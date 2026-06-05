@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { getErrorMessage } from "@/lib/utils";
 import { ApiError } from "@/types/api";
 import type { StoreResponse, PricingTier, MemberCard } from "@/types/store";
 import { Section, Field, Toggle, TagGroup, TagCheckbox } from "@/components/forms/section-components";
@@ -512,7 +513,7 @@ export default function StoreSettingsPage() {
       setShowPostSaveHint(true);
     } catch (err) {
       if (err instanceof ApiError) {
-        setError(err.detail);
+        setError(getErrorMessage(err));
       } else {
         setError("保存失败，请重试");
       }
@@ -535,7 +536,7 @@ export default function StoreSettingsPage() {
       setShowPostSaveHint(true);
     } catch (err) {
       if (err instanceof ApiError) {
-        setError(err.detail);
+        setError(getErrorMessage(err));
       } else {
         setError("Logo 上传失败");
       }
@@ -559,7 +560,7 @@ export default function StoreSettingsPage() {
       setShowPostSaveHint(true);
     } catch (err) {
       if (err instanceof ApiError) {
-        setError(err.detail);
+        setError(getErrorMessage(err));
       } else {
         setError("二维码上传失败");
       }

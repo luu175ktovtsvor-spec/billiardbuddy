@@ -35,7 +35,7 @@ export default function RegisterPage() {
       await register(phone, password, name || undefined);
     } catch (err) {
       if (err instanceof ApiError) {
-        setError(err.detail);
+        setError(err.status === 409 ? "该手机号已注册" : err.detail || "注册失败");
       } else {
         setError("注册失败，请重试");
       }

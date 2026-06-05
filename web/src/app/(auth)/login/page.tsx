@@ -30,7 +30,7 @@ export default function LoginPage() {
       await login(phone, password);
     } catch (err) {
       if (err instanceof ApiError) {
-        setError(err.detail);
+        setError(err.status === 401 ? "手机号或密码错误" : err.detail || "登录失败");
       } else {
         setError("登录失败，请重试");
       }
