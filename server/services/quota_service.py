@@ -2,13 +2,11 @@
 
 import logging
 from datetime import datetime, timezone
-from calendar import monthrange
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.quota import UsageQuota
-from models.generation import Generation
 
 logger = logging.getLogger(__name__)
 

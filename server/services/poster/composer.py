@@ -41,11 +41,6 @@ def overlay_images(
     logo_path: str | None,
     qrcode_path: str | None,
     upload_dir: Path,
-    *,
-    logo_position: tuple[int, int] = (60, 50),
-    logo_size: tuple[int, int] = (120, 120),
-    qrcode_position: tuple[int, int] = (860, 1220),
-    qrcode_size: tuple[int, int] = (160, 160),
 ) -> Image.Image:
     """在 AI 生成的底图上叠加 Logo 和二维码。
 
@@ -59,14 +54,6 @@ def overlay_images(
         门店 qrcode_url 数据库值。None 表示无二维码。
     upload_dir : Path
         上传目录根路径，用于路径安全检查。
-    logo_position : tuple[int, int]
-        Logo 左上角位置 (x, y)，默认 (60, 50)。
-    logo_size : tuple[int, int]
-        Logo 最大尺寸 (width, height)，默认 (120, 120)。
-    qrcode_position : tuple[int, int]
-        二维码左上角位置 (x, y)，默认 (860, 1220)。
-    qrcode_size : tuple[int, int]
-        二维码最大尺寸 (width, height)，默认 (160, 160)。
 
     Returns
     -------
@@ -74,6 +61,18 @@ def overlay_images(
         叠加后的图片。
     """
     result = base_image.convert("RGBA")
+    img_w, img_h = result.size
+
+    # 根据实际图片尺寸计算位置和大小（比例适配）
+    logo_margin = int(img_w * 0.05)
+    logo_max = int(img_w * 0.12)
+    logo_position = (logo_margin, logo_margin)
+    logo_size = (logo_max, logo_max)
+
+    qr_margin = int(img_w * 0.05)
+    qr_max = int(img_w * 0.12)
+    qrcode_position = (img_w - qr_max - qr_margin, img_h - qr_max - qr_margin)
+    qrcode_size = (qr_max, qr_max)
 
     # 叠加 Logo
     if logo_path:

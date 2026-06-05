@@ -8,7 +8,6 @@ import {
   ImageIcon,
   Clock,
   Settings,
-  Briefcase,
 } from "lucide-react";
 
 const NAV = [

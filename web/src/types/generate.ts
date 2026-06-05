@@ -35,6 +35,7 @@ export interface GenerateWorkbenchRequest {
   output_package?: OutputPackageItem[];
   extra_note?: string;
   prompt_key?: string;
+  model?: string;
 }
 
 export type OperationScenario =

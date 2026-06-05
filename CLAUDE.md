@@ -13,7 +13,9 @@
 - **前端**: Next.js 14 standalone 模式，端口 3000
 - **后端**: FastAPI + uvicorn，端口 8000
 - **数据库**: PostgreSQL 14，库名 `billiards_ai`
-- **AI**: DeepSeek API（文本），阿里云百炼 + OpenAI（图片，8 个模型）
+- **AI 文本模型**: DeepSeek（默认）+ 阿里云百炼（千问/Kimi/GLM/MiniMax），用户可选
+- **AI 图片模型**: 阿里云百炼（4 个）+ OpenAI（4 个），共 8 个
+- **内容渲染**: react-markdown + remark-gfm + @tailwindcss/typography
 - **部署文档**: `docs/服务器部署交接文档.md`
 
 ## 技术栈
@@ -180,6 +182,8 @@ journalctl -u billiards-backend -n 50 --no-pager
 | 岗位工作台（Workbench，SSE 流式输出） | ✅ |
 | 文案生成（朋友圈/群公告/活动/日报） | ✅ |
 | 海报生成（8 个 AI 模型 + Logo 叠加 + 二次调整） | ✅ |
+| Markdown 渲染（react-markdown + remark-gfm） | ✅ |
+| 文本模型选择（DeepSeek + 百炼多模型） | ✅ |
 | 生成历史 | ✅ |
 | 配额管理 | ✅ |
 | 多 AI Provider（DeepSeek/百炼/OpenAI） | ✅ |

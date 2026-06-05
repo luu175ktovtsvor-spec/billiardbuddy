@@ -7,7 +7,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_db, get_current_user
-from config import settings
 from core.exceptions import AppException
 from core.security import create_access_token, decode_token_allow_expired
 from models.user import User

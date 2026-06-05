@@ -3,7 +3,7 @@
 import logging
 from typing import AsyncIterator
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, APIStatusError, APITimeoutError, APIConnectionError
 
 from config import settings
 from core.exceptions import AIProviderError
@@ -41,12 +41,28 @@ class BailianProvider(TextProvider):
             messages.append({"role": "system", "content": request.system_prompt})
         messages.append({"role": "user", "content": request.prompt})
 
-        response = await self._get_client().chat.completions.create(
-            model=self._model,
-            messages=messages,
-            max_tokens=request.max_tokens,
-            temperature=request.temperature,
-        )
+        client = self._get_client()
+        try:
+            response = await client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+            )
+        except APIStatusError as e:
+            if e.status_code == 401:
+                raise AIProviderError(message="百炼 API Key 无效", status_code=401, provider_error=e) from e
+            elif e.status_code == 429:
+                raise AIProviderError(message="百炼 API 请求频率超限，请稍后重试", status_code=429, provider_error=e) from e
+            else:
+                raise AIProviderError(message=f"百炼 API 错误 ({e.status_code})", status_code=e.status_code, provider_error=e) from e
+        except APITimeoutError as e:
+            raise AIProviderError(message="百炼 API 响应超时，请稍后重试", status_code=504, provider_error=e) from e
+        except APIConnectionError as e:
+            raise AIProviderError(message="百炼 API 连接失败，请稍后重试", status_code=502, provider_error=e) from e
+        except Exception as e:
+            logger.exception("Bailian unexpected error")
+            raise AIProviderError(message="AI 生成失败，请稍后重试", provider_error=e) from e
 
         content = response.choices[0].message.content or ""
         tokens = response.usage.total_tokens if response.usage else 0

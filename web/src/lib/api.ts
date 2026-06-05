@@ -435,6 +435,22 @@ class ApiClient {
       remaining: number;
     }>("GET", "/api/v1/quota");
   }
+
+  // ─── Models ───
+
+  listTextModels() {
+    return this.request<{
+      models: Array<{
+        id: string;
+        name: string;
+        provider: string;
+        provider_name: string;
+        description: string;
+        best_for: string;
+        is_default: boolean;
+      }>;
+    }>("GET", "/api/v1/models/text-models");
+  }
 }
 
 export const api = new ApiClient();

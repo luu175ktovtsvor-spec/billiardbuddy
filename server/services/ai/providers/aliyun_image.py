@@ -1,6 +1,5 @@
 """阿里云百炼 -- 通义万相 ImageProvider"""
 
-import asyncio
 import logging
 
 import httpx

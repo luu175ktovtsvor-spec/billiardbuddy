@@ -4,6 +4,8 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/auth-context";
 import { api } from "@/lib/api";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { getErrorMessage } from "@/lib/utils";
 import { ApiError } from "@/types/api";
 import type { StoreResponse } from "@/types/store";
@@ -74,6 +76,10 @@ function WorkbenchPage() {
   const [knowledgeExpanded, setKnowledgeExpanded] = useState(false);
   const [quota, setQuota] = useState<{ used: number; limit: number; remaining: number } | null>(null);
 
+  /* Model selection */
+  const [textModels, setTextModels] = useState<Array<{ id: string; name: string; provider: string; provider_name: string; description: string; best_for: string; is_default: boolean }>>([]);
+  const [selectedModel, setSelectedModel] = useState<string>("");
+
   /* Refs */
   const inputSectionRef = useRef<HTMLDivElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
@@ -115,6 +121,21 @@ function WorkbenchPage() {
     return () => { cancelled = true; };
   }, [isAuthenticated]);
 
+  /* Load text models */
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let cancelled = false;
+    api.listTextModels()
+      .then((res) => {
+        if (cancelled) return;
+        setTextModels(res.models);
+        const defaultModel = res.models.find((m) => m.is_default);
+        if (defaultModel) setSelectedModel(defaultModel.id);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [isAuthenticated]);
+
   /* Handle task card click — pre-fill and auto-generate with streaming */
   const handleCardClick = async (card: RoleTaskCard) => {
     setIntent(card.userIntentTemplate);
@@ -138,6 +159,7 @@ function WorkbenchPage() {
           target_customer_type: card.targetCustomerType,
           output_package: card.outputPackage.length > 0 ? card.outputPackage : undefined,
           prompt_key: card.promptKey,
+          model: selectedModel || undefined,
         },
         (token) => setStreamingContent((prev) => prev + token),
         (fullContent, generationId) => {
@@ -176,6 +198,7 @@ function WorkbenchPage() {
           target_customer_type: targetCustomer || undefined,
           output_package: outputPackage.length > 0 ? outputPackage : undefined,
           extra_note: extraNote || undefined,
+          model: selectedModel || undefined,
         },
         (token) => setStreamingContent((prev) => prev + token),
         (fullContent, generationId) => {
@@ -487,6 +510,29 @@ function WorkbenchPage() {
           </div>
         </div>
 
+        {/* Model selector */}
+        {textModels.length > 0 && (
+          <div className="mb-4">
+            <label className="mb-1 block text-sm font-medium text-slate-700">AI 模型</label>
+            <select
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none"
+            >
+              {textModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name} ({m.provider_name}) — {m.best_for}
+                </option>
+              ))}
+            </select>
+            {textModels.find((m) => m.id === selectedModel)?.description && (
+              <p className="mt-1 text-xs text-slate-500">
+                {textModels.find((m) => m.id === selectedModel)?.description}
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Output package */}
         <div className="mb-4">
           <label className="mb-2 block text-sm font-medium text-slate-700">
@@ -642,8 +688,10 @@ function WorkbenchPage() {
                   className="w-full min-h-[200px] rounded-lg border border-indigo-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 resize-y"
                 />
               ) : (
-                <div className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
-                  {result.content}
+                <div className="prose prose-sm max-w-none prose-slate prose-headings:text-slate-900 prose-p:text-slate-700 prose-strong:text-slate-900 prose-li:text-slate-700 prose-th:bg-slate-50 prose-th:text-slate-700 prose-td:text-slate-600">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {result.content}
+                  </ReactMarkdown>
                 </div>
               )}
             </div>

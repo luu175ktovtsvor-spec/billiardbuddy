@@ -33,7 +33,3 @@ class GenerationListResponse(BaseModel):
     total: int
     page: int
     page_size: int
-
-
-class FavoriteResponse(BaseModel):
-    is_favorite: bool

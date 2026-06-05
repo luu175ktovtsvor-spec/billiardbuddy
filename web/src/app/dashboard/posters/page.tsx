@@ -91,7 +91,7 @@ function PostersPage() {
       }
     }).finally(() => { if (!cancelled) setDataLoading(false); });
     return () => { cancelled = true; };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, imageModel]);
 
   /* Handle reference image upload */
   const handleReferenceUpload = async (file: File) => {
@@ -161,11 +161,6 @@ function PostersPage() {
     } finally {
       setGenerating(false);
     }
-  };
-
-  /* Regenerate single */
-  const handleRegenerate = async () => {
-    await handleGenerate();
   };
 
   /* Download all images via fetch+blob (works for cross-origin OSS images) */
@@ -458,7 +453,7 @@ function PostersPage() {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={handleRegenerate}
+                  onClick={handleGenerate}
                   className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-500 hover:bg-slate-50 hover:text-slate-700"
                 >
                   <RefreshCw className="h-4 w-4" />

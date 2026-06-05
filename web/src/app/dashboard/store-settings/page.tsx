@@ -8,6 +8,7 @@ import type { StoreResponse, PricingTier, MemberCard } from "@/types/store";
 import { Section, Field, Toggle, TagGroup, TagCheckbox } from "@/components/forms/section-components";
 import { Upload, Building2, Wrench, FileText, ImageIcon, Sparkles, Brain } from "lucide-react";
 import { ProfileGuide } from "@/components/store/profile-guide";
+import { MODULE_LABELS } from "@/lib/role-workbench-config";
 
 type FormData = {
   name: string;
@@ -79,18 +80,6 @@ const EMPTY_FORM: FormData = {
   membership_types: "",
   recharge_rules: "",
   membership_benefits: "",
-};
-
-const MODULE_LABELS: Record<string, string> = {
-  basic: "基础信息",
-  business_goals: "经营目标",
-  customer_structure: "客户结构",
-  private_domain_groups: "私域群矩阵",
-  assistant_system: "助教体系",
-  events: "赛事活动",
-  commerce_rules: "团购/价格规则",
-  equipment: "桌型设备",
-  content_style: "内容风格",
 };
 
 type ProfileFormData = {

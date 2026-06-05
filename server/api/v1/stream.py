@@ -44,6 +44,7 @@ async def stream_workbench(
     output_package = [item.value if hasattr(item, 'value') else item for item in (body.output_package or [])]
     extra_note = body.extra_note
     prompt_key = body.prompt_key
+    model = body.model
 
     await check_quota(db, str(store.id))
     _validate_provider_for_production()
@@ -86,7 +87,7 @@ async def stream_workbench(
         full_content = ""
         generation_id = str(uuid.uuid4())
         try:
-            async for token, fallback_used in ProviderFactory.generate_stream_with_fallback(request):
+            async for token, fallback_used in ProviderFactory.generate_stream_with_fallback(request, model=model):
                 full_content += token
                 data = json.dumps({"token": token, "done": False, "fallback_used": fallback_used}, ensure_ascii=False)
                 yield f"data: {data}\n\n"

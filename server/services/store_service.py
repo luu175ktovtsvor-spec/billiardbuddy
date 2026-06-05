@@ -17,11 +17,6 @@ class StoreNotFoundError(AppException):
         super().__init__("未找到门店", status_code=404)
 
 
-class NotStoreMemberError(AppException):
-    def __init__(self):
-        super().__init__("您不属于该门店", status_code=403)
-
-
 class NoPermissionError(AppException):
     def __init__(self):
         super().__init__("无权限执行该操作", status_code=403)
@@ -75,30 +70,6 @@ async def create_store(
     db.add(member)
     await db.commit()
     await db.refresh(store)
-    return store
-
-
-async def get_current_member(
-    db: AsyncSession, user_id: uuid.UUID
-) -> StoreMember:
-    result = await db.execute(
-        select(StoreMember).where(StoreMember.user_id == user_id)
-    )
-    member = result.scalar_one_or_none()
-    if not member:
-        raise StoreNotFoundError()
-    return member
-
-
-async def get_store_by_member(
-    db: AsyncSession, member: StoreMember
-) -> Store:
-    result = await db.execute(
-        select(Store).where(Store.id == member.store_id)
-    )
-    store = result.scalar_one_or_none()
-    if not store:
-        raise StoreNotFoundError()
     return store
 
 

@@ -10,7 +10,6 @@ Workbench 轻量 Few-shot 选择器 (10F-2)
 6. 任何异常时静默降级，返回空字符串
 """
 
-import os
 import logging
 from pathlib import Path
 

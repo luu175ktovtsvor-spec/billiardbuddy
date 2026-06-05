@@ -48,6 +48,23 @@ class ProviderFactory:
         return instance
 
     @classmethod
+    def resolve_provider(cls, model: str | None = None) -> TextProvider:
+        """根据模型 ID 解析应该使用哪个 provider。
+
+        - qwen/kimi/glm/minimax/mimo → 百炼
+        - deepseek → DeepSeek
+        - 未指定 → 默认 provider
+        """
+        if not model:
+            return cls.get_text_provider()
+
+        bailian_prefixes = ["qwen", "kimi", "glm", "minimax", "mimo"]
+        if any(model.startswith(p) for p in bailian_prefixes):
+            return cls.get_bailian_provider(model)
+
+        return cls.get_text_provider()
+
+    @classmethod
     async def generate_with_fallback(cls, request) -> tuple:
         """带 Fallback 的生成：主模型失败时自动降级到百炼 Qwen。
 
@@ -70,9 +87,9 @@ class ProviderFactory:
             raise
 
     @classmethod
-    async def generate_stream_with_fallback(cls, request):
-        """带 Fallback 的流式生成。"""
-        primary = cls.get_text_provider()
+    async def generate_stream_with_fallback(cls, request, model: str | None = None):
+        """带 Fallback 的流式生成。model 参数用于指定模型 ID。"""
+        primary = cls.resolve_provider(model)
         try:
             async for token in primary.generate_stream(request):
                 yield token, False

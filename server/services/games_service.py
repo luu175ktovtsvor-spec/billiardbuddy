@@ -9,7 +9,7 @@ from models.generation import Generation
 from services.ai.factory import ProviderFactory
 from services.ai.prompt_engine import get_prompt_engine
 from services.ai.base import TextRequest
-from services.content_service import _append_guardrails, _strip_ai_prefixes
+from services.content_service import _append_guardrails
 from services.quota_service import check_quota, increment_usage
 
 prompt_engine = get_prompt_engine()
@@ -71,6 +71,6 @@ async def recommend_games(
     db.add(generation)
     await db.commit()
     await db.refresh(generation)
-    await increment_usage(db, str(store.id), tokens=response.tokens_used)
+    await increment_usage(db, str(store.id), tokens=response.tokens_used or 0)
 
     return generation

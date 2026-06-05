@@ -26,14 +26,6 @@ class Scenario(str, Enum):
     rainy = "rainy"
 
 
-class GroupNoticeScenario(str, Enum):
-    activity_notice = "activity_notice"
-    matchmaking = "matchmaking"
-    group_rule = "group_rule"
-    newcomer_welcome = "newcomer_welcome"
-    benefit_notice = "benefit_notice"
-
-
 class ActivityGoal(str, Enum):
     traffic = "traffic"
     membership = "membership"
@@ -55,9 +47,21 @@ class BudgetLevel(str, Enum):
 class OperationScenario(str, Enum):
     groupbuy_to_private = "groupbuy_to_private"
     assistant_promo = "assistant_promo"
+    assistant_outreach = "assistant_outreach"
     partner_match = "partner_match"
     tournament = "tournament"
     old_customer_recall = "old_customer_recall"
+    frontdesk_sop = "frontdesk_sop"
+    game_recommend = "game_recommend"
+    vip_maintenance = "vip_maintenance"
+    complaint_handling = "complaint_handling"
+    daily_report = "daily_report"
+    short_video = "short_video"
+    opening_event = "opening_event"
+    group_content = "group_content"
+    performance_template = "performance_template"
+    diagnosis_tool = "diagnosis_tool"
+    review_meeting = "review_meeting"
 
 
 class OperationRequest(BaseModel):
@@ -107,6 +111,7 @@ class WorkbenchRequest(BaseModel):
     output_package: list[OutputPackageItem] | None = Field(None, description="期望输出的成品类型，为空则由 AI 自行判断")
     extra_note: str = Field("", description="补充说明", max_length=200)
     prompt_key: str | None = Field(None, description="后端场景模板 key，如 operation.qiangyi_battle。有 promptKey 时优先使用该模板，否则 fallback 到 workbench.free_intent")
+    model: str | None = Field(None, description="指定文本模型 ID，如 deepseek-v4-flash、qwen3.7-plus 等")
 
 
 class CopywritingRequest(BaseModel):
