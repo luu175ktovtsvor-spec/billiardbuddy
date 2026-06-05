@@ -270,6 +270,33 @@ function parseFlexibleField(value: string): unknown {
   }
 }
 
+/** 把 JSON 数据转成用户能看懂的文字 */
+function formatJsonForDisplay(data: unknown): string {
+  if (!data) return "";
+  if (typeof data === "string") return data;
+  if (Array.isArray(data)) {
+    return data.map((item) => {
+      if (typeof item === "string") return item;
+      if (typeof item === "object" && item !== null) {
+        // 常见格式：{name, price} 或 {amount, bonus}
+        const parts: string[] = [];
+        if ("name" in item) parts.push(String(item.name));
+        if ("price" in item) parts.push(`${item.price}元`);
+        if ("amount" in item && "bonus" in item) parts.push(`充${item.amount}送${item.bonus}`);
+        if ("type" in item) parts.push(String(item.type));
+        if ("description" in item) parts.push(String(item.description));
+        return parts.length > 0 ? parts.join(" ") : JSON.stringify(item);
+      }
+      return String(item);
+    }).join("\n");
+  }
+  if (typeof data === "object") {
+    const entries = Object.entries(data as Record<string, unknown>);
+    return entries.map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`).join("\n");
+  }
+  return String(data);
+}
+
 function formDataToPayload(form: FormData) {
   const tableCount = form.table_count.trim() ? parseInt(form.table_count, 10) : null;
   const coachCount = form.coach_count.trim() ? parseInt(form.coach_count, 10) : null;
@@ -399,8 +426,8 @@ export default function StoreSettingsPage() {
           style: s.style || "",
           advantages: s.advantages || "",
           common_activities: s.common_activities || "",
-          pricing: typeof s.pricing === "string" ? s.pricing : s.pricing ? JSON.stringify(s.pricing, null, 2) : "",
-          member_cards: typeof s.member_cards === "string" ? s.member_cards : s.member_cards ? JSON.stringify(s.member_cards, null, 2) : "",
+          pricing: formatJsonForDisplay(s.pricing),
+          member_cards: formatJsonForDisplay(s.member_cards),
           coach_count: s.coach_count != null ? String(s.coach_count) : "",
           coach_service_types: s.coach_service_types || "",
           coach_price_range: s.coach_price_range || "",
@@ -413,9 +440,9 @@ export default function StoreSettingsPage() {
           daily_avg_customers: s.daily_avg_customers != null ? String(s.daily_avg_customers) : "",
           peak_hours: s.peak_hours || "",
           avg_spend_range: s.avg_spend_range || "",
-          membership_types: s.membership_types ? (typeof s.membership_types === "string" ? s.membership_types : JSON.stringify(s.membership_types, null, 2)) : "",
-          recharge_rules: s.recharge_rules ? (typeof s.recharge_rules === "string" ? s.recharge_rules : JSON.stringify(s.recharge_rules, null, 2)) : "",
-          membership_benefits: s.membership_benefits ? (typeof s.membership_benefits === "string" ? s.membership_benefits : JSON.stringify(s.membership_benefits, null, 2)) : "",
+          membership_types: formatJsonForDisplay(s.membership_types),
+          recharge_rules: formatJsonForDisplay(s.recharge_rules),
+          membership_benefits: formatJsonForDisplay(s.membership_benefits),
         });
         setProfileForm(profileToFormData(s.operation_profile));
       })
@@ -893,27 +920,27 @@ export default function StoreSettingsPage() {
           <Field label="价格体系">
             <textarea rows={3} value={form.pricing}
               onChange={(e) => updateField("pricing", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：中式黑八 30元/小时，美式九球 40元/小时&#10;或输入 JSON 格式" />
+              className={INPUT_CLASS} placeholder="如：中式黑八 30元/小时，美式九球 40元/小时" />
           </Field>
           <Field label="会员卡套餐">
             <textarea rows={3} value={form.member_cards}
               onChange={(e) => updateField("member_cards", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：月卡 300元，季卡 800元&#10;或输入 JSON 格式" />
+              className={INPUT_CLASS} placeholder="如：月卡 300元，季卡 800元" />
           </Field>
-          <Field label="会员类型（选填，JSON格式）">
+          <Field label="会员类型（选填）">
             <textarea rows={2} value={form.membership_types}
               onChange={(e) => updateField("membership_types", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：月卡、季卡、年卡&#10;或输入 JSON 格式，如 [{&quot;name&quot;:&quot;月卡&quot;,&quot;price&quot;:300}]" />
+              className={INPUT_CLASS} placeholder="如：月卡、季卡、年卡" />
           </Field>
-          <Field label="充值规则（选填，JSON格式）">
+          <Field label="充值规则（选填）">
             <textarea rows={2} value={form.recharge_rules}
               onChange={(e) => updateField("recharge_rules", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：充1000送99&#10;或输入 JSON 格式，如 [{&quot;amount&quot;:1000,&quot;bonus&quot;:99}]" />
+              className={INPUT_CLASS} placeholder="如：充1000送99，充3000送399" />
           </Field>
-          <Field label="会员权益（选填，JSON格式）">
+          <Field label="会员权益（选填）">
             <textarea rows={2} value={form.membership_benefits}
               onChange={(e) => updateField("membership_benefits", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：台费折扣、免费饮料、专属时段&#10;或输入 JSON 格式" />
+              className={INPUT_CLASS} placeholder="如：台费折扣、免费饮料、专属时段" />
           </Field>
         </Section>
         </>
