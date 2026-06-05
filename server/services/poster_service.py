@@ -151,7 +151,7 @@ async def generate_images(
     prompt: str,
     image_model: str,
     ratio: str = "3:4",
-    reference_image_path: str | None = None,
+    reference_image_paths: list[str] | None = None,
     count: int = 2,
     refine_from: str | None = None,
 ) -> dict:
@@ -165,8 +165,8 @@ async def generate_images(
         AI 生图模型 ID。
     ratio : str
         图片比例 (3:4 / 1:1 / 9:16 / 16:9)。
-    reference_image_path : str | None
-        参考图本地路径（已上传保存的文件路径）。
+    reference_image_paths : list[str] | None
+        参考图本地路径列表（已上传保存的文件路径）。
     count : int
         生成数量，默认 2。
     """
@@ -195,17 +195,23 @@ async def generate_images(
         )
         original = result.scalar_one_or_none()
         if original and original.result:
-            # 原图的 URL 存在 result 字段中，转换为本地路径
             original_path = Path(settings.upload_dir) / original.result.lstrip("/uploads/")
             if original_path.exists():
                 reference_style = await _analyze_reference_image(original_path)
                 logger.info("基于原图调整: %s", original_path)
-    elif reference_image_path:
-        ref_path = Path(reference_image_path).resolve()
+    elif reference_image_paths:
+        # 多张参考图：逐一分析，合并风格描述
         allowed_dir = Path(settings.upload_dir).resolve() / "references"
-        if not str(ref_path).startswith(str(allowed_dir)):
-            raise ValueError("reference_image_path 必须在 uploads/references/ 目录内")
-        reference_style = await _analyze_reference_image(ref_path)
+        styles = []
+        for ref_str in reference_image_paths:
+            ref_path = Path(ref_str).resolve()
+            if not str(ref_path).startswith(str(allowed_dir)):
+                raise ValueError("reference_image_path 必须在 uploads/references/ 目录内")
+            style = await _analyze_reference_image(ref_path)
+            if style:
+                styles.append(style)
+        if styles:
+            reference_style = "；".join(styles)
 
     # 构建 prompt
     full_prompt = _build_image_prompt(prompt, store, reference_style, provider_name)
@@ -260,7 +266,7 @@ async def generate_images(
                     "prompt": prompt,
                     "image_model": image_model,
                     "ratio": ratio,
-                    "reference_image": reference_image_path,
+                    "reference_images": reference_image_paths,
                 },
                 prompt_used=full_prompt,
                 result=poster_url,

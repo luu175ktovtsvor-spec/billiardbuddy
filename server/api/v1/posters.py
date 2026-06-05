@@ -45,7 +45,7 @@ async def generate_image(
         prompt=request.prompt,
         image_model=request.image_model,
         ratio=request.ratio,
-        reference_image_path=request.reference_image_path,
+        reference_image_paths=request.reference_image_paths,
         count=request.count or 2,
         refine_from=request.refine_from,
     )
@@ -85,7 +85,8 @@ async def upload_reference(
     with open(file_path, "wb") as f:
         f.write(content)
 
-    return {"url": f"/uploads/references/{safe_filename}"}
+    rel_path = f"/uploads/references/{safe_filename}"
+    return {"path": rel_path, "url": rel_path}
 
 
 @router.get("/image-models")

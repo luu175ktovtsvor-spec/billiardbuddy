@@ -12,7 +12,7 @@ export interface ImageGenerateRequest {
   prompt: string;
   image_model: string;
   ratio?: string;
-  reference_image_path?: string;
+  reference_image_paths?: string[];
   count?: number;
   refine_from?: string;
 }

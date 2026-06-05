@@ -33,10 +33,8 @@ function PostersPage() {
   const [ratio, setRatio] = useState("3:4");
   const [imageModel, setImageModel] = useState("");
 
-  /* Reference image */
-  const [referenceFile, setReferenceFile] = useState<File | null>(null);
-  const [referencePath, setReferencePath] = useState<string | null>(null);
-  const [referencePreview, setReferencePreview] = useState<string | null>(null);
+  /* Reference images */
+  const [references, setReferences] = useState<Array<{ file: File; path: string; preview: string }>>([]);
   const [referenceUploading, setReferenceUploading] = useState(false);
 
   /* Logo upload */
@@ -94,27 +92,31 @@ function PostersPage() {
   }, [isAuthenticated, imageModel]);
 
   /* Handle reference image upload */
-  const handleReferenceUpload = async (file: File) => {
-    setReferenceFile(file);
-    setReferencePreview(URL.createObjectURL(file));
+  const handleReferenceUpload = async (files: FileList | File[]) => {
+    const fileArray = Array.from(files);
+    if (references.length + fileArray.length > 5) {
+      setError("最多上传 5 张参考图");
+      return;
+    }
     setReferenceUploading(true);
     try {
-      const res = await api.uploadReferenceImage(file);
-      setReferencePath(res.path);
+      for (const file of fileArray) {
+        const res = await api.uploadReferenceImage(file);
+        setReferences((prev) => [...prev, { file, path: res.path, preview: URL.createObjectURL(file) }]);
+      }
     } catch {
-      setReferenceFile(null);
-      setReferencePreview(null);
-      setReferencePath(null);
+      setError("参考图上传失败");
     } finally {
       setReferenceUploading(false);
     }
   };
 
-  const removeReference = () => {
-    setReferenceFile(null);
-    setReferencePath(null);
-    if (referencePreview) URL.revokeObjectURL(referencePreview);
-    setReferencePreview(null);
+  const removeReference = (index: number) => {
+    setReferences((prev) => {
+      const removed = prev[index];
+      if (removed) URL.revokeObjectURL(removed.preview);
+      return prev.filter((_, i) => i !== index);
+    });
   };
 
   /* Handle tag click */
@@ -150,7 +152,7 @@ function PostersPage() {
         prompt: prompt.trim(),
         image_model: imageModel,
         ratio,
-        reference_image_path: referencePath || undefined,
+        reference_image_paths: references.length > 0 ? references.map((r) => r.path) : undefined,
         count: 2,
         refine_from: refineFrom || undefined,
       });
@@ -225,35 +227,39 @@ function PostersPage() {
 
           {/* Controls row */}
           <div className="mt-3 flex flex-wrap items-center gap-3">
-            {/* Reference image */}
-            <div className="flex items-center gap-2">
-              {referencePreview ? (
-                <div className="relative h-10 w-10 rounded-md border border-slate-200 overflow-hidden">
-                  <img src={referencePreview} alt="参考图" className="h-full w-full object-cover" />
+            {/* Reference images */}
+            <div className="flex items-center gap-2 flex-wrap">
+              {references.map((ref, idx) => (
+                <div key={idx} className="relative h-10 w-10 rounded-md border border-slate-200 overflow-hidden">
+                  <img src={ref.preview} alt={`参考图${idx + 1}`} className="h-full w-full object-cover" />
                   <button
                     type="button"
-                    onClick={removeReference}
+                    onClick={() => removeReference(idx)}
                     className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-red-500 text-white flex items-center justify-center"
                   >
                     <X className="h-3 w-3" />
                   </button>
                 </div>
-              ) : (
+              ))}
+              {references.length < 5 && (
                 <label className="flex items-center gap-1.5 cursor-pointer rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-500 hover:bg-slate-50 hover:text-slate-700">
                   <Upload className="h-4 w-4" />
-                  上传参考图
+                  {references.length === 0 ? "上传参考图" : "添加"}
                   <input
                     type="file"
                     accept="image/*"
+                    multiple
                     className="hidden"
                     onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) handleReferenceUpload(f);
+                      if (e.target.files?.length) handleReferenceUpload(e.target.files);
                     }}
                   />
                 </label>
               )}
               {referenceUploading && <span className="text-xs text-slate-500">上传中...</span>}
+              {references.length > 0 && (
+                <span className="text-xs text-slate-400">{references.length}/5</span>
+              )}
             </div>
 
             {/* Ratio selector */}
