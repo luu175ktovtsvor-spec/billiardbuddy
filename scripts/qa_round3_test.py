@@ -278,7 +278,7 @@ async def ensure_test_store(db: AsyncSession) -> tuple:
 ROLE_LABELS = {"manager": "店长", "assistant_manager": "助教管理", "coach": "教练", "frontdesk": "前厅", "boss": "老板", "operator": "运营"}
 
 
-async def run_single(db, user, store, case, idx, total):
+async def run_single(db, user, store, case, idx, total, model=None):
     cid = case["id"]
     label = ROLE_LABELS.get(case["role"], case["role"])
     print(f"  [{idx}/{total}] {cid} ({label}) ...", end=" ", flush=True)
@@ -295,6 +295,7 @@ async def run_single(db, user, store, case, idx, total):
             user_intent=case["intent"], role=case["role"],
             target_customer_type=case["customer"],
             output_package=case["pkg"],
+            model=model,
         )
         output = gen.result or ""
         result["success"] = True
@@ -420,8 +421,15 @@ def generate_report(results: list, output_path: Path):
 
 
 async def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="第三轮质量测试")
+    parser.add_argument("--model", default=None, help="AI 模型（如 kimi-k2.6, qwen3.7-max）")
+    args = parser.parse_args()
+
+    model = args.model
     print("=" * 60)
     print(f"第三轮质量测试 — {len(CASES)} 条业务逻辑深度检测")
+    print(f"模型: {model or '默认'}")
     print(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print("=" * 60)
 
@@ -433,7 +441,7 @@ async def main():
 
         results = []
         for i, case in enumerate(CASES, 1):
-            r = await run_single(db, user, store, case, i, len(CASES))
+            r = await run_single(db, user, store, case, i, len(CASES), model=model)
             results.append(r)
             if i < len(CASES):
                 await asyncio.sleep(0.3)

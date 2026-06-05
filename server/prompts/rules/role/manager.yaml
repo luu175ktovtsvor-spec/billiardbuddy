@@ -43,7 +43,7 @@ template: |
   - **用户给总预算时，只给分配思路建议，不拆具体金额。**
 
 required_knowledge:
-  - knowledge.tournament_rules
+  - knowledge.core_operations  - knowledge.tournament_rules
   - knowledge.mini_games
   - knowledge.profit_model
   - knowledge.performance_standards

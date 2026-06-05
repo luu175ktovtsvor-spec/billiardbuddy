@@ -51,7 +51,7 @@ template: |
   8. 【需要补充的信息】
 
 required_knowledge:
-  - knowledge.tournament_rules
+  - knowledge.core_operations  - knowledge.tournament_rules
   - knowledge.mini_games
   - knowledge.billiards_game_rules
   - knowledge.coaching_sop

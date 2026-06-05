@@ -404,6 +404,7 @@ async def generate_workbench(
     output_package: list[str] | None = None,
     extra_note: str = "",
     prompt_key: str | None = None,
+    model: str | None = None,
 ) -> Generation:
     await check_quota(db, str(store.id))
     _validate_provider_for_production()
@@ -512,7 +513,12 @@ async def generate_workbench(
 
         rendered_prompt = prompt_engine.render("workbench.free_intent", store, extra_vars)
 
-    provider = ProviderFactory.get_text_provider()
+    # 根据 model 参数选择 provider
+    if model and model not in ("deepseek-v4-flash", "deepseek-v4-pro"):
+        provider = ProviderFactory.get_bailian_provider(model=model)
+    else:
+        provider = ProviderFactory.get_text_provider()
+
     request = TextRequest(prompt=rendered_prompt, max_tokens=3000)
     try:
         response = await provider.generate(request)
