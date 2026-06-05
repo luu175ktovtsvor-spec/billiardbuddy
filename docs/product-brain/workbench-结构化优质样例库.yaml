@@ -901,3 +901,267 @@ examples:
     injection_style: "short_snippet"
     priority: "P0"
     max_injection_chars: 300
+
+  # ═══ 以下为 PPT 真实模板提取的 fewshot 示例（第四轮测试新增）═══
+
+  - id: "D001"
+    title: "店长日报（标准五段式）"
+    role: "manager"
+    target_customer_type: "all"
+    output_package: ["daily_report"]
+    scene_tags: ["daily_report", "store_manager", "closing"]
+    user_intent: "今天营业结束了，帮我写个日报"
+    extra_note: ""
+    good_output_snippet: |
+      测试台球俱乐部 · 店长日报 · 6月6日
+
+      一、今日数据
+      总营业额：12800元
+      台费：8200元（团购占比35%）
+      助教费：3100元
+      商品费：1500元
+      充值：2000元
+      好评：抖音5条 美团8条 大众2条
+      美团评分：4.7  抖音评分：4.8
+
+      二、各岗位数据
+      助教：到岗15人，上钟12人，平均时长2.5h
+      教练：加微信5人，组局3桌，转化竞技客户2人
+      前厅：团购核销15单，加微信12人，商品销售380元
+
+      三、今日重点
+      - 下午场团购客流不错，转化率比昨天高
+      - 助教小美今天上了4单，客户反馈好
+
+      四、发现问题
+      1. 晚高峰排队15分钟，建议增加1名前台
+      2. 斯诺克台布磨损，需要更换
+
+      五、明日计划
+      - 推进端午节活动方案
+      - 跟进赵哥的回访
+    why_good:
+      - "格式像真实管理群日报，不是咨询报告"
+      - "五段式结构完整：数据/岗位/重点/问题/计划"
+      - "包含四大数据板块：助教/教练/前厅/总营业额"
+    reusable_rules:
+      - "日报必须包含：总营业额、台费（含团购占比）、助教费、商品费、充值、好评数、评分"
+      - "日报格式像管理群发的文字，不是咨询报告"
+    suitable_for_fewshot: true
+    fewshot_use_case: ["runtime_positive_example"]
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 500
+
+  - id: "D002"
+    title: "教练日报-主教练"
+    role: "coach"
+    target_customer_type: "competition"
+    output_package: ["daily_report"]
+    scene_tags: ["daily_report", "coach", "closing"]
+    user_intent: "帮我写今天的教练日报"
+    extra_note: ""
+    good_output_snippet: |
+      测试台球俱乐部 · 教练日报 · 6月6日
+
+      加顾客微信：5/379
+      组局：3桌/35
+      晚场活动：红牛挑战赛
+      朋友圈：2条
+      短视频：2条
+      约客到店：13/88
+      器材销售：1/4
+      转化竞技客户：2/14
+      新入竞技群：7/344人
+      本月休息2天，请假1天
+    why_good:
+      - "格式像真实教练日报，数据简洁明了"
+      - "用分数表示（今日/累计），有对比感"
+      - "包含教练核心KPI：加微信/组局/约客/转化"
+    reusable_rules:
+      - "教练日报核心字段：加微信、组局、小游戏、好评、朋友圈、短视频、约客到店、器材销售、转化竞技客户"
+    suitable_for_fewshot: true
+    fewshot_use_case: ["runtime_positive_example"]
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 300
+
+  - id: "T001"
+    title: "周赛方案（含让条件）"
+    role: "coach"
+    target_customer_type: "competition"
+    output_package: ["activity_plan", "group_notice", "moments"]
+    scene_tags: ["tournament", "weekly_match", "handicap"]
+    user_intent: "这周末做周赛，帮我写全套"
+    extra_note: ""
+    good_output_snippet: |
+      本周周赛方案
+
+      比赛形式：中式八球
+      赛制：单败淘汰
+      时间：周六下午2点
+      地点：测试台球俱乐部
+
+      让条件规则：
+      A档让B档后一，A档让C档后二，A档让D档后三
+      B档让C档后一，B档让D档后二
+      C档让D档后一
+
+      报名费：30元
+      奖金：冠军500元 亚军300元 季军100元
+      人数限制：16-32人
+
+      群公告：
+      本周六下午2点周赛开打！中式八球单败淘汰，按档位让球，人人都有机会。报名费30元，冠军500元。想打的群里接龙，名额有限先到先得。
+
+      朋友圈：
+      周六下午2点，周赛等你来战。按档位让球，新手也能赢。报名费30，冠军500。来之前找我报名。
+    why_good:
+      - "让条件规则写得具体（A让B后一，A让C后二）"
+      - "包含赛事方案8项必填内容"
+      - "群公告和朋友圈都是纯文本，可直接复制发"
+    reusable_rules:
+      - "赛事方案必须包含：比赛形式、赛制、让条件规则、报名费奖金、时间地点、报名方式、预热文案、执行SOP"
+      - "让条件必须写具体（如A档让B档后一），不能写根据水平让球"
+    suitable_for_fewshot: true
+    fewshot_use_case: ["runtime_positive_example"]
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 500
+
+  - id: "T002"
+    title: "抢一大战方案"
+    role: "coach"
+    target_customer_type: "competition"
+    output_package: ["moments", "group_notice", "execution_tips"]
+    scene_tags: ["tournament", "qiangyi_battle", "light_competition"]
+    user_intent: "这周想搞个抢一大战，帮我出预热文案和主持词"
+    extra_note: ""
+    good_output_snippet: |
+      抢一大战方案
+
+      时间：每天下午2点、晚上7点各一场
+      报名费：10元/人
+      奖金：200-500元（根据报名人数调整）
+      让条件：按档位让球，增加偶然性，人人有机会赢
+
+      预热文案（群公告）：
+      今天下午2点抢一大战开打！报名费10块，赢了拿奖金。按档位让球，新手也能赢。想玩的群里报名。
+
+      主持词：
+      各位球友，今天的抢一大战马上开始。规则很简单：按档位让球，每低一个档位让一球。报名费10块，奖金看今天人数。打之前先报档位，我来定让球数。准备好的举手。
+    why_good:
+      - "抢一大战核心逻辑正确：让条件增加偶然性"
+      - "时间、报名费、奖金写清楚"
+      - "主持词简短有力，像真人说话"
+    reusable_rules:
+      - "抢一大战核心：每天两场、小额报名费、让条件增加偶然性"
+    suitable_for_fewshot: true
+    fewshot_use_case: ["runtime_positive_example"]
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 400
+
+  - id: "P001"
+    title: "助教PK方案"
+    role: "assistant_manager"
+    target_customer_type: "assistant"
+    output_package: ["pk_plan", "execution_tips"]
+    scene_tags: ["pk_plan", "assistant_incentive", "team_management"]
+    user_intent: "这个月想搞助教PK，总奖金5000，15个人参与"
+    extra_note: "规则要公平"
+    good_output_snippet: |
+      本月助教PK方案
+
+      分组：15人分3组，每组5人，按上月业绩均衡分配
+      指标：上钟时长40% + 客户评分30% + 加微信数15% + 预约回头客15%
+
+      阶梯奖励：
+      月上钟170小时：奖励500元
+      月上钟200小时：奖励1000元
+      月上钟230小时：奖励1500元
+      冠军组：额外人均200元
+      进步最大奖：300元
+
+      公示：每周日晚助教群公布排名
+      兑现：次月5日前发放
+
+      执行建议：本周一启动，跟助教说明规则，每周日晚发排名截图到群里，月末颁奖拍照发朋友圈。
+    why_good:
+      - "三层结构完整：分组/指标/阶梯奖励"
+      - "阶梯奖励有具体金额参考"
+      - "有公示节奏和兑现时间"
+    reusable_rules:
+      - "PK方案必须包含：分组规则、指标权重、阶梯奖励、公示节奏、兑现时间、执行建议"
+    suitable_for_fewshot: true
+    fewshot_use_case: ["runtime_positive_example"]
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 400
+
+  - id: "M001"
+    title: "朋友圈-空台促活"
+    role: "manager"
+    target_customer_type: "all"
+    output_package: ["moments"]
+    scene_tags: ["moments", "empty_table", "promotion"]
+    user_intent: "今天下午空台很多，帮我写条朋友圈拉人"
+    extra_note: ""
+    good_output_snippet: |
+      今天下午空台多，手痒的可以来。想组局的群里喊一声，我帮你凑搭子。没伴的也没事，一个人来练练球，或者找助教陪你打会儿都行。来之前跟我说一声，我帮你留台。
+    why_good:
+      - "像真人发的朋友圈，不是营销文案"
+      - "纯文本，没有markdown格式"
+      - "口语化，有邀请感，不推销"
+    reusable_rules:
+      - "朋友圈80-150字，纯文本，像真人说话"
+      - "不要用markdown格式（#、**、-等）"
+    suitable_for_fewshot: true
+    fewshot_use_case: ["runtime_positive_example"]
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 200
+
+  - id: "G001"
+    title: "群公告-比赛通知"
+    role: "coach"
+    target_customer_type: "competition"
+    output_package: ["group_notice"]
+    scene_tags: ["group_notice", "tournament", "announcement"]
+    user_intent: "帮我写个群公告，通知周末比赛"
+    extra_note: ""
+    good_output_snippet: |
+      本周六下午2点周赛开打！中式八球单败淘汰，按档位让球。报名费30元，冠军500元。想打的群里接龙，名额有限先到先得。
+    why_good:
+      - "200字以内，包含时间/形式/规则/报名方式"
+      - "纯文本，没有markdown格式"
+      - "简洁有力，看完就知道怎么行动"
+    reusable_rules:
+      - "群公告200字以内，包含：什么事+什么时间+谁参加+怎么做"
+    suitable_for_fewshot: true
+    fewshot_use_case: ["runtime_positive_example"]
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 200
+
+  - id: "F001"
+    title: "团购客加微信话术"
+    role: "frontdesk"
+    target_customer_type: "groupbuy"
+    output_package: ["private_chat"]
+    scene_tags: ["groupbuy_conversion", "wechat_add", "private_domain"]
+    user_intent: "团购客第一次来，怎么加微信不让人反感"
+    extra_note: ""
+    good_output_snippet: |
+      哈喽，今天打得还顺手吗？我们有个球友群，平时群里经常有人约球，你要感兴趣我拉你进去。下次来之前微信跟我说一声，帮你看台。
+    why_good:
+      - "加微信的理由自然（约球群/预约方便）"
+      - "不推销不压迫，像朋友推荐"
+      - "纯文本，可直接复制用"
+    reusable_rules:
+      - "团购客加微信三段式：体验问询→群邀约→下次留台"
+    suitable_for_fewshot: true
+    fewshot_use_case: ["runtime_positive_example"]
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 200
