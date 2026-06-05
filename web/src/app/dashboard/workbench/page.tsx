@@ -57,11 +57,23 @@ function WorkbenchPage() {
   /* Role tabs for task cards */
   const [activeRole, setActiveRole] = useState<string>("manager");
 
-  /* Workbench form */
+  /* Workbench form - load from localStorage */
   const [intent, setIntent] = useState("");
-  const [role, setRole] = useState<WorkbenchRole>("manager");
-  const [targetCustomer, setTargetCustomer] = useState<TargetCustomerType>("all");
-  const [outputPackage, setOutputPackage] = useState<OutputPackageItem[]>(DEFAULT_OUTPUT_PACKAGE);
+  const [role, setRole] = useState<WorkbenchRole>(() => {
+    if (typeof window !== "undefined") return (localStorage.getItem("workbench_role") as WorkbenchRole) || "manager";
+    return "manager";
+  });
+  const [targetCustomer, setTargetCustomer] = useState<TargetCustomerType>(() => {
+    if (typeof window !== "undefined") return (localStorage.getItem("workbench_target") as TargetCustomerType) || "all";
+    return "all";
+  });
+  const [outputPackage, setOutputPackage] = useState<OutputPackageItem[]>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("workbench_package");
+      if (saved) try { return JSON.parse(saved); } catch {}
+    }
+    return DEFAULT_OUTPUT_PACKAGE;
+  });
   const [extraNote, setExtraNote] = useState("");
 
   /* Generation */
@@ -99,6 +111,15 @@ function WorkbenchPage() {
       .finally(() => { if (!cancelled) setStoreLoading(false); });
     return () => { cancelled = true; };
   }, [isAuthenticated]);
+
+  /* Save user preferences to localStorage */
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("workbench_role", role);
+      localStorage.setItem("workbench_target", targetCustomer);
+      localStorage.setItem("workbench_package", JSON.stringify(outputPackage));
+    }
+  }, [role, targetCustomer, outputPackage]);
 
   /* Pre-fill from URL params (e.g. from posters page) */
   useEffect(() => {
