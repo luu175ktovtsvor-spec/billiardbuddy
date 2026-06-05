@@ -1,6 +1,6 @@
 """
 AI 工作台质量测试 — 第三轮：业务逻辑深度检测
-100 条用例，聚焦运营逻辑正确性 + 门店信息使用 + 输出格式
+108 条用例，聚焦运营逻辑正确性 + 门店信息使用 + 输出格式
 """
 
 import asyncio
@@ -164,7 +164,7 @@ CASES = [
     {"id": "U-08", "role": "manager", "customer": "all", "pkg": ["moments"], "intent": "急", "eval_type": "fuzzy"},
 ]
 
-assert len(CASES) == 100, f"Expected 100 cases, got {len(CASES)}"
+assert len(CASES) == 108, f"Expected 108 cases, got {len(CASES)}"
 
 # ──────────────────────────────────────────────
 # 8 维度自动检测
