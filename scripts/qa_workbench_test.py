@@ -609,7 +609,6 @@ async def run_single(db, user, store, case, idx, total, model):
             user_intent=case["intent"], role=case["role"],
             target_customer_type=case["customer"],
             output_package=case["pkg"], extra_note=case["extra"],
-            model=model,
         )
         output = gen.result or ""
         result["success"] = True
