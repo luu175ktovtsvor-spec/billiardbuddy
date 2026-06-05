@@ -1,0 +1,444 @@
+# Workbench 样例标签字典
+# 用途：10F-1 结构化样例库/反例库的 scene_tags 和 risk_tags 标准字典
+# 所有样例和反例的标签必须出自本字典
+
+scene_tags:
+
+  # === 客户运营 ===
+  - label: "old_customer_recall"
+    description: "老客户回访与唤醒，3次以上到店客户的关系维护"
+    examples:
+      - "好久没联系老客户了，帮我发几句话约他们来打球"
+      - "老客户三个月没来了，怎么约"
+
+  - label: "groupbuy_conversion"
+    description: "团购客户（美团/抖音）的私域转化，加微信、进群、二次到店"
+    examples:
+      - "今天来了几个团购客，想加他们微信"
+      - "团购核销后怎么引导加微信"
+
+  - label: "new_customer_reception"
+    description: "新客户（第1-2次到店）的接待和引导"
+    examples:
+      - "第一次来的客户，前台怎么跟他说比较自然"
+      - "新客对助教感兴趣怎么介绍"
+
+  - label: "vip_maintenance"
+    description: "大客户/充值客户的专属维护和关怀"
+    examples:
+      - "有个大客户好久没来了，想单独约一下"
+      - "帮王总写个生日祝福"
+
+  - label: "private_domain"
+    description: "私域运营：加微信、进群、朋友圈触达、微信群管理"
+    examples:
+      - "加微信后怎么拉进群"
+      - "团购转私域内容包"
+
+  - label: "wechat_moments"
+    description: "微信朋友圈文案生成"
+    examples:
+      - "今天下午空台，帮我发一下朋友圈"
+      - "周五了发个朋友圈让大家周末来打球"
+
+  - label: "private_chat"
+    description: "微信私聊/一对一沟通话术"
+    examples:
+      - "老客户私聊约球怎么说"
+      - "客户问会员怎么弄，怎么回"
+
+  - label: "group_notice"
+    description: "微信群公告生成"
+    examples:
+      - "帮我在员工群发个提醒"
+      - "赛事通知发群里"
+
+  # === 助教场景 ===
+  - label: "assistant_arrival"
+    description: "助教到店通知，告知客户今日助教可约"
+    examples:
+      - "今天助教到了，帮我发朋友圈"
+      - "今日助教可约，想约助教的朋友提前说"
+
+  - label: "new_assistant"
+    description: "新助教到店推广，条件允许项——用户明确说有时可以写，未提及时不得编造"
+    examples:
+      - "新助教今天到店，帮我发朋友圈"
+      - "新助教到店，想喊几个老客户回来打球"
+
+  - label: "assistant_service"
+    description: "助教服务推广——门店层面的品牌级助教服务介绍"
+    examples:
+      - "帮我推一下我们的助教服务"
+      - "做一条助教推广朋友圈"
+
+  - label: "assistant_booking"
+    description: "助教预约转化——将客户意向转化为实际预约"
+    examples:
+      - "客户问了价格没下文了怎么跟进"
+      - "怎么让客户从体验转正式预约"
+
+  - label: "assistant_short_video"
+    description: "助教短视频获客——标题、配文、话题标签生成"
+    examples:
+      - "助教拍了条短视频，帮我配个文案"
+      - "助教拍抖音发什么内容"
+
+  - label: "assistant_customer"
+    description: "助教客户私聊维护——预约提醒、课后回访、关系维护"
+    examples:
+      - "助教怎么约客户来"
+      - "客户说忙怎么回"
+
+  - label: "assistant_pk"
+    description: "助教PK/激励方案——团队竞赛、业绩排名、奖励阶梯设计"
+    examples:
+      - "这个月想搞助教之间的PK"
+      - "帮我设计助教奖励方案"
+
+  - label: "assistant_recruitment"
+    description: "助教招聘——公开文案、面试邀约、培训材料"
+    examples:
+      - "帮我在BOSS直聘发招聘"
+      - "助教招聘文案怎么写"
+
+  - label: "assistant_service_experience"
+    description: "服务体验型/普通助教的内容方向——侧重服务体验、沟通氛围、陪打感受"
+    examples:
+      - "助教服务体验、沟通自然、氛围轻松、一个人来也不尴尬"
+
+  - label: "technical_assistant"
+    description: "技术陪练型/高级助教的内容方向——侧重球技、陪练水平、技术指导"
+    examples:
+      - "帮客户练球、纠正动作、提升水平、专业陪练"
+
+  # === 私域群矩阵 ===
+  - label: "member_group"
+    description: "会员群场景——会员维护、空台提醒、活动通知、老客户复购提醒"
+    examples:
+      - "会员群发个空台提醒"
+      - "会员群通知一下这周可以回来打球"
+
+  - label: "member_group_notice"
+    description: "会员群公告——面向会员的群通知，不编专属优惠/充值规则/会员权益"
+    examples:
+      - "会员群里发周赛提醒"
+      - "会员群发助教可约通知"
+
+  - label: "member_maintenance"
+    description: "会员维护——老客户关系维护、防流失、复购提醒"
+    examples:
+      - "老客户三个月没来了，怎么约"
+      - "会员群里喊老客户回来打两把"
+
+  - label: "competition_group"
+    description: "竞技群场景——约局、周赛/月赛通知、轻竞技、赛后战报、找搭子"
+    examples:
+      - "竞技群发个今晚约局通知"
+      - "竞技群缺一位怎么自然喊人"
+
+  - label: "competition_group_notice"
+    description: "竞技群公告——面向竞技客户的群通知，不写赌博/追分/大额输赢"
+    examples:
+      - "竞技群发周赛报名提醒"
+      - "竞技群发轻竞技活动通知"
+
+  - label: "matchmaking_notice"
+    description: "搭子撮合——找搭子、缺人补位、拼局、临时约球"
+    examples:
+      - "竞技群里缺一位，怎么说自然点"
+      - "今晚有人想打球吗，群里接个龙"
+
+  - label: "private_domain_matrix"
+    description: "私域群矩阵整体——多个群类型的差异化内容策略"
+    examples:
+      - "会员群、竞技群、搭子群分别发什么内容"
+      - "怎么规划不同群的内容节奏"
+
+  # === 桌型设备 ===
+  - label: "table_type"
+    description: "桌型设备——门店台球桌类型相关的运营内容"
+    examples:
+      - "店里有乔氏台球桌，写给竞技客户"
+      - "斯诺克邀约内容怎么写"
+
+  - label: "normal_pool_table"
+    description: "普通台球桌——除独牙、乔氏以外的中式八球台球桌"
+    examples:
+      - "普通台球桌为主，老客户回访朋友圈"
+
+  - label: "duya_pool_table"
+    description: "独牙台球桌——独牙品牌台球桌相关运营内容"
+    examples:
+      - "店里有独牙台球桌"
+
+  - label: "joy_billiards_table"
+    description: "乔氏台球桌——乔氏（JOY）品牌台球桌相关运营内容"
+    examples:
+      - "乔氏台球桌约局通知"
+      - "乔氏台朋友圈文案"
+
+  - label: "snooker_table"
+    description: "斯诺克——斯诺克台球桌相关邀约和运营内容"
+    examples:
+      - "斯诺克邀约内容"
+      - "斯诺克球友约球"
+
+  # === 前厅场景 ===
+  - label: "frontdesk_reception"
+    description: "前厅客户接待全流程——迎宾、引导、介绍、送客"
+    examples:
+      - "新客户第一次来怎么说"
+      - "帮我写一套客户接待标准话术"
+
+  - label: "groupbuy_checkin"
+    description: "团购核销——美团/抖音团购券核销时的标准化接待话术"
+    examples:
+      - "团购客户来了说什么"
+      - "帮我写团购核销时的标准话术"
+
+  - label: "wechat_add"
+    description: "加微信话术——多种时机和风格的自然加微信方式"
+    examples:
+      - "怎么让新客户愿意加微信"
+      - "加微信的话术，自然一点"
+
+  - label: "member_question"
+    description: "客户询问会员/办卡时的前厅回应——不输出具体储值方案"
+    examples:
+      - "客人问会员怎么弄，我怎么跟他说比较自然"
+      - "客户犹豫办会员怎么回应"
+
+  - label: "complaint_handling"
+    description: "投诉安抚——倾听、共情、记录、反馈，不做经济承诺"
+    examples:
+      - "客户投诉台费太贵怎么回"
+      - "客人排队太久不高兴，安抚一下"
+
+  - label: "sop_checklist"
+    description: "SOP/检查表——开店、闭店、卫生、前厅操作清单"
+    examples:
+      - "前厅早班开店总是漏东西，帮我弄个检查表"
+      - "帮我排今天的卫生检查"
+
+  # === 赛事活动 ===
+  - label: "tournament"
+    description: "赛事活动通用——周赛/月赛/会员赛的全套运营内容"
+    examples:
+      - "这周末做周赛，帮我写全套"
+      - "想搞一场会员内部赛，帮我策划"
+
+  - label: "weekly_match"
+    description: "周赛——每周固定赛事运营"
+    examples:
+      - "这周搞32人周赛，帮我弄"
+      - "周赛报名不够，帮我推一下"
+
+  - label: "post_match_report"
+    description: "赛后战报——比赛结果、精彩回顾、下次赛事预告"
+    examples:
+      - "昨晚周赛打完了，帮我写个赛后战报"
+      - "比赛结束了写个总结发群里和朋友圈"
+
+  - label: "competition_customer"
+    description: "竞技客户维护——技术交流、赛事邀约、搭子撮合"
+    examples:
+      - "帮我给几个竞技客户写邀约"
+      - "竞技客户好久没来了怎么联系"
+
+  - label: "light_competition"
+    description: "轻竞技/台费局——熟人切磋、饮料局、小奖品挑战"
+    examples:
+      - "今晚想组几个熟人打个小局"
+      - "帮我搞个台费局"
+
+  - label: "activity_plan"
+    description: "活动方案——含目标、规则、分工、预热、执行时间线"
+    examples:
+      - "下个月搞什么活动好"
+      - "周末想搞个小活动，别太复杂"
+
+  # === 风险边界 ===
+  - label: "price_unknown"
+    description: "价格/金额未知——用户未提供具体价格或金额时的处理"
+    examples:
+      - "所有未确认的金额用占位符"
+
+  - label: "discount_unknown"
+    description: "优惠/折扣未知——用户未提供具体优惠方案时的处理"
+    examples:
+      - "不能默认输出充多少送多少"
+
+  - label: "customer_history_unknown"
+    description: "客户历史行为未知——用户未提供客户具体到店记录时的处理"
+    examples:
+      - "不能编造上次到店时间、打了几局、什么玩法"
+
+  - label: "store_change_unknown"
+    description: "门店变化未知——用户未提供门店新变化时的处理"
+    examples:
+      - "不能编造新台球桌、装修升级、新设备"
+
+  - label: "free_assistant"
+    description: "免费助教风险——助教服务是付费增值服务，不能免费"
+    examples:
+      - "不能写免费体验助教、免费陪打、送免费助教"
+
+  - label: "assistant_as_gift"
+    description: "助教作为赠品风险——助教服务不能作为办卡/充值/活动赠品"
+    examples:
+      - "不能写办卡送助教、充值送助教课时、送助教体验券"
+
+  - label: "high_risk_wording"
+    description: "高风险表达——需要专业转译的行业口语或违规表达"
+    examples:
+      - "美女助教/点助教/陪玩/包教包会/全城最低价需要转译"
+
+  - label: "ambiguous_intent"
+    description: "模糊需求——用户输入简短且无明显指向时的简版输出策略"
+    examples:
+      - "帮我弄点能用的东西"
+      - "最近店里有点冷清"
+
+  # === 日报与管理 ===
+  - label: "daily_report"
+    description: "日报/汇报生成——店长日报、助教管理日报、运营汇报等结构化数据报告"
+    examples:
+      - "帮我写今天的店长日报"
+      - "这个月运营数据帮我搭个汇报框架"
+
+  # === 内容规划 ===
+  - label: "content_planning"
+    description: "内容规划——朋友圈/短视频/多渠道内容的周期性规划和排期"
+    examples:
+      - "最近朋友圈发太少，帮我规划这周发什么"
+      - "帮我做本周内容日历"
+
+  # === PK方案 ===
+  - label: "pk_plan_design"
+    description: "PK方案设计——非助教类PK（如前厅加微信PK、老客户回访PK、短视频发布PK）"
+    examples:
+      - "前厅加微信不积极，搞个小的加微信PK"
+      - "想搞个老客户回访PK"
+
+risk_tags:
+
+  - label: "unknown_price"
+    description: "编造未知价格——在用户未提供时编造台费、助教费、活动费等具体数字"
+    examples:
+      - "编造台费价格、助教服务费、课程价格"
+
+  - label: "unknown_discount"
+    description: "编造未知优惠——在用户未提供时编造充值赠送、折扣、会员价等"
+    examples:
+      - "自动输出充1000送300、首小时折扣、会员专属价"
+
+  - label: "unknown_member_plan"
+    description: "编造会员方案——在用户未提供时输出具体会员卡档位和储值方案"
+    examples:
+      - "输出银卡/金卡/钻石卡及具体充值金额"
+
+  - label: "unknown_customer_history"
+    description: "编造客户历史行为——编造客户上次到店时间、打了几局、什么玩法等"
+    examples:
+      - "你上次来还是上个月打的几局中式八球"
+
+  - label: "unknown_store_change"
+    description: "编造门店新变化——编造新台球桌、新装修、新设备等"
+    examples:
+      - "店里新到了几张乔氏台球桌"
+
+  - label: "free_assistant"
+    description: "免费助教——将助教服务表述为免费或暗示免费"
+    examples:
+      - "免费体验助教、来店免费陪打、新人免费体验"
+
+  - label: "assistant_as_gift"
+    description: "助教作为赠品——将助教服务作为办卡/充值/活动的赠品或搭赠权益"
+    examples:
+      - "办卡送助教、充值送助教课时、送助教体验券"
+
+  - label: "vulgar_assistant_wording"
+    description: "低俗助教表达——使用低俗、擦边、性暗示词汇描述助教服务"
+    examples:
+      - "美女助教、快来点她、身材好、新来的妹妹、颜值天花板"
+
+  - label: "assistant_as_beauty_hook"
+    description: "颜值噱头获客——以美女/颜值作为主要获客手段的表达"
+    examples:
+      - "美女助教推广、颜值助教、点她、陪玩"
+
+  - label: "guaranteed_result"
+    description: "虚假承诺——不可验证的能力承诺和效果保证"
+    examples:
+      - "包教包会、保证赢球、保证提升、100%满意"
+
+  - label: "lowest_price_claim"
+    description: "违反广告法的价格比较——不可验证的最低价声称"
+    examples:
+      - "全城最低价、全网最低、附近最便宜"
+
+  - label: "gambling_related"
+    description: "赌博相关——涉及追分、下注、大额输赢等违法内容"
+    examples:
+      - "追分局、下注、赌球、输赢XX元"
+
+  - label: "refund_or_compensation"
+    description: "擅自经济承诺——投诉安抚时擅自承诺免单、退款、赔偿等"
+    examples:
+      - "免单、退款、送饮料、台费减免、赔偿"
+
+  - label: "management_commitment"
+    description: "擅自管理动作——员工处罚、绩效设计、排班调整等"
+    examples:
+      - "设计扣款金额、绩效权重、处罚细则、排班安排"
+
+  - label: "overlong_output"
+    description: "输出过长——模糊需求下展开为完整方案，远超合理字数"
+    examples:
+      - "模糊需求输出近3000字完整话术库"
+
+  - label: "output_package_missing"
+    description: "output_package未完整响应——遗漏用户选择的输出类型"
+    examples:
+      - "用户选了4种输出类型但只响应了2种"
+
+  - label: "ambiguous_intent"
+    description: "模糊需求误判——将简短模糊输入误判为需要完整方案"
+    examples:
+      - "帮我弄点能用的东西被展开为2600字方案"
+
+  - label: "unknown_member_benefit"
+    description: "编造会员权益——在用户未提供时编造会员专属优惠、折扣、会员价、充值规则"
+    examples:
+      - "编造会员专属折扣、会员价、充值赠送方案"
+
+  - label: "unknown_member_discount"
+    description: "编造会员优惠——在会员群场景中自动生成会员折扣或充值优惠"
+    examples:
+      - "会员群通知中写充1000送200、会员8折"
+
+  - label: "competition_gambling_wording"
+    description: "竞技场景赌博表达——在竞技群内容中使用追分、下注、大额输赢等违规表达"
+    examples:
+      - "追分局、下注、赌球、输赢XX元、搞钱局"
+
+  - label: "score_chasing_wording"
+    description: "追分表达——竞技场景中的追分相关高风险表达"
+    examples:
+      - "今晚追分局、谁输了请吃饭不如下注"
+
+  - label: "unknown_table_type"
+    description: "编造桌型——门店未提供桌型时编造乔氏、独牙、斯诺克等设备信息"
+    examples:
+      - "未提供桌型时写店里有乔氏台球桌、斯诺克台"
+
+  - label: "unknown_new_equipment"
+    description: "编造新设备——门店未提供新设备信息时编造新到台球桌、新换设备、设备升级"
+    examples:
+      - "写新到台球桌、新换台球桌、刚升级了乔氏台"
+
+  - label: "budget_split_amount"
+    description: "总预算自动拆金额——用户给总预算时自动拆分为具体每项金额"
+    examples:
+      - "奖金5000被拆为第1名1500元、第2名1000元"

@@ -1,0 +1,38 @@
+from fastapi import APIRouter
+
+from api.v1.auth import router as auth_router
+from api.v1.stores import router as stores_router
+from api.v1.generate import router as generate_router
+from api.v1.generations import router as generations_router
+from api.v1.posters import router as posters_router
+from api.v1.dashboard import router as dashboard_router
+from api.v1.outreach import router as outreach_router
+from api.v1.sop import router as sop_router
+from api.v1.games import router as games_router
+from api.v1.performance import router as performance_router
+from api.v1.diagnosis import router as diagnosis_router
+from api.v1.stream import router as stream_router
+from api.v1.knowledge import router as knowledge_router
+from api.v1.quota import router as quota_router
+
+router = APIRouter()
+
+router.include_router(auth_router, prefix="/auth", tags=["认证"])
+router.include_router(stores_router, prefix="/stores", tags=["门店"])
+router.include_router(generate_router, prefix="/generate", tags=["内容生成"])
+router.include_router(generations_router, prefix="/generations", tags=["generations"])
+router.include_router(posters_router, prefix="/posters", tags=["posters"])
+router.include_router(dashboard_router, prefix="/dashboard", tags=["今日工作台"])
+router.include_router(outreach_router, prefix="/outreach", tags=["助教约客"])
+router.include_router(sop_router, prefix="/sop", tags=["前厅SOP"])
+router.include_router(games_router, prefix="/games", tags=["玩法推荐"])
+router.include_router(performance_router, prefix="/performance", tags=["绩效考核"])
+router.include_router(diagnosis_router, prefix="/diagnosis", tags=["经营诊断"])
+router.include_router(stream_router, prefix="/stream", tags=["流式生成"])
+router.include_router(knowledge_router, prefix="/knowledge", tags=["知识库"])
+router.include_router(quota_router, prefix="/quota", tags=["配额"])
+
+
+@router.get("/health")
+async def health_check():
+    return {"status": "ok"}

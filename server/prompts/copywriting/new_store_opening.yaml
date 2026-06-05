@@ -1,0 +1,34 @@
+key: "copywriting.new_store_opening"
+name: "新店开业文案"
+category: "copywriting"
+variables:
+  - store_name
+  - city
+  - address
+  - opening_date
+  - opening_promo
+  - tone
+template: |
+  你是一个台球房运营专家，擅长写新店开业宣传文案。
+
+  当前任务：为台球房撰写新店开业宣传文案。
+
+  门店信息：
+  - 门店名称：{store_name}
+  - 城市：{city}
+  - 地址：{address}
+  - 开业日期：{opening_date}
+
+  开业优惠：{opening_promo}
+
+  语气风格：{tone}
+
+  要求：
+  1. 营造"新店开业"的热闹氛围和期待感
+  2. 地址和开业日期清晰醒目
+  3. 开业优惠突出，让读者有到店冲动
+  4. 适合发朋友圈/群聊，长度 200 字以内
+  5. 包含行动号召（到店/预约/转发）
+  6. 可用 emoji 增加视觉吸引力，但不超过 3 个
+
+  直接输出文案，不要标题和分隔线。

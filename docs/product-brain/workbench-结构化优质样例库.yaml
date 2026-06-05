@@ -1,0 +1,903 @@
+# Workbench 结构化优质样例库
+# 来源：workbench-优质样例库.md（10D-3 产出）+ 10F-1.5 补齐
+# 用途：10F-2 轻量 few-shot 选择的数据源
+# 质量要求：good_output_snippet 150-350 中文字
+# few-shot 可用性：suitable_for_fewshot + fewshot_use_case + injection_style 三重标注
+
+examples:
+  - id: "G001"
+    source_case_id: "C07"
+    title: "团购客加微信（前厅场景）"
+    role: "frontdesk"
+    target_customer_type: "groupbuy"
+    output_package:
+      - "private_chat"
+      - "group_notice"
+      - "sop_checklist"
+      - "execution_tips"
+    scene_tags:
+      - "groupbuy_conversion"
+      - "wechat_add"
+      - "private_domain"
+      - "groupbuy_checkin"
+    risk_tags: []
+    user_intent: "今天来了几个团购客，我想加他们微信，后面方便喊他们来打球"
+    extra_note: "不要太像推销"
+    good_output_snippet: |
+      哈喽，今天打得还顺手吗？我们有个球友群，平时群里经常有人约球，你要感兴趣我拉你进去。下次来之前微信跟我说一声，帮你看台。
+      加微信的理由给得很自然（活动通知/预约方便/约球群），不给客户压迫感。分当面说+微信说+群里说三个版本，每个版本简短自然。
+    why_good:
+      - "完全符合团购客户的轻引导策略，不推销不优惠"
+      - "话术自然像真人微信聊天，不像销售脚本"
+      - "output_package全部响应（私聊+群公告+SOP+执行建议）"
+    reusable_rules:
+      - "团购客加微信的三段式：体验问询→群邀约→下次留台"
+    suitable_for_fewshot: true
+    fewshot_use_case:
+      - "runtime_positive_example"
+      - "product_brain_reference"
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 350
+
+  - id: "G002"
+    source_case_id: "C13"
+    title: "助教短视频配文"
+    role: "assistant_manager"
+    target_customer_type: "assistant"
+    output_package:
+      - "short_video"
+      - "moments"
+      - "private_chat"
+    scene_tags:
+      - "assistant_short_video"
+      - "assistant_service"
+      - "wechat_moments"
+    risk_tags: []
+    user_intent: "助教拍了条短视频，帮我配个文案"
+    extra_note: "有吸引力，但是不要擦边"
+    good_output_snippet: |
+      短视频配文多条可选（抖音风格/朋友圈风格/通用风格）。话题标签贴合台球内容：#台球 #陪练 #打球日常。完全不擦边，表达为"专业台球陪练服务"。朋友圈版本更生活化、抖音版本更有节奏感。
+    why_good:
+      - "严格遵守不擦边、不低俗的合规红线"
+      - "多渠道适配（抖音vs朋友圈风格不同）"
+      - "助教表达专业体面，话题标签行业规范"
+    reusable_rules:
+      - "助教短视频配文的多渠道差异策略"
+    suitable_for_fewshot: true
+    fewshot_use_case:
+      - "runtime_positive_example"
+      - "product_brain_reference"
+    injection_style: "short_snippet"
+    priority: "P1"
+    max_injection_chars: 300
+
+  - id: "G003"
+    source_case_id: "C19"
+    title: "新客户第一次到店（前厅接待）"
+    role: "frontdesk"
+    target_customer_type: "new"
+    output_package:
+      - "private_chat"
+      - "sop_checklist"
+      - "execution_tips"
+    scene_tags:
+      - "new_customer_reception"
+      - "frontdesk_reception"
+      - "private_chat"
+    risk_tags: []
+    user_intent: "第一次来的客户，前台怎么跟他说比较自然"
+    extra_note: "不要像背话术"
+    good_output_snippet: |
+      当面说控制在3-5秒："第一次来吧？我带你看一下台位和灯光。" "打得怎么样？感觉还顺手吗？" SOP流程从到店到离店完整。保持轻松自然，不像客服。当面说+微信说+群里说三分场景话术。
+    why_good:
+      - "话术自然简洁，适合前厅实际使用"
+      - "不推销、不推卡、不推助教，对新客户保持建立关系的节奏"
+    reusable_rules:
+      - "新客户接待的三个自然切入点：带看台位→问打球感受→自然介绍"
+    suitable_for_fewshot: true
+    fewshot_use_case:
+      - "runtime_positive_example"
+      - "product_brain_reference"
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 300
+
+  - id: "G004"
+    source_case_id: "C28"
+    title: "助教群提醒发朋友圈（管理群语气）"
+    role: "assistant_manager"
+    target_customer_type: "assistant"
+    output_package:
+      - "group_notice"
+      - "execution_tips"
+    scene_tags:
+      - "assistant_service"
+      - "group_notice"
+      - "wechat_moments"
+    risk_tags: []
+    user_intent: "助教都不怎么发朋友圈，帮我在助教群里提醒一下"
+    extra_note: "别像训人"
+    good_output_snippet: |
+      群里提醒语气像日常沟通，不是训人："最近大家朋友圈发的少了点，提醒一下。每天发1-2条就行，不用多。发什么？可以是今天陪客户练球的小片段、店里氛围、比赛信息。不会写的来找我，我帮你看。"
+    why_good:
+      - "语气恰到好处——提醒但不批评，不给管理处罚压力"
+      - "给出具体可执行建议（发什么内容、什么时间发）"
+    reusable_rules:
+      - "员工提醒类群公告的语气模板：提醒+具体建议+不批评不处罚"
+    suitable_for_fewshot: true
+    fewshot_use_case:
+      - "runtime_positive_example"
+      - "product_brain_reference"
+    injection_style: "short_snippet"
+    priority: "P1"
+    max_injection_chars: 300
+
+  - id: "G005"
+    source_case_id: "C12"
+    title: "大客户单独约访（老板视角）"
+    role: "boss"
+    target_customer_type: "vip"
+    output_package:
+      - "private_chat"
+      - "execution_tips"
+    scene_tags:
+      - "vip_maintenance"
+      - "private_chat"
+    risk_tags: []
+    user_intent: "有个大客户好久没来了，想单独约一下，别显得太刻意"
+    extra_note: "稳一点，不要像销售"
+    good_output_snippet: |
+      私聊话术简洁稳重："好久没见你了，最近忙什么呢？哪天有空过来打两把。"不像销售、不像客服、不像群发。像朋友之间的自然关心。老板身份的稳重语气把握精准。
+    why_good:
+      - "老板身份的稳重语气把握精准，不推优惠不推充值不催消费"
+      - "像朋友之间的自然关心，不是销售跟进"
+    reusable_rules:
+      - "大客户维护的轻触达策略：关心+邀约+不推销"
+    suitable_for_fewshot: true
+    fewshot_use_case:
+      - "runtime_positive_example"
+      - "product_brain_reference"
+    injection_style: "short_snippet"
+    priority: "P1"
+    max_injection_chars: 250
+
+  - id: "G006"
+    source_case_id: "C21"
+    title: "下雨天朋友圈邀约"
+    role: "manager"
+    target_customer_type: "old"
+    output_package:
+      - "moments"
+      - "execution_tips"
+    scene_tags:
+      - "wechat_moments"
+      - "old_customer_recall"
+    risk_tags: []
+    user_intent: "今天下雨，店里估计人少，帮我发个朋友圈拉点人"
+    extra_note: "别写优惠"
+    good_output_snippet: |
+      朋友圈文案两条：雨天氛围+空台提醒。"下雨天窝在家里不如来打两局，球台空着，想打球的滴滴我。" 完全不写优惠，简洁自然，每条约100字。附建议发布时间。
+    why_good:
+      - "遵守不写优惠的约束，完全不涉及折扣充值"
+      - "雨天场景下的自然邀约，短小精悍"
+    reusable_rules:
+      - "天气类朋友圈的创作方向：氛围+便利+空台"
+    suitable_for_fewshot: true
+    fewshot_use_case:
+      - "runtime_positive_example"
+      - "product_brain_reference"
+    injection_style: "short_snippet"
+    priority: "P1"
+    max_injection_chars: 250
+
+  - id: "G007"
+    source_case_id: "C14"
+    title: "熟人小局（轻竞技安全表达）"
+    role: "manager"
+    target_customer_type: "light_competition"
+    output_package:
+      - "group_notice"
+      - "private_chat"
+      - "execution_tips"
+    scene_tags:
+      - "light_competition"
+      - "group_notice"
+    risk_tags:
+      - "gambling_related"
+    user_intent: "今晚想组几个熟人打个小局，帮我发群里说一下"
+    extra_note: "不要写赌博，正常点"
+    good_output_snippet: |
+      群公告直接简洁："今晚台费局，有人来吗？输的付台费。想来的群里接龙。"使用安全表达"台费局""饮料局"。不写追分/下注/赌博。像真人约局，不像组织比赛。
+    why_good:
+      - "严格使用安全的轻竞技表达，台费局/饮料局/熟人切磋"
+      - "像真人约局，不像组织比赛，简洁直接"
+    reusable_rules:
+      - "轻竞技场景的安全表达：台费局、饮料局、小奖品挑战、熟人切磋"
+    suitable_for_fewshot: true
+    fewshot_use_case:
+      - "runtime_positive_example"
+      - "product_brain_reference"
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 250
+
+  - id: "G008"
+    source_case_id: "C09"
+    title: "空台朋友圈拉人"
+    role: "manager"
+    target_customer_type: "new"
+    output_package:
+      - "moments"
+      - "execution_tips"
+    scene_tags:
+      - "wechat_moments"
+      - "new_customer_reception"
+    risk_tags: []
+    user_intent: "今天下午空台，帮我发一下"
+    extra_note: "别写太长"
+    good_output_snippet: |
+      两条朋友圈文案：轻松邀约型+社交型。每条约100字。"下午台位有空的，想打球的朋友滴滴我。" "一个人来也没事，帮你找搭子。"不写优惠、不写地址电话。附建议发布时间。
+    why_good:
+      - "简短有力，符合别写太长的要求"
+      - "空台邀约的经典表达，自然不做作"
+    reusable_rules:
+      - "空台朋友圈的两种风格：轻松邀约型+社交搭子型"
+    suitable_for_fewshot: false
+    fewshot_use_case:
+      - "product_brain_reference"
+      - "regression_reference"
+    injection_style: "rule_only"
+    priority: "P2"
+    max_injection_chars: 250
+
+  - id: "G009"
+    source_case_id: "C08"
+    title: "教练聊团购客（技术视角转化）"
+    role: "coach"
+    target_customer_type: "groupbuy"
+    output_package:
+      - "private_chat"
+      - "group_notice"
+      - "execution_tips"
+    scene_tags:
+      - "groupbuy_conversion"
+      - "competition_customer"
+      - "private_chat"
+    risk_tags: []
+    user_intent: "今天有几个团购新客打得还可以，我想跟他们聊聊，看能不能拉进群以后参加周赛"
+    extra_note: "从教练角度说，别像前厅推销"
+    good_output_snippet: |
+      教练视角话术：聊技术、聊球、自然引导。"刚才看你打那几杆，准度可以啊。平时经常打吗？我们周末有周赛，群里经常约球，你要感兴趣拉你进来。"分当面说/微信说/跟进场景。
+    why_good:
+      - "完美区分教练视角和前厅视角，用懂球的人聊天的方式转化"
+      - "不推销、不推卡，重点在技术交流和赛事引导"
+    reusable_rules:
+      - "教练转化团购客：聊技术+聊球+自然引导"
+    suitable_for_fewshot: true
+    fewshot_use_case:
+      - "runtime_positive_example"
+      - "product_brain_reference"
+    injection_style: "short_snippet"
+    priority: "P1"
+    max_injection_chars: 300
+
+  - id: "G010"
+    source_case_id: "C02"
+    title: "老客户回访约球"
+    role: "manager"
+    target_customer_type: "old"
+    output_package:
+      - "private_chat"
+      - "moments"
+      - "execution_tips"
+    scene_tags:
+      - "old_customer_recall"
+      - "private_chat"
+      - "wechat_moments"
+    risk_tags:
+      - "unknown_customer_history"
+    user_intent: "好久没联系老客户了，帮我发几句话约他们来打球"
+    extra_note: "正常熟人语气就行"
+    good_output_snippet: |
+      私聊话术像熟人打招呼："好久没见你来打球了，最近忙啥呢？有空回来打两把，找找手感。"不编造客户历史（不写到店时间、打了几局）。不优惠、不推销。执行建议：分3天发、按到店时间排序。
+    why_good:
+      - "私聊话术真正像熟人，不群发模板式好久不见"
+      - "不编造客户历史、不优惠、不推销、不自动推助教"
+    reusable_rules:
+      - "老客户回访的节奏控制：分批发、隔天跟进"
+    suitable_for_fewshot: true
+    fewshot_use_case:
+      - "runtime_positive_example"
+      - "product_brain_reference"
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 300
+
+  - id: "G011"
+    source_case_id: "C15"
+    title: "赛后战报（未知信息占位）"
+    role: "coach"
+    target_customer_type: "competition"
+    output_package:
+      - "moments"
+      - "group_notice"
+      - "poster_copy"
+    scene_tags:
+      - "post_match_report"
+      - "tournament"
+      - "wechat_moments"
+    risk_tags:
+      - "unknown_price"
+    user_intent: "昨晚周赛打完了，帮我写个赛后战报"
+    extra_note: "冠军名字和比分我还没整理"
+    good_output_snippet: |
+      2条朋友圈文案（赛果通报型+邀约引导型），1条群公告（通报完赛+下周报名+日常约球引导）。冠军名字和比分用【请补充：冠军姓名】【请补充：比分】占位，不编造。不写报名费、不写奖金金额、不带电话地址。
+    why_good:
+      - "未知信息全部用占位符，不乱编冠军名字和比分"
+      - "巧妙把战报转化为下次赛事预约引导"
+    reusable_rules:
+      - "赛后战报的一石二鸟策略：通报赛果+预热下一场"
+    suitable_for_fewshot: false
+    fewshot_use_case:
+      - "product_brain_reference"
+      - "regression_reference"
+    injection_style: "rule_only"
+    priority: "P0"
+    max_injection_chars: 320
+
+  - id: "G012"
+    source_case_id: "C17"
+    title: "前厅开店检查表"
+    role: "frontdesk"
+    target_customer_type: "new"
+    output_package:
+      - "sop_checklist"
+      - "execution_tips"
+    scene_tags:
+      - "sop_checklist"
+      - "frontdesk_reception"
+    risk_tags:
+      - "unknown_price"
+    user_intent: "前厅早班开店总是漏东西，帮我弄个检查表"
+    extra_note: "简单点，能照着做"
+    good_output_snippet: |
+      逐条可勾选的检查清单，按时间顺序排列（开门前→营业前→营业中）。简洁实用，不编造具体金额（不写"备用金500元"，只写"备用金准备充足"）。控制在15条以内。
+    why_good:
+      - "格式标准：逐条可勾选，按时间排列"
+      - "内容接地气，不编造金额"
+    reusable_rules:
+      - "SOP中金额用定性描述替代具体数字，控制在15条以内"
+    suitable_for_fewshot: false
+    fewshot_use_case:
+      - "product_brain_reference"
+      - "regression_reference"
+    injection_style: "rule_only"
+    priority: "P1"
+    max_injection_chars: 250
+
+  - id: "G013"
+    source_case_id: "C24"
+    title: "门店冷清（模糊需求简版输出）"
+    role: "boss"
+    target_customer_type: "old"
+    output_package:
+      - "moments"
+      - "group_notice"
+      - "activity_plan"
+      - "execution_tips"
+    scene_tags:
+      - "ambiguous_intent"
+      - "wechat_moments"
+      - "old_customer_recall"
+    risk_tags:
+      - "ambiguous_intent"
+    user_intent: "最近店里有点冷清，帮我想想发点什么"
+    extra_note: "不要搞复杂"
+    good_output_snippet: |
+      先给可直接发的朋友圈，再给2-3个执行建议。不展开为完整活动方案。不写优惠。以熟人口吻邀约："最近天气不错，晚上过来打两局？球台空着，想来的滴滴我。"
+    why_good:
+      - "模糊需求下保持简洁，不自动展开为大方案"
+      - "以熟人口吻邀约，非促销口吻，不写优惠"
+    reusable_rules:
+      - "模糊需求的简版输出策略：先发这条→再做2-3件事→需要你补充"
+    suitable_for_fewshot: true
+    fewshot_use_case:
+      - "runtime_positive_example"
+      - "product_brain_reference"
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 300
+
+  - id: "G014"
+    source_case_id: "C22"
+    title: "员工群提醒发朋友圈（温和语气）"
+    role: "manager"
+    target_customer_type: "old"
+    output_package:
+      - "group_notice"
+      - "execution_tips"
+    scene_tags:
+      - "group_notice"
+      - "wechat_moments"
+    risk_tags:
+      - "management_commitment"
+    user_intent: "最近员工发朋友圈不积极，帮我在员工群里说一下"
+    extra_note: "不要像骂人"
+    good_output_snippet: |
+      群公告语气像日常沟通："最近大家朋友圈发的少了点，提醒一下。每天发1-2条就行。不知道怎么发的可以看看店长之前发的，或者来找我帮你看。"不批评、不处罚、不做扣钱等管理动作。
+    why_good:
+      - "语气温和但不失管理立场，给具体指导而非空洞要求"
+      - "不做处罚/扣钱等管理动作"
+    reusable_rules:
+      - "员工提醒类沟通：温和+具体建议+不威胁处罚"
+    suitable_for_fewshot: false
+    fewshot_use_case:
+      - "product_brain_reference"
+      - "regression_reference"
+    injection_style: "rule_only"
+    priority: "P2"
+    max_injection_chars: 280
+
+  - id: "G015"
+    source_case_id: "V28"
+    title: "前厅加微信不让人反感"
+    role: "frontdesk"
+    target_customer_type: "groupbuy"
+    output_package:
+      - "private_chat"
+      - "sop_checklist"
+      - "execution_tips"
+    scene_tags:
+      - "wechat_add"
+      - "groupbuy_conversion"
+      - "private_domain"
+    risk_tags: []
+    user_intent: "今天来了好多团购客，怎么加微信才不让人反感"
+    extra_note: "自然一点"
+    good_output_snippet: |
+      多种加微信方式：打球体验型（"今天打得怎么样？加个微信，下次来之前跟我说帮你看台"）、约球群型（"我们有个球友群经常约球，拉你进去"）、活动通知型（"周末有比赛，加微信到时候通知你"）。自然不强迫。
+    why_good:
+      - "加微信的理由自然合理（活动通知/预约方便/约球群）"
+      - "多种方式适应不同客户类型，不推销不压迫"
+    reusable_rules:
+      - "前厅加微信的三种自然理由：体验问询+预约方便+约球群"
+    suitable_for_fewshot: true
+    fewshot_use_case:
+      - "runtime_positive_example"
+      - "product_brain_reference"
+    injection_style: "short_snippet"
+    priority: "P1"
+    max_injection_chars: 300
+
+  - id: "G016"
+    source_case_id: "C20"
+    title: "教练课程推广（不过度承诺）"
+    role: "coach"
+    target_customer_type: "new"
+    output_package:
+      - "moments"
+      - "private_chat"
+      - "execution_tips"
+    scene_tags:
+      - "competition_customer"
+      - "wechat_moments"
+      - "new_customer_reception"
+    risk_tags:
+      - "guaranteed_result"
+      - "unknown_price"
+    user_intent: "最近想推一下基础教学课，帮我写点能发朋友圈的"
+    extra_note: "不要吹太满"
+    good_output_snippet: |
+      朋友圈文案两条：讲解教学价值但不过度承诺。"帮你纠正几个常见问题，少走弯路，提升练球效率。"而非"包教包会""保证提升"。不编造课程价格，不写"全城最低价"。
+    why_good:
+      - "课程推广不过度承诺，不用包教包会/保证提升"
+      - "不编造课时价格，不写最低价等夸大表达"
+    reusable_rules:
+      - "教练课程推广的安全表达：纠正问题+提升效率+少走弯路"
+    suitable_for_fewshot: true
+    fewshot_use_case:
+      - "runtime_positive_example"
+      - "product_brain_reference"
+    injection_style: "short_snippet"
+    priority: "P1"
+    max_injection_chars: 280
+
+  - id: "G017"
+    source_case_id: "C30"
+    title: "客户问有没有人一起打（撮合约球）"
+    role: "manager"
+    target_customer_type: "competition"
+    output_package:
+      - "private_chat"
+      - "group_notice"
+      - "execution_tips"
+    scene_tags:
+      - "competition_customer"
+      - "private_chat"
+      - "group_notice"
+    risk_tags:
+      - "gambling_related"
+    user_intent: "有个客户问今晚有没有人一起打，我怎么回"
+    extra_note: "正常约局，不要写赌博"
+    good_output_snippet: |
+      私聊话术+群公告约球。先回客户："我帮你在群里问一下，看看有没有人今晚想打的。"然后在群里发："今晚有人想打球吗？有个球友在问，想打的群里接龙。"干净的表达，无赌博暗示。
+    why_good:
+      - "干净利落地把需求引导到群接龙"
+      - "不写追分/下注/赌博，像真实的约球聊天"
+    reusable_rules:
+      - "约球类话术的安全边界：群接龙+帮问+不写输赢金额"
+    suitable_for_fewshot: true
+    fewshot_use_case:
+      - "runtime_positive_example"
+      - "product_brain_reference"
+    injection_style: "short_snippet"
+    priority: "P1"
+    max_injection_chars: 280
+
+  - id: "G018"
+    source_case_id: "V05"
+    title: "周五朋友圈自然邀约"
+    role: "manager"
+    target_customer_type: "all"
+    output_package:
+      - "moments"
+      - "execution_tips"
+    scene_tags:
+      - "wechat_moments"
+    risk_tags: []
+    user_intent: "今天周五了，发个朋友圈让大家周末来打球"
+    extra_note: "自然点"
+    good_output_snippet: |
+      朋友圈文案简洁自然："周五了，周末想打球的提前说一声，帮你们留台。"不写优惠、不写价格。短小精悍，像真人周五发的内容。建议下午3-5点发布。
+    why_good:
+      - "像真人周五发的内容，短小精悍"
+      - "自然留台邀约，不写优惠不写价格"
+    reusable_rules:
+      - "周末邀约类朋友圈：简短+留台+不优惠"
+    suitable_for_fewshot: false
+    fewshot_use_case:
+      - "product_brain_reference"
+    injection_style: "not_runtime"
+    priority: "P2"
+    max_injection_chars: 200
+
+  - id: "G019"
+    source_case_id: "V06"
+    title: "老客带朋友感谢（轻触达）"
+    role: "manager"
+    target_customer_type: "old"
+    output_package:
+      - "private_chat"
+      - "execution_tips"
+    scene_tags:
+      - "old_customer_recall"
+      - "private_chat"
+    risk_tags: []
+    user_intent: "今天有个老客带朋友来，想私聊感谢一下"
+    extra_note: "别太肉麻"
+    good_output_snippet: |
+      私聊话术简短自然："今天看你带朋友过来，谢谢啊。你朋友打得也挺好的。下次来之前跟我说，帮你们留台。"不肉麻、不夸张。自然维护关系，不趁机推销充值或助教。
+    why_good:
+      - "感谢自然不刻意，像熟人聊天"
+      - "不趁机推销充值/助教/会员"
+    reusable_rules:
+      - "老客户转介绍的轻触达策略：感谢+肯定朋友+下次留台"
+    suitable_for_fewshot: false
+    fewshot_use_case:
+      - "product_brain_reference"
+    injection_style: "not_runtime"
+    priority: "P2"
+    max_injection_chars: 220
+
+  - id: "G020"
+    source_case_id: "D04"
+    title: "三个月没来的老客户唤醒"
+    role: "manager"
+    target_customer_type: "old"
+    output_package:
+      - "private_chat"
+      - "execution_tips"
+    scene_tags:
+      - "old_customer_recall"
+      - "private_chat"
+    risk_tags:
+      - "unknown_customer_history"
+    user_intent: "老客户三个月没来了，别太像销售"
+    extra_note: "就像朋友聊天"
+    good_output_snippet: |
+      私聊话术自然："好久没见你来了，最近忙什么呢？有空回来打两把，找找手感。"像朋友关心不是销售跟进。附温和的跟进节奏建议：首次发→3天后跟进→一周后轻提醒。不编造上次到店细节、不推优惠、不推会员。
+    why_good:
+      - "真正的熟人语气，完全不像销售"
+      - "不编造客户历史、不推优惠、不催消费、不自动推助教"
+    reusable_rules:
+      - "老客户沉默期唤醒话术：关心近况+找手感+不推优惠"
+    suitable_for_fewshot: true
+    fewshot_use_case:
+      - "runtime_positive_example"
+      - "product_brain_reference"
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 300
+
+  # === 以下为 10F-1.5 新增样例 ===
+
+  - id: "G021"
+    source_case_id: "10F-1.5-NEW"
+    title: "月度运营汇报框架（operator + daily_report）"
+    role: "operator"
+    target_customer_type: "all"
+    output_package:
+      - "daily_report"
+      - "execution_tips"
+    scene_tags:
+      - "daily_report"
+      - "content_planning"
+    risk_tags:
+      - "unknown_price"
+    user_intent: "这个月运营数据出来了，帮我搭个汇报框架给老板看"
+    extra_note: "数据我没理完，先用占位"
+    good_output_snippet: |
+      月度运营汇报框架：【本月关键数据】到店人数【请补充】、团购核销【请补充】、加微信【请补充】、助教上钟【请补充】；【重点完成】1-2条本月做的运营动作；【问题与原因】1-2条；【下月计划】1-2条。不编造任何具体数字。
+    why_good:
+      - "框架清晰可执行，所有数字用占位符不编造"
+      - "适合运营负责人向老板汇报的结构"
+    reusable_rules:
+      - "运营汇报框架：数据区+重点完成+问题+下月计划，数据用占位"
+    suitable_for_fewshot: false
+    fewshot_use_case:
+      - "product_brain_reference"
+      - "regression_reference"
+    injection_style: "rule_only"
+    priority: "P1"
+    max_injection_chars: 300
+
+  - id: "G022"
+    source_case_id: "10F-1.5-NEW"
+    title: "本周内容规划 + 朋友圈矩阵（operator）"
+    role: "operator"
+    target_customer_type: "all"
+    output_package:
+      - "moments"
+      - "short_video"
+      - "execution_tips"
+    scene_tags:
+      - "content_planning"
+      - "wechat_moments"
+      - "assistant_short_video"
+    risk_tags: []
+    user_intent: "最近朋友圈和短视频发得太少了，帮我规划这周发什么内容"
+    extra_note: "不要老发一样的，换着花样来"
+    good_output_snippet: |
+      本周内容建议（周一到周日轮换）：周一发门店氛围/台位情况、周二发助教服务体验/陪打感受、周三发客户互动/好评、周四发赛事预告/搭子邀约、周五发周末邀约+留台提醒、周六发赛事直播/店内实况、周日发赛后战报/下周预告。每条建议1-2句话配什么图。
+    why_good:
+      - "内容类型轮换合理，覆盖门店氛围+助教+赛事+日常"
+      - "可执行性强，运营负责人可直接按天排内容"
+    reusable_rules:
+      - "朋友圈内容矩阵：周一至周日不同主题轮换，避免全是广告"
+    suitable_for_fewshot: true
+    fewshot_use_case:
+      - "runtime_positive_example"
+      - "product_brain_reference"
+    injection_style: "short_snippet"
+    priority: "P1"
+    max_injection_chars: 320
+
+  - id: "G023"
+    source_case_id: "10F-1.5-NEW"
+    title: "店长每日运营简报（daily_report）"
+    role: "manager"
+    target_customer_type: "all"
+    output_package:
+      - "daily_report"
+      - "execution_tips"
+    scene_tags:
+      - "daily_report"
+    risk_tags:
+      - "unknown_price"
+      - "unknown_customer_history"
+    user_intent: "帮我写今天的店长日报，今天主要是老客户回访和助教在店"
+    extra_note: "数据还没整理完，用占位"
+    good_output_snippet: |
+      今日店长日报：【到店数据】到店人数【请补充】、团购核销【请补充】、新客【请补充】；【助教】在店【请补充】人、上钟【请补充】小时、新预约【请补充】；【重点工作】今日完成老客户回访【请补充】人、发朋友圈【请补充】条；【明日计划】待定。不编造任何数字。
+    why_good:
+      - "日报格式标准，数据字段用占位，不编造营业额/上钟数/客户数"
+      - "结构适合直接发管理群"
+    reusable_rules:
+      - "日报格式：到店数据+岗位数据+重点工作+明日计划，所有数字用占位"
+    suitable_for_fewshot: false
+    fewshot_use_case:
+      - "product_brain_reference"
+      - "regression_reference"
+    injection_style: "rule_only"
+    priority: "P1"
+    max_injection_chars: 320
+
+  - id: "G024"
+    source_case_id: "10F-1.5-NEW"
+    title: "助教管理日报（daily_report）"
+    role: "assistant_manager"
+    target_customer_type: "assistant"
+    output_package:
+      - "daily_report"
+      - "execution_tips"
+    scene_tags:
+      - "daily_report"
+      - "assistant_service"
+    risk_tags:
+      - "unknown_price"
+    user_intent: "帮我写今天的助教管理日报"
+    extra_note: "数据还没出来，用占位"
+    good_output_snippet: |
+      助教管理日报：【在店情况】今日到岗【请补充】人、请假【请补充】人；【上钟数据】上钟人数【请补充】、总上钟小时【请补充】、人均上钟【请补充】小时；【客户数据】新客预约助教【请补充】人、复约【请补充】人；【推广执行】朋友圈发布【请补充】条、短视频发布【请补充】条；【明日安排】待补充。不编造助教姓名和具体数字。
+    why_good:
+      - "覆盖助教管理核心指标，用占位不编造"
+      - "格式规范，适合直接转发"
+    reusable_rules:
+      - "助教管理日报核心字段：在店+上钟+客户+推广+明日安排"
+    suitable_for_fewshot: false
+    fewshot_use_case:
+      - "product_brain_reference"
+      - "regression_reference"
+    injection_style: "rule_only"
+    priority: "P1"
+    max_injection_chars: 320
+
+  - id: "G025"
+    source_case_id: "10F-1.5-NEW"
+    title: "助教PK方案（不拆金额）"
+    role: "assistant_manager"
+    target_customer_type: "assistant"
+    output_package:
+      - "pk_plan"
+      - "execution_tips"
+    scene_tags:
+      - "assistant_pk"
+    risk_tags:
+      - "budget_split_amount"
+    user_intent: "这个月想搞个助教PK，帮我设计一下方案"
+    extra_note: "奖金还没定，先出框架"
+    good_output_snippet: |
+      助教PK方案框架：【PK目标】提升助教上钟数和客户预约转化；【PK指标】上钟数、预约客户数、到店转化数、朋友圈发布数、短视频发布数；【分组方式】按当前业绩水平公平分组；【奖励阶梯】（如门店有总奖金预算）第一名约总奖金35%-45%、第二名约20%-30%、进步奖约10%-15%，具体金额请门店确认后填写；【公示方式】每日群内更新排名；【复盘周期】每周小结、月底总复盘。
+    why_good:
+      - "给总奖金时只给比例建议不拆具体金额"
+      - "PK指标贴合台球房真实业务（上钟/预约/到店/推广）"
+    reusable_rules:
+      - "PK方案给比例建议不拆金额，指标贴合台球房业务"
+    suitable_for_fewshot: false
+    fewshot_use_case:
+      - "product_brain_reference"
+      - "regression_reference"
+    injection_style: "rule_only"
+    priority: "P0"
+    max_injection_chars: 350
+
+  - id: "G026"
+    source_case_id: "10F-1.5-NEW"
+    title: "前厅加微信PK方案"
+    role: "frontdesk"
+    target_customer_type: "all"
+    output_package:
+      - "pk_plan"
+      - "execution_tips"
+    scene_tags:
+      - "pk_plan_design"
+      - "wechat_add"
+      - "frontdesk_reception"
+    risk_tags:
+      - "budget_split_amount"
+    user_intent: "前厅最近加微信不积极，搞个小的加微信PK"
+    extra_note: "小激励就行，别太复杂"
+    good_output_snippet: |
+      前厅加微信PK方案：【目标】提升团购客和新客的微信添加率；【指标】每日加微信数、有效加微信率（加后3天内有互动）；【统计方式】每日下班前在群里报数；【公示方式】每周一公示上周排名；【激励建议】如门店有小额激励预算，建议设周冠军奖和月冠军奖，具体奖励方式请门店确认；【注意事项】加微信要自然不强迫，不能为了PK硬拉客户加微信。
+    why_good:
+      - "PK指标贴合前厅实际工作，不编造奖金金额"
+      - "有注意事项防作弊，体现运营思维"
+    reusable_rules:
+      - "前厅PK关注加微信质量和自然度，不唯数量论"
+    suitable_for_fewshot: false
+    fewshot_use_case:
+      - "product_brain_reference"
+      - "regression_reference"
+    injection_style: "rule_only"
+    priority: "P1"
+    max_injection_chars: 350
+
+  - id: "G027"
+    source_case_id: "10G-4-NEW"
+    title: "会员群空台提醒（不编会员优惠）"
+    role: "manager"
+    target_customer_type: "old"
+    output_package:
+      - "group_notice"
+      - "execution_tips"
+    scene_tags:
+      - "member_group"
+      - "member_group_notice"
+      - "group_notice"
+    risk_tags:
+      - "unknown_member_benefit"
+      - "unknown_member_discount"
+    user_intent: "会员群里发个空台提醒"
+    extra_note: "不要乱承诺会员优惠"
+    good_output_snippet: |
+      群公告：今晚7点后还有几台空桌，想打球的直接过来，不用排队。一个人来也没事，群里喊一声找搭子，或者到店找前台帮你安排。来之前跟我说一声，帮你留个台。建议下午4-5点发在会员群。
+    why_good:
+      - "完全不编造会员专属优惠、充值规则、会员权益"
+      - "语气自然有人情味，像熟人喊打球"
+      - "包含具体执行建议（几点发、怎么发）"
+    reusable_rules:
+      - "会员群通知用自然口吻，不编优惠不编权益"
+    suitable_for_fewshot: true
+    fewshot_use_case:
+      - "runtime_positive_example"
+      - "product_brain_reference"
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 300
+
+  - id: "G028"
+    source_case_id: "10G-4-NEW"
+    title: "竞技群约局通知（安全表达）"
+    role: "coach"
+    target_customer_type: "competition"
+    output_package:
+      - "group_notice"
+      - "private_chat"
+    scene_tags:
+      - "competition_group"
+      - "competition_group_notice"
+      - "matchmaking_notice"
+    risk_tags:
+      - "competition_gambling_wording"
+      - "score_chasing_wording"
+    user_intent: "竞技群发个今晚约局通知"
+    extra_note: "写得轻松点，别像比赛通知"
+    good_output_snippet: |
+      今晚有人想打球吗？群里接个龙，看看今晚能凑几局。想打的扣1，或者直接说几点到。有乔氏台，手感正好。不要写成正式比赛通知，简单几句话，像群里有人喊一声打球的感觉。
+    why_good:
+      - "轻松自然约局，不涉及赌博追分大额输赢"
+      - "可合理引用门店已填写的桌型（乔氏）"
+      - "接龙互动形式适合群场景"
+    reusable_rules:
+      - "竞技群约局用轻松口吻，不写赌博/追分；可引用已填桌型"
+    suitable_for_fewshot: true
+    fewshot_use_case:
+      - "runtime_positive_example"
+      - "product_brain_reference"
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 300
+
+  - id: "G029"
+    source_case_id: "10G-4-NEW"
+    title: "乔氏台球桌竞技客户朋友圈（引用已填桌型）"
+    role: "manager"
+    target_customer_type: "competition"
+    output_package:
+      - "moments"
+      - "group_notice"
+    scene_tags:
+      - "table_type"
+      - "joy_billiards_table"
+      - "wechat_moments"
+    risk_tags:
+      - "unknown_table_type"
+      - "unknown_new_equipment"
+    user_intent: "店里有乔氏台球桌，发给竞技客户的朋友圈"
+    extra_note: "自然一点，不要太广告"
+    good_output_snippet: |
+      我们这的乔氏台，打起来确实不一样。袋口、库边、走位，每一下都实实在在。周末约个局，来试试手感？想打台费局还是单纯切磋都行，群里喊一声，我帮你凑人。建议下午3-4点发。
+    why_good:
+      - "合理引用门店已填写的乔氏桌型"
+      - "没有写新到台球桌/设备升级等编造信息"
+      - "轻松自然不广告，竞技感适中"
+    reusable_rules:
+      - "只引用门店已填写的桌型；不编造新设备/升级信息"
+    suitable_for_fewshot: true
+    fewshot_use_case:
+      - "runtime_positive_example"
+      - "product_brain_reference"
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 300

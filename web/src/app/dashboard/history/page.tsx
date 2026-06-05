@@ -1,0 +1,248 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import { api } from "@/lib/api";
+import { ApiError } from "@/types/api";
+import type { GenerationHistoryItem, GenerationType } from "@/types/generation-history";
+import { CopyButton } from "@/components/generators/copy-button";
+import { Star, Clock, ChevronLeft, ChevronRight } from "lucide-react";
+
+const TYPE_LABELS: Record<string, string> = {
+  copywriting: "文案",
+  activity: "活动",
+  operation: "经营",
+  workbench: "工作台",
+};
+
+const SUB_TYPE_LABELS: Record<string, string> = {
+  // 文案
+  moments: "朋友圈",
+  group_notice: "群公告",
+  // 活动
+  planning: "活动策划",
+  daily_invite: "每日约客",
+  activity_promo: "活动推广",
+  tournament_notice: "赛事通知",
+  recharge_promo: "充值促销",
+  afternoon_special: "下午场特惠",
+  // 经营场景
+  groupbuy_to_private: "团购转私域",
+  assistant_promo: "助教推广",
+  partner_match: "球友匹配",
+  tournament: "赛事活动",
+  old_customer_recall: "老客户回访",
+  assistant_outreach: "助教约客",
+  game_recommend: "玩法推荐",
+  opening_event: "开业活动",
+  performance_template: "绩效模板",
+  complaint_handling: "投诉处理",
+  daily_task_list: "每日任务",
+  vip_maintenance: "VIP维护",
+  daily_report: "日报",
+  training_exam: "培训考核",
+  review_meeting: "复盘会议",
+  short_video: "短视频",
+  frontdesk_sop: "前厅SOP",
+  ip_cooperation: "IP合作",
+  diagnosis_tool: "诊断工具",
+  group_content: "群内容",
+  workbench_tasks: "工作台任务",
+  // 岗位
+  boss: "老板",
+  manager: "店长",
+  assistant_manager: "助教管理",
+  coach: "教练",
+  frontdesk: "前厅",
+  operator: "运营",
+};
+
+export default function HistoryPage() {
+  const [items, setItems] = useState<GenerationHistoryItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const pageSize = 20;
+  const [typeFilter, setTypeFilter] = useState<string | null>(null);
+  const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
+
+  const fetchHistory = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await api.listGenerations({
+        page,
+        page_size: pageSize,
+        type: typeFilter as GenerationType | undefined,
+        is_favorite: showFavoritesOnly || undefined,
+      });
+      setItems(res.items);
+      setTotal(res.total);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        setItems([]);
+        setTotal(0);
+      } else {
+        setError("加载失败，请重试");
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [page, typeFilter, showFavoritesOnly]);
+
+  useEffect(() => {
+    fetchHistory();
+  }, [fetchHistory]);
+
+  const handleToggleFavorite = async (id: string, currentStatus: boolean) => {
+    try {
+      const res = await api.toggleFavorite(id);
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === id ? { ...item, is_favorite: res.is_favorite } : item
+        )
+      );
+    } catch {
+      // 静默处理
+    }
+  };
+
+  const totalPages = Math.ceil(total / pageSize);
+
+  return (
+    <div className="mx-auto max-w-4xl">
+      <div className="mb-6 flex items-center justify-between">
+        <h2 className="text-xl font-bold text-slate-900">生成历史</h2>
+        <div className="flex items-center gap-3">
+          {/* Favorite filter toggle */}
+          <button
+            type="button"
+            onClick={() => {
+              setShowFavoritesOnly((v) => !v);
+              setPage(1);
+            }}
+            className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors ${
+              showFavoritesOnly
+                ? "border-amber-200 bg-amber-50 text-amber-600"
+                : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+            }`}
+          >
+            <Star className={`h-3.5 w-3.5 ${showFavoritesOnly ? "fill-amber-600 text-amber-600" : ""}`} />
+            只看收藏
+          </button>
+          {/* Type filter */}
+          <select
+            value={typeFilter || ""}
+            onChange={(e) => {
+              setTypeFilter(e.target.value || null);
+              setPage(1);
+            }}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700"
+          >
+            <option value="">全部类型</option>
+            <option value="copywriting">文案</option>
+            <option value="activity">活动</option>
+            <option value="operation">经营</option>
+            <option value="workbench">工作台</option>
+            <option value="poster">海报</option>
+          </select>
+        </div>
+      </div>
+
+      {loading && (
+        <div className="py-20 text-center text-slate-500">加载中...</div>
+      )}
+
+      {error && (
+        <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-600">
+          {error}
+        </div>
+      )}
+
+      {!loading && !error && items.length === 0 && (
+        <div className="py-20 text-center">
+          <Clock className="mx-auto mb-3 h-10 w-10 text-slate-400" />
+          <p className="text-sm text-slate-500">还没有生成记录</p>
+        </div>
+      )}
+
+      {!loading && !error && items.length > 0 && (
+        <div className="space-y-3">
+          {items.map((item) => (
+            <div
+              key={item.id}
+              className="rounded-lg border border-slate-200 bg-white p-4 hover:border-slate-300 transition-colors shadow-sm"
+            >
+              <div className="mb-2 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-medium text-indigo-600">
+                    {TYPE_LABELS[item.type] || item.type}
+                  </span>
+                  {item.sub_type && (
+                    <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-600">
+                      {SUB_TYPE_LABELS[item.sub_type] || item.sub_type}
+                    </span>
+                  )}
+                  <span className="text-xs text-slate-400">
+                    {new Date(item.created_at).toLocaleString("zh-CN")}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleFavorite(item.id, item.is_favorite)}
+                    className="rounded-md p-1 hover:bg-slate-50 transition-colors"
+                    title={item.is_favorite ? "取消收藏" : "收藏"}
+                  >
+                    <Star
+                      className={`h-4 w-4 ${
+                        item.is_favorite
+                          ? "fill-amber-600 text-amber-600"
+                          : "text-slate-400 hover:text-amber-600"
+                      }`}
+                    />
+                  </button>
+                  <CopyButton text={item.content || ""} />
+                </div>
+              </div>
+              <p className="line-clamp-3 whitespace-pre-wrap text-sm text-slate-700">
+                {item.content || "（无内容）"}
+              </p>
+              {item.model_used && (
+                <p className="mt-2 text-xs text-slate-400">
+                  模型：{item.model_used}
+                  {item.tokens_used ? ` · ${item.tokens_used} tokens` : ""}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="mt-6 flex items-center justify-center gap-2">
+          <button
+            type="button"
+            disabled={page <= 1}
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            className="rounded-md border border-slate-200 bg-white p-2 text-slate-500 hover:bg-slate-50 disabled:opacity-30"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+          <span className="text-sm text-slate-500">
+            {page} / {totalPages}
+          </span>
+          <button
+            type="button"
+            disabled={page >= totalPages}
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            className="rounded-md border border-slate-200 bg-white p-2 text-slate-500 hover:bg-slate-50 disabled:opacity-30"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}

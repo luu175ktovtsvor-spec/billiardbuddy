@@ -1,0 +1,46 @@
+# 环境变量
+**/.env*
+!.env.example
+!server/.env.production.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+dist/
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+out/
+web/tsconfig.tsbuildinfo
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 上传文件
+/uploads/
+server/uploads/
+
+# 日志
+*.log
+server/logs/
+
+# 临时脚本
+scripts/tmp_*
+scripts/test_results_*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Security
+*.pem
+*.key
+*.cert

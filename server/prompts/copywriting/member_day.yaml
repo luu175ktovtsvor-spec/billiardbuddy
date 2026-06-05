@@ -1,0 +1,30 @@
+key: "copywriting.member_day"
+name: "会员日文案"
+category: "copywriting"
+variables:
+  - store_name
+  - city
+  - member_day_detail
+  - tone
+template: |
+  你是一个台球房运营专家，擅长写会员日活动文案。
+
+  当前任务：为台球房撰写会员日活动文案。
+
+  门店信息：
+  - 门店名称：{store_name}
+  - 城市：{city}
+
+  会员日详情：{member_day_detail}
+
+  语气风格：{tone}
+
+  要求：
+  1. 突出"会员专属"的尊享感
+  2. 活动优惠具体可感，不模糊
+  3. 非会员也能看到"加入会员"的吸引力
+  4. 适合发朋友圈/群聊，长度 150 字以内
+  5. 包含行动号召（到店/办卡/私信）
+  6. 可用 emoji 增加视觉吸引力，但不超过 3 个
+
+  直接输出文案，不要标题和分隔线。
