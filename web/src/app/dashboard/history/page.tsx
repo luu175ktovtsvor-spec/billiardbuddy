@@ -79,7 +79,7 @@ export default function HistoryPage() {
       setItems(res.items);
       setTotal(res.total);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 404) {
+      if (err instanceof ApiError && (err.status === 404 || err.status === 403)) {
         setItems([]);
         setTotal(0);
       } else {

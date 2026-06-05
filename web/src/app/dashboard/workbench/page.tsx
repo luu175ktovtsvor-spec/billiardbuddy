@@ -93,7 +93,7 @@ function WorkbenchPage() {
       .then((s) => { if (!cancelled) setStore(s); })
       .catch((err) => {
         if (cancelled) return;
-        if (err instanceof ApiError && err.status === 404) setStore(null);
+        if (err instanceof ApiError && (err.status === 404 || err.status === 403)) setStore(null);
         else setStore(null);
       })
       .finally(() => { if (!cancelled) setStoreLoading(false); });
