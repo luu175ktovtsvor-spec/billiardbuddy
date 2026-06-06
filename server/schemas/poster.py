@@ -9,11 +9,12 @@ class ImageGenerateRequest(BaseModel):
     prompt: str = Field(..., min_length=2, max_length=1000, description="用户描述")
     image_model: str = Field(default="wanx2.7-pro", description="AI 生图模型 ID")
     ratio: str = Field(default="3:4", description="图片比例：3:4 / 1:1 / 9:16 / 16:9")
-    reference_image_paths: list[str] | None = Field(default=None, description="参考图本地路径列表（上传后返回的 path）")
-    count: int = Field(default=2, ge=1, le=4, description="生成数量，1-4")
+    images: list[str] | None = Field(default=None, description="已上传图片路径列表（直接传给生图模型）")
+    reference_image_paths: list[str] | None = Field(default=None, description="参考图本地路径列表（兼容旧接口）")
+    count: int = Field(default=1, ge=1, le=4, description="生成数量，1-4")
     refine_from: str | None = Field(default=None, description="基于某张已生成图片进行调整，传入 generation_id")
-    add_store_info: bool = Field(default=True, description="是否在 prompt 中注入门店信息")
-    no_text: bool = Field(default=True, description="是否禁止 AI 生成文字（推荐开启，文字由系统叠加）")
+    add_store_info: bool = Field(default=False, description="是否在 prompt 中注入门店信息")
+    no_text: bool = Field(default=False, description="是否禁止 AI 生成文字")
     add_overlay: bool = Field(default=True, description="是否叠加 Logo 和二维码")
 
 

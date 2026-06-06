@@ -18,7 +18,7 @@ POSTERS_DIR = UPLOADS_DIR / "posters"
 
 # 图片比例 → 阿里云/OpenAI size 参数映射
 SIZE_MAP = {
-    "3:4": {"aliyun": "1024*1440", "openai": "1024x1365"},
+    "3:4": {"aliyun": "1024*1440", "openai": "1024x1536"},
     "1:1": {"aliyun": "1024*1024", "openai": "1024x1024"},
     "9:16": {"aliyun": "1024*1820", "openai": "1024x1820"},
     "16:9": {"aliyun": "1820*1024", "openai": "1820x1024"},
@@ -61,8 +61,8 @@ def _build_image_prompt(
     store: Store,
     reference_style: str | None = None,
     provider: str = "aliyun",
-    add_store_info: bool = True,
-    no_text: bool = True,
+    add_store_info: bool = False,
+    no_text: bool = False,
 ) -> str:
     """构建 AI 生图 prompt。
 
@@ -73,18 +73,18 @@ def _build_image_prompt(
     # 用户核心描述
     parts.append(user_prompt)
 
-    # 门店上下文（可选，用户可能想画非球房内容）
+    # 门店上下文（可选）
     if add_store_info:
         if store.name:
             parts.append(f"门店名称：{store.name}")
         if store.city:
             parts.append(f"城市：{store.city}")
 
-    # 参考图风格描述
+    # 参考图风格描述（仅作为 fallback，优先使用图生图直传）
     if reference_style:
         parts.append(f"参考风格：{reference_style}")
 
-    # 无文字指令（可选，用户可能想要带文字的图）
+    # 无文字指令（可选）
     if no_text:
         if provider == "aliyun":
             parts.append("无文字，无文字内容，no text")
@@ -157,10 +157,10 @@ async def generate_images(
     image_model: str,
     ratio: str = "3:4",
     reference_image_paths: list[str] | None = None,
-    count: int = 2,
+    count: int = 1,
     refine_from: str | None = None,
-    add_store_info: bool = True,
-    no_text: bool = True,
+    add_store_info: bool = False,
+    no_text: bool = False,
     add_overlay: bool = True,
 ) -> dict:
     """AI 生图并叠加门店 Logo 和二维码，返回多张结果。
@@ -174,10 +174,11 @@ async def generate_images(
     ratio : str
         图片比例 (3:4 / 1:1 / 9:16 / 16:9)。
     reference_image_paths : list[str] | None
-        参考图本地路径列表（已上传保存的文件路径）。
+        参考图本地路径列表。直接传给生图模型。
     count : int
-        生成数量，默认 2。
+        生成数量，默认 1。
     """
+    import io as _io
     from services.ai.factory import ProviderFactory
 
     provider_name = _model_to_provider(image_model)
@@ -192,12 +193,12 @@ async def generate_images(
 
     provider = ProviderFactory.get_image_provider(provider_name, api_key=api_key)
 
-    # 参考图风格识别
-    reference_style = None
+    # 加载参考图 bytes（直接传给生图模型）
+    ref_image_bytes: list[bytes] = []
     from models.generation import Generation
     from sqlalchemy import select
+
     if refine_from:
-        # 基于已生成图片进行调整：找到原图作为参考
         result = await db.execute(
             select(Generation).where(Generation.id == uuid.UUID(refine_from))
         )
@@ -205,28 +206,23 @@ async def generate_images(
         if original and original.result:
             original_path = Path(settings.upload_dir) / original.result.lstrip("/uploads/")
             if original_path.exists():
-                reference_style = await _analyze_reference_image(original_path)
+                ref_image_bytes.append(original_path.read_bytes())
                 logger.info("基于原图调整: %s", original_path)
     elif reference_image_paths:
-        # 多张参考图：逐一分析，合并风格描述
         allowed_dir = Path(settings.upload_dir).resolve() / "references"
-        styles = []
         for ref_str in reference_image_paths:
             ref_path = Path(ref_str).resolve()
             if not str(ref_path).startswith(str(allowed_dir)):
                 raise ValueError("reference_image_path 必须在 uploads/references/ 目录内")
-            style = await _analyze_reference_image(ref_path)
-            if style:
-                styles.append(style)
-        if styles:
-            reference_style = "；".join(styles)
+            if ref_path.exists():
+                ref_image_bytes.append(ref_path.read_bytes())
 
-    # 构建 prompt
-    full_prompt = _build_image_prompt(prompt, store, reference_style, provider_name, add_store_info, no_text)
+    # 构建 prompt（简化版，不自动拼接门店信息和 no_text）
+    full_prompt = _build_image_prompt(prompt, store, None, provider_name, add_store_info, no_text)
     size = _get_api_size(ratio, provider_name)
 
-    logger.info("AI 生图: provider=%s, model=%s, ratio=%s, count=%d, prompt=%s",
-                provider_name, image_model, ratio, count, full_prompt[:80])
+    logger.info("AI 生图: provider=%s, model=%s, ratio=%s, count=%d, has_ref=%s, prompt=%s",
+                provider_name, image_model, ratio, count, bool(ref_image_bytes), full_prompt[:80])
 
     # 生成多张图
     POSTERS_DIR.mkdir(parents=True, exist_ok=True)
@@ -244,13 +240,11 @@ async def generate_images(
                 prompt=full_prompt,
                 model=image_model,
                 size=size,
+                image=ref_image_bytes if ref_image_bytes else None,
             )
 
-            # 加载 AI 生成的图片
-            import io
-            ai_img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+            ai_img = Image.open(_io.BytesIO(image_bytes)).convert("RGBA")
 
-            # 叠加 Logo 和二维码（可选）
             if add_overlay:
                 final_img = overlay_images(
                     base_image=ai_img,
@@ -261,13 +255,11 @@ async def generate_images(
             else:
                 final_img = ai_img
 
-            # 保存
             final_img.save(output_path, "PNG")
 
             poster_url = f"/uploads/posters/{filename}"
             created_at = datetime.now(timezone.utc)
 
-            # 写入 generations 表
             generation = Generation(
                 store_id=store.id,
                 user_id=user_id,
@@ -301,7 +293,6 @@ async def generate_images(
 
     await db.commit()
 
-    # 过滤掉失败的
     valid_results = [r for r in results if r is not None]
 
     if not valid_results:

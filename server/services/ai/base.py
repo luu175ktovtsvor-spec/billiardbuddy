@@ -44,7 +44,14 @@ class ImageProvider(ABC):
         prompt: str,
         model: str = "",
         size: str = "1024*1024",
+        image: bytes | list[bytes] | None = None,
         **kwargs,
     ) -> bytes:
-        """生成图片，返回 PNG bytes。"""
+        """生成图片，返回 PNG bytes。
+
+        Parameters
+        ----------
+        image : bytes | list[bytes] | None
+            参考图片 bytes。传入后模型会直接读取图片内容生成。
+        """
         ...

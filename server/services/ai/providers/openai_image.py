@@ -1,6 +1,7 @@
 """OpenAI ImageProvider -- gpt-image 系列 / DALL-E 系列"""
 
 import base64
+import io
 import logging
 
 from services.ai.base import ImageProvider
@@ -55,9 +56,10 @@ class OpenAIImageProvider(ImageProvider):
         prompt: str,
         model: str = "gpt-image-1",
         size: str = "1024*1024",
+        image: bytes | list[bytes] | None = None,
         **kwargs,
     ) -> bytes:
-        """调用 OpenAI API 生成图片。"""
+        """调用 OpenAI API 生成图片。支持图生图。"""
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(api_key=self._api_key)
@@ -67,7 +69,22 @@ class OpenAIImageProvider(ImageProvider):
 
         quality = kwargs.get("quality") or _DEFAULT_QUALITY.get(model, "medium")
 
-        if model.startswith("dall-e"):
+        if image:
+            # 图生图：使用 images.edit() 接口
+            images = [image] if isinstance(image, bytes) else image
+            # images.edit 要求 file-like 对象
+            image_files = []
+            for img_bytes in images:
+                image_files.append(("image", ("ref.png", io.BytesIO(img_bytes), "image/png")))
+
+            response = await client.images.edit(
+                model=model,
+                prompt=prompt,
+                image=image_files[0][1][1] if len(image_files) == 1 else [f[1][1] for f in image_files],
+                size=openai_size,
+                quality=quality,
+            )
+        elif model.startswith("dall-e"):
             # DALL-E 系列用 response_format
             response = await client.images.generate(
                 model=model,

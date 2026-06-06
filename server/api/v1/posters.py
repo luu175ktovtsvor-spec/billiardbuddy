@@ -38,6 +38,9 @@ async def generate_image(
     db: AsyncSession = Depends(get_db),
 ):
     """AI 生图：用户描述 → AI 生成 → 叠加 Logo/二维码 → 返回多张结果。"""
+    # images 和 reference_image_paths 兼容合并
+    ref_paths = request.images or request.reference_image_paths
+
     result = await poster_service.generate_images(
         db=db,
         store=current_store,
@@ -45,8 +48,8 @@ async def generate_image(
         prompt=request.prompt,
         image_model=request.image_model,
         ratio=request.ratio,
-        reference_image_paths=request.reference_image_paths,
-        count=request.count or 2,
+        reference_image_paths=ref_paths,
+        count=request.count or 1,
         refine_from=request.refine_from,
         add_store_info=request.add_store_info,
         no_text=request.no_text,

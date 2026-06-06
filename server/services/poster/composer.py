@@ -64,12 +64,12 @@ def overlay_images(
     img_w, img_h = result.size
 
     # 根据实际图片尺寸计算位置和大小（比例适配）
-    logo_margin = int(img_w * 0.05)
-    logo_max = int(img_w * 0.12)
+    logo_margin = int(img_w * 0.04)
+    logo_max = int(img_w * 0.18)
     logo_position = (logo_margin, logo_margin)
     logo_size = (logo_max, logo_max)
 
-    qr_margin = int(img_w * 0.05)
+    qr_margin = int(img_w * 0.04)
     qr_max = int(img_w * 0.12)
     qrcode_position = (img_w - qr_max - qr_margin, img_h - qr_max - qr_margin)
     qrcode_size = (qr_max, qr_max)

@@ -1,5 +1,6 @@
 """阿里云百炼 -- 通义万相 ImageProvider"""
 
+import base64
 import logging
 
 import httpx
@@ -49,17 +50,24 @@ class AliyunImageProvider(ImageProvider):
         prompt: str,
         model: str = "wanx2.1-t2i-turbo",
         size: str = "1024*1024",
+        image: bytes | list[bytes] | None = None,
         **kwargs,
     ) -> bytes:
-        """调用阿里云百炼 API 生成图片。"""
+        """调用阿里云百炼 API 生成图片。支持图生图。"""
         import dashscope
         from dashscope import ImageSynthesis, MultiModalConversation
 
         dashscope.api_key = self._api_key
 
-        # wan2.7-image-pro 用 MultiModalConversation 接口
+        # wan2.7-image-pro 用 MultiModalConversation 接口（天然支持图片输入）
         if model == "wan2.7-image-pro":
-            messages = [{"role": "user", "content": [{"text": prompt}]}]
+            content = [{"text": prompt}]
+            if image:
+                images = [image] if isinstance(image, bytes) else image
+                for img_bytes in images:
+                    img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+                    content.append({"image": f"data:image/png;base64,{img_b64}"})
+            messages = [{"role": "user", "content": content}]
             resp = MultiModalConversation.call(
                 model=model,
                 messages=messages,
@@ -69,20 +77,25 @@ class AliyunImageProvider(ImageProvider):
                 raise RuntimeError(
                     f"阿里云生图失败: {resp.code} {resp.message}"
                 )
-            content = resp.output.choices[0].message.content
+            out = resp.output.choices[0].message.content
             url = (
-                content[0]["image"]
-                if isinstance(content[0], dict)
-                else content[0].image
+                out[0]["image"]
+                if isinstance(out[0], dict)
+                else out[0].image
             )
         else:
-            # 其他模型用 ImageSynthesis
-            resp = ImageSynthesis.call(
-                model=model,
-                prompt=prompt,
-                n=1,
-                size=size,
-            )
+            # 其他模型用 ImageSynthesis，支持 ref_img 参考图
+            call_kwargs = {
+                "model": model,
+                "prompt": prompt,
+                "n": 1,
+                "size": size,
+            }
+            if image:
+                images = [image] if isinstance(image, bytes) else image
+                img_b64 = base64.b64encode(images[0]).decode("utf-8")
+                call_kwargs["ref_img"] = f"data:image/png;base64,{img_b64}"
+            resp = ImageSynthesis.call(**call_kwargs)
             if resp.status_code != 200:
                 raise RuntimeError(
                     f"阿里云生图失败: {resp.code} {resp.message}"
