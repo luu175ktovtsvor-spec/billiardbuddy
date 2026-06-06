@@ -194,10 +194,10 @@ async def generate_images(
 
     # 参考图风格识别
     reference_style = None
+    from models.generation import Generation
+    from sqlalchemy import select
     if refine_from:
         # 基于已生成图片进行调整：找到原图作为参考
-        from models.generation import Generation
-        from sqlalchemy import select
         result = await db.execute(
             select(Generation).where(Generation.id == uuid.UUID(refine_from))
         )
