@@ -9,28 +9,28 @@ logger = logging.getLogger(__name__)
 
 OPENAI_IMAGE_MODELS: dict[str, dict[str, str]] = {
     "gpt-image-2": {
-        "name": "GPT Image 2",
-        "desc": "最新旗舰，任意分辨率",
+        "name": "GPT · 旗舰",
+        "desc": "最新一代，写实人像和创意设计都很强",
         "price": "$0.006-0.211/张",
-        "best_for": "人像/助教照片、写实风格、高质量海报、创意设计",
+        "best_for": "助教形象照、写实风格、品牌海报、创意设计",
     },
     "gpt-image-1": {
-        "name": "GPT Image 1",
-        "desc": "初代 GPT Image",
+        "name": "GPT · 通用",
+        "desc": "均衡型，画质稳定，适合大多数场景",
         "price": "$0.011-0.167/张",
-        "best_for": "通用海报、活动宣传、赛事海报",
+        "best_for": "活动海报、赛事宣传、通用配图",
     },
     "gpt-image-1-mini": {
-        "name": "GPT Image 1 Mini",
-        "desc": "低成本快速版",
+        "name": "GPT · 轻量",
+        "desc": "速度快成本低，适合日常大量出图",
         "price": "$0.005-0.036/张",
         "best_for": "快速预览、批量生成、日常配图",
     },
     "dall-e-3": {
-        "name": "DALL-E 3",
-        "desc": "经典模型",
+        "name": "DALL-E · 创意",
+        "desc": "擅长艺术风格和创意表达",
         "price": "$0.04-0.12/张",
-        "best_for": "创意海报、艺术风格、节日主题",
+        "best_for": "节日主题、艺术海报、创意设计",
     },
 }
 

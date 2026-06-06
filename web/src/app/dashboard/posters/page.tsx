@@ -287,14 +287,14 @@ function PostersPage() {
                 {aliyunModels.length > 0 && (
                   <optgroup label="阿里云百炼">
                     {aliyunModels.map((m) => (
-                      <option key={m.id} value={m.id}>{m.name} ({m.price})</option>
+                      <option key={m.id} value={m.id}>{m.name} — {m.desc}</option>
                     ))}
                   </optgroup>
                 )}
                 {openaiModels.length > 0 && (
                   <optgroup label="OpenAI">
                     {openaiModels.map((m) => (
-                      <option key={m.id} value={m.id}>{m.name} ({m.price})</option>
+                      <option key={m.id} value={m.id}>{m.name} — {m.desc}</option>
                     ))}
                   </optgroup>
                 )}

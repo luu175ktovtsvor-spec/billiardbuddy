@@ -11,28 +11,28 @@ logger = logging.getLogger(__name__)
 # 模型列表：model_id -> 显示信息
 ALIYUN_IMAGE_MODELS: dict[str, dict[str, str]] = {
     "wanx2.1-t2i-turbo": {
-        "name": "万相 2.1 Turbo",
-        "desc": "快速低成本，适合预览",
+        "name": "万相 · 快速",
+        "desc": "出图快，适合日常配图和快速预览",
         "price": "0.04元/张",
-        "best_for": "快速预览、批量生成、日常朋友圈配图",
+        "best_for": "朋友圈配图、日常发文、快速试效果",
     },
     "wanx2.1-t2i-plus": {
-        "name": "万相 2.1 Plus",
-        "desc": "质量升级版",
+        "name": "万相 · 精细",
+        "desc": "画质更细腻，适合正式场合使用",
         "price": "0.08元/张",
-        "best_for": "活动海报、赛事海报、群公告配图",
+        "best_for": "活动海报、赛事宣传、群公告配图",
     },
     "wan2.7-image-pro": {
-        "name": "万相 2.7 Pro",
-        "desc": "最新旗舰，4K分辨率，品牌色控制",
+        "name": "万相 · 旗舰",
+        "desc": "最新一代，4K 高清，色彩还原度最高",
         "price": "0.04-0.06元/张",
-        "best_for": "高品质活动海报、品牌宣传图、赛事主视觉",
+        "best_for": "品牌海报、赛事主视觉、高品质宣传图",
     },
     "z-image-turbo": {
-        "name": "Z-Image Turbo",
-        "desc": "极速写实，速度10倍",
+        "name": "Z-Image · 极速",
+        "desc": "写实风格，速度极快，适合批量出图",
         "price": "0.01元/张",
-        "best_for": "快速出图、大批量生成、测试用",
+        "best_for": "批量生成、快速测试、素材生产",
     },
 }
 
