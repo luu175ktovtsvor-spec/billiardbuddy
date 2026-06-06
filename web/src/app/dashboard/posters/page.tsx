@@ -40,6 +40,11 @@ function PostersPage() {
   /* Logo upload */
   const [logoUploading, setLogoUploading] = useState(false);
 
+  /* Generation options */
+  const [addStoreInfo, setAddStoreInfo] = useState(true);
+  const [noText, setNoText] = useState(true);
+  const [addOverlay, setAddOverlay] = useState(true);
+
   /* Data from API */
   const [imageModels, setImageModels] = useState<ImageModel[]>([]);
   const [inspirationTags, setInspirationTags] = useState<InspirationTag[]>([]);
@@ -155,6 +160,9 @@ function PostersPage() {
         reference_image_paths: references.length > 0 ? references.map((r) => r.path) : undefined,
         count: 2,
         refine_from: refineFrom || undefined,
+        add_store_info: addStoreInfo,
+        no_text: noText,
+        add_overlay: addOverlay,
       });
       setResults(res.images);
       setRefineFrom(null); // 清除调整状态
@@ -354,6 +362,38 @@ function PostersPage() {
             {store?.qrcode_url ? <span className="text-emerald-600">二维码 ✓</span> : <span className="text-red-600">二维码 未设置</span>}
             {logoUploading && <span className="text-indigo-600">上传中...</span>}
           </div>
+
+          {/* Generation options */}
+          <div className="mt-2 flex items-center gap-4 text-xs text-slate-500">
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={addStoreInfo}
+                onChange={(e) => setAddStoreInfo(e.target.checked)}
+                className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <span>融入门店信息</span>
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={noText}
+                onChange={(e) => setNoText(e.target.checked)}
+                className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <span>禁止生成文字</span>
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={addOverlay}
+                onChange={(e) => setAddOverlay(e.target.checked)}
+                className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <span>叠加 Logo/二维码</span>
+            </label>
+          </div>
+
           {/* Refine mode indicator */}
           {refineFrom && (
             <div className="mt-2 flex items-center gap-2 rounded-md bg-indigo-50 px-3 py-2 text-xs text-indigo-700">

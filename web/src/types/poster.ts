@@ -15,6 +15,9 @@ export interface ImageGenerateRequest {
   reference_image_paths?: string[];
   count?: number;
   refine_from?: string;
+  add_store_info?: boolean;
+  no_text?: boolean;
+  add_overlay?: boolean;
 }
 
 export interface GeneratedImage {

@@ -12,6 +12,9 @@ class ImageGenerateRequest(BaseModel):
     reference_image_paths: list[str] | None = Field(default=None, description="参考图本地路径列表（上传后返回的 path）")
     count: int = Field(default=2, ge=1, le=4, description="生成数量，1-4")
     refine_from: str | None = Field(default=None, description="基于某张已生成图片进行调整，传入 generation_id")
+    add_store_info: bool = Field(default=True, description="是否在 prompt 中注入门店信息")
+    no_text: bool = Field(default=True, description="是否禁止 AI 生成文字（推荐开启，文字由系统叠加）")
+    add_overlay: bool = Field(default=True, description="是否叠加 Logo 和二维码")
 
 
 class GeneratedImage(BaseModel):

@@ -26,20 +26,21 @@ SIZE_MAP = {
 
 # 场景灵感标签（纯提示文本，点击后填入输入框）
 INSPIRATION_TAGS = [
-    {"key": "tournament", "label": "赛事海报", "prompt": "台球赛事宣传海报，竞技氛围，专业赛场感"},
-    {"key": "promo", "label": "促销活动", "prompt": "台球房促销活动海报，动感光影，吸引人"},
-    {"key": "recruitment", "label": "助教招募", "prompt": "台球助教招聘图文，便签笔记风格"},
-    {"key": "partner", "label": "搭子群图文", "prompt": "台球搭子群招募图文，轻松活泼风格"},
-    {"key": "moments", "label": "朋友圈约球", "prompt": "台球房朋友圈约球海报，温暖生活感"},
-    {"key": "short_video", "label": "短视频封面", "prompt": "台球短视频封面，视觉冲击力强"},
-    {"key": "recharge", "label": "充值优惠", "prompt": "台球房充值优惠海报，高端质感"},
-    {"key": "afternoon", "label": "下午场畅打", "prompt": "台球房下午场畅打海报，清新休闲"},
-    {"key": "opening", "label": "开业活动", "prompt": "台球房开业活动海报，盛大喜庆"},
-    {"key": "holiday", "label": "节日主题", "prompt": "台球房节日主题活动海报"},
-    {"key": "champion", "label": "冠军战报", "prompt": "台球比赛冠军战报海报，热血竞技感"},
-    {"key": "assistant_portrait", "label": "助教形象照", "prompt": "台球助教专业形象照，专业台球人设"},
-    {"key": "coach", "label": "教练推广", "prompt": "台球教练推广海报，专业教学感"},
-    {"key": "store_brand", "label": "门店形象", "prompt": "台球房门店形象宣传图，专业品质感"},
+    {"key": "tournament", "label": "赛事海报", "prompt": "中式八球周赛海报，竞技氛围，专业赛场感，深色背景"},
+    {"key": "qiangyi", "label": "抢一大战", "prompt": "台球抢一大战海报，紧张刺激，对抗感，霓虹灯风格"},
+    {"key": "assistant", "label": "助教形象", "prompt": "台球助教专业形象照，台球陪练服务，专业台球人设"},
+    {"key": "moments", "label": "朋友圈配图", "prompt": "台球房下午场空台促活朋友圈配图，清新休闲风格"},
+    {"key": "recruitment", "label": "招聘海报", "prompt": "台球助教招聘海报，便签笔记风格，温馨有吸引力"},
+    {"key": "short_video", "label": "短视频封面", "prompt": "台球短视频封面，视觉冲击力强，动态模糊效果"},
+    {"key": "opening", "label": "开业活动", "prompt": "台球房开业活动海报，盛大喜庆，红色金色配色"},
+    {"key": "holiday", "label": "节日主题", "prompt": "台球房节日主题活动海报，喜庆氛围"},
+    {"key": "champion", "label": "冠军战报", "prompt": "台球比赛冠军战报海报，热血竞技感，聚光灯效果"},
+    {"key": "store_brand", "label": "门店形象", "prompt": "台球房门店形象宣传图，专业品质感，现代简约"},
+    {"key": "partner", "label": "搭子群", "prompt": "台球搭子群招募图文，轻松活泼风格，社交感"},
+    {"key": "coach", "label": "教练推广", "prompt": "台球教练教学推广海报，专业教学感，指导动作"},
+    {"key": "recharge", "label": "充值活动", "prompt": "台球房会员充值活动海报，高端质感，金色元素"},
+    {"key": "watch_party", "label": "看球活动", "prompt": "台球房看球活动海报，大屏幕观赛，啤酒零食氛围"},
+    {"key": "free", "label": "自由创作", "prompt": "画一只猫在打台球"},
 ]
 
 
@@ -60,31 +61,35 @@ def _build_image_prompt(
     store: Store,
     reference_style: str | None = None,
     provider: str = "aliyun",
+    add_store_info: bool = True,
+    no_text: bool = True,
 ) -> str:
     """构建 AI 生图 prompt。
 
-    用户描述 + 门店上下文 + 参考图风格 + 无文字指令。
+    用户描述 + 门店上下文（可选）+ 参考图风格 + 无文字指令（可选）。
     """
     parts = []
 
     # 用户核心描述
     parts.append(user_prompt)
 
-    # 门店上下文（帮助 AI 理解场景）
-    if store.name:
-        parts.append(f"门店名称：{store.name}")
-    if store.city:
-        parts.append(f"城市：{store.city}")
+    # 门店上下文（可选，用户可能想画非球房内容）
+    if add_store_info:
+        if store.name:
+            parts.append(f"门店名称：{store.name}")
+        if store.city:
+            parts.append(f"城市：{store.city}")
 
     # 参考图风格描述
     if reference_style:
         parts.append(f"参考风格：{reference_style}")
 
-    # 无文字指令（商业信息由 Pillow 后叠加）
-    if provider == "aliyun":
-        parts.append("无文字，无文字内容，no text")
-    else:
-        parts.append("no text, no words, no letters, no typography")
+    # 无文字指令（可选，用户可能想要带文字的图）
+    if no_text:
+        if provider == "aliyun":
+            parts.append("无文字，无文字内容，no text")
+        else:
+            parts.append("no text, no words, no letters, no typography")
 
     return ", ".join(parts)
 
@@ -154,6 +159,9 @@ async def generate_images(
     reference_image_paths: list[str] | None = None,
     count: int = 2,
     refine_from: str | None = None,
+    add_store_info: bool = True,
+    no_text: bool = True,
+    add_overlay: bool = True,
 ) -> dict:
     """AI 生图并叠加门店 Logo 和二维码，返回多张结果。
 
@@ -214,7 +222,7 @@ async def generate_images(
             reference_style = "；".join(styles)
 
     # 构建 prompt
-    full_prompt = _build_image_prompt(prompt, store, reference_style, provider_name)
+    full_prompt = _build_image_prompt(prompt, store, reference_style, provider_name, add_store_info, no_text)
     size = _get_api_size(ratio, provider_name)
 
     logger.info("AI 生图: provider=%s, model=%s, ratio=%s, count=%d, prompt=%s",
@@ -242,13 +250,16 @@ async def generate_images(
             import io
             ai_img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
 
-            # 叠加 Logo 和二维码
-            final_img = overlay_images(
-                base_image=ai_img,
-                logo_path=store.logo_url,
-                qrcode_path=store.qrcode_url,
-                upload_dir=UPLOADS_DIR,
-            )
+            # 叠加 Logo 和二维码（可选）
+            if add_overlay:
+                final_img = overlay_images(
+                    base_image=ai_img,
+                    logo_path=store.logo_url,
+                    qrcode_path=store.qrcode_url,
+                    upload_dir=UPLOADS_DIR,
+                )
+            else:
+                final_img = ai_img
 
             # 保存
             final_img.save(output_path, "PNG")

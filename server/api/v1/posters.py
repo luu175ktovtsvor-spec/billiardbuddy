@@ -48,6 +48,9 @@ async def generate_image(
         reference_image_paths=request.reference_image_paths,
         count=request.count or 2,
         refine_from=request.refine_from,
+        add_store_info=request.add_store_info,
+        no_text=request.no_text,
+        add_overlay=request.add_overlay,
     )
     return ImageGenerateResponse(**result)
 
