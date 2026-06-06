@@ -50,6 +50,17 @@ class OpenAIImageProvider(ImageProvider):
 
     def __init__(self, api_key: str):
         self._api_key = api_key
+        self._client = None
+
+    def _get_client(self):
+        if self._client is None:
+            import httpx
+            from openai import AsyncOpenAI
+            self._client = AsyncOpenAI(
+                api_key=self._api_key,
+                timeout=httpx.Timeout(300.0, connect=30.0),
+            )
+        return self._client
 
     async def generate_image(
         self,
@@ -60,9 +71,7 @@ class OpenAIImageProvider(ImageProvider):
         **kwargs,
     ) -> bytes:
         """调用 OpenAI API 生成图片。支持图生图。"""
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=self._api_key)
+        client = self._get_client()
 
         # 解析 size: "1024*1024" -> "1024x1024"
         openai_size = size.replace("*", "x")

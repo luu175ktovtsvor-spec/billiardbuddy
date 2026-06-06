@@ -32,6 +32,8 @@ const SUB_TYPE_LABELS: Record<string, string> = {
   tournament: "赛事活动",
   old_customer_recall: "老客户回访",
   assistant_outreach: "助教约客",
+  assistant_booking: "助教预约",
+  member_assistant_notice: "助教可约通知",
   game_recommend: "玩法推荐",
   opening_event: "开业活动",
   performance_template: "绩效模板",
@@ -39,6 +41,7 @@ const SUB_TYPE_LABELS: Record<string, string> = {
   daily_task_list: "每日任务",
   vip_maintenance: "VIP维护",
   daily_report: "日报",
+  monthly_report: "月报",
   training_exam: "培训考核",
   review_meeting: "复盘会议",
   short_video: "短视频",
@@ -47,6 +50,29 @@ const SUB_TYPE_LABELS: Record<string, string> = {
   diagnosis_tool: "诊断工具",
   group_content: "群内容",
   workbench_tasks: "工作台任务",
+  qiangyi_battle: "抢一大战",
+  tournament_signup: "赛事报名",
+  tournament_report: "赛事战报",
+  tournament_rules: "赛制说明",
+  champion_poster: "冠军海报",
+  coaching_promo: "教学推广",
+  competition_customer: "竞技客户维护",
+  empty_table_promo: "空台促活",
+  departure_followup: "离店跟进",
+  customer_group_guide: "进群引导",
+  opening_closing_sop: "开店闭店SOP",
+  equipment_management: "电器管理",
+  store_atmosphere: "门店氛围",
+  poster_copy: "海报文案",
+  sports_event_watching: "看球活动",
+  staff_birthday: "员工生日",
+  hygiene_check: "卫生检查",
+  review_guidance: "好评引导",
+  activity_direction: "活动方向",
+  business_strategy: "经营策略",
+  table_content_plan: "内容规划",
+  cart_promotion: "推车促销",
+  recruitment: "招聘",
   // 岗位
   boss: "老板",
   manager: "店长",
@@ -180,7 +206,7 @@ export default function HistoryPage() {
                   </span>
                   {item.sub_type && (
                     <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-600">
-                      {SUB_TYPE_LABELS[item.sub_type] || item.sub_type}
+                      {SUB_TYPE_LABELS[item.sub_type] || SUB_TYPE_LABELS[item.sub_type.split(".").pop() || ""] || item.sub_type}
                     </span>
                   )}
                   <span className="text-xs text-slate-400">
