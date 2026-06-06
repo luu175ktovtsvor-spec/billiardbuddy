@@ -43,7 +43,8 @@ function PostersPage() {
   /* Generation options */
   const [addStoreInfo, setAddStoreInfo] = useState(false);
   const [noText, setNoText] = useState(false);
-  const [addOverlay, setAddOverlay] = useState(true);
+  const [addLogoOverlay, setAddLogoOverlay] = useState(true);
+  const [addQrcodeOverlay, setAddQrcodeOverlay] = useState(true);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   /* Data from API */
@@ -163,7 +164,9 @@ function PostersPage() {
         refine_from: refineFrom || undefined,
         add_store_info: addStoreInfo,
         no_text: noText,
-        add_overlay: addOverlay,
+        add_overlay: addLogoOverlay || addQrcodeOverlay,
+        add_logo_overlay: addLogoOverlay,
+        add_qrcode_overlay: addQrcodeOverlay,
       });
       setResults(res.images);
       setRefineFrom(null); // 清除调整状态
@@ -374,7 +377,7 @@ function PostersPage() {
               {showAdvanced ? "收起选项 ▲" : "高级选项 ▼"}
             </button>
             {showAdvanced && (
-              <div className="mt-2 flex items-center gap-4 text-xs text-slate-500">
+              <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-slate-500">
                 <label className="flex items-center gap-1.5 cursor-pointer">
                   <input
                     type="checkbox"
@@ -396,11 +399,20 @@ function PostersPage() {
                 <label className="flex items-center gap-1.5 cursor-pointer">
                   <input
                     type="checkbox"
-                    checked={addOverlay}
-                    onChange={(e) => setAddOverlay(e.target.checked)}
+                    checked={addLogoOverlay}
+                    onChange={(e) => setAddLogoOverlay(e.target.checked)}
                     className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                   />
-                  <span>叠加 Logo/二维码</span>
+                  <span>叠加 Logo</span>
+                </label>
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={addQrcodeOverlay}
+                    onChange={(e) => setAddQrcodeOverlay(e.target.checked)}
+                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span>叠加二维码</span>
                 </label>
               </div>
             )}

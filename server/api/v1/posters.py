@@ -41,6 +41,10 @@ async def generate_image(
     # images 和 reference_image_paths 兼容合并
     ref_paths = request.images or request.reference_image_paths
 
+    # 兼容：add_overlay=False 时两个都不叠加
+    add_logo = request.add_logo_overlay if request.add_overlay else False
+    add_qr = request.add_qrcode_overlay if request.add_overlay else False
+
     result = await poster_service.generate_images(
         db=db,
         store=current_store,
@@ -53,7 +57,8 @@ async def generate_image(
         refine_from=request.refine_from,
         add_store_info=request.add_store_info,
         no_text=request.no_text,
-        add_overlay=request.add_overlay,
+        add_logo_overlay=add_logo,
+        add_qrcode_overlay=add_qr,
     )
     return ImageGenerateResponse(**result)
 

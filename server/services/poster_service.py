@@ -161,7 +161,8 @@ async def generate_images(
     refine_from: str | None = None,
     add_store_info: bool = False,
     no_text: bool = False,
-    add_overlay: bool = True,
+    add_logo_overlay: bool = True,
+    add_qrcode_overlay: bool = True,
 ) -> dict:
     """AI 生图并叠加门店 Logo 和二维码，返回多张结果。
 
@@ -245,11 +246,11 @@ async def generate_images(
 
             ai_img = Image.open(_io.BytesIO(image_bytes)).convert("RGBA")
 
-            if add_overlay:
+            if add_logo_overlay or add_qrcode_overlay:
                 final_img = overlay_images(
                     base_image=ai_img,
-                    logo_path=store.logo_url,
-                    qrcode_path=store.qrcode_url,
+                    logo_path=store.logo_url if add_logo_overlay else None,
+                    qrcode_path=store.qrcode_url if add_qrcode_overlay else None,
                     upload_dir=UPLOADS_DIR,
                 )
             else:

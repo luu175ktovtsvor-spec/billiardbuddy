@@ -19,6 +19,8 @@ export interface ImageGenerateRequest {
   add_store_info?: boolean;
   no_text?: boolean;
   add_overlay?: boolean;
+  add_logo_overlay?: boolean;
+  add_qrcode_overlay?: boolean;
 }
 
 export interface GeneratedImage {
