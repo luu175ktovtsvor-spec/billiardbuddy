@@ -24,6 +24,7 @@ template: |
   - 大客户维护场景由老板直接联系时，语气稳重、不卑不亢，不像推销员。
 
 required_knowledge:
+  - knowledge.core_operations  - knowledge.profit_model
   - knowledge.industry_data
   - knowledge.performance_standards
   - knowledge.business_cases
