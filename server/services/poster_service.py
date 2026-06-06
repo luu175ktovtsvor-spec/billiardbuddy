@@ -106,7 +106,7 @@ async def _analyze_reference_image(image_path: Path) -> str | None:
         from services.ai.factory import ProviderFactory
 
         # 用阿里云 qwen-vl-max 作为视觉理解模型
-        api_key = settings.dashscope_api_key
+        api_key = settings.dashscope_api_key or settings.bailian_api_key
         if not api_key:
             return None
 
@@ -183,7 +183,7 @@ async def generate_images(
     provider_name = _model_to_provider(image_model)
 
     if provider_name == "aliyun":
-        api_key = settings.dashscope_api_key
+        api_key = settings.dashscope_api_key or settings.bailian_api_key
     else:
         api_key = settings.openai_api_key
 
