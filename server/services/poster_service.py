@@ -17,12 +17,12 @@ logger = logging.getLogger(__name__)
 UPLOADS_DIR = Path(settings.upload_dir)
 POSTERS_DIR = UPLOADS_DIR / "posters"
 
-# 图片比例 → 尺寸参数
+# 图片比例 → 尺寸参数（宽高必须能被 16 整除）
 SIZE_MAP = {
     "3:4": "1024x1536",
     "1:1": "1024x1024",
-    "9:16": "1024x1820",
-    "16:9": "1820x1024",
+    "9:16": "864x1536",
+    "16:9": "1536x864",
 }
 
 # 场景灵感标签
