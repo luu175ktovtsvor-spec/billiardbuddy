@@ -88,6 +88,34 @@ async def generate_images(
         parts.append("no text, no words, no letters, no typography")
     full_prompt = ", ".join(parts)
 
+    # 多轮对话：拼接历史上下文
+    if conversation_id:
+        try:
+            hist_stmt = (
+                select(Generation)
+                .where(
+                    Generation.conversation_id == uuid.UUID(conversation_id),
+                    Generation.type == "poster",
+                )
+                .order_by(Generation.created_at)
+            )
+            hist_result = await db.execute(hist_stmt)
+            history_gens = hist_result.scalars().all()
+
+            if history_gens:
+                history_lines = []
+                for i, hg in enumerate(history_gens, 1):
+                    hist_prompt = hg.input_params.get("prompt", "") if hg.input_params else ""
+                    if hist_prompt:
+                        history_lines.append(f"{i}. {hist_prompt}")
+
+                if history_lines:
+                    history_text = "\n".join(history_lines)
+                    full_prompt = f"之前的设计要求：\n{history_text}\n当前要求：{full_prompt}"
+                    logger.info("拼接对话上下文: %d 轮历史", len(history_lines))
+        except Exception:
+            logger.warning("加载对话历史失败，跳过上下文拼接", exc_info=True)
+
     # 加载 Logo bytes（作为 input_image 传给 AI）
     input_images: list[bytes] = []
     if add_logo_overlay and store.logo_url:
