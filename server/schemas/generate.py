@@ -111,7 +111,7 @@ class WorkbenchRequest(BaseModel):
     output_package: list[OutputPackageItem] | None = Field(None, description="期望输出的成品类型，为空则由 AI 自行判断")
     extra_note: str = Field("", description="补充说明", max_length=200)
     prompt_key: str | None = Field(None, description="后端场景模板 key，如 operation.qiangyi_battle。有 promptKey 时优先使用该模板，否则 fallback 到 workbench.free_intent")
-    model: str | None = Field(None, description="指定文本模型 ID，如 deepseek-v4-flash、qwen3.7-plus 等")
+    model: str | None = Field(None, description="指定文本模型 ID（当前仅支持 deepseek-v4-flash）")
 
 
 class CopywritingRequest(BaseModel):

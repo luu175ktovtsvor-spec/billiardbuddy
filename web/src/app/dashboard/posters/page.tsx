@@ -288,29 +288,10 @@ function PostersPage() {
               </select>
             </div>
 
-            {/* Model selector */}
+            {/* Model label (single model, no selector needed) */}
             <div className="flex items-center gap-1.5">
               <span className="text-xs text-slate-500">模型</span>
-              <select
-                value={imageModel}
-                onChange={(e) => setImageModel(e.target.value)}
-                className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none"
-              >
-                {aliyunModels.length > 0 && (
-                  <optgroup label="阿里云百炼">
-                    {aliyunModels.map((m) => (
-                      <option key={m.id} value={m.id}>{m.name} — {m.desc}</option>
-                    ))}
-                  </optgroup>
-                )}
-                {openaiModels.length > 0 && (
-                  <optgroup label="OpenAI">
-                    {openaiModels.map((m) => (
-                      <option key={m.id} value={m.id}>{m.name} — {m.desc}</option>
-                    ))}
-                  </optgroup>
-                )}
-              </select>
+              <span className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs text-slate-600">GPT Image 2</span>
             </div>
             {/* Model recommendation hint */}
             {imageModels.find((m) => m.id === imageModel)?.best_for && (

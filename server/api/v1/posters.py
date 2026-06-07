@@ -103,20 +103,9 @@ async def upload_reference(
 @router.get("/image-models")
 async def list_image_models(_user: User = Depends(get_current_user)):
     """返回可用的 AI 生图模型列表。"""
-    from services.ai.providers.aliyun_image import ALIYUN_IMAGE_MODELS
     from services.ai.providers.openai_image import OPENAI_IMAGE_MODELS
 
     models = []
-    for model_id, info in ALIYUN_IMAGE_MODELS.items():
-        models.append({
-            "id": model_id,
-            "name": info["name"],
-            "desc": info["desc"],
-            "price": info["price"],
-            "best_for": info.get("best_for", ""),
-            "provider": "aliyun",
-            "provider_name": "阿里云百炼",
-        })
     for model_id, info in OPENAI_IMAGE_MODELS.items():
         models.append({
             "id": model_id,

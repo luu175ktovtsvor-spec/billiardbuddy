@@ -16,12 +16,12 @@ logger = logging.getLogger(__name__)
 UPLOADS_DIR = Path(settings.upload_dir)
 POSTERS_DIR = UPLOADS_DIR / "posters"
 
-# 图片比例 → 阿里云/OpenAI size 参数映射
+# 图片比例 → OpenAI size 参数
 SIZE_MAP = {
-    "3:4": {"aliyun": "1024*1440", "openai": "1024x1536"},
-    "1:1": {"aliyun": "1024*1024", "openai": "1024x1024"},
-    "9:16": {"aliyun": "1024*1820", "openai": "1024x1820"},
-    "16:9": {"aliyun": "1820*1024", "openai": "1820x1024"},
+    "3:4": "1024x1536",
+    "1:1": "1024x1024",
+    "9:16": "1024x1820",
+    "16:9": "1820x1024",
 }
 
 # 场景灵感标签（纯提示文本，点击后填入输入框）
@@ -44,109 +44,39 @@ INSPIRATION_TAGS = [
 ]
 
 
-def _model_to_provider(model_id: str) -> str:
-    """根据 model_id 判断属于哪个 provider。"""
-    from services.ai.providers.aliyun_image import ALIYUN_IMAGE_MODELS
-    from services.ai.providers.openai_image import OPENAI_IMAGE_MODELS
-
-    if model_id in ALIYUN_IMAGE_MODELS:
-        return "aliyun"
-    if model_id in OPENAI_IMAGE_MODELS:
-        return "openai"
-    raise ValueError(f"未知的图片模型: {model_id}")
-
-
 def _build_image_prompt(
     user_prompt: str,
     store: Store,
     reference_style: str | None = None,
-    provider: str = "aliyun",
     add_store_info: bool = False,
     no_text: bool = False,
 ) -> str:
-    """构建 AI 生图 prompt。
+    """构建 AI 生图 prompt。"""
+    parts = [user_prompt]
 
-    用户描述 + 门店上下文（可选）+ 参考图风格 + 无文字指令（可选）。
-    """
-    parts = []
-
-    # 用户核心描述
-    parts.append(user_prompt)
-
-    # 门店上下文（可选）
     if add_store_info:
         if store.name:
             parts.append(f"门店名称：{store.name}")
         if store.city:
             parts.append(f"城市：{store.city}")
 
-    # 参考图风格描述（仅作为 fallback，优先使用图生图直传）
     if reference_style:
         parts.append(f"参考风格：{reference_style}")
 
-    # 无文字指令（可选）
     if no_text:
-        if provider == "aliyun":
-            parts.append("无文字，无文字内容，no text")
-        else:
-            parts.append("no text, no words, no letters, no typography")
+        parts.append("no text, no words, no letters, no typography")
 
     return ", ".join(parts)
 
 
-def _get_api_size(ratio: str, provider: str) -> str:
-    """根据比例和 provider 获取 API size 参数。"""
-    sizes = SIZE_MAP.get(ratio, SIZE_MAP["3:4"])
-    return sizes.get(provider, sizes["aliyun"])
+def _get_api_size(ratio: str) -> str:
+    """根据比例获取 API size 参数。"""
+    return SIZE_MAP.get(ratio, SIZE_MAP["3:4"])
 
 
 async def _analyze_reference_image(image_path: Path) -> str | None:
-    """用视觉模型分析参考图，提取风格描述。"""
-    try:
-        from services.ai.factory import ProviderFactory
-
-        # 用阿里云 qwen-vl-max 作为视觉理解模型
-        api_key = settings.dashscope_api_key or settings.bailian_api_key
-        if not api_key:
-            return None
-
-        import dashscope
-        dashscope.api_key = api_key
-
-        from dashscope import MultiModalConversation
-
-        with open(image_path, "rb") as f:
-            image_data = f.read()
-
-        import base64
-        image_b64 = base64.b64encode(image_data).decode("utf-8")
-
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"image": f"data:image/png;base64,{image_b64}"},
-                    {"text": "请用2-3句话描述这张图片的视觉风格：包括配色、氛围、设计风格。只描述风格，不描述具体内容。"},
-                ],
-            }
-        ]
-
-        resp = MultiModalConversation.call(
-            model="qwen-vl-max",
-            messages=messages,
-        )
-
-        if resp.status_code == 200:
-            style_desc = resp.output.choices[0].message.content[0]["text"]
-            logger.info("参考图风格识别: %s", style_desc[:100])
-            return style_desc
-        else:
-            logger.warning("参考图风格识别失败: %s %s", resp.code, resp.message)
-            return None
-
-    except Exception:
-        logger.warning("参考图风格识别异常", exc_info=True)
-        return None
+    """参考图风格分析（已简化，直接传图给生图模型，不再提取文字描述）。"""
+    return None
 
 
 async def generate_images(
@@ -182,17 +112,11 @@ async def generate_images(
     import io as _io
     from services.ai.factory import ProviderFactory
 
-    provider_name = _model_to_provider(image_model)
-
-    if provider_name == "aliyun":
-        api_key = settings.dashscope_api_key or settings.bailian_api_key
-    else:
-        api_key = settings.openai_api_key
-
+    api_key = settings.openai_api_key
     if not api_key:
-        raise ValueError(f"Provider {provider_name} 的 API Key 未配置")
+        raise ValueError("OpenAI API Key 未配置")
 
-    provider = ProviderFactory.get_image_provider(provider_name, api_key=api_key)
+    provider = ProviderFactory.get_image_provider("openai", api_key=api_key)
 
     # 加载参考图 bytes（直接传给生图模型）
     ref_image_bytes: list[bytes] = []
@@ -218,12 +142,12 @@ async def generate_images(
             if ref_path.exists():
                 ref_image_bytes.append(ref_path.read_bytes())
 
-    # 构建 prompt（简化版，不自动拼接门店信息和 no_text）
-    full_prompt = _build_image_prompt(prompt, store, None, provider_name, add_store_info, no_text)
-    size = _get_api_size(ratio, provider_name)
+    # 构建 prompt
+    full_prompt = _build_image_prompt(prompt, store, None, add_store_info, no_text)
+    size = _get_api_size(ratio)
 
-    logger.info("AI 生图: provider=%s, model=%s, ratio=%s, count=%d, has_ref=%s, prompt=%s",
-                provider_name, image_model, ratio, count, bool(ref_image_bytes), full_prompt[:80])
+    logger.info("AI 生图: model=%s, ratio=%s, count=%d, has_ref=%s, prompt=%s",
+                image_model, ratio, count, bool(ref_image_bytes), full_prompt[:80])
 
     # 生成多张图
     POSTERS_DIR.mkdir(parents=True, exist_ok=True)

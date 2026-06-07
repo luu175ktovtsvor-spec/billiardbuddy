@@ -29,13 +29,6 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
     openai_api_key: str = ""
-    anthropic_api_key: str = ""
-    dashscope_api_key: str = ""
-
-    # 百炼模型网关
-    bailian_api_key: str = ""
-    bailian_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    bailian_default_model: str = "qwen-plus"
 
     # 阿里云 OSS
     oss_access_key_id: str = ""
@@ -49,7 +42,7 @@ class Settings(BaseSettings):
     # 当前启用的模型 Provider
     text_model_provider: str = "deepseek"
     text_model_name: str = "deepseek-v4-flash"
-    image_model_provider: str = "aliyun"
+    image_model_provider: str = "openai"
     image_model_name: str = ""
 
     @property
@@ -67,7 +60,7 @@ class Settings(BaseSettings):
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 
-    model_config = {"env_file": ".env", "case_sensitive": False}
+    model_config = {"env_file": ".env", "case_sensitive": False, "extra": "ignore"}
 
 
 settings = Settings()
