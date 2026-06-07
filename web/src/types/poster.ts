@@ -23,6 +23,7 @@ export interface ImageGenerateRequest {
   add_qrcode_overlay?: boolean;
   conversation_id?: string;
   previous_response_id?: string;
+  quality?: "standard" | "high";
 }
 
 export interface GeneratedImage {

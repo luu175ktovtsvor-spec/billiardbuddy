@@ -18,11 +18,12 @@ UPLOADS_DIR = Path(settings.upload_dir)
 POSTERS_DIR = UPLOADS_DIR / "posters"
 
 # 图片比例 → 尺寸参数（宽高必须能被 16 整除）
+# gpt-image-2 支持任意分辨率：单边≤3840，总像素 655360~8294400，宽高为16的倍数
 SIZE_MAP = {
-    "3:4": "1024x1536",
-    "1:1": "1024x1024",
-    "9:16": "864x1536",
-    "16:9": "1536x864",
+    "3:4": {"standard": "1024x1536", "high": "1536x2048"},
+    "1:1": {"standard": "1024x1024", "high": "2048x2048"},
+    "9:16": {"standard": "864x1536", "high": "1152x2048"},
+    "16:9": {"standard": "1536x864", "high": "2048x1152"},
 }
 
 # 场景灵感标签
@@ -45,8 +46,9 @@ INSPIRATION_TAGS = [
 ]
 
 
-def _get_api_size(ratio: str) -> str:
-    return SIZE_MAP.get(ratio, SIZE_MAP["3:4"])
+def _get_api_size(ratio: str, quality: str = "standard") -> str:
+    sizes = SIZE_MAP.get(ratio, SIZE_MAP["3:4"])
+    return sizes.get(quality, sizes["standard"])
 
 
 async def generate_images(
@@ -64,6 +66,7 @@ async def generate_images(
     add_logo_overlay: bool = True,
     add_qrcode_overlay: bool = True,
     conversation_id: str | None = None,
+    quality: str = "standard",
     previous_response_id: str | None = None,
 ) -> dict:
     """AI 生图，支持 Responses API 多轮对话。
@@ -127,7 +130,7 @@ async def generate_images(
         if qr_path.exists():
             input_images.append(qr_path.read_bytes())
 
-    size = _get_api_size(ratio)
+    size = _get_api_size(ratio, quality)
 
     # 如果是调整模式，加载原图作为参考
     if refine_from:

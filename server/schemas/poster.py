@@ -20,6 +20,7 @@ class ImageGenerateRequest(BaseModel):
     add_qrcode_overlay: bool = Field(default=True, description="是否叠加二维码")
     conversation_id: str | None = Field(default=None, description="对话 ID，用于多轮对话")
     previous_response_id: str | None = Field(default=None, description="上一轮的 OpenAI response ID")
+    quality: str = Field(default="standard", description="图片质量：standard(标准) / high(高清)")
 
 
 class GeneratedImage(BaseModel):

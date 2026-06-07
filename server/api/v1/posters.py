@@ -60,6 +60,7 @@ async def generate_image(
         add_qrcode_overlay=add_qr,
         conversation_id=request.conversation_id,
         previous_response_id=request.previous_response_id,
+        quality=request.quality,
     )
     return ImageGenerateResponse(**result)
 

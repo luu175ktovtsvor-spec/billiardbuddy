@@ -49,6 +49,7 @@ function PostersPage() {
   /* Entry page */
   const [prompt, setPrompt] = useState("");
   const [ratio, setRatio] = useState("3:4");
+  const [quality, setQuality] = useState<"standard" | "high">("standard");
   const [inspirationTags, setInspirationTags] = useState<InspirationTag[]>([]);
   const [sizeOptions, setSizeOptions] = useState<SizeOption[]>([]);
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
@@ -172,6 +173,7 @@ function PostersPage() {
         prompt: text,
         image_model: "gpt-image-2",
         ratio,
+        quality,
         images: references.length > 0 ? references.map((r) => r.path) : undefined,
         count: 1,
         add_store_info: addStoreInfo,
@@ -482,6 +484,19 @@ function PostersPage() {
                 {sizeOptions.map((s) => (
                   <option key={s.value} value={s.value}>{s.label}</option>
                 ))}
+              </select>
+            </div>
+
+            {/* Quality selector */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-slate-500">质量</span>
+              <select
+                value={quality}
+                onChange={(e) => setQuality(e.target.value as "standard" | "high")}
+                className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none"
+              >
+                <option value="standard">标准</option>
+                <option value="high">高清 (2K)</option>
               </select>
             </div>
 
