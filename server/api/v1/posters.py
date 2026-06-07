@@ -37,11 +37,9 @@ async def generate_image(
     current_store: Store = Depends(get_current_store),
     db: AsyncSession = Depends(get_db),
 ):
-    """AI 生图：用户描述 → AI 生成 → 叠加 Logo/二维码 → 返回多张结果。"""
-    # images 和 reference_image_paths 兼容合并
+    """AI 生图：支持多轮对话式生成。"""
     ref_paths = request.images or request.reference_image_paths
 
-    # 兼容：add_overlay=False 时两个都不叠加
     add_logo = request.add_logo_overlay if request.add_overlay else False
     add_qr = request.add_qrcode_overlay if request.add_overlay else False
 
@@ -59,6 +57,8 @@ async def generate_image(
         no_text=request.no_text,
         add_logo_overlay=add_logo,
         add_qrcode_overlay=add_qr,
+        conversation_id=request.conversation_id,
+        previous_response_id=request.previous_response_id,
     )
     return ImageGenerateResponse(**result)
 
@@ -80,7 +80,6 @@ async def upload_reference(
     if ext not in ALLOWED_IMAGE_EXTENSIONS:
         raise InvalidReferenceTypeError()
 
-    # Pillow 验证
     try:
         from PIL import Image
         img = Image.open(io.BytesIO(content))
@@ -100,23 +99,35 @@ async def upload_reference(
     return {"path": rel_path, "url": rel_path}
 
 
+@router.get("/conversations")
+async def list_conversations(
+    current_user: User = Depends(get_current_user),
+    current_store: Store = Depends(get_current_store),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取海报对话列表。"""
+    conversations = await poster_service.get_conversations(db, current_store.id)
+    return {"conversations": conversations}
+
+
+@router.get("/conversations/{conversation_id}")
+async def get_conversation(
+    conversation_id: str,
+    current_user: User = Depends(get_current_user),
+    current_store: Store = Depends(get_current_store),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取对话详情。"""
+    detail = await poster_service.get_conversation_detail(db, current_store.id, conversation_id)
+    if not detail:
+        return {"error": "对话不存在"}, 404
+    return detail
+
+
 @router.get("/image-models")
 async def list_image_models(_user: User = Depends(get_current_user)):
     """返回可用的 AI 生图模型列表。"""
-    from services.ai.providers.openai_image import OPENAI_IMAGE_MODELS
-
-    models = []
-    for model_id, info in OPENAI_IMAGE_MODELS.items():
-        models.append({
-            "id": model_id,
-            "name": info["name"],
-            "desc": info["desc"],
-            "price": info["price"],
-            "best_for": info.get("best_for", ""),
-            "provider": "openai",
-            "provider_name": "OpenAI",
-        })
-    return {"models": models}
+    return {"models": [{"id": "gpt-image-2", "name": "GPT Image 2"}]}
 
 
 @router.get("/inspiration-tags")

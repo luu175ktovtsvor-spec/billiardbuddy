@@ -30,23 +30,16 @@ class ProviderFactory:
         if provider_cls is None:
             raise ValueError(f"未注册的文本模型 Provider: {name}")
 
-        # Mimo 需要特殊初始化参数
-        if name == "mimo":
-            mimo_key = settings.mimo_api_key
-            instance = provider_cls(api_key=mimo_key)
-        else:
-            instance = provider_cls()
+        instance = provider_cls()
 
         cls._text_cache[name] = instance
         return instance
 
     @classmethod
     def resolve_provider(cls, model: str | None = None) -> TextProvider:
-        """根据模型 ID 解析 provider。mimo-* → mimo，其他 → 默认。"""
+        """根据模型 ID 解析 provider。当前只支持 deepseek。"""
         if not model:
             return cls.get_text_provider()
-        if model.startswith("mimo"):
-            return cls._get_or_create_text_provider("mimo")
         return cls.get_text_provider()
 
     @classmethod

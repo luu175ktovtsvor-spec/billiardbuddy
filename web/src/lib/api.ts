@@ -369,6 +369,10 @@ class ApiClient {
     return this.request<{ sizes: SizeOption[] }>("GET", "/api/v1/posters/size-options");
   }
 
+  listPosterConversations() {
+    return this.request<{ conversations: Array<{ id: string; title: string; message_count: number; thumbnail_url: string | null; created_at: string; updated_at: string }> }>("GET", "/api/v1/posters/conversations");
+  }
+
   // ─── Generations ───
 
   async listGenerations(params?: ListGenerationsParams): Promise<GenerationHistoryListResponse> {

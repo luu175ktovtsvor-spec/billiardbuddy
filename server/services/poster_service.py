@@ -1,22 +1,23 @@
+import io
 import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from PIL import Image
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from models.generation import Generation
 from models.store import Store
-from services.poster.composer import overlay_images
 
 logger = logging.getLogger(__name__)
 
 UPLOADS_DIR = Path(settings.upload_dir)
 POSTERS_DIR = UPLOADS_DIR / "posters"
 
-# 图片比例 → OpenAI size 参数
+# 图片比例 → 尺寸参数
 SIZE_MAP = {
     "3:4": "1024x1536",
     "1:1": "1024x1024",
@@ -24,7 +25,7 @@ SIZE_MAP = {
     "16:9": "1820x1024",
 }
 
-# 场景灵感标签（纯提示文本，点击后填入输入框）
+# 场景灵感标签
 INSPIRATION_TAGS = [
     {"key": "tournament", "label": "赛事海报", "prompt": "中式八球周赛海报，竞技氛围，专业赛场感，深色背景"},
     {"key": "qiangyi", "label": "抢一大战", "prompt": "台球抢一大战海报，紧张刺激，对抗感，霓虹灯风格"},
@@ -44,39 +45,8 @@ INSPIRATION_TAGS = [
 ]
 
 
-def _build_image_prompt(
-    user_prompt: str,
-    store: Store,
-    reference_style: str | None = None,
-    add_store_info: bool = False,
-    no_text: bool = False,
-) -> str:
-    """构建 AI 生图 prompt。"""
-    parts = [user_prompt]
-
-    if add_store_info:
-        if store.name:
-            parts.append(f"门店名称：{store.name}")
-        if store.city:
-            parts.append(f"城市：{store.city}")
-
-    if reference_style:
-        parts.append(f"参考风格：{reference_style}")
-
-    if no_text:
-        parts.append("no text, no words, no letters, no typography")
-
-    return ", ".join(parts)
-
-
 def _get_api_size(ratio: str) -> str:
-    """根据比例获取 API size 参数。"""
     return SIZE_MAP.get(ratio, SIZE_MAP["3:4"])
-
-
-async def _analyze_reference_image(image_path: Path) -> str | None:
-    """参考图风格分析（已简化，直接传图给生图模型，不再提取文字描述）。"""
-    return None
 
 
 async def generate_images(
@@ -93,36 +63,45 @@ async def generate_images(
     no_text: bool = False,
     add_logo_overlay: bool = True,
     add_qrcode_overlay: bool = True,
+    conversation_id: str | None = None,
+    previous_response_id: str | None = None,
 ) -> dict:
-    """AI 生图并叠加门店 Logo 和二维码，返回多张结果。
+    """AI 生图，支持 Responses API 多轮对话。
 
-    Parameters
-    ----------
-    prompt : str
-        用户描述的文字。
-    image_model : str
-        AI 生图模型 ID。
-    ratio : str
-        图片比例 (3:4 / 1:1 / 9:16 / 16:9)。
-    reference_image_paths : list[str] | None
-        参考图本地路径列表。直接传给生图模型。
-    count : int
-        生成数量，默认 1。
+    当 previous_response_id 存在时使用 Responses API（多轮）。
+    否则使用 Images API（首次生成）。
     """
-    import io as _io
-    from services.ai.factory import ProviderFactory
+    from services.ai.providers.openai_response_image import OpenAIResponseImageProvider
 
     api_key = settings.openai_api_key
     if not api_key:
         raise ValueError("OpenAI API Key 未配置")
 
-    provider = ProviderFactory.get_image_provider("openai", api_key=api_key, base_url=settings.openai_base_url)
+    # 构建 prompt
+    parts = [prompt]
+    if add_store_info:
+        if store.name:
+            parts.append(f"门店名称：{store.name}")
+        if store.city:
+            parts.append(f"城市：{store.city}")
+    if no_text:
+        parts.append("no text, no words, no letters, no typography")
+    full_prompt = ", ".join(parts)
 
-    # 加载参考图 bytes（直接传给生图模型）
-    ref_image_bytes: list[bytes] = []
-    from models.generation import Generation
-    from sqlalchemy import select
+    # 加载 Logo bytes（作为 input_image 传给 AI）
+    input_images: list[bytes] = []
+    if add_logo_overlay and store.logo_url:
+        logo_path = Path(settings.upload_dir) / store.logo_url.lstrip("/uploads/")
+        if logo_path.exists():
+            input_images.append(logo_path.read_bytes())
+    if add_qrcode_overlay and store.qrcode_url:
+        qr_path = Path(settings.upload_dir) / store.qrcode_url.lstrip("/uploads/")
+        if qr_path.exists():
+            input_images.append(qr_path.read_bytes())
 
+    size = _get_api_size(ratio)
+
+    # 如果是调整模式，加载原图作为参考
     if refine_from:
         result = await db.execute(
             select(Generation).where(Generation.id == uuid.UUID(refine_from))
@@ -131,7 +110,7 @@ async def generate_images(
         if original and original.result:
             original_path = Path(settings.upload_dir) / original.result.lstrip("/uploads/")
             if original_path.exists():
-                ref_image_bytes.append(original_path.read_bytes())
+                input_images.insert(0, original_path.read_bytes())
                 logger.info("基于原图调整: %s", original_path)
     elif reference_image_paths:
         allowed_dir = Path(settings.upload_dir).resolve() / "references"
@@ -140,47 +119,39 @@ async def generate_images(
             if not str(ref_path).startswith(str(allowed_dir)):
                 raise ValueError("reference_image_path 必须在 uploads/references/ 目录内")
             if ref_path.exists():
-                ref_image_bytes.append(ref_path.read_bytes())
+                input_images.append(ref_path.read_bytes())
 
-    # 构建 prompt
-    full_prompt = _build_image_prompt(prompt, store, None, add_store_info, no_text)
-    size = _get_api_size(ratio)
+    logger.info("AI 生图: ratio=%s, count=%d, has_ref=%s, conversation=%s, has_logo=%s",
+                ratio, count, bool(input_images), bool(conversation_id), bool(input_images))
 
-    logger.info("AI 生图: model=%s, ratio=%s, count=%d, has_ref=%s, prompt=%s",
-                image_model, ratio, count, bool(ref_image_bytes), full_prompt[:80])
+    # 使用 Responses API 生成
+    provider = OpenAIResponseImageProvider(api_key=api_key, base_url=settings.openai_base_url)
 
-    # 生成多张图
+    # 生成 conversation_id（如果是新对话）
+    conv_id = conversation_id or str(uuid.uuid4())
+
     POSTERS_DIR.mkdir(parents=True, exist_ok=True)
     results = []
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    sid = str(store.id).replace("-", "")[:8]
+    last_response_id = previous_response_id
 
     for i in range(count):
         rand = uuid.uuid4().hex[:4]
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        sid = str(store.id).replace("-", "")[:8]
         filename = f"ai_{sid}_{ts}_{rand}.png"
         output_path = POSTERS_DIR / filename
 
         try:
-            image_bytes = await provider.generate_image(
+            image_bytes, response_id = await provider.generate(
                 prompt=full_prompt,
-                model=image_model,
-                size=size,
-                image=ref_image_bytes if ref_image_bytes else None,
+                previous_response_id=last_response_id,
+                input_images=input_images if input_images else None,
             )
+            last_response_id = response_id
 
-            ai_img = Image.open(_io.BytesIO(image_bytes)).convert("RGBA")
-
-            if add_logo_overlay or add_qrcode_overlay:
-                final_img = overlay_images(
-                    base_image=ai_img,
-                    logo_path=store.logo_url if add_logo_overlay else None,
-                    qrcode_path=store.qrcode_url if add_qrcode_overlay else None,
-                    upload_dir=UPLOADS_DIR,
-                )
-            else:
-                final_img = ai_img
-
-            final_img.save(output_path, "PNG")
+            # 保存图片
+            img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+            img.save(output_path, "PNG")
 
             poster_url = f"/uploads/posters/{filename}"
             created_at = datetime.now(timezone.utc)
@@ -192,14 +163,15 @@ async def generate_images(
                 sub_type=ratio,
                 input_params={
                     "prompt": prompt,
-                    "image_model": image_model,
                     "ratio": ratio,
                     "reference_images": reference_image_paths,
                 },
                 prompt_used=full_prompt,
                 result=poster_url,
-                model_used=f"ai:{image_model}",
+                model_used="ai:gpt-image-2",
                 tokens_used=0,
+                conversation_id=uuid.UUID(conv_id),
+                openai_response_id=response_id,
             )
             db.add(generation)
             await db.flush()
@@ -225,18 +197,95 @@ async def generate_images(
 
     return {
         "images": valid_results,
-        "model_used": f"ai:{image_model}",
+        "model_used": "ai:gpt-image-2",
         "count": len(valid_results),
+        "conversation_id": conv_id,
+        "response_id": last_response_id,
+    }
+
+
+async def get_conversations(
+    db: AsyncSession,
+    store_id: uuid.UUID,
+    limit: int = 10,
+) -> list[dict]:
+    """获取对话列表（按 conversation_id 分组）。"""
+    stmt = (
+        select(Generation)
+        .where(Generation.store_id == store_id, Generation.type == "poster")
+        .where(Generation.conversation_id.isnot(None))
+        .order_by(Generation.created_at.desc())
+    )
+    result = await db.execute(stmt)
+    generations = result.scalars().all()
+
+    # 按 conversation_id 分组
+    conv_map: dict[str, list[Generation]] = {}
+    for gen in generations:
+        cid = str(gen.conversation_id)
+        if cid not in conv_map:
+            conv_map[cid] = []
+        conv_map[cid].append(gen)
+
+    conversations = []
+    for cid, gens in list(conv_map.items())[:limit]:
+        gens_sorted = sorted(gens, key=lambda g: g.created_at)
+        conversations.append({
+            "id": cid,
+            "title": gens_sorted[0].input_params.get("prompt", "海报生成") if gens_sorted[0].input_params else "海报生成",
+            "message_count": len(gens_sorted),
+            "thumbnail_url": gens_sorted[-1].result,
+            "created_at": gens_sorted[0].created_at,
+            "updated_at": gens_sorted[-1].created_at,
+        })
+
+    return conversations
+
+
+async def get_conversation_detail(
+    db: AsyncSession,
+    store_id: uuid.UUID,
+    conversation_id: str,
+) -> dict | None:
+    """获取对话详情（所有 generation 记录）。"""
+    stmt = (
+        select(Generation)
+        .where(
+            Generation.store_id == store_id,
+            Generation.type == "poster",
+            Generation.conversation_id == uuid.UUID(conversation_id),
+        )
+        .order_by(Generation.created_at)
+    )
+    result = await db.execute(stmt)
+    gens = result.scalars().all()
+
+    if not gens:
+        return None
+
+    messages = []
+    for gen in gens:
+        messages.append({
+            "generation_id": gen.id,
+            "poster_url": gen.result,
+            "created_at": gen.created_at,
+            "prompt": gen.input_params.get("prompt", "") if gen.input_params else "",
+        })
+
+    return {
+        "id": conversation_id,
+        "title": gens[0].input_params.get("prompt", "海报生成") if gens[0].input_params else "海报生成",
+        "created_at": gens[0].created_at,
+        "updated_at": gens[-1].created_at,
+        "messages": messages,
     }
 
 
 def get_inspiration_tags() -> list[dict]:
-    """返回场景灵感标签列表。"""
     return INSPIRATION_TAGS
 
 
 def get_size_options() -> list[dict]:
-    """返回可选的图片比例列表。"""
     return [
         {"value": "3:4", "label": "3:4 竖版海报", "desc": "朋友圈/群，最常用"},
         {"value": "1:1", "label": "1:1 方形", "desc": "小红书/抖音图文"},

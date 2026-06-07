@@ -18,6 +18,8 @@ class ImageGenerateRequest(BaseModel):
     add_overlay: bool = Field(default=True, description="是否叠加 Logo 和二维码（兼容旧接口）")
     add_logo_overlay: bool = Field(default=True, description="是否叠加 Logo")
     add_qrcode_overlay: bool = Field(default=True, description="是否叠加二维码")
+    conversation_id: str | None = Field(default=None, description="对话 ID，用于多轮对话")
+    previous_response_id: str | None = Field(default=None, description="上一轮的 OpenAI response ID")
 
 
 class GeneratedImage(BaseModel):
@@ -32,3 +34,24 @@ class ImageGenerateResponse(BaseModel):
     images: list[GeneratedImage]
     model_used: str
     count: int
+    conversation_id: str | None = None
+    response_id: str | None = None
+
+
+class PosterConversationItem(BaseModel):
+    """对话列表项。"""
+    id: str
+    title: str
+    message_count: int
+    thumbnail_url: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PosterConversationDetail(BaseModel):
+    """对话详情。"""
+    id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    messages: list[GeneratedImage]

@@ -21,6 +21,8 @@ export interface ImageGenerateRequest {
   add_overlay?: boolean;
   add_logo_overlay?: boolean;
   add_qrcode_overlay?: boolean;
+  conversation_id?: string;
+  previous_response_id?: string;
 }
 
 export interface GeneratedImage {
@@ -33,6 +35,8 @@ export interface ImageGenerateResponse {
   images: GeneratedImage[];
   model_used: string;
   count: number;
+  conversation_id?: string;
+  response_id?: string;
 }
 
 export interface InspirationTag {

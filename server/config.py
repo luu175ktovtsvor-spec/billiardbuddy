@@ -30,7 +30,6 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
-    mimo_api_key: str = ""
 
     # 阿里云 OSS
     oss_access_key_id: str = ""

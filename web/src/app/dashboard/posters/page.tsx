@@ -1,15 +1,30 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/auth-context";
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
-import type { ImageModel, InspirationTag, SizeOption, GeneratedImage, ImageGenerateResponse } from "@/types/poster";
+import type { InspirationTag, SizeOption, GeneratedImage } from "@/types/poster";
 import type { StoreResponse } from "@/types/store";
-import { ImageIcon, Upload, RefreshCw, Download, X, MessageSquare, Loader2 } from "lucide-react";
+import { ImageIcon, Upload, X, ArrowLeft, Send, Download, Loader2 } from "lucide-react";
 import { EmptyStoreGuide } from "@/components/empty-store-guide";
-import Link from "next/link";
+
+/* ─── Types ─── */
+interface ConversationMessage {
+  role: "user" | "assistant";
+  content: string;
+  images?: GeneratedImage[];
+}
+
+interface ConversationItem {
+  id: string;
+  title: string;
+  message_count: number;
+  thumbnail_url: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
 /* ─── Main page ─── */
 export default function PostersPageWrapper() {
@@ -28,17 +43,19 @@ function PostersPage() {
   const [store, setStore] = useState<StoreResponse | null | undefined>(undefined);
   const [storeLoading, setStoreLoading] = useState(true);
 
-  /* Form */
+  /* View mode */
+  const [viewMode, setViewMode] = useState<"entry" | "conversation">("entry");
+
+  /* Entry page */
   const [prompt, setPrompt] = useState("");
   const [ratio, setRatio] = useState("3:4");
-  const [imageModel] = useState("gpt-image-2");
+  const [inspirationTags, setInspirationTags] = useState<InspirationTag[]>([]);
+  const [sizeOptions, setSizeOptions] = useState<SizeOption[]>([]);
+  const [conversations, setConversations] = useState<ConversationItem[]>([]);
 
   /* Reference images */
   const [references, setReferences] = useState<Array<{ file: File; path: string; preview: string }>>([]);
   const [referenceUploading, setReferenceUploading] = useState(false);
-
-  /* Logo upload */
-  const [logoUploading, setLogoUploading] = useState(false);
 
   /* Generation options */
   const [addStoreInfo, setAddStoreInfo] = useState(false);
@@ -47,16 +64,13 @@ function PostersPage() {
   const [addQrcodeOverlay, setAddQrcodeOverlay] = useState(true);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  /* Data from API */
-  const [inspirationTags, setInspirationTags] = useState<InspirationTag[]>([]);
-  const [sizeOptions, setSizeOptions] = useState<SizeOption[]>([]);
-  const [dataLoading, setDataLoading] = useState(true);
-
-  /* Generation */
+  /* Conversation */
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [previousResponseId, setPreviousResponseId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [generating, setGenerating] = useState(false);
-  const [results, setResults] = useState<GeneratedImage[]>([]);
   const [error, setError] = useState("");
-  const [refineFrom, setRefineFrom] = useState<string | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   /* Load store */
   useEffect(() => {
@@ -70,29 +84,43 @@ function PostersPage() {
     return () => { cancelled = true; };
   }, [isAuthenticated]);
 
-  /* Pre-fill prompt from URL params (e.g. from workbench page) */
+  /* Pre-fill prompt from URL params */
   useEffect(() => {
     const urlPrompt = searchParams.get("prompt");
-    if (urlPrompt) setPrompt(urlPrompt);
+    if (urlPrompt) {
+      setPrompt(urlPrompt);
+      setViewMode("conversation");
+    }
   }, [searchParams]);
 
-  /* Load tags and sizes */
+  /* Load tags, sizes, conversations */
   useEffect(() => {
     if (!isAuthenticated) return;
     let cancelled = false;
-    setDataLoading(true);
     Promise.all([
       api.listInspirationTags().catch(() => ({ tags: [] })),
       api.listSizeOptions().catch(() => ({ sizes: [] })),
-    ]).then(([tagsData, sizesData]) => {
+      api.listPosterConversations().catch(() => ({ conversations: [] })),
+    ]).then(([tagsData, sizesData, convsData]) => {
       if (cancelled) return;
       setInspirationTags(tagsData.tags || []);
       setSizeOptions(sizesData.sizes || []);
-    }).finally(() => { if (!cancelled) setDataLoading(false); });
+      setConversations(convsData.conversations || []);
+    });
     return () => { cancelled = true; };
   }, [isAuthenticated]);
 
-  /* Handle reference image upload */
+  /* Auto scroll to bottom */
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  /* Scroll to bottom helper */
+  const scrollToBottom = useCallback(() => {
+    setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+  }, []);
+
+  /* Reference upload */
   const handleReferenceUpload = async (files: FileList | File[]) => {
     const fileArray = Array.from(files);
     if (references.length + fileArray.length > 5) {
@@ -120,50 +148,44 @@ function PostersPage() {
     });
   };
 
-  /* Handle tag click */
-  const handleTagClick = (tag: InspirationTag) => {
-    setPrompt(tag.prompt);
-  };
-
-  /* Logo upload */
-  const handleLogoUpload = async (file: File) => {
-    setLogoUploading(true);
-    try {
-      const res = await api.uploadLogo(file);
-      // 更新 store 状态
-      if (store) {
-        setStore({ ...store, logo_url: res.url });
-      }
-    } catch (err) {
-      setError(getErrorMessage(err));
-    } finally {
-      setLogoUploading(false);
-    }
-  };
-
-  /* Generate */
-  const handleGenerate = async () => {
-    if (!prompt.trim()) return;
+  /* Generate / send message */
+  const handleGenerate = async (messagePrompt?: string) => {
+    const text = (messagePrompt || prompt).trim();
+    if (!text || generating) return;
     setError("");
-    setResults([]);
+
+    // Add user message
+    const userMsg: ConversationMessage = { role: "user", content: text };
+    setMessages((prev) => [...prev, userMsg]);
+    setPrompt("");
     setGenerating(true);
 
+    // Switch to conversation view if in entry mode
+    if (viewMode === "entry") {
+      setViewMode("conversation");
+    }
+
+    scrollToBottom();
+
     try {
-      const res: ImageGenerateResponse = await api.generateImage({
-        prompt: prompt.trim(),
-        image_model: imageModel,
+      const res = await api.generateImage({
+        prompt: text,
+        image_model: "gpt-image-2",
         ratio,
         images: references.length > 0 ? references.map((r) => r.path) : undefined,
         count: 1,
-        refine_from: refineFrom || undefined,
         add_store_info: addStoreInfo,
         no_text: noText,
-        add_overlay: addLogoOverlay || addQrcodeOverlay,
         add_logo_overlay: addLogoOverlay,
         add_qrcode_overlay: addQrcodeOverlay,
+        conversation_id: conversationId || undefined,
+        previous_response_id: previousResponseId || undefined,
       });
-      setResults(res.images);
-      setRefineFrom(null); // 清除调整状态
+
+      const assistantMsg: ConversationMessage = { role: "assistant", content: "", images: res.images };
+      setMessages((prev) => [...prev, assistantMsg]);
+      setConversationId(res.conversation_id || null);
+      setPreviousResponseId(res.response_id || null);
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -171,24 +193,48 @@ function PostersPage() {
     }
   };
 
-  /* Download all images via fetch+blob (works for cross-origin OSS images) */
-  const handleDownloadAll = async () => {
-    for (const img of results) {
-      try {
-        const url = api.resolveUrl(img.poster_url);
-        const res = await fetch(url);
-        const blob = await res.blob();
-        const blobUrl = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = blobUrl;
-        a.download = `poster_${img.generation_id}.png`;
-        a.click();
-        URL.revokeObjectURL(blobUrl);
-      } catch {
-        // Fallback: open in new tab
-        window.open(api.resolveUrl(img.poster_url), "_blank");
-      }
+  /* Handle tag click */
+  const handleTagClick = (tag: InspirationTag) => {
+    setPrompt(tag.prompt);
+    setViewMode("conversation");
+    scrollToBottom();
+  };
+
+  /* Download image */
+  const handleDownload = async (img: GeneratedImage) => {
+    try {
+      const url = api.resolveUrl(img.poster_url);
+      const res = await fetch(url);
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = `poster_${img.generation_id}.png`;
+      a.click();
+      URL.revokeObjectURL(blobUrl);
+    } catch {
+      window.open(api.resolveUrl(img.poster_url), "_blank");
     }
+  };
+
+  /* Enter conversation from history */
+  const handleEnterConversation = (conv: ConversationItem) => {
+    setConversationId(conv.id);
+    setViewMode("conversation");
+    setMessages([]);
+    setPreviousResponseId(null);
+  };
+
+  /* Back to entry */
+  const handleBackToEntry = () => {
+    setViewMode("entry");
+    setConversationId(null);
+    setPreviousResponseId(null);
+    setMessages([]);
+    // Reload conversations
+    api.listPosterConversations().then((data) => {
+      setConversations(data.conversations || []);
+    }).catch(() => {});
   };
 
   /* ─── Loading states ─── */
@@ -206,9 +252,138 @@ function PostersPage() {
     return <EmptyStoreGuide description="请先完善门店资料，Logo 和二维码会自动叠加到生成的图片上。" />;
   }
 
-  /* Group models by provider */
+  /* ─── Conversation View ─── */
+  if (viewMode === "conversation") {
+    return (
+      <div className="mx-auto flex h-[calc(100vh-8rem)] max-w-3xl flex-col">
+        {/* Header */}
+        <div className="flex items-center gap-3 border-b border-slate-200 px-4 py-3">
+          <button
+            type="button"
+            onClick={handleBackToEntry}
+            className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </button>
+          <div>
+            <h2 className="text-sm font-semibold text-slate-900">AI 生图对话</h2>
+            {conversationId && (
+              <p className="text-xs text-slate-400">对话进行中</p>
+            )}
+          </div>
+        </div>
 
-  /* ─── Main content ─── */
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto px-4 py-4">
+          {messages.length === 0 && (
+            <div className="flex h-full items-center justify-center">
+              <p className="text-sm text-slate-400">描述你想要的海报，AI 会帮你生成</p>
+            </div>
+          )}
+
+          {messages.map((msg, idx) => (
+            <div key={idx} className={`mb-4 flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+              <div className={`max-w-[85%] rounded-2xl px-4 py-3 ${
+                msg.role === "user"
+                  ? "bg-indigo-600 text-white"
+                  : "bg-slate-100 text-slate-900"
+              }`}>
+                {msg.content && (
+                  <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                )}
+                {msg.images && msg.images.length > 0 && (
+                  <div className="mt-2 space-y-3">
+                    {msg.images.map((img) => (
+                      <div key={img.generation_id}>
+                        <img
+                          src={api.resolveUrl(img.poster_url)}
+                          alt="AI 生成的图片"
+                          className="w-full rounded-lg"
+                        />
+                        <div className="mt-2 flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPreviousResponseId(null);
+                              setPrompt("");
+                              scrollToBottom();
+                            }}
+                            className="inline-flex items-center gap-1 rounded-md bg-white/20 px-2 py-1 text-xs text-indigo-100 hover:bg-white/30"
+                          >
+                            基于此调整
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDownload(img)}
+                            className="inline-flex items-center gap-1 rounded-md bg-white/20 px-2 py-1 text-xs text-indigo-100 hover:bg-white/30"
+                          >
+                            <Download className="h-3 w-3" />
+                            下载
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {/* Generating indicator */}
+          {generating && (
+            <div className="mb-4 flex justify-start">
+              <div className="rounded-2xl bg-slate-100 px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
+                  <span className="text-sm text-slate-500">正在生成图片...</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+              {error}
+            </div>
+          )}
+
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* Input bar */}
+        <div className="border-t border-slate-200 bg-white px-4 py-3">
+          <div className="flex items-end gap-2">
+            <div className="flex-1">
+              <textarea
+                rows={1}
+                maxLength={1000}
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleGenerate();
+                  }
+                }}
+                className="w-full resize-none rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                placeholder="描述调整内容，如「背景改成深色」"
+              />
+            </div>
+            <button
+              type="button"
+              disabled={generating || !prompt.trim()}
+              onClick={() => handleGenerate()}
+              className="rounded-xl bg-indigo-600 p-2.5 text-white hover:bg-indigo-500 disabled:opacity-50"
+            >
+              <Send className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /* ─── Entry View ─── */
   return (
     <div className="mx-auto max-w-4xl">
       {/* Page header */}
@@ -225,6 +400,12 @@ function PostersPage() {
             maxLength={1000}
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && e.metaKey) {
+                e.preventDefault();
+                handleGenerate();
+              }
+            }}
             className="w-full rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 resize-none"
             placeholder="描述你想生成的图片"
           />
@@ -261,9 +442,6 @@ function PostersPage() {
                 </label>
               )}
               {referenceUploading && <span className="text-xs text-slate-500">上传中...</span>}
-              {references.length > 0 && (
-                <span className="text-xs text-slate-400">{references.length}/5</span>
-              )}
             </div>
 
             {/* Ratio selector */}
@@ -284,51 +462,29 @@ function PostersPage() {
             <button
               type="button"
               disabled={generating || !prompt.trim()}
-              onClick={handleGenerate}
+              onClick={() => handleGenerate()}
               className="ml-auto flex items-center gap-2 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {generating ? (
-                <>
-                  <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  生成中...
-                </>
-              ) : (
-                <>
-                  <ImageIcon className="h-4 w-4" />
-                  生成
-                </>
-              )}
+              <ImageIcon className="h-4 w-4" />
+              生成
             </button>
           </div>
 
-          {/* Store info hint */}
+          {/* Logo status */}
           <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
-            <span>门店信息自动叠加：</span>
             {store?.logo_url ? (
               <span className="text-emerald-600">Logo ✓</span>
             ) : (
-              <label className="flex items-center gap-1 cursor-pointer text-red-600 hover:text-red-700">
-                <span>Logo 未设置</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) handleLogoUpload(f);
-                  }}
-                />
-                <span className="underline">上传</span>
-              </label>
+              <span className="text-red-600">Logo 未设置</span>
             )}
-            {store?.qrcode_url ? <span className="text-emerald-600">二维码 ✓</span> : <span className="text-red-600">二维码 未设置</span>}
-            {logoUploading && <span className="text-indigo-600">上传中...</span>}
+            {store?.qrcode_url ? (
+              <span className="text-emerald-600">二维码 ✓</span>
+            ) : (
+              <span className="text-red-600">二维码 未设置</span>
+            )}
           </div>
 
-          {/* Advanced options (collapsible) */}
+          {/* Advanced options */}
           <div className="mt-2">
             <button
               type="button"
@@ -340,58 +496,24 @@ function PostersPage() {
             {showAdvanced && (
               <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-slate-500">
                 <label className="flex items-center gap-1.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={addStoreInfo}
-                    onChange={(e) => setAddStoreInfo(e.target.checked)}
-                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                  />
+                  <input type="checkbox" checked={addStoreInfo} onChange={(e) => setAddStoreInfo(e.target.checked)} className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
                   <span>融入门店信息</span>
                 </label>
                 <label className="flex items-center gap-1.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={noText}
-                    onChange={(e) => setNoText(e.target.checked)}
-                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                  />
+                  <input type="checkbox" checked={noText} onChange={(e) => setNoText(e.target.checked)} className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
                   <span>禁止生成文字</span>
                 </label>
                 <label className="flex items-center gap-1.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={addLogoOverlay}
-                    onChange={(e) => setAddLogoOverlay(e.target.checked)}
-                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                  />
+                  <input type="checkbox" checked={addLogoOverlay} onChange={(e) => setAddLogoOverlay(e.target.checked)} className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
                   <span>叠加 Logo</span>
                 </label>
                 <label className="flex items-center gap-1.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={addQrcodeOverlay}
-                    onChange={(e) => setAddQrcodeOverlay(e.target.checked)}
-                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                  />
+                  <input type="checkbox" checked={addQrcodeOverlay} onChange={(e) => setAddQrcodeOverlay(e.target.checked)} className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
                   <span>叠加二维码</span>
                 </label>
               </div>
             )}
           </div>
-
-          {/* Refine mode indicator */}
-          {refineFrom && (
-            <div className="mt-2 flex items-center gap-2 rounded-md bg-indigo-50 px-3 py-2 text-xs text-indigo-700">
-              <span>正在基于已生成图片调整</span>
-              <button
-                type="button"
-                onClick={() => setRefineFrom(null)}
-                className="ml-auto text-indigo-500 hover:text-indigo-700"
-              >
-                取消调整
-              </button>
-            </div>
-          )}
         </div>
 
         {/* ─── Inspiration tags ─── */}
@@ -413,107 +535,38 @@ function PostersPage() {
 
         {/* ─── Error ─── */}
         {error && (
-          <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-4">
-            <p className="text-sm text-red-600">{error}</p>
+          <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-600">
+            {error}
           </div>
         )}
 
-        {/* ─── Generating state ─── */}
-        {generating && results.length === 0 && (
-          <div className="flex items-center justify-center rounded-lg border border-slate-200 bg-white py-16 shadow-sm">
-            <div className="text-center">
-              <svg className="mx-auto mb-3 h-8 w-8 animate-spin text-indigo-600" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-              <p className="text-sm text-slate-500">AI 正在生成图片...</p>
-            </div>
-          </div>
-        )}
-
-        {/* ─── Results ─── */}
-        {results.length > 0 && !generating && (
-          <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
-            <div className="border-b border-slate-100 px-4 py-3">
-              <h3 className="text-sm font-semibold text-slate-700">生成结果</h3>
-            </div>
-
-            <div className="flex gap-4 p-4 justify-center">
-              {results.map((img) => (
-                <div key={img.generation_id} className="flex-1 max-w-sm">
-                  <div className="overflow-hidden rounded-md bg-white">
+        {/* ─── Recent conversations ─── */}
+        {conversations.length > 0 && (
+          <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <p className="mb-3 text-sm font-medium text-slate-700">最近的对话</p>
+            <div className="space-y-3">
+              {conversations.slice(0, 5).map((conv) => (
+                <div
+                  key={conv.id}
+                  onClick={() => handleEnterConversation(conv)}
+                  className="flex items-center gap-3 rounded-lg border border-slate-100 p-3 hover:border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors"
+                >
+                  {conv.thumbnail_url && (
                     <img
-                      src={api.resolveUrl(img.poster_url)}
-                      alt="AI 生成的图片"
-                      className="w-full object-contain"
+                      src={api.resolveUrl(conv.thumbnail_url)}
+                      alt=""
+                      className="h-12 w-12 rounded-md object-cover"
                     />
-                  </div>
-                  <div className="mt-2 flex items-center justify-between">
-                    <span className="text-xs text-slate-400">
-                      {new Date(img.created_at).toLocaleString("zh-CN")}
-                    </span>
-                    <div className="flex gap-1">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setRefineFrom(img.generation_id);
-                          setPrompt("");
-                          setError("");
-                          // 滚动到输入区
-                          document.querySelector("textarea")?.focus();
-                        }}
-                        className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs text-indigo-600 hover:bg-indigo-100"
-                      >
-                        基于此调整
-                      </button>
-                      <a
-                        href={api.resolveUrl(img.poster_url)}
-                        download
-                        className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-500 hover:bg-slate-50 hover:text-slate-700"
-                      >
-                        <Download className="h-3 w-3" />
-                        下载
-                      </a>
-                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <p className="truncate text-sm font-medium text-slate-700">{conv.title}</p>
+                    <p className="text-xs text-slate-400">
+                      {conv.message_count} 轮 · {new Date(conv.updated_at).toLocaleDateString("zh-CN")}
+                    </p>
                   </div>
                 </div>
               ))}
             </div>
-
-            <div className="flex items-center justify-between border-t border-slate-100 px-4 py-3">
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleGenerate}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-500 hover:bg-slate-50 hover:text-slate-700"
-                >
-                  <RefreshCw className="h-4 w-4" />
-                  重新生成
-                </button>
-                <Link
-                  href={`/dashboard/workbench?intent=${encodeURIComponent("为刚生成的海报配一段朋友圈文案")}&extra_note=${encodeURIComponent(`海报描述：${prompt}`)}`}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-sm text-indigo-600 hover:bg-indigo-100"
-                >
-                  <MessageSquare className="h-4 w-4" />
-                  生成配套文案
-                </Link>
-              </div>
-              <button
-                type="button"
-                onClick={handleDownloadAll}
-                className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-sm text-white hover:bg-indigo-500"
-              >
-                <Download className="h-4 w-4" />
-                下载全部
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* ─── Empty state ─── */}
-        {results.length === 0 && !generating && !error && (
-          <div className="flex items-center justify-center rounded-lg border border-dashed border-slate-200 bg-white py-16">
-            <p className="text-sm text-slate-500">输入描述后点击生成</p>
           </div>
         )}
       </div>

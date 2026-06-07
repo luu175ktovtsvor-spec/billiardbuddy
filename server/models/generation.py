@@ -28,6 +28,10 @@ class Generation(Base):
     model_used: Mapped[str | None] = mapped_column(String(100))
     tokens_used: Mapped[int | None] = mapped_column(Integer)
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False, server_default=func.false())
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
+    openai_response_id: Mapped[str | None] = mapped_column(String(200))
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
