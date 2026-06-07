@@ -71,7 +71,7 @@ async def generate_images(
     当 previous_response_id 存在时使用 Responses API（多轮）。
     否则使用 Images API（首次生成）。
     """
-    from services.ai.providers.openai_response_image import OpenAIResponseImageProvider
+    from services.ai.providers.openai_image import OpenAIImageProvider
 
     api_key = settings.openai_api_key
     if not api_key:
@@ -152,15 +152,14 @@ async def generate_images(
     logger.info("AI 生图: ratio=%s, count=%d, has_ref=%s, conversation=%s, has_logo=%s",
                 ratio, count, bool(input_images), bool(conversation_id), bool(input_images))
 
-    # 使用 Responses API 生成
-    provider = OpenAIResponseImageProvider(api_key=api_key, base_url=settings.openai_base_url)
+    # 使用 Images API 生成
+    provider = OpenAIImageProvider(api_key=api_key, base_url=settings.openai_base_url)
 
     # 生成 conversation_id（如果是新对话）
     conv_id = conversation_id or str(uuid.uuid4())
 
     POSTERS_DIR.mkdir(parents=True, exist_ok=True)
     results = []
-    last_response_id = previous_response_id
 
     for i in range(count):
         rand = uuid.uuid4().hex[:4]
@@ -170,12 +169,12 @@ async def generate_images(
         output_path = POSTERS_DIR / filename
 
         try:
-            image_bytes, response_id = await provider.generate(
+            image_bytes = await provider.generate_image(
                 prompt=full_prompt,
-                previous_response_id=last_response_id,
-                input_images=input_images if input_images else None,
+                model="gpt-image-2",
+                size=size,
+                image=input_images if input_images else None,
             )
-            last_response_id = response_id
 
             # 保存图片
             img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
@@ -199,7 +198,6 @@ async def generate_images(
                 model_used="ai:gpt-image-2",
                 tokens_used=0,
                 conversation_id=uuid.UUID(conv_id),
-                openai_response_id=response_id,
             )
             db.add(generation)
             await db.flush()
@@ -228,7 +226,6 @@ async def generate_images(
         "model_used": "ai:gpt-image-2",
         "count": len(valid_results),
         "conversation_id": conv_id,
-        "response_id": last_response_id,
     }
 
 
