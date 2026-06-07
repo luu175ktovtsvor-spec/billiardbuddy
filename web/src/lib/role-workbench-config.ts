@@ -1316,6 +1316,42 @@ const COACH_TASKS: RoleTaskCard[] = [
       "要不要提醒轻松练球、友好交流？",
     ],
   },
+  {
+    id: "coach-groupbuy-to-competition",
+    role: "coach",
+    title: "团购客转竞技客户",
+    description: "引导团购客户体验竞技活动，从散客变成常客",
+    userIntentTemplate: "今天有几个团购来的客户，帮我写引导话术，让他们下次还想来打球，最好能参加我们的活动",
+    targetCustomerType: "groupbuy",
+    outputPackage: ["private_chat", "group_notice", "execution_tips"],
+    sceneTags: ["教练", "团购客", "转化", "竞技"],
+    requiredProfileModules: ["commerce_rules", "private_domain_groups"],
+    priority: "P0",
+    promptKey: "operation.competition_customer",
+    inputHints: [
+      "团购客户是第一次来还是来过几次？",
+      "客户水平大概什么样？新手、有点基础、还是打得不错？",
+      "想引导进竞技群、参加轻竞技，还是先约下次来打？",
+    ],
+  },
+  {
+    id: "coach-newcomer-guide",
+    role: "coach",
+    title: "新手引导入门",
+    description: "降低新手参与门槛，引导从散客变为竞技常客",
+    userIntentTemplate: "有个新手客户想学球但怕水平不够，帮我写引导话术，让他觉得来打球没压力",
+    targetCustomerType: "new",
+    outputPackage: ["private_chat", "execution_tips"],
+    sceneTags: ["教练", "新手", "入门", "引导"],
+    requiredProfileModules: ["private_domain_groups"],
+    priority: "P0",
+    promptKey: "operation.competition_customer",
+    inputHints: [
+      "客户是完全不会打，还是有一定基础？",
+      "想引导客户加群、约球、还是了解教练课程？",
+      "门店有没有针对新手的活动或体验课？",
+    ],
+  },
 ];
 
 /* ─── 岗位任务映射 ─── */
@@ -1354,7 +1390,7 @@ export const ROLE_DESCRIPTIONS: Record<WorkbenchRole, string> = {
   boss: "关注全店经营状况和趋势",
   manager: "负责全店日常运营管理",
   assistant_manager: "负责助教团队管理和推广",
-  coach: "负责教学和赛事组织",
+  coach: "赛事运营、竞技客户维护与转化",
   frontdesk: "负责客户接待和前台管理",
   operator: "负责内容和数据分析",
 };

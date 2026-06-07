@@ -83,9 +83,12 @@ template: |
   - 薪资待遇全部用占位符。
 
 required_knowledge:
-  - knowledge.core_operations  - knowledge.assistant_service_sop
+  - knowledge.core_operations
+  - knowledge.assistant_service_sop
   - knowledge.assistant_tier_system
   - knowledge.assistant_salary
+  - knowledge.assistant_coaching_sop
+  - knowledge.assistant_difficult_situations
   - knowledge.recruitment_compliance
   - knowledge.account_nurturing
   - knowledge.compliance_rules

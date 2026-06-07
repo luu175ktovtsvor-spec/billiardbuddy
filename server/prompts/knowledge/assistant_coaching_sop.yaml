@@ -1,5 +1,5 @@
-key: "knowledge.coaching_sop"
-name: "球技培训SOP知识库"
+key: "knowledge.assistant_coaching_sop"
+name: "助教球技培训SOP知识库"
 category: "knowledge"
 variables: []
 template: |
