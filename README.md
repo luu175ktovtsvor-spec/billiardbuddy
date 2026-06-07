@@ -11,9 +11,9 @@ http://47.77.237.250
 - **前端**: Next.js 14 + React 18 + TypeScript + TailwindCSS + shadcn/ui
 - **后端**: Python 3.12+ + FastAPI + SQLAlchemy + Alembic
 - **数据库**: PostgreSQL 14
-- **AI 文本模型**: DeepSeek（默认）+ 阿里云百炼（千问/Kimi/GLM）
-- **AI 图片模型**: 阿里云百炼（4个）+ OpenAI（4个）
-- **内容渲染**: react-markdown + remark-gfm
+- **AI 文本模型**: DeepSeek V4 Flash（默认）+ Mimo V2.5（可选）
+- **AI 图片模型**: OpenAI gpt-image-2（通过 API2D 中转）
+- **内容渲染**: react-markdown + remark-gfm + @tailwindcss/typography
 - **包管理**: pnpm (前端) / uv (Python 后端)
 
 ## 快速启动
@@ -54,8 +54,8 @@ pnpm dev                   # 启动开发服务器
 git add . && git commit -m "描述" && git push origin main
 
 # 服务器上部署
-ssh root@39.106.214.21
-bash /var/www/billiards-ai/deploy.sh
+ssh root@47.77.237.250
+bash /var/www/billiards-ai/deploy_us.sh
 ```
 
 ## 已完成功能
@@ -66,9 +66,9 @@ bash /var/www/billiards-ai/deploy.sh
 | 门店资料管理 | 运营画像，98个字段 |
 | 岗位工作台 | 6个岗位，自然语言输入，SSE流式输出 |
 | 文案生成 | 朋友圈/群公告/活动/日报/话术 |
-| 海报生成 | 8个AI模型，参考图直传生图，Logo叠加，二次调整 |
+| 海报生成 | gpt-image-2 + Logo叠加 + 二维码叠加 + 二次调整 |
 | Markdown 渲染 | AI内容格式化显示 |
-| 模型选择 | DeepSeek + 百炼多模型可选 |
+| 模型选择 | DeepSeek V4 Flash + Mimo V2.5 |
 | 行业知识库 | 29个knowledge YAML，覆盖6个岗位 |
 | 生成历史 | 搜索、筛选、收藏 |
 | 配额管理 | 月度使用量追踪 |
