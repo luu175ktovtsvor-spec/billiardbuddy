@@ -9,12 +9,12 @@
 ## 当前状态
 
 - **GitHub**: https://github.com/luu175ktovtsvor-spec/billiards-ai-ops （私有仓库）
-- **服务器**: 阿里云 ECS `39.106.214.21`，Nginx + systemd
+- **服务器**: 阿里云 ECS 美国硅谷 `47.77.237.250`，Nginx + systemd
 - **前端**: Next.js 14 standalone 模式，端口 3000
 - **后端**: FastAPI + uvicorn，端口 8000
 - **数据库**: PostgreSQL 14，库名 `billiards_ai`
-- **AI 文本模型**: DeepSeek（默认）+ 阿里云百炼（千问/Kimi/GLM/MiniMax），用户可选
-- **AI 图片模型**: 阿里云百炼（4 个）+ OpenAI（4 个），共 8 个
+- **AI 文本模型**: DeepSeek V4 Flash（默认）+ Mimo V2.5（可选）
+- **AI 图片模型**: OpenAI gpt-image-2（通过 API2D 中转 `https://oa.api2d.net/v1`）
 - **内容渲染**: react-markdown + remark-gfm + @tailwindcss/typography
 - **部署文档**: `docs/服务器部署交接文档.md`
 
@@ -23,7 +23,7 @@
 - **前端**: Next.js 14 + React 18 + TypeScript + TailwindCSS + shadcn/ui
 - **后端**: Python 3.12+ + FastAPI + SQLAlchemy + Alembic
 - **数据库**: PostgreSQL 14
-- **海报合成**: Pillow (Python) + AI 生图（阿里云百炼/OpenAI）
+- **海报合成**: Pillow (Python) + AI 生图（OpenAI gpt-image-2）
 - **包管理**: pnpm (前端) / uv (Python 后端)
 
 ## 项目结构
@@ -61,10 +61,9 @@ server/                 # FastAPI 后端
       prompt_engine.py # Prompt 模板引擎（单例，get_prompt_engine()）
       factory.py       # Provider 工厂
       providers/       # AI 模型实现
-        deepseek.py    # DeepSeek 文本模型
-        bailian.py     # 百炼文本模型
-        openai_image.py # OpenAI 图片模型（GPT Image 2/1/Mini, DALL-E 3）
-        aliyun_image.py # 阿里云图片模型（万相 2.1/2.7, Z-Image）
+        deepseek.py    # DeepSeek V4 Flash 文本模型
+        mimo.py        # Mimo V2.5 文本模型（可选）
+        openai_image.py # OpenAI 图片模型（gpt-image-2）
     content_service.py # 文案生成核心逻辑
     poster_service.py  # 海报生成（AI 生图 + Logo/二维码叠加）
     poster/
@@ -72,7 +71,6 @@ server/                 # FastAPI 后端
     store_profile_service.py  # 门店运营画像
     dashboard_service.py      # 今日工作台规则引擎
     quota_service.py   # 配额管理
-    shared.py          # 共享工具函数（待创建）
   db/                  # 数据库连接 + Alembic 迁移
   prompts/             # Prompt 模板 YAML 文件
     knowledge/         # 29 个行业知识文件
@@ -144,11 +142,11 @@ git commit -m "描述"
 git push origin main
 
 # 服务器上部署
-ssh root@39.106.214.21
-bash /var/www/billiards-ai/deploy.sh
+ssh root@47.77.237.250
+bash /var/www/billiards-ai/deploy_us.sh
 ```
 
-一键脚本会自动：git pull → 重启后端 → 重新构建前端 → 重启前端 → 检查状态
+一键脚本会自动：git pull → 安装依赖 → 重启后端 → 构建前端 → 重启前端
 
 ## 常用命令
 
@@ -164,10 +162,10 @@ cd server && uv run alembic upgrade head   # 执行数据库迁移
 cd server && uv run alembic revision --autogenerate -m "描述"  # 生成迁移
 
 # 数据库
-docker compose up -d postgres   # 启动本地 PostgreSQL
+# 本地开发需要先启动 PostgreSQL（docker 或本地安装）
 
 # 服务器
-ssh root@39.106.214.21
+ssh root@47.77.237.250
 systemctl status billiards-backend billiards-frontend
 journalctl -u billiards-backend -n 50 --no-pager
 ```
@@ -181,9 +179,9 @@ journalctl -u billiards-backend -n 50 --no-pager
 | Prompt 引擎（YAML 模板，29 个 knowledge） | ✅ |
 | 岗位工作台（Workbench，SSE 流式输出） | ✅ |
 | 文案生成（朋友圈/群公告/活动/日报） | ✅ |
-| 海报生成（8 个 AI 模型 + Logo 叠加 + 二次调整） | ✅ |
+| 海报生成（gpt-image-2 + Logo 叠加 + 二次调整） | ✅ |
 | Markdown 渲染（react-markdown + remark-gfm） | ✅ |
-| 文本模型选择（DeepSeek + 百炼多模型） | ✅ |
+| 文本模型选择（DeepSeek V4 Flash + Mimo V2.5） | ✅ |
 | 生成历史 | ✅ |
 | 配额管理 | ✅ |
 | 多 AI Provider（DeepSeek/百炼/OpenAI） | ✅ |
@@ -200,7 +198,7 @@ journalctl -u billiards-backend -n 50 --no-pager
 - **助教推广获客** (`assistant_promotion.yaml`) — 朋友圈/短视频/现场推荐/客户维护
 - **助教服务 SOP** (`assistant_service_sop.yaml`) — 上钟前/中/后全流程
 - **好评文案规范** (`review_generation_rules.yaml`) — 美团/抖音好评写法
-- **教练刁钻问题** (`coach_difficult_situations.yaml`) — 18 个真实场景话术
+- **助教刁钻问题** (`assistant_difficult_situations.yaml`) — 18 个真实场景话术
 - **PK 激励机制** (`pk_incentive.yaml`) — 三层 PK 体系
 - **客户标签体系** (`customer_tagging.yaml`) — 6 类客户 + 打标签方法
 - **开业筹备** (`opening_preparation.yaml`) — 30 天时间线 + 开业 SOP
