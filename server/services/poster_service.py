@@ -116,7 +116,7 @@ async def generate_images(
     if not api_key:
         raise ValueError("OpenAI API Key 未配置")
 
-    provider = ProviderFactory.get_image_provider("openai", api_key=api_key)
+    provider = ProviderFactory.get_image_provider("openai", api_key=api_key, base_url=settings.openai_base_url)
 
     # 加载参考图 bytes（直接传给生图模型）
     ref_image_bytes: list[bytes] = []

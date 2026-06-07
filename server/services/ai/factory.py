@@ -19,6 +19,10 @@ class ProviderFactory:
     @classmethod
     def get_text_provider(cls) -> TextProvider:
         name = settings.text_model_provider
+        return cls._get_or_create_text_provider(name)
+
+    @classmethod
+    def _get_or_create_text_provider(cls, name: str) -> TextProvider:
         if name in cls._text_cache:
             return cls._text_cache[name]
 
@@ -26,21 +30,36 @@ class ProviderFactory:
         if provider_cls is None:
             raise ValueError(f"未注册的文本模型 Provider: {name}")
 
-        instance = provider_cls()
+        # Mimo 需要特殊初始化参数
+        if name == "mimo":
+            mimo_key = settings.mimo_api_key
+            instance = provider_cls(api_key=mimo_key)
+        else:
+            instance = provider_cls()
+
         cls._text_cache[name] = instance
         return instance
 
     @classmethod
+    def resolve_provider(cls, model: str | None = None) -> TextProvider:
+        """根据模型 ID 解析 provider。mimo-* → mimo，其他 → 默认。"""
+        if not model:
+            return cls.get_text_provider()
+        if model.startswith("mimo"):
+            return cls._get_or_create_text_provider("mimo")
+        return cls.get_text_provider()
+
+    @classmethod
     async def generate_with_fallback(cls, request) -> tuple:
-        """生成文本。无 fallback，直接调用默认 provider。"""
+        """生成文本。"""
         provider = cls.get_text_provider()
         response = await provider.generate(request)
         return response, False
 
     @classmethod
     async def generate_stream_with_fallback(cls, request, model: str | None = None):
-        """流式生成文本。无 fallback，直接调用默认 provider。"""
-        provider = cls.get_text_provider()
+        """流式生成文本。根据 model 参数路由到不同 provider。"""
+        provider = cls.resolve_provider(model)
         async for token in provider.generate_stream(request):
             yield token, False
 

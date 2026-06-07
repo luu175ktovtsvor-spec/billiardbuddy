@@ -22,8 +22,9 @@ class OpenAIImageProvider(ImageProvider):
     name = "openai"
     supported_models = list(OPENAI_IMAGE_MODELS.keys())
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, base_url: str = "https://api.openai.com/v1"):
         self._api_key = api_key
+        self._base_url = base_url
         self._client = None
 
     def _get_client(self):
@@ -32,6 +33,7 @@ class OpenAIImageProvider(ImageProvider):
             from openai import AsyncOpenAI
             self._client = AsyncOpenAI(
                 api_key=self._api_key,
+                base_url=self._base_url,
                 timeout=httpx.Timeout(300.0, connect=30.0),
             )
         return self._client

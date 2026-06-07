@@ -15,6 +15,15 @@ TEXT_MODELS = [
         "best_for": "日常文案、话术、日报生成",
         "is_default": True,
     },
+    {
+        "id": "mimo-v2.5",
+        "name": "Mimo V2.5",
+        "provider": "mimo",
+        "provider_name": "小米 Mimo",
+        "description": "小米大模型，推理能力强",
+        "best_for": "复杂分析、长内容生成",
+        "is_default": False,
+    },
 ]
 
 
