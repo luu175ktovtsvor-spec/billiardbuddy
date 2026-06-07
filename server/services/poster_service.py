@@ -270,6 +270,7 @@ async def get_conversation_detail(
             "poster_url": gen.result,
             "created_at": gen.created_at,
             "prompt": gen.input_params.get("prompt", "") if gen.input_params else "",
+            "openai_response_id": gen.openai_response_id,
         })
 
     return {

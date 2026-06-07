@@ -373,6 +373,10 @@ class ApiClient {
     return this.request<{ conversations: Array<{ id: string; title: string; message_count: number; thumbnail_url: string | null; created_at: string; updated_at: string }> }>("GET", "/api/v1/posters/conversations");
   }
 
+  getPosterConversationDetail(conversationId: string) {
+    return this.request<{ id: string; title: string; created_at: string; updated_at: string; messages: Array<{ generation_id: string; poster_url: string; created_at: string; prompt: string; openai_response_id: string | null }> }>("GET", `/api/v1/posters/conversations/${conversationId}`);
+  }
+
   // ─── Generations ───
 
   async listGenerations(params?: ListGenerationsParams): Promise<GenerationHistoryListResponse> {

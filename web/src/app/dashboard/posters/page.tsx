@@ -218,11 +218,38 @@ function PostersPage() {
   };
 
   /* Enter conversation from history */
-  const handleEnterConversation = (conv: ConversationItem) => {
+  const handleEnterConversation = async (conv: ConversationItem) => {
     setConversationId(conv.id);
     setViewMode("conversation");
-    setMessages([]);
     setPreviousResponseId(null);
+
+    try {
+      const detail = await api.getPosterConversationDetail(conv.id);
+      // Reconstruct messages from history
+      const loadedMessages: ConversationMessage[] = [];
+      for (const msg of detail.messages) {
+        // User message (the prompt that generated this image)
+        if (msg.prompt) {
+          loadedMessages.push({ role: "user", content: msg.prompt });
+        }
+        // Assistant message (the generated image)
+        loadedMessages.push({
+          role: "assistant",
+          content: "",
+          images: [{ generation_id: msg.generation_id, poster_url: msg.poster_url, created_at: msg.created_at }],
+        });
+        // Track the last response_id
+        if (msg.openai_response_id) {
+          setPreviousResponseId(msg.openai_response_id);
+        }
+      }
+      setMessages(loadedMessages);
+    } catch {
+      // If loading fails, start with empty conversation
+      setMessages([]);
+    }
+
+    scrollToBottom();
   };
 
   /* Back to entry */
@@ -304,9 +331,9 @@ function PostersPage() {
                           <button
                             type="button"
                             onClick={() => {
-                              setPreviousResponseId(null);
                               setPrompt("");
                               scrollToBottom();
+                              document.querySelector("textarea")?.focus();
                             }}
                             className="inline-flex items-center gap-1 rounded-md bg-white/20 px-2 py-1 text-xs text-indigo-100 hover:bg-white/30"
                           >

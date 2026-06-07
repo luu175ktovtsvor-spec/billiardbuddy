@@ -4,6 +4,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_current_user, get_current_store, get_db
@@ -120,7 +121,7 @@ async def get_conversation(
     """获取对话详情。"""
     detail = await poster_service.get_conversation_detail(db, current_store.id, conversation_id)
     if not detail:
-        return {"error": "对话不存在"}, 404
+        return JSONResponse({"error": "对话不存在"}, status_code=404)
     return detail
 
 
