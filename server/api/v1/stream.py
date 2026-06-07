@@ -25,6 +25,7 @@ from services.content_service import (
 from schemas.generate import WorkbenchRequest
 from services.store_profile_service import render_operation_profile_context
 from services.quota_service import check_quota, increment_usage
+from services.workbench_fewshot_service import select_workbench_fewshots
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -65,6 +66,19 @@ async def stream_workbench(
         knowledge_context = _load_knowledge_for_role(role, store)
         profile_context = render_operation_profile_context(store)
 
+        # 轻量 few-shot 选择
+        try:
+            fewshot_examples = select_workbench_fewshots(
+                role=role,
+                target_customer_type=customer_type,
+                output_package=output_package or [],
+                user_intent=user_intent,
+                extra_note=extra_note,
+                max_examples=2,
+            )
+        except Exception:
+            fewshot_examples = ""
+
         extra_vars = {
             "baseline_rules": baseline_rules,
             "role_rules": role_rules,
@@ -76,7 +90,7 @@ async def stream_workbench(
             "output_package_label": _format_output_package(output_package),
             "extra_note": extra_note or "无",
             "profile_context": profile_context,
-            "fewshot_examples": "",
+            "fewshot_examples": fewshot_examples,
         }
 
         rendered_prompt = prompt_engine.render("workbench.free_intent", store, extra_vars)

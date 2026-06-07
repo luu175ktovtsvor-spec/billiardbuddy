@@ -1345,7 +1345,7 @@ export const ROLE_LABELS: Record<WorkbenchRole, string> = {
   boss: "老板",
   manager: "店长",
   assistant_manager: "助教管理",
-  coach: "教练/赛事",
+  coach: "教练",
   frontdesk: "前厅",
   operator: "运营",
 };

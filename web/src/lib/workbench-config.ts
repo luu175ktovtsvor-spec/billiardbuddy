@@ -13,7 +13,7 @@ export const ROLE_OPTIONS: RoleOption[] = [
   { value: "boss", label: "老板 / 经营负责人", shortLabel: "老板", description: "关注全店经营状况和趋势" },
   { value: "manager", label: "店长", shortLabel: "店长", description: "负责全店日常运营管理" },
   { value: "assistant_manager", label: "助教管理", shortLabel: "助教管理", description: "负责助教团队管理和推广" },
-  { value: "coach", label: "教练 / 赛事", shortLabel: "教练", description: "负责教学和赛事组织" },
+  { value: "coach", label: "教练", shortLabel: "教练", description: "负责教学和竞技客户维护" },
   { value: "frontdesk", label: "前厅主管", shortLabel: "前厅", description: "负责客户接待和前台管理" },
   { value: "operator", label: "运营负责人", shortLabel: "运营", description: "负责内容和数据分析" },
 ];
