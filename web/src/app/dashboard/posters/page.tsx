@@ -31,7 +31,7 @@ function PostersPage() {
   /* Form */
   const [prompt, setPrompt] = useState("");
   const [ratio, setRatio] = useState("3:4");
-  const [imageModel, setImageModel] = useState("");
+  const [imageModel] = useState("gpt-image-2");
 
   /* Reference images */
   const [references, setReferences] = useState<Array<{ file: File; path: string; preview: string }>>([]);
@@ -48,7 +48,6 @@ function PostersPage() {
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   /* Data from API */
-  const [imageModels, setImageModels] = useState<ImageModel[]>([]);
   const [inspirationTags, setInspirationTags] = useState<InspirationTag[]>([]);
   const [sizeOptions, setSizeOptions] = useState<SizeOption[]>([]);
   const [dataLoading, setDataLoading] = useState(true);
@@ -77,26 +76,21 @@ function PostersPage() {
     if (urlPrompt) setPrompt(urlPrompt);
   }, [searchParams]);
 
-  /* Load image models, tags, sizes */
+  /* Load tags and sizes */
   useEffect(() => {
     if (!isAuthenticated) return;
     let cancelled = false;
     setDataLoading(true);
     Promise.all([
-      api.listImageModels().catch(() => ({ models: [] })),
       api.listInspirationTags().catch(() => ({ tags: [] })),
       api.listSizeOptions().catch(() => ({ sizes: [] })),
-    ]).then(([modelsData, tagsData, sizesData]) => {
+    ]).then(([tagsData, sizesData]) => {
       if (cancelled) return;
-      setImageModels(modelsData.models || []);
       setInspirationTags(tagsData.tags || []);
       setSizeOptions(sizesData.sizes || []);
-      if (modelsData.models?.length > 0 && !imageModel) {
-        setImageModel(modelsData.models[0].id);
-      }
     }).finally(() => { if (!cancelled) setDataLoading(false); });
     return () => { cancelled = true; };
-  }, [isAuthenticated, imageModel]);
+  }, [isAuthenticated]);
 
   /* Handle reference image upload */
   const handleReferenceUpload = async (files: FileList | File[]) => {
@@ -213,8 +207,6 @@ function PostersPage() {
   }
 
   /* Group models by provider */
-  const aliyunModels = imageModels.filter((m) => m.provider === "aliyun");
-  const openaiModels = imageModels.filter((m) => m.provider === "openai");
 
   /* ─── Main content ─── */
   return (
@@ -287,18 +279,6 @@ function PostersPage() {
                 ))}
               </select>
             </div>
-
-            {/* Model label (single model, no selector needed) */}
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs text-slate-500">模型</span>
-              <span className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs text-slate-600">GPT Image 2</span>
-            </div>
-            {/* Model recommendation hint */}
-            {imageModels.find((m) => m.id === imageModel)?.best_for && (
-              <div className="text-xs text-indigo-600 bg-indigo-50 rounded-md px-2 py-1">
-                推荐：{imageModels.find((m) => m.id === imageModel)?.best_for}
-              </div>
-            )}
 
             {/* Generate button */}
             <button

@@ -88,9 +88,8 @@ function WorkbenchPage() {
   const [knowledgeExpanded, setKnowledgeExpanded] = useState(false);
   const [quota, setQuota] = useState<{ used: number; limit: number; remaining: number } | null>(null);
 
-  /* Model selection */
-  const [textModels, setTextModels] = useState<Array<{ id: string; name: string; provider: string; provider_name: string; description: string; best_for: string; is_default: boolean }>>([]);
-  const [selectedModel, setSelectedModel] = useState<string>("");
+  /* Model (hidden from user, always use default) */
+  const [selectedModel, setSelectedModel] = useState<string>("deepseek-v4-flash");
 
   /* Refs */
   const inputSectionRef = useRef<HTMLDivElement>(null);
@@ -138,21 +137,6 @@ function WorkbenchPage() {
       .catch(() => {});
     api.getQuota()
       .then((res) => { if (!cancelled) setQuota({ used: res.monthly_generations_used, limit: res.monthly_generation_limit, remaining: res.remaining }); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [isAuthenticated]);
-
-  /* Load text models */
-  useEffect(() => {
-    if (!isAuthenticated) return;
-    let cancelled = false;
-    api.listTextModels()
-      .then((res) => {
-        if (cancelled) return;
-        setTextModels(res.models);
-        const defaultModel = res.models.find((m) => m.is_default);
-        if (defaultModel) setSelectedModel(defaultModel.id);
-      })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [isAuthenticated]);
@@ -529,12 +513,6 @@ function WorkbenchPage() {
               ))}
             </select>
           </div>
-        </div>
-
-        {/* Model label (single model, no selector needed) */}
-        <div className="mb-4">
-          <label className="mb-1 block text-sm font-medium text-slate-700">AI 模型</label>
-          <span className="inline-block rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">DeepSeek V4 Flash</span>
         </div>
 
         {/* Output package */}
