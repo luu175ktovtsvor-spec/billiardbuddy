@@ -14,7 +14,7 @@
 - **后端**: FastAPI + uvicorn，端口 8000
 - **数据库**: PostgreSQL 14，库名 `billiards_ai`
 - **AI 文本模型**: DeepSeek V4 Flash（默认）+ Mimo V2.5（可选）
-- **AI 图片模型**: OpenAI gpt-image-2（通过 API2D 中转 `https://oa.api2d.net/v1`）
+- **AI 图片模型**: OpenAI gpt-image-2（美国服务器直连 `https://api.openai.com/v1`）
 - **内容渲染**: react-markdown + remark-gfm + @tailwindcss/typography
 - **部署文档**: `docs/服务器部署交接文档.md`
 
