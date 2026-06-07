@@ -1165,3 +1165,213 @@ examples:
     injection_style: "short_snippet"
     priority: "P0"
     max_injection_chars: 200
+
+  # ═══ 以下为 QA 测试筛选 + PPT 衍生的新增样例（2026-06-07）═══
+
+  - id: "Q001"
+    title: "老客户回访约球（店长）"
+    role: "manager"
+    target_customer_type: "old"
+    output_package: ["private_chat", "moments", "execution_tips"]
+    scene_tags: ["old_customer_recall", "private_chat", "wechat_moments"]
+    risk_tags: []
+    user_intent: "好久没联系老客户了，帮我发几句话约他们来打球"
+    extra_note: "正常熟人语气就行"
+    good_output_snippet: |
+      私聊：兄弟，好久没见你来打球了，最近忙什么呢？有空回来打两把，找找手感呗。来之前跟我说一声，我帮你看下有没有好台子。
+      朋友圈：台子都擦干净了，就等你来。好久没见的兄弟们，有空回来打两把。来之前微信我说一声，帮你留个好位置。
+      执行建议：私聊分批次发，今天先发10个最久没来的，别一次性全发像群发。
+    why_good:
+      - "三条话术风格不同（标准/轻松/约球），覆盖不同客户性格"
+      - "附带客户可能怎么回→你怎么接的对话链"
+      - "执行建议具体可操作（分批发、时间段）"
+    reusable_rules:
+      - "老客户回访三段式：问候→约球→留台"
+      - "私聊分批次发，不要像群发"
+    suitable_for_fewshot: true
+    fewshot_use_case: ["runtime_positive_example"]
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 350
+
+  - id: "Q002"
+    title: "台费局群公告+朋友圈（教练）"
+    role: "coach"
+    target_customer_type: "light_competition"
+    output_package: ["group_notice", "moments", "execution_tips"]
+    scene_tags: ["light_competition", "group_notice", "wechat_moments"]
+    risk_tags: []
+    user_intent: "周末搞个台费局，帮我发群公告、朋友圈，再给个执行建议"
+    extra_note: ""
+    good_output_snippet: |
+      群公告：周末台费局，来吗？🎱 周六下午2点开始，台费局玩法——输的人付台费，赢的喝饮料。纯熟人切磋，以球会友，没有大额输赢，就图个乐。想来的群里接龙，凑够4人就能开打。
+      朋友圈：周末台费局，来不来？熟人之间打打，输的付台费，赢的喝饮料。纯娱乐局，没有大额输赢，就图个乐。周六下午2点开打，想来的私我。
+    why_good:
+      - "台费局表达正确：输的人付台费，不是赌博"
+      - "安全表达到位：纯熟人切磋、没有大额输赢、就图个乐"
+      - "群公告和朋友圈都是纯文本，可直接复制"
+    reusable_rules:
+      - "台费局安全表达：输的人付台费+纯熟人切磋+没有大额输赢"
+    suitable_for_fewshot: true
+    fewshot_use_case: ["runtime_positive_example"]
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 300
+
+  - id: "Q003"
+    title: "投诉安抚话术（前厅）"
+    role: "frontdesk"
+    target_customer_type: "new"
+    output_package: ["private_chat", "execution_tips"]
+    scene_tags: ["complaint_handling", "frontdesk_reception", "private_chat"]
+    risk_tags: []
+    user_intent: "刚才有客人说排队太久有点不高兴，帮我写几句话安抚一下"
+    extra_note: ""
+    good_output_snippet: |
+      当面说：哥/姐，刚才让您等久了吧，实在不好意思，今天台子确实满了，下次您来之前微信跟我说一声，我提前帮您留好。
+      微信说：今天等台等了挺久，实在不好意思，下次来之前跟我说一声，我提前帮您留好位置，不用排队。
+      执行建议：不要解释原因（"今天人多没办法"），直接道歉+给解决方案（提前留台）就行。
+    why_good:
+      - "不承诺补偿（不送东西、不免单），符合 baseline_rules"
+      - "话术简短自然，像真人道歉"
+      - "附带执行建议（什么时候发、谁发、注意什么）"
+    reusable_rules:
+      - "投诉安抚：道歉+解决方案，不解释原因，不承诺补偿"
+    suitable_for_fewshot: true
+    fewshot_use_case: ["runtime_positive_example"]
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 250
+
+  - id: "Q004"
+    title: "大客户维护（老板）"
+    role: "boss"
+    target_customer_type: "vip"
+    output_package: ["private_chat", "execution_tips"]
+    scene_tags: ["vip_maintenance", "private_chat", "old_customer_recall"]
+    risk_tags: []
+    user_intent: "有个大客户好久没来了，想单独约一下"
+    extra_note: ""
+    good_output_snippet: |
+      第一段（自然开口）：张哥，最近忙啥呢，好久没见你来打球了。
+      第二段（给台阶）：前两天刚换了批新台泥，走球比之前顺不少。哪天有空过来坐坐，我让前台给你留个包间，咱俩搓两杆。
+      第三段（收尾）：你提前跟我说声就行，我一般晚上都在店里。
+      执行建议：先发第一段，等对方回了再接第二段。不要一次性发三条。如果对方回"最近忙"，不要追问，回"那先忙，有空过来就行"即可。
+    why_good:
+      - "老板视角，语气像老板亲自维护大客户"
+      - "分三段发，不一次性轰炸"
+      - "占位符使用正确（客户称呼用张哥/对方称呼）"
+    reusable_rules:
+      - "大客户维护：分段发、不追问、给台阶"
+    suitable_for_fewshot: true
+    fewshot_use_case: ["runtime_positive_example"]
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 300
+
+  - id: "Q005"
+    title: "预算活动策划（运营）"
+    role: "operator"
+    target_customer_type: "old"
+    output_package: ["activity_plan", "moments", "execution_tips"]
+    scene_tags: ["activity_plan", "old_customer_recall", "wechat_moments"]
+    risk_tags: []
+    user_intent: "老板只给了3000预算，做个小活动"
+    extra_note: ""
+    good_output_snippet: |
+      活动名称：老友手感局
+      目标：激活3次以上老客户到店
+      预算分配思路：现场氛围20-30%、奖品40-50%、执行人力20-30%
+      玩法：熟人自由组局，每桌打完一局，胜者抽一次"手感盲盒"
+      报名方式：私聊前台报名，限【请填写】人，报满即止
+    why_good:
+      - "预算只给分配思路和比例，不拆具体金额（符合规则）"
+      - "活动方案结构完整（目标/对象/时间/玩法/分工/物料/预热）"
+      - "未确认信息用占位符（人数上限、单品成本、具体日期）"
+    reusable_rules:
+      - "预算活动：只给分配思路，不拆具体金额"
+      - "活动方案必须包含：目标/对象/时间/玩法/分工/物料/预热"
+    suitable_for_fewshot: true
+    fewshot_use_case: ["runtime_positive_example"]
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 350
+
+  - id: "Q006"
+    title: "约局群公告（教练）"
+    role: "coach"
+    target_customer_type: "competition"
+    output_package: ["group_notice", "execution_tips"]
+    scene_tags: ["competition_customer", "group_notice", "light_competition"]
+    risk_tags: []
+    user_intent: "今晚追分局，帮我发群里叫几个人来"
+    extra_note: ""
+    good_output_snippet: |
+      今晚有局，缺两个人，水平不限，能打就行。
+      时间：今晚【请补充具体时间，如8点】
+      台费：AA
+      规则：中式黑八，抢5
+      打法：正常打，不追分，纯切磋
+      想来的群里接龙，凑够就开。
+    why_good:
+      - "追分局→正确转译为'不追分，纯切磋'（高风险输入转译）"
+      - "简短有力，像教练在群里喊人"
+      - "未确认信息用占位符（具体时间）"
+    reusable_rules:
+      - "追分局必须转译为：台费局/纯切磋/熟人切磋"
+      - "约局群公告：时间+规则+报名方式，简短直接"
+    suitable_for_fewshot: true
+    fewshot_use_case: ["runtime_positive_example"]
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 200
+
+  - id: "Q007"
+    title: "教练散客转化搭话"
+    role: "coach"
+    target_customer_type: "groupbuy"
+    output_package: ["private_chat", "execution_tips"]
+    scene_tags: ["groupbuy_conversion", "competition_customer", "new_customer_reception"]
+    risk_tags: []
+    user_intent: "今天来了几个团购客，水平还行，帮我写引导话术让他们下次还想来"
+    extra_note: ""
+    good_output_snippet: |
+      当面说：刚才看你打得还可以，平时打得多吗？我们有个约球群，群里经常有人约局，我拉你进去？下次来提前跟我说，帮你留个好台。
+      关键：像懂球的人跟另一个打球的人聊天，不是推销。不要一上来就推比赛，先建立球友关系。
+    why_good:
+      - "散客转化第一步：搭话→看水平→约下次→入群"
+      - "语气自然，像教练跟球友聊天"
+      - "不推销、不推比赛、不推会员卡"
+    reusable_rules:
+      - "散客转化路径：搭话→约下次→入群→轻竞技→正式比赛"
+    suitable_for_fewshot: true
+    fewshot_use_case: ["runtime_positive_example"]
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 200
+
+  - id: "Q008"
+    title: "朋友圈内容规划（运营）"
+    role: "operator"
+    target_customer_type: "all"
+    output_package: ["moments", "execution_tips"]
+    scene_tags: ["content_planning", "wechat_moments"]
+    risk_tags: []
+    user_intent: "帮我安排几条这周可以发的朋友圈内容"
+    extra_note: "不要像广告"
+    good_output_snippet: |
+      周一（空台提醒）：下午空台多，想打球的来，提前说一声帮你看台。
+      周三（助教推广）：今天助教都在，想约的提前说。
+      周五（周末预热）：周末约球搭子，台费局来不来？
+      每条 80-150 字，纯文本，可直接复制发朋友圈。
+    why_good:
+      - "按周排期，覆盖不同场景（空台/助教/周末）"
+      - "每条都是纯文本，可直接复制"
+      - "不写优惠、不写价格、不写电话地址"
+    reusable_rules:
+      - "朋友圈规划：覆盖空台+助教+周末，每条 80-150 字"
+    suitable_for_fewshot: true
+    fewshot_use_case: ["runtime_positive_example"]
+    injection_style: "short_snippet"
+    priority: "P0"
+    max_injection_chars: 250
