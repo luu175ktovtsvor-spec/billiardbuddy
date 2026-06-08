@@ -53,15 +53,25 @@ class OpenAIImageProvider(ImageProvider):
         if image:
             images = [image] if isinstance(image, bytes) else image
 
-            # 用 BytesIO 包装，确保格式正确
-            def _make_file(img_bytes: bytes):
-                return io.BytesIO(img_bytes)
+            # 用 BytesIO 包装，必须设置 .name 属性
+            def _make_file(img_bytes: bytes, idx: int = 0):
+                if img_bytes[:2] == b'\xff\xd8':
+                    ext = "jpg"
+                elif img_bytes[:4] == b'\x89PNG':
+                    ext = "png"
+                elif img_bytes[:4] == b'RIFF':
+                    ext = "webp"
+                else:
+                    ext = "png"
+                f = io.BytesIO(img_bytes)
+                f.name = f"image_{idx}.{ext}"
+                return f
 
             # OpenAI images.edit 支持单张或多张图片
             if len(images) == 1:
-                image_file = _make_file(images[0])
+                image_file = _make_file(images[0], 0)
             else:
-                image_file = [_make_file(img) for img in images[:16]]
+                image_file = [_make_file(img, i) for i, img in enumerate(images[:16])]
 
             response = await client.images.edit(
                 model="gpt-image-2",
