@@ -53,13 +53,10 @@ async def stream_workbench(
     _validate_provider_for_production()
 
     if prompt_key:
-        # 从 prompt_key 推断 scenario（如 copywriting.moments → moments）
-        scenario_name = prompt_key.split(".", 1)[-1] if "." in prompt_key else prompt_key
         extra_vars = {
             "tone": TONE_LABELS.get("friendly", "friendly"),
             "target": CUSTOMER_LABELS.get(target_customer_type or "all", "全部客户"),
             "extra_note": extra_note or "无",
-            "scenario": scenario_name,
         }
         rendered_prompt = prompt_engine.render(prompt_key, store, extra_vars)
         rendered_prompt = _append_guardrails(rendered_prompt, store, role=role)
