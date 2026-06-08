@@ -135,7 +135,9 @@ async def generate_images(
     elif reference_image_paths:
         allowed_dir = Path(settings.upload_dir).resolve() / "references"
         for ref_str in reference_image_paths:
-            ref_path = Path(ref_str).resolve()
+            # 前端传的是 /uploads/references/xxx.png，需要去掉前缀后拼接
+            rel = ref_str.removeprefix("/uploads/")
+            ref_path = (Path(settings.upload_dir).resolve() / rel).resolve()
             if not str(ref_path).startswith(str(allowed_dir)):
                 raise ValueError("reference_image_path 必须在 uploads/references/ 目录内")
             if ref_path.exists():
