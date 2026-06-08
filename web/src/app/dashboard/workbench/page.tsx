@@ -38,6 +38,22 @@ import Link from "next/link";
 
 const OUTPUT_OPTIONS = OUTPUT_PACKAGE_GROUPS.flatMap((g) => g.items);
 
+/* 任务卡片使用频率（存储在 localStorage） */
+function getTaskCardUsage(): Record<string, number> {
+  if (typeof window === "undefined") return {};
+  try {
+    return JSON.parse(localStorage.getItem("workbench_card_usage") || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function trackTaskCardUsage(cardId: string) {
+  const usage = getTaskCardUsage();
+  usage[cardId] = (usage[cardId] || 0) + 1;
+  localStorage.setItem("workbench_card_usage", JSON.stringify(usage));
+}
+
 export default function WorkbenchPageWrapper() {
   return (
     <Suspense fallback={<div className="flex items-center justify-center py-20"><Loader2 className="h-6 w-6 animate-spin text-indigo-600" /></div>}>
@@ -92,6 +108,7 @@ function WorkbenchPage() {
   const [showOutputCustom, setShowOutputCustom] = useState(false);
   const [lastUsedCardId, setLastUsedCardId] = useState<string | null>(null);
   const [quota, setQuota] = useState<{ used: number; limit: number; remaining: number } | null>(null);
+  const [conversationId, setConversationId] = useState<string | null>(null);
 
   /* Model (hidden from user, always use default) */
   const [selectedModel, setSelectedModel] = useState<string>("deepseek-v4-flash");
@@ -156,6 +173,9 @@ function WorkbenchPage() {
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
+    // 记录使用频率
+    trackTaskCardUsage(card.id);
+
     setIntent(card.userIntentTemplate);
     setRole(card.role);
     setActiveRole(card.role);
@@ -166,6 +186,7 @@ function WorkbenchPage() {
     setError("");
     setResult(null);
     setStreamingContent("");
+    setConversationId(null); // 新任务卡片开始新对话
     setGenerating(true);
 
     try {
@@ -177,9 +198,10 @@ function WorkbenchPage() {
           output_package: card.outputPackage.length > 0 ? card.outputPackage : undefined,
           prompt_key: card.promptKey,
           model: selectedModel || undefined,
+          conversation_id: conversationId || undefined,
         },
         (token) => setStreamingContent((prev) => prev + token),
-        (fullContent, generationId) => {
+        (fullContent, generationId, convId) => {
           setResult({
             generation_id: generationId,
             type: "workbench",
@@ -189,6 +211,7 @@ function WorkbenchPage() {
             profile_suggestions: null,
           });
           setStreamingContent("");
+          if (convId) setConversationId(convId);
           setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
         },
         (msg) => {
@@ -228,9 +251,10 @@ function WorkbenchPage() {
           output_package: outputPackage.length > 0 ? outputPackage : undefined,
           extra_note: extraNote || undefined,
           model: selectedModel || undefined,
+          conversation_id: conversationId || undefined,
         },
         (token) => setStreamingContent((prev) => prev + token),
-        (fullContent, generationId) => {
+        (fullContent, generationId, convId) => {
           setResult({
             generation_id: generationId,
             type: "workbench",
@@ -240,6 +264,7 @@ function WorkbenchPage() {
             profile_suggestions: null,
           });
           setStreamingContent("");
+          if (convId) setConversationId(convId);
           setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
         },
         (msg) => {
@@ -450,8 +475,15 @@ function WorkbenchPage() {
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {currentTasks
             .sort((a, b) => {
+              const usage = getTaskCardUsage();
               const order: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
-              return (order[a.priority] ?? 9) - (order[b.priority] ?? 9);
+              const pa = order[a.priority] ?? 9;
+              const pb = order[b.priority] ?? 9;
+              // 同优先级按使用频率排序（高频在前）
+              if (pa === pb) {
+                return (usage[b.id] || 0) - (usage[a.id] || 0);
+              }
+              return pa - pb;
             })
             .map((card) => (
               <div
@@ -686,8 +718,10 @@ function WorkbenchPage() {
             </div>
             {streamingContent && (
               <div className="px-4 py-4">
-                <div className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
-                  {streamingContent}
+                <div className="prose prose-sm prose-slate max-w-none">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {streamingContent}
+                  </ReactMarkdown>
                   <span className="inline-block w-0.5 h-4 bg-indigo-600 animate-pulse ml-0.5 align-text-bottom" />
                 </div>
               </div>
@@ -810,7 +844,6 @@ function WorkbenchPage() {
                       setGenerating(true);
                       setEditing(false);
                       setError("");
-                      const prevResult = result;
                       setResult(null);
                       setStreamingContent("");
                       try {
@@ -820,10 +853,12 @@ function WorkbenchPage() {
                             role,
                             target_customer_type: targetCustomer || undefined,
                             output_package: outputPackage.length > 0 ? outputPackage : undefined,
-                            extra_note: "请基于以下内容优化改进，保留核心信息但提升质量：\n" + prevResult.content.substring(0, 500),
+                            extra_note: extraNote || undefined,
+                            model: selectedModel || undefined,
+                            conversation_id: conversationId || undefined,
                           },
                           (token) => setStreamingContent((prev) => prev + token),
-                          (fullContent, generationId) => {
+                          (fullContent, generationId, convId) => {
                             setResult({
                               generation_id: generationId,
                               type: "workbench",
@@ -833,6 +868,7 @@ function WorkbenchPage() {
                               profile_suggestions: null,
                             });
                             setStreamingContent("");
+                            if (convId) setConversationId(convId);
                           },
                           (msg) => setError(msg),
                         );

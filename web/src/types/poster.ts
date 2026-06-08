@@ -42,6 +42,7 @@ export interface InspirationTag {
   key: string;
   label: string;
   prompt: string;
+  category?: string;
 }
 
 export interface SizeOption {

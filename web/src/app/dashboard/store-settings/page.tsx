@@ -830,11 +830,6 @@ export default function StoreSettingsPage() {
                 className={INPUT_CLASS} placeholder="如：中式黑八 8张，美式 4张" />
             </Field>
           </div>
-          <Field label="球桌品牌">
-            <input type="text" maxLength={200} value={form.table_brands}
-              onChange={(e) => updateField("table_brands", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：乔氏、独牙、星牌" />
-          </Field>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <Toggle label="包间" checked={form.has_private_room}
               onChange={(v) => updateField("has_private_room", v)} />
@@ -1146,34 +1141,6 @@ export default function StoreSettingsPage() {
                 )}
               </div>
             </div>
-          </Field>
-
-          {/* 设备桌型 */}
-          <Field label="台球桌类型（多选）">
-            <div className="space-y-2">
-              <TagGroup>
-                {[
-                  ["normal_pool_table", "普通台球桌"],
-                  ["duya_pool_table", "独牙台球桌"],
-                  ["joy_billiards_table", "乔氏台球桌"],
-                  ["snooker_table", "斯诺克"],
-                ].map(([value, label]) => (
-                  <TagCheckbox key={value} label={label}
-                    checked={profileForm.equipment_table_types.includes(value)}
-                    onChange={() => toggleProfileArray("equipment_table_types", value)} />
-                ))}
-              </TagGroup>
-              <p className="text-xs text-slate-400">
-                除独牙、乔氏以外的中式八球台球桌，统一按普通台球桌处理。勾选后，AI 在生成赛事、约局、客户邀约内容时会参考门店桌型。
-              </p>
-            </div>
-          </Field>
-          <Field label="桌型补充说明（选填）">
-            <input type="text" maxLength={200}
-              value={profileForm.equipment_table_type_note}
-              onChange={(e) => updateProfileField("equipment_table_type_note", e.target.value)}
-              className={INPUT_CLASS}
-              placeholder="如：12 张普通台，2 张乔氏，1 张斯诺克" />
           </Field>
 
           {/* 助教配置 */}

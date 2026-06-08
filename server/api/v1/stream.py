@@ -4,6 +4,7 @@ import logging
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 
 from api.deps import get_current_user, get_current_store, get_db
 from core.rbac import Permission, require_permission
@@ -48,6 +49,7 @@ async def stream_workbench(
     extra_note = body.extra_note
     prompt_key = body.prompt_key
     model = body.model
+    conversation_id = body.conversation_id
 
     await check_quota(db, str(store.id))
     _validate_provider_for_production()
@@ -98,6 +100,38 @@ async def stream_workbench(
 
         rendered_prompt = prompt_engine.render("workbench.free_intent", store, extra_vars)
 
+    # 加载对话历史（最近 5 轮）
+    if conversation_id:
+        try:
+            hist_stmt = (
+                select(Generation)
+                .where(
+                    Generation.conversation_id == uuid.UUID(conversation_id),
+                    Generation.type == "workbench",
+                )
+                .order_by(Generation.created_at)
+            )
+            hist_result = await db.execute(hist_stmt)
+            history_gens = hist_result.scalars().all()
+
+            if history_gens:
+                history_lines = []
+                for i, hg in enumerate(history_gens[-5:], 1):
+                    hist_params = hg.input_params or {}
+                    hist_intent = hist_params.get("user_intent", "")
+                    hist_result_text = hg.result or ""
+                    if hist_intent:
+                        history_lines.append(f"用户（第{i}轮）：{hist_intent}")
+                    if hist_result_text:
+                        history_lines.append(f"助手（第{i}轮）：{hist_result_text[:800]}")
+
+                if history_lines:
+                    history_text = "\n".join(history_lines)
+                    rendered_prompt = f"{rendered_prompt}\n\n---\n【对话历史（供参考，不要重复生成相同内容）】\n{history_text}\n---\n"
+                    logger.info("工作台拼接对话上下文: %d 轮历史", len(history_lines) // 2)
+        except Exception:
+            logger.warning("加载工作台对话历史失败，跳过上下文拼接", exc_info=True)
+
     request = TextRequest(prompt=rendered_prompt, max_tokens=3000)
 
     async def event_generator():
@@ -117,6 +151,9 @@ async def stream_workbench(
         content = _strip_ai_prefixes(full_content)
 
         try:
+            # 使用传入的 conversation_id，或用本次 generation_id 作为新对话的 conversation_id
+            conv_id = uuid.UUID(conversation_id) if conversation_id else uuid.UUID(generation_id)
+
             generation = Generation(
                 id=uuid.UUID(generation_id),
                 store_id=store.id,
@@ -136,6 +173,7 @@ async def stream_workbench(
                 result=content,
                 model_used="stream",
                 tokens_used=0,
+                conversation_id=conv_id,
             )
             db.add(generation)
             await db.commit()
@@ -143,7 +181,7 @@ async def stream_workbench(
         except Exception as e:
             logger.error("Failed to save stream generation: %s", e)
 
-        yield f"data: {json.dumps({'token': '', 'done': True, 'full_content': content, 'generation_id': generation_id}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'token': '', 'done': True, 'full_content': content, 'generation_id': generation_id, 'conversation_id': str(conv_id)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_generator(),

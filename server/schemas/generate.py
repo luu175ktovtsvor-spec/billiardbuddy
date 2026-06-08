@@ -112,6 +112,7 @@ class WorkbenchRequest(BaseModel):
     extra_note: str = Field("", description="补充说明", max_length=200)
     prompt_key: str | None = Field(None, description="后端场景模板 key，如 operation.qiangyi_battle。有 promptKey 时优先使用该模板，否则 fallback 到 workbench.free_intent")
     model: str | None = Field(None, description="指定文本模型 ID（当前仅支持 deepseek-v4-flash）")
+    conversation_id: str | None = Field(None, description="对话 ID，用于多轮对话上下文")
 
 
 class CopywritingRequest(BaseModel):

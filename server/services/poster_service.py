@@ -26,23 +26,28 @@ SIZE_MAP = {
     "16:9": {"standard": "1536x864", "high": "2048x1152"},
 }
 
-# 场景灵感标签
+# 场景灵感标签（按分类组织）
 INSPIRATION_TAGS = [
-    {"key": "tournament", "label": "赛事海报", "prompt": "中式八球周赛海报，竞技氛围，专业赛场感，深色背景"},
-    {"key": "qiangyi", "label": "抢一大战", "prompt": "台球抢一大战海报，紧张刺激，对抗感，霓虹灯风格"},
-    {"key": "assistant", "label": "助教形象", "prompt": "台球助教专业形象照，台球陪练服务，专业台球人设"},
-    {"key": "moments", "label": "朋友圈配图", "prompt": "台球房下午场空台促活朋友圈配图，清新休闲风格"},
-    {"key": "recruitment", "label": "招聘海报", "prompt": "台球助教招聘海报，便签笔记风格，温馨有吸引力"},
-    {"key": "short_video", "label": "短视频封面", "prompt": "台球短视频封面，视觉冲击力强，动态模糊效果"},
-    {"key": "opening", "label": "开业活动", "prompt": "台球房开业活动海报，盛大喜庆，红色金色配色"},
-    {"key": "holiday", "label": "节日主题", "prompt": "台球房节日主题活动海报，喜庆氛围"},
-    {"key": "champion", "label": "冠军战报", "prompt": "台球比赛冠军战报海报，热血竞技感，聚光灯效果"},
-    {"key": "store_brand", "label": "门店形象", "prompt": "台球房门店形象宣传图，专业品质感，现代简约"},
-    {"key": "partner", "label": "搭子群", "prompt": "台球搭子群招募图文，轻松活泼风格，社交感"},
-    {"key": "coach", "label": "教练推广", "prompt": "台球教练教学推广海报，专业教学感，指导动作"},
-    {"key": "recharge", "label": "充值活动", "prompt": "台球房会员充值活动海报，高端质感，金色元素"},
-    {"key": "watch_party", "label": "看球活动", "prompt": "台球房看球活动海报，大屏幕观赛，啤酒零食氛围"},
-    {"key": "free", "label": "自由创作", "prompt": "画一只猫在打台球"},
+    # 赛事类
+    {"key": "tournament", "label": "赛事海报", "category": "赛事类", "prompt": "中式八球周赛海报，竞技氛围，专业赛场感，深色背景"},
+    {"key": "qiangyi", "label": "抢一大战", "category": "赛事类", "prompt": "台球抢一大战海报，紧张刺激，对抗感，霓虹灯风格"},
+    {"key": "champion", "label": "冠军战报", "category": "赛事类", "prompt": "台球比赛冠军战报海报，热血竞技感，聚光灯效果"},
+    # 社交媒体
+    {"key": "moments", "label": "朋友圈配图", "category": "社交媒体", "prompt": "台球房下午场空台促活朋友圈配图，清新休闲风格"},
+    {"key": "short_video", "label": "短视频封面", "category": "社交媒体", "prompt": "台球短视频封面，视觉冲击力强，动态模糊效果"},
+    {"key": "store_brand", "label": "门店形象", "category": "社交媒体", "prompt": "台球房门店形象宣传图，专业品质感，现代简约"},
+    # 营销推广
+    {"key": "opening", "label": "开业活动", "category": "营销推广", "prompt": "台球房开业活动海报，盛大喜庆，红色金色配色"},
+    {"key": "holiday", "label": "节日主题", "category": "营销推广", "prompt": "台球房节日主题活动海报，喜庆氛围"},
+    {"key": "recharge", "label": "充值活动", "category": "营销推广", "prompt": "台球房会员充值活动海报，高端质感，金色元素"},
+    {"key": "watch_party", "label": "看球活动", "category": "营销推广", "prompt": "台球房看球活动海报，大屏幕观赛，啤酒零食氛围"},
+    # 助教相关
+    {"key": "assistant", "label": "助教形象", "category": "助教相关", "prompt": "台球助教专业形象照，台球陪练服务，专业台球人设"},
+    {"key": "coach", "label": "教练推广", "category": "助教相关", "prompt": "台球教练教学推广海报，专业教学感，指导动作"},
+    {"key": "recruitment", "label": "招聘海报", "category": "助教相关", "prompt": "台球助教招聘海报，便签笔记风格，温馨有吸引力"},
+    # 其他
+    {"key": "partner", "label": "搭子群", "category": "其他", "prompt": "台球搭子群招募图文，轻松活泼风格，社交感"},
+    {"key": "free", "label": "自由创作", "category": "其他", "prompt": "画一只猫在打台球"},
 ]
 
 
@@ -63,12 +68,10 @@ async def generate_images(
     refine_from: str | None = None,
     add_store_info: bool = False,
     no_text: bool = False,
-    add_logo_overlay: bool = True,
-    add_qrcode_overlay: bool = True,
     conversation_id: str | None = None,
     quality: str = "standard",
 ) -> dict:
-    """AI 生图，支持多图输入（Logo/二维码/参考图）和以图生图调整。"""
+    """AI 生图，支持参考图传入和以图生图调整。"""
     from services.ai.providers.openai_image import OpenAIImageProvider
 
     api_key = settings.openai_api_key
@@ -86,7 +89,7 @@ async def generate_images(
         parts.append("no text, no words, no letters, no typography")
     full_prompt = ", ".join(parts)
 
-    # 多轮对话：拼接历史上下文（只保留最近 3 轮）
+    # 多轮对话：拼接历史上下文（保留最近 5 轮）
     if conversation_id:
         try:
             hist_stmt = (
@@ -102,7 +105,7 @@ async def generate_images(
 
             if history_gens:
                 history_lines = []
-                for i, hg in enumerate(history_gens[-3:], 1):  # 只保留最近 3 轮
+                for i, hg in enumerate(history_gens[-5:], 1):  # 保留最近 5 轮
                     hist_prompt = hg.input_params.get("prompt", "") if hg.input_params else ""
                     if hist_prompt:
                         history_lines.append(f"{i}. {hist_prompt}")
@@ -114,21 +117,9 @@ async def generate_images(
         except Exception:
             logger.warning("加载对话历史失败，跳过上下文拼接", exc_info=True)
 
-    # 加载参考图（Logo/二维码/原图/用户上传的参考图）
+    # 加载参考图（原图/用户上传的参考图）
     input_images: list[bytes] = []
     size = _get_api_size(ratio, quality)
-
-    # 加载 Logo 和二维码作为参考物料传给 AI
-    if add_logo_overlay and store.logo_url:
-        logo_rel = store.logo_url.removeprefix("/uploads/")
-        logo_path = Path(settings.upload_dir) / logo_rel
-        if logo_path.exists():
-            input_images.append(logo_path.read_bytes())
-    if add_qrcode_overlay and store.qrcode_url:
-        qr_rel = store.qrcode_url.removeprefix("/uploads/")
-        qr_path = Path(settings.upload_dir) / qr_rel
-        if qr_path.exists():
-            input_images.append(qr_path.read_bytes())
 
     # 如果是调整模式，加载原图作为参考（以图生图）
     if refine_from:

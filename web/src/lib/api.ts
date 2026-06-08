@@ -241,7 +241,7 @@ class ApiClient {
   async streamWorkbench(
     data: GenerateWorkbenchRequest,
     onToken: (token: string) => void,
-    onDone: (fullContent: string, generationId: string) => void,
+    onDone: (fullContent: string, generationId: string, conversationId?: string) => void,
     onError: (error: string) => void,
     signal?: AbortSignal,
   ): Promise<void> {
@@ -306,7 +306,7 @@ class ApiClient {
   private async _consumeSSEStream(
     res: Response,
     onToken: (token: string) => void,
-    onDone: (fullContent: string, generationId: string) => void,
+    onDone: (fullContent: string, generationId: string, conversationId?: string) => void,
     onError: (error: string) => void,
   ): Promise<void> {
     const reader = res.body?.getReader();
@@ -339,7 +339,7 @@ class ApiClient {
             onToken(parsed.token);
           }
           if (parsed.done && parsed.full_content) {
-            onDone(parsed.full_content, parsed.generation_id || "");
+            onDone(parsed.full_content, parsed.generation_id || "", parsed.conversation_id);
             return;
           }
         } catch {

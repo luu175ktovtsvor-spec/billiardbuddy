@@ -16,6 +16,22 @@ const TYPE_LABELS: Record<string, string> = {
   workbench: "工作台",
 };
 
+/** 去掉 Markdown 语法，返回纯文本预览 */
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/^#{1,6}\s+/gm, "")       // 去掉标题 #
+    .replace(/\*\*(.+?)\*\*/g, "$1")    // 去掉加粗 **
+    .replace(/\*(.+?)\*/g, "$1")        // 去掉斜体 *
+    .replace(/~~(.+?)~~/g, "$1")        // 去掉删除线 ~~
+    .replace(/`{1,3}[^`]*`{1,3}/g, "")  // 去掉代码块
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // 链接保留文字
+    .replace(/^[-*+]\s+/gm, "")         // 去掉列表符号
+    .replace(/^\d+\.\s+/gm, "")         // 去掉有序列表
+    .replace(/^>\s+/gm, "")             // 去掉引用
+    .replace(/^---+$/gm, "")            // 去掉分割线
+    .trim();
+}
+
 const SUB_TYPE_LABELS: Record<string, string> = {
   // 文案
   moments: "朋友圈",
@@ -236,7 +252,7 @@ export default function HistoryPage() {
                 </div>
               </div>
               <p className="line-clamp-3 whitespace-pre-wrap text-sm text-slate-700">
-                {item.content || "（无内容）"}
+                {stripMarkdown(item.content || "") || "（无内容）"}
               </p>
               {item.model_used && (
                 <p className="mt-2 text-xs text-slate-400">

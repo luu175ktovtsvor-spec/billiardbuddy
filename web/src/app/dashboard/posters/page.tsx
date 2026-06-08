@@ -61,8 +61,6 @@ function PostersPage() {
   /* Generation options */
   const [addStoreInfo, setAddStoreInfo] = useState(false);
   const [noText, setNoText] = useState(false);
-  const [addLogoOverlay, setAddLogoOverlay] = useState(true);
-  const [addQrcodeOverlay, setAddQrcodeOverlay] = useState(true);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   /* Conversation */
@@ -179,15 +177,19 @@ function PostersPage() {
         refine_from: refineFrom || undefined,
         add_store_info: addStoreInfo,
         no_text: noText,
-        add_logo_overlay: addLogoOverlay,
-        add_qrcode_overlay: addQrcodeOverlay,
         conversation_id: conversationId || undefined,
       });
 
       const assistantMsg: ConversationMessage = { role: "assistant", content: "", images: res.images };
       setMessages((prev) => [...prev, assistantMsg]);
       setConversationId(res.conversation_id || null);
-      setRefineFrom(null); // Reset after successful generation
+      // 将 refineFrom 设为最新生成的图片，支持连续调整
+      if (res.images && res.images.length > 0) {
+        setRefineFrom(res.images[0].generation_id);
+      }
+      // 清空参考图，防止跨轮次残留
+      references.forEach((r) => URL.revokeObjectURL(r.preview));
+      setReferences([]);
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -274,7 +276,7 @@ function PostersPage() {
   if (!isAuthenticated) return null;
 
   if (store === null) {
-    return <EmptyStoreGuide description="请先完善门店资料，Logo 和二维码会自动叠加到生成的图片上。" />;
+    return <EmptyStoreGuide description="请先完善门店资料，然后再开始生成图片。" />;
   }
 
   /* ─── Conversation View ─── */
@@ -509,20 +511,6 @@ function PostersPage() {
             </button>
           </div>
 
-          {/* Logo status */}
-          <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
-            {store?.logo_url ? (
-              <span className="text-emerald-600">Logo ✓</span>
-            ) : (
-              <span className="text-red-600">Logo 未设置</span>
-            )}
-            {store?.qrcode_url ? (
-              <span className="text-emerald-600">二维码 ✓</span>
-            ) : (
-              <span className="text-red-600">二维码 未设置</span>
-            )}
-          </div>
-
           {/* Advanced options */}
           <div className="mt-2">
             <button
@@ -542,14 +530,6 @@ function PostersPage() {
                   <input type="checkbox" checked={noText} onChange={(e) => setNoText(e.target.checked)} className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
                   <span>禁止生成文字</span>
                 </label>
-                <label className="flex items-center gap-1.5 cursor-pointer">
-                  <input type="checkbox" checked={addLogoOverlay} onChange={(e) => setAddLogoOverlay(e.target.checked)} className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
-                  <span>叠加 Logo</span>
-                </label>
-                <label className="flex items-center gap-1.5 cursor-pointer">
-                  <input type="checkbox" checked={addQrcodeOverlay} onChange={(e) => setAddQrcodeOverlay(e.target.checked)} className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
-                  <span>叠加二维码</span>
-                </label>
               </div>
             )}
           </div>
@@ -558,19 +538,33 @@ function PostersPage() {
         {/* ─── Scene cards ─── */}
         <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
           <p className="mb-3 text-sm font-medium text-slate-700">选一个场景开始</p>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {inspirationTags.map((tag) => (
-              <button
-                key={tag.key}
-                type="button"
-                onClick={() => handleTagClick(tag)}
-                className="flex flex-col items-start rounded-lg border border-slate-200 p-3 text-left hover:border-indigo-300 hover:bg-indigo-50/50 transition-all"
-              >
-                <span className="text-sm font-medium text-slate-700">{tag.label}</span>
-                <span className="mt-0.5 text-xs text-slate-400 line-clamp-2">{tag.prompt.substring(0, 30)}...</span>
-              </button>
-            ))}
-          </div>
+          {(() => {
+            // 按分类分组
+            const categories: Record<string, typeof inspirationTags> = {};
+            inspirationTags.forEach((tag) => {
+              const cat = tag.category || "其他";
+              if (!categories[cat]) categories[cat] = [];
+              categories[cat].push(tag);
+            });
+            return Object.entries(categories).map(([cat, tags]) => (
+              <div key={cat} className="mb-3 last:mb-0">
+                <p className="mb-2 text-xs font-medium text-slate-400">{cat}</p>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {tags.map((tag) => (
+                    <button
+                      key={tag.key}
+                      type="button"
+                      onClick={() => handleTagClick(tag)}
+                      className="flex flex-col items-start rounded-lg border border-slate-200 p-3 text-left hover:border-indigo-300 hover:bg-indigo-50/50 transition-all"
+                    >
+                      <span className="text-sm font-medium text-slate-700">{tag.label}</span>
+                      <span className="mt-0.5 text-xs text-slate-400 line-clamp-2">{tag.prompt.substring(0, 30)}...</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ));
+          })()}
         </div>
 
         {/* ─── Error ─── */}

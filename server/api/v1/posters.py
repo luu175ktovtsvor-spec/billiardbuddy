@@ -43,9 +43,6 @@ async def generate_image(
     """AI 生图：支持多轮对话式生成。"""
     ref_paths = request.images or request.reference_image_paths
 
-    add_logo = request.add_logo_overlay if request.add_overlay else False
-    add_qr = request.add_qrcode_overlay if request.add_overlay else False
-
     result = await poster_service.generate_images(
         db=db,
         store=current_store,
@@ -58,8 +55,6 @@ async def generate_image(
         refine_from=request.refine_from,
         add_store_info=request.add_store_info,
         no_text=request.no_text,
-        add_logo_overlay=add_logo,
-        add_qrcode_overlay=add_qr,
         conversation_id=request.conversation_id,
         quality=request.quality,
     )
