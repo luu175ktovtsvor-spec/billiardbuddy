@@ -15,6 +15,7 @@ from api.v1.stream import router as stream_router
 from api.v1.knowledge import router as knowledge_router
 from api.v1.quota import router as quota_router
 from api.v1.models import router as models_router
+from api.v1.members import router as members_router
 
 router = APIRouter()
 
@@ -33,6 +34,7 @@ router.include_router(stream_router, prefix="/stream", tags=["流式生成"])
 router.include_router(knowledge_router, prefix="/knowledge", tags=["知识库"])
 router.include_router(quota_router, prefix="/quota", tags=["配额"])
 router.include_router(models_router, prefix="/models", tags=["模型"])
+router.include_router(members_router, prefix="/members", tags=["成员管理"])
 
 
 @router.get("/health")

@@ -8,6 +8,7 @@ import {
   ImageIcon,
   Clock,
   Settings,
+  Users,
 } from "lucide-react";
 
 const NAV = [
@@ -16,6 +17,7 @@ const NAV = [
   { href: "/dashboard/posters", icon: ImageIcon, label: "AI 生图" },
   { href: "/dashboard/history", icon: Clock, label: "生成历史" },
   { href: "/dashboard/store-settings", icon: Settings, label: "门店设置" },
+  { href: "/dashboard/store-settings/members", icon: Users, label: "团队成员" },
 ];
 
 export function Sidebar() {

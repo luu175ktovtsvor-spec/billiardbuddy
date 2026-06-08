@@ -1,9 +1,12 @@
+from datetime import datetime, timezone
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from core.exceptions import AppException
 from core.security import hash_password, verify_password, create_access_token
 from models.user import User
+from models.store import StoreMember, StoreInvitation
 
 
 class PhoneAlreadyRegisteredError(AppException):
@@ -17,7 +20,8 @@ class InvalidCredentialsError(AppException):
 
 
 async def register_user(
-    db: AsyncSession, phone: str, password: str, name: str | None
+    db: AsyncSession, phone: str, password: str, name: str | None,
+    invite_code: str | None = None,
 ) -> tuple[User, str]:
     existing = await db.execute(select(User).where(User.phone == phone))
     if existing.scalar_one_or_none():
@@ -29,6 +33,28 @@ async def register_user(
         name=name,
     )
     db.add(user)
+    await db.flush()
+
+    # 如果提供了邀请码，自动加入门店
+    if invite_code:
+        code = invite_code.strip().upper()
+        result = await db.execute(
+            select(StoreInvitation).where(StoreInvitation.code == code)
+        )
+        invitation = result.scalar_one_or_none()
+
+        if invitation and invitation.is_active:
+            now = datetime.now(timezone.utc)
+            if (not invitation.expires_at or invitation.expires_at > now) and \
+               (invitation.max_uses is None or invitation.use_count < invitation.max_uses):
+                member = StoreMember(
+                    store_id=invitation.store_id,
+                    user_id=user.id,
+                    role=invitation.role,
+                )
+                db.add(member)
+                invitation.use_count += 1
+
     await db.commit()
     await db.refresh(user)
 

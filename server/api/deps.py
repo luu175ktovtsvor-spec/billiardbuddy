@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.exceptions import UnauthorizedException, ForbiddenException
 from core.security import decode_access_token
+from core.tenant import set_tenant
 from db.session import async_session
 from models.user import User
 from models.store import Store, StoreMember
@@ -71,6 +72,7 @@ async def get_current_store(
         store = await db.get(Store, target_store_id)
         if not store:
             raise ForbiddenException("门店不存在")
+        set_tenant(store.id)
         return store
 
     # 回退：取用户关联的第一个门店
@@ -83,6 +85,7 @@ async def get_current_store(
     store = await db.get(Store, member.store_id)
     if not store:
         raise ForbiddenException("门店不存在")
+    set_tenant(store.id)
     return store
 
 
@@ -105,4 +108,5 @@ async def get_verified_store(
     store = await db.get(Store, store_id)
     if not store:
         raise ForbiddenException("门店不存在")
+    set_tenant(store.id)
     return store

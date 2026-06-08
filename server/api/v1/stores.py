@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_db, get_current_user, get_current_store
+from core.rbac import Permission, require_permission
 from models.user import User
 from models.store import Store, StoreMember
 from schemas.store import (
@@ -18,7 +19,6 @@ from services.store_service import (
     create_store,
     update_store,
     calculate_completeness,
-    NoPermissionError,
 )
 from services.store_profile_service import calculate_operation_profile_completeness
 from services.storage_service import upload_logo, upload_qrcode, commit_upload, rollback_upload
@@ -33,20 +33,6 @@ def _store_to_response(store: Store) -> StoreResponse:
         operation_profile_completeness=calculate_operation_profile_completeness(store.operation_profile),
         completeness=calculate_completeness(store),
     )
-
-
-async def _check_can_edit(
-    db: AsyncSession, store: Store, user: User
-) -> None:
-    result = await db.execute(
-        select(StoreMember).where(
-            StoreMember.store_id == store.id,
-            StoreMember.user_id == user.id,
-        )
-    )
-    member = result.scalar_one_or_none()
-    if not member or member.role not in ("owner", "manager"):
-        raise NoPermissionError()
 
 
 @router.get("/list", response_model=list[StoreListItem])
@@ -87,8 +73,8 @@ async def update_my_store(
     current_user: Annotated[User, Depends(get_current_user)],
     store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    _perm: None = Depends(require_permission(Permission.STORE_UPDATE)),
 ):
-    await _check_can_edit(db, store, current_user)
     store = await update_store(db, store, body.model_dump(exclude_unset=True))
     return _store_to_response(store)
 
@@ -99,8 +85,8 @@ async def upload_store_logo(
     current_user: Annotated[User, Depends(get_current_user)],
     store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    _perm: None = Depends(require_permission(Permission.STORE_UPDATE)),
 ):
-    await _check_can_edit(db, store, current_user)
     url, temp_path, final_path = await upload_logo(store.id, file)
     try:
         store.logo_url = url
@@ -119,8 +105,8 @@ async def upload_store_qrcode(
     current_user: Annotated[User, Depends(get_current_user)],
     store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    _perm: None = Depends(require_permission(Permission.STORE_UPDATE)),
 ):
-    await _check_can_edit(db, store, current_user)
     url, temp_path, final_path = await upload_qrcode(store.id, file)
     try:
         store.qrcode_url = url

@@ -61,7 +61,10 @@ async def register(
     body: RegisterRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    user, token = await register_user(db, body.phone, body.password, body.name)
+    user, token = await register_user(
+        db, body.phone, body.password, body.name,
+        invite_code=body.invite_code,
+    )
     return TokenResponse(access_token=token)
 
 

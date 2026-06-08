@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_current_user, get_current_store, get_db
 from core.exceptions import AppException
+from core.rbac import Permission, require_permission
 from models.store import Store
 from models.user import User
 from schemas.poster import ImageGenerateRequest, ImageGenerateResponse
@@ -37,6 +38,7 @@ async def generate_image(
     current_user: User = Depends(get_current_user),
     current_store: Store = Depends(get_current_store),
     db: AsyncSession = Depends(get_db),
+    _perm: None = Depends(require_permission(Permission.POSTER_CREATE)),
 ):
     """AI 生图：支持多轮对话式生成。"""
     ref_paths = request.images or request.reference_image_paths
@@ -106,6 +108,7 @@ async def list_conversations(
     current_user: User = Depends(get_current_user),
     current_store: Store = Depends(get_current_store),
     db: AsyncSession = Depends(get_db),
+    _perm: None = Depends(require_permission(Permission.POSTER_LIST)),
 ):
     """获取海报对话列表。"""
     conversations = await poster_service.get_conversations(db, current_store.id)
@@ -118,6 +121,7 @@ async def get_conversation(
     current_user: User = Depends(get_current_user),
     current_store: Store = Depends(get_current_store),
     db: AsyncSession = Depends(get_db),
+    _perm: None = Depends(require_permission(Permission.POSTER_LIST)),
 ):
     """获取对话详情。"""
     detail = await poster_service.get_conversation_detail(db, current_store.id, conversation_id)

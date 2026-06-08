@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from api.deps import get_db, get_current_store
+from core.rbac import Permission, require_permission
 from services.quota_service import get_or_create_quota
 
 router = APIRouter()
@@ -21,6 +22,7 @@ class QuotaResponse(BaseModel):
 
 @router.get("/", response_model=QuotaResponse)
 async def get_quota(
+    _perm: None = Depends(require_permission(Permission.QUOTA_VIEW)),
     store=Depends(get_current_store),
     db=Depends(get_db),
 ):

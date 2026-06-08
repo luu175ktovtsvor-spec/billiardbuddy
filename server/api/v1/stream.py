@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from api.deps import get_current_user, get_current_store, get_db
+from core.rbac import Permission, require_permission
 from models.user import User
 from models.generation import Generation
 from services.ai.factory import ProviderFactory
@@ -38,6 +39,7 @@ async def stream_workbench(
     user: User = Depends(get_current_user),
     store=Depends(get_current_store),
     db=Depends(get_db),
+    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
 ):
     user_intent = body.user_intent
     role = body.role.value if hasattr(body.role, 'value') else body.role

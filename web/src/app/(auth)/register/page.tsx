@@ -1,17 +1,28 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/auth-context";
 import { ApiError } from "@/types/api";
 
 export default function RegisterPage() {
   const { register } = useAuth();
+  const searchParams = useSearchParams();
   const [phone, setPhone] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // 从 URL 参数读取邀请码
+  useEffect(() => {
+    const code = searchParams.get("invite");
+    if (code) {
+      setInviteCode(code.toUpperCase());
+    }
+  }, [searchParams]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,7 +43,7 @@ export default function RegisterPage() {
 
     setLoading(true);
     try {
-      await register(phone, password, name || undefined);
+      await register(phone, password, name || undefined, inviteCode || undefined);
     } catch (err) {
       if (err instanceof ApiError) {
         setError(err.status === 409 ? "该手机号已注册" : err.detail || "注册失败");
@@ -94,6 +105,23 @@ export default function RegisterPage() {
             placeholder="请输入密码（至少8位）"
             autoComplete="new-password"
           />
+        </div>
+
+        <div>
+          <label htmlFor="inviteCode" className="mb-1.5 block text-sm font-medium text-slate-700">
+            邀请码 <span className="text-slate-400">(选填)</span>
+          </label>
+          <input
+            id="inviteCode"
+            type="text"
+            maxLength={8}
+            value={inviteCode}
+            onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
+            className="w-full rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 transition-colors focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+            placeholder="输入邀请码加入门店"
+            autoComplete="off"
+          />
+          <p className="mt-1 text-xs text-slate-400">有邀请码可直接加入对应门店</p>
         </div>
 
         {error && (

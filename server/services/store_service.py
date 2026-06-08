@@ -51,13 +51,6 @@ def calculate_completeness(store: Store) -> int:
 async def create_store(
     db: AsyncSession, user_id: uuid.UUID, data: dict
 ) -> Store:
-    # 检查用户是否已有门店
-    existing = await db.execute(
-        select(StoreMember).where(StoreMember.user_id == user_id)
-    )
-    if existing.scalar_one_or_none():
-        raise StoreAlreadyExistsError()
-
     store = Store(owner_id=user_id, **data)
     db.add(store)
     await db.flush()

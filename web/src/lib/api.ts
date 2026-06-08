@@ -444,6 +444,52 @@ class ApiClient {
     }>("GET", "/api/v1/quota");
   }
 
+  // ─── Members ───
+
+  createInvitation(data: { role: string; max_uses?: number; expires_in_hours?: number }) {
+    return this.request<{
+      id: string; code: string; role: string; is_active: boolean;
+      max_uses: number | null; use_count: number; expires_at: string | null; created_at: string;
+    }>("POST", "/api/v1/members/invitations", data);
+  }
+
+  listInvitations() {
+    return this.request<Array<{
+      id: string; code: string; role: string; is_active: boolean;
+      max_uses: number | null; use_count: number; expires_at: string | null; created_at: string;
+    }>>("GET", "/api/v1/members/invitations");
+  }
+
+  toggleInvitation(id: string) {
+    return this.request<{ is_active: boolean }>("PATCH", `/api/v1/members/invitations/${id}`);
+  }
+
+  deleteInvitation(id: string) {
+    return this.request<{ detail: string }>("DELETE", `/api/v1/members/invitations/${id}`);
+  }
+
+  joinStore(inviteCode: string) {
+    return this.request<{ detail: string; store_id: string; role: string }>("POST", "/api/v1/members/join", { invite_code: inviteCode });
+  }
+
+  listMembers() {
+    return this.request<Array<{
+      user_id: string; name: string | null; phone: string; role: string; joined_at: string;
+    }>>("GET", "/api/v1/members/list");
+  }
+
+  changeMemberRole(userId: string, role: string) {
+    return this.request<{ detail: string; role: string }>("PATCH", `/api/v1/members/${userId}/role`, { role });
+  }
+
+  removeMember(userId: string) {
+    return this.request<{ detail: string }>("DELETE", `/api/v1/members/${userId}`);
+  }
+
+  addMemberByPhone(phone: string, role: string) {
+    return this.request<{ detail: string; user_id: string; role: string }>("POST", "/api/v1/members/add", { phone, role });
+  }
+
   // ─── Models ───
 
   listTextModels() {

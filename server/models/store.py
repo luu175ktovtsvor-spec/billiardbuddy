@@ -110,3 +110,28 @@ class StoreMember(Base):
     __table_args__ = (
         UniqueConstraint("store_id", "user_id", name="uq_store_member"),
     )
+
+
+class StoreInvitation(Base):
+    __tablename__ = "store_invitations"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    store_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stores.id"), nullable=False, index=True
+    )
+    code: Mapped[str] = mapped_column(String(8), nullable=False, unique=True, index=True)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    max_uses: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    use_count: Mapped[int] = mapped_column(Integer, default=0)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_current_store, get_current_user, get_db
 from core.exceptions import NotFoundException
+from core.rbac import Permission, require_permission
 from models.generation import Generation
 from models.store import Store
 from models.user import User
@@ -25,6 +26,7 @@ async def list_generation_history(
     current_user: Annotated[User, Depends(get_current_user)],
     current_store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    _perm: None = Depends(require_permission(Permission.GENERATION_LIST)),
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1)] = 20,
     generation_type: Annotated[str | None, Query(alias="type")] = None,
@@ -71,6 +73,7 @@ async def get_generation_history_detail(
     current_user: Annotated[User, Depends(get_current_user)],
     current_store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    _perm: None = Depends(require_permission(Permission.GENERATION_LIST)),
 ):
     generation = await get_generation_detail(
         db=db,
@@ -100,6 +103,7 @@ async def toggle_generation_favorite(
     current_user: Annotated[User, Depends(get_current_user)],
     current_store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    _perm: None = Depends(require_permission(Permission.GENERATION_LIST)),
 ):
     """切换生成记录的收藏状态"""
     generation = await get_generation_detail(

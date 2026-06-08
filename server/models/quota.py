@@ -17,7 +17,7 @@ class UsageQuota(Base):
     store_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("stores.id"), nullable=False, unique=True
     )
-    monthly_generation_limit: Mapped[int] = mapped_column(Integer, default=888)
+    monthly_generation_limit: Mapped[int] = mapped_column(Integer, default=100)
     monthly_tokens_limit: Mapped[int] = mapped_column(Integer, default=500000)
     monthly_generations_used: Mapped[int] = mapped_column(Integer, default=0)
     monthly_tokens_used: Mapped[int] = mapped_column(Integer, default=0)
