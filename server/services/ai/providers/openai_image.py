@@ -52,7 +52,21 @@ class OpenAIImageProvider(ImageProvider):
 
         if image:
             images = [image] if isinstance(image, bytes) else image
-            image_file = io.BytesIO(images[0])
+            img_bytes = images[0]
+            # 检测 MIME 类型
+            if img_bytes[:2] == b'\xff\xd8':
+                mime = "image/jpeg"
+                ext = "jpg"
+            elif img_bytes[:4] == b'\x89PNG':
+                mime = "image/png"
+                ext = "png"
+            elif img_bytes[:4] == b'RIFF':
+                mime = "image/webp"
+                ext = "webp"
+            else:
+                mime = "image/png"
+                ext = "png"
+            image_file = (f"image.{ext}", img_bytes, mime)
             response = await client.images.edit(
                 model="gpt-image-2",
                 prompt=prompt,
