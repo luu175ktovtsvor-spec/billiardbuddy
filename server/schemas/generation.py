@@ -10,6 +10,7 @@ class GenerationListItem(BaseModel):
     sub_type: str | None
     input_params: dict | None
     content: str | None
+    result: str | None = None
     model_used: str | None
     tokens_used: int | None
     is_favorite: bool = False
@@ -22,6 +23,7 @@ class GenerationDetailResponse(BaseModel):
     sub_type: str | None
     input_params: dict | None
     content: str | None
+    result: str | None = None
     model_used: str | None
     tokens_used: int | None
     is_favorite: bool = False

@@ -27,6 +27,7 @@ export interface GenerationHistoryItem {
   sub_type: string;
   input_params: Record<string, unknown> | null;
   content: string | null;
+  result: string | null;
   model_used: string | null;
   tokens_used: number | null;
   is_favorite: boolean;

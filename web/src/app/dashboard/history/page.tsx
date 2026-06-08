@@ -325,9 +325,19 @@ export default function HistoryPage() {
             </div>
 
             <div className="prose prose-sm prose-slate max-w-none">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {detailItem.content || "（无内容）"}
-              </ReactMarkdown>
+              {detailItem.type === "poster" && detailItem.result ? (
+                <div className="flex justify-center">
+                  <img
+                    src={api.resolveUrl(detailItem.result)}
+                    alt="生成的海报"
+                    className="max-w-full rounded-lg"
+                  />
+                </div>
+              ) : (
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {detailItem.content || "（无内容）"}
+                </ReactMarkdown>
+              )}
             </div>
 
             {detailItem.model_used && (
