@@ -122,11 +122,13 @@ async def generate_images(
     # 加载 Logo bytes（作为 input_image 传给 AI）
     input_images: list[bytes] = []
     if add_logo_overlay and store.logo_url:
-        logo_path = Path(settings.upload_dir) / store.logo_url.lstrip("/uploads/")
+        logo_rel = store.logo_url.removeprefix("/uploads/")
+        logo_path = Path(settings.upload_dir) / logo_rel
         if logo_path.exists():
             input_images.append(logo_path.read_bytes())
     if add_qrcode_overlay and store.qrcode_url:
-        qr_path = Path(settings.upload_dir) / store.qrcode_url.lstrip("/uploads/")
+        qr_rel = store.qrcode_url.removeprefix("/uploads/")
+        qr_path = Path(settings.upload_dir) / qr_rel
         if qr_path.exists():
             input_images.append(qr_path.read_bytes())
 
@@ -139,7 +141,7 @@ async def generate_images(
         )
         original = result.scalar_one_or_none()
         if original and original.result:
-            original_path = Path(settings.upload_dir) / original.result.lstrip("/uploads/")
+            original_path = Path(settings.upload_dir) / original.result.removeprefix("/uploads/")
             if original_path.exists():
                 input_images.insert(0, original_path.read_bytes())
                 logger.info("基于原图调整: %s", original_path)
