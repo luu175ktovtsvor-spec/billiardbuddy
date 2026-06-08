@@ -13,7 +13,7 @@
 - **前端**: Next.js 14 standalone 模式，端口 3000
 - **后端**: FastAPI + uvicorn，端口 8000
 - **数据库**: PostgreSQL 14，库名 `billiards_ai`
-- **AI 文本模型**: DeepSeek V4 Flash（默认）+ Mimo V2.5（可选）
+- **AI 文本模型**: DeepSeek V4 Flash
 - **AI 图片模型**: OpenAI gpt-image-2（美国服务器直连 `https://api.openai.com/v1`）
 - **内容渲染**: react-markdown + remark-gfm + @tailwindcss/typography
 - **部署文档**: `docs/服务器部署交接文档.md`
@@ -62,7 +62,7 @@ server/                 # FastAPI 后端
       factory.py       # Provider 工厂
       providers/       # AI 模型实现
         deepseek.py    # DeepSeek V4 Flash 文本模型
-        mimo.py        # Mimo V2.5 文本模型（可选）
+        mock.py         # Mock Provider（测试用）
         openai_image.py # OpenAI 图片模型（gpt-image-2）
     content_service.py # 文案生成核心逻辑
     poster_service.py  # 海报生成（AI 生图 + Logo/二维码叠加）
@@ -181,12 +181,12 @@ journalctl -u billiards-backend -n 50 --no-pager
 | 文案生成（朋友圈/群公告/活动/日报） | ✅ |
 | 海报生成（gpt-image-2 + Logo 叠加 + 二次调整） | ✅ |
 | Markdown 渲染（react-markdown + remark-gfm） | ✅ |
-| 文本模型选择（DeepSeek V4 Flash + Mimo V2.5） | ✅ |
+| 文本模型（DeepSeek V4 Flash） | ✅ |
 | 生成历史 | ✅ |
 | 配额管理 | ✅ |
-| 多 AI Provider（DeepSeek/百炼/OpenAI） | ✅ |
+| 多 AI Provider（DeepSeek/OpenAI） | ✅ |
 | fewshot 选择器 | ✅ |
-| 服务器部署（git + deploy.sh） | ✅ |
+| 服务器部署（git + deploy_us.sh） | ✅ |
 
 ## 行业知识体系
 

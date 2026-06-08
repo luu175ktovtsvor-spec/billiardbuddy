@@ -11,8 +11,8 @@ http://47.77.237.250
 - **前端**: Next.js 14 + React 18 + TypeScript + TailwindCSS + shadcn/ui
 - **后端**: Python 3.12+ + FastAPI + SQLAlchemy + Alembic
 - **数据库**: PostgreSQL 14
-- **AI 文本模型**: DeepSeek V4 Flash（默认）+ Mimo V2.5（可选）
-- **AI 图片模型**: OpenAI gpt-image-2（通过 API2D 中转）
+- **AI 文本模型**: DeepSeek V4 Flash
+- **AI 图片模型**: OpenAI gpt-image-2（美国服务器直连）
 - **内容渲染**: react-markdown + remark-gfm + @tailwindcss/typography
 - **包管理**: pnpm (前端) / uv (Python 后端)
 
@@ -68,7 +68,7 @@ bash /var/www/billiards-ai/deploy_us.sh
 | 文案生成 | 朋友圈/群公告/活动/日报/话术 |
 | 海报生成 | gpt-image-2 + Logo叠加 + 二维码叠加 + 二次调整 |
 | Markdown 渲染 | AI内容格式化显示 |
-| 模型选择 | DeepSeek V4 Flash + Mimo V2.5 |
+| 模型选择 | DeepSeek V4 Flash + GPT Image 2 |
 | 行业知识库 | 29个knowledge YAML，覆盖6个岗位 |
 | 生成历史 | 搜索、筛选、收藏 |
 | 配额管理 | 月度使用量追踪 |
