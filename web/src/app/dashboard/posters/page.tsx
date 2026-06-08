@@ -67,7 +67,7 @@ function PostersPage() {
 
   /* Conversation */
   const [conversationId, setConversationId] = useState<string | null>(null);
-  const [previousResponseId, setPreviousResponseId] = useState<string | null>(null);
+  const [refineFrom, setRefineFrom] = useState<string | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
@@ -176,18 +176,18 @@ function PostersPage() {
         quality,
         images: references.length > 0 ? references.map((r) => r.path) : undefined,
         count: 1,
+        refine_from: refineFrom || undefined,
         add_store_info: addStoreInfo,
         no_text: noText,
         add_logo_overlay: addLogoOverlay,
         add_qrcode_overlay: addQrcodeOverlay,
         conversation_id: conversationId || undefined,
-        previous_response_id: previousResponseId || undefined,
       });
 
       const assistantMsg: ConversationMessage = { role: "assistant", content: "", images: res.images };
       setMessages((prev) => [...prev, assistantMsg]);
       setConversationId(res.conversation_id || null);
-      setPreviousResponseId(res.response_id || null);
+      setRefineFrom(null); // Reset after successful generation
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -223,7 +223,7 @@ function PostersPage() {
   const handleEnterConversation = async (conv: ConversationItem) => {
     setConversationId(conv.id);
     setViewMode("conversation");
-    setPreviousResponseId(null);
+    setRefineFrom(null);
 
     try {
       const detail = await api.getPosterConversationDetail(conv.id);
@@ -240,10 +240,6 @@ function PostersPage() {
           content: "",
           images: [{ generation_id: msg.generation_id, poster_url: msg.poster_url, created_at: msg.created_at }],
         });
-        // Track the last response_id
-        if (msg.openai_response_id) {
-          setPreviousResponseId(msg.openai_response_id);
-        }
       }
       setMessages(loadedMessages);
     } catch {
@@ -258,7 +254,7 @@ function PostersPage() {
   const handleBackToEntry = () => {
     setViewMode("entry");
     setConversationId(null);
-    setPreviousResponseId(null);
+    setRefineFrom(null);
     setMessages([]);
     // Reload conversations
     api.listPosterConversations().then((data) => {
@@ -333,6 +329,7 @@ function PostersPage() {
                           <button
                             type="button"
                             onClick={() => {
+                              setRefineFrom(img.generation_id);
                               setPrompt("");
                               scrollToBottom();
                               document.querySelector("textarea")?.focus();
@@ -558,18 +555,19 @@ function PostersPage() {
           </div>
         </div>
 
-        {/* ─── Inspiration tags ─── */}
+        {/* ─── Scene cards ─── */}
         <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-          <p className="mb-2 text-sm font-medium text-slate-700">试试这些</p>
-          <div className="flex flex-wrap gap-2">
+          <p className="mb-3 text-sm font-medium text-slate-700">选一个场景开始</p>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {inspirationTags.map((tag) => (
               <button
                 key={tag.key}
                 type="button"
                 onClick={() => handleTagClick(tag)}
-                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-500 hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-600 transition-colors"
+                className="flex flex-col items-start rounded-lg border border-slate-200 p-3 text-left hover:border-indigo-300 hover:bg-indigo-50/50 transition-all"
               >
-                {tag.label}
+                <span className="text-sm font-medium text-slate-700">{tag.label}</span>
+                <span className="mt-0.5 text-xs text-slate-400 line-clamp-2">{tag.prompt.substring(0, 30)}...</span>
               </button>
             ))}
           </div>

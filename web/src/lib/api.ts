@@ -243,6 +243,7 @@ class ApiClient {
     onToken: (token: string) => void,
     onDone: (fullContent: string, generationId: string) => void,
     onError: (error: string) => void,
+    signal?: AbortSignal,
   ): Promise<void> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -260,6 +261,7 @@ class ApiClient {
         method: "POST",
         headers,
         body: JSON.stringify(data),
+        signal,
       });
 
       if (!res.ok) {

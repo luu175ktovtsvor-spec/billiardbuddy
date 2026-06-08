@@ -46,31 +46,34 @@ class OpenAIImageProvider(ImageProvider):
         image: bytes | list[bytes] | None = None,
         **kwargs,
     ) -> bytes:
-        """调用 OpenAI API 生成图片。支持图生图。"""
+        """调用 OpenAI API 生成图片。支持多图输入（最多16张）。"""
         client = self._get_client()
         openai_size = size.replace("*", "x")
 
         if image:
             images = [image] if isinstance(image, bytes) else image
-            img_bytes = images[0]
-            # 检测 MIME 类型
-            if img_bytes[:2] == b'\xff\xd8':
-                mime = "image/jpeg"
-                ext = "jpg"
-            elif img_bytes[:4] == b'\x89PNG':
-                mime = "image/png"
-                ext = "png"
-            elif img_bytes[:4] == b'RIFF':
-                mime = "image/webp"
-                ext = "webp"
+
+            def _make_file(img_bytes: bytes, idx: int):
+                if img_bytes[:2] == b'\xff\xd8':
+                    mime, ext = "image/jpeg", "jpg"
+                elif img_bytes[:4] == b'\x89PNG':
+                    mime, ext = "image/png", "png"
+                elif img_bytes[:4] == b'RIFF':
+                    mime, ext = "image/webp", "webp"
+                else:
+                    mime, ext = "image/png", "png"
+                return (f"image_{idx}.{ext}", img_bytes, mime)
+
+            # OpenAI images.edit 支持单张或多张图片
+            if len(images) == 1:
+                image_files = _make_file(images[0], 0)
             else:
-                mime = "image/png"
-                ext = "png"
-            image_file = (f"image.{ext}", img_bytes, mime)
+                image_files = [_make_file(img, i) for i, img in enumerate(images[:16])]
+
             response = await client.images.edit(
                 model="gpt-image-2",
                 prompt=prompt,
-                image=image_file,
+                image=image_files,
                 size=openai_size,
             )
         else:

@@ -1,0 +1,23 @@
+key: "operation.assistant_7day_screening"
+name: "助教7天筛选制SOP"
+category: "operation"
+variables:
+  - store_name
+  - assistant_types
+template: |
+  你是台球房助教管理专家。请为{store_name}制定助教7天筛选制SOP。
+
+  助教类型：{assistant_types}
+
+  请输出：
+  1. 7天筛选流程（每天的具体任务和考核标准）
+  2. 薪资规则（7天内按实打计算，无保底）
+  3. 筛选标准（哪些情况不通过）
+  4. 带教方法（一对一、面对面、松弛有度）
+  5. 虚拟台机制说明
+
+  核心原则：
+  - 7天内必须筛选出不存在保底的助教
+  - 个人形象 > 沟通能力 > 台球技术
+  - 打开思维：提升赚钱欲望
+  - 培训内容：球技、形象、服务、拓客、约客、维客、技巧

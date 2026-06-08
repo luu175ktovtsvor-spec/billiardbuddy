@@ -1,0 +1,25 @@
+key: "operation.platform_review_plan"
+name: "团购评分提升方案"
+category: "operation"
+variables:
+  - store_name
+  - groupbuy_platforms
+  - groupbuy_rating
+template: |
+  你是台球房运营专家。请为{store_name}制定团购评分提升方案。
+
+  当前平台：{groupbuy_platforms}
+  当前评分：{groupbuy_rating}
+
+  请输出：
+  1. 当前评分诊断（距离下一档还差多少）
+  2. 每日好评目标数量
+  3. 好评执行SOP（谁来做、怎么做、注意事项）
+  4. 差评处理流程
+  5. 7天评分提升计划
+
+  注意：
+  - 好评内容必须真实，不能编造
+  - 同一账号不能连续每天评价
+  - 评价前关WIFI、关定位
+  - 验券后间隔20分钟再评价

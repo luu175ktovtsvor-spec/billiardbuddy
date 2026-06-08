@@ -45,7 +45,7 @@ web/                    # Next.js 前端
     lib/
       api.ts            # API 客户端（统一 fetch 封装，token 刷新，SSE 流式）
       utils.ts          # 工具函数（cn, getErrorMessage）
-      role-workbench-config.ts  # 岗位任务卡片配置（44 个任务卡片）
+      role-workbench-config.ts  # 岗位任务卡片配置（54 个任务卡片）
       workbench-config.ts       # 工作台配置
     hooks/
       auth-context.tsx  # 认证上下文（login/register/logout）
@@ -65,15 +65,15 @@ server/                 # FastAPI 后端
         mock.py         # Mock Provider（测试用）
         openai_image.py # OpenAI 图片模型（gpt-image-2）
     content_service.py # 文案生成核心逻辑
-    poster_service.py  # 海报生成（AI 生图 + Logo/二维码叠加）
+    poster_service.py  # 海报生成（AI 生图，Logo/二维码直传 AI）
     poster/
-      composer.py      # Pillow 图片合成（Logo + 二维码叠加）
+      composer.py      # 图片合成工具
     store_profile_service.py  # 门店运营画像
     dashboard_service.py      # 今日工作台规则引擎
     quota_service.py   # 配额管理
   db/                  # 数据库连接 + Alembic 迁移
   prompts/             # Prompt 模板 YAML 文件
-    knowledge/         # 29 个行业知识文件
+    knowledge/         # 38 个行业知识文件
     rules/             # 角色规则 + 客户规则
     operation/         # 运营场景 prompt
     copywriting/       # 文案 prompt
@@ -177,11 +177,11 @@ journalctl -u billiards-backend -n 50 --no-pager
 | 模块 | 状态 |
 |------|------|
 | 用户注册/登录（手机号+密码） | ✅ |
-| 门店资料管理（运营画像） | ✅ |
-| Prompt 引擎（YAML 模板，29 个 knowledge） | ✅ |
-| 岗位工作台（Workbench，SSE 流式输出） | ✅ |
+| 门店资料管理（运营画像，12 字段新增 + 9 冗余字段删除） | ✅ |
+| Prompt 引擎（YAML 模板，38 个 knowledge） | ✅ |
+| 岗位工作台（Workbench，SSE 流式输出 + Abort 取消） | ✅ |
 | 文案生成（朋友圈/群公告/活动/日报） | ✅ |
-| 海报生成（gpt-image-2 + Logo 叠加 + 二次调整） | ✅ |
+| 海报生成（gpt-image-2 + Logo/二维码直传 AI + 二次调整） | ✅ |
 | Markdown 渲染（react-markdown + remark-gfm） | ✅ |
 | 文本模型（DeepSeek V4 Flash） | ✅ |
 | 生成历史 | ✅ |
@@ -190,13 +190,23 @@ journalctl -u billiards-backend -n 50 --no-pager
 | fewshot 选择器 | ✅ |
 | 多租户安全（自动 store_id 过滤 + RBAC 权限矩阵） | ✅ |
 | 成员管理（邀请码 + 手动添加 + 角色调整 + 移除） | ✅ |
+| 角色 tab/select 状态合并 | ✅ |
+| inputHints 可交互化（点击自动填入补充说明） | ✅ |
+| 输出包选择简化（推荐组合 + 折叠自定义） | ✅ |
+| 结果区按钮重新布局 | ✅ |
+| "基于此优化"功能（支持 abort + 历史版本） | ✅ |
+| 生成完成后引导下一步（热门任务卡片） | ✅ |
+| 生图场景卡片改造（灵感标签 → 卡片网格） | ✅ |
+| 生图"基于此调整"（refine_from 以图生图） | ✅ |
+| 生图 Logo/二维码多图直传 AI（最多 16 张） | ✅ |
+| 对话历史截断（只保留最近 3 轮） | ✅ |
 | 服务器部署（git + deploy_us.sh） | ✅ |
 
 ## 行业知识体系
 
 产品大脑文档在 `docs/product-brain/`，原始行业资料在桌面 `台球行业资料收集/`。
 
-核心知识模块（29 个 knowledge YAML）：
+核心知识模块（38 个 knowledge YAML）：
 - **每日工作流程** (`daily_workflow.yaml`) — 6 个角色的每日工作流 + 5 个延伸场景
 - **竞技群运营** (`competitive_group_ops.yaml`) — 教练维护竞技群的日常动作
 - **助教推广获客** (`assistant_promotion.yaml`) — 朋友圈/短视频/现场推荐/客户维护
@@ -214,7 +224,19 @@ journalctl -u billiards-backend -n 50 --no-pager
 - **小游戏** (`mini_games.yaml`) — 12 个小游戏规则
 - **盈利模型** (`profit_model.yaml`) — 收入结构 + 成本分析
 - **合规规则** (`compliance_rules.yaml`) — 平台规则 + 禁用词
+- **平台运营 SOP** (`platform_operations.yaml`) — 美团/抖音平台运营
 - 更多见 `server/prompts/knowledge/`
+
+新增 operation prompt（9 个）：
+- `operation/platform_review_plan.yaml` — 团购评分提升方案
+- `operation/groupbuy_optimize.yaml` — 团购品类优化建议
+- `operation/douyin_matrix_plan.yaml` — 抖音矩阵账号运营方案
+- `operation/assistant_7day_screening.yaml` — 助教7天筛选制SOP
+- `operation/manager_pk_plan.yaml` — 管理层PK方案
+- `operation/investment_return.yaml` — 投资回报周期经营表
+- `operation/promotion_analysis.yaml` — 促销效果对比分析
+- `operation/coach_entertain_casual.yaml` — 散客娱乐性提升话术
+- 更多见 `server/prompts/operation/`
 
 ## 不要做的事
 

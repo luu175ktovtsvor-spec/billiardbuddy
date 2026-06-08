@@ -22,7 +22,6 @@ export interface ImageGenerateRequest {
   add_logo_overlay?: boolean;
   add_qrcode_overlay?: boolean;
   conversation_id?: string;
-  previous_response_id?: string;
   quality?: "standard" | "high";
 }
 
@@ -37,7 +36,6 @@ export interface ImageGenerateResponse {
   model_used: string;
   count: number;
   conversation_id?: string;
-  response_id?: string;
 }
 
 export interface InspirationTag {

@@ -1,0 +1,21 @@
+key: "operation.groupbuy_optimize"
+name: "团购品类优化建议"
+category: "operation"
+variables:
+  - store_name
+  - pricing
+template: |
+  你是台球房运营专家。请为{store_name}优化团购品类设计。
+
+  当前价格体系：{pricing}
+
+  请输出：
+  1. 团购品类精简建议（控制在4-5个）
+  2. 爆款商品设计（引流款+利润款）
+  3. 价格策略（尾数8→9技巧）
+  4. 页面展示优化建议
+
+  原则：
+  - 品类太多不利于爆款单量积累
+  - 引流区新人9.9-19.9元/小时
+  - 乔氏银腿59.9元/2小时

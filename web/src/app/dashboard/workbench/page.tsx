@@ -54,8 +54,11 @@ function WorkbenchPage() {
   const [store, setStore] = useState<StoreResponse | null | undefined>(undefined);
   const [storeLoading, setStoreLoading] = useState(true);
 
-  /* Role tabs for task cards */
-  const [activeRole, setActiveRole] = useState<string>("manager");
+  /* Role tabs for task cards — synced with role select */
+  const [activeRole, setActiveRole] = useState<string>(() => {
+    if (typeof window !== "undefined") return localStorage.getItem("workbench_role") || "manager";
+    return "manager";
+  });
 
   /* Workbench form - load from localStorage */
   const [intent, setIntent] = useState("");
@@ -86,6 +89,8 @@ function WorkbenchPage() {
   const [editedContent, setEditedContent] = useState("");
   const [knowledgeItems, setKnowledgeItems] = useState<{ key: string; name: string }[]>([]);
   const [knowledgeExpanded, setKnowledgeExpanded] = useState(false);
+  const [showOutputCustom, setShowOutputCustom] = useState(false);
+  const [lastUsedCardId, setLastUsedCardId] = useState<string | null>(null);
   const [quota, setQuota] = useState<{ used: number; limit: number; remaining: number } | null>(null);
 
   /* Model (hidden from user, always use default) */
@@ -94,6 +99,7 @@ function WorkbenchPage() {
   /* Refs */
   const inputSectionRef = useRef<HTMLDivElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   /* Load store */
   useEffect(() => {
@@ -143,18 +149,24 @@ function WorkbenchPage() {
 
   /* Handle task card click — pre-fill and auto-generate with streaming */
   const handleCardClick = async (card: RoleTaskCard) => {
+    // Abort previous request if running
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setIntent(card.userIntentTemplate);
     setRole(card.role);
+    setActiveRole(card.role);
     setTargetCustomer(card.targetCustomerType);
+    setLastUsedCardId(card.id);
     setOutputPackage(card.outputPackage);
     setExtraNote("");
     setError("");
     setResult(null);
     setStreamingContent("");
     setGenerating(true);
-
-    // Scroll to input area
-    setTimeout(() => inputSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 100);
 
     try {
       await api.streamWorkbench(
@@ -177,19 +189,31 @@ function WorkbenchPage() {
             profile_suggestions: null,
           });
           setStreamingContent("");
+          setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
         },
-        (msg) => setError(msg),
+        (msg) => {
+          if (!controller.signal.aborted) setError(msg);
+        },
+        controller.signal,
       );
     } catch (err) {
-      setError(getErrorMessage(err));
+      if (!controller.signal.aborted) setError(getErrorMessage(err));
     } finally {
-      setGenerating(false);
+      if (!controller.signal.aborted) setGenerating(false);
     }
   };
 
   /* Handle free-form generate with streaming */
   const handleGenerate = async () => {
     if (!intent.trim()) return;
+
+    // Abort previous request if running
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setError("");
     setResult(null);
     setStreamingContent("");
@@ -218,12 +242,15 @@ function WorkbenchPage() {
           setStreamingContent("");
           setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
         },
-        (msg) => setError(msg),
+        (msg) => {
+          if (!controller.signal.aborted) setError(msg);
+        },
+        controller.signal,
       );
     } catch (err) {
-      setError(getErrorMessage(err));
+      if (!controller.signal.aborted) setError(getErrorMessage(err));
     } finally {
-      setGenerating(false);
+      if (!controller.signal.aborted) setGenerating(false);
     }
   };
 
@@ -403,7 +430,7 @@ function WorkbenchPage() {
             <button
               key={r}
               type="button"
-              onClick={() => setActiveRole(r)}
+              onClick={() => { setActiveRole(r); setRole(r as WorkbenchRole); }}
               className={`shrink-0 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
                 activeRole === r
                   ? "bg-slate-50 text-slate-900 shadow-sm"
@@ -422,7 +449,10 @@ function WorkbenchPage() {
         {/* 任务卡片网格 */}
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {currentTasks
-            .sort((a, b) => (a.priority === "P0" ? -1 : 1) - (b.priority === "P0" ? -1 : 1))
+            .sort((a, b) => {
+              const order: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
+              return (order[a.priority] ?? 9) - (order[b.priority] ?? 9);
+            })
             .map((card) => (
               <div
                 key={card.id}
@@ -448,9 +478,23 @@ function WorkbenchPage() {
                 )}
                 <div className="mb-2 text-xs text-slate-400">{getOutputLabels(card.outputPackage)}</div>
                 {card.inputHints && card.inputHints.length > 0 && (
-                  <div className="mb-2 rounded bg-slate-50 px-2 py-1.5 text-xs text-slate-400">
+                  <div className="mb-2 rounded bg-slate-50 px-2 py-1.5 text-xs">
                     <span className="font-medium text-slate-500">可补充：</span>
-                    {card.inputHints.join("、")}
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {card.inputHints.map((hint) => (
+                        <button
+                          key={hint}
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExtraNote((prev) => prev ? `${prev}，${hint}` : hint);
+                          }}
+                          className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-500 hover:border-indigo-300 hover:text-indigo-600 transition-colors"
+                        >
+                          {hint}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
                 <button
@@ -517,55 +561,69 @@ function WorkbenchPage() {
 
         {/* Output package */}
         <div className="mb-4">
-          <label className="mb-2 block text-sm font-medium text-slate-700">
-            想要输出 <span className="text-slate-400 font-normal">(可多选)</span>
-          </label>
+          <label className="mb-2 block text-sm font-medium text-slate-700">想要输出</label>
           <div className="mb-2 flex flex-wrap gap-1.5">
-            {RECOMMENDED_OUTPUT_COMBOS.map((combo) => (
-              <button
-                key={combo.key}
-                type="button"
-                onClick={() => setOutputPackage(combo.packages)}
-                className="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs text-indigo-600 hover:bg-indigo-100 transition-colors"
-              >
-                {combo.label}
-              </button>
-            ))}
+            {RECOMMENDED_OUTPUT_COMBOS.map((combo) => {
+              const isActive = JSON.stringify(outputPackage.sort()) === JSON.stringify(combo.packages.sort());
+              return (
+                <button
+                  key={combo.key}
+                  type="button"
+                  onClick={() => setOutputPackage(combo.packages)}
+                  className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                    isActive
+                      ? "border-indigo-500 bg-indigo-600 text-white"
+                      : "border-indigo-200 bg-indigo-50 text-indigo-600 hover:bg-indigo-100"
+                  }`}
+                >
+                  {combo.label}
+                </button>
+              );
+            })}
           </div>
-          <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
-            {OUTPUT_PACKAGE_GROUPS.map((group) => (
-              <div key={group.key}>
-                <p className="mb-1 text-xs font-medium text-slate-400 uppercase tracking-wide">{group.label}</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {group.items.map((opt) => {
-                    const checked = outputPackage.includes(opt.value);
-                    return (
-                      <label
-                        key={opt.value}
-                        className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs cursor-pointer transition-colors ${
-                          checked
-                            ? "border-indigo-500 bg-indigo-50 text-indigo-600"
-                            : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => {
-                            setOutputPackage((prev: OutputPackageItem[]) =>
-                              checked ? prev.filter((v) => v !== opt.value) : [...prev, opt.value]
-                            );
-                          }}
-                          className="h-3 w-3 rounded border-slate-300 text-indigo-600"
-                        />
-                        {opt.label}
-                      </label>
-                    );
-                  })}
+          <button
+            type="button"
+            onClick={() => setShowOutputCustom(!showOutputCustom)}
+            className="text-xs text-slate-400 hover:text-slate-600 transition-colors"
+          >
+            {showOutputCustom ? "收起自定义 ▲" : "自定义输出 ▼"}
+          </button>
+          {showOutputCustom && (
+            <div className="mt-2 space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+              {OUTPUT_PACKAGE_GROUPS.map((group) => (
+                <div key={group.key}>
+                  <p className="mb-1 text-xs font-medium text-slate-400 uppercase tracking-wide">{group.label}</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {group.items.map((opt) => {
+                      const checked = outputPackage.includes(opt.value);
+                      return (
+                        <label
+                          key={opt.value}
+                          className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs cursor-pointer transition-colors ${
+                            checked
+                              ? "border-indigo-500 bg-indigo-50 text-indigo-600"
+                              : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              setOutputPackage((prev: OutputPackageItem[]) =>
+                                checked ? prev.filter((v) => v !== opt.value) : [...prev, opt.value]
+                              );
+                            }}
+                            className="h-3 w-3 rounded border-slate-300 text-indigo-600"
+                          />
+                          {opt.label}
+                        </label>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Extra note */}
@@ -699,56 +757,60 @@ function WorkbenchPage() {
             )}
 
             {/* Actions */}
-            <div className="flex items-center gap-2 border-t border-slate-100 px-4 py-3">
-              <button
-                type="button"
-                onClick={() => handleCopy(editing ? editedContent : result.content)}
-                className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 transition-colors"
-              >
-                {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                {copied ? "已复制" : "一键复制"}
-              </button>
+            <div className="border-t border-slate-100 px-4 py-3">
+              {/* Primary action */}
+              <div className="mb-2">
+                <button
+                  type="button"
+                  onClick={() => handleCopy(editing ? editedContent : result.content)}
+                  className="flex w-full items-center justify-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors"
+                >
+                  {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                  {copied ? "已复制到剪贴板" : "一键复制"}
+                </button>
+              </div>
+              {/* Secondary actions */}
               {editing ? (
-                <>
+                <div className="flex items-center gap-2">
                   <button
                     type="button"
                     onClick={() => {
                       setResult({ ...result, content: editedContent });
                       setEditing(false);
                     }}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-sm font-medium text-indigo-600 hover:bg-indigo-100 transition-colors"
+                    className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-600 hover:bg-indigo-100 transition-colors"
                   >
-                    <Check className="h-3.5 w-3.5" />
+                    <Check className="h-3 w-3" />
                     保存修改
                   </button>
                   <button
                     type="button"
                     onClick={() => setEditing(false)}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                    className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors"
                   >
                     取消
                   </button>
-                </>
+                </div>
               ) : (
-                <>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
                   <button
                     type="button"
                     onClick={() => {
                       setEditedContent(result.content);
                       setEditing(true);
                     }}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                    className="inline-flex items-center gap-1 text-slate-500 hover:text-indigo-600 transition-colors"
                   >
-                    <Pencil className="h-3.5 w-3.5" />
+                    <Pencil className="h-3 w-3" />
                     编辑
                   </button>
                   <button
                     type="button"
                     onClick={async () => {
-                      setExtraNote(result.content);
                       setGenerating(true);
                       setEditing(false);
                       setError("");
+                      const prevResult = result;
                       setResult(null);
                       setStreamingContent("");
                       try {
@@ -758,7 +820,7 @@ function WorkbenchPage() {
                             role,
                             target_customer_type: targetCustomer || undefined,
                             output_package: outputPackage.length > 0 ? outputPackage : undefined,
-                            extra_note: result.content,
+                            extra_note: "请基于以下内容优化改进，保留核心信息但提升质量：\n" + prevResult.content.substring(0, 500),
                           },
                           (token) => setStreamingContent((prev) => prev + token),
                           (fullContent, generationId) => {
@@ -781,28 +843,28 @@ function WorkbenchPage() {
                       }
                     }}
                     disabled={generating}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                    className="inline-flex items-center gap-1 text-slate-500 hover:text-indigo-600 transition-colors"
                   >
-                    <Wand2 className="h-3.5 w-3.5" />
+                    <Wand2 className="h-3 w-3" />
                     基于此优化
                   </button>
-                  <Link
-                    href={`/dashboard/posters?prompt=${encodeURIComponent(result.content.substring(0, 200))}`}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-sm font-medium text-indigo-600 hover:bg-indigo-100 transition-colors"
-                  >
-                    <ImageIcon className="h-3.5 w-3.5" />
-                    生成配套海报
-                  </Link>
                   <button
                     type="button"
                     onClick={handleGenerate}
                     disabled={generating}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                    className="inline-flex items-center gap-1 text-slate-500 hover:text-indigo-600 transition-colors"
                   >
-                    <RefreshCw className="h-3.5 w-3.5" />
+                    <RefreshCw className="h-3 w-3" />
                     重新生成
                   </button>
-                </>
+                  <Link
+                    href={`/dashboard/posters?prompt=${encodeURIComponent(result.content.substring(0, 200))}`}
+                    className="inline-flex items-center gap-1 text-slate-500 hover:text-indigo-600 transition-colors"
+                  >
+                    <ImageIcon className="h-3 w-3" />
+                    生成配套海报
+                  </Link>
+                </div>
               )}
             </div>
           </div>
@@ -814,6 +876,40 @@ function WorkbenchPage() {
             <p className="text-xs text-slate-400 leading-relaxed max-w-xs">
               点击上方任务卡片一键生成，或在自由输入区描述你的需求。
             </p>
+          </div>
+        )}
+
+        {/* Next step guidance after generation */}
+        {result && !generating && (
+          <div className="mt-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <p className="mb-3 text-sm font-medium text-slate-700">接下来你可以：</p>
+            <div className="grid gap-2 sm:grid-cols-3">
+              {ROLE_TASKS[role]
+                ?.filter((c) => c.id !== lastUsedCardId)
+                .slice(0, 3)
+                .map((card) => (
+                  <button
+                    key={card.id}
+                    type="button"
+                    onClick={() => handleCardClick(card)}
+                    disabled={generating}
+                    className="flex items-start gap-2 rounded-lg border border-slate-200 p-3 text-left hover:border-indigo-200 hover:bg-indigo-50/50 transition-all"
+                  >
+                    <ArrowRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-indigo-400" />
+                    <div>
+                      <p className="text-xs font-medium text-slate-700">{card.title}</p>
+                      <p className="text-xs text-slate-400 line-clamp-1">{card.description}</p>
+                    </div>
+                  </button>
+                ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              className="mt-3 text-xs text-indigo-500 hover:text-indigo-600 transition-colors"
+            >
+              查看全部任务 ↑
+            </button>
           </div>
         )}
       </div>

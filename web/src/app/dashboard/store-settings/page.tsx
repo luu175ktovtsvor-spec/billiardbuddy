@@ -24,27 +24,18 @@ type FormData = {
   has_coaching: boolean;
   has_tournament: boolean;
   has_parking: boolean;
-  target_customers: string;
-  style: string;
   advantages: string;
-  common_activities: string;
   pricing: string;
   member_cards: string;
   coach_count: string;
-  coach_service_types: string;
   coach_price_range: string;
   beverage_price_range: string;
   snack_price_range: string;
-  cue_price_range: string;
   table_brands: string;
-  cue_brands: string;
-  other_equipment: string;
   daily_avg_customers: string;
   peak_hours: string;
   avg_spend_range: string;
-  membership_types: string;
   recharge_rules: string;
-  membership_benefits: string;
 };
 
 const EMPTY_FORM: FormData = {
@@ -60,27 +51,18 @@ const EMPTY_FORM: FormData = {
   has_coaching: false,
   has_tournament: false,
   has_parking: false,
-  target_customers: "",
-  style: "",
   advantages: "",
-  common_activities: "",
   pricing: "",
   member_cards: "",
   coach_count: "",
-  coach_service_types: "",
   coach_price_range: "",
   beverage_price_range: "",
   snack_price_range: "",
-  cue_price_range: "",
   table_brands: "",
-  cue_brands: "",
-  other_equipment: "",
   daily_avg_customers: "",
   peak_hours: "",
   avg_spend_range: "",
-  membership_types: "",
   recharge_rules: "",
-  membership_benefits: "",
 };
 
 type ProfileFormData = {
@@ -114,6 +96,19 @@ type ProfileFormData = {
   forbidden_phrases: string;
   equipment_table_types: string[];
   equipment_table_type_note: string;
+  /* 新增字段 */
+  one_liner: string;
+  staff_config: string;
+  opening_days: string;
+  competitor_info: string;
+  groupbuy_platforms: string[];
+  groupbuy_rating: string;
+  groupbuy_conversion_goal: string;
+  has_monthly_tournament: boolean;
+  has_referral_area: boolean;
+  atmosphere_features: string[];
+  allow_ai_write_recharge: boolean;
+  reception_opening_line: string;
 };
 
 const EMPTY_PROFILE_FORM: ProfileFormData = {
@@ -147,6 +142,18 @@ const EMPTY_PROFILE_FORM: ProfileFormData = {
   forbidden_phrases: "",
   equipment_table_types: [],
   equipment_table_type_note: "",
+  one_liner: "",
+  staff_config: "",
+  opening_days: "",
+  competitor_info: "",
+  groupbuy_platforms: [],
+  groupbuy_rating: "",
+  groupbuy_conversion_goal: "",
+  has_monthly_tournament: false,
+  has_referral_area: false,
+  atmosphere_features: [],
+  allow_ai_write_recharge: false,
+  reception_opening_line: "",
 };
 
 function profileToFormData(profile: Record<string, unknown> | null | undefined): ProfileFormData {
@@ -200,6 +207,19 @@ function profileToFormData(profile: Record<string, unknown> | null | undefined):
     forbidden_phrases: Array.isArray(style.forbidden_phrases) ? (style.forbidden_phrases as string[]).join("、") : "",
     equipment_table_types: Array.isArray(equipment.table_types) ? equipment.table_types as string[] : [],
     equipment_table_type_note: (equipment.table_type_note as string) || "",
+    /* 新增字段 */
+    one_liner: (basic.one_liner as string) || "",
+    staff_config: (basic.staff_config as string) || "",
+    opening_days: (basic.opening_days as string) || "",
+    competitor_info: (basic.competitor_info as string) || "",
+    groupbuy_platforms: Array.isArray(commerce.groupbuy_platforms) ? commerce.groupbuy_platforms as string[] : [],
+    groupbuy_rating: (commerce.groupbuy_rating as string) || "",
+    groupbuy_conversion_goal: (commerce.groupbuy_conversion_goal as string) || "",
+    has_monthly_tournament: !!events.has_monthly_tournament,
+    has_referral_area: !!events.has_referral_area,
+    atmosphere_features: Array.isArray(events.atmosphere_features) ? events.atmosphere_features as string[] : [],
+    allow_ai_write_recharge: !!commerce.allow_ai_write_recharge,
+    reception_opening_line: (assistant.reception_opening_line as string) || "",
   };
 }
 
@@ -217,6 +237,10 @@ function profileFormDataToProfile(form: ProfileFormData): Record<string, unknown
       main_selling_points: form.main_selling_points ? form.main_selling_points.split(/[,，、]/).map(s => s.trim()).filter(Boolean) : [],
       allow_address_in_content: form.allow_phone_address,
       allow_phone_in_content: form.allow_phone_address,
+      one_liner: form.one_liner || "",
+      staff_config: form.staff_config || "",
+      opening_days: form.opening_days || "",
+      competitor_info: form.competitor_info || "",
     },
     business_goals: {
       current_goals: form.current_goals,
@@ -236,17 +260,25 @@ function profileFormDataToProfile(form: ProfileFormData): Record<string, unknown
       assistant_forbidden_words: form.assistant_forbidden_words ? form.assistant_forbidden_words.split(/[,，、]/).map(s => s.trim()).filter(Boolean) : [],
       allow_new_assistant_notice: form.allow_new_assistant_notice,
       allow_today_assistant_available: form.allow_today_assistant_available,
+      reception_opening_line: form.reception_opening_line || "",
     },
     events: {
       has_weekly_match: form.has_weekly_match,
+      has_monthly_tournament: form.has_monthly_tournament,
       has_light_competition: form.has_light_competition,
       has_partner_group: form.has_partner_group_activity,
+      has_referral_area: form.has_referral_area,
+      atmosphere_features: form.atmosphere_features,
     },
     commerce_rules: {
       has_groupbuy: form.has_groupbuy,
       has_membership: form.has_membership,
       allow_discount_copy: form.allow_discount_copy,
       allow_price_copy: form.allow_price_copy,
+      groupbuy_platforms: form.groupbuy_platforms,
+      groupbuy_rating: form.groupbuy_rating || "",
+      groupbuy_conversion_goal: form.groupbuy_conversion_goal || "",
+      allow_ai_write_recharge: form.allow_ai_write_recharge,
     },
     content_style: {
       moments_tone: form.moments_tone || "",
@@ -315,27 +347,18 @@ function formDataToPayload(form: FormData) {
     has_coaching: form.has_coaching,
     has_tournament: form.has_tournament,
     has_parking: form.has_parking,
-    target_customers: form.target_customers.trim() || null,
-    style: form.style.trim() || null,
     advantages: form.advantages.trim() || null,
-    common_activities: form.common_activities.trim() || null,
     pricing: parseFlexibleField(form.pricing) as PricingTier[] | string | null,
     member_cards: parseFlexibleField(form.member_cards) as MemberCard[] | string | null,
     coach_count: Number.isNaN(coachCount) ? null : coachCount,
-    coach_service_types: form.coach_service_types.trim() || null,
     coach_price_range: form.coach_price_range.trim() || null,
     beverage_price_range: form.beverage_price_range.trim() || null,
     snack_price_range: form.snack_price_range.trim() || null,
-    cue_price_range: form.cue_price_range.trim() || null,
     table_brands: form.table_brands.trim() || null,
-    cue_brands: form.cue_brands.trim() || null,
-    other_equipment: form.other_equipment.trim() || null,
     daily_avg_customers: Number.isNaN(dailyAvg) ? null : dailyAvg,
     peak_hours: form.peak_hours.trim() || null,
     avg_spend_range: form.avg_spend_range.trim() || null,
-    membership_types: parseFlexibleField(form.membership_types),
     recharge_rules: parseFlexibleField(form.recharge_rules),
-    membership_benefits: parseFlexibleField(form.membership_benefits),
   };
 }
 
@@ -423,27 +446,18 @@ export default function StoreSettingsPage() {
           has_coaching: s.has_coaching || false,
           has_tournament: s.has_tournament || false,
           has_parking: s.has_parking || false,
-          target_customers: s.target_customers || "",
-          style: s.style || "",
           advantages: s.advantages || "",
-          common_activities: s.common_activities || "",
           pricing: formatJsonForDisplay(s.pricing),
           member_cards: formatJsonForDisplay(s.member_cards),
           coach_count: s.coach_count != null ? String(s.coach_count) : "",
-          coach_service_types: s.coach_service_types || "",
           coach_price_range: s.coach_price_range || "",
           beverage_price_range: s.beverage_price_range || "",
           snack_price_range: s.snack_price_range || "",
-          cue_price_range: s.cue_price_range || "",
           table_brands: s.table_brands || "",
-          cue_brands: s.cue_brands || "",
-          other_equipment: s.other_equipment || "",
           daily_avg_customers: s.daily_avg_customers != null ? String(s.daily_avg_customers) : "",
           peak_hours: s.peak_hours || "",
           avg_spend_range: s.avg_spend_range || "",
-          membership_types: formatJsonForDisplay(s.membership_types),
           recharge_rules: formatJsonForDisplay(s.recharge_rules),
-          membership_benefits: formatJsonForDisplay(s.membership_benefits),
         });
         setProfileForm(profileToFormData(s.operation_profile));
       })
@@ -473,7 +487,7 @@ export default function StoreSettingsPage() {
     setShowPostSaveHint(false);
   };
 
-  const toggleProfileArray = (key: "main_customer_types" | "current_goals" | "private_domain_groups" | "assistant_types" | "equipment_table_types" | "target_conversion_types", value: string) => {
+  const toggleProfileArray = (key: "main_customer_types" | "current_goals" | "private_domain_groups" | "assistant_types" | "equipment_table_types" | "target_conversion_types" | "atmosphere_features" | "groupbuy_platforms", value: string) => {
     setProfileForm((prev) => {
       const arr = prev[key];
       const next = arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value];
@@ -816,22 +830,10 @@ export default function StoreSettingsPage() {
                 className={INPUT_CLASS} placeholder="如：中式黑八 8张，美式 4张" />
             </Field>
           </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="球桌品牌">
-              <input type="text" maxLength={200} value={form.table_brands}
-                onChange={(e) => updateField("table_brands", e.target.value)}
-                className={INPUT_CLASS} placeholder="如：乔氏、独牙、星牌" />
-            </Field>
-            <Field label="球杆品牌">
-              <input type="text" maxLength={200} value={form.cue_brands}
-                onChange={(e) => updateField("cue_brands", e.target.value)}
-                className={INPUT_CLASS} placeholder="如：环球、LP、匠心" />
-            </Field>
-          </div>
-          <Field label="其他设备（选填）">
-            <input type="text" maxLength={200} value={form.other_equipment}
-              onChange={(e) => updateField("other_equipment", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：飞镖机、投影仪、自助售货机" />
+          <Field label="球桌品牌">
+            <input type="text" maxLength={200} value={form.table_brands}
+              onChange={(e) => updateField("table_brands", e.target.value)}
+              className={INPUT_CLASS} placeholder="如：乔氏、独牙、星牌" />
           </Field>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <Toggle label="包间" checked={form.has_private_room}
@@ -843,18 +845,11 @@ export default function StoreSettingsPage() {
             <Toggle label="停车" checked={form.has_parking}
               onChange={(v) => updateField("has_parking", v)} />
           </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="教练/助教人数">
-              <input type="number" min={0} value={form.coach_count}
-                onChange={(e) => updateField("coach_count", e.target.value)}
-                className={INPUT_CLASS} placeholder="如：5" />
-            </Field>
-            <Field label="助教服务类型">
-              <input type="text" maxLength={200} value={form.coach_service_types}
-                onChange={(e) => updateField("coach_service_types", e.target.value)}
-                className={INPUT_CLASS} placeholder="如：陪练、教学、组局" />
-            </Field>
-          </div>
+          <Field label="教练/助教人数">
+            <input type="number" min={0} value={form.coach_count}
+              onChange={(e) => updateField("coach_count", e.target.value)}
+              className={INPUT_CLASS} placeholder="如：5" />
+          </Field>
           <div className="grid gap-4 sm:grid-cols-3">
             <Field label="助教价格范围">
               <input type="text" maxLength={100} value={form.coach_price_range}
@@ -872,11 +867,6 @@ export default function StoreSettingsPage() {
                 className={INPUT_CLASS} placeholder="如：3-15元" />
             </Field>
           </div>
-          <Field label="球杆价格范围（选填）">
-            <input type="text" maxLength={100} value={form.cue_price_range}
-              onChange={(e) => updateField("cue_price_range", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：100-500元" />
-          </Field>
           <div className="grid gap-4 sm:grid-cols-3">
             <Field label="日均客流">
               <input type="number" min={0} value={form.daily_avg_customers}
@@ -898,25 +888,10 @@ export default function StoreSettingsPage() {
 
         {/* 经营信息 */}
         <Section title="经营信息" icon={FileText}>
-          <Field label="主要客群">
-            <input type="text" maxLength={500} value={form.target_customers}
-              onChange={(e) => updateField("target_customers", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：周边大学生、上班族" />
-          </Field>
-          <Field label="门店风格">
-            <input type="text" maxLength={200} value={form.style}
-              onChange={(e) => updateField("style", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：潮酷风、休闲风" />
-          </Field>
           <Field label="门店优势">
             <textarea rows={3} value={form.advantages}
               onChange={(e) => updateField("advantages", e.target.value)}
               className={INPUT_CLASS} placeholder="描述门店的核心竞争优势" />
-          </Field>
-          <Field label="常用活动">
-            <textarea rows={3} value={form.common_activities}
-              onChange={(e) => updateField("common_activities", e.target.value)}
-              className={INPUT_CLASS} placeholder="门店经常举办的活动类型" />
           </Field>
           <Field label="价格体系">
             <textarea rows={3} value={form.pricing}
@@ -928,20 +903,10 @@ export default function StoreSettingsPage() {
               onChange={(e) => updateField("member_cards", e.target.value)}
               className={INPUT_CLASS} placeholder="如：月卡 300元，季卡 800元" />
           </Field>
-          <Field label="会员类型（选填）">
-            <textarea rows={2} value={form.membership_types}
-              onChange={(e) => updateField("membership_types", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：月卡、季卡、年卡" />
-          </Field>
           <Field label="充值规则（选填）">
             <textarea rows={2} value={form.recharge_rules}
               onChange={(e) => updateField("recharge_rules", e.target.value)}
               className={INPUT_CLASS} placeholder="如：充1000送99，充3000送399" />
-          </Field>
-          <Field label="会员权益（选填）">
-            <textarea rows={2} value={form.membership_benefits}
-              onChange={(e) => updateField("membership_benefits", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：台费折扣、免费饮料、专属时段" />
           </Field>
         </Section>
         </>
@@ -1022,6 +987,48 @@ export default function StoreSettingsPage() {
                 placeholder="如：南山中心区" />
             </Field>
           </div>
+
+          {/* 一句话介绍 */}
+          <Field label="一句话介绍（用于海报、团购页、朋友圈）">
+            <input type="text" maxLength={50}
+              value={profileForm.one_liner}
+              onChange={(e) => updateProfileField("one_liner", e.target.value)}
+              className={INPUT_CLASS}
+              placeholder="如：找搭子，抢台费，来某门店" />
+          </Field>
+
+          {/* 人员配置 + 开业天数 */}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="人员配置（简述）">
+              <input type="text" maxLength={200}
+                value={profileForm.staff_config}
+                onChange={(e) => updateProfileField("staff_config", e.target.value)}
+                className={INPUT_CLASS}
+                placeholder="如：店长1人，助教管理2人，教练3人，前台3人" />
+            </Field>
+            <Field label="开业阶段">
+              <select
+                value={profileForm.opening_days}
+                onChange={(e) => updateProfileField("opening_days", e.target.value)}
+                className={INPUT_CLASS}
+              >
+                <option value="">请选择</option>
+                <option value="not_opened">尚未开业</option>
+                <option value="within_30">开业30天内</option>
+                <option value="30_90">开业30-90天</option>
+                <option value="over_90">开业90天以上</option>
+              </select>
+            </Field>
+          </div>
+
+          {/* 竞对信息 */}
+          <Field label="周边竞对信息（选填）">
+            <textarea rows={2} maxLength={500}
+              value={profileForm.competitor_info}
+              onChange={(e) => updateProfileField("competitor_info", e.target.value)}
+              className={INPUT_CLASS}
+              placeholder="如：3km内有2家竞对，XX球房主打低价，YY球房主打竞技" />
+          </Field>
 
           {/* 主要卖点 */}
           <Field label="门店主要卖点（用逗号分隔）">
@@ -1207,6 +1214,13 @@ export default function StoreSettingsPage() {
                       placeholder="如：美女助教、陪玩" />
                   </Field>
                 </div>
+                <Field label="管理层接待开场白（选填）">
+                  <input type="text" maxLength={200}
+                    value={profileForm.reception_opening_line}
+                    onChange={(e) => updateProfileField("reception_opening_line", e.target.value)}
+                    className={INPUT_CLASS}
+                    placeholder="如：欢迎来我们球房，我是XX，有什么需要随时找我" />
+                </Field>
                   <Toggle label="允许写「新助教到店」" checked={profileForm.allow_new_assistant_notice}
                     onChange={(v) => updateProfileField("allow_new_assistant_notice", v)} />
                   <Toggle label="允许写「今日助教可约」" checked={profileForm.allow_today_assistant_available}
@@ -1216,14 +1230,39 @@ export default function StoreSettingsPage() {
             )}
           </div>
 
-          {/* 赛事/团购/价格规则 */}
+          {/* 赛事/活动 */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <Toggle label="固定做周赛/活动" checked={profileForm.has_weekly_match}
+            <Toggle label="固定做周赛" checked={profileForm.has_weekly_match}
               onChange={(v) => updateProfileField("has_weekly_match", v)} />
+            <Toggle label="有月赛" checked={profileForm.has_monthly_tournament}
+              onChange={(v) => updateProfileField("has_monthly_tournament", v)} />
             <Toggle label="有轻竞技/台费局" checked={profileForm.has_light_competition}
               onChange={(v) => updateProfileField("has_light_competition", v)} />
             <Toggle label="有搭子群活动" checked={profileForm.has_partner_group_activity}
               onChange={(v) => updateProfileField("has_partner_group_activity", v)} />
+            <Toggle label="有引流台/引流区" checked={profileForm.has_referral_area}
+              onChange={(v) => updateProfileField("has_referral_area", v)} />
+          </div>
+
+          {/* 氛围特色 */}
+          <Field label="氛围特色（多选）">
+            <TagGroup>
+              {[
+                ["professional_lighting", "专业灯光"],
+                ["sound_system", "音响系统"],
+                ["fragrance", "香氛"],
+                ["referral_area", "引流台"],
+                ["assistant_rest_area", "助教休息区"],
+              ].map(([value, label]) => (
+                <TagCheckbox key={value} label={label}
+                  checked={profileForm.atmosphere_features.includes(value)}
+                  onChange={() => toggleProfileArray("atmosphere_features", value)} />
+              ))}
+            </TagGroup>
+          </Field>
+
+          {/* 团购与会员 */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             <Toggle label="做团购（美团/抖音）" checked={profileForm.has_groupbuy}
               onChange={(v) => updateProfileField("has_groupbuy", v)} />
             <Toggle label="有会员体系" checked={profileForm.has_membership}
@@ -1232,7 +1271,53 @@ export default function StoreSettingsPage() {
               onChange={(v) => updateProfileField("allow_discount_copy", v)} />
             <Toggle label="允许写价格" checked={profileForm.allow_price_copy}
               onChange={(v) => updateProfileField("allow_price_copy", v)} />
+            <Toggle label="允许AI写充值方案" checked={profileForm.allow_ai_write_recharge}
+              onChange={(v) => updateProfileField("allow_ai_write_recharge", v)} />
           </div>
+
+          {/* 团购平台 + 评分 + 转化目标 */}
+          {profileForm.has_groupbuy && (
+            <div className="grid gap-4 sm:grid-cols-3">
+              <Field label="团购平台（多选）">
+                <TagGroup>
+                  {[
+                    ["meituan", "美团"],
+                    ["douyin", "抖音"],
+                  ].map(([value, label]) => (
+                    <TagCheckbox key={value} label={label}
+                      checked={profileForm.groupbuy_platforms.includes(value)}
+                      onChange={() => toggleProfileArray("groupbuy_platforms", value)} />
+                  ))}
+                </TagGroup>
+              </Field>
+              <Field label="当前团购评分">
+                <select
+                  value={profileForm.groupbuy_rating}
+                  onChange={(e) => updateProfileField("groupbuy_rating", e.target.value)}
+                  className={INPUT_CLASS}
+                >
+                  <option value="">请选择</option>
+                  <option value="below_4.6">4.6以下</option>
+                  <option value="4.6_4.8">4.6-4.8</option>
+                  <option value="4.8_4.9">4.8-4.9</option>
+                  <option value="above_4.9">4.9以上</option>
+                </select>
+              </Field>
+              <Field label="团购客到店目标">
+                <select
+                  value={profileForm.groupbuy_conversion_goal}
+                  onChange={(e) => updateProfileField("groupbuy_conversion_goal", e.target.value)}
+                  className={INPUT_CLASS}
+                >
+                  <option value="">请选择</option>
+                  <option value="add_wechat">加微信进群</option>
+                  <option value="recommend_assistant">推荐助教</option>
+                  <option value="push_recharge">推充值卡</option>
+                  <option value="experience_guide">体验引导</option>
+                </select>
+              </Field>
+            </div>
+          )}
 
           <div className="grid gap-4 sm:grid-cols-3">
             <Field label="朋友圈语气">

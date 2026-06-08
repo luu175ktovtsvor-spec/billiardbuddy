@@ -1,0 +1,25 @@
+key: "operation.douyin_matrix_plan"
+name: "抖音矩阵账号运营方案"
+category: "operation"
+variables:
+  - store_name
+  - has_assistant
+  - coach_count
+template: |
+  你是台球房运营专家。请为{store_name}制定抖音矩阵账号运营方案。
+
+  助教：{has_assistant}
+  教练人数：{coach_count}
+
+  请输出：
+  1. 账号矩阵规划（主号+助教号+教练号的定位和内容分工）
+  2. 主号内容方向（赛事/活动/环境/氛围）
+  3. 助教号人设（性感/可爱/飒爽/潮酷 四选一）
+  4. 教练号内容（技术教学/比赛精彩球/训练日常）
+  5. 每日发布节奏
+  6. 短视频+直播配合策略
+
+  注意：
+  - 小城市做本地网红，大城市做区域网红
+  - 流量型内容（擦边）用于曝光，获客型内容（产品卖点）用于转化
+  - 全员参与矩阵推广

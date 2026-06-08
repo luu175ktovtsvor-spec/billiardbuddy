@@ -67,13 +67,8 @@ async def generate_images(
     add_qrcode_overlay: bool = True,
     conversation_id: str | None = None,
     quality: str = "standard",
-    previous_response_id: str | None = None,
 ) -> dict:
-    """AI 生图，支持 Responses API 多轮对话。
-
-    当 previous_response_id 存在时使用 Responses API（多轮）。
-    否则使用 Images API（首次生成）。
-    """
+    """AI 生图，支持多图输入（Logo/二维码/参考图）和以图生图调整。"""
     from services.ai.providers.openai_image import OpenAIImageProvider
 
     api_key = settings.openai_api_key
@@ -91,7 +86,7 @@ async def generate_images(
         parts.append("no text, no words, no letters, no typography")
     full_prompt = ", ".join(parts)
 
-    # 多轮对话：拼接历史上下文
+    # 多轮对话：拼接历史上下文（只保留最近 3 轮）
     if conversation_id:
         try:
             hist_stmt = (
@@ -107,7 +102,7 @@ async def generate_images(
 
             if history_gens:
                 history_lines = []
-                for i, hg in enumerate(history_gens, 1):
+                for i, hg in enumerate(history_gens[-3:], 1):  # 只保留最近 3 轮
                     hist_prompt = hg.input_params.get("prompt", "") if hg.input_params else ""
                     if hist_prompt:
                         history_lines.append(f"{i}. {hist_prompt}")
@@ -119,8 +114,11 @@ async def generate_images(
         except Exception:
             logger.warning("加载对话历史失败，跳过上下文拼接", exc_info=True)
 
-    # 加载 Logo bytes（作为 input_image 传给 AI）
+    # 加载参考图（Logo/二维码/原图/用户上传的参考图）
     input_images: list[bytes] = []
+    size = _get_api_size(ratio, quality)
+
+    # 加载 Logo 和二维码作为参考物料传给 AI
     if add_logo_overlay and store.logo_url:
         logo_rel = store.logo_url.removeprefix("/uploads/")
         logo_path = Path(settings.upload_dir) / logo_rel
@@ -132,9 +130,7 @@ async def generate_images(
         if qr_path.exists():
             input_images.append(qr_path.read_bytes())
 
-    size = _get_api_size(ratio, quality)
-
-    # 如果是调整模式，加载原图作为参考
+    # 如果是调整模式，加载原图作为参考（以图生图）
     if refine_from:
         result = await db.execute(
             select(Generation).where(Generation.id == uuid.UUID(refine_from))
@@ -143,7 +139,7 @@ async def generate_images(
         if original and original.result:
             original_path = Path(settings.upload_dir) / original.result.removeprefix("/uploads/")
             if original_path.exists():
-                input_images.insert(0, original_path.read_bytes())
+                input_images.append(original_path.read_bytes())
                 logger.info("基于原图调整: %s", original_path)
     elif reference_image_paths:
         allowed_dir = Path(settings.upload_dir).resolve() / "references"
@@ -154,8 +150,8 @@ async def generate_images(
             if ref_path.exists():
                 input_images.append(ref_path.read_bytes())
 
-    logger.info("AI 生图: ratio=%s, count=%d, has_ref=%s, conversation=%s, has_logo=%s",
-                ratio, count, bool(input_images), bool(conversation_id), bool(input_images))
+    logger.info("AI 生图: ratio=%s, count=%d, has_ref=%s, conversation=%s",
+                ratio, count, bool(input_images), bool(conversation_id))
 
     # 使用 Images API 生成
     provider = OpenAIImageProvider(api_key=api_key, base_url=settings.openai_base_url)
@@ -300,7 +296,6 @@ async def get_conversation_detail(
             "poster_url": gen.result,
             "created_at": gen.created_at,
             "prompt": gen.input_params.get("prompt", "") if gen.input_params else "",
-            "openai_response_id": gen.openai_response_id,
         })
 
     return {

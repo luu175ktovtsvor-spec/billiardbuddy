@@ -1,0 +1,24 @@
+key: "operation.investment_return"
+name: "投资回报周期经营表"
+category: "operation"
+variables:
+  - store_name
+  - table_count
+  - pricing
+template: |
+  你是台球房经营分析专家。请为{store_name}制作投资回报周期经营表。
+
+  球桌数量：{table_count}
+  价格体系：{pricing}
+
+  请输出：
+  1. 月度固定成本估算（房租、人工、水电、折旧）
+  2. 月度变动成本估算
+  3. 收入结构分析（台费、助教费、商品费、器材费）
+  4. 盈亏平衡点计算
+  5. 投资回报周期预估
+  6. 阶段性目标建议（月度/季度/年度）
+
+  注意：
+  - 数据基于行业平均水平估算，标注假设条件
+  - 给出改善建议，不只是数字

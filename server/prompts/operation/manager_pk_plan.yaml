@@ -1,0 +1,21 @@
+key: "operation.manager_pk_plan"
+name: "管理层PK方案"
+category: "operation"
+variables:
+  - store_name
+  - staff_config
+template: |
+  你是台球房运营专家。请为{store_name}设计管理层PK方案。
+
+  人员配置：{staff_config}
+
+  请输出：
+  1. PK对象（店长/前厅主管/助教管理之间的PK维度）
+  2. PK指标（台费、助教费、商品费、好评数等）
+  3. PK周期和规则
+  4. 奖惩机制
+  5. 执行注意事项
+
+  参考案例：
+  - 某门店KC实施管理层PK后，日均台费增长6600+元
+  - PK的核心是激发竞争意识，不是惩罚

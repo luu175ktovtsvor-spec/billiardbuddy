@@ -15,11 +15,10 @@ class ImageGenerateRequest(BaseModel):
     refine_from: str | None = Field(default=None, description="基于某张已生成图片进行调整，传入 generation_id")
     add_store_info: bool = Field(default=False, description="是否在 prompt 中注入门店信息")
     no_text: bool = Field(default=False, description="是否禁止 AI 生成文字")
-    add_overlay: bool = Field(default=True, description="是否叠加 Logo 和二维码（兼容旧接口）")
+    add_overlay: bool = Field(default=True, description="是否叠加 Logo 和二维码")
     add_logo_overlay: bool = Field(default=True, description="是否叠加 Logo")
     add_qrcode_overlay: bool = Field(default=True, description="是否叠加二维码")
     conversation_id: str | None = Field(default=None, description="对话 ID，用于多轮对话")
-    previous_response_id: str | None = Field(default=None, description="上一轮的 OpenAI response ID")
     quality: str = Field(default="standard", description="图片质量：standard(标准) / high(高清)")
 
 
@@ -36,7 +35,6 @@ class ImageGenerateResponse(BaseModel):
     model_used: str
     count: int
     conversation_id: str | None = None
-    response_id: str | None = None
 
 
 class PosterConversationItem(BaseModel):
