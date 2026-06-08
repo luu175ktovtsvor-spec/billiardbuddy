@@ -57,6 +57,7 @@ async def stream_workbench(
             "tone": TONE_LABELS.get("friendly", "friendly"),
             "target": CUSTOMER_LABELS.get(target_customer_type or "all", "全部客户"),
             "extra_note": extra_note or "无",
+            "scenario": "日常",
         }
         rendered_prompt = prompt_engine.render(prompt_key, store, extra_vars)
         rendered_prompt = _append_guardrails(rendered_prompt, store, role=role)
