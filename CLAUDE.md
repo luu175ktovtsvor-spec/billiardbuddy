@@ -52,9 +52,9 @@ web/                    # Next.js 前端
     types/              # TypeScript 类型定义
 
 server/                 # FastAPI 后端
-  api/v1/              # API 路由（auth, stores, generate, stream, posters, generations, knowledge, dashboard, outreach, sop, games, performance, diagnosis）
-  core/                # 安全、配额、异常
-  models/              # SQLAlchemy ORM 模型（user, store, generation, quota）
+  api/v1/              # API 路由（auth, stores, generate, stream, posters, generations, knowledge, dashboard, outreach, sop, games, performance, diagnosis, members）
+  core/                # 安全、配额、异常、租户隔离、RBAC 权限
+  models/              # SQLAlchemy ORM 模型（user, store, store_member, store_invitation, generation, quota）
   schemas/             # Pydantic 请求/响应模型
   services/
     ai/
@@ -86,12 +86,14 @@ server/                 # FastAPI 后端
 ## 核心架构原则
 
 1. **场景驱动，不是对话驱动** — 用户通过岗位工作台（Workbench）的场景卡片+自然语言输入触发 AI 生成，不做自由聊天
-2. **门店数据隔离** — 所有业务数据绑定 `store_id`，查询必须过滤 store_id
-3. **AI Provider 抽象** — 文本模型和图片模型各有独立抽象基类（`TextProvider` / `ImageProvider`），通过 `ProviderFactory` 创建实例
-4. **Prompt 模板与业务解耦** — Prompt 存放在 `server/prompts/` 下的 YAML 文件中，支持 `{variable}` 占位符
-5. **PromptEngine 是单例** — 通过 `get_prompt_engine()` 获取，不直接 `PromptEngine()`
-6. **海报 = AI 生图 + Logo/二维码叠加** — AI 生成背景图，Pillow 叠加门店 Logo 和二维码
-7. **不做自动触达** — 只生成内容供人工复制使用，不做自动群发、自动私信
+2. **门店数据隔离** — 所有业务数据绑定 `store_id`，通过 `core/tenant.py` 自动过滤（contextvars + do_orm_execute 事件监听器），fail-safe 设计
+3. **统一 RBAC 权限** — 通过 `core/rbac.py` 的权限矩阵 + `require_permission()` 依赖工厂实现集中式权限控制，6 个角色各有不同权限
+4. **AI Provider 抽象** — 文本模型和图片模型各有独立抽象基类（`TextProvider` / `ImageProvider`），通过 `ProviderFactory` 创建实例
+5. **Prompt 模板与业务解耦** — Prompt 存放在 `server/prompts/` 下的 YAML 文件中，支持 `{variable}` 占位符
+6. **PromptEngine 是单例** — 通过 `get_prompt_engine()` 获取，不直接 `PromptEngine()`
+7. **海报 = AI 生图 + Logo/二维码叠加** — AI 生成背景图，Pillow 叠加门店 Logo 和二维码
+8. **不做自动触达** — 只生成内容供人工复制使用，不做自动群发、自动私信
+9. **成员邀请机制** — 管理员生成邀请码 → 员工注册时输入 → 自动加入门店并获得指定角色
 
 ## 开发规范
 
@@ -186,6 +188,8 @@ journalctl -u billiards-backend -n 50 --no-pager
 | 配额管理 | ✅ |
 | 多 AI Provider（DeepSeek/OpenAI） | ✅ |
 | fewshot 选择器 | ✅ |
+| 多租户安全（自动 store_id 过滤 + RBAC 权限矩阵） | ✅ |
+| 成员管理（邀请码 + 手动添加 + 角色调整 + 移除） | ✅ |
 | 服务器部署（git + deploy_us.sh） | ✅ |
 
 ## 行业知识体系
@@ -216,7 +220,6 @@ journalctl -u billiards-backend -n 50 --no-pager
 
 - 不做微服务，单体应用
 - 不做国际化
-- 不做复杂权限系统（只需 boss/manager/assistant_manager/coach/frontdesk/operator 六角色）
 - 不做 Prompt 可视化编辑器
 - 不做海报拖拽编辑器
 - 不做 WebSocket 实时协作
