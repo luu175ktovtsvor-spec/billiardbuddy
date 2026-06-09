@@ -49,7 +49,7 @@ function PostersPage() {
   /* Entry page */
   const [prompt, setPrompt] = useState("");
   const [ratio, setRatio] = useState("3:4");
-  const [quality, setQuality] = useState<"standard" | "high">("standard");
+  const [quality, setQuality] = useState<"low" | "medium" | "high" | "auto">("auto");
   const [inspirationTags, setInspirationTags] = useState<InspirationTag[]>([]);
   const [sizeOptions, setSizeOptions] = useState<SizeOption[]>([]);
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
@@ -70,6 +70,7 @@ function PostersPage() {
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   /* Load store */
   useEffect(() => {
@@ -153,6 +154,13 @@ function PostersPage() {
     if (!text || generating) return;
     setError("");
 
+    // Cancel any ongoing request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     // Add user message
     const userMsg: ConversationMessage = { role: "user", content: text };
     setMessages((prev) => [...prev, userMsg]);
@@ -178,7 +186,7 @@ function PostersPage() {
         add_store_info: addStoreInfo,
         no_text: noText,
         conversation_id: conversationId || undefined,
-      });
+      }, controller.signal);
 
       const assistantMsg: ConversationMessage = { role: "assistant", content: "", images: res.images };
       setMessages((prev) => [...prev, assistantMsg]);
@@ -191,6 +199,10 @@ function PostersPage() {
       references.forEach((r) => URL.revokeObjectURL(r.preview));
       setReferences([]);
     } catch (err) {
+      // Ignore abort errors (user clicked generate again)
+      if (err instanceof DOMException && err.name === "AbortError") {
+        return;
+      }
       setError(getErrorMessage(err));
     } finally {
       setGenerating(false);
@@ -339,6 +351,18 @@ function PostersPage() {
                             className="inline-flex items-center gap-1 rounded-md bg-white/20 px-2 py-1 text-xs text-indigo-100 hover:bg-white/30"
                           >
                             基于此调整
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRefineFrom(null);
+                              setPrompt("");
+                              scrollToBottom();
+                              document.querySelector("textarea")?.focus();
+                            }}
+                            className="inline-flex items-center gap-1 rounded-md bg-white/20 px-2 py-1 text-xs text-indigo-100 hover:bg-white/30"
+                          >
+                            重新生成
                           </button>
                           <button
                             type="button"
@@ -491,11 +515,13 @@ function PostersPage() {
               <span className="text-xs text-slate-500">质量</span>
               <select
                 value={quality}
-                onChange={(e) => setQuality(e.target.value as "standard" | "high")}
+                onChange={(e) => setQuality(e.target.value as "low" | "medium" | "high" | "auto")}
                 className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none"
               >
-                <option value="standard">标准</option>
-                <option value="high">高清 (2K)</option>
+                <option value="low">草稿 (low)</option>
+                <option value="medium">标准 (medium)</option>
+                <option value="high">高清 (high)</option>
+                <option value="auto">自动 (auto)</option>
               </select>
             </div>
 

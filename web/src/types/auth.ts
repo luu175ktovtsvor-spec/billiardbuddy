@@ -23,5 +23,6 @@ export interface User {
   id: string;
   phone: string;
   name: string | null;
+  is_admin?: boolean;
   created_at: string;
 }

@@ -334,7 +334,7 @@ export default function MembersPage() {
       {tab === "invitations" && (
         <div className="rounded-lg border border-slate-200 bg-white">
           {invitations.length === 0 ? (
-            <div className="p-8 text-center text-slate-400">暂无邀请码，点击"生成邀请码"创建</div>
+            <div className="p-8 text-center text-slate-400">暂无邀请码，点击&quot;生成邀请码&quot;创建</div>
           ) : (
             <div className="divide-y divide-slate-100">
               {invitations.map((inv) => (

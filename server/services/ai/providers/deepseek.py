@@ -16,6 +16,7 @@ class DeepSeekProvider(TextProvider):
 
     def __init__(self):
         self._client: AsyncOpenAI | None = None
+        self._last_usage: dict | None = None
 
     def _get_client(self) -> AsyncOpenAI:
         if self._client is None:
@@ -32,10 +33,13 @@ class DeepSeekProvider(TextProvider):
         return self._client
 
     async def generate(self, request: TextRequest) -> TextResponse:
-        messages = []
-        if request.system_prompt:
-            messages.append({"role": "system", "content": request.system_prompt})
-        messages.append({"role": "user", "content": request.prompt})
+        if request.messages:
+            messages = request.messages
+        else:
+            messages = []
+            if request.system_prompt:
+                messages.append({"role": "system", "content": request.system_prompt})
+            messages.append({"role": "user", "content": request.prompt})
 
         client = self._get_client()
         try:
@@ -81,10 +85,13 @@ class DeepSeekProvider(TextProvider):
         )
 
     async def generate_stream(self, request: TextRequest) -> AsyncIterator[str]:
-        messages = []
-        if request.system_prompt:
-            messages.append({"role": "system", "content": request.system_prompt})
-        messages.append({"role": "user", "content": request.prompt})
+        if request.messages:
+            messages = request.messages
+        else:
+            messages = []
+            if request.system_prompt:
+                messages.append({"role": "system", "content": request.system_prompt})
+            messages.append({"role": "user", "content": request.prompt})
 
         client = self._get_client()
         try:
@@ -94,6 +101,7 @@ class DeepSeekProvider(TextProvider):
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
                 stream=True,
+                stream_options={"include_usage": True},
             )
         except APIStatusError as e:
             raise _classify_api_error(e) from e
@@ -118,6 +126,14 @@ class DeepSeekProvider(TextProvider):
 
         try:
             async for chunk in stream:
+                # 收集 usage 统计
+                if chunk.usage:
+                    self._last_usage = {
+                        "prompt_tokens": chunk.usage.prompt_tokens,
+                        "completion_tokens": chunk.usage.completion_tokens,
+                        "total_tokens": chunk.usage.total_tokens,
+                        "cache_hit_tokens": getattr(chunk.usage, 'prompt_cache_hit_tokens', 0),
+                    }
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
         except APIStatusError as e:

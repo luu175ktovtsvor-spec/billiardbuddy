@@ -16,7 +16,7 @@ class ImageGenerateRequest(BaseModel):
     add_store_info: bool = Field(default=False, description="是否在 prompt 中注入门店信息")
     no_text: bool = Field(default=False, description="是否禁止 AI 生成文字")
     conversation_id: str | None = Field(default=None, description="对话 ID，用于多轮对话")
-    quality: str = Field(default="standard", description="图片质量：standard(标准) / high(高清)")
+    quality: str = Field(default="auto", description="图片质量：low(草稿) / medium(标准) / high(高清) / auto(自动)")
 
 
 class GeneratedImage(BaseModel):

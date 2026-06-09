@@ -810,6 +810,37 @@ export default function StoreSettingsPage() {
             </div>
           </Section>
         )}
+
+        {/* 品牌风格 */}
+        {!isNew && (
+          <Section title="品牌风格" icon={Sparkles}>
+            <Field label="品牌风格">
+              <select
+                value={(store as any)?.brand_style || ""}
+                onChange={async (e) => {
+                  const value = e.target.value;
+                  try {
+                    await api.updateStore({ brand_style: value || undefined } as any);
+                    const updated = await api.getMyStore();
+                    setStore(updated);
+                  } catch {
+                    // 静默处理
+                  }
+                }}
+                className={INPUT_CLASS}
+              >
+                <option value="">不指定</option>
+                <option value="lively">活泼（轻松、emoji、亲切）</option>
+                <option value="professional">专业（正式、数据、商务）</option>
+                <option value="youthful">年轻（潮流、互动、Z世代）</option>
+                <option value="premium">高端（优雅、品质、尊贵）</option>
+              </select>
+            </Field>
+            <p className="text-xs text-slate-400 mt-1">
+              选择品牌风格后，AI 生成的文案会自动匹配对应语气。
+            </p>
+          </Section>
+        )}
         </>
         )}
 

@@ -43,6 +43,7 @@ class OpenAIImageProvider(ImageProvider):
         prompt: str,
         model: str = "gpt-image-2",
         size: str = "1024*1024",
+        quality: str = "auto",
         image: bytes | list[bytes] | None = None,
         **kwargs,
     ) -> bytes:
@@ -78,6 +79,7 @@ class OpenAIImageProvider(ImageProvider):
                 prompt=prompt,
                 image=image_file,
                 size=openai_size,
+                quality=quality,
             )
         else:
             response = await client.images.generate(
@@ -85,6 +87,7 @@ class OpenAIImageProvider(ImageProvider):
                 prompt=prompt,
                 n=1,
                 size=openai_size,
+                quality=quality,
             )
 
         image_b64 = response.data[0].b64_json

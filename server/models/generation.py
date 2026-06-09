@@ -32,6 +32,11 @@ class Generation(Base):
         UUID(as_uuid=True), nullable=True, index=True
     )
     openai_response_id: Mapped[str | None] = mapped_column(String(200))
+    effect_rating: Mapped[str | None] = mapped_column(String(20))  # "good" / "bad"
+    effect_note: Mapped[str | None] = mapped_column(String(500))
+    rated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    quality_used: Mapped[str | None] = mapped_column(String(20))
+    image_size: Mapped[str | None] = mapped_column(String(20))
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True

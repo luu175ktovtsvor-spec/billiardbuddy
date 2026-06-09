@@ -1,0 +1,13 @@
+key: "templates.activity"
+name: "活动策划模板"
+category: "activity"
+templates:
+  - label: "充值活动"
+    prompt: "策划一个充值活动，充500送100，目标是提升现金流"
+    tags: ["充值", "现金流"]
+  - label: "赛事活动"
+    prompt: "策划一个中式八球周赛，报名费20元，冠军奖金500元"
+    tags: ["赛事", "比赛"]
+  - label: "引流活动"
+    prompt: "策划一个新人引流活动，首次到店9.9元体验2小时"
+    tags: ["引流", "新人"]

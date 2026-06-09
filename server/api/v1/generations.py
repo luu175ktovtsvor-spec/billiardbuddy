@@ -54,6 +54,7 @@ async def list_generation_history(
                 sub_type=item.sub_type,
                 input_params=item.input_params,
                 content=item.result,
+                result=item.result if item.type == "poster" else None,
                 model_used=item.model_used,
                 tokens_used=item.tokens_used,
                 is_favorite=item.is_favorite,
@@ -90,6 +91,7 @@ async def get_generation_history_detail(
         sub_type=generation.sub_type,
         input_params=generation.input_params,
         content=generation.result,
+        result=generation.result if generation.type == "poster" else None,
         model_used=generation.model_used,
         tokens_used=generation.tokens_used,
         is_favorite=generation.is_favorite,
@@ -122,3 +124,48 @@ async def toggle_generation_favorite(
     )
     await db.commit()
     return {"is_favorite": new_status}
+
+
+@router.get("/export")
+async def export_generations(
+    current_user: Annotated[User, Depends(get_current_user)],
+    current_store: Annotated[Store, Depends(get_current_store)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    generation_type: Annotated[str | None, Query(alias="type")] = None,
+):
+    """导出生成历史为 CSV。"""
+    from fastapi.responses import StreamingResponse
+    import csv
+    import io
+
+    items, _ = await list_generations(
+        db=db,
+        store_id=current_store.id,
+        page=1,
+        page_size=1000,
+        generation_type=generation_type,
+    )
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID", "类型", "子类型", "内容", "模型", "Token数", "收藏", "效果评分", "创建时间"])
+
+    for item in items:
+        writer.writerow([
+            str(item.id),
+            item.type,
+            item.sub_type or "",
+            (item.result or "")[:200],
+            item.model_used or "",
+            item.tokens_used or 0,
+            "是" if item.is_favorite else "否",
+            item.effect_rating or "",
+            item.created_at.strftime("%Y-%m-%d %H:%M"),
+        ])
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=generations.csv"},
+    )

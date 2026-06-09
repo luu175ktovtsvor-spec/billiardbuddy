@@ -16,6 +16,10 @@ from api.v1.knowledge import router as knowledge_router
 from api.v1.quota import router as quota_router
 from api.v1.models import router as models_router
 from api.v1.members import router as members_router
+from api.v1.admin import router as admin_router
+from api.v1.feedback import router as feedback_router
+from api.v1.templates import router as templates_router
+from api.v1.repurpose import router as repurpose_router
 
 router = APIRouter()
 
@@ -35,6 +39,10 @@ router.include_router(knowledge_router, prefix="/knowledge", tags=["知识库"])
 router.include_router(quota_router, prefix="/quota", tags=["配额"])
 router.include_router(models_router, prefix="/models", tags=["模型"])
 router.include_router(members_router, prefix="/members", tags=["成员管理"])
+router.include_router(admin_router, prefix="/admin", tags=["管理后台"])
+router.include_router(feedback_router, prefix="/feedback", tags=["反馈"])
+router.include_router(templates_router, prefix="/templates", tags=["模板"])
+router.include_router(repurpose_router, prefix="/generate", tags=["内容变体"])
 
 
 @router.get("/health")

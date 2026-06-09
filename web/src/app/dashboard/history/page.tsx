@@ -29,6 +29,9 @@ function stripMarkdown(text: string): string {
     .replace(/^\d+\.\s+/gm, "")         // 去掉有序列表
     .replace(/^>\s+/gm, "")             // 去掉引用
     .replace(/^---+$/gm, "")            // 去掉分割线
+    .replace(/^\|(.+)\|$/gm, "")        // 去掉表格行
+    .replace(/^\|[-:\s|]+\|$/gm, "")    // 去掉表格分隔行
+    .replace(/\n{3,}/g, "\n\n")         // 多空行压缩
     .trim();
 }
 
@@ -152,6 +155,27 @@ export default function HistoryPage() {
     }
   };
 
+  const handleFeedback = async (id: string, rating: "good" | "bad") => {
+    try {
+      const token = api.getToken();
+      await fetch(`${api.baseUrl}/api/v1/feedback/generations/${id}/feedback`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ rating }),
+      });
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === id ? { ...item, effect_rating: rating } : item
+        )
+      );
+    } catch {
+      // 静默处理
+    }
+  };
+
   const totalPages = Math.ceil(total / pageSize);
 
   return (
@@ -191,6 +215,16 @@ export default function HistoryPage() {
             <option value="workbench">工作台</option>
             <option value="poster">海报</option>
           </select>
+          <button
+            onClick={() => {
+              const token = api.getToken();
+              const typeParam = typeFilter ? `?type=${typeFilter}` : "";
+              window.open(`${api.baseUrl}/api/v1/generations/export${typeParam}`, "_blank");
+            }}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+          >
+            导出 CSV
+          </button>
         </div>
       </div>
 
@@ -234,6 +268,22 @@ export default function HistoryPage() {
                   </span>
                 </div>
                 <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); handleFeedback(item.id, "good"); }}
+                    className={`rounded-md p-1 transition-colors ${item.effect_rating === "good" ? "bg-green-100 text-green-600" : "hover:bg-slate-50 text-slate-400 hover:text-green-600"}`}
+                    title="效果好"
+                  >
+                    👍
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); handleFeedback(item.id, "bad"); }}
+                    className={`rounded-md p-1 transition-colors ${item.effect_rating === "bad" ? "bg-red-100 text-red-600" : "hover:bg-slate-50 text-slate-400 hover:text-red-600"}`}
+                    title="效果差"
+                  >
+                    👎
+                  </button>
                   <button
                     type="button"
                     onClick={() => handleToggleFavorite(item.id, item.is_favorite)}
@@ -338,6 +388,32 @@ export default function HistoryPage() {
                 />
               </button>
               <CopyButton text={detailItem.content || ""} />
+            </div>
+
+            {/* 反馈按钮 */}
+            <div className="flex gap-2 mt-4">
+              <button
+                type="button"
+                onClick={() => handleFeedback(detailItem.id, "good")}
+                className={`px-3 py-1.5 rounded text-sm ${
+                  detailItem.effect_rating === "good"
+                    ? "bg-green-100 text-green-700 border border-green-300"
+                    : "bg-slate-50 text-slate-600 border border-slate-200 hover:bg-green-50"
+                }`}
+              >
+                👍 效果好
+              </button>
+              <button
+                type="button"
+                onClick={() => handleFeedback(detailItem.id, "bad")}
+                className={`px-3 py-1.5 rounded text-sm ${
+                  detailItem.effect_rating === "bad"
+                    ? "bg-red-100 text-red-700 border border-red-300"
+                    : "bg-slate-50 text-slate-600 border border-slate-200 hover:bg-red-50"
+                }`}
+              >
+                👎 效果差
+              </button>
             </div>
 
             <div className="prose prose-sm prose-slate max-w-none">

@@ -109,6 +109,9 @@ function WorkbenchPage() {
   const [lastUsedCardId, setLastUsedCardId] = useState<string | null>(null);
   const [quota, setQuota] = useState<{ used: number; limit: number; remaining: number } | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [effectRating, setEffectRating] = useState<string | null>(null);
+  const [showRepurpose, setShowRepurpose] = useState(false);
+  const [repurposing, setRepurposing] = useState(false);
 
   /* Model (hidden from user, always use default) */
   const [selectedModel, setSelectedModel] = useState<string>("deepseek-v4-flash");
@@ -293,6 +296,46 @@ function WorkbenchPage() {
     }
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  /* Feedback */
+  const handleFeedback = async (rating: "good" | "bad") => {
+    if (!result?.generation_id) return;
+    try {
+      await api.submitFeedback(result.generation_id, rating);
+      setEffectRating(rating);
+    } catch {
+      // 静默处理
+    }
+  };
+
+  /* Repurpose */
+  const handleRepurpose = async (platform: string) => {
+    if (!result?.generation_id) return;
+    setRepurposing(true);
+    setShowRepurpose(false);
+    try {
+      const token = api.getToken();
+      const res = await fetch(`${api.baseUrl}/api/v1/generate/repurpose`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          generation_id: result.generation_id,
+          target_platform: platform,
+        }),
+      });
+      const data = await res.json();
+      if (data.content) {
+        setResult({ ...result, content: data.content });
+      }
+    } catch {
+      // 静默处理
+    } finally {
+      setRepurposing(false);
+    }
   };
 
   /* Loading states */
@@ -900,6 +943,59 @@ function WorkbenchPage() {
                     <ImageIcon className="h-3 w-3" />
                     生成配套海报
                   </Link>
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setShowRepurpose(!showRepurpose)}
+                      disabled={repurposing}
+                      className="inline-flex items-center gap-1 text-slate-500 hover:text-indigo-600 transition-colors"
+                    >
+                      <RefreshCw className="h-3 w-3" />
+                      {repurposing ? "变体中..." : "变体为..."}
+                    </button>
+                    {showRepurpose && (
+                      <div className="absolute top-full left-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-10 min-w-[140px]">
+                        {[
+                          { platform: "douyin", label: "抖音文案" },
+                          { platform: "xiaohongshu", label: "小红书文案" },
+                          { platform: "group_notice", label: "群公告" },
+                          { platform: "wechat_moments", label: "朋友圈" },
+                        ].map((p) => (
+                          <button
+                            key={p.platform}
+                            onClick={() => handleRepurpose(p.platform)}
+                            className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-50 first:rounded-t-lg last:rounded-b-lg"
+                          >
+                            {p.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1 ml-auto">
+                    <button
+                      type="button"
+                      onClick={() => handleFeedback("good")}
+                      className={`px-2 py-1 rounded text-xs transition-colors ${
+                        effectRating === "good"
+                          ? "bg-green-100 text-green-700"
+                          : "text-slate-400 hover:text-green-600 hover:bg-green-50"
+                      }`}
+                    >
+                      👍
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleFeedback("bad")}
+                      className={`px-2 py-1 rounded text-xs transition-colors ${
+                        effectRating === "bad"
+                          ? "bg-red-100 text-red-700"
+                          : "text-slate-400 hover:text-red-600 hover:bg-red-50"
+                      }`}
+                    >
+                      👎
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

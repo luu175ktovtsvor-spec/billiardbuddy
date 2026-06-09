@@ -1,5 +1,12 @@
 from models.store import Store
 
+BRAND_STYLE_MAP = {
+    "lively": "活泼风格：用词轻松、多用emoji、语气亲切、适合年轻客群",
+    "professional": "专业风格：用词正式、数据说话、体现专业度、适合商务客群",
+    "youthful": "年轻风格：网络用语、潮流元素、互动感强、适合Z世代",
+    "premium": "高端风格：用词优雅、品质感、尊贵体验、适合高消费客群",
+}
+
 POSITIONING_LABELS = {
     "community_affordable": "社区球房",
     "commercial_premium": "商业球房",
@@ -351,6 +358,12 @@ def render_operation_profile_context(store: Store) -> str:
 
     if not parts:
         return ""
+
+    # ── 10. 品牌风格 ──
+    if store.brand_style:
+        style_desc = BRAND_STYLE_MAP.get(store.brand_style, "")
+        if style_desc:
+            parts.append(f"【品牌风格】{style_desc}")
 
     return "\n\n".join(parts)
 

@@ -20,10 +20,10 @@ POSTERS_DIR = UPLOADS_DIR / "posters"
 # 图片比例 → 尺寸参数（宽高必须能被 16 整除）
 # gpt-image-2 支持任意分辨率：单边≤3840，总像素 655360~8294400，宽高为16的倍数
 SIZE_MAP = {
-    "3:4": {"standard": "1024x1536", "high": "1536x2048"},
-    "1:1": {"standard": "1024x1024", "high": "2048x2048"},
-    "9:16": {"standard": "864x1536", "high": "1152x2048"},
-    "16:9": {"standard": "1536x864", "high": "2048x1152"},
+    "3:4": "1024x1536",
+    "1:1": "1024x1024",
+    "9:16": "1024x1536",
+    "16:9": "1536x1024",
 }
 
 # 场景灵感标签（按分类组织）
@@ -51,9 +51,8 @@ INSPIRATION_TAGS = [
 ]
 
 
-def _get_api_size(ratio: str, quality: str = "standard") -> str:
-    sizes = SIZE_MAP.get(ratio, SIZE_MAP["3:4"])
-    return sizes.get(quality, sizes["standard"])
+def _get_api_size(ratio: str) -> str:
+    return SIZE_MAP.get(ratio, SIZE_MAP["3:4"])
 
 
 async def generate_images(
@@ -87,6 +86,9 @@ async def generate_images(
             parts.append(f"城市：{store.city}")
     if no_text:
         parts.append("no text, no words, no letters, no typography")
+    # 迭代编辑保护指令：保留原图整体构图和风格
+    if refine_from:
+        parts.append("keep the overall composition and style unchanged, only modify what the user requested")
     full_prompt = ", ".join(parts)
 
     # 多轮对话：拼接历史上下文（保留最近 5 轮）
@@ -119,7 +121,7 @@ async def generate_images(
 
     # 加载参考图（原图/用户上传的参考图）
     input_images: list[bytes] = []
-    size = _get_api_size(ratio, quality)
+    size = _get_api_size(ratio)
 
     # 如果是调整模式，加载原图作为参考（以图生图）
     if refine_from:
@@ -165,14 +167,16 @@ async def generate_images(
                 prompt=full_prompt,
                 model="gpt-image-2",
                 size=size,
+                quality=quality,
                 image=input_images if input_images else None,
             )
 
-            # 保存图片
-            img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
-            img.save(output_path, "PNG")
+            # 保存图片（JPEG 格式，减小文件体积）
+            img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            output_path_jpg = output_path.with_suffix(".jpg")
+            img.save(output_path_jpg, "JPEG", quality=90)
 
-            poster_url = f"/uploads/posters/{filename}"
+            poster_url = f"/uploads/posters/{output_path_jpg.name}"
             created_at = datetime.now(timezone.utc)
 
             generation = Generation(

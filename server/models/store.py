@@ -75,6 +75,7 @@ class Store(Base):
     style: Mapped[str | None] = mapped_column(String(200))
     advantages: Mapped[str | None] = mapped_column(Text)
     common_activities: Mapped[str | None] = mapped_column(Text)
+    brand_style: Mapped[str | None] = mapped_column(String(50))  # "lively" / "professional" / "youthful" / "premium"
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

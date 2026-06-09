@@ -31,6 +31,7 @@ export interface GenerationHistoryItem {
   model_used: string | null;
   tokens_used: number | null;
   is_favorite: boolean;
+  effect_rating?: string | null;
   created_at: string;
 }
 

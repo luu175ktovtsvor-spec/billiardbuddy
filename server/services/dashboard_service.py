@@ -55,7 +55,8 @@ async def get_today_dashboard(
     completeness = calculate_completeness(store)
     weekday = WEEKDAY_NAMES[now.weekday()]
 
-    recommendations, greeting, tips = _build_rules(
+    recommendations, greeting, tips = await _build_rules(
+        db=db,
         store=store,
         completeness=completeness,
         today_count=today_count,
@@ -129,7 +130,8 @@ async def _get_latest_generation(
     return row
 
 
-def _build_rules(
+async def _build_rules(
+    db: AsyncSession,
     store: Store,
     completeness: int,
     today_count: int,
@@ -224,6 +226,37 @@ def _build_rules(
     if today_count >= 5:
         tips.append("今天已生成了多条内容，可以优先挑选最合适的一条发布。")
 
+    # Rule 8: 上次标记了"效果好"的内容推荐
+    good_gen = await _get_last_good_generation(db, store.id)
+    if good_gen:
+        recs.append(
+            DashboardRecommendation(
+                id="repeat_good",
+                title=f"上次的{good_gen.type}效果不错，再来一条？",
+                description="基于上次效果好的内容，生成类似的。",
+                action_label="去生成",
+                action_url="/dashboard/workbench",
+                action_type="generate_workbench",
+                priority="medium",
+                suggested_payload={"user_intent": f"基于上次效果好的内容，写一条类似的"},
+            )
+        )
+
+    # Rule 9: 距上次活动策划 > 7 天
+    days_since_activity = await _days_since_last_activity(db, store.id)
+    if days_since_activity and days_since_activity > 7:
+        recs.append(
+            DashboardRecommendation(
+                id="activity_reminder",
+                title="距上次活动已超过一周",
+                description="定期做活动能保持顾客活跃度。",
+                action_label="策划新活动",
+                action_url="/dashboard/workbench",
+                action_type="generate_activity",
+                priority="medium",
+            )
+        )
+
     # 兜底：如果没有任何推荐（极端情况）
     if not recs:
         recs.append(
@@ -239,6 +272,38 @@ def _build_rules(
         )
 
     return recs, greeting, tips
+
+
+async def _get_last_good_generation(db: AsyncSession, store_id: uuid.UUID) -> Generation | None:
+    """获取上次标记为"效果好"的生成记录。"""
+    stmt = (
+        select(Generation)
+        .where(Generation.store_id == store_id, Generation.effect_rating == "good")
+        .order_by(Generation.rated_at.desc())
+        .limit(1)
+    )
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def _days_since_last_activity(db: AsyncSession, store_id: uuid.UUID) -> int | None:
+    """计算距上次活动策划的天数。"""
+    stmt = (
+        select(Generation.created_at)
+        .where(
+            Generation.store_id == store_id,
+            Generation.type == "activity",
+        )
+        .order_by(Generation.created_at.desc())
+        .limit(1)
+    )
+    result = await db.execute(stmt)
+    last_activity = result.scalar_one_or_none()
+    if not last_activity:
+        return None
+    now = datetime.now(timezone.utc)
+    delta = now - last_activity
+    return delta.days
 
 
 def _weekday_recs(label: str) -> list[DashboardRecommendation]:

@@ -115,6 +115,7 @@ class ApiClient {
     body?: unknown,
     isFormData?: boolean,
     _isRetry?: boolean,
+    signal?: AbortSignal,
   ): Promise<T> {
     const headers: Record<string, string> = {};
     if (!isFormData) {
@@ -133,8 +134,12 @@ class ApiClient {
         method,
         headers,
         body: isFormData ? (body as FormData) : body ? JSON.stringify(body) : undefined,
+        signal,
       });
-    } catch {
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        throw err;
+      }
       throw new ApiError(0, "网络连接失败，请检查网络后重试");
     }
 
@@ -317,40 +322,55 @@ class ApiClient {
 
     const decoder = new TextDecoder();
     let buffer = "";
+    let fullContent = "";
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
 
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const jsonStr = line.slice(6);
-        try {
-          const parsed = JSON.parse(jsonStr);
-          if (parsed.error) {
-            onError(parsed.error);
-            return;
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const jsonStr = line.slice(6);
+          try {
+            const parsed = JSON.parse(jsonStr);
+            if (parsed.error) {
+              onError(parsed.error);
+              return;
+            }
+            if (parsed.token) {
+              fullContent += parsed.token;
+              onToken(parsed.token);
+            }
+            if (parsed.done && parsed.full_content) {
+              onDone(parsed.full_content, parsed.generation_id || "", parsed.conversation_id);
+              return;
+            }
+          } catch {
+            // Skip malformed JSON
           }
-          if (parsed.token) {
-            onToken(parsed.token);
-          }
-          if (parsed.done && parsed.full_content) {
-            onDone(parsed.full_content, parsed.generation_id || "", parsed.conversation_id);
-            return;
-          }
-        } catch {
-          // Skip malformed JSON
         }
       }
+      // 流结束但没有收到 done 信号
+      if (fullContent) {
+        onDone(fullContent, "", "");
+      }
+    } catch (err) {
+      // 网络断开时的友好提示
+      if (err instanceof DOMException && err.name === "AbortError") {
+        // 用户主动取消，不报错
+        return;
+      }
+      onError("连接中断，请检查网络后重试");
     }
   }
 
-  generateImage(data: ImageGenerateRequest) {
-    return this.request<ImageGenerateResponse>("POST", "/api/v1/posters/generate", data);
+  generateImage(data: ImageGenerateRequest, signal?: AbortSignal) {
+    return this.request<ImageGenerateResponse>("POST", "/api/v1/posters/generate", data, false, false, signal);
   }
 
   uploadReferenceImage(file: File) {
@@ -398,6 +418,10 @@ class ApiClient {
 
   async toggleFavorite(id: string): Promise<{ is_favorite: boolean }> {
     return this.request<{ is_favorite: boolean }>("PATCH", `/api/v1/generations/${id}/favorite`);
+  }
+
+  async submitFeedback(generationId: string, rating: "good" | "bad", note?: string): Promise<void> {
+    await this.request("POST", `/api/v1/feedback/generations/${generationId}/feedback`, { rating, note });
   }
 
   // ─── Dashboard ───

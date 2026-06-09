@@ -100,7 +100,14 @@ async def stream_workbench(
 
         rendered_prompt = prompt_engine.render("workbench.free_intent", store, extra_vars)
 
-    # 加载对话历史（最近 5 轮）
+    # 构建 messages 数组（支持多轮对话）
+    messages = []
+
+    # 1. System prompt
+    if rendered_prompt:
+        messages.append({"role": "system", "content": rendered_prompt})
+
+    # 2. 历史对话（最近 5 轮）
     if conversation_id:
         try:
             hist_stmt = (
@@ -114,29 +121,32 @@ async def stream_workbench(
             hist_result = await db.execute(hist_stmt)
             history_gens = hist_result.scalars().all()
 
-            if history_gens:
-                history_lines = []
-                for i, hg in enumerate(history_gens[-5:], 1):
-                    hist_params = hg.input_params or {}
-                    hist_intent = hist_params.get("user_intent", "")
-                    hist_result_text = hg.result or ""
-                    if hist_intent:
-                        history_lines.append(f"用户（第{i}轮）：{hist_intent}")
-                    if hist_result_text:
-                        history_lines.append(f"助手（第{i}轮）：{hist_result_text[:800]}")
-
-                if history_lines:
-                    history_text = "\n".join(history_lines)
-                    rendered_prompt = f"{rendered_prompt}\n\n---\n【对话历史（供参考，不要重复生成相同内容）】\n{history_text}\n---\n"
-                    logger.info("工作台拼接对话上下文: %d 轮历史", len(history_lines) // 2)
+            for hg in history_gens[-5:]:
+                hist_params = hg.input_params or {}
+                hist_intent = hist_params.get("user_intent", "")
+                hist_result_text = hg.result or ""
+                if hist_intent:
+                    messages.append({"role": "user", "content": hist_intent})
+                if hist_result_text:
+                    messages.append({"role": "assistant", "content": hist_result_text[:2000]})
         except Exception:
-            logger.warning("加载工作台对话历史失败，跳过上下文拼接", exc_info=True)
+            logger.warning("加载对话历史失败", exc_info=True)
 
-    request = TextRequest(prompt=rendered_prompt, max_tokens=3000)
+    # 3. 当前用户输入
+    messages.append({"role": "user", "content": user_intent or rendered_prompt})
+
+    # 传入 TextRequest
+    request = TextRequest(
+        prompt=user_intent or rendered_prompt,
+        system_prompt=rendered_prompt if not conversation_id else None,
+        messages=messages if conversation_id else None,
+        max_tokens=3000,
+    )
 
     async def event_generator():
         full_content = ""
         generation_id = str(uuid.uuid4())
+        provider = ProviderFactory.resolve_provider(model)
         try:
             async for token, fallback_used in ProviderFactory.generate_stream_with_fallback(request, model=model):
                 full_content += token
@@ -149,6 +159,11 @@ async def stream_workbench(
             return
 
         content = _strip_ai_prefixes(full_content)
+
+        # 获取 tokens_used（从 provider 的 _last_usage 获取）
+        tokens_used = 0
+        if hasattr(provider, '_last_usage') and provider._last_usage:
+            tokens_used = provider._last_usage.get("total_tokens", 0)
 
         try:
             # 使用传入的 conversation_id，或用本次 generation_id 作为新对话的 conversation_id
@@ -172,16 +187,16 @@ async def stream_workbench(
                 prompt_used=rendered_prompt,
                 result=content,
                 model_used="stream",
-                tokens_used=0,
+                tokens_used=tokens_used,
                 conversation_id=conv_id,
             )
             db.add(generation)
             await db.commit()
-            await increment_usage(db, str(store.id), tokens=0)
+            await increment_usage(db, str(store.id), tokens=tokens_used)
         except Exception as e:
             logger.error("Failed to save stream generation: %s", e)
 
-        yield f"data: {json.dumps({'token': '', 'done': True, 'full_content': content, 'generation_id': generation_id, 'conversation_id': str(conv_id)}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'token': '', 'done': True, 'full_content': content, 'generation_id': generation_id, 'conversation_id': str(conv_id), 'tokens_used': tokens_used}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_generator(),

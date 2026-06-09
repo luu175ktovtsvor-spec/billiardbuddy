@@ -22,7 +22,7 @@ export interface ImageGenerateRequest {
   add_logo_overlay?: boolean;
   add_qrcode_overlay?: boolean;
   conversation_id?: string;
-  quality?: "standard" | "high";
+  quality?: "low" | "medium" | "high" | "auto";
 }
 
 export interface GeneratedImage {
