@@ -1,3 +1,53 @@
+# 重构：AI 海报页面布局
+
+> 目标：三段式布局，删掉场景卡片，修复参考图路径 bug。
+
+---
+
+## 页面结构
+
+```
+┌─────────────────────────────────────────────┐
+│  顶部：输入区                                 │
+│  ┌─────────────────────────────────────┐    │
+│  │ [textarea: 描述你想生成的图片]        │    │
+│  │ [上传参考图] [比例 ▼] [质量 ▼] [生成] │    │
+│  │ [高级选项：融入门店信息 / 禁止文字]   │    │
+│  └─────────────────────────────────────┘    │
+│                                             │
+│  中间：海报展示区                             │
+│  ┌─────────────────────────────────────┐    │
+│  │                                     │    │
+│  │   [生成的海报图片]                   │    │
+│  │   [基于此调整] [重新生成] [下载]      │    │
+│  │                                     │    │
+│  │   [生成的海报图片 2]                 │    │
+│  │   [基于此调整] [重新生成] [下载]      │    │
+│  │                                     │    │
+│  └─────────────────────────────────────┘    │
+│                                             │
+│  底部：调整输入区（有海报后才显示）            │
+│  ┌─────────────────────────────────────┐    │
+│  │ [textarea: 描述调整内容]         [➤] │    │
+│  └─────────────────────────────────────┘    │
+│                                             │
+│  历史对话列表                                │
+│  ┌─────────────────────────────────────┐    │
+│  │ [对话1: 标题...]                     │    │
+│  │ [对话2: 标题...]                     │    │
+│  └─────────────────────────────────────┘    │
+└─────────────────────────────────────────────┘
+```
+
+---
+
+## 需要修改的文件
+
+### 1. `web/src/app/dashboard/posters/page.tsx`
+
+**整体改造**：从 entry/conversation 双视图改为单页面三段式。
+
+```tsx
 "use client";
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
@@ -196,7 +246,7 @@ function PostersPage() {
       const blobUrl = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = blobUrl;
-      a.download = `poster_${img.generation_id}.jpg`;
+      a.download = `poster_${img.generation_id}.png`;
       a.click();
       URL.revokeObjectURL(blobUrl);
     } catch {
@@ -444,3 +494,41 @@ function PostersPage() {
     </div>
   );
 }
+```
+
+### 2. `server/services/poster_service.py`（修复参考图路径 bug）
+
+**第 137-144 行**，替换为：
+
+```python
+    elif reference_image_paths:
+        upload_dir = Path(settings.upload_dir)
+        for ref_str in reference_image_paths:
+            # 前端传的是 /uploads/references/xxx.jpg，去掉 /uploads/ 前缀得到相对路径
+            rel = ref_str.removeprefix("/uploads/")
+            ref_path = upload_dir / rel
+            if not ref_path.resolve().is_relative_to(upload_dir.resolve()):
+                raise ValueError("reference_image_path 必须在 uploads/ 目录内")
+            if ref_path.exists():
+                input_images.append(ref_path.read_bytes())
+```
+
+### 3. 删除的文件/代码
+
+- 删除 `server/api/v1/calendar.py` 文件
+- `server/api/v1/router.py`：删除 calendar 的 import 和 include_router
+- 前端不再调用灵感标签 API（`listInspirationTags`），但后端保留（不删）
+
+---
+
+## 验证
+
+- [ ] 页面三段式布局：顶部输入 → 中间海报 → 底部调整
+- [ ] 场景卡片已删除
+- [ ] 上传参考图后生成成功（路径 bug 已修复）
+- [ ] "基于此调整"按钮高亮显示当前参考图
+- [ ] "重新生成"按钮清空参考图
+- [ ] 底部输入框有海报后才显示
+- [ ] 历史对话列表正常显示
+- [ ] 新对话按钮正常工作
+- [ ] `pnpm build` 通过

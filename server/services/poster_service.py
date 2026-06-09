@@ -135,11 +135,13 @@ async def generate_images(
                 input_images.append(original_path.read_bytes())
                 logger.info("基于原图调整: %s", original_path)
     elif reference_image_paths:
-        allowed_dir = Path(settings.upload_dir).resolve() / "references"
+        upload_dir = Path(settings.upload_dir)
         for ref_str in reference_image_paths:
-            ref_path = Path(ref_str).resolve()
-            if not str(ref_path).startswith(str(allowed_dir)):
-                raise ValueError("reference_image_path 必须在 uploads/references/ 目录内")
+            # 前端传的是 /uploads/references/xxx.jpg，去掉 /uploads/ 前缀得到相对路径
+            rel = ref_str.removeprefix("/uploads/")
+            ref_path = upload_dir / rel
+            if not ref_path.resolve().is_relative_to(upload_dir.resolve()):
+                raise ValueError("reference_image_path 必须在 uploads/ 目录内")
             if ref_path.exists():
                 input_images.append(ref_path.read_bytes())
 
