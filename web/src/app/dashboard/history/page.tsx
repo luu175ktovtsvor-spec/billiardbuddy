@@ -226,10 +226,20 @@ export default function HistoryPage() {
             <option value="poster">海报</option>
           </select>
           <button
-            onClick={() => {
-              const token = api.getToken();
+            onClick={async () => {
               const typeParam = typeFilter ? `?type=${typeFilter}` : "";
-              window.open(`${api.baseUrl}/api/v1/generations/export${typeParam}`, "_blank");
+              const token = api.getToken();
+              const res = await fetch(`${api.baseUrl}/api/v1/generations/export${typeParam}`, {
+                headers: { Authorization: `Bearer ${token}` },
+              });
+              if (!res.ok) return;
+              const blob = await res.blob();
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = "generations.csv";
+              a.click();
+              URL.revokeObjectURL(url);
             }}
             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
           >
