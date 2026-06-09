@@ -150,3 +150,66 @@ pk_output_checklist:
     - "✅ 排名公示节奏（每天/每周/每月）"
     - "✅ 兑现时间和方式"
     - "✅ 执行建议（谁负责、怎么启动）"
+
+punishment_system:
+  name: "惩处制度"
+  description: "有奖有罚，制度才能落地。AI生成PK方案时应包含惩处条款。"
+  principles:
+    - "惩处目的是纠正行为，不是惩罚人"
+    - "阶梯处罚：先警告、再罚款、再停岗、最后辞退"
+    - "一票否决项必须明确，触碰即开除"
+  common_violations:
+    - violation: "迟到/早退"
+      penalty: "警告 → 罚款[请填写]元/次 → 累计3次扣全勤奖"
+    - violation: "旷工"
+      penalty: "扣3倍日工资 → 累计2次辞退"
+    - violation: "客户投诉（服务态度）"
+      penalty: "第一次警告+道歉 → 第二次罚款[请填写]元 → 第三次停岗培训"
+    - violation: "客户投诉（重大事故）"
+      penalty: "立即停岗调查，视情节严重程度处理"
+    - violation: "私自收费/收红包"
+      penalty: "一票否决，立即辞退"
+    - violation: "泄露门店商业信息"
+      penalty: "一票否决，立即辞退"
+  veto_items:
+    - "在店内参与赌博"
+    - "私自收费/收客户红包转账"
+    - "泄露门店商业秘密"
+    - "与客户发生肢体冲突"
+    - "连续旷工3天以上"
+  output_note: "AI生成惩处制度时，金额用[请填写]占位，不编造具体数字"
+
+referral_reward:
+  name: "转介绍奖励"
+  description: "鼓励老客户带新客户到店消费，降低获客成本"
+  types:
+    - type: "客户转介绍"
+      description: "老客户带新朋友来打球"
+      reward_rules:
+        - "新客户首次消费后，奖励老客户[请填写]元台费券或等值礼品"
+        - "新客户累计消费满[请填写]元，再奖励老客户[请填写]元"
+      note: "奖励金额由门店确定，AI用占位符"
+    - type: "员工转介绍（招聘）"
+      description: "员工推荐新人入职"
+      reward_rules:
+        - "新人入职满1周：奖励[请填写]元"
+        - "新人入职满1个月：再奖励[请填写]元"
+        - "新人入职满3个月：再奖励[请填写]元"
+      note: "参考行业标准：入职1周200元+半个月300元+满月500元"
+  output_note: "AI生成转介绍方案时，金额用[请填写]占位"
+
+management_commission:
+  name: "管理提成规则"
+  description: "店长/助教管理/教练的管理提成结构"
+  roles:
+    - role: "店长"
+      structure: "底薪 + 门店利润提成 + PK奖金 + 年终分红"
+      commission_reference: "门店月利润的[请填写]%"
+    - role: "助教管理"
+      structure: "底薪 + 助教部管理费提成 + PK奖金"
+      commission_reference: "助教部月营收的[请填写]%或按助教人数提成"
+    - role: "教练"
+      structure: "底薪 + 课时提成 + 赛事组织奖金 + 器材销售提成"
+      commission_reference: "课时费的[请填写]% + 器材销售额的[请填写]%"
+  principle: "低底薪高提成，多劳多得，与门店业绩挂钩"
+  output_note: "AI生成薪资方案时，具体比例用[请填写]占位"

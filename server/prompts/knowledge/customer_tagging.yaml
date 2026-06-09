@@ -143,3 +143,38 @@ maintenance_strategy:
       - "次日回访（体验感受）"
       - "3天内邀约第二次"
       - "引导进群（竞技群/会员群）"
+
+abcd_classification:
+  name: "ABCD客户分级标准"
+  description: "按消费力和活跃度将客户分为四级，每级有不同的维护频率和动作"
+  levels:
+    - level: "A类（高价值活跃客户）"
+      criteria: "高频（每周2次以上）+ 高客单价（含助教或充值）+ 高复购"
+      maintenance_frequency: "每周1次"
+      actions:
+        - "专属服务：优先安排好台位、好助教"
+        - "生日关怀：个性化祝福+小礼物"
+        - "VIP活动邀请"
+        - "定期回访，了解需求变化"
+    - level: "B类（中等价值客户）"
+      criteria: "中频（每周1次）+ 中客单价 + 稳定复购"
+      maintenance_frequency: "每两周1次"
+      actions:
+        - "活动邀约：周赛/月赛/会员日"
+        - "服务升级推荐：尝试助教体验"
+        - "充值引导：介绍一卡通模式"
+    - level: "C类（潜力客户）"
+      criteria: "低频（每月1-2次）+ 有消费但未形成习惯"
+      maintenance_frequency: "每月1次"
+      actions:
+        - "空台提醒：下午场/工作日促活"
+        - "搭子撮合：帮找球友"
+        - "小游戏邀约：降低到店门槛"
+    - level: "D类（沉默/流失客户）"
+      criteria: "30天以上未到店"
+      maintenance_frequency: "季度唤醒"
+      actions:
+        - "个性化回访：不是群发，是真问候"
+        - "了解流失原因"
+        - "给出回店理由：新活动/新助教/新设备"
+  conversion_path: "散客 → 加微信 → 打标签 → ABCD分级 → 差异化维护"

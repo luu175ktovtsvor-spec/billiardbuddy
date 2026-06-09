@@ -10,6 +10,7 @@ class TextRequest:
     messages: list[dict] | None = None  # 多轮对话消息数组
     max_tokens: int = 2000
     temperature: float = 0.7
+    thinking: dict | None = None  # DeepSeek思考模式控制，如 {"type": "disabled"} 或 {"type": "enabled"}
 
 
 @dataclass

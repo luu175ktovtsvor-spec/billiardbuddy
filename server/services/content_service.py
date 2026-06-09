@@ -225,7 +225,7 @@ async def generate_copywriting(
     rendered_prompt = _append_guardrails(rendered_prompt, store, role="manager")
 
     provider = ProviderFactory.get_text_provider()
-    request = TextRequest(prompt=rendered_prompt)
+    request = TextRequest(prompt=rendered_prompt, thinking={"type": "disabled"})
     try:
         response = await provider.generate(request)
     except AIProviderError as e:

@@ -43,12 +43,15 @@ class DeepSeekProvider(TextProvider):
 
         client = self._get_client()
         try:
-            response = await client.chat.completions.create(
-                model=settings.text_model_name,
-                messages=messages,
-                max_tokens=request.max_tokens,
-                temperature=request.temperature,
-            )
+            kwargs = {
+                "model": settings.text_model_name,
+                "messages": messages,
+                "max_tokens": request.max_tokens,
+                "temperature": request.temperature,
+            }
+            if request.thinking:
+                kwargs["thinking"] = request.thinking
+            response = await client.chat.completions.create(**kwargs)
         except APIStatusError as e:
             raise _classify_api_error(e) from e
         except APITimeoutError as e:
@@ -95,14 +98,17 @@ class DeepSeekProvider(TextProvider):
 
         client = self._get_client()
         try:
-            stream = await client.chat.completions.create(
-                model=settings.text_model_name,
-                messages=messages,
-                max_tokens=request.max_tokens,
-                temperature=request.temperature,
-                stream=True,
-                stream_options={"include_usage": True},
-            )
+            kwargs = {
+                "model": settings.text_model_name,
+                "messages": messages,
+                "max_tokens": request.max_tokens,
+                "temperature": request.temperature,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            }
+            if request.thinking:
+                kwargs["thinking"] = request.thinking
+            stream = await client.chat.completions.create(**kwargs)
         except APIStatusError as e:
             raise _classify_api_error(e) from e
         except APITimeoutError as e:
