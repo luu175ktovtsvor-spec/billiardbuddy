@@ -69,7 +69,6 @@ export default function DashboardPage() {
   const [dashboardError, setDashboardError] = useState(false);
   const [storeError, setStoreError] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [weekPlan, setWeekPlan] = useState<any>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,11 +103,6 @@ export default function DashboardPage() {
     }
 
     loadData();
-
-    // 加载本周计划
-    api.getWeekPlan()
-      .then((data) => { if (!cancelled) setWeekPlan(data); })
-      .catch(() => {});
 
     return () => { cancelled = true; };
   }, []);
@@ -313,38 +307,6 @@ export default function DashboardPage() {
                         </p>
                       ))}
                     </div>
-                  </div>
-                </div>
-              )}
-
-              {/* 本周内容计划 */}
-              {weekPlan && (
-                <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="flex items-center gap-2 mb-3">
-                    <FileText className="h-5 w-5 text-indigo-600" />
-                    <h3 className="font-semibold text-slate-900">📅 本周内容计划</h3>
-                  </div>
-                  <div className="grid grid-cols-7 gap-2">
-                    {weekPlan.week_plan.map((day: any, i: number) => (
-                      <div
-                        key={i}
-                        className={`rounded-lg border p-3 text-center text-sm ${
-                          day.is_today ? "border-indigo-600 bg-indigo-50" :
-                          day.is_past ? "opacity-50 bg-slate-50" : "bg-white"
-                        }`}
-                      >
-                        <p className="font-medium text-slate-900">{day.day}</p>
-                        <p className="text-xs text-slate-500 mt-1 line-clamp-2">{day.topic}</p>
-                        {!day.is_past && (
-                          <Link
-                            href={`/dashboard/workbench?intent=${encodeURIComponent(day.suggestion)}`}
-                            className="text-xs text-indigo-600 mt-2 block hover:underline"
-                          >
-                            去生成
-                          </Link>
-                        )}
-                      </div>
-                    ))}
                   </div>
                 </div>
               )}
