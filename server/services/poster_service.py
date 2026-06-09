@@ -68,7 +68,7 @@ async def generate_images(
     add_store_info: bool = False,
     no_text: bool = False,
     conversation_id: str | None = None,
-    quality: str = "standard",
+    quality: str = "auto",
 ) -> dict:
     """AI 生图，支持参考图传入和以图生图调整。"""
     from services.ai.providers.openai_image import OpenAIImageProvider
