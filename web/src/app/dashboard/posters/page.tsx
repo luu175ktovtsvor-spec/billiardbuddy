@@ -490,28 +490,48 @@ function PostersPage() {
               ) : (
                 <div className="divide-y divide-slate-100">
                   {conversations.map((conv) => (
-                    <button
+                    <div
                       key={conv.id}
-                      type="button"
-                      onClick={() => handleSwitchConversation(conv)}
-                      className={`w-full text-left p-3 hover:bg-slate-50 transition-colors ${currentId === conv.id ? "bg-indigo-50" : ""}`}
+                      className={`relative group p-3 hover:bg-slate-50 transition-colors ${currentId === conv.id ? "bg-indigo-50" : ""}`}
                     >
-                      <div className="flex items-start gap-2">
-                        {conv.thumbnail_url ? (
-                          <img src={api.resolveUrl(conv.thumbnail_url)} alt="" className="h-10 w-10 rounded object-cover shrink-0" />
-                        ) : (
-                          <div className="h-10 w-10 rounded bg-slate-100 flex items-center justify-center shrink-0">
-                            <MessageSquare className="h-4 w-4 text-slate-400" />
+                      <button
+                        type="button"
+                        onClick={() => handleSwitchConversation(conv)}
+                        className="w-full text-left"
+                      >
+                        <div className="flex items-start gap-2">
+                          {conv.thumbnail_url ? (
+                            <img src={api.resolveUrl(conv.thumbnail_url)} alt="" className="h-10 w-10 rounded object-cover shrink-0" />
+                          ) : (
+                            <div className="h-10 w-10 rounded bg-slate-100 flex items-center justify-center shrink-0">
+                              <MessageSquare className="h-4 w-4 text-slate-400" />
+                            </div>
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium text-slate-700 truncate">{conv.title}</p>
+                            <p className="text-xs text-slate-400">
+                              {conv.message_count} 轮 · {new Date(conv.updated_at).toLocaleDateString("zh-CN")}
+                            </p>
                           </div>
-                        )}
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-medium text-slate-700 truncate">{conv.title}</p>
-                          <p className="text-xs text-slate-400">
-                            {conv.message_count} 轮 · {new Date(conv.updated_at).toLocaleDateString("zh-CN")}
-                          </p>
                         </div>
-                      </div>
-                    </button>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (!confirm("确定删除这个对话？")) return;
+                          try {
+                            await api.deletePosterConversation(conv.id);
+                            setConversations(prev => prev.filter(c => c.id !== conv.id));
+                          } catch {
+                            // 静默处理
+                          }
+                        }}
+                        className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 text-xs text-slate-400 hover:text-red-600 transition-opacity"
+                      >
+                        删除
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}

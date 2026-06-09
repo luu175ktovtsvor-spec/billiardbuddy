@@ -37,6 +37,7 @@ class Generation(Base):
     rated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     quality_used: Mapped[str | None] = mapped_column(String(20))
     image_size: Mapped[str | None] = mapped_column(String(20))
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True

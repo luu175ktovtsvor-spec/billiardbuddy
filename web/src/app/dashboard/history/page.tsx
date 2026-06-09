@@ -176,6 +176,16 @@ export default function HistoryPage() {
     }
   };
 
+  const handleDelete = async (id: string) => {
+    if (!confirm("确定删除这条记录？")) return;
+    try {
+      await api.deleteGeneration(id);
+      setItems((prev) => prev.filter((item) => item.id !== id));
+    } catch {
+      // 静默处理
+    }
+  };
+
   const totalPages = Math.ceil(total / pageSize);
 
   return (
@@ -299,6 +309,14 @@ export default function HistoryPage() {
                     />
                   </button>
                   <CopyButton text={item.content || ""} />
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}
+                    className="rounded-md p-1 hover:bg-slate-50 transition-colors text-slate-400 hover:text-red-600"
+                    title="删除"
+                  >
+                    🗑️
+                  </button>
                 </div>
               </div>
               <p className="line-clamp-3 whitespace-pre-wrap text-sm text-slate-700">

@@ -424,6 +424,14 @@ class ApiClient {
     await this.request("POST", `/api/v1/feedback/generations/${generationId}/feedback`, { rating, note });
   }
 
+  async deleteGeneration(id: string): Promise<void> {
+    await this.request("DELETE", `/api/v1/generations/${id}`);
+  }
+
+  async deletePosterConversation(conversationId: string): Promise<void> {
+    await this.request("DELETE", `/api/v1/generations/conversations/${conversationId}`);
+  }
+
   // ─── Dashboard ───
 
   getTodayDashboard() {

@@ -18,7 +18,7 @@ async def list_generations(
     page = max(1, page)
     page_size = max(1, min(page_size, 50))
 
-    conditions = [Generation.store_id == store_id]
+    conditions = [Generation.store_id == store_id, Generation.is_deleted == False]
     if generation_type:
         conditions.append(Generation.type == generation_type)
     if sub_type:
