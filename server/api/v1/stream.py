@@ -28,6 +28,7 @@ from schemas.generate import WorkbenchRequest
 from services.store_profile_service import render_operation_profile_context
 from services.quota_service import check_quota, increment_usage
 from services.workbench_fewshot_service import select_workbench_fewshots
+from services.brand_voice_service import get_brand_voice_context
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -102,6 +103,11 @@ async def stream_workbench(
 
     # 构建 messages 数组（支持多轮对话）
     messages = []
+
+    # 获取品牌声音上下文
+    brand_voice = await get_brand_voice_context(db, store.id)
+    if brand_voice:
+        rendered_prompt = f"{rendered_prompt}\n\n---\n{brand_voice}\n---"
 
     # 1. System prompt
     if rendered_prompt:

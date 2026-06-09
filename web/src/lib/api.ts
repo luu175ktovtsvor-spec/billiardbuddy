@@ -430,6 +430,10 @@ class ApiClient {
     return this.request<DashboardTodayResponse>("GET", "/api/v1/dashboard/today");
   }
 
+  getWeekPlan() {
+    return this.request<{ week_plan: any[]; today: string }>("GET", "/api/v1/calendar/week-plan");
+  }
+
   // ─── New Operation APIs ───
 
   outreachGenerate(data: GenerateOutreachRequest) {
