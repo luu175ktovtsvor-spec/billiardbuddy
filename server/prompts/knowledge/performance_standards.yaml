@@ -6,7 +6,7 @@ variables:
   - city
 description: |
   球房各岗位绩效考核评分标准。按岗位结构化存储考核维度、分值、评分标准、一票否决项。
-  数据来源：唐希台球连锁内部绩效考核方案。
+  球房各岗位绩效考核评分标准。
 
   # PPT核心校准：4岗位对齐
   # 助教(assistant) | 助教管理(assistant_manager) | 店长(manager) | 教练(coach)

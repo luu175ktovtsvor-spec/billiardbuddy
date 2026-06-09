@@ -10,7 +10,7 @@ variables:
   - address
 description: |
   台球俱乐部开业活动全套内容模板，包含老板致辞、主持人文稿、活动时间节点安排三大模块。
-  数据来源：唐希台球连锁/恺九台球俱乐部开业方案。
+  开业活动全套内容模板。
 
 sections:
   owner_speech:
