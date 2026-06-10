@@ -256,7 +256,7 @@ journalctl -u billiards-backend -n 50 --no-pager
 |------|------|
 | 用户注册/登录（手机号+密码） | ✅ |
 | 门店资料管理（运营画像，分步向导 + 全部编辑） | ✅ |
-| Prompt 引擎（YAML 模板，38 个 knowledge） | ✅ |
+| Prompt 引擎（YAML 模板，41 个 knowledge） | ✅ |
 | 岗位工作台（6 角色 × 54 张卡片，SSE 流式输出） | ✅ |
 | 文案生成（朋友圈/群公告/活动/日报） | ✅ |
 | 海报生成（gpt-image-2 + Logo/二维码直传 AI + 二次调整） | ✅ |
@@ -286,7 +286,7 @@ journalctl -u billiards-backend -n 50 --no-pager
 
 产品大脑文档在 `docs/product-brain/`。
 
-核心知识模块（38 个 knowledge YAML）：
+核心知识模块（41 个 knowledge YAML）：
 - **每日工作流程** (`daily_workflow.yaml`) — 6 个角色的每日工作流 + 5 个延伸场景
 - **岗位专属流程** (`daily_workflow_manager/coach/frontdesk/assistant_manager.yaml`) — 4个岗位独立流程
 - **核心运营逻辑** (`core_operations.yaml`) — 四大客户分类、岗位协作、定价铁律
@@ -313,6 +313,9 @@ journalctl -u billiards-backend -n 50 --no-pager
 - **平台运营 SOP** (`platform_operations.yaml`) — 美团/抖音平台运营
 - **核心指标公式库** (`core_metrics.yaml`) — 台费/助教/教练/前厅指标、趋势分析
 - **店长薪资结构** (`manager_compensation.yaml`) — 各管理岗位薪资参考
+- **球房选址指南** (`site_selection.yaml`) — 商业球房选址20个要点
+- **球房引流手册** (`traffic_generation.yaml`) — 引流操作手册
+- **球房合同基础** (`contract_basics.yaml`) — 合同基础知识
 - 更多见 `server/prompts/knowledge/`
 
 运营场景模板（54 个 operation YAML）：
