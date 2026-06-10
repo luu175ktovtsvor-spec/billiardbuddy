@@ -21,6 +21,7 @@ from api.v1.feedback import router as feedback_router
 from api.v1.templates import router as templates_router
 from api.v1.repurpose import router as repurpose_router
 from api.v1.batch import router as batch_router
+from api.v1.orchestrate import router as orchestrate_router
 
 router = APIRouter()
 
@@ -45,6 +46,7 @@ router.include_router(feedback_router, prefix="/feedback", tags=["反馈"])
 router.include_router(templates_router, prefix="/templates", tags=["模板"])
 router.include_router(repurpose_router, prefix="/generate", tags=["内容变体"])
 router.include_router(batch_router, prefix="/generate", tags=["批量生成"])
+router.include_router(orchestrate_router, prefix="/orchestrate", tags=["协作任务"])
 
 
 @router.get("/health")
