@@ -1588,3 +1588,19 @@ const OUTPUT_LABELS: Record<string, string> = {
 export function getOutputLabels(packages: OutputPackageItem[]): string {
   return packages.map((p) => OUTPUT_LABELS[p] || p).join(" · ");
 }
+
+// 获取跨角色 Top N 常用卡片
+export function getTopCards(n: number = 6): RoleTaskCard[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const usage: Record<string, number> = JSON.parse(
+      localStorage.getItem("workbench_card_usage") || "{}"
+    );
+    const allCards = Object.values(ROLE_TASKS).flat();
+    return allCards
+      .sort((a, b) => (usage[b.id] || 0) - (usage[a.id] || 0))
+      .slice(0, n);
+  } catch {
+    return Object.values(ROLE_TASKS).flat().slice(0, n);
+  }
+}
