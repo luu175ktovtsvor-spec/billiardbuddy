@@ -2,35 +2,167 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/auth-context";
 import { api } from "@/lib/api";
+import { getTopCards, ROLE_LABELS } from "@/lib/role-workbench-config";
+import type { RoleTaskCard } from "@/lib/role-workbench-config";
 import type { StoreResponse } from "@/types/store";
 import type { DashboardTodayResponse } from "@/types/dashboard";
 import {
-  Sparkles,
   Store,
-  History,
-  ImageIcon,
   Loader2,
   AlertCircle,
   ArrowRight,
-  FileText,
   CheckCircle,
   Crown,
   Clock,
+  Zap,
 } from "lucide-react";
 import { OnboardingGuide } from "@/components/onboarding-guide";
 import { ContentCalendar } from "@/components/content-calendar";
 import { MyTemplates } from "@/components/my-templates";
 
+/** 默认 emoji，sceneTags 里没有匹配时用这个 */
+const DEFAULT_EMOJI = "📋";
+
+/** 尝试从 sceneTags 里挑一个合适的 emoji */
+function pickEmoji(sceneTags: string[]): string {
+  const tagEmojiMap: Record<string, string> = {
+    朋友圈: "📱",
+    日常: "☀️",
+    门店品牌: "🏪",
+    老客户: "🤝",
+    私聊: "💬",
+    回访: "📞",
+    邀约: "📨",
+    会员群: "👥",
+    空台: "🎱",
+    促活: "🔥",
+    竞技群: "🏆",
+    约局: "🎯",
+    撮合: "🫂",
+    助教: "🎓",
+    推广: "📣",
+    周赛: "🏅",
+    活动: "🎉",
+    赛事: "🏟️",
+    员工群: "📋",
+    管理: "📊",
+    SOP: "✅",
+    日报: "📝",
+    汇报: "📈",
+    看球: "📺",
+    生日: "🎂",
+    关怀: "❤️",
+    团购: "🛒",
+    评分: "⭐",
+    品类: "📦",
+    爆款: "💥",
+    定价: "💰",
+    新助教: "🆕",
+    预约: "📅",
+    短视频: "🎬",
+    获客: "🧲",
+    维护: "🔧",
+    PK: "⚔️",
+    激励: "💪",
+    招聘: "👥",
+    合规: "📜",
+    业绩: "📊",
+    复盘: "🔍",
+    转化: "📈",
+    培训: "📖",
+    筛选: "🔎",
+    新人: "🌱",
+    加微信: "📱",
+    新客: "✨",
+    前厅: "🏢",
+    话术: "🎙️",
+    搭子: "👬",
+    进群: "📲",
+    投诉: "⚠️",
+    安抚: "🫶",
+    开店: "🔑",
+    检查: "🔍",
+    闭店: "🌙",
+    价格: "💲",
+    桌型: "🎱",
+    设备: "🔧",
+    推车: "🛒",
+    促销: "🏷️",
+    跟进: "📞",
+    回访: "📞",
+    私域: "🔒",
+    卫生: "🧹",
+    电器: "⚡",
+    节能: "🌱",
+    老板: "👔",
+    简报: "📋",
+    经营: "📈",
+    周计划: "📅",
+    月报: "📊",
+    方向: "🧭",
+    投资: "💰",
+    回报: "📈",
+    运营: "🎯",
+    内容: "✍️",
+    计划: "📅",
+    素材: "🎨",
+    氛围: "🎶",
+    预热: "🔥",
+    抖音: "🎵",
+    矩阵: "🔗",
+    直播: "📡",
+    教练: "🏅",
+    公告: "📢",
+    报名: "📝",
+    赛前: "⏰",
+    轻竞技: "🎯",
+    乔氏: "🎱",
+    斯诺克: "🎱",
+    战报: "📰",
+    抢一大战: "⚔️",
+    好评: "⭐",
+    引导: "👆",
+    教学: "📚",
+    新手: "🌟",
+    入门: "🚀",
+    散客: "🧑",
+    接待: "🤝",
+    小游戏: "🎮",
+    娱乐: "😄",
+    复盘: "🔍",
+    活动: "🎉",
+    预热: "🔥",
+  };
+  for (const tag of sceneTags) {
+    if (tagEmojiMap[tag]) return tagEmojiMap[tag];
+  }
+  return DEFAULT_EMOJI;
+}
+
+/** 从 localStorage 读取使用次数 */
+function getUsageCounts(): Record<string, number> {
+  if (typeof window === "undefined") return {};
+  try {
+    return JSON.parse(localStorage.getItem("workbench_card_usage") || "{}");
+  } catch {
+    return {};
+  }
+}
+
 export default function DashboardPage() {
   const { user } = useAuth();
+  const router = useRouter();
   const [store, setStore] = useState<StoreResponse | null | undefined>(undefined);
   const [dashboard, setDashboard] = useState<DashboardTodayResponse | null>(null);
   const [dashboardError, setDashboardError] = useState(false);
   const [storeError, setStoreError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [quota, setQuota] = useState<{ used: number; limit: number; remaining: number } | null>(null);
+  const [topCards, setTopCards] = useState<RoleTaskCard[]>([]);
+  const [usageCounts, setUsageCounts] = useState<Record<string, number>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -70,6 +202,10 @@ export default function DashboardPage() {
     }
 
     loadData();
+
+    // 加载常用卡片（仅客户端）
+    setTopCards(getTopCards(6));
+    setUsageCounts(getUsageCounts());
 
     return () => { cancelled = true; };
   }, []);
@@ -143,6 +279,40 @@ export default function DashboardPage() {
           {/* 有门店 */}
           {store && (
             <div className="space-y-6">
+              {/* 常用任务 */}
+              {topCards.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Zap className="h-5 w-5 text-indigo-600" />
+                    <h3 className="font-semibold text-slate-900">常用任务</h3>
+                  </div>
+                  <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+                    {topCards.map((card) => {
+                      const emoji = pickEmoji(card.sceneTags);
+                      const count = usageCounts[card.id] || 0;
+                      return (
+                        <button
+                          key={card.id}
+                          onClick={() => router.push(`/dashboard/workbench/${card.id}`)}
+                          className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white p-4 text-left hover:border-indigo-200 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 active:scale-[0.98] cursor-pointer"
+                        >
+                          <span className="mt-0.5 text-xl leading-none shrink-0">{emoji}</span>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium text-slate-900 truncate">{card.title}</p>
+                            <p className="mt-0.5 text-xs text-slate-500">
+                              {ROLE_LABELS[card.role]}
+                              {count > 0 && (
+                                <span className="ml-1.5 text-slate-400">· 使用 {count} 次</span>
+                              )}
+                            </p>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               {/* 门店状态卡片 */}
               <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="flex items-center justify-between mb-4">
@@ -289,61 +459,6 @@ export default function DashboardPage() {
               )}
             </div>
           )}
-
-          {/* 快捷入口 */}
-          <div className={store ? "" : "opacity-50"}>
-            {!store && (
-              <h3 className="mb-3 text-sm font-medium text-slate-400">快捷入口</h3>
-            )}
-            {store && (
-              <h3 className="mb-3 font-semibold text-slate-900">快捷入口</h3>
-            )}
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Link
-                href="/dashboard/workbench"
-                className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white p-4 hover:border-indigo-200 transition-colors shadow-sm"
-              >
-                <Sparkles className="h-5 w-5 shrink-0 text-indigo-600" />
-                <div>
-                  <p className="text-sm font-medium text-slate-900">AI 运营内容生成</p>
-                  <p className="text-xs text-slate-500">文案、群公告、活动方案</p>
-                </div>
-              </Link>
-
-              <Link
-                href="/dashboard/posters"
-                className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white p-4 hover:border-indigo-200 transition-colors shadow-sm"
-              >
-                <ImageIcon className="h-5 w-5 shrink-0 text-indigo-600" />
-                <div>
-                  <p className="text-sm font-medium text-slate-900">AI 生图</p>
-                  <p className="text-xs text-slate-500">自动合成宣传海报</p>
-                </div>
-              </Link>
-
-              <Link
-                href="/dashboard/history"
-                className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white p-4 hover:border-indigo-200 transition-colors shadow-sm"
-              >
-                <History className="h-5 w-5 shrink-0 text-indigo-600" />
-                <div>
-                  <p className="text-sm font-medium text-slate-900">生成历史</p>
-                  <p className="text-xs text-slate-500">查看历史生成内容</p>
-                </div>
-              </Link>
-
-              <Link
-                href="/dashboard/store-settings"
-                className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white p-4 hover:border-indigo-200 transition-colors shadow-sm"
-              >
-                <FileText className="h-5 w-5 shrink-0 text-indigo-600" />
-                <div>
-                  <p className="text-sm font-medium text-slate-900">门店资料</p>
-                  <p className="text-xs text-slate-500">编辑门店信息和上传素材</p>
-                </div>
-              </Link>
-            </div>
-          </div>
         </>
       )}
     </div>
