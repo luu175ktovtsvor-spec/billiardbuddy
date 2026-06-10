@@ -51,7 +51,7 @@ export function MyTemplates() {
     setTemplates(updated);
     setNewTitle("");
     setNewIntent("");
-    setShowAdd(false);
+    // 保持表单打开，方便连续添加
   };
 
   const handleDelete = (id: string) => {

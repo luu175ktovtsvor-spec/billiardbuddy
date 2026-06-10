@@ -101,7 +101,7 @@ async def _get_generation_stats(
                 Integer
             )
         ).label("today"),
-    ).where(Generation.store_id == store_id)
+    ).where(Generation.store_id == store_id, Generation.is_deleted == False)
 
     result = await db.execute(stmt)
     row = result.one()
@@ -121,7 +121,7 @@ async def _get_latest_generation(
 ) -> datetime | None:
     stmt = (
         select(Generation.created_at)
-        .where(Generation.store_id == store_id)
+        .where(Generation.store_id == store_id, Generation.is_deleted == False)
         .order_by(Generation.created_at.desc())
         .limit(1)
     )
@@ -278,7 +278,7 @@ async def _get_last_good_generation(db: AsyncSession, store_id: uuid.UUID) -> Ge
     """获取上次标记为"效果好"的生成记录。"""
     stmt = (
         select(Generation)
-        .where(Generation.store_id == store_id, Generation.effect_rating == "good")
+        .where(Generation.store_id == store_id, Generation.effect_rating == "good", Generation.is_deleted == False)
         .order_by(Generation.rated_at.desc())
         .limit(1)
     )
@@ -293,6 +293,7 @@ async def _days_since_last_activity(db: AsyncSession, store_id: uuid.UUID) -> in
         .where(
             Generation.store_id == store_id,
             Generation.type == "activity",
+            Generation.is_deleted == False,
         )
         .order_by(Generation.created_at.desc())
         .limit(1)

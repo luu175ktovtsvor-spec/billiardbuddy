@@ -14,6 +14,7 @@ class GenerationListItem(BaseModel):
     model_used: str | None
     tokens_used: int | None
     is_favorite: bool = False
+    effect_rating: str | None = None
     created_at: datetime
 
 
@@ -27,6 +28,7 @@ class GenerationDetailResponse(BaseModel):
     model_used: str | None
     tokens_used: int | None
     is_favorite: bool = False
+    effect_rating: str | None = None
     created_at: datetime
 
 

@@ -123,6 +123,8 @@ function WorkbenchPage() {
   const inputSectionRef = useRef<HTMLDivElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const conversationIdRef = useRef<string | null>(null);
+  const generatingCardIdRef = useRef<string | null>(null);
 
   /* Load store */
   useEffect(() => {
@@ -192,7 +194,9 @@ function WorkbenchPage() {
     setError("");
     setResult(null);
     setStreamingContent("");
+    conversationIdRef.current = null;
     setConversationId(null); // 新任务卡片开始新对话
+    generatingCardIdRef.current = card.id;
     setGenerating(true);
 
     try {
@@ -204,7 +208,7 @@ function WorkbenchPage() {
           output_package: card.outputPackage.length > 0 ? card.outputPackage : undefined,
           prompt_key: card.promptKey,
           model: selectedModel || undefined,
-          conversation_id: conversationId || undefined,
+          conversation_id: conversationIdRef.current || undefined,
         },
         (token) => setStreamingContent((prev) => prev + token),
         (fullContent, generationId, convId) => {
@@ -217,16 +221,17 @@ function WorkbenchPage() {
             profile_suggestions: null,
           });
           setStreamingContent("");
-          if (convId) setConversationId(convId);
+          if (convId) { conversationIdRef.current = convId; setConversationId(convId); }
+          generatingCardIdRef.current = null;
           setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
         },
         (msg) => {
-          if (!controller.signal.aborted) setError(msg);
+          if (!controller.signal.aborted) { setError(msg); generatingCardIdRef.current = null; }
         },
         controller.signal,
       );
     } catch (err) {
-      if (!controller.signal.aborted) setError(getErrorMessage(err));
+      if (!controller.signal.aborted) { setError(getErrorMessage(err)); generatingCardIdRef.current = null; }
     } finally {
       if (!controller.signal.aborted) setGenerating(false);
     }
@@ -563,7 +568,13 @@ function WorkbenchPage() {
             .map((card) => (
               <div
                 key={card.id}
-                className="flex flex-col rounded-lg border border-slate-200 bg-white p-4 shadow-sm hover:border-indigo-200 hover:shadow transition-all"
+                className={`flex flex-col rounded-lg border bg-white p-4 shadow-sm transition-all ${
+                  generatingCardIdRef.current === card.id
+                    ? "border-indigo-500 ring-2 ring-indigo-100"
+                    : lastUsedCardId === card.id
+                    ? "border-indigo-300"
+                    : "border-slate-200 hover:border-indigo-200"
+                }`}
               >
                 <div className="mb-1.5 flex items-start justify-between gap-2">
                   <h4 className="text-sm font-semibold text-slate-900">{card.title}</h4>
@@ -611,7 +622,7 @@ function WorkbenchPage() {
                     disabled={generating}
                     className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50 transition-colors"
                   >
-                    {generating ? "生成中..." : "一键生成"}
+                    {generatingCardIdRef.current === card.id ? "生成中..." : "一键生成"}
                     <ArrowRight className="h-3 w-3" />
                   </button>
                   <button
