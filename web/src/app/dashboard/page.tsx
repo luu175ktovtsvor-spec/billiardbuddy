@@ -17,6 +17,8 @@ import {
   TrendingUp,
   FileText,
   CheckCircle,
+  Crown,
+  Clock,
 } from "lucide-react";
 import { OnboardingGuide } from "@/components/onboarding-guide";
 
@@ -69,15 +71,17 @@ export default function DashboardPage() {
   const [dashboardError, setDashboardError] = useState(false);
   const [storeError, setStoreError] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [quota, setQuota] = useState<{ used: number; limit: number; remaining: number } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadData() {
       setLoading(true);
-      const [storeResult, dashResult] = await Promise.allSettled([
+      const [storeResult, dashResult, quotaResult] = await Promise.allSettled([
         api.getMyStore(),
         api.getTodayDashboard(),
+        api.getQuota(),
       ]);
 
       if (cancelled) return;
@@ -97,6 +101,10 @@ export default function DashboardPage() {
         setDashboardError(false);
       } else {
         setDashboardError(true);
+      }
+
+      if (quotaResult.status === "fulfilled") {
+        setQuota({ used: quotaResult.value.monthly_generations_used, limit: quotaResult.value.monthly_generation_limit, remaining: quotaResult.value.remaining });
       }
 
       setLoading(false);
@@ -241,6 +249,63 @@ export default function DashboardPage() {
                   <p className="mt-3 text-xs text-slate-400 truncate">地址：{store.address}</p>
                 )}
               </div>
+
+              {/* 订阅状态卡片 */}
+              {quota && (
+                <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <Crown className="h-5 w-5 text-amber-500" />
+                      <h3 className="font-semibold text-slate-900">本月使用情况</h3>
+                    </div>
+                    <span className="text-xs text-slate-400">
+                      {new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long" })}
+                    </span>
+                  </div>
+
+                  <div className="space-y-3">
+                    {/* 生成次数 */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm text-slate-600">AI 内容生成</span>
+                        <span className="text-sm font-medium text-slate-900">
+                          {quota.used} / {quota.limit}
+                        </span>
+                      </div>
+                      <div className="h-2 w-full rounded-full bg-slate-100">
+                        <div
+                          className={`h-2 rounded-full transition-all ${
+                            quota.used / quota.limit >= 0.9
+                              ? "bg-red-500"
+                              : quota.used / quota.limit >= 0.7
+                              ? "bg-amber-500"
+                              : "bg-indigo-500"
+                          }`}
+                          style={{ width: `${Math.min((quota.used / quota.limit) * 100, 100)}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* 状态提示 */}
+                    {quota.remaining <= 0 ? (
+                      <div className="flex items-center gap-2 rounded-md bg-red-50 p-3">
+                        <AlertCircle className="h-4 w-4 text-red-500" />
+                        <p className="text-sm text-red-700">本月额度已用完，下月1日自动重置</p>
+                      </div>
+                    ) : quota.remaining <= 5 ? (
+                      <div className="flex items-center gap-2 rounded-md bg-amber-50 p-3">
+                        <Clock className="h-4 w-4 text-amber-500" />
+                        <p className="text-sm text-amber-700">本月剩余 {quota.remaining} 次，请合理使用</p>
+                      </div>
+                    ) : null}
+
+                    {/* 到期提醒 */}
+                    <div className="flex items-center justify-between text-xs text-slate-400">
+                      <span>如需提升额度，请联系管理员</span>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* 今日推荐区 */}
               <div>
