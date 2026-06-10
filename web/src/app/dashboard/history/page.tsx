@@ -417,9 +417,9 @@ export default function HistoryPage() {
                 />
               </button>
               <CopyButton text={detailItem.content || ""} />
-              {detailItem.type === "workbench" && detailItem.input_params?.user_intent && (
+              {detailItem.type === "workbench" && typeof detailItem.input_params?.user_intent === "string" && (
                 <Link
-                  href={`/dashboard/workbench?intent=${encodeURIComponent(detailItem.input_params.user_intent)}`}
+                  href={`/dashboard/workbench?intent=${encodeURIComponent(detailItem.input_params.user_intent as string)}`}
                   className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 transition-colors"
                 >
                   <MessageSquare className="h-4 w-4" />
