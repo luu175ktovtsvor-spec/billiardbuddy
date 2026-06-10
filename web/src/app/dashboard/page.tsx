@@ -92,7 +92,6 @@ function pickEmoji(sceneTags: string[]): string {
     推车: "🛒",
     促销: "🏷️",
     跟进: "📞",
-    回访: "🔄",
     私域: "🔒",
     卫生: "🧹",
     电器: "⚡",
@@ -132,9 +131,6 @@ function pickEmoji(sceneTags: string[]): string {
     接待: "🤝",
     小游戏: "🎮",
     娱乐: "😄",
-    复盘: "🔍",
-    活动: "🎉",
-    预热: "🔥",
   };
   for (const tag of sceneTags) {
     if (tagEmojiMap[tag]) return tagEmojiMap[tag];
