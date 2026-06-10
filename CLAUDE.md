@@ -6,17 +6,25 @@
 
 **这不是**收银系统、灯控系统、会员管理系统。不做开台、计费、灯控、收银、库存、会员充值。
 
-## 当前状态
+## 线上环境
 
-- **GitHub**: https://github.com/luu175ktovtsvor-spec/billiards-ai-ops （私有仓库）
-- **服务器**: 阿里云 ECS 美国硅谷 `47.77.237.250`，Nginx + systemd
-- **前端**: Next.js 14 standalone 模式，端口 3000
-- **后端**: FastAPI + uvicorn，端口 8000
-- **数据库**: PostgreSQL 14，库名 `billiards_ai`
-- **AI 文本模型**: DeepSeek V4 Flash
-- **AI 图片模型**: OpenAI gpt-image-2（美国服务器直连 `https://api.openai.com/v1`）
-- **内容渲染**: react-markdown + remark-gfm + @tailwindcss/typography
-- **部署文档**: `docs/服务器部署交接文档.md`
+| 项目 | 值 |
+|------|-----|
+| **生产域名** | https://zzyppz.cn |
+| **服务器 IP** | 47.77.237.250（阿里云 ECS 美国硅谷） |
+| **SSH** | `ssh root@47.77.237.250`，密码 `Cch245461635` |
+| **前端** | Next.js 14 standalone，端口 3000，Nginx 反代 |
+| **后端** | FastAPI + uvicorn，端口 8000 |
+| **数据库** | PostgreSQL 14，库名 `billiards_ai`，用户 `billiards`，密码 `billiards123` |
+| **SSL** | Let's Encrypt 自动续期（Certbot） |
+| **GitHub** | https://github.com/luu175ktovtsvor-spec/billiards-ai-ops（私有仓库） |
+
+## AI 模型配置
+
+| 用途 | 模型 | 说明 |
+|------|------|------|
+| 文本生成 | DeepSeek V4 Flash | 通过 `https://api.deepseek.com` |
+| 图片生成 | OpenAI gpt-image-2 | 通过 Cloudflare Worker 代理 `https://openai-proxy.luu175ktovtsvor.workers.dev/v1` |
 
 ## 技术栈
 
@@ -25,6 +33,30 @@
 - **数据库**: PostgreSQL 14
 - **海报合成**: Pillow (Python) + AI 生图（OpenAI gpt-image-2）
 - **包管理**: pnpm (前端) / uv (Python 后端)
+- **内容渲染**: react-markdown + remark-gfm + @tailwindcss/typography
+
+## AI 图片生成架构说明
+
+项目中有两个 OpenAI 图片 Provider，选择标准 Image API 而非 Responses API 是有原因的：
+
+| Provider | 文件 | API | 状态 | 原因 |
+|----------|------|-----|------|------|
+| `OpenAIImageProvider` | `openai_image.py` | `images.generate` + `images.edit` | ✅ 在用 | 标准 Image API，无需组织验证 |
+| `OpenAIResponseImageProvider` | `openai_response_image.py` | Responses API（gpt-4o） | ❌ 未注册 | 需要 Organization Verification，无法通过 |
+
+**为什么用标准 Image API：**
+- OpenAI 的 Responses API（支持真正多轮对话图片生成）需要完成 **API Organization Verification** 才能使用
+- 我们的 OpenAI 账号无法通过组织验证，所以选择了标准 Image API
+
+**"多轮对话"如何实现：**
+- 标准 Image API 不支持 `previous_response_id`，无法真正传递多轮上下文
+- 我们通过 `images.edit` 接口模拟：把上一张生成的图片作为 `refine_from` 传入，实现"基于此调整"的以图生图效果
+- 这是一个务实的 workaround，效果满足需求
+
+**Cloudflare Worker 代理：**
+- `OPENAI_BASE_URL` 指向 `https://openai-proxy.luu175ktovtsvor.workers.dev/v1`
+- 这是一个 Cloudflare Worker 代理，用于优化 OpenAI API 的访问速度和稳定性
+- 不是直连 `https://api.openai.com/v1`
 
 ## 项目结构
 
@@ -33,54 +65,92 @@ web/                    # Next.js 前端
   src/
     app/
       (auth)/           # 登录/注册
+      admin/            # 管理后台（总览/用户/套餐/订阅/收入）
       dashboard/        # 主界面（需登录）
         workbench/      # 岗位工作台（核心功能）
         posters/        # AI 海报生成
         history/        # 生成历史
         store-settings/ # 门店资料管理
+          members/      # 团队成员管理
     components/
-      ui/               # shadcn/ui 基础组件
+      ui/               # shadcn/ui 基础组件 + CardSelect
       layout/           # 布局组件（header, sidebar, mobile-nav）
       generators/       # AI 生成结果展示（copy-button）
+      content-calendar.tsx  # 内容日历（静态）
+      my-templates.tsx      # 我的模板
+      onboarding-guide.tsx  # 新手引导
+      empty-store-guide.tsx # 无门店引导
+      error-boundary.tsx    # 错误边界
     lib/
       api.ts            # API 客户端（统一 fetch 封装，token 刷新，SSE 流式）
       utils.ts          # 工具函数（cn, getErrorMessage）
       role-workbench-config.ts  # 岗位任务卡片配置（54 个任务卡片）
-      workbench-config.ts       # 工作台配置
     hooks/
       auth-context.tsx  # 认证上下文（login/register/logout）
-    types/              # TypeScript 类型定义
+    types/              # TypeScript 类型定义（api, auth, dashboard, generate, generation-history, poster, store）
 
 server/                 # FastAPI 后端
-  api/v1/              # API 路由（auth, stores, generate, stream, posters, generations, knowledge, dashboard, outreach, sop, games, performance, diagnosis, members）
-  core/                # 安全、配额、异常、租户隔离、RBAC 权限
-  models/              # SQLAlchemy ORM 模型（user, store, store_member, store_invitation, generation, quota）
-  schemas/             # Pydantic 请求/响应模型
+  api/v1/
+    router.py           # 路由注册（21 个子路由）
+    auth.py             # 认证（注册/登录/刷新）
+    stores.py           # 门店 CRUD
+    generate.py         # 内容生成（文案/活动/经营）
+    stream.py           # SSE 流式生成（工作台）
+    posters.py          # 海报生成
+    generations.py      # 生成历史 CRUD
+    dashboard.py        # 今日工作台数据
+    knowledge.py        # 知识库查询
+    quota.py            # 配额管理
+    models.py           # 模型列表
+    members.py          # 团队成员管理
+    admin.py            # 管理后台 API
+    feedback.py         # 反馈（效果好/差）
+    templates.py        # 用户模板 CRUD
+    repurpose.py        # 内容变体（抖音/小红书/群公告/朋友圈）
+    batch.py            # 批量生成
+    outreach.py         # 助教约客
+    sop.py              # 前厅 SOP
+    games.py            # 玩法推荐
+    performance.py      # 绩效考核
+    diagnosis.py        # 经营诊断
+  core/
+    security.py         # JWT 认证（HS256，24小时有效期）
+    rbac.py             # RBAC 权限矩阵（6个角色 × 10+权限）
+    tenant.py           # 租户隔离（contextvars + SQLAlchemy 事件）
+    quota.py            # 配额检查
+    exceptions.py       # 自定义异常
+  models/
+    user.py             # 用户模型
+    store.py            # 门店模型（含 brand_style、operation_profile）
+    store_member.py     # 门店成员
+    store_invitation.py # 邀请码
+    generation.py       # 生成记录（含 is_deleted 软删除）
+    conversation.py     # 对话记录
+    quota.py            # 配额模型
   services/
     ai/
-      prompt_engine.py # Prompt 模板引擎（单例，get_prompt_engine()）
-      factory.py       # Provider 工厂
-      providers/       # AI 模型实现
-        deepseek.py    # DeepSeek V4 Flash 文本模型
-        mock.py         # Mock Provider（测试用）
+      prompt_engine.py  # Prompt 模板引擎（单例）
+      factory.py        # Provider 工厂
+      providers/
+        deepseek.py     # DeepSeek 文本模型
         openai_image.py # OpenAI 图片模型（gpt-image-2）
-    content_service.py # 文案生成核心逻辑
-    poster_service.py  # 海报生成（AI 生图，Logo/二维码直传 AI）
-    poster/
-      composer.py      # 图片合成工具
-    store_profile_service.py  # 门店运营画像
-    dashboard_service.py      # 今日工作台规则引擎
-    quota_service.py   # 配额管理
-  db/                  # 数据库连接 + Alembic 迁移
-  prompts/             # Prompt 模板 YAML 文件
-    knowledge/         # 38 个行业知识文件
-    rules/             # 角色规则 + 客户规则
-    operation/         # 运营场景 prompt
-    copywriting/       # 文案 prompt
-    activity/          # 活动 prompt
-    recruitment/       # 招聘 prompt
-    fewshots/          # fewshot 示例
-  main.py              # 入口
+        mock.py         # Mock Provider（测试用）
+    content_service.py  # 文案生成核心逻辑
+    poster_service.py   # 海报生成（AI 生图 + 对话历史）
+    dashboard_service.py # 今日工作台规则引擎
+    store_profile_service.py # 门店运营画像
+    generation_service.py # 生成记录查询
+    quota_service.py    # 配额管理
+    storage_service.py  # 文件上传存储
+  prompts/
+    knowledge/          # 38 个行业知识 YAML
+    rules/              # 角色规则 + 客户规则
+    operation/          # 运营场景 prompt
+    copywriting/        # 文案 prompt
+    activity/           # 活动 prompt
+    fewshots/           # fewshot 示例
+  db/migrations/versions/ # 14 个 Alembic 迁移（001-013 + add_new_tables）
+  main.py               # 入口
 ```
 
 ## 核心架构原则
@@ -94,6 +164,7 @@ server/                 # FastAPI 后端
 7. **海报 = AI 生图 + Logo/二维码叠加** — AI 生成背景图，Pillow 叠加门店 Logo 和二维码
 8. **不做自动触达** — 只生成内容供人工复制使用，不做自动群发、自动私信
 9. **成员邀请机制** — 管理员生成邀请码 → 员工注册时输入 → 自动加入门店并获得指定角色
+10. **内容变体** — 生成结果可一键转换为抖音文案/小红书文案/群公告/朋友圈格式
 
 ## 开发规范
 
@@ -106,17 +177,19 @@ server/                 # FastAPI 后端
 - useEffect 中的 API 调用必须加 `cancelled` flag 防止卸载后 setState
 - SSE 流式输出用于工作台生成（`streamWorkbench`）
 - 错误处理用 `lib/utils.ts` 的 `getErrorMessage`
+- 选择器组件用 `components/ui/card-select.tsx`（卡片式），不用原生 `<select>`
 
 ### 后端
 
 - API 版本前缀 `/api/v1/`
 - 请求/响应模型用 Pydantic v2 的 `BaseModel`
 - 数据库操作用 async SQLAlchemy
-- 认证用 JWT（access token），密码用 bcrypt 哈希
+- 认证用 JWT（access token，24小时有效期），密码用 bcrypt 哈希
 - 文件上传存本地目录 `server/uploads/`
 - AI 调用结果写入 `generations` 表，记录 prompt、model、tokens
 - PromptEngine 是单例，通过 `get_prompt_engine()` 获取，不要直接 `PromptEngine()`
 - Knowledge YAML 必须有 `template:` 和 `key:` 字段，否则 PromptEngine 加载会报错
+- 所有 Generation 查询必须加 `is_deleted == False` 过滤
 
 ### Prompt 模板
 
@@ -133,6 +206,8 @@ template: |
 
 修改 Prompt 不改业务代码，只改 YAML 文件。新增 knowledge YAML 必须包含 `template:` 字段。
 
+**禁止事项：** YAML 文件中不得出现任何第三方品牌名、来源出处、文件名引用。
+
 ## 代码同步与部署
 
 代码通过 GitHub 同步，服务器通过 git pull 拉取。
@@ -143,12 +218,18 @@ git add .
 git commit -m "描述"
 git push origin main
 
-# 服务器上部署
+# 服务器上部署（后端自动，前端需手动构建）
 ssh root@47.77.237.250
-bash /var/www/billiards-ai/deploy_us.sh
+cd /var/www/billiards-ai && bash deploy_us.sh
+
+# 前端有改动时需手动构建
+cd /var/www/billiards-ai/web
+npx next build --no-lint
+cp -r .next/static .next/standalone/.next/static
+systemctl restart billiards-frontend
 ```
 
-一键脚本会自动：git pull → 安装依赖 → 重启后端 → 构建前端 → 重启前端
+`deploy_us.sh` 自动执行：git pull → 安装依赖 → 数据库迁移 → 重启后端。**前端构建需手动执行。**
 
 ## 常用命令
 
@@ -163,9 +244,6 @@ cd server && uv run fastapi dev main.py    # 启动开发服务器
 cd server && uv run alembic upgrade head   # 执行数据库迁移
 cd server && uv run alembic revision --autogenerate -m "描述"  # 生成迁移
 
-# 数据库
-# 本地开发需要先启动 PostgreSQL（docker 或本地安装）
-
 # 服务器
 ssh root@47.77.237.250
 systemctl status billiards-backend billiards-frontend
@@ -177,30 +255,32 @@ journalctl -u billiards-backend -n 50 --no-pager
 | 模块 | 状态 |
 |------|------|
 | 用户注册/登录（手机号+密码） | ✅ |
-| 门店资料管理（运营画像，12 字段新增 + 9 冗余字段删除） | ✅ |
+| 门店资料管理（运营画像，分步向导 + 全部编辑） | ✅ |
 | Prompt 引擎（YAML 模板，38 个 knowledge） | ✅ |
-| 岗位工作台（Workbench，SSE 流式输出 + Abort 取消） | ✅ |
+| 岗位工作台（6 角色 × 54 张卡片，SSE 流式输出） | ✅ |
 | 文案生成（朋友圈/群公告/活动/日报） | ✅ |
 | 海报生成（gpt-image-2 + Logo/二维码直传 AI + 二次调整） | ✅ |
 | Markdown 渲染（react-markdown + remark-gfm） | ✅ |
 | 文本模型（DeepSeek V4 Flash） | ✅ |
-| 生成历史 | ✅ |
+| 生成历史（筛选/收藏/详情/导出 CSV） | ✅ |
 | 配额管理 | ✅ |
 | 多 AI Provider（DeepSeek/OpenAI） | ✅ |
 | fewshot 选择器 | ✅ |
 | 多租户安全（自动 store_id 过滤 + RBAC 权限矩阵） | ✅ |
 | 成员管理（邀请码 + 手动添加 + 角色调整 + 移除） | ✅ |
-| 角色 tab/select 状态合并 | ✅ |
-| inputHints 可交互化（点击自动填入补充说明） | ✅ |
-| 输出包选择简化（推荐组合 + 折叠自定义） | ✅ |
-| 结果区按钮重新布局 | ✅ |
-| "基于此优化"功能（支持 abort + 历史版本） | ✅ |
-| 生成完成后引导下一步（热门任务卡片） | ✅ |
-| 生图场景卡片改造（灵感标签 → 卡片网格） | ✅ |
+| 管理后台（用户管理/订阅管理/收入统计/套餐编辑） | ✅ |
+| 反馈系统（效果好/差） | ✅ |
+| 用户模板（我的模板，localStorage 存储） | ✅ |
+| 内容变体（一键转换为抖音/小红书/群公告/朋友圈） | ✅ |
+| 批量生成（一次生成 5 条同类内容） | ✅ |
+| 新手引导（5 步向导） | ✅ |
+| 内容日历（静态，按星期推荐发什么内容） | ✅ |
+| 品牌风格选择（卡片式选择器，影响 AI 语气） | ✅ |
 | 生图"基于此调整"（refine_from 以图生图） | ✅ |
 | 生图 Logo/二维码多图直传 AI（最多 16 张） | ✅ |
 | 对话历史截断（只保留最近 3 轮） | ✅ |
-| 服务器部署（git + deploy_us.sh） | ✅ |
+| 服务器部署（git + deploy_us.sh + SSL） | ✅ |
+| 生产域名（zzyppz.cn + HTTPS） | ✅ |
 
 ## 行业知识体系
 
@@ -249,6 +329,8 @@ journalctl -u billiards-backend -n 50 --no-pager
 - 不做 WebSocket 实时协作
 - 不做自动群发、自动私信
 - 不在 AI 生图 Prompt 中包含中文文字、价格、Logo、二维码
+- 不使用原生 `<select>` 做选择器（用 CardSelect 组件）
+- 不在代码中出现任何第三方品牌名或来源出处
 
 ## 文档维护规则
 
