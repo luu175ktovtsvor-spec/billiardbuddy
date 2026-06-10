@@ -23,6 +23,7 @@ export default function LandingPage() {
 
       {/* 功能展示 */}
       <section className="mx-auto max-w-6xl px-6 py-16">
+        <h2 className="text-2xl font-bold text-center mb-8">核心功能</h2>
         <div className="grid md:grid-cols-3 gap-8">
           {[
             { title: "AI 文案生成", desc: "朋友圈、群公告、活动方案，30 秒生成" },
@@ -37,22 +38,21 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* 定价 */}
-      <section className="mx-auto max-w-6xl px-6 py-16">
-        <h2 className="text-2xl font-bold text-center mb-8">定价</h2>
-        <div className="grid md:grid-cols-3 gap-8">
+      {/* 适用岗位 */}
+      <section className="mx-auto max-w-6xl px-6 py-16 bg-slate-50">
+        <h2 className="text-2xl font-bold text-center mb-8">适用岗位</h2>
+        <div className="grid md:grid-cols-3 gap-6">
           {[
-            { name: "免费版", price: "0", features: ["每月 20 次生成", "基础模板", "有水印"] },
-            { name: "专业版", price: "99", features: ["每月 300 次生成", "全部模板", "无水印海报"], popular: true },
-            { name: "团队版", price: "299", features: ["不限次数", "多成员协作", "专属客服"] },
-          ].map((p, i) => (
-            <div key={i} className={`rounded-lg border p-6 ${p.popular ? "border-indigo-600 ring-2 ring-indigo-600" : ""}`}>
-              {p.popular && <span className="text-xs bg-indigo-600 text-white px-2 py-1 rounded">最受欢迎</span>}
-              <h3 className="font-bold text-lg mt-2">{p.name}</h3>
-              <p className="text-3xl font-bold my-4">¥{p.price}<span className="text-sm font-normal">/月</span></p>
-              <ul className="space-y-2">
-                {p.features.map((f, j) => <li key={j} className="text-sm text-slate-600">✓ {f}</li>)}
-              </ul>
+            { role: "店长", tasks: "日报/周报/活动策划/老客维护" },
+            { role: "助教管理", tasks: "助教推广/招聘文案/PK方案/培训计划" },
+            { role: "教练", tasks: "赛事通知/赛后战报/搭子局/好评引导" },
+            { role: "前厅", tasks: "团购核销话术/投诉安抚/开店闭店SOP" },
+            { role: "老板", tasks: "经营简报/月度汇报/投资回报分析" },
+            { role: "运营", tasks: "朋友圈计划/短视频文案/抖音矩阵" },
+          ].map((r, i) => (
+            <div key={i} className="rounded-lg border bg-white p-4">
+              <h3 className="font-bold text-sm text-indigo-600 mb-1">{r.role}</h3>
+              <p className="text-sm text-slate-600">{r.tasks}</p>
             </div>
           ))}
         </div>
