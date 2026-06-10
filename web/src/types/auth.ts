@@ -10,10 +10,6 @@ export interface LoginRequest {
   password: string;
 }
 
-export interface RefreshTokenRequest {
-  access_token: string;
-}
-
 export interface TokenResponse {
   access_token: string;
   token_type: string;

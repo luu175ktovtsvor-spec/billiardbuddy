@@ -2,9 +2,8 @@ import { ApiError } from "@/types/api";
 import type { LoginRequest, RegisterRequest, TokenResponse, User } from "@/types/auth";
 import type { StoreCreate, StoreResponse, StoreUpdate, StoreListItem, UploadResponse } from "@/types/store";
 import type { GenerateActivityRequest, GenerateCopywritingRequest, GenerateOperationRequest, GenerateWorkbenchRequest, GenerateOutreachRequest, GenerateSOPRequest, GenerateGamesRequest, GeneratePerformanceRequest, GenerateDiagnosisRequest, GenerationResponse } from "@/types/generate";
-import type { ImageGenerateRequest, ImageGenerateResponse, ImageModel, InspirationTag, SizeOption } from "@/types/poster";
+import type { ImageGenerateRequest, ImageGenerateResponse, SizeOption } from "@/types/poster";
 import type {
-  GenerationHistoryItem,
   GenerationHistoryListResponse,
   ListGenerationsParams,
 } from "@/types/generation-history";
@@ -379,14 +378,6 @@ class ApiClient {
     return this.request<{ path: string; url: string }>("POST", "/api/v1/posters/reference", formData, true);
   }
 
-  listImageModels() {
-    return this.request<{ models: ImageModel[] }>("GET", "/api/v1/posters/image-models");
-  }
-
-  listInspirationTags() {
-    return this.request<{ tags: InspirationTag[] }>("GET", "/api/v1/posters/inspiration-tags");
-  }
-
   listSizeOptions() {
     return this.request<{ sizes: SizeOption[] }>("GET", "/api/v1/posters/size-options");
   }
@@ -410,10 +401,6 @@ class ApiClient {
     if (params?.is_favorite !== undefined) searchParams.set("is_favorite", String(params.is_favorite));
     const qs = searchParams.toString();
     return this.request<GenerationHistoryListResponse>("GET", `/api/v1/generations${qs ? `?${qs}` : ""}`);
-  }
-
-  async getGenerationDetail(id: string): Promise<GenerationHistoryItem> {
-    return this.request<GenerationHistoryItem>("GET", `/api/v1/generations/${id}`);
   }
 
   async toggleFavorite(id: string): Promise<{ is_favorite: boolean }> {
@@ -446,10 +433,6 @@ class ApiClient {
 
   getTodayDashboard() {
     return this.request<DashboardTodayResponse>("GET", "/api/v1/dashboard/today");
-  }
-
-  getWeekPlan() {
-    return this.request<{ week_plan: any[]; today: string }>("GET", "/api/v1/calendar/week-plan");
   }
 
   // ─── New Operation APIs ───
@@ -516,10 +499,6 @@ class ApiClient {
     return this.request<{ detail: string }>("DELETE", `/api/v1/members/invitations/${id}`);
   }
 
-  joinStore(inviteCode: string) {
-    return this.request<{ detail: string; store_id: string; role: string }>("POST", "/api/v1/members/join", { invite_code: inviteCode });
-  }
-
   listMembers() {
     return this.request<Array<{
       user_id: string; name: string | null; phone: string; role: string; joined_at: string;
@@ -538,21 +517,6 @@ class ApiClient {
     return this.request<{ detail: string; user_id: string; role: string }>("POST", "/api/v1/members/add", { phone, role });
   }
 
-  // ─── Models ───
-
-  listTextModels() {
-    return this.request<{
-      models: Array<{
-        id: string;
-        name: string;
-        provider: string;
-        provider_name: string;
-        description: string;
-        best_for: string;
-        is_default: boolean;
-      }>;
-    }>("GET", "/api/v1/models/text-models");
-  }
 }
 
 export const api = new ApiClient();

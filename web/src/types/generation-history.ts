@@ -1,26 +1,5 @@
 export type GenerationType = "copywriting" | "activity" | "poster" | "operation" | "workbench";
 
-export type GenerationSubType =
-  | "moments"
-  | "group_notice"
-  | "planning"
-  | "daily_invite"
-  | "activity_promo"
-  | "tournament_notice"
-  | "recharge_promo"
-  | "afternoon_special"
-  | "groupbuy_to_private"
-  | "assistant_promo"
-  | "partner_match"
-  | "tournament"
-  | "old_customer_recall"
-  | "boss"
-  | "manager"
-  | "assistant_manager"
-  | "coach"
-  | "frontdesk"
-  | "operator";
-
 export interface GenerationHistoryItem {
   id: string;
   type: GenerationType;
