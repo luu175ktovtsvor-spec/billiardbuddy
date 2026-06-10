@@ -48,7 +48,8 @@ template: |
   - 多平台内容适配时，朋友圈偏口语化、抖音偏节奏感、小红书偏攻略感，但都不编造信息。
 
 required_knowledge:
-  - knowledge.core_operations  - knowledge.customer_types
+  - knowledge.core_operations
+  - knowledge.customer_types
   - knowledge.industry_data
   - knowledge.account_nurturing
   - knowledge.business_cases

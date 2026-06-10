@@ -415,6 +415,7 @@ async def generate_workbench(
             "tone": TONE_LABELS.get("friendly", "friendly"),
             "target": CUSTOMER_LABELS.get(target_customer_type or "all", "全部客户"),
             "extra_note": extra_note or "无",
+            "scenario": "日常",
         }
         rendered_prompt = prompt_engine.render(prompt_key, store, extra_vars)
 
@@ -524,19 +525,7 @@ async def generate_workbench(
     except Exception as e:
         raise AIServiceError("AI 生成服务暂时不可用，请稍后重试") from e
 
-    content = response.content
-    prefixes_to_strip = [
-        "好的，店长！",
-        "好的，店长",
-        "好的！",
-        "没问题，我来帮你",
-        "以下是为你生成的",
-        "好的，没问题！",
-    ]
-    for prefix in prefixes_to_strip:
-        if content.startswith(prefix):
-            content = content[len(prefix):].lstrip("\n").lstrip()
-            break
+    content = _strip_ai_prefixes(response.content)
 
     generation = Generation(
         id=uuid.uuid4(),

@@ -59,7 +59,8 @@ template: |
   - 检查表条目控制在 15 条以内，简洁可执行。
 
 required_knowledge:
-  - knowledge.core_operations  - knowledge.frontdesk_training
+  - knowledge.core_operations
+  - knowledge.frontdesk_training
   - knowledge.daily_workflow
   - knowledge.customer_types
   - knowledge.service_philosophy

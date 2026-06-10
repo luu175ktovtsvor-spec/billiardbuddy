@@ -50,7 +50,7 @@ class DeepSeekProvider(TextProvider):
                 "temperature": request.temperature,
             }
             if request.thinking:
-                kwargs["thinking"] = request.thinking
+                kwargs["extra_body"] = {"thinking": request.thinking}
             response = await client.chat.completions.create(**kwargs)
         except APIStatusError as e:
             raise _classify_api_error(e) from e
@@ -107,7 +107,7 @@ class DeepSeekProvider(TextProvider):
                 "stream_options": {"include_usage": True},
             }
             if request.thinking:
-                kwargs["thinking"] = request.thinking
+                kwargs["extra_body"] = {"thinking": request.thinking}
             stream = await client.chat.completions.create(**kwargs)
         except APIStatusError as e:
             raise _classify_api_error(e) from e
