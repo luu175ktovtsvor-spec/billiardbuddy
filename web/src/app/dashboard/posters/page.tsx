@@ -7,7 +7,7 @@ import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
 import type { SizeOption, GeneratedImage } from "@/types/poster";
 import type { StoreResponse } from "@/types/store";
-import { ImageIcon, Upload, X, Send, Download, Loader2, Plus, MessageSquare } from "lucide-react";
+import { ImageIcon, Upload, X, Send, Download, Loader2, Plus, MessageSquare, ZoomIn } from "lucide-react";
 import { EmptyStoreGuide } from "@/components/empty-store-guide";
 
 interface ConversationMessage {
@@ -78,6 +78,9 @@ function PostersPage() {
   /* Generation state (global) */
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
+
+  /* Lightbox */
+  const [lightboxImage, setLightboxImage] = useState<string | null>(null);
 
   /* Refs */
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -403,7 +406,7 @@ function PostersPage() {
                       <div className="space-y-3">
                         {msg.images.map((img) => (
                           <div key={img.generation_id}>
-                            <img src={api.resolveUrl(img.poster_url)} alt="AI 生成的图片" className="w-full rounded-lg" />
+                            <img src={api.resolveUrl(img.poster_url)} alt="AI 生成的图片" className="w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity" onClick={() => setLightboxImage(api.resolveUrl(img.poster_url))} />
                             <div className="mt-3 flex items-center gap-2">
                               <button type="button" onClick={() => updateCurrent({ refineFrom: img.generation_id })} className={`px-3 py-1.5 rounded text-xs ${current.refineFrom === img.generation_id ? "bg-indigo-100 text-indigo-700 border border-indigo-300" : "bg-slate-50 text-slate-600 border border-slate-200 hover:bg-slate-100"}`}>
                                 基于此调整
@@ -539,6 +542,32 @@ function PostersPage() {
           </div>
         </div>
       </div>
+      {/* Lightbox */}
+      {lightboxImage && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+          onClick={() => setLightboxImage(null)}
+        >
+          <div className="relative max-w-4xl max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+            <img src={lightboxImage} alt="放大查看" className="max-w-full max-h-[90vh] object-contain rounded-lg" />
+            <button
+              type="button"
+              onClick={() => setLightboxImage(null)}
+              className="absolute -top-3 -right-3 h-8 w-8 rounded-full bg-white text-slate-700 flex items-center justify-center shadow-lg hover:bg-slate-100"
+            >
+              <X className="h-4 w-4" />
+            </button>
+            <a
+              href={lightboxImage}
+              download
+              className="absolute bottom-4 right-4 flex items-center gap-1.5 rounded-md bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-lg hover:bg-slate-50"
+            >
+              <Download className="h-4 w-4" />
+              下载
+            </a>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

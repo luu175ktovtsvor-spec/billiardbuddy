@@ -7,7 +7,8 @@ import type { GenerationHistoryItem, GenerationType } from "@/types/generation-h
 import { CopyButton } from "@/components/generators/copy-button";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Star, Clock, ChevronLeft, ChevronRight, X } from "lucide-react";
+import { Star, Clock, ChevronLeft, ChevronRight, X, MessageSquare } from "lucide-react";
+import Link from "next/link";
 
 const TYPE_LABELS: Record<string, string> = {
   copywriting: "文案",
@@ -416,6 +417,15 @@ export default function HistoryPage() {
                 />
               </button>
               <CopyButton text={detailItem.content || ""} />
+              {detailItem.type === "workbench" && detailItem.input_params?.user_intent && (
+                <Link
+                  href={`/dashboard/workbench?intent=${encodeURIComponent(detailItem.input_params.user_intent)}`}
+                  className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 transition-colors"
+                >
+                  <MessageSquare className="h-4 w-4" />
+                  继续对话
+                </Link>
+              )}
             </div>
 
             {/* 反馈按钮 */}

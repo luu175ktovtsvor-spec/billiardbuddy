@@ -32,7 +32,7 @@ import {
   RECOMMENDED_OUTPUT_COMBOS,
   getOutputPackageLabel,
 } from "@/lib/workbench-config";
-import { Brain, Sparkles, ArrowRight, Copy, Check, RefreshCw, Pencil, Wand2, ImageIcon, BookOpen, ChevronDown, Loader2 } from "lucide-react";
+import { Brain, Sparkles, ArrowRight, Copy, Check, RefreshCw, Pencil, Wand2, ImageIcon, BookOpen, ChevronDown, Loader2, MoreHorizontal, ThumbsUp, ThumbsDown } from "lucide-react";
 import { EmptyStoreGuide } from "@/components/empty-store-guide";
 import Link from "next/link";
 
@@ -111,6 +111,7 @@ function WorkbenchPage() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [effectRating, setEffectRating] = useState<string | null>(null);
   const [showRepurpose, setShowRepurpose] = useState(false);
+  const [showMoreActions, setShowMoreActions] = useState(false);
   const [repurposing, setRepurposing] = useState(false);
   const [batchResults, setBatchResults] = useState<string[]>([]);
   const [batchGenerating, setBatchGenerating] = useState(false);
@@ -808,6 +809,9 @@ function WorkbenchPage() {
                   </ReactMarkdown>
                   <span className="inline-block w-0.5 h-4 bg-indigo-600 animate-pulse ml-0.5 align-text-bottom" />
                 </div>
+                <div className="mt-2 text-xs text-slate-400 text-right">
+                  已生成 {streamingContent.length} 字
+                </div>
               </div>
             )}
           </div>
@@ -876,18 +880,78 @@ function WorkbenchPage() {
 
             {/* Actions */}
             <div className="border-t border-slate-100 px-4 py-3">
-              {/* Primary action */}
-              <div className="mb-2">
+              {/* Primary actions */}
+              <div className="flex gap-2 mb-2">
                 <button
                   type="button"
                   onClick={() => handleCopy(editing ? editedContent : result.content)}
-                  className="flex w-full items-center justify-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors"
+                  className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors"
                 >
                   {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                   {copied ? "已复制到剪贴板" : "一键复制"}
                 </button>
               </div>
-              {/* Secondary actions */}
+
+              {/* "基于此优化" — 突出显示 */}
+              {conversationId && (
+                <div className="mb-2 rounded-md border border-indigo-200 bg-indigo-50 p-2">
+                  <p className="text-xs text-indigo-600 mb-1.5">基于上一条结果继续优化：</p>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="想改哪里？直接说..."
+                      className="flex-1 rounded-md border border-indigo-200 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none"
+                      onKeyDown={async (e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          const target = e.target as HTMLInputElement;
+                          const optimizeNote = target.value.trim();
+                          if (!optimizeNote) return;
+                          target.value = "";
+                          setGenerating(true);
+                          setEditing(false);
+                          setError("");
+                          setResult(null);
+                          setStreamingContent("");
+                          try {
+                            await api.streamWorkbench(
+                              {
+                                user_intent: intent.trim(),
+                                role,
+                                target_customer_type: targetCustomer || undefined,
+                                output_package: outputPackage.length > 0 ? outputPackage : undefined,
+                                extra_note: optimizeNote,
+                                model: selectedModel || undefined,
+                                conversation_id: conversationId || undefined,
+                              },
+                              (token) => setStreamingContent((prev) => prev + token),
+                              (fullContent, generationId, convId) => {
+                                setResult({
+                                  generation_id: generationId,
+                                  type: "workbench",
+                                  sub_type: role,
+                                  content: fullContent,
+                                  created_at: new Date().toISOString(),
+                                  profile_suggestions: null,
+                                });
+                                setStreamingContent("");
+                                if (convId) setConversationId(convId);
+                                setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+                              },
+                              (msg) => setError(msg),
+                            );
+                          } catch (err) {
+                            setError(getErrorMessage(err));
+                          } finally {
+                            setGenerating(false);
+                          }
+                        }
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Secondary actions — 精简布局 */}
               {editing ? (
                 <div className="flex items-center gap-2">
                   <button
@@ -910,64 +974,7 @@ function WorkbenchPage() {
                   </button>
                 </div>
               ) : (
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditedContent(result.content);
-                      setEditing(true);
-                    }}
-                    className="inline-flex items-center gap-1 text-slate-500 hover:text-indigo-600 transition-colors"
-                  >
-                    <Pencil className="h-3 w-3" />
-                    编辑
-                  </button>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      setGenerating(true);
-                      setEditing(false);
-                      setError("");
-                      setResult(null);
-                      setStreamingContent("");
-                      try {
-                        await api.streamWorkbench(
-                          {
-                            user_intent: intent.trim(),
-                            role,
-                            target_customer_type: targetCustomer || undefined,
-                            output_package: outputPackage.length > 0 ? outputPackage : undefined,
-                            extra_note: extraNote || undefined,
-                            model: selectedModel || undefined,
-                            conversation_id: conversationId || undefined,
-                          },
-                          (token) => setStreamingContent((prev) => prev + token),
-                          (fullContent, generationId, convId) => {
-                            setResult({
-                              generation_id: generationId,
-                              type: "workbench",
-                              sub_type: role,
-                              content: fullContent,
-                              created_at: new Date().toISOString(),
-                              profile_suggestions: null,
-                            });
-                            setStreamingContent("");
-                            if (convId) setConversationId(convId);
-                          },
-                          (msg) => setError(msg),
-                        );
-                      } catch (err) {
-                        setError(getErrorMessage(err));
-                      } finally {
-                        setGenerating(false);
-                      }
-                    }}
-                    disabled={generating}
-                    className="inline-flex items-center gap-1 text-slate-500 hover:text-indigo-600 transition-colors"
-                  >
-                    <Wand2 className="h-3 w-3" />
-                    基于此优化
-                  </button>
+                <div className="flex items-center gap-2 text-xs">
                   <button
                     type="button"
                     onClick={handleGenerate}
@@ -977,39 +984,56 @@ function WorkbenchPage() {
                     <RefreshCw className="h-3 w-3" />
                     重新生成
                   </button>
-                  <Link
-                    href={`/dashboard/posters?prompt=${encodeURIComponent(result.content.substring(0, 200))}`}
-                    className="inline-flex items-center gap-1 text-slate-500 hover:text-indigo-600 transition-colors"
-                  >
-                    <ImageIcon className="h-3 w-3" />
-                    生成配套海报
-                  </Link>
                   <div className="relative">
                     <button
                       type="button"
-                      onClick={() => setShowRepurpose(!showRepurpose)}
-                      disabled={repurposing}
+                      onClick={() => setShowMoreActions(!showMoreActions)}
                       className="inline-flex items-center gap-1 text-slate-500 hover:text-indigo-600 transition-colors"
                     >
-                      <RefreshCw className="h-3 w-3" />
-                      {repurposing ? "变体中..." : "变体为..."}
+                      <MoreHorizontal className="h-3 w-3" />
+                      更多
                     </button>
-                    {showRepurpose && (
-                      <div className="absolute top-full left-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-10 min-w-[140px]">
-                        {[
-                          { platform: "douyin", label: "抖音文案" },
-                          { platform: "xiaohongshu", label: "小红书文案" },
-                          { platform: "group_notice", label: "群公告" },
-                          { platform: "wechat_moments", label: "朋友圈" },
-                        ].map((p) => (
-                          <button
-                            key={p.platform}
-                            onClick={() => handleRepurpose(p.platform)}
-                            className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-50 first:rounded-t-lg last:rounded-b-lg"
-                          >
-                            {p.label}
-                          </button>
-                        ))}
+                    {showMoreActions && (
+                      <div className="absolute bottom-full left-0 mb-1 bg-white border border-slate-200 rounded-lg shadow-lg z-10 min-w-[160px]">
+                        <button
+                          type="button"
+                          onClick={() => { setEditedContent(result.content); setEditing(true); setShowMoreActions(false); }}
+                          className="flex items-center gap-2 w-full text-left px-4 py-2 text-sm hover:bg-slate-50 rounded-t-lg"
+                        >
+                          <Pencil className="h-3 w-3" /> 编辑
+                        </button>
+                        <Link
+                          href={`/dashboard/posters?prompt=${encodeURIComponent(result.content.substring(0, 200))}`}
+                          className="flex items-center gap-2 w-full text-left px-4 py-2 text-sm hover:bg-slate-50"
+                          onClick={() => setShowMoreActions(false)}
+                        >
+                          <ImageIcon className="h-3 w-3" /> 生成配套海报
+                        </Link>
+                        <button
+                          type="button"
+                          onClick={() => { setShowRepurpose(!showRepurpose); }}
+                          className="flex items-center gap-2 w-full text-left px-4 py-2 text-sm hover:bg-slate-50"
+                        >
+                          <RefreshCw className="h-3 w-3" /> 变体为...
+                        </button>
+                        {showRepurpose && (
+                          <div className="border-t border-slate-100">
+                            {[
+                              { platform: "douyin", label: "抖音文案" },
+                              { platform: "xiaohongshu", label: "小红书文案" },
+                              { platform: "group_notice", label: "群公告" },
+                              { platform: "wechat_moments", label: "朋友圈" },
+                            ].map((p) => (
+                              <button
+                                key={p.platform}
+                                onClick={() => { handleRepurpose(p.platform); setShowMoreActions(false); }}
+                                className="block w-full text-left px-8 py-2 text-sm hover:bg-slate-50"
+                              >
+                                {p.label}
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
