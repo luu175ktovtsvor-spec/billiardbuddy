@@ -204,38 +204,40 @@ journalctl -u billiards-backend -n 50 --no-pager
 
 ## 行业知识体系
 
-产品大脑文档在 `docs/product-brain/`，原始行业资料在桌面 `台球行业资料收集/`。
+产品大脑文档在 `docs/product-brain/`。
 
 核心知识模块（38 个 knowledge YAML）：
 - **每日工作流程** (`daily_workflow.yaml`) — 6 个角色的每日工作流 + 5 个延伸场景
+- **岗位专属流程** (`daily_workflow_manager/coach/frontdesk/assistant_manager.yaml`) — 4个岗位独立流程
+- **核心运营逻辑** (`core_operations.yaml`) — 四大客户分类、岗位协作、定价铁律
+- **盈利模型** (`profit_model.yaml`) — 收入结构、成本分析、四类球房定价策略、团购设计
 - **竞技群运营** (`competitive_group_ops.yaml`) — 教练维护竞技群的日常动作
 - **助教推广获客** (`assistant_promotion.yaml`) — 朋友圈/短视频/现场推荐/客户维护
 - **助教服务 SOP** (`assistant_service_sop.yaml`) — 上钟前/中/后全流程
-- **好评文案规范** (`review_generation_rules.yaml`) — 美团/抖音好评写法
+- **助教等级体系** (`assistant_tier_system.yaml`) — 五级晋升、7天赋能培训课程表
+- **助教薪资体系** (`assistant_salary.yaml`) — 薪资结构、提成阶梯、保底规则
+- **助教球技培训SOP** (`assistant_coaching_sop.yaml`) — 新手到高级训练大纲
 - **助教刁钻问题** (`assistant_difficult_situations.yaml`) — 18 个真实场景话术
-- **PK 激励机制** (`pk_incentive.yaml`) — 三层 PK 体系
-- **客户标签体系** (`customer_tagging.yaml`) — 6 类客户 + 打标签方法
-- **开业筹备** (`opening_preparation.yaml`) — 30 天时间线 + 开业 SOP
+- **好评文案规范** (`review_generation_rules.yaml`) — 美团/抖音好评写法
+- **PK 激励机制** (`pk_incentive.yaml`) — 三层PK体系 + 惩处制度 + 转介绍奖励
+- **客户标签体系** (`customer_tagging.yaml`) — 6类客户 + ABCD分级 + 打标签方法
+- **客户档案模板** (`customer_profile_template.yaml`) — 字段定义、打标签SOP、生命周期管理
+- **开业筹备** (`opening_preparation.yaml`) — 30天时间线 + 开业SOP
 - **管理层招聘** (`management_recruitment.yaml`) — 岗位画像 + 面试话术
 - **充值策略** (`recharge_strategy.yaml`) — 一卡通模式 + 小比例赠送
-- **绩效标准** (`performance_standards.yaml`) — 5 个岗位考核维度
-- **赛事规则** (`tournament_rules.yaml`) — 赛事全流程 + 主持词模板
-- **前厅培训** (`frontdesk_training.yaml`) — 培训手册 + 服务标准
+- **绩效标准** (`performance_standards.yaml`) — 5个岗位考核维度
+- **赛事规则** (`tournament_rules.yaml`) — 10种赛事类型 + 主持词模板
+- **前厅培训** (`frontdesk_training.yaml`) — 培训手册 + 服务标准 + 台呢维护SOP
 - **小游戏** (`mini_games.yaml`) — 12 个小游戏规则
-- **盈利模型** (`profit_model.yaml`) — 收入结构 + 成本分析
 - **合规规则** (`compliance_rules.yaml`) — 平台规则 + 禁用词
 - **平台运营 SOP** (`platform_operations.yaml`) — 美团/抖音平台运营
+- **核心指标公式库** (`core_metrics.yaml`) — 台费/助教/教练/前厅指标、趋势分析
+- **店长薪资结构** (`manager_compensation.yaml`) — 各管理岗位薪资参考
 - 更多见 `server/prompts/knowledge/`
 
-新增 operation prompt（9 个）：
-- `operation/platform_review_plan.yaml` — 团购评分提升方案
-- `operation/groupbuy_optimize.yaml` — 团购品类优化建议
-- `operation/douyin_matrix_plan.yaml` — 抖音矩阵账号运营方案
-- `operation/assistant_7day_screening.yaml` — 助教7天筛选制SOP
-- `operation/manager_pk_plan.yaml` — 管理层PK方案
-- `operation/investment_return.yaml` — 投资回报周期经营表
-- `operation/promotion_analysis.yaml` — 促销效果对比分析
-- `operation/coach_entertain_casual.yaml` — 散客娱乐性提升话术
+运营场景模板（54 个 operation YAML）：
+- 覆盖6个岗位的日常运营场景
+- 包含日报/周报/赛事/活动/推广/招聘/培训/PK/诊断等
 - 更多见 `server/prompts/operation/`
 
 ## 不要做的事

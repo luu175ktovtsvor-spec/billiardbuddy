@@ -63,14 +63,17 @@ bash /var/www/billiards-ai/deploy_us.sh
 | 模块 | 说明 |
 |------|------|
 | 用户注册/登录 | 手机号+密码，支持邀请码注册自动加入门店 |
-| 门店资料管理 | 运营画像，12字段新增+9冗余字段删除 |
-| 岗位工作台 | 6个岗位，自然语言输入，SSE流式输出+Abort取消 |
+| 门店资料管理 | 运营画像（98字段，10大模块），完整度评分 |
+| 岗位工作台 | 6个岗位×80张任务卡，自然语言输入，SSE流式输出+Abort取消 |
 | 文案生成 | 朋友圈/群公告/活动/日报/话术 |
-| 海报生成 | gpt-image-2 + Logo/二维码直传AI + 二次调整 |
+| 海报生成 | gpt-image-2 + Logo/二维码直传AI + 以图生图 + 多轮对话 |
 | Markdown 渲染 | AI内容格式化显示 |
 | 模型选择 | DeepSeek V4 Flash + GPT Image 2 |
-| 行业知识库 | 38个knowledge YAML，覆盖6个岗位 |
-| 生成历史 | 搜索、筛选、收藏 |
+| thinking参数控制 | 简单任务禁用thinking节省token，复杂任务保留 |
+| 行业知识库 | 38个knowledge YAML + 54个operation YAML + 15个fewshot YAML |
+| 品牌声音学习 | 从"效果好"的历史内容提取风格特征注入prompt |
+| Few-shot选择器 | 多维打分（角色/客户/输出/意图/助教类型），最多2条 |
+| 生成历史 | 搜索、筛选、收藏、效果反馈 |
 | 配额管理 | 月度使用量追踪 |
 | 多租户安全 | 自动数据隔离 + RBAC权限矩阵 |
 | 成员管理 | 邀请码/手动添加/角色调整/移除成员 |
@@ -97,47 +100,51 @@ web/                    # Next.js 前端
     types/              # TypeScript 类型
 
 server/                 # FastAPI 后端
-  api/v1/              # API 路由
+  api/v1/              # API 路由（20个子路由）
   services/            # 业务逻辑
-  prompts/             # Prompt 模板 YAML
-    knowledge/         # 29 个行业知识文件
-    rules/             # 角色+客户规则
-    operation/         # 运营场景 prompt
+    ai/                # AI Provider（DeepSeek/OpenAI）
+      prompt_engine.py # Prompt模板引擎（单例）
+    content_service.py # 内容生成核心（4个生成函数）
+    poster_service.py  # 海报生成
+    dashboard_service.py # 今日工作台（9条推荐规则）
+    brand_voice_service.py # 品牌声音学习
+    workbench_fewshot_service.py # Few-shot选择器
+    store_profile_service.py # 门店运营画像渲染
+  prompts/             # Prompt 模板 YAML（127个）
+    knowledge/         # 38个行业知识文件
+    rules/             # 15个规则文件（6角色+7客户+2基线）
+    operation/         # 54个运营场景模板
+    fewshots/          # 15个样例库
+    copywriting/       # 5个文案模板
+    workbench/         # 1个自由意图模板
+    templates/         # 3个预设模板
   models/              # SQLAlchemy ORM
   schemas/             # Pydantic 模型
 ```
 
 ## 行业知识体系
 
-产品大脑文档在 `docs/product-brain/`，原始行业资料在桌面 `台球行业资料收集/`。
+产品大脑文档在 `docs/product-brain/`。
 
 核心知识模块（38个knowledge YAML）：
-- 每日工作流程（6个角色）
-- 竞技群运营
-- 助教推广获客
-- 助教服务SOP
-- 好评文案规范
-- 教练刁钻问题应对
-- PK激励机制
-- 客户标签体系
-- 开业筹备
-- 管理层招聘
-- 充值活动策略
-- 赛事活动规则
-- 前厅培训
-- 小游戏规则
-- 合规规则
-- 平台运营SOP（美团/抖音）
+- 每日工作流程（6个角色：店长/助教管理/教练/前厅/收银/服务员）
+- 核心运营逻辑、盈利模型、行业数据
+- 助教体系（服务SOP/等级体系/薪资/推广/培训/刁钻问题应对）
+- 赛事活动规则（10种活动类型、主持词模板）
+- 绩效考核标准（5个岗位）
+- 客户类型与标签体系
+- 前厅培训手册、服务理念
+- 合规规则、术语白名单
+- 小游戏规则、台球玩法规则
+- 竞技群运营、平台运营SOP
+- 微信养号、管理层招聘
+- 充值策略、PK激励机制
+- 开业筹备、定价规则
+- 核心指标公式库、客户档案模板、店长薪资结构
 
-新增operation prompt（9个）：
-- 团购评分提升方案
-- 团购品类优化建议
-- 抖音矩阵账号运营方案
-- 助教7天筛选制SOP
-- 管理层PK方案
-- 投资回报周期经营表
-- 促销效果对比分析
-- 散客娱乐性提升话术
+运营场景模板（54个operation YAML）：
+- 覆盖6个岗位的日常运营场景
+- 包含日报/周报/赛事/活动/推广/招聘/培训/PK/诊断等
 
 ## 不做的事
 
