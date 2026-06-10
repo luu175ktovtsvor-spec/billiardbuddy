@@ -29,6 +29,7 @@ from services.store_profile_service import render_operation_profile_context
 from services.quota_service import check_quota, increment_usage
 from services.workbench_fewshot_service import select_workbench_fewshots
 from services.brand_voice_service import get_brand_voice_context
+from core.security_guard import check_input_injection, filter_output_leak
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -49,6 +50,12 @@ async def stream_workbench(
     output_package = [item.value if hasattr(item, 'value') else item for item in (body.output_package or [])]
     extra_note = body.extra_note
     prompt_key = body.prompt_key
+
+    # 输入安全检查
+    injection_check = check_input_injection((user_intent or "") + " " + (extra_note or ""))
+    if injection_check:
+        from core.exceptions import AIServiceError
+        raise AIServiceError(injection_check)
     model = body.model
     conversation_id = body.conversation_id
 
@@ -219,6 +226,7 @@ async def stream_workbench(
             return
 
         content = _strip_ai_prefixes(full_content)
+        content = filter_output_leak(content)
 
         # 获取 tokens_used（从 provider 的 _last_usage 获取）
         tokens_used = 0

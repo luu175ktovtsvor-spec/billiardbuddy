@@ -14,6 +14,7 @@ from services.ai.base import TextRequest
 from services.workbench_fewshot_service import select_workbench_fewshots
 from services.store_profile_service import render_operation_profile_context
 from services.quota_service import check_quota, increment_usage
+from core.security_guard import check_input_injection, filter_output_leak
 
 prompt_engine = get_prompt_engine()
 
@@ -206,6 +207,11 @@ async def generate_copywriting(
     scenario: str,
     extra_note: str = "",
 ) -> Generation:
+    # 输入安全检查
+    injection_check = check_input_injection(extra_note)
+    if injection_check:
+        raise AIServiceError(injection_check)
+
     await check_quota(db, str(store.id))
     _validate_provider_for_production()
 
@@ -403,6 +409,10 @@ async def generate_workbench(
     target_customer_type: str | None = None,
     output_package: list[str] | None = None,
     extra_note: str = "",
+    # 输入安全检查
+    injection_check = check_input_injection(user_intent + " " + extra_note)
+    if injection_check:
+        raise AIServiceError(injection_check)
     prompt_key: str | None = None,
     model: str | None = None,
 ) -> Generation:
@@ -526,6 +536,7 @@ async def generate_workbench(
         raise AIServiceError("AI 生成服务暂时不可用，请稍后重试") from e
 
     content = _strip_ai_prefixes(response.content)
+    content = filter_output_leak(content)
 
     generation = Generation(
         id=uuid.uuid4(),
