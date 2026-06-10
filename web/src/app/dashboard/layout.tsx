@@ -7,6 +7,7 @@ import { Sidebar } from "@/components/layout/sidebar";
 import { Header } from "@/components/layout/header";
 import { MobileNav } from "@/components/layout/mobile-nav";
 import { ErrorBoundary } from "@/components/error-boundary";
+import { ToastProvider } from "@/components/ui/toast";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -36,7 +37,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <div className="lg:pl-60">
         <Header />
         <main className="px-4 py-6 pb-24 sm:px-6 lg:px-8 lg:py-8">
-          <ErrorBoundary>{children}</ErrorBoundary>
+          <ErrorBoundary>
+            <ToastProvider>{children}</ToastProvider>
+          </ErrorBoundary>
         </main>
       </div>
       <MobileNav />
