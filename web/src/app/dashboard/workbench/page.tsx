@@ -262,7 +262,7 @@ function WorkbenchPage() {
           output_package: outputPackage.length > 0 ? outputPackage : undefined,
           extra_note: extraNote || undefined,
           model: selectedModel || undefined,
-          conversation_id: conversationId || undefined,
+          conversation_id: conversationIdRef.current || undefined,
         },
         (token) => setStreamingContent((prev) => prev + token),
         (fullContent, generationId, convId) => {
@@ -275,7 +275,7 @@ function WorkbenchPage() {
             profile_suggestions: null,
           });
           setStreamingContent("");
-          if (convId) setConversationId(convId);
+          if (convId) { conversationIdRef.current = convId; setConversationId(convId); }
           setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
         },
         (msg) => {
@@ -932,7 +932,7 @@ function WorkbenchPage() {
                                 output_package: outputPackage.length > 0 ? outputPackage : undefined,
                                 extra_note: optimizeNote,
                                 model: selectedModel || undefined,
-                                conversation_id: conversationId || undefined,
+                                conversation_id: conversationIdRef.current || undefined,
                               },
                               (token) => setStreamingContent((prev) => prev + token),
                               (fullContent, generationId, convId) => {
@@ -945,7 +945,7 @@ function WorkbenchPage() {
                                   profile_suggestions: null,
                                 });
                                 setStreamingContent("");
-                                if (convId) setConversationId(convId);
+                                if (convId) { conversationIdRef.current = convId; setConversationId(convId); }
                                 setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
                               },
                               (msg) => setError(msg),

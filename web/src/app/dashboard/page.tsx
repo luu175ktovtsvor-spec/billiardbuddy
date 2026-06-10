@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useAuth } from "@/hooks/auth-context";
 import { api } from "@/lib/api";
 import type { StoreResponse } from "@/types/store";
-import type { DashboardRecommendation, DashboardTodayResponse } from "@/types/dashboard";
+import type { DashboardTodayResponse } from "@/types/dashboard";
 import {
   Sparkles,
   Store,
@@ -14,7 +14,6 @@ import {
   Loader2,
   AlertCircle,
   ArrowRight,
-  TrendingUp,
   FileText,
   CheckCircle,
   Crown,
@@ -23,48 +22,6 @@ import {
 import { OnboardingGuide } from "@/components/onboarding-guide";
 import { ContentCalendar } from "@/components/content-calendar";
 import { MyTemplates } from "@/components/my-templates";
-
-const PRIORITY_COLORS: Record<string, string> = {
-  high: "bg-red-50 border border-red-200 text-red-600",
-  medium: "bg-amber-50 border border-amber-200 text-amber-600",
-  low: "bg-slate-50 border border-slate-200 text-slate-500",
-};
-
-const PRIORITY_LABELS: Record<string, string> = {
-  high: "优先",
-  medium: "推荐",
-  low: "可选",
-};
-
-function recommendationHref(rec: DashboardRecommendation): string {
-  const params = new URLSearchParams();
-  const payload = rec.suggested_payload ?? {};
-
-  if (rec.action_type === "generate_copywriting") {
-    const subType = typeof payload.sub_type === "string" ? payload.sub_type : "moments";
-    params.set("intent", subType === "group_notice" ? "发一条群公告" : "发一条朋友圈");
-  } else if (rec.action_type === "generate_activity") {
-    params.set("intent", "策划一个活动");
-  } else if (rec.action_type === "generate_operation") {
-    params.set("intent", "生成运营内容");
-  } else if (rec.action_type === "generate_workbench") {
-    if (typeof payload.user_intent === "string") {
-      params.set("intent", payload.user_intent);
-    }
-  } else if (rec.action_type === "generate_poster") {
-    return "/dashboard/posters";
-  }
-
-  for (const [key, value] of Object.entries(payload)) {
-    if (key === "sub_type" || key === "user_intent") continue;
-    if (typeof value === "string" && value.trim()) {
-      params.set(key, value);
-    }
-  }
-
-  const qs = params.toString();
-  return qs ? `/dashboard/workbench?${qs}` : "/dashboard/workbench";
-}
 
 export default function DashboardPage() {
   const { user } = useAuth();
@@ -308,59 +265,6 @@ export default function DashboardPage() {
                   </div>
                 </div>
               )}
-
-              {/* 今日推荐区 */}
-              <div>
-                <div className="flex items-center gap-2 mb-3">
-                  <TrendingUp className="h-5 w-5 text-indigo-600" />
-                  <h3 className="font-semibold text-slate-900">今日推荐</h3>
-                </div>
-
-                {dashboard && dashboard.recommendations.length > 0 ? (
-                  <div className="space-y-3">
-                    {dashboard.recommendations.map((rec) => (
-                      <div
-                        key={rec.id}
-                        className="rounded-lg border border-slate-200 bg-white p-4 hover:border-slate-300 transition-colors shadow-sm"
-                      >
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-1">
-                              <span
-                                className={`shrink-0 rounded px-1.5 py-0.5 text-xs font-medium ${
-                                  PRIORITY_COLORS[rec.priority] || PRIORITY_COLORS.medium
-                                }`}
-                              >
-                                {PRIORITY_LABELS[rec.priority] || rec.priority}
-                              </span>
-                              <span className="font-medium text-slate-900">{rec.title}</span>
-                            </div>
-                            <p className="text-sm text-slate-500">{rec.description}</p>
-                          </div>
-                          <Link
-                            href={recommendationHref(rec)}
-                            className="shrink-0 inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-indigo-500"
-                          >
-                            {rec.action_label}
-                            <ArrowRight className="h-3.5 w-3.5" />
-                          </Link>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : dashboardError ? (
-                  <div className="rounded-lg border border-slate-200 bg-white p-6 text-center shadow-sm">
-                    <AlertCircle className="mx-auto h-8 w-8 text-amber-600 mb-2" />
-                    <p className="text-sm text-slate-500">今日推荐加载失败，请稍后重试</p>
-                  </div>
-                ) : (
-                  <div className="rounded-lg border border-slate-200 bg-white p-6 text-center shadow-sm">
-                    <p className="text-sm text-slate-500">
-                      今天暂无特别推荐，可以随时生成运营内容。
-                    </p>
-                  </div>
-                )}
-              </div>
 
               {/* 内容日历 */}
               <ContentCalendar />

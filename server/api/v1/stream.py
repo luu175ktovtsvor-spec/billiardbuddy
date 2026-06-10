@@ -182,6 +182,7 @@ async def stream_workbench(
                 .where(
                     Generation.conversation_id == uuid.UUID(conversation_id),
                     Generation.type == "workbench",
+                    Generation.is_deleted == False,
                 )
                 .order_by(Generation.created_at)
             )

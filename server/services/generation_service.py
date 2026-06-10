@@ -52,6 +52,7 @@ async def get_generation_detail(
         select(Generation).where(
             Generation.id == generation_id,
             Generation.store_id == store_id,
+            Generation.is_deleted == False,
         )
     )
     return result.scalar_one_or_none()

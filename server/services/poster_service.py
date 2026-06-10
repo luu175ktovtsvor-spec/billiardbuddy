@@ -99,6 +99,7 @@ async def generate_images(
                 .where(
                     Generation.conversation_id == uuid.UUID(conversation_id),
                     Generation.type == "poster",
+                    Generation.is_deleted == False,
                 )
                 .order_by(Generation.created_at)
             )
@@ -235,7 +236,7 @@ async def get_conversations(
     """获取对话列表（按 conversation_id 分组）。"""
     stmt = (
         select(Generation)
-        .where(Generation.store_id == store_id, Generation.type == "poster")
+        .where(Generation.store_id == store_id, Generation.type == "poster", Generation.is_deleted == False)
         .where(Generation.conversation_id.isnot(None))
         .order_by(Generation.created_at.desc())
     )
@@ -277,6 +278,7 @@ async def get_conversation_detail(
             Generation.store_id == store_id,
             Generation.type == "poster",
             Generation.conversation_id == uuid.UUID(conversation_id),
+            Generation.is_deleted == False,
         )
         .order_by(Generation.created_at)
     )
