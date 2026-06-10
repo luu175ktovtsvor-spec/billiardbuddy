@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { CardSelect } from "@/components/ui/card-select";
 import { getErrorMessage } from "@/lib/utils";
 import { ApiError } from "@/types/api";
 import type { StoreResponse, PricingTier, MemberCard } from "@/types/store";
@@ -814,29 +815,43 @@ export default function StoreSettingsPage() {
         {/* 品牌风格 */}
         {!isNew && (
           <Section title="品牌风格" icon={Sparkles}>
-            <Field label="品牌风格">
-              <select
-                value={(store as any)?.brand_style || ""}
-                onChange={async (e) => {
-                  const value = e.target.value;
-                  try {
-                    await api.updateStore({ brand_style: value || undefined } as any);
-                    const updated = await api.getMyStore();
-                    setStore(updated);
-                  } catch {
-                    // 静默处理
-                  }
-                }}
-                className={INPUT_CLASS}
-              >
-                <option value="">不指定</option>
-                <option value="lively">活泼（轻松、emoji、亲切）</option>
-                <option value="professional">专业（正式、数据、商务）</option>
-                <option value="youthful">年轻（潮流、互动、Z世代）</option>
-                <option value="premium">高端（优雅、品质、尊贵）</option>
-              </select>
-            </Field>
-            <p className="text-xs text-slate-400 mt-1">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {[
+                { value: "", label: "不指定", emoji: "—", desc: "默认语气" },
+                { value: "lively", label: "活泼", emoji: "🎉", desc: "轻松、emoji、亲切" },
+                { value: "professional", label: "专业", emoji: "💼", desc: "正式、数据、商务" },
+                { value: "youthful", label: "年轻", emoji: "⚡", desc: "潮流、互动、Z世代" },
+                { value: "premium", label: "高端", emoji: "✨", desc: "优雅、品质、尊贵" },
+              ].map((style) => (
+                <button
+                  key={style.value}
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await api.updateStore({ brand_style: style.value || undefined } as any);
+                      const updated = await api.getMyStore();
+                      setStore(updated);
+                    } catch {
+                      // 静默处理
+                    }
+                  }}
+                  className={`flex flex-col items-center gap-1 rounded-xl border-2 p-4 text-center transition-all ${
+                    (store as any)?.brand_style === style.value || (!style.value && !(store as any)?.brand_style)
+                      ? "border-indigo-500 bg-indigo-50 shadow-sm"
+                      : "border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm"
+                  }`}
+                >
+                  <span className="text-2xl">{style.emoji}</span>
+                  <span className={`text-sm font-medium ${
+                    (store as any)?.brand_style === style.value || (!style.value && !(store as any)?.brand_style)
+                      ? "text-indigo-700"
+                      : "text-slate-700"
+                  }`}>{style.label}</span>
+                  <span className="text-xs text-slate-400">{style.desc}</span>
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-slate-400 mt-2">
               选择品牌风格后，AI 生成的文案会自动匹配对应语气。
             </p>
           </Section>
@@ -858,7 +873,8 @@ export default function StoreSettingsPage() {
             <Field label="桌型描述">
               <input type="text" maxLength={500} value={form.table_types}
                 onChange={(e) => updateField("table_types", e.target.value)}
-                className={INPUT_CLASS} placeholder="如：中式黑八 8张，美式 4张" />
+                className={INPUT_CLASS} placeholder="如：中式黑八 30张，斯诺克 4张" />
+              <p className="text-xs text-slate-400 mt-1">按桌型分行填写，美式桌一般球房没有，有的话自己加上即可。</p>
             </Field>
           </div>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -871,7 +887,7 @@ export default function StoreSettingsPage() {
             <Toggle label="停车" checked={form.has_parking}
               onChange={(v) => updateField("has_parking", v)} />
           </div>
-          <Field label="教练/助教人数">
+          <Field label="助教总人数">
             <input type="number" min={0} value={form.coach_count}
               onChange={(e) => updateField("coach_count", e.target.value)}
               className={INPUT_CLASS} placeholder="如：5" />
@@ -881,16 +897,6 @@ export default function StoreSettingsPage() {
               <input type="text" maxLength={100} value={form.coach_price_range}
                 onChange={(e) => updateField("coach_price_range", e.target.value)}
                 className={INPUT_CLASS} placeholder="如：50-80元/小时" />
-            </Field>
-            <Field label="饮品价格范围">
-              <input type="text" maxLength={100} value={form.beverage_price_range}
-                onChange={(e) => updateField("beverage_price_range", e.target.value)}
-                className={INPUT_CLASS} placeholder="如：5-20元" />
-            </Field>
-            <Field label="零食价格范围">
-              <input type="text" maxLength={100} value={form.snack_price_range}
-                onChange={(e) => updateField("snack_price_range", e.target.value)}
-                className={INPUT_CLASS} placeholder="如：3-15元" />
             </Field>
           </div>
           <div className="grid gap-4 sm:grid-cols-3">
@@ -920,14 +926,9 @@ export default function StoreSettingsPage() {
               className={INPUT_CLASS} placeholder="描述门店的核心竞争优势" />
           </Field>
           <Field label="价格体系">
-            <textarea rows={3} value={form.pricing}
+            <textarea rows={5} value={form.pricing}
               onChange={(e) => updateField("pricing", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：中式黑八 30元/小时，美式九球 40元/小时" />
-          </Field>
-          <Field label="会员卡套餐">
-            <textarea rows={3} value={form.member_cards}
-              onChange={(e) => updateField("member_cards", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：月卡 300元，季卡 800元" />
+              className={INPUT_CLASS} placeholder={"1. 中式黑八\n   (a) 普台：30元/1小时\n   (b) 金腿：XX元/1小时\n   (c) 银腿：XX元/1小时\n   (d) 毒牙：XX元/1小时\n2. 包厢：XX元/1小时"} />
           </Field>
           <Field label="充值规则（选填）">
             <textarea rows={2} value={form.recharge_rules}
@@ -993,17 +994,18 @@ export default function StoreSettingsPage() {
           {/* 门店定位 + 商圈 */}
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="门店定位/风格">
-              <select
+              <CardSelect
                 value={profileForm.positioning}
-                onChange={(e) => updateProfileField("positioning", e.target.value)}
-                className={INPUT_CLASS}
-              >
-                <option value="">请选择</option>
-                <option value="community_affordable">社区球房</option>
-                <option value="commercial_premium">商业球房</option>
-                <option value="competition_focused">竞技球房</option>
-                <option value="competition_commercial">竞技商业球房</option>
-              </select>
+                onChange={(v) => updateProfileField("positioning", v)}
+                columns={2}
+                options={[
+                  { value: "", label: "请选择", emoji: "—" },
+                  { value: "community_affordable", label: "社区球房", emoji: "🏘️", desc: "亲民、高频、社区粘性" },
+                  { value: "commercial_premium", label: "商业球房", emoji: "🏬", desc: "品质、体验、商圈流量" },
+                  { value: "competition_focused", label: "竞技球房", emoji: "🏆", desc: "赛事、培训、专业设备" },
+                  { value: "competition_commercial", label: "竞技商业球房", emoji: "🎯", desc: "竞技+商业混合模式" },
+                ]}
+              />
             </Field>
             <Field label="所在商圈/区域">
               <input type="text" maxLength={100}
@@ -1014,13 +1016,13 @@ export default function StoreSettingsPage() {
             </Field>
           </div>
 
-          {/* 一句话介绍 */}
-          <Field label="一句话介绍（用于海报、团购页、朋友圈）">
+          {/* 广告语 */}
+          <Field label="广告语（用于海报、团购页、朋友圈）">
             <input type="text" maxLength={50}
               value={profileForm.one_liner}
               onChange={(e) => updateProfileField("one_liner", e.target.value)}
               className={INPUT_CLASS}
-              placeholder="如：找搭子，抢台费，来某门店" />
+              placeholder="如：来一杆，解千愁 | 找搭子，来打球 | 今晚谁来抢台费" />
           </Field>
 
           {/* 人员配置 + 开业天数 */}
@@ -1033,17 +1035,18 @@ export default function StoreSettingsPage() {
                 placeholder="如：店长1人，助教管理2人，教练3人，前台3人" />
             </Field>
             <Field label="开业阶段">
-              <select
+              <CardSelect
                 value={profileForm.opening_days}
-                onChange={(e) => updateProfileField("opening_days", e.target.value)}
-                className={INPUT_CLASS}
-              >
-                <option value="">请选择</option>
-                <option value="not_opened">尚未开业</option>
-                <option value="within_30">开业30天内</option>
-                <option value="30_90">开业30-90天</option>
-                <option value="over_90">开业90天以上</option>
-              </select>
+                onChange={(v) => updateProfileField("opening_days", v)}
+                columns={2}
+                options={[
+                  { value: "", label: "请选择", emoji: "—" },
+                  { value: "not_opened", label: "尚未开业", emoji: "🚧", desc: "筹备中" },
+                  { value: "within_30", label: "开业30天内", emoji: "🆕", desc: "新店蜜月期" },
+                  { value: "30_90", label: "开业30-90天", emoji: "📈", desc: "爬坡期" },
+                  { value: "over_90", label: "开业90天以上", emoji: "🏢", desc: "稳定运营" },
+                ]}
+              />
             </Field>
           </div>
 
@@ -1289,76 +1292,81 @@ export default function StoreSettingsPage() {
                 </TagGroup>
               </Field>
               <Field label="当前团购评分">
-                <select
+                <CardSelect
                   value={profileForm.groupbuy_rating}
-                  onChange={(e) => updateProfileField("groupbuy_rating", e.target.value)}
-                  className={INPUT_CLASS}
-                >
-                  <option value="">请选择</option>
-                  <option value="below_4.6">4.6以下</option>
-                  <option value="4.6_4.8">4.6-4.8</option>
-                  <option value="4.8_4.9">4.8-4.9</option>
-                  <option value="above_4.9">4.9以上</option>
-                </select>
+                  onChange={(v) => updateProfileField("groupbuy_rating", v)}
+                  columns={2}
+                  options={[
+                    { value: "", label: "请选择", emoji: "—" },
+                    { value: "below_4.6", label: "4.6以下", emoji: "😐", desc: "需要提升" },
+                    { value: "4.6_4.8", label: "4.6-4.8", emoji: "🙂", desc: "中等偏上" },
+                    { value: "4.8_4.9", label: "4.8-4.9", emoji: "😊", desc: "优秀" },
+                    { value: "above_4.9", label: "4.9以上", emoji: "🤩", desc: "顶级口碑" },
+                  ]}
+                />
               </Field>
               <Field label="团购客到店目标">
-                <select
+                <CardSelect
                   value={profileForm.groupbuy_conversion_goal}
-                  onChange={(e) => updateProfileField("groupbuy_conversion_goal", e.target.value)}
-                  className={INPUT_CLASS}
-                >
-                  <option value="">请选择</option>
-                  <option value="add_wechat">加微信进群</option>
-                  <option value="recommend_assistant">推荐助教</option>
-                  <option value="push_recharge">推充值卡</option>
-                  <option value="experience_guide">体验引导</option>
-                </select>
+                  onChange={(v) => updateProfileField("groupbuy_conversion_goal", v)}
+                  columns={2}
+                  options={[
+                    { value: "", label: "请选择", emoji: "—" },
+                    { value: "add_wechat", label: "加微信进群", emoji: "💬", desc: "私域沉淀" },
+                    { value: "recommend_assistant", label: "推荐助教", emoji: "🎱", desc: "提升上钟" },
+                    { value: "push_recharge", label: "推充值卡", emoji: "💳", desc: "锁客复购" },
+                    { value: "experience_guide", label: "体验引导", emoji: "✨", desc: "首次体验转化" },
+                  ]}
+                />
               </Field>
             </div>
           )}
 
           <div className="grid gap-4 sm:grid-cols-3">
             <Field label="朋友圈语气">
-              <select
+              <CardSelect
                 value={profileForm.moments_tone}
-                onChange={(e) => updateProfileField("moments_tone", e.target.value)}
-                className={INPUT_CLASS}
-              >
-                <option value="">请选择</option>
-                <option value="casual_friendly">熟人自然</option>
-                <option value="light_humorous">轻松幽默</option>
-                <option value="premium_business">高端商务</option>
-                <option value="young_trendy">年轻潮流</option>
-                <option value="short_direct">简短直接</option>
-              </select>
+                onChange={(v) => updateProfileField("moments_tone", v)}
+                columns={2}
+                options={[
+                  { value: "", label: "请选择", emoji: "—" },
+                  { value: "casual_friendly", label: "熟人自然", emoji: "🤝", desc: "像朋友聊天" },
+                  { value: "light_humorous", label: "轻松幽默", emoji: "😄", desc: "有梗有趣" },
+                  { value: "premium_business", label: "高端商务", emoji: "💼", desc: "专业品质感" },
+                  { value: "young_trendy", label: "年轻潮流", emoji: "⚡", desc: "网感强" },
+                  { value: "short_direct", label: "简短直接", emoji: "✂️", desc: "不废话" },
+                ]}
+              />
             </Field>
             <Field label="私聊语气">
-              <select
+              <CardSelect
                 value={profileForm.private_chat_tone}
-                onChange={(e) => updateProfileField("private_chat_tone", e.target.value)}
-                className={INPUT_CLASS}
-              >
-                <option value="">请选择</option>
-                <option value="casual_friendly">熟人自然</option>
-                <option value="light_humorous">轻松幽默</option>
-                <option value="premium_business">高端商务</option>
-                <option value="young_trendy">年轻潮流</option>
-                <option value="short_direct">简短直接</option>
-              </select>
+                onChange={(v) => updateProfileField("private_chat_tone", v)}
+                columns={2}
+                options={[
+                  { value: "", label: "请选择", emoji: "—" },
+                  { value: "casual_friendly", label: "熟人自然", emoji: "🤝", desc: "像朋友聊天" },
+                  { value: "light_humorous", label: "轻松幽默", emoji: "😄", desc: "有梗有趣" },
+                  { value: "premium_business", label: "高端商务", emoji: "💼", desc: "专业品质感" },
+                  { value: "young_trendy", label: "年轻潮流", emoji: "⚡", desc: "网感强" },
+                  { value: "short_direct", label: "简短直接", emoji: "✂️", desc: "不废话" },
+                ]}
+              />
             </Field>
             <Field label="群公告语气">
-              <select
+              <CardSelect
                 value={profileForm.group_notice_tone}
-                onChange={(e) => updateProfileField("group_notice_tone", e.target.value)}
-                className={INPUT_CLASS}
-              >
-                <option value="">请选择</option>
-                <option value="casual_friendly">熟人自然</option>
-                <option value="light_humorous">轻松幽默</option>
-                <option value="premium_business">高端商务</option>
-                <option value="young_trendy">年轻潮流</option>
-                <option value="short_direct">简短直接</option>
-              </select>
+                onChange={(v) => updateProfileField("group_notice_tone", v)}
+                columns={2}
+                options={[
+                  { value: "", label: "请选择", emoji: "—" },
+                  { value: "casual_friendly", label: "熟人自然", emoji: "🤝", desc: "像朋友聊天" },
+                  { value: "light_humorous", label: "轻松幽默", emoji: "😄", desc: "有梗有趣" },
+                  { value: "premium_business", label: "高端商务", emoji: "💼", desc: "专业品质感" },
+                  { value: "young_trendy", label: "年轻潮流", emoji: "⚡", desc: "网感强" },
+                  { value: "short_direct", label: "简短直接", emoji: "✂️", desc: "不废话" },
+                ]}
+              />
             </Field>
           </div>
 

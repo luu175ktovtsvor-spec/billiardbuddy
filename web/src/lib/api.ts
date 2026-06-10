@@ -428,6 +428,16 @@ class ApiClient {
     await this.request("DELETE", `/api/v1/generations/${id}`);
   }
 
+  async exportGenerations(type?: string): Promise<Blob> {
+    const typeParam = type ? `?type=${type}` : "";
+    const token = this.getToken();
+    const res = await fetch(`${this.baseUrl}/api/v1/generations/export${typeParam}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error("导出失败");
+    return res.blob();
+  }
+
   async deletePosterConversation(conversationId: string): Promise<void> {
     await this.request("DELETE", `/api/v1/generations/conversations/${conversationId}`);
   }

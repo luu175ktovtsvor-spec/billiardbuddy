@@ -158,15 +158,7 @@ export default function HistoryPage() {
 
   const handleFeedback = async (id: string, rating: "good" | "bad") => {
     try {
-      const token = api.getToken();
-      await fetch(`${api.baseUrl}/api/v1/feedback/generations/${id}/feedback`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ rating }),
-      });
+      await api.submitFeedback(id, rating);
       setItems((prev) =>
         prev.map((item) =>
           item.id === id ? { ...item, effect_rating: rating } : item
@@ -210,37 +202,43 @@ export default function HistoryPage() {
             <Star className={`h-3.5 w-3.5 ${showFavoritesOnly ? "fill-amber-600 text-amber-600" : ""}`} />
             只看收藏
           </button>
-          {/* Type filter */}
-          <select
-            value={typeFilter || ""}
-            onChange={(e) => {
-              setTypeFilter(e.target.value || null);
-              setPage(1);
-            }}
-            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700"
-          >
-            <option value="">全部类型</option>
-            <option value="copywriting">文案</option>
-            <option value="activity">活动</option>
-            <option value="operation">经营</option>
-            <option value="workbench">工作台</option>
-            <option value="poster">海报</option>
-          </select>
+          {/* Type filter — pill buttons */}
+          <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-1">
+            {[
+              { value: null, label: "全部" },
+              { value: "copywriting", label: "文案" },
+              { value: "activity", label: "活动" },
+              { value: "operation", label: "经营" },
+              { value: "workbench", label: "工作台" },
+              { value: "poster", label: "海报" },
+            ].map((t) => (
+              <button
+                key={t.value ?? "all"}
+                type="button"
+                onClick={() => { setTypeFilter(t.value); setPage(1); }}
+                className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                  typeFilter === t.value
+                    ? "bg-indigo-600 text-white"
+                    : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
           <button
             onClick={async () => {
-              const typeParam = typeFilter ? `?type=${typeFilter}` : "";
-              const token = api.getToken();
-              const res = await fetch(`${api.baseUrl}/api/v1/generations/export${typeParam}`, {
-                headers: { Authorization: `Bearer ${token}` },
-              });
-              if (!res.ok) return;
-              const blob = await res.blob();
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement("a");
-              a.href = url;
-              a.download = "generations.csv";
-              a.click();
-              URL.revokeObjectURL(url);
+              try {
+                const blob = await api.exportGenerations(typeFilter || undefined);
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = "generations.csv";
+                a.click();
+                URL.revokeObjectURL(url);
+              } catch {
+                // 静默处理
+              }
             }}
             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
           >
@@ -333,12 +331,6 @@ export default function HistoryPage() {
               <p className="line-clamp-3 whitespace-pre-wrap text-sm text-slate-700">
                 {stripMarkdown(item.content || "") || "（无内容）"}
               </p>
-              {item.model_used && (
-                <p className="mt-2 text-xs text-slate-400">
-                  模型：{item.model_used}
-                  {item.tokens_used ? ` · ${item.tokens_used} tokens` : ""}
-                </p>
-              )}
             </div>
           ))}
         </div>
@@ -470,12 +462,6 @@ export default function HistoryPage() {
               )}
             </div>
 
-            {detailItem.model_used && (
-              <p className="mt-4 border-t border-slate-100 pt-3 text-xs text-slate-400">
-                模型：{detailItem.model_used}
-                {detailItem.tokens_used ? ` · ${detailItem.tokens_used} tokens` : ""}
-              </p>
-            )}
           </div>
         </div>
       )}

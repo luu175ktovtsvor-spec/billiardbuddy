@@ -620,7 +620,13 @@ function WorkbenchPage() {
                     type="button"
                     onClick={() => handleCardClick(card)}
                     disabled={generating}
-                    className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50 transition-colors"
+                    className={`flex-1 inline-flex items-center justify-center gap-1.5 rounded-md px-4 py-2 text-xs font-medium text-white transition-colors ${
+                      generatingCardIdRef.current === card.id
+                        ? "bg-indigo-500 animate-pulse"
+                        : generating
+                        ? "bg-indigo-600 cursor-not-allowed"
+                        : "bg-indigo-600 hover:bg-indigo-500"
+                    }`}
                   >
                     {generatingCardIdRef.current === card.id ? "生成中..." : "一键生成"}
                     <ArrowRight className="h-3 w-3" />
