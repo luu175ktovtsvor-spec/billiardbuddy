@@ -12,6 +12,15 @@ interface User {
   created_at: string;
 }
 
+interface UserDetail {
+  user: User;
+  store: { id: string; name: string; city: string } | null;
+  subscription: { plan_name: string; status: string; period_end: string; payment_amount: number; payment_note: string } | null;
+  quota: { monthly_generation_limit: number; monthly_generations_used: number; monthly_tokens_used: number } | null;
+  stats: { total_generations: number };
+  recent_generations: { id: string; type: string; sub_type: string; created_at: string }[];
+}
+
 interface Plan {
   id: string;
   name: string;
@@ -27,6 +36,10 @@ export default function AdminUsersPage() {
   const [search, setSearch] = useState("");
   const pageSize = 20;
 
+  // 用户详情
+  const [detailUser, setDetailUser] = useState<UserDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
   // 开通订阅弹窗
   const [showActivateModal, setShowActivateModal] = useState(false);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
@@ -37,30 +50,23 @@ export default function AdminUsersPage() {
   const [paymentAmount, setPaymentAmount] = useState("");
   const [activating, setActivating] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    const token = api.getToken();
+  const token = typeof window !== "undefined" ? api.getToken() : "";
+
+  const fetchUsers = () => {
+    setLoading(true);
     fetch(`${api.baseUrl}/api/v1/admin/users?page=${page}&page_size=${pageSize}`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((res) => res.json())
-      .then((data) => {
-        if (!cancelled) {
-          setUsers(data.items || []);
-          setTotal(data.total || 0);
-        }
-      })
+      .then((data) => { setUsers(data.items || []); setTotal(data.total || 0); })
       .catch(() => {})
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [page]);
+      .finally(() => setLoading(false));
+  };
 
-  // 加载套餐列表
+  useEffect(() => { fetchUsers(); }, [page]);
+
   useEffect(() => {
-    const token = api.getToken();
-    fetch(`${api.baseUrl}/api/v1/admin/plans`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
+    fetch(`${api.baseUrl}/api/v1/admin/plans`, { headers: { Authorization: `Bearer ${token}` } })
       .then((res) => res.json())
       .then((data) => setPlans(data || []))
       .catch(() => {});
@@ -70,31 +76,43 @@ export default function AdminUsersPage() {
     search ? u.phone.includes(search) || (u.name && u.name.includes(search)) : true
   );
 
+  const handleViewDetail = async (userId: string) => {
+    setDetailLoading(true);
+    try {
+      const res = await fetch(`${api.baseUrl}/api/v1/admin/users/${userId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      setDetailUser(data);
+    } catch { setDetailUser(null); }
+    finally { setDetailLoading(false); }
+  };
+
+  const handleToggleStatus = async (userId: string) => {
+    try {
+      await fetch(`${api.baseUrl}/api/v1/admin/users/${userId}/status`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      fetchUsers();
+    } catch {}
+  };
+
   const handleActivate = async () => {
     if (!selectedUserId) return;
     setActivating(true);
     try {
-      const token = api.getToken();
-      const params = new URLSearchParams({
-        plan_slug: selectedPlanSlug,
-        months: String(months),
-      });
+      const params = new URLSearchParams({ plan_slug: selectedPlanSlug, months: String(months) });
       if (paymentNote) params.set("payment_note", paymentNote);
       if (paymentAmount) params.set("payment_amount", paymentAmount);
-
       await fetch(`${api.baseUrl}/api/v1/admin/users/${selectedUserId}/activate?${params}`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
       setShowActivateModal(false);
       setSelectedUserId(null);
-      // 刷新列表
-      setPage(page); // 触发 useEffect
-    } catch {
-      // 静默处理
-    } finally {
-      setActivating(false);
-    }
+      fetchUsers();
+    } catch {} finally { setActivating(false); }
   };
 
   if (loading) return <div className="py-20 text-center text-slate-500">加载中...</div>;
@@ -103,15 +121,8 @@ export default function AdminUsersPage() {
     <div>
       <h1 className="text-2xl font-bold mb-6">用户管理</h1>
 
-      {/* 搜索 */}
       <div className="mb-4">
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="搜索手机号或名称..."
-          className="w-full max-w-sm rounded-lg border border-slate-200 px-4 py-2 text-sm focus:border-indigo-500 focus:outline-none"
-        />
+        <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索手机号或名称..." className="w-full max-w-sm rounded-lg border border-slate-200 px-4 py-2 text-sm focus:border-indigo-500 focus:outline-none" />
       </div>
 
       <div className="rounded-lg border bg-white shadow-sm">
@@ -120,36 +131,34 @@ export default function AdminUsersPage() {
             <tr>
               <th className="px-4 py-3 text-left text-sm font-medium text-slate-600">手机号</th>
               <th className="px-4 py-3 text-left text-sm font-medium text-slate-600">名称</th>
+              <th className="px-4 py-3 text-left text-sm font-medium text-slate-600">状态</th>
               <th className="px-4 py-3 text-left text-sm font-medium text-slate-600">角色</th>
               <th className="px-4 py-3 text-left text-sm font-medium text-slate-600">注册时间</th>
               <th className="px-4 py-3 text-left text-sm font-medium text-slate-600">操作</th>
             </tr>
           </thead>
           <tbody className="divide-y">
-            {filteredUsers.map((user) => (
-              <tr key={user.id}>
-                <td className="px-4 py-3 text-sm">{user.phone}</td>
-                <td className="px-4 py-3 text-sm">{user.name || "-"}</td>
+            {filteredUsers.map((u) => (
+              <tr key={u.id}>
+                <td className="px-4 py-3 text-sm">{u.phone}</td>
+                <td className="px-4 py-3 text-sm">{u.name || "-"}</td>
                 <td className="px-4 py-3 text-sm">
-                  {user.is_admin ? (
-                    <span className="rounded bg-indigo-100 px-2 py-0.5 text-xs text-indigo-700">管理员</span>
-                  ) : (
-                    <span className="text-slate-500">用户</span>
-                  )}
-                </td>
-                <td className="px-4 py-3 text-sm text-slate-500">
-                  {new Date(user.created_at).toLocaleDateString("zh-CN")}
+                  <span className={`rounded px-2 py-0.5 text-xs ${u.is_active ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
+                    {u.is_active ? "正常" : "已禁用"}
+                  </span>
                 </td>
                 <td className="px-4 py-3 text-sm">
-                  <button
-                    onClick={() => {
-                      setSelectedUserId(user.id);
-                      setShowActivateModal(true);
-                    }}
-                    className="text-indigo-600 hover:underline text-sm"
-                  >
-                    开通订阅
-                  </button>
+                  {u.is_admin ? <span className="rounded bg-indigo-100 px-2 py-0.5 text-xs text-indigo-700">管理员</span> : <span className="text-slate-500">用户</span>}
+                </td>
+                <td className="px-4 py-3 text-sm text-slate-500">{new Date(u.created_at).toLocaleDateString("zh-CN")}</td>
+                <td className="px-4 py-3 text-sm">
+                  <div className="flex gap-2">
+                    <button onClick={() => handleViewDetail(u.id)} className="text-indigo-600 hover:underline">详情</button>
+                    <button onClick={() => { setSelectedUserId(u.id); setShowActivateModal(true); }} className="text-indigo-600 hover:underline">开通订阅</button>
+                    <button onClick={() => handleToggleStatus(u.id)} className={`${u.is_active ? "text-red-600" : "text-green-600"} hover:underline`}>
+                      {u.is_active ? "禁用" : "启用"}
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -161,98 +170,93 @@ export default function AdminUsersPage() {
       <div className="flex justify-between items-center mt-4">
         <span className="text-sm text-slate-500">共 {total} 个用户</span>
         <div className="flex gap-2">
-          <button
-            disabled={page <= 1}
-            onClick={() => setPage((p) => p - 1)}
-            className="px-3 py-1 border rounded text-sm disabled:opacity-50"
-          >
-            上一页
-          </button>
+          <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)} className="px-3 py-1 border rounded text-sm disabled:opacity-50">上一页</button>
           <span className="px-3 py-1 text-sm">第 {page} 页</span>
-          <button
-            disabled={filteredUsers.length < pageSize}
-            onClick={() => setPage((p) => p + 1)}
-            className="px-3 py-1 border rounded text-sm disabled:opacity-50"
-          >
-            下一页
-          </button>
+          <button disabled={filteredUsers.length < pageSize} onClick={() => setPage((p) => p + 1)} className="px-3 py-1 border rounded text-sm disabled:opacity-50">下一页</button>
         </div>
       </div>
+
+      {/* 用户详情弹窗 */}
+      {detailUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setDetailUser(null)}>
+          <div className="w-full max-w-lg max-h-[80vh] overflow-y-auto rounded-xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-bold">用户详情</h3>
+              <button onClick={() => setDetailUser(null)} className="text-slate-400 hover:text-slate-600">✕</button>
+            </div>
+            {detailLoading ? <p className="text-slate-500">加载中...</p> : (
+              <div className="space-y-4">
+                <div className="rounded-lg border p-3">
+                  <p className="text-sm font-medium text-slate-700 mb-2">基本信息</p>
+                  <p className="text-sm text-slate-600">手机号：{detailUser.user.phone}</p>
+                  <p className="text-sm text-slate-600">名称：{detailUser.user.name || "-"}</p>
+                  <p className="text-sm text-slate-600">状态：<span className={detailUser.user.is_active ? "text-green-600" : "text-red-600"}>{detailUser.user.is_active ? "正常" : "已禁用"}</span></p>
+                  <p className="text-sm text-slate-600">注册时间：{new Date(detailUser.user.created_at).toLocaleString("zh-CN")}</p>
+                </div>
+                {detailUser.store && (
+                  <div className="rounded-lg border p-3">
+                    <p className="text-sm font-medium text-slate-700 mb-2">门店信息</p>
+                    <p className="text-sm text-slate-600">门店名：{detailUser.store.name}</p>
+                    <p className="text-sm text-slate-600">城市：{detailUser.store.city}</p>
+                  </div>
+                )}
+                {detailUser.subscription && (
+                  <div className="rounded-lg border p-3">
+                    <p className="text-sm font-medium text-slate-700 mb-2">订阅信息</p>
+                    <p className="text-sm text-slate-600">套餐：{detailUser.subscription.plan_name}</p>
+                    <p className="text-sm text-slate-600">状态：<span className={detailUser.subscription.status === "active" ? "text-green-600" : "text-red-600"}>{detailUser.subscription.status}</span></p>
+                    <p className="text-sm text-slate-600">到期时间：{new Date(detailUser.subscription.period_end).toLocaleDateString("zh-CN")}</p>
+                  </div>
+                )}
+                {detailUser.quota && (
+                  <div className="rounded-lg border p-3">
+                    <p className="text-sm font-medium text-slate-700 mb-2">使用量</p>
+                    <p className="text-sm text-slate-600">本月生成：{detailUser.quota.monthly_generations_used} / {detailUser.quota.monthly_generation_limit}</p>
+                    <p className="text-sm text-slate-600">总生成次数：{detailUser.stats.total_generations}</p>
+                  </div>
+                )}
+                {detailUser.recent_generations.length > 0 && (
+                  <div className="rounded-lg border p-3">
+                    <p className="text-sm font-medium text-slate-700 mb-2">最近生成记录</p>
+                    {detailUser.recent_generations.slice(0, 5).map((g) => (
+                      <p key={g.id} className="text-xs text-slate-500">{g.type}/{g.sub_type} - {new Date(g.created_at).toLocaleString("zh-CN")}</p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* 开通订阅弹窗 */}
       {showActivateModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl">
             <h3 className="text-lg font-bold mb-4">开通订阅</h3>
-
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium mb-1">选择套餐</label>
-                <select
-                  value={selectedPlanSlug}
-                  onChange={(e) => setSelectedPlanSlug(e.target.value)}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                >
-                  {plans.map((p) => (
-                    <option key={p.slug} value={p.slug}>
-                      {p.name} (¥{p.price_monthly / 100}/月)
-                    </option>
-                  ))}
+                <select value={selectedPlanSlug} onChange={(e) => setSelectedPlanSlug(e.target.value)} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                  {plans.map((p) => <option key={p.slug} value={p.slug}>{p.name} (¥{p.price_monthly / 100}/月)</option>)}
                 </select>
               </div>
-
               <div>
                 <label className="block text-sm font-medium mb-1">开通月数</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={12}
-                  value={months}
-                  onChange={(e) => setMonths(Number(e.target.value))}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                />
+                <input type="number" min={1} max={12} value={months} onChange={(e) => setMonths(Number(e.target.value))} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
               </div>
-
               <div>
                 <label className="block text-sm font-medium mb-1">收款备注（选填）</label>
-                <input
-                  type="text"
-                  value={paymentNote}
-                  onChange={(e) => setPaymentNote(e.target.value)}
-                  placeholder="如：微信转账"
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                />
+                <input type="text" value={paymentNote} onChange={(e) => setPaymentNote(e.target.value)} placeholder="如：微信转账" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
               </div>
-
               <div>
-                <label className="block text-sm font-medium mb-1">收款金额（选填）</label>
-                <input
-                  type="number"
-                  value={paymentAmount}
-                  onChange={(e) => setPaymentAmount(e.target.value)}
-                  placeholder="单位：分"
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                />
+                <label className="block text-sm font-medium mb-1">收款金额（选填，单位：分）</label>
+                <input type="number" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} placeholder="单位：分" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
               </div>
             </div>
-
             <div className="flex justify-end gap-3 mt-6">
-              <button
-                onClick={() => {
-                  setShowActivateModal(false);
-                  setSelectedUserId(null);
-                }}
-                className="px-4 py-2 text-sm border rounded-lg hover:bg-slate-50"
-              >
-                取消
-              </button>
-              <button
-                onClick={handleActivate}
-                disabled={activating}
-                className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-50"
-              >
-                {activating ? "开通中..." : "确认开通"}
-              </button>
+              <button onClick={() => { setShowActivateModal(false); setSelectedUserId(null); }} className="px-4 py-2 text-sm border rounded-lg hover:bg-slate-50">取消</button>
+              <button onClick={handleActivate} disabled={activating} className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-50">{activating ? "开通中..." : "确认开通"}</button>
             </div>
           </div>
         </div>

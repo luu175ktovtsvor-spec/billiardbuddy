@@ -25,7 +25,9 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         <nav className="space-y-2">
           <Link href="/admin" className="block px-3 py-2 rounded hover:bg-slate-100 text-slate-700">总览</Link>
           <Link href="/admin/users" className="block px-3 py-2 rounded hover:bg-slate-100 text-slate-700">用户管理</Link>
+          <Link href="/admin/subscriptions" className="block px-3 py-2 rounded hover:bg-slate-100 text-slate-700">订阅管理</Link>
           <Link href="/admin/plans" className="block px-3 py-2 rounded hover:bg-slate-100 text-slate-700">套餐管理</Link>
+          <Link href="/admin/revenue" className="block px-3 py-2 rounded hover:bg-slate-100 text-slate-700">收入统计</Link>
         </nav>
       </aside>
       <main className="flex-1 p-6">{children}</main>
