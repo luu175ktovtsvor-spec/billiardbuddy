@@ -409,13 +409,14 @@ async def generate_workbench(
     target_customer_type: str | None = None,
     output_package: list[str] | None = None,
     extra_note: str = "",
+    prompt_key: str | None = None,
+    model: str | None = None,
+) -> Generation:
     # 输入安全检查
     injection_check = check_input_injection(user_intent + " " + extra_note)
     if injection_check:
         raise AIServiceError(injection_check)
-    prompt_key: str | None = None,
-    model: str | None = None,
-) -> Generation:
+
     await check_quota(db, str(store.id))
     _validate_provider_for_production()
 
