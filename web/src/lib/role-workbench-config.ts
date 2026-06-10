@@ -1554,7 +1554,7 @@ export const ROLE_DESCRIPTIONS: Record<WorkbenchRole, string> = {
 
 /* ─── MVP 岗位列表 ─── */
 
-export const MVP_ROLES: WorkbenchRole[] = ["manager", "assistant_manager", "frontdesk", "boss", "operator", "coach"];
+export const MVP_ROLES: WorkbenchRole[] = ["boss", "manager", "assistant_manager", "coach", "frontdesk", "operator"];
 
 /* ─── 模块标签映射 ─── */
 
