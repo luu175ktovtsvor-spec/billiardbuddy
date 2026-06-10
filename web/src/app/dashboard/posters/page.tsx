@@ -7,7 +7,7 @@ import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
 import type { SizeOption, GeneratedImage } from "@/types/poster";
 import type { StoreResponse } from "@/types/store";
-import { ImageIcon, Upload, X, Send, Download, Loader2, Plus, MessageSquare, ZoomIn } from "lucide-react";
+import { ImageIcon, Upload, X, Send, Download, Loader2, Plus, MessageSquare } from "lucide-react";
 import { EmptyStoreGuide } from "@/components/empty-store-guide";
 
 interface ConversationMessage {

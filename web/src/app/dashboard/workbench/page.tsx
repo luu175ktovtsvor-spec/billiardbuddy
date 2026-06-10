@@ -32,7 +32,7 @@ import {
   RECOMMENDED_OUTPUT_COMBOS,
   getOutputPackageLabel,
 } from "@/lib/workbench-config";
-import { Brain, Sparkles, ArrowRight, Copy, Check, RefreshCw, Pencil, Wand2, ImageIcon, BookOpen, ChevronDown, Loader2, MoreHorizontal, ThumbsUp, ThumbsDown } from "lucide-react";
+import { Brain, Sparkles, ArrowRight, Copy, Check, RefreshCw, Pencil, ImageIcon, BookOpen, ChevronDown, Loader2, MoreHorizontal } from "lucide-react";
 import { EmptyStoreGuide } from "@/components/empty-store-guide";
 import Link from "next/link";
 

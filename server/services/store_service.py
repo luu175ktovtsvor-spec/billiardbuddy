@@ -1,25 +1,8 @@
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-
 from core.exceptions import AppException
 from models.store import Store, StoreMember
-
-
-class StoreAlreadyExistsError(AppException):
-    def __init__(self):
-        super().__init__("您已创建过门店", status_code=409)
-
-
-class StoreNotFoundError(AppException):
-    def __init__(self):
-        super().__init__("未找到门店", status_code=404)
-
-
-class NoPermissionError(AppException):
-    def __init__(self):
-        super().__init__("无权限执行该操作", status_code=403)
 
 
 def calculate_completeness(store: Store) -> int:

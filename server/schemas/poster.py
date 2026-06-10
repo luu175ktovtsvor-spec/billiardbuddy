@@ -32,22 +32,3 @@ class ImageGenerateResponse(BaseModel):
     model_used: str
     count: int
     conversation_id: str | None = None
-
-
-class PosterConversationItem(BaseModel):
-    """对话列表项。"""
-    id: str
-    title: str
-    message_count: int
-    thumbnail_url: str | None
-    created_at: datetime
-    updated_at: datetime
-
-
-class PosterConversationDetail(BaseModel):
-    """对话详情。"""
-    id: str
-    title: str
-    created_at: datetime
-    updated_at: datetime
-    messages: list[GeneratedImage]
