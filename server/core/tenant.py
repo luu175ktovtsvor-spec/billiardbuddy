@@ -18,7 +18,7 @@ _current_store_id: contextvars.ContextVar[uuid.UUID | None] = contextvars.Contex
 )
 
 # 有 store_id 列的表（租户隔离范围）
-_TENANT_TABLES = {"stores", "generations", "usage_quotas"}
+_TENANT_TABLES = {"stores", "generations", "usage_quotas", "conversations"}
 
 
 def set_tenant(store_id: uuid.UUID | None) -> contextvars.Token:
