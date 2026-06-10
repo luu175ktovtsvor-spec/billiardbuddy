@@ -55,3 +55,6 @@ required_knowledge:
   - knowledge.business_cases
   - knowledge.compliance_rules
   - knowledge.term_whitelist
+  - knowledge.customer_tagging
+  - knowledge.platform_operations
+  - knowledge.traffic_generation

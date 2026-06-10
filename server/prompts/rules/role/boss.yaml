@@ -31,3 +31,11 @@ required_knowledge:
   - knowledge.business_cases
   - knowledge.compliance_rules
   - knowledge.customer_types
+  - knowledge.customer_tagging
+  - knowledge.opening_preparation
+  - knowledge.recharge_strategy
+  - knowledge.management_recruitment
+  - knowledge.manager_compensation
+  - knowledge.core_metrics
+  - knowledge.contract_basics
+  - knowledge.site_selection

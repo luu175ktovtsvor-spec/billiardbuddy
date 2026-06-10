@@ -51,3 +51,11 @@ required_knowledge:
   - knowledge.compliance_rules
   - knowledge.customer_types
   - knowledge.service_philosophy
+  - knowledge.customer_tagging
+  - knowledge.customer_profile_template
+  - knowledge.opening_preparation
+  - knowledge.recharge_strategy
+  - knowledge.core_metrics
+  - knowledge.review_generation_rules
+  - knowledge.daily_workflow_manager
+  - knowledge.contract_basics
