@@ -66,3 +66,5 @@ required_knowledge:
   - knowledge.competitive_group_ops
   - knowledge.compliance_rules
   - knowledge.customer_types
+  - knowledge.customer_tagging
+  - knowledge.daily_workflow_coach
