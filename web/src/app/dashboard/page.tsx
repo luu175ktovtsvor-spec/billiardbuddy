@@ -92,7 +92,7 @@ function pickEmoji(sceneTags: string[]): string {
     推车: "🛒",
     促销: "🏷️",
     跟进: "📞",
-    回访: "📞",
+    回访: "🔄",
     私域: "🔒",
     卫生: "🧹",
     电器: "⚡",
