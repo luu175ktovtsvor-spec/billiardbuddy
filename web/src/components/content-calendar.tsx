@@ -1,0 +1,113 @@
+"use client";
+
+import { useState } from "react";
+import Link from "next/link";
+import { Calendar, ChevronRight, Clock, Sparkles } from "lucide-react";
+
+interface CalendarItem {
+  time: string;
+  title: string;
+  desc: string;
+  href: string;
+}
+
+const WEEKDAY_ITEMS: Record<number, CalendarItem[]> = {
+  0: [ // 周日
+    { time: "10:00", title: "周末到店提醒", desc: "发朋友圈提醒客户周末来打球", href: "/dashboard/workbench?intent=周末到店提醒" },
+    { time: "14:00", title: "周赛战报", desc: "如果周末有比赛，发赛后战报", href: "/dashboard/workbench?intent=发周赛战报" },
+    { time: "20:00", title: "下周预告", desc: "预告下周的活动或赛事", href: "/dashboard/workbench?intent=下周活动预告" },
+  ],
+  1: [ // 周一
+    { time: "10:00", title: "新的一周开始", desc: "发朋友圈激励老客户本周来打球", href: "/dashboard/workbench?intent=新的一周朋友圈" },
+    { time: "15:00", title: "空台促活", desc: "下午空台多，发促活内容", href: "/dashboard/workbench?intent=下午空台促活" },
+  ],
+  2: [ // 周二
+    { time: "10:00", title: "助教推广", desc: "发助教服务推广内容", href: "/dashboard/workbench?intent=助教推广" },
+    { time: "15:00", title: "搭子局通知", desc: "撮合散客组局", href: "/dashboard/workbench?intent=搭子局通知" },
+  ],
+  3: [ // 周三
+    { time: "10:00", title: "会员群维护", desc: "会员群发内容保持活跃", href: "/dashboard/workbench?intent=会员群发什么" },
+    { time: "15:00", title: "竞技群维护", desc: "竞技群发约球通知", href: "/dashboard/workbench?intent=竞技群发什么" },
+  ],
+  4: [ // 周四
+    { time: "10:00", title: "老客户回访", desc: "联系半个月没来的老客户", href: "/dashboard/workbench?intent=老客户回访" },
+    { time: "15:00", title: "周赛预热", desc: "提前预热周末周赛", href: "/dashboard/workbench?intent=周赛预热" },
+  ],
+  5: [ // 周五
+    { time: "10:00", title: "周末预热", desc: "发朋友圈预热周末活动", href: "/dashboard/workbench?intent=周末预热朋友圈" },
+    { time: "15:00", title: "周赛报名", desc: "推周赛报名", href: "/dashboard/workbench?intent=周赛报名通知" },
+    { time: "20:00", title: "今晚约球", desc: "发今晚约球通知", href: "/dashboard/workbench?intent=今晚约球" },
+  ],
+  6: [ // 周六
+    { time: "10:00", title: "周末到店提醒", desc: "提醒客户周末来打球", href: "/dashboard/workbench?intent=周末到店提醒" },
+    { time: "14:00", title: "周赛执行", desc: "周赛相关内容", href: "/dashboard/workbench?intent=周赛" },
+    { time: "20:00", title: "赛后战报", desc: "发周赛战报", href: "/dashboard/workbench?intent=赛后战报" },
+  ],
+};
+
+const WEEKDAY_NAMES = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+
+export function ContentCalendar() {
+  const today = new Date();
+  const todayWeekday = today.getDay();
+  const [selectedDay, setSelectedDay] = useState(todayWeekday);
+
+  const items = WEEKDAY_ITEMS[selectedDay] || [];
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
+      <div className="border-b border-slate-100 px-4 py-3">
+        <div className="flex items-center gap-2">
+          <Calendar className="h-5 w-5 text-indigo-600" />
+          <h3 className="font-semibold text-slate-900">内容日历</h3>
+          <span className="ml-auto text-xs text-slate-400">今天该发什么</span>
+        </div>
+      </div>
+
+      {/* 星期选择 */}
+      <div className="flex border-b border-slate-100">
+        {WEEKDAY_NAMES.map((name, i) => (
+          <button
+            key={i}
+            type="button"
+            onClick={() => setSelectedDay(i)}
+            className={`flex-1 py-2 text-xs font-medium text-center transition-colors ${
+              i === selectedDay
+                ? "border-b-2 border-indigo-600 text-indigo-600"
+                : i === todayWeekday
+                ? "text-indigo-400"
+                : "text-slate-400 hover:text-slate-600"
+            }`}
+          >
+            {name}
+            {i === todayWeekday && <span className="block text-[10px] text-indigo-400">今天</span>}
+          </button>
+        ))}
+      </div>
+
+      {/* 内容列表 */}
+      <div className="divide-y divide-slate-50">
+        {items.map((item, i) => (
+          <div key={i} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors">
+            <div className="flex items-center gap-1.5 shrink-0 w-14">
+              <Clock className="h-3 w-3 text-slate-400" />
+              <span className="text-xs text-slate-500">{item.time}</span>
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-slate-900">{item.title}</p>
+              <p className="text-xs text-slate-500 truncate">{item.desc}</p>
+            </div>
+            <Link
+              href={item.href}
+              className="shrink-0 inline-flex items-center gap-1 rounded-md bg-indigo-50 px-2.5 py-1.5 text-xs font-medium text-indigo-600 hover:bg-indigo-100 transition-colors"
+            >
+              <Sparkles className="h-3 w-3" />
+              生成
+              <ChevronRight className="h-3 w-3" />
+            </Link>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

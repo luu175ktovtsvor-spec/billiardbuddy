@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { X, ChevronRight, Building2, Sparkles, Copy } from "lucide-react";
+import { X, ChevronRight, Building2, Sparkles, Copy, Calendar, MessageSquare, BookOpen } from "lucide-react";
 
 const STORAGE_KEY = "onboarding_dismissed";
 
@@ -10,21 +10,35 @@ const STEPS = [
   {
     icon: Building2,
     title: "完善门店核心资料",
-    desc: "填写门店名称、地址、球桌信息等基础数据，让 AI 了解你的球房。",
+    desc: "填写门店名称、地址、球桌信息等基础数据，让 AI 了解你的球房。资料越完整，AI 生成的内容越精准。",
     action: "去完善",
     href: "/dashboard/store-settings",
   },
   {
     icon: Sparkles,
     title: "生成第一条朋友圈",
-    desc: "用 AI 工作台一键生成朋友圈文案，体验 AI 如何帮球房做运营。",
+    desc: "用 AI 工作台一键生成朋友圈文案，体验 AI 如何帮球房做运营。选择你的岗位，点击任务卡即可。",
     action: "去生成",
     href: "/dashboard/workbench",
   },
   {
+    icon: MessageSquare,
+    title: "试试多轮优化",
+    desc: "生成后如果不满意，可以直接在结果下方输入修改意见，AI 会基于上一条继续优化，直到你满意为止。",
+    action: null,
+    href: null,
+  },
+  {
     icon: Copy,
-    title: "复制使用",
-    desc: "生成结果可以一键复制，直接发到朋友圈、群聊，开始你的 AI 运营之旅！",
+    title: "一键复制使用",
+    desc: "生成结果可以一键复制，直接发到朋友圈、群聊。系统会提示\"去微信粘贴吧\"，方便你快速使用。",
+    action: null,
+    href: null,
+  },
+  {
+    icon: Calendar,
+    title: "查看今日推荐",
+    desc: "每天打开 Dashboard，系统会根据星期和你的使用习惯推荐今天的运营动作，不用自己想该发什么。",
     action: null,
     href: null,
   },

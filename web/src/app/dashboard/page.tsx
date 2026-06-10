@@ -21,6 +21,8 @@ import {
   Clock,
 } from "lucide-react";
 import { OnboardingGuide } from "@/components/onboarding-guide";
+import { ContentCalendar } from "@/components/content-calendar";
+import { MyTemplates } from "@/components/my-templates";
 
 const PRIORITY_COLORS: Record<string, string> = {
   high: "bg-red-50 border border-red-200 text-red-600",
@@ -359,6 +361,12 @@ export default function DashboardPage() {
                   </div>
                 )}
               </div>
+
+              {/* 内容日历 */}
+              <ContentCalendar />
+
+              {/* 我的模板 */}
+              <MyTemplates />
 
               {/* Tips 提示 */}
               {dashboard && dashboard.tips.length > 0 && (
