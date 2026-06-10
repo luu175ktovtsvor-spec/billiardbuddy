@@ -365,6 +365,38 @@ def render_operation_profile_context(store: Store) -> str:
         if style_desc:
             parts.append(f"【品牌风格】{style_desc}")
 
+    # ── 11. 门店基础信息（直接从 Store 列读取）──
+    basic_info_lines: list[str] = []
+    if store.name:
+        basic_info_lines.append(f"门店名称：{store.name}")
+    if store.city:
+        city_str = store.city
+        if store.district:
+            city_str += store.district
+        basic_info_lines.append(f"门店位置：{city_str}")
+    if store.address:
+        basic_info_lines.append(f"门店地址：{store.address}")
+    if store.advantages:
+        basic_info_lines.append(f"门店核心优势：{store.advantages}")
+    if basic_info_lines:
+        parts.append("【门店信息】\n" + "\n".join(f"- {line}" for line in basic_info_lines))
+
+    # ── 12. 价格体系 ──
+    if store.pricing:
+        pricing_lines: list[str] = []
+        if isinstance(store.pricing, dict):
+            for k, v in store.pricing.items():
+                pricing_lines.append(f"  {k}：{v}")
+        elif isinstance(store.pricing, str) and store.pricing.strip():
+            pricing_lines.append(store.pricing)
+        if pricing_lines:
+            parts.append("【价格体系】\n" + "\n".join(pricing_lines))
+
+    # ── 13. 广告语 ──
+    one_liner = profile.get("basic", {}).get("one_liner", "") if isinstance(profile, dict) else ""
+    if one_liner:
+        parts.append(f"【广告语】{one_liner}")
+
     return "\n\n".join(parts)
 
 
