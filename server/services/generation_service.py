@@ -14,6 +14,7 @@ async def list_generations(
     generation_type: str | None = None,
     sub_type: str | None = None,
     is_favorite: bool | None = None,
+    effect_rating: str | None = None,
 ) -> tuple[list[Generation], int]:
     page = max(1, page)
     page_size = max(1, min(page_size, 50))
@@ -25,6 +26,8 @@ async def list_generations(
         conditions.append(Generation.sub_type == sub_type)
     if is_favorite is not None:
         conditions.append(Generation.is_favorite == is_favorite)
+    if effect_rating:
+        conditions.append(Generation.effect_rating == effect_rating)
 
     count_query = select(func.count()).select_from(Generation).where(*conditions)
     total_result = await db.execute(count_query)

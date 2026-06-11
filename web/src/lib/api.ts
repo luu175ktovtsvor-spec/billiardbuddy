@@ -422,12 +422,18 @@ class ApiClient {
     if (params?.type) searchParams.set("type", params.type);
     if (params?.sub_type) searchParams.set("sub_type", params.sub_type);
     if (params?.is_favorite !== undefined) searchParams.set("is_favorite", String(params.is_favorite));
+    if (params?.effect_rating) searchParams.set("effect_rating", params.effect_rating);
     const qs = searchParams.toString();
     return this.request<GenerationHistoryListResponse>("GET", `/api/v1/generations${qs ? `?${qs}` : ""}`);
   }
 
   async toggleFavorite(id: string): Promise<{ is_favorite: boolean }> {
     return this.request<{ is_favorite: boolean }>("PATCH", `/api/v1/generations/${id}/favorite`);
+  }
+
+  /** 保存用户手动编辑后的内容（历史里存实际发出去的版本） */
+  async updateGenerationContent(id: string, content: string): Promise<void> {
+    await this.request<{ status: string }>("PATCH", `/api/v1/generations/${id}/content`, { content });
   }
 
   async submitFeedback(generationId: string, rating: "good" | "bad", note?: string): Promise<void> {

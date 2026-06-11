@@ -7,9 +7,11 @@ import type { GenerationHistoryItem, GenerationType } from "@/types/generation-h
 import { CopyButton } from "@/components/generators/copy-button";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Star, Clock, ChevronLeft, ChevronRight, X, MessageSquare } from "lucide-react";
+import { Star, Clock, ChevronLeft, ChevronRight, X, MessageSquare, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { ROLE_TASKS } from "@/lib/role-workbench-config";
+import { markdownToPlainText } from "@/lib/utils";
+import { useToast } from "@/components/ui/toast";
 
 const TYPE_LABELS: Record<string, string> = {
   copywriting: "文案",
@@ -36,23 +38,39 @@ function continueHref(item: GenerationHistoryItem): string | null {
   return null;
 }
 
-/** 去掉 Markdown 语法，返回纯文本预览 */
-function stripMarkdown(text: string): string {
-  return text
-    .replace(/^#{1,6}\s+/gm, "")       // 去掉标题 #
-    .replace(/\*\*(.+?)\*\*/g, "$1")    // 去掉加粗 **
-    .replace(/\*(.+?)\*/g, "$1")        // 去掉斜体 *
-    .replace(/~~(.+?)~~/g, "$1")        // 去掉删除线 ~~
-    .replace(/`{1,3}[^`]*`{1,3}/g, "")  // 去掉代码块
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // 链接保留文字
-    .replace(/^[-*+]\s+/gm, "")         // 去掉列表符号
-    .replace(/^\d+\.\s+/gm, "")         // 去掉有序列表
-    .replace(/^>\s+/gm, "")             // 去掉引用
-    .replace(/^---+$/gm, "")            // 去掉分割线
-    .replace(/^\|(.+)\|$/gm, "")        // 去掉表格行
-    .replace(/^\|[-:\s|]+\|$/gm, "")    // 去掉表格分隔行
-    .replace(/\n{3,}/g, "\n\n")         // 多空行压缩
-    .trim();
+/** 保存历史记录为"我的模板"：按 prompt_key 找回任务卡，沉淀为可一键重跑的模板 */
+function saveItemAsTemplate(item: GenerationHistoryItem): boolean {
+  const params = (item.input_params || {}) as Record<string, unknown>;
+  const intent = typeof params.user_intent === "string" ? params.user_intent : "";
+  if (!intent) return false;
+  const promptKey = typeof params.prompt_key === "string" ? params.prompt_key : "";
+  let cardId: string | undefined;
+  let title = intent.slice(0, 12);
+  let role = typeof params.role === "string" ? params.role : "manager";
+  for (const tasks of Object.values(ROLE_TASKS)) {
+    const card = tasks.find((t) => t.promptKey && t.promptKey === promptKey);
+    if (card) {
+      cardId = card.id;
+      title = card.title;
+      role = card.role;
+      break;
+    }
+  }
+  try {
+    const templates = JSON.parse(localStorage.getItem("my_templates") || "[]");
+    templates.push({
+      id: Date.now().toString(),
+      title,
+      intent,
+      role,
+      cardId,
+      createdAt: new Date().toISOString(),
+    });
+    localStorage.setItem("my_templates", JSON.stringify(templates));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const SUB_TYPE_LABELS: Record<string, string> = {
@@ -132,7 +150,9 @@ export default function HistoryPage() {
   const pageSize = 20;
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
+  const [showGoodOnly, setShowGoodOnly] = useState(false);
   const [detailItem, setDetailItem] = useState<GenerationHistoryItem | null>(null);
+  const { toast } = useToast();
 
   const fetchHistory = useCallback(async () => {
     setLoading(true);
@@ -143,6 +163,7 @@ export default function HistoryPage() {
         page_size: pageSize,
         type: typeFilter as GenerationType | undefined,
         is_favorite: showFavoritesOnly || undefined,
+        effect_rating: showGoodOnly ? "good" : undefined,
       });
       setItems(res.items);
       setTotal(res.total);
@@ -156,7 +177,7 @@ export default function HistoryPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, typeFilter, showFavoritesOnly]);
+  }, [page, typeFilter, showFavoritesOnly, showGoodOnly]);
 
   useEffect(() => {
     fetchHistory();
@@ -190,6 +211,9 @@ export default function HistoryPage() {
       setDetailItem((prev) =>
         prev && prev.id === id ? { ...prev, effect_rating: rating } : prev
       );
+      if (rating === "good") {
+        toast("已存入门店金牌范文，AI 之后会参考这条的风格", "success");
+      }
     } catch {
       // 静默处理
     }
@@ -229,6 +253,18 @@ export default function HistoryPage() {
             <Star className={`h-3.5 w-3.5 ${showFavoritesOnly ? "fill-amber-600 text-amber-600" : ""}`} />
             只看收藏
           </button>
+          <button
+            type="button"
+            onClick={() => { setShowGoodOnly((v) => !v); setPage(1); }}
+            title="标过「效果好」的内容——AI 正在学习这些内容的风格"
+            className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm transition-colors ${
+              showGoodOnly
+                ? "border-green-200 bg-green-50 text-green-600"
+                : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+            }`}
+          >
+            👍 只看效果好
+          </button>
           {/* Type filter — pill buttons */}
           <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-1">
             {[
@@ -264,7 +300,7 @@ export default function HistoryPage() {
                 a.click();
                 URL.revokeObjectURL(url);
               } catch {
-                // 静默处理
+                toast("导出失败，请稍后重试", "error");
               }
             }}
             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
@@ -358,7 +394,7 @@ export default function HistoryPage() {
                 </div>
               </div>
               <p className="line-clamp-3 whitespace-pre-wrap text-sm text-slate-700">
-                {stripMarkdown(item.content || "") || "（无内容）"}
+                {markdownToPlainText(item.content || "") || "（无内容）"}
               </p>
             </div>
           ))}
@@ -446,6 +482,19 @@ export default function HistoryPage() {
                   <MessageSquare className="h-4 w-4" />
                   继续对话
                 </Link>
+              )}
+              {detailItem.type === "workbench" && typeof detailItem.input_params?.user_intent === "string" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const ok = saveItemAsTemplate(detailItem);
+                    toast(ok ? "已存为我的模板，首页点「使用」一键重跑" : "保存失败", ok ? "success" : "error");
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 transition-colors"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  存为模板
+                </button>
               )}
             </div>
 

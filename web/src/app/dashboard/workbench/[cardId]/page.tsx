@@ -6,7 +6,7 @@ import { useAuth } from "@/hooks/auth-context";
 import { api } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { getErrorMessage } from "@/lib/utils";
+import { getErrorMessage, markdownToPlainText } from "@/lib/utils";
 import type {
   GenerationResponse,
   WorkbenchRole,
@@ -40,6 +40,7 @@ import {
   Loader2,
   MoreHorizontal,
   ArrowRight,
+  Star,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -99,6 +100,8 @@ function TaskExecutionPageInner() {
   const [showMoreActions, setShowMoreActions] = useState(false);
   const [repurposing, setRepurposing] = useState(false);
   const [quotaVersion, setQuotaVersion] = useState(0);
+  const [badNoteOpen, setBadNoteOpen] = useState(false);
+  const [isFavorited, setIsFavorited] = useState(false);
 
   const [conversationId, setConversationId] = useState<string | null>(null);
   const conversationIdRef = useRef<string | null>(null);
@@ -139,6 +142,8 @@ function TaskExecutionPageInner() {
     setStreamingContent("");
     setEditing(false);
     setEffectRating(null);
+    setIsFavorited(false);
+    setBadNoteOpen(false);
     setShowMoreActions(false);
     setShowRepurpose(false);
     setGenerating(true);
@@ -209,11 +214,13 @@ function TaskExecutionPageInner() {
 
   /* ─── copy ─── */
   const handleCopy = async (text: string) => {
+    // 复制纯文本：粘到微信不带 ** ## 等 Markdown 记号
+    const plain = markdownToPlainText(text);
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(plain);
     } catch {
       const ta = document.createElement("textarea");
-      ta.value = text;
+      ta.value = plain;
       document.body.appendChild(ta);
       ta.select();
       document.execCommand("copy");
@@ -230,9 +237,57 @@ function TaskExecutionPageInner() {
     try {
       await api.submitFeedback(result.generation_id, rating);
       setEffectRating(rating);
-      toast(rating === "good" ? "感谢反馈" : "收到，我们会改进", "success");
+      if (rating === "good") {
+        toast("已存入门店金牌范文，AI 之后会参考这条的风格", "success");
+      } else {
+        // 点踩时收集一句话原因，注入后续生成的"避免清单"
+        setBadNoteOpen(true);
+      }
     } catch {
       // silent
+    }
+  };
+
+  const handleBadNoteSubmit = async (note: string) => {
+    setBadNoteOpen(false);
+    if (!result?.generation_id || !note.trim()) return;
+    try {
+      await api.submitFeedback(result.generation_id, "bad", note.trim());
+      toast("已记录，之后生成会避开这个问题", "success");
+    } catch {
+      // silent
+    }
+  };
+
+  /* ─── favorite ─── */
+  const handleToggleFavorite = async () => {
+    if (!result?.generation_id) return;
+    try {
+      const res = await api.toggleFavorite(result.generation_id);
+      setIsFavorited(res.is_favorite);
+      toast(res.is_favorite ? "已收藏，历史页「只看收藏」可找到" : "已取消收藏", "success");
+    } catch {
+      // silent
+    }
+  };
+
+  /* ─── save as template ─── */
+  const handleSaveAsTemplate = () => {
+    try {
+      const templates = JSON.parse(localStorage.getItem("my_templates") || "[]");
+      templates.push({
+        id: Date.now().toString(),
+        title: card?.title || intent.slice(0, 12),
+        intent: intent.trim(),
+        role,
+        cardId: card?.id,
+        createdAt: new Date().toISOString(),
+      });
+      localStorage.setItem("my_templates", JSON.stringify(templates));
+      setShowMoreActions(false);
+      toast("已存为我的模板，首页点「使用」一键重跑", "success");
+    } catch {
+      toast("保存失败，请重试", "error");
     }
   };
 
@@ -661,7 +716,7 @@ function TaskExecutionPageInner() {
 
               {/* 字数与朋友圈折叠提示 */}
               {result.content && (() => {
-                const charCount = result.content.replace(/\s/g, "").length;
+                const charCount = (editing ? editedContent : result.content).replace(/\s/g, "").length;
                 const foldRisk = charCount > 120 && outputPackage.includes("moments");
                 return (
                   <p className="mb-2 text-xs text-slate-400">
@@ -671,8 +726,8 @@ function TaskExecutionPageInner() {
                 );
               })()}
 
-              {/* "Based on this" optimization */}
-              {conversationId && (
+              {/* "Based on this" optimization（编辑态收起，防止未保存的修改被 AI 重新生成吞掉） */}
+              {conversationId && !editing && (
                 <div className="mb-2 rounded-md border border-indigo-200 bg-indigo-50 p-2.5">
                   <p className="text-xs text-indigo-600 mb-1.5">
                     基于上一条结果继续优化（点一下或直接说）：
@@ -714,9 +769,18 @@ function TaskExecutionPageInner() {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={async () => {
                       setResult({ ...result, content: editedContent });
                       setEditing(false);
+                      // 同步存回历史：历史页看到的就是实际发出去的版本，刷新不丢
+                      if (result.generation_id) {
+                        try {
+                          await api.updateGenerationContent(result.generation_id, editedContent);
+                          toast("修改已保存到历史", "success");
+                        } catch {
+                          toast("修改已应用，但保存到历史失败", "error");
+                        }
+                      }
                     }}
                     className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-600 hover:bg-indigo-100 transition-colors"
                   >
@@ -763,6 +827,13 @@ function TaskExecutionPageInner() {
                           className="flex items-center gap-2 w-full text-left px-4 py-2 text-sm hover:bg-slate-50 rounded-t-lg"
                         >
                           <Pencil className="h-3 w-3" /> 编辑
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleSaveAsTemplate}
+                          className="flex items-center gap-2 w-full text-left px-4 py-2 text-sm hover:bg-slate-50"
+                        >
+                          <Sparkles className="h-3 w-3" /> 存为我的模板
                         </button>
                         <Link
                           href={`/dashboard/posters/new?prompt=${encodeURIComponent(
@@ -814,7 +885,16 @@ function TaskExecutionPageInner() {
                   <div className="flex items-center gap-1 ml-auto">
                     <button
                       type="button"
+                      onClick={handleToggleFavorite}
+                      title={isFavorited ? "取消收藏" : "收藏，历史页随时找回"}
+                      className="px-2 py-1 rounded text-xs transition-colors text-slate-400 hover:text-amber-600 hover:bg-amber-50"
+                    >
+                      <Star className={`h-3.5 w-3.5 ${isFavorited ? "fill-amber-500 text-amber-500" : ""}`} />
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => handleFeedback("good")}
+                      title="效果好：AI 会学习这条的风格"
                       className={`px-2 py-1 rounded text-xs transition-colors ${
                         effectRating === "good"
                           ? "bg-green-100 text-green-700"
@@ -835,6 +915,27 @@ function TaskExecutionPageInner() {
                       👎
                     </button>
                   </div>
+                </div>
+              )}
+
+              {/* 点踩原因（可跳过）：填了会进入后续生成的"避免清单"，让差评真正改变行为 */}
+              {badNoteOpen && (
+                <div className="mt-2 rounded-md border border-red-100 bg-red-50 p-2.5">
+                  <p className="mb-1.5 text-xs text-red-500">哪里不满意？说一句，之后生成会避开这个问题（可跳过）</p>
+                  <input
+                    type="text"
+                    maxLength={100}
+                    autoFocus
+                    placeholder="例：太官方了 / 太长了 / 不像我们店的语气"
+                    className="w-full rounded-md border border-red-200 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:border-red-400 focus:outline-none"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        handleBadNoteSubmit((e.target as HTMLInputElement).value);
+                      } else if (e.key === "Escape") {
+                        setBadNoteOpen(false);
+                      }
+                    }}
+                  />
                 </div>
               )}
             </div>

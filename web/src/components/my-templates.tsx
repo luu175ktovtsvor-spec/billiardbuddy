@@ -3,13 +3,23 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { Bookmark, Plus, X, ChevronRight, Sparkles, Trash2 } from "lucide-react";
+import { ROLE_TASKS } from "@/lib/role-workbench-config";
 
 interface MyTemplate {
   id: string;
   title: string;
   intent: string;
   role: string;
+  /** 关联的任务卡 ID：有则"使用"直达卡片页带上需求，一键重跑 */
+  cardId?: string;
   createdAt: string;
+}
+
+/** 没有 cardId 的旧模板：取该岗位第一张卡片兜底（工作台首页不读 intent 参数，直跳卡片页才能带上需求） */
+function resolveCardId(t: MyTemplate): string | null {
+  if (t.cardId) return t.cardId;
+  const tasks = ROLE_TASKS[t.role as keyof typeof ROLE_TASKS];
+  return tasks?.[0]?.id || null;
 }
 
 const STORAGE_KEY = "my_templates";
@@ -164,7 +174,13 @@ export function MyTemplates() {
               <p className="text-xs text-slate-500 truncate">{t.intent}</p>
             </div>
             <Link
-              href={`/dashboard/workbench?intent=${encodeURIComponent(t.intent)}`}
+              href={(() => {
+                const cardId = resolveCardId(t);
+                // 直达卡片页并带上需求（工作台首页不读 intent，旧链接是死链）
+                return cardId
+                  ? `/dashboard/workbench/${cardId}?intent=${encodeURIComponent(t.intent)}`
+                  : `/dashboard/workbench`;
+              })()}
               className="shrink-0 inline-flex items-center gap-1 rounded-md bg-indigo-50 px-2.5 py-1.5 text-xs font-medium text-indigo-600 hover:bg-indigo-100 transition-colors"
             >
               <Sparkles className="h-3 w-3" />

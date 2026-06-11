@@ -203,7 +203,7 @@ export default function CollaboratePage() {
           <div className="border-b border-slate-100 px-4 py-3">
             <p className="text-sm font-semibold text-slate-700">📄 汇总方案</p>
             <p className="text-xs text-slate-400 mt-1">
-              {(taskResult.agents ?? []).length} 个 Agent 协作
+              {(taskResult.agents ?? []).length} 个 Agent 协作 · 方案已自动存入生成历史，可随时回看收藏
             </p>
           </div>
           <div className="px-4 py-4 prose prose-sm max-w-none prose-slate">
