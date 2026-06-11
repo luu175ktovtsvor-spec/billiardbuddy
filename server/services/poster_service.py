@@ -299,7 +299,9 @@ async def generate_images(
     valid_results = [r for r in results if r is not None]
 
     if not valid_results:
-        raise RuntimeError("全部图片生成失败，请检查模型配置或稍后重试")
+        # AIServiceError 而非 RuntimeError：后者落到通用兜底处理器变成无差别 500，
+        # 这句友好提示到不了用户
+        raise AIServiceError("图片生成失败，请稍后重试")
 
     # 按实际成功生成的张数计入配额（每张图都是一次计费生成）
     await increment_usage(db, str(store.id), tokens=0, count=len(valid_results))

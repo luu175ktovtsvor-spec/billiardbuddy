@@ -24,7 +24,7 @@
 | 用途 | 模型 | 说明 |
 |------|------|------|
 | 文本生成 | DeepSeek V4 Flash | 通过 `https://api.deepseek.com` |
-| 图片生成 | OpenAI gpt-image-2 | 通过 Cloudflare Worker 代理 `https://openai-proxy.luu175ktovtsvor.workers.dev/v1` |
+| 图片生成 | OpenAI gpt-image-2 | 生产直连 `https://api.openai.com/v1`（美国节点，~80ms）；Worker 代理为国内开发备选 |
 
 ## 技术栈
 
@@ -53,10 +53,10 @@
 - 我们通过 `images.edit` 接口模拟：把上一张生成的图片作为 `refine_from` 传入，实现"基于此调整"的以图生图效果
 - 这是一个务实的 workaround，效果满足需求
 
-**Cloudflare Worker 代理：**
-- `OPENAI_BASE_URL` 指向 `https://openai-proxy.luu175ktovtsvor.workers.dev/v1`
-- 这是一个 Cloudflare Worker 代理，用于优化 OpenAI API 的访问速度和稳定性
-- 不是直连 `https://api.openai.com/v1`
+**OpenAI 接口地址（`OPENAI_BASE_URL`）：**
+- 生产（美国硅谷节点）实测直连 `https://api.openai.com/v1` 正常（~80ms），服务器 .env 当前即直连配置
+- Cloudflare Worker 代理 `https://openai-proxy.luu175ktovtsvor.workers.dev/v1` 仅为国内本地开发的备选（直连不通时用）
+- 出口 IP 为阿里云美国（AS45102），如遇 OpenAI 对机房 IP 风控再考虑切代理
 
 ## 项目结构
 
