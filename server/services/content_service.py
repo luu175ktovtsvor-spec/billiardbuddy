@@ -304,18 +304,20 @@ async def generate_copywriting(
 
     template_key = f"copywriting.{sub_type}"
 
+    scenario_label = (
+        GROUP_NOTICE_SCENARIO_LABELS.get(scenario, scenario)
+        if sub_type == "group_notice"
+        else SCENARIO_LABELS.get(scenario, scenario)
+    )
     extra_vars = {
         "tone": TONE_LABELS.get(tone, tone),
-        "scenario": (
-            GROUP_NOTICE_SCENARIO_LABELS.get(scenario, scenario)
-            if sub_type == "group_notice"
-            else SCENARIO_LABELS.get(scenario, scenario)
-        ),
+        "scenario": scenario_label,
         "extra_note": extra_note or "无",
     }
 
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
-    rendered_prompt = _append_guardrails(rendered_prompt, store, role="manager", intent_text=f"{scenario} {extra_note}")
+    # intent 用中文标签：英文枚举值匹配不到中文知识关键词，筛选会形同虚设
+    rendered_prompt = _append_guardrails(rendered_prompt, store, role="manager", intent_text=f"{scenario_label} {extra_note}")
 
     provider = ProviderFactory.get_text_provider()
     request = TextRequest(prompt=rendered_prompt, thinking={"type": "disabled"})
@@ -453,7 +455,9 @@ async def generate_operation(
     }
 
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars, lenient=True)
-    rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role, intent_text=f"{scenario} {target or ''} {extra_note}")
+    # intent 用模板中文名：英文场景键匹配不到中文知识关键词
+    template_label = prompt_engine.template_name(template_key) or scenario
+    rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role, intent_text=f"{template_label} {target or ''} {extra_note}")
 
     provider = ProviderFactory.get_text_provider()
     request = TextRequest(prompt=rendered_prompt, max_tokens=3000)
@@ -527,7 +531,9 @@ async def generate_workbench(
             "date": date.today().isoformat(),
         }
         rendered_prompt = prompt_engine.render(prompt_key, store, extra_vars, lenient=True)
-        rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role, intent_text=f"{user_intent} {extra_note}")
+        # intent 带上模板中文名：用户意图为空时知识筛选仍能按场景命中
+        template_label = prompt_engine.template_name(prompt_key)
+        rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role, intent_text=f"{template_label} {user_intent} {extra_note}")
     else:
         # 通用 free_intent 路径：在模板内注入规则和知识
         baseline_rules = _load_rule_safe("rules.baseline", store)

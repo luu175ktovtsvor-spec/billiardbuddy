@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useEffect, useRef, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/auth-context";
 import { api } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
@@ -61,6 +61,7 @@ function trackTaskCardUsage(cardId: string) {
 function TaskExecutionPageInner() {
   const params = useParams<{ cardId: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const { toast } = useToast();
 
@@ -107,7 +108,9 @@ function TaskExecutionPageInner() {
   /* ─── pre-fill form from card data on mount ─── */
   useEffect(() => {
     if (card) {
-      setIntent(card.userIntentTemplate);
+      // URL 带 intent 时优先（历史页"继续对话"跳转传入）
+      const urlIntent = searchParams.get("intent");
+      setIntent(urlIntent || card.userIntentTemplate);
       setRole(card.role);
       setTargetCustomer(card.targetCustomerType);
       setOutputPackage(card.outputPackage);
@@ -253,28 +256,12 @@ function TaskExecutionPageInner() {
     setShowRepurpose(false);
     setShowMoreActions(false);
     try {
-      const token = api.getToken();
-      const res = await fetch(
-        `${api.baseUrl}/api/v1/generate/repurpose`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            generation_id: result.generation_id,
-            target_platform: platform,
-          }),
-        }
-      );
-      const data = await res.json();
-      if (data.content) {
-        setResult({ ...result, content: data.content });
-        toast("已转换为" + platform + "版本", "success");
-      }
-    } catch {
-      // silent
+      // 统一走 api 封装：带 X-Store-Id（多门店不串店）、401 自动刷新、非 2xx 抛错
+      const data = await api.repurposeContent(result.generation_id, platform);
+      setResult({ ...result, content: data.content });
+      toast("已转换为" + platform + "版本", "success");
+    } catch (err) {
+      toast(getErrorMessage(err) || "转换失败，请重试", "error");
     } finally {
       setRepurposing(false);
     }
@@ -777,7 +764,7 @@ function TaskExecutionPageInner() {
                           <Pencil className="h-3 w-3" /> 编辑
                         </button>
                         <Link
-                          href={`/dashboard/posters?prompt=${encodeURIComponent(
+                          href={`/dashboard/posters/new?prompt=${encodeURIComponent(
                             result.content.substring(0, 200)
                           )}`}
                           className="flex items-center gap-2 w-full text-left px-4 py-2 text-sm hover:bg-slate-50"

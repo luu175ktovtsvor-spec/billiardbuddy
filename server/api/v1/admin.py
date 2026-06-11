@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.deps import get_current_user, get_db
 from models.user import User
 from models.store import Store, StoreMember
-from models.plan import Plan, StoreSubscription
+from models.plan import Plan, StoreSubscription, SubscriptionPayment
 from models.generation import Generation
 from models.quota import UsageQuota
 
@@ -110,12 +110,31 @@ async def activate_user(
         payment_amount=payment_amount,
     )
     db.add(subscription)
+    await db.flush()
 
-    # 更新配额
+    # 收款流水（收入统计以流水为准）
+    if payment_amount > 0:
+        db.add(SubscriptionPayment(
+            subscription_id=subscription.id,
+            amount=payment_amount,
+            note=payment_note,
+            kind="new",
+            created_by=user.id,
+        ))
+
+    # 更新配额：无配额行时创建（否则套餐限额被首次生成的默认值顶掉）
     quota = await db.scalar(select(UsageQuota).where(UsageQuota.store_id == member.store_id))
-    if quota:
-        quota.monthly_generation_limit = plan.generation_limit
-        quota.monthly_tokens_limit = plan.token_limit
+    if quota is None:
+        from services.quota_service import _period_start_now
+        quota = UsageQuota(
+            store_id=member.store_id,
+            monthly_generations_used=0,
+            monthly_tokens_used=0,
+            current_period_start=_period_start_now(),
+        )
+        db.add(quota)
+    quota.monthly_generation_limit = plan.generation_limit
+    quota.monthly_tokens_limit = plan.token_limit
 
     await db.commit()
     return {"status": "ok", "plan": plan.name, "expires": subscription.current_period_end}
@@ -279,9 +298,18 @@ async def renew_subscription(
     base = sub.current_period_end if sub.current_period_end > now else now
     sub.current_period_end = base + timedelta(days=30 * months)
     sub.status = "active"
+    # payment_amount/payment_note 仅作"最近一笔"展示；历史收款进流水表，统计不再失真
     sub.payment_note = payment_note
     sub.payment_amount = payment_amount
     sub.updated_at = now
+    if payment_amount > 0:
+        db.add(SubscriptionPayment(
+            subscription_id=sub.id,
+            amount=payment_amount,
+            note=payment_note,
+            kind="renew",
+            created_by=user.id,
+        ))
     await db.commit()
     return {"status": "ok", "new_period_end": sub.current_period_end.isoformat()}
 
@@ -296,22 +324,19 @@ async def get_revenue_stats(
     now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
-    # 本月收入
+    # 收入统计基于收款流水：续费各算一笔、计入实际收款月份（订阅字段只存最近一笔）
     month_revenue = await db.scalar(
-        select(func.sum(StoreSubscription.payment_amount))
-        .where(and_(StoreSubscription.created_at >= month_start, StoreSubscription.payment_amount > 0))
+        select(func.sum(SubscriptionPayment.amount))
+        .where(SubscriptionPayment.created_at >= month_start)
     ) or 0
 
     # 总收入
-    total_revenue = await db.scalar(
-        select(func.sum(StoreSubscription.payment_amount))
-        .where(StoreSubscription.payment_amount > 0)
-    ) or 0
+    total_revenue = await db.scalar(select(func.sum(SubscriptionPayment.amount))) or 0
 
     # 本月收款笔数
     month_count = await db.scalar(
-        select(func.count(StoreSubscription.id))
-        .where(and_(StoreSubscription.created_at >= month_start, StoreSubscription.payment_amount > 0))
+        select(func.count(SubscriptionPayment.id))
+        .where(SubscriptionPayment.created_at >= month_start)
     ) or 0
 
     # 即将到期（7天内）

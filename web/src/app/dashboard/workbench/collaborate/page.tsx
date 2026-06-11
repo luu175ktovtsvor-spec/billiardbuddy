@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useAuth } from "@/hooks/auth-context";
 import { api } from "@/lib/api";
+import { ApiError, type OrchestrationTask } from "@/types/api";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { useToast } from "@/components/ui/toast";
 import { Loader2, CheckCircle, Clock, XCircle, Send } from "lucide-react";
@@ -28,7 +29,7 @@ export default function CollaboratePage() {
   const { toast } = useToast();
   const [selectedScenario, setSelectedScenario] = useState<string | null>(null);
   const [description, setDescription] = useState("");
-  const [taskResult, setTaskResult] = useState<any>(null);
+  const [taskResult, setTaskResult] = useState<OrchestrationTask | null>(null);
   const [loading, setLoading] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -36,28 +37,16 @@ export default function CollaboratePage() {
     if (!selectedScenario || !description.trim()) return;
     setLoading(true);
     try {
-      const token = api.getToken();
-      const res = await fetch(`${api.baseUrl}/api/v1/orchestrate`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          task_type: selectedScenario,
-          description: description.trim(),
-          auto_orchestrate: true,
-        }),
+      // 统一走 api 封装：带 X-Store-Id、401 自动刷新、非 2xx 抛 ApiError
+      const data = await api.startOrchestration({
+        task_type: selectedScenario,
+        description: description.trim(),
+        auto_orchestrate: true,
       });
-      if (!res.ok) {
-        toast(res.status === 401 ? "登录已过期，请重新登录" : "发起协作失败", "error");
-        return;
-      }
-      const data = await res.json();
       setTaskResult(data);
       if (data.task_id) startPolling(data.task_id);
-    } catch {
-      toast("发起协作失败", "error");
+    } catch (err) {
+      toast(err instanceof ApiError ? err.detail : "发起协作失败", "error");
     } finally {
       setLoading(false);
     }
@@ -67,18 +56,7 @@ export default function CollaboratePage() {
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = setInterval(async () => {
       try {
-        const token = api.getToken();
-        const res = await fetch(`${api.baseUrl}/api/v1/orchestrate/${taskId}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) {
-          // 任务丢失/登录过期等：停止轮询，避免把错误响应当成功
-          if (res.status === 401 || res.status === 404) {
-            if (pollRef.current) clearInterval(pollRef.current);
-          }
-          return;
-        }
-        const data = await res.json();
+        const data = await api.getOrchestration(taskId);
         setTaskResult(data);
         if (
           data.status === "completed" ||
@@ -87,8 +65,13 @@ export default function CollaboratePage() {
         ) {
           if (pollRef.current) clearInterval(pollRef.current);
         }
-      } catch {
-        // polling error, will retry next interval
+      } catch (err) {
+        // 任务丢失/登录过期：停止轮询并提示，避免无限卡"等待中"
+        if (err instanceof ApiError && (err.status === 401 || err.status === 404)) {
+          if (pollRef.current) clearInterval(pollRef.current);
+          toast(err.status === 404 ? "任务已丢失，请重新发起协作" : "登录已过期，请重新登录", "error");
+        }
+        // 网络抖动等其他错误：下个周期重试
       }
     }, 2000);
   };
@@ -165,7 +148,7 @@ export default function CollaboratePage() {
         <div className="rounded-lg border border-slate-200 bg-white p-4 mb-6">
           <h3 className="text-sm font-semibold text-slate-900 mb-3">协作进度</h3>
           <div className="space-y-2">
-            {taskResult.agents.map((a: any) => (
+            {(taskResult.agents ?? []).map((a) => (
               <div
                 key={a.role}
                 className="flex items-center gap-3 py-2 border-b border-slate-50 last:border-0"
@@ -213,7 +196,7 @@ export default function CollaboratePage() {
           <div className="border-b border-slate-100 px-4 py-3">
             <p className="text-sm font-semibold text-slate-700">📄 汇总方案</p>
             <p className="text-xs text-slate-400 mt-1">
-              {taskResult.agents.length} 个 Agent 协作
+              {(taskResult.agents ?? []).length} 个 Agent 协作
             </p>
           </div>
           <div className="px-4 py-4 prose prose-sm max-w-none prose-slate whitespace-pre-wrap">

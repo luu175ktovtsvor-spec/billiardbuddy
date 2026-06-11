@@ -103,6 +103,11 @@ class PromptEngine:
             return "；".join(f"{k}: {v}" for k, v in data.items())
         return str(data)
 
+    def template_name(self, template_key: str) -> str:
+        """返回模板的中文名称（用于知识筛选的意图文本），不存在时返回空串。"""
+        data = self._templates.get(template_key)
+        return data.get("name", "") if data else ""
+
     def list_templates(self, category: str | None = None) -> list[dict]:
         templates = list(self._templates.values())
         if category:
