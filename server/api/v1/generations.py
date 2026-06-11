@@ -34,6 +34,7 @@ async def list_generation_history(
     sub_type: Annotated[str | None, Query()] = None,
     is_favorite: Annotated[bool | None, Query()] = None,
     effect_rating: Annotated[str | None, Query()] = None,
+    search: Annotated[str | None, Query(max_length=50)] = None,
 ):
     page = max(1, page)
     page_size = max(1, min(page_size, 50))
@@ -47,6 +48,7 @@ async def list_generation_history(
         sub_type=sub_type,
         is_favorite=is_favorite,
         effect_rating=effect_rating,
+        search=search,
     )
 
     return GenerationListResponse(

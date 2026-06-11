@@ -401,9 +401,9 @@ export default function DashboardPage() {
                   </span>
                 </div>
 
-                {/* 统计信息 */}
+                {/* 统计信息：累计/今日 + 沉淀资产（收藏/效果好可点击直达） */}
                 {dashboard ? (
-                  <div className="grid grid-cols-3 gap-4 text-center">
+                  <div className="grid grid-cols-4 gap-3 text-center">
                     <div>
                       <p className="text-2xl font-bold text-slate-900">
                         {dashboard.summary.total_generations}
@@ -416,24 +416,18 @@ export default function DashboardPage() {
                       </p>
                       <p className="text-xs text-slate-500">今日生成</p>
                     </div>
-                    <div>
-                      {dashboard.summary.latest_generation_at ? (
-                        <>
-                          <p className="text-sm font-medium text-slate-900">
-                            {new Date(dashboard.summary.latest_generation_at).toLocaleTimeString(
-                              "zh-CN",
-                              { hour: "2-digit", minute: "2-digit" }
-                            )}
-                          </p>
-                          <p className="text-xs text-slate-500">最近生成</p>
-                        </>
-                      ) : (
-                        <>
-                          <p className="text-sm text-slate-400">-</p>
-                          <p className="text-xs text-slate-500">暂无记录</p>
-                        </>
-                      )}
-                    </div>
+                    <Link href="/dashboard/history" className="rounded-md hover:bg-slate-50 transition-colors">
+                      <p className="text-2xl font-bold text-amber-500">
+                        {dashboard.summary.favorite_count}
+                      </p>
+                      <p className="text-xs text-slate-500">收藏</p>
+                    </Link>
+                    <Link href="/dashboard/history" className="rounded-md hover:bg-slate-50 transition-colors" title="标过「效果好」的内容，AI 正在学习它们的风格">
+                      <p className="text-2xl font-bold text-emerald-500">
+                        {dashboard.summary.good_count}
+                      </p>
+                      <p className="text-xs text-slate-500">效果好</p>
+                    </Link>
                   </div>
                 ) : dashboardError ? (
                   <div className="flex items-center gap-2 text-sm text-amber-600">

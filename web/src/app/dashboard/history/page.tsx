@@ -152,7 +152,24 @@ export default function HistoryPage() {
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
   const [showGoodOnly, setShowGoodOnly] = useState(false);
   const [detailItem, setDetailItem] = useState<GenerationHistoryItem | null>(null);
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [repurposing, setRepurposing] = useState<string | null>(null);
+  const [repurposeResult, setRepurposeResult] = useState<{ label: string; content: string } | null>(null);
   const { toast } = useToast();
+
+  const handleDetailRepurpose = async (id: string, platform: string, label: string) => {
+    setRepurposing(platform);
+    setRepurposeResult(null);
+    try {
+      const res = await api.repurposeContent(id, platform);
+      setRepurposeResult({ label, content: res.content });
+    } catch (err) {
+      toast(err instanceof ApiError ? err.detail : "转换失败，请重试", "error");
+    } finally {
+      setRepurposing(null);
+    }
+  };
 
   const fetchHistory = useCallback(async () => {
     setLoading(true);
@@ -164,6 +181,7 @@ export default function HistoryPage() {
         type: typeFilter as GenerationType | undefined,
         is_favorite: showFavoritesOnly || undefined,
         effect_rating: showGoodOnly ? "good" : undefined,
+        search: search || undefined,
       });
       setItems(res.items);
       setTotal(res.total);
@@ -177,7 +195,13 @@ export default function HistoryPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, typeFilter, showFavoritesOnly, showGoodOnly]);
+  }, [page, typeFilter, showFavoritesOnly, showGoodOnly, search]);
+
+  // 打开/切换详情时清掉上一条的变体结果
+  useEffect(() => {
+    setRepurposeResult(null);
+    setRepurposing(null);
+  }, [detailItem?.id]);
 
   useEffect(() => {
     fetchHistory();
@@ -237,6 +261,29 @@ export default function HistoryPage() {
       <div className="mb-6 flex items-center justify-between">
         <h2 className="text-xl font-bold text-slate-900">生成历史</h2>
         <div className="flex items-center gap-3">
+          {/* 关键词搜索 */}
+          <input
+            type="text"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                setSearch(searchInput.trim());
+                setPage(1);
+              }
+            }}
+            placeholder="搜索内容关键词，回车"
+            className="w-44 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none"
+          />
+          {search && (
+            <button
+              type="button"
+              onClick={() => { setSearch(""); setSearchInput(""); setPage(1); }}
+              className="rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-sm text-indigo-600 hover:bg-indigo-100"
+            >
+              「{search}」✕
+            </button>
+          )}
           {/* Favorite filter toggle */}
           <button
             type="button"
@@ -523,6 +570,40 @@ export default function HistoryPage() {
                 👎 效果差
               </button>
             </div>
+
+            {/* 一键变体：旧爆款 30 秒转成其他平台版本 */}
+            {detailItem.type !== "poster" && (
+              <div className="mt-4 rounded-md border border-slate-100 bg-slate-50 p-3">
+                <p className="mb-2 text-xs text-slate-500">把这条转成其他平台格式：</p>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { platform: "douyin", label: "抖音文案" },
+                    { platform: "xiaohongshu", label: "小红书" },
+                    { platform: "group_notice", label: "群公告" },
+                    { platform: "wechat_moments", label: "朋友圈" },
+                  ].map((p) => (
+                    <button
+                      key={p.platform}
+                      type="button"
+                      disabled={repurposing !== null}
+                      onClick={() => handleDetailRepurpose(detailItem.id, p.platform, p.label)}
+                      className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 hover:border-indigo-300 hover:text-indigo-600 disabled:opacity-50 transition-colors"
+                    >
+                      {repurposing === p.platform ? "转换中..." : p.label}
+                    </button>
+                  ))}
+                </div>
+                {repurposeResult && (
+                  <div className="mt-3 rounded-md border border-indigo-100 bg-white p-3">
+                    <div className="mb-1.5 flex items-center justify-between">
+                      <p className="text-xs font-medium text-indigo-600">{repurposeResult.label}版</p>
+                      <CopyButton text={repurposeResult.content} />
+                    </div>
+                    <p className="whitespace-pre-wrap text-sm text-slate-700">{repurposeResult.content}</p>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="prose prose-sm prose-slate max-w-none">
               {detailItem.type === "poster" && detailItem.result ? (

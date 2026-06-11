@@ -48,7 +48,7 @@ async def get_today_dashboard(
     today_end = today_end_local.astimezone(timezone.utc)
 
     # 一次查询获取所有统计数据
-    total_count, today_count, latest = await _get_generation_stats(
+    total_count, today_count, favorite_count, good_count, latest = await _get_generation_stats(
         db, store.id, today_start, today_end
     )
 
@@ -72,6 +72,8 @@ async def get_today_dashboard(
         summary=DashboardSummary(
             total_generations=total_count,
             today_generations=today_count,
+            favorite_count=favorite_count,
+            good_count=good_count,
             latest_generation_at=latest,
         ),
         recommendations=recommendations,
@@ -92,7 +94,7 @@ async def _get_generation_stats(
     tuple[int, int, datetime | None]
         (total_count, today_count, latest_created_at)
     """
-    # 使用 CASE WHEN 在一次查询中计算两个 count
+    # 使用 CASE WHEN 在一次查询中计算多个 count
     stmt = select(
         func.count().label("total"),
         func.sum(
@@ -101,6 +103,8 @@ async def _get_generation_stats(
                 Integer
             )
         ).label("today"),
+        func.sum(func.cast(Generation.is_favorite == True, Integer)).label("favorites"),
+        func.sum(func.cast(Generation.effect_rating == "good", Integer)).label("good"),
     ).where(Generation.store_id == store_id, Generation.is_deleted == False)
 
     result = await db.execute(stmt)
@@ -108,11 +112,13 @@ async def _get_generation_stats(
 
     total_count = row.total or 0
     today_count = row.today or 0
+    favorite_count = row.favorites or 0
+    good_count = row.good or 0
 
     # 单独查询最新时间（因为需要排序，无法与 count 高效合并）
     latest = await _get_latest_generation(db, store_id)
 
-    return total_count, today_count, latest
+    return total_count, today_count, favorite_count, good_count, latest
 
 
 async def _get_latest_generation(

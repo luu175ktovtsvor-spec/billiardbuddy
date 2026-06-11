@@ -7,6 +7,8 @@ from pydantic import BaseModel
 class DashboardSummary(BaseModel):
     total_generations: int
     today_generations: int
+    favorite_count: int = 0
+    good_count: int = 0
     latest_generation_at: datetime | None = None
 
 
