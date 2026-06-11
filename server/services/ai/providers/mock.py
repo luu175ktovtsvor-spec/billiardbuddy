@@ -17,7 +17,15 @@ class MockTextProvider(TextProvider):
             tokens_used=0,
         )
 
-    async def generate_stream(self, request: TextRequest) -> AsyncIterator[str]:
+    async def generate_stream(
+        self, request: TextRequest, usage_sink: dict | None = None
+    ) -> AsyncIterator[str]:
         logger.warning("正在使用 MockTextProvider（流式），仅用于开发调试")
         yield "[MOCK] [Mock 流式输出] "
         yield "这是开发环境 Mock 返回的流式内容。"
+        if usage_sink is not None:
+            usage_sink.update({
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            })

@@ -29,8 +29,15 @@ class TextProvider(ABC):
         ...
 
     @abstractmethod
-    async def generate_stream(self, request: TextRequest) -> AsyncIterator[str]:
-        """流式生成，逐块 yield 文本片段"""
+    async def generate_stream(
+        self, request: TextRequest, usage_sink: dict | None = None
+    ) -> AsyncIterator[str]:
+        """流式生成，逐块 yield 文本片段。
+
+        usage_sink: 可选字典。生成结束后会把本次 token 用量
+        （prompt_tokens / completion_tokens / total_tokens 等）写入其中。
+        每次请求传入独立的 dict，避免并发请求间用量串号。
+        """
         ...
 
 
