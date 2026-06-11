@@ -249,11 +249,14 @@ def _strip_ai_prefixes(content: str) -> str:
     return content
 
 
-def _append_guardrails(rendered_prompt: str, store: Store, role: str | None = None) -> str:
+def _append_guardrails(rendered_prompt: str, store: Store, role: str | None = None, intent_text: str = "") -> str:
     """在渲染后的 prompt 后追加防护上下文（baseline_rules + role_rules + knowledge + profile）。
 
     非 workbench 路径（copywriting/activity/operation）的模板没有 {baseline_rules} 等占位符，
     所以不能用 extra_vars 注入。改为在渲染后的 prompt 后追加，确保合规约束生效。
+
+    intent_text（用户意图 + 补充说明）非空时，按场景筛选注入的行业知识，避免 prompt_key
+    路径（占工作台卡片的绝大多数）每次全量灌入知识。为空时保持原有全量行为。
     """
     sections: list[str] = []
 
@@ -266,7 +269,7 @@ def _append_guardrails(rendered_prompt: str, store: Store, role: str | None = No
         if role_rules:
             sections.append(f"## 岗位规则\n\n{role_rules}")
 
-        knowledge_context = _load_knowledge_for_role(role, store)
+        knowledge_context = _load_knowledge_for_role(role, store, intent_text)
         if knowledge_context:
             sections.append(f"## 行业知识参考\n\n{knowledge_context}")
 
@@ -311,7 +314,7 @@ async def generate_copywriting(
     }
 
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
-    rendered_prompt = _append_guardrails(rendered_prompt, store, role="manager")
+    rendered_prompt = _append_guardrails(rendered_prompt, store, role="manager", intent_text=f"{scenario} {extra_note}")
 
     provider = ProviderFactory.get_text_provider()
     request = TextRequest(prompt=rendered_prompt, thinking={"type": "disabled"})
@@ -378,7 +381,7 @@ async def generate_activity(
     }
 
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
-    rendered_prompt = _append_guardrails(rendered_prompt, store, role="manager")
+    rendered_prompt = _append_guardrails(rendered_prompt, store, role="manager", intent_text=f"{activity_goal} {target_customer or ''} {extra_note}")
 
     provider = ProviderFactory.get_text_provider()
     request = TextRequest(prompt=rendered_prompt, max_tokens=3000)
@@ -447,7 +450,7 @@ async def generate_operation(
     }
 
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
-    rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role)
+    rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role, intent_text=f"{scenario} {target or ''} {extra_note}")
 
     provider = ProviderFactory.get_text_provider()
     request = TextRequest(prompt=rendered_prompt, max_tokens=3000)
@@ -521,7 +524,7 @@ async def generate_workbench(
         # 从 prompt_key 提取场景名（如 "operation.qiangyi_battle" → "qiangyi_battle"）
         scenario_name = prompt_key.split(".", 1)[-1] if "." in prompt_key else prompt_key
         inferred_role = SCENARIO_ROLE_MAP.get(scenario_name) or role
-        rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role)
+        rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role, intent_text=f"{user_intent} {extra_note}")
     else:
         # 通用 free_intent 路径：在模板内注入规则和知识
         baseline_rules = _load_rule_safe("rules.baseline", store)
