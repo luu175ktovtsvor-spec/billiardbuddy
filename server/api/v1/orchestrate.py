@@ -38,7 +38,7 @@ async def create_orchestration(
     task = await start_task(
         task_type=req.task_type,
         description=req.description,
-        store_id=str(current_store.id),
+        store=current_store,
         roles=req.roles,
         auto_orchestrate=req.auto_orchestrate,
     )
@@ -49,9 +49,10 @@ async def create_orchestration(
 async def get_orchestration(
     task_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
+    current_store: Annotated[Store, Depends(get_current_store)],
 ):
     """查询协作任务状态"""
-    task = get_task(task_id)
+    task = get_task(task_id, str(current_store.id))
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     return task
@@ -61,9 +62,10 @@ async def get_orchestration(
 async def cancel_orchestration(
     task_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
+    current_store: Annotated[Store, Depends(get_current_store)],
 ):
     """取消协作任务"""
-    success = cancel_task(task_id)
+    success = cancel_task(task_id, str(current_store.id))
     if not success:
         raise HTTPException(status_code=404, detail="任务不存在")
     return {"status": "cancelled"}
