@@ -186,3 +186,36 @@ def test_knowledge_no_source_leak_terms():
     for key, data in knowledge.items():
         tpl = data.get("template", "")
         assert "PPT" not in tpl, f"{key} 残留 PPT 出处字样"
+
+
+def test_poster_prompt_image_roles():
+    """生图 prompt 回归：底图与参考图共存时必须声明图片角色，否则模型会把参考图内容抄进结果。"""
+    from services.poster_service import build_poster_prompt
+
+    # 底图 + 参考图：双声明
+    p = build_poster_prompt("背景改成深色", ["周赛海报"], has_base_image=True, ref_count=2)
+    assert "base image to modify" in p
+    assert "style references" in p
+    assert "之前的设计要求" in p and "当前要求" in p
+
+    # 仅底图：保留构图指令
+    p = build_poster_prompt("去掉文字", [], has_base_image=True, ref_count=0)
+    assert "keep the overall composition" in p
+    assert "style references" not in p
+
+    # 仅参考图：风格参考声明
+    p = build_poster_prompt("周赛海报", [], has_base_image=False, ref_count=1)
+    assert "style and mood references" in p
+
+    # 无图：纯文字
+    p = build_poster_prompt("周赛海报", [], has_base_image=False, ref_count=0, no_text=True)
+    assert "no text" in p and "image" not in p.split("no text")[0]
+
+
+def test_poster_refine_and_references_coexist():
+    """生图主流程回归：refine 与参考图不再互斥（修复 elif 静默丢弃参考图）。"""
+    import inspect as _inspect
+    from services import poster_service
+    src = _inspect.getsource(poster_service.generate_images)
+    assert "elif reference_image_paths" not in src, "refine 与参考图又变回互斥了"
+    assert "check_quota" in src and "check_input_injection" in src

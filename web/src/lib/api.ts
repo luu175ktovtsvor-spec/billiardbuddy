@@ -406,7 +406,7 @@ class ApiClient {
   }
 
   getPosterConversationDetail(conversationId: string) {
-    return this.request<{ id: string; title: string; created_at: string; updated_at: string; messages: Array<{ generation_id: string; poster_url: string; created_at: string; prompt: string; openai_response_id: string | null }> }>("GET", `/api/v1/posters/conversations/${conversationId}`);
+    return this.request<{ id: string; title: string; created_at: string; updated_at: string; messages: Array<{ generation_id: string; poster_url: string; created_at: string; prompt: string; reference_images: string[]; refine_from: string | null; ratio: string | null }> }>("GET", `/api/v1/posters/conversations/${conversationId}`);
   }
 
   // ─── Generations ───

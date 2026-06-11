@@ -8,6 +8,7 @@ import { getErrorMessage } from "@/lib/utils";
 import type { SizeOption, GeneratedImage } from "@/types/poster";
 import type { StoreResponse } from "@/types/store";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
+import { CardSelect } from "@/components/ui/card-select";
 import { ImageIcon, Upload, X, Send, Download, Loader2 } from "lucide-react";
 import { EmptyStoreGuide } from "@/components/empty-store-guide";
 
@@ -24,10 +25,18 @@ interface ConversationState {
   refineFrom: string | null;
   ratio: string;
   quality: "low" | "medium" | "high" | "auto";
-  references: Array<{ file: File; path: string; preview: string }>;
+  /** 参考图对整个对话持续有效，每轮全量随请求发送（可随时移除） */
+  references: Array<{ path: string; preview: string }>;
   addStoreInfo: boolean;
   noText: boolean;
 }
+
+const QUALITY_OPTIONS = [
+  { value: "low", label: "草稿", desc: "快速便宜" },
+  { value: "medium", label: "标准", desc: "日常够用" },
+  { value: "high", label: "高清", desc: "印刷级" },
+  { value: "auto", label: "自动", desc: "模型决定" },
+];
 
 function createNewConversation(): ConversationState {
   return {
@@ -111,6 +120,7 @@ function ConversationPageInner() {
       .then((detail) => {
         if (cancelled) return;
         const messages: ConversationMessage[] = [];
+        const refPaths: string[] = [];
         for (const msg of detail.messages) {
           if (msg.prompt) {
             messages.push({ role: "user", content: msg.prompt });
@@ -120,6 +130,10 @@ function ConversationPageInner() {
             content: "",
             images: [{ generation_id: msg.generation_id, poster_url: msg.poster_url, created_at: msg.created_at }],
           });
+          // 恢复对话级参考图（跨轮去重，保持上传顺序）
+          for (const p of msg.reference_images || []) {
+            if (p && !refPaths.includes(p)) refPaths.push(p);
+          }
         }
         const lastMsg = detail.messages[detail.messages.length - 1];
         setConv({
@@ -127,9 +141,9 @@ function ConversationPageInner() {
           title: detail.title,
           messages,
           refineFrom: lastMsg?.generation_id || null,
-          ratio: "3:4",
+          ratio: lastMsg?.ratio || "3:4",
           quality: "auto",
-          references: [],
+          references: refPaths.map((p) => ({ path: p, preview: api.resolveUrl(p) })),
           addStoreInfo: false,
           noText: false,
         });
@@ -165,7 +179,7 @@ function ConversationPageInner() {
       const newRefs = [...conv.references];
       for (const file of fileArray) {
         const res = await api.uploadReferenceImage(file);
-        newRefs.push({ file, path: res.path, preview: URL.createObjectURL(file) });
+        newRefs.push({ path: res.path, preview: URL.createObjectURL(file) });
       }
       updateConv({ references: newRefs });
     } catch {
@@ -175,7 +189,7 @@ function ConversationPageInner() {
 
   const removeReference = (index: number) => {
     const removed = conv.references[index];
-    if (removed) URL.revokeObjectURL(removed.preview);
+    if (removed && removed.preview.startsWith("blob:")) URL.revokeObjectURL(removed.preview);
     updateConv({ references: conv.references.filter((_, i) => i !== index) });
   };
 
@@ -216,11 +230,11 @@ function ConversationPageInner() {
 
       const assistantMsg: ConversationMessage = { role: "assistant", content: "", images: res.images };
       const newId = res.conversation_id || conv.id;
+      // 参考图不清空：对话级持续生效，用户可手动移除
       updateConv({
         id: newId,
         messages: [...conv.messages, userMsg, assistantMsg],
         refineFrom: res.images?.[0]?.generation_id || conv.refineFrom,
-        references: [],
       });
 
       /* Update URL if this was a new conversation */
@@ -266,6 +280,13 @@ function ConversationPageInner() {
   }
 
   const breadcrumbTitle = conversationId === "new" ? "新对话" : conv.title;
+
+  /* 当前底图（"基于此调整"选中的那张）的缩略信息 */
+  const refineImage = conv.refineFrom
+    ? conv.messages.flatMap((m) => m.images || []).find((img) => img.generation_id === conv.refineFrom) || null
+    : null;
+  const ratioLabel = sizeOptions.find((s) => s.value === conv.ratio)?.label || conv.ratio;
+  const qualityLabel = QUALITY_OPTIONS.find((q) => q.value === conv.quality)?.label || conv.quality;
 
   return (
     <div className="mx-auto max-w-4xl space-y-4">
@@ -367,6 +388,30 @@ function ConversationPageInner() {
 
           {/* Input area */}
           <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sticky bottom-4">
+            {/* 底图提示：让用户明确知道"在哪张图上改"，可一键退出调整模式 */}
+            {conv.refineFrom && conv.messages.length > 0 && (
+              <div className="mb-3 flex items-center gap-2.5 rounded-md border border-indigo-100 bg-indigo-50 px-2.5 py-2">
+                {refineImage && (
+                  <img
+                    src={api.resolveUrl(refineImage.poster_url)}
+                    alt="当前底图"
+                    className="h-10 w-10 rounded object-cover border border-indigo-200"
+                  />
+                )}
+                <span className="flex-1 text-xs text-indigo-600">
+                  将在这张图上调整；参考图与文字要求会一并生效
+                </span>
+                <button
+                  type="button"
+                  onClick={() => updateConv({ refineFrom: null })}
+                  title="退出调整模式，全新生成"
+                  className="rounded p-1 text-indigo-400 hover:bg-indigo-100 hover:text-indigo-600"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
+
             {/* First message: full input; subsequent: compact */}
             {conv.messages.length === 0 && (
               <textarea
@@ -430,6 +475,9 @@ function ConversationPageInner() {
                     </button>
                   </div>
                 ))}
+                {conv.references.length > 0 && (
+                  <span className="text-[11px] text-slate-400">参考图对本次对话持续生效</span>
+                )}
                 {conv.references.length < 5 && (
                   <label className="flex items-center gap-1.5 cursor-pointer rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-500 hover:bg-slate-50 hover:text-slate-700">
                     <Upload className="h-4 w-4" />
@@ -447,37 +495,6 @@ function ConversationPageInner() {
                 )}
               </div>
 
-              {/* Ratio */}
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs text-slate-500">比例</span>
-                <select
-                  value={conv.ratio}
-                  onChange={(e) => updateConv({ ratio: e.target.value })}
-                  className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none"
-                >
-                  {sizeOptions.map((s) => (
-                    <option key={s.value} value={s.value}>
-                      {s.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Quality */}
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs text-slate-500">质量</span>
-                <select
-                  value={conv.quality}
-                  onChange={(e) => updateConv({ quality: e.target.value as "low" | "medium" | "high" | "auto" })}
-                  className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none"
-                >
-                  <option value="low">草稿</option>
-                  <option value="medium">标准</option>
-                  <option value="high">高清</option>
-                  <option value="auto">自动</option>
-                </select>
-              </div>
-
               {/* Generate button (for first message) */}
               {conv.messages.length === 0 && (
                 <button
@@ -492,43 +509,58 @@ function ConversationPageInner() {
               )}
             </div>
 
-            {/* Advanced options */}
+            {/* Advanced options：比例/质量/开关（CardSelect，替换原生 select） */}
             <div className="mt-2">
               <button
                 type="button"
                 onClick={() => setShowAdvanced((v) => !v)}
                 className="text-xs text-slate-400 hover:text-slate-600"
               >
-                {showAdvanced ? "收起选项 ▲" : "高级选项 ▼"}
+                {showAdvanced ? "收起选项 ▲" : `比例与质量（${ratioLabel} · ${qualityLabel}）▼`}
               </button>
               {showAdvanced && (
-                <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-slate-500">
-                  <label className="flex items-center gap-1.5 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={conv.addStoreInfo}
-                      onChange={(e) => updateConv({ addStoreInfo: e.target.checked })}
-                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <p className="mb-1.5 text-xs text-slate-500">图片比例</p>
+                    <CardSelect
+                      value={conv.ratio}
+                      onChange={(v) => updateConv({ ratio: v })}
+                      options={sizeOptions.map((s) => ({ value: s.value, label: s.label, desc: s.desc }))}
+                      columns={4}
                     />
-                    <span>融入门店信息</span>
-                  </label>
-                  <label className="flex items-center gap-1.5 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={conv.noText}
-                      onChange={(e) => updateConv({ noText: e.target.checked })}
-                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                  </div>
+                  <div>
+                    <p className="mb-1.5 text-xs text-slate-500">图片质量</p>
+                    <CardSelect
+                      value={conv.quality}
+                      onChange={(v) => updateConv({ quality: v as "low" | "medium" | "high" | "auto" })}
+                      options={QUALITY_OPTIONS}
+                      columns={4}
                     />
-                    <span>禁止生成文字</span>
-                  </label>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500">
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={conv.addStoreInfo}
+                        onChange={(e) => updateConv({ addStoreInfo: e.target.checked })}
+                        className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span>融入门店信息</span>
+                    </label>
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={conv.noText}
+                        onChange={(e) => updateConv({ noText: e.target.checked })}
+                        className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span>禁止生成文字</span>
+                    </label>
+                  </div>
                 </div>
               )}
             </div>
-
-            {/* Refine hint */}
-            {conv.refineFrom && conv.messages.length > 0 && (
-              <p className="mt-1 text-xs text-slate-400">当前基于上一张图片调整</p>
-            )}
           </div>
         </>
       )}
