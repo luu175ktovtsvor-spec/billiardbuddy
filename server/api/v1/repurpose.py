@@ -6,11 +6,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_current_user, get_current_store, get_db
 from core.exceptions import NotFoundException
+from core.security_guard import filter_output_leak
 from models.generation import Generation
 from models.user import User
 from models.store import Store
 from services.ai.base import TextRequest
 from services.ai.factory import ProviderFactory
+from services.content_service import _validate_provider_for_production
+from services.quota_service import check_quota, increment_usage
 
 router = APIRouter()
 
@@ -42,6 +45,10 @@ async def repurpose_content(
     if not generation or generation.store_id != store.id:
         raise NotFoundException("生成记录不存在")
 
+    # 配额检查（此前缺失，导致内容变体绕过付费限额）
+    await check_quota(db, str(store.id))
+    _validate_provider_for_production()
+
     # 2. 构建变体 prompt
     platform_prompt = PLATFORM_PROMPTS.get(body.target_platform, PLATFORM_PROMPTS["wechat_moments"])
     full_prompt = f"{platform_prompt}\n\n原始内容：\n{generation.result}"
@@ -50,4 +57,7 @@ async def repurpose_content(
     request = TextRequest(prompt=full_prompt, max_tokens=1000)
     response = await ProviderFactory.generate_with_fallback(request)
 
-    return {"content": response[0].content, "platform": body.target_platform}
+    content = filter_output_leak(response[0].content)
+    await increment_usage(db, str(store.id), tokens=response[0].tokens_used or 0)
+
+    return {"content": content, "platform": body.target_platform}
