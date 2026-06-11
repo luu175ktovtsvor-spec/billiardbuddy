@@ -25,6 +25,7 @@ template: |
 
 required_knowledge:
   - knowledge.core_operations
+  - knowledge.diagnostic_logic
   - knowledge.profit_model
   - knowledge.industry_data
   - knowledge.performance_standards
