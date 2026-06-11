@@ -1,8 +1,7 @@
 key: "knowledge.assistant_promotion"
 name: "助教推广获客知识库"
 category: "knowledge"
-variables:
-  - store_name
+variables: []
 description: |
   助教如何通过各种渠道推广自己获得更多上钟机会。
   助教的核心工作是营销获客（不是陪打），助教的核心任务是提升自己赚钱的能力。

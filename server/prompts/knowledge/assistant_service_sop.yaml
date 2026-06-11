@@ -1,9 +1,7 @@
 key: "knowledge.assistant_service_sop"
 name: "助教服务 SOP 知识库"
 category: "knowledge"
-variables:
-  - store_name
-  - city
+variables: []
 description: |
   球房助教服务标准操作流程与情商话术知识库。
   涵盖上钟前准备、打球中服务、下钟后锁客、私域跟进全流程。
