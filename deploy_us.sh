@@ -10,7 +10,7 @@ echo "[3/5] 数据库迁移..."
 cd server && /root/.local/bin/uv run alembic upgrade head && cd ..
 echo "[4/5] 重启后端..."
 systemctl restart billiards-backend
-echo "[5/5] 构建前端..."
-cd web && cp -r .next/static .next/standalone/.next/static && cd ..
+echo "[5/5] 构建前端（真实执行 next build，旧版只拷贝旧产物会上线旧前端）..."
+cd web && npx next build --no-lint && cp -r .next/static .next/standalone/.next/static && cd ..
 systemctl restart billiards-frontend
 echo "=== 部署完成 ==="

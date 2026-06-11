@@ -26,6 +26,7 @@ interface Plan {
   name: string;
   slug: string;
   price_monthly: number;
+  is_active: boolean;
 }
 
 export default function AdminUsersPage() {
@@ -76,7 +77,7 @@ export default function AdminUsersPage() {
   useEffect(() => {
     fetch(`${api.baseUrl}/api/v1/admin/plans`, { headers: { Authorization: `Bearer ${token}` } })
       .then((res) => res.json())
-      .then((data) => setPlans(data || []))
+      .then((data) => setPlans((data || []).filter((p: Plan) => p.is_active))) // 开通下拉只给可用套餐
       .catch(() => {});
   }, []);
 
@@ -90,6 +91,7 @@ export default function AdminUsersPage() {
       const res = await fetch(`${api.baseUrl}/api/v1/admin/users/${userId}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
+      if (!res.ok) { setDetailUser(null); alert("加载用户详情失败"); return; } // 否则把错误JSON当data渲染会崩
       const data = await res.json();
       setDetailUser(data);
     } catch { setDetailUser(null); }
@@ -98,12 +100,13 @@ export default function AdminUsersPage() {
 
   const handleToggleStatus = async (userId: string) => {
     try {
-      await fetch(`${api.baseUrl}/api/v1/admin/users/${userId}/status`, {
+      const res = await fetch(`${api.baseUrl}/api/v1/admin/users/${userId}/status`, {
         method: "PUT",
         headers: { Authorization: `Bearer ${token}` },
       });
+      if (!res.ok) { alert("操作失败，请重试"); return; }
       fetchUsers();
-    } catch {}
+    } catch { alert("网络错误，请重试"); }
   };
 
   const handleActivate = async () => {
@@ -113,14 +116,19 @@ export default function AdminUsersPage() {
       const params = new URLSearchParams({ plan_slug: selectedPlanSlug, months: String(months) });
       if (paymentNote) params.set("payment_note", paymentNote);
       if (paymentAmount) params.set("payment_amount", paymentAmount);
-      await fetch(`${api.baseUrl}/api/v1/admin/users/${selectedUserId}/activate?${params}`, {
+      const res = await fetch(`${api.baseUrl}/api/v1/admin/users/${selectedUserId}/activate?${params}`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
+      if (!res.ok) {
+        const d = await res.json().catch(() => null);
+        alert(d?.detail || "开通失败，请重试"); // 静默会让"看似开通成功实则没扣费/没开通"
+        return;
+      }
       setShowActivateModal(false);
       setSelectedUserId(null);
       fetchUsers();
-    } catch {} finally { setActivating(false); }
+    } catch { alert("网络错误，请重试"); } finally { setActivating(false); }
   };
 
   const handleAdjustQuota = async () => {

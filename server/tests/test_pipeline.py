@@ -219,3 +219,27 @@ def test_poster_refine_and_references_coexist():
     src = _inspect.getsource(poster_service.generate_images)
     assert "elif reference_image_paths" not in src, "refine 与参考图又变回互斥了"
     assert "check_quota" in src and "check_input_injection" in src
+
+
+def test_admin_routes_single_prefix():
+    """路由回归：admin 必须挂在 /admin/* 而非 /admin/admin/*（双前缀曾让整个管理后台 404）。"""
+    from api.v1.router import router as v1_router
+    paths = {r.path for r in v1_router.routes}
+    assert "/admin/dashboard" in paths, f"admin 路由缺失: {sorted(p for p in paths if 'admin' in p)[:5]}"
+    assert not any(p.startswith("/admin/admin") for p in paths), "admin 双前缀回归"
+    # quota 不带尾斜杠（带斜杠会 307 重定向剥离认证头）
+    assert "/quota" in paths and "/quota/" not in paths
+
+
+def test_invitation_response_id_is_uuid():
+    """契约回归：InvitationResponse.id 必须是 UUID 类型（声明 str 会让响应校验 500）。"""
+    import uuid as _uuid
+    from api.v1.members import InvitationResponse
+    assert InvitationResponse.model_fields["id"].annotation is _uuid.UUID
+
+
+def test_store_update_accepts_brand_style():
+    """契约回归：品牌风格字段必须在 StoreUpdate/StoreResponse 中（曾被 schema 静默丢弃）。"""
+    from schemas.store import StoreUpdate, StoreResponse
+    assert "brand_style" in StoreUpdate.model_fields
+    assert "brand_style" in StoreResponse.model_fields

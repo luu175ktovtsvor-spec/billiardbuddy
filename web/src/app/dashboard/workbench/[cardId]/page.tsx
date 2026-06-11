@@ -113,6 +113,8 @@ function TaskExecutionPageInner() {
   const inputSectionRef = useRef<HTMLDivElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  // 记录上次生成的完整参数：失败重试时原样重放（含微调指令），不丢 optimizeNote
+  const lastGenOptsRef = useRef<{ optimizeNote?: string; isCardClick?: boolean } | undefined>(undefined);
 
   /* ─── pre-fill form from card data on mount ─── */
   useEffect(() => {
@@ -129,6 +131,7 @@ function TaskExecutionPageInner() {
 
   /* ─── streaming generation ─── */
   const doGenerate = async (opts?: { optimizeNote?: string; isCardClick?: boolean }) => {
+    lastGenOptsRef.current = opts;
     if (!intent.trim()) return;
 
     if (abortControllerRef.current) {
@@ -300,7 +303,9 @@ function TaskExecutionPageInner() {
     try {
       // 统一走 api 封装：带 X-Store-Id（多门店不串店）、401 自动刷新、非 2xx 抛错
       const data = await api.repurposeContent(result.generation_id, platform);
-      setResult({ ...result, content: data.content });
+      // 切换到变体的新记录 id：否则之后"编辑→保存"会把变体文本写进原始记录，
+      // 污染历史和已标"效果好"的金牌范文
+      setResult({ ...result, content: data.content, generation_id: data.generation_id || result.generation_id });
       toast("已转换为" + platform + "版本", "success");
     } catch (err) {
       toast(getErrorMessage(err) || "转换失败，请重试", "error");
@@ -585,7 +590,7 @@ function TaskExecutionPageInner() {
             <p className="flex-1 text-sm text-red-600">{error}</p>
             <button
               type="button"
-              onClick={() => doGenerate()}
+              onClick={() => doGenerate(lastGenOptsRef.current)}
               disabled={generating}
               className="shrink-0 rounded-md border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100 disabled:opacity-50"
             >

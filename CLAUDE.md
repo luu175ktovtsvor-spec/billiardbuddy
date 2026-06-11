@@ -185,7 +185,7 @@ server/                 # FastAPI 后端
 - 请求/响应模型用 Pydantic v2 的 `BaseModel`
 - 数据库操作用 async SQLAlchemy
 - 认证用 JWT（access token，24小时有效期），密码用 bcrypt 哈希
-- 文件上传存本地目录 `server/uploads/`
+- 文件上传存**项目根目录** `uploads/`（config.py 默认 `<项目根>/uploads`；`server/uploads/` 是历史遗留死目录，勿用。服务器 .env 如设 UPLOAD_DIR 必须用绝对路径）
 - AI 调用结果写入 `generations` 表，记录 prompt、model、tokens
 - PromptEngine 是单例，通过 `get_prompt_engine()` 获取，不要直接 `PromptEngine()`
 - Knowledge YAML 必须有 `template:` 和 `key:` 字段，否则 PromptEngine 加载会报错

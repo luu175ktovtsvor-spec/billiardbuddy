@@ -138,14 +138,6 @@ BUDGET_LABELS = {
     "heavy": "大力优惠",
 }
 
-OPERATION_SCENARIO_LABELS = {
-    "groupbuy_to_private": "团购转私域",
-    "assistant_promo": "助教推广",
-    "partner_match": "搭子局/竞技局",
-    "tournament": "周赛/月赛",
-    "old_customer_recall": "老客维护",
-}
-
 ROLE_LABELS = {
     "boss": "老板",
     "manager": "店长",
@@ -201,6 +193,7 @@ KNOWLEDGE_KEYWORDS: dict[str, list[str]] = {
     "knowledge.account_nurturing": ["养号", "账号", "起号", "权重", "限流", "新号"],
     "knowledge.assistant_coaching_sop": ["陪练", "教学", "训练", "球技", "动作", "纠正", "练球", "指导"],
     "knowledge.assistant_difficult_situations": ["刁钻", "难缠", "尴尬", "拒绝", "难题", "不好处理", "投诉"],
+    "knowledge.pk_incentive": ["PK", "对赌", "激励", "排名", "比拼", "奖惩", "冲业绩"],
     "knowledge.assistant_promotion": ["助教推广", "助教获客", "助教朋友圈", "推广助教", "助教引流"],
     "knowledge.assistant_salary": ["助教薪资", "助教工资", "助教提成", "保底", "分成", "薪资"],
     "knowledge.assistant_service_sop": ["上钟", "服务流程", "助教服务", "陪打", "陪玩", "点助教", "约助教"],

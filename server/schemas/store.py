@@ -80,6 +80,8 @@ class StoreUpdate(BaseModel):
     has_parking: bool | None = None
     target_customers: str | None = Field(default=None, max_length=500)
     style: str | None = Field(default=None, max_length=200)
+    # 品牌风格（影响 AI 语气）：此前 schema 缺该字段，前端一直在发但被静默丢弃
+    brand_style: str | None = Field(default=None, max_length=50)
     advantages: str | None = None
     common_activities: str | None = None
     operation_profile: OperationProfileUpdate | None = None
@@ -126,6 +128,7 @@ class StoreResponse(BaseModel):
     has_parking: bool
     target_customers: str | None
     style: str | None
+    brand_style: str | None = None
     advantages: str | None
     common_activities: str | None
     operation_profile: Any = None
