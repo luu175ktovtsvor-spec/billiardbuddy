@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.exceptions import AIServiceError, AIProviderError
+from core.security_guard import filter_output_leak
 from models.user import User
 from models.store import Store
 from models.generation import Generation
@@ -44,7 +45,10 @@ async def generate_performance_template(
     }
 
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
-    rendered_prompt = _append_guardrails(rendered_prompt, store, role="assistant_manager")
+    rendered_prompt = _append_guardrails(
+        rendered_prompt, store, role="assistant_manager",
+        intent_text=f"绩效考核 {ROLE_LABELS.get(role, role)} {PERIOD_LABELS.get(period, period)}",
+    )
 
     await check_quota(db, str(store.id))
 
@@ -68,7 +72,7 @@ async def generate_performance_template(
             "period": period,
         },
         prompt_used=rendered_prompt,
-        result=response.content,
+        result=filter_output_leak(response.content),
         model_used=response.model,
         tokens_used=response.tokens_used,
     )

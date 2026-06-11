@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.exceptions import AIServiceError, AIProviderError
+from core.security_guard import filter_output_leak
 from models.user import User
 from models.store import Store
 from models.generation import Generation
@@ -57,7 +58,10 @@ async def query_sop(
     }
 
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
-    rendered_prompt = _append_guardrails(rendered_prompt, store, role="frontdesk")
+    rendered_prompt = _append_guardrails(
+        rendered_prompt, store, role="frontdesk",
+        intent_text=f"{SCENARIO_LABELS.get(scenario, scenario)} {ROLE_LABELS.get(role, role)}",
+    )
 
     await check_quota(db, str(store.id))
 
@@ -82,7 +86,7 @@ async def query_sop(
             "customer_type": customer_type,
         },
         prompt_used=rendered_prompt,
-        result=response.content,
+        result=filter_output_leak(response.content),
         model_used=response.model,
         tokens_used=response.tokens_used,
     )

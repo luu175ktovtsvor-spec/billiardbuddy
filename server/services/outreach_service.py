@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.exceptions import AIServiceError, AIProviderError
+from core.security_guard import check_input_injection, filter_output_leak
 from models.user import User
 from models.store import Store
 from models.generation import Generation
@@ -41,6 +42,10 @@ async def generate_outreach(
     style: str,
     extra_note: str = "",
 ) -> Generation:
+    injection_check = check_input_injection(f"{customer_name} {relationship} {extra_note}")
+    if injection_check:
+        raise AIServiceError(injection_check)
+
     template_key = "operation.assistant_outreach"
 
     extra_vars = {
@@ -52,7 +57,10 @@ async def generate_outreach(
     }
 
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
-    rendered_prompt = _append_guardrails(rendered_prompt, store, role="assistant_manager")
+    rendered_prompt = _append_guardrails(
+        rendered_prompt, store, role="assistant_manager",
+        intent_text=f"约客 {CUSTOMER_TYPE_LABELS.get(customer_type, customer_type)} {relationship} {extra_note}",
+    )
 
     await check_quota(db, str(store.id))
 
@@ -79,7 +87,7 @@ async def generate_outreach(
             "extra_note": extra_note,
         },
         prompt_used=rendered_prompt,
-        result=response.content,
+        result=filter_output_leak(response.content),
         model_used=response.model,
         tokens_used=response.tokens_used,
     )
