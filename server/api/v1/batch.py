@@ -5,12 +5,15 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_current_user, get_current_store, get_db
+from core.exceptions import AIServiceError
+from core.security_guard import check_input_injection, filter_output_leak
 from models.user import User
 from models.store import Store
 from services.ai.base import TextRequest
 from services.ai.factory import ProviderFactory
 from services.brand_voice_service import get_brand_voice_context
-from services.content_service import _strip_ai_prefixes
+from services.content_service import _strip_ai_prefixes, _validate_provider_for_production
+from services.quota_service import check_quota, increment_usage
 
 router = APIRouter()
 
@@ -30,6 +33,13 @@ async def batch_generate(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """批量生成多条内容。"""
+    # 输入安全检查 + 配额检查（此前缺失，导致批量生成绕过付费限额）
+    injection_check = check_input_injection(body.extra_note or "")
+    if injection_check:
+        raise AIServiceError(injection_check)
+    await check_quota(db, str(store.id))
+    _validate_provider_for_production()
+
     count = min(max(body.count, 1), 10)
 
     # 获取品牌声音
@@ -58,6 +68,7 @@ async def batch_generate(
     response = await ProviderFactory.generate_with_fallback(request)
 
     content = _strip_ai_prefixes(response[0].content)
+    content = filter_output_leak(content)
 
     # 按编号拆分
     items = []
@@ -71,6 +82,8 @@ async def batch_generate(
             current += "\n" + line
     if current.strip():
         items.append(current.strip())
+
+    await increment_usage(db, str(store.id), tokens=response[0].tokens_used or 0)
 
     return {
         "items": items[:count],
