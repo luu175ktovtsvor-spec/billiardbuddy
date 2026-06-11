@@ -140,6 +140,44 @@ async def activate_user(
     return {"status": "ok", "plan": plan.name, "expires": subscription.current_period_end}
 
 
+@router.put("/users/{user_id}/quota")
+async def adjust_user_quota(
+    user_id: str,
+    generation_limit: int = None,
+    tokens_limit: int = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """单店自定义配额：不动套餐，直接调这家店的本月上限（"试用觉得好用，找我提额"的入口）。"""
+    require_admin(user)
+
+    member = await db.scalar(select(StoreMember).where(StoreMember.user_id == user_id))
+    if not member:
+        raise HTTPException(status_code=404, detail="用户没有门店")
+
+    quota = await db.scalar(select(UsageQuota).where(UsageQuota.store_id == member.store_id))
+    if quota is None:
+        from services.quota_service import _period_start_now
+        quota = UsageQuota(
+            store_id=member.store_id,
+            monthly_generations_used=0,
+            monthly_tokens_used=0,
+            current_period_start=_period_start_now(),
+        )
+        db.add(quota)
+    if generation_limit is not None:
+        quota.monthly_generation_limit = max(0, generation_limit)
+    if tokens_limit is not None:
+        quota.monthly_tokens_limit = max(0, tokens_limit)
+    await db.commit()
+    return {
+        "status": "ok",
+        "generation_limit": quota.monthly_generation_limit,
+        "tokens_limit": quota.monthly_tokens_limit,
+        "generations_used": quota.monthly_generations_used,
+    }
+
+
 @router.get("/plans")
 async def list_plans(
     user: User = Depends(get_current_user),

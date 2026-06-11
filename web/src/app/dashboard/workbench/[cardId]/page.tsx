@@ -29,6 +29,7 @@ import {
   getOutputPackageLabel,
 } from "@/lib/workbench-config";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
+import { QuotaBadge } from "@/components/quota-badge";
 import { useToast } from "@/components/ui/toast";
 import {
   Sparkles,
@@ -88,11 +89,7 @@ function TaskExecutionPageInner() {
   const [showRepurpose, setShowRepurpose] = useState(false);
   const [showMoreActions, setShowMoreActions] = useState(false);
   const [repurposing, setRepurposing] = useState(false);
-  const [quota, setQuota] = useState<{
-    used: number;
-    limit: number;
-    remaining: number;
-  } | null>(null);
+  const [quotaVersion, setQuotaVersion] = useState(0);
 
   const [conversationId, setConversationId] = useState<string | null>(null);
   const conversationIdRef = useRef<string | null>(null);
@@ -117,26 +114,6 @@ function TaskExecutionPageInner() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [card?.id]);
-
-  /* ─── load quota ─── */
-  useEffect(() => {
-    if (!isAuthenticated) return;
-    let cancelled = false;
-    api
-      .getQuota()
-      .then((res) => {
-        if (!cancelled)
-          setQuota({
-            used: res.monthly_generations_used,
-            limit: res.monthly_generation_limit,
-            remaining: res.remaining,
-          });
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [isAuthenticated]);
 
   /* ─── streaming generation ─── */
   const doGenerate = async (opts?: { optimizeNote?: string; isCardClick?: boolean }) => {
@@ -185,6 +162,7 @@ function TaskExecutionPageInner() {
             profile_suggestions: null,
           });
           setStreamingContent("");
+          setQuotaVersion((v) => v + 1); // 生成完成后实时刷新配额展示
           if (convId) {
             conversationIdRef.current = convId;
             setConversationId(convId);
@@ -334,19 +312,8 @@ function TaskExecutionPageInner() {
         )}
       </div>
 
-      {/* ─── Quota warning ─── */}
-      {quota && quota.remaining <= 5 && quota.remaining > 0 && (
-        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3">
-          <p className="text-xs text-amber-700">
-            本月剩余 {quota.remaining} 次生成额度
-          </p>
-        </div>
-      )}
-      {quota && quota.remaining <= 0 && (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3">
-          <p className="text-xs text-red-700">本月额度已用完</p>
-        </div>
-      )}
+      {/* ─── Quota（试用/套餐 · 实时余量 · 提额引导）─── */}
+      <QuotaBadge refreshKey={quotaVersion} />
 
       {/* ─── Input section ─── */}
       <div
