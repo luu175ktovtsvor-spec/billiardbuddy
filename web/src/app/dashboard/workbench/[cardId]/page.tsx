@@ -45,6 +45,15 @@ import Link from "next/link";
 
 /* ─── helpers ─── */
 
+/** 微调预设：把"用户不知道怎么说的调整话"变成可点的按钮 */
+const TWEAK_PRESETS = [
+  "更口语一点，像店里人随手发的",
+  "更简短，控制在三五句",
+  "更有吸引力，让人想来",
+  "换个角度再写一版",
+  "去掉表情符号，正式一点",
+];
+
 function trackTaskCardUsage(cardId: string) {
   try {
     const usage: Record<string, number> = JSON.parse(
@@ -650,12 +659,37 @@ function TaskExecutionPageInner() {
                 </button>
               </div>
 
+              {/* 字数与朋友圈折叠提示 */}
+              {result.content && (() => {
+                const charCount = result.content.replace(/\s/g, "").length;
+                const foldRisk = charCount > 120 && outputPackage.includes("moments");
+                return (
+                  <p className="mb-2 text-xs text-slate-400">
+                    约 {charCount} 字
+                    {foldRisk && <span className="text-amber-600">——超过约 120 字发朋友圈会被折叠成一行，建议点「更简短」</span>}
+                  </p>
+                );
+              })()}
+
               {/* "Based on this" optimization */}
               {conversationId && (
                 <div className="mb-2 rounded-md border border-indigo-200 bg-indigo-50 p-2.5">
                   <p className="text-xs text-indigo-600 mb-1.5">
-                    基于上一条结果继续优化：
+                    基于上一条结果继续优化（点一下或直接说）：
                   </p>
+                  <div className="mb-2 flex flex-wrap gap-1.5">
+                    {TWEAK_PRESETS.map((t) => (
+                      <button
+                        key={t}
+                        type="button"
+                        disabled={generating}
+                        onClick={() => doGenerate({ optimizeNote: t })}
+                        className="rounded-full border border-indigo-200 bg-white px-2.5 py-1 text-xs text-indigo-600 hover:bg-indigo-100 disabled:opacity-50 transition-colors"
+                      >
+                        {t.split("，")[0]}
+                      </button>
+                    ))}
+                  </div>
                   <div className="flex gap-2">
                     <input
                       type="text"
