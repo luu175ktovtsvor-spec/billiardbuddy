@@ -39,6 +39,24 @@ const QUALITY_OPTIONS = [
   { value: "auto", label: "自动", desc: "模型决定" },
 ];
 
+/** 调整方向预设：用户进了调整模式常常不知道说什么，给可点的方向 */
+const REFINE_PRESETS = [
+  "文字更大更醒目",
+  "背景更简洁",
+  "换一组配色",
+  "整体更亮一些",
+  "更有高级感",
+  "人物更突出",
+];
+
+/** 生图等待阶段文案：30-60 秒的等待里让用户知道没卡住 */
+const GEN_STAGES = [
+  "正在理解你的描述…",
+  "正在构图与配色…",
+  "正在绘制画面细节…",
+  "正在精修质感，马上就好…",
+];
+
 /** 通用风格预设：不限台球行业，点击追加到描述文本（用户可见可改） */
 const STYLE_PRESETS = [
   { label: "写实人像", prompt: "写实人像摄影风格，自然光影，质感细腻" },
@@ -84,6 +102,7 @@ function ConversationPageInner() {
   const [prompt, setPrompt] = useState("");
   const [overlayText, setOverlayText] = useState("");
   const [quotaVersion, setQuotaVersion] = useState(0);
+  const [genStage, setGenStage] = useState(0);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
@@ -182,6 +201,19 @@ function ConversationPageInner() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [conv.messages]);
+
+  /* 等待阶段文案推进（每 9 秒进一档，停在最后一档） */
+  useEffect(() => {
+    if (!generating) {
+      setGenStage(0);
+      return;
+    }
+    const timer = setInterval(
+      () => setGenStage((s) => Math.min(s + 1, GEN_STAGES.length - 1)),
+      9000,
+    );
+    return () => clearInterval(timer);
+  }, [generating]);
 
   const scrollToBottom = useCallback(() => {
     setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
@@ -435,8 +467,9 @@ function ConversationPageInner() {
                 <div className="rounded-lg border border-slate-200 bg-white p-4">
                   <div className="flex items-center gap-2">
                     <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
-                    <span className="text-sm text-slate-500">正在生成图片...</span>
+                    <span className="text-sm text-slate-500">{GEN_STAGES[genStage]}</span>
                   </div>
+                  <p className="mt-1.5 pl-6 text-xs text-slate-400">高清图通常需要 30-60 秒，可以先做别的，结果会留在这里</p>
                 </div>
               )}
 
@@ -477,6 +510,22 @@ function ConversationPageInner() {
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
+              </div>
+            )}
+
+            {/* 调整方向快捷词：点一下直接发送 */}
+            {conv.refineFrom && conv.messages.length > 0 && !generating && (
+              <div className="mb-3 flex flex-wrap gap-1.5">
+                {REFINE_PRESETS.map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => sendGenerate(t, conv.refineFrom)}
+                    className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-600 hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600 transition-colors"
+                  >
+                    {t}
+                  </button>
+                ))}
               </div>
             )}
 
