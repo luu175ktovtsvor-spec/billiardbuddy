@@ -172,10 +172,10 @@ def test_generation_paths_use_unified_pipeline():
 
 
 def test_orchestrator_hardening():
-    """协作引擎回归：落库/TTL清理/取消中止句柄/汇总Agent 必须存在。"""
+    """协作引擎回归：结果落库/过期清理/取消中止句柄/汇总Agent 必须存在。"""
     import services.orchestrator as orch
     src = inspect.getsource(orch)
-    for piece in ["_persist_result", "_cleanup_old_tasks", "_task_handles", "_synthesize"]:
+    for piece in ["_persist_result", "TASK_RETENTION_DAYS", "_task_handles", "_synthesize"]:
         assert piece in src, f"orchestrator 缺 {piece}"
 
 
@@ -243,3 +243,36 @@ def test_store_update_accepts_brand_style():
     from schemas.store import StoreUpdate, StoreResponse
     assert "brand_style" in StoreUpdate.model_fields
     assert "brand_style" in StoreResponse.model_fields
+
+
+def test_orchestrator_commander_mode():
+    """协作引擎回归：指挥官模式三阶段(规划/执行/汇总)+ DB落库 + 跨worker安全。"""
+    import inspect as _inspect
+    from services import orchestrator as orch
+    src = _inspect.getsource(orch)
+    # 指挥官规划阶段
+    assert "_plan_framework" in src, "缺指挥官规划阶段"
+    assert "framework" in src, "缺协作框架"
+    # 岗位执行带框架
+    assert "run_agent" in src and "framework" in _inspect.getsource(orch.run_agent), "岗位Agent未注入框架"
+    # 汇总含一致性校验
+    assert "_synthesize" in src and "一致性校验" in src
+    # 状态落库(非内存dict)
+    assert "CollabTask" in src, "任务状态未落库"
+    assert "async_session" in src
+    # 阶段推导
+    assert "_stage_of" in src
+
+
+def test_collab_task_model_registered():
+    """collab_tasks 模型已注册到 Base.metadata（迁移015）。"""
+    from db.base import Base
+    assert "collab_tasks" in Base.metadata.tables
+
+
+def test_orchestrate_get_cancel_are_async_db():
+    """查询/取消改为 async + DB（旧版是内存同步函数，多worker下404）。"""
+    import inspect as _inspect
+    from services import orchestrator as orch
+    assert _inspect.iscoroutinefunction(orch.get_task)
+    assert _inspect.iscoroutinefunction(orch.cancel_task)

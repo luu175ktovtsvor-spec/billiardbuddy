@@ -1,4 +1,4 @@
-"""协作任务 API"""
+"""协作任务 API（指挥官模式，状态落库，多 worker 安全）"""
 
 from typing import Annotated, Optional
 
@@ -36,14 +36,15 @@ async def create_orchestration(
     db: Annotated[AsyncSession, Depends(get_db)],
     _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
 ):
-    """发起协作任务"""
+    """发起协作任务（指挥官规划 → 岗位分工执行 → 汇总整合）"""
     if req.task_type not in COLLABORATION_SCENARIOS and req.task_type != "custom":
         raise HTTPException(status_code=400, detail=f"未知任务类型: {req.task_type}")
 
-    # 协作任务一次触发多个 Agent 生成，按一次生成计入配额（先检查后计费，防无限刷）
+    # 一次协作 = 指挥官 + 多岗位 + 汇总共 7-9 次 LLM 调用，按 3 次生成计费
     await check_quota(db, str(current_store.id))
 
     task = await start_task(
+        db=db,
         task_type=req.task_type,
         description=req.description,
         store=current_store,
@@ -51,7 +52,7 @@ async def create_orchestration(
         roles=req.roles,
         auto_orchestrate=req.auto_orchestrate,
     )
-    await increment_usage(db, str(current_store.id))
+    await increment_usage(db, str(current_store.id), count=3)
     return task
 
 
@@ -60,9 +61,10 @@ async def get_orchestration(
     task_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
     current_store: Annotated[Store, Depends(get_current_store)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """查询协作任务状态"""
-    task = get_task(task_id, str(current_store.id))
+    """查询协作任务状态（状态在数据库，任何 worker 都能响应）"""
+    task = await get_task(db, task_id, str(current_store.id))
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     return task
@@ -73,9 +75,10 @@ async def cancel_orchestration(
     task_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
     current_store: Annotated[Store, Depends(get_current_store)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """取消协作任务"""
-    success = cancel_task(task_id, str(current_store.id))
+    success = await cancel_task(db, task_id, str(current_store.id))
     if not success:
         raise HTTPException(status_code=404, detail="任务不存在")
     return {"status": "cancelled"}
