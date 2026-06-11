@@ -9,6 +9,7 @@ import { useToast } from "@/components/ui/toast";
 import { Loader2, CheckCircle, Clock, XCircle, Send } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { markdownToPlainText } from "@/lib/utils";
 
 const SCENARIOS = [
   { type: "activity_planning", emoji: "🏆", name: "策划活动", desc: "周赛/月赛/节日活动" },
@@ -97,7 +98,7 @@ export default function CollaboratePage() {
 
       <h2 className="text-xl font-bold text-slate-900 mb-2">🤝 协作任务</h2>
       <p className="text-sm text-slate-500 mb-6">
-        多个 Agent 协作完成复杂任务，一次生成完整方案。
+        说一句你的目标，运营智能体会先制定方案框架、再分派各岗位分头执行、最后整合成一份可直接落地的完整方案。
       </p>
 
       {/* Scenario selection */}
@@ -145,14 +146,49 @@ export default function CollaboratePage() {
         </button>
       </div>
 
-      {/* Collaboration progress */}
+      {/* 三阶段进度条 */}
       {taskResult && (
         <div className="rounded-lg border border-slate-200 bg-white p-4 mb-6">
-          <h3 className="text-sm font-semibold text-slate-900 mb-1">协作进度</h3>
-          {taskResult.status === "running" && (
-            <p className="mb-3 text-xs text-slate-400">
-              所有岗位 Agent 同时并行生成（不是卡住了），全部完成后会自动综合成一份统一方案
-            </p>
+          <h3 className="text-sm font-semibold text-slate-900 mb-3">协作进度</h3>
+          <div className="mb-4 flex items-center gap-2 text-xs">
+            {[
+              { key: "planning", label: "① 指挥官规划" },
+              { key: "executing", label: "② 岗位分头执行" },
+              { key: "synthesizing", label: "③ 整合成方案" },
+            ].map((step, i) => {
+              const order = ["planning", "executing", "synthesizing"];
+              const cur = taskResult.status === "completed" ? 3 : order.indexOf(taskResult.stage || "planning");
+              const done = i < cur || taskResult.status === "completed";
+              const active = i === cur && taskResult.status === "running";
+              return (
+                <div key={step.key} className="flex items-center gap-2">
+                  <span className={`rounded-full px-2.5 py-1 ${
+                    done ? "bg-emerald-50 text-emerald-600"
+                    : active ? "bg-amber-50 text-amber-600"
+                    : "bg-slate-50 text-slate-400"
+                  }`}>
+                    {active && <Loader2 className="inline h-3 w-3 animate-spin mr-1" />}
+                    {done && !active && "✓ "}
+                    {step.label}
+                  </span>
+                  {i < 2 && <span className="text-slate-300">→</span>}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* 指挥官框架 */}
+          {taskResult.framework && (
+            <details className="mb-3 rounded-md border border-indigo-100 bg-indigo-50/50 p-3" open={taskResult.status === "running"}>
+              <summary className="cursor-pointer text-xs font-semibold text-indigo-700">📋 协作框架（指挥官制定，各岗位据此分工）</summary>
+              <div className="mt-2 prose prose-xs max-w-none prose-slate text-xs">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{taskResult.framework}</ReactMarkdown>
+              </div>
+            </details>
+          )}
+
+          {taskResult.stage === "planning" && taskResult.status === "running" && (
+            <p className="mb-3 text-xs text-slate-400">指挥官正在制定协作框架（约 20-40 秒）…</p>
           )}
           <div className="space-y-2">
             {(taskResult.agents ?? []).map((a) => (
@@ -201,9 +237,9 @@ export default function CollaboratePage() {
       {taskResult?.summary && (
         <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-100 px-4 py-3">
-            <p className="text-sm font-semibold text-slate-700">📄 汇总方案</p>
+            <p className="text-sm font-semibold text-slate-700">📄 完整方案</p>
             <p className="text-xs text-slate-400 mt-1">
-              {(taskResult.agents ?? []).length} 个 Agent 协作 · 方案已自动存入生成历史，可随时回看收藏
+              {(taskResult.agents ?? []).length} 个岗位按统一框架协作产出 · 已存入生成历史，可回看/收藏
             </p>
           </div>
           <div className="px-4 py-4 prose prose-sm max-w-none prose-slate">
@@ -214,7 +250,7 @@ export default function CollaboratePage() {
           <div className="border-t border-slate-100 px-4 py-3">
             <button
               onClick={() => {
-                navigator.clipboard.writeText(taskResult.summary || "");
+                navigator.clipboard.writeText(markdownToPlainText(taskResult.summary || ""));
                 toast("已复制全部");
               }}
               className="flex items-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors"
