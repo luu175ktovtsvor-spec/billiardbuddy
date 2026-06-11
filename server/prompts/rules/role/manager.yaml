@@ -44,6 +44,7 @@ template: |
 
 required_knowledge:
   - knowledge.core_operations
+  - knowledge.diagnostic_logic
   - knowledge.tournament_rules
   - knowledge.mini_games
   - knowledge.profit_model
