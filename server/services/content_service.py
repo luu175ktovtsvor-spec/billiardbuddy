@@ -1,3 +1,4 @@
+import logging
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +16,9 @@ from services.workbench_fewshot_service import select_workbench_fewshots
 from services.store_profile_service import render_operation_profile_context
 from services.quota_service import check_quota, increment_usage
 from core.security_guard import check_input_injection, filter_output_leak
+from services.scenario_role_map import SCENARIO_ROLE_MAP
+
+logger = logging.getLogger(__name__)
 
 prompt_engine = get_prompt_engine()
 
@@ -133,7 +137,8 @@ def _load_knowledge_for_role(role: str, store: Store) -> str:
             rendered = prompt_engine.render(key, store, {})
             if rendered.strip():
                 parts.append(rendered.strip())
-        except (PromptTemplateNotFoundError, PromptVariableMissingError):
+        except (PromptTemplateNotFoundError, PromptVariableMissingError) as e:
+            logger.warning("知识加载跳过: %s - %s", key, str(e))
             continue
 
     if not parts:
@@ -240,6 +245,7 @@ async def generate_copywriting(
         raise AIServiceError("AI 生成服务暂时不可用，请稍后重试") from e
 
     content = _strip_ai_prefixes(response.content)
+    content = filter_output_leak(content)
 
     generation = Generation(
         id=uuid.uuid4(),
@@ -279,6 +285,10 @@ async def generate_activity(
     await check_quota(db, str(store.id))
     _validate_provider_for_production()
 
+    injection_check = check_input_injection(extra_note)
+    if injection_check:
+        raise AIServiceError(injection_check)
+
     template_key = "activity.planning"
 
     extra_vars = {
@@ -302,6 +312,7 @@ async def generate_activity(
         raise AIServiceError("AI 生成服务暂时不可用，请稍后重试") from e
 
     content = _strip_ai_prefixes(response.content)
+    content = filter_output_leak(content)
 
     generation = Generation(
         id=uuid.uuid4(),
@@ -342,17 +353,14 @@ async def generate_operation(
     await check_quota(db, str(store.id))
     _validate_provider_for_production()
 
+    injection_check = check_input_injection(extra_note)
+    if injection_check:
+        raise AIServiceError(injection_check)
+
     template_key = f"operation.{scenario}"
 
     # 根据场景推断岗位，用于注入对应的 role_rules 和 knowledge
-    scenario_role_map = {
-        "groupbuy_to_private": "frontdesk",
-        "assistant_promo": "assistant_manager",
-        "partner_match": "coach",
-        "tournament": "coach",
-        "old_customer_recall": "manager",
-    }
-    inferred_role = scenario_role_map.get(scenario, "manager")
+    inferred_role = SCENARIO_ROLE_MAP.get(scenario, "manager")
 
     extra_vars = {
         "tone": TONE_LABELS.get(tone, tone),
@@ -373,6 +381,7 @@ async def generate_operation(
         raise AIServiceError("AI 生成服务暂时不可用，请稍后重试") from e
 
     content = _strip_ai_prefixes(response.content)
+    content = filter_output_leak(content)
 
     generation = Generation(
         id=uuid.uuid4(),
@@ -431,60 +440,9 @@ async def generate_workbench(
         rendered_prompt = prompt_engine.render(prompt_key, store, extra_vars)
 
         # 推断岗位用于注入对应 role_rules 和 knowledge
-        scenario_role_map = {
-            "groupbuy_to_private": "frontdesk",
-            "assistant_promo": "assistant_manager",
-            "partner_match": "coach",
-            "tournament": "coach",
-            "old_customer_recall": "manager",
-            "assistant_outreach": "assistant_manager",
-            "assistant_booking": "assistant_manager",
-            "member_assistant_notice": "assistant_manager",
-            "daily_report": role,
-            "performance_template": "assistant_manager",
-            "daily_task_list": role,
-            "vip_maintenance": "manager",
-            "group_content": "operator",
-            "short_video": "operator",
-            "complaint_handling": "frontdesk",
-            "frontdesk_sop": "frontdesk",
-            "tournament_signup": "coach",
-            "tournament_report": "coach",
-            "qiangyi_battle": "coach",
-            "review_guidance": "coach",
-            "cart_promotion": "frontdesk",
-            "opening_event": "operator",
-            "recruitment": "assistant_manager",
-            "training_exam": "assistant_manager",
-            "diagnosis_tool": "boss",
-            "coaching_promo": "coach",
-            "competition_customer": "coach",
-            "empty_table_promo": "frontdesk",
-            "departure_followup": "frontdesk",
-            "customer_group_guide": "frontdesk",
-            "opening_closing_sop": "frontdesk",
-            "equipment_management": "frontdesk",
-            "store_atmosphere": "operator",
-            "poster_copy": "operator",
-            "sports_event_watching": "manager",
-            "staff_birthday": "manager",
-            "hygiene_check": "frontdesk",
-            "champion_poster": "coach",
-            "tournament_rules": "coach",
-            "monthly_report": "boss",
-            "activity_direction": "boss",
-            "business_strategy": "boss",
-            "table_content_plan": "operator",
-            "game_recommend": "coach",
-            "ip_cooperation": "assistant_manager",
-            "review_meeting": "manager",
-            "holiday_promo": "operator",
-            "new_store_opening": "operator",
-            "member_day": "operator",
-        }
         # 从 prompt_key 提取场景名（如 "operation.qiangyi_battle" → "qiangyi_battle"）
         scenario_name = prompt_key.split(".", 1)[-1] if "." in prompt_key else prompt_key
-        inferred_role = scenario_role_map.get(scenario_name, role)
+        inferred_role = SCENARIO_ROLE_MAP.get(scenario_name) or role
         rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role)
     else:
         # 通用 free_intent 路径：在模板内注入规则和知识
