@@ -148,7 +148,12 @@ export default function CollaboratePage() {
       {/* Collaboration progress */}
       {taskResult && (
         <div className="rounded-lg border border-slate-200 bg-white p-4 mb-6">
-          <h3 className="text-sm font-semibold text-slate-900 mb-3">协作进度</h3>
+          <h3 className="text-sm font-semibold text-slate-900 mb-1">协作进度</h3>
+          {taskResult.status === "running" && (
+            <p className="mb-3 text-xs text-slate-400">
+              所有岗位 Agent 同时并行生成（不是卡住了），全部完成后会自动综合成一份统一方案
+            </p>
+          )}
           <div className="space-y-2">
             {(taskResult.agents ?? []).map((a) => (
               <div
