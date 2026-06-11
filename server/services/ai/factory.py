@@ -50,10 +50,15 @@ class ProviderFactory:
         return response, False
 
     @classmethod
-    async def generate_stream_with_fallback(cls, request, model: str | None = None):
-        """流式生成文本。根据 model 参数路由到不同 provider。"""
+    async def generate_stream_with_fallback(
+        cls, request, model: str | None = None, usage_sink: dict | None = None
+    ):
+        """流式生成文本。根据 model 参数路由到不同 provider。
+
+        usage_sink: 透传给 provider，生成结束后写入本次 token 用量。
+        """
         provider = cls.resolve_provider(model)
-        async for token in provider.generate_stream(request):
+        async for token in provider.generate_stream(request, usage_sink=usage_sink):
             yield token, False
 
     @classmethod
