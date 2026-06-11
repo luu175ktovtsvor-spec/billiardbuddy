@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_current_user, get_current_store, get_db
 from core.exceptions import NotFoundException
+from core.rbac import Permission, require_permission
 from models.generation import Generation
 from models.user import User
 from models.store import Store
@@ -22,9 +23,10 @@ async def submit_feedback(
     user: Annotated[User, Depends(get_current_user)],
     store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    _perm: None = Depends(require_permission(Permission.GENERATION_LIST)),
 ):
     generation = await db.get(Generation, generation_id)
-    if not generation or generation.store_id != store.id:
+    if not generation or generation.store_id != store.id or generation.is_deleted:
         raise NotFoundException("生成记录不存在")
 
     generation.effect_rating = body.rating  # "good" / "bad"

@@ -38,8 +38,9 @@ async def register_user(
     # 如果提供了邀请码，自动加入门店
     if invite_code:
         code = invite_code.strip().upper()
+        # 行级锁，串行化并发注册，避免 use_count 竞态突破次数上限
         result = await db.execute(
-            select(StoreInvitation).where(StoreInvitation.code == code)
+            select(StoreInvitation).where(StoreInvitation.code == code).with_for_update()
         )
         invitation = result.scalar_one_or_none()
 
