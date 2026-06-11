@@ -1,5 +1,28 @@
 import { ApiError } from "@/types/api";
 
+/**
+ * Markdown 转纯文本：复制到微信/朋友圈不再满屏 ** 和 ##。
+ * 表格行保留单元格文字（只去竖线），不丢内容。
+ */
+export function markdownToPlainText(text: string): string {
+  return text
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/\*(.+?)\*/g, "$1")
+    .replace(/~~(.+?)~~/g, "$1")
+    .replace(/`{1,3}([^`]*)`{1,3}/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/^[-*+]\s+/gm, "")
+    .replace(/^>\s+/gm, "")
+    .replace(/^---+\s*$/gm, "")
+    .replace(/^\|[-:\s|]+\|\s*$/gm, "") // 表格分隔行删除
+    .replace(/^\|(.+)\|\s*$/gm, (_m, cells: string) =>
+      cells.split("|").map((c: string) => c.trim()).join("  ")
+    )
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export function getErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
     switch (err.status) {

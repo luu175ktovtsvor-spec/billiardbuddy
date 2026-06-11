@@ -16,6 +16,7 @@ from services.ai.base import TextRequest
 from services.workbench_fewshot_service import select_workbench_fewshots
 from services.store_profile_service import render_operation_profile_context
 from services.quota_service import check_quota, increment_usage
+from services.brand_voice_service import get_brand_voice_context
 from core.security_guard import check_input_injection, filter_output_leak, AI_RESPONSE_PREFIXES
 from services.scenario_role_map import SCENARIO_ROLE_MAP
 
@@ -384,6 +385,10 @@ async def generate_copywriting(
     # intent 用中文标签：英文枚举值匹配不到中文知识关键词，筛选会形同虚设
     rendered_prompt = _append_guardrails(rendered_prompt, store, role="manager", intent_text=f"{scenario_label} {extra_note}")
 
+    brand_voice = await get_brand_voice_context(db, store.id)
+    if brand_voice:
+        rendered_prompt = f"{rendered_prompt}\n\n---\n{brand_voice}\n---"
+
     provider = ProviderFactory.get_text_provider()
     request = TextRequest(prompt=rendered_prompt, thinking={"type": "disabled"})
     try:
@@ -450,6 +455,10 @@ async def generate_activity(
 
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
     rendered_prompt = _append_guardrails(rendered_prompt, store, role="manager", intent_text=f"{activity_goal} {target_customer or ''} {extra_note}")
+
+    brand_voice = await get_brand_voice_context(db, store.id)
+    if brand_voice:
+        rendered_prompt = f"{rendered_prompt}\n\n---\n{brand_voice}\n---"
 
     provider = ProviderFactory.get_text_provider()
     request = TextRequest(prompt=rendered_prompt, max_tokens=3000)
@@ -523,6 +532,10 @@ async def generate_operation(
     # intent 用模板中文名：英文场景键匹配不到中文知识关键词
     template_label = prompt_engine.template_name(template_key) or scenario
     rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role, intent_text=f"{template_label} {target or ''} {extra_note}")
+
+    brand_voice = await get_brand_voice_context(db, store.id)
+    if brand_voice:
+        rendered_prompt = f"{rendered_prompt}\n\n---\n{brand_voice}\n---"
 
     provider = ProviderFactory.get_text_provider()
     request = TextRequest(prompt=rendered_prompt, max_tokens=3000)
@@ -637,6 +650,11 @@ async def generate_workbench(
         }
 
         rendered_prompt = prompt_engine.render("workbench.free_intent", store, extra_vars)
+
+    # 品牌声音：与流式路径保持一致，让"点赞教 AI 学风格"在所有入口生效
+    brand_voice = await get_brand_voice_context(db, store.id)
+    if brand_voice:
+        rendered_prompt = f"{rendered_prompt}\n\n---\n{brand_voice}\n---"
 
     # 获取文本 provider
     provider = ProviderFactory.get_text_provider()
