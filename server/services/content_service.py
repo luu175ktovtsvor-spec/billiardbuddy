@@ -29,6 +29,71 @@ def _validate_provider_for_production() -> None:
     if settings.app_env == "production" and settings.text_model_provider == "mock":
         raise AIServiceError("生产环境禁止使用 Mock Provider，请配置真实 AI 模型")
 
+
+async def run_generation(
+    db: AsyncSession,
+    store: Store,
+    user: User | None,
+    *,
+    prompt: str,
+    gen_type: str,
+    sub_type: str | None = None,
+    input_params: dict | None = None,
+    user_input: str = "",
+    max_tokens: int = 3000,
+    strip_prefixes: bool = True,
+    use_fallback: bool = False,
+) -> Generation:
+    """统一生成管道：注入检查 → 配额 → 调AI → 去前缀 → 泄露过滤 → 落库 → 计费。
+
+    所有非流式生成路径必须走这里。历史教训：poster/batch/repurpose/专项服务
+    各自手写"渲染→调AI→落库"时，配额/注入/过滤/落库四件套总会漏掉某一环。
+    user_input 传用户自由文本（用于注入检查），纯模板渲染场景可传空串。
+    """
+    if user_input:
+        injection_check = check_input_injection(user_input)
+        if injection_check:
+            raise AIServiceError(injection_check)
+
+    await check_quota(db, str(store.id))
+    _validate_provider_for_production()
+
+    request = TextRequest(prompt=prompt, max_tokens=max_tokens)
+    try:
+        if use_fallback:
+            response, _ = await ProviderFactory.generate_with_fallback(request)
+        else:
+            response = await ProviderFactory.get_text_provider().generate(request)
+    except AIProviderError as e:
+        raise AIServiceError(e.message) from e
+    except AIServiceError:
+        raise
+    except Exception as e:
+        raise AIServiceError("AI 生成服务暂时不可用，请稍后重试") from e
+
+    content = response.content
+    if strip_prefixes:
+        content = _strip_ai_prefixes(content)
+    content = filter_output_leak(content)
+
+    generation = Generation(
+        id=uuid.uuid4(),
+        store_id=store.id,
+        user_id=user.id if user else None,
+        type=gen_type,
+        sub_type=sub_type,
+        input_params=input_params or {},
+        prompt_used=prompt,
+        result=content,
+        model_used=response.model,
+        tokens_used=response.tokens_used or 0,
+    )
+    db.add(generation)
+    await db.commit()
+    await db.refresh(generation)
+    await increment_usage(db, str(store.id), tokens=response.tokens_used or 0)
+    return generation
+
 TONE_LABELS = {
     "lively": "活泼",
     "professional": "专业",
