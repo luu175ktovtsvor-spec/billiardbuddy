@@ -9,6 +9,7 @@ import type { SizeOption, GeneratedImage } from "@/types/poster";
 import type { StoreResponse } from "@/types/store";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { CardSelect } from "@/components/ui/card-select";
+import { QuotaBadge } from "@/components/quota-badge";
 import { ImageIcon, Upload, X, Send, Download, Loader2 } from "lucide-react";
 import { EmptyStoreGuide } from "@/components/empty-store-guide";
 
@@ -82,6 +83,7 @@ function ConversationPageInner() {
   const [inspirationTags, setInspirationTags] = useState<Array<{ key: string; label: string; prompt: string; category?: string }>>([]);
   const [prompt, setPrompt] = useState("");
   const [overlayText, setOverlayText] = useState("");
+  const [quotaVersion, setQuotaVersion] = useState(0);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
@@ -258,6 +260,8 @@ function ConversationPageInner() {
         messages: [...conv.messages, userMsg, assistantMsg],
         refineFrom: res.images?.[0]?.generation_id || refineFromArg,
       });
+
+      setQuotaVersion((v) => v + 1); // 生成完成后实时刷新配额展示
 
       /* Update URL if this was a new conversation */
       if (conversationId === "new" && newId) {
@@ -446,6 +450,9 @@ function ConversationPageInner() {
               {error}
             </div>
           )}
+
+          {/* Quota（生图与文本共用次数池）*/}
+          <QuotaBadge refreshKey={quotaVersion} />
 
           {/* Input area */}
           <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sticky bottom-4">

@@ -12,9 +12,12 @@ from models.quota import UsageQuota
 
 logger = logging.getLogger(__name__)
 
-# 默认配额
-DEFAULT_GENERATION_LIMIT = 100
-DEFAULT_TOKENS_LIMIT = 500000
+# 默认配额 = 试用档（未开通套餐的新门店）。
+# 30 次/月：店长日均 3-5 次可体验约一周，足够判断"好不好用"；
+# 生图与文本共用此池，30 次全用于生图的成本也可控。
+# 开通套餐后由 plan 的限额覆盖；管理后台也可单店调整。
+DEFAULT_GENERATION_LIMIT = 30
+DEFAULT_TOKENS_LIMIT = 200000
 
 # 业务时区（月度配额按中国时区重置，避免 UTC 月底错位数小时）
 BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
@@ -77,11 +80,11 @@ async def check_quota(db: AsyncSession, store_id: str) -> UsageQuota:
     if quota.monthly_generations_used >= quota.monthly_generation_limit:
         from core.exceptions import QuotaExceededError
         raise QuotaExceededError(
-            f"本月生成次数已达上限 ({quota.monthly_generation_limit} 次)"
+            f"本月生成次数已达上限（{quota.monthly_generation_limit} 次）。如需提升额度，请联系您的服务商"
         )
     if quota.monthly_tokens_limit and quota.monthly_tokens_used >= quota.monthly_tokens_limit:
         from core.exceptions import QuotaExceededError
-        raise QuotaExceededError("本月 AI 用量已达上限，请联系管理员升级套餐")
+        raise QuotaExceededError("本月 AI 用量已达上限。如需提升额度，请联系您的服务商")
     return quota
 
 
