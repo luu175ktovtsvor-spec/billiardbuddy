@@ -29,7 +29,12 @@ async def admin_dashboard(
 
     total_users = await db.scalar(select(func.count(User.id)))
     total_stores = await db.scalar(select(func.count(Store.id)))
-    total_generations = await db.scalar(select(func.count(Generation.id)))
+    # store_id.isnot(None) 让自动租户过滤跳过本查询（管理后台需全局统计），同时过滤软删除
+    total_generations = await db.scalar(
+        select(func.count(Generation.id)).where(
+            Generation.is_deleted == False, Generation.store_id.isnot(None)
+        )
+    )
 
     return {
         "total_users": total_users,
@@ -153,10 +158,16 @@ async def get_user_detail(
                 "monthly_tokens_used": quota.monthly_tokens_used,
             }
 
-    # 获取生成统计
-    total_generations = await db.scalar(select(func.count(Generation.id)).where(Generation.user_id == user_id))
+    # 获取生成统计（store_id.isnot(None) 跳过自动租户过滤 + 过滤软删除）
+    total_generations = await db.scalar(
+        select(func.count(Generation.id)).where(
+            Generation.user_id == user_id, Generation.is_deleted == False, Generation.store_id.isnot(None)
+        )
+    )
     recent_generations = await db.scalars(
-        select(Generation).where(Generation.user_id == user_id).order_by(desc(Generation.created_at)).limit(10)
+        select(Generation)
+        .where(Generation.user_id == user_id, Generation.is_deleted == False, Generation.store_id.isnot(None))
+        .order_by(desc(Generation.created_at)).limit(10)
     )
     recent_list = [{"id": str(g.id), "type": g.type, "sub_type": g.sub_type, "created_at": g.created_at.isoformat()} for g in recent_generations.all()]
 
@@ -203,12 +214,25 @@ async def list_subscriptions(
     subs = await db.scalars(query.offset(offset).limit(page_size))
     total = await db.scalar(select(func.count(StoreSubscription.id)))
 
+    # 批量预取，避免逐行 N+1 查询（原先每条订阅 4 次查询）
+    subs_list = subs.all()
+    plan_ids = {s.plan_id for s in subs_list}
+    store_ids = {s.store_id for s in subs_list}
+    plans_map = {p.id: p for p in (await db.scalars(select(Plan).where(Plan.id.in_(plan_ids)))).all()} if plan_ids else {}
+    stores_map = {st.id: st for st in (await db.scalars(select(Store).where(Store.id.in_(store_ids)))).all()} if store_ids else {}
+    member_by_store: dict = {}
+    if store_ids:
+        for mb in (await db.scalars(select(StoreMember).where(StoreMember.store_id.in_(store_ids)))).all():
+            member_by_store.setdefault(mb.store_id, mb)
+    user_ids = {mb.user_id for mb in member_by_store.values()}
+    users_map = {u.id: u for u in (await db.scalars(select(User).where(User.id.in_(user_ids)))).all()} if user_ids else {}
+
     result = []
-    for sub in subs.all():
-        plan = await db.scalar(select(Plan).where(Plan.id == sub.plan_id))
-        store = await db.scalar(select(Store).where(Store.id == sub.store_id))
-        member = await db.scalar(select(StoreMember).where(StoreMember.store_id == sub.store_id))
-        user_info = await db.scalar(select(User).where(User.id == member.user_id)) if member else None
+    for sub in subs_list:
+        plan = plans_map.get(sub.plan_id)
+        store = stores_map.get(sub.store_id)
+        member = member_by_store.get(sub.store_id)
+        user_info = users_map.get(member.user_id) if member else None
         result.append({
             "id": str(sub.id),
             "store_name": store.name if store else "未知",

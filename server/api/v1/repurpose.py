@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_current_user, get_current_store, get_db
 from core.exceptions import NotFoundException
+from core.rbac import Permission, require_permission
 from core.security_guard import filter_output_leak
 from models.generation import Generation
 from models.user import User
@@ -38,11 +39,12 @@ async def repurpose_content(
     user: Annotated[User, Depends(get_current_user)],
     store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
 ):
     """将一条内容变体为其他平台格式。"""
     # 1. 获取原始内容
     generation = await db.get(Generation, body.generation_id)
-    if not generation or generation.store_id != store.id:
+    if not generation or generation.store_id != store.id or generation.is_deleted:
         raise NotFoundException("生成记录不存在")
 
     # 配额检查（此前缺失，导致内容变体绕过付费限额）
