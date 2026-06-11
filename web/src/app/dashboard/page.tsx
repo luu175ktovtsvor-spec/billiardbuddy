@@ -26,6 +26,24 @@ function recommendationHref(rec: DashboardRecommendation): string {
   return rec.action_url || "/dashboard/workbench";
 }
 
+/**
+ * 推荐取前 N 条的策略（不是简单截断）：
+ * - 资料/上传类提醒最多占 1 条——资料不全的店不被"完善资料"天天霸屏
+ * - "上次效果好一键复刻"是最个性化的推荐，优先露出（后端规则序里它排最后，截断会永远看不到）
+ * - 其余按 high > medium 排
+ */
+function pickTopRecommendations(recs: DashboardRecommendation[], n = 3): DashboardRecommendation[] {
+  const setup = recs.filter((r) => r.action_type === "edit_store").slice(0, 1);
+  const repeatGood = recs.filter((r) => r.id === "repeat_good");
+  const rest = recs
+    .filter((r) => r.action_type !== "edit_store" && r.id !== "repeat_good")
+    .sort((a, b) => (a.priority === "high" ? 0 : 1) - (b.priority === "high" ? 0 : 1));
+  const seen = new Set<string>();
+  return [...setup, ...repeatGood, ...rest]
+    .filter((r) => !seen.has(r.id) && seen.add(r.id))
+    .slice(0, n);
+}
+
 function hourGreeting(): string {
   const h = new Date().getHours();
   if (h < 6) return "夜深了";
@@ -256,7 +274,7 @@ export default function DashboardPage() {
         <div className="mb-6 rounded-lg border border-indigo-100 bg-indigo-50/50 p-4">
           <p className="mb-2.5 text-sm font-semibold text-slate-800">📌 今天建议做这几件事</p>
           <div className="space-y-2">
-            {dashboard.recommendations.slice(0, 3).map((rec) => (
+            {pickTopRecommendations(dashboard.recommendations).map((rec) => (
               <div key={rec.id} className="flex items-center gap-3 rounded-md bg-white border border-slate-100 px-3 py-2.5">
                 {rec.priority === "high" && <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" />}
                 <div className="min-w-0 flex-1">
