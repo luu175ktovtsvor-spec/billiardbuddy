@@ -29,7 +29,7 @@ video_types:
   - key: "store_promo"
     name: "门店引流类"
     description: "门店开业、活动、环境展示等引流短视频"
-    hook_formula: "视觉冲击+价格锚点，例如：'50张球桌50名助教，开业免费畅打！'"
+    hook_formula: "视觉冲击+价格锚点，例如：'50张球台50名助教，新人9.9元体验一小时！'（禁用「免费畅打」等无底线让利话术）"
     structure: "亮点展示 → 价格/优惠 → 引导到店"
     style: "热情、活力、有吸引力"
   - key: "assistant_show"

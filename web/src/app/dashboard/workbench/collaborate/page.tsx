@@ -7,6 +7,8 @@ import { ApiError, type OrchestrationTask } from "@/types/api";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { useToast } from "@/components/ui/toast";
 import { Loader2, CheckCircle, Clock, XCircle, Send } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 const SCENARIOS = [
   { type: "activity_planning", emoji: "🏆", name: "策划活动", desc: "周赛/月赛/节日活动" },
@@ -199,8 +201,10 @@ export default function CollaboratePage() {
               {(taskResult.agents ?? []).length} 个 Agent 协作
             </p>
           </div>
-          <div className="px-4 py-4 prose prose-sm max-w-none prose-slate whitespace-pre-wrap">
-            {taskResult.summary}
+          <div className="px-4 py-4 prose prose-sm max-w-none prose-slate">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {taskResult.summary}
+            </ReactMarkdown>
           </div>
           <div className="border-t border-slate-100 px-4 py-3">
             <button

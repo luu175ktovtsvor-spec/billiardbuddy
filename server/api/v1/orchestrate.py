@@ -47,6 +47,7 @@ async def create_orchestration(
         task_type=req.task_type,
         description=req.description,
         store=current_store,
+        user_id=current_user.id,
         roles=req.roles,
         auto_orchestrate=req.auto_orchestrate,
     )

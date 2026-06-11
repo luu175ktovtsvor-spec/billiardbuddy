@@ -148,3 +148,41 @@ def test_orchestrate_has_quota_guard():
     src = inspect.getsource(orch.create_orchestration)
     assert "check_quota" in src
     assert "increment_usage" in src
+
+
+def test_run_generation_pipeline_has_all_guards():
+    """统一管道四件套回归：注入检查/配额/过滤/落库/计费缺一不可。"""
+    from services.content_service import run_generation
+    src = inspect.getsource(run_generation)
+    for guard in ["check_input_injection", "check_quota", "filter_output_leak", "db.add", "increment_usage"]:
+        assert guard in src, f"run_generation 缺 {guard}"
+
+
+def test_generation_paths_use_unified_pipeline():
+    """所有非流式生成路径必须走 run_generation（根治新路径漏防护）。"""
+    import services.diagnosis_service as m1
+    import services.performance_service as m2
+    import services.sop_service as m3
+    import services.games_service as m4
+    import services.outreach_service as m5
+    import api.v1.repurpose as m6
+    import api.v1.batch as m7
+    for mod in (m1, m2, m3, m4, m5, m6, m7):
+        assert "run_generation" in inspect.getsource(mod), f"{mod.__name__} 未走统一管道"
+
+
+def test_orchestrator_hardening():
+    """协作引擎回归：落库/TTL清理/取消中止句柄/汇总Agent 必须存在。"""
+    import services.orchestrator as orch
+    src = inspect.getsource(orch)
+    for piece in ["_persist_result", "_cleanup_old_tasks", "_task_handles", "_synthesize"]:
+        assert piece in src, f"orchestrator 缺 {piece}"
+
+
+def test_knowledge_no_source_leak_terms():
+    """知识口径回归：知识库正文不得出现来源出处与方向冲突表述。"""
+    pe = get_prompt_engine()
+    knowledge = {k: v for k, v in pe._templates.items() if k.startswith("knowledge.")}
+    for key, data in knowledge.items():
+        tpl = data.get("template", "")
+        assert "PPT" not in tpl, f"{key} 残留 PPT 出处字样"

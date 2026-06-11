@@ -92,7 +92,7 @@ three_layers:
       - tier: "月度冠军组"
         reward: "[请填写，如：全组奖金/聚餐/额外休假]"
       - tier: "月度个人冠军"
-        reward: "[请填写，如：个人奖金/优先排钟权]"
+        reward: "[请填写，如：个人奖金/助教展示区推荐位]"
       - tier: "月度进步最大"
         reward: "[请填写，如：奖金/培训机会]"
     output_template: |
