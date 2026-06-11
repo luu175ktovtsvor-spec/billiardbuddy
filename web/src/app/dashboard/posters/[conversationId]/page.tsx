@@ -112,6 +112,7 @@ function ConversationPageInner() {
   /* Refs */
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const lastAttemptRef = useRef<{ text: string; refine: string | null } | null>(null);
 
   /* Update conversation state */
   const updateConv = useCallback((patch: Partial<ConversationState>) => {
@@ -247,6 +248,7 @@ function ConversationPageInner() {
   /* Generate（核心发送逻辑，供输入框 / 再来一版共用） */
   const sendGenerate = async (text: string, refineFromArg: string | null) => {
     if (!text || generating) return;
+    lastAttemptRef.current = { text, refine: refineFromArg };
     setError("");
 
     if (abortControllerRef.current) {
@@ -479,8 +481,18 @@ function ConversationPageInner() {
 
           {/* Error */}
           {error && (
-            <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-600">
-              {error}
+            <div className="flex items-center gap-3 rounded-md border border-red-200 bg-red-50 p-4">
+              <p className="flex-1 text-sm text-red-600">{error}</p>
+              {lastAttemptRef.current && (
+                <button
+                  type="button"
+                  disabled={generating}
+                  onClick={() => lastAttemptRef.current && sendGenerate(lastAttemptRef.current.text, lastAttemptRef.current.refine)}
+                  className="shrink-0 rounded-md border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100 disabled:opacity-50"
+                >
+                  重试
+                </button>
+              )}
             </div>
           )}
 

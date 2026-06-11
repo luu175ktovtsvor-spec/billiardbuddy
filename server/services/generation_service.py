@@ -15,6 +15,7 @@ async def list_generations(
     sub_type: str | None = None,
     is_favorite: bool | None = None,
     effect_rating: str | None = None,
+    search: str | None = None,
 ) -> tuple[list[Generation], int]:
     page = max(1, page)
     page_size = max(1, min(page_size, 50))
@@ -28,6 +29,9 @@ async def list_generations(
         conditions.append(Generation.is_favorite == is_favorite)
     if effect_rating:
         conditions.append(Generation.effect_rating == effect_rating)
+    if search and search.strip():
+        # 关键词搜索生成内容（"找上次那条赛事通知"不用一页页翻）
+        conditions.append(Generation.result.ilike(f"%{search.strip()[:50]}%"))
 
     count_query = select(func.count()).select_from(Generation).where(*conditions)
     total_result = await db.execute(count_query)

@@ -423,6 +423,7 @@ class ApiClient {
     if (params?.sub_type) searchParams.set("sub_type", params.sub_type);
     if (params?.is_favorite !== undefined) searchParams.set("is_favorite", String(params.is_favorite));
     if (params?.effect_rating) searchParams.set("effect_rating", params.effect_rating);
+    if (params?.search) searchParams.set("search", params.search);
     const qs = searchParams.toString();
     return this.request<GenerationHistoryListResponse>("GET", `/api/v1/generations${qs ? `?${qs}` : ""}`);
   }

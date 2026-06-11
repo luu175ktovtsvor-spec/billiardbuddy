@@ -28,4 +28,5 @@ export interface ListGenerationsParams {
   sub_type?: string;
   is_favorite?: boolean;
   effect_rating?: string;
+  search?: string;
 }

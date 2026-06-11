@@ -581,8 +581,16 @@ function TaskExecutionPageInner() {
       <div ref={resultRef}>
         {/* Error */}
         {error && (
-          <div className="mb-4 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-4">
-            <p className="text-sm text-red-600">{error}</p>
+          <div className="mb-4 flex items-center gap-3 rounded-md border border-red-200 bg-red-50 p-4">
+            <p className="flex-1 text-sm text-red-600">{error}</p>
+            <button
+              type="button"
+              onClick={() => doGenerate()}
+              disabled={generating}
+              className="shrink-0 rounded-md border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100 disabled:opacity-50"
+            >
+              重试
+            </button>
           </div>
         )}
 
