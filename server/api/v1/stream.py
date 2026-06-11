@@ -17,7 +17,6 @@ from services.content_service import (
     _load_rule_safe,
     _load_knowledge_for_role,
     _format_output_package,
-    _strip_ai_prefixes,
     _append_guardrails,
     ROLE_LABELS,
     CUSTOMER_LABELS,
@@ -29,7 +28,7 @@ from services.store_profile_service import render_operation_profile_context
 from services.quota_service import check_quota, increment_usage
 from services.workbench_fewshot_service import select_workbench_fewshots
 from services.brand_voice_service import get_brand_voice_context
-from core.security_guard import check_input_injection, filter_output_leak
+from core.security_guard import check_input_injection, StreamGuard
 from services.scenario_role_map import SCENARIO_ROLE_MAP as scenario_role_map
 
 logger = logging.getLogger(__name__)
@@ -80,7 +79,7 @@ async def stream_workbench(
         role_rules = _load_rule_safe(f"rules.role.{role}", store)
         customer_type = target_customer_type or "all"
         customer_rules = _load_rule_safe(f"rules.customer.{customer_type}", store)
-        knowledge_context = _load_knowledge_for_role(role, store)
+        knowledge_context = _load_knowledge_for_role(role, store, f"{user_intent or ''} {extra_note or ''}")
         profile_context = render_operation_profile_context(store)
 
         # 轻量 few-shot 选择
@@ -162,27 +161,30 @@ async def stream_workbench(
     )
 
     async def event_generator():
-        full_content = ""
         generation_id = str(uuid.uuid4())
-        provider = ProviderFactory.resolve_provider(model)
+        guard = StreamGuard()
+        usage: dict = {}
         try:
-            async for token, fallback_used in ProviderFactory.generate_stream_with_fallback(request, model=model):
-                full_content += token
-                data = json.dumps({"token": token, "done": False, "fallback_used": fallback_used}, ensure_ascii=False)
-                yield f"data: {data}\n\n"
+            async for token, fallback_used in ProviderFactory.generate_stream_with_fallback(
+                request, model=model, usage_sink=usage
+            ):
+                # 增量安全过滤：去前缀 + 实时泄露检测后再下发
+                safe = guard.feed(token)
+                if safe:
+                    data = json.dumps({"token": safe, "done": False, "fallback_used": fallback_used}, ensure_ascii=False)
+                    yield f"data: {data}\n\n"
+                if guard.blocked:
+                    break
 
         except Exception as e:
             logger.error("SSE stream error: %s", e)
             yield f"data: {json.dumps({'error': '生成过程中出现错误，请重试'}, ensure_ascii=False)}\n\n"
             return
 
-        content = _strip_ai_prefixes(full_content)
-        content = filter_output_leak(content)
+        content = guard.finalize()
 
-        # 获取 tokens_used（从 provider 的 _last_usage 获取）
-        tokens_used = 0
-        if hasattr(provider, '_last_usage') and provider._last_usage:
-            tokens_used = provider._last_usage.get("total_tokens", 0)
+        # 获取 tokens_used（本次请求独立的 usage_sink，避免并发串号）
+        tokens_used = usage.get("total_tokens", 0)
 
         try:
             # 使用传入的 conversation_id，或用本次 generation_id 作为新对话的 conversation_id
