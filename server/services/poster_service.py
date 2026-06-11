@@ -9,8 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
+from core.exceptions import AIServiceError
+from core.security_guard import check_input_injection
 from models.generation import Generation
 from models.store import Store
+from services.quota_service import check_quota, increment_usage
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +79,12 @@ async def generate_images(
     api_key = settings.openai_api_key
     if not api_key:
         raise ValueError("OpenAI API Key 未配置")
+
+    # 输入安全检查 + 配额检查（此前缺失，导致生图绕过付费限额，而生图是真金白银成本）
+    injection_check = check_input_injection(prompt)
+    if injection_check:
+        raise AIServiceError(injection_check)
+    await check_quota(db, str(store.id))
 
     # 构建 prompt
     parts = [prompt]
@@ -219,6 +228,9 @@ async def generate_images(
 
     if not valid_results:
         raise RuntimeError("全部图片生成失败，请检查模型配置或稍后重试")
+
+    # 按实际成功生成的张数计入配额（每张图都是一次计费生成）
+    await increment_usage(db, str(store.id), tokens=0, count=len(valid_results))
 
     return {
         "images": valid_results,
