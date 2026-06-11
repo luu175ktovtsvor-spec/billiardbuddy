@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.exceptions import AIServiceError, AIProviderError
+from core.security_guard import check_input_injection, filter_output_leak
 from models.user import User
 from models.store import Store
 from models.generation import Generation
@@ -31,6 +32,10 @@ async def analyze_diagnosis(
     problem_area: str,
     current_situation: str,
 ) -> Generation:
+    injection_check = check_input_injection(current_situation)
+    if injection_check:
+        raise AIServiceError(injection_check)
+
     template_key = "operation.diagnosis_tool"
 
     extra_vars = {
@@ -39,7 +44,10 @@ async def analyze_diagnosis(
     }
 
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
-    rendered_prompt = _append_guardrails(rendered_prompt, store, role="manager")
+    rendered_prompt = _append_guardrails(
+        rendered_prompt, store, role="manager",
+        intent_text=f"{PROBLEM_AREA_LABELS.get(problem_area, problem_area)} {current_situation}",
+    )
 
     await check_quota(db, str(store.id))
 
@@ -63,7 +71,7 @@ async def analyze_diagnosis(
             "current_situation": current_situation,
         },
         prompt_used=rendered_prompt,
-        result=response.content,
+        result=filter_output_leak(response.content),
         model_used=response.model,
         tokens_used=response.tokens_used,
     )
