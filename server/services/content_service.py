@@ -144,6 +144,7 @@ KNOWLEDGE_KEYWORDS: dict[str, list[str]] = {
     "knowledge.contract_basics": ["合同", "租约", "签约", "条款", "租赁"],
     "knowledge.core_metrics": ["指标", "数据", "台费", "上座率", "翻台", "复购", "趋势", "营收", "报表"],
     "knowledge.diagnostic_logic": ["诊断", "复盘", "下滑", "上不去", "冷清", "为什么", "提升营业额", "业绩", "没客人", "客流少", "经营问题", "分析原因", "怎么提升", "生意差"],
+    "knowledge.assistant_scripts": ["话术", "怎么说", "怎么开口", "迎宾", "走访", "排钟", "转介绍", "办卡", "邀约", "搭话", "加微信", "私聊", "约客"],
     "knowledge.customer_profile_template": ["档案", "客户资料", "客户信息", "建档", "客户档案"],
     "knowledge.customer_tagging": ["标签", "打标", "分级", "客户分类", "客户标签"],
     "knowledge.customer_types": ["客户", "客群", "客户类型", "新客", "老客", "客户分类"],
