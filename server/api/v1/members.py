@@ -195,8 +195,9 @@ async def join_store(
     """用邀请码加入门店。"""
     code = body.invite_code.strip().upper()
 
+    # 行级锁：与注册路径一致，串行化并发使用，避免 use_count 竞态突破次数上限
     result = await db.execute(
-        select(StoreInvitation).where(StoreInvitation.code == code)
+        select(StoreInvitation).where(StoreInvitation.code == code).with_for_update()
     )
     invitation = result.scalar_one_or_none()
 

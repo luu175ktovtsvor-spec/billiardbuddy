@@ -9,13 +9,32 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Star, Clock, ChevronLeft, ChevronRight, X, MessageSquare } from "lucide-react";
 import Link from "next/link";
+import { ROLE_TASKS } from "@/lib/role-workbench-config";
 
 const TYPE_LABELS: Record<string, string> = {
   copywriting: "文案",
   activity: "活动",
   operation: "经营",
   workbench: "工作台",
+  poster: "海报",
 };
+
+/** "继续对话"跳转：按 prompt_key 找回原任务卡片并带上原始意图；找不到（自由输入等）则不显示入口 */
+function continueHref(item: GenerationHistoryItem): string | null {
+  if (item.type !== "workbench") return null;
+  const params = (item.input_params || {}) as Record<string, unknown>;
+  const intent = params.user_intent;
+  const promptKey = params.prompt_key;
+  if (typeof intent !== "string" || !intent) return null;
+  if (typeof promptKey !== "string" || !promptKey) return null;
+  for (const tasks of Object.values(ROLE_TASKS)) {
+    const card = tasks.find((t) => t.promptKey === promptKey);
+    if (card) {
+      return `/dashboard/workbench/${card.id}?intent=${encodeURIComponent(intent)}`;
+    }
+  }
+  return null;
+}
 
 /** 去掉 Markdown 语法，返回纯文本预览 */
 function stripMarkdown(text: string): string {
@@ -151,6 +170,10 @@ export default function HistoryPage() {
           item.id === id ? { ...item, is_favorite: res.is_favorite } : item
         )
       );
+      // 详情弹窗打开时同步图标状态
+      setDetailItem((prev) =>
+        prev && prev.id === id ? { ...prev, is_favorite: res.is_favorite } : prev
+      );
     } catch {
       // 静默处理
     }
@@ -163,6 +186,9 @@ export default function HistoryPage() {
         prev.map((item) =>
           item.id === id ? { ...item, effect_rating: rating } : item
         )
+      );
+      setDetailItem((prev) =>
+        prev && prev.id === id ? { ...prev, effect_rating: rating } : prev
       );
     } catch {
       // 静默处理
@@ -180,6 +206,7 @@ export default function HistoryPage() {
   };
 
   const totalPages = Math.ceil(total / pageSize);
+  const detailContinueHref = detailItem ? continueHref(detailItem) : null;
 
   return (
     <div className="mx-auto max-w-4xl">
@@ -305,7 +332,7 @@ export default function HistoryPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => handleToggleFavorite(item.id, item.is_favorite)}
+                    onClick={(e) => { e.stopPropagation(); handleToggleFavorite(item.id, item.is_favorite); }}
                     className="rounded-md p-1 hover:bg-slate-50 transition-colors"
                     title={item.is_favorite ? "取消收藏" : "收藏"}
                   >
@@ -317,7 +344,9 @@ export default function HistoryPage() {
                       }`}
                     />
                   </button>
-                  <CopyButton text={item.content || ""} />
+                  <span onClick={(e) => e.stopPropagation()}>
+                    <CopyButton text={item.content || ""} />
+                  </span>
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}
@@ -409,9 +438,9 @@ export default function HistoryPage() {
                 />
               </button>
               <CopyButton text={detailItem.content || ""} />
-              {detailItem.type === "workbench" && typeof detailItem.input_params?.user_intent === "string" && (
+              {detailContinueHref && (
                 <Link
-                  href={`/dashboard/workbench?intent=${encodeURIComponent(detailItem.input_params.user_intent as string)}`}
+                  href={detailContinueHref}
                   className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 transition-colors"
                 >
                   <MessageSquare className="h-4 w-4" />

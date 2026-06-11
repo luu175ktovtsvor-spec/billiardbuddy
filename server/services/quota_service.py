@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.quota import UsageQuota
@@ -42,18 +43,27 @@ async def get_or_create_quota(db: AsyncSession, store_id: str) -> UsageQuota:
     )
     quota = result.scalar_one_or_none()
     if quota is None:
-        quota = UsageQuota(
-            store_id=store_id,
-            monthly_generation_limit=DEFAULT_GENERATION_LIMIT,
-            monthly_tokens_limit=DEFAULT_TOKENS_LIMIT,
-            monthly_generations_used=0,
-            monthly_tokens_used=0,
-            current_period_start=_period_start_now(),
+        # ON CONFLICT DO NOTHING：store_id 唯一约束下并发首建不再抛 IntegrityError
+        import uuid as _uuid
+        await db.execute(
+            pg_insert(UsageQuota)
+            .values(
+                id=_uuid.uuid4(),
+                store_id=store_id,
+                monthly_generation_limit=DEFAULT_GENERATION_LIMIT,
+                monthly_tokens_limit=DEFAULT_TOKENS_LIMIT,
+                monthly_generations_used=0,
+                monthly_tokens_used=0,
+                current_period_start=_period_start_now(),
+            )
+            .on_conflict_do_nothing(index_elements=["store_id"])
         )
-        db.add(quota)
         await db.commit()
-        await db.refresh(quota)
-    elif _is_new_period(quota):
+        result = await db.execute(
+            select(UsageQuota).where(UsageQuota.store_id == store_id)
+        )
+        quota = result.scalar_one()
+    if _is_new_period(quota):
         quota.monthly_generations_used = 0
         quota.monthly_tokens_used = 0
         quota.current_period_start = _period_start_now()
@@ -69,6 +79,9 @@ async def check_quota(db: AsyncSession, store_id: str) -> UsageQuota:
         raise QuotaExceededError(
             f"本月生成次数已达上限 ({quota.monthly_generation_limit} 次)"
         )
+    if quota.monthly_tokens_limit and quota.monthly_tokens_used >= quota.monthly_tokens_limit:
+        from core.exceptions import QuotaExceededError
+        raise QuotaExceededError("本月 AI 用量已达上限，请联系管理员升级套餐")
     return quota
 
 

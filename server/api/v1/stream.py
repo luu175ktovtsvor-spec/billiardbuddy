@@ -76,9 +76,11 @@ async def stream_workbench(
             "date": date.today().isoformat(),
         }
         rendered_prompt = prompt_engine.render(prompt_key, store, extra_vars, lenient=True)
+        # intent 带上模板中文名：用户意图为空时知识筛选仍能按场景命中（英文 key 匹配不到中文关键词）
+        template_label = prompt_engine.template_name(prompt_key)
         rendered_prompt = _append_guardrails(
             rendered_prompt, store, role=inferred_role,
-            intent_text=f"{user_intent or ''} {extra_note or ''}",
+            intent_text=f"{template_label} {user_intent or ''} {extra_note or ''}",
         )
     else:
         baseline_rules = _load_rule_safe("rules.baseline", store)
@@ -192,10 +194,14 @@ async def stream_workbench(
         # 获取 tokens_used（本次请求独立的 usage_sink，避免并发串号）
         tokens_used = usage.get("total_tokens", 0)
 
+        # 使用传入的 conversation_id，或用本次 generation_id 作为新对话的 conversation_id
+        # 在落库 try 外解析：避免非法 conversation_id 导致 conv_id 未绑定，done 事件 NameError
         try:
-            # 使用传入的 conversation_id，或用本次 generation_id 作为新对话的 conversation_id
             conv_id = uuid.UUID(conversation_id) if conversation_id else uuid.UUID(generation_id)
+        except ValueError:
+            conv_id = uuid.UUID(generation_id)
 
+        try:
             generation = Generation(
                 id=uuid.UUID(generation_id),
                 store_id=store.id,

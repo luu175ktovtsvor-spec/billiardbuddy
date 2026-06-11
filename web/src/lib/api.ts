@@ -1,4 +1,5 @@
 import { ApiError } from "@/types/api";
+import type { OrchestrationTask, RepurposeResponse } from "@/types/api";
 import type { LoginRequest, RegisterRequest, TokenResponse, User } from "@/types/auth";
 import type { StoreCreate, StoreResponse, StoreUpdate, StoreListItem, UploadResponse } from "@/types/store";
 import type { GenerateActivityRequest, GenerateCopywritingRequest, GenerateOperationRequest, GenerateWorkbenchRequest, GenerateOutreachRequest, GenerateSOPRequest, GenerateGamesRequest, GeneratePerformanceRequest, GenerateDiagnosisRequest, GenerationResponse } from "@/types/generate";
@@ -239,6 +240,24 @@ class ApiClient {
 
   generateWorkbench(data: GenerateWorkbenchRequest) {
     return this.request<GenerationResponse>("POST", "/api/v1/generate/workbench", data);
+  }
+
+  /** 内容变体：把生成结果转换为指定平台格式 */
+  repurposeContent(generationId: string, targetPlatform: string) {
+    return this.request<RepurposeResponse>("POST", "/api/v1/generate/repurpose", {
+      generation_id: generationId,
+      target_platform: targetPlatform,
+    });
+  }
+
+  // ─── Orchestrate（多 Agent 协作） ───
+
+  startOrchestration(data: { task_type: string; description: string; auto_orchestrate?: boolean }) {
+    return this.request<OrchestrationTask>("POST", "/api/v1/orchestrate", data);
+  }
+
+  getOrchestration(taskId: string) {
+    return this.request<OrchestrationTask>("GET", `/api/v1/orchestrate/${taskId}`);
   }
 
   /** SSE 流式工作台生成 */
