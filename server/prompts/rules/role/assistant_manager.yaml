@@ -84,6 +84,7 @@ template: |
 
 required_knowledge:
   - knowledge.core_operations
+  - knowledge.assistant_scripts
   - knowledge.assistant_service_sop
   - knowledge.assistant_tier_system
   - knowledge.assistant_salary
