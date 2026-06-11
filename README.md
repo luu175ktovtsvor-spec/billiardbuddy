@@ -64,13 +64,15 @@ bash /var/www/billiards-ai/deploy_us.sh
 |------|------|
 | 用户注册/登录 | 手机号+密码，支持邀请码注册自动加入门店 |
 | 门店资料管理 | 运营画像（98字段，10大模块），完整度评分 |
-| 岗位工作台 | 6个岗位×80张任务卡，自然语言输入，SSE流式输出+Abort取消 |
-| 文案生成 | 朋友圈/群公告/活动/日报/话术 |
-| 海报生成 | gpt-image-2 + Logo/二维码直传AI + 以图生图 + 多轮对话 |
-| Markdown 渲染 | AI内容格式化显示 |
-| 模型选择 | DeepSeek V4 Flash + GPT Image 2 |
+| 岗位工作台 | 6个岗位×82张任务卡，自然语言输入，SSE流式输出+Abort取消 |
+| 多 Agent 协作页 | 按任务自动编排多个岗位 Agent 并行生成 + 汇总（workbench/collaborate） |
+| 文案生成 | 朋友圈/群公告/活动/日报/话术，统一 run_generation 管道（注入/配额/过滤/落库/计费） |
+| 海报生成 | gpt-image-2 + 底图与参考图共存（对话级持久）+ 以图生图 + 多轮对话 |
+| 试用-提额订阅 | 注册即试用档，管理后台开通套餐/单店调额（迁移 014 收款流水表） |
+| Markdown 渲染 | AI内容格式化显示；复制时转纯文本（去 Markdown 记号便于发微信） |
+| 模型选择 | DeepSeek V4 Flash + GPT Image 2（直连 api.openai.com） |
 | thinking参数控制 | 简单任务禁用thinking节省token，复杂任务保留 |
-| 行业知识库 | 38个knowledge YAML + 54个operation YAML + 15个fewshot YAML |
+| 行业知识库 | 43个knowledge YAML + 54个operation YAML + 15个fewshot YAML |
 | 品牌声音学习 | 从"效果好"的历史内容提取风格特征注入prompt |
 | Few-shot选择器 | 多维打分（角色/客户/输出/意图/助教类型），最多2条 |
 | 生成历史 | 搜索、筛选、收藏、效果反馈 |
@@ -100,18 +102,18 @@ web/                    # Next.js 前端
     types/              # TypeScript 类型
 
 server/                 # FastAPI 后端
-  api/v1/              # API 路由（20个子路由）
+  api/v1/              # API 路由（23个子路由，含 orchestrate 协作任务）
   services/            # 业务逻辑
     ai/                # AI Provider（DeepSeek/OpenAI）
       prompt_engine.py # Prompt模板引擎（单例）
-    content_service.py # 内容生成核心（4个生成函数）
+    content_service.py # 内容生成核心 + 统一管道 run_generation
     poster_service.py  # 海报生成
     dashboard_service.py # 今日工作台（9条推荐规则）
     brand_voice_service.py # 品牌声音学习
     workbench_fewshot_service.py # Few-shot选择器
     store_profile_service.py # 门店运营画像渲染
-  prompts/             # Prompt 模板 YAML（127个）
-    knowledge/         # 38个行业知识文件
+  prompts/             # Prompt 模板 YAML（139个）
+    knowledge/         # 43个行业知识文件
     rules/             # 15个规则文件（6角色+7客户+2基线）
     operation/         # 54个运营场景模板
     fewshots/          # 15个样例库
@@ -126,7 +128,7 @@ server/                 # FastAPI 后端
 
 产品大脑文档在 `docs/product-brain/`。
 
-核心知识模块（38个knowledge YAML）：
+核心知识模块（43个knowledge YAML）：
 - 每日工作流程（6个角色：店长/助教管理/教练/前厅/收银/服务员）
 - 核心运营逻辑、盈利模型、行业数据
 - 助教体系（服务SOP/等级体系/薪资/推广/培训/刁钻问题应对）
