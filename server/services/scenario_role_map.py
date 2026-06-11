@@ -9,9 +9,9 @@ SCENARIO_ROLE_MAP = {
     "assistant_outreach": "assistant_manager",
     "assistant_booking": "assistant_manager",
     "member_assistant_notice": "assistant_manager",
-    "daily_report": None,
+    "daily_report": None,  # None = 使用请求中的 role 作为 fallback
     "performance_template": "assistant_manager",
-    "daily_task_list": None,
+    "daily_task_list": None,  # None = 使用请求中的 role 作为 fallback
     "vip_maintenance": "manager",
     "group_content": "operator",
     "short_video": "operator",
@@ -47,4 +47,7 @@ SCENARIO_ROLE_MAP = {
     "game_recommend": "coach",
     "ip_cooperation": "assistant_manager",
     "review_meeting": "manager",
+    "holiday_promo": "operator",
+    "new_store_opening": "operator",
+    "member_day": "operator",
 }

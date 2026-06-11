@@ -1,9 +1,7 @@
 key: "knowledge.daily_workflow"
 name: "前厅日常工作流程知识库"
 category: "knowledge"
-variables:
-  - store_name
-  - city
+variables: []
 description: |
   球房前厅各角色每日/每周工作清单知识库。
   球房前厅各角色每日/每周工作清单知识库。

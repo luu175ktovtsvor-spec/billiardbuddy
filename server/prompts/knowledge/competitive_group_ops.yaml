@@ -1,8 +1,7 @@
 key: "knowledge.competitive_group_ops"
 name: "竞技群运营知识库"
 category: "knowledge"
-variables:
-  - store_name
+variables: []
 description: |
   教练维护竞技群的日常运营知识。
   竞技群是教练的核心工作阵地，目标是让竞技客户持续到店、参与赛事、带朋友来打球。

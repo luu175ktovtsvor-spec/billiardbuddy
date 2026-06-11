@@ -1,9 +1,7 @@
 key: "knowledge.performance_standards"
 name: "绩效评分标准知识库"
 category: "knowledge"
-variables:
-  - store_name
-  - city
+variables: []
 description: |
   球房各岗位绩效考核评分标准。按岗位结构化存储考核维度、分值、评分标准、一票否决项。
   球房各岗位绩效考核评分标准。

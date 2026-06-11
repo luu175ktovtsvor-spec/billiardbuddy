@@ -30,6 +30,7 @@ from services.quota_service import check_quota, increment_usage
 from services.workbench_fewshot_service import select_workbench_fewshots
 from services.brand_voice_service import get_brand_voice_context
 from core.security_guard import check_input_injection, filter_output_leak
+from services.scenario_role_map import SCENARIO_ROLE_MAP as scenario_role_map
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -71,59 +72,8 @@ async def stream_workbench(
         }
         rendered_prompt = prompt_engine.render(prompt_key, store, extra_vars)
         # 根据prompt_key推断岗位角色，与content_service.py保持一致
-        scenario_role_map = {
-            "groupbuy_to_private": "frontdesk",
-            "assistant_promo": "assistant_manager",
-            "partner_match": "coach",
-            "tournament": "coach",
-            "old_customer_recall": "manager",
-            "assistant_outreach": "assistant_manager",
-            "assistant_booking": "assistant_manager",
-            "member_assistant_notice": "assistant_manager",
-            "daily_report": role,
-            "performance_template": "assistant_manager",
-            "daily_task_list": role,
-            "vip_maintenance": "manager",
-            "group_content": "operator",
-            "short_video": "operator",
-            "complaint_handling": "frontdesk",
-            "frontdesk_sop": "frontdesk",
-            "tournament_signup": "coach",
-            "tournament_report": "coach",
-            "qiangyi_battle": "coach",
-            "review_guidance": "coach",
-            "cart_promotion": "frontdesk",
-            "opening_event": "operator",
-            "recruitment": "assistant_manager",
-            "training_exam": "assistant_manager",
-            "diagnosis_tool": "boss",
-            "coaching_promo": "coach",
-            "competition_customer": "coach",
-            "empty_table_promo": "frontdesk",
-            "departure_followup": "frontdesk",
-            "customer_group_guide": "frontdesk",
-            "opening_closing_sop": "frontdesk",
-            "equipment_management": "frontdesk",
-            "store_atmosphere": "operator",
-            "poster_copy": "operator",
-            "sports_event_watching": "manager",
-            "staff_birthday": "manager",
-            "hygiene_check": "frontdesk",
-            "champion_poster": "coach",
-            "tournament_rules": "coach",
-            "monthly_report": "boss",
-            "activity_direction": "boss",
-            "business_strategy": "boss",
-            "table_content_plan": "operator",
-            "game_recommend": "coach",
-            "ip_cooperation": "assistant_manager",
-            "review_meeting": "manager",
-            "holiday_promo": "operator",
-            "new_store_opening": "operator",
-            "member_day": "operator",
-        }
         scenario_name = prompt_key.split(".", 1)[-1] if "." in prompt_key else prompt_key
-        inferred_role = scenario_role_map.get(scenario_name, role)
+        inferred_role = scenario_role_map.get(scenario_name) or role
         rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role)
     else:
         baseline_rules = _load_rule_safe("rules.baseline", store)
