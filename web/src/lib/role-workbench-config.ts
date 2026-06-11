@@ -1596,6 +1596,15 @@ export function getTopCards(n: number = 6): RoleTaskCard[] {
     const usage: Record<string, number> = JSON.parse(
       localStorage.getItem("workbench_card_usage") || "{}"
     );
+    // 还没有任何使用记录时认岗位：前厅第一天打开首页看到的是前厅的活，不是店长的
+    if (Object.keys(usage).length === 0) {
+      const savedRole = localStorage.getItem("workbench_role") as WorkbenchRole | null;
+      const roleTasks = savedRole ? ROLE_TASKS[savedRole] : null;
+      if (roleTasks && roleTasks.length > 0) {
+        const p0 = roleTasks.filter((c) => c.priority === "P0");
+        return (p0.length >= n ? p0 : roleTasks).slice(0, n);
+      }
+    }
     const allCards = Object.values(ROLE_TASKS).flat();
     return allCards
       .sort((a, b) => (usage[b.id] || 0) - (usage[a.id] || 0))

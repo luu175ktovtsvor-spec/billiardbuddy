@@ -68,7 +68,7 @@ export default function PostersPage() {
       await api.deletePosterConversation(conv.id);
       setConversations((prev) => prev.filter((c) => c.id !== conv.id));
     } catch {
-      // silent
+      alert("删除失败，请重试");
     } finally {
       setDeleting(null);
     }

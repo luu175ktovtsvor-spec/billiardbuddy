@@ -9,11 +9,11 @@ from typing import Optional
 INJECTION_PATTERNS = [
     # 中文
     r"你的(系统|prompt|指令|规则|提示词|设定|配置)",
-    r"(告诉我|说出|显示|输出|打印)(你的|系统|后台)(prompt|指令|规则|提示词)",
+    r"(告诉我|说出|显示|输出|打印)\s*(你的|系统|后台)\s*(prompt|指令|规则|提示词)",
     r"(忘记|忽略|无视|跳过)(你(之前|上面)的|所有)(指令|规则|设定|限制)",
     r"(假装|假设|扮演|模拟)(你是|你没有)(一个)?(没有|不限|无)(限制|规则|约束)",
     r"(用|以)(base64|编码|加密)(方式)?(告诉我|输出|显示)",
-    r"(repeat|print|show|display|output|reveal)(your|the|system)(prompt|instructions|rules)",
+    r"(repeat|print|show|display|output|reveal)\s*(your|the|system)\s*(prompt|instructions|rules)",
     r"ignore.*(previous|above|all).*(instructions|rules|prompts)",
     r"system\s*prompt",
     r"你(是|叫|叫什么)(什么|谁|啥)(模型|AI|机器人|助手)",
@@ -83,15 +83,19 @@ def check_input_injection(user_input: str) -> Optional[str]:
 def filter_output_leak(ai_output: str) -> str:
     """
     过滤AI输出中的系统信息泄露。
-    如果检测到泄露，替换为安全提示。
+
+    只移除包含泄露内容的行，保留其余正文（避免正文偶然提到"AI/模型"
+    时整段被丢弃）；若所有内容都命中泄露，才回退到统一安全提示。
     """
     if not ai_output:
         return ai_output
 
-    if _match_leak(ai_output):
-        return LEAK_REPLACEMENT
+    if not _match_leak(ai_output):
+        return ai_output
 
-    return ai_output
+    kept = [line for line in ai_output.split("\n") if not _match_leak(line)]
+    cleaned = "\n".join(kept).strip()
+    return cleaned if cleaned else LEAK_REPLACEMENT
 
 
 # 泄露检测的尾部扫描窗口：覆盖最长泄露短语，足以捕获跨 token 边界形成的关键词
@@ -155,7 +159,8 @@ class StreamGuard:
         return token
 
     def finalize(self) -> str:
-        """流结束时调用，返回最终安全的完整文本。"""
-        if self._blocked or _match_leak(self._full):
-            return LEAK_REPLACEMENT
-        return _strip_response_prefixes(self._full)
+        """流结束时调用，返回最终安全的完整文本（命中泄露时按行移除）。"""
+        cleaned = _strip_response_prefixes(self._full)
+        if self._blocked or _match_leak(cleaned):
+            return filter_output_leak(cleaned)
+        return cleaned

@@ -1,12 +1,12 @@
 "use client";
 
 import { Suspense, useEffect, useRef, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/auth-context";
 import { api } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { getErrorMessage } from "@/lib/utils";
+import { getErrorMessage, markdownToPlainText } from "@/lib/utils";
 import type {
   GenerationResponse,
   WorkbenchRole,
@@ -29,6 +29,7 @@ import {
   getOutputPackageLabel,
 } from "@/lib/workbench-config";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
+import { QuotaBadge } from "@/components/quota-badge";
 import { useToast } from "@/components/ui/toast";
 import {
   Sparkles,
@@ -39,10 +40,20 @@ import {
   Loader2,
   MoreHorizontal,
   ArrowRight,
+  Star,
 } from "lucide-react";
 import Link from "next/link";
 
 /* ─── helpers ─── */
+
+/** 微调预设：把"用户不知道怎么说的调整话"变成可点的按钮 */
+const TWEAK_PRESETS = [
+  "更口语一点，像店里人随手发的",
+  "更简短，控制在三五句",
+  "更有吸引力，让人想来",
+  "换个角度再写一版",
+  "去掉表情符号，正式一点",
+];
 
 function trackTaskCardUsage(cardId: string) {
   try {
@@ -61,6 +72,7 @@ function trackTaskCardUsage(cardId: string) {
 function TaskExecutionPageInner() {
   const params = useParams<{ cardId: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const { toast } = useToast();
 
@@ -87,11 +99,9 @@ function TaskExecutionPageInner() {
   const [showRepurpose, setShowRepurpose] = useState(false);
   const [showMoreActions, setShowMoreActions] = useState(false);
   const [repurposing, setRepurposing] = useState(false);
-  const [quota, setQuota] = useState<{
-    used: number;
-    limit: number;
-    remaining: number;
-  } | null>(null);
+  const [quotaVersion, setQuotaVersion] = useState(0);
+  const [badNoteOpen, setBadNoteOpen] = useState(false);
+  const [isFavorited, setIsFavorited] = useState(false);
 
   const [conversationId, setConversationId] = useState<string | null>(null);
   const conversationIdRef = useRef<string | null>(null);
@@ -103,11 +113,15 @@ function TaskExecutionPageInner() {
   const inputSectionRef = useRef<HTMLDivElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  // 记录上次生成的完整参数：失败重试时原样重放（含微调指令），不丢 optimizeNote
+  const lastGenOptsRef = useRef<{ optimizeNote?: string; isCardClick?: boolean } | undefined>(undefined);
 
   /* ─── pre-fill form from card data on mount ─── */
   useEffect(() => {
     if (card) {
-      setIntent(card.userIntentTemplate);
+      // URL 带 intent 时优先（历史页"继续对话"跳转传入）
+      const urlIntent = searchParams.get("intent");
+      setIntent(urlIntent || card.userIntentTemplate);
       setRole(card.role);
       setTargetCustomer(card.targetCustomerType);
       setOutputPackage(card.outputPackage);
@@ -115,28 +129,9 @@ function TaskExecutionPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [card?.id]);
 
-  /* ─── load quota ─── */
-  useEffect(() => {
-    if (!isAuthenticated) return;
-    let cancelled = false;
-    api
-      .getQuota()
-      .then((res) => {
-        if (!cancelled)
-          setQuota({
-            used: res.monthly_generations_used,
-            limit: res.monthly_generation_limit,
-            remaining: res.remaining,
-          });
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [isAuthenticated]);
-
   /* ─── streaming generation ─── */
   const doGenerate = async (opts?: { optimizeNote?: string; isCardClick?: boolean }) => {
+    lastGenOptsRef.current = opts;
     if (!intent.trim()) return;
 
     if (abortControllerRef.current) {
@@ -150,6 +145,8 @@ function TaskExecutionPageInner() {
     setStreamingContent("");
     setEditing(false);
     setEffectRating(null);
+    setIsFavorited(false);
+    setBadNoteOpen(false);
     setShowMoreActions(false);
     setShowRepurpose(false);
     setGenerating(true);
@@ -182,6 +179,7 @@ function TaskExecutionPageInner() {
             profile_suggestions: null,
           });
           setStreamingContent("");
+          setQuotaVersion((v) => v + 1); // 生成完成后实时刷新配额展示
           if (convId) {
             conversationIdRef.current = convId;
             setConversationId(convId);
@@ -219,11 +217,13 @@ function TaskExecutionPageInner() {
 
   /* ─── copy ─── */
   const handleCopy = async (text: string) => {
+    // 复制纯文本：粘到微信不带 ** ## 等 Markdown 记号
+    const plain = markdownToPlainText(text);
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(plain);
     } catch {
       const ta = document.createElement("textarea");
-      ta.value = text;
+      ta.value = plain;
       document.body.appendChild(ta);
       ta.select();
       document.execCommand("copy");
@@ -240,9 +240,57 @@ function TaskExecutionPageInner() {
     try {
       await api.submitFeedback(result.generation_id, rating);
       setEffectRating(rating);
-      toast(rating === "good" ? "感谢反馈" : "收到，我们会改进", "success");
+      if (rating === "good") {
+        toast("已存入门店金牌范文，AI 之后会参考这条的风格", "success");
+      } else {
+        // 点踩时收集一句话原因，注入后续生成的"避免清单"
+        setBadNoteOpen(true);
+      }
     } catch {
       // silent
+    }
+  };
+
+  const handleBadNoteSubmit = async (note: string) => {
+    setBadNoteOpen(false);
+    if (!result?.generation_id || !note.trim()) return;
+    try {
+      await api.submitFeedback(result.generation_id, "bad", note.trim());
+      toast("已记录，之后生成会避开这个问题", "success");
+    } catch {
+      // silent
+    }
+  };
+
+  /* ─── favorite ─── */
+  const handleToggleFavorite = async () => {
+    if (!result?.generation_id) return;
+    try {
+      const res = await api.toggleFavorite(result.generation_id);
+      setIsFavorited(res.is_favorite);
+      toast(res.is_favorite ? "已收藏，历史页「只看收藏」可找到" : "已取消收藏", "success");
+    } catch {
+      // silent
+    }
+  };
+
+  /* ─── save as template ─── */
+  const handleSaveAsTemplate = () => {
+    try {
+      const templates = JSON.parse(localStorage.getItem("my_templates") || "[]");
+      templates.push({
+        id: Date.now().toString(),
+        title: card?.title || intent.slice(0, 12),
+        intent: intent.trim(),
+        role,
+        cardId: card?.id,
+        createdAt: new Date().toISOString(),
+      });
+      localStorage.setItem("my_templates", JSON.stringify(templates));
+      setShowMoreActions(false);
+      toast("已存为我的模板，首页点「使用」一键重跑", "success");
+    } catch {
+      toast("保存失败，请重试", "error");
     }
   };
 
@@ -253,28 +301,14 @@ function TaskExecutionPageInner() {
     setShowRepurpose(false);
     setShowMoreActions(false);
     try {
-      const token = api.getToken();
-      const res = await fetch(
-        `${api.baseUrl}/api/v1/generate/repurpose`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            generation_id: result.generation_id,
-            target_platform: platform,
-          }),
-        }
-      );
-      const data = await res.json();
-      if (data.content) {
-        setResult({ ...result, content: data.content });
-        toast("已转换为" + platform + "版本", "success");
-      }
-    } catch {
-      // silent
+      // 统一走 api 封装：带 X-Store-Id（多门店不串店）、401 自动刷新、非 2xx 抛错
+      const data = await api.repurposeContent(result.generation_id, platform);
+      // 切换到变体的新记录 id：否则之后"编辑→保存"会把变体文本写进原始记录，
+      // 污染历史和已标"效果好"的金牌范文
+      setResult({ ...result, content: data.content, generation_id: data.generation_id || result.generation_id });
+      toast("已转换为" + platform + "版本", "success");
+    } catch (err) {
+      toast(getErrorMessage(err) || "转换失败，请重试", "error");
     } finally {
       setRepurposing(false);
     }
@@ -347,19 +381,8 @@ function TaskExecutionPageInner() {
         )}
       </div>
 
-      {/* ─── Quota warning ─── */}
-      {quota && quota.remaining <= 5 && quota.remaining > 0 && (
-        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3">
-          <p className="text-xs text-amber-700">
-            本月剩余 {quota.remaining} 次生成额度
-          </p>
-        </div>
-      )}
-      {quota && quota.remaining <= 0 && (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3">
-          <p className="text-xs text-red-700">本月额度已用完</p>
-        </div>
-      )}
+      {/* ─── Quota（试用/套餐 · 实时余量 · 提额引导）─── */}
+      <QuotaBadge refreshKey={quotaVersion} />
 
       {/* ─── Input section ─── */}
       <div
@@ -563,8 +586,16 @@ function TaskExecutionPageInner() {
       <div ref={resultRef}>
         {/* Error */}
         {error && (
-          <div className="mb-4 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-4">
-            <p className="text-sm text-red-600">{error}</p>
+          <div className="mb-4 flex items-center gap-3 rounded-md border border-red-200 bg-red-50 p-4">
+            <p className="flex-1 text-sm text-red-600">{error}</p>
+            <button
+              type="button"
+              onClick={() => doGenerate(lastGenOptsRef.current)}
+              disabled={generating}
+              className="shrink-0 rounded-md border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100 disabled:opacity-50"
+            >
+              重试
+            </button>
           </div>
         )}
 
@@ -696,12 +727,37 @@ function TaskExecutionPageInner() {
                 </button>
               </div>
 
-              {/* "Based on this" optimization */}
-              {conversationId && (
+              {/* 字数与朋友圈折叠提示 */}
+              {result.content && (() => {
+                const charCount = (editing ? editedContent : result.content).replace(/\s/g, "").length;
+                const foldRisk = charCount > 120 && outputPackage.includes("moments");
+                return (
+                  <p className="mb-2 text-xs text-slate-400">
+                    约 {charCount} 字
+                    {foldRisk && <span className="text-amber-600">——超过约 120 字发朋友圈会被折叠成一行，建议点「更简短」</span>}
+                  </p>
+                );
+              })()}
+
+              {/* "Based on this" optimization（编辑态收起，防止未保存的修改被 AI 重新生成吞掉） */}
+              {conversationId && !editing && (
                 <div className="mb-2 rounded-md border border-indigo-200 bg-indigo-50 p-2.5">
                   <p className="text-xs text-indigo-600 mb-1.5">
-                    基于上一条结果继续优化：
+                    基于上一条结果继续优化（点一下或直接说）：
                   </p>
+                  <div className="mb-2 flex flex-wrap gap-1.5">
+                    {TWEAK_PRESETS.map((t) => (
+                      <button
+                        key={t}
+                        type="button"
+                        disabled={generating}
+                        onClick={() => doGenerate({ optimizeNote: t })}
+                        className="rounded-full border border-indigo-200 bg-white px-2.5 py-1 text-xs text-indigo-600 hover:bg-indigo-100 disabled:opacity-50 transition-colors"
+                      >
+                        {t.split("，")[0]}
+                      </button>
+                    ))}
+                  </div>
                   <div className="flex gap-2">
                     <input
                       type="text"
@@ -726,9 +782,18 @@ function TaskExecutionPageInner() {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={async () => {
                       setResult({ ...result, content: editedContent });
                       setEditing(false);
+                      // 同步存回历史：历史页看到的就是实际发出去的版本，刷新不丢
+                      if (result.generation_id) {
+                        try {
+                          await api.updateGenerationContent(result.generation_id, editedContent);
+                          toast("修改已保存到历史", "success");
+                        } catch {
+                          toast("修改已应用，但保存到历史失败", "error");
+                        }
+                      }
                     }}
                     className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-600 hover:bg-indigo-100 transition-colors"
                   >
@@ -776,8 +841,15 @@ function TaskExecutionPageInner() {
                         >
                           <Pencil className="h-3 w-3" /> 编辑
                         </button>
+                        <button
+                          type="button"
+                          onClick={handleSaveAsTemplate}
+                          className="flex items-center gap-2 w-full text-left px-4 py-2 text-sm hover:bg-slate-50"
+                        >
+                          <Sparkles className="h-3 w-3" /> 存为我的模板
+                        </button>
                         <Link
-                          href={`/dashboard/posters?prompt=${encodeURIComponent(
+                          href={`/dashboard/posters/new?prompt=${encodeURIComponent(
                             result.content.substring(0, 200)
                           )}`}
                           className="flex items-center gap-2 w-full text-left px-4 py-2 text-sm hover:bg-slate-50"
@@ -826,7 +898,16 @@ function TaskExecutionPageInner() {
                   <div className="flex items-center gap-1 ml-auto">
                     <button
                       type="button"
+                      onClick={handleToggleFavorite}
+                      title={isFavorited ? "取消收藏" : "收藏，历史页随时找回"}
+                      className="px-2 py-1 rounded text-xs transition-colors text-slate-400 hover:text-amber-600 hover:bg-amber-50"
+                    >
+                      <Star className={`h-3.5 w-3.5 ${isFavorited ? "fill-amber-500 text-amber-500" : ""}`} />
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => handleFeedback("good")}
+                      title="效果好：AI 会学习这条的风格"
                       className={`px-2 py-1 rounded text-xs transition-colors ${
                         effectRating === "good"
                           ? "bg-green-100 text-green-700"
@@ -847,6 +928,27 @@ function TaskExecutionPageInner() {
                       👎
                     </button>
                   </div>
+                </div>
+              )}
+
+              {/* 点踩原因（可跳过）：填了会进入后续生成的"避免清单"，让差评真正改变行为 */}
+              {badNoteOpen && (
+                <div className="mt-2 rounded-md border border-red-100 bg-red-50 p-2.5">
+                  <p className="mb-1.5 text-xs text-red-500">哪里不满意？说一句，之后生成会避开这个问题（可跳过）</p>
+                  <input
+                    type="text"
+                    maxLength={100}
+                    autoFocus
+                    placeholder="例：太官方了 / 太长了 / 不像我们店的语气"
+                    className="w-full rounded-md border border-red-200 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:border-red-400 focus:outline-none"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        handleBadNoteSubmit((e.target as HTMLInputElement).value);
+                      } else if (e.key === "Escape") {
+                        setBadNoteOpen(false);
+                      }
+                    }}
+                  />
                 </div>
               )}
             </div>

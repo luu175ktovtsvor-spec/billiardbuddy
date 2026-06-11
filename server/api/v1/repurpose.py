@@ -1,3 +1,4 @@
+import uuid as uuid_mod
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -7,14 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.deps import get_current_user, get_current_store, get_db
 from core.exceptions import NotFoundException
 from core.rbac import Permission, require_permission
-from core.security_guard import filter_output_leak
 from models.generation import Generation
 from models.user import User
 from models.store import Store
-from services.ai.base import TextRequest
-from services.ai.factory import ProviderFactory
-from services.content_service import _validate_provider_for_production
-from services.quota_service import check_quota, increment_usage
+from services.content_service import run_generation
 
 router = APIRouter()
 
@@ -42,24 +39,35 @@ async def repurpose_content(
     _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
 ):
     """将一条内容变体为其他平台格式。"""
-    # 1. 获取原始内容
-    generation = await db.get(Generation, body.generation_id)
+    # 非法 UUID 直接 404，而非 DBAPI 异常 500
+    try:
+        source_id = uuid_mod.UUID(body.generation_id)
+    except ValueError:
+        raise NotFoundException("生成记录不存在")
+
+    generation = await db.get(Generation, source_id)
     if not generation or generation.store_id != store.id or generation.is_deleted:
         raise NotFoundException("生成记录不存在")
 
-    # 配额检查（此前缺失，导致内容变体绕过付费限额）
-    await check_quota(db, str(store.id))
-    _validate_provider_for_production()
-
-    # 2. 构建变体 prompt
     platform_prompt = PLATFORM_PROMPTS.get(body.target_platform, PLATFORM_PROMPTS["wechat_moments"])
     full_prompt = f"{platform_prompt}\n\n原始内容：\n{generation.result}"
 
-    # 3. 调用 AI 生成
-    request = TextRequest(prompt=full_prompt, max_tokens=1000)
-    response = await ProviderFactory.generate_with_fallback(request)
+    # 统一管道：配额 + 过滤 + 落库（此前不落库，无历史可查）+ 计费
+    result = await run_generation(
+        db, store, user,
+        prompt=full_prompt,
+        gen_type="repurpose",
+        sub_type=body.target_platform,
+        input_params={
+            "source_generation_id": str(source_id),
+            "target_platform": body.target_platform,
+        },
+        max_tokens=1000,
+        use_fallback=True,
+    )
 
-    content = filter_output_leak(response[0].content)
-    await increment_usage(db, str(store.id), tokens=response[0].tokens_used or 0)
-
-    return {"content": content, "platform": body.target_platform}
+    return {
+        "content": result.result,
+        "platform": body.target_platform,
+        "generation_id": str(result.id),
+    }

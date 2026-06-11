@@ -55,9 +55,9 @@ export default function AdminRevenuePage() {
       <div className="rounded-lg border bg-white p-6 shadow-sm">
         <h2 className="text-lg font-bold mb-4">说明</h2>
         <ul className="space-y-2 text-sm text-slate-600">
-          <li>• 收入数据基于"开通订阅"时填写的收款金额统计</li>
-          <li>• 如需查看详细收款记录，请到"订阅管理"页面</li>
-          <li>• "即将到期"指7天内到期的活跃订阅，建议主动联系续费</li>
+          <li>• 收入按每笔收款流水统计，开通和续费各计一笔，计入实际收款月份</li>
+          <li>• 如需查看详细收款记录，请到「订阅管理」页面</li>
+          <li>• 「即将到期」指7天内到期的活跃订阅，建议主动联系续费</li>
         </ul>
       </div>
     </div>
