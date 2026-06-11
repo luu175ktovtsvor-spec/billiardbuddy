@@ -38,6 +38,18 @@ const QUALITY_OPTIONS = [
   { value: "auto", label: "自动", desc: "模型决定" },
 ];
 
+/** 通用风格预设：不限台球行业，点击追加到描述文本（用户可见可改） */
+const STYLE_PRESETS = [
+  { label: "写实人像", prompt: "写实人像摄影风格，自然光影，质感细腻" },
+  { label: "日系清新", prompt: "日系小清新风格，柔和色调，干净留白" },
+  { label: "赛博霓虹", prompt: "赛博朋克霓虹风格，蓝紫色光效，未来感" },
+  { label: "复古海报", prompt: "复古胶片海报风格，颗粒质感，怀旧配色" },
+  { label: "3D卡通", prompt: "3D卡通渲染风格，圆润可爱，色彩鲜艳" },
+  { label: "电影质感", prompt: "电影感画面，戏剧化布光，宽幅构图" },
+  { label: "ins风", prompt: "ins风格，明亮通透，时尚生活感" },
+  { label: "黑白高级", prompt: "黑白摄影风格，高对比度，极简高级感" },
+];
+
 function createNewConversation(): ConversationState {
   return {
     id: null,
@@ -67,7 +79,9 @@ function ConversationPageInner() {
   /* Conversation state */
   const [conv, setConv] = useState<ConversationState>(createNewConversation());
   const [sizeOptions, setSizeOptions] = useState<SizeOption[]>([]);
+  const [inspirationTags, setInspirationTags] = useState<Array<{ key: string; label: string; prompt: string; category?: string }>>([]);
   const [prompt, setPrompt] = useState("");
+  const [overlayText, setOverlayText] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
@@ -95,12 +109,15 @@ function ConversationPageInner() {
     return () => { cancelled = true; };
   }, [isAuthenticated]);
 
-  /* Load size options */
+  /* Load size options + 场景灵感标签 */
   useEffect(() => {
     if (!isAuthenticated) return;
     let cancelled = false;
     api.listSizeOptions()
       .then((data) => { if (!cancelled) setSizeOptions(data.sizes || []); })
+      .catch(() => {});
+    api.listInspirationTags()
+      .then((data) => { if (!cancelled) setInspirationTags(data.tags || []); })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [isAuthenticated]);
@@ -193,9 +210,8 @@ function ConversationPageInner() {
     updateConv({ references: conv.references.filter((_, i) => i !== index) });
   };
 
-  /* Generate */
-  const handleGenerate = async () => {
-    const text = prompt.trim();
+  /* Generate（核心发送逻辑，供输入框 / 再来一版共用） */
+  const sendGenerate = async (text: string, refineFromArg: string | null) => {
     if (!text || generating) return;
     setError("");
 
@@ -204,6 +220,12 @@ function ConversationPageInner() {
     }
     const controller = new AbortController();
     abortControllerRef.current = controller;
+
+    // 文字上图（实验）：把要画进图里的文字拼进最终 prompt，输入框保持大白话
+    const overlay = overlayText.trim();
+    const finalPrompt = overlay
+      ? `${text}，在画面中醒目地写上文字：「${overlay}」，文字内容必须一字不差、清晰可读`
+      : text;
 
     const userMsg: ConversationMessage = { role: "user", content: text };
     updateConv({ messages: [...conv.messages, userMsg] });
@@ -214,15 +236,15 @@ function ConversationPageInner() {
     try {
       const res = await api.generateImage(
         {
-          prompt: text,
+          prompt: finalPrompt,
           image_model: "gpt-image-2",
           ratio: conv.ratio,
           quality: conv.quality,
           images: conv.references.length > 0 ? conv.references.map((r) => r.path) : undefined,
           count: 1,
-          refine_from: conv.refineFrom || undefined,
+          refine_from: refineFromArg || undefined,
           add_store_info: conv.addStoreInfo,
-          no_text: conv.noText,
+          no_text: overlay ? false : conv.noText,
           conversation_id: conv.id || undefined,
         },
         controller.signal,
@@ -234,7 +256,7 @@ function ConversationPageInner() {
       updateConv({
         id: newId,
         messages: [...conv.messages, userMsg, assistantMsg],
-        refineFrom: res.images?.[0]?.generation_id || conv.refineFrom,
+        refineFrom: res.images?.[0]?.generation_id || refineFromArg,
       });
 
       /* Update URL if this was a new conversation */
@@ -247,6 +269,31 @@ function ConversationPageInner() {
     } finally {
       setGenerating(false);
     }
+  };
+
+  const handleGenerate = () => sendGenerate(prompt.trim(), conv.refineFrom);
+
+  /* 再来一版：找到该结果前最近一条用户要求，原话重发且不基于底图（出全新构图） */
+  const handleRegenerate = (msgIdx: number) => {
+    for (let i = msgIdx - 1; i >= 0; i--) {
+      const m = conv.messages[i];
+      if (m.role === "user" && m.content) {
+        sendGenerate(m.content, null);
+        return;
+      }
+    }
+  };
+
+  /* 把某张生成图加入参考图集（"以后照这张的感觉来"） */
+  const addAsReference = (img: GeneratedImage) => {
+    if (conv.references.some((r) => r.path === img.poster_url)) return;
+    if (conv.references.length >= 5) {
+      setError("最多 5 张参考图，请先移除一张");
+      return;
+    }
+    updateConv({
+      references: [...conv.references, { path: img.poster_url, preview: api.resolveUrl(img.poster_url) }],
+    });
   };
 
   /* Download */
@@ -343,10 +390,24 @@ function ConversationPageInner() {
                               </button>
                               <button
                                 type="button"
-                                onClick={() => updateConv({ refineFrom: null })}
-                                className="px-3 py-1.5 rounded text-xs bg-slate-50 text-slate-600 border border-slate-200 hover:bg-slate-100"
+                                disabled={generating}
+                                onClick={() => handleRegenerate(idx)}
+                                title="用同样的要求再生成一张全新构图"
+                                className="px-3 py-1.5 rounded text-xs bg-slate-50 text-slate-600 border border-slate-200 hover:bg-slate-100 disabled:opacity-50"
                               >
-                                重新生成
+                                再来一版
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => addAsReference(img)}
+                                title="加入参考图，后续生成都参考这张的感觉"
+                                className={`px-3 py-1.5 rounded text-xs border ${
+                                  conv.references.some((r) => r.path === img.poster_url)
+                                    ? "bg-emerald-50 text-emerald-600 border-emerald-200"
+                                    : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                                }`}
+                              >
+                                {conv.references.some((r) => r.path === img.poster_url) ? "已设为参考" : "用作参考图"}
                               </button>
                               <button
                                 type="button"
@@ -412,22 +473,65 @@ function ConversationPageInner() {
               </div>
             )}
 
-            {/* First message: full input; subsequent: compact */}
+            {/* First message: 引导 + full input; subsequent: compact */}
             {conv.messages.length === 0 && (
-              <textarea
-                rows={3}
-                maxLength={1000}
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && e.metaKey) {
-                    e.preventDefault();
-                    handleGenerate();
-                  }
-                }}
-                className="w-full rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 resize-none"
-                placeholder="描述你想生成的图片"
-              />
+              <>
+                <div className="mb-3">
+                  <p className="text-sm font-medium text-slate-700">用大白话描述你想要的图就行</p>
+                  <p className="mt-0.5 text-xs text-slate-400">
+                    不只是海报——人像形象照、朋友圈配图、活动图都可以；上传参考图，AI 会「照这个感觉来」。
+                  </p>
+                </div>
+
+                {inspirationTags.length > 0 && (
+                  <div className="mb-3">
+                    <p className="mb-1.5 text-xs text-slate-500">场景起稿（点击填入，可再修改）</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {inspirationTags.map((tag) => (
+                        <button
+                          key={tag.key}
+                          type="button"
+                          onClick={() => setPrompt(tag.prompt)}
+                          className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-600 hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600 transition-colors"
+                        >
+                          {tag.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="mb-3">
+                  <p className="mb-1.5 text-xs text-slate-500">叠加风格（点击追加到描述）</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {STYLE_PRESETS.map((s) => (
+                      <button
+                        key={s.label}
+                        type="button"
+                        onClick={() => setPrompt((p) => (p.trim() ? `${p.trim()}，${s.prompt}` : s.prompt))}
+                        className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600 hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600 transition-colors"
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <textarea
+                  rows={3}
+                  maxLength={1000}
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && e.metaKey) {
+                      e.preventDefault();
+                      handleGenerate();
+                    }
+                  }}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 resize-none"
+                  placeholder="例：帮我们店的女助教生成一张高级感形象照，球房背景，光线柔和"
+                />
+              </>
             )}
 
             {conv.messages.length > 0 && (
@@ -538,6 +642,19 @@ function ConversationPageInner() {
                       columns={4}
                     />
                   </div>
+                  <div>
+                    <p className="mb-1.5 text-xs text-slate-500">
+                      把文字画进图里 <span className="text-slate-400">（实验功能：AI 写中文偶有笔误，重要物料发出前请检查）</span>
+                    </p>
+                    <input
+                      type="text"
+                      maxLength={30}
+                      value={overlayText}
+                      onChange={(e) => setOverlayText(e.target.value)}
+                      placeholder="例：周五晚8点 · 抢一大战"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    />
+                  </div>
                   <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500">
                     <label className="flex items-center gap-1.5 cursor-pointer">
                       <input
@@ -548,14 +665,15 @@ function ConversationPageInner() {
                       />
                       <span>融入门店信息</span>
                     </label>
-                    <label className="flex items-center gap-1.5 cursor-pointer">
+                    <label className={`flex items-center gap-1.5 ${overlayText.trim() ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}>
                       <input
                         type="checkbox"
-                        checked={conv.noText}
+                        disabled={!!overlayText.trim()}
+                        checked={overlayText.trim() ? false : conv.noText}
                         onChange={(e) => updateConv({ noText: e.target.checked })}
                         className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                       />
-                      <span>禁止生成文字</span>
+                      <span>禁止生成文字{overlayText.trim() ? "（已填上图文字，自动失效）" : ""}</span>
                     </label>
                   </div>
                 </div>
