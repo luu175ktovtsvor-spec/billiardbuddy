@@ -88,3 +88,158 @@ def test_increment_usage_is_atomic():
     src = inspect.getsource(increment_usage)
     assert "update(UsageQuota)" in src, "increment_usage 应使用数据库原子 UPDATE"
     assert "count" in inspect.signature(increment_usage).parameters
+
+
+def test_all_operation_templates_render_via_workbench_path():
+    """工作台 prompt_key 路径：54 个 operation 模板用通用变量 + 宽松模式必须全部可渲染。
+
+    回归背景：daily_report 等 14 个模板声明了 role/date 等额外变量，
+    严格渲染在卡片点击时直接 500。
+    """
+    from datetime import date
+    from models.store import Store
+    from services.content_service import ROLE_LABELS
+    from services.scenario_role_map import SCENARIO_ROLE_MAP
+
+    pe = get_prompt_engine()
+    store = Store(name="测试球房", city="成都")
+    ops = [k for k in pe._templates if k.startswith("operation.")]
+    assert len(ops) >= 50
+    for key in ops:
+        scenario = key.split(".", 1)[-1]
+        inferred = SCENARIO_ROLE_MAP.get(scenario) or "manager"
+        extra = {
+            "tone": "亲切",
+            "target": "全部客户",
+            "extra_note": "无",
+            "scenario": "日常",
+            "role": ROLE_LABELS.get(inferred, inferred),
+            "date": date.today().isoformat(),
+        }
+        rendered = pe.render(key, store, extra, lenient=True)
+        assert rendered, f"{key} 渲染为空"
+        assert "{role_display}" not in rendered, f"{key} 残留未替换占位符"
+
+
+def test_render_strict_mode_still_raises():
+    """严格模式行为不变：缺变量必须抛 PromptVariableMissingError。"""
+    import pytest
+    from models.store import Store
+    from services.ai.prompt_engine import PromptVariableMissingError
+
+    pe = get_prompt_engine()
+    store = Store(name="测试球房", city="成都")
+    with pytest.raises(PromptVariableMissingError):
+        pe.render("operation.daily_report", store, {"tone": "a", "target": "b", "extra_note": "c"})
+
+
+def test_profit_model_no_high_ratio_recharge():
+    """知识口径回归：profit_model 不得出现大比例充值赠送（须与一卡通铁律一致）。"""
+    pe = get_prompt_engine()
+    tpl = pe._templates["knowledge.profit_model"]["template"]
+    for bad in ["充1000送500", "充300送100", "充500送200", "20-33%"]:
+        assert bad not in tpl, f"profit_model 残留大比例赠送口径: {bad}"
+    assert "充1000送99" in tpl
+
+
+def test_orchestrate_has_quota_guard():
+    """协作页配额回归：发起协作任务必须有配额检查与用量计费。"""
+    import api.v1.orchestrate as orch
+    src = inspect.getsource(orch.create_orchestration)
+    assert "check_quota" in src
+    assert "increment_usage" in src
+
+
+def test_run_generation_pipeline_has_all_guards():
+    """统一管道四件套回归：注入检查/配额/过滤/落库/计费缺一不可。"""
+    from services.content_service import run_generation
+    src = inspect.getsource(run_generation)
+    for guard in ["check_input_injection", "check_quota", "filter_output_leak", "db.add", "increment_usage"]:
+        assert guard in src, f"run_generation 缺 {guard}"
+
+
+def test_generation_paths_use_unified_pipeline():
+    """所有非流式生成路径必须走 run_generation（根治新路径漏防护）。"""
+    import services.diagnosis_service as m1
+    import services.performance_service as m2
+    import services.sop_service as m3
+    import services.games_service as m4
+    import services.outreach_service as m5
+    import api.v1.repurpose as m6
+    import api.v1.batch as m7
+    for mod in (m1, m2, m3, m4, m5, m6, m7):
+        assert "run_generation" in inspect.getsource(mod), f"{mod.__name__} 未走统一管道"
+
+
+def test_orchestrator_hardening():
+    """协作引擎回归：落库/TTL清理/取消中止句柄/汇总Agent 必须存在。"""
+    import services.orchestrator as orch
+    src = inspect.getsource(orch)
+    for piece in ["_persist_result", "_cleanup_old_tasks", "_task_handles", "_synthesize"]:
+        assert piece in src, f"orchestrator 缺 {piece}"
+
+
+def test_knowledge_no_source_leak_terms():
+    """知识口径回归：知识库正文不得出现来源出处与方向冲突表述。"""
+    pe = get_prompt_engine()
+    knowledge = {k: v for k, v in pe._templates.items() if k.startswith("knowledge.")}
+    for key, data in knowledge.items():
+        tpl = data.get("template", "")
+        assert "PPT" not in tpl, f"{key} 残留 PPT 出处字样"
+
+
+def test_poster_prompt_image_roles():
+    """生图 prompt 回归：底图与参考图共存时必须声明图片角色，否则模型会把参考图内容抄进结果。"""
+    from services.poster_service import build_poster_prompt
+
+    # 底图 + 参考图：双声明
+    p = build_poster_prompt("背景改成深色", ["周赛海报"], has_base_image=True, ref_count=2)
+    assert "base image to modify" in p
+    assert "style references" in p
+    assert "之前的设计要求" in p and "当前要求" in p
+
+    # 仅底图：保留构图指令
+    p = build_poster_prompt("去掉文字", [], has_base_image=True, ref_count=0)
+    assert "keep the overall composition" in p
+    assert "style references" not in p
+
+    # 仅参考图：风格参考声明
+    p = build_poster_prompt("周赛海报", [], has_base_image=False, ref_count=1)
+    assert "style and mood references" in p
+
+    # 无图：纯文字
+    p = build_poster_prompt("周赛海报", [], has_base_image=False, ref_count=0, no_text=True)
+    assert "no text" in p and "image" not in p.split("no text")[0]
+
+
+def test_poster_refine_and_references_coexist():
+    """生图主流程回归：refine 与参考图不再互斥（修复 elif 静默丢弃参考图）。"""
+    import inspect as _inspect
+    from services import poster_service
+    src = _inspect.getsource(poster_service.generate_images)
+    assert "elif reference_image_paths" not in src, "refine 与参考图又变回互斥了"
+    assert "check_quota" in src and "check_input_injection" in src
+
+
+def test_admin_routes_single_prefix():
+    """路由回归：admin 必须挂在 /admin/* 而非 /admin/admin/*（双前缀曾让整个管理后台 404）。"""
+    from api.v1.router import router as v1_router
+    paths = {r.path for r in v1_router.routes}
+    assert "/admin/dashboard" in paths, f"admin 路由缺失: {sorted(p for p in paths if 'admin' in p)[:5]}"
+    assert not any(p.startswith("/admin/admin") for p in paths), "admin 双前缀回归"
+    # quota 不带尾斜杠（带斜杠会 307 重定向剥离认证头）
+    assert "/quota" in paths and "/quota/" not in paths
+
+
+def test_invitation_response_id_is_uuid():
+    """契约回归：InvitationResponse.id 必须是 UUID 类型（声明 str 会让响应校验 500）。"""
+    import uuid as _uuid
+    from api.v1.members import InvitationResponse
+    assert InvitationResponse.model_fields["id"].annotation is _uuid.UUID
+
+
+def test_store_update_accepts_brand_style():
+    """契约回归：品牌风格字段必须在 StoreUpdate/StoreResponse 中（曾被 schema 静默丢弃）。"""
+    from schemas.store import StoreUpdate, StoreResponse
+    assert "brand_style" in StoreUpdate.model_fields
+    assert "brand_style" in StoreResponse.model_fields

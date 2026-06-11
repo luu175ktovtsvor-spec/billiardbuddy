@@ -1,17 +1,10 @@
-import uuid
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.exceptions import AIServiceError, AIProviderError
-from core.security_guard import check_input_injection, filter_output_leak
 from models.user import User
 from models.store import Store
 from models.generation import Generation
-from services.ai.factory import ProviderFactory
 from services.ai.prompt_engine import get_prompt_engine
-from services.ai.base import TextRequest
-from services.content_service import _append_guardrails
-from services.quota_service import check_quota, increment_usage
+from services.content_service import _append_guardrails, run_generation
 
 prompt_engine = get_prompt_engine()
 
@@ -42,10 +35,6 @@ async def generate_outreach(
     style: str,
     extra_note: str = "",
 ) -> Generation:
-    injection_check = check_input_injection(f"{customer_name} {relationship} {extra_note}")
-    if injection_check:
-        raise AIServiceError(injection_check)
-
     template_key = "operation.assistant_outreach"
 
     extra_vars = {
@@ -62,22 +51,10 @@ async def generate_outreach(
         intent_text=f"约客 {CUSTOMER_TYPE_LABELS.get(customer_type, customer_type)} {relationship} {extra_note}",
     )
 
-    await check_quota(db, str(store.id))
-
-    provider = ProviderFactory.get_text_provider()
-    request = TextRequest(prompt=rendered_prompt, max_tokens=2000)
-    try:
-        response = await provider.generate(request)
-    except AIProviderError as e:
-        raise AIServiceError(e.message) from e
-    except Exception as e:
-        raise AIServiceError("AI 生成服务暂时不可用，请稍后重试") from e
-
-    generation = Generation(
-        id=uuid.uuid4(),
-        store_id=store.id,
-        user_id=user.id,
-        type="outreach",
+    return await run_generation(
+        db, store, user,
+        prompt=rendered_prompt,
+        gen_type="outreach",
         sub_type="generate",
         input_params={
             "customer_name": customer_name,
@@ -86,14 +63,6 @@ async def generate_outreach(
             "style": style,
             "extra_note": extra_note,
         },
-        prompt_used=rendered_prompt,
-        result=filter_output_leak(response.content),
-        model_used=response.model,
-        tokens_used=response.tokens_used,
+        user_input=f"{customer_name} {relationship} {extra_note}",
+        max_tokens=2000,
     )
-    db.add(generation)
-    await db.commit()
-    await db.refresh(generation)
-    await increment_usage(db, str(store.id), tokens=response.tokens_used or 0)
-
-    return generation

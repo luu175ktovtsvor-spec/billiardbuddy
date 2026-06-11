@@ -2,6 +2,7 @@
 
 import secrets
 import string
+import uuid as uuid_mod
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -28,7 +29,8 @@ class CreateInvitationRequest(BaseModel):
 
 
 class InvitationResponse(BaseModel):
-    id: str
+    # UUID 类型：ORM 给的是 uuid.UUID 对象，声明 str 会让 Pydantic v2 响应校验直接 500
+    id: uuid_mod.UUID
     code: str
     role: str
     is_active: bool
@@ -66,6 +68,9 @@ class AddMemberRequest(BaseModel):
 # ─── 工具函数 ───
 
 VALID_ROLES = {"owner", "manager", "assistant_manager", "coach", "frontdesk", "operator"}
+# 可由邀请码/手动添加/改角色授予的角色：owner 不在内——否则店长（持 STORE_UPDATE）
+# 可铸造 owner 邀请码或把同伙加为 owner，进而接管门店。owner 转让需另走专门流程。
+GRANTABLE_ROLES = VALID_ROLES - {"owner"}
 
 
 def _generate_code(length: int = 8) -> str:
@@ -85,8 +90,8 @@ async def create_invitation(
     _perm: None = Depends(require_permission(Permission.STORE_UPDATE)),
 ):
     """创建邀请码。"""
-    if body.role not in VALID_ROLES:
-        raise AppException(f"无效角色: {body.role}，可选: {', '.join(VALID_ROLES)}")
+    if body.role not in GRANTABLE_ROLES:
+        raise AppException(f"无效角色: {body.role}，可选: {', '.join(GRANTABLE_ROLES)}")
 
     # 生成唯一邀请码
     for _ in range(10):
@@ -195,8 +200,9 @@ async def join_store(
     """用邀请码加入门店。"""
     code = body.invite_code.strip().upper()
 
+    # 行级锁：与注册路径一致，串行化并发使用，避免 use_count 竞态突破次数上限
     result = await db.execute(
-        select(StoreInvitation).where(StoreInvitation.code == code)
+        select(StoreInvitation).where(StoreInvitation.code == code).with_for_update()
     )
     invitation = result.scalar_one_or_none()
 
@@ -270,27 +276,31 @@ async def change_member_role(
     _perm: None = Depends(require_permission(Permission.STORE_UPDATE)),
 ):
     """调整成员角色。"""
-    import uuid
-    if body.role not in VALID_ROLES:
+    if body.role not in GRANTABLE_ROLES:
         raise AppException(f"无效角色: {body.role}")
 
     # 不能修改自己的角色
     if str(current_user.id) == user_id:
         raise AppException("不能修改自己的角色")
 
+    try:
+        target_uuid = uuid_mod.UUID(user_id)
+    except ValueError:
+        raise NotFoundException("该用户不是门店成员")
+
     result = await db.execute(
         select(StoreMember).where(
             StoreMember.store_id == current_store.id,
-            StoreMember.user_id == uuid.UUID(user_id),
+            StoreMember.user_id == target_uuid,
         )
     )
     member = result.scalar_one_or_none()
     if not member:
         raise NotFoundException("该用户不是门店成员")
 
-    # 非 owner 不能把别人设为 owner
-    if body.role == "owner":
-        raise AppException("不能通过此接口转让 owner 角色")
+    # 不能降级/改动 owner——否则店长可把店主降为前台，接管门店
+    if member.role == "owner":
+        raise ForbiddenException("不能修改店主（owner）的角色")
 
     member.role = body.role
     await db.commit()
@@ -349,7 +359,7 @@ async def add_member_by_phone(
     _perm: None = Depends(require_permission(Permission.STORE_UPDATE)),
 ):
     """管理员通过手机号直接添加成员。"""
-    if body.role not in VALID_ROLES:
+    if body.role not in GRANTABLE_ROLES:
         raise AppException(f"无效角色: {body.role}")
 
     # 查找用户

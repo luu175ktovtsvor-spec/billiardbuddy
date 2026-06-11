@@ -24,7 +24,7 @@
 | 用途 | 模型 | 说明 |
 |------|------|------|
 | 文本生成 | DeepSeek V4 Flash | 通过 `https://api.deepseek.com` |
-| 图片生成 | OpenAI gpt-image-2 | 通过 Cloudflare Worker 代理 `https://openai-proxy.luu175ktovtsvor.workers.dev/v1` |
+| 图片生成 | OpenAI gpt-image-2 | 生产直连 `https://api.openai.com/v1`（美国节点，~80ms）；Worker 代理为国内开发备选 |
 
 ## 技术栈
 
@@ -53,10 +53,10 @@
 - 我们通过 `images.edit` 接口模拟：把上一张生成的图片作为 `refine_from` 传入，实现"基于此调整"的以图生图效果
 - 这是一个务实的 workaround，效果满足需求
 
-**Cloudflare Worker 代理：**
-- `OPENAI_BASE_URL` 指向 `https://openai-proxy.luu175ktovtsvor.workers.dev/v1`
-- 这是一个 Cloudflare Worker 代理，用于优化 OpenAI API 的访问速度和稳定性
-- 不是直连 `https://api.openai.com/v1`
+**OpenAI 接口地址（`OPENAI_BASE_URL`）：**
+- 生产（美国硅谷节点）实测直连 `https://api.openai.com/v1` 正常（~80ms），服务器 .env 当前即直连配置
+- Cloudflare Worker 代理 `https://openai-proxy.luu175ktovtsvor.workers.dev/v1` 仅为国内本地开发的备选（直连不通时用）
+- 出口 IP 为阿里云美国（AS45102），如遇 OpenAI 对机房 IP 风控再考虑切代理
 
 ## 项目结构
 
@@ -185,7 +185,7 @@ server/                 # FastAPI 后端
 - 请求/响应模型用 Pydantic v2 的 `BaseModel`
 - 数据库操作用 async SQLAlchemy
 - 认证用 JWT（access token，24小时有效期），密码用 bcrypt 哈希
-- 文件上传存本地目录 `server/uploads/`
+- 文件上传存**项目根目录** `uploads/`（config.py 默认 `<项目根>/uploads`；`server/uploads/` 是历史遗留死目录，勿用。服务器 .env 如设 UPLOAD_DIR 必须用绝对路径）
 - AI 调用结果写入 `generations` 表，记录 prompt、model、tokens
 - PromptEngine 是单例，通过 `get_prompt_engine()` 获取，不要直接 `PromptEngine()`
 - Knowledge YAML 必须有 `template:` 和 `key:` 字段，否则 PromptEngine 加载会报错
@@ -207,6 +207,8 @@ template: |
 修改 Prompt 不改业务代码，只改 YAML 文件。新增 knowledge YAML 必须包含 `template:` 字段。
 
 **禁止事项：** YAML 文件中不得出现任何第三方品牌名、来源出处、文件名引用。
+
+**品牌词豁免（2026-06-12 裁决）：** 球台/球杆等器材品牌（乔氏、星牌、百能、独牙等）属行业通用品类叫法（如"乔氏中八"近乎品类名，门店资料字段本身就存器材品牌），予以豁免。该禁令针对的是知识来源与机构名（培训机构、连锁品牌、文档出处），此类仍严格禁止。
 
 ## 代码同步与部署
 
@@ -331,9 +333,9 @@ journalctl -u billiards-backend -n 50 --no-pager
 - 不做海报拖拽编辑器
 - 不做 WebSocket 实时协作
 - 不做自动群发、自动私信
-- 不在 AI 生图 Prompt 中包含中文文字、价格、Logo、二维码
+- 不在 AI 生图 Prompt 中**主动**包含中文文字、价格、Logo、二维码（2026-06-12 调整：用户在生图页"把文字画进图里"输入框显式填写文字时例外，作为实验功能放行；系统侧仍不自动往 prompt 塞中文文字）
 - 不使用原生 `<select>` 做选择器（用 CardSelect 组件）
-- 不在代码中出现任何第三方品牌名或来源出处
+- 不在代码中出现任何第三方品牌名或来源出处（器材品牌如乔氏/星牌/百能/独牙属行业通用品类叫法，豁免；禁的是知识来源与机构名）
 
 ## 文档维护规则
 

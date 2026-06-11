@@ -8,7 +8,6 @@ import { ApiError } from "@/types/api";
 import type { StoreResponse } from "@/types/store";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { Users, Loader2 } from "lucide-react";
-import { EmptyStoreGuide } from "@/components/empty-store-guide";
 
 const MODULES = [
   { slug: "basic", label: "基本信息", icon: "📋", desc: "门店名称、地址、电话、营业时间" },
@@ -50,6 +49,27 @@ function getModuleStatus(store: StoreResponse | null, profile: Record<string, un
 export default function StoreSettingsPage() {
   const router = useRouter();
   const [store, setStore] = useState<StoreResponse | null | undefined>(undefined);
+  const [newStoreName, setNewStoreName] = useState("");
+  const [newStoreCity, setNewStoreCity] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState("");
+
+  const handleCreateStore = async () => {
+    if (!newStoreName.trim() || creating) return;
+    setCreating(true);
+    setCreateError("");
+    try {
+      const created = await api.createStore({
+        name: newStoreName.trim(),
+        city: newStoreCity.trim() || undefined,
+      });
+      setStore(created);
+    } catch (err) {
+      setCreateError(err instanceof ApiError ? err.detail : "创建失败，请重试");
+    } finally {
+      setCreating(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -74,13 +94,54 @@ export default function StoreSettingsPage() {
   }
 
   if (!store) {
+    // 此前这里只有"请先创建门店"的提示却没有创建入口——无邀请码注册的
+    // 新用户会陷入死循环（全站唯一出口就是这个表单）
     return (
       <div className="mx-auto max-w-2xl">
         <Breadcrumb items={[
           { label: "工作台", href: "/dashboard/workbench" },
           { label: "门店设置" },
         ]} />
-        <EmptyStoreGuide description="你还没有门店资料，请先创建门店" />
+        <div className="rounded-lg border border-indigo-200 bg-white p-6 shadow-sm">
+          <h2 className="mb-1 text-lg font-bold text-slate-900">创建你的门店</h2>
+          <p className="mb-5 text-sm text-slate-500">
+            填个店名就能开始，其余资料创建后可以分模块慢慢完善——资料越全，AI 生成越准。
+          </p>
+          <div className="space-y-4">
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">门店名称 *</label>
+              <input
+                type="text"
+                maxLength={100}
+                value={newStoreName}
+                onChange={(e) => setNewStoreName(e.target.value)}
+                placeholder="例：星辉台球俱乐部"
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">所在城市（选填）</label>
+              <input
+                type="text"
+                maxLength={50}
+                value={newStoreCity}
+                onChange={(e) => setNewStoreCity(e.target.value)}
+                placeholder="例：成都"
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              />
+            </div>
+            {createError && <p className="text-sm text-red-600">{createError}</p>}
+            <button
+              type="button"
+              disabled={creating || !newStoreName.trim()}
+              onClick={handleCreateStore}
+              className="w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+            >
+              {creating ? "创建中..." : "创建门店"}
+            </button>
+            <p className="text-xs text-slate-400">是员工？让管理员发邀请码，注册时填写即可自动加入门店。</p>
+          </div>
+        </div>
       </div>
     );
   }

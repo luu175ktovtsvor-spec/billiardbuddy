@@ -1,6 +1,8 @@
 export interface DashboardSummary {
   total_generations: number
   today_generations: number
+  favorite_count: number
+  good_count: number
   latest_generation_at: string | null
 }
 

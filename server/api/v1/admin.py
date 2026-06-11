@@ -8,11 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.deps import get_current_user, get_db
 from models.user import User
 from models.store import Store, StoreMember
-from models.plan import Plan, StoreSubscription
+from models.plan import Plan, StoreSubscription, SubscriptionPayment
 from models.generation import Generation
 from models.quota import UsageQuota
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+# 注意：前缀由 router.py 统一指定（include_router(prefix="/admin")），此处不得再写
+# prefix——否则双前缀变成 /api/v1/admin/admin/*，整个管理后台 404（历史教训）
+router = APIRouter(tags=["admin"])
 
 
 def require_admin(user: User):
@@ -58,7 +60,19 @@ async def list_users(
     )
     total = await db.scalar(select(func.count(User.id)))
 
-    return {"items": users.all(), "total": total, "page": page}
+    # 显式序列化，禁止把 ORM 对象直接下发（会泄露 password_hash）
+    items = [
+        {
+            "id": str(u.id),
+            "phone": u.phone,
+            "name": u.name,
+            "is_active": u.is_active,
+            "is_admin": u.is_admin,
+            "created_at": u.created_at.isoformat() if u.created_at else None,
+        }
+        for u in users.all()
+    ]
+    return {"items": items, "total": total, "page": page}
 
 
 @router.post("/users/{user_id}/activate")
@@ -98,15 +112,72 @@ async def activate_user(
         payment_amount=payment_amount,
     )
     db.add(subscription)
+    await db.flush()
 
-    # 更新配额
+    # 收款流水（收入统计以流水为准）
+    if payment_amount > 0:
+        db.add(SubscriptionPayment(
+            subscription_id=subscription.id,
+            amount=payment_amount,
+            note=payment_note,
+            kind="new",
+            created_by=user.id,
+        ))
+
+    # 更新配额：无配额行时创建（否则套餐限额被首次生成的默认值顶掉）
     quota = await db.scalar(select(UsageQuota).where(UsageQuota.store_id == member.store_id))
-    if quota:
-        quota.monthly_generation_limit = plan.generation_limit
-        quota.monthly_tokens_limit = plan.token_limit
+    if quota is None:
+        from services.quota_service import _period_start_now
+        quota = UsageQuota(
+            store_id=member.store_id,
+            monthly_generations_used=0,
+            monthly_tokens_used=0,
+            current_period_start=_period_start_now(),
+        )
+        db.add(quota)
+    quota.monthly_generation_limit = plan.generation_limit
+    quota.monthly_tokens_limit = plan.token_limit
 
     await db.commit()
     return {"status": "ok", "plan": plan.name, "expires": subscription.current_period_end}
+
+
+@router.put("/users/{user_id}/quota")
+async def adjust_user_quota(
+    user_id: str,
+    generation_limit: int = None,
+    tokens_limit: int = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """单店自定义配额：不动套餐，直接调这家店的本月上限（"试用觉得好用，找我提额"的入口）。"""
+    require_admin(user)
+
+    member = await db.scalar(select(StoreMember).where(StoreMember.user_id == user_id))
+    if not member:
+        raise HTTPException(status_code=404, detail="用户没有门店")
+
+    quota = await db.scalar(select(UsageQuota).where(UsageQuota.store_id == member.store_id))
+    if quota is None:
+        from services.quota_service import _period_start_now
+        quota = UsageQuota(
+            store_id=member.store_id,
+            monthly_generations_used=0,
+            monthly_tokens_used=0,
+            current_period_start=_period_start_now(),
+        )
+        db.add(quota)
+    if generation_limit is not None:
+        quota.monthly_generation_limit = max(0, generation_limit)
+    if tokens_limit is not None:
+        quota.monthly_tokens_limit = max(0, tokens_limit)
+    await db.commit()
+    return {
+        "status": "ok",
+        "generation_limit": quota.monthly_generation_limit,
+        "tokens_limit": quota.monthly_tokens_limit,
+        "generations_used": quota.monthly_generations_used,
+    }
 
 
 @router.get("/plans")
@@ -115,7 +186,9 @@ async def list_plans(
     db: AsyncSession = Depends(get_db),
 ):
     require_admin(user)
-    plans = await db.scalars(select(Plan).where(Plan.is_active == True))
+    # 管理端返回全量（含停用）：否则停用后从列表消失、无入口再启用；
+    # 「开通订阅」下拉等只需可用套餐的场景由前端按 is_active 过滤
+    plans = await db.scalars(select(Plan).order_by(Plan.created_at))
     return plans.all()
 
 
@@ -208,11 +281,13 @@ async def list_subscriptions(
 ):
     require_admin(user)
     query = select(StoreSubscription).order_by(desc(StoreSubscription.current_period_end))
+    count_query = select(func.count(StoreSubscription.id))
     if status:
         query = query.where(StoreSubscription.status == status)
+        count_query = count_query.where(StoreSubscription.status == status)
     offset = (page - 1) * page_size
     subs = await db.scalars(query.offset(offset).limit(page_size))
-    total = await db.scalar(select(func.count(StoreSubscription.id)))
+    total = await db.scalar(count_query)
 
     # 批量预取，避免逐行 N+1 查询（原先每条订阅 4 次查询）
     subs_list = subs.all()
@@ -267,9 +342,18 @@ async def renew_subscription(
     base = sub.current_period_end if sub.current_period_end > now else now
     sub.current_period_end = base + timedelta(days=30 * months)
     sub.status = "active"
+    # payment_amount/payment_note 仅作"最近一笔"展示；历史收款进流水表，统计不再失真
     sub.payment_note = payment_note
     sub.payment_amount = payment_amount
     sub.updated_at = now
+    if payment_amount > 0:
+        db.add(SubscriptionPayment(
+            subscription_id=sub.id,
+            amount=payment_amount,
+            note=payment_note,
+            kind="renew",
+            created_by=user.id,
+        ))
     await db.commit()
     return {"status": "ok", "new_period_end": sub.current_period_end.isoformat()}
 
@@ -284,22 +368,19 @@ async def get_revenue_stats(
     now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
-    # 本月收入
+    # 收入统计基于收款流水：续费各算一笔、计入实际收款月份（订阅字段只存最近一笔）
     month_revenue = await db.scalar(
-        select(func.sum(StoreSubscription.payment_amount))
-        .where(and_(StoreSubscription.created_at >= month_start, StoreSubscription.payment_amount > 0))
+        select(func.sum(SubscriptionPayment.amount))
+        .where(SubscriptionPayment.created_at >= month_start)
     ) or 0
 
     # 总收入
-    total_revenue = await db.scalar(
-        select(func.sum(StoreSubscription.payment_amount))
-        .where(StoreSubscription.payment_amount > 0)
-    ) or 0
+    total_revenue = await db.scalar(select(func.sum(SubscriptionPayment.amount))) or 0
 
     # 本月收款笔数
     month_count = await db.scalar(
-        select(func.count(StoreSubscription.id))
-        .where(and_(StoreSubscription.created_at >= month_start, StoreSubscription.payment_amount > 0))
+        select(func.count(SubscriptionPayment.id))
+        .where(SubscriptionPayment.created_at >= month_start)
     ) or 0
 
     # 即将到期（7天内）

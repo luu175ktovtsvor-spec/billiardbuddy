@@ -5,15 +5,19 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.quota import UsageQuota
 
 logger = logging.getLogger(__name__)
 
-# 默认配额
-DEFAULT_GENERATION_LIMIT = 100
-DEFAULT_TOKENS_LIMIT = 500000
+# 默认配额 = 试用档（未开通套餐的新门店）。
+# 30 次/月：店长日均 3-5 次可体验约一周，足够判断"好不好用"；
+# 生图与文本共用此池，30 次全用于生图的成本也可控。
+# 开通套餐后由 plan 的限额覆盖；管理后台也可单店调整。
+DEFAULT_GENERATION_LIMIT = 30
+DEFAULT_TOKENS_LIMIT = 200000
 
 # 业务时区（月度配额按中国时区重置，避免 UTC 月底错位数小时）
 BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
@@ -42,18 +46,27 @@ async def get_or_create_quota(db: AsyncSession, store_id: str) -> UsageQuota:
     )
     quota = result.scalar_one_or_none()
     if quota is None:
-        quota = UsageQuota(
-            store_id=store_id,
-            monthly_generation_limit=DEFAULT_GENERATION_LIMIT,
-            monthly_tokens_limit=DEFAULT_TOKENS_LIMIT,
-            monthly_generations_used=0,
-            monthly_tokens_used=0,
-            current_period_start=_period_start_now(),
+        # ON CONFLICT DO NOTHING：store_id 唯一约束下并发首建不再抛 IntegrityError
+        import uuid as _uuid
+        await db.execute(
+            pg_insert(UsageQuota)
+            .values(
+                id=_uuid.uuid4(),
+                store_id=store_id,
+                monthly_generation_limit=DEFAULT_GENERATION_LIMIT,
+                monthly_tokens_limit=DEFAULT_TOKENS_LIMIT,
+                monthly_generations_used=0,
+                monthly_tokens_used=0,
+                current_period_start=_period_start_now(),
+            )
+            .on_conflict_do_nothing(index_elements=["store_id"])
         )
-        db.add(quota)
         await db.commit()
-        await db.refresh(quota)
-    elif _is_new_period(quota):
+        result = await db.execute(
+            select(UsageQuota).where(UsageQuota.store_id == store_id)
+        )
+        quota = result.scalar_one()
+    if _is_new_period(quota):
         quota.monthly_generations_used = 0
         quota.monthly_tokens_used = 0
         quota.current_period_start = _period_start_now()
@@ -67,8 +80,11 @@ async def check_quota(db: AsyncSession, store_id: str) -> UsageQuota:
     if quota.monthly_generations_used >= quota.monthly_generation_limit:
         from core.exceptions import QuotaExceededError
         raise QuotaExceededError(
-            f"本月生成次数已达上限 ({quota.monthly_generation_limit} 次)"
+            f"本月生成次数已达上限（{quota.monthly_generation_limit} 次）。如需提升额度，请联系您的服务商"
         )
+    if quota.monthly_tokens_limit and quota.monthly_tokens_used >= quota.monthly_tokens_limit:
+        from core.exceptions import QuotaExceededError
+        raise QuotaExceededError("本月 AI 用量已达上限。如需提升额度，请联系您的服务商")
     return quota
 
 

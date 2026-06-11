@@ -7,33 +7,70 @@ import type { GenerationHistoryItem, GenerationType } from "@/types/generation-h
 import { CopyButton } from "@/components/generators/copy-button";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Star, Clock, ChevronLeft, ChevronRight, X, MessageSquare } from "lucide-react";
+import { Star, Clock, ChevronLeft, ChevronRight, X, MessageSquare, Sparkles } from "lucide-react";
 import Link from "next/link";
+import { ROLE_TASKS } from "@/lib/role-workbench-config";
+import { markdownToPlainText } from "@/lib/utils";
+import { useToast } from "@/components/ui/toast";
 
 const TYPE_LABELS: Record<string, string> = {
   copywriting: "文案",
   activity: "活动",
   operation: "经营",
   workbench: "工作台",
+  poster: "海报",
 };
 
-/** 去掉 Markdown 语法，返回纯文本预览 */
-function stripMarkdown(text: string): string {
-  return text
-    .replace(/^#{1,6}\s+/gm, "")       // 去掉标题 #
-    .replace(/\*\*(.+?)\*\*/g, "$1")    // 去掉加粗 **
-    .replace(/\*(.+?)\*/g, "$1")        // 去掉斜体 *
-    .replace(/~~(.+?)~~/g, "$1")        // 去掉删除线 ~~
-    .replace(/`{1,3}[^`]*`{1,3}/g, "")  // 去掉代码块
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // 链接保留文字
-    .replace(/^[-*+]\s+/gm, "")         // 去掉列表符号
-    .replace(/^\d+\.\s+/gm, "")         // 去掉有序列表
-    .replace(/^>\s+/gm, "")             // 去掉引用
-    .replace(/^---+$/gm, "")            // 去掉分割线
-    .replace(/^\|(.+)\|$/gm, "")        // 去掉表格行
-    .replace(/^\|[-:\s|]+\|$/gm, "")    // 去掉表格分隔行
-    .replace(/\n{3,}/g, "\n\n")         // 多空行压缩
-    .trim();
+/** "继续对话"跳转：按 prompt_key 找回原任务卡片并带上原始意图；找不到（自由输入等）则不显示入口 */
+function continueHref(item: GenerationHistoryItem): string | null {
+  if (item.type !== "workbench") return null;
+  const params = (item.input_params || {}) as Record<string, unknown>;
+  const intent = params.user_intent;
+  const promptKey = params.prompt_key;
+  if (typeof intent !== "string" || !intent) return null;
+  if (typeof promptKey !== "string" || !promptKey) return null;
+  for (const tasks of Object.values(ROLE_TASKS)) {
+    const card = tasks.find((t) => t.promptKey === promptKey);
+    if (card) {
+      return `/dashboard/workbench/${card.id}?intent=${encodeURIComponent(intent)}`;
+    }
+  }
+  return null;
+}
+
+/** 保存历史记录为"我的模板"：按 prompt_key 找回任务卡，沉淀为可一键重跑的模板 */
+function saveItemAsTemplate(item: GenerationHistoryItem): boolean {
+  const params = (item.input_params || {}) as Record<string, unknown>;
+  const intent = typeof params.user_intent === "string" ? params.user_intent : "";
+  if (!intent) return false;
+  const promptKey = typeof params.prompt_key === "string" ? params.prompt_key : "";
+  let cardId: string | undefined;
+  let title = intent.slice(0, 12);
+  let role = typeof params.role === "string" ? params.role : "manager";
+  for (const tasks of Object.values(ROLE_TASKS)) {
+    const card = tasks.find((t) => t.promptKey && t.promptKey === promptKey);
+    if (card) {
+      cardId = card.id;
+      title = card.title;
+      role = card.role;
+      break;
+    }
+  }
+  try {
+    const templates = JSON.parse(localStorage.getItem("my_templates") || "[]");
+    templates.push({
+      id: Date.now().toString(),
+      title,
+      intent,
+      role,
+      cardId,
+      createdAt: new Date().toISOString(),
+    });
+    localStorage.setItem("my_templates", JSON.stringify(templates));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const SUB_TYPE_LABELS: Record<string, string> = {
@@ -113,7 +150,26 @@ export default function HistoryPage() {
   const pageSize = 20;
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
+  const [showGoodOnly, setShowGoodOnly] = useState(false);
   const [detailItem, setDetailItem] = useState<GenerationHistoryItem | null>(null);
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [repurposing, setRepurposing] = useState<string | null>(null);
+  const [repurposeResult, setRepurposeResult] = useState<{ label: string; content: string } | null>(null);
+  const { toast } = useToast();
+
+  const handleDetailRepurpose = async (id: string, platform: string, label: string) => {
+    setRepurposing(platform);
+    setRepurposeResult(null);
+    try {
+      const res = await api.repurposeContent(id, platform);
+      setRepurposeResult({ label, content: res.content });
+    } catch (err) {
+      toast(err instanceof ApiError ? err.detail : "转换失败，请重试", "error");
+    } finally {
+      setRepurposing(null);
+    }
+  };
 
   const fetchHistory = useCallback(async () => {
     setLoading(true);
@@ -124,6 +180,8 @@ export default function HistoryPage() {
         page_size: pageSize,
         type: typeFilter as GenerationType | undefined,
         is_favorite: showFavoritesOnly || undefined,
+        effect_rating: showGoodOnly ? "good" : undefined,
+        search: search || undefined,
       });
       setItems(res.items);
       setTotal(res.total);
@@ -137,7 +195,13 @@ export default function HistoryPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, typeFilter, showFavoritesOnly]);
+  }, [page, typeFilter, showFavoritesOnly, showGoodOnly, search]);
+
+  // 打开/切换详情时清掉上一条的变体结果
+  useEffect(() => {
+    setRepurposeResult(null);
+    setRepurposing(null);
+  }, [detailItem?.id]);
 
   useEffect(() => {
     fetchHistory();
@@ -150,6 +214,10 @@ export default function HistoryPage() {
         prev.map((item) =>
           item.id === id ? { ...item, is_favorite: res.is_favorite } : item
         )
+      );
+      // 详情弹窗打开时同步图标状态
+      setDetailItem((prev) =>
+        prev && prev.id === id ? { ...prev, is_favorite: res.is_favorite } : prev
       );
     } catch {
       // 静默处理
@@ -164,6 +232,12 @@ export default function HistoryPage() {
           item.id === id ? { ...item, effect_rating: rating } : item
         )
       );
+      setDetailItem((prev) =>
+        prev && prev.id === id ? { ...prev, effect_rating: rating } : prev
+      );
+      if (rating === "good") {
+        toast("已存入门店金牌范文，AI 之后会参考这条的风格", "success");
+      }
     } catch {
       // 静默处理
     }
@@ -180,12 +254,36 @@ export default function HistoryPage() {
   };
 
   const totalPages = Math.ceil(total / pageSize);
+  const detailContinueHref = detailItem ? continueHref(detailItem) : null;
 
   return (
     <div className="mx-auto max-w-4xl">
       <div className="mb-6 flex items-center justify-between">
         <h2 className="text-xl font-bold text-slate-900">生成历史</h2>
         <div className="flex items-center gap-3">
+          {/* 关键词搜索 */}
+          <input
+            type="text"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                setSearch(searchInput.trim());
+                setPage(1);
+              }
+            }}
+            placeholder="搜索内容关键词，回车"
+            className="w-44 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none"
+          />
+          {search && (
+            <button
+              type="button"
+              onClick={() => { setSearch(""); setSearchInput(""); setPage(1); }}
+              className="rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-sm text-indigo-600 hover:bg-indigo-100"
+            >
+              「{search}」✕
+            </button>
+          )}
           {/* Favorite filter toggle */}
           <button
             type="button"
@@ -201,6 +299,18 @@ export default function HistoryPage() {
           >
             <Star className={`h-3.5 w-3.5 ${showFavoritesOnly ? "fill-amber-600 text-amber-600" : ""}`} />
             只看收藏
+          </button>
+          <button
+            type="button"
+            onClick={() => { setShowGoodOnly((v) => !v); setPage(1); }}
+            title="标过「效果好」的内容——AI 正在学习这些内容的风格"
+            className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm transition-colors ${
+              showGoodOnly
+                ? "border-green-200 bg-green-50 text-green-600"
+                : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+            }`}
+          >
+            👍 只看效果好
           </button>
           {/* Type filter — pill buttons */}
           <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-1">
@@ -237,7 +347,7 @@ export default function HistoryPage() {
                 a.click();
                 URL.revokeObjectURL(url);
               } catch {
-                // 静默处理
+                toast("导出失败，请稍后重试", "error");
               }
             }}
             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
@@ -305,7 +415,7 @@ export default function HistoryPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => handleToggleFavorite(item.id, item.is_favorite)}
+                    onClick={(e) => { e.stopPropagation(); handleToggleFavorite(item.id, item.is_favorite); }}
                     className="rounded-md p-1 hover:bg-slate-50 transition-colors"
                     title={item.is_favorite ? "取消收藏" : "收藏"}
                   >
@@ -317,7 +427,9 @@ export default function HistoryPage() {
                       }`}
                     />
                   </button>
-                  <CopyButton text={item.content || ""} />
+                  <span onClick={(e) => e.stopPropagation()}>
+                    <CopyButton text={item.content || ""} />
+                  </span>
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}
@@ -329,7 +441,7 @@ export default function HistoryPage() {
                 </div>
               </div>
               <p className="line-clamp-3 whitespace-pre-wrap text-sm text-slate-700">
-                {stripMarkdown(item.content || "") || "（无内容）"}
+                {markdownToPlainText(item.content || "") || "（无内容）"}
               </p>
             </div>
           ))}
@@ -409,14 +521,27 @@ export default function HistoryPage() {
                 />
               </button>
               <CopyButton text={detailItem.content || ""} />
-              {detailItem.type === "workbench" && typeof detailItem.input_params?.user_intent === "string" && (
+              {detailContinueHref && (
                 <Link
-                  href={`/dashboard/workbench?intent=${encodeURIComponent(detailItem.input_params.user_intent as string)}`}
+                  href={detailContinueHref}
                   className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 transition-colors"
                 >
                   <MessageSquare className="h-4 w-4" />
                   继续对话
                 </Link>
+              )}
+              {detailItem.type === "workbench" && typeof detailItem.input_params?.user_intent === "string" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const ok = saveItemAsTemplate(detailItem);
+                    toast(ok ? "已存为我的模板，首页点「使用」一键重跑" : "保存失败", ok ? "success" : "error");
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 transition-colors"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  存为模板
+                </button>
               )}
             </div>
 
@@ -445,6 +570,40 @@ export default function HistoryPage() {
                 👎 效果差
               </button>
             </div>
+
+            {/* 一键变体：旧爆款 30 秒转成其他平台版本 */}
+            {detailItem.type !== "poster" && (
+              <div className="mt-4 rounded-md border border-slate-100 bg-slate-50 p-3">
+                <p className="mb-2 text-xs text-slate-500">把这条转成其他平台格式：</p>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { platform: "douyin", label: "抖音文案" },
+                    { platform: "xiaohongshu", label: "小红书" },
+                    { platform: "group_notice", label: "群公告" },
+                    { platform: "wechat_moments", label: "朋友圈" },
+                  ].map((p) => (
+                    <button
+                      key={p.platform}
+                      type="button"
+                      disabled={repurposing !== null}
+                      onClick={() => handleDetailRepurpose(detailItem.id, p.platform, p.label)}
+                      className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 hover:border-indigo-300 hover:text-indigo-600 disabled:opacity-50 transition-colors"
+                    >
+                      {repurposing === p.platform ? "转换中..." : p.label}
+                    </button>
+                  ))}
+                </div>
+                {repurposeResult && (
+                  <div className="mt-3 rounded-md border border-indigo-100 bg-white p-3">
+                    <div className="mb-1.5 flex items-center justify-between">
+                      <p className="text-xs font-medium text-indigo-600">{repurposeResult.label}版</p>
+                      <CopyButton text={repurposeResult.content} />
+                    </div>
+                    <p className="whitespace-pre-wrap text-sm text-slate-700">{repurposeResult.content}</p>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="prose prose-sm prose-slate max-w-none">
               {detailItem.type === "poster" && detailItem.result ? (

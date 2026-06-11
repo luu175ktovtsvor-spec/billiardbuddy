@@ -6,8 +6,9 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_current_user, get_current_store, get_db
-from core.exceptions import NotFoundException
+from core.exceptions import AppException, NotFoundException
 from core.rbac import Permission, require_permission
+from core.security_guard import check_input_injection
 from models.generation import Generation
 from models.user import User
 from models.store import Store
@@ -28,6 +29,12 @@ async def submit_feedback(
     generation = await db.get(Generation, generation_id)
     if not generation or generation.store_id != store.id or generation.is_deleted:
         raise NotFoundException("生成记录不存在")
+
+    # 点踩备注会持久注入该店后续所有生成的"避免清单"——必须过注入检查
+    if body.note:
+        injection_check = check_input_injection(body.note)
+        if injection_check:
+            raise AppException(injection_check, status_code=400)
 
     generation.effect_rating = body.rating  # "good" / "bad"
     generation.effect_note = body.note

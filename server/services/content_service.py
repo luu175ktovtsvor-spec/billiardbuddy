@@ -1,5 +1,6 @@
 import logging
 import uuid
+from datetime import date
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +16,7 @@ from services.ai.base import TextRequest
 from services.workbench_fewshot_service import select_workbench_fewshots
 from services.store_profile_service import render_operation_profile_context
 from services.quota_service import check_quota, increment_usage
+from services.brand_voice_service import get_brand_voice_context
 from core.security_guard import check_input_injection, filter_output_leak, AI_RESPONSE_PREFIXES
 from services.scenario_role_map import SCENARIO_ROLE_MAP
 
@@ -27,6 +29,71 @@ def _validate_provider_for_production() -> None:
     """生产环境禁止使用 mock provider。"""
     if settings.app_env == "production" and settings.text_model_provider == "mock":
         raise AIServiceError("生产环境禁止使用 Mock Provider，请配置真实 AI 模型")
+
+
+async def run_generation(
+    db: AsyncSession,
+    store: Store,
+    user: User | None,
+    *,
+    prompt: str,
+    gen_type: str,
+    sub_type: str | None = None,
+    input_params: dict | None = None,
+    user_input: str = "",
+    max_tokens: int = 3000,
+    strip_prefixes: bool = True,
+    use_fallback: bool = False,
+) -> Generation:
+    """统一生成管道：注入检查 → 配额 → 调AI → 去前缀 → 泄露过滤 → 落库 → 计费。
+
+    所有非流式生成路径必须走这里。历史教训：poster/batch/repurpose/专项服务
+    各自手写"渲染→调AI→落库"时，配额/注入/过滤/落库四件套总会漏掉某一环。
+    user_input 传用户自由文本（用于注入检查），纯模板渲染场景可传空串。
+    """
+    if user_input:
+        injection_check = check_input_injection(user_input)
+        if injection_check:
+            raise AIServiceError(injection_check)
+
+    await check_quota(db, str(store.id))
+    _validate_provider_for_production()
+
+    request = TextRequest(prompt=prompt, max_tokens=max_tokens)
+    try:
+        if use_fallback:
+            response, _ = await ProviderFactory.generate_with_fallback(request)
+        else:
+            response = await ProviderFactory.get_text_provider().generate(request)
+    except AIProviderError as e:
+        raise AIServiceError(e.message) from e
+    except AIServiceError:
+        raise
+    except Exception as e:
+        raise AIServiceError("AI 生成服务暂时不可用，请稍后重试") from e
+
+    content = response.content
+    if strip_prefixes:
+        content = _strip_ai_prefixes(content)
+    content = filter_output_leak(content)
+
+    generation = Generation(
+        id=uuid.uuid4(),
+        store_id=store.id,
+        user_id=user.id if user else None,
+        type=gen_type,
+        sub_type=sub_type,
+        input_params=input_params or {},
+        prompt_used=prompt,
+        result=content,
+        model_used=response.model,
+        tokens_used=response.tokens_used or 0,
+    )
+    db.add(generation)
+    await db.commit()
+    await db.refresh(generation)
+    await increment_usage(db, str(store.id), tokens=response.tokens_used or 0)
+    return generation
 
 TONE_LABELS = {
     "lively": "活泼",
@@ -69,14 +136,6 @@ BUDGET_LABELS = {
     "light": "轻度优惠",
     "medium": "中度优惠",
     "heavy": "大力优惠",
-}
-
-OPERATION_SCENARIO_LABELS = {
-    "groupbuy_to_private": "团购转私域",
-    "assistant_promo": "助教推广",
-    "partner_match": "搭子局/竞技局",
-    "tournament": "周赛/月赛",
-    "old_customer_recall": "老客维护",
 }
 
 ROLE_LABELS = {
@@ -134,6 +193,7 @@ KNOWLEDGE_KEYWORDS: dict[str, list[str]] = {
     "knowledge.account_nurturing": ["养号", "账号", "起号", "权重", "限流", "新号"],
     "knowledge.assistant_coaching_sop": ["陪练", "教学", "训练", "球技", "动作", "纠正", "练球", "指导"],
     "knowledge.assistant_difficult_situations": ["刁钻", "难缠", "尴尬", "拒绝", "难题", "不好处理", "投诉"],
+    "knowledge.pk_incentive": ["PK", "对赌", "激励", "排名", "比拼", "奖惩", "冲业绩"],
     "knowledge.assistant_promotion": ["助教推广", "助教获客", "助教朋友圈", "推广助教", "助教引流"],
     "knowledge.assistant_salary": ["助教薪资", "助教工资", "助教提成", "保底", "分成", "薪资"],
     "knowledge.assistant_service_sop": ["上钟", "服务流程", "助教服务", "陪打", "陪玩", "点助教", "约助教"],
@@ -303,18 +363,24 @@ async def generate_copywriting(
 
     template_key = f"copywriting.{sub_type}"
 
+    scenario_label = (
+        GROUP_NOTICE_SCENARIO_LABELS.get(scenario, scenario)
+        if sub_type == "group_notice"
+        else SCENARIO_LABELS.get(scenario, scenario)
+    )
     extra_vars = {
         "tone": TONE_LABELS.get(tone, tone),
-        "scenario": (
-            GROUP_NOTICE_SCENARIO_LABELS.get(scenario, scenario)
-            if sub_type == "group_notice"
-            else SCENARIO_LABELS.get(scenario, scenario)
-        ),
+        "scenario": scenario_label,
         "extra_note": extra_note or "无",
     }
 
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
-    rendered_prompt = _append_guardrails(rendered_prompt, store, role="manager", intent_text=f"{scenario} {extra_note}")
+    # intent 用中文标签：英文枚举值匹配不到中文知识关键词，筛选会形同虚设
+    rendered_prompt = _append_guardrails(rendered_prompt, store, role="manager", intent_text=f"{scenario_label} {extra_note}")
+
+    brand_voice = await get_brand_voice_context(db, store.id)
+    if brand_voice:
+        rendered_prompt = f"{rendered_prompt}\n\n---\n{brand_voice}\n---"
 
     provider = ProviderFactory.get_text_provider()
     request = TextRequest(prompt=rendered_prompt, thinking={"type": "disabled"})
@@ -383,6 +449,10 @@ async def generate_activity(
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
     rendered_prompt = _append_guardrails(rendered_prompt, store, role="manager", intent_text=f"{activity_goal} {target_customer or ''} {extra_note}")
 
+    brand_voice = await get_brand_voice_context(db, store.id)
+    if brand_voice:
+        rendered_prompt = f"{rendered_prompt}\n\n---\n{brand_voice}\n---"
+
     provider = ProviderFactory.get_text_provider()
     request = TextRequest(prompt=rendered_prompt, max_tokens=3000)
     try:
@@ -447,10 +517,18 @@ async def generate_operation(
         "tone": TONE_LABELS.get(tone, tone),
         "target": target or "全部客户",
         "extra_note": extra_note or "无",
+        "role": ROLE_LABELS.get(inferred_role, inferred_role),
+        "date": date.today().isoformat(),
     }
 
-    rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
-    rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role, intent_text=f"{scenario} {target or ''} {extra_note}")
+    rendered_prompt = prompt_engine.render(template_key, store, extra_vars, lenient=True)
+    # intent 用模板中文名：英文场景键匹配不到中文知识关键词
+    template_label = prompt_engine.template_name(template_key) or scenario
+    rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role, intent_text=f"{template_label} {target or ''} {extra_note}")
+
+    brand_voice = await get_brand_voice_context(db, store.id)
+    if brand_voice:
+        rendered_prompt = f"{rendered_prompt}\n\n---\n{brand_voice}\n---"
 
     provider = ProviderFactory.get_text_provider()
     request = TextRequest(prompt=rendered_prompt, max_tokens=3000)
@@ -512,19 +590,21 @@ async def generate_workbench(
 
     if prompt_key:
         # promptKey 路径：使用指定场景模板（如 operation.qiangyi_battle），再追加防护上下文
+        # 从 prompt_key 提取场景名（如 "operation.qiangyi_battle" → "qiangyi_battle"），推断岗位
+        scenario_name = prompt_key.split(".", 1)[-1] if "." in prompt_key else prompt_key
+        inferred_role = SCENARIO_ROLE_MAP.get(scenario_name) or role
         extra_vars = {
             "tone": TONE_LABELS.get("friendly", "friendly"),
             "target": CUSTOMER_LABELS.get(target_customer_type or "all", "全部客户"),
             "extra_note": extra_note or "无",
             "scenario": "日常",
+            "role": ROLE_LABELS.get(inferred_role, inferred_role),
+            "date": date.today().isoformat(),
         }
-        rendered_prompt = prompt_engine.render(prompt_key, store, extra_vars)
-
-        # 推断岗位用于注入对应 role_rules 和 knowledge
-        # 从 prompt_key 提取场景名（如 "operation.qiangyi_battle" → "qiangyi_battle"）
-        scenario_name = prompt_key.split(".", 1)[-1] if "." in prompt_key else prompt_key
-        inferred_role = SCENARIO_ROLE_MAP.get(scenario_name) or role
-        rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role, intent_text=f"{user_intent} {extra_note}")
+        rendered_prompt = prompt_engine.render(prompt_key, store, extra_vars, lenient=True)
+        # intent 带上模板中文名：用户意图为空时知识筛选仍能按场景命中
+        template_label = prompt_engine.template_name(prompt_key)
+        rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role, intent_text=f"{template_label} {user_intent} {extra_note}")
     else:
         # 通用 free_intent 路径：在模板内注入规则和知识
         baseline_rules = _load_rule_safe("rules.baseline", store)
@@ -563,6 +643,11 @@ async def generate_workbench(
         }
 
         rendered_prompt = prompt_engine.render("workbench.free_intent", store, extra_vars)
+
+    # 品牌声音：与流式路径保持一致，让"点赞教 AI 学风格"在所有入口生效
+    brand_voice = await get_brand_voice_context(db, store.id)
+    if brand_voice:
+        rendered_prompt = f"{rendered_prompt}\n\n---\n{brand_voice}\n---"
 
     # 获取文本 provider
     provider = ProviderFactory.get_text_provider()

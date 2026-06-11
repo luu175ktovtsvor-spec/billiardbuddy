@@ -48,7 +48,7 @@ async def get_today_dashboard(
     today_end = today_end_local.astimezone(timezone.utc)
 
     # 一次查询获取所有统计数据
-    total_count, today_count, latest = await _get_generation_stats(
+    total_count, today_count, favorite_count, good_count, latest = await _get_generation_stats(
         db, store.id, today_start, today_end
     )
 
@@ -72,6 +72,8 @@ async def get_today_dashboard(
         summary=DashboardSummary(
             total_generations=total_count,
             today_generations=today_count,
+            favorite_count=favorite_count,
+            good_count=good_count,
             latest_generation_at=latest,
         ),
         recommendations=recommendations,
@@ -92,7 +94,7 @@ async def _get_generation_stats(
     tuple[int, int, datetime | None]
         (total_count, today_count, latest_created_at)
     """
-    # 使用 CASE WHEN 在一次查询中计算两个 count
+    # 使用 CASE WHEN 在一次查询中计算多个 count
     stmt = select(
         func.count().label("total"),
         func.sum(
@@ -101,6 +103,8 @@ async def _get_generation_stats(
                 Integer
             )
         ).label("today"),
+        func.sum(func.cast(Generation.is_favorite == True, Integer)).label("favorites"),
+        func.sum(func.cast(Generation.effect_rating == "good", Integer)).label("good"),
     ).where(Generation.store_id == store_id, Generation.is_deleted == False)
 
     result = await db.execute(stmt)
@@ -108,11 +112,13 @@ async def _get_generation_stats(
 
     total_count = row.total or 0
     today_count = row.today or 0
+    favorite_count = row.favorites or 0
+    good_count = row.good or 0
 
     # 单独查询最新时间（因为需要排序，无法与 count 高效合并）
     latest = await _get_latest_generation(db, store_id)
 
-    return total_count, today_count, latest
+    return total_count, today_count, favorite_count, good_count, latest
 
 
 async def _get_latest_generation(
@@ -183,7 +189,7 @@ async def _build_rules(
                 title="今天还没生成运营内容",
                 description="先生成一条朋友圈或群公告，开始今天的运营。",
                 action_label="去生成内容",
-                action_url="/dashboard/generate",
+                action_url="/dashboard/workbench",
                 action_type="generate_copywriting",
                 priority="high",
                 suggested_payload={
@@ -204,7 +210,7 @@ async def _build_rules(
                 title="运营场景：周末赛事/搭子局预热",
                 description="用经营场景一键生成周末赛事报名通知和搭子局邀约。",
                 action_label="去生成运营内容",
-                action_url="/dashboard/generate",
+                action_url="/dashboard/workbench",
                 action_type="generate_operation",
                 priority="high",
                 suggested_payload={
@@ -229,16 +235,29 @@ async def _build_rules(
     # Rule 8: 上次标记了"效果好"的内容推荐
     good_gen = await _get_last_good_generation(db, store.id)
     if good_gen:
+        type_labels = {
+            "copywriting": "文案", "activity": "活动方案", "operation": "经营内容",
+            "workbench": "内容", "poster": "海报", "diagnosis": "经营诊断",
+            "sop": "话术", "outreach": "约客话术", "batch": "批量内容",
+        }
+        type_label = type_labels.get(good_gen.type, "内容")
+        params = good_gen.input_params or {}
+        payload: dict = {
+            "user_intent": params.get("user_intent") or "基于上次效果好的内容，写一条类似的",
+        }
+        # 带上 prompt_key：前端可据此直达原任务卡片，一键复刻
+        if params.get("prompt_key"):
+            payload["prompt_key"] = params["prompt_key"]
         recs.append(
             DashboardRecommendation(
                 id="repeat_good",
-                title=f"上次的{good_gen.type}效果不错，再来一条？",
+                title=f"上次的{type_label}效果不错，再来一条？",
                 description="基于上次效果好的内容，生成类似的。",
-                action_label="去生成",
+                action_label="一键复刻",
                 action_url="/dashboard/workbench",
                 action_type="generate_workbench",
                 priority="medium",
-                suggested_payload={"user_intent": f"基于上次效果好的内容，写一条类似的"},
+                suggested_payload=payload,
             )
         )
 
@@ -265,7 +284,7 @@ async def _build_rules(
                 title="生成运营内容",
                 description="前往 AI 生成页面，制作今日的运营内容。",
                 action_label="去生成",
-                action_url="/dashboard/generate",
+                action_url="/dashboard/workbench",
                 action_type="generate_copywriting",
                 priority="medium",
             )
@@ -315,7 +334,7 @@ def _weekday_recs(label: str) -> list[DashboardRecommendation]:
             title="发一条朋友圈文案",
             description=f"{extra}工作日适合提醒附近顾客下班后来打几局。",
             action_label="去生成朋友圈",
-            action_url="/dashboard/generate",
+            action_url="/dashboard/workbench",
             action_type="generate_copywriting",
             priority="high",
             suggested_payload={
@@ -330,7 +349,7 @@ def _weekday_recs(label: str) -> list[DashboardRecommendation]:
             title="发一条微信群公告",
             description="在会员群发起约球接龙，活跃群氛围。",
             action_label="去生成群公告",
-            action_url="/dashboard/generate",
+            action_url="/dashboard/workbench",
             action_type="generate_copywriting",
             priority="medium",
             suggested_payload={
@@ -344,7 +363,7 @@ def _weekday_recs(label: str) -> list[DashboardRecommendation]:
             title="策划一个轻活动",
             description="下午场/晚场优惠，带动非高峰时段客流。",
             action_label="去生成活动",
-            action_url="/dashboard/generate",
+            action_url="/dashboard/workbench",
             action_type="generate_activity",
             priority="medium",
             suggested_payload={
@@ -363,7 +382,7 @@ def _friday_recs() -> list[DashboardRecommendation]:
             title="发一条周末预热朋友圈",
             description="周五是推周末活动的最佳时机，提醒顾客提前约局。",
             action_label="去生成朋友圈",
-            action_url="/dashboard/generate",
+            action_url="/dashboard/workbench",
             action_type="generate_copywriting",
             priority="high",
             suggested_payload={
@@ -378,7 +397,7 @@ def _friday_recs() -> list[DashboardRecommendation]:
             title="发一条周末活动群公告",
             description="在微信群预告周末活动和优惠。",
             action_label="去生成群公告",
-            action_url="/dashboard/generate",
+            action_url="/dashboard/workbench",
             action_type="generate_copywriting",
             priority="high",
             suggested_payload={
@@ -406,7 +425,7 @@ def _weekend_recs(weekday: str) -> list[DashboardRecommendation]:
             title="发一条今日到店提醒",
             description="提醒老顾客今天到店打球，带动周末客流。",
             action_label="去生成朋友圈",
-            action_url="/dashboard/generate",
+            action_url="/dashboard/workbench",
             action_type="generate_copywriting",
             priority="high",
             suggested_payload={
@@ -430,7 +449,7 @@ def _weekend_recs(weekday: str) -> list[DashboardRecommendation]:
             title="发一条会员卡/储值活动文案",
             description="周末客流多，适合推广会员卡和储值活动。",
             action_label="去生成",
-            action_url="/dashboard/generate",
+            action_url="/dashboard/workbench",
             action_type="generate_activity",
             priority="medium",
             suggested_payload={

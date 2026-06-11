@@ -115,6 +115,12 @@ export default function MembersPage() {
   };
 
   const handleChangeRole = async (userId: string, newRole: string) => {
+    // 下拉误触即改权限风险大：先确认再生效
+    const label = ROLE_LABELS[newRole as keyof typeof ROLE_LABELS] || newRole;
+    if (!confirm(`确定把该成员的角色改为「${label}」？权限会立即变更。`)) {
+      await loadMembers(); // 还原下拉显示
+      return;
+    }
     try {
       await api.changeMemberRole(userId, newRole);
       await loadMembers();

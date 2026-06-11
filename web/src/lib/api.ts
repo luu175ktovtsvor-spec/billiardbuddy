@@ -1,4 +1,5 @@
 import { ApiError } from "@/types/api";
+import type { OrchestrationTask, RepurposeResponse } from "@/types/api";
 import type { LoginRequest, RegisterRequest, TokenResponse, User } from "@/types/auth";
 import type { StoreCreate, StoreResponse, StoreUpdate, StoreListItem, UploadResponse } from "@/types/store";
 import type { GenerateActivityRequest, GenerateCopywritingRequest, GenerateOperationRequest, GenerateWorkbenchRequest, GenerateOutreachRequest, GenerateSOPRequest, GenerateGamesRequest, GeneratePerformanceRequest, GenerateDiagnosisRequest, GenerationResponse } from "@/types/generate";
@@ -241,6 +242,24 @@ class ApiClient {
     return this.request<GenerationResponse>("POST", "/api/v1/generate/workbench", data);
   }
 
+  /** 内容变体：把生成结果转换为指定平台格式 */
+  repurposeContent(generationId: string, targetPlatform: string) {
+    return this.request<RepurposeResponse>("POST", "/api/v1/generate/repurpose", {
+      generation_id: generationId,
+      target_platform: targetPlatform,
+    });
+  }
+
+  // ─── Orchestrate（多 Agent 协作） ───
+
+  startOrchestration(data: { task_type: string; description: string; auto_orchestrate?: boolean }) {
+    return this.request<OrchestrationTask>("POST", "/api/v1/orchestrate", data);
+  }
+
+  getOrchestration(taskId: string) {
+    return this.request<OrchestrationTask>("GET", `/api/v1/orchestrate/${taskId}`);
+  }
+
   /** SSE 流式工作台生成 */
   async streamWorkbench(
     data: GenerateWorkbenchRequest,
@@ -378,6 +397,10 @@ class ApiClient {
     return this.request<{ path: string; url: string }>("POST", "/api/v1/posters/reference", formData, true);
   }
 
+  listInspirationTags() {
+    return this.request<{ tags: Array<{ key: string; label: string; prompt: string; category?: string }> }>("GET", "/api/v1/posters/inspiration-tags");
+  }
+
   listSizeOptions() {
     return this.request<{ sizes: SizeOption[] }>("GET", "/api/v1/posters/size-options");
   }
@@ -387,7 +410,7 @@ class ApiClient {
   }
 
   getPosterConversationDetail(conversationId: string) {
-    return this.request<{ id: string; title: string; created_at: string; updated_at: string; messages: Array<{ generation_id: string; poster_url: string; created_at: string; prompt: string; openai_response_id: string | null }> }>("GET", `/api/v1/posters/conversations/${conversationId}`);
+    return this.request<{ id: string; title: string; created_at: string; updated_at: string; messages: Array<{ generation_id: string; poster_url: string; created_at: string; prompt: string; reference_images: string[]; refine_from: string | null; ratio: string | null }> }>("GET", `/api/v1/posters/conversations/${conversationId}`);
   }
 
   // ─── Generations ───
@@ -399,12 +422,19 @@ class ApiClient {
     if (params?.type) searchParams.set("type", params.type);
     if (params?.sub_type) searchParams.set("sub_type", params.sub_type);
     if (params?.is_favorite !== undefined) searchParams.set("is_favorite", String(params.is_favorite));
+    if (params?.effect_rating) searchParams.set("effect_rating", params.effect_rating);
+    if (params?.search) searchParams.set("search", params.search);
     const qs = searchParams.toString();
     return this.request<GenerationHistoryListResponse>("GET", `/api/v1/generations${qs ? `?${qs}` : ""}`);
   }
 
   async toggleFavorite(id: string): Promise<{ is_favorite: boolean }> {
     return this.request<{ is_favorite: boolean }>("PATCH", `/api/v1/generations/${id}/favorite`);
+  }
+
+  /** 保存用户手动编辑后的内容（历史里存实际发出去的版本） */
+  async updateGenerationContent(id: string, content: string): Promise<void> {
+    await this.request<{ status: string }>("PATCH", `/api/v1/generations/${id}/content`, { content });
   }
 
   async submitFeedback(generationId: string, rating: "good" | "bad", note?: string): Promise<void> {
@@ -417,10 +447,11 @@ class ApiClient {
 
   async exportGenerations(type?: string): Promise<Blob> {
     const typeParam = type ? `?type=${type}` : "";
+    const headers: Record<string, string> = {};
     const token = this.getToken();
-    const res = await fetch(`${this.baseUrl}/api/v1/generations/export${typeParam}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    if (this.storeId) headers["X-Store-Id"] = this.storeId; // 多门店用户导出当前门店而非默认门店
+    const res = await fetch(`${this.baseUrl}/api/v1/generations/export${typeParam}`, { headers });
     if (!res.ok) throw new Error("导出失败");
     return res.blob();
   }
@@ -472,6 +503,7 @@ class ApiClient {
       monthly_tokens_limit: number;
       monthly_tokens_used: number;
       remaining: number;
+      plan_name: string | null;
     }>("GET", "/api/v1/quota");
   }
 

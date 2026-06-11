@@ -1,6 +1,7 @@
 """Agent 编排引擎 — 多角色协作生成"""
 
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -9,13 +10,24 @@ from core.exceptions import AIServiceError
 from core.security_guard import check_input_injection, filter_output_leak
 from services.ai.base import TextRequest
 from services.ai.factory import ProviderFactory
-from services.content_service import _append_guardrails
+from services.content_service import _append_guardrails, ROLE_LABELS
 
+logger = logging.getLogger(__name__)
 
 # 内存存储协作任务状态（生产环境可替换为 Redis）
 _tasks: dict[str, dict] = {}
 # 各任务的岗位 system prompt（单独存放，不随 API 响应返回，避免泄露 prompt）
 _task_prompts: dict[str, dict[str, str]] = {}
+# 后台执行句柄：取消任务时真正中止 LLM 调用，不白烧 token
+_task_handles: dict[str, asyncio.Task] = {}
+
+# 单 Agent 生成超时（DeepSeek 非流式 2000 token 高峰期可能超 30s，放宽到 90s）
+AGENT_TIMEOUT = 90
+# 汇总 Agent 超时
+SUMMARY_TIMEOUT = 90
+# 终态任务保留时长与总量上限
+TASK_TTL_SECONDS = 3600
+MAX_TASKS = 100
 
 
 COLLABORATION_SCENARIOS = {
@@ -82,8 +94,8 @@ def _build_role_system_prompt(role: str, description: str, store) -> str:
     return _append_guardrails(base, store, role=role, intent_text=description)
 
 
-async def run_agent(role: str, description: str, system_prompt: str) -> str:
-    """运行单个 Agent 生成内容（使用预构建的、含知识库的 system prompt）"""
+async def run_agent(role: str, description: str, system_prompt: str) -> tuple[str, int]:
+    """运行单个 Agent，返回 (安全内容, 消耗tokens)"""
     provider = ProviderFactory.get_text_provider()
 
     request = TextRequest(
@@ -100,13 +112,57 @@ async def run_agent(role: str, description: str, system_prompt: str) -> str:
     )
 
     response = await provider.generate(request)
-    return filter_output_leak(response.content)
+    return filter_output_leak(response.content), response.tokens_used or 0
+
+
+async def _synthesize(description: str, joined: str) -> tuple[str, int]:
+    """汇总 Agent：把各岗位产出综合成一份口径统一的完整方案"""
+    provider = ProviderFactory.get_text_provider()
+    request = TextRequest(
+        system_prompt=(
+            "你是台球房的运营操盘手，负责把各岗位提交的内容整合成一份口径统一、"
+            "可直接执行的完整方案。只输出整合后的方案本身，不要评论各岗位的产出。"
+        ),
+        prompt=f"""任务：{description}
+
+以下是各岗位的产出：
+
+{joined}
+
+请整合为一份统一方案，要求：
+1. 统一预算、时间线、人员分工，消除各岗位之间的矛盾和重复
+2. 按「方案概述 → 时间线 → 各岗位分工 → 预算 → 风险与备选」结构输出
+3. 保留各岗位产出中的可执行细节（话术、清单、数字），不要泛泛而谈""",
+        max_tokens=3000,
+    )
+    response = await provider.generate(request)
+    return filter_output_leak(response.content), response.tokens_used or 0
+
+
+def _cleanup_old_tasks() -> None:
+    """清理超过 TTL 的终态任务，防止内存无限堆积"""
+    now = datetime.now(timezone.utc)
+    expired = []
+    for tid, t in _tasks.items():
+        if t.get("status") in ("completed", "failed", "cancelled"):
+            try:
+                created = datetime.fromisoformat(t["created_at"])
+            except (KeyError, ValueError):
+                expired.append(tid)
+                continue
+            if (now - created).total_seconds() > TASK_TTL_SECONDS:
+                expired.append(tid)
+    for tid in expired:
+        _tasks.pop(tid, None)
+        _task_prompts.pop(tid, None)
+        _task_handles.pop(tid, None)
 
 
 async def start_task(
     task_type: str,
     description: str,
     store,
+    user_id=None,
     roles: Optional[list[str]] = None,
     auto_orchestrate: bool = True,
 ) -> dict:
@@ -115,78 +171,175 @@ async def start_task(
     if injection_check:
         raise AIServiceError(injection_check)
 
+    _cleanup_old_tasks()
+    # 上限只数运行中的任务：终态任务不占并发名额（否则一店刷满 100 条已完成
+    # 任务可让全部门店 1 小时内无法发起协作）
+    running_total = sum(1 for t in _tasks.values() if t.get("status") == "running")
+    if running_total >= MAX_TASKS:
+        raise AIServiceError("当前协作任务过多，请稍后再试")
+    # 每店同时只允许一个运行中任务：一次协作 = 多路 LLM 调用，防止并发刷
+    for t in _tasks.values():
+        if t.get("store_id") == str(store.id) and t.get("status") == "running":
+            raise AIServiceError("已有协作任务在执行中，请等它完成后再发起新任务")
+
     task_id = str(uuid.uuid4())
 
-    if auto_orchestrate and not roles:
-        roles = await analyze_task(description)
-    elif not roles:
-        scenario = COLLABORATION_SCENARIOS.get(task_type, {})
-        roles = scenario.get("default_roles", ["manager"])
-
-    # 在请求上下文内（store 仍可读）预构建各岗位 system prompt，存入单独 dict
-    _task_prompts[task_id] = {
-        r: _build_role_system_prompt(r, description, store) for r in roles
-    }
-
+    # 关键：占位必须发生在任何 await 之前（事件循环单线程，检查+占位同一同步段
+    # 即原子）。否则并发请求会在 analyze_task 的秒级窗口内双双通过上面的检查。
     task = {
         "task_id": task_id,
         "task_type": task_type,
         "description": description,
         "store_id": str(store.id),
-        "roles": roles,
+        "user_id": str(user_id) if user_id else None,
+        "roles": [],
         "status": "running",
-        "agents": [
-            {"role": r, "status": "pending", "content": None}
-            for r in roles
-        ],
+        "agents": [],
         "summary": None,
+        "generation_id": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     _tasks[task_id] = task
 
-    asyncio.create_task(_execute_agents(task_id))
+    try:
+        if auto_orchestrate and not roles:
+            roles = await analyze_task(description)
+        if not roles:
+            # 自动编排返回为空（LLM 输出全非法）或未指定：回退到场景默认角色
+            scenario = COLLABORATION_SCENARIOS.get(task_type, {})
+            roles = scenario.get("default_roles") or ["manager"]
+
+        # 在请求上下文内（store 仍可读）预构建各岗位 system prompt，存入单独 dict
+        _task_prompts[task_id] = {
+            r: _build_role_system_prompt(r, description, store) for r in roles
+        }
+    except Exception:
+        _tasks.pop(task_id, None)  # 占位回收，避免失败任务卡住"每店一个"限制
+        raise
+
+    task["roles"] = roles
+    task["agents"] = [
+        {"role": r, "status": "pending", "content": None}
+        for r in roles
+    ]
+
+    _task_handles[task_id] = asyncio.create_task(_execute_agents(task_id))
     return task
 
 
 async def _execute_agents(task_id: str):
-    """并发执行所有 Agent"""
+    """并发执行所有 Agent，完成后汇总并落库"""
     task = _tasks.get(task_id)
     if not task:
         return
 
     description = task["description"]
     prompts = _task_prompts.get(task_id, {})
+    tokens_total = 0
 
     async def run_one(agent: dict):
+        nonlocal tokens_total
         agent["status"] = "running"
         try:
-            content = await asyncio.wait_for(
+            content, tokens = await asyncio.wait_for(
                 run_agent(agent["role"], description, prompts.get(agent["role"], "")),
-                timeout=30,
+                timeout=AGENT_TIMEOUT,
             )
             agent["status"] = "completed"
             agent["content"] = content
+            tokens_total += tokens
         except asyncio.TimeoutError:
             agent["status"] = "skipped"
             agent["content"] = "[超时跳过]"
-        except Exception as e:
+        except asyncio.CancelledError:
+            agent["status"] = "cancelled"
+            raise
+        except Exception:
+            # 不把 provider 原始异常透给前端（可能含内部 URL/模型名）
+            logger.exception("协作 Agent 生成失败: task=%s role=%s", task_id, agent["role"])
             agent["status"] = "failed"
-            agent["content"] = f"[失败: {str(e)}]"
+            agent["content"] = "[生成失败，请重试]"
 
-    await asyncio.gather(*[run_one(a) for a in task["agents"]])
+    try:
+        await asyncio.gather(*[run_one(a) for a in task["agents"]])
+    except asyncio.CancelledError:
+        for a in task["agents"]:
+            if a["status"] in ("pending", "running"):
+                a["status"] = "cancelled"
+        task["status"] = "cancelled"
+        _task_prompts.pop(task_id, None)
+        _task_handles.pop(task_id, None)
+        return
+
+    # 已被取消则不再覆写状态（修复：完成后无条件覆写回 completed 的状态机 bug）
+    if task.get("status") == "cancelled":
+        _task_prompts.pop(task_id, None)
+        _task_handles.pop(task_id, None)
+        return
 
     completed = [a for a in task["agents"] if a["status"] == "completed"]
     if completed:
-        task["summary"] = "\n\n---\n\n".join(
-            f"### {a['role']} Agent\n\n{a['content']}"
+        joined = "\n\n---\n\n".join(
+            f"### {ROLE_LABELS.get(a['role'], a['role'])}\n\n{a['content']}"
             for a in completed
         )
+        if len(completed) >= 2:
+            # 汇总 Agent：第二轮综合，统一预算/时间线/分工；失败则回退到拼接
+            try:
+                summary, tokens = await asyncio.wait_for(
+                    _synthesize(description, joined), timeout=SUMMARY_TIMEOUT
+                )
+                tokens_total += tokens
+                task["summary"] = summary
+            except Exception:
+                logger.warning("汇总 Agent 失败，回退到拼接: task=%s", task_id, exc_info=True)
+                task["summary"] = joined
+        else:
+            task["summary"] = joined
         task["status"] = "completed"
     else:
         task["status"] = "failed"
 
     # 用完即清理预构建的 prompt，避免内存堆积与 prompt 残留
     _task_prompts.pop(task_id, None)
+    _task_handles.pop(task_id, None)
+
+    if task["status"] == "completed":
+        await _persist_result(task, tokens_total)
+
+
+async def _persist_result(task: dict, tokens_total: int) -> None:
+    """协作结果写入 generations（接入历史/统计体系）并补记 tokens 用量"""
+    try:
+        from db.session import async_session
+        from models.generation import Generation
+        from services.quota_service import increment_usage
+
+        gen_id = uuid.uuid4()
+        async with async_session() as db:
+            db.add(Generation(
+                id=gen_id,
+                store_id=uuid.UUID(task["store_id"]),
+                user_id=uuid.UUID(task["user_id"]) if task.get("user_id") else None,
+                type="workbench",
+                sub_type=f"collab_{task['task_type']}",
+                input_params={
+                    "task_type": task["task_type"],
+                    "description": task["description"],
+                    "roles": task["roles"],
+                    "collaboration": True,
+                },
+                result=task.get("summary"),
+                model_used="collaboration",
+                tokens_used=tokens_total,
+            ))
+            await db.commit()
+            if tokens_total:
+                # 生成次数已在发起时计 1，这里只补记 tokens
+                await increment_usage(db, task["store_id"], tokens=tokens_total, count=0)
+        task["generation_id"] = str(gen_id)
+    except Exception:
+        logger.warning("协作结果落库失败: task=%s", task.get("task_id"), exc_info=True)
 
 
 def get_task(task_id: str, store_id: str) -> Optional[dict]:
@@ -198,7 +351,7 @@ def get_task(task_id: str, store_id: str) -> Optional[dict]:
 
 
 def cancel_task(task_id: str, store_id: str) -> bool:
-    """取消任务（校验门店归属，防越权取消别家门店任务）"""
+    """取消任务（校验门店归属；真正中止后台 LLM 调用，不白烧 token）"""
     task = _tasks.get(task_id)
     if not task or task.get("store_id") != store_id:
         return False
@@ -206,4 +359,8 @@ def cancel_task(task_id: str, store_id: str) -> bool:
     for agent in task["agents"]:
         if agent["status"] in ("pending", "running"):
             agent["status"] = "cancelled"
+    handle = _task_handles.pop(task_id, None)
+    if handle and not handle.done():
+        handle.cancel()
+    _task_prompts.pop(task_id, None)
     return True

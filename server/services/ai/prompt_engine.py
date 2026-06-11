@@ -32,7 +32,13 @@ class PromptEngine:
             if data and "key" in data:
                 self._templates[data["key"]] = data
 
-    def render(self, template_key: str, store: Store, extra_vars: dict | None = None) -> str:
+    def render(
+        self,
+        template_key: str,
+        store: Store,
+        extra_vars: dict | None = None,
+        lenient: bool = False,
+    ) -> str:
         template_data = self._templates.get(template_key)
         if template_data is None:
             raise PromptTemplateNotFoundError(template_key)
@@ -44,7 +50,11 @@ class PromptEngine:
         required = template_data.get("variables", [])
         missing = [v for v in required if variables.get(v) is None]
         if missing:
-            raise PromptVariableMissingError(missing)
+            if not lenient:
+                raise PromptVariableMissingError(missing)
+            # 宽松模式：工作台卡片只提供通用变量，缺失的场景变量交给模型按用户需求处理
+            for var in missing:
+                variables[var] = "（未提供，请结合用户本次需求与门店情况合理处理）"
 
         # 用 str.replace 逐个替换，避免 format_map 的花括号转义问题
         rendered = template_data["template"]
@@ -92,6 +102,11 @@ class PromptEngine:
         if isinstance(data, dict):
             return "；".join(f"{k}: {v}" for k, v in data.items())
         return str(data)
+
+    def template_name(self, template_key: str) -> str:
+        """返回模板的中文名称（用于知识筛选的意图文本），不存在时返回空串。"""
+        data = self._templates.get(template_key)
+        return data.get("name", "") if data else ""
 
     def list_templates(self, category: str | None = None) -> list[dict]:
         templates = list(self._templates.values())
