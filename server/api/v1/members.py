@@ -1,6 +1,6 @@
 """成员管理 API：邀请码、加入门店、成员列表、角色调整、移除成员。"""
 
-import random
+import secrets
 import string
 from datetime import datetime, timezone
 from typing import Annotated
@@ -69,8 +69,9 @@ VALID_ROLES = {"owner", "manager", "assistant_manager", "coach", "frontdesk", "o
 
 
 def _generate_code(length: int = 8) -> str:
+    # 用密码学安全随机数，避免邀请码可预测/被枚举
     chars = string.ascii_uppercase + string.digits
-    return "".join(random.choices(chars, k=length))
+    return "".join(secrets.choice(chars) for _ in range(length))
 
 
 # ─── 邀请码管理 ───
