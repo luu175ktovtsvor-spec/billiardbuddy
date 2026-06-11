@@ -49,6 +49,10 @@ export default function CollaboratePage() {
           auto_orchestrate: true,
         }),
       });
+      if (!res.ok) {
+        toast(res.status === 401 ? "登录已过期，请重新登录" : "发起协作失败", "error");
+        return;
+      }
       const data = await res.json();
       setTaskResult(data);
       if (data.task_id) startPolling(data.task_id);
@@ -67,6 +71,13 @@ export default function CollaboratePage() {
         const res = await fetch(`${api.baseUrl}/api/v1/orchestrate/${taskId}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
+        if (!res.ok) {
+          // 任务丢失/登录过期等：停止轮询，避免把错误响应当成功
+          if (res.status === 401 || res.status === 404) {
+            if (pollRef.current) clearInterval(pollRef.current);
+          }
+          return;
+        }
         const data = await res.json();
         setTaskResult(data);
         if (
