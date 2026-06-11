@@ -15,7 +15,7 @@ from services.ai.base import TextRequest
 from services.workbench_fewshot_service import select_workbench_fewshots
 from services.store_profile_service import render_operation_profile_context
 from services.quota_service import check_quota, increment_usage
-from core.security_guard import check_input_injection, filter_output_leak
+from core.security_guard import check_input_injection, filter_output_leak, AI_RESPONSE_PREFIXES
 from services.scenario_role_map import SCENARIO_ROLE_MAP
 
 logger = logging.getLogger(__name__)
@@ -121,8 +121,91 @@ def _load_rule_safe(template_key: str, store: Store) -> str:
         return ""
 
 
-def _load_knowledge_for_role(role: str, store: Store) -> str:
-    """根据岗位规则中声明的 required_knowledge，加载并拼接对应知识库。"""
+# 核心知识：无论用户意图如何都注入（合规/术语/核心运营逻辑/服务理念 + 岗位每日流程）
+CORE_KNOWLEDGE_KEYS = {
+    "knowledge.compliance_rules",
+    "knowledge.term_whitelist",
+    "knowledge.core_operations",
+    "knowledge.service_philosophy",
+}
+
+# 场景化知识：仅当用户意图/补充说明命中关键词时才注入，避免每次全量灌入
+KNOWLEDGE_KEYWORDS: dict[str, list[str]] = {
+    "knowledge.account_nurturing": ["养号", "账号", "起号", "权重", "限流", "新号"],
+    "knowledge.assistant_coaching_sop": ["陪练", "教学", "训练", "球技", "动作", "纠正", "练球", "指导"],
+    "knowledge.assistant_difficult_situations": ["刁钻", "难缠", "尴尬", "拒绝", "难题", "不好处理", "投诉"],
+    "knowledge.assistant_promotion": ["助教推广", "助教获客", "助教朋友圈", "推广助教", "助教引流"],
+    "knowledge.assistant_salary": ["助教薪资", "助教工资", "助教提成", "保底", "分成", "薪资"],
+    "knowledge.assistant_service_sop": ["上钟", "服务流程", "助教服务", "陪打", "陪玩", "点助教", "约助教"],
+    "knowledge.assistant_tier_system": ["等级", "晋升", "助教等级", "赋能", "分级", "升级"],
+    "knowledge.billiards_game_rules": ["规则", "玩法", "中八", "斯诺克", "九球", "黑八", "打法", "比赛规则"],
+    "knowledge.business_cases": ["案例", "参考案例", "成功案例", "同行", "别人家"],
+    "knowledge.competitive_group_ops": ["竞技群", "群运营", "维护群", "搭子群", "群活跃", "群里"],
+    "knowledge.contract_basics": ["合同", "租约", "签约", "条款", "租赁"],
+    "knowledge.core_metrics": ["指标", "数据", "台费", "上座率", "翻台", "复购", "趋势", "营收", "报表"],
+    "knowledge.customer_profile_template": ["档案", "客户资料", "客户信息", "建档", "客户档案"],
+    "knowledge.customer_tagging": ["标签", "打标", "分级", "客户分类", "客户标签"],
+    "knowledge.customer_types": ["客户", "客群", "客户类型", "新客", "老客", "客户分类"],
+    "knowledge.frontdesk_training": ["前厅", "前台", "接待", "服务标准", "台呢", "前厅培训"],
+    "knowledge.industry_data": ["行业数据", "市场", "行情", "大盘"],
+    "knowledge.management_recruitment": ["招聘", "招人", "面试", "管理岗", "店长招聘"],
+    "knowledge.manager_compensation": ["店长薪资", "管理层薪资", "底薪", "店长工资"],
+    "knowledge.mini_games": ["小游戏", "游戏", "互动", "破冰", "暖场", "活跃气氛"],
+    "knowledge.opening_preparation": ["开业", "筹备", "开店", "试营业", "开张", "新店"],
+    "knowledge.performance_standards": ["绩效", "考核", "kpi", "提成", "标准", "考评"],
+    "knowledge.platform_operations": ["平台", "美团", "抖音", "点评", "团购", "线上", "本地生活"],
+    "knowledge.profit_model": ["定价", "价格", "利润", "盈利", "成本", "套餐", "收入", "团购", "毛利"],
+    "knowledge.recharge_strategy": ["充值", "储值", "会员卡", "办卡", "续费", "一卡通", "会员"],
+    "knowledge.recruitment_compliance": ["招聘合规", "用工", "劳动", "合同合规"],
+    "knowledge.review_generation_rules": ["好评", "评价", "点评", "晒图", "评论", "review"],
+    "knowledge.site_selection": ["选址", "位置", "店面", "商圈", "门面"],
+    "knowledge.tournament_rules": ["比赛", "赛事", "周赛", "月赛", "锦标", "排位", "积分赛", "战报", "主持"],
+    "knowledge.traffic_generation": ["引流", "拉新", "获客", "人气", "客流", "流量", "冷清"],
+}
+
+# 命中关键词的场景知识最多额外注入的条数（核心知识不计入此上限）
+_MAX_SCENE_KNOWLEDGE = 4
+
+
+def _is_core_knowledge(key: str) -> bool:
+    """核心知识：固定集合 + 岗位每日流程（daily_workflow*）。"""
+    return key in CORE_KNOWLEDGE_KEYS or key.startswith("knowledge.daily_workflow")
+
+
+def _select_knowledge_keys(required_keys: list[str], intent_text: str) -> list[str]:
+    """根据用户意图筛选需要注入的知识键。
+
+    - intent_text 为空时不筛选，返回全部（保持非工作台路径的原有行为）。
+    - 核心知识始终注入；场景知识按关键词命中数排序，取前 _MAX_SCENE_KNOWLEDGE 条。
+    - 未命中任何场景知识时，只注入核心知识，大幅压缩 prompt 体积。
+    - 保留 required_keys 的原始顺序，确保 prompt 结构稳定。
+    """
+    if not intent_text or not intent_text.strip():
+        return required_keys
+
+    intent_lower = intent_text.lower()
+    scored: list[tuple[int, str]] = []
+    for key in required_keys:
+        if _is_core_knowledge(key):
+            continue
+        keywords = KNOWLEDGE_KEYWORDS.get(key, [])
+        score = sum(1 for kw in keywords if kw.lower() in intent_lower)
+        if score > 0:
+            scored.append((score, key))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    selected = {k for _, k in scored[:_MAX_SCENE_KNOWLEDGE]}
+    selected.update(k for k in required_keys if _is_core_knowledge(k))
+
+    return [k for k in required_keys if k in selected]
+
+
+def _load_knowledge_for_role(role: str, store: Store, intent_text: str = "") -> str:
+    """根据岗位规则中声明的 required_knowledge，加载并拼接对应知识库。
+
+    intent_text（用户意图 + 补充说明）非空时，只注入核心知识 + 命中场景的知识，
+    避免每次把全部知识全量灌入 prompt（manager 角色原本约 12 万字符）。
+    """
     role_template = prompt_engine._templates.get(f"rules.role.{role}")
     if not role_template:
         return ""
@@ -131,8 +214,10 @@ def _load_knowledge_for_role(role: str, store: Store) -> str:
     if not required_keys:
         return ""
 
+    selected_keys = _select_knowledge_keys(required_keys, intent_text)
+
     parts: list[str] = []
-    for key in required_keys:
+    for key in selected_keys:
         try:
             rendered = prompt_engine.render(key, store, {})
             if rendered.strip():
@@ -155,19 +240,10 @@ def _format_output_package(output_package: list[str] | None) -> str:
 
 
 def _strip_ai_prefixes(content: str) -> str:
-    """去除 AI 回应语前缀。"""
-    prefixes_to_strip = [
-        "好的，店长！",
-        "好的，店长",
-        "好的！",
-        "没问题，我来帮你",
-        "以下是为你生成的",
-        "好的，没问题！",
-    ]
-    for prefix in prefixes_to_strip:
+    """去除 AI 回应语前缀。前缀列表与流式过滤共用 security_guard.AI_RESPONSE_PREFIXES。"""
+    for prefix in AI_RESPONSE_PREFIXES:
         if content.startswith(prefix):
-            content = content[len(prefix):].lstrip("\n").lstrip()
-            break
+            return content[len(prefix):].lstrip("\n").lstrip()
     return content
 
 
@@ -452,7 +528,7 @@ async def generate_workbench(
         customer_type = target_customer_type or "all"
         customer_rules = _load_rule_safe(f"rules.customer.{customer_type}", store)
 
-        knowledge_context = _load_knowledge_for_role(role, store)
+        knowledge_context = _load_knowledge_for_role(role, store, f"{user_intent} {extra_note}")
 
         # 轻量 few-shot 选择 (10F-2)：根据请求字段选择最多 2 条优质正例
         try:
