@@ -58,7 +58,19 @@ async def list_users(
     )
     total = await db.scalar(select(func.count(User.id)))
 
-    return {"items": users.all(), "total": total, "page": page}
+    # 显式序列化，禁止把 ORM 对象直接下发（会泄露 password_hash）
+    items = [
+        {
+            "id": str(u.id),
+            "phone": u.phone,
+            "name": u.name,
+            "is_active": u.is_active,
+            "is_admin": u.is_admin,
+            "created_at": u.created_at.isoformat() if u.created_at else None,
+        }
+        for u in users.all()
+    ]
+    return {"items": items, "total": total, "page": page}
 
 
 @router.post("/users/{user_id}/activate")
