@@ -73,7 +73,10 @@ async def stream_workbench(
         # 根据prompt_key推断岗位角色，与content_service.py保持一致
         scenario_name = prompt_key.split(".", 1)[-1] if "." in prompt_key else prompt_key
         inferred_role = scenario_role_map.get(scenario_name) or role
-        rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role)
+        rendered_prompt = _append_guardrails(
+            rendered_prompt, store, role=inferred_role,
+            intent_text=f"{user_intent or ''} {extra_note or ''}",
+        )
     else:
         baseline_rules = _load_rule_safe("rules.baseline", store)
         role_rules = _load_rule_safe(f"rules.role.{role}", store)
