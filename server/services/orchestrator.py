@@ -172,7 +172,10 @@ async def start_task(
         raise AIServiceError(injection_check)
 
     _cleanup_old_tasks()
-    if len(_tasks) >= MAX_TASKS:
+    # 上限只数运行中的任务：终态任务不占并发名额（否则一店刷满 100 条已完成
+    # 任务可让全部门店 1 小时内无法发起协作）
+    running_total = sum(1 for t in _tasks.values() if t.get("status") == "running")
+    if running_total >= MAX_TASKS:
         raise AIServiceError("当前协作任务过多，请稍后再试")
     # 每店同时只允许一个运行中任务：一次协作 = 多路 LLM 调用，防止并发刷
     for t in _tasks.values():
@@ -181,35 +184,44 @@ async def start_task(
 
     task_id = str(uuid.uuid4())
 
-    if auto_orchestrate and not roles:
-        roles = await analyze_task(description)
-    if not roles:
-        # 自动编排返回为空（LLM 输出全非法）或未指定：回退到场景默认角色
-        scenario = COLLABORATION_SCENARIOS.get(task_type, {})
-        roles = scenario.get("default_roles") or ["manager"]
-
-    # 在请求上下文内（store 仍可读）预构建各岗位 system prompt，存入单独 dict
-    _task_prompts[task_id] = {
-        r: _build_role_system_prompt(r, description, store) for r in roles
-    }
-
+    # 关键：占位必须发生在任何 await 之前（事件循环单线程，检查+占位同一同步段
+    # 即原子）。否则并发请求会在 analyze_task 的秒级窗口内双双通过上面的检查。
     task = {
         "task_id": task_id,
         "task_type": task_type,
         "description": description,
         "store_id": str(store.id),
         "user_id": str(user_id) if user_id else None,
-        "roles": roles,
+        "roles": [],
         "status": "running",
-        "agents": [
-            {"role": r, "status": "pending", "content": None}
-            for r in roles
-        ],
+        "agents": [],
         "summary": None,
         "generation_id": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     _tasks[task_id] = task
+
+    try:
+        if auto_orchestrate and not roles:
+            roles = await analyze_task(description)
+        if not roles:
+            # 自动编排返回为空（LLM 输出全非法）或未指定：回退到场景默认角色
+            scenario = COLLABORATION_SCENARIOS.get(task_type, {})
+            roles = scenario.get("default_roles") or ["manager"]
+
+        # 在请求上下文内（store 仍可读）预构建各岗位 system prompt，存入单独 dict
+        _task_prompts[task_id] = {
+            r: _build_role_system_prompt(r, description, store) for r in roles
+        }
+    except Exception:
+        _tasks.pop(task_id, None)  # 占位回收，避免失败任务卡住"每店一个"限制
+        raise
+
+    task["roles"] = roles
+    task["agents"] = [
+        {"role": r, "status": "pending", "content": None}
+        for r in roles
+    ]
 
     _task_handles[task_id] = asyncio.create_task(_execute_agents(task_id))
     return task

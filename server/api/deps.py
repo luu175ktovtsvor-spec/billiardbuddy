@@ -75,11 +75,15 @@ async def get_current_store(
         set_tenant(store.id)
         return store
 
-    # 回退：取用户关联的第一个门店
+    # 回退：取用户关联的第一个门店（多门店用户用 .first()，
+    # scalar_one_or_none 在多行时会抛 MultipleResultsFound → 500）
     result = await db.execute(
-        select(StoreMember).where(StoreMember.user_id == current_user.id)
+        select(StoreMember)
+        .where(StoreMember.user_id == current_user.id)
+        .order_by(StoreMember.created_at)
+        .limit(1)
     )
-    member = result.scalar_one_or_none()
+    member = result.scalars().first()
     if not member:
         raise ForbiddenException("您不属于任何门店")
     store = await db.get(Store, member.store_id)

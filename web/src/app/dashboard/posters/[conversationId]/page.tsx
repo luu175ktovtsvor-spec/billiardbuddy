@@ -5,6 +5,7 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/auth-context";
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
+import { ApiError } from "@/types/api";
 import type { SizeOption, GeneratedImage } from "@/types/poster";
 import type { StoreResponse } from "@/types/store";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
@@ -175,21 +176,27 @@ function ConversationPageInner() {
           }
         }
         const lastMsg = detail.messages[detail.messages.length - 1];
-        setConv({
+        // 用函数式更新保留本地已选设置：新对话首图生成后 URL replace 会重跑本 effect，
+        // 硬编码默认值会把用户选的质量/门店信息/禁文字静默重置
+        setConv((prev) => ({
           id: detail.id,
           title: detail.title,
           messages,
           refineFrom: lastMsg?.generation_id || null,
-          ratio: lastMsg?.ratio || "3:4",
-          quality: "auto",
+          ratio: lastMsg?.ratio || prev.ratio || "3:4",
+          quality: prev.quality,
           references: refPaths.map((p) => ({ path: p, preview: api.resolveUrl(p) })),
-          addStoreInfo: false,
-          noText: false,
-        });
+          addStoreInfo: prev.addStoreInfo,
+          noText: prev.noText,
+        }));
       })
-      .catch(() => {
-        if (!cancelled) {
+      .catch((err) => {
+        if (cancelled) return;
+        // 仅"对话不存在"才降级为新对话；其它错误显式提示，避免内容静默分叉进新会话
+        if (err instanceof ApiError && err.status === 404) {
           setConv(createNewConversation());
+        } else {
+          setError("对话加载失败，请刷新重试");
         }
       })
       .finally(() => {
@@ -263,8 +270,13 @@ function ConversationPageInner() {
       ? `${text}，在画面中醒目地写上文字：「${overlay}」，文字内容必须一字不差、清晰可读`
       : text;
 
-    const userMsg: ConversationMessage = { role: "user", content: text };
-    updateConv({ messages: [...conv.messages, userMsg] });
+    // 重试场景去重：上次失败已追加过同文本的用户气泡，不再重复追加
+    const lastMsg = conv.messages[conv.messages.length - 1];
+    const alreadyAppended = lastMsg?.role === "user" && lastMsg.content === text;
+    const baseMessages = alreadyAppended
+      ? conv.messages
+      : [...conv.messages, { role: "user" as const, content: text }];
+    updateConv({ messages: baseMessages });
     setPrompt("");
     setGenerating(true);
     scrollToBottom();
@@ -291,7 +303,7 @@ function ConversationPageInner() {
       // 参考图不清空：对话级持续生效，用户可手动移除
       updateConv({
         id: newId,
-        messages: [...conv.messages, userMsg, assistantMsg],
+        messages: [...baseMessages, assistantMsg],
         refineFrom: res.images?.[0]?.generation_id || refineFromArg,
       });
 

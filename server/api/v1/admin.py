@@ -12,7 +12,9 @@ from models.plan import Plan, StoreSubscription, SubscriptionPayment
 from models.generation import Generation
 from models.quota import UsageQuota
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+# 注意：前缀由 router.py 统一指定（include_router(prefix="/admin")），此处不得再写
+# prefix——否则双前缀变成 /api/v1/admin/admin/*，整个管理后台 404（历史教训）
+router = APIRouter(tags=["admin"])
 
 
 def require_admin(user: User):
@@ -184,7 +186,9 @@ async def list_plans(
     db: AsyncSession = Depends(get_db),
 ):
     require_admin(user)
-    plans = await db.scalars(select(Plan).where(Plan.is_active == True))
+    # 管理端返回全量（含停用）：否则停用后从列表消失、无入口再启用；
+    # 「开通订阅」下拉等只需可用套餐的场景由前端按 is_active 过滤
+    plans = await db.scalars(select(Plan).order_by(Plan.created_at))
     return plans.all()
 
 
@@ -277,11 +281,13 @@ async def list_subscriptions(
 ):
     require_admin(user)
     query = select(StoreSubscription).order_by(desc(StoreSubscription.current_period_end))
+    count_query = select(func.count(StoreSubscription.id))
     if status:
         query = query.where(StoreSubscription.status == status)
+        count_query = count_query.where(StoreSubscription.status == status)
     offset = (page - 1) * page_size
     subs = await db.scalars(query.offset(offset).limit(page_size))
-    total = await db.scalar(select(func.count(StoreSubscription.id)))
+    total = await db.scalar(count_query)
 
     # 批量预取，避免逐行 N+1 查询（原先每条订阅 4 次查询）
     subs_list = subs.all()

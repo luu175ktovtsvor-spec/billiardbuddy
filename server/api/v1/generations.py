@@ -90,13 +90,18 @@ async def export_generations(
     import csv
     import io
 
-    items, _ = await list_generations(
-        db=db,
-        store_id=current_store.id,
-        page=1,
-        page_size=1000,
-        generation_type=generation_type,
+    from sqlalchemy import select
+
+    # 导出走专用查询：list_generations 会把 page_size 钳到 50，导出必须全量（上限 5000 防内存失控）
+    stmt = (
+        select(Generation)
+        .where(Generation.store_id == current_store.id, Generation.is_deleted == False)
+        .order_by(Generation.created_at.desc())
+        .limit(5000)
     )
+    if generation_type:
+        stmt = stmt.where(Generation.type == generation_type)
+    items = (await db.execute(stmt)).scalars().all()
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -221,7 +226,7 @@ async def delete_generation(
     current_user: Annotated[User, Depends(get_current_user)],
     current_store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    _perm: None = Depends(require_permission(Permission.GENERATION_LIST)),
+    _perm: None = Depends(require_permission(Permission.GENERATION_DELETE)),
 ):
     """软删除生成记录。"""
     generation = await get_generation_detail(
@@ -243,7 +248,7 @@ async def delete_conversation(
     current_user: Annotated[User, Depends(get_current_user)],
     current_store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    _perm: None = Depends(require_permission(Permission.GENERATION_LIST)),
+    _perm: None = Depends(require_permission(Permission.GENERATION_DELETE)),
 ):
     """软删除整个对话的所有记录。"""
     await db.execute(

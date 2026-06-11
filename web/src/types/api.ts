@@ -27,4 +27,7 @@ export interface OrchestrationTask {
 
 export interface RepurposeResponse {
   content: string;
+  platform: string;
+  /** 变体是独立的新生成记录；前端必须切换到该 id，否则后续编辑/反馈会写到原记录上 */
+  generation_id: string;
 }

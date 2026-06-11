@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from config import settings
 from db.base import Base
+import models  # noqa: F401 — 触发全部模型注册到 Base.metadata，否则 autogenerate 会漏表/生成删表迁移
 
 config = context.config
 

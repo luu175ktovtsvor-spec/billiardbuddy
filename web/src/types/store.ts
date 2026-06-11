@@ -42,6 +42,7 @@ export interface StoreCreate {
   has_parking?: boolean;
   target_customers?: string | null;
   style?: string | null;
+  brand_style?: string | null;
   advantages?: string | null;
   common_activities?: string | null;
   // Expanded profile fields
@@ -80,6 +81,7 @@ export interface StoreUpdate {
   has_parking?: boolean;
   target_customers?: string | null;
   style?: string | null;
+  brand_style?: string | null;
   advantages?: string | null;
   common_activities?: string | null;
   // Expanded profile fields
@@ -121,6 +123,7 @@ export interface StoreResponse {
   has_parking: boolean;
   target_customers: string | null;
   style: string | null;
+  brand_style?: string | null;
   advantages: string | null;
   common_activities: string | null;
   operation_profile: Record<string, unknown> | null;

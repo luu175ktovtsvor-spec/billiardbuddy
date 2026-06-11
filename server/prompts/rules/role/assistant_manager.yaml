@@ -88,6 +88,7 @@ required_knowledge:
   - knowledge.assistant_service_sop
   - knowledge.assistant_tier_system
   - knowledge.assistant_salary
+  - knowledge.pk_incentive
   - knowledge.assistant_coaching_sop
   - knowledge.assistant_difficult_situations
   - knowledge.recruitment_compliance

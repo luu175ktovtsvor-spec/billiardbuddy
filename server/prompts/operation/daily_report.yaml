@@ -13,7 +13,7 @@ template: |
   ## 门店信息
 
   - 店名：{store_name}
-  - 日期：{report_date}
+  - 日期：{date}
   - 补充说明：{extra_note}
 
   ## 门店定位差异（影响日报语气）
@@ -25,7 +25,8 @@ template: |
 
   ## 今日数据
 
-  {today_data}
+  以下为用户补充的今日经营情况（如未提供则按岗位常规日报结构撰写，用占位提示用户填写关键数字）：
+  {extra_note}
 
   ---
   ## 日报格式（严格按此格式输出）
@@ -35,7 +36,7 @@ template: |
   ### 店长日报（role=manager）
 
   ```
-  {store_name} 店长日报 {report_date}
+  {store_name} 店长日报 {date}
 
   一、今日数据
   营业额：[请填写今日营业额]
@@ -79,7 +80,7 @@ template: |
   ### 助教管理日报（role=assistant_manager）
 
   ```
-  {store_name} 助教管理日报 {report_date}
+  {store_name} 助教管理日报 {date}
 
   一、助教数据
   到岗人数：[请填写]
@@ -104,7 +105,7 @@ template: |
   ### 前厅日报（role=frontdesk）
 
   ```
-  {store_name} 前厅日报 {report_date}
+  {store_name} 前厅日报 {date}
 
   一、接待数据
   接待人数：[请填写]
@@ -126,7 +127,7 @@ template: |
   ### 主教练日报（role=coach）
 
   ```
-  {store_name} 教练日报 {report_date}
+  {store_name} 教练日报 {date}
 
   一、客户数据
   加微信：[当日/月累计]（如 5/379）
@@ -155,7 +156,7 @@ template: |
   ### 副教练日报（role=assistant_coach）
 
   ```
-  {store_name} 副教练日报 {report_date}
+  {store_name} 副教练日报 {date}
 
   一、活动执行
   小游戏：[请填写]类型/[请填写]人参与

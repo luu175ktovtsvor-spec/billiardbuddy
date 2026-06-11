@@ -15,11 +15,11 @@ interface MyTemplate {
   createdAt: string;
 }
 
-/** 没有 cardId 的旧模板：取该岗位第一张卡片兜底（工作台首页不读 intent 参数，直跳卡片页才能带上需求） */
+/** 解析模板关联的任务卡。无 cardId 的旧模板返回 null（跳工作台首页让用户选卡），
+ * 不能兜底到岗位第一张卡——卡片页落地会用该卡的 prompt_key 自动生成并扣配额，
+ * 用错场景模板内容必然跑偏 */
 function resolveCardId(t: MyTemplate): string | null {
-  if (t.cardId) return t.cardId;
-  const tasks = ROLE_TASKS[t.role as keyof typeof ROLE_TASKS];
-  return tasks?.[0]?.id || null;
+  return t.cardId || null;
 }
 
 const STORAGE_KEY = "my_templates";

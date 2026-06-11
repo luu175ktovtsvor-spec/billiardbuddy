@@ -25,7 +25,7 @@ class QuotaResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-@router.get("/", response_model=QuotaResponse)
+@router.get("", response_model=QuotaResponse)  # 不带尾斜杠：与前端请求路径一致，避免 307 重定向剥离认证头
 async def get_quota(
     _perm: None = Depends(require_permission(Permission.QUOTA_VIEW)),
     store=Depends(get_current_store),

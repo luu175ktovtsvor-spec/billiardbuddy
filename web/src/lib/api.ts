@@ -447,10 +447,11 @@ class ApiClient {
 
   async exportGenerations(type?: string): Promise<Blob> {
     const typeParam = type ? `?type=${type}` : "";
+    const headers: Record<string, string> = {};
     const token = this.getToken();
-    const res = await fetch(`${this.baseUrl}/api/v1/generations/export${typeParam}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    if (this.storeId) headers["X-Store-Id"] = this.storeId; // 多门店用户导出当前门店而非默认门店
+    const res = await fetch(`${this.baseUrl}/api/v1/generations/export${typeParam}`, { headers });
     if (!res.ok) throw new Error("导出失败");
     return res.blob();
   }
