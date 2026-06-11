@@ -17,9 +17,9 @@ const STEPS = [
   {
     icon: Sparkles,
     title: "生成第一条朋友圈",
-    desc: "用 AI 工作台一键生成朋友圈文案，体验 AI 如何帮球房做运营。选择你的岗位，点击任务卡即可。",
+    desc: "点击直达「今日朋友圈」任务卡，需求已替你填好，点生成就能看到 AI 为你的球房逐字写出文案。",
     action: "去生成",
-    href: "/dashboard/workbench",
+    href: "/dashboard/workbench/mgr-daily-moments",
   },
   {
     icon: MessageSquare,

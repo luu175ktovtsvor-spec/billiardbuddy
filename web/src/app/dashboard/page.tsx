@@ -5,10 +5,35 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/auth-context";
 import { api } from "@/lib/api";
-import { getTopCards, ROLE_LABELS } from "@/lib/role-workbench-config";
+import { getTopCards, ROLE_LABELS, ROLE_TASKS } from "@/lib/role-workbench-config";
 import type { RoleTaskCard } from "@/lib/role-workbench-config";
 import type { StoreResponse } from "@/types/store";
-import type { DashboardTodayResponse } from "@/types/dashboard";
+import type { DashboardTodayResponse, DashboardRecommendation } from "@/types/dashboard";
+
+/** 推荐项跳转：有 prompt_key 就直达原任务卡片带需求（一键复刻），否则用后端给的 URL */
+function recommendationHref(rec: DashboardRecommendation): string {
+  const payload = (rec.suggested_payload || {}) as Record<string, unknown>;
+  const promptKey = typeof payload.prompt_key === "string" ? payload.prompt_key : null;
+  const recIntent = typeof payload.user_intent === "string" ? payload.user_intent : null;
+  if (promptKey) {
+    for (const tasks of Object.values(ROLE_TASKS)) {
+      const card = tasks.find((t) => t.promptKey && t.promptKey === promptKey);
+      if (card) {
+        return `/dashboard/workbench/${card.id}${recIntent ? `?intent=${encodeURIComponent(recIntent)}` : ""}`;
+      }
+    }
+  }
+  return rec.action_url || "/dashboard/workbench";
+}
+
+function hourGreeting(): string {
+  const h = new Date().getHours();
+  if (h < 6) return "夜深了";
+  if (h < 11) return "早上好";
+  if (h < 14) return "中午好";
+  if (h < 18) return "下午好";
+  return "晚上好";
+}
 import {
   Store,
   Loader2,
@@ -213,13 +238,42 @@ export default function DashboardPage() {
       {/* 首次登录引导 */}
       {isNewUser && <OnboardingGuide />}
 
-      {/* 顶部欢迎区 */}
+      {/* 顶部欢迎区：带名字/店名/时段的问候，"工具"变"搭档" */}
       <div className="mb-6">
         <h2 className="text-xl font-bold text-slate-900">今日工作台</h2>
         {dashboard && (
-          <p className="mt-1 text-sm text-slate-500">{dashboard.greeting}</p>
+          <p className="mt-1 text-sm text-slate-500">
+            {hourGreeting()}
+            {user?.name ? `，${user.name}` : ""}
+            {store?.name ? `。${store.name}` : "。"}
+            {dashboard.greeting}
+          </p>
         )}
       </div>
+
+      {/* 今日建议：后端 9 条规则引擎的推荐（此前从未渲染），取前 3 条 */}
+      {!loading && store && dashboard && dashboard.recommendations.length > 0 && (
+        <div className="mb-6 rounded-lg border border-indigo-100 bg-indigo-50/50 p-4">
+          <p className="mb-2.5 text-sm font-semibold text-slate-800">📌 今天建议做这几件事</p>
+          <div className="space-y-2">
+            {dashboard.recommendations.slice(0, 3).map((rec) => (
+              <div key={rec.id} className="flex items-center gap-3 rounded-md bg-white border border-slate-100 px-3 py-2.5">
+                {rec.priority === "high" && <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" />}
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-slate-800">{rec.title}</p>
+                  <p className="truncate text-xs text-slate-400">{rec.description}</p>
+                </div>
+                <Link
+                  href={recommendationHref(rec)}
+                  className="shrink-0 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 transition-colors"
+                >
+                  {rec.action_label}
+                </Link>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 加载中 */}
       {loading && (
@@ -389,6 +443,15 @@ export default function DashboardPage() {
                   </div>
 
                   <div className="space-y-3">
+                    {/* 成就视角：先看产出，再看余量 */}
+                    {quota.used > 0 && (
+                      <p className="text-sm text-slate-600">
+                        本月已产出 <span className="font-semibold text-indigo-600">{quota.used}</span> 条运营内容
+                        <span className="text-xs text-slate-400">
+                          ，按每条手写 20 分钟算，约省下 {Math.max(0.5, Math.round((quota.used * 20 / 60) * 2) / 2)} 小时
+                        </span>
+                      </p>
+                    )}
                     {/* 生成次数 */}
                     <div>
                       <div className="flex items-center justify-between mb-1">
