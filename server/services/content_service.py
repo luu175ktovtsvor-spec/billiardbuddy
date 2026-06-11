@@ -1,5 +1,6 @@
 import logging
 import uuid
+from datetime import date
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -447,9 +448,11 @@ async def generate_operation(
         "tone": TONE_LABELS.get(tone, tone),
         "target": target or "全部客户",
         "extra_note": extra_note or "无",
+        "role": ROLE_LABELS.get(inferred_role, inferred_role),
+        "date": date.today().isoformat(),
     }
 
-    rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
+    rendered_prompt = prompt_engine.render(template_key, store, extra_vars, lenient=True)
     rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role, intent_text=f"{scenario} {target or ''} {extra_note}")
 
     provider = ProviderFactory.get_text_provider()
@@ -512,18 +515,18 @@ async def generate_workbench(
 
     if prompt_key:
         # promptKey 路径：使用指定场景模板（如 operation.qiangyi_battle），再追加防护上下文
+        # 从 prompt_key 提取场景名（如 "operation.qiangyi_battle" → "qiangyi_battle"），推断岗位
+        scenario_name = prompt_key.split(".", 1)[-1] if "." in prompt_key else prompt_key
+        inferred_role = SCENARIO_ROLE_MAP.get(scenario_name) or role
         extra_vars = {
             "tone": TONE_LABELS.get("friendly", "friendly"),
             "target": CUSTOMER_LABELS.get(target_customer_type or "all", "全部客户"),
             "extra_note": extra_note or "无",
             "scenario": "日常",
+            "role": ROLE_LABELS.get(inferred_role, inferred_role),
+            "date": date.today().isoformat(),
         }
-        rendered_prompt = prompt_engine.render(prompt_key, store, extra_vars)
-
-        # 推断岗位用于注入对应 role_rules 和 knowledge
-        # 从 prompt_key 提取场景名（如 "operation.qiangyi_battle" → "qiangyi_battle"）
-        scenario_name = prompt_key.split(".", 1)[-1] if "." in prompt_key else prompt_key
-        inferred_role = SCENARIO_ROLE_MAP.get(scenario_name) or role
+        rendered_prompt = prompt_engine.render(prompt_key, store, extra_vars, lenient=True)
         rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role, intent_text=f"{user_intent} {extra_note}")
     else:
         # 通用 free_intent 路径：在模板内注入规则和知识

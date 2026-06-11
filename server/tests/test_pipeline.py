@@ -88,3 +88,63 @@ def test_increment_usage_is_atomic():
     src = inspect.getsource(increment_usage)
     assert "update(UsageQuota)" in src, "increment_usage 应使用数据库原子 UPDATE"
     assert "count" in inspect.signature(increment_usage).parameters
+
+
+def test_all_operation_templates_render_via_workbench_path():
+    """工作台 prompt_key 路径：54 个 operation 模板用通用变量 + 宽松模式必须全部可渲染。
+
+    回归背景：daily_report 等 14 个模板声明了 role/date 等额外变量，
+    严格渲染在卡片点击时直接 500。
+    """
+    from datetime import date
+    from models.store import Store
+    from services.content_service import ROLE_LABELS
+    from services.scenario_role_map import SCENARIO_ROLE_MAP
+
+    pe = get_prompt_engine()
+    store = Store(name="测试球房", city="成都")
+    ops = [k for k in pe._templates if k.startswith("operation.")]
+    assert len(ops) >= 50
+    for key in ops:
+        scenario = key.split(".", 1)[-1]
+        inferred = SCENARIO_ROLE_MAP.get(scenario) or "manager"
+        extra = {
+            "tone": "亲切",
+            "target": "全部客户",
+            "extra_note": "无",
+            "scenario": "日常",
+            "role": ROLE_LABELS.get(inferred, inferred),
+            "date": date.today().isoformat(),
+        }
+        rendered = pe.render(key, store, extra, lenient=True)
+        assert rendered, f"{key} 渲染为空"
+        assert "{role_display}" not in rendered, f"{key} 残留未替换占位符"
+
+
+def test_render_strict_mode_still_raises():
+    """严格模式行为不变：缺变量必须抛 PromptVariableMissingError。"""
+    import pytest
+    from models.store import Store
+    from services.ai.prompt_engine import PromptVariableMissingError
+
+    pe = get_prompt_engine()
+    store = Store(name="测试球房", city="成都")
+    with pytest.raises(PromptVariableMissingError):
+        pe.render("operation.daily_report", store, {"tone": "a", "target": "b", "extra_note": "c"})
+
+
+def test_profit_model_no_high_ratio_recharge():
+    """知识口径回归：profit_model 不得出现大比例充值赠送（须与一卡通铁律一致）。"""
+    pe = get_prompt_engine()
+    tpl = pe._templates["knowledge.profit_model"]["template"]
+    for bad in ["充1000送500", "充300送100", "充500送200", "20-33%"]:
+        assert bad not in tpl, f"profit_model 残留大比例赠送口径: {bad}"
+    assert "充1000送99" in tpl
+
+
+def test_orchestrate_has_quota_guard():
+    """协作页配额回归：发起协作任务必须有配额检查与用量计费。"""
+    import api.v1.orchestrate as orch
+    src = inspect.getsource(orch.create_orchestration)
+    assert "check_quota" in src
+    assert "increment_usage" in src

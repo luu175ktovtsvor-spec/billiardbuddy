@@ -1,6 +1,7 @@
 import json
 import uuid
 import logging
+from datetime import date
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -63,16 +64,18 @@ async def stream_workbench(
     _validate_provider_for_production()
 
     if prompt_key:
+        # 根据prompt_key推断岗位角色，与content_service.py保持一致
+        scenario_name = prompt_key.split(".", 1)[-1] if "." in prompt_key else prompt_key
+        inferred_role = scenario_role_map.get(scenario_name) or role
         extra_vars = {
             "tone": TONE_LABELS.get("friendly", "friendly"),
             "target": CUSTOMER_LABELS.get(target_customer_type or "all", "全部客户"),
             "extra_note": extra_note or "无",
             "scenario": "日常",
+            "role": ROLE_LABELS.get(inferred_role, inferred_role),
+            "date": date.today().isoformat(),
         }
-        rendered_prompt = prompt_engine.render(prompt_key, store, extra_vars)
-        # 根据prompt_key推断岗位角色，与content_service.py保持一致
-        scenario_name = prompt_key.split(".", 1)[-1] if "." in prompt_key else prompt_key
-        inferred_role = scenario_role_map.get(scenario_name) or role
+        rendered_prompt = prompt_engine.render(prompt_key, store, extra_vars, lenient=True)
         rendered_prompt = _append_guardrails(
             rendered_prompt, store, role=inferred_role,
             intent_text=f"{user_intent or ''} {extra_note or ''}",
