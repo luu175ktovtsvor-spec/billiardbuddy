@@ -77,7 +77,7 @@ web/                    # Next.js 前端
       layout/           # 布局组件（header, sidebar, mobile-nav）
       generators/       # AI 生成结果展示（copy-button）
       content-calendar.tsx  # 内容日历（静态）
-      my-templates.tsx      # 我的模板
+      my-templates.tsx      # 我的收藏（服务端 is_favorite，非 localStorage）
       onboarding-guide.tsx  # 新手引导
       empty-store-guide.tsx # 无门店引导
       error-boundary.tsx    # 错误边界
@@ -264,7 +264,7 @@ journalctl -u billiards-backend -n 50 --no-pager
 | 海报生成（gpt-image-2 + Logo/二维码直传 AI + 二次调整） | ✅ |
 | Markdown 渲染（react-markdown + remark-gfm） | ✅ |
 | 文本模型（DeepSeek V4 Flash） | ✅ |
-| 生成历史（筛选/收藏/详情/导出 CSV） | ✅ |
+| 生成历史（筛选/搜索/收藏/独立全屏详情页 `/dashboard/history/[id]`/导出 CSV） | ✅ |
 | 配额管理 | ✅ |
 | 多 AI Provider（DeepSeek/OpenAI） | ✅ |
 | fewshot 选择器 | ✅ |
@@ -272,7 +272,7 @@ journalctl -u billiards-backend -n 50 --no-pager
 | 成员管理（邀请码 + 手动添加 + 角色调整 + 移除） | ✅ |
 | 管理后台（用户管理/订阅管理/收入统计/套餐编辑） | ✅ |
 | 反馈系统（效果好/差） | ✅ |
-| 用户模板（我的模板，localStorage 存储） | ✅ |
+| 我的收藏（服务端 is_favorite 复用，"再写一条"走原卡片+原意图同管道；原 localStorage 模板已废弃） | ✅ |
 | 内容变体（一键转换为抖音/小红书/群公告/朋友圈） | ✅ |
 | 批量生成（一次生成 5 条同类内容） | ✅ |
 | 新手引导（5 步向导） | ✅ |
