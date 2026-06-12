@@ -63,6 +63,8 @@ async def list_generation_history(
                 model_used=item.model_used,
                 tokens_used=item.tokens_used,
                 is_favorite=item.is_favorite,
+                title=item.title,
+                conversation_id=item.conversation_id,
                 effect_rating=item.effect_rating,
                 created_at=item.created_at,
             )
@@ -155,6 +157,8 @@ async def get_generation_history_detail(
         model_used=generation.model_used,
         tokens_used=generation.tokens_used,
         is_favorite=generation.is_favorite,
+        title=generation.title,
+        conversation_id=generation.conversation_id,
         effect_rating=generation.effect_rating,
         created_at=generation.created_at,
     )
@@ -218,6 +222,34 @@ async def update_generation_content(
     generation.result = content[:20000]
     await db.commit()
     return {"status": "ok"}
+
+
+class UpdateTitleRequest(BaseModel):
+    title: str
+
+
+@router.patch("/{generation_id}/title")
+async def update_generation_title(
+    generation_id: uuid.UUID,
+    body: UpdateTitleRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    current_store: Annotated[Store, Depends(get_current_store)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    _perm: None = Depends(require_permission(Permission.GENERATION_LIST)),
+):
+    """给生成记录命名(海报找图友好):仅改展示名,不动内容。"""
+    generation = await get_generation_detail(
+        db=db,
+        store_id=current_store.id,
+        generation_id=generation_id,
+    )
+    if generation is None:
+        raise NotFoundException("生成记录不存在")
+
+    title = body.title.strip()[:80]
+    generation.title = title or None
+    await db.commit()
+    return {"status": "ok", "title": generation.title}
 
 
 @router.delete("/{generation_id}")

@@ -12,6 +12,14 @@ import { markdownToPlainText, formatDateTime } from "@/lib/utils";
 import { isWeChat } from "@/lib/wechat";
 import { useToast } from "@/components/ui/toast";
 
+/** 海报行展示名:用户命名 > prompt 前 18 字 > 兜底"海报" */
+function displayTitle(item: GenerationHistoryItem): string {
+  if (item.title) return item.title;
+  const prompt = item.input_params?.prompt;
+  if (typeof prompt === "string" && prompt.trim()) return prompt.trim().slice(0, 18);
+  return "海报";
+}
+
 export default function HistoryPage() {
   const [items, setItems] = useState<GenerationHistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -294,9 +302,31 @@ export default function HistoryPage() {
                   </button>
                 </div>
               </div>
-              <p className="line-clamp-3 whitespace-pre-wrap text-[15px] text-slate-700">
-                {markdownToPlainText(item.content || "") || "（无内容）"}
-              </p>
+              {item.type === "poster" ? (
+                <div className="flex items-center gap-3">
+                  {item.result && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={api.resolveUrl(item.result)}
+                      alt=""
+                      className="h-14 w-14 shrink-0 rounded-lg object-cover"
+                    />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[15px] font-semibold text-slate-900">{displayTitle(item)}</p>
+                    <p className="text-xs text-slate-400">{formatDateTime(item.created_at)}</p>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {item.title && (
+                    <p className="text-[15px] font-semibold text-slate-900">{item.title}</p>
+                  )}
+                  <p className="line-clamp-3 whitespace-pre-wrap text-[15px] text-slate-700">
+                    {markdownToPlainText(item.content || "") || "（无内容）"}
+                  </p>
+                </>
+              )}
             </div>
           ))}
         </div>

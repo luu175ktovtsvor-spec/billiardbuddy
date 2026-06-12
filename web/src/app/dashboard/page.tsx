@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/auth-context";
 import { api } from "@/lib/api";
 import { getTopCards, ROLE_LABELS, ROLE_TASKS } from "@/lib/role-workbench-config";
+import { SceneIconTile } from "@/lib/scene-icons";
 import type { RoleTaskCard } from "@/lib/role-workbench-config";
 import type { StoreResponse } from "@/types/store";
 import type { DashboardTodayResponse, DashboardRecommendation } from "@/types/dashboard";
@@ -62,126 +63,12 @@ import {
   ChevronRight,
   Crown,
   Clock,
+  Lightbulb,
   Zap,
 } from "lucide-react";
 import { OnboardingGuide } from "@/components/onboarding-guide";
 import { ContentCalendar } from "@/components/content-calendar";
 import { MyTemplates } from "@/components/my-templates";
-
-/** 默认 emoji，sceneTags 里没有匹配时用这个 */
-const DEFAULT_EMOJI = "📋";
-
-/** 尝试从 sceneTags 里挑一个合适的 emoji */
-function pickEmoji(sceneTags: string[]): string {
-  const tagEmojiMap: Record<string, string> = {
-    朋友圈: "📱",
-    日常: "☀️",
-    门店品牌: "🏪",
-    老客户: "🤝",
-    私聊: "💬",
-    回访: "📞",
-    邀约: "📨",
-    会员群: "👥",
-    空台: "🎱",
-    促活: "🔥",
-    竞技群: "🏆",
-    约局: "🎯",
-    撮合: "🫂",
-    助教: "🎓",
-    推广: "📣",
-    周赛: "🏅",
-    活动: "🎉",
-    赛事: "🏟️",
-    员工群: "📋",
-    管理: "📊",
-    SOP: "✅",
-    日报: "📝",
-    汇报: "📈",
-    看球: "📺",
-    生日: "🎂",
-    关怀: "❤️",
-    团购: "🛒",
-    评分: "⭐",
-    品类: "📦",
-    爆款: "💥",
-    定价: "💰",
-    新助教: "🆕",
-    预约: "📅",
-    短视频: "🎬",
-    获客: "🧲",
-    维护: "🔧",
-    PK: "⚔️",
-    激励: "💪",
-    招聘: "👥",
-    合规: "📜",
-    业绩: "📊",
-    复盘: "🔍",
-    转化: "📈",
-    培训: "📖",
-    筛选: "🔎",
-    新人: "🌱",
-    加微信: "📱",
-    新客: "✨",
-    前厅: "🏢",
-    话术: "🎙️",
-    搭子: "👬",
-    进群: "📲",
-    投诉: "⚠️",
-    安抚: "🫶",
-    开店: "🔑",
-    检查: "🔍",
-    闭店: "🌙",
-    价格: "💲",
-    桌型: "🎱",
-    设备: "🔧",
-    推车: "🛒",
-    促销: "🏷️",
-    跟进: "📞",
-    私域: "🔒",
-    卫生: "🧹",
-    电器: "⚡",
-    节能: "🌱",
-    老板: "👔",
-    简报: "📋",
-    经营: "📈",
-    周计划: "📅",
-    月报: "📊",
-    方向: "🧭",
-    投资: "💰",
-    回报: "📈",
-    运营: "🎯",
-    内容: "✍️",
-    计划: "📅",
-    素材: "🎨",
-    氛围: "🎶",
-    预热: "🔥",
-    抖音: "🎵",
-    矩阵: "🔗",
-    直播: "📡",
-    教练: "🏅",
-    公告: "📢",
-    报名: "📝",
-    赛前: "⏰",
-    轻竞技: "🎯",
-    乔氏: "🎱",
-    斯诺克: "🎱",
-    战报: "📰",
-    抢一大战: "⚔️",
-    好评: "⭐",
-    引导: "👆",
-    教学: "📚",
-    新手: "🌟",
-    入门: "🚀",
-    散客: "🧑",
-    接待: "🤝",
-    小游戏: "🎮",
-    娱乐: "😄",
-  };
-  for (const tag of sceneTags) {
-    if (tagEmojiMap[tag]) return tagEmojiMap[tag];
-  }
-  return DEFAULT_EMOJI;
-}
 
 /** 从 localStorage 读取使用次数 */
 function getUsageCounts(): Record<string, number> {
@@ -275,7 +162,10 @@ export default function DashboardPage() {
       {/* 今日建议：后端 9 条规则引擎的推荐（此前从未渲染），取前 3 条 */}
       {!loading && store && dashboard && dashboard.recommendations.length > 0 && (
         <div className="mb-6 rounded-2xl border border-brand-100 bg-brand-50/50 p-4">
-          <p className="mb-3 text-[15px] font-semibold text-slate-800 lg:text-sm">📌 今天建议做这几件事</p>
+          <div className="mb-3 flex items-center gap-2">
+            <Lightbulb className="h-5 w-5 text-brand-600" />
+            <p className="text-[15px] font-semibold text-slate-800 lg:text-sm">今天建议做这几件事</p>
+          </div>
           <div className="space-y-2">
             {pickTopRecommendations(dashboard.recommendations).map((rec) => (
               <Link
@@ -283,11 +173,14 @@ export default function DashboardPage() {
                 href={recommendationHref(rec)}
                 className="flex min-h-[56px] items-center gap-3 rounded-xl bg-white border border-slate-100 px-3.5 py-3 transition-colors active:bg-slate-100"
               >
-                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-brand-50 text-lg">
-                  {rec.priority === "high" ? "🔥" : "✨"}
-                </span>
+                <SceneIconTile hint={rec.title || rec.description} size="sm" />
                 <div className="min-w-0 flex-1">
-                  <p className="text-[15px] font-medium text-slate-800 lg:text-sm">{rec.title}</p>
+                  <div className="flex items-center gap-1.5">
+                    <p className="text-[15px] font-medium text-slate-800 lg:text-sm">{rec.title}</p>
+                    {rec.priority === "high" && (
+                      <span className="rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">优先</span>
+                    )}
+                  </div>
                   <p className="truncate text-[13px] text-slate-400 lg:text-xs">{rec.description}</p>
                 </div>
                 <span className="flex shrink-0 items-center gap-0.5 text-[13px] font-medium text-brand-600 lg:text-xs">
@@ -363,7 +256,6 @@ export default function DashboardPage() {
                   </div>
                   <div className="flex gap-3 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden lg:grid lg:grid-cols-3 lg:overflow-visible lg:pb-0">
                     {topCards.map((card) => {
-                      const emoji = pickEmoji(card.sceneTags);
                       const count = usageCounts[card.id] || 0;
                       return (
                         <button
@@ -371,7 +263,7 @@ export default function DashboardPage() {
                           onClick={() => router.push(`/dashboard/workbench/${card.id}`)}
                           className="flex w-44 shrink-0 items-start gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-left hover:border-brand-200 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 active:scale-[0.98] cursor-pointer lg:w-auto"
                         >
-                          <span className="mt-0.5 text-2xl leading-none shrink-0 lg:text-xl">{emoji}</span>
+                          <SceneIconTile hint={card.title} size="sm" />
                           <div className="min-w-0 flex-1">
                             <p className="text-[15px] font-medium text-slate-900 truncate lg:text-sm">{card.title}</p>
                             <p className="mt-0.5 truncate text-xs text-slate-500">

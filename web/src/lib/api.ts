@@ -464,6 +464,15 @@ class ApiClient {
     await this.request<{ status: string }>("PATCH", `/api/v1/generations/${id}/content`, { content });
   }
 
+  /** 给生成记录命名(海报找图友好) */
+  async updateGenerationTitle(id: string, title: string): Promise<{ title: string | null }> {
+    return this.request<{ status: string; title: string | null }>(
+      "PATCH",
+      `/api/v1/generations/${id}/title`,
+      { title }
+    );
+  }
+
   async submitFeedback(generationId: string, rating: "good" | "bad", note?: string): Promise<void> {
     await this.request("POST", `/api/v1/feedback/generations/${generationId}/feedback`, { rating, note });
   }

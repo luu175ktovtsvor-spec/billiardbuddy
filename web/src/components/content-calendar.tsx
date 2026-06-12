@@ -102,7 +102,7 @@ export function ContentCalendar() {
           <span className="ml-auto text-[13px] text-slate-400 lg:text-xs">
             {isToday && items.length > 0
               ? doneCount >= items.length
-                ? "今天全部完成 🎉"
+                ? "今天全部完成"
                 : `今天完成 ${doneCount}/${items.length}`
               : "今天该发什么"}
           </span>

@@ -1,271 +1,157 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/auth-context";
-import { api } from "@/lib/api";
-import { ApiError, type OrchestrationTask } from "@/types/api";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { PageHeader } from "@/components/layout/page-header";
-import { useToast } from "@/components/ui/toast";
-import { Loader2, CheckCircle, Clock, XCircle, Send } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { markdownToPlainText } from "@/lib/utils";
+import {
+  Trophy,
+  Store,
+  BookOpen,
+  BarChart3,
+  Flag,
+  BadgePercent,
+  Crown,
+  Wand2,
+  ChevronRight,
+  type LucideIcon,
+} from "lucide-react";
 
-const SCENARIOS = [
-  { type: "activity_planning", emoji: "🏆", name: "策划活动", desc: "周赛/月赛/节日活动" },
-  { type: "store_opening", emoji: "🎉", name: "新店开业", desc: "开业筹备全流程" },
-  { type: "staff_training", emoji: "📚", name: "员工培训", desc: "新人入职/技能提升" },
-  { type: "business_review", emoji: "📊", name: "经营复盘", desc: "月度/季度经营分析" },
+/* 协作场景馆:只负责"选场景",执行在独立的 run 页(对话感)。
+ * 前 4 个是后端原生 task_type;后 4 个是预设模板——走 custom 通道+预填描述,
+ * 不需要后端新增类型,场景可以随时在这里加。 */
+
+interface Scenario {
+  type: string;
+  icon: LucideIcon;
+  name: string;
+  desc: string;
+  roles: string[];
+  /** custom 预设:预填到执行页的任务描述模板 */
+  preset?: string;
+}
+
+const SCENARIOS: Scenario[] = [
+  {
+    type: "activity_planning",
+    icon: Trophy,
+    name: "策划活动",
+    desc: "周赛、月赛、节日活动,从玩法到宣传一条龙",
+    roles: ["店长", "教练", "运营", "前厅"],
+  },
+  {
+    type: "store_opening",
+    icon: Store,
+    name: "新店开业",
+    desc: "开业筹备全流程:节奏、物料、引爆动作",
+    roles: ["老板", "店长", "前厅", "运营"],
+  },
+  {
+    type: "staff_training",
+    icon: BookOpen,
+    name: "员工培训",
+    desc: "新人入职、技能提升、考核标准一次出齐",
+    roles: ["店长", "助教管理", "前厅"],
+  },
+  {
+    type: "business_review",
+    icon: BarChart3,
+    name: "经营复盘",
+    desc: "月度/季度经营分析,问题与下一步打法",
+    roles: ["老板", "店长", "运营"],
+  },
+  {
+    type: "custom",
+    icon: Flag,
+    name: "周年庆方案",
+    desc: "店庆主题、玩法、宣传节奏、预算分配思路",
+    roles: ["自动分派"],
+    preset: "帮我策划门店周年庆活动:确定主题和玩法,设计宣传节奏(提前几天发什么),给出预算分配思路和当天人员分工。",
+  },
+  {
+    type: "custom",
+    icon: BadgePercent,
+    name: "淡季促活作战",
+    desc: "工作日下午没人?引流、社群、助教联动打法",
+    roles: ["自动分派"],
+    preset: "制定淡季(工作日下午时段)促活作战方案:怎么引流到店、社群里怎么带节奏、助教怎么联动,给出一周的执行清单。",
+  },
+  {
+    type: "custom",
+    icon: Crown,
+    name: "会员体系搭建",
+    desc: "权益设计、推销话术、上线节奏整套方案",
+    roles: ["自动分派"],
+    preset: "帮我设计门店会员/储值体系搭建方案:权益怎么设计、前台推销话术、上线推广节奏,注意要符合小比例赠送的稳妥原则。",
+  },
+  {
+    type: "custom",
+    icon: Wand2,
+    name: "自定义协作",
+    desc: "自己描述任务,指挥官自动分派岗位",
+    roles: ["自动分派"],
+  },
 ];
 
-const ROLE_NAMES: Record<string, string> = {
-  boss: "老板 Agent",
-  manager: "店长 Agent",
-  assistant_manager: "助教管理 Agent",
-  coach: "教练 Agent",
-  frontdesk: "前厅 Agent",
-  operator: "运营 Agent",
-};
-
-export default function CollaboratePage() {
+export default function CollaborateGalleryPage() {
   const { isAuthenticated } = useAuth();
-  const { toast } = useToast();
-  const [selectedScenario, setSelectedScenario] = useState<string | null>(null);
-  const [description, setDescription] = useState("");
-  const [taskResult, setTaskResult] = useState<OrchestrationTask | null>(null);
-  const [loading, setLoading] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const handleStart = async () => {
-    if (!selectedScenario || !description.trim()) return;
-    setLoading(true);
-    try {
-      // 统一走 api 封装：带 X-Store-Id、401 自动刷新、非 2xx 抛 ApiError
-      const data = await api.startOrchestration({
-        task_type: selectedScenario,
-        description: description.trim(),
-        auto_orchestrate: true,
-      });
-      setTaskResult(data);
-      if (data.task_id) startPolling(data.task_id);
-    } catch (err) {
-      toast(err instanceof ApiError ? err.detail : "发起协作失败", "error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const startPolling = (taskId: string) => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(async () => {
-      try {
-        const data = await api.getOrchestration(taskId);
-        setTaskResult(data);
-        if (
-          data.status === "completed" ||
-          data.status === "failed" ||
-          data.status === "cancelled"
-        ) {
-          if (pollRef.current) clearInterval(pollRef.current);
-        }
-      } catch (err) {
-        // 任务丢失/登录过期：停止轮询并提示，避免无限卡"等待中"
-        if (err instanceof ApiError && (err.status === 401 || err.status === 404)) {
-          if (pollRef.current) clearInterval(pollRef.current);
-          toast(err.status === 404 ? "任务已丢失，请重新发起协作" : "登录已过期，请重新登录", "error");
-        }
-        // 网络抖动等其他错误：下个周期重试
-      }
-    }, 2000);
-  };
-
-  useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
-  }, []);
+  const router = useRouter();
 
   if (!isAuthenticated) return null;
 
+  const goRun = (s: Scenario) => {
+    const params = new URLSearchParams({ type: s.type, name: s.name });
+    if (s.preset) params.set("preset", s.preset);
+    router.push(`/dashboard/workbench/collaborate/run?${params.toString()}`);
+  };
+
   return (
-    <div className="mx-auto max-w-5xl pb-24 lg:pb-0">
+    <div className="mx-auto max-w-5xl">
       <PageHeader title="多人协作" backHref="/dashboard/workbench" />
       <Breadcrumb
         items={[
           { label: "工作台", href: "/dashboard/workbench" },
-          { label: "🤝 协作任务" },
+          { label: "协作任务" },
         ]}
       />
 
-      {/* 手机端标题由 PageHeader 承担，避免重复大标题 */}
-      <h2 className="hidden text-xl font-bold text-slate-900 mb-2 lg:block">🤝 协作任务</h2>
-      <p className="text-[15px] leading-relaxed text-slate-500 mb-6 lg:text-sm">
-        说一句你的目标，运营智能体会先制定方案框架、再分派各岗位分头执行、最后整合成一份可直接落地的完整方案。
+      <h2 className="hidden text-xl font-bold text-slate-900 mb-2 lg:block">协作任务</h2>
+      <p className="mb-6 text-[15px] leading-relaxed text-slate-500 lg:text-sm">
+        选一个场景,运营智能体先制定方案框架,再让各岗位分头执行,最后整合成一份能直接落地的完整方案。
       </p>
 
-      {/* Scenario selection */}
-      <div className="grid grid-cols-2 gap-3 mb-6">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {SCENARIOS.map((s) => (
           <button
-            key={s.type}
-            onClick={() => setSelectedScenario(s.type)}
-            className={`rounded-2xl border px-4 py-5 text-center transition-all duration-200 active:scale-[0.98] ${
-              selectedScenario === s.type
-                ? "border-brand-500 bg-brand-50 shadow-sm"
-                : "border-slate-200 bg-white hover:border-brand-200"
-            }`}
+            key={s.name}
+            type="button"
+            onClick={() => goRun(s)}
+            className="flex items-start gap-3.5 rounded-2xl border border-slate-200 bg-white p-4 text-left transition-all duration-200 hover:border-brand-200 hover:shadow-md active:scale-[0.98]"
           >
-            <span className="text-3xl block mb-2">{s.emoji}</span>
-            <p className="text-[15px] font-semibold text-slate-900">{s.name}</p>
-            <p className="text-xs text-slate-400 mt-1">{s.desc}</p>
+            <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
+              <s.icon className="h-6 w-6" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center justify-between gap-2">
+                <span className="text-[15px] font-semibold text-slate-900">{s.name}</span>
+                <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />
+              </span>
+              <span className="mt-0.5 block text-[13px] leading-relaxed text-slate-500">{s.desc}</span>
+              <span className="mt-2 flex flex-wrap gap-1">
+                {s.roles.map((r) => (
+                  <span key={r} className="rounded-full bg-slate-50 px-2 py-0.5 text-[11px] text-slate-500">
+                    {r}
+                  </span>
+                ))}
+              </span>
+            </span>
           </button>
         ))}
       </div>
 
-      {/* Task description */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 mb-6">
-        <label className="mb-2 block text-sm font-medium text-slate-700">
-          任务描述
-        </label>
-        <textarea
-          rows={3}
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none"
-          placeholder="例如：策划一场周末台球挑战赛，预算3000元，目标吸引新客户"
-        />
-        {/* 手机吸底主按钮（含安全区），桌面回到卡片内原位置 */}
-        <div className="fixed bottom-0 left-0 right-0 z-20 border-t border-slate-100 bg-white p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] lg:static lg:mt-3 lg:border-0 lg:bg-transparent lg:p-0">
-          <button
-            onClick={handleStart}
-            disabled={loading || !selectedScenario || !description.trim()}
-            className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-brand-600 px-4 text-[15px] font-medium text-white hover:bg-brand-500 active:scale-[0.98] disabled:opacity-50 transition-all"
-          >
-            {loading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Send className="h-4 w-4" />
-            )}
-            {loading ? "发起中..." : "🚀 发起协作"}
-          </button>
-        </div>
-      </div>
-
-      {/* 三阶段进度条 */}
-      {taskResult && (
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 mb-6">
-          <h3 className="text-sm font-semibold text-slate-900 mb-3">协作进度</h3>
-          <div className="mb-4 flex items-center gap-2 overflow-x-auto text-xs [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {[
-              { key: "planning", label: "① 指挥官规划" },
-              { key: "executing", label: "② 岗位分头执行" },
-              { key: "synthesizing", label: "③ 整合成方案" },
-            ].map((step, i) => {
-              const order = ["planning", "executing", "synthesizing"];
-              const cur = taskResult.status === "completed" ? 3 : order.indexOf(taskResult.stage || "planning");
-              const done = i < cur || taskResult.status === "completed";
-              const active = i === cur && taskResult.status === "running";
-              return (
-                <div key={step.key} className="flex shrink-0 items-center gap-2">
-                  <span className={`whitespace-nowrap rounded-full px-2.5 py-1 ${
-                    done ? "bg-emerald-50 text-emerald-600"
-                    : active ? "bg-amber-50 text-amber-600"
-                    : "bg-slate-50 text-slate-400"
-                  }`}>
-                    {active && <Loader2 className="inline h-3 w-3 animate-spin mr-1" />}
-                    {done && !active && "✓ "}
-                    {step.label}
-                  </span>
-                  {i < 2 && <span className="text-slate-300">→</span>}
-                </div>
-              );
-            })}
-          </div>
-
-          {/* 指挥官框架 */}
-          {taskResult.framework && (
-            <details className="mb-3 rounded-xl border border-brand-100 bg-brand-50/50 p-3" open={taskResult.status === "running"}>
-              <summary className="cursor-pointer text-xs font-semibold text-brand-700">📋 协作框架（指挥官制定，各岗位据此分工）</summary>
-              <div className="mt-2 prose prose-xs max-w-none prose-slate text-xs">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{taskResult.framework}</ReactMarkdown>
-              </div>
-            </details>
-          )}
-
-          {taskResult.stage === "planning" && taskResult.status === "running" && (
-            <p className="mb-3 text-xs text-slate-400">指挥官正在制定协作框架（约 20-40 秒）…</p>
-          )}
-          <div className="space-y-2">
-            {(taskResult.agents ?? []).map((a) => (
-              <div
-                key={a.role}
-                className="flex items-center gap-3 py-2 border-b border-slate-50 last:border-0"
-              >
-                {a.status === "completed" ? (
-                  <CheckCircle className="h-4 w-4 text-emerald-500" />
-                ) : a.status === "running" ? (
-                  <Loader2 className="h-4 w-4 text-amber-500 animate-spin" />
-                ) : a.status === "failed" ? (
-                  <XCircle className="h-4 w-4 text-red-500" />
-                ) : (
-                  <Clock className="h-4 w-4 text-slate-300" />
-                )}
-                <p className="text-sm font-medium text-slate-700 flex-1">
-                  {ROLE_NAMES[a.role] || a.role}
-                </p>
-                <span
-                  className={`text-xs px-2 py-0.5 rounded-full ${
-                    a.status === "completed"
-                      ? "bg-emerald-50 text-emerald-600"
-                      : a.status === "running"
-                        ? "bg-amber-50 text-amber-600"
-                        : a.status === "failed"
-                          ? "bg-red-50 text-red-600"
-                          : "bg-slate-50 text-slate-400"
-                  }`}
-                >
-                  {a.status === "completed"
-                    ? "已完成"
-                    : a.status === "running"
-                      ? "生成中..."
-                      : a.status === "failed"
-                        ? "失败"
-                        : "等待中"}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Summary result */}
-      {taskResult?.summary && (
-        <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div className="border-b border-slate-100 px-4 py-3">
-            <p className="text-sm font-semibold text-slate-700">📄 完整方案</p>
-            <p className="text-xs text-slate-400 mt-1">
-              {(taskResult.agents ?? []).length} 个岗位按统一框架协作产出 · 已存入生成历史，可回看/收藏
-            </p>
-          </div>
-          <div className="px-4 py-4 prose prose-sm max-w-none prose-slate">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {taskResult.summary}
-            </ReactMarkdown>
-          </div>
-          <div className="border-t border-slate-100 px-4 py-3">
-            <button
-              onClick={() => {
-                navigator.clipboard.writeText(markdownToPlainText(taskResult.summary || ""));
-                toast("已复制全部");
-              }}
-              className="flex h-11 w-full items-center justify-center gap-1.5 rounded-xl bg-brand-600 px-4 text-[15px] font-medium text-white hover:bg-brand-500 active:scale-[0.98] transition-all lg:w-auto"
-            >
-              📋 复制全部
-            </button>
-          </div>
-        </div>
-      )}
+      <p className="mt-5 text-center text-xs text-slate-400">
+        每次协作生成一份完整方案,计入生成次数;结果自动存入生成历史
+      </p>
     </div>
   );
 }

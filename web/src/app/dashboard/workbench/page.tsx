@@ -13,7 +13,8 @@ import {
   getOutputLabels,
 } from "@/lib/role-workbench-config";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
-import { Brain, Loader2, Search, X } from "lucide-react";
+import { Brain, Loader2, Search, X, MessageCircle, ChevronRight } from "lucide-react";
+import Link from "next/link";
 import { EmptyStoreGuide } from "@/components/empty-store-guide";
 
 function getTaskCardUsage(): Record<string, number> {
@@ -133,6 +134,21 @@ export default function WorkbenchPage() {
           </button>
         )}
       </div>
+
+      {/* 自由对话入口:卡片是按场景点菜,这里是想到啥说啥 */}
+      <Link
+        href="/dashboard/chat"
+        className="mb-4 flex items-center gap-3 rounded-2xl border border-brand-100 bg-brand-50/60 px-4 py-3 active:scale-[0.98] transition-transform"
+      >
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-600 text-white">
+          <MessageCircle className="h-4 w-4" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[15px] font-medium text-slate-900">找不到合适的卡片？直接跟 AI 说</span>
+          <span className="block text-xs text-slate-500">对话式出成品，懂你的门店和台球行业</span>
+        </span>
+        <ChevronRight className="h-4 w-4 shrink-0 text-brand-400" />
+      </Link>
 
       {/* 搜索结果(跨岗位) */}
       {q ? (
