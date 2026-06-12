@@ -94,12 +94,12 @@ export function ContentCalendar() {
     : 0;
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
+    <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
       <div className="border-b border-slate-100 px-4 py-3">
         <div className="flex items-center gap-2">
           <Calendar className="h-5 w-5 text-brand-600" />
-          <h3 className="font-semibold text-slate-900">内容日历</h3>
-          <span className="ml-auto text-xs text-slate-400">
+          <h3 className="text-[17px] font-semibold text-slate-900 lg:text-base">内容日历</h3>
+          <span className="ml-auto text-[13px] text-slate-400 lg:text-xs">
             {isToday && items.length > 0
               ? doneCount >= items.length
                 ? "今天全部完成 🎉"
@@ -116,7 +116,7 @@ export function ContentCalendar() {
             key={i}
             type="button"
             onClick={() => setSelectedDay(i)}
-            className={`flex-1 py-2 text-xs font-medium text-center transition-colors ${
+            className={`flex-1 min-h-[44px] py-2 text-[13px] font-medium text-center transition-colors active:bg-slate-100 lg:min-h-0 lg:text-xs ${
               i === selectedDay
                 ? "border-b-2 border-brand-600 text-brand-600"
                 : i === todayWeekday
@@ -136,32 +136,32 @@ export function ContentCalendar() {
           const pk = itemPromptKey(item);
           const done = isToday && !!pk && doneSubTypes.has(pk);
           return (
-            <div key={i} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors">
+            <div key={i} className="flex min-h-[56px] items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors">
               <div className="flex items-center gap-1.5 shrink-0 w-14">
                 {done ? (
-                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                  <CheckCircle2 className="h-4 w-4 text-emerald-500" />
                 ) : (
-                  <Clock className="h-3 w-3 text-slate-400" />
+                  <Clock className="h-3.5 w-3.5 text-slate-400" />
                 )}
                 <span className="text-xs text-slate-500">{item.time}</span>
               </div>
               <div className="flex-1 min-w-0">
-                <p className={`text-sm font-medium ${done ? "text-slate-400 line-through" : "text-slate-900"}`}>
+                <p className={`text-[15px] font-medium lg:text-sm ${done ? "text-slate-400 line-through" : "text-slate-900"}`}>
                   {item.title}
                 </p>
-                <p className="text-xs text-slate-500 truncate">{item.desc}</p>
+                <p className="text-[13px] text-slate-500 truncate lg:text-xs">{item.desc}</p>
               </div>
               <Link
                 href={item.href}
-                className={`shrink-0 inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                className={`shrink-0 inline-flex items-center gap-1 rounded-lg px-3 py-2.5 text-[13px] font-medium transition-all active:scale-[0.98] lg:text-xs ${
                   done
                     ? "bg-slate-50 text-slate-400 hover:bg-slate-100"
                     : "bg-brand-50 text-brand-600 hover:bg-brand-100"
                 }`}
               >
-                <Sparkles className="h-3 w-3" />
+                <Sparkles className="h-3.5 w-3.5" />
                 {done ? "再来一条" : "生成"}
-                <ChevronRight className="h-3 w-3" />
+                <ChevronRight className="h-3.5 w-3.5" />
               </Link>
             </div>
           );

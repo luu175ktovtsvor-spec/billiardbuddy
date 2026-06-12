@@ -29,6 +29,8 @@ import {
   getOutputPackageLabel,
 } from "@/lib/workbench-config";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
+import { PageHeader } from "@/components/layout/page-header";
+import { Sheet } from "@/components/ui/sheet";
 import { QuotaBadge } from "@/components/quota-badge";
 import { useToast } from "@/components/ui/toast";
 import {
@@ -313,6 +315,7 @@ function TaskExecutionPageInner() {
   if (!card) {
     return (
       <div className="mx-auto max-w-3xl">
+        <PageHeader title="AI 生成" backHref="/dashboard/workbench" />
         <Breadcrumb
           items={[
             { label: "返回首页", href: "/dashboard" },
@@ -327,7 +330,7 @@ function TaskExecutionPageInner() {
           <button
             type="button"
             onClick={() => router.push("/dashboard/workbench")}
-            className="text-sm text-brand-600 hover:text-brand-500"
+            className="inline-flex min-h-[44px] items-center text-sm text-brand-600 hover:text-brand-500"
           >
             返回工作台
           </button>
@@ -337,7 +340,10 @@ function TaskExecutionPageInner() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl">
+    <div className="mx-auto max-w-3xl pb-24 lg:pb-0">
+      {/* ─── 手机端顶栏：深层页底部 Tab 已隐藏，← 是唯一返回出口（桌面端隐藏，由 Breadcrumb 接管） ─── */}
+      <PageHeader title={card?.title || "AI 生成"} backHref="/dashboard/workbench" />
+
       {/* ─── Breadcrumb ─── */}
       <Breadcrumb
         items={[
@@ -371,7 +377,7 @@ function TaskExecutionPageInner() {
       {/* ─── Input section ─── */}
       <div
         ref={inputSectionRef}
-        className="mb-6 rounded-lg border border-slate-200 bg-white p-4 sm:p-6 shadow-sm"
+        className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 sm:p-6 shadow-sm"
       >
         {/* Intent input */}
         <div className="mb-4">
@@ -383,7 +389,7 @@ function TaskExecutionPageInner() {
             maxLength={500}
             value={intent}
             onChange={(e) => setIntent(e.target.value)}
-            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none"
+            className="w-full min-h-[96px] rounded-lg border border-slate-200 bg-white px-3 py-2 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none"
             placeholder="例如：好久没联系老客户了，帮我发几句话约他们来打球"
           />
           <p className="mt-1 text-right text-xs text-slate-400">
@@ -407,7 +413,7 @@ function TaskExecutionPageInner() {
                       prev ? `${prev}，${hint}` : hint
                     )
                   }
-                  className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-500 hover:border-brand-300 hover:text-brand-600 transition-colors"
+                  className="inline-flex min-h-[44px] items-center rounded-full border border-slate-200 bg-white px-3 text-xs text-slate-500 hover:border-brand-300 hover:text-brand-600 transition-colors active:scale-[0.98]"
                 >
                   {hint}
                 </button>
@@ -425,7 +431,7 @@ function TaskExecutionPageInner() {
             <select
               value={role}
               onChange={(e) => setRole(e.target.value as WorkbenchRole)}
-              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-brand-500 focus:outline-none"
+              className="w-full min-h-[44px] rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-brand-500 focus:outline-none"
             >
               {ROLE_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -443,7 +449,7 @@ function TaskExecutionPageInner() {
               onChange={(e) =>
                 setTargetCustomer(e.target.value as TargetCustomerType)
               }
-              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-brand-500 focus:outline-none"
+              className="w-full min-h-[44px] rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-brand-500 focus:outline-none"
             >
               {CUSTOMER_TYPE_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -469,7 +475,7 @@ function TaskExecutionPageInner() {
                   key={combo.key}
                   type="button"
                   onClick={() => setOutputPackage(combo.packages)}
-                  className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                  className={`inline-flex min-h-[44px] items-center rounded-full border px-3 text-xs transition-colors active:scale-[0.98] ${
                     isActive
                       ? "border-brand-500 bg-brand-600 text-white"
                       : "border-brand-200 bg-brand-50 text-brand-600 hover:bg-brand-100"
@@ -483,7 +489,7 @@ function TaskExecutionPageInner() {
           <button
             type="button"
             onClick={() => setShowOutputCustom(!showOutputCustom)}
-            className="text-xs text-slate-400 hover:text-slate-600 transition-colors"
+            className="inline-flex min-h-[44px] items-center text-xs text-slate-400 hover:text-slate-600 transition-colors"
           >
             {showOutputCustom ? "收起自定义 ▲" : "自定义输出 ▼"}
           </button>
@@ -500,7 +506,7 @@ function TaskExecutionPageInner() {
                       return (
                         <label
                           key={opt.value}
-                          className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs cursor-pointer transition-colors ${
+                          className={`flex min-h-[44px] items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs cursor-pointer transition-colors ${
                             checked
                               ? "border-brand-500 bg-brand-50 text-brand-600"
                               : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
@@ -540,32 +546,37 @@ function TaskExecutionPageInner() {
             maxLength={200}
             value={extraNote}
             onChange={(e) => setExtraNote(e.target.value)}
-            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none"
+            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none"
             placeholder="如：不要太长、别写优惠"
           />
         </div>
 
         {/* Generate button：额度用尽时直接禁用并给出口,不让用户点了再撞 429 */}
-        <button
-          type="button"
-          disabled={generating || !intent.trim() || quotaExhausted}
-          onClick={() => doGenerate()}
-          className="flex w-full items-center justify-center gap-2 rounded-md bg-brand-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-150 active:scale-[0.98]"
-        >
-          {quotaExhausted ? (
-            <>本月额度已用完 · 联系您的服务商提升，当月立即生效</>
-          ) : generating ? (
-            <>
-              <Loader2 className="h-4 w-4 animate-spin" />
-              AI 正在生成中...
-            </>
-          ) : (
-            <>
-              <Sparkles className="h-4 w-4" />
-              生成运营成品
-            </>
-          )}
-        </button>
+        {/* 手机端吸底固定（微信 App 感），桌面端回归卡片内静态布局 */}
+        <div className="fixed bottom-0 left-0 right-0 z-20 border-t border-slate-100 bg-white p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] lg:static lg:border-0 lg:bg-transparent lg:p-0">
+          <button
+            type="button"
+            disabled={generating || !intent.trim() || quotaExhausted}
+            onClick={() => doGenerate()}
+            className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-brand-600 px-4 text-base font-medium text-white hover:bg-brand-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-150 active:scale-[0.98]"
+          >
+            {quotaExhausted ? (
+              <span className="text-sm leading-snug">
+                本月额度已用完 · 联系您的服务商提升，当月立即生效
+              </span>
+            ) : generating ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                AI 正在生成中...
+              </>
+            ) : (
+              <>
+                <Sparkles className="h-4 w-4" />
+                生成运营成品
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* ─── Result section ─── */}
@@ -578,7 +589,7 @@ function TaskExecutionPageInner() {
               type="button"
               onClick={() => doGenerate(lastGenOptsRef.current)}
               disabled={generating}
-              className="shrink-0 rounded-md border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100 disabled:opacity-50"
+              className="inline-flex min-h-[44px] shrink-0 items-center rounded-xl border border-red-200 bg-white px-4 text-xs font-medium text-red-600 hover:bg-red-100 disabled:opacity-50 active:scale-[0.98]"
             >
               重试
             </button>
@@ -587,7 +598,7 @@ function TaskExecutionPageInner() {
 
         {/* Streaming */}
         {generating && !result && (
-          <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
+          <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-100 px-4 py-3">
               <div className="flex items-center gap-2">
                 <Loader2 className="h-4 w-4 animate-spin text-brand-600" />
@@ -614,7 +625,7 @@ function TaskExecutionPageInner() {
 
         {/* Final result */}
         {result && !generating && (
-          <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
+          <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
             {/* Header */}
             <div className="border-b border-slate-100 px-4 py-3">
               <div className="flex items-center justify-between">
@@ -717,7 +728,7 @@ function TaskExecutionPageInner() {
                   onClick={() =>
                     handleCopy(editing ? editedContent : result.content)
                   }
-                  className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 transition-all duration-150 active:scale-[0.98]"
+                  className="flex h-10 flex-1 items-center justify-center gap-1.5 rounded-xl bg-brand-600 px-4 text-sm font-medium text-white hover:bg-brand-500 transition-all duration-150 active:scale-[0.98]"
                 >
                   {copied ? (
                     <Check className="h-4 w-4" />
@@ -746,14 +757,14 @@ function TaskExecutionPageInner() {
                   <p className="text-xs text-brand-600 mb-1.5">
                     基于上一条结果继续优化（点一下或直接说）：
                   </p>
-                  <div className="mb-2 flex flex-wrap gap-1.5">
+                  <div className="mb-2 flex gap-2 overflow-x-auto pb-0.5">
                     {TWEAK_PRESETS.map((t) => (
                       <button
                         key={t}
                         type="button"
                         disabled={generating}
                         onClick={() => doGenerate({ optimizeNote: t })}
-                        className="rounded-full border border-brand-200 bg-white px-2.5 py-1 text-xs text-brand-600 hover:bg-brand-100 disabled:opacity-50 transition-colors"
+                        className="h-9 shrink-0 rounded-full border border-brand-200 bg-white px-3 text-xs text-brand-600 hover:bg-brand-100 disabled:opacity-50 transition-colors active:scale-[0.98]"
                       >
                         {t.split("，")[0]}
                       </button>
@@ -763,7 +774,7 @@ function TaskExecutionPageInner() {
                     <input
                       type="text"
                       placeholder="想改哪里？直接说..."
-                      className="flex-1 rounded-md border border-brand-200 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none"
+                      className="min-h-[44px] flex-1 rounded-lg border border-brand-200 bg-white px-3 py-1.5 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none"
                       onKeyDown={async (e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
                           const target = e.target as HTMLInputElement;
@@ -780,7 +791,7 @@ function TaskExecutionPageInner() {
 
               {/* Secondary actions */}
               {editing ? (
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-3">
                   <button
                     type="button"
                     onClick={async () => {
@@ -796,41 +807,46 @@ function TaskExecutionPageInner() {
                         }
                       }
                     }}
-                    className="inline-flex items-center gap-1 rounded-md border border-brand-200 bg-brand-50 px-3 py-1.5 text-xs font-medium text-brand-600 hover:bg-brand-100 transition-colors"
+                    className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-brand-200 bg-brand-50 px-4 text-sm font-medium text-brand-600 hover:bg-brand-100 transition-colors active:scale-[0.98]"
                   >
-                    <Check className="h-3 w-3" />
+                    <Check className="h-4 w-4" />
                     保存修改
                   </button>
                   <button
                     type="button"
                     onClick={() => setEditing(false)}
-                    className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                    className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors active:scale-[0.98]"
                   >
                     取消
                   </button>
                 </div>
               ) : (
-                <div className="flex items-center gap-2 text-xs">
+                <div className="flex items-center gap-3 text-sm">
                   <button
                     type="button"
                     onClick={() => doGenerate()}
                     disabled={generating}
-                    className="inline-flex items-center gap-1 text-slate-500 hover:text-brand-600 transition-colors"
+                    className="inline-flex h-10 items-center gap-1.5 text-slate-500 hover:text-brand-600 transition-colors"
                   >
-                    <RefreshCw className="h-3 w-3" />
+                    <RefreshCw className="h-4 w-4" />
                     重新生成
                   </button>
                   <div className="relative">
                     <button
                       type="button"
                       onClick={() => setShowMoreActions(!showMoreActions)}
-                      className="inline-flex items-center gap-1 text-slate-500 hover:text-brand-600 transition-colors"
+                      className="inline-flex h-10 items-center gap-1.5 text-slate-500 hover:text-brand-600 transition-colors"
                     >
-                      <MoreHorizontal className="h-3 w-3" />
+                      <MoreHorizontal className="h-4 w-4" />
                       更多
                     </button>
-                    {showMoreActions && (
-                      <div className="absolute bottom-full left-0 mb-1 bg-white border border-slate-200 rounded-lg shadow-lg z-10 min-w-[160px]">
+                    {/* 更多操作：底部抽屉（手机端替代悬浮下拉，整行大 cell 可点） */}
+                    <Sheet
+                      open={showMoreActions}
+                      onClose={() => setShowMoreActions(false)}
+                      title="更多操作"
+                    >
+                      <div className="space-y-1 pb-2">
                         <button
                           type="button"
                           onClick={() => {
@@ -838,28 +854,28 @@ function TaskExecutionPageInner() {
                             setEditing(true);
                             setShowMoreActions(false);
                           }}
-                          className="flex items-center gap-2 w-full text-left px-4 py-2 text-sm hover:bg-slate-50 rounded-t-lg"
+                          className="flex h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-[15px] text-slate-700 hover:bg-slate-50 active:bg-slate-100"
                         >
-                          <Pencil className="h-3 w-3" /> 编辑
+                          <Pencil className="h-4 w-4 text-slate-400" /> 编辑
                         </button>
                         <Link
                           href={`/dashboard/posters/new?prompt=${encodeURIComponent(
                             result.content.substring(0, 200)
                           )}`}
-                          className="flex items-center gap-2 w-full text-left px-4 py-2 text-sm hover:bg-slate-50"
+                          className="flex h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-[15px] text-slate-700 hover:bg-slate-50 active:bg-slate-100"
                           onClick={() => setShowMoreActions(false)}
                         >
-                          生成配套海报
+                          <ArrowRight className="h-4 w-4 text-slate-400" /> 生成配套海报
                         </Link>
                         <button
                           type="button"
                           onClick={() => setShowRepurpose(!showRepurpose)}
-                          className="flex items-center gap-2 w-full text-left px-4 py-2 text-sm hover:bg-slate-50"
+                          className="flex h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-[15px] text-slate-700 hover:bg-slate-50 active:bg-slate-100"
                         >
-                          <RefreshCw className="h-3 w-3" /> 变体为...
+                          <RefreshCw className="h-4 w-4 text-slate-400" /> 变体为...
                         </button>
                         {showRepurpose && (
-                          <div className="border-t border-slate-100">
+                          <div className="grid grid-cols-2 gap-2 pt-1">
                             {[
                               { platform: "douyin", label: "抖音文案" },
                               {
@@ -877,8 +893,9 @@ function TaskExecutionPageInner() {
                             ].map((p) => (
                               <button
                                 key={p.platform}
+                                type="button"
                                 onClick={() => handleRepurpose(p.platform)}
-                                className="block w-full text-left px-8 py-2 text-sm hover:bg-slate-50"
+                                className="h-12 rounded-xl border border-slate-200 bg-white text-[15px] text-slate-700 hover:bg-slate-50 transition-all active:scale-[0.98]"
                               >
                                 {p.label}
                               </button>
@@ -886,7 +903,7 @@ function TaskExecutionPageInner() {
                           </div>
                         )}
                       </div>
-                    )}
+                    </Sheet>
                   </div>
                   {/* Feedback */}
                   <div className="flex items-center gap-1 ml-auto">
@@ -894,15 +911,15 @@ function TaskExecutionPageInner() {
                       type="button"
                       onClick={handleToggleFavorite}
                       title={isFavorited ? "取消收藏" : "收藏，历史页随时找回"}
-                      className="px-2 py-1 rounded text-xs transition-colors text-slate-400 hover:text-amber-600 hover:bg-amber-50"
+                      className="flex h-10 w-10 items-center justify-center rounded-lg transition-colors text-slate-400 hover:text-amber-600 hover:bg-amber-50 active:scale-[0.98]"
                     >
-                      <Star className={`h-3.5 w-3.5 ${isFavorited ? "fill-amber-500 text-amber-500" : ""}`} />
+                      <Star className={`h-4 w-4 ${isFavorited ? "fill-amber-500 text-amber-500" : ""}`} />
                     </button>
                     <button
                       type="button"
                       onClick={() => handleFeedback("good")}
                       title="效果好：AI 会学习这条的风格"
-                      className={`px-2 py-1 rounded text-xs transition-colors ${
+                      className={`flex h-10 w-10 items-center justify-center rounded-lg text-base transition-colors active:scale-[0.98] ${
                         effectRating === "good"
                           ? "bg-green-100 text-green-700"
                           : "text-slate-400 hover:text-green-600 hover:bg-green-50"
@@ -913,7 +930,7 @@ function TaskExecutionPageInner() {
                     <button
                       type="button"
                       onClick={() => handleFeedback("bad")}
-                      className={`px-2 py-1 rounded text-xs transition-colors ${
+                      className={`flex h-10 w-10 items-center justify-center rounded-lg text-base transition-colors active:scale-[0.98] ${
                         effectRating === "bad"
                           ? "bg-red-100 text-red-700"
                           : "text-slate-400 hover:text-red-600 hover:bg-red-50"
@@ -934,7 +951,7 @@ function TaskExecutionPageInner() {
                     maxLength={100}
                     autoFocus
                     placeholder="例：太官方了 / 太长了 / 不像我们店的语气"
-                    className="w-full rounded-md border border-red-200 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:border-red-400 focus:outline-none"
+                    className="w-full min-h-[44px] rounded-lg border border-red-200 bg-white px-3 py-1.5 text-[15px] text-slate-900 placeholder-slate-400 focus:border-red-400 focus:outline-none"
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         handleBadNoteSubmit((e.target as HTMLInputElement).value);
@@ -951,7 +968,7 @@ function TaskExecutionPageInner() {
 
         {/* Empty state */}
         {!result && !generating && !error && (
-          <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-slate-200 bg-white py-16 px-6 text-center shadow-sm">
+          <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white py-16 px-6 text-center shadow-sm">
             <Sparkles className="h-8 w-8 text-brand-300 mb-2" />
             <p className="text-sm font-medium text-slate-500 mb-1">
               点击上方按钮开始生成
@@ -964,7 +981,7 @@ function TaskExecutionPageInner() {
 
         {/* Next step guidance after generation */}
         {result && !generating && (
-          <div className="mt-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <p className="mb-3 text-sm font-medium text-slate-700">
               接下来你可以：
             </p>
@@ -976,7 +993,7 @@ function TaskExecutionPageInner() {
                 <Link
                   key={nextCard.id}
                   href={`/dashboard/workbench/${nextCard.id}`}
-                  className="flex items-start gap-2 rounded-lg border border-slate-200 p-3 text-left hover:border-brand-200 hover:bg-brand-50/50 transition-all"
+                  className="flex items-start gap-2 rounded-xl border border-slate-200 p-3 text-left hover:border-brand-200 hover:bg-brand-50/50 transition-all active:scale-[0.98]"
                 >
                   <ArrowRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand-400" />
                   <div>
@@ -993,7 +1010,7 @@ function TaskExecutionPageInner() {
             <button
               type="button"
               onClick={() => router.push("/dashboard/workbench")}
-              className="mt-3 text-xs text-brand-500 hover:text-brand-600 transition-colors"
+              className="mt-1 inline-flex min-h-[44px] items-center text-xs text-brand-500 hover:text-brand-600 transition-colors"
             >
               查看全部任务 ↑
             </button>

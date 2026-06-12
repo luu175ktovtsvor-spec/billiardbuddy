@@ -11,6 +11,8 @@ import type { SizeOption, GeneratedImage } from "@/types/poster";
 import type { StoreResponse } from "@/types/store";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { CardSelect } from "@/components/ui/card-select";
+import { PageHeader } from "@/components/layout/page-header";
+import { Sheet } from "@/components/ui/sheet";
 import { QuotaBadge } from "@/components/quota-badge";
 import { ImageIcon, Upload, X, Send, Download, Loader2 } from "lucide-react";
 import { EmptyStoreGuide } from "@/components/empty-store-guide";
@@ -372,8 +374,11 @@ function ConversationPageInner() {
   /* Loading */
   if (authLoading || storeLoading) {
     return (
-      <div className="flex items-center justify-center py-20">
-        <Loader2 className="h-6 w-6 animate-spin text-brand-600" />
+      <div className="mx-auto max-w-4xl">
+        <PageHeader title="AI 生图" backHref="/dashboard/posters" />
+        <div className="flex items-center justify-center py-20">
+          <Loader2 className="h-6 w-6 animate-spin text-brand-600" />
+        </div>
       </div>
     );
   }
@@ -392,7 +397,10 @@ function ConversationPageInner() {
   const qualityLabel = QUALITY_OPTIONS.find((q) => q.value === conv.quality)?.label || conv.quality;
 
   return (
-    <div className="mx-auto max-w-4xl space-y-4">
+    /* 手机端输入区吸底（fixed）后，容器底部 pb 垫高，防止最后一条消息被输入区遮住 */
+    <div className={`mx-auto max-w-4xl space-y-4 ${conv.messages.length > 0 ? (conv.refineFrom ? "pb-80" : "pb-56") : ""} lg:pb-0`}>
+      {/* 手机端顶栏：深层页底部 Tab 已隐藏，← 是唯一返回出口（桌面端隐藏，由 Breadcrumb 接管） */}
+      <PageHeader title={breadcrumbTitle || "AI 生图"} backHref="/dashboard/posters" />
       <Breadcrumb
         items={[
           { label: "返回列表", href: "/dashboard/posters" },
@@ -412,14 +420,14 @@ function ConversationPageInner() {
               {conv.messages.map((msg, idx) => (
                 <div
                   key={idx}
-                  className={`rounded-lg border p-4 ${
+                  className={`rounded-2xl border p-4 ${
                     msg.role === "user"
                       ? "bg-brand-50 border-brand-200"
                       : "bg-white border-slate-200"
                   }`}
                 >
                   {msg.role === "user" ? (
-                    <p className="text-sm text-brand-700">{msg.content}</p>
+                    <p className="text-[15px] leading-relaxed text-brand-700 lg:text-sm">{msg.content}</p>
                   ) : (
                     msg.images &&
                     msg.images.length > 0 && (
@@ -432,11 +440,11 @@ function ConversationPageInner() {
                               className="w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
                               onClick={() => setLightboxImage(api.resolveUrl(img.poster_url))}
                             />
-                            <div className="mt-3 flex items-center gap-2">
+                            <div className="mt-3 flex flex-wrap items-center gap-2">
                               <button
                                 type="button"
                                 onClick={() => updateConv({ refineFrom: img.generation_id })}
-                                className={`px-3 py-1.5 rounded text-xs ${
+                                className={`inline-flex h-10 items-center rounded-xl px-4 text-[13px] active:scale-[0.98] ${
                                   conv.refineFrom === img.generation_id
                                     ? "bg-brand-100 text-brand-700 border border-brand-300"
                                     : "bg-slate-50 text-slate-600 border border-slate-200 hover:bg-slate-100"
@@ -449,7 +457,7 @@ function ConversationPageInner() {
                                 disabled={generating}
                                 onClick={() => handleRegenerate(idx)}
                                 title="用同样的要求再生成一张全新构图"
-                                className="px-3 py-1.5 rounded text-xs bg-slate-50 text-slate-600 border border-slate-200 hover:bg-slate-100 disabled:opacity-50"
+                                className="inline-flex h-10 items-center rounded-xl px-4 text-[13px] bg-slate-50 text-slate-600 border border-slate-200 hover:bg-slate-100 active:scale-[0.98] disabled:opacity-50"
                               >
                                 再来一版
                               </button>
@@ -457,7 +465,7 @@ function ConversationPageInner() {
                                 type="button"
                                 onClick={() => addAsReference(img)}
                                 title="加入参考图，后续生成都参考这张的感觉"
-                                className={`px-3 py-1.5 rounded text-xs border ${
+                                className={`inline-flex h-10 items-center rounded-xl px-4 text-[13px] border active:scale-[0.98] ${
                                   conv.references.some((r) => r.path === img.poster_url)
                                     ? "bg-emerald-50 text-emerald-600 border-emerald-200"
                                     : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
@@ -473,9 +481,9 @@ function ConversationPageInner() {
                                     : handleDownload(img)
                                 }
                                 title={inWeChat ? "微信内请长按图片保存" : undefined}
-                                className="px-3 py-1.5 rounded text-xs bg-slate-50 text-slate-600 border border-slate-200 hover:bg-slate-100"
+                                className="inline-flex h-10 items-center rounded-xl px-4 text-[13px] bg-slate-50 text-slate-600 border border-slate-200 hover:bg-slate-100 active:scale-[0.98]"
                               >
-                                <Download className="h-3 w-3 inline mr-1" />
+                                <Download className="h-3.5 w-3.5 inline mr-1" />
                                 {inWeChat ? "保存图片" : "下载"}
                               </button>
                             </div>
@@ -489,7 +497,7 @@ function ConversationPageInner() {
 
               {/* Generating indicator */}
               {generating && (
-                <div className="rounded-lg border border-slate-200 bg-white p-4">
+                <div className="rounded-2xl border border-slate-200 bg-white p-4">
                   <div className="flex items-center gap-2">
                     <Loader2 className="h-4 w-4 animate-spin text-brand-600" />
                     <span className="text-sm text-slate-500">{GEN_STAGES[genStage]}</span>
@@ -505,14 +513,14 @@ function ConversationPageInner() {
 
           {/* Error */}
           {error && (
-            <div className="flex items-center gap-3 rounded-md border border-red-200 bg-red-50 p-4">
+            <div className="flex items-center gap-3 rounded-xl border border-red-200 bg-red-50 p-4">
               <p className="flex-1 text-sm text-red-600">{error}</p>
               {lastAttemptRef.current && (
                 <button
                   type="button"
                   disabled={generating}
                   onClick={() => lastAttemptRef.current && sendGenerate(lastAttemptRef.current.text, lastAttemptRef.current.refine)}
-                  className="shrink-0 rounded-md border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100 disabled:opacity-50"
+                  className="inline-flex h-10 shrink-0 items-center rounded-lg border border-red-200 bg-white px-4 text-xs font-medium text-red-600 hover:bg-red-100 active:scale-[0.98] disabled:opacity-50"
                 >
                   重试
                 </button>
@@ -523,8 +531,14 @@ function ConversationPageInner() {
           {/* Quota（生图与文本共用次数池）*/}
           <QuotaBadge refreshKey={quotaVersion} onQuota={(q) => setQuotaRemaining(q.remaining)} />
 
-          {/* Input area */}
-          <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sticky bottom-4">
+          {/* Input area：有消息后手机端吸底（fixed+安全区），桌面端保持原 sticky 卡片；首屏（无消息）保持文档流卡片，避免高引导面板被钉死 */}
+          <div
+            className={
+              conv.messages.length > 0
+                ? "fixed bottom-0 left-0 right-0 z-20 border-t border-slate-100 bg-white px-3 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] lg:sticky lg:bottom-4 lg:left-auto lg:right-auto lg:rounded-2xl lg:border lg:border-slate-200 lg:p-4 lg:shadow-sm"
+                : "rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sticky bottom-4"
+            }
+          >
             {/* 底图提示：让用户明确知道"在哪张图上改"，可一键退出调整模式 */}
             {conv.refineFrom && conv.messages.length > 0 && (
               <div className="mb-3 flex items-center gap-2.5 rounded-md border border-brand-100 bg-brand-50 px-2.5 py-2">
@@ -542,22 +556,22 @@ function ConversationPageInner() {
                   type="button"
                   onClick={() => updateConv({ refineFrom: null })}
                   title="退出调整模式，全新生成"
-                  className="rounded p-1 text-brand-400 hover:bg-brand-100 hover:text-brand-600"
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-brand-400 hover:bg-brand-100 hover:text-brand-600 active:bg-brand-100"
                 >
-                  <X className="h-3.5 w-3.5" />
+                  <X className="h-4 w-4" />
                 </button>
               </div>
             )}
 
             {/* 调整方向快捷词：点一下直接发送 */}
             {conv.refineFrom && conv.messages.length > 0 && !generating && (
-              <div className="mb-3 flex flex-wrap gap-1.5">
+              <div className="mb-3 flex gap-1.5 overflow-x-auto pb-1 lg:flex-wrap lg:overflow-visible lg:pb-0">
                 {REFINE_PRESETS.map((t) => (
                   <button
                     key={t}
                     type="button"
                     onClick={() => sendGenerate(t, conv.refineFrom)}
-                    className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-600 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-600 transition-colors"
+                    className="inline-flex h-9 shrink-0 items-center whitespace-nowrap rounded-full border border-slate-200 bg-slate-50 px-3 text-xs text-slate-600 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-600 active:scale-[0.98] transition-colors"
                   >
                     {t}
                   </button>
@@ -578,13 +592,13 @@ function ConversationPageInner() {
                 {inspirationTags.length > 0 && (
                   <div className="mb-3">
                     <p className="mb-1.5 text-xs text-slate-500">场景起稿（点击填入，可再修改）</p>
-                    <div className="flex flex-wrap gap-1.5">
+                    <div className="flex gap-1.5 overflow-x-auto pb-1 lg:flex-wrap lg:overflow-visible lg:pb-0">
                       {inspirationTags.map((tag) => (
                         <button
                           key={tag.key}
                           type="button"
                           onClick={() => setPrompt(tag.prompt)}
-                          className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-600 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-600 transition-colors"
+                          className="inline-flex h-9 shrink-0 items-center whitespace-nowrap rounded-full border border-slate-200 bg-slate-50 px-3 text-xs text-slate-600 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-600 active:scale-[0.98] transition-colors"
                         >
                           {tag.label}
                         </button>
@@ -595,13 +609,13 @@ function ConversationPageInner() {
 
                 <div className="mb-3">
                   <p className="mb-1.5 text-xs text-slate-500">叠加风格（点击追加到描述）</p>
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="flex gap-1.5 overflow-x-auto pb-1 lg:flex-wrap lg:overflow-visible lg:pb-0">
                     {STYLE_PRESETS.map((s) => (
                       <button
                         key={s.label}
                         type="button"
                         onClick={() => setPrompt((p) => (p.trim() ? `${p.trim()}，${s.prompt}` : s.prompt))}
-                        className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-600 transition-colors"
+                        className="inline-flex h-9 shrink-0 items-center whitespace-nowrap rounded-full border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-600 active:scale-[0.98] transition-colors"
                       >
                         {s.label}
                       </button>
@@ -620,7 +634,7 @@ function ConversationPageInner() {
                       handleGenerate();
                     }
                   }}
-                  className="w-full rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none lg:text-sm"
                   placeholder="例：帮我们店的女助教生成一张高级感形象照，球房背景，光线柔和"
                 />
               </>
@@ -640,7 +654,7 @@ function ConversationPageInner() {
                         handleGenerate();
                       }
                     }}
-                    className="w-full resize-none rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+                    className="w-full resize-none rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 lg:text-sm"
                     placeholder={conv.refineFrom ? "描述调整内容，如「背景改成深色」" : "描述新的图片需求"}
                   />
                 </div>
@@ -649,9 +663,9 @@ function ConversationPageInner() {
                   disabled={generating || !prompt.trim() || quotaExhausted}
                   onClick={handleGenerate}
                   title={quotaExhausted ? "本月额度已用完，联系您的服务商提升" : undefined}
-                  className="rounded-xl bg-brand-600 p-2.5 text-white hover:bg-brand-500 disabled:opacity-50"
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand-600 text-white hover:bg-brand-500 active:scale-[0.98] disabled:opacity-50"
                 >
-                  <Send className="h-4 w-4" />
+                  <Send className="h-5 w-5" />
                 </button>
               </div>
             )}
@@ -659,24 +673,25 @@ function ConversationPageInner() {
             {/* Options row */}
             <div className="mt-3 flex flex-wrap items-center gap-3">
               {/* References */}
-              <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex w-full items-center gap-2 overflow-x-auto pb-1 lg:w-auto lg:flex-wrap lg:overflow-visible lg:pb-0">
                 {conv.references.map((ref, idx) => (
-                  <div key={idx} className="relative h-10 w-10 rounded-md border border-slate-200 overflow-hidden">
+                  <div key={idx} className="relative h-12 w-12 shrink-0 rounded-lg border border-slate-200 overflow-hidden">
                     <img src={ref.preview} alt={`参考图${idx + 1}`} className="h-full w-full object-cover" />
                     <button
                       type="button"
                       onClick={() => removeReference(idx)}
-                      className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-red-500 text-white flex items-center justify-center"
+                      aria-label="移除参考图"
+                      className="absolute right-0.5 top-0.5 h-6 w-6 rounded-full bg-red-500 text-white flex items-center justify-center"
                     >
-                      <X className="h-3 w-3" />
+                      <X className="h-3.5 w-3.5" />
                     </button>
                   </div>
                 ))}
                 {conv.references.length > 0 && (
-                  <span className="text-[11px] text-slate-400">参考图对本次对话持续生效</span>
+                  <span className="shrink-0 whitespace-nowrap text-[11px] text-slate-400">参考图对本次对话持续生效</span>
                 )}
                 {conv.references.length < 5 && (
-                  <label className="flex items-center gap-1.5 cursor-pointer rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-500 hover:bg-slate-50 hover:text-slate-700">
+                  <label className="flex h-11 shrink-0 items-center gap-1.5 cursor-pointer rounded-xl border border-slate-200 bg-white px-4 text-sm text-slate-500 hover:bg-slate-50 hover:text-slate-700 active:scale-[0.98] lg:h-9 lg:px-3">
                     <Upload className="h-4 w-4" />
                     {conv.references.length === 0 ? "上传参考图" : "添加"}
                     <input
@@ -698,7 +713,7 @@ function ConversationPageInner() {
                   type="button"
                   disabled={generating || !prompt.trim() || quotaExhausted}
                   onClick={handleGenerate}
-                  className="ml-auto flex items-center gap-2 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="ml-auto flex h-11 items-center gap-2 rounded-xl bg-brand-600 px-5 text-sm font-medium text-white hover:bg-brand-500 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-4 w-4" />}
                   {quotaExhausted ? "额度已用完" : "生成"}
@@ -706,17 +721,17 @@ function ConversationPageInner() {
               )}
             </div>
 
-            {/* Advanced options：比例/质量/开关（CardSelect，替换原生 select） */}
+            {/* Advanced options：比例/质量/开关（CardSelect，替换原生 select）——改为底部抽屉 Sheet，手机端不再撑高输入区 */}
             <div className="mt-2">
               <button
                 type="button"
                 onClick={() => setShowAdvanced((v) => !v)}
-                className="text-xs text-slate-400 hover:text-slate-600"
+                className="inline-flex min-h-[44px] items-center text-xs text-slate-400 hover:text-slate-600 lg:min-h-0"
               >
-                {showAdvanced ? "收起选项 ▲" : `比例与质量（${ratioLabel} · ${qualityLabel}）▼`}
+                {`比例与质量（${ratioLabel} · ${qualityLabel}）›`}
               </button>
-              {showAdvanced && (
-                <div className="mt-3 space-y-3">
+              <Sheet open={showAdvanced} onClose={() => setShowAdvanced(false)} title="高级选项">
+                <div className="space-y-4 pb-2">
                   <div>
                     <p className="mb-1.5 text-xs text-slate-500">图片比例</p>
                     <CardSelect
@@ -745,32 +760,32 @@ function ConversationPageInner() {
                       value={overlayText}
                       onChange={(e) => setOverlayText(e.target.value)}
                       placeholder="例：周五晚8点 · 抢一大战"
-                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 lg:text-sm"
                     />
                   </div>
-                  <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500">
-                    <label className="flex items-center gap-1.5 cursor-pointer">
+                  <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[13px] text-slate-500">
+                    <label className="flex min-h-[44px] items-center gap-2 cursor-pointer">
                       <input
                         type="checkbox"
                         checked={conv.addStoreInfo}
                         onChange={(e) => updateConv({ addStoreInfo: e.target.checked })}
-                        className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                        className="h-5 w-5 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
                       />
                       <span>融入门店信息</span>
                     </label>
-                    <label className={`flex items-center gap-1.5 ${overlayText.trim() ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}>
+                    <label className={`flex min-h-[44px] items-center gap-2 ${overlayText.trim() ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}>
                       <input
                         type="checkbox"
                         disabled={!!overlayText.trim()}
                         checked={overlayText.trim() ? false : conv.noText}
                         onChange={(e) => updateConv({ noText: e.target.checked })}
-                        className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                        className="h-5 w-5 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
                       />
                       <span>禁止生成文字{overlayText.trim() ? "（已填上图文字，自动失效）" : ""}</span>
                     </label>
                   </div>
                 </div>
-              )}
+              </Sheet>
             </div>
           </div>
         </>
@@ -787,9 +802,9 @@ function ConversationPageInner() {
             <button
               type="button"
               onClick={() => setLightboxImage(null)}
-              className="absolute -top-3 -right-3 h-8 w-8 rounded-full bg-white text-slate-700 flex items-center justify-center shadow-lg hover:bg-slate-100"
+              className="absolute -top-3 -right-3 h-11 w-11 rounded-full bg-white text-slate-700 flex items-center justify-center shadow-lg hover:bg-slate-100 active:scale-[0.98]"
             >
-              <X className="h-4 w-4" />
+              <X className="h-5 w-5" />
             </button>
             {inWeChat ? (
               <div className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-md bg-black/70 px-4 py-2 text-sm font-medium text-white shadow-lg">
@@ -799,7 +814,7 @@ function ConversationPageInner() {
               <a
                 href={lightboxImage}
                 download
-                className="absolute bottom-4 right-4 flex items-center gap-1.5 rounded-md bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-lg hover:bg-slate-50"
+                className="absolute bottom-4 right-4 flex h-11 items-center gap-1.5 rounded-xl bg-white px-4 text-sm font-medium text-slate-700 shadow-lg hover:bg-slate-50 active:scale-[0.98]"
               >
                 <Download className="h-4 w-4" />
                 下载

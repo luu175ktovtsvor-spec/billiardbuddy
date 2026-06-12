@@ -10,6 +10,7 @@ import { api } from "@/lib/api";
 import { ApiError } from "@/types/api";
 import type { GenerationHistoryItem } from "@/types/generation-history";
 import { CopyButton } from "@/components/generators/copy-button";
+import { PageHeader } from "@/components/layout/page-header";
 import { typeLabel, subTypeLabel, continueHref } from "@/lib/history-labels";
 import { downloadImage, safeFileName, formatDateTime } from "@/lib/utils";
 import { isWeChat } from "@/lib/wechat";
@@ -95,22 +96,28 @@ export default function HistoryDetailPage() {
 
   if (loading) {
     return (
-      <div className="mx-auto max-w-3xl px-4 py-10 text-center text-sm text-slate-400">加载中…</div>
+      <div className="mx-auto max-w-3xl">
+        <PageHeader title="内容详情" backHref="/dashboard/history" />
+        <div className="py-10 text-center text-sm text-slate-400">加载中…</div>
+      </div>
     );
   }
 
   if (error || !item) {
     return (
-      <div className="mx-auto max-w-3xl px-4 py-10 text-center">
-        <p className="mb-4 text-sm text-slate-500">{error || "记录不存在"}</p>
-        <button
-          type="button"
-          onClick={() => router.push("/dashboard/history")}
-          className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-4 py-2 text-sm text-slate-600 hover:bg-slate-50"
-        >
-          <ChevronLeft className="h-4 w-4" />
-          返回历史记录
-        </button>
+      <div className="mx-auto max-w-3xl">
+        <PageHeader title="内容详情" backHref="/dashboard/history" />
+        <div className="py-10 text-center">
+          <p className="mb-4 text-[15px] text-slate-500">{error || "记录不存在"}</p>
+          <button
+            type="button"
+            onClick={() => router.push("/dashboard/history")}
+            className="inline-flex h-11 items-center gap-1 rounded-xl border border-slate-200 bg-white px-5 text-[15px] text-slate-600 hover:bg-slate-50 active:scale-[0.98]"
+          >
+            <ChevronLeft className="h-4 w-4" />
+            返回历史记录
+          </button>
+        </div>
       </div>
     );
   }
@@ -119,9 +126,11 @@ export default function HistoryDetailPage() {
   const isPoster = item.type === "poster" && !!item.result;
 
   return (
-    <div className="mx-auto max-w-3xl px-4 py-6">
-      {/* 顶部返回 + 元信息 */}
-      <div className="mb-5 flex items-center justify-between">
+    <div className="mx-auto max-w-3xl">
+      {/* 手机顶栏：返回 + 标题（深层页，底部 Tab 自动隐藏） */}
+      <PageHeader title="内容详情" backHref="/dashboard/history" />
+      {/* 顶部返回 + 元信息（桌面；手机返回已在 PageHeader） */}
+      <div className="mb-5 hidden items-center justify-between lg:flex">
         <button
           type="button"
           onClick={() => router.push("/dashboard/history")}
@@ -145,12 +154,27 @@ export default function HistoryDetailPage() {
         </div>
       </div>
 
-      {/* 操作栏 */}
-      <div className="mb-4 flex flex-wrap items-center gap-2">
+      {/* 手机端元信息行 */}
+      <div className="mb-4 flex flex-wrap items-center gap-2 lg:hidden">
+        <span className="rounded-full bg-brand-50 px-2.5 py-0.5 text-xs font-medium text-brand-600">
+          {typeLabel(item.type)}
+        </span>
+        {item.sub_type && (
+          <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-600">
+            {subTypeLabel(item)}
+          </span>
+        )}
+        <span className="text-xs text-slate-400">
+          {formatDateTime(item.created_at)}
+        </span>
+      </div>
+
+      {/* 操作栏：h-11 等宽排布 */}
+      <div className="mb-4 flex items-stretch gap-2">
         <button
           type="button"
           onClick={handleToggleFavorite}
-          className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+          className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white text-[15px] font-medium text-slate-700 hover:bg-slate-50 active:scale-[0.98] transition-colors"
         >
           <Star
             className={`h-4 w-4 ${
@@ -159,11 +183,15 @@ export default function HistoryDetailPage() {
           />
           {item.is_favorite ? "已收藏" : "收藏"}
         </button>
-        {!isPoster && <CopyButton text={item.content || ""} />}
+        {!isPoster && (
+          <span className="min-w-0 flex-1 [&>div]:h-full [&_button]:h-full [&_button]:w-full [&_button]:justify-center [&_button]:rounded-xl [&_button]:text-[15px]">
+            <CopyButton text={item.content || ""} />
+          </span>
+        )}
         {href && (
           <Link
             href={href}
-            className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+            className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white text-[15px] font-medium text-slate-700 hover:bg-slate-50 active:scale-[0.98] transition-colors"
           >
             <MessageSquare className="h-4 w-4" />
             继续对话

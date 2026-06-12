@@ -107,10 +107,10 @@ export default function HistoryPage() {
 
   return (
     <div className="mx-auto max-w-4xl">
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 space-y-3">
         <h2 className="text-xl font-bold text-slate-900">生成历史</h2>
-        <div className="flex items-center gap-3">
-          {/* 关键词搜索 */}
+        {/* 第一行：关键词搜索占满 */}
+        <div className="flex items-center gap-2">
           <input
             type="text"
             value={searchInput}
@@ -122,17 +122,20 @@ export default function HistoryPage() {
               }
             }}
             placeholder="搜索内容关键词，回车"
-            className="w-44 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none"
+            className="h-11 min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-4 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none"
           />
           {search && (
             <button
               type="button"
               onClick={() => { setSearch(""); setSearchInput(""); setPage(1); }}
-              className="rounded-lg border border-brand-200 bg-brand-50 px-2.5 py-1.5 text-sm text-brand-600 hover:bg-brand-100"
+              className="h-11 max-w-[40%] shrink-0 truncate rounded-xl border border-brand-200 bg-brand-50 px-3 text-sm text-brand-600 hover:bg-brand-100 active:scale-[0.98]"
             >
               「{search}」✕
             </button>
           )}
+        </div>
+        {/* 第二行：全部筛选 chips 一条横向滚动行，导出 CSV 在行尾 */}
+        <div className="-mx-4 flex items-center gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:-mx-6 sm:px-6 lg:mx-0 lg:flex-wrap lg:px-0">
           {/* Favorite filter toggle */}
           <button
             type="button"
@@ -140,7 +143,7 @@ export default function HistoryPage() {
               setShowFavoritesOnly((v) => !v);
               setPage(1);
             }}
-            className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors ${
+            className={`flex h-9 shrink-0 items-center gap-1.5 rounded-full border px-3.5 text-sm font-medium transition-colors active:scale-[0.98] ${
               showFavoritesOnly
                 ? "border-amber-200 bg-amber-50 text-amber-600"
                 : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
@@ -153,7 +156,7 @@ export default function HistoryPage() {
             type="button"
             onClick={() => { setShowGoodOnly((v) => !v); setPage(1); }}
             title="标过「效果好」的内容——AI 正在学习这些内容的风格"
-            className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm transition-colors ${
+            className={`flex h-9 shrink-0 items-center gap-1.5 rounded-full border px-3.5 text-sm transition-colors active:scale-[0.98] ${
               showGoodOnly
                 ? "border-green-200 bg-green-50 text-green-600"
                 : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
@@ -161,30 +164,28 @@ export default function HistoryPage() {
           >
             👍 只看效果好
           </button>
-          {/* Type filter — pill buttons */}
-          <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-1">
-            {[
-              { value: null, label: "全部" },
-              { value: "copywriting", label: "文案" },
-              { value: "activity", label: "活动" },
-              { value: "operation", label: "经营" },
-              { value: "workbench", label: "工作台" },
-              { value: "poster", label: "海报" },
-            ].map((t) => (
-              <button
-                key={t.value ?? "all"}
-                type="button"
-                onClick={() => { setTypeFilter(t.value); setPage(1); }}
-                className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                  typeFilter === t.value
-                    ? "bg-brand-600 text-white"
-                    : "text-slate-500 hover:text-slate-700"
-                }`}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
+          {/* Type filter — pill chips */}
+          {[
+            { value: null, label: "全部" },
+            { value: "copywriting", label: "文案" },
+            { value: "activity", label: "活动" },
+            { value: "operation", label: "经营" },
+            { value: "workbench", label: "工作台" },
+            { value: "poster", label: "海报" },
+          ].map((t) => (
+            <button
+              key={t.value ?? "all"}
+              type="button"
+              onClick={() => { setTypeFilter(t.value); setPage(1); }}
+              className={`h-9 shrink-0 rounded-full border px-3.5 text-sm font-medium transition-colors active:scale-[0.98] ${
+                typeFilter === t.value
+                  ? "border-brand-600 bg-brand-600 text-white"
+                  : "border-slate-200 bg-white text-slate-500 hover:text-slate-700"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
           <button
             onClick={async () => {
               if (isWeChat()) {
@@ -203,7 +204,7 @@ export default function HistoryPage() {
                 toast("导出失败，请稍后重试", "error");
               }
             }}
-            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+            className="h-9 shrink-0 rounded-full border border-slate-200 bg-white px-3.5 text-sm text-slate-700 hover:bg-slate-50 active:scale-[0.98]"
           >
             导出 CSV
           </button>
@@ -223,7 +224,7 @@ export default function HistoryPage() {
       {!loading && !error && items.length === 0 && (
         <div className="py-20 text-center">
           <Clock className="mx-auto mb-3 h-10 w-10 text-slate-400" />
-          <p className="text-sm text-slate-500">还没有生成记录</p>
+          <p className="text-[15px] text-slate-500">还没有生成记录</p>
         </div>
       )}
 
@@ -233,10 +234,10 @@ export default function HistoryPage() {
             <div
               key={item.id}
               onClick={() => router.push(`/dashboard/history/${item.id}`)}
-              className="rounded-lg border border-slate-200 bg-white p-4 hover:border-slate-300 transition-colors shadow-sm cursor-pointer"
+              className="rounded-2xl border border-slate-200 bg-white p-4 hover:border-slate-300 transition active:scale-[0.98] shadow-sm cursor-pointer"
             >
-              <div className="mb-2 flex items-center justify-between">
-                <div className="flex items-center gap-2">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-y-1">
+                <div className="flex flex-wrap items-center gap-2">
                   <span className="rounded-full bg-brand-50 px-2.5 py-0.5 text-xs font-medium text-brand-600">
                     {typeLabel(item.type)}
                   </span>
@@ -249,11 +250,11 @@ export default function HistoryPage() {
                     {formatDateTime(item.created_at)}
                   </span>
                 </div>
-                <div className="flex items-center gap-1">
+                <div className="ml-auto flex items-center">
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); handleFeedback(item.id, "good"); }}
-                    className={`rounded-md p-1 transition-colors ${item.effect_rating === "good" ? "bg-green-100 text-green-600" : "hover:bg-slate-50 text-slate-400 hover:text-green-600"}`}
+                    className={`flex h-10 w-10 items-center justify-center rounded-full text-base transition-colors ${item.effect_rating === "good" ? "bg-green-100 text-green-600" : "hover:bg-slate-50 active:bg-slate-100 text-slate-400 hover:text-green-600"}`}
                     title="效果好"
                   >
                     👍
@@ -261,7 +262,7 @@ export default function HistoryPage() {
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); handleFeedback(item.id, "bad"); }}
-                    className={`rounded-md p-1 transition-colors ${item.effect_rating === "bad" ? "bg-red-100 text-red-600" : "hover:bg-slate-50 text-slate-400 hover:text-red-600"}`}
+                    className={`flex h-10 w-10 items-center justify-center rounded-full text-base transition-colors ${item.effect_rating === "bad" ? "bg-red-100 text-red-600" : "hover:bg-slate-50 active:bg-slate-100 text-slate-400 hover:text-red-600"}`}
                     title="效果差"
                   >
                     👎
@@ -269,31 +270,31 @@ export default function HistoryPage() {
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); handleToggleFavorite(item.id, item.is_favorite); }}
-                    className="rounded-md p-1 hover:bg-slate-50 transition-colors"
+                    className="flex h-10 w-10 items-center justify-center rounded-full hover:bg-slate-50 active:bg-slate-100 transition-colors"
                     title={item.is_favorite ? "取消收藏" : "收藏"}
                   >
                     <Star
-                      className={`h-4 w-4 ${
+                      className={`h-5 w-5 ${
                         item.is_favorite
                           ? "fill-amber-600 text-amber-600"
                           : "text-slate-400 hover:text-amber-600"
                       }`}
                     />
                   </button>
-                  <span onClick={(e) => e.stopPropagation()}>
+                  <span onClick={(e) => e.stopPropagation()} className="[&_button]:h-10 [&_button]:rounded-full">
                     <CopyButton text={item.content || ""} />
                   </span>
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}
-                    className="rounded-md p-1 hover:bg-slate-50 transition-colors text-slate-400 hover:text-red-600"
+                    className="flex h-10 w-10 items-center justify-center rounded-full text-base hover:bg-slate-50 active:bg-slate-100 transition-colors text-slate-400 hover:text-red-600"
                     title="删除"
                   >
                     🗑️
                   </button>
                 </div>
               </div>
-              <p className="line-clamp-3 whitespace-pre-wrap text-sm text-slate-700">
+              <p className="line-clamp-3 whitespace-pre-wrap text-[15px] text-slate-700">
                 {markdownToPlainText(item.content || "") || "（无内容）"}
               </p>
             </div>
@@ -308,9 +309,9 @@ export default function HistoryPage() {
             type="button"
             disabled={page <= 1}
             onClick={() => setPage((p) => Math.max(1, p - 1))}
-            className="rounded-md border border-slate-200 bg-white p-2 text-slate-500 hover:bg-slate-50 disabled:opacity-30"
+            className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 active:bg-slate-100 disabled:opacity-30"
           >
-            <ChevronLeft className="h-4 w-4" />
+            <ChevronLeft className="h-5 w-5" />
           </button>
           <span className="text-sm text-slate-500">
             {page} / {totalPages}
@@ -319,9 +320,9 @@ export default function HistoryPage() {
             type="button"
             disabled={page >= totalPages}
             onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            className="rounded-md border border-slate-200 bg-white p-2 text-slate-500 hover:bg-slate-50 disabled:opacity-30"
+            className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 active:bg-slate-100 disabled:opacity-30"
           >
-            <ChevronRight className="h-4 w-4" />
+            <ChevronRight className="h-5 w-5" />
           </button>
         </div>
       )}

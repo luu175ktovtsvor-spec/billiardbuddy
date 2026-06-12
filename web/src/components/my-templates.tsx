@@ -63,10 +63,10 @@ export function MyTemplates() {
 
   if (loading) {
     return (
-      <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
+      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2">
           <Star className="h-5 w-5 text-amber-500" />
-          <h3 className="font-semibold text-slate-900">我的收藏</h3>
+          <h3 className="text-[17px] font-semibold text-slate-900 lg:text-base">我的收藏</h3>
         </div>
         <div className="p-6 text-center text-sm text-slate-400">加载中…</div>
       </div>
@@ -75,14 +75,14 @@ export function MyTemplates() {
 
   if (items.length === 0) {
     return (
-      <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
+      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2">
           <Star className="h-5 w-5 text-amber-500" />
-          <h3 className="font-semibold text-slate-900">我的收藏</h3>
+          <h3 className="text-[17px] font-semibold text-slate-900 lg:text-base">我的收藏</h3>
         </div>
         <div className="p-6 text-center">
-          <p className="text-sm text-slate-500 mb-1">还没有收藏内容</p>
-          <p className="text-xs text-slate-400">
+          <p className="text-[15px] text-slate-500 mb-1 lg:text-sm">还没有收藏内容</p>
+          <p className="text-[13px] text-slate-400 lg:text-xs">
             生成满意的内容后点
             <Star className="inline h-3 w-3 text-amber-500 mx-0.5" />
             收藏，下次在这里一键复用
@@ -93,19 +93,19 @@ export function MyTemplates() {
   }
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
+    <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
       <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Star className="h-5 w-5 text-amber-500" />
-          <h3 className="font-semibold text-slate-900">我的收藏</h3>
+          <h3 className="text-[17px] font-semibold text-slate-900 lg:text-base">我的收藏</h3>
           <span className="text-xs text-slate-400">{items.length}条</span>
         </div>
         <Link
           href="/dashboard/history?favorite=1"
-          className="inline-flex items-center gap-0.5 text-xs text-slate-400 hover:text-brand-600"
+          className="inline-flex items-center gap-0.5 rounded-lg px-2 py-2.5 -my-2 -mr-2 text-[13px] text-slate-400 hover:text-brand-600 active:bg-slate-100 lg:text-xs"
         >
           全部
-          <ChevronRight className="h-3 w-3" />
+          <ChevronRight className="h-3.5 w-3.5" />
         </Link>
       </div>
 
@@ -116,17 +116,17 @@ export function MyTemplates() {
           const href = rerunHref(item, card);
           const preview = markdownToPlainText(item.content || item.result || "").slice(0, 50);
           return (
-            <div key={item.id} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors">
+            <div key={item.id} className="flex min-h-[56px] items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors">
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-slate-900 truncate">{title}</p>
-                {preview && <p className="text-xs text-slate-500 truncate">{preview}</p>}
+                <p className="text-[15px] font-medium text-slate-900 truncate lg:text-sm">{title}</p>
+                {preview && <p className="text-[13px] text-slate-500 truncate lg:text-xs">{preview}</p>}
               </div>
               {href && (
                 <Link
                   href={href}
-                  className="shrink-0 inline-flex items-center gap-1 rounded-md bg-brand-50 px-2.5 py-1.5 text-xs font-medium text-brand-600 hover:bg-brand-100 transition-colors"
+                  className="shrink-0 inline-flex items-center gap-1 rounded-lg bg-brand-50 px-3 py-2.5 text-[13px] font-medium text-brand-600 hover:bg-brand-100 active:scale-[0.98] transition-all lg:text-xs"
                 >
-                  <Sparkles className="h-3 w-3" />
+                  <Sparkles className="h-3.5 w-3.5" />
                   再写一条
                 </Link>
               )}
