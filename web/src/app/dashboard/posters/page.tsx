@@ -78,7 +78,7 @@ export default function PostersPage() {
   if (authLoading || storeLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="h-6 w-6 animate-spin text-indigo-600" />
+        <Loader2 className="h-6 w-6 animate-spin text-brand-600" />
       </div>
     );
   }
@@ -102,7 +102,7 @@ export default function PostersPage() {
         <button
           type="button"
           onClick={handleNew}
-          className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-500 transition-colors"
+          className="flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-500 transition-colors"
         >
           <Plus className="h-4 w-4" />
           新建对话
@@ -121,7 +121,7 @@ export default function PostersPage() {
           <button
             type="button"
             onClick={handleNew}
-            className="mt-4 text-sm font-medium text-indigo-600 hover:text-indigo-500"
+            className="mt-4 text-sm font-medium text-brand-600 hover:text-brand-500"
           >
             开始第一次生图
           </button>
@@ -132,7 +132,7 @@ export default function PostersPage() {
             <div
               key={conv.id}
               onClick={() => handleOpen(conv)}
-              className="group flex items-center gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all cursor-pointer"
+              className="group flex items-center gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm hover:shadow-md hover:border-brand-200 transition-all cursor-pointer"
             >
               {/* Thumbnail */}
               {conv.thumbnail_url ? (

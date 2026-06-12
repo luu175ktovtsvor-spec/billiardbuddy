@@ -118,7 +118,7 @@ export default function AdminPlansPage() {
             </div>
             <div className="flex justify-end gap-3 mt-6">
               <button onClick={() => setEditingPlan(null)} className="px-4 py-2 text-sm border rounded-lg hover:bg-slate-50">取消</button>
-              <button onClick={handleSave} disabled={saving} className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-50">{saving ? "保存中..." : "保存"}</button>
+              <button onClick={handleSave} disabled={saving} className="px-4 py-2 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-500 disabled:opacity-50">{saving ? "保存中..." : "保存"}</button>
             </div>
           </div>
         </div>

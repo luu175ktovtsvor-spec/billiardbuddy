@@ -69,7 +69,7 @@ export default function WorkbenchPage() {
   }, [activeRole]);
 
   if (authLoading || storeLoading) {
-    return <div className="flex items-center justify-center py-20"><Loader2 className="h-6 w-6 animate-spin text-indigo-600" /></div>;
+    return <div className="flex items-center justify-center py-20"><Loader2 className="h-6 w-6 animate-spin text-brand-600" /></div>;
   }
   if (!isAuthenticated) return null;
   if (store === null) {
@@ -108,7 +108,7 @@ export default function WorkbenchPage() {
       <Breadcrumb items={[{ label: "返回首页", href: "/dashboard" }, { label: "AI 工作台" }]} />
 
       <div className="flex items-center gap-2 mb-4">
-        <Brain className="h-5 w-5 text-indigo-600" />
+        <Brain className="h-5 w-5 text-brand-600" />
         <h2 className="text-xl font-bold text-slate-900">AI 工作台</h2>
       </div>
 
@@ -120,7 +120,7 @@ export default function WorkbenchPage() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="找功能，如：投诉、日报、海报、招聘…"
-          className="w-full rounded-lg border border-slate-200 bg-white py-2.5 pl-9 pr-9 text-sm text-slate-900 placeholder-slate-400 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+          className="w-full rounded-lg border border-slate-200 bg-white py-2.5 pl-9 pr-9 text-sm text-slate-900 placeholder-slate-400 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
         />
         {query && (
           <button
@@ -144,7 +144,7 @@ export default function WorkbenchPage() {
               <div
                 key={card.id}
                 onClick={() => router.push(`/dashboard/workbench/${card.id}`)}
-                className="flex flex-col rounded-lg border border-slate-200 bg-white p-4 shadow-sm cursor-pointer hover:border-indigo-200 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 active:scale-[0.98]"
+                className="flex flex-col rounded-lg border border-slate-200 bg-white p-4 shadow-sm cursor-pointer hover:border-brand-200 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 active:scale-[0.98]"
               >
                 <div className="mb-1.5 flex items-start justify-between gap-2">
                   <h4 className="text-sm font-semibold text-slate-900">{card.title}</h4>
@@ -177,7 +177,7 @@ export default function WorkbenchPage() {
               activeRole === r.key && !r.isCollab
                 ? "bg-slate-50 text-slate-900 shadow-sm"
                 : r.isCollab
-                ? "text-indigo-600 hover:bg-indigo-50"
+                ? "text-brand-600 hover:bg-brand-50"
                 : "text-slate-500 hover:text-slate-700"
             }`}
           >
@@ -196,12 +196,12 @@ export default function WorkbenchPage() {
           <div
             key={card.id}
             onClick={() => router.push(`/dashboard/workbench/${card.id}`)}
-            className="flex flex-col rounded-lg border border-slate-200 bg-white p-4 shadow-sm cursor-pointer hover:border-indigo-200 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 active:scale-[0.98]"
+            className="flex flex-col rounded-lg border border-slate-200 bg-white p-4 shadow-sm cursor-pointer hover:border-brand-200 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 active:scale-[0.98]"
           >
             <div className="mb-1.5 flex items-start justify-between gap-2">
               <h4 className="text-sm font-semibold text-slate-900">{card.title}</h4>
               {card.priority === "P0" && (
-                <span className="shrink-0 rounded-full bg-indigo-50 px-1.5 py-0.5 text-xs text-indigo-600">推荐</span>
+                <span className="shrink-0 rounded-full bg-brand-50 px-1.5 py-0.5 text-xs text-brand-600">推荐</span>
               )}
             </div>
             <p className="mb-2 text-xs text-slate-500 leading-relaxed">{card.description}</p>

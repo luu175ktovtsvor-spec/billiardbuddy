@@ -80,7 +80,7 @@ export function OnboardingGuide() {
             <div
               key={i}
               className={`h-2 rounded-full transition-all ${
-                i === step ? "w-6 bg-indigo-600" : i < step ? "w-2 bg-indigo-300" : "w-2 bg-slate-200"
+                i === step ? "w-6 bg-brand-600" : i < step ? "w-2 bg-brand-300" : "w-2 bg-slate-200"
               }`}
             />
           ))}
@@ -88,8 +88,8 @@ export function OnboardingGuide() {
 
         {/* Step content */}
         <div className="mb-5 flex flex-col items-center text-center">
-          <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-indigo-50">
-            <current.icon className="h-7 w-7 text-indigo-600" />
+          <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-brand-50">
+            <current.icon className="h-7 w-7 text-brand-600" />
           </div>
           <h3 className="mb-1 text-lg font-bold text-slate-900">{current.title}</h3>
           <p className="text-sm text-slate-500 leading-relaxed">{current.desc}</p>
@@ -125,7 +125,7 @@ export function OnboardingGuide() {
               <Link
                 href={current.href}
                 onClick={dismiss}
-                className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
+                className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500"
               >
                 {current.action}
                 <ChevronRight className="h-4 w-4" />
@@ -134,7 +134,7 @@ export function OnboardingGuide() {
               <button
                 type="button"
                 onClick={() => setStep((s) => s + 1)}
-                className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
+                className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500"
               >
                 下一步
                 <ChevronRight className="h-4 w-4" />
@@ -144,7 +144,7 @@ export function OnboardingGuide() {
             <button
               type="button"
               onClick={dismiss}
-              className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
+              className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500"
             >
               开始使用
             </button>

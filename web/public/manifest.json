@@ -1,0 +1,16 @@
+{
+  "name": "球房 AI 运营助手",
+  "short_name": "球房AI",
+  "description": "台球房的运营活，AI 替你干",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#0c211a",
+  "theme_color": "#0c211a",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

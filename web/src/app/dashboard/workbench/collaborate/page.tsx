@@ -109,8 +109,8 @@ export default function CollaboratePage() {
             onClick={() => setSelectedScenario(s.type)}
             className={`rounded-lg border p-4 text-center transition-all duration-200 ${
               selectedScenario === s.type
-                ? "border-indigo-500 bg-indigo-50 shadow-sm"
-                : "border-slate-200 bg-white hover:border-indigo-200"
+                ? "border-brand-500 bg-brand-50 shadow-sm"
+                : "border-slate-200 bg-white hover:border-brand-200"
             }`}
           >
             <span className="text-3xl block mb-2">{s.emoji}</span>
@@ -129,13 +129,13 @@ export default function CollaboratePage() {
           rows={3}
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 resize-none"
+          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none"
           placeholder="例如：策划一场周末台球挑战赛，预算3000元，目标吸引新客户"
         />
         <button
           onClick={handleStart}
           disabled={loading || !selectedScenario || !description.trim()}
-          className="mt-3 flex w-full items-center justify-center gap-2 rounded-md bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50 transition-colors"
+          className="mt-3 flex w-full items-center justify-center gap-2 rounded-md bg-brand-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 transition-colors"
         >
           {loading ? (
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -179,8 +179,8 @@ export default function CollaboratePage() {
 
           {/* 指挥官框架 */}
           {taskResult.framework && (
-            <details className="mb-3 rounded-md border border-indigo-100 bg-indigo-50/50 p-3" open={taskResult.status === "running"}>
-              <summary className="cursor-pointer text-xs font-semibold text-indigo-700">📋 协作框架（指挥官制定，各岗位据此分工）</summary>
+            <details className="mb-3 rounded-md border border-brand-100 bg-brand-50/50 p-3" open={taskResult.status === "running"}>
+              <summary className="cursor-pointer text-xs font-semibold text-brand-700">📋 协作框架（指挥官制定，各岗位据此分工）</summary>
               <div className="mt-2 prose prose-xs max-w-none prose-slate text-xs">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{taskResult.framework}</ReactMarkdown>
               </div>
@@ -253,7 +253,7 @@ export default function CollaboratePage() {
                 navigator.clipboard.writeText(markdownToPlainText(taskResult.summary || ""));
                 toast("已复制全部");
               }}
-              className="flex items-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors"
+              className="flex items-center gap-1.5 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 transition-colors"
             >
               📋 复制全部
             </button>

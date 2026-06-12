@@ -182,7 +182,7 @@ export default function MembersPage() {
           </button>
           <button
             onClick={() => { setShowCreateForm(true); setShowAddForm(false); }}
-            className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500"
+            className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-500"
           >
             <Plus className="h-4 w-4" />
             生成邀请码
@@ -258,7 +258,7 @@ export default function MembersPage() {
             <button
               onClick={handleCreateInvitation}
               disabled={creating}
-              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+              className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50"
             >
               {creating ? "生成中..." : "生成"}
             </button>
@@ -303,7 +303,7 @@ export default function MembersPage() {
               {members.map((m) => (
                 <div key={m.user_id} className="flex items-center justify-between px-4 py-3">
                   <div className="flex items-center gap-3">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-indigo-100 text-sm font-medium text-indigo-600">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-brand-100 text-sm font-medium text-brand-600">
                       {(m.name || m.phone).slice(0, 1)}
                     </div>
                     <div>
@@ -348,7 +348,7 @@ export default function MembersPage() {
                   <div>
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-sm font-semibold text-slate-900">{inv.code}</span>
-                      <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-xs text-indigo-600">
+                      <span className="rounded bg-brand-50 px-1.5 py-0.5 text-xs text-brand-600">
                         {ROLE_LABELS[inv.role] || inv.role}
                       </span>
                       {!inv.is_active && (
@@ -363,7 +363,7 @@ export default function MembersPage() {
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => copyInviteLink(inv.code)}
-                      className="rounded p-1.5 text-slate-400 hover:bg-indigo-50 hover:text-indigo-500"
+                      className="rounded p-1.5 text-slate-400 hover:bg-brand-50 hover:text-brand-500"
                       title="复制邀请链接"
                     >
                       <Copy className="h-4 w-4" />

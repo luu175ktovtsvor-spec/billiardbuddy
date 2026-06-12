@@ -63,7 +63,7 @@ export default function AdminDashboard() {
           <p className="text-sm font-medium text-amber-700">
             ⚠️ {revenue?.expiring_soon || 0} 个订阅即将到期（7天内），{revenue?.expired || 0} 个已过期
           </p>
-          <a href="/admin/subscriptions" className="text-sm text-indigo-600 hover:underline mt-1 inline-block">去查看 →</a>
+          <a href="/admin/subscriptions" className="text-sm text-brand-600 hover:underline mt-1 inline-block">去查看 →</a>
         </div>
       ) : null}
 

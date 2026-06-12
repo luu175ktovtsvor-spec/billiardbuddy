@@ -373,7 +373,7 @@ function ConversationPageInner() {
   if (authLoading || storeLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="h-6 w-6 animate-spin text-indigo-600" />
+        <Loader2 className="h-6 w-6 animate-spin text-brand-600" />
       </div>
     );
   }
@@ -414,12 +414,12 @@ function ConversationPageInner() {
                   key={idx}
                   className={`rounded-lg border p-4 ${
                     msg.role === "user"
-                      ? "bg-indigo-50 border-indigo-200"
+                      ? "bg-brand-50 border-brand-200"
                       : "bg-white border-slate-200"
                   }`}
                 >
                   {msg.role === "user" ? (
-                    <p className="text-sm text-indigo-700">{msg.content}</p>
+                    <p className="text-sm text-brand-700">{msg.content}</p>
                   ) : (
                     msg.images &&
                     msg.images.length > 0 && (
@@ -438,7 +438,7 @@ function ConversationPageInner() {
                                 onClick={() => updateConv({ refineFrom: img.generation_id })}
                                 className={`px-3 py-1.5 rounded text-xs ${
                                   conv.refineFrom === img.generation_id
-                                    ? "bg-indigo-100 text-indigo-700 border border-indigo-300"
+                                    ? "bg-brand-100 text-brand-700 border border-brand-300"
                                     : "bg-slate-50 text-slate-600 border border-slate-200 hover:bg-slate-100"
                                 }`}
                               >
@@ -491,7 +491,7 @@ function ConversationPageInner() {
               {generating && (
                 <div className="rounded-lg border border-slate-200 bg-white p-4">
                   <div className="flex items-center gap-2">
-                    <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
+                    <Loader2 className="h-4 w-4 animate-spin text-brand-600" />
                     <span className="text-sm text-slate-500">{GEN_STAGES[genStage]}</span>
                     <span className="ml-auto text-xs tabular-nums text-slate-400">{genSeconds}s</span>
                   </div>
@@ -527,22 +527,22 @@ function ConversationPageInner() {
           <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sticky bottom-4">
             {/* 底图提示：让用户明确知道"在哪张图上改"，可一键退出调整模式 */}
             {conv.refineFrom && conv.messages.length > 0 && (
-              <div className="mb-3 flex items-center gap-2.5 rounded-md border border-indigo-100 bg-indigo-50 px-2.5 py-2">
+              <div className="mb-3 flex items-center gap-2.5 rounded-md border border-brand-100 bg-brand-50 px-2.5 py-2">
                 {refineImage && (
                   <img
                     src={api.resolveUrl(refineImage.poster_url)}
                     alt="当前底图"
-                    className="h-10 w-10 rounded object-cover border border-indigo-200"
+                    className="h-10 w-10 rounded object-cover border border-brand-200"
                   />
                 )}
-                <span className="flex-1 text-xs text-indigo-600">
+                <span className="flex-1 text-xs text-brand-600">
                   将在这张图上调整；参考图与文字要求会一并生效
                 </span>
                 <button
                   type="button"
                   onClick={() => updateConv({ refineFrom: null })}
                   title="退出调整模式，全新生成"
-                  className="rounded p-1 text-indigo-400 hover:bg-indigo-100 hover:text-indigo-600"
+                  className="rounded p-1 text-brand-400 hover:bg-brand-100 hover:text-brand-600"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
@@ -557,7 +557,7 @@ function ConversationPageInner() {
                     key={t}
                     type="button"
                     onClick={() => sendGenerate(t, conv.refineFrom)}
-                    className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-600 hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600 transition-colors"
+                    className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-600 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-600 transition-colors"
                   >
                     {t}
                   </button>
@@ -584,7 +584,7 @@ function ConversationPageInner() {
                           key={tag.key}
                           type="button"
                           onClick={() => setPrompt(tag.prompt)}
-                          className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-600 hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600 transition-colors"
+                          className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-600 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-600 transition-colors"
                         >
                           {tag.label}
                         </button>
@@ -601,7 +601,7 @@ function ConversationPageInner() {
                         key={s.label}
                         type="button"
                         onClick={() => setPrompt((p) => (p.trim() ? `${p.trim()}，${s.prompt}` : s.prompt))}
-                        className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600 hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600 transition-colors"
+                        className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-600 transition-colors"
                       >
                         {s.label}
                       </button>
@@ -620,7 +620,7 @@ function ConversationPageInner() {
                       handleGenerate();
                     }
                   }}
-                  className="w-full rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 resize-none"
+                  className="w-full rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none"
                   placeholder="例：帮我们店的女助教生成一张高级感形象照，球房背景，光线柔和"
                 />
               </>
@@ -640,7 +640,7 @@ function ConversationPageInner() {
                         handleGenerate();
                       }
                     }}
-                    className="w-full resize-none rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    className="w-full resize-none rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
                     placeholder={conv.refineFrom ? "描述调整内容，如「背景改成深色」" : "描述新的图片需求"}
                   />
                 </div>
@@ -649,7 +649,7 @@ function ConversationPageInner() {
                   disabled={generating || !prompt.trim() || quotaExhausted}
                   onClick={handleGenerate}
                   title={quotaExhausted ? "本月额度已用完，联系您的服务商提升" : undefined}
-                  className="rounded-xl bg-indigo-600 p-2.5 text-white hover:bg-indigo-500 disabled:opacity-50"
+                  className="rounded-xl bg-brand-600 p-2.5 text-white hover:bg-brand-500 disabled:opacity-50"
                 >
                   <Send className="h-4 w-4" />
                 </button>
@@ -698,7 +698,7 @@ function ConversationPageInner() {
                   type="button"
                   disabled={generating || !prompt.trim() || quotaExhausted}
                   onClick={handleGenerate}
-                  className="ml-auto flex items-center gap-2 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="ml-auto flex items-center gap-2 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-4 w-4" />}
                   {quotaExhausted ? "额度已用完" : "生成"}
@@ -745,7 +745,7 @@ function ConversationPageInner() {
                       value={overlayText}
                       onChange={(e) => setOverlayText(e.target.value)}
                       placeholder="例：周五晚8点 · 抢一大战"
-                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
                     />
                   </div>
                   <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500">
@@ -754,7 +754,7 @@ function ConversationPageInner() {
                         type="checkbox"
                         checked={conv.addStoreInfo}
                         onChange={(e) => updateConv({ addStoreInfo: e.target.checked })}
-                        className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                        className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
                       />
                       <span>融入门店信息</span>
                     </label>
@@ -764,7 +764,7 @@ function ConversationPageInner() {
                         disabled={!!overlayText.trim()}
                         checked={overlayText.trim() ? false : conv.noText}
                         onChange={(e) => updateConv({ noText: e.target.checked })}
-                        className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                        className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
                       />
                       <span>禁止生成文字{overlayText.trim() ? "（已填上图文字，自动失效）" : ""}</span>
                     </label>
@@ -817,7 +817,7 @@ export default function ConversationPage() {
     <Suspense
       fallback={
         <div className="flex items-center justify-center py-20">
-          <Loader2 className="h-6 w-6 animate-spin text-indigo-600" />
+          <Loader2 className="h-6 w-6 animate-spin text-brand-600" />
         </div>
       }
     >

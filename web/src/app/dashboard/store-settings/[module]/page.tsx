@@ -299,7 +299,7 @@ function formDataToPayload(form: FormData) {
   };
 }
 
-const INPUT_CLASS = "w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20";
+const INPUT_CLASS = "w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20";
 
 /* ───── Sub-components for each module ───── */
 
@@ -481,7 +481,7 @@ function ProfileModule({
 
       {/* 完整度评分卡片 */}
       {store.operation_profile_completeness && (
-        <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-4">
+        <div className="rounded-lg border border-brand-200 bg-brand-50 p-4">
           <div className="mb-2 flex items-center justify-between">
             <span className="font-semibold text-slate-800">AI 运营画像完整度</span>
             <span className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${
@@ -752,14 +752,14 @@ function BrandingModule({
             onClick={() => onBrandStyleChange(style.value)}
             className={`flex flex-col items-center gap-1 rounded-xl border-2 p-4 text-center transition-all ${
               (store as any).brand_style === style.value || (!style.value && !(store as any).brand_style)
-                ? "border-indigo-500 bg-indigo-50 shadow-sm"
+                ? "border-brand-500 bg-brand-50 shadow-sm"
                 : "border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm"
             }`}
           >
             <span className="text-2xl">{style.emoji}</span>
             <span className={`text-sm font-medium ${
               (store as any).brand_style === style.value || (!style.value && !(store as any).brand_style)
-                ? "text-indigo-700" : "text-slate-700"
+                ? "text-brand-700" : "text-slate-700"
             }`}>{style.label}</span>
             <span className="text-xs text-slate-400">{style.desc}</span>
           </button>
@@ -1053,7 +1053,7 @@ export default function StoreSettingsModulePage() {
     return (
       <div className="mx-auto max-w-2xl py-20 text-center">
         <p className="text-slate-500">模块不存在</p>
-        <Link href="/dashboard/store-settings" className="mt-4 inline-block text-sm text-indigo-600 hover:underline">
+        <Link href="/dashboard/store-settings" className="mt-4 inline-block text-sm text-brand-600 hover:underline">
           返回门店设置
         </Link>
       </div>
@@ -1084,7 +1084,7 @@ export default function StoreSettingsModulePage() {
         <h1 className="text-xl font-bold text-slate-900">{meta.icon} {meta.label}</h1>
         <Link
           href="/dashboard/store-settings"
-          className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-indigo-600 transition-colors"
+          className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-brand-600 transition-colors"
         >
           <ArrowLeft className="h-4 w-4" />
           返回
@@ -1128,7 +1128,7 @@ export default function StoreSettingsModulePage() {
       <div className="mt-6 flex justify-end pb-6">
         <button type="button" disabled={saving}
           onClick={handleSave}
-          className="rounded-md bg-indigo-600 px-6 py-2.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
+          className="rounded-md bg-brand-600 px-6 py-2.5 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50">
           {saving ? "保存中..." : "保存"}
         </button>
       </div>

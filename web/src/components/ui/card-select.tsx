@@ -30,13 +30,13 @@ export function CardSelect({ value, onChange, options, columns = 3 }: CardSelect
           onClick={() => onChange(opt.value)}
           className={`flex flex-col items-center gap-0.5 rounded-lg border-2 p-3 text-center transition-all ${
             value === opt.value
-              ? "border-indigo-500 bg-indigo-50 shadow-sm"
+              ? "border-brand-500 bg-brand-50 shadow-sm"
               : "border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm"
           }`}
         >
           {opt.emoji && <span className="text-lg">{opt.emoji}</span>}
           <span className={`text-sm font-medium ${
-            value === opt.value ? "text-indigo-700" : "text-slate-700"
+            value === opt.value ? "text-brand-700" : "text-slate-700"
           }`}>{opt.label}</span>
           {opt.desc && <span className="text-xs text-slate-400 leading-tight">{opt.desc}</span>}
         </button>

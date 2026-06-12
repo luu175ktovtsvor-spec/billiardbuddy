@@ -97,7 +97,7 @@ export function ContentCalendar() {
     <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
       <div className="border-b border-slate-100 px-4 py-3">
         <div className="flex items-center gap-2">
-          <Calendar className="h-5 w-5 text-indigo-600" />
+          <Calendar className="h-5 w-5 text-brand-600" />
           <h3 className="font-semibold text-slate-900">内容日历</h3>
           <span className="ml-auto text-xs text-slate-400">
             {isToday && items.length > 0
@@ -118,14 +118,14 @@ export function ContentCalendar() {
             onClick={() => setSelectedDay(i)}
             className={`flex-1 py-2 text-xs font-medium text-center transition-colors ${
               i === selectedDay
-                ? "border-b-2 border-indigo-600 text-indigo-600"
+                ? "border-b-2 border-brand-600 text-brand-600"
                 : i === todayWeekday
-                ? "text-indigo-400"
+                ? "text-brand-400"
                 : "text-slate-400 hover:text-slate-600"
             }`}
           >
             {name}
-            {i === todayWeekday && <span className="block text-[10px] text-indigo-400">今天</span>}
+            {i === todayWeekday && <span className="block text-[10px] text-brand-400">今天</span>}
           </button>
         ))}
       </div>
@@ -156,7 +156,7 @@ export function ContentCalendar() {
                 className={`shrink-0 inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
                   done
                     ? "bg-slate-50 text-slate-400 hover:bg-slate-100"
-                    : "bg-indigo-50 text-indigo-600 hover:bg-indigo-100"
+                    : "bg-brand-50 text-brand-600 hover:bg-brand-100"
                 }`}
               >
                 <Sparkles className="h-3 w-3" />

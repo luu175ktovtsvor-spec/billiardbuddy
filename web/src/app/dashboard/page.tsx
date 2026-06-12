@@ -272,7 +272,7 @@ export default function DashboardPage() {
 
       {/* 今日建议：后端 9 条规则引擎的推荐（此前从未渲染），取前 3 条 */}
       {!loading && store && dashboard && dashboard.recommendations.length > 0 && (
-        <div className="mb-6 rounded-lg border border-indigo-100 bg-indigo-50/50 p-4">
+        <div className="mb-6 rounded-lg border border-brand-100 bg-brand-50/50 p-4">
           <p className="mb-2.5 text-sm font-semibold text-slate-800">📌 今天建议做这几件事</p>
           <div className="space-y-2">
             {pickTopRecommendations(dashboard.recommendations).map((rec) => (
@@ -284,7 +284,7 @@ export default function DashboardPage() {
                 </div>
                 <Link
                   href={recommendationHref(rec)}
-                  className="shrink-0 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 transition-colors"
+                  className="shrink-0 rounded-md bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-500 transition-colors"
                 >
                   {rec.action_label}
                 </Link>
@@ -297,7 +297,7 @@ export default function DashboardPage() {
       {/* 加载中 */}
       {loading && (
         <div className="flex items-center justify-center py-16">
-          <Loader2 className="h-8 w-8 animate-spin text-indigo-600" />
+          <Loader2 className="h-8 w-8 animate-spin text-brand-600" />
           <span className="ml-3 text-slate-500">加载今日工作台...</span>
         </div>
       )}
@@ -307,9 +307,9 @@ export default function DashboardPage() {
           {/* 无门店状态：引导卡片 */}
           {(store === null || (storeError && !store)) && (
             <div className="space-y-6">
-              <div className="rounded-lg border border-indigo-200 bg-white p-6 sm:p-8 shadow-sm">
+              <div className="rounded-lg border border-brand-200 bg-white p-6 sm:p-8 shadow-sm">
                 <div className="flex flex-col items-center text-center">
-                  <Store className="mb-4 h-14 w-14 text-indigo-600" />
+                  <Store className="mb-4 h-14 w-14 text-brand-600" />
                   <h3 className="mb-2 text-lg font-bold text-slate-900">
                     先完善门店资料，AI 才能帮你生成内容
                   </h3>
@@ -325,7 +325,7 @@ export default function DashboardPage() {
                       "上传 Logo 和微信二维码",
                     ].map((step, i) => (
                       <div key={i} className="flex items-center gap-3 rounded-md bg-slate-50 px-4 py-2.5">
-                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-xs font-bold text-white">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-600 text-xs font-bold text-white">
                           {i + 1}
                         </span>
                         <span className="text-sm text-slate-700">{step}</span>
@@ -335,7 +335,7 @@ export default function DashboardPage() {
 
                   <Link
                     href="/dashboard/store-settings"
-                    className="inline-flex items-center gap-2 rounded-md bg-indigo-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-indigo-500"
+                    className="inline-flex items-center gap-2 rounded-md bg-brand-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-500"
                   >
                     去完善门店资料
                     <ArrowRight className="h-4 w-4" />
@@ -352,7 +352,7 @@ export default function DashboardPage() {
               {topCards.length > 0 && (
                 <div>
                   <div className="flex items-center gap-2 mb-3">
-                    <Zap className="h-5 w-5 text-indigo-600" />
+                    <Zap className="h-5 w-5 text-brand-600" />
                     <h3 className="font-semibold text-slate-900">常用任务</h3>
                   </div>
                   <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
@@ -363,7 +363,7 @@ export default function DashboardPage() {
                         <button
                           key={card.id}
                           onClick={() => router.push(`/dashboard/workbench/${card.id}`)}
-                          className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white p-4 text-left hover:border-indigo-200 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 active:scale-[0.98] cursor-pointer"
+                          className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white p-4 text-left hover:border-brand-200 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 active:scale-[0.98] cursor-pointer"
                         >
                           <span className="mt-0.5 text-xl leading-none shrink-0">{emoji}</span>
                           <div className="min-w-0 flex-1">
@@ -386,7 +386,7 @@ export default function DashboardPage() {
               <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-2">
-                    <Store className="h-5 w-5 text-indigo-600" />
+                    <Store className="h-5 w-5 text-brand-600" />
                     <h3 className="font-semibold text-slate-900">{store.name}</h3>
                   </div>
                   <span
@@ -459,7 +459,7 @@ export default function DashboardPage() {
                     {/* 成就视角：先看产出，再看余量 */}
                     {quota.used > 0 && (
                       <p className="text-sm text-slate-600">
-                        本月已产出 <span className="font-semibold text-indigo-600">{quota.used}</span> 条运营内容
+                        本月已产出 <span className="font-semibold text-brand-600">{quota.used}</span> 条运营内容
                         <span className="text-xs text-slate-400">
                           ，按每条手写 20 分钟算，约省下 {Math.max(0.5, Math.round((quota.used * 20 / 60) * 2) / 2)} 小时
                         </span>
@@ -480,7 +480,7 @@ export default function DashboardPage() {
                               ? "bg-red-500"
                               : quota.used / quota.limit >= 0.7
                               ? "bg-amber-500"
-                              : "bg-indigo-500"
+                              : "bg-brand-500"
                           }`}
                           style={{ width: `${Math.min((quota.used / quota.limit) * 100, 100)}%` }}
                         />
@@ -516,9 +516,9 @@ export default function DashboardPage() {
 
               {/* Tips 提示 */}
               {dashboard && dashboard.tips.length > 0 && (
-                <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-4">
+                <div className="rounded-lg border border-brand-200 bg-brand-50 p-4">
                   <div className="flex items-start gap-2">
-                    <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-indigo-600" />
+                    <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-brand-600" />
                     <div>
                       {dashboard.tips.map((tip, i) => (
                         <p key={i} className="text-sm text-slate-700">

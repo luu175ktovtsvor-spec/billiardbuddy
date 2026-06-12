@@ -125,13 +125,13 @@ export default function HistoryDetailPage() {
         <button
           type="button"
           onClick={() => router.push("/dashboard/history")}
-          className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-indigo-600 transition-colors"
+          className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-brand-600 transition-colors"
         >
           <ChevronLeft className="h-4 w-4" />
           历史记录
         </button>
         <div className="flex items-center gap-2">
-          <span className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-medium text-indigo-600">
+          <span className="rounded-full bg-brand-50 px-2.5 py-0.5 text-xs font-medium text-brand-600">
             {typeLabel(item.type)}
           </span>
           {item.sub_type && (
@@ -208,16 +208,16 @@ export default function HistoryDetailPage() {
                 type="button"
                 disabled={repurposing !== null}
                 onClick={() => handleRepurpose(p.platform, p.label)}
-                className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 hover:border-indigo-300 hover:text-indigo-600 disabled:opacity-50 transition-colors"
+                className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 hover:border-brand-300 hover:text-brand-600 disabled:opacity-50 transition-colors"
               >
                 {repurposing === p.platform ? "转换中..." : p.label}
               </button>
             ))}
           </div>
           {repurposeResult && (
-            <div className="mt-3 rounded-md border border-indigo-100 bg-white p-3">
+            <div className="mt-3 rounded-md border border-brand-100 bg-white p-3">
               <div className="mb-1.5 flex items-center justify-between">
-                <p className="text-xs font-medium text-indigo-600">{repurposeResult.label}版</p>
+                <p className="text-xs font-medium text-brand-600">{repurposeResult.label}版</p>
                 <CopyButton text={repurposeResult.content} />
               </div>
               <p className="whitespace-pre-wrap text-sm text-slate-700">{repurposeResult.content}</p>
@@ -243,7 +243,7 @@ export default function HistoryDetailPage() {
                   const stamp = (item.created_at || "").slice(0, 10).replace(/-/g, "");
                   downloadImage(api.resolveUrl(item.result!), safeFileName(`海报_${stamp}`));
                 }}
-                className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
+                className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500"
               >
                 <Download className="h-4 w-4" />
                 下载图片
