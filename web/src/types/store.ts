@@ -134,6 +134,8 @@ export interface StoreResponse {
     suggested_modules: string[];
   } | null;
   completeness: number;
+  /** 当前用户在本店的角色(owner/manager/...)——工作台默认选中自己的岗位 */
+  my_role?: string | null;
   // Expanded profile fields
   coach_count: number | null;
   coach_service_types: string | null;

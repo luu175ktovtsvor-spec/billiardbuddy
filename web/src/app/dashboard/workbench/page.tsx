@@ -13,7 +13,7 @@ import {
   getOutputLabels,
 } from "@/lib/role-workbench-config";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
-import { Brain, Loader2 } from "lucide-react";
+import { Brain, Loader2, Search, X } from "lucide-react";
 import { EmptyStoreGuide } from "@/components/empty-store-guide";
 
 function getTaskCardUsage(): Record<string, number> {
@@ -25,11 +25,19 @@ function getTaskCardUsage(): Record<string, number> {
   }
 }
 
+/** 成员角色 → 工作台岗位 tab。owner 看老板视角;未知角色回退店长。 */
+function roleToTab(myRole: string | null | undefined): string {
+  if (!myRole) return "manager";
+  if (myRole === "owner") return "boss";
+  return myRole in ROLE_TASKS ? myRole : "manager";
+}
+
 export default function WorkbenchPage() {
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const router = useRouter();
   const [store, setStore] = useState<StoreResponse | null | undefined>(undefined);
   const [storeLoading, setStoreLoading] = useState(true);
+  const [query, setQuery] = useState("");
   const [activeRole, setActiveRole] = useState<string>(() => {
     if (typeof window !== "undefined") return localStorage.getItem("workbench_role") || "manager";
     return "manager";
@@ -40,7 +48,15 @@ export default function WorkbenchPage() {
     let cancelled = false;
     setStoreLoading(true);
     api.getMyStore()
-      .then((s) => { if (!cancelled) setStore(s); })
+      .then((s) => {
+        if (cancelled) return;
+        setStore(s);
+        // 首次进入(无手动选择记录)默认选中用户自己的岗位:
+        // 助教管理打开看到的应该是助教管理的卡,不是店长的
+        if (!localStorage.getItem("workbench_role") && s.my_role) {
+          setActiveRole(roleToTab(s.my_role));
+        }
+      })
       .catch(() => { if (!cancelled) setStore(null); })
       .finally(() => { if (!cancelled) setStoreLoading(false); });
     return () => { cancelled = true; };
@@ -69,6 +85,19 @@ export default function WorkbenchPage() {
     return pa - pb;
   });
 
+  // 关键词搜索:82 张卡跨岗位找功能("投诉""日报"),不用一个 tab 一个 tab 翻
+  const q = query.trim().toLowerCase();
+  const searchResults = q
+    ? Object.values(ROLE_TASKS)
+        .flat()
+        .filter(
+          (card) =>
+            card.title.toLowerCase().includes(q) ||
+            card.description.toLowerCase().includes(q) ||
+            card.sceneTags.some((t) => t.toLowerCase().includes(q))
+        )
+    : [];
+
   const allRoles: Array<{ key: string; label: string; isCollab?: boolean }> = [
     ...MVP_ROLES.map((r) => ({ key: r, label: ROLE_LABELS[r] })),
     { key: "collaborate", label: "🤝 协作", isCollab: true },
@@ -83,6 +112,54 @@ export default function WorkbenchPage() {
         <h2 className="text-xl font-bold text-slate-900">AI 工作台</h2>
       </div>
 
+      {/* 卡片搜索 */}
+      <div className="relative mb-4">
+        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="找功能，如：投诉、日报、海报、招聘…"
+          className="w-full rounded-lg border border-slate-200 bg-white py-2.5 pl-9 pr-9 text-sm text-slate-900 placeholder-slate-400 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+        />
+        {query && (
+          <button
+            type="button"
+            onClick={() => setQuery("")}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+
+      {/* 搜索结果(跨岗位) */}
+      {q ? (
+        <>
+          <p className="mb-4 text-sm text-slate-500">
+            {searchResults.length > 0 ? `找到 ${searchResults.length} 个相关功能` : "没找到相关功能，换个关键词试试（如：朋友圈、赛事、话术）"}
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {searchResults.map((card) => (
+              <div
+                key={card.id}
+                onClick={() => router.push(`/dashboard/workbench/${card.id}`)}
+                className="flex flex-col rounded-lg border border-slate-200 bg-white p-4 shadow-sm cursor-pointer hover:border-indigo-200 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 active:scale-[0.98]"
+              >
+                <div className="mb-1.5 flex items-start justify-between gap-2">
+                  <h4 className="text-sm font-semibold text-slate-900">{card.title}</h4>
+                  <span className="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-xs text-slate-500">
+                    {ROLE_LABELS[card.role as keyof typeof ROLE_LABELS] || card.role}
+                  </span>
+                </div>
+                <p className="mb-2 text-xs text-slate-500 leading-relaxed">{card.description}</p>
+                <div className="mt-auto text-xs text-slate-400">{getOutputLabels(card.outputPackage)}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : (
+        <>
       {/* 角色 Tab */}
       <div className="mb-4 flex gap-2 rounded-lg bg-white border border-slate-200 p-1 overflow-x-auto shadow-sm">
         {allRoles.map((r) => (
@@ -139,6 +216,8 @@ export default function WorkbenchPage() {
           </div>
         ))}
       </div>
+        </>
+      )}
     </div>
   );
 }

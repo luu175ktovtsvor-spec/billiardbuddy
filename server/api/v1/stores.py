@@ -26,12 +26,13 @@ from services.storage_service import upload_logo, upload_qrcode, commit_upload, 
 router = APIRouter(tags=["门店"])
 
 
-def _store_to_response(store: Store) -> StoreResponse:
+def _store_to_response(store: Store, my_role: str | None = None) -> StoreResponse:
     data = {k: v for k, v in store.__dict__.items() if not k.startswith("_")}
     return StoreResponse(
         **data,
         operation_profile_completeness=calculate_operation_profile_completeness(store.operation_profile),
         completeness=calculate_completeness(store),
+        my_role=my_role,
     )
 
 
@@ -63,8 +64,18 @@ async def create_my_store(
 @router.get("/me", response_model=StoreResponse)
 async def get_my_store(
     store: Annotated[Store, Depends(get_current_store)],
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    return _store_to_response(store)
+    # 带上当前用户在本店的角色:前端工作台默认选中用户自己的岗位 tab
+    result = await db.execute(
+        select(StoreMember.role).where(
+            StoreMember.store_id == store.id,
+            StoreMember.user_id == current_user.id,
+        )
+    )
+    my_role = result.scalar_one_or_none()
+    return _store_to_response(store, my_role=my_role)
 
 
 @router.put("/me", response_model=StoreResponse)

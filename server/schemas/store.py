@@ -134,6 +134,9 @@ class StoreResponse(BaseModel):
     operation_profile: Any = None
     operation_profile_completeness: Any = None
     completeness: int = 0
+    # 当前用户在本店的角色(owner/manager/assistant_manager/coach/frontdesk/operator)
+    # 前端工作台用它默认选中用户自己的岗位 tab
+    my_role: str | None = None
     # 助教资料
     coach_count: int | None = None
     coach_service_types: str | None = None
