@@ -198,7 +198,7 @@ export default function AdminUsersPage() {
       <h1 className="text-2xl font-bold mb-6">用户管理</h1>
 
       <div className="mb-4">
-        <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索手机号或名称..." className="w-full max-w-sm rounded-lg border border-slate-200 px-4 py-2 text-sm focus:border-brand-500 focus:outline-none" />
+        <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索手机号或名称..." className="w-full max-w-sm rounded-lg px-4 py-2 text-sm focus:border-brand-500 focus:outline-none" />
       </div>
 
       <div className="rounded-lg border bg-white shadow-sm">
@@ -315,21 +315,21 @@ export default function AdminUsersPage() {
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium mb-1">选择套餐</label>
-                <select value={selectedPlanSlug} onChange={(e) => setSelectedPlanSlug(e.target.value)} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                <select value={selectedPlanSlug} onChange={(e) => setSelectedPlanSlug(e.target.value)} className="w-full rounded-lg px-3 py-2 text-sm">
                   {plans.map((p) => <option key={p.slug} value={p.slug}>{p.name} (¥{p.price_monthly / 100}/月)</option>)}
                 </select>
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">开通月数</label>
-                <input type="number" min={1} max={12} value={months} onChange={(e) => setMonths(Number(e.target.value))} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                <input type="number" min={1} max={12} value={months} onChange={(e) => setMonths(Number(e.target.value))} className="w-full rounded-lg px-3 py-2 text-sm" />
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">收款备注（选填）</label>
-                <input type="text" value={paymentNote} onChange={(e) => setPaymentNote(e.target.value)} placeholder="如：微信转账" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                <input type="text" value={paymentNote} onChange={(e) => setPaymentNote(e.target.value)} placeholder="如：微信转账" className="w-full rounded-lg px-3 py-2 text-sm" />
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">收款金额（选填，单位：分）</label>
-                <input type="number" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} placeholder="单位：分" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                <input type="number" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} placeholder="单位：分" className="w-full rounded-lg px-3 py-2 text-sm" />
               </div>
             </div>
             <div className="flex justify-end gap-3 mt-6">
@@ -349,7 +349,7 @@ export default function AdminUsersPage() {
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium mb-1">每月生成次数上限</label>
-                <input type="number" min={0} value={quotaGenLimit} onChange={(e) => setQuotaGenLimit(e.target.value)} placeholder="如：100（试用默认 30）" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                <input type="number" min={0} value={quotaGenLimit} onChange={(e) => setQuotaGenLimit(e.target.value)} placeholder="如：100（试用默认 30）" className="w-full rounded-lg px-3 py-2 text-sm" />
               </div>
               {quotaError && <p className="text-xs text-red-600">{quotaError}</p>}
             </div>
@@ -370,7 +370,7 @@ export default function AdminUsersPage() {
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium mb-1">新密码（至少 8 位）</label>
-                <input type="text" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="输入新密码" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                <input type="text" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="输入新密码" className="w-full rounded-lg px-3 py-2 text-sm" />
               </div>
               {resetError && <p className="text-xs text-red-600">{resetError}</p>}
             </div>

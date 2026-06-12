@@ -81,7 +81,7 @@ export default function AdminSubscriptionsPage() {
       <h1 className="text-2xl font-bold mb-6">订阅管理</h1>
 
       <div className="flex gap-3 mb-4">
-        <select value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }} className="rounded-lg border border-slate-200 px-3 py-2 text-sm">
+        <select value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }} className="rounded-lg px-3 py-2 text-sm">
           <option value="">全部状态</option>
           <option value="active">活跃</option>
         </select>
@@ -140,15 +140,15 @@ export default function AdminSubscriptionsPage() {
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium mb-1">续费月数</label>
-                <input type="number" min={1} max={24} value={renewMonths} onChange={(e) => setRenewMonths(Number(e.target.value))} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                <input type="number" min={1} max={24} value={renewMonths} onChange={(e) => setRenewMonths(Number(e.target.value))} className="w-full rounded-lg px-3 py-2 text-sm" />
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">收款备注（选填）</label>
-                <input type="text" value={renewNote} onChange={(e) => setRenewNote(e.target.value)} placeholder="如：微信转账" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                <input type="text" value={renewNote} onChange={(e) => setRenewNote(e.target.value)} placeholder="如：微信转账" className="w-full rounded-lg px-3 py-2 text-sm" />
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">收款金额（选填，单位：分）</label>
-                <input type="number" value={renewAmount} onChange={(e) => setRenewAmount(e.target.value)} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                <input type="number" value={renewAmount} onChange={(e) => setRenewAmount(e.target.value)} className="w-full rounded-lg px-3 py-2 text-sm" />
               </div>
             </div>
             <div className="flex justify-end gap-3 mt-6">
