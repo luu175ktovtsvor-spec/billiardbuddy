@@ -179,6 +179,15 @@ server/                 # FastAPI 后端
 - 错误处理用 `lib/utils.ts` 的 `getErrorMessage`
 - 选择器组件用 `components/ui/card-select.tsx`（卡片式），不用原生 `<select>`
 
+**设计系统（2026-06-12 起，微信内手机端是第一公民）：**
+- 主色 `brand`（台呢墨绿，tailwind.config 定义），点缀色 amber 暖金；**禁止再用 indigo**
+- 视觉 token：卡片 `rounded-2xl`、按钮 `rounded-xl`；手机正文 `text-[15px]`、标题 `text-[17px]+`；按压态 `active:scale-[0.98]`，不做 hover-only 交互
+- 触控目标 ≥44px（图标按钮至少 `h-10 w-10`）
+- 手机弹层一律用 `components/ui/sheet.tsx`（底部抽屉），不用居中 modal
+- 深层页（生成页/详情页/向导）：顶部用 `components/layout/page-header.tsx`（← + 标题，仅手机显示），底部 Tab 由 MobileNav 按路由前缀自动隐藏；页面主按钮吸底（`fixed bottom-0` + `pb-[calc(0.75rem+env(safe-area-inset-bottom))]` + 内容 `pb-24 lg:pb-0`）
+- 列表页保留底部 Tab；桌面端（lg:）保持紧凑布局，Header/Breadcrumb 为桌面专属
+- 微信 WebView 适配见 `lib/wechat.ts`：下载用"长按保存"引导，复制必须校验真实结果
+
 ### 后端
 
 - API 版本前缀 `/api/v1/`
