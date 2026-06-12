@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, Integer
@@ -136,6 +136,36 @@ async def _get_latest_generation(
     return row
 
 
+# 节日营销日历（公历固定日；提前 lead_days 天开始在今日工作台提示做节日内容）。
+# 农历节日（春节/端午/中秋）因需农历换算暂不纳入，后续可补。
+FESTIVALS = [
+    (1, 1, "元旦", 7),
+    (2, 14, "情人节", 7),
+    (3, 8, "妇女节", 5),
+    (5, 1, "劳动节", 10),
+    (6, 1, "儿童节", 5),
+    (10, 1, "国庆节", 10),
+    (11, 11, "双十一", 7),
+    (12, 25, "圣诞节", 7),
+]
+
+
+def _upcoming_festival(now: datetime):
+    """返回最近一个进入提示窗口的节日 (名称, 距今天数)；无则 None。"""
+    today = now.date()
+    best = None
+    for mo, day, name, lead in FESTIVALS:
+        for yr in (today.year, today.year + 1):
+            try:
+                fdate = date(yr, mo, day)
+            except ValueError:
+                continue
+            delta = (fdate - today).days
+            if 0 <= delta <= lead and (best is None or delta < best[1]):
+                best = (name, delta)
+    return best
+
+
 async def _build_rules(
     db: AsyncSession,
     store: Store,
@@ -146,6 +176,27 @@ async def _build_rules(
 ) -> tuple[list[DashboardRecommendation], str, list[str]]:
     recs: list[DashboardRecommendation] = []
     tips: list[str] = []
+
+    # Rule 0: 节日临近——提前做节日内容（高优先，时效性强，是"今日工作台"实时感的来源）
+    fest = _upcoming_festival(datetime.now(BUSINESS_TZ))
+    if fest:
+        name, days = fest
+        when = "就是今天" if days == 0 else f"还有 {days} 天"
+        recs.append(
+            DashboardRecommendation(
+                id="festival",
+                title=f"{name}{when}，提前备好节日内容",
+                description=f"{name}临近，提前生成节日朋友圈/活动，抢占客户注意力。",
+                action_label="做节日内容",
+                action_url="/dashboard/workbench",
+                action_type="generate_copywriting",
+                priority="high",
+                suggested_payload={
+                    "prompt_key": "copywriting.moments",
+                    "user_intent": f"写一条{name}主题的朋友圈，结合门店活动和氛围",
+                },
+            )
+        )
 
     # Rule 1: 资料不完整优先提醒
     if completeness < 70:
