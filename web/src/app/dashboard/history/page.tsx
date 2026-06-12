@@ -9,6 +9,7 @@ import { CopyButton } from "@/components/generators/copy-button";
 import { Star, Clock, ChevronLeft, ChevronRight } from "lucide-react";
 import { typeLabel, subTypeLabel } from "@/lib/history-labels";
 import { markdownToPlainText } from "@/lib/utils";
+import { isWeChat } from "@/lib/wechat";
 import { useToast } from "@/components/ui/toast";
 
 export default function HistoryPage() {
@@ -186,6 +187,10 @@ export default function HistoryPage() {
           </div>
           <button
             onClick={async () => {
+              if (isWeChat()) {
+                toast("微信内无法下载文件，请用手机浏览器或电脑打开后导出", "error");
+                return;
+              }
               try {
                 const blob = await api.exportGenerations(typeFilter || undefined);
                 const url = URL.createObjectURL(blob);

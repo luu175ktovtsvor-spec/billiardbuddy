@@ -12,6 +12,7 @@ import type { GenerationHistoryItem } from "@/types/generation-history";
 import { CopyButton } from "@/components/generators/copy-button";
 import { typeLabel, subTypeLabel, continueHref } from "@/lib/history-labels";
 import { downloadImage, safeFileName } from "@/lib/utils";
+import { isWeChat } from "@/lib/wechat";
 import { useToast } from "@/components/ui/toast";
 
 const REPURPOSE_PLATFORMS = [
@@ -32,6 +33,9 @@ export default function HistoryDetailPage() {
   const [error, setError] = useState("");
   const [repurposing, setRepurposing] = useState<string | null>(null);
   const [repurposeResult, setRepurposeResult] = useState<{ label: string; content: string } | null>(null);
+  // 微信 WebView 不支持 a[download]:改为"长按图片保存"引导
+  const [inWeChat, setInWeChat] = useState(false);
+  useEffect(() => setInWeChat(isWeChat()), []);
 
   const fetchDetail = useCallback(async () => {
     setLoading(true);
@@ -228,17 +232,23 @@ export default function HistoryDetailPage() {
           <div className="flex flex-col items-center gap-4">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={api.resolveUrl(item.result!)} alt="生成的海报" className="max-w-full rounded-lg" />
-            <button
-              type="button"
-              onClick={() => {
-                const stamp = (item.created_at || "").slice(0, 10).replace(/-/g, "");
-                downloadImage(api.resolveUrl(item.result!), safeFileName(`海报_${stamp}`));
-              }}
-              className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
-            >
-              <Download className="h-4 w-4" />
-              下载图片
-            </button>
+            {inWeChat ? (
+              <p className="rounded-md bg-slate-100 px-4 py-2 text-sm text-slate-600">
+                长按上方图片 → 保存图片
+              </p>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  const stamp = (item.created_at || "").slice(0, 10).replace(/-/g, "");
+                  downloadImage(api.resolveUrl(item.result!), safeFileName(`海报_${stamp}`));
+                }}
+                className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
+              >
+                <Download className="h-4 w-4" />
+                下载图片
+              </button>
+            )}
           </div>
         ) : (
           <div className="prose prose-sm prose-slate max-w-none">
