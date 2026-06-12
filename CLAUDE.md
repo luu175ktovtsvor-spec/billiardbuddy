@@ -283,6 +283,13 @@ journalctl -u billiards-backend -n 50 --no-pager
 | 对话历史截断（只保留最近 3 轮） | ✅ |
 | 服务器部署（git + deploy_us.sh + SSL） | ✅ |
 | 生产域名（zzyppz.cn + HTTPS） | ✅ |
+| 业务时区单一来源（core/timezone.py，"今天"一律北京时间） | ✅ |
+| 微信 WebView 适配（复制真实校验/图片长按保存引导/CSV 提示） | ✅ |
+| 配额商业闭环（429 透传提额引导 + 额度用尽禁用生成按钮） | ✅ |
+| 价格直出（资料已填+允许写价格→真实价格进文案；prompt_engine 单点策略） | ✅ |
+| 工作台卡片搜索 + 默认岗位跟随 my_role | ✅ |
+| 数据库每日备份（cron 4:30 + /var/backups/billiards 保留7天） | ✅ |
+| 前端错误上报（POST /api/v1/logs/client，journalctl 查 client-error） | ✅ |
 
 ## 行业知识体系
 
