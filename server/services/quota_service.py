@@ -2,12 +2,12 @@
 
 import logging
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.timezone import BUSINESS_TZ
 from models.quota import UsageQuota
 
 logger = logging.getLogger(__name__)
@@ -28,10 +28,6 @@ def token_ceiling(generation_limit: int) -> int:
 # 开通套餐后由 plan 的限额覆盖；管理后台也可单店调整。
 DEFAULT_GENERATION_LIMIT = 30
 DEFAULT_TOKENS_LIMIT = token_ceiling(DEFAULT_GENERATION_LIMIT)
-
-# 业务时区（月度配额按中国时区重置，避免 UTC 月底错位数小时）
-BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
-
 
 def _period_start_now() -> datetime:
     now = datetime.now(BUSINESS_TZ)
