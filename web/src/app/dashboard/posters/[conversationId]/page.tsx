@@ -5,6 +5,7 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/auth-context";
 import { api } from "@/lib/api";
 import { getErrorMessage, downloadImage, safeFileName } from "@/lib/utils";
+import { isWeChat } from "@/lib/wechat";
 import { ApiError } from "@/types/api";
 import type { SizeOption, GeneratedImage } from "@/types/poster";
 import type { StoreResponse } from "@/types/store";
@@ -109,6 +110,9 @@ function ConversationPageInner() {
   const [error, setError] = useState("");
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  // 微信 WebView 不支持 a[download]:下载入口降级为"长按图片保存"引导
+  const [inWeChat, setInWeChat] = useState(false);
+  useEffect(() => setInWeChat(isWeChat()), []);
 
   /* Refs */
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -452,11 +456,16 @@ function ConversationPageInner() {
                               </button>
                               <button
                                 type="button"
-                                onClick={() => handleDownload(img)}
+                                onClick={() =>
+                                  inWeChat
+                                    ? setLightboxImage(api.resolveUrl(img.poster_url))
+                                    : handleDownload(img)
+                                }
+                                title={inWeChat ? "微信内请长按图片保存" : undefined}
                                 className="px-3 py-1.5 rounded text-xs bg-slate-50 text-slate-600 border border-slate-200 hover:bg-slate-100"
                               >
                                 <Download className="h-3 w-3 inline mr-1" />
-                                下载
+                                {inWeChat ? "保存图片" : "下载"}
                               </button>
                             </div>
                           </div>
@@ -769,14 +778,20 @@ function ConversationPageInner() {
             >
               <X className="h-4 w-4" />
             </button>
-            <a
-              href={lightboxImage}
-              download
-              className="absolute bottom-4 right-4 flex items-center gap-1.5 rounded-md bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-lg hover:bg-slate-50"
-            >
-              <Download className="h-4 w-4" />
-              下载
-            </a>
+            {inWeChat ? (
+              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-md bg-black/70 px-4 py-2 text-sm font-medium text-white shadow-lg">
+                长按图片 → 保存图片
+              </div>
+            ) : (
+              <a
+                href={lightboxImage}
+                download
+                className="absolute bottom-4 right-4 flex items-center gap-1.5 rounded-md bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-lg hover:bg-slate-50"
+              >
+                <Download className="h-4 w-4" />
+                下载
+              </a>
+            )}
           </div>
         </div>
       )}
