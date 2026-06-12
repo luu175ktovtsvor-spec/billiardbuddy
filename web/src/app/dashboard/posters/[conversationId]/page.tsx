@@ -105,6 +105,7 @@ function ConversationPageInner() {
   const [overlayText, setOverlayText] = useState("");
   const [quotaVersion, setQuotaVersion] = useState(0);
   const [genStage, setGenStage] = useState(0);
+  const [genSeconds, setGenSeconds] = useState(0);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
@@ -217,17 +218,24 @@ function ConversationPageInner() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [conv.messages]);
 
-  /* 等待阶段文案推进（每 9 秒进一档，停在最后一档） */
+  /* 等待阶段文案推进（每 9 秒进一档，停在最后一档）+ 真实已用时秒数。
+   * 只有阶段文案会在 27 秒后停在"马上就好"——再干等 20 多秒就是欺骗感;
+   * 跳动的真实秒数让用户确信没卡住。 */
   useEffect(() => {
     if (!generating) {
       setGenStage(0);
+      setGenSeconds(0);
       return;
     }
-    const timer = setInterval(
+    const stageTimer = setInterval(
       () => setGenStage((s) => Math.min(s + 1, GEN_STAGES.length - 1)),
       9000,
     );
-    return () => clearInterval(timer);
+    const secondsTimer = setInterval(() => setGenSeconds((s) => s + 1), 1000);
+    return () => {
+      clearInterval(stageTimer);
+      clearInterval(secondsTimer);
+    };
   }, [generating]);
 
   const scrollToBottom = useCallback(() => {
@@ -485,6 +493,7 @@ function ConversationPageInner() {
                   <div className="flex items-center gap-2">
                     <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
                     <span className="text-sm text-slate-500">{GEN_STAGES[genStage]}</span>
+                    <span className="ml-auto text-xs tabular-nums text-slate-400">{genSeconds}s</span>
                   </div>
                   <p className="mt-1.5 pl-6 text-xs text-slate-400">高清图通常需要 30-60 秒，可以先做别的，结果会留在这里</p>
                 </div>

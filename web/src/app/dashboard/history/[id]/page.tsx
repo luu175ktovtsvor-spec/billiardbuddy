@@ -11,7 +11,7 @@ import { ApiError } from "@/types/api";
 import type { GenerationHistoryItem } from "@/types/generation-history";
 import { CopyButton } from "@/components/generators/copy-button";
 import { typeLabel, subTypeLabel, continueHref } from "@/lib/history-labels";
-import { downloadImage, safeFileName } from "@/lib/utils";
+import { downloadImage, safeFileName, formatDateTime } from "@/lib/utils";
 import { isWeChat } from "@/lib/wechat";
 import { useToast } from "@/components/ui/toast";
 
@@ -140,7 +140,7 @@ export default function HistoryDetailPage() {
             </span>
           )}
           <span className="text-xs text-slate-400">
-            {new Date(item.created_at).toLocaleString("zh-CN")}
+            {formatDateTime(item.created_at)}
           </span>
         </div>
       </div>
