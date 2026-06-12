@@ -271,26 +271,6 @@ function TaskExecutionPageInner() {
     }
   };
 
-  /* ─── save as template ─── */
-  const handleSaveAsTemplate = () => {
-    try {
-      const templates = JSON.parse(localStorage.getItem("my_templates") || "[]");
-      templates.push({
-        id: Date.now().toString(),
-        title: card?.title || intent.slice(0, 12),
-        intent: intent.trim(),
-        role,
-        cardId: card?.id,
-        createdAt: new Date().toISOString(),
-      });
-      localStorage.setItem("my_templates", JSON.stringify(templates));
-      setShowMoreActions(false);
-      toast("已存为我的模板，首页点「使用」一键重跑", "success");
-    } catch {
-      toast("保存失败，请重试", "error");
-    }
-  };
-
   /* ─── repurpose ─── */
   const handleRepurpose = async (platform: string) => {
     if (!result?.generation_id) return;
@@ -837,13 +817,6 @@ function TaskExecutionPageInner() {
                           className="flex items-center gap-2 w-full text-left px-4 py-2 text-sm hover:bg-slate-50 rounded-t-lg"
                         >
                           <Pencil className="h-3 w-3" /> 编辑
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleSaveAsTemplate}
-                          className="flex items-center gap-2 w-full text-left px-4 py-2 text-sm hover:bg-slate-50"
-                        >
-                          <Sparkles className="h-3 w-3" /> 存为我的模板
                         </button>
                         <Link
                           href={`/dashboard/posters/new?prompt=${encodeURIComponent(

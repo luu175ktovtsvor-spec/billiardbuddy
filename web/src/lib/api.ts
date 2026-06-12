@@ -6,6 +6,7 @@ import type { GenerateActivityRequest, GenerateCopywritingRequest, GenerateOpera
 import type { ImageGenerateRequest, ImageGenerateResponse, SizeOption } from "@/types/poster";
 import type {
   GenerationHistoryListResponse,
+  GenerationHistoryItem,
   ListGenerationsParams,
 } from "@/types/generation-history";
 import type { DashboardTodayResponse } from "@/types/dashboard";
@@ -426,6 +427,10 @@ class ApiClient {
     if (params?.search) searchParams.set("search", params.search);
     const qs = searchParams.toString();
     return this.request<GenerationHistoryListResponse>("GET", `/api/v1/generations${qs ? `?${qs}` : ""}`);
+  }
+
+  async getGeneration(id: string): Promise<GenerationHistoryItem> {
+    return this.request<GenerationHistoryItem>("GET", `/api/v1/generations/${id}`);
   }
 
   async toggleFavorite(id: string): Promise<{ is_favorite: boolean }> {

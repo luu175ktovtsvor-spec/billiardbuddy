@@ -2,93 +2,91 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { Bookmark, Plus, X, ChevronRight, Sparkles, Trash2 } from "lucide-react";
+import { Star, Sparkles, ChevronRight } from "lucide-react";
 import { ROLE_TASKS } from "@/lib/role-workbench-config";
+import { api } from "@/lib/api";
+import { markdownToPlainText } from "@/lib/utils";
+import type { GenerationHistoryItem } from "@/types/generation-history";
 
-interface MyTemplate {
-  id: string;
-  title: string;
-  intent: string;
-  role: string;
-  /** 关联的任务卡 ID：有则"使用"直达卡片页带上需求，一键重跑 */
-  cardId?: string;
-  createdAt: string;
-}
-
-/** 解析模板关联的任务卡。无 cardId 的旧模板返回 null（跳工作台首页让用户选卡），
- * 不能兜底到岗位第一张卡——卡片页落地会用该卡的 prompt_key 自动生成并扣配额，
- * 用错场景模板内容必然跑偏 */
-function resolveCardId(t: MyTemplate): string | null {
-  return t.cardId || null;
-}
-
-const STORAGE_KEY = "my_templates";
-
-function loadTemplates(): MyTemplate[] {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-  } catch {
-    return [];
+/** 按 prompt_key 找回原任务卡，得到友好标题 + 可重跑的卡片 ID。
+ * 找不到（自由输入、非工作台类型）则返回 null，不兜底到第一张卡——
+ * 用错场景重跑内容必然跑偏。 */
+function resolveCard(item: GenerationHistoryItem): { id: string; title: string } | null {
+  const params = (item.input_params || {}) as Record<string, unknown>;
+  const promptKey = typeof params.prompt_key === "string" ? params.prompt_key : "";
+  if (!promptKey) return null;
+  for (const tasks of Object.values(ROLE_TASKS)) {
+    const card = tasks.find((t) => t.promptKey === promptKey);
+    if (card) return { id: card.id, title: card.title };
   }
+  return null;
 }
 
-function saveTemplates(templates: MyTemplate[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(templates));
+/** 收藏内容的展示标题：优先卡片名，其次需求意图首句，最后兜底。 */
+function favoriteTitle(item: GenerationHistoryItem, card: { title: string } | null): string {
+  if (card) return card.title;
+  const params = (item.input_params || {}) as Record<string, unknown>;
+  const intent = typeof params.user_intent === "string" ? params.user_intent : "";
+  if (intent) return intent.slice(0, 16);
+  return "收藏的内容";
+}
+
+/** 重跑链接：仅当能找回原卡片且有原始意图时才给出，保证重跑走同一管道、不跑偏。 */
+function rerunHref(item: GenerationHistoryItem, card: { id: string } | null): string | null {
+  if (!card) return null;
+  const params = (item.input_params || {}) as Record<string, unknown>;
+  const intent = typeof params.user_intent === "string" ? params.user_intent : "";
+  if (!intent) return null;
+  return `/dashboard/workbench/${card.id}?intent=${encodeURIComponent(intent)}`;
 }
 
 export function MyTemplates() {
-  const [templates, setTemplates] = useState<MyTemplate[]>([]);
-  const [showAdd, setShowAdd] = useState(false);
-  const [newTitle, setNewTitle] = useState("");
-  const [newIntent, setNewIntent] = useState("");
-  const [newRole, setNewRole] = useState("manager");
+  const [items, setItems] = useState<GenerationHistoryItem[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setTemplates(loadTemplates());
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.listGenerations({ is_favorite: true, page_size: 6 });
+        if (!cancelled) setItems(res.items);
+      } catch {
+        if (!cancelled) setItems([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const handleAdd = () => {
-    if (!newTitle.trim() || !newIntent.trim()) return;
-    const newTemplate: MyTemplate = {
-      id: Date.now().toString(),
-      title: newTitle.trim(),
-      intent: newIntent.trim(),
-      role: newRole,
-      createdAt: new Date().toISOString(),
-    };
-    const updated = [...templates, newTemplate];
-    saveTemplates(updated);
-    setTemplates(updated);
-    setNewTitle("");
-    setNewIntent("");
-    // 保持表单打开，方便连续添加
-  };
-
-  const handleDelete = (id: string) => {
-    const updated = templates.filter((t) => t.id !== id);
-    saveTemplates(updated);
-    setTemplates(updated);
-  };
-
-  if (templates.length === 0 && !showAdd) {
+  if (loading) {
     return (
       <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
-        <div className="px-4 py-3 border-b border-slate-100">
-          <div className="flex items-center gap-2">
-            <Bookmark className="h-5 w-5 text-indigo-600" />
-            <h3 className="font-semibold text-slate-900">我的模板</h3>
-          </div>
+        <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2">
+          <Star className="h-5 w-5 text-amber-500" />
+          <h3 className="font-semibold text-slate-900">我的收藏</h3>
+        </div>
+        <div className="p-6 text-center text-sm text-slate-400">加载中…</div>
+      </div>
+    );
+  }
+
+  if (items.length === 0) {
+    return (
+      <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
+        <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2">
+          <Star className="h-5 w-5 text-amber-500" />
+          <h3 className="font-semibold text-slate-900">我的收藏</h3>
         </div>
         <div className="p-6 text-center">
-          <p className="text-sm text-slate-500 mb-3">保存常用需求，下次直接用</p>
-          <button
-            type="button"
-            onClick={() => setShowAdd(true)}
-            className="inline-flex items-center gap-1.5 rounded-md bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-600 hover:bg-indigo-100"
-          >
-            <Plus className="h-4 w-4" />
-            添加第一个模板
-          </button>
+          <p className="text-sm text-slate-500 mb-1">还没有收藏内容</p>
+          <p className="text-xs text-slate-400">
+            生成满意的内容后点
+            <Star className="inline h-3 w-3 text-amber-500 mx-0.5" />
+            收藏，下次在这里一键复用
+          </p>
         </div>
       </div>
     );
@@ -96,105 +94,45 @@ export function MyTemplates() {
 
   return (
     <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
-      <div className="px-4 py-3 border-b border-slate-100">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Bookmark className="h-5 w-5 text-indigo-600" />
-            <h3 className="font-semibold text-slate-900">我的模板</h3>
-            <span className="text-xs text-slate-400">{templates.length}个</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowAdd(!showAdd)}
-            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-indigo-600 hover:bg-indigo-50"
-          >
-            <Plus className="h-3 w-3" />
-            添加
-          </button>
+      <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Star className="h-5 w-5 text-amber-500" />
+          <h3 className="font-semibold text-slate-900">我的收藏</h3>
+          <span className="text-xs text-slate-400">{items.length}条</span>
         </div>
+        <Link
+          href="/dashboard/history?favorite=1"
+          className="inline-flex items-center gap-0.5 text-xs text-slate-400 hover:text-indigo-600"
+        >
+          全部
+          <ChevronRight className="h-3 w-3" />
+        </Link>
       </div>
 
-      {/* 添加模板表单 */}
-      {showAdd && (
-        <div className="border-b border-slate-100 p-4 bg-slate-50">
-          <div className="space-y-3">
-            <input
-              type="text"
-              value={newTitle}
-              onChange={(e) => setNewTitle(e.target.value)}
-              placeholder="模板名称（如：每日朋友圈）"
-              className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
-            />
-            <input
-              type="text"
-              value={newIntent}
-              onChange={(e) => setNewIntent(e.target.value)}
-              placeholder="需求描述（如：帮我写一条朋友圈，语气轻松幽默）"
-              className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
-            />
-            <select
-              value={newRole}
-              onChange={(e) => setNewRole(e.target.value)}
-              className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
-            >
-              <option value="manager">店长</option>
-              <option value="assistant_manager">助教管理</option>
-              <option value="coach">教练</option>
-              <option value="frontdesk">前厅</option>
-              <option value="boss">老板</option>
-              <option value="operator">运营</option>
-            </select>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={handleAdd}
-                disabled={!newTitle.trim() || !newIntent.trim()}
-                className="flex-1 rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
-              >
-                保存
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowAdd(false)}
-                className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
-              >
-                取消
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 模板列表 */}
       <div className="divide-y divide-slate-50">
-        {templates.map((t) => (
-          <div key={t.id} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors">
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-slate-900">{t.title}</p>
-              <p className="text-xs text-slate-500 truncate">{t.intent}</p>
+        {items.map((item) => {
+          const card = resolveCard(item);
+          const title = favoriteTitle(item, card);
+          const href = rerunHref(item, card);
+          const preview = markdownToPlainText(item.content || item.result || "").slice(0, 50);
+          return (
+            <div key={item.id} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-slate-900 truncate">{title}</p>
+                {preview && <p className="text-xs text-slate-500 truncate">{preview}</p>}
+              </div>
+              {href && (
+                <Link
+                  href={href}
+                  className="shrink-0 inline-flex items-center gap-1 rounded-md bg-indigo-50 px-2.5 py-1.5 text-xs font-medium text-indigo-600 hover:bg-indigo-100 transition-colors"
+                >
+                  <Sparkles className="h-3 w-3" />
+                  再写一条
+                </Link>
+              )}
             </div>
-            <Link
-              href={(() => {
-                const cardId = resolveCardId(t);
-                // 直达卡片页并带上需求（工作台首页不读 intent，旧链接是死链）
-                return cardId
-                  ? `/dashboard/workbench/${cardId}?intent=${encodeURIComponent(t.intent)}`
-                  : `/dashboard/workbench`;
-              })()}
-              className="shrink-0 inline-flex items-center gap-1 rounded-md bg-indigo-50 px-2.5 py-1.5 text-xs font-medium text-indigo-600 hover:bg-indigo-100 transition-colors"
-            >
-              <Sparkles className="h-3 w-3" />
-              使用
-            </Link>
-            <button
-              type="button"
-              onClick={() => handleDelete(t.id)}
-              className="shrink-0 p-1 text-slate-400 hover:text-red-500 transition-colors"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
