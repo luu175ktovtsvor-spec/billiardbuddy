@@ -94,7 +94,7 @@ export function ContentCalendar() {
     : 0;
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+    <div className="rounded-2xl bg-white">
       <div className="border-b border-slate-100 px-4 py-3">
         <div className="flex items-center gap-2">
           <Calendar className="h-5 w-5 text-brand-600" />

@@ -9,10 +9,12 @@ import {
   Clock,
   Settings,
   Users,
+  MessageCircle,
 } from "lucide-react";
 
 const NAV = [
   { href: "/dashboard", icon: LayoutDashboard, label: "首页" },
+  { href: "/dashboard/chat", icon: MessageCircle, label: "AI 助手" },
   { href: "/dashboard/workbench", icon: Sparkles, label: "AI 工作台" },
   { href: "/dashboard/posters", icon: ImageIcon, label: "AI 生图" },
   { href: "/dashboard/history", icon: Clock, label: "生成历史" },
@@ -20,23 +22,23 @@ const NAV = [
   { href: "/dashboard/store-settings/members", icon: Users, label: "团队成员" },
 ];
 
+/* 桌面侧边栏:iOS/macOS 系统设置式浅灰侧栏——
+ * 选中项=白色圆角块+tint 蓝图标,未选中=灰字,无边框无深色块。 */
 export function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <aside className="hidden lg:flex lg:w-60 lg:flex-col lg:fixed lg:inset-y-0 bg-sidebar text-white">
+    <aside className="hidden lg:flex lg:w-60 lg:flex-col lg:fixed lg:inset-y-0 border-r border-black/5 bg-sidebar">
       {/* Logo */}
       <div className="flex h-16 items-center gap-3 px-6">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-500">
-          <span className="text-sm font-bold text-white">AI</span>
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600">
+          <span className="text-sm">🎱</span>
         </div>
-        <span className="text-sm font-semibold text-white">球房运营助手</span>
+        <span className="text-sm font-semibold text-slate-900">球房运营助手</span>
       </div>
 
-      <div className="h-px bg-white/10" />
-
       {/* Navigation */}
-      <nav className="flex-1 space-y-1 px-3 py-4">
+      <nav className="flex-1 space-y-0.5 px-3 py-2">
         {NAV.map((item) => {
           const isActive =
             item.href === "/dashboard"
@@ -46,13 +48,13 @@ export function Sidebar() {
             <Link
               key={item.href}
               href={item.href}
-              className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
+              className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors ${
                 isActive
-                  ? "bg-white/10 text-white"
-                  : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
+                  ? "bg-white font-medium text-slate-900 shadow-sm"
+                  : "text-slate-600 hover:bg-sidebar-hover"
               }`}
             >
-              <item.icon className="h-4 w-4" />
+              <item.icon className={`h-4 w-4 ${isActive ? "text-brand-600" : "text-slate-400"}`} />
               {item.label}
             </Link>
           );
@@ -60,8 +62,8 @@ export function Sidebar() {
       </nav>
 
       {/* Bottom */}
-      <div className="border-t border-white/10 p-4">
-        <p className="text-xs text-slate-500">球房 AI 运营助手 v1.0</p>
+      <div className="p-4">
+        <p className="text-xs text-slate-400">球房 AI 运营助手 v1.0</p>
       </div>
     </aside>
   );

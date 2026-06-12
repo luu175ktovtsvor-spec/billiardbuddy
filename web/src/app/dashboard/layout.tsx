@@ -22,7 +22,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   if (isLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50">
+      <div className="flex min-h-screen items-center justify-center bg-[#F2F2F7]">
         <p className="text-slate-400">加载中...</p>
       </div>
     );
@@ -33,7 +33,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-[#F2F2F7]">
       <ClientErrorReporter />
       <Sidebar />
       <div className="lg:pl-60">

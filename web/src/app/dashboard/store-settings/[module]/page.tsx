@@ -301,7 +301,7 @@ function formDataToPayload(form: FormData) {
 }
 
 /* 手机触控规格：input 高 44px + 15px 字号；textarea 保持多行内边距 */
-const INPUT_BASE = "w-full rounded-lg border border-slate-200 bg-white px-3 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20";
+const INPUT_BASE = "w-full rounded-lg bg-white px-3 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20";
 const INPUT_CLASS = `${INPUT_BASE} h-11`;
 const TEXTAREA_CLASS = `${INPUT_BASE} py-2.5`;
 
@@ -437,7 +437,7 @@ function BasicModule({
               onChange={handleLogoUpload} className="hidden" />
             <button type="button" disabled={logoUploading}
               onClick={() => logoInputRef.current?.click()}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+              className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">
               <Upload className="h-3.5 w-3.5" />
               {logoUploading ? "上传中..." : "上传 Logo"}
             </button>
@@ -458,7 +458,7 @@ function BasicModule({
               onChange={handleQrcodeUpload} className="hidden" />
             <button type="button" disabled={qrcodeUploading}
               onClick={() => qrcodeInputRef.current?.click()}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+              className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">
               <Upload className="h-3.5 w-3.5" />
               {qrcodeUploading ? "上传二维码" : "上传二维码"}
             </button>

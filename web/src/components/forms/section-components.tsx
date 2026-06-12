@@ -4,7 +4,7 @@ export function Section({ title, icon: Icon, children }: {
   children: React.ReactNode;
 }) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4 sm:p-6 shadow-sm">
+    <div className="rounded-lg bg-white p-4 sm:p-6 shadow-sm">
       <div className="mb-4 flex items-center gap-2 border-b border-slate-100 pb-3">
         <Icon className="h-4 w-4 text-slate-500" />
         <h3 className="text-sm font-semibold text-slate-700">{title}</h3>
@@ -38,7 +38,7 @@ export function Toggle({ label, checked, onChange }: {
     <label className="flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 cursor-pointer hover:bg-slate-50">
       <input type="checkbox" checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 rounded border-slate-300 bg-white text-brand-600 focus:ring-2 focus:ring-brand-500/20" />
+        className="h-4 w-4 rounded border-slate-300 bg-[#F2F2F7] text-brand-600 focus:ring-2 focus:ring-brand-500/20" />
       <span className="text-sm text-slate-700">{label}</span>
     </label>
   );

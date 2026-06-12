@@ -39,7 +39,7 @@ export function Header() {
         <button
           type="button"
           onClick={() => setOpen(!open)}
-          className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+          className="flex items-center gap-2 rounded-lg bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
         >
           <Store className="h-4 w-4 text-slate-400" />
           <span className="max-w-[160px] truncate font-medium">
@@ -49,7 +49,7 @@ export function Header() {
         </button>
 
         {open && (
-          <div className="absolute left-0 top-full mt-2 w-64 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg">
+          <div className="absolute left-0 top-full mt-2 w-64 rounded-xl bg-white p-1.5 shadow-lg">
             {stores.length > 0 ? (
               stores.map((s) => (
                 <button

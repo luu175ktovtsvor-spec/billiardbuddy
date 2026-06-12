@@ -126,7 +126,7 @@ export default function CollaborateGalleryPage() {
             key={s.name}
             type="button"
             onClick={() => goRun(s)}
-            className="flex items-start gap-3.5 rounded-2xl border border-slate-200 bg-white p-4 text-left transition-all duration-200 hover:border-brand-200 hover:shadow-md active:scale-[0.98]"
+            className="flex items-start gap-3.5 rounded-2xl bg-white p-4 text-left transition-all duration-200 hover:border-brand-200 hover:shadow-md active:scale-[0.98]"
           >
             <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
               <s.icon className="h-6 w-6" />

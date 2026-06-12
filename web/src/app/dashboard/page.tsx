@@ -147,7 +147,7 @@ export default function DashboardPage() {
 
       {/* 顶部欢迎区：带名字/店名/时段的问候，"工具"变"搭档" */}
       <div className="mb-6">
-        <h2 className="text-xl font-bold text-slate-900">
+        <h2 className="text-[28px] font-bold tracking-tight text-slate-900 lg:text-2xl">
           {hourGreeting()}
           {user?.name ? `，${user.name}` : ""}
         </h2>
@@ -261,7 +261,7 @@ export default function DashboardPage() {
                         <button
                           key={card.id}
                           onClick={() => router.push(`/dashboard/workbench/${card.id}`)}
-                          className="flex w-44 shrink-0 items-start gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-left hover:border-brand-200 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 active:scale-[0.98] cursor-pointer lg:w-auto"
+                          className="flex w-44 shrink-0 items-start gap-3 rounded-2xl bg-white p-4 text-left hover:border-brand-200 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 active:scale-[0.98] cursor-pointer lg:w-auto"
                         >
                           <SceneIconTile hint={card.title} size="sm" />
                           <div className="min-w-0 flex-1">
@@ -281,7 +281,7 @@ export default function DashboardPage() {
               )}
 
               {/* 门店状态卡片 */}
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="rounded-2xl bg-white p-5 shadow-sm">
                 <div className="flex items-center justify-between gap-2 mb-4">
                   <div className="flex min-w-0 items-center gap-2">
                     <Store className="h-5 w-5 shrink-0 text-brand-600" />
@@ -345,7 +345,7 @@ export default function DashboardPage() {
 
               {/* 订阅状态卡片 */}
               {quota && (
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="rounded-2xl bg-white p-5 shadow-sm">
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
                       <Crown className="h-5 w-5 text-amber-500" />
