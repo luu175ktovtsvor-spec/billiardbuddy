@@ -100,6 +100,9 @@ function TaskExecutionPageInner() {
   const [showMoreActions, setShowMoreActions] = useState(false);
   const [repurposing, setRepurposing] = useState(false);
   const [quotaVersion, setQuotaVersion] = useState(0);
+  // null=未知(不禁用);0=用尽 → 禁用生成按钮并显示提额出口
+  const [quotaRemaining, setQuotaRemaining] = useState<number | null>(null);
+  const quotaExhausted = quotaRemaining !== null && quotaRemaining <= 0;
   const [badNoteOpen, setBadNoteOpen] = useState(false);
   const [isFavorited, setIsFavorited] = useState(false);
 
@@ -359,7 +362,7 @@ function TaskExecutionPageInner() {
       </div>
 
       {/* ─── Quota（试用/套餐 · 实时余量 · 提额引导）─── */}
-      <QuotaBadge refreshKey={quotaVersion} />
+      <QuotaBadge refreshKey={quotaVersion} onQuota={(q) => setQuotaRemaining(q.remaining)} />
 
       {/* ─── Input section ─── */}
       <div
@@ -538,14 +541,16 @@ function TaskExecutionPageInner() {
           />
         </div>
 
-        {/* Generate button */}
+        {/* Generate button：额度用尽时直接禁用并给出口,不让用户点了再撞 429 */}
         <button
           type="button"
-          disabled={generating || !intent.trim()}
+          disabled={generating || !intent.trim() || quotaExhausted}
           onClick={() => doGenerate()}
           className="flex w-full items-center justify-center gap-2 rounded-md bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-150 active:scale-[0.98]"
         >
-          {generating ? (
+          {quotaExhausted ? (
+            <>本月额度已用完 · 联系您的服务商提升，当月立即生效</>
+          ) : generating ? (
             <>
               <Loader2 className="h-4 w-4 animate-spin" />
               AI 正在生成中...

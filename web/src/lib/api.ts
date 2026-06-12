@@ -305,7 +305,7 @@ class ApiClient {
                   window.location.href = "/login";
                 }
               }
-              onError(`请求失败 (${retryRes.status})`);
+              onError(await this.friendlyStreamError(retryRes));
               return;
             }
             return this._consumeSSEStream(retryRes, onToken, onDone, onError);
@@ -317,7 +317,7 @@ class ApiClient {
             window.location.href = "/login";
           }
         }
-        onError(`请求失败 (${res.status})`);
+        onError(await this.friendlyStreamError(res));
         return;
       }
 
@@ -325,6 +325,23 @@ class ApiClient {
     } catch {
       onError("网络异常，请检查后重试");
     }
+  }
+
+  /** SSE 建流失败时给用户可读文案。429 必须透传后端的提额引导
+   * (后端文案带具体上限和"联系服务商",别降级成裸状态码劝退用户)。 */
+  private async friendlyStreamError(res: Response): Promise<string> {
+    let detail = "";
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === "string") detail = body.detail;
+    } catch {
+      // 非 JSON 响应,走默认文案
+    }
+    if (res.status === 429) {
+      return detail || "本月生成次数已达上限。如需提升额度，请联系您的服务商";
+    }
+    if (res.status >= 400 && res.status < 500 && detail) return detail;
+    return `生成失败，请稍后重试 (${res.status})`;
   }
 
   private async _consumeSSEStream(
