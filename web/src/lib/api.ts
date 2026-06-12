@@ -450,6 +450,11 @@ class ApiClient {
     return this.request<GenerationHistoryItem>("GET", `/api/v1/generations/${id}`);
   }
 
+  /** 前端错误上报(fire-and-forget,失败静默) */
+  async reportClientError(payload: { message: string; stack?: string; url?: string }): Promise<void> {
+    await this.request("POST", "/api/v1/logs/client", payload);
+  }
+
   async toggleFavorite(id: string): Promise<{ is_favorite: boolean }> {
     return this.request<{ is_favorite: boolean }>("PATCH", `/api/v1/generations/${id}/favorite`);
   }
