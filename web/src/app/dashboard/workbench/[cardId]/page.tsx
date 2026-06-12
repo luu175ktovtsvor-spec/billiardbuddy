@@ -6,7 +6,7 @@ import { useAuth } from "@/hooks/auth-context";
 import { api } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { getErrorMessage, markdownToPlainText } from "@/lib/utils";
+import { getErrorMessage, markdownToPlainText, formatDateTime } from "@/lib/utils";
 import type {
   GenerationResponse,
   WorkbenchRole,
@@ -622,7 +622,7 @@ function TaskExecutionPageInner() {
                   生成结果
                 </p>
                 <span className="text-xs text-slate-400">
-                  {new Date(result.created_at).toLocaleString("zh-CN")}
+                  {formatDateTime(result.created_at)}
                 </span>
               </div>
               {intent && (

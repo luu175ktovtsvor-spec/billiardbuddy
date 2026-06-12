@@ -8,7 +8,7 @@ import type { GenerationHistoryItem, GenerationType } from "@/types/generation-h
 import { CopyButton } from "@/components/generators/copy-button";
 import { Star, Clock, ChevronLeft, ChevronRight } from "lucide-react";
 import { typeLabel, subTypeLabel } from "@/lib/history-labels";
-import { markdownToPlainText } from "@/lib/utils";
+import { markdownToPlainText, formatDateTime } from "@/lib/utils";
 import { isWeChat } from "@/lib/wechat";
 import { useToast } from "@/components/ui/toast";
 
@@ -246,7 +246,7 @@ export default function HistoryPage() {
                     </span>
                   )}
                   <span className="text-xs text-slate-400">
-                    {new Date(item.created_at).toLocaleString("zh-CN")}
+                    {formatDateTime(item.created_at)}
                   </span>
                 </div>
                 <div className="flex items-center gap-1">

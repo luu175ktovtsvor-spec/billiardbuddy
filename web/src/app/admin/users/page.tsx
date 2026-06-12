@@ -1,5 +1,6 @@
 "use client";
 
+import { formatDateTime } from "@/lib/utils";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 
@@ -233,7 +234,7 @@ export default function AdminUsersPage() {
                   <p className="text-sm text-slate-600">手机号：{detailUser.user.phone}</p>
                   <p className="text-sm text-slate-600">名称：{detailUser.user.name || "-"}</p>
                   <p className="text-sm text-slate-600">状态：<span className={detailUser.user.is_active ? "text-green-600" : "text-red-600"}>{detailUser.user.is_active ? "正常" : "已禁用"}</span></p>
-                  <p className="text-sm text-slate-600">注册时间：{new Date(detailUser.user.created_at).toLocaleString("zh-CN")}</p>
+                  <p className="text-sm text-slate-600">注册时间：{formatDateTime(detailUser.user.created_at)}</p>
                 </div>
                 {detailUser.store && (
                   <div className="rounded-lg border p-3">
@@ -261,7 +262,7 @@ export default function AdminUsersPage() {
                   <div className="rounded-lg border p-3">
                     <p className="text-sm font-medium text-slate-700 mb-2">最近生成记录</p>
                     {detailUser.recent_generations.slice(0, 5).map((g) => (
-                      <p key={g.id} className="text-xs text-slate-500">{g.type}/{g.sub_type} - {new Date(g.created_at).toLocaleString("zh-CN")}</p>
+                      <p key={g.id} className="text-xs text-slate-500">{g.type}/{g.sub_type} - {formatDateTime(g.created_at)}</p>
                     ))}
                   </div>
                 )}

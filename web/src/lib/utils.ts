@@ -1,5 +1,19 @@
 import { ApiError } from "@/types/api";
 
+/** 列表/详情时间戳:去掉秒("2026/6/12 14:30"),扫列表不用读到秒级噪音 */
+export function formatDateTime(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
 /** 文件名安全化：去掉 Windows/Mac 文件系统非法字符 */
 export function safeFileName(s: string): string {
   return (s || "").replace(/[\\/:*?"<>|\n\r]+/g, "").trim().slice(0, 60) || "图片";
