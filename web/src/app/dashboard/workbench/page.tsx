@@ -101,7 +101,6 @@ export default function WorkbenchPage() {
 
   const allRoles: Array<{ key: string; label: string; isCollab?: boolean }> = [
     ...MVP_ROLES.map((r) => ({ key: r, label: ROLE_LABELS[r] })),
-    { key: "collaborate", label: "🤝 协作", isCollab: true },
   ];
 
   return (
