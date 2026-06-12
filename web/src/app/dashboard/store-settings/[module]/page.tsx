@@ -10,6 +10,7 @@ import type { StoreResponse, PricingTier, MemberCard } from "@/types/store";
 import { Section, Field, Toggle, TagGroup, TagCheckbox } from "@/components/forms/section-components";
 import { CardSelect } from "@/components/ui/card-select";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
+import { PageHeader } from "@/components/layout/page-header";
 import { Upload, Building2, Wrench, FileText, Sparkles, ArrowLeft, Loader2 } from "lucide-react";
 
 const VALID_MODULES = ["basic", "profile", "branding", "pricing", "slogan"] as const;
@@ -299,7 +300,10 @@ function formDataToPayload(form: FormData) {
   };
 }
 
-const INPUT_CLASS = "w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20";
+/* 手机触控规格：input 高 44px + 15px 字号；textarea 保持多行内边距 */
+const INPUT_BASE = "w-full rounded-lg border border-slate-200 bg-white px-3 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20";
+const INPUT_CLASS = `${INPUT_BASE} h-11`;
+const TEXTAREA_CLASS = `${INPUT_BASE} py-2.5`;
 
 /* ───── Sub-components for each module ───── */
 
@@ -411,7 +415,7 @@ function BasicModule({
         <Field label="门店优势">
           <textarea rows={3} value={form.advantages}
             onChange={(e) => updateField("advantages", e.target.value)}
-            className={INPUT_CLASS} placeholder="描述门店的核心竞争优势" />
+            className={TEXTAREA_CLASS} placeholder="描述门店的核心竞争优势" />
         </Field>
       </Section>
 
@@ -530,7 +534,7 @@ function ProfileModule({
       <Field label="主要卖点（用逗号分隔）">
         <textarea rows={2} maxLength={500} value={profileForm.main_selling_points}
           onChange={(e) => updateProfileField("main_selling_points", e.target.value)}
-          className={INPUT_CLASS} placeholder="如：24小时营业、乔氏台球桌、免费停车" />
+          className={TEXTAREA_CLASS} placeholder="如：24小时营业、乔氏台球桌、免费停车" />
       </Field>
       <Field label="主要客户类型（多选）">
         <TagGroup>
@@ -595,7 +599,7 @@ function ProfileModule({
       <Field label="周边竞对信息（选填）">
         <textarea rows={2} maxLength={500} value={profileForm.competitor_info}
           onChange={(e) => updateProfileField("competitor_info", e.target.value)}
-          className={INPUT_CLASS} placeholder="如：3km内有2家竞对" />
+          className={TEXTAREA_CLASS} placeholder="如：3km内有2家竞对" />
       </Field>
 
       {/* 私域群矩阵 */}
@@ -814,19 +818,19 @@ function PricingModule({
         <Field label="价格体系">
           <textarea rows={8} value={form.pricing}
             onChange={(e) => updateField("pricing", e.target.value)}
-            className={INPUT_CLASS}
+            className={TEXTAREA_CLASS}
             placeholder={"1. 中式黑八\n   (a) 普台：30元/1小时\n   (b) 金腿：XX元/1小时\n   (c) 银腿：XX元/1小时\n   (d) 毒牙：XX元/1小时\n2. 包厢：XX元/1小时"} />
         </Field>
         <Field label="会员卡套餐">
           <textarea rows={5} value={form.member_cards}
             onChange={(e) => updateField("member_cards", e.target.value)}
-            className={INPUT_CLASS}
+            className={TEXTAREA_CLASS}
             placeholder={"1. 畅打月卡：888元/月\n2. 周卡：388元/周\n3. 次卡：50次 1500元"} />
         </Field>
         <Field label="充值规则（选填）">
           <textarea rows={3} value={form.recharge_rules}
             onChange={(e) => updateField("recharge_rules", e.target.value)}
-            className={INPUT_CLASS}
+            className={TEXTAREA_CLASS}
             placeholder="如：充1000送99，充3000送399" />
         </Field>
       </Section>
@@ -1051,36 +1055,44 @@ export default function StoreSettingsModulePage() {
   /* Invalid module */
   if (!isValid) {
     return (
-      <div className="mx-auto max-w-2xl py-20 text-center">
-        <p className="text-slate-500">模块不存在</p>
-        <Link href="/dashboard/store-settings" className="mt-4 inline-block text-sm text-brand-600 hover:underline">
-          返回门店设置
-        </Link>
-      </div>
-    );
-  }
-
-  /* Loading */
-  if (store === undefined) {
-    return (
-      <div className="flex items-center justify-center py-20">
-        <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
-        <span className="ml-2 text-slate-500">加载中...</span>
-      </div>
+      <>
+        <PageHeader title="门店设置" backHref="/dashboard/store-settings" />
+        <div className="mx-auto max-w-2xl py-20 text-center">
+          <p className="text-slate-500">模块不存在</p>
+          <Link href="/dashboard/store-settings" className="mt-4 inline-block text-sm text-brand-600 hover:underline">
+            返回门店设置
+          </Link>
+        </div>
+      </>
     );
   }
 
   const meta = MODULE_META[module as ModuleSlug];
 
+  /* Loading */
+  if (store === undefined) {
+    return (
+      <>
+        <PageHeader title={meta.label} backHref="/dashboard/store-settings" />
+        <div className="flex items-center justify-center py-20">
+          <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
+          <span className="ml-2 text-slate-500">加载中...</span>
+        </div>
+      </>
+    );
+  }
+
   return (
-    <div className="mx-auto max-w-2xl">
+    <div className="mx-auto max-w-2xl pb-24 lg:pb-0">
+      <PageHeader title={meta.label} backHref="/dashboard/store-settings" />
       <Breadcrumb items={[
         { label: "工作台", href: "/dashboard/workbench" },
         { label: "门店设置", href: "/dashboard/store-settings" },
         { label: `${meta.icon} ${meta.label}` },
       ]} />
 
-      <div className="mb-6 flex items-center justify-between">
+      {/* 桌面标题行（手机端由 PageHeader 承担） */}
+      <div className="mb-6 hidden items-center justify-between lg:flex">
         <h1 className="text-xl font-bold text-slate-900">{meta.icon} {meta.label}</h1>
         <Link
           href="/dashboard/store-settings"
@@ -1124,11 +1136,11 @@ export default function StoreSettingsModulePage() {
         )}
       </div>
 
-      {/* Save bar */}
-      <div className="mt-6 flex justify-end pb-6">
+      {/* Save bar：手机端吸底（避开安全区），桌面端保持原右对齐 */}
+      <div className="fixed bottom-0 left-0 right-0 z-20 border-t border-slate-200 bg-white p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] lg:static lg:mt-6 lg:flex lg:justify-end lg:border-0 lg:bg-transparent lg:p-0 lg:pb-6">
         <button type="button" disabled={saving}
           onClick={handleSave}
-          className="rounded-md bg-brand-600 px-6 py-2.5 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50">
+          className="flex h-12 w-full items-center justify-center rounded-xl bg-brand-600 text-[15px] font-medium text-white hover:bg-brand-500 active:bg-brand-700 disabled:opacity-50 lg:h-auto lg:w-auto lg:rounded-md lg:px-6 lg:py-2.5 lg:text-sm">
           {saving ? "保存中..." : "保存"}
         </button>
       </div>

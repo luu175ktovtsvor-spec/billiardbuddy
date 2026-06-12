@@ -64,12 +64,12 @@ export function OnboardingGuide() {
   const current = STEPS[step];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="relative w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="relative w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
         <button
           type="button"
           onClick={dismiss}
-          className="absolute top-3 right-3 rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+          className="absolute top-2 right-2 flex h-10 w-10 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 active:bg-slate-100"
         >
           <X className="h-5 w-5" />
         </button>
@@ -92,7 +92,7 @@ export function OnboardingGuide() {
             <current.icon className="h-7 w-7 text-brand-600" />
           </div>
           <h3 className="mb-1 text-lg font-bold text-slate-900">{current.title}</h3>
-          <p className="text-sm text-slate-500 leading-relaxed">{current.desc}</p>
+          <p className="text-[15px] text-slate-500 leading-relaxed lg:text-sm">{current.desc}</p>
         </div>
 
         {/* Step number */}
@@ -106,7 +106,7 @@ export function OnboardingGuide() {
             <button
               type="button"
               onClick={() => setStep((s) => s - 1)}
-              className="rounded-md px-4 py-2 text-sm text-slate-500 hover:text-slate-700"
+              className="h-11 rounded-xl px-4 text-[15px] text-slate-500 hover:text-slate-700 active:bg-slate-100 lg:text-sm"
             >
               上一步
             </button>
@@ -114,7 +114,7 @@ export function OnboardingGuide() {
             <button
               type="button"
               onClick={dismiss}
-              className="rounded-md px-4 py-2 text-sm text-slate-400 hover:text-slate-600"
+              className="h-11 rounded-xl px-4 text-[15px] text-slate-400 hover:text-slate-600 active:bg-slate-100 lg:text-sm"
             >
               跳过
             </button>
@@ -125,7 +125,7 @@ export function OnboardingGuide() {
               <Link
                 href={current.href}
                 onClick={dismiss}
-                className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500"
+                className="inline-flex h-11 items-center gap-1.5 rounded-xl bg-brand-600 px-5 text-[15px] font-medium text-white hover:bg-brand-500 active:scale-[0.98] transition-transform lg:text-sm"
               >
                 {current.action}
                 <ChevronRight className="h-4 w-4" />
@@ -134,7 +134,7 @@ export function OnboardingGuide() {
               <button
                 type="button"
                 onClick={() => setStep((s) => s + 1)}
-                className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500"
+                className="inline-flex h-11 items-center gap-1.5 rounded-xl bg-brand-600 px-5 text-[15px] font-medium text-white hover:bg-brand-500 active:scale-[0.98] transition-transform lg:text-sm"
               >
                 下一步
                 <ChevronRight className="h-4 w-4" />
@@ -144,7 +144,7 @@ export function OnboardingGuide() {
             <button
               type="button"
               onClick={dismiss}
-              className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500"
+              className="inline-flex h-11 items-center gap-1.5 rounded-xl bg-brand-600 px-5 text-[15px] font-medium text-white hover:bg-brand-500 active:scale-[0.98] transition-transform lg:text-sm"
             >
               开始使用
             </button>

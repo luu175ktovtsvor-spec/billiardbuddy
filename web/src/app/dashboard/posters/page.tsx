@@ -102,7 +102,7 @@ export default function PostersPage() {
         <button
           type="button"
           onClick={handleNew}
-          className="flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-500 transition-colors"
+          className="flex h-11 items-center gap-2 rounded-xl bg-brand-600 px-4 text-sm font-medium text-white hover:bg-brand-500 active:scale-[0.98] transition-all"
         >
           <Plus className="h-4 w-4" />
           新建对话
@@ -115,13 +115,13 @@ export default function PostersPage() {
           <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
         </div>
       ) : conversations.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-slate-300 bg-white py-16 text-center">
+        <div className="rounded-2xl border border-dashed border-slate-300 bg-white py-16 text-center">
           <MessageSquare className="mx-auto h-10 w-10 text-slate-300" />
           <p className="mt-3 text-sm text-slate-500">暂无对话记录</p>
           <button
             type="button"
             onClick={handleNew}
-            className="mt-4 text-sm font-medium text-brand-600 hover:text-brand-500"
+            className="mt-2 inline-flex min-h-[44px] items-center justify-center px-4 text-sm font-medium text-brand-600 hover:text-brand-500 active:scale-[0.98]"
           >
             开始第一次生图
           </button>
@@ -132,7 +132,7 @@ export default function PostersPage() {
             <div
               key={conv.id}
               onClick={() => handleOpen(conv)}
-              className="group flex items-center gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm hover:shadow-md hover:border-brand-200 transition-all cursor-pointer"
+              className="group flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm hover:shadow-md hover:border-brand-200 active:scale-[0.98] transition-all cursor-pointer"
             >
               {/* Thumbnail */}
               {conv.thumbnail_url ? (
@@ -149,7 +149,7 @@ export default function PostersPage() {
 
               {/* Info */}
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-slate-800 truncate">
+                <p className="text-[15px] font-medium text-slate-800 truncate lg:text-sm">
                   {conv.title}
                 </p>
                 <p className="mt-0.5 text-xs text-slate-400">
@@ -162,7 +162,7 @@ export default function PostersPage() {
                 type="button"
                 onClick={(e) => handleDelete(e, conv)}
                 disabled={deleting === conv.id}
-                className="opacity-0 group-hover:opacity-100 text-xs text-slate-400 hover:text-red-600 transition-opacity disabled:opacity-50"
+                className="flex h-11 shrink-0 items-center px-2 -mr-2 text-xs text-slate-400 hover:text-red-600 active:text-red-600 transition-opacity disabled:opacity-50 lg:opacity-0 lg:group-hover:opacity-100"
               >
                 {deleting === conv.id ? "删除中..." : "删除"}
               </button>

@@ -5,6 +5,7 @@ import { useAuth } from "@/hooks/auth-context";
 import { api } from "@/lib/api";
 import { ApiError, type OrchestrationTask } from "@/types/api";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
+import { PageHeader } from "@/components/layout/page-header";
 import { useToast } from "@/components/ui/toast";
 import { Loader2, CheckCircle, Clock, XCircle, Send } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -88,7 +89,8 @@ export default function CollaboratePage() {
   if (!isAuthenticated) return null;
 
   return (
-    <div className="mx-auto max-w-5xl">
+    <div className="mx-auto max-w-5xl pb-24 lg:pb-0">
+      <PageHeader title="多人协作" backHref="/dashboard/workbench" />
       <Breadcrumb
         items={[
           { label: "工作台", href: "/dashboard/workbench" },
@@ -96,8 +98,9 @@ export default function CollaboratePage() {
         ]}
       />
 
-      <h2 className="text-xl font-bold text-slate-900 mb-2">🤝 协作任务</h2>
-      <p className="text-sm text-slate-500 mb-6">
+      {/* 手机端标题由 PageHeader 承担，避免重复大标题 */}
+      <h2 className="hidden text-xl font-bold text-slate-900 mb-2 lg:block">🤝 协作任务</h2>
+      <p className="text-[15px] leading-relaxed text-slate-500 mb-6 lg:text-sm">
         说一句你的目标，运营智能体会先制定方案框架、再分派各岗位分头执行、最后整合成一份可直接落地的完整方案。
       </p>
 
@@ -107,21 +110,21 @@ export default function CollaboratePage() {
           <button
             key={s.type}
             onClick={() => setSelectedScenario(s.type)}
-            className={`rounded-lg border p-4 text-center transition-all duration-200 ${
+            className={`rounded-2xl border px-4 py-5 text-center transition-all duration-200 active:scale-[0.98] ${
               selectedScenario === s.type
                 ? "border-brand-500 bg-brand-50 shadow-sm"
                 : "border-slate-200 bg-white hover:border-brand-200"
             }`}
           >
             <span className="text-3xl block mb-2">{s.emoji}</span>
-            <p className="text-sm font-semibold text-slate-900">{s.name}</p>
+            <p className="text-[15px] font-semibold text-slate-900">{s.name}</p>
             <p className="text-xs text-slate-400 mt-1">{s.desc}</p>
           </button>
         ))}
       </div>
 
       {/* Task description */}
-      <div className="rounded-lg border border-slate-200 bg-white p-4 mb-6">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 mb-6">
         <label className="mb-2 block text-sm font-medium text-slate-700">
           任务描述
         </label>
@@ -129,28 +132,31 @@ export default function CollaboratePage() {
           rows={3}
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none"
+          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none"
           placeholder="例如：策划一场周末台球挑战赛，预算3000元，目标吸引新客户"
         />
-        <button
-          onClick={handleStart}
-          disabled={loading || !selectedScenario || !description.trim()}
-          className="mt-3 flex w-full items-center justify-center gap-2 rounded-md bg-brand-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 transition-colors"
-        >
-          {loading ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Send className="h-4 w-4" />
-          )}
-          {loading ? "启动中..." : "🚀 启动协作"}
-        </button>
+        {/* 手机吸底主按钮（含安全区），桌面回到卡片内原位置 */}
+        <div className="fixed bottom-0 left-0 right-0 z-20 border-t border-slate-100 bg-white p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] lg:static lg:mt-3 lg:border-0 lg:bg-transparent lg:p-0">
+          <button
+            onClick={handleStart}
+            disabled={loading || !selectedScenario || !description.trim()}
+            className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-brand-600 px-4 text-[15px] font-medium text-white hover:bg-brand-500 active:scale-[0.98] disabled:opacity-50 transition-all"
+          >
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Send className="h-4 w-4" />
+            )}
+            {loading ? "发起中..." : "🚀 发起协作"}
+          </button>
+        </div>
       </div>
 
       {/* 三阶段进度条 */}
       {taskResult && (
-        <div className="rounded-lg border border-slate-200 bg-white p-4 mb-6">
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 mb-6">
           <h3 className="text-sm font-semibold text-slate-900 mb-3">协作进度</h3>
-          <div className="mb-4 flex items-center gap-2 text-xs">
+          <div className="mb-4 flex items-center gap-2 overflow-x-auto text-xs [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {[
               { key: "planning", label: "① 指挥官规划" },
               { key: "executing", label: "② 岗位分头执行" },
@@ -161,8 +167,8 @@ export default function CollaboratePage() {
               const done = i < cur || taskResult.status === "completed";
               const active = i === cur && taskResult.status === "running";
               return (
-                <div key={step.key} className="flex items-center gap-2">
-                  <span className={`rounded-full px-2.5 py-1 ${
+                <div key={step.key} className="flex shrink-0 items-center gap-2">
+                  <span className={`whitespace-nowrap rounded-full px-2.5 py-1 ${
                     done ? "bg-emerald-50 text-emerald-600"
                     : active ? "bg-amber-50 text-amber-600"
                     : "bg-slate-50 text-slate-400"
@@ -179,7 +185,7 @@ export default function CollaboratePage() {
 
           {/* 指挥官框架 */}
           {taskResult.framework && (
-            <details className="mb-3 rounded-md border border-brand-100 bg-brand-50/50 p-3" open={taskResult.status === "running"}>
+            <details className="mb-3 rounded-xl border border-brand-100 bg-brand-50/50 p-3" open={taskResult.status === "running"}>
               <summary className="cursor-pointer text-xs font-semibold text-brand-700">📋 协作框架（指挥官制定，各岗位据此分工）</summary>
               <div className="mt-2 prose prose-xs max-w-none prose-slate text-xs">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{taskResult.framework}</ReactMarkdown>
@@ -235,7 +241,7 @@ export default function CollaboratePage() {
 
       {/* Summary result */}
       {taskResult?.summary && (
-        <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
+        <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-100 px-4 py-3">
             <p className="text-sm font-semibold text-slate-700">📄 完整方案</p>
             <p className="text-xs text-slate-400 mt-1">
@@ -253,7 +259,7 @@ export default function CollaboratePage() {
                 navigator.clipboard.writeText(markdownToPlainText(taskResult.summary || ""));
                 toast("已复制全部");
               }}
-              className="flex items-center gap-1.5 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 transition-colors"
+              className="flex h-11 w-full items-center justify-center gap-1.5 rounded-xl bg-brand-600 px-4 text-[15px] font-medium text-white hover:bg-brand-500 active:scale-[0.98] transition-all lg:w-auto"
             >
               📋 复制全部
             </button>

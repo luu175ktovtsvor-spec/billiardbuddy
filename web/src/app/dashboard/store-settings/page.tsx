@@ -5,9 +5,11 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { ApiError } from "@/types/api";
-import type { StoreResponse } from "@/types/store";
+import type { StoreResponse, StoreListItem } from "@/types/store";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
-import { Users, Loader2 } from "lucide-react";
+import { Sheet } from "@/components/ui/sheet";
+import { useAuth } from "@/hooks/auth-context";
+import { Loader2, ChevronRight, Check } from "lucide-react";
 
 const MODULES = [
   { slug: "basic", label: "基本信息", icon: "📋", desc: "门店名称、地址、电话、营业时间" },
@@ -48,11 +50,15 @@ function getModuleStatus(store: StoreResponse | null, profile: Record<string, un
 
 export default function StoreSettingsPage() {
   const router = useRouter();
+  const { logout } = useAuth();
   const [store, setStore] = useState<StoreResponse | null | undefined>(undefined);
   const [newStoreName, setNewStoreName] = useState("");
   const [newStoreCity, setNewStoreCity] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
+  // 账号区：桌面 Header(门店切换/退出)在手机端隐藏，这里是手机唯一入口
+  const [stores, setStores] = useState<StoreListItem[]>([]);
+  const [storeSheetOpen, setStoreSheetOpen] = useState(false);
 
   const handleCreateStore = async () => {
     if (!newStoreName.trim() || creating) return;
@@ -84,6 +90,21 @@ export default function StoreSettingsPage() {
     return () => { cancelled = true; };
   }, []);
 
+  // 拉门店列表：多店时账号区可切店（与桌面 Header 同一套逻辑）
+  useEffect(() => {
+    let cancelled = false;
+    api.listStores()
+      .then((list) => { if (!cancelled) setStores(list); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleSwitchStore = (id: string) => {
+    api.setStoreId(id);
+    setStoreSheetOpen(false);
+    window.location.reload();
+  };
+
   if (store === undefined) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -102,7 +123,7 @@ export default function StoreSettingsPage() {
           { label: "工作台", href: "/dashboard/workbench" },
           { label: "门店设置" },
         ]} />
-        <div className="rounded-lg border border-brand-200 bg-white p-6 shadow-sm">
+        <div className="rounded-2xl border border-brand-200 bg-white p-6 shadow-sm">
           <h2 className="mb-1 text-lg font-bold text-slate-900">创建你的门店</h2>
           <p className="mb-5 text-sm text-slate-500">
             填个店名就能开始，其余资料创建后可以分模块慢慢完善——资料越全，AI 生成越准。
@@ -116,7 +137,7 @@ export default function StoreSettingsPage() {
                 value={newStoreName}
                 onChange={(e) => setNewStoreName(e.target.value)}
                 placeholder="例：星辉台球俱乐部"
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+                className="h-11 w-full rounded-lg border border-slate-200 px-3 text-[15px] focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
               />
             </div>
             <div>
@@ -127,7 +148,7 @@ export default function StoreSettingsPage() {
                 value={newStoreCity}
                 onChange={(e) => setNewStoreCity(e.target.value)}
                 placeholder="例：成都"
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+                className="h-11 w-full rounded-lg border border-slate-200 px-3 text-[15px] focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
               />
             </div>
             {createError && <p className="text-sm text-red-600">{createError}</p>}
@@ -135,16 +156,26 @@ export default function StoreSettingsPage() {
               type="button"
               disabled={creating || !newStoreName.trim()}
               onClick={handleCreateStore}
-              className="w-full rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50"
+              className="flex h-12 w-full items-center justify-center rounded-xl bg-brand-600 px-4 text-[15px] font-medium text-white hover:bg-brand-500 active:bg-brand-700 disabled:opacity-50"
             >
               {creating ? "创建中..." : "创建门店"}
             </button>
             <p className="text-xs text-slate-400">是员工？让管理员发邀请码，注册时填写即可自动加入门店。</p>
           </div>
         </div>
+        {/* 手机端没有桌面 Header，无门店时也要能退出账号 */}
+        <button
+          type="button"
+          onClick={logout}
+          className="mt-4 flex h-12 w-full items-center justify-center rounded-2xl border border-slate-200 bg-white text-[15px] font-medium text-red-500 active:bg-slate-100 lg:hidden"
+        >
+          退出登录
+        </button>
       </div>
     );
   }
+
+  const doneCount = MODULES.filter((m) => getModuleStatus(store, store.operation_profile, m.slug)).length;
 
   return (
     <div className="mx-auto max-w-2xl">
@@ -153,56 +184,109 @@ export default function StoreSettingsPage() {
         { label: "门店设置" },
       ]} />
 
-      <div className="mb-6">
+      {/* 桌面标题（手机端直接看门店头卡） */}
+      <div className="mb-6 hidden lg:block">
         <h1 className="text-xl font-bold text-slate-900">⚙️ 门店设置</h1>
         <p className="mt-1 text-sm text-slate-500">
           分模块管理门店资料，AI 会根据这些信息生成更精准的文案
         </p>
       </div>
 
-      <div className="grid gap-3">
+      {/* 门店头卡 */}
+      <div className="mb-5 rounded-2xl bg-gradient-to-br from-brand-600 to-brand-700 p-5 text-white shadow-sm">
+        <p className="truncate text-xl font-bold">{store.name}</p>
+        <p className="mt-1 text-[13px] text-white/80">
+          资料完整度 {doneCount}/{MODULES.length} · 资料越全，AI 生成越准
+        </p>
+      </div>
+
+      {/* 分组一：门店资料 */}
+      <p className="mb-2 px-1 text-xs font-medium text-slate-400">门店资料</p>
+      <div className="mb-5 divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         {MODULES.map((m) => {
           const done = getModuleStatus(store, store.operation_profile, m.slug);
           return (
             <Link
               key={m.slug}
               href={`/dashboard/store-settings/${m.slug}`}
-              className="group flex items-center gap-4 rounded-xl border border-slate-200 bg-white px-4 py-4 shadow-sm transition-all hover:border-brand-300 hover:shadow-md"
+              title={m.desc}
+              className="flex h-[52px] items-center gap-3 px-4 transition-colors active:bg-slate-100 lg:hover:bg-slate-50"
             >
-              <span className="text-2xl">{m.icon}</span>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold text-slate-800">{m.label}</span>
-                  {done && (
-                    <span className="inline-flex items-center rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-xs font-medium text-emerald-600">
-                      已填写
-                    </span>
-                  )}
-                </div>
-                <p className="text-xs text-slate-400 mt-0.5">{m.desc}</p>
-              </div>
-              <span className="text-slate-300 group-hover:text-brand-500 transition-colors">→</span>
+              <span className="text-xl">{m.icon}</span>
+              <span className="min-w-0 flex-1 truncate text-[15px] font-medium text-slate-800">{m.label}</span>
+              <span className={`shrink-0 text-xs ${done ? "text-emerald-600" : "text-slate-400"}`}>
+                {done ? "已填写" : "未填写"}
+              </span>
+              <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />
             </Link>
           );
         })}
       </div>
 
-      {/* 团队成员入口 */}
-      <div className="mt-6 pt-4 border-t border-slate-200">
+      {/* 分组二：团队成员入口 */}
+      <p className="mb-2 px-1 text-xs font-medium text-slate-400">团队</p>
+      <div className="mb-5 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         <Link
           href="/dashboard/store-settings/members"
-          className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm transition-all hover:border-brand-300 hover:shadow-md"
+          className="flex h-[52px] items-center gap-3 px-4 transition-colors active:bg-slate-100 lg:hover:bg-slate-50"
         >
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-100">
-            <Users className="h-5 w-5 text-slate-600" />
-          </div>
-          <div className="flex-1">
-            <span className="text-sm font-semibold text-slate-800">👥 团队成员</span>
-            <p className="text-xs text-slate-400">管理门店成员、角色和权限</p>
-          </div>
-          <span className="text-slate-300">→</span>
+          <span className="text-xl">👥</span>
+          <span className="min-w-0 flex-1 truncate text-[15px] font-medium text-slate-800">成员管理</span>
+          <span className="shrink-0 text-xs text-slate-400">角色与权限</span>
+          <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />
         </Link>
       </div>
+
+      {/* 分组三：账号（仅手机——桌面端走 Header 的门店切换/退出） */}
+      <div className="lg:hidden">
+        <p className="mb-2 px-1 text-xs font-medium text-slate-400">账号</p>
+        <div className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          {stores.length > 1 ? (
+            <button
+              type="button"
+              onClick={() => setStoreSheetOpen(true)}
+              className="flex h-[52px] w-full items-center gap-3 px-4 text-left transition-colors active:bg-slate-100"
+            >
+              <span className="text-xl">🏬</span>
+              <span className="flex-1 text-[15px] font-medium text-slate-800">切换门店</span>
+              <span className="max-w-[40%] truncate text-xs text-slate-400">{store.name}</span>
+              <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />
+            </button>
+          ) : (
+            <div className="flex h-[52px] items-center gap-3 px-4">
+              <span className="text-xl">🏬</span>
+              <span className="flex-1 text-[15px] font-medium text-slate-800">当前门店</span>
+              <span className="max-w-[50%] truncate text-xs text-slate-400">{store.name}</span>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={logout}
+            className="flex h-[52px] w-full items-center justify-center text-[15px] font-medium text-red-500 transition-colors active:bg-slate-100"
+          >
+            退出登录
+          </button>
+        </div>
+      </div>
+
+      {/* 切店抽屉（多店时从账号区唤起） */}
+      <Sheet open={storeSheetOpen} onClose={() => setStoreSheetOpen(false)} title="切换门店">
+        <div className="space-y-1 pb-2">
+          {stores.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              onClick={() => handleSwitchStore(s.id)}
+              className={`flex h-12 w-full items-center justify-between rounded-xl px-4 text-left text-[15px] transition-colors active:bg-slate-100 ${
+                s.id === store.id ? "bg-brand-50 font-medium text-brand-700" : "text-slate-800"
+              }`}
+            >
+              <span className="truncate">{s.name}</span>
+              {s.id === store.id && <Check className="h-4 w-4 shrink-0 text-brand-600" />}
+            </button>
+          ))}
+        </div>
+      </Sheet>
     </div>
   );
 }
