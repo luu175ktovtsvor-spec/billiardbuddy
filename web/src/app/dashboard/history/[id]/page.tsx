@@ -286,7 +286,7 @@ export default function HistoryDetailPage() {
           className={`rounded px-3 py-1.5 text-sm ${
             item.effect_rating === "good"
               ? "border border-green-300 bg-green-100 text-green-700"
-              : "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-green-50"
+              : "bg-slate-50 text-slate-600 hover:bg-green-50"
           }`}
         >
           👍 效果好
@@ -297,7 +297,7 @@ export default function HistoryDetailPage() {
           className={`rounded px-3 py-1.5 text-sm ${
             item.effect_rating === "bad"
               ? "border border-red-300 bg-red-100 text-red-700"
-              : "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-red-50"
+              : "bg-slate-50 text-slate-600 hover:bg-red-50"
           }`}
         >
           👎 效果差
@@ -315,7 +315,7 @@ export default function HistoryDetailPage() {
                 type="button"
                 disabled={repurposing !== null}
                 onClick={() => handleRepurpose(p.platform, p.label)}
-                className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 hover:border-brand-300 hover:text-brand-600 disabled:opacity-50 transition-colors"
+                className="rounded-md bg-slate-100 px-3 py-1.5 text-xs text-slate-600 hover:border-brand-300 hover:text-brand-600 disabled:opacity-50 transition-colors"
               >
                 {repurposing === p.platform ? "转换中..." : p.label}
               </button>

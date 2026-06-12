@@ -195,7 +195,7 @@ export default function WorkbenchPage() {
                 ? "bg-brand-600 text-white shadow-sm"
                 : r.isCollab
                 ? "border border-brand-200 bg-white text-brand-600"
-                : "border border-slate-200 bg-white text-slate-600"
+                : "bg-slate-100 text-slate-600"
             }`}
           >
             {r.label}

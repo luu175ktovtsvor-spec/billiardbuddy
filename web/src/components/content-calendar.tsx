@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Calendar, CheckCircle2, ChevronRight, Clock, Sparkles } from "lucide-react";
+import { Calendar, CheckCircle2, ChevronRight, Clock, Sparkles, PartyPopper } from "lucide-react";
 import { api } from "@/lib/api";
 import { getTaskById } from "@/lib/role-workbench-config";
 
@@ -49,6 +49,33 @@ const WEEKDAY_ITEMS: Record<number, CalendarItem[]> = {
 
 const WEEKDAY_NAMES = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
+// 节日表与后端 dashboard_service 的 FESTIVALS 保持一致(月,日,名称),前端提前 10 天内提醒
+const FESTIVALS: Array<[number, number, string]> = [
+  [1, 1, "元旦"], [2, 14, "情人节"], [3, 8, "妇女节"], [5, 1, "劳动节"],
+  [6, 1, "儿童节"], [10, 1, "国庆节"], [11, 11, "双十一"], [12, 25, "圣诞节"],
+];
+
+/** 从今天起 10 天内最近的节日(跨年安全),没有则 null */
+function upcomingFestival(now: Date): { name: string; days: number } | null {
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  let best: { name: string; days: number } | null = null;
+  for (const [mo, d, name] of FESTIVALS) {
+    for (const yr of [now.getFullYear(), now.getFullYear() + 1]) {
+      const fd = new Date(yr, mo - 1, d);
+      const days = Math.round((fd.getTime() - start.getTime()) / 86400000);
+      if (days >= 0 && days <= 10 && (!best || days < best.days)) {
+        best = { name, days };
+      }
+    }
+  }
+  return best;
+}
+
+function timeToMin(t: string): number {
+  const [h, m] = t.split(":").map(Number);
+  return h * 60 + m;
+}
+
 /** 从事项 href 解析出任务卡的 promptKey（用于和今日生成记录比对打勾） */
 function itemPromptKey(item: CalendarItem): string | null {
   const m = item.href.match(/\/dashboard\/workbench\/([^?]+)/);
@@ -59,8 +86,11 @@ function itemPromptKey(item: CalendarItem): string | null {
 export function ContentCalendar() {
   const today = new Date();
   const todayWeekday = today.getDay();
+  const nowMin = today.getHours() * 60 + today.getMinutes();
   const [selectedDay, setSelectedDay] = useState(todayWeekday);
   const [doneSubTypes, setDoneSubTypes] = useState<Set<string>>(new Set());
+
+  const festival = upcomingFestival(today);
 
   /* 拉今日生成记录：做过的事项自动打勾，静态日历变每日打卡清单 */
   useEffect(() => {
@@ -86,12 +116,16 @@ export function ContentCalendar() {
 
   const items = WEEKDAY_ITEMS[selectedDay] || [];
   const isToday = selectedDay === todayWeekday;
-  const doneCount = isToday
-    ? items.filter((it) => {
-        const pk = itemPromptKey(it);
-        return pk && doneSubTypes.has(pk);
-      }).length
-    : 0;
+  const itemDone = (it: CalendarItem) => {
+    const pk = itemPromptKey(it);
+    return isToday && !!pk && doneSubTypes.has(pk);
+  };
+  const doneCount = isToday ? items.filter(itemDone).length : 0;
+
+  // 今天列里:第一个"还没到点且没做"的事项 = 接下来要做的(高亮)
+  const nextIdx = isToday
+    ? items.findIndex((it) => !itemDone(it) && timeToMin(it.time) >= nowMin)
+    : -1;
 
   return (
     <div className="rounded-2xl bg-white">
@@ -102,12 +136,30 @@ export function ContentCalendar() {
           <span className="ml-auto text-[13px] text-slate-400 lg:text-xs">
             {isToday && items.length > 0
               ? doneCount >= items.length
-                ? "今天全部完成"
+                ? "今天全部完成 🎉"
                 : `今天完成 ${doneCount}/${items.length}`
-              : "今天该发什么"}
+              : "一周内容节奏"}
           </span>
         </div>
       </div>
+
+      {/* 节日雷达:临近节日提醒(实时,复用后端同款节日表) */}
+      {festival && (
+        <Link
+          href={`/dashboard/workbench/mgr-daily-moments?intent=${encodeURIComponent(festival.name + "活动预热朋友圈")}`}
+          className="flex items-center gap-2 border-b border-slate-100 bg-brand-50/60 px-4 py-2.5 active:bg-brand-100/60 transition-colors"
+        >
+          <PartyPopper className="h-4 w-4 shrink-0 text-brand-600" />
+          <span className="flex-1 text-[13px] text-slate-700">
+            {festival.days === 0 ? (
+              <>今天就是<b className="font-semibold">{festival.name}</b>，趁热做内容</>
+            ) : (
+              <>还有 <b className="font-semibold">{festival.days}</b> 天就是<b className="font-semibold">{festival.name}</b>，建议提前备活动</>
+            )}
+          </span>
+          <ChevronRight className="h-4 w-4 shrink-0 text-brand-400" />
+        </Link>
+      )}
 
       {/* 星期选择 */}
       <div className="flex border-b border-slate-100">
@@ -133,21 +185,31 @@ export function ContentCalendar() {
       {/* 内容列表 */}
       <div className="divide-y divide-slate-50">
         {items.map((item, i) => {
-          const pk = itemPromptKey(item);
-          const done = isToday && !!pk && doneSubTypes.has(pk);
+          const done = itemDone(item);
+          const past = isToday && !done && timeToMin(item.time) < nowMin;
+          const isNext = i === nextIdx;
           return (
-            <div key={i} className="flex min-h-[56px] items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors">
-              <div className="flex items-center gap-1.5 shrink-0 w-14">
+            <div
+              key={i}
+              className={`flex min-h-[56px] items-center gap-3 px-4 py-3 transition-colors ${
+                isNext ? "bg-brand-50/40" : "hover:bg-slate-50"
+              }`}
+            >
+              <div className="flex items-center gap-1.5 shrink-0 w-20">
                 {done ? (
                   <CheckCircle2 className="h-4 w-4 text-emerald-500" />
                 ) : (
-                  <Clock className="h-3.5 w-3.5 text-slate-400" />
+                  <Clock className={`h-3.5 w-3.5 ${past ? "text-slate-300" : "text-slate-400"}`} />
                 )}
-                <span className="text-xs text-slate-500">{item.time}</span>
+                <span className={`text-xs ${past ? "text-slate-300" : "text-slate-500"}`}>{item.time}</span>
+                {isNext && (
+                  <span className="rounded-full bg-brand-600 px-1.5 py-0.5 text-[10px] font-medium text-white">接下来</span>
+                )}
               </div>
               <div className="flex-1 min-w-0">
-                <p className={`text-[15px] font-medium lg:text-sm ${done ? "text-slate-400 line-through" : "text-slate-900"}`}>
+                <p className={`text-[15px] font-medium lg:text-sm ${done ? "text-slate-400 line-through" : past ? "text-slate-400" : "text-slate-900"}`}>
                   {item.title}
+                  {past && <span className="ml-1.5 text-[11px] font-normal text-slate-300">已过</span>}
                 </p>
                 <p className="text-[13px] text-slate-500 truncate lg:text-xs">{item.desc}</p>
               </div>

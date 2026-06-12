@@ -53,7 +53,7 @@ export function CopyButton({ text }: { text: string }) {
             ? "bg-emerald-50 text-emerald-600 border border-emerald-200"
             : state === "failed"
               ? "bg-red-50 text-red-600 border border-red-200"
-              : "bg-white text-slate-700 border border-slate-200 hover:bg-slate-50"
+              : "bg-white text-slate-700 hover:bg-slate-50"
         }`}
       >
         {state === "copied" ? (
