@@ -88,28 +88,28 @@ export default function AdminPlansPage() {
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium mb-1">套餐名称</label>
-                <input type="text" value={editingPlan.name} onChange={(e) => setEditingPlan({ ...editingPlan, name: e.target.value })} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                <input type="text" value={editingPlan.name} onChange={(e) => setEditingPlan({ ...editingPlan, name: e.target.value })} className="w-full rounded-lg px-3 py-2 text-sm" />
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">月价（分）</label>
-                <input type="number" value={editingPlan.price_monthly} onChange={(e) => setEditingPlan({ ...editingPlan, price_monthly: Number(e.target.value) })} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                <input type="number" value={editingPlan.price_monthly} onChange={(e) => setEditingPlan({ ...editingPlan, price_monthly: Number(e.target.value) })} className="w-full rounded-lg px-3 py-2 text-sm" />
                 <p className="text-xs text-slate-400 mt-1">显示为 ¥{editingPlan.price_monthly / 100}/月</p>
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">每月生成次数</label>
-                <input type="number" value={editingPlan.generation_limit} onChange={(e) => setEditingPlan({ ...editingPlan, generation_limit: Number(e.target.value) })} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                <input type="number" value={editingPlan.generation_limit} onChange={(e) => setEditingPlan({ ...editingPlan, generation_limit: Number(e.target.value) })} className="w-full rounded-lg px-3 py-2 text-sm" />
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">Token限额</label>
-                <input type="number" value={editingPlan.token_limit} onChange={(e) => setEditingPlan({ ...editingPlan, token_limit: Number(e.target.value) })} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                <input type="number" value={editingPlan.token_limit} onChange={(e) => setEditingPlan({ ...editingPlan, token_limit: Number(e.target.value) })} className="w-full rounded-lg px-3 py-2 text-sm" />
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">海报限额</label>
-                <input type="number" value={editingPlan.poster_limit} onChange={(e) => setEditingPlan({ ...editingPlan, poster_limit: Number(e.target.value) })} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                <input type="number" value={editingPlan.poster_limit} onChange={(e) => setEditingPlan({ ...editingPlan, poster_limit: Number(e.target.value) })} className="w-full rounded-lg px-3 py-2 text-sm" />
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">最大成员数</label>
-                <input type="number" value={editingPlan.max_members} onChange={(e) => setEditingPlan({ ...editingPlan, max_members: Number(e.target.value) })} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                <input type="number" value={editingPlan.max_members} onChange={(e) => setEditingPlan({ ...editingPlan, max_members: Number(e.target.value) })} className="w-full rounded-lg px-3 py-2 text-sm" />
               </div>
               <div className="flex items-center gap-2">
                 <input type="checkbox" checked={editingPlan.is_active} onChange={(e) => setEditingPlan({ ...editingPlan, is_active: e.target.checked })} className="rounded border-slate-300" />
