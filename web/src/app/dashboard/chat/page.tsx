@@ -129,7 +129,7 @@ export default function ChatPage() {
                   key={s}
                   type="button"
                   onClick={() => send(s)}
-                  className="rounded-full border border-slate-200 bg-white px-4 py-2.5 text-[14px] text-slate-700 active:bg-slate-50 active:scale-[0.98] transition-all"
+                  className="rounded-full bg-slate-100 px-4 py-2.5 text-[14px] text-slate-700 active:bg-slate-50 active:scale-[0.98] transition-all"
                 >
                   {s}
                 </button>

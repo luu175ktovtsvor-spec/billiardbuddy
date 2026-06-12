@@ -424,7 +424,7 @@ function BasicModule({
           <div>
             <label className="mb-1 block font-medium text-slate-700">Logo</label>
             {store.logo_url ? (
-              <div className="mb-2 overflow-hidden rounded-lg border border-slate-200">
+              <div className="mb-2 overflow-hidden rounded-lg">
                 <img src={api.resolveUrl(store.logo_url)} alt="门店 Logo"
                   className="h-32 w-full object-contain bg-slate-50" />
               </div>
@@ -445,7 +445,7 @@ function BasicModule({
           <div>
             <label className="mb-1 block font-medium text-slate-700">微信二维码</label>
             {store.qrcode_url ? (
-              <div className="mb-2 overflow-hidden rounded-lg border border-slate-200">
+              <div className="mb-2 overflow-hidden rounded-lg">
                 <img src={api.resolveUrl(store.qrcode_url)} alt="门店二维码"
                   className="h-32 w-full object-contain bg-slate-50" />
               </div>
@@ -775,7 +775,7 @@ function BrandingModule({
         <div>
           <label className="mb-1 block font-medium text-slate-700">Logo</label>
           {store.logo_url ? (
-            <div className="mb-2 overflow-hidden rounded-lg border border-slate-200">
+            <div className="mb-2 overflow-hidden rounded-lg">
               <img src={api.resolveUrl(store.logo_url)} alt="门店 Logo"
                 className="h-32 w-full object-contain bg-slate-50" />
             </div>
@@ -788,7 +788,7 @@ function BrandingModule({
         <div>
           <label className="mb-1 block font-medium text-slate-700">微信二维码</label>
           {store.qrcode_url ? (
-            <div className="mb-2 overflow-hidden rounded-lg border border-slate-200">
+            <div className="mb-2 overflow-hidden rounded-lg">
               <img src={api.resolveUrl(store.qrcode_url)} alt="门店二维码"
                 className="h-32 w-full object-contain bg-slate-50" />
             </div>

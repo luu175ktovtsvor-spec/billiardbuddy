@@ -137,7 +137,7 @@ export default function StoreSettingsPage() {
                 value={newStoreName}
                 onChange={(e) => setNewStoreName(e.target.value)}
                 placeholder="例：星辉台球俱乐部"
-                className="h-11 w-full rounded-lg border border-slate-200 px-3 text-[15px] focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+                className="h-11 w-full rounded-lg px-3 text-[15px] focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
               />
             </div>
             <div>
@@ -148,7 +148,7 @@ export default function StoreSettingsPage() {
                 value={newStoreCity}
                 onChange={(e) => setNewStoreCity(e.target.value)}
                 placeholder="例：成都"
-                className="h-11 w-full rounded-lg border border-slate-200 px-3 text-[15px] focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+                className="h-11 w-full rounded-lg px-3 text-[15px] focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
               />
             </div>
             {createError && <p className="text-sm text-red-600">{createError}</p>}

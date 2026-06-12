@@ -232,7 +232,7 @@ export default function LandingPage() {
               desc: "每天打开告诉你今天该发什么、节日临近该备什么活动",
             },
           ].map((f) => (
-            <div key={f.title} className="rounded-2xl border border-slate-200 p-6">
+            <div key={f.title} className="rounded-2xl p-6">
               <span className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-brand-600 text-white">
                 <f.icon className="h-5 w-5" />
               </span>

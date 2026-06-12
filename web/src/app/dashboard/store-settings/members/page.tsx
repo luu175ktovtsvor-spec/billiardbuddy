@@ -214,7 +214,7 @@ export default function MembersPage() {
                 value={addPhone}
                 onChange={(e) => setAddPhone(e.target.value.replace(/\D/g, ""))}
                 placeholder="员工手机号"
-                className="h-11 flex-1 rounded-lg border border-slate-200 px-3 text-[15px]"
+                className="h-11 flex-1 rounded-lg px-3 text-[15px]"
               />
               <select
                 value={addRole}
@@ -235,7 +235,7 @@ export default function MembersPage() {
                 </button>
                 <button
                   onClick={() => setShowAddForm(false)}
-                  className="h-11 rounded-xl border border-slate-200 px-4 text-[15px] text-slate-600 hover:bg-slate-50 active:bg-slate-100 lg:rounded-lg lg:text-sm"
+                  className="h-11 rounded-xl px-4 text-[15px] text-slate-600 hover:bg-slate-50 active:bg-slate-100 lg:rounded-lg lg:text-sm"
                 >
                   取消
                 </button>
@@ -264,7 +264,7 @@ export default function MembersPage() {
                 value={newMaxUses}
                 onChange={(e) => setNewMaxUses(e.target.value)}
                 placeholder="使用次数限制（空=不限）"
-                className="h-11 w-full rounded-lg border border-slate-200 px-3 text-[15px] lg:w-48"
+                className="h-11 w-full rounded-lg px-3 text-[15px] lg:w-48"
               />
               <div className="flex gap-2">
                 <button
@@ -276,7 +276,7 @@ export default function MembersPage() {
                 </button>
                 <button
                   onClick={() => setShowCreateForm(false)}
-                  className="h-11 rounded-xl border border-slate-200 px-4 text-[15px] text-slate-600 hover:bg-slate-50 active:bg-slate-100 lg:rounded-lg lg:text-sm"
+                  className="h-11 rounded-xl px-4 text-[15px] text-slate-600 hover:bg-slate-50 active:bg-slate-100 lg:rounded-lg lg:text-sm"
                 >
                   取消
                 </button>

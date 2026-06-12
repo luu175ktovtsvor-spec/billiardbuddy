@@ -34,7 +34,7 @@ export function ProfileGuide({
         {fields.map((field) => (
           <div
             key={field.label}
-            className="flex items-center gap-2 rounded-md bg-white border border-slate-200 px-3 py-2 shadow-sm"
+            className="flex items-center gap-2 rounded-md bg-white px-3 py-2 shadow-sm"
           >
             {field.done ? (
               <CheckCircle className="h-4 w-4 shrink-0 text-emerald-600" />

@@ -413,7 +413,7 @@ function TaskExecutionPageInner() {
                       prev ? `${prev}，${hint}` : hint
                     )
                   }
-                  className="inline-flex min-h-[44px] items-center rounded-full border border-slate-200 bg-white px-3 text-xs text-slate-500 hover:border-brand-300 hover:text-brand-600 transition-colors active:scale-[0.98]"
+                  className="inline-flex min-h-[44px] items-center rounded-full bg-slate-100 px-3 text-xs text-slate-500 hover:border-brand-300 hover:text-brand-600 transition-colors active:scale-[0.98]"
                 >
                   {hint}
                 </button>
@@ -494,7 +494,7 @@ function TaskExecutionPageInner() {
             {showOutputCustom ? "收起自定义 ▲" : "自定义输出 ▼"}
           </button>
           {showOutputCustom && (
-            <div className="mt-2 space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div className="mt-2 space-y-2 rounded-lg bg-slate-50 p-3">
               {OUTPUT_PACKAGE_GROUPS.map((group) => (
                 <div key={group.key}>
                   <p className="mb-1 text-xs font-medium text-slate-400 uppercase tracking-wide">
@@ -993,7 +993,7 @@ function TaskExecutionPageInner() {
                 <Link
                   key={nextCard.id}
                   href={`/dashboard/workbench/${nextCard.id}`}
-                  className="flex items-start gap-2 rounded-xl border border-slate-200 p-3 text-left hover:border-brand-200 hover:bg-brand-50/50 transition-all active:scale-[0.98]"
+                  className="flex items-start gap-2 rounded-xl p-3 text-left hover:border-brand-200 hover:bg-brand-50/50 transition-all active:scale-[0.98]"
                 >
                   <ArrowRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand-400" />
                   <div>

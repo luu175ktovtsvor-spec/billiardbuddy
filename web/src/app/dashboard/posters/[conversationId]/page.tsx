@@ -451,7 +451,7 @@ function ConversationPageInner() {
                                 className={`inline-flex h-10 items-center rounded-xl px-4 text-[13px] active:scale-[0.98] ${
                                   conv.refineFrom === img.generation_id
                                     ? "bg-brand-100 text-brand-700 border border-brand-300"
-                                    : "bg-slate-50 text-slate-600 border border-slate-200 hover:bg-slate-100"
+                                    : "bg-slate-50 text-slate-600 hover:bg-slate-100"
                                 }`}
                               >
                                 基于此调整
@@ -461,7 +461,7 @@ function ConversationPageInner() {
                                 disabled={generating}
                                 onClick={() => handleRegenerate(idx)}
                                 title="用同样的要求再生成一张全新构图"
-                                className="inline-flex h-10 items-center rounded-xl px-4 text-[13px] bg-slate-50 text-slate-600 border border-slate-200 hover:bg-slate-100 active:scale-[0.98] disabled:opacity-50"
+                                className="inline-flex h-10 items-center rounded-xl px-4 text-[13px] bg-slate-50 text-slate-600 hover:bg-slate-100 active:scale-[0.98] disabled:opacity-50"
                               >
                                 再来一版
                               </button>
@@ -485,7 +485,7 @@ function ConversationPageInner() {
                                     : handleDownload(img)
                                 }
                                 title={inWeChat ? "微信内请长按图片保存" : undefined}
-                                className="inline-flex h-10 items-center rounded-xl px-4 text-[13px] bg-slate-50 text-slate-600 border border-slate-200 hover:bg-slate-100 active:scale-[0.98]"
+                                className="inline-flex h-10 items-center rounded-xl px-4 text-[13px] bg-slate-50 text-slate-600 hover:bg-slate-100 active:scale-[0.98]"
                               >
                                 <Download className="h-3.5 w-3.5 inline mr-1" />
                                 {inWeChat ? "保存图片" : "下载"}
@@ -575,7 +575,7 @@ function ConversationPageInner() {
                     key={t}
                     type="button"
                     onClick={() => sendGenerate(t, conv.refineFrom)}
-                    className="inline-flex h-9 shrink-0 items-center whitespace-nowrap rounded-full border border-slate-200 bg-slate-50 px-3 text-xs text-slate-600 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-600 active:scale-[0.98] transition-colors"
+                    className="inline-flex h-9 shrink-0 items-center whitespace-nowrap rounded-full bg-slate-50 px-3 text-xs text-slate-600 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-600 active:scale-[0.98] transition-colors"
                   >
                     {t}
                   </button>
@@ -602,7 +602,7 @@ function ConversationPageInner() {
                           key={tag.key}
                           type="button"
                           onClick={() => setPrompt(tag.prompt)}
-                          className="inline-flex h-9 shrink-0 items-center whitespace-nowrap rounded-full border border-slate-200 bg-slate-50 px-3 text-xs text-slate-600 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-600 active:scale-[0.98] transition-colors"
+                          className="inline-flex h-9 shrink-0 items-center whitespace-nowrap rounded-full bg-slate-50 px-3 text-xs text-slate-600 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-600 active:scale-[0.98] transition-colors"
                         >
                           {tag.label}
                         </button>
@@ -619,7 +619,7 @@ function ConversationPageInner() {
                         key={s.label}
                         type="button"
                         onClick={() => setPrompt((p) => (p.trim() ? `${p.trim()}，${s.prompt}` : s.prompt))}
-                        className="inline-flex h-9 shrink-0 items-center whitespace-nowrap rounded-full border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-600 active:scale-[0.98] transition-colors"
+                        className="inline-flex h-9 shrink-0 items-center whitespace-nowrap rounded-full bg-slate-100 px-3 text-xs text-slate-600 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-600 active:scale-[0.98] transition-colors"
                       >
                         {s.label}
                       </button>
@@ -679,7 +679,7 @@ function ConversationPageInner() {
               {/* References */}
               <div className="flex w-full items-center gap-2 overflow-x-auto pb-1 lg:w-auto lg:flex-wrap lg:overflow-visible lg:pb-0">
                 {conv.references.map((ref, idx) => (
-                  <div key={idx} className="relative h-12 w-12 shrink-0 rounded-lg border border-slate-200 overflow-hidden">
+                  <div key={idx} className="relative h-12 w-12 shrink-0 rounded-lg overflow-hidden">
                     <img src={ref.preview} alt={`参考图${idx + 1}`} className="h-full w-full object-cover" />
                     <button
                       type="button"

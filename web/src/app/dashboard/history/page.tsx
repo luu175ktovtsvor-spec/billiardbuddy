@@ -212,7 +212,7 @@ export default function HistoryPage() {
                 toast("导出失败，请稍后重试", "error");
               }
             }}
-            className="h-9 shrink-0 rounded-full border border-slate-200 bg-white px-3.5 text-sm text-slate-700 hover:bg-slate-50 active:scale-[0.98]"
+            className="h-9 shrink-0 rounded-full bg-slate-100 px-3.5 text-sm text-slate-700 hover:bg-slate-50 active:scale-[0.98]"
           >
             导出 CSV
           </button>
