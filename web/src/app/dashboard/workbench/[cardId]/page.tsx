@@ -377,7 +377,7 @@ function TaskExecutionPageInner() {
       {/* ─── Input section ─── */}
       <div
         ref={inputSectionRef}
-        className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 sm:p-6 shadow-sm"
+        className="mb-6 rounded-2xl bg-white p-4 sm:p-6 shadow-sm"
       >
         {/* Intent input */}
         <div className="mb-4">
@@ -389,7 +389,7 @@ function TaskExecutionPageInner() {
             maxLength={500}
             value={intent}
             onChange={(e) => setIntent(e.target.value)}
-            className="w-full min-h-[96px] rounded-lg border border-slate-200 bg-white px-3 py-2 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none"
+            className="w-full min-h-[96px] rounded-lg bg-[#F2F2F7] px-3 py-2 text-[15px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none"
             placeholder="例如：好久没联系老客户了，帮我发几句话约他们来打球"
           />
           <p className="mt-1 text-right text-xs text-slate-400">
@@ -431,7 +431,7 @@ function TaskExecutionPageInner() {
             <select
               value={role}
               onChange={(e) => setRole(e.target.value as WorkbenchRole)}
-              className="w-full min-h-[44px] rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-brand-500 focus:outline-none"
+              className="w-full min-h-[44px] rounded-lg bg-white px-3 py-2 text-sm text-slate-900 focus:border-brand-500 focus:outline-none"
             >
               {ROLE_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -449,7 +449,7 @@ function TaskExecutionPageInner() {
               onChange={(e) =>
                 setTargetCustomer(e.target.value as TargetCustomerType)
               }
-              className="w-full min-h-[44px] rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-brand-500 focus:outline-none"
+              className="w-full min-h-[44px] rounded-lg bg-white px-3 py-2 text-sm text-slate-900 focus:border-brand-500 focus:outline-none"
             >
               {CUSTOMER_TYPE_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -546,7 +546,7 @@ function TaskExecutionPageInner() {
             maxLength={200}
             value={extraNote}
             onChange={(e) => setExtraNote(e.target.value)}
-            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none"
+            className="w-full rounded-lg bg-[#F2F2F7] px-3 py-2 text-[15px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none"
             placeholder="如：不要太长、别写优惠"
           />
         </div>
@@ -598,7 +598,7 @@ function TaskExecutionPageInner() {
 
         {/* Streaming */}
         {generating && !result && (
-          <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="rounded-2xl bg-white">
             <div className="border-b border-slate-100 px-4 py-3">
               <div className="flex items-center gap-2">
                 <Loader2 className="h-4 w-4 animate-spin text-brand-600" />
@@ -625,7 +625,7 @@ function TaskExecutionPageInner() {
 
         {/* Final result */}
         {result && !generating && (
-          <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="rounded-2xl bg-white">
             {/* Header */}
             <div className="border-b border-slate-100 px-4 py-3">
               <div className="flex items-center justify-between">
@@ -661,7 +661,7 @@ function TaskExecutionPageInner() {
                 <textarea
                   value={editedContent}
                   onChange={(e) => setEditedContent(e.target.value)}
-                  className="w-full min-h-[200px] rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-y"
+                  className="w-full min-h-[200px] rounded-lg border border-brand-200 bg-[#F2F2F7] px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-y"
                 />
               ) : (
                 <div className="prose prose-sm max-w-none prose-slate prose-headings:text-slate-900 prose-p:text-slate-700 prose-strong:text-slate-900 prose-li:text-slate-700 prose-th:bg-slate-50 prose-th:text-slate-700 prose-td:text-slate-600">
@@ -815,7 +815,7 @@ function TaskExecutionPageInner() {
                   <button
                     type="button"
                     onClick={() => setEditing(false)}
-                    className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors active:scale-[0.98]"
+                    className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-white px-4 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors active:scale-[0.98]"
                   >
                     取消
                   </button>
@@ -895,7 +895,7 @@ function TaskExecutionPageInner() {
                                 key={p.platform}
                                 type="button"
                                 onClick={() => handleRepurpose(p.platform)}
-                                className="h-12 rounded-xl border border-slate-200 bg-white text-[15px] text-slate-700 hover:bg-slate-50 transition-all active:scale-[0.98]"
+                                className="h-12 rounded-xl bg-white text-[15px] text-slate-700 hover:bg-slate-50 transition-all active:scale-[0.98]"
                               >
                                 {p.label}
                               </button>
@@ -981,7 +981,7 @@ function TaskExecutionPageInner() {
 
         {/* Next step guidance after generation */}
         {result && !generating && (
-          <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="mt-4 rounded-2xl bg-white p-4 shadow-sm">
             <p className="mb-3 text-sm font-medium text-slate-700">
               接下来你可以：
             </p>

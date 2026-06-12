@@ -116,7 +116,7 @@ export default function LandingPage() {
 
         <div className="grid gap-5 sm:grid-cols-2 lg:mx-auto lg:max-w-4xl">
           {/* 朋友圈样式卡 */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="rounded-2xl bg-white p-5 shadow-sm">
             <p className="mb-3 text-xs font-medium text-brand-600">朋友圈文案 · 晚间邀约</p>
             <div className="flex gap-3">
               <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-brand-600 text-lg">
@@ -143,7 +143,7 @@ export default function LandingPage() {
           </div>
 
           {/* 群公告样式卡 */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="rounded-2xl bg-white p-5 shadow-sm">
             <p className="mb-3 text-xs font-medium text-brand-600">群公告 · 周赛报名</p>
             <div className="rounded-xl bg-slate-50 p-4">
               <p className="mb-1 text-xs text-slate-400">店长 @所有人</p>
@@ -270,7 +270,7 @@ export default function LandingPage() {
         </h2>
         <div className="mx-auto max-w-2xl space-y-3">
           {FAQS.map((f) => (
-            <details key={f.q} className="group rounded-2xl border border-slate-200 bg-white">
+            <details key={f.q} className="group rounded-2xl bg-white">
               <summary className="flex cursor-pointer list-none items-center justify-between px-5 py-4 text-[15px] font-medium text-slate-900">
                 {f.q}
                 <span className="ml-3 text-slate-300 transition-transform group-open:rotate-45">＋</span>

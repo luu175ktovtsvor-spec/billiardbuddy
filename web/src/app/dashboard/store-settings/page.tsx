@@ -167,7 +167,7 @@ export default function StoreSettingsPage() {
         <button
           type="button"
           onClick={logout}
-          className="mt-4 flex h-12 w-full items-center justify-center rounded-2xl border border-slate-200 bg-white text-[15px] font-medium text-red-500 active:bg-slate-100 lg:hidden"
+          className="mt-4 flex h-12 w-full items-center justify-center rounded-2xl bg-white text-[15px] font-medium text-red-500 active:bg-slate-100 lg:hidden"
         >
           退出登录
         </button>
@@ -202,7 +202,7 @@ export default function StoreSettingsPage() {
 
       {/* 分组一：门店资料 */}
       <p className="mb-2 px-1 text-xs font-medium text-slate-400">门店资料</p>
-      <div className="mb-5 divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="mb-5 divide-y divide-slate-100 overflow-hidden rounded-2xl bg-white">
         {MODULES.map((m) => {
           const done = getModuleStatus(store, store.operation_profile, m.slug);
           return (
@@ -225,7 +225,7 @@ export default function StoreSettingsPage() {
 
       {/* 分组二：团队成员入口 */}
       <p className="mb-2 px-1 text-xs font-medium text-slate-400">团队</p>
-      <div className="mb-5 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="mb-5 overflow-hidden rounded-2xl bg-white">
         <Link
           href="/dashboard/store-settings/members"
           className="flex h-[52px] items-center gap-3 px-4 transition-colors active:bg-slate-100 lg:hover:bg-slate-50"
@@ -240,7 +240,7 @@ export default function StoreSettingsPage() {
       {/* 分组三：账号（仅手机——桌面端走 Header 的门店切换/退出） */}
       <div className="lg:hidden">
         <p className="mb-2 px-1 text-xs font-medium text-slate-400">账号</p>
-        <div className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="divide-y divide-slate-100 overflow-hidden rounded-2xl bg-white">
           {stores.length > 1 ? (
             <button
               type="button"

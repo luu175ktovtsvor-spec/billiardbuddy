@@ -63,7 +63,7 @@ export function MobileNav() {
 
   return (
     <>
-      <nav className="fixed bottom-0 left-0 right-0 z-30 border-t border-slate-200 bg-white pb-[env(safe-area-inset-bottom)] lg:hidden">
+      <nav className="fixed bottom-0 left-0 right-0 z-30 border-t border-black/10 bg-white/85 backdrop-blur-xl pb-[env(safe-area-inset-bottom)] lg:hidden">
         <div className="flex items-center justify-around px-1">
           {NAV_LEFT.map(renderItem)}
 

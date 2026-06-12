@@ -130,7 +130,7 @@ export default function HistoryPage() {
               }
             }}
             placeholder="搜索内容关键词，回车"
-            className="h-11 min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-4 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none"
+            className="h-11 min-w-0 flex-1 rounded-xl bg-white px-4 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none"
           />
           {search && (
             <button
@@ -242,7 +242,7 @@ export default function HistoryPage() {
             <div
               key={item.id}
               onClick={() => router.push(`/dashboard/history/${item.id}`)}
-              className="rounded-2xl border border-slate-200 bg-white p-4 hover:border-slate-300 transition active:scale-[0.98] shadow-sm cursor-pointer"
+              className="rounded-2xl bg-white p-4 hover:border-slate-300 transition active:scale-[0.98] shadow-sm cursor-pointer"
             >
               <div className="mb-2 flex flex-wrap items-center justify-between gap-y-1">
                 <div className="flex flex-wrap items-center gap-2">
@@ -339,7 +339,7 @@ export default function HistoryPage() {
             type="button"
             disabled={page <= 1}
             onClick={() => setPage((p) => Math.max(1, p - 1))}
-            className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 active:bg-slate-100 disabled:opacity-30"
+            className="flex h-11 w-11 items-center justify-center rounded-xl bg-white text-slate-500 hover:bg-slate-50 active:bg-slate-100 disabled:opacity-30"
           >
             <ChevronLeft className="h-5 w-5" />
           </button>
@@ -350,7 +350,7 @@ export default function HistoryPage() {
             type="button"
             disabled={page >= totalPages}
             onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 active:bg-slate-100 disabled:opacity-30"
+            className="flex h-11 w-11 items-center justify-center rounded-xl bg-white text-slate-500 hover:bg-slate-50 active:bg-slate-100 disabled:opacity-30"
           >
             <ChevronRight className="h-5 w-5" />
           </button>

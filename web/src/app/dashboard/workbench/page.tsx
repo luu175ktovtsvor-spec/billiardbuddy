@@ -121,7 +121,7 @@ export default function WorkbenchPage() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="找功能，如：投诉、日报、海报、招聘…"
-          className="h-11 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-11 text-[15px] text-slate-900 placeholder-slate-400 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+          className="h-11 w-full rounded-xl bg-[#F2F2F7] pl-9 pr-11 text-[15px] text-slate-900 placeholder-slate-400 shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500/20"
         />
         {query && (
           <button
@@ -161,7 +161,7 @@ export default function WorkbenchPage() {
               <div
                 key={card.id}
                 onClick={() => router.push(`/dashboard/workbench/${card.id}`)}
-                className="flex flex-col rounded-2xl border border-slate-200 bg-white p-4 shadow-sm cursor-pointer hover:border-brand-200 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 active:scale-[0.98]"
+                className="flex flex-col rounded-2xl bg-white p-4 shadow-sm cursor-pointer hover:border-brand-200 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 active:scale-[0.98]"
               >
                 <div className="mb-1.5 flex items-start justify-between gap-2">
                   <h4 className="text-[15px] font-semibold text-slate-900">{card.title}</h4>
@@ -213,7 +213,7 @@ export default function WorkbenchPage() {
           <div
             key={card.id}
             onClick={() => router.push(`/dashboard/workbench/${card.id}`)}
-            className="flex flex-col rounded-2xl border border-slate-200 bg-white p-4 shadow-sm cursor-pointer hover:border-brand-200 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 active:scale-[0.98]"
+            className="flex flex-col rounded-2xl bg-white p-4 shadow-sm cursor-pointer hover:border-brand-200 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 active:scale-[0.98]"
           >
             <div className="mb-1.5 flex items-start justify-between gap-2">
               <h4 className="text-[15px] font-semibold text-slate-900">{card.title}</h4>

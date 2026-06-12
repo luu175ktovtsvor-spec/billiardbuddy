@@ -501,7 +501,7 @@ function ConversationPageInner() {
 
               {/* Generating indicator */}
               {generating && (
-                <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="rounded-2xl bg-white p-4">
                   <div className="flex items-center gap-2">
                     <Loader2 className="h-4 w-4 animate-spin text-brand-600" />
                     <span className="text-sm text-slate-500">{GEN_STAGES[genStage]}</span>
@@ -540,7 +540,7 @@ function ConversationPageInner() {
             className={
               conv.messages.length > 0
                 ? "fixed bottom-0 left-0 right-0 z-20 border-t border-slate-100 bg-white px-3 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] lg:sticky lg:bottom-4 lg:left-auto lg:right-auto lg:rounded-2xl lg:border lg:border-slate-200 lg:p-4 lg:shadow-sm"
-                : "rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sticky bottom-4"
+                : "rounded-2xl bg-white p-4 shadow-sm sticky bottom-4"
             }
           >
             {/* 底图提示：让用户明确知道"在哪张图上改"，可一键退出调整模式 */}
@@ -638,7 +638,7 @@ function ConversationPageInner() {
                       handleGenerate();
                     }
                   }}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none lg:text-sm"
+                  className="w-full rounded-xl bg-[#F2F2F7] px-4 py-3 text-[15px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none lg:text-sm"
                   placeholder="例：帮我们店的女助教生成一张高级感形象照，球房背景，光线柔和"
                 />
               </>
@@ -658,7 +658,7 @@ function ConversationPageInner() {
                         handleGenerate();
                       }
                     }}
-                    className="w-full resize-none rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 lg:text-sm"
+                    className="w-full resize-none rounded-xl bg-[#F2F2F7] px-4 py-2.5 text-[15px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20 lg:text-sm"
                     placeholder={conv.refineFrom ? "描述调整内容，如「背景改成深色」" : "描述新的图片需求"}
                   />
                 </div>
@@ -695,7 +695,7 @@ function ConversationPageInner() {
                   <span className="shrink-0 whitespace-nowrap text-[11px] text-slate-400">参考图对本次对话持续生效</span>
                 )}
                 {conv.references.length < 5 && (
-                  <label className="flex h-11 shrink-0 items-center gap-1.5 cursor-pointer rounded-xl border border-slate-200 bg-white px-4 text-sm text-slate-500 hover:bg-slate-50 hover:text-slate-700 active:scale-[0.98] lg:h-9 lg:px-3">
+                  <label className="flex h-11 shrink-0 items-center gap-1.5 cursor-pointer rounded-xl bg-white px-4 text-sm text-slate-500 hover:bg-slate-50 hover:text-slate-700 active:scale-[0.98] lg:h-9 lg:px-3">
                     <Upload className="h-4 w-4" />
                     {conv.references.length === 0 ? "上传参考图" : "添加"}
                     <input
@@ -764,7 +764,7 @@ function ConversationPageInner() {
                       value={overlayText}
                       onChange={(e) => setOverlayText(e.target.value)}
                       placeholder="例：周五晚8点 · 抢一大战"
-                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 lg:text-sm"
+                      className="w-full rounded-xl bg-[#F2F2F7] px-3 py-2.5 text-[15px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20 lg:text-sm"
                     />
                   </div>
                   <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[13px] text-slate-500">

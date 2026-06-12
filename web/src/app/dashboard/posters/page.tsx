@@ -132,7 +132,7 @@ export default function PostersPage() {
             <div
               key={conv.id}
               onClick={() => handleOpen(conv)}
-              className="group flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm hover:shadow-md hover:border-brand-200 active:scale-[0.98] transition-all cursor-pointer"
+              className="group flex items-center gap-4 rounded-2xl bg-white p-4 shadow-sm hover:shadow-md hover:border-brand-200 active:scale-[0.98] transition-all cursor-pointer"
             >
               {/* Thumbnail */}
               {conv.thumbnail_url ? (

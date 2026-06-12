@@ -147,7 +147,7 @@ export default function ChatPage() {
             </div>
           ) : (
             <div key={i} className="flex flex-col items-start">
-              <div className="max-w-[92%] rounded-2xl rounded-bl-md border border-slate-200 bg-white px-4 py-3 shadow-sm">
+              <div className="max-w-[92%] rounded-2xl rounded-bl-md bg-white px-4 py-3">
                 <div className="prose prose-sm max-w-none prose-slate prose-p:my-1.5 prose-headings:my-2">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
                 </div>
@@ -164,7 +164,7 @@ export default function ChatPage() {
         {/* 流式中的回复 */}
         {draft && (
           <div className="flex">
-            <div className="max-w-[92%] rounded-2xl rounded-bl-md border border-slate-200 bg-white px-4 py-3 shadow-sm">
+            <div className="max-w-[92%] rounded-2xl rounded-bl-md bg-white px-4 py-3">
               <div className="prose prose-sm max-w-none prose-slate prose-p:my-1.5">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft}</ReactMarkdown>
               </div>
@@ -195,7 +195,7 @@ export default function ChatPage() {
             rows={1}
             placeholder={quotaExhausted ? "本月额度已用完，联系您的服务商提升" : "店里的事,直接说…"}
             disabled={quotaExhausted}
-            className="max-h-32 flex-1 resize-none rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:bg-slate-50"
+            className="max-h-32 flex-1 resize-none rounded-xl bg-[#F2F2F7] px-4 py-2.5 text-[15px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:bg-slate-50"
           />
           <button
             type="button"

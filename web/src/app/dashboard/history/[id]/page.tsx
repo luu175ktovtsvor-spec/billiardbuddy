@@ -135,7 +135,7 @@ export default function HistoryDetailPage() {
           <button
             type="button"
             onClick={() => router.push("/dashboard/history")}
-            className="inline-flex h-11 items-center gap-1 rounded-xl border border-slate-200 bg-white px-5 text-[15px] text-slate-600 hover:bg-slate-50 active:scale-[0.98]"
+            className="inline-flex h-11 items-center gap-1 rounded-xl bg-white px-5 text-[15px] text-slate-600 hover:bg-slate-50 active:scale-[0.98]"
           >
             <ChevronLeft className="h-4 w-4" />
             返回历史记录
@@ -205,7 +205,7 @@ export default function HistoryDetailPage() {
               }}
               placeholder="给这条内容起个名字"
               autoFocus
-              className="h-10 min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none"
+              className="h-10 min-w-0 flex-1 rounded-xl bg-white px-3 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none"
             />
             <button
               type="button"
@@ -217,7 +217,7 @@ export default function HistoryDetailPage() {
             <button
               type="button"
               onClick={() => setEditingTitle(false)}
-              className="h-10 shrink-0 rounded-xl border border-slate-200 bg-white px-4 text-sm text-slate-600 hover:bg-slate-50 active:scale-[0.98] transition-colors"
+              className="h-10 shrink-0 rounded-xl bg-white px-4 text-sm text-slate-600 hover:bg-slate-50 active:scale-[0.98] transition-colors"
             >
               取消
             </button>
@@ -245,7 +245,7 @@ export default function HistoryDetailPage() {
         <button
           type="button"
           onClick={handleToggleFavorite}
-          className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white text-[15px] font-medium text-slate-700 hover:bg-slate-50 active:scale-[0.98] transition-colors"
+          className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-xl bg-white text-[15px] font-medium text-slate-700 hover:bg-slate-50 active:scale-[0.98] transition-colors"
         >
           <Star
             className={`h-4 w-4 ${
@@ -262,7 +262,7 @@ export default function HistoryDetailPage() {
         {href && (
           <Link
             href={href}
-            className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white text-[15px] font-medium text-slate-700 hover:bg-slate-50 active:scale-[0.98] transition-colors"
+            className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-xl bg-white text-[15px] font-medium text-slate-700 hover:bg-slate-50 active:scale-[0.98] transition-colors"
           >
             <MessageSquare className="h-4 w-4" />
             继续对话
@@ -334,7 +334,7 @@ export default function HistoryDetailPage() {
       )}
 
       {/* 内容 */}
-      <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="rounded-xl bg-white p-6 shadow-sm">
         {isPoster ? (
           <div className="flex flex-col items-center gap-4">
             {/* eslint-disable-next-line @next/next/no-img-element */}

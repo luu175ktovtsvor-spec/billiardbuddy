@@ -63,7 +63,7 @@ export function MyTemplates() {
 
   if (loading) {
     return (
-      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="rounded-2xl bg-white">
         <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2">
           <Star className="h-5 w-5 text-amber-500" />
           <h3 className="text-[17px] font-semibold text-slate-900 lg:text-base">我的收藏</h3>
@@ -75,7 +75,7 @@ export function MyTemplates() {
 
   if (items.length === 0) {
     return (
-      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="rounded-2xl bg-white">
         <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2">
           <Star className="h-5 w-5 text-amber-500" />
           <h3 className="text-[17px] font-semibold text-slate-900 lg:text-base">我的收藏</h3>
@@ -93,7 +93,7 @@ export function MyTemplates() {
   }
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+    <div className="rounded-2xl bg-white">
       <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Star className="h-5 w-5 text-amber-500" />

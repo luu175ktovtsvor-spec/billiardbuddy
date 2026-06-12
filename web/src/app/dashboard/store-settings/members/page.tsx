@@ -205,7 +205,7 @@ export default function MembersPage() {
 
         {/* 手动添加成员表单 */}
         {showAddForm && (
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <div className="rounded-2xl bg-white p-4">
             <h3 className="mb-3 text-[15px] font-medium text-slate-900">通过手机号添加成员</h3>
             <div className="flex flex-col gap-3 lg:flex-row">
               <input
@@ -219,7 +219,7 @@ export default function MembersPage() {
               <select
                 value={addRole}
                 onChange={(e) => setAddRole(e.target.value)}
-                className="h-11 rounded-lg border border-slate-200 bg-white px-3 text-[15px]"
+                className="h-11 rounded-lg bg-white px-3 text-[15px]"
               >
                 {ROLE_OPTIONS.map((r) => (
                   <option key={r} value={r}>{ROLE_LABELS[r]}</option>
@@ -246,13 +246,13 @@ export default function MembersPage() {
 
         {/* 创建邀请码表单 */}
         {showCreateForm && (
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <div className="rounded-2xl bg-white p-4">
             <h3 className="mb-3 text-[15px] font-medium text-slate-900">生成邀请码</h3>
             <div className="flex flex-col gap-3 lg:flex-row">
               <select
                 value={newRole}
                 onChange={(e) => setNewRole(e.target.value)}
-                className="h-11 rounded-lg border border-slate-200 bg-white px-3 text-[15px]"
+                className="h-11 rounded-lg bg-white px-3 text-[15px]"
               >
                 {ROLE_OPTIONS.map((r) => (
                   <option key={r} value={r}>{ROLE_LABELS[r]}</option>
@@ -308,7 +308,7 @@ export default function MembersPage() {
 
         {/* 成员列表 */}
         {tab === "members" && (
-          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          <div className="overflow-hidden rounded-2xl bg-white">
             {members.length === 0 ? (
               <div className="p-8 text-center text-slate-400">暂无成员</div>
             ) : (
@@ -328,7 +328,7 @@ export default function MembersPage() {
                       <select
                         value={m.role}
                         onChange={(e) => handleChangeRole(m.user_id, e.target.value)}
-                        className="h-10 rounded-lg border border-slate-200 bg-white px-2 text-sm"
+                        className="h-10 rounded-lg bg-white px-2 text-sm"
                       >
                         {Object.entries(ROLE_LABELS).map(([val, label]) => (
                           <option key={val} value={val}>{label}</option>
@@ -351,7 +351,7 @@ export default function MembersPage() {
 
         {/* 邀请码列表 */}
         {tab === "invitations" && (
-          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          <div className="overflow-hidden rounded-2xl bg-white">
             {invitations.length === 0 ? (
               <div className="p-8 text-center text-slate-400">暂无邀请码，点击&quot;生成邀请码&quot;创建</div>
             ) : (

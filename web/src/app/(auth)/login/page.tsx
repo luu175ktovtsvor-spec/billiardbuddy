@@ -42,7 +42,7 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-8 shadow-sm">
+    <div className="rounded-xl bg-white p-8 shadow-sm">
       <h2 className="mb-6 text-lg font-semibold text-slate-900">登录</h2>
 
       <form onSubmit={handleSubmit} className="space-y-4">
@@ -56,7 +56,7 @@ export default function LoginPage() {
             maxLength={11}
             value={phone}
             onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))}
-            className="w-full rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 transition-colors focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+            className="w-full rounded-lg bg-[#F2F2F7] px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500/20"
             placeholder="请输入11位手机号"
             autoComplete="tel"
           />
@@ -72,7 +72,7 @@ export default function LoginPage() {
               type={showPassword ? "text" : "password"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 pr-10 text-sm text-slate-900 placeholder-slate-400 transition-colors focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+              className="w-full rounded-lg bg-[#F2F2F7] px-3.5 py-2.5 pr-10 text-sm text-slate-900 placeholder-slate-400 transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500/20"
               placeholder="请输入密码"
               autoComplete="current-password"
             />
