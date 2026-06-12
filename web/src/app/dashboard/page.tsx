@@ -33,13 +33,14 @@ function recommendationHref(rec: DashboardRecommendation): string {
  * - 其余按 high > medium 排
  */
 function pickTopRecommendations(recs: DashboardRecommendation[], n = 3): DashboardRecommendation[] {
+  const festival = recs.filter((r) => r.id === "festival");
   const setup = recs.filter((r) => r.action_type === "edit_store").slice(0, 1);
   const repeatGood = recs.filter((r) => r.id === "repeat_good");
   const rest = recs
-    .filter((r) => r.action_type !== "edit_store" && r.id !== "repeat_good")
+    .filter((r) => r.id !== "festival" && r.action_type !== "edit_store" && r.id !== "repeat_good")
     .sort((a, b) => (a.priority === "high" ? 0 : 1) - (b.priority === "high" ? 0 : 1));
   const seen = new Set<string>();
-  return [...setup, ...repeatGood, ...rest]
+  return [...festival, ...setup, ...repeatGood, ...rest]
     .filter((r) => !seen.has(r.id) && seen.add(r.id))
     .slice(0, n);
 }
