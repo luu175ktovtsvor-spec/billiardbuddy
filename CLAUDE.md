@@ -180,7 +180,7 @@ server/                 # FastAPI 后端
 - 选择器组件用 `components/ui/card-select.tsx`（卡片式），不用原生 `<select>`
 
 **设计系统（2026-06-12 起，微信内手机端是第一公民）：**
-- 主色 `brand`（台呢墨绿，tailwind.config 定义），点缀色 amber 暖金；**禁止再用 indigo**
+- 主色 `brand`（**iOS 系统蓝 #007AFF**，tailwind.config 定义；2026-06-12 由台呢绿改为苹果风）；**禁止再用 indigo**；tint 只给可点元素，页面底色 iOS 灰 #F2F2F7，卡片白底无边框靠灰白分层
 - 视觉 token：卡片 `rounded-2xl`、按钮 `rounded-xl`；手机正文 `text-[15px]`、标题 `text-[17px]+`；按压态 `active:scale-[0.98]`，不做 hover-only 交互
 - 触控目标 ≥44px（图标按钮至少 `h-10 w-10`）
 - 手机弹层一律用 `components/ui/sheet.tsx`（底部抽屉），不用居中 modal
