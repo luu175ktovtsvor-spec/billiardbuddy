@@ -10,12 +10,14 @@ import {
   Settings,
   Users,
   MessageCircle,
+  Workflow,
 } from "lucide-react";
 
 const NAV = [
   { href: "/dashboard", icon: LayoutDashboard, label: "首页" },
   { href: "/dashboard/chat", icon: MessageCircle, label: "AI 助手" },
   { href: "/dashboard/workbench", icon: Sparkles, label: "AI 工作台" },
+  { href: "/dashboard/workbench/collaborate", icon: Workflow, label: "多人协作" },
   { href: "/dashboard/posters", icon: ImageIcon, label: "AI 生图" },
   { href: "/dashboard/history", icon: Clock, label: "生成历史" },
   { href: "/dashboard/store-settings", icon: Settings, label: "门店设置" },

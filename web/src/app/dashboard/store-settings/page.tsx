@@ -223,6 +223,20 @@ export default function StoreSettingsPage() {
         })}
       </div>
 
+      {/* 分组：我的内容(历史入口——手机底部不再放历史 tab,从这进) */}
+      <p className="mb-2 px-1 text-xs font-medium text-slate-400">内容</p>
+      <div className="mb-5 overflow-hidden rounded-2xl bg-white">
+        <Link
+          href="/dashboard/history"
+          className="flex h-[52px] items-center gap-3 px-4 transition-colors active:bg-slate-100 lg:hover:bg-slate-50"
+        >
+          <span className="text-xl">🕑</span>
+          <span className="min-w-0 flex-1 truncate text-[15px] font-medium text-slate-800">生成历史</span>
+          <span className="shrink-0 text-xs text-slate-400">收藏 · 复用</span>
+          <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />
+        </Link>
+      </div>
+
       {/* 分组二：团队成员入口 */}
       <p className="mb-2 px-1 text-xs font-medium text-slate-400">团队</p>
       <div className="mb-5 overflow-hidden rounded-2xl bg-white">
