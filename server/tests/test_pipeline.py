@@ -276,3 +276,30 @@ def test_orchestrate_get_cancel_are_async_db():
     from services import orchestrator as orch
     assert _inspect.iscoroutinefunction(orch.get_task)
     assert _inspect.iscoroutinefunction(orch.cancel_task)
+
+
+def test_token_ceiling_derives_from_count():
+    """配额回归:token上限由次数自动推导,二者永不错配(次数永远先于token触发)。"""
+    from services.quota_service import token_ceiling, TOKENS_PER_GENERATION, DEFAULT_GENERATION_LIMIT, DEFAULT_TOKENS_LIMIT
+    assert token_ceiling(30) == 30 * TOKENS_PER_GENERATION
+    assert token_ceiling(0) == 0
+    assert DEFAULT_TOKENS_LIMIT == token_ceiling(DEFAULT_GENERATION_LIMIT)
+    # 正常用量(每次≤8000)下,次数用满时token必未超 → token不会先触发
+    assert DEFAULT_GENERATION_LIMIT * 5000 < token_ceiling(DEFAULT_GENERATION_LIMIT)
+
+
+def test_prompt_template_not_found_is_4xx():
+    """回归:未知prompt_key/模板抛400级AppException而非裸500。"""
+    from services.ai.prompt_engine import PromptTemplateNotFoundError
+    from core.exceptions import AppException
+    e = PromptTemplateNotFoundError("operation.nonexistent")
+    assert isinstance(e, AppException)
+    assert e.status_code == 400
+
+
+def test_check_quota_token_gate_uses_derived():
+    """check_quota 的 token 关卡按次数推导,不读 stored 字段。"""
+    import inspect as _inspect
+    from services.quota_service import check_quota
+    src = _inspect.getsource(check_quota)
+    assert "token_ceiling(quota.monthly_generation_limit)" in src

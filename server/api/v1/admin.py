@@ -135,8 +135,10 @@ async def activate_user(
             current_period_start=_period_start_now(),
         )
         db.add(quota)
+    # token 上限由次数自动推导,与套餐次数永远配套(check_quota 实际也按次数推导校验)
+    from services.quota_service import token_ceiling
     quota.monthly_generation_limit = plan.generation_limit
-    quota.monthly_tokens_limit = plan.token_limit
+    quota.monthly_tokens_limit = token_ceiling(plan.generation_limit)
 
     await db.commit()
     return {"status": "ok", "plan": plan.name, "expires": subscription.current_period_end}
@@ -146,20 +148,21 @@ async def activate_user(
 async def adjust_user_quota(
     user_id: str,
     generation_limit: int = None,
-    tokens_limit: int = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """单店自定义配额：不动套餐，直接调这家店的本月上限（"试用觉得好用，找我提额"的入口）。"""
+    """单店自定义配额：只设"生成次数"上限，token 上限自动配套（"试用觉得好用，找我提额"的入口）。"""
     require_admin(user)
+    if generation_limit is None:
+        raise HTTPException(status_code=422, detail="请提供 generation_limit")
 
     member = await db.scalar(select(StoreMember).where(StoreMember.user_id == user_id))
     if not member:
         raise HTTPException(status_code=404, detail="用户没有门店")
 
+    from services.quota_service import token_ceiling, _period_start_now
     quota = await db.scalar(select(UsageQuota).where(UsageQuota.store_id == member.store_id))
     if quota is None:
-        from services.quota_service import _period_start_now
         quota = UsageQuota(
             store_id=member.store_id,
             monthly_generations_used=0,
@@ -167,10 +170,8 @@ async def adjust_user_quota(
             current_period_start=_period_start_now(),
         )
         db.add(quota)
-    if generation_limit is not None:
-        quota.monthly_generation_limit = max(0, generation_limit)
-    if tokens_limit is not None:
-        quota.monthly_tokens_limit = max(0, tokens_limit)
+    quota.monthly_generation_limit = max(0, generation_limit)
+    quota.monthly_tokens_limit = token_ceiling(generation_limit)  # token 自动跟随次数
     await db.commit()
     return {
         "status": "ok",

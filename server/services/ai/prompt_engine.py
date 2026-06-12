@@ -2,13 +2,15 @@ from pathlib import Path
 
 import yaml
 
+from core.exceptions import AppException
 from models.store import Store
 
 
-class PromptTemplateNotFoundError(Exception):
-    """模板 key 不存在"""
+class PromptTemplateNotFoundError(AppException):
+    """模板 key 不存在。继承 AppException(400)：用户传了无效 prompt_key 时
+    返回 4xx 而非裸 500（仍可被 _load_knowledge_for_role 的 except 捕获）。"""
     def __init__(self, template_key: str):
-        super().__init__(f"Prompt 模板不存在: {template_key}")
+        super().__init__(f"场景模板不存在：{template_key}", status_code=400)
 
 
 class PromptVariableMissingError(Exception):

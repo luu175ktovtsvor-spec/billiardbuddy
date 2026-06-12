@@ -12,12 +12,22 @@ from models.quota import UsageQuota
 
 logger = logging.getLogger(__name__)
 
+# token 上限由"次数上限"自动推导,二者永不错配——管理员/套餐只需设置生成次数,
+# token 仅作防滥用安全网(单次约 3-5k token,留足余量按 8000/次)。
+TOKENS_PER_GENERATION = 8000
+
+
+def token_ceiling(generation_limit: int) -> int:
+    """由生成次数上限推导 token 安全网上限。"""
+    return max(0, generation_limit) * TOKENS_PER_GENERATION
+
+
 # 默认配额 = 试用档（未开通套餐的新门店）。
 # 30 次/月：店长日均 3-5 次可体验约一周，足够判断"好不好用"；
 # 生图与文本共用此池，30 次全用于生图的成本也可控。
 # 开通套餐后由 plan 的限额覆盖；管理后台也可单店调整。
 DEFAULT_GENERATION_LIMIT = 30
-DEFAULT_TOKENS_LIMIT = 200000
+DEFAULT_TOKENS_LIMIT = token_ceiling(DEFAULT_GENERATION_LIMIT)
 
 # 业务时区（月度配额按中国时区重置，避免 UTC 月底错位数小时）
 BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
@@ -82,9 +92,12 @@ async def check_quota(db: AsyncSession, store_id: str) -> UsageQuota:
         raise QuotaExceededError(
             f"本月生成次数已达上限（{quota.monthly_generation_limit} 次）。如需提升额度，请联系您的服务商"
         )
-    if quota.monthly_tokens_limit and quota.monthly_tokens_used >= quota.monthly_tokens_limit:
+    # token 安全网由次数上限推导(而非读 stored 字段),保证永远不会先于次数触发,
+    # 只拦截异常的超大用量(防滥用)。stored monthly_tokens_limit 仅供展示。
+    ceiling = token_ceiling(quota.monthly_generation_limit)
+    if ceiling and quota.monthly_tokens_used >= ceiling:
         from core.exceptions import QuotaExceededError
-        raise QuotaExceededError("本月 AI 用量已达上限。如需提升额度，请联系您的服务商")
+        raise QuotaExceededError("本月 AI 用量异常偏高，已达安全上限，请联系您的服务商")
     return quota
 
 
