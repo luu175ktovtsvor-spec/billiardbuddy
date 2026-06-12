@@ -323,3 +323,39 @@ def test_no_naive_date_today_in_user_paths():
         src = pathlib.Path(path).read_text()
         assert "date.today()" not in src, f"{path} 仍在使用 date.today()"
         assert "business_today()" in src
+
+
+def test_price_field_single_point_policy():
+    """价格直出闭环:price_info 单点策略——
+    未填→暂无;已填+允许写价格→真实数值;已填+未开启→不公开提示(不给占位符机会)。"""
+    from models.store import Store
+    from services.ai.prompt_engine import get_prompt_engine
+
+    engine = get_prompt_engine()
+
+    s_empty = Store(name="测试店", pricing=None, operation_profile=None)
+    assert engine._format_price_field(s_empty, s_empty.pricing) == "暂无"
+
+    s_open = Store(
+        name="测试店",
+        pricing={"台费": "100元/小时"},
+        operation_profile={"commerce_rules": {"allow_price_copy": True}},
+    )
+    assert "100元/小时" in engine._format_price_field(s_open, s_open.pricing)
+
+    s_closed = Store(
+        name="测试店",
+        pricing={"台费": "100元/小时"},
+        operation_profile={"commerce_rules": {"allow_price_copy": False}},
+    )
+    out = engine._format_price_field(s_closed, s_closed.pricing)
+    assert "100元/小时" not in out  # 不泄露门店不想公开的价格
+    assert "价格私我" in out
+
+
+def test_baseline_rules_prefer_real_price():
+    """规则层回归:已有真实价格优先,不再一刀切占位。"""
+    import pathlib
+    src = pathlib.Path("prompts/rules/baseline_rules.yaml").read_text()
+    assert "直接写真实数值" in src
+    assert "禁止在资料已有的情况下仍输出占位符" in src

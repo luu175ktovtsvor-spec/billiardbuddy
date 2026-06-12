@@ -72,8 +72,8 @@ class PromptEngine:
             "address": store.address or "",
             "phone": store.phone or "",
             "business_hours": store.business_hours or "",
-            "price_info": self._format_jsonb(store.pricing),
-            "member_card_info": self._format_jsonb(store.member_cards),
+            "price_info": self._format_price_field(store, store.pricing),
+            "member_card_info": self._format_price_field(store, store.member_cards),
             "target_customer": store.target_customers or "",
             "store_advantages": store.advantages or "",
             "store_style": store.style or "",
@@ -104,6 +104,21 @@ class PromptEngine:
         if isinstance(data, dict):
             return "；".join(f"{k}: {v}" for k, v in data.items())
         return str(data)
+
+    def _format_price_field(self, store: Store, data) -> str:
+        """价格类字段的单点策略(所有模板的 price_info/member_card_info 都走这里):
+        - 资料没填 → "暂无"(模板规则:不提及或用占位符)
+        - 已填 + 运营画像开启"允许写价格" → 输出真实数值,AI 直接写进文案
+        - 已填 + 未开启 → 明确告知 AI 不公开写数字(写"价格私我/详询前台"),
+          避免占位符和泄露门店不想公开的价格"""
+        if not data:
+            return "暂无"
+        formatted = self._format_jsonb(data)
+        profile = store.operation_profile if isinstance(store.operation_profile, dict) else {}
+        commerce = profile.get("commerce_rules", {}) if isinstance(profile.get("commerce_rules", {}), dict) else {}
+        if commerce.get("allow_price_copy"):
+            return formatted
+        return "门店已设置不在文案中公开写价格（需要提价格时写「价格私我/详询前台」，不要用占位符，也不要写具体数字）"
 
     def template_name(self, template_key: str) -> str:
         """返回模板的中文名称（用于知识筛选的意图文本），不存在时返回空串。"""

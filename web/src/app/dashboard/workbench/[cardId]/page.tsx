@@ -103,6 +103,10 @@ function TaskExecutionPageInner() {
   // null=未知(不禁用);0=用尽 → 禁用生成按钮并显示提额出口
   const [quotaRemaining, setQuotaRemaining] = useState<number | null>(null);
   const quotaExhausted = quotaRemaining !== null && quotaRemaining <= 0;
+  // 结果里的占位符数量(【请填写/请补充】)——大于 0 时引导用户补门店资料
+  const placeholderCount = result?.content
+    ? (result.content.match(/【请(填写|补充)/g) || []).length
+    : 0;
   const [badNoteOpen, setBadNoteOpen] = useState(false);
   const [isFavorited, setIsFavorited] = useState(false);
 
@@ -656,6 +660,21 @@ function TaskExecutionPageInner() {
                 </div>
               )}
             </div>
+
+            {/* 占位符引导:内容里有【请填写/请补充】= 门店资料缺对应信息,
+                指给用户最短的补全路径,而不是让他每次手动替换 */}
+            {!editing && !generating && placeholderCount > 0 && (
+              <div className="border-t border-amber-200 bg-amber-50 px-4 py-3">
+                <p className="text-xs text-amber-700">
+                  内容里有 {placeholderCount} 处需要手动补的信息（如价格、时间）。
+                  若是价格类：到
+                  <Link href="/dashboard/store-settings" className="mx-0.5 font-medium text-indigo-600 underline">
+                    门店设置
+                  </Link>
+                  补全「定价体系」，并在运营画像的「团购/价格规则」里开启允许写价格，重新生成即可直接带真实价格。
+                </p>
+              </div>
+            )}
 
             {/* Profile suggestions */}
             {result.profile_suggestions &&
