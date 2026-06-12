@@ -49,7 +49,6 @@ export default function AdminUsersPage() {
   const [showQuotaModal, setShowQuotaModal] = useState(false);
   const [quotaUserId, setQuotaUserId] = useState<string | null>(null);
   const [quotaGenLimit, setQuotaGenLimit] = useState("");
-  const [quotaTokensLimit, setQuotaTokensLimit] = useState("");
   const [quotaSaving, setQuotaSaving] = useState(false);
   const [quotaError, setQuotaError] = useState("");
   const [plans, setPlans] = useState<Plan[]>([]);
@@ -138,7 +137,6 @@ export default function AdminUsersPage() {
     try {
       const params = new URLSearchParams();
       if (quotaGenLimit) params.set("generation_limit", quotaGenLimit);
-      if (quotaTokensLimit) params.set("tokens_limit", quotaTokensLimit);
       const res = await fetch(`${api.baseUrl}/api/v1/admin/users/${quotaUserId}/quota?${params}`, {
         method: "PUT",
         headers: { Authorization: `Bearer ${token}` },
@@ -151,7 +149,6 @@ export default function AdminUsersPage() {
       setShowQuotaModal(false);
       setQuotaUserId(null);
       setQuotaGenLimit("");
-      setQuotaTokensLimit("");
     } catch {
       setQuotaError("网络错误，请重试");
     } finally {
@@ -312,21 +309,17 @@ export default function AdminUsersPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
             <h3 className="text-lg font-bold mb-1">调整配额</h3>
-            <p className="text-xs text-slate-400 mb-4">直接修改该用户门店的本月上限，立即生效；留空的项不变。开通/续费套餐会重新覆盖这里的值。</p>
+            <p className="text-xs text-slate-400 mb-4">设置该门店每月可生成次数，立即生效。token 用量上限会自动按次数配套，无需单独设置。开通/续费套餐会重新覆盖此值。</p>
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium mb-1">每月生成次数上限</label>
                 <input type="number" min={0} value={quotaGenLimit} onChange={(e) => setQuotaGenLimit(e.target.value)} placeholder="如：100（试用默认 30）" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
               </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">每月 tokens 上限（选填）</label>
-                <input type="number" min={0} value={quotaTokensLimit} onChange={(e) => setQuotaTokensLimit(e.target.value)} placeholder="如：500000（试用默认 200000）" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
-              </div>
               {quotaError && <p className="text-xs text-red-600">{quotaError}</p>}
             </div>
             <div className="flex justify-end gap-3 mt-6">
               <button onClick={() => { setShowQuotaModal(false); setQuotaUserId(null); setQuotaError(""); }} className="px-4 py-2 text-sm border rounded-lg hover:bg-slate-50">取消</button>
-              <button onClick={handleAdjustQuota} disabled={quotaSaving || (!quotaGenLimit && !quotaTokensLimit)} className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-50">{quotaSaving ? "保存中..." : "确认调整"}</button>
+              <button onClick={handleAdjustQuota} disabled={quotaSaving || !quotaGenLimit} className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-50">{quotaSaving ? "保存中..." : "确认调整"}</button>
             </div>
           </div>
         </div>
