@@ -13,8 +13,15 @@ interface QuotaInfo {
 /**
  * 配额徽标：显示"试用版/套餐名 · 本月剩余 N/M 次"，余量不足时升级为提额引导。
  * refreshKey 变化时重新拉取（生成完成后 +1 即可实时刷新）。
+ * onQuota：把配额回传给宿主页面（额度用尽时禁用生成按钮，免得用户点了再撞 429）。
  */
-export function QuotaBadge({ refreshKey = 0 }: { refreshKey?: number }) {
+export function QuotaBadge({
+  refreshKey = 0,
+  onQuota,
+}: {
+  refreshKey?: number;
+  onQuota?: (quota: QuotaInfo) => void;
+}) {
   const [quota, setQuota] = useState<QuotaInfo | null>(null);
 
   useEffect(() => {
@@ -22,18 +29,22 @@ export function QuotaBadge({ refreshKey = 0 }: { refreshKey?: number }) {
     api
       .getQuota()
       .then((res) => {
-        if (!cancelled)
-          setQuota({
-            limit: res.monthly_generation_limit,
-            used: res.monthly_generations_used,
-            remaining: res.remaining,
-            planName: res.plan_name,
-          });
+        if (cancelled) return;
+        const info = {
+          limit: res.monthly_generation_limit,
+          used: res.monthly_generations_used,
+          remaining: res.remaining,
+          planName: res.plan_name,
+        };
+        setQuota(info);
+        onQuota?.(info);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
+    // onQuota 是宿主每次渲染的新箭头函数,放进依赖会无限请求
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
   if (!quota) return null;

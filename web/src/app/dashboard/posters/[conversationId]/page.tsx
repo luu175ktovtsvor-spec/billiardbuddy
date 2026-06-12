@@ -113,6 +113,9 @@ function ConversationPageInner() {
   // 微信 WebView 不支持 a[download]:下载入口降级为"长按图片保存"引导
   const [inWeChat, setInWeChat] = useState(false);
   useEffect(() => setInWeChat(isWeChat()), []);
+  // null=未知(不禁用);0=用尽 → 禁用生成,免得点了再撞 429
+  const [quotaRemaining, setQuotaRemaining] = useState<number | null>(null);
+  const quotaExhausted = quotaRemaining !== null && quotaRemaining <= 0;
 
   /* Refs */
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -509,7 +512,7 @@ function ConversationPageInner() {
           )}
 
           {/* Quota（生图与文本共用次数池）*/}
-          <QuotaBadge refreshKey={quotaVersion} />
+          <QuotaBadge refreshKey={quotaVersion} onQuota={(q) => setQuotaRemaining(q.remaining)} />
 
           {/* Input area */}
           <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sticky bottom-4">
@@ -634,8 +637,9 @@ function ConversationPageInner() {
                 </div>
                 <button
                   type="button"
-                  disabled={generating || !prompt.trim()}
+                  disabled={generating || !prompt.trim() || quotaExhausted}
                   onClick={handleGenerate}
+                  title={quotaExhausted ? "本月额度已用完，联系您的服务商提升" : undefined}
                   className="rounded-xl bg-indigo-600 p-2.5 text-white hover:bg-indigo-500 disabled:opacity-50"
                 >
                   <Send className="h-4 w-4" />
@@ -683,12 +687,12 @@ function ConversationPageInner() {
               {conv.messages.length === 0 && (
                 <button
                   type="button"
-                  disabled={generating || !prompt.trim()}
+                  disabled={generating || !prompt.trim() || quotaExhausted}
                   onClick={handleGenerate}
                   className="ml-auto flex items-center gap-2 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-4 w-4" />}
-                  生成
+                  {quotaExhausted ? "额度已用完" : "生成"}
                 </button>
               )}
             </div>
