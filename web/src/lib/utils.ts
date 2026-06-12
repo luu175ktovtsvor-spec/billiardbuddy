@@ -1,5 +1,26 @@
 import { ApiError } from "@/types/api";
 
+/** 文件名安全化：去掉 Windows/Mac 文件系统非法字符 */
+export function safeFileName(s: string): string {
+  return (s || "").replace(/[\\/:*?"<>|\n\r]+/g, "").trim().slice(0, 60) || "图片";
+}
+
+/** 下载图片为本地文件（带友好命名）。失败则新标签打开兜底。 */
+export async function downloadImage(absoluteUrl: string, filename: string): Promise<void> {
+  try {
+    const res = await fetch(absoluteUrl);
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = filename.endsWith(".jpg") ? filename : filename + ".jpg";
+    a.click();
+    URL.revokeObjectURL(blobUrl);
+  } catch {
+    window.open(absoluteUrl, "_blank");
+  }
+}
+
 /**
  * Markdown 转纯文本：复制到微信/朋友圈不再满屏 ** 和 ##。
  * 表格行保留单元格文字（只去竖线），不丢内容。

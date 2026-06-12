@@ -4,7 +4,7 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/auth-context";
 import { api } from "@/lib/api";
-import { getErrorMessage } from "@/lib/utils";
+import { getErrorMessage, downloadImage, safeFileName } from "@/lib/utils";
 import { ApiError } from "@/types/api";
 import type { SizeOption, GeneratedImage } from "@/types/poster";
 import type { StoreResponse } from "@/types/store";
@@ -346,21 +346,12 @@ function ConversationPageInner() {
     });
   };
 
-  /* Download */
+  /* Download：友好命名「门店名_海报_日期时间.jpg」 */
   const handleDownload = async (img: GeneratedImage) => {
-    try {
-      const url = api.resolveUrl(img.poster_url);
-      const res = await fetch(url);
-      const blob = await res.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = blobUrl;
-      a.download = `poster_${img.generation_id}.jpg`;
-      a.click();
-      URL.revokeObjectURL(blobUrl);
-    } catch {
-      window.open(api.resolveUrl(img.poster_url), "_blank");
-    }
+    const d = new Date();
+    const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}_${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
+    const base = safeFileName(`${store?.name || "门店"}_海报_${stamp}`);
+    await downloadImage(api.resolveUrl(img.poster_url), base);
   };
 
   /* Loading */
