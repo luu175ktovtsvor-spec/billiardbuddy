@@ -303,3 +303,23 @@ def test_check_quota_token_gate_uses_derived():
     from services.quota_service import check_quota
     src = _inspect.getsource(check_quota)
     assert "token_ceiling(quota.monthly_generation_limit)" in src
+
+
+def test_business_today_is_beijing_date():
+    """回归:面向用户的"今天"一律按北京时间,不依赖服务器系统时区。
+    服务器在美国,系统时区一旦回到 UTC,date.today() 会让日报日期错 8 小时。"""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from core.timezone import business_today, BUSINESS_TZ
+
+    assert str(BUSINESS_TZ) == "Asia/Shanghai"
+    assert business_today() == datetime.now(ZoneInfo("Asia/Shanghai")).date()
+
+
+def test_no_naive_date_today_in_user_paths():
+    """回归:生成路径里不允许再出现 date.today()(裸用系统时区)。"""
+    import pathlib
+    for path in ["api/v1/stream.py", "services/content_service.py"]:
+        src = pathlib.Path(path).read_text()
+        assert "date.today()" not in src, f"{path} 仍在使用 date.today()"
+        assert "business_today()" in src

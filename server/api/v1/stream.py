@@ -1,7 +1,6 @@
 import json
 import uuid
 import logging
-from datetime import date
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -9,6 +8,7 @@ from sqlalchemy import select
 
 from api.deps import get_current_user, get_current_store, get_db
 from core.rbac import Permission, require_permission
+from core.timezone import business_today
 from models.user import User
 from models.generation import Generation
 from services.ai.factory import ProviderFactory
@@ -73,7 +73,7 @@ async def stream_workbench(
             "extra_note": extra_note or "无",
             "scenario": "日常",
             "role": ROLE_LABELS.get(inferred_role, inferred_role),
-            "date": date.today().isoformat(),
+            "date": business_today().isoformat(),
         }
         rendered_prompt = prompt_engine.render(prompt_key, store, extra_vars, lenient=True)
         # intent 带上模板中文名：用户意图为空时知识筛选仍能按场景命中（英文 key 匹配不到中文关键词）

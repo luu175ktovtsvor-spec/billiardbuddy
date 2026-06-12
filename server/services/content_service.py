@@ -1,11 +1,11 @@
 import logging
 import uuid
-from datetime import date
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from core.exceptions import AIServiceError, AIProviderError
+from core.timezone import business_today
 
 from models.user import User
 from models.store import Store
@@ -518,7 +518,7 @@ async def generate_operation(
         "target": target or "全部客户",
         "extra_note": extra_note or "无",
         "role": ROLE_LABELS.get(inferred_role, inferred_role),
-        "date": date.today().isoformat(),
+        "date": business_today().isoformat(),
     }
 
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars, lenient=True)
@@ -599,7 +599,7 @@ async def generate_workbench(
             "extra_note": extra_note or "无",
             "scenario": "日常",
             "role": ROLE_LABELS.get(inferred_role, inferred_role),
-            "date": date.today().isoformat(),
+            "date": business_today().isoformat(),
         }
         rendered_prompt = prompt_engine.render(prompt_key, store, extra_vars, lenient=True)
         # intent 带上模板中文名：用户意图为空时知识筛选仍能按场景命中

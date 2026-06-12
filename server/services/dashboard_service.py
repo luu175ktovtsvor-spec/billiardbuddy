@@ -1,10 +1,10 @@
 import uuid
 from datetime import datetime, timezone, timedelta, date
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, Integer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.timezone import BUSINESS_TZ
 from models.generation import Generation
 from models.store import Store
 from schemas.dashboard import (
@@ -13,8 +13,6 @@ from schemas.dashboard import (
     DashboardTodayResponse,
 )
 from services.store_service import calculate_completeness
-
-BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
 
 WEEKDAY_NAMES = [
     "Monday",
