@@ -10,7 +10,7 @@ import remarkGfm from "remark-gfm";
 import { Star, Clock, ChevronLeft, ChevronRight, X, MessageSquare, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { ROLE_TASKS } from "@/lib/role-workbench-config";
-import { markdownToPlainText } from "@/lib/utils";
+import { markdownToPlainText, downloadImage, safeFileName } from "@/lib/utils";
 import { useToast } from "@/components/ui/toast";
 
 const TYPE_LABELS: Record<string, string> = {
@@ -19,7 +19,49 @@ const TYPE_LABELS: Record<string, string> = {
   operation: "经营",
   workbench: "工作台",
   poster: "海报",
+  batch: "批量生成",
+  diagnosis: "经营诊断",
+  games: "玩法推荐",
+  outreach: "约客话术",
+  performance: "绩效考核",
+  repurpose: "内容变体",
+  sop: "服务话术",
 };
+
+// 协作任务类型 → 中文(sub_type 形如 collab_activity_planning)
+const COLLAB_TASK_LABELS: Record<string, string> = {
+  activity_planning: "策划活动",
+  store_opening: "新店开业",
+  staff_training: "员工培训",
+  business_review: "经营复盘",
+  custom: "自定义协作",
+};
+
+// 变体平台
+const PLATFORM_LABELS: Record<string, string> = {
+  douyin: "抖音版", xiaohongshu: "小红书版", wechat_moments: "朋友圈版", group_notice: "群公告版",
+};
+
+// 诊断问题域
+const PROBLEM_LABELS: Record<string, string> = {
+  traffic: "客流", revenue: "营收", customer_loss: "服务", staff: "团队",
+  competition: "竞争", activity_effect: "综合",
+};
+
+/** 类型/子类型标签解析:覆盖后端所有产出值,绝不向用户露出英文原值 */
+function typeLabel(type: string): string {
+  return TYPE_LABELS[type] || "内容";
+}
+function subTypeLabel(item: { type: string; sub_type: string | null }): string {
+  const sub = item.sub_type || "";
+  if (!sub) return typeLabel(item.type);
+  if (sub.startsWith("collab_")) return "协作·" + (COLLAB_TASK_LABELS[sub.slice(7)] || "方案");
+  if (item.type === "repurpose") return PLATFORM_LABELS[sub] || "内容变体";
+  if (item.type === "diagnosis") return PROBLEM_LABELS[sub] || "经营诊断";
+  if (item.type === "poster") return sub; // 比例(3:4 等)直接显示
+  const stripped = sub.includes(".") ? sub.split(".").pop()! : sub;
+  return SUB_TYPE_LABELS[sub] || SUB_TYPE_LABELS[stripped] || typeLabel(item.type);
+}
 
 /** "继续对话"跳转：按 prompt_key 找回原任务卡片并带上原始意图；找不到（自由输入等）则不显示入口 */
 function continueHref(item: GenerationHistoryItem): string | null {
@@ -385,11 +427,11 @@ export default function HistoryPage() {
               <div className="mb-2 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <span className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-medium text-indigo-600">
-                    {TYPE_LABELS[item.type] || item.type}
+                    {typeLabel(item.type)}
                   </span>
                   {item.sub_type && (
                     <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-600">
-                      {SUB_TYPE_LABELS[item.sub_type] || SUB_TYPE_LABELS[item.sub_type.split(".").pop() || ""] || item.sub_type}
+                      {subTypeLabel(item)}
                     </span>
                   )}
                   <span className="text-xs text-slate-400">
@@ -486,11 +528,11 @@ export default function HistoryPage() {
             <div className="mb-4 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-medium text-indigo-600">
-                  {TYPE_LABELS[detailItem.type] || detailItem.type}
+                  {typeLabel(detailItem.type)}
                 </span>
                 {detailItem.sub_type && (
                   <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-600">
-                    {SUB_TYPE_LABELS[detailItem.sub_type] || SUB_TYPE_LABELS[detailItem.sub_type.split(".").pop() || ""] || detailItem.sub_type}
+                    {subTypeLabel(detailItem)}
                   </span>
                 )}
                 <span className="text-xs text-slate-400">
@@ -607,12 +649,22 @@ export default function HistoryPage() {
 
             <div className="prose prose-sm prose-slate max-w-none">
               {detailItem.type === "poster" && detailItem.result ? (
-                <div className="flex justify-center">
+                <div className="flex flex-col items-center gap-3">
                   <img
-                    src={api.resolveUrl(detailItem.result)}
+                    src={api.resolveUrl(detailItem.result!)}
                     alt="生成的海报"
                     className="max-w-full rounded-lg"
                   />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const stamp = (detailItem.created_at || "").slice(0, 10).replace(/-/g, "");
+                      downloadImage(api.resolveUrl(detailItem.result!), safeFileName(`海报_${stamp}`));
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
+                  >
+                    ⬇ 下载图片
+                  </button>
                 </div>
               ) : (
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
