@@ -52,6 +52,13 @@ export default function AdminUsersPage() {
   const [quotaGenLimit, setQuotaGenLimit] = useState("");
   const [quotaSaving, setQuotaSaving] = useState(false);
   const [quotaError, setQuotaError] = useState("");
+
+  // 重置密码弹窗
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [resetUserId, setResetUserId] = useState<string | null>(null);
+  const [newPassword, setNewPassword] = useState("");
+  const [resetSaving, setResetSaving] = useState(false);
+  const [resetError, setResetError] = useState("");
   const [plans, setPlans] = useState<Plan[]>([]);
   const [selectedPlanSlug, setSelectedPlanSlug] = useState("free");
   const [months, setMonths] = useState(1);
@@ -157,6 +164,33 @@ export default function AdminUsersPage() {
     }
   };
 
+  const handleResetPassword = async () => {
+    if (!resetUserId) return;
+    if (newPassword.length < 8) { setResetError("新密码至少 8 位"); return; }
+    if (!confirm("确定将该用户密码重置为新密码?用户数据不受影响")) return;
+    setResetSaving(true);
+    setResetError("");
+    try {
+      const res = await fetch(`${api.baseUrl}/api/v1/admin/users/${resetUserId}/password?new_password=${encodeURIComponent(newPassword)}`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        setResetError(data?.detail || `重置失败 (${res.status})`);
+        return;
+      }
+      setShowResetModal(false);
+      setResetUserId(null);
+      setNewPassword("");
+      alert("已重置，请把新密码告知用户");
+    } catch {
+      setResetError("网络错误，请重试");
+    } finally {
+      setResetSaving(false);
+    }
+  };
+
   if (loading) return <div className="py-20 text-center text-slate-500">加载中...</div>;
 
   return (
@@ -198,6 +232,7 @@ export default function AdminUsersPage() {
                     <button onClick={() => handleViewDetail(u.id)} className="text-brand-600 hover:underline">详情</button>
                     <button onClick={() => { setSelectedUserId(u.id); setShowActivateModal(true); }} className="text-brand-600 hover:underline">开通订阅</button>
                     <button onClick={() => { setQuotaUserId(u.id); setQuotaError(""); setShowQuotaModal(true); }} className="text-brand-600 hover:underline">调整配额</button>
+                    <button onClick={() => { setResetUserId(u.id); setNewPassword(""); setResetError(""); setShowResetModal(true); }} className="text-brand-600 hover:underline">重置密码</button>
                     <button onClick={() => handleToggleStatus(u.id)} className={`${u.is_active ? "text-red-600" : "text-green-600"} hover:underline`}>
                       {u.is_active ? "禁用" : "启用"}
                     </button>
@@ -321,6 +356,27 @@ export default function AdminUsersPage() {
             <div className="flex justify-end gap-3 mt-6">
               <button onClick={() => { setShowQuotaModal(false); setQuotaUserId(null); setQuotaError(""); }} className="px-4 py-2 text-sm border rounded-lg hover:bg-slate-50">取消</button>
               <button onClick={handleAdjustQuota} disabled={quotaSaving || !quotaGenLimit} className="px-4 py-2 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-500 disabled:opacity-50">{quotaSaving ? "保存中..." : "确认调整"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 重置密码弹窗：管理员代用户设置新密码，用户数据不受影响 */}
+      {showResetModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
+            <h3 className="text-lg font-bold mb-1">重置密码</h3>
+            <p className="text-xs text-slate-400 mb-4">为该用户设置新密码，重置后请把新密码告知用户。</p>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">新密码（至少 8 位）</label>
+                <input type="text" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="输入新密码" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+              </div>
+              {resetError && <p className="text-xs text-red-600">{resetError}</p>}
+            </div>
+            <div className="flex justify-end gap-3 mt-6">
+              <button onClick={() => { setShowResetModal(false); setResetUserId(null); setNewPassword(""); setResetError(""); }} className="px-4 py-2 text-sm border rounded-lg hover:bg-slate-50">取消</button>
+              <button onClick={handleResetPassword} disabled={resetSaving || newPassword.length < 8} className="px-4 py-2 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-500 disabled:opacity-50">{resetSaving ? "重置中..." : "确认重置"}</button>
             </div>
           </div>
         </div>

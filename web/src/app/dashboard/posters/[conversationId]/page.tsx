@@ -186,13 +186,17 @@ function ConversationPageInner() {
           }
         }
         const lastMsg = detail.messages[detail.messages.length - 1];
+        // 历史页"继续调整这张图"带 ?refine=生成ID 进入:基准图定位到那张(须真实存在)
+        const refineParam = searchParams.get("refine");
+        const refineValid =
+          refineParam && detail.messages.some((m) => m.generation_id === refineParam);
         // 用函数式更新保留本地已选设置：新对话首图生成后 URL replace 会重跑本 effect，
         // 硬编码默认值会把用户选的质量/门店信息/禁文字静默重置
         setConv((prev) => ({
           id: detail.id,
           title: detail.title,
           messages,
-          refineFrom: lastMsg?.generation_id || null,
+          refineFrom: (refineValid ? refineParam : lastMsg?.generation_id) || null,
           ratio: lastMsg?.ratio || prev.ratio || "3:4",
           quality: prev.quality,
           references: refPaths.map((p) => ({ path: p, preview: api.resolveUrl(p) })),

@@ -155,7 +155,7 @@ server/                 # FastAPI 后端
 
 ## 核心架构原则
 
-1. **场景驱动，不是对话驱动** — 用户通过岗位工作台（Workbench）的场景卡片+自然语言输入触发 AI 生成，不做自由聊天
+1. **场景卡片为主 + 自由对话为辅（2026-06-13 用户拍板调整）** — 岗位工作台场景卡片仍是主路径；新增独立对话入口 `/dashboard/chat`（DeepSeek 式对话），走同一条 free_intent 生成管道：门店画像、行业知识库、合规过滤、配额、落库全部生效，不是裸聊大模型
 2. **门店数据隔离** — 所有业务数据绑定 `store_id`，通过 `core/tenant.py` 自动过滤（contextvars + do_orm_execute 事件监听器），fail-safe 设计
 3. **统一 RBAC 权限** — 通过 `core/rbac.py` 的权限矩阵 + `require_permission()` 依赖工厂实现集中式权限控制，6 个角色各有不同权限
 4. **AI Provider 抽象** — 文本模型和图片模型各有独立抽象基类（`TextProvider` / `ImageProvider`），通过 `ProviderFactory` 创建实例
@@ -222,6 +222,12 @@ template: |
 ## 代码同步与部署
 
 代码通过 GitHub 同步，服务器通过 git pull 拉取。
+
+**分支与发布流程（2026-06-13 起，保护线上用户体验）：**
+- `main` = 线上稳定版，服务器只部署 main；**日常开发一律在 `dev` 分支**，不直接改 main
+- 攒一批改动在 dev 验证完（tsc/build/pytest 全绿 + 本地过一遍），用户说"上线"才合并 main 并部署——避免频繁上线打扰正在使用的用户
+- 紧急线上 bug 可直接在 main 修并立即部署，修完同步回 dev
+- 落地页暂未启用：生产 `/` 直跳登录；落地页代码在 `/landing-preview`（无入口，内部调样式用），正式启用时搬回 `app/page.tsx`
 
 ```bash
 # 本地改完代码后
@@ -299,6 +305,12 @@ journalctl -u billiards-backend -n 50 --no-pager
 | 工作台卡片搜索 + 默认岗位跟随 my_role | ✅ |
 | 数据库每日备份（cron 4:30 + /var/backups/billiards 保留7天） | ✅ |
 | 前端错误上报（POST /api/v1/logs/client，journalctl 查 client-error） | ✅ |
+| AI 自由对话（/dashboard/chat，同管道含知识库；FAB"问AI·写文案"直达） | ✅ |
+| 协作拆分（场景馆 8 卡含 4 个 custom 预设 + 独立执行页 /collaborate/run） | ✅ |
+| 生成记录命名（migration 016 title 列 + PATCH /title + 历史改名/搜索含名） | ✅ |
+| 海报续修（历史详情"继续调整这张图"→ 原对话 ?refine= 定位基准图） | ✅ |
+| 管理后台重置密码（PUT /admin/users/{id}/password，不动用户数据） | ✅ |
+| 场景图标体系（lib/scene-icons 语义映射 lucide，替代随机 emoji） | ✅ |
 
 ## 行业知识体系
 

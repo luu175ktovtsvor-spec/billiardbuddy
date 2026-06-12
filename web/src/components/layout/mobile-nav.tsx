@@ -31,6 +31,7 @@ const DEEP_PREFIXES = [
   "/dashboard/posters/",
   "/dashboard/history/",
   "/dashboard/store-settings/",
+  "/dashboard/chat",
 ];
 
 export function MobileNav() {
@@ -87,13 +88,13 @@ export function MobileNav() {
             type="button"
             onClick={() => {
               setCreateOpen(false);
-              router.push("/dashboard/workbench");
+              router.push("/dashboard/chat");
             }}
             className="flex flex-col items-center gap-2 rounded-2xl bg-brand-50 px-4 py-5 active:scale-[0.97] transition-transform"
           >
             <PenLine className="h-7 w-7 text-brand-600" />
-            <span className="text-[15px] font-medium text-slate-900">写文案</span>
-            <span className="text-xs text-slate-500">朋友圈 / 群公告 / 活动…</span>
+            <span className="text-[15px] font-medium text-slate-900">问 AI · 写文案</span>
+            <span className="text-xs text-slate-500">直接说需求,对话式出成品</span>
           </button>
           <button
             type="button"

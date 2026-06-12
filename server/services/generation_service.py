@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import or_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.generation import Generation
@@ -30,8 +30,9 @@ async def list_generations(
     if effect_rating:
         conditions.append(Generation.effect_rating == effect_rating)
     if search and search.strip():
-        # 关键词搜索生成内容（"找上次那条赛事通知"不用一页页翻）
-        conditions.append(Generation.result.ilike(f"%{search.strip()[:50]}%"))
+        # 关键词搜索:内容 + 用户命名(海报靠名字找图)
+        kw = f"%{search.strip()[:50]}%"
+        conditions.append(or_(Generation.result.ilike(kw), Generation.title.ilike(kw)))
 
     count_query = select(func.count()).select_from(Generation).where(*conditions)
     total_result = await db.execute(count_query)

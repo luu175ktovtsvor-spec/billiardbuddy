@@ -28,6 +28,8 @@ class Generation(Base):
     model_used: Mapped[str | None] = mapped_column(String(100))
     tokens_used: Mapped[int | None] = mapped_column(Integer)
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False, server_default=func.false())
+    # 用户自定义命名(海报找图/历史检索友好);空则前端用 prompt 派生展示名
+    title: Mapped[str | None] = mapped_column(String(80), nullable=True)
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True, index=True
     )

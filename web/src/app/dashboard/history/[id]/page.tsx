@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Star, ChevronLeft, MessageSquare, Download } from "lucide-react";
+import { Star, ChevronLeft, MessageSquare, Download, Pencil } from "lucide-react";
 import { api } from "@/lib/api";
 import { ApiError } from "@/types/api";
 import type { GenerationHistoryItem } from "@/types/generation-history";
@@ -23,6 +23,14 @@ const REPURPOSE_PLATFORMS = [
   { platform: "wechat_moments", label: "朋友圈" },
 ];
 
+/** 展示名:用户命名 > prompt 前 18 字 > 兜底"未命名" */
+function displayTitle(item: GenerationHistoryItem): string {
+  if (item.title) return item.title;
+  const prompt = item.input_params?.prompt;
+  if (typeof prompt === "string" && prompt.trim()) return prompt.trim().slice(0, 18);
+  return "未命名";
+}
+
 export default function HistoryDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -37,6 +45,9 @@ export default function HistoryDetailPage() {
   // 微信 WebView 不支持 a[download]:改为"长按图片保存"引导
   const [inWeChat, setInWeChat] = useState(false);
   useEffect(() => setInWeChat(isWeChat()), []);
+  // 命名行内编辑(仅此功能自身 state)
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleInput, setTitleInput] = useState("");
 
   const fetchDetail = useCallback(async () => {
     setLoading(true);
@@ -77,6 +88,18 @@ export default function HistoryDetailPage() {
       toast(rating === "good" ? "已记录，之后会多写这种" : "已记录，之后会避开这种", "success");
     } catch {
       // silent
+    }
+  };
+
+  const handleSaveTitle = async () => {
+    if (!item) return;
+    try {
+      const res = await api.updateGenerationTitle(item.id, titleInput.trim());
+      setItem({ ...item, title: res.title });
+      setEditingTitle(false);
+      toast("已命名", "success");
+    } catch (err) {
+      toast(err instanceof ApiError ? err.detail : "保存失败，请重试", "error");
     }
   };
 
@@ -169,6 +192,54 @@ export default function HistoryDetailPage() {
         </span>
       </div>
 
+      {/* 命名行：展示名 + 铅笔进入行内编辑 */}
+      <div className="mb-4 flex items-center gap-1.5">
+        {editingTitle ? (
+          <>
+            <input
+              type="text"
+              value={titleInput}
+              onChange={(e) => setTitleInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleSaveTitle();
+              }}
+              placeholder="给这条内容起个名字"
+              autoFocus
+              className="h-10 min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={handleSaveTitle}
+              className="h-10 shrink-0 rounded-xl bg-brand-600 px-4 text-sm font-medium text-white hover:bg-brand-500 active:scale-[0.98] transition-colors"
+            >
+              保存
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditingTitle(false)}
+              className="h-10 shrink-0 rounded-xl border border-slate-200 bg-white px-4 text-sm text-slate-600 hover:bg-slate-50 active:scale-[0.98] transition-colors"
+            >
+              取消
+            </button>
+          </>
+        ) : (
+          <>
+            <p className="truncate text-[15px] font-semibold text-slate-900">{displayTitle(item)}</p>
+            <button
+              type="button"
+              onClick={() => {
+                setTitleInput(item.title || "");
+                setEditingTitle(true);
+              }}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-slate-400 hover:bg-slate-50 hover:text-brand-600 active:bg-slate-100 transition-colors"
+              title="命名"
+            >
+              <Pencil className="h-4 w-4" />
+            </button>
+          </>
+        )}
+      </div>
+
       {/* 操作栏：h-11 等宽排布 */}
       <div className="mb-4 flex items-stretch gap-2">
         <button
@@ -195,6 +266,14 @@ export default function HistoryDetailPage() {
           >
             <MessageSquare className="h-4 w-4" />
             继续对话
+          </Link>
+        )}
+        {item.type === "poster" && item.conversation_id && (
+          <Link
+            href={`/dashboard/posters/${item.conversation_id}?refine=${item.id}`}
+            className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-xl bg-brand-600 text-[15px] font-medium text-white hover:bg-brand-500 active:scale-[0.98] transition-colors"
+          >
+            继续调整这张图
           </Link>
         )}
       </div>

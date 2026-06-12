@@ -1,3 +1,5 @@
+import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
@@ -15,6 +17,7 @@ from models.quota import UsageQuota
 # 注意：前缀由 router.py 统一指定（include_router(prefix="/admin")），此处不得再写
 # prefix——否则双前缀变成 /api/v1/admin/admin/*，整个管理后台 404（历史教训）
 router = APIRouter(tags=["admin"])
+logger = logging.getLogger(__name__)
 
 
 def require_admin(user: User):
@@ -73,6 +76,35 @@ async def list_users(
         for u in users.all()
     ]
     return {"items": items, "total": total, "page": page}
+
+
+@router.put("/users/{user_id}/password")
+async def admin_reset_password(
+    user_id: str,
+    new_password: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """管理员替用户重置密码(用户忘记密码时人工处理)。
+    只更新密码哈希,不动用户/门店/生成历史的任何数据。"""
+    require_admin(user)
+
+    if len(new_password) < 8:
+        raise HTTPException(status_code=422, detail="密码至少 8 位")
+
+    try:
+        target_id = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    target = await db.get(User, target_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    from core.security import hash_password
+    target.password_hash = hash_password(new_password)
+    await db.commit()
+    logger.info("admin %s reset password for user %s(%s)", user.id, target.id, target.phone)
+    return {"status": "ok", "phone": target.phone}
 
 
 @router.post("/users/{user_id}/activate")
