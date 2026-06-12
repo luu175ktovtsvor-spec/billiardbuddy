@@ -164,7 +164,7 @@ export default function AdminUsersPage() {
       <h1 className="text-2xl font-bold mb-6">用户管理</h1>
 
       <div className="mb-4">
-        <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索手机号或名称..." className="w-full max-w-sm rounded-lg border border-slate-200 px-4 py-2 text-sm focus:border-indigo-500 focus:outline-none" />
+        <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索手机号或名称..." className="w-full max-w-sm rounded-lg border border-slate-200 px-4 py-2 text-sm focus:border-brand-500 focus:outline-none" />
       </div>
 
       <div className="rounded-lg border bg-white shadow-sm">
@@ -190,14 +190,14 @@ export default function AdminUsersPage() {
                   </span>
                 </td>
                 <td className="px-4 py-3 text-sm">
-                  {u.is_admin ? <span className="rounded bg-indigo-100 px-2 py-0.5 text-xs text-indigo-700">管理员</span> : <span className="text-slate-500">用户</span>}
+                  {u.is_admin ? <span className="rounded bg-brand-100 px-2 py-0.5 text-xs text-brand-700">管理员</span> : <span className="text-slate-500">用户</span>}
                 </td>
                 <td className="px-4 py-3 text-sm text-slate-500">{new Date(u.created_at).toLocaleDateString("zh-CN")}</td>
                 <td className="px-4 py-3 text-sm">
                   <div className="flex gap-2">
-                    <button onClick={() => handleViewDetail(u.id)} className="text-indigo-600 hover:underline">详情</button>
-                    <button onClick={() => { setSelectedUserId(u.id); setShowActivateModal(true); }} className="text-indigo-600 hover:underline">开通订阅</button>
-                    <button onClick={() => { setQuotaUserId(u.id); setQuotaError(""); setShowQuotaModal(true); }} className="text-indigo-600 hover:underline">调整配额</button>
+                    <button onClick={() => handleViewDetail(u.id)} className="text-brand-600 hover:underline">详情</button>
+                    <button onClick={() => { setSelectedUserId(u.id); setShowActivateModal(true); }} className="text-brand-600 hover:underline">开通订阅</button>
+                    <button onClick={() => { setQuotaUserId(u.id); setQuotaError(""); setShowQuotaModal(true); }} className="text-brand-600 hover:underline">调整配额</button>
                     <button onClick={() => handleToggleStatus(u.id)} className={`${u.is_active ? "text-red-600" : "text-green-600"} hover:underline`}>
                       {u.is_active ? "禁用" : "启用"}
                     </button>
@@ -299,7 +299,7 @@ export default function AdminUsersPage() {
             </div>
             <div className="flex justify-end gap-3 mt-6">
               <button onClick={() => { setShowActivateModal(false); setSelectedUserId(null); }} className="px-4 py-2 text-sm border rounded-lg hover:bg-slate-50">取消</button>
-              <button onClick={handleActivate} disabled={activating} className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-50">{activating ? "开通中..." : "确认开通"}</button>
+              <button onClick={handleActivate} disabled={activating} className="px-4 py-2 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-500 disabled:opacity-50">{activating ? "开通中..." : "确认开通"}</button>
             </div>
           </div>
         </div>
@@ -320,7 +320,7 @@ export default function AdminUsersPage() {
             </div>
             <div className="flex justify-end gap-3 mt-6">
               <button onClick={() => { setShowQuotaModal(false); setQuotaUserId(null); setQuotaError(""); }} className="px-4 py-2 text-sm border rounded-lg hover:bg-slate-50">取消</button>
-              <button onClick={handleAdjustQuota} disabled={quotaSaving || !quotaGenLimit} className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-50">{quotaSaving ? "保存中..." : "确认调整"}</button>
+              <button onClick={handleAdjustQuota} disabled={quotaSaving || !quotaGenLimit} className="px-4 py-2 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-500 disabled:opacity-50">{quotaSaving ? "保存中..." : "确认调整"}</button>
             </div>
           </div>
         </div>

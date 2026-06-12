@@ -9,7 +9,7 @@ export default function LandingPage() {
           <h1 className="text-xl font-bold">球房 AI 运营助手</h1>
           <div className="flex gap-3">
             <Link href="/login" className="px-4 py-2 text-sm">登录</Link>
-            <Link href="/register" className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-md">免费试用</Link>
+            <Link href="/register" className="px-4 py-2 text-sm bg-brand-600 text-white rounded-md">免费试用</Link>
           </div>
         </div>
       </header>
@@ -18,7 +18,7 @@ export default function LandingPage() {
       <section className="mx-auto max-w-6xl px-6 py-20 text-center">
         <h2 className="text-4xl font-bold mb-4">AI 帮你写球房运营文案，每天省 2 小时</h2>
         <p className="text-lg text-slate-600 mb-8">专为台球房管理层设计，朋友圈/活动策划/海报一键生成</p>
-        <Link href="/register" className="px-8 py-3 bg-indigo-600 text-white rounded-lg text-lg">免费试用</Link>
+        <Link href="/register" className="px-8 py-3 bg-brand-600 text-white rounded-lg text-lg">免费试用</Link>
       </section>
 
       {/* 功能展示 */}
@@ -51,7 +51,7 @@ export default function LandingPage() {
             { role: "运营", tasks: "朋友圈计划/短视频文案/抖音矩阵" },
           ].map((r, i) => (
             <div key={i} className="rounded-lg border bg-white p-4">
-              <h3 className="font-bold text-sm text-indigo-600 mb-1">{r.role}</h3>
+              <h3 className="font-bold text-sm text-brand-600 mb-1">{r.role}</h3>
               <p className="text-sm text-slate-600">{r.tasks}</p>
             </div>
           ))}

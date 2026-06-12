@@ -27,7 +27,7 @@ export function Sidebar() {
     <aside className="hidden lg:flex lg:w-60 lg:flex-col lg:fixed lg:inset-y-0 bg-sidebar text-white">
       {/* Logo */}
       <div className="flex h-16 items-center gap-3 px-6">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-500">
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-500">
           <span className="text-sm font-bold text-white">AI</span>
         </div>
         <span className="text-sm font-semibold text-white">球房运营助手</span>

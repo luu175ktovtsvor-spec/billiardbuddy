@@ -33,7 +33,7 @@ export function Header() {
   }, []);
 
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-slate-200 bg-white/80 backdrop-blur-sm px-4 sm:px-6">
+    <header className="sticky top-0 z-30 hidden h-16 items-center justify-between border-b border-slate-200 bg-white/80 backdrop-blur-sm px-4 sm:px-6 lg:flex">
       {/* Left: Store switcher */}
       <div className="relative" ref={ref}>
         <button
@@ -65,7 +65,7 @@ export function Header() {
               <Link
                 href="/dashboard/store-settings"
                 onClick={() => setOpen(false)}
-                className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-indigo-600 hover:bg-slate-50"
+                className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-brand-600 hover:bg-slate-50"
               >
                 <Store className="h-4 w-4" />
                 创建门店

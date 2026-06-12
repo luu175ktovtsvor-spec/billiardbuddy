@@ -51,14 +51,14 @@ const ICONS: Record<ToastType, React.ReactNode> = {
   success: <CheckCircle className="h-4 w-4 text-emerald-500" />,
   error: <XCircle className="h-4 w-4 text-red-500" />,
   warning: <AlertCircle className="h-4 w-4 text-amber-500" />,
-  info: <Info className="h-4 w-4 text-indigo-500" />,
+  info: <Info className="h-4 w-4 text-brand-500" />,
 };
 
 const BG_COLORS: Record<ToastType, string> = {
   success: "bg-emerald-50 border-emerald-200",
   error: "bg-red-50 border-red-200",
   warning: "bg-amber-50 border-amber-200",
-  info: "bg-indigo-50 border-indigo-200",
+  info: "bg-brand-50 border-brand-200",
 };
 
 function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }) {

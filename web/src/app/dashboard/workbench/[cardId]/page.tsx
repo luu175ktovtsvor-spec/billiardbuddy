@@ -302,7 +302,7 @@ function TaskExecutionPageInner() {
   if (authLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="h-6 w-6 animate-spin text-indigo-600" />
+        <Loader2 className="h-6 w-6 animate-spin text-brand-600" />
       </div>
     );
   }
@@ -327,7 +327,7 @@ function TaskExecutionPageInner() {
           <button
             type="button"
             onClick={() => router.push("/dashboard/workbench")}
-            className="text-sm text-indigo-600 hover:text-indigo-500"
+            className="text-sm text-brand-600 hover:text-brand-500"
           >
             返回工作台
           </button>
@@ -383,7 +383,7 @@ function TaskExecutionPageInner() {
             maxLength={500}
             value={intent}
             onChange={(e) => setIntent(e.target.value)}
-            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 resize-none"
+            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none"
             placeholder="例如：好久没联系老客户了，帮我发几句话约他们来打球"
           />
           <p className="mt-1 text-right text-xs text-slate-400">
@@ -407,7 +407,7 @@ function TaskExecutionPageInner() {
                       prev ? `${prev}，${hint}` : hint
                     )
                   }
-                  className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-500 hover:border-indigo-300 hover:text-indigo-600 transition-colors"
+                  className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-500 hover:border-brand-300 hover:text-brand-600 transition-colors"
                 >
                   {hint}
                 </button>
@@ -425,7 +425,7 @@ function TaskExecutionPageInner() {
             <select
               value={role}
               onChange={(e) => setRole(e.target.value as WorkbenchRole)}
-              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none"
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-brand-500 focus:outline-none"
             >
               {ROLE_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -443,7 +443,7 @@ function TaskExecutionPageInner() {
               onChange={(e) =>
                 setTargetCustomer(e.target.value as TargetCustomerType)
               }
-              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none"
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-brand-500 focus:outline-none"
             >
               {CUSTOMER_TYPE_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -471,8 +471,8 @@ function TaskExecutionPageInner() {
                   onClick={() => setOutputPackage(combo.packages)}
                   className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
                     isActive
-                      ? "border-indigo-500 bg-indigo-600 text-white"
-                      : "border-indigo-200 bg-indigo-50 text-indigo-600 hover:bg-indigo-100"
+                      ? "border-brand-500 bg-brand-600 text-white"
+                      : "border-brand-200 bg-brand-50 text-brand-600 hover:bg-brand-100"
                   }`}
                 >
                   {combo.label}
@@ -502,7 +502,7 @@ function TaskExecutionPageInner() {
                           key={opt.value}
                           className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs cursor-pointer transition-colors ${
                             checked
-                              ? "border-indigo-500 bg-indigo-50 text-indigo-600"
+                              ? "border-brand-500 bg-brand-50 text-brand-600"
                               : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
                           }`}
                         >
@@ -516,7 +516,7 @@ function TaskExecutionPageInner() {
                                   : [...prev, opt.value]
                               );
                             }}
-                            className="h-3 w-3 rounded border-slate-300 text-indigo-600"
+                            className="h-3 w-3 rounded border-slate-300 text-brand-600"
                           />
                           {opt.label}
                         </label>
@@ -540,7 +540,7 @@ function TaskExecutionPageInner() {
             maxLength={200}
             value={extraNote}
             onChange={(e) => setExtraNote(e.target.value)}
-            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 resize-none"
+            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none"
             placeholder="如：不要太长、别写优惠"
           />
         </div>
@@ -550,7 +550,7 @@ function TaskExecutionPageInner() {
           type="button"
           disabled={generating || !intent.trim() || quotaExhausted}
           onClick={() => doGenerate()}
-          className="flex w-full items-center justify-center gap-2 rounded-md bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-150 active:scale-[0.98]"
+          className="flex w-full items-center justify-center gap-2 rounded-md bg-brand-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-150 active:scale-[0.98]"
         >
           {quotaExhausted ? (
             <>本月额度已用完 · 联系您的服务商提升，当月立即生效</>
@@ -590,8 +590,8 @@ function TaskExecutionPageInner() {
           <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-100 px-4 py-3">
               <div className="flex items-center gap-2">
-                <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
-                <p className="text-sm font-medium text-indigo-600">
+                <Loader2 className="h-4 w-4 animate-spin text-brand-600" />
+                <p className="text-sm font-medium text-brand-600">
                   AI 正在生成中...
                 </p>
               </div>
@@ -602,7 +602,7 @@ function TaskExecutionPageInner() {
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
                     {streamingContent}
                   </ReactMarkdown>
-                  <span className="inline-block w-0.5 h-4 bg-indigo-600 animate-pulse ml-0.5 align-text-bottom" />
+                  <span className="inline-block w-0.5 h-4 bg-brand-600 animate-pulse ml-0.5 align-text-bottom" />
                 </div>
                 <div className="mt-2 text-xs text-slate-400 text-right">
                   已生成 {streamingContent.length} 字
@@ -635,7 +635,7 @@ function TaskExecutionPageInner() {
                   {outputPackage.map((pkg) => (
                     <span
                       key={pkg}
-                      className="inline-block rounded-full bg-indigo-50 px-2 py-0.5 text-xs text-indigo-600"
+                      className="inline-block rounded-full bg-brand-50 px-2 py-0.5 text-xs text-brand-600"
                     >
                       {getOutputPackageLabel(pkg)}
                     </span>
@@ -650,7 +650,7 @@ function TaskExecutionPageInner() {
                 <textarea
                   value={editedContent}
                   onChange={(e) => setEditedContent(e.target.value)}
-                  className="w-full min-h-[200px] rounded-lg border border-indigo-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 resize-y"
+                  className="w-full min-h-[200px] rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-y"
                 />
               ) : (
                 <div className="prose prose-sm max-w-none prose-slate prose-headings:text-slate-900 prose-p:text-slate-700 prose-strong:text-slate-900 prose-li:text-slate-700 prose-th:bg-slate-50 prose-th:text-slate-700 prose-td:text-slate-600">
@@ -668,7 +668,7 @@ function TaskExecutionPageInner() {
                 <p className="text-xs text-amber-700">
                   内容里有 {placeholderCount} 处需要手动补的信息（如价格、时间）。
                   若是价格类：到
-                  <Link href="/dashboard/store-settings" className="mx-0.5 font-medium text-indigo-600 underline">
+                  <Link href="/dashboard/store-settings" className="mx-0.5 font-medium text-brand-600 underline">
                     门店设置
                   </Link>
                   补全「定价体系」，并在运营画像的「团购/价格规则」里开启允许写价格，重新生成即可直接带真实价格。
@@ -686,7 +686,7 @@ function TaskExecutionPageInner() {
                     </p>
                     <Link
                       href="/dashboard/store-settings"
-                      className="text-xs font-medium text-indigo-600 underline hover:text-indigo-600"
+                      className="text-xs font-medium text-brand-600 underline hover:text-brand-600"
                     >
                       去补充
                     </Link>
@@ -717,7 +717,7 @@ function TaskExecutionPageInner() {
                   onClick={() =>
                     handleCopy(editing ? editedContent : result.content)
                   }
-                  className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-all duration-150 active:scale-[0.98]"
+                  className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 transition-all duration-150 active:scale-[0.98]"
                 >
                   {copied ? (
                     <Check className="h-4 w-4" />
@@ -742,8 +742,8 @@ function TaskExecutionPageInner() {
 
               {/* "Based on this" optimization（编辑态收起，防止未保存的修改被 AI 重新生成吞掉） */}
               {conversationId && !editing && (
-                <div className="mb-2 rounded-md border border-indigo-200 bg-indigo-50 p-2.5">
-                  <p className="text-xs text-indigo-600 mb-1.5">
+                <div className="mb-2 rounded-md border border-brand-200 bg-brand-50 p-2.5">
+                  <p className="text-xs text-brand-600 mb-1.5">
                     基于上一条结果继续优化（点一下或直接说）：
                   </p>
                   <div className="mb-2 flex flex-wrap gap-1.5">
@@ -753,7 +753,7 @@ function TaskExecutionPageInner() {
                         type="button"
                         disabled={generating}
                         onClick={() => doGenerate({ optimizeNote: t })}
-                        className="rounded-full border border-indigo-200 bg-white px-2.5 py-1 text-xs text-indigo-600 hover:bg-indigo-100 disabled:opacity-50 transition-colors"
+                        className="rounded-full border border-brand-200 bg-white px-2.5 py-1 text-xs text-brand-600 hover:bg-brand-100 disabled:opacity-50 transition-colors"
                       >
                         {t.split("，")[0]}
                       </button>
@@ -763,7 +763,7 @@ function TaskExecutionPageInner() {
                     <input
                       type="text"
                       placeholder="想改哪里？直接说..."
-                      className="flex-1 rounded-md border border-indigo-200 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none"
+                      className="flex-1 rounded-md border border-brand-200 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none"
                       onKeyDown={async (e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
                           const target = e.target as HTMLInputElement;
@@ -796,7 +796,7 @@ function TaskExecutionPageInner() {
                         }
                       }
                     }}
-                    className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-600 hover:bg-indigo-100 transition-colors"
+                    className="inline-flex items-center gap-1 rounded-md border border-brand-200 bg-brand-50 px-3 py-1.5 text-xs font-medium text-brand-600 hover:bg-brand-100 transition-colors"
                   >
                     <Check className="h-3 w-3" />
                     保存修改
@@ -815,7 +815,7 @@ function TaskExecutionPageInner() {
                     type="button"
                     onClick={() => doGenerate()}
                     disabled={generating}
-                    className="inline-flex items-center gap-1 text-slate-500 hover:text-indigo-600 transition-colors"
+                    className="inline-flex items-center gap-1 text-slate-500 hover:text-brand-600 transition-colors"
                   >
                     <RefreshCw className="h-3 w-3" />
                     重新生成
@@ -824,7 +824,7 @@ function TaskExecutionPageInner() {
                     <button
                       type="button"
                       onClick={() => setShowMoreActions(!showMoreActions)}
-                      className="inline-flex items-center gap-1 text-slate-500 hover:text-indigo-600 transition-colors"
+                      className="inline-flex items-center gap-1 text-slate-500 hover:text-brand-600 transition-colors"
                     >
                       <MoreHorizontal className="h-3 w-3" />
                       更多
@@ -952,7 +952,7 @@ function TaskExecutionPageInner() {
         {/* Empty state */}
         {!result && !generating && !error && (
           <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-slate-200 bg-white py-16 px-6 text-center shadow-sm">
-            <Sparkles className="h-8 w-8 text-indigo-300 mb-2" />
+            <Sparkles className="h-8 w-8 text-brand-300 mb-2" />
             <p className="text-sm font-medium text-slate-500 mb-1">
               点击上方按钮开始生成
             </p>
@@ -976,9 +976,9 @@ function TaskExecutionPageInner() {
                 <Link
                   key={nextCard.id}
                   href={`/dashboard/workbench/${nextCard.id}`}
-                  className="flex items-start gap-2 rounded-lg border border-slate-200 p-3 text-left hover:border-indigo-200 hover:bg-indigo-50/50 transition-all"
+                  className="flex items-start gap-2 rounded-lg border border-slate-200 p-3 text-left hover:border-brand-200 hover:bg-brand-50/50 transition-all"
                 >
-                  <ArrowRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-indigo-400" />
+                  <ArrowRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand-400" />
                   <div>
                     <p className="text-xs font-medium text-slate-700">
                       {nextCard.title}
@@ -993,7 +993,7 @@ function TaskExecutionPageInner() {
             <button
               type="button"
               onClick={() => router.push("/dashboard/workbench")}
-              className="mt-3 text-xs text-indigo-500 hover:text-indigo-600 transition-colors"
+              className="mt-3 text-xs text-brand-500 hover:text-brand-600 transition-colors"
             >
               查看全部任务 ↑
             </button>
@@ -1011,7 +1011,7 @@ export default function TaskExecutionPage() {
     <Suspense
       fallback={
         <div className="flex items-center justify-center py-20">
-          <Loader2 className="h-6 w-6 animate-spin text-indigo-600" />
+          <Loader2 className="h-6 w-6 animate-spin text-brand-600" />
         </div>
       }
     >

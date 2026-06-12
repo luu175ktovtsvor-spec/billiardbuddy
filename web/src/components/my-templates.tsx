@@ -102,7 +102,7 @@ export function MyTemplates() {
         </div>
         <Link
           href="/dashboard/history?favorite=1"
-          className="inline-flex items-center gap-0.5 text-xs text-slate-400 hover:text-indigo-600"
+          className="inline-flex items-center gap-0.5 text-xs text-slate-400 hover:text-brand-600"
         >
           全部
           <ChevronRight className="h-3 w-3" />
@@ -124,7 +124,7 @@ export function MyTemplates() {
               {href && (
                 <Link
                   href={href}
-                  className="shrink-0 inline-flex items-center gap-1 rounded-md bg-indigo-50 px-2.5 py-1.5 text-xs font-medium text-indigo-600 hover:bg-indigo-100 transition-colors"
+                  className="shrink-0 inline-flex items-center gap-1 rounded-md bg-brand-50 px-2.5 py-1.5 text-xs font-medium text-brand-600 hover:bg-brand-100 transition-colors"
                 >
                   <Sparkles className="h-3 w-3" />
                   再写一条

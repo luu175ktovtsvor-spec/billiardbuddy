@@ -122,13 +122,13 @@ export default function HistoryPage() {
               }
             }}
             placeholder="搜索内容关键词，回车"
-            className="w-44 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none"
+            className="w-44 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none"
           />
           {search && (
             <button
               type="button"
               onClick={() => { setSearch(""); setSearchInput(""); setPage(1); }}
-              className="rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-sm text-indigo-600 hover:bg-indigo-100"
+              className="rounded-lg border border-brand-200 bg-brand-50 px-2.5 py-1.5 text-sm text-brand-600 hover:bg-brand-100"
             >
               「{search}」✕
             </button>
@@ -177,7 +177,7 @@ export default function HistoryPage() {
                 onClick={() => { setTypeFilter(t.value); setPage(1); }}
                 className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
                   typeFilter === t.value
-                    ? "bg-indigo-600 text-white"
+                    ? "bg-brand-600 text-white"
                     : "text-slate-500 hover:text-slate-700"
                 }`}
               >
@@ -237,7 +237,7 @@ export default function HistoryPage() {
             >
               <div className="mb-2 flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <span className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-medium text-indigo-600">
+                  <span className="rounded-full bg-brand-50 px-2.5 py-0.5 text-xs font-medium text-brand-600">
                     {typeLabel(item.type)}
                   </span>
                   {item.sub_type && (

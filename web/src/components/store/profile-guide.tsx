@@ -22,14 +22,14 @@ export function ProfileGuide({
   const totalCount = fields.length;
 
   return (
-    <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-4 sm:p-5 shadow-sm">
+    <div className="rounded-lg border border-brand-200 bg-brand-50 p-4 sm:p-5 shadow-sm">
       <div className="mb-3 flex items-center gap-2">
         <span className="text-sm font-semibold text-slate-900">{title}</span>
-        <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs text-indigo-600">
+        <span className="rounded-full bg-brand-50 px-2 py-0.5 text-xs text-brand-600">
           {doneCount}/{totalCount}
         </span>
       </div>
-      <p className="mb-3 text-sm text-indigo-600">{description}</p>
+      <p className="mb-3 text-sm text-brand-600">{description}</p>
       <div className="grid gap-2 sm:grid-cols-2">
         {fields.map((field) => (
           <div

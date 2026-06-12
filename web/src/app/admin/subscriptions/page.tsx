@@ -114,7 +114,7 @@ export default function AdminSubscriptionsPage() {
                 <td className="px-4 py-3 text-sm text-slate-500">{new Date(s.period_end).toLocaleDateString("zh-CN")}</td>
                 <td className="px-4 py-3 text-sm">{s.payment_amount ? `¥${s.payment_amount / 100}` : "-"}</td>
                 <td className="px-4 py-3 text-sm">
-                  <button onClick={() => { setRenewModal(s); setRenewMonths(1); setRenewNote(""); setRenewAmount(""); }} className="text-indigo-600 hover:underline">续费</button>
+                  <button onClick={() => { setRenewModal(s); setRenewMonths(1); setRenewNote(""); setRenewAmount(""); }} className="text-brand-600 hover:underline">续费</button>
                 </td>
               </tr>
             ))}
@@ -153,7 +153,7 @@ export default function AdminSubscriptionsPage() {
             </div>
             <div className="flex justify-end gap-3 mt-6">
               <button onClick={() => setRenewModal(null)} className="px-4 py-2 text-sm border rounded-lg hover:bg-slate-50">取消</button>
-              <button onClick={handleRenew} disabled={renewing} className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-50">{renewing ? "续费中..." : "确认续费"}</button>
+              <button onClick={handleRenew} disabled={renewing} className="px-4 py-2 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-500 disabled:opacity-50">{renewing ? "续费中..." : "确认续费"}</button>
             </div>
           </div>
         </div>
