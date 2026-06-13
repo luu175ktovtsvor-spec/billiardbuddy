@@ -53,7 +53,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         await api.getMyStore(); // 有门店 → 当普通用户进 dashboard
       } catch (err) {
-        if ((err as { status?: number })?.status === 404) dest = "/admin";
+        // 无门店：/stores/me 抛 403「不属于任何门店」(或 404)，纯平台超管才直接进 /admin；
+        // 其它错误(网络/500)不误判，仍按普通用户进 dashboard
+        const st = (err as { status?: number })?.status;
+        if (st === 403 || st === 404) dest = "/admin";
       }
     }
     router.push(dest);
