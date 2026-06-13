@@ -19,6 +19,7 @@ from services.content_service import (
     _load_knowledge_for_role,
     _format_output_package,
     _append_guardrails,
+    concise_directive,
     ROLE_LABELS,
     CUSTOMER_LABELS,
     TONE_LABELS,
@@ -126,6 +127,9 @@ async def stream_workbench(
     brand_voice = await get_brand_voice_context(db, store.id)
     if brand_voice:
         rendered_prompt = f"{rendered_prompt}\n\n---\n{brand_voice}\n---"
+
+    # #3 精简档：要求只出一条（与同步 /generate/workbench 路径一致）
+    rendered_prompt += concise_directive(body.concise)
 
     # 1. System prompt
     if rendered_prompt:

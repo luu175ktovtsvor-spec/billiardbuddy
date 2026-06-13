@@ -4,7 +4,7 @@ export function Section({ title, icon: Icon, children }: {
   children: React.ReactNode;
 }) {
   return (
-    <div className="rounded-lg bg-white p-4 sm:p-6 shadow-sm">
+    <div className="rounded-2xl bg-white p-4 sm:p-6 shadow-sm">
       <div className="mb-4 flex items-center gap-2 border-b border-slate-100 pb-3">
         <Icon className="h-4 w-4 text-slate-500" />
         <h3 className="text-sm font-semibold text-slate-700">{title}</h3>
@@ -35,12 +35,18 @@ export function Toggle({ label, checked, onChange }: {
   onChange: (v: boolean) => void;
 }) {
   return (
-    <label className="flex items-center gap-2 rounded-md bg-slate-100 px-3 py-2 cursor-pointer hover:bg-slate-50">
-      <input type="checkbox" checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 rounded border-slate-300 bg-[#F2F2F7] text-brand-600 focus:ring-2 focus:ring-brand-500/20" />
-      <span className="text-sm text-slate-700">{label}</span>
-    </label>
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      className={`flex w-full items-center justify-between gap-3 rounded-xl px-3.5 py-2.5 text-left transition-all active:scale-[0.99] ${
+        checked ? "bg-brand-50 ring-1 ring-brand-200" : "bg-slate-50 ring-1 ring-transparent active:bg-slate-100"
+      }`}
+    >
+      <span className={`text-sm ${checked ? "font-medium text-brand-700" : "text-slate-600"}`}>{label}</span>
+      <span className={`relative h-[26px] w-[42px] shrink-0 rounded-full transition-colors ${checked ? "bg-brand-500" : "bg-slate-300"}`}>
+        <span className={`absolute top-0.5 h-[22px] w-[22px] rounded-full bg-white shadow transition-all ${checked ? "left-[18px]" : "left-0.5"}`} />
+      </span>
+    </button>
   );
 }
 
@@ -56,13 +62,16 @@ export function TagCheckbox({ label, checked, onChange }: {
   onChange: () => void;
 }) {
   return (
-    <label className={`inline-flex cursor-pointer items-center rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-      checked
-        ? "border-brand-200 bg-brand-50 text-brand-600"
-        : "border-slate-200 bg-white text-slate-400 hover:bg-slate-50"
-    }`}>
-      <input type="checkbox" checked={checked} onChange={onChange} className="sr-only" />
+    <button
+      type="button"
+      onClick={onChange}
+      className={`inline-flex items-center rounded-full px-3.5 py-1.5 text-[13px] font-medium transition-all active:scale-[0.96] ${
+        checked
+          ? "bg-brand-600 text-white shadow-sm"
+          : "bg-slate-100 text-slate-500 active:bg-slate-200"
+      }`}
+    >
       {label}
-    </label>
+    </button>
   );
 }

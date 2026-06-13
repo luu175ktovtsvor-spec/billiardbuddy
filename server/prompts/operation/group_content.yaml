@@ -72,7 +72,7 @@ group_types:
           【会员专属】
           {store_name}会员{activity_name}
           仅限会员参与，非会员无法享受此福利
-          详情私信我，凭会员卡号领取
+          详情私信我，凭会员账号领取
       - type: "新品优先体验"
         template: |
           【新品首发】

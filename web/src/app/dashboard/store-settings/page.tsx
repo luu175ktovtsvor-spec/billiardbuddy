@@ -12,12 +12,19 @@ import { useAuth } from "@/hooks/auth-context";
 import { Loader2, ChevronRight, Check } from "lucide-react";
 
 const MODULES = [
-  { slug: "basic", label: "基本信息", icon: "📋", desc: "门店名称、地址、电话、营业时间" },
-  { slug: "profile", label: "运营画像", icon: "📊", desc: "门店类型、客群、定价、特色服务" },
-  { slug: "branding", label: "品牌风格", icon: "🎨", desc: "品牌调性、Logo、二维码" },
-  { slug: "pricing", label: "定价体系", icon: "💰", desc: "台费标准、套餐设计、会员卡" },
-  { slug: "slogan", label: "广告语", icon: "📝", desc: "门店宣传语、文案风格" },
+  { slug: "basic", label: "基本信息", icon: "📋", desc: "名称、地址、营业时间——文案落款和到店引导都靠它" },
+  { slug: "profile", label: "运营画像", icon: "📊", desc: "定位、客群、目标——决定 AI 推荐什么内容、用什么语气" },
+  { slug: "branding", label: "品牌风格", icon: "🎨", desc: "品牌调性、Logo、二维码——AI 文案的语气和海报素材" },
+  { slug: "pricing", label: "定价体系", icon: "💰", desc: "台费、套餐、充值（一卡通）——需要写价格时 AI 才有数可写" },
+  { slug: "slogan", label: "广告语", icon: "📝", desc: "宣传语、文案口吻——AI 落笔的腔调和金句" },
 ];
+
+// 按门店成长阶段提示"现在最该填哪块"（阶段来自 /dashboard/card-signals）
+const STAGE_HINT: Record<string, string> = {
+  preopen: "你还没开业——先把「基本信息」和「定价体系」填好，第一批客户就靠它们吸引。",
+  newopen: "新店阶段——把「运营画像」「广告语」填细点，AI 帮你把客户沉淀下来、养成复购。",
+  mature: "成熟店——「运营画像」和「广告语」最影响 AI 内容质量，建议重点完善、保持更新。",
+};
 
 function isNonEmpty(v: unknown): boolean {
   if (v === null || v === undefined) return false;
@@ -59,6 +66,7 @@ export default function StoreSettingsPage() {
   // 账号区：桌面 Header(门店切换/退出)在手机端隐藏，这里是手机唯一入口
   const [stores, setStores] = useState<StoreListItem[]>([]);
   const [storeSheetOpen, setStoreSheetOpen] = useState(false);
+  const [stage, setStage] = useState("");
 
   const handleCreateStore = async () => {
     if (!newStoreName.trim() || creating) return;
@@ -99,6 +107,15 @@ export default function StoreSettingsPage() {
     return () => { cancelled = true; };
   }, []);
 
+  // 取门店成长阶段，给出"现在最该填哪块"的引导
+  useEffect(() => {
+    let cancelled = false;
+    api.getCardSignals()
+      .then((s) => { if (!cancelled) setStage(s.stage); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   const handleSwitchStore = (id: string) => {
     api.setStoreId(id);
     setStoreSheetOpen(false);
@@ -126,7 +143,7 @@ export default function StoreSettingsPage() {
         <div className="rounded-2xl border border-brand-200 bg-white p-6 shadow-sm">
           <h2 className="mb-1 text-lg font-bold text-slate-900">创建你的门店</h2>
           <p className="mb-5 text-sm text-slate-500">
-            填个店名就能开始，其余资料创建后可以分模块慢慢完善——资料越全，AI 生成越准。
+            先填个店名就能用。门店资料填得越细，AI 越懂你这家店——写出来的朋友圈、群公告、活动方案就越像你自己写的，而不是网上抄的。
           </p>
           <div className="space-y-4">
             <div>
@@ -137,7 +154,7 @@ export default function StoreSettingsPage() {
                 value={newStoreName}
                 onChange={(e) => setNewStoreName(e.target.value)}
                 placeholder="例：星辉台球俱乐部"
-                className="h-11 w-full rounded-lg px-3 text-[15px] focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+                className="h-11 w-full rounded-xl bg-slate-50 px-3.5 text-[15px] transition-colors focus:bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/30"
               />
             </div>
             <div>
@@ -148,7 +165,7 @@ export default function StoreSettingsPage() {
                 value={newStoreCity}
                 onChange={(e) => setNewStoreCity(e.target.value)}
                 placeholder="例：成都"
-                className="h-11 w-full rounded-lg px-3 text-[15px] focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+                className="h-11 w-full rounded-xl bg-slate-50 px-3.5 text-[15px] transition-colors focus:bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/30"
               />
             </div>
             {createError && <p className="text-sm text-red-600">{createError}</p>}
@@ -188,7 +205,7 @@ export default function StoreSettingsPage() {
       <div className="mb-6 hidden lg:block">
         <h1 className="text-xl font-bold text-slate-900">⚙️ 门店设置</h1>
         <p className="mt-1 text-sm text-slate-500">
-          分模块管理门店资料，AI 会根据这些信息生成更精准的文案
+          门店资料是 AI 的「记忆」——填得越全，它写出来的内容越贴合你这家店的定位、客群和价格
         </p>
       </div>
 
@@ -196,9 +213,17 @@ export default function StoreSettingsPage() {
       <div className="mb-5 rounded-2xl bg-gradient-to-br from-brand-600 to-brand-700 p-5 text-white shadow-sm">
         <p className="truncate text-xl font-bold">{store.name}</p>
         <p className="mt-1 text-[13px] text-white/80">
-          资料完整度 {doneCount}/{MODULES.length} · 资料越全，AI 生成越准
+          已完善 {doneCount}/{MODULES.length} · 资料越全，AI 写得越像你家店
         </p>
       </div>
+
+      {/* 按成长阶段引导：现在最该填哪块 */}
+      {STAGE_HINT[stage] && (
+        <div className="mb-4 flex items-start gap-2 rounded-2xl border border-brand-100 bg-brand-50/60 px-4 py-3">
+          <span className="text-sm">🧭</span>
+          <p className="text-[13px] leading-relaxed text-slate-700">{STAGE_HINT[stage]}</p>
+        </div>
+      )}
 
       {/* 分组一：门店资料 */}
       <p className="mb-2 px-1 text-xs font-medium text-slate-400">门店资料</p>

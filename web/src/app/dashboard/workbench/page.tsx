@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/auth-context";
 import { api } from "@/lib/api";
 import type { StoreResponse } from "@/types/store";
+import type { CardSignals } from "@/types/dashboard";
 import {
   ROLE_TASKS,
   MVP_ROLES,
@@ -12,6 +13,7 @@ import {
   ROLE_DESCRIPTIONS,
   getOutputLabels,
 } from "@/lib/role-workbench-config";
+import type { RoleTaskCard } from "@/lib/role-workbench-config";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { Brain, Loader2, Search, X, MessageCircle, ChevronRight } from "lucide-react";
 import Link from "next/link";
@@ -43,6 +45,8 @@ export default function WorkbenchPage() {
     if (typeof window !== "undefined") return localStorage.getItem("workbench_role") || "manager";
     return "manager";
   });
+  // 卡片动态排序信号（跨设备，源自生成历史；拉不到则退回本地频次+优先级）
+  const [cardSignals, setCardSignals] = useState<CardSignals | null>(null);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -69,6 +73,13 @@ export default function WorkbenchPage() {
     }
   }, [activeRole]);
 
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let cancelled = false;
+    api.getCardSignals().then((s) => { if (!cancelled) setCardSignals(s); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [isAuthenticated]);
+
   if (authLoading || storeLoading) {
     return <div className="flex items-center justify-center py-20"><Loader2 className="h-6 w-6 animate-spin text-brand-600" /></div>;
   }
@@ -77,13 +88,20 @@ export default function WorkbenchPage() {
     return <EmptyStoreGuide description="请先完善门店资料，AI 工作台才能根据你的门店生成内容。" />;
   }
 
-  const currentTasks = (ROLE_TASKS[activeRole as keyof typeof ROLE_TASKS] || []).sort((a, b) => {
-    const usage = getTaskCardUsage();
-    const order: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
-    const pa = order[a.priority] ?? 9;
-    const pb = order[b.priority] ?? 9;
-    if (pa === pb) return (usage[b.id] || 0) - (usage[a.id] || 0);
-    return pa - pb;
+  // 卡片排序：行为分（跨设备频次 + 标过效果好的加权）优先 → 再优先级 → 再本地频次。
+  // 新店行为全 0 时自动退回"优先级 + 本地频次"，与改造前一致，不打扰新用户。
+  const usage = getTaskCardUsage();
+  const freq = cardSignals?.prompt_key_counts || {};
+  const goodSet = new Set(cardSignals?.good_prompt_keys || []);
+  const behaviorScore = (c: RoleTaskCard) =>
+    c.promptKey ? (freq[c.promptKey] || 0) * 2 + (goodSet.has(c.promptKey) ? 3 : 0) : 0;
+  const order: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
+  const currentTasks = (ROLE_TASKS[activeRole as keyof typeof ROLE_TASKS] || []).slice().sort((a, b) => {
+    const sa = behaviorScore(a), sb = behaviorScore(b);
+    if (sa !== sb) return sb - sa;
+    const pa = order[a.priority] ?? 9, pb = order[b.priority] ?? 9;
+    if (pa !== pb) return pa - pb;
+    return (usage[b.id] || 0) - (usage[a.id] || 0);
   });
 
   // 关键词搜索:82 张卡跨岗位找功能("投诉""日报"),不用一个 tab 一个 tab 翻
@@ -216,9 +234,11 @@ export default function WorkbenchPage() {
           >
             <div className="mb-1.5 flex items-start justify-between gap-2">
               <h4 className="text-[15px] font-semibold text-slate-900">{card.title}</h4>
-              {card.priority === "P0" && (
+              {card.promptKey && (freq[card.promptKey] || 0) >= 2 ? (
+                <span className="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-xs text-slate-500">常用</span>
+              ) : card.priority === "P0" ? (
                 <span className="shrink-0 rounded-full bg-brand-50 px-1.5 py-0.5 text-xs text-brand-600">推荐</span>
-              )}
+              ) : null}
             </div>
             <p className="mb-2 text-xs text-slate-500 leading-relaxed">{card.description}</p>
             {card.sceneTags.length > 0 && (

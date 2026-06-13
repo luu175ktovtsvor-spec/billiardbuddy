@@ -2,12 +2,10 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/auth-context";
 import { api } from "@/lib/api";
-import { getTopCards, ROLE_LABELS, ROLE_TASKS } from "@/lib/role-workbench-config";
+import { ROLE_TASKS } from "@/lib/role-workbench-config";
 import { SceneIconTile } from "@/lib/scene-icons";
-import type { RoleTaskCard } from "@/lib/role-workbench-config";
 import type { StoreResponse } from "@/types/store";
 import type { DashboardTodayResponse, DashboardRecommendation } from "@/types/dashboard";
 
@@ -27,23 +25,41 @@ function recommendationHref(rec: DashboardRecommendation): string {
   return rec.action_url || "/dashboard/workbench";
 }
 
+/** 推荐类目 → 标签 + 配色（让老板一眼知道"为什么推这个"） */
+const CATEGORY_META: Record<string, { label: string; cls: string }> = {
+  stage: { label: "阶段重点", cls: "bg-cyan-50 text-cyan-600" },
+  focus: { label: "今日重点", cls: "bg-brand-50 text-brand-600" },
+  frequent: { label: "常用", cls: "bg-slate-100 text-slate-500" },
+  gap: { label: "补缺口", cls: "bg-amber-50 text-amber-600" },
+  good: { label: "效果好", cls: "bg-emerald-50 text-emerald-600" },
+  setup: { label: "完善资料", cls: "bg-red-50 text-red-500" },
+  festival: { label: "节日", cls: "bg-pink-50 text-pink-500" },
+};
+
 /**
- * 推荐取前 N 条的策略（不是简单截断）：
- * - 资料/上传类提醒最多占 1 条——资料不全的店不被"完善资料"天天霸屏
- * - "上次效果好一键复刻"是最个性化的推荐，优先露出（后端规则序里它排最后，截断会永远看不到）
- * - 其余按 high > medium 排
+ * 取前 N 条推荐，并保证"类目多样性"——别让一屏全是发朋友圈。
+ * 排序：今日重点 → 你常用 → 补缺口 → 复刻好评 → 完善资料 → 节日/其余；
+ * 每类限量（focus≤3，其余 1-2），避免越用越单一。
  */
-function pickTopRecommendations(recs: DashboardRecommendation[], n = 3): DashboardRecommendation[] {
-  const festival = recs.filter((r) => r.id === "festival");
-  const setup = recs.filter((r) => r.action_type === "edit_store").slice(0, 1);
-  const repeatGood = recs.filter((r) => r.id === "repeat_good");
-  const rest = recs
-    .filter((r) => r.id !== "festival" && r.action_type !== "edit_store" && r.id !== "repeat_good")
-    .sort((a, b) => (a.priority === "high" ? 0 : 1) - (b.priority === "high" ? 0 : 1));
+function pickTopRecommendations(recs: DashboardRecommendation[], n = 5): DashboardRecommendation[] {
+  const CAP: Record<string, number> = { stage: 2, focus: 3, frequent: 1, gap: 2, good: 1, setup: 1, festival: 2 };
+  const RANK: Record<string, number> = { festival: 0, stage: 1, focus: 2, frequent: 3, gap: 4, good: 5, setup: 6 };
+  const rank = (r: DashboardRecommendation) =>
+    r.id === "daily_focus" ? -1 : (RANK[r.category || "focus"] ?? 6);
+  const ordered = [...recs].sort((a, b) => rank(a) - rank(b));
   const seen = new Set<string>();
-  return [...festival, ...setup, ...repeatGood, ...rest]
-    .filter((r) => !seen.has(r.id) && seen.add(r.id))
-    .slice(0, n);
+  const catCount: Record<string, number> = {};
+  const out: DashboardRecommendation[] = [];
+  for (const r of ordered) {
+    if (seen.has(r.id)) continue;
+    const cat = r.category || "focus";
+    if (CAP[cat] != null && (catCount[cat] || 0) >= CAP[cat]) continue;
+    seen.add(r.id);
+    catCount[cat] = (catCount[cat] || 0) + 1;
+    out.push(r);
+    if (out.length >= n) break;
+  }
+  return out;
 }
 
 function hourGreeting(): string {
@@ -64,33 +80,18 @@ import {
   Crown,
   Clock,
   Lightbulb,
-  Zap,
 } from "lucide-react";
 import { OnboardingGuide } from "@/components/onboarding-guide";
-import { ContentCalendar } from "@/components/content-calendar";
 import { MyTemplates } from "@/components/my-templates";
-
-/** 从 localStorage 读取使用次数 */
-function getUsageCounts(): Record<string, number> {
-  if (typeof window === "undefined") return {};
-  try {
-    return JSON.parse(localStorage.getItem("workbench_card_usage") || "{}");
-  } catch {
-    return {};
-  }
-}
 
 export default function DashboardPage() {
   const { user } = useAuth();
-  const router = useRouter();
   const [store, setStore] = useState<StoreResponse | null | undefined>(undefined);
   const [dashboard, setDashboard] = useState<DashboardTodayResponse | null>(null);
   const [dashboardError, setDashboardError] = useState(false);
   const [storeError, setStoreError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [quota, setQuota] = useState<{ used: number; limit: number; remaining: number } | null>(null);
-  const [topCards, setTopCards] = useState<RoleTaskCard[]>([]);
-  const [usageCounts, setUsageCounts] = useState<Record<string, number>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -131,10 +132,6 @@ export default function DashboardPage() {
 
     loadData();
 
-    // 加载常用卡片（仅客户端）
-    setTopCards(getTopCards(6));
-    setUsageCounts(getUsageCounts());
-
     return () => { cancelled = true; };
   }, []);
 
@@ -159,7 +156,7 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* 今日建议：后端 9 条规则引擎的推荐（此前从未渲染），取前 3 条 */}
+      {/* 今日推荐：后端规则引擎 + 行为信号（你常用/补缺口），类目多样取前 5 条 */}
       {!loading && store && dashboard && dashboard.recommendations.length > 0 && (
         <div className="mb-6 rounded-2xl border border-brand-100 bg-brand-50/50 p-4">
           <div className="mb-3 flex items-center gap-2">
@@ -177,8 +174,10 @@ export default function DashboardPage() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
                     <p className="text-[15px] font-medium text-slate-800 lg:text-sm">{rec.title}</p>
-                    {rec.priority === "high" && (
-                      <span className="rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">优先</span>
+                    {CATEGORY_META[rec.category || "focus"] && (
+                      <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${CATEGORY_META[rec.category || "focus"].cls}`}>
+                        {CATEGORY_META[rec.category || "focus"].label}
+                      </span>
                     )}
                   </div>
                   <p className="truncate text-[13px] text-slate-400 lg:text-xs">{rec.description}</p>
@@ -220,7 +219,7 @@ export default function DashboardPage() {
                   <div className="mb-6 w-full max-w-sm space-y-2 text-left">
                     {[
                       "填写门店名称、地址、电话",
-                      "填写价格、会员卡和门店优势",
+                      "填写台费、充值规则和门店优势",
                       "上传 Logo 和微信二维码",
                     ].map((step, i) => (
                       <div key={i} className="flex items-center gap-3 rounded-lg bg-slate-50 px-4 py-3">
@@ -247,39 +246,6 @@ export default function DashboardPage() {
           {/* 有门店 */}
           {store && (
             <div className="space-y-6">
-              {/* 常用任务 */}
-              {topCards.length > 0 && (
-                <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <Zap className="h-5 w-5 text-brand-600" />
-                    <h3 className="text-[17px] font-semibold text-slate-900 lg:text-base">常用任务</h3>
-                  </div>
-                  <div className="flex gap-3 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden lg:grid lg:grid-cols-3 lg:overflow-visible lg:pb-0">
-                    {topCards.map((card) => {
-                      const count = usageCounts[card.id] || 0;
-                      return (
-                        <button
-                          key={card.id}
-                          onClick={() => router.push(`/dashboard/workbench/${card.id}`)}
-                          className="flex w-44 shrink-0 items-start gap-3 rounded-2xl bg-white p-4 text-left hover:border-brand-200 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 active:scale-[0.98] cursor-pointer lg:w-auto"
-                        >
-                          <SceneIconTile hint={card.title} size="sm" />
-                          <div className="min-w-0 flex-1">
-                            <p className="text-[15px] font-medium text-slate-900 truncate lg:text-sm">{card.title}</p>
-                            <p className="mt-0.5 truncate text-xs text-slate-500">
-                              {ROLE_LABELS[card.role]}
-                              {count > 0 && (
-                                <span className="ml-1.5 text-slate-400">· 使用 {count} 次</span>
-                              )}
-                            </p>
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
               {/* 门店状态卡片 */}
               <div className="rounded-2xl bg-white p-5 shadow-sm">
                 <div className="flex items-center justify-between gap-2 mb-4">
@@ -408,9 +374,6 @@ export default function DashboardPage() {
                   </div>
                 </div>
               )}
-
-              {/* 内容日历 */}
-              <ContentCalendar />
 
               {/* 我的模板 */}
               <MyTemplates />

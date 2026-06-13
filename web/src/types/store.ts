@@ -49,8 +49,6 @@ export interface StoreCreate {
   coach_count?: number | null;
   coach_service_types?: string | null;
   coach_price_range?: string | null;
-  beverage_price_range?: string | null;
-  snack_price_range?: string | null;
   cue_price_range?: string | null;
   table_brands?: string | null;
   cue_brands?: string | null;
@@ -88,8 +86,6 @@ export interface StoreUpdate {
   coach_count?: number | null;
   coach_service_types?: string | null;
   coach_price_range?: string | null;
-  beverage_price_range?: string | null;
-  snack_price_range?: string | null;
   cue_price_range?: string | null;
   table_brands?: string | null;
   cue_brands?: string | null;
@@ -140,8 +136,6 @@ export interface StoreResponse {
   coach_count: number | null;
   coach_service_types: string | null;
   coach_price_range: string | null;
-  beverage_price_range: string | null;
-  snack_price_range: string | null;
   cue_price_range: string | null;
   table_brands: string | null;
   cue_brands: string | null;

@@ -22,25 +22,32 @@ export function CardSelect({ value, onChange, options, columns = 3 }: CardSelect
   }[columns];
 
   return (
-    <div className={`grid ${gridClass} gap-2`}>
-      {options.map((opt) => (
-        <button
-          key={opt.value}
-          type="button"
-          onClick={() => onChange(opt.value)}
-          className={`flex flex-col items-center gap-0.5 rounded-lg border-2 p-3 text-center transition-all ${
-            value === opt.value
-              ? "border-brand-500 bg-brand-50 shadow-sm"
-              : "border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm"
-          }`}
-        >
-          {opt.emoji && <span className="text-lg">{opt.emoji}</span>}
-          <span className={`text-sm font-medium ${
-            value === opt.value ? "text-brand-700" : "text-slate-700"
-          }`}>{opt.label}</span>
-          {opt.desc && <span className="text-xs text-slate-400 leading-tight">{opt.desc}</span>}
-        </button>
-      ))}
+    <div className={`grid ${gridClass} gap-2.5`}>
+      {options.map((opt) => {
+        const selected = value === opt.value;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => onChange(opt.value)}
+            className={`flex min-h-[60px] flex-col items-center justify-center gap-0.5 rounded-2xl p-3 text-center transition-all active:scale-[0.97] ${
+              selected
+                ? "bg-brand-50 ring-2 ring-brand-500"
+                : "bg-slate-50 ring-1 ring-transparent active:bg-slate-100"
+            }`}
+          >
+            {opt.emoji && <span className="text-xl leading-none">{opt.emoji}</span>}
+            <span className={`text-sm font-medium ${selected ? "text-brand-700" : "text-slate-700"}`}>
+              {opt.label}
+            </span>
+            {opt.desc && (
+              <span className={`text-xs leading-tight ${selected ? "text-brand-500" : "text-slate-400"}`}>
+                {opt.desc}
+              </span>
+            )}
+          </button>
+        );
+      })}
     </div>
   );
 }

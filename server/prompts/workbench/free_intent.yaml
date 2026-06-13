@@ -47,7 +47,7 @@ template: |
   - 店名：{store_name}
   - 城市：{city}
   - 价格参考：{price_info}
-  - 会员卡参考：{member_card_info}
+  - 充值/储值参考：{member_card_info}
   - 球桌数量：{table_count}
   - 桌型：{table_types}
   - 主要客群：{target_customer}

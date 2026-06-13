@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { getErrorMessage, markdownToPlainText, formatDateTime } from "@/lib/utils";
+import { findPlaceholders } from "@/lib/placeholders";
 import type {
   GenerationResponse,
   WorkbenchRole,
@@ -88,6 +89,7 @@ function TaskExecutionPageInner() {
   const [outputPackage, setOutputPackage] = useState<OutputPackageItem[]>(DEFAULT_OUTPUT_PACKAGE);
   const [extraNote, setExtraNote] = useState("");
   const [showOutputCustom, setShowOutputCustom] = useState(false);
+  const [concise, setConcise] = useState(false);  // #3 只出一条
 
   /* ─── generation state ─── */
   const [generating, setGenerating] = useState(false);
@@ -106,9 +108,9 @@ function TaskExecutionPageInner() {
   const [quotaRemaining, setQuotaRemaining] = useState<number | null>(null);
   const quotaExhausted = quotaRemaining !== null && quotaRemaining <= 0;
   // 结果里的占位符数量(【请填写/请补充】)——大于 0 时引导用户补门店资料
-  const placeholderCount = result?.content
-    ? (result.content.match(/【请(填写|补充)/g) || []).length
-    : 0;
+  // 占位符识别用 findPlaceholders（同时覆盖【请填写】和 [请补充：XX] 两种写法，原内联正则漏了方括号）
+  const placeholders = result?.content ? findPlaceholders(result.content) : [];
+  const placeholderCount = placeholders.length;
   const [badNoteOpen, setBadNoteOpen] = useState(false);
   const [isFavorited, setIsFavorited] = useState(false);
 
@@ -176,6 +178,7 @@ function TaskExecutionPageInner() {
           prompt_key: card?.promptKey,
           model: selectedModel || undefined,
           conversation_id: conversationIdRef.current || undefined,
+          concise: concise || undefined,
         },
         (token) => setStreamingContent((prev) => prev + token),
         (fullContent, generationId, convId) => {
@@ -493,6 +496,11 @@ function TaskExecutionPageInner() {
           >
             {showOutputCustom ? "收起自定义 ▲" : "自定义输出 ▼"}
           </button>
+          <label className="ml-3 inline-flex min-h-[44px] items-center gap-1.5 text-xs text-slate-500 cursor-pointer">
+            <input type="checkbox" checked={concise} onChange={(e) => setConcise(e.target.checked)}
+              className="h-3.5 w-3.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500/30" />
+            只出一条
+          </label>
           {showOutputCustom && (
             <div className="mt-2 space-y-2 rounded-lg bg-slate-50 p-3">
               {OUTPUT_PACKAGE_GROUPS.map((group) => (
@@ -677,7 +685,7 @@ function TaskExecutionPageInner() {
             {!editing && !generating && placeholderCount > 0 && (
               <div className="border-t border-amber-200 bg-amber-50 px-4 py-3">
                 <p className="text-xs text-amber-700">
-                  内容里有 {placeholderCount} 处需要手动补的信息（如价格、时间）。
+                  内容里有 {placeholderCount} 处需要手动补：<span className="font-medium">{placeholders.join("、")}</span>。
                   若是价格类：到
                   <Link href="/dashboard/store-settings" className="mx-0.5 font-medium text-brand-600 underline">
                     门店设置

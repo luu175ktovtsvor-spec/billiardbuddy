@@ -42,7 +42,7 @@ template: |
 roles:
   manager:
     name: "店长"
-    description: "门店全面管理负责人，核心关注四大数据板块：助教数据、教练数据、前厅数据、总营业额"
+    description: "门店全面管理负责人，核心工作是营销（拉新·转化·复购）；通过盯四大数据板块（助教数据、教练数据、前厅数据、总营业额）驱动经营，数据是抓手不是目的"
     daily_tasks:
       opening:
         time: "09:00-14:00"
@@ -254,7 +254,7 @@ roles:
       - task: "训练分析报表"
         frequency: "每月31日"
         details: "上报助教训练情况分析统计报表"
-    difficult_situations: "参考 knowledge.coach_difficult_situations 中的18个刁钻问题应对话术"
+    difficult_situations: "参考 knowledge.assistant_difficult_situations 中的18个刁钻问题应对话术"
 
   cashier:
     name: "收银员"
@@ -274,7 +274,7 @@ roles:
           - task: "收银结算"
             details: "准确录入消费项目，确保收银无差错"
           - task: "会员办理"
-            details: "主动介绍会员权益，引导客户办理会员卡"
+            details: "主动介绍会员权益，引导客户充值办一卡通"
           - task: "客户登记"
             details: "登记新客户信息（姓名、电话、来源渠道），添加微信"
           - task: "线上回复"

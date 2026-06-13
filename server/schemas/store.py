@@ -45,9 +45,7 @@ class StoreCreate(BaseModel):
     coach_count: int | None = Field(default=None, ge=0)
     coach_service_types: str | None = Field(default=None, max_length=500)
     coach_price_range: str | None = Field(default=None, max_length=200)
-    # 商品定价
-    beverage_price_range: str | None = Field(default=None, max_length=200)
-    snack_price_range: str | None = Field(default=None, max_length=200)
+    # 球杆定价
     cue_price_range: str | None = Field(default=None, max_length=200)
     # 设备品牌
     table_brands: str | None = Field(default=None, max_length=500)
@@ -89,9 +87,7 @@ class StoreUpdate(BaseModel):
     coach_count: int | None = Field(default=None, ge=0)
     coach_service_types: str | None = Field(default=None, max_length=500)
     coach_price_range: str | None = Field(default=None, max_length=200)
-    # 商品定价
-    beverage_price_range: str | None = Field(default=None, max_length=200)
-    snack_price_range: str | None = Field(default=None, max_length=200)
+    # 球杆定价
     cue_price_range: str | None = Field(default=None, max_length=200)
     # 设备品牌
     table_brands: str | None = Field(default=None, max_length=500)
@@ -141,9 +137,7 @@ class StoreResponse(BaseModel):
     coach_count: int | None = None
     coach_service_types: str | None = None
     coach_price_range: str | None = None
-    # 商品定价
-    beverage_price_range: str | None = None
-    snack_price_range: str | None = None
+    # 球杆定价
     cue_price_range: str | None = None
     # 设备品牌
     table_brands: str | None = None

@@ -48,8 +48,14 @@ export function MyTemplates() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await api.listGenerations({ is_favorite: true, page_size: 6 });
-        if (!cancelled) setItems(res.items);
+        const res = await api.listGenerations({ is_favorite: true, page_size: 18 });
+        if (!cancelled) {
+          // 标过"效果好"的收藏优先露出（稳定排序保留原时间序），再取前 6
+          const sorted = [...res.items].sort(
+            (a, b) => (a.effect_rating === "good" ? 0 : 1) - (b.effect_rating === "good" ? 0 : 1)
+          );
+          setItems(sorted.slice(0, 6));
+        }
       } catch {
         if (!cancelled) setItems([]);
       } finally {
@@ -118,7 +124,12 @@ export function MyTemplates() {
           return (
             <div key={item.id} className="flex min-h-[56px] items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors">
               <div className="flex-1 min-w-0">
-                <p className="text-[15px] font-medium text-slate-900 truncate lg:text-sm">{title}</p>
+                <p className="text-[15px] font-medium text-slate-900 truncate lg:text-sm">
+                  {title}
+                  {item.effect_rating === "good" && (
+                    <span className="ml-1.5 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600">效果好</span>
+                  )}
+                </p>
                 {preview && <p className="text-[13px] text-slate-500 truncate lg:text-xs">{preview}</p>}
               </div>
               {href && (

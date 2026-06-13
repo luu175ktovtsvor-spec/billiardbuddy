@@ -3,12 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Send, Loader2, Sparkles } from "lucide-react";
+import { Send, Loader2, Sparkles, Pencil, Check } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/auth-context";
 import { PageHeader } from "@/components/layout/page-header";
 import { QuotaBadge } from "@/components/quota-badge";
 import { CopyButton } from "@/components/generators/copy-button";
+import { useToast } from "@/components/ui/toast";
 import type { WorkbenchRole } from "@/types/generate";
 
 /* 自由对话模式:像 DeepSeek 一样直接跟 AI 聊,但背后是同一条 free_intent 生成管道
@@ -18,6 +19,7 @@ import type { WorkbenchRole } from "@/types/generate";
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  generationId?: string; // 助教回复对应的历史记录 id,用于把行内编辑存回历史
 }
 
 const SUGGESTIONS = [
@@ -38,6 +40,7 @@ function toWorkbenchRole(myRole: string | null | undefined): WorkbenchRole {
 
 export default function ChatPage() {
   const { isAuthenticated } = useAuth();
+  const { toast } = useToast();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState(""); // 流式中的 AI 回复
   const [input, setInput] = useState("");
@@ -46,6 +49,8 @@ export default function ChatPage() {
   const [quotaVersion, setQuotaVersion] = useState(0);
   const [quotaRemaining, setQuotaRemaining] = useState<number | null>(null);
   const quotaExhausted = quotaRemaining !== null && quotaRemaining <= 0;
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState("");
 
   const convIdRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -88,8 +93,8 @@ export default function ChatPage() {
           conversation_id: convIdRef.current || undefined,
         },
         (token) => setDraft((prev) => prev + token),
-        (fullContent, _generationId, convId) => {
-          setMessages((prev) => [...prev, { role: "assistant", content: fullContent }]);
+        (fullContent, generationId, convId) => {
+          setMessages((prev) => [...prev, { role: "assistant", content: fullContent, generationId: generationId || undefined }]);
           setDraft("");
           setQuotaVersion((v) => v + 1);
           if (convId) convIdRef.current = convId;
@@ -103,6 +108,21 @@ export default function ChatPage() {
       );
     } finally {
       if (!controller.signal.aborted) setGenerating(false);
+    }
+  };
+
+  // 行内编辑回复:存回历史(与工作台一致),刷新/历史页看到的就是改后的版本
+  const saveEdit = async (index: number, gid: string | undefined) => {
+    const newContent = editDraft;
+    setMessages((prev) => prev.map((m, j) => (j === index ? { ...m, content: newContent } : m)));
+    setEditingIndex(null);
+    if (gid) {
+      try {
+        await api.updateGenerationContent(gid, newContent);
+        toast("修改已保存到历史", "success");
+      } catch {
+        toast("修改已应用，但保存到历史失败", "error");
+      }
     }
   };
 
@@ -147,16 +167,54 @@ export default function ChatPage() {
             </div>
           ) : (
             <div key={i} className="flex flex-col items-start">
-              <div className="max-w-[92%] rounded-2xl rounded-bl-md bg-white px-4 py-3">
-                <div className="prose prose-sm max-w-none prose-slate prose-p:my-1.5 prose-headings:my-2">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
-                </div>
+              <div className={`rounded-2xl rounded-bl-md bg-white px-4 py-3 ${editingIndex === i ? "w-full max-w-[92%]" : "max-w-[92%]"}`}>
+                {editingIndex === i ? (
+                  <textarea
+                    value={editDraft}
+                    onChange={(e) => setEditDraft(e.target.value)}
+                    rows={Math.min(16, Math.max(3, editDraft.split("\n").reduce((a, l) => a + Math.max(1, Math.ceil(l.length / 18)), 1)))}
+                    autoFocus
+                    className="w-full min-w-[240px] resize-none rounded-xl bg-[#F2F2F7] px-3 py-2 text-[15px] leading-relaxed text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+                  />
+                ) : (
+                  <div className="prose prose-sm max-w-none prose-slate prose-p:my-1.5 prose-headings:my-2">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                  </div>
+                )}
               </div>
-              {!m.content.startsWith("⚠️") && (
-                <div className="mt-1.5 pl-1">
-                  <CopyButton text={m.content} />
-                </div>
-              )}
+              {!m.content.startsWith("⚠️") &&
+                (editingIndex === i ? (
+                  <div className="mt-1.5 flex items-center gap-3 pl-1">
+                    <button
+                      type="button"
+                      onClick={() => saveEdit(i, m.generationId)}
+                      className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-brand-200 bg-brand-50 px-3 text-sm font-medium text-brand-600 transition-transform active:scale-[0.98]"
+                    >
+                      <Check className="h-4 w-4" /> 保存修改
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingIndex(null)}
+                      className="inline-flex h-9 items-center rounded-xl px-3 text-sm font-medium text-slate-500 transition-transform active:scale-[0.98]"
+                    >
+                      取消
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mt-1.5 flex items-center gap-3 pl-1">
+                    <CopyButton text={m.content} />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditDraft(m.content);
+                        setEditingIndex(i);
+                      }}
+                      className="inline-flex items-center gap-1 text-sm text-slate-400 transition-colors hover:text-brand-600 active:scale-[0.98]"
+                    >
+                      <Pencil className="h-3.5 w-3.5" /> 编辑
+                    </button>
+                  </div>
+                ))}
             </div>
           )
         )}

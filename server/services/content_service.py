@@ -568,6 +568,16 @@ async def generate_operation(
     return generation
 
 
+def concise_directive(concise: bool) -> str:
+    """#3 精简档：要求只出一条，不堆多个方案/版本。concise=False 时无影响（返回空串）。"""
+    if not concise:
+        return ""
+    return (
+        "\n\n【篇幅要求】本次只要一条：直接给最合适的那一条成品，"
+        "不要给多个方案/版本/标题候选，不要罗列「方案一/方案二/方案三」。"
+    )
+
+
 async def generate_workbench(
     db: AsyncSession,
     store: Store,
@@ -579,6 +589,7 @@ async def generate_workbench(
     extra_note: str = "",
     prompt_key: str | None = None,
     model: str | None = None,
+    concise: bool = False,
 ) -> Generation:
     # 输入安全检查
     injection_check = check_input_injection(user_intent + " " + extra_note)
@@ -648,6 +659,9 @@ async def generate_workbench(
     brand_voice = await get_brand_voice_context(db, store.id)
     if brand_voice:
         rendered_prompt = f"{rendered_prompt}\n\n---\n{brand_voice}\n---"
+
+    # #3 精简档：要求只出一条（放最后，盖过模板里"给多个方案"的默认）
+    rendered_prompt += concise_directive(concise)
 
     # 获取文本 provider
     provider = ProviderFactory.get_text_provider()
