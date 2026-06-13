@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, and_, desc
+from sqlalchemy import select, func, and_, or_, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_current_user, get_db
@@ -52,16 +52,26 @@ async def admin_dashboard(
 async def list_users(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    q: Annotated[str | None, Query()] = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     require_admin(user)
 
+    # 按手机号/名称全库搜索（服务端做，避免只在当前页前端过滤导致"号存在却查不到"）
+    base = select(User)
+    count_stmt = select(func.count(User.id))
+    if q and q.strip():
+        like = f"%{q.strip()}%"
+        cond = or_(User.phone.ilike(like), User.name.ilike(like))
+        base = base.where(cond)
+        count_stmt = count_stmt.where(cond)
+
     offset = (page - 1) * page_size
     users = await db.scalars(
-        select(User).order_by(User.created_at.desc()).offset(offset).limit(page_size)
+        base.order_by(User.created_at.desc()).offset(offset).limit(page_size)
     )
-    total = await db.scalar(select(func.count(User.id)))
+    total = await db.scalar(count_stmt)
 
     # 显式序列化，禁止把 ORM 对象直接下发（会泄露 password_hash）
     items = [

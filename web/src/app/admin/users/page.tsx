@@ -70,7 +70,8 @@ export default function AdminUsersPage() {
 
   const fetchUsers = () => {
     setLoading(true);
-    fetch(`${api.baseUrl}/api/v1/admin/users?page=${page}&page_size=${pageSize}`, {
+    const qs = search.trim() ? `&q=${encodeURIComponent(search.trim())}` : "";
+    fetch(`${api.baseUrl}/api/v1/admin/users?page=${page}&page_size=${pageSize}${qs}`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((res) => res.json())
@@ -79,7 +80,12 @@ export default function AdminUsersPage() {
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { fetchUsers(); }, [page]);
+  // 搜索走服务端（全库搜索，不再只过滤当前页）：page/search 变化都重拉，搜索防抖 300ms
+  useEffect(() => {
+    const t = setTimeout(fetchUsers, 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, search]);
 
   useEffect(() => {
     fetch(`${api.baseUrl}/api/v1/admin/plans`, { headers: { Authorization: `Bearer ${token}` } })
@@ -88,9 +94,8 @@ export default function AdminUsersPage() {
       .catch(() => {});
   }, []);
 
-  const filteredUsers = users.filter((u) =>
-    search ? u.phone.includes(search) || (u.name && u.name.includes(search)) : true
-  );
+  // 服务端已按 q 过滤，这里直接用返回结果（不再前端二次过滤，否则又退回"只搜当前页"）
+  const filteredUsers = users;
 
   const handleViewDetail = async (userId: string) => {
     setDetailLoading(true);
@@ -198,7 +203,7 @@ export default function AdminUsersPage() {
       <h1 className="text-2xl font-bold mb-6">用户管理</h1>
 
       <div className="mb-4">
-        <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索手机号或名称..." className="w-full max-w-sm rounded-lg px-4 py-2 text-sm focus:border-brand-500 focus:outline-none" />
+        <input type="text" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} placeholder="搜索手机号或名称（全库）..." className="w-full max-w-sm rounded-lg px-4 py-2 text-sm focus:border-brand-500 focus:outline-none" />
       </div>
 
       <div className="rounded-lg border bg-white shadow-sm">
@@ -250,7 +255,7 @@ export default function AdminUsersPage() {
         <div className="flex gap-2">
           <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)} className="px-3 py-1 border rounded text-sm disabled:opacity-50">上一页</button>
           <span className="px-3 py-1 text-sm">第 {page} 页</span>
-          <button disabled={filteredUsers.length < pageSize} onClick={() => setPage((p) => p + 1)} className="px-3 py-1 border rounded text-sm disabled:opacity-50">下一页</button>
+          <button disabled={page * pageSize >= total} onClick={() => setPage((p) => p + 1)} className="px-3 py-1 border rounded text-sm disabled:opacity-50">下一页</button>
         </div>
       </div>
 
