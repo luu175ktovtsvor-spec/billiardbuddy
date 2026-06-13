@@ -15,10 +15,11 @@ from dataclasses import dataclass
 
 import httpx
 from openai import AsyncOpenAI
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
+from db.session import async_session
 from models.store_memory import StoreMemory
 
 logger = logging.getLogger(__name__)
@@ -101,6 +102,7 @@ _CONSOLIDATE_SYS = (
     "3. 互相矛盾 → 以**新记忆**为准。\n"
     "4. 不同的事实 → 都保留。\n"
     "5. 新记忆没带来新信息 → 保留已有那条即可。\n"
+    "6. 情景类(发生过的事)只留最近、最重要的；零碎或过时的旧情景合并成一句简短总结，不要无限堆积。\n"
     "输出整合后的**完整列表**（是结果列表，不是操作指令）。\n"
     "type：semantic|preference|operational|episodic\n"
     '格式：{"memories":[{"type":"...","content":"...","confidence":"high|medium|low"}]}'
@@ -177,17 +179,47 @@ async def _replace_store_memory(db: AsyncSession, store_id, memories: list[Memor
     await db.commit()
 
 
+# 上限：防止店脑无限膨胀（耐久事实全留；情景类是会累积的，单独设较小上限）
+_EPISODIC_CAP = 25
+_TOTAL_CAP = 150
+
+
+def _cap_memories(memories: list[Memory]) -> list[Memory]:
+    """加上限防膨胀：耐久类(事实/偏好/运营模式)全留，情景类只留最近若干条，再封顶总数。"""
+    durable = [m for m in memories if m.type != "episodic"]
+    episodic = [m for m in memories if m.type == "episodic"]
+    return (durable + episodic[-_EPISODIC_CAP:])[:_TOTAL_CAP]
+
+
 async def remember(db: AsyncSession, store_id, interaction_text: str) -> list[Memory]:
     """从一次交互学习：抽取 → 与已有整合 → 存，返回整合后的店脑。
-    设计为后台调用：失败静默（不影响主流程），不计用户配额。"""
+    设计为后台调用：失败静默（不影响主流程），不计用户配额。
+    **并发安全**：用每店事务级咨询锁串行化同一家店的学习，根治"删全部再插入"的丢记忆竞态。"""
     try:
         new = await extract_memories(interaction_text)
         if not new:
             return await load_store_memory(db, store_id)
+        # 同店并发学习串行化（锁随本事务 commit/回滚释放；只挡同店、不挡跨店，不影响吞吐）
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+            {"k": f"store_memory:{store_id}"},
+        )
         existing = await load_store_memory(db, store_id)
         merged = await consolidate_memories(existing, new) if existing else new
+        merged = _cap_memories(merged)
         await _replace_store_memory(db, store_id, merged)
         return merged
     except Exception:
         logger.exception("memory_service.remember 失败 store_id=%s", store_id)
         return []
+
+
+async def learn_in_background(store_id, text: str) -> None:
+    """后台学习封装：开独立 session 调 remember。供生成/反馈等后台调用，失败静默、不计配额。"""
+    if not text or not text.strip():
+        return
+    try:
+        async with async_session() as bg_db:
+            await remember(bg_db, store_id, text)
+    except Exception:
+        logger.exception("店脑后台学习失败 store_id=%s", store_id)

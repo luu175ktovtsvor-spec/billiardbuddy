@@ -218,3 +218,9 @@ store_memory(
 3. **评估是统计性的**：抽取召回允许 6 条抖动 ≤1，防幻觉必须 0；记忆操作 temperature=0 求稳。
 
 落地清单：`models/store_memory.py` + 迁移 017、`services/memory_service.py`(extract/consolidate/load/remember/format)、`stream.py`(注入+`BackgroundTask`后台学习)、`api/v1/store_memory.py`(CRUD)、前端 `/dashboard/store-brain`「AI 眼里的你的店」。**钩子后台学习不计用户配额。**
+
+### 9.1 生产耐用加固（为"人多了、以后不再改"一次做到位）
+
+1. **并发安全（根治丢记忆）**：`remember()` 取**每店事务级咨询锁** `pg_advisory_xact_lock(hashtext("store_memory:{store_id}"))`，把同一家店的并发学习串行化——解决"读现有→整合→删全部再插入"在多员工同时使用时的丢更新竞态。只锁同店、不锁跨店，不影响整体吞吐。已用并发 e2e 验证（两条并发学习都不丢）。
+   - 取舍：锁在 consolidate(LLM ~3-5s) 期间持有连接；单店学习不频繁、连接池 20+40 足够，realistic SaaS 规模无碍。极端规模再考虑队列化（当前不做，避免过度设计）。
+2. **防膨胀上限**：`_cap_memories` —— 耐久类(事实/偏好/运营模式)全留，**情景类(会累积)只留最近 25 条**，总数封顶 150；同时 consolidate prompt 要求"旧情景合并成简短总结"。双保险，多年使用也不会无限胀大。已有上限单测覆盖。
