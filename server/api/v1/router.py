@@ -23,6 +23,7 @@ from api.v1.repurpose import router as repurpose_router
 from api.v1.batch import router as batch_router
 from api.v1.orchestrate import router as orchestrate_router
 from api.v1.client_logs import router as client_logs_router
+from api.v1.store_memory import router as store_memory_router
 
 router = APIRouter()
 
@@ -49,6 +50,7 @@ router.include_router(repurpose_router, prefix="/generate", tags=["内容变体"
 router.include_router(batch_router, prefix="/generate", tags=["批量生成"])
 router.include_router(orchestrate_router, prefix="/orchestrate", tags=["协作任务"])
 router.include_router(client_logs_router, prefix="/logs", tags=["客户端日志"])
+router.include_router(store_memory_router, prefix="/store-memory", tags=["店脑·门店记忆"])
 
 
 @router.get("/health")

@@ -158,3 +158,12 @@ export interface StoreListItem {
 export interface UploadResponse {
   url: string;
 }
+
+/** 店脑：门店 AI 记忆条目（「AI 眼里的你的店」页） */
+export interface StoreMemoryItem {
+  id: string;
+  type: string;
+  type_label: string;
+  content: string;
+  confidence: string;
+}

@@ -276,6 +276,20 @@ export default function StoreSettingsPage() {
         </Link>
       </div>
 
+      {/* 分组二点五：店脑——AI 对这家店的理解 */}
+      <p className="mb-2 px-1 text-xs font-medium text-slate-400">智能</p>
+      <div className="mb-5 overflow-hidden rounded-2xl bg-white">
+        <Link
+          href="/dashboard/store-brain"
+          className="flex h-[52px] items-center gap-3 px-4 transition-colors active:bg-slate-100 lg:hover:bg-slate-50"
+        >
+          <span className="text-xl">🧠</span>
+          <span className="min-w-0 flex-1 truncate text-[15px] font-medium text-slate-800">AI 眼里的你的店</span>
+          <span className="shrink-0 text-xs text-slate-400">越用越懂·可纠错</span>
+          <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />
+        </Link>
+      </div>
+
       {/* 分组三：账号（仅手机——桌面端走 Header 的门店切换/退出） */}
       <div className="lg:hidden">
         <p className="mb-2 px-1 text-xs font-medium text-slate-400">账号</p>
