@@ -170,7 +170,8 @@ async def activate_user(
     # token 上限由次数自动推导,与套餐次数永远配套(check_quota 实际也按次数推导校验)
     from services.quota_service import token_ceiling
     quota.monthly_generation_limit = plan.generation_limit
-    quota.monthly_tokens_limit = token_ceiling(plan.generation_limit)
+    # 仅展示用；封顶 int4 上限，防超大次数(如不限额)算出的 token 数溢出。实际拦截按次数推导(见 check_quota)
+    quota.monthly_tokens_limit = min(token_ceiling(plan.generation_limit), 2_000_000_000)
     quota.monthly_poster_limit = plan.poster_limit  # 海报独立额度跟随套餐
 
     await db.commit()
@@ -206,7 +207,8 @@ async def adjust_user_quota(
         )
         db.add(quota)
     quota.monthly_generation_limit = max(0, generation_limit)
-    quota.monthly_tokens_limit = token_ceiling(generation_limit)  # token 自动跟随次数
+    # token 自动跟随次数；封顶 int4，防超大额度(不限额)溢出。实际拦截按次数推导
+    quota.monthly_tokens_limit = min(token_ceiling(generation_limit), 2_000_000_000)
     if poster_limit is not None:
         quota.monthly_poster_limit = max(0, poster_limit)
     await db.commit()
