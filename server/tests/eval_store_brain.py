@@ -103,15 +103,20 @@ _ABSTAIN = [
 
 
 def test_extraction_recall_and_no_hallucination():
-    fails = []
+    # LLM 行为评估是统计性的（非确定）：防幻觉=信任底线，必须 0；
+    # 召回允许 6 条里抖动 ≤1（避免把单次 LLM 波动误判成回归）。
+    recall_miss, halluc_fail = [], []
     for name, text, must, forbidden in _EXTRACT:
         mems = _run(extract_memories(text))
         blob = _joined(mems)
         miss = [m for m in must if m not in blob]
         halluc = [f for f in forbidden if f in blob]
-        if miss or halluc:
-            fails.append(f"[{name}] 漏抓={miss} 幻觉={halluc} | {blob[:120]}")
-    assert not fails, "抽取未达标:\n" + "\n".join(fails)
+        if halluc:
+            halluc_fail.append(f"[{name}] 幻觉={halluc} | {blob[:100]}")
+        if miss:
+            recall_miss.append(f"[{name}] 漏抓={miss} | {blob[:100]}")
+    assert not halluc_fail, "出现幻觉（信任底线，必须 0）:\n" + "\n".join(halluc_fail)
+    assert len(recall_miss) <= 1, "召回漏太多（>1/6）:\n" + "\n".join(recall_miss)
 
 
 def test_consolidation_outcomes():

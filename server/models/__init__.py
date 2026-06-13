@@ -7,9 +7,10 @@ from models.quota import UsageQuota
 from models.plan import Plan, StoreSubscription, SubscriptionPayment
 from models.conversation import Conversation, ConversationMessage
 from models.collaboration import CollabTask
+from models.store_memory import StoreMemory
 
 __all__ = [
     "User", "Store", "StoreMember", "StoreInvitation", "Generation",
     "UsageQuota", "Plan", "StoreSubscription", "SubscriptionPayment",
-    "Conversation", "ConversationMessage", "CollabTask",
+    "Conversation", "ConversationMessage", "CollabTask", "StoreMemory",
 ]

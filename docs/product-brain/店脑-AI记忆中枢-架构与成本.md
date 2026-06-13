@@ -206,3 +206,15 @@ store_memory(
 
 - 产品定位不碰收银/实时数据，所以店脑**学不到"这条朋友圈到底带来几个客"**这种真实经营结果——它能学的是"你做了什么、你说哪条好、你的偏好"。这是天花板，但已足够让它从"聪明工具"变"懂你店的伙伴"。
 - 单店记忆量小（几页纸），**不需要**向量库/知识图谱那套重型检索；真到了跨门店百万级记忆，再单独挂小 embedding 模型即可，不影响现在的选型。
+
+---
+
+## 9. 实测后的 as-built 调整（2026-06-13 第一版落地）
+
+第一版已落地并通过真实 DeepSeek 评估（`server/tests/eval_store_brain.py` 5/5 + 端到端实跑）。相对上面设计的两处修正：
+
+1. **注入位置：放 system prompt 末尾，不是前缀。** 设计原想放前缀吃 KV 缓存，但实测发现**店脑与门店 profile 冲突时（如"金腿75"vs profile"金腿60"），放前缀压不过后面的 profile**。改放末尾（近因效应）+ 措辞"如与其他资料/价格冲突一律以店脑为准"后，店脑正确覆盖冲突项、互补其余项。**取舍：放弃了店脑那 1~2k token 的缓存命中，换取覆盖正确性——值得。**
+2. **整合返回"最终列表"而非 ADD/UPDATE 操作。** 实测 ADD/UPDATE/MERGE/NOOP 标签边界模糊、模型不稳定贴标签，但"无重复+改价生效"这个目标始终达成。故 `consolidate_memories` 直接返回整合后的完整列表，按结果对错衡量。
+3. **评估是统计性的**：抽取召回允许 6 条抖动 ≤1，防幻觉必须 0；记忆操作 temperature=0 求稳。
+
+落地清单：`models/store_memory.py` + 迁移 017、`services/memory_service.py`(extract/consolidate/load/remember/format)、`stream.py`(注入+`BackgroundTask`后台学习)、`api/v1/store_memory.py`(CRUD)、前端 `/dashboard/store-brain`「AI 眼里的你的店」。**钩子后台学习不计用户配额。**

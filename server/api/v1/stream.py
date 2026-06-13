@@ -28,6 +28,9 @@ from services.content_service import (
 from schemas.generate import WorkbenchRequest
 from services.store_profile_service import render_operation_profile_context
 from services.quota_service import check_quota, increment_usage
+from services.memory_service import load_store_memory, format_memories_for_prompt, remember
+from db.session import async_session
+from starlette.background import BackgroundTask
 from services.workbench_fewshot_service import select_workbench_fewshots
 from services.brand_voice_service import get_brand_voice_context
 from core.security_guard import check_input_injection, StreamGuard
@@ -36,6 +39,17 @@ from services.scenario_role_map import SCENARIO_ROLE_MAP as scenario_role_map
 logger = logging.getLogger(__name__)
 router = APIRouter()
 prompt_engine = get_prompt_engine()
+
+
+async def _learn_in_background(store_id: str, text: str) -> None:
+    """生成后台学习：开独立 session，从用户输入抽取记忆、整合进店脑。失败静默，不影响主流程、不计配额。"""
+    if not text or not text.strip():
+        return
+    try:
+        async with async_session() as bg_db:
+            await remember(bg_db, store_id, text)
+    except Exception:
+        logger.exception("店脑后台学习失败 store_id=%s", store_id)
 
 
 @router.post("/workbench")
@@ -130,6 +144,15 @@ async def stream_workbench(
 
     # #3 精简档：要求只出一条（与同步 /generate/workbench 路径一致）
     rendered_prompt += concise_directive(body.concise)
+
+    # 店脑：注入这家店的长期记忆 → 所有生成"懂这家店"。
+    # 放在 system prompt 末尾（紧贴用户问题），利用近因效应让它压过前面 profile 里的旧值。
+    try:
+        brain_text = format_memories_for_prompt(await load_store_memory(db, store.id))
+        if brain_text:
+            rendered_prompt = f"{rendered_prompt}\n\n{brain_text}"
+    except Exception:
+        logger.warning("注入店脑失败，跳过", exc_info=True)
 
     # 1. System prompt
     if rendered_prompt:
@@ -235,6 +258,9 @@ async def stream_workbench(
 
         yield f"data: {json.dumps({'token': '', 'done': True, 'full_content': content, 'generation_id': generation_id, 'conversation_id': str(conv_id), 'tokens_used': tokens_used}, ensure_ascii=False)}\n\n"
 
+    # 店脑：本次生成结束后，后台从用户输入学习（不阻塞响应、不计配额）
+    learn_text = f"{user_intent or ''}。{extra_note or ''}".strip("。 ")
+
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
@@ -243,4 +269,5 @@ async def stream_workbench(
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
+        background=BackgroundTask(_learn_in_background, str(store.id), learn_text),
     )

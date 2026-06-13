@@ -1,7 +1,7 @@
 import { ApiError } from "@/types/api";
 import type { OrchestrationTask, RepurposeResponse } from "@/types/api";
 import type { LoginRequest, RegisterRequest, TokenResponse, User } from "@/types/auth";
-import type { StoreCreate, StoreResponse, StoreUpdate, StoreListItem, UploadResponse } from "@/types/store";
+import type { StoreCreate, StoreResponse, StoreUpdate, StoreListItem, UploadResponse, StoreMemoryItem } from "@/types/store";
 import type { GenerateActivityRequest, GenerateOperationRequest, GenerateWorkbenchRequest, GenerateOutreachRequest, GenerateSOPRequest, GenerateGamesRequest, GeneratePerformanceRequest, GenerateDiagnosisRequest, GenerationResponse } from "@/types/generate";
 import type { ImageGenerateRequest, ImageGenerateResponse, SizeOption } from "@/types/poster";
 import type {
@@ -458,6 +458,20 @@ class ApiClient {
   /** 保存用户手动编辑后的内容（历史里存实际发出去的版本） */
   async updateGenerationContent(id: string, content: string): Promise<void> {
     await this.request<{ status: string }>("PATCH", `/api/v1/generations/${id}/content`, { content });
+  }
+
+  // ── 店脑：门店 AI 记忆（「AI 眼里的你的店」页）──
+  async getStoreMemory(): Promise<StoreMemoryItem[]> {
+    return this.request<StoreMemoryItem[]>("GET", "/api/v1/store-memory");
+  }
+  async addStoreMemory(content: string, type = "semantic"): Promise<StoreMemoryItem> {
+    return this.request<StoreMemoryItem>("POST", "/api/v1/store-memory", { content, type });
+  }
+  async updateStoreMemory(id: string, content: string): Promise<StoreMemoryItem> {
+    return this.request<StoreMemoryItem>("PATCH", `/api/v1/store-memory/${id}`, { content });
+  }
+  async deleteStoreMemory(id: string): Promise<void> {
+    await this.request("DELETE", `/api/v1/store-memory/${id}`);
   }
 
   /** 给生成记录命名(海报找图友好) */
