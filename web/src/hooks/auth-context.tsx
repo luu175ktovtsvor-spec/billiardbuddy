@@ -46,8 +46,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     api.setToken(res.access_token);
     const u = await api.getMe();
     setUser(u);
-    // 平台超管账号不绑门店，进 /dashboard 会因"无门店"报错，直接导向独立后台
-    router.push(u.is_admin ? "/admin" : "/dashboard");
+    // 默认进普通用户工作台——有门店的账号（含"既是老板又是超管"的号）客户端体验与普通用户完全一致。
+    // 只有「没有门店的纯平台超管账号」才直接进 /admin（它进 dashboard 没有门店可用）。
+    let dest = "/dashboard";
+    if (u.is_admin) {
+      try {
+        await api.getMyStore(); // 有门店 → 当普通用户进 dashboard
+      } catch (err) {
+        if ((err as { status?: number })?.status === 404) dest = "/admin";
+      }
+    }
+    router.push(dest);
   }, [router]);
 
   const register = useCallback(async (phone: string, password: string, name?: string, inviteCode?: string) => {
