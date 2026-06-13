@@ -218,7 +218,8 @@ def test_poster_refine_and_references_coexist():
     from services import poster_service
     src = _inspect.getsource(poster_service.generate_images)
     assert "elif reference_image_paths" not in src, "refine 与参考图又变回互斥了"
-    assert "check_quota" in src and "check_input_injection" in src
+    # 海报走独立额度池（check_poster_quota），且生图前必须做注入校验
+    assert "check_poster_quota" in src and "check_input_injection" in src
 
 
 def test_admin_routes_single_prefix():

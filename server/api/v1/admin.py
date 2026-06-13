@@ -171,6 +171,7 @@ async def activate_user(
     from services.quota_service import token_ceiling
     quota.monthly_generation_limit = plan.generation_limit
     quota.monthly_tokens_limit = token_ceiling(plan.generation_limit)
+    quota.monthly_poster_limit = plan.poster_limit  # 海报独立额度跟随套餐
 
     await db.commit()
     return {"status": "ok", "plan": plan.name, "expires": subscription.current_period_end}
@@ -180,10 +181,12 @@ async def activate_user(
 async def adjust_user_quota(
     user_id: str,
     generation_limit: int = None,
+    poster_limit: int = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """单店自定义配额：只设"生成次数"上限，token 上限自动配套（"试用觉得好用，找我提额"的入口）。"""
+    """单店自定义配额：设"生成次数"上限（token 自动配套），可选单独设海报上限。
+    （"试用觉得好用，找我提额"的入口）"""
     require_admin(user)
     if generation_limit is None:
         raise HTTPException(status_code=422, detail="请提供 generation_limit")
@@ -204,12 +207,16 @@ async def adjust_user_quota(
         db.add(quota)
     quota.monthly_generation_limit = max(0, generation_limit)
     quota.monthly_tokens_limit = token_ceiling(generation_limit)  # token 自动跟随次数
+    if poster_limit is not None:
+        quota.monthly_poster_limit = max(0, poster_limit)
     await db.commit()
     return {
         "status": "ok",
         "generation_limit": quota.monthly_generation_limit,
         "tokens_limit": quota.monthly_tokens_limit,
         "generations_used": quota.monthly_generations_used,
+        "poster_limit": quota.monthly_poster_limit,
+        "posters_used": quota.monthly_posters_used,
     }
 
 
@@ -262,6 +269,8 @@ async def get_user_detail(
                 "monthly_generation_limit": quota.monthly_generation_limit,
                 "monthly_generations_used": quota.monthly_generations_used,
                 "monthly_tokens_used": quota.monthly_tokens_used,
+                "monthly_poster_limit": quota.monthly_poster_limit,
+                "monthly_posters_used": quota.monthly_posters_used,
             }
 
     # 获取生成统计（store_id.isnot(None) 跳过自动租户过滤 + 过滤软删除）

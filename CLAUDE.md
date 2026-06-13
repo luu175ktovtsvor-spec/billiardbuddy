@@ -149,7 +149,7 @@ server/                 # FastAPI 后端
     copywriting/        # 文案 prompt
     activity/           # 活动 prompt
     fewshots/           # fewshot 示例
-  db/migrations/versions/ # 14 个 Alembic 迁移（001-013 + add_new_tables）
+  db/migrations/versions/ # 19 个 Alembic 迁移（001-018 主链 + add_new_tables_and_fields 旁支，head=018）
   main.py               # 入口
 ```
 
@@ -323,6 +323,8 @@ journalctl -u billiards-backend -n 50 --no-pager
 | AI 对话回复行内编辑（/chat 回复"复制/编辑"→ textarea 改 → 保存修改，调 updateGenerationContent 存回历史；与工作台结果编辑同款） | ✅ |
 | 行业术语对齐：会员卡→一卡通/充值（36 处 prompt + 3 处前端；保留"一卡通替代传统会员卡"对比句与"严禁输出会员卡档位"护栏；球房一卡通通吃商品/助教/台费，赠送通常只送台费） | ✅ |
 | 店脑·AI记忆中枢（第一版）：生成/对话后台异步从用户输入抽取门店记忆→整合(改价更新不重复)→存`store_memories`；生成前注入 prompt 末尾(冲突以店脑为准)→越用越懂这家店；`/dashboard/store-brain`「AI眼里的你的店」可看/改/删(人在环)。memory_service + golden验收套件 `tests/eval_store_brain.py`(真实DeepSeek 5/5)。后台学习不计配额。生产加固：并发安全(每店 pg_advisory_xact_lock 防丢记忆)+ 防膨胀上限(情景25/总150)。详见 docs/product-brain/店脑-AI记忆中枢-架构与成本.md | ✅ |
+| 海报独立额度池（migration 018）：海报不再与文案共用次数池，单独计数/限额(`monthly_poster_limit`/`monthly_posters_used`)；套餐 `poster_limit` 开通时同步、单店可调；生图前 `check_poster_quota` 校验、用尽走 429 提额引导；前端 QuotaBadge `mode="poster"` 单独显示"剩余N/M张(生图较耗额度)"。同时堵住免费版白嫖高清海报漏洞。比例尺寸修复：3:4→1152×1536、9:16→1152×2048、16:9→2048×1152、1:1→1024×1024(旧值全错且3:4与9:16撞同图) | ✅ |
+| 独立管理后台·超管账号（代码部分）：`server/scripts/manage_admin.py` 建不绑门店的 `is_admin` 超管账号(密码走环境变量)；登录后 is_admin 用户导向 `/admin`。后端 admin API 零门店依赖。独立端口/Nginx/IP锁见 docs/编排-独立管理后台与运营待办.md(等上线) | ✅ |
 
 ## 行业知识体系
 
