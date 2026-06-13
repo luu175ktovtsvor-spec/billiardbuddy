@@ -10,7 +10,7 @@ const STEPS = [
   {
     icon: Building2,
     title: "完善门店核心资料",
-    desc: "填写门店名称、地址、球桌信息等基础数据，让 AI 了解你的球房。资料越完整，AI 生成的内容越精准。",
+    desc: "填好门店定位、客群、价格这些资料，AI 才知道你这家店该发什么、用什么语气。资料越全，写出来越像你自己的店——这是用好它的第一步。",
     action: "去完善",
     href: "/dashboard/store-settings",
   },

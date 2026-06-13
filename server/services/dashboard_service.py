@@ -1,8 +1,11 @@
 import uuid
 from datetime import datetime, timezone, timedelta, date
+from typing import NamedTuple
+from urllib.parse import quote
 
 from sqlalchemy import func, select, Integer
 from sqlalchemy.ext.asyncio import AsyncSession
+from borax.calendars.festivals2 import LunarFestival, SolarFestival
 
 from core.timezone import BUSINESS_TZ
 from models.generation import Generation
@@ -13,6 +16,8 @@ from schemas.dashboard import (
     DashboardTodayResponse,
 )
 from services.store_service import calculate_completeness
+from services.behavior_service import BehaviorSnapshot, get_behavior_snapshot
+from services.ai.prompt_engine import get_prompt_engine
 
 WEEKDAY_NAMES = [
     "Monday",
@@ -52,6 +57,7 @@ async def get_today_dashboard(
 
     completeness = calculate_completeness(store)
     weekday = WEEKDAY_NAMES[now.weekday()]
+    snap = await get_behavior_snapshot(db, store.id)
 
     recommendations, greeting, tips = await _build_rules(
         db=db,
@@ -60,6 +66,7 @@ async def get_today_dashboard(
         today_count=today_count,
         total_count=total_count,
         weekday=weekday,
+        snap=snap,
     )
 
     return DashboardTodayResponse(
@@ -77,6 +84,17 @@ async def get_today_dashboard(
         recommendations=recommendations,
         tips=tips,
     )
+
+
+async def get_card_signals(db: AsyncSession, store: Store) -> dict:
+    """工作台卡片动态排序用的行为信号（跨设备）：
+    各 prompt_key 使用次数 + 标过"效果好"的 prompt_key + 门店成长阶段。"""
+    snap = await get_behavior_snapshot(db, store.id)
+    return {
+        "prompt_key_counts": dict(snap.prompt_key_counts),
+        "good_prompt_keys": list(snap.good_prompt_keys),
+        "stage": _growth_stage(store, snap.recent_total),
+    }
 
 
 async def _get_generation_stats(
@@ -134,34 +152,276 @@ async def _get_latest_generation(
     return row
 
 
-# 节日营销日历（公历固定日；提前 lead_days 天开始在今日工作台提示做节日内容）。
-# 农历节日（春节/端午/中秋）因需农历换算暂不纳入，后续可补。
-FESTIVALS = [
-    (1, 1, "元旦", 7),
-    (2, 14, "情人节", 7),
-    (3, 8, "妇女节", 5),
-    (5, 1, "劳动节", 10),
-    (6, 1, "儿童节", 5),
-    (10, 1, "国庆节", 10),
-    (11, 11, "双十一", 7),
-    (12, 25, "圣诞节", 7),
+# 节日营销日历——公历用 SolarFestival、农历(春节/端午/中秋)用 LunarFestival，
+# 由 borax 每年自动换算公历日期(覆盖 1900-2100，不再硬编码、不会过期)。
+# 每项：(borax节日对象, 名称, 提前提示天数, 海报视觉主题)。
+# 海报主题=深链预填生图的 prompt：只描述氛围/色调/元素，不含中文文字(符合"不主动往生图prompt塞中文字"的规则)。
+# 选定节日(用户确认)：传统农历 春节/端午/中秋 + 全民大假 元旦/劳动节/国庆 + 娱乐场所常做 情人节/圣诞。
+_FESTIVAL_DEFS = [
+    (LunarFestival(month=1, day=1), "春节", 15, "中式台球俱乐部室内场景，红金喜庆氛围，灯笼与中国结点缀，暖光，高端温馨"),
+    (LunarFestival(month=5, day=5), "端午节", 10, "台球俱乐部室内场景，端午氛围，粽叶与艾草绿色点缀，清爽，传统节日感"),
+    (LunarFestival(month=8, day=15), "中秋节", 10, "台球俱乐部室内场景，中秋氛围，圆月与暖黄灯光，团圆温馨，高端质感"),
+    (SolarFestival(month=1, day=1), "元旦", 7, "台球俱乐部室内场景，跨年氛围，烟花与彩带点缀，蓝金色调，热闹喜庆"),
+    (SolarFestival(month=2, day=14), "情人节", 7, "台球俱乐部室内场景，情人节氛围，玫瑰与暖粉色调，浪漫双人，温馨格调"),
+    (SolarFestival(month=5, day=1), "劳动节", 10, "台球俱乐部室内场景，五一假期氛围，明亮活力，欢聚热闹，假日感"),
+    (SolarFestival(month=10, day=1), "国庆节", 10, "台球俱乐部室内场景，国庆氛围，红色喜庆，节日热闹，假日聚会感"),
+    (SolarFestival(month=12, day=25), "圣诞节", 7, "台球俱乐部室内场景，圣诞氛围，圣诞树与暖光，红绿色调，温馨派对感"),
 ]
 
 
+class UpcomingFestival(NamedTuple):
+    name: str
+    days: int          # 距今天数（0 = 就是今天）
+    poster_theme: str  # 海报视觉主题（深链预填生图）
+
+
 def _upcoming_festival(now: datetime):
-    """返回最近一个进入提示窗口的节日 (名称, 距今天数)；无则 None。"""
+    """返回最近一个进入提示窗口的节日 UpcomingFestival；无则 None。
+    农历日期由 borax 每年自动换算（1900-2100），不再硬编码、不会过期。"""
     today = now.date()
     best = None
-    for mo, day, name, lead in FESTIVALS:
-        for yr in (today.year, today.year + 1):
-            try:
-                fdate = date(yr, mo, day)
-            except ValueError:
-                continue
-            delta = (fdate - today).days
-            if 0 <= delta <= lead and (best is None or delta < best[1]):
-                best = (name, delta)
+    for fes, name, lead, theme in _FESTIVAL_DEFS:
+        wd = fes.list_days(start_date=today, count=1)[0]  # 今天起的下一次该节日
+        delta = (wd.solar - today).days
+        if 0 <= delta <= lead and (best is None or delta < best.days):
+            best = UpcomingFestival(name, delta, theme)
     return best
+
+
+def _festival_recs(store: Store, now: datetime) -> list[DashboardRecommendation]:
+    """节日临近的推荐：文案恒出 + 海报。
+    海报走生图模型（花钱、占生成额度），故只在节日且用户主动点击时触发，绝不自动出图；
+    且需 Logo/二维码才完整——有则直达生图、缺则引导先上传，不推一个用不了的功能。"""
+    fest = _upcoming_festival(now)
+    if not fest:
+        return []
+    when = "就是今天" if fest.days == 0 else f"还有 {fest.days} 天"
+    recs = [
+        DashboardRecommendation(
+            id="festival",
+            category="festival",
+            title=f"{fest.name}{when}，提前备好节日文案",
+            description=f"{fest.name}临近，提前生成节日朋友圈/活动，抢占客户注意力。",
+            action_label="做节日文案",
+            action_url="/dashboard/workbench",
+            action_type="generate_copywriting",
+            priority="high",
+            suggested_payload={
+                "prompt_key": "copywriting.moments",
+                "user_intent": f"写一条{fest.name}主题的朋友圈，结合门店活动和氛围",
+            },
+        )
+    ]
+    has_assets = bool(getattr(store, "logo_url", None)) and bool(getattr(store, "qrcode_url", None))
+    if has_assets:
+        recs.append(
+            DashboardRecommendation(
+                id="festival_poster",
+                category="festival",
+                title=f"做一张{fest.name}海报",
+                description=f"{fest.name}临近，生成一张节日海报，自动带上门店 Logo 和二维码。",
+                action_label="做节日海报",
+                action_url=f"/dashboard/posters/new?prompt={quote(fest.poster_theme)}",
+                action_type="generate_poster",
+                priority="high",
+            )
+        )
+    else:
+        recs.append(
+            DashboardRecommendation(
+                id="festival_poster_setup",
+                category="festival",
+                title=f"补个 Logo，{fest.name}海报一键出",
+                description="上传门店 Logo 和二维码后，就能生成带品牌的节日海报。",
+                action_label="去上传 Logo",
+                action_url="/dashboard/store-settings/branding",
+                action_type="edit_store",
+                priority="high",
+            )
+        )
+    return recs
+
+
+def _profile_flag(store: Store, *path: str) -> bool:
+    """安全读取 operation_profile 里的布尔标志（路径不存在则 False）。"""
+    cur = store.operation_profile if isinstance(store.operation_profile, dict) else {}
+    for key in path:
+        if not isinstance(cur, dict):
+            return False
+        cur = cur.get(key)
+    return bool(cur)
+
+
+def _daily_focus(store: Store, weekday: str) -> tuple[str, str, str] | None:
+    """按星期 + 门店画像给出"今天最该做的一条内容"(标题, 描述, 生成意图)。
+    画像里没有的能力(助教/周赛/社群)不推，保证每家店看到的都贴合自己。
+    这并入了原"内容日历"的按星期内容价值，但改成动态、按画像过滤。"""
+    has_assistant = _profile_flag(store, "assistant_system", "has_assistant") or bool(store.has_coaching)
+    has_weekly = _profile_flag(store, "events", "has_weekly_match")
+    has_group = (
+        _profile_flag(store, "private_domain_groups", "member_group", "enabled")
+        or _profile_flag(store, "private_domain_groups", "competition_group", "enabled")
+    )
+    if weekday == "Monday":
+        return ("发条朋友圈激励老客回归", "新的一周，提醒老顾客本周来打几局。", "写一条新的一周激励老客户回归的朋友圈")
+    if weekday == "Tuesday":
+        if has_assistant:
+            return ("推一波助教服务", "发助教到店推广，带动上钟转化。", "写一条助教到店推广的内容")
+        return ("撮合散客组局", "发条搭子局通知，把散客约起来。", "写一条搭子局组局通知")
+    if weekday == "Wednesday":
+        if has_group:
+            return ("维护一下社群", "群里发条约球/约局内容保持活跃。", "写一条会员群约球的群公告")
+        return ("发条工作日朋友圈", "提醒附近顾客下班后来放松一局。", "写一条工作日下班后约球的朋友圈")
+    if weekday == "Thursday":
+        if has_weekly:
+            return ("预热周末周赛", "提前放出周赛信息，攒报名人数。", "写一条周末周赛预热通知")
+        return ("回访沉睡老客", "联系半个月没来的老客户，发条关怀。", "写一条联系半个月没来的老客户的私聊话术")
+    if weekday == "Friday":
+        return ("发周末预热内容", "周五是推周末活动的最佳时机，提醒提前约局。", "写一条周末预热朋友圈")
+    if weekday in ("Saturday", "Sunday"):
+        if has_weekly:
+            return ("发到店提醒 + 赛后战报", "周末客流高峰，提醒到店并发周赛战报。", "写一条周末到店提醒朋友圈")
+        return ("发周末到店提醒", "提醒老顾客今天到店打球，带动客流。", "写一条周末到店提醒朋友圈")
+    return None
+
+
+def _frequency_rec(snap: BehaviorSnapshot) -> DashboardRecommendation | None:
+    """你常用：把最高频的任务卡顶出来一键再做（L4：优先顶"既常做又标过效果好"的）。
+    取代原前端"常用任务"板块——改服务端统计，跨设备、按真实生成次数。"""
+    pk = snap.top_prompt_key(min_count=2, prefer_good=True)
+    if not pk:
+        return None
+    name = get_prompt_engine().template_name(pk) or "你常用的内容"
+    is_good = pk in snap.good_prompt_keys
+    return DashboardRecommendation(
+        id="frequent",
+        category="frequent",
+        title=f"再做一次「{name}」" + ("（你标过效果好）" if is_good else ""),
+        description="你常做、还标过效果好，再来一条。" if is_good else "这是你最近最常做的，一键打开继续。",
+        action_label="去生成",
+        action_url="/dashboard/workbench",
+        action_type="generate_workbench",
+        priority="medium",
+        suggested_payload={"prompt_key": pk},
+    )
+
+
+def _gap_recs(snap: BehaviorSnapshot) -> list[DashboardRecommendation]:
+    """补缺口/深度：揪出"只做某几样"的单一化，按使用深度推没碰过的能力，避免越用越窄。"""
+    recs: list[DashboardRecommendation] = []
+    n = snap.recent_total
+    if n < 3:
+        return recs  # 用得太少，先别催着补，免得打扰新用户
+    # L4 启发式：用了很多还从没碰某个"习惯类"能力 → 判定有意不做，停止唠叨
+    nag_variety = n <= 15
+    did_group = snap.sub_type_counts.get("group_notice", 0) > 0 or any(
+        "group" in pk for pk in snap.prompt_key_counts
+    )
+    if not did_group and nag_variety:
+        recs.append(DashboardRecommendation(
+            id="gap_group", category="gap",
+            title="顺手发条群公告", description="最近都在发朋友圈，群里也热乎下，约球接龙更直接。",
+            action_label="去生成", action_url="/dashboard/workbench", action_type="generate_copywriting",
+            priority="medium",
+            suggested_payload={"prompt_key": "copywriting.group_notice", "user_intent": "写一条会员群约球的群公告"},
+        ))
+    made_text = snap.sub_type_counts.get("moments", 0) > 0 or snap.type_counts.get("copywriting", 0) > 0
+    if made_text and snap.type_counts.get("poster", 0) == 0 and nag_variety:
+        recs.append(DashboardRecommendation(
+            id="gap_poster", category="gap",
+            title="给文案配张海报", description="你最近发了文案还没配过海报——图文一起发，转化更好。",
+            action_label="去做海报", action_url="/dashboard/posters", action_type="generate_poster",
+            priority="medium",
+        ))
+    if n >= 5 and snap.type_counts.get("activity", 0) == 0:
+        recs.append(DashboardRecommendation(
+            id="gap_activity", category="gap",
+            title="该策划个活动了", description="光发内容不够，办场活动能直接带客流。",
+            action_label="去策划", action_url="/dashboard/workbench", action_type="generate_activity",
+            priority="medium",
+            suggested_payload={"activity_goal": "traffic", "budget_level": "light"},
+        ))
+    if n >= 8 and snap.type_counts.get("diagnosis", 0) == 0:
+        recs.append(DashboardRecommendation(
+            id="gap_diagnosis", category="gap",
+            title="让 AI 给你做次经营诊断", description="你已经很活跃了，试试更深的——看哪块还能再提升。",
+            action_label="去诊断", action_url="/dashboard/workbench", action_type="generate_workbench",
+            priority="medium",
+            suggested_payload={"prompt_key": "operation.diagnosis_tool", "user_intent": "帮我诊断一下门店经营，哪里能提升"},
+        ))
+    return recs[:2]  # 最多 2 条，别刷屏
+
+
+def _rec(rid: str, category: str, title: str, desc: str, *, action_label: str,
+         action_url: str = "/dashboard/workbench", action_type: str = "generate_copywriting",
+         priority: str = "high", prompt_key: str | None = None,
+         intent: str | None = None, payload: dict | None = None) -> DashboardRecommendation:
+    """简洁构造一条推荐（给阶段/缺口等新规则用，省掉重复样板）。"""
+    sp: dict = dict(payload) if payload else {}
+    if prompt_key:
+        sp["prompt_key"] = prompt_key
+    if intent:
+        sp["user_intent"] = intent
+    return DashboardRecommendation(
+        id=rid, category=category, title=title, description=desc,
+        action_label=action_label, action_url=action_url, action_type=action_type,
+        priority=priority, suggested_payload=sp or None,
+    )
+
+
+def _growth_stage(store: Store, total_count: int) -> str:
+    """门店成长阶段：preopen 筹备 | newopen 新店 | ramp 爬坡 | mature 成熟 | "" 未知(走现状)。
+    优先用"开业阶段"字段，没填则用累计产出量兜底——没填且用得久当成熟店推深度。"""
+    profile = store.operation_profile if isinstance(store.operation_profile, dict) else {}
+    basic = profile.get("basic") if isinstance(profile.get("basic"), dict) else {}
+    opening = basic.get("opening_days", "") if isinstance(basic, dict) else ""
+    mapping = {"not_opened": "preopen", "within_30": "newopen", "30_90": "ramp", "over_90": "mature"}
+    if opening in mapping:
+        return mapping[opening]
+    if total_count >= 40:
+        return "mature"
+    return ""
+
+
+def _stage_recs(stage: str) -> list[DashboardRecommendation]:
+    """阶段重点：筹备/新店推冷启动，成熟店推深度复购。"""
+    if stage == "preopen":
+        return [
+            _rec("stage_preopen_invite", "stage", "邀约储备客户到店",
+                 "开业前 7 天最关键——把攒的客户一个个约到店，开业当天就有人气。",
+                 action_label="去生成", intent="写一条邀约储备客户来新店体验的私聊话术"),
+            _rec("stage_preopen_warmup", "stage", "做开业预热内容",
+                 "开业前发预热朋友圈/海报，把声势造起来。",
+                 action_label="去生成", prompt_key="copywriting.moments", intent="写一条新店开业预热朋友圈"),
+        ]
+    if stage == "newopen":
+        return [
+            _rec("stage_newopen_group", "stage", "把到店客户拉进群",
+                 "新店蜜月期，趁热把第一批客户沉淀到私域，别让他们只来一次。",
+                 action_label="去生成", prompt_key="copywriting.group_notice", intent="写一条邀请新客进群的话术"),
+        ]
+    if stage == "mature":
+        return [
+            _rec("stage_mature_recall", "stage", "唤醒一批沉睡老客",
+                 "成熟店增长靠复购——挑一批好久没来的老客，发条召回。",
+                 action_label="去生成", priority="medium",
+                 prompt_key="operation.old_customer_recall", intent="写一条召回沉睡老客户的私聊话术"),
+        ]
+    return []
+
+
+def _dynamic_tips(snap: BehaviorSnapshot) -> list[str]:
+    """基于行为快照生成"AI 在学你"的实时反馈，替代写死的提示。"""
+    tips: list[str] = []
+    if snap.recent_total == 0:
+        return tips
+    moments = snap.sub_type_counts.get("moments", 0)
+    if moments >= 3 and snap.type_counts.get("activity", 0) == 0:
+        tips.append(f"这阵子你发了 {moments} 条朋友圈，还没做过活动方案——办场活动更能直接带客流。")
+    if snap.good_prompt_keys:
+        name = get_prompt_engine().template_name(next(iter(snap.good_prompt_keys))) or "你常做的内容"
+        tips.append(f"你标过「{name}」效果好，AI 正在往这个风格学。")
+    return tips
 
 
 async def _build_rules(
@@ -171,36 +431,52 @@ async def _build_rules(
     today_count: int,
     total_count: int,
     weekday: str,
+    snap: BehaviorSnapshot,
 ) -> tuple[list[DashboardRecommendation], str, list[str]]:
     recs: list[DashboardRecommendation] = []
     tips: list[str] = []
 
-    # Rule 0: 节日临近——提前做节日内容（高优先，时效性强，是"今日工作台"实时感的来源）
-    fest = _upcoming_festival(datetime.now(BUSINESS_TZ))
-    if fest:
-        name, days = fest
-        when = "就是今天" if days == 0 else f"还有 {days} 天"
+    # Rule 0: 节日临近——文案恒出 + 海报(按 Logo 门控)。时效性强，是"今日工作台"实时感的来源。
+    recs.extend(_festival_recs(store, datetime.now(BUSINESS_TZ)))
+
+    # Rule 0.4: 成长阶段——筹备/新店推冷启动，成熟店推深度（阶段重点）
+    stage = _growth_stage(store, total_count)
+    recs.extend(_stage_recs(stage))
+
+    # Rule 0.5: 今日运营重点——按星期 + 门店画像给一条最贴合的内容
+    # （并入原"内容日历"的按星期价值，但改为动态、按画像过滤；筹备店还没开业不推到店类）
+    focus = _daily_focus(store, weekday)
+    if focus and stage != "preopen":
+        f_title, f_desc, f_intent = focus
         recs.append(
             DashboardRecommendation(
-                id="festival",
-                title=f"{name}{when}，提前备好节日内容",
-                description=f"{name}临近，提前生成节日朋友圈/活动，抢占客户注意力。",
-                action_label="做节日内容",
+                id="daily_focus",
+                category="focus",
+                title=f_title,
+                description=f_desc,
+                action_label="去生成",
                 action_url="/dashboard/workbench",
                 action_type="generate_copywriting",
                 priority="high",
                 suggested_payload={
                     "prompt_key": "copywriting.moments",
-                    "user_intent": f"写一条{name}主题的朋友圈，结合门店活动和氛围",
+                    "user_intent": f_intent,
                 },
             )
         )
+
+    # Rule 0.6: 行为信号——"你常用" + "补缺口"（实时跟进，越用越懂你）
+    freq = _frequency_rec(snap)
+    if freq:
+        recs.append(freq)
+    recs.extend(_gap_recs(snap))
 
     # Rule 1: 资料不完整优先提醒
     if completeness < 70:
         recs.append(
             DashboardRecommendation(
                 id="incomplete_profile",
+                category="setup",
                 title="完善门店资料",
                 description="门店资料越完整，AI 生成的文案和海报越准确。",
                 action_label="去完善资料",
@@ -221,6 +497,7 @@ async def _build_rules(
         recs.append(
             DashboardRecommendation(
                 id="missing_assets",
+                category="setup",
                 title=f"上传{'和'.join(missing_parts)}",
                 description="上传 Logo 和二维码后，生成海报会自动带上门店品牌和联系方式。",
                 action_label="去上传",
@@ -249,8 +526,10 @@ async def _build_rules(
             )
         )
 
-    # Rules 3/4/5: 星期推荐
-    if weekday == "Friday":
+    # Rules 3/4/5: 星期推荐（筹备店还没开业 → 只给冷启动问候，不推"提醒到店"类）
+    if stage == "preopen":
+        greeting = "开业冲刺期，先把人攒起来、把声势造出来！"
+    elif weekday == "Friday":
         greeting = "周五到了，适合做一波周末客流预热！"
         recs.extend(_friday_recs())
         recs.append(
@@ -277,9 +556,11 @@ async def _build_rules(
         greeting = "工作日适合提醒顾客下班后来放松。"
         recs.extend(_weekday_recs("weekday"))
 
-    # Rule 7: 今天已经生成很多内容
+    # Rule 7: 行为驱动的动态 tips（"AI 在学你"），替代写死的固定提示
+    tips.extend(_dynamic_tips(snap))
     if today_count >= 5:
         tips.append("今天已生成了多条内容，可以优先挑选最合适的一条发布。")
+    tips = tips[:3]  # 最多 3 条，别刷屏
 
     # Rule 8: 上次标记了"效果好"的内容推荐
     good_gen = await _get_last_good_generation(db, store.id)
@@ -300,6 +581,7 @@ async def _build_rules(
         recs.append(
             DashboardRecommendation(
                 id="repeat_good",
+                category="good",
                 title=f"上次的{type_label}效果不错，再来一条？",
                 description="基于上次效果好的内容，生成类似的。",
                 action_label="一键复刻",
@@ -316,6 +598,7 @@ async def _build_rules(
         recs.append(
             DashboardRecommendation(
                 id="activity_reminder",
+                category="gap",
                 title="距上次活动已超过一周",
                 description="定期做活动能保持顾客活跃度。",
                 action_label="策划新活动",
@@ -495,8 +778,8 @@ def _weekend_recs(weekday: str) -> list[DashboardRecommendation]:
         ),
         DashboardRecommendation(
             id="weekend_member",
-            title="发一条会员卡/储值活动文案",
-            description="周末客流多，适合推广会员卡和储值活动。",
+            title="发一条储值/一卡通活动文案",
+            description="周末客流多，适合推广储值/一卡通锁客。",
             action_label="去生成",
             action_url="/dashboard/workbench",
             action_type="generate_activity",
@@ -504,7 +787,7 @@ def _weekend_recs(weekday: str) -> list[DashboardRecommendation]:
             suggested_payload={
                 "activity_goal": "membership",
                 "budget_level": "medium",
-                "extra_note": "会员卡或储值活动推广",
+                "extra_note": "储值/一卡通活动推广（小比例赠送，赠送仅限台费）",
             },
         ),
     ]

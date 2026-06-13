@@ -50,10 +50,11 @@ class Store(Base):
     coach_service_types: Mapped[str | None] = mapped_column(String(500))
     coach_price_range: Mapped[str | None] = mapped_column(String(200))
 
-    # 商品定价
+    # 球杆定价
+    cue_price_range: Mapped[str | None] = mapped_column(String(200))
+    # 已弃用(2026-06-13 商品种类过多,不再让用户填写):保留休眠列不 drop,避免破坏性迁移
     beverage_price_range: Mapped[str | None] = mapped_column(String(200))
     snack_price_range: Mapped[str | None] = mapped_column(String(200))
-    cue_price_range: Mapped[str | None] = mapped_column(String(200))
 
     # 设备品牌
     table_brands: Mapped[str | None] = mapped_column(String(500))

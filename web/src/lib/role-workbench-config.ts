@@ -492,7 +492,7 @@ const FRONTDESK_TASKS: RoleTaskCard[] = [
     inputHints: [
       "客户刚到店、刚核销，还是已经打完球？",
       "想要自然加微信话术，还是顺便引导进群？",
-      "不要强推会员卡或充值，可以写清楚。",
+      "不要强推一卡通充值，可以写清楚。",
     ],
   },
   {
@@ -1587,29 +1587,4 @@ const OUTPUT_LABELS: Record<string, string> = {
 
 export function getOutputLabels(packages: OutputPackageItem[]): string {
   return packages.map((p) => OUTPUT_LABELS[p] || p).join(" · ");
-}
-
-// 获取跨角色 Top N 常用卡片
-export function getTopCards(n: number = 6): RoleTaskCard[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const usage: Record<string, number> = JSON.parse(
-      localStorage.getItem("workbench_card_usage") || "{}"
-    );
-    // 还没有任何使用记录时认岗位：前厅第一天打开首页看到的是前厅的活，不是店长的
-    if (Object.keys(usage).length === 0) {
-      const savedRole = localStorage.getItem("workbench_role") as WorkbenchRole | null;
-      const roleTasks = savedRole ? ROLE_TASKS[savedRole] : null;
-      if (roleTasks && roleTasks.length > 0) {
-        const p0 = roleTasks.filter((c) => c.priority === "P0");
-        return (p0.length >= n ? p0 : roleTasks).slice(0, n);
-      }
-    }
-    const allCards = Object.values(ROLE_TASKS).flat();
-    return allCards
-      .sort((a, b) => (usage[b.id] || 0) - (usage[a.id] || 0))
-      .slice(0, n);
-  } catch {
-    return Object.values(ROLE_TASKS).flat().slice(0, n);
-  }
 }

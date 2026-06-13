@@ -34,7 +34,6 @@ type FormData = {
   has_tournament: boolean; has_parking: boolean;
   advantages: string; pricing: string; member_cards: string;
   coach_count: string; coach_price_range: string;
-  beverage_price_range: string; snack_price_range: string;
   table_brands: string; daily_avg_customers: string;
   peak_hours: string; avg_spend_range: string; recharge_rules: string;
 };
@@ -47,7 +46,6 @@ const EMPTY_FORM: FormData = {
   has_tournament: false, has_parking: false,
   advantages: "", pricing: "", member_cards: "",
   coach_count: "", coach_price_range: "",
-  beverage_price_range: "", snack_price_range: "",
   table_brands: "", daily_avg_customers: "",
   peak_hours: "", avg_spend_range: "", recharge_rules: "",
 };
@@ -290,8 +288,6 @@ function formDataToPayload(form: FormData) {
     member_cards: parseFlexibleField(form.member_cards) as MemberCard[] | string | null,
     coach_count: Number.isNaN(coachCount) ? null : coachCount,
     coach_price_range: form.coach_price_range.trim() || null,
-    beverage_price_range: form.beverage_price_range.trim() || null,
-    snack_price_range: form.snack_price_range.trim() || null,
     table_brands: form.table_brands.trim() || null,
     daily_avg_customers: Number.isNaN(dailyAvg) ? null : dailyAvg,
     peak_hours: form.peak_hours.trim() || null,
@@ -301,7 +297,7 @@ function formDataToPayload(form: FormData) {
 }
 
 /* 手机触控规格：input 高 44px + 15px 字号；textarea 保持多行内边距 */
-const INPUT_BASE = "w-full rounded-lg bg-white px-3 text-[15px] text-slate-900 placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20";
+const INPUT_BASE = "w-full rounded-xl bg-slate-50 px-3.5 text-[15px] text-slate-900 placeholder-slate-400 transition-colors focus:bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/30";
 const INPUT_CLASS = `${INPUT_BASE} h-11`;
 const TEXTAREA_CLASS = `${INPUT_BASE} py-2.5`;
 
@@ -327,7 +323,7 @@ function BasicModule({
         <Field label="门店名称" required>
           <input type="text" maxLength={200} value={form.name}
             onChange={(e) => updateField("name", e.target.value)}
-            className={INPUT_CLASS} placeholder="请输入门店名称" />
+            className={INPUT_CLASS} placeholder="如：星辉台球俱乐部" />
         </Field>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="城市">
@@ -344,18 +340,18 @@ function BasicModule({
         <Field label="详细地址">
           <input type="text" maxLength={500} value={form.address}
             onChange={(e) => updateField("address", e.target.value)}
-            className={INPUT_CLASS} placeholder="请输入详细地址" />
+            className={INPUT_CLASS} placeholder="如：天府大道中段XX号3楼" />
         </Field>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="联系电话">
             <input type="text" maxLength={50} value={form.phone}
               onChange={(e) => updateField("phone", e.target.value)}
-              className={INPUT_CLASS} placeholder="门店联系电话" />
+              className={INPUT_CLASS} placeholder="如：028-8888XXXX 或 138XXXXXXXX" />
           </Field>
           <Field label="营业时间">
             <input type="text" maxLength={200} value={form.business_hours}
               onChange={(e) => updateField("business_hours", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：10:00 - 次日02:00" />
+              className={INPUT_CLASS} placeholder="如：24 小时营业" />
           </Field>
         </div>
       </Section>
@@ -365,36 +361,43 @@ function BasicModule({
           <Field label="球桌数量">
             <input type="number" min={0} value={form.table_count}
               onChange={(e) => updateField("table_count", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：12" />
+              className={INPUT_CLASS} placeholder="如：21" />
           </Field>
-          <Field label="桌型描述">
+          <Field label="桌型描述（含包厢）">
             <input type="text" maxLength={500} value={form.table_types}
               onChange={(e) => updateField("table_types", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：中式黑八 30张，斯诺克 4张" />
+              className={INPUT_CLASS} placeholder="如：大厅16张（金腿1、银腿3、普台12）+ 斯诺克1张，包厢2间" />
           </Field>
         </div>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Toggle label="包间" checked={form.has_private_room}
-            onChange={(v) => updateField("has_private_room", v)} />
-          <Toggle label="陪练" checked={form.has_coaching}
-            onChange={(v) => updateField("has_coaching", v)} />
-          <Toggle label="比赛" checked={form.has_tournament}
-            onChange={(v) => updateField("has_tournament", v)} />
-          <Toggle label="停车" checked={form.has_parking}
-            onChange={(v) => updateField("has_parking", v)} />
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="助教总人数">
-            <input type="number" min={0} value={form.coach_count}
-              onChange={(e) => updateField("coach_count", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：5" />
-          </Field>
-          <Field label="助教价格范围">
-            <input type="text" maxLength={100} value={form.coach_price_range}
-              onChange={(e) => updateField("coach_price_range", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：50-80元/小时" />
-          </Field>
-        </div>
+        <Field label="店里有没有助教？">
+          <div className="flex gap-2">
+            {([["有", true], ["没有", false]] as [string, boolean][]).map(([label, val]) => (
+              <button key={label} type="button"
+                onClick={() => updateField("has_coaching", val)}
+                className={`flex-1 rounded-xl py-2.5 text-sm font-medium transition-all active:scale-[0.98] ${
+                  form.has_coaching === val
+                    ? "bg-brand-600 text-white shadow-sm"
+                    : "bg-slate-50 text-slate-500 active:bg-slate-100"
+                }`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </Field>
+        {form.has_coaching && (
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="助教总人数">
+              <input type="number" min={0} value={form.coach_count}
+                onChange={(e) => updateField("coach_count", e.target.value)}
+                className={INPUT_CLASS} placeholder="如：12" />
+            </Field>
+            <Field label="助教价格（按级别）">
+              <input type="text" maxLength={100} value={form.coach_price_range}
+                onChange={(e) => updateField("coach_price_range", e.target.value)}
+                className={INPUT_CLASS} placeholder="如：初级60、中级88、高级128（元/小时）" />
+            </Field>
+          </div>
+        )}
         <div className="grid gap-4 sm:grid-cols-3">
           <Field label="日均客流">
             <input type="number" min={0} value={form.daily_avg_customers}
@@ -479,8 +482,8 @@ function ProfileModule({
 }) {
   return (
     <Section title="AI 运营画像" icon={Sparkles}>
-      <p className="text-slate-500">
-        让 AI 更懂你这家球房，生成内容更像本店的人写的。
+      <p className="text-sm text-slate-500">
+        这是 AI 最看重的一屏。定位决定它用什么语气、推什么活动，客群决定它帮你转化谁——填得越准，写出来越像你自己的店。
       </p>
 
       {/* 完整度评分卡片 */}
@@ -543,6 +546,7 @@ function ProfileModule({
               onChange={() => toggleProfileArray("main_customer_types", v)} />
           ))}
         </TagGroup>
+        <p className="mt-1.5 text-xs text-slate-400">选了哪类客户，AI 推荐的活动方向和话术就往哪类靠。</p>
       </Field>
       <Field label="重点转化客户（多选）">
         <TagGroup>
@@ -573,6 +577,7 @@ function ProfileModule({
           <input type="text" maxLength={300} value={profileForm.avoid_recommendations}
             onChange={(e) => updateProfileField("avoid_recommendations", e.target.value)}
             className={INPUT_CLASS} placeholder="如：充值赠送、免费体验" />
+          <p className="mt-1.5 text-xs text-slate-400">填了这里，AI 就不会再往这些方向出主意。</p>
         </Field>
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
@@ -739,36 +744,21 @@ function BrandingModule({
 }) {
   return (
     <Section title="品牌风格" icon={Sparkles}>
-      <p className="text-slate-500">
-        选择品牌风格后，AI 生成的文案会自动匹配对应语气。
+      <p className="text-sm text-slate-500">
+        选一个品牌调性，AI 写所有文案时都会自动贴着这个语气走，不用每次都交代。
       </p>
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        {[
+      <CardSelect
+        value={(store as any).brand_style || ""}
+        onChange={onBrandStyleChange}
+        columns={3}
+        options={[
           { value: "", label: "不指定", emoji: "—", desc: "默认语气" },
-          { value: "lively", label: "活泼", emoji: "🎉", desc: "轻松、emoji、亲切" },
-          { value: "professional", label: "专业", emoji: "💼", desc: "正式、数据、商务" },
-          { value: "youthful", label: "年轻", emoji: "⚡", desc: "潮流、互动、Z世代" },
-          { value: "premium", label: "高端", emoji: "✨", desc: "优雅、品质、尊贵" },
-        ].map((style) => (
-          <button
-            key={style.value}
-            type="button"
-            onClick={() => onBrandStyleChange(style.value)}
-            className={`flex flex-col items-center gap-1 rounded-xl border-2 p-4 text-center transition-all ${
-              (store as any).brand_style === style.value || (!style.value && !(store as any).brand_style)
-                ? "border-brand-500 bg-brand-50 shadow-sm"
-                : "border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm"
-            }`}
-          >
-            <span className="text-2xl">{style.emoji}</span>
-            <span className={`text-sm font-medium ${
-              (store as any).brand_style === style.value || (!style.value && !(store as any).brand_style)
-                ? "text-brand-700" : "text-slate-700"
-            }`}>{style.label}</span>
-            <span className="text-xs text-slate-400">{style.desc}</span>
-          </button>
-        ))}
-      </div>
+          { value: "lively", label: "活泼", emoji: "🎉", desc: "轻松亲切" },
+          { value: "professional", label: "专业", emoji: "💼", desc: "正式商务" },
+          { value: "youthful", label: "年轻", emoji: "⚡", desc: "潮流互动" },
+          { value: "premium", label: "高端", emoji: "✨", desc: "优雅品质" },
+        ]}
+      />
 
       {/* Logo + 二维码 */}
       <div className="grid gap-6 sm:grid-cols-2 mt-4">
@@ -815,17 +805,14 @@ function PricingModule({
   return (
     <>
       <Section title="价格体系" icon={FileText}>
+        <p className="text-sm text-slate-500">
+          台费、套餐、充值（一卡通）填在这。默认 AI 不会把数字写进文案（改写「价格私我」帮你留客）；想让它直接报价，去「运营画像」打开「允许写价格」。
+        </p>
         <Field label="价格体系">
           <textarea rows={8} value={form.pricing}
             onChange={(e) => updateField("pricing", e.target.value)}
             className={TEXTAREA_CLASS}
             placeholder={"1. 中式黑八\n   (a) 普台：30元/1小时\n   (b) 金腿：XX元/1小时\n   (c) 银腿：XX元/1小时\n   (d) 毒牙：XX元/1小时\n2. 包厢：XX元/1小时"} />
-        </Field>
-        <Field label="会员卡套餐">
-          <textarea rows={5} value={form.member_cards}
-            onChange={(e) => updateField("member_cards", e.target.value)}
-            className={TEXTAREA_CLASS}
-            placeholder={"1. 畅打月卡：888元/月\n2. 周卡：388元/周\n3. 次卡：50次 1500元"} />
         </Field>
         <Field label="充值规则（选填）">
           <textarea rows={3} value={form.recharge_rules}
@@ -833,21 +820,6 @@ function PricingModule({
             className={TEXTAREA_CLASS}
             placeholder="如：充1000送99，充3000送399" />
         </Field>
-      </Section>
-
-      <Section title="辅助定价信息" icon={Wrench}>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="饮料价格范围">
-            <input type="text" maxLength={100} value={form.beverage_price_range}
-              onChange={(e) => updateField("beverage_price_range", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：8-30元" />
-          </Field>
-          <Field label="小食价格范围">
-            <input type="text" maxLength={100} value={form.snack_price_range}
-              onChange={(e) => updateField("snack_price_range", e.target.value)}
-              className={INPUT_CLASS} placeholder="如：15-50元" />
-          </Field>
-        </div>
       </Section>
     </>
   );
@@ -859,8 +831,31 @@ function SloganModule({
   profileForm: ProfileFormData;
   updateProfileField: <K extends keyof ProfileFormData>(k: K, v: ProfileFormData[K]) => void;
 }) {
+  const TONE_OPTIONS = [
+    { value: "", label: "不指定", emoji: "—" },
+    { value: "casual_friendly", label: "熟人自然", emoji: "🤝", desc: "像朋友聊天" },
+    { value: "light_humorous", label: "轻松幽默", emoji: "😄", desc: "有梗有趣" },
+    { value: "premium_business", label: "高端商务", emoji: "💼", desc: "专业品质感" },
+    { value: "young_trendy", label: "年轻潮流", emoji: "⚡", desc: "网感强" },
+    { value: "short_direct", label: "简短直接", emoji: "✂️", desc: "不废话" },
+  ];
+  const { moments_tone, private_chat_tone, group_notice_tone } = profileForm;
+  const unifiedTone =
+    moments_tone === private_chat_tone && private_chat_tone === group_notice_tone
+      ? moments_tone
+      : "";
+  const [showPerScene, setShowPerScene] = useState(false);
+  const setAllTones = (v: string) => {
+    updateProfileField("moments_tone", v);
+    updateProfileField("private_chat_tone", v);
+    updateProfileField("group_notice_tone", v);
+  };
+
   return (
     <Section title="广告语与文案风格" icon={FileText}>
+      <p className="text-sm text-slate-500">
+        一句广告语 + 一个整体语气，AI 写朋友圈、群公告、私聊都照这个调子走，口吻统一不跑偏。
+      </p>
       <Field label="广告语（用于海报、团购页、朋友圈）">
         <input type="text" maxLength={50} value={profileForm.one_liner}
           onChange={(e) => updateProfileField("one_liner", e.target.value)}
@@ -868,44 +863,31 @@ function SloganModule({
           placeholder="如：来一杆，解千愁 | 找搭子，来打球" />
       </Field>
 
-      <div className="grid gap-4 sm:grid-cols-3">
-        <Field label="朋友圈语气">
-          <CardSelect value={profileForm.moments_tone}
-            onChange={(v) => updateProfileField("moments_tone", v)} columns={2}
-            options={[
-              { value: "", label: "请选择", emoji: "—" },
-              { value: "casual_friendly", label: "熟人自然", emoji: "🤝", desc: "像朋友聊天" },
-              { value: "light_humorous", label: "轻松幽默", emoji: "😄", desc: "有梗有趣" },
-              { value: "premium_business", label: "高端商务", emoji: "💼", desc: "专业品质感" },
-              { value: "young_trendy", label: "年轻潮流", emoji: "⚡", desc: "网感强" },
-              { value: "short_direct", label: "简短直接", emoji: "✂️", desc: "不废话" },
-            ]} />
-        </Field>
-        <Field label="私聊语气">
-          <CardSelect value={profileForm.private_chat_tone}
-            onChange={(v) => updateProfileField("private_chat_tone", v)} columns={2}
-            options={[
-              { value: "", label: "请选择", emoji: "—" },
-              { value: "casual_friendly", label: "熟人自然", emoji: "🤝", desc: "像朋友聊天" },
-              { value: "light_humorous", label: "轻松幽默", emoji: "😄", desc: "有梗有趣" },
-              { value: "premium_business", label: "高端商务", emoji: "💼", desc: "专业品质感" },
-              { value: "young_trendy", label: "年轻潮流", emoji: "⚡", desc: "网感强" },
-              { value: "short_direct", label: "简短直接", emoji: "✂️", desc: "不废话" },
-            ]} />
-        </Field>
-        <Field label="群公告语气">
-          <CardSelect value={profileForm.group_notice_tone}
-            onChange={(v) => updateProfileField("group_notice_tone", v)} columns={2}
-            options={[
-              { value: "", label: "请选择", emoji: "—" },
-              { value: "casual_friendly", label: "熟人自然", emoji: "🤝", desc: "像朋友聊天" },
-              { value: "light_humorous", label: "轻松幽默", emoji: "😄", desc: "有梗有趣" },
-              { value: "premium_business", label: "高端商务", emoji: "💼", desc: "专业品质感" },
-              { value: "young_trendy", label: "年轻潮流", emoji: "⚡", desc: "网感强" },
-              { value: "short_direct", label: "简短直接", emoji: "✂️", desc: "不废话" },
-            ]} />
-        </Field>
-      </div>
+      <Field label="整体语气">
+        <CardSelect value={unifiedTone} onChange={setAllTones} columns={3} options={TONE_OPTIONS} />
+      </Field>
+
+      <button type="button" onClick={() => setShowPerScene((v) => !v)}
+        className="text-left text-sm font-medium text-brand-600 active:text-brand-700">
+        {showPerScene ? "收起分场景微调" : "分场景微调（选填）›"}
+      </button>
+      {showPerScene && (
+        <div className="space-y-4 rounded-xl bg-slate-50 p-3.5">
+          <p className="text-xs text-slate-400">默认三个场景都跟随「整体语气」；只有想区别对待时才在这里单独调。</p>
+          <Field label="朋友圈语气">
+            <CardSelect value={moments_tone}
+              onChange={(v) => updateProfileField("moments_tone", v)} columns={3} options={TONE_OPTIONS} />
+          </Field>
+          <Field label="私聊语气">
+            <CardSelect value={private_chat_tone}
+              onChange={(v) => updateProfileField("private_chat_tone", v)} columns={3} options={TONE_OPTIONS} />
+          </Field>
+          <Field label="群公告语气">
+            <CardSelect value={group_notice_tone}
+              onChange={(v) => updateProfileField("group_notice_tone", v)} columns={3} options={TONE_OPTIONS} />
+          </Field>
+        </div>
+      )}
 
       <Field label="禁用表达（用逗号分隔）">
         <input type="text" maxLength={300} value={profileForm.forbidden_phrases}
@@ -959,8 +941,6 @@ export default function StoreSettingsModulePage() {
           member_cards: formatJsonForDisplay(s.member_cards),
           coach_count: s.coach_count != null ? String(s.coach_count) : "",
           coach_price_range: s.coach_price_range || "",
-          beverage_price_range: s.beverage_price_range || "",
-          snack_price_range: s.snack_price_range || "",
           table_brands: s.table_brands || "",
           daily_avg_customers: s.daily_avg_customers != null ? String(s.daily_avg_customers) : "",
           peak_hours: s.peak_hours || "",

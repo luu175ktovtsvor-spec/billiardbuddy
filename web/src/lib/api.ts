@@ -2,14 +2,14 @@ import { ApiError } from "@/types/api";
 import type { OrchestrationTask, RepurposeResponse } from "@/types/api";
 import type { LoginRequest, RegisterRequest, TokenResponse, User } from "@/types/auth";
 import type { StoreCreate, StoreResponse, StoreUpdate, StoreListItem, UploadResponse } from "@/types/store";
-import type { GenerateActivityRequest, GenerateCopywritingRequest, GenerateOperationRequest, GenerateWorkbenchRequest, GenerateOutreachRequest, GenerateSOPRequest, GenerateGamesRequest, GeneratePerformanceRequest, GenerateDiagnosisRequest, GenerationResponse } from "@/types/generate";
+import type { GenerateActivityRequest, GenerateOperationRequest, GenerateWorkbenchRequest, GenerateOutreachRequest, GenerateSOPRequest, GenerateGamesRequest, GeneratePerformanceRequest, GenerateDiagnosisRequest, GenerationResponse } from "@/types/generate";
 import type { ImageGenerateRequest, ImageGenerateResponse, SizeOption } from "@/types/poster";
 import type {
   GenerationHistoryListResponse,
   GenerationHistoryItem,
   ListGenerationsParams,
 } from "@/types/generation-history";
-import type { DashboardTodayResponse } from "@/types/dashboard";
+import type { DashboardTodayResponse, CardSignals } from "@/types/dashboard";
 
 const configuredBaseUrl = process.env.NEXT_PUBLIC_API_URL;
 const BASE_URL = !configuredBaseUrl
@@ -226,10 +226,6 @@ class ApiClient {
   }
 
   // ─── Generate ───
-
-  generateCopywriting(data: GenerateCopywritingRequest) {
-    return this.request<GenerationResponse>("POST", "/api/v1/generate/copywriting", data);
-  }
 
   generateActivity(data: GenerateActivityRequest) {
     return this.request<GenerationResponse>("POST", "/api/v1/generate/activity", data);
@@ -500,6 +496,10 @@ class ApiClient {
 
   getTodayDashboard() {
     return this.request<DashboardTodayResponse>("GET", "/api/v1/dashboard/today");
+  }
+
+  getCardSignals() {
+    return this.request<CardSignals>("GET", "/api/v1/dashboard/card-signals");
   }
 
   // ─── New Operation APIs ───

@@ -3,7 +3,7 @@ name: "充值活动策略知识库"
 category: "knowledge"
 variables: []
 description: |
-  充值活动和会员卡策略。
+  充值活动和一卡通策略。
   核心原则：不推荐大额充值赠送（会让后期涨价更难），建议小比例赠送。
   一卡通替代传统会员卡。
 
@@ -69,16 +69,8 @@ recharge_tiers:
         bonus: "1000"
         ratio: "20%"
     suitable: "商业球房、成熟球房"
-  aggressive:
-    name: "激进方案（不推荐）"
-    tiers:
-      - amount: "5000"
-        bonus: "2000"
-        ratio: "40%"
-      - amount: "10000"
-        bonus: "5000"
-        ratio: "50%"
-    risk: "后期涨价困难，利润被压缩，不建议使用"
+  # 大额赠送（如充5000送2000、充10000送5000，比例40%-50%）违背"取消大额充值赠送"的定价铁律，
+  # 一律不推荐、不生成、不在库内保留可套用的档位模板。
 
 membership_card:
   traditional:

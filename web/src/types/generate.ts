@@ -37,6 +37,8 @@ export interface GenerateWorkbenchRequest {
   prompt_key?: string;
   model?: string;
   conversation_id?: string;
+  /** 精简档：只出一条，不堆多个方案/版本 */
+  concise?: boolean;
 }
 
 export type OperationScenario =

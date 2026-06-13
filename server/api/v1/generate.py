@@ -34,7 +34,7 @@ async def generate_copywriting_api(
         user=current_user,
         sub_type=body.sub_type.value,
         tone=body.tone.value,
-        scenario=body.scenario.value,
+        scenario=body.scenario,  # scenario 是 str 字段，不是枚举，不能 .value（修复 500）
         extra_note=body.extra_note,
     )
     return GenerationResponse(
@@ -117,6 +117,7 @@ async def generate_workbench_api(
         output_package=[item.value for item in body.output_package] if body.output_package else None,
         extra_note=body.extra_note,
         prompt_key=body.prompt_key,
+        concise=body.concise,
     )
     suggestions = detect_profile_suggestions(
         profile=current_store.operation_profile,

@@ -1,7 +1,9 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/auth-context";
+import { api } from "@/lib/api";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { PageHeader } from "@/components/layout/page-header";
 import {
@@ -93,11 +95,35 @@ const SCENARIOS: Scenario[] = [
   },
 ];
 
+/** 按门店成长阶段给场景排序权重（小=靠前）。自定义协作永远最后。 */
+function stageRank(s: Scenario, stage: string): number {
+  if (s.name === "自定义协作") return 100;
+  if (stage === "preopen" || stage === "newopen") {
+    if (s.type === "store_opening") return 0;    // 筹备/新店：开业方案顶上来
+    if (s.type === "business_review") return 80; // 还没经营，别推复盘
+  }
+  if (stage === "mature") {
+    if (s.type === "business_review") return 0;  // 成熟店：推复盘
+    if (s.type === "store_opening") return 80;   // 早开业了，开业方案沉底
+  }
+  return 50;
+}
+
 export default function CollaborateGalleryPage() {
   const { isAuthenticated } = useAuth();
   const router = useRouter();
+  const [stage, setStage] = useState("");
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let cancelled = false;
+    api.getCardSignals().then((s) => { if (!cancelled) setStage(s.stage); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [isAuthenticated]);
 
   if (!isAuthenticated) return null;
+
+  const scenarios = [...SCENARIOS].sort((a, b) => stageRank(a, stage) - stageRank(b, stage));
 
   const goRun = (s: Scenario) => {
     const params = new URLSearchParams({ type: s.type, name: s.name });
@@ -121,7 +147,7 @@ export default function CollaborateGalleryPage() {
       </p>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        {SCENARIOS.map((s) => (
+        {scenarios.map((s) => (
           <button
             key={s.name}
             type="button"

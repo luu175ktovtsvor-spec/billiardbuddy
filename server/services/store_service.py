@@ -57,8 +57,8 @@ _UPDATE_ALLOWED_FIELDS = {
     "operation_profile",
     # 助教资料
     "coach_count", "coach_service_types", "coach_price_range",
-    # 商品定价
-    "beverage_price_range", "snack_price_range", "cue_price_range",
+    # 球杆定价
+    "cue_price_range",
     # 设备品牌
     "table_brands", "cue_brands", "other_equipment",
     # 会员体系

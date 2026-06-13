@@ -29,7 +29,7 @@
 ## 技术栈
 
 - **前端**: Next.js 14 + React 18 + TypeScript + TailwindCSS + shadcn/ui
-- **后端**: Python 3.12+ + FastAPI + SQLAlchemy + Alembic
+- **后端**: Python 3.12+ + FastAPI + SQLAlchemy + Alembic + borax（农历节日公历换算）
 - **数据库**: PostgreSQL 14
 - **海报合成**: Pillow (Python) + AI 生图（OpenAI gpt-image-2）
 - **包管理**: pnpm (前端) / uv (Python 后端)
@@ -76,7 +76,6 @@ web/                    # Next.js 前端
       ui/               # shadcn/ui 基础组件 + CardSelect
       layout/           # 布局组件（header, sidebar, mobile-nav）
       generators/       # AI 生成结果展示（copy-button）
-      content-calendar.tsx  # 内容日历（静态）
       my-templates.tsx      # 我的收藏（服务端 is_favorite，非 localStorage）
       onboarding-guide.tsx  # 新手引导
       empty-store-guide.tsx # 无门店引导
@@ -137,7 +136,8 @@ server/                 # FastAPI 后端
         mock.py         # Mock Provider（测试用）
     content_service.py  # 文案生成核心逻辑
     poster_service.py   # 海报生成（AI 生图 + 对话历史）
-    dashboard_service.py # 今日工作台规则引擎
+    dashboard_service.py # 今日推荐规则引擎（日期+画像+节日[borax农历动态]+行为信号；节日出文案+海报双推荐）
+    behavior_service.py  # 行为信号层（从 generations 算 BehaviorSnapshot：你常用/补缺口/深度）
     store_profile_service.py # 门店运营画像
     generation_service.py # 生成记录查询
     quota_service.py    # 配额管理
@@ -291,7 +291,9 @@ journalctl -u billiards-backend -n 50 --no-pager
 | 内容变体（一键转换为抖音/小红书/群公告/朋友圈） | ✅ |
 | 批量生成（一次生成 5 条同类内容） | ✅ |
 | 新手引导（5 步向导） | ✅ |
-| 内容日历（静态，按星期推荐发什么内容） | ✅ |
+| 今日推荐（行为感知：日期+画像+节日+成长阶段+你常用/补缺口/深度，类目多样，动态 tips"AI在学你"；已合并原"常用任务"、删除静态内容日历） | ✅ |
+| 工作台卡片动态排序（`/dashboard/card-signals`：按跨设备 prompt_key 频次+效果好排序，"常用"标签；新店退回优先级排序） | ✅ |
+| 模块动态化（门店设置按成长阶段引导横幅 / 协作场景馆按阶段排序 / 收藏按"效果好"优先 / 节日提醒：8 个节日，农历春节·端午·中秋由 borax 每年自动换算公历[1900-2100，不再硬编码]） | ✅ |
 | 品牌风格选择（卡片式选择器，影响 AI 语气） | ✅ |
 | 生图"基于此调整"（refine_from 以图生图） | ✅ |
 | 生图 Logo/二维码多图直传 AI（最多 16 张） | ✅ |
@@ -311,6 +313,10 @@ journalctl -u billiards-backend -n 50 --no-pager
 | 海报续修（历史详情"继续调整这张图"→ 原对话 ?refine= 定位基准图） | ✅ |
 | 管理后台重置密码（PUT /admin/users/{id}/password，不动用户数据） | ✅ |
 | 场景图标体系（lib/scene-icons 语义映射 lucide，替代随机 emoji） | ✅ |
+| 生成优化三件套（#1 prompt 注入北京时间日期上下文，AI 知道今天周几/周末几号；#2 占位符识别 `lib/placeholders` 横幅提示需补内容；#3"只出一条"开关 concise，避免多方案堆砌） | ✅ |
+| 节日双推荐（节日临近出"文案"恒出 + "海报"：有 Logo/二维码→直达生图带节日视觉主题、缺→引导上传品牌页；前端 CAP.festival=2 两条都展示；海报走生图模型不自动出图） | ✅ |
+| AI 对话回复行内编辑（/chat 回复"复制/编辑"→ textarea 改 → 保存修改，调 updateGenerationContent 存回历史；与工作台结果编辑同款） | ✅ |
+| 行业术语对齐：会员卡→一卡通/充值（36 处 prompt + 3 处前端；保留"一卡通替代传统会员卡"对比句与"严禁输出会员卡档位"护栏；球房一卡通通吃商品/助教/台费，赠送通常只送台费） | ✅ |
 
 ## 行业知识体系
 

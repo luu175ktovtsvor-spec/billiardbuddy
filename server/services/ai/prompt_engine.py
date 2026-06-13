@@ -1,9 +1,27 @@
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import yaml
 
 from core.exceptions import AppException
+from core.timezone import BUSINESS_TZ
 from models.store import Store
+
+_WEEKDAY_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+
+
+def build_date_context(now: datetime) -> dict:
+    """生成上下文的日期锚点：今天日期 / 星期 / 本周末（周六+周日）。
+    now 由调用方注入（生产侧传北京时间），便于测试确定性。
+    解决"周末/明天/周五"等时间词没有锚点、AI 只能瞎猜的问题。"""
+    wd = now.weekday()  # 周一=0 … 周日=6
+    saturday = now + timedelta(days=(5 - wd))
+    sunday = saturday + timedelta(days=1)
+    return {
+        "today_date": now.strftime("%Y-%m-%d"),
+        "weekday_cn": _WEEKDAY_CN[wd],
+        "this_weekend": f"{saturday.month}月{saturday.day}日（周六）、{sunday.month}月{sunday.day}日（周日）",
+    }
 
 
 class PromptTemplateNotFoundError(AppException):
@@ -62,6 +80,14 @@ class PromptEngine:
         rendered = template_data["template"]
         for key, value in variables.items():
             rendered = rendered.replace("{" + key + "}", str(value))
+        # 生成类模板注入时间锚点（知识库类不注入），避免"今天/明天/周末/本周几"被 AI 瞎算
+        if template_data.get("category") != "knowledge":
+            d = build_date_context(datetime.now(BUSINESS_TZ))
+            header = (
+                f"【当前时间】今天 {d['today_date']}（{d['weekday_cn']}）；本周末是 {d['this_weekend']}。"
+                "凡涉及今天/明天/周末/本周几，一律以此为准，不要自行推算。\n\n"
+            )
+            rendered = header + rendered
         return rendered
 
     def _build_store_variables(self, store: Store) -> dict:
@@ -85,8 +111,6 @@ class PromptEngine:
             "coach_count": str(store.coach_count) if store.coach_count else "未填写",
             "coach_service_types": store.coach_service_types or "未填写",
             "coach_price_range": store.coach_price_range or "未填写",
-            "beverage_price_range": store.beverage_price_range or "未填写",
-            "snack_price_range": store.snack_price_range or "未填写",
             "cue_price_range": store.cue_price_range or "未填写",
             "table_brands": store.table_brands or "未填写",
             "cue_brands": store.cue_brands or "未填写",
