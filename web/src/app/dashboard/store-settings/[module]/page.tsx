@@ -280,7 +280,7 @@ function formDataToPayload(form: FormData) {
     table_count: Number.isNaN(tableCount) ? null : tableCount,
     table_types: form.table_types.trim() || null,
     has_private_room: form.has_private_room,
-    has_coaching: form.has_coaching,
+    // has_coaching 不再由基础页设置——以『运营画像』has_assistant 为单一来源，后端 update_store 同步
     has_tournament: form.has_tournament,
     has_parking: form.has_parking,
     advantages: form.advantages.trim() || null,
@@ -369,35 +369,22 @@ function BasicModule({
               className={INPUT_CLASS} placeholder="如：大厅16张（金腿1、银腿3、普台12）+ 斯诺克1张，包厢2间" />
           </Field>
         </div>
-        <Field label="店里有没有助教？">
-          <div className="flex gap-2">
-            {([["有", true], ["没有", false]] as [string, boolean][]).map(([label, val]) => (
-              <button key={label} type="button"
-                onClick={() => updateField("has_coaching", val)}
-                className={`flex-1 rounded-xl py-2.5 text-sm font-medium transition-all active:scale-[0.98] ${
-                  form.has_coaching === val
-                    ? "bg-brand-600 text-white shadow-sm"
-                    : "bg-slate-50 text-slate-500 active:bg-slate-100"
-                }`}>
-                {label}
-              </button>
-            ))}
-          </div>
-        </Field>
-        {form.has_coaching && (
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="助教总人数">
-              <input type="number" min={0} value={form.coach_count}
-                onChange={(e) => updateField("coach_count", e.target.value)}
-                className={INPUT_CLASS} placeholder="如：12" />
-            </Field>
-            <Field label="助教价格（按级别）">
-              <input type="text" maxLength={100} value={form.coach_price_range}
-                onChange={(e) => updateField("coach_price_range", e.target.value)}
-                className={INPUT_CLASS} placeholder="如：初级60、中级88、高级128（元/小时）" />
-            </Field>
-          </div>
-        )}
+        {/* "有没有助教/助教类型"统一在『运营画像』设置（单一来源）；这里只收人数和价格 */}
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="助教总人数（有就填）">
+            <input type="number" min={0} value={form.coach_count}
+              onChange={(e) => updateField("coach_count", e.target.value)}
+              className={INPUT_CLASS} placeholder="如：12" />
+          </Field>
+          <Field label="助教价格（按级别）">
+            <input type="text" maxLength={100} value={form.coach_price_range}
+              onChange={(e) => updateField("coach_price_range", e.target.value)}
+              className={INPUT_CLASS} placeholder="如：初级60、中级88、高级128（元/小时）" />
+          </Field>
+        </div>
+        <p className="-mt-1 px-1 text-xs text-slate-400">
+          「有没有助教、助教类型」在『运营画像』里统一设置。
+        </p>
         <div className="grid gap-4 sm:grid-cols-3">
           <Field label="日均客流">
             <input type="number" min={0} value={form.daily_avg_customers}

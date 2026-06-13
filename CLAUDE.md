@@ -261,6 +261,11 @@ cd server && uv run fastapi dev main.py    # 启动开发服务器
 cd server && uv run alembic upgrade head   # 执行数据库迁移
 cd server && uv run alembic revision --autogenerate -m "描述"  # 生成迁移
 
+# 测试（一条命令跑全套）
+bash scripts/test.sh          # 快速门：后端pytest + 前端vitest + tsc（不花钱不联网AI，dev运行时安全）
+bash scripts/test.sh --eval   # 额外跑店脑 LLM 验收 eval_store_brain.py（真实 DeepSeek，慢/花钱/需key）
+# 注意：scripts/test.sh 不含 next build（会和 next dev 抢 .next 缓存）；上线构建走 deploy 流程
+
 # 服务器
 ssh root@47.77.237.250
 systemctl status billiards-backend billiards-frontend
@@ -317,7 +322,7 @@ journalctl -u billiards-backend -n 50 --no-pager
 | 节日双推荐（节日临近出"文案"恒出 + "海报"：有 Logo/二维码→直达生图带节日视觉主题、缺→引导上传品牌页；前端 CAP.festival=2 两条都展示；海报走生图模型不自动出图） | ✅ |
 | AI 对话回复行内编辑（/chat 回复"复制/编辑"→ textarea 改 → 保存修改，调 updateGenerationContent 存回历史；与工作台结果编辑同款） | ✅ |
 | 行业术语对齐：会员卡→一卡通/充值（36 处 prompt + 3 处前端；保留"一卡通替代传统会员卡"对比句与"严禁输出会员卡档位"护栏；球房一卡通通吃商品/助教/台费，赠送通常只送台费） | ✅ |
-| 店脑·AI记忆中枢（第一版）：生成/对话后台异步从用户输入抽取门店记忆→整合(改价更新不重复)→存`store_memories`；生成前注入 prompt 末尾(冲突以店脑为准)→越用越懂这家店；`/dashboard/store-brain`「AI眼里的你的店」可看/改/删(人在环)。memory_service + golden验收套件 `tests/eval_store_brain.py`(真实DeepSeek 5/5)。后台学习不计配额。详见 docs/product-brain/店脑-AI记忆中枢-架构与成本.md | ✅ |
+| 店脑·AI记忆中枢（第一版）：生成/对话后台异步从用户输入抽取门店记忆→整合(改价更新不重复)→存`store_memories`；生成前注入 prompt 末尾(冲突以店脑为准)→越用越懂这家店；`/dashboard/store-brain`「AI眼里的你的店」可看/改/删(人在环)。memory_service + golden验收套件 `tests/eval_store_brain.py`(真实DeepSeek 5/5)。后台学习不计配额。生产加固：并发安全(每店 pg_advisory_xact_lock 防丢记忆)+ 防膨胀上限(情景25/总150)。详见 docs/product-brain/店脑-AI记忆中枢-架构与成本.md | ✅ |
 
 ## 行业知识体系
 

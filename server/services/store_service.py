@@ -75,6 +75,12 @@ async def update_store(
         if field not in _UPDATE_ALLOWED_FIELDS:
             continue
         setattr(store, field, value)
+    # 助教"有没有"以运营画像(operation_profile.assistant_system.has_assistant)为单一来源：
+    # 同步到 store.has_coaching（free_intent 等 prompt 读它）。仅在本次更新涉及 operation_profile 时同步，避免误清。
+    if "operation_profile" in data and isinstance(store.operation_profile, dict):
+        assistant = store.operation_profile.get("assistant_system") or {}
+        if "has_assistant" in assistant:
+            store.has_coaching = bool(assistant.get("has_assistant"))
     await db.commit()
     await db.refresh(store)
     return store
