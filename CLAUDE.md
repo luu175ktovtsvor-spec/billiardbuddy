@@ -324,7 +324,7 @@ journalctl -u billiards-backend -n 50 --no-pager
 | 行业术语对齐：会员卡→一卡通/充值（36 处 prompt + 3 处前端；保留"一卡通替代传统会员卡"对比句与"严禁输出会员卡档位"护栏；球房一卡通通吃商品/助教/台费，赠送通常只送台费） | ✅ |
 | 店脑·AI记忆中枢（第一版）：生成/对话后台异步从用户输入抽取门店记忆→整合(改价更新不重复)→存`store_memories`；生成前注入 prompt 末尾(冲突以店脑为准)→越用越懂这家店；`/dashboard/store-brain`「AI眼里的你的店」可看/改/删(人在环)。memory_service + golden验收套件 `tests/eval_store_brain.py`(真实DeepSeek 5/5)。后台学习不计配额。生产加固：并发安全(每店 pg_advisory_xact_lock 防丢记忆)+ 防膨胀上限(情景25/总150)。详见 docs/product-brain/店脑-AI记忆中枢-架构与成本.md | ✅ |
 | 海报独立额度池（migration 018）：海报不再与文案共用次数池，单独计数/限额(`monthly_poster_limit`/`monthly_posters_used`)；套餐 `poster_limit` 开通时同步、单店可调；生图前 `check_poster_quota` 校验、用尽走 429 提额引导；前端 QuotaBadge `mode="poster"` 单独显示"剩余N/M张(生图较耗额度)"。同时堵住免费版白嫖高清海报漏洞。比例尺寸修复：3:4→1152×1536、9:16→1152×2048、16:9→2048×1152、1:1→1024×1024(旧值全错且3:4与9:16撞同图) | ✅ |
-| 独立管理后台·超管账号（代码部分）：`server/scripts/manage_admin.py` 建不绑门店的 `is_admin` 超管账号(密码走环境变量)；登录后 is_admin 用户导向 `/admin`。后端 admin API 零门店依赖。独立端口/Nginx/IP锁见 docs/编排-独立管理后台与运营待办.md(等上线) | ✅ |
+| 管理后台权限模型（2026-06-14 定稿）：唯一管理员 = 老板本人账号 `is_admin`（既当普通客户端、有门店进 /dashboard 体验与普通用户一致，又能访问主域名 `/admin` 进后台）；客户端零管理入口（is_admin 仅影响登录跳转：无门店的纯 admin→/admin，有门店→/dashboard）。后台「用户管理→调整配额」给任意用户设文案/海报额度即时生效（`monthly_tokens_limit` 封顶 2e9 防溢出）。`scripts/manage_admin.py` 保留作应急授/撤管理员。曾试"专用超管号+8443独立端口"已撤销，详见 docs/编排-独立管理后台与运营待办.md | ✅ |
 
 ## 行业知识体系
 
