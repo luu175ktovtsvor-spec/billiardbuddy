@@ -13,7 +13,7 @@ from core.exceptions import AIServiceError
 from core.security_guard import check_input_injection
 from models.generation import Generation
 from models.store import Store
-from services.quota_service import check_quota, increment_usage
+from services.quota_service import check_poster_quota, increment_poster_usage
 
 logger = logging.getLogger(__name__)
 
@@ -22,11 +22,13 @@ POSTERS_DIR = UPLOADS_DIR / "posters"
 
 # 图片比例 → 尺寸参数（宽高必须能被 16 整除）
 # gpt-image-2 支持任意分辨率：单边≤3840，总像素 655360~8294400，宽高为16的倍数
+# 每个尺寸都精确等于声称的比例，且宽高均为 16 的倍数（见 tests/test_poster_sizing.py）。
+# 旧版 3:4 与 9:16 都误填 1024x1536(实为2:3)、16:9 误填 1536x1024(实为3:2)——选不同比例出同一张图。
 SIZE_MAP = {
-    "3:4": "1024x1536",
-    "1:1": "1024x1024",
-    "9:16": "1024x1536",
-    "16:9": "1536x1024",
+    "3:4": "1152x1536",   # 0.75
+    "1:1": "1024x1024",   # 1.0
+    "9:16": "1152x2048",  # 0.5625
+    "16:9": "2048x1152",  # 1.7778
 }
 
 # 场景灵感标签（按分类组织）
@@ -161,7 +163,7 @@ async def generate_images(
     injection_check = check_input_injection(prompt)
     if injection_check:
         raise AIServiceError(injection_check)
-    await check_quota(db, str(store.id))
+    await check_poster_quota(db, str(store.id))
 
     # ── 2. 多轮对话：收集历史设计要求（最近 5 轮）──
     history_prompts: list[str] = []
@@ -303,8 +305,8 @@ async def generate_images(
         # 这句友好提示到不了用户
         raise AIServiceError("图片生成失败，请稍后重试")
 
-    # 按实际成功生成的张数计入配额（每张图都是一次计费生成）
-    await increment_usage(db, str(store.id), tokens=0, count=len(valid_results))
+    # 按实际成功生成的张数计入海报额度（独立池，不挤占文案次数）
+    await increment_poster_usage(db, str(store.id), count=len(valid_results))
 
     return {
         "images": valid_results,

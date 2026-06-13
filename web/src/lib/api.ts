@@ -553,6 +553,9 @@ class ApiClient {
       monthly_tokens_limit: number;
       monthly_tokens_used: number;
       remaining: number;
+      monthly_poster_limit: number;
+      monthly_posters_used: number;
+      posters_remaining: number;
       plan_name: string | null;
     }>("GET", "/api/v1/quota");
   }

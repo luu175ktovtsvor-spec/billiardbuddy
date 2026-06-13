@@ -21,6 +21,13 @@ class UsageQuota(Base):
     monthly_tokens_limit: Mapped[int] = mapped_column(Integer, default=500000)
     monthly_generations_used: Mapped[int] = mapped_column(Integer, default=0)
     monthly_tokens_used: Mapped[int] = mapped_column(Integer, default=0)
+    # 海报独立额度池：生图比文案贵得多，单独计数/限额，不挤占文案池。
+    monthly_poster_limit: Mapped[int] = mapped_column(
+        Integer, default=3, server_default="3"
+    )
+    monthly_posters_used: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
     current_period_start: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -20,6 +20,10 @@ class QuotaResponse(BaseModel):
     monthly_tokens_limit: int
     monthly_tokens_used: int
     remaining: int
+    # 海报独立额度池（生图比文案贵，单独计数/限额）
+    monthly_poster_limit: int
+    monthly_posters_used: int
+    posters_remaining: int
     plan_name: str | None = None  # 无有效订阅 = 试用版
 
     model_config = {"from_attributes": True}
@@ -53,5 +57,8 @@ async def get_quota(
         monthly_tokens_limit=quota.monthly_tokens_limit,
         monthly_tokens_used=quota.monthly_tokens_used,
         remaining=max(0, quota.monthly_generation_limit - quota.monthly_generations_used),
+        monthly_poster_limit=quota.monthly_poster_limit,
+        monthly_posters_used=quota.monthly_posters_used,
+        posters_remaining=max(0, quota.monthly_poster_limit - quota.monthly_posters_used),
         plan_name=plan_name,
     )

@@ -532,8 +532,8 @@ function ConversationPageInner() {
             </div>
           )}
 
-          {/* Quota（生图与文本共用次数池）*/}
-          <QuotaBadge refreshKey={quotaVersion} onQuota={(q) => setQuotaRemaining(q.remaining)} />
+          {/* Quota（海报走独立额度池：生图比文案贵，单独计数/限额）*/}
+          <QuotaBadge mode="poster" refreshKey={quotaVersion} onQuota={(q) => setQuotaRemaining(q.remaining)} />
 
           {/* Input area：有消息后手机端吸底（fixed+安全区），桌面端保持原 sticky 卡片；首屏（无消息）保持文档流卡片，避免高引导面板被钉死 */}
           <div

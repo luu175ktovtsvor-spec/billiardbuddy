@@ -46,7 +46,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     api.setToken(res.access_token);
     const u = await api.getMe();
     setUser(u);
-    router.push("/dashboard");
+    // 平台超管账号不绑门店，进 /dashboard 会因"无门店"报错，直接导向独立后台
+    router.push(u.is_admin ? "/admin" : "/dashboard");
   }, [router]);
 
   const register = useCallback(async (phone: string, password: string, name?: string, inviteCode?: string) => {

@@ -29,6 +29,14 @@ def token_ceiling(generation_limit: int) -> int:
 DEFAULT_GENERATION_LIMIT = 30
 DEFAULT_TOKENS_LIMIT = token_ceiling(DEFAULT_GENERATION_LIMIT)
 
+# 海报独立额度池默认值（试用店）。生图贵得多，免费/试用只给少量，开套餐后由 plan.poster_limit 覆盖。
+DEFAULT_POSTER_LIMIT = 3
+
+
+def poster_quota_exceeded(quota: UsageQuota) -> bool:
+    """纯谓词：海报额度是否已用尽（便于单测，不碰 DB）。"""
+    return quota.monthly_posters_used >= quota.monthly_poster_limit
+
 def _period_start_now() -> datetime:
     now = datetime.now(BUSINESS_TZ)
     start_local = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -63,6 +71,8 @@ async def get_or_create_quota(db: AsyncSession, store_id: str) -> UsageQuota:
                 monthly_tokens_limit=DEFAULT_TOKENS_LIMIT,
                 monthly_generations_used=0,
                 monthly_tokens_used=0,
+                monthly_poster_limit=DEFAULT_POSTER_LIMIT,
+                monthly_posters_used=0,
                 current_period_start=_period_start_now(),
             )
             .on_conflict_do_nothing(index_elements=["store_id"])
@@ -75,6 +85,7 @@ async def get_or_create_quota(db: AsyncSession, store_id: str) -> UsageQuota:
     if _is_new_period(quota):
         quota.monthly_generations_used = 0
         quota.monthly_tokens_used = 0
+        quota.monthly_posters_used = 0
         quota.current_period_start = _period_start_now()
         await db.commit()
         await db.refresh(quota)
@@ -110,5 +121,28 @@ async def increment_usage(
             monthly_generations_used=UsageQuota.monthly_generations_used + count,
             monthly_tokens_used=UsageQuota.monthly_tokens_used + tokens,
         )
+    )
+    await db.commit()
+
+
+async def check_poster_quota(db: AsyncSession, store_id: str) -> UsageQuota:
+    """海报额度检查（独立于文案池）。用尽时抛 QuotaExceededError → 走同一条 429 提额引导。"""
+    quota = await get_or_create_quota(db, store_id)
+    if poster_quota_exceeded(quota):
+        from core.exceptions import QuotaExceededError
+        raise QuotaExceededError(
+            f"本月海报生成已达上限（{quota.monthly_poster_limit} 张）。生图算力成本较高，"
+            "如需更多请联系您的服务商升级套餐"
+        )
+    return quota
+
+
+async def increment_poster_usage(db: AsyncSession, store_id: str, count: int = 1) -> None:
+    """按实际成功生成的海报张数原子递增海报计数（不动文案池）。"""
+    await get_or_create_quota(db, store_id)
+    await db.execute(
+        update(UsageQuota)
+        .where(UsageQuota.store_id == store_id)
+        .values(monthly_posters_used=UsageQuota.monthly_posters_used + count)
     )
     await db.commit()
