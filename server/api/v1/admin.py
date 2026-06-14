@@ -3,6 +3,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
+from dateutil.relativedelta import relativedelta
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, and_, or_, desc
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +25,12 @@ logger = logging.getLogger(__name__)
 def require_admin(user: User):
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="需要管理员权限")
+
+
+def _add_months(start: datetime, months: int) -> datetime:
+    """按**自然月**推进到期时间：3月5日 + 2 月 = 5月5日（而非 30 天×月数 = 5月4日）。
+    与店主直觉一致；relativedelta 自动处理月末（1月31日 + 1 月 = 2月28/29日）。"""
+    return start + relativedelta(months=months)
 
 
 async def _primary_store_member(db: AsyncSession, user_id: str) -> StoreMember | None:
@@ -163,7 +171,7 @@ async def activate_user(
         plan_id=plan.id,
         status="active",
         current_period_start=now,
-        current_period_end=now + timedelta(days=30 * months),
+        current_period_end=_add_months(now, months),
         activated_by=user.id,
         payment_note=payment_note,
         payment_amount=payment_amount,
@@ -409,7 +417,7 @@ async def renew_subscription(
 
     now = datetime.now(timezone.utc)
     base = sub.current_period_end if sub.current_period_end > now else now
-    sub.current_period_end = base + timedelta(days=30 * months)
+    sub.current_period_end = _add_months(base, months)
     sub.status = "active"
     # payment_amount/payment_note 仅作"最近一笔"展示；历史收款进流水表，统计不再失真
     sub.payment_note = payment_note
