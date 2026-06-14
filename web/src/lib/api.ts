@@ -10,6 +10,7 @@ import type {
   ListGenerationsParams,
 } from "@/types/generation-history";
 import type { DashboardTodayResponse, CardSignals } from "@/types/dashboard";
+import type { ReportSchema, ReportListItem, ReportSubmitResponse, ReportData } from "@/types/report";
 
 const configuredBaseUrl = process.env.NEXT_PUBLIC_API_URL;
 const BASE_URL = !configuredBaseUrl
@@ -504,6 +505,27 @@ class ApiClient {
 
   async deletePosterConversation(conversationId: string): Promise<void> {
     await this.request("DELETE", `/api/v1/generations/conversations/${conversationId}`);
+  }
+
+  // ─── 报表 / 日报 ───
+  async getReportSchema(reportType: string): Promise<ReportSchema> {
+    return this.request<ReportSchema>("GET", `/api/v1/reports/schema/${reportType}`);
+  }
+  async listReports(): Promise<ReportListItem[]> {
+    return this.request<ReportListItem[]>("GET", "/api/v1/reports");
+  }
+  async submitReport(reportType: string, data: ReportData, note: string): Promise<ReportSubmitResponse> {
+    return this.request<ReportSubmitResponse>("POST", `/api/v1/reports/${reportType}`, { data, note });
+  }
+  /** 导出 Excel：手写 fetch + 手动补 X-Store-Id（不能走 request，它 res.json()） */
+  async exportReport(reportId: string): Promise<Blob> {
+    const headers: Record<string, string> = {};
+    const token = this.getToken();
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    if (this.storeId) headers["X-Store-Id"] = this.storeId; // 多门店导当前门店
+    const res = await fetch(`${this.baseUrl}/api/v1/reports/${reportId}/export`, { headers });
+    if (!res.ok) throw new Error("导出失败");
+    return res.blob();
   }
 
   // ─── Dashboard ───

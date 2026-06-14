@@ -13,6 +13,7 @@ import {
   PenLine,
   LayoutGrid,
   Users,
+  FileText,
 } from "lucide-react";
 import { Sheet } from "@/components/ui/sheet";
 
@@ -35,6 +36,7 @@ const DEEP_PREFIXES = [
   "/dashboard/posters/",
   "/dashboard/history/",
   "/dashboard/store-settings/",
+  "/dashboard/report/",
   "/dashboard/chat",
 ];
 
@@ -88,6 +90,17 @@ export function MobileNav() {
       {/* 生成总闸抽屉:四种生成方式平铺,从轻到重 */}
       <Sheet open={createOpen} onClose={() => setCreateOpen(false)} title="想做点什么？">
         <div className="grid grid-cols-2 gap-3 pb-3">
+          <button
+            type="button"
+            onClick={() => { setCreateOpen(false); router.push("/dashboard/report"); }}
+            className="col-span-2 flex items-center gap-3 rounded-2xl bg-brand-50 px-4 py-4 active:scale-[0.98] transition-transform"
+          >
+            <FileText className="h-7 w-7 shrink-0 text-brand-600" />
+            <span className="flex flex-col text-left">
+              <span className="text-[15px] font-medium text-slate-900">写今天的日报</span>
+              <span className="text-xs text-slate-500">填几个数，AI 帮你写好导 Excel</span>
+            </span>
+          </button>
           <button
             type="button"
             onClick={() => { setCreateOpen(false); router.push("/dashboard/chat"); }}
