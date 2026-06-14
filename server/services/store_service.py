@@ -52,7 +52,7 @@ async def create_store(
 _UPDATE_ALLOWED_FIELDS = {
     "name", "city", "district", "address", "phone", "business_hours",
     "table_count", "table_types", "pricing", "member_cards",
-    "target_customers", "advantages", "common_activities", "style",
+    "target_customers", "advantages", "common_activities", "style", "brand_style",
     "has_private_room", "has_coaching", "has_tournament", "has_parking",
     "operation_profile",
     # 助教资料

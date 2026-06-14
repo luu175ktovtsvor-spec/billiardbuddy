@@ -3,6 +3,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 from services.report_service import (
+    _date_label,
     build_prefill,
     compute_cumulative,
     compute_deltas,
@@ -88,3 +89,8 @@ def test_relabel_payload_roster_rows():
     p = relabel_payload({"rows": [{"name": "小美", "hours": 5.5, "rank": 1}]}, labels)
     assert "助教明细" in p
     assert p["助教明细"][0]["助教"] == "小美" and p["助教明细"][0]["陪打时长"] == 5.5
+
+
+def test_date_label_adds_weekday():
+    assert _date_label("2026-06-13") == "2026-06-13（周六）"   # 周六，让AI别把昨天说成上周日
+    assert _date_label("乱七八糟") == "乱七八糟"                # 解析失败兜底原样返回
