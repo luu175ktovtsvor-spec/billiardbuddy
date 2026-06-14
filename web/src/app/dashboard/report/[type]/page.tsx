@@ -44,6 +44,8 @@ export default function ReportFillPage() {
   const [loadErr, setLoadErr] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<ReportSubmitResponse | null>(null);
+  const [nlText, setNlText] = useState("");
+  const [extracting, setExtracting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,6 +72,23 @@ export default function ReportFillPage() {
       toast(getErrorMessage(err)); // 配额用尽(429)时后端带提额引导文案
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function extractFromNL() {
+    setExtracting(true);
+    try {
+      const res = await api.extractReport(reportType, nlText);
+      if (Object.keys(res.data).length === 0) {
+        toast("没识别到数字，换个说法或直接填下面");
+      } else {
+        setValue((v) => ({ ...v, ...res.data }));
+        toast("已帮你填好，核对一下");
+      }
+    } catch (err) {
+      toast(getErrorMessage(err));
+    } finally {
+      setExtracting(false);
     }
   }
 
@@ -149,6 +168,29 @@ export default function ReportFillPage() {
     <div className="mx-auto max-w-2xl pb-24 lg:pb-0">
       <PageHeader title={title} backHref="/dashboard/report" />
       <h1 className="mb-4 hidden text-[22px] font-semibold text-slate-900 lg:block">{title}</h1>
+
+      {schema.shape !== "roster" && (
+        <div className="mb-3 rounded-2xl bg-brand-50 p-4">
+          <h3 className="mb-1.5 flex items-center gap-1.5 text-[13px] font-medium text-brand-700">
+            <Sparkles className="h-4 w-4" />说一句话，AI 帮你填
+          </h3>
+          <textarea
+            value={nlText}
+            onChange={(e) => setNlText(e.target.value)}
+            rows={2}
+            placeholder="例：今天营业额5800，充值1200，加了8个微信，3条好评"
+            className="w-full resize-none rounded-xl border border-brand-100 bg-white px-3 py-2.5 text-[15px] focus:border-brand-600 focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={extractFromNL}
+            disabled={extracting || !nlText.trim()}
+            className="mt-2 flex items-center gap-1.5 rounded-xl bg-brand-600 px-4 py-2 text-sm font-medium text-white active:scale-[0.98] transition-transform disabled:opacity-60"
+          >
+            {extracting ? "识别中…" : "AI 帮我填"}
+          </button>
+        </div>
+      )}
 
       <ReportForm schema={schema} value={value} onChange={setValue} />
 
