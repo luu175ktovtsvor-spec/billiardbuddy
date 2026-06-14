@@ -7,7 +7,7 @@ from pathlib import Path
 import yaml
 
 _FORMS_DIR = Path(__file__).resolve().parent.parent / "report_forms"
-_REQUIRED = ("key", "shape", "groups")
+_REQUIRED = ("key", "shape")
 _SHAPES = ("flat", "roster", "personal")
 
 _registry: dict[str, dict] | None = None
@@ -18,7 +18,9 @@ def _load_all() -> dict[str, dict]:
     for path in _FORMS_DIR.rglob("*.yaml"):
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         if not data or not all(k in data for k in _REQUIRED):
-            continue  # 缺 key/shape/groups 静默跳过（同 prompt_engine 约定）
+            continue  # 缺 key/shape 静默跳过（同 prompt_engine 约定）
+        if "groups" not in data and "columns" not in data:
+            continue  # flat/personal 用 groups、roster 用 columns，至少有一
         if data["shape"] not in _SHAPES:
             raise ValueError(f"{path.name}: 未知 shape {data['shape']}")
         registry[data["key"]] = data
