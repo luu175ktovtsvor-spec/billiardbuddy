@@ -4,6 +4,7 @@
 纯逻辑部分不碰 DB，便于单测（对齐 test_dashboard_recommendations 风格）。
 """
 import json
+import logging
 from datetime import datetime
 
 from sqlalchemy import select
@@ -12,8 +13,10 @@ from core.timezone import business_now
 from models.generation import Generation
 from services.ai.prompt_engine import get_prompt_engine
 from services.content_service import run_generation
-from services.memory_service import _json_call
+from services.memory_service import _json_call, format_memories_for_prompt, load_store_memory
 from services.report_schema import get_report_schema
+
+logger = logging.getLogger(__name__)
 
 _WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
@@ -154,6 +157,17 @@ async def generate_report(db, store, user, report_type: str, data: dict, note: s
         },
         lenient=True,
     )
+
+    # 店脑：把这家店的长期记忆拼到 prompt 末尾 → 日报也"懂这家店"。
+    # 与 stream.py 同款机制；放末尾靠近因效应让背景知识生效；fail-safe，失败跳过不影响生成。
+    # 数字是今天的事实、店脑是背景，二者不冲突。
+    try:
+        brain_text = format_memories_for_prompt(await load_store_memory(db, store.id))
+        if brain_text:
+            prompt = f"{prompt}\n\n{brain_text}"
+    except Exception:
+        logger.warning("报表注入店脑失败，跳过", exc_info=True)
+
     return await run_generation(
         db, store, user,
         prompt=prompt,
