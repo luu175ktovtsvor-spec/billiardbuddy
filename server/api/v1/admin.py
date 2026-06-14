@@ -25,6 +25,23 @@ def require_admin(user: User):
         raise HTTPException(status_code=403, detail="需要管理员权限")
 
 
+async def _primary_store_member(db: AsyncSession, user_id: str) -> StoreMember | None:
+    """取用户的主门店成员记录（最早加入的那家）。
+
+    必须与客户端 get_current_store 无 X-Store-Id 时的回退口径一致（deps.py: order_by created_at limit 1），
+    否则多门店用户在后台被开通/调额到的门店，可能不是客户端当前操作的门店 → 表现为"充了钱客户端却没额度"。
+    单门店用户（绝大多数）无任何行为变化；多门店用户从"任意一家"变为"确定的最早一家"。
+    """
+    return (
+        await db.execute(
+            select(StoreMember)
+            .where(StoreMember.user_id == user_id)
+            .order_by(StoreMember.created_at)
+            .limit(1)
+        )
+    ).scalars().first()
+
+
 @router.get("/dashboard")
 async def admin_dashboard(
     user: User = Depends(get_current_user),
@@ -134,10 +151,8 @@ async def activate_user(
     if not plan:
         raise HTTPException(status_code=404, detail="套餐不存在")
 
-    # 获取用户的门店
-    member = await db.scalar(
-        select(StoreMember).where(StoreMember.user_id == user_id)
-    )
+    # 获取用户的主门店（与客户端选店口径一致，避免多门店用户充错店）
+    member = await _primary_store_member(db, user_id)
     if not member:
         raise HTTPException(status_code=404, detail="用户没有门店")
 
@@ -202,7 +217,7 @@ async def adjust_user_quota(
     if generation_limit is None:
         raise HTTPException(status_code=422, detail="请提供 generation_limit")
 
-    member = await db.scalar(select(StoreMember).where(StoreMember.user_id == user_id))
+    member = await _primary_store_member(db, user_id)
     if not member:
         raise HTTPException(status_code=404, detail="用户没有门店")
 
@@ -256,8 +271,8 @@ async def get_user_detail(
     if not target:
         raise HTTPException(status_code=404, detail="用户不存在")
 
-    # 获取门店信息
-    member = await db.scalar(select(StoreMember).where(StoreMember.user_id == user_id))
+    # 获取门店信息（主门店，与开通/调额口径一致）
+    member = await _primary_store_member(db, user_id)
     store_info = None
     subscription_info = None
     quota_info = None

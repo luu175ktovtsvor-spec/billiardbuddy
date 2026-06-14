@@ -31,6 +31,9 @@ class StoreSubscription(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     store_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("stores.id"), unique=True, nullable=False, index=True)
     plan_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("plans.id"), nullable=False)
+    # ⚠️ status 是"死字段"：没有任何定时任务把过期订阅置为非 active，过期后它仍停在 "active"。
+    # 是否有效一律按 current_period_end > now 实时计算（见 quota.py / admin.py 收入统计）。
+    # 新代码切勿直接信 status == "active" 判断订阅有效，否则会把过期户当有效户。
     status: Mapped[str] = mapped_column(String(20), default="active")
     current_period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     current_period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

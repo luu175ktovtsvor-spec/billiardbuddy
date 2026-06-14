@@ -83,7 +83,7 @@ web/                    # Next.js 前端
     lib/
       api.ts            # API 客户端（统一 fetch 封装，token 刷新，SSE 流式）
       utils.ts          # 工具函数（cn, getErrorMessage）
-      role-workbench-config.ts  # 岗位任务卡片配置（54 个任务卡片）
+      role-workbench-config.ts  # 岗位任务卡片配置（82 个任务卡片，其中 80 个带 promptKey）
     hooks/
       auth-context.tsx  # 认证上下文（login/register/logout）
     types/              # TypeScript 类型定义（api, auth, dashboard, generate, generation-history, poster, store）
@@ -279,7 +279,7 @@ journalctl -u billiards-backend -n 50 --no-pager
 | 用户注册/登录（手机号+密码） | ✅ |
 | 门店资料管理（运营画像，分步向导 + 全部编辑） | ✅ |
 | Prompt 引擎（YAML 模板，41 个 knowledge） | ✅ |
-| 岗位工作台（6 角色 × 54 张卡片，SSE 流式输出） | ✅ |
+| 岗位工作台（6 角色 × 82 张卡片，SSE 流式输出） | ✅ |
 | 文案生成（朋友圈/群公告/活动/日报） | ✅ |
 | 海报生成（gpt-image-2 + Logo/二维码直传 AI + 二次调整） | ✅ |
 | Markdown 渲染（react-markdown + remark-gfm） | ✅ |

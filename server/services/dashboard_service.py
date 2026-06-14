@@ -102,13 +102,13 @@ async def _get_generation_stats(
     store_id: uuid.UUID,
     today_start: datetime,
     today_end: datetime,
-) -> tuple[int, int, datetime | None]:
-    """一次查询获取：总数、今日数、最新时间。
+) -> tuple[int, int, int, int, datetime | None]:
+    """一次查询获取：总数、今日数、收藏数、效果好数、最新时间。
 
     Returns
     -------
-    tuple[int, int, datetime | None]
-        (total_count, today_count, latest_created_at)
+    tuple[int, int, int, int, datetime | None]
+        (total_count, today_count, favorite_count, good_count, latest_created_at)
     """
     # 使用 CASE WHEN 在一次查询中计算多个 count
     stmt = select(
