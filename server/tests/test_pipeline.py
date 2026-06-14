@@ -222,6 +222,71 @@ def test_poster_refine_and_references_coexist():
     assert "check_poster_quota" in src and "check_input_injection" in src
 
 
+def test_poster_prompt_logo_qr_roles():
+    """生图重构：提供 Logo/二维码时，prompt 必须声明其角色（all-GPT 渲染）。"""
+    from services.poster_service import build_poster_prompt
+    p = build_poster_prompt("充值活动海报", [], has_base_image=False, ref_count=0, has_logo=True, has_qr=True)
+    assert "logo" in p.lower()
+    assert "qr code" in p.lower()
+    # 不提供时不应凭空冒出角色声明
+    p2 = build_poster_prompt("充值活动海报", [], has_base_image=False, ref_count=0)
+    assert "logo" not in p2.lower() and "qr code" not in p2.lower()
+
+
+def test_generate_images_accepts_structured_fields():
+    """生图重构：generate_images 必须接受结构化新字段（前端契约）。"""
+    import inspect as _inspect
+    from services import poster_service
+    params = _inspect.signature(poster_service.generate_images).parameters
+    for name in ("image_prompt", "poster_text", "background_mode", "store_photo_path", "logo_path", "qr_path"):
+        assert name in params, f"generate_images 缺少新参数 {name}"
+
+
+def test_poster_schemas_structured_fields():
+    """生图重构：请求/扩写 schema 契约。"""
+    from schemas.poster import ImageGenerateRequest, PromptExpandRequest, PromptExpandResponse
+    req = ImageGenerateRequest.model_fields
+    for name in ("image_prompt", "poster_text", "background_mode", "store_photo_path", "logo_path", "qr_path"):
+        assert name in req, f"ImageGenerateRequest 缺字段 {name}"
+    assert "description" in PromptExpandRequest.model_fields
+    pr = PromptExpandResponse.model_fields
+    assert "image_prompt" in pr and "needs" in pr
+
+
+def test_poster_single_image_per_user():
+    """生图硬限制：一次只出 1 张(count=1) + 每用户同一时刻只允许一张在跑(_GENERATING_USERS 拦截)。"""
+    import inspect as _inspect
+    from api.v1 import posters
+    src = _inspect.getsource(posters.generate_image)
+    assert "count=1" in src, "生图未强制单张（应 count=1）"
+    assert "_GENERATING_USERS" in src, "缺少每用户'同一时刻只一张在跑'的拦截"
+
+
+def test_image_gen_no_retry_and_long_timeout():
+    """钱安全回归：生图不自动重试(max_retries=0) + 读超时走配置项(覆盖5-10分钟真实耗时)，不再硬编码300s。
+    根因见 CLAUDE.md「AI 并发与限流」：超时太短会把'还在生成'判成失败，叠加重试导致重复扣费。"""
+    import inspect as _inspect
+    from services.ai.providers import openai_image
+    from config import settings
+    src = _inspect.getsource(openai_image.OpenAIImageProvider)
+    assert "max_retries=0" in src, "生图开了自动重试=超时后会重复扣费"
+    assert "openai_image_timeout" in src, "生图读超时未走配置项(应覆盖真实生图耗时)"
+    assert "300.0" not in src, "生图读超时仍硬编码300s(短于真实5-10分钟，会把成功的图判失败)"
+    assert settings.openai_image_timeout >= 600, "生图读超时太短，覆盖不了5-10分钟的真实耗时"
+
+
+def test_poster_global_concurrency_gate():
+    """突发限流回归：生图调用必须经全局并发闸(asyncio.Semaphore)排队，护住 OpenAI 每分钟出图限额(IPM)。"""
+    import inspect as _inspect
+    from services import poster_service
+    from config import settings
+    assert hasattr(poster_service, "_get_image_semaphore"), "缺少全局生图并发闸"
+    assert "asyncio.Semaphore" in _inspect.getsource(poster_service), "并发闸未用 asyncio.Semaphore"
+    gen_src = _inspect.getsource(poster_service.generate_images)
+    assert "_get_image_semaphore" in gen_src, "生图调用未经并发闸排队"
+    assert settings.poster_max_concurrency >= 1, "并发闸上限必须 >=1"
+
+
 def test_admin_routes_single_prefix():
     """路由回归：admin 必须挂在 /admin/* 而非 /admin/admin/*（双前缀曾让整个管理后台 404）。"""
     from api.v1.router import router as v1_router

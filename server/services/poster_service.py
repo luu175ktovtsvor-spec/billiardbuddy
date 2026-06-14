@@ -1,3 +1,4 @@
+import asyncio
 import io
 import logging
 import uuid
@@ -19,6 +20,20 @@ logger = logging.getLogger(__name__)
 
 UPLOADS_DIR = Path(settings.upload_dir)
 POSTERS_DIR = UPLOADS_DIR / "posters"
+
+# 全局生图并发闸：限制本进程同时调用 OpenAI 生图的数量，避免突发把 Tier1 的 IPM(每分钟图片数)打满触发 429。
+# 超出上限的请求在此排队等待（生图本身就要 5-10 分钟，排队可接受），而不是立刻失败。
+# 注：asyncio.Semaphore 是进程内的——生产 2 worker 各持一个，实际全局并发≈2×本值；这是刻意取舍：
+# 429 是"被拒绝"不扣钱，不值得为精确全局限流上 Redis。真正烧钱的是"超时+重试"，那条已由超时拉满+max_retries=0 堵死。
+_image_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_image_semaphore() -> asyncio.Semaphore:
+    """懒加载生图信号量（首次调用时按配置创建，绑定到当前事件循环）。"""
+    global _image_semaphore
+    if _image_semaphore is None:
+        _image_semaphore = asyncio.Semaphore(settings.poster_max_concurrency)
+    return _image_semaphore
 
 # 图片比例 → 尺寸参数（宽高必须能被 16 整除）
 # gpt-image-2 支持任意分辨率：单边≤3840，总像素 655360~8294400，宽高为16的倍数
@@ -64,6 +79,21 @@ def _get_api_size(ratio: str) -> str:
 _MAX_INPUT_IMAGES = 16
 
 
+def _load_upload_bytes(path_str: str | None) -> bytes | None:
+    """从 uploads 目录内安全加载图片字节；空/越界/不存在一律返回 None。"""
+    if not path_str or ".." in path_str:
+        return None
+    upload_dir = Path(settings.upload_dir)
+    rel = path_str.removeprefix("/uploads/")
+    p = upload_dir / rel
+    try:
+        if not p.resolve().is_relative_to(upload_dir.resolve()):
+            return None
+    except (OSError, ValueError):
+        return None
+    return p.read_bytes() if p.exists() else None
+
+
 def build_poster_prompt(
     prompt: str,
     history_prompts: list[str],
@@ -73,6 +103,8 @@ def build_poster_prompt(
     store_name: str = "",
     city: str = "",
     no_text: bool = False,
+    has_logo: bool = False,
+    has_qr: bool = False,
 ) -> str:
     """组装生图 prompt（纯函数，便于测试）。
 
@@ -99,6 +131,11 @@ def build_poster_prompt(
     elif ref_count > 0:
         parts.append("use the input images as style and mood references")
 
+    if has_logo:
+        parts.append("one of the input images is the store logo — integrate it cleanly into the design without distorting it")
+    if has_qr:
+        parts.append("one of the input images is a QR code — place it clearly in a corner, do not stylize or recolor it, reproduce it as-is in high contrast so it stays scannable")
+
     current = ", ".join(parts)
     if history_prompts:
         lines = "\n".join(f"{i}. {p}" for i, p in enumerate(history_prompts, 1))
@@ -120,6 +157,12 @@ async def generate_images(
     no_text: bool = False,
     conversation_id: str | None = None,
     quality: str = "auto",
+    image_prompt: str | None = None,
+    poster_text: dict | None = None,
+    background_mode: str = "ai_generate",
+    store_photo_path: str | None = None,
+    logo_path: str | None = None,
+    qr_path: str | None = None,
 ) -> dict:
     """AI 生图，支持多轮调整（底图）与参考图（风格）同时传入。
 
@@ -197,6 +240,17 @@ async def generate_images(
             base_image = original_path.read_bytes()
             logger.info("基于原图调整: %s", original_path)
 
+    # 门店照优化：上传的门店实拍照作为底图（与 refine_from 互斥，refine_from 优先）
+    if base_image is None and background_mode == "store_photo" and store_photo_path:
+        sp = _load_upload_bytes(store_photo_path)
+        if sp is not None:
+            base_image = sp
+            logger.info("门店照优化底图: %s", store_photo_path)
+
+    # 品牌资产：手动上传的 Logo / 二维码（all-GPT 直接作为输入图交模型渲染）
+    logo_bytes = _load_upload_bytes(logo_path)
+    qr_bytes = _load_upload_bytes(qr_path)
+
     ref_bytes: list[bytes] = []
     if reference_image_paths:
         upload_dir = Path(settings.upload_dir)
@@ -211,13 +265,23 @@ async def generate_images(
             if ref_path.exists():
                 ref_bytes.append(ref_path.read_bytes())
 
-    max_refs = _MAX_INPUT_IMAGES - (1 if base_image else 0)
+    # 输入图顺序：要保真的排前面（底图→二维码→Logo），风格参考随后（官方：靠前输入图保真更强）。
+    # 二维码紧跟底图——它最需要原样复现才能扫得出，享受前排更强的保真。
+    preserve_imgs: list[bytes] = []
+    if base_image:
+        preserve_imgs.append(base_image)
+    if qr_bytes:
+        preserve_imgs.append(qr_bytes)
+    if logo_bytes:
+        preserve_imgs.append(logo_bytes)
+    max_refs = max(0, _MAX_INPUT_IMAGES - len(preserve_imgs))
     ref_bytes = ref_bytes[:max_refs]
-    input_images: list[bytes] = ([base_image] if base_image else []) + ref_bytes
+    input_images: list[bytes] = preserve_imgs + ref_bytes
 
-    # ── 4. 组装 prompt（含图片角色声明）──
+    # ── 4. 组装 prompt（核心用扩写后的 image_prompt，无则用原文；含图片角色声明）──
+    core_prompt = image_prompt if (image_prompt and image_prompt.strip()) else prompt
     full_prompt = build_poster_prompt(
-        prompt=prompt,
+        prompt=core_prompt,
         history_prompts=history_prompts,
         has_base_image=base_image is not None,
         ref_count=len(ref_bytes),
@@ -225,6 +289,8 @@ async def generate_images(
         store_name=store.name or "",
         city=store.city or "",
         no_text=no_text,
+        has_logo=logo_bytes is not None,
+        has_qr=qr_bytes is not None,
     )
 
     size = _get_api_size(ratio)
@@ -248,13 +314,15 @@ async def generate_images(
         output_path = POSTERS_DIR / filename
 
         try:
-            image_bytes = await provider.generate_image(
-                prompt=full_prompt,
-                model="gpt-image-2",
-                size=size,
-                quality=quality,
-                image=input_images if input_images else None,
-            )
+            # 经全局并发闸：超出 poster_max_concurrency 的请求在此排队，护住 OpenAI 每分钟出图限额(IPM)
+            async with _get_image_semaphore():
+                image_bytes = await provider.generate_image(
+                    prompt=full_prompt,
+                    model="gpt-image-2",
+                    size=size,
+                    quality=quality,
+                    image=input_images if input_images else None,
+                )
 
             # 保存图片（JPEG 格式，减小文件体积）
             img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
@@ -274,6 +342,13 @@ async def generate_images(
                     "ratio": ratio,
                     "reference_images": reference_image_paths,
                     "refine_from": refine_from,
+                    # ── 生图重构：结构化保存，为"回退到 Pillow 合成"预留（不动数据模型）──
+                    "image_prompt": image_prompt,
+                    "poster_text": poster_text,
+                    "background_mode": background_mode,
+                    "store_photo_path": store_photo_path,
+                    "logo_path": logo_path,
+                    "qr_path": qr_path,
                 },
                 prompt_used=full_prompt,
                 result=poster_url,
@@ -409,3 +484,18 @@ def get_size_options() -> list[dict]:
         {"value": "9:16", "label": "9:16 手机全屏", "desc": "短视频封面/抖音竖屏"},
         {"value": "16:9", "label": "16:9 横版", "desc": "公众号封面/视频封面"},
     ]
+
+
+# 「看看能做成什么样」示例：idea_text 可一键"参考思路"填进描述框；image_url 待补成品图
+SHOWCASE_EXAMPLES = [
+    {"idea_text": "周五晚上抢一大战，图上写「报名费10元、赢家拿奖金」，要热血电竞风", "image_url": None},
+    {"idea_text": "中式八球周赛报名海报，写「每周五19点开赛，群里接龙报名」，专业赛场感", "image_url": None},
+    {"idea_text": "充值送活动，写「充500送100，仅限本周」，高端金色质感", "image_url": None},
+    {"idea_text": "助教招聘，写「底薪+高提成、日结、免费培训、微信XXX」，年轻有活力", "image_url": None},
+    {"idea_text": "世界杯决赛看球夜，写「今晚8点大屏看球，啤酒小吃管够」，热闹氛围", "image_url": None},
+    {"idea_text": "用我们店的实拍照做一张春节活动海报，喜庆红金、灯笼氛围", "image_url": None},
+]
+
+
+def get_showcase_examples() -> list[dict]:
+    return SHOWCASE_EXAMPLES

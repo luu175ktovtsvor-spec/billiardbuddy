@@ -3,7 +3,7 @@ import type { OrchestrationTask, RepurposeResponse } from "@/types/api";
 import type { LoginRequest, RegisterRequest, TokenResponse, User } from "@/types/auth";
 import type { StoreCreate, StoreResponse, StoreUpdate, StoreListItem, UploadResponse, StoreMemoryItem } from "@/types/store";
 import type { GenerateActivityRequest, GenerateOperationRequest, GenerateWorkbenchRequest, GenerateOutreachRequest, GenerateSOPRequest, GenerateGamesRequest, GeneratePerformanceRequest, GenerateDiagnosisRequest, GenerationResponse } from "@/types/generate";
-import type { ImageGenerateRequest, ImageGenerateResponse, SizeOption } from "@/types/poster";
+import type { ImageGenerateRequest, ImageGenerateResponse, SizeOption, PromptExpandRequest, PromptExpandResponse, ShowcaseExample } from "@/types/poster";
 import type {
   GenerationHistoryListResponse,
   GenerationHistoryItem,
@@ -418,6 +418,14 @@ class ApiClient {
 
   listSizeOptions() {
     return this.request<{ sizes: SizeOption[] }>("GET", "/api/v1/posters/size-options");
+  }
+
+  expandPosterPrompt(data: PromptExpandRequest, signal?: AbortSignal) {
+    return this.request<PromptExpandResponse>("POST", "/api/v1/posters/expand", data, false, false, signal);
+  }
+
+  listPosterShowcase() {
+    return this.request<{ examples: ShowcaseExample[] }>("GET", "/api/v1/posters/showcase");
   }
 
   listPosterConversations() {
