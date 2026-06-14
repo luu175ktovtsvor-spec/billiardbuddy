@@ -17,7 +17,13 @@ _current_store_id: contextvars.ContextVar[uuid.UUID | None] = contextvars.Contex
     "current_store_id", default=None
 )
 
-# 有 store_id 列的表（租户隔离范围）
+# 自动租户过滤的目标表。
+# ⚠️ 实际只对 **generations / usage_quotas** 真正生效：stores 表主键是 id 没有 store_id 列、
+#    conversations 运行时从不被 ORM 查询（对话靠 Generation.conversation_id 裸列）——这两个是"死配置"。
+# ⚠️ 同样有 store_id 列但**不在本集合、无自动保护**的表：store_subscriptions / store_memories / collab_tasks。
+#    它们的跨店隔离**完全依赖各处手写 `.where(<Model>.store_id == ...)`**，没有 fail-safe 兜底。
+#    新增对这些表的查询若漏带 store_id 过滤 = 静默跨店泄露。改本集合前务必确认 admin 等无租户上下文的
+#    查询不会被 fail-safe 清空（见 test_tenant_isolation.py 的分类断言）。
 _TENANT_TABLES = {"stores", "generations", "usage_quotas", "conversations"}
 
 
