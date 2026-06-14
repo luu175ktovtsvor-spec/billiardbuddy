@@ -106,6 +106,15 @@ def relabel_payload(payload: dict, labels: dict) -> dict:
     return out
 
 
+def _date_label(date_str: str) -> str:
+    """'2026-06-13' → '2026-06-13（周六）'，让 AI 知道环比对比的是哪天、不瞎猜日子。"""
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d")
+        return f"{date_str}（{_WEEKDAYS[d.weekday()]}）"
+    except (ValueError, TypeError):
+        return date_str
+
+
 # ─── DB 编排（走 run_generation：配额 + 注入检查 + 落库 + 计费）───
 
 
@@ -187,6 +196,8 @@ async def generate_report(db, store, user, report_type: str, data: dict, note: s
 
     payload = narrative_payload(schema["shape"], data, deltas, cumulative, ranked_rows)
     payload = relabel_payload(payload, field_labels(schema))  # 喂中文 label，免 AI 把 coach_* 瞎翻成"教练"
+    if deltas and last and last.get("date"):
+        payload["环比对比的上一份日报日期"] = _date_label(str(last["date"]))  # 让 AI 说准对比的是哪天
     prompt = get_prompt_engine().render(
         schema["narrative"]["prompt_key"],
         store,
