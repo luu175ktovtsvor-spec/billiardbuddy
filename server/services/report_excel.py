@@ -124,16 +124,18 @@ def _render_roster(schema: dict, data: dict, narrative: str) -> Workbook:
         for j, col in enumerate(cols, 1):
             detail.cell(i, j, row.get(col["key"]))
 
-    rank_by = schema.get("rank_by", cols[1]["key"])
+    id_key = cols[0]["key"]
+    rank_by = schema.get("rank_by") or (cols[1]["key"] if len(cols) > 1 else id_key)
+    rank_label = next((c["label"] for c in cols if c["key"] == rank_by), rank_by)
     rank_sheet = wb.create_sheet("排名")
     ranked = rank_roster([dict(x) for x in rows], rank_by)
-    for j, h in enumerate(("排名", schema.get("row_label", "成员"), rank_by), 1):
+    for j, h in enumerate(("排名", schema.get("row_label", "成员"), rank_label), 1):
         c = rank_sheet.cell(1, j, h)
         c.font = _HEAD_FONT
         c.fill = _HEAD_FILL
     for i, row in enumerate(ranked, 2):
         rank_sheet.cell(i, 1, row["rank"])
-        rank_sheet.cell(i, 2, row.get("name"))
+        rank_sheet.cell(i, 2, row.get(id_key))
         rank_sheet.cell(i, 3, row.get(rank_by))
 
     note = wb.create_sheet("播报")

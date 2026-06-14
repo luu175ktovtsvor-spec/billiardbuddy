@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_current_store, get_current_user, get_db
+from core.exceptions import NotFoundException
 from core.rbac import Permission, require_permission
 from models.generation import Generation
 from models.store import Store
@@ -93,7 +94,9 @@ async def export_report(
                 Generation.is_deleted == False,  # noqa: E712
             )
         )
-    ).scalar_one()
+    ).scalar_one_or_none()
+    if gen is None:
+        raise NotFoundException("报表记录不存在")
     schema = get_report_schema(gen.sub_type)
     xlsx = render_report(schema, gen.input_params, gen.result)
     fname = f"{gen.sub_type}_{gen.created_at:%Y%m%d}.xlsx"

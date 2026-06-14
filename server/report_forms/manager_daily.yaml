@@ -20,7 +20,7 @@ groups:
   - name: 各岗位汇总
     fields:
       - {key: coach_on_duty,  label: 助教到岗, type: number, unit: 人, source: manual}
-      - {key: coach_on_clock, label: 助教上钟, type: number, unit: 人, source: manual}
+      - {key: coach_on_clock, label: 助教上钟, type: number, unit: 人, source: pos_glance}
 narrative:
   prompt_key: report.manager_daily_narrative
   outputs: [今日总结, 发现问题, 明日计划]
