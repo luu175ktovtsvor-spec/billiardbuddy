@@ -424,6 +424,23 @@ def _dynamic_tips(snap: BehaviorSnapshot) -> list[str]:
     return tips
 
 
+async def _report_written_today(db: AsyncSession, store_id, now: datetime) -> bool:
+    """今天是否已提交过日报（按 input_params['date'] 比，避开时区双基准坑）。"""
+    today = now.strftime("%Y-%m-%d")
+    stmt = (
+        select(Generation)
+        .where(
+            Generation.store_id == store_id,
+            Generation.type == "report",
+            Generation.is_deleted == False,  # noqa: E712
+        )
+        .order_by(Generation.created_at.desc())
+        .limit(10)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    return any(str((r.input_params or {}).get("date", "")) == today for r in rows)
+
+
 async def _build_rules(
     db: AsyncSession,
     store: Store,
@@ -462,6 +479,21 @@ async def _build_rules(
                     "prompt_key": "copywriting.moments",
                     "user_intent": f_intent,
                 },
+            )
+        )
+
+    # Rule 0.55: 今天还没写日报就提醒（非筹备店）—— 日报功能的主动触发入口
+    if stage != "preopen" and not await _report_written_today(db, store.id, datetime.now(BUSINESS_TZ)):
+        recs.append(
+            DashboardRecommendation(
+                id="report_due",
+                category="report",
+                title="今天的日报还没写",
+                description="填几个数，AI 帮你写好总结、一键导出 Excel。",
+                action_label="去写日报",
+                action_url="/dashboard/report",
+                action_type="navigate",
+                priority="high",
             )
         )
 
