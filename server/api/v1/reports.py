@@ -17,10 +17,16 @@ from core.rbac import Permission, require_permission
 from models.generation import Generation
 from models.store import Store
 from models.user import User
-from schemas.report import ReportCreateRequest, ReportListItem, ReportResponse
+from schemas.report import (
+    ReportCreateRequest,
+    ReportExtractRequest,
+    ReportExtractResponse,
+    ReportListItem,
+    ReportResponse,
+)
 from services.report_excel import render_report
 from services.report_schema import get_report_schema
-from services.report_service import generate_report
+from services.report_service import extract_report_data, generate_report
 
 router = APIRouter()
 _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -77,6 +83,18 @@ async def submit_report(
         narrative=gen.result,
         deltas=gen.input_params.get("_deltas", {}),
     )
+
+
+@router.post("/{report_type}/extract", response_model=ReportExtractResponse)
+async def extract_report(
+    report_type: str,
+    payload: ReportExtractRequest,
+    _user: Annotated[User, Depends(get_current_user)],
+    _store: Annotated[Store, Depends(get_current_store)],
+    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
+):
+    """「说一句话」→ AI 抽取结构化字段，前端拿去预填表单（用户再核对）。"""
+    return ReportExtractResponse(data=await extract_report_data(report_type, payload.text))
 
 
 @router.get("/{report_id}/export")

@@ -6,6 +6,14 @@ class ReportCreateRequest(BaseModel):
     note: str = ""
 
 
+class ReportExtractRequest(BaseModel):
+    text: str
+
+
+class ReportExtractResponse(BaseModel):
+    data: dict
+
+
 class ReportResponse(BaseModel):
     report_id: str
     narrative: str

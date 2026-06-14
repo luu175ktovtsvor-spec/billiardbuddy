@@ -12,6 +12,7 @@ from core.timezone import business_now
 from models.generation import Generation
 from services.ai.prompt_engine import get_prompt_engine
 from services.content_service import run_generation
+from services.memory_service import _json_call
 from services.report_schema import get_report_schema
 
 _WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -161,3 +162,32 @@ async def generate_report(db, store, user, report_type: str, data: dict, note: s
         input_params=full_data,
         user_input=note,
     )
+
+
+async def extract_report_data(report_type: str, text: str) -> dict:
+    """从一句话自然语言抽取该表字段值（flat/personal）。返回 {key: number}，只保留已知数值字段。
+
+    花名册(roster)要逐人列，不适合"说一句话"，直接返回 {}。
+    走 DeepSeek JSON 模式（复用店脑的 _json_call），属输入辅助、不计配额。
+    """
+    schema = get_report_schema(report_type)
+    if schema["shape"] == "roster":
+        return {}
+    fields = [
+        (f["key"], f["label"], f.get("unit", ""))
+        for g in schema.get("groups", [])
+        for f in g["fields"]
+    ]
+    field_desc = "\n".join(f"- {k}（{label}{unit}）" for k, label, unit in fields)
+    system = (
+        "你是台球房日报数字抽取器。用户会用一句话口语汇报今天的经营数据，"
+        "请抽取下列字段的数值，输出 JSON（键用字段英文 key，值是数字）。"
+        "用户没提到的字段一律不要出现在结果里。只输出 JSON，不要解释。\n\n字段：\n"
+        + field_desc
+    )
+    raw = await _json_call(system, (text or "").strip())
+    known = {k for k, _, _ in fields}
+    return {
+        k: v for k, v in raw.items()
+        if k in known and isinstance(v, (int, float)) and not isinstance(v, bool)
+    }

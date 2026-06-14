@@ -517,6 +517,10 @@ class ApiClient {
   async submitReport(reportType: string, data: ReportData, note: string): Promise<ReportSubmitResponse> {
     return this.request<ReportSubmitResponse>("POST", `/api/v1/reports/${reportType}`, { data, note });
   }
+  /** 「说一句话」→ AI 抽取字段，前端拿去预填表单 */
+  async extractReport(reportType: string, text: string): Promise<{ data: ReportData }> {
+    return this.request<{ data: ReportData }>("POST", `/api/v1/reports/${reportType}/extract`, { text });
+  }
   /** 导出 Excel：手写 fetch + 手动补 X-Store-Id（不能走 request，它 res.json()） */
   async exportReport(reportId: string): Promise<Blob> {
     const headers: Record<string, string> = {};
