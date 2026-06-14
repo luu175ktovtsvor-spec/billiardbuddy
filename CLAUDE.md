@@ -278,23 +278,20 @@ template: |
 - 落地页暂未启用：生产 `/` 直跳登录；落地页代码在 `/landing-preview`（无入口，内部调样式用），正式启用时搬回 `app/page.tsx`
 
 ```bash
-# 本地改完代码后
-git add .
-git commit -m "描述"
-git push origin main
+# 本地：dev 验证通过后提交推送
+git add . && git commit -m "描述"
+git push origin dev
+# 「上线」时合并到 main（服务器只部署 main）
+git checkout main && git merge dev && git push origin main && git checkout dev
 
-# 服务器上部署（后端自动，前端需手动构建）
+# 服务器部署：一条命令搞定（后端 + 前端 + 冒烟自检）
 ssh root@47.77.237.250
 cd /var/www/billiards-ai && bash deploy_us.sh
-
-# 前端有改动时需手动构建
-cd /var/www/billiards-ai/web
-npx next build --no-lint
-cp -r .next/static .next/standalone/.next/static
-systemctl restart billiards-frontend
 ```
 
-`deploy_us.sh` 自动执行：git pull → 安装依赖 → 数据库迁移 → 重启后端。**前端构建需手动执行。**
+`deploy_us.sh` 一条命令完成全部：git pull → 后端依赖(uv sync) → 数据库迁移 → 重启后端 → **前端 `next build` + 拷贝 standalone 的 static/public + 重启前端** → **冒烟自检**（真测线上后端 API 与前端静态资源，漏拷/起不来会报错退出）。
+
+⚠️ **不要再手动分步 build 前端**：standalone 模式下 `next build` 不含 static/public、且会清掉旧的，漏 `cp` 会让 `/_next/static` 全部返回 400 → **整站白屏**（2026-06-15 就这么踩过，且 `systemctl active` 照样显示正常、极具迷惑性）。统一走 `deploy_us.sh`，它末尾的冒烟检查会兜住这个坑。
 
 ## 常用命令
 
