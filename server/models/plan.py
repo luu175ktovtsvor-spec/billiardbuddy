@@ -57,6 +57,7 @@ class SubscriptionPayment(Base):
         ForeignKey("store_subscriptions.id"), nullable=False, index=True
     )
     amount: Mapped[int] = mapped_column(Integer, default=0)  # 分
+    plan_name: Mapped[str | None] = mapped_column(String(100))  # 缴费当时的档位名(快照,供历史展示;旧数据为空)
     note: Mapped[str | None] = mapped_column(String(500))
     kind: Mapped[str] = mapped_column(String(20), default="new")  # new | renew
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))

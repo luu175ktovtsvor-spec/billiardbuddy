@@ -17,6 +17,7 @@ interface UserDetail {
   user: User;
   store: { id: string; name: string; city: string } | null;
   subscription: { plan_name: string; status: string; period_end: string; payment_amount: number; payment_note: string } | null;
+  payment_history?: { date: string | null; plan_name: string | null; amount: number; kind: string; note: string | null }[];
   quota: { monthly_generation_limit: number; monthly_generations_used: number; monthly_tokens_used: number } | null;
   stats: { total_generations: number };
   recent_generations: { id: string; type: string; sub_type: string; created_at: string }[];
@@ -289,6 +290,21 @@ export default function AdminUsersPage() {
                     <p className="text-sm text-slate-600">套餐：{detailUser.subscription.plan_name}</p>
                     <p className="text-sm text-slate-600">状态：<span className={detailUser.subscription.status === "active" ? "text-green-600" : "text-red-600"}>{detailUser.subscription.status}</span></p>
                     <p className="text-sm text-slate-600">到期时间：{new Date(detailUser.subscription.period_end).toLocaleDateString("zh-CN")}</p>
+                  </div>
+                )}
+                {detailUser.payment_history && detailUser.payment_history.length > 0 && (
+                  <div className="rounded-lg border p-3">
+                    <p className="text-sm font-medium text-slate-700 mb-2">缴费 / 会员历史</p>
+                    <div className="space-y-1.5">
+                      {detailUser.payment_history.map((p, i) => (
+                        <div key={i} className="flex items-center justify-between gap-2 text-xs text-slate-600">
+                          <span className="w-20 shrink-0 text-slate-500">{p.date ? new Date(p.date).toLocaleDateString("zh-CN") : "-"}</span>
+                          <span className="flex-1 truncate">{p.plan_name || "—"}</span>
+                          <span className={p.kind === "renew" ? "text-slate-400" : "text-brand-600"}>{p.kind === "renew" ? "续费" : "开通"}</span>
+                          <span className="w-14 shrink-0 text-right font-medium text-slate-700">¥{(p.amount / 100).toFixed(0)}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
                 {detailUser.quota && (
