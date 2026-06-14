@@ -521,6 +521,10 @@ class ApiClient {
   async extractReport(reportType: string, text: string): Promise<{ data: ReportData }> {
     return this.request<{ data: ReportData }>("POST", `/api/v1/reports/${reportType}/extract`, { text });
   }
+  /** 今天哪些日报已交（老板/团队看交付状态） */
+  async getReportTodayStatus(): Promise<{ date: string; submitted: string[] }> {
+    return this.request<{ date: string; submitted: string[] }>("GET", "/api/v1/reports/today-status");
+  }
   /** 导出 Excel：手写 fetch + 手动补 X-Store-Id（不能走 request，它 res.json()） */
   async exportReport(reportId: string): Promise<Blob> {
     const headers: Record<string, string> = {};

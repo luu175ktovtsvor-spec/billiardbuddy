@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.deps import get_current_store, get_current_user, get_db
 from core.exceptions import NotFoundException
 from core.rbac import Permission, require_permission
+from core.timezone import business_now
 from models.generation import Generation
 from models.store import Store
 from models.user import User
@@ -66,6 +67,32 @@ async def list_reports(
         )
         for r in rows
     ]
+
+
+@router.get("/today-status")
+async def today_status(
+    store: Annotated[Store, Depends(get_current_store)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    _perm: None = Depends(require_permission(Permission.GENERATION_LIST)),
+):
+    """今天哪些日报已交（老板/团队看交付状态）。按 input_params['date'] 比，避开时区坑。"""
+    today = business_now().strftime("%Y-%m-%d")
+    stmt = (
+        select(Generation)
+        .where(
+            Generation.store_id == store.id,
+            Generation.type == "report",
+            Generation.is_deleted == False,  # noqa: E712
+        )
+        .order_by(Generation.created_at.desc())
+        .limit(50)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    submitted = sorted({
+        r.sub_type for r in rows
+        if r.sub_type and str((r.input_params or {}).get("date", "")) == today
+    })
+    return {"date": today, "submitted": submitted}
 
 
 @router.post("/{report_type}", response_model=ReportResponse)
