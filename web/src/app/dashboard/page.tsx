@@ -34,6 +34,7 @@ const CATEGORY_META: Record<string, { label: string; cls: string }> = {
   good: { label: "效果好", cls: "bg-emerald-50 text-emerald-600" },
   setup: { label: "完善资料", cls: "bg-red-50 text-red-500" },
   festival: { label: "节日", cls: "bg-pink-50 text-pink-500" },
+  report: { label: "日报", cls: "bg-violet-50 text-violet-600" },
 };
 
 /**
@@ -42,8 +43,8 @@ const CATEGORY_META: Record<string, { label: string; cls: string }> = {
  * 每类限量（focus≤3，其余 1-2），避免越用越单一。
  */
 function pickTopRecommendations(recs: DashboardRecommendation[], n = 5): DashboardRecommendation[] {
-  const CAP: Record<string, number> = { stage: 2, focus: 3, frequent: 1, gap: 2, good: 1, setup: 1, festival: 2 };
-  const RANK: Record<string, number> = { festival: 0, stage: 1, focus: 2, frequent: 3, gap: 4, good: 5, setup: 6 };
+  const CAP: Record<string, number> = { report: 1, stage: 2, focus: 3, frequent: 1, gap: 2, good: 1, setup: 1, festival: 2 };
+  const RANK: Record<string, number> = { festival: 0, report: 1, stage: 1, focus: 2, frequent: 3, gap: 4, good: 5, setup: 6 };
   const rank = (r: DashboardRecommendation) =>
     r.id === "daily_focus" ? -1 : (RANK[r.category || "focus"] ?? 6);
   const ordered = [...recs].sort((a, b) => rank(a) - rank(b));
