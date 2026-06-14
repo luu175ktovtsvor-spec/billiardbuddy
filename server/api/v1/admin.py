@@ -36,6 +36,25 @@ def _add_months(start: datetime, months: int) -> datetime:
     return start.replace(year=year, month=month, day=day)
 
 
+async def _apply_plan_to_quota(db: AsyncSession, store_id, plan) -> None:
+    """把套餐档位的额度写进门店配额（开通/续费共用）。
+    文案次数 + 海报独立池；token 上限按次数推导并封顶 int4（仅展示，实际拦截按次数）。
+    无配额行时创建（用量计数归零、周期从本自然月起）。"""
+    from services.quota_service import token_ceiling, _period_start_now
+    quota = await db.scalar(select(UsageQuota).where(UsageQuota.store_id == store_id))
+    if quota is None:
+        quota = UsageQuota(
+            store_id=store_id,
+            monthly_generations_used=0,
+            monthly_tokens_used=0,
+            current_period_start=_period_start_now(),
+        )
+        db.add(quota)
+    quota.monthly_generation_limit = plan.generation_limit
+    quota.monthly_tokens_limit = min(token_ceiling(plan.generation_limit), 2_000_000_000)
+    quota.monthly_poster_limit = plan.poster_limit
+
+
 async def _primary_store_member(db: AsyncSession, user_id: str) -> StoreMember | None:
     """取用户的主门店成员记录（最早加入的那家）。
 
@@ -167,51 +186,40 @@ async def activate_user(
     if not member:
         raise HTTPException(status_code=404, detail="用户没有门店")
 
-    # 创建订阅
+    # 创建/更新订阅：store_id 唯一(一店一行)，故"重新开通"必须 UPSERT，否则撞唯一约束 500。
+    # 开通 = 从今天起算新周期（区别于续费的"在原到期日上延长"），支持换档位/过期后重开。
     now = datetime.now(timezone.utc)
-    subscription = StoreSubscription(
-        store_id=member.store_id,
-        plan_id=plan.id,
-        status="active",
-        current_period_start=now,
-        current_period_end=_add_months(now, months),
-        activated_by=user.id,
-        payment_note=payment_note,
-        payment_amount=payment_amount,
-    )
-    db.add(subscription)
+    sub = await db.scalar(select(StoreSubscription).where(StoreSubscription.store_id == member.store_id))
+    if sub is None:
+        sub = StoreSubscription(
+            store_id=member.store_id, plan_id=plan.id, status="active",
+            current_period_start=now, current_period_end=_add_months(now, months),
+            activated_by=user.id, payment_note=payment_note, payment_amount=payment_amount,
+        )
+        db.add(sub)
+    else:
+        sub.plan_id = plan.id
+        sub.status = "active"
+        sub.current_period_start = now
+        sub.current_period_end = _add_months(now, months)
+        sub.activated_by = user.id
+        sub.payment_note = payment_note
+        sub.payment_amount = payment_amount
+        sub.updated_at = now
     await db.flush()
 
     # 收款流水（收入统计以流水为准）
     if payment_amount > 0:
         db.add(SubscriptionPayment(
-            subscription_id=subscription.id,
-            amount=payment_amount,
-            note=payment_note,
-            kind="new",
-            created_by=user.id,
+            subscription_id=sub.id, amount=payment_amount,
+            note=payment_note, kind="new", created_by=user.id,
         ))
 
-    # 更新配额：无配额行时创建（否则套餐限额被首次生成的默认值顶掉）
-    quota = await db.scalar(select(UsageQuota).where(UsageQuota.store_id == member.store_id))
-    if quota is None:
-        from services.quota_service import _period_start_now
-        quota = UsageQuota(
-            store_id=member.store_id,
-            monthly_generations_used=0,
-            monthly_tokens_used=0,
-            current_period_start=_period_start_now(),
-        )
-        db.add(quota)
-    # token 上限由次数自动推导,与套餐次数永远配套(check_quota 实际也按次数推导校验)
-    from services.quota_service import token_ceiling
-    quota.monthly_generation_limit = plan.generation_limit
-    # 仅展示用；封顶 int4 上限，防超大次数(如不限额)算出的 token 数溢出。实际拦截按次数推导(见 check_quota)
-    quota.monthly_tokens_limit = min(token_ceiling(plan.generation_limit), 2_000_000_000)
-    quota.monthly_poster_limit = plan.poster_limit  # 海报独立额度跟随套餐
+    # 配额跟随档位
+    await _apply_plan_to_quota(db, member.store_id, plan)
 
     await db.commit()
-    return {"status": "ok", "plan": plan.name, "expires": subscription.current_period_end}
+    return {"status": "ok", "plan": plan.name, "expires": sub.current_period_end}
 
 
 @router.put("/users/{user_id}/quota")
@@ -419,6 +427,7 @@ async def renew_subscription(
         raise HTTPException(status_code=404, detail="订阅不存在")
 
     now = datetime.now(timezone.utc)
+    # 未过期=在原到期日上续；已过期=从今天起算（实现"8月6号过期后续费→9月6号到期"）
     base = sub.current_period_end if sub.current_period_end > now else now
     sub.current_period_end = _add_months(base, months)
     sub.status = "active"
@@ -426,6 +435,10 @@ async def renew_subscription(
     sub.payment_note = payment_note
     sub.payment_amount = payment_amount
     sub.updated_at = now
+    # 续费把配额刷回该档位：修复"过期被自动降级到试用后，续费只延期却不恢复额度"
+    plan = await db.get(Plan, sub.plan_id)
+    if plan:
+        await _apply_plan_to_quota(db, sub.store_id, plan)
     if payment_amount > 0:
         db.add(SubscriptionPayment(
             subscription_id=sub.id,
