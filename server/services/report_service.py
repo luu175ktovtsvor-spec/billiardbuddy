@@ -82,11 +82,38 @@ def narrative_payload(
     return payload
 
 
+def field_labels(schema: dict) -> dict:
+    """{字段key: 中文label}（flat/personal 的 groups + roster 的 columns）。"""
+    out: dict = {}
+    for g in schema.get("groups", []):
+        for f in g.get("fields", []):
+            out[f["key"]] = f.get("label", f["key"])
+    for c in schema.get("columns", []):
+        out[c["key"]] = c.get("label", c["key"])
+    return out
+
+
+def relabel_payload(payload: dict, labels: dict) -> dict:
+    """把喂 AI 的 JSON 里英文 key 换成中文 label，避免 AI 按 key 名瞎翻（如 coach_*→教练）。"""
+    out: dict = {}
+    for k, v in payload.items():
+        if k in ("环比", "本月累计") and isinstance(v, dict):
+            out[k] = {labels.get(fk, fk): fv for fk, fv in v.items()}
+        elif k == "rows" and isinstance(v, list):
+            out["助教明细"] = [{labels.get(fk, fk): fv for fk, fv in r.items()} for r in v]
+        else:
+            out[labels.get(k, k)] = v
+    return out
+
+
 # ─── DB 编排（走 run_generation：配额 + 注入检查 + 落库 + 计费）───
 
 
-async def load_last_submission(db, store_id, sub_type: str) -> dict | None:
-    """取这家店上一份同类型日报的 input_params（供环比）。带 is_deleted==False。"""
+async def load_last_submission(db, store_id, sub_type: str, today: str) -> dict | None:
+    """取这家店上一份"前一天(非今天)"的同类型日报 input_params（供环比）。
+
+    排除今天的重复提交——环比应对比前一天，而不是当天早些时候的那份。
+    """
     stmt = (
         select(Generation)
         .where(
@@ -96,15 +123,24 @@ async def load_last_submission(db, store_id, sub_type: str) -> dict | None:
             Generation.is_deleted == False,  # noqa: E712
         )
         .order_by(Generation.created_at.desc())
-        .limit(1)
+        .limit(10)
     )
-    row = (await db.execute(stmt)).scalar_one_or_none()
-    return row.input_params if row else None
+    rows = (await db.execute(stmt)).scalars().all()
+    for r in rows:
+        d = str((r.input_params or {}).get("date", ""))
+        if r.input_params and d and d != today:
+            return r.input_params
+    return None
 
 
 async def _month_submissions(db, store_id, sub_type: str, now: datetime) -> list[dict]:
-    """本月该类型已提交的 input_params（按 input_params['date'] 过滤，避开时区双基准坑）。"""
+    """本月"前几天"每天最新一份的 input_params（供累计）。
+
+    按 input_params['date'] 过滤（避开时区双基准坑）；**同一天去重只留最新、排除今天**，
+    这样累计 = 各前一天最新值 + 今天当前这份，不会因当天重复提交而重复计数。
+    """
     ym = now.strftime("%Y-%m")
+    today = now.strftime("%Y-%m-%d")
     stmt = (
         select(Generation)
         .where(
@@ -114,13 +150,17 @@ async def _month_submissions(db, store_id, sub_type: str, now: datetime) -> list
             Generation.is_deleted == False,  # noqa: E712
         )
         .order_by(Generation.created_at.desc())
-        .limit(40)
+        .limit(60)
     )
     rows = (await db.execute(stmt)).scalars().all()
-    return [
-        r.input_params for r in rows
-        if r.input_params and str(r.input_params.get("date", "")).startswith(ym)
-    ]
+    seen: set = set()
+    out: list[dict] = []
+    for r in rows:
+        d = str((r.input_params or {}).get("date", ""))
+        if d.startswith(ym) and d != today and d not in seen:
+            seen.add(d)
+            out.append(r.input_params)
+    return out
 
 
 async def generate_report(db, store, user, report_type: str, data: dict, note: str = "") -> Generation:
@@ -131,7 +171,7 @@ async def generate_report(db, store, user, report_type: str, data: dict, note: s
     schema = get_report_schema(report_type)
     now = business_now()
     prefill = build_prefill(schema, store, now)
-    last = await load_last_submission(db, store.id, report_type)
+    last = await load_last_submission(db, store.id, report_type, now.strftime("%Y-%m-%d"))
     deltas = compute_deltas(data, last, schema.get("narrative", {}).get("delta_fields", []))
 
     full_data: dict = {**prefill, **data, "_deltas": deltas}
@@ -146,6 +186,7 @@ async def generate_report(db, store, user, report_type: str, data: dict, note: s
         full_data["rows"] = ranked_rows
 
     payload = narrative_payload(schema["shape"], data, deltas, cumulative, ranked_rows)
+    payload = relabel_payload(payload, field_labels(schema))  # 喂中文 label，免 AI 把 coach_* 瞎翻成"教练"
     prompt = get_prompt_engine().render(
         schema["narrative"]["prompt_key"],
         store,
