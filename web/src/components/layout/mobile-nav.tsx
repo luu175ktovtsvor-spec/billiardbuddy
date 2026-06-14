@@ -14,6 +14,7 @@ import {
   LayoutGrid,
   Users,
   FileText,
+  BookOpen,
 } from "lucide-react";
 import { Sheet } from "@/components/ui/sheet";
 
@@ -138,6 +139,13 @@ export function MobileNav() {
             <span className="text-center text-xs text-slate-500">AI 生图 / 活动海报</span>
           </button>
         </div>
+        <button
+          type="button"
+          onClick={() => { setCreateOpen(false); router.push("/dashboard/guide"); }}
+          className="flex w-full items-center justify-center gap-1.5 pb-2 text-sm text-slate-400 active:text-slate-600"
+        >
+          <BookOpen className="h-4 w-4" />使用指南
+        </button>
       </Sheet>
     </>
   );

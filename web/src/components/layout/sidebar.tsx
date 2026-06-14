@@ -12,6 +12,7 @@ import {
   MessageCircle,
   Workflow,
   FileText,
+  BookOpen,
 } from "lucide-react";
 
 const NAV = [
@@ -66,7 +67,14 @@ export function Sidebar() {
       </nav>
 
       {/* Bottom */}
-      <div className="p-4">
+      <div className="space-y-2.5 p-4">
+        <Link
+          href="/dashboard/guide"
+          className="flex items-center gap-2 text-sm text-slate-500 transition-colors hover:text-slate-900"
+        >
+          <BookOpen className="h-4 w-4" />
+          使用指南
+        </Link>
         <p className="text-xs text-slate-400">球房 AI 运营助手 v1.0</p>
       </div>
     </aside>
