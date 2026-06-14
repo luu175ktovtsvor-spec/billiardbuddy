@@ -1,0 +1,15 @@
+key: report.coach_daily_narrative
+name: "教练日报叙事"
+category: report
+variables: [store_name, date]
+template: |
+  你是台球房教练的运营助手。下面是教练今天的动作数字（含本月累计），
+  只输出两段中文，不复述数字，用"竞技客户运营"的视角点评：
+
+  门店：{store_name}　日期：{date}
+  今日数据（JSON）：{numbers_json}
+  补充说明：{note}
+
+  按以下结构输出（每段 2-4 句，口语、可执行）：
+  ## 今日总结
+  ## 明日计划

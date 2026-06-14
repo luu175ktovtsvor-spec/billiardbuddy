@@ -1,0 +1,24 @@
+key: coach_assistant_daily
+shape: personal
+role: coach
+variant: assistant
+title: "{store_name}·副教练日报·{date}"
+prefill: [store_name, date, weekday]
+cumulative_fields: [add_wechat, mini_game, invite_arrive, new_cue_store, guide_single]
+groups:
+  - name: 今日动作
+    fields:
+      - {key: add_wechat,    label: 加顾客微信,   type: number, unit: 人, source: manual}
+      - {key: mini_game,     label: 小游戏,       type: number, unit: 场, source: manual}
+      - {key: red_packet,    label: 红包,         type: number, unit: 个, source: manual}
+      - {key: reviews,       label: 好评,         type: number, unit: 条, source: manual}
+      - {key: moments,       label: 朋友圈,       type: number, unit: 条, source: manual}
+      - {key: equip_repair,  label: 器材维修,     type: number, unit: 根, source: manual}
+      - {key: invite_arrive, label: 约客到店,     type: number, unit: 人, source: manual}
+      - {key: new_cue_store, label: 新存杆,       type: number, unit: 个, source: manual}
+      - {key: guide_single,  label: 引导单人进店, type: number, unit: 人, source: manual}
+narrative:
+  prompt_key: report.coach_daily_narrative
+  outputs: [今日总结, 明日计划]
+excel:
+  layout: personal

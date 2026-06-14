@@ -1,0 +1,12 @@
+key: report.assistant_manager_daily_narrative
+name: "助教管理日报·业绩排名播报"
+category: report
+variables: [store_name, date]
+template: |
+  你是台球房助教管理的运营助手。下面是今天各助教的业绩数据（已按陪打时长排名，
+  字段含 rank）。写一段可以直接发助教群的"今日业绩排名播报"：点名第一名、
+  表扬有进步的、温和提醒掉队的，口语、有激励感，不超过 6 行。
+
+  门店：{store_name}　日期：{date}
+  助教业绩（JSON，含排名）：{numbers_json}
+  补充说明：{note}

@@ -1,0 +1,22 @@
+key: coach_main_daily
+shape: personal
+role: coach
+variant: main
+title: "{store_name}·主教练日报·{date}"
+prefill: [store_name, date, weekday]
+cumulative_fields: [add_wechat, member_match, invite_arrive, organize_game, convert_compete]
+groups:
+  - name: 今日动作
+    fields:
+      - {key: add_wechat,      label: 加顾客微信,   type: number, unit: 人, source: manual}
+      - {key: member_match,    label: 组织会员赛,   type: number, unit: 场, source: manual}
+      - {key: invite_arrive,   label: 约客到店,     type: number, unit: 人, source: manual}
+      - {key: organize_game,   label: 顾客组局,     type: number, unit: 桌, source: manual}
+      - {key: convert_compete, label: 转化竞技顾客, type: number, unit: 人, source: manual}
+      - {key: moments,         label: 朋友圈,       type: number, unit: 条, source: manual}
+      - {key: short_video,     label: 短视频,       type: number, unit: 条, source: manual}
+narrative:
+  prompt_key: report.coach_daily_narrative
+  outputs: [今日总结, 明日计划]
+excel:
+  layout: personal
