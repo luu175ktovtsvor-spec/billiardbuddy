@@ -4,6 +4,7 @@ import base64
 import io
 import logging
 
+from config import settings
 from services.ai.base import ImageProvider
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,10 @@ class OpenAIImageProvider(ImageProvider):
             self._client = AsyncOpenAI(
                 api_key=self._api_key,
                 base_url=self._base_url,
-                timeout=httpx.Timeout(300.0, connect=30.0),
+                # 读超时必须覆盖真实生图耗时（gpt-image-2 单张可能 5-10 分钟）。设太短(如旧的300s)会把
+                # "还在生成"误判为超时失败，但服务端其实已生成并扣费——钱花了图没拿到。详见 CLAUDE.md「AI 并发与限流」
+                timeout=httpx.Timeout(settings.openai_image_timeout, connect=30.0),
+                max_retries=0,  # 生图慢且贵：SDK 默认会在连接/超时失败时自动重试，但生图"已生成完才断"会被重复扣费——关掉自动重试防烧钱
             )
         return self._client
 

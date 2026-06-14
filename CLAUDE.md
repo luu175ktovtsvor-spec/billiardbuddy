@@ -30,8 +30,8 @@
 
 | 用途 | 模型 | 说明 |
 |------|------|------|
-| 文本生成 | DeepSeek V4 Flash | 通过 `https://api.deepseek.com` |
-| 图片生成 | OpenAI gpt-image-2 | 生产直连 `https://api.openai.com/v1`（美国节点，~80ms）；Worker 代理为国内开发备选 |
+| 文本生成 | DeepSeek V4 Flash | 通过 `https://api.deepseek.com`；并发 2500/账户级（详见「AI 并发与限流」） |
+| 图片生成 | OpenAI gpt-image-2 | 一律直连 `https://api.openai.com/v1`（生产+本地均实测可直连，~80ms）；旧 Worker 代理已废弃下线、勿用。⚠️ 限额/测试铁律见「AI 并发与限流」，**测试前必读** |
 
 ## 技术栈
 
@@ -60,10 +60,51 @@
 - 我们通过 `images.edit` 接口模拟：把上一张生成的图片作为 `refine_from` 传入，实现"基于此调整"的以图生图效果
 - 这是一个务实的 workaround，效果满足需求
 
-**OpenAI 接口地址（`OPENAI_BASE_URL`）：**
-- 生产（美国硅谷节点）实测直连 `https://api.openai.com/v1` 正常（~80ms），服务器 .env 当前即直连配置
-- Cloudflare Worker 代理 `https://openai-proxy.luu175ktovtsvor.workers.dev/v1` 仅为国内本地开发的备选（直连不通时用）
-- 出口 IP 为阿里云美国（AS45102），如遇 OpenAI 对机房 IP 风控再考虑切代理
+**OpenAI 接口地址（`OPENAI_BASE_URL`）：一律直连 `https://api.openai.com/v1`**
+- **本机是美国网络**，直连 `api.openai.com` 正常；生产（美国硅谷节点）同样直连（~80ms）。本地开发也直连、不需要任何代理。
+- ⚠️ **更正（2026-06-14）**：之前这里写"生图失败是临时网络抖动 + 余额"是**错的**。测试"扣了钱却没出图"的真因是 **超时设太短 + 重试风暴 + Tier1 的 IPM 限额** 叠加，与网络/地域/余额无关——详见下方「**AI 并发与限流**」专节（测试前必读）。
+- ⚠️ **Cloudflare Worker 代理已废弃下线**（`openai-proxy.luu175ktovtsvor.workers.dev` 返回 404 / error 1042 "No Workers script found"）——**不要再用、不要依赖**。本地 `server/.env` 若仍把 `OPENAI_BASE_URL` 指向该代理，会导致生图全部 404，需改成直连。
+- 出口 IP 为阿里云美国（AS45102），如遇 OpenAI 对机房 IP 风控再议。
+
+## AI 并发与限流（生图/文本）— ⚠️ 测试前必读，否则会烧钱
+
+> **2026-06-14 血泪教训。** 一次生图测试"扣了 $5、0 张图到手"，根因不是网络/余额，是 **超时太短 + 重试风暴 + Tier1 IPM 限额** 叠加。规则写在这，谁测都先看。
+
+### 真实限额（官方文档当天实测，非凭记忆）
+
+**OpenAI 生图（gpt-image-2，账户目前 Tier 2，2026-06-15 充值 $50 升级）**
+- 分层按累计充值自动升级：Free / Tier 1（充 $5）/ **Tier 2（充 $50，当前）** / … / Tier 5（$1000）。
+- 限流指标含 **IPM（每分钟图片数）** 与 TPM 等，任一打满即被限。**gpt-image-2 各层 IPM 是官方公开的**（来源 `developers.openai.com/api/docs/models/gpt-image-2`）：Tier1=5 / **Tier2=20（当前）** / Tier3=50 / Tier4=150 / Tier5=250。账户实时余量另可在 `platform.openai.com/settings/organization/limits` 或响应头 `x-ratelimit-remaining-requests` 查。（⚠️ 教训：此表第一次查时漏了——限流指南页已指路"per-model 去 models page 看"，要跟着指路走到模型详情页，别停在指南页就下"查不到"的结论。）
+- ⚠️ 官方原话："失败/被拒的请求也计入每分钟限额，所以不停重发没用"——注意这说的是占**限额计数**、**不是扣费**。
+- ⚠️ **被限流(429)拒绝的请求不生成图、不扣钱**；OpenAI 只对"实际生成的图"计费。所以"30 人挤 20 限额 → 多付 10 张钱"**不成立**。当年烧钱是"超时+重发把已生成(已扣费)的图重复生成"，是另一回事、已修。
+- 单张生图慢：**5–10 分钟**很正常。因为慢，并发闸(同时最多几张)已把"每分钟起的张数"压到远低于 20，超出的请求是**排队等**、不是发出去被拒。
+
+**DeepSeek 文本（deepseek-v4-flash）**
+- **并发上限 2500**（v4-pro 是 500），**按账户算、与用哪个 API Key 无关**；超了返回 429。我们这个体量到不了，不是瓶颈。
+- 真正风险是**共享预付余额**：余额不足返回 402（代码已映射成"余额不足"提示）。
+- 可免费申请扩容；长请求有 keep-alive（最长 10 分钟）。`deepseek-chat`/`deepseek-reasoner` 旧名 2026-07-24 起弃用，对应 v4-flash 的非思考/思考模式。
+
+### 烧钱是怎么发生的（务必理解，别再犯）
+
+1. 生图要 5–10 分钟，但客户端读超时只设了 300 秒 → **还在生成就被判"超时失败"**；
+2. SDK 默认重试 2 次 + 测试脚本自己又 for 循环重试 → **同一张反复重发**；
+3. **每次重发都在服务端重新生成、重新扣费**，且失败请求还占 IPM → 触发 429 → 看着全失败、其实钱已扣光、0 图到手。
+
+### 🔒 测试生图铁律（任何人、任何脚本都遵守）
+
+1. **绝不重试生图请求**：不写 `for`/`while` 重发，不靠 SDK 自动重试（已 `max_retries=0`）。一次请求**就等它出**，超时也只算一次、不补发。
+2. **超时拉满**：客户端读超时 ≥ 实际生图耗时。代码已设 `openai_image_timeout=900s(15min)`，别再调小。
+3. **单张串行测**：一次只发 1 张，等出图再发下一张，绝不一次性丢 4-5 张。
+4. **先设账户硬上限兜底**：测试前在 OpenAI 后台设 monthly budget hard limit，防脚本失控烧穿。
+5. 看到 429/超时**先停下查原因**，别"再试一次"——重发只会更糟（占 IPM + 可能重复扣费）。
+
+### 代码里已有的护栏（现状）
+
+- `server/config.py`：`openai_image_timeout=900`、`poster_max_concurrency=4`（每 worker，2 worker→实际≈8 并发，远低于 L2 的 20 IPM；均可经环境变量上调）。
+- `openai_image.py`：`max_retries=0`，读超时用 `openai_image_timeout`。
+- `poster_service.py`：全局 `asyncio.Semaphore(poster_max_concurrency)` 给生图调用排队，护住 IPM；超出排队不立刻 429。
+- `posters.py`：每用户同一时刻只允许 1 张在跑（`_GENERATING_USERS`），且强制 `count=1`。
+- ⚠️ **多 worker 边界**：生产 2 worker，上面信号量/集合都是**进程内**的——同一用户两请求落不同 worker 可能各放行一张，全局并发实际 ≈ 2× 配置值。这是刻意取舍：429 是"被拒绝"不扣钱，不值得为精确全局限流上 Redis；真正烧钱的"超时+重试"已被进程内措施完全堵死。要精确全局限流再上 DB/Redis。
 
 ## 项目结构
 

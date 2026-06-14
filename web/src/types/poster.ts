@@ -18,11 +18,40 @@ export interface ImageGenerateRequest {
   refine_from?: string;
   add_store_info?: boolean;
   no_text?: boolean;
-  add_overlay?: boolean;
-  add_logo_overlay?: boolean;
-  add_qrcode_overlay?: boolean;
   conversation_id?: string;
   quality?: "low" | "medium" | "high" | "auto";
+  // 生图重构（新增，可选）
+  image_prompt?: string;
+  poster_text?: PosterText;
+  background_mode?: "ai_generate" | "store_photo";
+  store_photo_path?: string;
+  logo_path?: string;
+  qr_path?: string;
+}
+
+export interface PosterText {
+  title?: string;
+  lines?: string[];
+  contact?: string;
+}
+
+export interface PromptExpandRequest {
+  description: string;
+  poster_text?: PosterText;
+  background_mode?: "ai_generate" | "store_photo";
+  has_logo?: boolean;
+  has_qr?: boolean;
+  ratio?: string;
+}
+
+export interface PromptExpandResponse {
+  image_prompt: string;
+  needs: string[];
+}
+
+export interface ShowcaseExample {
+  idea_text: string;
+  image_url: string | null;
 }
 
 export interface GeneratedImage {
