@@ -1,9 +1,8 @@
+import calendar
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
-
-from dateutil.relativedelta import relativedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, and_, or_, desc
@@ -29,8 +28,12 @@ def require_admin(user: User):
 
 def _add_months(start: datetime, months: int) -> datetime:
     """按**自然月**推进到期时间：3月5日 + 2 月 = 5月5日（而非 30 天×月数 = 5月4日）。
-    与店主直觉一致；relativedelta 自动处理月末（1月31日 + 1 月 = 2月28/29日）。"""
-    return start + relativedelta(months=months)
+    纯标准库实现（不引第三方依赖）；月末自动钳制：1月31日 + 1 月 = 2月28/29日。"""
+    m = start.month - 1 + months
+    year = start.year + m // 12
+    month = m % 12 + 1
+    day = min(start.day, calendar.monthrange(year, month)[1])
+    return start.replace(year=year, month=month, day=day)
 
 
 async def _primary_store_member(db: AsyncSession, user_id: str) -> StoreMember | None:
