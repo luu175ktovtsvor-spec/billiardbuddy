@@ -6,8 +6,10 @@ from services.report_service import (
     build_prefill,
     compute_cumulative,
     compute_deltas,
+    field_labels,
     narrative_payload,
     rank_roster,
+    relabel_payload,
 )
 
 
@@ -63,3 +65,26 @@ def test_narrative_payload_flat_just_deltas():
     p = narrative_payload("flat", {"revenue": 100}, {"revenue": {"pct": 20.0}})
     assert p["环比"]["revenue"]["pct"] == 20.0
     assert "本月累计" not in p and "rows" not in p
+
+
+def test_field_labels_from_groups_and_columns():
+    flat = {"groups": [{"fields": [{"key": "coach_on_clock", "label": "助教上钟"}]}]}
+    assert field_labels(flat)["coach_on_clock"] == "助教上钟"
+    roster = {"columns": [{"key": "hours", "label": "陪打时长"}]}
+    assert field_labels(roster)["hours"] == "陪打时长"
+
+
+def test_relabel_payload_translates_keys_and_deltas():
+    labels = {"coach_on_clock": "助教上钟", "revenue": "营业额"}
+    p = relabel_payload(
+        {"coach_on_clock": 6, "revenue": 8600, "环比": {"revenue": {"pct": 5}}}, labels
+    )
+    assert "助教上钟" in p and "coach_on_clock" not in p   # 不再喂英文key(免AI翻成"教练")
+    assert p["环比"] == {"营业额": {"pct": 5}}               # 环比内层key也翻
+
+
+def test_relabel_payload_roster_rows():
+    labels = {"name": "助教", "hours": "陪打时长"}
+    p = relabel_payload({"rows": [{"name": "小美", "hours": 5.5, "rank": 1}]}, labels)
+    assert "助教明细" in p
+    assert p["助教明细"][0]["助教"] == "小美" and p["助教明细"][0]["陪打时长"] == 5.5
