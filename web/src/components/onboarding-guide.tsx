@@ -96,9 +96,17 @@ export function OnboardingGuide() {
         </div>
 
         {/* Step number */}
-        <p className="mb-4 text-center text-xs text-slate-400">
+        <p className="mb-2 text-center text-xs text-slate-400">
           第 {step + 1} 步，共 {STEPS.length} 步
         </p>
+
+        <Link
+          href="/dashboard/guide"
+          onClick={dismiss}
+          className="mb-4 block text-center text-xs text-brand-600 active:opacity-70"
+        >
+          查看完整使用指南 →
+        </Link>
 
         {/* Actions */}
         <div className="flex items-center justify-between">
