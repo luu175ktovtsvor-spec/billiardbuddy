@@ -211,7 +211,7 @@ async def activate_user(
     # 收款流水（收入统计以流水为准）
     if payment_amount > 0:
         db.add(SubscriptionPayment(
-            subscription_id=sub.id, amount=payment_amount,
+            subscription_id=sub.id, amount=payment_amount, plan_name=plan.name,
             note=payment_note, kind="new", created_by=user.id,
         ))
 
@@ -295,6 +295,7 @@ async def get_user_detail(
     store_info = None
     subscription_info = None
     quota_info = None
+    payment_history = []  # 该客户逐笔开通/续费流水（会员历史）
     if member:
         store = await db.scalar(select(Store).where(Store.id == member.store_id))
         if store:
@@ -309,6 +310,22 @@ async def get_user_detail(
                 "payment_amount": sub.payment_amount,
                 "payment_note": sub.payment_note,
             }
+            # 逐笔缴费历史（同一店一条订阅，所有缴费都挂在这条订阅下）
+            pays = (await db.execute(
+                select(SubscriptionPayment)
+                .where(SubscriptionPayment.subscription_id == sub.id)
+                .order_by(desc(SubscriptionPayment.created_at))
+            )).scalars().all()
+            payment_history = [
+                {
+                    "date": p.created_at.isoformat() if p.created_at else None,
+                    "plan_name": p.plan_name,
+                    "amount": p.amount,
+                    "kind": p.kind,  # new=开通 / renew=续费
+                    "note": p.note,
+                }
+                for p in pays
+            ]
         quota = await db.scalar(select(UsageQuota).where(UsageQuota.store_id == member.store_id))
         if quota:
             quota_info = {
@@ -336,6 +353,7 @@ async def get_user_detail(
         "user": {"id": str(target.id), "phone": target.phone, "name": target.name, "is_active": target.is_active, "is_admin": target.is_admin, "created_at": target.created_at.isoformat()},
         "store": store_info,
         "subscription": subscription_info,
+        "payment_history": payment_history,
         "quota": quota_info,
         "stats": {"total_generations": total_generations or 0},
         "recent_generations": recent_list,
@@ -443,6 +461,7 @@ async def renew_subscription(
         db.add(SubscriptionPayment(
             subscription_id=sub.id,
             amount=payment_amount,
+            plan_name=plan.name if plan else None,
             note=payment_note,
             kind="renew",
             created_by=user.id,
