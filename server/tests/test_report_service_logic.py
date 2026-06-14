@@ -6,6 +6,7 @@ from services.report_service import (
     build_prefill,
     compute_cumulative,
     compute_deltas,
+    narrative_payload,
     rank_roster,
 )
 
@@ -44,3 +45,21 @@ def test_rank_roster_desc():
     ranked = rank_roster(rows, "hours")
     assert [r["name"] for r in ranked] == ["B", "A"]
     assert ranked[0]["rank"] == 1
+
+
+def test_narrative_payload_personal_includes_cumulative():
+    p = narrative_payload("personal", {"add_wechat": 5}, {}, cumulative={"add_wechat": 379})
+    assert p["本月累计"] == {"add_wechat": 379}   # 累计真进了喂 AI 的 JSON
+    assert p["add_wechat"] == 5
+
+
+def test_narrative_payload_roster_includes_ranked_rows():
+    rows = [{"name": "B", "hours": 5, "rank": 1}]
+    p = narrative_payload("roster", {}, {}, ranked_rows=rows)
+    assert p["rows"] == rows                       # 显式传排名,不靠共享引用
+
+
+def test_narrative_payload_flat_just_deltas():
+    p = narrative_payload("flat", {"revenue": 100}, {"revenue": {"pct": 20.0}})
+    assert p["环比"]["revenue"]["pct"] == 20.0
+    assert "本月累计" not in p and "rows" not in p

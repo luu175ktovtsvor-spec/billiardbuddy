@@ -62,6 +62,22 @@ def rank_roster(rows: list[dict], by: str) -> list[dict]:
     return ranked
 
 
+def narrative_payload(
+    shape: str, data: dict, deltas: dict,
+    cumulative: dict | None = None, ranked_rows: list | None = None,
+) -> dict:
+    """组装喂给 AI 的数字 JSON：环比恒带；personal 带本月累计；roster 带已排名 rows。
+
+    显式传累计/排名（不依赖 dict 共享引用），保证 prompt 真拿到这些数据。
+    """
+    payload: dict = {**data, "环比": deltas}
+    if shape == "personal" and cumulative is not None:
+        payload["本月累计"] = cumulative
+    if shape == "roster" and ranked_rows is not None:
+        payload["rows"] = ranked_rows
+    return payload
+
+
 # ─── DB 编排（走 run_generation：配额 + 注入检查 + 落库 + 计费）───
 
 
@@ -115,19 +131,22 @@ async def generate_report(db, store, user, report_type: str, data: dict, note: s
     deltas = compute_deltas(data, last, schema.get("narrative", {}).get("delta_fields", []))
 
     full_data: dict = {**prefill, **data, "_deltas": deltas}
+    cumulative: dict | None = None
+    ranked_rows: list | None = None
     if schema["shape"] == "personal":
         month_rows = await _month_submissions(db, store.id, report_type, now)
-        full_data["_cumulative"] = compute_cumulative(
-            month_rows + [data], schema.get("cumulative_fields", [])
-        )
+        cumulative = compute_cumulative(month_rows + [data], schema.get("cumulative_fields", []))
+        full_data["_cumulative"] = cumulative
     elif schema["shape"] == "roster":
-        full_data["rows"] = rank_roster(list(data.get("rows", [])), schema.get("rank_by", ""))
+        ranked_rows = rank_roster(list(data.get("rows", [])), schema.get("rank_by", ""))
+        full_data["rows"] = ranked_rows
 
+    payload = narrative_payload(schema["shape"], data, deltas, cumulative, ranked_rows)
     prompt = get_prompt_engine().render(
         schema["narrative"]["prompt_key"],
         store,
         {
-            "numbers_json": json.dumps({**data, "环比": deltas}, ensure_ascii=False),
+            "numbers_json": json.dumps(payload, ensure_ascii=False),
             "note": note or "（无）",
             "store_name": prefill.get("store_name", ""),
             "date": prefill.get("date", ""),
