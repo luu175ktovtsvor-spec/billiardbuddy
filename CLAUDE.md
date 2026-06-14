@@ -373,6 +373,7 @@ journalctl -u billiards-backend -n 50 --no-pager
 | 会员生命周期自动化（2026-06-14）：到期时间按**自然月**（3月5开2月=5月5，纯标准库 `_add_months`）；开通改 **UPSERT**（一店一订阅行，再开通/换档位从今天起算、不撞唯一约束）；续费**刷回该档位配额**（修过期降级后续费不恢复额度）；**到期自动降级** `scripts/expire_subscriptions.py` + 每小时 cron（过期订阅置 expired + 配额降回试用30/3，只动有过期订阅的店、无订阅/手动不限额账号不碰）。续费过期后从今天起算 | ✅ |
 | 缴费/会员历史（migration 019）：`subscription_payments` 加 `plan_name`（快照缴费当时档位）；开通/续费写入；用户详情接口返回 `payment_history`（逐笔：日期/档位/开通或续费/金额，倒序）；前端「用户管理→详情」展示"缴费/会员历史"。到期降级不删流水，历史永久可查 | ✅ |
 | 运营日报自动化（2026-06-14 上线）：4 张岗位日报——店长/前厅(flat)、教练主/副(personal·今日/本月累计)、助教管理(roster·按时长排名+明细/排名/播报三 sheet)；**填表或「说一句话」**(自然语言→DeepSeek JSON 抽取字段预填)→ AI 写叙事(**注入店脑记忆**"懂这家店"·环比对比前一天·喂中文 label 防 AI 把助教叫教练)→ **导出 Excel**(openpyxl)。配置化引擎(`server/report_forms/*.yaml` 一表一 YAML，前端按 shape 三态渲染)+ `reports.py` API + 复用 generations 表**零迁移**(走 run_generation 配额/落库)。配套：今日推荐"日报没写"信号(写过当天不催)、老板今日交付状态(`/reports/today-status`)、落地页式使用指南(`/dashboard/guide` + 侧栏/抽屉/首次弹窗入口)。**铁律：不重做收银系统**——POS 字段(营业额/上钟数)标"收银系统看"只瞄一眼填，主收"运营动作数据"(加微/约客/转化等 POS 采不到的)。详见 `docs/product-brain/运营日报自动化-设计.md` | ✅ |
+| 生图模块重构 + 并发限流加固（2026-06-15 上线 `b4d130f`）：生图前端整页重写——一句话描述框 + 背景来源(AI生成/上传门店照优化) + 结构化「要写的字」 + 手动 Logo/二维码 + DeepSeek 扩写引擎(大白话→提示词、可预览改) + 落地式新手引导，替代旧场景卡片/风格预设；**并发限流防烧钱**：生图读超时 300→900s、`max_retries=0`、全局信号量 `poster_max_concurrency=4`、每用户单张在跑、强制 `count=1`(详见「AI 并发与限流」)；部署加固：`deploy_us.sh` 并入前端 build+cp+冒烟自检(防 standalone 缺 static 白屏) | ✅ |
 
 ## 行业知识体系
 
