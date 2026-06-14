@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { FileText, Download, ChevronRight } from "lucide-react";
+import { FileText, Download, Check, Circle } from "lucide-react";
 import { api } from "@/lib/api";
 import { PageHeader } from "@/components/layout/page-header";
 import { REPORT_TYPES, reportTypeLabel } from "@/lib/report-types";
@@ -15,6 +15,7 @@ export default function ReportListPage() {
   const router = useRouter();
   const { toast } = useToast();
   const [items, setItems] = useState<ReportListItem[]>([]);
+  const [submitted, setSubmitted] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -35,8 +36,11 @@ export default function ReportListPage() {
     (async () => {
       setLoading(true);
       try {
-        const res = await api.listReports();
-        if (!cancelled) setItems(res);
+        const [res, status] = await Promise.all([api.listReports(), api.getReportTodayStatus()]);
+        if (!cancelled) {
+          setItems(res);
+          setSubmitted(status.submitted);
+        }
       } catch (err) {
         if (!cancelled) setError(getErrorMessage(err));
       } finally {
@@ -67,6 +71,29 @@ export default function ReportListPage() {
     <div className="mx-auto max-w-2xl">
       <PageHeader title="日报" backHref="/dashboard" />
       <h1 className="mb-4 hidden text-[22px] font-semibold text-slate-900 lg:block">日报</h1>
+
+      {/* 今日交付（老板/团队看谁交了） */}
+      <section className="mb-5 rounded-2xl bg-white p-4">
+        <h2 className="mb-2 text-[13px] font-medium text-slate-500">
+          今日交付 {submitted.length}/{REPORT_TYPES.length}
+        </h2>
+        <div className="flex flex-wrap gap-2">
+          {REPORT_TYPES.map((r) => {
+            const done = submitted.includes(r.type);
+            return (
+              <span
+                key={r.type}
+                className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-xs ${
+                  done ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-400"
+                }`}
+              >
+                {done ? <Check className="h-3.5 w-3.5" /> : <Circle className="h-3.5 w-3.5" />}
+                {r.label}
+              </span>
+            );
+          })}
+        </div>
+      </section>
 
       {/* 写今天的日报 */}
       <section className="mb-6">
