@@ -58,6 +58,33 @@ export function markdownToPlainText(text: string): string {
     .trim();
 }
 
+/** 复制纯文本，带真实成功校验。
+ * 微信 WebView/老浏览器里 clipboard API 和 execCommand 都可能静默失败——
+ * 返回布尔，调用方据此提示"已复制"或"长按手动复制"，绝不显示假的"已复制"。 */
+export async function copyPlainText(plain: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(plain);
+    return true;
+  } catch {
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = plain;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      // readonly：避免 iOS 弹出键盘顶乱页面
+      textarea.setAttribute("readonly", "");
+      document.body.appendChild(textarea);
+      textarea.select();
+      textarea.setSelectionRange(0, plain.length); // iOS 必需
+      const ok = document.execCommand("copy");
+      document.body.removeChild(textarea);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
 export function getErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
     switch (err.status) {

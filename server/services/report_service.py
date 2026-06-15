@@ -251,7 +251,13 @@ async def extract_report_data(report_type: str, text: str) -> dict:
         "用户没提到的字段一律不要出现在结果里。只输出 JSON，不要解释。\n\n字段：\n"
         + field_desc
     )
-    raw = await _json_call(system, (text or "").strip())
+    # "说一句话"属输入辅助：DeepSeek 抖动/超时/限流时优雅降级返回 {}，
+    # 让前端退回手动填表，而非把整个抽取端点炸成 500。
+    try:
+        raw = await _json_call(system, (text or "").strip())
+    except Exception:
+        logger.warning("日报「说一句话」抽取失败，退回手填", exc_info=True)
+        return {}
     known = {k for k, _, _ in fields}
     return {
         k: v for k, v in raw.items()

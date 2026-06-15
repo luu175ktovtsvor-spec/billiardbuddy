@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
+import { copyPlainText } from "@/lib/utils";
 import { ApiError } from "@/types/api";
 import { PageHeader } from "@/components/layout/page-header";
 import { Copy, Plus, Trash2, ToggleLeft, ToggleRight, UserPlus, Users } from "lucide-react";
@@ -42,6 +43,7 @@ export default function MembersPage() {
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [copyNote, setCopyNote] = useState<{ text: string; ok: boolean } | null>(null);
 
   // 创建邀请码表单
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -159,10 +161,17 @@ export default function MembersPage() {
     }
   };
 
-  const copyInviteLink = (code: string) => {
+  const copyInviteLink = async (code: string) => {
     const url = `${window.location.origin}/register?invite=${code}`;
-    navigator.clipboard.writeText(url);
-    alert("邀请链接已复制");
+    // 真实校验复制结果：微信 WebView 里 clipboard 可能静默失败，
+    // 不能像以前那样不管成没成功都弹"已复制"，否则老板粘贴出来是空的。
+    const ok = await copyPlainText(url);
+    setCopyNote(
+      ok
+        ? { text: "邀请链接已复制，去微信粘贴发给员工", ok: true }
+        : { text: `复制失败，请长按手动复制此链接：${url}`, ok: false }
+    );
+    window.setTimeout(() => setCopyNote(null), ok ? 2500 : 8000);
   };
 
   if (loading) {
@@ -207,6 +216,15 @@ export default function MembersPage() {
 
         {error && (
           <div className="rounded-xl bg-red-50 p-3 text-sm text-red-600">{error}</div>
+        )}
+        {copyNote && (
+          <div
+            className={`rounded-xl p-3 text-sm break-all ${
+              copyNote.ok ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-700"
+            }`}
+          >
+            {copyNote.text}
+          </div>
         )}
 
         {/* 手动添加成员表单 */}

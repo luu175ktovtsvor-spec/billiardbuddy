@@ -35,8 +35,10 @@ class ForbiddenException(AppException):
 
 
 class AIServiceError(AppException):
-    def __init__(self, message: str = "AI 生成服务暂时不可用"):
-        super().__init__(message, status_code=500)
+    def __init__(self, message: str = "AI 生成服务暂时不可用", status_code: int = 500):
+        # status_code 可透传上游分类（如 DeepSeek 余额不足 503 / 限流 429），
+        # 默认 500 保持原有泛化语义、向后兼容。
+        super().__init__(message, status_code=status_code)
 
 
 class AIProviderError(AppException):

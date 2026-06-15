@@ -440,13 +440,17 @@ async def get_conversation_detail(
     store_id: uuid.UUID,
     conversation_id: str,
 ) -> dict | None:
-    """获取对话详情（所有 generation 记录）。"""
+    """获取对话详情（所有 generation 记录）。非法 conversation_id 返回 None（端点转 404，不 500）。"""
+    try:
+        conv_uuid = uuid.UUID(conversation_id)
+    except (ValueError, TypeError):
+        return None
     stmt = (
         select(Generation)
         .where(
             Generation.store_id == store_id,
             Generation.type == "poster",
-            Generation.conversation_id == uuid.UUID(conversation_id),
+            Generation.conversation_id == conv_uuid,
             Generation.is_deleted == False,
         )
         .order_by(Generation.created_at)

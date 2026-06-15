@@ -19,6 +19,11 @@ class InvalidCredentialsError(AppException):
         super().__init__("手机号或密码错误", status_code=401)
 
 
+class InvalidInviteCodeError(AppException):
+    def __init__(self):
+        super().__init__("邀请码无效或已过期，请向管理员索取新的邀请码", status_code=400)
+
+
 async def register_user(
     db: AsyncSession, phone: str, password: str, name: str | None,
     invite_code: str | None = None,
@@ -44,17 +49,25 @@ async def register_user(
         )
         invitation = result.scalar_one_or_none()
 
-        if invitation and invitation.is_active:
-            now = datetime.now(timezone.utc)
-            if (not invitation.expires_at or invitation.expires_at > now) and \
-               (invitation.max_uses is None or invitation.use_count < invitation.max_uses):
-                member = StoreMember(
-                    store_id=invitation.store_id,
-                    user_id=user.id,
-                    role=invitation.role,
-                )
-                db.add(member)
-                invitation.use_count += 1
+        now = datetime.now(timezone.utc)
+        valid = (
+            invitation is not None
+            and invitation.is_active
+            and (not invitation.expires_at or invitation.expires_at > now)
+            and (invitation.max_uses is None or invitation.use_count < invitation.max_uses)
+        )
+        # 邀请码失效不能静默放过：否则会建出"未入店的孤儿号"，员工再自建店 → 脱离老板门店、
+        # 团队数据散架。此时整单注册失败回滚(未 commit → 不建号)，让员工拿新码重试。
+        if not valid:
+            raise InvalidInviteCodeError()
+
+        member = StoreMember(
+            store_id=invitation.store_id,
+            user_id=user.id,
+            role=invitation.role,
+        )
+        db.add(member)
+        invitation.use_count += 1
 
     await db.commit()
     await db.refresh(user)
