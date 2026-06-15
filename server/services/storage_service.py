@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from io import BytesIO
 from pathlib import Path
@@ -58,11 +59,21 @@ async def _upload_file(
         temp_path 是临时文件路径，final_filename 是最终文件名。
     """
     content = await file.read()
+    # Pillow 校验/转码/写盘是同步 CPU+IO，放线程池避免阻塞事件循环
+    # （多个上传并发时会卡住同 worker 的其他请求，含 SSE 流）。
+    return await asyncio.to_thread(
+        _process_and_save_image, content, file.filename, store_id, subdir
+    )
 
+
+def _process_and_save_image(
+    content: bytes, filename: str | None, store_id: uuid.UUID, subdir: str
+) -> tuple[str, Path, str]:
+    """同步：大小/类型校验 → Pillow verify/转 RGB/去 EXIF → 写临时文件。纯 CPU/IO，无 DB。"""
     if len(content) > MAX_FILE_SIZE:
         raise FileTooLargeError()
 
-    ext = Path(file.filename or ".jpg").suffix.lower()
+    ext = Path(filename or ".jpg").suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise InvalidFileTypeError()
 
@@ -86,13 +97,13 @@ async def _upload_file(
     upload_dir = Path(settings.upload_dir) / subdir
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    filename = f"{store_id}_{uuid.uuid4().hex}.jpg"
-    final_path = upload_dir / filename
-    temp_path = upload_dir / f"{filename}.tmp"
+    out_name = f"{store_id}_{uuid.uuid4().hex}.jpg"
+    final_path = upload_dir / out_name
+    temp_path = upload_dir / f"{out_name}.tmp"
 
     img.save(temp_path, "JPEG", quality=85)
 
-    url = f"/uploads/{subdir}/{filename}"
+    url = f"/uploads/{subdir}/{out_name}"
     return url, temp_path, str(final_path)
 
 

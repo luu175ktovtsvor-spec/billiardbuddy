@@ -55,6 +55,12 @@ def _get_api_size(ratio: str) -> str:
 _MAX_INPUT_IMAGES = 16
 
 
+def _save_png_as_jpeg(image_bytes: bytes, output_path_jpg) -> None:
+    """同步：把模型返回的 PNG 解码并以 JPEG 落盘。CPU 密集，由调用方经 to_thread 调用，
+    避免在生图回写阶段阻塞事件循环（拖慢同 worker 的其他请求/SSE）。"""
+    Image.open(io.BytesIO(image_bytes)).convert("RGB").save(output_path_jpg, "JPEG", quality=90)
+
+
 def _load_upload_bytes(path_str: str | None) -> bytes | None:
     """从 uploads 目录内安全加载图片字节；空/越界/不存在一律返回 None。"""
     if not path_str or ".." in path_str:
@@ -330,10 +336,9 @@ async def generate_images(
                     image=input_images if input_images else None,
                 )
 
-            # 保存图片（JPEG 格式，减小文件体积）
-            img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            # 保存图片（JPEG 格式，减小文件体积）；Pillow 解码+编码是同步 CPU，放线程池
             output_path_jpg = output_path.with_suffix(".jpg")
-            img.save(output_path_jpg, "JPEG", quality=90)
+            await asyncio.to_thread(_save_png_as_jpeg, image_bytes, output_path_jpg)
 
             poster_url = f"/uploads/posters/{output_path_jpg.name}"
             created_at = datetime.now(timezone.utc)

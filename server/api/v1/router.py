@@ -1,5 +1,9 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.deps import get_db
 from api.v1.auth import router as auth_router
 from api.v1.stores import router as stores_router
 from api.v1.generate import router as generate_router
@@ -56,5 +60,10 @@ router.include_router(reports_router, prefix="/reports", tags=["报表日报"])
 
 
 @router.get("/health")
-async def health_check():
-    return {"status": "ok"}
+async def health_check(db: AsyncSession = Depends(get_db)):
+    """真健康检查：探一次 DB。DB 不通返回 503，让外部拨测/探活能发现"进程活着但业务全挂"。"""
+    try:
+        await db.execute(text("SELECT 1"))
+    except Exception:
+        return JSONResponse({"status": "degraded", "db": "down"}, status_code=503)
+    return {"status": "ok", "db": "up"}
