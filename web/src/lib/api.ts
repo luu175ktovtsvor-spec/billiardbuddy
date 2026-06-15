@@ -37,7 +37,9 @@ class ApiClient {
       localStorage.setItem("access_token", token);
       if (typeof document !== "undefined") {
         const secure = window.location.protocol === "https:" ? "; Secure" : "";
-        document.cookie = `token=${token}; path=/; SameSite=Lax${secure}`;
+        // max-age 与 7 天 JWT 同寿命(604800s)。否则是会话级 cookie：微信 WebView 回收进程后
+        // cookie 即丢，而 middleware 只认这个 cookie → 已登录用户被误踢回登录页(微信第一天高频)。
+        document.cookie = `token=${token}; path=/; max-age=604800; SameSite=Lax${secure}`;
       }
     } else {
       localStorage.removeItem("access_token");

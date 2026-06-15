@@ -143,7 +143,8 @@ async def export_report(
     if gen is None:
         raise NotFoundException("报表记录不存在")
     schema = get_report_schema(gen.sub_type)
-    xlsx = render_report(schema, gen.input_params, gen.result)
+    # input_params 理论上总是 dict，但防早期/异常数据为 NULL 时 openpyxl 渲染崩成 500。
+    xlsx = render_report(schema, gen.input_params or {}, gen.result or "")
     fname = f"{gen.sub_type}_{gen.created_at:%Y%m%d}.xlsx"
     return StreamingResponse(
         io.BytesIO(xlsx),

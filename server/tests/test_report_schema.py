@@ -1,6 +1,7 @@
 """报表 schema 加载器纯逻辑单测（不依赖 DB）。"""
 import pytest
 
+from core.exceptions import NotFoundException
 from services.report_schema import get_report_schema
 
 
@@ -18,5 +19,8 @@ def test_field_source_tags_present():
 
 
 def test_unknown_report_raises():
-    with pytest.raises(KeyError):
+    # 未知 report_type 必须抛 NotFoundException(404)，而非 KeyError → 500。
+    # 日报 4 个端点共用 get_report_schema，URL 手滑/前端拼错 key 不能炸成 500。
+    with pytest.raises(NotFoundException) as exc:
         get_report_schema("does_not_exist")
+    assert exc.value.status_code == 404

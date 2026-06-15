@@ -283,10 +283,14 @@ async def delete_conversation(
     _perm: None = Depends(require_permission(Permission.GENERATION_DELETE)),
 ):
     """软删除整个对话的所有记录。"""
+    try:
+        conv_uuid = uuid.UUID(conversation_id)
+    except (ValueError, TypeError):
+        raise NotFoundException("对话不存在")
     await db.execute(
         update(Generation)
         .where(
-            Generation.conversation_id == uuid.UUID(conversation_id),
+            Generation.conversation_id == conv_uuid,
             Generation.store_id == current_store.id,
         )
         .values(is_deleted=True)

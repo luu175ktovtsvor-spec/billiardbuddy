@@ -66,7 +66,7 @@ async def run_generation(
         else:
             response = await ProviderFactory.get_text_provider().generate(request)
     except AIProviderError as e:
-        raise AIServiceError(e.message) from e
+        raise AIServiceError(e.message, status_code=e.status_code) from e
     except AIServiceError:
         raise
     except Exception as e:
@@ -387,7 +387,7 @@ async def generate_copywriting(
     try:
         response = await provider.generate(request)
     except AIProviderError as e:
-        raise AIServiceError(e.message) from e
+        raise AIServiceError(e.message, status_code=e.status_code) from e
     except Exception as e:
         raise AIServiceError("AI 生成服务暂时不可用，请稍后重试") from e
 
@@ -458,7 +458,7 @@ async def generate_activity(
     try:
         response = await provider.generate(request)
     except AIProviderError as e:
-        raise AIServiceError(e.message) from e
+        raise AIServiceError(e.message, status_code=e.status_code) from e
     except Exception as e:
         raise AIServiceError("AI 生成服务暂时不可用，请稍后重试") from e
 
@@ -535,7 +535,7 @@ async def generate_operation(
     try:
         response = await provider.generate(request)
     except AIProviderError as e:
-        raise AIServiceError(e.message) from e
+        raise AIServiceError(e.message, status_code=e.status_code) from e
     except Exception as e:
         raise AIServiceError("AI 生成服务暂时不可用，请稍后重试") from e
 
@@ -670,7 +670,7 @@ async def generate_workbench(
     try:
         response = await provider.generate(request)
     except AIProviderError as e:
-        raise AIServiceError(e.message) from e
+        raise AIServiceError(e.message, status_code=e.status_code) from e
     except Exception as e:
         raise AIServiceError("AI 生成服务暂时不可用，请稍后重试") from e
 

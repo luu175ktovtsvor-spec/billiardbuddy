@@ -6,6 +6,8 @@ from pathlib import Path
 
 import yaml
 
+from core.exceptions import NotFoundException
+
 _FORMS_DIR = Path(__file__).resolve().parent.parent / "report_forms"
 _REQUIRED = ("key", "shape")
 _SHAPES = ("flat", "roster", "personal")
@@ -28,10 +30,16 @@ def _load_all() -> dict[str, dict]:
 
 
 def get_report_schema(report_type: str) -> dict:
-    """按 key 取一张表的 schema；未知 key 抛 KeyError。"""
+    """按 key 取一张表的 schema；未知 key 抛 NotFoundException(404)。
+
+    日报 submit/extract/export 三处端点共用本函数，report_type 来自 URL 路径参数。
+    未知 key 若抛 KeyError 会落到全局兜底 → 500"服务器内部错误"，故显式转 404。
+    """
     global _registry
     if _registry is None:
         _registry = _load_all()
+    if report_type not in _registry:
+        raise NotFoundException("没有这张报表")
     return _registry[report_type]
 
 
