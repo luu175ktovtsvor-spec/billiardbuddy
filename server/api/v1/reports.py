@@ -7,7 +7,7 @@ import asyncio
 import io
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +26,7 @@ from schemas.report import (
     ReportListItem,
     ReportResponse,
 )
+from services.memory_service import learn_in_background
 from services.report_excel import render_report
 from services.report_schema import get_report_schema
 from services.report_service import extract_report_data, generate_report
@@ -103,9 +104,16 @@ async def submit_report(
     user: Annotated[User, Depends(get_current_user)],
     store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    background: BackgroundTasks,
     _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
 ):
     gen = await generate_report(db, store, user, report_type, payload.data, payload.note)
+    # 店脑：店主在日报里手写的 note 是真实经营事实（"周三会员日效果好""大客户充了5000"），
+    # 比工作台的需求句信息量更高。后台异步喂进店脑学习（与生成路径一致：失败静默、不计配额、
+    # 有咨询锁+整合+上限护栏）。过短的 note（"无"/"好"）不学，避免噪声。
+    note = (payload.note or "").strip()
+    if len(note) >= 6:
+        background.add_task(learn_in_background, str(store.id), note)
     return ReportResponse(
         report_id=str(gen.id),
         narrative=gen.result,
