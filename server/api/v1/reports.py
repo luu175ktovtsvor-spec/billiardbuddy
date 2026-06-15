@@ -3,6 +3,7 @@
 复用 generations 表（type="report"）。导出端点用 /{report_id}/export 后缀，避开
 GET /{report_type} 的路径冲突。
 """
+import asyncio
 import io
 from typing import Annotated
 
@@ -144,7 +145,8 @@ async def export_report(
         raise NotFoundException("报表记录不存在")
     schema = get_report_schema(gen.sub_type)
     # input_params 理论上总是 dict，但防早期/异常数据为 NULL 时 openpyxl 渲染崩成 500。
-    xlsx = render_report(schema, gen.input_params or {}, gen.result or "")
+    # openpyxl 构建 Workbook 是同步 CPU（roster 多 sheet 可达数百 ms），放线程池避免阻塞事件循环。
+    xlsx = await asyncio.to_thread(render_report, schema, gen.input_params or {}, gen.result or "")
     fname = f"{gen.sub_type}_{gen.created_at:%Y%m%d}.xlsx"
     return StreamingResponse(
         io.BytesIO(xlsx),

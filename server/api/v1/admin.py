@@ -26,13 +26,18 @@ def require_admin(user: User):
         raise HTTPException(status_code=403, detail="需要管理员权限")
 
 
-def _add_months(start: datetime, months: int) -> datetime:
+def _add_months(start: datetime, months: int, anchor_day: int | None = None) -> datetime:
     """按**自然月**推进到期时间：3月5日 + 2 月 = 5月5日（而非 30 天×月数 = 5月4日）。
-    纯标准库实现（不引第三方依赖）；月末自动钳制：1月31日 + 1 月 = 2月28/29日。"""
+    纯标准库实现（不引第三方依赖）；月末自动钳制：1月31日 + 1 月 = 2月28/29日。
+
+    anchor_day：续费锚点。续费若以"上次（已被钳制的）到期日"为基推进，1月31签约会
+    退化成 2-28→3-28→… 每月稳定少几天、回不到月底。传 anchor_day=签约日(current_period_start.day)
+    可让到期日每月按"原签约日，按月长钳制"对齐（31→2月28→3月31→4月30…），不再累积丢天。
+    默认 None=用 start.day（保持原行为，向后兼容）。"""
     m = start.month - 1 + months
     year = start.year + m // 12
     month = m % 12 + 1
-    day = min(start.day, calendar.monthrange(year, month)[1])
+    day = min(anchor_day if anchor_day is not None else start.day, calendar.monthrange(year, month)[1])
     return start.replace(year=year, month=month, day=day)
 
 
@@ -447,7 +452,10 @@ async def renew_subscription(
     now = datetime.now(timezone.utc)
     # 未过期=在原到期日上续；已过期=从今天起算（实现"8月6号过期后续费→9月6号到期"）
     base = sub.current_period_end if sub.current_period_end > now else now
-    sub.current_period_end = _add_months(base, months)
+    # 未过期续费锚定"原签约日"(current_period_start.day，续费时不变)，避免 1月31签约被
+    # 月末钳制后退化成永远 28 号、每月丢天；已过期从今天起算则锚到今天。
+    anchor_day = sub.current_period_start.day if sub.current_period_end > now else now.day
+    sub.current_period_end = _add_months(base, months, anchor_day=anchor_day)
     sub.status = "active"
     # payment_amount/payment_note 仅作"最近一笔"展示；历史收款进流水表，统计不再失真
     sub.payment_note = payment_note
