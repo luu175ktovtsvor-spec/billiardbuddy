@@ -31,9 +31,10 @@ class StoreSubscription(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     store_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("stores.id"), unique=True, nullable=False, index=True)
     plan_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("plans.id"), nullable=False)
-    # ⚠️ status 是"死字段"：没有任何定时任务把过期订阅置为非 active，过期后它仍停在 "active"。
-    # 是否有效一律按 current_period_end > now 实时计算（见 quota.py / admin.py 收入统计）。
-    # 新代码切勿直接信 status == "active" 判断订阅有效，否则会把过期户当有效户。
+    # status：到期降级 cron(server/scripts/expire_subscriptions.py，每小时)会把过期订阅置 "expired"。
+    # 但 cron 最长有 1 小时延迟窗，且"无订阅的店"根本没有此行——故判断订阅是否有效仍以
+    # current_period_end > now 实时计算为准(见 quota.py / admin.py)，status 只作展示/统计辅助，
+    # 不要单独依赖 status == "active" 判定有效。
     status: Mapped[str] = mapped_column(String(20), default="active")
     current_period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     current_period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
