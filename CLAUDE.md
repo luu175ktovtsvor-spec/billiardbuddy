@@ -111,7 +111,7 @@
 
 **尺寸**：gpt-image-2 接受**任意分辨率**，约束：单边 ≤3840px、两边均为 16 的倍数、长短边比 ≤3:1、总像素 655,360～8,294,400（来源 `developers.openai.com/api/docs/guides/image-generation`）。本项目 `SIZE_MAP` 四档**均合规且比例精确**：`1:1→1024×1024` / `3:4→1152×1536` / `9:16→1152×2048` / `16:9→2048×1152`。
 
-**质量**：`low`/`medium`/`high`/`auto`(默认)。前端 `QUALITY_OPTIONS` 提供 low/medium/high，对话默认值 `auto`（由模型自选，成本不定、可能落到 high）。
+**质量**：`low`/`medium`/`high`（**已去 `auto`**）。前端 `QUALITY_OPTIONS` 提供 low/medium/high，对话默认 `medium`（成本可控；后端 `poster_service` 把任何非 low/medium/high 的传入值一律降级为 medium）。
 
 **每张计费**（gpt-image-2 官方表，**只对"实际生成的图"计费**，被 429 拒绝不计；来源 image-generation 指南 #calculating-costs）：
 
@@ -124,7 +124,7 @@
 - 我们的 **`1:1`=1024×1024 与上表完全对应**：Low $0.006 / Med $0.053 / High **$0.211**。
 - `3:4`/`9:16`/`16:9` 是更大的自定义尺寸（1152×1536≈1.77M px；1152×2048、2048×1152≈2.36M px），比上表竖/横列略贵，**精确值用官方[计费计算器](https://developers.openai.com/api/docs/guides/image-generation#calculating-costs)**；量级估算：High ≈ $0.18–0.25/张、Medium ≈ $0.045–0.07/张、Low ≈ $0.006–0.008/张。
 - token 费率（gpt-image-2 标准价、非 Batch）：文本输入 $8 / 缓存输入 $2 / **图像输出 $30**（均每 1M tokens）。Batch 减半。
-- ⚠️ **high 比 low 贵约 30–40 倍**（同尺寸 $0.006 vs $0.211）。海报草稿先 low/medium、定稿再 high；默认 `auto` 会让模型自己挑、成本不可控，成本敏感场景建议显式给 quality。>2K(2560×1440) 属实验性。
+- ⚠️ **high 比 low 贵约 30–40 倍**（同尺寸 $0.006 vs $0.211）。海报草稿先 low/medium、定稿再 high；默认已固定 `medium`（成本可控），不再有 `auto`。>2K(2560×1440) 属实验性。
 
 ## 项目结构
 
@@ -158,7 +158,7 @@ web/                    # Next.js 前端
 
 server/                 # FastAPI 后端
   api/v1/
-    router.py           # 路由注册（21 个子路由）
+    router.py           # 路由注册（25 个子路由）
     auth.py             # 认证（注册/登录/刷新）
     stores.py           # 门店 CRUD
     generate.py         # 内容生成（文案/活动/经营）
@@ -181,10 +181,9 @@ server/                 # FastAPI 后端
     performance.py      # 绩效考核
     diagnosis.py        # 经营诊断
   core/
-    security.py         # JWT 认证（HS256，24小时有效期）
+    security.py         # JWT 认证（HS256，7 天有效期）
     rbac.py             # RBAC 权限矩阵（6个角色 × 10+权限）
     tenant.py           # 租户隔离（contextvars + SQLAlchemy 事件）
-    quota.py            # 配额检查
     exceptions.py       # 自定义异常
   models/
     user.py             # 用户模型
@@ -211,7 +210,7 @@ server/                 # FastAPI 后端
     quota_service.py    # 配额管理
     storage_service.py  # 文件上传存储
   prompts/
-    knowledge/          # 38 个行业知识 YAML
+    knowledge/          # 43 个行业知识 YAML
     rules/              # 角色规则 + 客户规则
     operation/          # 运营场景 prompt
     copywriting/        # 文案 prompt
@@ -224,7 +223,7 @@ server/                 # FastAPI 后端
 ## 核心架构原则
 
 1. **场景卡片为主 + 自由对话为辅（2026-06-13 用户拍板调整）** — 岗位工作台场景卡片仍是主路径；新增独立对话入口 `/dashboard/chat`（DeepSeek 式对话），走同一条 free_intent 生成管道：门店画像、行业知识库、合规过滤、配额、落库全部生效，不是裸聊大模型
-2. **门店数据隔离** — 所有业务数据绑定 `store_id`，通过 `core/tenant.py` 自动过滤（contextvars + do_orm_execute 事件监听器），fail-safe 设计
+2. **门店数据隔离** — 业务数据绑定 `store_id`。`core/tenant.py`（contextvars + do_orm_execute 事件 + fail-safe）⚠️**自动过滤当前实际只覆盖 `generations` / `usage_quotas`**；`store_subscriptions`/`store_memories`/`collab_tasks`/`store_members`/`store_invitations` 等带 store_id 的表**无自动兜底、靠各处手写 `.where(store_id==)`**——新增对它们的查询务必显式带 store_id，漏写 = 静默跨店泄露（详见 `docs/耦合地图与改动检查清单.md`）
 3. **统一 RBAC 权限** — 通过 `core/rbac.py` 的权限矩阵 + `require_permission()` 依赖工厂实现集中式权限控制，6 个角色各有不同权限
 4. **AI Provider 抽象** — 文本模型和图片模型各有独立抽象基类（`TextProvider` / `ImageProvider`），通过 `ProviderFactory` 创建实例
 5. **Prompt 模板与业务解耦** — Prompt 存放在 `server/prompts/` 下的 YAML 文件中，支持 `{variable}` 占位符
@@ -261,11 +260,11 @@ server/                 # FastAPI 后端
 - API 版本前缀 `/api/v1/`
 - 请求/响应模型用 Pydantic v2 的 `BaseModel`
 - 数据库操作用 async SQLAlchemy
-- 认证用 JWT（access token，24小时有效期），密码用 bcrypt 哈希
+- 认证用 JWT（access token，7 天有效期），密码用 bcrypt 哈希
 - 文件上传存**项目根目录** `uploads/`（config.py 默认 `<项目根>/uploads`；`server/uploads/` 是历史遗留死目录，勿用。服务器 .env 如设 UPLOAD_DIR 必须用绝对路径）
 - AI 调用结果写入 `generations` 表，记录 prompt、model、tokens
 - PromptEngine 是单例，通过 `get_prompt_engine()` 获取，不要直接 `PromptEngine()`
-- Knowledge YAML 必须有 `template:` 和 `key:` 字段，否则 PromptEngine 加载会报错
+- Knowledge/模板 YAML 必须有 `key:`；渲染类模板还需 `template:`（缺 template 是在 `render()` 时 KeyError，**不是加载期**）。⚠️ 加载器**故意宽松**（凡有 `key` 即登记）——因 fewshots/预设模板库等是 `templates:`/`examples:` 等不同结构，**切勿在加载器加“必须有 template”的校验**，会把这些非渲染条目从 `_templates` 误删（已踩过、已回滚）
 - 所有 Generation 查询必须加 `is_deleted == False` 过滤
 
 ### Prompt 模板
@@ -343,7 +342,7 @@ journalctl -u billiards-backend -n 50 --no-pager
 |------|------|
 | 用户注册/登录（手机号+密码） | ✅ |
 | 门店资料管理（运营画像，分步向导 + 全部编辑） | ✅ |
-| Prompt 引擎（YAML 模板，41 个 knowledge） | ✅ |
+| Prompt 引擎（YAML 模板，43 个 knowledge） | ✅ |
 | 岗位工作台（6 角色 × 82 张卡片，SSE 流式输出） | ✅ |
 | 文案生成（朋友圈/群公告/活动/日报） | ✅ |
 | 海报生成（gpt-image-2 + Logo/二维码直传 AI + 二次调整） | ✅ |
@@ -367,7 +366,7 @@ journalctl -u billiards-backend -n 50 --no-pager
 | 品牌风格选择（卡片式选择器，影响 AI 语气） | ✅ |
 | 生图"基于此调整"（refine_from 以图生图） | ✅ |
 | 生图 Logo/二维码多图直传 AI（最多 16 张） | ✅ |
-| 对话历史截断（只保留最近 3 轮） | ✅ |
+| 对话历史截断（只保留最近 5 轮） | ✅ |
 | 服务器部署（git + deploy_us.sh + SSL） | ✅ |
 | 生产域名（zzyppz.cn + HTTPS） | ✅ |
 | 业务时区单一来源（core/timezone.py，"今天"一律北京时间） | ✅ |
@@ -390,7 +389,7 @@ journalctl -u billiards-backend -n 50 --no-pager
 | 店脑·AI记忆中枢（第一版）：生成/对话后台异步从用户输入抽取门店记忆→整合(改价更新不重复)→存`store_memories`；生成前注入 prompt 末尾(冲突以店脑为准)→越用越懂这家店；`/dashboard/store-brain`「AI眼里的你的店」可看/改/删(人在环)。memory_service + golden验收套件 `tests/eval_store_brain.py`(真实DeepSeek 5/5)。后台学习不计配额。生产加固：并发安全(每店 pg_advisory_xact_lock 防丢记忆)+ 防膨胀上限(情景25/总150)。详见 docs/product-brain/店脑-AI记忆中枢-架构与成本.md | ✅ |
 | 海报独立额度池（migration 018）：海报不再与文案共用次数池，单独计数/限额(`monthly_poster_limit`/`monthly_posters_used`)；套餐 `poster_limit` 开通时同步、单店可调；生图前 `check_poster_quota` 校验、用尽走 429 提额引导；前端 QuotaBadge `mode="poster"` 单独显示"剩余N/M张(生图较耗额度)"。同时堵住免费版白嫖高清海报漏洞。比例尺寸修复：3:4→1152×1536、9:16→1152×2048、16:9→2048×1152、1:1→1024×1024(旧值全错且3:4与9:16撞同图) | ✅ |
 | 管理后台权限模型（2026-06-14 定稿）：唯一管理员 = 老板本人账号 `is_admin`（既当普通客户端、有门店进 /dashboard 体验与普通用户一致，又能访问主域名 `/admin` 进后台）；客户端零管理入口（is_admin 仅影响登录跳转：无门店的纯 admin→/admin，有门店→/dashboard）。后台「用户管理→调整配额」给任意用户设文案/海报额度即时生效（`monthly_tokens_limit` 封顶 2e9 防溢出）。`scripts/manage_admin.py` 保留作应急授/撤管理员。曾试"专用超管号+8443独立端口"已撤销，详见 docs/耦合地图与改动检查清单.md | ✅ |
-| 会员生命周期自动化（2026-06-14）：到期时间按**自然月**（3月5开2月=5月5，纯标准库 `_add_months`）；开通改 **UPSERT**（一店一订阅行，再开通/换档位从今天起算、不撞唯一约束）；续费**刷回该档位配额**（修过期降级后续费不恢复额度）；**到期自动降级** `scripts/expire_subscriptions.py` + 每小时 cron（过期订阅置 expired + 配额降回试用30/3，只动有过期订阅的店、无订阅/手动不限额账号不碰）。续费过期后从今天起算 | ✅ |
+| 会员生命周期自动化（2026-06-14）：到期时间按**自然月**（3月5开2月=5月5，纯标准库 `_add_months`）；开通改 **UPSERT**（一店一订阅行，再开通/换档位从今天起算、不撞唯一约束）；续费**刷回该档位配额**（修过期降级后续费不恢复额度）；**到期自动降级** `server/scripts/expire_subscriptions.py` + 每小时 cron（过期订阅置 expired + 配额降回试用30/3，只动有过期订阅的店、无订阅/手动不限额账号不碰）。续费过期后从今天起算 | ✅ |
 | 缴费/会员历史（migration 019）：`subscription_payments` 加 `plan_name`（快照缴费当时档位）；开通/续费写入；用户详情接口返回 `payment_history`（逐笔：日期/档位/开通或续费/金额，倒序）；前端「用户管理→详情」展示"缴费/会员历史"。到期降级不删流水，历史永久可查 | ✅ |
 | 运营日报自动化（2026-06-14 上线）：4 张岗位日报——店长/前厅(flat)、教练主/副(personal·今日/本月累计)、助教管理(roster·按时长排名+明细/排名/播报三 sheet)；**填表或「说一句话」**(自然语言→DeepSeek JSON 抽取字段预填)→ AI 写叙事(**注入店脑记忆**"懂这家店"·环比对比前一天·喂中文 label 防 AI 把助教叫教练)→ **导出 Excel**(openpyxl)。配置化引擎(`server/report_forms/*.yaml` 一表一 YAML，前端按 shape 三态渲染)+ `reports.py` API + 复用 generations 表**零迁移**(走 run_generation 配额/落库)。配套：今日推荐"日报没写"信号(写过当天不催)、老板今日交付状态(`/reports/today-status`)、落地页式使用指南(`/dashboard/guide` + 侧栏/抽屉/首次弹窗入口)。**铁律：不重做收银系统**——POS 字段(营业额/上钟数)标"收银系统看"只瞄一眼填，主收"运营动作数据"(加微/约客/转化等 POS 采不到的)。详见 `docs/product-brain/运营日报自动化-设计.md` | ✅ |
 | 生图模块重构 + 并发限流加固（2026-06-15 上线 `b4d130f`）：生图前端整页重写——一句话描述框 + 背景来源(AI生成/上传门店照优化) + 结构化「要写的字」 + 手动 Logo/二维码 + DeepSeek 扩写引擎(大白话→提示词、可预览改) + 落地式新手引导，替代旧场景卡片/风格预设；**并发限流防烧钱**：生图读超时 300→900s、`max_retries=0`、全局信号量 `poster_max_concurrency=4`、每用户单张在跑、强制 `count=1`(详见「AI 并发与限流」)；部署加固：`deploy_us.sh` 并入前端 build+cp+冒烟自检(防 standalone 缺 static 白屏) | ✅ |
@@ -399,7 +398,7 @@ journalctl -u billiards-backend -n 50 --no-pager
 
 产品大脑文档在 `docs/product-brain/`。
 
-核心知识模块（41 个 knowledge YAML）：
+核心知识模块（43 个 knowledge YAML）：
 - **每日工作流程** (`daily_workflow.yaml`) — 6 个角色的每日工作流 + 5 个延伸场景
 - **岗位专属流程** (`daily_workflow_manager/coach/frontdesk/assistant_manager.yaml`) — 4个岗位独立流程
 - **核心运营逻辑** (`core_operations.yaml`) — 四大客户分类、岗位协作、定价铁律
