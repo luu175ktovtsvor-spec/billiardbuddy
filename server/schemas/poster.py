@@ -16,7 +16,7 @@ class ImageGenerateRequest(BaseModel):
     add_store_info: bool = Field(default=False, description="是否在 prompt 中注入门店信息")
     no_text: bool = Field(default=False, description="是否禁止 AI 生成文字")
     conversation_id: str | None = Field(default=None, description="对话 ID，用于多轮对话")
-    quality: str = Field(default="auto", description="图片质量：low(草稿) / medium(标准) / high(高清) / auto(自动)")
+    quality: str = Field(default="medium", description="图片质量：low(草稿) / medium(标准·默认) / high(高清·最贵)；不再用 auto(成本不可控)")
     # ── 生图重构（新增，全部可选，向后兼容）──
     image_prompt: str | None = Field(default=None, description="已扩写的最终提示词（前端可改后回传）；为空则用 prompt 原文")
     poster_text: dict | None = Field(default=None, description="要写在图上的结构化文字 {title, lines[], contact}")

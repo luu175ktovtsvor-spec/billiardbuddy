@@ -154,7 +154,7 @@ async def generate_images(
     add_store_info: bool = False,
     no_text: bool = False,
     conversation_id: str | None = None,
-    quality: str = "auto",
+    quality: str = "medium",
     image_prompt: str | None = None,
     poster_text: dict | None = None,
     background_mode: str = "ai_generate",
@@ -297,6 +297,8 @@ async def generate_images(
         has_qr=qr_bytes is not None,
     )
 
+    # 质量收敛到三档：去掉 auto(让模型自挑→成本不可控)；非法/空值一律按 medium
+    quality = quality if quality in ("low", "medium", "high") else "medium"
     size = _get_api_size(ratio)
     logger.info("AI 生图: ratio=%s, count=%d, base=%s, refs=%d, conversation=%s",
                 ratio, count, bool(base_image), len(ref_bytes), bool(conv_uuid))
