@@ -486,18 +486,3 @@ def get_size_options() -> list[dict]:
         {"value": "9:16", "label": "9:16 手机全屏", "desc": "短视频封面/抖音竖屏"},
         {"value": "16:9", "label": "16:9 横版", "desc": "公众号封面/视频封面"},
     ]
-
-
-# 「看看能做成什么样」示例：idea_text 可一键"参考思路"填进描述框；image_url 待补成品图
-SHOWCASE_EXAMPLES = [
-    {"idea_text": "周五晚上抢一大战，图上写「报名费10元、赢家拿奖金」，要热血电竞风", "image_url": None},
-    {"idea_text": "中式八球周赛报名海报，写「每周五19点开赛，群里接龙报名」，专业赛场感", "image_url": None},
-    {"idea_text": "充值送活动，写「充500送100，仅限本周」，高端金色质感", "image_url": None},
-    {"idea_text": "助教招聘，写「底薪+高提成、日结、免费培训、微信XXX」，年轻有活力", "image_url": None},
-    {"idea_text": "世界杯决赛看球夜，写「今晚8点大屏看球，啤酒小吃管够」，热闹氛围", "image_url": None},
-    {"idea_text": "用我们店的实拍照做一张春节活动海报，喜庆红金、灯笼氛围", "image_url": None},
-]
-
-
-def get_showcase_examples() -> list[dict]:
-    return SHOWCASE_EXAMPLES

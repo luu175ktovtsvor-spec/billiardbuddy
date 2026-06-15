@@ -1,48 +1,35 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import {
-  X,
-  ImageIcon,
-  Sparkles,
-  Upload,
-  Layers,
-  Type,
-  Palette,
-  RefreshCw,
-} from "lucide-react";
-import { api } from "@/lib/api";
-import type { ShowcaseExample } from "@/types/poster";
+import { X, ImageIcon, Sparkles, Upload, Type, Palette, RefreshCw } from "lucide-react";
 
 interface PosterIntroProps {
   open: boolean;
   onClose: () => void;
-  /** 点示例「参考这张思路」→ 把 idea 文本回填到主界面描述框 */
-  onPickIdea: (ideaText: string) => void;
 }
 
+// 不给"套模板"，只告诉用户具体怎么填、能做什么。
 const STEPS = [
   {
     icon: Type,
     title: "用大白话说清楚",
-    desc: "做什么 + 图上想写什么字 + 想要什么感觉，越具体越好。比如「周末双人台费 5 折活动，写上时间和电话，热血电竞风」。",
+    desc: "做什么海报 + 图上要写哪些字 + 想要什么感觉。比如「招助教，写上待遇和电话，温馨有活力」——说得越具体，出得越准。",
   },
   {
     icon: Upload,
-    title: "想用自家店的照片？",
-    desc: "可以上传门店实拍照，让 AI 在你的真实场景上加工出图，比纯生成更有「就是这家店」的感觉。",
+    title: "想用自家店照片、放 Logo / 二维码？",
+    desc: "可以上传门店实拍照，让 AI 在你的真实场景上加工；也能传 Logo、二维码，AI 会清晰地画进图里。",
   },
   {
-    icon: Layers,
-    title: "一次出多张",
-    desc: "AI 一次能给你几张不同方案，挑一张你最满意的接着用，不用一遍遍重做。",
+    icon: Sparkles,
+    title: "系统帮你优化，选清晰度出图",
+    desc: "开着「AI 帮我优化描述」，系统会把你的大白话变成更专业的绘图描述（可改）；再选草稿 / 标准 / 高清，点出图就行。",
   },
 ];
 
 const TIPS = [
   {
     icon: Sparkles,
-    text: "把活动时间、价格、联系方式写清楚，AI 才会把这些字准确画进图里。",
+    text: "活动时间、价格、联系方式写清楚，AI 才能把这些字准确画进图里。",
   },
   {
     icon: Palette,
@@ -54,39 +41,8 @@ const TIPS = [
   },
 ];
 
-export function PosterIntro({ open, onClose, onPickIdea }: PosterIntroProps) {
-  const [examples, setExamples] = useState<ShowcaseExample[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    setLoading(true);
-    api
-      .listPosterShowcase()
-      .then((res) => {
-        if (cancelled) return;
-        setExamples(res.examples || []);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setExamples([]);
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open]);
-
+export function PosterIntro({ open, onClose }: PosterIntroProps) {
   if (!open) return null;
-
-  const handlePick = (ideaText: string) => {
-    onPickIdea(ideaText);
-    onClose();
-  };
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-[#F2F2F7] pb-28 lg:pb-32">
@@ -100,7 +56,7 @@ export function PosterIntro({ open, onClose, onPickIdea }: PosterIntroProps) {
             用一句话，做出台球房海报
           </h1>
           <p className="mt-1.5 text-[15px] leading-relaxed text-slate-500">
-            描述你想要的，AI 帮你出图——活动海报、节日海报、招聘都行。
+            活动海报、节日海报、招聘海报，或用你的门店照做图——把要的说清楚，AI 帮你出。
           </p>
         </div>
         <button
@@ -114,64 +70,8 @@ export function PosterIntro({ open, onClose, onPickIdea }: PosterIntroProps) {
       </div>
 
       <div className="mx-auto max-w-2xl px-4">
-        {/* 看看能做成什么样 */}
-        <section className="mt-2">
-          <h2 className="mb-3 text-[17px] font-bold text-slate-900">看看能做成什么样</h2>
-
-          {loading ? (
-            <div className="grid grid-cols-2 gap-3">
-              {[0, 1].map((i) => (
-                <div
-                  key={i}
-                  className="aspect-[3/4] animate-pulse rounded-2xl bg-slate-200/70"
-                />
-              ))}
-            </div>
-          ) : examples.length === 0 ? (
-            <div className="rounded-2xl bg-white p-6 text-center text-[15px] text-slate-400">
-              示例图即将上线
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-3">
-              {examples.map((ex, i) => (
-                <div
-                  key={i}
-                  className="flex flex-col overflow-hidden rounded-2xl bg-white shadow-sm"
-                >
-                  {ex.image_url ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={api.resolveUrl(ex.image_url)}
-                      alt={ex.idea_text}
-                      className="aspect-[3/4] w-full object-cover"
-                      loading="lazy"
-                    />
-                  ) : (
-                    <div className="flex aspect-[3/4] w-full flex-col items-center justify-center gap-2 bg-slate-100 px-3 text-center">
-                      <ImageIcon className="h-7 w-7 text-slate-300" />
-                      <span className="text-[13px] text-slate-400">示例图即将上线</span>
-                    </div>
-                  )}
-                  <div className="flex flex-1 flex-col gap-2 p-3">
-                    <p className="line-clamp-2 text-[13px] leading-relaxed text-slate-600">
-                      {ex.idea_text}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => handlePick(ex.idea_text)}
-                      className="mt-auto h-9 rounded-xl bg-brand-50 text-[13px] font-medium text-brand-600 active:scale-[0.98] active:bg-brand-100"
-                    >
-                      参考这张思路
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
         {/* 三步就能出图 */}
-        <section className="mt-7">
+        <section className="mt-2">
           <h2 className="mb-3 text-[17px] font-bold text-slate-900">三步就能出图</h2>
           <div className="space-y-3">
             {STEPS.map((step, i) => (
@@ -184,9 +84,7 @@ export function PosterIntro({ open, onClose, onPickIdea }: PosterIntroProps) {
                 </div>
                 <div className="min-w-0 flex-1">
                   <h3 className="flex items-center gap-1.5 text-[15px] font-semibold text-slate-900">
-                    <span className="text-[13px] font-bold text-brand-600">
-                      {i + 1}.
-                    </span>
+                    <span className="text-[13px] font-bold text-brand-600">{i + 1}.</span>
                     {step.title}
                   </h3>
                   <p className="mt-1 text-[14px] leading-relaxed text-slate-500">
@@ -208,9 +106,7 @@ export function PosterIntro({ open, onClose, onPickIdea }: PosterIntroProps) {
                 className="flex items-start gap-3 rounded-2xl bg-white p-4 shadow-sm"
               >
                 <tip.icon className="mt-0.5 h-5 w-5 shrink-0 text-brand-600" />
-                <p className="text-[14px] leading-relaxed text-slate-600">
-                  {tip.text}
-                </p>
+                <p className="text-[14px] leading-relaxed text-slate-600">{tip.text}</p>
               </div>
             ))}
           </div>
