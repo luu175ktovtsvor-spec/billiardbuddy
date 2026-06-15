@@ -19,7 +19,7 @@ export interface ImageGenerateRequest {
   add_store_info?: boolean;
   no_text?: boolean;
   conversation_id?: string;
-  quality?: "low" | "medium" | "high" | "auto";
+  quality?: "low" | "medium" | "high";
   // 生图重构（新增，可选）
   image_prompt?: string;
   poster_text?: PosterText;
