@@ -185,12 +185,6 @@ async def list_image_models(_user: User = Depends(get_current_user)):
     return {"models": [{"id": "gpt-image-2", "name": "GPT Image 2"}]}
 
 
-@router.get("/inspiration-tags")
-async def list_inspiration_tags(_user: User = Depends(get_current_user)):
-    """返回场景灵感标签列表。"""
-    return {"tags": poster_service.get_inspiration_tags()}
-
-
 @router.get("/size-options")
 async def list_size_options(_user: User = Depends(get_current_user)):
     """返回可选的图片比例列表。"""

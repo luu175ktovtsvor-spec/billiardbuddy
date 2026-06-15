@@ -67,13 +67,6 @@ export interface ImageGenerateResponse {
   conversation_id?: string;
 }
 
-export interface InspirationTag {
-  key: string;
-  label: string;
-  prompt: string;
-  category?: string;
-}
-
 export interface SizeOption {
   value: string;
   label: string;
