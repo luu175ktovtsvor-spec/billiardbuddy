@@ -47,7 +47,7 @@ class OpenAIImageProvider(ImageProvider):
         prompt: str,
         model: str = "gpt-image-2",
         size: str = "1024*1024",
-        quality: str = "auto",
+        quality: str = "medium",
         image: bytes | list[bytes] | None = None,
         **kwargs,
     ) -> bytes:

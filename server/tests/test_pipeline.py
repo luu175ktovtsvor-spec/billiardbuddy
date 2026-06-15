@@ -298,6 +298,16 @@ def test_poster_text_injected_when_no_expand():
     assert "_format_poster_text" in src, "未扩写路径没有注入 poster_text，要写的字会丢"
 
 
+def test_poster_quality_three_tiers_no_auto():
+    """生图质量收敛到三档(low/medium/high)、去掉 auto(成本不可控)、默认 medium。"""
+    import inspect as _inspect
+    from services import poster_service
+    from schemas.poster import ImageGenerateRequest
+    assert ImageGenerateRequest.model_fields["quality"].default == "medium", "schema 默认应为 medium、不再是 auto"
+    src = _inspect.getsource(poster_service.generate_images)
+    assert '("low", "medium", "high")' in src, "未把 quality 收敛到三档(去 auto)"
+
+
 def test_admin_routes_single_prefix():
     """路由回归：admin 必须挂在 /admin/* 而非 /admin/admin/*（双前缀曾让整个管理后台 404）。"""
     from api.v1.router import router as v1_router

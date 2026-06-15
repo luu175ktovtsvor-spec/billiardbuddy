@@ -45,7 +45,7 @@ interface ConversationState {
   messages: ConversationMessage[];
   refineFrom: string | null;
   ratio: string;
-  quality: "low" | "medium" | "high" | "auto";
+  quality: "low" | "medium" | "high";
   /** 参考图对整个对话持续有效，每轮全量随请求发送（可随时移除） */
   references: Array<{ path: string; preview: string }>;
   addStoreInfo: boolean;
@@ -66,11 +66,11 @@ interface UploadedAsset {
   preview: string;
 }
 
+// 三档明价（gpt-image-2 官方每张价，1024² 参考）：去掉"自动"——它让模型自挑、成本不可控。
 const QUALITY_OPTIONS = [
-  { value: "low", label: "草稿", desc: "快速便宜" },
-  { value: "medium", label: "标准", desc: "日常够用" },
-  { value: "high", label: "高清", desc: "印刷级" },
-  { value: "auto", label: "自动", desc: "模型决定" },
+  { value: "low", label: "草稿", desc: "最便宜 ~$0.01/张" },
+  { value: "medium", label: "标准", desc: "日常够用·推荐" },
+  { value: "high", label: "高清", desc: "印刷级·最贵 ~$0.2/张" },
 ];
 
 const BACKGROUND_OPTIONS = [
@@ -103,7 +103,7 @@ function createNewConversation(): ConversationState {
     messages: [],
     refineFrom: null,
     ratio: "3:4",
-    quality: "auto",
+    quality: "medium",
     references: [],
     addStoreInfo: false,
     noText: false,
@@ -1223,7 +1223,7 @@ function ConversationPageInner() {
                     <p className="mb-1.5 text-xs text-slate-500">图片质量</p>
                     <CardSelect
                       value={conv.quality}
-                      onChange={(v) => updateConv({ quality: v as "low" | "medium" | "high" | "auto" })}
+                      onChange={(v) => updateConv({ quality: v as "low" | "medium" | "high" })}
                       options={QUALITY_OPTIONS}
                       columns={4}
                     />
