@@ -49,11 +49,6 @@ export interface PromptExpandResponse {
   needs: string[];
 }
 
-export interface ShowcaseExample {
-  idea_text: string;
-  image_url: string | null;
-}
-
 export interface GeneratedImage {
   generation_id: string;
   poster_url: string;

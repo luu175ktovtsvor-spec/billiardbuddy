@@ -191,7 +191,3 @@ async def list_size_options(_user: User = Depends(get_current_user)):
     return {"sizes": poster_service.get_size_options()}
 
 
-@router.get("/showcase")
-async def list_showcase(_user: User = Depends(get_current_user)):
-    """返回「看看能做成什么样」示例（idea_text 可一键参考思路填入；image_url 待补成品图）。"""
-    return {"examples": poster_service.get_showcase_examples()}

@@ -69,7 +69,7 @@ interface UploadedAsset {
 // 三档明价（gpt-image-2 官方每张价，1024² 参考）：去掉"自动"——它让模型自挑、成本不可控。
 const QUALITY_OPTIONS = [
   { value: "low", label: "草稿", desc: "最便宜 ~$0.01/张" },
-  { value: "medium", label: "标准", desc: "日常够用·推荐" },
+  { value: "medium", label: "标准", desc: "推荐·日常够用 ~$0.05/张" },
   { value: "high", label: "高清", desc: "印刷级·最贵 ~$0.2/张" },
 ];
 
@@ -584,12 +584,6 @@ function ConversationPageInner() {
     await downloadImage(api.resolveUrl(img.poster_url), base);
   };
 
-  /* PosterIntro 选示例思路 → 回填描述框 */
-  const handlePickIdea = (ideaText: string) => {
-    handleDescriptionChange(ideaText);
-    setShowIntro(false);
-  };
-
   /* Loading */
   if (authLoading || storeLoading) {
     return (
@@ -845,7 +839,7 @@ function ConversationPageInner() {
                     }
                   }}
                   className="w-full rounded-xl bg-[#F2F2F7] px-4 py-3 text-[15px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none lg:text-sm"
-                  placeholder={'例：周五晚上抢一大战，图上写"报名费10元、赢家拿奖金"，要热血电竞风'}
+                  placeholder={"说清楚：做什么海报 + 图上要写哪些字 + 想要什么风格，越具体越好"}
                 />
 
                 {/* 背景来源 */}
@@ -1062,7 +1056,7 @@ function ConversationPageInner() {
                   <Sparkles className="h-4 w-4 shrink-0 text-brand-600" />
                   <span className="flex-1 text-sm text-slate-700">
                     AI 帮我优化描述
-                    <span className="ml-1 text-xs text-slate-400">把你的大白话变成专业绘图指令</span>
+                    <span className="ml-1 text-xs text-slate-400">系统内置帮你把话优化成更专业的描述，直接出图</span>
                   </span>
                   <input
                     type="checkbox"
@@ -1084,7 +1078,7 @@ function ConversationPageInner() {
                   <div className="space-y-2 rounded-xl border border-brand-100 bg-brand-50/40 p-3.5">
                     <p className="flex items-center gap-1.5 text-xs font-medium text-brand-700">
                       <Sparkles className="h-3.5 w-3.5" />
-                      AI 优化后的描述（可改）
+                      AI 优化后的描述（可直接改，点下方「用这个出图」即可，不用复制回填）
                     </p>
                     {expandNeeds.length > 0 && (
                       <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
@@ -1256,7 +1250,7 @@ function ConversationPageInner() {
       )}
 
       {/* 功能介绍 / 新手引导 */}
-      <PosterIntro open={showIntro} onClose={() => setShowIntro(false)} onPickIdea={handlePickIdea} />
+      <PosterIntro open={showIntro} onClose={() => setShowIntro(false)} />
 
       {/* Lightbox */}
       {lightboxImage && (
