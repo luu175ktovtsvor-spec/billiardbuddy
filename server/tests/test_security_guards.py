@@ -48,6 +48,14 @@ def test_rbac_list_implies_create():
             assert Permission.GENERATION_CREATE in perms, f"{role} 有 LIST 却无 CREATE，会让 LIST-守护的写端点失守"
 
 
+def test_report_submission_feeds_store_brain():
+    """日报提交必须把店主手写 note 喂进店脑学习(越用越懂的关键原料)——防被悄悄删回去。"""
+    import inspect
+    import api.v1.reports as reports
+    src = inspect.getsource(reports)
+    assert "learn_in_background" in src, "日报提交未把 note 喂店脑(store-brain 学习接线丢失)"
+
+
 def test_store_update_whitelist_excludes_identity_and_ownership():
     """门店资料更新走字段白名单——不可经此改 owner_id/id 夺取门店归属或篡改身份。"""
     from services.store_service import _UPDATE_ALLOWED_FIELDS
