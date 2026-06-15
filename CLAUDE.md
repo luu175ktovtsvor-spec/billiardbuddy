@@ -34,6 +34,8 @@
 | 文本生成 | DeepSeek V4 Flash | 通过 `https://api.deepseek.com`；并发 2500/账户级（详见「AI 并发与限流」） |
 | 图片生成 | OpenAI gpt-image-2 | 一律直连 `https://api.openai.com/v1`（生产+本地均实测可直连，~80ms）；旧 Worker 代理已废弃下线、勿用。⚠️ 限额/测试铁律见「AI 并发与限流」，**测试前必读** |
 
+**上下文/记忆（2026-06-16 查证官方文档）：DeepSeek `/chat/completions` 是无状态的——服务端不记任何上下文。** 所谓"记忆"全由**应用层自己管**：① 多轮对话(`stream.py`)从 DB 捞最近 5 轮历史拼成完整 `messages` 数组、每次整包重发；② 长期记忆=店脑(`store_memories` 表)注入 prompt。这是无状态 API 下的标准正解，**别误以为 API 会自动记**。DeepSeek 上下文缓存(磁盘 KV cache)**默认自动开启、无需配置**，命中省最多 90%——但它只省钱、不是记忆。
+
 ## 技术栈
 
 - **前端**: Next.js 14 + React 18 + TypeScript + TailwindCSS + shadcn/ui
@@ -193,6 +195,7 @@ server/                 # FastAPI 后端
     generation.py       # 生成记录（含 is_deleted 软删除）
     conversation.py     # 对话记录
     quota.py            # 配额模型
+    usage_event.py      # 使用事件（产品分析/AI可观测性，append-only，无外键、不入租户过滤）
   services/
     ai/
       prompt_engine.py  # Prompt 模板引擎（单例）
@@ -209,6 +212,7 @@ server/                 # FastAPI 后端
     generation_service.py # 生成记录查询
     quota_service.py    # 配额管理
     storage_service.py  # 文件上传存储
+    usage_event_service.py # 使用事件记录（故障安全 log_event，喂版本迭代）
   prompts/
     knowledge/          # 43 个行业知识 YAML
     rules/              # 角色规则 + 客户规则
@@ -216,7 +220,7 @@ server/                 # FastAPI 后端
     copywriting/        # 文案 prompt
     activity/           # 活动 prompt
     fewshots/           # fewshot 示例
-  db/migrations/versions/ # 20 个 Alembic 迁移（001-019 主链 + add_new_tables_and_fields 旁支，head=019）
+  db/migrations/versions/ # 21 个 Alembic 迁移（001-020 主链 + add_new_tables_and_fields 旁支，head=020）
   main.py               # 入口
 ```
 
@@ -393,6 +397,8 @@ journalctl -u billiards-backend -n 50 --no-pager
 | 缴费/会员历史（migration 019）：`subscription_payments` 加 `plan_name`（快照缴费当时档位）；开通/续费写入；用户详情接口返回 `payment_history`（逐笔：日期/档位/开通或续费/金额，倒序）；前端「用户管理→详情」展示"缴费/会员历史"。到期降级不删流水，历史永久可查 | ✅ |
 | 运营日报自动化（2026-06-14 上线）：4 张岗位日报——店长/前厅(flat)、教练主/副(personal·今日/本月累计)、助教管理(roster·按时长排名+明细/排名/播报三 sheet)；**填表或「说一句话」**(自然语言→DeepSeek JSON 抽取字段预填)→ AI 写叙事(**注入店脑记忆**"懂这家店"·环比对比前一天·喂中文 label 防 AI 把助教叫教练)→ **导出 Excel**(openpyxl)。配置化引擎(`server/report_forms/*.yaml` 一表一 YAML，前端按 shape 三态渲染)+ `reports.py` API + 复用 generations 表**零迁移**(走 run_generation 配额/落库)。配套：今日推荐"日报没写"信号(写过当天不催)、老板今日交付状态(`/reports/today-status`)、落地页式使用指南(`/dashboard/guide` + 侧栏/抽屉/首次弹窗入口)。**铁律：不重做收银系统**——POS 字段(营业额/上钟数)标"收银系统看"只瞄一眼填，主收"运营动作数据"(加微/约客/转化等 POS 采不到的)。详见 `docs/product-brain/运营日报自动化-设计.md` | ✅ |
 | 生图模块重构 + 并发限流加固（2026-06-15 上线 `b4d130f`）：生图前端整页重写——一句话描述框 + 背景来源(AI生成/上传门店照优化) + 结构化「要写的字」 + 手动 Logo/二维码 + DeepSeek 扩写引擎(大白话→提示词、可预览改) + 落地式新手引导，替代旧场景卡片/风格预设；**并发限流防烧钱**：生图读超时 300→900s、`max_retries=0`、全局信号量 `poster_max_concurrency=4`、每用户单张在跑、强制 `count=1`(详见「AI 并发与限流」)；部署加固：`deploy_us.sh` 并入前端 build+cp+冒烟自检(防 standalone 缺 static 白屏) | ✅ |
+| 店脑学日报手写 note（2026-06-16）：日报提交时把店主手写的经营事实(note≥6字)异步喂店脑学习——补"越用越懂"短板(原来只学工作台/对话的需求句)；故障安全、不计配额、有 pg_advisory_xact_lock+整合+上限护栏 | ✅ |
+| 使用事件采集 / 产品分析（2026-06-16，migration 020）：`usage_events` append-only 事件表 + 故障安全 `log_event`(独立 session、吞异常、**绝不影响生成**)；`run_generation` 打点生成**成功与失败**(场景/耗时/错误类型——把原来看不见的失败捞回来)；admin `GET /usage/scenarios` 按场景看 调用数/失败率/平均耗时，喂版本迭代。详见 `docs/product-brain/使用事件采集-产品分析.md` | ✅ |
 
 ## 行业知识体系
 
