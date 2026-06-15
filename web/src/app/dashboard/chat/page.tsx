@@ -245,7 +245,11 @@ export default function ChatPage() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              // 仅桌面(精确指针/物理键盘)上 Enter 直接发送；手机/微信(触屏 pointer:coarse)
+              // 的 Enter 用于换行、发送走右侧按钮——否则想写两行时第一行回车就把半句发出去了。
+              const isTouch =
+                typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && !isTouch) {
                 e.preventDefault();
                 send(input);
               }
