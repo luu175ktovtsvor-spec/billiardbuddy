@@ -199,6 +199,12 @@ export default function MembersPage() {
           </div>
         </div>
 
+        {/* 简介：这页能干嘛、怎么用 */}
+        <div className="rounded-2xl bg-brand-50/60 p-4 text-[13px] leading-relaxed text-slate-600">
+          <p className="mb-1 text-[14px] font-medium text-slate-800">把员工也拉进来一起用</p>
+          想让店员也能登录用 AI 写文案、出海报、写日报？点<span className="font-medium text-brand-600">「生成邀请码」</span>把码发给员工，他们注册时填一下就自动进店、拿到你给的角色（角色不同，能用的功能也不同）；员工已经注册过，就用<span className="font-medium text-brand-600">「手动添加」</span>填手机号。
+        </div>
+
         {error && (
           <div className="rounded-xl bg-red-50 p-3 text-sm text-red-600">{error}</div>
         )}

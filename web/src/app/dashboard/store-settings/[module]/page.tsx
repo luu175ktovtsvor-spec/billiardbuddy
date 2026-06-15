@@ -559,6 +559,7 @@ function ProfileModule({
           <input type="text" maxLength={200} value={profileForm.monthly_focus}
             onChange={(e) => updateProfileField("monthly_focus", e.target.value)}
             className={INPUT_CLASS} placeholder="如：推团购核销、提升助教上钟" />
+          <p className="mt-1.5 text-xs text-slate-400">AI 会围绕这个重点，来出本月的活动和内容建议。</p>
         </Field>
         <Field label="避免推荐的内容">
           <input type="text" maxLength={300} value={profileForm.avoid_recommendations}
@@ -572,6 +573,7 @@ function ProfileModule({
           <input type="text" maxLength={200} value={profileForm.staff_config}
             onChange={(e) => updateProfileField("staff_config", e.target.value)}
             className={INPUT_CLASS} placeholder="如：店长1人，助教管理2人" />
+          <p className="mt-1.5 text-xs text-slate-400">让 AI 知道店里有哪些岗位，分配任务、写话术时才对得上人。</p>
         </Field>
         <Field label="开业阶段">
           <CardSelect
@@ -592,6 +594,7 @@ function ProfileModule({
         <textarea rows={2} maxLength={500} value={profileForm.competitor_info}
           onChange={(e) => updateProfileField("competitor_info", e.target.value)}
           className={TEXTAREA_CLASS} placeholder="如：3km内有2家竞对" />
+        <p className="mt-1.5 text-xs text-slate-400">AI 想差异化卖点、避开和对手撞活动时会参考。</p>
       </Field>
 
       {/* 私域群矩阵 */}
@@ -799,7 +802,7 @@ function PricingModule({
           <textarea rows={8} value={form.pricing}
             onChange={(e) => updateField("pricing", e.target.value)}
             className={TEXTAREA_CLASS}
-            placeholder={"1. 中式黑八\n   (a) 普台：30元/1小时\n   (b) 金腿：XX元/1小时\n   (c) 银腿：XX元/1小时\n   (d) 毒牙：XX元/1小时\n2. 包厢：XX元/1小时"} />
+            placeholder={"把各类台费、包厢、套餐写清楚就行，怎么顺手怎么写。例：普台 30元/时，金腿 50元/时，包厢 80元/时"} />
         </Field>
         <Field label="充值规则（选填）">
           <textarea rows={3} value={form.recharge_rules}

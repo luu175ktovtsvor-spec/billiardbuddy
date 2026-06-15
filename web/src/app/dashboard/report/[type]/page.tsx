@@ -178,7 +178,7 @@ export default function ReportFillPage() {
             value={nlText}
             onChange={(e) => setNlText(e.target.value)}
             rows={2}
-            placeholder="例：今天营业额5800，充值1200，加了8个微信，3条好评"
+            placeholder="随口把今天的数字说一遍（营业额、充值、加微、好评…），AI 自动填进下表"
             className="w-full resize-none rounded-xl border border-brand-100 bg-white px-3 py-2.5 text-[15px] focus:border-brand-600 focus:outline-none"
           />
           <button
@@ -200,7 +200,7 @@ export default function ReportFillPage() {
           value={note}
           onChange={(e) => setNote(e.target.value)}
           rows={3}
-          placeholder="今天有什么特别的？例：搞了充500送50活动 / 有个客诉已处理。AI 会写进日报。"
+          placeholder="今天有什么值得记的（特殊活动、客诉、亮点），AI 会写进日报"
           className="w-full resize-none rounded-xl border border-slate-200 px-3 py-2.5 text-[15px] focus:border-brand-600 focus:outline-none"
         />
       </div>

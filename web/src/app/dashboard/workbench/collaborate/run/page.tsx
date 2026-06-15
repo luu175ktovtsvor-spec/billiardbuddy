@@ -116,7 +116,7 @@ function CollaborateRunInner() {
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           className="w-full rounded-xl bg-[#F2F2F7] px-3 py-2.5 text-[15px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none"
-          placeholder="例如：策划一场周末台球挑战赛，预算3000元，目标吸引新客户"
+          placeholder="说清楚你要做什么、目标和预算，AI 会安排好岗位分工和方案"
         />
         {/* 手机吸底主按钮（含安全区），桌面回到卡片内原位置 */}
         <div className="fixed bottom-0 left-0 right-0 z-20 border-t border-slate-100 bg-white p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] lg:static lg:mt-3 lg:border-0 lg:bg-transparent lg:p-0">
