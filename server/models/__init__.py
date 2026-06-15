@@ -8,9 +8,11 @@ from models.plan import Plan, StoreSubscription, SubscriptionPayment
 from models.conversation import Conversation, ConversationMessage
 from models.collaboration import CollabTask
 from models.store_memory import StoreMemory
+from models.usage_event import UsageEvent
 
 __all__ = [
     "User", "Store", "StoreMember", "StoreInvitation", "Generation",
     "UsageQuota", "Plan", "StoreSubscription", "SubscriptionPayment",
     "Conversation", "ConversationMessage", "CollabTask", "StoreMemory",
+    "UsageEvent",
 ]

@@ -19,6 +19,9 @@ from api.v1.admin import _add_months
 _MANUAL_FILTER_TABLES = {
     "store_members", "store_invitations",
     "store_subscriptions", "store_memories", "collab_tasks",
+    # usage_events：admin-only 分析表，刻意跨店做统计聚合、不参与租户隔离；
+    # 需要按店看时由 admin 显式 .where(store_id)。绝不能进 _TENANT_TABLES(会被 fail-safe 清空)。
+    "usage_events",
 }
 
 
