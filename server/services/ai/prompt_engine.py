@@ -49,6 +49,9 @@ class PromptEngine:
         for yaml_file in prompts_dir.rglob("*.yaml"):
             with open(yaml_file, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
+            # 宽松登记：凡有 key 的 YAML 都收进 _templates。不同消费方按 key 读各自的子结构
+            # （render 读 template；预设库 list_templates 读 templates；fewshots 读 examples 等）。
+            # 切勿在此加"必须有 template"校验——会把非渲染类条目(fewshots/templates 库)误删。
             if data and "key" in data:
                 self._templates[data["key"]] = data
 

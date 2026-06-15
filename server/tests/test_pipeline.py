@@ -180,12 +180,20 @@ def test_orchestrator_hardening():
 
 
 def test_knowledge_no_source_leak_terms():
-    """知识口径回归：知识库正文不得出现来源出处与方向冲突表述。"""
+    """口径回归：知识库 + 规则模板 的正文/名称都不得出现来源出处字样(如 PPT)。
+
+    覆盖 knowledge.* 与 rules.*（rules 的 name/正文同样会注入 prompt）——
+    原测试只查 knowledge 是盲区，rules/ 曾长期残留"PPT校准版"出处指纹。
+    operation.* 里"别写得像 PPT"是通用文档品类口语，不在此约束内。
+    """
     pe = get_prompt_engine()
-    knowledge = {k: v for k, v in pe._templates.items() if k.startswith("knowledge.")}
-    for key, data in knowledge.items():
-        tpl = data.get("template", "")
-        assert "PPT" not in tpl, f"{key} 残留 PPT 出处字样"
+    targets = {
+        k: v for k, v in pe._templates.items()
+        if k.startswith("knowledge.") or k.startswith("rules.")
+    }
+    for key, data in targets.items():
+        blob = (data.get("template", "") or "") + " " + (data.get("name", "") or "")
+        assert "PPT" not in blob, f"{key} 残留 PPT 出处字样"
 
 
 def test_poster_prompt_image_roles():
