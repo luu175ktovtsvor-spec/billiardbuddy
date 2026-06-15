@@ -1,4 +1,5 @@
 import logging
+import time
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,17 +60,21 @@ async def run_generation(
     await check_quota(db, str(store.id))
     _validate_provider_for_production()
 
+    _t0 = time.monotonic()
     request = TextRequest(prompt=prompt, max_tokens=max_tokens)
     try:
         if use_fallback:
             response, _ = await ProviderFactory.generate_with_fallback(request)
         else:
             response = await ProviderFactory.get_text_provider().generate(request)
-    except AIProviderError as e:
-        raise AIServiceError(e.message, status_code=e.status_code) from e
-    except AIServiceError:
-        raise
     except Exception as e:
+        # 把"看不见的失败"记成使用事件(故障安全)，再按原映射抛出——行为与原三段 except 等价
+        await _safe_log_generation(store, user, gen_type, sub_type, outcome="failure",
+                                   error_type=type(e).__name__, t0=_t0)
+        if isinstance(e, AIProviderError):
+            raise AIServiceError(e.message, status_code=e.status_code) from e
+        if isinstance(e, AIServiceError):
+            raise
         raise AIServiceError("AI 生成服务暂时不可用，请稍后重试") from e
 
     content = response.content
@@ -93,7 +98,36 @@ async def run_generation(
     await db.commit()
     await db.refresh(generation)
     await increment_usage(db, str(store.id), tokens=response.tokens_used or 0)
+    await _safe_log_generation(store, user, gen_type, sub_type, outcome="success",
+                               tokens=response.tokens_used or 0, t0=_t0)
     return generation
+
+
+async def _safe_log_generation(
+    store, user, gen_type: str, sub_type: str | None, *,
+    outcome: str, t0: float, tokens: int = 0, error_type: str | None = None,
+) -> None:
+    """故障安全记录一条 generation 使用事件(成功/失败)，喂版本迭代。绝不影响生成。"""
+    try:
+        from services.usage_event_service import log_event
+        props = {
+            "scenario": sub_type or gen_type,
+            "gen_type": gen_type,
+            "outcome": outcome,
+            "latency_ms": int((time.monotonic() - t0) * 1000),
+        }
+        if tokens:
+            props["tokens"] = tokens
+        if error_type:
+            props["error_type"] = error_type
+        await log_event(
+            "generation",
+            store_id=str(store.id),
+            user_id=(str(user.id) if user else None),
+            props=props,
+        )
+    except Exception:
+        pass  # 打点绝不影响生成
 
 TONE_LABELS = {
     "lively": "活泼",

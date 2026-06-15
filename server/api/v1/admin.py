@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, and_, or_, desc
+from sqlalchemy import select, func, and_, or_, desc, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_current_user, get_db
@@ -575,3 +575,47 @@ async def update_plan(
     if is_active is not None: plan.is_active = is_active
     await db.commit()
     return {"status": "ok"}
+
+
+# ========== 使用分析（产品迭代用，跨店聚合，admin only）==========
+@router.get("/usage/scenarios")
+async def usage_scenarios(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    days: int = Query(30, ge=1, le=365),
+):
+    """按场景看生成的 调用数/失败数/失败率/平均耗时 —— 喂版本迭代（哪个场景最该改）。
+
+    数据来自 usage_events（生成成功/失败的故障安全打点，含现在落库看不见的失败）。
+    跨店统计聚合，不暴露任一店具体内容。
+    """
+    require_admin(user)
+    rows = (await db.execute(text(
+        """
+        SELECT
+            COALESCE(props->>'scenario', '?') AS scenario,
+            count(*) AS attempts,
+            count(*) FILTER (WHERE props->>'outcome' = 'failure') AS failures,
+            round(avg((props->>'latency_ms')::numeric)
+                  FILTER (WHERE props->>'latency_ms' IS NOT NULL)) AS avg_latency_ms
+        FROM usage_events
+        WHERE event = 'generation'
+          AND created_at >= now() - make_interval(days => :days)
+        GROUP BY 1
+        ORDER BY failures DESC, attempts DESC
+        LIMIT 100
+        """
+    ), {"days": days})).all()
+    return {
+        "days": days,
+        "scenarios": [
+            {
+                "scenario": r.scenario,
+                "attempts": r.attempts,
+                "failures": r.failures,
+                "failure_rate": round(r.failures / r.attempts, 3) if r.attempts else 0,
+                "avg_latency_ms": int(r.avg_latency_ms) if r.avg_latency_ms is not None else None,
+            }
+            for r in rows
+        ],
+    }
