@@ -287,6 +287,17 @@ def test_poster_global_concurrency_gate():
     assert settings.poster_max_concurrency >= 1, "并发闸上限必须 >=1"
 
 
+def test_poster_text_injected_when_no_expand():
+    """生图 Q1 修复：未走扩写时，结构化「要写的字」也要拼进提示词，否则 GPT 不渲染文字。"""
+    import inspect as _inspect
+    from services.poster_service import _format_poster_text, generate_images
+    out = _format_poster_text({"title": "抢一大战", "lines": ["每天两场", "冠军500"], "contact": "找李伟 15984632071"})
+    assert "抢一大战" in out and "每天两场" in out and "冠军500" in out and "15984632071" in out, "要写的字内容未逐字进入指令"
+    assert _format_poster_text(None) == "" and _format_poster_text({}) == "", "空输入应返回空串"
+    src = _inspect.getsource(generate_images)
+    assert "_format_poster_text" in src, "未扩写路径没有注入 poster_text，要写的字会丢"
+
+
 def test_admin_routes_single_prefix():
     """路由回归：admin 必须挂在 /admin/* 而非 /admin/admin/*（双前缀曾让整个管理后台 404）。"""
     from api.v1.router import router as v1_router

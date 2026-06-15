@@ -412,10 +412,6 @@ class ApiClient {
     return this.request<{ path: string; url: string }>("POST", "/api/v1/posters/reference", formData, true);
   }
 
-  listInspirationTags() {
-    return this.request<{ tags: Array<{ key: string; label: string; prompt: string; category?: string }> }>("GET", "/api/v1/posters/inspiration-tags");
-  }
-
   listSizeOptions() {
     return this.request<{ sizes: SizeOption[] }>("GET", "/api/v1/posters/size-options");
   }

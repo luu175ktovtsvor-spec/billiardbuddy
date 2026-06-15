@@ -46,30 +46,6 @@ SIZE_MAP = {
     "16:9": "2048x1152",  # 1.7778
 }
 
-# 场景灵感标签（按分类组织）
-INSPIRATION_TAGS = [
-    # 赛事类
-    {"key": "tournament", "label": "赛事海报", "category": "赛事类", "prompt": "中式八球周赛海报，竞技氛围，专业赛场感，深色背景"},
-    {"key": "qiangyi", "label": "抢一大战", "category": "赛事类", "prompt": "台球抢一大战海报，紧张刺激，对抗感，霓虹灯风格"},
-    {"key": "champion", "label": "冠军战报", "category": "赛事类", "prompt": "台球比赛冠军战报海报，热血竞技感，聚光灯效果"},
-    # 社交媒体
-    {"key": "moments", "label": "朋友圈配图", "category": "社交媒体", "prompt": "台球房下午场空台促活朋友圈配图，清新休闲风格"},
-    {"key": "short_video", "label": "短视频封面", "category": "社交媒体", "prompt": "台球短视频封面，视觉冲击力强，动态模糊效果"},
-    {"key": "store_brand", "label": "门店形象", "category": "社交媒体", "prompt": "台球房门店形象宣传图，专业品质感，现代简约"},
-    # 营销推广
-    {"key": "opening", "label": "开业活动", "category": "营销推广", "prompt": "台球房开业活动海报，盛大喜庆，红色金色配色"},
-    {"key": "holiday", "label": "节日主题", "category": "营销推广", "prompt": "台球房节日主题活动海报，喜庆氛围"},
-    {"key": "recharge", "label": "充值活动", "category": "营销推广", "prompt": "台球房会员充值活动海报，高端质感，金色元素"},
-    {"key": "watch_party", "label": "看球活动", "category": "营销推广", "prompt": "台球房看球活动海报，大屏幕观赛，啤酒零食氛围"},
-    # 助教相关
-    {"key": "assistant", "label": "助教形象", "category": "助教相关", "prompt": "台球助教专业形象照，台球陪练服务，专业台球人设"},
-    {"key": "coach", "label": "教练推广", "category": "助教相关", "prompt": "台球教练教学推广海报，专业教学感，指导动作"},
-    {"key": "recruitment", "label": "招聘海报", "category": "助教相关", "prompt": "台球助教招聘海报，便签笔记风格，温馨有吸引力"},
-    # 其他
-    {"key": "partner", "label": "搭子群", "category": "其他", "prompt": "台球搭子群招募图文，轻松活泼风格，社交感"},
-    {"key": "free", "label": "自由创作", "category": "其他", "prompt": "画一只猫在打台球"},
-]
-
 
 def _get_api_size(ratio: str) -> str:
     return SIZE_MAP.get(ratio, SIZE_MAP["3:4"])
@@ -92,6 +68,28 @@ def _load_upload_bytes(path_str: str | None) -> bytes | None:
     except (OSError, ValueError):
         return None
     return p.read_bytes() if p.exists() else None
+
+
+def _format_poster_text(poster_text: dict | None) -> str:
+    """把结构化「要写的字」(标题/多行信息/联系方式)拼成给模型的渲染指令，中文逐字保留。
+    未走扩写直接出图时用它确保文字进入提示词——扩写路径已由引擎把文字编进 image_prompt，故不在那条路重复。"""
+    if not isinstance(poster_text, dict):
+        return ""
+    parts: list[str] = []
+    title = str(poster_text.get("title") or "").strip()
+    if title:
+        parts.append(f"标题「{title}」")
+    lines = poster_text.get("lines") or []
+    if isinstance(lines, (list, tuple)):
+        body_lines = [str(x).strip() for x in lines if str(x).strip()]
+        if body_lines:
+            parts.append("、".join(body_lines))
+    contact = str(poster_text.get("contact") or "").strip()
+    if contact:
+        parts.append(f"联系方式「{contact}」")
+    if not parts:
+        return ""
+    return "在画面醒目位置原样渲染以下中文文字（一字不差、清晰可读、排版整齐）：" + "；".join(parts) + "。"
 
 
 def build_poster_prompt(
@@ -280,6 +278,12 @@ async def generate_images(
 
     # ── 4. 组装 prompt（核心用扩写后的 image_prompt，无则用原文；含图片角色声明）──
     core_prompt = image_prompt if (image_prompt and image_prompt.strip()) else prompt
+    # 没走扩写时，结构化「要写的字」不在 core_prompt 里——显式拼上，确保 GPT 渲染。
+    # （扩写路径已把文字编进 image_prompt，故只在未扩写时补、不会重复。）
+    if not (image_prompt and image_prompt.strip()):
+        _pt = _format_poster_text(poster_text)
+        if _pt:
+            core_prompt = f"{core_prompt}。{_pt}" if core_prompt and core_prompt.strip() else _pt
     full_prompt = build_poster_prompt(
         prompt=core_prompt,
         history_prompts=history_prompts,
@@ -471,10 +475,6 @@ async def get_conversation_detail(
         "updated_at": gens[-1].created_at,
         "messages": messages,
     }
-
-
-def get_inspiration_tags() -> list[dict]:
-    return INSPIRATION_TAGS
 
 
 def get_size_options() -> list[dict]:
