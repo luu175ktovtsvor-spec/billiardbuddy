@@ -117,7 +117,8 @@ export default function PostersPage() {
       ) : conversations.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-slate-300 bg-white py-16 text-center">
           <MessageSquare className="mx-auto h-10 w-10 text-slate-300" />
-          <p className="mt-3 text-sm text-slate-500">暂无对话记录</p>
+          <p className="mt-3 text-[15px] font-medium text-slate-700">用一句话，让 AI 帮你出海报</p>
+          <p className="mx-auto mt-1 max-w-xs text-sm text-slate-500">活动、节日、招聘海报，或用门店照做图——把要的说清楚就行，进去有「怎么用」教你。</p>
           <button
             type="button"
             onClick={handleNew}

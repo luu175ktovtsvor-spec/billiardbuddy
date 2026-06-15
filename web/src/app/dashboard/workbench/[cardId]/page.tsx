@@ -393,7 +393,7 @@ function TaskExecutionPageInner() {
             value={intent}
             onChange={(e) => setIntent(e.target.value)}
             className="w-full min-h-[96px] rounded-lg bg-[#F2F2F7] px-3 py-2 text-[15px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none"
-            placeholder="例如：好久没联系老客户了，帮我发几句话约他们来打球"
+            placeholder="说说你的具体情况、想要什么效果，越具体 AI 写得越贴你的店"
           />
           <p className="mt-1 text-right text-xs text-slate-400">
             {intent.length}/500
@@ -555,7 +555,7 @@ function TaskExecutionPageInner() {
             value={extraNote}
             onChange={(e) => setExtraNote(e.target.value)}
             className="w-full rounded-lg bg-[#F2F2F7] px-3 py-2 text-[15px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20 resize-none"
-            placeholder="如：不要太长、别写优惠"
+            placeholder="可补充额外要求，比如字数、语气、要避开的内容"
           />
         </div>
 
@@ -958,7 +958,7 @@ function TaskExecutionPageInner() {
                     type="text"
                     maxLength={100}
                     autoFocus
-                    placeholder="例：太官方了 / 太长了 / 不像我们店的语气"
+                    placeholder="直接说哪里不满意就行"
                     className="w-full min-h-[44px] rounded-lg border border-red-200 bg-white px-3 py-1.5 text-[15px] text-slate-900 placeholder-slate-400 focus:border-red-400 focus:outline-none"
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
