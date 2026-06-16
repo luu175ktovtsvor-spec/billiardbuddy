@@ -104,3 +104,45 @@ def test_today_recommendation_formats(monkeypatch):
     monkeypatch.setattr(agent_tools, "get_today_dashboard", fake_dash)
     out = asyncio.run(agent_tools.get_today_recommendation({}, _ctx()))
     assert "周二" in out and "双人局" in out and "周中拉新好时机" in out
+
+
+# ---- make_poster（受审批的生图工具） ----
+
+def test_make_poster_registered_requires_approval():
+    t = default_registry.get("make_poster")
+    assert t is not None
+    assert t.requires_approval is True
+
+
+def test_make_poster_calls_generate_images_and_returns_image(monkeypatch):
+    captured = {}
+
+    async def fake_gen(**kwargs):
+        captured.update(kwargs)
+        return {"images": [{"poster_url": "/uploads/posters/x.png", "generation_id": "g1"}], "count": 1}
+
+    import services.poster_service as ps
+    monkeypatch.setattr(ps, "generate_images", fake_gen)
+    ctx = SimpleNamespace(db=object(), store=SimpleNamespace(id="s1"), user=SimpleNamespace(id="u1"))
+    out = asyncio.run(agent_tools.make_poster({"description": "周末活动海报，热闹风", "ratio": "9:16"}, ctx))
+
+    assert "/uploads/posters/x.png" in out and "![" in out  # 返回 markdown 图片
+    assert captured["count"] == 1          # 强制单张
+    assert captured["quality"] == "medium"  # 成本可控
+    assert captured["prompt"] == "周末活动海报，热闹风"
+    assert captured["ratio"] == "9:16"
+
+
+def test_make_poster_empty_desc_skips_generation(monkeypatch):
+    called = []
+
+    async def fake_gen(**kwargs):
+        called.append(1)
+        return {"images": []}
+
+    import services.poster_service as ps
+    monkeypatch.setattr(ps, "generate_images", fake_gen)
+    ctx = SimpleNamespace(db=None, store=None, user=SimpleNamespace(id="u"))
+    out = asyncio.run(agent_tools.make_poster({"description": "   "}, ctx))
+    assert called == []  # 空描述绝不触发花钱的生图
+    assert "描述" in out
