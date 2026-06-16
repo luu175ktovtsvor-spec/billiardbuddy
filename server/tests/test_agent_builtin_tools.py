@@ -146,3 +146,65 @@ def test_make_poster_empty_desc_skips_generation(monkeypatch):
     out = asyncio.run(agent_tools.make_poster({"description": "   "}, ctx))
     assert called == []  # 空描述绝不触发花钱的生图
     assert "描述" in out
+
+
+# ---- make_platform_content（抖音/小红书/快手/视频号 平台定制内容） ----
+
+def test_make_platform_content_registered_no_approval():
+    t = default_registry.get("make_platform_content")
+    assert t is not None
+    assert t.requires_approval is False  # 内容生成+复制，不自动发、不需审批
+
+
+def test_make_platform_content_routes_and_passes_need(monkeypatch):
+    captured = {}
+
+    def fake_guardrails(prompt, store, role=None, intent_text=""):
+        captured["role"] = role
+        return prompt  # 测试里跳过画像/合规拼装
+
+    async def fake_run(db, store, user, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(result="抖音脚本内容 #台球")
+
+    monkeypatch.setattr(agent_tools, "_append_guardrails", fake_guardrails)
+    monkeypatch.setattr(agent_tools, "run_generation", fake_run)
+    ctx = SimpleNamespace(db=object(), store=SimpleNamespace(), user=SimpleNamespace(my_role="operator"))
+    out = asyncio.run(agent_tools.make_platform_content({"platform": "抖音", "need": "周末双人半价"}, ctx))
+
+    assert out == "抖音脚本内容 #台球"
+    assert captured["sub_type"] == "douyin"          # 中文"抖音"归一到 douyin
+    assert captured["gen_type"] == "platform_content"
+    assert captured["input_params"]["need"] == "周末双人半价"
+    assert "周末双人半价" in captured["prompt"]       # need 进了 prompt
+    assert captured["role"] == "operator"            # 跟随 my_role
+
+
+def test_make_platform_content_xiaohongshu_alias(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(agent_tools, "_append_guardrails",
+                        lambda prompt, store, role=None, intent_text="": prompt)
+
+    async def fake_run(db, store, user, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(result="小红书笔记")
+
+    monkeypatch.setattr(agent_tools, "run_generation", fake_run)
+    ctx = SimpleNamespace(db=None, store=None, user=SimpleNamespace(my_role=None))
+    out = asyncio.run(agent_tools.make_platform_content({"platform": "xiaohongshu", "need": "约球"}, ctx))
+    assert out == "小红书笔记"
+    assert captured["sub_type"] == "xiaohongshu"
+
+
+def test_make_platform_content_unknown_platform_skips(monkeypatch):
+    called = []
+
+    async def fake_run(db, store, user, **kwargs):
+        called.append(1)
+        return SimpleNamespace(result="x")
+
+    monkeypatch.setattr(agent_tools, "run_generation", fake_run)
+    ctx = SimpleNamespace(db=None, store=None, user=SimpleNamespace(my_role=None))
+    out = asyncio.run(agent_tools.make_platform_content({"platform": "twitter", "need": "x"}, ctx))
+    assert called == []  # 未知平台不触发生成
+    assert "平台" in out
