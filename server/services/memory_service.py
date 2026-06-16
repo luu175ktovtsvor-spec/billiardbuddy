@@ -151,6 +151,17 @@ def format_memories_for_prompt(memories: list[Memory]) -> str:
     )
 
 
+def with_store_brain(prompt: str, memories: list[Memory]) -> str:
+    """把店脑记忆追加到 prompt **末尾**后返回；空记忆时原样返回。
+
+    ⚠️ 必须放在 prompt 末尾（近因效应压过前面 profile 里的旧画像，实现"改价/纠错优先"）——
+    这是耦合契约：在它之后再 append 任何段落都会让该优先级静默失效。
+    （与 stream.py 的注入位置/语义保持一致，供所有非流式路径复用。）
+    """
+    brain = format_memories_for_prompt(memories)
+    return f"{prompt}\n\n{brain}" if brain else prompt
+
+
 # ── 持久化 + 学习流（DB）─────────────────────────────────────────
 # 所有查询显式按 store_id 过滤 → 绕开租户自动过滤的"无上下文 fail-safe"，无需 set_tenant。
 

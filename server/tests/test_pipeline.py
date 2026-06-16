@@ -158,6 +158,18 @@ def test_run_generation_pipeline_has_all_guards():
         assert guard in src, f"run_generation 缺 {guard}"
 
 
+def test_run_generation_injects_store_brain():
+    """"懂这家店"回归：统一管道必须注入店脑——否则诊断/绩效/SOP/玩法/约客/变体/批量
+    这些走 run_generation 的功能全都"不记得"用户教过的门店事实，体验上像失忆。
+    契约：店脑追加在 prompt 末尾（with_store_brain），且其后不再 append（近因效应优先）。"""
+    from services.content_service import run_generation
+    src = inspect.getsource(run_generation)
+    assert "with_store_brain" in src or "format_memories_for_prompt" in src, "run_generation 未注入店脑"
+    assert "load_store_memory" in src, "run_generation 未读取该店记忆"
+    # 店脑注入必须在调用 AI（构造 TextRequest）之前，且追加到末尾
+    assert src.index("with_store_brain") < src.index("TextRequest(prompt=prompt"), "店脑须在调AI前注入"
+
+
 def test_generation_paths_use_unified_pipeline():
     """所有非流式生成路径必须走 run_generation（根治新路径漏防护）。"""
     import services.diagnosis_service as m1
@@ -259,6 +271,34 @@ def test_poster_schemas_structured_fields():
     assert "description" in PromptExpandRequest.model_fields
     pr = PromptExpandResponse.model_fields
     assert "image_prompt" in pr and "needs" in pr
+
+
+def test_poster_store_context_feeds_visual_traits_not_price():
+    """海报"懂这家店"回归：扩写引擎的门店背景要带上画面气质字段(调性/客群/球型/风格)，
+    但**绝不能带价格/电话等会被渲染成图上文字**的信息（守"不主动塞中文文字/价格"铁律）。"""
+    from api.v1.posters import _store_context
+    from models.store import Store
+
+    s = Store(
+        name="星河台球", city="成都",
+        brand_style="youthful",
+        target_customers="周边写字楼年轻白领",
+        table_types="中式八球为主",
+        style="工业潮流风",
+        pricing={"台费": "金腿68元/小时"},
+        phone="13800001111",
+    )
+    ctx = _store_context(s)
+    # 画面气质字段都在
+    assert "星河台球" in ctx and "成都" in ctx
+    assert "年轻潮流" in ctx          # brand_style 枚举映射成中文气质
+    assert "年轻白领" in ctx and "中式八球" in ctx and "工业潮流风" in ctx
+    # 价格/电话绝不能进生图背景（会被画成图上文字）
+    assert "68" not in ctx and "元" not in ctx, "价格泄露进生图背景=会被渲染成图上文字"
+    assert "13800001111" not in ctx, "电话泄露进生图背景"
+
+    # 空店只给名字、不崩
+    assert _store_context(Store(name="某球房")) == "门店名：某球房"
 
 
 def test_poster_single_image_per_user():
@@ -454,3 +494,14 @@ def test_baseline_rules_prefer_real_price():
     src = pathlib.Path("prompts/rules/baseline_rules.yaml").read_text()
     assert "直接写真实数值" in src
     assert "禁止在资料已有的情况下仍输出占位符" in src
+
+
+def test_baseline_has_positive_expert_layer():
+    """"进攻层"回归:baseline 除了一堆"不许做"的防御铁规,必须有一层"什么叫好内容"的正向专家标准——
+    这是"行业人一看就觉得好用"的来源(具体压倒空泛/一条内容一个动作/卖氛围人情/活动靠巧思)。
+    防止未来重构把它误删,让输出退回"正确但不拍大腿"。"""
+    import pathlib
+    src = pathlib.Path("prompts/rules/baseline_rules.yaml").read_text()
+    assert "正向专家标准" in src, "baseline 缺正向专家层(只剩防御规则=输出会退回正确但不内行)"
+    assert "具体压倒空泛" in src, "缺'具体压倒空泛'这条最关键的内行标准"
+    assert "活动靠巧思" in src
