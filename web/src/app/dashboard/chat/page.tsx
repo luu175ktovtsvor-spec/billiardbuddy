@@ -1,15 +1,17 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   Send, Loader2, Sparkles, Check, CalendarDays, Lightbulb, PenLine,
-  UserPlus, Stethoscope, Dices, Wrench,
+  UserPlus, Stethoscope, Dices, Wrench, Menu, LayoutDashboard, LayoutGrid,
+  FileText, ImageIcon, Clock, User, BookOpen,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/auth-context";
-import { PageHeader } from "@/components/layout/page-header";
+import { Sheet } from "@/components/ui/sheet";
 import { QuotaBadge } from "@/components/quota-badge";
 import { CopyButton } from "@/components/generators/copy-button";
 
@@ -36,6 +38,17 @@ const SUGGESTIONS = [
   "帮我写一条今晚的朋友圈",
   "给一位好久没来的老顾客写个约客消息",
   "最近生意有点冷清，帮我看看",
+];
+
+// 管家是主界面：移动端顶栏菜单进其他功能（桌面端有侧栏，不用这个）
+const NAV_ITEMS = [
+  { href: "/dashboard", label: "今日", Icon: LayoutDashboard },
+  { href: "/dashboard/workbench", label: "AI 工作台", Icon: LayoutGrid },
+  { href: "/dashboard/report", label: "写日报", Icon: FileText },
+  { href: "/dashboard/posters", label: "AI 生图", Icon: ImageIcon },
+  { href: "/dashboard/history", label: "生成历史", Icon: Clock },
+  { href: "/dashboard/store-settings", label: "门店设置", Icon: User },
+  { href: "/dashboard/guide", label: "使用指南", Icon: BookOpen },
 ];
 
 // 工具 → 给非技术店员看的友好标签 + 图标
@@ -88,6 +101,7 @@ export default function ManagerPage() {
   const [liveSteps, setLiveSteps] = useState<ToolStep[]>([]); // 本轮进行中的工具步骤
   const [input, setInput] = useState("");
   const [generating, setGenerating] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [quotaVersion, setQuotaVersion] = useState(0);
   const [quotaRemaining, setQuotaRemaining] = useState<number | null>(null);
   const quotaExhausted = quotaRemaining !== null && quotaRemaining <= 0;
@@ -167,7 +181,36 @@ export default function ManagerPage() {
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col pb-36 lg:min-h-[calc(100vh-8rem)] lg:pb-0">
-      <PageHeader title="AI 运营管家" backHref="/dashboard" />
+      {/* 主页式顶栏（移动端）：管家是主界面，左侧是菜单进其他功能，不再是"返回" */}
+      <div className="sticky top-0 z-30 -mx-4 mb-4 flex h-12 items-center border-b border-slate-100 bg-white/95 px-1 backdrop-blur-sm sm:-mx-6 lg:hidden">
+        <button
+          type="button"
+          onClick={() => setMenuOpen(true)}
+          aria-label="功能菜单"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-slate-600 active:bg-slate-100"
+        >
+          <Menu className="h-6 w-6" />
+        </button>
+        <p className="absolute left-1/2 max-w-[60%] -translate-x-1/2 truncate text-center text-base font-semibold text-slate-900">
+          AI 运营管家
+        </p>
+      </div>
+
+      <Sheet open={menuOpen} onClose={() => setMenuOpen(false)} title="更多功能">
+        <div className="grid grid-cols-3 gap-3 pb-3">
+          {NAV_ITEMS.map(({ href, label, Icon }) => (
+            <Link
+              key={href}
+              href={href}
+              onClick={() => setMenuOpen(false)}
+              className="flex flex-col items-center gap-2 rounded-2xl bg-slate-100 px-3 py-4 transition-transform active:scale-[0.97]"
+            >
+              <Icon className="h-6 w-6 text-slate-700" />
+              <span className="text-center text-[13px] text-slate-700">{label}</span>
+            </Link>
+          ))}
+        </div>
+      </Sheet>
 
       <QuotaBadge refreshKey={quotaVersion} onQuota={(q) => setQuotaRemaining(q.remaining)} />
 
