@@ -83,13 +83,36 @@ async def generate_image(
         _GENERATING_USERS.discard(uid)
 
 
+# brand_style 枚举 → 画面气质中文描述（影响海报视觉风格，不是要写到图上的文字）
+_BRAND_STYLE_VISUAL = {
+    "lively": "活泼热闹",
+    "professional": "专业稳重",
+    "youthful": "年轻潮流",
+    "premium": "高端精致",
+}
+
+
 def _store_context(store: Store) -> str:
-    """给扩写引擎的门店背景（简短）。"""
+    """给扩写引擎的门店背景，让海报"懂这家店的气质"。
+
+    ⚠️ 只喂**影响画面气质/风格**的信息（调性/客群/主打球型/门店风格），
+    **刻意排除价格/电话/地址/数字等任何会被渲染成图上文字的字段**——
+    守住"不主动往生图 prompt 塞中文文字/价格"的铁律（CLAUDE.md）。
+    """
     bits = []
     if store.name:
         bits.append(f"门店名：{store.name}")
     if getattr(store, "city", None):
         bits.append(f"城市：{store.city}")
+    style_label = _BRAND_STYLE_VISUAL.get((getattr(store, "brand_style", "") or "").strip())
+    if style_label:
+        bits.append(f"品牌调性：{style_label}")
+    if getattr(store, "target_customers", None):
+        bits.append(f"主要客群：{store.target_customers}")
+    if getattr(store, "table_types", None):
+        bits.append(f"主打球型/球台：{store.table_types}")
+    if getattr(store, "style", None):
+        bits.append(f"门店风格：{store.style}")
     return "；".join(bits)
 
 

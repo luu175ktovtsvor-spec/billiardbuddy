@@ -18,6 +18,7 @@ from services.workbench_fewshot_service import select_workbench_fewshots
 from services.store_profile_service import render_operation_profile_context
 from services.quota_service import check_quota, increment_usage
 from services.brand_voice_service import get_brand_voice_context
+from services.memory_service import load_store_memory, with_store_brain
 from core.security_guard import check_input_injection, filter_output_leak, AI_RESPONSE_PREFIXES
 from services.scenario_role_map import SCENARIO_ROLE_MAP
 
@@ -59,6 +60,14 @@ async def run_generation(
 
     await check_quota(db, str(store.id))
     _validate_provider_for_production()
+
+    # 店脑：注入这家店的长期记忆 → 让所有走统一管道的生成（诊断/绩效/SOP/玩法/约客/变体/批量）
+    # 都"懂这家店"。必须追加在 prompt 末尾（近因效应压过旧画像，实现改价/纠错优先），其后不可再 append。
+    # 故障安全：店脑读取/格式化失败不影响主生成。
+    try:
+        prompt = with_store_brain(prompt, await load_store_memory(db, store.id))
+    except Exception:
+        logger.warning("run_generation 注入店脑失败，跳过 store_id=%s", store.id, exc_info=True)
 
     _t0 = time.monotonic()
     request = TextRequest(prompt=prompt, max_tokens=max_tokens)
