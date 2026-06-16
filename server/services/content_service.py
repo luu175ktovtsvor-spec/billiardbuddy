@@ -235,7 +235,7 @@ CORE_KNOWLEDGE_KEYS = {
 KNOWLEDGE_KEYWORDS: dict[str, list[str]] = {
     "knowledge.account_nurturing": ["养号", "账号", "起号", "权重", "限流", "新号"],
     "knowledge.assistant_coaching_sop": ["陪练", "教学", "训练", "球技", "动作", "纠正", "练球", "指导"],
-    "knowledge.assistant_difficult_situations": ["刁钻", "难缠", "尴尬", "拒绝", "难题", "不好处理", "投诉"],
+    "knowledge.assistant_difficult_situations": ["刁钻", "难缠", "尴尬", "拒绝", "难题", "不好处理", "投诉", "越界", "想法", "红包", "疑难", "难伺候", "灌酒"],
     "knowledge.pk_incentive": ["PK", "对赌", "激励", "排名", "比拼", "奖惩", "冲业绩"],
     "knowledge.assistant_promotion": ["助教推广", "助教获客", "助教朋友圈", "推广助教", "助教引流"],
     "knowledge.assistant_salary": ["助教薪资", "助教工资", "助教提成", "保底", "分成", "薪资"],
