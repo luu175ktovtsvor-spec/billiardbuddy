@@ -208,3 +208,44 @@ def test_make_platform_content_unknown_platform_skips(monkeypatch):
     out = asyncio.run(agent_tools.make_platform_content({"platform": "twitter", "need": "x"}, ctx))
     assert called == []  # 未知平台不触发生成
     assert "平台" in out
+
+
+# ---- make_groupbuy_content（美团/抖音团购套餐文案） ----
+
+def test_make_groupbuy_content_registered_no_approval():
+    t = default_registry.get("make_groupbuy_content")
+    assert t is not None
+    assert t.requires_approval is False
+
+
+def test_make_groupbuy_content_generates(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(agent_tools, "_append_guardrails",
+                        lambda prompt, store, role=None, intent_text="": prompt)
+
+    async def fake_run(db, store, user, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(result="团购套餐文案")
+
+    monkeypatch.setattr(agent_tools, "run_generation", fake_run)
+    ctx = SimpleNamespace(db=None, store=None, user=SimpleNamespace(my_role="manager"))
+    out = asyncio.run(agent_tools.make_groupbuy_content({"need": "周末双人套餐", "platform": "美团"}, ctx))
+    assert out == "团购套餐文案"
+    assert captured["gen_type"] == "groupbuy"
+    assert captured["sub_type"] == "meituan"  # 美团→meituan
+    assert "周末双人套餐" in captured["prompt"]
+    assert captured["input_params"]["need"] == "周末双人套餐"
+
+
+def test_make_groupbuy_content_empty_skips(monkeypatch):
+    called = []
+
+    async def fake_run(db, store, user, **kwargs):
+        called.append(1)
+        return SimpleNamespace(result="x")
+
+    monkeypatch.setattr(agent_tools, "run_generation", fake_run)
+    ctx = SimpleNamespace(db=None, store=None, user=SimpleNamespace(my_role=None))
+    out = asyncio.run(agent_tools.make_groupbuy_content({"need": "  "}, ctx))
+    assert called == []
+    assert "团购" in out
