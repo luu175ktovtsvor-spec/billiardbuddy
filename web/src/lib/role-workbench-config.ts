@@ -472,6 +472,23 @@ const ASSISTANT_MANAGER_TASKS: RoleTaskCard[] = [
       "目前有助教管理带教吗？",
     ],
   },
+  {
+    id: "am-assistant-supervision",
+    role: "assistant_manager",
+    title: "助教督导与目标管理",
+    description: "给助教定日/月目标、督导主动获客（不主动怎么处理）、带教与维客，按行业标准来",
+    userIntentTemplate: "帮我做一套助教团队的督导和目标管理办法",
+    targetCustomerType: "all",
+    outputPackage: ["sop_checklist", "execution_tips"],
+    sceneTags: ["助教", "督导", "目标", "管理", "带教", "获客", "维客"],
+    requiredProfileModules: ["assistant_system"],
+    priority: "P1",
+    promptKey: "operation.assistant_supervision",
+    inputHints: [
+      "手下几个助教？想解决什么（定目标 / 有人不主动获客 / 带教 / 维客）？",
+      "有没有具体某个助教的情况要处理？",
+    ],
+  },
 ];
 
 /* ─── 前厅 frontdesk — 15 张卡片 ─── */
