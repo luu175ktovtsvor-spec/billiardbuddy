@@ -489,6 +489,23 @@ const ASSISTANT_MANAGER_TASKS: RoleTaskCard[] = [
       "有没有具体某个助教的情况要处理？",
     ],
   },
+  {
+    id: "am-assistant-difficult",
+    role: "assistant_manager",
+    title: "助教疑难场景应对",
+    description: "客户对助教有想法 / 红包 / 越界等棘手场景，守边界又不伤客情的话术",
+    userIntentTemplate: "有客户对助教有想法，帮我想想怎么专业化解、守住边界又不得罪人",
+    targetCustomerType: "all",
+    outputPackage: ["private_chat", "execution_tips"],
+    sceneTags: ["助教", "疑难", "越界", "红包", "边界", "话术"],
+    requiredProfileModules: ["assistant_system"],
+    priority: "P1",
+    promptKey: "operation.assistant_difficult",
+    inputHints: [
+      "具体什么情况？（客户有想法 / 给红包 / 越界 / 难伺候）",
+      "想要应对话术，还是处理原则？",
+    ],
+  },
 ];
 
 /* ─── 前厅 frontdesk — 15 张卡片 ─── */

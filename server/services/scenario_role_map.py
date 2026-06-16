@@ -9,6 +9,7 @@ SCENARIO_ROLE_MAP = {
     "assistant_outreach": "assistant_manager",
     "assistant_booking": "assistant_manager",
     "assistant_supervision": "assistant_manager",
+    "assistant_difficult": "assistant_manager",
     "member_assistant_notice": "assistant_manager",
     "daily_report": None,  # None = 使用请求中的 role 作为 fallback
     "performance_template": "assistant_manager",
