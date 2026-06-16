@@ -177,9 +177,10 @@ export default function AdminUsersPage() {
     setResetSaving(true);
     setResetError("");
     try {
-      const res = await fetch(`${api.baseUrl}/api/v1/admin/users/${resetUserId}/password?new_password=${encodeURIComponent(newPassword)}`, {
+      const res = await fetch(`${api.baseUrl}/api/v1/admin/users/${resetUserId}/password`, {
         method: "PUT",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ new_password: newPassword }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => null);

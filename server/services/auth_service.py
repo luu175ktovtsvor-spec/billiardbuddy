@@ -24,6 +24,11 @@ class InvalidInviteCodeError(AppException):
         super().__init__("邀请码无效或已过期，请向管理员索取新的邀请码", status_code=400)
 
 
+class IncorrectPasswordError(AppException):
+    def __init__(self):
+        super().__init__("当前密码不正确", status_code=400)
+
+
 async def register_user(
     db: AsyncSession, phone: str, password: str, name: str | None,
     invite_code: str | None = None,
@@ -89,3 +94,16 @@ async def login_user(
 
     token = create_access_token(user.id)
     return user, token
+
+
+async def change_password(
+    db: AsyncSession, user: User, old_password: str, new_password: str
+) -> None:
+    """用户自助改密码：验证旧密码 → 设新密码（新密码强度由 schema 校验）。
+    只更新 password_hash，不动用户/门店/历史任何数据；不签发新 token（旧 token 仍有效）。"""
+    if not verify_password(old_password, user.password_hash):
+        raise IncorrectPasswordError()
+    if verify_password(new_password, user.password_hash):
+        raise AppException("新密码不能与旧密码相同", status_code=400)
+    user.password_hash = hash_password(new_password)
+    await db.commit()

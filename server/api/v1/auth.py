@@ -16,8 +16,9 @@ from schemas.auth import (
     RefreshTokenRequest,
     TokenResponse,
     UserResponse,
+    ChangePasswordRequest,
 )
-from services.auth_service import register_user, login_user
+from services.auth_service import register_user, login_user, change_password
 
 router = APIRouter(tags=["认证"])
 
@@ -131,3 +132,14 @@ async def get_me(
     current_user: Annotated[User, Depends(get_current_user)],
 ):
     return current_user
+
+
+@router.put("/password")
+async def change_my_password(
+    body: ChangePasswordRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """用户自助修改密码：验证当前密码 → 设新密码（密码走请求体、不进日志）。旧 token 仍有效。"""
+    await change_password(db, current_user, body.old_password, body.new_password)
+    return {"status": "ok"}
