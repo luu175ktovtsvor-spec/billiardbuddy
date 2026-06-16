@@ -22,6 +22,7 @@ export interface AgentStreamHandlers {
   onToken?: (token: string) => void;
   onToolCall?: (tool: string, args: Record<string, unknown>, id?: string) => void;
   onToolResult?: (tool: string, content: string, id?: string) => void;
+  onApprovalRequest?: (tool: string, args: Record<string, unknown>, id?: string) => void;
   onFinal?: (content: string) => void;
   onDone?: (info: { turns: number; stopped_reason: string }) => void;
   onError?: (error: string) => void;
@@ -500,6 +501,7 @@ class ApiClient {
               case "token": handlers.onToken?.(ev.content || ""); break;
               case "tool_call": handlers.onToolCall?.(ev.tool, ev.args || {}, ev.id); break;
               case "tool_result": handlers.onToolResult?.(ev.tool, ev.content || "", ev.id); break;
+              case "approval_request": handlers.onApprovalRequest?.(ev.tool, ev.args || {}, ev.id); break;
               case "final": handlers.onFinal?.(ev.content || ""); break;
               case "done": handlers.onDone?.({ turns: ev.turns, stopped_reason: ev.stopped_reason }); return;
               case "error": handlers.onError?.(ev.error || "生成出错，请重试"); return;
@@ -513,6 +515,11 @@ class ApiClient {
       if (err instanceof DOMException && err.name === "AbortError") return;
       handlers.onError?.("连接中断，请检查网络后重试");
     }
+  }
+
+  /** 确认执行一个需审批的 Agent 工具（如生图）。⚠️ 生图慢，可能要几分钟，靠 request 的长超时承接。 */
+  async executeAgentTool(tool: string, args: Record<string, unknown>): Promise<{ tool: string; result: string }> {
+    return this.request<{ tool: string; result: string }>("POST", "/api/v1/agent/execute", { tool, args });
   }
 
   generateImage(data: ImageGenerateRequest, signal?: AbortSignal) {

@@ -14,6 +14,7 @@ import { useAuth } from "@/hooks/auth-context";
 import { Sheet } from "@/components/ui/sheet";
 import { QuotaBadge } from "@/components/quota-badge";
 import { CopyButton } from "@/components/generators/copy-button";
+import { getErrorMessage } from "@/lib/utils";
 
 /* AI 运营管家:对话式 Agent。老板说人话 → 管家自己规划、调用工具(写文案/约客/诊断/查今日推荐…)
  * → 交付成果,过程可见。背后是 /agent/chat 的 ReAct 循环,门店画像/店脑/合规/配额全生效。
@@ -26,11 +27,24 @@ interface ToolStep {
   done: boolean;
 }
 
+interface ApprovalState {
+  tool: string;
+  args: Record<string, unknown>;
+  status: "pending" | "done" | "cancelled";
+}
+
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   steps?: ToolStep[]; // 该条回复过程中管家调用过的工具
   error?: boolean;
+  approval?: ApprovalState; // 该条回复附带的"待确认动作"（如生图，花钱需点头）
+}
+
+/** 待确认动作的人话说明（生图等花钱/对外动作经审批闸先确认） */
+function approvalLabel(tool: string): string {
+  if (tool === "make_poster") return "生成一张海报（会用 1 张生图额度，可能要等几分钟）";
+  return "执行这个操作";
 }
 
 const SUGGESTIONS = [
@@ -102,6 +116,7 @@ export default function ManagerPage() {
   const [input, setInput] = useState("");
   const [generating, setGenerating] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [executingIdx, setExecutingIdx] = useState<number | null>(null); // 正在执行确认动作的消息下标
   const [quotaVersion, setQuotaVersion] = useState(0);
   const [quotaRemaining, setQuotaRemaining] = useState<number | null>(null);
   const quotaExhausted = quotaRemaining !== null && quotaRemaining <= 0;
@@ -135,6 +150,7 @@ export default function ManagerPage() {
 
     const steps: ToolStep[] = [];
     let finalText = "";
+    let approval: ApprovalState | undefined;
 
     try {
       await api.streamAgent(
@@ -153,13 +169,16 @@ export default function ManagerPage() {
             }
             setLiveSteps([...steps]);
           },
+          onApprovalRequest: (tool, args) => {
+            approval = { tool, args, status: "pending" };
+          },
           onFinal: (content) => {
             finalText = content;
           },
           onDone: () => {
             setMessages((prev) => [
               ...prev,
-              { role: "assistant", content: finalText, steps: steps.length ? [...steps] : undefined },
+              { role: "assistant", content: finalText, steps: steps.length ? [...steps] : undefined, approval },
             ]);
             setDraft("");
             setLiveSteps([]);
@@ -177,6 +196,29 @@ export default function ManagerPage() {
     } finally {
       if (!controller.signal.aborted) setGenerating(false);
     }
+  };
+
+  // 用户点"确认生成"→ 经 /agent/execute 真正执行该工具（生图慢，可能等几分钟）
+  const confirmApproval = async (idx: number, ap: ApprovalState) => {
+    setExecutingIdx(idx);
+    try {
+      const res = await api.executeAgentTool(ap.tool, ap.args);
+      setMessages((prev) =>
+        prev.map((m, j) => (j === idx && m.approval ? { ...m, approval: { ...m.approval, status: "done" } } : m)),
+      );
+      setMessages((prev) => [...prev, { role: "assistant", content: res.result }]);
+      setQuotaVersion((v) => v + 1);
+    } catch (e) {
+      setMessages((prev) => [...prev, { role: "assistant", content: `⚠️ ${getErrorMessage(e)}`, error: true }]);
+    } finally {
+      setExecutingIdx(null);
+    }
+  };
+
+  const cancelApproval = (idx: number) => {
+    setMessages((prev) =>
+      prev.map((m, j) => (j === idx && m.approval ? { ...m, approval: { ...m.approval, status: "cancelled" } } : m)),
+    );
   };
 
   return (
@@ -259,6 +301,38 @@ export default function ManagerPage() {
                 <div className="mt-1.5 flex items-center gap-3 pl-1">
                   <CopyButton text={m.content} />
                 </div>
+              )}
+              {m.approval?.status === "pending" && (
+                <div className="mt-2 w-full max-w-[92%] rounded-2xl border border-brand-200 bg-brand-50 px-4 py-3">
+                  <p className="mb-2 text-[13px] text-slate-600">这一步会{approvalLabel(m.approval.tool)}，确认吗？</p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => confirmApproval(i, m.approval!)}
+                      disabled={executingIdx === i}
+                      className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-brand-600 px-4 text-sm font-medium text-white transition-transform active:scale-[0.98] disabled:opacity-50"
+                    >
+                      {executingIdx === i ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" /> 生成中…
+                        </>
+                      ) : (
+                        "确认生成"
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => cancelApproval(i)}
+                      disabled={executingIdx === i}
+                      className="inline-flex h-9 items-center rounded-xl px-3 text-sm text-slate-500 transition-transform active:scale-[0.98] disabled:opacity-50"
+                    >
+                      取消
+                    </button>
+                  </div>
+                </div>
+              )}
+              {m.approval?.status === "cancelled" && (
+                <p className="mt-1.5 pl-1 text-xs text-slate-400">已取消</p>
               )}
             </div>
           ),
