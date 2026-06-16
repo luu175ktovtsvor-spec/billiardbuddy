@@ -11,7 +11,7 @@ import logging
 
 from core.timezone import business_today
 from services.agent.registry import tool
-from services.content_service import generate_workbench
+from services.content_service import _append_guardrails, generate_workbench, run_generation
 from services.dashboard_service import get_today_dashboard
 from services.diagnosis_service import analyze_diagnosis
 from services.games_service import recommend_games as _recommend_games
@@ -216,3 +216,63 @@ async def make_poster(args: dict, ctx) -> str:
         return "海报已生成（但没拿到图片链接，去生成历史看看）。"
     # 返回 markdown 图片：前端用现成 ReactMarkdown 直接渲染出图
     return f"做好啦！👇\n\n![门店海报]({url})"
+
+
+# ---- 平台定制内容(抖音/小红书/快手/视频号)：内容生成 + 复制 handoff，不自动发 ----
+# 平台 prompt 只设"格式/调性"，行业知识/门店画像/合规由 run_generation 管道自动注入。
+
+_PLATFORM_ALIAS = {
+    "douyin": "douyin", "抖音": "douyin",
+    "xiaohongshu": "xiaohongshu", "小红书": "xiaohongshu", "xhs": "xiaohongshu", "red": "xiaohongshu",
+    "kuaishou": "kuaishou", "快手": "kuaishou",
+    "shipinhao": "shipinhao", "视频号": "shipinhao", "channels": "shipinhao",
+}
+
+_PLATFORM_CONTENT_PROMPTS = {
+    "douyin": "把下面的需求写成一条**抖音短视频文案 / 口播脚本**：开头 3 秒强钩子抓住人，"
+              "中间口播分段、短句有节奏、突出 1 个核心卖点，结尾明确行动号召；末尾配 3-5 个相关话题标签(#)。"
+              "整体口语化、年轻、有网感，别像硬广。",
+    "xiaohongshu": "把下面的需求写成一条**小红书笔记**：标题 20 字内、有标题党/数字/痛点钩子；"
+                   "正文用 emoji 分段、像真人分享、有种草点或干货、真诚不硬广；结尾引导互动(评论/收藏)；"
+                   "末尾配 5-8 个相关话题标签(#)。",
+    "kuaishou": "把下面的需求写成一条**快手短视频文案 / 口播脚本**：开头直接抛钩子，用词接地气、实在、有'老铁'感，"
+                "突出实惠和真东西，结尾喊话行动；末尾配 3-5 个话题标签(#)。",
+    "shipinhao": "把下面的需求写成一条**微信视频号短视频文案 / 口播脚本**：偏熟人、本地、正能量调性，"
+                 "标题清楚、口播自然亲切、突出门店特色和邻里感，结尾引导到店或转发；适合朋友圈生态传播。",
+}
+
+
+@tool(
+    name="make_platform_content",
+    description="给指定平台写一条平台定制内容、交给用户复制去发：抖音短视频脚本 / 小红书笔记 / 快手 / 视频号。"
+                "当用户要『发抖音 / 做个抖音视频 / 写条小红书 / 发笔记 / 发快手 / 发视频号』时调用。"
+                "按各平台的格式和调性写好，用户复制后到对应 App 自己发（我们不替他自动发）。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "platform": {"type": "string", "description": "目标平台：douyin(抖音) / xiaohongshu(小红书) / kuaishou(快手) / shipinhao(视频号)"},
+            "need": {"type": "string", "description": "要发什么内容，原话即可，如'周末双人半价活动'"},
+        },
+        "required": ["platform", "need"],
+    },
+)
+async def make_platform_content(args: dict, ctx) -> str:
+    p = _PLATFORM_ALIAS.get((args.get("platform") or "").strip().lower(), (args.get("platform") or "").strip().lower())
+    need = (args.get("need") or "").strip()
+    instruction = _PLATFORM_CONTENT_PROMPTS.get(p)
+    if not instruction or not need:
+        return "告诉我发哪个平台(抖音/小红书/快手/视频号)和要发什么内容，我来写。"
+
+    role = getattr(ctx.user, "my_role", None) or "manager"
+    prompt = f"{instruction}\n\n【要发的内容/需求】\n{need}"
+    prompt = _append_guardrails(prompt, ctx.store, role=role, intent_text=need)
+    gen = await run_generation(
+        ctx.db, ctx.store, ctx.user,
+        prompt=prompt,
+        gen_type="platform_content",
+        sub_type=p,
+        input_params={"platform": p, "need": need},
+        user_input=need,
+        max_tokens=1500,
+    )
+    return gen.result
