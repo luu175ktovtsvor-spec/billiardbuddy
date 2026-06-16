@@ -280,7 +280,9 @@ async def make_platform_content(args: dict, ctx) -> str:
         return "告诉我发哪个平台(抖音/小红书/快手/视频号)和要发什么内容，我来写。"
 
     role = getattr(ctx.user, "my_role", None) or "manager"
-    prompt = f"{instruction}\n{_PLATFORM_REDLINE}\n\n【要发的内容/需求】\n{need}"
+    loc = "".join(x for x in [getattr(ctx.store, "city", "") or "", getattr(ctx.store, "district", "") or ""] if x)
+    loc_line = f"\n【门店所在城市】{loc}（需要同城/城市标签时只用这个真实地点，绝不编造其它城市）" if loc else ""
+    prompt = f"{instruction}\n{_PLATFORM_REDLINE}{loc_line}\n\n【要发的内容/需求】\n{need}"
     prompt = _append_guardrails(prompt, ctx.store, role=role, intent_text=need)
     gen = await run_generation(
         ctx.db, ctx.store, ctx.user,
@@ -337,7 +339,9 @@ async def make_groupbuy_content(args: dict, ctx) -> str:
         instruction += "\n抖音版:标题更要数字+紧迫感、卖点一句话能拍进视频;抖音核销率偏低,**结尾强化「尽快到店/提前预约留台」**。"
     elif platform == "meituan":
         instruction += "\n美团版:信息写全、强调体验口碑、打消顾虑(人找店、重决策复购)。"
-    prompt = f"{instruction}\n\n【团购需求】\n{need}"
+    loc = "".join(x for x in [getattr(ctx.store, "city", "") or "", getattr(ctx.store, "district", "") or ""] if x)
+    loc_line = f"\n【门店所在城市】{loc}（如需写到地点只用这个真实地点，别编造）" if loc else ""
+    prompt = f"{instruction}{loc_line}\n\n【团购需求】\n{need}"
     prompt = _append_guardrails(prompt, ctx.store, role=role, intent_text=need)
     gen = await run_generation(
         ctx.db, ctx.store, ctx.user,
