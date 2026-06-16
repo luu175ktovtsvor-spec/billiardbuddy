@@ -73,6 +73,8 @@ const TOOL_META: Record<string, { label: string; Icon: typeof Wrench }> = {
   assistant_outreach: { label: "拟约客话术", Icon: UserPlus },
   diagnose_operation: { label: "做经营诊断", Icon: Stethoscope },
   recommend_games: { label: "想玩法", Icon: Dices },
+  make_poster: { label: "做海报", Icon: ImageIcon },
+  make_platform_content: { label: "写平台内容", Icon: Sparkles },
 };
 
 function toolMeta(name: string) {
