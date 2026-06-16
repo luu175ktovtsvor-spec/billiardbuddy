@@ -276,3 +276,55 @@ async def make_platform_content(args: dict, ctx) -> str:
         max_tokens=1500,
     )
     return gen.result
+
+
+# ---- 团购套餐文案(美团/抖音来客)：内容生成 + 引导后台上架，不接服务商 API、不自动上架、不碰核销 ----
+
+_GROUPBUY_PLATFORM = {
+    "meituan": "meituan", "美团": "meituan", "点评": "meituan", "大众点评": "meituan",
+    "douyin": "douyin", "抖音": "douyin", "抖音团购": "douyin", "抖音来客": "douyin",
+}
+
+
+@tool(
+    name="make_groupbuy_content",
+    description="给美团/抖音团购写一套可直接上架的团购套餐文案(套餐标题/卖点/包含内容/使用规则)+ 一条引流钩子。"
+                "当用户要『做个团购 / 上个套餐 / 写团购 / 搞个引流低价』时调用。写好后引导老板去商家后台"
+                "(美团开店宝 / 抖音来客)自己上架——我们不替他上架、不碰核销。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "need": {"type": "string", "description": "想做什么团购，如'周末双人台费套餐''9.9 新人引流低价''4 人欢乐时光'"},
+            "platform": {"type": "string", "description": "平台(可选)：meituan(美团) / douyin(抖音团购)"},
+        },
+        "required": ["need"],
+    },
+)
+async def make_groupbuy_content(args: dict, ctx) -> str:
+    need = (args.get("need") or "").strip()
+    if not need:
+        return "告诉我想做个什么团购(如'周末双人套餐''9.9 新人引流'),我来写。"
+    platform = _GROUPBUY_PLATFORM.get((args.get("platform") or "").strip().lower(), "")
+    plat_hint = {"douyin": "(发抖音来客)", "meituan": "(发美团)"}.get(platform, "")
+
+    role = getattr(ctx.user, "my_role", None) or "manager"
+    instruction = (
+        f"把下面的需求写成一套**可直接上架**的台球房团购套餐文案{plat_hint}，包含：\n"
+        "① 套餐标题(吸引点击、带价格感、突出划算)\n"
+        "② 卖点(为什么值、适合谁)\n"
+        "③ 包含内容(清单:台费时长 / 几人用 / 是否含助教 / 饮品小食等)\n"
+        "④ 使用规则(有效期、适用时段如周中/非节假日、是否需预约、不可叠加、到店核销)\n"
+        "最后附一条引流到这个团购的短视频/朋友圈钩子。要具体、数字清楚、能直接拿去商家后台上架。"
+    )
+    prompt = f"{instruction}\n\n【团购需求】\n{need}"
+    prompt = _append_guardrails(prompt, ctx.store, role=role, intent_text=need)
+    gen = await run_generation(
+        ctx.db, ctx.store, ctx.user,
+        prompt=prompt,
+        gen_type="groupbuy",
+        sub_type=platform or "general",
+        input_params={"need": need, "platform": platform or "general"},
+        user_input=need,
+        max_tokens=2000,
+    )
+    return gen.result
