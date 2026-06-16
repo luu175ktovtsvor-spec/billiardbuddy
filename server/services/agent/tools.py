@@ -26,7 +26,8 @@ _WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日
 
 @tool(
     name="get_current_date",
-    description="获取今天的日期（北京时间）和星期几。当需要判断'今天/今晚/本周末/几号/是工作日还是周末'时调用。",
+    description="获取今天的日期（北京时间）和星期几。仅当用户直接问日期/星期，或你确实要据此判断时才调用；"
+                "写具体运营内容（朋友圈/活动/海报等）时系统已自动注入当天日期，不必为此单独查。",
     parameters={"type": "object", "properties": {}},
 )
 async def get_current_date(args: dict, ctx) -> str:
@@ -37,7 +38,8 @@ async def get_current_date(args: dict, ctx) -> str:
 @tool(
     name="get_today_recommendation",
     description="查这家店今天的运营推荐（综合日期/节日/门店画像/成长阶段算出来的）。"
-                "当老板问'今天/这几天该做点啥''有什么建议'，或你需要结合门店当下情况给主意时调用。",
+                "仅当老板开口问『今天/这几天该做点啥』『有没有什么建议/主意』这类开放求建议时才调用；"
+                "用户已经明确要做某件具体事（写文案/做海报/发平台/约客/诊断等）时，别调它，直接用对应工具。",
     parameters={"type": "object", "properties": {}},
 )
 async def get_today_recommendation(args: dict, ctx) -> str:
