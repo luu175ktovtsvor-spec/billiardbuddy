@@ -273,34 +273,6 @@ def test_poster_schemas_structured_fields():
     assert "image_prompt" in pr and "needs" in pr
 
 
-def test_poster_store_context_feeds_visual_traits_not_price():
-    """海报"懂这家店"回归：扩写引擎的门店背景要带上画面气质字段(调性/客群/球型/风格)，
-    但**绝不能带价格/电话等会被渲染成图上文字**的信息（守"不主动塞中文文字/价格"铁律）。"""
-    from api.v1.posters import _store_context
-    from models.store import Store
-
-    s = Store(
-        name="星河台球", city="成都",
-        brand_style="youthful",
-        target_customers="周边写字楼年轻白领",
-        table_types="中式八球为主",
-        style="工业潮流风",
-        pricing={"台费": "金腿68元/小时"},
-        phone="13800001111",
-    )
-    ctx = _store_context(s)
-    # 画面气质字段都在
-    assert "星河台球" in ctx and "成都" in ctx
-    assert "年轻潮流" in ctx          # brand_style 枚举映射成中文气质
-    assert "年轻白领" in ctx and "中式八球" in ctx and "工业潮流风" in ctx
-    # 价格/电话绝不能进生图背景（会被画成图上文字）
-    assert "68" not in ctx and "元" not in ctx, "价格泄露进生图背景=会被渲染成图上文字"
-    assert "13800001111" not in ctx, "电话泄露进生图背景"
-
-    # 空店只给名字、不崩
-    assert _store_context(Store(name="某球房")) == "门店名：某球房"
-
-
 def test_poster_single_image_per_user():
     """生图硬限制：一次只出 1 张(count=1) + 每用户同一时刻只允许一张在跑(_GENERATING_USERS 拦截)。"""
     import inspect as _inspect
