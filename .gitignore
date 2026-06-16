@@ -35,6 +35,9 @@ server/logs/
 # 临时脚本
 scripts/tmp_*
 scripts/test_results_*
+scripts/qa_*.json
+scripts/compare_*.json
+scripts/test_output/
 
 # OS
 .DS_Store
