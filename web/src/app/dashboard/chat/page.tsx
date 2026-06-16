@@ -75,6 +75,7 @@ const TOOL_META: Record<string, { label: string; Icon: typeof Wrench }> = {
   recommend_games: { label: "想玩法", Icon: Dices },
   make_poster: { label: "做海报", Icon: ImageIcon },
   make_platform_content: { label: "写平台内容", Icon: Sparkles },
+  make_groupbuy_content: { label: "写团购套餐", Icon: FileText },
 };
 
 function toolMeta(name: string) {
