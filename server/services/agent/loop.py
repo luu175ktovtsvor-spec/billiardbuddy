@@ -21,6 +21,13 @@ from services.ai.factory import ProviderFactory
 
 logger = logging.getLogger(__name__)
 
+# 审批闸（proposal 模式）：requires_approval 的工具不在循环里执行，
+# 改提请用户确认；这条作为工具结果回灌给模型，让它把方案讲给用户、不要假装已完成。
+_APPROVAL_PENDING_MSG = (
+    "[待用户确认] 已请求执行「{name}」，需用户确认后才会真正执行。"
+    "请用一两句话把你打算做的事告诉用户、并请他确认，不要假装已经做完或已生成。"
+)
+
 
 @dataclass
 class AgentStep:
@@ -96,8 +103,17 @@ async def run_agent_loop(
             fn = tc.get("function") or {}
             name = fn.get("name")
             args = _parse_args(fn.get("arguments"))
-            steps.append(AgentStep(type="tool_call", tool_name=name, tool_args=args, tool_call_id=tc_id))
 
+            tool = registry.get(name) if name else None
+            if tool is not None and tool.requires_approval:
+                # 审批闸：不在循环里执行，记一笔 approval_request、回灌"待确认"
+                steps.append(AgentStep(type="approval_request", tool_name=name, tool_args=args, tool_call_id=tc_id))
+                pending = _APPROVAL_PENDING_MSG.format(name=name)
+                steps.append(AgentStep(type="tool_result", tool_name=name, tool_call_id=tc_id, content=pending))
+                messages.append({"role": "tool", "tool_call_id": tc_id, "content": pending})
+                continue
+
+            steps.append(AgentStep(type="tool_call", tool_name=name, tool_args=args, tool_call_id=tc_id))
             result_str = await _execute_tool(registry, name, args, ctx)
             steps.append(AgentStep(type="tool_result", tool_name=name, tool_call_id=tc_id, content=result_str))
             messages.append({"role": "tool", "tool_call_id": tc_id, "content": result_str})
@@ -198,6 +214,17 @@ async def run_agent_loop_stream(
             fn = tc.get("function") or {}
             name = fn.get("name")
             args = _parse_args(fn.get("arguments"))
+
+            tool = registry.get(name) if name else None
+            if tool is not None and tool.requires_approval:
+                # 审批闸（proposal 模式）：不在循环里执行，吐 approval_request 让前端弹确认，
+                # 把"待确认"回灌让模型讲方案；用户确认后走独立的 /agent/execute 执行。
+                yield {"type": "approval_request", "tool": name, "args": args, "id": tc_id}
+                pending = _APPROVAL_PENDING_MSG.format(name=name)
+                yield {"type": "tool_result", "tool": name, "id": tc_id, "content": pending}
+                messages.append({"role": "tool", "tool_call_id": tc_id, "content": pending})
+                continue
+
             yield {"type": "tool_call", "tool": name, "args": args, "id": tc_id}
             result = await _execute_tool(registry, name, args, ctx)
             yield {"type": "tool_result", "tool": name, "id": tc_id, "content": result}

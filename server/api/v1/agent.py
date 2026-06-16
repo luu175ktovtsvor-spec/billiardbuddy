@@ -118,3 +118,44 @@ async def agent_chat(
         },
         background=BackgroundTask(_learn_in_background, str(store.id), body.message),
     )
+
+
+class AgentExecuteRequest(BaseModel):
+    tool: str
+    args: dict | None = None
+
+
+@router.post("/execute")
+async def agent_execute(
+    body: AgentExecuteRequest,
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
+):
+    """确认后执行一个需审批的工具（proposal 模式的执行端点）。
+
+    只允许执行 requires_approval=True 的工具——这些是对话循环里被拦下、等用户点确认的动作
+    （如生图：花钱）。普通工具在循环里直接执行，不经此路径。
+    工具自身的护栏（配额/限流/落库）由其 handler 负责；这里让其异常（如配额不足）正常抛出，
+    由全局异常处理转成对用户友好的提示。
+    """
+    tool = default_registry.get(body.tool)
+    if tool is None or not tool.requires_approval:
+        raise AIServiceError("该操作不可执行，或无需经此确认")
+
+    args = body.args or {}
+    injection = check_input_injection(
+        " ".join(str(v) for v in args.values() if isinstance(v, (str, int, float)))
+    )
+    if injection:
+        raise AIServiceError(injection)
+
+    ctx = AgentContext(db=db, store=store, user=user)
+    result = await tool.handler(args, ctx)
+    if not isinstance(result, str):
+        try:
+            result = json.dumps(result, ensure_ascii=False)
+        except (TypeError, ValueError):
+            result = str(result)
+    return {"tool": body.tool, "result": result}

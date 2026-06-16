@@ -152,3 +152,66 @@ async def recommend_games(args: dict, ctx) -> str:
         time_available=args.get("time", "30分钟"),
     )
     return gen.result
+
+
+# ---- 受审批工具（花钱/对外，requires_approval=True，循环里不执行，确认后经 /agent/execute 跑） ----
+
+# 每用户同一时刻只允许一张 agent 生图在跑（护住 OpenAI 每分钟出图限额 + 防误触多次扣费）。
+# 进程内即可：真正的全局并发由 poster_service 的信号量兜底；这里只防同一用户连点。
+_POSTER_GENERATING: set[str] = set()
+
+
+@tool(
+    name="make_poster",
+    description="给门店做一张活动/宣传海报（AI 生图）。当用户要『做张海报/出张图/弄个海报』时调用。"
+                "⚠️ 生图要花钱：这个工具会先把方案讲给用户、等他确认后才真正生成，不会自动出图。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "description": {"type": "string", "description": "海报要画成什么样的完整描述（主题/风格/元素/氛围/想突出的卖点），越具体越好"},
+            "ratio": {"type": "string", "description": "比例(可选)：1:1 / 3:4 / 9:16 / 16:9，默认 1:1"},
+        },
+        "required": ["description"],
+    },
+    requires_approval=True,
+)
+async def make_poster(args: dict, ctx) -> str:
+    """确认后才会被调用（经 /agent/execute）。沿用 poster_service 的配额/并发/计费护栏，
+    额外补『每用户单张在跑』锁 + 强制 count=1 + 质量固定 medium（成本可控）。"""
+    from services import poster_service  # 延迟导入，避免 import 期重负载/循环依赖
+
+    desc = (args.get("description") or "").strip()
+    if not desc:
+        return "缺少海报描述，没法生成。"
+
+    uid = str(getattr(ctx.user, "id", "") or "")
+    if uid and uid in _POSTER_GENERATING:
+        return "你上一张海报还在生成中，等它出完再来下一张～"
+    if uid:
+        _POSTER_GENERATING.add(uid)
+    try:
+        result = await poster_service.generate_images(
+            db=ctx.db,
+            store=ctx.store,
+            user_id=ctx.user.id,
+            prompt=desc,
+            image_model="gpt-image-2",
+            ratio=args.get("ratio", "1:1"),
+            quality="medium",  # 固定 medium：high 贵 30-40 倍，agent 默认走性价比；要高清去生图页
+            count=1,            # 一次只出 1 张，护 IPM
+            image_prompt=desc,
+            background_mode="ai_generate",
+        )
+    finally:
+        if uid:
+            _POSTER_GENERATING.discard(uid)
+
+    images = result.get("images") or []
+    if not images:
+        return "海报这次没生成出来，稍后再试一下。"
+    first = images[0]
+    url = first.get("poster_url") if isinstance(first, dict) else getattr(first, "poster_url", None)
+    if not url:
+        return "海报已生成（但没拿到图片链接，去生成历史看看）。"
+    # 返回 markdown 图片：前端用现成 ReactMarkdown 直接渲染出图
+    return f"做好啦！👇\n\n![门店海报]({url})"
