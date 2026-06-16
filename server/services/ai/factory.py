@@ -22,6 +22,15 @@ class ProviderFactory:
         return cls._get_or_create_text_provider(name)
 
     @classmethod
+    def get_orchestration_provider(cls) -> TextProvider:
+        """编排大脑 provider（Agent 规划/选工具用，可与内容生成 provider 不同）。
+
+        默认跟随生成 provider；要切 GLM-4.6 时注册 GLM provider 并设
+        settings.orchestration_model_provider 即可，无需改这里。
+        """
+        return cls._get_or_create_text_provider(settings.effective_orchestration_provider)
+
+    @classmethod
     def _get_or_create_text_provider(cls, name: str) -> TextProvider:
         if name in cls._text_cache:
             return cls._text_cache[name]

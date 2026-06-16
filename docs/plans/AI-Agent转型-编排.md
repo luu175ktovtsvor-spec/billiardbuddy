@@ -1,0 +1,216 @@
+# 球房 AI 运营助手 → AI Agent 转型 · 编排总蓝图
+
+> **本文件是这次转型的权威计划(阶段二·编排产物)。** 代码走 `AI-Agent-Dev` 分支(从 dev 切)。
+> `main` = 美国生产、勿动；`dev` = 网页版日常；`feat/miniprogram` = 小程序接入(独立线)。
+> 状态:**待用户审阅**。审阅通过后进入阶段三·开发(从 P0 开始,逐 task 推进)。
+> 调研依据见本文末「附录·调研结论速查」与 `docs/references/Anthropic-Agent-SDK-参考架构.md`。
+
+---
+
+## 1. 背景与目标
+
+### 1.1 从哪来、到哪去
+- **现状**:一个"场景卡片 + 自由对话"的台球房运营 SaaS。所有 AI 调用是**一发一收**——拼好 prompt → 调 DeepSeek → 出一段文字。功能强、但**不会"自己干活"**:不会规划、不会连续调用多个能力、不会真正动手。
+- **目标**:转型为**台球房运营 AI Agent**——老板用大白话说需求,Agent 自己**规划 → 连续调用一套"技能/工具" → 交付整套成果**,过程可见;按需召回门店记忆(越用越懂这家店);能代执行对外动作(走合规通道 + 人工确认);并能主动盯店、定时提醒。
+
+### 1.2 北极星
+**让一个不懂运营的台球房老板,像雇了个懂行的运营店长——说句话,事就办了(或办到"就差你点头发布"那一步)。**
+
+### 1.3 这不是什么(边界仍在)
+- 不做收银/计费/开台/灯控/库存/会员充值系统(POS 只**读**数据做分析,不**控制**)。
+- 不做会让用户被封号的灰产自动化(见 §3.3)。
+- 不做微服务、不做国际化、不做可视化 Prompt/海报编辑器。
+
+---
+
+## 2. 三个已定决策(用户 2026-06-16 拍板)
+
+| 维度 | 决定 | 含义 |
+|------|------|------|
+| **主交互形态** | 对话管家 + 主动出击 | 反应式对话 Agent 为底座,叠加主动监测/提醒/预生成。96 张卡片降级为「快捷入口 + Agent 的工具库」,仍可单点用 |
+| **大脑模型** | 可切换、先 DeepSeek 验证 | 「编排大脑」做成可切换配置;先用 DeepSeek 跑通实测,规划力不够稳则一键切 GLM-4.6。「内容生成」继续用便宜的 DeepSeek V4-Flash 不变 |
+| **工具边界** | 大幅扩(接业务系统动作) | Agent 可代执行对外动作,但**只走官方合规通道 + 强制人工确认闸**(见 §3.3) |
+
+---
+
+## 3. 目标架构
+
+### 3.1 一句话
+> 一个**对话为主入口**的台球房运营 Agent:老板说人话 → **DeepSeek 大脑(可切 GLM)** 规划 → 调用一套**技能/工具注册表** → 完成多步运营活 → 按需召回**门店记忆(pgvector)** → 对外动作走**合规通道 + 审批闸** → 还能**主动盯店**提醒。
+
+### 3.2 组件分层
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  前端 (Next.js, 微信 WebView 第一公民)                          │
+│  · 对话管家页(主入口):看得见 思考 / 工具调用 / 多步进度          │
+│  · 工作台卡片(快捷入口,直接触发某个工具)                        │
+│  · 审批确认 UI(对外动作前弹确认)                                │
+└───────────────────────────┬─────────────────────────────────┘
+                            │ SSE(协议扩展:token/thinking/tool_call/tool_result/step/approval/done)
+┌───────────────────────────┴─────────────────────────────────┐
+│  Agent 编排层 (新增 server/services/agent/)                    │
+│  · ReAct 循环:模型→(思考)→调工具→观察→继续,直到完成            │
+│  · 工具注册表(Tool Registry):统一 schema + 权限 + 审批标记      │
+│  · 审批闸(Approval Gate):side-effecting 动作先确认             │
+│  · 大脑选择器(可切换 DeepSeek / GLM / …)                       │
+└───────────────────────────┬─────────────────────────────────┘
+                            │ 复用
+┌───────────────────────────┴─────────────────────────────────┐
+│  能力层(现有,包成工具)        │  记忆层                         │
+│  · run_generation 统一管道    │  · 门店画像 / 行业知识库          │
+│  · 现有 25 子路由的十几个能力  │  · 店脑长期记忆(升级 pgvector 召回)│
+│  · 海报生成(独立额度池)        │  · 情景记忆(复用 generations)     │
+│  · 对外动作(P3:企微/美团/抖音) │  · 对话短期记忆(滚动总结)         │
+└───────────────────────────┬─────────────────────────────────┘
+                            │
+┌───────────────────────────┴─────────────────────────────────┐
+│  模型抽象层 (server/services/ai/)                             │
+│  · TextProvider(加 function calling)· ImageProvider           │
+│  · EmbeddingProvider(新增,向量化用)· 大脑/生成 双模型配置       │
+└───────────────────────────────────────────────────────────────┘
+```
+
+### 3.3 ⚠️ 对外动作的合规设计(工具边界 = 大幅扩,但走正道)
+
+| 动作 | 现实约束 | 落地方式 | 阶段 |
+|------|---------|---------|------|
+| 美团 / 抖音发布 | 有官方开放平台 API,但需**企业资质 + 对接审批** | 走官方 API;编排前抓官方文档核实资质门槛与可发布范围 | P3 |
+| 微信"群发" | 🔴 **个人微信第三方自动群发 = 封号红线**(腾讯明令禁止) | **不做自动发**。合规路径:① 门店用**企业微信**→走企微官方消息 API;② 否则 **Agent 拟内容 + 一键复制/引导人工发送** | P3 |
+| POS 数据 | 只**读**安全;**控制**(开台/计费)不做 | 读营业额/上钟数等喂 Agent 当判断依据(日报已在做类似) | P3 |
+
+**统一护栏(借鉴 Codex `approval_policy`)**:
+- 工具分两类:**只读/查询类**(查画像、查知识、查今日推荐、读记忆)→ 自动放行;**写/花钱/对外类**(改门店资料、生图、发布、发送)→ **先弹确认**,用户点头才执行。
+- 任何对外发布/发送**绝不静默自动执行**。这既满足"代执行真实动作",又不闯祸。
+
+**🔓 开放问题(P3 前需用户确认)**:若用户坚持要做"个人微信自动群发",需再次确认封号风险后才评估;当前默认走合规路径。
+
+---
+
+## 4. 关键技术决策(逐项)
+
+### 4.1 模型抽象层加 Function Calling(P0 核心,最硬的一块)
+- **改 `server/services/ai/base.py`**:`TextRequest` 增 `tools: list[dict] | None`、`tool_choice`;`TextResponse` 增 `tool_calls`。
+- **改 `server/services/ai/providers/deepseek.py`**:把 `tools`/`tool_choice` 透传进 `chat.completions.create`;解析非流式 `message.tool_calls` 与**流式 `delta.tool_calls` 增量拼接**(难点)。
+- **依据**:DeepSeek V4 原生支持工具调用(OpenAI 兼容),**思考模式支持多轮"推理+工具调用"**。⚠️ 思考模式工具循环里 `reasoning_content` **必须每轮完整回传**(与普通多轮相反,普通多轮要移除);`finish_reason` 多一个 `insufficient_system_resource` 要当可重试信号。
+
+### 4.2 ReAct 编排循环(P0)
+- **新增 `server/services/agent/loop.py`**:`模型 →(产出思考/工具调用)→ 执行工具 → 把结果作 role:"tool" 消息回灌 → 再调模型`,直到模型产出最终答复或达 `max_turns`。
+- **不引重型框架**(LangGraph/CrewAI/AutoGen):单领域、工具可控、要稳,自研白盒 ReAct 循环最省、侵入最小、易调试。
+- **可借 `orchestrator.py` 的现成能力**(526 行已验证:多步 LLM、并行子任务、状态存 `CollabTask`、超时、取消)——但它是**固定流水线**(规划→执行→汇总),Agent 需要的是**模型自主决定调哪个工具/调几次的动态循环**,把它演进成 tool-use loop。
+
+### 4.3 工具注册表(Tool Registry, P0/P1)
+- **新增 `server/services/agent/tools/`**:每个工具 = `{name, description, input_schema(JSON Schema), 权限标记, 是否需审批, handler}`。
+- `description` 写清"何时该调我"——这是大脑选对工具的关键(借鉴 Claude Skill 的 description 设计)。
+- **现有「卡片→promptKey→后端模板」映射本身就是一份现成的技能目录**(`role-workbench-config.ts` 96 张卡 + 后端 25 子路由),P1 直接转成工具元数据。
+
+### 4.4 SSE 协议扩展(P0/P1,前后端同步改)
+- **后端 `stream.py`**:事件类型从 `token/done/error` 扩展出 `thinking / tool_call_start / tool_result / step / approval_request / done`。
+- **前端 `web/src/lib/api.ts` 的 `_consumeSSEStream`**:按事件类型路由(现在只认 token/error/done/full_content/generation_id/conversation_id)。
+- **前端两页**:`/dashboard/chat` 与 `workbench/[cardId]` 新增"过程展示"面板(思考 + 工具调用 timeline + 多步进度)。现成可复用:conversation_id 多轮、AbortController 中止、行内编辑回存。
+
+### 4.5 大脑可切换(P0 跨切面)
+- **配置位**:区分「编排大脑模型」与「内容生成模型」两个 config(`config.py` + `factory.py`)。
+- 默认编排大脑 = DeepSeek(零新增接入),备选 GLM-4.6(OpenAI 兼容,改 base_url 至 `open.bigmodel.cn/api/paas/v4/` + key 即可)。
+- **验证关**:P1 跑通后用真实运营任务做小样本 A/B,实测 DeepSeek 规划稳定性;不达标切 GLM。
+
+### 4.6 记忆升级(P2)
+- **现状**:店脑记忆**全量注入** prompt 末尾(`memory_service.py`,已有抽取/整合/并发锁/上限);对话只留**最近 5 轮**。问题:记忆一多必撑爆 context、稀释相关性、成本线性涨。
+- **升级**:
+  1. **【最高】pgvector 语义召回**:`store_memories` 加 `embedding` 列 + HNSW 索引,注入前召回 top-k(8~12 条)而非全量。**零新增基础设施**(PG14 已在),SQL 里同时做"语义相似 + `store_id` 过滤"(贴合租户隔离铁律)。
+  2. **【高】情景记忆**:复用 `generations`/`usage_events` 加 embedding,记"哪天给这家店出过什么/效果如何"——直接喂"越用越懂这家店"。
+  3. **【中】对话滚动总结**:最近 5 轮之上,把更早对话压成摘要,防早期信息直接丢(借鉴 Codex compaction)。
+  4. **【中】软衰减**:记忆加 `updated_at`/`last_used_at`,召回排序对久未命中降权,到上限优先淘汰低分项。
+- ⚠️ **Embedding 来源**:DeepSeek **官方无 embedding 接口**(已核实)。新增 `EmbeddingProvider`,走独立服务(OpenAI `text-embedding-3-small`,项目已直连 api.openai.com;或自托管开源中文 embedding)。**编排开发前定下来,别假设 DeepSeek 能出 embedding。**
+
+### 4.7 Skill 规范化(P2)
+- 借鉴 Claude Code 的 SKILL.md 思想,把"运营场景/SOP"沉淀为标准化技能条目(`name` + `description`[何时调] + 可选脚本/资源 + 渐进式加载:平时只给元数据、用到才加载全文)。
+- 与"工具"区分:**工具**=对外系统/能力的一次调用(查/写/发);**技能**=一段可复用的运营工作流知识(指导 Agent 怎么把活干漂亮)。两者都进注册表,大脑按 description 选用。
+
+### 4.8 审批闸(Approval Gate, P2)
+- side-effecting 工具触发时,后端发 `approval_request` 事件 → 前端弹确认 → 用户确认后回传 → 执行;拒绝则跳过。
+- 跨 worker 状态:审批态走 DB(不靠进程内),沿用现有"多 worker 边界"取舍原则。
+
+---
+
+## 5. 分阶段路线图
+
+> 原则:**先把核心 Agent 跑起来并验证大脑(P0+P1),再深化记忆(P2),最后做高风险/高合规成本的对外动作与主动层(P3/P4)**。每阶段末验收 + 与用户确认再进下一阶段。
+
+### P0 · 地基(把"一发一收"变成"会调工具的循环")— ✅ 已完成 2026-06-16
+- **范围**:模型抽象层加 function calling(base.py + deepseek.py 流式 tool_calls);新建 ReAct 循环骨架;工具注册表骨架;大脑可切换配置;SSE 协议扩展(后端事件 + 前端解析)。
+- **产出**:一个能"调 demo 工具、跑通多轮循环、流式吐事件"的最小 Agent + `/api/v1/agent/chat` SSE 端点 + 前端 `streamAgent` 客户端。
+- **验收**:✅ 后端 163 测试绿(全程 TDD,新增 ~30 条);✅ 前端 tsc 干净;✅ **真实 DeepSeek 端到端冒烟通过**(模型自主调用 get_current_date → 用结果作答 → 2 轮收敛,见 `server/scripts/smoke_agent.py`)。
+- **落地文件**:`server/services/ai/base.py`(TextRequest+tools/model、TextResponse+tool_calls)、`server/services/ai/providers/deepseek.py`(透传+解析+流式累积)、`server/services/ai/providers/mock.py`(脚本化)、`server/services/ai/factory.py`(编排 provider)、`server/config.py`(编排模型配置)、`server/services/agent/`(registry/context/tools/loop)、`server/api/v1/agent.py`(SSE 端点)、`web/src/lib/api.ts`(streamAgent)。
+- **遗留给 P1**:agent 端点接全管道(落库/计费/store-brain 注入)、把现有十几个能力登记成工具、对话管家 UI 面板。
+
+### P1 · 对话管家 MVP(反应式 Agent 跑通)
+- **范围**:把现有十几个能力包成工具(见 §6);对话管家前端页(思考/工具/进度面板);DeepSeek 大脑真实任务实测 + (按需)GLM A/B。
+- **产出**:老板能在对话里说"帮我搞定这周末活动",Agent 规划并连续调用文案/海报/群公告/约客话术等工具,交付整套。
+- **验收**:Playwright 真实点通核心路径;大脑规划稳定性有实测结论(继续 DeepSeek 还是切 GLM)。
+
+### P2 · 记忆与技能体系(越用越懂 + 动作前确认)
+- **范围**:pgvector 召回(迁移 + EmbeddingProvider)替代全量注入;情景记忆;对话滚动总结;Skill 规范化;审批闸。
+- **产出**:记忆按需召回、记得"上次给你出过什么";写/花钱/对外动作前弹确认。
+- **验收**:记忆召回相关性 + token 成本下降有数据;审批闸拦住所有 side-effecting 动作。
+
+### P3 · 对外动作(合规落地"大幅扩")
+- **范围**(全部经审批闸):① 先抓官方文档核实**美团/抖音开放平台**发布 API + 资质要求;② **企业微信**消息 API(门店用企微时)/ 否则"拟内容+引导人工发送";③ **POS 只读**对接。
+- **前置**:逐个平台官方 API 与资质门槛**必须先查证**(反幻觉,不臆测端点/参数);🔓 个人微信自动群发的开放问题需用户确认。
+- **验收**:每条对外通道走通一次真实(沙箱/测试)发布,全程有确认闸。
+
+### P4 · 主动出击
+- **范围**:排程引擎(定时任务);门店状态监测(基于行为信号/今日推荐规则);**合规推送通道**(先核实:微信订阅消息/服务号模板/企业微信/短信,WebView 无原生推送);预生成(如"明天会员日,已备好 3 版文案")。
+- **验收**:能在合适时机主动推一条有用提醒给老板,且推送通道合规。
+
+---
+
+## 6. 现有能力 → 工具映射(P1 复用清单)
+
+**几乎零改造(纯结构化入参 + 走 `run_generation`)**:写文案(copywriting/activity/operation)、助教约客(outreach)、前厅 SOP(sop)、小游戏推荐(games)、绩效模板(performance)、经营诊断(diagnosis)、内容变体(repurpose)、批量生成(batch)。
+**非 AI 的确定性数据工具(Agent 的"感知"工具)**:今日推荐/行为信号(dashboard,纯 DB)、列知识模块(knowledge)、日报字段抽取(reports extract)。
+**有状态/特殊,包成"高级能力"**:海报生成(poster_service,独立额度池 + 生图限流护栏照旧)、日报(reports)、店脑读写(memory_service load/remember)。
+
+---
+
+## 7. 风险与开放问题
+
+| # | 风险/问题 | 处理 |
+|---|----------|------|
+| 1 | DeepSeek V4 的 agentic 规划力**查无实测分**(榜上只有上代 V3.2,明显落后 GLM) | 大脑做成可切换,P1 实测;不稳切 GLM-4.6 |
+| 2 | DeepSeek 流式 `tool_calls` 增量拼接、`stream+tools` 官方无背书示例 | P0 单独联调验证;`reasoning_content` 思考模式工具循环要回传 |
+| 3 | 🔴 个人微信自动群发 = 封号 | 不做;走企微官方 API 或人工发送(开放问题待确认) |
+| 4 | 美团/抖音发布需企业资质 + 审批 | P3 前抓官方文档核实,做不到就降级为"拟好内容+引导发布" |
+| 5 | WeChat WebView 无原生推送(影响 P4 主动出击) | P4 前核实合规推送通道 |
+| 6 | 多 worker 下进程内状态(信号量/任务句柄)不共享 | 审批态/Agent 态走 DB;沿用现有取舍 |
+| 7 | Embedding 依赖外部服务(DeepSeek 无) | 新增 EmbeddingProvider,编排前定来源 |
+| 8 | 大改可能波及现有"卡片+对话"用户体验 | 工作台卡片保留为快捷入口;转型在 AI-Agent-Dev 分支,验完才上线 |
+
+---
+
+## 8. CLAUDE.md 需改写的部分(用户已授权)
+
+1. **项目定位**:从"运营辅助 SaaS 工具"→"台球房运营 AI Agent"。
+2. **核心架构原则**:新增"Agent 编排层 / 工具注册表 / ReAct 循环 / 审批闸";"记忆"从全量注入改为 pgvector 召回。
+3. **"不要做的事"**:"不做自动群发/自动私信"铁律**调整**为——"可代执行对外动作,但只走官方合规通道 + 强制人工确认,绝不做个人微信自动群发等封号路径";POS 明确为"只读不控"。
+4. **AI 模型配置**:新增"编排大脑(可切换 DeepSeek/GLM) vs 内容生成(DeepSeek)"双模型说明 + EmbeddingProvider。
+5. **已完成功能 / 项目结构**:随各阶段落地实时更新。
+
+> 改写时机:各阶段落地后实时更新,不一次性空改。本编排文档是过渡期的权威现状来源之一。
+
+---
+
+## 附录 · 调研结论速查(2026-06-16,均经官方来源核实)
+
+- **DeepSeek V4-Flash**:1M 上下文;输入 $0.14 / 缓存命中 $0.0028 / 输出 $0.28(每 1M token);✅ Function Calling(OpenAI 兼容);思考模式支持多轮工具调用。来源 `api-docs.deepseek.com`。
+- **大脑可靠性排序(伯克利 BFCL 函数调用榜)**:Claude > Gemini > **GLM-4.6(72.38,国产第一/全球第 4,反超 GPT-5.2)** > Kimi > DeepSeek-V3.2(56.73) > Qwen。来源 `gorilla.cs.berkeley.edu`(数据截至 2026-04,V4 未进榜)。
+- **国产 vs 国际 agentic 差距**:函数调用、网页浏览已追平/局部反超;业务域多轮工具使用差 5-7 分;终端/CLI 差最大(~20 分)。我们的 agent 任务正落在差距最小的"函数调用+业务域多轮"上→留国产生态可行。
+- **混合方案成本量级**:全 DeepSeek ≈ $0.0028/任务;GLM/Claude/Gemini 当大脑 + DeepSeek 生成 ≈ 贵 6-17 倍;全 Opus ≈ 贵 68 倍。编排 token 少、生成 token 多→"贵模型只做编排"性价比高。
+- **记忆**:pgvector(PG14 已在,零新增基础设施)做 top-k 召回;DeepSeek 无 embedding 接口,需独立 embedding 服务。
+- **API Key**:坚定平台内置(非技术用户 + 移动端 BYO 必泄露;DeepSeek 文本一次约 4 厘,内置完全扛得住);行业惯例(Jasper/Copy.ai)亦内置。
+- **Codex 可借鉴**:统一 ReAct 循环 + 工具回灌、工具按需检索、AGENTS.md 式分层指令(→平台默认<店脑<本次指令)、**审批闸(最该迁移)**、会话持久化+压缩;**不必迁移** OS 沙箱(我们不跑 shell)。⚠️ 最新 Codex 已移除 chat-completions,别想"套个 DeepSeek base_url 直接用",借的是设计思想不是代码。
+- **框架选型**:自研轻量 ReAct(白盒可控)> OpenAI Agents SDK(轻量,DeepSeek 经 `OpenAIChatCompletionsModel` 兼容)> LangGraph(留给未来复杂状态机);不上 CrewAI/AutoGen(多 Agent 对单领域过度设计;AutoGen 已进维护模式)。
+
+---
+
+*文档版本:v1 · 2026-06-16 · 阶段二编排产物 · 待用户审阅*

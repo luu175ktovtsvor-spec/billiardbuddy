@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     image_model_provider: str = "openai"
     image_model_name: str = ""
 
+    # 编排大脑（Agent 规划/选工具用）——与「内容生成」分离，可独立切换。
+    # 留空 = 跟随 text_model_*（零配置即全 DeepSeek，不改现状）。
+    # 规划可靠性不足时，把 provider/name 切到 GLM-4.6（OpenAI 兼容：注册 GLM provider + 配 base_url/key 即可）。
+    orchestration_model_provider: str = ""
+    orchestration_model_name: str = ""
+
     @property
     def database_url(self) -> str:
         return (
@@ -68,6 +74,16 @@ class Settings(BaseSettings):
             f"postgresql://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
+
+    @property
+    def effective_orchestration_provider(self) -> str:
+        """编排大脑 provider 名；留空则跟随生成 provider。"""
+        return self.orchestration_model_provider or self.text_model_provider
+
+    @property
+    def effective_orchestration_model(self) -> str:
+        """编排大脑模型名；留空则跟随生成模型。"""
+        return self.orchestration_model_name or self.text_model_name
 
     model_config = {"env_file": ".env", "case_sensitive": False, "extra": "ignore"}
 

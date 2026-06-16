@@ -17,6 +17,22 @@ const BASE_URL = !configuredBaseUrl
   ? ""
   : configuredBaseUrl.replace(/\/$/, "");
 
+/** Agent 流式对话事件回调（对应后端 /agent/chat 的 SSE 事件：token/tool_call/tool_result/final/done/error）。 */
+export interface AgentStreamHandlers {
+  onToken?: (token: string) => void;
+  onToolCall?: (tool: string, args: Record<string, unknown>, id?: string) => void;
+  onToolResult?: (tool: string, content: string, id?: string) => void;
+  onFinal?: (content: string) => void;
+  onDone?: (info: { turns: number; stopped_reason: string }) => void;
+  onError?: (error: string) => void;
+}
+
+export interface AgentChatPayload {
+  message: string;
+  history?: unknown[];
+  model?: string;
+}
+
 class ApiClient {
   private token: string | null = null;
   baseUrl: string;
@@ -408,6 +424,94 @@ class ApiClient {
         return;
       }
       onError("连接中断，请检查网络后重试");
+    }
+  }
+
+  /** Agent 流式对话：POST /agent/chat，按事件类型回调（token/tool_call/tool_result/final/done/error）。 */
+  async streamAgent(
+    data: AgentChatPayload,
+    handlers: AgentStreamHandlers,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "Accept": "text/event-stream",
+    };
+    if (this.token) headers["Authorization"] = `Bearer ${this.token}`;
+    if (this.storeId) headers["X-Store-Id"] = this.storeId;
+
+    const url = `${this.baseUrl}/api/v1/agent/chat`;
+    try {
+      const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(data), signal });
+      if (!res.ok) {
+        if (res.status === 401 && this.token) {
+          const newToken = await this.refreshAccessToken();
+          if (newToken) {
+            headers["Authorization"] = `Bearer ${newToken}`;
+            const retryRes = await fetch(url, { method: "POST", headers, body: JSON.stringify(data), signal });
+            if (!retryRes.ok) {
+              if (retryRes.status === 401) {
+                this.setToken(null);
+                if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+                  window.location.href = "/login";
+                }
+              }
+              handlers.onError?.(await this.friendlyStreamError(retryRes));
+              return;
+            }
+            return this._consumeAgentSSEStream(retryRes, handlers);
+          }
+        }
+        if (res.status === 401) {
+          this.setToken(null);
+          if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+            window.location.href = "/login";
+          }
+        }
+        handlers.onError?.(await this.friendlyStreamError(res));
+        return;
+      }
+      return this._consumeAgentSSEStream(res, handlers);
+    } catch {
+      handlers.onError?.("网络异常，请检查后重试");
+    }
+  }
+
+  private async _consumeAgentSSEStream(res: Response, handlers: AgentStreamHandlers): Promise<void> {
+    const reader = res.body?.getReader();
+    if (!reader) {
+      handlers.onError?.("无法读取流式响应");
+      return;
+    }
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const ev = JSON.parse(line.slice(6));
+            switch (ev.type) {
+              case "token": handlers.onToken?.(ev.content || ""); break;
+              case "tool_call": handlers.onToolCall?.(ev.tool, ev.args || {}, ev.id); break;
+              case "tool_result": handlers.onToolResult?.(ev.tool, ev.content || "", ev.id); break;
+              case "final": handlers.onFinal?.(ev.content || ""); break;
+              case "done": handlers.onDone?.({ turns: ev.turns, stopped_reason: ev.stopped_reason }); return;
+              case "error": handlers.onError?.(ev.error || "生成出错，请重试"); return;
+            }
+          } catch {
+            // 跳过非法 JSON 行
+          }
+        }
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      handlers.onError?.("连接中断，请检查网络后重试");
     }
   }
 

@@ -5,12 +5,15 @@ from typing import AsyncIterator
 
 @dataclass
 class TextRequest:
-    prompt: str
+    prompt: str = ""  # 单轮模式用；多轮/Agent 走 messages 时可留空（provider 优先用 messages）
     system_prompt: str | None = None
     messages: list[dict] | None = None  # 多轮对话消息数组
     max_tokens: int = 2000
     temperature: float = 0.7
     thinking: dict | None = None  # DeepSeek思考模式控制，如 {"type": "disabled"} 或 {"type": "enabled"}
+    tools: list[dict] | None = None  # function calling 工具定义（OpenAI 格式：[{"type":"function","function":{...}}]）
+    tool_choice: str | dict | None = None  # "auto" / "none" / "required" / {"type":"function","function":{"name":...}}
+    model: str | None = None  # 本次调用模型覆写（编排大脑可用比生成更强的模型）；留空用 settings.text_model_name
 
 
 @dataclass
@@ -18,6 +21,8 @@ class TextResponse:
     content: str
     model: str
     tokens_used: int = 0
+    tool_calls: list[dict] | None = None  # 模型要调用的工具，标准化为 provider 无关 dict，可回灌进 messages
+    finish_reason: str | None = None  # stop / tool_calls / length / content_filter / ...
 
 
 class TextProvider(ABC):
@@ -30,9 +35,13 @@ class TextProvider(ABC):
 
     @abstractmethod
     async def generate_stream(
-        self, request: TextRequest, usage_sink: dict | None = None
+        self, request: TextRequest, usage_sink: dict | None = None,
+        tool_calls_sink: list[dict] | None = None,
     ) -> AsyncIterator[str]:
         """流式生成，逐块 yield 文本片段。
+
+        tool_calls_sink: 可选列表。若本轮模型返回工具调用，流结束后把累积好的
+        tool_calls（标准化 dict）写入其中，供 Agent 循环消费。
 
         usage_sink: 可选字典。生成结束后会把本次 token 用量
         （prompt_tokens / completion_tokens / total_tokens 等）写入其中。
