@@ -198,6 +198,13 @@ class ApiClient {
     return this.request<User>("GET", "/api/v1/auth/me");
   }
 
+  changePassword(oldPassword: string, newPassword: string) {
+    return this.request<{ status: string }>("PUT", "/api/v1/auth/password", {
+      old_password: oldPassword,
+      new_password: newPassword,
+    });
+  }
+
   // ─── Store ───
 
   createStore(data: StoreCreate) {

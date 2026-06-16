@@ -65,6 +65,33 @@ def test_run_generation_logs_usage_events():
     assert 'outcome="failure"' in src and 'outcome="success"' in src, "使用事件须同时记成功与失败"
 
 
+def test_password_strength_rejects_weak():
+    """改密码/重置密码的弱口令校验：挡住连续数字、同字符重复、太短。"""
+    import pytest
+    from schemas.auth import validate_password_strength
+    for weak in ["12345678", "87654321", "11111111", "abc12"]:
+        with pytest.raises(ValueError):
+            validate_password_strength(weak)
+    for ok in ["billiards2026", "myStore88", "Qwer1234"]:
+        assert validate_password_strength(ok) == ok
+
+
+def test_user_self_service_change_password_wired():
+    """用户自助改密码端点必须在(/auth/password + change_password)——防被悄悄删。"""
+    import inspect
+    import api.v1.auth as auth
+    src = inspect.getsource(auth)
+    assert "change_password" in src and '"/password"' in src, "用户自助改密码端点丢失"
+
+
+def test_admin_reset_password_uses_request_body():
+    """后台重置密码必须走请求体(不进URL/日志)——防回退成 query 参数。"""
+    import inspect
+    import api.v1.admin as admin
+    src = inspect.getsource(admin.admin_reset_password)
+    assert "AdminResetPasswordRequest" in src and "body.new_password" in src, "后台重置密码不应再走 query 参数"
+
+
 def test_store_update_whitelist_excludes_identity_and_ownership():
     """门店资料更新走字段白名单——不可经此改 owner_id/id 夺取门店归属或篡改身份。"""
     from services.store_service import _UPDATE_ALLOWED_FIELDS

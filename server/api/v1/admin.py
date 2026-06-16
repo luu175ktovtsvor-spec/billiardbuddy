@@ -14,6 +14,7 @@ from models.store import Store, StoreMember
 from models.plan import Plan, StoreSubscription, SubscriptionPayment
 from models.generation import Generation
 from models.quota import UsageQuota
+from schemas.auth import AdminResetPasswordRequest
 
 # 注意：前缀由 router.py 统一指定（include_router(prefix="/admin")），此处不得再写
 # prefix——否则双前缀变成 /api/v1/admin/admin/*，整个管理后台 404（历史教训）
@@ -143,16 +144,13 @@ async def list_users(
 @router.put("/users/{user_id}/password")
 async def admin_reset_password(
     user_id: str,
-    new_password: str,
+    body: AdminResetPasswordRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """管理员替用户重置密码(用户忘记密码时人工处理)。
+    """管理员替用户重置密码(用户忘记密码时人工处理)。新密码走请求体（不进 URL/日志）+ 强度校验。
     只更新密码哈希,不动用户/门店/生成历史的任何数据。"""
     require_admin(user)
-
-    if len(new_password) < 8:
-        raise HTTPException(status_code=422, detail="密码至少 8 位")
 
     try:
         target_id = uuid.UUID(user_id)
@@ -163,7 +161,7 @@ async def admin_reset_password(
         raise HTTPException(status_code=404, detail="用户不存在")
 
     from core.security import hash_password
-    target.password_hash = hash_password(new_password)
+    target.password_hash = hash_password(body.new_password)
     await db.commit()
     logger.info("admin %s reset password for user %s(%s)", user.id, target.id, target.phone)
     return {"status": "ok", "phone": target.phone}

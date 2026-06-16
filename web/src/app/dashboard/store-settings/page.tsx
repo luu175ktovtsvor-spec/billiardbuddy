@@ -63,6 +63,28 @@ export default function StoreSettingsPage() {
   const [newStoreCity, setNewStoreCity] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
+  // 修改密码（账号安全）
+  const [pwdSheetOpen, setPwdSheetOpen] = useState(false);
+  const [oldPwd, setOldPwd] = useState("");
+  const [newPwd, setNewPwd] = useState("");
+  const [confirmPwd, setConfirmPwd] = useState("");
+  const [pwdSaving, setPwdSaving] = useState(false);
+  const [pwdError, setPwdError] = useState("");
+  const [pwdSuccess, setPwdSuccess] = useState(false);
+  const handleChangePassword = async () => {
+    setPwdError("");
+    if (newPwd.length < 8) { setPwdError("新密码至少 8 位"); return; }
+    if (newPwd !== confirmPwd) { setPwdError("两次输入的新密码不一致"); return; }
+    setPwdSaving(true);
+    try {
+      await api.changePassword(oldPwd, newPwd);
+      setPwdSuccess(true);
+    } catch (err) {
+      setPwdError(err instanceof ApiError ? err.detail : "修改失败，请重试");
+    } finally {
+      setPwdSaving(false);
+    }
+  };
   // 账号区：桌面 Header(门店切换/退出)在手机端隐藏，这里是手机唯一入口
   const [stores, setStores] = useState<StoreListItem[]>([]);
   const [storeSheetOpen, setStoreSheetOpen] = useState(false);
@@ -322,6 +344,22 @@ export default function StoreSettingsPage() {
         </div>
       </div>
 
+      {/* 账号安全：修改密码（手机+桌面都可用） */}
+      <div>
+        <p className="mb-2 px-1 text-xs font-medium text-slate-400">账号安全</p>
+        <div className="overflow-hidden rounded-2xl bg-white">
+          <button
+            type="button"
+            onClick={() => { setOldPwd(""); setNewPwd(""); setConfirmPwd(""); setPwdError(""); setPwdSuccess(false); setPwdSheetOpen(true); }}
+            className="flex h-[52px] w-full items-center gap-3 px-4 text-left transition-colors active:bg-slate-100"
+          >
+            <span className="text-xl">🔒</span>
+            <span className="flex-1 text-[15px] font-medium text-slate-800">修改密码</span>
+            <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />
+          </button>
+        </div>
+      </div>
+
       {/* 切店抽屉（多店时从账号区唤起） */}
       <Sheet open={storeSheetOpen} onClose={() => setStoreSheetOpen(false)} title="切换门店">
         <div className="space-y-1 pb-2">
@@ -338,6 +376,53 @@ export default function StoreSettingsPage() {
               {s.id === store.id && <Check className="h-4 w-4 shrink-0 text-brand-600" />}
             </button>
           ))}
+        </div>
+      </Sheet>
+
+      {/* 修改密码抽屉 */}
+      <Sheet open={pwdSheetOpen} onClose={() => setPwdSheetOpen(false)} title="修改密码">
+        <div className="space-y-3 pb-2">
+          {pwdSuccess ? (
+            <div className="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-600">
+              密码已修改成功，下次登录用新密码。
+            </div>
+          ) : (
+            <>
+              <input
+                type="password"
+                value={oldPwd}
+                onChange={(e) => setOldPwd(e.target.value)}
+                placeholder="当前密码"
+                autoComplete="current-password"
+                className="w-full rounded-xl bg-[#F2F2F7] px-4 py-3 text-[15px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+              />
+              <input
+                type="password"
+                value={newPwd}
+                onChange={(e) => setNewPwd(e.target.value)}
+                placeholder="新密码（至少 8 位，别用连续数字）"
+                autoComplete="new-password"
+                className="w-full rounded-xl bg-[#F2F2F7] px-4 py-3 text-[15px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+              />
+              <input
+                type="password"
+                value={confirmPwd}
+                onChange={(e) => setConfirmPwd(e.target.value)}
+                placeholder="再输一次新密码"
+                autoComplete="new-password"
+                className="w-full rounded-xl bg-[#F2F2F7] px-4 py-3 text-[15px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+              />
+              {pwdError && <p className="px-1 text-sm text-red-600">{pwdError}</p>}
+              <button
+                type="button"
+                onClick={handleChangePassword}
+                disabled={pwdSaving || !oldPwd || !newPwd}
+                className="w-full rounded-xl bg-brand-600 py-3 text-[15px] font-medium text-white transition-transform active:scale-[0.98] disabled:opacity-50"
+              >
+                {pwdSaving ? "提交中…" : "确认修改"}
+              </button>
+            </>
+          )}
         </div>
       </Sheet>
     </div>
