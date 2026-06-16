@@ -38,15 +38,16 @@ const CATEGORY_META: Record<string, { label: string; cls: string }> = {
 };
 
 /**
- * 取前 N 条推荐，并保证"类目多样性"——别让一屏全是发朋友圈。
- * 排序：今日重点 → 你常用 → 补缺口 → 复刻好评 → 完善资料 → 节日/其余；
- * 每类限量（focus≤3，其余 1-2），避免越用越单一。
+ * 取前 N 条推荐，类目多样化，并**优先"懂这家店此刻"的个性化推荐**，再到通用周几建议：
+ * 节日(时效) → 日报(时效) → 上次效果好复刻 → 你常用 → 补缺口 → 成长阶段/完善资料 → 通用周几重点(兜底)。
+ * 这样活跃店首屏看到的是贴合自己的内容，而非"周X推什么"的通用日历；新店没有行为信号时，
+ * 个性化项天然为空、自然回落到周几引导，不会变差。每类限量，避免一屏全是同一种。
  */
 function pickTopRecommendations(recs: DashboardRecommendation[], n = 5): DashboardRecommendation[] {
   const CAP: Record<string, number> = { report: 1, stage: 2, focus: 3, frequent: 1, gap: 2, good: 1, setup: 1, festival: 2 };
-  const RANK: Record<string, number> = { festival: 0, report: 1, stage: 1, focus: 2, frequent: 3, gap: 4, good: 5, setup: 6 };
-  const rank = (r: DashboardRecommendation) =>
-    r.id === "daily_focus" ? -1 : (RANK[r.category || "focus"] ?? 6);
+  // 个性化("懂你"：good/frequent/gap)排在通用"周几重点"(focus)之前；festival/report 时效性强仍靠前。
+  const RANK: Record<string, number> = { festival: 0, report: 1, good: 2, frequent: 3, gap: 4, stage: 5, setup: 5, focus: 6 };
+  const rank = (r: DashboardRecommendation) => RANK[r.category || "focus"] ?? 6;
   const ordered = [...recs].sort((a, b) => rank(a) - rank(b));
   const seen = new Set<string>();
   const catCount: Record<string, number> = {};
