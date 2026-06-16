@@ -163,8 +163,9 @@ _POSTER_GENERATING: set[str] = set()
 
 @tool(
     name="make_poster",
-    description="给门店做一张活动/宣传海报（AI 生图）。当用户要『做张海报/出张图/弄个海报』时调用。"
-                "⚠️ 生图要花钱：这个工具会先把方案讲给用户、等他确认后才真正生成，不会自动出图。",
+    description="给门店做一张活动/宣传海报（AI 生图）。当用户要『做张海报/出张图/弄个海报』时，"
+                "把你构思好的海报画面描述填进 description，**直接调用本工具**。"
+                "不用先用文字问用户『行不行』——系统会自动弹出确认卡片让他点，确认后才真正生成、才花钱。",
     parameters={
         "type": "object",
         "properties": {
