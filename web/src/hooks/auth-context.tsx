@@ -46,9 +46,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     api.setToken(res.access_token);
     const u = await api.getMe();
     setUser(u);
-    // 默认进普通用户工作台——有门店的账号（含"既是老板又是超管"的号）客户端体验与普通用户完全一致。
+    // 登录后默认落地「AI 运营管家」——对话式 Agent 是产品主界面（2026-06 转型）。
+    // 有门店的账号（含"既是老板又是超管"的号）客户端体验与普通用户完全一致。
     // 只有「没有门店的纯平台超管账号」才直接进 /admin（它进 dashboard 没有门店可用）。
-    let dest = "/dashboard";
+    let dest = "/dashboard/chat";
     if (u.is_admin) {
       try {
         await api.getMyStore(); // 有门店 → 当普通用户进 dashboard
