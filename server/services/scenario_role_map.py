@@ -52,4 +52,16 @@ SCENARIO_ROLE_MAP = {
     "holiday_promo": "operator",
     "new_store_opening": "operator",
     "member_day": "operator",
+    # 按 PPT 岗位工作内容补齐（2026-06-16）
+    "purchase_plan": "frontdesk",
+    "frontdesk_onboarding": "frontdesk",
+    "patrol_safety_check": "frontdesk",
+    "shift_schedule": "frontdesk",
+    "phased_goal_plan": "manager",
+    "team_building_plan": "manager",
+    "four_data_review": "manager",
+    "coach_outreach": "coach",
+    "cross_industry_alliance": "operator",
+    "referral_program": "operator",
+    "ground_promotion": "operator",
 }

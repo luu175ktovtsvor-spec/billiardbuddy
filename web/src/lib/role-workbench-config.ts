@@ -16,7 +16,7 @@ export interface RoleTaskCard {
   promptKey?: string;
 }
 
-/* ─── 店长 manager — 10 张卡片 ─── */
+/* ─── 店长 manager — 13 张卡片 ─── */
 
 const MANAGER_TASKS: RoleTaskCard[] = [
   {
@@ -234,9 +234,63 @@ const MANAGER_TASKS: RoleTaskCard[] = [
       "引流区的价格是多少？",
     ],
   },
+  {
+    id: "mgr-phased-goal-plan",
+    role: "manager",
+    title: "阶段性目标计划",
+    description: "制定月度/季度/年度目标，拆解到周+跟踪复盘机制",
+    userIntentTemplate: "帮我定一份这个月的经营目标计划，拆成每周能执行的动作，再说说怎么跟踪复盘",
+    targetCustomerType: "all",
+    outputPackage: ["execution_tips", "daily_report"],
+    sceneTags: ["目标", "计划", "复盘", "管理"],
+    requiredProfileModules: ["business_goals"],
+    priority: "P0",
+    promptKey: "operation.phased_goal_plan",
+    inputHints: [
+      "这次定哪个周期的目标？这个月、这季度还是全年？",
+      "最想提升哪条线？台费、助教费、充值还是好评？",
+      "本店现状大概什么水平？没有就先空着，AI 用占位提示你填。",
+    ],
+  },
+  {
+    id: "mgr-team-building-plan",
+    role: "manager",
+    title: "团队搭建方案",
+    description: "按本店球台规模配人员，排招齐补齐的节奏",
+    userIntentTemplate: "我们店该配多少人、各岗位招什么样的，帮我出个团队搭建方案",
+    targetCustomerType: "all",
+    outputPackage: ["execution_tips", "sop_checklist"],
+    sceneTags: ["团队搭建", "人员配置", "招聘", "管理"],
+    requiredProfileModules: ["basic"],
+    priority: "P1",
+    promptKey: "operation.team_building_plan",
+    inputHints: [
+      "本店多少张球台？目前各岗位有几个人？",
+      "是新店要从头搭，还是已开业要补人？",
+      "现在最缺哪个岗位？助教管理、教练还是前厅？",
+    ],
+  },
+  {
+    id: "mgr-four-data-review",
+    role: "manager",
+    title: "四大数据复盘",
+    description: "台费/助教费/商品费/充值的趋势结构判断+下一步动作",
+    userIntentTemplate: "帮我复盘一下台费、助教费、商品费、充值这四块数据，看哪里出了问题、接下来该做什么",
+    targetCustomerType: "all",
+    outputPackage: ["execution_tips", "daily_report"],
+    sceneTags: ["数据分析", "复盘", "台费", "助教费"],
+    requiredProfileModules: ["business_goals"],
+    priority: "P0",
+    promptKey: "operation.four_data_review",
+    inputHints: [
+      "复盘哪段时间？这周、这个月还是对比上周？",
+      "四块数据手头有数字吗？没有就空着，数字看收银系统。",
+      "最想搞清楚哪块？台费上不去、助教费掉了还是充值少了？",
+    ],
+  },
 ];
 
-/* ─── 助教管理 assistant_manager — 12 张卡片 ─── */
+/* ─── 助教管理 assistant_manager — 14 张卡片 ─── */
 
 const ASSISTANT_MANAGER_TASKS: RoleTaskCard[] = [
   {
@@ -508,7 +562,7 @@ const ASSISTANT_MANAGER_TASKS: RoleTaskCard[] = [
   },
 ];
 
-/* ─── 前厅 frontdesk — 15 张卡片 ─── */
+/* ─── 前厅 frontdesk — 19 张卡片 ─── */
 
 const FRONTDESK_TASKS: RoleTaskCard[] = [
   {
@@ -812,9 +866,81 @@ const FRONTDESK_TASKS: RoleTaskCard[] = [
       "要不要带不合格整改追踪？",
     ],
   },
+  {
+    id: "fd-purchase-plan",
+    role: "frontdesk",
+    title: "商品采购计划",
+    description: "采购品类清单+备货节奏+陈列建议（库存数字以收银系统为准）",
+    userIntentTemplate: "帮我做一份门店商品采购备货计划和陈列建议",
+    targetCustomerType: "all",
+    outputPackage: ["sop_checklist", "execution_tips"],
+    sceneTags: ["前厅", "采购", "备货", "商品", "陈列"],
+    requiredProfileModules: [],
+    priority: "P2",
+    promptKey: "operation.purchase_plan",
+    inputHints: [
+      "是日常补货、节日/赛事备货，还是清滞销？",
+      "侧重饮料零食，还是器材耗材？",
+      "具体库存数量以你收银系统为准，我只给品类和节奏建议。",
+    ],
+  },
+  {
+    id: "fd-staff-onboarding",
+    role: "frontdesk",
+    title: "员工培训上岗",
+    description: "新人分天培训大纲+带教清单+上岗考核要点",
+    userIntentTemplate: "新来了前厅员工，帮我做一份培训上岗计划和带教检查清单",
+    targetCustomerType: "all",
+    outputPackage: ["sop_checklist", "execution_tips"],
+    sceneTags: ["前厅", "培训", "上岗", "新人", "带教"],
+    requiredProfileModules: [],
+    priority: "P2",
+    promptKey: "operation.frontdesk_onboarding",
+    inputHints: [
+      "新人是服务员、前台还是收银？",
+      "要分天培训计划，还是上岗带教检查清单？",
+      "门店有没有特别的服务标准或流程要带教？",
+    ],
+  },
+  {
+    id: "fd-patrol-safety",
+    role: "frontdesk",
+    title: "巡店与安全检查",
+    description: "营业中巡店+消防用电安全逐条检查表",
+    userIntentTemplate: "帮我做一份营业期间的巡店检查和安全检查表",
+    targetCustomerType: "all",
+    outputPackage: ["sop_checklist", "execution_tips"],
+    sceneTags: ["前厅", "巡店", "安全", "消防", "检查"],
+    requiredProfileModules: [],
+    priority: "P2",
+    promptKey: "operation.patrol_safety_check",
+    inputHints: [
+      "是日常巡店、高峰巡店，还是安全专项检查？",
+      "要不要单独突出消防和用电安全？",
+      "按区域分组(服务/卫生/设备/安全)够用吗？",
+    ],
+  },
+  {
+    id: "fd-shift-schedule",
+    role: "frontdesk",
+    title: "班次安排建议",
+    description: "按客流给排班结构+岗位配置+调休原则",
+    userIntentTemplate: "帮我按客流安排前厅班次，保证人够用又不浪费",
+    targetCustomerType: "all",
+    outputPackage: ["sop_checklist", "execution_tips"],
+    sceneTags: ["前厅", "排班", "班次", "人力", "计划"],
+    requiredProfileModules: [],
+    priority: "P2",
+    promptKey: "operation.shift_schedule",
+    inputHints: [
+      "是日常排班、周末高峰，还是节假日/淡季？",
+      "门店有几个岗位要排(前台/服务/收银/推车)？",
+      "具体几个人由你定，我给排班结构和配置建议。",
+    ],
+  },
 ];
 
-/* ─── 老板 boss — 8 张卡片 ─── */
+/* ─── 老板 boss — 9 张卡片 ─── */
 
 const BOSS_TASKS: RoleTaskCard[] = [
   {
@@ -1013,9 +1139,27 @@ const BOSS_TASKS: RoleTaskCard[] = [
       "目标达成了吗？",
     ],
   },
+  {
+    id: "boss-business-strategy",
+    role: "boss",
+    title: "经营策略建议",
+    description: "门店阶段定位+营销/成本/团队策略，老板视角的方向参考",
+    userIntentTemplate: "结合我们店的情况，帮我理一理下一步的经营策略方向",
+    targetCustomerType: "all",
+    outputPackage: ["execution_tips"],
+    sceneTags: ["经营", "策略", "营销", "决策"],
+    requiredProfileModules: ["business_goals"],
+    priority: "P1",
+    promptKey: "operation.business_strategy",
+    inputHints: [
+      "现在最想解决什么？拉客流、提利润、稳团队还是定方向？",
+      "门店处于什么阶段？新店、爬坡还是成熟？",
+      "有没有具体的困扰或目标？",
+    ],
+  },
 ];
 
-/* ─── 运营/内容 operator — 9 张卡片 ─── */
+/* ─── 运营/内容 operator — 12 张卡片 ─── */
 
 const OPERATOR_TASKS: RoleTaskCard[] = [
   {
@@ -1198,9 +1342,63 @@ const OPERATOR_TASKS: RoleTaskCard[] = [
       "目前有在做抖音吗？粉丝多少？",
     ],
   },
+  {
+    id: "op-cross-industry-alliance",
+    role: "operator",
+    title: "异业联盟合作方案",
+    description: "找周边商户互相导流，搭本地 5 公里异业联盟",
+    userIntentTemplate: "帮我做一套异业联盟方案，跟周边商户合作互相引流。",
+    targetCustomerType: "all",
+    outputPackage: ["execution_tips", "sop_checklist"],
+    sceneTags: ["运营", "异业联盟", "引流", "本地"],
+    requiredProfileModules: ["business_goals"],
+    priority: "P1",
+    promptKey: "operation.cross_industry_alliance",
+    inputHints: [
+      "门店周边都有什么商户？餐饮、健身、KTV、网咖？",
+      "最想引来哪类客户？散客、竞技客户还是充值客户？",
+      "有没有现成可以互换的资源？比如体验券、展架位？",
+    ],
+  },
+  {
+    id: "op-referral-program",
+    role: "operator",
+    title: "老带新转介绍机制",
+    description: "设计老客带新客的转介绍奖励和引导话术",
+    userIntentTemplate: "帮我设计一套老带新机制，让老客户愿意带朋友来。",
+    targetCustomerType: "old",
+    outputPackage: ["execution_tips", "private_chat", "group_notice"],
+    sceneTags: ["运营", "转介绍", "老带新", "裂变"],
+    requiredProfileModules: ["commerce_rules"],
+    priority: "P1",
+    promptKey: "operation.referral_program",
+    inputHints: [
+      "想给老客和新客什么福利？台费券、饮料还是助教体验？",
+      "主要想让老客带哪类新人？散客、竞技客户？",
+      "有没有不想用的奖励方式？比如不搞充值赠送。",
+    ],
+  },
+  {
+    id: "op-ground-promotion",
+    role: "operator",
+    title: "地推拓客方案",
+    description: "组织门店周边线下地推，点位/话术/物料/追踪",
+    userIntentTemplate: "帮我做一套地推方案，去周边写字楼商圈拉客加微信。",
+    targetCustomerType: "new",
+    outputPackage: ["execution_tips", "sop_checklist", "private_chat"],
+    sceneTags: ["运营", "地推", "拓客", "线下"],
+    requiredProfileModules: ["business_goals"],
+    priority: "P2",
+    promptKey: "operation.ground_promotion",
+    inputHints: [
+      "门店周边有什么？写字楼、商业街、小区还是学校？",
+      "有几个人能出去地推？",
+      "有没有现成的体验券或物料？没有就先用占位。",
+    ],
+  },
 ];
 
-/* ─── 教练/赛事 coach — 16 张卡片 ─── */
+/* ─── 教练/赛事 coach — 17 张卡片 ─── */
 
 const COACH_TASKS: RoleTaskCard[] = [
   {
@@ -1278,16 +1476,16 @@ const COACH_TASKS: RoleTaskCard[] = [
   {
     id: "coach-joy-billiards-invite",
     role: "coach",
-    title: "乔氏台球桌邀约",
-    description: "结合门店乔氏球桌的约局内容",
-    userIntentTemplate: "帮我写一条乔氏台球桌相关的邀约内容，适合发给竞技客户。",
+    title: "中式八球约局",
+    description: "结合门店球桌（如中式八球台）的约局内容",
+    userIntentTemplate: "帮我写一条中式八球约局内容，适合发给竞技客户。",
     targetCustomerType: "competition",
     outputPackage: ["group_notice", "moments"],
-    sceneTags: ["教练", "乔氏", "约局"],
+    sceneTags: ["教练", "中式八球", "约局"],
     requiredProfileModules: ["equipment"],
     priority: "P0",
     inputHints: [
-      "门店画像里是否已填乔氏台球桌？没有就不要强行写。",
+      "门店主打什么球桌？没有特别的就按通用台写。",
       "是发朋友圈，还是竞技群？",
       "想约练球、周赛热身，还是普通约球？",
     ],
@@ -1541,6 +1739,24 @@ const COACH_TASKS: RoleTaskCard[] = [
       "几个客户在打？",
       "大概什么水平？新手还是有一定基础？",
       "预计打多长时间？",
+    ],
+  },
+  {
+    id: "coach-outreach",
+    role: "coach",
+    title: "教练引流拓客",
+    description: "进同行店结交打球搭子，再自然引导到店的全链路话术",
+    userIntentTemplate: "我想去周边球房打球认识些球友，再把他们引到我们店来，帮我写一套话术",
+    targetCustomerType: "competition",
+    outputPackage: ["private_chat", "execution_tips"],
+    sceneTags: ["教练", "引流", "拓客", "搭子"],
+    requiredProfileModules: [],
+    priority: "P0",
+    promptKey: "operation.coach_outreach",
+    inputHints: [
+      "打算去哪类店拓客？周边社区店、商业店还是竞技店？",
+      "想结交什么样的球友？散客、有水平的、还是固定搭子？",
+      "我们店近期有什么活动可以当引导由头？没有就先不写。",
     ],
   },
 ];
