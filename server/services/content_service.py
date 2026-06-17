@@ -264,7 +264,7 @@ KNOWLEDGE_KEYWORDS: dict[str, list[str]] = {
     "knowledge.recruitment_compliance": ["招聘合规", "用工", "劳动", "合同合规"],
     "knowledge.review_generation_rules": ["好评", "评价", "点评", "晒图", "评论", "review"],
     "knowledge.site_selection": ["选址", "位置", "店面", "商圈", "门面"],
-    "knowledge.tournament_rules": ["比赛", "赛事", "周赛", "月赛", "锦标", "排位", "积分赛", "战报", "主持"],
+    "knowledge.tournament_rules": ["比赛", "赛事", "周赛", "月赛", "锦标", "排位", "积分赛", "战报", "主持", "联赛", "主题之夜", "单身", "情侣", "女生场", "闺蜜", "团建", "包场", "看球", "双业态"],
     "knowledge.traffic_generation": ["引流", "拉新", "获客", "人气", "客流", "流量", "冷清"],
     "knowledge.growth_playbook": ["裂变", "老带新", "转介绍", "集赞", "邀请", "打卡", "拼台", "搭子", "积分", "排行榜", "抽奖", "留存", "复购", "召回", "唤醒", "月卡", "异业", "拉新", "引流", "获客"],
 }
