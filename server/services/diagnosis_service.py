@@ -33,9 +33,11 @@ async def analyze_diagnosis(
     }
 
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
+    # 诊断旗舰必带"决策树 + 指标库"：在 intent 前缀塞诊断触发词，确保 diagnostic_logic
+    # (诊断/经营问题/分析原因) 与 core_metrics(数据/指标) 稳定被知识筛选选中注入，不靠现场措辞碰运气。
     rendered_prompt = _append_guardrails(
         rendered_prompt, store, role="manager",
-        intent_text=f"{PROBLEM_AREA_LABELS.get(problem_area, problem_area)} {current_situation}",
+        intent_text=f"诊断 经营问题 分析原因 数据 指标 {PROBLEM_AREA_LABELS.get(problem_area, problem_area)} {current_situation}",
     )
 
     return await run_generation(
