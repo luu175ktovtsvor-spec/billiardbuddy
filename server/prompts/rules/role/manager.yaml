@@ -57,6 +57,7 @@ required_knowledge:
   - knowledge.customer_profile_template
   - knowledge.opening_preparation
   - knowledge.recharge_strategy
+  - knowledge.growth_playbook
   - knowledge.core_metrics
   - knowledge.review_generation_rules
   - knowledge.daily_workflow_manager
