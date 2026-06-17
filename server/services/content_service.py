@@ -237,7 +237,7 @@ KNOWLEDGE_KEYWORDS: dict[str, list[str]] = {
     "knowledge.assistant_coaching_sop": ["陪练", "教学", "训练", "球技", "动作", "纠正", "练球", "指导"],
     "knowledge.assistant_difficult_situations": ["刁钻", "难缠", "尴尬", "拒绝", "难题", "不好处理", "投诉", "越界", "想法", "红包", "疑难", "难伺候", "灌酒"],
     "knowledge.pk_incentive": ["PK", "对赌", "激励", "排名", "比拼", "奖惩", "冲业绩"],
-    "knowledge.assistant_promotion": ["助教推广", "助教获客", "助教朋友圈", "推广助教", "助教引流"],
+    "knowledge.assistant_promotion": ["助教推广", "助教获客", "助教朋友圈", "推广助教", "助教引流", "自我推广", "推广自己"],
     "knowledge.assistant_salary": ["助教薪资", "助教工资", "助教提成", "保底", "分成", "薪资"],
     "knowledge.assistant_service_sop": ["上钟", "服务流程", "助教服务", "陪打", "陪玩", "点助教", "约助教"],
     "knowledge.assistant_tier_system": ["等级", "晋升", "助教等级", "赋能", "分级", "升级"],
