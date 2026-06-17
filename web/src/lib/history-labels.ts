@@ -32,8 +32,8 @@ const PLATFORM_LABELS: Record<string, string> = {
 
 // 诊断问题域
 const PROBLEM_LABELS: Record<string, string> = {
-  traffic: "客流", revenue: "营收", customer_loss: "服务", staff: "团队",
-  competition: "竞争", activity_effect: "综合",
+  traffic: "客流", revenue: "营收", customer_loss: "老客流失", staff: "团队",
+  competition: "竞争", activity_effect: "活动效果", off_season: "淡季/时段",
 };
 
 const SUB_TYPE_LABELS: Record<string, string> = {

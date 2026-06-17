@@ -119,7 +119,7 @@ async def assistant_outreach(args: dict, ctx) -> str:
         "properties": {
             "situation": {"type": "string", "description": "老板描述的现状/困扰，原话即可"},
             "problem_area": {"type": "string",
-                             "description": "问题领域(可选)：traffic/revenue/customer_loss/staff/competition/activity_effect"},
+                             "description": "问题领域(可选)：traffic(客流)/revenue(营收)/customer_loss(老客流失)/staff(团队)/competition(竞争)/activity_effect(活动效果)/off_season(淡季·工作日白天或某时段空台)"},
         },
         "required": ["situation"],
     },
