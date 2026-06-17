@@ -11,10 +11,11 @@ prompt_engine = get_prompt_engine()
 PROBLEM_AREA_LABELS = {
     "traffic": "客流",
     "revenue": "营收",
-    "customer_loss": "服务",
+    "customer_loss": "老客流失",
     "staff": "团队",
     "competition": "竞争",
-    "activity_effect": "综合",
+    "activity_effect": "活动效果",
+    "off_season": "淡季/时段",
 }
 
 
