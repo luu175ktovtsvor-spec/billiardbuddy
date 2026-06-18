@@ -297,6 +297,28 @@ def _is_core_knowledge(key: str) -> bool:
     return key in CORE_KNOWLEDGE_KEYS or key.startswith("knowledge.daily_workflow")
 
 
+_CONTENT_BIGRAM_CACHE: dict[str, set] = {}
+
+
+def _intent_bigrams(text: str) -> set:
+    s = "".join((text or "").lower().split())
+    return {s[i:i + 2] for i in range(len(s) - 1)} if len(s) >= 2 else set()
+
+
+def _content_bigrams(key: str) -> set:
+    """某条知识【内容本身】的字 bigram 集合（缓存）。用于"按内容找料"：
+    知识里本来就写了的词（如"短视频"），intent 提到就能命中，不依赖手维护的关键词表——
+    根治"忘加暗号就翻不到对应知识"那类脆弱性。"""
+    cached = _CONTENT_BIGRAM_CACHE.get(key)
+    if cached is not None:
+        return cached
+    data = prompt_engine._templates.get(key) or {}
+    text = " ".join(str(v) for v in data.values() if isinstance(v, str))
+    grams = _intent_bigrams(text)
+    _CONTENT_BIGRAM_CACHE[key] = grams
+    return grams
+
+
 def _select_knowledge_keys(required_keys: list[str], intent_text: str) -> list[str]:
     """根据用户意图筛选需要注入的知识键。
 
@@ -309,19 +331,42 @@ def _select_knowledge_keys(required_keys: list[str], intent_text: str) -> list[s
         return required_keys
 
     intent_lower = intent_text.lower()
-    scored: list[tuple[int, str]] = []
+    # ① 关键词命中（精准、保持原行为）：按命中数排序选进，占满 _MAX_SCENE_KNOWLEDGE 为止。
+    kw_scored: list[tuple[int, str]] = []
     for key in required_keys:
         if _is_core_knowledge(key):
             continue
-        keywords = KNOWLEDGE_KEYWORDS.get(key, [])
-        score = sum(1 for kw in keywords if kw.lower() in intent_lower)
-        if score > 0:
-            scored.append((score, key))
+        kw = sum(1 for k in KNOWLEDGE_KEYWORDS.get(key, []) if k.lower() in intent_lower)
+        if kw > 0:
+            kw_scored.append((kw, key))
+    kw_scored.sort(key=lambda x: x[0], reverse=True)
+    selected_keys = [k for _, k in kw_scored[:_MAX_SCENE_KNOWLEDGE]]
 
-    scored.sort(key=lambda x: x[0], reverse=True)
-    selected = {k for _, k in scored[:_MAX_SCENE_KNOWLEDGE]}
+    # ② 还有空位 → 用"内容相关性"补漏：intent 的字 bigram 有多大比例出现在某知识【内容】里。
+    #    只填关键词没占满的剩余槽位，不挤掉关键词已选的（回归风险低），却能把"关键词漏配但内容相关"
+    #    的知识捞回来（如"短视频"在助教推广知识正文里，关键词没配也能命中）。
+    if len(selected_keys) < _MAX_SCENE_KNOWLEDGE:
+        ib = _intent_bigrams(intent_text)
+        rest: list[tuple[float, str]] = []
+        for key in required_keys:
+            if _is_core_knowledge(key) or key in selected_keys:
+                continue
+            cb = _content_bigrams(key)
+            ov = len(ib & cb) if (ib and cb) else 0
+            frac = ov / len(ib) if ib else 0.0
+            # 要求【强重叠】才补：intent 半数以上字 bigram 命中、且绝对命中量 ≥4。
+            # 这样避开"朋友/客户/一个"这类常见字的噪声误补，又能捞回"短视频"这种真相关的漏配，
+            # 也不破坏"诊断知识只在诊断意图出现"等门控（非诊断意图不会和诊断内容强重叠）。
+            if frac >= 0.5 and ov >= 4:
+                rest.append((frac, key))
+        rest.sort(key=lambda x: x[0], reverse=True)
+        for _, key in rest:
+            if len(selected_keys) >= _MAX_SCENE_KNOWLEDGE:
+                break
+            selected_keys.append(key)
+
+    selected = set(selected_keys)
     selected.update(k for k in required_keys if _is_core_knowledge(k))
-
     return [k for k in required_keys if k in selected]
 
 
