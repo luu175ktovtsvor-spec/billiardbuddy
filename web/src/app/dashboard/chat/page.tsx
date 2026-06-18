@@ -10,7 +10,7 @@ import {
   UserPlus, Stethoscope, Dices, Wrench, Menu, LayoutDashboard, LayoutGrid,
   FileText, ImageIcon, Clock, User, BookOpen, Scissors, Paperclip, X,
   ShieldCheck, FolderOpen, AlertTriangle,
-  Search, Save, FilePen, FileSpreadsheet, History, PartyPopper, SquarePen,
+  Search, Save, FilePen, FileSpreadsheet, History, PartyPopper, SquarePen, Wallet,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/auth-context";
@@ -94,6 +94,7 @@ const NAV_ITEMS = [
   { href: "/dashboard/edit", label: "视频剪辑", Icon: Scissors },
   { href: "/dashboard/posters", label: "AI 生图", Icon: ImageIcon },
   { href: "/dashboard/history", label: "生成历史", Icon: Clock },
+  { href: "/dashboard/usage", label: "用量·花费", Icon: Wallet },
   { href: "/dashboard/store-settings", label: "门店设置", Icon: User },
   { href: "/dashboard/guide", label: "使用指南", Icon: BookOpen },
 ];

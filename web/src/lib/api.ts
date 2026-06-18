@@ -778,6 +778,18 @@ class ApiClient {
     }>("GET", "/api/v1/quota");
   }
 
+  /** BYOK 本月用量与粗估花费 */
+  getCost() {
+    return this.request<{
+      month: string;
+      total_tokens: number;
+      total_count: number;
+      est_cost_yuan: number;
+      rate_per_m_tokens: number;
+      by_feature: Array<{ feature: string; tokens: number; count: number }>;
+    }>("GET", "/api/v1/quota/cost");
+  }
+
   // ─── Members ───
 
   createInvitation(data: { role: string; max_uses?: number; expires_in_hours?: number }) {
