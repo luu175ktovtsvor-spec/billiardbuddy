@@ -36,15 +36,23 @@ def _reconcile_columns(sync_conn) -> None:
             if col.name in existing:
                 continue
             coltype = col.type.compile(dialect=dialect)
-            # 默认值：把 server_default 映射成 SQLite 可用字面量（false/true → 0/1）
+            # 默认值：把 server_default 映射成 SQLite ALTER 可用字面量。
+            # 注意 func.false()/func.true()/func.now() 渲染成 'false()'/'true()'/'now()'，
+            # SQLite ALTER ADD COLUMN 不接受非常量默认（CURRENT_TIMESTAMP 例外）→ 必须处理，否则建库崩。
             default_sql = ""
             sd = col.server_default
             if sd is not None and getattr(sd, "arg", None) is not None:
-                arg = sd.arg
-                raw = getattr(arg, "text", None) or str(arg)
-                low = raw.strip().lower()
-                raw = {"false": "0", "true": "1"}.get(low, raw)
-                default_sql = f" DEFAULT {raw}"
+                raw = str(getattr(sd.arg, "text", None) or sd.arg).strip()
+                low = raw.lower().rstrip("()")  # 'false()'→'false'、'now()'→'now'
+                if low == "false":
+                    default_sql = " DEFAULT 0"
+                elif low == "true":
+                    default_sql = " DEFAULT 1"
+                elif low in ("now", "current_timestamp"):
+                    default_sql = " DEFAULT CURRENT_TIMESTAMP"
+                elif "(" not in raw:  # 纯常量(数字/字符串字面量)直接用
+                    default_sql = f" DEFAULT {raw}"
+                # 其它函数型默认 → 不加 DEFAULT（避免 SQLite 非常量默认报错）
             # NOT NULL 无默认会 ALTER 失败 → 兜个空串默认
             if not col.nullable and not default_sql:
                 default_sql = " DEFAULT ''"

@@ -91,6 +91,12 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
       setKeyConfigured(c.key_configured);
       setKeyMask(c.key_mask || "");
       setApiKey("");
+      setImageEnabled(c.image_enabled);
+      setImageBaseUrl(c.image_base_url || "");
+      setImageModel(c.image_model || "");
+      setImageKeyConfigured(c.image_key_configured);
+      setImageKeyMask(c.image_key_mask || "");
+      setImageApiKey("");
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : "切换失败");
     } finally {

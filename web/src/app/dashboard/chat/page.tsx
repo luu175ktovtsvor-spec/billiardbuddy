@@ -31,6 +31,7 @@ interface ToolStep {
   tool: string;
   args?: Record<string, unknown>;
   result?: string;
+  id?: string; // tool_call_id：按它把 tool_result 回填到对应步骤（防审批占位结果覆盖成品）
   done: boolean;
 }
 
@@ -347,17 +348,19 @@ export default function ManagerPage() {
         },
         {
           onToken: (t) => setDraft((prev) => prev + t),
-          onToolCall: (tool, args) => {
-            steps.push({ tool, args, done: false });
+          onToolCall: (tool, args, id) => {
+            steps.push({ tool, args, id, done: false });
             setLiveSteps([...steps]);
           },
-          onToolResult: (_tool, content) => {
-            const last = steps[steps.length - 1];
-            if (last) {
-              last.done = true;
-              last.result = content;
+          onToolResult: (_tool, content, id) => {
+            // 按 id 定位对应步骤回填——不能盲取最后一个：同一轮里审批工具(make_poster)会先发
+            // approval_request(不建步骤)再发一条"待确认"占位结果，盲取末尾会把前面的成品卡内容覆盖掉。
+            const st = id ? steps.find((s) => s.id === id) : steps[steps.length - 1];
+            if (st) {
+              st.done = true;
+              st.result = content;
+              setLiveSteps([...steps]);
             }
-            setLiveSteps([...steps]);
           },
           onApprovalRequest: (tool, args, _id, token, preview) => {
             approval = { tool, args, token, preview, status: "pending" };
