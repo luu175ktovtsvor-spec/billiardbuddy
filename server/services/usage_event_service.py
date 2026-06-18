@@ -38,3 +38,20 @@ async def log_event(event: str, *, store_id=None, user_id=None, props: dict | No
             await db.commit()
     except Exception:
         logger.warning("usage event 记录失败 event=%s", event, exc_info=True)
+
+
+async def observe_compliance(raw_content: str, *, store_id=None, sub_type: str = "") -> None:
+    """可观测性：统计模型【原始输出】里的铁律违反（绝对化广告词等），喂"铁律违反率"指标。
+
+    扫【过滤前】的原始内容，测的是模型真实 slip 率（代码闸随后会修掉、用户看到的是安全版）——
+    这样能量化"换了模型/改了 prompt 后，模型违反铁律的频率有没有下降"，让架构改进可被验证。
+    命中才记一条 compliance_hit。故障安全：绝不影响生成。
+    """
+    try:
+        from core.security_guard import scan_compliance
+        hits = scan_compliance(raw_content or "")
+        if hits:
+            await log_event("compliance_hit", store_id=store_id,
+                            props={"terms": hits[:10], "sub_type": (sub_type or "")[:60]})
+    except Exception:
+        logger.warning("compliance 观测失败", exc_info=True)

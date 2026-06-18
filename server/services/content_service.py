@@ -86,6 +86,13 @@ async def run_generation(
             raise
         raise AIServiceError("AI 生成服务暂时不可用，请稍后重试") from e
 
+    # 可观测性：扫原始输出铁律违反率（对外平台/团购内容尤其敏感，故障安全）
+    try:
+        from services.usage_event_service import observe_compliance
+        await observe_compliance(response.content, store_id=str(store.id), sub_type=sub_type)
+    except Exception:
+        pass
+
     content = response.content
     if strip_prefixes:
         content = _strip_ai_prefixes(content)
@@ -728,6 +735,13 @@ async def generate_workbench(
         raise AIServiceError(e.message, status_code=e.status_code) from e
     except Exception as e:
         raise AIServiceError("AI 生成服务暂时不可用，请稍后重试") from e
+
+    # 可观测性：扫原始输出的铁律违反率（喂"模型 slip 率"指标，故障安全、不影响生成）
+    try:
+        from services.usage_event_service import observe_compliance
+        await observe_compliance(response.content, store_id=str(store.id), sub_type=prompt_key or role)
+    except Exception:
+        pass
 
     content = _strip_ai_prefixes(response.content)
     content = filter_output_leak(content)

@@ -617,3 +617,43 @@ async def usage_scenarios(
             for r in rows
         ],
     }
+
+
+@router.get("/usage/compliance")
+async def usage_compliance(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    days: int = Query(30, ge=1, le=365),
+):
+    """铁律违反观测：模型【原始输出】命中绝对化广告词的频率（slip 率）——量化"换模型/改 prompt
+    后，模型守铁律有没有变好"。compliance_hit 记的是过滤前的违反（代码闸随后已修正、用户看到安全版）。
+    这是"可安全迭代地基"的核心指标：改进可被验证。"""
+    require_admin(user)
+    totals = (await db.execute(text(
+        """
+        SELECT count(*) FILTER (WHERE event = 'generation') AS gens,
+               count(*) FILTER (WHERE event = 'compliance_hit') AS hits
+        FROM usage_events
+        WHERE created_at >= now() - make_interval(days => :days)
+        """
+    ), {"days": days})).one()
+    by_term = (await db.execute(text(
+        """
+        SELECT term, count(*) AS hits
+        FROM usage_events, jsonb_array_elements_text(props->'terms') AS term
+        WHERE event = 'compliance_hit'
+          AND created_at >= now() - make_interval(days => :days)
+        GROUP BY term
+        ORDER BY hits DESC
+        LIMIT 50
+        """
+    ), {"days": days})).all()
+    gens = totals.gens or 0
+    hits = totals.hits or 0
+    return {
+        "days": days,
+        "generations": gens,
+        "violation_events": hits,
+        "slip_rate": round(hits / gens, 4) if gens else 0,
+        "by_term": [{"term": r.term, "hits": r.hits} for r in by_term],
+    }
