@@ -73,12 +73,18 @@ jobs:
         run: node scripts/build_backend.js
 
       # ── ③ 发布 worker(patchright RPA):打成独立 exe,用户免装 Python ──
-      # build_publisher.js 若不存在则跳过(P0.2 尚未落地时不阻塞整条流水线)。
-      - name: 发布 worker 打包(可选)
+      # 默认 gate 住(仓库变量 BUILD_PUBLISHER!=1 时跳过):PyInstaller 打 patchright driver 难调,
+      # 待真 Windows 摸通后把仓库变量 BUILD_PUBLISHER 设 1 再开。
+      # 始终建好空目录 resources/publisher-bin,让 electron-builder 的 extraResources 不因缺源报错;
+      # 跳过时安装包不含打包 worker,publish.js 自动回退;AI/文件/报表等核心功能不受影响、照常出包。
+      - name: 发布 worker 打包(默认 gate 关)
         working-directory: desktop
+        env:
+          BUILD_PUBLISHER: ${{ vars.BUILD_PUBLISHER }}
         run: |
-          if (Test-Path scripts/build_publisher.js) { node scripts/build_publisher.js }
-          else { Write-Host "build_publisher.js 未就绪,跳过(P0.2 待落地)" }
+          New-Item -ItemType Directory -Force -Path resources/publisher-bin | Out-Null
+          if ($env:BUILD_PUBLISHER -eq "1") { node scripts/build_publisher.js }
+          else { Write-Host "BUILD_PUBLISHER!=1,跳过发布 worker 打包(安装包不含发布内核,核心功能不受影响)" }
         shell: pwsh
 
       # ── ④ Electron 壳:打成 nsis 安装包 ──
