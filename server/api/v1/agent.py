@@ -90,6 +90,19 @@ _DESKTOP_FILE_OPS_HINT = (
 )
 
 
+_VALID_PERMISSION_MODES = {"ask", "auto_files", "full"}
+
+
+def _resolve_permission(mode: str | None, full_disk: bool | None) -> tuple[str, bool]:
+    """把请求里的权限/范围设置收敛成安全值。
+    非桌面（云端 web 多租户）一律强制 ask + 无全盘——那里压根没注册本地文件工具，
+    且绝不能让某租户的请求拿到任何文件自主权（防御性）。"""
+    if os.environ.get("DESKTOP_LOCAL") != "1":
+        return "ask", False
+    m = mode if mode in _VALID_PERMISSION_MODES else "ask"
+    return m, bool(full_disk)
+
+
 def _selected_files_note(paths: list[str] | None) -> str:
     """老板当场选定的文件 → 注入 system prompt，让大脑知道有这些文件、用完整路径直接读/改。"""
     if not paths:
@@ -164,6 +177,8 @@ class AgentChatRequest(BaseModel):
     model: str | None = None
     conversation_id: str | None = None  # 多轮续接：传它则后端按会话查历史(刷新不丢、省token)
     selected_files: list[str] | None = None  # 桌面版：老板经文件选择器选定、授权 Agent 读/改的文件绝对路径
+    permission_mode: str | None = None  # 桌面权限：ask(默认)/auto_files(信任·自动改文件)/full(最高·全自动)
+    full_disk_access: bool | None = None  # 高级·全盘：文件工具不限"内容库+选定文件"，可碰任意路径
 
 
 @router.post("/chat")
@@ -190,7 +205,11 @@ async def agent_chat(
         if note:
             system_prompt = system_prompt + "\n\n" + note
 
-    ctx = AgentContext(db=db, store=store, user=user, allowed_paths=body.selected_files or [])
+    perm_mode, full_disk = _resolve_permission(body.permission_mode, body.full_disk_access)
+    ctx = AgentContext(
+        db=db, store=store, user=user, allowed_paths=body.selected_files or [],
+        permission_mode=perm_mode, full_disk_access=full_disk,
+    )
 
     # 多轮续接：有 conversation_id 则从 DB 查本会话历史(替代前端全量回传——刷新不丢、省 token、更可靠);否则用前端 history
     import uuid as _uuid
@@ -277,6 +296,7 @@ class AgentExecuteRequest(BaseModel):
     tool: str
     args: dict | None = None
     selected_files: list[str] | None = None  # 同 chat：审批通过后执行写/改时，授权可动这些选定文件
+    full_disk_access: bool | None = None     # 同 chat：全盘模式下手动确认的文件改动也需放行
 
 
 @router.post("/execute")
@@ -305,7 +325,11 @@ async def agent_execute(
     if injection:
         raise AIServiceError(injection)
 
-    ctx = AgentContext(db=db, store=store, user=user, allowed_paths=body.selected_files or [])
+    _m, full_disk = _resolve_permission(None, body.full_disk_access)
+    ctx = AgentContext(
+        db=db, store=store, user=user, allowed_paths=body.selected_files or [],
+        full_disk_access=full_disk,
+    )
     result = await tool.handler(args, ctx)
     if not isinstance(result, str):
         try:

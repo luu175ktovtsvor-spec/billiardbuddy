@@ -20,7 +20,11 @@ class Tool:
     description: str
     parameters: dict
     handler: ToolHandler
-    requires_approval: bool = False  # 写/花钱/对外类=True；审批闸(P2)据此先弹确认
+    requires_approval: bool = False  # 写/花钱/对外类=True；审批闸据此先弹确认
+    # 审批类别（决定"自动批准/信任模式"下哪些可免确认直接执行）：
+    #   "file"  本机文件读改——可逆（改前自动备份），信任模式可免确认自动改；
+    #   "spend" 花钱/对外（生图/发布/团购）——不可逆/有外部后果，仅"全自动"最高档才免确认。
+    approval_class: str = "spend"
 
     def to_openai_schema(self) -> dict:
         """导出成 DeepSeek/OpenAI 兼容的 tools 数组元素。"""
@@ -69,6 +73,7 @@ def tool(
     description: str,
     parameters: dict | None = None,
     requires_approval: bool = False,
+    approval_class: str = "spend",
     registry: ToolRegistry | None = None,
 ) -> Callable[[ToolHandler], ToolHandler]:
     """装饰器：把一个 async 函数登记为工具。
@@ -88,6 +93,7 @@ def tool(
                 parameters=parameters or {"type": "object", "properties": {}},
                 handler=fn,
                 requires_approval=requires_approval,
+                approval_class=approval_class,
             )
         )
         return fn

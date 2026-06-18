@@ -92,6 +92,18 @@ async def test_edit_excel_on_selected_file_with_backup(library, tmp_path):
     assert len(backups) == 1
 
 
+def test_full_disk_access_bypasses_scope(library, tmp_path):
+    from services.agent import local_tools as lt
+
+    outside = tmp_path / "anywhere" / "任意.txt"
+    outside.parent.mkdir(parents=True)
+    # 未开全盘 → 拒
+    with pytest.raises(ValueError):
+        lt._resolve(str(outside), AgentContext())
+    # 开了全盘（高级模式）→ 放行任意路径
+    assert lt._resolve(str(outside), AgentContext(full_disk_access=True)) == outside.resolve()
+
+
 @pytest.mark.asyncio
 async def test_edit_excel_denies_unselected_outside(library, tmp_path):
     from services.agent import local_tools as lt

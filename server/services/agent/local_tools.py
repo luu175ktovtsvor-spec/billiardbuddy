@@ -41,10 +41,14 @@ def _allowed_paths(ctx) -> list[Path]:
 
 def _resolve(rel_or_abs: str, ctx=None) -> Path:
     """把传入路径解析进沙箱并校验不越界。沙箱 = 内容库 + 用户当场选定的文件/目录。
-    返回绝对 Path；越界抛 ValueError。相对路径一律落到内容库内。"""
+    返回绝对 Path；越界抛 ValueError。相对路径一律落到内容库内。
+    ctx.full_disk_access=True 时不限范围（高级·全盘模式，老板显式开启）。"""
     root = _library_root().resolve()
     p = Path(rel_or_abs)
     path = (p if p.is_absolute() else root / p).resolve()
+    # 高级·全盘模式：老板显式开启 → 不限范围（可碰任意路径）
+    if getattr(ctx, "full_disk_access", False):
+        return path
     # ① 内容库内 → 放行
     if path == root or root in path.parents:
         return path
@@ -174,6 +178,7 @@ _LOCAL_TOOLS = [
         parameters={"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
         handler=write_file,
         requires_approval=True,
+        approval_class="file",
     ),
     Tool(
         name="edit_file",
@@ -181,6 +186,7 @@ _LOCAL_TOOLS = [
         parameters={"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]},
         handler=edit_file,
         requires_approval=True,
+        approval_class="file",
     ),
     Tool(
         name="edit_excel",
@@ -195,6 +201,7 @@ _LOCAL_TOOLS = [
         }, "required": ["path", "changes"]},
         handler=edit_excel,
         requires_approval=True,
+        approval_class="file",
     ),
 ]
 

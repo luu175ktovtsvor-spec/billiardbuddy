@@ -40,6 +40,20 @@ _FORCE_FINAL_MSG = "请基于上面已有的工具结果，直接用一段话给
 _FALLBACK_FINAL = "这个需求我拆了好几步还没完全收尾。你可以把要求说得更具体一点，或者分两次让我来做。"
 
 
+def _auto_approve(tool, ctx) -> bool:
+    """据 ctx.permission_mode 决定一个 requires_approval 工具是否免确认、直接自动执行。
+    ask=都弹确认（默认）；auto_files=仅文件类(可逆、已自动备份)免确认；full=全部免确认（含花钱/对外）。"""
+    mode = getattr(ctx, "permission_mode", "ask") or "ask"
+    if mode == "ask":
+        return False
+    kind = getattr(tool, "approval_class", "spend")
+    if mode == "auto_files":
+        return kind == "file"
+    if mode == "full":
+        return True
+    return False
+
+
 @dataclass
 class AgentStep:
     type: str  # thinking | tool_call | tool_result | final
@@ -118,8 +132,9 @@ async def run_agent_loop(
             args = _parse_args(fn.get("arguments"))
 
             tool = registry.get(name) if name else None
-            if tool is not None and tool.requires_approval:
+            if tool is not None and tool.requires_approval and not _auto_approve(tool, ctx):
                 # 审批闸：不在循环里执行，记一笔 approval_request、回灌"待确认"
+                # （信任/全自动模式下 _auto_approve 为真 → 跳过这里、走下面直接执行）
                 steps.append(AgentStep(type="approval_request", tool_name=name, tool_args=args, tool_call_id=tc_id))
                 pending = _APPROVAL_PENDING_MSG.format(name=name)
                 steps.append(AgentStep(type="tool_result", tool_name=name, tool_call_id=tc_id, content=pending))
@@ -242,9 +257,10 @@ async def run_agent_loop_stream(
             args = _parse_args(fn.get("arguments"))
 
             tool = registry.get(name) if name else None
-            if tool is not None and tool.requires_approval:
+            if tool is not None and tool.requires_approval and not _auto_approve(tool, ctx):
                 # 审批闸（proposal 模式）：不在循环里执行，吐 approval_request 让前端弹确认，
                 # 把"待确认"回灌让模型讲方案；用户确认后走独立的 /agent/execute 执行。
+                # （信任/全自动模式下 _auto_approve 为真 → 跳过这里、走下面直接执行，并自动备份。）
                 yield {"type": "approval_request", "tool": name, "args": args, "id": tc_id}
                 pending = _APPROVAL_PENDING_MSG.format(name=name)
                 yield {"type": "tool_result", "tool": name, "id": tc_id, "content": pending}
