@@ -157,9 +157,38 @@ async def edit_excel(args: dict, ctx) -> str:
     return f"已改 {path.name}：\n" + "\n".join(diffs) + f"\n（原件已备份，可回滚）"
 
 
+# ────────────────────────────── 召回：翻老板本机攒下的历史内容（真 RAG·语义检索） ──────────────────────────────
+
+async def recall_my_content(args, ctx) -> str:
+    """语义检索老板过去生成的内容（"找我上次那条…""跟之前类似的"）。先惰性补建索引再搜。"""
+    store = getattr(ctx, "store", None)
+    if store is None or getattr(store, "id", None) is None:
+        return "（拿不到当前门店，没法翻历史。）"
+    from services.rag.recall import backfill_from_generations, recall
+    await backfill_from_generations(ctx.db, store.id)
+    hits = recall(str(store.id), args.get("query", "") or "", top=5)
+    if not hits:
+        return "没在你过去的内容里找到相关的。要不直接说需求，我现写一条。"
+    lines = []
+    for h in hits:
+        snippet = " ".join((h["text"] or "").split())[:200]
+        lines.append(f"- {snippet}")
+    return "翻到这些你以前写过的相关内容（可参考/在此基础上改）：\n" + "\n".join(lines)
+
+
 # ────────────────────────────── 工具定义（人看得懂的描述，大脑据此选） ──────────────────────────────
 
 _LOCAL_TOOLS = [
+    Tool(
+        name="recall_my_content",
+        description="检索老板【以前生成过】的内容（按意思找，不是按关键词）。当老板说"
+                    "『找我上次那条…』『跟之前类似的』『把以前效果好的那条改改』『我之前写过的XX』时调用——"
+                    "先翻历史找出相关的几条，再据此改写/参考，比从零写更贴老板的风格。",
+        parameters={"type": "object", "properties": {
+            "query": {"type": "string", "description": "要找的内容/主题，原话即可，如'双十一活动朋友圈'"},
+        }, "required": ["query"]},
+        handler=recall_my_content,
+    ),
     Tool(
         name="list_files",
         description="列出本机「内容库」里已有的文件（之前生成的文案/报表/海报/视频等）。要找/改某个文件前先用它看看有啥。",
