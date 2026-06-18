@@ -52,3 +52,7 @@ Thumbs.db
 server/prompts.enc
 
 .superpowers/
+
+# 桌面本地试用产物(不进git)
+.dev-byok-key
+server/billiards_local.db
