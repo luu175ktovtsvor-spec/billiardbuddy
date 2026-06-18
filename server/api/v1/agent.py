@@ -90,6 +90,19 @@ _DESKTOP_FILE_OPS_HINT = (
 )
 
 
+def _selected_files_note(paths: list[str] | None) -> str:
+    """老板当场选定的文件 → 注入 system prompt，让大脑知道有这些文件、用完整路径直接读/改。"""
+    if not paths:
+        return ""
+    lines = "\n".join(f"- {p}" for p in paths if p and p.strip())
+    if not lines:
+        return ""
+    return (
+        "【老板刚选了这些文件交给你处理（可直接读/改，调工具时用下面的完整路径）】\n" + lines +
+        "\n改 Excel/文本前先 read_file 看清内容与单元格坐标；写/改会先弹给老板确认、自动备份原件、可回滚。"
+    )
+
+
 def compose_agent_system_prompt(profile_text: str, brain_text: str) -> str:
     """拼 agent 的 system prompt：基底指令 + 当天日期 + 门店画像 + 店脑记忆（让它"懂当下、懂这家店"）。"""
     parts = [_AGENT_BASE_PROMPT]
@@ -150,6 +163,7 @@ class AgentChatRequest(BaseModel):
     history: list[dict] | None = None
     model: str | None = None
     conversation_id: str | None = None  # 多轮续接：传它则后端按会话查历史(刷新不丢、省token)
+    selected_files: list[str] | None = None  # 桌面版：老板经文件选择器选定、授权 Agent 读/改的文件绝对路径
 
 
 @router.post("/chat")
@@ -170,8 +184,13 @@ async def agent_chat(
     profile_text = render_operation_profile_context(store)
     memories = await load_store_memory(db, store.id)
     system_prompt = compose_agent_system_prompt(profile_text, format_memories_for_prompt(memories))
+    # 桌面版：老板当场选定的文件 → 注入 prompt（告诉大脑路径）+ 进 ctx.allowed_paths（授权工具可动）
+    if body.selected_files and os.environ.get("DESKTOP_LOCAL") == "1":
+        note = _selected_files_note(body.selected_files)
+        if note:
+            system_prompt = system_prompt + "\n\n" + note
 
-    ctx = AgentContext(db=db, store=store, user=user)
+    ctx = AgentContext(db=db, store=store, user=user, allowed_paths=body.selected_files or [])
 
     # 多轮续接：有 conversation_id 则从 DB 查本会话历史(替代前端全量回传——刷新不丢、省 token、更可靠);否则用前端 history
     import uuid as _uuid
@@ -257,6 +276,7 @@ async def agent_chat(
 class AgentExecuteRequest(BaseModel):
     tool: str
     args: dict | None = None
+    selected_files: list[str] | None = None  # 同 chat：审批通过后执行写/改时，授权可动这些选定文件
 
 
 @router.post("/execute")
@@ -285,7 +305,7 @@ async def agent_execute(
     if injection:
         raise AIServiceError(injection)
 
-    ctx = AgentContext(db=db, store=store, user=user)
+    ctx = AgentContext(db=db, store=store, user=user, allowed_paths=body.selected_files or [])
     result = await tool.handler(args, ctx)
     if not isinstance(result, str):
         try:

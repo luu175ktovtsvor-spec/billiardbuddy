@@ -7,7 +7,7 @@
 // 安全默认全保持:contextIsolation 开 / sandbox 开 / nodeIntegration 关。
 // 加载的页面只能通过 preload 的 contextBridge 白名单调用原生能力,拿不到 Node。
 
-const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, dialog } = require("electron");
 const path = require("path");
 const publish = require("./publish");
 const video = require("./video");
@@ -97,6 +97,20 @@ ipcMain.handle("video:probe", (_e, { inputPath }) => video.probe(inputPath));
 ipcMain.handle("video:run", (_e, { op, args }) =>
   video.run(op, args, { onProgress: (p) => emit("video:progress", { op, ...p }) })
 );
+
+// 本地文件选择器:老板选定文件 → 返回绝对路径,前端随对话以 selected_files 传后端,
+// Agent 沙箱据此授权可读/改这些文件(默认 Excel/文本报表;可传 opts.filters/properties 定制)。
+ipcMain.handle("files:pick", async (_e, opts = {}) => {
+  const result = await dialog.showOpenDialog(mainWindow || undefined, {
+    title: opts.title || "选择要让 AI 处理的文件",
+    properties: opts.multi ? ["openFile", "multiSelections"] : ["openFile"],
+    filters: opts.filters || [
+      { name: "报表/文档", extensions: ["xlsx", "xlsm", "csv", "txt", "md"] },
+      { name: "所有文件", extensions: ["*"] },
+    ],
+  });
+  return { canceled: result.canceled, paths: result.filePaths || [] };
+});
 
 // 是否运行在桌面端 + 本地后端地址(前端运行时据此连本地后端,不依赖 build 期 env)
 ipcMain.handle("desktop:info", () => ({

@@ -27,14 +27,32 @@ def _library_root() -> Path:
     return root
 
 
-def _resolve(rel_or_abs: str) -> Path:
-    """把传入路径解析进内容库并校验不越界。返回绝对 Path；越界抛 ValueError。"""
+def _allowed_paths(ctx) -> list[Path]:
+    """用户当场选定、显式授权的文件/目录（来自 OS 文件选择器）。解析为绝对 Path。"""
+    raw = getattr(ctx, "allowed_paths", None) or []
+    out: list[Path] = []
+    for s in raw:
+        try:
+            out.append(Path(s).resolve())
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def _resolve(rel_or_abs: str, ctx=None) -> Path:
+    """把传入路径解析进沙箱并校验不越界。沙箱 = 内容库 + 用户当场选定的文件/目录。
+    返回绝对 Path；越界抛 ValueError。相对路径一律落到内容库内。"""
     root = _library_root().resolve()
     p = Path(rel_or_abs)
     path = (p if p.is_absolute() else root / p).resolve()
-    if path != root and root not in path.parents:
-        raise ValueError(f"越界：只能操作内容库（{root}）内的文件，拒绝 {rel_or_abs}")
-    return path
+    # ① 内容库内 → 放行
+    if path == root or root in path.parents:
+        return path
+    # ② 用户经文件选择器当场选定的文件/目录（或其子文件）→ 放行（显式授权）
+    for a in _allowed_paths(ctx):
+        if path == a or a in path.parents:
+            return path
+    raise ValueError(f"越界：只能操作内容库或你当场选定的文件，拒绝 {rel_or_abs}")
 
 
 def _backup(path: Path) -> str | None:
@@ -63,7 +81,7 @@ async def list_files(args: dict, ctx) -> str:
 
 async def read_file(args: dict, ctx) -> str:
     """读一个文件的内容，给 Agent 看（编辑前先读）。文本直接读；Excel 列出非空单元格。"""
-    path = _resolve(args["path"])
+    path = _resolve(args["path"], ctx)
     if not path.exists():
         return f"文件不存在：{args['path']}"
     if path.suffix.lower() in (".xlsx", ".xlsm"):
@@ -87,7 +105,7 @@ async def read_file(args: dict, ctx) -> str:
 
 async def write_file(args: dict, ctx) -> str:
     """把内容写到内容库里的一个文件（新建或覆盖）。args: path, content。覆盖前自动备份。"""
-    path = _resolve(args["path"])
+    path = _resolve(args["path"], ctx)
     path.parent.mkdir(parents=True, exist_ok=True)
     backup = _backup(path)
     path.write_text(args["content"], encoding="utf-8")
@@ -100,7 +118,7 @@ async def write_file(args: dict, ctx) -> str:
 async def edit_file(args: dict, ctx) -> str:
     """改文本文件的某一段：把 old_text 精确替换成 new_text（同我改代码的方式）。改前备份。
     args: path, old_text, new_text。"""
-    path = _resolve(args["path"])
+    path = _resolve(args["path"], ctx)
     if not path.exists():
         return f"文件不存在：{args['path']}"
     text = path.read_text(encoding="utf-8")
@@ -119,7 +137,7 @@ async def edit_excel(args: dict, ctx) -> str:
     """直接改 Excel 报表的单元格（改营业额、加一列提成等）。改前备份、改后回传逐格 diff。
     args: path, changes=[{cell:'B2', value:8600}, ...]（cell 用 A1 式坐标；多表加 sheet）。"""
     from openpyxl import load_workbook
-    path = _resolve(args["path"])
+    path = _resolve(args["path"], ctx)
     if not path.exists():
         return f"报表不存在：{args['path']}"
     backup = _backup(path)
@@ -147,7 +165,7 @@ _LOCAL_TOOLS = [
     Tool(
         name="read_file",
         description="读取内容库里某个文件的内容（编辑前必须先读，才知道里面是什么）。Excel 会列出各单元格。",
-        parameters={"type": "object", "properties": {"path": {"type": "string", "description": "内容库内的文件名/相对路径"}}, "required": ["path"]},
+        parameters={"type": "object", "properties": {"path": {"type": "string", "description": "内容库内的文件名/相对路径，或老板当场选定文件的完整路径"}}, "required": ["path"]},
         handler=read_file,
     ),
     Tool(

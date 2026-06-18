@@ -7,10 +7,11 @@ import remarkGfm from "remark-gfm";
 import {
   Send, Loader2, Sparkles, Check, CalendarDays, Lightbulb, PenLine,
   UserPlus, Stethoscope, Dices, Wrench, Menu, LayoutDashboard, LayoutGrid,
-  FileText, ImageIcon, Clock, User, BookOpen, Scissors,
+  FileText, ImageIcon, Clock, User, BookOpen, Scissors, Paperclip, X,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/auth-context";
+import { useDesktop } from "@/hooks/use-desktop";
 import { Sheet } from "@/components/ui/sheet";
 import { QuotaBadge } from "@/components/quota-badge";
 import { CopyButton } from "@/components/generators/copy-button";
@@ -149,6 +150,9 @@ function StepList({ steps, active }: { steps: ToolStep[]; active: boolean }) {
 
 export default function ManagerPage() {
   const { isAuthenticated } = useAuth();
+  const { isDesktop, electron } = useDesktop();
+  // 桌面版:老板选定、授权 Agent 读/改的本地文件绝对路径（整轮会话有效，直到清除）
+  const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null); // 多轮续接：刷新不丢、后端按它查历史
   const [draft, setDraft] = useState(""); // 流式中的最终答复
@@ -224,7 +228,12 @@ export default function ManagerPage() {
 
     try {
       await api.streamAgent(
-        { message: msg, history, conversation_id: conversationId },
+        {
+          message: msg,
+          history,
+          conversation_id: conversationId,
+          selected_files: selectedFiles.length ? selectedFiles : undefined,
+        },
         {
           onToken: (t) => setDraft((prev) => prev + t),
           onToolCall: (tool, args) => {
@@ -269,11 +278,24 @@ export default function ManagerPage() {
     }
   };
 
+  // 桌面版：选本地文件交给 AI（授权它读/改这些文件，如"把这份报表的3月营业额改成…"）
+  const pickFiles = async () => {
+    if (!electron) return;
+    try {
+      const r = await electron.files.pick({ multi: true });
+      if (!r.canceled && r.paths.length) {
+        setSelectedFiles((prev) => Array.from(new Set([...prev, ...r.paths])));
+      }
+    } catch { /* 取消/失败忽略 */ }
+  };
+  const removeFile = (p: string) => setSelectedFiles((prev) => prev.filter((x) => x !== p));
+  const baseName = (p: string) => p.split(/[\\/]/).pop() || p;
+
   // 用户点"确认生成"→ 经 /agent/execute 真正执行该工具（生图慢，可能等几分钟）
   const confirmApproval = async (idx: number, ap: ApprovalState) => {
     setExecutingIdx(idx);
     try {
-      const res = await api.executeAgentTool(ap.tool, ap.args);
+      const res = await api.executeAgentTool(ap.tool, ap.args, selectedFiles.length ? selectedFiles : undefined);
       setMessages((prev) =>
         prev.map((m, j) => (j === idx && m.approval ? { ...m, approval: { ...m.approval, status: "done" } } : m)),
       );
@@ -449,7 +471,42 @@ export default function ManagerPage() {
 
       {/* 输入区:手机吸底,桌面贴底 */}
       <div className="fixed bottom-0 left-0 right-0 z-20 border-t border-slate-100 bg-white px-3 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] lg:sticky lg:bottom-4 lg:mt-6 lg:rounded-2xl lg:border lg:border-slate-200 lg:p-3 lg:shadow-sm">
+        {/* 桌面版:已选定、授权 AI 读/改的本地文件（以 chip 展示，可移除） */}
+        {isDesktop && selectedFiles.length > 0 && (
+          <div className="mx-auto mb-2 flex max-w-3xl flex-wrap items-center gap-1.5">
+            {selectedFiles.map((p) => (
+              <span
+                key={p}
+                title={p}
+                className="inline-flex items-center gap-1 rounded-lg bg-brand-50 py-1 pl-2 pr-1 text-[12px] text-brand-700"
+              >
+                <FileText className="h-3.5 w-3.5 shrink-0" />
+                <span className="max-w-[160px] truncate">{baseName(p)}</span>
+                <button
+                  type="button"
+                  onClick={() => removeFile(p)}
+                  aria-label="移除文件"
+                  className="flex h-4 w-4 items-center justify-center rounded text-brand-500 hover:bg-brand-100"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="mx-auto flex max-w-3xl items-end gap-2">
+          {isDesktop && (
+            <button
+              type="button"
+              onClick={pickFiles}
+              disabled={quotaExhausted}
+              aria-label="选文件给 AI 处理"
+              title="选本机文件交给 AI 读/改（如报表）"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#F2F2F7] text-slate-500 transition-transform active:scale-95 disabled:opacity-40"
+            >
+              <Paperclip className="h-5 w-5" />
+            </button>
+          )}
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}

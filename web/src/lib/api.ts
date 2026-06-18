@@ -33,6 +33,7 @@ export interface AgentChatPayload {
   history?: unknown[];
   model?: string;
   conversation_id?: string | null;
+  selected_files?: string[]; // 桌面版：老板选定、授权 Agent 读/改的文件绝对路径
 }
 
 class ApiClient {
@@ -529,9 +530,18 @@ class ApiClient {
     }
   }
 
-  /** 确认执行一个需审批的 Agent 工具（如生图）。⚠️ 生图慢，可能要几分钟，靠 request 的长超时承接。 */
-  async executeAgentTool(tool: string, args: Record<string, unknown>): Promise<{ tool: string; result: string }> {
-    return this.request<{ tool: string; result: string }>("POST", "/api/v1/agent/execute", { tool, args });
+  /** 确认执行一个需审批的 Agent 工具（如生图、改本地文件）。⚠️ 生图慢，可能要几分钟，靠 request 的长超时承接。
+   * selectedFiles：桌面版改本地选定文件时透传，授权 execute 端可动这些文件（与 chat 一致）。 */
+  async executeAgentTool(
+    tool: string,
+    args: Record<string, unknown>,
+    selectedFiles?: string[],
+  ): Promise<{ tool: string; result: string }> {
+    return this.request<{ tool: string; result: string }>("POST", "/api/v1/agent/execute", {
+      tool,
+      args,
+      selected_files: selectedFiles,
+    });
   }
 
   generateImage(data: ImageGenerateRequest, signal?: AbortSignal) {

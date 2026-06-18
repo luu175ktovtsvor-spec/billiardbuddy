@@ -33,4 +33,11 @@ contextBridge.exposeInMainWorld("electron", {
     run: (op, args) => ipcRenderer.invoke("video:run", { op, args }),
     onProgress: (cb) => on("video:progress", cb),
   },
+
+  // ── 本地文件(让 AI"长在电脑上":选定文件→授权 Agent 读/改) ──
+  files: {
+    // 弹系统文件选择器,返回 { canceled, paths: [绝对路径] }。
+    // 选定的文件随对话以 selected_files 传给后端,Agent 才被授权读/改它(沙箱机制)。
+    pick: (opts) => ipcRenderer.invoke("files:pick", opts || {}),
+  },
 });
