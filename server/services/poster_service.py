@@ -311,8 +311,8 @@ async def generate_images(
     logger.info("AI 生图: ratio=%s, count=%d, base=%s, refs=%d, conversation=%s",
                 ratio, count, bool(base_image), len(ref_bytes), bool(conv_uuid))
 
-    # 使用 Images API 生成
-    provider = OpenAIImageProvider(api_key=api_key, base_url=image_base_url)
+    # 按 base_url 自动路由到对应生图 Provider（OpenAI 兼容 / 硅基流动 / 通义万相…，CC Switch 式口子）
+    provider = ProviderFactory.build_image_provider(api_key, image_base_url, image_model_cfg)
 
     # 生成 conversation_id（如果是新对话；旧对话沿用已校验的 conv_uuid）
     conv_id = str(conv_uuid) if conv_uuid else str(uuid.uuid4())

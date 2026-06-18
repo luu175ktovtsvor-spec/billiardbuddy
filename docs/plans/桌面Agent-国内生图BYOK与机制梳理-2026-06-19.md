@@ -12,23 +12,25 @@
 
 ## 1. 国内生图模型怎么接入（核心：大陆调不了 OpenAI）
 
-盒子在大陆，调不了 `api.openai.com`，**生图必须用国内模型 + 老板自己的 key**。已查证三档接入路径：
+盒子在大陆，调不了 `api.openai.com`，**生图必须用国内模型 + 老板自己的 key**。逐项查证官方文档后，国内生图分**两大阵营，不是"接口一样只换 key"**：
 
-| 档 | 模型/平台 | 接入方式（查证） | 工作量 |
+| 阵营 | 厂商（查证 base_url） | 关键差异 | 代码状态 |
 |---|---|---|---|
-| **T1 已打通** | **硅基流动 SiliconFlow** | **OpenAI 兼容** `/images/generations`，一个 key 通吃 Kolors(快手可图)/FLUX 等。老板填 `base_url=https://api.siliconflow.cn/v1` + key + `model=Kwai-Kolors/Kolors` | 代码层已通（见下） |
-| **T2 待适配器** | **通义万相**（阿里百炼 DashScope） | 文生图是**原生异步**（建任务→轮询，1-2 分钟），非 OpenAI 那套 | 写专属 ImageProvider 适配器 |
-| **T3 待适配器(含视频)** | **即梦 / Seedance**（字节火山方舟） | 原生 API，按 token 计费；还能文生**视频** | 适配器；顺带解锁视频 |
+| **OpenAI 兼容**（base_url+key+model 三件套，复用 `OpenAIImageProvider`） | 火山方舟·即梦 Seedream `ark.cn-beijing.volces.com/api/v3`（同步直返，同平台还能视频）/ 智谱 CogView `open.bigmodel.cn/api/paas/v4`（cogview-3-flash 免费）/ 阶跃 Step `api.stepfun.com/v1` / 百度千帆 `qianfan.baidubce.com/v2` / OpenAI gpt-image-2(海外) | 标准 `/images/generations`，回 url 或 b64 | ✅ 已支持（openai_image 用配置模型 + url/b64 双响应 + 条件 quality） |
+| **硅基流动**（聚合平台·一个 key 通吃 Kolors/Qwen-Image/SD…最省事） `api.siliconflow.cn/v1` | 字段 `image_size`/`batch_size`、回 `images[].url`(1h) | ✅ `SiliconFlowImageProvider`（字段映射） |
+| **通义万相**（阿里）`dashscope.aliyuncs.com/api/v1` | 原生**异步**：建任务→轮询 task_id（1-2 分钟），size 用星号 `*`，url 24h | ✅ `DashScopeImageProvider`（异步轮询） |
+| **腾讯混元 / MiniMax** | 原生（腾讯云签名鉴权 / 下划线端点 `image_generation`、`aspect_ratio`、`data.image_base64`） | 🔜 适配器待写（已登记目录，调用给清晰报错引导） |
 
-**已落地的代码（T1 基础设施，本次提交）**：
-- `openai_image.py`：① 用传入的 `model`（不再写死 gpt-image-2）；② `quality` 是 gpt-image 专有参数，仅 gpt-image 系列才传（国内端点多不接受）；③ 响应兼容 b64_json 与 **url**（国内端点多回 url，`_extract_image_bytes` 即时下载）。
-- `poster_service.py`：把 `get_image_config_for_store` 取到的门店模型真正传下去（原来取了又写死 gpt-image-2）。
-- 单测 `test_image_provider_byok.py`：模型透传 / quality 条件 / url 响应 / 桌面纯 BYOK 守卫。
+**计费**：国内生图全是**按张后付费、无包月订阅**（约 0.06–0.25 元/张；cogview-3-flash 免费、通义新人送 50 张/90天、文心每日免费额度）。订阅/TPM 套餐是文本模型的，与生图无关。url 多 1–24h 有效，生成后立即下载落盘。
 
-**待办（按需做，需各自查证官方文档再写，勿凭记忆）**：
-- 校准 T1 硅基流动的精确参数（其 image 端点用 `image_size`/`batch_size`，可能需薄适配层）——真机用老板 key 验。
-- T2 通义万相、T3 即梦/Seedance 原生适配器（异步建任务→轮询）。
-- **接入 UX**：模型设置页"我的 AI 模型"——文字 / 生图 /（将来）视频 三块；预设卡片（硅基流动 / 通义 / 即梦）一键预填 base_url，或手动粘 base_url+key+model（沿用现有 CC Switch 多供应商快切）。
+**"口子"已落地（本次提交）**：
+- `services/ai/providers/image_catalog.py`：CC Switch 式供应商目录 `IMAGE_PROVIDER_CATALOG`（前端据此渲染"选供应商"卡片 + 预填 base_url）+ `resolve_image_kind(base_url)`（按 base_url 自动路由 kind，**免新增 DB 字段**）+ `fetch_image_bytes`（下载短期 url）。
+- `factory.build_image_provider(key, base_url, model)`：按 kind 选 provider 类；`poster_service` 改用它（不再写死 OpenAIImageProvider）。
+- **扩展方式（口子）**：新增 OpenAI 兼容厂商 = 往目录加一条；新增原生厂商 = 写一个 `ImageProvider` 子类 + 在 `build_image_provider` 登记。
+- 单测 `test_image_providers_domestic.py` + `test_image_provider_byok.py`（路由 / 字段映射 / 异步轮询 / 纯 BYOK 守卫，mock httpx）。**真机出图需老板的 key 在盒子上验。**
+
+**待办**：① 真机用老板 key 验各家出图（尤其硅基流动 image_size、通义异步轮询）；② 腾讯混元/MiniMax 原生适配器；③ 火山 Seedream 关水印（extra_body watermark=false）；④ 视频(Seedance)适配器。
+- **接入 UX（待前端做）**：模型设置页"我的 AI 模型"——文字 / 生图 /（将来）视频；预设卡片（硅基流动/火山/智谱/阶跃/百度/通义…）一键预填 base_url，老板填 key + 选 model（沿用现有 CC Switch 多供应商快切）。
 
 ## 2. 海报"风格 → 提示词"机制（模型无关）
 
