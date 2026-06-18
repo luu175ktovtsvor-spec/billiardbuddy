@@ -85,6 +85,7 @@ import {
 } from "lucide-react";
 import { OnboardingGuide } from "@/components/onboarding-guide";
 import { MyTemplates } from "@/components/my-templates";
+import { DesktopByokGate } from "@/components/desktop-byok-gate";
 
 export default function DashboardPage() {
   const { user } = useAuth();
@@ -141,6 +142,9 @@ export default function DashboardPage() {
 
   return (
     <div>
+      {/* 桌面版:没填大模型 Key 时显眼引导（纯 BYOK，不填 AI 不工作） */}
+      <DesktopByokGate />
+
       {/* 首次登录引导 */}
       {isNewUser && <OnboardingGuide />}
 
