@@ -177,6 +177,15 @@ export interface ByokConfigOut {
   key_mask: string;
 }
 
+/** BYOK 多供应商配置档（CC Switch 式：存好几套、一键切换） */
+export interface ByokProfile {
+  name: string;
+  base_url: string | null;
+  model: string | null;
+  has_key: boolean;
+  is_active: boolean;
+}
+
 /** BYOK：写配置（api_key 明文，仅提交时传；不传则保留原 key） */
 export interface ByokConfigIn {
   enabled: boolean;
