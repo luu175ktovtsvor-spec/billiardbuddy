@@ -8,6 +8,7 @@ import {
   Send, Loader2, Sparkles, Check, CalendarDays, Lightbulb, PenLine,
   UserPlus, Stethoscope, Dices, Wrench, Menu, LayoutDashboard, LayoutGrid,
   FileText, ImageIcon, Clock, User, BookOpen, Scissors, Paperclip, X,
+  ShieldCheck, FolderOpen, AlertTriangle,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/auth-context";
@@ -153,6 +154,10 @@ export default function ManagerPage() {
   const { isDesktop, electron } = useDesktop();
   // 桌面版:老板选定、授权 Agent 读/改的本地文件绝对路径（整轮会话有效，直到清除）
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
+  // 桌面版权限：ask(每次问)/auto_files(自动改文件)/full(全自动)；fullDisk=全盘范围。持久化到本地。
+  const [permissionMode, setPermissionMode] = useState<"ask" | "auto_files" | "full">("ask");
+  const [fullDisk, setFullDisk] = useState(false);
+  const [permSheetOpen, setPermSheetOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null); // 多轮续接：刷新不丢、后端按它查历史
   const [draft, setDraft] = useState(""); // 流式中的最终答复
@@ -233,6 +238,8 @@ export default function ManagerPage() {
           history,
           conversation_id: conversationId,
           selected_files: selectedFiles.length ? selectedFiles : undefined,
+          permission_mode: isDesktop ? permissionMode : undefined,
+          full_disk_access: isDesktop && fullDisk ? true : undefined,
         },
         {
           onToken: (t) => setDraft((prev) => prev + t),
@@ -278,7 +285,24 @@ export default function ManagerPage() {
     }
   };
 
-  // 桌面版：选本地文件交给 AI（授权它读/改这些文件，如"把这份报表的3月营业额改成…"）
+  // 桌面权限设置：进页面读本地存的偏好
+  useEffect(() => {
+    try {
+      const m = localStorage.getItem("agent_permission_mode");
+      if (m === "ask" || m === "auto_files" || m === "full") setPermissionMode(m);
+      setFullDisk(localStorage.getItem("agent_full_disk") === "1");
+    } catch { /* 忽略 */ }
+  }, []);
+  const updateMode = (m: "ask" | "auto_files" | "full") => {
+    setPermissionMode(m);
+    try { localStorage.setItem("agent_permission_mode", m); } catch { /* 忽略 */ }
+  };
+  const updateFullDisk = (v: boolean) => {
+    setFullDisk(v);
+    try { localStorage.setItem("agent_full_disk", v ? "1" : "0"); } catch { /* 忽略 */ }
+  };
+
+  // 桌面版：选本地文件/文件夹交给 AI（授权它读/改，如"把这份报表的3月营业额改成…"）
   const pickFiles = async () => {
     if (!electron) return;
     try {
@@ -288,14 +312,29 @@ export default function ManagerPage() {
       }
     } catch { /* 取消/失败忽略 */ }
   };
+  const pickFolder = async () => {
+    if (!electron) return;
+    try {
+      const r = await electron.files.pick({ directory: true });
+      if (!r.canceled && r.paths.length) {
+        setSelectedFiles((prev) => Array.from(new Set([...prev, ...r.paths])));
+      }
+    } catch { /* 取消/失败忽略 */ }
+  };
   const removeFile = (p: string) => setSelectedFiles((prev) => prev.filter((x) => x !== p));
   const baseName = (p: string) => p.split(/[\\/]/).pop() || p;
+  const PERM_LABEL: Record<string, string> = { ask: "谨慎", auto_files: "自动改文件", full: "全自动" };
 
   // 用户点"确认生成"→ 经 /agent/execute 真正执行该工具（生图慢，可能等几分钟）
   const confirmApproval = async (idx: number, ap: ApprovalState) => {
     setExecutingIdx(idx);
     try {
-      const res = await api.executeAgentTool(ap.tool, ap.args, selectedFiles.length ? selectedFiles : undefined);
+      const res = await api.executeAgentTool(
+        ap.tool,
+        ap.args,
+        selectedFiles.length ? selectedFiles : undefined,
+        isDesktop && fullDisk ? true : undefined,
+      );
       setMessages((prev) =>
         prev.map((m, j) => (j === idx && m.approval ? { ...m, approval: { ...m.approval, status: "done" } } : m)),
       );
@@ -353,6 +392,87 @@ export default function ManagerPage() {
               <span className="text-center text-[13px] text-slate-700">{label}</span>
             </Link>
           ))}
+        </div>
+      </Sheet>
+
+      {/* 桌面版：AI 权限与文件授权 */}
+      <Sheet open={permSheetOpen} onClose={() => setPermSheetOpen(false)} title="AI 权限与文件">
+        <div className="space-y-5 pb-3">
+          {/* 选文件/文件夹交给 AI */}
+          <div>
+            <p className="mb-2 text-[13px] font-medium text-slate-700">让 AI 处理本机文件</p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={pickFiles}
+                className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-[#F2F2F7] py-2.5 text-[14px] text-slate-700 active:scale-[0.98]"
+              >
+                <Paperclip className="h-4 w-4" /> 选文件
+              </button>
+              <button
+                type="button"
+                onClick={pickFolder}
+                className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-[#F2F2F7] py-2.5 text-[14px] text-slate-700 active:scale-[0.98]"
+              >
+                <FolderOpen className="h-4 w-4" /> 选文件夹
+              </button>
+            </div>
+            <p className="mt-1.5 text-[12px] text-slate-400">选中的文件/文件夹，AI 才被授权读和改它们。</p>
+          </div>
+
+          {/* 权限模式 */}
+          <div>
+            <p className="mb-2 text-[13px] font-medium text-slate-700">改文件时怎么确认</p>
+            <div className="space-y-2">
+              {([
+                { v: "ask", t: "谨慎（推荐）", d: "每次改文件/做海报都先弹给你确认，最稳。" },
+                { v: "auto_files", t: "自动改文件", d: "改本机文件不再每次问、直接动手（仍自动备份，可回滚）；做海报等花钱的仍会问。" },
+                { v: "full", t: "全自动", d: "所有动作（含做海报等花钱/对外）都不再问、直接执行。省事但要你完全信任它。" },
+              ] as const).map((o) => (
+                <button
+                  key={o.v}
+                  type="button"
+                  onClick={() => updateMode(o.v)}
+                  className={`w-full rounded-xl border p-3 text-left transition ${
+                    permissionMode === o.v ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-[14px] font-medium text-slate-800">{o.t}</span>
+                    {permissionMode === o.v && <Check className="h-4 w-4 text-brand-600" />}
+                  </div>
+                  <p className="mt-0.5 text-[12px] leading-relaxed text-slate-500">{o.d}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 全盘范围（高级·带警告） */}
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+            <button
+              type="button"
+              onClick={() => updateFullDisk(!fullDisk)}
+              className="flex w-full items-start gap-2 text-left"
+            >
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+              <div className="flex-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[14px] font-medium text-amber-900">全盘访问（高级）</span>
+                  <span
+                    className={`ml-2 flex h-5 w-9 shrink-0 items-center rounded-full px-0.5 transition ${
+                      fullDisk ? "justify-end bg-amber-500" : "justify-start bg-slate-300"
+                    }`}
+                  >
+                    <span className="h-4 w-4 rounded-full bg-white" />
+                  </span>
+                </div>
+                <p className="mt-0.5 text-[12px] leading-relaxed text-amber-700">
+                  开启后 AI 不再限于你选定的文件，可碰电脑上任意文件。功能更强，但误改风险也更大——
+                  确定信任再开。关着时只动你选的文件/文件夹，最安全。
+                </p>
+              </div>
+            </button>
+          </div>
         </div>
       </Sheet>
 
@@ -505,6 +625,24 @@ export default function ManagerPage() {
               className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#F2F2F7] text-slate-500 transition-transform active:scale-95 disabled:opacity-40"
             >
               <Paperclip className="h-5 w-5" />
+            </button>
+          )}
+          {isDesktop && (
+            <button
+              type="button"
+              onClick={() => setPermSheetOpen(true)}
+              aria-label="权限设置"
+              title={`AI 权限：${PERM_LABEL[permissionMode]}${fullDisk ? " · 全盘" : ""}`}
+              className={`flex h-11 shrink-0 items-center gap-1 rounded-xl px-2.5 text-[12px] transition-transform active:scale-95 ${
+                permissionMode === "full" || fullDisk
+                  ? "bg-amber-50 text-amber-600"
+                  : permissionMode === "auto_files"
+                    ? "bg-brand-50 text-brand-600"
+                    : "bg-[#F2F2F7] text-slate-500"
+              }`}
+            >
+              <ShieldCheck className="h-4 w-4" />
+              <span className="hidden sm:inline">{PERM_LABEL[permissionMode]}</span>
             </button>
           )}
           <textarea

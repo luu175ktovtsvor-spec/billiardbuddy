@@ -41,10 +41,11 @@ export interface ElectronBridge {
     onProgress(cb: (p: { op: string; pct?: number }) => void): () => void;
   };
   files: {
-    /** 弹系统文件选择器,返回选定文件绝对路径;随对话以 selected_files 传后端授权 Agent 读/改。 */
+    /** 弹系统文件/文件夹选择器,返回绝对路径;随对话以 selected_files 传后端授权 Agent 读/改。 */
     pick(opts?: {
       title?: string;
       multi?: boolean;
+      directory?: boolean; // true=选文件夹(授权整个目录),否则选文件
       filters?: { name: string; extensions: string[] }[];
     }): Promise<{ canceled: boolean; paths: string[] }>;
   };
