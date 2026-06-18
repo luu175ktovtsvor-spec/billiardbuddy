@@ -143,3 +143,24 @@ class ProviderFactory:
         if os.environ.get("DESKTOP_LOCAL") == "1":
             return ("", settings.openai_base_url, None)
         return (settings.openai_api_key, settings.openai_base_url, None)
+
+    @classmethod
+    def build_image_provider(cls, api_key: str, base_url: str | None, model: str | None = None):
+        """按 base_url 自动路由到对应生图 Provider（CC Switch 式"口子"，新增厂商不必改调用方）。
+        - openai_compatible（gpt-image-2 / 火山方舟Seedream / 智谱CogView / 阶跃Step / 百度千帆）→ OpenAIImageProvider
+        - siliconflow（image_size/batch_size，images[].url）→ SiliconFlowImageProvider
+        - dashscope（通义万相，异步建任务→轮询）→ DashScopeImageProvider
+        - minimax / tencent_hunyuan（原生，适配器待写）→ 清晰报错，引导改用已支持的。"""
+        from services.ai.providers.image_catalog import resolve_image_kind
+        kind = resolve_image_kind(base_url)
+        if kind == "siliconflow":
+            from services.ai.providers.siliconflow_image import SiliconFlowImageProvider
+            return SiliconFlowImageProvider(api_key=api_key, base_url=base_url)
+        if kind == "dashscope":
+            from services.ai.providers.dashscope_image import DashScopeImageProvider
+            return DashScopeImageProvider(api_key=api_key, base_url=base_url)
+        if kind in ("minimax", "tencent_hunyuan"):
+            raise ValueError(
+                f"生图供应商「{kind}」适配器尚未实现，请改用硅基流动 / 通义万相 / OpenAI 兼容(火山·智谱·阶跃·百度)")
+        from services.ai.providers.openai_image import OpenAIImageProvider
+        return OpenAIImageProvider(api_key=api_key, base_url=base_url or "https://api.openai.com/v1")
