@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>桌面 Agent · macOS 设计图</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  :root { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, "PingFang SC", sans-serif; }
+  body { font-family: var(--app-font, -apple-system, BlinkMacSystemFont, system-ui, "PingFang SC", sans-serif); }
+  .vibrancy { background: rgba(245,245,247,0.88); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+  .card-shadow { box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04); }
+  .win-shadow { box-shadow: 0 24px 70px rgba(0,0,0,0.28), 0 4px 14px rgba(0,0,0,0.12); }
+  .pop-shadow { box-shadow: 0 8px 30px rgba(0,0,0,0.12); }
+  .hairline { border-color: rgba(0,0,0,0.07); }
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.16); border-radius: 8px; }
+</style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-8" style="background: linear-gradient(135deg,#dfe3ea 0%,#eceef2 45%,#e3e7ee 100%);">
+
+<!-- macOS 窗口 -->
+<div class="w-[1180px] h-[760px] rounded-2xl overflow-hidden win-shadow flex bg-white">
+
+  <!-- 侧栏（毛玻璃） -->
+  <aside class="w-[260px] vibrancy flex flex-col border-r hairline">
+    <!-- 红绿灯 + 标题区（可拖拽区） -->
+    <div class="h-[52px] flex items-center px-[18px] gap-2">
+      <span class="w-3 h-3 rounded-full" style="background:#ff5f57"></span>
+      <span class="w-3 h-3 rounded-full" style="background:#febc2e"></span>
+      <span class="w-3 h-3 rounded-full" style="background:#28c840"></span>
+    </div>
+    <div class="px-4 pb-2 flex items-center gap-2">
+      <img src="icon.png" alt="球房管家" class="w-7 h-7 rounded-lg object-cover">
+      <div class="text-[15px] font-semibold text-[#1d1d1f]">球房管家</div>
+    </div>
+
+    <!-- 新对话 -->
+    <div class="px-3 mt-1">
+      <button class="w-full h-9 rounded-lg bg-white/70 hover:bg-white card-shadow text-[13px] text-[#1d1d1f] flex items-center justify-center gap-1.5 active:scale-[0.98] transition">
+        <span class="text-[#007AFF] text-[15px] leading-none">＋</span> 新对话
+      </button>
+    </div>
+
+    <!-- 会话列表 -->
+    <div class="px-2 mt-3 flex-1 overflow-y-auto">
+      <div class="px-2 text-[11px] text-[#86868b] mb-1">今天</div>
+      <div class="rounded-lg px-3 py-2 mb-0.5 bg-black/[0.06] cursor-default">
+        <div class="text-[13px] text-[#1d1d1f] truncate">周末双人优惠文案 + 海报</div>
+        <div class="text-[11px] text-[#86868b] truncate mt-0.5">帮我写条周末双人优惠的朋友圈…</div>
+      </div>
+      <div class="rounded-lg px-3 py-2 mb-0.5 hover:bg-black/[0.04] cursor-default">
+        <div class="text-[13px] text-[#1d1d1f] truncate">这个月经营诊断</div>
+        <div class="text-[11px] text-[#86868b] truncate mt-0.5">照着我导出的报表看看哪…</div>
+      </div>
+      <div class="px-2 text-[11px] text-[#86868b] mb-1 mt-3">前 7 天</div>
+      <div class="rounded-lg px-3 py-2 mb-0.5 hover:bg-black/[0.04] cursor-default">
+        <div class="text-[13px] text-[#1d1d1f] truncate">中秋活动策划</div>
+      </div>
+      <div class="rounded-lg px-3 py-2 mb-0.5 hover:bg-black/[0.04] cursor-default">
+        <div class="text-[13px] text-[#1d1d1f] truncate">助教约客话术一批</div>
+      </div>
+    </div>
+
+    <!-- 底部：门店 + 设置 -->
+    <div class="border-t hairline p-3 flex items-center gap-2">
+      <div class="w-7 h-7 rounded-full bg-[#007AFF]/15 flex items-center justify-center text-[12px] text-[#007AFF] font-semibold">楠</div>
+      <div class="flex-1 min-w-0">
+        <div class="text-[12px] text-[#1d1d1f] truncate">楠米台球·万象城店</div>
+        <div class="text-[11px] text-[#86868b] truncate">本月 AI 花费 ≈ ¥3.2</div>
+      </div>
+      <button class="w-7 h-7 rounded-md hover:bg-black/[0.06] text-[#86868b] flex items-center justify-center">⚙</button>
+    </div>
+  </aside>
+
+  <!-- 主对话区 -->
+  <main class="flex-1 flex flex-col bg-white min-w-0">
+    <!-- 顶栏 -->
+    <div class="h-[52px] flex items-center justify-between px-5 border-b hairline">
+      <div class="text-[14px] font-medium text-[#1d1d1f]">周末双人优惠文案 + 海报</div>
+      <div class="flex items-center gap-3 text-[12px] text-[#86868b]">
+        <span class="px-2 py-1 rounded-md bg-black/[0.04] cursor-default">DeepSeek V4 ⌄</span>
+      </div>
+    </div>
+
+    <!-- 对话流 -->
+    <div class="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+
+      <!-- 用户气泡 -->
+      <div class="flex justify-end">
+        <div class="max-w-[78%] rounded-2xl rounded-tr-md px-4 py-2.5 text-[14px] text-[#1d1d1f]" style="background:#007AFF14">
+          帮我写条周末双人优惠的朋友圈，再做张海报
+        </div>
+      </div>
+
+      <!-- 工具步骤 chip -->
+      <div class="flex items-center gap-2">
+        <span class="inline-flex items-center gap-1.5 rounded-full bg-black/[0.04] px-3 py-1 text-[12px] text-[#86868b]">
+          🔍 已挑选文案模板：<span class="text-[#1d1d1f]">周末双人局</span>
+        </span>
+      </div>
+
+      <!-- 管家回复 + 成品卡片 -->
+      <div class="max-w-[88%] space-y-2.5">
+        <div class="text-[14px] text-[#1d1d1f] leading-relaxed">好嘞，先给你写好朋友圈文案 👇 海报我也准备了，确认下风格就开做。</div>
+
+        <!-- 成品卡片 -->
+        <div class="rounded-xl border hairline bg-white card-shadow overflow-hidden">
+          <div class="flex items-center justify-between px-4 py-2.5 border-b hairline bg-black/[0.015]">
+            <div class="flex items-center gap-1.5 text-[13px] font-medium text-[#1d1d1f]">📝 朋友圈文案</div>
+            <button class="text-[12px] text-[#007AFF] hover:underline">复制</button>
+          </div>
+          <div class="px-4 py-3 text-[14px] text-[#1d1d1f] leading-relaxed whitespace-pre-line">🎱 周末来一局！双人同行更划算～
+本周六日，两人开台享 8 折，再送一小时畅打体验。
+约上搭子，台呢一铺，烦恼全消。
+📍 万象城店 · 营业到凌晨两点，随时来。</div>
+        </div>
+      </div>
+
+      <!-- AskUserQuestion 提问卡片（新增组件） -->
+      <div class="max-w-[88%]">
+        <div class="rounded-xl border hairline bg-white card-shadow overflow-hidden">
+          <div class="px-4 py-2.5 border-b hairline flex items-center gap-1.5 text-[13px] font-medium text-[#1d1d1f]">
+            🎨 海报想走哪种风格？<span class="text-[11px] font-normal text-[#86868b]">挑一个，我来出图</span>
+          </div>
+          <div class="p-3 grid grid-cols-3 gap-2.5">
+            <!-- 选项1（推荐） -->
+            <button class="text-left rounded-lg border-2 p-3 transition active:scale-[0.98]" style="border-color:#007AFF;background:#007AFF08">
+              <div class="h-12 rounded-md mb-2" style="background:linear-gradient(135deg,#ff9966,#ff5e62)"></div>
+              <div class="text-[13px] font-medium text-[#1d1d1f] flex items-center gap-1">暖色温馨 <span class="text-[10px] text-white px-1.5 py-0.5 rounded-full" style="background:#007AFF">推荐</span></div>
+              <div class="text-[11px] text-[#86868b] mt-0.5 leading-snug">情侣/朋友局，温暖有约会感</div>
+            </button>
+            <!-- 选项2 -->
+            <button class="text-left rounded-lg border hairline p-3 hover:bg-black/[0.02] transition active:scale-[0.98]">
+              <div class="h-12 rounded-md mb-2" style="background:linear-gradient(135deg,#7b2ff7,#00d2ff)"></div>
+              <div class="text-[13px] font-medium text-[#1d1d1f]">动感霓虹</div>
+              <div class="text-[11px] text-[#86868b] mt-0.5 leading-snug">年轻夜场，潮酷吸睛</div>
+            </button>
+            <!-- 选项3 -->
+            <button class="text-left rounded-lg border hairline p-3 hover:bg-black/[0.02] transition active:scale-[0.98]">
+              <div class="h-12 rounded-md mb-2" style="background:linear-gradient(135deg,#e8e8ed,#c7c7cc)"></div>
+              <div class="text-[13px] font-medium text-[#1d1d1f]">简约高级</div>
+              <div class="text-[11px] text-[#86868b] mt-0.5 leading-snug">干净留白，质感门店</div>
+            </button>
+          </div>
+          <div class="px-3 pb-3 flex items-center gap-2">
+            <button class="text-[12px] text-[#86868b] px-3 py-1.5 rounded-md hover:bg-black/[0.04]">其它（自己说）…</button>
+            <div class="flex-1"></div>
+            <button class="text-[13px] text-white px-4 py-1.5 rounded-lg active:scale-[0.98]" style="background:#007AFF">确定这个风格</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 审批卡片 -->
+      <div class="max-w-[88%]">
+        <div class="rounded-xl border bg-[#fffaf0] card-shadow overflow-hidden" style="border-color:#f0c98a66">
+          <div class="px-4 py-3">
+            <div class="flex items-center gap-1.5 text-[13px] font-medium text-[#1d1d1f] mb-1.5">⚠️ 做海报需要你确认<span class="text-[11px] font-normal text-[#86868b]">（生图会花你自己的 Key 额度）</span></div>
+            <div class="text-[13px] text-[#3a3a3c] rounded-lg bg-white/70 border hairline px-3 py-2">竖版 9:16 · 暖色温馨风 · 突出「周末双人 8 折」· 含门店名与营业时间</div>
+          </div>
+          <div class="px-4 pb-3 flex items-center gap-2 justify-end">
+            <button class="text-[13px] text-[#1d1d1f] px-4 py-1.5 rounded-lg border hairline hover:bg-black/[0.03] active:scale-[0.98]">取消</button>
+            <button class="text-[13px] text-white px-4 py-1.5 rounded-lg active:scale-[0.98]" style="background:#007AFF">确认生成</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- 底部输入区 -->
+    <div class="px-5 pb-4 pt-2 border-t hairline">
+      <!-- 权限模式分段控件 -->
+      <div class="flex items-center gap-2 mb-2.5">
+        <span class="text-[11px] text-[#86868b]">权限</span>
+        <div class="inline-flex p-0.5 rounded-lg bg-black/[0.05] text-[12px]">
+          <button class="px-3 py-1 rounded-md bg-white text-[#1d1d1f] card-shadow">都先问我</button>
+          <button class="px-3 py-1 rounded-md text-[#86868b]">日常自己做</button>
+          <button class="px-3 py-1 rounded-md text-[#86868b]">全部自己做</button>
+        </div>
+        <span class="text-[11px] text-[#86868b]">· 群发、对外发布始终先问你</span>
+      </div>
+      <!-- 输入框 -->
+      <div class="flex items-end gap-2 rounded-xl border hairline bg-white px-3 py-2 card-shadow">
+        <button class="w-8 h-8 rounded-md hover:bg-black/[0.05] text-[#86868b] flex items-center justify-center text-[18px]">📎</button>
+        <textarea rows="1" placeholder="回复球房管家…" class="flex-1 resize-none outline-none text-[14px] text-[#1d1d1f] placeholder:text-[#b0b0b5] py-1.5 bg-transparent"></textarea>
+        <button class="w-8 h-8 rounded-lg flex items-center justify-center text-white active:scale-[0.95]" style="background:#007AFF">↑</button>
+      </div>
+    </div>
+  </main>
+</div>
+
+</body>
+</html>
