@@ -2,27 +2,27 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import String, Integer, Boolean, Text, DateTime, ForeignKey, func, Index
-from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db.base import Base
+from db.types import GUID, JSONType
 
 
 class Generation(Base):
     __tablename__ = "generations"
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+        GUID, primary_key=True, default=uuid.uuid4
     )
     store_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("stores.id"), nullable=False, index=True
+        GUID, ForeignKey("stores.id"), nullable=False, index=True
     )
     user_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True
+        GUID, ForeignKey("users.id"), nullable=True, index=True
     )
     type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     sub_type: Mapped[str | None] = mapped_column(String(50))
-    input_params: Mapped[dict | None] = mapped_column(JSONB)
+    input_params: Mapped[dict | None] = mapped_column(JSONType)
     prompt_used: Mapped[str | None] = mapped_column(Text)
     result: Mapped[str | None] = mapped_column(Text)
     model_used: Mapped[str | None] = mapped_column(String(100))
@@ -31,7 +31,7 @@ class Generation(Base):
     # 用户自定义命名(海报找图/历史检索友好);空则前端用 prompt 派生展示名
     title: Mapped[str | None] = mapped_column(String(80), nullable=True)
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), nullable=True, index=True
+        GUID, nullable=True, index=True
     )
     openai_response_id: Mapped[str | None] = mapped_column(String(200))
     effect_rating: Mapped[str | None] = mapped_column(String(20))  # "good" / "bad"

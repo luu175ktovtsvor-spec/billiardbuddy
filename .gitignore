@@ -48,4 +48,7 @@ Thumbs.db
 *.key
 *.cert
 
+# 桌面打包：加密知识库块(build_prompts_pack.py 每次构建用新 key 重新生成，含产品 IP，不入库)
+server/prompts.enc
+
 .superpowers/

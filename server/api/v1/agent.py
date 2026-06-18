@@ -14,6 +14,7 @@ TODO(后续)：agent 会话本身落库(type=agent) + 多轮 conversation_id 续
 """
 import json
 import logging
+import os
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -81,12 +82,23 @@ def _today_line() -> str:
         return ""
 
 
+_DESKTOP_FILE_OPS_HINT = (
+    "【你能直接操作老板本机的文件（桌面版）】你在老板自己的电脑上运行，有一组本地文件工具：\n"
+    "- list_files 看内容库里有什么、read_file 读某个文件、write_file 存文件、edit_file 改文本某段、edit_excel 直接改 Excel 报表(改营业额/加列等)。\n"
+    "- 老板说『把刚才那份存下来』『把报表里营业额改成 X』『给文案改个价』这类，就**真的去读、去改文件**，别只在对话里复述。\n"
+    "- 改之前**先 read_file 看清内容/单元格坐标**再改；写/改会先弹给老板确认、自动备份原件、可回滚——放心动手。"
+)
+
+
 def compose_agent_system_prompt(profile_text: str, brain_text: str) -> str:
     """拼 agent 的 system prompt：基底指令 + 当天日期 + 门店画像 + 店脑记忆（让它"懂当下、懂这家店"）。"""
     parts = [_AGENT_BASE_PROMPT]
     today = _today_line()
     if today:
         parts.append(today)
+    # 桌面全本地版：告诉大脑它能直接读写改本机文件，它才会主动用文件工具（云端 web 版不设 DESKTOP_LOCAL→不加）。
+    if os.environ.get("DESKTOP_LOCAL") == "1":
+        parts.append(_DESKTOP_FILE_OPS_HINT)
     if profile_text and profile_text.strip():
         parts.append("【这家店的情况】\n" + profile_text.strip())
     if brain_text and brain_text.strip():

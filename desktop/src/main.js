@@ -1,0 +1,149 @@
+// 台球运营管家 · 桌面端 Electron 主进程
+//
+// 职责:① 开窗口加载现有 web 前端(连云后端出内容/跑 Agent);
+//      ② 把"本地原生能力"(发布 RPA / 视频剪辑)经 IPC 暴露给前端;
+//      ③ 浏览器自动化(patchright)跑在【独立子进程】,绝不在渲染进程——见 publish.js。
+//
+// 安全默认全保持:contextIsolation 开 / sandbox 开 / nodeIntegration 关。
+// 加载的页面只能通过 preload 的 contextBridge 白名单调用原生能力,拿不到 Node。
+
+const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const path = require("path");
+const publish = require("./publish");
+const video = require("./video");
+const backend = require("./backend");
+const frontend = require("./frontend");
+const updater = require("./updater");
+
+// 加载哪个前端:dev 跑本地 web(含发布UI,在 feat/desktop-agent 分支),prod 起打包的 Next.js standalone。
+// 云端 main(zzyppz.cn)没有发布UI,故默认不直连云端页面。
+// DESKTOP_APP_URL 显式设了就优先用它(dev 调试);否则 prod 走本地前端(frontend.js 起 server.js)。
+const FORCED_APP_URL = process.env.DESKTOP_APP_URL || null;
+// 是否由 Electron 托管本地后端(全本地)。设 0 则自己手动起后端(dev 调试用)。
+const MANAGE_BACKEND = process.env.DESKTOP_MANAGE_BACKEND !== "0";
+// 是否由 Electron 托管本地前端(prod 全本地)。设 0 或显式给 DESKTOP_APP_URL 则不起。
+const MANAGE_FRONTEND = process.env.DESKTOP_MANAGE_FRONTEND !== "0" && !FORCED_APP_URL;
+// 仓库根(dev 用 uv 跑 server/);desktop/src → desktop → repo
+const REPO_ROOT = path.join(__dirname, "..", "..");
+
+let mainWindow = null;
+let backendReady = false;
+let frontendUrl = null; // prod 本地前端就绪后的 URL
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1280,
+    height: 860,
+    minWidth: 960,
+    minHeight: 640,
+    title: "台球运营管家",
+    backgroundColor: "#F2F2F7",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true, // 默认即开,显式声明
+      sandbox: true,
+      nodeIntegration: false,
+    },
+  });
+
+  // prod：本地前端就绪 → 它的 URL；否则用 DESKTOP_APP_URL(dev) 或兜底 localhost:3000。
+  const url = frontendUrl || FORCED_APP_URL || "http://localhost:3000";
+  mainWindow.loadURL(url);
+
+  // 外链用系统浏览器打开,不在 app 内导航走丢
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("http")) shell.openExternal(url);
+    return { action: "deny" };
+  });
+
+  if (process.env.DESKTOP_DEVTOOLS === "1") mainWindow.webContents.openDevTools({ mode: "detach" });
+
+  mainWindow.on("closed", () => { mainWindow = null; });
+}
+
+// 进度/状态回推渲染层(扫码就绪、发布进度、剪辑进度)
+function emit(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+}
+
+// ──────────────────────────────────────────────────────────────
+// IPC:发布(RPA)。所有"对外/花钱"动作都是【备好内容 → 人点确认 → 才发】(审批闸)。
+// 渲染层经 window.electron.publish.* 调用;真正的浏览器自动化在 publish.js 的子进程里。
+// ──────────────────────────────────────────────────────────────
+ipcMain.handle("publish:platforms", () => publish.listPlatforms());
+
+// 扫码登录:启动登录流,二维码 data-url 经 publish:login:qrcode 事件推前端展示;
+// 登录完成/失败经 publish:login:status 推。返回一个 sessionId 供前端跟踪。
+ipcMain.handle("publish:login:start", (_e, { platform }) =>
+  publish.startLogin(platform, {
+    onQrcode: (dataUrl) => emit("publish:login:qrcode", { platform, dataUrl }),
+    onStatus: (status) => emit("publish:login:status", { platform, status }),
+  })
+);
+
+ipcMain.handle("publish:login:check", (_e, { platform }) => publish.checkLogin(platform));
+
+// 发布:人确认后调用。content = { videoPath, title, tags, coverPath, scheduleAt? }
+ipcMain.handle("publish:post", (_e, { platform, content }) =>
+  publish.post(platform, content, {
+    onProgress: (p) => emit("publish:progress", { platform, ...p }),
+  })
+);
+
+// ──────────────────────────────────────────────────────────────
+// IPC:视频剪辑(ffmpeg)。基础能力:裁剪/拼接/竖屏转码/烧字幕/水印/变速。
+// ──────────────────────────────────────────────────────────────
+ipcMain.handle("video:probe", (_e, { inputPath }) => video.probe(inputPath));
+ipcMain.handle("video:run", (_e, { op, args }) =>
+  video.run(op, args, { onProgress: (p) => emit("video:progress", { op, ...p }) })
+);
+
+// 是否运行在桌面端 + 本地后端地址(前端运行时据此连本地后端,不依赖 build 期 env)
+ipcMain.handle("desktop:info", () => ({
+  isDesktop: true,
+  version: app.getVersion(),
+  platform: process.platform,
+  backendUrl: MANAGE_BACKEND ? backend.backendUrl() : null,
+  backendReady,
+}));
+
+app.whenReady().then(async () => {
+  if (MANAGE_BACKEND) {
+    // 全本地:先拉起本地后端(本地 SQLite),就绪后再开窗口
+    const r = await backend.start({
+      userDataDir: app.getPath("userData"),
+      repoRoot: REPO_ROOT,
+      onLog: (s) => { if (process.env.DESKTOP_DEVTOOLS === "1") process.stdout.write(`[backend] ${s}`); },
+    });
+    backendReady = r.ok;
+    if (!r.ok) console.error("本地后端未在超时内就绪,前端可能连不上");
+  }
+  if (MANAGE_FRONTEND) {
+    // prod:后端就绪后起本地 Next.js standalone(它把 /api/v1/* 反代到本地后端)。
+    // 无 standalone 产物(dev 直接运行 electron .)则 ok=false,回落 DESKTOP_APP_URL/localhost:3000。
+    const f = await frontend.start({
+      onLog: (s) => { if (process.env.DESKTOP_DEVTOOLS === "1") process.stdout.write(`[frontend] ${s}`); },
+    });
+    if (f.ok) frontendUrl = f.url;
+    else console.warn("本地前端未起(无 standalone 产物?),回落 DESKTOP_APP_URL/localhost:3000");
+  }
+  createWindow();
+  // 自动更新:打包后后台静默检查(dev/mac 内部自跳过,不阻塞、不打扰)
+  updater.init({
+    app,
+    getWindow: () => mainWindow,
+    onLog: (s) => { if (process.env.DESKTOP_DEVTOOLS === "1") process.stdout.write(s); },
+  });
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+});
+
+app.on("window-all-closed", () => {
+  publish.dispose();
+  backend.stop();
+  frontend.stop();
+  if (process.platform !== "darwin") app.quit();
+});
+
+app.on("before-quit", () => { backend.stop(); frontend.stop(); });

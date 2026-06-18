@@ -1,0 +1,196 @@
+"""本地文件操作工具（桌面全本地版专属，DESKTOP_LOCAL=1 才注册）。
+
+把"像 Claude Code 那样在本机读/写/改文件"的通用能力给 Agent——但配台球老板用得起的护栏：
+- **范围锁**：只动「内容库」(用户数据目录下一个文件夹) + 库内文件。绝不漫游全盘、不碰系统文件。
+- **改前备份**：写/改前自动把原件复制到 .backups/，可回滚。
+- **审批闸**：write/edit 类 requires_approval=True，循环里不直接执行——先把"要怎么改"弹给老板(人看得懂的改动)，确认后才落盘。
+- **不暴露裸 shell**：只给文件操作（改动是人能审的 diff），命令类另包成具体安全动作。
+
+⚠️ 云端 web 版（PostgreSQL，多租户）绝不注册这些——文件操作只在用户自己机器上的本地后端有意义。
+"""
+import logging
+import os
+import shutil
+from datetime import datetime
+from pathlib import Path
+
+from core.timezone import business_now
+from services.agent.registry import Tool, default_registry
+
+logger = logging.getLogger(__name__)
+
+
+def _library_root() -> Path:
+    """内容库根：Agent 只能在这里面(+库内)动手。默认在用户数据目录下。"""
+    root = Path(os.environ.get("DESKTOP_LIBRARY_DIR") or (Path.home() / ".billiards-desktop" / "library"))
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _resolve(rel_or_abs: str) -> Path:
+    """把传入路径解析进内容库并校验不越界。返回绝对 Path；越界抛 ValueError。"""
+    root = _library_root().resolve()
+    p = Path(rel_or_abs)
+    path = (p if p.is_absolute() else root / p).resolve()
+    if path != root and root not in path.parents:
+        raise ValueError(f"越界：只能操作内容库（{root}）内的文件，拒绝 {rel_or_abs}")
+    return path
+
+
+def _backup(path: Path) -> str | None:
+    """改/写前备份原件，返回备份路径（原件不存在则 None）。"""
+    if not path.exists():
+        return None
+    bdir = _library_root() / ".backups"
+    bdir.mkdir(exist_ok=True)
+    stamp = business_now().strftime("%Y%m%d-%H%M%S")
+    dest = bdir / f"{path.stem}.{stamp}{path.suffix}.bak"
+    shutil.copy2(path, dest)
+    return str(dest)
+
+
+# ────────────────────────────── 只读工具（无需审批） ──────────────────────────────
+
+async def list_files(args: dict, ctx) -> str:
+    """列内容库里的文件（生成过的文案/报表/海报/视频等）。"""
+    root = _library_root()
+    items = []
+    for p in sorted(root.rglob("*")):
+        if p.is_file() and ".backups" not in p.parts:
+            items.append(f"- {p.relative_to(root)}  ({p.stat().st_size} 字节)")
+    return "内容库文件：\n" + ("\n".join(items) if items else "（空）")
+
+
+async def read_file(args: dict, ctx) -> str:
+    """读一个文件的内容，给 Agent 看（编辑前先读）。文本直接读；Excel 列出非空单元格。"""
+    path = _resolve(args["path"])
+    if not path.exists():
+        return f"文件不存在：{args['path']}"
+    if path.suffix.lower() in (".xlsx", ".xlsm"):
+        from openpyxl import load_workbook
+        wb = load_workbook(path, data_only=True)
+        lines = []
+        for ws in wb.worksheets:
+            lines.append(f"# 工作表「{ws.title}」")
+            for row in ws.iter_rows():
+                for cell in row:
+                    if cell.value is not None:
+                        lines.append(f"{cell.coordinate}={cell.value!r}")
+        return "\n".join(lines) if lines else "（空表）"
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return f"（二进制文件，{path.stat().st_size} 字节，不便直接读取）"
+
+
+# ────────────────────────────── 写/改工具（走审批闸） ──────────────────────────────
+
+async def write_file(args: dict, ctx) -> str:
+    """把内容写到内容库里的一个文件（新建或覆盖）。args: path, content。覆盖前自动备份。"""
+    path = _resolve(args["path"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup = _backup(path)
+    path.write_text(args["content"], encoding="utf-8")
+    msg = f"已写入 {path.name}（{len(args['content'])} 字）。"
+    if backup:
+        msg += f" 原件已备份。"
+    return msg
+
+
+async def edit_file(args: dict, ctx) -> str:
+    """改文本文件的某一段：把 old_text 精确替换成 new_text（同我改代码的方式）。改前备份。
+    args: path, old_text, new_text。"""
+    path = _resolve(args["path"])
+    if not path.exists():
+        return f"文件不存在：{args['path']}"
+    text = path.read_text(encoding="utf-8")
+    old, new = args["old_text"], args["new_text"]
+    n = text.count(old)
+    if n == 0:
+        return f"没找到要替换的内容，未改动。"
+    if n > 1:
+        return f"要替换的内容出现 {n} 次（不唯一），为安全未改动；请给更具体的上下文。"
+    backup = _backup(path)
+    path.write_text(text.replace(old, new), encoding="utf-8")
+    return f"已修改 {path.name}：\n- 原：{old[:80]}\n+ 新：{new[:80]}\n（原件已备份，可回滚）"
+
+
+async def edit_excel(args: dict, ctx) -> str:
+    """直接改 Excel 报表的单元格（改营业额、加一列提成等）。改前备份、改后回传逐格 diff。
+    args: path, changes=[{cell:'B2', value:8600}, ...]（cell 用 A1 式坐标；多表加 sheet）。"""
+    from openpyxl import load_workbook
+    path = _resolve(args["path"])
+    if not path.exists():
+        return f"报表不存在：{args['path']}"
+    backup = _backup(path)
+    wb = load_workbook(path)
+    diffs = []
+    for ch in args.get("changes", []):
+        ws = wb[ch["sheet"]] if ch.get("sheet") else wb.active
+        cell = ch["cell"]
+        old = ws[cell].value
+        ws[cell] = ch["value"]
+        diffs.append(f"{ws.title}!{cell}: {old!r} → {ch['value']!r}")
+    wb.save(path)
+    return f"已改 {path.name}：\n" + "\n".join(diffs) + f"\n（原件已备份，可回滚）"
+
+
+# ────────────────────────────── 工具定义（人看得懂的描述，大脑据此选） ──────────────────────────────
+
+_LOCAL_TOOLS = [
+    Tool(
+        name="list_files",
+        description="列出本机「内容库」里已有的文件（之前生成的文案/报表/海报/视频等）。要找/改某个文件前先用它看看有啥。",
+        parameters={"type": "object", "properties": {}},
+        handler=list_files,
+    ),
+    Tool(
+        name="read_file",
+        description="读取内容库里某个文件的内容（编辑前必须先读，才知道里面是什么）。Excel 会列出各单元格。",
+        parameters={"type": "object", "properties": {"path": {"type": "string", "description": "内容库内的文件名/相对路径"}}, "required": ["path"]},
+        handler=read_file,
+    ),
+    Tool(
+        name="write_file",
+        description="把内容写进本机内容库的一个文件（新建或覆盖，如保存一份文案/清单）。覆盖会先自动备份原件。",
+        parameters={"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
+        handler=write_file,
+        requires_approval=True,
+    ),
+    Tool(
+        name="edit_file",
+        description="修改一个文本文件的某一段：把指定原文精确替换成新文本。改前自动备份、可回滚。",
+        parameters={"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]},
+        handler=edit_file,
+        requires_approval=True,
+    ),
+    Tool(
+        name="edit_excel",
+        description="直接修改本机的 Excel 报表（改营业额、改某个数、加一列提成等）。先 read_file 看清单元格坐标，再给要改的单元格。改前自动备份、改后回传每格的前后对比。",
+        parameters={"type": "object", "properties": {
+            "path": {"type": "string"},
+            "changes": {"type": "array", "items": {"type": "object", "properties": {
+                "sheet": {"type": "string", "description": "工作表名，留空=第一个表"},
+                "cell": {"type": "string", "description": "A1 式坐标，如 B2"},
+                "value": {"description": "新值"},
+            }, "required": ["cell", "value"]}},
+        }, "required": ["path", "changes"]},
+        handler=edit_excel,
+        requires_approval=True,
+    ),
+]
+
+
+def register_local_tools(registry=None) -> int:
+    """把本地文件工具注册进注册表。仅桌面本地模式调用。返回注册数。"""
+    reg = registry or default_registry
+    for t in _LOCAL_TOOLS:
+        if reg.get(t.name) is None:
+            reg.register(t)
+    return len(_LOCAL_TOOLS)
+
+
+# 仅桌面全本地模式自动注册（云端 web 版不设 DESKTOP_LOCAL → 拿不到文件操作工具）
+if os.environ.get("DESKTOP_LOCAL") == "1":
+    register_local_tools()
+    logger.info("已注册 %d 个本地文件操作工具（桌面全本地模式）", len(_LOCAL_TOOLS))

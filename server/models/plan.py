@@ -2,16 +2,16 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, func
-from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db.base import Base
+from db.types import GUID, JSONType
 
 
 class Plan(Base):
     __tablename__ = "plans"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     slug: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     price_monthly: Mapped[int] = mapped_column(Integer, default=0)  # 分
@@ -20,7 +20,7 @@ class Plan(Base):
     token_limit: Mapped[int] = mapped_column(Integer, default=100000)
     poster_limit: Mapped[int] = mapped_column(Integer, default=5)
     max_members: Mapped[int] = mapped_column(Integer, default=1)
-    features: Mapped[dict | None] = mapped_column(JSONB)
+    features: Mapped[dict | None] = mapped_column(JSONType)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -28,7 +28,7 @@ class Plan(Base):
 class StoreSubscription(Base):
     __tablename__ = "store_subscriptions"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
     store_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("stores.id"), unique=True, nullable=False, index=True)
     plan_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("plans.id"), nullable=False)
     # status：到期降级 cron(server/scripts/expire_subscriptions.py，每小时)会把过期订阅置 "expired"。
@@ -53,7 +53,7 @@ class SubscriptionPayment(Base):
     """
     __tablename__ = "subscription_payments"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
     subscription_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("store_subscriptions.id"), nullable=False, index=True
     )

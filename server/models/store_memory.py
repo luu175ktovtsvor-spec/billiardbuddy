@@ -2,10 +2,10 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import String, Text, DateTime, ForeignKey, func
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db.base import Base
+from db.types import GUID
 
 
 class StoreMemory(Base):
@@ -15,10 +15,10 @@ class StoreMemory(Base):
     __tablename__ = "store_memories"
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+        GUID, primary_key=True, default=uuid.uuid4
     )
     store_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("stores.id"), nullable=False, index=True
+        GUID, ForeignKey("stores.id"), nullable=False, index=True
     )
     type: Mapped[str] = mapped_column(String(20), nullable=False, default="semantic")
     content: Mapped[str] = mapped_column(Text, nullable=False)

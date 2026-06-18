@@ -2,20 +2,20 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import String, Integer, Boolean, Text, DateTime, ForeignKey, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base
+from db.types import GUID, JSONType
 
 
 class Store(Base):
     __tablename__ = "stores"
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+        GUID, primary_key=True, default=uuid.uuid4
     )
     owner_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+        GUID, ForeignKey("users.id"), nullable=False, index=True
     )
 
     # 基础信息
@@ -31,9 +31,9 @@ class Store(Base):
     table_types: Mapped[str | None] = mapped_column(String(500))
 
     # 灵活信息
-    pricing: Mapped[dict | None] = mapped_column(JSONB)
-    member_cards: Mapped[dict | None] = mapped_column(JSONB)
-    operation_profile: Mapped[dict | None] = mapped_column(JSONB)
+    pricing: Mapped[dict | None] = mapped_column(JSONType)
+    member_cards: Mapped[dict | None] = mapped_column(JSONType)
+    operation_profile: Mapped[dict | None] = mapped_column(JSONType)
 
     # 图片
     logo_url: Mapped[str | None] = mapped_column(String(500))
@@ -62,9 +62,9 @@ class Store(Base):
     other_equipment: Mapped[str | None] = mapped_column(Text)
 
     # 会员体系
-    membership_types: Mapped[dict | None] = mapped_column(JSONB)
-    recharge_rules: Mapped[dict | None] = mapped_column(JSONB)
-    membership_benefits: Mapped[dict | None] = mapped_column(JSONB)
+    membership_types: Mapped[dict | None] = mapped_column(JSONType)
+    recharge_rules: Mapped[dict | None] = mapped_column(JSONType)
+    membership_benefits: Mapped[dict | None] = mapped_column(JSONType)
 
     # 营业数据
     daily_avg_customers: Mapped[int | None] = mapped_column(Integer)
@@ -99,13 +99,13 @@ class StoreMember(Base):
     __tablename__ = "store_members"
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+        GUID, primary_key=True, default=uuid.uuid4
     )
     store_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("stores.id"), nullable=False, index=True
+        GUID, ForeignKey("stores.id"), nullable=False, index=True
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+        GUID, ForeignKey("users.id"), nullable=False, index=True
     )
     role: Mapped[str] = mapped_column(String(20), nullable=False)
 
@@ -125,15 +125,15 @@ class StoreInvitation(Base):
     __tablename__ = "store_invitations"
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+        GUID, primary_key=True, default=uuid.uuid4
     )
     store_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("stores.id"), nullable=False, index=True
+        GUID, ForeignKey("stores.id"), nullable=False, index=True
     )
     code: Mapped[str] = mapped_column(String(8), nullable=False, unique=True, index=True)
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     created_by: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+        GUID, ForeignKey("users.id"), nullable=False
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     max_uses: Mapped[int | None] = mapped_column(Integer, nullable=True)

@@ -392,3 +392,7 @@ async def make_groupbuy_content(args: dict, ctx) -> str:
         max_tokens=2000,
     )
     return gen.result
+
+
+# 桌面全本地版：导入本地文件操作工具（模块内按 DESKTOP_LOCAL 条件自注册；云端 web 版不设该 env → 不暴露文件操作）。
+from services.agent import local_tools  # noqa: E402,F401

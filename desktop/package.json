@@ -1,0 +1,84 @@
+{
+  "name": "billiards-desktop-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "台球房 AI 运营管家 · 桌面端（Electron 壳 + 本地后端 + 本地发布RPA + 视频剪辑；全本地出内容/跑 Agent）",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "DESKTOP_APP_URL=http://localhost:3000 electron .",
+    "build:backend": "node scripts/build_backend.js",
+    "build:frontend": "node scripts/build_frontend.js",
+    "build": "electron-builder",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0"
+  },
+  "build": {
+    "appId": "cn.zzyppz.billiards.desktop",
+    "productName": "台球运营管家",
+    "files": [
+      "src/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "publisher",
+        "to": "publisher",
+        "filter": ["**/*", "!**/__pycache__/**", "!**/*.pyc", "!**/.venv/**", "!**/cookies/**"]
+      },
+      {
+        "from": "resources/backend",
+        "to": "backend",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "resources/frontend",
+        "to": "frontend",
+        "filter": ["**/*"]
+      }
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "publisher/**/*",
+      "node_modules/ffmpeg-static/**/*",
+      "node_modules/ffprobe-static/**/*"
+    ],
+    "npmRebuild": false,
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://zzyppz.cn/desktop/",
+        "channel": "latest"
+      }
+    ],
+    "mac": {
+      "target": ["dmg"],
+      "category": "public.app-category.business",
+      "hardenedRuntime": false,
+      "identity": null
+    },
+    "win": {
+      "target": ["nsis"],
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "台球运营管家"
+    },
+    "linux": {
+      "target": ["AppImage"]
+    }
+  }
+}

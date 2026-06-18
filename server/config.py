@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 # 项目根目录（server/ 的父目录）
@@ -16,6 +17,11 @@ class Settings(BaseSettings):
     postgres_user: str = "postgres"
     postgres_password: str = "postgres"
     postgres_db: str = "billiards_ai"
+
+    # 桌面全本地版：整条 DB URL 直给（如 sqlite+aiosqlite:////abs/path/billiards_local.db）。
+    # 留空 = web 版，按上方 postgres_* 拼 PostgreSQL URL（生产行为完全不变）。
+    # 别名 DATABASE_URL：env DATABASE_URL 设了就走它，否则保持 PG。
+    database_url_override: str = Field(default="", alias="DATABASE_URL")
 
     # JWT
     secret_key: str = ""
@@ -65,6 +71,9 @@ class Settings(BaseSettings):
 
     @property
     def database_url(self) -> str:
+        # 桌面本地版：env DATABASE_URL 已设则直接用（SQLite），不走 PG 拼接
+        if self.database_url_override:
+            return self.database_url_override
         return (
             f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
@@ -88,7 +97,12 @@ class Settings(BaseSettings):
         """编排大脑模型名；留空则跟随生成模型。"""
         return self.orchestration_model_name or self.text_model_name
 
-    model_config = {"env_file": ".env", "case_sensitive": False, "extra": "ignore"}
+    model_config = {
+        "env_file": ".env",
+        "case_sensitive": False,
+        "extra": "ignore",
+        "populate_by_name": True,  # 允许用字段名 database_url_override 直接赋值（别名 DATABASE_URL 仍生效）
+    }
 
 
 settings = Settings()

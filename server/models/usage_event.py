@@ -2,10 +2,10 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import String, DateTime, func
-from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db.base import Base
+from db.types import GUID, JSONType
 
 
 class UsageEvent(Base):
@@ -20,15 +20,15 @@ class UsageEvent(Base):
     __tablename__ = "usage_events"
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+        GUID, primary_key=True, default=uuid.uuid4
     )
     # 事件名（小写下划线），如 generation / generation_failed。按它聚合，故建索引。
     event: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     # 解耦冗余列（无外键）：用于分组统计。
-    store_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
-    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    store_id: Mapped[uuid.UUID | None] = mapped_column(GUID, nullable=True, index=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(GUID, nullable=True)
     # 小上下文：scenario / outcome / error_type / latency_ms / tokens 等。
-    props: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    props: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
