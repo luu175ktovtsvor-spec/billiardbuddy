@@ -22,10 +22,16 @@
 import argparse
 import asyncio
 import json
+import os
 import sys
 import time
 import uuid
 from pathlib import Path
+
+# 让 eval 完整模拟"桌面本地模式"：本地文件工具会自动注册，且 compose_agent_system_prompt 会注入
+# "你能直接读改老板本机文件、说存/改就真去做"的引导——否则测本地操作决策时大脑缺这段引导、会读完就停，
+# 等于把产品的一只手绑起来测（生产桌面版恒设此变量）。必须在导入 services/config 前设。
+os.environ.setdefault("DESKTOP_LOCAL", "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -34,6 +40,10 @@ import yaml  # noqa: E402
 from config import settings  # noqa: E402
 from models.store import Store  # noqa: E402
 import services.agent.tools  # noqa: F401,E402  导入即把内置工具登记进 default_registry
+from services.agent.local_tools import register_local_tools  # noqa: E402
+# 桌面本地操作工具(改文件/改报表)默认只在 DESKTOP_LOCAL=1 注册；eval 要覆盖"模型进盒子后
+# 改老板电脑文件的决策"(最危险盲区)，这里显式注册进来。
+register_local_tools()
 from services.agent.context import AgentContext  # noqa: E402
 from services.agent.loop import run_agent_loop  # noqa: E402
 from services.agent.registry import Tool, ToolRegistry, default_registry  # noqa: E402
@@ -70,6 +80,14 @@ _STUB_RESULTS = {
     "make_platform_content": "【平台定制内容已写好·测试桩】脚本/笔记草稿已就绪，复制到对应 App 自己发。",
     "make_groupbuy_content": "【团购套餐文案已写好·测试桩】套餐标题/卖点/包含内容/使用规则齐全，去商家后台上架即可。",
     "make_poster": "【海报已生成·测试桩】(此分支正常不会被执行——做海报应走审批闸)",
+    # ── 本地文件操作工具的桩(不真碰磁盘) ──
+    "list_files": "内容库现有文件：本月营业额报表.xlsx、周末活动朋友圈.txt、助教提成表.xlsx、双十一海报.png",
+    "read_file": ("【文件内容·测试桩】Sheet1『本月营业额』: A1=项目 B1=金额；A2=营业额 B2=32000；A3=台费收入 B3=18000。"
+                  "Sheet2『助教提成』: A1=姓名 B1=本月提成；A2=小敏 B2=2400；A3=小雨 B3=1800；A4=阿强 B4=2100"),
+    "recall_my_content": "翻到你以前写过的相关内容：①双十一朋友圈(效果好)『双11来约球，台费5折，约起～』",
+    "write_file": "【已写入文件·测试桩】(此分支正常应走审批闸、不该直接执行)",
+    "edit_file": "【已改文件·测试桩】(此分支正常应走审批闸、不该直接执行)",
+    "edit_excel": "【已改 Excel·测试桩】B2: 32000→38000(此分支按权限模式：ask 走审批/auto_files 直接改)",
 }
 
 
@@ -86,6 +104,7 @@ def build_stub_registry(recorder: list[dict]) -> ToolRegistry:
             description=t.description,         # ← 用真实描述，评的就是描述够不够大脑选对
             parameters=t.parameters,
             requires_approval=t.requires_approval,
+            approval_class=t.approval_class,  # ← 必须带上：文件类(file)/花钱类(spend),权限分级靠它判
             handler=_make_stub(t.name, recorder),
         ))
     return reg
@@ -131,6 +150,10 @@ async def run_case(case: dict, store: Store, system_prompt: str, model: str | No
     recorder: list[dict] = []
     registry = build_stub_registry(recorder)
     ctx = AgentContext(db=None, store=store, user=_StubUser())
+    # 本地操作类用例：按用例设权限模式(ask/auto_files/full)，并模拟"老板已选定一个文件"(沙箱已授权)，
+    # 才能测出"文件类在 auto_files 免确认直接改 / 花钱类仍审批"这套权限分级在脑子里有没有生效。
+    ctx.permission_mode = case.get("permission_mode") or "ask"
+    ctx.allowed_paths = ["/Users/boss/Desktop/本月营业额报表.xlsx"]
 
     async with sem:
         t0 = time.monotonic()
@@ -154,10 +177,12 @@ async def run_case(case: dict, store: Store, system_prompt: str, model: str | No
     chosen = executed | approvals
 
     expect_tools = set(case.get("expect_tools") or [])
+    expect_executed = set(case.get("expect_executed") or [])  # 必须【直接执行】(测 auto_files/full 免确认生效)
     forbid_tools = set(case.get("forbid_tools") or [])
     discourage = set(case.get("discourage") or [])
     expect_approval = set(case.get("expect_approval") or [])
     expect_no_tool = bool(case.get("expect_no_tool"))
+    allow_tools = set(case.get("allow_tools") or [])  # 调了也不扣分(如先 read_file 再改=好习惯)
     # expect_any: 每个子组里至少命中一个即可(如"活动方案"可走 plan_activity 或 write_operation_content)
     expect_any = [list(g) for g in (case.get("expect_any") or [])]
     any_members = {t for g in expect_any for t in g}
@@ -174,6 +199,12 @@ async def run_case(case: dict, store: Store, system_prompt: str, model: str | No
     for t in expect_tools:
         if t not in chosen:
             hard.append(f"漏调应调工具: {t}")
+    for t in expect_executed:
+        if t not in executed:
+            if t in approvals:
+                hard.append(f"该自动执行却走了审批闸(权限模式没在脑子里生效?): {t}")
+            else:
+                hard.append(f"漏调应直接执行的工具: {t}")
     for g in expect_any:
         if not (set(g) & chosen):
             hard.append(f"这组里至少要调一个、却一个没调: {g}")
@@ -190,7 +221,7 @@ async def run_case(case: dict, store: Store, system_prompt: str, model: str | No
         if t in chosen:
             soft.append(f"多此一举调了: {t}")
     # 额外调了既不在期望也不在审批期望里的工具(非禁用/非浪费类)→ 轻微偏离
-    unexpected = chosen - expect_tools - expect_approval - discourage - forbid_tools - any_members
+    unexpected = chosen - expect_tools - expect_executed - expect_approval - discourage - forbid_tools - any_members - allow_tools
     if unexpected and not expect_no_tool:
         soft.append(f"额外调了: {sorted(unexpected)}")
 
@@ -199,7 +230,9 @@ async def run_case(case: dict, store: Store, system_prompt: str, model: str | No
         "id": cid, "category": case.get("category"), "title": case.get("title", ""),
         "grade": grade, "message": case["message"],
         "executed": sorted(executed), "approvals": sorted(approvals),
-        "expect_tools": sorted(expect_tools), "expect_approval": sorted(expect_approval),
+        "permission_mode": ctx.permission_mode,
+        "expect_tools": sorted(expect_tools), "expect_executed": sorted(expect_executed),
+        "expect_approval": sorted(expect_approval),
         "expect_no_tool": expect_no_tool,
         "turns": result.turns, "stopped_reason": result.stopped_reason,
         "issues_hard": hard, "issues_soft": soft,
@@ -299,7 +332,8 @@ def dry_run():
     print(f"用例 {len(cases)}:")
     bad = 0
     for c in cases:
-        ref = set((c.get('expect_tools') or []) + (c.get('expect_approval') or [])
+        ref = set((c.get('expect_tools') or []) + (c.get('expect_executed') or [])
+                  + (c.get('expect_approval') or [])
                   + (c.get('forbid_tools') or []) + (c.get('discourage') or [])
                   + [t for g in (c.get('expect_any') or []) for t in g])
         unknown = ref - real_names
