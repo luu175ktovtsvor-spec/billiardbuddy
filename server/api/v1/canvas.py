@@ -1,7 +1,9 @@
-"""Canvas（画布）定向改写路由——成品右侧展开后"指着某处说改这里"。"""
+"""Canvas（画布）路由——成品右侧展开"指着某处说改这里"，以及报表可视化看/改。"""
+import os
+from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +14,21 @@ from models.user import User
 from services.canvas_service import canvas_edit
 
 router = APIRouter()
+
+
+def _require_desktop() -> None:
+    """报表看/改读写本机文件——只在桌面本地版放行；云端多租户绝不能读服务器/他人文件。"""
+    if os.environ.get("DESKTOP_LOCAL") != "1":
+        raise HTTPException(status_code=403, detail="该功能仅桌面本地版可用")
+
+
+def _safe_xlsx(path_str: str) -> Path:
+    p = Path(path_str or "")
+    if p.suffix.lower() not in (".xlsx", ".xlsm"):
+        raise HTTPException(status_code=400, detail="只支持 .xlsx 报表")
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="报表文件不存在")
+    return p
 
 
 class CanvasEditRequest(BaseModel):
@@ -37,3 +54,93 @@ async def canvas_edit_endpoint(
         selection=body.selection,
         deliverable_type=body.deliverable_type or "内容",
     )
+
+
+# ───────────────── 报表可视化：看表格（只读）/ 点格改（写·自动备份） ·桌面专属 ─────────────────
+
+_MAX_ROWS = 200
+_MAX_COLS = 30
+
+
+class SheetRequest(BaseModel):
+    path: str  # 老板选定的本机报表路径(.xlsx)
+
+
+@router.post("/sheet")
+async def read_sheet(
+    body: SheetRequest,
+    _user: Annotated[User, Depends(get_current_user)],
+    _store: Annotated[Store, Depends(get_current_store)],
+    _perm: None = Depends(require_permission(Permission.QUOTA_VIEW)),
+):
+    """读本机报表 → 结构化表格(供前端可视化展示)。桌面专属、只读、限行列防超大。"""
+    _require_desktop()
+    p = _safe_xlsx(body.path)
+    from openpyxl import load_workbook
+    wb = load_workbook(p, data_only=True)
+    truncated = len(wb.worksheets) > 5
+    sheets = []
+    for ws in wb.worksheets[:5]:
+        if (ws.max_row or 0) > _MAX_ROWS or (ws.max_column or 0) > _MAX_COLS:
+            truncated = True
+        rows = []
+        for row in ws.iter_rows(max_row=_MAX_ROWS, max_col=_MAX_COLS):
+            rows.append(["" if c.value is None else str(c.value) for c in row])
+        while rows and not any(cell for cell in rows[-1]):  # 去尾部全空行
+            rows.pop()
+        # 去尾部全空列（openpyxl 按 max_col 填充会带一堆空列）
+        maxc = 0
+        for row in rows:
+            for i in range(len(row) - 1, -1, -1):
+                if row[i]:
+                    maxc = max(maxc, i + 1)
+                    break
+        rows = [row[:maxc] for row in rows]
+        sheets.append({"name": ws.title, "rows": rows})
+    wb.close()
+    return {"name": p.name, "sheets": sheets, "truncated": truncated}
+
+
+class ExcelCellEdit(BaseModel):
+    path: str
+    cell: str                 # A1 式坐标，如 B2
+    value: str                # 新值（纯数字会自动转数值）
+    sheet: str | None = None  # 工作表名，留空=第一个表
+
+
+@router.post("/excel-edit")
+async def excel_edit(
+    body: ExcelCellEdit,
+    _user: Annotated[User, Depends(get_current_user)],
+    _store: Annotated[Store, Depends(get_current_store)],
+    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
+):
+    """点格改：改本机报表一个单元格。桌面专属、改前自动备份、返回前后对比(diff)。"""
+    _require_desktop()
+    import shutil
+    from core.timezone import business_now
+    from openpyxl import load_workbook
+    p = _safe_xlsx(body.path)
+    # 改前自动备份（落到报表同目录的隐藏备份夹，可回滚）
+    bdir = p.parent / ".billiards-backups"
+    bdir.mkdir(exist_ok=True)
+    backup = bdir / f"{p.stem}.{business_now().strftime('%Y%m%d-%H%M%S')}{p.suffix}.bak"
+    shutil.copy2(p, backup)
+    wb = load_workbook(p)
+    ws = wb[body.sheet] if (body.sheet and body.sheet in wb.sheetnames) else wb.active
+    try:
+        old = ws[body.cell].value
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"坐标无效：{body.cell}")
+    # 纯数字转数值，否则按文本
+    v: object = body.value
+    s = (body.value or "").strip()
+    try:
+        v = int(s) if s.lstrip("-").isdigit() else float(s)
+    except ValueError:
+        v = body.value
+    ws[body.cell] = v
+    wb.save(p)
+    wb.close()
+    return {"ok": True, "sheet": ws.title, "cell": body.cell,
+            "old": "" if old is None else str(old), "new": str(v)}
