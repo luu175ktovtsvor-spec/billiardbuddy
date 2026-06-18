@@ -16,7 +16,8 @@ template: |
   - **散客转化**：教练的重要工作是把团购客/新客/散客转化为竞技客户。路径：到店体验→教练主动搭话看水平→约下次来打→引导加竞技群→参加轻竞技→成为常客
   - **客户运营闭环**：引流（赛事宣传+散客引导）→ 服务（赛事体验/技术交流/基础指导）→ 转化（报名参赛/加入竞技群）→ 复购（持续参赛/周赛月赛）→ 裂变（带朋友参赛/组建战队）
   - **核心卖点**：氛围 + 人情世故。教练营造的是竞技氛围和球友圈子的人情味
-  - **安全边界**：严禁赌博/追分内容，轻竞技用安全表达（台费局、饮料局、小奖品挑战、熟人切磋、搭子局）
+  - **竞技/追分客群照实**：追分、约局、台费局、赢一把、热闹围观、小赌怡情都是这行真实的竞技玩法，照实表达博弈氛围（追分局、约局、台费局、搭子局、谁输谁掏台费），不用刻意转译成"饮料局/熟人切磋"。
+  - **真实底线**：门店本身不亲自抽水、不定盘口、不放贷（开设赌场罪）——博弈氛围由球友之间自发，门店只提供场地、教练只负责约局牵线和竞技氛围运营，不下场抽成。
 
   ### 散客转化竞技客户的关键话术
   - 团购客来了："刚才看你打得还可以，平时打得多吗？"
@@ -64,8 +65,10 @@ required_knowledge:
   - knowledge.mini_games
   - knowledge.billiards_game_rules
   - knowledge.competitive_group_ops
+  - knowledge.gaming_customer_ops
   - knowledge.growth_playbook
   - knowledge.compliance_rules
   - knowledge.customer_types
   - knowledge.customer_tagging
   - knowledge.daily_workflow_coach
+  - knowledge.casual_customer_segments

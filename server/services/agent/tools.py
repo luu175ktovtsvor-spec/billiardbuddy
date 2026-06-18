@@ -11,7 +11,7 @@ import logging
 
 from core.timezone import business_today
 from services.agent.registry import tool
-from services.content_service import _append_guardrails, generate_workbench, run_generation
+from services.content_service import _append_guardrails, generate_activity, generate_workbench, run_generation
 from services.dashboard_service import get_today_dashboard
 from services.diagnosis_service import analyze_diagnosis
 from services.games_service import recommend_games as _recommend_games
@@ -20,6 +20,15 @@ from services.outreach_service import generate_outreach
 logger = logging.getLogger(__name__)
 
 _WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+
+# 交付类工具：结果本身就是给老板直接拿去用的成品（前端原样渲染成可复制卡片、不让大脑改写）。
+# 落库时把这些工具的产出并进会话 result，才能①历史里看到真内容 ②下一轮"把刚才那条改一下"时
+# 大脑读得到自己上轮写了啥。感知类(查日期/今日推荐)与 make_poster(走 /execute 单独落库)不在此列。
+# ⚠️ 必须与前端 chat/page.tsx 的 DELIVERABLE_TOOLS 保持一致。
+DELIVERABLE_TOOLS = frozenset({
+    "write_operation_content", "plan_activity", "assistant_outreach",
+    "diagnose_operation", "recommend_games", "make_platform_content", "make_groupbuy_content",
+})
 
 
 # ---- 感知（只读） ------------------------------------------------------------
@@ -80,6 +89,36 @@ async def write_operation_content(args: dict, ctx) -> str:
         output_package=args.get("outputs"),
         extra_note=args.get("note", "") or "",
         concise=True,
+    )
+    return gen.result
+
+
+@tool(
+    name="plan_activity",
+    description="策划一套**成体系的台球房活动方案**（玩法机制/优惠力度/时间安排/传播话术/落地步骤），比单写一段文案更系统。"
+                "当老板要『策划/搞个活动、办会员日、做比赛、节日营销(春节/中秋等)、包场团建、老客回流专场、学生场、搭子主题局』时调用。"
+                "区分：只要一段现成文字(朋友圈/群公告)用 write_operation_content；要一整套能落地执行的活动方案用本工具。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "need": {"type": "string", "description": "老板的具体要求原话，如'周末双人主题之夜''中秋节搞个活动''会员日冲一波充值'"},
+            "goal": {"type": "string",
+                     "description": "活动主要目的(可选)：traffic(拉人气)/membership(卖会员卡)/tournament(做比赛)/comeback(老客回流)/student(学生优惠)/community(搭子群活跃)/team_building(团建包场)/holiday(节日营销)/coaching(陪练推广)"},
+            "target": {"type": "string", "description": "面向哪类客群(可选)，如'附近上班族''学生''情侣闺蜜'"},
+            "budget": {"type": "string", "description": "优惠力度(可选)：light(轻度)/medium(中度)/heavy(大力)"},
+            "duration": {"type": "string", "description": "活动持续多久(可选)，如'周末两天''整个7月'"},
+        },
+        "required": ["need"],
+    },
+)
+async def plan_activity(args: dict, ctx) -> str:
+    gen = await generate_activity(
+        ctx.db, ctx.store, ctx.user,
+        activity_goal=args.get("goal") or "traffic",
+        target_customer=args.get("target"),
+        budget_level=args.get("budget"),
+        duration=args.get("duration"),
+        extra_note=args.get("need", "") or "",
     )
     return gen.result
 

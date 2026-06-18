@@ -170,7 +170,7 @@ async def _plan_framework(description: str, task_type: str, store) -> tuple[str,
 
 只输出框架本身，不写任何具体文案内容。"""
 
-    provider = ProviderFactory.get_text_provider()
+    provider = ProviderFactory.get_text_provider_for_store(store)
     response = await provider.generate(
         TextRequest(system_prompt=system_prompt, prompt=prompt, max_tokens=1500)
     )
@@ -200,10 +200,10 @@ def _build_role_system_prompt(role: str, description: str, store) -> str:
 
 
 async def run_agent(
-    role: str, description: str, framework: str, system_prompt: str
+    role: str, description: str, framework: str, system_prompt: str, store=None
 ) -> tuple[str, int]:
     """运行单个岗位 Agent（带共享框架），返回 (安全内容, tokens)"""
-    provider = ProviderFactory.get_text_provider()
+    provider = ProviderFactory.get_text_provider_for_store(store)
     request = TextRequest(
         system_prompt=system_prompt,
         prompt=f"""总策划已制定《协作框架》，全体岗位必须以它为准（预算、时间、分工边界不得偏离）：
@@ -223,8 +223,8 @@ async def run_agent(
 
 # ─── ③ 汇总整合（含一致性校验） ───
 
-async def _synthesize(description: str, framework: str, joined: str) -> tuple[str, int]:
-    provider = ProviderFactory.get_text_provider()
+async def _synthesize(description: str, framework: str, joined: str, store=None) -> tuple[str, int]:
+    provider = ProviderFactory.get_text_provider_for_store(store)
     request = TextRequest(
         system_prompt=(
             "你是台球房的运营操盘手，负责把各岗位提交的内容整合成一份口径统一、"
@@ -360,7 +360,7 @@ async def _execute(
             await _update_task(task_id, agents=list(agents))
             try:
                 content, t = await asyncio.wait_for(
-                    run_agent(agent["role"], description, framework, prompts.get(agent["role"], "")),
+                    run_agent(agent["role"], description, framework, prompts.get(agent["role"], ""), store),
                     timeout=AGENT_TIMEOUT,
                 )
                 agent["status"] = "completed"
@@ -399,7 +399,7 @@ async def _execute(
         if len(completed) >= 2:
             try:
                 summary, t = await asyncio.wait_for(
-                    _synthesize(description, framework, joined), timeout=SUMMARY_TIMEOUT
+                    _synthesize(description, framework, joined, store), timeout=SUMMARY_TIMEOUT
                 )
                 tokens_total += t
             except Exception:

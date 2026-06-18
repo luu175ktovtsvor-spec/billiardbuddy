@@ -201,7 +201,7 @@ async def stream_workbench(
         usage: dict = {}
         try:
             async for token, fallback_used in ProviderFactory.generate_stream_with_fallback(
-                request, model=model, usage_sink=usage
+                request, model=model, usage_sink=usage, store=store
             ):
                 # 增量安全过滤：去前缀 + 实时泄露检测后再下发
                 safe = guard.feed(token)

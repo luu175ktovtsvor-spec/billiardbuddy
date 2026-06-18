@@ -1,0 +1,127 @@
+{
+  "summary": {
+    "total": 4,
+    "GREEN": 4,
+    "YELLOW": 0,
+    "RED": 0,
+    "ERROR": 0,
+    "scored": 4,
+    "green_rate": 100.0,
+    "tag": "datefix-verify"
+  },
+  "by_category": {
+    "tool_selection": {
+      "GREEN": 2,
+      "YELLOW": 0,
+      "RED": 0,
+      "ERROR": 0
+    },
+    "advice": {
+      "GREEN": 1,
+      "YELLOW": 0,
+      "RED": 0,
+      "ERROR": 0
+    },
+    "orchestration": {
+      "GREEN": 1,
+      "YELLOW": 0,
+      "RED": 0,
+      "ERROR": 0
+    }
+  },
+  "results": [
+    {
+      "id": "AG-SEL-01",
+      "category": "tool_selection",
+      "title": "写朋友圈",
+      "grade": "GREEN",
+      "message": "帮我写条周末双人半价的朋友圈",
+      "executed": [
+        "write_operation_content"
+      ],
+      "approvals": [],
+      "expect_tools": [
+        "write_operation_content"
+      ],
+      "expect_approval": [],
+      "expect_no_tool": false,
+      "turns": 2,
+      "stopped_reason": "final",
+      "issues_hard": [],
+      "issues_soft": [],
+      "final_text": "给你整理好了，直接复制发朋友圈👇\n\n---\n\n🎱 **周末双人半价，喊上球友来干一局！**\n\n这周末别宅了，约上你的搭子来武侯巷子球房搓两把～\n双人同行，台费直接 **半价**🔥\n灯光到位、氛围拉满，10张中八台任你挑！\n\n📍地铁6号线桂溪生态公园站A口出来就到\n💰中八台30元/小时，会员价25元/小时\n\n周末位置抢手，早点来占台子哈～\n私我留台也行！🙋‍♂️\n\n#成都台球 #周末去哪儿 #武侯区 #双人半价 #巷子球房\n\n---\n\n后面加不加配图？想让我顺便帮你做张海报也可以，直接说～",
+      "seconds": 6.8
+    },
+    {
+      "id": "AG-SEL-05",
+      "category": "tool_selection",
+      "title": "发抖音",
+      "grade": "GREEN",
+      "message": "帮我弄条抖音视频脚本，推一下周末的双人优惠",
+      "executed": [
+        "make_platform_content"
+      ],
+      "approvals": [],
+      "expect_tools": [
+        "make_platform_content"
+      ],
+      "expect_approval": [],
+      "expect_no_tool": false,
+      "turns": 2,
+      "stopped_reason": "final",
+      "issues_hard": [],
+      "issues_soft": [],
+      "final_text": "好嘞，给你写一条完整的抖音脚本，直接拿去拍！\n\n---\n\n## 🎬 抖音短视频脚本｜武侯巷子球房\n\n**【视频主题】** 周末双人搭子局，好耍不贵！\n\n**【时长】** 约30-40秒\n\n**【BGM建议】** 轻快节奏的Citypop或节奏感强的Lo-fi，音量适中\n\n---\n\n### 0:00-0:05 🎯 开场（镜头怼脸/或快速扫过球桌）\n\n**画面：** 两个人同时出杆击球，球进袋的慢镜头\n\n**文案（旁白/字幕）：**\n> 周末不躺平，拉上你的搭子来巷子干两把！\n\n---\n\n### 0:05-0:15 📍 环境展示\n\n**画面：** 快速切换——大厅全景（10张台子）、球桌特写、两人边打球边聊天\n\n**文案：**\n> 武侯区这家藏在巷子里的宝藏球房🏠\n> 10张中八台，大厅敞亮，舒服得很～\n> 地铁6号线桂溪生态公园站A口出来50米就到🚇\n\n---\n\n### 0:15-0:25 ",
+      "seconds": 19.6
+    },
+    {
+      "id": "AG-ADV-01",
+      "category": "advice",
+      "title": "开口问该干啥",
+      "grade": "GREEN",
+      "message": "今天店里该做点啥来拉拉客人？给我出个主意",
+      "executed": [
+        "get_today_recommendation"
+      ],
+      "approvals": [],
+      "expect_tools": [
+        "get_today_recommendation"
+      ],
+      "expect_approval": [],
+      "expect_no_tool": false,
+      "turns": 2,
+      "stopped_reason": "final",
+      "issues_hard": [],
+      "issues_soft": [],
+      "final_text": "好嘞！不过我刚才查的时候系统数据有点偏——按你给的**今天周三（6月17日）**来盘一下情况：\n\n**你家周三的规律：** 下午3点前基本空台，晚7点后才开始上人。想拉客，就得把**下午空档**和**晚上黄金档**都安排上。\n\n---\n\n我给你出一套 **「周三人气双响炮」** 👇\n\n---\n\n### 🎯 方案一：下午空档引流（3点前→6点）\n搞个 **「周三下午茶·畅打局」**\n- 下午2点~6点，**来就送矿泉水1瓶**（成本几毛钱，但客人觉得贴心）\n- 文案主打：*「周三摸鱼不如来摸杆，下午场人少不打挤，一个人来也能给你凑搭子」*\n- 发朋友圈+私聊几个白天有空的老哥\n\n### 🎯 方案二：晚上黄金档锁位（防排队跑单）\n你家周五周六要排队，**周三晚上虽然也会满，但还有机会提前锁客**\n- 私聊那些**周二周四上钟率高的老客**（比如张助教服务的那波白领）\n- 话术：*「哥，今晚过来",
+      "seconds": 13.0
+    },
+    {
+      "id": "AG-ORC-01",
+      "category": "orchestration",
+      "title": "周末活动一条龙(含海报)",
+      "grade": "GREEN",
+      "message": "帮我搞定这周末的双人活动：写个活动方案，再配条朋友圈，最后来张海报",
+      "executed": [
+        "write_operation_content"
+      ],
+      "approvals": [
+        "make_poster"
+      ],
+      "expect_tools": [
+        "make_poster",
+        "write_operation_content"
+      ],
+      "expect_approval": [
+        "make_poster"
+      ],
+      "expect_no_tool": false,
+      "turns": 2,
+      "stopped_reason": "final",
+      "issues_hard": [],
+      "issues_soft": [],
+      "final_text": "好嘞，三个活儿一起安排上了！先给你看看写出来的活动方案+朋友圈文案，海报那边你点个确认就出图👇\n\n---\n\n## 📋 周末双人搭子活动方案\n\n**活动名称：** 周末双人搭子局 🎱\n**时间：** 6月20日（周六）— 6月21日（周日）\n**地点：** 武侯巷子球房（桂溪路19号·地铁6号线A口步行50米）\n\n**活动内容：**\n- 🎯 **双人畅打**：约上你的搭子来巷子，两人一桌，边打边唠\n- 💰 **价格**：中八台 **30元/小时**，会员 **25元/小时**，两个人AA一人也就十几块\n- 🆚 技术型张助教在店，想学两手中高杆走位的哥姐直接找他指点\n- 😊 李前台记得住每个熟客名字，来了就跟回家一样\n\n**适合人群：** 朋友局、同事局、想找搭子又不尴尬的\n\n---\n\n## 📱 朋友圈文案\n\n周末不躺平，来巷子找搭子 🎱✨\n\n约上兄弟/姐妹来打两把\n两张嘴一张桌，边打边吹牛\n",
+      "seconds": 26.2
+    }
+  ]
+}

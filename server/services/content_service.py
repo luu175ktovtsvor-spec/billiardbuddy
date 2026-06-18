@@ -71,11 +71,11 @@ async def run_generation(
 
     _t0 = time.monotonic()
     request = TextRequest(prompt=prompt, max_tokens=max_tokens)
+    # 按门店路由：BYOK 门店用自己的 key/base_url/model（token 成本与并发自担）；否则平台默认。
+    # （use_fallback 历史上无真备份 provider，已统一走 for_store；参数保留兼容调用方签名）
+    provider = ProviderFactory.get_text_provider_for_store(store)
     try:
-        if use_fallback:
-            response, _ = await ProviderFactory.generate_with_fallback(request)
-        else:
-            response = await ProviderFactory.get_text_provider().generate(request)
+        response = await provider.generate(request)
     except Exception as e:
         # 把"看不见的失败"记成使用事件(故障安全)，再按原映射抛出——行为与原三段 except 等价
         await _safe_log_generation(store, user, gen_type, sub_type, outcome="failure",
@@ -266,7 +266,18 @@ KNOWLEDGE_KEYWORDS: dict[str, list[str]] = {
     "knowledge.site_selection": ["选址", "位置", "店面", "商圈", "门面"],
     "knowledge.tournament_rules": ["比赛", "赛事", "周赛", "月赛", "锦标", "排位", "积分赛", "战报", "主持", "联赛", "主题之夜", "单身", "情侣", "女生场", "闺蜜", "团建", "包场", "看球", "双业态"],
     "knowledge.traffic_generation": ["引流", "拉新", "获客", "人气", "客流", "流量", "冷清"],
+    "knowledge.traffic_priority": ["引流渠道", "拉新渠道", "获客渠道", "推广渠道", "怎么推广", "怎么引流", "怎么拉新", "怎么获客", "渠道优先", "合规引流", "合规获客", "抖音引流", "美团引流", "小红书引流", "视频号", "地推", "异业"],
     "knowledge.growth_playbook": ["裂变", "老带新", "转介绍", "集赞", "邀请", "打卡", "拼台", "搭子", "积分", "排行榜", "抽奖", "留存", "复购", "召回", "唤醒", "月卡", "异业", "拉新", "引流", "获客"],
+    "knowledge.female_customer_ops": ["女生", "女性", "闺蜜", "姐妹", "女士", "女孩", "小姐妹", "女客", "女性客群", "女生场", "闺蜜局", "女生向", "女性向", "出片", "拍照打卡"],
+    "knowledge.scale_guide": ["规模", "几台", "小店", "独立店", "台数", "10台", "20台", "连锁", "中小店", "夫妻店", "大店", "门店大小", "多少台", "台球桌数量", "几张台"],
+    "knowledge.gaming_customer_ops": ["追分", "约局", "博弈", "台费局", "赢一把", "小赌", "下注", "对局", "围观", "高手局", "追分客", "彩头"],
+    "knowledge.assistant_overtime_service": ["超休", "买超休", "陪出去", "出去吃饭", "陪客户出去", "外出陪", "陪伴服务", "超休时长", "超休奖励"],
+    "knowledge.cost_control": ["控成本", "成本控制", "成材率", "损耗", "耗材", "电费", "台呢更换", "皮头", "巧粉", "降本", "省成本", "能耗"],
+    "knowledge.positioning_design": ["定位", "差异化", "卖点", "口号", "slogan", "心智", "竞争对手", "凭什么选", "宣传特色", "品牌传播", "找搭子", "怎么宣传", "占领心智"],
+    "knowledge.price_raise": ["涨价", "提价", "上调价格", "调价", "价格上调", "提毛利", "加价", "能不能涨", "敢不敢涨", "提价格"],
+    "knowledge.assistant_persona_building": ["人设", "美女人设", "形象", "颜值", "气质", "风格", "穿搭", "妆容", "妆造", "出镜", "包装助教", "助教形象", "性感", "可爱", "飒爽", "潮酷"],
+    "knowledge.store_manager_competency": ["店长能力", "店长职责", "店长该", "带团队", "赛马", "店长核心", "怎么当店长", "考核店长", "抓店长", "店长素质", "店长工作"],
+    "knowledge.casual_customer_segments": ["散客", "初次进店", "第一次来", "新散客", "散客维护", "散客转化", "留散客", "娱乐型", "刚上瘾", "散客分层"],
 }
 
 # 命中关键词的场景知识最多额外注入的条数（核心知识不计入此上限）
@@ -426,7 +437,7 @@ async def generate_copywriting(
     if brand_voice:
         rendered_prompt = f"{rendered_prompt}\n\n---\n{brand_voice}\n---"
 
-    provider = ProviderFactory.get_text_provider()
+    provider = ProviderFactory.get_text_provider_for_store(store)
     request = TextRequest(prompt=rendered_prompt, thinking={"type": "disabled"})
     try:
         response = await provider.generate(request)
@@ -497,7 +508,7 @@ async def generate_activity(
     if brand_voice:
         rendered_prompt = f"{rendered_prompt}\n\n---\n{brand_voice}\n---"
 
-    provider = ProviderFactory.get_text_provider()
+    provider = ProviderFactory.get_text_provider_for_store(store)
     request = TextRequest(prompt=rendered_prompt, max_tokens=3000)
     try:
         response = await provider.generate(request)
@@ -574,7 +585,7 @@ async def generate_operation(
     if brand_voice:
         rendered_prompt = f"{rendered_prompt}\n\n---\n{brand_voice}\n---"
 
-    provider = ProviderFactory.get_text_provider()
+    provider = ProviderFactory.get_text_provider_for_store(store)
     request = TextRequest(prompt=rendered_prompt, max_tokens=3000)
     try:
         response = await provider.generate(request)
@@ -708,7 +719,7 @@ async def generate_workbench(
     rendered_prompt += concise_directive(concise)
 
     # 获取文本 provider
-    provider = ProviderFactory.get_text_provider()
+    provider = ProviderFactory.get_text_provider_for_store(store)
 
     request = TextRequest(prompt=rendered_prompt, max_tokens=3000)
     try:

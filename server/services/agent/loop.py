@@ -21,6 +21,11 @@ from services.ai.factory import ProviderFactory
 
 logger = logging.getLogger(__name__)
 
+# 编排（选工具/规划）用低温度：实测 0.7（TextRequest 默认）下 DeepSeek 会"有时兴起自己聊、
+# 不调工具"，导致该写文案/推玩法的需求被直接闲聊掉。工具选择要的是稳定可复现，不是创意——
+# 故循环统一压到 0.3。真正要创意的内容生成在各工具内部走 run_generation（自带 0.7），不受此影响。
+_ORCH_TEMPERATURE = 0.3
+
 # 审批闸（proposal 模式）：requires_approval 的工具不在循环里执行，
 # 改提请用户确认；这条作为工具结果回灌给模型，让它把方案讲给用户、不要假装已完成。
 _APPROVAL_PENDING_MSG = (
@@ -58,6 +63,7 @@ async def run_agent_loop(
     history: list[dict] | None = None,
     max_turns: int = 8,
     max_tokens: int = 2000,
+    temperature: float = _ORCH_TEMPERATURE,
 ) -> AgentResult:
     provider = provider or ProviderFactory.get_orchestration_provider()
     model = model or settings.effective_orchestration_model
@@ -80,6 +86,7 @@ async def run_agent_loop(
             tool_choice="auto",
             model=model,
             max_tokens=max_tokens,
+            temperature=temperature,
         ))
 
         # 无工具调用 → 收到最终答复，结束
@@ -167,6 +174,7 @@ async def run_agent_loop_stream(
     history: list[dict] | None = None,
     max_turns: int = 8,
     max_tokens: int = 2000,
+    temperature: float = _ORCH_TEMPERATURE,
 ):
     """流式版 ReAct 循环：边跑边 yield 事件 dict，供 SSE 推给前端。
 
@@ -194,7 +202,8 @@ async def run_agent_loop_stream(
         sink: list[dict] = []
         parts: list[str] = []
         async for tok in provider.generate_stream(
-            TextRequest(messages=messages, tools=tools, tool_choice="auto", model=model, max_tokens=max_tokens),
+            TextRequest(messages=messages, tools=tools, tool_choice="auto", model=model,
+                        max_tokens=max_tokens, temperature=temperature),
             tool_calls_sink=sink,
         ):
             parts.append(tok)

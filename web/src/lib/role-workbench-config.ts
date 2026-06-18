@@ -20,6 +20,41 @@ export interface RoleTaskCard {
 
 const MANAGER_TASKS: RoleTaskCard[] = [
   {
+    id: "mgr-quant-assessment",
+    role: "manager",
+    title: "量化考核奖惩矩阵",
+    description: "各岗位月度任务配奖惩 + 业绩目标团队占比分配",
+    userIntentTemplate: "帮我做一套量化考核方案，各岗位月度任务怎么配奖惩、业绩目标怎么按岗位分",
+    targetCustomerType: "all",
+    outputPackage: ["sop_checklist", "execution_tips"],
+    sceneTags: ["量化考核", "绩效", "奖惩", "团队"],
+    requiredProfileModules: ["basic"],
+    priority: "P2",
+    promptKey: "operation.quant_assessment_matrix",
+    inputHints: [
+      "想考核哪些岗位？店长/助教管理/教练/前厅/收银？",
+      "重点考核什么动作？充值/带组时长/订台/订包/招聘/好评？",
+      "奖惩力度和业绩目标心里有数吗？没有就占位，我给框架。",
+    ],
+  },
+  {
+    id: "mgr-cost-control",
+    role: "manager",
+    title: "成本控制/成材率自检",
+    description: "电费/损耗/成材率/人效，店长成本自检和降本动作清单",
+    userIntentTemplate: "帮我做个成本自检，电费、台呢损耗、成材率、人效这些怎么控",
+    targetCustomerType: "all",
+    outputPackage: ["sop_checklist", "execution_tips"],
+    sceneTags: ["成本", "成材率", "损耗", "控成本"],
+    requiredProfileModules: ["basic"],
+    priority: "P2",
+    inputHints: [
+      "最近哪块成本感觉偏高？电费、耗材、人力还是损耗？",
+      "台呢多久换一次、皮头巧粉用得快不快，有数吗？",
+      "要全面自检清单，还是只看某一项怎么降？",
+    ],
+  },
+  {
     id: "mgr-daily-moments",
     role: "manager",
     title: "今日朋友圈",
@@ -294,6 +329,24 @@ const MANAGER_TASKS: RoleTaskCard[] = [
 
 const ASSISTANT_MANAGER_TASKS: RoleTaskCard[] = [
   {
+    id: "am-recruit-sop",
+    role: "assistant_manager",
+    title: "招助教·一线话术",
+    description: "平台沟通/要照片/同业挖人/约面试，招助教全流程一线话术",
+    userIntentTemplate: "帮我招助教，怎么在平台聊、怎么筛形象、怎么约面试，给我话术",
+    targetCustomerType: "assistant",
+    outputPackage: ["private_chat", "sop_checklist", "execution_tips"],
+    sceneTags: ["助教招聘", "招人", "面试", "挖人"],
+    requiredProfileModules: ["basic"],
+    priority: "P1",
+    promptKey: "operation.assistant_recruit_sop",
+    inputHints: [
+      "走哪个渠道招？招聘平台、朋友圈、还是同业挖人？",
+      "对形象/气质/沟通有什么具体要求？（薪资别填，话术里占位）",
+      "要平台公开版文案，还是一对一私信邀约话术？",
+    ],
+  },
+  {
     id: "am-today-available",
     role: "assistant_manager",
     title: "今日助教可约通知",
@@ -565,6 +618,24 @@ const ASSISTANT_MANAGER_TASKS: RoleTaskCard[] = [
 /* ─── 前厅 frontdesk — 19 张卡片 ─── */
 
 const FRONTDESK_TASKS: RoleTaskCard[] = [
+  {
+    id: "fd-review-reply",
+    role: "frontdesk",
+    title: "平台差评回复",
+    description: "美团/抖音/点评公开差评的回复话术，得体不认怂不甩锅",
+    userIntentTemplate: "美团上来了个差评，帮我回复一下，别认怂也别甩锅",
+    targetCustomerType: "all",
+    outputPackage: ["execution_tips"],
+    sceneTags: ["差评", "评价回复", "美团", "公关"],
+    requiredProfileModules: ["basic"],
+    priority: "P1",
+    promptKey: "operation.review_reply",
+    inputHints: [
+      "差评说的是什么？台费贵/助教/卫生/排队/态度？",
+      "把客户原话大概贴一下，我照着回。",
+      "有没有想给的补偿或改进？没有就只共情+引导再来。",
+    ],
+  },
   {
     id: "fd-groupbuy-add-wechat",
     role: "frontdesk",
@@ -944,6 +1015,60 @@ const FRONTDESK_TASKS: RoleTaskCard[] = [
 
 const BOSS_TASKS: RoleTaskCard[] = [
   {
+    id: "boss-opening-ground-blitz",
+    role: "boss",
+    title: "开业前地推作战SOP",
+    description: "开业前15/10/7天倒计时：拓客地图/分组任务/地推话术/异业渠道",
+    userIntentTemplate: "快开业了，帮我排开业前的地推作战计划，怎么分组、去哪推、怎么转化",
+    targetCustomerType: "all",
+    outputPackage: ["sop_checklist", "execution_tips"],
+    sceneTags: ["开业", "地推", "拓客", "筹备"],
+    requiredProfileModules: ["basic"],
+    priority: "P2",
+    promptKey: "operation.opening_ground_blitz",
+    inputHints: [
+      "离开业还有几天？周边有哪些人流密集区（商城/夜市/社区/学校）？",
+      "有多少人能下去地推？教练/助教/服务生分组怎么配？",
+      "开业想主推什么钩子（引流卡/体验券/办卡礼）？",
+    ],
+  },
+  {
+    id: "boss-recharge-design",
+    role: "boss",
+    title: "充值/一卡通方案设计",
+    description: "按门店定位设计充值/一卡通方案，赠送仅限台费、不搞大额充值送",
+    userIntentTemplate: "帮我设计一套充值/一卡通方案，按我店的定位来，别搞大额充值送",
+    targetCustomerType: "all",
+    outputPackage: ["activity_plan", "execution_tips"],
+    sceneTags: ["充值", "一卡通", "会员", "定价"],
+    requiredProfileModules: ["basic", "pricing"],
+    priority: "P1",
+    promptKey: "operation.recharge_design",
+    inputHints: [
+      "门店定位是社区、商业还是竞技？目前有没有在做充值？",
+      "想要保守一点（赠送少）还是力度大一点？",
+      "是要新设计，还是想把以前的大额充值送改成一卡通？",
+    ],
+  },
+  {
+    id: "boss-pricing-design",
+    role: "boss",
+    title: "定价/价目表设计",
+    description: "按四盈利点和定位排出可落地价目表，含引流台、尾数9",
+    userIntentTemplate: "帮我把店里的价目表理一遍，台费、商品、助教费、引流台怎么定",
+    targetCustomerType: "all",
+    outputPackage: ["activity_plan", "execution_tips"],
+    sceneTags: ["定价", "价目表", "台费", "盈利"],
+    requiredProfileModules: ["basic", "pricing"],
+    priority: "P1",
+    promptKey: "operation.pricing_design",
+    inputHints: [
+      "门店定位和城市？现在的台费/助教费大概多少？",
+      "周边3公里竞对的台费均价知道吗？方便对标回调。",
+      "想不想设个引流台/低价爆款把人先引进来？",
+    ],
+  },
+  {
     id: "boss-daily-brief",
     role: "boss",
     title: "今日经营简报",
@@ -1162,6 +1287,24 @@ const BOSS_TASKS: RoleTaskCard[] = [
 /* ─── 运营/内容 operator — 12 张卡片 ─── */
 
 const OPERATOR_TASKS: RoleTaskCard[] = [
+  {
+    id: "op-influencer-outreach",
+    role: "operator",
+    title: "达人探店对接",
+    description: "找本地探店达人、怎么开口谈、怎么追踪到店效果",
+    userIntentTemplate: "想找本地探店达人来拍视频引流，怎么找怎么谈，给我对接话术",
+    targetCustomerType: "all",
+    outputPackage: ["private_chat", "execution_tips"],
+    sceneTags: ["达人", "探店", "引流", "本地生活"],
+    requiredProfileModules: ["basic"],
+    priority: "P1",
+    promptKey: "operation.influencer_outreach",
+    inputHints: [
+      "门店在哪个城市？大城市找区域达人、小城市找本地网红。",
+      "想用哪种合作？免费体验换视频、送券分销、还是付发布费？",
+      "店里有什么好出片的点？氛围、助教、赛事、装修。",
+    ],
+  },
   {
     id: "op-weekly-content-plan",
     role: "operator",
@@ -1401,6 +1544,23 @@ const OPERATOR_TASKS: RoleTaskCard[] = [
 /* ─── 教练/赛事 coach — 17 张卡片 ─── */
 
 const COACH_TASKS: RoleTaskCard[] = [
+  {
+    id: "coach-gaming-customer",
+    role: "coach",
+    title: "追分/博弈客群维护",
+    description: "约局撮合、营造热闹氛围、维护追分/竞技这批高频高粘客",
+    userIntentTemplate: "帮我维护好追分约局这批客户，怎么撮局、怎么造氛围、怎么留住他们",
+    targetCustomerType: "light_competition",
+    outputPackage: ["private_chat", "group_notice", "execution_tips"],
+    sceneTags: ["追分", "约局", "博弈客群", "竞技客"],
+    requiredProfileModules: ["basic", "customer_structure"],
+    priority: "P1",
+    inputHints: [
+      "这批客户主要打什么？中八追分、约局、还是台费局？",
+      "想要约局撮合话术、群里造氛围，还是维护老追分客？",
+      "店里有没有水平相近的对手可以撮一桌？",
+    ],
+  },
   {
     id: "coach-weekly-tournament-notice",
     role: "coach",

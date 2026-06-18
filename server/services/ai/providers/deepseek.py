@@ -14,20 +14,29 @@ logger = logging.getLogger(__name__)
 class DeepSeekProvider(TextProvider):
     """DeepSeek 文本模型 Provider（兼容 OpenAI SDK）"""
 
-    def __init__(self):
+    def __init__(self, api_key: str | None = None, base_url: str | None = None,
+                 default_model: str | None = None, timeout: float = 60.0):
+        # 默认全 None → fallback settings（平台默认行为 100% 不变）。
+        # BYOK 时由 ProviderFactory 传入门店自带的 key/base_url/model（可接任意 OpenAI 兼容模型）。
         self._client: AsyncOpenAI | None = None
+        self._api_key = api_key
+        self._base_url = base_url
+        self._default_model = default_model
+        self._timeout = timeout
 
     def _get_client(self) -> AsyncOpenAI:
         if self._client is None:
-            if not settings.deepseek_api_key:
+            api_key = self._api_key or settings.deepseek_api_key
+            base_url = self._base_url or settings.deepseek_base_url
+            if not api_key:
                 raise AIProviderError(
                     message="AI 服务未配置，请联系管理员设置 API Key",
                     status_code=503,
                 )
             self._client = AsyncOpenAI(
-                base_url=settings.deepseek_base_url,
-                api_key=settings.deepseek_api_key,
-                timeout=httpx.Timeout(60.0, connect=10.0),
+                base_url=base_url,
+                api_key=api_key,
+                timeout=httpx.Timeout(self._timeout, connect=10.0),
             )
         return self._client
 
@@ -41,7 +50,10 @@ class DeepSeekProvider(TextProvider):
             messages.append({"role": "user", "content": request.prompt})
 
         client = self._get_client()
-        model_name = request.model or settings.text_model_name
+        # default_model 优先：BYOK 实例的 default_model=门店模型名，门店 key 只认它，
+        # 不能被调用方传入的平台模型名(如 loop 默认的 deepseek-v4-flash)覆盖否则第三方平台 400。
+        # 非 BYOK(default_model=None)时退回 request.model(编排 per-call 覆盖)→ settings 默认。
+        model_name = self._default_model or request.model or settings.text_model_name
         try:
             kwargs = {
                 "model": model_name,
@@ -113,7 +125,10 @@ class DeepSeekProvider(TextProvider):
             messages.append({"role": "user", "content": request.prompt})
 
         client = self._get_client()
-        model_name = request.model or settings.text_model_name
+        # default_model 优先：BYOK 实例的 default_model=门店模型名，门店 key 只认它，
+        # 不能被调用方传入的平台模型名(如 loop 默认的 deepseek-v4-flash)覆盖否则第三方平台 400。
+        # 非 BYOK(default_model=None)时退回 request.model(编排 per-call 覆盖)→ settings 默认。
+        model_name = self._default_model or request.model or settings.text_model_name
         try:
             kwargs = {
                 "model": model_name,

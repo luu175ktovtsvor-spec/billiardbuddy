@@ -82,6 +82,40 @@ function toolMeta(name: string) {
   return TOOL_META[name] || { label: name, Icon: Wrench };
 }
 
+// 交付类工具：结果本身就是给老板直接拿去用的成品(走了店脑/知识/护栏全管道、已校准过)，
+// 必须原样展示，绝不让编排大脑改写/精简(那会让验证过的行业真实内容失真)。
+// 感知类(查日期/今日推荐)不在此列——它们的值由大脑消化后综合作答。
+const DELIVERABLE_TOOLS = new Set([
+  "write_operation_content", "plan_activity", "assistant_outreach",
+  "diagnose_operation", "recommend_games", "make_platform_content", "make_groupbuy_content",
+]);
+
+/** 把交付类工具的产出原样渲染成可复制卡片(成品，不经大脑改写) */
+function DeliverableCards({ steps }: { steps: ToolStep[] }) {
+  const cards = steps.filter((s) => s.result && DELIVERABLE_TOOLS.has(s.tool));
+  if (cards.length === 0) return null;
+  return (
+    <div className="mb-2 flex w-full max-w-[92%] flex-col gap-2">
+      {cards.map((s, i) => {
+        const { label, Icon } = toolMeta(s.tool);
+        return (
+          <div key={i} className="rounded-2xl border border-slate-100 bg-white px-4 py-3 shadow-sm">
+            <p className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-brand-600">
+              <Icon className="h-3.5 w-3.5" /> {label}
+            </p>
+            <div className="prose prose-sm max-w-none prose-slate prose-p:my-1.5 prose-headings:my-2">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{s.result || ""}</ReactMarkdown>
+            </div>
+            <div className="mt-1.5">
+              <CopyButton text={s.result || ""} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /** 一组工具步骤的展示（进行中带转圈，完成打勾） */
 function StepList({ steps, active }: { steps: ToolStep[]; active: boolean }) {
   if (steps.length === 0) return null;
@@ -114,6 +148,7 @@ function StepList({ steps, active }: { steps: ToolStep[]; active: boolean }) {
 export default function ManagerPage() {
   const { isAuthenticated } = useAuth();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [conversationId, setConversationId] = useState<string | null>(null); // 多轮续接：刷新不丢、后端按它查历史
   const [draft, setDraft] = useState(""); // 流式中的最终答复
   const [liveSteps, setLiveSteps] = useState<ToolStep[]>([]); // 本轮进行中的工具步骤
   const [input, setInput] = useState("");
@@ -132,6 +167,36 @@ export default function ManagerPage() {
   }, [messages.length, draft, liveSteps.length]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  // 会话持久化(微信刷新/切出不丢历史)：按门店隔离存 localStorage
+  const sessionKey = () => `agent_chat_session_${api.getStoreId() || "default"}`;
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(sessionKey());
+      if (raw) {
+        const saved = JSON.parse(raw);
+        if (Array.isArray(saved.messages) && saved.messages.length) setMessages(saved.messages);
+        if (saved.conversationId) setConversationId(saved.conversationId);
+      }
+    } catch { /* localStorage 不可用时忽略 */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    try {
+      if (messages.length) localStorage.setItem(sessionKey(), JSON.stringify({ conversationId, messages }));
+    } catch { /* 忽略 */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, conversationId]);
+
+  // 开新对话：清空当前会话(历史已落库,可在生成历史查)
+  const startNewChat = () => {
+    if (generating) return;
+    setMessages([]);
+    setConversationId(null);
+    setDraft("");
+    setLiveSteps([]);
+    try { localStorage.removeItem(sessionKey()); } catch { /* 忽略 */ }
+  };
 
   const send = async (text: string) => {
     const msg = text.trim();
@@ -157,7 +222,7 @@ export default function ManagerPage() {
 
     try {
       await api.streamAgent(
-        { message: msg, history },
+        { message: msg, history, conversation_id: conversationId },
         {
           onToken: (t) => setDraft((prev) => prev + t),
           onToolCall: (tool, args) => {
@@ -178,11 +243,12 @@ export default function ManagerPage() {
           onFinal: (content) => {
             finalText = content;
           },
-          onDone: () => {
+          onDone: (info) => {
             setMessages((prev) => [
               ...prev,
               { role: "assistant", content: finalText, steps: steps.length ? [...steps] : undefined, approval },
             ]);
+            if (info?.conversation_id) setConversationId(info.conversation_id); // 存会话id,刷新可续接
             setDraft("");
             setLiveSteps([]);
             setQuotaVersion((v) => v + 1);
@@ -239,6 +305,15 @@ export default function ManagerPage() {
         <p className="absolute left-1/2 max-w-[60%] -translate-x-1/2 truncate text-center text-base font-semibold text-slate-900">
           AI 运营管家
         </p>
+        {messages.length > 0 && (
+          <button
+            type="button"
+            onClick={startNewChat}
+            className="ml-auto shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium text-brand-600 active:bg-brand-50"
+          >
+            新对话
+          </button>
+        )}
       </div>
 
       <Sheet open={menuOpen} onClose={() => setMenuOpen(false)} title="更多功能">
@@ -295,12 +370,17 @@ export default function ManagerPage() {
           ) : (
             <div key={i} className="flex flex-col items-start">
               {m.steps && <StepList steps={m.steps} active={false} />}
-              <div className="max-w-[92%] rounded-2xl rounded-bl-md bg-white px-4 py-3">
-                <div className="prose prose-sm max-w-none prose-slate prose-p:my-1.5 prose-headings:my-2">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+              {m.steps && <DeliverableCards steps={m.steps} />}
+              {m.content.trim() && (
+                <div className="max-w-[92%] rounded-2xl rounded-bl-md bg-white px-4 py-3">
+                  <div className="prose prose-sm max-w-none prose-slate prose-p:my-1.5 prose-headings:my-2">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                  </div>
                 </div>
-              </div>
-              {!m.error && (
+              )}
+              {/* 纯对话(无交付卡片)时才在底部给一个复制；交付卡片各自带复制按钮 */}
+              {!m.error && m.content.trim() &&
+                !m.steps?.some((s) => s.result && DELIVERABLE_TOOLS.has(s.tool)) && (
                 <div className="mt-1.5 flex items-center gap-3 pl-1">
                   <CopyButton text={m.content} />
                 </div>
@@ -345,6 +425,7 @@ export default function ManagerPage() {
         {(liveSteps.length > 0 || draft) && (
           <div className="flex flex-col items-start">
             {liveSteps.length > 0 && <StepList steps={liveSteps} active={generating} />}
+            {liveSteps.length > 0 && <DeliverableCards steps={liveSteps} />}
             {draft && (
               <div className="max-w-[92%] rounded-2xl rounded-bl-md bg-white px-4 py-3">
                 <div className="prose prose-sm max-w-none prose-slate prose-p:my-1.5">

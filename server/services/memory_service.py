@@ -63,10 +63,29 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
-async def _json_call(system: str, user: str) -> dict:
-    """调 DeepSeek JSON 模式，解析失败返回 {}（不抛，调用方兜底）。"""
-    resp = await _get_client().chat.completions.create(
-        model=settings.text_model_name,
+def _provider_client_and_model(store=None) -> tuple[AsyncOpenAI, str]:
+    """按门店路由记忆调用：BYOK 门店用自己的 key/base_url/model（让店脑学习与正文生成走同一 key、
+    成本归属一致）；否则平台默认。解密失败安全回退平台。"""
+    if store is not None and getattr(store, "byok_enabled", False) and getattr(store, "byok_api_key_enc", None):
+        from core.crypto import try_decrypt
+        key = try_decrypt(store.byok_api_key_enc)
+        if key:
+            return (
+                AsyncOpenAI(
+                    base_url=getattr(store, "byok_base_url", None) or settings.deepseek_base_url,
+                    api_key=key,
+                    timeout=httpx.Timeout(120.0, connect=10.0),
+                ),
+                getattr(store, "byok_model", None) or settings.text_model_name,
+            )
+    return _get_client(), settings.text_model_name
+
+
+async def _json_call(system: str, user: str, store=None) -> dict:
+    """调 JSON 模式（BYOK 门店走门店自带模型），解析失败返回 {}（不抛，调用方兜底）。"""
+    client, model = _provider_client_and_model(store)
+    resp = await client.chat.completions.create(
+        model=model,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         response_format={"type": "json_object"},
         temperature=0,  # 记忆抽取/整合求稳定可复现，温度拉到 0
@@ -118,15 +137,15 @@ def _to_memories(data: dict) -> list[Memory]:
     return out
 
 
-async def extract_memories(interaction_text: str) -> list[Memory]:
-    """从一次交互（对话/生成需求/反馈）里抽取值得长期记住的门店记忆。"""
+async def extract_memories(interaction_text: str, store=None) -> list[Memory]:
+    """从一次交互（对话/生成需求/反馈）里抽取值得长期记住的门店记忆。store 给定且 BYOK 则走门店模型。"""
     if not interaction_text or not interaction_text.strip():
         return []
-    return _to_memories(await _json_call(_EXTRACT_SYS, interaction_text.strip()))
+    return _to_memories(await _json_call(_EXTRACT_SYS, interaction_text.strip(), store))
 
 
-async def consolidate_memories(existing: list[Memory], new: list[Memory]) -> list[Memory]:
-    """把新记忆并入已有记忆，返回去重、最新的**完整列表**。
+async def consolidate_memories(existing: list[Memory], new: list[Memory], store=None) -> list[Memory]:
+    """把新记忆并入已有记忆，返回去重、最新的**完整列表**。store 给定且 BYOK 则走门店模型。
     解析失败时兜底返回并集（宁可暂时重复，也不丢信息）。"""
     if not new:
         return list(existing)
@@ -136,7 +155,7 @@ async def consolidate_memories(existing: list[Memory], new: list[Memory]) -> lis
         + "\n【新记忆】\n"
         + json.dumps([{"type": m.type, "content": m.content} for m in new], ensure_ascii=False)
     )
-    merged = _to_memories(await _json_call(_CONSOLIDATE_SYS, payload))
+    merged = _to_memories(await _json_call(_CONSOLIDATE_SYS, payload, store))
     return merged if merged else list(existing) + list(new)
 
 
@@ -207,7 +226,9 @@ async def remember(db: AsyncSession, store_id, interaction_text: str) -> list[Me
     设计为后台调用：失败静默（不影响主流程），不计用户配额。
     **并发安全**：用每店事务级咨询锁串行化同一家店的学习，根治"删全部再插入"的丢记忆竞态。"""
     try:
-        new = await extract_memories(interaction_text)
+        from models.store import Store
+        store = await db.get(Store, _sid(store_id))  # 取门店 BYOK 配置：开启则店脑学习也走门店自带 key
+        new = await extract_memories(interaction_text, store)
         if not new:
             return await load_store_memory(db, store_id)
         # 同店并发学习串行化（锁随本事务 commit/回滚释放；只挡同店、不挡跨店，不影响吞吐）
@@ -216,7 +237,7 @@ async def remember(db: AsyncSession, store_id, interaction_text: str) -> list[Me
             {"k": f"store_memory:{store_id}"},
         )
         existing = await load_store_memory(db, store_id)
-        merged = await consolidate_memories(existing, new) if existing else new
+        merged = await consolidate_memories(existing, new, store) if existing else new
         merged = _cap_memories(merged)
         await _replace_store_memory(db, store_id, merged)
         return merged
