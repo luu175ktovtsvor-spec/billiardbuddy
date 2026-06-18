@@ -1,7 +1,7 @@
 import { ApiError } from "@/types/api";
 import type { OrchestrationTask, RepurposeResponse } from "@/types/api";
 import type { LoginRequest, RegisterRequest, TokenResponse, User } from "@/types/auth";
-import type { StoreCreate, StoreResponse, StoreUpdate, StoreListItem, UploadResponse, StoreMemoryItem, ByokConfigOut, ByokConfigIn, ByokValidateResult } from "@/types/store";
+import type { StoreCreate, StoreResponse, StoreUpdate, StoreListItem, UploadResponse, StoreMemoryItem, ByokConfigOut, ByokConfigIn, ByokValidateResult, ByokProfile } from "@/types/store";
 import type { GenerateActivityRequest, GenerateOperationRequest, GenerateWorkbenchRequest, GenerateOutreachRequest, GenerateSOPRequest, GenerateGamesRequest, GeneratePerformanceRequest, GenerateDiagnosisRequest, GenerationResponse } from "@/types/generate";
 import type { ImageGenerateRequest, ImageGenerateResponse, SizeOption, PromptExpandRequest, PromptExpandResponse } from "@/types/poster";
 import type {
@@ -253,6 +253,22 @@ class ApiClient {
   }
   validateByokConfig(data: ByokConfigIn) {
     return this.request<ByokValidateResult>("POST", "/api/v1/stores/me/byok/validate", data);
+  }
+
+  // 多供应商配置档（CC Switch 式：存好几套、一键切换）
+  listByokProfiles() {
+    return this.request<{ profiles: ByokProfile[] }>("GET", "/api/v1/stores/me/byok/profiles");
+  }
+  saveByokProfile(data: { name: string; base_url?: string | null; api_key?: string | null; model?: string | null }) {
+    return this.request<{ profiles: ByokProfile[] }>("POST", "/api/v1/stores/me/byok/profiles", data);
+  }
+  activateByokProfile(name: string) {
+    return this.request<{ active: string; profiles: ByokProfile[] }>(
+      "POST", `/api/v1/stores/me/byok/profiles/${encodeURIComponent(name)}/activate`, {});
+  }
+  deleteByokProfile(name: string) {
+    return this.request<{ profiles: ByokProfile[] }>(
+      "DELETE", `/api/v1/stores/me/byok/profiles/${encodeURIComponent(name)}`);
   }
 
   uploadLogo(file: File) {

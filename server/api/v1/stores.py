@@ -235,3 +235,87 @@ async def validate_byok_config(
         return {"ok": False, "error": e.message}  # 友好提示，不回传原始异常(防调试信息泄露)
     except Exception:
         return {"ok": False, "error": "连接测试失败，请检查 Key、base_url、模型名是否正确"}
+
+
+# ── 多供应商配置档（CC Switch 式：存好几套、一键切换） ──
+class BYOKProfileIn(BaseModel):
+    name: str
+    base_url: str | None = None
+    api_key: str | None = None   # 明文，仅保存时传；加密后存本地配置档库
+    model: str | None = None
+
+
+@router.get("/me/byok/profiles")
+async def list_byok_profiles(
+    store: Annotated[Store, Depends(get_current_store)],
+    current_user: Annotated[User, Depends(get_current_user)],
+):
+    """列出本店存的所有大模型配置档（不含密文，标出当前激活的那套）。"""
+    _ensure_store_owner(store, current_user)
+    from services import byok_profiles
+    return {"profiles": byok_profiles.list_profiles(str(store.id))}
+
+
+@router.post("/me/byok/profiles")
+async def save_byok_profile(
+    body: BYOKProfileIn,
+    store: Annotated[Store, Depends(get_current_store)],
+    current_user: Annotated[User, Depends(get_current_user)],
+    _perm: None = Depends(require_permission(Permission.STORE_UPDATE)),
+):
+    """新增/更新一套配置档。传 api_key 则加密更新 key，不传则只改 base_url/model。"""
+    _ensure_store_owner(store, current_user)
+    if not body.name.strip():
+        raise HTTPException(status_code=400, detail="请给这套配置起个名（如 DeepSeek、备用号）")
+    from core.crypto import encrypt, CryptoNotConfigured
+    from services import byok_profiles
+    key_enc = None
+    if body.api_key is not None and body.api_key.strip():
+        try:
+            key_enc = encrypt(body.api_key.strip())
+        except CryptoNotConfigured:
+            raise HTTPException(status_code=503, detail="服务端未配置 BYOK 主密钥（BYOK_ENCRYPT_KEY），请联系管理员配置后再试")
+    byok_profiles.save_profile(
+        str(store.id), body.name.strip(),
+        (body.base_url or "").strip() or None, (body.model or "").strip() or None, key_enc,
+    )
+    return {"profiles": byok_profiles.list_profiles(str(store.id))}
+
+
+@router.post("/me/byok/profiles/{name}/activate")
+async def activate_byok_profile(
+    name: str,
+    store: Annotated[Store, Depends(get_current_store)],
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    _perm: None = Depends(require_permission(Permission.STORE_UPDATE)),
+):
+    """激活某套配置档：把它的值写进门店真正生效的 BYOK 配置（factory 照读 store.byok_*）。"""
+    _ensure_store_owner(store, current_user)
+    from services import byok_profiles
+    prof = byok_profiles.get_profile(str(store.id), name)
+    if not prof:
+        raise HTTPException(status_code=404, detail="没有这套配置")
+    if not prof["api_key_enc"]:
+        raise HTTPException(status_code=400, detail="这套配置还没填 Key，没法激活")
+    # 同一把 BYOK_ENCRYPT_KEY 加密 → 密文可直接拷进 store，无需重新加密
+    store.byok_enabled = True
+    store.byok_base_url = prof["base_url"]
+    store.byok_model = prof["model"]
+    store.byok_api_key_enc = prof["api_key_enc"]
+    await db.commit()
+    byok_profiles.set_active(str(store.id), name)
+    return {"active": name, "profiles": byok_profiles.list_profiles(str(store.id))}
+
+
+@router.delete("/me/byok/profiles/{name}")
+async def delete_byok_profile(
+    name: str,
+    store: Annotated[Store, Depends(get_current_store)],
+    current_user: Annotated[User, Depends(get_current_user)],
+    _perm: None = Depends(require_permission(Permission.STORE_UPDATE)),
+):
+    _ensure_store_owner(store, current_user)
+    from services import byok_profiles
+    byok_profiles.delete_profile(str(store.id), name)
+    return {"profiles": byok_profiles.list_profiles(str(store.id))}

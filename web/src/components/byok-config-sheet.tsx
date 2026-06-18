@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { ApiError } from "@/types/api";
-import type { ByokValidateResult } from "@/types/store";
+import type { ByokValidateResult, ByokProfile } from "@/types/store";
 import { Sheet } from "@/components/ui/sheet";
 import { Loader2, CheckCircle2, XCircle } from "lucide-react";
 
@@ -29,6 +29,10 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
   const [testResult, setTestResult] = useState<ByokValidateResult | null>(null);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  // 多供应商配置档（CC Switch 式）
+  const [profiles, setProfiles] = useState<ByokProfile[]>([]);
+  const [profileName, setProfileName] = useState("");
+  const [busyProfile, setBusyProfile] = useState("");
 
   useEffect(() => {
     if (!open) return;
@@ -54,10 +58,66 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+    api.listByokProfiles()
+      .then((r) => { if (!cancelled) setProfiles(r.profiles); })
+      .catch(() => { /* 配置档拿不到不挡主流程 */ });
     return () => {
       cancelled = true;
     };
   }, [open]);
+
+  const activateProfile = async (name: string) => {
+    setBusyProfile(name);
+    setError("");
+    try {
+      const r = await api.activateByokProfile(name);
+      setProfiles(r.profiles);
+      const c = await api.getByokConfig();   // 激活已写进 store.byok_*，刷新表单回显
+      setEnabled(c.enabled);
+      setBaseUrl(c.base_url || "");
+      setModel(c.model || "");
+      setKeyConfigured(c.key_configured);
+      setKeyMask(c.key_mask || "");
+      setApiKey("");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : "切换失败");
+    } finally {
+      setBusyProfile("");
+    }
+  };
+
+  const deleteProfile = async (name: string) => {
+    setBusyProfile(name);
+    try {
+      const r = await api.deleteByokProfile(name);
+      setProfiles(r.profiles);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : "删除失败");
+    } finally {
+      setBusyProfile("");
+    }
+  };
+
+  const saveAsProfile = async () => {
+    const name = profileName.trim();
+    if (!name) { setError("先给这套配置起个名（如 DeepSeek、备用号）"); return; }
+    setBusyProfile(name);
+    setError("");
+    try {
+      const r = await api.saveByokProfile({
+        name,
+        base_url: baseUrl.trim() || null,
+        model: model.trim() || null,
+        ...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
+      });
+      setProfiles(r.profiles);
+      setProfileName("");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : "保存失败");
+    } finally {
+      setBusyProfile("");
+    }
+  };
 
   const buildBody = () => ({
     enabled,
@@ -111,6 +171,73 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
           {/* 这块是干嘛的 */}
           <div className="rounded-xl bg-brand-50/60 p-3 text-[13px] leading-relaxed text-slate-600">
             接入你自己的大模型 API Key 后，AI 生成就走<b>你自己的账户</b>——成本和并发你自己掌控，不挤平台共享额度。适合用量大、或想用更强模型（如 deepseek-v4-pro）的门店。<b>不开启则用平台默认，无需配置。</b>
+          </div>
+
+          {/* 多供应商配置档：存好几套、一键切换（CC Switch 式） */}
+          {profiles.length > 0 && (
+            <div>
+              <p className="mb-2 text-[13px] font-medium text-slate-700">已存的配置（点切换即生效）</p>
+              <div className="space-y-2">
+                {profiles.map((p) => (
+                  <div
+                    key={p.name}
+                    className={`flex items-center gap-2 rounded-xl border p-3 ${
+                      p.is_active ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white"
+                    }`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[14px] font-medium text-slate-800">{p.name}</span>
+                        {p.is_active && (
+                          <span className="rounded bg-brand-600 px-1.5 py-0.5 text-[10px] text-white">使用中</span>
+                        )}
+                        {!p.has_key && <span className="text-[11px] text-amber-500">缺 Key</span>}
+                      </div>
+                      <p className="truncate text-[12px] text-slate-400">
+                        {p.model || "默认模型"} · {p.base_url || "默认地址"}
+                      </p>
+                    </div>
+                    {!p.is_active && p.has_key && (
+                      <button
+                        type="button"
+                        onClick={() => activateProfile(p.name)}
+                        disabled={!!busyProfile}
+                        className="shrink-0 rounded-lg bg-brand-600 px-3 py-1.5 text-[13px] text-white disabled:opacity-50"
+                      >
+                        {busyProfile === p.name ? <Loader2 className="h-4 w-4 animate-spin" /> : "切换"}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => deleteProfile(p.name)}
+                      disabled={!!busyProfile}
+                      aria-label="删除"
+                      className="shrink-0 text-slate-300 hover:text-rose-500 disabled:opacity-50"
+                    >
+                      <XCircle className="h-5 w-5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 把当前填写的内容存成一套配置（方便以后一键切回） */}
+          <div className="flex gap-2">
+            <input
+              value={profileName}
+              onChange={(e) => setProfileName(e.target.value)}
+              placeholder="给当前配置起个名，存起来（如 DeepSeek、备用号）"
+              className={inputCls}
+            />
+            <button
+              type="button"
+              onClick={saveAsProfile}
+              disabled={!!busyProfile || !profileName.trim()}
+              className="shrink-0 rounded-xl bg-slate-100 px-4 text-[14px] text-slate-700 disabled:opacity-50"
+            >
+              存为一套
+            </button>
           </div>
 
           {/* 启用开关 */}
