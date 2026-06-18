@@ -176,6 +176,55 @@ async def recall_my_content(args, ctx) -> str:
     return "翻到这些你以前写过的相关内容（可参考/在此基础上改）：\n" + "\n".join(lines)
 
 
+# ────────────────────────────── 审批预览（确认前给老板看"会改成什么"，不再瞎确认） ──────────────────────────────
+
+def _name_of(args: dict) -> str:
+    return Path(args.get("path", "?") or "?").name
+
+
+def preview_edit_excel(args: dict, ctx) -> str:
+    """改 Excel 前的人话 diff：逐格 旧值→新值（读现值算）。读不到就只列要写的新值，绝不抛错。"""
+    changes = args.get("changes", []) or []
+    lines = [f"改报表《{_name_of(args)}》，共 {len(changes)} 处："]
+    wb = None
+    try:
+        from openpyxl import load_workbook
+        path = _resolve(args["path"], ctx)
+        if path.exists():
+            wb = load_workbook(path, data_only=True)
+    except Exception:
+        wb = None
+    for ch in changes:
+        cell, sheet = ch.get("cell", "?"), ch.get("sheet")
+        old = "?"
+        try:
+            if wb is not None:
+                ws = wb[sheet] if sheet else wb.active
+                old = ws[cell].value
+        except Exception:
+            old = "?"
+        loc = f"{sheet}!{cell}" if sheet else cell
+        lines.append(f"  {loc}：{old!r} → {ch.get('value')!r}")
+    return "\n".join(lines)
+
+
+def preview_edit_file(args: dict, ctx) -> str:
+    old = (args.get("old_text") or "")[:140]
+    new = (args.get("new_text") or "")[:140]
+    return f"改文件《{_name_of(args)}》：\n- 原：{old}\n+ 改：{new}"
+
+
+def preview_write_file(args: dict, ctx) -> str:
+    content = args.get("content") or ""
+    exists = False
+    try:
+        exists = _resolve(args["path"], ctx).exists()
+    except Exception:
+        exists = False
+    snippet = content[:200] + ("…" if len(content) > 200 else "")
+    return f"{'覆盖' if exists else '新建'}文件《{_name_of(args)}》（{len(content)} 字）：\n{snippet}"
+
+
 # ────────────────────────────── 工具定义（人看得懂的描述，大脑据此选） ──────────────────────────────
 
 _LOCAL_TOOLS = [
@@ -208,6 +257,7 @@ _LOCAL_TOOLS = [
         handler=write_file,
         requires_approval=True,
         approval_class="file",
+        preview=preview_write_file,
     ),
     Tool(
         name="edit_file",
@@ -216,6 +266,7 @@ _LOCAL_TOOLS = [
         handler=edit_file,
         requires_approval=True,
         approval_class="file",
+        preview=preview_edit_file,
     ),
     Tool(
         name="edit_excel",
@@ -231,6 +282,7 @@ _LOCAL_TOOLS = [
         handler=edit_excel,
         requires_approval=True,
         approval_class="file",
+        preview=preview_edit_excel,
     ),
 ]
 

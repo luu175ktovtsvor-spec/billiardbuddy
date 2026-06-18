@@ -55,6 +55,19 @@ def _auto_approve(tool, ctx) -> bool:
     return False
 
 
+def _approval_preview(tool, args, ctx) -> str | None:
+    """调工具自带预览器算"确认前给老板看的人话 diff"（如 edit_excel 的 B2 32000→38000）。
+    没有预览器或生成失败都返回 None——绝不因预览出错而拖垮审批。"""
+    fn = getattr(tool, "preview", None)
+    if not fn:
+        return None
+    try:
+        return fn(args, ctx)
+    except Exception:
+        logger.exception("审批预览生成失败: %s", getattr(tool, "name", "?"))
+        return None
+
+
 @dataclass
 class AgentStep:
     type: str  # thinking | tool_call | tool_result | final
@@ -62,6 +75,7 @@ class AgentStep:
     tool_name: str | None = None
     tool_args: dict | None = None
     tool_call_id: str | None = None
+    preview: str | None = None  # approval_request 专用：确认前给老板看的"会改成什么"diff
 
 
 @dataclass
@@ -136,7 +150,8 @@ async def run_agent_loop(
             if tool is not None and tool.requires_approval and not _auto_approve(tool, ctx):
                 # 审批闸：不在循环里执行，记一笔 approval_request、回灌"待确认"
                 # （信任/全自动模式下 _auto_approve 为真 → 跳过这里、走下面直接执行）
-                steps.append(AgentStep(type="approval_request", tool_name=name, tool_args=args, tool_call_id=tc_id))
+                steps.append(AgentStep(type="approval_request", tool_name=name, tool_args=args, tool_call_id=tc_id,
+                                       preview=_approval_preview(tool, args, ctx)))
                 pending = _APPROVAL_PENDING_MSG.format(name=name)
                 steps.append(AgentStep(type="tool_result", tool_name=name, tool_call_id=tc_id, content=pending))
                 messages.append({"role": "tool", "tool_call_id": tc_id, "content": pending})
@@ -266,6 +281,7 @@ async def run_agent_loop_stream(
                 yield {
                     "type": "approval_request", "tool": name, "args": args, "id": tc_id,
                     "token": sign_approval(name, args),
+                    "preview": _approval_preview(tool, args, ctx),
                 }
                 pending = _APPROVAL_PENDING_MSG.format(name=name)
                 yield {"type": "tool_result", "tool": name, "id": tc_id, "content": pending}

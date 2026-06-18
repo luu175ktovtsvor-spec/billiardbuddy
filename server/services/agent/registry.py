@@ -25,6 +25,9 @@ class Tool:
     #   "file"  本机文件读改——可逆（改前自动备份），信任模式可免确认自动改；
     #   "spend" 花钱/对外（生图/发布/团购）——不可逆/有外部后果，仅"全自动"最高档才免确认。
     approval_class: str = "spend"
+    # 审批预览器（可选）：(args, ctx) -> str，给老板看"确认前到底会改什么"的人话 diff
+    #   （如 edit_excel 读现值算"B2 32000→38000"）。审批闸据此让前端展示预览，不再"瞎确认"。
+    preview: Callable[[dict, Any], str] | None = None
 
     def to_openai_schema(self) -> dict:
         """导出成 DeepSeek/OpenAI 兼容的 tools 数组元素。"""

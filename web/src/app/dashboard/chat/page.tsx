@@ -33,6 +33,7 @@ interface ApprovalState {
   tool: string;
   args: Record<string, unknown>;
   token?: string; // 审批提案签名，确认执行时回传校验（防篡改）
+  preview?: string; // 确认前给老板看的"会改成什么"diff（如 edit_excel 的 B2 32000→38000）
   status: "pending" | "done" | "cancelled";
 }
 
@@ -47,7 +48,18 @@ interface ChatMessage {
 /** 待确认动作的人话说明（生图等花钱/对外动作经审批闸先确认） */
 function approvalLabel(tool: string): string {
   if (tool === "make_poster") return "生成一张海报（会用 1 张生图额度，可能要等几分钟）";
+  if (tool === "edit_excel") return "直接改你的 Excel 报表（改前自动备份，可回滚）";
+  if (tool === "edit_file") return "修改这个文件（改前自动备份，可回滚）";
+  if (tool === "write_file") return "保存成一个文件（覆盖会先自动备份）";
   return "执行这个操作";
+}
+
+// 确认按钮文案：改文件类说"确认修改/保存"，别用海报的"确认生成"误导
+function approvalConfirmText(tool: string): string {
+  if (tool === "make_poster") return "确认生成";
+  if (tool === "write_file") return "确认保存";
+  if (tool === "edit_excel" || tool === "edit_file") return "确认修改";
+  return "确认执行";
 }
 
 const SUGGESTIONS = [
@@ -275,8 +287,8 @@ export default function ManagerPage() {
             }
             setLiveSteps([...steps]);
           },
-          onApprovalRequest: (tool, args, _id, token) => {
-            approval = { tool, args, token, status: "pending" };
+          onApprovalRequest: (tool, args, _id, token, preview) => {
+            approval = { tool, args, token, preview, status: "pending" };
           },
           onFinal: (content) => {
             finalText = content;
@@ -412,7 +424,7 @@ export default function ManagerPage() {
             role: "assistant" as const,
             content: res.continuation,
             approval: res.approval
-              ? { tool: res.approval.tool, args: res.approval.args, token: res.approval.token, status: "pending" as const }
+              ? { tool: res.approval.tool, args: res.approval.args, token: res.approval.token, preview: res.approval.preview, status: "pending" as const }
               : undefined,
           });
         }
@@ -681,6 +693,11 @@ export default function ManagerPage() {
               {m.approval?.status === "pending" && (
                 <div className="mt-2 w-full max-w-[92%] rounded-2xl border border-brand-200 bg-brand-50 px-4 py-3">
                   <p className="mb-2 text-[13px] text-slate-600">这一步会{approvalLabel(m.approval.tool)}，确认吗？</p>
+                  {m.approval.preview && (
+                    <pre className="mb-2.5 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-[12.5px] leading-relaxed text-slate-700">
+                      {m.approval.preview}
+                    </pre>
+                  )}
                   <div className="flex gap-2">
                     <button
                       type="button"
@@ -690,10 +707,10 @@ export default function ManagerPage() {
                     >
                       {executingIdx === i ? (
                         <>
-                          <Loader2 className="h-4 w-4 animate-spin" /> 生成中…
+                          <Loader2 className="h-4 w-4 animate-spin" /> 处理中…
                         </>
                       ) : (
-                        "确认生成"
+                        approvalConfirmText(m.approval.tool)
                       )}
                     </button>
                     <button
