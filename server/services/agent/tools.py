@@ -11,6 +11,7 @@ import logging
 
 from core.timezone import business_today
 from services.agent.registry import tool
+from services.agent.scenario_catalog import format_catalog_for_model
 from services.content_service import _append_guardrails, generate_activity, generate_workbench, run_generation
 from services.dashboard_service import get_today_dashboard
 from services.diagnosis_service import analyze_diagnosis
@@ -64,9 +65,28 @@ async def get_today_recommendation(args: dict, ctx) -> str:
 # ---- 生成（走现有管道，自带配额/落库/店脑/合规过滤） ----------------------------
 
 @tool(
+    name="find_scenario",
+    description="查台球房有没有现成的『精修场景模板』可用。当老板要写某个具体运营场景的内容"
+                "（如强一比赛主持/赛事报名/助教推广/团购转私域/老客回流/开业活动/投诉应对/学生优惠局…）时，"
+                "**先调我**列出可用模板，挑一个最贴切的，再把它的 key 作为 write_operation_content 的 prompt_key 写——"
+                "比从零写效果好得多（这些模板是按行业真实做法校准过的）。需求很普通、清单里没贴切的，就别用、直接写。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "need": {"type": "string", "description": "老板想写的内容/场景，原话即可，用于把相关模板排前面"},
+        },
+        "required": ["need"],
+    },
+)
+async def find_scenario(args: dict, ctx) -> str:
+    return format_catalog_for_model(args.get("need", "") or "")
+
+
+@tool(
     name="write_operation_content",
     description="按老板的一句话需求，写一段台球房运营内容（朋友圈/群公告/活动文案/日报叙事等通用文字）。"
-                "这是最常用的写文案工具，会自动带上门店画像、岗位规则、行业知识。需要写任何运营文字时优先用它。",
+                "这是最常用的写文案工具，会自动带上门店画像、岗位规则、行业知识。需要写任何运营文字时优先用它。"
+                "若先用 find_scenario 找到了贴切的精修模板，把它的 key 传进 prompt_key，会用那套校准模板来写。",
     parameters={
         "type": "object",
         "properties": {
@@ -75,19 +95,28 @@ async def get_today_recommendation(args: dict, ctx) -> str:
             "outputs": {"type": "array", "items": {"type": "string"},
                         "description": "想要的内容形式(可选)：moments(朋友圈)/group_notice(群公告)/private_chat(私聊)/poster_copy(海报文案)"},
             "note": {"type": "string", "description": "补充说明(可选)"},
+            "prompt_key": {"type": "string",
+                           "description": "可选。来自 find_scenario 的精修模板 key（如 operation.qiangyi_battle）。"
+                                          "传了就用那套校准模板写；不传则走通用写法。"},
         },
         "required": ["need"],
     },
 )
 async def write_operation_content(args: dict, ctx) -> str:
     role = getattr(ctx.user, "my_role", None) or "manager"
+    prompt_key = (args.get("prompt_key") or "").strip() or None
+    note = args.get("note", "") or ""
+    # 精修模板路径靠 extra_note 把老板的具体需求带进模板的 {extra_note} 槽；没单独 note 就用 need。
+    if prompt_key and not note:
+        note = args.get("need", "") or ""
     gen = await generate_workbench(
         ctx.db, ctx.store, ctx.user,
         user_intent=args["need"],
         role=role,
         target_customer_type=args.get("customer_type"),
         output_package=args.get("outputs"),
-        extra_note=args.get("note", "") or "",
+        extra_note=note,
+        prompt_key=prompt_key,
         concise=True,
     )
     return gen.result
