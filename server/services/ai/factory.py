@@ -117,3 +117,23 @@ class ProviderFactory:
         instance = provider_cls(**kwargs)
         cls._image_cache[cache_key] = instance
         return instance
+
+    @classmethod
+    def get_image_config_for_store(cls, store) -> tuple[str, str, str | None]:
+        """按门店取生图配置 (api_key, base_url, model)。
+        门店配了生图 BYOK（byok_image_enabled + 密文 key）→ 用门店自带（自担成本）；
+        否则回退平台默认 config.openai_*。model 为 None 时由 provider 用默认(gpt-image-2)。
+        解密失败安全回退平台默认、不阻断生图。"""
+        from config import settings
+        enc = getattr(store, "byok_image_api_key_enc", None) if store is not None else None
+        if store is not None and getattr(store, "byok_image_enabled", False) and enc:
+            from core.crypto import try_decrypt
+            key = try_decrypt(enc)
+            if key:
+                return (
+                    key,
+                    getattr(store, "byok_image_base_url", None) or settings.openai_base_url,
+                    getattr(store, "byok_image_model", None) or None,
+                )
+            logger.warning("生图 BYOK key 解密失败，回退平台默认 store_id=%s", getattr(store, "id", None))
+        return (settings.openai_api_key, settings.openai_base_url, None)

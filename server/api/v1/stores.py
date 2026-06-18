@@ -138,6 +138,11 @@ class BYOKConfigIn(BaseModel):
     base_url: str | None = None
     api_key: str | None = None   # 明文，仅写入/验证时传；加密后存，GET 绝不回显
     model: str | None = None
+    # 生图模型（与文字分开：文字多用 DeepSeek、生图用 OpenAI gpt-image，key/base_url 通常不同）
+    image_enabled: bool = False
+    image_base_url: str | None = None
+    image_api_key: str | None = None
+    image_model: str | None = None
 
 
 class BYOKConfigOut(BaseModel):
@@ -146,6 +151,11 @@ class BYOKConfigOut(BaseModel):
     model: str | None = None
     key_configured: bool = False
     key_mask: str = ""
+    image_enabled: bool = False
+    image_base_url: str | None = None
+    image_model: str | None = None
+    image_key_configured: bool = False
+    image_key_mask: str = ""
 
 
 def _ensure_store_owner(store: Store, user: User) -> None:
@@ -157,9 +167,14 @@ def _ensure_store_owner(store: Store, user: User) -> None:
 def _byok_out(store: Store) -> BYOKConfigOut:
     from core.crypto import mask, try_decrypt
     plain = try_decrypt(store.byok_api_key_enc) if store.byok_api_key_enc else None
+    iplain = try_decrypt(store.byok_image_api_key_enc) if getattr(store, "byok_image_api_key_enc", None) else None
     return BYOKConfigOut(
         enabled=bool(store.byok_enabled), base_url=store.byok_base_url, model=store.byok_model,
         key_configured=bool(plain), key_mask=mask(plain) if plain else "",
+        image_enabled=bool(getattr(store, "byok_image_enabled", False)),
+        image_base_url=getattr(store, "byok_image_base_url", None),
+        image_model=getattr(store, "byok_image_model", None),
+        image_key_configured=bool(iplain), image_key_mask=mask(iplain) if iplain else "",
     )
 
 
@@ -197,6 +212,20 @@ async def update_byok_config(
                 raise HTTPException(status_code=503, detail="服务端未配置 BYOK 主密钥（BYOK_ENCRYPT_KEY），请联系管理员配置后再试")
         else:
             store.byok_api_key_enc = None
+    # 生图模型配置（与文字同样规则：不传 key 保留原 key，传空串清除）
+    store.byok_image_enabled = bool(body.image_enabled)
+    if body.image_base_url is not None:
+        store.byok_image_base_url = body.image_base_url.strip() or None
+    if body.image_model is not None:
+        store.byok_image_model = body.image_model.strip() or None
+    if body.image_api_key is not None:
+        if body.image_api_key.strip():
+            try:
+                store.byok_image_api_key_enc = encrypt(body.image_api_key.strip())
+            except CryptoNotConfigured:
+                raise HTTPException(status_code=503, detail="服务端未配置 BYOK 主密钥（BYOK_ENCRYPT_KEY），请联系管理员配置后再试")
+        else:
+            store.byok_image_api_key_enc = None
     await db.commit()
     await db.refresh(store)
     return _byok_out(store)
