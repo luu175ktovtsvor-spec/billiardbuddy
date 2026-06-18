@@ -19,6 +19,7 @@ dependencies = [
     "borax>=4.1.3",
     "openpyxl>=3.1.0",
     "aiosqlite>=0.22.1",
+    "fastembed>=0.8.0",
 ]
 
 [dependency-groups]

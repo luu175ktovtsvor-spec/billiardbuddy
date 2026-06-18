@@ -64,8 +64,10 @@ class FastEmbedEmbedder:
 
     def __init__(self, model_name: str | None = None):
         from fastembed import TextEmbedding  # 懒导入：没装也不影响 deterministic
+        # bge-small-zh-v1.5：中文专用、仅 ~90MB、纯本地。实测"拍个视频"能按意思命中"短视频知识"
+        # （字面零重叠），是字面法做不到的。multilingual-e5-small 不在 fastembed 支持列表，勿用。
         self._model_name = model_name or os.environ.get(
-            "RAG_FASTEMBED_MODEL", "intfloat/multilingual-e5-small"
+            "RAG_FASTEMBED_MODEL", "BAAI/bge-small-zh-v1.5"
         )
         self._m = TextEmbedding(model_name=self._model_name)
         # 用一次探测维度
