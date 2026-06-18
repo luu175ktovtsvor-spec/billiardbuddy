@@ -414,7 +414,8 @@ async def agent_execute(
         if ap:  # 续接里若又提出花钱/对外动作，带出新审批卡（带签名）
             from services.agent.approval import sign_approval
             new_approval = {"tool": ap.tool_name, "args": ap.tool_args,
-                            "token": sign_approval(ap.tool_name, ap.tool_args)}
+                            "token": sign_approval(ap.tool_name, ap.tool_args),
+                            "preview": ap.preview}
         # 续接落库进同一会话，刷新不丢、下一轮续得上
         if body.conversation_id and continuation:
             import uuid as _uuid
