@@ -297,10 +297,12 @@ export default function ManagerPage() {
     const msg = text.trim();
     if (!msg || generating || quotaExhausted || !isAuthenticated) return;
 
-    // 同会话多轮：把已有对话作为 history 带上（只取 role+content）
+    // 同会话多轮：把已有对话作为 history 带上（只取 role+content）。
+    // 只发最近 12 条 + 每条截断，防长对话撑爆上下文（后端也会再封顶一次，双保险）。
     const history = messages
       .filter((m) => !m.error)
-      .map((m) => ({ role: m.role, content: m.content }));
+      .slice(-12)
+      .map((m) => ({ role: m.role, content: m.content.slice(0, 2000) }));
 
     setMessages((prev) => [...prev, { role: "user", content: msg }]);
     setInput("");

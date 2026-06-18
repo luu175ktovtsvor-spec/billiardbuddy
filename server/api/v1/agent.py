@@ -172,6 +172,22 @@ async def _persist_agent_chat(db, store, user, message: str, content: str, gen_i
         pass
 
 
+_HIST_MAX_MSGS = 12      # 最多保留最近 12 条历史（约 6 轮 user+assistant），超出丢最旧的
+_HIST_MAX_CHARS = 2000   # 每条历史内容截断上限
+
+
+def _cap_history(history: list[dict] | None) -> list[dict] | None:
+    """控住 context 体积：只留最近 _HIST_MAX_MSGS 条、每条截断 _HIST_MAX_CHARS 字。
+    防长对话撑爆上下文窗口——尤其堵住"前端全量回传 history"那条没封顶的路径。"""
+    if not history:
+        return history
+    out: list[dict] = []
+    for m in history[-_HIST_MAX_MSGS:]:
+        c = m.get("content") or ""
+        out.append({**m, "content": c[:_HIST_MAX_CHARS]} if len(c) > _HIST_MAX_CHARS else m)
+    return out
+
+
 async def _load_agent_history(db, store, conversation_id: str | None) -> list[dict]:
     """按 conversation_id 从 DB 取本会话最近 5 轮历史（user/assistant 对），供续接。失败返回空。"""
     if not conversation_id:
@@ -268,6 +284,8 @@ async def agent_chat(
                 history = hist
         except Exception:
             logger.warning("agent 历史加载失败 conversation_id=%s", body.conversation_id, exc_info=True)
+
+    history = _cap_history(history)  # 统一封顶：覆盖 DB 与前端两条路径，长对话不撑爆
 
     gen_id = str(_uuid.uuid4())
     try:
