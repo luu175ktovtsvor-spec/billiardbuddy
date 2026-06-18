@@ -21,6 +21,7 @@ import { Sheet } from "@/components/ui/sheet";
 import { QuotaBadge } from "@/components/quota-badge";
 import { CopyButton } from "@/components/generators/copy-button";
 import { CanvasPanel } from "@/components/canvas-panel";
+import { DesktopChatShell } from "@/components/desktop/chat-shell";
 import { getErrorMessage } from "@/lib/utils";
 
 /* AI 运营管家:对话式 Agent。老板说人话 → 管家自己规划、调用工具(写文案/约客/诊断/查今日推荐…)
@@ -540,6 +541,10 @@ export default function ManagerPage() {
       ),
     );
   };
+
+  // 桌面端（Electron）：早返回 macOS 风外壳；手机网页版走下面原有布局，二者物理隔离、互不影响。
+  // SSR 与首帧 isDesktop 均为 false → 先渲手机版（hydration 一致），挂载后 useDesktop 置 true 才切桌面，无水合错位。
+  if (isDesktop) return <DesktopChatShell />;
 
   return (
     <div
