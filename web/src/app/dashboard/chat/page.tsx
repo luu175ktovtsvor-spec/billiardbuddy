@@ -32,6 +32,7 @@ interface ToolStep {
 interface ApprovalState {
   tool: string;
   args: Record<string, unknown>;
+  token?: string; // 审批提案签名，确认执行时回传校验（防篡改）
   status: "pending" | "done" | "cancelled";
 }
 
@@ -274,8 +275,8 @@ export default function ManagerPage() {
             }
             setLiveSteps([...steps]);
           },
-          onApprovalRequest: (tool, args) => {
-            approval = { tool, args, status: "pending" };
+          onApprovalRequest: (tool, args, _id, token) => {
+            approval = { tool, args, token, status: "pending" };
           },
           onFinal: (content) => {
             finalText = content;
@@ -397,6 +398,7 @@ export default function ManagerPage() {
         ap.args,
         selectedFiles.length ? selectedFiles : undefined,
         isDesktop && fullDisk ? true : undefined,
+        ap.token,
       );
       setMessages((prev) =>
         prev.map((m, j) => (j === idx && m.approval ? { ...m, approval: { ...m.approval, status: "done" } } : m)),
