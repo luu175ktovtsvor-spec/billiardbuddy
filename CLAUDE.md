@@ -6,6 +6,9 @@
 > 3. `docs/耦合地图与改动检查清单.md` = **改前必看**，跨模块连带影响。
 > 4. **🚧 进行中：微信小程序接入** → 权威计划 `docs/plans/小程序接入-编排.md`（代码走 `feat/miniprogram` 分支；`main` = 美国生产**勿动**；备案域名**勿迁离大陆服务器**）。
 > 5. **🚧 进行中：桌面 AI Agent（Codex 化）** → **当前工作分支 `feat/desktop-agent`**。全本地架构（Electron 壳 + 本地 FastAPI + SQLite + 知识加密 `prompts.enc`），**纯 BYOK**（老板自带大模型 key，盒子不内置平台 key）；脑（大模型/BYOK）+ 工具执行层 + 四层防御（权限模式/allow-ask-deny/沙箱/审批闸）+ 自动更新；4 平台发布 RPA + 视频剪辑。权威文档：执行清单 `docs/plans/桌面Agent-Codex化-执行清单-2026-06-18.md`、架构 `docs/plans/桌面AI-Agent-架构与开发计划-2026-06-18.md`、能力地图 `docs/plans/桌面Agent-完整能力地图-路线图.md`。**`main`/`web` 云端勿动；下方「桌面分支(feat/desktop-agent)新增」节列本程已落能力。**
+> 6. **🎨 本分支当前主线：桌面 Agent macOS 重做（2026-06-19 起）** → `feat/desktop-agent` 即桌面端**主分支**（不碰 `main`/`web`，逻辑上是桌面 Agent 的重做/重新开发，可直接 commit+push）。重点：① macOS 原生质感 UI 重设计；② **纯 BYOK 盒子——不内置任何平台 key，已代码强制**（`factory.get_image_config_for_store` 在 `DESKTOP_LOCAL=1` 没配即空 key，绝不回退平台 key）；③ 国内文生图/视频接入（**大陆调不了 OpenAI**，走硅基流动 OpenAI 兼容 / 通义万相 / 即梦，老板自带 key）；④ 自研 harness（学 Claude Code 设计、**代码自写，不内置/不抄 cc-haha 泄露码**）。权威文档：`docs/design/桌面Agent-macOS设计规范.md`、`docs/plans/桌面Agent-国内生图BYOK与机制梳理-2026-06-19.md`。
+>
+> ⚠️ **文档维护＝硬要求（本分支 + 所有新开的 Claude Code 窗口都照办）**：边开发边更新相关文档（上面的设计规范/机制梳理/计划 + 本文件「桌面分支新增」表 + 项目记忆），**不做完不更新、过时即改**。新会话先读这些定位、干完活回来更新它们。
 >
 > ⚠️ **`docs/archive/` 里全是历史快照，别当现状**（里面可能写着已撤销的方案，如"8443独立端口"）。文档地图见 `docs/README.md`。生产当前提交以 `git -C 服务器 log` 或部署文档为准。
 
