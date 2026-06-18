@@ -258,32 +258,14 @@ async def agent_chat(
         permission_mode=perm_mode, full_disk_access=full_disk,
     )
 
-    # 多轮续接：有 conversation_id 则从 DB 查本会话历史(替代前端全量回传——刷新不丢、省 token、更可靠);否则用前端 history
+    # 多轮续接：有 conversation_id 则从 DB 查本会话历史(替代前端全量回传——刷新不丢、省 token、更可靠);否则用前端 history。
+    # 统一走 _load_agent_history（与 /agent/execute 同一函数，单一来源，不再两处各抄一份"最近5轮"查询）。
     import uuid as _uuid
     history = body.history
     if body.conversation_id:
-        try:
-            from sqlalchemy import select
-            from models.generation import Generation as _Gen
-            rows = (await db.execute(
-                select(_Gen).where(
-                    _Gen.store_id == store.id,
-                    _Gen.conversation_id == _uuid.UUID(body.conversation_id),
-                    _Gen.type == "agent",
-                    _Gen.is_deleted == False,  # noqa: E712
-                ).order_by(_Gen.created_at)
-            )).scalars().all()
-            hist: list[dict] = []
-            for g in rows[-5:]:  # 只取最近5轮，控 context
-                uin = (g.input_params or {}).get("message")
-                if uin:
-                    hist.append({"role": "user", "content": uin})
-                if g.result:
-                    hist.append({"role": "assistant", "content": g.result[:2000]})
-            if hist:
-                history = hist
-        except Exception:
-            logger.warning("agent 历史加载失败 conversation_id=%s", body.conversation_id, exc_info=True)
+        db_hist = await _load_agent_history(db, store, body.conversation_id)
+        if db_hist:  # DB 查到本会话历史 → 用它；查不到/失败则保留前端回传的 history
+            history = db_hist
 
     history = _cap_history(history)  # 统一封顶：覆盖 DB 与前端两条路径，长对话不撑爆
 

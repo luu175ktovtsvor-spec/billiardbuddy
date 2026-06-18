@@ -102,3 +102,26 @@ def test_default_ctx_is_ask():
     ))
     assert _has_approval(res)
     assert "file" not in executed
+
+
+def test_force_confirm_tool_asks_even_in_full_mode():
+    """bypass-immune（借鉴 cc-haha 权限瀑布）：force_confirm 高危工具即使在 full(全自动) 模式也强制确认、绝不自动执行。"""
+    executed = []
+    reg = ToolRegistry()
+
+    async def publish_handler(args, ctx):
+        executed.append("publish")
+        return "已发布"
+
+    reg.register(Tool(name="publish_post", description="发布到平台（高危·对外·不可逆）",
+                      parameters={"type": "object", "properties": {}},
+                      handler=publish_handler, requires_approval=True,
+                      approval_class="spend", force_confirm=True))
+
+    res = asyncio.run(run_agent_loop(
+        user_message="x", registry=reg,
+        provider=_provider_calls_then_done("publish_post"),
+        ctx=AgentContext(permission_mode="full"),  # 最高放行模式
+    ))
+    assert _has_approval(res)          # full 模式也强制弹确认
+    assert "publish" not in executed   # 绝不自动执行

@@ -10,7 +10,7 @@
 import logging
 
 from core.timezone import business_today
-from services.agent.registry import tool
+from services.agent.registry import default_registry, tool
 from services.agent.scenario_catalog import format_catalog_for_model
 from services.content_service import _append_guardrails, generate_activity, generate_workbench, run_generation
 from services.dashboard_service import get_today_dashboard
@@ -22,20 +22,18 @@ logger = logging.getLogger(__name__)
 
 _WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
-# 交付类工具：结果本身就是给老板直接拿去用的成品（前端原样渲染成可复制卡片、不让大脑改写）。
-# 落库时把这些工具的产出并进会话 result，才能①历史里看到真内容 ②下一轮"把刚才那条改一下"时
-# 大脑读得到自己上轮写了啥。感知类(查日期/今日推荐)与 make_poster(走 /execute 单独落库)不在此列。
-# ⚠️ 必须与前端 chat/page.tsx 的 DELIVERABLE_TOOLS 保持一致。
-DELIVERABLE_TOOLS = frozenset({
-    "write_operation_content", "plan_activity", "assistant_outreach",
-    "diagnose_operation", "recommend_games", "make_platform_content", "make_groupbuy_content",
-})
+# 交付类工具（成品）= 在各 @tool 上标 deliverable=True；本模块底部据注册表自动汇总成 DELIVERABLE_TOOLS。
+# 落库时把成品并进会话 result，才能①历史里看到真内容 ②下一轮"把刚才那条改一下"大脑读得到自己上轮写了啥。
+# 感知类(查日期/今日推荐/找场景) 与 make_poster(走 /execute 单独落库) 不标 deliverable。
+# ⚠️ 单一来源即工具自身的 deliverable 标记——不再手抄白名单（旧手抄常量漏登 write_batch 致批量产出不落库）。
+#    前端 chat/page.tsx 另有一份同名常量（跨代码库无法共享）——加新成品工具时记得同步那边。
 
 
 # ---- 感知（只读） ------------------------------------------------------------
 
 @tool(
     name="get_current_date",
+    read_only=True,
     description="获取今天的日期（北京时间）和星期几。仅当用户直接问日期/星期，或你确实要据此判断时才调用；"
                 "写具体运营内容（朋友圈/活动/海报等）时系统已自动注入当天日期，不必为此单独查。",
     parameters={"type": "object", "properties": {}},
@@ -47,6 +45,7 @@ async def get_current_date(args: dict, ctx) -> str:
 
 @tool(
     name="get_today_recommendation",
+    read_only=True,
     description="查这家店今天的运营推荐（综合日期/节日/门店画像/成长阶段算出来的）。"
                 "仅当老板开口问『今天/这几天该做点啥』『有没有什么建议/主意』这类开放求建议时才调用；"
                 "用户已经明确要做某件具体事（写文案/做海报/发平台/约客/诊断等）时，别调它，直接用对应工具。",
@@ -66,6 +65,7 @@ async def get_today_recommendation(args: dict, ctx) -> str:
 
 @tool(
     name="find_scenario",
+    read_only=True,
     description="查台球房有没有现成的『精修场景模板』可用。当老板要写某个具体运营场景的内容"
                 "（如强一比赛主持/赛事报名/助教推广/团购转私域/老客回流/开业活动/投诉应对/学生优惠局…）时，"
                 "**先调我**列出可用模板，挑一个最贴切的，再把它的 key 作为 write_operation_content 的 prompt_key 写——"
@@ -84,6 +84,7 @@ async def find_scenario(args: dict, ctx) -> str:
 
 @tool(
     name="write_operation_content",
+    deliverable=True,
     description="按老板的一句话需求，写一段台球房运营内容（朋友圈/群公告/活动文案/日报叙事等通用文字）。"
                 "这是最常用的写文案工具，会自动带上门店画像、岗位规则、行业知识。需要写任何运营文字时优先用它。"
                 "若先用 find_scenario 找到了贴切的精修模板，把它的 key 传进 prompt_key，会用那套校准模板来写。",
@@ -124,6 +125,7 @@ async def write_operation_content(args: dict, ctx) -> str:
 
 @tool(
     name="write_batch",
+    deliverable=True,
     description="一次写【一批】同类内容（多条不重样），省得一条条来。当老板说"
                 "『写一周的朋友圈 / 给我5条群公告 / 一次多来几条不一样的 / 这周每天发一条』时调用。"
                 "默认写朋友圈；也可写群公告/活动点子。每条角度或主题都不同，老板挑着用。",
@@ -163,6 +165,7 @@ async def write_batch(args: dict, ctx) -> str:
 
 @tool(
     name="plan_activity",
+    deliverable=True,
     description="策划一套**成体系的台球房活动方案**（玩法机制/优惠力度/时间安排/传播话术/落地步骤），比单写一段文案更系统。"
                 "当老板要『策划/搞个活动、办会员日、做比赛、节日营销(春节/中秋等)、包场团建、老客回流专场、学生场、搭子主题局』时调用。"
                 "区分：只要一段现成文字(朋友圈/群公告)用 write_operation_content；要一整套能落地执行的活动方案用本工具。",
@@ -193,6 +196,7 @@ async def plan_activity(args: dict, ctx) -> str:
 
 @tool(
     name="assistant_outreach",
+    deliverable=True,
     description="生成助教/前台主动联系某位客户的约客话术。当需要'给某个客户发消息约他来打球/邀约/维护'时调用。",
     parameters={
         "type": "object",
@@ -220,6 +224,7 @@ async def assistant_outreach(args: dict, ctx) -> str:
 
 @tool(
     name="diagnose_operation",
+    deliverable=True,
     description="针对经营问题给诊断和改进建议。当老板描述'生意冷清/营业额上不去/客户流失/员工问题/活动没效果'等经营困扰时调用。",
     parameters={
         "type": "object",
@@ -242,6 +247,7 @@ async def diagnose_operation(args: dict, ctx) -> str:
 
 @tool(
     name="recommend_games",
+    deliverable=True,
     description="根据人数/水平/时长推荐台球小游戏玩法。当需要'搞点互动游戏/活动玩法/暖场点子'时调用。",
     parameters={
         "type": "object",
@@ -367,6 +373,7 @@ _PLATFORM_CONTENT_PROMPTS = {
 
 @tool(
     name="make_platform_content",
+    deliverable=True,
     description="给指定平台写一条平台定制内容、交给用户复制去发：抖音短视频脚本 / 小红书笔记 / 快手 / 视频号。"
                 "当用户要『发抖音 / 做个抖音视频 / 写条小红书 / 发笔记 / 发快手 / 发视频号』时调用。"
                 "按各平台的格式和调性写好，用户复制后到对应 App 自己发（我们不替他自动发）。",
@@ -413,6 +420,7 @@ _GROUPBUY_PLATFORM = {
 
 @tool(
     name="make_groupbuy_content",
+    deliverable=True,
     description="给美团/抖音团购写一套可直接上架的团购套餐文案(套餐标题/卖点/包含内容/使用规则)+ 一条引流钩子。"
                 "当用户要『做个团购 / 上个套餐 / 写团购 / 搞个引流低价』时调用。写好后引导老板去商家后台"
                 "(美团开店宝 / 抖音来客)自己上架——我们不替他上架、不碰核销。",
@@ -464,3 +472,7 @@ async def make_groupbuy_content(args: dict, ctx) -> str:
 
 # 桌面全本地版：导入本地文件操作工具（模块内按 DESKTOP_LOCAL 条件自注册；云端 web 版不设该 env → 不暴露文件操作）。
 from services.agent import local_tools  # noqa: E402,F401
+
+# 成品白名单的单一来源：据各工具自带的 deliverable 标记自动汇总。
+# 必须在所有内置工具 + local_tools 都注册进 default_registry 之后再求值（故置于本模块末尾）。
+DELIVERABLE_TOOLS = frozenset(default_registry.deliverable_names())
