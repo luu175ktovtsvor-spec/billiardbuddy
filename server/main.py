@@ -29,6 +29,19 @@ async def lifespan(app: FastAPI):
     for w in config_warnings:
         logger.warning("生产安全警告: %s", w)
 
+    # 桌面全本地版（SQLite）：无 Alembic 迁移，启动时按模型 create_all 建表（幂等）。
+    # 云端 PostgreSQL 不走此路（仍靠 Alembic 迁移建库），按 engine 方言判断。
+    if engine.dialect.name == "sqlite":
+        from db.init_local import init_local_db
+        await init_local_db()
+
+    # 启动时打印知识库加载情况：桌面打包版据此确认加密块(prompts.enc)解密成功（模板数应=171），
+    # 而非静默回退到明文 prompts/（打包里已删明文 → 回退会是 0，立刻能看出护城河失效）。
+    from services.ai.prompt_engine import get_prompt_engine
+    _pe = get_prompt_engine()
+    _src = "加密块(prompts.enc)" if __import__("os").environ.get("PROMPTS_PACK_KEY") else "明文YAML"
+    logger.info("知识库已加载：%d 模板（来源：%s）", len(_pe._templates), _src)
+
     yield
 
     logger.info("服务关闭，清理数据库连接...")

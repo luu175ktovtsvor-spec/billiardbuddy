@@ -232,10 +232,12 @@ async def remember(db: AsyncSession, store_id, interaction_text: str) -> list[Me
         if not new:
             return await load_store_memory(db, store_id)
         # 同店并发学习串行化（锁随本事务 commit/回滚释放；只挡同店、不挡跨店，不影响吞吐）
-        await db.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
-            {"k": f"store_memory:{store_id}"},
-        )
+        # 仅 PostgreSQL 有 pg_advisory_xact_lock；桌面本地版 SQLite 单写、无多 worker 竞态，no-op 跳过即可。
+        if db.bind.dialect.name == "postgresql":
+            await db.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+                {"k": f"store_memory:{store_id}"},
+            )
         existing = await load_store_memory(db, store_id)
         merged = await consolidate_memories(existing, new, store) if existing else new
         merged = _cap_memories(merged)

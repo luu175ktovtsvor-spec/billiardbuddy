@@ -7,7 +7,7 @@ import remarkGfm from "remark-gfm";
 import {
   Send, Loader2, Sparkles, Check, CalendarDays, Lightbulb, PenLine,
   UserPlus, Stethoscope, Dices, Wrench, Menu, LayoutDashboard, LayoutGrid,
-  FileText, ImageIcon, Clock, User, BookOpen,
+  FileText, ImageIcon, Clock, User, BookOpen, Scissors,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/auth-context";
@@ -59,6 +59,8 @@ const NAV_ITEMS = [
   { href: "/dashboard", label: "今日", Icon: LayoutDashboard },
   { href: "/dashboard/workbench", label: "AI 工作台", Icon: LayoutGrid },
   { href: "/dashboard/report", label: "写日报", Icon: FileText },
+  { href: "/dashboard/publish", label: "一键发布", Icon: Send },
+  { href: "/dashboard/edit", label: "视频剪辑", Icon: Scissors },
   { href: "/dashboard/posters", label: "AI 生图", Icon: ImageIcon },
   { href: "/dashboard/history", label: "生成历史", Icon: Clock },
   { href: "/dashboard/store-settings", label: "门店设置", Icon: User },

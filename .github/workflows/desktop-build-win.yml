@@ -1,0 +1,104 @@
+# 云端出 Windows 安装包（GitHub Actions · windows runner）
+#
+# 为什么要它:PyInstaller 不能交叉编译——Windows 的后端 .exe 必须在 Windows 上打。
+# 开发者在 Mac 写代码,推到 GitHub,这台云端 Windows 机自动把"前端+后端+Electron 壳"
+# 打成一个 .exe 安装包,从 Actions 的 artifact 下载即可。不需要任何人有实体 Windows。
+#
+# 触发:① 手动(Actions 页点 Run);② 推 tag v*(如 v0.1.1)→ 顺带可发布给自动更新。
+#
+# 产物:desktop/dist/台球运营管家-Setup-x.y.z.exe + latest.yml(自动更新用)。
+# 当前 --publish never:只构建+上传 artifact,不自动传到更新私服(等服务器上传凭据配好再开)。
+
+name: 桌面版-Windows出包
+
+on:
+  workflow_dispatch: {}        # 手动触发
+  push:
+    tags:
+      - "v*"                   # 打版本 tag 时自动出包
+
+jobs:
+  build-win:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # ── 工具链:Node + pnpm + Python + uv ──
+      - name: 装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: 装 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: 装 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 装 uv
+        uses: astral-sh/setup-uv@v5
+
+      # ── ① 前端:出 Next.js standalone 产物 ──
+      # 不设 NEXT_PUBLIC_API_URL → 前端走相对路径 → standalone server.js 反代到本地后端(8077),零跨域。
+      - name: 前端依赖
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: 前端构建(standalone)
+        working-directory: web
+        env:
+          API_PROXY_URL: http://127.0.0.1:8077
+        run: pnpm build
+
+      - name: 组装前端到 desktop/resources
+        working-directory: desktop
+        run: node scripts/build_frontend.js
+
+      # ── ② 后端:PyInstaller 打成 Windows .exe(含加密知识库 prompts.enc) ──
+      - name: 后端依赖(uv sync,含 pyinstaller)
+        working-directory: server
+        run: uv sync
+
+      - name: 后端打包(PyInstaller → resources/backend)
+        working-directory: desktop
+        run: node scripts/build_backend.js
+
+      # ── ③ 发布 worker(patchright RPA):打成独立 exe,用户免装 Python ──
+      # build_publisher.js 若不存在则跳过(P0.2 尚未落地时不阻塞整条流水线)。
+      - name: 发布 worker 打包(可选)
+        working-directory: desktop
+        run: |
+          if (Test-Path scripts/build_publisher.js) { node scripts/build_publisher.js }
+          else { Write-Host "build_publisher.js 未就绪,跳过(P0.2 待落地)" }
+        shell: pwsh
+
+      # ── ④ Electron 壳:打成 nsis 安装包 ──
+      - name: desktop 依赖
+        working-directory: desktop
+        run: npm ci
+
+      - name: 出 Windows 安装包(electron-builder)
+        working-directory: desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --publish never
+
+      # ── ⑤ 上传产物 ──
+      - name: 上传安装包 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 台球运营管家-Windows安装包
+          path: |
+            desktop/dist/*.exe
+            desktop/dist/latest.yml
+          if-no-files-found: error
+          retention-days: 30

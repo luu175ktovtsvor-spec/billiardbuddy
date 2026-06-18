@@ -43,6 +43,14 @@ class PromptEngine:
         self._load_all()
 
     def _load_all(self) -> None:
+        # 桌面全本地版：优先用加密知识库包（护城河不明文外泄）。设了 PROMPTS_PACK_KEY 且有 prompts.enc 才走。
+        # web/dev 不设该 env → load_pack 返回 None → 落回下面的明文 YAML 加载，行为完全不变。
+        from services.ai.prompt_pack import load_pack
+        pack = load_pack()
+        if pack is not None:
+            self._templates = pack
+            return
+
         prompts_dir = Path(__file__).parent.parent.parent / "prompts"
         if not prompts_dir.exists():
             return
