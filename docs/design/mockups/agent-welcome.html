@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>桌面 Agent · 欢迎/空状态设计图</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, "PingFang SC", sans-serif; }
+  .vibrancy { background: rgba(245,245,247,0.88); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+  .card-shadow { box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04); }
+  .win-shadow { box-shadow: 0 24px 70px rgba(0,0,0,0.28), 0 4px 14px rgba(0,0,0,0.12); }
+  .hairline { border-color: rgba(0,0,0,0.07); }
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.16); border-radius: 8px; }
+</style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-8" style="background: linear-gradient(135deg,#dfe3ea 0%,#eceef2 45%,#e3e7ee 100%);">
+
+<div class="w-[1180px] h-[760px] rounded-2xl overflow-hidden win-shadow flex bg-white">
+
+  <!-- 侧栏（毛玻璃）—— 与对话屏一致 -->
+  <aside class="w-[260px] vibrancy flex flex-col border-r hairline">
+    <div class="h-[52px] flex items-center px-[18px] gap-2">
+      <span class="w-3 h-3 rounded-full" style="background:#ff5f57"></span>
+      <span class="w-3 h-3 rounded-full" style="background:#febc2e"></span>
+      <span class="w-3 h-3 rounded-full" style="background:#28c840"></span>
+    </div>
+    <div class="px-4 pb-2 flex items-center gap-2">
+      <img src="icon.png" alt="球房管家" class="w-7 h-7 rounded-lg object-cover">
+      <div class="text-[15px] font-semibold text-[#1d1d1f]">球房管家</div>
+    </div>
+    <div class="px-3 mt-1">
+      <button class="w-full h-9 rounded-lg bg-white/70 hover:bg-white card-shadow text-[13px] text-[#1d1d1f] flex items-center justify-center gap-1.5 active:scale-[0.98] transition">
+        <span class="text-[#007AFF] text-[15px] leading-none">＋</span> 新对话
+      </button>
+    </div>
+    <div class="px-2 mt-3 flex-1 overflow-y-auto">
+      <div class="px-2 text-[11px] text-[#86868b] mb-1">前 7 天</div>
+      <div class="rounded-lg px-3 py-2 mb-0.5 hover:bg-black/[0.04] cursor-default">
+        <div class="text-[13px] text-[#1d1d1f] truncate">中秋活动策划</div>
+      </div>
+      <div class="rounded-lg px-3 py-2 mb-0.5 hover:bg-black/[0.04] cursor-default">
+        <div class="text-[13px] text-[#1d1d1f] truncate">助教约客话术一批</div>
+      </div>
+      <div class="rounded-lg px-3 py-2 mb-0.5 hover:bg-black/[0.04] cursor-default">
+        <div class="text-[13px] text-[#1d1d1f] truncate">这个月经营诊断</div>
+      </div>
+    </div>
+    <div class="border-t hairline p-3 flex items-center gap-2">
+      <div class="w-7 h-7 rounded-full bg-[#007AFF]/15 flex items-center justify-center text-[12px] text-[#007AFF] font-semibold">楠</div>
+      <div class="flex-1 min-w-0">
+        <div class="text-[12px] text-[#1d1d1f] truncate">楠米台球·万象城店</div>
+        <div class="text-[11px] text-[#86868b] truncate">本月 AI 花费 ≈ ¥3.2</div>
+      </div>
+      <button class="w-7 h-7 rounded-md hover:bg-black/[0.06] text-[#86868b] flex items-center justify-center">⚙</button>
+    </div>
+  </aside>
+
+  <!-- 主区：欢迎 / 空状态 -->
+  <main class="flex-1 flex flex-col bg-white min-w-0">
+    <div class="h-[52px] flex items-center px-5 border-b hairline">
+      <div class="text-[14px] font-medium text-[#1d1d1f]">新对话</div>
+    </div>
+
+    <!-- 居中欢迎 -->
+    <div class="flex-1 overflow-y-auto flex flex-col items-center justify-center px-8">
+      <div class="w-full max-w-[640px] -mt-6">
+        <!-- 图标 + 问候 -->
+        <div class="flex flex-col items-center text-center mb-7">
+          <img src="icon.png" alt="球房管家" class="w-16 h-16 rounded-2xl mb-4 card-shadow">
+          <div class="text-[24px] font-semibold text-[#1d1d1f]">晚上好，老板</div>
+          <div class="text-[15px] text-[#86868b] mt-1">今天想让我帮你做点什么？说一句，或点下面试试。</div>
+        </div>
+
+        <!-- 今日建议（主动出击） -->
+        <div class="rounded-xl border p-3.5 mb-3 flex items-center gap-3" style="border-color:#007AFF33;background:#007AFF0a">
+          <div class="text-[18px]">💡</div>
+          <div class="flex-1">
+            <div class="text-[13px] font-medium text-[#1d1d1f]">今日建议</div>
+            <div class="text-[13px] text-[#3a3a3c] mt-0.5">周五了，周末客流高峰前，要不要发条周末活动预告？</div>
+          </div>
+          <button class="text-[13px] text-white px-3.5 py-1.5 rounded-lg active:scale-[0.98] whitespace-nowrap" style="background:#007AFF">帮我写</button>
+        </div>
+
+        <!-- 建议起手卡片（showcase 能力，点了直接做） -->
+        <div class="grid grid-cols-2 gap-2.5">
+          <button class="text-left rounded-xl border hairline bg-white card-shadow p-3.5 hover:bg-black/[0.015] active:scale-[0.99] transition">
+            <div class="text-[16px] mb-1.5">📝</div>
+            <div class="text-[13.5px] font-medium text-[#1d1d1f]">写条周末活动朋友圈</div>
+            <div class="text-[12px] text-[#86868b] mt-0.5">双人优惠，发圈引流</div>
+          </button>
+          <button class="text-left rounded-xl border hairline bg-white card-shadow p-3.5 hover:bg-black/[0.015] active:scale-[0.99] transition">
+            <div class="text-[16px] mb-1.5">📊</div>
+            <div class="text-[13.5px] font-medium text-[#1d1d1f]">照报表看这月经营</div>
+            <div class="text-[12px] text-[#86868b] mt-0.5">选张导出的报表，我来诊断</div>
+          </button>
+          <button class="text-left rounded-xl border hairline bg-white card-shadow p-3.5 hover:bg-black/[0.015] active:scale-[0.99] transition">
+            <div class="text-[16px] mb-1.5">🎨</div>
+            <div class="text-[13.5px] font-medium text-[#1d1d1f]">做张拉新海报</div>
+            <div class="text-[12px] text-[#86868b] mt-0.5">描述想要的，我生图（先确认）</div>
+          </button>
+          <button class="text-left rounded-xl border hairline bg-white card-shadow p-3.5 hover:bg-black/[0.015] active:scale-[0.99] transition">
+            <div class="text-[16px] mb-1.5">🗓️</div>
+            <div class="text-[13.5px] font-medium text-[#1d1d1f]">给我一周不重样的朋友圈</div>
+            <div class="text-[12px] text-[#86868b] mt-0.5">一次出一批，挑着发</div>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 底部输入区 -->
+    <div class="px-5 pb-4 pt-2">
+      <div class="flex items-center gap-2 mb-2.5 max-w-[760px] mx-auto">
+        <span class="text-[11px] text-[#86868b]">权限</span>
+        <div class="inline-flex p-0.5 rounded-lg bg-black/[0.05] text-[12px]">
+          <button class="px-3 py-1 rounded-md bg-white text-[#1d1d1f] card-shadow">都先问我</button>
+          <button class="px-3 py-1 rounded-md text-[#86868b]">日常自己做</button>
+          <button class="px-3 py-1 rounded-md text-[#86868b]">全部自己做</button>
+        </div>
+        <span class="text-[11px] text-[#86868b]">· 群发、对外发布始终先问你</span>
+      </div>
+      <div class="flex items-end gap-2 rounded-xl border hairline bg-white px-3 py-2 card-shadow max-w-[760px] mx-auto">
+        <button class="w-8 h-8 rounded-md hover:bg-black/[0.05] text-[#86868b] flex items-center justify-center text-[18px]">📎</button>
+        <textarea rows="1" placeholder="问问球房管家…" class="flex-1 resize-none outline-none text-[14px] text-[#1d1d1f] placeholder:text-[#b0b0b5] py-1.5 bg-transparent"></textarea>
+        <button class="w-8 h-8 rounded-lg flex items-center justify-center text-white active:scale-[0.95]" style="background:#007AFF">↑</button>
+      </div>
+    </div>
+  </main>
+</div>
+
+</body>
+</html>
