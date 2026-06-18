@@ -10,8 +10,9 @@ import {
   UserPlus, Stethoscope, Dices, Wrench, Menu, LayoutDashboard, LayoutGrid,
   FileText, ImageIcon, Clock, User, BookOpen, Scissors, Paperclip, X,
   ShieldCheck, FolderOpen, AlertTriangle,
-  Search, Save, FilePen, FileSpreadsheet, History, PartyPopper, SquarePen, Wallet, Layers,
+  Search, Save, FilePen, FileSpreadsheet, History, PartyPopper, SquarePen, Wallet, Layers, ChevronRight,
 } from "lucide-react";
+import type { DashboardTodayResponse } from "@/types/dashboard";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/auth-context";
 import { useDesktop } from "@/hooks/use-desktop";
@@ -252,6 +253,8 @@ export default function ManagerPage() {
   const [quotaVersion, setQuotaVersion] = useState(0);
   // 画布：在右侧展开某条成品、指着某处定向改。content 为打开时的快照(不随消息更新重置版本栈)。
   const [canvas, setCanvas] = useState<{ msgIdx: number; stepIdx: number; content: string; type: string } | null>(null);
+  // 今日推荐（规则算的、不花钱）：开屏主动显示"今天建议你…"，点一条直接让管家去做。
+  const [todayRec, setTodayRec] = useState<DashboardTodayResponse | null>(null);
   const [quotaRemaining, setQuotaRemaining] = useState<number | null>(null);
   const quotaExhausted = quotaRemaining !== null && quotaRemaining <= 0;
 
@@ -263,6 +266,17 @@ export default function ManagerPage() {
   }, [messages.length, draft, liveSteps.length]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  // 开屏拉今日推荐（规则算的、不花钱），供空状态主动显示"今天建议你…"
+  useEffect(() => {
+    let cancelled = false;
+    if (isAuthenticated) {
+      api.getTodayDashboard().then((d) => !cancelled && setTodayRec(d)).catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated]);
 
   // 会话持久化(微信刷新/切出不丢历史)：按门店隔离存 localStorage
   const sessionKey = () => `agent_chat_session_${api.getStoreId() || "default"}`;
@@ -702,6 +716,31 @@ export default function ManagerPage() {
             <p className="mb-5 text-sm text-slate-500">
               说一句你想干啥，我自己安排：写文案、约客、出活动主意、看经营问题。我懂你这家店。
             </p>
+
+            {/* 主动出击·今日建议（规则算的、零成本）：开屏就告诉老板"今天该干啥"，点一条直接让管家做 */}
+            {todayRec && todayRec.recommendations.length > 0 && (
+              <div className="mx-auto mb-5 max-w-md rounded-2xl bg-white p-4 text-left ring-1 ring-brand-100">
+                <p className="mb-2.5 flex items-center gap-1.5 text-[13px] font-semibold text-brand-700">
+                  <Lightbulb className="h-4 w-4" /> {todayRec.weekday}·今天建议你
+                </p>
+                <div className="flex flex-col gap-1.5">
+                  {todayRec.recommendations.slice(0, 3).map((r) => (
+                    <button
+                      key={r.id}
+                      type="button"
+                      onClick={() => send(r.title)}
+                      className="flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2 text-left transition-all active:scale-[0.98]"
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[14px] font-medium text-slate-800">{r.title}</span>
+                        <span className="block truncate text-[12px] leading-tight text-slate-400">{r.description}</span>
+                      </span>
+                      <ChevronRight className="h-4 w-4 shrink-0 text-brand-400" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* 主动出击：让管家先把今天该做的备成草稿 */}
             <button
