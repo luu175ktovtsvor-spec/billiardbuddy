@@ -182,11 +182,24 @@ async def diagnose_from_pos(args: dict, ctx) -> str:
     """读老板从收银系统导出的报表(Excel)，喂进经营诊断引擎(决策树+指标库)，给【有数有据】的诊断——
     不再凭老板一句口述泛泛而谈。桌面独有：报表在老板自己电脑上，要他先选定文件。"""
     file = (args.get("file") or "").strip()
+    # 没给路径 / 给的找不到 → 兜底用老板【当场选定的报表】(.xlsx)，省得大脑非得报对完整路径
+    def _picked_report() -> str | None:
+        for p in (getattr(ctx, "allowed_paths", None) or []):
+            ps = str(p)
+            if ps.lower().endswith((".xlsx", ".xls")) and Path(ps).exists():
+                return ps
+        return None
+    if not file:
+        file = _picked_report() or ""
     if not file:
         return "请先用文件选择器选一下你从收银系统导出的报表（.xlsx），我照着真实数据帮你看。"
     path = _resolve(file, ctx)
     if not path.exists():
-        return f"没找到这个文件：{file}。麻烦用文件选择器重新选一下导出的报表。"
+        fallback = _picked_report()
+        if fallback:
+            path = Path(fallback)
+        else:
+            return f"没找到这个文件：{file}。麻烦用文件选择器重新选一下导出的报表。"
     # 复用 read_file 的读法（Excel 列出非空单元格）拿到真实数字
     data_text = await read_file({"path": file}, ctx)
     situation = (

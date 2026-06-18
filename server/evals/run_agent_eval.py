@@ -77,6 +77,7 @@ _STUB_RESULTS = {
     "plan_activity": "【活动方案已策划·测试桩】主题/玩法机制/优惠力度/时间安排/传播话术/落地步骤齐全，可直接执行。",
     "assistant_outreach": "【约客话术已写好·测试桩】王哥好久没来打两杆了，这周末有双人优惠，给你留个好台，啥时候过来？",
     "diagnose_operation": "【经营诊断已出·测试桩】工作日下午空台：推闲时套餐、约老客白天局、对接周边上班族午休时段。",
+    "diagnose_from_pos": "【已照报表真实数字诊断·测试桩】周二周三营收最低(2100/2300，仅周六23%)，建议主攻工作日白天上班族闲时套餐。",
     "recommend_games": "【玩法已推·测试桩】6 人混合水平：推荐『幸运球 PK』『团队接力赛』两个暖场玩法。",
     "make_platform_content": "【平台定制内容已写好·测试桩】脚本/笔记草稿已就绪，复制到对应 App 自己发。",
     "make_groupbuy_content": "【团购套餐文案已写好·测试桩】套餐标题/卖点/包含内容/使用规则齐全，去商家后台上架即可。",
@@ -154,7 +155,16 @@ async def run_case(case: dict, store: Store, system_prompt: str, model: str | No
     # 本地操作类用例：按用例设权限模式(ask/auto_files/full)，并模拟"老板已选定一个文件"(沙箱已授权)，
     # 才能测出"文件类在 auto_files 免确认直接改 / 花钱类仍审批"这套权限分级在脑子里有没有生效。
     ctx.permission_mode = case.get("permission_mode") or "ask"
-    ctx.allowed_paths = ["/Users/boss/Desktop/本月营业额报表.xlsx"]
+    picked = case.get("selected_file")
+    ctx.allowed_paths = [picked] if picked else ["/Users/boss/Desktop/本月营业额报表.xlsx"]
+    # 用例显式声明"老板选定了某文件"时，像生产一样把"已选文件"提示注入 system prompt
+    # （否则大脑不知道有这份文件、只会反问"哪份？"——对它不公平）。
+    sp = system_prompt
+    if picked:
+        from api.v1.agent import _selected_files_note
+        note = _selected_files_note([picked])
+        if note:
+            sp = system_prompt + "\n\n" + note
 
     async with sem:
         t0 = time.monotonic()
@@ -163,7 +173,7 @@ async def run_case(case: dict, store: Store, system_prompt: str, model: str | No
                 user_message=case["message"],
                 registry=registry,
                 ctx=ctx,
-                system_prompt=system_prompt,
+                system_prompt=sp,
                 model=model,
                 max_turns=8,
                 max_tokens=1200,
