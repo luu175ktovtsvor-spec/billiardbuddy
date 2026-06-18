@@ -121,9 +121,12 @@ class ProviderFactory:
     @classmethod
     def get_image_config_for_store(cls, store) -> tuple[str, str, str | None]:
         """按门店取生图配置 (api_key, base_url, model)。
-        门店配了生图 BYOK（byok_image_enabled + 密文 key）→ 用门店自带（自担成本）；
-        否则回退平台默认 config.openai_*。model 为 None 时由 provider 用默认(gpt-image-2)。
-        解密失败安全回退平台默认、不阻断生图。"""
+        门店配了生图 BYOK（byok_image_enabled + 密文 key）→ 用门店自带（自担成本）。
+        **桌面盒子（DESKTOP_LOCAL=1）= 纯 BYOK**：没配就返回空 key（逼老板去「模型设置」填自己的），
+        绝不回退用平台 key——盒子内不内置任何平台 key（与云端 web 版相反，web 才回退平台默认垫付）。
+        gpt-image-2 仍保留为可选模型接口（老板自带 OpenAI key 时可选它）。
+        model 为 None 时由 provider 用默认(gpt-image-2)。解密失败安全降级、不阻断。"""
+        import os
         from config import settings
         enc = getattr(store, "byok_image_api_key_enc", None) if store is not None else None
         if store is not None and getattr(store, "byok_image_enabled", False) and enc:
@@ -135,5 +138,8 @@ class ProviderFactory:
                     getattr(store, "byok_image_base_url", None) or settings.openai_base_url,
                     getattr(store, "byok_image_model", None) or None,
                 )
-            logger.warning("生图 BYOK key 解密失败，回退平台默认 store_id=%s", getattr(store, "id", None))
+            logger.warning("生图 BYOK key 解密失败 store_id=%s", getattr(store, "id", None))
+        # 桌面盒子：没配 BYOK 就给空 key（纯 BYOK，绝不动平台 key）；云端 web：回退平台默认。
+        if os.environ.get("DESKTOP_LOCAL") == "1":
+            return ("", settings.openai_base_url, None)
         return (settings.openai_api_key, settings.openai_base_url, None)

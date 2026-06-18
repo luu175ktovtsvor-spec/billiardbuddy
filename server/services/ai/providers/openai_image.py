@@ -51,9 +51,17 @@ class OpenAIImageProvider(ImageProvider):
         image: bytes | list[bytes] | None = None,
         **kwargs,
     ) -> bytes:
-        """调用 OpenAI API 生成图片。支持多图输入（最多16张）。"""
+        """调用 OpenAI 兼容的生图 API 生成图片。支持多图输入（最多16张）。
+
+        - **model 用传入值**：BYOK 门店配了国内模型（如硅基流动的 `Kwai-Kolors/Kolors`，走 OpenAI 兼容端点）
+          时即用其模型名，不再写死 gpt-image-2（平台/未配 → 仍默认 gpt-image-2）。
+        - **quality 是 gpt-image 系列专有参数**：国内 OpenAI 兼容端点多不接受，故仅 gpt-image 系列才附加。
+        - 响应兼容两种：gpt-image 回 b64_json；国内端点（硅基流动等）多回图片 url——见 `_extract_image_bytes`。
+        """
         client = self._get_client()
         openai_size = size.replace("*", "x")
+        use_model = model or "gpt-image-2"
+        extra = {"quality": quality} if use_model.startswith("gpt-image") else {}
 
         if image:
             images = [image] if isinstance(image, bytes) else image
@@ -79,20 +87,36 @@ class OpenAIImageProvider(ImageProvider):
                 image_file = [_make_file(img, i) for i, img in enumerate(images[:16])]
 
             response = await client.images.edit(
-                model="gpt-image-2",
+                model=use_model,
                 prompt=prompt,
                 image=image_file,
                 size=openai_size,
-                quality=quality,
+                **extra,
             )
         else:
             response = await client.images.generate(
-                model="gpt-image-2",
+                model=use_model,
                 prompt=prompt,
                 n=1,
                 size=openai_size,
-                quality=quality,
+                **extra,
             )
 
-        image_b64 = response.data[0].b64_json
-        return base64.b64decode(image_b64)
+        return await self._extract_image_bytes(response)
+
+    async def _extract_image_bytes(self, response) -> bytes:
+        """兼容两种生图响应取回图片字节：
+        - gpt-image 系列回 base64（`b64_json`）；
+        - 国内 OpenAI 兼容端点（硅基流动等）多回图片 `url`（有效期约 1 小时）——这里即时下载成 bytes。"""
+        data0 = response.data[0]
+        b64 = getattr(data0, "b64_json", None)
+        if b64:
+            return base64.b64decode(b64)
+        url = getattr(data0, "url", None)
+        if url:
+            import httpx
+            async with httpx.AsyncClient(timeout=httpx.Timeout(settings.openai_image_timeout, connect=30.0)) as hc:
+                r = await hc.get(url)
+                r.raise_for_status()
+                return r.content
+        raise RuntimeError("生图响应里既无 b64_json 也无 url，无法取回图片")
