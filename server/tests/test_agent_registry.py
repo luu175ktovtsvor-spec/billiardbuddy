@@ -91,3 +91,24 @@ def test_builtin_demo_tool_current_date():
     out = asyncio.run(get_current_date({}, None))
     assert business_today().isoformat() in out
     assert default_registry.get("get_current_date") is not None
+
+
+def test_deliverable_names_from_registry():
+    """deliverable 标记跟着工具走；deliverable_names() 只收 deliverable=True 的，是成品白名单单一来源。"""
+    reg = ToolRegistry()
+    reg.register(Tool(name="good", description="成品", parameters={}, handler=_echo_handler, deliverable=True))
+    reg.register(Tool(name="probe", description="只读", parameters={}, handler=_echo_handler, read_only=True))
+    assert reg.deliverable_names() == {"good"}
+
+
+def test_builtin_deliverable_tools_derived_includes_write_batch():
+    """DELIVERABLE_TOOLS 从工具的 deliverable 标记自动派生（根治旧手抄白名单漏登 write_batch 的 bug）；
+    感知/找场景类不算成品。"""
+    from services.agent.tools import DELIVERABLE_TOOLS
+
+    assert "write_batch" in DELIVERABLE_TOOLS  # 曾漏登的那个，现在由标记保证不再漏
+    for name in ("write_operation_content", "plan_activity", "assistant_outreach",
+                 "diagnose_operation", "recommend_games", "make_platform_content", "make_groupbuy_content"):
+        assert name in DELIVERABLE_TOOLS
+    for name in ("find_scenario", "get_current_date", "get_today_recommendation", "make_poster"):
+        assert name not in DELIVERABLE_TOOLS

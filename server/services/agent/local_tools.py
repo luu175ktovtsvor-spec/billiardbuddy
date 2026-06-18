@@ -286,6 +286,7 @@ _LOCAL_TOOLS = [
             "query": {"type": "string", "description": "要找的内容/主题，原话即可，如'双十一活动朋友圈'"},
         }, "required": ["query"]},
         handler=recall_my_content,
+        read_only=True,
     ),
     Tool(
         name="diagnose_from_pos",
@@ -298,18 +299,21 @@ _LOCAL_TOOLS = [
             "problem_area": {"type": "string", "description": "问题领域(可选)：revenue/traffic/customer_loss/staff/competition/off_season"},
         }, "required": ["file"]},
         handler=diagnose_from_pos,
+        read_only=True,
     ),
     Tool(
         name="list_files",
         description="列出本机「内容库」里已有的文件（之前生成的文案/报表/海报/视频等）。要找/改某个文件前先用它看看有啥。",
         parameters={"type": "object", "properties": {}},
         handler=list_files,
+        read_only=True,
     ),
     Tool(
         name="read_file",
         description="读取内容库里某个文件的内容（编辑前必须先读，才知道里面是什么）。Excel 会列出各单元格。",
         parameters={"type": "object", "properties": {"path": {"type": "string", "description": "内容库内的文件名/相对路径，或老板当场选定文件的完整路径"}}, "required": ["path"]},
         handler=read_file,
+        read_only=True,
     ),
     Tool(
         name="write_file",
