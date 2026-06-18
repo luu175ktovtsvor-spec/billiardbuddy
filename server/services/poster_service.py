@@ -179,7 +179,7 @@ async def generate_images(
     from services.ai.factory import ProviderFactory
 
     # 生图 BYOK：门店配了自带生图模型 → 用门店的 key/base_url（自担成本）；否则回退平台默认。
-    api_key, image_base_url, _image_model = ProviderFactory.get_image_config_for_store(store)
+    api_key, image_base_url, image_model_cfg = ProviderFactory.get_image_config_for_store(store)
     if not api_key:
         raise ValueError("生图模型未配置：请在「模型设置」里填生图模型的 Key（或留空用平台默认）")
 
@@ -332,7 +332,8 @@ async def generate_images(
             async with _get_image_semaphore():
                 image_bytes = await provider.generate_image(
                     prompt=full_prompt,
-                    model="gpt-image-2",
+                    # 门店 BYOK 配了生图模型(如国内 Kwai-Kolors/Kolors 走 OpenAI 兼容端点)→ 用它；否则平台默认 gpt-image-2
+                    model=image_model_cfg or "gpt-image-2",
                     size=size,
                     quality=quality,
                     image=input_images if input_images else None,
