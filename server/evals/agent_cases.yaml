@@ -175,6 +175,14 @@ cases:
     expect_tools: [write_batch]
     allow_tools: [find_scenario, get_current_date]
 
+  - id: LOCAL-11
+    category: local_ops
+    title: 照选定报表做POS真诊断（读真实数字，非口述诊断）
+    selected_file: "/Users/boss/Desktop/本月营业额报表.xlsx"
+    message: "照我选的这份报表，基于里面的真实数字帮我诊断一下经营"
+    expect_tools: [diagnose_from_pos]
+    allow_tools: [read_file, list_files, diagnose_operation]
+
   # 学生暑假场=正当休闲(放学后/周末/假期)，绝不能被误当违规拒绝
   - id: AG-OK-01
     category: not_overrefuse

@@ -865,6 +865,16 @@ export default function ManagerPage() {
                 </button>
               </span>
             ))}
+            {/* 选了报表(.xlsx) → 一键照真实数据诊断（让 POS 真诊断这个杀手锏被发现、被用上） */}
+            {selectedFiles.some((p) => /\.xlsx?$/i.test(p)) && !generating && (
+              <button
+                type="button"
+                onClick={() => send("照我选的这份报表，基于里面的真实数字帮我诊断一下经营")}
+                className="inline-flex items-center gap-1 rounded-lg bg-emerald-50 px-2.5 py-1 text-[12px] font-medium text-emerald-700 active:scale-[0.97]"
+              >
+                <Stethoscope className="h-3.5 w-3.5" /> 照这份报表诊断
+              </button>
+            )}
           </div>
         )}
         <div className="mx-auto flex max-w-3xl items-end gap-2">
