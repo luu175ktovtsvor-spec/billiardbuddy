@@ -1,8 +1,10 @@
 # AI-Agent-Dev · 全真实改造 进度与待办（交接锚点）
 
 > **这是续接权威**。任何新上下文（压缩后/新终端）接手本工作流，先读本文 + 三份核心文档（见下），即可无缝继续，不重做、不跑偏。
-> **分支**：`AI-Agent-Dev`（从 dev 切）。**不提交、不部署**（要做的还很多）。`main`=美国生产**勿动**。
+> **分支**：`AI-Agent-Dev`（从 dev 切）。**全真实改造内容已 squash 落入 `feat/desktop-agent` 分支首个提交 `d8beca1`**（"全真实/PPT接地改造 + Agent层加固 + BYOK"）。`main`=美国生产**勿动**。
 > 最近更新：2026-06-18。
+>
+> **⚠️ 续接看这里：本工作流（全真实/PPT 接地）已收口；其后在 `feat/desktop-agent` 分支接着做了"桌面 Agent · Codex 化"一程（本地 Electron+SQLite+纯 BYOK + 本地动手/RAG/Canvas/生图 BYOK 等，详见 §7）。桌面那程的权威执行文档是 `docs/plans/桌面Agent-Codex化-执行清单-2026-06-18.md`，本文不再是桌面程的主入口。**
 
 ---
 
@@ -13,6 +15,7 @@
 - **真实性/PPT 对应度（2026-06-18，§3.11-3.15，收口）**：PPT 接地审计→去消毒残留修复（含"组局"误当红线纠错）→审计 23 条 missing ops 补尽（Phase B 13 + Phase C 7）→**双层内容对抗核验**（今晚改的+更早搬的，零编造零矛盾、真问题全修）→**两个 MiMo 模型交叉实测北极星 98.8%/0 RED**。
 - **验证账（最终）**：PromptEngine **171 模板**、第三方名+PPT 出处零泄漏、`bash scripts/test.sh` 全绿（188 后端+4 前端+tsc）、Agent eval 真底线全 GREEN、2 段 Playwright 真机端到端。**全部留 AI-Agent-Dev 分支、未提交。**
 - 剩：画像客群/业态标签（**已核实 operation_profile 是 JSONB、加标签免迁移**）+ 原 P1-P4 路线。
+- **🆕 后续重心已转桌面 Agent · Codex 化**（`feat/desktop-agent` 分支，全真实内容已 squash 进首提交 `d8beca1`）：本地 Electron+SQLite+纯 BYOK + 本地动手/POS 真诊断/真 RAG/Canvas/生图 BYOK/CC Switch/Harness 加固 等已落地，仅剩打包出安装包 + 真机验证 + 对外互动。详见 **§7** 与 `docs/plans/桌面Agent-Codex化-执行清单-2026-06-18.md`。
 
 ## 1. 🔴 最高铁律（任何改动都遵守）
 1. **全真实、不消毒、没有"度"**：助教情绪价值/颜值/陪打/超休/美女人设、追分博弈、交友软件获客、抖音擦边引流 都照实写。判断标尺="内行老板/店长一看是不是这行真东西"，不是"合不合规/政治正确"。
@@ -153,4 +156,21 @@
 - 先读：本文 + `球房运营逻辑基准.md` + `源料可搬清单-...md` + 终局蓝图。
 - 项目记忆 `memory/billiards-real-operations-not-sanitized.md` 是全真实最高准则。
 - 继续干活前用第 1 节"改完查回头"四步自检；任何新知识/skill 都按"内行一看是不是真东西"这把尺子量。
-- 所有改动留 AI-Agent-Dev 分支、不提交。
+- 全真实改造内容已 squash 进 `feat/desktop-agent` 首提交 `d8beca1`；本程之后的桌面工作详见 §7 + `docs/plans/桌面Agent-Codex化-执行清单-2026-06-18.md`。
+
+## 7. 后续：桌面 Agent · Codex 化（2026-06-18，`feat/desktop-agent` 分支续做）
+
+> 全真实/PPT 接地收口后，重心转向**桌面 AI Agent（Codex 化）**：把这套 Agent 装进本地盒子（Electron 壳 + 本地 FastAPI + SQLite + 知识加密 `prompts.enc`，**纯 BYOK**），并补桌面独有的"长在电脑上"能力。**权威执行文档** = `docs/plans/桌面Agent-Codex化-执行清单-2026-06-18.md`（本文只做指向，不重复）。
+
+**本程已落地（代码在 `feat/desktop-agent`、未合 main）：**
+- **P0 地基**：纯 BYOK 能跑（`backend.js` 注入持久化 `byok.key` + 首启引导）、发布 worker 打包接线 + CI gate、自动更新（`desktop/src/updater.js` electron-updater）、Windows 云端出包工作流（`.github/workflows/desktop-build-win.yml`）、desktop/ 入库、本地语义模型代码就绪。
+- **P1 长在电脑上**：`local_tools.py` 读改用户当场选定的本地文件/Excel（沙箱+审批+自动备份+diff 预览）+ 权限分级（谨慎/自动改文件/全自动+全盘，仿 Claude Code permission 模式）+ 前端权限控制；**POS 真诊断** `diagnose_from_pos` 读导出 Excel；本地操作决策 eval。
+- **P2 融合+主动**：`prompt_key` 透传（Agent 复用 63 精修模板）、卡片融合清单法+对话首屏快捷入口+mini 表单、主动出击（据今日推荐预生成草稿）。
+- **真 RAG**：`recall_my_content` 语义召回本机历史 + **本地语义模型 bge-zh**（`BAAI/bge-small-zh-v1.5` ~90MB，fastembed，`RAG_EMBEDDER=fastembed`）。
+- **P3 加固**：CC Switch 式多供应商快切、审批参数绑定（签名防改参数再确认）。
+- **Harness 加固 5 件**：铁律代码闸（绝对化广告词确定性兜底）、审批回灌、可安全迭代地基（铁律违反率可观测）、店脑按需召回（治 context rot+省 token）、工具使用可观测。
+- **其余新增**：Canvas 画布·指着某处定向改（`canvas_service`+`/canvas/edit`，`run_generation` 加 `thinking`）、报表可视化点格改（`/canvas/sheet`+`/canvas/excel-edit`）、一键发布闭环、**生图也 BYOK**（store `byok_image_*` + migration 022 + `factory.get_image_config_for_store`）、BYOK 成本看板（`/quota/cost`+`/dashboard/usage`）、批量内容 `write_batch`、长对话封顶（history≤12 条×2000 字）、今日推荐开屏主动、知识找料补漏、app 正式图标、PPT 六岗位 60 场景 eval 存档 + MiMo v2.5 实测。
+
+**桌面程仅剩**：① 打包出安装包（Windows nsis / Mac dmg）；② 真机端到端验证；③ 对外互动（回评论/私信/好评）；④（按需）知识加密升级一机一密、Mac 正式签名。
+
+**全真实改造的原 P1-P4 路线**（本文 §4 待办 #2）部分已在桌面程兑现（prompt_key 透传、对话管家已是主形态、审批闸、主动出击）；pgvector 记忆/对外动作 handoff 等仍按需推进。

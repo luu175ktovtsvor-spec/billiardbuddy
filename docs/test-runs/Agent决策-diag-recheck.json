@@ -1,0 +1,47 @@
+{
+  "summary": {
+    "total": 1,
+    "GREEN": 1,
+    "YELLOW": 0,
+    "RED": 0,
+    "ERROR": 0,
+    "scored": 1,
+    "green_rate": 100.0,
+    "tag": "diag-recheck"
+  },
+  "by_category": {
+    "local_ops": {
+      "GREEN": 1,
+      "YELLOW": 0,
+      "RED": 0,
+      "ERROR": 0
+    }
+  },
+  "results": [
+    {
+      "id": "LOCAL-11",
+      "category": "local_ops",
+      "title": "照选定报表做POS真诊断（读真实数字，非口述诊断）",
+      "grade": "GREEN",
+      "message": "照我选的这份报表，基于里面的真实数字帮我诊断一下经营",
+      "executed": [
+        "diagnose_from_pos",
+        "read_file"
+      ],
+      "approvals": [],
+      "permission_mode": "ask",
+      "expect_tools": [
+        "diagnose_from_pos"
+      ],
+      "expect_executed": [],
+      "expect_approval": [],
+      "expect_no_tool": false,
+      "turns": 3,
+      "stopped_reason": "final",
+      "issues_hard": [],
+      "issues_soft": [],
+      "final_text": "好，诊断结果出来了！结合你这张报表和咱们球房的情况，我给你掰开揉碎讲讲👇\n\n---\n\n## 📊 武侯巷子球房·本月经营诊断\n\n### 一、整体营收情况\n\n**总营业额：32,000元**\n**台费收入：18,000元（占56%）**\n**其他收入（助教/酒水等）：14,000元（占44%）**\n\n整体来看，台费和其他收入的比例还算健康，大概六四开，说明助教服务和酒水这块有贡献，不是纯靠台费撑。\n\n---\n\n### 二、最大问题：周中白天空台太严重 ⚠️\n\n诊断显示**周二、周三营收最低**（分别2100和2300），只有周六的23%左右。\n\n想想也对——咱们店10张台，工作日白天几乎没人，晚上7点后才开始上客。周一到周三这几天，白天台子全空着，等于白交房租电费。\n\n### 三、助教这边的情况\n\n3个助教提成合计 **6,300元**：\n- 小敏 2,400元（最高）\n- 阿强 2,100元",
+      "seconds": 20.1
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "summary": {
+    "total": 2,
+    "GREEN": 1,
+    "YELLOW": 0,
+    "RED": 1,
+    "ERROR": 0,
+    "scored": 2,
+    "green_rate": 50.0,
+    "tag": "batch-diag-check"
+  },
+  "by_category": {
+    "tool_selection": {
+      "GREEN": 1,
+      "YELLOW": 0,
+      "RED": 0,
+      "ERROR": 0
+    },
+    "local_ops": {
+      "GREEN": 0,
+      "YELLOW": 0,
+      "RED": 1,
+      "ERROR": 0
+    }
+  },
+  "results": [
+    {
+      "id": "AG-SEL-14",
+      "category": "tool_selection",
+      "title": "批量写一周朋友圈（该走 write_batch，不是一条条 write）",
+      "grade": "GREEN",
+      "message": "给我写一周的朋友圈，每天发一条、不重样",
+      "executed": [
+        "write_batch"
+      ],
+      "approvals": [],
+      "permission_mode": "ask",
+      "expect_tools": [
+        "write_batch"
+      ],
+      "expect_executed": [],
+      "expect_approval": [],
+      "expect_no_tool": false,
+      "turns": 2,
+      "stopped_reason": "final",
+      "issues_hard": [],
+      "issues_soft": [],
+      "final_text": "写好啦！给你备了7条不重样的朋友圈，从今天周四到下周三，每天一条轮着发，你看看：\n\n**① 周四·工作日摸鱼局**\n下午场没人抢台子，一个人来练球也舒服～老板请你喝杯水，聊两句就记住你名字了😎\n📍武侯巷子球房 | 地铁口50米\n#台球 #成都台球 #工作日放松\n\n**② 周五·周末预热**\n明天就周末了，今晚先来热热手！约个搭子、组个局，10张台子随便挑，晚7点后人多建议早点来⏰\n#周五夜生活 #成都搭子\n\n**③ 周六·搭子局走起**\n周末不摸两把说不过去吧？新朋友老朋友都欢迎，老板亲自接待，来了就是哥就是姐👋\n中八台30/小时，会员25，划算得很～\n#周末去哪儿 #成都台球\n\n**④ 周日·轻松收尾**\n明天打工前最后Happy一下～约上兄弟闺蜜来打两局，赢了开心、输了也开心🎱\n张助教今天也在，想学走位中高杆的直接找她！\n#周日放松 #台球教学\n\n**⑤ 周一·回血局**\n周一上班上累",
+      "seconds": 15.3
+    },
+    {
+      "id": "LOCAL-11",
+      "category": "local_ops",
+      "title": "照选定报表做POS真诊断（读真实数字，非口述诊断）",
+      "grade": "RED",
+      "message": "照我选的这份报表，基于里面的真实数字帮我诊断一下经营",
+      "executed": [
+        "list_files"
+      ],
+      "approvals": [],
+      "permission_mode": "ask",
+      "expect_tools": [
+        "diagnose_from_pos"
+      ],
+      "expect_executed": [],
+      "expect_approval": [],
+      "expect_no_tool": false,
+      "turns": 2,
+      "stopped_reason": "final",
+      "issues_hard": [
+        "漏调应调工具: diagnose_from_pos"
+      ],
+      "issues_soft": [],
+      "final_text": "我看到内容库里有这些文件，你说的是哪份报表？是 **本月营业额报表.xlsx** 吗？还是其他文件？你把文件名告诉我就开整！",
+      "seconds": 6.5
+    }
+  ]
+}
