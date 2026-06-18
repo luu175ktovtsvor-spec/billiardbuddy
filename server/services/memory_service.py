@@ -159,10 +159,41 @@ async def consolidate_memories(existing: list[Memory], new: list[Memory], store=
     return merged if merged else list(existing) + list(new)
 
 
-def format_memories_for_prompt(memories: list[Memory]) -> str:
-    """把店脑格式化成注入 prompt 的稳定前缀文本（空记忆返回空串）。"""
+# 店脑按需召回阈值：记忆多于这个数才启用相关性筛选（少则全留，无 context rot 风险）
+_MEMORY_INJECT_CAP = 15
+
+
+def select_relevant_memories(memories: list[Memory], intent, cap: int = _MEMORY_INJECT_CAP) -> list[Memory]:
+    """按需召回：记忆多于 cap 时，只留与当前需求【语义最相关】的 cap 条（+置信度加权）。
+
+    解决"店脑全量注入"——量大了把整包记忆塞进 prompt 会触发 context rot（弱模型召回变差）、
+    还白烧 BYOK token。改成按相关性召回相关的几条。少于 cap 或无 intent → 全留（向后兼容）。
+    用 RAG 嵌入器做【内存内】排序，不碰持久索引（记忆可编辑，避免同步问题）；失败安全回退全量。
+    """
+    if not memories or not intent or not str(intent).strip() or len(memories) <= cap:
+        return memories
+    try:
+        from services.rag.embedder import get_embedder, cosine
+        emb = get_embedder()
+        q = emb.embed(str(intent))
+        bonus = {"high": 0.10, "medium": 0.0, "low": -0.05}
+        scored = [
+            (cosine(q, emb.embed(m.content or "")) + bonus.get(getattr(m, "confidence", "medium"), 0.0), m)
+            for m in memories
+        ]
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [m for _, m in scored[:cap]]
+    except Exception:
+        return memories  # 召回失败不影响主流程，回退全量
+
+
+def format_memories_for_prompt(memories: list[Memory], intent=None) -> str:
+    """把店脑格式化成注入 prompt 的稳定前缀文本（空记忆返回空串）。
+    传 intent 则先按需召回相关记忆（避免全量注入撑大 prompt）；不传则全留。"""
     if not memories:
         return ""
+    if intent:
+        memories = select_relevant_memories(memories, intent)
     lines = "\n".join(f"- {m.content}" for m in memories)
     return (
         "【这家店的最新记忆（AI 长期积累的最新最准信息；写内容时**如与其他门店资料/价格冲突，一律以这里为准**；"
@@ -170,14 +201,14 @@ def format_memories_for_prompt(memories: list[Memory]) -> str:
     )
 
 
-def with_store_brain(prompt: str, memories: list[Memory]) -> str:
+def with_store_brain(prompt: str, memories: list[Memory], intent=None) -> str:
     """把店脑记忆追加到 prompt **末尾**后返回；空记忆时原样返回。
 
     ⚠️ 必须放在 prompt 末尾（近因效应压过前面 profile 里的旧画像，实现"改价/纠错优先"）——
     这是耦合契约：在它之后再 append 任何段落都会让该优先级静默失效。
     （与 stream.py 的注入位置/语义保持一致，供所有非流式路径复用。）
     """
-    brain = format_memories_for_prompt(memories)
+    brain = format_memories_for_prompt(memories, intent=intent)
     return f"{prompt}\n\n{brain}" if brain else prompt
 
 

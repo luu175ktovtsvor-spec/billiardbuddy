@@ -65,7 +65,7 @@ async def run_generation(
     # 都"懂这家店"。必须追加在 prompt 末尾（近因效应压过旧画像，实现改价/纠错优先），其后不可再 append。
     # 故障安全：店脑读取/格式化失败不影响主生成。
     try:
-        prompt = with_store_brain(prompt, await load_store_memory(db, store.id))
+        prompt = with_store_brain(prompt, await load_store_memory(db, store.id), intent=user_input)
     except Exception:
         logger.warning("run_generation 注入店脑失败，跳过 store_id=%s", store.id, exc_info=True)
 
