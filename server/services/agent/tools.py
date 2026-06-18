@@ -138,7 +138,10 @@ async def write_operation_content(args: dict, ctx) -> str:
     },
 )
 async def write_batch(args: dict, ctx) -> str:
-    count = min(max(int(args.get("count") or 5), 1), 7)
+    try:
+        count = min(max(int(args.get("count") or 5), 1), 7)
+    except (TypeError, ValueError):
+        count = 5  # 大脑偶尔把 count 传成"五条"这类非数字，兜底 5
     kind = (args.get("kind") or "moments").strip()
     need = (args.get("need") or "").strip()
     if not need:

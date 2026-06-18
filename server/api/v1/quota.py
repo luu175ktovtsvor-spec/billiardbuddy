@@ -90,7 +90,7 @@ async def get_cost(
     rows = (
         await db.execute(
             select(
-                Generation.gen_type,
+                Generation.type,
                 func.coalesce(func.sum(Generation.tokens_used), 0),
                 func.count(),
             )
@@ -99,7 +99,7 @@ async def get_cost(
                 Generation.created_at >= month_start,
                 Generation.is_deleted == False,  # noqa: E712
             )
-            .group_by(Generation.gen_type)
+            .group_by(Generation.type)
         )
     ).all()
     by_feature = [

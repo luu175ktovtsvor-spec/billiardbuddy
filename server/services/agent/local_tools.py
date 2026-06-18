@@ -144,17 +144,22 @@ async def edit_excel(args: dict, ctx) -> str:
     path = _resolve(args["path"], ctx)
     if not path.exists():
         return f"报表不存在：{args['path']}"
-    backup = _backup(path)
     wb = load_workbook(path)
     diffs = []
     for ch in args.get("changes", []):
         ws = wb[ch["sheet"]] if ch.get("sheet") else wb.active
         cell = ch["cell"]
-        old = ws[cell].value
-        ws[cell] = ch["value"]
+        try:
+            old = ws[cell].value
+            ws[cell] = ch["value"]
+        except AttributeError:  # 合并单元格的非左上角格只读
+            return f"{cell} 是合并单元格，改不了——请改合并区左上角那个格子。"
+        except (ValueError, KeyError):
+            return f"坐标无效：{cell}。请用 A1 式坐标（如 B2）。"
         diffs.append(f"{ws.title}!{cell}: {old!r} → {ch['value']!r}")
+    backup = _backup(path)  # 改成功才备份，避免改失败留孤儿备份
     wb.save(path)
-    return f"已改 {path.name}：\n" + "\n".join(diffs) + f"\n（原件已备份，可回滚）"
+    return f"已改 {path.name}：\n" + "\n".join(diffs) + ("\n（原件已备份，可回滚）" if backup else "")
 
 
 # ────────────────────────────── 召回：翻老板本机攒下的历史内容（真 RAG·语义检索） ──────────────────────────────
@@ -200,8 +205,9 @@ async def diagnose_from_pos(args: dict, ctx) -> str:
             path = Path(fallback)
         else:
             return f"没找到这个文件：{file}。麻烦用文件选择器重新选一下导出的报表。"
-    # 复用 read_file 的读法（Excel 列出非空单元格）拿到真实数字
-    data_text = await read_file({"path": file}, ctx)
+    # 复用 read_file 的读法（Excel 列出非空单元格）拿到真实数字。
+    # ⚠️ 必须读【解析/兜底后的 path】，不是原始 file——否则给的路径不存在时会把"文件不存在"当数据喂给诊断引擎。
+    data_text = await read_file({"path": str(path)}, ctx)
     situation = (
         "以下是这家店从收银系统导出的【真实经营数据】。请**基于这些具体数字**诊断："
         "引用关键数字、算出关键比率(如台费占比/空台时段)、指出异常项，再给可落地建议，别泛泛而谈：\n"

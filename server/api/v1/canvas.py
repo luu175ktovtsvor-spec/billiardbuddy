@@ -125,12 +125,12 @@ async def excel_edit(
     bdir = p.parent / ".billiards-backups"
     bdir.mkdir(exist_ok=True)
     backup = bdir / f"{p.stem}.{business_now().strftime('%Y%m%d-%H%M%S')}{p.suffix}.bak"
-    shutil.copy2(p, backup)
     wb = load_workbook(p)
     ws = wb[body.sheet] if (body.sheet and body.sheet in wb.sheetnames) else wb.active
     try:
         old = ws[body.cell].value
     except Exception:
+        wb.close()
         raise HTTPException(status_code=400, detail=f"坐标无效：{body.cell}")
     # 纯数字转数值，否则按文本
     v: object = body.value
@@ -139,7 +139,12 @@ async def excel_edit(
         v = int(s) if s.lstrip("-").isdigit() else float(s)
     except ValueError:
         v = body.value
-    ws[body.cell] = v
+    try:
+        ws[body.cell] = v
+    except AttributeError:  # 合并单元格的非左上角格只读
+        wb.close()
+        raise HTTPException(status_code=400, detail=f"{body.cell} 是合并单元格，请改合并区左上角那个格子")
+    shutil.copy2(p, backup)  # 改成功才备份，避免改失败留孤儿备份
     wb.save(p)
     wb.close()
     return {"ok": True, "sheet": ws.title, "cell": body.cell,
