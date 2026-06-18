@@ -305,6 +305,16 @@ class ApiClient {
     });
   }
 
+  /** 画布定向改写：圈了段(selection)只改那段、不动别处；不传则整篇修订。 */
+  canvasEdit(content: string, instruction: string, selection?: string, deliverableType?: string) {
+    return this.request<{ content: string; mode: string; changed_span?: string }>("POST", "/api/v1/canvas/edit", {
+      content,
+      instruction,
+      selection: selection ?? null,
+      deliverable_type: deliverableType ?? null,
+    });
+  }
+
   // ─── Orchestrate（多 Agent 协作） ───
 
   startOrchestration(data: { task_type: string; description: string; auto_orchestrate?: boolean }) {

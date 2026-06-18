@@ -30,6 +30,7 @@ from api.v1.client_logs import router as client_logs_router
 from api.v1.store_memory import router as store_memory_router
 from api.v1.reports import router as reports_router
 from api.v1.agent import router as agent_router
+from api.v1.canvas import router as canvas_router
 
 router = APIRouter()
 
@@ -59,6 +60,7 @@ router.include_router(client_logs_router, prefix="/logs", tags=["客户端日志
 router.include_router(store_memory_router, prefix="/store-memory", tags=["店脑·门店记忆"])
 router.include_router(reports_router, prefix="/reports", tags=["报表日报"])
 router.include_router(agent_router, prefix="/agent", tags=["AI Agent 对话"])
+router.include_router(canvas_router, prefix="/canvas", tags=["画布定向改写"])
 
 
 @router.get("/health")

@@ -9,7 +9,7 @@ import {
   UserPlus, Stethoscope, Dices, Wrench, Menu, LayoutDashboard, LayoutGrid,
   FileText, ImageIcon, Clock, User, BookOpen, Scissors, Paperclip, X,
   ShieldCheck, FolderOpen, AlertTriangle,
-  Search, Save, FilePen, FileSpreadsheet, History, PartyPopper,
+  Search, Save, FilePen, FileSpreadsheet, History, PartyPopper, SquarePen,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/auth-context";
@@ -17,6 +17,7 @@ import { useDesktop } from "@/hooks/use-desktop";
 import { Sheet } from "@/components/ui/sheet";
 import { QuotaBadge } from "@/components/quota-badge";
 import { CopyButton } from "@/components/generators/copy-button";
+import { CanvasPanel } from "@/components/canvas-panel";
 import { getErrorMessage } from "@/lib/utils";
 
 /* AI 运营管家:对话式 Agent。老板说人话 → 管家自己规划、调用工具(写文案/约客/诊断/查今日推荐…)
@@ -130,24 +131,41 @@ const DELIVERABLE_TOOLS = new Set([
   "diagnose_operation", "recommend_games", "make_platform_content", "make_groupbuy_content",
 ]);
 
-/** 把交付类工具的产出原样渲染成可复制卡片(成品，不经大脑改写) */
-function DeliverableCards({ steps }: { steps: ToolStep[] }) {
-  const cards = steps.filter((s) => s.result && DELIVERABLE_TOOLS.has(s.tool));
+/** 把交付类工具的产出原样渲染成可复制卡片(成品，不经大脑改写)。
+ *  带 onOpenCanvas 时每张卡多一个"在画布上改"——展开右侧画布，指着某处定向改。 */
+function DeliverableCards({
+  steps,
+  onOpenCanvas,
+}: {
+  steps: ToolStep[];
+  onOpenCanvas?: (content: string, type: string, stepIdx: number) => void;
+}) {
+  // 保留原始 step 下标，供画布改完同步回这张卡
+  const cards = steps.map((s, idx) => ({ s, idx })).filter(({ s }) => s.result && DELIVERABLE_TOOLS.has(s.tool));
   if (cards.length === 0) return null;
   return (
     <div className="mb-2 flex w-full max-w-[92%] flex-col gap-2">
-      {cards.map((s, i) => {
+      {cards.map(({ s, idx }) => {
         const { label, Icon } = toolMeta(s.tool);
         return (
-          <div key={i} className="rounded-2xl border border-slate-100 bg-white px-4 py-3 shadow-sm">
+          <div key={idx} className="rounded-2xl border border-slate-100 bg-white px-4 py-3 shadow-sm">
             <p className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-brand-600">
               <Icon className="h-3.5 w-3.5" /> {label}
             </p>
             <div className="prose prose-sm max-w-none prose-slate prose-p:my-1.5 prose-headings:my-2">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{s.result || ""}</ReactMarkdown>
             </div>
-            <div className="mt-1.5">
+            <div className="mt-1.5 flex items-center gap-2">
               <CopyButton text={s.result || ""} />
+              {onOpenCanvas && (
+                <button
+                  type="button"
+                  onClick={() => onOpenCanvas(s.result || "", label, idx)}
+                  className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[12.5px] font-medium text-brand-600 active:scale-[0.97]"
+                >
+                  <SquarePen className="h-3.5 w-3.5" /> 在画布上改
+                </button>
+              )}
             </div>
           </div>
         );
@@ -209,6 +227,8 @@ export default function ManagerPage() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [executingIdx, setExecutingIdx] = useState<number | null>(null); // 正在执行确认动作的消息下标
   const [quotaVersion, setQuotaVersion] = useState(0);
+  // 画布：在右侧展开某条成品、指着某处定向改。content 为打开时的快照(不随消息更新重置版本栈)。
+  const [canvas, setCanvas] = useState<{ msgIdx: number; stepIdx: number; content: string; type: string } | null>(null);
   const [quotaRemaining, setQuotaRemaining] = useState<number | null>(null);
   const quotaExhausted = quotaRemaining !== null && quotaRemaining <= 0;
 
@@ -454,8 +474,23 @@ export default function ManagerPage() {
     );
   };
 
+  // 画布改完 → 把最新版同步回那张成品卡（按 消息下标+步骤下标 定位，不动其它）
+  const syncCanvas = (msgIdx: number, stepIdx: number, next: string) => {
+    setMessages((prev) =>
+      prev.map((m, j) =>
+        j === msgIdx && m.steps
+          ? { ...m, steps: m.steps.map((s, k) => (k === stepIdx ? { ...s, result: next } : s)) }
+          : m,
+      ),
+    );
+  };
+
   return (
-    <div className="mx-auto flex max-w-3xl flex-col pb-36 lg:min-h-[calc(100vh-8rem)] lg:pb-0">
+    <div
+      className={`mx-auto flex max-w-3xl flex-col pb-36 lg:min-h-[calc(100vh-8rem)] lg:pb-0 ${
+        canvas ? "lg:mr-[460px] lg:transition-[margin]" : ""
+      }`}
+    >
       {/* 主页式顶栏（移动端）：管家是主界面，左侧是菜单进其他功能，不再是"返回" */}
       <div className="sticky top-0 z-30 -mx-4 mb-4 flex h-12 items-center border-b border-slate-100 bg-white/95 px-1 backdrop-blur-sm sm:-mx-6 lg:hidden">
         <button
@@ -685,7 +720,12 @@ export default function ManagerPage() {
           ) : (
             <div key={i} className="flex flex-col items-start">
               {m.steps && <StepList steps={m.steps} active={false} />}
-              {m.steps && <DeliverableCards steps={m.steps} />}
+              {m.steps && (
+                <DeliverableCards
+                  steps={m.steps}
+                  onOpenCanvas={(content, type, stepIdx) => setCanvas({ msgIdx: i, stepIdx, content, type })}
+                />
+              )}
               {m.content.trim() && (
                 <div className="max-w-[92%] rounded-2xl rounded-bl-md bg-white px-4 py-3">
                   <div className="prose prose-sm max-w-none prose-slate prose-p:my-1.5 prose-headings:my-2">
@@ -852,6 +892,17 @@ export default function ManagerPage() {
           管家会用你的门店资料办事，结果可直接复制；生成内容计入次数
         </p>
       </div>
+
+      {canvas && (
+        <CanvasPanel
+          open
+          title={canvas.type || "成品"}
+          deliverableType={canvas.type || "内容"}
+          content={canvas.content}
+          onClose={() => setCanvas(null)}
+          onContentChange={(next) => syncCanvas(canvas.msgIdx, canvas.stepIdx, next)}
+        />
+      )}
     </div>
   );
 }
