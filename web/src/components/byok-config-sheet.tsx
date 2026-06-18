@@ -24,6 +24,13 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
   const [model, setModel] = useState("");
   const [keyConfigured, setKeyConfigured] = useState(false);
   const [keyMask, setKeyMask] = useState("");
+  // 生图模型（与文字分开配）
+  const [imageEnabled, setImageEnabled] = useState(false);
+  const [imageBaseUrl, setImageBaseUrl] = useState("");
+  const [imageApiKey, setImageApiKey] = useState("");
+  const [imageModel, setImageModel] = useState("");
+  const [imageKeyConfigured, setImageKeyConfigured] = useState(false);
+  const [imageKeyMask, setImageKeyMask] = useState("");
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ByokValidateResult | null>(null);
@@ -51,6 +58,11 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
         setModel(c.model || "");
         setKeyConfigured(c.key_configured);
         setKeyMask(c.key_mask || "");
+        setImageEnabled(c.image_enabled);
+        setImageBaseUrl(c.image_base_url || "");
+        setImageModel(c.image_model || "");
+        setImageKeyConfigured(c.image_key_configured);
+        setImageKeyMask(c.image_key_mask || "");
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof ApiError ? err.detail : "加载失败");
@@ -125,6 +137,10 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
     model: model.trim() || null,
     // 只在填了新 key 时才提交（不填则后端保留原 key）
     ...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
+    image_enabled: imageEnabled,
+    image_base_url: imageBaseUrl.trim() || null,
+    image_model: imageModel.trim() || null,
+    ...(imageApiKey.trim() ? { image_api_key: imageApiKey.trim() } : {}),
   });
 
   const handleTest = async () => {
@@ -152,6 +168,12 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
       setKeyConfigured(c.key_configured);
       setKeyMask(c.key_mask || "");
       setApiKey("");
+      setImageEnabled(c.image_enabled);
+      setImageBaseUrl(c.image_base_url || "");
+      setImageModel(c.image_model || "");
+      setImageKeyConfigured(c.image_key_configured);
+      setImageKeyMask(c.image_key_mask || "");
+      setImageApiKey("");
       setSaved(true);
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : "保存失败");
@@ -301,6 +323,39 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
             <label className="mb-1 block text-sm font-medium text-slate-700">模型名（model）</label>
             <input className={inputCls} value={model} onChange={(e) => setModel(e.target.value)} placeholder="deepseek-v4-pro" />
             <p className="mt-1 px-1 text-xs text-slate-400">如 deepseek-v4-pro（守规更稳）/ deepseek-v4-flash（更便宜）/ mimo-v2.5。</p>
+          </div>
+
+          {/* 生图模型（与文字分开配：文字多用 DeepSeek、生图用 OpenAI gpt-image，Key 通常不同） */}
+          <div className="space-y-3 rounded-xl bg-slate-50 p-3">
+            <div className="flex items-center justify-between">
+              <div className="min-w-0 pr-3">
+                <p className="text-[15px] font-medium text-slate-800">生图模型（做海报用，可选）</p>
+                <p className="mt-0.5 text-xs text-slate-400">生图多用 OpenAI gpt-image，和文字模型的 Key 通常不是同一个，单独配。不开则用平台默认。</p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={imageEnabled}
+                onClick={() => setImageEnabled((v) => !v)}
+                className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${imageEnabled ? "bg-brand-600" : "bg-slate-300"}`}
+              >
+                <span className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform ${imageEnabled ? "translate-x-[22px]" : "translate-x-0.5"}`} />
+              </button>
+            </div>
+            {imageEnabled && (
+              <>
+                <input className={inputCls} value={imageBaseUrl} onChange={(e) => setImageBaseUrl(e.target.value)} placeholder="接口地址，如 https://api.openai.com/v1" />
+                <input
+                  type="password"
+                  autoComplete="off"
+                  className={inputCls}
+                  value={imageApiKey}
+                  onChange={(e) => setImageApiKey(e.target.value)}
+                  placeholder={imageKeyConfigured ? `已配置 ${imageKeyMask}，留空则不修改` : "生图模型的 Key，sk-..."}
+                />
+                <input className={inputCls} value={imageModel} onChange={(e) => setImageModel(e.target.value)} placeholder="模型名（留空用默认 gpt-image-2）" />
+              </>
+            )}
           </div>
 
           {/* 测试结果 */}

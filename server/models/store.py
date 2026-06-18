@@ -84,6 +84,12 @@ class Store(Base):
     byok_base_url: Mapped[str | None] = mapped_column(String(300))
     byok_api_key_enc: Mapped[str | None] = mapped_column(Text)
     byok_model: Mapped[str | None] = mapped_column(String(100))
+    # 生图 BYOK：门店自带生图模型(OpenAI gpt-image 兼容)。与文字模型分开——文字多用 DeepSeek、生图用 OpenAI，
+    # key/base_url 通常不同。未配则回退平台默认(config.openai_*)。key 同样 Fernet 加密、绝不明文落库。
+    byok_image_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    byok_image_base_url: Mapped[str | None] = mapped_column(String(300))
+    byok_image_api_key_enc: Mapped[str | None] = mapped_column(Text)
+    byok_image_model: Mapped[str | None] = mapped_column(String(100))
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

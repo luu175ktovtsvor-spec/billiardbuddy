@@ -175,6 +175,11 @@ export interface ByokConfigOut {
   model: string | null;
   key_configured: boolean;
   key_mask: string;
+  image_enabled: boolean;
+  image_base_url: string | null;
+  image_model: string | null;
+  image_key_configured: boolean;
+  image_key_mask: string;
 }
 
 /** BYOK 多供应商配置档（CC Switch 式：存好几套、一键切换） */
@@ -192,6 +197,10 @@ export interface ByokConfigIn {
   base_url?: string | null;
   api_key?: string | null;
   model?: string | null;
+  image_enabled?: boolean;
+  image_base_url?: string | null;
+  image_api_key?: string | null;
+  image_model?: string | null;
 }
 
 /** BYOK：测试连接结果 */

@@ -176,10 +176,12 @@ async def generate_images(
     两者不互斥——修复旧版 elif 导致调整模式下新参考图被静默丢弃的问题。
     """
     from services.ai.providers.openai_image import OpenAIImageProvider
+    from services.ai.factory import ProviderFactory
 
-    api_key = settings.openai_api_key
+    # 生图 BYOK：门店配了自带生图模型 → 用门店的 key/base_url（自担成本）；否则回退平台默认。
+    api_key, image_base_url, _image_model = ProviderFactory.get_image_config_for_store(store)
     if not api_key:
-        raise ValueError("OpenAI API Key 未配置")
+        raise ValueError("生图模型未配置：请在「模型设置」里填生图模型的 Key（或留空用平台默认）")
 
     # ── 1. 全部校验前置：非法参数必须在调用生图 API（真金白银）之前拦下 ──
     conv_uuid: uuid.UUID | None = None
@@ -310,7 +312,7 @@ async def generate_images(
                 ratio, count, bool(base_image), len(ref_bytes), bool(conv_uuid))
 
     # 使用 Images API 生成
-    provider = OpenAIImageProvider(api_key=api_key, base_url=settings.openai_base_url)
+    provider = OpenAIImageProvider(api_key=api_key, base_url=image_base_url)
 
     # 生成 conversation_id（如果是新对话；旧对话沿用已校验的 conv_uuid）
     conv_id = str(conv_uuid) if conv_uuid else str(uuid.uuid4())
