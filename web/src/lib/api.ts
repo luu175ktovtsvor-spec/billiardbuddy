@@ -563,13 +563,20 @@ class ApiClient {
     selectedFiles?: string[],
     fullDiskAccess?: boolean,
     token?: string,
-  ): Promise<{ tool: string; result: string }> {
-    return this.request<{ tool: string; result: string }>("POST", "/api/v1/agent/execute", {
+    conversationId?: string | null,
+  ): Promise<{
+    tool: string;
+    result: string;
+    continuation?: string;  // 审批回灌：执行后管家基于结果的自然接话
+    approval?: { tool: string; args: Record<string, unknown>; token?: string } | null;
+  }> {
+    return this.request("POST", "/api/v1/agent/execute", {
       tool,
       args,
       selected_files: selectedFiles,
       full_disk_access: fullDiskAccess,
       token,
+      conversation_id: conversationId,
     });
   }
 
