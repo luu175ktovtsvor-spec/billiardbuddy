@@ -35,6 +35,11 @@
         "filter": ["**/*", "!**/__pycache__/**", "!**/*.pyc", "!**/.venv/**", "!**/cookies/**"]
       },
       {
+        "from": "resources/publisher-bin",
+        "to": "publisher-bin",
+        "filter": ["**/*"]
+      },
+      {
         "from": "resources/backend",
         "to": "backend",
         "filter": ["**/*"]

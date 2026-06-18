@@ -41,16 +41,30 @@ function sessionDir() {
 }
 
 function pythonBin() {
-  // dev 用系统 python3;打包后用随 worker 一起 PyInstaller 的可执行(后续补)
+  // dev 用系统 python3(可经 DESKTOP_PYTHON 覆盖,如 python / 绝对路径)
   return process.env.DESKTOP_PYTHON || "python3";
+}
+
+// 打包后的发布 worker 可执行(PyInstaller --onedir 产物,含 patchright,用户免装 Python)。
+// 布局(同后端):resources/publisher-bin/billiards_publisher/billiards_publisher(.exe)。
+// 存在则优先用它,否则回退 python3 cli.py(dev / 未打包 worker 时)。
+function packagedWorkerExe() {
+  if (!process.resourcesPath) return null;
+  const exeName = process.platform === "win32" ? "billiards_publisher.exe" : "billiards_publisher";
+  const p = path.join(process.resourcesPath, "publisher-bin", "billiards_publisher", exeName);
+  return fs.existsSync(p) ? p : null;
 }
 
 const _running = new Map(); // platform -> child proc(防同平台并发)
 
 function _spawnWorker(args, { onLine }) {
   const dir = publisherDir();
-  const cliPy = path.join(dir, "cli.py");
-  const child = spawn(pythonBin(), [cliPy, ...args], {
+  // 优先打包 exe(billiards_publisher <args>);否则 dev 回退 python3 cli.py <args>。
+  const exe = packagedWorkerExe();
+  const [cmd, baseArgs] = exe
+    ? [exe, []]
+    : [pythonBin(), [path.join(dir, "cli.py")]];
+  const child = spawn(cmd, [...baseArgs, ...args], {
     cwd: dir,
     env: { ...process.env, SAU_SESSION_DIR: sessionDir(), PYTHONUNBUFFERED: "1" },
   });
