@@ -9,6 +9,7 @@ import {
   UserPlus, Stethoscope, Dices, Wrench, Menu, LayoutDashboard, LayoutGrid,
   FileText, ImageIcon, Clock, User, BookOpen, Scissors, Paperclip, X,
   ShieldCheck, FolderOpen, AlertTriangle,
+  Search, Save, FilePen, FileSpreadsheet, History, PartyPopper,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/auth-context";
@@ -106,6 +107,15 @@ const TOOL_META: Record<string, { label: string; Icon: typeof Wrench }> = {
   make_poster: { label: "做海报", Icon: ImageIcon },
   make_platform_content: { label: "写平台内容", Icon: Sparkles },
   make_groupbuy_content: { label: "写团购套餐", Icon: FileText },
+  plan_activity: { label: "策划活动", Icon: PartyPopper },
+  find_scenario: { label: "找合适的方案", Icon: Search },
+  // 本地文件操作（桌面版）——老板要看清管家在动哪类文件
+  recall_my_content: { label: "翻你以前写的", Icon: History },
+  list_files: { label: "翻看你的文件", Icon: FolderOpen },
+  read_file: { label: "读文件", Icon: FileText },
+  write_file: { label: "存文件", Icon: Save },
+  edit_file: { label: "改文件", Icon: FilePen },
+  edit_excel: { label: "改报表", Icon: FileSpreadsheet },
 };
 
 function toolMeta(name: string) {
