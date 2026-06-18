@@ -39,6 +39,10 @@
   - 校准 `package.json` build.win（nsis 配置、图标、`publish` 字段）。
 - [ ] **P0.5 desktop/ 提交 git** ⭐当前未追踪、有丢失风险
   - 确认 `desktop/.gitignore` 已忽略 node_modules/dist/resources/.pyinstaller-build（已确认 ✅）；提交 `desktop/src`、`publisher`、`scripts`、`package.json`、配置。
+- [ ] **P0.6 打包本地语义模型 fastembed+bge-zh** 🔴新增（2026-06-18 末程，desktop 已默认 `RAG_EMBEDDER=fastembed`）
+  - `build_backend.js` PyInstaller 要：① 把 `fastembed`+`onnxruntime` 打进去（onnxruntime 是 native 库，补 hidden-import/collect-all，漏了运行时崩）；② **预置 `BAAI/bge-small-zh-v1.5` 模型（~90MB）进包** + 运行时设 `HF_HUB_OFFLINE=1`，否则老板首次用要联网拉 90MB。
+  - 不做的话兜底：模型首次用联网拉一次（~90MB）存本机缓存、之后离线——能用但首次有延迟。
+  - 云端 web 默认 deterministic（不设 RAG_EMBEDDER），不下模型、不受影响；fastembed 已进 pyproject。
 
 ### P1 · 长在电脑上更深（桌面唯一能给、云端给不了的质变）
 
