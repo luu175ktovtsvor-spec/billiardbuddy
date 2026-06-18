@@ -39,6 +39,8 @@ export default function PublishPage() {
     const sp = new URLSearchParams(window.location.search);
     if (sp.get("title")) setTitle(sp.get("title") || "");
     if (sp.get("tags")) setTagsInput((sp.get("tags") || "").replace(/,/g, " "));
+    const p = (sp.get("platform") || "").trim();
+    if (p && ["douyin", "kuaishou", "shipinhao", "xiaohongshu"].includes(p)) setPlatform(p);
   }, []);
 
   useEffect(() => {
