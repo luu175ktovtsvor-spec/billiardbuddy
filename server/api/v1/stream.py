@@ -148,7 +148,7 @@ async def stream_workbench(
     # 店脑：注入这家店的长期记忆 → 所有生成"懂这家店"。
     # 放在 system prompt 末尾（紧贴用户问题），利用近因效应让它压过前面 profile 里的旧值。
     try:
-        brain_text = format_memories_for_prompt(await load_store_memory(db, store.id))
+        brain_text = format_memories_for_prompt(await load_store_memory(db, store.id), intent=body.user_intent)
         if brain_text:
             rendered_prompt = f"{rendered_prompt}\n\n{brain_text}"
     except Exception:

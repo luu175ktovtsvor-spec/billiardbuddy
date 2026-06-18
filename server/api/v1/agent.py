@@ -228,7 +228,8 @@ async def agent_chat(
     # 注入"懂这家店"：门店画像（同步）+ 店脑记忆 → system prompt
     profile_text = render_operation_profile_context(store)
     memories = await load_store_memory(db, store.id)
-    system_prompt = compose_agent_system_prompt(profile_text, format_memories_for_prompt(memories))
+    # 店脑按需召回：按老板这句话的相关性筛记忆，避免全量注入撑大 prompt（context rot）
+    system_prompt = compose_agent_system_prompt(profile_text, format_memories_for_prompt(memories, intent=body.message))
     # 桌面版：老板当场选定的文件 → 注入 prompt（告诉大脑路径）+ 进 ctx.allowed_paths（授权工具可动）
     if body.selected_files and os.environ.get("DESKTOP_LOCAL") == "1":
         note = _selected_files_note(body.selected_files)
