@@ -22,7 +22,7 @@ export interface AgentStreamHandlers {
   onToken?: (token: string) => void;
   onToolCall?: (tool: string, args: Record<string, unknown>, id?: string) => void;
   onToolResult?: (tool: string, content: string, id?: string) => void;
-  onApprovalRequest?: (tool: string, args: Record<string, unknown>, id?: string) => void;
+  onApprovalRequest?: (tool: string, args: Record<string, unknown>, id?: string, token?: string) => void;
   onFinal?: (content: string) => void;
   onDone?: (info: { turns: number; stopped_reason: string; conversation_id?: string; generation_id?: string }) => void;
   onError?: (error: string) => void;
@@ -532,7 +532,7 @@ class ApiClient {
               case "token": handlers.onToken?.(ev.content || ""); break;
               case "tool_call": handlers.onToolCall?.(ev.tool, ev.args || {}, ev.id); break;
               case "tool_result": handlers.onToolResult?.(ev.tool, ev.content || "", ev.id); break;
-              case "approval_request": handlers.onApprovalRequest?.(ev.tool, ev.args || {}, ev.id); break;
+              case "approval_request": handlers.onApprovalRequest?.(ev.tool, ev.args || {}, ev.id, ev.token); break;
               case "final": handlers.onFinal?.(ev.content || ""); break;
               case "done": handlers.onDone?.({ turns: ev.turns, stopped_reason: ev.stopped_reason, conversation_id: ev.conversation_id, generation_id: ev.generation_id }); return;
               case "error": handlers.onError?.(ev.error || "生成出错，请重试"); return;
@@ -562,12 +562,14 @@ class ApiClient {
     args: Record<string, unknown>,
     selectedFiles?: string[],
     fullDiskAccess?: boolean,
+    token?: string,
   ): Promise<{ tool: string; result: string }> {
     return this.request<{ tool: string; result: string }>("POST", "/api/v1/agent/execute", {
       tool,
       args,
       selected_files: selectedFiles,
       full_disk_access: fullDiskAccess,
+      token,
     });
   }
 

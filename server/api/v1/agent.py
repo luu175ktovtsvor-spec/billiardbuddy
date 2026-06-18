@@ -298,6 +298,7 @@ class AgentExecuteRequest(BaseModel):
     args: dict | None = None
     selected_files: list[str] | None = None  # 同 chat：审批通过后执行写/改时，授权可动这些选定文件
     full_disk_access: bool | None = None     # 同 chat：全盘模式下手动确认的文件改动也需放行
+    token: str | None = None                 # 审批提案签名（绑定本组 args，防前端篡改后再确认）
 
 
 @router.post("/execute")
@@ -320,6 +321,12 @@ async def agent_execute(
         raise AIServiceError("该操作不可执行，或无需经此确认")
 
     args = body.args or {}
+    # 审批参数绑定（P3.2）：带了 token 就必须匹配本组 args（防"改了参数再确认"）；
+    # 没带 token 放行（向后兼容旧客户端）——前端现都会回传 token，实际即绑定。
+    if body.token is not None:
+        from services.agent.approval import verify_approval
+        if not verify_approval(body.tool, args, body.token):
+            raise AIServiceError("确认信息已变化，请重新发起这次操作（请勿手动改动待确认的内容）")
     injection = check_input_injection(
         " ".join(str(v) for v in args.values() if isinstance(v, (str, int, float)))
     )

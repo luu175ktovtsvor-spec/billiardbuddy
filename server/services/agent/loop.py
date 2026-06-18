@@ -14,6 +14,7 @@ import logging
 from dataclasses import dataclass, field
 
 from config import settings
+from services.agent.approval import sign_approval
 from services.agent.context import AgentContext
 from services.agent.registry import ToolRegistry
 from services.ai.base import TextProvider, TextRequest
@@ -261,7 +262,11 @@ async def run_agent_loop_stream(
                 # 审批闸（proposal 模式）：不在循环里执行，吐 approval_request 让前端弹确认，
                 # 把"待确认"回灌让模型讲方案；用户确认后走独立的 /agent/execute 执行。
                 # （信任/全自动模式下 _auto_approve 为真 → 跳过这里、走下面直接执行，并自动备份。）
-                yield {"type": "approval_request", "tool": name, "args": args, "id": tc_id}
+                # token 绑定本组 args，execute 校验防前端篡改（P3.2）。
+                yield {
+                    "type": "approval_request", "tool": name, "args": args, "id": tc_id,
+                    "token": sign_approval(name, args),
+                }
                 pending = _APPROVAL_PENDING_MSG.format(name=name)
                 yield {"type": "tool_result", "tool": name, "id": tc_id, "content": pending}
                 messages.append({"role": "tool", "tool_call_id": tc_id, "content": pending})
