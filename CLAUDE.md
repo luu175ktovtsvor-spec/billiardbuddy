@@ -5,6 +5,7 @@
 > 2. `docs/遗留工作清单.md` 顶部「现状速览」= 最近进展 + 还有效的待办；
 > 3. `docs/耦合地图与改动检查清单.md` = **改前必看**，跨模块连带影响。
 > 4. **🚧 进行中：微信小程序接入** → 权威计划 `docs/plans/小程序接入-编排.md`（代码走 `feat/miniprogram` 分支；`main` = 美国生产**勿动**；备案域名**勿迁离大陆服务器**）。
+> 5. **🚧 进行中：桌面 AI Agent（Codex 化）** → **当前工作分支 `feat/desktop-agent`**。全本地架构（Electron 壳 + 本地 FastAPI + SQLite + 知识加密 `prompts.enc`），**纯 BYOK**（老板自带大模型 key，盒子不内置平台 key）；脑（大模型/BYOK）+ 工具执行层 + 四层防御（权限模式/allow-ask-deny/沙箱/审批闸）+ 自动更新；4 平台发布 RPA + 视频剪辑。权威文档：执行清单 `docs/plans/桌面Agent-Codex化-执行清单-2026-06-18.md`、架构 `docs/plans/桌面AI-Agent-架构与开发计划-2026-06-18.md`、能力地图 `docs/plans/桌面Agent-完整能力地图-路线图.md`。**`main`/`web` 云端勿动；下方「桌面分支(feat/desktop-agent)新增」节列本程已落能力。**
 >
 > ⚠️ **`docs/archive/` 里全是历史快照，别当现状**（里面可能写着已撤销的方案，如"8443独立端口"）。文档地图见 `docs/README.md`。生产当前提交以 `git -C 服务器 log` 或部署文档为准。
 
@@ -33,8 +34,8 @@
 
 | 用途 | 模型 | 说明 |
 |------|------|------|
-| 文本生成 | DeepSeek V4 Flash | 通过 `https://api.deepseek.com`；并发 2500/账户级（详见「AI 并发与限流」） |
-| 图片生成 | OpenAI gpt-image-2 | 一律直连 `https://api.openai.com/v1`（生产+本地均实测可直连，~80ms）；旧 Worker 代理已废弃下线、勿用。⚠️ 限额/测试铁律见「AI 并发与限流」，**测试前必读** |
+| 文本生成 | DeepSeek V4 Flash（可 BYOK 换） | 平台默认走 `https://api.deepseek.com`；并发 2500/账户级（详见「AI 并发与限流」）。门店可 BYOK 自带文字模型 key/base_url/model（桌面分支为纯 BYOK，老板必须自带 key） |
+| 图片生成 | OpenAI gpt-image-2（**可按门店 BYOK**，2026-06-18 桌面分支起） | **未配 BYOK → 平台默认直连 `https://api.openai.com/v1`**（生产+本地均实测可直连，~80ms）；旧 Worker 代理已废弃下线、勿用。**门店可 BYOK 自带生图模型 key/base_url/model（与文字模型分开配；store 加 `byok_image_*` 字段，migration 022，`factory.get_image_config_for_store(store)` 路由——配了用门店自带、未配回退平台 gpt-image-2）**。⚠️ gpt-image-2 限额/计费铁律见「AI 并发与限流」，**测试前必读** |
 
 **上下文/记忆（2026-06-16 查证官方文档）：DeepSeek `/chat/completions` 是无状态的——服务端不记任何上下文。** 所谓"记忆"全由**应用层自己管**：① 多轮对话(`stream.py`)从 DB 捞最近 5 轮历史拼成完整 `messages` 数组、每次整包重发；② 长期记忆=店脑(`store_memories` 表)注入 prompt。这是无状态 API 下的标准正解，**别误以为 API 会自动记**。DeepSeek 上下文缓存(磁盘 KV cache)**默认自动开启、无需配置**，命中省最多 90%——但它只省钱、不是记忆。
 
@@ -238,7 +239,7 @@ server/                 # FastAPI 后端
 8. **对外/花钱动作走审批闸，不自动触达** — 内容默认供人工复制；Agent 的对外或花钱动作（如生图 `make_poster`）标 `requires_approval=True`，ReAct 循环里不直接执行，吐 `approval_request` 弹确认卡片、人点确认后经 `/agent/execute` 才跑（见 `services/agent/loop.py`）。绝不自动群发、自动私信（个人微信群发=封号红线）
 9. **成员邀请机制** — 管理员生成邀请码 → 员工注册时输入 → 自动加入门店并获得指定角色
 10. **内容变体** — 生成结果可一键转换为抖音文案/小红书文案/群公告/朋友圈格式
-11. **AI Agent 化（ReAct + 工具 + 审批闸 + BYOK）** — `services/agent/loop.py` 真 ReAct 循环（think→调工具→结果回灌→再推理），`deepseek.py` 真 function calling，`services/agent/tools.py` 注册运营工具（复用 `run_generation`/`generate_workbench` 管道，自带配额/落库/店脑/合规）；`ProviderFactory.get_text_provider_for_store(store)` 按门店路由 BYOK key（`core/crypto.py` Fernet 加密）。北极星对齐用 `server/evals/` eval 体系量化验证
+11. **AI Agent 化（ReAct + 工具 + 审批闸 + BYOK）** — `services/agent/loop.py` 真 ReAct 循环（think→调工具→结果回灌→再推理），`deepseek.py` 真 function calling，`services/agent/tools.py` 注册运营工具（复用 `run_generation`/`generate_workbench` 管道，自带配额/落库/店脑/合规）；`ProviderFactory.get_text_provider_for_store(store)` 按门店路由文字 BYOK key（`core/crypto.py` Fernet 加密）。**BYOK 三态（桌面分支扩充）**：① 文字 BYOK；② **生图 BYOK**（`get_image_config_for_store(store)`，门店自带生图模型 key/base_url/model，未配回退平台 gpt-image-2）；③ **CC Switch 式多供应商快切**——BYOK 从单条扩成"多套大模型 Key + active 指针"，预设卡片网格（DeepSeek/MiMo/火山/硅基…）一键切换，原子写+自动备份+永远留一个可用配置。北极星对齐用 `server/evals/` eval 体系量化验证
 
 ## 开发规范
 
@@ -301,6 +302,7 @@ template: |
 - `main` = 线上稳定版，服务器只部署 main；**日常开发一律在 `dev` 分支**，不直接改 main
 - 攒一批改动在 dev 验证完（tsc/build/pytest 全绿 + 本地过一遍），用户说"上线"才合并 main 并部署——避免频繁上线打扰正在使用的用户
 - 紧急线上 bug 可直接在 main 修并立即部署，修完同步回 dev
+- **专项分支独立推进、不动云端**：微信小程序走 `feat/miniprogram`、桌面 AI Agent 走 `feat/desktop-agent`（全本地 Electron+SQLite，纯 BYOK，与上面 main/dev 云端流程互不干扰，未合 main）
 - 落地页暂未启用：生产 `/` 直跳登录；落地页代码在 `/landing-preview`（无入口，内部调样式用），正式启用时搬回 `app/page.tsx`
 
 ```bash
@@ -402,6 +404,37 @@ journalctl -u billiards-backend -n 50 --no-pager
 | 生图模块重构 + 并发限流加固（2026-06-15 上线 `b4d130f`）：生图前端整页重写——一句话描述框 + 背景来源(AI生成/上传门店照优化) + 结构化「要写的字」 + 手动 Logo/二维码 + DeepSeek 扩写引擎(大白话→提示词、可预览改) + 落地式新手引导，替代旧场景卡片/风格预设；**并发限流防烧钱**：生图读超时 300→900s、`max_retries=0`、全局信号量 `poster_max_concurrency=4`、每用户单张在跑、强制 `count=1`(详见「AI 并发与限流」)；部署加固：`deploy_us.sh` 并入前端 build+cp+冒烟自检(防 standalone 缺 static 白屏) | ✅ |
 | 店脑学日报手写 note（2026-06-16）：日报提交时把店主手写的经营事实(note≥6字)异步喂店脑学习——补"越用越懂"短板(原来只学工作台/对话的需求句)；故障安全、不计配额、有 pg_advisory_xact_lock+整合+上限护栏 | ✅ |
 | 使用事件采集 / 产品分析（2026-06-16，migration 020）：`usage_events` append-only 事件表 + 故障安全 `log_event`(独立 session、吞异常、**绝不影响生成**)；`run_generation` 打点生成**成功与失败**(场景/耗时/错误类型——把原来看不见的失败捞回来)；admin `GET /usage/scenarios` 按场景看 调用数/失败率/平均耗时，喂版本迭代。详见 `docs/product-brain/使用事件采集-产品分析.md` | ✅ |
+
+## 桌面分支（feat/desktop-agent）新增
+
+> 以下为 **2026-06-18 桌面 Agent · Codex 化** 这一程在 `feat/desktop-agent` 分支落地的能力（代码已在分支、未合 main；区别于上方云端「已完成功能」表）。形态=本地 Electron 壳 + 本地 FastAPI + SQLite + 知识加密 `prompts.enc`，纯 BYOK。⚠️ 端到端真机验证（打包出安装包后）尚未做。
+
+| 模块 | 状态 |
+|------|------|
+| 桌面全本地骨架 + P0 地基：Electron 壳 + 本地 backend.js 起 FastAPI + SQLite；启动器注入本机持久化 BYOK key（`backend.js` 的 `byok.key`，修桌面填 BYOK 报 503 卡点）；自动更新（`desktop/src/updater.js` electron-updater）；Windows 云端出包（`.github/workflows/desktop-build-win.yml` GitHub Actions windows runner，PyInstaller 打后端 .exe + electron-builder 出 nsis）；首启 BYOK 引导（没填 key 首页显眼提示 + 一键设置） | ✅ |
+| 发布 worker 打包接线 + CI gate（`publisher/cli.py` PyInstaller 打可执行，patchright Chromium 首用自动下载，免装 Python） | ✅ |
+| max_turns 未收敛强制收尾（强制模型基于已有结果收尾，不再返回空答复） | ✅ |
+| P1 桌面「长在电脑上」：报表/文件直改地基（`local_tools.py` `read_file`/`write_file`/`edit_file`/`edit_excel` 读改用户当场选定的本地文件，沙箱 `_allowed_paths`+自动备份 `_backup`）+ **权限分级**（谨慎/自动改文件/全自动+全盘+选文件夹，仿 Claude Code permission 模式）+ 前端权限控制（`web/.../chat/page.tsx`） | ✅ |
+| P2 卡片融合·清单法：Agent 查场景目录清单、复用 63 个精修模板（`tools.py` `write_operation_content` 透传 `prompt_key`）+ 对话首屏常用场景快捷入口 + mini 表单（给小白老板降门槛）+ 主动出击（据今日推荐预生成文字草稿给老板过目，不自动发） | ✅ |
+| 真 RAG 核心：语义召回老板本机攒下的历史内容（`local_tools.recall_my_content` + `services/rag/`） | ✅ |
+| 本地语义模型 bge-zh（`BAAI/bge-small-zh-v1.5` ~90MB，fastembed/onnxruntime，`RAG_EMBEDDER=fastembed`，桌面 `backend.js` 已默认）：知识/店脑/历史「按意思找料」，根治"换说法就漏"；云端 web 默认 deterministic 字面法不受影响 | ✅ |
+| Harness 加固 5 件：① 铁律代码闸第一块（绝对化广告词确定性兜底，不靠模型自觉）；② 审批回灌（执行结果喂回循环、管家"知道"自己做了啥能自然接话，修断流）；③ 可安全迭代地基（铁律违反率可观测，量化模型 slip 率）；④ 店脑改按需召回（修"全量注入"治 context rot + 省 BYOK token）；⑤ 工具使用可观测（看模型选了哪些工具/失败率/轮数，喂迭代） | ✅ |
+| CC Switch 式多供应商快切（P3.1）：存多套大模型 Key + active 指针，一键切换；预设卡片网格；原子写+自动备份+永留一个可用配置 | ✅ |
+| 审批参数绑定（P3.2）：`/agent/execute` 校验确认时 args 与提案 args 一致（签名防"改了参数再确认"），对本地写文件/Excel 尤其重要 | ✅ |
+| 改文件审批加 diff 预览（`local_tools.preview_edit_file`/`preview_edit_excel`/`preview_write_file`，确认前看清会改成什么）+ 工具实时步骤标签补全（改文件/找方案不露裸英文名） | ✅ |
+| **Canvas 画布·指着某处定向改**（`canvas_service` + `POST /canvas/edit`：圈选只改那段、不动别处；`run_generation` 加 `thinking` 参数） | ✅ |
+| 一键发布闭环：平台内容写完→"去发布"带文案跳发布页预填 | ✅ |
+| **POS 真诊断**（`local_tools.diagnose_from_pos` 读老板从收银系统导出的营业额 Excel → 基于真实数字诊断；选报表→"照这份报表诊断"一键钮+没报路径兜底用选定报表；POS 只读边界不破） | ✅ |
+| **BYOK 成本看板**（`GET /quota/cost` 返回本月 token≈多少钱 + 前端 `/dashboard/usage` 页，老板看自己 key 花了多少） | ✅ |
+| 长对话不崩（history 统一封顶最近 12 条 + 每条截 2000 字符，防撑爆上下文） | ✅ |
+| **批量内容 write_batch**（`tools.py` "给我一周朋友圈不重样"一次出一批，省日常体力活） | ✅ |
+| 今日推荐更主动（对话开屏显示"今天建议你…"，点一条直接让管家做；规则算零成本） | ✅ |
+| **报表可视化点格改**（`canvas.py` `POST /canvas/sheet` 读表 + `POST /canvas/excel-edit` 改：选报表"看表格"全屏铺成表格→点格内联改→保存落盘；桌面专属 + 自动备份） | ✅ |
+| **生图也 BYOK**（store 加 `byok_image_*` 字段，migration 022，`factory.get_image_config_for_store(store)`；前端 BYOK 配置面板加"生图模型"区；未配回退平台 gpt-image-2） | ✅ |
+| app 图标（`desktop/build/icon.png`：机器人 + 8 号球 + 球杆，用户正式 logo，替掉默认 Electron 原子图标） | ✅ |
+| 知识找料补漏：知识选取加"内容补漏"（关键词漏配时按内容强相关补）+ 助教短视频文案触发词修复 | ✅ |
+| 测试存档：PPT 六岗位 60 场景（`server/evals/scenes/ppt_staff.yaml`）+ MiMo v2.5 实测报告 + Agent 决策 eval 扩"本地操作"覆盖（量化模型进盒子改文件的决策） | ✅ |
+| **🔜 仅剩**：打包出安装包（Windows nsis / Mac dmg）+ 真机端到端验证（填 BYOK→写文案/改报表/发布全链路） | 🔜 |
 
 ## 行业知识体系
 
