@@ -10,9 +10,10 @@ import {
   UserPlus, Stethoscope, Dices, Wrench, Menu, LayoutDashboard, LayoutGrid,
   FileText, ImageIcon, Clock, User, BookOpen, Scissors, Paperclip, X,
   ShieldCheck, FolderOpen, AlertTriangle,
-  Search, Save, FilePen, FileSpreadsheet, History, PartyPopper, SquarePen, Wallet, Layers, ChevronRight,
+  Search, Save, FilePen, FileSpreadsheet, History, PartyPopper, SquarePen, Wallet, Layers, ChevronRight, Table2,
 } from "lucide-react";
 import type { DashboardTodayResponse } from "@/types/dashboard";
+import { ReportTablePanel } from "@/components/report-table-panel";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/auth-context";
 import { useDesktop } from "@/hooks/use-desktop";
@@ -255,6 +256,8 @@ export default function ManagerPage() {
   const [canvas, setCanvas] = useState<{ msgIdx: number; stepIdx: number; content: string; type: string } | null>(null);
   // 今日推荐（规则算的、不花钱）：开屏主动显示"今天建议你…"，点一条直接让管家去做。
   const [todayRec, setTodayRec] = useState<DashboardTodayResponse | null>(null);
+  // 报表可视化：点"看表格"打开选定的 .xlsx 报表，铺成表格、点格子直接改。
+  const [reportPath, setReportPath] = useState<string | null>(null);
   const [quotaRemaining, setQuotaRemaining] = useState<number | null>(null);
   const quotaExhausted = quotaRemaining !== null && quotaRemaining <= 0;
 
@@ -904,7 +907,16 @@ export default function ManagerPage() {
                 </button>
               </span>
             ))}
-            {/* 选了报表(.xlsx) → 一键照真实数据诊断（让 POS 真诊断这个杀手锏被发现、被用上） */}
+            {/* 选了报表(.xlsx) → 看表格(可视化点格改) + 一键照真实数据诊断 */}
+            {selectedFiles.some((p) => /\.xlsx?$/i.test(p)) && (
+              <button
+                type="button"
+                onClick={() => setReportPath(selectedFiles.find((p) => /\.xlsx?$/i.test(p)) || null)}
+                className="inline-flex items-center gap-1 rounded-lg bg-brand-50 px-2.5 py-1 text-[12px] font-medium text-brand-700 active:scale-[0.97]"
+              >
+                <Table2 className="h-3.5 w-3.5" /> 看表格
+              </button>
+            )}
             {selectedFiles.some((p) => /\.xlsx?$/i.test(p)) && !generating && (
               <button
                 type="button"
@@ -988,6 +1000,10 @@ export default function ManagerPage() {
           onClose={() => setCanvas(null)}
           onContentChange={(next) => syncCanvas(canvas.msgIdx, canvas.stepIdx, next)}
         />
+      )}
+
+      {reportPath && (
+        <ReportTablePanel open path={reportPath} fileName={baseName(reportPath)} onClose={() => setReportPath(null)} />
       )}
     </div>
   );

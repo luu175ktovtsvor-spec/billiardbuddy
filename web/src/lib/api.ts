@@ -315,6 +315,24 @@ class ApiClient {
     });
   }
 
+  /** 看本机报表为表格（桌面专属） */
+  readSheet(path: string) {
+    return this.request<{ name: string; sheets: { name: string; rows: string[][] }[]; truncated: boolean }>(
+      "POST",
+      "/api/v1/canvas/sheet",
+      { path },
+    );
+  }
+
+  /** 点格改：改本机报表一个单元格（桌面专属，自动备份） */
+  excelEditCell(path: string, cell: string, value: string, sheet?: string) {
+    return this.request<{ ok: boolean; sheet: string; cell: string; old: string; new: string }>(
+      "POST",
+      "/api/v1/canvas/excel-edit",
+      { path, cell, value, sheet: sheet ?? null },
+    );
+  }
+
   // ─── Orchestrate（多 Agent 协作） ───
 
   startOrchestration(data: { task_type: string; description: string; auto_orchestrate?: boolean }) {
