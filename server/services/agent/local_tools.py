@@ -176,6 +176,36 @@ async def recall_my_content(args, ctx) -> str:
     return "翻到这些你以前写过的相关内容（可参考/在此基础上改）：\n" + "\n".join(lines)
 
 
+# ────────────────────────────── POS 真诊断：读老板导出的报表 → 基于真实数字诊断 ──────────────────────────────
+
+async def diagnose_from_pos(args: dict, ctx) -> str:
+    """读老板从收银系统导出的报表(Excel)，喂进经营诊断引擎(决策树+指标库)，给【有数有据】的诊断——
+    不再凭老板一句口述泛泛而谈。桌面独有：报表在老板自己电脑上，要他先选定文件。"""
+    file = (args.get("file") or "").strip()
+    if not file:
+        return "请先用文件选择器选一下你从收银系统导出的报表（.xlsx），我照着真实数据帮你看。"
+    path = _resolve(file, ctx)
+    if not path.exists():
+        return f"没找到这个文件：{file}。麻烦用文件选择器重新选一下导出的报表。"
+    # 复用 read_file 的读法（Excel 列出非空单元格）拿到真实数字
+    data_text = await read_file({"path": file}, ctx)
+    situation = (
+        "以下是这家店从收银系统导出的【真实经营数据】。请**基于这些具体数字**诊断："
+        "引用关键数字、算出关键比率(如台费占比/空台时段)、指出异常项，再给可落地建议，别泛泛而谈：\n"
+        f"{data_text}"
+    )
+    focus = (args.get("focus") or "").strip()
+    if focus:
+        situation += f"\n\n老板想重点看：{focus}"
+    from services.diagnosis_service import analyze_diagnosis  # 懒导入，避免顶层耦合
+    gen = await analyze_diagnosis(
+        ctx.db, ctx.store, getattr(ctx, "user", None),
+        problem_area=(args.get("problem_area") or "revenue"),
+        current_situation=situation,
+    )
+    return gen.result
+
+
 # ────────────────────────────── 审批预览（确认前给老板看"会改成什么"，不再瞎确认） ──────────────────────────────
 
 def _name_of(args: dict) -> str:
@@ -237,6 +267,18 @@ _LOCAL_TOOLS = [
             "query": {"type": "string", "description": "要找的内容/主题，原话即可，如'双十一活动朋友圈'"},
         }, "required": ["query"]},
         handler=recall_my_content,
+    ),
+    Tool(
+        name="diagnose_from_pos",
+        description="读老板从【收银系统导出的报表 Excel】(营业额/台时/各项收入/上钟等)，基于真实数字做经营诊断。"
+                    "当老板说『我导出了数据你帮我看看 / 看看这个月经营 / 分析下这张报表 / 照着我的真实数据诊断』"
+                    "并且选定了一个报表文件时调用——比凭口述诊断准得多、会引用具体数字。",
+        parameters={"type": "object", "properties": {
+            "file": {"type": "string", "description": "老板选定的 POS 导出报表文件路径(.xlsx)"},
+            "focus": {"type": "string", "description": "想重点看什么(可选)，如'为什么周二下午营收低'"},
+            "problem_area": {"type": "string", "description": "问题领域(可选)：revenue/traffic/customer_loss/staff/competition/off_season"},
+        }, "required": ["file"]},
+        handler=diagnose_from_pos,
     ),
     Tool(
         name="list_files",
