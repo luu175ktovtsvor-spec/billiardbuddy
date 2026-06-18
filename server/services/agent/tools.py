@@ -123,6 +123,42 @@ async def write_operation_content(args: dict, ctx) -> str:
 
 
 @tool(
+    name="write_batch",
+    description="一次写【一批】同类内容（多条不重样），省得一条条来。当老板说"
+                "『写一周的朋友圈 / 给我5条群公告 / 一次多来几条不一样的 / 这周每天发一条』时调用。"
+                "默认写朋友圈；也可写群公告/活动点子。每条角度或主题都不同，老板挑着用。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "need": {"type": "string", "description": "围绕什么写，原话即可，如'周末双人活动'或'日常引流'"},
+            "count": {"type": "integer", "description": "要几条(1-7)，默认5"},
+            "kind": {"type": "string", "description": "类型(可选)：moments(朋友圈,默认)/group_notice(群公告)/activity(活动)"},
+        },
+        "required": ["need"],
+    },
+)
+async def write_batch(args: dict, ctx) -> str:
+    count = min(max(int(args.get("count") or 5), 1), 7)
+    kind = (args.get("kind") or "moments").strip()
+    need = (args.get("need") or "").strip()
+    if not need:
+        return "想批量写点啥？给个主题（比如'周末活动'或'日常引流'）+ 要几条，我一次给你一批。"
+    label = {"moments": "朋友圈文案", "group_notice": "微信群公告", "activity": "活动点子"}.get(kind, "朋友圈文案")
+    prompt = (
+        f"围绕「{need}」，写 {count} 条**各不相同**的{label}：角度/主题/开头钩子都别雷同，每条都能直接拿去用。"
+        f"用『1、』『2、』… 给每条编号，每条之间空一行，不要写额外的解说或总结。"
+    )
+    prompt = _append_guardrails(prompt, ctx.store, role=getattr(ctx.user, "my_role", None) or "manager", intent_text=need)
+    gen = await run_generation(
+        ctx.db, ctx.store, ctx.user,
+        prompt=prompt, gen_type="batch", sub_type=kind,
+        input_params={"kind": kind, "count": count, "need": need},
+        user_input=need, max_tokens=2800,
+    )
+    return gen.result
+
+
+@tool(
     name="plan_activity",
     description="策划一套**成体系的台球房活动方案**（玩法机制/优惠力度/时间安排/传播话术/落地步骤），比单写一段文案更系统。"
                 "当老板要『策划/搞个活动、办会员日、做比赛、节日营销(春节/中秋等)、包场团建、老客回流专场、学生场、搭子主题局』时调用。"

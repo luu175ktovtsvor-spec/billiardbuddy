@@ -10,7 +10,7 @@ import {
   UserPlus, Stethoscope, Dices, Wrench, Menu, LayoutDashboard, LayoutGrid,
   FileText, ImageIcon, Clock, User, BookOpen, Scissors, Paperclip, X,
   ShieldCheck, FolderOpen, AlertTriangle,
-  Search, Save, FilePen, FileSpreadsheet, History, PartyPopper, SquarePen, Wallet,
+  Search, Save, FilePen, FileSpreadsheet, History, PartyPopper, SquarePen, Wallet, Layers,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/auth-context";
@@ -67,7 +67,7 @@ function approvalConfirmText(tool: string): string {
 
 const SUGGESTIONS = [
   "这周末搞个什么活动好？",
-  "帮我写一条今晚的朋友圈",
+  "给我写一周的朋友圈，每天不重样",
   "给一位好久没来的老顾客写个约客消息",
   "最近生意有点冷清，帮我看看",
 ];
@@ -104,6 +104,7 @@ const TOOL_META: Record<string, { label: string; Icon: typeof Wrench }> = {
   get_current_date: { label: "看了今天日期", Icon: CalendarDays },
   get_today_recommendation: { label: "看了今日推荐", Icon: Lightbulb },
   write_operation_content: { label: "写文案", Icon: PenLine },
+  write_batch: { label: "批量写一批", Icon: Layers },
   assistant_outreach: { label: "拟约客话术", Icon: UserPlus },
   diagnose_operation: { label: "做经营诊断", Icon: Stethoscope },
   recommend_games: { label: "想玩法", Icon: Dices },
@@ -129,7 +130,7 @@ function toolMeta(name: string) {
 // 必须原样展示，绝不让编排大脑改写/精简(那会让验证过的行业真实内容失真)。
 // 感知类(查日期/今日推荐)不在此列——它们的值由大脑消化后综合作答。
 const DELIVERABLE_TOOLS = new Set([
-  "write_operation_content", "plan_activity", "assistant_outreach",
+  "write_operation_content", "write_batch", "plan_activity", "assistant_outreach",
   "diagnose_operation", "recommend_games", "make_platform_content", "make_groupbuy_content",
 ]);
 
