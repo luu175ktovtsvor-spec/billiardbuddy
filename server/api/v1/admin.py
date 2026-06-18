@@ -657,3 +657,42 @@ async def usage_compliance(
         "slip_rate": round(hits / gens, 4) if gens else 0,
         "by_term": [{"term": r.term, "hits": r.hits} for r in by_term],
     }
+
+
+@router.get("/usage/agent-tools")
+async def usage_agent_tools(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    days: int = Query(30, ge=1, le=365),
+):
+    """Agent 工具使用观测：模型选了哪些工具、哪个用得多、工具失败率、平均轮数——
+    喂"工具选对没/哪个工具老出问题/描述要不要改"的迭代。可安全迭代地基的一部分。"""
+    require_admin(user)
+    totals = (await db.execute(text(
+        """
+        SELECT count(*) AS sessions,
+               COALESCE(sum((props->>'failures')::int), 0) AS failures,
+               round(avg((props->>'turns')::numeric), 1) AS avg_turns
+        FROM usage_events
+        WHERE event = 'agent_tools'
+          AND created_at >= now() - make_interval(days => :days)
+        """
+    ), {"days": days})).one()
+    by_tool = (await db.execute(text(
+        """
+        SELECT tool, count(*) AS uses
+        FROM usage_events, jsonb_array_elements_text(props->'tools') AS tool
+        WHERE event = 'agent_tools'
+          AND created_at >= now() - make_interval(days => :days)
+        GROUP BY tool
+        ORDER BY uses DESC
+        LIMIT 50
+        """
+    ), {"days": days})).all()
+    return {
+        "days": days,
+        "sessions": totals.sessions or 0,
+        "tool_failures": totals.failures or 0,
+        "avg_turns": float(totals.avg_turns) if totals.avg_turns is not None else None,
+        "by_tool": [{"tool": r.tool, "uses": r.uses} for r in by_tool],
+    }

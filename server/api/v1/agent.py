@@ -279,6 +279,8 @@ async def agent_chat(
         from services.agent.tools import DELIVERABLE_TOOLS
         final_content = ""
         deliverables: list[str] = []  # 交付类工具的产出(成品)，需并进 result 落库——否则下一轮看不到、改不了
+        tools_used: list[str] = []    # 可观测：本轮模型选了哪些工具（含待审批的）
+        tool_failures = 0             # 可观测：工具执行失败次数（喂"哪个工具/选择老出问题"）
         turns = 0
         try:
             async for event in run_agent_loop_stream(
@@ -293,12 +295,23 @@ async def agent_chat(
                 et = event.get("type")
                 if et == "final":
                     final_content = event.get("content", "") or final_content
-                if et == "tool_result" and event.get("tool") in DELIVERABLE_TOOLS:
+                if et in ("tool_call", "approval_request") and event.get("tool"):
+                    tools_used.append(event.get("tool"))
+                if et == "tool_result":
                     c = event.get("content") or ""
-                    if c.strip():
+                    if c.startswith(("[工具执行失败]", "[工具不存在]")):
+                        tool_failures += 1
+                    if event.get("tool") in DELIVERABLE_TOOLS and c.strip():
                         deliverables.append(c)
                 if et == "done":
                     turns = event.get("turns", 0) or 0
+                    try:  # 工具使用可观测（故障安全，不影响 SSE）
+                        from services.usage_event_service import log_event
+                        await log_event("agent_tools", store_id=str(store.id),
+                                        user_id=(str(user.id) if user else None),
+                                        props={"tools": tools_used[:20], "failures": tool_failures, "turns": turns})
+                    except Exception:
+                        pass
                     # 落库 result = 交付成品 + 收尾语：① 历史里看得到真内容 ② 下一轮"把刚才那条改一下"大脑读得到
                     persist_text = final_content
                     if deliverables:
