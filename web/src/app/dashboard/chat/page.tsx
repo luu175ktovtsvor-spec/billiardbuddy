@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -131,14 +132,25 @@ const DELIVERABLE_TOOLS = new Set([
   "diagnose_operation", "recommend_games", "make_platform_content", "make_groupbuy_content",
 ]);
 
+// 平台原始名（make_platform_content 的 platform 参数，可能中/英文）→ 发布页平台 id
+const PLATFORM_PUBLISH_ID: Record<string, string> = {
+  douyin: "douyin", 抖音: "douyin",
+  kuaishou: "kuaishou", 快手: "kuaishou",
+  shipinhao: "shipinhao", 视频号: "shipinhao", channels: "shipinhao",
+  xiaohongshu: "xiaohongshu", 小红书: "xiaohongshu", xhs: "xiaohongshu", red: "xiaohongshu",
+};
+
 /** 把交付类工具的产出原样渲染成可复制卡片(成品，不经大脑改写)。
- *  带 onOpenCanvas 时每张卡多一个"在画布上改"——展开右侧画布，指着某处定向改。 */
+ *  带 onOpenCanvas 时每张卡多一个"在画布上改"——展开右侧画布，指着某处定向改。
+ *  带 onPublish 时平台内容多一个"去发布"——带文案/话题跳到发布页(桌面端)。 */
 function DeliverableCards({
   steps,
   onOpenCanvas,
+  onPublish,
 }: {
   steps: ToolStep[];
   onOpenCanvas?: (content: string, type: string, stepIdx: number) => void;
+  onPublish?: (platform: unknown, content: string) => void; // 桌面端：平台内容一键去发布
 }) {
   // 保留原始 step 下标，供画布改完同步回这张卡
   const cards = steps.map((s, idx) => ({ s, idx })).filter(({ s }) => s.result && DELIVERABLE_TOOLS.has(s.tool));
@@ -164,6 +176,15 @@ function DeliverableCards({
                   className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[12.5px] font-medium text-brand-600 active:scale-[0.97]"
                 >
                   <SquarePen className="h-3.5 w-3.5" /> 在画布上改
+                </button>
+              )}
+              {onPublish && s.tool === "make_platform_content" && (
+                <button
+                  type="button"
+                  onClick={() => onPublish(s.args?.platform, s.result || "")}
+                  className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[12.5px] font-medium text-brand-600 active:scale-[0.97]"
+                >
+                  <Send className="h-3.5 w-3.5" /> 去发布
                 </button>
               )}
             </div>
@@ -474,6 +495,17 @@ export default function ManagerPage() {
     );
   };
 
+  // 平台内容 → 一键去发布：抽话题标签(#xx)做 tags、其余正文做文案，带平台跳发布页预填（仅桌面）
+  const router = useRouter();
+  const publishHandoff = (rawPlatform: unknown, content: string) => {
+    const raw = String(rawPlatform ?? "").trim();
+    const pid = PLATFORM_PUBLISH_ID[raw.toLowerCase()] || PLATFORM_PUBLISH_ID[raw] || "douyin";
+    const tags = (content.match(/#[^\s#]+/g) || []).map((t) => t.slice(1)).slice(0, 8);
+    const caption = content.replace(/#[^\s#]+/g, "").replace(/\n{3,}/g, "\n\n").trim().slice(0, 800);
+    const qs = new URLSearchParams({ platform: pid, title: caption, tags: tags.join(",") });
+    router.push(`/dashboard/publish?${qs.toString()}`);
+  };
+
   // 画布改完 → 把最新版同步回那张成品卡（按 消息下标+步骤下标 定位，不动其它）
   const syncCanvas = (msgIdx: number, stepIdx: number, next: string) => {
     setMessages((prev) =>
@@ -724,6 +756,7 @@ export default function ManagerPage() {
                 <DeliverableCards
                   steps={m.steps}
                   onOpenCanvas={(content, type, stepIdx) => setCanvas({ msgIdx: i, stepIdx, content, type })}
+                  onPublish={isDesktop ? publishHandoff : undefined}
                 />
               )}
               {m.content.trim() && (
