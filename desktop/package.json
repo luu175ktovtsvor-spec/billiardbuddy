@@ -1,6 +1,6 @@
 {
   "name": "billiards-desktop-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "台球房 AI 运营管家 · 桌面端（Electron 壳 + 本地后端 + 本地发布RPA + 视频剪辑；全本地出内容/跑 Agent）",
   "main": "src/main.js",
