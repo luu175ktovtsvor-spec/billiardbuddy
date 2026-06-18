@@ -55,31 +55,38 @@ def _is_new_period(quota: UsageQuota) -> bool:
 
 
 async def get_or_create_quota(db: AsyncSession, store_id: str) -> UsageQuota:
+    import uuid as _uuid
+    # store_id 强制成 UUID 对象：SQLite 的 Uuid(as_uuid=True) 列绑定要 uuid 对象（传字符串会
+    # 'str' object has no attribute 'hex' 崩）；PG 同样接受 UUID 对象，不影响生产路径。
+    sid = _uuid.UUID(store_id) if isinstance(store_id, str) else store_id
     result = await db.execute(
-        select(UsageQuota).where(UsageQuota.store_id == store_id)
+        select(UsageQuota).where(UsageQuota.store_id == sid)
     )
     quota = result.scalar_one_or_none()
     if quota is None:
-        # ON CONFLICT DO NOTHING：store_id 唯一约束下并发首建不再抛 IntegrityError
-        import uuid as _uuid
-        await db.execute(
-            pg_insert(UsageQuota)
-            .values(
-                id=_uuid.uuid4(),
-                store_id=store_id,
-                monthly_generation_limit=DEFAULT_GENERATION_LIMIT,
-                monthly_tokens_limit=DEFAULT_TOKENS_LIMIT,
-                monthly_generations_used=0,
-                monthly_tokens_used=0,
-                monthly_poster_limit=DEFAULT_POSTER_LIMIT,
-                monthly_posters_used=0,
-                current_period_start=_period_start_now(),
-            )
-            .on_conflict_do_nothing(index_elements=["store_id"])
+        # ON CONFLICT DO NOTHING：store_id 唯一约束下并发首建不再抛 IntegrityError。
+        # pg_insert 是 PG 专属，SQLite 用 sqlite_insert（两者都支持 on_conflict_do_nothing）。
+        from db.session import engine
+        values = dict(
+            id=_uuid.uuid4(),
+            store_id=sid,
+            monthly_generation_limit=DEFAULT_GENERATION_LIMIT,
+            monthly_tokens_limit=DEFAULT_TOKENS_LIMIT,
+            monthly_generations_used=0,
+            monthly_tokens_used=0,
+            monthly_poster_limit=DEFAULT_POSTER_LIMIT,
+            monthly_posters_used=0,
+            current_period_start=_period_start_now(),
         )
+        if engine.dialect.name == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+            stmt = sqlite_insert(UsageQuota).values(**values).on_conflict_do_nothing(index_elements=["store_id"])
+        else:
+            stmt = pg_insert(UsageQuota).values(**values).on_conflict_do_nothing(index_elements=["store_id"])
+        await db.execute(stmt)
         await db.commit()
         result = await db.execute(
-            select(UsageQuota).where(UsageQuota.store_id == store_id)
+            select(UsageQuota).where(UsageQuota.store_id == sid)
         )
         quota = result.scalar_one()
     if _is_new_period(quota):
