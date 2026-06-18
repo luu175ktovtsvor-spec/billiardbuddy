@@ -40,6 +40,14 @@ export interface ElectronBridge {
     run(op: string, args: Record<string, unknown>): Promise<{ ok: boolean }>;
     onProgress(cb: (p: { op: string; pct?: number }) => void): () => void;
   };
+  files: {
+    /** 弹系统文件选择器,返回选定文件绝对路径;随对话以 selected_files 传后端授权 Agent 读/改。 */
+    pick(opts?: {
+      title?: string;
+      multi?: boolean;
+      filters?: { name: string; extensions: string[] }[];
+    }): Promise<{ canceled: boolean; paths: string[] }>;
+  };
 }
 
 declare global {
