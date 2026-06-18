@@ -46,6 +46,7 @@ async def run_generation(
     max_tokens: int = 3000,
     strip_prefixes: bool = True,
     use_fallback: bool = False,
+    thinking: dict | None = None,
 ) -> Generation:
     """统一生成管道：注入检查 → 配额 → 调AI → 去前缀 → 泄露过滤 → 落库 → 计费。
 
@@ -70,7 +71,7 @@ async def run_generation(
         logger.warning("run_generation 注入店脑失败，跳过 store_id=%s", store.id, exc_info=True)
 
     _t0 = time.monotonic()
-    request = TextRequest(prompt=prompt, max_tokens=max_tokens)
+    request = TextRequest(prompt=prompt, max_tokens=max_tokens, thinking=thinking)
     # 按门店路由：BYOK 门店用自己的 key/base_url/model（token 成本与并发自担）；否则平台默认。
     # （use_fallback 历史上无真备份 provider，已统一走 for_store；参数保留兼容调用方签名）
     provider = ProviderFactory.get_text_provider_for_store(store)
