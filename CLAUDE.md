@@ -14,6 +14,8 @@
 
 **这不是**收银系统、灯控系统、会员管理系统。不做开台、计费、灯控、收银、库存、会员充值。
 
+**形态（2026-06 起转型为 AI Agent）**：在"岗位场景卡片 + 自由对话"之上，增加了 **AI 对话管家（ReAct Agent）**——理解老板一句话需求、自主调用运营工具（写文案/约客/诊断/玩法/平台内容/团购/做海报）完成任务；花钱/对外的动作走**审批闸**（弹确认卡片、人点确认后才执行）。门店可 **BYOK**（自带大模型 Key，自担成本/并发）。权威评估见 `docs/product-brain/AI-Agent架构评估与北极星测试-2026-06-17.md`，转型计划见 `docs/plans/AI-Agent转型-编排.md`。
+
 ## 线上环境
 
 | 项目 | 值 |
@@ -233,9 +235,10 @@ server/                 # FastAPI 后端
 5. **Prompt 模板与业务解耦** — Prompt 存放在 `server/prompts/` 下的 YAML 文件中，支持 `{variable}` 占位符
 6. **PromptEngine 是单例** — 通过 `get_prompt_engine()` 获取，不直接 `PromptEngine()`
 7. **海报 = AI 生图 + Logo/二维码叠加** — AI 生成背景图，Pillow 叠加门店 Logo 和二维码
-8. **不做自动触达** — 只生成内容供人工复制使用，不做自动群发、自动私信
+8. **对外/花钱动作走审批闸，不自动触达** — 内容默认供人工复制；Agent 的对外或花钱动作（如生图 `make_poster`）标 `requires_approval=True`，ReAct 循环里不直接执行，吐 `approval_request` 弹确认卡片、人点确认后经 `/agent/execute` 才跑（见 `services/agent/loop.py`）。绝不自动群发、自动私信（个人微信群发=封号红线）
 9. **成员邀请机制** — 管理员生成邀请码 → 员工注册时输入 → 自动加入门店并获得指定角色
 10. **内容变体** — 生成结果可一键转换为抖音文案/小红书文案/群公告/朋友圈格式
+11. **AI Agent 化（ReAct + 工具 + 审批闸 + BYOK）** — `services/agent/loop.py` 真 ReAct 循环（think→调工具→结果回灌→再推理），`deepseek.py` 真 function calling，`services/agent/tools.py` 注册运营工具（复用 `run_generation`/`generate_workbench` 管道，自带配额/落库/店脑/合规）；`ProviderFactory.get_text_provider_for_store(store)` 按门店路由 BYOK key（`core/crypto.py` Fernet 加密）。北极星对齐用 `server/evals/` eval 体系量化验证
 
 ## 开发规范
 
@@ -448,7 +451,7 @@ journalctl -u billiards-backend -n 50 --no-pager
 - 不做 Prompt 可视化编辑器
 - 不做海报拖拽编辑器
 - 不做 WebSocket 实时协作
-- 不做自动群发、自动私信
+- 不做自动群发、自动私信（个人微信群发=封号红线）；对外/花钱动作走 Agent 审批闸（人确认后执行），不是全自动触达
 - 不在 AI 生图 Prompt 中**主动**包含中文文字、价格、Logo、二维码（2026-06-12 调整：用户在生图页"把文字画进图里"输入框显式填写文字时例外，作为实验功能放行；系统侧仍不自动往 prompt 塞中文文字）
 - 不使用原生 `<select>` 做选择器（用 CardSelect 组件）
 - 不在代码中出现任何第三方品牌名或来源出处（器材品牌如乔氏/星牌/百能/独牙属行业通用品类叫法，豁免；禁的是知识来源与机构名）

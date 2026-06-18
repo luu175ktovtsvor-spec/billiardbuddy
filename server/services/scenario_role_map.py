@@ -64,4 +64,5 @@ SCENARIO_ROLE_MAP = {
     "cross_industry_alliance": "operator",
     "referral_program": "operator",
     "ground_promotion": "operator",
+    "theme_night": "operator",
 }

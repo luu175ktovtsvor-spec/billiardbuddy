@@ -1,0 +1,486 @@
+# 模拟台球房固定夹具 — 北极星测试专用
+# 三个店覆盖三种典型形态：社区小店 / 商业中端 / 竞技馆
+# 字段对齐 Store model（store.py）+ operation_profile（门店运营画像字段字典.md）
+# Memory type: semantic | preference | operational | episodic
+# confidence: high | medium | low
+
+key: sim_stores
+
+stores:
+
+  # ─────────────────────────────────────────────
+  # 1. 社区小店 — 武侯巷子球房
+  # 定位：社区实惠型，10台中八，附近上班族+学生，地铁口，价格低，老板亲和
+  # allow_price_copy: true — 测试"真实价格进文案"分支
+  # ─────────────────────────────────────────────
+  community:
+    name: "武侯巷子球房"
+    city: "成都"
+    district: "武侯区"
+    address: "武侯区桂溪路19号靠近地铁6号线桂溪生态公园站A口"
+    phone: ""
+    business_hours: "10:00-次日2:00"
+
+    table_count: 10
+    table_types: "普通中式八球台"
+
+    pricing:
+      "中八台": "30元/小时"
+      "会员价": "25元/小时"
+
+    member_cards:
+      "一卡通-200档": "充200得220，台费/饮料/助教通用"
+      "一卡通-500档": "充500得580，台费/饮料/助教通用"
+
+    operation_profile:
+      # 基础信息
+      positioning: "community_affordable"
+      one_liner: "地铁口的台球房，10张台全是中八，打球喝茶随便坐"
+      main_advantages: ["地铁口50米", "价格全区最实惠", "老板认识每个熟客"]
+      allow_address_in_content: true
+      allow_phone_in_content: false
+      allow_business_hours_in_content: true
+      # 经营目标
+      current_focus: "old_customer_recall"
+      monthly_priority: "把流失三个月以上的老客拉回来，目标20人"
+      # 客户结构
+      primary_types: ["old", "new", "groupbuy"]
+      most_want_convert: "groupbuy"
+      has_matchmaking_group: true
+      has_customer_wechat_groups: true
+      matchmaking_group_status: "活跃，每周有人自发约局"
+      old_customer_maintenance_style: "熟人口吻，叫哥叫姐，不推优惠，随便聊"
+      new_customer_conversion_style: "团购到店后引导加微信进群，顺手推一卡通"
+      # 助教体系
+      has_assistant: true
+      assistant_count: 3
+      has_assistant_manager: false
+      assistant_types: ["service_experience", "technical_coaching"]
+      booking_method: "到店直接找前台，或加老板微信预约"
+      is_paid_service: true
+      ban_free_assistant_wording: true
+      ban_assistant_price_in_content: false
+      has_assistant_media: false
+      do_assistant_short_video: false
+      do_assistant_pk: false
+      assistant_promo_style: "接地气，像介绍朋友一样"
+      # 会员/团购/价格
+      do_groupbuy: true
+      groupbuy_platforms: ["美团", "抖音"]
+      groupbuy_conversion_goal: "加微信进群"
+      has_member_system: true
+      allow_ai_write_member: true
+      allow_ai_write_recharge: false
+      allow_ai_write_discount: false
+      ban_lowest_price_claim: true
+      ban_auto_recharge_promo: true
+      # 关键开关：允许写真实价格（测试价格直出分支）
+      commerce_rules:
+        allow_price_copy: true
+        must_placeholder_price: false
+      # 赛事/活动
+      has_weekly_tournament: false
+      has_monthly_tournament: false
+      common_activity_types: ["搭子局", "节日活动"]
+      do_light_competition: true
+      allow_ai_write_prize_amount: false
+      # 前厅SOP
+      frontdesk_responsible_for_wechat: true
+      add_wechat_after_groupbuy_checkin: true
+      member_inquiry_handling: "问会员直接报一卡通档位，引导老板微信"
+      # 内容风格
+      moments_tone: "casual_friendly"
+      emoji_preference: "light"
+      max_emoji_per_post: 3
+      avoid_official_tone: true
+      avoid_salesy_tone: true
+      use_boss_voice: true
+      # AI偏好
+      default_output_length: "concise"
+      always_include_execution_tips: true
+      missing_info_strategy: "placeholder"
+      # 设备
+      equipment:
+        table_count: 10
+        table_types: ["normal_pool_table"]
+        table_type_note: "10张普通中八台，全大厅无包厢"
+
+    has_private_room: false
+    has_coaching: true
+    has_tournament: false
+    has_parking: false
+
+    coach_count: 3
+    coach_service_types: "陪练/基础教学"
+    coach_price_range: "初级88元/小时 中级128元/小时"
+    cue_price_range: ""
+    table_brands: "百能"
+    cue_brands: ""
+    other_equipment: ""
+
+    daily_avg_customers: 40
+    peak_hours: "晚7点后，周五周六最旺"
+    avg_spend_range: "人均40-60元"
+    target_customers: "附近上班族、大学生、家庭亲子"
+    style: "轻松热闹，熟客多，进门就像老朋友"
+    advantages: "地铁口50米、价格实惠、老板记得每个熟客名字"
+    common_activities: "周末搭子局、节日台费局"
+    brand_style: "lively"
+
+    # 店脑长期记忆（4种type全覆盖）
+    memories:
+      - type: "semantic"
+        content: "门店10张普通中八台，全是大厅无包厢，适合朋友局和搭子局"
+        confidence: "high"
+      - type: "preference"
+        content: "老板偏好口语化文案，称呼客人要叫哥叫姐，不要正式套话，不要堆功能卖点"
+        confidence: "high"
+      - type: "operational"
+        content: "工作日下午3点前几乎没人，晚7点后开始满台，周一全周最差，周五周六晚上要排队"
+        confidence: "high"
+      - type: "episodic"
+        content: "上个月中秋节办了免费矿泉水加小型台球邀请赛，当天来客比平时多一倍，有三组新客加了微信"
+        confidence: "medium"
+      - type: "preference"
+        content: "老板不希望AI在文案里写具体充值方案，觉得太像广告；一卡通介绍到200和500两档即可"
+        confidence: "high"
+
+    # 员工记忆（注入店脑作为semantic）
+    staff_memories:
+      - type: "semantic"
+        content: "张助教技术型，擅长中高杆和走位教学，主要服务附近白领，周二到周四晚上上钟率最高"
+        confidence: "high"
+      - type: "semantic"
+        content: "李前台亲和力强，记得大多数熟客名字，但不擅长推销一卡通，客人问起才说"
+        confidence: "medium"
+      - type: "operational"
+        content: "前台换人频繁，新人第一周靠老板陪着接待，三个月后才稳定"
+        confidence: "medium"
+
+
+  # ─────────────────────────────────────────────
+  # 2. 商业中端店 — 尚格台球会所
+  # 定位：商业品质型，20台（含少量包厢），白领/情侣/朋友局，中端价
+  # allow_price_copy: false — 测试"价格占位符"分支
+  # ─────────────────────────────────────────────
+  commercial:
+    name: "尚格台球会所"
+    city: "成都"
+    district: "锦江区"
+    address: "锦江区东大街188号国际金融中心B1层"
+    phone: ""
+    business_hours: "11:00-次日1:00"
+
+    table_count: 20
+    table_types: "中式八球台为主，含2张乔氏台和2间包厢"
+
+    pricing:
+      "普通台": "45元/小时"
+      "乔氏台": "65元/小时"
+      "包厢台": "80元/小时（含软饮一份）"
+      "会员价（普通台）": "35元/小时"
+
+    member_cards:
+      "一卡通-500档": "充500得560，台费/饮料/助教通用"
+      "一卡通-1000档": "充1000得1150，台费/饮料/助教通用"
+      "一卡通-3000档": "充3000得3600，另赠助教课2节"
+
+    operation_profile:
+      # 基础信息
+      positioning: "commercial_premium"
+      one_liner: "CBD里的台球会所，包厢私密，乔氏球桌，适合商务和情侣约局"
+      main_advantages: ["写字楼商圈核心位置", "乔氏台+包厢差异化", "助教团队5人专业齐整"]
+      allow_address_in_content: true
+      allow_phone_in_content: false
+      allow_business_hours_in_content: false
+      # 经营目标
+      current_focus: "assistant_booking"
+      monthly_priority: "助教上钟率从40%提到60%，重点推周中下午空档时段"
+      # 客户结构
+      primary_types: ["old", "new", "groupbuy", "corporate"]
+      most_want_convert: "corporate"
+      has_matchmaking_group: true
+      has_customer_wechat_groups: true
+      matchmaking_group_status: "中等，有300人群，发消息响应20%"
+      old_customer_maintenance_style: "专业礼貌，节日问候，偶尔推会员活动"
+      new_customer_conversion_style: "体验完引导加微信，介绍一卡通500档性价比"
+      groupbuy_common_questions: "可以预约包厢吗？助教怎么约？周末几点最忙？"
+      # 助教体系
+      has_assistant: true
+      assistant_count: 5
+      has_assistant_manager: true
+      assistant_types: ["service_experience", "technical_coaching"]
+      booking_method: "前台现场登记，或微信公众号预约，节假日提前一天"
+      is_paid_service: true
+      ban_free_assistant_wording: true
+      ban_assistant_price_in_content: true
+      has_assistant_media: true
+      do_assistant_short_video: true
+      do_assistant_pk: true
+      assistant_promo_style: "专业自然，突出技术实力和服务口碑"
+      # 会员/团购/价格
+      do_groupbuy: true
+      groupbuy_platforms: ["美团", "抖音", "口碑"]
+      groupbuy_conversion_goal: "加微信进群"
+      has_member_system: true
+      allow_ai_write_member: true
+      allow_ai_write_recharge: false
+      allow_ai_write_discount: false
+      ban_lowest_price_claim: true
+      ban_auto_recharge_promo: true
+      # 关键开关：价格用占位符（测试价格占位分支）
+      commerce_rules:
+        allow_price_copy: false
+        must_placeholder_price: true
+      # 赛事/活动
+      has_weekly_tournament: false
+      has_monthly_tournament: true
+      common_activity_types: ["月度邀请赛", "情侣双打赛", "企业团建局"]
+      do_light_competition: true
+      allow_ai_write_prize_amount: false
+      allow_ai_write_entry_fee: false
+      has_watch_event: true
+      # 前厅SOP
+      frontdesk_responsible_for_wechat: true
+      add_wechat_after_groupbuy_checkin: true
+      member_inquiry_handling: "引导找助教管理或店长，不在前台报价"
+      assistant_inquiry_handling: "介绍助教管理微信，当场帮预约，强调提前一天更稳"
+      complaint_boundary: "安抚道歉，记录在案，重要投诉15分钟内反馈店长"
+      ban_frontdesk_price_quote: true
+      # 内容风格
+      moments_tone: "light_humorous"
+      emoji_preference: "moderate"
+      max_emoji_per_post: 2
+      avoid_official_tone: true
+      avoid_salesy_tone: true
+      use_boss_voice: false
+      use_manager_voice: true
+      # AI偏好
+      default_output_length: "balanced"
+      always_include_execution_tips: true
+      missing_info_strategy: "placeholder"
+      # 设备
+      equipment:
+        table_count: 20
+        table_types: ["normal_pool_table", "joy_billiards_table"]
+        table_type_note: "16张普通中八台+2张乔氏台+2间包厢（包厢各配一张普通台）"
+
+    has_private_room: true
+    has_coaching: true
+    has_tournament: true
+    has_parking: true
+
+    coach_count: 5
+    coach_service_types: "陪练/技术教学/赛前特训"
+    coach_price_range: "基础助教128元/小时 高级助教188元/小时"
+    cue_price_range: "提供公共球杆免费使用，高端私杆代存50元/月"
+    table_brands: "乔氏（2台）、百能（16台）"
+    cue_brands: ""
+    other_equipment: "2间包厢，每间约30平，配沙发、小茶几、独立空调"
+
+    daily_avg_customers: 120
+    peak_hours: "工作日午休12-14点，晚间19-23点，周末全天"
+    avg_spend_range: "人均80-150元"
+    target_customers: "CBD白领、情侣约局、朋友聚会、企业团建"
+    style: "专业温馨，服务有质感，不过分推销"
+    advantages: "商圈核心位置、包厢私密性好、助教团队齐整、乔氏台差异化"
+    common_activities: "月度会员邀请赛、情侣双打赛、企业台球团建"
+    brand_style: "professional"
+
+    # 店脑长期记忆
+    memories:
+      - type: "semantic"
+        content: "门店20台：16张普通中八+2张乔氏台，另有2间包厢，助教团队5人"
+        confidence: "high"
+      - type: "preference"
+        content: "店长偏好内容有质感但不显高冷，强调体验感和专业服务，不写价格具体数字"
+        confidence: "high"
+      - type: "operational"
+        content: "工作日午休时段包厢最抢手，周末全天几乎满台，节假日前一天提前预约包厢成常态"
+        confidence: "high"
+      - type: "episodic"
+        content: "上季度办了一次企业团建台球联赛，吸引3家公司40余人，其中12人当场充了一卡通"
+        confidence: "medium"
+      - type: "operational"
+        content: "助教上钟高峰在周三周四晚上，周一周二下午几乎无约，需要专项推广"
+        confidence: "high"
+      - type: "preference"
+        content: "文案不要太销售，客户群偏白领，对推销敏感，适合分享体验感而不是报价格"
+        confidence: "high"
+
+    # 员工记忆
+    staff_memories:
+      - type: "semantic"
+        content: "王助教技术全面、待人专业，是门店销售口碑最好的助教，约满率超80%，擅长从零带起新手白领"
+        confidence: "high"
+      - type: "semantic"
+        content: "陈前台话术流畅，团购核销转化率高，引导加微信成功率约70%，不擅长处理投诉"
+        confidence: "medium"
+      - type: "operational"
+        content: "助教管理小林每周五下午统计本周上钟数据，发助教排班调整通知，是运营数据的一手来源"
+        confidence: "high"
+
+
+  # ─────────────────────────────────────────────
+  # 3. 竞技馆 — 弧旋竞技台球馆
+  # 定位：赛事竞技型，30台含斯诺克，周赛积分赛常态，竞技客群，教练强
+  # allow_price_copy: false — 竞技馆客单价高、定价谈判多，不在文案里写价格
+  # ─────────────────────────────────────────────
+  competitive:
+    name: "弧旋竞技台球馆"
+    city: "重庆"
+    district: "渝中区"
+    address: "渝中区解放碑商业核心区嘉陵江滨江路88号二楼"
+    phone: ""
+    business_hours: "10:00-次日3:00"
+
+    table_count: 30
+    table_types: "中式八球台为主，含斯诺克台6张"
+
+    pricing:
+      "中八台（非高峰）": "50元/小时"
+      "中八台（高峰 18:00-23:00）": "65元/小时"
+      "斯诺克台": "90元/小时"
+      "赛事台（包台）": "面议"
+
+    member_cards:
+      "一卡通-1000档": "充1000得1100，台费/斯诺克通用，赛事报名费8折"
+      "一卡通-3000档": "充3000得3600，赛事报名费免，赛季积分优先排名"
+      "赛季VIP": "2000元/赛季，含月赛报名资格+教练课2节+赛事排名积分"
+
+    operation_profile:
+      # 基础信息
+      positioning: "competition_focused"
+      one_liner: "重庆竞技台球首选，6张斯诺克台+周赛积分赛，专为爱打比赛的球友打造"
+      main_advantages: ["重庆最多斯诺克台", "固定周赛+月度积分赛体系", "专业级教练团队"]
+      allow_address_in_content: true
+      allow_phone_in_content: false
+      allow_business_hours_in_content: false
+      # 经营目标
+      current_focus: "tournament_growth"
+      monthly_priority: "本赛季月赛参赛人数从30人扩大到50人，新增10名赛季VIP"
+      # 客户结构
+      primary_types: ["old", "competitive", "enthusiast"]
+      most_want_convert: "enthusiast"
+      has_matchmaking_group: false
+      has_customer_wechat_groups: true
+      matchmaking_group_status: "两个群：竞技交流群800人+赛事通知群200人，高活跃"
+      old_customer_maintenance_style: "竞技同好口吻，聊球技聊赛事，不推活动，信任靠实力建立"
+      new_customer_conversion_style: "先推参加一次周赛体验，让球技说话，再介绍赛季VIP"
+      # 助教体系
+      has_assistant: true
+      assistant_count: 8
+      has_assistant_manager: true
+      assistant_types: ["technical_coaching"]
+      booking_method: "微信公众号预约，教练日程提前3天公开，竞技客直接找主教练沟通"
+      is_paid_service: true
+      ban_free_assistant_wording: true
+      ban_assistant_price_in_content: true
+      has_assistant_media: true
+      do_assistant_short_video: true
+      do_assistant_pk: true
+      assistant_promo_style: "突出技术成绩和竞赛经历，用数据和赛事战绩说话"
+      # 会员/团购/价格
+      do_groupbuy: false
+      has_member_system: true
+      allow_ai_write_member: true
+      allow_ai_write_recharge: false
+      allow_ai_write_discount: false
+      ban_lowest_price_claim: true
+      ban_auto_recharge_promo: true
+      # 关键开关：竞技馆不在文案写价格，走人工沟通
+      commerce_rules:
+        allow_price_copy: false
+        must_placeholder_price: true
+      # 赛事/活动
+      has_weekly_tournament: true
+      has_monthly_tournament: true
+      typical_tournament_scale: "周赛16-24人，月赛32-48人"
+      common_activity_types: ["周赛积分赛", "月度排位赛", "赛季总决赛", "看球活动"]
+      do_light_competition: false
+      allow_ai_write_prize_amount: true
+      allow_ai_write_entry_fee: true
+      must_placeholder_prize_if_unknown: false
+      has_watch_event: true
+      post_match_report_style: "专业有气势，战绩数据准确，突出精彩对局"
+      # 前厅SOP
+      frontdesk_responsible_for_wechat: false
+      add_wechat_after_groupbuy_checkin: false
+      member_inquiry_handling: "详细介绍赛季VIP权益，引导联系主教练"
+      assistant_inquiry_handling: "展示教练资质卡，引导扫码预约，强调先试一节课"
+      complaint_boundary: "赛事争议由裁判组裁定，价格争议找店长，不在前台当场承诺"
+      ban_frontdesk_price_quote: true
+      # 内容风格
+      moments_tone: "short_direct"
+      private_chat_tone: "casual_warm"
+      group_notice_tone: "short_direct"
+      emoji_preference: "minimal"
+      max_emoji_per_post: 1
+      avoid_official_tone: false
+      avoid_salesy_tone: true
+      use_boss_voice: false
+      use_manager_voice: false
+      # AI偏好
+      default_output_length: "concise"
+      always_include_execution_tips: true
+      missing_info_strategy: "placeholder"
+      # 设备
+      equipment:
+        table_count: 30
+        table_types: ["normal_pool_table", "snooker_table"]
+        table_type_note: "24张普通中八台+6张斯诺克标准台，另设2个半封闭赛事区（各4台）"
+
+    has_private_room: false
+    has_coaching: true
+    has_tournament: true
+    has_parking: true
+
+    coach_count: 8
+    coach_service_types: "竞技提升/赛前特训/斯诺克专项/体系化进阶"
+    coach_price_range: "助教188元/小时 主教练288元/小时 斯诺克专项教练368元/小时"
+    cue_price_range: "公用球杆免费，私杆代存80元/月，提供品牌球杆短租30元/场"
+    table_brands: "星牌（斯诺克6台）、独牙（4台）、普通中八14台"
+    cue_brands: "提供星牌/独牙公用球杆，可短租"
+    other_equipment: "专业计分系统、赛事直播屏2块、裁判台、积分榜公示屏"
+
+    daily_avg_customers: 180
+    peak_hours: "工作日晚18-23点，周末全天，赛事日白天提前2小时"
+    avg_spend_range: "人均100-200元，赛事日人均150-250元"
+    target_customers: "台球竞技爱好者、球馆常客、想参加正式比赛的球友"
+    style: "专业严肃中带着竞技热情，赛事氛围强，不搞娱乐气氛"
+    advantages: "重庆斯诺克台最多、固定赛事体系成熟、教练团队有竞赛资历"
+    common_activities: "每周六固定周赛（中八）、每月最后一个周日积分月赛、斯诺克体验赛（季度）"
+    brand_style: "professional"
+
+    # 店脑长期记忆
+    memories:
+      - type: "semantic"
+        content: "门店30台：24张中八+6张斯诺克台，有专业赛事区，是重庆斯诺克台最集中的球馆"
+        confidence: "high"
+      - type: "preference"
+        content: "老板要求文案不提具体价格，竞技客群对定价敏感，价格谈判要人工沟通"
+        confidence: "high"
+      - type: "operational"
+        content: "每周六下午周赛是全周最核心的运营节点，提前3天发群公告报名，当天早1小时到才有好台位"
+        confidence: "high"
+      - type: "episodic"
+        content: "上赛季总决赛来了58人，网络直播同时在线峰值340人，冠军奖金3000元，赛后3天馆内上座率提升30%"
+        confidence: "medium"
+      - type: "operational"
+        content: "竞技群里约有200名核心球友，平均每月进馆2次以上，这批人是口碑传播和赛事组织的核心"
+        confidence: "high"
+      - type: "preference"
+        content: "内容风格要简洁有力，竞技客不喜欢废话，赛事通知要直接讲时间/规则/奖金，不用铺垫"
+        confidence: "high"
+
+    # 员工记忆
+    staff_memories:
+      - type: "semantic"
+        content: "主教练陈教练，有省级赛事参赛经历，擅长中式九球与斯诺克，弟子中有3人进过市级决赛"
+        confidence: "high"
+      - type: "semantic"
+        content: "赛事裁判小刘熟悉各类赛制规则，每次赛事负责场控和记分，是赛事顺利运转的关键人"
+        confidence: "high"
+      - type: "operational"
+        content: "助教管理每月统计教练上钟排名，前3名公示在公告板激励，末位助教本月需主动开发一个新客"
+        confidence: "medium"

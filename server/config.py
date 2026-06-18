@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
 
+    # BYOK：加密门店自带 API Key 的主密钥（Fernet 44 字符 base64）。从 env BYOK_ENCRYPT_KEY 注入，不进代码库。
+    byok_encrypt_key: str = ""
+
     # 生图并发与超时（依据 OpenAI 账户 IPM 限额 + "生图慢、绝不重试"策略，详见 CLAUDE.md「AI 并发与限流」）
     # gpt-image-2 单张可能 5-10 分钟：读超时必须覆盖真实耗时，否则慢但已成功的图被判超时失败=钱花了图没拿到
     openai_image_timeout: float = 900.0

@@ -1,7 +1,7 @@
 import { ApiError } from "@/types/api";
 import type { OrchestrationTask, RepurposeResponse } from "@/types/api";
 import type { LoginRequest, RegisterRequest, TokenResponse, User } from "@/types/auth";
-import type { StoreCreate, StoreResponse, StoreUpdate, StoreListItem, UploadResponse, StoreMemoryItem } from "@/types/store";
+import type { StoreCreate, StoreResponse, StoreUpdate, StoreListItem, UploadResponse, StoreMemoryItem, ByokConfigOut, ByokConfigIn, ByokValidateResult } from "@/types/store";
 import type { GenerateActivityRequest, GenerateOperationRequest, GenerateWorkbenchRequest, GenerateOutreachRequest, GenerateSOPRequest, GenerateGamesRequest, GeneratePerformanceRequest, GenerateDiagnosisRequest, GenerationResponse } from "@/types/generate";
 import type { ImageGenerateRequest, ImageGenerateResponse, SizeOption, PromptExpandRequest, PromptExpandResponse } from "@/types/poster";
 import type {
@@ -24,7 +24,7 @@ export interface AgentStreamHandlers {
   onToolResult?: (tool: string, content: string, id?: string) => void;
   onApprovalRequest?: (tool: string, args: Record<string, unknown>, id?: string) => void;
   onFinal?: (content: string) => void;
-  onDone?: (info: { turns: number; stopped_reason: string }) => void;
+  onDone?: (info: { turns: number; stopped_reason: string; conversation_id?: string; generation_id?: string }) => void;
   onError?: (error: string) => void;
 }
 
@@ -32,6 +32,7 @@ export interface AgentChatPayload {
   message: string;
   history?: unknown[];
   model?: string;
+  conversation_id?: string | null;
 }
 
 class ApiClient {
@@ -238,6 +239,17 @@ class ApiClient {
 
   updateStore(data: StoreUpdate) {
     return this.request<StoreResponse>("PUT", "/api/v1/stores/me", data);
+  }
+
+  // BYOK：门店自带大模型 Key（仅 owner，后端 owner_id 校验）
+  getByokConfig() {
+    return this.request<ByokConfigOut>("GET", "/api/v1/stores/me/byok");
+  }
+  updateByokConfig(data: ByokConfigIn) {
+    return this.request<ByokConfigOut>("PUT", "/api/v1/stores/me/byok", data);
+  }
+  validateByokConfig(data: ByokConfigIn) {
+    return this.request<ByokValidateResult>("POST", "/api/v1/stores/me/byok/validate", data);
   }
 
   uploadLogo(file: File) {
@@ -503,7 +515,7 @@ class ApiClient {
               case "tool_result": handlers.onToolResult?.(ev.tool, ev.content || "", ev.id); break;
               case "approval_request": handlers.onApprovalRequest?.(ev.tool, ev.args || {}, ev.id); break;
               case "final": handlers.onFinal?.(ev.content || ""); break;
-              case "done": handlers.onDone?.({ turns: ev.turns, stopped_reason: ev.stopped_reason }); return;
+              case "done": handlers.onDone?.({ turns: ev.turns, stopped_reason: ev.stopped_reason, conversation_id: ev.conversation_id, generation_id: ev.generation_id }); return;
               case "error": handlers.onError?.(ev.error || "生成出错，请重试"); return;
             }
           } catch {

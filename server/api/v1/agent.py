@@ -28,6 +28,7 @@ from db.session import async_session
 from models.user import User
 from services.agent.context import AgentContext
 from services.agent.loop import run_agent_loop_stream
+from services.ai.factory import ProviderFactory
 from services.agent.registry import default_registry
 from services.memory_service import format_memories_for_prompt, load_store_memory, remember
 from services.quota_service import check_quota
@@ -46,19 +47,46 @@ _AGENT_BASE_PROMPT = (
     "这两个只在用户真的问『今天几号/是不是周末』，或开口问『今天该做点啥、给点建议』时才用；写具体内容时系统会自动带上当天日期，不必单独查。"
     "【会花钱/有后果的事】做海报、对外发布等，把方案想好后直接调用对应工具就行——系统会自动弹确认卡片让用户点，"
     "你不要再用文字反复问『行不行/要不要生成』，简短说一句你准备做什么即可。"
-    "【红线】遇到擦边或违规要求（招『美女陪练』并主打颜值身材、宣传『美女陪打/陪玩』、无底线让利如『充1万送1万』『全城最低』『台费免费畅打』、诱导助教与客人私下约会等），"
-    "不要调用工具去生成这类内容，而是用一两句话善意说清风险，给出走正路的替代做法（靠球技、氛围、服务、合理实惠）。"
+    "【交付内容会原样展示，别复述】写文案/活动方案/约客话术/诊断/玩法/平台内容/团购套餐这些工具产出的成品，"
+    "系统会原样、完整地展示给用户(可一键复制)，你绝不要在回复里再把整段内容抄一遍或改写精简——"
+    "那既多余又会让校准过的内容失真。你只需用一句话说『写好啦，你看看，要改告诉我』这类简短引导即可。"
+    "【红线·只有这两件事死活不碰】① 把助教服务直接卖成实际性交易（性服务/援交/陪睡/上门过夜/特殊服务这类）；"
+    "② 门店自己当庄、定盘口、按局抽水组织赌球（开设赌场罪）。遇到这两类——"
+    "**绝不调用任何工具，哪怕想写个『干净版』也不行**；先停下，一两句说清为什么不能这么搞、给走正路的替代。"
+    "【这些都是球房真实生意，照帮、别当红线误杀】助教的美女人设/颜值形象/异性情绪价值、引导客人加微信、陪打、"
+    "助教超休陪客人出去吃饭喝酒（这是真实存在的延伸服务，带职业分寸、不写性暗示就行）、"
+    "客人之间你情我愿的追分较劲（门店只提供场地、还要帮着把金额控住别玩大）、学生放学后/周末/假期的正当优惠——"
+    "这些都是这行真实的运营逻辑，正常调工具帮，最多写的时候把握点分寸，绝不能因为『听着擦边』就误当红线拒掉。"
     "【把方向带正】有些活儿能帮，但别顺着错的来，要把方向带正："
     "①客人给差评/投诉，是帮老板『专业体面地回应』而不是『怼客人/损客人』——写得真诚、有格局、让围观的人觉得店家大气，绝不写嘲讽、反击、贬低顾客的话；"
     "②面向学生/中学生的内容，只主打放学后、周末、寒暑假的正当休闲，绝不诱导逃课翘课，注意未成年的时段与分寸；"
     "③比赛带现金奖励时，定位成正规赛事（报名费做奖池 + 奖杯荣誉），绝不做成抽头/对赌/赌球；"
-    "④涉及辞退、合同、劳动纠纷等法律文书，可以给参考模板，但要提醒『这属于法律文书，落地前请让 HR 或专业人士把关』。"
+    "④涉及辞退、合同、劳动纠纷等法律文书，可以给参考模板，但要提醒『这属于法律文书，落地前请让 HR 或专业人士把关』；"
+    "⑤老板想搞充值/优惠活动但开的条件太猛（充1万送1万、台费终身免费畅打、全城最低价这类无底线让利或绝对化广告词），"
+    "别一口回绝、也别照搬——正常调用写文案/活动工具去做，但把力度收到合理（小比例赠送、用真实价格、不写『全城最低/终身免费』这种违规词），"
+    "并顺口提醒老板你为什么这么调（力度太猛会亏、绝对化广告词违广告法）。"
 )
 
 
+def _today_line() -> str:
+    """当天日期（北京时间）一句话，注入 system prompt 让大脑天然懂"今天/这周末"是哪天，
+    不必为规划/写内容而反射性先调 get_current_date 多兜一轮（实测这是最常见的无谓工具调用）。"""
+    try:
+        from core.timezone import business_today
+        d = business_today()
+        wk = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][d.weekday()]
+        return (f"【今天】{d.isoformat()}（{wk}）。涉及『今天/明天/这周末/最近』等时间时直接据此推算并落到内容里，"
+                "不必再调 get_current_date 查日期。")
+    except Exception:
+        return ""
+
+
 def compose_agent_system_prompt(profile_text: str, brain_text: str) -> str:
-    """拼 agent 的 system prompt：基底指令 + 门店画像 + 店脑记忆（让它"懂这家店"）。"""
+    """拼 agent 的 system prompt：基底指令 + 当天日期 + 门店画像 + 店脑记忆（让它"懂当下、懂这家店"）。"""
     parts = [_AGENT_BASE_PROMPT]
+    today = _today_line()
+    if today:
+        parts.append(today)
     if profile_text and profile_text.strip():
         parts.append("【这家店的情况】\n" + profile_text.strip())
     if brain_text and brain_text.strip():
@@ -78,10 +106,38 @@ async def _learn_in_background(store_id: str, text: str) -> None:
         logger.exception("agent 店脑后台学习失败 store_id=%s", store_id)
 
 
+async def _persist_agent_chat(db, store, user, message: str, content: str, gen_id: str, conv_uuid, turns: int) -> None:
+    """落库 agent 会话(type=agent)+conversation_id,供刷新续接/分析,并打点。故障安全:失败不阻断 SSE。"""
+    import uuid as _uuid
+    try:
+        from models.generation import Generation
+        db.add(Generation(
+            id=_uuid.UUID(gen_id), store_id=store.id, user_id=(user.id if user else None),
+            type="agent", sub_type="chat", input_params={"message": message},
+            prompt_used=message, result=(content or ""), model_used="agent", tokens_used=0,
+            conversation_id=conv_uuid,
+        ))
+        await db.commit()
+    except Exception:
+        logger.warning("agent 会话落库失败,跳过", exc_info=True)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+    try:
+        from services.usage_event_service import log_event
+        await log_event("agent_chat", store_id=str(store.id),
+                        user_id=(str(user.id) if user else None),
+                        props={"turns": turns, "has_output": bool(content)})
+    except Exception:
+        pass
+
+
 class AgentChatRequest(BaseModel):
     message: str
     history: list[dict] | None = None
     model: str | None = None
+    conversation_id: str | None = None  # 多轮续接：传它则后端按会话查历史(刷新不丢、省token)
 
 
 @router.post("/chat")
@@ -105,16 +161,70 @@ async def agent_chat(
 
     ctx = AgentContext(db=db, store=store, user=user)
 
+    # 多轮续接：有 conversation_id 则从 DB 查本会话历史(替代前端全量回传——刷新不丢、省 token、更可靠);否则用前端 history
+    import uuid as _uuid
+    history = body.history
+    if body.conversation_id:
+        try:
+            from sqlalchemy import select
+            from models.generation import Generation as _Gen
+            rows = (await db.execute(
+                select(_Gen).where(
+                    _Gen.store_id == store.id,
+                    _Gen.conversation_id == _uuid.UUID(body.conversation_id),
+                    _Gen.type == "agent",
+                    _Gen.is_deleted == False,  # noqa: E712
+                ).order_by(_Gen.created_at)
+            )).scalars().all()
+            hist: list[dict] = []
+            for g in rows[-5:]:  # 只取最近5轮，控 context
+                uin = (g.input_params or {}).get("message")
+                if uin:
+                    hist.append({"role": "user", "content": uin})
+                if g.result:
+                    hist.append({"role": "assistant", "content": g.result[:2000]})
+            if hist:
+                history = hist
+        except Exception:
+            logger.warning("agent 历史加载失败 conversation_id=%s", body.conversation_id, exc_info=True)
+
+    gen_id = str(_uuid.uuid4())
+    try:
+        conv_uuid = _uuid.UUID(body.conversation_id) if body.conversation_id else _uuid.UUID(gen_id)
+    except (ValueError, TypeError):
+        conv_uuid = _uuid.UUID(gen_id)
+
     async def event_generator():
+        from services.agent.tools import DELIVERABLE_TOOLS
+        final_content = ""
+        deliverables: list[str] = []  # 交付类工具的产出(成品)，需并进 result 落库——否则下一轮看不到、改不了
+        turns = 0
         try:
             async for event in run_agent_loop_stream(
                 user_message=body.message,
                 registry=default_registry,
                 ctx=ctx,
                 system_prompt=system_prompt,
-                history=body.history,
+                history=history,
                 model=body.model,
+                provider=ProviderFactory.get_text_provider_for_store(store),  # BYOK：对话也走门店自带 key
             ):
+                et = event.get("type")
+                if et == "final":
+                    final_content = event.get("content", "") or final_content
+                if et == "tool_result" and event.get("tool") in DELIVERABLE_TOOLS:
+                    c = event.get("content") or ""
+                    if c.strip():
+                        deliverables.append(c)
+                if et == "done":
+                    turns = event.get("turns", 0) or 0
+                    # 落库 result = 交付成品 + 收尾语：① 历史里看得到真内容 ② 下一轮"把刚才那条改一下"大脑读得到
+                    persist_text = final_content
+                    if deliverables:
+                        tail = f"\n\n{final_content}" if final_content.strip() else ""
+                        persist_text = "\n\n".join(deliverables) + tail
+                    await _persist_agent_chat(db, store, user, body.message, persist_text, gen_id, conv_uuid, turns)
+                    event = {**event, "generation_id": gen_id, "conversation_id": str(conv_uuid)}
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception:
             logger.exception("agent chat stream error")

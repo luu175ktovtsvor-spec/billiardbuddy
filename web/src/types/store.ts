@@ -167,3 +167,28 @@ export interface StoreMemoryItem {
   content: string;
   confidence: string;
 }
+
+/** BYOK：门店自带大模型 Key 配置（读，不含明文 key） */
+export interface ByokConfigOut {
+  enabled: boolean;
+  base_url: string | null;
+  model: string | null;
+  key_configured: boolean;
+  key_mask: string;
+}
+
+/** BYOK：写配置（api_key 明文，仅提交时传；不传则保留原 key） */
+export interface ByokConfigIn {
+  enabled: boolean;
+  base_url?: string | null;
+  api_key?: string | null;
+  model?: string | null;
+}
+
+/** BYOK：测试连接结果 */
+export interface ByokValidateResult {
+  ok: boolean;
+  model?: string;
+  sample?: string;
+  error?: string;
+}

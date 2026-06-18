@@ -78,6 +78,13 @@ class Store(Base):
     common_activities: Mapped[str | None] = mapped_column(Text)
     brand_style: Mapped[str | None] = mapped_column(String(50))  # "lively" / "professional" / "youthful" / "premium"
 
+    # BYOK（门店自带大模型 Key，自担 API 成本与并发；解决"全员共用平台单 key"的并发瓶颈+成本不可持续）
+    # key 经 core/crypto 加密存 byok_api_key_enc，绝不明文落库；base_url/model 支持任意 OpenAI 兼容模型
+    byok_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    byok_base_url: Mapped[str | None] = mapped_column(String(300))
+    byok_api_key_enc: Mapped[str | None] = mapped_column(Text)
+    byok_model: Mapped[str | None] = mapped_column(String(100))
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -944,3 +944,119 @@ anti_examples:
     regression_test: true
     runtime_prompt_eligible: false
     priority: "P0"
+
+  - id: "B038"
+    source_case_id: "HF-ASSIST-GIFT-01"
+    title: "充值活动把助教服务写成赠品/赠时/赠次"
+    role: "operator"
+    target_customer_type: "all"
+    output_package:
+      - "activity_plan"
+      - "moments"
+      - "group_notice"
+      - "execution_tips"
+    scene_tags:
+      - "recharge_activity"
+      - "assistant_service"
+    risk_tags:
+      - "assistant_as_gift"
+      - "free_assistant"
+    user_intent: "搞个充值活动，吸引客人充钱，写个文案"
+    wrong_output_summary: "在充值活动文案中写'充300送1小时助教陪练''充500赠助教服务2次''充值满额享助教体验'等，把助教服务当作充值赠品"
+    error_types:
+      - "assistant_as_gift"
+    why_wrong:
+      - "助教陪练是独立的付费增值服务，不能被当作充值行为的附赠品；这样写会破坏助教服务的价值体系，导致客户觉得助教是附送的、不值钱的"
+      - "助教服务的收费权归助教/门店，不能被充值活动随意赠送"
+    correct_approach: "充值赠品只写台费相关（赠台费时长/赠台费金额/赠台位），助教服务另行说明是付费项目，不要捆绑在充值方案里"
+    runtime_rule_summary: "充值/办卡活动赠品只限台费，不得写赠助教/赠陪练/赠助教次数/赠助教时长"
+    regression_test: true
+    runtime_prompt_eligible: false
+    priority: "P0"
+
+  - id: "B039"
+    source_case_id: "HF-DISCOUNT-HOOK-01"
+    title: "活动/拉新文案钩子全靠优惠折扣堆砌而非卖氛围社交"
+    role: "manager"
+    target_customer_type: "new"
+    output_package:
+      - "moments"
+      - "group_notice"
+      - "activity_plan"
+      - "execution_tips"
+    scene_tags:
+      - "activity_plan"
+      - "wechat_moments"
+      - "new_customer_acquisition"
+    risk_tags:
+      - "discount_hook_overload"
+      - "unknown_discount"
+    user_intent: "最近想搞个活动吸引新人来打球，帮我写个文案"
+    wrong_output_summary: "文案核心钩子全是'首次来店8折''拉朋友来免1小时台费''充值满200打9折''介绍新客得50元现金券'，通篇靠优惠折扣驱动，没有任何关于台球乐趣、社交氛围、技术进步的表达"
+    error_types:
+      - "discount_hook_overload"
+    why_wrong:
+      - "台球房的核心价值是社交、娱乐、技术成长，优惠只是辅助手段而非主角；纯优惠钩子吸引来的是价格敏感客，留不住、复购差"
+      - "折扣幅度和现金金额均未经门店确认，属于编造数据"
+      - "用户只说'吸引新人'，没有说要做折扣活动"
+    correct_approach: "主钩子写氛围和社交：'不会打？来这里学两招比自己瞎练快多了''带朋友来，一台球跟朋友打半天比出去吃饭还值''周末有空台，不用等，来就能打'。如果要写优惠，加注：以门店实际优惠为准，请确认后使用"
+    runtime_rule_summary: "拉新/活动文案主钩子写氛围/社交/乐趣，优惠只能作为辅助且须有确认提示；禁止以折扣/现金/减免堆砌为主要卖点"
+    regression_test: true
+    runtime_prompt_eligible: false
+    priority: "P0"
+
+  - id: "B040"
+    source_case_id: "HF-RECHARGE-GIFT-SCOPE-01"
+    title: "充值赠送金额可用于助教/商品消费（应仅限台费）"
+    role: "operator"
+    target_customer_type: "old"
+    output_package:
+      - "moments"
+      - "group_notice"
+      - "execution_tips"
+    scene_tags:
+      - "recharge_activity"
+      - "member_question"
+    risk_tags:
+      - "recharge_gift_scope_error"
+      - "assistant_as_gift"
+    user_intent: "帮我写个一卡通充值方案，充值有赠送"
+    wrong_output_summary: "写'充500赠100，赠送金额可用于台费、助教陪练或任意消费''赠送余额全场通用，助教、球杆、饮料均可用'，把赠送金额的使用范围扩展到助教服务和商品"
+    error_types:
+      - "recharge_gift_scope_error"
+    why_wrong:
+      - "行业惯例：一卡通充值赠送金额通常仅限台费抵扣，不赠助教服务（助教有独立收费体系）；赠送部分可否用于商品需门店另行确认，不能AI随意写'全场通用'"
+      - "把赠额开放给助教消费，等于变相赠送助教服务，违反助教非赠品原则"
+    correct_approach: "只写'赠送金额仅限台费使用'，或用占位符'赠送金额使用范围【请补充：如仅限台费/是否含商品等】'；绝不自行扩展到助教或全场通用"
+    runtime_rule_summary: "充值赠送金额默认仅限台费，不得写全场通用/可用于助教/可买商品；如需扩大范围须用占位符提示门店确认"
+    regression_test: true
+    runtime_prompt_eligible: false
+    priority: "P0"
+
+  - id: "B041"
+    source_case_id: "HF-ASSIST-CARD-BUNDLE-01"
+    title: "办卡/入会权益中把助教服务写成固定权益或标配"
+    role: "operator"
+    target_customer_type: "new"
+    output_package:
+      - "moments"
+      - "private_chat"
+      - "execution_tips"
+    scene_tags:
+      - "member_question"
+      - "assistant_service"
+    risk_tags:
+      - "assistant_as_gift"
+      - "unknown_member_plan"
+    user_intent: "帮我写个一卡通介绍，说说办了有什么好处"
+    wrong_output_summary: "一卡通权益介绍中写'会员享每月1次免费助教陪练''充值入会即享助教体验权益''会员专属助教指导课程'，把助教服务绑入会员卡固定权益"
+    error_types:
+      - "assistant_as_gift"
+    why_wrong:
+      - "助教服务是独立付费项目，不是会员卡标配权益，不得被AI自行捆绑进去"
+      - "即便门店有此政策，也必须来自门店资料中明确填写的权益说明，AI不能自行发明"
+    correct_approach: "会员权益只写台费相关：台费折扣、高峰时段优先、专属台位预留等；如需提及助教，只写'助教陪练另行预约，价格以门店实际为准'，不列入固定权益"
+    runtime_rule_summary: "会员卡/一卡通权益介绍不得包含助教服务；如门店资料有明确说明则用门店数据，否则只写台费权益"
+    regression_test: true
+    runtime_prompt_eligible: false
+    priority: "P0"

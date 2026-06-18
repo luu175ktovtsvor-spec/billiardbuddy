@@ -22,6 +22,32 @@ class ProviderFactory:
         return cls._get_or_create_text_provider(name)
 
     @classmethod
+    def get_text_provider_for_store(cls, store) -> TextProvider:
+        """按门店路由文本生成 provider。
+
+        BYOK 门店（byok_enabled + 有密文 key）→ 用门店自带 key/base_url/model 构造临时 provider
+        （DeepSeekProvider 本质是通用 OpenAI 兼容 provider，可接 MiMo / deepseek-v4-pro / 任意兼容模型）；
+        token 成本与并发由门店自担。否则 → 走平台默认单例（行为不变）。
+        BYOK provider 不入单例缓存（各店 key 不同）；解密失败安全回退平台默认、不阻断生成。
+        """
+        enc = getattr(store, "byok_api_key_enc", None) if store is not None else None
+        if store is not None and getattr(store, "byok_enabled", False) and enc:
+            from core.crypto import try_decrypt
+            key = try_decrypt(enc)
+            if key:
+                from services.ai.providers.deepseek import DeepSeekProvider
+                return DeepSeekProvider(
+                    api_key=key,
+                    base_url=getattr(store, "byok_base_url", None) or None,
+                    default_model=getattr(store, "byok_model", None) or None,
+                    timeout=300.0,  # 兼容 reasoning 模型（如 MiMo v2.5）较慢的首字延迟
+                )
+            logger.warning("BYOK key 解密失败，回退平台默认 store_id=%s", getattr(store, "id", None))
+        elif store is not None and getattr(store, "byok_enabled", False):
+            logger.warning("门店启用 BYOK 但未配置 key，回退平台默认 store_id=%s", getattr(store, "id", None))
+        return cls.get_text_provider()
+
+    @classmethod
     def get_orchestration_provider(cls) -> TextProvider:
         """编排大脑 provider（Agent 规划/选工具用，可与内容生成 provider 不同）。
 
@@ -60,13 +86,17 @@ class ProviderFactory:
 
     @classmethod
     async def generate_stream_with_fallback(
-        cls, request, model: str | None = None, usage_sink: dict | None = None
+        cls, request, model: str | None = None, usage_sink: dict | None = None, store=None
     ):
-        """流式生成文本。根据 model 参数路由到不同 provider。
+        """流式生成文本。BYOK 门店走门店自带 provider（key/base_url/model 自担成本），
+        否则按 model 路由到平台默认 provider。
 
         usage_sink: 透传给 provider，生成结束后写入本次 token 用量。
         """
-        provider = cls.resolve_provider(model)
+        if store is not None and getattr(store, "byok_enabled", False):
+            provider = cls.get_text_provider_for_store(store)
+        else:
+            provider = cls.resolve_provider(model)
         async for token in provider.generate_stream(request, usage_sink=usage_sink):
             yield token, False
 
