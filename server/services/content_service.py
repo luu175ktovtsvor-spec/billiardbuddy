@@ -319,6 +319,63 @@ def _content_bigrams(key: str) -> set:
     return grams
 
 
+_KNOWLEDGE_EMB_CACHE: dict[str, list] = {}
+
+
+def _semantic_available() -> bool:
+    """装了 fastembed 本地语义模型 → True（用"按意思找料"）；否则回退字面 bigram。"""
+    try:
+        from services.rag.embedder import get_embedder
+        return getattr(get_embedder(), "name", "") == "fastembed"
+    except Exception:
+        return False
+
+
+def _knowledge_emb(key: str):
+    """某条知识片段（名+正文截断）的语义向量，缓存。"""
+    cached = _KNOWLEDGE_EMB_CACHE.get(key)
+    if cached is not None:
+        return cached
+    from services.rag.embedder import get_embedder
+    data = prompt_engine._templates.get(key) or {}
+    name = str(data.get("name", ""))
+    text = " ".join(str(v) for v in data.values() if isinstance(v, str))
+    emb = get_embedder().embed((name + "。" + text)[:400])
+    _KNOWLEDGE_EMB_CACHE[key] = emb
+    return emb
+
+
+def _semantic_fill(intent_text: str, candidates: list[str]) -> list[str]:
+    """按【意思】给候选知识排序，返回相关度够（cosine≥0.45）的 key。
+    "拍个视频"也能命中"短视频知识"（字面零重叠）——根治"换说法就漏"。"""
+    from services.rag.embedder import get_embedder, cosine
+    q = get_embedder().embed(intent_text)
+    scored: list[tuple[float, str]] = []
+    for key in candidates:
+        try:
+            s = cosine(q, _knowledge_emb(key))
+        except Exception:
+            s = 0.0
+        if s >= 0.45:
+            scored.append((s, key))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [k for _, k in scored]
+
+
+def _bigram_fill(intent_text: str, candidates: list[str]) -> list[str]:
+    """没装语义模型时的回退：字面强重叠（半数命中且≥4）才补。"""
+    ib = _intent_bigrams(intent_text)
+    scored: list[tuple[float, str]] = []
+    for key in candidates:
+        cb = _content_bigrams(key)
+        ov = len(ib & cb) if (ib and cb) else 0
+        frac = ov / len(ib) if ib else 0.0
+        if frac >= 0.5 and ov >= 4:
+            scored.append((frac, key))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [k for _, k in scored]
+
+
 def _select_knowledge_keys(required_keys: list[str], intent_text: str) -> list[str]:
     """根据用户意图筛选需要注入的知识键。
 
@@ -342,25 +399,13 @@ def _select_knowledge_keys(required_keys: list[str], intent_text: str) -> list[s
     kw_scored.sort(key=lambda x: x[0], reverse=True)
     selected_keys = [k for _, k in kw_scored[:_MAX_SCENE_KNOWLEDGE]]
 
-    # ② 还有空位 → 用"内容相关性"补漏：intent 的字 bigram 有多大比例出现在某知识【内容】里。
-    #    只填关键词没占满的剩余槽位，不挤掉关键词已选的（回归风险低），却能把"关键词漏配但内容相关"
-    #    的知识捞回来（如"短视频"在助教推广知识正文里，关键词没配也能命中）。
+    # ② 还有空位 → 补漏：装了 fastembed 用【按意思找】(语义)，否则回退【字面强重叠】。
+    #    只填关键词没占满的剩余槽位、不挤掉关键词已选的（回归风险低），却能把"关键词漏配但相关"
+    #    的知识捞回来（如"拍个视频"按意思命中"短视频知识"，字面零重叠也能找到）。
     if len(selected_keys) < _MAX_SCENE_KNOWLEDGE:
-        ib = _intent_bigrams(intent_text)
-        rest: list[tuple[float, str]] = []
-        for key in required_keys:
-            if _is_core_knowledge(key) or key in selected_keys:
-                continue
-            cb = _content_bigrams(key)
-            ov = len(ib & cb) if (ib and cb) else 0
-            frac = ov / len(ib) if ib else 0.0
-            # 要求【强重叠】才补：intent 半数以上字 bigram 命中、且绝对命中量 ≥4。
-            # 这样避开"朋友/客户/一个"这类常见字的噪声误补，又能捞回"短视频"这种真相关的漏配，
-            # 也不破坏"诊断知识只在诊断意图出现"等门控（非诊断意图不会和诊断内容强重叠）。
-            if frac >= 0.5 and ov >= 4:
-                rest.append((frac, key))
-        rest.sort(key=lambda x: x[0], reverse=True)
-        for _, key in rest:
+        candidates = [k for k in required_keys if not _is_core_knowledge(k) and k not in selected_keys]
+        fill = _semantic_fill(intent_text, candidates) if _semantic_available() else _bigram_fill(intent_text, candidates)
+        for key in fill:
             if len(selected_keys) >= _MAX_SCENE_KNOWLEDGE:
                 break
             selected_keys.append(key)

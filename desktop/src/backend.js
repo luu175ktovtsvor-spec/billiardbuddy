@@ -80,6 +80,8 @@ function _spawnProc({ userDataDir, repoRoot, onLog }) {
     DESKTOP_LOCAL: "1",
     SECRET_KEY: secretKey(userDataDir),
     BYOK_ENCRYPT_KEY: byokEncryptKey(userDataDir), // 纯 BYOK:加密老板自带 key,缺它则 PUT /me/byok 503
+    RAG_EMBEDDER: "fastembed", // 本地语义模型(bge-zh ~90MB):知识/店脑/历史"按意思找料",换说法也能找对。
+                               // 首次用时联网拉~90MB存本机缓存(后续离线);打包时应预置模型免首次下载(见执行清单)。
   };
   // PyInstaller onedir 产物:resources/backend/billiards_backend/billiards_backend(目录里的内层 exe)。
   const exeName = process.platform === "win32" ? "billiards_backend.exe" : "billiards_backend";
