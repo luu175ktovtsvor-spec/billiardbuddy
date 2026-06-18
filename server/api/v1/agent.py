@@ -29,6 +29,7 @@ from db.session import async_session
 from models.user import User
 from services.agent.context import AgentContext
 from services.agent.loop import run_agent_loop_stream
+from services.agent.proactive import generate_daily_drafts
 from services.ai.factory import ProviderFactory
 from services.agent.registry import default_registry
 from services.memory_service import format_memories_for_prompt, load_store_memory, remember
@@ -337,3 +338,20 @@ async def agent_execute(
         except (TypeError, ValueError):
             result = str(result)
     return {"tool": body.tool, "result": result}
+
+
+@router.post("/daily-drafts")
+async def agent_daily_drafts(
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
+):
+    """主动出击：据今日推荐，预生成几条【文字草稿】给老板过目（只产草稿、不自动发；海报类不碰）。
+
+    由老板主动触发（前端"帮我备好今天的"按钮）——BYOK 下不背着人烧钱，不做无人值守定时自动生成。
+    走 generate_workbench 管道，配额/落库/店脑/合规全生效；额度不足时由 check_quota 抛出友好提示。
+    """
+    await check_quota(db, str(store.id))
+    drafts = await generate_daily_drafts(db, store, user, max_drafts=3)
+    return {"drafts": drafts}

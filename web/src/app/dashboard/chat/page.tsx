@@ -344,6 +344,33 @@ export default function ManagerPage() {
   const baseName = (p: string) => p.split(/[\\/]/).pop() || p;
   const PERM_LABEL: Record<string, string> = { ask: "谨慎", auto_files: "自动改文件", full: "全自动" };
 
+  // 主动出击：管家据今日推荐，预生成几条草稿给老板过目（只产草稿、不自动发）
+  const [preparing, setPreparing] = useState(false);
+  const prepareToday = async () => {
+    if (preparing || generating || quotaExhausted) return;
+    setPreparing(true);
+    try {
+      const { drafts } = await api.dailyDrafts();
+      if (!drafts.length) {
+        setMessages((p) => [
+          ...p,
+          { role: "assistant", content: "今天暂时没有需要提前备的草稿——有想做的直接跟我说就行。" },
+        ]);
+      } else {
+        setMessages((p) => [
+          ...p,
+          { role: "assistant", content: `我看了下今天，先给你备了 ${drafts.length} 条草稿，你过目、要改告诉我：` },
+          ...drafts.map((d) => ({ role: "assistant" as const, content: `**${d.title}**\n\n${d.content}` })),
+        ]);
+      }
+      setQuotaVersion((v) => v + 1);
+    } catch (e) {
+      setMessages((p) => [...p, { role: "assistant", content: `⚠️ ${getErrorMessage(e)}`, error: true }]);
+    } finally {
+      setPreparing(false);
+    }
+  };
+
   // 常用场景：点开 mini 表单 / 填完组成需求发给管家
   const openScenario = (s: (typeof QUICK_SCENARIOS)[number]) => {
     setScAudience(""); setScTiming(""); setScOffer(""); setScNote("");
@@ -563,9 +590,20 @@ export default function ManagerPage() {
               🎱
             </span>
             <p className="mb-1 text-[17px] font-semibold text-slate-900">店里的事，交给管家</p>
-            <p className="mb-6 text-sm text-slate-500">
+            <p className="mb-5 text-sm text-slate-500">
               说一句你想干啥，我自己安排：写文案、约客、出活动主意、看经营问题。我懂你这家店。
             </p>
+
+            {/* 主动出击：让管家先把今天该做的备成草稿 */}
+            <button
+              type="button"
+              onClick={prepareToday}
+              disabled={preparing || generating || quotaExhausted}
+              className="mx-auto mb-6 flex items-center gap-2 rounded-xl bg-brand-600 px-5 py-2.5 text-[15px] font-medium text-white transition-transform active:scale-[0.98] disabled:opacity-50"
+            >
+              {preparing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+              {preparing ? "正在帮你备…" : "帮我备好今天的"}
+            </button>
 
             {/* 常用场景：点一下填几个空，管家用精修模板写（不知道怎么开口时用这个） */}
             <div className="mx-auto mb-6 grid max-w-md grid-cols-2 gap-2 sm:grid-cols-4">

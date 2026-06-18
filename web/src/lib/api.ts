@@ -534,6 +534,13 @@ class ApiClient {
 
   /** 确认执行一个需审批的 Agent 工具（如生图、改本地文件）。⚠️ 生图慢，可能要几分钟，靠 request 的长超时承接。
    * selectedFiles：桌面版改本地选定文件时透传，授权 execute 端可动这些文件（与 chat 一致）。 */
+  /** 主动出击：据今日推荐预生成几条文字草稿给老板过目（老板主动点触发，只产草稿不自动发）。 */
+  async dailyDrafts(): Promise<{
+    drafts: { title: string; category: string; prompt_key: string | null; content: string }[];
+  }> {
+    return this.request("POST", "/api/v1/agent/daily-drafts", {});
+  }
+
   async executeAgentTool(
     tool: string,
     args: Record<string, unknown>,
