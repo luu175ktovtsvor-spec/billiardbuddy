@@ -33,6 +33,12 @@ _APPROVAL_PENDING_MSG = (
     "请用一两句话把你打算做的事告诉用户、并请他确认，不要假装已经做完或已生成。"
 )
 
+# 达到 max_turns 仍未收敛时，强制模型基于已有结果给一段最终答复（不再给工具），
+# 避免直接返回空答复让用户看到"AI 没反应"。
+_FORCE_FINAL_MSG = "请基于上面已有的工具结果，直接用一段话给用户最终答复，不要再调用任何工具。"
+# 强制收尾仍拿不到内容时的静态兜底（极端情况）。
+_FALLBACK_FINAL = "这个需求我拆了好几步还没完全收尾。你可以把要求说得更具体一点，或者分两次让我来做。"
+
 
 @dataclass
 class AgentStep:
@@ -125,10 +131,21 @@ async def run_agent_loop(
             steps.append(AgentStep(type="tool_result", tool_name=name, tool_call_id=tc_id, content=result_str))
             messages.append({"role": "tool", "tool_call_id": tc_id, "content": result_str})
 
-    # 达到 max_turns 仍未收敛（兜底，防止循环跑飞）
-    logger.warning("agent loop 达到 max_turns=%s 仍未结束", max_turns)
-    steps.append(AgentStep(type="final", content=""))
-    return AgentResult(final_text="", steps=steps, turns=max_turns,
+    # 达到 max_turns 仍未收敛（兜底，防止循环跑飞）：强制模型基于已有结果给最终答复，不返回空。
+    logger.warning("agent loop 达到 max_turns=%s 仍未结束，强制收尾", max_turns)
+    messages.append({"role": "user", "content": _FORCE_FINAL_MSG})
+    final_text = ""
+    try:
+        resp = await provider.generate(TextRequest(
+            messages=messages, model=model, max_tokens=max_tokens, temperature=temperature,
+        ))
+        final_text = (resp.content or "").strip()
+    except Exception:  # 强制收尾本身失败也不崩，走静态兜底
+        logger.exception("max_turns 强制收尾失败")
+    if not final_text:
+        final_text = _FALLBACK_FINAL
+    steps.append(AgentStep(type="final", content=final_text))
+    return AgentResult(final_text=final_text, steps=steps, turns=max_turns,
                        stopped_reason="max_turns", messages=messages)
 
 
@@ -239,7 +256,18 @@ async def run_agent_loop_stream(
             yield {"type": "tool_result", "tool": name, "id": tc_id, "content": result}
             messages.append({"role": "tool", "tool_call_id": tc_id, "content": result})
 
-    # 达到 max_turns 仍未收敛
-    logger.warning("agent stream loop 达到 max_turns=%s 仍未结束", max_turns)
-    yield {"type": "final", "content": ""}
+    # 达到 max_turns 仍未收敛：强制模型基于已有结果给最终答复（不再给工具），逐片流式吐出，不返回空。
+    logger.warning("agent stream loop 达到 max_turns=%s 仍未结束，强制收尾", max_turns)
+    messages.append({"role": "user", "content": _FORCE_FINAL_MSG})
+    final_parts: list[str] = []
+    try:
+        async for tok in provider.generate_stream(
+            TextRequest(messages=messages, model=model, max_tokens=max_tokens, temperature=temperature),
+        ):
+            final_parts.append(tok)
+            yield {"type": "token", "content": tok}
+    except Exception:  # 强制收尾失败也不崩，走静态兜底
+        logger.exception("max_turns 强制收尾(流式)失败")
+    final_text = "".join(final_parts).strip() or _FALLBACK_FINAL
+    yield {"type": "final", "content": final_text}
     yield {"type": "done", "turns": max_turns, "stopped_reason": "max_turns"}

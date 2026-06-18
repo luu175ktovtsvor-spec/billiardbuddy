@@ -80,6 +80,29 @@ def test_loop_max_turns_guard():
     res = _run(user_message="x", registry=reg, provider=_AlwaysToolProvider(), max_turns=3)
     assert res.stopped_reason == "max_turns"
     assert res.turns == 3
+    # 机制：即便没收敛也绝不返回空答复（强制收尾仍空 → 静态兜底文案）
+    assert res.final_text.strip() != ""
+
+
+def test_loop_max_turns_forces_final_answer():
+    """达到 max_turns 时强制收尾：基于已有结果再要一段最终答复（不带工具），而非返回空。"""
+    async def handler(args, ctx):
+        return "ok"
+
+    reg = _registry_with(handler)
+
+    class _ToolsThenFinalProvider(MockTextProvider):
+        async def generate(self, request):
+            # 带工具的轮次永远要求调工具（逼到 max_turns）；强制收尾那次(无工具)给真答复
+            if request.tools:
+                return TextResponse(content="", model="mock",
+                                    tool_calls=[_tc("get_today")], finish_reason="tool_calls")
+            return TextResponse(content="这是强制收尾的最终答复", model="mock",
+                                tool_calls=None, finish_reason="stop")
+
+    res = _run(user_message="x", registry=reg, provider=_ToolsThenFinalProvider(), max_turns=3)
+    assert res.stopped_reason == "max_turns"
+    assert res.final_text == "这是强制收尾的最终答复"  # 非空、且确实来自强制收尾那次调用
 
 
 def test_loop_unknown_tool_fed_back():
