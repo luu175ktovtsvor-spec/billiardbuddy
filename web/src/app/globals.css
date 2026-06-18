@@ -66,3 +66,11 @@
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
 }
+
+/* 桌面端（Electron 无边框窗口）拖拽区：标题/侧栏顶部可拖动窗口，按钮区免拖拽。web 浏览器无副作用。 */
+.app-drag {
+  -webkit-app-region: drag;
+}
+.app-no-drag {
+  -webkit-app-region: no-drag;
+}
