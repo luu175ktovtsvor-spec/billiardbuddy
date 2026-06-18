@@ -56,6 +56,19 @@ const SUGGESTIONS = [
   "最近生意有点冷清，帮我看看",
 ];
 
+// 常用场景快捷入口：点一下弹 mini 表单填关键信息 → 组成需求喂给管家（管家再用精修模板写）。
+// label 与场景目录里的中文名对齐，管家 find_scenario 能匹配到对应精修模板。
+const QUICK_SCENARIOS: { label: string; hint: string; Icon: typeof PenLine }[] = [
+  { label: "搞个活动", hint: "周末/节日/会员日", Icon: Sparkles },
+  { label: "写朋友圈", hint: "今晚发什么", Icon: PenLine },
+  { label: "发群公告", hint: "群里通知一声", Icon: FileText },
+  { label: "约老客回流", hint: "好久没来的", Icon: UserPlus },
+  { label: "经营诊断", hint: "生意问题把脉", Icon: Stethoscope },
+  { label: "助教推广", hint: "突出特长引流", Icon: Lightbulb },
+  { label: "强一比赛主持", hint: "赛事主持词", Icon: Dices },
+  { label: "团购转私域", hint: "团购客加微信", Icon: Wrench },
+];
+
 // 管家是主界面：移动端顶栏菜单进其他功能（桌面端有侧栏，不用这个）
 const NAV_ITEMS = [
   { href: "/dashboard", label: "今日", Icon: LayoutDashboard },
@@ -158,6 +171,12 @@ export default function ManagerPage() {
   const [permissionMode, setPermissionMode] = useState<"ask" | "auto_files" | "full">("ask");
   const [fullDisk, setFullDisk] = useState(false);
   const [permSheetOpen, setPermSheetOpen] = useState(false);
+  // 常用场景 mini 表单
+  const [scenarioOpen, setScenarioOpen] = useState<(typeof QUICK_SCENARIOS)[number] | null>(null);
+  const [scAudience, setScAudience] = useState("");
+  const [scTiming, setScTiming] = useState("");
+  const [scOffer, setScOffer] = useState("");
+  const [scNote, setScNote] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null); // 多轮续接：刷新不丢、后端按它查历史
   const [draft, setDraft] = useState(""); // 流式中的最终答复
@@ -325,6 +344,23 @@ export default function ManagerPage() {
   const baseName = (p: string) => p.split(/[\\/]/).pop() || p;
   const PERM_LABEL: Record<string, string> = { ask: "谨慎", auto_files: "自动改文件", full: "全自动" };
 
+  // 常用场景：点开 mini 表单 / 填完组成需求发给管家
+  const openScenario = (s: (typeof QUICK_SCENARIOS)[number]) => {
+    setScAudience(""); setScTiming(""); setScOffer(""); setScNote("");
+    setScenarioOpen(s);
+  };
+  const submitScenario = () => {
+    if (!scenarioOpen) return;
+    const parts = [`帮我写「${scenarioOpen.label}」`];
+    if (scAudience.trim()) parts.push(`面向${scAudience.trim()}`);
+    if (scTiming.trim()) parts.push(scTiming.trim());
+    if (scOffer.trim()) parts.push(`优惠：${scOffer.trim()}`);
+    let msg = parts.join("，");
+    if (scNote.trim()) msg += `。${scNote.trim()}`;
+    setScenarioOpen(null);
+    void send(msg);
+  };
+
   // 用户点"确认生成"→ 经 /agent/execute 真正执行该工具（生图慢，可能等几分钟）
   const confirmApproval = async (idx: number, ap: ApprovalState) => {
     setExecutingIdx(idx);
@@ -476,6 +512,47 @@ export default function ManagerPage() {
         </div>
       </Sheet>
 
+      {/* 常用场景 mini 表单：填几个空 → 组成需求发给管家（管家用精修模板写） */}
+      <Sheet open={!!scenarioOpen} onClose={() => setScenarioOpen(null)} title={scenarioOpen?.label ?? ""}>
+        {scenarioOpen && (
+          <div className="space-y-3 pb-3">
+            <p className="text-[13px] text-slate-500">填几个空（都能不填），管家用校准过的模板帮你写，省得自己想怎么开口。</p>
+            <input
+              value={scAudience}
+              onChange={(e) => setScAudience(e.target.value)}
+              placeholder="面向谁？如 上班族 / 学生 / 情侣（可不填）"
+              className="w-full rounded-xl bg-[#F2F2F7] px-4 py-2.5 text-[15px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+            />
+            <input
+              value={scTiming}
+              onChange={(e) => setScTiming(e.target.value)}
+              placeholder="什么时间 / 场次？如 周五晚 / 整个 7 月（可不填）"
+              className="w-full rounded-xl bg-[#F2F2F7] px-4 py-2.5 text-[15px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+            />
+            <input
+              value={scOffer}
+              onChange={(e) => setScOffer(e.target.value)}
+              placeholder="有什么优惠 / 力度？如 双人立减 30（可不填）"
+              className="w-full rounded-xl bg-[#F2F2F7] px-4 py-2.5 text-[15px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+            />
+            <textarea
+              value={scNote}
+              onChange={(e) => setScNote(e.target.value)}
+              rows={2}
+              placeholder="还有什么要补充的？（可不填）"
+              className="w-full resize-none rounded-xl bg-[#F2F2F7] px-4 py-2.5 text-[15px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+            />
+            <button
+              type="button"
+              onClick={submitScenario}
+              className="w-full rounded-xl bg-brand-600 py-3 text-[15px] font-medium text-white transition-transform active:scale-[0.98]"
+            >
+              让管家写
+            </button>
+          </div>
+        )}
+      </Sheet>
+
       <QuotaBadge refreshKey={quotaVersion} onQuota={(q) => setQuotaRemaining(q.remaining)} />
 
       {/* 消息流 */}
@@ -489,6 +566,24 @@ export default function ManagerPage() {
             <p className="mb-6 text-sm text-slate-500">
               说一句你想干啥，我自己安排：写文案、约客、出活动主意、看经营问题。我懂你这家店。
             </p>
+
+            {/* 常用场景：点一下填几个空，管家用精修模板写（不知道怎么开口时用这个） */}
+            <div className="mx-auto mb-6 grid max-w-md grid-cols-2 gap-2 sm:grid-cols-4">
+              {QUICK_SCENARIOS.map((s) => (
+                <button
+                  key={s.label}
+                  type="button"
+                  onClick={() => openScenario(s)}
+                  className="flex flex-col items-center gap-1.5 rounded-2xl bg-white p-3 ring-1 ring-slate-100 transition-all active:scale-[0.97]"
+                >
+                  <s.Icon className="h-5 w-5 text-brand-600" />
+                  <span className="text-[13px] font-medium text-slate-800">{s.label}</span>
+                  <span className="text-[11px] leading-tight text-slate-400">{s.hint}</span>
+                </button>
+              ))}
+            </div>
+
+            <p className="mb-2 text-[12px] text-slate-400">或者直接说一句：</p>
             <div className="flex flex-col items-center gap-2">
               {SUGGESTIONS.map((s) => (
                 <button
