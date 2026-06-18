@@ -63,6 +63,38 @@ def _strip_response_prefixes(content: str) -> str:
     return content
 
 
+# ── 业务铁律·代码闸：绝对化广告词（违《广告法》） ──
+# 把"靠模型自觉别写"改成"代码确定性兜底"——弱模型常忽略"别写全城最低/终身免费"，
+# 这里在输出后把这些违法绝对化词替换成安全表达，不依赖模型遵循。
+# ⚠️ 刻意【只收"任何渠道都违法"的绝对化词】，绝不收渠道相关词（露骨/追分/官方套话等）——
+#    那些对内部文案/私域是真实卖点，一刀切会误伤（项目踩过"消毒一刀切"的坑）。
+_AD_LAW_REPLACEMENTS = {
+    "全城最低价": "实惠价格", "全网最低价": "实惠价格", "全市最低价": "实惠价格",
+    "史上最低价": "超值价格", "全城最低": "实惠", "全网最低": "实惠", "全市最低": "实惠",
+    "史上最低": "超值", "最低价": "优惠价",
+    "终身免费": "长期优惠", "永久免费": "长期优惠",
+}
+
+
+def scan_compliance(text: str) -> list:
+    """只检测不改：返回文本里命中的绝对化广告词（供观测/告警/eval 量化铁律命中率）。"""
+    if not text:
+        return []
+    return [bad for bad in _AD_LAW_REPLACEMENTS if bad in text]
+
+
+def filter_compliance(text: str) -> str:
+    """输出后置铁律闸：把绝对化广告词替换成安全表达。长词优先替换，避免子串重复处理。
+    只动这一类全渠道违法词，不碰其他——保证零误伤内部内容。"""
+    if not text:
+        return text
+    out = text
+    for bad in sorted(_AD_LAW_REPLACEMENTS, key=len, reverse=True):
+        if bad in out:
+            out = out.replace(bad, _AD_LAW_REPLACEMENTS[bad])
+    return out
+
+
 def check_input_injection(user_input: str) -> Optional[str]:
     """
     检测用户输入中的prompt注入尝试。
@@ -82,20 +114,22 @@ def check_input_injection(user_input: str) -> Optional[str]:
 
 def filter_output_leak(ai_output: str) -> str:
     """
-    过滤AI输出中的系统信息泄露。
+    输出统一安全出口：① 过滤系统信息泄露 ② 应用业务铁律代码闸(绝对化广告词)。
 
-    只移除包含泄露内容的行，保留其余正文（避免正文偶然提到"AI/模型"
+    泄露：只移除包含泄露内容的行，保留其余正文（避免正文偶然提到"AI/模型"
     时整段被丢弃）；若所有内容都命中泄露，才回退到统一安全提示。
+    铁律：在两个返回分支都套 filter_compliance，让所有调用此出口的生成路径（含流式
+    finalize）都确定性地把违广告法的绝对化词换掉——不靠模型自觉。
     """
     if not ai_output:
         return ai_output
 
     if not _match_leak(ai_output):
-        return ai_output
+        return filter_compliance(ai_output)
 
     kept = [line for line in ai_output.split("\n") if not _match_leak(line)]
     cleaned = "\n".join(kept).strip()
-    return cleaned if cleaned else LEAK_REPLACEMENT
+    return filter_compliance(cleaned) if cleaned else LEAK_REPLACEMENT
 
 
 # 泄露检测的尾部扫描窗口：覆盖最长泄露短语，足以捕获跨 token 边界形成的关键词
