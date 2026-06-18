@@ -34,6 +34,8 @@ export interface AgentChatPayload {
   model?: string;
   conversation_id?: string | null;
   selected_files?: string[]; // 桌面版：老板选定、授权 Agent 读/改的文件绝对路径
+  permission_mode?: "ask" | "auto_files" | "full"; // 权限：每次问/自动改文件/全自动
+  full_disk_access?: boolean; // 高级·全盘：文件工具不限内容库+选定文件
 }
 
 class ApiClient {
@@ -536,11 +538,13 @@ class ApiClient {
     tool: string,
     args: Record<string, unknown>,
     selectedFiles?: string[],
+    fullDiskAccess?: boolean,
   ): Promise<{ tool: string; result: string }> {
     return this.request<{ tool: string; result: string }>("POST", "/api/v1/agent/execute", {
       tool,
       args,
       selected_files: selectedFiles,
+      full_disk_access: fullDiskAccess,
     });
   }
 

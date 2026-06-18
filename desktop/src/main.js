@@ -101,14 +101,20 @@ ipcMain.handle("video:run", (_e, { op, args }) =>
 // 本地文件选择器:老板选定文件 → 返回绝对路径,前端随对话以 selected_files 传后端,
 // Agent 沙箱据此授权可读/改这些文件(默认 Excel/文本报表;可传 opts.filters/properties 定制)。
 ipcMain.handle("files:pick", async (_e, opts = {}) => {
-  const result = await dialog.showOpenDialog(mainWindow || undefined, {
-    title: opts.title || "选择要让 AI 处理的文件",
-    properties: opts.multi ? ["openFile", "multiSelections"] : ["openFile"],
-    filters: opts.filters || [
+  // opts.directory=true → 选文件夹(授权 AI 在整个文件夹里读改,如"我的报表"目录);否则选文件。
+  const base = opts.directory ? ["openDirectory"] : ["openFile"];
+  const properties = opts.multi ? [...base, "multiSelections"] : base;
+  const dialogOpts = {
+    title: opts.title || (opts.directory ? "选择要让 AI 处理的文件夹" : "选择要让 AI 处理的文件"),
+    properties,
+  };
+  if (!opts.directory) {
+    dialogOpts.filters = opts.filters || [
       { name: "报表/文档", extensions: ["xlsx", "xlsm", "csv", "txt", "md"] },
       { name: "所有文件", extensions: ["*"] },
-    ],
-  });
+    ];
+  }
+  const result = await dialog.showOpenDialog(mainWindow || undefined, dialogOpts);
   return { canceled: result.canceled, paths: result.filePaths || [] };
 });
 
