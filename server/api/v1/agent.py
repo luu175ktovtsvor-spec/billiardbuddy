@@ -28,7 +28,7 @@ from core.security_guard import check_input_injection
 from db.session import async_session
 from models.user import User
 from services.agent.context import AgentContext
-from services.agent.loop import run_agent_loop_stream
+from services.agent.loop import run_agent_loop, run_agent_loop_stream
 from services.agent.proactive import generate_daily_drafts
 from services.ai.factory import ProviderFactory
 from services.agent.registry import default_registry
@@ -172,6 +172,35 @@ async def _persist_agent_chat(db, store, user, message: str, content: str, gen_i
         pass
 
 
+async def _load_agent_history(db, store, conversation_id: str | None) -> list[dict]:
+    """按 conversation_id 从 DB 取本会话最近 5 轮历史（user/assistant 对），供续接。失败返回空。"""
+    if not conversation_id:
+        return []
+    try:
+        import uuid as _uuid
+        from sqlalchemy import select
+        from models.generation import Generation as _Gen
+        rows = (await db.execute(
+            select(_Gen).where(
+                _Gen.store_id == store.id,
+                _Gen.conversation_id == _uuid.UUID(conversation_id),
+                _Gen.type == "agent",
+                _Gen.is_deleted == False,  # noqa: E712
+            ).order_by(_Gen.created_at)
+        )).scalars().all()
+        hist: list[dict] = []
+        for g in rows[-5:]:
+            uin = (g.input_params or {}).get("message")
+            if uin:
+                hist.append({"role": "user", "content": uin})
+            if g.result:
+                hist.append({"role": "assistant", "content": g.result[:2000]})
+        return hist
+    except Exception:
+        logger.warning("agent 历史加载失败 conversation_id=%s", conversation_id, exc_info=True)
+        return []
+
+
 class AgentChatRequest(BaseModel):
     message: str
     history: list[dict] | None = None
@@ -299,6 +328,7 @@ class AgentExecuteRequest(BaseModel):
     selected_files: list[str] | None = None  # 同 chat：审批通过后执行写/改时，授权可动这些选定文件
     full_disk_access: bool | None = None     # 同 chat：全盘模式下手动确认的文件改动也需放行
     token: str | None = None                 # 审批提案签名（绑定本组 args，防前端篡改后再确认）
+    conversation_id: str | None = None       # 审批回灌：执行后据此取历史，让管家基于结果自然接话
 
 
 @router.post("/execute")
@@ -344,7 +374,46 @@ async def agent_execute(
             result = json.dumps(result, ensure_ascii=False)
         except (TypeError, ValueError):
             result = str(result)
-    return {"tool": body.tool, "result": result}
+
+    # 审批回灌（修"断流"缝）：把执行结果喂回推理循环，让管家"知道"自己做了什么、
+    # 自然地接话（"做好啦，要不要我配条文案？"），而不是对话死在这。失败不影响已执行结果。
+    continuation = ""
+    new_approval = None
+    try:
+        profile_text = render_operation_profile_context(store)
+        memories = await load_store_memory(db, store.id)
+        sys_prompt = compose_agent_system_prompt(profile_text, format_memories_for_prompt(memories))
+        history = await _load_agent_history(db, store, body.conversation_id)
+        synth = (
+            f"[系统提示·非用户输入] 老板已确认、你刚请求的「{body.tool}」已执行完成。"
+            f"结果摘要：{result[:300]}。请用一句话自然地告诉老板做好了，若合适顺带建议下一步该做什么；"
+            f"不要重复粘贴上面的结果原文，也不要重新调用「{body.tool}」。"
+        )
+        cont = await run_agent_loop(
+            user_message=synth, registry=default_registry, ctx=ctx,
+            system_prompt=sys_prompt, history=history,
+            provider=ProviderFactory.get_text_provider_for_store(store),
+            max_turns=3,
+        )
+        continuation = cont.final_text or ""
+        ap = next((s for s in cont.steps if s.type == "approval_request"), None)
+        if ap:  # 续接里若又提出花钱/对外动作，带出新审批卡（带签名）
+            from services.agent.approval import sign_approval
+            new_approval = {"tool": ap.tool_name, "args": ap.tool_args,
+                            "token": sign_approval(ap.tool_name, ap.tool_args)}
+        # 续接落库进同一会话，刷新不丢、下一轮续得上
+        if body.conversation_id and continuation:
+            import uuid as _uuid
+            try:
+                conv_uuid = _uuid.UUID(body.conversation_id)
+                await _persist_agent_chat(db, store, user, f"（已确认执行 {body.tool}）",
+                                          continuation, str(_uuid.uuid4()), conv_uuid, cont.turns)
+            except (ValueError, TypeError):
+                pass
+    except Exception:
+        logger.warning("审批回灌续接失败（不影响已执行结果）", exc_info=True)
+
+    return {"tool": body.tool, "result": result, "continuation": continuation, "approval": new_approval}
 
 
 @router.post("/daily-drafts")

@@ -399,11 +399,25 @@ export default function ManagerPage() {
         selectedFiles.length ? selectedFiles : undefined,
         isDesktop && fullDisk ? true : undefined,
         ap.token,
+        conversationId,
       );
       setMessages((prev) =>
         prev.map((m, j) => (j === idx && m.approval ? { ...m, approval: { ...m.approval, status: "done" } } : m)),
       );
-      setMessages((prev) => [...prev, { role: "assistant", content: res.result }]);
+      setMessages((prev) => {
+        const next = [...prev, { role: "assistant" as const, content: res.result }];
+        // 审批回灌：管家基于执行结果的自然接话；若续接里又提出花钱/对外动作，带出新审批卡
+        if (res.continuation && res.continuation.trim()) {
+          next.push({
+            role: "assistant" as const,
+            content: res.continuation,
+            approval: res.approval
+              ? { tool: res.approval.tool, args: res.approval.args, token: res.approval.token, status: "pending" as const }
+              : undefined,
+          });
+        }
+        return next;
+      });
       setQuotaVersion((v) => v + 1);
     } catch (e) {
       setMessages((prev) => [...prev, { role: "assistant", content: `⚠️ ${getErrorMessage(e)}`, error: true }]);
