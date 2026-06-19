@@ -47,9 +47,9 @@ const MOCK_MESSAGES: ChatMessage[] = [
     question: {
       question: "海报想走哪种风格？",
       options: [
-        { label: "暖色温馨", description: "情侣/朋友局，温暖有约会感" },
-        { label: "动感霓虹", description: "年轻夜场，潮酷吸睛" },
-        { label: "简约高级", description: "干净留白，质感门店" },
+        { label: "温馨有爱", description: "情侣、朋友来打球，暖暖的有氛围" },
+        { label: "年轻潮酷", description: "年轻人、夜场，酷炫抓眼球" },
+        { label: "简约干净", description: "清爽不花哨，显得有档次" },
       ],
     },
   },

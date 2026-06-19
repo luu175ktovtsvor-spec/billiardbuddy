@@ -10,9 +10,9 @@ import types
 def test_resolve_style_prompt():
     from services.agent.poster_styles import resolve_style_prompt, POSTER_STYLES
     assert resolve_style_prompt("warm") == POSTER_STYLES[0]["prompt"]      # 按 key
-    assert resolve_style_prompt("暖色温馨")                                  # 按中文 label
-    assert "霓虹" in (resolve_style_prompt("动感霓虹") or "")
-    assert resolve_style_prompt("暖色温馨风") == POSTER_STYLES[0]["prompt"]  # 容错：带后缀也能认
+    assert resolve_style_prompt("温馨有爱")                                  # 按中文 label（大白话）
+    assert "霓虹" in (resolve_style_prompt("年轻潮酷") or "")
+    assert resolve_style_prompt("温馨有爱风") == POSTER_STYLES[0]["prompt"]  # 容错：带后缀也能认
     assert resolve_style_prompt("老板自己想的奇怪风格xyz") is None          # 认不出 → None（调用方原样拼）
     assert resolve_style_prompt("") is None
 
@@ -33,9 +33,9 @@ def test_make_poster_injects_style_into_model_prompt(monkeypatch):
     ctx = types.SimpleNamespace(db=None, store=types.SimpleNamespace(id="s1"),
                                 user=types.SimpleNamespace(id="u-test-1"))
     out = asyncio.run(agent_tools.make_poster(
-        {"description": "周末双人优惠海报", "style": "暖色温馨"}, ctx))
+        {"description": "周末双人优惠海报", "style": "温馨有爱"}, ctx))
 
-    frag = resolve_style_prompt("暖色温馨")
+    frag = resolve_style_prompt("温馨有爱")
     assert frag  # 风格片段存在
     assert frag in captured["prompt"]        # ★ 链路核心：风格片段真的拼进了喂给模型的提示词
     assert frag in captured["image_prompt"]  # image_prompt 同样带上
