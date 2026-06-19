@@ -72,3 +72,5 @@ required_knowledge:
   - knowledge.customer_tagging
   - knowledge.daily_workflow_coach
   - knowledge.casual_customer_segments
+  - knowledge.female_customer_ops
+  - knowledge.game_rules
