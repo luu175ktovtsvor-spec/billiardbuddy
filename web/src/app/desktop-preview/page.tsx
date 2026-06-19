@@ -10,6 +10,7 @@ import { DesktopShell, DesktopSidebar } from "@/components/desktop/macos-shell";
 import { WelcomeScreen } from "@/components/desktop/welcome-screen";
 import { DesktopComposer, type PermissionMode } from "@/components/desktop/desktop-composer";
 import { DesktopChatThread } from "@/components/desktop/chat-thread";
+import { DesktopPreviewPanel, type PreviewItem } from "@/components/desktop/preview-panel";
 import type { ChatMessage } from "@/hooks/use-agent-chat";
 
 const MOCK_CONVERSATIONS = [
@@ -46,6 +47,11 @@ export default function DesktopPreviewPage() {
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<PermissionMode>("ask");
   const [showThread, setShowThread] = useState(true);
+  const [previewItem, setPreviewItem] = useState<PreviewItem | null>({
+    kind: "content",
+    title: "朋友圈文案",
+    text: MOCK_MESSAGES[1].steps?.[1]?.result || "",
+  });
 
   return (
     <DesktopShell
@@ -59,6 +65,7 @@ export default function DesktopPreviewPage() {
           onSelect={() => setShowThread(true)}
         />
       }
+      preview={previewItem ? <DesktopPreviewPanel item={previewItem} onClose={() => setPreviewItem(null)} onRefine={() => {}} /> : undefined}
     >
       <div className="flex h-[52px] items-center border-b border-black/[0.07] px-5 text-[14px] font-medium text-[#1d1d1f]">
         {showThread ? "周末双人优惠海报" : "新对话"}
@@ -73,6 +80,7 @@ export default function DesktopPreviewPage() {
           executingIdx={null}
           onConfirm={() => {}}
           onCancel={() => {}}
+          onPreview={setPreviewItem}
         />
       ) : (
         <WelcomeScreen
