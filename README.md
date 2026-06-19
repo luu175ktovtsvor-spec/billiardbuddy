@@ -1,12 +1,12 @@
 # 球房运营 AI 助手 · 桌面版 AI Agent
 
 > 装在台球房老板自己电脑上的 **AI 运营管家**——全本地、纯 BYOK（自带大模型 key）、真 Agent（一句话 → 自己调工具干活）。
-> 本仓库是从云端 web SaaS（`billiards-ai-ops`）的桌面分支独立出来的**桌面产品**。**想一张文档全看懂 → `docs/桌面版AI-Agent-产品形态/README.md`（架构地图）。**
+> 本仓库是**桌面版台球房运营 AI Agent 的独立仓库**，`main` 即当前桌面产品的全部代码。**想一张文档全看懂 → `docs/桌面版AI-Agent-产品形态/README.md`（架构地图）；当前产品化主线待办 → `docs/完整优化清单.md`（37 项优化清单，go-forward 工作主线）。**
 
 ## 这是什么
 
 - **全本地**：Electron 外壳 + 本地 FastAPI + 本地 SQLite + 加密知识库（`prompts.enc`）。门店数据全在老板自己机器上，不连云。
-- **纯 BYOK**：盒子**不内置任何平台大模型 key**。老板自带文字/生图模型 key，花的是自己的钱、自担成本与并发。代码层强制：桌面没配 key 就空 key、绝不偷用平台 key。
+- **纯 BYOK**：盒子**不内置任何平台大模型 key**。老板自带文字/生图模型 key，花的是自己的钱、自担成本与并发。代码层强制：桌面没配 key 就空 key、绝不回退平台 key，空 key 时返回友好 503。
 - **真 Agent**：老板说一句话 → AI 大脑（ReAct 循环）自己想 → 调运营工具（写文案 / 做海报 / 经营诊断 / 约客 / 改本地报表）→ 花钱或对外的动作走**审批闸**（弹卡片，人点确认才执行）。
 - **macOS 原生质感** UI：无边框窗口 + 毛玻璃侧栏 + 红绿灯 + 双栏 + 右侧预览面板。
 
@@ -16,7 +16,7 @@
 - **后端（本地）**：Python 3.12 + FastAPI + SQLAlchemy + **SQLite**（aiosqlite）
 - **前端**：Next.js 14 + React 18 + TypeScript + TailwindCSS（macOS 桌面 UI）
 - **AI（BYOK）**：文字（任意 OpenAI 兼容，如 DeepSeek/硅基/火山） + 生图（硅基流动 / 通义万相 / 即梦 / gpt-image 等，国内可用）
-- **本地语义**：bge-zh（fastembed）做 RAG，「按意思找料」换说法也找得到
+- **本地语义**：bge-zh（fastembed / onnxruntime，本地跑、非 pgvector）做 RAG，「按意思找料」换说法也找得到
 - **知识库**：加密 `prompts.enc`（运行时解密，55 知识 + 77 场景 YAML）
 
 ## 怎么跑（开发）
@@ -49,6 +49,7 @@ web/src/components/desktop/     桌面 macOS UI（macos-shell/chat-shell/chat-th
 server/prompts/         知识库（桌面运行时用加密 prompts.enc）
 docs/桌面版AI-Agent-产品形态/   架构地图（全看懂从这开始）
 docs/台球行业真实性分支/         知识库真实性核对 + PPT 原件全文
+docs/完整优化清单.md             当前产品化主线待办（37 项优化清单，go-forward 工作主线）
 ```
 
 ## 关键边界（铁律）

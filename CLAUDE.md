@@ -113,7 +113,7 @@ docs/台球行业真实性分支/        知识库真实性核对 + PPT 原件�
 ### Prompt 模板（YAML）
 - 必须有 `key:`；渲染类(knowledge/operation/copywriting/activity)还需 `template:`（缺它是 `render()` 时 KeyError）
 - 加载器**故意宽松**(凡有 `key` 即登记)——fewshots/预设库是 `templates:`/`examples:` 不同结构，切勿加"必须有 template"校验
-- **禁止**出现第三方品牌名/来源出处/文件名（器材品牌如乔氏/星牌属行业通用品类，豁免）
+- **品牌/来源铁律（判据：PPT 里有 = 保留）**：禁止出现「来源出处 / 文件名 / PPT 之外凭空捏造的无关第三方品牌」；但**《台球行业真实运营逻辑》PPT 中真实出现的平台 / 获客渠道 / 器材名一律保留、不脱敏、不删**——平台名（美团 / 抖音 / 快手 / 小红书 / 大众点评…）、获客渠道含交友社交软件（探探 / 陌陌 / Soul / 积目…）、器材品牌（乔氏 / 星牌…）都是台球运营的行业必需真实信息。**用户已明确拍板：只要 PPT 里出现的这类词，全部保留，哪怕看起来"有风险"也不动。** 这些词需进 `knowledge/term_whitelist.yaml` 白名单，确保 `test_knowledge_guardrails.py` 不误杀。
 - 护栏测试：`server/tests/test_knowledge_guardrails.py`
 
 ## 已落地能力（桌面版）
@@ -159,7 +159,7 @@ cd desktop && npm install && npm run dev   # Electron 起壳 + 本地后端 + �
 - 不内置/泄漏任何平台大模型 key（纯 BYOK 铁律）
 - 不抄 cc-haha 泄露源码进项目（只学架构、用自己 Python 写）
 - 不在生图 prompt 主动塞中文文字/价格/Logo/二维码（用户显式填文字例外）
-- 不用原生 `<select>`（用 CardSelect）；不在代码/YAML 出现第三方品牌名或来源出处
+- 不用原生 `<select>`（用 CardSelect）；代码/YAML 不出现「来源出处/文件名/捏造的无关品牌」，但 **PPT 中真实出现的平台/获客渠道/交友社交软件/器材名一律保留**（判据：PPT 里有=保留，详见「Prompt 模板」节品牌/来源铁律）
 
 ## 关键约束（铁律）
 

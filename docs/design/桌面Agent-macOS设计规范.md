@@ -1,6 +1,6 @@
 # 桌面 AI Agent · macOS 设计规范（2026-06-19）
 
-> 适用范围：**桌面端 Electron App 的 Agent 对话体验**（`feat/desktop-agent`，先聚焦 `/dashboard/chat` 及其周边）。
+> 适用范围：**桌面端 Electron App 的 Agent 对话体验**（本仓库 `main` = 桌面产品；先聚焦 `/dashboard/chat` 及其周边）。
 > 这与 web 端"微信手机优先、iOS 蓝"的设计是**两个语境**：桌面端走 **macOS 原生质感**。
 > 技术底座不变：Next.js + React + TailwindCSS + shadcn/ui。**不换组件库，用 macOS 设计语言重做皮。**
 > 设计图（mockup）见同目录 `mockups/agent-chat.html` —— 写码以设计图为最高优先级参考。
