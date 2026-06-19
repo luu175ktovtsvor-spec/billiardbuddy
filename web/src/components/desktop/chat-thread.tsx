@@ -6,11 +6,18 @@
  */
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Loader2, Check, Wrench, AlertTriangle, Send } from "lucide-react";
+import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2 } from "lucide-react";
 
 import { CopyButton } from "@/components/generators/copy-button";
 import { toolMeta, DELIVERABLE_TOOLS, approvalLabel, approvalConfirmText } from "@/lib/agent-tools";
 import type { ChatMessage, ToolStep, ApprovalState } from "@/hooks/use-agent-chat";
+import type { PreviewItem } from "./preview-panel";
+
+/** 从一段 markdown 里抽第一张图片的 url（海报结果是 ![门店海报](url)）。 */
+function posterUrl(content: string): string | null {
+  const m = content.match(/!\[[^\]]*\]\(([^)\s]+)/);
+  return m ? m[1] : null;
+}
 
 function MacStepList({ steps, active }: { steps: ToolStep[]; active: boolean }) {
   if (steps.length === 0) return null;
@@ -43,9 +50,11 @@ function MacStepList({ steps, active }: { steps: ToolStep[]; active: boolean }) 
 function MacDeliverables({
   steps,
   onPublish,
+  onPreview,
 }: {
   steps: ToolStep[];
   onPublish?: (platform: unknown, content: string) => void;
+  onPreview?: (item: PreviewItem) => void;
 }) {
   const cards = steps.map((s, idx) => ({ s, idx })).filter(({ s }) => s.result && DELIVERABLE_TOOLS.has(s.tool));
   if (cards.length === 0) return null;
@@ -64,15 +73,26 @@ function MacDeliverables({
             <div className="prose prose-sm max-w-none px-4 py-3 prose-slate prose-p:my-1.5 prose-headings:my-2">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{s.result || ""}</ReactMarkdown>
             </div>
-            {onPublish && s.tool === "make_platform_content" && (
-              <div className="px-4 pb-3">
-                <button
-                  type="button"
-                  onClick={() => onPublish(s.args?.platform, s.result || "")}
-                  className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[12.5px] font-medium text-brand-600 active:scale-[0.97]"
-                >
-                  <Send className="h-3.5 w-3.5" /> 去发布
-                </button>
+            {(onPreview || (onPublish && s.tool === "make_platform_content")) && (
+              <div className="flex items-center gap-2 px-4 pb-3">
+                {onPreview && (
+                  <button
+                    type="button"
+                    onClick={() => onPreview({ kind: "content", title: label, text: s.result || "" })}
+                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[12.5px] font-medium text-brand-600 active:scale-[0.97]"
+                  >
+                    <Maximize2 className="h-3.5 w-3.5" /> 展开预览
+                  </button>
+                )}
+                {onPublish && s.tool === "make_platform_content" && (
+                  <button
+                    type="button"
+                    onClick={() => onPublish(s.args?.platform, s.result || "")}
+                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[12.5px] font-medium text-brand-600 active:scale-[0.97]"
+                  >
+                    <Send className="h-3.5 w-3.5" /> 去发布
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -144,6 +164,7 @@ export function DesktopChatThread({
   onConfirm,
   onCancel,
   onPublish,
+  onPreview,
 }: {
   messages: ChatMessage[];
   draft: string;
@@ -153,6 +174,7 @@ export function DesktopChatThread({
   onConfirm: (idx: number, ap: ApprovalState) => void;
   onCancel: (idx: number) => void;
   onPublish?: (platform: unknown, content: string) => void;
+  onPreview?: (item: PreviewItem) => void;
 }) {
   return (
     <div className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
@@ -175,11 +197,20 @@ export function DesktopChatThread({
             ) : (
               <>
                 {m.steps && <MacStepList steps={m.steps} active={false} />}
-                {m.steps && <MacDeliverables steps={m.steps} onPublish={onPublish} />}
+                {m.steps && <MacDeliverables steps={m.steps} onPublish={onPublish} onPreview={onPreview} />}
                 {m.content && (
                   <div className="prose prose-sm max-w-none leading-relaxed prose-slate prose-p:my-1.5">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
                   </div>
+                )}
+                {onPreview && posterUrl(m.content) && (
+                  <button
+                    type="button"
+                    onClick={() => onPreview({ kind: "poster", imageUrl: posterUrl(m.content) as string })}
+                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[12.5px] font-medium text-brand-600 active:scale-[0.97]"
+                  >
+                    <Maximize2 className="h-3.5 w-3.5" /> 在右侧看大图
+                  </button>
                 )}
                 {m.approval && (
                   <MacApprovalCard ap={m.approval} idx={idx} executing={executingIdx === idx} onConfirm={onConfirm} onCancel={onCancel} />

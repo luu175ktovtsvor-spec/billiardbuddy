@@ -12,6 +12,7 @@ import { DesktopShell, DesktopSidebar } from "./macos-shell";
 import { WelcomeScreen } from "./welcome-screen";
 import { DesktopComposer } from "./desktop-composer";
 import { DesktopChatThread } from "./chat-thread";
+import { DesktopPreviewPanel, type PreviewItem } from "./preview-panel";
 
 const PLATFORM_PUBLISH_ID: Record<string, string> = {
   douyin: "douyin", 抖音: "douyin",
@@ -39,6 +40,7 @@ export function DesktopChatShell({
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<PermissionMode>("ask");
   const chat = useAgentChat({ permissionMode: mode });
+  const [preview, setPreview] = useState<PreviewItem | null>(null);
 
   // 权限偏好持久化（与手机页同一个 localStorage key，体验一致）
   useEffect(() => {
@@ -72,6 +74,11 @@ export function DesktopChatShell({
     router.push(`/dashboard/publish?${qs.toString()}`);
   };
 
+  // 右侧"基于此调整"：把输入框预填好引子，老板补上要改什么、发出去，管家在原件上接着改
+  const onRefine = (kind: PreviewItem["kind"]) => {
+    setInput(kind === "poster" ? "把刚才那张海报改成：" : "把刚才这条改成：");
+  };
+
   const empty = chat.messages.length === 0 && !chat.generating;
 
   return (
@@ -85,6 +92,7 @@ export function DesktopChatShell({
           onOpenSettings={() => router.push("/dashboard/store-settings")}
         />
       }
+      preview={preview ? <DesktopPreviewPanel item={preview} onClose={() => setPreview(null)} onRefine={onRefine} /> : undefined}
     >
       <div className="flex h-[52px] items-center border-b border-black/[0.07] px-5 text-[14px] font-medium text-[#1d1d1f]">
         {empty ? "新对话" : "对话"}
@@ -102,6 +110,7 @@ export function DesktopChatShell({
           onConfirm={chat.confirmApproval}
           onCancel={chat.cancelApproval}
           onPublish={publishHandoff}
+          onPreview={setPreview}
         />
       )}
 
