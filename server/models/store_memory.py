@@ -23,6 +23,11 @@ class StoreMemory(Base):
     type: Mapped[str] = mapped_column(String(20), nullable=False, default="semantic")
     content: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[str] = mapped_column(String(10), nullable=False, default="medium")
+    # 来源：manual=老板亲自定的店规矩（最高优先、AI 绝不删改）；auto=AI 从交互里学到的。
+    # init_local 的 _reconcile_columns 会给老库自动补这一列（server_default="auto" 让旧行默认归 auto）。
+    source: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="auto", server_default="auto"
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
