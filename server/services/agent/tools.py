@@ -261,22 +261,43 @@ async def assistant_outreach(args: dict, ctx) -> str:
 @tool(
     name="diagnose_operation",
     deliverable=True,
-    description="针对经营问题给诊断和改进建议。当老板描述'生意冷清/营业额上不去/客户流失/员工问题/活动没效果'等经营困扰时调用。",
+    description="针对经营问题给诊断和改进建议。当老板描述'生意冷清/营业额上不去/客户流失/员工问题/活动没效果'等经营困扰时调用。"
+                "**老板说『照报表/照数据诊断』、且当场用文件选择器选了 Excel 报表文件时，把 report_path 设成那个文件的绝对路径**——"
+                "系统会自动读出真实数字、算好团购占比/台费占比/翻台率等指标喂进诊断决策树，不用老板逐项打字报数。",
     parameters={
         "type": "object",
         "properties": {
             "situation": {"type": "string", "description": "老板描述的现状/困扰，原话即可"},
             "problem_area": {"type": "string",
                              "description": "问题领域(可选)：traffic(客流)/revenue(营收)/customer_loss(老客流失)/staff(团队)/competition(竞争)/activity_effect(活动效果)/off_season(淡季·工作日白天或某时段空台)"},
+            "report_path": {"type": "string",
+                            "description": "可选。老板要『照报表/照数据』诊断且当场选了 Excel 报表时，传该文件的绝对路径——"
+                                           "系统读数字+算指标喂决策树。文件须在老板当场选定的文件或内容库内（沙箱）。"},
         },
         "required": ["situation"],
     },
 )
 async def diagnose_operation(args: dict, ctx) -> str:
+    situation = args["situation"]
+    report_path = (args.get("report_path") or "").strip()
+    if report_path:
+        # 读报表失败（文件不在/格式怪/越界）一律 try/except 降级回纯文字诊断 + 提示，绝不带崩。
+        try:
+            from services.agent.local_tools import _resolve  # 复用沙箱校验：越界即 ValueError
+            from services.report_reader import extract_report_indicators
+            safe = _resolve(report_path, ctx)  # 沙箱：内容库 + 当场选定文件，越界拒
+            _ind, summary = extract_report_indicators(str(safe))
+            if summary:
+                situation = f"{summary}\n\n老板补充：{situation}"
+        except ValueError as e:  # 越界
+            situation = f"（你选的报表不在我能读的范围里：{e}。这次按你说的情况诊断。）\n\n{situation}"
+        except Exception as e:  # noqa: BLE001 — 任何读表异常都降级，不崩
+            logger.warning("照报表诊断读表失败，降级纯文字：%s", e)
+            situation = f"（这份报表没能自动读出来，按你说的情况诊断。）\n\n{situation}"
     gen = await analyze_diagnosis(
         ctx.db, ctx.store, ctx.user,
         problem_area=args.get("problem_area", "revenue"),
-        current_situation=args["situation"],
+        current_situation=situation,
     )
     ctx.last_knowledge_used = (gen.input_params or {}).get("knowledge_used") or []  # B-2 依据可见
     return gen.result
