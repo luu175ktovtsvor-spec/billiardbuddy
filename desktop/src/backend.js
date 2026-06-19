@@ -35,7 +35,7 @@ function pingHealth() {
   });
 }
 
-async function _waitReady(timeoutMs = 30000) {
+async function _waitReady(timeoutMs = 60000) {  // 冷启(解密知识库+建库+import)在老机/机械盘较慢,给足 60s
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (await pingHealth()) return true;
@@ -82,6 +82,9 @@ function _spawnProc({ userDataDir, repoRoot, onLog }) {
     BYOK_ENCRYPT_KEY: byokEncryptKey(userDataDir), // 纯 BYOK:加密老板自带 key,缺它则 PUT /me/byok 503
     RAG_EMBEDDER: "fastembed", // 本地语义模型(bge-zh ~90MB):知识/店脑/历史"按意思找料",换说法也能找对。
                                // 首次用时联网拉~90MB存本机缓存(后续离线);打包时应预置模型免首次下载(见执行清单)。
+    // 上传/海报/Logo/二维码落点:app 包内是【只读】的(装到 /Applications 或 Gatekeeper translocation),
+    // 不指开会让生图写盘崩、最坏首启 mkdir 崩。指到 userData 可写目录。
+    UPLOAD_DIR: path.join(userDataDir, "uploads"),
   };
   // PyInstaller onedir 产物:resources/backend/billiards_backend/billiards_backend(目录里的内层 exe)。
   const exeName = process.platform === "win32" ? "billiards_backend.exe" : "billiards_backend";

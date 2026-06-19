@@ -202,7 +202,7 @@ async def update_generation_content(
     current_user: Annotated[User, Depends(get_current_user)],
     current_store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    _perm: None = Depends(require_permission(Permission.GENERATION_LIST)),
+    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),  # 改内容是写操作，用写权限
 ):
     """保存用户手动编辑后的内容：历史里存的就是实际发出去的版本。"""
     generation = await get_generation_detail(
@@ -235,7 +235,7 @@ async def update_generation_title(
     current_user: Annotated[User, Depends(get_current_user)],
     current_store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    _perm: None = Depends(require_permission(Permission.GENERATION_LIST)),
+    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),  # 改标题是写操作，用写权限
 ):
     """给生成记录命名(海报找图友好):仅改展示名,不动内容。"""
     generation = await get_generation_detail(

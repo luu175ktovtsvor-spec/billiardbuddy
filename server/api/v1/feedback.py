@@ -26,7 +26,7 @@ async def submit_feedback(
     user: Annotated[User, Depends(get_current_user)],
     store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    _perm: None = Depends(require_permission(Permission.GENERATION_LIST)),
+    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),  # 反馈会异步喂店脑、影响后续生成，按写操作
 ):
     generation = await db.get(Generation, generation_id)
     if not generation or generation.store_id != store.id or generation.is_deleted:
