@@ -70,6 +70,13 @@ _DENIAL_FALLBACK_MSG = (
 _FORCE_FINAL_MSG = "请基于上面已有的工具结果，直接用一段话给用户最终答复，不要再调用任何工具。"
 # 强制收尾仍拿不到内容时的静态兜底（极端情况）。
 _FALLBACK_FINAL = "这个需求我拆了好几步还没完全收尾。你可以把要求说得更具体一点，或者分两次让我来做。"
+# 模型偶尔（尤其碰敏感词、或被自身安全过滤）吐【完全空白】的最终答复 → 绝不能把空白丢给用户（看着像卡死/坏了）。
+_EMPTY_FINAL_FALLBACK = "这个我没法给出回应——可能是要求太敏感、或没说清楚。换个说法、把需求说具体点再试试。"
+
+
+def _final_or_fallback(text: str) -> str:
+    """最终答复兜底：非空白原样返回；空白则给友好兜底，绝不把空白丢给用户。"""
+    return text if (text and text.strip()) else _EMPTY_FINAL_FALLBACK
 
 # 循环退出原因（命名常量，值保持稳定——落库/前端/测试据此判断；不要随意改字面值）。
 _STOP_FINAL = "final"          # 模型不再调工具，收敛到最终答复
@@ -434,6 +441,11 @@ async def run_agent_loop(
     provider = provider or ProviderFactory.get_orchestration_provider()
     model = model or settings.effective_orchestration_model
     ctx = ctx or AgentContext()
+    # 子代理（run_subagent）递归跑时复用同一个 provider/model（同门店 BYOK key、同模型）。
+    if getattr(ctx, "provider", None) is None:
+        ctx.provider = provider
+    if getattr(ctx, "model", None) is None:
+        ctx.model = model
 
     messages = _init_messages(system_prompt, history, user_message)
     tools = registry.to_openai_tools()
@@ -473,7 +485,7 @@ async def run_agent_loop(
             #   budget=None → _BUDGET_OK，整段跳过（交互式零影响）。
             _budget = _check_budget(ctx)
             if _budget == _BUDGET_STOP:
-                full_final = "".join(final_segments) + (resp.content or "")
+                full_final = _final_or_fallback("".join(final_segments) + (resp.content or ""))
                 steps.append(AgentStep(type="final", content=full_final))
                 return AgentResult(
                     final_text=full_final, steps=steps, turns=turn,
@@ -492,7 +504,7 @@ async def run_agent_loop(
                         messages.append({"role": "assistant", "content": resp.content})
                     messages.append({"role": "user", "content": cont})
                     continue
-            full_final = "".join(final_segments) + (resp.content or "")
+            full_final = _final_or_fallback("".join(final_segments) + (resp.content or ""))
             steps.append(AgentStep(type="final", content=full_final))
             return AgentResult(
                 final_text=full_final, steps=steps, turns=turn,
@@ -835,6 +847,11 @@ async def run_agent_loop_stream(
     provider = provider or ProviderFactory.get_orchestration_provider()
     model = model or settings.effective_orchestration_model
     ctx = ctx or AgentContext()
+    # 子代理（run_subagent）递归跑时复用同一个 provider/model（同门店 BYOK key、同模型）。
+    if getattr(ctx, "provider", None) is None:
+        ctx.provider = provider
+    if getattr(ctx, "model", None) is None:
+        ctx.model = model
 
     messages = _init_messages(system_prompt, history, user_message)
     tools = registry.to_openai_tools()
@@ -879,7 +896,7 @@ async def run_agent_loop_stream(
             #   budget=None → _BUDGET_OK，整段跳过（交互式零影响）。⚠️ 同步路径同样逻辑，别只改一处。
             _budget = _check_budget(ctx)
             if _budget == _BUDGET_STOP:
-                full_final = "".join(final_segments) + text
+                full_final = _final_or_fallback("".join(final_segments) + text)
                 yield {"type": "final", "content": full_final}
                 yield {"type": "done", "turns": turn, "stopped_reason": _STOP_FINAL,
                        "tokens_used": getattr(ctx, "tokens_used", 0)}
@@ -897,7 +914,7 @@ async def run_agent_loop_stream(
                         messages.append({"role": "assistant", "content": text})
                     messages.append({"role": "user", "content": cont})
                     continue
-            full_final = "".join(final_segments) + text
+            full_final = _final_or_fallback("".join(final_segments) + text)
             yield {"type": "final", "content": full_final}
             yield {"type": "done", "turns": turn, "stopped_reason": _STOP_FINAL,
                    "tokens_used": getattr(ctx, "tokens_used", 0)}

@@ -6,7 +6,7 @@
 import {
   CalendarDays, Lightbulb, PenLine, UserPlus, Stethoscope, Dices, ImageIcon, Sparkles,
   FileText, PartyPopper, Search, History, FolderOpen, Save, FilePen, FileSpreadsheet, Layers, Wrench,
-  FileSearch, Terminal,
+  FileSearch, Terminal, Globe, ListChecks, Users,
 } from "lucide-react";
 
 export const TOOL_META: Record<string, { label: string; Icon: typeof Wrench }> = {
@@ -31,6 +31,10 @@ export const TOOL_META: Record<string, { label: string; Icon: typeof Wrench }> =
   find_files: { label: "找文件", Icon: Search },
   search_in_files: { label: "搜文件内容", Icon: FileSearch },
   run_command: { label: "跑命令", Icon: Terminal },
+  web_fetch: { label: "抓网页", Icon: Globe },
+  web_search: { label: "网上搜", Icon: Search },
+  todo_write: { label: "列任务清单", Icon: ListChecks },
+  run_subagent: { label: "派子代理", Icon: Users },
 };
 
 export function toolMeta(name: string) {
