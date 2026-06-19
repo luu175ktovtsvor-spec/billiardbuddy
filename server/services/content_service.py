@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 import uuid
 
@@ -294,8 +295,16 @@ KNOWLEDGE_KEYWORDS: dict[str, list[str]] = {
     "knowledge.casual_customer_segments": ["散客", "初次进店", "第一次来", "新散客", "散客维护", "散客转化", "留散客", "娱乐型", "刚上瘾", "散客分层"],
 }
 
-# 命中关键词的场景知识最多额外注入的条数（核心知识不计入此上限）
-_MAX_SCENE_KNOWLEDGE = 4
+# 场景知识注入条数上限（A-3 动态化）：默认 8（原死 4 会把相关知识静默挤掉=C-2）；经 DESKTOP_KNOWLEDGE_MAX_SCENE 可配。
+# 真正的"动态"靠下面的语义门槛 _SEM_THRESHOLD：简单需求命中少、自然注得少；复杂多意图命中多、才注到上限——不再被死 4 一刀切。
+_MAX_SCENE_KNOWLEDGE_DEFAULT = 8
+
+
+def _scene_cap() -> int:
+    try:
+        return max(1, int(os.environ.get("DESKTOP_KNOWLEDGE_MAX_SCENE", str(_MAX_SCENE_KNOWLEDGE_DEFAULT))))
+    except (TypeError, ValueError):
+        return _MAX_SCENE_KNOWLEDGE_DEFAULT
 # A-2：语义召回提为主路径——语义相关门槛(cosine≥此值即算相关、可单独纳入) + 关键词命中的加分权重(降为加分项、非门槛)。
 _SEM_THRESHOLD = 0.45
 _KW_BONUS = 0.15
@@ -400,6 +409,17 @@ def _semantic_scores(intent_text: str, candidates: list[str]) -> dict:
     return out
 
 
+def _log_recall(intent_text: str, scored: list, cap: int) -> None:
+    """X-4 可观测打点：记本次知识召回的 key+分数 + 被上限截掉了哪些（喂迭代揪死知识/误召）。结构化 logger、故障安全。"""
+    try:
+        sel = [(k, round(sc, 3)) for sc, k in scored[:cap]]
+        cut = [(k, round(sc, 3)) for sc, k in scored[cap:]]
+        if sel or cut:
+            logger.info("知识召回 | intent=%.50s | 选中=%s | 上限截掉=%s", intent_text, sel, cut)
+    except Exception:
+        pass
+
+
 def _select_knowledge_keys(required_keys: list[str], intent_text: str) -> list[str]:
     """根据用户意图筛选需要注入的知识键。
 
@@ -416,6 +436,7 @@ def _select_knowledge_keys(required_keys: list[str], intent_text: str) -> list[s
     intent_lower = intent_text.lower()
     core = [k for k in required_keys if _is_core_knowledge(k)]
     scene = [k for k in required_keys if not _is_core_knowledge(k)]
+    cap = _scene_cap()  # A-3：动态上限（默认 8、可配），不再死 4
 
     def _kw_hits(key: str) -> int:
         return sum(1 for w in KNOWLEDGE_KEYWORDS.get(key, []) if w.lower() in intent_lower)
@@ -431,16 +452,17 @@ def _select_knowledge_keys(required_keys: list[str], intent_text: str) -> list[s
             if s >= _SEM_THRESHOLD or kw > 0:
                 scored.append((s + _KW_BONUS * kw, key))
         scored.sort(key=lambda x: x[0], reverse=True)
-        selected_keys = [k for _, k in scored[:_MAX_SCENE_KNOWLEDGE]]
+        selected_keys = [k for _, k in scored[:cap]]
+        _log_recall(intent_text, scored, cap)  # X-4 可观测打点：选中/截掉
     else:
         # 回退（没装语义模型）：关键词命中为主，按命中数排序取前 N；不足再 bigram 字面补。保持原行为。
         kw_scored = sorted(((_kw_hits(k), k) for k in scene if _kw_hits(k) > 0),
                            key=lambda x: x[0], reverse=True)
-        selected_keys = [k for _, k in kw_scored[:_MAX_SCENE_KNOWLEDGE]]
-        if len(selected_keys) < _MAX_SCENE_KNOWLEDGE:
+        selected_keys = [k for _, k in kw_scored[:cap]]
+        if len(selected_keys) < cap:
             candidates = [k for k in scene if k not in selected_keys]
             for key in _bigram_fill(intent_text, candidates):
-                if len(selected_keys) >= _MAX_SCENE_KNOWLEDGE:
+                if len(selected_keys) >= cap:
                     break
                 selected_keys.append(key)
 

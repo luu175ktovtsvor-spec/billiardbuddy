@@ -34,12 +34,22 @@ def test_semantic_relevant_without_keyword_gets_selected(monkeypatch):
 
 
 def test_cap_and_ranking(monkeypatch):
-    """超上限时按统一分排序取前 N，高分进、低分不进。"""
+    """超上限时按统一分排序取前 N，高分进、低分不进；上限可经 DESKTOP_KNOWLEDGE_MAX_SCENE 配（A-3 动态化）。"""
+    monkeypatch.setenv("DESKTOP_KNOWLEDGE_MAX_SCENE", "3")
     scores = {f"knowledge.k{i}": 0.9 - i * 0.1 for i in range(6)}
     _patch_semantic(monkeypatch, scores=scores, keywords={})
     out = cs._select_knowledge_keys(list(scores), "随便问问")
-    assert len(out) == cs._MAX_SCENE_KNOWLEDGE
+    assert len([k for k in out if k.startswith("knowledge.k")]) == 3
     assert "knowledge.k0" in out and "knowledge.k5" not in out
+
+
+def test_dynamic_cap_default_no_silent_drop(monkeypatch):
+    """A-3/C-2：默认上限提到 8，6 条相关知识不再被旧死 4 静默挤掉。"""
+    monkeypatch.delenv("DESKTOP_KNOWLEDGE_MAX_SCENE", raising=False)
+    scores = {f"knowledge.k{i}": 0.9 - i * 0.05 for i in range(6)}  # 6 条都 ≥ 阈值
+    _patch_semantic(monkeypatch, scores=scores, keywords={})
+    out = cs._select_knowledge_keys(list(scores), "复杂多意图的需求")
+    assert len([k for k in out if k.startswith("knowledge.k")]) == 6  # 默认 8 → 6 条全进、不被挤掉
 
 
 def test_keyword_is_bonus_not_gate(monkeypatch):
