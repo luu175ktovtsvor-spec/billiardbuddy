@@ -102,3 +102,7 @@ required_knowledge:
   - knowledge.growth_playbook
   - knowledge.assistant_persona_building
   - knowledge.casual_customer_segments
+  - knowledge.assistant_overtime_service
+  - knowledge.female_customer_ops
+  - knowledge.game_rules
+  - knowledge.traffic_priority

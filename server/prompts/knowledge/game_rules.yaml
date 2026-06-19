@@ -1,6 +1,9 @@
 key: "knowledge.game_rules"
 name: "台球玩法规则库"
 category: "knowledge"
+description: |
+  各种球房玩法的运营落地要点：抢一大战、台费局、饮料局、小奖品挑战、搭子局怎么设报名费/奖金/让球、怎么预热主持、怎么把搭子局当成「搭子→常客→会员」的转化口子（含别变赌博的提醒）。详细规则在 knowledge.billiards_game_rules，这条管的是怎么把玩法办成活动。
+  老板要策划玩法活动、写玩法说明文案，或问某个局该收多少钱、怎么组织时调它。
 variables: []
 template: |
   ## 台球玩法规则知识库

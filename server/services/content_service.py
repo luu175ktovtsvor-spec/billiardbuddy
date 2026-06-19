@@ -291,6 +291,9 @@ KNOWLEDGE_KEYWORDS: dict[str, list[str]] = {
 
 # 命中关键词的场景知识最多额外注入的条数（核心知识不计入此上限）
 _MAX_SCENE_KNOWLEDGE = 4
+# A-2：语义召回提为主路径——语义相关门槛(cosine≥此值即算相关、可单独纳入) + 关键词命中的加分权重(降为加分项、非门槛)。
+_SEM_THRESHOLD = 0.45
+_KW_BONUS = 0.15
 
 
 def _is_core_knowledge(key: str) -> bool:
@@ -340,7 +343,9 @@ def _knowledge_emb(key: str):
     from services.rag.embedder import get_embedder
     data = prompt_engine._templates.get(key) or {}
     name = str(data.get("name", ""))
-    text = " ".join(str(v) for v in data.values() if isinstance(v, str))
+    # A-2：有 description(知识索引)就优先用它做语义向量——比一股脑塞正文更准、更稳；没有再退回正文截断。
+    desc = str(data.get("description", "")).strip()
+    text = desc if desc else " ".join(str(v) for v in data.values() if isinstance(v, str))
     emb = get_embedder().embed((name + "。" + text)[:400])
     _KNOWLEDGE_EMB_CACHE[key] = emb
     return emb
@@ -377,42 +382,64 @@ def _bigram_fill(intent_text: str, candidates: list[str]) -> list[str]:
     return [k for _, k in scored]
 
 
+def _semantic_scores(intent_text: str, candidates: list[str]) -> dict:
+    """给候选知识按【意思】打分，返回 {key: cosine}（不过滤，供统一排序用）。"""
+    from services.rag.embedder import get_embedder, cosine
+    q = get_embedder().embed(intent_text)
+    out: dict[str, float] = {}
+    for key in candidates:
+        try:
+            out[key] = cosine(q, _knowledge_emb(key))
+        except Exception:
+            out[key] = 0.0
+    return out
+
+
 def _select_knowledge_keys(required_keys: list[str], intent_text: str) -> list[str]:
     """根据用户意图筛选需要注入的知识键。
 
     - intent_text 为空时不筛选，返回全部（保持非工作台路径的原有行为）。
-    - 核心知识始终注入；场景知识按关键词命中数排序，取前 _MAX_SCENE_KNOWLEDGE 条。
-    - 未命中任何场景知识时，只注入核心知识，大幅压缩 prompt 体积。
+    - 核心知识始终注入。
+    - 场景知识（A-2 改造）：装了语义模型时【语义召回为主路径】——按"意思"统一打分，关键词命中
+      降为【加分项】(不再是必须先命中的门槛)，所以"换说法/没配暗号"但相关的知识也能进；没装语义
+      模型时回退原行为（关键词命中为主 + bigram 字面补）。取前 _MAX_SCENE_KNOWLEDGE 条。
     - 保留 required_keys 的原始顺序，确保 prompt 结构稳定。
     """
     if not intent_text or not intent_text.strip():
         return required_keys
 
     intent_lower = intent_text.lower()
-    # ① 关键词命中（精准、保持原行为）：按命中数排序选进，占满 _MAX_SCENE_KNOWLEDGE 为止。
-    kw_scored: list[tuple[int, str]] = []
-    for key in required_keys:
-        if _is_core_knowledge(key):
-            continue
-        kw = sum(1 for k in KNOWLEDGE_KEYWORDS.get(key, []) if k.lower() in intent_lower)
-        if kw > 0:
-            kw_scored.append((kw, key))
-    kw_scored.sort(key=lambda x: x[0], reverse=True)
-    selected_keys = [k for _, k in kw_scored[:_MAX_SCENE_KNOWLEDGE]]
+    core = [k for k in required_keys if _is_core_knowledge(k)]
+    scene = [k for k in required_keys if not _is_core_knowledge(k)]
 
-    # ② 还有空位 → 补漏：装了 fastembed 用【按意思找】(语义)，否则回退【字面强重叠】。
-    #    只填关键词没占满的剩余槽位、不挤掉关键词已选的（回归风险低），却能把"关键词漏配但相关"
-    #    的知识捞回来（如"拍个视频"按意思命中"短视频知识"，字面零重叠也能找到）。
-    if len(selected_keys) < _MAX_SCENE_KNOWLEDGE:
-        candidates = [k for k in required_keys if not _is_core_knowledge(k) and k not in selected_keys]
-        fill = _semantic_fill(intent_text, candidates) if _semantic_available() else _bigram_fill(intent_text, candidates)
-        for key in fill:
-            if len(selected_keys) >= _MAX_SCENE_KNOWLEDGE:
-                break
-            selected_keys.append(key)
+    def _kw_hits(key: str) -> int:
+        return sum(1 for w in KNOWLEDGE_KEYWORDS.get(key, []) if w.lower() in intent_lower)
 
-    selected = set(selected_keys)
-    selected.update(k for k in required_keys if _is_core_knowledge(k))
+    if _semantic_available():
+        # 【语义为主】对所有场景候选按意思打分；关键词命中作加分项、不当门槛。
+        sem = _semantic_scores(intent_text, scene)
+        scored: list[tuple[float, str]] = []
+        for key in scene:
+            s = sem.get(key, 0.0)
+            kw = _kw_hits(key)
+            # 纳入：语义够相关 或 有关键词命中（任一即可）——语义不再只是"填空位"，而是主路径。
+            if s >= _SEM_THRESHOLD or kw > 0:
+                scored.append((s + _KW_BONUS * kw, key))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        selected_keys = [k for _, k in scored[:_MAX_SCENE_KNOWLEDGE]]
+    else:
+        # 回退（没装语义模型）：关键词命中为主，按命中数排序取前 N；不足再 bigram 字面补。保持原行为。
+        kw_scored = sorted(((_kw_hits(k), k) for k in scene if _kw_hits(k) > 0),
+                           key=lambda x: x[0], reverse=True)
+        selected_keys = [k for _, k in kw_scored[:_MAX_SCENE_KNOWLEDGE]]
+        if len(selected_keys) < _MAX_SCENE_KNOWLEDGE:
+            candidates = [k for k in scene if k not in selected_keys]
+            for key in _bigram_fill(intent_text, candidates):
+                if len(selected_keys) >= _MAX_SCENE_KNOWLEDGE:
+                    break
+                selected_keys.append(key)
+
+    selected = set(selected_keys) | set(core)
     return [k for k in required_keys if k in selected]
 
 
