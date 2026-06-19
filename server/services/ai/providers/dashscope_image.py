@@ -45,9 +45,12 @@ class DashScopeImageProvider(ImageProvider):
         image: bytes | list[bytes] | None = None,
         **kwargs,
     ) -> bytes:
-        if image:  # 万相文生图端点不收参考图——别让 Logo/二维码/底图"以为带了其实没带"，明确记一笔
+        if image:  # 本 provider 只接万相文生图端点（编辑/参考图在另一组 native 端点、未接）——明确记一笔，别让传入图"以为带了其实没带"
             n = len(image) if isinstance(image, list) else 1
-            logger.warning("通义万相为纯文生图、不支持参考图：本次忽略 %d 张（Logo/二维码/底图不会进图）", n)
+            logger.warning(
+                "本接口走万相文生图端点、不带参考图：本次传入的 %d 张被忽略；要叠 Logo/二维码请改用硅基 Qwen-Image-Edit 或火山 Seedream",
+                n,
+            )
         task_id = await self._submit(prompt, model or "wanx2.1-t2i-turbo", size)
         url = await self._poll(task_id)
         return await fetch_image_bytes(url)
