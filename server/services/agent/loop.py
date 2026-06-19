@@ -69,6 +69,9 @@ _MAX_TOOL_RESULT_CHARS = 12000
 _MICROCOMPACT_KEEP = 4
 _CLEARED_RESULT_MARK = "[旧的查询结果已清理以省上下文；需要可重新查]"
 
+# 防打转（anti-spin）：同一工具 + 完全相同参数最多放行几次；再多结果也不会变（是在空转），拦下逼模型换思路。
+_MAX_SAME_CALL = 3
+
 
 def _auto_approve(tool, ctx) -> bool:
     """据 ctx.permission_mode 决定一个 requires_approval 工具是否免确认、直接自动执行。
@@ -329,6 +332,15 @@ async def _execute_tool(registry: ToolRegistry, name: str | None, args: dict, ct
     tool = registry.get(name) if name else None
     if tool is None:
         return f"[工具不存在] {name}"
+    # 防打转（anti-spin）：同一工具+完全相同参数反复调 → 结果不会变，拦下逼它换思路（计数存 ctx、跨轮累计）
+    try:
+        sig = f"{name}|{json.dumps(args, sort_keys=True, ensure_ascii=False)}"
+    except (TypeError, ValueError):
+        sig = f"{name}|{args!r}"
+    ctx.call_counts[sig] = ctx.call_counts.get(sig, 0) + 1
+    if ctx.call_counts[sig] > _MAX_SAME_CALL:
+        return (f"[别重复了] 你已用完全相同的参数调用 {name} {ctx.call_counts[sig]} 次，结果不会变。"
+                f"请换个参数/思路，或直接根据已有信息回答老板，别再重复调它。")
     # PreToolUse hook（借鉴 cc-haha）：工具执行前可拦截（如发布前敏感词检查 / 群发前校验名单）。故障安全。
     deny = await run_pre_tool_hooks(name, args, ctx)
     if deny:

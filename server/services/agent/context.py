@@ -22,3 +22,5 @@ class AgentContext:
     permission_mode: str = "ask"
     # 范围越界开关：True = 文件工具不再限于"内容库+选定文件"，可碰任意路径（高级·带风险）。
     full_disk_access: bool = False
+    # 防打转计数：同一工具+完全相同参数的调用次数（_execute_tool 跨轮维护），超阈值拦下逼模型换思路。
+    call_counts: dict = field(default_factory=dict)
