@@ -37,6 +37,7 @@ from services.memory_service import format_memories_for_prompt, load_store_memor
 from services.quota_service import check_quota
 from services.store_profile_service import render_operation_profile_context
 import services.agent.tools  # noqa: F401  导入即把内置工具登记进 default_registry
+import services.agent.web_tools  # noqa: F401  第二批：WebFetch/WebSearch/TodoWrite/run_subagent 登记进 default_registry
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -97,6 +98,18 @@ def _today_line() -> str:
     except Exception:
         return ""
 
+
+_WEB_AGENT_TOOLS_HINT = (
+    "【你还会上网查资料、列清单、拆子任务（对标专业 AI 助手的本事）】\n"
+    "- web_search：要最新的、本地知识库里没有的外部信息（行业趋势、同行竞品在怎么做、某种新做法）就上网搜，"
+    "返回前几条标题+链接+摘要；想看某条的全文，再用 web_fetch 抓它的链接。\n"
+    "- web_fetch：给一个已知网址，抓回它的正文（读一篇文章、看某个竞品页写了什么）。\n"
+    "- todo_write：遇到要分好几步才能做完的复杂任务，先用它把步骤列成清单、再逐项做、做完一步更新状态——"
+    "不容易漏步，老板也看得到进度；一步到位的简单活儿不用列。\n"
+    "- run_subagent：遇到那种『先把某一大块独立子任务彻底做完、再回来继续主线』的大任务，可以把这块交给子代理专心做完拿回结果"
+    "（会多花一次完整模型调用，普通小事别用它）。\n"
+    "原则：本地知识库/门店资料够用就别上网；只在确实需要外部最新信息时才搜。"
+)
 
 _DESKTOP_FILE_OPS_HINT = (
     "【你能直接操作老板本机的文件（桌面版）】你在老板自己的电脑上运行，有一组本地文件工具：\n"
@@ -160,6 +173,8 @@ def compose_agent_system_prompt(profile_text: str, brain_text: str, full_disk: b
     today = _today_line()
     if today:
         parts.append(today)
+    # 第二批通用能力（上网查资料/列清单/拆子任务）——桌面与云端 web 都注册了这四个工具，故都告诉大脑何时用。
+    parts.append(_WEB_AGENT_TOOLS_HINT)
     # 桌面全本地版：告诉大脑它能直接读写改本机文件，它才会主动用文件工具（云端 web 版不设 DESKTOP_LOCAL→不加）。
     if os.environ.get("DESKTOP_LOCAL") == "1":
         parts.append(_DESKTOP_FILE_OPS_HINT)

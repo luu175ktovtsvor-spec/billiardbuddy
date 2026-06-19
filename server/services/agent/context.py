@@ -63,3 +63,12 @@ class AgentContext:
     denials_by_action: dict = field(default_factory=dict)
     # 全局累计拒绝次数（跨动作）：达 _DENIAL_FALLBACK_TOTAL 也整体回退到逐项确认观察期，防"换个参数接着烦"。
     denials_total: int = 0
+    # ── 第二批真 Agent 工具（对标 Claude Code 的 TodoWrite / Task）──
+    # TodoWrite 写进来的多步任务清单：每项 {"task": str, "status": "pending|in_progress|done"}。
+    #   让 Agent 把"这次要分几步做"列出来、逐项跟踪进度（复杂任务先列清单再逐项做）。默认空。
+    todos: list = field(default_factory=list)
+    # run_subagent（子代理）递归跑 run_agent_loop 时复用的【同一个文字 provider / 模型】——
+    #   loop 启动时把当次用的 provider/model 写进 ctx，子代理据此复用（同一门店 BYOK key、同模型），
+    #   不必再各自去 factory 取。None = 子代理自己回退到编排默认 provider/model。
+    provider: Any = None
+    model: Any = None
