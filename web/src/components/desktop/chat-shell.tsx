@@ -4,12 +4,12 @@
  * 桌面端 Agent 对话整壳：侧栏 + （空态欢迎页 | 对话流）+ 输入区，接 useAgentChat 真后端管道。
  * 由 chat/page.tsx 在 isDesktop 时早返回渲染；手机网页版走原有页面，二者物理隔离。
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { api } from "@/lib/api";
-import { useAgentChat, type PermissionMode } from "@/hooks/use-agent-chat";
-import { DesktopShell, DesktopSidebar } from "./macos-shell";
+import { useAgentChat, type PermissionMode, type ChatMessage } from "@/hooks/use-agent-chat";
+import { DesktopShell, DesktopSidebar, type DesktopConversation } from "./macos-shell";
 import { WelcomeScreen } from "./welcome-screen";
 import { DesktopComposer } from "./desktop-composer";
 import { DesktopChatThread } from "./chat-thread";
@@ -26,6 +26,15 @@ function timeGreeting(): string {
   const h = new Date().getHours();
   const t = h < 5 ? "凌晨好" : h < 11 ? "早上好" : h < 13 ? "中午好" : h < 18 ? "下午好" : "晚上好";
   return `${t}，老板`;
+}
+
+function groupByDate(iso: string | null): string {
+  if (!iso) return "更早";
+  const d = new Date(iso);
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return "今天";
+  const days = Math.floor((now.getTime() - d.getTime()) / 86400000);
+  return days < 7 ? "前 7 天" : "更早";
 }
 
 export function DesktopChatShell({
@@ -64,6 +73,29 @@ export function DesktopChatShell({
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // 会话历史列表（侧栏）：进页面拉一次 + 每拿到新会话 id 后刷新（新会话冒头）
+  const [conversations, setConversations] = useState<DesktopConversation[]>([]);
+  const refreshConversations = useCallback(async () => {
+    try {
+      const r = await api.listAgentConversations();
+      setConversations((r.conversations || []).map((c) => ({
+        id: c.conversation_id,
+        title: c.title || "新对话",
+        group: groupByDate(c.last_at),
+      })));
+    } catch { /* 拿不到就空 */ }
+  }, []);
+  useEffect(() => { void refreshConversations(); }, [refreshConversations]);
+  useEffect(() => { if (chat.conversationId) void refreshConversations(); }, [chat.conversationId, refreshConversations]);
+
+  // 点开一条历史会话 → 拉它的消息加载进来（可继续聊）
+  const loadConv = useCallback(async (id: string) => {
+    try {
+      const r = await api.getAgentConversation(id);
+      chat.loadConversation(id, (r.messages || []) as ChatMessage[]);
+    } catch { /* 忽略 */ }
+  }, [chat]);
 
   // 权限偏好持久化（与手机页同一个 localStorage key，体验一致）
   useEffect(() => {
@@ -110,8 +142,10 @@ export function DesktopChatShell({
         <DesktopSidebar
           storeName={liveStoreName || storeName}
           monthlySpend={liveSpend ?? monthlySpend}
-          conversations={[]}
+          conversations={conversations}
+          activeId={chat.conversationId ?? undefined}
           onNewChat={chat.startNewChat}
+          onSelect={loadConv}
           onOpenSettings={() => router.push("/dashboard/store-settings")}
         />
       }

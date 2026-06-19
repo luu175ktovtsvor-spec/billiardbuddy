@@ -217,6 +217,78 @@ async def _load_agent_history(db, store, conversation_id: str | None) -> list[di
         return []
 
 
+def _group_agent_conversations(rows) -> list[dict]:
+    """把（按 created_at 倒序的）agent 生成记录按 conversation_id 分组成会话列表。
+    标题=该会话最早一条的 user message（或 title）；last_at=最新时间；保序=最新会话在前；取前 40。"""
+    convs: dict = {}
+    for g in rows:
+        cid = str(g.conversation_id)
+        if cid not in convs:
+            convs[cid] = {"conversation_id": cid,
+                          "last_at": g.created_at.isoformat() if g.created_at else None,
+                          "title": None}
+        msg = (g.input_params or {}).get("message") if g.input_params else None
+        title = g.title or msg  # 倒序遍历→最后一次赋值来自最早一条→标题=会话第一句
+        if title:
+            convs[cid]["title"] = str(title)[:30]
+    return list(convs.values())[:40]
+
+
+@router.get("/agent/conversations")
+async def list_agent_conversations(
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
+):
+    """列出本店的 agent 会话（标题/最近时间），供桌面侧栏回看与切换。"""
+    from sqlalchemy import select
+    from models.generation import Generation as _Gen
+    rows = (await db.execute(
+        select(_Gen).where(
+            _Gen.store_id == store.id,
+            _Gen.type == "agent",
+            _Gen.is_deleted == False,  # noqa: E712
+            _Gen.conversation_id.isnot(None),
+        ).order_by(_Gen.created_at.desc()).limit(300)
+    )).scalars().all()
+    return {"conversations": _group_agent_conversations(rows)}
+
+
+@router.get("/agent/conversations/{conversation_id}")
+async def get_agent_conversation(
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
+):
+    """取某个 agent 会话的全部消息（user/assistant 文本对），供桌面端点开回看（不含步骤卡，仅文本）。"""
+    import uuid as _uuid
+    from sqlalchemy import select
+    from models.generation import Generation as _Gen
+    try:
+        cid = _uuid.UUID(conversation_id)
+    except (ValueError, TypeError):
+        return {"conversation_id": conversation_id, "messages": []}
+    rows = (await db.execute(
+        select(_Gen).where(
+            _Gen.store_id == store.id,
+            _Gen.conversation_id == cid,
+            _Gen.type == "agent",
+            _Gen.is_deleted == False,  # noqa: E712
+        ).order_by(_Gen.created_at)
+    )).scalars().all()
+    messages: list[dict] = []
+    for g in rows:
+        uin = (g.input_params or {}).get("message") if g.input_params else None
+        if uin:
+            messages.append({"role": "user", "content": uin})
+        if g.result:
+            messages.append({"role": "assistant", "content": g.result})
+    return {"conversation_id": conversation_id, "messages": messages}
+
+
 class AgentChatRequest(BaseModel):
     message: str
     history: list[dict] | None = None
