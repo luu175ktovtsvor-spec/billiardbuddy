@@ -144,7 +144,16 @@ app.whenReady().then(async () => {
       onLog: (s) => { if (process.env.DESKTOP_DEVTOOLS === "1") process.stdout.write(`[backend] ${s}`); },
     });
     backendReady = r.ok;
-    if (!r.ok) console.error("本地后端未在超时内就绪,前端可能连不上");
+    if (!r.ok) {
+      // 不静默回落到打不开的空白页:明确弹一条人话报错,告诉用户端口可能被占用。
+      console.error("本地后端未在超时内就绪,前端可能连不上");
+      const port = r.port || 8077;
+      dialog.showErrorBox(
+        "台球运营管家启动失败",
+        `后端服务没能起来(${port} 端口可能被别的程序占用)。\n\n` +
+        `请关闭占用该端口的程序后,重新打开本软件。`
+      );
+    }
   }
   if (MANAGE_FRONTEND) {
     // prod:后端就绪后起本地 Next.js standalone(它把 /api/v1/* 反代到本地后端)。
@@ -153,7 +162,19 @@ app.whenReady().then(async () => {
       onLog: (s) => { if (process.env.DESKTOP_DEVTOOLS === "1") process.stdout.write(`[frontend] ${s}`); },
     });
     if (f.ok) frontendUrl = f.url;
-    else console.warn("本地前端未起(无 standalone 产物?),回落 DESKTOP_APP_URL/localhost:3000");
+    else if (f.reason === "no-standalone") {
+      // dev 路径:本就没打包前端产物,回落 DESKTOP_APP_URL/localhost:3000 是预期行为,不报错。
+      console.warn("本地前端未起(无 standalone 产物),回落 DESKTOP_APP_URL/localhost:3000");
+    } else {
+      // 有 standalone 产物却没起来:端口被占用等真故障。不静默回落到打不开的页,弹人话报错。
+      const port = f.port || 3100;
+      console.error("本地前端未在超时内就绪");
+      dialog.showErrorBox(
+        "台球运营管家启动失败",
+        `界面服务没能起来(${port} 端口可能被别的程序占用)。\n\n` +
+        `请关闭占用该端口的程序后,重新打开本软件。`
+      );
+    }
   }
   createWindow();
   // 自动更新:打包后后台静默检查(dev/mac 内部自跳过,不阻塞、不打扰)

@@ -6,6 +6,7 @@
 import {
   CalendarDays, Lightbulb, PenLine, UserPlus, Stethoscope, Dices, ImageIcon, Sparkles,
   FileText, PartyPopper, Search, History, FolderOpen, Save, FilePen, FileSpreadsheet, Layers, Wrench,
+  FileSearch, Terminal,
 } from "lucide-react";
 
 export const TOOL_META: Record<string, { label: string; Icon: typeof Wrench }> = {
@@ -27,6 +28,9 @@ export const TOOL_META: Record<string, { label: string; Icon: typeof Wrench }> =
   write_file: { label: "存文件", Icon: Save },
   edit_file: { label: "改文件", Icon: FilePen },
   edit_excel: { label: "改报表", Icon: FileSpreadsheet },
+  find_files: { label: "找文件", Icon: Search },
+  search_in_files: { label: "搜文件内容", Icon: FileSearch },
+  run_command: { label: "跑命令", Icon: Terminal },
 };
 
 export function toolMeta(name: string) {
@@ -41,15 +45,21 @@ export const DELIVERABLE_TOOLS = new Set([
   "make_poster",
 ]);
 
-/** 待确认动作的人话标题（要对外发出去的动作经审批闸先确认）。 */
-export function approvalLabel(tool: string): string {
+/** 待确认动作的人话标题（要对外发出去 / 在本机执行的动作经审批闸先确认）。 */
+export function approvalLabel(tool: string, args?: Record<string, unknown>): string {
   if (tool === "edit_excel") return "改这份报表需要你确认";
   if (tool === "write_file" || tool === "edit_file") return "改这个文件需要你确认";
+  if (tool === "run_command") {
+    // 中性表述：只说要在本机执行命令 + 原文，不提钱、不评判。
+    const cmd = typeof args?.command === "string" ? args.command : "";
+    return cmd ? `要在你电脑上执行命令：${cmd}` : "要在你电脑上执行一条命令";
+  }
   return `执行「${toolMeta(tool).label}」需要你确认`;
 }
 
 /** 确认按钮文案。 */
 export function approvalConfirmText(tool: string): string {
   if (tool === "edit_excel" || tool === "write_file" || tool === "edit_file") return "确认修改";
+  if (tool === "run_command") return "确认执行命令";
   return "确认执行";
 }

@@ -105,6 +105,16 @@ _DESKTOP_FILE_OPS_HINT = (
     "- 改之前**先 read_file 看清内容/单元格坐标**再改；写/改会先弹给老板确认、自动备份原件、可回滚——放心动手。"
 )
 
+_DESKTOP_FULL_ACCESS_HINT = (
+    "【老板已开启「完全访问模式」——你能自己找/搜文件、列任意目录、跑命令】此模式下你不再被限在内容库：\n"
+    "- find_files：在任意目录下按文件名递归找（如在桌面找所有 *.xlsx、找 **/采购*），先找到再读。\n"
+    "- search_in_files：在任意目录下按内容搜（哪个文件里写了某个词），返回 文件:行号:命中行。\n"
+    "- list_files 带 path：列任意目录里有什么。\n"
+    "- run_command：跑一条命令（ls/find/python 脚本/git status 等），**每条都会把命令原文弹给老板确认**才执行；"
+    "禁止用 && | ; > < 等拼接，危险命令(删根/提权/格式化)会被直接拒。\n"
+    "老板没开完全访问模式时，你只能动内容库和他当场选定的文件——这几个跨目录/命令能力会被拒，别硬试。"
+)
+
 
 _VALID_PERMISSION_MODES = {"ask", "auto_files", "full"}
 
@@ -143,8 +153,9 @@ def _selected_files_note(paths: list[str] | None) -> str:
     )
 
 
-def compose_agent_system_prompt(profile_text: str, brain_text: str) -> str:
-    """拼 agent 的 system prompt：基底指令 + 当天日期 + 门店画像 + 店脑记忆（让它"懂当下、懂这家店"）。"""
+def compose_agent_system_prompt(profile_text: str, brain_text: str, full_disk: bool = False) -> str:
+    """拼 agent 的 system prompt：基底指令 + 当天日期 + 门店画像 + 店脑记忆（让它"懂当下、懂这家店"）。
+    full_disk=True（老板开了完全访问模式）时额外注入"可找/搜文件、列任意目录、跑命令"的 hint。"""
     parts = [_AGENT_BASE_PROMPT]
     today = _today_line()
     if today:
@@ -152,6 +163,9 @@ def compose_agent_system_prompt(profile_text: str, brain_text: str) -> str:
     # 桌面全本地版：告诉大脑它能直接读写改本机文件，它才会主动用文件工具（云端 web 版不设 DESKTOP_LOCAL→不加）。
     if os.environ.get("DESKTOP_LOCAL") == "1":
         parts.append(_DESKTOP_FILE_OPS_HINT)
+        # 完全访问模式：再告诉它能自己找/搜文件、列任意目录、跑命令（会弹卡确认）。
+        if full_disk:
+            parts.append(_DESKTOP_FULL_ACCESS_HINT)
     if profile_text and profile_text.strip():
         parts.append("【这家店的情况】\n" + profile_text.strip())
     if brain_text and brain_text.strip():
@@ -345,15 +359,17 @@ async def agent_chat(
     # 注入"懂这家店"：门店画像（同步）+ 店脑记忆 → system prompt
     profile_text = render_operation_profile_context(store)
     memories = await load_store_memory(db, store.id)
+    perm_mode, full_disk = _resolve_permission(body.permission_mode, body.full_disk_access)
     # 店脑按需召回：按老板这句话的相关性筛记忆，避免全量注入撑大 prompt（context rot）
-    system_prompt = compose_agent_system_prompt(profile_text, format_memories_for_prompt(memories, intent=body.message))
+    system_prompt = compose_agent_system_prompt(
+        profile_text, format_memories_for_prompt(memories, intent=body.message), full_disk=full_disk,
+    )
     # 桌面版：老板当场选定的文件 → 注入 prompt（告诉大脑路径）+ 进 ctx.allowed_paths（授权工具可动）
     if body.selected_files and os.environ.get("DESKTOP_LOCAL") == "1":
         note = _selected_files_note(body.selected_files)
         if note:
             system_prompt = system_prompt + "\n\n" + note
 
-    perm_mode, full_disk = _resolve_permission(body.permission_mode, body.full_disk_access)
     ctx = AgentContext(
         db=db, store=store, user=user, allowed_paths=body.selected_files or [],
         permission_mode=perm_mode, full_disk_access=full_disk,
@@ -514,7 +530,7 @@ async def agent_execute(
     try:
         profile_text = render_operation_profile_context(store)
         memories = await load_store_memory(db, store.id)
-        sys_prompt = compose_agent_system_prompt(profile_text, format_memories_for_prompt(memories))
+        sys_prompt = compose_agent_system_prompt(profile_text, format_memories_for_prompt(memories), full_disk=full_disk)
         history = await _load_agent_history(db, store, body.conversation_id)
         synth = (
             f"[系统提示·非用户输入] 老板已确认、你刚请求的「{body.tool}」已执行完成。"

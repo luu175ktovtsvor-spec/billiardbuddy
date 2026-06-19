@@ -380,7 +380,21 @@ export default function ManagerPage() {
           },
           onError: (m) => {
             if (controller.signal.aborted) return;
-            setMessages((prev) => [...prev, { role: "assistant", content: `⚠️ ${m}`, error: true }]);
+            // 流在 done 前断开时，别把已攒到的 steps/审批/正文丢了：先落一条带这些内容的正常 assistant 消息，再追加错误提示。
+            const salvaged = steps.length > 0 || !!approval || !!finalText.trim();
+            setMessages((prev) => {
+              const next: ChatMessage[] = [...prev];
+              if (salvaged) {
+                next.push({
+                  role: "assistant",
+                  content: finalText,
+                  steps: steps.length ? [...steps] : undefined,
+                  approval,
+                });
+              }
+              next.push({ role: "assistant", content: `⚠️ ${m}`, error: true });
+              return next;
+            });
             setDraft("");
             setLiveSteps([]);
           },

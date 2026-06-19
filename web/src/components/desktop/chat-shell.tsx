@@ -51,7 +51,9 @@ export function DesktopChatShell({
   const { electron } = useDesktop();
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<PermissionMode>("ask");
-  const chat = useAgentChat({ permissionMode: mode });
+  // 完全访问模式：独立于权限模式（一个管"问不问"，一个管"能碰多大范围"）。默认关、本地持久化。
+  const [fullDisk, setFullDisk] = useState(false);
+  const chat = useAgentChat({ permissionMode: mode, fullDisk });
   const [preview, setPreview] = useState<PreviewItem | null>(null);
 
   // 发布功能是否可用(发布内核存在或本机有 python3)。不可用就不挂"去发布"入口，
@@ -121,16 +123,21 @@ export function DesktopChatShell({
     } catch { /* 忽略 */ }
   }, [chat]);
 
-  // 权限偏好持久化（与手机页同一个 localStorage key，体验一致）
+  // 权限偏好持久化（与手机页同一套 localStorage key，体验一致）
   useEffect(() => {
     try {
       const m = localStorage.getItem("agent_permission_mode");
       if (m === "ask" || m === "auto_files" || m === "full") setMode(m);
+      setFullDisk(localStorage.getItem("agent_full_disk") === "1");
     } catch { /* 忽略 */ }
   }, []);
   const updateMode = (m: PermissionMode) => {
     setMode(m);
     try { localStorage.setItem("agent_permission_mode", m); } catch { /* 忽略 */ }
+  };
+  const updateFullDisk = (v: boolean) => {
+    setFullDisk(v);
+    try { localStorage.setItem("agent_full_disk", v ? "1" : "0"); } catch { /* 忽略 */ }
   };
 
   const onSend = () => {
@@ -203,6 +210,8 @@ export function DesktopChatShell({
         onSend={onSend}
         permissionMode={mode}
         onPermissionChange={updateMode}
+        fullDisk={fullDisk}
+        onFullDiskChange={updateFullDisk}
         disabled={chat.generating}
       />
     </DesktopShell>

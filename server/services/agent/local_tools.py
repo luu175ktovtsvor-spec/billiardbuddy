@@ -10,7 +10,10 @@
 """
 import logging
 import os
+import re
+import shlex
 import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -80,16 +83,289 @@ def _backup(path: Path) -> str | None:
     return str(dest)
 
 
+# ────────────────────────────── 真 Agent 文件/命令工具的公共护栏 ──────────────────────────────
+
+# 搜文件内容时只扫这些「文本类」扩展（没装 ripgrep 退回 Python os.walk 时用）；
+# 二进制（图片/视频/Office 压缩包/可执行）跳过——搜内容没意义还容易乱码/卡死。
+_TEXT_EXTS = {
+    ".txt", ".md", ".markdown", ".csv", ".tsv", ".log", ".json", ".jsonl", ".yaml", ".yml",
+    ".toml", ".ini", ".cfg", ".conf", ".env", ".py", ".js", ".ts", ".jsx", ".tsx", ".html",
+    ".htm", ".css", ".scss", ".xml", ".sql", ".sh", ".bat", ".ps1", ".java", ".go", ".rs",
+    ".c", ".cpp", ".h", ".hpp", ".php", ".rb", ".lua", ".vue", ".svelte", ".gitignore", "",
+}
+# os.walk 退回时单个文件扫描上限（字节）：超过当大文件跳过，防把几百 M 的日志读爆内存。
+_GREP_MAX_FILE_BYTES = 5 * 1024 * 1024
+# 危险命令黑名单（run_command 用）：命中任一即拒。覆盖删根/提权/裸盘写/格式化/递归放权/fork 炸弹/写系统要害区。
+_DANGEROUS_PATTERNS = [
+    r"\brm\b.*\s-[a-z]*[rf]",          # rm -rf / rm -fr / rm -r 等
+    r"\bsudo\b",                        # 提权
+    r"\bsu\b\s",                        # 切换用户
+    r"\bdd\b.*\bif=",                   # dd if= 裸盘读写
+    r"\bmkfs",                          # 格式化文件系统
+    r"\bchmod\b.*-[a-z]*r[a-z]*\s*777",  # chmod -R 777 放权（命令已转小写，故匹配小写 r）
+    r"\bchown\b.*-[a-z]*r",             # chown -R 递归改属主（同上）
+    r":\(\)\s*\{.*\}\s*;\s*:",          # :(){ :|:& };: fork 炸弹
+    r">\s*/dev/",                       # 写 /dev/*
+    r"\b/dev/(sd|disk|null|zero|random)", # 触碰裸盘/设备
+    r">\s*/boot",                       # 写 /boot
+    r"/etc/ssh",                        # 动 ssh 配置/密钥
+    r"\b(shutdown|reboot|halt|poweroff)\b",  # 关机重启
+    r"\bmkfs|\bfdisk|\bparted",         # 分区/格式化
+    r"\bcurl\b.*\|\s*(sh|bash)",        # curl ... | sh 远程执行
+    r"\bwget\b.*\|\s*(sh|bash)",        # wget ... | sh
+]
+# 禁用的 shell 操作符（防命令拼接/重定向/管道/子命令绕过黑名单）。命中即拒。
+_SHELL_OPERATORS = ["&&", "||", "|", ";", ">", "<", "`", "$(", "&"]
+
+
+def _resolve_dir(root_path: str, ctx=None) -> Path:
+    """把一个【目录根】解析进沙箱并校验。语义同 _resolve（内容库/选定文件/全盘门控），
+    但面向"在这个目录下找/搜/列"的场景。越界抛 ValueError。"""
+    return _resolve(root_path, ctx)
+
+
 # ────────────────────────────── 只读工具（无需审批） ──────────────────────────────
 
 async def list_files(args: dict, ctx) -> str:
-    """列内容库里的文件（生成过的文案/报表/海报/视频等）。"""
-    root = _library_root()
+    """列文件。不传 path=列内容库（原行为）；传 path=列该目录（沙箱内随时、沙箱外要全盘）。"""
+    raw = (args.get("path") or "").strip()
+    if not raw:
+        # 原行为：列内容库全部文件（递归）
+        root = _library_root()
+        items = []
+        for p in sorted(root.rglob("*")):
+            if p.is_file() and ".backups" not in p.parts:
+                items.append(f"- {p.relative_to(root)}  ({p.stat().st_size} 字节)")
+        return "内容库文件：\n" + ("\n".join(items) if items else "（空）")
+    # 传了 path：列指定目录（仅该层，不递归）
+    try:
+        d = _resolve_dir(raw, ctx)
+    except ValueError as e:
+        return f"列不了这个目录：{e}（沙箱外的目录需要老板开启「完全访问模式」）"
+    if not d.exists():
+        return f"目录不存在：{raw}"
+    if not d.is_dir():
+        return f"这不是目录（是个文件）：{raw}"
     items = []
-    for p in sorted(root.rglob("*")):
-        if p.is_file() and ".backups" not in p.parts:
-            items.append(f"- {p.relative_to(root)}  ({p.stat().st_size} 字节)")
-    return "内容库文件：\n" + ("\n".join(items) if items else "（空）")
+    try:
+        for p in sorted(d.iterdir()):
+            kind = "📁" if p.is_dir() else "📄"
+            size = "" if p.is_dir() else f"  ({p.stat().st_size} 字节)"
+            items.append(f"- {kind} {p.name}{size}")
+    except PermissionError:
+        return f"没权限读这个目录：{raw}"
+    return f"目录 {d}：\n" + ("\n".join(items) if items else "（空目录）")
+
+
+async def find_files(args: dict, ctx) -> str:
+    """按名字 glob 递归找文件（Claude Code 的 Glob 等价物）。
+    args: root_path（绝对目录），pattern（glob 如 *.xlsx 或 **/采购*），max_results（默认 100）。只读。"""
+    raw_root = (args.get("root_path") or "").strip()
+    pattern = (args.get("pattern") or "").strip()
+    if not raw_root:
+        return "请给 root_path（要在哪个目录下找，绝对路径）。"
+    if not pattern:
+        return "请给 pattern（要找的文件名规则，glob，如 *.xlsx 或 **/采购*）。"
+    try:
+        max_results = int(args.get("max_results") or 100)
+    except (TypeError, ValueError):
+        max_results = 100
+    max_results = max(1, min(max_results, 1000))
+    try:
+        root = _resolve_dir(raw_root, ctx)
+    except ValueError as e:
+        return f"找不了这个目录：{e}（沙箱外的目录需要老板开启「完全访问模式」）"
+    if not root.exists():
+        return f"目录不存在：{raw_root}"
+    if not root.is_dir():
+        return f"这不是目录：{raw_root}"
+    # glob 默认只匹配当前层；想递归用户写 **/xxx。为贴合"递归按名字搜"的直觉，
+    # 不含 / 的纯文件名模式（如 *.xlsx）自动当成 **/ 递归找。
+    glob_pat = pattern if "/" in pattern else f"**/{pattern}"
+    hits: list[Path] = []
+    total = 0
+    try:
+        for p in root.glob(glob_pat):
+            if p.is_file() and ".backups" not in p.parts:
+                total += 1
+                if len(hits) < max_results:
+                    hits.append(p)
+    except (ValueError, OSError) as e:
+        return f"搜的时候出错了：{e}"
+    if total == 0:
+        return f"在 {root} 下没找到匹配「{pattern}」的文件。"
+    lines = [f"在 {root} 下找到 {total} 个匹配「{pattern}」的文件" +
+             (f"（只列前 {max_results} 个）：" if total > len(hits) else "：")]
+    lines += [f"- {p}" for p in hits]
+    return "\n".join(lines)
+
+
+def _grep_with_ripgrep(root: Path, query: str, max_results: int) -> list[str] | None:
+    """有 rg 就用它搜内容（快、自动跳二进制/.gitignore）。返回 "文件:行号:命中行" 列表；
+    没装 rg 返回 None（让调用方退回 Python 实现）。"""
+    rg = shutil.which("rg")
+    if not rg:
+        return None
+    try:
+        # -n 行号 -H 带文件名 -e 把 query 当独立模式（防 query 以 - 开头被当选项）-m 每文件命中上限
+        proc = subprocess.run(
+            [rg, "-n", "-H", "--max-count", "50", "-e", query, str(root)],
+            shell=False, capture_output=True, text=True, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    out_lines = (proc.stdout or "").splitlines()
+    results: list[str] = []
+    for ln in out_lines:
+        results.append(ln)
+        if len(results) >= max_results:
+            break
+    return results
+
+
+def _grep_with_python(root: Path, query: str, max_results: int) -> list[str]:
+    """没装 rg 的退路：os.walk + 正则，只扫文本类扩展、跳大文件/二进制。"""
+    try:
+        rx = re.compile(query)
+    except re.error:
+        # query 不是合法正则 → 当普通子串搜（转义）
+        rx = re.compile(re.escape(query))
+    results: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        # 跳过备份目录与隐藏的版本控制目录，省时间
+        dirnames[:] = [d for d in dirnames if d not in (".backups", ".git", "node_modules", "__pycache__")]
+        for fn in filenames:
+            fp = Path(dirpath) / fn
+            if fp.suffix.lower() not in _TEXT_EXTS:
+                continue
+            try:
+                if fp.stat().st_size > _GREP_MAX_FILE_BYTES:
+                    continue
+            except OSError:
+                continue
+            try:
+                with fp.open("r", encoding="utf-8", errors="ignore") as f:
+                    for i, line in enumerate(f, 1):
+                        if rx.search(line):
+                            results.append(f"{fp}:{i}:{line.rstrip()[:300]}")
+                            if len(results) >= max_results:
+                                return results
+            except (OSError, UnicodeError):
+                continue
+    return results
+
+
+async def search_in_files(args: dict, ctx) -> str:
+    """在目录下按内容搜文件（Claude Code 的 Grep 等价物）。优先 ripgrep，没装退回 Python。
+    args: root_path（绝对目录），query（关键词/正则），max_results（默认 100）。只读。"""
+    raw_root = (args.get("root_path") or "").strip()
+    query = args.get("query") or ""
+    if not raw_root:
+        return "请给 root_path（要在哪个目录下搜，绝对路径）。"
+    if not query.strip():
+        return "请给 query（要搜的关键词或正则）。"
+    try:
+        max_results = int(args.get("max_results") or 100)
+    except (TypeError, ValueError):
+        max_results = 100
+    max_results = max(1, min(max_results, 1000))
+    try:
+        root = _resolve_dir(raw_root, ctx)
+    except ValueError as e:
+        return f"搜不了这个目录：{e}（沙箱外的目录需要老板开启「完全访问模式」）"
+    if not root.exists():
+        return f"目录不存在：{raw_root}"
+    if not root.is_dir():
+        return f"这不是目录：{raw_root}"
+    results = _grep_with_ripgrep(root, query, max_results)
+    if results is None:
+        results = _grep_with_python(root, query, max_results)
+    if not results:
+        return f"在 {root} 下没有内容含「{query}」的文件。"
+    head = f"在 {root} 下搜到「{query}」（文件:行号:命中行）："
+    return head + "\n" + "\n".join(results)
+
+
+# ────────────────────────────── 跑命令（最险·硬门控全盘 + 黑名单 + 禁操作符 + 审批闸） ──────────────────────────────
+
+def _check_command_safety(command: str) -> str | None:
+    """命令安全检查。安全返回 None；不安全返回【拒绝原因】（人话）。
+    顺序：① 必须开全盘（由 handler 在调用前先判，这里不重复）② 禁 shell 操作符 ③ 危险黑名单。"""
+    cmd = (command or "").strip()
+    if not cmd:
+        return "命令是空的，没东西可跑。"
+    # ② 禁 shell 操作符（防拼接/重定向/管道/子命令绕过黑名单）
+    for op in _SHELL_OPERATORS:
+        if op in cmd:
+            return (f"命令里有 shell 操作符「{op}」，不允许（防止命令拼接/重定向绕过安全检查）。"
+                    "请一次只跑一条简单命令，不要用 && || | ; > < 反引号 $() 这些。")
+    # ③ 危险黑名单
+    low = cmd.lower()
+    for pat in _DANGEROUS_PATTERNS:
+        if re.search(pat, low):
+            return f"这条命令命中了危险操作黑名单（{pat}），出于安全拒绝执行。"
+    return None
+
+
+async def run_command(args: dict, ctx) -> str:
+    """在老板本机跑一条命令（Claude Code 的 Bash 等价物·最危险）。
+    硬门控：必须开「完全访问模式」(full_disk_access)；禁 shell 操作符；危险黑名单；shell=False；超时；输出截断。
+    args: command（字符串），timeout_sec（默认 30），cwd（工作目录，可选）。审批跟权限档走（L1/L2弹卡、L3自己跑）；危险黑名单与档位无关、永远拦死。"""
+    # ① 硬门控：没开完全访问模式 → 直接拒（命令工具风险最高，绝不在普通模式下放行）
+    if not getattr(ctx, "full_disk_access", False):
+        return "跑命令需要先开启「完全访问模式」。普通模式下我只能动内容库和你选定的文件，不能跑命令。"
+    command = (args.get("command") or "").strip()
+    reason = _check_command_safety(command)
+    if reason:
+        return f"拒绝执行：{reason}"
+    try:
+        timeout_sec = float(args.get("timeout_sec") or 30)
+    except (TypeError, ValueError):
+        timeout_sec = 30.0
+    timeout_sec = max(1.0, min(timeout_sec, 300.0))
+    cwd = (args.get("cwd") or "").strip() or None
+    if cwd and not Path(cwd).is_dir():
+        return f"工作目录不存在：{cwd}"
+    try:
+        parts = shlex.split(command)
+    except ValueError as e:
+        return f"命令解析失败（引号没配对？）：{e}"
+    if not parts:
+        return "命令是空的，没东西可跑。"
+    try:
+        proc = subprocess.run(
+            parts, shell=False, capture_output=True, text=True,
+            timeout=timeout_sec, cwd=cwd,
+        )
+    except subprocess.TimeoutExpired:
+        return f"命令跑超时了（超过 {int(timeout_sec)} 秒自动掐断）：{command}"
+    except FileNotFoundError:
+        return f"找不到这个命令（没装或不在 PATH 里）：{parts[0]}"
+    except OSError as e:
+        return f"命令没跑起来：{e}"
+    stdout = proc.stdout or ""
+    stderr = proc.stderr or ""
+    stdout_show = _truncate_output(stdout)
+    stderr_show = _truncate_output(stderr)
+    out = [f"命令：{command}", f"返回码：{proc.returncode}"]
+    if stdout_show:
+        out.append(f"【标准输出】\n{stdout_show}")
+    if stderr_show:
+        out.append(f"【错误输出】\n{stderr_show}")
+    if not stdout_show and not stderr_show:
+        out.append("（无输出）")
+    return "\n".join(out)
+
+
+def _truncate_output(text: str, max_lines: int = 100) -> str:
+    """命令输出按行截断：超 max_lines 行只留前 max_lines 行并提示。"""
+    if not text:
+        return ""
+    lines = text.splitlines()
+    if len(lines) <= max_lines:
+        return text.rstrip()
+    kept = "\n".join(lines[:max_lines])
+    return f"{kept}\n…[输出共 {len(lines)} 行，只显示前 {max_lines} 行]"
 
 
 async def read_file(args: dict, ctx) -> str:
@@ -272,6 +548,21 @@ def preview_edit_file(args: dict, ctx) -> str:
     return f"改文件《{_name_of(args)}》：\n- 原：{old}\n+ 改：{new}"
 
 
+def preview_run_command(args: dict, ctx) -> str:
+    """跑命令前给老板看的预览：把【将执行的命令原文】清清楚楚展示，让他看原文再点确认。"""
+    command = (args.get("command") or "").strip() or "（空）"
+    cwd = (args.get("cwd") or "").strip()
+    try:
+        timeout_sec = int(float(args.get("timeout_sec") or 30))
+    except (TypeError, ValueError):
+        timeout_sec = 30
+    lines = ["将在你电脑上执行命令（看清原文再确认）：", f"  $ {command}"]
+    if cwd:
+        lines.append(f"  工作目录：{cwd}")
+    lines.append(f"  超时：{timeout_sec} 秒")
+    return "\n".join(lines)
+
+
 def preview_write_file(args: dict, ctx) -> str:
     content = args.get("content") or ""
     exists = False
@@ -312,10 +603,57 @@ _LOCAL_TOOLS = [
     ),
     Tool(
         name="list_files",
-        description="列出本机「内容库」里已有的文件（之前生成的文案/报表/海报/视频等）。要找/改某个文件前先用它看看有啥。",
-        parameters={"type": "object", "properties": {}},
+        description="列文件。不传 path＝列本机「内容库」里已有的文件（之前生成的文案/报表/海报等）；"
+                    "传 path＝列那个目录里有什么（沙箱内随时可用；沙箱外的任意目录需老板开「完全访问模式」）。",
+        parameters={"type": "object", "properties": {
+            "path": {"type": "string", "description": "要列的目录绝对路径（可选）；不传＝列内容库"},
+        }},
         handler=list_files,
         read_only=True,
+    ),
+    Tool(
+        name="find_files",
+        description="按文件名【递归找文件】（像 Claude Code 的 Glob）。给一个目录和文件名规则(glob)，"
+                    "如在桌面找所有 *.xlsx、或找 **/采购* 这种。返回匹配到的文件完整路径。"
+                    "沙箱内（内容库/老板选定的）随时可用；要在沙箱外任意目录找，需老板开「完全访问模式」。",
+        parameters={"type": "object", "properties": {
+            "root_path": {"type": "string", "description": "在哪个目录下找（绝对路径，如老板的桌面）"},
+            "pattern": {"type": "string", "description": "文件名规则(glob)，如 *.xlsx、**/采购*、报表*.csv"},
+            "max_results": {"type": "integer", "description": "最多返回几个（默认 100）"},
+        }, "required": ["root_path", "pattern"]},
+        handler=find_files,
+        read_only=True,
+    ),
+    Tool(
+        name="search_in_files",
+        description="按【内容】搜文件（像 Claude Code 的 Grep）。给一个目录和关键词/正则，"
+                    "搜出哪些文件里含这个词，返回 文件:行号:命中行。找『提到过XX的文件/报表里写了YY的』时用。"
+                    "沙箱内随时可用；沙箱外任意目录需老板开「完全访问模式」。",
+        parameters={"type": "object", "properties": {
+            "root_path": {"type": "string", "description": "在哪个目录下搜（绝对路径）"},
+            "query": {"type": "string", "description": "要搜的关键词或正则，如『提成』或『\\d{11}』"},
+            "max_results": {"type": "integer", "description": "最多返回几条命中（默认 100）"},
+        }, "required": ["root_path", "query"]},
+        handler=search_in_files,
+        read_only=True,
+    ),
+    Tool(
+        name="run_command",
+        description="在老板本机【跑一条命令】（像 Claude Code 的 Bash，最危险）。"
+                    "只有老板开了「完全访问模式」才可用。逐项确认/自动接受档会把命令原文弹给老板确认才执行；"
+                    "完全访问档则自己跑、不逐个问（命令会显示在对话里，老板可随时打断）。"
+                    "禁止 && || | ; > < 反引号 这类拼接/重定向；危险命令(删根/提权/格式化等)任何档位都直接拒。"
+                    "适合跑 ls/find/python 脚本/git status 这类一次性查看类命令。",
+        parameters={"type": "object", "properties": {
+            "command": {"type": "string", "description": "要执行的单条命令原文（不要用 && | ; 等拼接）"},
+            "timeout_sec": {"type": "integer", "description": "超时秒数（默认 30，最多 300）"},
+            "cwd": {"type": "string", "description": "工作目录（可选，绝对路径）"},
+        }, "required": ["command"]},
+        handler=run_command,
+        requires_approval=True,
+        approval_class="command",
+        force_confirm=False,  # 跟权限档走:L1/L2弹卡确认、L3完全访问自己跑;危险黑名单在handler、与档位无关永远拦
+        preview=preview_run_command,
     ),
     Tool(
         name="read_file",

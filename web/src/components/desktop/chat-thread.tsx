@@ -244,7 +244,7 @@ function MacApprovalCard({
     <div className="overflow-hidden rounded-xl border bg-[#fffaf0] shadow-sm" style={{ borderColor: "#f0c98a66" }}>
       <div className="px-4 py-3">
         <div className="mb-2.5 flex items-center gap-1.5 text-[13px] font-medium text-[#1d1d1f]">
-          ⚠️ {approvalLabel(ap.tool)}
+          ⚠️ {approvalLabel(ap.tool, ap.args)}
           <span className="text-[11px] font-normal text-[#86868b]">（这个动作要发出去 / 写进文件，做之前先让你看明白再点头）</span>
         </div>
         {/* SH-8 结构化理由：让老板一眼看清「要做什么 / 为什么要你确认 / 影响」，看明白再决定。 */}

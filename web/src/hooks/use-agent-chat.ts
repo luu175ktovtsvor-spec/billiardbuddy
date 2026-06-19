@@ -141,7 +141,23 @@ export function useAgentChat(opts: AgentChatOptions) {
             },
             onError: (m) => {
               if (controller.signal.aborted) return;
-              setMessages((prev) => [...prev, { role: "assistant", content: `⚠️ ${m}`, error: true }]);
+              // 流在 done 前断开时，已攒到的 steps/审批/提问/正文不能直接丢——
+              // 先把这些已生成内容落成一条正常 assistant 消息（成品卡/审批卡照常可用），再追加一条错误提示。
+              const salvaged = steps.length > 0 || !!approval || !!question || !!finalText.trim();
+              setMessages((prev) => {
+                const next: ChatMessage[] = [...prev];
+                if (salvaged) {
+                  next.push({
+                    role: "assistant",
+                    content: finalText,
+                    steps: steps.length ? [...steps] : undefined,
+                    approval,
+                    question,
+                  });
+                }
+                next.push({ role: "assistant", content: `⚠️ ${m}`, error: true });
+                return next;
+              });
               setDraft("");
               setLiveSteps([]);
             },

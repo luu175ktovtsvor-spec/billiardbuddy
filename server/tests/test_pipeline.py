@@ -170,6 +170,28 @@ def test_run_generation_injects_store_brain():
     assert src.index("with_store_brain") < src.index("TextRequest(prompt=prompt"), "店脑须在调AI前注入"
 
 
+def test_handrolled_workbench_paths_inject_store_brain():
+    """REST 工作台卡片 + 主动草稿的四个手搓管道（generate_workbench/_copywriting/
+    _activity/_operation）不走 run_generation，曾全员漏注入店脑——导致这些产出
+    "看不到"老板店脑（含 manual 亲定店规矩/改价）。回归契约：
+      1) 每条都调 with_store_brain + load_store_memory；
+      2) 店脑必须在调 AI（provider.generate）之前注入；
+      3) 店脑必须是最后一次 append——其后不得再有 brand_voice / concise_directive
+         等改写 rendered_prompt 的语句（近因效应，店脑须压过它们）。"""
+    import services.content_service as cs
+    for fn_name in ("generate_workbench", "generate_copywriting", "generate_activity", "generate_operation"):
+        fn = getattr(cs, fn_name)
+        src = inspect.getsource(fn)
+        assert "with_store_brain" in src, f"{fn_name} 未注入店脑"
+        assert "load_store_memory" in src, f"{fn_name} 未读取该店记忆"
+        # 店脑须在调 AI 前
+        assert src.index("with_store_brain") < src.index("provider.generate"), f"{fn_name} 店脑须在调AI前注入"
+        # 店脑须排在 brand_voice / concise 之后（最后 append，近因效应）
+        tail = src[src.index("with_store_brain"):]
+        assert "get_brand_voice_context" not in tail, f"{fn_name} brand_voice 在店脑之后追加，破坏近因契约"
+        assert "concise_directive(" not in tail, f"{fn_name} concise_directive 在店脑之后追加，破坏近因契约"
+
+
 def test_generation_paths_use_unified_pipeline():
     """所有非流式生成路径必须走 run_generation（根治新路径漏防护）。"""
     import services.diagnosis_service as m1
