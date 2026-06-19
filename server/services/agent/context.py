@@ -47,3 +47,19 @@ class AgentContext:
     last_delta: int = 0
     # 预算推动语已下发次数（continuations>=3 且增量极小才算 diminishing；防一两轮误判早停）。
     budget_continuations: int = 0
+    # ── SH-6 三级上下文压缩 · autocompact（第三级：临近窗口顶满时的语义兜底）──
+    # 模型上下文窗口（token）。autocompact 阈值 = 这个 * autocompact_ratio。
+    #   None = 不启用 autocompact（交互式默认，只靠 snip/microcompact 前两级；对现有行为零影响）。
+    #   N>0  = 估算上下文 token 超过 N*ratio 时，把较早的非近 N 轮消息压成一段摘要（花一次 LLM）。
+    model_ctx_window: int | None = None
+    # autocompact 触发比例（窗口的百分之多少算"临近顶满"）；默认 0.7。
+    autocompact_ratio: float = 0.7
+    # autocompact 触发时保留原文的"最近消息"条数（更早的才压成摘要）；保护近几轮上下文不被压糊。
+    autocompact_keep: int = 12
+    # ── SH-8 连续拒绝自动回退（老板反复拒同一动作 → 别再反复提，自动换法子）──
+    # 按【动作 key（工具名|规范化 args）】记的"连续被拒次数"：审批卡老板点拒绝 → +1；
+    # 同一动作连续达 _DENIAL_FALLBACK_N 次 → loop 不再提请该动作，改走文本答复/换方案。
+    # 成功确认执行该动作 → 该 key 清零（老板改主意了，回到正常审批）。故障安全：取/写都带默认。
+    denials_by_action: dict = field(default_factory=dict)
+    # 全局累计拒绝次数（跨动作）：达 _DENIAL_FALLBACK_TOTAL 也整体回退到逐项确认观察期，防"换个参数接着烦"。
+    denials_total: int = 0

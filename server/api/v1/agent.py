@@ -28,7 +28,8 @@ from core.security_guard import check_input_injection
 from db.session import async_session
 from models.user import User
 from services.agent.context import AgentContext
-from services.agent.loop import run_agent_loop, run_agent_loop_stream
+from services.agent import denial_tracker
+from services.agent.loop import _action_key, run_agent_loop, run_agent_loop_stream
 from services.agent.proactive import generate_daily_drafts
 from services.ai.factory import ProviderFactory
 from services.agent.registry import default_registry
@@ -116,6 +117,17 @@ def _resolve_permission(mode: str | None, full_disk: bool | None) -> tuple[str, 
         return "ask", False
     m = mode if mode in _VALID_PERMISSION_MODES else "ask"
     return m, bool(full_disk)
+
+
+def _model_ctx_window() -> int | None:
+    """SH-6 autocompact 触发用的模型上下文窗口（token）。默认 None＝不启用（不同 BYOK 模型窗口大小不一，
+    乱设会误触发/迟触发，故不默认开）。要在超长对话时启用自动瘦身，配 DESKTOP_MODEL_CTX_WINDOW＝如 64000。
+    非法值按 None。"""
+    try:
+        v = int(os.environ.get("DESKTOP_MODEL_CTX_WINDOW", "") or 0)
+        return v if v > 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _selected_files_note(paths: list[str] | None) -> str:
@@ -346,6 +358,7 @@ async def agent_chat(
         db=db, store=store, user=user, allowed_paths=body.selected_files or [],
         permission_mode=perm_mode, full_disk_access=full_disk,
         auto_spend_limit=getattr(store, "agent_auto_spend_limit", None),
+        model_ctx_window=_model_ctx_window(),  # SH-6：配了 DESKTOP_MODEL_CTX_WINDOW 才启用自动瘦身
     )
 
     # 多轮续接：有 conversation_id 则从 DB 查本会话历史(替代前端全量回传——刷新不丢、省 token、更可靠);否则用前端 history。
@@ -364,6 +377,10 @@ async def agent_chat(
         conv_uuid = _uuid.UUID(body.conversation_id) if body.conversation_id else _uuid.UUID(gen_id)
     except (ValueError, TypeError):
         conv_uuid = _uuid.UUID(gen_id)
+
+    # SH-8：把本会话已累积的「连续拒绝」计数注入 ctx，让循环里 _denial_fallback 能据此对【反复被拒的动作】
+    # 自动回退（不再提请、改走文本/换方案）。故障安全：注不进就当无历史拒绝。
+    denial_tracker.load_into_ctx(ctx, str(conv_uuid))
 
     async def event_generator():
         from services.agent.tools import DELIVERABLE_TOOLS
@@ -477,7 +494,12 @@ async def agent_execute(
         db=db, store=store, user=user, allowed_paths=body.selected_files or [],
         full_disk_access=full_disk,
         auto_spend_limit=getattr(store, "agent_auto_spend_limit", None),
+        model_ctx_window=_model_ctx_window(),  # SH-6：同 chat，配了环境变量才启用
     )
+    # SH-8：老板成功确认执行了这个动作 → 该动作的「连续拒绝」计数清零（他改主意了，回到正常审批节奏）。
+    denial_tracker.clear_denial(body.conversation_id, _action_key(body.tool, args))
+    # 续接循环用本会话最新拒绝计数（清完零的），让后续若再提别的动作仍受回退保护。
+    denial_tracker.load_into_ctx(ctx, body.conversation_id)
     result = await tool.handler(args, ctx)
     if not isinstance(result, str):
         try:
@@ -511,7 +533,8 @@ async def agent_execute(
             from services.agent.approval import sign_approval
             new_approval = {"tool": ap.tool_name, "args": ap.tool_args,
                             "token": sign_approval(ap.tool_name, ap.tool_args),
-                            "preview": ap.preview}
+                            "preview": ap.preview,
+                            "reason": ap.reason}  # SH-8：续接审批卡也带结构化理由，跟首张卡一致
         # 续接落库进同一会话，刷新不丢、下一轮续得上
         if body.conversation_id and continuation:
             import uuid as _uuid
@@ -525,6 +548,28 @@ async def agent_execute(
         logger.warning("审批回灌续接失败（不影响已执行结果）", exc_info=True)
 
     return {"tool": body.tool, "result": result, "continuation": continuation, "approval": new_approval}
+
+
+class AgentRejectRequest(BaseModel):
+    tool: str
+    args: dict | None = None
+    conversation_id: str | None = None  # 按会话累计拒绝计数，供"连续拒绝就别再提"判定
+
+
+@router.post("/reject")
+async def agent_reject(
+    body: AgentRejectRequest,
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
+):
+    """SH-8：老板点了审批卡的「拒绝/取消」→ 记一次该动作的拒绝。
+
+    同一动作连续拒绝达阈值后，下一轮循环里 _denial_fallback 会让 Agent 不再反复提请该动作、改走文本/换方案
+    （"这个就先不做了，我换个法子"）。纯记账、不执行任何工具。故障安全：记不上也不报错给前端添堵。"""
+    denial_tracker.record_denial(body.conversation_id, _action_key(body.tool, body.args or {}))
+    return {"ok": True}
 
 
 @router.post("/daily-drafts")

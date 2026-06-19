@@ -7,7 +7,7 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag } from "lucide-react";
+import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, FileEdit } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
@@ -231,7 +231,7 @@ function MacApprovalCard({
   idx: number;
   executing: boolean;
   onConfirm: (idx: number, ap: ApprovalState) => void;
-  onCancel: (idx: number) => void;
+  onCancel: (idx: number, ap?: ApprovalState) => void;
 }) {
   if (ap.status === "cancelled") {
     return <div className="text-[13px] text-[#86868b]">已取消。</div>;
@@ -239,22 +239,63 @@ function MacApprovalCard({
   if (ap.status === "done") {
     return <div className="flex items-center gap-1.5 text-[13px] text-emerald-600"><Check className="h-3.5 w-3.5" /> 已确认执行。</div>;
   }
+  const r = ap.reason;
   return (
     <div className="overflow-hidden rounded-xl border bg-[#fffaf0] shadow-sm" style={{ borderColor: "#f0c98a66" }}>
       <div className="px-4 py-3">
-        <div className="mb-1.5 flex items-center gap-1.5 text-[13px] font-medium text-[#1d1d1f]">
+        <div className="mb-2.5 flex items-center gap-1.5 text-[13px] font-medium text-[#1d1d1f]">
           ⚠️ {approvalLabel(ap.tool)}
-          <span className="text-[11px] font-normal text-[#86868b]">（要发出去的动作，发出前先让你点头确认）</span>
+          <span className="text-[11px] font-normal text-[#86868b]">（这个动作要发出去 / 写进文件，做之前先让你看明白再点头）</span>
         </div>
-        {ap.preview && (
-          <div className="rounded-lg border border-black/[0.07] bg-white/70 px-3 py-2 text-[13px] text-[#3a3a3c] whitespace-pre-line">
-            {ap.preview}
+        {/* SH-8 结构化理由：让老板一眼看清「要做什么 / 为什么要你确认 / 影响」，看明白再决定。 */}
+        {r ? (
+          <div className="space-y-2.5">
+            {r.what && (
+              <div className="flex items-start gap-2">
+                <Target className="mt-[2px] h-3.5 w-3.5 shrink-0 text-brand-600" />
+                <div className="text-[13px] leading-relaxed text-[#3a3a3c]">
+                  <span className="font-medium text-[#1d1d1f]">要做什么：</span>
+                  {r.what}
+                </div>
+              </div>
+            )}
+            {r.why && (
+              <div className="flex items-start gap-2">
+                <ShieldQuestion className="mt-[2px] h-3.5 w-3.5 shrink-0 text-[#d4901f]" />
+                <div className="text-[13px] leading-relaxed text-[#3a3a3c]">
+                  <span className="font-medium text-[#1d1d1f]">为什么要你确认：</span>
+                  {r.why}
+                </div>
+              </div>
+            )}
+            {r.impact && (
+              <div className="flex items-start gap-2">
+                <FileEdit className="mt-[2px] h-3.5 w-3.5 shrink-0 text-[#86868b]" />
+                <div className="text-[13px] leading-relaxed text-[#3a3a3c]">
+                  <span className="font-medium text-[#1d1d1f]">影响：</span>
+                  {r.impact}
+                </div>
+              </div>
+            )}
+            {/* 预览（会改成什么 / diff）放在理由下面，作为细节补充 */}
+            {ap.preview && (
+              <div className="rounded-lg border border-black/[0.07] bg-white/70 px-3 py-2 text-[13px] text-[#3a3a3c] whitespace-pre-line">
+                {ap.preview}
+              </div>
+            )}
           </div>
+        ) : (
+          // 兜底：旧会话或后端没带结构化理由时，退回只展示预览，不留白
+          ap.preview && (
+            <div className="rounded-lg border border-black/[0.07] bg-white/70 px-3 py-2 text-[13px] text-[#3a3a3c] whitespace-pre-line">
+              {ap.preview}
+            </div>
+          )
         )}
       </div>
       <div className="flex items-center justify-end gap-2 px-4 pb-3">
         <button
-          onClick={() => onCancel(idx)}
+          onClick={() => onCancel(idx, ap)}
           disabled={executing}
           className="rounded-lg border border-black/[0.07] bg-white px-4 py-1.5 text-[13px] text-[#1d1d1f] transition hover:bg-black/[0.03] active:scale-[0.98] disabled:opacity-40"
         >
@@ -314,7 +355,7 @@ export function DesktopChatThread({
   generating: boolean;
   executingIdx: number | null;
   onConfirm: (idx: number, ap: ApprovalState) => void;
-  onCancel: (idx: number) => void;
+  onCancel: (idx: number, ap?: ApprovalState) => void;
   onPublish?: (platform: unknown, content: string) => void;
   onPreview?: (item: PreviewItem) => void;
   onAnswer?: (label: string) => void;
