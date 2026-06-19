@@ -56,6 +56,13 @@ export function DesktopComposer({
         <span className="text-[11px] text-[#86868b]">· 群发、对外发布始终先问你</span>
       </div>
 
+      {/* 切到「跳过确认」(full) 时明确告知：做海报会直接花老板自己的 BYOK 生图 Key 的钱（B-5，配合后端一轮花钱上限闸）。 */}
+      {permissionMode === "full" && (
+        <p className="mx-auto mb-2.5 max-w-[760px] text-[11px] leading-relaxed text-amber-600">
+          ⚠️ 跳过确认后，做海报会直接用你的 Key 花钱生图、不再逐张问你（同一次任务里出图超过设定张数才会再弹确认）。这是你自己的生图账号，留意余额。
+        </p>
+      )}
+
       {/* 输入框 */}
       <div className="mx-auto flex max-w-[760px] items-end gap-2 rounded-xl border border-black/[0.07] bg-white px-3 py-2 shadow-sm">
         <button className="flex h-8 w-8 items-center justify-center rounded-md text-[#86868b] hover:bg-black/[0.05]" aria-label="附件">
