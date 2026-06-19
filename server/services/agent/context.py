@@ -24,3 +24,11 @@ class AgentContext:
     full_disk_access: bool = False
     # 防打转计数：同一工具+完全相同参数的调用次数（_execute_tool 跨轮维护），超阈值拦下逼模型换思路。
     call_counts: dict = field(default_factory=dict)
+    # full(跳过确认)模式下，本轮 Agent 运行内已「免确认自动放行的花钱动作」次数；
+    # 超上限即使 full 也强制弹确认——防批量出图静默扣 BYOK 余额(B-5/C-1)。
+    auto_spend_count: int = 0
+    # 花钱上限闸的「本店上限值」：老板可在 UI 调高/调低/关闭（这是他自己的 BYOK 生图 key 和钱，应由他掌控）。
+    #   None = 用 DESKTOP_AGENT_AUTO_SPEND_LIMIT 环境默认；
+    #   N>=0 = 一轮内自动花钱上限（0 = 花钱永远先确认）；
+    #   N<0（如 -1）= 老板主动关闭上限闸，full 下花钱也全自动放行。
+    auto_spend_limit: int | None = None

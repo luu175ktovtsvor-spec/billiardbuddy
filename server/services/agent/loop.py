@@ -20,6 +20,7 @@
 """
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 
 from config import settings
@@ -73,6 +74,16 @@ _CLEARED_RESULT_MARK = "[旧的查询结果已清理以省上下文；需要可�
 _MAX_SAME_CALL = 3
 
 
+def _auto_spend_limit() -> int:
+    """full(跳过确认)模式下，一轮 Agent 运行内允许「免确认自动花钱」的次数上限。
+    超过即使 full 也强制弹确认，挡住"老板切跳过确认后被批量出图静默扣 BYOK 余额"(B-5/C-1·痛点#7)。
+    经 DESKTOP_AGENT_AUTO_SPEND_LIMIT 配置；默认 5；设 0 = full 也从不自动花钱。"""
+    try:
+        return max(0, int(os.environ.get("DESKTOP_AGENT_AUTO_SPEND_LIMIT", "5")))
+    except (TypeError, ValueError):
+        return 5
+
+
 def _auto_approve(tool, ctx) -> bool:
     """据 ctx.permission_mode 决定一个 requires_approval 工具是否免确认、直接自动执行。
     有序判定（借鉴 cc-haha 权限瀑布）：force_confirm（bypass-immune）> 权限模式。
@@ -88,6 +99,20 @@ def _auto_approve(tool, ctx) -> bool:
     if mode == "auto_files":
         return kind == "file"
     if mode == "full":
+        # full=所有动作免确认；但「花钱类」(生图等)加一道【一轮内自动花钱上限闸】：
+        # 老板切到"跳过确认"后，模型批量出图会静默扣 BYOK 余额(痛点#7)——超上限即使 full 也强制弹确认。
+        # 文件类(可逆、改前已自动备份)不计入、不设限。
+        if kind == "file":
+            return True
+        # 上限值：优先用本店设置 ctx.auto_spend_limit（老板可在 UI 调高/调低/关闭），没设才用环境默认。
+        # 这是老板自己的 BYOK 生图 key 和钱、应由他掌控：负数 = 老板关闭上限闸，full 下花钱也全自动。
+        raw = getattr(ctx, "auto_spend_limit", None)
+        limit = raw if raw is not None else _auto_spend_limit()
+        if limit < 0:
+            return True
+        if getattr(ctx, "auto_spend_count", 0) >= limit:
+            return False
+        ctx.auto_spend_count = getattr(ctx, "auto_spend_count", 0) + 1
         return True
     return False
 
