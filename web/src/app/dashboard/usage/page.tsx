@@ -38,7 +38,7 @@ export default function UsagePage() {
 
   return (
     <div className="mx-auto max-w-2xl pb-10">
-      <PageHeader title="用量 · 花费" />
+      <PageHeader title="用量" />
 
       {loading ? (
         <div className="flex items-center justify-center py-20 text-slate-400">
@@ -51,7 +51,7 @@ export default function UsagePage() {
           {/* 总览卡 */}
           <div className="rounded-2xl bg-gradient-to-br from-brand-600 to-brand-500 px-5 py-5 text-white shadow-sm">
             <p className="flex items-center gap-1.5 text-[13px] opacity-90">
-              <Wallet className="h-4 w-4" /> {data.month} · 本月 AI 花费（粗估）
+              <Wallet className="h-4 w-4" /> {data.month} · 本月 AI 用量（粗估）
             </p>
             <p className="mt-1 text-[34px] font-bold leading-tight">¥{data.est_cost_yuan}</p>
             <div className="mt-2 flex gap-5 text-[13px] opacity-90">

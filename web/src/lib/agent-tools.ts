@@ -34,14 +34,15 @@ export function toolMeta(name: string) {
 }
 
 // 交付类工具：结果是给老板直接拿去用的成品，原样渲染、绝不让大脑改写。需与后端 deliverable 标记一致。
+// make_poster 直接出图、就是成品（海报图原样渲染），不再走审批卡。
 export const DELIVERABLE_TOOLS = new Set([
   "write_operation_content", "write_batch", "plan_activity", "assistant_outreach",
   "diagnose_operation", "recommend_games", "make_platform_content", "make_groupbuy_content",
+  "make_poster",
 ]);
 
-/** 待确认动作的人话标题（花钱/对外动作经审批闸先确认）。 */
+/** 待确认动作的人话标题（要对外发出去的动作经审批闸先确认）。 */
 export function approvalLabel(tool: string): string {
-  if (tool === "make_poster") return "做这张海报需要你确认";
   if (tool === "edit_excel") return "改这份报表需要你确认";
   if (tool === "write_file" || tool === "edit_file") return "改这个文件需要你确认";
   return `执行「${toolMeta(tool).label}」需要你确认`;
@@ -49,7 +50,6 @@ export function approvalLabel(tool: string): string {
 
 /** 确认按钮文案。 */
 export function approvalConfirmText(tool: string): string {
-  if (tool === "make_poster") return "确认生成";
   if (tool === "edit_excel" || tool === "write_file" || tool === "edit_file") return "确认修改";
   return "确认执行";
 }

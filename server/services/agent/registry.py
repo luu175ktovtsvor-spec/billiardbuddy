@@ -4,7 +4,8 @@
 - name + description（描述写清"何时该调我"，是大脑选对工具的关键）
 - JSON Schema 入参 parameters
 - handler（async 执行体）
-- requires_approval（写/花钱/对外类=True，审批闸 P2 据此先弹确认）
+- requires_approval（对外/不可逆/写入类=True：发布到平台、群发客户、删数据等，审批闸 P2 据此先弹确认，
+  防自动对外/账号被封——这是安全闸，不是"花钱"闸。做海报/写内容这类只产成品给老板看的不属此列）
 
 handler 签名约定: async def fn(args: dict, ctx: AgentContext) -> Any
 """
@@ -20,10 +21,11 @@ class Tool:
     description: str
     parameters: dict
     handler: ToolHandler
-    requires_approval: bool = False  # 写/花钱/对外类=True；审批闸据此先弹确认
+    requires_approval: bool = False  # 对外/不可逆/写入类=True（发布/群发/删数据）；审批闸据此先弹安全确认
     # 审批类别（决定"自动批准/信任模式"下哪些可免确认直接执行）：
     #   "file"  本机文件读改——可逆（改前自动备份），信任模式可免确认自动改；
-    #   "spend" 花钱/对外（生图/发布/团购）——不可逆/有外部后果，仅"全自动"最高档才免确认。
+    #   "spend" 对外/不可逆动作（未来的平台发布、群发客户、删数据）——有外部后果/不可撤回，仅"全自动"最高档才免确认。
+    #           （类别名沿用历史 "spend"，但定性是"对外/不可逆安全闸"，不再因为"花钱/生图"而弹确认。）
     approval_class: str = "spend"
     # 审批预览器（可选）：(args, ctx) -> str，给老板看"确认前到底会改什么"的人话 diff
     #   （如 edit_excel 读现值算"B2 32000→38000"）。审批闸据此让前端展示预览，不再"瞎确认"。
@@ -34,7 +36,7 @@ class Tool:
     #   read_only   纯查询、无副作用——同一轮里多个只读调用可安全并发执行。
     deliverable: bool = False
     read_only: bool = False
-    # 高危不可逆/对外操作（如未来的群发短信、平台发布、删数据）——即使在"全自动托管"(full) 模式也强制弹确认。
+    # 高危不可逆/对外操作（如未来的群发短信、平台发布、删数据）——即使在"全自动托管"(full) 模式也强制弹安全确认。
     # 借鉴 cc-haha 权限瀑布的 bypass-immune：某些操作的人工确认永不被任何"放行模式"旁路。
     force_confirm: bool = False
     # 提问工具（AskUserQuestion，借鉴 cc-haha）：循环里不执行，改吐 ask_question 事件让前端渲染选项卡片，
