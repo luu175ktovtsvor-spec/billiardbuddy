@@ -1,7 +1,7 @@
 # 桌面版 AI Agent · 产品形态架构地图
 
 > 这一份把"桌面版台球房运营 AI Agent"整个产品**从壳到脑到知识**讲透，一张文档全看懂。
-> 代码现住在 `feat/desktop-agent` 分支（和云端 web SaaS 同一仓库、共用后端/前端）。本文标清**哪些是桌面专属、哪些与 web 共享**。
+> 本仓库就是「桌面版 AI Agent」独立仓库，`main` = 桌面产品全部代码（历史上从云端 web SaaS 仓库独立而来，与原仓库 `billiards-ai-ops` 仍共享后端 `server/`、前端 `web/`、知识库 `prompts/`）。本文标清**哪些是桌面专属、哪些与 web 共享**。
 
 ## 一、这是什么（形态 + 理念）
 
@@ -121,4 +121,4 @@
 - **打包**：CI `.github/workflows/desktop-build-win.yml`（PyInstaller 打后端 .exe + electron-builder 出 nsis）。⚠️ 打包出包后**真机端到端验收尚未做**（见 `docs/plans/桌面Agent-Codex化-执行清单`）。
 
 ---
-*本文件随"桌面版 AI Agent 单独建仓库"准备，将作为新仓库的 README 落地。代码改动以原仓库 `feat/desktop-agent` 为准。*
+*本文件是「桌面版 AI Agent」独立仓库的产品形态地图（架构地图，一张文档看懂产品）。当前产品化主线待办见 `docs/完整优化清单.md`。*

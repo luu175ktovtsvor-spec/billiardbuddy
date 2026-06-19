@@ -1,8 +1,10 @@
-# 桌面 Agent · Codex 化 · 执行清单（2026-06-18 · 权威执行文档）
+# 桌面 Agent · Codex 化 · 执行清单（2026-06-18 · P0-P3 历史交付账本）
+
+> **📌 note（当前主线）**：本清单是 P0-P3 这一程的**历史交付账本**（记录当时做了什么、改了哪些文件、验收口径）。**当前活跃的 go-forward 主线工作文档已转到 `docs/完整优化清单.md`（37 项产品化优化清单）** —— 想看"接下来做什么"去那份；本文留作已交付内容的回溯依据。
 
 > **第一读者是 AI。** 这是把"桌面版做成 Codex 那种效果"落到每一步的执行清单。配套：架构见 `桌面AI-Agent-架构与开发计划-2026-06-18.md`，能力地图见 `桌面Agent-完整能力地图-路线图.md`，本地操作设计见 `桌面AI-Agent-本地操作能力-真Agent化-设计.md`。本文聚焦"怎么做、改哪些文件、产出什么、验收口径"。
 
-> **📍 进度速览（2026-06-18 末，代码已在 `feat/desktop-agent` 分支、未合 main）**：**P0 / P1 / P2 / P3 + Harness 加固 + 这一程新增功能全部已落地**（详见下方各项打勾 + 一句话现状）。**仅剩**：① 打包出安装包（Windows nsis / Mac dmg）；② 真机端到端验证（填 BYOK→写文案/改报表/发布全链路过一遍）。其余开发已完成。
+> **📍 进度速览（2026-06-18 末，代码已合入 main —— 本仓库 `main` = 桌面产品全部代码）**：**P0 / P1 / P2 / P3 + Harness 加固 + 这一程新增功能全部已落地**（详见下方各项打勾 + 一句话现状）。**仅剩**：① 打包出安装包（Windows nsis / Mac dmg）；② 真机端到端验证（填 BYOK→写文案/改报表/发布全链路过一遍）。其余开发已完成。后续产品化优化见 `docs/完整优化清单.md`。
 
 ## 0. 已拍板决策（2026-06-18，本轮新增）
 
@@ -35,7 +37,7 @@
 - [x] **P0.5 desktop/ 提交 git** ✅
   - **已做**：`desktop/.gitignore` 忽略 node_modules/dist/resources/.pyinstaller-build；`desktop/src`、`publisher`、`scripts`、`package.json` 已入分支。（commit `d5858ac`）
 - [x] **P0.6 打包本地语义模型 fastembed+bge-zh** 🔴 ✅（代码层就绪；进包预置留打包时做）
-  - **已做**：`backend.js` 默认 `RAG_EMBEDDER=fastembed`；`server/services/rag/embedder.py` 用 `BAAI/bge-small-zh-v1.5`（~90MB），fastembed 已进 pyproject；云端 web 默认 deterministic 不下模型。（commit `1b988b6`）
+  - **已做**：`backend.js` 默认 `RAG_EMBEDDER=fastembed`；`server/services/rag/embedder.py` 用 `BAAI/bge-small-zh-v1.5`（~90MB，本地 fastembed/onnxruntime，非 pgvector），fastembed 已进 pyproject。（commit `1b988b6`）
   - ⚠️ 留打包阶段做：PyInstaller 把 fastembed+onnxruntime 打进 + 预置模型进包 + `HF_HUB_OFFLINE=1`（否则首次联网拉 90MB，能用但有延迟）——属"打包出安装包"环节。
 
 ### P1 · 长在电脑上更深（桌面唯一能给、云端给不了的质变）
@@ -76,7 +78,7 @@
 - [x] **BYOK 成本看板** ✅：`GET /quota/cost` + 前端 `/dashboard/usage` 页（看自己 key 本月 token≈多少钱）。（commit `fc86e16`）
 - [x] **批量内容 write_batch** ✅：`tools.py`「给我一周朋友圈不重样」一次出一批。（commit `fe4a3f9`）
 - [x] **长对话不崩** ✅：history 封顶最近 12 条 + 每条截 2000 字符（防撑爆上下文）。（commit `32cf0a1`）
-- [x] **生图也 BYOK** ✅：store 加 `byok_image_*` 字段 + migration 022 + `factory.get_image_config_for_store(store)` + 前端配置面板"生图模型"区（未配回退平台 gpt-image-2）。（commit `6ab3912`）
+- [x] **生图也 BYOK** ✅：store 加 `byok_image_*` 字段 + migration 022 + `factory.get_image_config_for_store(store)` + 前端配置面板"生图模型"区（纯 BYOK：`DESKTOP_LOCAL=1` 未配即空 key、绝不回退平台 key，空 key → 友好 503）。（commit `6ab3912`）
 - [x] **max_turns 未收敛强制收尾** ✅：不再返回空答复。（commit `6624419`）
 - [x] **app 图标** ✅：`desktop/build/icon.png`（机器人+8 号球+球杆正式 logo）。（commit `54e25ee`/`7a001a8`）
 - [x] **测试存档** ✅：PPT 六岗位 60 场景（`evals/scenes/ppt_staff.yaml`）+ MiMo v2.5 实测。（commit `bbf035f`）
@@ -91,7 +93,7 @@
 ## 4. 文档更新清单
 
 - [x] 本执行清单（新建 + 2026-06-18 末程：P0/P1/P2/P3/Harness/本程新增全部打勾标现状）。
-- [x] `CLAUDE.md`：桌面版决策（纯 BYOK / Windows 优先 / CI 出包）+「桌面分支(feat/desktop-agent)新增」整节 + 生图 BYOK / CC Switch 已补进项目状态区与「核心架构原则」第 11 条。（⚠️ 卡片 96→105、子路由 25→28 的数字校正属云端表细节，未在本程动）
+- [x] `CLAUDE.md`：桌面版决策（纯 BYOK / Windows 优先 / CI 出包）+「桌面 Agent 新增」整节 + 生图 BYOK / CC Switch 已补进项目状态区与「核心架构原则」第 11 条。（注：本程代码当时在 `feat/desktop-agent` 分支推进，现已合入本仓库 `main`，`main` = 桌面产品全部代码）
 - [x] `docs/AI-Agent-Dev全真实改造-进度与待办.md`：已追加桌面这一程进度。
 - [x] `桌面Agent-完整能力地图-路线图.md`：已勾掉本程落地能力。
 - [ ] 架构计划 `桌面AI-Agent-架构与开发计划-2026-06-18.md`：进度区追加 P0 完成情况（本次未动，待补）。

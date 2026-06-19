@@ -1,10 +1,10 @@
 # AI-Agent-Dev · 全真实改造 进度与待办（交接锚点）
 
-> **这是续接权威**。任何新上下文（压缩后/新终端）接手本工作流，先读本文 + 三份核心文档（见下），即可无缝继续，不重做、不跑偏。
-> **分支**：`AI-Agent-Dev`（从 dev 切）。**全真实改造内容已 squash 落入 `feat/desktop-agent` 分支首个提交 `d8beca1`**（"全真实/PPT接地改造 + Agent层加固 + BYOK"）。`main`=美国生产**勿动**。
+> **这是历史改造程的进度档**（全真实/PPT 接地 + Agent 层加固那一程）。续接当前桌面产品请先读 `交接-给新会话/现状与待办.md`；本文留作那程的来龙去脉与验证账。
+> **仓库**：本仓库 = 桌面版台球房 AI Agent 独立仓库，**`main` = 桌面产品全部代码**（已无云端 web 形态）。下文提到的"全真实/PPT 接地改造"就在 `main` 这一脉里，最早是 squash 落入提交 `d8beca1`（"全真实/PPT接地改造 + Agent层加固 + BYOK"）。
 > 最近更新：2026-06-18。
 >
-> **⚠️ 续接看这里：本工作流（全真实/PPT 接地）已收口；其后在 `feat/desktop-agent` 分支接着做了"桌面 Agent · Codex 化"一程（本地 Electron+SQLite+纯 BYOK + 本地动手/RAG/Canvas/生图 BYOK 等，详见 §7）。桌面那程的权威执行文档是 `docs/plans/桌面Agent-Codex化-执行清单-2026-06-18.md`，本文不再是桌面程的主入口。**
+> **⚠️ 续接看这里：本工作流（全真实/PPT 接地）已收口；其后接着做了"桌面 Agent · Codex 化"一程（本地 Electron+SQLite+纯 BYOK + 本地动手/RAG/Canvas/生图 BYOK 等，详见 §7）。当前 go-forward 主线工作文档 = `docs/完整优化清单.md`（37 项产品化优化清单）；桌面那程的执行清单是 `docs/plans/桌面Agent-Codex化-执行清单-2026-06-18.md`。本文不再是主入口。**
 
 ---
 
@@ -13,9 +13,9 @@
 - 内容层：去消毒全真实、7 缺口 YAML、源料搬运 42 条、北极星 eval 对齐。
 - **Agent 层（2026-06-17，§3.6-3.10）**：Agent 决策 eval（**25 用例 100% GREEN**）；修日期注入/编排温度0.3/交付落库跨轮；加 plan_activity（工具→10）；交付物保真渲染；红线策略厘清。
 - **真实性/PPT 对应度（2026-06-18，§3.11-3.15，收口）**：PPT 接地审计→去消毒残留修复（含"组局"误当红线纠错）→审计 23 条 missing ops 补尽（Phase B 13 + Phase C 7）→**双层内容对抗核验**（今晚改的+更早搬的，零编造零矛盾、真问题全修）→**两个 MiMo 模型交叉实测北极星 98.8%/0 RED**。
-- **验证账（最终）**：PromptEngine **171 模板**、第三方名+PPT 出处零泄漏、`bash scripts/test.sh` 全绿（188 后端+4 前端+tsc）、Agent eval 真底线全 GREEN、2 段 Playwright 真机端到端。**全部留 AI-Agent-Dev 分支、未提交。**
+- **验证账（最终）**：PromptEngine **171 模板**、第三方名+PPT 出处零泄漏、`bash scripts/test.sh` 全绿（188 后端+4 前端+tsc）、Agent eval 真底线全 GREEN、2 段 Playwright 真机端到端。这些改造内容现都在 `main` 这一脉里。
 - 剩：画像客群/业态标签（**已核实 operation_profile 是 JSONB、加标签免迁移**）+ 原 P1-P4 路线。
-- **🆕 后续重心已转桌面 Agent · Codex 化**（`feat/desktop-agent` 分支，全真实内容已 squash 进首提交 `d8beca1`）：本地 Electron+SQLite+纯 BYOK + 本地动手/POS 真诊断/真 RAG/Canvas/生图 BYOK/CC Switch/Harness 加固 等已落地，仅剩打包出安装包 + 真机验证 + 对外互动。详见 **§7** 与 `docs/plans/桌面Agent-Codex化-执行清单-2026-06-18.md`。
+- **🆕 后续重心已转桌面 Agent · Codex 化**（全真实内容最早 squash 进提交 `d8beca1`）：本地 Electron+SQLite+纯 BYOK + 本地动手/POS 真诊断/真 RAG/Canvas/生图 BYOK/CC Switch/Harness 加固 等已落地，仅剩打包出安装包 + 真机验证 + 对外互动。详见 **§7**、`docs/plans/桌面Agent-Codex化-执行清单-2026-06-18.md` 与 go-forward 主线 `docs/完整优化清单.md`。
 
 ## 1. 🔴 最高铁律（任何改动都遵守）
 1. **全真实、不消毒、没有"度"**：助教情绪价值/颜值/陪打/超休/美女人设、追分博弈、交友软件获客、抖音擦边引流 都照实写。判断标尺="内行老板/店长一看是不是这行真东西"，不是"合不合规/政治正确"。
@@ -28,14 +28,14 @@
 - 整个 `台球行业资料收集给ai/` 文件夹=真实源料（助教/前厅/教练/赛事/数据/培训SOP）。⚠️ 内含 `账号密码.txt`——**安全红线，绝不读不碰**。
 - 我们基座=`docs/product-brain/球房运营逻辑基准.md`（运营逻辑唯一基准，PPT 派生）+ `助教业务规则库.md`。
 
-## 3. ✅ 已完成并验证（本会话，AI-Agent-Dev 分支，未提交）
+## 3. ✅ 已完成并验证（这一程的全真实改造，现都在 `main` 这一脉里）
 
 ### 3.1 战略文档（落盘 docs/product-brain 与 docs/plans）
 - `AI-Agent最终形态-终局蓝图-2026-06-17.md`（v2 全真实立场，§〇 立场段已改）
 - `AI-Agent最终形态-开发计划与步骤-2026-06-17.md`（P0+→P4 + 一键发布可选track）
 - `真实性审计报告-Agent够不够懂台球一线-2026-06-17.md`
 - `源料可搬清单-待审搬运计划-2026-06-17.md`（42 条搬运计划，含3判断点）
-- 原始数据：`docs/test-runs/{agent-final-form,reality-audit,source-mining}-20260617/`
+- 原始数据：原存 `docs/test-runs/{agent-final-form,reality-audit,source-mining}-20260617/`（该目录已随 docs 清理删除，仅留此处历史记录）
 
 ### 3.2 全真实去消毒
 - **中枢** `server/prompts/rules/baseline_rules.yaml`（rule 21追分/26-33助教颜值擦边交友/52/新助教段 全回正真实）
@@ -54,7 +54,7 @@
 
 ### 3.6 Agent 决策 eval（新建，2026-06-17）—— 给"管家选对工具"装上尺子
 - 新建 `server/evals/{agent_cases.yaml, run_agent_eval.py}`：真 DeepSeek 编排大脑 + **克隆生产 9 个工具的真实 description/schema、但 handler 换成桩**（不真生成/不生图→只耗少量编排 token，省钱）。15 个真实老板需求用例覆盖：工具选择/审批闸/红线拒绝/多工具编排/收敛。
-- 判分：该调的调了没 / 不该调别调 / 花钱动作走没走审批闸 / 擦边违规有没有被放行 / 有没有空兜圈。跑法 `uv run python evals/run_agent_eval.py [--dry-run|--only 逗号id|--model X]`。报告落 `docs/test-runs/Agent决策-*.md`。
+- 判分：该调的调了没 / 不该调别调 / 花钱动作走没走审批闸 / 擦边违规有没有被放行 / 有没有空兜圈。跑法 `uv run python evals/run_agent_eval.py [--dry-run|--only 逗号id|--model X]`。（当时报告落 `docs/test-runs/Agent决策-*.md`，该目录已随 docs 清理删除。）
 - **基线 86.7%(🟢13🟡2🔴0)→ 修复后 100%**：实测唯一偏差=老板说"今天/这周末"时大脑反射性多调一次 `get_current_date`。根因=agent system prompt 没注入当天日期。**正解**：`compose_agent_system_prompt` 加 `_today_line()`（北京时间日期+星期，注入大脑），它据此直接推算、不再多查；顺带让管家对话也懂当下。复测两个 YELLOW 全转 GREEN（且 ORC-01 从 4 轮收敛到 2 轮）；58 个 agent 单测全绿（更新了 1 条因日期注入而变更的契约断言）。
 
 ### 3.7 Agent 能力/稳定性加固（2026-06-17，eval 驱动）
@@ -88,7 +88,7 @@
 - **eval 重分类**：AG-RED-01 改测真底线(助教卖性交易→拒)；新增 AG-OK-03(美女人设招聘)/AG-OK-04(超休陪出去)证明不误杀。**全量 27 用例 100% GREEN**，58 agent 单测全绿。红线尺度自此 = PPT 真实尺度，不松不紧。
 
 ### 3.12 PPT 接地审计 + 去消毒残留修复（2026-06-18 夜，workflow 编排）—— 把"去消毒没去干净"补齐
-- **审计（workflow 8 维度只读子代理交叉核对 prompt/knowledge vs PPT）**：14 处过度消毒 / 5 处偏差 / 23 处缺的真实 ops。结果存 `docs/test-runs/PPT接地审计-20260618*`。我亲读 PPT 核实 = `docs/test-runs/PPT真实运营逻辑-亲验摘要-20260618.md`（页码级证据）。
+- **审计（workflow 8 维度只读子代理交叉核对 prompt/knowledge vs PPT）**：14 处过度消毒 / 5 处偏差 / 23 处缺的真实 ops。（结果当时存 `docs/test-runs/PPT接地审计-20260618*`、亲验摘要存 `docs/test-runs/PPT真实运营逻辑-亲验摘要-20260618.md`，该目录已随 docs 清理删除；PPT 真实性核对结论现见 `docs/台球行业真实性分支/`。）
 - **核心发现**：baseline/term_whitelist 早放开了，但"知识层"十来个文件还留旧消毒规则 → 自相矛盾、AI 行为随机。最严重是**接线 bug**：coach.yaml 引用的是被消毒的 competitive_group_ops，而真实版 gaming_customer_ops 空挂没被任何角色引用。
 - **修复（workflow 4 一致性簇并行外科手术 + 我核实）**：
   - 博弈追分簇：competitive_group_ops/tournament_rules/business_strategy/customer_tagging 去掉"禁止追分/轻竞技社交代替/台费局=小额"消毒壳；**coach.yaml 接线修复**（加 gaming_customer_ops）；gaming_customer_ops 补"控场——门店帮控金额别炸店(不抽水不当庄)"+"约局防钓鱼"。
@@ -117,13 +117,13 @@
   - assistant_promotion 编死数字（≥20人/天）→ 占位；「不擦边」→「别发露骨」（流量型=擦边是真实打法）。
   - 追分客户补回 PPT 原词「赢钱」；定位业态恢复 PPT 四类（社区/竞技商业/竞技/商业）。
 - **B. 更早从文件夹其他文档搬的源料 vs PPT**（§3.5 的 42 条/~30 文件，8 域对抗复核）：**7/8 域 SOLID、1 域 MOSTLY，零 contradicts、零编造假做法**——搬来的真实且与 PPT 一致（赛制数字逐字来自 P226、超休边界对齐 P194 自爱、陪打时长 KPI 对齐 P251/P277、门店不抽头底线反复强调）。唯 4 处 low 级「文件内部数字打架」（搬运抄串），全修：充值提成门槛 300↔500→占位、请假罚款口径含糊→明确不叠加、免费体验 3局↔20分钟→统一20分钟、送客「门口」↔「电梯口」→统一电梯口(P175)。
-- 两轮验证：PromptEngine 171、第三方+PPT 出处零泄漏、test.sh 全绿。核验存档 `docs/test-runs/`（输出文件）。
+- 两轮验证：PromptEngine 171、第三方+PPT 出处零泄漏、test.sh 全绿。（核验输出文件当时存 `docs/test-runs/`，该目录已随 docs 清理删除。）
 
 ### 3.15 MiMo 实测 + Phase C 补齐剩余 PPT ops（2026-06-18）—— 真实性做满
-- **MiMo v2.5 Pro 全量北极星实测（强模型去模型弱点confound、纯测内容质量）**：80 场景 **98.8% GREEN（🟢79🟡1🔴0）**，比旧内容上的 96% 还高、零 RED。证明今晚去消毒+PPT对齐+新内容让内容质量更扎实。唯 1 YELLOW=customer_pricing(最难类目)judge=3 借词「会员卡」、钩子偏优惠——判为模型单次波动(一卡通是硬规则、80次仅滑1次)，不为 1/80 过拟合，不动 prompt。报告 `docs/test-runs/北极星对齐-mimo-v25pro-postfix.*`。
+- **MiMo v2.5 Pro 全量北极星实测（强模型去模型弱点confound、纯测内容质量）**：80 场景 **98.8% GREEN（🟢79🟡1🔴0）**，比旧内容上的 96% 还高、零 RED。证明今晚去消毒+PPT对齐+新内容让内容质量更扎实。唯 1 YELLOW=customer_pricing(最难类目)judge=3 借词「会员卡」、钩子偏优惠——判为模型单次波动(一卡通是硬规则、80次仅滑1次)，不为 1/80 过拟合，不动 prompt。（报告当时存 `docs/test-runs/北极星对齐-mimo-v25pro-postfix.*`，该目录已随 docs 清理删除。）
 - **Phase C 补齐审计剩余 PPT 真实 ops（workflow 7 子代理 + 我核实）**：profit_model(三种球房客户转化入口动线 P121)、core_operations(做深转化人情世故动作清单:免费体验/撒娇/私杆保养/帮谈门/控金额 P124)、traffic_generation(5公里本地流量铁律 P84)、customer_tagging(维客让会员互相成朋友+防被钓走 P220/227)、phased_goal_plan(阶段目标参照投资回报表 P241-243)、management_recruitment(识人定律:招不到人四原因/人才吸引力法则 P136-144)、recharge_strategy(低门槛入会礼包抬沉没成本 P65)。全 ppt_grounded+剥名+占位；修掉子代理误写的「PPT」出处字样 2 处。
 - **至此审计 23 条 missing ops 已基本补尽**(Phase B 13 + Phase C 7 + 抢一大战本就有)。验证：PromptEngine 171、第三方+PPT出处零泄漏、test.sh 全绿。
-- **两模型交叉印证(Phase C 后最终内容)**：MiMo v2.5-Pro 98.8%/0RED、MiMo v2.5(非Pro)98.8%/0RED——两个模型都 0 RED,单个 YELLOW 每轮不同(Pro=customer_pricing借词、v2.5=activity亚军赠送比例超标),均为模型在最难类目的单次生成滑点、非内容库系统性问题。报告 `docs/test-runs/北极星对齐-mimo-v25-phasec.*`。**真实性/PPT 对应度做满，收口。**
+- **两模型交叉印证(Phase C 后最终内容)**：MiMo v2.5-Pro 98.8%/0RED、MiMo v2.5(非Pro)98.8%/0RED——两个模型都 0 RED,单个 YELLOW 每轮不同(Pro=customer_pricing借词、v2.5=activity亚军赠送比例超标),均为模型在最难类目的单次生成滑点、非内容库系统性问题。（报告当时存 `docs/test-runs/北极星对齐-mimo-v25-phasec.*`，该目录已随 docs 清理删除。）**真实性/PPT 对应度做满，收口。**
 
 ### 3.5 源料搬运 42 条（剥名+占位+守底线，全验证）
 - 超休（新 `knowledge/assistant_overtime_service.yaml`，守源料边界）
@@ -143,10 +143,14 @@
 - ✅ ~~真实性/PPT 对应度做满~~（2026-06-18，§3.11-3.15，**收口**）：PPT 接地审计→去消毒残留修复→审计 23 条 missing ops 补尽→双层内容对抗核验（零编造零矛盾）→两 MiMo 模型实测 98.8%/0 RED。
 - ✅ ~~可搬清单 42 条复核~~（2026-06-18，§3.14 B 段，7/8 域 SOLID、零矛盾，4 处内部数字打架已修）。
 
-**还剩（下一阶段，需用户定方向）：**
-1. **Wave2b 画像客群/业态标签**：operation_profile 加业态(普通/24h无人店/高端会所/社区店)+客群(竞技/追分占比、女性友好、青少年亲子)标签 → 标签驱动差异化内容。**已核实 operation_profile 是 JSONB 列、加键免迁移**；真正成本在前端门店设置表单 + render_operation_profile_context 渲染 + 让 owner 能填(或店脑学)。全栈小功能。
-2. **原 AI-Agent 转型路线 P1-P4**（更大工程，见 `docs/plans/AI-Agent转型-编排.md` + 终局蓝图开发计划）：P0+ prompt_key透传(蓝图最高性价比)/对话管家MVP/pgvector记忆/审批闸/对外动作handoff/主动出击。
-3. **上线前**：`bash scripts/test.sh` 全绿 + 北极星 eval GREEN 率不回退（当前两 MiMo 模型 98.8%）→ 用户说"上线"才合并 main 部署。
+> **⚠️ go-forward 看这里**：本程（全真实/PPT 接地）的剩余项已并入当前桌面产品的主线工作文档 **`docs/完整优化清单.md`**（37 项产品化优化清单）。下面这几条 P1 小项就是清单里的 **A-9**（补 3 个 P1 硬数字：引流台 1/4~1/5、美团金牌三条件、刷评分口径统一）和 **B-7**（生图不支持叠 Logo/二维码→前端明确告知），**已并入 A-9 / B-7**，按那份清单推进、不再在本文单列。
+
+**还剩（下一阶段，按 `docs/完整优化清单.md` 推进）：**
+1. **真实性 P1 硬数字补漏**：3 个 P1 硬数字 → **已并入 `docs/完整优化清单.md` 的 A-9**。
+2. **生图能力边界提示**：生图不支持叠 Logo/二维码需前端明确告知 → **已并入 `docs/完整优化清单.md` 的 B-7**。
+3. **Wave2b 画像客群/业态标签**：operation_profile 加业态(普通/24h无人店/高端会所/社区店)+客群(竞技/追分占比、女性友好、青少年亲子)标签 → 标签驱动差异化内容。**已核实 operation_profile 是 JSONB 列、加键免迁移**；真正成本在前端门店设置表单 + render_operation_profile_context 渲染 + 让 owner 能填(或店脑学)。全栈小功能。
+4. **原 AI-Agent 转型路线 P1-P4**：部分已在桌面程兑现（prompt_key 透传、对话管家已是主形态、审批闸、主动出击）；其余按需推进。本地语义记忆走 **bge-zh 本地 RAG（fastembed/onnxruntime，非 pgvector）**；对外动作 handoff 等仍按需排进 `docs/完整优化清单.md`。
+5. **上线前**：`bash scripts/test.sh` 全绿 + 北极星 eval GREEN 率不回退（当前两 MiMo 模型 98.8%）；桌面产品的"上线"= 打包出安装包 + 真机端到端验收（详见 `交接-给新会话/现状与待办.md`），不是合并云端部署。
 
 ## 5. 待用户拍板（曾问未定，我按全真实默认走了）
 - **刷团购评分/刷好评**：PPT 教（开业刷单/关定位断WiFi），真实但平台违规。**默认未主动搬入教学**（作内部认知可后补 platform_operations）。
@@ -156,13 +160,13 @@
 - 先读：本文 + `球房运营逻辑基准.md` + `源料可搬清单-...md` + 终局蓝图。
 - 项目记忆 `memory/billiards-real-operations-not-sanitized.md` 是全真实最高准则。
 - 继续干活前用第 1 节"改完查回头"四步自检；任何新知识/skill 都按"内行一看是不是真东西"这把尺子量。
-- 全真实改造内容已 squash 进 `feat/desktop-agent` 首提交 `d8beca1`；本程之后的桌面工作详见 §7 + `docs/plans/桌面Agent-Codex化-执行清单-2026-06-18.md`。
+- 全真实改造内容现都在 `main` 这一脉里（最早 squash 进提交 `d8beca1`）；本程之后的桌面工作详见 §7 + go-forward 主线 `docs/完整优化清单.md` + `docs/plans/桌面Agent-Codex化-执行清单-2026-06-18.md`。
 
-## 7. 后续：桌面 Agent · Codex 化（2026-06-18，`feat/desktop-agent` 分支续做）
+## 7. 后续：桌面 Agent · Codex 化（2026-06-18，续做）
 
 > 全真实/PPT 接地收口后，重心转向**桌面 AI Agent（Codex 化）**：把这套 Agent 装进本地盒子（Electron 壳 + 本地 FastAPI + SQLite + 知识加密 `prompts.enc`，**纯 BYOK**），并补桌面独有的"长在电脑上"能力。**权威执行文档** = `docs/plans/桌面Agent-Codex化-执行清单-2026-06-18.md`（本文只做指向，不重复）。
 
-**本程已落地（代码在 `feat/desktop-agent`、未合 main）：**
+**本程已落地（代码现都在 `main`）：**
 - **P0 地基**：纯 BYOK 能跑（`backend.js` 注入持久化 `byok.key` + 首启引导）、发布 worker 打包接线 + CI gate、自动更新（`desktop/src/updater.js` electron-updater）、Windows 云端出包工作流（`.github/workflows/desktop-build-win.yml`）、desktop/ 入库、本地语义模型代码就绪。
 - **P1 长在电脑上**：`local_tools.py` 读改用户当场选定的本地文件/Excel（沙箱+审批+自动备份+diff 预览）+ 权限分级（谨慎/自动改文件/全自动+全盘，仿 Claude Code permission 模式）+ 前端权限控制；**POS 真诊断** `diagnose_from_pos` 读导出 Excel；本地操作决策 eval。
 - **P2 融合+主动**：`prompt_key` 透传（Agent 复用 63 精修模板）、卡片融合清单法+对话首屏快捷入口+mini 表单、主动出击（据今日推荐预生成草稿）。
@@ -173,4 +177,4 @@
 
 **桌面程仅剩**：① 打包出安装包（Windows nsis / Mac dmg）；② 真机端到端验证；③ 对外互动（回评论/私信/好评）；④（按需）知识加密升级一机一密、Mac 正式签名。
 
-**全真实改造的原 P1-P4 路线**（本文 §4 待办 #2）部分已在桌面程兑现（prompt_key 透传、对话管家已是主形态、审批闸、主动出击）；pgvector 记忆/对外动作 handoff 等仍按需推进。
+**全真实改造的原 P1-P4 路线**（本文 §4 待办 #4）部分已在桌面程兑现（prompt_key 透传、对话管家已是主形态、审批闸、主动出击）；本地语义记忆走 bge-zh 本地 RAG（fastembed/onnxruntime，非 pgvector）、对外动作 handoff 等仍按需推进，统一排进 `docs/完整优化清单.md`。

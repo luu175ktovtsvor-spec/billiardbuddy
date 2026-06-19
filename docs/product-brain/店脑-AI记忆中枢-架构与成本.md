@@ -1,9 +1,11 @@
 # 店脑（AI 记忆中枢）— 架构、成本与上下文澄清
 
-> 状态：**设计稿（已调研 + 逻辑推演确认，未开始编码）**
-> 日期：2026-06-13
-> 目标：让球房从业者用这个软件时，**明显感觉它很聪明**——而且不只是表面，深处真的在"长脑子"。
+> 状态：**第一版已落地（真 RAG 已编码 + 真模型评估通过）**。下方第 9 节是 as-built 调整，本文前半段保留当初的设计推演与成本结论（仍成立，作历史背景读）。
+> 日期：2026-06-13（设计）；2026-06-13 第一版落地
+> 目标：让球房老板用这个桌面软件时，**明显感觉它很聪明**——而且不只是表面，深处真的在"长脑子"。
 > 注意：本文的"店脑"指**给单家门店的 AI 长期记忆**，和 `docs/product-brain/` 里的"产品大脑（行业知识/Prompt 规则）"不是一回事。
+> 形态：本仓库是**桌面版台球房 AI Agent 独立仓库**，后端 = 本地 FastAPI + **本地 SQLite** + 纯 BYOK（老板自带 key，没配即空 key、绝不回退平台、空 key → 友好 503）。店脑落本地库、只服务这一台机器上的这家店，**没有云端 DB、没有多端 SaaS 多租户**。
+> go-forward 主线工作 → **`docs/完整优化清单.md`**（37 项产品化优化清单）。
 
 ---
 
@@ -52,7 +54,7 @@
         └───────┬────────┘                    │
                 ▼                              │
    ╔════════════════════════════════════════════════════╗
-   ║   store_memory  (Postgres, 按 store_id 自动隔离)     ║
+   ║   store_memory  (本地 SQLite, 单机单店)              ║
    ║   语义事实 · 情景 · 偏好 · 运营模式                   ║
    ╚════════════════════════╤═══════════════════════════╝
                             │ 摊开 / 可改
@@ -76,7 +78,7 @@
 
 ```
 store_memory(
-  id, store_id,           -- 按 store_id，天然吃 core/tenant.py 的租户隔离
+  id, store_id,           -- 落本地 SQLite；查询显式按 store_id 过滤（单机基本一家店，store_id 仍保留以便多店切换）
   type,                   -- semantic 语义事实 / episodic 情景 / preference 偏好 / procedural 运营模式
   content,                -- 记忆内容（文本）
   confidence,             -- 置信度
@@ -92,7 +94,9 @@ store_memory(
 
 ---
 
-## 3. DeepSeek 上下文澄清（专门回答你的疑问）
+## 3. 上下文澄清（专门回答你的疑问）
+
+> 本节用 DeepSeek 当例子讲清"上下文 ≠ 记忆"，结论与模型无关。本仓库是**纯 BYOK**：文字模型由老板自带（任意 OpenAI 兼容端点，DeepSeek 只是其一），具体上下文长度看老板选的型号；下面的无状态/每次注入机制对所有模型都成立。
 
 你的疑问：「上下文只有 1MB（或 128K）？是不是开新对话窗口就从头开始？」
 
@@ -184,9 +188,9 @@ store_memory(
 
 1. **正好插在已有护城河上**：对话/卡片/协作都走同一条 `free_intent` 管道，店脑注入放这个咽喉点一次 → 所有功能一起受益。架构早就为它留好了位置。
 2. **收编碎片**：现在 `operation_profile`（静态）+ `behavior_service`（算的）+ `feedback`（👍👎）各管一摊；店脑给它们统一读写口。
-3. **天然吃多租户隔离**：`store_memory` 按 `store_id` 存 → `core/tenant.py` 自动过滤覆盖。
-4. **分层更干净**：数据层(PG) → **记忆层(店脑·新)** → 生成层(PromptEngine)。
-5. **为什么是 DeepSeek 的近乎最优解**：记忆方案分两派——mem0 派靠 embedding+向量检索（DeepSeek 没 embedding，要额外接模型）；load-whole 派靠大上下文整本注入（DeepSeek 1M 上下文 + 便宜 + KV 缓存，原生就够）。**顺着 DeepSeek 的能力曲线，就该选 load-whole，正是本架构。**
+3. **单机单店、按 store_id 显式过滤**：`store_memory` 按 `store_id` 存，查询显式过滤（绕开租户自动过滤的无上下文 fail-safe）；本地 SQLite、数据全在老板自己机器上，不连云。
+4. **分层更干净**：数据层(本地 SQLite) → **记忆层(店脑·新)** → 生成层(PromptEngine)。
+5. **整本注入的取舍**：记忆方案分两派——mem0 派靠 embedding + 向量检索；load-whole 派靠把整本店脑塞进 prompt。单店记忆量小、整本注入足够便宜直接，故主路走 load-whole（见第 8 节边界）。语义召回历史/知识/店脑这一层另由真 RAG 承担（**本地 bge-zh，fastembed/onnxruntime**，非 pgvector），二者互补。
 
 ---
 
@@ -205,7 +209,7 @@ store_memory(
 ## 8. 诚实的边界
 
 - 产品定位不碰收银/实时数据，所以店脑**学不到"这条朋友圈到底带来几个客"**这种真实经营结果——它能学的是"你做了什么、你说哪条好、你的偏好"。这是天花板，但已足够让它从"聪明工具"变"懂你店的伙伴"。
-- 单店记忆量小（几页纸），**不需要**向量库/知识图谱那套重型检索；真到了跨门店百万级记忆，再单独挂小 embedding 模型即可，不影响现在的选型。
+- 单店记忆量小（几页纸），店脑本身整本注入即可、不靠重型检索。语义召回（历史/知识/店脑）这一层由**本地 bge-zh（fastembed/onnxruntime）真 RAG** 承担——本地小 ONNX 模型、单机零云依赖，**不是 pgvector**；导入失败安全回退确定性词面后端，不崩（见 `server/services/rag/`）。单机规模下足够，不需要外接云端向量库。
 
 ---
 
@@ -217,10 +221,10 @@ store_memory(
 2. **整合返回"最终列表"而非 ADD/UPDATE 操作。** 实测 ADD/UPDATE/MERGE/NOOP 标签边界模糊、模型不稳定贴标签，但"无重复+改价生效"这个目标始终达成。故 `consolidate_memories` 直接返回整合后的完整列表，按结果对错衡量。
 3. **评估是统计性的**：抽取召回允许 6 条抖动 ≤1，防幻觉必须 0；记忆操作 temperature=0 求稳。
 
-落地清单：`models/store_memory.py` + 迁移 017、`services/memory_service.py`(extract/consolidate/load/remember/format)、`stream.py`(注入+`BackgroundTask`后台学习)、`api/v1/store_memory.py`(CRUD)、前端 `/dashboard/store-brain`「AI 眼里的你的店」。**钩子后台学习不计用户配额。**
+落地清单：`models/store_memory.py`（桌面用 `db/init_local.py` 建表 + 老库平滑补列，不走 PG 迁移）、`services/memory_service.py`(extract/consolidate/load/remember/format)、`api/v1/stream.py`(注入 + `BackgroundTask` 后台学习)、`api/v1/store_memory.py`(CRUD)、前端 `/dashboard/store-brain`「AI 眼里的你的店」。**钩子后台学习不计用户配额。** 语义召回侧见 `services/rag/`（本地 bge-zh）。后续产品化优化见 `docs/完整优化清单.md`。
 
 ### 9.1 生产耐用加固（为"人多了、以后不再改"一次做到位）
 
-1. **并发安全（根治丢记忆）**：`remember()` 取**每店事务级咨询锁** `pg_advisory_xact_lock(hashtext("store_memory:{store_id}"))`，把同一家店的并发学习串行化——解决"读现有→整合→删全部再插入"在多员工同时使用时的丢更新竞态。只锁同店、不锁跨店，不影响整体吞吐。已用并发 e2e 验证（两条并发学习都不丢）。
-   - 取舍：锁在 consolidate(LLM ~3-5s) 期间持有连接；单店学习不频繁、连接池 20+40 足够，realistic SaaS 规模无碍。极端规模再考虑队列化（当前不做，避免过度设计）。
+1. **并发安全（根治丢记忆）**：`remember()` 在多 worker 数据库上取**每店事务级咨询锁**，把同一家店的并发学习串行化——解决"读现有→整合→删全部再插入"在并发时的丢更新竞态。
+   - **桌面本地版（当前形态）= 本地 SQLite 单写**：`memory_service` 按 `db.bind.dialect.name` 分支，`pg_advisory_xact_lock` 仅 PostgreSQL 走，SQLite 上是 **no-op 跳过**（单进程单写、无多 worker 竞态，天然不丢）。这正是 CLAUDE.md「PG 专属 SQL 按方言兜底」铁律的体现。
 2. **防膨胀上限**：`_cap_memories` —— 耐久类(事实/偏好/运营模式)全留，**情景类(会累积)只留最近 25 条**，总数封顶 150；同时 consolidate prompt 要求"旧情景合并成简短总结"。双保险，多年使用也不会无限胀大。已有上限单测覆盖。
