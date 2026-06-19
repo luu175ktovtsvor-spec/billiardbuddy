@@ -138,6 +138,7 @@ class AgentStep:
     tool_args: dict | None = None
     tool_call_id: str | None = None
     preview: str | None = None  # approval_request 专用：确认前给老板看的"会改成什么"diff
+    meta: dict | None = None    # B-2：tool_result 携带的附加信息（如 {"knowledge_used": [...]} 依据可见）
 
 
 @dataclass
@@ -328,8 +329,14 @@ async def run_agent_loop(
             steps.append(AgentStep(type="tool_call", tool_name=plan.name, tool_args=plan.args,
                                    tool_call_id=plan.tool_call_id))
             result_str = await _execute_tool(registry, plan.name, plan.args, ctx)
+            # B-2 依据可见：工具若注入了行业知识（deliverable 工具写进 ctx.last_knowledge_used），
+            # 把名字挂到本条 tool_result 的 meta；取后立即复位，防串到下一个工具。
+            _meta = None
+            if ctx.last_knowledge_used:
+                _meta = {"knowledge_used": ctx.last_knowledge_used}
+            ctx.last_knowledge_used = None
             steps.append(AgentStep(type="tool_result", tool_name=plan.name,
-                                   tool_call_id=plan.tool_call_id, content=result_str))
+                                   tool_call_id=plan.tool_call_id, content=result_str, meta=_meta))
             messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": result_str})
 
     # 达到 max_turns 仍未收敛（兜底，防止循环跑飞）：强制模型基于已有结果给最终答复，不返回空。
@@ -525,7 +532,13 @@ async def run_agent_loop_stream(
             # 先吐 tool_call 事件（前端即时显示"正在调 X"），再跑工具（可能慢），最后吐结果
             yield {"type": "tool_call", "tool": plan.name, "args": plan.args, "id": plan.tool_call_id}
             result = await _execute_tool(registry, plan.name, plan.args, ctx)
-            yield {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": result}
+            # B-2 依据可见：工具若注入了行业知识，把名字一并带进 tool_result 事件（前端成品卡显示「依据：…」）。
+            # 取后立即复位，防串到下一个工具。⚠️ 同步路径同样要改，别只改一处（见上面 run_agent_loop）。
+            _evt = {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": result}
+            if ctx.last_knowledge_used:
+                _evt["knowledge_used"] = ctx.last_knowledge_used
+            ctx.last_knowledge_used = None
+            yield _evt
             messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": result})
 
     # 达到 max_turns 仍未收敛：强制模型基于已有结果给最终答复（不再给工具），逐片流式吐出，不返回空。

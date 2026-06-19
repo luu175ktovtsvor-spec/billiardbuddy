@@ -32,3 +32,6 @@ class AgentContext:
     #   N>=0 = 一轮内自动花钱上限（0 = 花钱永远先确认）；
     #   N<0（如 -1）= 老板主动关闭上限闸，full 下花钱也全自动放行。
     auto_spend_limit: int | None = None
+    # B-2 本轮 deliverable 注入的知识名：deliverable 工具执行完把 gen.input_params["knowledge_used"]
+    # 写进这里，loop 取后挂到该工具的 tool_result（step.meta / 流式事件），完即复位 None（防串到下一个工具）。
+    last_knowledge_used: list | None = None

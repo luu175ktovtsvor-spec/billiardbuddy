@@ -376,6 +376,8 @@ async def agent_chat(
                         tool_failures += 1
                     if event.get("tool") in DELIVERABLE_TOOLS and c.strip():
                         deliverables.append(c)
+                    # B-2 依据可见：loop 已把 knowledge_used 直接放进该 tool_result 事件，
+                    # 下面 json.dumps(event) 原样透传给前端成品卡（无需在此重组，{**event,...} 也会保留它）。
                 if et == "done":
                     turns = event.get("turns", 0) or 0
                     try:  # 工具使用可观测（故障安全，不影响 SSE）

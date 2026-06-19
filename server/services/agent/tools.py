@@ -152,6 +152,7 @@ async def write_operation_content(args: dict, ctx) -> str:
         prompt_key=prompt_key,
         concise=True,
     )
+    ctx.last_knowledge_used = (gen.input_params or {}).get("knowledge_used") or []  # B-2 依据可见
     return gen.result
 
 
@@ -185,13 +186,14 @@ async def write_batch(args: dict, ctx) -> str:
         f"围绕「{need}」，写 {count} 条**各不相同**的{label}：角度/主题/开头钩子都别雷同，每条都能直接拿去用。"
         f"用『1、』『2、』… 给每条编号，每条之间空一行，不要写额外的解说或总结。"
     )
-    prompt = _append_guardrails(prompt, ctx.store, role=getattr(ctx.user, "my_role", None) or "manager", intent_text=need)
+    prompt, knowledge_names = _append_guardrails(prompt, ctx.store, role=getattr(ctx.user, "my_role", None) or "manager", intent_text=need)
     gen = await run_generation(
         ctx.db, ctx.store, ctx.user,
         prompt=prompt, gen_type="batch", sub_type=kind,
-        input_params={"kind": kind, "count": count, "need": need},
+        input_params={"kind": kind, "count": count, "need": need, "knowledge_used": knowledge_names},
         user_input=need, max_tokens=2800,
     )
+    ctx.last_knowledge_used = (gen.input_params or {}).get("knowledge_used") or []  # B-2 依据可见
     return gen.result
 
 
@@ -223,6 +225,7 @@ async def plan_activity(args: dict, ctx) -> str:
         duration=args.get("duration"),
         extra_note=args.get("need", "") or "",
     )
+    ctx.last_knowledge_used = (gen.input_params or {}).get("knowledge_used") or []  # B-2 依据可见
     return gen.result
 
 
@@ -251,6 +254,7 @@ async def assistant_outreach(args: dict, ctx) -> str:
         style=args.get("style", "friendly"),
         extra_note=args.get("note", "") or "",
     )
+    ctx.last_knowledge_used = (gen.input_params or {}).get("knowledge_used") or []  # B-2 依据可见
     return gen.result
 
 
@@ -274,6 +278,7 @@ async def diagnose_operation(args: dict, ctx) -> str:
         problem_area=args.get("problem_area", "revenue"),
         current_situation=args["situation"],
     )
+    ctx.last_knowledge_used = (gen.input_params or {}).get("knowledge_used") or []  # B-2 依据可见
     return gen.result
 
 
@@ -298,6 +303,7 @@ async def recommend_games(args: dict, ctx) -> str:
         skill_level=args.get("skill_level", "mixed"),
         time_available=args.get("time", "30分钟"),
     )
+    ctx.last_knowledge_used = (gen.input_params or {}).get("knowledge_used") or []  # B-2 依据可见
     return gen.result
 
 
@@ -441,16 +447,17 @@ async def make_platform_content(args: dict, ctx) -> str:
     loc = "".join(x for x in [getattr(ctx.store, "city", "") or "", getattr(ctx.store, "district", "") or ""] if x)
     loc_line = f"\n【门店所在城市】{loc}（需要同城/城市标签时只用这个真实地点，绝不编造其它城市）" if loc else ""
     prompt = f"{instruction}\n{_PLATFORM_REDLINE}{loc_line}\n\n【要发的内容/需求】\n{need}"
-    prompt = _append_guardrails(prompt, ctx.store, role=role, intent_text=need)
+    prompt, knowledge_names = _append_guardrails(prompt, ctx.store, role=role, intent_text=need)
     gen = await run_generation(
         ctx.db, ctx.store, ctx.user,
         prompt=prompt,
         gen_type="platform_content",
         sub_type=p,
-        input_params={"platform": p, "need": need},
+        input_params={"platform": p, "need": need, "knowledge_used": knowledge_names},
         user_input=need,
         max_tokens=1500,
     )
+    ctx.last_knowledge_used = (gen.input_params or {}).get("knowledge_used") or []  # B-2 依据可见
     return gen.result
 
 
@@ -501,16 +508,17 @@ async def make_groupbuy_content(args: dict, ctx) -> str:
     loc = "".join(x for x in [getattr(ctx.store, "city", "") or "", getattr(ctx.store, "district", "") or ""] if x)
     loc_line = f"\n【门店所在城市】{loc}（如需写到地点只用这个真实地点，别编造）" if loc else ""
     prompt = f"{instruction}{loc_line}\n\n【团购需求】\n{need}"
-    prompt = _append_guardrails(prompt, ctx.store, role=role, intent_text=need)
+    prompt, knowledge_names = _append_guardrails(prompt, ctx.store, role=role, intent_text=need)
     gen = await run_generation(
         ctx.db, ctx.store, ctx.user,
         prompt=prompt,
         gen_type="groupbuy",
         sub_type=platform or "general",
-        input_params={"need": need, "platform": platform or "general"},
+        input_params={"need": need, "platform": platform or "general", "knowledge_used": knowledge_names},
         user_input=need,
         max_tokens=2000,
     )
+    ctx.last_knowledge_used = (gen.input_params or {}).get("knowledge_used") or []  # B-2 依据可见
     return gen.result
 
 

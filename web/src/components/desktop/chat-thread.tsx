@@ -6,7 +6,7 @@
  */
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2 } from "lucide-react";
+import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen } from "lucide-react";
 
 import { CopyButton } from "@/components/generators/copy-button";
 import { toolMeta, DELIVERABLE_TOOLS, approvalLabel, approvalConfirmText } from "@/lib/agent-tools";
@@ -73,6 +73,15 @@ function MacDeliverables({
             <div className="prose prose-sm max-w-none px-4 py-3 prose-slate prose-p:my-1.5 prose-headings:my-2">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{s.result || ""}</ReactMarkdown>
             </div>
+            {s.knowledgeUsed && s.knowledgeUsed.length > 0 && (
+              <div className="flex items-start gap-1.5 px-4 pb-2.5 text-[12px] leading-relaxed text-[#86868b]">
+                <BookOpen className="mt-[1px] h-3.5 w-3.5 shrink-0 text-[#a1a1a6]" />
+                <span>
+                  <span className="text-[#86868b]">依据：</span>
+                  {s.knowledgeUsed.join(" · ")}
+                </span>
+              </div>
+            )}
             {(onPreview || (onPublish && s.tool === "make_platform_content")) && (
               <div className="flex items-center gap-2 px-4 pb-3">
                 {onPreview && (

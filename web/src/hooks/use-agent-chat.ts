@@ -18,6 +18,7 @@ export interface ToolStep {
   args?: Record<string, unknown>;
   result?: string;
   id?: string; // tool_call_id：按它回填 tool_result 到对应步骤
+  knowledgeUsed?: string[]; // B-2「依据可见」：本次注入的知识【大白话name】，成品卡显示"依据：…"
   done: boolean;
 }
 
@@ -107,12 +108,13 @@ export function useAgentChat(opts: AgentChatOptions) {
               steps.push({ tool, args, id, done: false });
               setLiveSteps([...steps]);
             },
-            onToolResult: (_tool, content, id) => {
+            onToolResult: (_tool, content, id, knowledgeUsed) => {
               // 按 id 定位回填——不能盲取末尾：审批工具先发占位结果，盲取会覆盖成品卡
               const st = id ? steps.find((s) => s.id === id) : steps[steps.length - 1];
               if (st) {
                 st.done = true;
                 st.result = content;
+                if (knowledgeUsed && knowledgeUsed.length) st.knowledgeUsed = knowledgeUsed;
                 setLiveSteps([...steps]);
               }
             },
