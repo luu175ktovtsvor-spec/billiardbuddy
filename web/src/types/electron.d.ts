@@ -27,6 +27,8 @@ export interface PublishPlatform {
 export interface ElectronBridge {
   info(): Promise<DesktopInfo>;
   publish: {
+    /** 发布功能是否可用(发布内核存在或本机有 python3);不可用时前端隐藏入口/给说人话提示。 */
+    available(): Promise<{ ok: boolean; reason?: "no_worker" | "no_python" }>;
     platforms(): Promise<PublishPlatform[]>;
     startLogin(platform: string): Promise<{ ok: boolean }>;
     checkLogin(platform: string): Promise<{ loggedIn: boolean }>;

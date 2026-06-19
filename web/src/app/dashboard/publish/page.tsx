@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Upload, CheckCircle2, RefreshCw, Send, Smartphone, X } from "lucide-react";
+import { Loader2, Upload, CheckCircle2, RefreshCw, Send, Smartphone, AlertCircle } from "lucide-react";
 import { useDesktop } from "@/hooks/use-desktop";
 import type { LoginStatus, PublishPlatform } from "@/types/electron";
 
@@ -33,6 +33,18 @@ export default function PublishPage() {
   const [progress, setProgress] = useState<{ pct?: number; msg?: string } | null>(null);
   const [result, setResult] = useState<{ ok: boolean; url?: string; error?: string } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // 发布功能是否可用(发布内核存在或本机有 python3)。不可用直接给说人话提示，
+  // 别让老板扫码、选视频、点了"确认发布"才在底层失败。null=还在查。
+  const [avail, setAvail] = useState<{ ok: boolean; reason?: string } | null>(null);
+  useEffect(() => {
+    if (!electron) return;
+    let cancelled = false;
+    electron.publish.available()
+      .then((r) => { if (!cancelled) setAvail(r); })
+      .catch(() => { if (!cancelled) setAvail({ ok: false }); });
+    return () => { cancelled = true; };
+  }, [electron]);
 
   // 进入页:从 URL 预填 AI 生成的标题/话题(?title=..&tags=a,b),并订阅桌面事件
   useEffect(() => {
@@ -101,6 +113,37 @@ export default function PublishPage() {
         <p className="text-sm text-slate-500">
           发抖音用的是你自己的账号、在你电脑上扫码发布(更安全、不封号)。请下载安装「台球运营管家」桌面版后使用。
         </p>
+      </div>
+    );
+  }
+
+  // ── 发布功能不可用：给说人话提示，别让老板走完流程才失败 ──
+  if (avail && !avail.ok) {
+    const isNoPython = avail.reason === "no_python";
+    return (
+      <div className="mx-auto max-w-xl py-16 text-center">
+        <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[#f5f5f7]">
+          <AlertCircle className="h-7 w-7 text-[#86868b]" />
+        </div>
+        <h1 className="mb-2 text-[17px] font-semibold text-[#1d1d1f]">这台电脑暂时还发不了</h1>
+        {isNoPython ? (
+          <p className="mx-auto max-w-md text-[14px] leading-relaxed text-[#86868b]">
+            一键发布需要电脑上装一个叫 Python 3 的小工具来帮你扫码发视频，你这台还没装。
+            装好后重开软件就能用了；不确定怎么装的话，发我们客服「Python 3 怎么装」，照着做几分钟搞定。
+          </p>
+        ) : (
+          <p className="mx-auto max-w-md text-[14px] leading-relaxed text-[#86868b]">
+            这个版本的安装包里少了发布要用的组件。请下载最新版「台球运营管家」重装一下，就能用一键发布了。
+          </p>
+        )}
+        <a
+          href="https://www.python.org/downloads/"
+          target="_blank"
+          rel="noreferrer"
+          className={`mt-5 inline-flex h-10 items-center gap-1.5 rounded-lg bg-[#007AFF] px-5 text-[14px] font-medium text-white transition-transform active:scale-[0.98] ${isNoPython ? "" : "hidden"}`}
+        >
+          去装 Python 3
+        </a>
       </div>
     );
   }
