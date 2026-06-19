@@ -13,6 +13,49 @@ const PRESETS = [
   { label: "小米 MiMo", base_url: "https://api.xiaomimimo.com/v1", model: "mimo-v2.5" },
 ];
 
+// 生图供应商预设（少而精·主流强）：点一下自动填 base_url + 推荐模型。
+// base_url 与后端 resolve_image_kind 路由严格一致；叠图场景优先填 Qwen-Image-Edit-2509。
+// editLogo=true 表示该模型支持「图生图」，能叠 Logo / 二维码。
+const IMAGE_PRESETS = [
+  {
+    label: "硅基流动",
+    base_url: "https://api.siliconflow.cn/v1",
+    model: "Qwen/Qwen-Image-Edit-2509",
+    note: "一个 Key 多模型、新人送额度，最省事；这个模型支持传参考图，能叠 Logo/二维码。",
+    recommended: true,
+    editLogo: true,
+  },
+  {
+    label: "火山·即梦 Seedream",
+    base_url: "https://ark.cn-beijing.volces.com/api/v3",
+    model: "doubao-seedream-4-0",
+    note: "字节出品、效果强，约 0.2 元/张；支持传图编辑，能叠 Logo/二维码。",
+    editLogo: true,
+  },
+  {
+    label: "通义万相（阿里）",
+    base_url: "https://dashscope.aliyuncs.com/api/v1",
+    model: "wanx2.1-t2i-turbo",
+    note: "阿里主流文生图、效果强；原生异步约 1-2 分钟，叠图请改用硅基/火山。",
+    editLogo: false,
+  },
+  {
+    label: "智谱 CogView-4",
+    base_url: "https://open.bigmodel.cn/api/paas/v4",
+    model: "cogview-4",
+    note: "主流、便宜（约 0.06 元/张）；纯文生图，不做叠图。",
+    editLogo: false,
+  },
+];
+
+// 海外·降级：大陆通常调不通，仅自带 OpenAI Key 能直连时用，单列弱化在末尾。
+const IMAGE_PRESET_OVERSEAS = {
+  label: "OpenAI gpt-image",
+  base_url: "https://api.openai.com/v1",
+  model: "gpt-image-2",
+  note: "海外模型，大陆一般调不通；仅你自带 OpenAI Key 且能直连时再选。",
+};
+
 const inputCls =
   "w-full rounded-xl bg-[#F2F2F7] px-4 py-3 text-[15px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20";
 
@@ -336,7 +379,7 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
             <div className="flex items-center justify-between">
               <div className="min-w-0 pr-3">
                 <p className="text-[15px] font-medium text-slate-800">生图模型（做海报用，可选）</p>
-                <p className="mt-0.5 text-xs text-slate-400">生图多用 OpenAI gpt-image，和文字模型的 Key 通常不是同一个，单独配。不开则用平台默认。</p>
+                <p className="mt-0.5 text-xs text-slate-400">选下面的国内主流生图模型、填你自己的 Key 就行。和文字模型的 Key 通常不是同一个，单独配。不开则用平台默认。</p>
               </div>
               <button
                 type="button"
@@ -350,7 +393,64 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
             </div>
             {imageEnabled && (
               <>
-                <input className={inputCls} value={imageBaseUrl} onChange={(e) => setImageBaseUrl(e.target.value)} placeholder="接口地址，如 https://api.openai.com/v1" />
+                {/* 生图供应商预设卡：点一下自动填 base_url + 推荐模型。硅基默认推荐置顶。 */}
+                <div>
+                  <p className="mb-2 text-[13px] font-medium text-slate-700">选一个生图供应商（点卡片自动填地址和模型）</p>
+                  <div className="space-y-2">
+                    {IMAGE_PRESETS.map((p) => {
+                      const active = imageBaseUrl.trim() === p.base_url;
+                      return (
+                        <button
+                          key={p.label}
+                          type="button"
+                          onClick={() => {
+                            setImageBaseUrl(p.base_url);
+                            setImageModel(p.model);
+                          }}
+                          className={`w-full rounded-xl border p-3 text-left transition-colors active:scale-[0.99] ${
+                            active ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white hover:border-slate-300"
+                          }`}
+                        >
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-[14px] font-medium text-slate-800">{p.label}</span>
+                            {p.recommended && (
+                              <span className="rounded bg-brand-600 px-1.5 py-0.5 text-[10px] text-white">推荐</span>
+                            )}
+                            {p.editLogo && (
+                              <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-600">可叠 Logo/二维码</span>
+                            )}
+                            {active && (
+                              <span className="ml-auto text-[11px] font-medium text-brand-600">已选</span>
+                            )}
+                          </div>
+                          <p className="mt-1 text-[12px] leading-snug text-slate-400">{p.note}</p>
+                        </button>
+                      );
+                    })}
+                    {/* 海外·降级：弱化在末尾 */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setImageBaseUrl(IMAGE_PRESET_OVERSEAS.base_url);
+                        setImageModel(IMAGE_PRESET_OVERSEAS.model);
+                      }}
+                      className={`w-full rounded-xl border border-dashed p-3 text-left transition-colors active:scale-[0.99] ${
+                        imageBaseUrl.trim() === IMAGE_PRESET_OVERSEAS.base_url
+                          ? "border-brand-300 bg-brand-50"
+                          : "border-slate-200 bg-white hover:border-slate-300"
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-[13px] font-medium text-slate-500">更多 · {IMAGE_PRESET_OVERSEAS.label}</span>
+                        {imageBaseUrl.trim() === IMAGE_PRESET_OVERSEAS.base_url && (
+                          <span className="ml-auto text-[11px] font-medium text-brand-600">已选</span>
+                        )}
+                      </div>
+                      <p className="mt-1 text-[12px] leading-snug text-slate-400">{IMAGE_PRESET_OVERSEAS.note}</p>
+                    </button>
+                  </div>
+                </div>
+                <input className={inputCls} value={imageBaseUrl} onChange={(e) => setImageBaseUrl(e.target.value)} placeholder="接口地址，如 https://api.siliconflow.cn/v1" />
                 <input
                   type="password"
                   autoComplete="off"
@@ -359,7 +459,7 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
                   onChange={(e) => setImageApiKey(e.target.value)}
                   placeholder={imageKeyConfigured ? `已配置 ${imageKeyMask}，留空则不修改` : "生图模型的 Key，sk-..."}
                 />
-                <input className={inputCls} value={imageModel} onChange={(e) => setImageModel(e.target.value)} placeholder="模型名（留空用默认 gpt-image-2）" />
+                <input className={inputCls} value={imageModel} onChange={(e) => setImageModel(e.target.value)} placeholder="模型名（点上面卡片自动带入，如 Qwen/Qwen-Image-Edit-2509）" />
               </>
             )}
           </div>
