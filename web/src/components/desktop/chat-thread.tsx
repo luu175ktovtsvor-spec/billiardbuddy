@@ -4,10 +4,13 @@
  * 桌面端对话流（macOS 风）：用户气泡 / 工具步骤 / 成品卡(可复制·去发布) / 审批卡。
  * 纯展示组件，状态与逻辑由 useAgentChat 提供。忠实复刻手机页的渲染语义、换 macOS 皮。
  */
+import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen } from "lucide-react";
+import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag } from "lucide-react";
 
+import { api } from "@/lib/api";
+import { getErrorMessage } from "@/lib/utils";
 import { CopyButton } from "@/components/generators/copy-button";
 import { toolMeta, DELIVERABLE_TOOLS, approvalLabel, approvalConfirmText } from "@/lib/agent-tools";
 import type { ChatMessage, ToolStep, ApprovalState, QuestionData } from "@/hooks/use-agent-chat";
@@ -47,6 +50,156 @@ function MacStepList({ steps, active }: { steps: ToolStep[]; active: boolean }) 
   );
 }
 
+/**
+ * B-3 纠错按钮：成品卡上一个轻量动作"这条不适用/我们店不这样"。
+ * 点开 → 内联输入老板的店规矩 → 调 api.addStoreMemory 写成 manual 店规矩（后端 POST 强制 source="manual"，
+ * AI 注入最高优先、绝不覆盖）。成功后给"已记进你的店规矩"轻提示。
+ */
+function CorrectionAction() {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function submit() {
+    const rule = text.trim();
+    if (!rule || saving) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      // type 仅做分类，后端 POST 一律落 source="manual"（老板亲定的店规矩）
+      await api.addStoreMemory(rule, "rule");
+      setSaved(true);
+      setOpen(false);
+      setText("");
+      setTimeout(() => setSaved(false), 3000);
+    } catch (e) {
+      setErr(getErrorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (saved) {
+    return (
+      <div className="flex items-center gap-1.5 px-4 pb-3 text-[12.5px] text-emerald-600">
+        <Check className="h-3.5 w-3.5" /> 已记进你的店规矩，以后管家会照办。
+      </div>
+    );
+  }
+
+  if (!open) {
+    return (
+      <div className="px-4 pb-3">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[12.5px] font-medium text-[#86868b] transition hover:text-[#1d1d1f] active:scale-[0.97]"
+        >
+          <Flag className="h-3.5 w-3.5" /> 这条不适用 / 我们店不这样
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-4 pb-3">
+      <div className="rounded-lg border border-black/[0.08] bg-black/[0.015] p-2.5">
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit();
+          }}
+          autoFocus
+          rows={2}
+          placeholder="说一句我们店的规矩，如：我们店不做大额充值赠送"
+          className="w-full resize-none rounded-md border border-black/[0.07] bg-white px-2.5 py-2 text-[13px] text-[#1d1d1f] outline-none placeholder:text-[#b0b0b5] focus:border-brand-500"
+        />
+        {err && <div className="mt-1.5 text-[12px] text-[#ff3b30]">{err}</div>}
+        <div className="mt-2 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => { setOpen(false); setText(""); setErr(null); }}
+            disabled={saving}
+            className="rounded-md px-3 py-1 text-[12.5px] text-[#86868b] transition hover:text-[#1d1d1f] active:scale-[0.97] disabled:opacity-40"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={saving || !text.trim()}
+            className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-3 py-1 text-[12.5px] font-medium text-white transition active:scale-[0.98] disabled:opacity-40"
+          >
+            {saving && <Loader2 className="h-3 w-3 animate-spin" />}
+            记进店规矩
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DeliverableCard({
+  step,
+  onPublish,
+  onPreview,
+}: {
+  step: ToolStep;
+  onPublish?: (platform: unknown, content: string) => void;
+  onPreview?: (item: PreviewItem) => void;
+}) {
+  const { label, Icon } = toolMeta(step.tool);
+  return (
+    <div className="overflow-hidden rounded-xl border border-black/[0.07] bg-white shadow-sm">
+      <div className="flex items-center justify-between border-b border-black/[0.07] bg-black/[0.015] px-4 py-2.5">
+        <span className="flex items-center gap-1.5 text-[13px] font-medium text-[#1d1d1f]">
+          <Icon className="h-3.5 w-3.5 text-brand-600" /> {label}
+        </span>
+        <CopyButton text={step.result || ""} />
+      </div>
+      <div className="prose prose-sm max-w-none px-4 py-3 prose-slate prose-p:my-1.5 prose-headings:my-2">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{step.result || ""}</ReactMarkdown>
+      </div>
+      {step.knowledgeUsed && step.knowledgeUsed.length > 0 && (
+        <div className="flex items-start gap-1.5 px-4 pb-2.5 text-[12px] leading-relaxed text-[#86868b]">
+          <BookOpen className="mt-[1px] h-3.5 w-3.5 shrink-0 text-[#a1a1a6]" />
+          <span>
+            <span className="text-[#86868b]">依据：</span>
+            {step.knowledgeUsed.join(" · ")}
+          </span>
+        </div>
+      )}
+      {(onPreview || (onPublish && step.tool === "make_platform_content")) && (
+        <div className="flex items-center gap-2 px-4 pb-1">
+          {onPreview && (
+            <button
+              type="button"
+              onClick={() => onPreview({ kind: "content", title: label, text: step.result || "" })}
+              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[12.5px] font-medium text-brand-600 active:scale-[0.97]"
+            >
+              <Maximize2 className="h-3.5 w-3.5" /> 展开预览
+            </button>
+          )}
+          {onPublish && step.tool === "make_platform_content" && (
+            <button
+              type="button"
+              onClick={() => onPublish(step.args?.platform, step.result || "")}
+              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[12.5px] font-medium text-brand-600 active:scale-[0.97]"
+            >
+              <Send className="h-3.5 w-3.5" /> 去发布
+            </button>
+          )}
+        </div>
+      )}
+      {/* 纠错入口：放在「依据」附近，让老板看到 AI 的依据后能立刻纠正「我们店不这样」 */}
+      <CorrectionAction />
+    </div>
+  );
+}
+
 function MacDeliverables({
   steps,
   onPublish,
@@ -60,53 +213,9 @@ function MacDeliverables({
   if (cards.length === 0) return null;
   return (
     <div className="flex flex-col gap-2">
-      {cards.map(({ s, idx }) => {
-        const { label, Icon } = toolMeta(s.tool);
-        return (
-          <div key={idx} className="overflow-hidden rounded-xl border border-black/[0.07] bg-white shadow-sm">
-            <div className="flex items-center justify-between border-b border-black/[0.07] bg-black/[0.015] px-4 py-2.5">
-              <span className="flex items-center gap-1.5 text-[13px] font-medium text-[#1d1d1f]">
-                <Icon className="h-3.5 w-3.5 text-brand-600" /> {label}
-              </span>
-              <CopyButton text={s.result || ""} />
-            </div>
-            <div className="prose prose-sm max-w-none px-4 py-3 prose-slate prose-p:my-1.5 prose-headings:my-2">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{s.result || ""}</ReactMarkdown>
-            </div>
-            {s.knowledgeUsed && s.knowledgeUsed.length > 0 && (
-              <div className="flex items-start gap-1.5 px-4 pb-2.5 text-[12px] leading-relaxed text-[#86868b]">
-                <BookOpen className="mt-[1px] h-3.5 w-3.5 shrink-0 text-[#a1a1a6]" />
-                <span>
-                  <span className="text-[#86868b]">依据：</span>
-                  {s.knowledgeUsed.join(" · ")}
-                </span>
-              </div>
-            )}
-            {(onPreview || (onPublish && s.tool === "make_platform_content")) && (
-              <div className="flex items-center gap-2 px-4 pb-3">
-                {onPreview && (
-                  <button
-                    type="button"
-                    onClick={() => onPreview({ kind: "content", title: label, text: s.result || "" })}
-                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[12.5px] font-medium text-brand-600 active:scale-[0.97]"
-                  >
-                    <Maximize2 className="h-3.5 w-3.5" /> 展开预览
-                  </button>
-                )}
-                {onPublish && s.tool === "make_platform_content" && (
-                  <button
-                    type="button"
-                    onClick={() => onPublish(s.args?.platform, s.result || "")}
-                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[12.5px] font-medium text-brand-600 active:scale-[0.97]"
-                  >
-                    <Send className="h-3.5 w-3.5" /> 去发布
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        );
-      })}
+      {cards.map(({ s, idx }) => (
+        <DeliverableCard key={idx} step={s} onPublish={onPublish} onPreview={onPreview} />
+      ))}
     </div>
   );
 }

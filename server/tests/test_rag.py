@@ -74,3 +74,87 @@ def test_store_isolation():
     hits = recall("A", "活动文案", top=5)
     assert all(h["source_id"] == "g1" for h in hits)
     assert all("甲店" in h["text"] for h in hits)  # 只召回本店的，不串店
+
+
+# ── A-7 Contextual Retrieval（确定性上下文前缀；不调 LLM、不花 BYOK 钱）──
+
+def test_context_prefix_built_deterministically():
+    """带元数据拼出的前缀：含场景、日期(+中文月)、意图/活动、效果好——纯元数据确定性拼。"""
+    from services.rag.recall import build_context_prefix
+    prefix = build_context_prefix({
+        "sub_type": "朋友圈",
+        "ts": "2026-03-08T10:00:00+08:00",
+        "input_params": {"scenario": "双十一五折"},
+        "effect_rating": "good",
+    })
+    assert prefix.startswith("【") and prefix.endswith("】")
+    assert "朋友圈" in prefix          # 场景(sub_type)
+    assert "2026-03-08" in prefix      # 日期
+    assert "三月" in prefix            # 中文月（让"三月"类查询能命中）
+    assert "双十一五折" in prefix       # 意图/活动(input_params)
+    assert "效果好" in prefix          # 好评 → 效果好
+
+
+def test_context_prefix_empty_when_no_meta():
+    """没任何元数据 → 不硬塞前缀，返回空串。"""
+    from services.rag.recall import build_context_prefix
+    assert build_context_prefix(None) == ""
+    assert build_context_prefix({}) == ""
+
+
+def test_favorite_marks_effect_good():
+    """收藏(is_favorite)也算效果好，能被前缀带上。"""
+    from services.rag.recall import build_context_prefix
+    prefix = build_context_prefix({"sub_type": "群公告", "is_favorite": True})
+    assert "效果好" in prefix
+
+
+def test_indexed_text_contains_context_prefix():
+    """带元数据入库后，索引里存的文本【含确定性上下文前缀】（钉死 A-7 核心行为）。"""
+    from services.rag import index_store
+    from services.rag.recall import index_text
+
+    sid = "store-ctx"
+    index_text(
+        sid, "generation", "g1", "双十一全场五折活动朋友圈文案",
+        ts="2026-03-08T10:00:00+08:00",
+        meta={"sub_type": "朋友圈", "input_params": {"scenario": "双十一五折"},
+              "effect_rating": "good"},
+    )
+    rows = index_store._conn().execute(
+        "SELECT text FROM vectors WHERE store_id=? AND source_id=?", (sid, "g1")
+    ).fetchall()
+    indexed = rows[0][0]
+    assert indexed.startswith("【")                # 前缀在原文前面
+    assert "2026-03-08" in indexed and "三月" in indexed
+    assert "双十一五折" in indexed and "效果好" in indexed
+    assert "双十一全场五折活动朋友圈文案" in indexed   # 原文也还在
+
+
+def test_no_meta_keeps_plain_text_unchanged():
+    """不带元数据/不带 ts 时，索引文本就是原文，不加前缀（保持现有行为不破）。"""
+    from services.rag import index_store
+    from services.rag.recall import index_text
+
+    sid = "store-plain"
+    index_text(sid, "generation", "g1", "纯文案没有元数据")
+    rows = index_store._conn().execute(
+        "SELECT text FROM vectors WHERE store_id=? AND source_id=?", (sid, "g1")
+    ).fetchall()
+    assert rows[0][0] == "纯文案没有元数据"          # 一字不差，无前缀
+
+
+def test_recall_hits_via_context_prefix():
+    """前缀进了索引文本 → 用前缀里的词(效果好/月份)查询也能命中（A-7 收益）。"""
+    from services.rag.recall import index_text, recall
+
+    sid = "store-ctx2"
+    index_text(sid, "generation", "g1", "全场五折活动朋友圈文案",
+               ts="2026-03-08T10:00:00+08:00",
+               meta={"sub_type": "朋友圈", "effect_rating": "good"})
+    # 无效果元数据的对照条（原文本身不含"效果好"/月份）
+    index_text(sid, "generation", "g2", "周末双人优惠群公告")
+
+    hits = recall(sid, "三月 效果好的", top=2)
+    assert hits, "应能借前缀里的月份/效果命中"
+    assert hits[0]["source_id"] == "g1"            # 带前缀那条命中在前
