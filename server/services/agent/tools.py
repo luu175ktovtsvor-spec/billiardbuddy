@@ -12,8 +12,14 @@ import logging
 from core.timezone import business_today
 from services.agent.registry import default_registry, tool
 from services.agent.poster_styles import resolve_style_prompt, style_labels_hint
-from services.agent.scenario_catalog import format_catalog_for_model
-from services.content_service import _append_guardrails, generate_activity, generate_workbench, run_generation
+from services.agent.scenario_catalog import format_catalog_for_model, get_catalog, pick_best_prompt_key
+from services.content_service import (
+    _append_guardrails,
+    generate_activity,
+    generate_workbench,
+    rank_knowledge_for_topic,
+    run_generation,
+)
 from services.dashboard_service import get_today_dashboard
 from services.diagnosis_service import analyze_diagnosis
 from services.games_service import recommend_games as _recommend_games
@@ -84,6 +90,34 @@ async def find_scenario(args: dict, ctx) -> str:
 
 
 @tool(
+    name="look_up_knowledge",
+    read_only=True,
+    description="查台球行业知识库（55 条真实运营知识：获客/客户运营/助教/店长/数据诊断/红线合规…）。"
+                "**拿不准某个运营做法该不该做、是不是踩红线、有没有更专业的打法时，用它查行业知识再判断**——"
+                "比凭空想靠谱。给个 topic（你拿不准的那件事，原话即可），返回最相关的几条知识的"
+                "名字 + 一句索引（不是整篇正文，省 token）；要据某条深入写内容时，对应场景模板走 find_scenario。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "topic": {"type": "string",
+                      "description": "你拿不准/想查证的运营做法或话题，原话即可，如'助教能不能发擦边朋友圈''淡季白天怎么拉人''能不能涨价'"},
+        },
+        "required": ["topic"],
+    },
+)
+async def look_up_knowledge(args: dict, ctx) -> str:
+    topic = (args.get("topic") or "").strip()
+    hits = rank_knowledge_for_topic(topic, top=5)
+    if not hits:
+        return "（暂时没查到相关的行业知识，按你的常识判断即可。）"
+    lines = []
+    for h in hits:
+        desc = h.get("description") or ""
+        lines.append(f"【{h['name']}】{desc}" if desc else f"【{h['name']}】")
+    return "行业知识参考（拿这些判断该不该做/是不是红线/有没有更专业打法）：\n" + "\n".join(lines)
+
+
+@tool(
     name="ask_user_question",
     description="当你需要老板在几个方案/方向里先做个选择才能往下做时（如海报走哪种风格、活动主打什么方向、面向哪类客户、"
                 "价位高还是低），用这个把 2-4 个选项摆给他点选，**别自己替他定**。每个选项给一个简短标签 + 一句说明。"
@@ -137,14 +171,25 @@ async def ask_user_question(args: dict, ctx) -> str:
 )
 async def write_operation_content(args: dict, ctx) -> str:
     role = getattr(ctx.user, "my_role", None) or "manager"
-    prompt_key = (args.get("prompt_key") or "").strip() or None
+    need = args.get("need", "") or ""
+    # 模型主动传的 prompt_key 优先；但要确认它是【目录里真实存在】的精修模板才算有效——
+    # 模型偶尔会编一个不存在的 key，那就当没传，走兜底。
+    raw_key = (args.get("prompt_key") or "").strip() or None
+    catalog = get_catalog()
+    valid_keys = {e["key"] for e in catalog}
+    if raw_key and raw_key in valid_keys:
+        prompt_key = raw_key
+    else:
+        # A-5/C-3 确定性兜底：模型没传/传了无效 key 时，按需求确定性挑一个最贴切的精修模板，
+        # 别直接走泛化 free_intent 漏掉精修；找不到够贴切的（分太低）才返回 None、退回泛化写法。
+        prompt_key = pick_best_prompt_key(need, catalog=catalog)
     note = args.get("note", "") or ""
     # 精修模板路径靠 extra_note 把老板的具体需求带进模板的 {extra_note} 槽；没单独 note 就用 need。
     if prompt_key and not note:
-        note = args.get("need", "") or ""
+        note = need
     gen = await generate_workbench(
         ctx.db, ctx.store, ctx.user,
-        user_intent=args["need"],
+        user_intent=need,
         role=role,
         target_customer_type=args.get("customer_type"),
         output_package=args.get("outputs"),

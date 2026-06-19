@@ -49,6 +49,26 @@ def rank_scenarios(need: str, catalog: list[dict] | None = None, top: int | None
     return scored[:top] if top else scored
 
 
+# 兜底匹配门槛：bigram 重叠分≥此值才认为"够贴切、值得用精修模板"。
+# 太低会乱套不相关模板，太高则白白漏掉精修。need 与场景名通常共享 2-3 个 bigram 才算相关。
+_MIN_FALLBACK_SCORE = 2
+
+
+def pick_best_prompt_key(need: str, catalog: list[dict] | None = None) -> str | None:
+    """【确定性兜底】对 need 选一个最相关的精修场景 prompt_key；够不到门槛就返回 None。
+
+    用于 write_operation_content：模型没主动传 prompt_key 时，别直接走泛化 free_intent
+    漏掉精修模板——这里按场景名的 bigram 重叠确定性挑一个最贴切的。找不到贴切的（分太低）
+    才返回 None、退回泛化写法。need 为空返回 None（不强塞模板）。
+    """
+    if not (need or "").strip():
+        return None
+    ranked = rank_scenarios(need, catalog=catalog, top=1)
+    if ranked and ranked[0].get("_score", 0) >= _MIN_FALLBACK_SCORE:
+        return ranked[0]["key"]
+    return None
+
+
 def format_catalog_for_model(need: str = "") -> str:
     """给 find_scenario 工具返回的文本：按相关度排好的清单，让模型挑一个 prompt_key。"""
     ranked = rank_scenarios(need)
