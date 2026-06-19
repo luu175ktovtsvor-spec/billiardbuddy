@@ -10,8 +10,10 @@
  */
 import { useCallback, useRef, useState } from "react";
 
-import { api } from "@/lib/api";
+import { api, type ApprovalReason } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
+
+export type { ApprovalReason };
 
 export interface ToolStep {
   tool: string;
@@ -27,6 +29,7 @@ export interface ApprovalState {
   args: Record<string, unknown>;
   token?: string;
   preview?: string;
+  reason?: ApprovalReason; // SH-8：结构化理由 {what/why/impact}，审批卡据此列清"要做什么/为什么要你确认/影响"
   status: "pending" | "done" | "cancelled";
 }
 
@@ -118,8 +121,8 @@ export function useAgentChat(opts: AgentChatOptions) {
                 setLiveSteps([...steps]);
               }
             },
-            onApprovalRequest: (tool, args, _id, token, preview) => {
-              approval = { tool, args, token, preview, status: "pending" };
+            onApprovalRequest: (tool, args, _id, token, preview, reason) => {
+              approval = { tool, args, token, preview, reason, status: "pending" };
             },
             onAskQuestion: (q) => {
               question = { question: q.question, options: q.options, multi: q.multi };
@@ -173,7 +176,7 @@ export function useAgentChat(opts: AgentChatOptions) {
             role: "assistant",
             content: res.continuation,
             approval: res.approval
-              ? { tool: res.approval.tool, args: res.approval.args, token: res.approval.token, preview: res.approval.preview, status: "pending" }
+              ? { tool: res.approval.tool, args: res.approval.args, token: res.approval.token, preview: res.approval.preview, reason: res.approval.reason, status: "pending" }
               : undefined,
           });
         }
@@ -186,11 +189,14 @@ export function useAgentChat(opts: AgentChatOptions) {
     }
   }, [conversationId]);
 
-  const cancelApproval = useCallback((idx: number) => {
+  const cancelApproval = useCallback((idx: number, ap?: ApprovalState) => {
+    // SH-8：把"老板拒绝了这个动作"上报后端记一次 → 同一动作连拒到阈值，管家就不再反复提请、改走文本/换方案。
+    // 故障安全（.catch 吞掉）、不阻断取消本身。
+    if (ap?.tool) api.rejectAgentTool(ap.tool, ap.args, conversationId).catch(() => {});
     setMessages((prev) =>
       prev.map((m, j) => (j === idx && m.approval ? { ...m, approval: { ...m.approval, status: "cancelled" } } : m)),
     );
-  }, []);
+  }, [conversationId]);
 
   const startNewChat = useCallback(() => {
     if (generating) return;

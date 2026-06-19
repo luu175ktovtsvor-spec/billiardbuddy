@@ -17,12 +17,20 @@ const BASE_URL = !configuredBaseUrl
   ? ""
   : configuredBaseUrl.replace(/\/$/, "");
 
+/** SH-8 结构化审批理由：审批卡用它列清【要做什么 / 为什么要你确认 / 影响】。三件套都是字符串，后端兜底保证有话可说。 */
+export interface ApprovalReason {
+  what: string;
+  why: string;
+  impact: string;
+}
+
 /** Agent 流式对话事件回调（对应后端 /agent/chat 的 SSE 事件：token/tool_call/tool_result/final/done/error）。 */
 export interface AgentStreamHandlers {
   onToken?: (token: string) => void;
   onToolCall?: (tool: string, args: Record<string, unknown>, id?: string) => void;
   onToolResult?: (tool: string, content: string, id?: string, knowledgeUsed?: string[]) => void;
-  onApprovalRequest?: (tool: string, args: Record<string, unknown>, id?: string, token?: string, preview?: string) => void;
+  // SH-8：reason = 结构化审批理由 {what 要做什么 / why 为什么要你确认 / impact 影响}，让审批卡说清楚再让老板点头。
+  onApprovalRequest?: (tool: string, args: Record<string, unknown>, id?: string, token?: string, preview?: string, reason?: ApprovalReason) => void;
   onAskQuestion?: (q: { question: string; options: { label: string; description?: string }[]; multi?: boolean; id?: string }) => void;
   onFinal?: (content: string) => void;
   onDone?: (info: { turns: number; stopped_reason: string; conversation_id?: string; generation_id?: string }) => void;
@@ -561,7 +569,7 @@ class ApiClient {
               case "token": handlers.onToken?.(ev.content || ""); break;
               case "tool_call": handlers.onToolCall?.(ev.tool, ev.args || {}, ev.id); break;
               case "tool_result": handlers.onToolResult?.(ev.tool, ev.content || "", ev.id, Array.isArray(ev.knowledge_used) ? ev.knowledge_used : undefined); break;
-              case "approval_request": handlers.onApprovalRequest?.(ev.tool, ev.args || {}, ev.id, ev.token, ev.preview); break;
+              case "approval_request": handlers.onApprovalRequest?.(ev.tool, ev.args || {}, ev.id, ev.token, ev.preview, ev.reason); break;
               case "ask_question": handlers.onAskQuestion?.({ question: ev.question || "", options: ev.options || [], multi: ev.multi, id: ev.id }); break;
               case "final": handlers.onFinal?.(ev.content || ""); break;
               case "done": handlers.onDone?.({ turns: ev.turns, stopped_reason: ev.stopped_reason, conversation_id: ev.conversation_id, generation_id: ev.generation_id }); return;
@@ -598,7 +606,7 @@ class ApiClient {
     tool: string;
     result: string;
     continuation?: string;  // 审批回灌：执行后管家基于结果的自然接话
-    approval?: { tool: string; args: Record<string, unknown>; token?: string; preview?: string } | null;
+    approval?: { tool: string; args: Record<string, unknown>; token?: string; preview?: string; reason?: ApprovalReason } | null;
   }> {
     return this.request("POST", "/api/v1/agent/execute", {
       tool,
@@ -606,6 +614,15 @@ class ApiClient {
       selected_files: selectedFiles,
       full_disk_access: fullDiskAccess,
       token,
+      conversation_id: conversationId,
+    });
+  }
+
+  /** SH-8：老板拒绝/取消某审批动作 → 上报后端记一次（连拒到阈值就别再反复提请）。故障安全，调用方 .catch 吞掉即可。 */
+  async rejectAgentTool(tool: string, args: Record<string, unknown>, conversationId?: string | null): Promise<{ ok: boolean }> {
+    return this.request("POST", "/api/v1/agent/reject", {
+      tool,
+      args,
       conversation_id: conversationId,
     });
   }

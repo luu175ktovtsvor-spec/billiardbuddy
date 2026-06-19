@@ -514,6 +514,9 @@ export default function ManagerPage() {
   };
 
   const cancelApproval = (idx: number) => {
+    // SH-8：上报"拒绝"给后端记一次（连拒到阈值就别再反复提请）。故障安全、不阻断取消。
+    const ap = messages[idx]?.approval;
+    if (ap?.tool) api.rejectAgentTool(ap.tool, ap.args, conversationId).catch(() => {});
     setMessages((prev) =>
       prev.map((m, j) => (j === idx && m.approval ? { ...m, approval: { ...m.approval, status: "cancelled" } } : m)),
     );

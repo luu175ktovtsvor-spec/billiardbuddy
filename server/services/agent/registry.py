@@ -30,6 +30,10 @@ class Tool:
     # 审批预览器（可选）：(args, ctx) -> str，给老板看"确认前到底会改什么"的人话 diff
     #   （如 edit_excel 读现值算"B2 32000→38000"）。审批闸据此让前端展示预览，不再"瞎确认"。
     preview: Callable[[dict, Any], str] | None = None
+    # SH-8 审批理由生成器（可选）：(args, ctx) -> dict，产出结构化的「为什么要你确认」——
+    #   {what: 这步要做什么, why: 为什么需要你点头, impact: 会有什么影响(改哪个文件/可否回滚)}。
+    #   不给则 loop 据工具元信息(approval_class/名字/args)自动拼一份兜底理由，审批卡总有话说、不再干巴巴。
+    approval_reason: Callable[[dict, Any], dict] | None = None
     # 工具自描述行为标记（借鉴 cc-haha 的 Tool.isReadOnly/isDeliverable，让"这是不是成品/能否并发"
     # 跟着工具走、不再靠外部手抄白名单——白名单和工具两处维护必漂移，write_batch 漏登记就是这么来的）：
     #   deliverable 结果是给老板直接拿去用的成品（前端原样渲染成可复制卡片、需并进会话 result 落库）；
@@ -103,6 +107,7 @@ def tool(
     force_confirm: bool = False,
     is_question: bool = False,
     max_result_chars: int | None = None,
+    approval_reason: Callable[[dict, Any], dict] | None = None,
     registry: ToolRegistry | None = None,
 ) -> Callable[[ToolHandler], ToolHandler]:
     """装饰器：把一个 async 函数登记为工具。
@@ -128,6 +133,7 @@ def tool(
                 force_confirm=force_confirm,
                 is_question=is_question,
                 max_result_chars=max_result_chars,
+                approval_reason=approval_reason,
             )
         )
         return fn

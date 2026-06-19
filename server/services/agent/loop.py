@@ -52,6 +52,19 @@ _QUESTION_PENDING_MSG = (
     "不要替他选、也不要假装他已经选了。"
 )
 
+# ── SH-8 连续拒绝自动回退 ──
+# 老板对【同一动作】连续点拒绝达 _DENIAL_FALLBACK_N 次 → loop 不再反复提请该动作（别没完没了地烦），
+# 改回灌一句"这个就先不做了、换个法子"，让模型走文本答复 / 提替代方案。阈值 N=2（拒两次就够明确了）。
+# 另设全局累计闸 _DENIAL_FALLBACK_TOTAL：跨不同动作累计拒太多次也整体回退（防"换个参数接着烦"）。
+_DENIAL_FALLBACK_N = 2
+_DENIAL_FALLBACK_TOTAL = 20
+# 命中回退时回灌给模型的提示（让它别再提该动作、改用文字答复或换方案，给老板一句台阶话）。
+_DENIAL_FALLBACK_MSG = (
+    "[这个先不做了] 老板已经多次没同意执行「{name}」这个动作，就别再反复请求确认了。"
+    "用一句话告诉老板这个就先不做了、你换个法子，然后改用文字直接答复或提个替代方案，"
+    "不要再调用「{name}」。"
+)
+
 # 达到 max_turns 仍未收敛时，强制模型基于已有结果给一段最终答复（不再给工具），
 # 避免直接返回空答复让用户看到"AI 没反应"。
 _FORCE_FINAL_MSG = "请基于上面已有的工具结果，直接用一段话给用户最终答复，不要再调用任何工具。"
@@ -73,6 +86,30 @@ _CLEARED_RESULT_MARK = "[旧的查询结果已清理以省上下文；需要可�
 
 # 防打转（anti-spin）：同一工具 + 完全相同参数最多放行几次；再多结果也不会变（是在空转），拦下逼模型换思路。
 _MAX_SAME_CALL = 3
+
+# ── SH-6 三级上下文压缩 · 第三级 autocompact（超长对话顶满窗口时的语义兜底）──
+# 前两级（SH-3 落盘 _cap_tool_result / microcompact 清旧只读结果）都是零 LLM 的轻压缩；
+# 当超长多步任务把上下文顶到临近窗口时，仍可能溢出——此时花【一次】文字 provider 调用，把
+# 【较早的非近 N 轮】消息总结成一段精简摘要（保留：关键事实 / 已产出 / 老板诉求 / 待办；丢：冗余来回），
+# 用一条摘要消息替换那一大段，再拼上最近 N 轮原文，重建出更短的 messages。
+#
+# ⚠️ 触发顺序铁律：snip(SH-3 落盘，在工具执行时已发生) → microcompact → autocompact。autocompact 排最后、
+#    且【只在临近窗口才触发】（est < 窗口*ratio 直接跳过），平时一动不动、不花这次昂贵调用。
+# ⚠️ SH-9 prompt-cache 纪律：autocompact 是【整个 loop 里唯一允许重建 messages 前缀的点】（microcompact 是
+#    就地改单条 content；这里是重排/替换前面一大段）。重建必然让那一刻起 cache 全 miss——这是「拿一次大 miss
+#    换掉一大段顶满窗口的旧文 + 续命不让请求溢出」的划算交易，且仅临近窗口才发生（低频）。除本函数外任何
+#    代码都不应重建前缀，详见 docs/耦合地图与改动检查清单.md「prompt-cache 前缀稳定纪律」。
+# 故障安全：估算/总结任一步抛错 → 跳过压缩、用原 messages 继续，绝不让主循环崩。
+_AUTOCOMPACT_MIN_OLD = 6   # 较早段至少要有这么多条消息才值得花 LLM 压（太少不划算、直接跳过）
+_AUTOCOMPACT_SUMMARY_MAX_TOKENS = 1024  # 摘要生成的 max_tokens（够装关键事实/待办，又不喧宾夺主）
+_AUTOCOMPACT_SUMMARY_PROMPT = (
+    "下面是一段较早的 AI 助手与老板的对话记录（含工具调用与结果）。请把它压成一段精简摘要，"
+    "只保留对【接下来继续完成任务】有用的信息：老板的核心诉求、已确认的关键事实/数据、已经产出了什么、"
+    "还没做完的待办。丢掉寒暄、重复的来回、已无意义的中间过程。直接给摘要正文，不要加任何开场白或标题。\n\n"
+    "=== 较早对话记录 ===\n{transcript}"
+)
+# 摘要消息的标记前缀（落进 messages 的 assistant 消息，便于人/测试识别这是压缩产物）。
+_AUTOCOMPACT_SUMMARY_MARK = "[此前对话摘要]"
 
 # SH-4 截断恢复：模型一轮输出被 max_tokens 砍断时 finish_reason="length"（不是正常 "stop"）。
 # 收尾分支识别它 → 把已输出的半句 append 回去 + 提示"接着写完"再要一轮，多轮片段拼成完整 final，
@@ -197,6 +234,58 @@ def _approval_preview(tool, args, ctx) -> str | None:
         return None
 
 
+def _action_key(name: str | None, args: dict) -> str:
+    """SH-8 动作标识：工具名 + 规范化 args（与 anti-spin sig / approval canonical 同套 sort_keys 思路）。
+    用作"连续被拒"计数的 key——同一工具+同参视为同一动作；序列化失败退回 repr（绝不抛错拖垮审批）。"""
+    try:
+        return f"{name}|{json.dumps(args or {}, sort_keys=True, ensure_ascii=False)}"
+    except (TypeError, ValueError):
+        return f"{name}|{args!r}"
+
+
+def _build_approval_reason(tool, args, ctx) -> dict:
+    """SH-8 结构化审批理由：{what 做什么 / why 为什么要你确认 / impact 影响}。
+    优先用工具自带的 approval_reason(args, ctx) 生成器；没有或失败则据工具元信息(approval_class/名字)兜底拼一份，
+    审批卡总有话可说、不再只给一句干巴巴的 label。绝不因理由生成出错而拖垮审批（故障安全）。"""
+    fn = getattr(tool, "approval_reason", None)
+    if fn:
+        try:
+            r = fn(args, ctx)
+            if isinstance(r, dict) and r.get("what"):
+                # 补全缺失字段，保证三件套都在
+                return {"what": r.get("what", ""), "why": r.get("why", ""), "impact": r.get("impact", "")}
+        except Exception:
+            logger.exception("审批理由生成失败，退回兜底: %s", getattr(tool, "name", "?"))
+    name = getattr(tool, "name", "?")
+    desc = (getattr(tool, "description", "") or "").split("。")[0]
+    kind = getattr(tool, "approval_class", "spend")
+    if kind == "file":
+        path = args.get("path") if isinstance(args, dict) else None
+        what = f"{desc}" if desc else f"执行「{name}」"
+        why = "这会改动你电脑上的文件，落盘前需要你点头确认。"
+        impact = (f"会改动文件：{path}。改前已自动备份原件，确认后可随时回滚。"
+                  if path else "会改动内容库里的文件。改前已自动备份原件，确认后可随时回滚。")
+    else:
+        what = f"{desc}" if desc else f"执行「{name}」"
+        why = "这是对外/不可逆的动作（如发布、群发），做出去收不回，需要你点头确认。"
+        impact = "确认后会真正执行这个对外动作，请先看清内容再决定。"
+    return {"what": what, "why": why, "impact": impact}
+
+
+def _denial_fallback(name: str | None, args: dict, ctx) -> bool:
+    """SH-8：该动作是否已触发"连续拒绝自动回退"——同一动作连续被拒达 _DENIAL_FALLBACK_N 次，
+    或全局累计拒绝达 _DENIAL_FALLBACK_TOTAL 次。命中则 loop 不再提请该动作，改走文本/换方案。
+    只读 ctx 计数（拒绝时由 /agent/execute 取消路径 record_denial 累加），故障安全：ctx 不全也不抛。"""
+    if ctx is None:
+        return False
+    if getattr(ctx, "denials_total", 0) >= _DENIAL_FALLBACK_TOTAL:
+        return True
+    by = getattr(ctx, "denials_by_action", None)
+    if not isinstance(by, dict):
+        return False
+    return by.get(_action_key(name, args), 0) >= _DENIAL_FALLBACK_N
+
+
 @dataclass
 class AgentStep:
     type: str  # thinking | tool_call | tool_result | final
@@ -205,6 +294,7 @@ class AgentStep:
     tool_args: dict | None = None
     tool_call_id: str | None = None
     preview: str | None = None  # approval_request 专用：确认前给老板看的"会改成什么"diff
+    reason: dict | None = None  # SH-8：approval_request 专用，结构化理由 {what/why/impact}
     meta: dict | None = None    # B-2：tool_result 携带的附加信息（如 {"knowledge_used": [...]} 依据可见）
 
 
@@ -230,6 +320,9 @@ class _ToolPlan:
     question: dict | None = None     # is_question 时的 {question, options, multi}
     pending_msg: str | None = None  # needs_approval 时回灌给模型的"待确认"文本
     preview: str | None = None      # needs_approval 时给老板看的人话 diff
+    reason: dict | None = None      # SH-8 结构化审批理由 {what/why/impact}，随 approval_request 带给前端
+    fallback: bool = False          # SH-8 连续拒绝回退：True=该动作老板已反复拒、不再提请，改走文本/换方案
+    fallback_msg: str | None = None  # fallback 时回灌给模型的"这个先不做了、换法子"提示
 
 
 def _init_messages(system_prompt: str | None, history: list[dict] | None, user_message: str) -> list[dict]:
@@ -268,10 +361,18 @@ def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _Too
                 },
             )
         if tool.requires_approval and not _auto_approve(tool, ctx):
+            # SH-8 连续拒绝自动回退：同一动作老板已反复拒（或全局累计拒太多）→ 不再提请该动作，
+            # 改回灌"这个先不做了、换个法子"，让模型走文本答复/替代方案，别没完没了地弹同一张确认卡。
+            if _denial_fallback(name, args, ctx):
+                return _ToolPlan(
+                    name=name, args=args, tool_call_id=tc_id, fallback=True,
+                    fallback_msg=_DENIAL_FALLBACK_MSG.format(name=name),
+                )
             return _ToolPlan(
                 name=name, args=args, tool_call_id=tc_id, needs_approval=True,
                 pending_msg=_APPROVAL_PENDING_MSG.format(name=name),
                 preview=_approval_preview(tool, args, ctx),
+                reason=_build_approval_reason(tool, args, ctx),
             )
     return _ToolPlan(name=name, args=args, tool_call_id=tc_id)
 
@@ -337,7 +438,9 @@ async def run_agent_loop(
     continuations = 0               # SH-4：续写次数（防"一直被截一直续"死循环）
 
     for turn in range(1, max_turns + 1):
-        _microcompact(messages, registry)  # 清理旧的只读工具结果，省上下文 token
+        # SH-6 三级压缩流水线（snip→microcompact→autocompact）：临近窗口才语义压、平时只清旧只读结果。
+        # autocompact 可能重建前缀（唯一允许点）→ 用返回值重绑 messages（就地切片同步，保后续 append 落到新列表）。
+        messages[:] = await _compact_pipeline(messages, registry, ctx, provider, model, temperature)
         # SH-1：发请求前补缺失/删孤儿/去重 tool_result，堵 OpenAI 兼容端点的配对 400（纯函数返回新列表，就地替换内容）。
         messages[:] = ensure_tool_pairing(messages)
         resp = await provider.generate(TextRequest(
@@ -415,9 +518,14 @@ async def run_agent_loop(
                                        tool_call_id=plan.tool_call_id, content=_QUESTION_PENDING_MSG))
                 messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": _QUESTION_PENDING_MSG})
                 continue
+            if plan.fallback:  # SH-8 连续拒绝回退：不提请该动作，回灌"换个法子"让模型走文本/替代方案
+                steps.append(AgentStep(type="tool_result", tool_name=plan.name,
+                                       tool_call_id=plan.tool_call_id, content=plan.fallback_msg))
+                messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": plan.fallback_msg})
+                continue
             if plan.needs_approval:
                 steps.append(AgentStep(type="approval_request", tool_name=plan.name, tool_args=plan.args,
-                                       tool_call_id=plan.tool_call_id, preview=plan.preview))
+                                       tool_call_id=plan.tool_call_id, preview=plan.preview, reason=plan.reason))
                 steps.append(AgentStep(type="tool_result", tool_name=plan.name,
                                        tool_call_id=plan.tool_call_id, content=plan.pending_msg))
                 messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": plan.pending_msg})
@@ -552,6 +660,134 @@ def _microcompact(messages: list[dict], registry: ToolRegistry) -> None:
         messages[i] = {**messages[i], "content": _CLEARED_RESULT_MARK}
 
 
+def _estimate_tokens(messages: list[dict]) -> int:
+    """粗估 messages 占用的 token 数，分中英文计权——CJK（中/日/韩）一字≈1 token，英文/JSON/符号约 4 字符≈1 token。
+    只为 autocompact 阈值判断服务（求"快且零依赖"）。旧版一律 //4 会把中文低估约 4 倍 → 顶满窗口还不触发压缩、
+    真溢出；本产品以中文为主，故必须分别计权。任何取值异常都按 0 处理（绝不抛错拖垮主流程）。"""
+    cjk = other = 0
+    for m in messages:
+        try:
+            text = ""
+            c = m.get("content")
+            if isinstance(c, str):
+                text += c
+            elif c is not None:
+                text += str(c)
+            tcs = m.get("tool_calls")
+            if tcs:
+                text += json.dumps(tcs, ensure_ascii=False)
+            for ch in text:
+                if "一" <= ch <= "鿿" or "぀" <= ch <= "ヿ" or "가" <= ch <= "힣":
+                    cjk += 1
+                else:
+                    other += 1
+        except (TypeError, ValueError):
+            continue
+    return cjk + other // 4
+
+
+def _split_for_autocompact(messages: list[dict], keep: int) -> int:
+    """算出"较早段 / 最近段"的分界下标 idx：messages[:idx] 压成摘要、messages[idx:] 保留原文。
+    规则（保 tool 配对完整 + system 不动）：
+    - system 消息永远留在最前、不进摘要段（返回的 idx 至少跨过开头连续的 system）；
+    - 最近至少保留 keep 条；
+    - 分界不能落在 assistant(tool_calls)→role:tool 组的中间：若 messages[idx] 是 role:tool（孤儿尾），
+      把 idx 往前挪到它所属 assistant 之前，确保最近段不以孤儿 tool_result 开头。
+    返回 idx；idx<=system 段长度则表示"没有可压的较早段"（交调用方跳过）。"""
+    n = len(messages)
+    # 开头连续 system 段长度（system 不压）
+    sys_end = 0
+    while sys_end < n and messages[sys_end].get("role") == "system":
+        sys_end += 1
+    idx = n - keep
+    if idx <= sys_end:
+        return sys_end  # 没有足够的较早段可压
+    # 若分界处是 role:tool（说明落在某组中间），往前挪到该组的 assistant 之前，避免孤儿尾
+    while idx > sys_end and messages[idx].get("role") == "tool":
+        idx -= 1
+    # 此刻 messages[idx] 若是带 tool_calls 的 assistant，它属于最近段（连同其结果一起保留），无需再动；
+    # 若往前挪过头到 sys_end，调用方会因较早段太短而跳过。
+    return idx
+
+
+def _render_transcript(old: list[dict]) -> str:
+    """把待压缩的较早段渲染成可读文本喂给总结 prompt（角色 + 内容 + 工具调用名）。纯本地、零网络。"""
+    lines: list[str] = []
+    for m in old:
+        role = m.get("role", "?")
+        content = m.get("content") or ""
+        if isinstance(content, str):
+            text = content
+        else:
+            text = str(content)
+        tcs = m.get("tool_calls")
+        if tcs:
+            names = ", ".join((tc.get("function") or {}).get("name", "?") for tc in tcs)
+            text = (text + f" [调用工具: {names}]").strip()
+        if text:
+            lines.append(f"{role}: {text}")
+    return "\n".join(lines)
+
+
+async def _autocompact(messages: list[dict], ctx, provider, model, temperature: float) -> list[dict] | None:
+    """SH-6 第三级：把较早的非近 N 轮消息压成一段摘要，重建出更短的 messages。
+    成功返回新 messages（重建前缀，唯一允许点）；不值得压 / 摘要失败 → 返回 None（调用方用原 messages 继续）。
+    故障安全：任何异常都吞掉返回 None，绝不让主循环崩。"""
+    if ctx is None:
+        return None
+    window = getattr(ctx, "model_ctx_window", None)
+    if not window or window <= 0:
+        return None  # 未配窗口 = 不启用 autocompact（交互式默认）
+    try:
+        keep = max(1, int(getattr(ctx, "autocompact_keep", 12) or 12))
+        idx = _split_for_autocompact(messages, keep)
+        # system 段长度（重建时原样保留在最前）
+        sys_end = 0
+        while sys_end < len(messages) and messages[sys_end].get("role") == "system":
+            sys_end += 1
+        old = messages[sys_end:idx]
+        if len(old) < _AUTOCOMPACT_MIN_OLD:
+            return None  # 较早段太短，压它不划算 → 跳过（让前两级与窗口余量扛着）
+        transcript = _render_transcript(old)
+        if not transcript.strip():
+            return None
+        resp = await provider.generate(TextRequest(
+            messages=[{"role": "user",
+                       "content": _AUTOCOMPACT_SUMMARY_PROMPT.format(transcript=transcript)}],
+            model=model,
+            max_tokens=_AUTOCOMPACT_SUMMARY_MAX_TOKENS,
+            temperature=temperature,
+        ))
+        summary = (resp.content or "").strip()
+        if not summary:
+            return None  # 没拿到摘要 → 别用空摘要顶掉历史，跳过
+        # 重建：system 原样 + 一条摘要 assistant 消息 + 最近段原文。
+        summary_msg = {"role": "assistant", "content": f"{_AUTOCOMPACT_SUMMARY_MARK}\n{summary}"}
+        rebuilt = messages[:sys_end] + [summary_msg] + messages[idx:]
+        return rebuilt
+    except Exception:
+        logger.exception("autocompact 压缩失败，跳过、用原 messages 继续")
+        return None
+
+
+async def _compact_pipeline(messages: list[dict], registry: ToolRegistry, ctx,
+                            provider, model, temperature: float) -> list[dict]:
+    """SH-6 三级压缩有序流水线（每轮发请求前调一次）。返回当前应使用的 messages 列表。
+    顺序铁律：snip(SH-3，已在工具执行时落盘) → microcompact(就地清旧只读结果) → autocompact(临近窗口才语义压)。
+    - microcompact 就地改 messages（不重建前缀，省 token、零 LLM）；
+    - 仅当估算 token 超过 窗口*ratio 时才走 autocompact（前两级省下的已反映在 _estimate_tokens 上，省下就不触发）。
+    autocompact 返回 None（不启用/不值得/失败）→ 原 messages 不变。"""
+    _microcompact(messages, registry)  # 第二级：清旧只读结果（就地，零 LLM）
+    window = getattr(ctx, "model_ctx_window", None) if ctx is not None else None
+    if not window or window <= 0:
+        return messages  # 未配窗口 → autocompact 整段跳过（交互式零影响）
+    ratio = getattr(ctx, "autocompact_ratio", 0.7) or 0.7
+    if _estimate_tokens(messages) < window * ratio:
+        return messages  # 没临近窗口 → 不花那次昂贵 LLM，原样返回
+    rebuilt = await _autocompact(messages, ctx, provider, model, temperature)  # 第三级：语义压（唯一重建前缀点）
+    return rebuilt if rebuilt is not None else messages
+
+
 async def _force_final_text(provider, messages: list[dict], model, max_tokens: int, temperature: float) -> str:
     """max_turns 强制收尾（非流式）：追加"别再调工具、直接答"的提示再要一段答复。
     自身失败也不崩，走静态兜底，绝不返回空。"""
@@ -602,7 +838,9 @@ async def run_agent_loop_stream(
     continuations = 0               # SH-4：续写次数（防"一直被截一直续"死循环）
 
     for turn in range(1, max_turns + 1):
-        _microcompact(messages, registry)  # 清理旧的只读工具结果，省上下文 token
+        # SH-6 三级压缩流水线（snip→microcompact→autocompact）：临近窗口才语义压、平时只清旧只读结果。
+        # ⚠️ 同步路径同样逻辑，别只改一处（见上面 run_agent_loop）。autocompact 可能重建前缀（唯一允许点）。
+        messages[:] = await _compact_pipeline(messages, registry, ctx, provider, model, temperature)
         # SH-1：发请求前补缺失/删孤儿/去重 tool_result，堵 OpenAI 兼容端点的配对 400（纯函数返回新列表，就地替换内容）。
         messages[:] = ensure_tool_pairing(messages)
         sink: list[dict] = []
@@ -674,13 +912,19 @@ async def run_agent_loop_stream(
                 yield {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": _QUESTION_PENDING_MSG}
                 messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": _QUESTION_PENDING_MSG})
                 continue
+            if plan.fallback:  # SH-8 连续拒绝回退：不提请该动作，回灌"换个法子"让模型走文本/替代方案
+                yield {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": plan.fallback_msg}
+                messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": plan.fallback_msg})
+                continue
             if plan.needs_approval:
                 # 审批闸（proposal 模式）：吐 approval_request 让前端弹确认，把"待确认"回灌让模型讲方案；
                 # token 绑定本组 args，/agent/execute 校验防前端篡改（P3.2）。
+                # SH-8：带结构化理由 reason{what/why/impact}，审批卡能说清"为什么要你确认"。
                 yield {
                     "type": "approval_request", "tool": plan.name, "args": plan.args, "id": plan.tool_call_id,
                     "token": sign_approval(plan.name, plan.args),
                     "preview": plan.preview,
+                    "reason": plan.reason,
                 }
                 yield {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": plan.pending_msg}
                 messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": plan.pending_msg})
