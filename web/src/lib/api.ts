@@ -750,6 +750,18 @@ class ApiClient {
     return this.request<DashboardTodayResponse>("GET", "/api/v1/dashboard/today");
   }
 
+  // 桌面端：列出本店 agent 会话（侧栏回看/切换）
+  listAgentConversations() {
+    return this.request<{ conversations: { conversation_id: string; title: string | null; last_at: string | null }[] }>(
+      "GET", "/api/v1/agent/conversations");
+  }
+
+  // 桌面端：取某个 agent 会话的全部消息（点开回看）
+  getAgentConversation(id: string) {
+    return this.request<{ conversation_id: string; messages: { role: "user" | "assistant"; content: string }[] }>(
+      "GET", `/api/v1/agent/conversations/${encodeURIComponent(id)}`);
+  }
+
   getCardSignals() {
     return this.request<CardSignals>("GET", "/api/v1/dashboard/card-signals");
   }

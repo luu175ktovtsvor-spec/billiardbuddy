@@ -204,8 +204,18 @@ export function useAgentChat(opts: AgentChatOptions) {
     setGenerating(false);
   }, []);
 
+  // 点开历史会话：加载其消息 + 设 conversationId（后续可在此基础上续接）
+  const loadConversation = useCallback((id: string, msgs: ChatMessage[]) => {
+    abortRef.current?.abort();
+    setMessages(msgs);
+    setConversationId(id);
+    setDraft("");
+    setLiveSteps([]);
+    setGenerating(false);
+  }, []);
+
   return {
     messages, draft, liveSteps, generating, conversationId, executingIdx,
-    send, confirmApproval, cancelApproval, startNewChat, stop,
+    send, confirmApproval, cancelApproval, startNewChat, stop, loadConversation,
   };
 }
