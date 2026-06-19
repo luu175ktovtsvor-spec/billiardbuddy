@@ -11,7 +11,7 @@
 //
 // MVP 平台:抖音(douyin)先做;快手/视频号/小红书复用同协议,后续子代理并行加。
 
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -53,6 +53,28 @@ function packagedWorkerExe() {
   const exeName = process.platform === "win32" ? "billiards_publisher.exe" : "billiards_publisher";
   const p = path.join(process.resourcesPath, "publisher-bin", "billiards_publisher", exeName);
   return fs.existsSync(p) ? p : null;
+}
+
+// python3 是否真能跑(回退路径需要它)。spawnSync 同步探一下版本,失败=没装。
+function pythonUsable() {
+  try {
+    const r = spawnSync(pythonBin(), ["--version"], { stdio: "ignore", timeout: 4000 });
+    return r.status === 0; // 退出码 0 = 可执行
+  } catch {
+    return false;
+  }
+}
+
+// 发布功能是否可用(给前端在显入口前先问,别让老板点了才失败)。
+// 可用 = ① 装了打包发布内核(publisher-bin,免装 Python);或 ② 本机有 python3 且回退脚本在。
+// 返回 { ok, reason }(reason 给前端拿去拼说人话提示)。
+function checkAvailable() {
+  if (packagedWorkerExe()) return { ok: true };
+  const cliExists = fs.existsSync(path.join(publisherDir(), "cli.py"));
+  if (cliExists && pythonUsable()) return { ok: true };
+  // 不可用:区分两种原因,前端按 reason 给不同说人话提示
+  if (!cliExists) return { ok: false, reason: "no_worker" }; // 安装包没带发布内核(理论上不该发生)
+  return { ok: false, reason: "no_python" }; // 回退要 python3 但本机没装
 }
 
 const _running = new Map(); // platform -> child proc(防同平台并发)
@@ -143,4 +165,4 @@ function dispose() {
   _running.clear();
 }
 
-module.exports = { listPlatforms, startLogin, checkLogin, post, dispose };
+module.exports = { listPlatforms, checkAvailable, startLogin, checkLogin, post, dispose };

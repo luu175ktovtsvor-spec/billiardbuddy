@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld("electron", {
 
   // ── 发布(RPA · 半自动 · 扫码登录 · 人点确认才发) ──
   publish: {
+    // 发布功能是否可用(发布内核存在或本机有 python3)。前端显入口前先问。
+    available: () => ipcRenderer.invoke("publish:available"),
     platforms: () => ipcRenderer.invoke("publish:platforms"),
     startLogin: (platform) => ipcRenderer.invoke("publish:login:start", { platform }),
     checkLogin: (platform) => ipcRenderer.invoke("publish:login:check", { platform }),

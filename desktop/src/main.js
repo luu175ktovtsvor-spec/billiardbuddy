@@ -76,6 +76,10 @@ function emit(channel, payload) {
 // ──────────────────────────────────────────────────────────────
 ipcMain.handle("publish:platforms", () => publish.listPlatforms());
 
+// 发布功能是否可用(发布内核存在或本机有 python3)。前端显发布入口前先问,
+// 不可用就隐藏入口/给说人话提示,别让老板点了才失败。返回 { ok, reason? }。
+ipcMain.handle("publish:available", () => publish.checkAvailable());
+
 // 扫码登录:启动登录流,二维码 data-url 经 publish:login:qrcode 事件推前端展示;
 // 登录完成/失败经 publish:login:status 推。返回一个 sessionId 供前端跟踪。
 ipcMain.handle("publish:login:start", (_e, { platform }) =>

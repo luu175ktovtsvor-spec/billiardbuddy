@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { api } from "@/lib/api";
+import { useDesktop } from "@/hooks/use-desktop";
 import { useAgentChat, type PermissionMode, type ChatMessage } from "@/hooks/use-agent-chat";
 import { DesktopShell, DesktopSidebar, type DesktopConversation } from "./macos-shell";
 import { WelcomeScreen } from "./welcome-screen";
@@ -47,10 +48,23 @@ export function DesktopChatShell({
   todaySuggestion?: string;
 }) {
   const router = useRouter();
+  const { electron } = useDesktop();
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<PermissionMode>("ask");
   const chat = useAgentChat({ permissionMode: mode });
   const [preview, setPreview] = useState<PreviewItem | null>(null);
+
+  // 发布功能是否可用(发布内核存在或本机有 python3)。不可用就不挂"去发布"入口，
+  // 老板看不到就不会点了才失败；真要发会落到发布页的说人话提示。null=还没问出来。
+  const [publishOk, setPublishOk] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!electron) return;
+    let cancelled = false;
+    electron.publish.available()
+      .then((r) => { if (!cancelled) setPublishOk(!!r.ok); })
+      .catch(() => { if (!cancelled) setPublishOk(false); });
+    return () => { cancelled = true; };
+  }, [electron]);
 
   // 侧栏真数据：门店名 + 本月 AI 花费（拿不到就用传入的默认/占位，不阻断）
   const [liveStoreName, setLiveStoreName] = useState<string | undefined>();
@@ -166,7 +180,7 @@ export function DesktopChatShell({
           executingIdx={chat.executingIdx}
           onConfirm={chat.confirmApproval}
           onCancel={chat.cancelApproval}
-          onPublish={publishHandoff}
+          onPublish={publishOk ? publishHandoff : undefined}
           onPreview={setPreview}
           onAnswer={(label) => { void chat.send(label); }}
         />
