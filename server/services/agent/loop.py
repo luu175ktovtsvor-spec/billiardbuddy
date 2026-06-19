@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from config import settings
 from services.agent.approval import sign_approval
 from services.agent.context import AgentContext
+from services.agent.hooks import run_post_tool_hooks, run_pre_tool_hooks
 from services.agent.registry import ToolRegistry
 from services.ai.base import TextProvider, TextRequest
 from services.ai.factory import ProviderFactory
@@ -319,6 +320,10 @@ async def _execute_tool(registry: ToolRegistry, name: str | None, args: dict, ct
     tool = registry.get(name) if name else None
     if tool is None:
         return f"[工具不存在] {name}"
+    # PreToolUse hook（借鉴 cc-haha）：工具执行前可拦截（如发布前敏感词检查 / 群发前校验名单）。故障安全。
+    deny = await run_pre_tool_hooks(name, args, ctx)
+    if deny:
+        return f"[已被拦截] {name}：{deny}"
     try:
         result = await tool.handler(args, ctx)
     except Exception as e:  # 工具失败不崩循环：错误（带类型，给模型更多自纠信号）回灌，让它决定补救
@@ -332,7 +337,10 @@ async def _execute_tool(registry: ToolRegistry, name: str | None, args: dict, ct
             text = json.dumps(result, ensure_ascii=False)
         except (TypeError, ValueError):
             text = str(result)
-    return _cap_tool_result(tool, text)
+    capped = _cap_tool_result(tool, text)
+    # PostToolUse hook：工具执行后观察/归档/通知（只观察、不改控制流）。故障安全。
+    await run_post_tool_hooks(name, args, capped, ctx)
+    return capped
 
 
 def _cap_tool_result(tool, text: str) -> str:
