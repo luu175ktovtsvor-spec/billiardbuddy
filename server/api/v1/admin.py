@@ -588,6 +588,8 @@ async def usage_scenarios(
     跨店统计聚合，不暴露任一店具体内容。
     """
     require_admin(user)
+    if db.bind.dialect.name != "postgresql":  # 产品分析 SQL 是 PG 专属(jsonb/make_interval/FILTER)；桌面 SQLite 返空(盒子用不到)
+        return {"days": days, "scenarios": []}
     rows = (await db.execute(text(
         """
         SELECT
@@ -629,6 +631,8 @@ async def usage_compliance(
     后，模型守铁律有没有变好"。compliance_hit 记的是过滤前的违反（代码闸随后已修正、用户看到安全版）。
     这是"可安全迭代地基"的核心指标：改进可被验证。"""
     require_admin(user)
+    if db.bind.dialect.name != "postgresql":  # PG 专属(jsonb_array_elements_text/make_interval)；桌面 SQLite 返空
+        return {"days": days, "generations": 0, "violation_events": 0, "slip_rate": 0, "by_term": []}
     totals = (await db.execute(text(
         """
         SELECT count(*) FILTER (WHERE event = 'generation') AS gens,
@@ -668,6 +672,8 @@ async def usage_agent_tools(
     """Agent 工具使用观测：模型选了哪些工具、哪个用得多、工具失败率、平均轮数——
     喂"工具选对没/哪个工具老出问题/描述要不要改"的迭代。可安全迭代地基的一部分。"""
     require_admin(user)
+    if db.bind.dialect.name != "postgresql":  # PG 专属(jsonb_array_elements_text/make_interval)；桌面 SQLite 返空
+        return {"days": days, "sessions": 0, "tool_failures": 0, "avg_turns": None, "by_tool": []}
     totals = (await db.execute(text(
         """
         SELECT count(*) AS sessions,

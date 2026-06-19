@@ -234,7 +234,7 @@ def _group_agent_conversations(rows) -> list[dict]:
     return list(convs.values())[:40]
 
 
-@router.get("/agent/conversations")
+@router.get("/conversations")
 async def list_agent_conversations(
     user: User = Depends(get_current_user),
     store=Depends(get_current_store),
@@ -255,7 +255,7 @@ async def list_agent_conversations(
     return {"conversations": _group_agent_conversations(rows)}
 
 
-@router.get("/agent/conversations/{conversation_id}")
+@router.get("/conversations/{conversation_id}")
 async def get_agent_conversation(
     conversation_id: str,
     user: User = Depends(get_current_user),

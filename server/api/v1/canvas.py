@@ -1,6 +1,7 @@
 """Canvas（画布）路由——成品右侧展开"指着某处说改这里"，以及报表可视化看/改。"""
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,6 +12,7 @@ from api.deps import get_current_user, get_current_store, get_db
 from core.rbac import Permission, require_permission
 from models.store import Store
 from models.user import User
+from services.agent.local_tools import _resolve as _sandbox_resolve
 from services.canvas_service import canvas_edit
 
 router = APIRouter()
@@ -22,13 +24,20 @@ def _require_desktop() -> None:
         raise HTTPException(status_code=403, detail="该功能仅桌面本地版可用")
 
 
-def _safe_xlsx(path_str: str) -> Path:
+def _safe_xlsx(path_str: str, selected_files: list[str] | None = None, full_disk: bool = False) -> Path:
+    """校验并收敛报表路径：只允许操作【老板当场选定(OS 选择器授权)的文件】或内容库内，
+    复用 local_tools 同款沙箱——防路径被下游替换成任意 xlsx(如 ~/账目.xlsx)。"""
     p = Path(path_str or "")
     if p.suffix.lower() not in (".xlsx", ".xlsm"):
         raise HTTPException(status_code=400, detail="只支持 .xlsx 报表")
-    if not p.exists() or not p.is_file():
+    ctx = SimpleNamespace(allowed_paths=selected_files or [], full_disk_access=full_disk)
+    try:
+        resolved = _sandbox_resolve(path_str, ctx)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="只能看/改你当场选定的报表")
+    if not resolved.exists() or not resolved.is_file():
         raise HTTPException(status_code=404, detail="报表文件不存在")
-    return p
+    return resolved
 
 
 class CanvasEditRequest(BaseModel):
@@ -64,6 +73,8 @@ _MAX_COLS = 30
 
 class SheetRequest(BaseModel):
     path: str  # 老板选定的本机报表路径(.xlsx)
+    selected_files: list[str] = []   # OS 选择器授权的文件(沙箱白名单)；path 必须在其中或内容库内
+    full_disk_access: bool = False
 
 
 @router.post("/sheet")
@@ -75,7 +86,7 @@ async def read_sheet(
 ):
     """读本机报表 → 结构化表格(供前端可视化展示)。桌面专属、只读、限行列防超大。"""
     _require_desktop()
-    p = _safe_xlsx(body.path)
+    p = _safe_xlsx(body.path, body.selected_files, body.full_disk_access)
     from openpyxl import load_workbook
     wb = load_workbook(p, data_only=True)
     truncated = len(wb.worksheets) > 5
@@ -106,6 +117,8 @@ class ExcelCellEdit(BaseModel):
     cell: str                 # A1 式坐标，如 B2
     value: str                # 新值（纯数字会自动转数值）
     sheet: str | None = None  # 工作表名，留空=第一个表
+    selected_files: list[str] = []   # OS 选择器授权的文件(沙箱白名单)
+    full_disk_access: bool = False
 
 
 @router.post("/excel-edit")
@@ -120,7 +133,7 @@ async def excel_edit(
     import shutil
     from core.timezone import business_now
     from openpyxl import load_workbook
-    p = _safe_xlsx(body.path)
+    p = _safe_xlsx(body.path, body.selected_files, body.full_disk_access)
     # 改前自动备份（落到报表同目录的隐藏备份夹，可回滚）
     bdir = p.parent / ".billiards-backups"
     bdir.mkdir(exist_ok=True)

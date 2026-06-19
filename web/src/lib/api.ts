@@ -316,12 +316,12 @@ class ApiClient {
     });
   }
 
-  /** 看本机报表为表格（桌面专属） */
+  /** 看本机报表为表格（桌面专属）。selected_files=被操作文件自身，过后端沙箱(只许动选定的报表) */
   readSheet(path: string) {
     return this.request<{ name: string; sheets: { name: string; rows: string[][] }[]; truncated: boolean }>(
       "POST",
       "/api/v1/canvas/sheet",
-      { path },
+      { path, selected_files: [path] },
     );
   }
 
@@ -330,7 +330,7 @@ class ApiClient {
     return this.request<{ ok: boolean; sheet: string; cell: string; old: string; new: string }>(
       "POST",
       "/api/v1/canvas/excel-edit",
-      { path, cell, value, sheet: sheet ?? null },
+      { path, cell, value, sheet: sheet ?? null, selected_files: [path] },
     );
   }
 
