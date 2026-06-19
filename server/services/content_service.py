@@ -410,6 +410,60 @@ def _semantic_scores(intent_text: str, candidates: list[str]) -> dict:
     return out
 
 
+def _all_knowledge_keys() -> list[str]:
+    """全部 knowledge.* 模板 key（不含场景/文案模板）。供编排脑"查行业知识"用。"""
+    return [t["key"] for t in prompt_engine.list_templates(category="knowledge") if t.get("key")]
+
+
+def rank_knowledge_for_topic(topic: str, top: int = 5) -> list[dict]:
+    """按 topic 相关度给【全部】行业 knowledge 排序，返回前 top 条的 {key, name, description}。
+
+    供编排脑（agent loop）的 look_up_knowledge 工具用：拿不准某个运营做法该不该做/是不是
+    红线/有没有更专业打法时，查行业知识再判断。只返回 name + description（知识索引），
+    不返回整篇正文——省 token。
+
+    打分：装了 fastembed 语义模型 → 走 _semantic_scores（按意思找，"换说法"也能召回）；
+    没装则回退【关键词命中 + 内容/名称 bigram 字面重叠】，纯确定性、不依赖外部模型。
+    topic 为空时按固定顺序返回前 top 条（确定性）。
+    """
+    keys = _all_knowledge_keys()
+    if not keys:
+        return []
+
+    def _shape(key: str) -> dict:
+        data = prompt_engine._templates.get(key) or {}
+        return {
+            "key": key,
+            "name": str(data.get("name", "")) or key,
+            "description": str(data.get("description", "")).strip(),
+        }
+
+    topic = (topic or "").strip()
+    if not topic:
+        return [_shape(k) for k in keys[:top]]
+
+    scored: list[tuple[float, str]]
+    if _semantic_available():
+        sem = _semantic_scores(topic, keys)
+        scored = sorted(((sem.get(k, 0.0), k) for k in keys), key=lambda x: x[0], reverse=True)
+    else:
+        # 字面回退：关键词命中（强信号）+ 内容/名称 bigram 重叠（兜没配关键词的）。
+        topic_lower = topic.lower()
+        ib = _intent_bigrams(topic)
+
+        def _score(key: str) -> float:
+            kw = sum(1 for w in KNOWLEDGE_KEYWORDS.get(key, []) if w.lower() in topic_lower)
+            data = prompt_engine._templates.get(key) or {}
+            nb = _intent_bigrams(str(data.get("name", "")))
+            cb = _content_bigrams(key)
+            overlap = (len(ib & nb) * 2 + len(ib & cb)) if ib else 0
+            return kw * 5.0 + overlap
+
+        scored = sorted(((_score(k), k) for k in keys), key=lambda x: x[0], reverse=True)
+
+    return [_shape(k) for _, k in scored[:top]]
+
+
 def _log_recall(intent_text: str, scored: list, cap: int) -> None:
     """X-4 可观测打点：记本次知识召回的 key+分数 + 被上限截掉了哪些（喂迭代揪死知识/误召）。结构化 logger、故障安全。"""
     try:
