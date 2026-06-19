@@ -62,15 +62,23 @@ function _spawnProc(entry, onLog) {
     cwd,
     env: { ...env, ELECTRON_RUN_AS_NODE: "1" },
   });
-  _proc.stdout.on("data", (d) => onLog && onLog(d.toString()));
-  _proc.stderr.on("data", (d) => onLog && onLog(d.toString()));
-  _proc.on("close", (code) => {
+  // spawn 失败时 stdout/stderr 为 null,直接 .on 会 TypeError 崩主进程,先判非 null。
+  if (_proc.stdout) _proc.stdout.on("data", (d) => onLog && onLog(d.toString()));
+  if (_proc.stderr) _proc.stderr.on("data", (d) => onLog && onLog(d.toString()));
+  // spawn 失败时 error 与 close 会先后各触发一次,只能重启一次,否则两个定时器叠加成 spawn 风暴。
+  let _restarted = false;
+  const _restart = (why) => {
+    if (_restarted) return;
+    _restarted = true;
     _proc = null;
     if (!_stopping) {
-      onLog && onLog(`[frontend] 进程退出(code ${code})，3 秒后重启…\n`);
+      onLog && onLog(`[frontend] ${why},3 秒后重启…\n`);
       setTimeout(() => _spawnProc(entry, onLog), 3000);
     }
-  });
+  };
+  // spawn 自身失败(execPath 异常等)走 error 事件,不挂会未捕获崩主进程;与 close 同走延时重启路径。
+  _proc.on("error", (err) => _restart(`启动失败：${err && err.message}`));
+  _proc.on("close", (code) => _restart(`进程退出(code ${code})`));
 }
 
 // 启动前端并等就绪。返回 { ok, url }。无 standalone 产物（dev）则 ok=false 让 main 走 dev 路径。
@@ -80,7 +88,12 @@ async function start({ onLog } = {}) {
   _stopping = false;
   _spawnProc(entry, onLog);
   const ready = await _waitReady();
-  return { ok: ready, url: frontendUrl() };
+  if (!ready) {
+    // 探活超时:有 standalone 产物却起不来,最常见是 3100 端口被别的程序占用。
+    // 不能静默回落到打不开的页,记一条人话原因供 main 弹窗。
+    onLog && onLog(`[frontend] 前端在超时内未就绪:${PORT} 端口可能被别的程序占用,请关闭占用程序后重启软件。\n`);
+  }
+  return { ok: ready, url: frontendUrl(), port: PORT };
 }
 
 function stop() {

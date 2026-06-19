@@ -657,6 +657,13 @@ async def generate_copywriting(
     if brand_voice:
         rendered_prompt = f"{rendered_prompt}\n\n---\n{brand_voice}\n---"
 
+    # 店脑：注入这家店长期记忆（含 manual 亲定店规矩/改价）。必须排在末尾（近因效应
+    # 压过 brand_voice 等旧上下文），其后不再 append。故障安全：读失败不影响主生成。
+    try:
+        rendered_prompt = with_store_brain(rendered_prompt, await load_store_memory(db, store.id), intent=f"{scenario_label} {extra_note}")
+    except Exception:
+        logger.warning("generate_copywriting 注入店脑失败，跳过 store_id=%s", store.id, exc_info=True)
+
     provider = ProviderFactory.get_text_provider_for_store(store)
     request = TextRequest(prompt=rendered_prompt, thinking={"type": "disabled"})
     try:
@@ -728,6 +735,13 @@ async def generate_activity(
     brand_voice = await get_brand_voice_context(db, store.id)
     if brand_voice:
         rendered_prompt = f"{rendered_prompt}\n\n---\n{brand_voice}\n---"
+
+    # 店脑：注入门店长期记忆（含 manual 亲定店规矩/改价），必须排末尾（近因效应），其后不再 append。
+    # 故障安全：读失败不影响主生成。
+    try:
+        rendered_prompt = with_store_brain(rendered_prompt, await load_store_memory(db, store.id), intent=f"{activity_goal} {target_customer or ''} {extra_note}")
+    except Exception:
+        logger.warning("generate_activity 注入店脑失败，跳过 store_id=%s", store.id, exc_info=True)
 
     provider = ProviderFactory.get_text_provider_for_store(store)
     request = TextRequest(prompt=rendered_prompt, max_tokens=3000)
@@ -806,6 +820,13 @@ async def generate_operation(
     brand_voice = await get_brand_voice_context(db, store.id)
     if brand_voice:
         rendered_prompt = f"{rendered_prompt}\n\n---\n{brand_voice}\n---"
+
+    # 店脑：注入门店长期记忆（含 manual 亲定店规矩/改价），必须排末尾（近因效应），其后不再 append。
+    # 故障安全：读失败不影响主生成。
+    try:
+        rendered_prompt = with_store_brain(rendered_prompt, await load_store_memory(db, store.id), intent=f"{template_label} {target or ''} {extra_note}")
+    except Exception:
+        logger.warning("generate_operation 注入店脑失败，跳过 store_id=%s", store.id, exc_info=True)
 
     provider = ProviderFactory.get_text_provider_for_store(store)
     request = TextRequest(prompt=rendered_prompt, max_tokens=3000)
@@ -940,6 +961,13 @@ async def generate_workbench(
 
     # #3 精简档：要求只出一条（放最后，盖过模板里"给多个方案"的默认）
     rendered_prompt += concise_directive(concise)
+
+    # 店脑：注入门店长期记忆（含 manual 亲定店规矩/改价），必须排在末尾（近因效应压过
+    # brand_voice/concise 等上文），其后不再 append。故障安全：读失败不影响主生成。
+    try:
+        rendered_prompt = with_store_brain(rendered_prompt, await load_store_memory(db, store.id), intent=f"{user_intent} {extra_note}")
+    except Exception:
+        logger.warning("generate_workbench 注入店脑失败，跳过 store_id=%s", store.id, exc_info=True)
 
     # 获取文本 provider
     provider = ProviderFactory.get_text_provider_for_store(store)

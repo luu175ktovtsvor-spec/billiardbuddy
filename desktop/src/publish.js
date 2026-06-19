@@ -90,14 +90,21 @@ function _spawnWorker(args, { onLine }) {
     cwd: dir,
     env: { ...process.env, SAU_SESSION_DIR: sessionDir(), PYTHONUNBUFFERED: "1" },
   });
-  const rl = readline.createInterface({ input: child.stdout });
-  rl.on("line", (line) => {
-    line = line.trim();
-    if (!line.startsWith("{")) return; // 忽略非协议输出(日志)
-    try { onLine(JSON.parse(line)); } catch { /* 容错:坏行跳过 */ }
-  });
   let stderr = "";
-  child.stderr.on("data", (d) => { stderr += d.toString(); });
+  // spawn 失败(python3/打包 worker 找不到、无权限)时 stdout/stderr 为 null,
+  // readline/.on 直接用会 TypeError 崩主进程;先判非 null。
+  if (child.stdout) {
+    const rl = readline.createInterface({ input: child.stdout });
+    rl.on("line", (line) => {
+      line = line.trim();
+      if (!line.startsWith("{")) return; // 忽略非协议输出(日志)
+      try { onLine(JSON.parse(line)); } catch { /* 容错:坏行跳过 */ }
+    });
+  }
+  if (child.stderr) child.stderr.on("data", (d) => { stderr += d.toString(); });
+  // spawn 自身失败走 error 事件,不挂会未捕获崩主进程。把原因并进 stderr,
+  // 让上层 close 回调(startLogin/checkLogin/post)的 reject 带上人话原因。
+  child.on("error", (err) => { stderr += `\n[发布内核启动失败] ${err && err.message}`; });
   return { child, getStderr: () => stderr };
 }
 

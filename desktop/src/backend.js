@@ -100,15 +100,24 @@ function _spawnProc({ userDataDir, repoRoot, onLog }) {
     const serverDir = path.join(repoRoot, "server");
     _proc = spawn("uv", ["run", "uvicorn", "main:app", "--host", HOST, "--port", String(_port)], { env, cwd: serverDir });
   }
-  _proc.stdout.on("data", (d) => onLog && onLog(d.toString()));
-  _proc.stderr.on("data", (d) => onLog && onLog(d.toString()));
-  _proc.on("close", (code) => {
+  // spawn 失败(命令不存在/无权限/exe 损坏)时 stdout/stderr 为 null,直接 .on 会 TypeError 崩主进程。
+  if (_proc.stdout) _proc.stdout.on("data", (d) => onLog && onLog(d.toString()));
+  if (_proc.stderr) _proc.stderr.on("data", (d) => onLog && onLog(d.toString()));
+  // spawn 失败时 error 与 close 会先后各触发一次,只能重启一次,否则两个定时器叠加成 spawn 风暴。
+  // 用一次性闸把"失败 → 延时重启"统一收口,保持原有自愈机制。
+  let _restarted = false;
+  const _restart = (why) => {
+    if (_restarted) return;
+    _restarted = true;
     _proc = null;
     if (!_stopping) {
-      onLog && onLog(`[backend] 进程退出(code ${code}),3 秒后重启…\n`);
+      onLog && onLog(`[backend] ${why},3 秒后重启…\n`);
       setTimeout(() => _spawnProc({ userDataDir, repoRoot, onLog }), 3000);
     }
-  });
+  };
+  // spawn 自身失败(可执行文件找不到、uv 没装)走 error 事件,不挂会抛未捕获异常崩主进程。
+  _proc.on("error", (err) => _restart(`启动失败:${err && err.message}`));
+  _proc.on("close", (code) => _restart(`进程退出(code ${code})`));
 }
 
 // 启动后端并等就绪。返回 { ok, url }。
@@ -117,7 +126,12 @@ async function start({ userDataDir, repoRoot, onLog }) {
   _stopping = false;
   _spawnProc({ userDataDir, repoRoot, onLog });
   const ready = await _waitReady();
-  return { ok: ready, url: backendUrl() };
+  if (!ready) {
+    // 健康探活超时:最常见是 8077 端口被别的程序占用(后端起不来/连不上),
+    // 不能静默回落到打不开的空白页。明确记一条人话原因,main 据此弹窗告诉用户。
+    onLog && onLog(`[backend] 后端在超时内未就绪:${_port} 端口可能被别的程序占用,请关闭占用程序后重启软件。\n`);
+  }
+  return { ok: ready, url: backendUrl(), port: _port };
 }
 
 function stop() {

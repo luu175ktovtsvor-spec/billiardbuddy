@@ -265,6 +265,11 @@ def _build_approval_reason(tool, args, ctx) -> dict:
         why = "这会改动你电脑上的文件，落盘前需要你点头确认。"
         impact = (f"会改动文件：{path}。改前已自动备份原件，确认后可随时回滚。"
                   if path else "会改动内容库里的文件。改前已自动备份原件，确认后可随时回滚。")
+    elif kind == "command":
+        cmd = args.get("command") if isinstance(args, dict) else None
+        what = f"在你电脑上跑命令：{cmd}" if cmd else (desc or f"执行「{name}」")
+        why = "这是在你电脑上直接执行命令，可能有副作用，每条都需要你看清原文再点头。"
+        impact = f"确认后会真正运行这条命令：{cmd}。请先看清命令原文再决定。" if cmd else "确认后会运行这条命令，请先看清原文。"
     else:
         what = f"{desc}" if desc else f"执行「{name}」"
         why = "这是对外/不可逆的动作（如发布、群发），做出去收不回，需要你点头确认。"
