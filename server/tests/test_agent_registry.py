@@ -108,7 +108,8 @@ def test_builtin_deliverable_tools_derived_includes_write_batch():
 
     assert "write_batch" in DELIVERABLE_TOOLS  # 曾漏登的那个，现在由标记保证不再漏
     for name in ("write_operation_content", "plan_activity", "assistant_outreach",
-                 "diagnose_operation", "recommend_games", "make_platform_content", "make_groupbuy_content"):
+                 "diagnose_operation", "recommend_games", "make_platform_content", "make_groupbuy_content",
+                 "make_poster"):  # make_poster 去钱味后：直接出图、当成品（海报图原样渲染），不再弹审批
         assert name in DELIVERABLE_TOOLS
-    for name in ("find_scenario", "get_current_date", "get_today_recommendation", "make_poster"):
+    for name in ("find_scenario", "get_current_date", "get_today_recommendation"):
         assert name not in DELIVERABLE_TOOLS

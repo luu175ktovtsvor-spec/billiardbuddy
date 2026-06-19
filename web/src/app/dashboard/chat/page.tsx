@@ -49,21 +49,19 @@ interface ChatMessage {
   content: string;
   steps?: ToolStep[]; // 该条回复过程中管家调用过的工具
   error?: boolean;
-  approval?: ApprovalState; // 该条回复附带的"待确认动作"（如生图，花钱需点头）
+  approval?: ApprovalState; // 该条回复附带的"待确认动作"（对外/写入类动作，发出或落盘前先点头）
 }
 
-/** 待确认动作的人话说明（生图等花钱/对外动作经审批闸先确认） */
+/** 待确认动作的人话说明（对外/写入类动作经审批闸先确认） */
 function approvalLabel(tool: string): string {
-  if (tool === "make_poster") return "生成一张海报（会用 1 张生图额度，可能要等几分钟）";
   if (tool === "edit_excel") return "直接改你的 Excel 报表（改前自动备份，可回滚）";
   if (tool === "edit_file") return "修改这个文件（改前自动备份，可回滚）";
   if (tool === "write_file") return "保存成一个文件（覆盖会先自动备份）";
   return "执行这个操作";
 }
 
-// 确认按钮文案：改文件类说"确认修改/保存"，别用海报的"确认生成"误导
+// 确认按钮文案：改文件类说"确认修改/保存"
 function approvalConfirmText(tool: string): string {
-  if (tool === "make_poster") return "确认生成";
   if (tool === "write_file") return "确认保存";
   if (tool === "edit_excel" || tool === "edit_file") return "确认修改";
   return "确认执行";
@@ -98,7 +96,7 @@ const NAV_ITEMS = [
   { href: "/dashboard/edit", label: "视频剪辑", Icon: Scissors },
   { href: "/dashboard/posters", label: "AI 生图", Icon: ImageIcon },
   { href: "/dashboard/history", label: "生成历史", Icon: Clock },
-  { href: "/dashboard/usage", label: "用量·花费", Icon: Wallet },
+  { href: "/dashboard/usage", label: "用量", Icon: Wallet },
   { href: "/dashboard/store-settings", label: "门店设置", Icon: User },
   { href: "/dashboard/guide", label: "使用指南", Icon: BookOpen },
 ];
@@ -136,6 +134,7 @@ function toolMeta(name: string) {
 const DELIVERABLE_TOOLS = new Set([
   "write_operation_content", "write_batch", "plan_activity", "assistant_outreach",
   "diagnose_operation", "recommend_games", "make_platform_content", "make_groupbuy_content",
+  "make_poster",  // 海报=生图成品，直接出图、不再走审批卡
 ]);
 
 // 平台原始名（make_platform_content 的 platform 参数，可能中/英文）→ 发布页平台 id

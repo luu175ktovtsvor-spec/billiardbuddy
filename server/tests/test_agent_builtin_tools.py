@@ -107,12 +107,13 @@ def test_today_recommendation_formats(monkeypatch):
     assert "周二" in out and "双人局" in out and "周中拉新好时机" in out
 
 
-# ---- make_poster（受审批的生图工具） ----
+# ---- make_poster（生图工具：直接出图、当成品返回，不再弹审批——纯 BYOK 老板自带 key 本就花自己钱） ----
 
-def test_make_poster_registered_requires_approval():
+def test_make_poster_is_deliverable_and_no_approval():
     t = default_registry.get("make_poster")
     assert t is not None
-    assert t.requires_approval is True
+    assert t.requires_approval is False  # 去钱味：做海报=直接做、不弹确认（不是对外动作）
+    assert t.deliverable is True         # 成品卡直接展示海报，并进会话 result 落库
 
 
 def test_make_poster_calls_generate_images_and_returns_image(monkeypatch):

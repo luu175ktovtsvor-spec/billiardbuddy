@@ -31,7 +31,7 @@ _WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日
 
 # 交付类工具（成品）= 在各 @tool 上标 deliverable=True；本模块底部据注册表自动汇总成 DELIVERABLE_TOOLS。
 # 落库时把成品并进会话 result，才能①历史里看到真内容 ②下一轮"把刚才那条改一下"大脑读得到自己上轮写了啥。
-# 感知类(查日期/今日推荐/找场景) 与 make_poster(走 /execute 单独落库) 不标 deliverable。
+# 感知类(查日期/今日推荐/找场景/查知识) 不标 deliverable。make_poster 已是 deliverable(成品卡显示海报)。
 # ⚠️ 单一来源即工具自身的 deliverable 标记——不再手抄白名单（旧手抄常量漏登 write_batch 致批量产出不落库）。
 #    前端 chat/page.tsx 另有一份同名常量（跨代码库无法共享）——加新成品工具时记得同步那边。
 
@@ -373,15 +373,16 @@ async def recommend_games(args: dict, ctx) -> str:
     return gen.result
 
 
-# ---- 受审批工具（花钱/对外，requires_approval=True，循环里不执行，确认后经 /agent/execute 跑） ----
+# ---- 生图工具（deliverable 成品，直接执行出图——纯 BYOK 老板自带 key、本就花自己的钱，不弹确认） ----
 
-# 每用户同一时刻只允许一张 agent 生图在跑（护住 OpenAI 每分钟出图限额 + 防误触多次扣费）。
+# 每用户同一时刻只允许一张 agent 生图在跑（护住每分钟出图限额 + 防误触多次重复出图）。
 # 进程内即可：真正的全局并发由 poster_service 的信号量兜底；这里只防同一用户连点。
 _POSTER_GENERATING: set[str] = set()
 
 
 @tool(
     name="make_poster",
+    deliverable=True,
     description=(
         "给门店做一张活动/宣传海报（AI 生图）。当用户要『做张海报/出张图/弄个海报』时调用。"
         "**做海报前，若老板没明确指定风格，先用 ask_user_question 问他想走哪种风格**"
@@ -389,7 +390,7 @@ _POSTER_GENERATING: set[str] = set()
         "**最关键：你要当『提示词扩写师』（像豆包/即梦那样）——把老板的大白话需求 + 选的风格/感觉，"
         "扩写成一段丰富、具体的【中文】画面描述：写清主体/场景、色调、光线、构图、氛围、质感**，"
         "别只丢一句活动名（那样出图很烂）。风格不是固定模板——老板说啥你就往那个感觉扩写，预设只是常用起点、不是全部。"
-        "需求很明确就直接做、不必多问。不用先用文字问『行不行』——系统会自动弹确认卡片，确认后才真正生成、才花钱。"
+        "需求很明确就直接做、不必多问——风格定了就直接出图，出好的海报会原样展示给老板。"
     ),
     parameters={
         "type": "object",
@@ -400,10 +401,9 @@ _POSTER_GENERATING: set[str] = set()
         },
         "required": ["description"],
     },
-    requires_approval=True,
 )
 async def make_poster(args: dict, ctx) -> str:
-    """确认后才会被调用（经 /agent/execute）。沿用 poster_service 的配额/并发/计费护栏，
+    """循环里直接执行出图、当成品返回（不弹确认）。沿用 poster_service 的配额/并发护栏，
     额外补『每用户单张在跑』锁 + 强制 count=1 + 质量固定 medium（成本可控）。"""
     from services import poster_service  # 延迟导入，避免 import 期重负载/循环依赖
 

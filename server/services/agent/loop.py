@@ -83,15 +83,15 @@ _MAX_CONTINUATIONS = 3
 _CONTINUE_MSG = "你上一段被长度限制截断了，没写完。请从断掉的地方接着写完，不要重复前面已经写过的内容，也不要加开场白。"
 
 # ── SH-2 token 预算递减早停 ──
-# BYOK 是老板自掏钱，"换参数空转、发散打转烧光钱"是真实风险（anti-spin 只挡同参重复，挡不住这个）。
+# "换参数空转、发散打转不收尾"是真实风险（anti-spin 只挡同参重复，挡不住这个）。
 # 给一次 Agent 任务设 token 预算：到 90% 或连续多轮增量极小（diminishing=在空转）就停/推动收尾。
 # token_budget=None（默认交互式）整段跳过，对现有对话行为零影响。
 _BUDGET_STOP_RATIO = 0.9        # 累计消耗到预算 90% → 停（强制收尾，别再发散）
 _BUDGET_PUSH_RATIO = 0.5        # 过半才开始下推动语（前期别打扰）
 _BUDGET_DIMINISH_DELTA = 500    # 单轮增量低于此阈值算"几乎没产出新东西"
 _BUDGET_DIMINISH_TURNS = 3      # 连续这么多轮增量都极小 → 判定 diminishing（在空转）→ 停
-# 还有预算时的推动语：催它收口、别没完没了地调工具发散。
-_BUDGET_PUSH_MSG = "你这次任务已用掉约 {pct}% 的 token 预算。请抓紧基于已有结果给老板最终答复，别再发散调工具了。"
+# 还有预算时的推动语：催它收口、别没完没了地调工具发散（中性措辞，不提 token/预算）。
+_BUDGET_PUSH_MSG = "请抓紧基于已有结果给老板最终答复，别再发散调工具了。"
 
 # _check_budget 返回值：三态。
 _BUDGET_OK = "ok"        # 预算未触线 → 正常走收尾分支（含 Stop hook）
@@ -142,9 +142,9 @@ def _check_budget(ctx) -> str:
 
 
 def _auto_spend_limit() -> int:
-    """full(跳过确认)模式下，一轮 Agent 运行内允许「免确认自动花钱」的次数上限。
-    超过即使 full 也强制弹确认，挡住"老板切跳过确认后被批量出图静默扣 BYOK 余额"(B-5/C-1·痛点#7)。
-    经 DESKTOP_AGENT_AUTO_SPEND_LIMIT 配置；默认 5；设 0 = full 也从不自动花钱。"""
+    """full(跳过确认)模式下，一轮 Agent 运行内允许「免确认自动执行对外/写入动作」的次数上限。
+    幕后静默兜底：超过即使 full 也强制弹确认，挡住"老板切跳过确认后被批量自动执行对外/写入动作而失控"(B-5/C-1·痛点#7)。
+    经 DESKTOP_AGENT_AUTO_SPEND_LIMIT 配置；默认 5；设 0 = full 也从不自动放行对外/写入动作。"""
     try:
         return max(0, int(os.environ.get("DESKTOP_AGENT_AUTO_SPEND_LIMIT", "5")))
     except (TypeError, ValueError):
@@ -155,7 +155,7 @@ def _auto_approve(tool, ctx) -> bool:
     """据 ctx.permission_mode 决定一个 requires_approval 工具是否免确认、直接自动执行。
     有序判定（借鉴 cc-haha 权限瀑布）：force_confirm（bypass-immune）> 权限模式。
     - force_confirm=True 的高危不可逆/对外操作（未来的群发/平台发布/删数据）**任何模式都强制确认**；
-    - ask=都弹确认（默认）；auto_files=仅文件类(可逆、已自动备份)免确认；full=全部免确认（含花钱/对外）。"""
+    - ask=都弹确认（默认）；auto_files=仅文件类(可逆、已自动备份)免确认；full=全部免确认（含对外/写入）。"""
     # bypass-immune：高危操作的人工确认永不被放行模式旁路。放在最前，优先级高于一切模式。
     if getattr(tool, "force_confirm", False):
         return False
@@ -166,13 +166,13 @@ def _auto_approve(tool, ctx) -> bool:
     if mode == "auto_files":
         return kind == "file"
     if mode == "full":
-        # full=所有动作免确认；但「花钱类」(生图等)加一道【一轮内自动花钱上限闸】：
-        # 老板切到"跳过确认"后，模型批量出图会静默扣 BYOK 余额(痛点#7)——超上限即使 full 也强制弹确认。
+        # full=所有动作免确认；但「对外/写入类」(发布、群发等)加一道【一轮内自动放行上限闸】：
+        # 老板切到"跳过确认"后，模型批量自动对外/写入会失控(痛点#7)——超上限即使 full 也强制弹安全确认。
         # 文件类(可逆、改前已自动备份)不计入、不设限。
         if kind == "file":
             return True
         # 上限值：优先用本店设置 ctx.auto_spend_limit（老板可在 UI 调高/调低/关闭），没设才用环境默认。
-        # 这是老板自己的 BYOK 生图 key 和钱、应由他掌控：负数 = 老板关闭上限闸，full 下花钱也全自动。
+        # 这是老板自己机器上的对外动作、应由他掌控：负数 = 老板关闭上限闸，full 下对外/写入也全自动。
         raw = getattr(ctx, "auto_spend_limit", None)
         limit = raw if raw is not None else _auto_spend_limit()
         if limit < 0:
@@ -372,10 +372,9 @@ async def run_agent_loop(
                     stopped_reason=_STOP_FINAL, messages=messages,
                 )
             if _budget == _BUDGET_PUSH:
-                pct = int(min(100, ctx.tokens_used * 100 / ctx.token_budget))
                 if resp.content:
                     messages.append({"role": "assistant", "content": resp.content})
-                messages.append({"role": "user", "content": _BUDGET_PUSH_MSG.format(pct=pct)})
+                messages.append({"role": "user", "content": _BUDGET_PUSH_MSG})
                 continue
             if not stop_blocked:
                 cont = await run_stop_hooks(messages, ctx)
@@ -643,10 +642,9 @@ async def run_agent_loop_stream(
                        "tokens_used": getattr(ctx, "tokens_used", 0)}
                 return
             if _budget == _BUDGET_PUSH:
-                pct = int(min(100, ctx.tokens_used * 100 / ctx.token_budget))
                 if text:
                     messages.append({"role": "assistant", "content": text})
-                messages.append({"role": "user", "content": _BUDGET_PUSH_MSG.format(pct=pct)})
+                messages.append({"role": "user", "content": _BUDGET_PUSH_MSG})
                 continue
             if not stop_blocked:
                 cont = await run_stop_hooks(messages, ctx)

@@ -74,8 +74,6 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
   const [imageModel, setImageModel] = useState("");
   const [imageKeyConfigured, setImageKeyConfigured] = useState(false);
   const [imageKeyMask, setImageKeyMask] = useState("");
-  // 做海报自动出图上限（B-5）：null=用默认(5)；>=0=上限(0=每张先问)；-1=老板关闭上限闸
-  const [autoSpendLimit, setAutoSpendLimit] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ByokValidateResult | null>(null);
@@ -108,7 +106,6 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
         setImageModel(c.image_model || "");
         setImageKeyConfigured(c.image_key_configured);
         setImageKeyMask(c.image_key_mask || "");
-        setAutoSpendLimit(c.agent_auto_spend_limit ?? null);
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof ApiError ? err.detail : "加载失败");
@@ -193,7 +190,6 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
     image_base_url: imageBaseUrl.trim() || null,
     image_model: imageModel.trim() || null,
     ...(imageApiKey.trim() ? { image_api_key: imageApiKey.trim() } : {}),
-    agent_auto_spend_limit: autoSpendLimit,
   });
 
   const handleTest = async () => {
@@ -227,7 +223,6 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
       setImageKeyConfigured(c.image_key_configured);
       setImageKeyMask(c.image_key_mask || "");
       setImageApiKey("");
-      setAutoSpendLimit(c.agent_auto_spend_limit ?? null);
       setSaved(true);
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : "保存失败");
@@ -465,40 +460,6 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
                   placeholder={imageKeyConfigured ? `已配置 ${imageKeyMask}，留空则不修改` : "生图模型的 Key，sk-..."}
                 />
                 <input className={inputCls} value={imageModel} onChange={(e) => setImageModel(e.target.value)} placeholder="模型名（点上面卡片自动带入，如 Qwen/Qwen-Image-Edit-2509）" />
-
-                {/* B-5：做海报自动出图上限——老板可调/可关（他自己的生图 Key 和钱，应由他掌控） */}
-                <div className="rounded-lg bg-white px-3 py-2.5 ring-1 ring-slate-100">
-                  <p className="text-[13px] font-medium text-slate-800">做海报自动出图上限</p>
-                  <p className="mt-0.5 text-[12px] leading-snug text-slate-400">
-                    选了「跳过确认」时，一次任务最多自动出几张就停下来问你，免得手滑批量出图烧了你的 Key。这是你自己的钱，随你调或关掉。
-                  </p>
-                  <div className="mt-2 flex items-center gap-2">
-                    {autoSpendLimit === -1 ? (
-                      <span className="flex-1 text-[13px] text-slate-500">已关闭上限（不拦，我自己盯着花费）</span>
-                    ) : (
-                      <div className="flex flex-1 items-center gap-1.5 text-[13px] text-slate-600">
-                        <input
-                          type="number"
-                          min={0}
-                          value={autoSpendLimit ?? 5}
-                          onChange={(e) => {
-                            const n = parseInt(e.target.value, 10);
-                            setAutoSpendLimit(Number.isNaN(n) ? null : Math.max(0, n));
-                          }}
-                          className="w-16 rounded-lg bg-[#F2F2F7] px-2.5 py-1.5 text-center text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
-                        />
-                        <span>张/次（默认 5）</span>
-                      </div>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => setAutoSpendLimit(autoSpendLimit === -1 ? 5 : -1)}
-                      className="ml-auto shrink-0 rounded-lg bg-slate-100 px-3 py-1.5 text-[13px] text-slate-600 transition active:scale-[0.98]"
-                    >
-                      {autoSpendLimit === -1 ? "重新开启上限" : "关闭上限"}
-                    </button>
-                  </div>
-                </div>
               </>
             )}
           </div>

@@ -88,7 +88,7 @@ export function DesktopSidebar({
         ))}
       </div>
 
-      {/* 底部：门店 + 本月花费（不显示 BYOK 黑话）+ 设置 */}
+      {/* 底部：门店 + 本月用量（不显示 BYOK 黑话）+ 设置 */}
       <div className="flex items-center gap-2 border-t border-black/[0.07] p-3">
         <div className="flex h-7 w-7 items-center justify-center rounded-full bg-brand-600/15 text-[12px] font-semibold text-brand-600">
           {storeName.slice(0, 1)}
@@ -96,7 +96,7 @@ export function DesktopSidebar({
         <div className="min-w-0 flex-1">
           <div className="truncate text-[12px] text-[#1d1d1f]">{storeName}</div>
           {monthlySpend && (
-            <div className="truncate text-[11px] text-[#86868b]">本月 AI 花费 ≈ {monthlySpend}</div>
+            <div className="truncate text-[11px] text-[#86868b]">本月 AI 用量 ≈ {monthlySpend}</div>
           )}
         </div>
         <button

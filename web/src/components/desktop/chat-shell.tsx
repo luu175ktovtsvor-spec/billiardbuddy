@@ -66,7 +66,7 @@ export function DesktopChatShell({
     return () => { cancelled = true; };
   }, [electron]);
 
-  // 侧栏真数据：门店名 + 本月 AI 花费（拿不到就用传入的默认/占位，不阻断）
+  // 侧栏真数据：门店名 + 本月 AI 用量（拿不到就用传入的默认/占位，不阻断）
   const [liveStoreName, setLiveStoreName] = useState<string | undefined>();
   const [liveSpend, setLiveSpend] = useState<string | undefined>();
   const [liveToday, setLiveToday] = useState<string | undefined>();

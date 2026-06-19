@@ -244,7 +244,7 @@ function MacApprovalCard({
       <div className="px-4 py-3">
         <div className="mb-1.5 flex items-center gap-1.5 text-[13px] font-medium text-[#1d1d1f]">
           ⚠️ {approvalLabel(ap.tool)}
-          <span className="text-[11px] font-normal text-[#86868b]">（花钱/对外动作，先点头才执行）</span>
+          <span className="text-[11px] font-normal text-[#86868b]">（要发出去的动作，发出前先让你点头确认）</span>
         </div>
         {ap.preview && (
           <div className="rounded-lg border border-black/[0.07] bg-white/70 px-3 py-2 text-[13px] text-[#3a3a3c] whitespace-pre-line">
