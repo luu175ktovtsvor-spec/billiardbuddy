@@ -35,3 +35,15 @@ class AgentContext:
     # B-2 本轮 deliverable 注入的知识名：deliverable 工具执行完把 gen.input_params["knowledge_used"]
     # 写进这里，loop 取后挂到该工具的 tool_result（step.meta / 流式事件），完即复位 None（防串到下一个工具）。
     last_knowledge_used: list | None = None
+    # ── SH-2 token 预算递减早停（防 BYOK 发散打转烧光钱 + 真实编排消耗可观测）──
+    # token_budget：本次 Agent 任务允许消耗的 token 上限。
+    #   None = 交互式不限（默认，对话场景行为零变化）；N>0 = 到 90% 或连续多轮增量极小就停/推动。
+    token_budget: int | None = None
+    # 累计已消耗 token（loop 每轮把 provider usage 累加进来；端点没返回则 len//4 粗估）。
+    tokens_used: int = 0
+    # 上一轮累计总量（算本轮增量 delta = tokens_used - last_total 用）。
+    last_total: int = 0
+    # 上一轮的增量（diminishing 判定：连续多轮 delta 都极小 = 在空转）。
+    last_delta: int = 0
+    # 预算推动语已下发次数（continuations>=3 且增量极小才算 diminishing；防一两轮误判早停）。
+    budget_continuations: int = 0

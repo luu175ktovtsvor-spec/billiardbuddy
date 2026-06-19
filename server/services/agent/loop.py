@@ -27,6 +27,7 @@ from config import settings
 from services.agent.approval import sign_approval
 from services.agent.context import AgentContext
 from services.agent.hooks import run_post_tool_hooks, run_pre_tool_hooks, run_stop_hooks
+from services.agent.message_repair import ensure_tool_pairing
 from services.agent.registry import ToolRegistry
 from services.ai.base import TextProvider, TextRequest
 from services.ai.factory import ProviderFactory
@@ -72,6 +73,72 @@ _CLEARED_RESULT_MARK = "[旧的查询结果已清理以省上下文；需要可�
 
 # 防打转（anti-spin）：同一工具 + 完全相同参数最多放行几次；再多结果也不会变（是在空转），拦下逼模型换思路。
 _MAX_SAME_CALL = 3
+
+# SH-4 截断恢复：模型一轮输出被 max_tokens 砍断时 finish_reason="length"（不是正常 "stop"）。
+# 收尾分支识别它 → 把已输出的半句 append 回去 + 提示"接着写完"再要一轮，多轮片段拼成完整 final，
+# 用户不再看到被砍断的半句。_MAX_CONTINUATIONS 是续写次数上限，防"一直被截一直续"死循环（呼应 max_turns 兜底哲学）。
+_LENGTH_FINISH = "length"
+_MAX_CONTINUATIONS = 3
+# 续写提示：让模型从断点接着写，别重头来也别重复已写的部分。
+_CONTINUE_MSG = "你上一段被长度限制截断了，没写完。请从断掉的地方接着写完，不要重复前面已经写过的内容，也不要加开场白。"
+
+# ── SH-2 token 预算递减早停 ──
+# BYOK 是老板自掏钱，"换参数空转、发散打转烧光钱"是真实风险（anti-spin 只挡同参重复，挡不住这个）。
+# 给一次 Agent 任务设 token 预算：到 90% 或连续多轮增量极小（diminishing=在空转）就停/推动收尾。
+# token_budget=None（默认交互式）整段跳过，对现有对话行为零影响。
+_BUDGET_STOP_RATIO = 0.9        # 累计消耗到预算 90% → 停（强制收尾，别再发散）
+_BUDGET_PUSH_RATIO = 0.5        # 过半才开始下推动语（前期别打扰）
+_BUDGET_DIMINISH_DELTA = 500    # 单轮增量低于此阈值算"几乎没产出新东西"
+_BUDGET_DIMINISH_TURNS = 3      # 连续这么多轮增量都极小 → 判定 diminishing（在空转）→ 停
+# 还有预算时的推动语：催它收口、别没完没了地调工具发散。
+_BUDGET_PUSH_MSG = "你这次任务已用掉约 {pct}% 的 token 预算。请抓紧基于已有结果给老板最终答复，别再发散调工具了。"
+
+# _check_budget 返回值：三态。
+_BUDGET_OK = "ok"        # 预算未触线 → 正常走收尾分支（含 Stop hook）
+_BUDGET_PUSH = "push"    # 还有预算但已过半且本轮有产出 → 回灌推动语、让它收口
+_BUDGET_STOP = "stop"    # 到 90% 或 diminishing → 强制停（优先级高于 Stop hook，不让 hook 拉回空转）
+
+
+def _accumulate_usage(ctx, resp_tokens: int, fallback_text: str) -> None:
+    """把本轮 provider usage 累加进 ctx.tokens_used，并更新 last_total/last_delta + diminishing 计数。
+    端点没返回（resp_tokens<=0）则按 len//4 粗估。token_budget=None 也照常累加（顺带喂成本看板，零行为影响）。
+    diminishing 判定靠 budget_continuations 当"连续低增量轮"计数：本轮 delta 极小则 +1、否则归零。"""
+    if ctx is None:
+        return
+    delta = resp_tokens if (resp_tokens and resp_tokens > 0) else (len(fallback_text or "") // 4)
+    ctx.last_total = ctx.tokens_used
+    ctx.tokens_used += delta
+    ctx.last_delta = delta
+    # 连续低增量轮计数（diminishing/空转检测）：低于阈值累加、否则清零
+    if delta < _BUDGET_DIMINISH_DELTA:
+        ctx.budget_continuations = getattr(ctx, "budget_continuations", 0) + 1
+    else:
+        ctx.budget_continuations = 0
+
+
+def _check_budget(ctx) -> str:
+    """SH-2 预算判定（三态 ok/push/stop）。token_budget=None → 恒 ok（交互式零影响）。
+    - 到 90% 预算 → stop（强制收尾，优先级高于 Stop hook）；
+    - 连续 _BUDGET_DIMINISH_TURNS 轮增量都 < 阈值（在空转）→ stop；
+    - 还有预算、已过半且本轮有产出（delta>=阈值）→ push（回灌推动语催收口）；
+    - 否则 ok。"""
+    if ctx is None or getattr(ctx, "token_budget", None) is None:
+        return _BUDGET_OK
+    budget = ctx.token_budget
+    if budget <= 0:
+        return _BUDGET_OK
+    used = getattr(ctx, "tokens_used", 0)
+    delta = getattr(ctx, "last_delta", 0)
+    # 到 90% → 停
+    if used >= budget * _BUDGET_STOP_RATIO:
+        return _BUDGET_STOP
+    # 连续多轮增量极小（diminishing/空转）→ 停
+    if getattr(ctx, "budget_continuations", 0) >= _BUDGET_DIMINISH_TURNS:
+        return _BUDGET_STOP
+    # 还有预算、过半、本轮有产出 → 推动收口（仅在有产出时出现，避免空转还催）
+    if used >= budget * _BUDGET_PUSH_RATIO and delta >= _BUDGET_DIMINISH_DELTA:
+        return _BUDGET_PUSH
+    return _BUDGET_OK
 
 
 def _auto_spend_limit() -> int:
@@ -266,9 +333,13 @@ async def run_agent_loop(
     tools = registry.to_openai_tools()
     steps: list[AgentStep] = []
     stop_blocked = False  # Stop hook 每轮最多阻断一次（防死循环；仍受 max_turns 兜底）
+    final_segments: list[str] = []  # SH-4：被 length 截断的最终答复，多轮续写片段在此拼接
+    continuations = 0               # SH-4：续写次数（防"一直被截一直续"死循环）
 
     for turn in range(1, max_turns + 1):
         _microcompact(messages, registry)  # 清理旧的只读工具结果，省上下文 token
+        # SH-1：发请求前补缺失/删孤儿/去重 tool_result，堵 OpenAI 兼容端点的配对 400（纯函数返回新列表，就地替换内容）。
+        messages[:] = ensure_tool_pairing(messages)
         resp = await provider.generate(TextRequest(
             messages=messages,
             tools=tools,
@@ -277,9 +348,35 @@ async def run_agent_loop(
             max_tokens=max_tokens,
             temperature=temperature,
         ))
+        # SH-2：累加本轮真实 token 用量（端点没返回则粗估），喂预算判定 + 成本看板。
+        _accumulate_usage(ctx, getattr(resp, "tokens_used", 0), resp.content or "")
 
         # 无工具调用 → 准备收尾。Stop hook 可阻断停止让它继续（默认无 hook → 直接收尾）。
         if not resp.tool_calls:
+            # SH-4 截断恢复：finish_reason="length" = 这段没说完被砍断。把已输出 append + 提示"接着写完"，
+            # 再要一轮，多轮片段拼成完整 final；续写到上限就强制收尾（不死循环）。
+            if resp.finish_reason == _LENGTH_FINISH and continuations < _MAX_CONTINUATIONS:
+                final_segments.append(resp.content or "")
+                messages.append({"role": "assistant", "content": resp.content or ""})
+                messages.append({"role": "user", "content": _CONTINUE_MSG})
+                continuations += 1
+                continue
+            # SH-2 token 预算（放在 Stop hook 之前：预算到了优先级最高，不让 Stop hook 把空转拉回来）。
+            #   budget=None → _BUDGET_OK，整段跳过（交互式零影响）。
+            _budget = _check_budget(ctx)
+            if _budget == _BUDGET_STOP:
+                full_final = "".join(final_segments) + (resp.content or "")
+                steps.append(AgentStep(type="final", content=full_final))
+                return AgentResult(
+                    final_text=full_final, steps=steps, turns=turn,
+                    stopped_reason=_STOP_FINAL, messages=messages,
+                )
+            if _budget == _BUDGET_PUSH:
+                pct = int(min(100, ctx.tokens_used * 100 / ctx.token_budget))
+                if resp.content:
+                    messages.append({"role": "assistant", "content": resp.content})
+                messages.append({"role": "user", "content": _BUDGET_PUSH_MSG.format(pct=pct)})
+                continue
             if not stop_blocked:
                 cont = await run_stop_hooks(messages, ctx)
                 if cont:
@@ -288,9 +385,10 @@ async def run_agent_loop(
                         messages.append({"role": "assistant", "content": resp.content})
                     messages.append({"role": "user", "content": cont})
                     continue
-            steps.append(AgentStep(type="final", content=resp.content))
+            full_final = "".join(final_segments) + (resp.content or "")
+            steps.append(AgentStep(type="final", content=full_final))
             return AgentResult(
-                final_text=resp.content, steps=steps, turns=turn,
+                final_text=full_final, steps=steps, turns=turn,
                 stopped_reason=_STOP_FINAL, messages=messages,
             )
 
@@ -390,25 +488,51 @@ async def _execute_tool(registry: ToolRegistry, name: str | None, args: dict, ct
             text = json.dumps(result, ensure_ascii=False)
         except (TypeError, ValueError):
             text = str(result)
-    capped = _cap_tool_result(tool, text)
+    capped = _cap_tool_result(tool, text, ctx)
     # PostToolUse hook：工具执行后观察/归档/通知（只观察、不改控制流）。故障安全。
     await run_post_tool_hooks(name, args, capped, ctx)
     return capped
 
 
-def _cap_tool_result(tool, text: str) -> str:
-    """超大结果护栏（借鉴 cc-haha maxResultSizeChars）：只截"喂回模型推理"的查询/读取类大结果，
-    护住上下文窗口与 BYOK token 成本；成品（deliverable）是给老板的最终产物，绝不截断。"""
-    if getattr(tool, "deliverable", False) or len(text) <= _MAX_TOOL_RESULT_CHARS:
+def _cap_tool_result(tool, text: str, ctx=None) -> str:
+    """超大结果护栏：只处理"喂回模型推理"的查询/读取类大结果，护住上下文窗口与 BYOK token 成本；
+    成品（deliverable）是给老板的最终产物，绝不截断不落盘。
+
+    SH-3 落盘优先于硬截断：超阈值且【非 deliverable 且非自读类（read_only）】的大结果 →
+    落盘 tool-results/ + 回灌「<persisted-output>路径</persisted-output> + 开头预览 + 用 read 读全」，
+    模型按需把后半段拉回来，不丢信息（比"截断+让它缩小范围重查"更省 token 也更稳）。
+    自读类（read_only，如 read_file）结果落盘没意义（落了还得再 read 一遍），退回老的硬截断行为。
+    阈值：tool.max_result_chars（None=全局默认 _MAX_TOOL_RESULT_CHARS）。"""
+    limit = getattr(tool, "max_result_chars", None) or _MAX_TOOL_RESULT_CHARS
+    if getattr(tool, "deliverable", False) or len(text) <= limit:
         return text
-    kept = text[:_MAX_TOOL_RESULT_CHARS]
-    return (f"{kept}\n\n…[结果较长已截断：原 {len(text)} 字，这里只回灌前 {_MAX_TOOL_RESULT_CHARS} 字。"
+    # 自读类（read_only）：落盘无意义（再 read 一遍同样大），保持硬截断
+    if not getattr(tool, "read_only", False) and ctx is not None:
+        try:
+            from services.agent.tool_result_store import persist
+            path, preview = persist(getattr(tool, "name", None), text, ctx)
+            return (f"[结果较长已存盘] <persisted-output>{path}</persisted-output>（共 {len(text)} 字）。\n"
+                    f"开头预览：\n{preview}\n…\n"
+                    f"需要看完整内容，用 read_file 读上面这个路径。")
+        except Exception:
+            logger.exception("工具结果落盘失败，退回截断: %s", getattr(tool, "name", "?"))
+    kept = text[:limit]
+    return (f"{kept}\n\n…[结果较长已截断：原 {len(text)} 字，这里只回灌前 {limit} 字。"
             f"需要更完整内容请缩小范围或分批读取。]")
 
 
 def _microcompact(messages: list[dict], registry: ToolRegistry) -> None:
     """就地清理【旧的只读工具结果】内容，保留最近 _MICROCOMPACT_KEEP 条原文，省 loop 内上下文 token（零 LLM）。
-    只读工具的结果是可重查/已消化的，清掉最安全；写/成品类结果一律不动。按 tool_call_id 定位、只换 content。"""
+    只读工具的结果是可重查/已消化的，清掉最安全；写/成品类结果一律不动。按 tool_call_id 定位、只换 content。
+
+    ⚠️ SH-9 · prompt-cache 纪律：本函数【就地改靠前的 tool 消息 content】（messages[i]={**messages[i],"content":占位符}）。
+    这是【故意为之】——按 PC（prompt caching）缓存以 tools→system→messages 为前缀层级命中，改前缀块会让那一刻起
+    后面全部 cache miss。这里【拿一次 cache miss 换掉一大段旧只读结果占的 token】，是省 token 的划算交易。
+    为把 miss 频率压到最低，触发被【对齐到压缩边界】：只在只读结果【超过 _MICROCOMPACT_KEEP 条】时才动手
+    （`len(ro_msg_idx) <= _MICROCOMPACT_KEEP` 直接 return），不是每轮都改前缀；且一旦清成占位符就不再重复清同一条
+    （`content != _CLEARED_RESULT_MARK` 过滤），避免反复 touch 同一前缀位置造成无谓的连环 miss。
+    除本函数与 SH-6 的 autocompact（唯一允许整段重建前缀的点）外，任何代码都不应就地改 messages 靠前部分——
+    详见 docs/耦合地图与改动检查清单.md「prompt-cache 前缀稳定纪律」。"""
     # 从 assistant 的 tool_calls 建「tool_call_id → 是否只读」映射
     ro_ids: set = set()
     for m in messages:
@@ -475,22 +599,55 @@ async def run_agent_loop_stream(
     messages = _init_messages(system_prompt, history, user_message)
     tools = registry.to_openai_tools()
     stop_blocked = False  # Stop hook 每轮最多阻断一次（防死循环；仍受 max_turns 兜底）
+    final_segments: list[str] = []  # SH-4：被 length 截断的最终答复，多轮续写片段在此拼接
+    continuations = 0               # SH-4：续写次数（防"一直被截一直续"死循环）
 
     for turn in range(1, max_turns + 1):
         _microcompact(messages, registry)  # 清理旧的只读工具结果，省上下文 token
+        # SH-1：发请求前补缺失/删孤儿/去重 tool_result，堵 OpenAI 兼容端点的配对 400（纯函数返回新列表，就地替换内容）。
+        messages[:] = ensure_tool_pairing(messages)
         sink: list[dict] = []
+        finish: dict = {}  # SH-4：本轮 finish_reason 由 provider 写回（="length" = 被截断）
+        usage: dict = {}   # SH-2：本轮 token 用量由 provider 写回（total_tokens 等），按请求独立避免并发串号
         parts: list[str] = []
         async for tok in provider.generate_stream(
             TextRequest(messages=messages, tools=tools, tool_choice="auto", model=model,
                         max_tokens=max_tokens, temperature=temperature),
             tool_calls_sink=sink,
+            finish_sink=finish,
+            usage_sink=usage,
         ):
             parts.append(tok)
             yield {"type": "token", "content": tok}
         text = "".join(parts)
+        # SH-2：累加本轮真实 token 用量（端点没返回 total_tokens 则按 len//4 粗估），喂预算判定 + 成本看板。
+        _accumulate_usage(ctx, usage.get("total_tokens", 0) or 0, text)
 
         # 无工具调用 → 准备收尾。Stop hook 可阻断停止让它继续（默认无 hook → 直接收尾）。
         if not sink:
+            # SH-4 截断恢复：finish_reason="length" = 这段没说完被砍断。不发 final，把已收片段回灌 + 提示"接着写完"，
+            # 再要一轮（token 已逐片吐过，前端会接着流出续写部分）；多轮片段拼成完整 final；到上限强制收尾不死循环。
+            if finish.get("finish_reason") == _LENGTH_FINISH and continuations < _MAX_CONTINUATIONS:
+                final_segments.append(text)
+                messages.append({"role": "assistant", "content": text})
+                messages.append({"role": "user", "content": _CONTINUE_MSG})
+                continuations += 1
+                continue
+            # SH-2 token 预算（放在 Stop hook 之前：预算到了优先级最高，不让 Stop hook 把空转拉回来）。
+            #   budget=None → _BUDGET_OK，整段跳过（交互式零影响）。⚠️ 同步路径同样逻辑，别只改一处。
+            _budget = _check_budget(ctx)
+            if _budget == _BUDGET_STOP:
+                full_final = "".join(final_segments) + text
+                yield {"type": "final", "content": full_final}
+                yield {"type": "done", "turns": turn, "stopped_reason": _STOP_FINAL,
+                       "tokens_used": getattr(ctx, "tokens_used", 0)}
+                return
+            if _budget == _BUDGET_PUSH:
+                pct = int(min(100, ctx.tokens_used * 100 / ctx.token_budget))
+                if text:
+                    messages.append({"role": "assistant", "content": text})
+                messages.append({"role": "user", "content": _BUDGET_PUSH_MSG.format(pct=pct)})
+                continue
             if not stop_blocked:
                 cont = await run_stop_hooks(messages, ctx)
                 if cont:
@@ -499,8 +656,10 @@ async def run_agent_loop_stream(
                         messages.append({"role": "assistant", "content": text})
                     messages.append({"role": "user", "content": cont})
                     continue
-            yield {"type": "final", "content": text}
-            yield {"type": "done", "turns": turn, "stopped_reason": _STOP_FINAL}
+            full_final = "".join(final_segments) + text
+            yield {"type": "final", "content": full_final}
+            yield {"type": "done", "turns": turn, "stopped_reason": _STOP_FINAL,
+                   "tokens_used": getattr(ctx, "tokens_used", 0)}
             return
 
         # 工具调用轮：assistant(tool_calls) 回灌 → 逐个处理 → 结果回灌
@@ -555,4 +714,5 @@ async def run_agent_loop_stream(
         logger.exception("max_turns 强制收尾(流式)失败")
     final_text = "".join(final_parts).strip() or _FALLBACK_FINAL
     yield {"type": "final", "content": final_text}
-    yield {"type": "done", "turns": max_turns, "stopped_reason": _STOP_MAX_TURNS}
+    yield {"type": "done", "turns": max_turns, "stopped_reason": _STOP_MAX_TURNS,
+           "tokens_used": getattr(ctx, "tokens_used", 0)}

@@ -37,6 +37,7 @@ class TextProvider(ABC):
     async def generate_stream(
         self, request: TextRequest, usage_sink: dict | None = None,
         tool_calls_sink: list[dict] | None = None,
+        finish_sink: dict | None = None,
     ) -> AsyncIterator[str]:
         """流式生成，逐块 yield 文本片段。
 
@@ -46,6 +47,10 @@ class TextProvider(ABC):
         usage_sink: 可选字典。生成结束后会把本次 token 用量
         （prompt_tokens / completion_tokens / total_tokens 等）写入其中。
         每次请求传入独立的 dict，避免并发请求间用量串号。
+
+        finish_sink: 可选字典（SH-4）。流结束后把本轮 finish_reason 写入
+        `finish_sink["finish_reason"]`（stop / tool_calls / length / ...）。Agent 循环据此识别
+        被 max_tokens 截断（="length"）的最终答复并续写拼接。每次请求传入独立 dict，避免并发串号。
         """
         ...
 

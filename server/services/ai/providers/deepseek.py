@@ -115,6 +115,7 @@ class DeepSeekProvider(TextProvider):
     async def generate_stream(
         self, request: TextRequest, usage_sink: dict | None = None,
         tool_calls_sink: list[dict] | None = None,
+        finish_sink: dict | None = None,
     ) -> AsyncIterator[str]:
         if request.messages:
             messages = request.messages
@@ -179,7 +180,13 @@ class DeepSeekProvider(TextProvider):
                     })
                 if not chunk.choices:
                     continue
-                delta = chunk.choices[0].delta
+                choice0 = chunk.choices[0]
+                # SH-4：截断恢复需要 finish_reason。流式里它在末片随 choice 返回（content 片为 None），
+                # 累计最后一个非空值写进 finish_sink，供 Agent 循环判断 ="length" 续写。
+                fr = getattr(choice0, "finish_reason", None)
+                if fr and finish_sink is not None:
+                    finish_sink["finish_reason"] = fr
+                delta = choice0.delta
                 # 累积流式工具调用增量（id/name 在首片，arguments 分片拼接）
                 if getattr(delta, "tool_calls", None):
                     _accumulate_tool_call_deltas(tool_acc, delta.tool_calls)

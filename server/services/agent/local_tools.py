@@ -56,6 +56,15 @@ def _resolve(rel_or_abs: str, ctx=None) -> Path:
     for a in _allowed_paths(ctx):
         if path == a or a in path.parents:
             return path
+    # ③ SH-3：Agent 自己落盘的超大工具结果目录（UPLOAD_DIR/tool-results/）→ 放行，
+    #    否则模型 read 不回自己刚落盘的结果（落盘走 tool_result_store.persist，是 Agent 内部产物、非外部文件）。
+    try:
+        from services.agent.tool_result_store import results_root
+        tr_root = results_root().resolve()
+        if path == tr_root or tr_root in path.parents:
+            return path
+    except Exception:
+        pass
     raise ValueError(f"越界：只能操作内容库或你当场选定的文件，拒绝 {rel_or_abs}")
 
 
