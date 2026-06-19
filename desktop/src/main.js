@@ -31,6 +31,7 @@ let backendReady = false;
 let frontendUrl = null; // prod 本地前端就绪后的 URL
 
 function createWindow() {
+  const isMac = process.platform === "darwin";
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -38,6 +39,9 @@ function createWindow() {
     minHeight: 640,
     title: "台球运营管家",
     backgroundColor: "#F2F2F7",
+    // macOS 原生质感:隐藏标题栏(保留红绿灯,内容延伸到顶),红绿灯位对齐桌面壳侧栏顶部 52px 区(见 web 的 .app-drag)。
+    // 毛玻璃 vibrancy 暂不开——需配合侧栏背景透明 + 真机调，先用 CSS 近似(bg-sidebar/85 + backdrop-blur)。
+    ...(isMac ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 16, y: 18 } } : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true, // 默认即开,显式声明
