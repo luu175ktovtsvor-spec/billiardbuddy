@@ -8,18 +8,19 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { ApiError } from "@/types/api";
 import type { ByokConfigIn } from "@/types/store";
-import { Loader2, CheckCircle2, ArrowLeft, X } from "lucide-react";
+import { Loader2, CheckCircle2, ArrowLeft, X, ExternalLink } from "lucide-react";
 
-// 文字模型供应商：DeepSeek 推荐置顶、小米 MiMo、其它自己填。
-// 每张带一句"去哪开通"的人话指引，新手照着走就能拿到 Key。
+// 文字模型供应商：8 家国内主流 + 其它自己填。
+// 每张带一句"去哪开通"的人话指引和官网链接，新手照着走就能拿到 Key；
+// 不预填具体型号——步骤 2 里让老板自己去官网看有哪些模型、复制模型名填。
 type Provider = {
   id: string;
   label: string;
   desc: string; // 一句话介绍
   guide: string; // 去哪开通注册充值
+  url: string; // 官网/拿 Key 页面（点开在系统浏览器打开）
   base_url: string;
-  model: string;
-  custom?: boolean; // 自己填：进步骤 2 后地址/模型也可改
+  custom?: boolean; // 自己填：进步骤 2 后地址也可改
   recommended?: boolean;
 };
 
@@ -28,29 +29,76 @@ const PROVIDERS: Provider[] = [
     id: "deepseek",
     label: "DeepSeek（深度求索）",
     desc: "国内主流、便宜又稳，做台球房文案足够用，新手首选。",
-    guide: "去 platform.deepseek.com 注册、充几块钱、在「API Keys」里点新建，复制那串密钥。",
+    guide: "去 platform.deepseek.com 注册 → 充几块钱 → 在「API Keys」点新建，复制那串密钥。",
+    url: "https://platform.deepseek.com/api_keys",
     base_url: "https://api.deepseek.com",
-    model: "deepseek-v4-pro",
     recommended: true,
+  },
+  {
+    id: "siliconflow",
+    label: "硅基流动 SiliconFlow",
+    desc: "模型多、一个 Key 多模型、新人常送额度。",
+    guide: "去 cloud.siliconflow.cn 注册 → 账户 → 在「API 密钥」点新建。",
+    url: "https://cloud.siliconflow.cn/account/ak",
+    base_url: "https://api.siliconflow.cn/v1",
+  },
+  {
+    id: "volcengine",
+    label: "火山方舟 · 豆包",
+    desc: "字节豆包，稳、企业级。",
+    guide: "火山引擎控制台 → 方舟 → API Key（模型名填的是「接入点 ID / Model ID」，不是普通模型名）。",
+    url: "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey",
+    base_url: "https://ark.cn-beijing.volces.com/api/v3",
+  },
+  {
+    id: "bailian",
+    label: "通义百炼 · 阿里",
+    desc: "阿里通义，模型全。",
+    guide: "去 bailian.console.aliyun.com 控制台 → API-KEY。",
+    url: "https://bailian.console.aliyun.com/",
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  },
+  {
+    id: "zhipu",
+    label: "智谱 GLM",
+    desc: "智谱 GLM 系列。",
+    guide: "去 open.bigmodel.cn 控制台 → API Keys。",
+    url: "https://open.bigmodel.cn/",
+    base_url: "https://open.bigmodel.cn/api/paas/v4/",
+  },
+  {
+    id: "moonshot",
+    label: "Kimi · 月之暗面",
+    desc: "Kimi，长文本强。",
+    guide: "去 platform.moonshot.cn 控制台 → API Keys。",
+    url: "https://platform.moonshot.cn/console/api-keys",
+    base_url: "https://api.moonshot.cn/v1",
   },
   {
     id: "mimo",
     label: "小米 MiMo",
-    desc: "小米出品，响应快、性价比高，也能跑。",
-    guide: "去小米开放平台注册开通、充值后创建一个密钥，复制下来。",
+    desc: "小米出品、响应快、性价比高。",
+    guide: "去 mimo.mi.com 用小米账号登录 → API Keys。",
+    url: "https://mimo.mi.com/",
     base_url: "https://api.xiaomimimo.com/v1",
-    model: "mimo-v2.5",
   },
   {
     id: "custom",
     label: "其它 · 自己填",
-    desc: "用别家模型（硅基流动 / 火山 / 通义等任意 OpenAI 兼容的都行）。",
-    guide: "到你那家模型的官网拿到接口地址、模型名和密钥，下一步手动填。",
+    desc: "任意 OpenAI 兼容的都行（硅基 / 火山 / 通义…）。",
+    guide: "到你那家官网拿地址、模型名、密钥，下一步手动填。",
+    url: "",
     base_url: "",
-    model: "",
     custom: true,
   },
 ];
+
+// 在系统浏览器打开外链：Electron 主进程已用 setWindowOpenHandler 把 window.open(http...) 转交系统浏览器；
+// 普通网页里就是新标签打开。统一走这个，省得各处重复。
+function openExternal(url: string) {
+  if (!url) return;
+  window.open(url, "_blank", "noopener,noreferrer");
+}
 
 const inputCls =
   "w-full rounded-lg bg-[#f5f5f7] px-3.5 py-2.5 text-[14px] text-[#1d1d1f] placeholder-[#86868b] focus:outline-none focus:ring-2 focus:ring-[#007AFF]/25";
@@ -91,7 +139,7 @@ export function ByokOnboardingWizard({
   const pickProvider = (p: Provider) => {
     setProvider(p);
     setBaseUrl(p.base_url);
-    setModel(p.model);
+    setModel(""); // 不预填型号——步骤 2 让老板去官网看可用模型、自己填
     setError("");
     setStep(2);
   };
@@ -221,29 +269,44 @@ export function ByokOnboardingWizard({
               <h2 className="text-[17px] font-semibold text-[#1d1d1f]">粘上你的密钥</h2>
               <p className="mt-1 text-[13px] leading-relaxed text-[#86868b]">{provider.guide}</p>
 
-              {/* 自己填的供应商：地址和模型也露出来让填 */}
+              {/* 自己填的供应商：接口地址也露出来让填（选好的厂商已自动带好地址） */}
               {provider.custom && (
-                <div className="mt-4 space-y-2.5">
-                  <div>
-                    <label className="mb-1 block text-[13px] font-medium text-[#1d1d1f]">接口地址</label>
-                    <input
-                      className={inputCls}
-                      value={baseUrl}
-                      onChange={(e) => setBaseUrl(e.target.value)}
-                      placeholder="https://你的模型地址/v1"
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-[13px] font-medium text-[#1d1d1f]">模型名</label>
-                    <input
-                      className={inputCls}
-                      value={model}
-                      onChange={(e) => setModel(e.target.value)}
-                      placeholder="如 deepseek-v4-pro"
-                    />
-                  </div>
+                <div className="mt-4">
+                  <label className="mb-1 block text-[13px] font-medium text-[#1d1d1f]">接口地址</label>
+                  <input
+                    className={inputCls}
+                    value={baseUrl}
+                    onChange={(e) => setBaseUrl(e.target.value)}
+                    placeholder="https://你的模型地址/v1"
+                  />
                 </div>
               )}
+
+              {/* 模型名：所有厂商都要填（型号各家不同、也常更新，去官网看了再填最准） */}
+              <div className="mt-4">
+                <label className="mb-1 block text-[13px] font-medium text-[#1d1d1f]">模型名</label>
+                <input
+                  className={inputCls}
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  placeholder="粘贴你在该厂商选的模型名"
+                />
+                {provider.id === "volcengine" && (
+                  <p className="mt-1.5 text-[12px] leading-snug text-[#86868b]">
+                    火山填的是「接入点 ID / Model ID」，不是普通模型名。
+                  </p>
+                )}
+                {provider.url && (
+                  <button
+                    type="button"
+                    onClick={() => openExternal(provider.url)}
+                    className="mt-1.5 inline-flex items-center gap-1 text-[12px] text-[#007AFF] transition-colors hover:underline"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    去 {provider.label} 官网看有哪些模型、复制模型名填这里
+                  </button>
+                )}
+              </div>
 
               <div className="mt-4">
                 <label className="mb-1 block text-[13px] font-medium text-[#1d1d1f]">你的密钥</label>
