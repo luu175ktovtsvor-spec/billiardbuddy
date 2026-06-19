@@ -9,10 +9,11 @@ import { Paperclip, ArrowUp } from "lucide-react";
 
 export type PermissionMode = "ask" | "auto_files" | "full";
 
+// 用词照搬 Claude Code 的权限模式概念（default/acceptEdits/bypassPermissions），忠实翻译、不自己编：
 const MODES: { value: PermissionMode; label: string }[] = [
-  { value: "ask", label: "都先问我" },
-  { value: "auto_files", label: "日常自己做" },
-  { value: "full", label: "全部自己做" },
+  { value: "ask", label: "逐项确认" },        // ≈ Claude default：每步都问
+  { value: "auto_files", label: "自动接受修改" }, // ≈ Claude acceptEdits：自动接受改动，花钱/对外仍问
+  { value: "full", label: "跳过确认" },        // ≈ Claude bypassPermissions：免确认
 ];
 
 export function DesktopComposer({
