@@ -63,6 +63,11 @@ _STOP_MAX_TURNS = "max_turns"  # 达到 max_turns 兜底强制收尾
 # 护住上下文窗口与 BYOK token 成本。只作用于"喂回模型推理"的查询/读取类结果；成品不截断。
 _MAX_TOOL_RESULT_CHARS = 12000
 
+# microcompact（借鉴 cc-haha microCompact）：循环内把【旧的只读工具结果】内容换成占位符（保留最近 N 条原文），
+# 省上下文 token、零 LLM。只动可重查的只读结果、按 tool_call_id 定位、不改消息结构（保 prompt cache 前缀稳定）。
+_MICROCOMPACT_KEEP = 4
+_CLEARED_RESULT_MARK = "[旧的查询结果已清理以省上下文；需要可重新查]"
+
 
 def _auto_approve(tool, ctx) -> bool:
     """据 ctx.permission_mode 决定一个 requires_approval 工具是否免确认、直接自动执行。
@@ -232,6 +237,7 @@ async def run_agent_loop(
     steps: list[AgentStep] = []
 
     for turn in range(1, max_turns + 1):
+        _microcompact(messages, registry)  # 清理旧的只读工具结果，省上下文 token
         resp = await provider.generate(TextRequest(
             messages=messages,
             tools=tools,
@@ -339,6 +345,29 @@ def _cap_tool_result(tool, text: str) -> str:
             f"需要更完整内容请缩小范围或分批读取。]")
 
 
+def _microcompact(messages: list[dict], registry: ToolRegistry) -> None:
+    """就地清理【旧的只读工具结果】内容，保留最近 _MICROCOMPACT_KEEP 条原文，省 loop 内上下文 token（零 LLM）。
+    只读工具的结果是可重查/已消化的，清掉最安全；写/成品类结果一律不动。按 tool_call_id 定位、只换 content。"""
+    # 从 assistant 的 tool_calls 建「tool_call_id → 是否只读」映射
+    ro_ids: set = set()
+    for m in messages:
+        if m.get("role") == "assistant":
+            for tc in (m.get("tool_calls") or []):
+                name = (tc.get("function") or {}).get("name")
+                tool = registry.get(name) if name else None
+                if tool is not None and getattr(tool, "read_only", False):
+                    ro_ids.add(tc.get("id"))
+    if not ro_ids:
+        return
+    ro_msg_idx = [i for i, m in enumerate(messages)
+                  if m.get("role") == "tool" and m.get("tool_call_id") in ro_ids
+                  and m.get("content") != _CLEARED_RESULT_MARK]
+    if len(ro_msg_idx) <= _MICROCOMPACT_KEEP:
+        return
+    for i in ro_msg_idx[:-_MICROCOMPACT_KEEP]:  # 除最近 N 条外，旧的只读结果换占位符
+        messages[i] = {**messages[i], "content": _CLEARED_RESULT_MARK}
+
+
 async def _force_final_text(provider, messages: list[dict], model, max_tokens: int, temperature: float) -> str:
     """max_turns 强制收尾（非流式）：追加"别再调工具、直接答"的提示再要一段答复。
     自身失败也不崩，走静态兜底，绝不返回空。"""
@@ -386,6 +415,7 @@ async def run_agent_loop_stream(
     tools = registry.to_openai_tools()
 
     for turn in range(1, max_turns + 1):
+        _microcompact(messages, registry)  # 清理旧的只读工具结果，省上下文 token
         sink: list[dict] = []
         parts: list[str] = []
         async for tok in provider.generate_stream(
