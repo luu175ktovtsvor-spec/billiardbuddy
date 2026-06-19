@@ -21,7 +21,7 @@ const BASE_URL = !configuredBaseUrl
 export interface AgentStreamHandlers {
   onToken?: (token: string) => void;
   onToolCall?: (tool: string, args: Record<string, unknown>, id?: string) => void;
-  onToolResult?: (tool: string, content: string, id?: string) => void;
+  onToolResult?: (tool: string, content: string, id?: string, knowledgeUsed?: string[]) => void;
   onApprovalRequest?: (tool: string, args: Record<string, unknown>, id?: string, token?: string, preview?: string) => void;
   onAskQuestion?: (q: { question: string; options: { label: string; description?: string }[]; multi?: boolean; id?: string }) => void;
   onFinal?: (content: string) => void;
@@ -560,7 +560,7 @@ class ApiClient {
             switch (ev.type) {
               case "token": handlers.onToken?.(ev.content || ""); break;
               case "tool_call": handlers.onToolCall?.(ev.tool, ev.args || {}, ev.id); break;
-              case "tool_result": handlers.onToolResult?.(ev.tool, ev.content || "", ev.id); break;
+              case "tool_result": handlers.onToolResult?.(ev.tool, ev.content || "", ev.id, Array.isArray(ev.knowledge_used) ? ev.knowledge_used : undefined); break;
               case "approval_request": handlers.onApprovalRequest?.(ev.tool, ev.args || {}, ev.id, ev.token, ev.preview); break;
               case "ask_question": handlers.onAskQuestion?.({ question: ev.question || "", options: ev.options || [], multi: ev.multi, id: ev.id }); break;
               case "final": handlers.onFinal?.(ev.content || ""); break;

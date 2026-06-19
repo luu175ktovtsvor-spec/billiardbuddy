@@ -99,13 +99,18 @@ async def run_generation(
         content = _strip_ai_prefixes(content)
     content = filter_output_leak(content)
 
+    # B-2 依据可见：input_params 里若没带 knowledge_used（调用方走 _append_guardrails 时会传），
+    # 兜个空列表，保证 Generation.input_params 恒有该键、前端拿得到（无依赖即空）。
+    final_params = dict(input_params or {})
+    final_params.setdefault("knowledge_used", [])
+
     generation = Generation(
         id=uuid.uuid4(),
         store_id=store.id,
         user_id=user.id if user else None,
         type=gen_type,
         sub_type=sub_type,
-        input_params=input_params or {},
+        input_params=final_params,
         prompt_used=prompt,
         result=content,
         model_used=response.model,
@@ -443,36 +448,44 @@ def _select_knowledge_keys(required_keys: list[str], intent_text: str) -> list[s
     return [k for k in required_keys if k in selected]
 
 
-def _load_knowledge_for_role(role: str, store: Store, intent_text: str = "") -> str:
+def _load_knowledge_for_role(role: str, store: Store, intent_text: str = "") -> tuple[str, list[str]]:
     """根据岗位规则中声明的 required_knowledge，加载并拼接对应知识库。
 
     intent_text（用户意图 + 补充说明）非空时，只注入核心知识 + 命中场景的知识，
     避免每次把全部知识全量灌入 prompt（manager 角色原本约 12 万字符）。
+
+    返回 (text, names)：text 是拼好的知识文本；names 是本次真正注入的每条知识的【大白话 name】
+    （取自 prompt_engine._templates[key]["name"]，空的跳过）。B-2「依据可见」据 names 在成品卡上
+    显示「依据：name1、name2」。两者一一对应：渲染成功(进 parts)的 key 才进 names。
     """
     role_template = prompt_engine._templates.get(f"rules.role.{role}")
     if not role_template:
-        return ""
+        return "", []
 
     required_keys = role_template.get("required_knowledge", [])
     if not required_keys:
-        return ""
+        return "", []
 
     selected_keys = _select_knowledge_keys(required_keys, intent_text)
 
     parts: list[str] = []
+    names: list[str] = []
     for key in selected_keys:
         try:
             rendered = prompt_engine.render(key, store, {})
             if rendered.strip():
                 parts.append(rendered.strip())
+                name = prompt_engine.template_name(key)
+                if name:
+                    names.append(name)
         except (PromptTemplateNotFoundError, PromptVariableMissingError) as e:
             logger.warning("知识加载跳过: %s - %s", key, str(e))
             continue
 
     if not parts:
-        return ""
+        return "", []
 
-    return "\n\n---\n\n".join(parts)
+    return "\n\n---\n\n".join(parts), names
 
 
 def _format_output_package(output_package: list[str] | None) -> str:
@@ -490,7 +503,7 @@ def _strip_ai_prefixes(content: str) -> str:
     return content
 
 
-def _append_guardrails(rendered_prompt: str, store: Store, role: str | None = None, intent_text: str = "") -> str:
+def _append_guardrails(rendered_prompt: str, store: Store, role: str | None = None, intent_text: str = "") -> tuple[str, list[str]]:
     """在渲染后的 prompt 后追加防护上下文（baseline_rules + role_rules + knowledge + profile）。
 
     非 workbench 路径（copywriting/activity/operation）的模板没有 {baseline_rules} 等占位符，
@@ -498,8 +511,12 @@ def _append_guardrails(rendered_prompt: str, store: Store, role: str | None = No
 
     intent_text（用户意图 + 补充说明）非空时，按场景筛选注入的行业知识，避免 prompt_key
     路径（占工作台卡片的绝大多数）每次全量灌入知识。为空时保持原有全量行为。
+
+    返回 (text, knowledge_names)：text 是追加完护栏后的 prompt；knowledge_names 是本次注入的
+    行业知识【大白话 name】列表（B-2「依据可见」用，无 role/无知识时为空列表）。
     """
     sections: list[str] = []
+    knowledge_names: list[str] = []
 
     baseline_rules = _load_rule_safe("rules.baseline", store)
     if baseline_rules:
@@ -510,7 +527,7 @@ def _append_guardrails(rendered_prompt: str, store: Store, role: str | None = No
         if role_rules:
             sections.append(f"## 岗位规则\n\n{role_rules}")
 
-        knowledge_context = _load_knowledge_for_role(role, store, intent_text)
+        knowledge_context, knowledge_names = _load_knowledge_for_role(role, store, intent_text)
         if knowledge_context:
             sections.append(f"## 行业知识参考\n\n{knowledge_context}")
 
@@ -519,10 +536,10 @@ def _append_guardrails(rendered_prompt: str, store: Store, role: str | None = No
         sections.append(f"## 门店运营画像\n\n{profile_context}")
 
     if not sections:
-        return rendered_prompt
+        return rendered_prompt, knowledge_names
 
     guardrails_text = "\n\n---\n\n".join(sections)
-    return f"{rendered_prompt}\n\n---\n\n{guardrails_text}"
+    return f"{rendered_prompt}\n\n---\n\n{guardrails_text}", knowledge_names
 
 
 async def generate_copywriting(
@@ -557,7 +574,7 @@ async def generate_copywriting(
 
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
     # intent 用中文标签：英文枚举值匹配不到中文知识关键词，筛选会形同虚设
-    rendered_prompt = _append_guardrails(rendered_prompt, store, role="manager", intent_text=f"{scenario_label} {extra_note}")
+    rendered_prompt, knowledge_names = _append_guardrails(rendered_prompt, store, role="manager", intent_text=f"{scenario_label} {extra_note}")
 
     brand_voice = await get_brand_voice_context(db, store.id)
     if brand_voice:
@@ -585,6 +602,7 @@ async def generate_copywriting(
             "tone": tone,
             "scenario": scenario,
             "extra_note": extra_note,
+            "knowledge_used": knowledge_names,  # B-2 依据可见：本次注入的行业知识名
         },
         prompt_used=rendered_prompt,
         result=content,
@@ -628,7 +646,7 @@ async def generate_activity(
     }
 
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
-    rendered_prompt = _append_guardrails(rendered_prompt, store, role="manager", intent_text=f"{activity_goal} {target_customer or ''} {extra_note}")
+    rendered_prompt, knowledge_names = _append_guardrails(rendered_prompt, store, role="manager", intent_text=f"{activity_goal} {target_customer or ''} {extra_note}")
 
     brand_voice = await get_brand_voice_context(db, store.id)
     if brand_voice:
@@ -658,6 +676,7 @@ async def generate_activity(
             "budget_level": budget_level,
             "duration": duration,
             "extra_note": extra_note,
+            "knowledge_used": knowledge_names,  # B-2 依据可见
         },
         prompt_used=rendered_prompt,
         result=content,
@@ -705,7 +724,7 @@ async def generate_operation(
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars, lenient=True)
     # intent 用模板中文名：英文场景键匹配不到中文知识关键词
     template_label = prompt_engine.template_name(template_key) or scenario
-    rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role, intent_text=f"{template_label} {target or ''} {extra_note}")
+    rendered_prompt, knowledge_names = _append_guardrails(rendered_prompt, store, role=inferred_role, intent_text=f"{template_label} {target or ''} {extra_note}")
 
     brand_voice = await get_brand_voice_context(db, store.id)
     if brand_voice:
@@ -734,6 +753,7 @@ async def generate_operation(
             "tone": tone,
             "target": target,
             "extra_note": extra_note,
+            "knowledge_used": knowledge_names,  # B-2 依据可见
         },
         prompt_used=rendered_prompt,
         result=content,
@@ -796,7 +816,7 @@ async def generate_workbench(
         rendered_prompt = prompt_engine.render(prompt_key, store, extra_vars, lenient=True)
         # intent 带上模板中文名：用户意图为空时知识筛选仍能按场景命中
         template_label = prompt_engine.template_name(prompt_key)
-        rendered_prompt = _append_guardrails(rendered_prompt, store, role=inferred_role, intent_text=f"{template_label} {user_intent} {extra_note}")
+        rendered_prompt, knowledge_names = _append_guardrails(rendered_prompt, store, role=inferred_role, intent_text=f"{template_label} {user_intent} {extra_note}")
     else:
         # 通用 free_intent 路径：在模板内注入规则和知识
         baseline_rules = _load_rule_safe("rules.baseline", store)
@@ -805,7 +825,7 @@ async def generate_workbench(
         customer_type = target_customer_type or "all"
         customer_rules = _load_rule_safe(f"rules.customer.{customer_type}", store)
 
-        knowledge_context = _load_knowledge_for_role(role, store, f"{user_intent} {extra_note}")
+        knowledge_context, knowledge_names = _load_knowledge_for_role(role, store, f"{user_intent} {extra_note}")
 
         # 轻量 few-shot 选择 (10F-2)：根据请求字段选择最多 2 条优质正例
         try:
@@ -878,6 +898,7 @@ async def generate_workbench(
             "output_package": output_package,
             "extra_note": extra_note,
             "prompt_key": prompt_key,
+            "knowledge_used": knowledge_names,  # B-2 依据可见：本次注入的行业知识名
         },
         prompt_used=rendered_prompt,
         result=content,

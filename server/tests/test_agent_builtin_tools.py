@@ -17,8 +17,9 @@ def _ctx(role="manager"):
     return SimpleNamespace(db=object(), store=SimpleNamespace(id="s1"), user=SimpleNamespace(my_role=role))
 
 
-def _gen(result="MOCK输出"):
-    return SimpleNamespace(result=result)
+def _gen(result="MOCK输出", knowledge_used=None):
+    # input_params 带 knowledge_used：deliverable 工具会读它写进 ctx.last_knowledge_used（B-2 依据可见）
+    return SimpleNamespace(result=result, input_params={"knowledge_used": knowledge_used or []})
 
 
 def test_expected_tools_registered():
@@ -161,11 +162,12 @@ def test_make_platform_content_routes_and_passes_need(monkeypatch):
 
     def fake_guardrails(prompt, store, role=None, intent_text=""):
         captured["role"] = role
-        return prompt  # 测试里跳过画像/合规拼装
+        return prompt, ["平台运营知识库"]  # B-2：现返回 (prompt, knowledge_names)
 
     async def fake_run(db, store, user, **kwargs):
         captured.update(kwargs)
-        return SimpleNamespace(result="抖音脚本内容 #台球")
+        return SimpleNamespace(result="抖音脚本内容 #台球",
+                              input_params=kwargs.get("input_params") or {})
 
     monkeypatch.setattr(agent_tools, "_append_guardrails", fake_guardrails)
     monkeypatch.setattr(agent_tools, "run_generation", fake_run)
@@ -178,16 +180,18 @@ def test_make_platform_content_routes_and_passes_need(monkeypatch):
     assert captured["input_params"]["need"] == "周末双人半价"
     assert "周末双人半价" in captured["prompt"]       # need 进了 prompt
     assert captured["role"] == "operator"            # 跟随 my_role
+    assert captured["input_params"]["knowledge_used"] == ["平台运营知识库"]  # B-2 依据带进落库
+    assert ctx.last_knowledge_used == ["平台运营知识库"]                     # 经 ctx 传给 loop
 
 
 def test_make_platform_content_xiaohongshu_alias(monkeypatch):
     captured = {}
     monkeypatch.setattr(agent_tools, "_append_guardrails",
-                        lambda prompt, store, role=None, intent_text="": prompt)
+                        lambda prompt, store, role=None, intent_text="": (prompt, []))
 
     async def fake_run(db, store, user, **kwargs):
         captured.update(kwargs)
-        return SimpleNamespace(result="小红书笔记")
+        return SimpleNamespace(result="小红书笔记", input_params=kwargs.get("input_params") or {})
 
     monkeypatch.setattr(agent_tools, "run_generation", fake_run)
     ctx = SimpleNamespace(db=None, store=None, user=SimpleNamespace(my_role=None))
@@ -221,11 +225,11 @@ def test_make_groupbuy_content_registered_no_approval():
 def test_make_groupbuy_content_generates(monkeypatch):
     captured = {}
     monkeypatch.setattr(agent_tools, "_append_guardrails",
-                        lambda prompt, store, role=None, intent_text="": prompt)
+                        lambda prompt, store, role=None, intent_text="": (prompt, []))
 
     async def fake_run(db, store, user, **kwargs):
         captured.update(kwargs)
-        return SimpleNamespace(result="团购套餐文案")
+        return SimpleNamespace(result="团购套餐文案", input_params=kwargs.get("input_params") or {})
 
     monkeypatch.setattr(agent_tools, "run_generation", fake_run)
     ctx = SimpleNamespace(db=None, store=None, user=SimpleNamespace(my_role="manager"))
