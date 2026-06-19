@@ -117,8 +117,8 @@ function TaskExecutionPageInner() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const conversationIdRef = useRef<string | null>(null);
 
-  /* ─── model (hidden, always default) ─── */
-  const [selectedModel] = useState<string>("deepseek-v4-flash");
+  /* ─── model：不写死型号；留空→后端按门店 BYOK 配置自己路由（不盖掉老板配的模型）─── */
+  const [selectedModel] = useState<string>("");
 
   /* ─── refs ─── */
   const inputSectionRef = useRef<HTMLDivElement>(null);

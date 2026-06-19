@@ -7,7 +7,7 @@
  * 真机 macOS 质感（无边框窗口 + 原生红绿灯 + 毛玻璃）由 Electron titleBarStyle:'hiddenInset' + vibrancy 提供，
  * 顶部 52px 留给原生红绿灯；可拖拽区用 .app-drag（见 globals.css）。
  */
-import { Plus, Settings } from "lucide-react";
+import { Plus, Settings, Cpu } from "lucide-react";
 
 export type DesktopConversation = {
   id: string;
@@ -19,6 +19,7 @@ export type DesktopConversation = {
 export function DesktopSidebar({
   storeName = "我的台球房",
   monthlySpend,
+  modelLabel,
   conversations = [],
   activeId,
   onNewChat,
@@ -27,6 +28,8 @@ export function DesktopSidebar({
 }: {
   storeName?: string;
   monthlySpend?: string;
+  /** 当前正在用的文字模型名（来自 BYOK 配置）；空=未配置 */
+  modelLabel?: string;
   conversations?: DesktopConversation[];
   activeId?: string;
   onNewChat?: () => void;
@@ -87,6 +90,22 @@ export function DesktopSidebar({
           </div>
         ))}
       </div>
+
+      {/* 当前在用的模型（点开配置）。没配/为空 → 提示去设置 */}
+      <button
+        onClick={onOpenSettings}
+        className="app-no-drag mx-3 mb-1 mt-2 flex items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition hover:bg-black/[0.04]"
+        aria-label={modelLabel ? `正在用模型 ${modelLabel}，点击修改` : "未配置模型，点击去设置"}
+      >
+        <Cpu className={`h-3.5 w-3.5 shrink-0 ${modelLabel ? "text-brand-600" : "text-[#86868b]"}`} />
+        {modelLabel ? (
+          <span className="min-w-0 flex-1 truncate text-[11px] text-[#1d1d1f]">
+            正在用：<span className="text-[#86868b]">{modelLabel}</span>
+          </span>
+        ) : (
+          <span className="min-w-0 flex-1 truncate text-[11px] text-[#86868b]">未配置模型 · 去设置</span>
+        )}
+      </button>
 
       {/* 底部：门店 + 本月用量（不显示 BYOK 黑话）+ 设置 */}
       <div className="flex items-center gap-2 border-t border-black/[0.07] p-3">

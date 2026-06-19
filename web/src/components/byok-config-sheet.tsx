@@ -5,13 +5,26 @@ import { api } from "@/lib/api";
 import { ApiError } from "@/types/api";
 import type { ByokValidateResult, ByokProfile } from "@/types/store";
 import { Sheet } from "@/components/ui/sheet";
-import { Loader2, CheckCircle2, XCircle } from "lucide-react";
+import { Loader2, CheckCircle2, XCircle, ExternalLink } from "lucide-react";
 
-// 常见 OpenAI 兼容供应商的快填（点一下自动填 base_url + 一个推荐模型名）
+// 常见 OpenAI 兼容供应商的快填（点一下只自动填 base_url；模型名各家不同、也常更新，
+// 去对应官网看了再填——每家旁边给可点的官网链接）。
 const PRESETS = [
-  { label: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-v4-pro" },
-  { label: "小米 MiMo", base_url: "https://api.xiaomimimo.com/v1", model: "mimo-v2.5" },
+  { label: "DeepSeek", base_url: "https://api.deepseek.com", url: "https://platform.deepseek.com/api_keys" },
+  { label: "硅基流动", base_url: "https://api.siliconflow.cn/v1", url: "https://cloud.siliconflow.cn/account/ak" },
+  { label: "火山·豆包", base_url: "https://ark.cn-beijing.volces.com/api/v3", url: "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey" },
+  { label: "通义百炼", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", url: "https://bailian.console.aliyun.com/" },
+  { label: "智谱 GLM", base_url: "https://open.bigmodel.cn/api/paas/v4/", url: "https://open.bigmodel.cn/" },
+  { label: "Kimi", base_url: "https://api.moonshot.cn/v1", url: "https://platform.moonshot.cn/console/api-keys" },
+  { label: "小米 MiMo", base_url: "https://api.xiaomimimo.com/v1", url: "https://mimo.mi.com/" },
 ];
+
+// 在系统浏览器打开外链：Electron 主进程已用 setWindowOpenHandler 把 window.open(http...) 转交系统浏览器；
+// 普通网页里就是新标签打开。
+function openExternal(url: string) {
+  if (!url) return;
+  window.open(url, "_blank", "noopener,noreferrer");
+}
 
 // 生图供应商预设（少而精·主流强）：点一下自动填 base_url + 推荐模型。
 // base_url 与后端 resolve_image_kind 路由严格一致；叠图场景优先填 Qwen-Image-Edit-2509。
@@ -241,7 +254,7 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
         <div className="space-y-4 pb-2">
           {/* 这块是干嘛的 */}
           <div className="rounded-xl bg-brand-50/60 p-3 text-[13px] leading-relaxed text-slate-600">
-            接入你自己的大模型 API Key 后，AI 生成就走<b>你自己的账户</b>——成本和并发你自己掌控，不挤平台共享额度。适合用量大、或想用更强模型（如 deepseek-v4-pro）的门店。<b>不开启则用平台默认，无需配置。</b>
+            接入你自己的大模型 API Key 后，AI 生成就走<b>你自己的账户</b>——成本和并发你自己掌控，不挤平台共享额度。适合用量大、或想用更强模型的门店。<b>不开启则用平台默认，无需配置。</b>
           </div>
 
           {/* 多供应商配置档：存好几套、一键切换（CC Switch 式） */}
@@ -328,22 +341,39 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
             </button>
           </div>
 
-          {/* 供应商快填 */}
-          <div className="flex flex-wrap gap-2">
-            <span className="self-center text-xs text-slate-400">快填：</span>
-            {PRESETS.map((p) => (
-              <button
-                key={p.label}
-                type="button"
-                onClick={() => {
-                  setBaseUrl(p.base_url);
-                  setModel(p.model);
-                }}
-                className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600 transition-colors active:scale-[0.97] active:bg-slate-200"
-              >
-                {p.label}
-              </button>
-            ))}
+          {/* 供应商快填：点一下只填接口地址；模型名去对应官网看了再填（每家给可点的官网链接） */}
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="self-center text-xs text-slate-400">快填地址：</span>
+              {PRESETS.map((p) => (
+                <button
+                  key={p.label}
+                  type="button"
+                  onClick={() => setBaseUrl(p.base_url)}
+                  className={`rounded-full px-3 py-1 text-xs font-medium transition-colors active:scale-[0.97] ${
+                    baseUrl.trim() === p.base_url
+                      ? "bg-brand-100 text-brand-700"
+                      : "bg-slate-100 text-slate-600 active:bg-slate-200"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span className="text-xs text-slate-400">去官网拿 Key / 看模型名：</span>
+              {PRESETS.map((p) => (
+                <button
+                  key={p.label}
+                  type="button"
+                  onClick={() => openExternal(p.url)}
+                  className="inline-flex items-center gap-0.5 text-xs text-brand-600 transition-colors hover:underline"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  {p.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* base_url */}
@@ -370,8 +400,8 @@ export function ByokConfigSheet({ open, onClose }: { open: boolean; onClose: () 
           {/* model */}
           <div>
             <label className="mb-1 block text-sm font-medium text-slate-700">模型名（model）</label>
-            <input className={inputCls} value={model} onChange={(e) => setModel(e.target.value)} placeholder="deepseek-v4-pro" />
-            <p className="mt-1 px-1 text-xs text-slate-400">如 deepseek-v4-pro（守规更稳）/ deepseek-v4-flash（更便宜）/ mimo-v2.5。</p>
+            <input className={inputCls} value={model} onChange={(e) => setModel(e.target.value)} placeholder="粘贴你在该厂商选的模型名" />
+            <p className="mt-1 px-1 text-xs text-slate-400">各家模型名不同、也常更新，点上面对应官网链接看有哪些可用、复制填这里（火山填的是接入点 ID / Model ID）。</p>
           </div>
 
           {/* 生图模型（与文字分开配：文字多用 DeepSeek、生图用 OpenAI gpt-image，Key 通常不同） */}

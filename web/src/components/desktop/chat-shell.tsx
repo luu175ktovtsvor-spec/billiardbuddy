@@ -70,11 +70,18 @@ export function DesktopChatShell({
   const [liveStoreName, setLiveStoreName] = useState<string | undefined>();
   const [liveSpend, setLiveSpend] = useState<string | undefined>();
   const [liveToday, setLiveToday] = useState<string | undefined>();
+  // 当前在用的文字模型名（侧栏底部显示「正在用：xxx」）：BYOK 启用且配了 key 才算在用
+  const [liveModel, setLiveModel] = useState<string | undefined>();
   useEffect(() => {
     let cancelled = false;
     (async () => {
       // allSettled：任一接口挂了不拖垮其它，拿不到的就保持默认/占位
-      const [s, c, t] = await Promise.allSettled([api.getMyStore(), api.getCost(), api.getTodayDashboard()]);
+      const [s, c, t, b] = await Promise.allSettled([
+        api.getMyStore(),
+        api.getCost(),
+        api.getTodayDashboard(),
+        api.getByokConfig(),
+      ]);
       if (cancelled) return;
       if (s.status === "fulfilled" && s.value?.name) setLiveStoreName(s.value.name);
       if (c.status === "fulfilled" && typeof c.value?.est_cost_yuan === "number") {
@@ -83,6 +90,9 @@ export function DesktopChatShell({
       if (t.status === "fulfilled") {
         const rec = t.value?.recommendations?.[0];
         if (rec) setLiveToday(rec.description || rec.title);
+      }
+      if (b.status === "fulfilled" && b.value?.enabled && b.value?.key_configured && b.value?.model) {
+        setLiveModel(b.value.model);
       }
     })();
     return () => { cancelled = true; };
@@ -156,6 +166,7 @@ export function DesktopChatShell({
         <DesktopSidebar
           storeName={liveStoreName || storeName}
           monthlySpend={liveSpend ?? monthlySpend}
+          modelLabel={liveModel}
           conversations={conversations}
           activeId={chat.conversationId ?? undefined}
           onNewChat={chat.startNewChat}
