@@ -42,8 +42,11 @@ class SiliconFlowImageProvider(ImageProvider):
             "image_size": size.replace("*", "x"),  # 硅基流动用 image_size、x 格式（非 OpenAI 的 size）
             "batch_size": 1,
         }
-        if image:  # 以图生图：收 base64 data-uri（单图）
-            img = image[0] if isinstance(image, list) else image
+        if image:  # 以图生图：收 base64 data-uri（仅单图，多图只用第一张）
+            imgs = image if isinstance(image, list) else [image]
+            if len(imgs) > 1:  # 别让多余的 Logo/二维码"以为带了其实没带"，明确记一笔
+                logger.warning("硅基流动以图生图只收 1 张参考图：本次 %d 张只用第一张（多余的不会进图）", len(imgs))
+            img = imgs[0]
             if isinstance(img, (bytes, bytearray)):
                 body["image"] = "data:image/png;base64," + base64.b64encode(img).decode()
 

@@ -207,10 +207,10 @@ async def _load_agent_history(db, store, conversation_id: str | None) -> list[di
         hist: list[dict] = []
         for g in rows[-5:]:
             uin = (g.input_params or {}).get("message")
-            if uin:
-                hist.append({"role": "user", "content": uin})
-            if g.result:
-                hist.append({"role": "assistant", "content": g.result[:2000]})
+            if not uin or not g.result:
+                continue  # 只取完整一轮(user+assistant)，跳过半截记录，避免连续同角色消息
+            hist.append({"role": "user", "content": uin})
+            hist.append({"role": "assistant", "content": g.result[:2000]})
         return hist
     except Exception:
         logger.warning("agent 历史加载失败 conversation_id=%s", conversation_id, exc_info=True)

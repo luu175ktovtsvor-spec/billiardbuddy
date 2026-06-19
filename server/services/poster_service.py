@@ -181,6 +181,9 @@ async def generate_images(
     # 生图 BYOK：门店配了自带生图模型 → 用门店的 key/base_url（自担成本）；否则回退平台默认。
     api_key, image_base_url, image_model_cfg = ProviderFactory.get_image_config_for_store(store)
     if not api_key:
+        import os
+        if os.environ.get("DESKTOP_LOCAL") == "1":  # 桌面纯 BYOK：没有"平台默认"，别误导老板留空
+            raise ValueError("生图模型未配置：请在「模型设置」里填你自己的生图模型 Key（桌面版用你自己的 key，没有平台默认）")
         raise ValueError("生图模型未配置：请在「模型设置」里填生图模型的 Key（或留空用平台默认）")
 
     # ── 1. 全部校验前置：非法参数必须在调用生图 API（真金白银）之前拦下 ──
@@ -332,8 +335,8 @@ async def generate_images(
             async with _get_image_semaphore():
                 image_bytes = await provider.generate_image(
                     prompt=full_prompt,
-                    # 门店 BYOK 配了生图模型(如国内 Kwai-Kolors/Kolors 走 OpenAI 兼容端点)→ 用它；否则平台默认 gpt-image-2
-                    model=image_model_cfg or "gpt-image-2",
+                    # 门店 BYOK 配了生图模型→ 用它；否则回退调用方传入的 image_model（make_poster 传 gpt-image-2、生图页可传别的）
+                    model=image_model_cfg or image_model,
                     size=size,
                     quality=quality,
                     image=input_images if input_images else None,

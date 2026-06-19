@@ -70,15 +70,14 @@ export function useAgentChat(opts: AgentChatOptions) {
     if (!msg || generating) return;
     const o = optsRef.current;
 
-    setMessages((prev) => {
-      const history = prev
-        .filter((m) => !m.error)
-        .slice(-12)
-        .map((m) => ({ role: m.role, content: m.content.slice(0, 2000) }));
-      // 真正发送放在下面（用 prev 拿 history）——这里只追加 user 消息
-      void runSend(msg, history);
-      return [...prev, { role: "user", content: msg }];
-    });
+    // 在 updater 外算好 history（读当前 messages），updater 只追加 user 气泡。
+    // 副作用 runSend 绝不放进 setMessages 更新函数里——否则 React StrictMode 开发态会把 updater 跑两次→同一条消息双发请求。
+    const history = messages
+      .filter((m) => !m.error)
+      .slice(-12)
+      .map((m) => ({ role: m.role, content: m.content.slice(0, 2000) }));
+    setMessages((prev) => [...prev, { role: "user", content: msg }]);
+    void runSend(msg, history);
 
     async function runSend(message: string, history: { role: string; content: string }[]) {
       setDraft("");
@@ -148,7 +147,7 @@ export function useAgentChat(opts: AgentChatOptions) {
         if (!controller.signal.aborted) setGenerating(false);
       }
     }
-  }, [generating, conversationId]);
+  }, [generating, conversationId, messages]);
 
   const confirmApproval = useCallback(async (idx: number, ap: ApprovalState) => {
     const o = optsRef.current;
