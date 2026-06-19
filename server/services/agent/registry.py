@@ -40,6 +40,9 @@ class Tool:
     # 提问工具（AskUserQuestion，借鉴 cc-haha）：循环里不执行，改吐 ask_question 事件让前端渲染选项卡片，
     # 老板点选后把选择作为下一条消息发回。问题与选项由模型填进 args（question/options）。
     is_question: bool = False
+    # SH-3 工具结果落盘阈值（单位：字符）：超阈值且非成品/非自读类 → 落盘 tool-results/，回灌路径+预览。
+    #   None = 用全局默认 _MAX_TOOL_RESULT_CHARS；给 read 类自读工具设很大值/特判可避免"读出来又落盘读不回"。
+    max_result_chars: int | None = None
 
     def to_openai_schema(self) -> dict:
         """导出成 DeepSeek/OpenAI 兼容的 tools 数组元素。"""
@@ -97,6 +100,7 @@ def tool(
     read_only: bool = False,
     force_confirm: bool = False,
     is_question: bool = False,
+    max_result_chars: int | None = None,
     registry: ToolRegistry | None = None,
 ) -> Callable[[ToolHandler], ToolHandler]:
     """装饰器：把一个 async 函数登记为工具。
@@ -121,6 +125,7 @@ def tool(
                 read_only=read_only,
                 force_confirm=force_confirm,
                 is_question=is_question,
+                max_result_chars=max_result_chars,
             )
         )
         return fn

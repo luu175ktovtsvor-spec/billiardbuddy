@@ -31,6 +31,7 @@ class MockTextProvider(TextProvider):
     async def generate_stream(
         self, request: TextRequest, usage_sink: dict | None = None,
         tool_calls_sink: list[dict] | None = None,
+        finish_sink: dict | None = None,
     ) -> AsyncIterator[str]:
         if self._scripted is not None:
             resp = self._scripted.pop(0) if self._scripted else TextResponse(content="[MOCK] 脚本已用尽", model="mock")
@@ -38,8 +39,12 @@ class MockTextProvider(TextProvider):
                 yield resp.content
             if resp.tool_calls and tool_calls_sink is not None:
                 tool_calls_sink.extend(resp.tool_calls)
+            if finish_sink is not None and resp.finish_reason is not None:
+                finish_sink["finish_reason"] = resp.finish_reason  # SH-4：透出脚本的 finish_reason 供截断恢复测试
             if usage_sink is not None:
-                usage_sink.update({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+                # SH-2：透出脚本里的 tokens_used，供 token 预算早停测试驱动（脚本没设则 0）
+                t = resp.tokens_used or 0
+                usage_sink.update({"prompt_tokens": 0, "completion_tokens": t, "total_tokens": t})
             return
         logger.warning("正在使用 MockTextProvider（流式），仅用于开发调试")
         yield "[MOCK] [Mock 流式输出] "

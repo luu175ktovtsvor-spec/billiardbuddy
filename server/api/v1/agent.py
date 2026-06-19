@@ -155,15 +155,18 @@ async def _learn_in_background(store_id: str, text: str) -> None:
         logger.exception("agent 店脑后台学习失败 store_id=%s", store_id)
 
 
-async def _persist_agent_chat(db, store, user, message: str, content: str, gen_id: str, conv_uuid, turns: int) -> None:
-    """落库 agent 会话(type=agent)+conversation_id,供刷新续接/分析,并打点。故障安全:失败不阻断 SSE。"""
+async def _persist_agent_chat(db, store, user, message: str, content: str, gen_id: str, conv_uuid, turns: int,
+                              tokens_used: int = 0) -> None:
+    """落库 agent 会话(type=agent)+conversation_id,供刷新续接/分析,并打点。故障安全:失败不阻断 SSE。
+    SH-2：tokens_used 拿循环累加的真实编排消耗（喂 BYOK 成本看板），端点没返回时为粗估值。"""
     import uuid as _uuid
     try:
         from models.generation import Generation
         db.add(Generation(
             id=_uuid.UUID(gen_id), store_id=store.id, user_id=(user.id if user else None),
             type="agent", sub_type="chat", input_params={"message": message},
-            prompt_used=message, result=(content or ""), model_used="agent", tokens_used=0,
+            prompt_used=message, result=(content or ""), model_used="agent",
+            tokens_used=(tokens_used or 0),
             conversation_id=conv_uuid,
         ))
         await db.commit()
@@ -390,11 +393,13 @@ async def agent_chat(
                     # 下面 json.dumps(event) 原样透传给前端成品卡（无需在此重组，{**event,...} 也会保留它）。
                 if et == "done":
                     turns = event.get("turns", 0) or 0
+                    tokens_used = event.get("tokens_used", 0) or 0  # SH-2：循环累加的真实编排消耗
                     try:  # 工具使用可观测（故障安全，不影响 SSE）
                         from services.usage_event_service import log_event
                         await log_event("agent_tools", store_id=str(store.id),
                                         user_id=(str(user.id) if user else None),
-                                        props={"tools": tools_used[:20], "failures": tool_failures, "turns": turns})
+                                        props={"tools": tools_used[:20], "failures": tool_failures,
+                                               "turns": turns, "tokens_used": tokens_used})
                     except Exception:
                         pass
                     # 落库 result = 交付成品 + 收尾语：① 历史里看得到真内容 ② 下一轮"把刚才那条改一下"大脑读得到
@@ -402,7 +407,8 @@ async def agent_chat(
                     if deliverables:
                         tail = f"\n\n{final_content}" if final_content.strip() else ""
                         persist_text = "\n\n".join(deliverables) + tail
-                    await _persist_agent_chat(db, store, user, body.message, persist_text, gen_id, conv_uuid, turns)
+                    await _persist_agent_chat(db, store, user, body.message, persist_text, gen_id, conv_uuid,
+                                              turns, tokens_used=tokens_used)
                     event = {**event, "generation_id": gen_id, "conversation_id": str(conv_uuid)}
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception:
