@@ -29,11 +29,18 @@ export interface ApprovalState {
   status: "pending" | "done" | "cancelled";
 }
 
+export interface QuestionData {
+  question: string;
+  options: { label: string; description?: string }[];
+  multi?: boolean;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   steps?: ToolStep[];
   approval?: ApprovalState;
+  question?: QuestionData; // AskUserQuestion：管家给老板的选项，老板点选后作为下一句消息发回
   error?: boolean;
 }
 
@@ -83,6 +90,7 @@ export function useAgentChat(opts: AgentChatOptions) {
       const steps: ToolStep[] = [];
       let finalText = "";
       let approval: ApprovalState | undefined;
+      let question: QuestionData | undefined;
 
       try {
         await api.streamAgent(
@@ -112,13 +120,16 @@ export function useAgentChat(opts: AgentChatOptions) {
             onApprovalRequest: (tool, args, _id, token, preview) => {
               approval = { tool, args, token, preview, status: "pending" };
             },
+            onAskQuestion: (q) => {
+              question = { question: q.question, options: q.options, multi: q.multi };
+            },
             onFinal: (content) => {
               finalText = content;
             },
             onDone: (info) => {
               setMessages((prev) => [
                 ...prev,
-                { role: "assistant", content: finalText, steps: steps.length ? [...steps] : undefined, approval },
+                { role: "assistant", content: finalText, steps: steps.length ? [...steps] : undefined, approval, question },
               ]);
               if (info?.conversation_id) setConversationId(info.conversation_id);
               setDraft("");

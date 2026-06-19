@@ -10,7 +10,7 @@ import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2 } from "lucide-r
 
 import { CopyButton } from "@/components/generators/copy-button";
 import { toolMeta, DELIVERABLE_TOOLS, approvalLabel, approvalConfirmText } from "@/lib/agent-tools";
-import type { ChatMessage, ToolStep, ApprovalState } from "@/hooks/use-agent-chat";
+import type { ChatMessage, ToolStep, ApprovalState, QuestionData } from "@/hooks/use-agent-chat";
 import type { PreviewItem } from "./preview-panel";
 
 /** 从一段 markdown 里抽第一张图片的 url（海报结果是 ![门店海报](url)）。 */
@@ -155,6 +155,29 @@ function MacApprovalCard({
   );
 }
 
+function MacQuestionCard({ q, onAnswer }: { q: QuestionData; onAnswer: (label: string) => void }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-black/[0.07] bg-white shadow-sm">
+      <div className="border-b border-black/[0.07] px-4 py-2.5 text-[13px] font-medium text-[#1d1d1f]">
+        🤔 {q.question}
+      </div>
+      <div className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2">
+        {q.options.map((o, i) => (
+          <button
+            key={i}
+            type="button"
+            onClick={() => onAnswer(o.label)}
+            className="rounded-lg border border-black/[0.07] bg-white p-3 text-left transition hover:border-brand-600 hover:bg-brand-50 active:scale-[0.99]"
+          >
+            <div className="text-[13.5px] font-medium text-[#1d1d1f]">{o.label}</div>
+            {o.description && <div className="mt-0.5 text-[12px] text-[#86868b]">{o.description}</div>}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function DesktopChatThread({
   messages,
   draft,
@@ -165,6 +188,7 @@ export function DesktopChatThread({
   onCancel,
   onPublish,
   onPreview,
+  onAnswer,
 }: {
   messages: ChatMessage[];
   draft: string;
@@ -175,6 +199,7 @@ export function DesktopChatThread({
   onCancel: (idx: number) => void;
   onPublish?: (platform: unknown, content: string) => void;
   onPreview?: (item: PreviewItem) => void;
+  onAnswer?: (label: string) => void;
 }) {
   return (
     <div className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
@@ -215,6 +240,7 @@ export function DesktopChatThread({
                 {m.approval && (
                   <MacApprovalCard ap={m.approval} idx={idx} executing={executingIdx === idx} onConfirm={onConfirm} onCancel={onCancel} />
                 )}
+                {m.question && onAnswer && <MacQuestionCard q={m.question} onAnswer={onAnswer} />}
               </>
             )}
           </div>

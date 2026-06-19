@@ -83,6 +83,37 @@ async def find_scenario(args: dict, ctx) -> str:
 
 
 @tool(
+    name="ask_user_question",
+    description="当你需要老板在几个方案/方向里先做个选择才能往下做时（如海报走哪种风格、活动主打什么方向、面向哪类客户、"
+                "价位高还是低），用这个把 2-4 个选项摆给他点选，**别自己替他定**。每个选项给一个简短标签 + 一句说明。"
+                "问完就停下等他点选，他选了会作为下一句消息发回来，你再接着做。需求很明确、没有歧义时别用它（直接做）。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "question": {"type": "string", "description": "要问老板的问题，一句话说清楚"},
+            "options": {
+                "type": "array",
+                "description": "2-4 个选项",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "description": "选项标签，简短（如『暖色温馨』）"},
+                        "description": {"type": "string", "description": "这个选项的一句话说明（可选）"},
+                    },
+                    "required": ["label"],
+                },
+            },
+            "allow_multiple": {"type": "boolean", "description": "是否允许多选，默认否"},
+        },
+        "required": ["question", "options"],
+    },
+    is_question=True,
+)
+async def ask_user_question(args: dict, ctx) -> str:
+    return ""  # 由 agent 循环拦截、不实际执行（吐 ask_question 事件让前端渲染选项卡片）
+
+
+@tool(
     name="write_operation_content",
     deliverable=True,
     description="按老板的一句话需求，写一段台球房运营内容（朋友圈/群公告/活动文案/日报叙事等通用文字）。"

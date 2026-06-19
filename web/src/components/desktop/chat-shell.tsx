@@ -134,6 +134,7 @@ export function DesktopChatShell({
           onCancel={chat.cancelApproval}
           onPublish={publishHandoff}
           onPreview={setPreview}
+          onAnswer={(label) => { void chat.send(label); }}
         />
       )}
 
