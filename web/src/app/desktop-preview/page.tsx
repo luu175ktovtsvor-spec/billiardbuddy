@@ -41,6 +41,18 @@ const MOCK_MESSAGES: ChatMessage[] = [
       status: "pending",
     },
   },
+  {
+    role: "assistant",
+    content: "对了，海报想走哪种风格？挑一个我来出图 👇",
+    question: {
+      question: "海报想走哪种风格？",
+      options: [
+        { label: "暖色温馨", description: "情侣/朋友局，温暖有约会感" },
+        { label: "动感霓虹", description: "年轻夜场，潮酷吸睛" },
+        { label: "简约高级", description: "干净留白，质感门店" },
+      ],
+    },
+  },
 ];
 
 export default function DesktopPreviewPage() {
@@ -81,6 +93,7 @@ export default function DesktopPreviewPage() {
           onConfirm={() => {}}
           onCancel={() => {}}
           onPreview={setPreviewItem}
+          onAnswer={() => {}}
         />
       ) : (
         <WelcomeScreen

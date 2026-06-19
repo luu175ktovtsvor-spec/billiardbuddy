@@ -37,6 +37,9 @@ class Tool:
     # 高危不可逆/对外操作（如未来的群发短信、平台发布、删数据）——即使在"全自动托管"(full) 模式也强制弹确认。
     # 借鉴 cc-haha 权限瀑布的 bypass-immune：某些操作的人工确认永不被任何"放行模式"旁路。
     force_confirm: bool = False
+    # 提问工具（AskUserQuestion，借鉴 cc-haha）：循环里不执行，改吐 ask_question 事件让前端渲染选项卡片，
+    # 老板点选后把选择作为下一条消息发回。问题与选项由模型填进 args（question/options）。
+    is_question: bool = False
 
     def to_openai_schema(self) -> dict:
         """导出成 DeepSeek/OpenAI 兼容的 tools 数组元素。"""
@@ -93,6 +96,7 @@ def tool(
     deliverable: bool = False,
     read_only: bool = False,
     force_confirm: bool = False,
+    is_question: bool = False,
     registry: ToolRegistry | None = None,
 ) -> Callable[[ToolHandler], ToolHandler]:
     """装饰器：把一个 async 函数登记为工具。
@@ -116,6 +120,7 @@ def tool(
                 deliverable=deliverable,
                 read_only=read_only,
                 force_confirm=force_confirm,
+                is_question=is_question,
             )
         )
         return fn

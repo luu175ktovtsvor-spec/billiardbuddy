@@ -43,6 +43,12 @@ _APPROVAL_PENDING_MSG = (
     "请用一两句话把你打算做的事告诉用户、并请他确认，不要假装已经做完或已生成。"
 )
 
+# 提问工具（AskUserQuestion）：选项已展示给用户、等他点选，回灌提示让模型简短提示、别替他选。
+_QUESTION_PENDING_MSG = (
+    "[等用户选择] 已把选项展示给用户、等他点选。用一句话提示他从中选一个即可，"
+    "不要替他选、也不要假装他已经选了。"
+)
+
 # 达到 max_turns 仍未收敛时，强制模型基于已有结果给一段最终答复（不再给工具），
 # 避免直接返回空答复让用户看到"AI 没反应"。
 _FORCE_FINAL_MSG = "请基于上面已有的工具结果，直接用一段话给用户最终答复，不要再调用任何工具。"
@@ -118,6 +124,8 @@ class _ToolPlan:
     tool_call_id: str | None
     needs_approval: bool = False    # True=命中审批闸（不在循环里执行，回灌"待确认"待用户点）
     error: str | None = None        # 非空=入参校验失败：不执行，把错误回灌让模型改参数重试
+    is_question: bool = False        # True=提问工具：吐 ask_question 事件、不执行，等老板点选
+    question: dict | None = None     # is_question 时的 {question, options, multi}
     pending_msg: str | None = None  # needs_approval 时回灌给模型的"待确认"文本
     preview: str | None = None      # needs_approval 时给老板看的人话 diff
 
@@ -148,6 +156,15 @@ def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _Too
         err = _validate_args(tool, args)
         if err:
             return _ToolPlan(name=name, args=args, tool_call_id=tc_id, error=err)
+        if getattr(tool, "is_question", False):
+            return _ToolPlan(
+                name=name, args=args, tool_call_id=tc_id, is_question=True,
+                question={
+                    "question": args.get("question", "") or "",
+                    "options": args.get("options", []) or [],
+                    "multi": bool(args.get("allow_multiple")),
+                },
+            )
         if tool.requires_approval and not _auto_approve(tool, ctx):
             return _ToolPlan(
                 name=name, args=args, tool_call_id=tc_id, needs_approval=True,
@@ -248,6 +265,13 @@ async def run_agent_loop(
                 steps.append(AgentStep(type="tool_result", tool_name=plan.name,
                                        tool_call_id=plan.tool_call_id, content=plan.error))
                 messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": plan.error})
+                continue
+            if plan.is_question:  # 提问：记一笔 ask_question + 回灌"等用户选"，不执行
+                steps.append(AgentStep(type="ask_question", tool_name=plan.name, tool_args=plan.question,
+                                       tool_call_id=plan.tool_call_id))
+                steps.append(AgentStep(type="tool_result", tool_name=plan.name,
+                                       tool_call_id=plan.tool_call_id, content=_QUESTION_PENDING_MSG))
+                messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": _QUESTION_PENDING_MSG})
                 continue
             if plan.needs_approval:
                 steps.append(AgentStep(type="approval_request", tool_name=plan.name, tool_args=plan.args,
@@ -387,6 +411,11 @@ async def run_agent_loop_stream(
                 yield {"type": "tool_call", "tool": plan.name, "args": plan.args, "id": plan.tool_call_id}
                 yield {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": plan.error}
                 messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": plan.error})
+                continue
+            if plan.is_question:  # 提问：吐 ask_question 事件(带选项)让前端渲染卡片 + 回灌"等用户选"，不执行
+                yield {"type": "ask_question", "tool": plan.name, "id": plan.tool_call_id, **(plan.question or {})}
+                yield {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": _QUESTION_PENDING_MSG}
+                messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": _QUESTION_PENDING_MSG})
                 continue
             if plan.needs_approval:
                 # 审批闸（proposal 模式）：吐 approval_request 让前端弹确认，把"待确认"回灌让模型讲方案；
