@@ -7,6 +7,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
+import { api } from "@/lib/api";
 import { useAgentChat, type PermissionMode } from "@/hooks/use-agent-chat";
 import { DesktopShell, DesktopSidebar } from "./macos-shell";
 import { WelcomeScreen } from "./welcome-screen";
@@ -41,6 +42,28 @@ export function DesktopChatShell({
   const [mode, setMode] = useState<PermissionMode>("ask");
   const chat = useAgentChat({ permissionMode: mode });
   const [preview, setPreview] = useState<PreviewItem | null>(null);
+
+  // 侧栏真数据：门店名 + 本月 AI 花费（拿不到就用传入的默认/占位，不阻断）
+  const [liveStoreName, setLiveStoreName] = useState<string | undefined>();
+  const [liveSpend, setLiveSpend] = useState<string | undefined>();
+  const [liveToday, setLiveToday] = useState<string | undefined>();
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      // allSettled：任一接口挂了不拖垮其它，拿不到的就保持默认/占位
+      const [s, c, t] = await Promise.allSettled([api.getMyStore(), api.getCost(), api.getTodayDashboard()]);
+      if (cancelled) return;
+      if (s.status === "fulfilled" && s.value?.name) setLiveStoreName(s.value.name);
+      if (c.status === "fulfilled" && typeof c.value?.est_cost_yuan === "number") {
+        setLiveSpend(`¥${c.value.est_cost_yuan.toFixed(2)}`);
+      }
+      if (t.status === "fulfilled") {
+        const rec = t.value?.recommendations?.[0];
+        if (rec) setLiveToday(rec.description || rec.title);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // 权限偏好持久化（与手机页同一个 localStorage key，体验一致）
   useEffect(() => {
@@ -85,8 +108,8 @@ export function DesktopChatShell({
     <DesktopShell
       sidebar={
         <DesktopSidebar
-          storeName={storeName}
-          monthlySpend={monthlySpend}
+          storeName={liveStoreName || storeName}
+          monthlySpend={liveSpend ?? monthlySpend}
           conversations={[]}
           onNewChat={chat.startNewChat}
           onOpenSettings={() => router.push("/dashboard/store-settings")}
@@ -99,7 +122,7 @@ export function DesktopChatShell({
       </div>
 
       {empty ? (
-        <WelcomeScreen greeting={timeGreeting()} todaySuggestion={todaySuggestion} onPick={pick} />
+        <WelcomeScreen greeting={timeGreeting()} todaySuggestion={liveToday || todaySuggestion} onPick={pick} />
       ) : (
         <DesktopChatThread
           messages={chat.messages}
