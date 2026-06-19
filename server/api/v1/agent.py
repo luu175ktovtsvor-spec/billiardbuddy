@@ -328,6 +328,7 @@ async def agent_chat(
     ctx = AgentContext(
         db=db, store=store, user=user, allowed_paths=body.selected_files or [],
         permission_mode=perm_mode, full_disk_access=full_disk,
+        auto_spend_limit=getattr(store, "agent_auto_spend_limit", None),
     )
 
     # 多轮续接：有 conversation_id 则从 DB 查本会话历史(替代前端全量回传——刷新不丢、省 token、更可靠);否则用前端 history。
@@ -453,6 +454,7 @@ async def agent_execute(
     ctx = AgentContext(
         db=db, store=store, user=user, allowed_paths=body.selected_files or [],
         full_disk_access=full_disk,
+        auto_spend_limit=getattr(store, "agent_auto_spend_limit", None),
     )
     result = await tool.handler(args, ctx)
     if not isinstance(result, str):

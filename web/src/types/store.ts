@@ -180,6 +180,7 @@ export interface ByokConfigOut {
   image_model: string | null;
   image_key_configured: boolean;
   image_key_mask: string;
+  agent_auto_spend_limit: number | null;
 }
 
 /** BYOK 多供应商配置档（CC Switch 式：存好几套、一键切换） */
@@ -201,6 +202,8 @@ export interface ByokConfigIn {
   image_base_url?: string | null;
   image_api_key?: string | null;
   image_model?: string | null;
+  /** 做海报自动出图上限（B-5）：>=0=上限(0=每张先问)；-1=关闭上限闸；不传=不改 */
+  agent_auto_spend_limit?: number | null;
 }
 
 /** BYOK：测试连接结果 */

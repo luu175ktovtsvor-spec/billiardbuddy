@@ -143,6 +143,8 @@ class BYOKConfigIn(BaseModel):
     image_base_url: str | None = None
     image_api_key: str | None = None
     image_model: str | None = None
+    # 做海报自动出图上限（B-5）：None=不改/用默认；>=0=上限(0=每张先问)；-1=老板关闭上限闸。
+    agent_auto_spend_limit: int | None = None
 
 
 class BYOKConfigOut(BaseModel):
@@ -156,6 +158,7 @@ class BYOKConfigOut(BaseModel):
     image_model: str | None = None
     image_key_configured: bool = False
     image_key_mask: str = ""
+    agent_auto_spend_limit: int | None = None
 
 
 def _ensure_store_owner(store: Store, user: User) -> None:
@@ -175,6 +178,7 @@ def _byok_out(store: Store) -> BYOKConfigOut:
         image_base_url=getattr(store, "byok_image_base_url", None),
         image_model=getattr(store, "byok_image_model", None),
         image_key_configured=bool(iplain), image_key_mask=mask(iplain) if iplain else "",
+        agent_auto_spend_limit=getattr(store, "agent_auto_spend_limit", None),
     )
 
 
@@ -226,6 +230,9 @@ async def update_byok_config(
                 raise HTTPException(status_code=503, detail="服务端未配置 BYOK 主密钥（BYOK_ENCRYPT_KEY），请联系管理员配置后再试")
         else:
             store.byok_image_api_key_enc = None
+    # 做海报自动出图上限（B-5）：仅当显式传了才更新（fields_set），避免首启向导那种只传文字配置的 PUT 把它清掉。
+    if "agent_auto_spend_limit" in body.model_fields_set:
+        store.agent_auto_spend_limit = body.agent_auto_spend_limit
     await db.commit()
     await db.refresh(store)
     return _byok_out(store)
