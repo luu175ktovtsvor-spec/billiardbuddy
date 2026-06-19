@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from config import settings
 from services.agent.approval import sign_approval
 from services.agent.context import AgentContext
-from services.agent.hooks import run_post_tool_hooks, run_pre_tool_hooks
+from services.agent.hooks import run_post_tool_hooks, run_pre_tool_hooks, run_stop_hooks
 from services.agent.registry import ToolRegistry
 from services.ai.base import TextProvider, TextRequest
 from services.ai.factory import ProviderFactory
@@ -236,6 +236,7 @@ async def run_agent_loop(
     messages = _init_messages(system_prompt, history, user_message)
     tools = registry.to_openai_tools()
     steps: list[AgentStep] = []
+    stop_blocked = False  # Stop hook 每轮最多阻断一次（防死循环；仍受 max_turns 兜底）
 
     for turn in range(1, max_turns + 1):
         _microcompact(messages, registry)  # 清理旧的只读工具结果，省上下文 token
@@ -248,8 +249,16 @@ async def run_agent_loop(
             temperature=temperature,
         ))
 
-        # 无工具调用 → 收到最终答复，结束
+        # 无工具调用 → 准备收尾。Stop hook 可阻断停止让它继续（默认无 hook → 直接收尾）。
         if not resp.tool_calls:
+            if not stop_blocked:
+                cont = await run_stop_hooks(messages, ctx)
+                if cont:
+                    stop_blocked = True
+                    if resp.content:
+                        messages.append({"role": "assistant", "content": resp.content})
+                    messages.append({"role": "user", "content": cont})
+                    continue
             steps.append(AgentStep(type="final", content=resp.content))
             return AgentResult(
                 final_text=resp.content, steps=steps, turns=turn,
@@ -421,6 +430,7 @@ async def run_agent_loop_stream(
 
     messages = _init_messages(system_prompt, history, user_message)
     tools = registry.to_openai_tools()
+    stop_blocked = False  # Stop hook 每轮最多阻断一次（防死循环；仍受 max_turns 兜底）
 
     for turn in range(1, max_turns + 1):
         _microcompact(messages, registry)  # 清理旧的只读工具结果，省上下文 token
@@ -435,8 +445,16 @@ async def run_agent_loop_stream(
             yield {"type": "token", "content": tok}
         text = "".join(parts)
 
-        # 无工具调用 → 本轮文本即最终答复
+        # 无工具调用 → 准备收尾。Stop hook 可阻断停止让它继续（默认无 hook → 直接收尾）。
         if not sink:
+            if not stop_blocked:
+                cont = await run_stop_hooks(messages, ctx)
+                if cont:
+                    stop_blocked = True
+                    if text:
+                        messages.append({"role": "assistant", "content": text})
+                    messages.append({"role": "user", "content": cont})
+                    continue
             yield {"type": "final", "content": text}
             yield {"type": "done", "turns": turn, "stopped_reason": _STOP_FINAL}
             return

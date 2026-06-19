@@ -3,7 +3,7 @@ import asyncio
 
 import pytest
 
-from services.agent.hooks import (clear_hooks, register_post_tool_hook, register_pre_tool_hook)
+from services.agent.hooks import (clear_hooks, register_post_tool_hook, register_pre_tool_hook, register_stop_hook)
 from services.agent.loop import run_agent_loop
 from services.agent.registry import Tool, ToolRegistry
 from services.ai.base import TextResponse
@@ -93,3 +93,26 @@ def test_no_hooks_no_behavior_change():
     res = asyncio.run(run_agent_loop(user_message="x", registry=_reg(executed), provider=_provider()))
     assert executed == ["ran"]
     assert res.final_text == "完成"
+
+
+def test_stop_hook_blocks_once_then_allows():
+    seen = {"n": 0}
+
+    async def stop_hook(messages, ctx):
+        seen["n"] += 1
+        return {"continue": "再确认一下有没有遗漏"}  # 总想阻断
+
+    register_stop_hook(stop_hook)
+
+    state = {"t": 0}
+
+    class _P(MockTextProvider):
+        async def generate(self, request):
+            state["t"] += 1
+            return TextResponse(content=f"答复{state['t']}", model="mock", finish_reason="stop")  # 从不调工具
+
+    res = asyncio.run(run_agent_loop(user_message="x", registry=_reg([]), provider=_P()))
+    assert seen["n"] == 1            # 阻断一次后 stop_blocked，不再调 stop hook（防死循环）
+    assert res.final_text == "答复2"  # 第二轮才真收尾
+    assert res.turns >= 2
+    assert any(m.get("role") == "user" and "再确认一下" in str(m.get("content")) for m in res.messages)
