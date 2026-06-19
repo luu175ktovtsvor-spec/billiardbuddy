@@ -308,8 +308,8 @@ export default function StoreSettingsPage() {
           className="flex h-[52px] items-center gap-3 px-4 transition-colors active:bg-slate-100 lg:hover:bg-slate-50"
         >
           <span className="text-xl">🧠</span>
-          <span className="min-w-0 flex-1 truncate text-[15px] font-medium text-slate-800">AI 眼里的你的店</span>
-          <span className="shrink-0 text-xs text-slate-400">越用越懂·可纠错</span>
+          <span className="min-w-0 flex-1 truncate text-[15px] font-medium text-slate-800">我的店规矩</span>
+          <span className="shrink-0 text-xs text-slate-400">你定的+AI学到的</span>
           <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />
         </Link>
         {store.my_role === "owner" && (

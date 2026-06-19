@@ -20,6 +20,8 @@ _TYPE_LABEL = {
     "episodic": "发生过的事",
 }
 
+_SOURCE_LABEL = {"manual": "店主定", "auto": "AI学到"}
+
 
 class MemoryItem(BaseModel):
     id: str
@@ -27,6 +29,8 @@ class MemoryItem(BaseModel):
     type_label: str
     content: str
     confidence: str
+    source: str
+    source_label: str
 
 
 class MemoryUpdate(BaseModel):
@@ -39,9 +43,11 @@ class MemoryCreate(BaseModel):
 
 
 def _item(m: StoreMemory) -> MemoryItem:
+    src = getattr(m, "source", None) or "auto"
     return MemoryItem(
         id=str(m.id), type=m.type, type_label=_TYPE_LABEL.get(m.type, m.type),
         content=m.content, confidence=m.confidence,
+        source=src, source_label=_SOURCE_LABEL.get(src, src),
     )
 
 
@@ -72,7 +78,11 @@ async def add_memory(
     injection = check_input_injection(content)
     if injection:
         raise HTTPException(status_code=400, detail=injection)
-    m = StoreMemory(store_id=store.id, type=body.type, content=content, confidence="high")
+    # 老板亲自填的 = 店规矩，标 source="manual"：AI 学习时绝不删改、注入时最高优先。
+    m = StoreMemory(
+        store_id=store.id, type=body.type, content=content,
+        confidence="high", source="manual",
+    )
     db.add(m)
     await db.commit()
     await db.refresh(m)
@@ -101,6 +111,8 @@ async def update_memory(memory_id: str, body: MemoryUpdate,
     if injection:
         raise HTTPException(status_code=400, detail=injection)
     m.content = content
+    # 老板亲手改过 = 认定为店规矩，转 manual：此后 AI 学习绝不删改、注入最高优先。
+    m.source = "manual"
     await db.commit()
     return _item(m)
 

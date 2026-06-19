@@ -30,6 +30,7 @@ class Memory:
     type: str             # semantic | preference | operational | episodic
     content: str
     confidence: str = "medium"
+    source: str = "auto"  # manual=老板亲定的店规矩(AI 绝不删改、注入最高优先) | auto=AI 学到
 
 
 _TYPE_MAP = {
@@ -164,14 +165,20 @@ _MEMORY_INJECT_CAP = 15
 
 
 def select_relevant_memories(memories: list[Memory], intent, cap: int = _MEMORY_INJECT_CAP) -> list[Memory]:
-    """按需召回：记忆多于 cap 时，只留与当前需求【语义最相关】的 cap 条（+置信度加权）。
+    """按需召回：manual（老板亲定的店规矩）**始终全部注入**（不进 cap、最高优先、绝不被挤掉）；
+    auto 记忆多于 cap 时，只留与当前需求【语义最相关】的 cap 条（+置信度加权）。
 
-    解决"店脑全量注入"——量大了把整包记忆塞进 prompt 会触发 context rot（弱模型召回变差）、
-    还白烧 BYOK token。改成按相关性召回相关的几条。少于 cap 或无 intent → 全留（向后兼容）。
-    用 RAG 嵌入器做【内存内】排序，不碰持久索引（记忆可编辑，避免同步问题）；失败安全回退全量。
+    解决"店脑全量注入"——auto 量大了把整包塞进 prompt 会触发 context rot（弱模型召回变差）、
+    还白烧 BYOK token。改成 auto 按相关性召回。auto 少于 cap 或无 intent → auto 全留（向后兼容）。
+    用 RAG 嵌入器做【内存内】排序，不碰持久索引（记忆可编辑，避免同步问题）；失败安全回退 auto 全量。
+    返回顺序：manual 在前（最高优先），auto 在后。
     """
-    if not memories or not intent or not str(intent).strip() or len(memories) <= cap:
+    if not memories:
         return memories
+    manual = [m for m in memories if getattr(m, "source", "auto") == "manual"]
+    auto = [m for m in memories if getattr(m, "source", "auto") != "manual"]
+    if not intent or not str(intent).strip() or len(auto) <= cap:
+        return manual + auto
     try:
         from services.rag.embedder import get_embedder, cosine
         emb = get_embedder()
@@ -179,26 +186,39 @@ def select_relevant_memories(memories: list[Memory], intent, cap: int = _MEMORY_
         bonus = {"high": 0.10, "medium": 0.0, "low": -0.05}
         scored = [
             (cosine(q, emb.embed(m.content or "")) + bonus.get(getattr(m, "confidence", "medium"), 0.0), m)
-            for m in memories
+            for m in auto
         ]
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [m for _, m in scored[:cap]]
+        return manual + [m for _, m in scored[:cap]]
     except Exception:
-        return memories  # 召回失败不影响主流程，回退全量
+        return manual + auto  # 召回失败不影响主流程，回退 auto 全量（manual 始终在前）
 
 
 def format_memories_for_prompt(memories: list[Memory], intent=None) -> str:
     """把店脑格式化成注入 prompt 的稳定前缀文本（空记忆返回空串）。
-    传 intent 则先按需召回相关记忆（避免全量注入撑大 prompt）；不传则全留。"""
+    传 intent 则先按需召回相关记忆（避免全量注入撑大 prompt）；不传则全留。
+
+    分两段：manual（老板亲定的店规矩）单独成块、标"优先级最高·冲突以此为准"；auto 保持原样。
+    """
     if not memories:
         return ""
     if intent:
         memories = select_relevant_memories(memories, intent)
-    lines = "\n".join(f"- {m.content}" for m in memories)
-    return (
-        "【这家店的最新记忆（AI 长期积累的最新最准信息；写内容时**如与其他门店资料/价格冲突，一律以这里为准**；"
-        "自然运用、不要照抄、不要无关硬塞）】\n" + lines
-    )
+    manual = [m for m in memories if getattr(m, "source", "auto") == "manual"]
+    auto = [m for m in memories if getattr(m, "source", "auto") != "manual"]
+    blocks: list[str] = []
+    if manual:
+        blocks.append(
+            "【店主亲自定的店规矩·优先级最高·与其它资料冲突时以此为准（必须严格遵守，不得违背）】\n"
+            + "\n".join(f"- {m.content}" for m in manual)
+        )
+    if auto:
+        blocks.append(
+            "【这家店的最新记忆（AI 长期积累的最新最准信息；写内容时**如与其他门店资料/价格冲突，一律以这里为准**；"
+            "自然运用、不要照抄、不要无关硬塞）】\n"
+            + "\n".join(f"- {m.content}" for m in auto)
+        )
+    return "\n\n".join(blocks)
 
 
 def with_store_brain(prompt: str, memories: list[Memory], intent=None) -> str:
@@ -220,7 +240,7 @@ def _sid(store_id) -> uuid.UUID:
 
 
 async def load_store_memory(db: AsyncSession, store_id) -> list[Memory]:
-    """读一家店的全部记忆。"""
+    """读一家店的全部记忆（manual + auto 都返回，带 source）。"""
     rows = (
         await db.execute(
             select(StoreMemory)
@@ -228,15 +248,29 @@ async def load_store_memory(db: AsyncSession, store_id) -> list[Memory]:
             .order_by(StoreMemory.created_at)
         )
     ).scalars().all()
-    return [Memory(r.type, r.content, r.confidence) for r in rows]
+    return [
+        Memory(r.type, r.content, r.confidence, getattr(r, "source", None) or "auto")
+        for r in rows
+    ]
 
 
 async def _replace_store_memory(db: AsyncSession, store_id, memories: list[Memory]) -> None:
-    """用整合后的列表整体替换该店记忆（delete + insert）。"""
+    """只替换该店的 **auto 记忆**（delete + insert），manual（老板亲定的店规矩）原样保留绝不删改。
+
+    `memories` 是整合后的【auto 列表】；只删 source!='manual' 的旧行，再插入新 auto 行。
+    manual 行不在删除范围、也不重复插入 → 老板手填的店规矩永远不被 AI 覆盖。
+    """
     sid = _sid(store_id)
-    await db.execute(delete(StoreMemory).where(StoreMemory.store_id == sid))
+    await db.execute(
+        delete(StoreMemory).where(
+            StoreMemory.store_id == sid, StoreMemory.source != "manual"
+        )
+    )
     for m in memories:
-        db.add(StoreMemory(store_id=sid, type=m.type, content=m.content, confidence=m.confidence))
+        db.add(StoreMemory(
+            store_id=sid, type=m.type, content=m.content,
+            confidence=m.confidence, source="auto",
+        ))
     await db.commit()
 
 
@@ -269,11 +303,17 @@ async def remember(db: AsyncSession, store_id, interaction_text: str) -> list[Me
                 text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
                 {"k": f"store_memory:{store_id}"},
             )
-        existing = await load_store_memory(db, store_id)
-        merged = await consolidate_memories(existing, new, store) if existing else new
-        merged = _cap_memories(merged)
-        await _replace_store_memory(db, store_id, merged)
-        return merged
+        all_existing = await load_store_memory(db, store_id)
+        # 只管理 auto 记忆：manual（老板亲定的店规矩）拆出来原样保留，绝不进 AI 整合/删改。
+        existing_auto = [m for m in all_existing if m.source != "manual"]
+        manual = [m for m in all_existing if m.source == "manual"]
+        merged_auto = (
+            await consolidate_memories(existing_auto, new, store) if existing_auto else new
+        )
+        merged_auto = _cap_memories(merged_auto)
+        # _replace 只删/换 auto 行，manual 行不动 → 落库后店脑 = manual（原样）+ merged_auto。
+        await _replace_store_memory(db, store_id, merged_auto)
+        return manual + merged_auto
     except Exception:
         logger.exception("memory_service.remember 失败 store_id=%s", store_id)
         return []
