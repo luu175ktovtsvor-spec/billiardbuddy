@@ -91,6 +91,10 @@ class Store(Base):
     byok_image_api_key_enc: Mapped[str | None] = mapped_column(Text)
     byok_image_model: Mapped[str | None] = mapped_column(String(100))
 
+    # 做海报自动出图上限（B-5）：full(跳过确认)模式下一轮内免确认自动花钱的张数上限，老板可在 UI 调。
+    # None=用默认(env DESKTOP_AGENT_AUTO_SPEND_LIMIT，默认5)；>=0=上限(0=每张都先问)；-1=老板关闭上限闸(他自己的 BYOK key/钱)。
+    agent_auto_spend_limit: Mapped[int | None] = mapped_column(Integer)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
