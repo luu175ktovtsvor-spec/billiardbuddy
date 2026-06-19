@@ -8,13 +8,13 @@ import { useCallback, useEffect, useState } from "react";
 import { Sparkles, KeyRound } from "lucide-react";
 import { useDesktop } from "@/hooks/use-desktop";
 import { api } from "@/lib/api";
-import { ByokConfigSheet } from "@/components/byok-config-sheet";
+import { ByokOnboardingWizard } from "@/components/byok-onboarding-wizard";
 
 export function DesktopByokGate() {
   const { isDesktop } = useDesktop();
   const [needsKey, setNeedsKey] = useState(false);
   const [checked, setChecked] = useState(false);
-  const [sheetOpen, setSheetOpen] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   const check = useCallback(async () => {
     try {
@@ -57,7 +57,7 @@ export function DesktopByokGate() {
               填一次就行，之后写文案/做方案/改报表都能用。
             </p>
             <button
-              onClick={() => setSheetOpen(true)}
+              onClick={() => setWizardOpen(true)}
               className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-amber-500 px-4 py-2 text-[14px] font-medium text-white transition active:scale-[0.98]"
             >
               <Sparkles className="h-4 w-4" />
@@ -66,11 +66,11 @@ export function DesktopByokGate() {
           </div>
         </div>
       </div>
-      <ByokConfigSheet
-        open={sheetOpen}
-        onClose={() => {
-          setSheetOpen(false);
-          void check(); // 关闭后复查:填好了就自动撤掉提示
+      <ByokOnboardingWizard
+        open={wizardOpen}
+        onClose={() => setWizardOpen(false)}
+        onDone={() => {
+          void check(); // 向导填好后复查:配上了就自动撤掉提示条
         }}
       />
     </>
