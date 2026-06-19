@@ -11,6 +11,7 @@ import logging
 
 from core.timezone import business_today
 from services.agent.registry import default_registry, tool
+from services.agent.poster_styles import resolve_style_prompt, style_labels_hint
 from services.agent.scenario_catalog import format_catalog_for_model
 from services.content_service import _append_guardrails, generate_activity, generate_workbench, run_generation
 from services.dashboard_service import get_today_dashboard
@@ -309,13 +310,18 @@ _POSTER_GENERATING: set[str] = set()
 
 @tool(
     name="make_poster",
-    description="给门店做一张活动/宣传海报（AI 生图）。当用户要『做张海报/出张图/弄个海报』时，"
-                "把你构思好的海报画面描述填进 description，**直接调用本工具**。"
-                "不用先用文字问用户『行不行』——系统会自动弹出确认卡片让他点，确认后才真正生成、才花钱。",
+    description=(
+        "给门店做一张活动/宣传海报（AI 生图）。当用户要『做张海报/出张图/弄个海报』时调用。"
+        "**做海报前，若老板没明确指定风格，先用 ask_user_question 问他想走哪种风格**"
+        f"（可选：{style_labels_hint()}；也可让他自己说），他选了再带 style 调用我——"
+        "风格会真正拼进给模型的提示词、出的图才对味（不是摆设）。需求里已指定风格或很明确，就直接调、不必多问。"
+        "不用先用文字问『行不行』——系统会自动弹确认卡片，确认后才真正生成、才花钱。"
+    ),
     parameters={
         "type": "object",
         "properties": {
-            "description": {"type": "string", "description": "海报要画成什么样的完整描述（主题/风格/元素/氛围/想突出的卖点），越具体越好"},
+            "description": {"type": "string", "description": "海报画面的完整描述（主题/元素/氛围/想突出的卖点），越具体越好"},
+            "style": {"type": "string", "description": "海报风格(可选)：老板从 ask_user_question 选的那个风格 label，或他自己说的风格。会被拼进给模型的提示词。"},
             "ratio": {"type": "string", "description": "比例(可选)：1:1 / 3:4 / 9:16 / 16:9，默认 1:1"},
         },
         "required": ["description"],
@@ -330,6 +336,11 @@ async def make_poster(args: dict, ctx) -> str:
     desc = (args.get("description") or "").strip()
     if not desc:
         return "缺少海报描述，没法生成。"
+    # 风格预设链路（解决"点了风格模型收不到=死模板"）：把选定风格的丰富视觉提示词真正拼进描述、喂给模型。
+    style = (args.get("style") or "").strip()
+    if style:
+        frag = resolve_style_prompt(style) or style  # 解析不到就原样拼（支持老板"自己说"任意风格）
+        desc = f"{desc}。整体风格：{frag}"
 
     uid = str(getattr(ctx.user, "id", "") or "")
     if uid and uid in _POSTER_GENERATING:
