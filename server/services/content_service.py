@@ -600,18 +600,29 @@ def _append_guardrails(rendered_prompt: str, store: Store, role: str | None = No
     if baseline_rules:
         sections.append(f"## 通用强制规则\n\n{baseline_rules}")
 
+    knowledge_context = ""
     if role:
         role_rules = _load_rule_safe(f"rules.role.{role}", store)
         if role_rules:
             sections.append(f"## 岗位规则\n\n{role_rules}")
 
         knowledge_context, knowledge_names = _load_knowledge_for_role(role, store, intent_text)
-        if knowledge_context:
-            sections.append(f"## 行业知识参考\n\n{knowledge_context}")
 
     profile_context = render_operation_profile_context(store)
     if profile_context:
         sections.append(f"## 门店运营画像\n\n{profile_context}")
+
+    # 行业知识放在【最后】(近因效应最强)+【MUST 框架】——直治实测发现的"知识召回到了却没用进生成"
+    # (Lost-in-the-Middle / Sufficient-Context 已知失败；Anthropic 修法=更强措辞+前置/后置)。
+    # relabel：从"行业知识参考"(被当可选背景)→"必须基于这套真实逻辑推导"。
+    if knowledge_context:
+        sections.append(
+            "## 【必须严格基于这套真实运营逻辑作答】\n\n"
+            "下面是《台球行业真实运营逻辑》的台球行业真实运营逻辑（经营/营销/客户/助教/竞技的一线真做法）。"
+            "你【必须】基于它来推导和组织你的回答——核心判断、结构、做法都要落在这套逻辑上；"
+            "它没覆盖到的细节才用你的专业判断补，但方向必须与它一致，**不得脱离它凭通用常识自由发挥**。\n\n"
+            f"{knowledge_context}"
+        )
 
     if not sections:
         return rendered_prompt, knowledge_names
