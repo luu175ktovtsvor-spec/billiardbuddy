@@ -81,7 +81,7 @@
 - [x] **生图也 BYOK** ✅：store 加 `byok_image_*` 字段 + migration 022 + `factory.get_image_config_for_store(store)` + 前端配置面板"生图模型"区（纯 BYOK：`DESKTOP_LOCAL=1` 未配即空 key、绝不回退平台 key，空 key → 友好 503）。（commit `6ab3912`）
 - [x] **max_turns 未收敛强制收尾** ✅：不再返回空答复。（commit `6624419`）
 - [x] **app 图标** ✅：`desktop/build/icon.png`（机器人+8 号球+球杆正式 logo）。（commit `54e25ee`/`7a001a8`）
-- [x] **测试存档** ✅：PPT 六岗位 60 场景（`evals/scenes/ppt_staff.yaml`）+ MiMo v2.5 实测。（commit `bbf035f`）
+- [x] **测试存档** ✅：行业真实运营资料 六岗位 60 场景（`evals/scenes/ppt_staff.yaml`）+ MiMo v2.5 实测。（commit `bbf035f`）
 
 ## 3. 最后统一验证清单（开发全部完成后一次性做）—— ⬅ **当前就卡在这一步（开发已完成）**
 

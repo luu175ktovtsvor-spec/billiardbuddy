@@ -902,7 +902,7 @@ examples:
     priority: "P0"
     max_injection_chars: 300
 
-  # ═══ 以下为 PPT 真实模板提取的 fewshot 示例（第四轮测试新增）═══
+  # ═══ 以下为 行业真实模板提取的 fewshot 示例（第四轮测试新增）═══
 
   - id: "D001"
     title: "店长日报（标准五段式）"
@@ -1166,7 +1166,7 @@ examples:
     priority: "P0"
     max_injection_chars: 200
 
-  # ═══ 以下为 QA 测试筛选 + PPT 衍生的新增样例（2026-06-07）═══
+  # ═══ 以下为 QA 测试筛选 + 行业真实运营资料 衍生的新增样例（2026-06-07）═══
 
   - id: "Q001"
     title: "老客户回访约球（店长）"
