@@ -7,7 +7,7 @@
 
 被两处消费：
 - tests/test_knowledge_manifest.py：断言无死料 / 无孤儿关键词 / 渲染类都有 description。
-- scripts/gen_knowledge_manifest.py：渲染成 docs/台球行业真实性分支/知识manifest.md。
+- scripts/gen_knowledge_manifest.py：渲染成 docs/知识manifest.md。
 """
 from __future__ import annotations
 

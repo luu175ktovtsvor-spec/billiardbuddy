@@ -48,7 +48,6 @@ server/services/ai/providers/  生图 BYOK 口子（image_catalog/siliconflow/da
 web/src/components/desktop/     桌面 macOS UI（macos-shell/chat-shell/chat-thread/composer/preview）
 server/prompts/         知识库（桌面运行时用加密 prompts.enc）
 docs/桌面版AI-Agent-产品形态/   架构地图（全看懂从这开始）
-docs/台球行业真实性分支/         知识库真实性核对 + PPT 原件全文
 docs/完整优化清单.md             当前产品化主线待办（37 项优化清单，go-forward 工作主线）
 ```
 
@@ -57,4 +56,4 @@ docs/完整优化清单.md             当前产品化主线待办（37 项优�
 - **纯 BYOK**：绝不内置/泄漏任何平台大模型 key。
 - **POS 只读**：不做收银/计费/灯控/会员充值系统；只读老板从收银系统导出的报表做诊断。
 - **不自动群发/私信**：对外或花钱动作一律走审批闸（人确认后执行），个人微信自动群发=封号红线。
-- **行业真实但守红线**：助教获客/擦边等贴台球行业真实运营逻辑的做法，但硬线=不营销实际性交易、不帮刑事级犯罪（详见 `docs/台球行业真实性分支/`）。
+- **行业真实但守红线**：助教获客/擦边等贴台球行业真实运营逻辑的做法，但硬线=不营销实际性交易、不帮刑事级犯罪（核对底本本地留存、不在仓库）。
