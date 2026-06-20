@@ -17,7 +17,7 @@
 - **前端**：Next.js 14 + React 18 + TypeScript + TailwindCSS（macOS 桌面 UI）
 - **AI（BYOK）**：文字（任意 OpenAI 兼容，如 DeepSeek/硅基/火山） + 生图（硅基流动 / 通义万相 / 即梦 / gpt-image 等，国内可用）
 - **本地语义**：bge-zh（fastembed / onnxruntime，本地跑、非 pgvector）做 RAG，「按意思找料」换说法也找得到
-- **知识库**：加密 `prompts.enc`（运行时解密，55 知识 + 77 场景 YAML）
+- **知识库**：加密 `prompts.enc`（运行时解密，52 知识 + 72 场景 YAML）
 
 ## 怎么跑（开发）
 
