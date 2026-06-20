@@ -57,7 +57,6 @@ const SUB_TYPE_LABELS: Record<string, string> = {
   assistant_booking: "助教预约",
   member_assistant_notice: "助教可约通知",
   game_recommend: "玩法推荐",
-  opening_event: "开业活动",
   performance_template: "绩效模板",
   complaint_handling: "投诉处理",
   daily_task_list: "每日任务",

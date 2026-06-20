@@ -57,7 +57,6 @@ class OperationScenario(str, Enum):
     complaint_handling = "complaint_handling"
     daily_report = "daily_report"
     short_video = "short_video"
-    opening_event = "opening_event"
     group_content = "group_content"
     performance_template = "performance_template"
     diagnosis_tool = "diagnosis_tool"

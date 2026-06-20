@@ -24,7 +24,6 @@ SCENARIO_ROLE_MAP = {
     "qiangyi_battle": "coach",
     "review_guidance": "coach",
     "cart_promotion": "frontdesk",
-    "opening_event": "operator",
     "recruitment": "assistant_manager",
     "training_exam": "assistant_manager",
     "diagnosis_tool": "boss",

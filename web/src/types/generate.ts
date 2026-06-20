@@ -54,7 +54,6 @@ export type OperationScenario =
   | "complaint_handling"
   | "daily_report"
   | "short_video"
-  | "opening_event"
   | "group_content"
   | "performance_template"
   | "diagnosis_tool"
