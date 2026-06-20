@@ -3,7 +3,7 @@ name: "朋友圈文案模板"
 category: "copywriting"
 templates:
   - label: "周末充值活动"
-    prompt: "写一条周末充值活动的朋友圈文案，充300送50，语气活泼，带emoji"
+    prompt: "写一条周末一卡通充值活动的朋友圈文案，语气活泼，带emoji"
     tags: ["充值", "周末"]
   - label: "下午场促活"
     prompt: "写一条下午场空台促活的朋友圈文案，下午2-6点特价，轻松休闲风格"
