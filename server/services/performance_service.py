@@ -38,7 +38,7 @@ async def generate_performance_template(
     }
 
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
-    rendered_prompt = _append_guardrails(
+    rendered_prompt, knowledge_names = _append_guardrails(
         rendered_prompt, store, role="assistant_manager",
         intent_text=f"绩效考核 {ROLE_LABELS.get(role, role)} {PERIOD_LABELS.get(period, period)}",
     )
@@ -48,6 +48,6 @@ async def generate_performance_template(
         prompt=rendered_prompt,
         gen_type="performance",
         sub_type="template",
-        input_params={"role": role, "period": period},
+        input_params={"role": role, "period": period, "knowledge_used": knowledge_names},
         max_tokens=2500,
     )

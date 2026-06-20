@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import String, Integer, Boolean, Text, DateTime, ForeignKey, func, Index
 from sqlalchemy.orm import Mapped, mapped_column
@@ -41,11 +41,14 @@ class Generation(Base):
     image_size: Mapped[str | None] = mapped_column(String(20))
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
+    # Python 侧 default：flush 时即落值，commit 后无需 db.refresh 回填——
+    # 异步 SQLite 上 refresh 会失败并使对象 expired、随后属性访问触发惰性加载崩（详见 content_service._safe_refresh）。
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), index=True
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now(), index=True
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now(),
+        onupdate=func.now()
     )
 
     __table_args__ = (
