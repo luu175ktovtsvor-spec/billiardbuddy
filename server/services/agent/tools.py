@@ -151,9 +151,11 @@ async def ask_user_question(args: dict, ctx) -> str:
 @tool(
     name="write_operation_content",
     deliverable=True,
-    description="按老板的一句话需求，写一段台球房运营内容（朋友圈/群公告/活动文案/日报叙事等通用文字）。"
-                "这是最常用的写文案工具，会自动带上门店画像、岗位规则、行业知识。需要写任何运营文字时优先用它。"
-                "若先用 find_scenario 找到了贴切的精修模板，把它的 key 传进 prompt_key，会用那套校准模板来写。",
+    description="按老板的一句话需求，写一段【发在自己渠道】的通用运营文字（朋友圈/群公告/活动文案/日报叙事）。"
+                "会自动带上门店画像、岗位规则、行业知识。"
+                "【何时别用·避免选错工具】要发【抖音/小红书/快手/视频号】→用 make_platform_content；"
+                "要写【美团/抖音团购套餐】→用 make_groupbuy_content；要一整套【成体系活动方案】(玩法+优惠+时间+落地步骤)而非一段文字→用 plan_activity；问经营诊断→用 diagnose_operation。"
+                "若先用 find_scenario 找到贴切的精修模板，把它的 key 传进 prompt_key，会用那套校准模板来写。",
     parameters={
         "type": "object",
         "properties": {
