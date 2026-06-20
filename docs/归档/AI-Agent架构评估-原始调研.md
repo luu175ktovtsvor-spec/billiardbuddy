@@ -140,9 +140,9 @@
   - 依据: docs/product-brain/球房运营逻辑基准.md:1-144, server/tests/test_pipeline.py:136-142, server/tests/test_pipeline.py:471-479
 - **agent压测用"注入校验布尔值+人工阅读"定义合格，无量化标准**: 压测脚本（临时、已删）对每个场景输出一行 `[growth_playbook 是否注入：True/False]`，这是唯一的自动检验项——只检查 knowledge key 是否进入 prompt，不检查输出内容是否正确。输出质量判断完全靠人工阅读，判定标准是主观的（"输出有没有用上套路""金额是否占位不编数字"）。12+场景覆盖了平台内容/玩法推荐/诊断/约客/文案/多步链式等，但没有失败判定的量化阈值。
   - 依据: docs/test-runs/P2-1-growth_playbook-拉新裂变库-20260617.md:4, docs/test-runs/P2-3-诊断决策树注入-20260617.md:8-14, docs/test-runs/agent压测实跑-2026-06-17.md:409-412
-- **知识库口径护栏覆盖"禁止出现什么"但不覆盖"必须体现什么"**: test_pipeline.py 中有7条左右的口径回归测试：检查profit_model不得含大比例赠送字样、知识库不得含PPT出处字样、baseline必须含正向专家层关键字、价格字段单点策略、日期用北京时间等。这些都是防御型（不能出现X）。但北极星的核心正向要素——如"散客求社交/竞技求交流/助教求情绪价值/追分求刺激"四大客户分类、"客户运营五步闭环"、"营销第一"等——没有任何测试验证AI输出是否体现这些框架。
+- **知识库口径护栏覆盖"禁止出现什么"但不覆盖"必须体现什么"**: test_pipeline.py 中有7条左右的口径回归测试：检查profit_model不得含大比例赠送字样、知识库不得含行业真实运营资料出处字样、baseline必须含正向专家层关键字、价格字段单点策略、日期用北京时间等。这些都是防御型（不能出现X）。但北极星的核心正向要素——如"散客求社交/竞技求交流/助教求情绪价值/追分求刺激"四大客户分类、"客户运营五步闭环"、"营销第一"等——没有任何测试验证AI输出是否体现这些框架。
   - 依据: server/tests/test_pipeline.py:136-142, 194-208, 471-479
-- **样例库和反例库存在但未接入自动评测**: docs/product-brain/ 目录下有 workbench-结构化优质样例库.yaml 和 workbench-结构化反例库.yaml 两个文件，是北极星对齐测试的天然素材，但当前它们没有被任何测试文件引用，仅作为人工参考存在。运营逻辑对齐审计报告（2026-06-13）是纯人工审计，共改了7个YAML文件，方法是人工对照PPT逐文件核查，不可重复运行。
+- **样例库和反例库存在但未接入自动评测**: docs/product-brain/ 目录下有 workbench-结构化优质样例库.yaml 和 workbench-结构化反例库.yaml 两个文件，是北极星对齐测试的天然素材，但当前它们没有被任何测试文件引用，仅作为人工参考存在。运营逻辑对齐审计报告（2026-06-13）是纯人工审计，共改了7个YAML文件，方法是人工对照行业真实运营资料逐文件核查，不可重复运行。
   - 依据: docs/product-brain/运营逻辑对齐审计报告.md:1-46, docs/product-brain/workbench-结构化优质样例库.yaml（未被任何test_*.py import）
 - **多轮链式场景（multi-turn）测试全部靠Mock，无真实LLM行为测试**: test_agent_loop.py 的6个测试函数全部使用 MockTextProvider 注入预设的 scripted 响应序列（TextResponse数组），验证的是循环骨架的控制流（tool调用→回灌→收敛、max_turns兜底、未知工具/异常的错误回灌），完全不涉及DeepSeek真实的工具选择行为。真实的"DeepSeek面对用户输入选哪个工具"只在压测的临时脚本中测，且只存档文本、无法自动回归。
   - 依据: server/tests/test_agent_loop.py:33-127, server/tests/test_agent_builtin_tools.py:36-48（monkeypatch假工具）
