@@ -20,8 +20,8 @@
 ## 1. 🔴 最高铁律（任何改动都遵守）
 1. **全真实、不消毒、没有"度"**：助教情绪价值/颜值/陪打/超休/美女人设、追分博弈、交友软件获客、抖音擦边引流 都照实写。判断标尺="内行老板/店长一看是不是这行真东西"，不是"合不合规/政治正确"。
 2. **只守两条底线**（这是真实本身，不是消毒）：① 不编造（金额/档位/助教信息/客户历史 未知一律占位【请补充:XX】）；② 助教是台球陪练不营销实际性交易（客人越界保护助教拉回）+ 门店不亲自抽水/组局/定盘口/放贷（开设赌场罪）。另保留商业真实：助教付费不写免费/不作赠品、不打包赢包教保票、不写全城最低价。
-3. **第三方名零泄漏**：唐希/课程方/FUNENG/某门店/某门店/某门店/某门店/某门店/恺九/YOUME/金彩杯/巨玩/彬利烎/台球大姚/案例店名/人名/具体城市——一律不进库，只留通用逻辑。器材品类（乔氏/独牙/斯诺克/银腿金腿）豁免。
-4. **改完查回头**：① `cd server && uv run python -c "from services.ai.prompt_engine import get_prompt_engine; e=get_prompt_engine(); print(len(e._templates))"`（应≥166）；② `grep -rni "课程方\|唐希\|某门店\|某门店\|YOUME\|金彩\|巨玩\|彬利\|童童" server/prompts/`（应零）；③ 前端改动 `cd web && npx tsc --noEmit`（应 0）；④ 上线前 `bash scripts/test.sh` + 北极星 eval（已重定基线）看 GREEN 率。
+3. **第三方名零泄漏**：（已识别的第三方连锁/品牌/人名/案例店名/城市等，清单见内部脱敏记录）——一律不进库，只留通用逻辑。器材品类（乔氏/独牙/斯诺克/银腿金腿）豁免。
+4. **改完查回头**：① `cd server && uv run python -c "from services.ai.prompt_engine import get_prompt_engine; e=get_prompt_engine(); print(len(e._templates))"`（应≥166）；② `grep -rni "<内部脱敏清单逐名>" server/prompts/`（应零）；③ 前端改动 `cd web && npx tsc --noEmit`（应 0）；④ 上线前 `bash scripts/test.sh` + 北极星 eval（已重定基线）看 GREEN 率。
 
 ## 2. 真实源料（核实/搬运的依据）
 - 真实 行业真实运营资料（基座源头标准，已通读核实 276 页）：`/Users/swl/Desktop/行业资料/行业真实运营资料`（提取文本曾存 /tmp/行业资料.txt）。
