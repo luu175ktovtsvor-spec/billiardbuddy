@@ -25,7 +25,7 @@ export function DesktopComposer({
   fullDisk = false,
   onFullDiskChange,
   disabled,
-  placeholder = "问问球房管家…",
+  placeholder = "问问台球运营管家…",
 }: {
   value: string;
   onChange: (v: string) => void;

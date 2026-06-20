@@ -63,3 +63,7 @@ server/billiards_local.db
 测试项目的AI Agent功能/
 /经营数据总表.xlsx
 /*.xlsx
+
+# Playwright 本地截图/快照产物(验证用,不入库)
+.playwright-mcp/
+desktop-*.png
