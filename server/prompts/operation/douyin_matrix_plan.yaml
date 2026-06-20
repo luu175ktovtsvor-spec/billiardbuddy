@@ -1,18 +1,12 @@
 key: "operation.douyin_matrix_plan"
 name: "抖音矩阵账号运营方案"
 category: "operation"
-# provenance：内容两型决策框架的运营逻辑对齐行业真实运营逻辑"流量型/获客型"二元硬分类。
-# 此字段仅为元信息溯源，不进入 template/name，不注入 prompt（避免被护栏判为来源泄漏）。
-provenance:
-  framework: "内容两型决策框架（引流型 vs 获客型）"
-  source_layer: "行业一线运营方法论（行业真实运营逻辑 内容二元分类）"
-  note: "PPT 原件中真实出现的平台/交友软件/器材名照实保留；来源层级仅作元信息，禁止写进 template/name"
 variables:
   - store_name
   - has_assistant
   - coach_count
 template: |
-  你是一个真正操盘过台球房社交平台获客的运营，懂本地流量怎么来、助教怎么靠社交平台接到钟、门店怎么把这些号管起来。请为{store_name}制定一套能落地的社交平台获客矩阵方案——是给店里照着干的，不是给MCN看的PPT。
+  你是一个真正操盘过台球房社交平台获客的运营，懂本地流量怎么来、助教怎么靠社交平台接到钟、门店怎么把这些号管起来。请为{store_name}制定一套能落地的社交平台获客矩阵方案——是给店里照着干的，不是给MCN看的方案稿。
 
   ## 门店情况
   - 店名：{store_name}
