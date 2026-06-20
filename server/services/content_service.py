@@ -618,7 +618,7 @@ def _append_guardrails(rendered_prompt: str, store: Store, role: str | None = No
     if knowledge_context:
         sections.append(
             "## 【必须严格基于这套真实运营逻辑作答】\n\n"
-            "下面是《台球行业真实运营逻辑》的台球行业真实运营逻辑（经营/营销/客户/助教/竞技的一线真做法）。"
+            "下面是台球行业的真实运营逻辑（经营/营销/客户/助教/竞技的一线真做法）。"
             "你【必须】基于它来推导和组织你的回答——核心判断、结构、做法都要落在这套逻辑上；"
             "它没覆盖到的细节才用你的专业判断补，但方向必须与它一致，**不得脱离它凭通用常识自由发挥**。\n\n"
             f"{knowledge_context}"
