@@ -1,7 +1,7 @@
 """生成知识库可观测 manifest 文档（X-3）。
 
 读 services.knowledge_manifest.build_manifest()，渲染成
-docs/台球行业真实性分支/知识manifest.md：每条 knowledge → 被哪些角色列入 →
+docs/知识manifest.md：每条 knowledge → 被哪些角色列入 →
 有无 description → 有无关键词，让审计/新会话一眼看出覆盖与死角。
 
 用法（在 server/ 下）：
@@ -21,7 +21,6 @@ from services.knowledge_manifest import build_manifest  # noqa: E402
 _OUT = (
     Path(__file__).resolve().parents[2]
     / "docs"
-    / "台球行业真实性分支"
     / "知识manifest.md"
 )
 
