@@ -38,7 +38,7 @@ export function WelcomeScreen({
         {/* 图标 + 问候 */}
         <div className="mb-7 flex flex-col items-center text-center">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/agent-icon.png" alt="球房管家" className="mb-4 h-16 w-16 rounded-2xl shadow-sm" />
+          <img src="/agent-icon.png" alt="台球运营管家" className="mb-4 h-16 w-16 rounded-2xl shadow-sm" />
           <div className="text-[24px] font-semibold text-[#1d1d1f]">{greeting}</div>
           <div className="mt-1 text-[15px] text-[#86868b]">今天想让我帮你做点什么？说一句，或点下面试试。</div>
         </div>

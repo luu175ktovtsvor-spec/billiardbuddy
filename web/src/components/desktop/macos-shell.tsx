@@ -54,8 +54,8 @@ export function DesktopSidebar({
       <div className="app-drag flex h-[52px] items-center" />
       <div className="app-drag flex items-center gap-2 px-4 pb-2">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src="/agent-icon.png" alt="球房管家" className="h-7 w-7 rounded-lg object-cover" />
-        <div className="text-[15px] font-semibold text-[#1d1d1f]">球房管家</div>
+        <img src="/agent-icon.png" alt="台球运营管家" className="h-7 w-7 rounded-lg object-cover" />
+        <div className="text-[15px] font-semibold text-[#1d1d1f]">台球运营管家</div>
       </div>
 
       {/* 新对话 */}
