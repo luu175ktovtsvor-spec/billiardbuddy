@@ -56,6 +56,9 @@ class AgentContext:
     autocompact_ratio: float = 0.7
     # autocompact 触发时保留原文的"最近消息"条数（更早的才压成摘要）；保护近几轮上下文不被压糊。
     autocompact_keep: int = 12
+    # autocompact 连续"真失败"（摘要 LLM 抛错 / 返回空摘要）次数；达 _AUTOCOMPACT_FAIL_MAX 即熔断、不再每轮空烧 LLM。
+    # 压成功 → 清零；"较早段太短 / 空 transcript"这类"不值得压"不算失败、不计数。借鉴 CC s08 的连续失败熔断器。
+    autocompact_fail_streak: int = 0
     # ── SH-8 连续拒绝自动回退（老板反复拒同一动作 → 别再反复提，自动换法子）──
     # 按【动作 key（工具名|规范化 args）】记的"连续被拒次数"：审批卡老板点拒绝 → +1；
     # 同一动作连续达 _DENIAL_FALLBACK_N 次 → loop 不再提请该动作，改走文本答复/换方案。

@@ -117,6 +117,9 @@ _AUTOCOMPACT_SUMMARY_PROMPT = (
 )
 # 摘要消息的标记前缀（落进 messages 的 assistant 消息，便于人/测试识别这是压缩产物）。
 _AUTOCOMPACT_SUMMARY_MARK = "[此前对话摘要]"
+# autocompact 连续"真失败"达这么多次 → 熔断停手，不再每轮空烧昂贵的摘要 LLM（如 BYOK key 额度耗尽 / 模型对超长
+# prompt 反复报错时，上下文已顶到窗口*ratio 之上，否则每一轮都会再徒劳地试一次摘要、白烧 token）。借鉴 CC s08。
+_AUTOCOMPACT_FAIL_MAX = 3
 
 # SH-4 截断恢复：模型一轮输出被 max_tokens 砍断时 finish_reason="length"（不是正常 "stop"）。
 # 收尾分支识别它 → 把已输出的半句 append 回去 + 提示"接着写完"再要一轮，多轮片段拼成完整 final，
@@ -777,12 +780,17 @@ async def _autocompact(messages: list[dict], ctx, provider, model, temperature: 
         ))
         summary = (resp.content or "").strip()
         if not summary:
-            return None  # 没拿到摘要 → 别用空摘要顶掉历史，跳过
+            # 摘要 LLM 返回空 = 真失败（区别于"不值得压"）→ 计入连续失败，达上限即熔断
+            ctx.autocompact_fail_streak = getattr(ctx, "autocompact_fail_streak", 0) + 1
+            return None  # 别用空摘要顶掉历史，跳过
         # 重建：system 原样 + 一条摘要 assistant 消息 + 最近段原文。
         summary_msg = {"role": "assistant", "content": f"{_AUTOCOMPACT_SUMMARY_MARK}\n{summary}"}
         rebuilt = messages[:sys_end] + [summary_msg] + messages[idx:]
+        ctx.autocompact_fail_streak = 0  # 压成功 → 清零连续失败计数
         return rebuilt
     except Exception:
+        # 摘要 LLM 抛错 = 真失败 → 计入连续失败，达上限即熔断（防顶满时每轮空烧一次昂贵 LLM）
+        ctx.autocompact_fail_streak = getattr(ctx, "autocompact_fail_streak", 0) + 1
         logger.exception("autocompact 压缩失败，跳过、用原 messages 继续")
         return None
 
@@ -801,6 +809,9 @@ async def _compact_pipeline(messages: list[dict], registry: ToolRegistry, ctx,
     ratio = getattr(ctx, "autocompact_ratio", 0.7) or 0.7
     if _estimate_tokens(messages) < window * ratio:
         return messages  # 没临近窗口 → 不花那次昂贵 LLM，原样返回
+    # 熔断：autocompact 已连续真失败 _AUTOCOMPACT_FAIL_MAX 次 → 不再每轮空烧昂贵摘要 LLM，直接用原 messages 继续。
+    if getattr(ctx, "autocompact_fail_streak", 0) >= _AUTOCOMPACT_FAIL_MAX:
+        return messages
     rebuilt = await _autocompact(messages, ctx, provider, model, temperature)  # 第三级：语义压（唯一重建前缀点）
     return rebuilt if rebuilt is not None else messages
 

@@ -197,6 +197,71 @@ def test_pipeline_disabled_window_no_call():
     assert out == before
 
 
+# ---------- autocompact 连续失败熔断（借鉴 CC s08）----------
+
+def test_autocompact_failure_increments_streak_and_success_resets():
+    """真失败（空摘要 / 抛错）累加 autocompact_fail_streak；一次成功清零。"""
+    ctx = AgentContext(model_ctx_window=8000, autocompact_keep=6)
+    # 空摘要 = 真失败 → +1
+    empty = MockTextProvider(scripted=[TextResponse(content="  ", model="mock")])
+    asyncio.run(_autocompact(_long_history(10), ctx, empty, "mock", 0.3))
+    assert ctx.autocompact_fail_streak == 1
+
+    class _Boom(MockTextProvider):
+        async def generate(self, request):
+            raise RuntimeError("炸")
+
+    # 抛错 = 真失败 → +1
+    asyncio.run(_autocompact(_long_history(10), ctx, _Boom(), "mock", 0.3))
+    assert ctx.autocompact_fail_streak == 2
+    # 成功 → 清零
+    ok = MockTextProvider(scripted=[TextResponse(content="一段有效摘要", model="mock")])
+    asyncio.run(_autocompact(_long_history(10), ctx, ok, "mock", 0.3))
+    assert ctx.autocompact_fail_streak == 0
+
+
+def test_autocompact_too_short_not_counted_as_failure():
+    """"较早段太短"是"不值得压"不是失败 → 不计入熔断计数（别把正常跳过误判成失败）。"""
+    ctx = AgentContext(model_ctx_window=100, autocompact_keep=12)
+    msgs = [{"role": "system", "content": "s"}] + [
+        {"role": "user", "content": f"u{i}"} for i in range(13)]  # 较早段仅 1 条 < MIN_OLD
+    prov = MockTextProvider(scripted=[TextResponse(content="摘要", model="mock")])
+    asyncio.run(_autocompact(msgs, ctx, prov, "mock", 0.3))
+    assert ctx.autocompact_fail_streak == 0  # 没真失败 → 计数不动
+
+
+def test_pipeline_circuit_breaker_stops_burning_llm():
+    """连续真失败达 _AUTOCOMPACT_FAIL_MAX → 熔断：_compact_pipeline 不再调昂贵摘要 LLM。"""
+    from services.agent.loop import _AUTOCOMPACT_FAIL_MAX
+    called = {"n": 0}
+
+    class _FailCounting(MockTextProvider):
+        async def generate(self, request):
+            called["n"] += 1
+            return TextResponse(content="", model="mock")  # 空摘要 = 真失败
+
+    ctx = AgentContext(model_ctx_window=8000, autocompact_keep=6)
+    prov = _FailCounting()
+    for _ in range(_AUTOCOMPACT_FAIL_MAX):          # 每轮都临近窗口 → 真调 LLM、失败累加
+        asyncio.run(_compact_pipeline(_long_history(10), _reg(), ctx, prov, "mock", 0.3))
+    assert called["n"] == _AUTOCOMPACT_FAIL_MAX
+    assert ctx.autocompact_fail_streak == _AUTOCOMPACT_FAIL_MAX
+    # 已达上限 → 再来一轮直接熔断，generate 不再被触达
+    asyncio.run(_compact_pipeline(_long_history(10), _reg(), ctx, prov, "mock", 0.3))
+    assert called["n"] == _AUTOCOMPACT_FAIL_MAX     # 没增加 = 熔断生效，不再空烧
+
+
+def test_pipeline_circuit_breaker_recovers_after_success():
+    """熔断阈值差一次时，一次成功清零，不会因历史失败永久停摆。"""
+    from services.agent.loop import _AUTOCOMPACT_FAIL_MAX
+    ctx = AgentContext(model_ctx_window=8000, autocompact_keep=6)
+    ctx.autocompact_fail_streak = _AUTOCOMPACT_FAIL_MAX - 1  # 差一次就熔断
+    ok = MockTextProvider(scripted=[TextResponse(content="精简摘要B", model="mock")])
+    out = asyncio.run(_compact_pipeline(_long_history(10), _reg(), ctx, ok, "mock", 0.3))
+    assert ctx.autocompact_fail_streak == 0  # 成功清零
+    assert any(_AUTOCOMPACT_SUMMARY_MARK in (m.get("content") or "") for m in out)
+
+
 # ---------- 同步 loop 端到端 ----------
 
 def test_sync_loop_autocompact_shrinks_history():
