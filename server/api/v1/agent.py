@@ -31,7 +31,6 @@ from services.agent.context import AgentContext
 from services.agent import denial_tracker
 from services.agent.loop import _action_key, run_agent_loop, run_agent_loop_stream
 from services.agent.proactive import generate_daily_drafts
-from services.ai.factory import ProviderFactory
 from services.ai.failover import build_resilient_text_provider  # BYOK 失败自动切备用配置档
 from services.agent.registry import default_registry
 from services.memory_service import format_memories_for_prompt, load_store_memory, remember

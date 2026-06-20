@@ -366,23 +366,6 @@ def _knowledge_emb(key: str):
     return emb
 
 
-def _semantic_fill(intent_text: str, candidates: list[str]) -> list[str]:
-    """按【意思】给候选知识排序，返回相关度够（cosine≥0.45）的 key。
-    "拍个视频"也能命中"短视频知识"（字面零重叠）——根治"换说法就漏"。"""
-    from services.rag.embedder import get_embedder, cosine
-    q = get_embedder().embed(intent_text)
-    scored: list[tuple[float, str]] = []
-    for key in candidates:
-        try:
-            s = cosine(q, _knowledge_emb(key))
-        except Exception:
-            s = 0.0
-        if s >= 0.45:
-            scored.append((s, key))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [k for _, k in scored]
-
-
 def _bigram_fill(intent_text: str, candidates: list[str]) -> list[str]:
     """没装语义模型时的回退：字面强重叠（半数命中且≥4）才补。"""
     ib = _intent_bigrams(intent_text)
