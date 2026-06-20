@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -42,8 +43,22 @@ async def lifespan(app: FastAPI):
     _src = "加密块(prompts.enc)" if __import__("os").environ.get("PROMPTS_PACK_KEY") else "明文YAML"
     logger.info("知识库已加载：%d 模板（来源：%s）", len(_pe._templates), _src)
 
+    # 主动出击·进程内每日定时（opt-in：配了 DESKTOP_DAILY_DRAFTS_HOUR 才启；桌面 SQLite 才有意义）。
+    # 到点自动把"今日草稿"预生成缓存好，老板打开就秒出。守红线：只产草稿、绝不自动发布。
+    from services import daily_scheduler
+    sched_stop = asyncio.Event()
+    sched_task = None
+    if engine.dialect.name == "sqlite" and daily_scheduler.target_hour() is not None:
+        sched_task = asyncio.create_task(daily_scheduler.scheduler_loop(sched_stop))
+
     yield
 
+    if sched_task is not None:
+        sched_stop.set()
+        try:
+            await asyncio.wait_for(sched_task, timeout=5)
+        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            sched_task.cancel()
     logger.info("服务关闭，清理数据库连接...")
     await engine.dispose()
 
