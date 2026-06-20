@@ -447,6 +447,23 @@ async def edit_excel(args: dict, ctx) -> str:
     return f"已改 {path.name}：\n" + "\n".join(diffs) + ("\n（原件已备份，可回滚）" if backup else "")
 
 
+async def delete_file(args: dict, ctx) -> str:
+    """删除内容库里的一个文件（删前自动备份到 .backups，可恢复）。args: path。
+    高危不可逆动作——force_confirm=True，任何权限档都强制弹确认后才会执行（不被"跳过确认"旁路）。
+    只删单个文件、不删文件夹（删目录风险大，挡住）。"""
+    path = _resolve(args["path"], ctx)
+    if not path.exists():
+        return f"文件不存在：{args['path']}（无需删除）"
+    if path.is_dir():
+        return f"「{path.name}」是文件夹——为安全本工具只删单个文件，不删目录。请逐个文件删。"
+    backup = _backup(path)
+    path.unlink()
+    msg = f"已删除 {path.name}。"
+    if backup:
+        msg += " 原件已备份到 .backups，可恢复。"
+    return msg
+
+
 # ────────────────────────────── 召回：翻老板本机攒下的历史内容（真 RAG·语义检索） ──────────────────────────────
 
 async def recall_my_content(args, ctx) -> str:
@@ -574,6 +591,23 @@ def preview_write_file(args: dict, ctx) -> str:
     return f"{'覆盖' if exists else '新建'}文件《{_name_of(args)}》（{len(content)} 字）：\n{snippet}"
 
 
+def preview_delete_file(args: dict, ctx) -> str:
+    """删文件前给老板看的预览：清楚说明要删哪个文件、删了能不能恢复。"""
+    name = _name_of(args)
+    info = ""
+    try:
+        p = _resolve(args["path"], ctx)
+        if not p.exists():
+            info = "（文件不存在，无需删）"
+        elif p.is_dir():
+            info = "（这是文件夹，本工具不删目录）"
+        else:
+            info = f"（{p.stat().st_size} 字节）"
+    except Exception:
+        info = ""
+    return f"⚠️ 将【删除】文件《{name}》{info}。删前自动备份到 .backups、可恢复；你确认后才真正删。"
+
+
 # ────────────────────────────── 工具定义（人看得懂的描述，大脑据此选） ──────────────────────────────
 
 _LOCAL_TOOLS = [
@@ -695,6 +729,20 @@ _LOCAL_TOOLS = [
         requires_approval=True,
         approval_class="file",
         preview=preview_edit_excel,
+    ),
+    Tool(
+        name="delete_file",
+        description="删除内容库里的一个文件（如清掉一份不要的旧文案/旧报表/旧清单）。删前自动备份、可恢复。"
+                    "高危不可逆动作——【任何权限档都会先把「要删哪个文件」弹给老板确认，确认后才真正删】，"
+                    "「跳过确认」档也不例外。只删单个文件、不删文件夹。",
+        parameters={"type": "object", "properties": {
+            "path": {"type": "string", "description": "要删的文件（内容库内文件名/相对路径，或老板当场选定文件的完整路径）"},
+        }, "required": ["path"]},
+        handler=delete_file,
+        requires_approval=True,
+        approval_class="file",
+        force_confirm=True,  # 删除不可逆（虽自动备份）——任何档位都强制确认，不被「跳过确认」旁路
+        preview=preview_delete_file,
     ),
 ]
 
