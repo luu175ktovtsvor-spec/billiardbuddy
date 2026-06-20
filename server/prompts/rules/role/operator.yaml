@@ -52,7 +52,6 @@ required_knowledge:
   - knowledge.diagnostic_logic
   - knowledge.customer_types
   - knowledge.industry_data
-  - knowledge.account_nurturing
   - knowledge.business_cases
   - knowledge.compliance_rules
   - knowledge.term_whitelist

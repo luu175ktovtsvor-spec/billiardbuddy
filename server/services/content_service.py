@@ -266,7 +266,6 @@ CORE_KNOWLEDGE_KEYS = {
 
 # 场景化知识：仅当用户意图/补充说明命中关键词时才注入，避免每次全量灌入
 KNOWLEDGE_KEYWORDS: dict[str, list[str]] = {
-    "knowledge.account_nurturing": ["养号", "账号", "起号", "权重", "限流", "新号"],
     "knowledge.assistant_coaching_sop": ["陪练", "教学", "训练", "球技", "动作", "纠正", "练球", "指导"],
     "knowledge.assistant_difficult_situations": ["刁钻", "难缠", "尴尬", "拒绝", "难题", "不好处理", "投诉", "越界", "想法", "红包", "疑难", "难伺候", "灌酒"],
     "knowledge.pk_incentive": ["PK", "对赌", "激励", "排名", "比拼", "奖惩", "冲业绩"],
@@ -285,7 +284,6 @@ KNOWLEDGE_KEYWORDS: dict[str, list[str]] = {
     "knowledge.customer_profile_template": ["档案", "客户资料", "客户信息", "建档", "客户档案"],
     "knowledge.customer_tagging": ["标签", "打标", "分级", "客户分类", "客户标签"],
     "knowledge.customer_types": ["客户", "客群", "客户类型", "新客", "老客", "客户分类"],
-    "knowledge.frontdesk_training": ["前厅", "前台", "接待", "服务标准", "台呢", "前厅培训"],
     "knowledge.industry_data": ["行业数据", "市场", "行情", "大盘"],
     "knowledge.management_recruitment": ["招聘", "招人", "面试", "管理岗", "店长招聘"],
     "knowledge.manager_compensation": ["店长薪资", "管理层薪资", "底薪", "店长工资"],
