@@ -34,6 +34,17 @@ def _validate_provider_for_production() -> None:
         raise AIServiceError("生产环境禁止使用 Mock Provider，请配置真实 AI 模型")
 
 
+async def _safe_refresh(db, obj) -> None:
+    """【刻意不调 db.refresh】commit 后 refresh 本只为回填 server_default 的 created_at/updated_at。
+    但实测（真机/真 SQLite，Python 3.12 与 3.14 均复现）：在本项目这条【多步生成】路径上，
+    refresh 的 GUID 主键回查会失败抛 'Could not refresh instance'，并把对象置为 expired——
+    于是随后任何属性访问（如 gen.created_at / 序列化）触发【异步惰性加载 → MissingGreenlet】在同步上下文崩，
+    导致写文案/诊断/活动/团购等核心工具整条废掉。而现有单测全用 _FakeDB 把 refresh 空转、从没盖到这条真路径。
+    根治：Generation.created_at/updated_at 已加 Python 侧 default（flush 即落值、无需 refresh），故这里直接放空、
+    绝不让对象 expired。obj 此时已 commit 落库、result/id 等字段齐全。保留本函数（5 处调用点不动）集中说明此坑。"""
+    return None
+
+
 async def run_generation(
     db: AsyncSession,
     store: Store,
@@ -55,6 +66,14 @@ async def run_generation(
     各自手写"渲染→调AI→落库"时，配额/注入/过滤/落库四件套总会漏掉某一环。
     user_input 传用户自由文本（用于注入检查），纯模板渲染场景可传空串。
     """
+    # 防御性守卫：prompt 必须是 str。历史教训——_append_guardrails 返回 (text, names) 元组，
+    # 多个 service 曾误写 `prompt = _append_guardrails(...)` 把元组当 prompt 传，导致请求 content 非字符串、
+    # 被严格模型(如 MiMo)400 拒；单测全 mock provider、没真机跑，一直没暴露。此守卫让任何此类误用立刻响亮失败。
+    if not isinstance(prompt, str):
+        raise TypeError(
+            f"run_generation 的 prompt 必须是 str，收到 {type(prompt).__name__}"
+            "——多半是把 _append_guardrails 返回的元组直接当 prompt 传了，应解包：text, names = _append_guardrails(...)"
+        )
     if user_input:
         injection_check = check_input_injection(user_input)
         if injection_check:
@@ -119,7 +138,7 @@ async def run_generation(
     )
     db.add(generation)
     await db.commit()
-    await db.refresh(generation)
+    await _safe_refresh(db, generation)
     await increment_usage(db, str(store.id), tokens=response.tokens_used or 0)
     await _safe_log_generation(store, user, gen_type, sub_type, outcome="success",
                                tokens=response.tokens_used or 0, t0=_t0)
@@ -678,7 +697,7 @@ async def generate_copywriting(
     )
     db.add(generation)
     await db.commit()
-    await db.refresh(generation)
+    await _safe_refresh(db, generation)
 
     await increment_usage(db, str(store.id), tokens=response.tokens_used or 0)
 
@@ -759,7 +778,7 @@ async def generate_activity(
     )
     db.add(generation)
     await db.commit()
-    await db.refresh(generation)
+    await _safe_refresh(db, generation)
 
     await increment_usage(db, str(store.id), tokens=response.tokens_used or 0)
 
@@ -843,7 +862,7 @@ async def generate_operation(
     )
     db.add(generation)
     await db.commit()
-    await db.refresh(generation)
+    await _safe_refresh(db, generation)
 
     await increment_usage(db, str(store.id), tokens=response.tokens_used or 0)
 
@@ -995,7 +1014,7 @@ async def generate_workbench(
     )
     db.add(generation)
     await db.commit()
-    await db.refresh(generation)
+    await _safe_refresh(db, generation)
 
     await increment_usage(db, str(store.id), tokens=response.tokens_used or 0)
 

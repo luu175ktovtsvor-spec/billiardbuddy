@@ -51,7 +51,7 @@ async def query_sop(
     }
 
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
-    rendered_prompt = _append_guardrails(
+    rendered_prompt, knowledge_names = _append_guardrails(
         rendered_prompt, store, role="frontdesk",
         intent_text=f"{SCENARIO_LABELS.get(scenario, scenario)} {ROLE_LABELS.get(role, role)}",
     )
@@ -65,6 +65,7 @@ async def query_sop(
             "role": role,
             "scenario": scenario,
             "customer_type": customer_type,
+            "knowledge_used": knowledge_names,
         },
         max_tokens=2000,
     )

@@ -33,7 +33,7 @@ async def recommend_games(
     }
 
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
-    rendered_prompt = _append_guardrails(
+    rendered_prompt, knowledge_names = _append_guardrails(
         rendered_prompt, store, role="coach",
         intent_text=f"小游戏 {SKILL_LEVEL_LABELS.get(skill_level, skill_level)} {time_available}",
     )
@@ -47,6 +47,7 @@ async def recommend_games(
             "customer_count": customer_count,
             "skill_level": skill_level,
             "time_available": time_available,
+            "knowledge_used": knowledge_names,
         },
         user_input=time_available,
         max_tokens=2000,

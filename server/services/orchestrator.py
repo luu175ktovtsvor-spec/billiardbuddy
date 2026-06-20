@@ -145,7 +145,7 @@ async def _plan_framework(description: str, task_type: str, store) -> tuple[str,
     scenario = COLLABORATION_SCENARIOS.get(task_type, {})
     default_roles = scenario.get("default_roles") or ["manager"]
 
-    system_prompt = _append_guardrails(
+    system_prompt, _ = _append_guardrails(
         COMMANDER_BASE, store, role="manager", intent_text=description
     )
     prompt = f"""任务：{description}
@@ -196,7 +196,8 @@ def _build_role_system_prompt(role: str, description: str, store) -> str:
     """岗位 system prompt：人设 + 岗位规则 + 按场景筛选的行业知识 + 门店画像。
     与工作台同一水准，而非裸调通用 AI。"""
     base = ROLE_PROMPTS.get(role, "你是台球房运营专家。")
-    return _append_guardrails(base, store, role=role, intent_text=description)
+    text, _ = _append_guardrails(base, store, role=role, intent_text=description)
+    return text
 
 
 async def run_agent(

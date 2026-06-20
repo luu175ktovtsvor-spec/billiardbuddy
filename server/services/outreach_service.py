@@ -46,7 +46,7 @@ async def generate_outreach(
     }
 
     rendered_prompt = prompt_engine.render(template_key, store, extra_vars)
-    rendered_prompt = _append_guardrails(
+    rendered_prompt, knowledge_names = _append_guardrails(
         rendered_prompt, store, role="assistant_manager",
         intent_text=f"约客 {CUSTOMER_TYPE_LABELS.get(customer_type, customer_type)} {relationship} {extra_note}",
     )
@@ -62,6 +62,7 @@ async def generate_outreach(
             "relationship": relationship,
             "style": style,
             "extra_note": extra_note,
+            "knowledge_used": knowledge_names,
         },
         user_input=f"{customer_name} {relationship} {extra_note}",
         max_tokens=2000,
