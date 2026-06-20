@@ -118,7 +118,7 @@
 ## 七、怎么跑
 
 - **开发**：`desktop/` 里 `npm run dev`（Electron 起壳 + `backend.js` 跑 `uv run uvicorn` + `frontend.js` 跑 Next dev）。
-- **打包**：CI `.github/workflows/desktop-build-win.yml`（PyInstaller 打后端 .exe + electron-builder 出 nsis）。⚠️ 打包出包后**真机端到端验收尚未做**（见 `docs/plans/桌面Agent-Codex化-执行清单`）。
+- **打包**：CI `.github/workflows/desktop-build-win.yml`（PyInstaller 打后端 .exe + electron-builder 出 nsis）。⚠️ 打包出包后**真机端到端验收尚未做**（见 `docs/完整优化清单.md`）。
 
 ---
 *本文件是「桌面版 AI Agent」独立仓库的产品形态地图（架构地图，一张文档看懂产品）。当前产品化主线待办见 `docs/完整优化清单.md`。*
