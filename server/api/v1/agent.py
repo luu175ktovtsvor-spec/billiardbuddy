@@ -623,6 +623,13 @@ async def agent_daily_drafts(
     由老板主动触发（前端"帮我备好今天的"按钮）——要做什么由老板点一下，不做无人值守的定时自动生成。
     走 generate_workbench 管道，配额/落库/店脑/合规全生效；额度不足时由 check_quota 抛出友好提示。
     """
+    from core.timezone import business_today
+    from services.daily_scheduler import get_cached_drafts, save_drafts
+    today = str(business_today())
+    cached = get_cached_drafts(str(store.id), today)
+    if cached is not None:
+        return {"drafts": cached, "cached": True}  # 定时器/早先已备好 → 秒出、不再花 token
     await check_quota(db, str(store.id))
     drafts = await generate_daily_drafts(db, store, user, max_drafts=3)
-    return {"drafts": drafts}
+    save_drafts(str(store.id), today, drafts)  # 缓存当天：二次点击秒出、定时器不再重复生成
+    return {"drafts": drafts, "cached": False}
