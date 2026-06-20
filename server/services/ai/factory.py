@@ -29,6 +29,10 @@ class ProviderFactory:
         （DeepSeekProvider 本质是通用 OpenAI 兼容 provider，可接 MiMo / deepseek-v4-pro / 任意兼容模型）；
         token 成本与并发由门店自担。否则 → 走平台默认单例（行为不变）。
         BYOK provider 不入单例缓存（各店 key 不同）；解密失败安全回退平台默认、不阻断生成。
+
+        **桌面盒子（DESKTOP_LOCAL=1）= 纯 BYOK**：拿不到可用的门店自带 key 时，
+        友好 503、绝不回退平台 key（与 get_image_config_for_store 同款守卫——
+        把"不回退平台 key"从部署约定升级为代码不变量，纵使盒子里误带了平台 key 也不会被静默用上）。
         """
         enc = getattr(store, "byok_api_key_enc", None) if store is not None else None
         if store is not None and getattr(store, "byok_enabled", False) and enc:
@@ -42,9 +46,17 @@ class ProviderFactory:
                     default_model=getattr(store, "byok_model", None) or None,
                     timeout=300.0,  # 兼容 reasoning 模型（如 MiMo v2.5）较慢的首字延迟
                 )
-            logger.warning("BYOK key 解密失败，回退平台默认 store_id=%s", getattr(store, "id", None))
+            logger.warning("BYOK key 解密失败 store_id=%s", getattr(store, "id", None))
         elif store is not None and getattr(store, "byok_enabled", False):
-            logger.warning("门店启用 BYOK 但未配置 key，回退平台默认 store_id=%s", getattr(store, "id", None))
+            logger.warning("门店启用 BYOK 但未配置 key store_id=%s", getattr(store, "id", None))
+        # 桌面纯 BYOK：没有可用的门店 key 就友好报错，绝不落到平台 key；云端 web 才回退平台默认。
+        import os
+        if os.environ.get("DESKTOP_LOCAL") == "1":
+            from core.exceptions import AIProviderError
+            raise AIProviderError(
+                message="还没配置你自己的文字模型 Key，请在「模型设置」里填写后再用",
+                status_code=503,
+            )
         return cls.get_text_provider()
 
     @classmethod

@@ -376,13 +376,26 @@ async def read_file(args: dict, ctx) -> str:
     if path.suffix.lower() in (".xlsx", ".xlsm"):
         from openpyxl import load_workbook
         wb = load_workbook(path, data_only=True)
+        # read_file 是 read_only：超长结果走硬截断、不落盘。大报表若逐格全列，会被通用截断把单元格切碎、
+        # 语义全毁。故在此先按非空单元格数封顶，只给前若干行的完整内容 + 表尺寸提示，保证可读。
+        MAX_CELLS = 1200
         lines = []
+        emitted = 0
+        truncated = False
         for ws in wb.worksheets:
-            lines.append(f"# 工作表「{ws.title}」")
+            lines.append(f"# 工作表「{ws.title}」（{ws.max_row} 行 × {ws.max_column} 列）")
+            if truncated:
+                lines.append("…[已达读取上限，本表略]")
+                continue
             for row in ws.iter_rows():
+                if emitted >= MAX_CELLS:
+                    truncated = True
+                    lines.append(f"…[表太大，已读约 {MAX_CELLS} 个非空单元格、余下略；要看特定区域请说明行列范围]")
+                    break
                 for cell in row:
                     if cell.value is not None:
                         lines.append(f"{cell.coordinate}={cell.value!r}")
+                        emitted += 1
         return "\n".join(lines) if lines else "（空表）"
     try:
         return path.read_text(encoding="utf-8")

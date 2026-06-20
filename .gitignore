@@ -56,3 +56,10 @@ server/prompts.enc
 # 桌面本地试用产物(不进git)
 .dev-byok-key
 server/billiards_local.db
+
+# 真机/手测产物 + 真实门店数据(隐私敏感、绝不入库)
+# 注意：live eval 脚本(server/evals/*_live_test.py)写死了"测试项目的AI Agent功能"目录名当落点，
+# 故只忽略、别删该目录；老板导出的 POS 报表(经营数据总表.xlsx 等)落在根目录，含真实数据不入库。
+测试项目的AI Agent功能/
+/经营数据总表.xlsx
+/*.xlsx
