@@ -1,12 +1,6 @@
 key: "operation.short_video"
 name: "短视频文案模板"
 category: "operation"
-# provenance：内容两型决策框架的运营逻辑对齐行业真实运营逻辑"流量型/获客型"二元硬分类。
-# 此字段仅为元信息溯源，不进入 template/name，不注入 prompt（避免被护栏判为来源泄漏）。
-provenance:
-  framework: "内容两型决策框架（引流型 vs 获客型）"
-  source_layer: "行业一线运营方法论（行业真实运营逻辑 内容二元分类）"
-  note: "PPT 原件中真实出现的平台/交友软件/器材名照实保留；来源层级仅作元信息，禁止写进 template/name"
 variables:
   - store_name
   - city
