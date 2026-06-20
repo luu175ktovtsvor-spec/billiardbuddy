@@ -167,20 +167,27 @@ def _selected_files_note(paths: list[str] | None) -> str:
 
 
 def compose_agent_system_prompt(profile_text: str, brain_text: str, full_disk: bool = False) -> str:
-    """拼 agent 的 system prompt：基底指令 + 当天日期 + 门店画像 + 店脑记忆（让它"懂当下、懂这家店"）。
+    """拼 agent 的 system prompt（让它"懂当下、懂这家店"）。
+
+    顺序铁律（缓存稳定·借鉴 learn-claude-code s10）：先放对所有店/所有天【字节稳定】的静态段
+    （基底指令 + 通用能力 hint + 桌面文件能力 hint），再放每天/每店/每句都会变的【动态尾段】
+    （当天日期 + 门店画像 + 店脑记忆）。动态串绝不插进静态前缀中间——否则会顶掉它后面静态内容的
+    服务端自动前缀缓存命中（DeepSeek/硅基流动等 OpenAI 兼容端点按请求前缀自动命中缓存，
+    让前缀逐字节稳定＝省钱省延迟；它们不支持也不需要 Anthropic 式显式 cache_control）。
     full_disk=True（老板开了完全访问模式）时额外注入"可找/搜文件、列任意目录、跑命令"的 hint。"""
-    parts = [_AGENT_BASE_PROMPT]
-    today = _today_line()
-    if today:
-        parts.append(today)
+    # —— 静态前缀：身份/红线/工具用法 + 通用能力 + 桌面文件能力（与当天/门店无关，逐字节稳定，可被前缀缓存复用）——
     # 第二批通用能力（上网查资料/列清单/拆子任务）——桌面与云端 web 都注册了这四个工具，故都告诉大脑何时用。
-    parts.append(_WEB_AGENT_TOOLS_HINT)
+    parts = [_AGENT_BASE_PROMPT, _WEB_AGENT_TOOLS_HINT]
     # 桌面全本地版：告诉大脑它能直接读写改本机文件，它才会主动用文件工具（云端 web 版不设 DESKTOP_LOCAL→不加）。
     if os.environ.get("DESKTOP_LOCAL") == "1":
         parts.append(_DESKTOP_FILE_OPS_HINT)
         # 完全访问模式：再告诉它能自己找/搜文件、列任意目录、跑命令（会弹卡确认）。
         if full_disk:
             parts.append(_DESKTOP_FULL_ACCESS_HINT)
+    # —— 动态尾段：每天变的日期 → 每店变的画像 → 每句变的店脑记忆（越靠后越易变），一律排在静态前缀之后 ——
+    today = _today_line()
+    if today:
+        parts.append(today)
     if profile_text and profile_text.strip():
         parts.append("【这家店的情况】\n" + profile_text.strip())
     if brain_text and brain_text.strip():
