@@ -37,7 +37,6 @@ SCENARIO_ROLE_MAP = {
     "equipment_management": "frontdesk",
     "store_atmosphere": "operator",
     "poster_copy": "operator",
-    "sports_event_watching": "manager",
     "staff_birthday": "manager",
     "hygiene_check": "frontdesk",
     "champion_poster": "coach",
@@ -47,7 +46,6 @@ SCENARIO_ROLE_MAP = {
     "business_strategy": "boss",
     "table_content_plan": "operator",
     "game_recommend": "coach",
-    "ip_cooperation": "assistant_manager",
     "review_meeting": "manager",
     "holiday_promo": "operator",
     "new_store_opening": "operator",
@@ -64,5 +62,4 @@ SCENARIO_ROLE_MAP = {
     "cross_industry_alliance": "operator",
     "referral_program": "operator",
     "ground_promotion": "operator",
-    "theme_night": "operator",
 }
