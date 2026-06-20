@@ -54,11 +54,6 @@ def resolve_style_prompt(style: str | None) -> str | None:
     return None
 
 
-def style_options() -> list[dict]:
-    """给 Agent 的 AskUserQuestion / 前端风格卡片用的选项（label + desc）。"""
-    return [{"label": s["label"], "description": s["desc"]} for s in POSTER_STYLES]
-
-
 def style_labels_hint() -> str:
     """给工具描述里列可选风格用的一行文本。"""
     return " / ".join(s["label"] for s in POSTER_STYLES)
