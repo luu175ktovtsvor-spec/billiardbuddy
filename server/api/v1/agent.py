@@ -32,6 +32,7 @@ from services.agent import denial_tracker
 from services.agent.loop import _action_key, run_agent_loop, run_agent_loop_stream
 from services.agent.proactive import generate_daily_drafts
 from services.ai.factory import ProviderFactory
+from services.ai.failover import build_resilient_text_provider  # BYOK 失败自动切备用配置档
 from services.agent.registry import default_registry
 from services.memory_service import format_memories_for_prompt, load_store_memory, remember
 from services.quota_service import check_quota
@@ -435,7 +436,7 @@ async def agent_chat(
                 system_prompt=system_prompt,
                 history=history,
                 model=body.model,
-                provider=ProviderFactory.get_text_provider_for_store(store),  # BYOK：对话也走门店自带 key
+                provider=build_resilient_text_provider(store),  # BYOK：对话走门店自带 key；某家挂了自动切备用档
             ):
                 et = event.get("type")
                 if et == "final":
@@ -562,7 +563,7 @@ async def agent_execute(
         cont = await run_agent_loop(
             user_message=synth, registry=default_registry, ctx=ctx,
             system_prompt=sys_prompt, history=history,
-            provider=ProviderFactory.get_text_provider_for_store(store),
+            provider=build_resilient_text_provider(store),  # 同上：失败自动切备用档
             max_turns=3,
         )
         continuation = cont.final_text or ""
