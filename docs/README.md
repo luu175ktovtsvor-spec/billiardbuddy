@@ -1,6 +1,6 @@
 # 桌面版 AI Agent — 文档导航
 
-> 本仓库 = 桌面版台球房运营 AI Agent（独立仓库）。`main` = 桌面产品全部代码，已无云端 web 形态。
+> 本仓库 = 桌面版**通用 AI Agent**（独立仓库）。`main` = 桌面产品全部代码，已无云端 web 形态。台球房运营 = 可 `@挂载` 的领域知识库，不是产品边界。
 > 后端 = 本地 SQLite + 纯 BYOK（没配 key 即空 key、绝不回退平台、空 key → 友好 503）；RAG = bge-zh 本地（fastembed/onnxruntime）。
 > 文档已做大清理：删掉历史改造进度档、原始调研、旧蓝图/旧战略、云端 web 时代残留、被推翻的消毒/转译方向，只留**反映当前桌面形态 + PPT-only 知识库**的活文档。
 
@@ -30,16 +30,15 @@
 | `球房运营逻辑基准.md` | **北极星** · PPT 派生脱敏运营逻辑基准 |
 | `助教业务规则库.md` / `Prompt规则库.md` | 助教业务 / 生成口吻格式 规则（PPT-only 下逐条核对 PPT 有据性） |
 | `门店运营画像字段字典.md` | 门店画像字段字典 |
-| `BYOK-门店自带模型-实现.md` / `店脑-AI记忆中枢-架构与成本.md` / `运营日报自动化-设计.md` | as-built 功能设计（当前架构） |
-| `workbench-结构化优质样例库.yaml` / `workbench-结构化反例库.yaml` / `workbench-样例标签字典.yaml` | 工作台样例库（**优质库被 `workbench_fewshot_service.py` 代码实读**，是活资产非文档） |
+| `BYOK-门店自带模型-实现.md` / `店脑-AI记忆中枢-架构与成本.md` | as-built 功能设计（当前架构） |
+| `workbench-结构化优质样例库.yaml` | 工作台优质样例库（被 `workbench_fewshot_service.py` 代码实读，是活资产非文档） |
 
 ## 计划 / 设计 / 参考 / 其它
 
 | 路径 | 说明 |
 |------|------|
-| `plans/cc-haha可借鉴全编目与编排.md` | 学 Claude Code 机制的借鉴主索引（新会话据此挑 🔜 项） |
-| `plans/桌面Agent-国内生图BYOK与机制梳理.md` | 国内生图 BYOK 接入机制（接新厂商的口子） |
-| `plans/桌面Agent-完整能力地图-路线图.md` | 七大能力全景（进度以 `完整优化清单.md` 为准） |
+| `plans/通用Agent改造-0到6路线图.md` | **当前主路线图**：把盒子做成通用偏代码 Agent、对标 Claude Code（台球=可挂载知识库主题） |
+| `plans/cc-haha功能矩阵-全搬对照.md` | cc-haha 全功能×本项目状态进度表（配套上面路线图） |
 | `design/桌面Agent-macOS设计规范.md` + `design/mockups/` | 桌面 UI 设计规范 + 设计图（写码最高优先参考） |
 | `references/Anthropic-Agent-SDK-参考架构.md` | 官方 Agent SDK 参考（学机制用 Python 实现） |
 | `references/P3对外平台-官方文档与资质清单.md` | 对外发布平台资质与官方文档 |
