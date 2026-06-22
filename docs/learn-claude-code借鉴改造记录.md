@@ -6,7 +6,7 @@
 
 ## 审计先验证：这些 CC 机制【产品早已做到】，无需改
 - **知识渐进式披露（s07）**：系统提示零知识正文，只放工具描述 + 场景/知识目录（`find_scenario`/`look_up_knowledge`）；
-  55 knowledge + 79 operation 正文走 bge-zh RAG 在生成工具内部按需召回，**只进生成调用、不回灌编排脑** → 比 CC 的 `load_skill` 更省 token。
+  57 knowledge + 72 operation 正文走 bge-zh RAG 在生成工具内部按需召回，**只进生成调用、不回灌编排脑** → 比 CC 的 `load_skill` 更省 token。
 - **压缩落盘顺序（s08）**：大结果先落盘再换占位符（`_cap_tool_result` 在 `_microcompact` 之前）；read 工具豁免落盘防"读→落盘→再读"死循环。
 - **截断续写（s11）**：`finish_reason=="length"` → 续写 ≤3 次拼完整。
 - **三级压缩全套**：snip → microcompact → autocompact，且 system 段受保护不动。
