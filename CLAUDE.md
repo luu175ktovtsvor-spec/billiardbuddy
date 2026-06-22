@@ -8,7 +8,7 @@
 > - **改前必看跨模块影响** → `docs/耦合地图与改动检查清单.md`；**文档索引** → `docs/README.md`。
 > - ⚠️ **与原仓库关系**：本仓库（`billiards-desktop-agent`）和云端 `billiards-ai-ops` **共享大量代码**（`server/`/`web/`/`prompts/` 基本共享）。桌面专属的只有 Electron 壳（`desktop/`）+ Agent 大脑（`services/agent/`）+ 桌面 UI（`web/src/components/desktop/`）+ 纯 BYOK 守卫 + 本地 SQLite。**改共享逻辑两仓库会漂移，注意同步。**
 > - ⚠️ **项目 auto-memory 不在本路径**（原记忆按旧文件夹路径存）。关键上下文/教训以本文件 + 交接文档为准。
-> - 🧑‍✈️ **owner 最高做主**：技术栈/语言/架构/抄不抄代码/用不用第三方库——一切由 owner 拍板，**不锁死**（现状 = Electron + FastAPI + SQLite + Next.js，但要换随时换，别把"现状"当"限制"）。参考代码（cc-haha / Claude Code，`~/Desktop/cc-haha-ref`）**可直接抄**、成熟第三方库/SDK **直接用**，别为"少依赖/纯净"硬造轮子。助手只提示风险**一次**、owner 拍板后照办，不设"规矩"挡他。唯一不随偏好松动的，是**产品面向终端用户的安全红线**（见末节铁律）。
+> - 🧑‍✈️ **owner 最高做主**：技术栈/语言/架构/抄不抄/用不用库一切 owner 拍板、不锁死（现状 Electron+FastAPI+SQLite+Next.js，但"现状≠限制"，要换随时换）。参考代码(cc-haha/Claude Code)可抄、好库直接用，别硬造轮子。助手只提示风险**一次**再照办，不设规矩挡他。唯一不松 = 产品对终端用户的安全红线（见末节）。
 
 ## 项目简介
 
@@ -33,7 +33,7 @@
 5. **对外/花钱动作走审批闸** — 生图/发布等标 `requires_approval=True`，循环里不直接执行，吐 `approval_request` 弹卡片、人确认后经 `/agent/execute` 才跑。绝不自动群发/私信。
 6. **本地文件操作有护栏** — `local_tools` 沙箱（内容库 + 用户选定文件；`full_disk_access` 时放开）；`..` 穿越/越界抛错；写/改前自动备份。
 7. **Prompt 与业务解耦** — 知识存 `prompts/` YAML（`{变量}` 占位），改 prompt 不改业务代码。`PromptEngine` 是单例 `get_prompt_engine()`。
-8. **持续学 Claude Code/cc-haha** — 对照 `~/Desktop/cc-haha-ref`（**可直接抄用**）学其省 token/Hook/上下文压缩/工具系统机制，能直接搬的代码就搬，搬完按本项目结构整合。
+8. **动手前先看主流 Agent 怎么做** — 实现 harness/agent 能力前，先研究 Claude Code / Codex / 其他开源 Agent（Cline / OpenHands / Goose 等）的架构与设计；对照 `~/Desktop/cc-haha-ref`（可直接抄用），能搬的代码直接搬、按本项目结构整合。
 
 ## 开发规范
 
