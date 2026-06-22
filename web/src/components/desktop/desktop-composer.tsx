@@ -49,6 +49,7 @@ export function DesktopComposer({
   selectedFiles = [],
   onPickFiles,
   onRemoveFile,
+  onOpenFile,
   knowledgePacks = [],
   onKnowledgePacksChange,
   outputStyle = "",
@@ -65,6 +66,8 @@ export function DesktopComposer({
   selectedFiles?: string[];
   onPickFiles?: () => void;
   onRemoveFile?: (path: string) => void;
+  /** 点开附件：报表(.xlsx/.xlsm) 在右侧用表格视图打开（可点格改）。 */
+  onOpenFile?: (path: string) => void;
   knowledgePacks?: string[];
   onKnowledgePacksChange?: (packs: string[]) => void;
   outputStyle?: string;
@@ -149,14 +152,26 @@ export function DesktopComposer({
           {/* 已选文件（附件） */}
           {selectedFiles.length > 0 && (
             <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
-              {selectedFiles.map((p) => (
+              {selectedFiles.map((p) => {
+                const openable = !!onOpenFile && /\.(xlsx|xlsm|pdf|docx|pptx|html|htm)$/i.test(p); // 报表/PDF/Word/PPT/网页可点开预览
+                return (
                 <span
                   key={p}
-                  title={p}
+                  title={openable ? `${p}（点击在右侧预览）` : p}
                   className="inline-flex max-w-[220px] items-center gap-1.5 rounded-md bg-black/[0.05] py-1 pl-2 pr-1 font-mono text-[11.5px] text-[#3a3a3c] dark:bg-white/[0.05] dark:text-[#c8cace]"
                 >
                   <FileText className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
-                  <span className="truncate">{baseName(p)}</span>
+                  {openable ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpenFile?.(p)}
+                      className="truncate text-[#10a37f] underline-offset-2 transition hover:underline"
+                    >
+                      {baseName(p)}
+                    </button>
+                  ) : (
+                    <span className="truncate">{baseName(p)}</span>
+                  )}
                   <button
                     type="button"
                     onClick={() => onRemoveFile?.(p)}
@@ -166,7 +181,8 @@ export function DesktopComposer({
                     <X className="h-3 w-3" />
                   </button>
                 </span>
-              ))}
+                );
+              })}
             </div>
           )}
 

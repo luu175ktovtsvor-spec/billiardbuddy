@@ -177,13 +177,14 @@ function MacStepList({ steps, active, onPreview }: { steps: ToolStep[]; active: 
                 ) : (
                   <ResultDisclosure
                     text={s.result as string}
-                    onOpen={onPreview ? () => onPreview({
-                      kind: "file",
-                      title: label,
-                      path: typeof s.args?.path === "string" ? s.args.path
-                        : typeof s.args?.file_path === "string" ? s.args.file_path : undefined,
-                      text: s.result as string,
-                    }) : undefined}
+                    onOpen={onPreview ? () => {
+                      const path = typeof s.args?.path === "string" ? s.args.path
+                        : typeof s.args?.file_path === "string" ? s.args.file_path : undefined;
+                      // 报表→表格(可点格改)；PDF/Word/PPT/网页→文档原样预览；其它→纯文本
+                      if (path && /\.(xlsx|xlsm)$/i.test(path)) onPreview({ kind: "sheet", title: label, path });
+                      else if (path && /\.(pdf|docx|pptx|html|htm)$/i.test(path)) onPreview({ kind: "doc", title: label, path });
+                      else onPreview({ kind: "file", title: label, path, text: s.result as string });
+                    } : undefined}
                   />
                 ))}
             </div>

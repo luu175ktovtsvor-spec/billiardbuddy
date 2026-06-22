@@ -50,6 +50,13 @@ export interface ElectronBridge {
       directory?: boolean; // true=选文件夹(授权整个目录),否则选文件
       filters?: { name: string; extensions: string[] }[];
     }): Promise<{ canceled: boolean; paths: string[] }>;
+    /** 系统「另存为」：把成品(base64 字节)写到用户选定的位置(桌面/任意文件夹)。 */
+    save(opts: {
+      defaultName?: string;
+      base64: string;
+      title?: string;
+      filters?: { name: string; extensions: string[] }[];
+    }): Promise<{ canceled: boolean; path?: string; error?: string }>;
   };
 }
 

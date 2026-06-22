@@ -10,7 +10,6 @@ import type {
   ListGenerationsParams,
 } from "@/types/generation-history";
 import type { DashboardTodayResponse, CardSignals } from "@/types/dashboard";
-import type { ReportSchema, ReportListItem, ReportSubmitResponse, ReportData } from "@/types/report";
 
 const configuredBaseUrl = process.env.NEXT_PUBLIC_API_URL;
 const BASE_URL = !configuredBaseUrl
@@ -346,6 +345,48 @@ class ApiClient {
       "/api/v1/canvas/excel-edit",
       { path, cell, value, sheet: sheet ?? null, selected_files: [path] },
     );
+  }
+
+  /** Word/PPT 按块读（桌面专属）：返回带稳定 id 的文本块，供逐块编辑。 */
+  docBlocks(path: string) {
+    return this.request<{
+      name: string;
+      kind: "docx" | "pptx";
+      blocks: { id: string; kind: string; text: string; slide?: number }[];
+    }>("POST", "/api/v1/canvas/doc-blocks", { path, selected_files: [path] });
+  }
+
+  /** Word/PPT 按块写回原文件（桌面专属，改前自动备份）。edits = {块id: 新文字}。 */
+  docSave(path: string, edits: Record<string, string>) {
+    return this.request<{ ok: boolean; path: string; saved: number }>(
+      "POST",
+      "/api/v1/canvas/doc-save",
+      { path, edits, selected_files: [path] },
+    );
+  }
+
+  /** 定稿渲染：把成品内容渲染成指定格式字节(base64)，配合 Electron「另存为」写到本机任意位置。 */
+  renderDeliverable(content: string, format: string) {
+    return this.request<{ base64: string; ext: string }>("POST", "/api/v1/canvas/render", { content, format });
+  }
+
+  /** 定稿保存到「内容库/成品」（桌面专属，重名自动备份）。 */
+  saveToLibrary(content: string, format: string, name: string) {
+    return this.request<{ ok: boolean; path: string }>("POST", "/api/v1/canvas/save-to-library", { content, format, name });
+  }
+
+  /** 文档预览（桌面专属，只读）：PDF/Word(.docx)/PPT(.pptx)/网页(.html) → 前端可渲染的数据。
+   * render: pdf(base64原样) / page(网页原文) / richtext(Word转HTML片段) / slides(PPT逐页大纲) / toobig */
+  readDoc(path: string) {
+    return this.request<{
+      name: string;
+      render: "pdf" | "page" | "richtext" | "slides" | "toobig";
+      pdf_base64?: string;
+      html?: string;
+      slides?: { title: string; bullets: string[] }[];
+      message?: string;
+      truncated?: boolean;
+    }>("POST", "/api/v1/canvas/doc", { path, selected_files: [path] });
   }
 
   // ─── Orchestrate（多 Agent 协作） ───
@@ -739,35 +780,6 @@ class ApiClient {
 
   async deletePosterConversation(conversationId: string): Promise<void> {
     await this.request("DELETE", `/api/v1/generations/conversations/${conversationId}`);
-  }
-
-  // ─── 报表 / 日报 ───
-  async getReportSchema(reportType: string): Promise<ReportSchema> {
-    return this.request<ReportSchema>("GET", `/api/v1/reports/schema/${reportType}`);
-  }
-  async listReports(): Promise<ReportListItem[]> {
-    return this.request<ReportListItem[]>("GET", "/api/v1/reports");
-  }
-  async submitReport(reportType: string, data: ReportData, note: string): Promise<ReportSubmitResponse> {
-    return this.request<ReportSubmitResponse>("POST", `/api/v1/reports/${reportType}`, { data, note });
-  }
-  /** 「说一句话」→ AI 抽取字段，前端拿去预填表单 */
-  async extractReport(reportType: string, text: string): Promise<{ data: ReportData }> {
-    return this.request<{ data: ReportData }>("POST", `/api/v1/reports/${reportType}/extract`, { text });
-  }
-  /** 今天哪些日报已交（老板/团队看交付状态） */
-  async getReportTodayStatus(): Promise<{ date: string; submitted: string[] }> {
-    return this.request<{ date: string; submitted: string[] }>("GET", "/api/v1/reports/today-status");
-  }
-  /** 导出 Excel：手写 fetch + 手动补 X-Store-Id（不能走 request，它 res.json()） */
-  async exportReport(reportId: string): Promise<Blob> {
-    const headers: Record<string, string> = {};
-    const token = this.getToken();
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-    if (this.storeId) headers["X-Store-Id"] = this.storeId; // 多门店导当前门店
-    const res = await fetch(`${this.baseUrl}/api/v1/reports/${reportId}/export`, { headers });
-    if (!res.ok) throw new Error("导出失败");
-    return res.blob();
   }
 
   // ─── Dashboard ───
