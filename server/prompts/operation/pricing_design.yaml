@@ -1,6 +1,9 @@
 key: "operation.pricing_design"
 name: "定价/价目表设计"
 category: "operation"
+domain: strategy
+freedom: hard_number
+tags: [scene:定价, scene:价目表]
 variables:
   - store_name
   - positioning

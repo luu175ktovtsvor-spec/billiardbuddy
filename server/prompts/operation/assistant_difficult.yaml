@@ -1,6 +1,9 @@
 key: "operation.assistant_difficult"
 name: "助教疑难场景应对"
 category: "operation"
+domain: talent-mgmt
+freedom: red_line
+tags: [scene:话术, role:助教管理]
 variables:
   - store_name
   - target

@@ -1,6 +1,9 @@
 key: "operation.patrol_safety_check"
 name: "巡店与安全检查表"
 category: "operation"
+domain: talent-mgmt
+freedom: skeleton
+tags: [scene:安全巡店, role:前厅]
 variables:
   - store_name
   - tone

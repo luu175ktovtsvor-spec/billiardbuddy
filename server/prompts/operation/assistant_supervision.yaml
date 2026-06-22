@@ -1,6 +1,9 @@
 key: "operation.assistant_supervision"
 name: "助教团队督导与目标管理"
 category: "operation"
+domain: talent-mgmt
+freedom: red_line
+tags: [scene:督导, role:助教管理]
 variables:
   - store_name
   - target

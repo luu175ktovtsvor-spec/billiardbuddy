@@ -1,6 +1,9 @@
 key: "operation.store_atmosphere"
 name: "门店氛围内容"
 category: "operation"
+domain: customer-ops
+freedom: red_line
+tags: [scene:内容文案, role:运营, scene:氛围展示]
 variables:
   - store_name
   - city

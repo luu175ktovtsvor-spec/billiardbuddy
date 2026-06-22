@@ -1,6 +1,9 @@
 key: "knowledge.platform_operations"
 name: "美团与抖音运营操作手册"
 category: "knowledge"
+domain: marketing
+freedom: hard_number
+tags: [scene:评分, scene:刷评, scene:团购, scene:引流, channel:美团, channel:抖音, channel:大众点评]
 description: |
   美团/大众点评/抖音的线上运营实操：美团评分线和金牌店铺达标、刷评价的防风控细节（关WiFi关定位、不复制粘贴、评价间隔）、差评回复、团购品类设计；抖音短视频矩阵（含助教出镜的「擦边」引流真实打法）、直播时长、本地推投放；还有朋友圈和短视频的发布频次要求。
   老板要冲美团星级好评、设计团购套餐、规划抖音内容和直播、安排员工发朋友圈发视频时调它。

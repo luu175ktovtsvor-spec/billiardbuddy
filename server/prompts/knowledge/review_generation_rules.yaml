@@ -1,6 +1,9 @@
 key: "knowledge.review_generation_rules"
 name: "好评文案生成规范"
 category: "knowledge"
+domain: marketing
+freedom: red_line
+tags: [scene:刷评, scene:好评文案, scene:评分, channel:美团, channel:抖音, channel:大众点评]
 variables: []
 description: |
   美团/抖音/大众点评好评文案的写法规范。

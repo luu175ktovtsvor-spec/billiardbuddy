@@ -1,6 +1,9 @@
 key: "knowledge.assistant_persona_building"
 name: "助教人设/形象卖点打造SOP"
 category: "knowledge"
+domain: marketing
+freedom: red_line
+tags: [scene:助教人设, scene:形象卖点, scene:引流, role:助教, channel:抖音, channel:朋友圈, channel:私域]
 variables: []
 description: |
   助教"美女人设/形象卖点"的体系化打造方法。围绕"个人形象 > 沟通能力 > 台球技术"这条助教岗位的核心排序，

@@ -1,6 +1,9 @@
 key: "operation.training_exam"
 name: "培训考试试卷模板"
 category: "operation"
+domain: talent-mgmt
+freedom: hard_number
+tags: [scene:培训, role:前厅, role:助教, role:店长]
 variables:
   - store_name
   - role

@@ -1,6 +1,9 @@
 key: "knowledge.price_raise"
 name: "经营改善后分区主动涨价"
 category: "knowledge"
+domain: strategy
+freedom: skeleton
+tags: [scene:定价, scene:涨价]
 variables: []
 description: |
   把"只会降价救火"补成"会主动涨价提毛利"的真实能力。讲清接管/经营改善后，

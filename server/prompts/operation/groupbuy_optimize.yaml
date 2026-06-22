@@ -1,6 +1,9 @@
 key: "operation.groupbuy_optimize"
 name: "团购品类优化建议"
 category: "operation"
+domain: marketing
+freedom: hard_number
+tags: [scene:团购优化, scene:定价, role:店长, channel:美团, channel:大众点评]
 variables:
   - store_name
   - price_info

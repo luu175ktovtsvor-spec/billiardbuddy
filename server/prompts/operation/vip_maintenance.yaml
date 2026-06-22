@@ -1,6 +1,9 @@
 key: "operation.vip_maintenance"
 name: "大客户维护模板"
 category: "operation"
+domain: customer-ops
+freedom: skeleton
+tags: [scene:复购, role:店长, object:VIP, object:大客户]
 variables:
   - store_name
   - city

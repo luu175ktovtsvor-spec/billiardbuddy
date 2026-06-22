@@ -1,6 +1,9 @@
 key: "operation.frontdesk_sop"
 name: "前厅SOP话术查询"
 category: "operation"
+domain: talent-mgmt
+freedom: skeleton
+tags: [scene:话术, role:前厅]
 variables:
   - store_name
   - role

@@ -1,6 +1,9 @@
 key: "operation.assistant_promo"
 name: "助教推广"
 category: "operation"
+domain: marketing
+freedom: red_line
+tags: [scene:助教推广, scene:引流, role:店长, role:助教, channel:抖音, channel:朋友圈, channel:交友软件, channel:私域]
 variables:
   - store_name
   - city

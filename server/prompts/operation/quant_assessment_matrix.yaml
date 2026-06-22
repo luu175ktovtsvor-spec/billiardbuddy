@@ -1,6 +1,9 @@
 key: "operation.quant_assessment_matrix"
 name: "全岗位量化考核奖惩矩阵"
 category: "operation"
+domain: talent-mgmt
+freedom: hard_number
+tags: [scene:绩效, role:店长]
 variables:
   - store_name
 template: |

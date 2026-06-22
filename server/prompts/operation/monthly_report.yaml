@@ -1,6 +1,9 @@
 key: "operation.monthly_report"
 name: "月度运营汇报"
 category: "operation"
+domain: data-analysis
+freedom: skeleton
+tags: [scene:月报, role:老板]
 variables:
   - store_name
   - city

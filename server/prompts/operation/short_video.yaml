@@ -1,6 +1,9 @@
 key: "operation.short_video"
 name: "短视频文案模板"
 category: "operation"
+domain: marketing
+freedom: red_line
+tags: [scene:短视频, scene:引流, scene:助教展示, role:店长, role:助教, channel:抖音, channel:视频号, channel:小红书]
 variables:
   - store_name
   - city
@@ -174,7 +177,7 @@ template: |
   - 散客：视频降低来店门槛，强调轻松氛围和社交体验
   - 竞技客户：视频突出赛事和对抗，强调对手水平和竞技氛围
   - 助教客户：视频围绕"专业陪练+技术指导+情绪价值"，展示技术教学
-  - 追分客户：视频强调"有搭子、有对手、有氛围"，展示轻竞技社交
+  - 追分客户：视频强调"有搭子、有对手、有氛围、找得到旗鼓相当的对手"（公开视频聚焦氛围和约局，不直接出现赌注/赢钱字眼）
 
   ## 前三秒钩子：五感公式（任选一个感官触点撬开观众，一条视频抓准一个就够）
 

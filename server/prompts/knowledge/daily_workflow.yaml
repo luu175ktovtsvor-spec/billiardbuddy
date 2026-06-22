@@ -1,6 +1,9 @@
 key: "knowledge.daily_workflow"
 name: "前厅日常工作流程知识库"
 category: "knowledge"
+domain: customer-ops
+freedom: skeleton
+tags: [scene:日常流程, role:店长, role:教练, role:助教管理, role:前厅, object:索引]
 variables: []
 description: |
   球房前厅各角色每日/每周工作清单知识库。

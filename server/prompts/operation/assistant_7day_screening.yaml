@@ -1,6 +1,9 @@
 key: "operation.assistant_7day_screening"
 name: "助教7天筛选制SOP"
 category: "operation"
+domain: talent-mgmt
+freedom: hard_number
+tags: [scene:筛选, role:助教管理]
 variables:
   - store_name
   - assistant_types

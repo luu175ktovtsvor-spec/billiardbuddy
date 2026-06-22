@@ -1,6 +1,9 @@
 key: "knowledge.diagnostic_logic"
 name: "经营诊断决策树"
 category: "knowledge"
+domain: data-analysis
+freedom: skeleton
+tags: [scene:诊断, role:店长]
 variables: []
 description: |
   球房经营诊断的"指标异常 → 根因 → 责任部门 → 具体动作"决策规则。

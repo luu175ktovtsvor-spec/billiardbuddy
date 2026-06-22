@@ -4,6 +4,9 @@ description: |
   前厅主管从14点中班到23点后收尾的整天流程（交接班、卫生检查、空调电源管理、台尼熨烫球具维护、巡场监督、摆球服务、投诉处理），核心是服务质量和卫生标准；含前厅主管八项工作任务、小推车促销节奏。
   老板/前厅问"前厅一天该干嘛/前厅主管八项任务/服务卫生标准"时调它。
 category: "knowledge"
+domain: talent-mgmt
+freedom: skeleton
+tags: [scene:日报, role:前厅]
 variables:
   - store_name
 template: |

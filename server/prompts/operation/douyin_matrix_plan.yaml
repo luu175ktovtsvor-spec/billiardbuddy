@@ -1,6 +1,9 @@
 key: "operation.douyin_matrix_plan"
 name: "抖音矩阵账号运营方案"
 category: "operation"
+domain: marketing
+freedom: red_line
+tags: [scene:抖音矩阵, scene:引流, scene:助教获客, role:店长, role:助教, role:教练, channel:抖音, channel:小红书]
 variables:
   - store_name
   - has_assistant

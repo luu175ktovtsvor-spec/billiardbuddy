@@ -1,6 +1,9 @@
 key: "operation.old_customer_recall"
 name: "老客维护"
 category: "operation"
+domain: customer-ops
+freedom: skeleton
+tags: [scene:复购, role:店长, object:老客, object:流失客]
 variables:
   - store_name
   - city

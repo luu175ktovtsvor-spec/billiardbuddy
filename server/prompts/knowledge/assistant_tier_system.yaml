@@ -4,6 +4,9 @@
 key: "knowledge.assistant_tier_system"
 name: "助教等级体系知识库"
 category: "knowledge"
+domain: talent-mgmt
+freedom: hard_number
+tags: [scene:薪资, role:助教]
 description: |
   助教怎么分级、怎么管的骨架规则：以在册口径为准——七天筛选制（新人七天内按实打结算、不设保底）、开业前招聘只有补助没保底、入职培训七维（球技/形象/服务/拓客/约客/维客/技巧）、助教月业绩奖励档（>170h 奖 500 / >200h 奖 1000 / >230h 奖 1500，参考值、门店自定）。具体球技分级线、各级保底/提成/课时、罚款考勤、培训课程表等由门店自定，不写死。老板要搭助教晋升通道、定级、排培训时用它（金额一律占位、门店自定）。
 variables: []

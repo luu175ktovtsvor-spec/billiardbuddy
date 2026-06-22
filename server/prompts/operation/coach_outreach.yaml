@@ -1,6 +1,9 @@
 key: "operation.coach_outreach"
 name: "教练引流拓客"
 category: "operation"
+domain: marketing
+freedom: skeleton
+tags: [scene:教练拓客, scene:引流, role:教练, channel:同行店, channel:私域]
 variables:
   - store_name
   - city

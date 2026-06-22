@@ -1,6 +1,9 @@
 key: "operation.assistant_recruit_sop"
 name: "助教招聘一线SOP"
 category: "operation"
+domain: talent-mgmt
+freedom: red_line
+tags: [scene:招聘, role:助教管理]
 variables:
   - store_name
 template: |

@@ -1,6 +1,9 @@
 key: "operation.customer_group_guide"
 name: "引导客户进对应群"
 category: "operation"
+domain: customer-ops
+freedom: red_line
+tags: [scene:私域社群, role:前厅, scene:进群引导, object:散客]
 variables:
   - store_name
   - city

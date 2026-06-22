@@ -3,6 +3,9 @@ name: "助教薪资体系知识库"
 category: "knowledge"
 description: |
   助教这工资怎么发(对齐台球行业真实运营逻辑):七天筛选制(新助教七天内按实打结算、不设保底,七天内完成去留筛选;开业前招聘只有补助、没有保底)、月业绩奖励三档(170h/200h/230h)。老板要定助教薪资、写招聘里的薪资时用它(具体金额一律占位、不替门店编数)。
+domain: talent-mgmt
+freedom: hard_number
+tags: [scene:薪资, role:助教]
 variables: []
 template: |
   ## 助教薪资体系知识库

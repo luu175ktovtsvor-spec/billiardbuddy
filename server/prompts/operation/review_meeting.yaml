@@ -1,6 +1,9 @@
 key: "operation.review_meeting"
 name: "球房复盘会模板"
 category: "operation"
+domain: data-analysis
+freedom: red_line
+tags: [scene:复盘, role:店长]
 variables:
   - store_name
   - meeting_type

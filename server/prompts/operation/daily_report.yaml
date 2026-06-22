@@ -1,6 +1,9 @@
 key: "operation.daily_report"
 name: "日报生成"
 category: "operation"
+domain: data-analysis
+freedom: skeleton
+tags: [scene:日报, role:店长]
 variables:
   - store_name
   - tone

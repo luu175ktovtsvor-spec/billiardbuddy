@@ -1,6 +1,9 @@
 key: "operation.equipment_management"
 name: "电器管理"
 category: "operation"
+domain: talent-mgmt
+freedom: skeleton
+tags: [scene:设备管理, role:前厅]
 variables:
   - store_name
   - city

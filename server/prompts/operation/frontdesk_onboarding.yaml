@@ -1,6 +1,9 @@
 key: "operation.frontdesk_onboarding"
 name: "前厅员工培训上岗"
 category: "operation"
+domain: talent-mgmt
+freedom: skeleton
+tags: [scene:培训, role:前厅]
 variables:
   - store_name
   - tone

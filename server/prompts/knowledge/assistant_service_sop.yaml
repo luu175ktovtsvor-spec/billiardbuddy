@@ -1,6 +1,9 @@
 key: "knowledge.assistant_service_sop"
 name: "助教服务 SOP 知识库"
 category: "knowledge"
+domain: customer-ops
+freedom: red_line
+tags: [scene:服务, role:助教, scene:上钟, scene:送客, scene:超休]
 variables: []
 description: |
   球房助教服务标准操作流程与情商话术知识库。

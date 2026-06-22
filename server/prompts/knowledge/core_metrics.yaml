@@ -1,6 +1,9 @@
 key: "knowledge.core_metrics"
 name: "核心指标公式库"
 category: "knowledge"
+domain: data-analysis
+freedom: hard_number
+tags: [scene:诊断, role:店长]
 variables: []
 description: |
   球房经营核心指标的计算公式和分析方法。

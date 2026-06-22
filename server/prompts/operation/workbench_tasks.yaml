@@ -1,6 +1,9 @@
 key: "operation.workbench_tasks"
 name: "工作台任务卡片模板"
 category: "operation"
+domain: talent-mgmt
+freedom: skeleton
+tags: [scene:任务表, role:店长, role:前厅, role:助教]
 variables:
   - store_name
   - role

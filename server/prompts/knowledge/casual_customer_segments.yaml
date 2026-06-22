@@ -1,6 +1,9 @@
 key: "knowledge.casual_customer_segments"
 name: "初次进店散客细分与维护转化"
 category: "knowledge"
+domain: marketing
+freedom: skeleton
+tags: [scene:客户分类, scene:散客维护, scene:转化, role:前厅, role:助教, role:教练]
 variables: []
 description: |
   初次进店的"散客"不是同一类人。按上瘾程度和来店动机分成四层：娱乐型、仅限朋友型、刚上瘾型、竞技型。

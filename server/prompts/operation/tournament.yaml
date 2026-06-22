@@ -1,6 +1,9 @@
 key: "operation.tournament"
 name: "周赛/月赛"
 category: "operation"
+domain: customer-ops
+freedom: red_line
+tags: [scene:赛事活动, role:店长, object:竞技客, object:追分客]
 variables:
   - store_name
   - city
@@ -84,7 +87,7 @@ template: |
   - 周赛/月赛：定期举办，活跃门店氛围、培养赛事文化
   - 中式八球赛：用标准规则
   - 让分赛：按水平让条件，让比赛更有悬念、更公平（具体让法由门店定）
-  - 轻竞技玩法（如追分局）：以台费局/饮料局形式做，不涉及现金输赢
+  - 门店组织的趣味赛：以台费局/饮料局/小奖品形式做，奖只挂台费/饮料/小礼品，门店不当庄不抽水（客户私下追分对赌是客户自己的事，门店不参与）
 
   ### 赛事执行
   - 赛前提前宣传预热

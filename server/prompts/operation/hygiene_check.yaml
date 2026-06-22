@@ -1,6 +1,9 @@
 key: "operation.hygiene_check"
 name: "卫生检查"
 category: "operation"
+domain: talent-mgmt
+freedom: skeleton
+tags: [scene:卫生, role:前厅]
 variables:
   - store_name
   - city

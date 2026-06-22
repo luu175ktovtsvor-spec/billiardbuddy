@@ -1,6 +1,9 @@
 key: "operation.four_data_review"
 name: "四大数据复盘"
 category: "operation"
+domain: data-analysis
+freedom: skeleton
+tags: [scene:复盘, role:店长]
 variables:
   - store_name
   - tone

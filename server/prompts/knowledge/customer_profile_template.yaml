@@ -1,6 +1,9 @@
 key: "knowledge.customer_profile_template"
 name: "客户档案模板知识库"
 category: "knowledge"
+domain: marketing
+freedom: skeleton
+tags: [scene:客户档案, scene:打标签, role:店长, role:助教, role:教练, role:前厅]
 variables: []
 description: |
   客户档案的字段定义、打标签SOP和客户生命周期管理。

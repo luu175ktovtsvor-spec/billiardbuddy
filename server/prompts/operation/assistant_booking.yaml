@@ -1,6 +1,9 @@
 key: "operation.assistant_booking"
 name: "助教预约转化"
 category: "operation"
+domain: customer-ops
+freedom: red_line
+tags: [scene:转化, role:助教管理, object:助教客户, scene:预约续约]
 variables:
   - store_name
   - city

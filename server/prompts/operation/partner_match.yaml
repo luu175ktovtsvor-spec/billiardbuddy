@@ -1,6 +1,9 @@
 key: "operation.partner_match"
 name: "搭子局/竞技局"
 category: "operation"
+domain: customer-ops
+freedom: skeleton
+tags: [scene:玩法活动, scene:搭子局, object:散客, object:单人客]
 variables:
   - store_name
   - city

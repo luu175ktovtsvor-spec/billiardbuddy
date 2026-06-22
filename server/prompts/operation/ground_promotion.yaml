@@ -1,6 +1,9 @@
 key: "operation.ground_promotion"
 name: "地推拓客方案"
 category: "operation"
+domain: marketing
+freedom: skeleton
+tags: [scene:地推, scene:引流, role:店长, channel:地推, channel:私域]
 variables:
   - store_name
   - target

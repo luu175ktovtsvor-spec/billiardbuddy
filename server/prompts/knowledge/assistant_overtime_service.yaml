@@ -1,6 +1,9 @@
 key: "knowledge.assistant_overtime_service"
 name: "助教超休服务（陪伴服务·管理·激励·边界）"
 category: "knowledge"
+domain: talent-mgmt
+freedom: red_line
+tags: [scene:超休, role:助教]
 variables: []
 description: |
   助教"超休"服务的真实运营逻辑：超休是助教出售自己时间、在球房外给客户提供陪伴价值的服务，是商业球房助教的核心收入来源之一。

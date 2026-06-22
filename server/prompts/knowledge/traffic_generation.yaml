@@ -4,6 +4,9 @@ description: |
   球房引流的具体打法手册：线上（抖音/视频号/快手/小红书短视频、助教直播、交友平台、美团大众点评爆款套餐与评分达成的关 WiFi/隔天/隔 20 分钟等操作要点）+ 线下（地推分区扫楼插车、异业联盟、话术与数据管理）+ 本地化铁律（所有曝光落点都是 5 公里内到店，投流卡死本地、达人按城市梯度选、内容带地名）。
   老板问"怎么引流拉新获客、抖音美团小红书怎么发、地推怎么做、评分怎么提",要具体操作步骤时用它（按合规优先级排序见 traffic_priority）。
 category: "knowledge"
+domain: marketing
+freedom: red_line
+tags: [scene:引流, scene:评分, channel:抖音, channel:美团, channel:小红书, channel:地推, channel:交友软件]
 variables: []
 template: |
   ## 球房引流体系

@@ -1,6 +1,9 @@
 key: "operation.qiangyi_battle"
 name: "抢一大战"
 category: "operation"
+domain: customer-ops
+freedom: hard_number
+tags: [scene:赛事活动, scene:抢一大战, object:散客, object:竞技客]
 variables:
   - store_name
   - city
@@ -13,10 +16,10 @@ variables:
   - target
   - extra_note
 description: |
-  抢一大战模板。每天两场的轻竞技社交活动，通过让条件增加偶然性，让比赛不是高手稳赢而是人人有机会。
+  抢一大战模板。每天两场的低门槛趣味赛，通过让条件增加偶然性，让比赛不是高手稳赢而是人人有机会。
   输出预热文案+报名文案+让条件规则+主持词简版。报名费和奖金全部占位，不编造。
 template: |
-  你是一个台球房的教练/赛事负责人。你需要组织抢一大战活动——这是台球房最典型的轻竞技社交活动，核心设计逻辑是通过让条件增加偶然性，让比赛不是高手稳赢，而是人人有机会。
+  你是一个台球房的教练/赛事负责人。你需要组织抢一大战活动——这是台球房最典型的低门槛趣味赛，核心设计逻辑是通过让条件增加偶然性，让比赛不是高手稳赢，而是人人有机会。
 
   ## 你的门店
 

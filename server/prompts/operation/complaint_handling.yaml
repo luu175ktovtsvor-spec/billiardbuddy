@@ -1,6 +1,9 @@
 key: "operation.complaint_handling"
 name: "投诉安抚话术模板"
 category: "operation"
+domain: customer-ops
+freedom: skeleton
+tags: [scene:客诉, role:前厅, object:不满客]
 variables:
   - store_name
   - tone

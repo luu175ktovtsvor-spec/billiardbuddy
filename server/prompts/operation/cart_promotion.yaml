@@ -1,6 +1,9 @@
 key: "operation.cart_promotion"
 name: "小推车促销"
 category: "operation"
+domain: talent-mgmt
+freedom: skeleton
+tags: [scene:促销, role:前厅]
 variables:
   - store_name
   - city
