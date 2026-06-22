@@ -33,7 +33,7 @@
 5. **对外/花钱动作走审批闸** — 生图/发布等标 `requires_approval=True`，循环里不直接执行，吐 `approval_request` 弹卡片、人确认后经 `/agent/execute` 才跑。绝不自动群发/私信。
 6. **本地文件操作有护栏** — `local_tools` 沙箱（内容库 + 用户选定文件；`full_disk_access` 时放开）；`..` 穿越/越界抛错；写/改前自动备份。
 7. **Prompt 与业务解耦** — 知识存 `prompts/` YAML（`{变量}` 占位），改 prompt 不改业务代码。`PromptEngine` 是单例 `get_prompt_engine()`。
-8. **动手前先看主流 Agent 怎么做** — 实现 harness/agent 能力前，先研究 Claude Code / Codex / 其他开源 Agent（Cline / OpenHands / Goose 等）的架构与设计；对照 `~/Desktop/cc-haha-ref`（可直接抄用），能搬的代码直接搬、按本项目结构整合。
+8. **动手前先看主流 harness 怎么做** — 实现 harness/agent 能力前，先看主流 agent/harness 的架构与设计（终端类 Claude Code/Codex/Aider/Goose/OpenCode、IDE 类 Cline、自主类 OpenHands、框架 LangGraph/Agent SDK…），全景+研究入口见 `docs/references/AI-Agent-harness全景与参考.md`；再对照 `~/Desktop/cc-haha-ref`（可直接抄用）动手。
 
 ## 开发规范
 
