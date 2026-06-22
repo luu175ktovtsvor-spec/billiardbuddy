@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_db, get_current_user, get_current_store
@@ -31,3 +32,30 @@ async def dashboard_card_signals(
     _perm: None = Depends(require_permission(Permission.DASHBOARD_VIEW)),
 ):
     return await get_card_signals(db=db, store=store)
+
+
+class AdoptRecRequest(BaseModel):
+    rec_id: str  # 被点的今日推荐 id（rec.id）
+
+
+@router.post("/adopt-rec")
+async def dashboard_adopt_rec(
+    body: AdoptRecRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    store: Annotated[Store, Depends(get_current_store)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    _perm: None = Depends(require_permission(Permission.DASHBOARD_VIEW)),
+):
+    """隐式反馈·采纳上浮：老板点某条今日推荐去做时调一下，记一次"采纳"弱正反馈。
+    轻量、不建表——落成 usage 事件（喂分析）；真正影响排序的是随后那条对话生成上带的 source_rec_id
+    （见 agent.py），二者互补。故障安全：记录失败不影响前端跳转。"""
+    rec_id = (body.rec_id or "").strip()[:50]
+    if rec_id:
+        try:
+            from services.usage_event_service import log_event
+            await log_event("rec_adopted", store_id=str(store.id),
+                            user_id=(str(current_user.id) if current_user else None),
+                            props={"rec_id": rec_id})
+        except Exception:
+            pass
+    return {"status": "ok", "rec_id": rec_id}
