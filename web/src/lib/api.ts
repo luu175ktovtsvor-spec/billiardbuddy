@@ -1,14 +1,6 @@
 import { ApiError } from "@/types/api";
-import type { OrchestrationTask, RepurposeResponse } from "@/types/api";
 import type { LoginRequest, RegisterRequest, TokenResponse, User } from "@/types/auth";
 import type { StoreCreate, StoreResponse, StoreUpdate, StoreListItem, UploadResponse, StoreMemoryItem, ByokConfigOut, ByokConfigIn, ByokValidateResult, ByokProfile } from "@/types/store";
-import type { GenerateActivityRequest, GenerateOperationRequest, GenerateWorkbenchRequest, GenerateOutreachRequest, GenerateSOPRequest, GenerateGamesRequest, GeneratePerformanceRequest, GenerateDiagnosisRequest, GenerationResponse } from "@/types/generate";
-import type { ImageGenerateRequest, ImageGenerateResponse, SizeOption, PromptExpandRequest, PromptExpandResponse } from "@/types/poster";
-import type {
-  GenerationHistoryListResponse,
-  GenerationHistoryItem,
-  ListGenerationsParams,
-} from "@/types/generation-history";
 import type { DashboardTodayResponse, CardSignals } from "@/types/dashboard";
 
 const configuredBaseUrl = process.env.NEXT_PUBLIC_API_URL;
@@ -297,28 +289,6 @@ class ApiClient {
     return this.request<UploadResponse>("POST", "/api/v1/stores/me/qrcode", formData, true);
   }
 
-  // ─── Generate ───
-
-  generateActivity(data: GenerateActivityRequest) {
-    return this.request<GenerationResponse>("POST", "/api/v1/generate/activity", data);
-  }
-
-  generateOperation(data: GenerateOperationRequest) {
-    return this.request<GenerationResponse>("POST", "/api/v1/generate/operation", data);
-  }
-
-  generateWorkbench(data: GenerateWorkbenchRequest) {
-    return this.request<GenerationResponse>("POST", "/api/v1/generate/workbench", data);
-  }
-
-  /** 内容变体：把生成结果转换为指定平台格式 */
-  repurposeContent(generationId: string, targetPlatform: string) {
-    return this.request<RepurposeResponse>("POST", "/api/v1/generate/repurpose", {
-      generation_id: generationId,
-      target_platform: targetPlatform,
-    });
-  }
-
   /** 画布定向改写：圈了段(selection)只改那段、不动别处；不传则整篇修订。 */
   canvasEdit(content: string, instruction: string, selection?: string, deliverableType?: string) {
     return this.request<{ content: string; mode: string; changed_span?: string }>("POST", "/api/v1/canvas/edit", {
@@ -389,82 +359,6 @@ class ApiClient {
     }>("POST", "/api/v1/canvas/doc", { path, selected_files: [path] });
   }
 
-  // ─── Orchestrate（多 Agent 协作） ───
-
-  startOrchestration(data: { task_type: string; description: string; auto_orchestrate?: boolean }) {
-    return this.request<OrchestrationTask>("POST", "/api/v1/orchestrate", data);
-  }
-
-  getOrchestration(taskId: string) {
-    return this.request<OrchestrationTask>("GET", `/api/v1/orchestrate/${taskId}`);
-  }
-
-  /** SSE 流式工作台生成 */
-  async streamWorkbench(
-    data: GenerateWorkbenchRequest,
-    onToken: (token: string) => void,
-    onDone: (fullContent: string, generationId: string, conversationId?: string) => void,
-    onError: (error: string) => void,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      "Accept": "text/event-stream",
-    };
-    if (this.token) {
-      headers["Authorization"] = `Bearer ${this.token}`;
-    }
-    if (this.storeId) {
-      headers["X-Store-Id"] = this.storeId;
-    }
-
-    try {
-      const res = await fetch(`${this.baseUrl}/api/v1/stream/workbench`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(data),
-        signal,
-      });
-
-      if (!res.ok) {
-        if (res.status === 401 && this.token) {
-          const newToken = await this.refreshAccessToken();
-          if (newToken) {
-            headers["Authorization"] = `Bearer ${newToken}`;
-            const retryRes = await fetch(`${this.baseUrl}/api/v1/stream/workbench`, {
-              method: "POST",
-              headers,
-              body: JSON.stringify(data),
-            });
-            if (!retryRes.ok) {
-              if (retryRes.status === 401) {
-                this.setToken(null);
-                if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-                  window.location.href = "/login";
-                }
-              }
-              onError(await this.friendlyStreamError(retryRes));
-              return;
-            }
-            return this._consumeSSEStream(retryRes, onToken, onDone, onError);
-          }
-        }
-        if (res.status === 401) {
-          this.setToken(null);
-          if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-            window.location.href = "/login";
-          }
-        }
-        onError(await this.friendlyStreamError(res));
-        return;
-      }
-
-      return this._consumeSSEStream(res, onToken, onDone, onError);
-    } catch {
-      onError("网络异常，请检查后重试");
-    }
-  }
-
   /** SSE 建流失败时给用户可读文案。429 必须透传后端的提额引导
    * (后端文案带具体上限和"联系服务商",别降级成裸状态码劝退用户)。 */
   private async friendlyStreamError(res: Response): Promise<string> {
@@ -480,67 +374,6 @@ class ApiClient {
     }
     if (res.status >= 400 && res.status < 500 && detail) return detail;
     return `生成失败，请稍后重试 (${res.status})`;
-  }
-
-  private async _consumeSSEStream(
-    res: Response,
-    onToken: (token: string) => void,
-    onDone: (fullContent: string, generationId: string, conversationId?: string) => void,
-    onError: (error: string) => void,
-  ): Promise<void> {
-    const reader = res.body?.getReader();
-    if (!reader) {
-      onError("无法读取流式响应");
-      return;
-    }
-
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let fullContent = "";
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const jsonStr = line.slice(6);
-          try {
-            const parsed = JSON.parse(jsonStr);
-            if (parsed.error) {
-              onError(parsed.error);
-              return;
-            }
-            if (parsed.token) {
-              fullContent += parsed.token;
-              onToken(parsed.token);
-            }
-            if (parsed.done && parsed.full_content) {
-              onDone(parsed.full_content, parsed.generation_id || "", parsed.conversation_id);
-              return;
-            }
-          } catch {
-            // Skip malformed JSON
-          }
-        }
-      }
-      // 流结束但没有收到 done 信号
-      if (fullContent) {
-        onDone(fullContent, "", "");
-      }
-    } catch (err) {
-      // 网络断开时的友好提示
-      if (err instanceof DOMException && err.name === "AbortError") {
-        // 用户主动取消，不报错
-        return;
-      }
-      onError("连接中断，请检查网络后重试");
-    }
   }
 
   /** Agent 流式对话：POST /agent/chat，按事件类型回调（token/tool_call/tool_result/final/done/error）。 */
@@ -677,63 +510,9 @@ class ApiClient {
     });
   }
 
-  generateImage(data: ImageGenerateRequest, signal?: AbortSignal) {
-    return this.request<ImageGenerateResponse>("POST", "/api/v1/posters/generate", data, false, false, signal);
-  }
-
-  uploadReferenceImage(file: File) {
-    const formData = new FormData();
-    formData.append("file", file);
-    return this.request<{ path: string; url: string }>("POST", "/api/v1/posters/reference", formData, true);
-  }
-
-  listSizeOptions() {
-    return this.request<{ sizes: SizeOption[] }>("GET", "/api/v1/posters/size-options");
-  }
-
-  expandPosterPrompt(data: PromptExpandRequest, signal?: AbortSignal) {
-    return this.request<PromptExpandResponse>("POST", "/api/v1/posters/expand", data, false, false, signal);
-  }
-
-  listPosterConversations() {
-    return this.request<{ conversations: Array<{ id: string; title: string; message_count: number; thumbnail_url: string | null; created_at: string; updated_at: string }> }>("GET", "/api/v1/posters/conversations");
-  }
-
-  getPosterConversationDetail(conversationId: string) {
-    return this.request<{ id: string; title: string; created_at: string; updated_at: string; messages: Array<{ generation_id: string; poster_url: string; created_at: string; prompt: string; reference_images: string[]; refine_from: string | null; ratio: string | null }> }>("GET", `/api/v1/posters/conversations/${conversationId}`);
-  }
-
-  // ─── Generations ───
-
-  async listGenerations(params?: ListGenerationsParams): Promise<GenerationHistoryListResponse> {
-    const searchParams = new URLSearchParams();
-    if (params?.page) searchParams.set("page", String(params.page));
-    if (params?.page_size) searchParams.set("page_size", String(params.page_size));
-    if (params?.type) searchParams.set("type", params.type);
-    if (params?.sub_type) searchParams.set("sub_type", params.sub_type);
-    if (params?.is_favorite !== undefined) searchParams.set("is_favorite", String(params.is_favorite));
-    if (params?.effect_rating) searchParams.set("effect_rating", params.effect_rating);
-    if (params?.search) searchParams.set("search", params.search);
-    const qs = searchParams.toString();
-    return this.request<GenerationHistoryListResponse>("GET", `/api/v1/generations${qs ? `?${qs}` : ""}`);
-  }
-
-  async getGeneration(id: string): Promise<GenerationHistoryItem> {
-    return this.request<GenerationHistoryItem>("GET", `/api/v1/generations/${id}`);
-  }
-
   /** 前端错误上报(fire-and-forget,失败静默) */
   async reportClientError(payload: { message: string; stack?: string; url?: string }): Promise<void> {
     await this.request("POST", "/api/v1/logs/client", payload);
-  }
-
-  async toggleFavorite(id: string): Promise<{ is_favorite: boolean }> {
-    return this.request<{ is_favorite: boolean }>("PATCH", `/api/v1/generations/${id}/favorite`);
-  }
-
-  /** 保存用户手动编辑后的内容（历史里存实际发出去的版本） */
-  async updateGenerationContent(id: string, content: string): Promise<void> {
-    await this.request<{ status: string }>("PATCH", `/api/v1/generations/${id}/content`, { content });
   }
 
   // ── 店脑：门店 AI 记忆（「AI 眼里的你的店」页）──
@@ -748,38 +527,6 @@ class ApiClient {
   }
   async deleteStoreMemory(id: string): Promise<void> {
     await this.request("DELETE", `/api/v1/store-memory/${id}`);
-  }
-
-  /** 给生成记录命名(海报找图友好) */
-  async updateGenerationTitle(id: string, title: string): Promise<{ title: string | null }> {
-    return this.request<{ status: string; title: string | null }>(
-      "PATCH",
-      `/api/v1/generations/${id}/title`,
-      { title }
-    );
-  }
-
-  async submitFeedback(generationId: string, rating: "good" | "bad", note?: string): Promise<void> {
-    await this.request("POST", `/api/v1/feedback/generations/${generationId}/feedback`, { rating, note });
-  }
-
-  async deleteGeneration(id: string): Promise<void> {
-    await this.request("DELETE", `/api/v1/generations/${id}`);
-  }
-
-  async exportGenerations(type?: string): Promise<Blob> {
-    const typeParam = type ? `?type=${type}` : "";
-    const headers: Record<string, string> = {};
-    const token = this.getToken();
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-    if (this.storeId) headers["X-Store-Id"] = this.storeId; // 多门店用户导出当前门店而非默认门店
-    const res = await fetch(`${this.baseUrl}/api/v1/generations/export${typeParam}`, { headers });
-    if (!res.ok) throw new Error("导出失败");
-    return res.blob();
-  }
-
-  async deletePosterConversation(conversationId: string): Promise<void> {
-    await this.request("DELETE", `/api/v1/generations/conversations/${conversationId}`);
   }
 
   // ─── Dashboard ───
@@ -862,34 +609,6 @@ class ApiClient {
 
   getCardSignals() {
     return this.request<CardSignals>("GET", "/api/v1/dashboard/card-signals");
-  }
-
-  // ─── New Operation APIs ───
-
-  outreachGenerate(data: GenerateOutreachRequest) {
-    return this.request<GenerationResponse>("POST", "/api/v1/outreach/generate", data);
-  }
-
-  sopQuery(data: GenerateSOPRequest) {
-    return this.request<GenerationResponse>("POST", "/api/v1/sop/query", data);
-  }
-
-  gamesRecommend(data: GenerateGamesRequest) {
-    return this.request<GenerationResponse>("POST", "/api/v1/games/recommend", data);
-  }
-
-  performanceTemplate(data: GeneratePerformanceRequest) {
-    return this.request<GenerationResponse>("POST", "/api/v1/performance/template", data);
-  }
-
-  diagnosisAnalyze(data: GenerateDiagnosisRequest) {
-    return this.request<GenerationResponse>("POST", "/api/v1/diagnosis/analyze", data);
-  }
-
-  // ─── Knowledge ───
-
-  listKnowledge() {
-    return this.request<{ items: { key: string; name: string }[]; total: number }>("GET", "/api/v1/knowledge/list");
   }
 
   // ─── Quota ───
