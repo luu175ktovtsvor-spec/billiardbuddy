@@ -24,6 +24,13 @@
     -moz-osx-font-smoothing: grayscale;
   }
 
+  /* 跟随系统：暗色时 body 底色转深，避免浅色组件外露白边 / 加载态闪白 */
+  @media (prefers-color-scheme: dark) {
+    body { background: #0e0f11; color: #e6e7e9; }
+    ::-webkit-scrollbar-thumb { background: #3a3a40; }
+    ::-webkit-scrollbar-thumb:hover { background: #4a4a52; }
+  }
+
   /* Scrollbar */
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }

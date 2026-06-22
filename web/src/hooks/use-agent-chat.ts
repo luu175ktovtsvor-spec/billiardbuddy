@@ -21,6 +21,7 @@ export interface ToolStep {
   result?: string;
   id?: string; // tool_call_id：按它回填 tool_result 到对应步骤
   knowledgeUsed?: string[]; // B-2「依据可见」：本次注入的知识【大白话name】，成品卡显示"依据：…"
+  progress?: string; // 命令边跑边显示：工具执行中实时累进的输出（run_command 终端块据此实时渲染）
   done: boolean;
 }
 
@@ -45,15 +46,19 @@ export interface ChatMessage {
   steps?: ToolStep[];
   approval?: ApprovalState;
   question?: QuestionData; // AskUserQuestion：管家给老板的选项，老板点选后作为下一句消息发回
+  kind?: "command"; // 审批通过后执行的 run_command 结果：渲染成终端式块（完整命令+输出+退出码）
   error?: boolean;
 }
 
-export type PermissionMode = "ask" | "auto_files" | "full";
+export type PermissionMode = "ask" | "auto_files" | "full" | "plan";
 
 export interface AgentChatOptions {
   permissionMode: PermissionMode;
   selectedFiles?: string[];
   fullDisk?: boolean;
+  knowledgePacks?: string[]; // @ 挂载的知识库（如 ["billiards"]）：挂上=领域专家，不挂=通用 Agent
+  outputStyle?: string; // 输出风格名（explanatory/concise…），空=默认
+  goal?: string; // /goal 目标驱动：本次会话目标条件
 }
 
 export function useAgentChat(opts: AgentChatOptions) {
@@ -69,10 +74,12 @@ export function useAgentChat(opts: AgentChatOptions) {
   const optsRef = useRef(opts);
   optsRef.current = opts;
 
-  const send = useCallback(async (text: string) => {
+  const send = useCallback(async (text: string, sourceRecId?: string) => {
     const msg = text.trim();
     if (!msg || generating) return;
     const o = optsRef.current;
+    // 采纳信号只在推荐触发的首轮、且是新会话时带上（同会话续接不重复计采纳）。
+    const recId = sourceRecId && !conversationId ? sourceRecId : undefined;
 
     // 在 updater 外算好 history（读当前 messages），updater 只追加 user 气泡。
     // 副作用 runSend 绝不放进 setMessages 更新函数里——否则 React StrictMode 开发态会把 updater 跑两次→同一条消息双发请求。
@@ -104,12 +111,24 @@ export function useAgentChat(opts: AgentChatOptions) {
             selected_files: o.selectedFiles?.length ? o.selectedFiles : undefined,
             permission_mode: o.permissionMode,
             full_disk_access: o.fullDisk ? true : undefined,
+            knowledge_packs: o.knowledgePacks?.length ? o.knowledgePacks : undefined,
+            output_style: o.outputStyle || undefined,
+            goal: o.goal || undefined,
+            source_rec_id: recId,
           },
           {
             onToken: (t) => setDraft((prev) => prev + t),
             onToolCall: (tool, args, id) => {
               steps.push({ tool, args, id, done: false });
               setLiveSteps([...steps]);
+            },
+            onToolProgress: (_tool, id, chunk) => {
+              // 命令边跑边显示：把实时输出片段累进对应步骤，终端块据此滚动更新
+              const st = id ? steps.find((s) => s.id === id) : steps[steps.length - 1];
+              if (st) {
+                st.progress = (st.progress || "") + chunk;
+                setLiveSteps([...steps]);
+              }
             },
             onToolResult: (_tool, content, id, knowledgeUsed) => {
               // 按 id 定位回填——不能盲取末尾：审批工具先发占位结果，盲取会覆盖成品卡
@@ -181,12 +200,18 @@ export function useAgentChat(opts: AgentChatOptions) {
         o.fullDisk ? true : undefined,
         ap.token,
         conversationId,
+        o.knowledgePacks?.length ? o.knowledgePacks : undefined,
       );
       setMessages((prev) =>
         prev.map((m, j) => (j === idx && m.approval ? { ...m, approval: { ...m.approval, status: "done" } } : m)),
       );
       setMessages((prev) => {
-        const next: ChatMessage[] = [...prev, { role: "assistant", content: res.result }];
+        // 跑命令的结果渲染成终端式块（完整命令+输出+退出码）；其它工具结果走普通文本。
+        const first: ChatMessage =
+          ap.tool === "run_command"
+            ? { role: "assistant", content: res.result, kind: "command" }
+            : { role: "assistant", content: res.result };
+        const next: ChatMessage[] = [...prev, first];
         if (res.continuation && res.continuation.trim()) {
           next.push({
             role: "assistant",
@@ -237,8 +262,14 @@ export function useAgentChat(opts: AgentChatOptions) {
     setGenerating(false);
   }, []);
 
+  // 往会话里塞一条本地 assistant 消息（如 /help 的说明），不走后端。
+  const pushAssistantMessage = useCallback((content: string) => {
+    setMessages((prev) => [...prev, { role: "assistant", content }]);
+  }, []);
+
   return {
     messages, draft, liveSteps, generating, conversationId, executingIdx,
     send, confirmApproval, cancelApproval, startNewChat, stop, loadConversation,
+    pushAssistantMessage,
   };
 }

@@ -1,19 +1,19 @@
 "use client";
 
 /**
- * 桌面端（Electron）macOS 风外壳：左侧毛玻璃侧栏 + 主区（+ 可选右侧预览栏）。
- * 仅在 useDesktop().isDesktop 下渲染；手机网页版走原有布局，二者物理隔离、互不影响。
- * 设计图见 docs/design/mockups/agent-*.html、规范见 docs/design/桌面Agent-macOS设计规范.md。
- * 真机 macOS 质感（无边框窗口 + 原生红绿灯 + 毛玻璃）由 Electron titleBarStyle:'hiddenInset' + vibrancy 提供，
- * 顶部 52px 留给原生红绿灯；可拖拽区用 .app-drag（见 globals.css）。
+ * 单窗口 Codex 风外壳：slim 侧栏（会话/设置）+ 主区（transcript + composer）+ 可选右侧预览。
+ * 浅色为默认、跟随系统深浅色（dark: 变体）。仅桌面端渲染；整窗自己掌控外观。
+ * 顶部留给原生红绿灯（Electron titleBarStyle:'hiddenInset'），可拖拽区用 .app-drag。
  */
-import { Plus, Settings, Cpu } from "lucide-react";
+import { Plus, Settings, Cpu, Terminal } from "lucide-react";
+
+import { useHorizontalResize } from "./use-resize";
 
 export type DesktopConversation = {
   id: string;
   title: string;
   subtitle?: string;
-  group?: string; // "今天" / "前 7 天" …
+  group?: string;
 };
 
 export function DesktopSidebar({
@@ -28,7 +28,6 @@ export function DesktopSidebar({
 }: {
   storeName?: string;
   monthlySpend?: string;
-  /** 当前正在用的文字模型名（来自 BYOK 配置）；空=未配置 */
   modelLabel?: string;
   conversations?: DesktopConversation[];
   activeId?: string;
@@ -36,101 +35,99 @@ export function DesktopSidebar({
   onSelect?: (id: string) => void;
   onOpenSettings?: () => void;
 }) {
-  // 按 group 分组保序
   const groups: { name: string; items: DesktopConversation[] }[] = [];
   for (const c of conversations) {
     const name = c.group || "最近";
     let g = groups.find((x) => x.name === name);
-    if (!g) {
-      g = { name, items: [] };
-      groups.push(g);
-    }
+    if (!g) { g = { name, items: [] }; groups.push(g); }
     g.items.push(c);
   }
 
+  const { width, onHandleMouseDown } = useHorizontalResize({
+    storageKey: "desktop.sidebarWidth", defaultWidth: 244, min: 200, max: 420, edge: "right",
+  });
+
   return (
-    <aside className="flex w-[240px] shrink-0 flex-col border-r border-black/[0.07] bg-sidebar/85 backdrop-blur-2xl">
-      {/* 顶部：留给原生红绿灯 + App 名（可拖拽移动窗口） */}
-      <div className="app-drag flex h-[52px] items-center" />
-      <div className="app-drag flex items-center gap-2 px-4 pb-2">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src="/agent-icon.png" alt="台球运营管家" className="h-7 w-7 rounded-lg object-cover" />
-        <div className="text-[15px] font-semibold text-[#1d1d1f]">台球运营管家</div>
+    <aside style={{ width }} className="relative flex shrink-0 flex-col border-r border-black/[0.08] bg-[#f5f5f7] dark:border-white/[0.06] dark:bg-[#0b0c0e]">
+      <div className="app-drag h-[40px]" />
+      <div className="app-drag flex items-center gap-2 px-3.5 pb-3">
+        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-[#10a37f]/15 text-[#10a37f]">
+          <Terminal className="h-3.5 w-3.5" />
+        </span>
+        <span className="font-mono text-[13px] font-medium tracking-tight text-[#1d1d1f] dark:text-[#e6e7e9]">台球运营管家</span>
       </div>
 
-      {/* 新对话 */}
-      <div className="px-3">
+      <div className="px-2.5">
         <button
           onClick={onNewChat}
-          className="app-no-drag flex h-9 w-full items-center justify-center gap-1.5 rounded-lg bg-white/70 text-[13px] text-[#1d1d1f] shadow-sm transition hover:bg-white active:scale-[0.98]"
+          className="app-no-drag flex h-8 w-full items-center gap-2 rounded-md border border-black/[0.08] bg-white px-2.5 text-[12.5px] text-[#3a3a3c] shadow-sm transition hover:bg-black/[0.02] active:scale-[0.99] dark:border-white/[0.08] dark:bg-white/[0.02] dark:text-[#c8cace] dark:shadow-none dark:hover:bg-white/[0.05]"
         >
-          <Plus className="h-4 w-4 text-brand-600" /> 新对话
+          <Plus className="h-3.5 w-3.5 text-[#10a37f]" /> 新会话
         </button>
       </div>
 
-      {/* 会话列表 */}
-      <div className="mt-3 flex-1 overflow-y-auto px-2">
+      <div className="mt-3 flex-1 overflow-y-auto px-1.5">
         {groups.map((g) => (
-          <div key={g.name} className="mb-2">
-            <div className="mb-1 px-2 text-[11px] text-[#86868b]">{g.name}</div>
+          <div key={g.name} className="mb-2.5">
+            <div className="mb-1 px-2 font-mono text-[10px] uppercase tracking-wider text-[#a1a1a6] dark:text-[#54565d]">{g.name}</div>
             {g.items.map((c) => (
               <button
                 key={c.id}
                 onClick={() => onSelect?.(c.id)}
-                className={`mb-0.5 block w-full rounded-lg px-3 py-2 text-left transition ${
-                  c.id === activeId ? "bg-black/[0.06]" : "hover:bg-black/[0.04]"
+                className={`mb-px block w-full rounded-md px-2.5 py-1.5 text-left transition ${
+                  c.id === activeId
+                    ? "bg-black/[0.06] text-[#1d1d1f] dark:bg-white/[0.07] dark:text-[#e6e7e9]"
+                    : "text-[#6e6e73] hover:bg-black/[0.04] dark:text-[#9a9ca3] dark:hover:bg-white/[0.035]"
                 }`}
               >
-                <div className="truncate text-[13px] text-[#1d1d1f]">{c.title}</div>
-                {c.subtitle && (
-                  <div className="mt-0.5 truncate text-[11px] text-[#86868b]">{c.subtitle}</div>
-                )}
+                <div className="truncate text-[12.5px]">{c.title}</div>
               </button>
             ))}
           </div>
         ))}
       </div>
 
-      {/* 当前在用的模型（点开配置）。没配/为空 → 提示去设置 */}
       <button
         onClick={onOpenSettings}
-        className="app-no-drag mx-3 mb-1 mt-2 flex items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition hover:bg-black/[0.04]"
+        className="app-no-drag mx-1.5 mb-1 mt-1.5 flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition hover:bg-black/[0.04] dark:hover:bg-white/[0.04]"
         aria-label={modelLabel ? `正在用模型 ${modelLabel}，点击修改` : "未配置模型，点击去设置"}
       >
-        <Cpu className={`h-3.5 w-3.5 shrink-0 ${modelLabel ? "text-brand-600" : "text-[#86868b]"}`} />
+        <Cpu className={`h-3.5 w-3.5 shrink-0 ${modelLabel ? "text-[#10a37f]" : "text-[#86868b] dark:text-[#6e7077]"}`} />
         {modelLabel ? (
-          <span className="min-w-0 flex-1 truncate text-[11px] text-[#1d1d1f]">
-            正在用：<span className="text-[#86868b]">{modelLabel}</span>
-          </span>
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-[#6e6e73] dark:text-[#9a9ca3]">{modelLabel}</span>
         ) : (
-          <span className="min-w-0 flex-1 truncate text-[11px] text-[#86868b]">未配置模型 · 去设置</span>
+          <span className="min-w-0 flex-1 truncate text-[11px] text-[#86868b] dark:text-[#6e7077]">未配置模型 · 去设置</span>
         )}
       </button>
 
-      {/* 底部：门店 + 本月用量（不显示 BYOK 黑话）+ 设置 */}
-      <div className="flex items-center gap-2 border-t border-black/[0.07] p-3">
-        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-brand-600/15 text-[12px] font-semibold text-brand-600">
+      <div className="flex items-center gap-2 border-t border-black/[0.08] p-2.5 dark:border-white/[0.06]">
+        <div className="flex h-6 w-6 items-center justify-center rounded-md bg-[#10a37f]/15 text-[11px] font-semibold text-[#10a37f]">
           {storeName.slice(0, 1)}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[12px] text-[#1d1d1f]">{storeName}</div>
+          <div className="truncate text-[12px] text-[#3a3a3c] dark:text-[#c8cace]">{storeName}</div>
           {monthlySpend && (
-            <div className="truncate text-[11px] text-[#86868b]">本月 AI 用量 ≈ {monthlySpend}</div>
+            <div className="truncate font-mono text-[10.5px] text-[#86868b] dark:text-[#6e7077]">本月 ≈ {monthlySpend}</div>
           )}
         </div>
         <button
           onClick={onOpenSettings}
-          className="app-no-drag flex h-7 w-7 items-center justify-center rounded-md text-[#86868b] hover:bg-black/[0.06]"
+          className="app-no-drag flex h-7 w-7 items-center justify-center rounded-md text-[#86868b] transition hover:bg-black/[0.06] hover:text-[#1d1d1f] dark:text-[#6e7077] dark:hover:bg-white/[0.06] dark:hover:text-[#c8cace]"
           aria-label="设置"
         >
           <Settings className="h-4 w-4" />
         </button>
       </div>
+      <div
+        onMouseDown={onHandleMouseDown}
+        className="app-no-drag absolute right-0 top-0 z-20 h-full w-1 cursor-col-resize transition-colors hover:bg-[#10a37f]/40"
+        title="拖拽调整侧栏宽度"
+      />
     </aside>
   );
 }
 
-/** 整窗外壳：sidebar + main（+ 可选右侧预览）。填满 Electron 窗口。 */
+/** 整窗外壳：sidebar + main（+ 可选右侧预览）。浅色默认、跟随系统，铺满 Electron 窗口。 */
 export function DesktopShell({
   sidebar,
   children,
@@ -141,9 +138,9 @@ export function DesktopShell({
   preview?: React.ReactNode;
 }) {
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-white text-[#1d1d1f]">
+    <div className="flex h-screen w-full overflow-hidden bg-white text-[#1d1d1f] antialiased dark:bg-[#0e0f11] dark:text-[#e6e7e9]">
       {sidebar}
-      <main className="flex min-w-0 flex-1 flex-col border-r border-black/[0.07] bg-white">{children}</main>
+      <main className="flex min-w-0 flex-1 flex-col bg-white dark:bg-[#0e0f11]">{children}</main>
       {preview}
     </div>
   );
