@@ -34,11 +34,19 @@ class KnowledgeEntry:
     # 命中关键词（KNOWLEDGE_KEYWORDS 里配的词），空列表=没配关键词
     keywords: list[str] = field(default_factory=list)
     is_core: bool = False  # 恒注入的核心知识（CORE_KNOWLEDGE_KEYS 或 daily_workflow*）
+    # L1 域目录页（key 以 _index 结尾）：模块化重构的"域导航页"，靠 Agent 的 look_up_knowledge
+    # 召回（rank_knowledge_for_topic 排全部 category=knowledge），**故意不进任何角色 required_knowledge**——
+    # 它是给编排脑导航用的，不是塞进生成管道的内容。故不按 required_knowledge 判死料。
+    is_index: bool = False
 
     @property
     def is_dead(self) -> bool:
-        """死料：没有任何角色把它列进 required_knowledge。"""
-        return not self.required_by_roles
+        """死料：没有任何角色把它列进 required_knowledge、且不是靠 look_up_knowledge 召回的 L1 域目录页。
+
+        L1 域目录页（is_index）走 look_up_knowledge 这条独立召回路径（rank_knowledge_for_topic
+        排全部 category=knowledge），本就不进 required_knowledge——它可达、不是死料。
+        """
+        return not self.required_by_roles and not self.is_index
 
     @property
     def has_keywords(self) -> bool:
@@ -107,6 +115,7 @@ def build_manifest() -> KnowledgeManifest:
                 is_render_class="template" in data,
                 keywords=list(KNOWLEDGE_KEYWORDS.get(kk, [])),
                 is_core=_is_core(kk),
+                is_index=kk.endswith("_index"),
             )
         )
 
