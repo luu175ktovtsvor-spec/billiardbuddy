@@ -1,23 +1,88 @@
-"""MCP (Model Context Protocol) 客户端 —— 最小实现（stdio JSON-RPC，不引第三方 SDK）。
+"""MCP (Model Context Protocol) 客户端 —— 基于官方 `mcp` SDK（stdio 传输）。
 
 连接外部 MCP server，把其 tools 暴露给 Agent（命名 `mcp__<server>__<tool>`，缓存稳定排序保前缀缓存）。
 - 配置：`.mcp.json`（`{"mcpServers": {"<name>": {"command":.., "args":[..], "env":{..}}}}`），
-  来源 `<cwd>/.mcp.json` + `~/.claude/mcp.json` + `DESKTOP_LIBRARY_DIR/.mcp.json`（先出现者优先）。
-- v1：每次操作 spawn server → initialize → (list/call) → close（无长连接/生命周期管理，简单稳；
-  长连接优化留后）。tools/list 结果缓存；tools/call 每次新起进程。
+  来源同下 `_load_mcp_config`（桌面只读门店库；非桌面读 cwd + ~/.claude）。
+- 每次操作起一次 stdio 会话 → initialize → (list/call) → 关（无长连接/生命周期管理，简单稳；
+  SDK 的 `stdio_client` + `ClientSession` 负责协议握手/版本协商/通知）。tools/list 结果缓存。
 - 安全：MCP 工具按 `annotations.readOnlyHint` 分级——只读→免确认；否则 requires_approval（走审批闸）。
-- 平台：stdio 读用 select 做超时（Unix/macOS）。Windows 管道 select 受限，留后用线程兜。
+- 异步桥：SDK 全异步；对外仍保留同步的 `_StdioMCP`/`load_mcp_tools`/`mcp_status`，
+  内部用 `_run_async`（独立线程跑一个新事件循环）兜住"可能已在事件循环里被调用"的场景。
 """
+import asyncio
 import json
 import os
-import select
-import subprocess
-import time
+import threading
+from datetime import timedelta
 from pathlib import Path
+
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 from services.agent.registry import Tool
 
-_PROTO = "2024-11-05"
+_OP_TIMEOUT = 120.0  # 单次会话总超时（含 npx/uvx 首启现下载包的冷启动）
+
+
+def _server_params(cfg: dict) -> StdioServerParameters:
+    return StdioServerParameters(
+        command=cfg["command"],
+        args=cfg.get("args") or [],
+        env={**os.environ, **(cfg.get("env") or {})},
+    )
+
+
+def _run_async(coro_factory):
+    """在独立线程的新事件循环里把协程跑完——无论调用方是否已在事件循环中都安全。
+
+    coro_factory 是「返回一个新协程的函数」（协程必须在目标循环里创建，故传工厂而非协程对象）。"""
+    box: dict = {}
+
+    def _runner():
+        try:
+            box["v"] = asyncio.run(coro_factory())
+        except Exception as e:  # noqa: BLE001
+            box["e"] = e
+
+    th = threading.Thread(target=_runner, daemon=True)
+    th.start()
+    th.join()
+    if "e" in box:
+        raise box["e"]
+    return box.get("v")
+
+
+async def _a_list_tools(cfg: dict) -> list[dict]:
+    async def _go():
+        async with stdio_client(_server_params(cfg)) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                res = await session.list_tools()
+                return [t.model_dump(by_alias=True, exclude_none=True) for t in res.tools]
+    return await asyncio.wait_for(_go(), timeout=_OP_TIMEOUT)
+
+
+def _format_call_result(res) -> str:
+    parts = []
+    for c in (res.content or []):
+        if getattr(c, "type", None) == "text":
+            parts.append(c.text or "")
+        else:
+            parts.append(json.dumps(c.model_dump(by_alias=True, exclude_none=True), ensure_ascii=False))
+    out = "\n".join(parts).strip()
+    if getattr(res, "isError", False):
+        return f"[MCP 工具出错] {out}"
+    return out or "(无输出)"
+
+
+async def _a_call_tool(cfg: dict, name: str, arguments: dict) -> str:
+    async def _go():
+        async with stdio_client(_server_params(cfg)) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                res = await session.call_tool(name, arguments or {})
+                return _format_call_result(res)
+    return await asyncio.wait_for(_go(), timeout=_OP_TIMEOUT)
 
 
 def _load_mcp_config() -> dict:
@@ -53,101 +118,27 @@ def _load_mcp_config() -> dict:
 
 
 class _StdioMCP:
-    """一次性 stdio 会话：spawn → initialize → (list_tools / call_tool) → close。"""
+    """同步门面：保留旧接口（`with _StdioMCP(cfg) as s: s.list_tools()/s.call_tool()`）。
+
+    每个方法各起一次 SDK stdio 会话（initialize→操作→关），内部经 `_run_async` 在新循环里跑，
+    故无论调用方是否已在事件循环中都安全。command 缺失立即报错（与旧行为一致）。"""
 
     def __init__(self, cfg: dict):
+        if not cfg.get("command"):
+            raise RuntimeError("MCP 配置缺少 command")
         self.cfg = cfg
-        self.proc: subprocess.Popen | None = None
-        self._id = 0
 
     def __enter__(self):
-        command = self.cfg.get("command")
-        if not command:
-            raise RuntimeError("MCP 配置缺少 command")
-        args = self.cfg.get("args") or []
-        env = {**os.environ, **(self.cfg.get("env") or {})}
-        self.proc = subprocess.Popen(
-            [command, *args],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            text=True, env=env, bufsize=1,
-        )
-        # initialize 给足超时：npx / uvx 类服务首启要现下载包（首次几十秒），20s 不够会"初始化超时"。
-        self._request("initialize", {
-            "protocolVersion": _PROTO, "capabilities": {},
-            "clientInfo": {"name": "billiards-desktop", "version": "1.0"},
-        }, timeout=90.0)
-        self._notify("notifications/initialized", {})
         return self
 
     def __exit__(self, *_a):
-        try:
-            if self.proc:
-                if self.proc.stdin:
-                    self.proc.stdin.close()
-                self.proc.terminate()
-                self.proc.wait(timeout=3)
-        except Exception:
-            try:
-                if self.proc:
-                    self.proc.kill()
-            except Exception:
-                pass
-
-    def _send(self, obj: dict):
-        assert self.proc and self.proc.stdin
-        self.proc.stdin.write(json.dumps(obj, ensure_ascii=False) + "\n")
-        self.proc.stdin.flush()
-
-    def _notify(self, method: str, params: dict):
-        self._send({"jsonrpc": "2.0", "method": method, "params": params})
-
-    def _request(self, method: str, params: dict, timeout: float = 20.0) -> dict:
-        assert self.proc and self.proc.stdout
-        self._id += 1
-        rid = self._id
-        self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError(f"MCP 请求超时（{method}）")
-            try:
-                r, _, _ = select.select([self.proc.stdout], [], [], remaining)
-                if not r:
-                    raise RuntimeError(f"MCP 请求超时（{method}）")
-            except (OSError, ValueError):
-                pass  # 平台不支持 select(pipe)：退回阻塞 readline
-            line = self.proc.stdout.readline()
-            if line == "":
-                raise RuntimeError("MCP server 已退出/无响应")
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                msg = json.loads(line)
-            except Exception:
-                continue
-            if msg.get("id") == rid:
-                if msg.get("error"):
-                    raise RuntimeError(str(msg["error"]))
-                return msg.get("result") or {}
-            # 其它 id / 通知：忽略，继续读
+        return False
 
     def list_tools(self) -> list[dict]:
-        return self._request("tools/list", {}).get("tools") or []
+        return _run_async(lambda: _a_list_tools(self.cfg))
 
     def call_tool(self, name: str, arguments: dict) -> str:
-        res = self._request("tools/call", {"name": name, "arguments": arguments or {}})
-        parts = []
-        for c in (res.get("content") or []):
-            if isinstance(c, dict) and c.get("type") == "text":
-                parts.append(c.get("text") or "")
-            else:
-                parts.append(json.dumps(c, ensure_ascii=False))
-        out = "\n".join(parts).strip()
-        if res.get("isError"):
-            return f"[MCP 工具出错] {out}"
-        return out or "(无输出)"
+        return _run_async(lambda: _a_call_tool(self.cfg, name, arguments or {}))
 
 
 def _make_mcp_tool(server_name: str, cfg: dict, t: dict) -> Tool:
@@ -159,14 +150,9 @@ def _make_mcp_tool(server_name: str, cfg: dict, t: dict) -> Tool:
     raw_name = t.get("name")
 
     async def handler(args, ctx, _cfg=cfg, _tn=raw_name):
-        import asyncio
-
-        def _call():
-            with _StdioMCP(_cfg) as s:
-                return s.call_tool(_tn, args or {})
-
+        # handler 本就在 agent 事件循环里被 await——SDK 异步调用直接 await（stdio_client 走 anyio/asyncio 后端）。
         try:
-            return await asyncio.to_thread(_call)
+            return await _a_call_tool(_cfg, _tn, args or {})
         except Exception as e:  # noqa: BLE001
             return f"[MCP 调用失败] {e}"
 

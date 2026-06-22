@@ -122,6 +122,10 @@ function runPyInstaller() {
     "--collect-submodules", "sqlalchemy",
     "--collect-all", "borax",
     "--collect-all", "email_validator",
+    // MCP 官方 SDK + 其动态 import 的依赖（mcp 内部 + jsonschema/referencing 动态加载校验器）
+    "--collect-all", "mcp",
+    "--collect-all", "jsonschema",
+    "--collect-all", "jsonschema_specifications",
     // 明确排除本地语义模型相关重型库：lazy import、运行时缺它会优雅回退到零依赖词面嵌入。
     // 不打进包 → 包更小、纯离线可用、不联网下 90MB 模型（语义"按意思找料"关闭，其余功能不受影响）。
     "--exclude-module", "fastembed",
