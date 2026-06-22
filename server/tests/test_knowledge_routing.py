@@ -141,3 +141,27 @@ def test_look_up_surfaces_hard_numbers(topic, expect_key, nums):
     facts_text = " ".join(hit.get("key_facts") or [])
     miss = [n for n in nums if n not in facts_text]
     assert not miss, f"「{topic}」的 {expect_key}.key_facts 缺准数 {miss}；实际={facts_text}"
+
+
+# 漂移守门：单一源文件的硬数字必须在 key_facts 与 template【两处都在】，改一处漏一处即红。
+# （key_facts 是 look_up_knowledge 召回给的、template 是生成注入的，两处必须一致，否则口径漂移）
+_NO_DRIFT_PINS = {
+    "knowledge.platform_operations": ["80", "4.6", "4.8", "4.9", "3.5"],
+    "knowledge.assistant_salary": ["170", "200", "230", "500", "1000", "1500"],
+    "knowledge.pk_incentive": ["0.2", "0.3", "0.5"],
+    "knowledge.recharge_strategy": ["1000", "99", "3000", "399", "5000", "799", "10000", "1999"],
+    "knowledge.scale_guide": ["45", "40", "16"],
+    "knowledge.tournament_rules": ["200", "500"],
+    "knowledge.industry_data": ["2.1", "6000", "180"],
+    "knowledge.profit_model": ["1/4", "1/5"],
+}
+
+
+@pytest.mark.parametrize("key,nums", list(_NO_DRIFT_PINS.items()))
+def test_key_facts_template_no_drift(key, nums):
+    """单一源文件的硬数字在 key_facts 与 template 两处必须一致（防改一处漏一处的口径漂移）。"""
+    data = get_prompt_engine()._templates.get(key) or {}
+    kf = " ".join(data.get("key_facts") or [])
+    tpl = str(data.get("template") or "")
+    miss = [n for n in nums if not (n in kf and n in tpl)]
+    assert not miss, f"{key} 硬数字漂移（key_facts 与 template 没都包含）：{miss}"
