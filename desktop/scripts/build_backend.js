@@ -46,6 +46,10 @@ const hiddenImports = [
   "cryptography", "cryptography.fernet", "cryptography.hazmat.backends.openssl",
   // ── 农历节日换算 / Excel 导出
   "borax", "borax.calendars", "borax.calendars.festivals2", "openpyxl",
+  // ── PDF/Word/PPT 读取（read_file 里懒加载，PyInstaller 静态分析必漏）
+  "pypdf", "docx", "pptx", "lxml", "lxml.etree",
+  // ── 本会话新增的 agent 模块里【只懒加载、PyInstaller 静态分析可能漏】的（top-level 导入的已自动收）
+  "services.agent.output_styles", "services.agent.hooks_config", "services.agent.im_telegram",
 ];
 
 // 运行时数据文件：加密知识库块(prompts.enc，放 bundle 根)、报表表单(report_forms)。
@@ -55,6 +59,11 @@ const addData = [];
 addData.push(`--add-data=${PACK_ENC}${sep}.`);          // prompts.enc → bundle 根
 const reportForms = path.join(SERVER, "report_forms");
 if (fs.existsSync(reportForms)) addData.push(`--add-data=${reportForms}${sep}report_forms`);
+// 内置技能 / 输出风格（数据目录，运行时 _bundled_*_dir() 从 sys._MEIPASS/<name> 读）—— 必须显式带，否则装出来就丢。
+const bundledSkills = path.join(SERVER, "skills");
+if (fs.existsSync(bundledSkills)) addData.push(`--add-data=${bundledSkills}${sep}skills`);
+const bundledStyles = path.join(SERVER, "output-styles");
+if (fs.existsSync(bundledStyles)) addData.push(`--add-data=${bundledStyles}${sep}output-styles`);
 
 function genFernetKey() {
   // 用后端环境的 cryptography 生成一个 Fernet key（与解密同库，避免格式不匹配）

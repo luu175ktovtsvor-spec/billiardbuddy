@@ -7,7 +7,7 @@
 // 安全默认全保持:contextIsolation 开 / sandbox 开 / nodeIntegration 关。
 // 加载的页面只能通过 preload 的 contextBridge 白名单调用原生能力,拿不到 Node。
 
-const { app, BrowserWindow, ipcMain, shell, dialog } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, dialog, nativeTheme } = require("electron");
 const path = require("path");
 const publish = require("./publish");
 const video = require("./video");
@@ -38,7 +38,8 @@ function createWindow() {
     minWidth: 960,
     minHeight: 640,
     title: "台球运营管家",
-    backgroundColor: "#F2F2F7",
+    // 跟随系统深浅色：暗色用深底，浅色用白底（避免启动闪屏与界面不一致）
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#0e0f11" : "#ffffff",
     // macOS 原生质感:隐藏标题栏(保留红绿灯,内容延伸到顶),红绿灯位对齐桌面壳侧栏顶部 52px 区(见 web 的 .app-drag)。
     // 毛玻璃 vibrancy 暂不开——需配合侧栏背景透明 + 真机调，先用 CSS 近似(bg-sidebar/85 + backdrop-blur)。
     ...(isMac ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 16, y: 18 } } : {}),
