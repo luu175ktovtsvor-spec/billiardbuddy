@@ -1,6 +1,9 @@
 key: "operation.shift_schedule"
 name: "前厅班次安排建议"
 category: "operation"
+domain: talent-mgmt
+freedom: skeleton
+tags: [scene:排班, role:前厅]
 variables:
   - store_name
   - tone

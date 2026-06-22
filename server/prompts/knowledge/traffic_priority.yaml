@@ -4,6 +4,9 @@ description: |
   给引流方案排优先级的决策框架：第一优先合规公域（抖音矩阵/美团大众点评/小红书/视频号）、第二优先合规私域（梯度集赞/老带新/组局裂变/打卡挑战/地推/异业联盟）、第三层绝对红线（批量假号机刷买评、对外平台发露骨内容、等额超额无底线让利）。关键区分：引导真实客户按平台规则写评价是要教的正经活、只有假号机刷才是红线；探探陌陌Soul积目交友软件获客和颜值/暧昧感擦边路线属可用但注意账号风险、按平台规则操作避免限流封号。
   老板问引流/拉新/获客/推广该先做什么、某个做法能不能碰时,先用它定能做不能做和先后顺序,再到 traffic_generation 取具体操作。
 category: "knowledge"
+domain: marketing
+freedom: red_line
+tags: [scene:引流, scene:合规优先级, channel:抖音, channel:美团, channel:小红书, channel:私域, channel:地推, channel:交友软件]
 variables: []
 template: |
   ## 引流渠道合规优先级

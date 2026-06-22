@@ -1,6 +1,9 @@
 key: "knowledge.management_recruitment"
 name: "管理层招聘知识库"
 category: "knowledge"
+domain: talent-mgmt
+freedom: red_line
+tags: [scene:招聘, role:店长, role:助教管理]
 variables: []
 description: |
   台球房管理层（店长、助教管理、教练、主管）的招聘方法论。

@@ -1,6 +1,9 @@
 key: "operation.departure_followup"
 name: "离店跟进"
 category: "operation"
+domain: customer-ops
+freedom: red_line
+tags: [scene:复购, role:前厅, object:新客, object:老客, object:团购客]
 variables:
   - store_name
   - city

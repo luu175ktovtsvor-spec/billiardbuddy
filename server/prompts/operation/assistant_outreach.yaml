@@ -1,6 +1,9 @@
 key: "operation.assistant_outreach"
 name: "助教约客话术"
 category: "operation"
+domain: customer-ops
+freedom: red_line
+tags: [scene:约客, role:助教, object:散客, object:追分客, object:VIP]
 variables:
   - store_name
   - customer_name

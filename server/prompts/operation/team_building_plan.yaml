@@ -1,6 +1,9 @@
 key: "operation.team_building_plan"
 name: "团队搭建与人员配置方案"
 category: "operation"
+domain: talent-mgmt
+freedom: skeleton
+tags: [scene:团队搭建, role:店长]
 variables:
   - store_name
   - table_count

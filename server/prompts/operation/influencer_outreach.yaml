@@ -1,6 +1,9 @@
 key: "operation.influencer_outreach"
 name: "达人/探店账号对接方案"
 category: "operation"
+domain: marketing
+freedom: skeleton
+tags: [scene:达人探店, scene:引流, role:店长, channel:抖音, channel:小红书]
 variables:
   - store_name
   - city

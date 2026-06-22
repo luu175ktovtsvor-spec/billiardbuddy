@@ -1,6 +1,9 @@
 key: "operation.game_recommend"
 name: "台球玩法推荐"
 category: "operation"
+domain: customer-ops
+freedom: red_line
+tags: [scene:玩法活动, object:散客, object:追分客]
 variables:
   - store_name
   - customer_count
@@ -58,7 +61,7 @@ template: |
   ## 可推荐的玩法类型
 
   - 中式八球：门店主力标准玩法
-  - 追分：轻竞技社交玩法，不涉及现金输赢，仅计分娱乐
+  - 追分：客户带彩头对打、冲着赢钱来的高价值玩法（门店只控金额、不当庄、不抽水、不定盘口）；对外公开文案才转译成台费局/竞技对局等安全表达
   - 趣味小游戏：用于活动引流、活跃氛围，奖品级别为台费券（如送贵宾区一小时台费券）/饮料，不写大额
 
   推荐玩法时按客户人数、水平、可用时间灵活组合，规则细节由门店实际讲解。

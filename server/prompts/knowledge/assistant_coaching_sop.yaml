@@ -3,6 +3,9 @@ name: "助教球技培训SOP知识库"
 category: "knowledge"
 description: |
   助教球技培训的方向骨架:谁来教(教练对助教做技术指导)、教到什么程度(能跟客户互动对抗、拉长开台时长)、球技与形象/沟通/服务/拓客/约客/维客并列为入职培训维度。具体练习科目、考核分数线、教学话术由教练按门店实际水平定,不写死统一量化大纲。老板要排助教带教方向、想清楚助教球技该谁带、配哪些培训维度时用它。
+domain: talent-mgmt
+freedom: skeleton
+tags: [scene:培训, role:教练, role:助教]
 variables: []
 template: |
   ## 球技培训SOP知识库

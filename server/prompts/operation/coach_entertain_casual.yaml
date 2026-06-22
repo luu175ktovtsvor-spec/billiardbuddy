@@ -1,6 +1,9 @@
 key: "operation.coach_entertain_casual"
 name: "散客娱乐性提升话术"
 category: "operation"
+domain: customer-ops
+freedom: skeleton
+tags: [scene:服务, role:教练, object:散客, scene:转化]
 variables:
   - store_name
   - table_types

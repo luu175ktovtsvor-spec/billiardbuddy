@@ -1,6 +1,9 @@
 key: "knowledge.recruitment_compliance"
 name: "助教招聘合规规则知识库"
 category: "knowledge"
+domain: strategy
+freedom: red_line
+tags: [scene:招聘, role:助教, scene:合规, channel:私域]
 description: |
   助教招聘怎么写才不被平台封号：守住封号两条注意点（禁止在其他岗位聊助教、禁止在助教岗位和第三方谈业务），方向是不发越界/涉黄擦边的招聘内容、不写"靠打赏红包"式陪玩收入、不索要与工作无关的私密信息。
   老板要发助教/教练招聘文案、写职位描述，或账号被封问怎么改时调它（区分平台公开和私信）。

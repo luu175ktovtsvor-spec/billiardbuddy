@@ -1,6 +1,9 @@
 key: "knowledge.opening_preparation"
 name: "开业筹备知识库"
 category: "knowledge"
+domain: strategy
+freedom: hard_number
+tags: [scene:开业筹备, scene:开店]
 variables: []
 description: |
   新店开业前30-40天的筹备时间线和任务清单。

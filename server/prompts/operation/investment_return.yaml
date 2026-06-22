@@ -1,6 +1,9 @@
 key: "operation.investment_return"
 name: "投资回报周期经营表"
 category: "operation"
+domain: strategy
+freedom: skeleton
+tags: [scene:投资回报, scene:盈利模型, scene:成本]
 variables:
   - store_name
   - table_count

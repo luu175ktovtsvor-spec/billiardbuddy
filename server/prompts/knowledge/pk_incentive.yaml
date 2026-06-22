@@ -1,6 +1,9 @@
 key: "knowledge.pk_incentive"
 name: "PK激励机制知识库"
 category: "knowledge"
+domain: talent-mgmt
+freedom: hard_number
+tags: [scene:PK激励, role:助教]
 variables: []
 description: |
   助教PK激励的两组硬规则：助教个人阶梯奖励、助教榜首激励（按全员总时长比例提成）。

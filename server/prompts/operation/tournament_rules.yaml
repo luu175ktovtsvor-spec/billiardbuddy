@@ -4,6 +4,9 @@
 key: "operation.tournament_rules"
 name: "赛制说明"
 category: "operation"
+domain: customer-ops
+freedom: red_line
+tags: [scene:赛事活动, role:教练, scene:赛制说明, object:追分客]
 variables:
   - store_name
   - city

@@ -1,6 +1,9 @@
 key: "operation.diagnosis_tool"
 name: "经营诊断工具"
 category: "operation"
+domain: customer-ops
+freedom: hard_number
+tags: [scene:诊断, role:店长, object:营收结构, object:助教费]
 variables:
   - store_name
   - problem_area

@@ -1,6 +1,9 @@
 key: "operation.empty_table_promo"
 name: "空台提醒促活"
 category: "operation"
+domain: customer-ops
+freedom: skeleton
+tags: [scene:促活, role:前厅, scene:搭子局, object:散客]
 variables:
   - store_name
   - city

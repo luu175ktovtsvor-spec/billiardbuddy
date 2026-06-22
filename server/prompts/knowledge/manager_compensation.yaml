@@ -1,6 +1,9 @@
 key: "knowledge.manager_compensation"
 name: "店长薪资结构知识库"
 category: "knowledge"
+domain: talent-mgmt
+freedom: hard_number
+tags: [scene:薪资, role:店长]
 variables: []
 description: |
   管理岗位薪资的骨架口径（以行业真实运营资料在册的为准）。行业资料在册的是"薪资架构管理"这一管理项 + PK 奖金机制 + 助教奖励/PK 系数硬数字；各岗位的具体薪资构成、提成比例、绩效考核维度由门店自定，不写死。AI 生成薪资方案/招聘文案时，所有金额一律用 [请填写] 占位、不编造。

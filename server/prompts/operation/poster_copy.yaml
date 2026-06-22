@@ -1,6 +1,9 @@
 key: "operation.poster_copy"
 name: "活动海报文案"
 category: "operation"
+domain: customer-ops
+freedom: red_line
+tags: [scene:内容文案, object:海报文案, role:运营]
 variables:
   - store_name
   - city

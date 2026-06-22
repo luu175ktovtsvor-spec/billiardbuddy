@@ -1,6 +1,9 @@
 key: "operation.promotion_analysis"
 name: "促销效果对比分析"
 category: "operation"
+domain: data-analysis
+freedom: skeleton
+tags: [scene:复盘]
 variables:
   - store_name
 template: |

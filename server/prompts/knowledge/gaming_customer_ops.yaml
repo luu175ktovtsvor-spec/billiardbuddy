@@ -1,6 +1,9 @@
 key: "knowledge.gaming_customer_ops"
 name: "追分/博弈客群对内运营"
 category: "knowledge"
+domain: customer-ops
+freedom: red_line
+tags: [scene:分客群, object:追分客, scene:约局撮合, scene:控场]
 variables: []
 description: |
   追分客户（四大类客户之一，核心需求=赢钱/输赢刺激）的对内运营知识库。

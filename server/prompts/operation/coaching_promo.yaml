@@ -1,6 +1,9 @@
 key: "operation.coaching_promo"
 name: "教学课程推广"
 category: "operation"
+domain: marketing
+freedom: red_line
+tags: [scene:教学推广, scene:引流, role:教练, role:助教, channel:朋友圈, channel:私域]
 variables:
   - store_name
   - city

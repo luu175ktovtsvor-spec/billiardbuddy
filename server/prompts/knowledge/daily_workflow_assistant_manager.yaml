@@ -4,6 +4,9 @@ description: |
   助教管理（带助教的主管）一天围绕什么干：三大核心方向（维客拓客、带助教赚钱、打开助教思维）、抓助教维客/拓客/免费体验转化/直播/朋友圈短视频产出、晚场门迎推助教、刷 BOSS 直聘招人、核对助教日报。导向是营销获客不是单纯堆陪打时长。具体到分钟的作息表、各项 KPI 目标数字由门店自定，不写死。
   老板/助教主管问"助教管理一天该干嘛/怎么带组/日报怎么写"时调它。
 category: "knowledge"
+domain: talent-mgmt
+freedom: skeleton
+tags: [scene:日报, role:助教管理]
 variables:
   - store_name
 template: |

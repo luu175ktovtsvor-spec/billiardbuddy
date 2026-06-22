@@ -1,6 +1,9 @@
 key: "knowledge.positioning_design"
 name: "球房定位设计与品牌传播"
 category: "knowledge"
+domain: strategy
+freedom: skeleton
+tags: [scene:门店定位, scene:品牌传播, channel:抖音, channel:美团]
 variables: []
 description: |
   给球房做定位的方法论：定位是什么、怎么扒竞品找定位、怎么提炼高感知差异化口号、品牌传播三部曲（差异化→重复抢心智→高感知 slogan），以及口号怎么在抖音/美团/门头/朋友圈里重复曝光抢同城客户心智。供 AI 在帮门店做品牌定位、起 slogan、写门头/平台标语、规划传播时调用。

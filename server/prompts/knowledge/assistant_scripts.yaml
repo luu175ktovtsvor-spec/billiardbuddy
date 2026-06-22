@@ -1,6 +1,9 @@
 key: "knowledge.assistant_scripts"
 name: "助教高频话术速查"
 category: "knowledge"
+domain: customer-ops
+freedom: red_line
+tags: [scene:话术, role:助教, scene:迎宾, scene:约客, scene:转介绍]
 variables: []
 description: |
   助教前线高频场景的可直接复制话术卡：迎宾、走访、上钟、转介绍、办卡、邀约。

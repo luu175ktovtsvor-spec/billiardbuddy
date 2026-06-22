@@ -1,6 +1,9 @@
 key: "operation.group_content"
 name: "私域群内容模板"
 category: "operation"
+domain: customer-ops
+freedom: red_line
+tags: [scene:私域社群, role:运营, object:散客, object:追分客]
 variables:
   - store_name
   - city
@@ -39,7 +42,7 @@ template: |
   - 散客：降低来店门槛，强调轻松氛围和社交体验
   - 竞技客户：突出赛事和对抗机会，强调对手水平
   - 助教客户：围绕"专业陪练+技术指导+情绪价值"，强调技术提升
-  - 追分客户：强调"有搭子、有对手、有氛围"，用轻竞技社交吸引
+  - 追分客户：强调"有搭子、有对手、有氛围、找得到旗鼓相当的对手"吸引（公开群内容聚焦氛围和约局，不直接出现赌注/赢钱字眼）
 
   合规要求：
   - 不使用"陪"字及变体，使用"助理教练"替代

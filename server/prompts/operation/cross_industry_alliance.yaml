@@ -1,6 +1,9 @@
 key: "operation.cross_industry_alliance"
 name: "异业联盟合作方案"
 category: "operation"
+domain: marketing
+freedom: skeleton
+tags: [scene:异业联盟, scene:引流, role:店长, channel:异业]
 variables:
   - store_name
   - target

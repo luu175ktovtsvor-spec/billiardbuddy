@@ -1,6 +1,9 @@
 key: "knowledge.assistant_promotion"
 name: "助教推广获客知识库"
 category: "knowledge"
+domain: marketing
+freedom: red_line
+tags: [scene:引流, scene:助教获客, scene:人设, role:助教, channel:抖音, channel:朋友圈, channel:交友软件, channel:私域]
 variables: []
 description: |
   助教如何通过各种渠道推广自己获得更多上钟机会。

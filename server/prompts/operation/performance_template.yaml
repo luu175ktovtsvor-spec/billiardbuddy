@@ -1,6 +1,9 @@
 key: "operation.performance_template"
 name: "绩效考核模板"
 category: "operation"
+domain: talent-mgmt
+freedom: skeleton
+tags: [scene:绩效, role:店长]
 variables:
   - store_name
   - role

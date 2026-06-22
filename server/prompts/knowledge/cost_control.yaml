@@ -1,6 +1,9 @@
 key: "knowledge.cost_control"
 name: "店长成本控制与成材率知识库"
 category: "knowledge"
+domain: strategy
+freedom: skeleton
+tags: [scene:成本, role:店长, role:前厅, scene:经营诊断]
 variables: []
 description: |
   店长怎么控成本、怎么自检的判断和清单。

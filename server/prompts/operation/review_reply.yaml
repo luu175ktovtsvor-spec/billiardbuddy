@@ -1,6 +1,9 @@
 key: "operation.review_reply"
 name: "平台差评公开回复话术"
 category: "operation"
+domain: marketing
+freedom: red_line
+tags: [scene:差评回复, scene:评分, role:店长, channel:美团, channel:抖音, channel:大众点评]
 variables:
   - store_name
 template: |

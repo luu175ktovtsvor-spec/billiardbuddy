@@ -1,6 +1,9 @@
 key: "operation.groupbuy_to_private"
 name: "团购转私域"
 category: "operation"
+domain: marketing
+freedom: skeleton
+tags: [scene:团购转私域, scene:转化, role:店长, role:前厅, channel:美团, channel:抖音, channel:私域]
 variables:
   - store_name
   - city

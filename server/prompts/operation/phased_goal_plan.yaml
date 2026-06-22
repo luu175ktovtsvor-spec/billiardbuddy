@@ -1,6 +1,9 @@
 key: "operation.phased_goal_plan"
 name: "阶段性目标计划"
 category: "operation"
+domain: talent-mgmt
+freedom: skeleton
+tags: [scene:目标管理, role:店长]
 variables:
   - store_name
   - tone

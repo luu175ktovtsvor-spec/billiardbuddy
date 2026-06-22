@@ -1,6 +1,9 @@
 key: "operation.review_guidance"
 name: "好评引导"
 category: "operation"
+domain: marketing
+freedom: red_line
+tags: [scene:好评引导, scene:评分, role:教练, role:前厅, channel:美团, channel:抖音, channel:大众点评]
 variables:
   - store_name
   - city

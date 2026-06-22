@@ -1,6 +1,9 @@
 key: "operation.tournament_signup"
 name: "赛前报名"
 category: "operation"
+domain: customer-ops
+freedom: skeleton
+tags: [scene:赛事活动, role:教练, scene:报名推广]
 variables:
   - store_name
   - city

@@ -1,6 +1,9 @@
 key: "operation.table_content_plan"
 name: "桌型相关内容策划"
 category: "operation"
+domain: customer-ops
+freedom: skeleton
+tags: [scene:内容文案, role:运营, object:桌型, channel:短视频]
 variables:
   - store_name
   - city

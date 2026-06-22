@@ -1,6 +1,9 @@
 key: "knowledge.mini_games"
 name: "小球房趣味游戏规则库"
 category: "knowledge"
+domain: customer-ops
+freedom: skeleton
+tags: [scene:玩法活动, role:教练, object:散客, object:团购客, scene:引流转化]
 description: |
   球房趣味小游戏的运营逻辑：目标人群（散客、团购客、开台频次低的客户、刚上瘾的客户）、核心目的（引导单人进店消费、加微拉群、筛精准客户、增粘性）、奖品口径（低成本高感知，高难度可给贵宾区一小时台费券，免费券客户前台必须通知主教练）。游戏由教练组织、下午2点宣传。
   老板要在晚场/开业/团购转化时搞互动游戏、写主持话术或活动文案，或想用游戏把单人客和新手盘进店时调它。

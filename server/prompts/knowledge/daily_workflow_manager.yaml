@@ -4,6 +4,9 @@ description: |
   店长一天的工作（巡场、管理层例会、营业数据统计、库存盘点、高价值客户亲自接待、美团/抖音评价回复、收银审核、早晚班交接），第一职责是营销获客、抓手是四大数据板块（助教/教练/前厅/总营业额）；含店长日报模板与关键指标。
   老板/店长问"店长一天该干嘛/盯哪些数据/日报怎么写"时调它。
 category: "knowledge"
+domain: talent-mgmt
+freedom: skeleton
+tags: [scene:日报, role:店长]
 variables:
   - store_name
 template: |

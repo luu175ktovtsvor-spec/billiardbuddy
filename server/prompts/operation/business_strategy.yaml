@@ -1,6 +1,9 @@
 key: "operation.business_strategy"
 name: "经营策略建议"
 category: "operation"
+domain: strategy
+freedom: skeleton
+tags: [scene:经营策略, scene:经营规划, role:店长]
 variables:
   - store_name
   - city
@@ -152,7 +155,7 @@ template: |
   - 助教收入：助教体系优化、上钟率提升、服务升级
   - 商品收入：品类优化、定价策略、促销节奏
   - 会员收入：会员体系设计、充值策略、权益设计
-  - 增值收入：赛事、培训、包场、异业合作
+  - 器材收入：私杆/皮头/手套等器材销售、保养推售
 
   ### 成本控制
   - 房租：谈判免租期/阶梯租金

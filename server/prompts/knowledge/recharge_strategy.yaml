@@ -1,6 +1,9 @@
 key: "knowledge.recharge_strategy"
 name: "充值活动策略知识库"
 category: "knowledge"
+domain: strategy
+freedom: hard_number
+tags: [scene:充值, scene:定价, scene:会员]
 variables: []
 description: |
   充值活动和一卡通策略。

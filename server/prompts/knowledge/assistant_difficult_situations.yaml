@@ -1,6 +1,9 @@
 key: "knowledge.assistant_difficult_situations"
 name: "助教管理刁钻问题应对话术"
 category: "knowledge"
+domain: talent-mgmt
+freedom: red_line
+tags: [scene:话术, role:助教管理, role:教练]
 variables: []
 description: |
   教练和助教管理在日常工作中经常遇到的刁钻问题及标准应对话术。

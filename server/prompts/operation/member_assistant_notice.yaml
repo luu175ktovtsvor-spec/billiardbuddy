@@ -1,6 +1,9 @@
 key: "operation.member_assistant_notice"
 name: "会员群助教可约通知"
 category: "operation"
+domain: customer-ops
+freedom: red_line
+tags: [scene:私域社群, role:助教管理, object:会员, scene:助教可约]
 variables:
   - store_name
   - city

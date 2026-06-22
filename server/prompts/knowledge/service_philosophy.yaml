@@ -1,5 +1,8 @@
 key: "knowledge.service_philosophy"
 name: "服务理念场景化知识库"
+domain: customer-ops
+freedom: red_line
+tags: [scene:服务, role:助教, scene:迎宾, scene:送客]
 description: |
   台球房一线服务的真实场景动作与话术库：迎宾接待→上钟/上课服务→送客（送至电梯口）的标准流程、巧粉/皮头/台面维护、助教形象管理、以及换台/退卡/排队/会员查询等高频场景的具体做法和话术。
   老板要做员工/助教服务培训、定迎宾接待和处理客诉的话术、写服务考核标准时,用它。

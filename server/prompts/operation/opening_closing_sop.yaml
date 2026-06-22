@@ -1,6 +1,9 @@
 key: "operation.opening_closing_sop"
 name: "开店闭店SOP"
 category: "operation"
+domain: strategy
+freedom: skeleton
+tags: [scene:开店闭店, scene:SOP, role:前厅, role:店长]
 variables:
   - store_name
   - city

@@ -1,6 +1,9 @@
 key: "operation.referral_program"
 name: "老带新转介绍机制"
 category: "operation"
+domain: marketing
+freedom: skeleton
+tags: [scene:老带新, scene:转介绍, scene:裂变, role:店长, channel:私域]
 variables:
   - store_name
   - target

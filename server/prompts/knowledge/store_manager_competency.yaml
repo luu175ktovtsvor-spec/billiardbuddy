@@ -1,6 +1,9 @@
 key: "knowledge.store_manager_competency"
 name: "店长能力模型"
 category: "knowledge"
+domain: talent-mgmt
+freedom: skeleton
+tags: [scene:能力模型, role:店长]
 variables: []
 description: |
   台球房店长的能力模型与考核体系。讲清三件事：①店长的核心工作不是看店收银，

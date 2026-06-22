@@ -1,6 +1,9 @@
 key: "operation.staff_birthday"
 name: "员工/助教生日"
 category: "operation"
+domain: customer-ops
+freedom: skeleton
+tags: [scene:团队关怀, role:店长, object:员工, object:助教]
 variables:
   - store_name
   - city

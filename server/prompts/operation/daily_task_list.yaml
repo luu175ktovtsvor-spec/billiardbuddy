@@ -1,6 +1,9 @@
 key: "operation.daily_task_list"
 name: "每日任务表模板"
 category: "operation"
+domain: talent-mgmt
+freedom: skeleton
+tags: [scene:任务表, role:店长, role:前厅, role:助教]
 variables:
   - store_name
   - role

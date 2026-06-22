@@ -1,6 +1,9 @@
 key: "knowledge.customer_tagging"
 name: "客户标签体系知识库"
 category: "knowledge"
+domain: marketing
+freedom: skeleton
+tags: [scene:打标签, scene:客户分层, scene:维客, role:教练, role:助教, role:店长]
 variables: []
 description: |
   给客户打标签的方法和维护策略。
