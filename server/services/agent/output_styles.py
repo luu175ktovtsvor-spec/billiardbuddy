@@ -1,4 +1,4 @@
-"""Output Styles —— 对标 Claude Code 的输出风格（clean-room：只复刻开放契约）。
+"""Output Styles —— 对标 Claude Code 的输出风格（参考其实现，可直接抄用）。
 
 切换 agent 的"输出人格/模式"，本质 = 往系统提示追加一段风格指令。
 - 单个 `.md` 文件 = 一个风格（文件名=风格名，可被 frontmatter `name` 覆盖）。

@@ -9,8 +9,7 @@ role:tool 回灌（同 tool_call_id），且不能有「孤儿 tool_result」（
 的最后一道配对自检——纯函数、无新状态，在 `loop.py` 每次 provider.generate 之前调一遍兜住。
 
 机制原理参见 Anthropic TU「When Claude uses tools」描述的「工具调用→结果回灌」闭环契约
-（https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview）；本实现为 clean-room
-自写，不含任何第三方源码片段。
+（https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview）。
 """
 
 # 缺失 tool_result 的合成占位内容（让模型知道这步结果丢了、可重试，而非把缺失当真空答复）。
