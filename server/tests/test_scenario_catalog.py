@@ -62,3 +62,36 @@ def test_find_scenario_tool_returns_catalog_text():
 
     out = asyncio.run(t.find_scenario({"need": "强一比赛"}, ctx=None))
     assert "operation.qiangyi_battle" in out
+
+
+# ---- 模块化重构第5步：scenario_catalog 域/facet 路由 ----
+
+def test_catalog_items_carry_domain_and_tags():
+    """get_catalog 现在带 domain + tags（取自 Phase 1 模块化元数据），供域标注 + facet 排序。"""
+    cat = get_catalog()
+    qy = next(e for e in cat if e["key"] == "operation.qiangyi_battle")
+    assert qy.get("domain") == "customer-ops"   # 抢一大战属客户运营域
+    assert "tags" in qy and isinstance(qy["tags"], list)
+
+
+def test_format_annotates_domain():
+    """find_scenario 输出给每个 operation 场景标注运营域中文名（让模型按 L0 同套域心智路由）。"""
+    text = format_catalog_for_model("抢一大战")
+    assert "（客户运营）" in text                 # 抢一大战这条带域标注
+    assert "所属的运营域" in text                 # 抬头说明了括号含义
+
+
+def test_facet_ranking_default_off_preserves_name_only():
+    """use_facets 默认关：纯名字分（pick_best 的兜底门槛走这条，保守语义不变）。
+    带 facet 标签但名字不沾边的场景，默认排序不该被标签抬上来。"""
+    fake = [
+        {"key": "operation.a", "name": "毫不相干的名字", "tags": ["scene:约客", "role:助教"]},
+        {"key": "operation.b", "name": "约客话术模板", "tags": []},
+    ]
+    ranked = rank_scenarios("帮我写约客", catalog=fake)  # 默认 use_facets=False
+    assert ranked[0]["key"] == "operation.b"            # 纯名字命中"约客"，b 在前
+    # 打开 facet：a 的标签命中"约客"会拿到加分（但每个标签仅 +0.5，不越过 pick_best 门槛 2）
+    ranked_f = rank_scenarios("帮我写约客", catalog=fake, use_facets=True)
+    a_score = next(r["_score"] for r in ranked_f if r["key"] == "operation.a")
+    assert a_score > 0                                   # facet 命中给了加分
+    assert a_score < 2                                   # 但够不到兜底门槛（不会放松自动套模板）

@@ -49,21 +49,24 @@ def test_compose_empty_general_is_base_redline_web_today():
 
 
 def test_static_hints_precede_dynamic_segments(monkeypatch):
-    """缓存稳定铁律：每天变的日期 + 每店变的画像/记忆/台球人设，必须排在所有静态段之后。"""
+    """缓存稳定铁律：真正每天变的日期 + 每店变的画像/记忆，必须排在所有静态段之后。
+
+    模块化重构第5步后：台球 L0 核心层 + 台球人设也是【会话内 byte 稳定】的静态内容（不随日期/门店/这句话变），
+    已前移到日期之前的静态前缀区——所以人设不再属于"动态段"，而和 web/文件 hint 一样算静态前缀。"""
     monkeypatch.setenv("DESKTOP_LOCAL", "1")  # 触发桌面文件能力 hint，验证它也在动态段之前
     out = compose_agent_system_prompt(
         "门店A的画像特征", "请记住：老板叫张三", full_disk=False, billiards_mode=True,
     )
     i_web = out.index(_WEB_AGENT_TOOLS_HINT)
     i_fileops = out.index(_DESKTOP_FILE_OPS_HINT)
-    i_today = out.index(_today_line())
     i_persona = out.index(_BILLIARDS_PERSONA)
+    i_today = out.index(_today_line())
     i_profile = out.index("门店A的画像特征")
     i_brain = out.index("张三")
-    # 所有静态段(web hint / 文件 hint) 都在所有动态段(日期/人设/画像/记忆)之前
-    assert max(i_web, i_fileops) < min(i_today, i_persona, i_profile, i_brain)
-    # 动态段内部：日期 → 台球人设 → 画像 → 记忆（越靠后越易变）
-    assert i_today < i_persona < i_profile < i_brain
+    # 静态前缀（web hint / 文件 hint / 台球 L0+人设，都 byte 稳定）全在动态尾段（日期/画像/记忆）之前
+    assert max(i_web, i_fileops, i_persona) < min(i_today, i_profile, i_brain)
+    # 动态尾段内部：日期 → 画像 → 记忆（越靠后越易变）
+    assert i_today < i_profile < i_brain
 
 
 def test_static_prefix_byte_stable_across_stores(monkeypatch):
