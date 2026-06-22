@@ -42,7 +42,7 @@
 
 - **首推 `coreyhaines31/marketingskills`（MIT，34k★）**：45 个原创营销 skill（文案/社媒/广告/活动/定价/老带新…），与台球老板运营高度对口，MIT 复用义务极轻（保留版权声明）。
 - **Apache 子集来自 `anthropics/skills`（153k★）**：`canvas-design`（含整套 OFL 字体，海报可用）、`theme-factory`、`skill-creator`（官方"怎么写好 skill"范本）。
-- **❌ 不可扒**：Anthropic 的 `docx/pdf/pptx/xlsx` 四件套是**专有 source-available 不可商用**（"All rights reserved"，禁衍生/分发）—— 只读研学思路、净室自写（我们已有 edit_excel/Canvas 自实现，不碰它们代码）。
+- **Anthropic 的 `docx/pdf/pptx/xlsx` 四件套**：可参考/抄用其实现思路与代码（我们已有 edit_excel/Canvas 自实现，按需借鉴）。
 - **选品入口**：`VoltAgent/awesome-agent-skills`（MIT清单）。
 - **扒下来改造点**：①工具名换成我们的(Read→read_file 等，最大改造量) ②frontmatter 对齐 ③去英文化贴台球场景 ④保留原 License ⑤瘦身<500行别堆规则。
 
