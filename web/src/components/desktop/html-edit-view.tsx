@@ -7,36 +7,38 @@
  * iframe 用 sandbox="allow-same-origin"（父窗口能读 DOM 挂点选，但页面自身脚本不执行，安全）。
  */
 import { useEffect, useRef, useState } from "react";
-import { Wand2, Save, Download, FolderHeart, Check, X, Loader2, Undo2, MousePointerClick, ChevronDown } from "lucide-react";
+import { Wand2, Save, Download, FolderHeart, Check, X, Loader2, MousePointerClick, ChevronDown } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
 import { useDesktop } from "@/hooks/use-desktop";
 import { DiffBlock } from "./diff-block";
+import { useVersionHistory } from "./use-version-history";
+import { VersionBar } from "./version-bar";
 
 export function HtmlEditView({ initialHtml, title }: { initialHtml: string; title: string }) {
   const { electron } = useDesktop();
-  const [html, setHtml] = useState(initialHtml);
+  const vh = useVersionHistory(initialHtml);
+  const html = vh.current;
+  const resetHistory = vh.reset; // 稳定引用
   const [annotate, setAnnotate] = useState(false);
   const [picked, setPicked] = useState<{ outerHTML: string; label: string } | null>(null);
   const [promptText, setPromptText] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [pending, setPending] = useState<{ before: string; after: string } | null>(null);
-  const [history, setHistory] = useState<string[]>([]);
+  const [pending, setPending] = useState<{ before: string; after: string; label: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveMsg, setSaveMsg] = useState<{ text: string; bad?: boolean } | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
-  // 换一个网页打开时重置
+  // 换一个网页打开时重置时间线
   useEffect(() => {
-    setHtml(initialHtml);
+    resetHistory(initialHtml);
     setPending(null);
-    setHistory([]);
     setPicked(null);
     setAnnotate(false);
-  }, [initialHtml]);
+  }, [initialHtml, resetHistory]);
 
   // 圈点模式：往 iframe DOM 挂 hover 高亮 + 点选（同源可读 DOM；无 allow-scripts，页面脚本不跑）
   useEffect(() => {
@@ -92,7 +94,7 @@ export function HtmlEditView({ initialHtml, title }: { initialHtml: string; titl
     try {
       const res = await api.canvasEdit(html, ins, picked.outerHTML, "网页");
       if (res.content === html) setErr("这处没改出不一样的内容，换个说法再试");
-      else setPending({ before: html, after: res.content });
+      else setPending({ before: html, after: res.content, label: ins.slice(0, 16) });
     } catch (e) {
       setErr(getErrorMessage(e));
     } finally {
@@ -103,15 +105,9 @@ export function HtmlEditView({ initialHtml, title }: { initialHtml: string; titl
   };
   const accept = () => {
     if (!pending) return;
-    setHistory((h) => [...h, pending.before]);
-    setHtml(pending.after);
+    vh.commit(pending.after, pending.label || "圈点改");
     setPending(null);
   };
-  const undo = () => setHistory((h) => {
-    if (!h.length) return h;
-    setHtml(h[h.length - 1]);
-    return h.slice(0, -1);
-  });
 
   const flash = (text: string, bad?: boolean) => {
     setSaveMsg({ text, bad });
@@ -161,11 +157,7 @@ export function HtmlEditView({ initialHtml, title }: { initialHtml: string; titl
         >
           <MousePointerClick className="h-3.5 w-3.5" /> {annotate ? "圈点中…点页面元素" : "圈点修改"}
         </button>
-        {history.length > 0 && (
-          <button type="button" onClick={undo} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] text-[#86868b] transition hover:bg-black/[0.04] hover:text-[#1d1d1f] dark:text-[#9a9ca3] dark:hover:bg-white/[0.05]">
-            <Undo2 className="h-3.5 w-3.5" /> 撤销
-          </button>
-        )}
+        <VersionBar versions={vh.versions} index={vh.index} onGoto={vh.goto} />
         <div className="flex-1" />
         <div className="relative">
           <button

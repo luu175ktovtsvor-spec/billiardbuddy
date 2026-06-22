@@ -12,7 +12,7 @@
  */
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { X, Download, Wand2, Copy, Check, Loader2, RotateCcw, Table2, FileText, CheckCircle2, RefreshCw, Undo2, Save, ChevronDown, FolderHeart } from "lucide-react";
+import { X, Download, Wand2, Copy, Check, Loader2, RotateCcw, Table2, FileText, CheckCircle2, RefreshCw, Save, ChevronDown, FolderHeart } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
@@ -22,6 +22,8 @@ import { useHorizontalResize } from "./use-resize";
 import { DiffBlock } from "./diff-block";
 import { HtmlEditView } from "./html-edit-view";
 import { DocEditView } from "./doc-edit-view";
+import { useVersionHistory } from "./use-version-history";
+import { VersionBar } from "./version-bar";
 
 export type PreviewItem =
   | { kind: "poster"; title?: string; imageUrl: string; ratio?: string }
@@ -383,24 +385,21 @@ export function DesktopPreviewPanel({
 
   // 文案/文件的就地工作副本：content 走 canvasEdit 在此基础上就地改写；file 仅作展示（改由管家写回原件）。
   const isText = item.kind === "content" || item.kind === "file";
-  const [workText, setWorkText] = useState(isText ? (item as { text: string }).text : "");
-  const [edited, setEdited] = useState(false);
+  // 版本检查点：每次接受改写存一版，可回看/跳任意一版（取代旧的撤销栈）
+  const vh = useVersionHistory(isText ? (item as { text: string }).text : "");
+  const workText = vh.current;
+  const edited = vh.index > 0;
+  const resetHistory = vh.reset; // 稳定引用，供换预览对象时清时间线
   const [busy, setBusy] = useState(false);
   const [editErr, setEditErr] = useState<string | null>(null);
   // 待确认的改写（对齐 cc-haha：改完不直接落，先出 diff 给老板 接受/放弃）
   const [pending, setPending] = useState<{ before: string; after: string; label: string } | null>(null);
-  // 撤销栈：每次接受改写前先压入上一版，可一步步回退
-  const [history, setHistory] = useState<string[]>([]);
-  // 切换预览对象时重置工作副本/待确认/撤销栈
+  // 切换预览对象时重置时间线/待确认
   useEffect(() => {
-    if (item.kind === "content" || item.kind === "file") {
-      setWorkText(item.text);
-      setEdited(false);
-      setEditErr(null);
-      setPending(null);
-      setHistory([]);
-    }
-  }, [item]);
+    resetHistory(isText ? (item as { text: string }).text : "");
+    setEditErr(null);
+    setPending(null);
+  }, [item, isText, resetHistory]);
 
   // 选区浮窗：划中一段 → 冒出"基于此调整"
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -441,24 +440,13 @@ export function DesktopPreviewPanel({
       setBusy(false);
     }
   };
-  // 接受 diff：压栈上一版 → 落新版
+  // 接受 diff：存为新一版（进版本时间线）
   const acceptPending = () => {
     if (!pending) return;
-    setHistory((h) => [...h, pending.before]);
-    setWorkText(pending.after);
-    setEdited(true);
+    vh.commit(pending.after, pending.label || "改写");
     setPending(null);
   };
   const rejectPending = () => setPending(null);
-  // 撤销：回退到上一版
-  const undo = () => {
-    setHistory((h) => {
-      if (h.length === 0) return h;
-      const prev = h[h.length - 1];
-      setWorkText(prev);
-      return h.slice(0, -1);
-    });
-  };
 
   const onBodyMouseUp = () => {
     if (!selectable) return;
@@ -495,13 +483,9 @@ export function DesktopPreviewPanel({
     await runCanvasEdit(ins, undefined, "整条改");
   };
   const reset = () => {
-    if (item.kind === "content" || item.kind === "file") {
-      setWorkText(item.text);
-      setEdited(false);
-      setEditErr(null);
-      setPending(null);
-      setHistory([]);
-    }
+    vh.goto(0);          // 复原 = 回到最初那一版（时间线仍在，可再跳回去）
+    setEditErr(null);
+    setPending(null);
   };
 
   // 「保存到电脑」：存成什么格式（大白话名 + 文件后缀）
@@ -768,24 +752,21 @@ export function DesktopPreviewPanel({
                   <Wand2 className="h-3.5 w-3.5" /> 整张重做
                 </button>
               ) : null}
-              {history.length > 0 && (
-                <button
-                  onClick={undo}
-                  title="撤销上一步改动"
-                  className="flex h-9 items-center justify-center gap-1.5 rounded-md border border-black/[0.1] bg-white px-3 text-[13px] text-[#86868b] transition hover:bg-black/[0.03] active:scale-[0.98] dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#9a9ca3] dark:hover:bg-white/[0.06]"
-                >
-                  <Undo2 className="h-3.5 w-3.5" /> 撤销
-                </button>
-              )}
               {edited && (
                 <button
                   onClick={reset}
-                  title="还原成最初的内容"
+                  title="回到最初那一版"
                   className="flex h-9 items-center justify-center gap-1.5 rounded-md border border-black/[0.1] bg-white px-3 text-[13px] text-[#86868b] transition hover:bg-black/[0.03] active:scale-[0.98] dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#9a9ca3] dark:hover:bg-white/[0.06]"
                 >
                   <RotateCcw className="h-3.5 w-3.5" /> 复原
                 </button>
               )}
+            </div>
+          )}
+          {/* 版本时间线：回看/跳到任意一版 */}
+          {!pending && vh.versions.length > 1 && (
+            <div className="mt-1.5 flex items-center">
+              <VersionBar versions={vh.versions} index={vh.index} onGoto={vh.goto} />
             </div>
           )}
           {/* 定稿保存提示 */}

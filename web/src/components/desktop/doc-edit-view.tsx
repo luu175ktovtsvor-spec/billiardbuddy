@@ -11,6 +11,15 @@ import { Loader2, Save, Wand2, Check, X, Pencil, FileText, Presentation } from "
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
 import { DiffBlock } from "./diff-block";
+import { useVersionHistory } from "./use-version-history";
+import { VersionBar } from "./version-bar";
+
+type Edits = Record<string, string>;
+const editsEq = (a: Edits, b: Edits) => {
+  const ka = Object.keys(a);
+  return ka.length === Object.keys(b).length && ka.every((k) => a[k] === b[k]);
+};
+const snippet = (t: string) => { const s = (t || "").trim().replace(/\s+/g, " "); return s.length > 10 ? s.slice(0, 10) + "…" : s; };
 
 type Block = { id: string; kind: string; text: string; slide?: number };
 
@@ -29,7 +38,9 @@ export function DocEditView({ path, title }: { path: string; title: string }) {
   const [data, setData] = useState<{ kind: "docx" | "pptx"; blocks: Block[] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const [edits, setEdits] = useState<Record<string, string>>({});
+  const vh = useVersionHistory<Edits>({}, "原始", editsEq); // 版本检查点：每次改存一版改动快照
+  const edits = vh.current;
+  const resetHistory = vh.reset; // 稳定引用，供换文档时清时间线
   const [picked, setPicked] = useState<string | null>(null);
   const [draft, setDraft] = useState("");           // 手动编辑的文字
   const [aiText, setAiText] = useState("");          // 让 AI 改的指令
@@ -43,7 +54,7 @@ export function DocEditView({ path, title }: { path: string; title: string }) {
     let cancelled = false;
     setLoading(true);
     setErr(null);
-    setEdits({});
+    resetHistory({});
     setPicked(null);
     setPending(null);
     api
@@ -52,7 +63,7 @@ export function DocEditView({ path, title }: { path: string; title: string }) {
       .catch((e) => { if (!cancelled) setErr(getErrorMessage(e)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [path]);
+  }, [path, resetHistory]);
 
   const textOf = (b: Block) => edits[b.id] ?? b.text;
   const dirtyCount = Object.keys(edits).length;
@@ -65,13 +76,10 @@ export function DocEditView({ path, title }: { path: string; title: string }) {
     setTimeout(() => taRef.current?.focus(), 0);
   };
   const applyManual = (b: Block) => {
-    const v = draft;
-    setEdits((m) => {
-      const next = { ...m };
-      if (v === b.text) delete next[b.id]; // 改回原样 = 不算改动
-      else next[b.id] = v;
-      return next;
-    });
+    const next = { ...edits };
+    if (draft === b.text) delete next[b.id]; // 改回原样 = 不算改动
+    else next[b.id] = draft;
+    vh.commit(next, `改《${snippet(b.text)}》`);
     setPicked(null);
   };
   const runAi = async (b: Block) => {
@@ -93,12 +101,10 @@ export function DocEditView({ path, title }: { path: string; title: string }) {
   const acceptPending = () => {
     if (!pending) return;
     const orig = data?.blocks.find((x) => x.id === pending.id)?.text;
-    setEdits((m) => {
-      const next = { ...m };
-      if (pending.after === orig) delete next[pending.id];
-      else next[pending.id] = pending.after;
-      return next;
-    });
+    const next = { ...edits };
+    if (pending.after === orig) delete next[pending.id];
+    else next[pending.id] = pending.after;
+    vh.commit(next, `改《${snippet(pending.before)}》`);
     setPending(null);
     setPicked(null);
   };
@@ -109,9 +115,9 @@ export function DocEditView({ path, title }: { path: string; title: string }) {
     setSaving(true);
     try {
       const r = await api.docSave(path, edits);
-      // 写回成功：把改动并进基线、清空待存
+      // 写回成功：把改动并进基线、版本时间线重置为新基线
       setData((d) => d && { ...d, blocks: d.blocks.map((b) => (b.id in edits ? { ...b, text: edits[b.id] } : b)) });
-      setEdits({});
+      vh.reset({});
       flash(`已写回原文件（改了 ${r.saved} 处）`);
     } catch (e) {
       flash(getErrorMessage(e), true);
@@ -202,6 +208,7 @@ export function DocEditView({ path, title }: { path: string; title: string }) {
         <Icon className="h-3.5 w-3.5 text-[#10a37f]" />
         <span className="text-[12px] text-[#86868b] dark:text-[#9a9ca3]">点任意一段文字即可修改{dirtyCount > 0 ? ` · 待写回 ${dirtyCount} 处` : ""}</span>
         <div className="flex-1" />
+        <VersionBar versions={vh.versions} index={vh.index} onGoto={vh.goto} />
         <button
           onClick={save}
           disabled={saving || dirtyCount === 0}
