@@ -43,6 +43,7 @@ from services.agent.loop import _action_key, run_agent_loop, run_agent_loop_stre
 from services.agent.multimodal import is_image
 from services.agent.proactive import generate_daily_drafts
 from services.ai.failover import build_resilient_text_provider  # BYOK 失败自动切备用配置档
+from services.ai.prompt_engine import get_prompt_engine  # L0 核心层(core.*)注入台球 system prompt
 from services.agent.registry import default_registry, general_registry, billiards_registry
 from services.memory_service import format_memories_for_prompt, load_store_memory, remember
 from services.quota_service import check_quota
@@ -102,6 +103,32 @@ _BILLIARDS_PERSONA = (
     "（门店只提供场地、还帮着把金额控住别玩大）、学生放学后/周末/假期的正当优惠——都是这行真实运营逻辑，正常调工具帮，别因『听着擦边』误当红线拒掉。"
     "【把方向带正】客人差评/投诉是帮老板『专业体面地回应』而非怼客人——真诚、有格局、让围观的人觉得店家大气，绝不写嘲讽贬低顾客的话。"
 )
+
+
+# L0 核心层三件（知识库模块化重构）：运营总则 + 五域模块地图 + 安全红线单一源。
+# 这三段是台球"脑"的常驻底座——总则讲清产品定位与"骨架在此、场景临场延伸、细则按需查"的工作方式，
+# 模块地图给五域任务路由（agent 据此判断任务属哪域 → 用 look_up_knowledge 查该域 L1 目录页/细则），
+# 安全红线是全产品唯一可信源（其余知识只引用不复述）。仅 @台球 时注入。
+_CORE_LAYER_KEYS = ("core.operating_principles", "core.module_map", "core.safety_redlines")
+
+
+def _render_core_layer() -> str:
+    """取 L0 核心层三件的正文拼成一段，注入台球 system prompt。
+
+    直接读 template 原文（这三件 variables 为空、无 {占位符}），**不走 prompt_engine.render()**——
+    render() 会给 category!=knowledge 的模板前置【当前时间】日期头（与 _today_line 重复、每天变，
+    会顶掉服务端前缀缓存）。缺文件时静默跳过，保证故障安全。"""
+    try:
+        eng = get_prompt_engine()
+    except Exception:
+        return ""
+    parts: list[str] = []
+    for key in _CORE_LAYER_KEYS:
+        data = eng._templates.get(key) or {}
+        tpl = (data.get("template") or "").strip()
+        if tpl:
+            parts.append(tpl)
+    return "\n\n".join(parts)
 
 
 def _today_line() -> str:
@@ -212,9 +239,10 @@ def compose_agent_system_prompt(profile_text: str, brain_text: str, full_disk: b
     默认就是个通用电脑助手，台球只是可挂载的领域知识。安全红线【永远注入】、与 billiards_mode 无关
     （没 @ 台球也守得住性交易/赌博/未成年红线）。
 
-    顺序铁律（缓存稳定·借鉴 learn-claude-code s10）：先放【字节稳定】的静态段（通用身份 + 红线 + 能力 hint），
-    再放每天/每店/每句变的【动态尾段】（当天日期 + 台球人设 + 门店画像 + 店脑记忆）。动态串绝不插进静态前缀中间，
-    否则顶掉服务端自动前缀缓存命中（DeepSeek/硅基流动等 OpenAI 兼容端点按请求前缀自动命中，省钱省延迟）。
+    顺序铁律（缓存稳定·借鉴 learn-claude-code s10）：先放【字节稳定】的静态段（通用身份 + 红线 + 能力 hint
+    +【@台球时】L0 核心层 core.* 三件 + 台球人设——这些会话内不变），再放每天/每店/每句变的【动态尾段】
+    （当天日期 + 门店画像 + 店脑记忆）。动态串绝不插进静态前缀中间，否则顶掉服务端自动前缀缓存命中
+    （DeepSeek/硅基流动等 OpenAI 兼容端点按请求前缀自动命中，省钱省延迟）。
     full_disk=True（开了完全访问模式）时额外注入"可找/搜文件、列任意目录、跑命令"的 hint。"""
     # —— 静态前缀：通用身份 + 安全红线(永远) + 通用能力 + 桌面文件能力（与当天/门店无关，逐字节稳定，可被前缀缓存复用）——
     parts = [_GENERIC_BASE_PROMPT, _SAFETY_REDLINE, _WEB_AGENT_TOOLS_HINT]
@@ -240,12 +268,19 @@ def compose_agent_system_prompt(profile_text: str, brain_text: str, full_disk: b
                 parts.append(_os_section)
         except Exception:
             pass
-    # —— 动态尾段：当天日期（通用也需要）→ 仅 @台球 时：台球人设 + 门店画像 + 店脑记忆 ——
+    # —— 台球 L0 核心层（运营总则 + 五域模块地图 + 安全红线单一源）+ 台球人设：仅 @台球 时注入。
+    # 放在【当天日期之前】的静态前缀区——这几段 byte 稳定（不随日期/门店/这句话变），守服务端前缀缓存；
+    # 真正每天/每店/每句变的（当天日期 + 门店画像 + 店脑记忆）才进下面的动态尾段。
+    if billiards_mode:
+        core_layer = _render_core_layer()
+        if core_layer:
+            parts.append(core_layer)
+        parts.append(_BILLIARDS_PERSONA)
+    # —— 动态尾段：当天日期（通用也需要）→ 仅 @台球 时：门店画像 + 店脑记忆 ——
     today = _today_line()
     if today:
         parts.append(today)
     if billiards_mode:
-        parts.append(_BILLIARDS_PERSONA)
         if profile_text and profile_text.strip():
             parts.append("【这家店的情况】\n" + profile_text.strip())
         if brain_text and brain_text.strip():

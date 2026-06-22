@@ -50,6 +50,33 @@ def test_three_segments_are_distinct_nonempty():
     assert "台球" not in _GENERIC_BASE_PROMPT
 
 
+def test_billiards_mode_injects_l0_core_layer():
+    """知识库模块化重构第5步：@台球时注入 L0 核心层三件（运营总则 + 五域模块地图 + 安全红线单一源）。"""
+    p = compose_agent_system_prompt("画像", "记忆", billiards_mode=True)
+    assert "五域模块地图" in p           # core.module_map：五域任务路由
+    assert "运营总则" in p               # core.operating_principles：常驻总则
+    assert "唯一可信源" in p             # core.safety_redlines：红线单一源标识
+    # 五域名都在地图里（agent 据此路由任务到对应域）
+    for dom in ("战略认知", "营销获客", "客户运营", "人才管理", "数据诊断"):
+        assert dom in p
+
+
+def test_general_mode_no_l0_core_layer():
+    """通用模式（未 @台球）绝不注入 L0 台球核心层——台球只是可挂载领域。"""
+    p = compose_agent_system_prompt("画像", "记忆", billiards_mode=False)
+    assert "五域模块地图" not in p
+    assert "运营总则" not in p
+
+
+def test_l0_core_layer_before_today_line_for_cache():
+    """前缀缓存纪律：L0 核心层（byte 稳定）必须排在【当天日期】之前，不被每天变的日期顶掉缓存。"""
+    p = compose_agent_system_prompt("画像", "记忆", billiards_mode=True)
+    if "【今天】" in p:  # _today_line 正常产出时才校验位置
+        assert p.index("五域模块地图") < p.index("【今天】")
+        # 门店画像/店脑（每店每句变）应在日期之后（动态尾段）
+        assert p.index("【今天】") < p.index("画像")
+
+
 def test_general_registry_excludes_billiards_includes_generic_tools():
     """通用工具集 = 默认表减台球专用；含核心通用工具 + 通用生图；台球集含台球专用工具。"""
     import services.agent.tools  # noqa: F401  确保工具登记进 default_registry
