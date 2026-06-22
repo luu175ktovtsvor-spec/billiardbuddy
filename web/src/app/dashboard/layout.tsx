@@ -1,11 +1,10 @@
 "use client";
 
+// 单窗口化：桌面版只剩 AI agent 一个窗口（Codex 风）。
+// 这里只保留「鉴权守卫」——不再渲染网页版侧栏/头部/底栏。整窗外观由 DesktopChatShell 自己掌控。
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/auth-context";
-import { Sidebar } from "@/components/layout/sidebar";
-import { Header } from "@/components/layout/header";
-import { MobileNav } from "@/components/layout/mobile-nav";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { ToastProvider } from "@/components/ui/toast";
 import { ClientErrorReporter } from "@/components/client-error-reporter";
@@ -22,8 +21,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   if (isLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#F2F2F7]">
-        <p className="text-slate-400">加载中...</p>
+      <div className="flex min-h-screen items-center justify-center bg-white dark:bg-[#0e0f11]">
+        <p className="text-[13px] text-[#86868b] dark:text-[#6e7077]">加载中…</p>
       </div>
     );
   }
@@ -33,18 +32,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   return (
-    <div className="min-h-screen bg-[#F2F2F7]">
-      <ClientErrorReporter />
-      <Sidebar />
-      <div className="lg:pl-60">
-        <Header />
-        <main className="px-4 py-6 pb-24 sm:px-6 lg:px-8 lg:py-8">
-          <ErrorBoundary>
-            <ToastProvider>{children}</ToastProvider>
-          </ErrorBoundary>
-        </main>
-      </div>
-      <MobileNav />
-    </div>
+    <ErrorBoundary>
+      <ToastProvider>
+        <ClientErrorReporter />
+        {children}
+      </ToastProvider>
+    </ErrorBoundary>
   );
 }

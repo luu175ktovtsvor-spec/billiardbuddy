@@ -29,6 +29,8 @@ export interface AgentStreamHandlers {
   onToken?: (token: string) => void;
   onToolCall?: (tool: string, args: Record<string, unknown>, id?: string) => void;
   onToolResult?: (tool: string, content: string, id?: string, knowledgeUsed?: string[]) => void;
+  // 命令边跑边显示：工具执行中实时推来的输出片段（chunk），按 id 累进对应步骤的终端块。
+  onToolProgress?: (tool: string, id: string | undefined, chunk: string, stream?: string) => void;
   // SH-8：reason = 结构化审批理由 {what 要做什么 / why 为什么要你确认 / impact 影响}，让审批卡说清楚再让老板点头。
   onApprovalRequest?: (tool: string, args: Record<string, unknown>, id?: string, token?: string, preview?: string, reason?: ApprovalReason) => void;
   onAskQuestion?: (q: { question: string; options: { label: string; description?: string }[]; multi?: boolean; id?: string }) => void;
@@ -43,8 +45,12 @@ export interface AgentChatPayload {
   model?: string;
   conversation_id?: string | null;
   selected_files?: string[]; // 桌面版：老板选定、授权 Agent 读/改的文件绝对路径
-  permission_mode?: "ask" | "auto_files" | "full"; // 权限：每次问/自动改文件/全自动
+  permission_mode?: "ask" | "auto_files" | "full" | "plan"; // 权限：每次问/自动改文件/全自动/计划
   full_disk_access?: boolean; // 高级·全盘：文件工具不限内容库+选定文件
+  knowledge_packs?: string[]; // @ 挂载的知识库（如 ["billiards"]）；含 billiards → 台球专家模式，否则通用
+  output_style?: string; // 输出风格名（explanatory/concise…），空=默认
+  goal?: string; // /goal 目标驱动：本次会话目标条件
+  source_rec_id?: string; // 隐式反馈：本次对话由今日推荐哪一条触发（rec.id）→ 后端落到 generation 做"采纳上浮"
 }
 
 class ApiClient {
@@ -569,6 +575,7 @@ class ApiClient {
               case "token": handlers.onToken?.(ev.content || ""); break;
               case "tool_call": handlers.onToolCall?.(ev.tool, ev.args || {}, ev.id); break;
               case "tool_result": handlers.onToolResult?.(ev.tool, ev.content || "", ev.id, Array.isArray(ev.knowledge_used) ? ev.knowledge_used : undefined); break;
+              case "tool_progress": handlers.onToolProgress?.(ev.tool, ev.id, ev.chunk || "", ev.stream); break;
               case "approval_request": handlers.onApprovalRequest?.(ev.tool, ev.args || {}, ev.id, ev.token, ev.preview, ev.reason); break;
               case "ask_question": handlers.onAskQuestion?.({ question: ev.question || "", options: ev.options || [], multi: ev.multi, id: ev.id }); break;
               case "final": handlers.onFinal?.(ev.content || ""); break;
@@ -602,6 +609,7 @@ class ApiClient {
     fullDiskAccess?: boolean,
     token?: string,
     conversationId?: string | null,
+    knowledgePacks?: string[],
   ): Promise<{
     tool: string;
     result: string;
@@ -615,6 +623,7 @@ class ApiClient {
       full_disk_access: fullDiskAccess,
       token,
       conversation_id: conversationId,
+      knowledge_packs: knowledgePacks,
     });
   }
 
@@ -767,6 +776,11 @@ class ApiClient {
     return this.request<DashboardTodayResponse>("GET", "/api/v1/dashboard/today");
   }
 
+  // 隐式反馈·采纳上浮：老板点某条今日推荐去做时记一次"采纳"（故障安全，失败不阻断跳转）
+  adoptRecommendation(recId: string) {
+    return this.request<{ status: string; rec_id: string }>("POST", "/api/v1/dashboard/adopt-rec", { rec_id: recId });
+  }
+
   // 桌面端：列出本店 agent 会话（侧栏回看/切换）
   listAgentConversations() {
     return this.request<{ conversations: { conversation_id: string; title: string | null; last_at: string | null }[] }>(
@@ -777,6 +791,61 @@ class ApiClient {
   getAgentConversation(id: string) {
     return this.request<{ conversation_id: string; messages: { role: "user" | "assistant"; content: string }[] }>(
       "GET", `/api/v1/agent/conversations/${encodeURIComponent(id)}`);
+  }
+
+  // 桌面端：列出已安装技能(Skill)，供 `/` 命令面板展示
+  listSkills() {
+    return this.request<{ skills: SkillMeta[] }>("GET", "/api/v1/agent/skills");
+  }
+
+  // 桌面端：列出可用输出风格
+  listOutputStyles() {
+    return this.request<{ output_styles: OutputStyleMeta[] }>("GET", "/api/v1/agent/output-styles");
+  }
+
+  // 桌面端：MCP 服务器状态（连接状态 + 工具数，要真连一下）
+  listMcp() {
+    return this.request<{ servers: { name: string; command?: string; status: string; tools: number }[] }>("GET", "/api/v1/agent/mcp");
+  }
+
+  // 桌面端：免 key 的官方 MCP 预设（一键加）
+  listMcpPresets() {
+    return this.request<{ presets: { id: string; name: string; desc: string; command: string; args: string[] }[] }>("GET", "/api/v1/agent/mcp/presets");
+  }
+
+  // 桌面端：加/覆盖一个 MCP server
+  addMcp(data: { name: string; command: string; args?: string[]; env?: Record<string, string> }) {
+    return this.request<{ ok: boolean; message: string }>("POST", "/api/v1/agent/mcp/add", data);
+  }
+
+  // 桌面端：删一个 MCP server
+  removeMcp(name: string) {
+    return this.request<{ ok: boolean; message: string }>("POST", "/api/v1/agent/mcp/remove", { name });
+  }
+
+  // 桌面端：启用/停用一个 MCP server
+  toggleMcp(name: string, disabled: boolean) {
+    return this.request<{ ok: boolean; message: string }>("POST", "/api/v1/agent/mcp/toggle", { name, disabled });
+  }
+
+  // 桌面端：已装插件
+  listPlugins() {
+    return this.request<{ plugins: { name: string; enabled: boolean; description: string; components: Record<string, number> }[] }>("GET", "/api/v1/agent/plugins");
+  }
+
+  // 桌面端：启用/停用一个插件
+  togglePlugin(name: string, enabled: boolean) {
+    return this.request<{ ok: boolean; message: string }>("POST", "/api/v1/agent/plugins/toggle", { name, enabled });
+  }
+
+  // 桌面端：从 GitHub 装插件
+  installPlugin(repo: string) {
+    return this.request<{ ok: boolean; message: string }>("POST", "/api/v1/agent/plugins/install", { repo });
+  }
+
+  // 桌面端：温和校验生图 model↔供应商是否对得上
+  validateImageModel(base_url: string, model: string) {
+    return this.request<{ ok: boolean; level: string; message: string; provider: string; known_models: string[] }>("POST", "/api/v1/agent/image/validate", { base_url, model });
   }
 
   getCardSignals() {
@@ -881,6 +950,20 @@ class ApiClient {
     return this.request<{ detail: string; user_id: string; role: string }>("POST", "/api/v1/members/add", { phone, role });
   }
 
+}
+
+export interface SkillMeta {
+  name: string;
+  description: string;
+  source: string;
+  argument_hint?: string;
+  user_invocable: boolean;
+}
+
+export interface OutputStyleMeta {
+  name: string;
+  description: string;
+  source: string;
 }
 
 export const api = new ApiClient();

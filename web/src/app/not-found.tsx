@@ -10,10 +10,10 @@ export default function NotFound() {
           你访问的页面可能已被移动或删除
         </p>
         <Link
-          href="/dashboard"
+          href="/dashboard/chat"
           className="mt-6 inline-flex items-center gap-2 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500"
         >
-          返回首页
+          返回工作台
         </Link>
       </div>
     </div>

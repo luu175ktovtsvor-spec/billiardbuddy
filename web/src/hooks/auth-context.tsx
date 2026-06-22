@@ -46,21 +46,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     api.setToken(res.access_token);
     const u = await api.getMe();
     setUser(u);
-    // 登录后默认落地「AI 运营管家」——对话式 Agent 是产品主界面（2026-06 转型）。
-    // 有门店的账号（含"既是老板又是超管"的号）客户端体验与普通用户完全一致。
-    // 只有「没有门店的纯平台超管账号」才直接进 /admin（它进 dashboard 没有门店可用）。
-    let dest = "/dashboard/chat";
-    if (u.is_admin) {
-      try {
-        await api.getMyStore(); // 有门店 → 当普通用户进 dashboard
-      } catch (err) {
-        // 无门店：/stores/me 抛 403「不属于任何门店」(或 404)，纯平台超管才直接进 /admin；
-        // 其它错误(网络/500)不误判，仍按普通用户进 dashboard
-        const st = (err as { status?: number })?.status;
-        if (st === 403 || st === 404) dest = "/admin";
-      }
-    }
-    router.push(dest);
+    // 单窗口产品：登录后落地唯一窗口「AI agent 会话」。
+    router.push("/dashboard/chat");
   }, [router]);
 
   const register = useCallback(async (phone: string, password: string, name?: string, inviteCode?: string) => {
@@ -68,7 +55,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     api.setToken(res.access_token);
     const u = await api.getMe();
     setUser(u);
-    router.push("/dashboard");
+    router.push("/dashboard/chat");
   }, [router]);
 
   const logout = useCallback(() => {

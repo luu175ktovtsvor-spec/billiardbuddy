@@ -6,7 +6,7 @@
 import {
   CalendarDays, Lightbulb, PenLine, UserPlus, Stethoscope, Dices, ImageIcon, Sparkles,
   FileText, PartyPopper, Search, History, FolderOpen, Save, FilePen, FileSpreadsheet, Layers, Wrench,
-  FileSearch, Terminal, Globe, ListChecks, Users,
+  FileSearch, Terminal, Globe, ListChecks, Users, Monitor, MousePointerClick, Plug, Bell, Clock,
 } from "lucide-react";
 
 export const TOOL_META: Record<string, { label: string; Icon: typeof Wrench }> = {
@@ -18,6 +18,7 @@ export const TOOL_META: Record<string, { label: string; Icon: typeof Wrench }> =
   diagnose_operation: { label: "做经营诊断", Icon: Stethoscope },
   recommend_games: { label: "想玩法", Icon: Dices },
   make_poster: { label: "做海报", Icon: ImageIcon },
+  generate_image: { label: "生成图片", Icon: ImageIcon },
   make_platform_content: { label: "写平台内容", Icon: Sparkles },
   make_groupbuy_content: { label: "写团购套餐", Icon: FileText },
   plan_activity: { label: "策划活动", Icon: PartyPopper },
@@ -35,10 +36,24 @@ export const TOOL_META: Record<string, { label: string; Icon: typeof Wrench }> =
   web_search: { label: "网上搜", Icon: Search },
   todo_write: { label: "列任务清单", Icon: ListChecks },
   run_subagent: { label: "派子代理", Icon: Users },
+  skill: { label: "用技能", Icon: Sparkles },
+  computer_view: { label: "看屏幕", Icon: Monitor },
+  computer_control: { label: "操作电脑", Icon: MousePointerClick },
+  notify: { label: "发通知", Icon: Bell },
+  run_background: { label: "后台跑命令", Icon: Terminal },
+  schedule_reminder: { label: "设提醒", Icon: Clock },
+  list_reminders: { label: "看提醒", Icon: Clock },
+  cancel_reminder: { label: "取消提醒", Icon: Clock },
+  install_plugin: { label: "装插件", Icon: Plug },
 };
 
 export function toolMeta(name: string) {
-  return TOOL_META[name] || { label: name, Icon: Wrench };
+  if (TOOL_META[name]) return TOOL_META[name];
+  if (name.startsWith("mcp__")) {
+    const parts = name.split("__");
+    return { label: `MCP·${parts[1] || ""}·${parts.slice(2).join("·")}`, Icon: Plug };
+  }
+  return { label: name, Icon: Wrench };
 }
 
 // 交付类工具：结果是给老板直接拿去用的成品，原样渲染、绝不让大脑改写。需与后端 deliverable 标记一致。
@@ -46,19 +61,31 @@ export function toolMeta(name: string) {
 export const DELIVERABLE_TOOLS = new Set([
   "write_operation_content", "write_batch", "plan_activity", "assistant_outreach",
   "diagnose_operation", "recommend_games", "make_platform_content", "make_groupbuy_content",
-  "make_poster",
+  "make_poster", "generate_image",
 ]);
 
-/** 待确认动作的人话标题（要对外发出去 / 在本机执行的动作经审批闸先确认）。 */
+/** 待确认动作的标题（对外发出 / 在本机执行的动作，经审批闸先确认）。前置「需要确认」徽标已表态，标题只点动作。 */
 export function approvalLabel(tool: string, args?: Record<string, unknown>): string {
-  if (tool === "edit_excel") return "改这份报表需要你确认";
-  if (tool === "write_file" || tool === "edit_file") return "改这个文件需要你确认";
+  if (tool === "edit_excel") return "修改这份报表";
+  if (tool === "write_file" || tool === "edit_file") return "修改这个文件";
   if (tool === "run_command") {
     // 中性表述：只说要在本机执行命令 + 原文，不提钱、不评判。
     const cmd = typeof args?.command === "string" ? args.command : "";
-    return cmd ? `要在你电脑上执行命令：${cmd}` : "要在你电脑上执行一条命令";
+    return cmd ? `在本机执行命令：${cmd}` : "在本机执行一条命令";
   }
-  return `执行「${toolMeta(tool).label}」需要你确认`;
+  if (tool === "computer_control") {
+    const a = typeof args?.action === "string" ? args.action : "";
+    return a ? `操作电脑：${a}` : "操作电脑";
+  }
+  if (tool === "run_background") {
+    const cmd = typeof args?.command === "string" ? args.command : "";
+    return cmd ? `在后台执行命令：${cmd}` : "在后台执行一条命令";
+  }
+  if (tool === "install_plugin") {
+    const repo = typeof args?.repo === "string" ? args.repo : "";
+    return repo ? `从 GitHub 安装插件：${repo}` : "安装一个插件";
+  }
+  return `执行「${toolMeta(tool).label}」`;
 }
 
 /** 确认按钮文案。 */

@@ -1,13 +1,13 @@
 "use client";
 
 /**
- * 桌面端对话流（macOS 风）：用户气泡 / 工具步骤 / 成品卡(可复制·去发布) / 审批卡。
- * 纯展示组件，状态与逻辑由 useAgentChat 提供。忠实复刻手机页的渲染语义、换 macOS 皮。
+ * Codex 风对话流（浅色默认 · 跟随系统深浅色）：用户输入(› 前导) / 工具步骤块 / 成品卡 / 内联审批 / 提问卡。
+ * 纯展示组件，状态与逻辑由 useAgentChat 提供。
  */
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, FileEdit } from "lucide-react";
+import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, FileEdit, Terminal, ChevronRight } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
@@ -15,33 +15,177 @@ import { CopyButton } from "@/components/generators/copy-button";
 import { toolMeta, DELIVERABLE_TOOLS, approvalLabel, approvalConfirmText } from "@/lib/agent-tools";
 import type { ChatMessage, ToolStep, ApprovalState, QuestionData } from "@/hooks/use-agent-chat";
 import type { PreviewItem } from "./preview-panel";
+import { AgentSpinner } from "./agent-spinner";
 
-/** 从一段 markdown 里抽第一张图片的 url（海报结果是 ![门店海报](url)）。 */
+const PROSE = "prose prose-sm prose-slate dark:prose-invert max-w-none leading-relaxed prose-p:my-1.5";
+
 function posterUrl(content: string): string | null {
   const m = content.match(/!\[[^\]]*\]\(([^)\s]+)/);
   return m ? m[1] : null;
 }
 
-function MacStepList({ steps, active }: { steps: ToolStep[]; active: boolean }) {
+/** 解析 run_command 的结果文本（后端固定格式：命令／返回码／【标准输出】／【错误输出】）。 */
+function parseCommandResult(
+  text: string,
+): { command: string; exitCode: number | null; stdout: string; stderr: string } | null {
+  if (!text.startsWith("命令：")) return null;
+  const nl = text.indexOf("\n");
+  const command = (nl === -1 ? text.slice(3) : text.slice(3, nl)).trim();
+  const rc = text.match(/返回码：(-?\d+)/);
+  const exitCode = rc ? parseInt(rc[1], 10) : null;
+  const SO = "【标准输出】";
+  const SE = "【错误输出】";
+  const soIdx = text.indexOf(SO);
+  const seIdx = text.indexOf(SE);
+  let stdout = "";
+  let stderr = "";
+  if (soIdx !== -1) stdout = text.slice(soIdx + SO.length, seIdx !== -1 ? seIdx : undefined).trim();
+  if (seIdx !== -1) stderr = text.slice(seIdx + SE.length).trim();
+  return { command, exitCode, stdout, stderr };
+}
+
+/** 终端式命令块：完整命令 + stdout/stderr + 退出码（对标 Claude Code 的 Bash 展示）。 */
+function TerminalBlock({ text }: { text: string }) {
+  const p = parseCommandResult(text);
+  if (!p) {
+    // 非标准格式（拒绝执行／需开启完全访问等提示）：当等宽提示展示
+    return (
+      <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-[#1e1e1e] px-3 py-2 font-mono text-[12px] leading-relaxed text-[#d4d4d4]">
+        {text}
+      </pre>
+    );
+  }
+  const ok = p.exitCode === 0 || p.exitCode === null;
+  return (
+    <div className="overflow-hidden rounded-md border border-black/10 bg-[#1e1e1e] dark:border-white/10">
+      <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-1.5">
+        <span className="flex min-w-0 items-center gap-1.5 font-mono text-[12px] text-[#d4d4d4]">
+          <Terminal className="h-3.5 w-3.5 shrink-0 text-[#10a37f]" />
+          <span className="truncate">{p.command}</span>
+        </span>
+        {p.exitCode !== null && (
+          <span
+            className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] ${ok ? "bg-[#10a37f]/20 text-[#3ddc97]" : "bg-[#ff3b30]/25 text-[#ff8585]"}`}
+          >
+            exit {p.exitCode}
+          </span>
+        )}
+      </div>
+      <div className="max-h-[320px] overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed">
+        {p.stdout && <pre className="whitespace-pre-wrap text-[#d4d4d4]">{p.stdout}</pre>}
+        {p.stderr && <pre className="whitespace-pre-wrap text-[#ff8585]">{p.stderr}</pre>}
+        {!p.stdout && !p.stderr && <span className="text-[#888]">（无输出）</span>}
+      </div>
+    </div>
+  );
+}
+
+/** 命令执行中的实时终端块（边跑边显示）：命令头 + 滚动累进的输出 + 运行中指示。 */
+function LiveTerminalBlock({ command, output }: { command: string; output: string }) {
+  return (
+    <div className="overflow-hidden rounded-md border border-black/10 bg-[#1e1e1e] dark:border-white/10">
+      <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-1.5">
+        <span className="flex min-w-0 items-center gap-1.5 font-mono text-[12px] text-[#d4d4d4]">
+          <Terminal className="h-3.5 w-3.5 shrink-0 text-[#10a37f]" />
+          <span className="truncate">{command || "运行命令"}</span>
+        </span>
+        <span className="flex shrink-0 items-center gap-1 font-mono text-[10px] text-[#3ddc97]">
+          <Loader2 className="h-3 w-3 animate-spin" /> 运行中
+        </span>
+      </div>
+      <div className="max-h-[320px] overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed">
+        {output ? <pre className="whitespace-pre-wrap text-[#d4d4d4]">{output}</pre> : <span className="text-[#888]">…</span>}
+      </div>
+    </div>
+  );
+}
+
+/** 普通工具结果的可折叠披露（抓网页／搜文件／读文件等）：默认折叠显示一行预览，点开看全文。 */
+function ResultDisclosure({ text, onOpen }: { text: string; onOpen?: () => void }) {
+  const [open, setOpen] = useState(false);
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  const preview = oneLine.length > 64 ? oneLine.slice(0, 64) + "…" : oneLine;
+  return (
+    <div className="ml-5">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex min-w-0 items-center gap-1 font-mono text-[11.5px] text-[#86868b] transition hover:text-[#1d1d1f] dark:text-[#6e7077] dark:hover:text-[#c8cace]"
+        >
+          <ChevronRight className={`h-3 w-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
+          <span className="truncate">{open ? "收起结果" : `结果：${preview}`}</span>
+        </button>
+        {onOpen && (
+          <button
+            type="button"
+            onClick={onOpen}
+            className="shrink-0 font-mono text-[11px] text-[#10a37f] transition hover:underline"
+          >
+            ⤢ 右侧打开
+          </button>
+        )}
+      </div>
+      {open && (
+        <pre className="mt-1 max-h-[280px] overflow-auto whitespace-pre-wrap rounded-md border border-black/[0.06] bg-black/[0.02] px-2.5 py-2 font-mono text-[12px] leading-relaxed text-[#3a3a3c] dark:border-white/[0.06] dark:bg-white/[0.02] dark:text-[#9a9ca3]">
+          {text}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+/** todo_write 的结果（☐待办 / ◐进行中 / ☑已完成）渲染成常驻可见的清单卡（不折叠）。 */
+function TodoCard({ text }: { text: string }) {
+  return (
+    <div className="ml-5 rounded-md border border-black/[0.06] bg-black/[0.02] px-3 py-2 dark:border-white/[0.06] dark:bg-white/[0.02]">
+      <pre className="whitespace-pre-wrap font-mono text-[12px] leading-relaxed text-[#3a3a3c] dark:text-[#c8cace]">{text}</pre>
+    </div>
+  );
+}
+
+function MacStepList({ steps, active, onPreview }: { steps: ToolStep[]; active: boolean; onPreview?: (item: PreviewItem) => void }) {
   if (steps.length === 0) return null;
   return (
-    <div className="rounded-xl bg-black/[0.03] px-3 py-2.5">
-      <p className="mb-1.5 flex items-center gap-1.5 text-[12px] font-medium text-[#86868b]">
-        <Wrench className="h-3.5 w-3.5" /> 管家干了这些活
+    <div className="rounded-lg border border-black/[0.06] bg-black/[0.02] px-3 py-2.5 dark:border-white/[0.06] dark:bg-white/[0.02]">
+      <p className="mb-1.5 flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-[#86868b] dark:text-[#6e7077]">
+        <Wrench className="h-3 w-3" /> 执行过程
       </p>
       <div className="flex flex-col gap-1.5">
         {steps.map((s, i) => {
           const { label, Icon } = toolMeta(s.tool);
           const running = active && !s.done && i === steps.length - 1;
+          // 非成品工具（跑命令/抓网页/搜文件/读文件…）把结果摊开展示；成品工具走下方成品卡，不在此重复。
+          const showResult = s.done && !!s.result && !DELIVERABLE_TOOLS.has(s.tool);
+          // 命令边跑边显示：未结束 + 已有实时输出 → 渲染滚动中的终端块
+          const showLiveCmd = !s.done && s.tool === "run_command" && !!s.progress;
+          const cmdText = typeof s.args?.command === "string" ? s.args.command : "";
           return (
-            <div key={i} className="flex items-center gap-2 text-[13px] text-[#3a3a3c]">
-              <Icon className="h-3.5 w-3.5 shrink-0 text-brand-500" />
-              <span>{label}</span>
-              {running ? (
-                <Loader2 className="h-3 w-3 animate-spin text-[#b0b0b5]" />
-              ) : s.done ? (
-                <Check className="h-3 w-3 text-emerald-500" />
-              ) : null}
+            <div key={i} className="flex flex-col gap-1">
+              <div className="flex items-center gap-2 text-[13px] text-[#3a3a3c] dark:text-[#9a9ca3]">
+                <span className={`shrink-0 text-[9px] leading-none ${running ? "animate-pulse text-[#d4901f]" : s.done ? "text-[#10a37f]" : "text-[#b0b0b5] dark:text-[#56585f]"}`}>⏺</span>
+                <Icon className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+                <span>{label}</span>
+                {running && <Loader2 className="h-3 w-3 animate-spin text-[#b0b0b5] dark:text-[#56585f]" />}
+              </div>
+              {showLiveCmd && <LiveTerminalBlock command={cmdText} output={s.progress as string} />}
+              {showResult &&
+                (s.tool === "run_command" ? (
+                  <TerminalBlock text={s.result as string} />
+                ) : s.tool === "todo_write" ? (
+                  <TodoCard text={s.result as string} />
+                ) : (
+                  <ResultDisclosure
+                    text={s.result as string}
+                    onOpen={onPreview ? () => onPreview({
+                      kind: "file",
+                      title: label,
+                      path: typeof s.args?.path === "string" ? s.args.path
+                        : typeof s.args?.file_path === "string" ? s.args.file_path : undefined,
+                      text: s.result as string,
+                    }) : undefined}
+                  />
+                ))}
             </div>
           );
         })}
@@ -50,11 +194,6 @@ function MacStepList({ steps, active }: { steps: ToolStep[]; active: boolean }) 
   );
 }
 
-/**
- * B-3 纠错按钮：成品卡上一个轻量动作"这条不适用/我们店不这样"。
- * 点开 → 内联输入老板的店规矩 → 调 api.addStoreMemory 写成 manual 店规矩（后端 POST 强制 source="manual"，
- * AI 注入最高优先、绝不覆盖）。成功后给"已记进你的店规矩"轻提示。
- */
 function CorrectionAction() {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
@@ -68,7 +207,6 @@ function CorrectionAction() {
     setSaving(true);
     setErr(null);
     try {
-      // type 仅做分类，后端 POST 一律落 source="manual"（老板亲定的店规矩）
       await api.addStoreMemory(rule, "rule");
       setSaved(true);
       setOpen(false);
@@ -83,8 +221,8 @@ function CorrectionAction() {
 
   if (saved) {
     return (
-      <div className="flex items-center gap-1.5 px-4 pb-3 text-[12.5px] text-emerald-600">
-        <Check className="h-3.5 w-3.5" /> 已记进你的店规矩，以后管家会照办。
+      <div className="flex items-center gap-1.5 px-4 pb-3 text-[12.5px] text-[#10a37f]">
+        <Check className="h-3.5 w-3.5" /> 已记住，以后照此办。
       </div>
     );
   }
@@ -95,9 +233,9 @@ function CorrectionAction() {
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[12.5px] font-medium text-[#86868b] transition hover:text-[#1d1d1f] active:scale-[0.97]"
+          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] text-[#86868b] transition hover:text-[#1d1d1f] active:scale-[0.97] dark:text-[#6e7077] dark:hover:text-[#c8cace]"
         >
-          <Flag className="h-3.5 w-3.5" /> 这条不适用 / 我们店不这样
+          <Flag className="h-3.5 w-3.5" /> 这条不太合适
         </button>
       </div>
     );
@@ -105,25 +243,23 @@ function CorrectionAction() {
 
   return (
     <div className="px-4 pb-3">
-      <div className="rounded-lg border border-black/[0.08] bg-black/[0.015] p-2.5">
+      <div className="rounded-lg border border-black/[0.08] bg-black/[0.02] p-2.5 dark:border-white/[0.08] dark:bg-white/[0.02]">
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit();
-          }}
+          onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit(); }}
           autoFocus
           rows={2}
-          placeholder="说一句我们店的规矩，如：我们店不做大额充值赠送"
-          className="w-full resize-none rounded-md border border-black/[0.07] bg-white px-2.5 py-2 text-[13px] text-[#1d1d1f] outline-none placeholder:text-[#b0b0b5] focus:border-brand-500"
+          placeholder="告诉我一条规矩，下次照办，比如：不要写绝对化广告词"
+          className="w-full resize-none rounded-md border border-black/[0.08] bg-white px-2.5 py-2 text-[13px] text-[#1d1d1f] outline-none placeholder:text-[#b0b0b5] focus:border-[#10a37f]/50 dark:border-white/[0.08] dark:bg-[#0e0f11] dark:text-[#e6e7e9] dark:placeholder:text-[#56585f]"
         />
-        {err && <div className="mt-1.5 text-[12px] text-[#ff3b30]">{err}</div>}
+        {err && <div className="mt-1.5 text-[12px] text-[#ff3b30] dark:text-[#ff8585]">{err}</div>}
         <div className="mt-2 flex items-center justify-end gap-2">
           <button
             type="button"
             onClick={() => { setOpen(false); setText(""); setErr(null); }}
             disabled={saving}
-            className="rounded-md px-3 py-1 text-[12.5px] text-[#86868b] transition hover:text-[#1d1d1f] active:scale-[0.97] disabled:opacity-40"
+            className="rounded-md px-3 py-1 text-[12.5px] text-[#86868b] transition hover:text-[#1d1d1f] active:scale-[0.97] disabled:opacity-40 dark:text-[#9a9ca3] dark:hover:text-[#e6e7e9]"
           >
             取消
           </button>
@@ -131,10 +267,10 @@ function CorrectionAction() {
             type="button"
             onClick={submit}
             disabled={saving || !text.trim()}
-            className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-3 py-1 text-[12.5px] font-medium text-white transition active:scale-[0.98] disabled:opacity-40"
+            className="inline-flex items-center gap-1.5 rounded-md bg-[#10a37f] px-3 py-1 text-[12.5px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.98] disabled:opacity-40"
           >
             {saving && <Loader2 className="h-3 w-3 animate-spin" />}
-            记进店规矩
+            记住
           </button>
         </div>
       </div>
@@ -153,23 +289,20 @@ function DeliverableCard({
 }) {
   const { label, Icon } = toolMeta(step.tool);
   return (
-    <div className="overflow-hidden rounded-xl border border-black/[0.07] bg-white shadow-sm">
-      <div className="flex items-center justify-between border-b border-black/[0.07] bg-black/[0.015] px-4 py-2.5">
-        <span className="flex items-center gap-1.5 text-[13px] font-medium text-[#1d1d1f]">
-          <Icon className="h-3.5 w-3.5 text-brand-600" /> {label}
+    <div className="overflow-hidden rounded-lg border border-black/[0.08] bg-white shadow-sm dark:border-white/[0.08] dark:bg-[#16181d] dark:shadow-none">
+      <div className="flex items-center justify-between border-b border-black/[0.06] bg-black/[0.015] px-4 py-2 dark:border-white/[0.06] dark:bg-white/[0.02]">
+        <span className="flex items-center gap-1.5 font-mono text-[12px] text-[#1d1d1f] dark:text-[#c8cace]">
+          <Icon className="h-3.5 w-3.5 text-[#10a37f]" /> {label}
         </span>
         <CopyButton text={step.result || ""} />
       </div>
-      <div className="prose prose-sm max-w-none px-4 py-3 prose-slate prose-p:my-1.5 prose-headings:my-2">
+      <div className={`${PROSE} px-4 py-3`}>
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{step.result || ""}</ReactMarkdown>
       </div>
       {step.knowledgeUsed && step.knowledgeUsed.length > 0 && (
-        <div className="flex items-start gap-1.5 px-4 pb-2.5 text-[12px] leading-relaxed text-[#86868b]">
-          <BookOpen className="mt-[1px] h-3.5 w-3.5 shrink-0 text-[#a1a1a6]" />
-          <span>
-            <span className="text-[#86868b]">依据：</span>
-            {step.knowledgeUsed.join(" · ")}
-          </span>
+        <div className="flex items-start gap-1.5 px-4 pb-2.5 text-[12px] leading-relaxed text-[#86868b] dark:text-[#6e7077]">
+          <BookOpen className="mt-[1px] h-3.5 w-3.5 shrink-0" />
+          <span><span>依据：</span>{step.knowledgeUsed.join(" · ")}</span>
         </div>
       )}
       {(onPreview || (onPublish && step.tool === "make_platform_content")) && (
@@ -178,7 +311,7 @@ function DeliverableCard({
             <button
               type="button"
               onClick={() => onPreview({ kind: "content", title: label, text: step.result || "" })}
-              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[12.5px] font-medium text-brand-600 active:scale-[0.97]"
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/10 active:scale-[0.97]"
             >
               <Maximize2 className="h-3.5 w-3.5" /> 展开预览
             </button>
@@ -187,14 +320,13 @@ function DeliverableCard({
             <button
               type="button"
               onClick={() => onPublish(step.args?.platform, step.result || "")}
-              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[12.5px] font-medium text-brand-600 active:scale-[0.97]"
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/10 active:scale-[0.97]"
             >
               <Send className="h-3.5 w-3.5" /> 去发布
             </button>
           )}
         </div>
       )}
-      {/* 纠错入口：放在「依据」附近，让老板看到 AI 的依据后能立刻纠正「我们店不这样」 */}
       <CorrectionAction />
     </div>
   );
@@ -234,77 +366,58 @@ function MacApprovalCard({
   onCancel: (idx: number, ap?: ApprovalState) => void;
 }) {
   if (ap.status === "cancelled") {
-    return <div className="text-[13px] text-[#86868b]">已取消。</div>;
+    return <div className="text-[13px] text-[#86868b] dark:text-[#6e7077]">已取消。</div>;
   }
   if (ap.status === "done") {
-    return <div className="flex items-center gap-1.5 text-[13px] text-emerald-600"><Check className="h-3.5 w-3.5" /> 已确认执行。</div>;
+    return <div className="flex items-center gap-1.5 text-[13px] text-[#10a37f]"><Check className="h-3.5 w-3.5" /> 已确认执行。</div>;
   }
   const r = ap.reason;
+  const previewBox = "rounded-md border border-black/[0.08] bg-black/[0.03] px-3 py-2 font-mono text-[12.5px] text-[#3a3a3c] whitespace-pre-line dark:border-white/[0.08] dark:bg-black/30 dark:text-[#c8cace]";
   return (
-    <div className="overflow-hidden rounded-xl border bg-[#fffaf0] shadow-sm" style={{ borderColor: "#f0c98a66" }}>
+    <div className="overflow-hidden rounded-lg border border-[#e0b84a]/40 bg-[#fffaf0] dark:border-[#d4a72c]/25 dark:bg-[#211c0d]">
       <div className="px-4 py-3">
-        <div className="mb-2.5 flex items-center gap-1.5 text-[13px] font-medium text-[#1d1d1f]">
-          ⚠️ {approvalLabel(ap.tool, ap.args)}
-          <span className="text-[11px] font-normal text-[#86868b]">（这个动作要发出去 / 写进文件，做之前先让你看明白再点头）</span>
+        <div className="mb-2.5 flex items-center gap-2 text-[13px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">
+          <span className="rounded bg-[#d4a72c]/15 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-[#b9770f] dark:text-[#e0b84a]">需要确认</span>
+          {approvalLabel(ap.tool, ap.args)}
         </div>
-        {/* SH-8 结构化理由：让老板一眼看清「要做什么 / 为什么要你确认 / 影响」，看明白再决定。 */}
         {r ? (
           <div className="space-y-2.5">
             {r.what && (
               <div className="flex items-start gap-2">
-                <Target className="mt-[2px] h-3.5 w-3.5 shrink-0 text-brand-600" />
-                <div className="text-[13px] leading-relaxed text-[#3a3a3c]">
-                  <span className="font-medium text-[#1d1d1f]">要做什么：</span>
-                  {r.what}
-                </div>
+                <Target className="mt-[2px] h-3.5 w-3.5 shrink-0 text-[#10a37f]" />
+                <div className="text-[13px] leading-relaxed text-[#3a3a3c] dark:text-[#c8cace]"><span className="font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">要做什么：</span>{r.what}</div>
               </div>
             )}
             {r.why && (
               <div className="flex items-start gap-2">
-                <ShieldQuestion className="mt-[2px] h-3.5 w-3.5 shrink-0 text-[#d4901f]" />
-                <div className="text-[13px] leading-relaxed text-[#3a3a3c]">
-                  <span className="font-medium text-[#1d1d1f]">为什么要你确认：</span>
-                  {r.why}
-                </div>
+                <ShieldQuestion className="mt-[2px] h-3.5 w-3.5 shrink-0 text-[#d4901f] dark:text-[#e0b84a]" />
+                <div className="text-[13px] leading-relaxed text-[#3a3a3c] dark:text-[#c8cace]"><span className="font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">为什么要你确认：</span>{r.why}</div>
               </div>
             )}
             {r.impact && (
               <div className="flex items-start gap-2">
-                <FileEdit className="mt-[2px] h-3.5 w-3.5 shrink-0 text-[#86868b]" />
-                <div className="text-[13px] leading-relaxed text-[#3a3a3c]">
-                  <span className="font-medium text-[#1d1d1f]">影响：</span>
-                  {r.impact}
-                </div>
+                <FileEdit className="mt-[2px] h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#9a9ca3]" />
+                <div className="text-[13px] leading-relaxed text-[#3a3a3c] dark:text-[#c8cace]"><span className="font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">影响：</span>{r.impact}</div>
               </div>
             )}
-            {/* 预览（会改成什么 / diff）放在理由下面，作为细节补充 */}
-            {ap.preview && (
-              <div className="rounded-lg border border-black/[0.07] bg-white/70 px-3 py-2 text-[13px] text-[#3a3a3c] whitespace-pre-line">
-                {ap.preview}
-              </div>
-            )}
+            {ap.preview && <div className={previewBox}>{ap.preview}</div>}
           </div>
         ) : (
-          // 兜底：旧会话或后端没带结构化理由时，退回只展示预览，不留白
-          ap.preview && (
-            <div className="rounded-lg border border-black/[0.07] bg-white/70 px-3 py-2 text-[13px] text-[#3a3a3c] whitespace-pre-line">
-              {ap.preview}
-            </div>
-          )
+          ap.preview && <div className={previewBox}>{ap.preview}</div>
         )}
       </div>
       <div className="flex items-center justify-end gap-2 px-4 pb-3">
         <button
           onClick={() => onCancel(idx, ap)}
           disabled={executing}
-          className="rounded-lg border border-black/[0.07] bg-white px-4 py-1.5 text-[13px] text-[#1d1d1f] transition hover:bg-black/[0.03] active:scale-[0.98] disabled:opacity-40"
+          className="rounded-md border border-black/[0.1] bg-white px-4 py-1.5 text-[13px] text-[#1d1d1f] transition hover:bg-black/[0.03] active:scale-[0.98] disabled:opacity-40 dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#c8cace] dark:hover:bg-white/[0.06]"
         >
           取消
         </button>
         <button
           onClick={() => onConfirm(idx, ap)}
           disabled={executing}
-          className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-1.5 text-[13px] text-white transition active:scale-[0.98] disabled:opacity-60"
+          className="flex items-center gap-1.5 rounded-md bg-[#10a37f] px-4 py-1.5 text-[13px] text-white transition hover:bg-[#0e906f] active:scale-[0.98] disabled:opacity-60"
         >
           {executing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
           {approvalConfirmText(ap.tool)}
@@ -316,20 +429,18 @@ function MacApprovalCard({
 
 function MacQuestionCard({ q, onAnswer }: { q: QuestionData; onAnswer: (label: string) => void }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-black/[0.07] bg-white shadow-sm">
-      <div className="border-b border-black/[0.07] px-4 py-2.5 text-[13px] font-medium text-[#1d1d1f]">
-        🤔 {q.question}
-      </div>
+    <div className="overflow-hidden rounded-lg border border-black/[0.08] bg-white shadow-sm dark:border-white/[0.08] dark:bg-[#16181d] dark:shadow-none">
+      <div className="border-b border-black/[0.06] px-4 py-2.5 text-[13px] font-medium text-[#1d1d1f] dark:border-white/[0.06] dark:text-[#e6e7e9]">🤔 {q.question}</div>
       <div className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2">
         {q.options.map((o, i) => (
           <button
             key={i}
             type="button"
             onClick={() => onAnswer(o.label)}
-            className="rounded-lg border border-black/[0.07] bg-white p-3 text-left transition hover:border-brand-600 hover:bg-brand-50 active:scale-[0.99]"
+            className="rounded-md border border-black/[0.08] bg-black/[0.01] p-3 text-left transition hover:border-[#10a37f]/40 hover:bg-[#10a37f]/[0.06] active:scale-[0.99] dark:border-white/[0.08] dark:bg-white/[0.02]"
           >
-            <div className="text-[13.5px] font-medium text-[#1d1d1f]">{o.label}</div>
-            {o.description && <div className="mt-0.5 text-[12px] text-[#86868b]">{o.description}</div>}
+            <div className="text-[13px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{o.label}</div>
+            {o.description && <div className="mt-0.5 text-[12px] text-[#6e6e73] dark:text-[#8a8c93]">{o.description}</div>}
           </button>
         ))}
       </div>
@@ -348,6 +459,7 @@ export function DesktopChatThread({
   onPublish,
   onPreview,
   onAnswer,
+  onStop,
 }: {
   messages: ChatMessage[];
   draft: string;
@@ -359,68 +471,67 @@ export function DesktopChatThread({
   onPublish?: (platform: unknown, content: string) => void;
   onPreview?: (item: PreviewItem) => void;
   onAnswer?: (label: string) => void;
+  onStop?: () => void;
 }) {
   return (
-    <div className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
-      {messages.map((m, idx) =>
-        m.role === "user" ? (
-          <div key={idx} className="flex justify-end">
-            <div
-              className="max-w-[78%] rounded-2xl rounded-tr-md px-4 py-2.5 text-[14px] text-[#1d1d1f]"
-              style={{ background: "#007AFF14" }}
-            >
-              {m.content}
+    <div className="flex-1 overflow-y-auto">
+      <div className="mx-auto max-w-[820px] space-y-5 px-5 py-6">
+        {messages.map((m, idx) =>
+          m.role === "user" ? (
+            <div key={idx} className="flex gap-2.5">
+              <span className="mt-0.5 select-none font-mono text-[14px] leading-relaxed text-[#10a37f]">›</span>
+              <div className="min-w-0 flex-1 whitespace-pre-wrap text-[14px] leading-relaxed text-[#1d1d1f] dark:text-[#e6e7e9]">{m.content}</div>
             </div>
-          </div>
-        ) : (
-          <div key={idx} className="max-w-[88%] space-y-2.5">
-            {m.error ? (
-              <div className="flex items-center gap-1.5 text-[14px] text-[#ff3b30]">
-                <AlertTriangle className="h-4 w-4 shrink-0" /> {m.content.replace(/^⚠️\s*/, "")}
+          ) : (
+            <div key={idx} className="space-y-2.5">
+              {m.error ? (
+                <div className="flex items-center gap-1.5 text-[14px] text-[#ff3b30] dark:text-[#ff8585]">
+                  <AlertTriangle className="h-4 w-4 shrink-0" /> {m.content.replace(/^⚠️\s*/, "")}
+                </div>
+              ) : (
+                <>
+                  {m.steps && <MacStepList steps={m.steps} active={false} onPreview={onPreview} />}
+                  {m.steps && <MacDeliverables steps={m.steps} onPublish={onPublish} onPreview={onPreview} />}
+                  {m.content &&
+                    (m.kind === "command" ? (
+                      <TerminalBlock text={m.content} />
+                    ) : (
+                      <div className={PROSE}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                      </div>
+                    ))}
+                  {onPreview && posterUrl(m.content) && (
+                    <button
+                      type="button"
+                      onClick={() => onPreview({ kind: "poster", imageUrl: posterUrl(m.content) as string })}
+                      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/10 active:scale-[0.97]"
+                    >
+                      <Maximize2 className="h-3.5 w-3.5" /> 在右侧看大图
+                    </button>
+                  )}
+                  {m.approval && (
+                    <MacApprovalCard ap={m.approval} idx={idx} executing={executingIdx === idx} onConfirm={onConfirm} onCancel={onCancel} />
+                  )}
+                  {m.question && onAnswer && <MacQuestionCard q={m.question} onAnswer={onAnswer} />}
+                </>
+              )}
+            </div>
+          )
+        )}
+
+        {generating && (
+          <div className="space-y-2.5">
+            {liveSteps.length > 0 && <MacStepList steps={liveSteps} active onPreview={onPreview} />}
+            {draft ? (
+              <div className={PROSE}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft}</ReactMarkdown>
               </div>
             ) : (
-              <>
-                {m.steps && <MacStepList steps={m.steps} active={false} />}
-                {m.steps && <MacDeliverables steps={m.steps} onPublish={onPublish} onPreview={onPreview} />}
-                {m.content && (
-                  <div className="prose prose-sm max-w-none leading-relaxed prose-slate prose-p:my-1.5">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
-                  </div>
-                )}
-                {onPreview && posterUrl(m.content) && (
-                  <button
-                    type="button"
-                    onClick={() => onPreview({ kind: "poster", imageUrl: posterUrl(m.content) as string })}
-                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[12.5px] font-medium text-brand-600 active:scale-[0.97]"
-                  >
-                    <Maximize2 className="h-3.5 w-3.5" /> 在右侧看大图
-                  </button>
-                )}
-                {m.approval && (
-                  <MacApprovalCard ap={m.approval} idx={idx} executing={executingIdx === idx} onConfirm={onConfirm} onCancel={onCancel} />
-                )}
-                {m.question && onAnswer && <MacQuestionCard q={m.question} onAnswer={onAnswer} />}
-              </>
+              <AgentSpinner onStop={onStop} />
             )}
           </div>
-        )
-      )}
-
-      {/* 进行中（流式） */}
-      {generating && (
-        <div className="max-w-[88%] space-y-2.5">
-          {liveSteps.length > 0 && <MacStepList steps={liveSteps} active />}
-          {draft ? (
-            <div className="prose prose-sm max-w-none leading-relaxed prose-slate prose-p:my-1.5">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft}</ReactMarkdown>
-            </div>
-          ) : liveSteps.length === 0 ? (
-            <div className="flex items-center gap-2 text-[13px] text-[#86868b]">
-              <Loader2 className="h-4 w-4 animate-spin" /> 管家在想…
-            </div>
-          ) : null}
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
