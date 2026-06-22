@@ -51,14 +51,43 @@ async def lifespan(app: FastAPI):
     if engine.dialect.name == "sqlite" and daily_scheduler.target_hour() is not None:
         sched_task = asyncio.create_task(daily_scheduler.scheduler_loop(sched_stop))
 
+    # 配置驱动 Hooks（settings.json 的 command 钩子）：自门控 DESKTOP_CONFIG_HOOKS=1 才装，测试零干扰。
+    try:
+        from services.agent.hooks_config import install_config_hooks
+        _nh = install_config_hooks()
+        if _nh:
+            logger.info("已装配置驱动 Hooks：%d 个事件钩子", _nh)
+    except Exception:
+        logger.debug("装配置 Hooks 失败（忽略）", exc_info=True)
+
+    # 定时提醒（Cron-lite）：进程内 loop 每 30s 检查到点提醒、弹系统通知。桌面专属。
+    rem_task = None
+    if __import__("os").environ.get("DESKTOP_LOCAL") == "1":
+        try:
+            from services.agent.reminders import reminders_loop
+            rem_task = asyncio.create_task(reminders_loop(sched_stop))
+        except Exception:
+            logger.debug("启动提醒 loop 失败（忽略）", exc_info=True)
+
+    # IM 适配 · Telegram：长轮询 bot（配了 TELEGRAM_BOT_TOKEN 才起）。
+    im_task = None
+    if __import__("os").environ.get("TELEGRAM_BOT_TOKEN"):
+        try:
+            from services.agent.im_telegram import telegram_loop
+            im_task = asyncio.create_task(telegram_loop(sched_stop))
+            logger.info("Telegram IM 适配已启动")
+        except Exception:
+            logger.debug("启动 Telegram loop 失败（忽略）", exc_info=True)
+
     yield
 
-    if sched_task is not None:
-        sched_stop.set()
-        try:
-            await asyncio.wait_for(sched_task, timeout=5)
-        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
-            sched_task.cancel()
+    sched_stop.set()
+    for _t in (sched_task, rem_task, im_task):
+        if _t is not None:
+            try:
+                await asyncio.wait_for(_t, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                _t.cancel()
     logger.info("服务关闭，清理数据库连接...")
     await engine.dispose()
 
