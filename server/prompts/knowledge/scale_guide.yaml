@@ -8,6 +8,9 @@ domain: strategy
 freedom: hard_number
 tags: [scene:人员配置, scene:经营规划, role:店长]
 variables: []
+key_facts:  # 硬数字单一可信源(镜像PPT硬规则对照表)；look_up_knowledge会带回它,答硬数字以此为准
+  - "约45台满编配置：店长1 / 前厅主管1 / 助教管理4(≥3) / 助教40 / 教练2 / 前台组长3 / 服务生16 / 收银4 / 保洁3"
+  - "规模递减(35/25/15台)：助教管理、教练、保洁按比例递减"
 template: |
   ## 门店人员配置基准
 

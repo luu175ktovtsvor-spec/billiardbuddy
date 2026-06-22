@@ -104,3 +104,40 @@ def test_module_map_lists_all_domains_and_routes_to_lookup():
     for dom_cn in ("战略认知", "营销获客", "客户运营", "人才管理", "数据诊断"):
         assert dom_cn in mm, f"模块地图缺域：{dom_cn}"
     assert "look_up_knowledge" in mm, "模块地图未指示用 look_up_knowledge 往下查（断了 L0→L1 链）"
+
+
+# 硬数字单一可信源文件：必须带 key_facts，且 look_up_knowledge 能把准数带回（修 A08：模型查得到准数、不上网瞎搜）
+_HARD_NUMBER_FILES = [
+    "knowledge.platform_operations", "knowledge.recharge_strategy", "knowledge.profit_model",
+    "knowledge.scale_guide", "knowledge.assistant_salary", "knowledge.pk_incentive",
+    "knowledge.tournament_rules", "knowledge.industry_data", "knowledge.core_metrics",
+]
+
+
+def test_hard_number_files_have_key_facts():
+    """硬数字单一源文件必须带非空 key_facts（否则 look_up_knowledge 答硬数字题又得上网瞎搜）。"""
+    eng = get_prompt_engine()
+    missing = [k for k in _HARD_NUMBER_FILES
+               if not (eng._templates.get(k) or {}).get("key_facts")]
+    assert not missing, f"这些硬数字文件缺 key_facts（修 A08 的关键字段）：{missing}"
+
+
+# 代表性硬数字查询 → look_up_knowledge 的 key_facts 必须带回对应准数（PPT 硬规则对照表口径）
+_HARD_NUMBER_RECALL = [
+    ("美团金牌店铺达成条件评分要求", "knowledge.platform_operations", ["80", "4", "3.5"]),
+    ("助教薪资月业绩奖励多少", "knowledge.assistant_salary", ["170", "200", "230"]),
+    ("充值活动档位怎么设", "knowledge.recharge_strategy", ["1000", "99"]),
+    ("抢一大战报名费奖金", "knowledge.tournament_rules", ["10", "200"]),
+    ("助教PK系数怎么定", "knowledge.pk_incentive", ["0.2", "0.3", "0.5"]),
+]
+
+
+@pytest.mark.parametrize("topic,expect_key,nums", _HARD_NUMBER_RECALL)
+def test_look_up_surfaces_hard_numbers(topic, expect_key, nums):
+    """硬数字查询 → 期望文件进 top-6 且其 key_facts 含对应准数（钉死 A08 类回归）。"""
+    hits = rank_knowledge_for_topic(topic, top=6)
+    hit = next((h for h in hits if h["key"] == expect_key), None)
+    assert hit is not None, f"「{topic}」期望召回 {expect_key}，top6={[h['key'] for h in hits]}"
+    facts_text = " ".join(hit.get("key_facts") or [])
+    miss = [n for n in nums if n not in facts_text]
+    assert not miss, f"「{topic}」的 {expect_key}.key_facts 缺准数 {miss}；实际={facts_text}"
