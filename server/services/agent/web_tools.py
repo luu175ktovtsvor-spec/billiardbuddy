@@ -114,6 +114,20 @@ def _normalize_url(url: str) -> str:
     return u
 
 
+# JS 壳判定阈值：正文极短（< 这么多字）但页面里塞了不少 <script>，多半正文靠 JS 渲染、静态抓不到。
+_JS_SHELL_MIN_TEXT = 200
+_JS_SHELL_MIN_SCRIPTS = 3
+
+
+def _looks_like_js_shell(raw_html: str, text: str) -> bool:
+    """判这页是不是"JS 壳/反爬空壳"：解析出的正文很短，但原始 HTML 里有多个 <script>。
+    典型如 React/Vue 单页应用首屏（<div id=root></div> + 一堆 script），静态抓只拿到骨架没正文。"""
+    if len(text.strip()) >= _JS_SHELL_MIN_TEXT:
+        return False
+    script_count = len(re.findall(r"(?is)<script\b", raw_html or ""))
+    return script_count >= _JS_SHELL_MIN_SCRIPTS
+
+
 async def web_fetch(args: dict, ctx) -> str:
     """抓取一个网页的正文内容（GET → 粗清 HTML 成纯文本 → 截断）。
     args: url（必填），extract（可选，想重点看什么——只作提示拼进开头，不做二次 LLM 抽取）。只读、故障安全。"""
@@ -144,7 +158,12 @@ async def web_fetch(args: dict, ctx) -> str:
         return f"网页内容读取失败（编码问题）：{url}。"
     text = _html_to_text(body)
     if not text:
-        return f"抓到了页面但没解析出正文（可能整页靠 JavaScript 动态渲染）：{url}。"
+        return (f"抓到了页面但没解析出正文：{url}。这页大概率靠 JavaScript 动态渲染、或有反爬，"
+                "静态抓不到正文——建议换一个来源/网址，或换个能直接给出文字的页面。")
+    if _looks_like_js_shell(body, text):
+        return (f"抓到了 {url}，但只拿到很少内容（正文约 {len(text.strip())} 字，页面里却有大量脚本）——"
+                "这页正文多半靠 JavaScript 渲染或有反爬，静态抓不全。建议换个来源/网址再试。"
+                f"\n\n（仅供参考，已抓到的少量片段）\n{text.strip()[:500]}")
     head = f"【网页正文】{url}\n"
     if extract:
         head += f"（重点关注：{extract}）\n"
@@ -155,11 +174,12 @@ async def web_fetch(args: dict, ctx) -> str:
 
 # ────────────────────────────── WebSearch：网页搜索（无需 API key） ──────────────────────────────
 
-# DuckDuckGo 的无需 key 的 HTML 端点：解析返回里的结果块拿 标题/链接/摘要。
+# 两个【无需 API key】的 HTML 搜索端点：先 DuckDuckGo，失败/空再退 Bing（双源兜底、降低单点限流概率）。
 _DDG_URL = "https://html.duckduckgo.com/html/"
+_BING_URL = "https://www.bing.com/search"
 _DDG_UNAVAILABLE = (
-    "搜索暂时不可用（可能被对方限流或网络不通）。你可以改用 WebFetch 直接抓一个已知网址，"
-    "或根据已有信息先回答老板。"
+    "搜索这会儿受限了（可能被对方临时限流，或网络不太通）——稍后再试，或换个说法/关键词再搜。"
+    "也可以改用 WebFetch 直接抓一个你已知的网址，或我先用现有信息帮你答。"
 )
 
 
@@ -203,9 +223,68 @@ def _parse_ddg_results(raw_html: str, max_results: int) -> list[dict]:
     return results
 
 
+def _parse_bing_results(raw_html: str, max_results: int) -> list[dict]:
+    """从 Bing 搜索结果页解析出前几条 {title, url, snippet}（兜底源，DDG 限流时用）。
+    结构：<h2><a href="真实URL">标题</a></h2> + <p class="b_lineclamp2">摘要</p>。解析不出返回空列表。"""
+    results: list[dict] = []
+    # 标题锚：h2 里的 <a>，href 不一定是第一个属性（前面常有 target=），故 href 匹配整段 <a ...>。
+    title_rx = re.compile(
+        r'(?is)<h2[^>]*>\s*<a\b[^>]*?\bhref="(?P<href>https?://[^"]+)"[^>]*>(?P<title>.*?)</a>'
+    )
+    snip_rx = re.compile(r'(?is)<p class="b_lineclamp\d"[^>]*>(?P<snip>.*?)</p>')
+
+    def _clean(s: str) -> str:
+        return re.sub(r"\s+", " ", html.unescape(re.sub(r"(?s)<[^>]+>", "", s or ""))).strip()
+
+    snippets = [m.group("snip") for m in snip_rx.finditer(raw_html)]
+    for i, m in enumerate(title_rx.finditer(raw_html)):
+        if len(results) >= max_results:
+            break
+        url = html.unescape(m.group("href"))
+        title = _clean(m.group("title"))
+        snip = _clean(snippets[i]) if i < len(snippets) else ""
+        # 跳过 Bing 自身的导航/翻译链接，只留真正的外站结果。
+        if url and title and "bing.com" not in url and "go.microsoft.com" not in url:
+            results.append({"title": title, "url": url, "snippet": snip})
+    return results
+
+
+async def _search_ddg(client: "httpx.AsyncClient", query: str, max_results: int) -> list[dict] | None:
+    """走 DuckDuckGo html 端点搜。返回结果列表（可能空）；请求层失败（异常/非200）返回 None（让调用方退 Bing）。"""
+    try:
+        resp = await client.post(_DDG_URL, data={"q": query})
+    except (httpx.HTTPError, Exception):  # noqa: BLE001 — 故障安全：任何失败都退 Bing
+        logger.debug("DDG 搜索请求失败", exc_info=True)
+        return None
+    if resp.status_code != 200:  # DDG 限流时常返 202（带挑战页、无结果）
+        return None
+    try:
+        return _parse_ddg_results(resp.text or "", max_results)
+    except Exception:
+        logger.debug("DDG 结果解析异常", exc_info=True)
+        return None
+
+
+async def _search_bing(client: "httpx.AsyncClient", query: str, max_results: int) -> list[dict] | None:
+    """走 Bing 搜索页搜（DDG 失败/空时的兜底源）。返回结果列表（可能空）；请求层失败返回 None。"""
+    try:
+        resp = await client.get(_BING_URL, params={"q": query, "count": max_results, "setlang": "zh-CN"})
+    except (httpx.HTTPError, Exception):  # noqa: BLE001
+        logger.debug("Bing 搜索请求失败", exc_info=True)
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        return _parse_bing_results(resp.text or "", max_results)
+    except Exception:
+        logger.debug("Bing 结果解析异常", exc_info=True)
+        return None
+
+
 async def web_search(args: dict, ctx) -> str:
-    """在网上搜索信息，返回前几条 标题+链接+摘要（走 DuckDuckGo html 端点，无需 API key）。
-    args: query（必填），max（可选，返回几条，默认 5、上限 10）。只读、故障安全（被挡/失败 → 友好提示改用 WebFetch）。"""
+    """在网上搜索信息，返回前几条 标题+链接+摘要（无需 API key）。
+    双源兜底：先 DuckDuckGo，失败/空再退 Bing——单源被限流时仍有机会搜到。
+    args: query（必填），max（可选，返回几条，默认 5、上限 10）。只读、故障安全（都失败 → 友好提示，不抛崩）。"""
     query = (args.get("query") or "").strip()
     if not query:
         return "没给搜索词，没法搜。请提供要搜什么。"
@@ -214,26 +293,35 @@ async def web_search(args: dict, ctx) -> str:
     except (TypeError, ValueError):
         max_results = 5
     max_results = max(1, min(max_results, 10))
+    results: list[dict] = []
+    # 区分"请求层失败"(None，限流/网络问题 → 该说"受限稍后再试")与"成功但没结果"([]，冷门词 → 该说"没搜到")。
+    both_request_failed = True
     try:
         async with httpx.AsyncClient(
             timeout=_HTTP_TIMEOUT, follow_redirects=True,
             headers={"User-Agent": _UA, "Accept": "text/html"},
         ) as client:
-            resp = await client.post(_DDG_URL, data={"q": query})
-    except httpx.HTTPError:
-        return _DDG_UNAVAILABLE
+            # ① 先 DuckDuckGo
+            ddg = await _search_ddg(client, query, max_results)
+            if ddg is not None:
+                both_request_failed = False
+            if ddg:
+                results = ddg
+            else:
+                # ② DDG 失败(None)或空([]) → 退 Bing 兜底
+                bing = await _search_bing(client, query, max_results)
+                if bing is not None:
+                    both_request_failed = False
+                if bing:
+                    results = bing
     except Exception:
-        logger.debug("WebSearch 请求异常", exc_info=True)
-        return _DDG_UNAVAILABLE
-    if resp.status_code != 200:
-        return _DDG_UNAVAILABLE
-    try:
-        results = _parse_ddg_results(resp.text or "", max_results)
-    except Exception:
-        logger.debug("WebSearch 结果解析异常", exc_info=True)
+        logger.debug("WebSearch 整体异常", exc_info=True)
         return _DDG_UNAVAILABLE
     if not results:
-        return f"没搜到「{query}」的结果（或对方没返回可解析的内容）。换个关键词，或用 WebFetch 直接抓已知网址。"
+        if both_request_failed:
+            return _DDG_UNAVAILABLE  # 两源都没连上 → 限流/网络受限的提示
+        return (f"没搜到「{query}」的结果（搜索源返回了但没有可用条目，可能这个词太冷门）。"
+                "换个说法/关键词再试，或用 WebFetch 直接抓一个你已知的网址。")
     lines = [f"搜「{query}」找到这些（共 {len(results)} 条）："]
     for i, r in enumerate(results, 1):
         lines.append(f"{i}. {r['title']}\n   {r['url']}" + (f"\n   {r['snippet']}" if r["snippet"] else ""))
@@ -310,6 +398,32 @@ def _subagent_registry():
         return None
 
 
+_SUBAGENT_TYPES: dict = {
+    "general-purpose": {
+        "read_only": False,
+        "prompt": ("你是被【主 Agent】派来专心做完一个【聚焦子任务】的子代理。集中把这一件事做到位、"
+                   "给出可直接交付的结果，不展开无关的事，也不再往下拆子代理。"),
+    },
+    "explore": {
+        "read_only": True,
+        "prompt": ("你是【只读探索员】子代理：只查不改——用读文件/搜文件/列目录/上网查等只读手段，"
+                   "把要找的信息或现状摸清楚，给一份清晰的发现汇总。绝不写改文件、不跑会改动的命令、不做对外动作。"),
+    },
+    "plan": {
+        "read_only": True,
+        "prompt": ("你是【规划员】子代理：只读不动手——先用只读手段了解现状，再产出一份分步、可执行的计划"
+                   "（每步做什么、注意什么、有什么风险）。绝不实际执行任何写入或操作。"),
+    },
+}
+
+
+def _resolve_subagent_type(raw) -> dict:
+    key = str(raw or "general-purpose").strip().lower()
+    aliases = {"general": "general-purpose", "general_purpose": "general-purpose"}
+    key = aliases.get(key, key)
+    return _SUBAGENT_TYPES.get(key, _SUBAGENT_TYPES["general-purpose"])
+
+
 async def run_subagent(args: dict, ctx) -> str:
     """把一个聚焦的独立子任务交给【子代理】专心做完、拿回最终文本。
     内部递归跑一遍 run_agent_loop：给它【不含 run_subagent 自身】的工具子集（防无限递归）、较小的
@@ -319,14 +433,22 @@ async def run_subagent(args: dict, ctx) -> str:
     if not task:
         return "没给子任务内容，没法交给子代理。请说清要它做完什么。"
     focus = (args.get("focus") or "").strip()
-    sub_registry = _subagent_registry()
-    if sub_registry is None:
+    atype = _resolve_subagent_type(args.get("subagent_type"))
+    from services.agent.registry import ToolRegistry
+    sub_registry = ToolRegistry()
+    try:
+        for t in default_registry.all():
+            if t.name == "run_subagent":
+                continue
+            # 只读型专家(explore/plan)：只给只读工具，从机制上保证它"不动手"。
+            if atype["read_only"] and not getattr(t, "read_only", False):
+                continue
+            sub_registry.register(t)
+    except Exception:
+        logger.debug("构建子代理工具子集失败", exc_info=True)
         return "子代理暂时启动不了（工具集构建失败）。我直接来做这件事吧。"
     user_msg = task if not focus else f"{task}\n\n【重点/约束】{focus}"
-    sub_prompt = (
-        "你是一个被【主 Agent】派来专心做完一个【聚焦子任务】的子代理。集中把下面这一件事做到位、"
-        "给出可直接交付的结果即可，不要展开做无关的事，也不要再把任务往下拆给别的子代理。"
-    )
+    sub_prompt = atype["prompt"]
     try:
         from services.agent.loop import run_agent_loop
         # 给子代理一个干净的运行上下文：沿用同一 db/store/user/provider/model 与权限/沙箱设置，
@@ -408,12 +530,14 @@ _WEB_TOOLS = [
     ),
     Tool(
         name="run_subagent",
-        description="把一个复杂、独立的子任务交给【子代理】专心做完、拿回结果（注意：会多花一次完整的模型调用，"
-                    "只在真正需要拆分的大任务时用，普通一步能做完的别用它）。适合那种『先独立把 A 这一大块彻底做完、"
-                    "再回来继续主线』的场景——子代理会拿到除它自己以外的全部工具去把这件事做到位。",
+        description="把一个复杂、独立的子任务交给【子代理专家】专心做完、拿回结果（会多花一次完整模型调用，"
+                    "只在真需要拆分的大任务时用）。可选 subagent_type 指定专家："
+                    "general-purpose(默认·全能·可动手) / explore(只读探索·只查不改) / plan(只读规划·只出计划不执行)。",
         parameters={"type": "object", "properties": {
             "task": {"type": "string", "description": "要交给子代理做完的子任务（说清楚、自包含）"},
             "focus": {"type": "string", "description": "重点 / 约束 / 期望产出（可选）"},
+            "subagent_type": {"type": "string", "enum": ["general-purpose", "explore", "plan"],
+                              "description": "专家类型（可选，默认 general-purpose）"},
         }, "required": ["task"]},
         handler=run_subagent,
         read_only=True,

@@ -18,6 +18,23 @@ OPENAI_IMAGE_MODELS: dict[str, dict[str, str]] = {
     },
 }
 
+# gpt-image 系列（gpt-image-1/2）只接受这几种尺寸。poster_service 按比例算出的 2048x1152(16:9)、
+# 1152x1536(3:4) 等会被 OpenAI 400 拒（Invalid size）→ 整条生图链失败。按宽高比吸附到最接近的受支持尺寸。
+_GPT_IMAGE_SIZES = {"1024x1024", "1024x1536", "1536x1024", "auto"}
+
+
+def _snap_gpt_image_size(size: str) -> str:
+    """把任意尺寸吸附到 gpt-image 支持的尺寸：方→1024x1024，横→1536x1024，竖→1024x1536。"""
+    if size in _GPT_IMAGE_SIZES:
+        return size
+    try:
+        w, h = (int(x) for x in size.lower().split("x"))
+    except Exception:
+        return "1024x1024"
+    if w == h:
+        return "1024x1024"
+    return "1536x1024" if w > h else "1024x1536"
+
 
 class OpenAIImageProvider(ImageProvider):
     name = "openai"
@@ -61,6 +78,8 @@ class OpenAIImageProvider(ImageProvider):
         client = self._get_client()
         openai_size = size.replace("*", "x")
         use_model = model or "gpt-image-2"
+        if use_model.startswith("gpt-image"):
+            openai_size = _snap_gpt_image_size(openai_size)  # 防 16:9/3:4 等尺寸被 gpt-image 400 拒
         extra = {"quality": quality} if use_model.startswith("gpt-image") else {}
 
         if image:

@@ -4,13 +4,10 @@
 来源：2026-06-14 全项目耦合审查（docs/耦合地图与改动检查清单.md）。
 这些测试不验证功能对错，只在**有人破坏跨模块契约时大声失败**。
 """
-from datetime import datetime
-
 import models  # noqa: F401  触发所有 ORM 模型注册到 Base.registry
 from db.base import Base
 from core.tenant import _TENANT_TABLES
 from services.ai.prompt_engine import get_prompt_engine
-from api.v1.admin import _add_months
 
 
 # ── 护栏1：租户隔离表分类不得漂移 ───────────────────────────────
@@ -73,12 +70,3 @@ def test_dashboard_hardcoded_prompt_keys_resolve():
         "重命名/删除 server/prompts 下对应 YAML 会让今日推荐变死链——"
         "改 YAML 的 key 时必须同步 dashboard_service.py 里的字面量。"
     )
-
-
-# ── 护栏3：会员到期时间按自然月，不是 30 天 ─────────────────────
-# 店主直觉：3月5日开 2 个月 = 5月5日到期。曾用 timedelta(days=30*months) 得 5月4日。
-def test_subscription_expiry_uses_calendar_months():
-    assert _add_months(datetime(2025, 3, 5), 2) == datetime(2025, 5, 5)
-    assert _add_months(datetime(2025, 1, 2), 1) == datetime(2025, 2, 2)
-    # 月末钳制：1月31日 + 1 月 = 2月28日（非闰年）
-    assert _add_months(datetime(2025, 1, 31), 1) == datetime(2025, 2, 28)

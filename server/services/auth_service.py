@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from core.exceptions import AppException
 from core.security import hash_password, verify_password, create_access_token
@@ -74,7 +75,13 @@ async def register_user(
         db.add(member)
         invitation.use_count += 1
 
-    await db.commit()
+    # 防并发/重复提交：SELECT 检查与 INSERT 之间若有竞态（如连点两次「注册」），
+    # 第二条会撞 phone 唯一约束 → IntegrityError。这里兜成友好的 409，绝不暴露成裸 500。
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise PhoneAlreadyRegisteredError()
     await db.refresh(user)
 
     token = create_access_token(user.id)

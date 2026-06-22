@@ -18,6 +18,7 @@ from schemas.dashboard import (
 from services.store_service import calculate_completeness
 from services.behavior_service import BehaviorSnapshot, get_behavior_snapshot
 from services.ai.prompt_engine import get_prompt_engine
+from services.memory_service import Memory, load_store_memory, select_relevant_memories
 
 WEEKDAY_NAMES = [
     "Monday",
@@ -59,6 +60,15 @@ async def get_today_dashboard(
     weekday = WEEKDAY_NAMES[now.weekday()]
     snap = await get_behavior_snapshot(db, store.id)
 
+    # 店脑：读这家店的长期记忆，让今日推荐"认得这家店"（主打学生/会员/助教…就顶相关建议）。
+    # 按"今日运营内容"为意图筛相关记忆（避免全量、与生成管道一致的按需召回）；故障安全、空记忆无影响。
+    memories: list[Memory] = []
+    try:
+        all_mem = await load_store_memory(db, store.id)
+        memories = select_relevant_memories(all_mem, "今天该发什么运营内容、做什么活动")
+    except Exception:
+        memories = []
+
     recommendations, greeting, tips = await _build_rules(
         db=db,
         store=store,
@@ -67,6 +77,7 @@ async def get_today_dashboard(
         total_count=total_count,
         weekday=weekday,
         snap=snap,
+        memories=memories,
     )
 
     return DashboardTodayResponse(
@@ -424,6 +435,48 @@ def _dynamic_tips(snap: BehaviorSnapshot) -> list[str]:
     return tips
 
 
+# 店脑→今日推荐的"店情专属"映射：记忆里命中某类客群/打法 → 顶一条最贴这家店的建议。
+# 轻量关键词匹配（不调模型、不建表）：每项 (命中词组, rec 构造参数)。命中即生成一条 category="store" 的高优先推荐。
+# 顺序即优先级——靠前的更具体（学生/会员 > 泛化）；只取第一条命中，避免刷屏。
+_MEMORY_REC_RULES: list[tuple[tuple[str, ...], dict]] = [
+    (("学生", "大学生", "高校", "学校"),
+     {"id": "store_student", "title": "给学生客群来一条",
+      "desc": "记得你家主打学生——发条戳学生的内容（拼场便宜、组队开黑），把这拨人约起来。",
+      "intent": "写一条面向学生客群的朋友圈，突出学生拼场优惠和组队氛围"}),
+    (("会员", "储值", "充值卡", "一卡通", "锁客"),
+     {"id": "store_member", "title": "盘一盘会员/储值",
+      "desc": "你家重会员运营——发条储值/会员权益提醒，把老客的复购攥住。",
+      "intent": "写一条会员储值权益提醒，突出复购和锁客，赠送仅限台费、力度合理"}),
+    (("助教", "教练", "陪打", "上钟"),
+     {"id": "store_assistant", "title": "推一波助教/陪打",
+      "desc": "你家有助教服务——发条助教到店、陪打体验的内容，带动上钟转化。",
+      "intent": "写一条助教到店陪打推广内容，带职业分寸、不写性暗示"}),
+    (("亲子", "家庭", "儿童", "小孩"),
+     {"id": "store_family", "title": "招呼一下亲子家庭",
+      "desc": "你家做亲子/家庭客——发条周末家庭时光的内容，把这类客人请进来。",
+      "intent": "写一条面向亲子家庭客群的周末到店朋友圈"}),
+    (("比赛", "赛事", "周赛", "排位"),
+     {"id": "store_match", "title": "预热一下赛事",
+      "desc": "你家常办比赛——提前放出赛事/排位信息，攒报名、聚人气。",
+      "intent": "写一条门店赛事预热通知，攒报名人数（正规赛事·报名费做奖池）"}),
+]
+
+
+def _memory_recs(memories: list[Memory]) -> list[DashboardRecommendation]:
+    """店脑→"店情专属"推荐：从记忆内容里识别这家店的客群/打法，顶一条最贴它的建议（最多一条，不刷屏）。
+    轻量关键词匹配，不调模型、不建表；无相关记忆或无命中则返回空（不打扰）。"""
+    if not memories:
+        return []
+    blob = " ".join((m.content or "") for m in memories)
+    for keywords, spec in _MEMORY_REC_RULES:
+        if any(k in blob for k in keywords):
+            return [
+                _rec(spec["id"], "store", spec["title"], spec["desc"],
+                     action_label="去生成", intent=spec["intent"]),
+            ]
+    return []
+
+
 async def _report_written_today(db: AsyncSession, store_id, now: datetime) -> bool:
     """今天是否已提交过日报（按 input_params['date'] 比，避开时区双基准坑）。"""
     today = now.strftime("%Y-%m-%d")
@@ -449,9 +502,13 @@ async def _build_rules(
     total_count: int,
     weekday: str,
     snap: BehaviorSnapshot,
+    memories: list[Memory] | None = None,
 ) -> tuple[list[DashboardRecommendation], str, list[str]]:
     recs: list[DashboardRecommendation] = []
     tips: list[str] = []
+
+    # Rule 0.0: 店情专属——读店脑长期记忆，识别这家店的客群/打法，顶一条最贴它的建议（让推荐认得这家店）。
+    recs.extend(_memory_recs(memories or []))
 
     # Rule 0: 节日临近——文案恒出 + 海报(按 Logo 门控)。时效性强，是"今日工作台"实时感的来源。
     recs.extend(_festival_recs(store, datetime.now(BUSINESS_TZ)))
@@ -654,7 +711,40 @@ async def _build_rules(
             )
         )
 
+    # 隐式反馈闭环：老板点过去做的推荐(source_rec_id)上浮，长期显示没动的下沉。
+    recs = _rerank_by_adoption(recs, snap)
+
     return recs, greeting, tips
+
+
+# 推荐排序优先级底分：先按业务优先级（high>medium>low），再在同档内按"被采纳"上浮。
+_PRIORITY_SCORE = {"high": 100, "medium": 50, "low": 0}
+
+
+def _rerank_by_adoption(
+    recs: list[DashboardRecommendation], snap: BehaviorSnapshot
+) -> list[DashboardRecommendation]:
+    """隐式反馈排序：在不打乱"业务优先级"大盘的前提下，按隐式信号微调同档内顺序——
+    老板点过去做的推荐(被采纳)上浮、长期一直显示却从没点的下沉。
+
+    设计取舍：只在 priority 分档内重排（high 永远在 medium 前），避免一条低优先但常被点的把
+    "完善资料/节日"这种刚需挤到后面。采纳次数封顶 +9，跳过(显示多次从没采纳)扣分但不致负出大档。
+    稳定排序保留同分原有先后（既有规则的精心排序不被打乱）。"""
+    if not snap.adopted_rec_ids and snap.recent_total < 8:
+        return recs  # 还没攒到信号（没人点过推荐、用得也少）→ 不动，省得早期瞎排
+
+    def score(idx_rec: tuple[int, DashboardRecommendation]) -> tuple[int, int]:
+        idx, r = idx_rec
+        base = _PRIORITY_SCORE.get(r.priority, 50)
+        adopted = snap.adoption_rank(r.id)
+        if adopted > 0:
+            base += min(adopted * 3, 9)  # 采纳上浮（封顶，避免单条霸榜）
+        elif snap.recent_total >= 12 and r.id not in snap.adopted_rec_ids:
+            base -= 5  # 用得久了还从没点过这条 → 轻微下沉（仍留在档内，不消失）
+        return (base, -idx)  # -idx：同分稳定保留原始先后
+
+    ranked = sorted(enumerate(recs), key=score, reverse=True)
+    return [r for _, r in ranked]
 
 
 async def _get_last_good_generation(db: AsyncSession, store_id: uuid.UUID) -> Generation | None:

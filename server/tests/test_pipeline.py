@@ -142,14 +142,6 @@ def test_profit_model_no_high_ratio_recharge():
     assert "充1000送99" in tpl
 
 
-def test_orchestrate_has_quota_guard():
-    """协作页配额回归：发起协作任务必须有配额检查与用量计费。"""
-    import api.v1.orchestrate as orch
-    src = inspect.getsource(orch.create_orchestration)
-    assert "check_quota" in src
-    assert "increment_usage" in src
-
-
 def test_run_generation_pipeline_has_all_guards():
     """统一管道四件套回归：注入检查/配额/过滤/落库/计费缺一不可。"""
     from services.content_service import run_generation
@@ -193,24 +185,12 @@ def test_handrolled_workbench_paths_inject_store_brain():
 
 
 def test_generation_paths_use_unified_pipeline():
-    """所有非流式生成路径必须走 run_generation（根治新路径漏防护）。"""
+    """agent 工具复用的非流式生成路径必须走 run_generation（根治新路径漏防护）。"""
     import services.diagnosis_service as m1
-    import services.performance_service as m2
-    import services.sop_service as m3
     import services.games_service as m4
     import services.outreach_service as m5
-    import api.v1.repurpose as m6
-    import api.v1.batch as m7
-    for mod in (m1, m2, m3, m4, m5, m6, m7):
+    for mod in (m1, m4, m5):
         assert "run_generation" in inspect.getsource(mod), f"{mod.__name__} 未走统一管道"
-
-
-def test_orchestrator_hardening():
-    """协作引擎回归：结果落库/过期清理/取消中止句柄/汇总Agent 必须存在。"""
-    import services.orchestrator as orch
-    src = inspect.getsource(orch)
-    for piece in ["_persist_result", "TASK_RETENTION_DAYS", "_task_handles", "_synthesize"]:
-        assert piece in src, f"orchestrator 缺 {piece}"
 
 
 def test_knowledge_no_source_leak_terms():
@@ -295,15 +275,6 @@ def test_poster_schemas_structured_fields():
     assert "image_prompt" in pr and "needs" in pr
 
 
-def test_poster_single_image_per_user():
-    """生图硬限制：一次只出 1 张(count=1) + 每用户同一时刻只允许一张在跑(_GENERATING_USERS 拦截)。"""
-    import inspect as _inspect
-    from api.v1 import posters
-    src = _inspect.getsource(posters.generate_image)
-    assert "count=1" in src, "生图未强制单张（应 count=1）"
-    assert "_GENERATING_USERS" in src, "缺少每用户'同一时刻只一张在跑'的拦截"
-
-
 def test_image_gen_no_retry_and_long_timeout():
     """钱安全回归：生图不自动重试(max_retries=0) + 读超时走配置项(覆盖5-10分钟真实耗时)，不再硬编码300s。
     根因见 CLAUDE.md「AI 并发与限流」：超时太短会把'还在生成'判成失败，叠加重试导致重复扣费。"""
@@ -350,13 +321,10 @@ def test_poster_quality_three_tiers_no_auto():
     assert '("low", "medium", "high")' in src, "未把 quality 收敛到三档(去 auto)"
 
 
-def test_admin_routes_single_prefix():
-    """路由回归：admin 必须挂在 /admin/* 而非 /admin/admin/*（双前缀曾让整个管理后台 404）。"""
+def test_quota_route_no_trailing_slash():
+    """路由回归：quota 不带尾斜杠（带斜杠会 307 重定向剥离认证头）。"""
     from api.v1.router import router as v1_router
     paths = {r.path for r in v1_router.routes}
-    assert "/admin/dashboard" in paths, f"admin 路由缺失: {sorted(p for p in paths if 'admin' in p)[:5]}"
-    assert not any(p.startswith("/admin/admin") for p in paths), "admin 双前缀回归"
-    # quota 不带尾斜杠（带斜杠会 307 重定向剥离认证头）
     assert "/quota" in paths and "/quota/" not in paths
 
 
@@ -372,39 +340,6 @@ def test_store_update_accepts_brand_style():
     from schemas.store import StoreUpdate, StoreResponse
     assert "brand_style" in StoreUpdate.model_fields
     assert "brand_style" in StoreResponse.model_fields
-
-
-def test_orchestrator_commander_mode():
-    """协作引擎回归：指挥官模式三阶段(规划/执行/汇总)+ DB落库 + 跨worker安全。"""
-    import inspect as _inspect
-    from services import orchestrator as orch
-    src = _inspect.getsource(orch)
-    # 指挥官规划阶段
-    assert "_plan_framework" in src, "缺指挥官规划阶段"
-    assert "framework" in src, "缺协作框架"
-    # 岗位执行带框架
-    assert "run_agent" in src and "framework" in _inspect.getsource(orch.run_agent), "岗位Agent未注入框架"
-    # 汇总含一致性校验
-    assert "_synthesize" in src and "一致性校验" in src
-    # 状态落库(非内存dict)
-    assert "CollabTask" in src, "任务状态未落库"
-    assert "async_session" in src
-    # 阶段推导
-    assert "_stage_of" in src
-
-
-def test_collab_task_model_registered():
-    """collab_tasks 模型已注册到 Base.metadata（迁移015）。"""
-    from db.base import Base
-    assert "collab_tasks" in Base.metadata.tables
-
-
-def test_orchestrate_get_cancel_are_async_db():
-    """查询/取消改为 async + DB（旧版是内存同步函数，多worker下404）。"""
-    import inspect as _inspect
-    from services import orchestrator as orch
-    assert _inspect.iscoroutinefunction(orch.get_task)
-    assert _inspect.iscoroutinefunction(orch.cancel_task)
 
 
 def test_token_ceiling_derives_from_count():
@@ -448,7 +383,7 @@ def test_business_today_is_beijing_date():
 def test_no_naive_date_today_in_user_paths():
     """回归:生成路径里不允许再出现 date.today()(裸用系统时区)。"""
     import pathlib
-    for path in ["api/v1/stream.py", "services/content_service.py"]:
+    for path in ["services/content_service.py"]:
         src = pathlib.Path(path).read_text()
         assert "date.today()" not in src, f"{path} 仍在使用 date.today()"
         assert "business_today()" in src

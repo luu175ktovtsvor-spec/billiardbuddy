@@ -1,11 +1,14 @@
 """今日推荐 / 行为信号 的纯逻辑单测（不依赖 DB）。
 覆盖：成长阶段判定、节日提醒(含农历)、阶段推荐、补缺口、你常用(含效果好优先)、
-动态tips、当日运营重点。get_behavior_snapshot 走 DB，属集成测试，不在此覆盖。"""
+动态tips、当日运营重点、店情专属(店脑→推荐)、采纳上浮排序(隐式反馈)。
+get_behavior_snapshot 走 DB，属集成测试，不在此覆盖。"""
 from collections import Counter
 from datetime import datetime
 from types import SimpleNamespace
 
 from services.behavior_service import BehaviorSnapshot
+from services.memory_service import Memory
+from schemas.dashboard import DashboardRecommendation
 from services.dashboard_service import (
     _growth_stage,
     _upcoming_festival,
@@ -15,6 +18,8 @@ from services.dashboard_service import (
     _frequency_rec,
     _dynamic_tips,
     _daily_focus,
+    _memory_recs,
+    _rerank_by_adoption,
 )
 
 
@@ -24,13 +29,14 @@ def _store(opening_days="", has_coaching=False, **profile_extra):
     return SimpleNamespace(operation_profile=profile, has_coaching=has_coaching)
 
 
-def _snap(recent_total=0, type_counts=None, sub_type_counts=None, prompt_key_counts=None, good=None):
+def _snap(recent_total=0, type_counts=None, sub_type_counts=None, prompt_key_counts=None, good=None, adopted=None):
     return BehaviorSnapshot(
         type_counts=Counter(type_counts or {}),
         sub_type_counts=Counter(sub_type_counts or {}),
         prompt_key_counts=Counter(prompt_key_counts or {}),
         recent_prompt_keys=list((prompt_key_counts or {}).keys()),
         good_prompt_keys=set(good or []),
+        adopted_rec_ids=Counter(adopted or {}),
         recent_total=recent_total,
     )
 
@@ -197,3 +203,86 @@ def test_daily_focus_tuesday_gates_on_assistant():
 def test_daily_focus_monday():
     title, _desc, _intent = _daily_focus(_store(), "Monday")
     assert "老客" in title
+
+
+# ─── 店情专属：店脑长期记忆 → 今日推荐（A1）───
+
+def _mem(content):
+    return Memory(type="semantic", content=content)
+
+
+def test_memory_recs_empty_when_no_memory():
+    assert _memory_recs([]) == []
+
+
+def test_memory_recs_student_store():
+    # 记得"主打学生客" → 顶一条学生局建议
+    recs = _memory_recs([_mem("这家店主打附近大学的学生客群")])
+    assert len(recs) == 1
+    assert recs[0].id == "store_student" and recs[0].category == "store"
+    assert "学生" in recs[0].suggested_payload["user_intent"]
+
+
+def test_memory_recs_member_store():
+    recs = _memory_recs([_mem("老板很看重会员储值，主推一卡通锁客")])
+    assert recs[0].id == "store_member"
+
+
+def test_memory_recs_no_match_returns_empty():
+    # 有记忆但不命中任何客群/打法关键词 → 不打扰
+    assert _memory_recs([_mem("门店在三楼，周边有写字楼")]) == []
+
+
+def test_memory_recs_only_one_even_if_multiple_match():
+    # 同时命中学生+会员 → 只取最具体的第一条（不刷屏）
+    recs = _memory_recs([_mem("主打学生客群，也做会员储值")])
+    assert len(recs) == 1 and recs[0].id == "store_student"
+
+
+# ─── 采纳上浮 / 跳过下沉：隐式反馈排序（A2）───
+
+def _r(rid, priority="medium"):
+    return DashboardRecommendation(
+        id=rid, title=rid, description=rid, action_label="去",
+        action_url="/x", action_type="generate_copywriting", priority=priority,
+    )
+
+
+def test_rerank_noop_when_no_signal():
+    # 没采纳信号且用得少 → 原样不动（早期不瞎排）
+    recs = [_r("a"), _r("b"), _r("c")]
+    assert _rerank_by_adoption(recs, _snap(recent_total=3)) == recs
+
+
+def test_rerank_adopted_floats_up_within_priority():
+    # 同为 medium：b 被采纳过 → b 上浮到 a 前
+    recs = [_r("a"), _r("b"), _r("c")]
+    out = _rerank_by_adoption(recs, _snap(recent_total=10, adopted={"b": 3}))
+    assert out[0].id == "b"
+
+
+def test_rerank_keeps_priority_dominance():
+    # 高优先 setup 即便从没被点，也不该被一条常被点的 medium 挤到后面
+    recs = [_r("setup", "high"), _r("freq", "medium")]
+    out = _rerank_by_adoption(recs, _snap(recent_total=20, adopted={"freq": 5}))
+    assert out[0].id == "setup"
+
+
+def test_rerank_long_skipped_sinks_within_priority():
+    # 用了很久(>=12)，never_clicked 从没被点、clicked 被点过 → clicked 排前
+    recs = [_r("never_clicked"), _r("clicked")]
+    out = _rerank_by_adoption(recs, _snap(recent_total=15, adopted={"clicked": 1}))
+    assert out[0].id == "clicked"
+
+
+def test_rerank_stable_for_equal_score():
+    # 同优先、都没被点、信号已激活 → 保留原始先后（稳定排序，不打乱既有规则编排）
+    recs = [_r("a"), _r("b"), _r("c")]
+    out = _rerank_by_adoption(recs, _snap(recent_total=10, adopted={"z": 1}))
+    assert [r.id for r in out] == ["a", "b", "c"]
+
+
+def test_adoption_rank_helper():
+    snap = _snap(adopted={"festival": 2})
+    assert snap.adoption_rank("festival") == 2
+    assert snap.adoption_rank("missing") == 0

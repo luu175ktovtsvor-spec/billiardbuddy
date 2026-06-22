@@ -139,3 +139,39 @@ def tool(
         return fn
 
     return deco
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 通用 Agent 化 · 工具集分层
+#   默认（通用模式）= 通用工具（文件/命令/上网/清单/子代理/生图/看日期/问选项）。
+#   @「台球行业知识库」(billiards_mode) = 通用 + 台球专用工具（写文案/海报/诊断/约客/玩法/平台/团购…）。
+# 不删台球工具——它们仍登记在 default_registry，只是默认不挂、@ 台球时才进工具集（台球业务后面再接）。
+# ══════════════════════════════════════════════════════════════════════════
+
+# 台球行业专用工具名（通用模式下不暴露给模型；@ 台球知识库时才加进来）。
+BILLIARDS_TOOL_NAMES: set[str] = {
+    "get_today_recommendation", "find_scenario", "look_up_knowledge",
+    "write_operation_content", "write_batch", "plan_activity", "assistant_outreach",
+    "diagnose_operation", "recommend_games", "make_poster", "make_platform_content",
+    "make_groupbuy_content", "recall_my_content", "diagnose_from_pos",
+}
+
+
+def general_registry() -> "ToolRegistry":
+    """通用 Agent 默认工具集 = default_registry 减去台球专用工具。
+    每次调用现建一个临时 ToolRegistry（工具对象共享、不复制 handler），开销可忽略。"""
+    reg = ToolRegistry()
+    for t in default_registry.all():
+        if t.name in BILLIARDS_TOOL_NAMES:
+            continue
+        reg.register(t)
+    return reg
+
+
+def billiards_registry() -> "ToolRegistry":
+    """@ 台球知识库时的工具集 = 全部（通用 + 台球）。建临时表（不复用全局 default_registry——
+    否则上层往里加 MCP 等动态工具会污染全局、下次请求重复注册报错）。"""
+    reg = ToolRegistry()
+    for t in default_registry.all():
+        reg.register(t)
+    return reg

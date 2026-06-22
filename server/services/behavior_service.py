@@ -24,6 +24,9 @@ class BehaviorSnapshot:
     prompt_key_counts: Counter = field(default_factory=Counter)  # prompt_key -> 次数（"你常用"）
     recent_prompt_keys: list[str] = field(default_factory=list)  # 最近在前，用于"接着做"
     good_prompt_keys: set[str] = field(default_factory=set)      # 标过"效果好"的 prompt_key
+    # 隐式反馈：老板点了今日推荐去做 → 那条生成记下 source_rec_id；这里按 rec.id 聚合采纳次数。
+    # 采纳=弱正反馈（被点的推荐类别上浮）。空 = 还没人点过推荐。
+    adopted_rec_ids: Counter = field(default_factory=Counter)    # rec.id -> 被采纳次数
     recent_total: int = 0                                        # 窗口内总条数
 
     def top_prompt_key(self, min_count: int = 2, prefer_good: bool = False) -> str | None:
@@ -36,6 +39,10 @@ class BehaviorSnapshot:
                     return pk
         return ranked[0][0] if ranked else None
 
+    def adoption_rank(self, rec_id: str) -> int:
+        """某条推荐最近被采纳了几次（隐式弱正反馈）。0 = 没被点过。排序加权用。"""
+        return self.adopted_rec_ids.get(rec_id, 0)
+
 
 async def get_behavior_snapshot(db: AsyncSession, store_id: uuid.UUID) -> BehaviorSnapshot:
     since = datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)
@@ -45,6 +52,7 @@ async def get_behavior_snapshot(db: AsyncSession, store_id: uuid.UUID) -> Behavi
             Generation.sub_type,
             Generation.input_params,
             Generation.effect_rating,
+            Generation.source_rec_id,
         )
         .where(
             Generation.store_id == store_id,
@@ -68,4 +76,6 @@ async def get_behavior_snapshot(db: AsyncSession, store_id: uuid.UUID) -> Behavi
             snap.recent_prompt_keys.append(pk)
             if r.effect_rating == "good":
                 snap.good_prompt_keys.add(pk)
+        if r.source_rec_id:
+            snap.adopted_rec_ids[r.source_rec_id] += 1
     return snap

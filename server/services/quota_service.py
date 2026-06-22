@@ -101,6 +101,10 @@ async def get_or_create_quota(db: AsyncSession, store_id: str) -> UsageQuota:
 
 async def check_quota(db: AsyncSession, store_id: str) -> UsageQuota:
     quota = await get_or_create_quota(db, store_id)
+    # 纯 BYOK 桌面版：店主自带模型 key、自己花钱，不受平台生成次数/用量配额（云端 SaaS 限制不该漏进 BYOK 盒子）。
+    import os
+    if os.environ.get("DESKTOP_LOCAL") == "1":
+        return quota
     if quota.monthly_generations_used >= quota.monthly_generation_limit:
         from core.exceptions import QuotaExceededError
         raise QuotaExceededError(
@@ -135,6 +139,10 @@ async def increment_usage(
 async def check_poster_quota(db: AsyncSession, store_id: str) -> UsageQuota:
     """海报额度检查（独立于文案池）。用尽时抛 QuotaExceededError → 走同一条 429 提额引导。"""
     quota = await get_or_create_quota(db, store_id)
+    # 纯 BYOK 桌面版：店主自带生图 key、自己花钱出图，不受平台海报配额（3 张/月是云端 SaaS 套餐限制，不该漏进 BYOK 盒子）。
+    import os
+    if os.environ.get("DESKTOP_LOCAL") == "1":
+        return quota
     if poster_quota_exceeded(quota):
         from core.exceptions import QuotaExceededError
         raise QuotaExceededError(

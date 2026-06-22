@@ -18,6 +18,7 @@
 - steps 记录每一步（thinking / tool_call / tool_result / approval_request / final），供 SSE 流式展示与测试断言。
 - 默认用编排大脑 provider + 编排模型（可与内容生成分离，见 settings.effective_orchestration_*）。
 """
+import asyncio
 import json
 import logging
 import os
@@ -29,6 +30,12 @@ from services.agent.context import AgentContext
 from services.agent.hooks import run_post_tool_hooks, run_pre_tool_hooks, run_stop_hooks
 from services.agent.message_repair import ensure_tool_pairing
 from services.agent.registry import ToolRegistry
+from services.agent.vision_degrade import (
+    looks_like_vision_error,
+    messages_have_images,
+    prepend_degrade_hint,
+    strip_images_from_messages,
+)
 from services.ai.base import TextProvider, TextRequest
 from services.ai.factory import ProviderFactory
 
@@ -77,6 +84,15 @@ _EMPTY_FINAL_FALLBACK = "这个我没法给出回应——可能是要求太敏�
 def _final_or_fallback(text: str) -> str:
     """最终答复兜底：非空白原样返回；空白则给友好兜底，绝不把空白丢给用户。"""
     return text if (text and text.strip()) else _EMPTY_FINAL_FALLBACK
+
+
+def _finalize_text(text: str, ctx) -> str:
+    """收尾统一出口：先空白兜底，再【若本轮发生过非识图降级】在开头加一句温和提示。
+    所有 final 文本（同步/流式、正常/预算停/强制收尾）都过这道，确保降级提示一定带上。"""
+    out = _final_or_fallback(text)
+    if ctx is not None and getattr(ctx, "vision_degraded", False):
+        out = prepend_degrade_hint(out)
+    return out
 
 # 循环退出原因（命名常量，值保持稳定——落库/前端/测试据此判断；不要随意改字面值）。
 _STOP_FINAL = "final"          # 模型不再调工具，收敛到最终答复
@@ -340,15 +356,74 @@ class _ToolPlan:
     fallback_msg: str | None = None  # fallback 时回灌给模型的"这个先不做了、换法子"提示
 
 
-def _init_messages(system_prompt: str | None, history: list[dict] | None, user_message: str) -> list[dict]:
-    """组装初始 messages：system（可选）+ 历史（可选）+ 本轮 user。两入口完全一致，单点维护。"""
+def _init_messages(
+    system_prompt: str | None,
+    history: list[dict] | None,
+    user_message: str,
+    user_images: list[str] | None = None,
+) -> list[dict]:
+    """组装初始 messages：system（可选）+ 历史（可选）+ 本轮 user。两入口完全一致，单点维护。
+    user_images：本轮老板随消息带的图片路径 → 按 OpenAI 兼容 image_url 拼进 user content（多模态回灌）。
+    模型自带识图就能看；无图则 content 仍是原字符串、行为零变化。"""
+    from services.agent.multimodal import build_user_content
     messages: list[dict] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     if history:
         messages.extend(history)
-    messages.append({"role": "user", "content": user_message})
+    messages.append({"role": "user", "content": build_user_content(user_message, user_images)})
     return messages
+
+
+async def _generate_with_vision_degrade(provider, request, messages, ctx):
+    """调 provider.generate，并对【非识图模型撞图片报错】做一次性优雅降级（同步路径）。
+
+    带图请求若报错 且 错误像"不支持图片"（看 provider_error 里的 image_url/expected text 等）
+    且 messages 里确实有图 → 把所有多模态 content 去图成纯文字（就地改共享 list，后续轮也不再带图）→
+    用纯文字重试一次，并置 ctx.vision_degraded=True（拼最终答复处据此加温和提示）。
+    其它错误 / 本就没图 / 重试仍失败 → 原样抛出（不吞错，行为与原来一致）。"""
+    try:
+        return await provider.generate(request)
+    except Exception as e:
+        if (ctx is not None
+                and looks_like_vision_error(e)
+                and messages_have_images(messages)
+                and strip_images_from_messages(messages)):
+            ctx.vision_degraded = True
+            logger.info("文字模型疑似不支持图片(%s)，已去图改纯文字重试一次", type(e).__name__)
+            return await provider.generate(request)
+        raise
+
+
+async def _vision_degrade_stream(provider, request, messages, ctx, **sinks):
+    """流式版 generate_stream 的一次性优雅降级包装（异步生成器）。
+
+    与同步版同理：第三方端点对【带图却不支持】的请求在【建流时】就抛 400（DeepSeekProvider 里 create() 先 await、
+    报错发生在任何 token 之前）——故只要还【没吐过任何 token】就能安全去图重试，不会重复输出。
+    一旦开始吐 token 再出错，则照常抛出（已无法干净重试）。"""
+    yielded = False
+    try:
+        async for tok in provider.generate_stream(request, **sinks):
+            yielded = True
+            yield tok
+    except Exception as e:
+        if (not yielded
+                and ctx is not None
+                and looks_like_vision_error(e)
+                and messages_have_images(messages)
+                and strip_images_from_messages(messages)):
+            ctx.vision_degraded = True
+            logger.info("文字模型疑似不支持图片(%s)，已去图改纯文字重试一次(流式)", type(e).__name__)
+            async for tok in provider.generate_stream(request, **sinks):
+                yield tok
+            return
+        raise
+
+
+_PLAN_MODE_SKIP_MSG = (
+    "[计划模式] 现在只规划、不动手：「{name}」是会实际操作的步骤，已跳过。"
+    "请先把完整、分步的计划讲清楚给老板；等老板切到执行模式或确认后再实际做。"
+)
 
 
 def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _ToolPlan:
@@ -374,6 +449,13 @@ def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _Too
                     "options": args.get("options", []) or [],
                     "multi": bool(args.get("allow_multiple")),
                 },
+            )
+        # 计划模式(plan)：只规划不动手——只读工具放行去探索，会动手的(写文件/跑命令/对外/操作电脑等)一律不执行，
+        # 回灌"计划模式下跳过"，让模型把完整计划讲给老板（对标 Claude Code 的 plan mode）。
+        if getattr(ctx, "permission_mode", "") == "plan" and not getattr(tool, "read_only", False):
+            return _ToolPlan(
+                name=name, args=args, tool_call_id=tc_id, fallback=True,
+                fallback_msg=_PLAN_MODE_SKIP_MSG.format(name=name),
             )
         if tool.requires_approval and not _auto_approve(tool, ctx):
             # SH-8 连续拒绝自动回退：同一动作老板已反复拒（或全局累计拒太多）→ 不再提请该动作，
@@ -437,6 +519,7 @@ async def run_agent_loop(
     provider: TextProvider | None = None,
     model: str | None = None,
     history: list[dict] | None = None,
+    user_images: list[str] | None = None,
     max_turns: int = 8,
     max_tokens: int = 2000,
     temperature: float = _ORCH_TEMPERATURE,
@@ -450,7 +533,7 @@ async def run_agent_loop(
     if getattr(ctx, "model", None) is None:
         ctx.model = model
 
-    messages = _init_messages(system_prompt, history, user_message)
+    messages = _init_messages(system_prompt, history, user_message, user_images)
     tools = registry.to_openai_tools()
     steps: list[AgentStep] = []
     stop_blocked = False  # Stop hook 每轮最多阻断一次（防死循环；仍受 max_turns 兜底）
@@ -463,14 +546,15 @@ async def run_agent_loop(
         messages[:] = await _compact_pipeline(messages, registry, ctx, provider, model, temperature)
         # SH-1：发请求前补缺失/删孤儿/去重 tool_result，堵 OpenAI 兼容端点的配对 400（纯函数返回新列表，就地替换内容）。
         messages[:] = ensure_tool_pairing(messages)
-        resp = await provider.generate(TextRequest(
+        # 非识图模型撞图片报错 → 自动去图、纯文字重试一次（模型无关·反应式降级）；置 ctx.vision_degraded 供收尾加提示。
+        resp = await _generate_with_vision_degrade(provider, TextRequest(
             messages=messages,
             tools=tools,
             tool_choice="auto",
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
-        ))
+        ), messages, ctx)
         # SH-2：累加本轮真实 token 用量（端点没返回则粗估），喂预算判定 + 成本看板。
         _accumulate_usage(ctx, getattr(resp, "tokens_used", 0), resp.content or "")
 
@@ -488,7 +572,7 @@ async def run_agent_loop(
             #   budget=None → _BUDGET_OK，整段跳过（交互式零影响）。
             _budget = _check_budget(ctx)
             if _budget == _BUDGET_STOP:
-                full_final = _final_or_fallback("".join(final_segments) + (resp.content or ""))
+                full_final = _finalize_text("".join(final_segments) + (resp.content or ""), ctx)
                 steps.append(AgentStep(type="final", content=full_final))
                 return AgentResult(
                     final_text=full_final, steps=steps, turns=turn,
@@ -507,7 +591,7 @@ async def run_agent_loop(
                         messages.append({"role": "assistant", "content": resp.content})
                     messages.append({"role": "user", "content": cont})
                     continue
-            full_final = _final_or_fallback("".join(final_segments) + (resp.content or ""))
+            full_final = _finalize_text("".join(final_segments) + (resp.content or ""), ctx)
             steps.append(AgentStep(type="final", content=full_final))
             return AgentResult(
                 final_text=full_final, steps=steps, turns=turn,
@@ -566,7 +650,9 @@ async def run_agent_loop(
 
     # 达到 max_turns 仍未收敛（兜底，防止循环跑飞）：强制模型基于已有结果给最终答复，不返回空。
     logger.warning("agent loop 达到 max_turns=%s 仍未结束，强制收尾", max_turns)
-    final_text = await _force_final_text(provider, messages, model, max_tokens, temperature)
+    final_text = await _force_final_text(provider, messages, model, max_tokens, temperature, ctx=ctx)
+    if ctx is not None and getattr(ctx, "vision_degraded", False):
+        final_text = prepend_degrade_hint(final_text)
     steps.append(AgentStep(type="final", content=final_text))
     return AgentResult(final_text=final_text, steps=steps, turns=max_turns,
                        stopped_reason=_STOP_MAX_TURNS, messages=messages)
@@ -816,14 +902,15 @@ async def _compact_pipeline(messages: list[dict], registry: ToolRegistry, ctx,
     return rebuilt if rebuilt is not None else messages
 
 
-async def _force_final_text(provider, messages: list[dict], model, max_tokens: int, temperature: float) -> str:
+async def _force_final_text(provider, messages: list[dict], model, max_tokens: int, temperature: float,
+                            ctx=None) -> str:
     """max_turns 强制收尾（非流式）：追加"别再调工具、直接答"的提示再要一段答复。
-    自身失败也不崩，走静态兜底，绝不返回空。"""
+    自身失败也不崩，走静态兜底，绝不返回空。带 ctx 时同样走非识图降级（去图重试一次）。"""
     messages.append({"role": "user", "content": _FORCE_FINAL_MSG})
     try:
-        resp = await provider.generate(TextRequest(
+        resp = await _generate_with_vision_degrade(provider, TextRequest(
             messages=messages, model=model, max_tokens=max_tokens, temperature=temperature,
-        ))
+        ), messages, ctx)
         final_text = (resp.content or "").strip()
     except Exception:
         logger.exception("max_turns 强制收尾失败")
@@ -840,6 +927,7 @@ async def run_agent_loop_stream(
     provider: TextProvider | None = None,
     model: str | None = None,
     history: list[dict] | None = None,
+    user_images: list[str] | None = None,
     max_turns: int = 8,
     max_tokens: int = 2000,
     temperature: float = _ORCH_TEMPERATURE,
@@ -864,7 +952,7 @@ async def run_agent_loop_stream(
     if getattr(ctx, "model", None) is None:
         ctx.model = model
 
-    messages = _init_messages(system_prompt, history, user_message)
+    messages = _init_messages(system_prompt, history, user_message, user_images)
     tools = registry.to_openai_tools()
     stop_blocked = False  # Stop hook 每轮最多阻断一次（防死循环；仍受 max_turns 兜底）
     final_segments: list[str] = []  # SH-4：被 length 截断的最终答复，多轮续写片段在此拼接
@@ -880,9 +968,13 @@ async def run_agent_loop_stream(
         finish: dict = {}  # SH-4：本轮 finish_reason 由 provider 写回（="length" = 被截断）
         usage: dict = {}   # SH-2：本轮 token 用量由 provider 写回（total_tokens 等），按请求独立避免并发串号
         parts: list[str] = []
-        async for tok in provider.generate_stream(
+        # 非识图模型撞图片报错 → 自动去图、纯文字重试一次（建流时即 400、尚未吐 token，可干净重试）；
+        # 置 ctx.vision_degraded 供收尾加提示。⚠️ 同步路径同样逻辑，别只改一处。
+        async for tok in _vision_degrade_stream(
+            provider,
             TextRequest(messages=messages, tools=tools, tool_choice="auto", model=model,
                         max_tokens=max_tokens, temperature=temperature),
+            messages, ctx,
             tool_calls_sink=sink,
             finish_sink=finish,
             usage_sink=usage,
@@ -907,7 +999,7 @@ async def run_agent_loop_stream(
             #   budget=None → _BUDGET_OK，整段跳过（交互式零影响）。⚠️ 同步路径同样逻辑，别只改一处。
             _budget = _check_budget(ctx)
             if _budget == _BUDGET_STOP:
-                full_final = _final_or_fallback("".join(final_segments) + text)
+                full_final = _finalize_text("".join(final_segments) + text, ctx)
                 yield {"type": "final", "content": full_final}
                 yield {"type": "done", "turns": turn, "stopped_reason": _STOP_FINAL,
                        "tokens_used": getattr(ctx, "tokens_used", 0)}
@@ -925,7 +1017,7 @@ async def run_agent_loop_stream(
                         messages.append({"role": "assistant", "content": text})
                     messages.append({"role": "user", "content": cont})
                     continue
-            full_final = _final_or_fallback("".join(final_segments) + text)
+            full_final = _finalize_text("".join(final_segments) + text, ctx)
             yield {"type": "final", "content": full_final}
             yield {"type": "done", "turns": turn, "stopped_reason": _STOP_FINAL,
                    "tokens_used": getattr(ctx, "tokens_used", 0)}
@@ -965,7 +1057,22 @@ async def run_agent_loop_stream(
 
             # 先吐 tool_call 事件（前端即时显示"正在调 X"），再跑工具（可能慢），最后吐结果
             yield {"type": "tool_call", "tool": plan.name, "args": plan.args, "id": plan.tool_call_id}
-            result = await _execute_tool(registry, plan.name, plan.args, ctx)
+            # 命令边跑边显示：挂一个 progress 通道给工具，执行期间把它推的 tool_progress 实时 yield 给前端
+            # （借鉴 Claude Code 的 onProgress/pendingProgress：进度与最终结果分流、边跑边出）。
+            _pq: asyncio.Queue = asyncio.Queue()
+            ctx.progress_emit = lambda ev, _q=_pq, _id=plan.tool_call_id: _q.put_nowait({**ev, "id": _id})
+            _exec = asyncio.create_task(_execute_tool(registry, plan.name, plan.args, ctx))
+            try:
+                while not _exec.done():
+                    try:
+                        yield await asyncio.wait_for(_pq.get(), timeout=0.15)
+                    except asyncio.TimeoutError:
+                        pass
+                while not _pq.empty():  # 收尾把残余进度吐净
+                    yield _pq.get_nowait()
+                result = await _exec
+            finally:
+                ctx.progress_emit = None
             # B-2 依据可见：工具若注入了行业知识，把名字一并带进 tool_result 事件（前端成品卡显示「依据：…」）。
             # 取后立即复位，防串到下一个工具。⚠️ 同步路径同样要改，别只改一处（见上面 run_agent_loop）。
             _evt = {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": result}
@@ -980,14 +1087,18 @@ async def run_agent_loop_stream(
     messages.append({"role": "user", "content": _FORCE_FINAL_MSG})
     final_parts: list[str] = []
     try:
-        async for tok in provider.generate_stream(
+        async for tok in _vision_degrade_stream(
+            provider,
             TextRequest(messages=messages, model=model, max_tokens=max_tokens, temperature=temperature),
+            messages, ctx,
         ):
             final_parts.append(tok)
             yield {"type": "token", "content": tok}
     except Exception:  # 强制收尾失败也不崩，走静态兜底
         logger.exception("max_turns 强制收尾(流式)失败")
     final_text = "".join(final_parts).strip() or _FALLBACK_FINAL
+    if ctx is not None and getattr(ctx, "vision_degraded", False):
+        final_text = prepend_degrade_hint(final_text)
     yield {"type": "final", "content": final_text}
     yield {"type": "done", "turns": max_turns, "stopped_reason": _STOP_MAX_TURNS,
            "tokens_used": getattr(ctx, "tokens_used", 0)}
