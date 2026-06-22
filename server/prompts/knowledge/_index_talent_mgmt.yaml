@@ -1,0 +1,49 @@
+key: "knowledge.talent_mgmt_index"
+name: "人才管理·域目录页（L1）"
+category: "knowledge"
+domain: talent-mgmt
+freedom: skeleton
+tags: [scene:域目录, scene:招聘, scene:培训, scene:薪资, scene:PK, scene:日报, scene:排班, role:店长, role:助教管理]
+description: |
+  人才管理域的目录页（L1 导航）：老板/店长问"怎么招人选人 / 助教怎么管怎么带 / 各岗日报怎么写 /
+  薪资怎么定 / PK 怎么搞 / 绩效怎么考 / 排班巡检采购卫生怎么安排 / 助教刁钻场景怎么应对"这类
+  【团队与岗位管理】问题时查它。覆盖：选育用留全流程、店长/教练/助教/助教管理/前厅各岗管理与日报、招聘（含助教7天筛选）、
+  薪资与PK激励、排班/巡检/采购/卫生等运营事务。本页给骨架 + 子知识索引 + 典范指针 + 硬数字/红线单一源。
+variables: []
+template: |
+  ## 人才管理 talent-mgmt · 域目录页（L1 导航）
+
+  这个域管【把对的人招进来、带出来、留得住、有干劲】：选育用留 + 各岗日报 + 薪资 PK + 日常运营事务。
+  下面是骨架 → 子知识索引 → 典范 → 硬数字/红线单一源。
+
+  ### 骨架（底层逻辑，模型据此延伸）
+  - **店长第一职责是营销获客，不是看店收银**：核心工作是把客流和业绩做上去（营销/团队/数据/成本/执行五大能力），靠赛马机制找对的人，而不是自己干所有事。
+  - **助教管理的核心任务 = 提升助教赚钱的能力**：助教人才画像"个人形象 > 沟通能力 > 台球技术"；七天筛选制（七天内按实打结算、不设保底）；球技培训为的是能跟客户互动对抗、拉长开台时长。
+  - **各岗各有一日工作流**：店长、助教管理、教练、前厅主管、前台/收银/服务生，每岗每天围绕核心三件事转，配日报字段（教练日报=加微/组局/转化竞技客）。
+  - **激励靠 PK 与阶梯奖励**：助教个人阶梯奖励 + 榜首激励（按全员总时长比例提成），保持团队战斗力、人人有动力。
+  - **绩效看维度 + 一票否决红线**：按岗位列考核维度，配红线（助教自爱、防封等）。
+  - **日常运营事务别漏**：排班按客流时段、巡店与安全检查、卫生检查、商品采购、电器（空调）管理、小推车促销——多为可勾选清单，判断/建议层、不替门店排死表不碰收银系统。
+
+  ### 子知识索引（要细则，用 look_up_knowledge 查或读全文）
+  - knowledge.store_manager_competency — 店长能力模型与考核（核心是营销不是收银）。
+  - knowledge.management_recruitment — 管理层招聘方法论（赛马机制找对的人）。【红线相关】
+  - knowledge.assistant_tier_system / knowledge.assistant_salary — 助教等级体系、薪资体系（七天筛选/三档）。【硬数字】
+  - knowledge.assistant_coaching_sop — 助教球技培训方向骨架。
+  - knowledge.assistant_overtime_service — 助教超休（陪伴服务·管理·激励）的真实运营逻辑。【红线相关】
+  - knowledge.assistant_difficult_situations — 助教/助教管理刁钻场景应对话术（保护助教）。【红线相关】
+  - knowledge.pk_incentive / knowledge.manager_compensation — 助教 PK 激励硬规则、店长/管理岗薪资结构。【硬数字】
+  - knowledge.performance_standards — 各岗绩效考核维度与一票否决红线。
+  - knowledge.daily_workflow_manager / _coach / _assistant_manager / _frontdesk — 店长/教练/助教管理/前厅各岗每日工作流程。
+
+  ### 典范（要动手写真东西时，读这几个最对版；多为 operation 模板，经 find_scenario 取 prompt_key）
+  - 招聘/筛选/督导 → operation.assistant_recruit_sop、operation.assistant_7day_screening、operation.assistant_supervision、operation.assistant_difficult。
+  - 团队/目标/绩效/PK/考试 → operation.team_building_plan、operation.phased_goal_plan、operation.performance_template、operation.quant_assessment_matrix、operation.manager_pk_plan、operation.training_exam。
+  - 前厅运营事务 → operation.frontdesk_sop、operation.frontdesk_onboarding、operation.shift_schedule、operation.patrol_safety_check、operation.hygiene_check、operation.purchase_plan、operation.equipment_management、operation.cart_promotion、operation.daily_task_list、operation.workbench_tasks。
+
+  ### 硬数字 · 单一源（钉死，别处只引用不复述）
+  - 助教薪资档位 / 七天筛选口径 → knowledge.assistant_salary、operation.assistant_7day_screening；PK 系数与阶梯奖励 → knowledge.pk_incentive；
+    管理岗薪资结构 → knowledge.manager_compensation；人员配置基准（约 45 台）→ knowledge.scale_guide（strategy 域）。**查到再用，不自己造。**
+
+  ### 红线（不复述，一律见 core.safety_redlines）
+  - 助教自爱不越界·客人越界要保护助教、招聘防封·用工守劳动法（依法签合同、不以"合作/兼职"规避）、未成年不得提供助教服务——
+    管理/招聘/写话术前必看 `core.safety_redlines`，本页只指路不重述。

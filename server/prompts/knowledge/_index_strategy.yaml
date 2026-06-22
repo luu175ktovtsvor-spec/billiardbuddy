@@ -1,0 +1,50 @@
+key: "knowledge.strategy_index"
+name: "战略认知·域目录页（L1）"
+category: "knowledge"
+domain: strategy
+freedom: skeleton
+tags: [scene:域目录, scene:战略, scene:定位, scene:定价, scene:盈利, scene:选址, scene:开业, role:老板]
+description: |
+  战略认知域的目录页（L1 导航）：老板问"这门生意怎么样 / 该怎么定位 / 价格怎么定 / 要不要涨价 /
+  怎么搭充值方案 / 怎么算赚不赚钱 / 选址开店怎么准备 / 配多少人"这类【顶层决策与商业模型】问题时查它。
+  覆盖：行业分析与赛道、门店定位与品牌传播、定价/提价/充值策略、盈利模型与成本控制、选址、开业筹备、规模配置。
+  本页给骨架 + 该域全部子知识的索引 + 典范指针；要具体细则/硬数字再按指针深入查。
+variables: []
+template: |
+  ## 战略认知 strategy · 域目录页（L1 导航）
+
+  这个域管【顶层决策与商业模型】：生意怎么看、店怎么定位、价怎么定、钱怎么赚、店怎么开。
+  下面是骨架（先据此判断方向）→ 子知识索引（要细则再查）→ 典范（动手写时读全文）→ 硬数字/红线单一源。
+
+  ### 骨架（底层逻辑，模型据此延伸；不预建死场景）
+  - **先认行业再认自己**：先看大盘（市场规模/客群画像/四类球房定位：社区/商业/竞技/竞技商业），再定本店是哪一类、卖给谁。
+  - **定位 = 找到一句别人记得住的差异化**：扒透周边竞品 → 找到没人占的位置 → 提炼高感知差异化口号 → 重复传播抢心智。球房卖的是"氛围 + 人情世故"，不是台子本身。
+  - **盈利是一盘账**：收入（台费/助教费/商品/充值）− 成本（房租/人工/折旧/耗材），靠翻台率、客单价、会员占比、团购占比这几个抓手撬。
+  - **定价/充值有方向铁律**：不推大额充值赠送（后期涨价会更难），走小比例赠送 + 一卡通；经营做起来后再分区主动涨价提毛利，别只会降价救火。
+  - **开店是有时间线的工程**：选址（商业用地/层高柱距/用电空调消防/产权 + 先扒周边竞品）→ 开业前 30-40 天筹备（先搭团队、再拓客、最后全员培训）→ 按规模配齐人。
+  - **成本与成材率是省出来的利润**：人效、电费（空调为主）、器材商品损耗、成材率（台呢/皮头/巧粉/新手练废）四块自检。
+
+  ### 子知识索引（要细则，用 look_up_knowledge 查或读这几个全文）
+  - knowledge.industry_data — 行业大盘与客群画像（市场规模/年龄性别占比/消费特征/四类定位）。【硬数字】
+  - knowledge.positioning_design — 怎么扒竞品找定位、提炼差异化口号、品牌传播三部曲。
+  - knowledge.business_cases — 四类球房怎么定位怎么挣钱的运营全景 + 两大核心卖点（氛围四感 + 人情世故）。
+  - knowledge.profit_model — 球房算账与盈利全景（收入/成本结构 + 翻台客单会员团购占比）。【硬数字】
+  - knowledge.recharge_strategy — 充值与一卡通策略（不推大额赠送、小比例赠送）。【硬数字】
+  - knowledge.price_raise — 经营改善后分区主动涨价的方法（把"只会降价"补成"会涨价"）。
+  - knowledge.cost_control — 店长控成本与成材率自检（人效/电费/损耗/成材率四块）。
+  - knowledge.site_selection — 选址关键要点 + 选址前扒透周边竞品。
+  - knowledge.opening_preparation — 新店开业前 30-40 天筹备时间线与任务清单。【硬数字】
+  - knowledge.scale_guide — 门店人员配置基准（以约 45 台规模为单一基准）。【硬数字】
+  - knowledge.recruitment_compliance — 助教招聘怎么写不被平台封号（封号两条注意点）。【红线相关】
+
+  ### 典范（要动手写真东西时，读这几个的全文最对版）
+  - 给经营方向建议 → operation.business_strategy（基于行业认知 + 门店数据给方向，建议是参考、决策权在老板）。
+  - 做价目表/充值方案 → operation.pricing_design、operation.recharge_design（具体数字一律占位）。
+  - 算投资回报 / 写开闭店 SOP → operation.investment_return、operation.opening_closing_sop。
+
+  ### 硬数字 · 单一源（钉死，别处只引用不复述）
+  - 行业数字 → knowledge.industry_data；盈利/定价模型 → knowledge.profit_model；规模基准（约 45 台）→ knowledge.scale_guide；
+    充值赠送比例 → knowledge.recharge_strategy；开业时间线 → knowledge.opening_preparation。**查到再用，不自己造、不"看着合理"地编。**
+
+  ### 红线（不复述，一律见 core.safety_redlines）
+  - 招聘防封（助教招聘合规、用工守劳动法）、未成年保护、门店不当庄抽水定盘口——判断/写之前必看 `core.safety_redlines`，本页只指路不重述。

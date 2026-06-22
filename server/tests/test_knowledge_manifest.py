@@ -5,6 +5,8 @@
 
 ① 无死料：每个 knowledge.* key 至少被 1 个角色的 required_knowledge 列入
    —— A-4 成果的回归守门。以后谁再加一条没人引用的知识，这里立刻变红。
+   例外：L1 域目录页（key 以 _index 结尾）靠 Agent 的 look_up_knowledge 召回、
+   故意不进 required_knowledge，is_dead 已豁免它们（见 knowledge_manifest.py）。
 ② 无孤儿关键词：KNOWLEDGE_KEYWORDS 表里每个 key 都对应真实存在的 knowledge 文件
    —— 防关键词指向已删/改名的知识，选取时静默引空。
 ③ 渲染类有 description：每个带 template 的 knowledge 都有 description（A-2 成果守门）
