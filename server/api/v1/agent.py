@@ -16,13 +16,23 @@ import json
 import logging
 import os
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Form, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+from services.agent import skills as _agent_skills  # noqa: F401  注册 skill 工具 + 渲染技能清单（渐进披露）
+from services.agent import computer_tools as _agent_computer  # noqa: F401  注册 computer_view/computer_control（DESKTOP_LOCAL）
+from services.agent import image_tools as _agent_image  # noqa: F401  注册 edit_image 本机改图（DESKTOP_LOCAL）
+from services.agent import background_tools as _agent_bg  # noqa: F401  注册 run_background（DESKTOP_LOCAL）
+from services.agent import reminders as _agent_reminders  # noqa: F401  注册 schedule_reminder/list/cancel（DESKTOP_LOCAL）
+from services.agent import plugins as _agent_plugins  # noqa: F401  注册 install_plugin（DESKTOP_LOCAL）
+from services.agent import mcp_client as _agent_mcp  # noqa: F401  MCP 客户端（动态发现外部 server 工具）
+from services.agent.goal_hook import install_goal_hook as _install_goal_hook
+_install_goal_hook()  # /goal 目标驱动 Stop hook（常驻；无 ctx.goal 时 no-op）
 from starlette.background import BackgroundTask
 
 from api.deps import get_current_store, get_current_user, get_db
-from core.exceptions import AIServiceError
+from core.exceptions import AIServiceError, AppException
 from core.rbac import Permission, require_permission
 from core.security_guard import check_input_injection
 from db.session import async_session
@@ -30,9 +40,10 @@ from models.user import User
 from services.agent.context import AgentContext
 from services.agent import denial_tracker
 from services.agent.loop import _action_key, run_agent_loop, run_agent_loop_stream
+from services.agent.multimodal import is_image
 from services.agent.proactive import generate_daily_drafts
 from services.ai.failover import build_resilient_text_provider  # BYOK 失败自动切备用配置档
-from services.agent.registry import default_registry
+from services.agent.registry import default_registry, general_registry, billiards_registry
 from services.memory_service import format_memories_for_prompt, load_store_memory, remember
 from services.quota_service import check_quota
 from services.store_profile_service import render_operation_profile_context
@@ -42,47 +53,54 @@ import services.agent.web_tools  # noqa: F401  第二批：WebFetch/WebSearch/To
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_AGENT_BASE_PROMPT = (
-    "你是台球房运营助手的 AI Agent。用大白话、简洁地帮台球房老板/店员完成日常运营工作。"
-    "能用工具完成的就调工具（写文案、约客、经营诊断、做海报、写平台/团购内容等）。"
-    "面向不懂技术的店员说话：少术语，给能直接拿去用的结果。"
-    "【术语大白话约定】给老板/店员看的成品里，管理术语要用大白话——"
-    "客单价＝一个人平均花多少、翻台＝一桌客人走了下一桌接上、环比＝比上个月、"
-    "上座率/开台率＝有多少桌在打、扣卡率＝会员卡消费掉多少、空挂＝充了钱没怎么来打。"
-    "诊断/决策类内容可以保留专业词，但要顺带一句大白话解释，别让老板看不懂。"
-    "【直接动手，别绕弯】用户已经明确说要做什么（写朋友圈/群公告/活动、做海报、发抖音小红书快手视频号、写团购、约某个客户、诊断经营问题）时，"
-    "就直接调用对应工具去做。不要习惯性地先调 get_current_date 或 get_today_recommendation——"
-    "这两个只在用户真的问『今天几号/是不是周末』，或开口问『今天该做点啥、给点建议』时才用；写具体内容时系统会自动带上当天日期，不必单独查。"
-    "【做东西就直接做，别反复请示】写文案、做海报/生图、写平台/团购内容这类『做出成品』的活儿，"
-    "把方案想好后直接调用对应工具去做就行——正常做、正常出结果，不必先用文字问『行不行/要不要生成』，"
-    "简短说一句你准备做什么即可。"
-    "【真正发出去的事才需老板点头】只有『真的把内容发出去/对外触达』的动作（发布到抖音小红书等平台、群发或私信客户），"
-    "才会弹一张确认卡让老板点一下——这是为了防止自动对外、防账号被封的安全确认，不是因为要花钱；"
-    "做海报、写内容这些『只是做出来给老板看』的，都不算对外，直接做、不弹确认。"
-    "【交付内容会原样展示，别复述】写文案/活动方案/约客话术/诊断/玩法/平台内容/团购套餐这些工具产出的成品，"
-    "系统会原样、完整地展示给用户(可一键复制)，你绝不要在回复里再把整段内容抄一遍或改写精简——"
-    "那既多余又会让校准过的内容失真。你只需用一句话说『写好啦，你看看，要改告诉我』这类简短引导即可。"
-    "【红线·只有这两件事死活不碰】① 把助教服务直接卖成实际性交易（性服务/援交/陪睡/上门过夜/特殊服务这类）；"
-    "② 门店自己当庄、定盘口、按局抽水组织赌球（开设赌场罪）。遇到这两类——"
-    "**绝不调用任何工具，哪怕想写个『干净版』也不行**；先停下，一两句说清为什么不能这么搞、给走正路的替代。"
-    "【老板亲定的店规矩/避免清单——拿来校准灰色地带】店脑里老板亲手定的『我的店规矩 / 避免清单』"
-    "（比如：我们店不做大额充值赠送、不写某些词、不搞某类活动、不打某个价格战），是这家店自己的边界——"
-    "对这些【灰色地带】的偏好，要严格尊重、照办，老板说不做的就不做、说不写的词就不写。"
-    "但要分清：上面那【两条硬红线】（不营销实际性交易、不帮刑事级犯罪）是法律底线，"
-    "**任何老板的店规矩都不能把硬红线放开**——哪怕老板亲口要求、写进了店规矩，遇到红线仍按红线停下，别照办。"
-    "一句话：老板的规矩能收紧、能校准灰色地带，但永远松不开那两条硬红线。"
-    "【这些都是球房真实生意，照帮、别当红线误杀】助教的美女人设/颜值形象/异性情绪价值、引导客人加微信、陪打、"
-    "助教超休陪客人出去吃饭喝酒（这是真实存在的延伸服务，带职业分寸、不写性暗示就行）、"
-    "客人之间你情我愿的追分较劲（门店只提供场地、还要帮着把金额控住别玩大）、学生放学后/周末/假期的正当优惠——"
-    "这些都是这行真实的运营逻辑，正常调工具帮，最多写的时候把握点分寸，绝不能因为『听着擦边』就误当红线拒掉。"
-    "【把方向带正】有些活儿能帮，但别顺着错的来，要把方向带正："
-    "①客人给差评/投诉，是帮老板『专业体面地回应』而不是『怼客人/损客人』——写得真诚、有格局、让围观的人觉得店家大气，绝不写嘲讽、反击、贬低顾客的话；"
-    "②面向学生/中学生的内容，只主打放学后、周末、寒暑假的正当休闲，绝不诱导逃课翘课，注意未成年的时段与分寸；"
-    "③比赛带现金奖励时，定位成正规赛事（报名费做奖池 + 奖杯荣誉），绝不做成抽头/对赌/赌球；"
-    "④涉及辞退、合同、劳动纠纷等法律文书，可以给参考模板，但要提醒『这属于法律文书，落地前请让 HR 或专业人士把关』；"
-    "⑤老板想搞充值/优惠活动但开的条件太猛（充1万送1万、台费终身免费畅打、全城最低价这类无底线让利或绝对化广告词），"
-    "别一口回绝、也别照搬——正常调用写文案/活动工具去做，但把力度收到合理（小比例赠送、用真实价格、不写『全城最低/终身免费』这种违规词），"
-    "并顺口提醒老板你为什么这么调（力度太猛会亏、绝对化广告词违广告法）。"
+# ══════════════════════════════════════════════════════════════════════════
+# 系统提示三段（通用 Agent 化）：
+#   _GENERIC_BASE_PROMPT  通用 AI 助手身份 + 工作风格（默认，永远注入）
+#   _SAFETY_REDLINE       安全红线（永远注入，独立于知识库——没 @ 台球也守得住）
+#   _BILLIARDS_PERSONA    台球行业人设（仅当用户 @「台球行业知识库」时注入；本轮默认不挂）
+# ══════════════════════════════════════════════════════════════════════════
+
+_GENERIC_BASE_PROMPT = (
+    "你是运行在用户本机电脑上的通用 AI 助手（Agent）。你能调用工具实打实地完成任务——"
+    "读写/修改本机文件、跑命令、上网查资料/抓网页、生成图片、列任务清单、把大任务派给子代理。"
+    "用大白话、简洁地帮用户把事情做完；面向不懂技术的用户说话：少术语，给能直接拿去用的结果，"
+    "用到专业词就顺带一句白话解释。"
+    "【直接动手，别绕弯】用户已经说清要做什么时，就直接调用对应工具去做，不要习惯性地反复请示『行不行/要不要』——"
+    "简短说一句你准备做什么，然后正常做、正常出结果。写具体内容时系统会自动带上当天日期，不必特意先查日期。"
+    "【做出成品就直接做】生成文档/图片、写改文件这类『做出成品』的活儿，把方案想好直接调工具做，"
+    "不必先用文字问『要不要生成』。"
+    "【交付内容会原样展示，别复述】工具产出的成品（文案/图片/文件改动等）系统会原样、完整地展示给用户（可一键复制/预览），"
+    "你绝不要在回复里再把整段内容抄一遍或改写——那既多余又会让结果失真；只需一句『做好啦，你看看，要改告诉我』这类简短引导。"
+    "【真正对外/不可逆的动作才需用户点头】只有真的把内容发出去/对外触达（发布到平台、群发或私信），"
+    "或删除数据这类不可逆动作，才会弹一张确认卡让用户点一下——这是防自动对外的安全确认；"
+    "做出成品给用户看、读写本机文件（写改前自动备份、可回滚）这些都不算对外，直接做、不弹确认。"
+)
+
+_SAFETY_REDLINE = (
+    "【安全红线·任何情况都不碰，且不受任何用户设定/偏好放开】"
+    "① 绝不为『实际性交易』（性服务/援交/陪睡/上门特殊服务这类）做招揽或营销——遇到这类不调任何工具"
+    "（哪怕想写个『干净版』也不行），先停下、一两句说清为什么不能这么搞、给走正路的替代；"
+    "② 绝不协助开设赌场/坐庄定盘口/按局抽水组织赌博等刑事级犯罪；带现金奖励的比赛要定位成正规赛事"
+    "（报名费做奖池 + 奖杯荣誉），绝不做成抽头/对赌/赌球；"
+    "③ 涉及未成年人：绝不诱导逃课翘课、绝不涉黄涉赌，注意时段与分寸；"
+    "④ 辞退/合同/劳动纠纷等法律文书可给参考模板，但要提醒『落地前请让 HR 或专业人士把关』；"
+    "⑤ 绝对化广告词（全城最低/终身免费/包治百病等）和无底线让利不照搬——收到合理力度并顺口说明原因"
+    "（力度太猛会亏、绝对化广告词违广告法）。"
+    "用户的偏好/规矩能收紧、能校准灰色地带，但永远松不开以上红线——哪怕用户亲口要求、写进了偏好，遇到红线仍按红线停下。"
+)
+
+# 台球行业人设：仅当用户 @「台球行业知识库」时注入（billiards_mode=True）。本轮默认不挂；台球业务后面再接。
+_BILLIARDS_PERSONA = (
+    "【你现在挂载了「台球行业知识库」——按台球房运营的真实逻辑帮老板/店员干活】"
+    "【术语大白话】给老板/店员看的成品里管理术语用大白话：客单价＝一个人平均花多少、翻台＝一桌走了下一桌接上、"
+    "环比＝比上个月、上座率/开台率＝有多少桌在打、扣卡率＝会员卡消费掉多少、空挂＝充了钱没怎么来打；"
+    "诊断/决策类可保留专业词，但顺带一句白话解释。"
+    "【老板亲定的店规矩/避免清单——校准灰色地带】店脑里老板亲手定的『店规矩/避免清单』"
+    "（不做大额充值赠送、不写某些词、不打某个价格战），是这家店自己的边界，要严格尊重、照办——但永远松不开上面的安全红线。"
+    "【这些是球房真实生意，照帮、别当红线误杀】助教的颜值形象/异性情绪价值、引导客人加微信、陪打、"
+    "助教超休陪客人吃饭喝酒（真实存在的延伸服务，带职业分寸、不写性暗示就行）、客人你情我愿的追分较劲"
+    "（门店只提供场地、还帮着把金额控住别玩大）、学生放学后/周末/假期的正当优惠——都是这行真实运营逻辑，正常调工具帮，别因『听着擦边』误当红线拒掉。"
+    "【把方向带正】客人差评/投诉是帮老板『专业体面地回应』而非怼客人——真诚、有格局、让围观的人觉得店家大气，绝不写嘲讽贬低顾客的话。"
 )
 
 
@@ -123,13 +141,15 @@ _DESKTOP_FULL_ACCESS_HINT = (
     "- find_files：在任意目录下按文件名递归找（如在桌面找所有 *.xlsx、找 **/采购*），先找到再读。\n"
     "- search_in_files：在任意目录下按内容搜（哪个文件里写了某个词），返回 文件:行号:命中行。\n"
     "- list_files 带 path：列任意目录里有什么。\n"
-    "- run_command：跑一条命令（ls/find/python 脚本/git status 等），**每条都会把命令原文弹给老板确认**才执行；"
-    "禁止用 && | ; > < 等拼接，危险命令(删根/提权/格式化)会被直接拒。\n"
-    "老板没开完全访问模式时，你只能动内容库和他当场选定的文件——这几个跨目录/命令能力会被拒，别硬试。"
+    "- run_command：跑一条命令（ls/find/python 脚本/git status 等），「标准/自动编辑」档每条都把命令原文弹给老板确认才执行，"
+    "「完全自主」档则自己跑（命令显示在对话里、老板可随时打断）；禁止用 && | ; > < 等拼接，危险命令(删根/提权/格式化)会被直接拒。\n"
+    "你就是长在老板这台电脑上的助手：他说「去桌面找那个文件夹/那个报表」你就 find_files 去找、找到 read_file 去读、要改就 edit_file/edit_excel——大胆动手，写改都会先确认+自动备份。\n"
+    "【你就是长在用户这台电脑上的通用助手】本机上的活你都能干：在桌面/任意目录新建文件夹、读改任意文件（包括 ~/.claude/CLAUDE.md 这种全局配置）、跑脚本/命令整理资料、生成任何文档/图片。"
+    "用户让你干什么，你就用文件/命令/生图工具实打实地去干，别给自己设限。"
 )
 
 
-_VALID_PERMISSION_MODES = {"ask", "auto_files", "full"}
+_VALID_PERMISSION_MODES = {"ask", "auto_files", "full", "plan"}
 
 
 def _resolve_permission(mode: str | None, full_disk: bool | None) -> tuple[str, bool]:
@@ -139,7 +159,12 @@ def _resolve_permission(mode: str | None, full_disk: bool | None) -> tuple[str, 
     if os.environ.get("DESKTOP_LOCAL") != "1":
         return "ask", False
     m = mode if mode in _VALID_PERMISSION_MODES else "ask"
-    return m, bool(full_disk)
+    # 桌面单机版（老板自己的机器 + 自带 key）：默认放开「完全本地访问」——能找/读/改本机任意文件、跑命令，
+    # 像 Claude Code 一样真长在电脑上。安全不靠把能力锁死，而靠：① 权限模式（默认「标准」每步先弹确认）；
+    # ② 写/改前自动备份可回滚；③ 危险命令黑名单；④ 对外群发/平台发布仍强制确认（封号红线）。
+    # 仅当请求显式传 false 时才收回为「内容库+选定文件」受限沙箱。
+    fd = True if full_disk is None else bool(full_disk)
+    return m, fd
 
 
 def _model_ctx_window() -> int | None:
@@ -151,6 +176,18 @@ def _model_ctx_window() -> int | None:
         return v if v > 0 else None
     except (TypeError, ValueError):
         return None
+
+
+def _build_agent_registry(billiards_mode: bool):
+    """本次请求的工具表 = 通用/台球工具 + 已配置 MCP server 的工具（动态发现，缓存）。"""
+    reg = billiards_registry() if billiards_mode else general_registry()
+    try:
+        for mt in _agent_mcp.load_mcp_tools():
+            if reg.get(mt.name) is None:
+                reg.register(mt)
+    except Exception:
+        pass
+    return reg
 
 
 def _selected_files_note(paths: list[str] | None) -> str:
@@ -166,33 +203,54 @@ def _selected_files_note(paths: list[str] | None) -> str:
     )
 
 
-def compose_agent_system_prompt(profile_text: str, brain_text: str, full_disk: bool = False) -> str:
-    """拼 agent 的 system prompt（让它"懂当下、懂这家店"）。
+def compose_agent_system_prompt(profile_text: str, brain_text: str, full_disk: bool = False,
+                                billiards_mode: bool = False, output_style: str = "") -> str:
+    """拼 agent 的 system prompt。
 
-    顺序铁律（缓存稳定·借鉴 learn-claude-code s10）：先放对所有店/所有天【字节稳定】的静态段
-    （基底指令 + 通用能力 hint + 桌面文件能力 hint），再放每天/每店/每句都会变的【动态尾段】
-    （当天日期 + 门店画像 + 店脑记忆）。动态串绝不插进静态前缀中间——否则会顶掉它后面静态内容的
-    服务端自动前缀缓存命中（DeepSeek/硅基流动等 OpenAI 兼容端点按请求前缀自动命中缓存，
-    让前缀逐字节稳定＝省钱省延迟；它们不支持也不需要 Anthropic 式显式 cache_control）。
-    full_disk=True（老板开了完全访问模式）时额外注入"可找/搜文件、列任意目录、跑命令"的 hint。"""
-    # —— 静态前缀：身份/红线/工具用法 + 通用能力 + 桌面文件能力（与当天/门店无关，逐字节稳定，可被前缀缓存复用）——
-    # 第二批通用能力（上网查资料/列清单/拆子任务）——桌面与云端 web 都注册了这四个工具，故都告诉大脑何时用。
-    parts = [_AGENT_BASE_PROMPT, _WEB_AGENT_TOOLS_HINT]
+    本体是【通用 AI Agent】：默认只注入通用身份 + 安全红线 + 通用/桌面文件能力。
+    仅当用户 @ 了「台球行业知识库」(billiards_mode=True) 时，才追加台球人设 + 门店画像 + 店脑记忆——
+    默认就是个通用电脑助手，台球只是可挂载的领域知识。安全红线【永远注入】、与 billiards_mode 无关
+    （没 @ 台球也守得住性交易/赌博/未成年红线）。
+
+    顺序铁律（缓存稳定·借鉴 learn-claude-code s10）：先放【字节稳定】的静态段（通用身份 + 红线 + 能力 hint），
+    再放每天/每店/每句变的【动态尾段】（当天日期 + 台球人设 + 门店画像 + 店脑记忆）。动态串绝不插进静态前缀中间，
+    否则顶掉服务端自动前缀缓存命中（DeepSeek/硅基流动等 OpenAI 兼容端点按请求前缀自动命中，省钱省延迟）。
+    full_disk=True（开了完全访问模式）时额外注入"可找/搜文件、列任意目录、跑命令"的 hint。"""
+    # —— 静态前缀：通用身份 + 安全红线(永远) + 通用能力 + 桌面文件能力（与当天/门店无关，逐字节稳定，可被前缀缓存复用）——
+    parts = [_GENERIC_BASE_PROMPT, _SAFETY_REDLINE, _WEB_AGENT_TOOLS_HINT]
     # 桌面全本地版：告诉大脑它能直接读写改本机文件，它才会主动用文件工具（云端 web 版不设 DESKTOP_LOCAL→不加）。
     if os.environ.get("DESKTOP_LOCAL") == "1":
         parts.append(_DESKTOP_FILE_OPS_HINT)
         # 完全访问模式：再告诉它能自己找/搜文件、列任意目录、跑命令（会弹卡确认）。
         if full_disk:
             parts.append(_DESKTOP_FULL_ACCESS_HINT)
-    # —— 动态尾段：每天变的日期 → 每店变的画像 → 每句变的店脑记忆（越靠后越易变），一律排在静态前缀之后 ——
+        # 渐进式披露：已安装技能(Skill)的"名字+描述"清单(正文调用时才展开)。session 稳定，放动态日期之前(守前缀缓存)。
+        try:
+            _sk_section = _agent_skills.render_skills_for_prompt()
+            if _sk_section:
+                parts.append(_sk_section)
+        except Exception:
+            pass
+    # 输出风格（用户选的，session 稳定）：追加一段风格指令。通用，与 DESKTOP_LOCAL 无关。
+    if output_style:
+        try:
+            from services.agent.output_styles import render_output_style_prompt
+            _os_section = render_output_style_prompt(output_style)
+            if _os_section:
+                parts.append(_os_section)
+        except Exception:
+            pass
+    # —— 动态尾段：当天日期（通用也需要）→ 仅 @台球 时：台球人设 + 门店画像 + 店脑记忆 ——
     today = _today_line()
     if today:
         parts.append(today)
-    if profile_text and profile_text.strip():
-        parts.append("【这家店的情况】\n" + profile_text.strip())
-    if brain_text and brain_text.strip():
-        # format_memories_for_prompt 自带"如与其他资料冲突以此为准"的前缀
-        parts.append(brain_text.strip())
+    if billiards_mode:
+        parts.append(_BILLIARDS_PERSONA)
+        if profile_text and profile_text.strip():
+            parts.append("【这家店的情况】\n" + profile_text.strip())
+        if brain_text and brain_text.strip():
+            # format_memories_for_prompt 自带"如与其他资料冲突以此为准"的前缀
+            parts.append(brain_text.strip())
     return "\n\n".join(parts)
 
 
@@ -208,9 +266,10 @@ async def _learn_in_background(store_id: str, text: str) -> None:
 
 
 async def _persist_agent_chat(db, store, user, message: str, content: str, gen_id: str, conv_uuid, turns: int,
-                              tokens_used: int = 0) -> None:
+                              tokens_used: int = 0, source_rec_id: str | None = None) -> None:
     """落库 agent 会话(type=agent)+conversation_id,供刷新续接/分析,并打点。故障安全:失败不阻断 SSE。
-    SH-2：tokens_used 拿循环累加的真实编排消耗（喂 BYOK 成本看板），端点没返回时为粗估值。"""
+    SH-2：tokens_used 拿循环累加的真实编排消耗（喂 BYOK 成本看板），端点没返回时为粗估值。
+    source_rec_id：本次对话若由今日推荐触发，记下是哪条 → 隐式反馈"采纳上浮"（behavior_service 据此聚合）。"""
     import uuid as _uuid
     try:
         from models.generation import Generation
@@ -220,6 +279,7 @@ async def _persist_agent_chat(db, store, user, message: str, content: str, gen_i
             prompt_used=message, result=(content or ""), model_used="agent",
             tokens_used=(tokens_used or 0),
             conversation_id=conv_uuid,
+            source_rec_id=(source_rec_id or None),
         ))
         await db.commit()
     except Exception:
@@ -362,6 +422,225 @@ class AgentChatRequest(BaseModel):
     selected_files: list[str] | None = None  # 桌面版：老板经文件选择器选定、授权 Agent 读/改的文件绝对路径
     permission_mode: str | None = None  # 桌面权限：ask(默认)/auto_files(信任·自动改文件)/full(最高·全自动)
     full_disk_access: bool | None = None  # 高级·全盘：文件工具不限"内容库+选定文件"，可碰任意路径
+    knowledge_packs: list[str] | None = None  # @ 挂载的知识库（如 ["billiards"]）；含 "billiards" → 切台球专家模式
+    output_style: str | None = None  # 输出风格名（如 "explanatory"/"concise"），空=默认
+    goal: str | None = None  # /goal 目标驱动：本次会话的目标条件，空=不启用
+    source_rec_id: str | None = None  # 隐式反馈：本次对话由今日推荐哪一条触发（rec.id），落到 generation 上做"采纳上浮"
+
+
+@router.get("/skills")
+async def agent_list_skills(user: User = Depends(get_current_user)):
+    """列出已安装技能(Skill)，供前端 `/` 命令面板展示。技能=文件系统全局、与门店无关。"""
+    items = [
+        {
+            "name": s.name, "description": s.description, "source": s.source,
+            "argument_hint": s.argument_hint, "user_invocable": s.user_invocable,
+        }
+        for s in _agent_skills.load_skills()
+    ]
+    return {"skills": items}
+
+
+@router.get("/output-styles")
+async def agent_list_output_styles(user: User = Depends(get_current_user)):
+    """列出可用输出风格，供前端切换。"""
+    from services.agent import output_styles as _os
+    items = [
+        {"name": s.name, "description": s.description, "source": s.source}
+        for s in _os.load_output_styles()
+    ]
+    return {"output_styles": items}
+
+
+@router.get("/mcp")
+async def agent_list_mcp(user: User = Depends(get_current_user)):
+    """列出已配置 MCP server 的连接状态 + 工具数；顺带刷新工具缓存（新配置下次对话即生效）。"""
+    from services.agent import mcp_client as _mc
+    status = _mc.mcp_status()
+    try:
+        _mc.load_mcp_tools(force=True)
+    except Exception:
+        pass
+    return {"servers": status}
+
+
+@router.get("/mcp/presets")
+async def agent_mcp_presets(user: User = Depends(get_current_user)):
+    """免 key 的官方 MCP server 预设（fetch/time/memory/DuckDuckGo），供界面"一键加"。"""
+    from services.agent.mcp_config import MCP_PRESETS
+    return {"presets": MCP_PRESETS}
+
+
+def _require_desktop() -> None:
+    """这些管理端点只在桌面单机版可用；云端 web 多租户严禁让某租户改服务器侧的 MCP/插件配置。"""
+    if os.environ.get("DESKTOP_LOCAL") != "1":
+        raise HTTPException(status_code=403, detail="该操作仅在桌面版可用")
+
+
+class McpAddRequest(BaseModel):
+    name: str
+    command: str
+    args: list[str] | None = None
+    env: dict | None = None
+
+
+@router.post("/mcp/add")
+async def agent_mcp_add(body: McpAddRequest, user: User = Depends(get_current_user)):
+    """界面加/覆盖一个 MCP server（写门店库 .mcp.json，原子写）。成功后刷新工具缓存，下次对话生效。"""
+    _require_desktop()
+    from services.agent import mcp_config as _mcfg
+    ok, msg = _mcfg.add_server(body.name, body.command, body.args, body.env)
+    if ok:
+        try:
+            from services.agent import mcp_client as _mc
+            _mc.load_mcp_tools(force=True)
+        except Exception:
+            pass
+    return {"ok": ok, "message": msg}
+
+
+class McpNameRequest(BaseModel):
+    name: str
+
+
+@router.post("/mcp/remove")
+async def agent_mcp_remove(body: McpNameRequest, user: User = Depends(get_current_user)):
+    """界面删一个 MCP server（写门店库 .mcp.json，原子写）。"""
+    _require_desktop()
+    from services.agent import mcp_config as _mcfg
+    ok, msg = _mcfg.remove_server(body.name)
+    if ok:
+        try:
+            from services.agent import mcp_client as _mc
+            _mc.load_mcp_tools(force=True)
+        except Exception:
+            pass
+    return {"ok": ok, "message": msg}
+
+
+class McpToggleRequest(BaseModel):
+    name: str
+    disabled: bool
+
+
+@router.post("/mcp/toggle")
+async def agent_mcp_toggle(body: McpToggleRequest, user: User = Depends(get_current_user)):
+    """界面启用/停用一个 MCP server（写 disabled 标记，配置仍留着）。"""
+    _require_desktop()
+    from services.agent import mcp_config as _mcfg
+    ok, msg = _mcfg.set_server_disabled(body.name, body.disabled)
+    if ok:
+        try:
+            from services.agent import mcp_client as _mc
+            _mc.load_mcp_tools(force=True)
+        except Exception:
+            pass
+    return {"ok": ok, "message": msg}
+
+
+@router.get("/plugins")
+async def agent_list_plugins(user: User = Depends(get_current_user)):
+    """列出本地插件（名字/启用/描述/组件计数）。插件的技能/风格/MCP 已自动并入对应系统。"""
+    from services.agent import plugins as _plugins
+    return {"plugins": _plugins.list_plugins()}
+
+
+class PluginToggleRequest(BaseModel):
+    name: str
+    enabled: bool
+
+
+@router.post("/plugins/toggle")
+async def agent_plugin_toggle(body: PluginToggleRequest, user: User = Depends(get_current_user)):
+    """界面启用/停用一个插件（改它的 plugin.json `enabled`）。重开会话生效。"""
+    _require_desktop()
+    from services.agent import plugins as _plugins
+    ok, msg = _plugins.set_plugin_enabled(body.name, body.enabled)
+    return {"ok": ok, "message": msg}
+
+
+class PluginInstallRequest(BaseModel):
+    repo: str
+
+
+@router.post("/plugins/install")
+async def agent_plugin_install(body: PluginInstallRequest, user: User = Depends(get_current_user)):
+    """界面从 GitHub 装插件（owner/repo 或 https url），git clone 到门店插件库。"""
+    _require_desktop()
+    from services.agent import plugins as _plugins
+    ok, msg = _plugins.install_plugin_from_github(body.repo)
+    return {"ok": ok, "message": msg}
+
+
+class ImageValidateRequest(BaseModel):
+    base_url: str | None = None
+    model: str | None = None
+
+
+@router.post("/image/validate")
+async def agent_image_validate(body: ImageValidateRequest, user: User = Depends(get_current_user)):
+    """温和校验生图 model 是否属于所选 base_url 那家供应商（按 IMAGE_PROVIDER_CATALOG）。
+    不匹配返回 ok=False + 一句"模型名跟所选供应商对不上，确认下？"；未知端点不拦。"""
+    from services.ai.providers.image_catalog import validate_image_model
+    return validate_image_model(body.base_url, body.model)
+
+
+class ImWebhookRequest(BaseModel):
+    text: str
+    platform: str | None = None
+
+
+@router.post("/im/webhook")
+async def im_webhook(body: ImWebhookRequest, x_im_secret: str = Header(default="")):
+    """通用 IM webhook（飞书/微信/钉钉/WhatsApp 用，配内网穿透 POST 进来）。密钥保护：
+    需 env `IM_WEBHOOK_SECRET` 且请求头 `X-Im-Secret` 匹配；未设密钥=端点禁用。"""
+    from services.agent.im_telegram import handle_im_webhook
+    status, payload = await handle_im_webhook(body.text or "", x_im_secret)
+    if status != 200:
+        raise HTTPException(status_code=status, detail=payload.get("detail", "error"))
+    return payload
+
+
+@router.post("/im/wechat")
+async def im_wechat(
+    type: str = Form(default="text"),
+    content: str = Form(default=""),
+    source: str = Form(default=""),
+    isMentioned: str = Form(default="0"),
+    isMsgFromSelf: str = Form(default="0"),
+    token: str | None = None,
+):
+    """对接 wechatbot-webhook（个人微信本地桥）：店主在本机跑 wechatbot-webhook、扫码登小号、把它的
+    RECVD_MSG_API 指向本端点（建议带 `?token=<IM_WEBHOOK_SECRET>`）。微信来消息 → 这里跑 Agent →
+    按它要的 JSON 返回 → 它发回微信，即「微信发消息 → 本地 Agent 响应」。
+    安全：① 配了 IM_WEBHOOK_SECRET 才校验 token；② 只回文本、不回自己发的（防自回环）；
+    ③ 群里只回 @ 我的；④ 配了 IM_WECHAT_ALLOW（逗号分隔微信名/id）则只回名单内的人。"""
+    import os
+    import json as _json
+    from services.agent.im_telegram import _run_agent_for_im
+
+    secret = os.environ.get("IM_WEBHOOK_SECRET")
+    if secret and token != secret:
+        return {"success": False, "error": "forbidden"}
+    if type != "text" or isMsgFromSelf == "1" or not (content or "").strip():
+        return {"success": True}  # 非文本 / 自己发的 / 空 → 静默不回
+
+    try:
+        src = _json.loads(source) if source else {}
+    except Exception:
+        src = {}
+    if src.get("room") and isMentioned != "1":
+        return {"success": True}  # 群里没 @ 我 → 不回
+
+    allow = os.environ.get("IM_WECHAT_ALLOW")
+    if allow:
+        names = {a.strip() for a in allow.split(",") if a.strip()}
+        sender = src.get("from") or {}
+        if not (names & {str(sender.get("name") or ""), str(sender.get("id") or "")}):
+            return {"success": True}  # 不在白名单 → 不回
+
+    reply = await _run_agent_for_im(content.strip())
+    return {"success": True, "data": {"type": "text", "content": reply}}
 
 
 @router.post("/chat")
@@ -376,15 +655,30 @@ async def agent_chat(
     if injection:
         raise AIServiceError(injection)
 
+    # 空输入守卫：空消息/纯空格/纯斜杠(// 、/ 等) → 别让 ReAct 循环瞎逛（实测会乱调 list_files/web_search 烧 BYOK 额度），直接友好提示。
+    if not (body.message or "").strip().strip("/").strip():
+        async def _empty_gen():
+            tip = "你还没说要做什么呢～告诉我一句就行，比如「写条周末活动朋友圈」「看看这个报表」「做张拉新海报」。"
+            yield f"data: {json.dumps({'type': 'final', 'content': tip}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'turns': 0}, ensure_ascii=False)}\n\n"
+        return StreamingResponse(_empty_gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
+
+    # Slash 命令：'/name args' 且 name 是可调用技能 → 展开技能正文喂模型（前端仍显示用户原文 body.message）。
+    effective_message = _agent_skills.maybe_expand_slash(body.message) or body.message
+
     await check_quota(db, str(store.id))
 
     # 注入"懂这家店"：门店画像（同步）+ 店脑记忆 → system prompt
     profile_text = render_operation_profile_context(store)
     memories = await load_store_memory(db, store.id)
     perm_mode, full_disk = _resolve_permission(body.permission_mode, body.full_disk_access)
+    # @ 知识库：前端 @ 选了「台球行业知识库」→ knowledge_packs 含 "billiards" → 挂台球人设+门店画像+台球工具集；
+    # 否则默认通用 Agent。安全红线两种模式都常驻（由 compose 内部保证）。
+    billiards_mode = bool(body.knowledge_packs and "billiards" in body.knowledge_packs)
     # 店脑按需召回：按老板这句话的相关性筛记忆，避免全量注入撑大 prompt（context rot）
     system_prompt = compose_agent_system_prompt(
-        profile_text, format_memories_for_prompt(memories, intent=body.message), full_disk=full_disk,
+        profile_text, format_memories_for_prompt(memories, intent=body.message),
+        full_disk=full_disk, billiards_mode=billiards_mode, output_style=body.output_style or "",
     )
     # 桌面版：老板当场选定的文件 → 注入 prompt（告诉大脑路径）+ 进 ctx.allowed_paths（授权工具可动）
     if body.selected_files and os.environ.get("DESKTOP_LOCAL") == "1":
@@ -392,11 +686,29 @@ async def agent_chat(
         if note:
             system_prompt = system_prompt + "\n\n" + note
 
+    # 事件 Hooks：UserPromptSubmit（可注入上下文/拦截）+ SessionStart（新会话注入上下文）。无配置时 no-op。
+    try:
+        from services.agent.hooks import run_event_hooks
+        _ups_block, _ups_ctx = await run_event_hooks("UserPromptSubmit", {"prompt": body.message})
+        if _ups_block:
+            raise AIServiceError(f"输入被 hook 拦截：{_ups_block}")
+        _ss_ctx = None
+        if not body.conversation_id:
+            _, _ss_ctx = await run_event_hooks("SessionStart", {})
+        _extra = "\n\n".join(x for x in (_ups_ctx, _ss_ctx) if x)
+        if _extra:
+            system_prompt = system_prompt + "\n\n" + _extra
+    except AIServiceError:
+        raise
+    except Exception:
+        logger.debug("事件 hooks 失败（忽略）", exc_info=True)
+
     ctx = AgentContext(
         db=db, store=store, user=user, allowed_paths=body.selected_files or [],
         permission_mode=perm_mode, full_disk_access=full_disk,
         auto_spend_limit=getattr(store, "agent_auto_spend_limit", None),
         model_ctx_window=_model_ctx_window(),  # SH-6：配了 DESKTOP_MODEL_CTX_WINDOW 才启用自动瘦身
+        goal=body.goal or "",
     )
 
     # 多轮续接：有 conversation_id 则从 DB 查本会话历史(替代前端全量回传——刷新不丢、省 token、更可靠);否则用前端 history。
@@ -429,11 +741,14 @@ async def agent_chat(
         turns = 0
         try:
             async for event in run_agent_loop_stream(
-                user_message=body.message,
-                registry=default_registry,
+                user_message=effective_message,
+                # 通用 Agent 默认走通用工具集；@ 了台球知识库则用全集；再并入已配置的 MCP server 工具
+                registry=_build_agent_registry(billiards_mode),
                 ctx=ctx,
                 system_prompt=system_prompt,
                 history=history,
+                # 多模态：老板随消息选的图片直接进 user 消息（image_url），模型自带识图就能看。
+                user_images=[p for p in (body.selected_files or []) if is_image(p)] if os.environ.get("DESKTOP_LOCAL") == "1" else None,
                 model=body.model,
                 provider=build_resilient_text_provider(store),  # BYOK：对话走门店自带 key；某家挂了自动切备用档
             ):
@@ -466,10 +781,17 @@ async def agent_chat(
                     if deliverables:
                         tail = f"\n\n{final_content}" if final_content.strip() else ""
                         persist_text = "\n\n".join(deliverables) + tail
+                    # 采纳信号只记在推荐触发的那一轮（首轮、无续接 id）；同会话后续追问不重复计采纳。
+                    _rec_id = body.source_rec_id if not body.conversation_id else None
                     await _persist_agent_chat(db, store, user, body.message, persist_text, gen_id, conv_uuid,
-                                              turns, tokens_used=tokens_used)
+                                              turns, tokens_used=tokens_used, source_rec_id=_rec_id)
                     event = {**event, "generation_id": gen_id, "conversation_id": str(conv_uuid)}
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except AppException as e:
+            # 业务异常（含 BYOK 守卫的"还没配 key"友好 503 AIProviderError）：把明确的中文引导透传给前端，
+            # 让用户知道去「模型设置」配自己的 key，而不是看笼统的"出现错误请重试"。need_byok=True 时前端弹「去设置」。
+            logger.info("agent chat 业务异常→前端: %s (status=%s)", e.message, e.status_code)
+            yield f"data: {json.dumps({'type': 'error', 'error': e.message, 'need_byok': e.status_code == 503}, ensure_ascii=False)}\n\n"
         except Exception:
             logger.exception("agent chat stream error")
             yield f"data: {json.dumps({'type': 'error', 'error': '生成过程中出现错误，请重试'}, ensure_ascii=False)}\n\n"
@@ -493,6 +815,7 @@ class AgentExecuteRequest(BaseModel):
     full_disk_access: bool | None = None     # 同 chat：全盘模式下手动确认的文件改动也需放行
     token: str | None = None                 # 审批提案签名（绑定本组 args，防前端篡改后再确认）
     conversation_id: str | None = None       # 审批回灌：执行后据此取历史，让管家基于结果自然接话
+    knowledge_packs: list[str] | None = None  # 同 chat：续接也按是否 @ 台球决定身份/工具集
 
 
 @router.post("/execute")
@@ -511,6 +834,13 @@ async def agent_execute(
     由全局异常处理转成对用户友好的提示。
     """
     tool = default_registry.get(body.tool)
+    if tool is None and body.tool.startswith("mcp__"):
+        # MCP 工具是按请求注入的（不在全局 default_registry）；审批执行端也要能找到它们，否则需确认的 MCP 动作无法落地。
+        try:
+            from services.agent.mcp_client import load_mcp_tools
+            tool = next((t for t in load_mcp_tools() if t.name == body.tool), None)
+        except Exception:
+            tool = None
     if tool is None or not tool.requires_approval:
         raise AIServiceError("该操作不可执行，或无需经此确认")
 
@@ -552,7 +882,9 @@ async def agent_execute(
     try:
         profile_text = render_operation_profile_context(store)
         memories = await load_store_memory(db, store.id)
-        sys_prompt = compose_agent_system_prompt(profile_text, format_memories_for_prompt(memories), full_disk=full_disk)
+        billiards_mode = bool(body.knowledge_packs and "billiards" in body.knowledge_packs)
+        sys_prompt = compose_agent_system_prompt(profile_text, format_memories_for_prompt(memories),
+                                                 full_disk=full_disk, billiards_mode=billiards_mode)
         history = await _load_agent_history(db, store, body.conversation_id)
         synth = (
             f"[系统提示·非用户输入] 老板已确认、你刚请求的「{body.tool}」已执行完成。"
@@ -560,7 +892,7 @@ async def agent_execute(
             f"不要重复粘贴上面的结果原文，也不要重新调用「{body.tool}」。"
         )
         cont = await run_agent_loop(
-            user_message=synth, registry=default_registry, ctx=ctx,
+            user_message=synth, registry=_build_agent_registry(billiards_mode), ctx=ctx,
             system_prompt=sys_prompt, history=history,
             provider=build_resilient_text_provider(store),  # 同上：失败自动切备用档
             max_turns=3,

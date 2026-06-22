@@ -39,6 +39,10 @@ class Generation(Base):
     rated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     quality_used: Mapped[str | None] = mapped_column(String(20))
     image_size: Mapped[str | None] = mapped_column(String(20))
+    # 隐式反馈闭环：这条生成由今日推荐的哪一条触发（rec.id，如 "festival"/"daily_focus"/"frequent"）。
+    # 空=非推荐触发（老板自己发起）。轻量、可空；SQLite 由 init_local._reconcile_columns 自动补列。
+    # 被采纳多的推荐类别在排序时上浮、长期没人点的下沉（见 behavior_service.adopted_rec_ids）。
+    source_rec_id: Mapped[str | None] = mapped_column(String(50))
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
     # Python 侧 default：flush 时即落值，commit 后无需 db.refresh 回填——
