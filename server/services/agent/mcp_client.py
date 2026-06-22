@@ -1,4 +1,4 @@
-"""MCP (Model Context Protocol) 客户端 —— clean-room 最小实现（stdio JSON-RPC，不引第三方 SDK）。
+"""MCP (Model Context Protocol) 客户端 —— 最小实现（stdio JSON-RPC，不引第三方 SDK）。
 
 连接外部 MCP server，把其 tools 暴露给 Agent（命名 `mcp__<server>__<tool>`，缓存稳定排序保前缀缓存）。
 - 配置：`.mcp.json`（`{"mcpServers": {"<name>": {"command":.., "args":[..], "env":{..}}}}`），

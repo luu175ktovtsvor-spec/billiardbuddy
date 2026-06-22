@@ -1,6 +1,6 @@
 """IM 适配 · Telegram —— 对标 Claude Code 的 IM 渠道适配器（adapters/）。
 
-把 Agent 接到 Telegram bot：长轮询收消息 → 跑 agent → 回消息。clean-room、stdlib urllib（无依赖）。
+把 Agent 接到 Telegram bot：长轮询收消息 → 跑 agent → 回消息。stdlib urllib（无依赖）。
 配置（env / 桌面注入）：`TELEGRAM_BOT_TOKEN`、`TELEGRAM_ALLOWED_CHATS`（逗号分隔的 chat_id，空=全允许）。
 安全：IM 无法弹审批卡 → **IM 安全工具集**：排除所有需审批/写改/跑命令/操作电脑/对外的工具，只查只生成。
 其它平台（飞书/微信/钉钉）照此结构加一个适配器即可（poll/parse/send + 同一个 agent_runner）。

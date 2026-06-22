@@ -1,4 +1,4 @@
-"""Skills 系统 —— 对标 Claude Code 的 SKILL.md（clean-room：只复刻开放契约，不抄源码）。
+"""Skills 系统 —— 对标 Claude Code 的 SKILL.md（参考其实现，可直接抄用）。
 
 技能(Skill) = 一个目录含 `SKILL.md`（YAML frontmatter + markdown 正文）。
 - **渐进式披露**：每次只把"名字 + description"清单注入系统提示；正文 body 仅当被调用
