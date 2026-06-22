@@ -8,6 +8,8 @@ domain: customer-ops
 freedom: red_line
 tags: [scene:赛事活动, role:教练, object:追分客, object:竞技客, scene:抢一大战]
 variables: []
+key_facts:  # 硬数字单一可信源(镜像PPT硬规则对照表)；look_up_knowledge会带回它,答硬数字以此为准
+  - "抢一大战：报名费10元、奖金200-500元、下午两点+晚上七点各一场、提前预热、让条件增加偶然性(金额为区间参考·门店自定)"
 template: |
   ## 赛事活动规则知识库
 

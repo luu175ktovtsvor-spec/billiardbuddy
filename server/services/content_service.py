@@ -431,10 +431,14 @@ def rank_knowledge_for_topic(topic: str, top: int = 5) -> list[dict]:
 
     def _shape(key: str) -> dict:
         data = prompt_engine._templates.get(key) or {}
+        kf = data.get("key_facts") or []
         return {
             "key": key,
             "name": str(data.get("name", "")) or key,
             "description": str(data.get("description", "")).strip(),
+            # key_facts：知识文件里钉死的硬数字/铁律（单一可信源镜像）。look_up_knowledge 把它一并带回，
+            # 让"查一下"这条路也能拿到精确事实、不必去网搜/瞎编（双索引：description 管语义召回、key_facts 管精确事实）。
+            "key_facts": [str(x).strip() for x in kf if str(x).strip()] if isinstance(kf, list) else [],
         }
 
     topic = (topic or "").strip()

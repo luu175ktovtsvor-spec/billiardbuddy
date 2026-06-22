@@ -7,6 +7,9 @@ domain: talent-mgmt
 freedom: hard_number
 tags: [scene:薪资, role:助教]
 variables: []
+key_facts:  # 硬数字单一可信源(镜像PPT硬规则对照表)；look_up_knowledge会带回它,答硬数字以此为准
+  - "七天筛选制：新助教7天内按实打结算、不设保底，7天内定去留；开业前招聘只有补助没保底"
+  - "助教月业绩阶梯奖励(参考·门店自定)：>170h奖500元 / >200h奖1000元 / >230h奖1500元"
 template: |
   ## 助教薪资体系知识库
 

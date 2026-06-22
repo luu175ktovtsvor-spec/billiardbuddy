@@ -92,10 +92,14 @@ async def find_scenario(args: dict, ctx) -> str:
 @tool(
     name="look_up_knowledge",
     read_only=True,
-    description="查台球行业知识库（55 条真实运营知识：获客/客户运营/助教/店长/数据诊断/红线合规…）。"
-                "**拿不准某个运营做法该不该做、是不是踩红线、有没有更专业的打法时，用它查行业知识再判断**——"
-                "比凭空想靠谱。给个 topic（你拿不准的那件事，原话即可），返回最相关的几条知识的"
-                "名字 + 一句索引（不是整篇正文，省 token）；要据某条深入写内容时，对应场景模板走 find_scenario。",
+    description="查台球行业知识库（真实运营知识：获客/客户运营/助教/店长/数据诊断/红线合规…，含硬数字）。"
+                "**拿不准某个运营做法该不该做、是不是踩红线、有没有更专业的打法、或要某个行业硬数字"
+                "（美团金牌线/充值档位/助教薪资PK系数/抢一大战奖金/人员配置等）时，用它查再判断**——"
+                "比凭空想靠谱。给个 topic（你拿不准的那件事，原话即可），返回最相关几条的名字 + 一句索引 + 钉死的硬数字。"
+                "⚠️【台球行业的硬数字/做法以本知识库为准，别上网搜】：要确数先用这个查，查到的【硬数字】直接照用；"
+                "查不到具体数字时用对应工具(写文案/诊断会带出全文)或如实说不确定让老板提供，"
+                "**别用 web_search 去搜台球行业数字、也别拿网搜结果覆盖知识库口径**（网上的不一定对、还可能编）。"
+                "要据某条深入写内容时，对应场景模板走 find_scenario。",
     parameters={
         "type": "object",
         "properties": {
@@ -113,8 +117,14 @@ async def look_up_knowledge(args: dict, ctx) -> str:
     lines = []
     for h in hits:
         desc = h.get("description") or ""
-        lines.append(f"【{h['name']}】{desc}" if desc else f"【{h['name']}】")
-    return "行业知识参考（拿这些判断该不该做/是不是红线/有没有更专业打法）：\n" + "\n".join(lines)
+        line = f"【{h['name']}】{desc}" if desc else f"【{h['name']}】"
+        facts = h.get("key_facts") or []
+        if facts:
+            # 钉死的硬数字直接带回——这就是准数，照用，别再上网搜。
+            line += "\n  ▸ 硬数字(以此为准)：" + "；".join(facts)
+        lines.append(line)
+    return ("行业知识参考（判断该不该做/是不是红线/有没有更专业打法；带【硬数字】的直接照用、别上网搜覆盖）：\n"
+            + "\n".join(lines))
 
 
 @tool(
