@@ -109,7 +109,7 @@
 | **Skills（SKILL.md）** | ✅ | ✅ **端到端**（加载/渐进披露/skill工具/slash/面板/2内置技能/18测试） |
 | Output Styles | ✅ | ✅ 端到端（loader/系统提示注入/`GET /agent/output-styles`/工具条风格下拉/2内置风格,7测试） |
 | Plugins + Marketplace | ✅ | ⚠️ 本地目录插件✅ + **install_plugin**(从 GitHub owner/repo 或 url `git clone` 安装→组件自动生效)✅；marketplace目录/npm·pip源/依赖闭包❌ |
-| MCP 客户端 | ✅ | ✅ stdio JSON-RPC(无依赖)：`.mcp.json`配置/发现/调用/状态/按readOnlyHint分级审批，接进registry，`GET /agent/mcp`，5测试 |
+| MCP 客户端 | ✅ | ✅ 官方 `mcp` SDK(stdio)：`.mcp.json`配置/发现/调用/状态/按readOnlyHint分级审批，接进registry，`GET /agent/mcp`，5测试 |
 
 ## J · Computer Use / 测试
 
