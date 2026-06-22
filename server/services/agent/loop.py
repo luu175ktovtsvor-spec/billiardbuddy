@@ -123,6 +123,22 @@ _MAX_SAME_CALL = 3
 #    换掉一大段顶满窗口的旧文 + 续命不让请求溢出」的划算交易，且仅临近窗口才发生（低频）。除本函数外任何
 #    代码都不应重建前缀，详见 docs/耦合地图与改动检查清单.md「prompt-cache 前缀稳定纪律」。
 # 故障安全：估算/总结任一步抛错 → 跳过压缩、用原 messages 继续，绝不让主循环崩。
+# 循环每轮响应的 max_tokens 默认值（可配）。原 2000 偏小：写运营方案/长文案常超 2000 token，
+# 会把【工具调用的超长 content 参数】截断 → 入参 JSON 不完整 → 解析失败 → 写空文件 → 打转到 502。
+# 提到 4096 让多数方案一次写完；仍超长的由 _plan_tool_call 的"截断专属回灌"兜底（让模型写精简/分次）。
+try:
+    _DEFAULT_AGENT_MAX_TOKENS = max(2000, int(os.environ.get("DESKTOP_AGENT_MAX_TOKENS", "4096") or 4096))
+except (TypeError, ValueError):
+    _DEFAULT_AGENT_MAX_TOKENS = 4096
+
+# 工具入参被截断（raw 非空却 JSON 解析不出，多半是 content 太长撞上 max_tokens）时回灌给模型的指令：
+# 不拿空参去执行(会写空文件/反复重试同一个超大写入→打转到502)，而是明确让它换策略——写精简或分次。
+_ARGS_TRUNCATED_MSG = (
+    "【工具 {name} 的参数没收全、解析失败】很可能是 content 等长内容超出单次输出上限被截断了。"
+    "别再原样重发同一个超大调用。请改写法：① 把内容写精简（砍掉冗长表格/重复段，只留能直接用的主干）；"
+    "或 ② 分多次写——先用 write_file 写主干骨架，再用 edit_file 逐段追加。一次别塞超长内容。"
+)
+
 _AUTOCOMPACT_MIN_OLD = 6   # 较早段至少要有这么多条消息才值得花 LLM 压（太少不划算、直接跳过）
 _AUTOCOMPACT_SUMMARY_MAX_TOKENS = 1024  # 摘要生成的 max_tokens（够装关键事实/待办，又不喧宾夺主）
 _AUTOCOMPACT_SUMMARY_PROMPT = (
@@ -433,7 +449,12 @@ def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _Too
     tc_id = tc.get("id")
     fn = tc.get("function") or {}
     name = fn.get("name")
-    args = _parse_args(fn.get("arguments"))
+    args, parsed_ok = _parse_args_ex(fn.get("arguments"))
+    # 入参被截断(非空却解析失败)：别拿空参去执行(会写空文件/反复重试同一超大写入→打转到502)，
+    # 回灌"截断专属"指令让模型写精简/分次。这是 502 大文件 bug 的根治点。
+    if not parsed_ok:
+        return _ToolPlan(name=name, args={}, tool_call_id=tc_id,
+                         error=_ARGS_TRUNCATED_MSG.format(name=name or "该工具"))
 
     tool = registry.get(name) if name else None
     if tool is not None:
@@ -521,7 +542,7 @@ async def run_agent_loop(
     history: list[dict] | None = None,
     user_images: list[str] | None = None,
     max_turns: int = 8,
-    max_tokens: int = 2000,
+    max_tokens: int = _DEFAULT_AGENT_MAX_TOKENS,
     temperature: float = _ORCH_TEMPERATURE,
 ) -> AgentResult:
     provider = provider or ProviderFactory.get_orchestration_provider()
@@ -603,7 +624,7 @@ async def run_agent_loop(
             steps.append(AgentStep(type="thinking", content=resp.content))
 
         # 把 assistant 的 tool_calls 原样回灌（下一轮模型需要看到自己调了什么）
-        messages.append({"role": "assistant", "content": resp.content or "", "tool_calls": resp.tool_calls})
+        messages.append({"role": "assistant", "content": resp.content or "", "tool_calls": _sanitize_tool_calls(resp.tool_calls)})
 
         # 逐个处理工具调用：审批闸判定 → （待确认 回灌"待确认" | 执行 回灌结果）
         for tc in resp.tool_calls:
@@ -659,16 +680,39 @@ async def run_agent_loop(
 
 
 def _parse_args(raw) -> dict:
+    return _parse_args_ex(raw)[0]
+
+
+def _parse_args_ex(raw) -> tuple[dict, bool]:
+    """解析工具入参，返回 (args, parsed_ok)。
+    parsed_ok=False 仅当 raw 是【非空字符串但 JSON 解析失败】——多半是 content 等长字段撞上
+    max_tokens 被截断（区别于"模型本就没给参数"的合法空参 {}）。调用方据此回灌"截断专属"指令让模型换策略。"""
     if isinstance(raw, dict):
-        return raw
-    if not raw:
-        return {}
+        return raw, True
+    if not raw or (isinstance(raw, str) and not raw.strip()):
+        return {}, True
     try:
         parsed = json.loads(raw)
-        return parsed if isinstance(parsed, dict) else {}
+        return (parsed, True) if isinstance(parsed, dict) else ({}, True)
     except (ValueError, TypeError):
-        logger.warning("工具入参解析失败，按空参处理: %r", raw)
-        return {}
+        logger.warning("工具入参解析失败(疑被截断)，回灌让模型精简/分次重试: %.120r", raw)
+        return {}, False
+
+
+def _sanitize_tool_calls(tool_calls):
+    """回灌进消息历史前，把【解析不出(被截断)的 tool_call 参数】替换成 "{}"。
+    防畸形 JSON 参数(content 太长被砍断)被原样重发给 provider → 触发 400/500；同时丢掉超长半截
+    内容、缩小上下文。配合 _plan_tool_call 的"截断专属"回灌，让模型拿到干净历史 + 明确指令去重试。"""
+    if not tool_calls:
+        return tool_calls
+    out = []
+    for tc in tool_calls:
+        fn = tc.get("function") or {}
+        if _parse_args_ex(fn.get("arguments"))[1]:
+            out.append(tc)
+        else:
+            out.append({**tc, "function": {**fn, "arguments": "{}"}})
+    return out
 
 
 async def _execute_tool(registry: ToolRegistry, name: str | None, args: dict, ctx: AgentContext) -> str:
@@ -929,7 +973,7 @@ async def run_agent_loop_stream(
     history: list[dict] | None = None,
     user_images: list[str] | None = None,
     max_turns: int = 8,
-    max_tokens: int = 2000,
+    max_tokens: int = _DEFAULT_AGENT_MAX_TOKENS,
     temperature: float = _ORCH_TEMPERATURE,
 ):
     """流式版 ReAct 循环：边跑边 yield 事件 dict，供 SSE 推给前端。
@@ -1024,7 +1068,7 @@ async def run_agent_loop_stream(
             return
 
         # 工具调用轮：assistant(tool_calls) 回灌 → 逐个处理 → 结果回灌
-        messages.append({"role": "assistant", "content": text, "tool_calls": sink})
+        messages.append({"role": "assistant", "content": text, "tool_calls": _sanitize_tool_calls(sink)})
         for tc in sink:
             plan = _plan_tool_call(tc, registry, ctx)
             if plan.error:  # 入参校验未过：吐 tool_call + 错误结果，回灌让模型改参数重试，不执行
