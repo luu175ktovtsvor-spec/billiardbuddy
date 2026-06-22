@@ -83,16 +83,22 @@ def _provider_client_and_model(store=None) -> tuple[AsyncOpenAI, str]:
 
 
 async def _json_call(system: str, user: str, store=None) -> dict:
-    """调 JSON 模式（BYOK 门店走门店自带模型），解析失败返回 {}（不抛，调用方兜底）。"""
-    client, model = _provider_client_and_model(store)
-    resp = await client.chat.completions.create(
-        model=model,
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-        response_format={"type": "json_object"},
-        temperature=0,  # 记忆抽取/整合求稳定可复现，温度拉到 0
-        max_tokens=900,
-    )
-    raw = resp.choices[0].message.content or ""
+    """调 JSON 模式（BYOK 门店走门店自带模型），解析/调用失败返回 {}（不抛，调用方兜底）。
+    店脑学习是【辅助功能】：没配 key（纯 BYOK 未配 → 构造空 key client 即报错）或 provider 任何报错，
+    都静默跳过、绝不让主对话崩——"还没配 key"的友好引导由主生成的 503 守卫负责给。"""
+    try:
+        client, model = _provider_client_and_model(store)
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            response_format={"type": "json_object"},
+            temperature=0,  # 记忆抽取/整合求稳定可复现，温度拉到 0
+            max_tokens=900,
+        )
+        raw = resp.choices[0].message.content or ""
+    except Exception as e:
+        logger.warning("memory_service 调用失败(辅助功能，已跳过): %s", type(e).__name__)
+        return {}
     try:
         return json.loads(raw)
     except json.JSONDecodeError:

@@ -8,6 +8,7 @@
 
 ⚠️ 云端 web 版（PostgreSQL，多租户）绝不注册这些——文件操作只在用户自己机器上的本地后端有意义。
 """
+import asyncio
 import logging
 import os
 import re
@@ -332,21 +333,54 @@ async def run_command(args: dict, ctx) -> str:
         return f"命令解析失败（引号没配对？）：{e}"
     if not parts:
         return "命令是空的，没东西可跑。"
+    # 命令边跑边显示（对标 Claude Code）：用 asyncio 子进程逐行读 stdout/stderr，
+    # 若 ctx.progress_emit 在则每段实时推出（流式循环据此 yield tool_progress）；同时攒全量供最终结果。
+    emit = getattr(ctx, "progress_emit", None)
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = []
+
+    async def _pump(stream, sink, kind):
+        if stream is None:
+            return
+        while True:
+            raw = await stream.readline()
+            if not raw:
+                break
+            line = raw.decode("utf-8", errors="replace")
+            sink.append(line)
+            if emit:
+                try:
+                    emit({"type": "tool_progress", "tool": "run_command", "stream": kind, "chunk": line})
+                except Exception:
+                    pass
+
     try:
-        proc = subprocess.run(
-            parts, shell=False, capture_output=True, text=True,
-            timeout=timeout_sec, cwd=cwd,
+        proc = await asyncio.create_subprocess_exec(
+            *parts, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd,
         )
-    except subprocess.TimeoutExpired:
-        return f"命令跑超时了（超过 {int(timeout_sec)} 秒自动掐断）：{command}"
     except FileNotFoundError:
         return f"找不到这个命令（没装或不在 PATH 里）：{parts[0]}"
     except OSError as e:
         return f"命令没跑起来：{e}"
-    stdout = proc.stdout or ""
-    stderr = proc.stderr or ""
-    stdout_show = _truncate_output(stdout)
-    stderr_show = _truncate_output(stderr)
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(
+                _pump(proc.stdout, stdout_parts, "stdout"),
+                _pump(proc.stderr, stderr_parts, "stderr"),
+                proc.wait(),
+            ),
+            timeout=timeout_sec,
+        )
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        return f"命令跑超时了（超过 {int(timeout_sec)} 秒自动掐断）：{command}"
+
+    stdout_show = _truncate_output("".join(stdout_parts))
+    stderr_show = _truncate_output("".join(stderr_parts))
     out = [f"命令：{command}", f"返回码：{proc.returncode}"]
     if stdout_show:
         out.append(f"【标准输出】\n{stdout_show}")
@@ -368,8 +402,67 @@ def _truncate_output(text: str, max_lines: int = 100) -> str:
     return f"{kept}\n…[输出共 {len(lines)} 行，只显示前 {max_lines} 行]"
 
 
+_DOC_MAX_CHARS = 9000  # PDF/Word/PPT 提取文字封顶，防撑爆上下文；超了给清晰提示
+
+
+def _cap_doc(text: str, kind: str) -> str:
+    if len(text) > _DOC_MAX_CHARS:
+        return text[:_DOC_MAX_CHARS] + f"\n\n…[{kind}较长，已读前 {_DOC_MAX_CHARS} 字；要看后面或某部分请说明]"
+    return text
+
+
+def _read_pdf(path) -> str:
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(str(path))
+        parts = []
+        for i, page in enumerate(reader.pages, 1):
+            t = (page.extract_text() or "").strip()
+            if t:
+                parts.append(f"--- 第 {i} 页 ---\n{t}")
+        if not parts:
+            return "（这份 PDF 没提取到文字——多半是扫描件/图片型 PDF，要 OCR 才能读）"
+        return _cap_doc("\n\n".join(parts), "PDF")
+    except Exception as e:  # noqa: BLE001
+        return f"（PDF 读取失败：{e}）"
+
+
+def _read_docx(path) -> str:
+    try:
+        import docx
+        doc = docx.Document(str(path))
+        parts = [p.text for p in doc.paragraphs if p.text.strip()]
+        for tbl in doc.tables:
+            for row in tbl.rows:
+                cells = [c.text.strip() for c in row.cells]
+                if any(cells):
+                    parts.append(" | ".join(cells))
+        if not parts:
+            return "（这份 Word 文档没有文字内容）"
+        return _cap_doc("\n".join(parts), "Word 文档")
+    except Exception as e:  # noqa: BLE001
+        return f"（Word 读取失败：{e}）"
+
+
+def _read_pptx(path) -> str:
+    try:
+        from pptx import Presentation
+        prs = Presentation(str(path))
+        parts = []
+        for i, slide in enumerate(prs.slides, 1):
+            texts = [s.text_frame.text.strip() for s in slide.shapes
+                     if s.has_text_frame and s.text_frame.text.strip()]
+            if texts:
+                parts.append(f"--- 第 {i} 页 ---\n" + "\n".join(texts))
+        if not parts:
+            return "（这份 PPT 没有文字内容）"
+        return _cap_doc("\n\n".join(parts), "PPT")
+    except Exception as e:  # noqa: BLE001
+        return f"（PPT 读取失败：{e}）"
+
+
 async def read_file(args: dict, ctx) -> str:
-    """读一个文件的内容，给 Agent 看（编辑前先读）。文本直接读；Excel 列出非空单元格。"""
+    """读一个文件的内容，给 Agent 看（编辑前先读）。文本直接读；Excel 列非空单元格；PDF/Word/PPT 提取文字。"""
     path = _resolve(args["path"], ctx)
     if not path.exists():
         return f"文件不存在：{args['path']}"
@@ -397,6 +490,12 @@ async def read_file(args: dict, ctx) -> str:
                         lines.append(f"{cell.coordinate}={cell.value!r}")
                         emitted += 1
         return "\n".join(lines) if lines else "（空表）"
+    if path.suffix.lower() == ".pdf":
+        return _read_pdf(path)
+    if path.suffix.lower() == ".docx":
+        return _read_docx(path)
+    if path.suffix.lower() == ".pptx":
+        return _read_pptx(path)
     try:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
@@ -704,7 +803,7 @@ _LOCAL_TOOLS = [
     ),
     Tool(
         name="read_file",
-        description="读取内容库里某个文件的内容（编辑前必须先读，才知道里面是什么）。Excel 会列出各单元格。",
+        description="读取内容库里某个文件的内容（编辑前必须先读，才知道里面是什么）。Excel 列单元格；PDF/Word(.docx)/PPT(.pptx) 自动提取文字。",
         parameters={"type": "object", "properties": {"path": {"type": "string", "description": "内容库内的文件名/相对路径，或老板当场选定文件的完整路径"}}, "required": ["path"]},
         handler=read_file,
         read_only=True,

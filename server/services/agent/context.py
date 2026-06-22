@@ -20,6 +20,8 @@ class AgentContext:
     #   "auto_files" 信任模式：本机文件读改免确认直接动手（仍自动备份），对外/写入仍弹确认；
     #   "full"       最高权限：所有动作（含对外/写入）都免确认自动执行。
     permission_mode: str = "ask"
+    # /goal 目标驱动：设了目标 → 收尾前 Stop hook 回灌"对照目标自检"，没完成就继续（受 max_turns 兜底）。
+    goal: str = ""
     # 范围越界开关：True = 文件工具不再限于"内容库+选定文件"，可碰任意路径（高级·带风险）。
     full_disk_access: bool = False
     # 防打转计数：同一工具+完全相同参数的调用次数（_execute_tool 跨轮维护），超阈值拦下逼模型换思路。
@@ -75,3 +77,11 @@ class AgentContext:
     #   不必再各自去 factory 取。None = 子代理自己回退到编排默认 provider/model。
     provider: Any = None
     model: Any = None
+    # 流式工具进度回调（命令边跑边显示）：run_agent_loop_stream 执行工具前挂上它，工具(如 run_command)
+    #   执行中把每段输出经它推出去 → 循环 yield tool_progress 事件 → 前端实时渲染。同步入口/无需流式时为 None。
+    progress_emit: Any = None
+    # ── 非识图模型优雅降级（模型无关·反应式）──
+    # 老板随消息带了图、但他自带的文字模型不支持图片（撞 image_url 直接报错），loop 会自动去图、用纯文字重试一次，
+    # 并把这个标记置 True；拼最终答复处据此加一句温和提示（"看不了图，这次按文字来的，要看图换个带视觉的模型"）。
+    # 不靠任何"识图/非识图模型清单"，纯靠"报错→去图重试"反应式判定（呼应壳子不分识图模型的原则）。默认 False。
+    vision_degraded: bool = False

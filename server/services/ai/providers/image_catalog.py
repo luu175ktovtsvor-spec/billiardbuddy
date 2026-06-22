@@ -102,6 +102,41 @@ def resolve_image_kind(base_url: str | None) -> str:
     return "openai_compatible"
 
 
+def _catalog_entry_for_base_url(base_url: str | None):
+    """据 base_url 找目录里对应的供应商条目（按 host 前缀宽松匹配）。找不到→None（=未知供应商，不拦）。"""
+    u = (base_url or "").strip().rstrip("/").lower()
+    if not u:
+        return None
+    for entry in IMAGE_PROVIDER_CATALOG:
+        cat = str(entry.get("base_url") or "").rstrip("/").lower()
+        if cat and (u == cat or u.startswith(cat) or cat.startswith(u)):
+            return entry
+    return None
+
+
+def validate_image_model(base_url: str | None, model: str | None) -> dict:
+    """温和校验：填的生图 model 是否属于所选 base_url 那家供应商（按 IMAGE_PROVIDER_CATALOG）。
+
+    返回 {ok, level, message, provider, known_models}：
+    - 供应商不在目录里（自定义端点）→ ok=True、level="unknown"（不拦，老板自己填的端点我们不认得很正常）；
+    - model 在该家目录里 → ok=True、level="match"；
+    - model 不在 → ok=False、level="mismatch"，给一句『模型名跟所选供应商对不上，确认下？』并列出该家有哪些模型。
+    纯查目录、不触网；前端也可直接用目录数据自行校验，这个端点是给"填了自定义端点"时兜底。"""
+    model = (model or "").strip()
+    entry = _catalog_entry_for_base_url(base_url)
+    if entry is None:
+        return {"ok": True, "level": "unknown", "message": "", "provider": "", "known_models": []}
+    known = [str(m.get("id")) for m in (entry.get("models") or []) if m.get("id")]
+    pname = str(entry.get("name") or "")
+    if not model:
+        return {"ok": True, "level": "unknown", "message": "", "provider": pname, "known_models": known}
+    if model in known:
+        return {"ok": True, "level": "match", "message": "", "provider": pname, "known_models": known}
+    hint = ("这个模型名跟所选供应商「" + pname + "」对不上，确认下？"
+            + ("该供应商常用模型：" + "、".join(known) + "。" if known else ""))
+    return {"ok": False, "level": "mismatch", "message": hint, "provider": pname, "known_models": known}
+
+
 async def fetch_image_bytes(url: str) -> bytes:
     """把生图返回的图片 URL 即时下载成 bytes（国内端点 url 多为 1-24h 短期有效，必须立刻取回落盘）。"""
     timeout = httpx.Timeout(settings.openai_image_timeout, connect=30.0)

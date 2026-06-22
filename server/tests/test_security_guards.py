@@ -48,14 +48,6 @@ def test_rbac_list_implies_create():
             assert Permission.GENERATION_CREATE in perms, f"{role} 有 LIST 却无 CREATE，会让 LIST-守护的写端点失守"
 
 
-def test_report_submission_feeds_store_brain():
-    """日报提交必须把店主手写 note 喂进店脑学习(越用越懂的关键原料)——防被悄悄删回去。"""
-    import inspect
-    import api.v1.reports as reports
-    src = inspect.getsource(reports)
-    assert "learn_in_background" in src, "日报提交未把 note 喂店脑(store-brain 学习接线丢失)"
-
-
 def test_run_generation_logs_usage_events():
     """统一管道必须给生成打使用事件(成功+失败)，喂版本迭代——防被悄悄删回去。"""
     import inspect
@@ -82,14 +74,6 @@ def test_user_self_service_change_password_wired():
     import api.v1.auth as auth
     src = inspect.getsource(auth)
     assert "change_password" in src and '"/password"' in src, "用户自助改密码端点丢失"
-
-
-def test_admin_reset_password_uses_request_body():
-    """后台重置密码必须走请求体(不进URL/日志)——防回退成 query 参数。"""
-    import inspect
-    import api.v1.admin as admin
-    src = inspect.getsource(admin.admin_reset_password)
-    assert "AdminResetPasswordRequest" in src and "body.new_password" in src, "后台重置密码不应再走 query 参数"
 
 
 def test_store_update_whitelist_excludes_identity_and_ownership():

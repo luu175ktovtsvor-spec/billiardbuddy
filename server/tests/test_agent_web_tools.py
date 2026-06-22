@@ -166,15 +166,17 @@ def test_web_search_max_caps(monkeypatch):
 
 
 def test_web_search_blocked_friendly(monkeypatch):
+    # 两源都返回非 200（被挡）→ 友好"受限"提示，且引导改用 WebFetch
     _patch_httpx(monkeypatch, resp=_FakeResp(status=403, text="blocked"))
     out = asyncio.run(web_tools.web_search({"query": "x"}, _ctx()))
-    assert "搜索暂时不可用" in out and "WebFetch" in out
+    assert "受限" in out and "WebFetch" in out
 
 
 def test_web_search_network_error_friendly(monkeypatch):
+    # 两源都抛网络错 → 不崩，返回友好"受限"提示
     _patch_httpx(monkeypatch, exc=httpx.ConnectError("boom"))
     out = asyncio.run(web_tools.web_search({"query": "x"}, _ctx()))
-    assert "搜索暂时不可用" in out  # 不抛异常
+    assert "受限" in out  # 不抛异常
 
 
 def test_web_search_no_results(monkeypatch):
@@ -186,6 +188,84 @@ def test_web_search_no_results(monkeypatch):
 def test_web_search_empty_query():
     out = asyncio.run(web_tools.web_search({"query": ""}, _ctx()))
     assert "搜索词" in out
+
+
+# DDG 限流(202/空) → 退 Bing 兜底。用区分 post/get 的假客户端：post(DDG)给挑战页、get(Bing)给可解析结果。
+_BING_HTML = (
+    '<li class="b_algo"><h2 class=""><a target="_blank" href="https://x.com/a">台球房抖音引流实操</a></h2>'
+    '<div class="b_caption"><p class="b_lineclamp2">教你台球房怎么在抖音获客</p></div></li>'
+    '<li class="b_algo"><h2 class=""><a href="https://bing.com/nav">站内导航应跳过</a></h2>'
+    '<div class="b_caption"><p class="b_lineclamp2">x</p></div></li>'
+)
+
+
+class _SplitClient:
+    """假 httpx：post(DDG) 与 get(Bing) 各给不同响应，验证双源兜底链路。"""
+    def __init__(self, ddg_resp, bing_resp):
+        self._ddg, self._bing = ddg_resp, bing_resp
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def post(self, url, **kw):
+        return self._ddg
+
+    async def get(self, url, **kw):
+        return self._bing
+
+
+def test_web_search_falls_back_to_bing(monkeypatch):
+    # DDG 返 202（限流、无结果）→ 自动退 Bing，拿到 Bing 结果；Bing 自身导航链接被过滤
+    monkeypatch.setattr(
+        web_tools.httpx, "AsyncClient",
+        lambda *a, **k: _SplitClient(_FakeResp(status=202, text="challenge"), _FakeResp(text=_BING_HTML)),
+    )
+    out = asyncio.run(web_tools.web_search({"query": "台球房引流"}, _ctx()))
+    assert "台球房抖音引流实操" in out and "https://x.com/a" in out
+    assert "站内导航应跳过" not in out  # bing.com 自身链接被过滤
+
+
+def test_web_search_ddg_first_skips_bing(monkeypatch):
+    # DDG 有结果时不该再打 Bing（get 抛错来证明没被调用）
+    class _DDGOnly(_SplitClient):
+        async def get(self, url, **kw):
+            raise AssertionError("DDG 有结果时不应调用 Bing")
+    monkeypatch.setattr(
+        web_tools.httpx, "AsyncClient",
+        lambda *a, **k: _DDGOnly(_FakeResp(text=_DDG_HTML), None),
+    )
+    out = asyncio.run(web_tools.web_search({"query": "台球房引流"}, _ctx()))
+    assert "台球房抖音引流" in out  # 来自 DDG
+
+
+# ────────────────────────────── WebFetch · JS 壳/反爬识别 ──────────────────────────────
+
+def test_web_fetch_detects_js_shell(monkeypatch):
+    # 正文极短(有一点文字但<200字) + 一堆 <script> → 判为 JS 壳，提示靠 JS 渲染/反爬、换来源
+    shell = ('<html><body><div id="root">加载中</div>'
+             + ('<script src="a.js"></script>' * 5) + '</body></html>')
+    _patch_httpx(monkeypatch, resp=_FakeResp(text=shell))
+    out = asyncio.run(web_tools.web_fetch({"url": "https://spa.example.com"}, _ctx()))
+    assert ("JavaScript" in out or "脚本" in out) and "来源" in out
+
+
+def test_web_fetch_empty_shell_friendly(monkeypatch):
+    # 完全空壳（解析不出任何正文）→ 也给"靠 JS 渲染/反爬、换来源"的友好提示，不崩
+    empty_shell = '<html><body><div id="app"></div>' + ('<script src="b.js"></script>' * 4) + '</body></html>'
+    _patch_httpx(monkeypatch, resp=_FakeResp(text=empty_shell))
+    out = asyncio.run(web_tools.web_fetch({"url": "https://spa2.example.com"}, _ctx()))
+    assert "JavaScript" in out and "来源" in out
+
+
+def test_web_fetch_long_page_not_flagged(monkeypatch):
+    # 正常长正文页不应被误判为 JS 壳
+    good = "<html><body><h1>台球房运营</h1><p>" + ("正文内容很长很长。" * 40) + "</p></body></html>"
+    _patch_httpx(monkeypatch, resp=_FakeResp(text=good))
+    out = asyncio.run(web_tools.web_fetch({"url": "https://good.com"}, _ctx()))
+    assert "网页正文" in out and "台球房运营" in out
 
 
 # ────────────────────────────── TodoWrite ──────────────────────────────

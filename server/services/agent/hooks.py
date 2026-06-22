@@ -31,6 +31,7 @@ StopHook = Callable[[list, Any], Awaitable[dict | None]]
 _PRE_TOOL_HOOKS: list[PreToolHook] = []
 _POST_TOOL_HOOKS: list[PostToolHook] = []
 _STOP_HOOKS: list[StopHook] = []
+_EVENT_HOOKS: dict = {}  # 事件名 -> [async fn(payload) -> dict|None]（UserPromptSubmit/SessionStart 等）
 
 
 def register_pre_tool_hook(fn: PreToolHook) -> PreToolHook:
@@ -56,6 +57,7 @@ def clear_hooks() -> None:
     _PRE_TOOL_HOOKS.clear()
     _POST_TOOL_HOOKS.clear()
     _STOP_HOOKS.clear()
+    _EVENT_HOOKS.clear()
 
 
 async def run_pre_tool_hooks(tool_name: str, args: dict, ctx: Any) -> str | None:
@@ -89,3 +91,25 @@ async def run_stop_hooks(messages: list, ctx: Any) -> str | None:
         except Exception:
             logger.exception("Stop hook 失败（忽略，不阻断停止）: %s", getattr(fn, "__name__", "?"))
     return None
+
+
+def register_event_hook(event: str, fn) -> None:
+    """注册事件 hook（UserPromptSubmit / SessionStart 等）。fn: async (payload) -> {block?|context?} | None。"""
+    _EVENT_HOOKS.setdefault(event, []).append(fn)
+
+
+async def run_event_hooks(event: str, payload: dict):
+    """跑某事件的 hooks。返回 (block_reason|None, injected_context|None)。故障安全。"""
+    block = None
+    parts = []
+    for fn in _EVENT_HOOKS.get(event, []):
+        try:
+            r = await fn(payload)
+            if isinstance(r, dict):
+                if r.get("block"):
+                    block = str(r["block"])
+                if r.get("context"):
+                    parts.append(str(r["context"]))
+        except Exception:
+            logger.exception("事件 hook 失败（忽略）: %s", event)
+    return block, ("\n".join(parts) if parts else None)

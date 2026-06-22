@@ -48,6 +48,23 @@ def test_resolve_kind():
     assert resolve_image_kind("") == "openai_compatible"  # 兜底最通用
 
 
+def test_validate_image_model():
+    """生图 model↔供应商温和校验：属于该家=ok；不属于=温和提示；未知端点不拦。"""
+    from services.ai.providers.image_catalog import validate_image_model
+    # 模型属于硅基流动 → match
+    r = validate_image_model("https://api.siliconflow.cn/v1", "Kwai-Kolors/Kolors")
+    assert r["ok"] is True and r["level"] == "match"
+    # 把通义万相的模型填到硅基流动 → mismatch + 温和提示
+    r = validate_image_model("https://api.siliconflow.cn/v1", "wanx2.1-t2i-turbo")
+    assert r["ok"] is False and r["level"] == "mismatch"
+    assert "对不上" in r["message"] and r["provider"] == "硅基流动 SiliconFlow"
+    # 自定义端点（不在目录里）→ 不认得很正常、不拦
+    r = validate_image_model("https://my-own-endpoint.example.com/v1", "anything")
+    assert r["ok"] is True and r["level"] == "unknown"
+    # 空 model（还没填）→ 不拦
+    assert validate_image_model("https://api.siliconflow.cn/v1", "")["ok"] is True
+
+
 def test_build_image_provider_routing():
     from services.ai.factory import ProviderFactory
     from services.ai.providers.siliconflow_image import SiliconFlowImageProvider

@@ -61,6 +61,24 @@ def _save_png_as_jpeg(image_bytes: bytes, output_path_jpg) -> None:
     Image.open(io.BytesIO(image_bytes)).convert("RGB").save(output_path_jpg, "JPEG", quality=90)
 
 
+def _overlay_logo(image_bytes: bytes, logo_bytes: bytes) -> bytes:
+    """把门店真实 logo 像素级贴到海报右上角（不经模型→店名文字不糊）。logo 缩到海报宽 ~16%、留边距、保留透明通道。
+    解决"模型复刻 logo 把店名画成乱码"。任何异常安全返回原图（贴不上不该让整张图失败）。"""
+    try:
+        poster = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+        logo = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
+        target_w = max(1, int(poster.width * 0.16))
+        logo = logo.resize((target_w, max(1, int(logo.height * target_w / logo.width))), Image.LANCZOS)
+        margin = int(poster.width * 0.04)
+        poster.alpha_composite(logo, (poster.width - logo.width - margin, margin))
+        out = io.BytesIO()
+        poster.convert("RGB").save(out, "PNG")
+        return out.getvalue()
+    except Exception:
+        logger.warning("logo 合成失败，返回原图", exc_info=True)
+        return image_bytes
+
+
 def _load_upload_bytes(path_str: str | None) -> bytes | None:
     """从 uploads 目录内安全加载图片字节；空/越界/不存在一律返回 None。"""
     if not path_str or ".." in path_str:
@@ -256,8 +274,18 @@ async def generate_images(
             base_image = sp
             logger.info("门店照优化底图: %s", store_photo_path)
 
-    # 品牌资产：手动上传的 Logo / 二维码（all-GPT 直接作为输入图交模型渲染）
+    # 品牌资产：门店 Logo / 二维码。Logo 不再交模型渲染（会糊店名），改 PIL 像素级贴（见 _overlay_logo）。
     logo_bytes = _load_upload_bytes(logo_path)
+    if logo_bytes is None and logo_path:
+        # 桌面版：老板经文件选择器选定的 logo 常在 uploads 之外（桌面/任意已授权路径）→ _load_upload_bytes 会拒，这里直接读。
+        import os as _os
+        if _os.environ.get("DESKTOP_LOCAL") == "1":
+            try:
+                _lp = Path(logo_path)
+                if _lp.is_file():
+                    logo_bytes = _lp.read_bytes()
+            except Exception:
+                pass
     qr_bytes = _load_upload_bytes(qr_path)
 
     ref_bytes: list[bytes] = []
@@ -281,8 +309,7 @@ async def generate_images(
         preserve_imgs.append(base_image)
     if qr_bytes:
         preserve_imgs.append(qr_bytes)
-    if logo_bytes:
-        preserve_imgs.append(logo_bytes)
+    # logo 不再塞给模型渲染（模型会把店名文字画成乱码）——改为生成后用 PIL 像素级贴上（见下方 _overlay_logo）。
     max_refs = max(0, _MAX_INPUT_IMAGES - len(preserve_imgs))
     ref_bytes = ref_bytes[:max_refs]
     input_images: list[bytes] = preserve_imgs + ref_bytes
@@ -304,7 +331,7 @@ async def generate_images(
         store_name=store.name or "",
         city=store.city or "",
         no_text=no_text,
-        has_logo=logo_bytes is not None,
+        has_logo=False,  # logo 不让模型画（会糊店名）→ 改 PIL 贴；prompt 不再要求"整合 logo"
         has_qr=qr_bytes is not None,
     )
 
@@ -341,6 +368,10 @@ async def generate_images(
                     quality=quality,
                     image=input_images if input_images else None,
                 )
+
+            # 门店真实 logo：生成后用 PIL 像素级贴上（不经模型→店名文字不糊）。
+            if logo_bytes:
+                image_bytes = _overlay_logo(image_bytes, logo_bytes)
 
             # 保存图片（JPEG 格式，减小文件体积）；Pillow 解码+编码是同步 CPU，放线程池
             output_path_jpg = output_path.with_suffix(".jpg")

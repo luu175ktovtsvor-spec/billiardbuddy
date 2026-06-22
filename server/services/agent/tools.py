@@ -397,7 +397,7 @@ _POSTER_GENERATING: set[str] = set()
     parameters={
         "type": "object",
         "properties": {
-            "description": {"type": "string", "description": "你扩写好的海报【详细中文画面描述】：主体/场景/色调/光线/构图/氛围/质感都写清，越具体出图越好；别只写活动名一句话"},
+            "description": {"type": "string", "description": "你扩写好的海报【详细中文画面描述】：主体/场景/色调/光线/构图/氛围/质感都写清，越具体出图越好；别只写活动名一句话。若老板选了 logo/店标图，别在这段里描述或重画它——系统会单独把真 logo 精确贴到角上，你只写背景/主体/氛围"},
             "style": {"type": "string", "description": "海报风格(可选)：老板从 ask_user_question 选的那个风格 label，或他自己说的风格；会把对应的丰富视觉关键词拼进提示词"},
             "ratio": {"type": "string", "description": "比例(可选)：1:1 / 3:4 / 9:16 / 16:9，默认 1:1"},
         },
@@ -418,6 +418,16 @@ async def make_poster(args: dict, ctx) -> str:
         frag = resolve_style_prompt(style) or style  # 解析不到就原样拼（支持老板"自己说"任意风格）
         desc = f"{desc}。整体风格：{frag}"
 
+    # 老板当场选定的图片（典型是门店 logo）→ 传给生图：第一张当 logo（poster_service has_logo 指令会让模型
+    # "把它干净地融进设计、不变形"），其余当风格参考图。解决"门店上传 Logo 做海报"这条之前走不通的链路。
+    from services.agent.multimodal import is_image
+    _sel_imgs = [p for p in (getattr(ctx, "allowed_paths", None) or []) if is_image(p)]
+    _logo_path = _sel_imgs[0] if _sel_imgs else None
+    _refs = _sel_imgs[1:] or None
+
+    # 每轮只出一张：模型有时一次请求里连出多张（不同比例）→ 重复烧店主额度。挡住第二张起。
+    if getattr(ctx, "_image_generated_this_run", False):
+        return "本轮已生成过一张图，一轮只出一张；除非老板明确要多张，否则别再调用生图工具。"
     uid = str(getattr(ctx.user, "id", "") or "")
     if uid and uid in _POSTER_GENERATING:
         return "你上一张海报还在生成中，等它出完再来下一张～"
@@ -429,13 +439,16 @@ async def make_poster(args: dict, ctx) -> str:
             store=ctx.store,
             user_id=ctx.user.id,
             prompt=desc,
-            image_model="gpt-image-2",
+            image_model=None,  # 不写死；门店 BYOK model 优先，无则 provider 兜底 gpt-image-2（单点收口）
             ratio=args.get("ratio", "1:1"),
             quality="medium",  # 固定 medium：high 贵 30-40 倍，agent 默认走性价比；要高清去生图页
             count=1,            # 一次只出 1 张，护 IPM
             image_prompt=desc,
             background_mode="ai_generate",
+            logo_path=_logo_path,              # 老板选的 logo → 融进海报（万一门店要上传 Logo）
+            reference_image_paths=_refs,       # 其余选定图 → 风格参考
         )
+        ctx._image_generated_this_run = True  # 本轮已出图 → 后续重复生成被上面护栏挡下
     finally:
         if uid:
             _POSTER_GENERATING.discard(uid)
@@ -449,6 +462,65 @@ async def make_poster(args: dict, ctx) -> str:
         return "海报已生成（但没拿到图片链接，去生成历史看看）。"
     # 返回 markdown 图片：前端用现成 ReactMarkdown 直接渲染出图
     return f"做好啦！👇\n\n![门店海报]({url})"
+
+
+@tool(
+    name="generate_image",
+    deliverable=True,
+    description=(
+        "用接入的生图模型生成一张图片（海报/插画/示意图/配图/草图等都行——这是通用生图能力，不限题材）。"
+        "当用户要『生成/画/做一张图』时调用。你要当『提示词扩写师』：把用户的大白话需求扩写成一段丰富、具体的"
+        "【中文】画面描述——写清主体/场景、色调、光线、构图、氛围、质感，别只丢一句话（那样出图很烂）。"
+        "需求明确就直接出图，出好的图会原样展示给用户。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "description": {"type": "string", "description": "你扩写好的【详细中文画面描述】：主体/场景/色调/光线/构图/氛围/质感都写清，越具体出图越好。若老板选了 logo/店标图，别在这段里描述或重画它——系统会单独把真 logo 精确贴到角上，你只写背景/主体/氛围"},
+            "ratio": {"type": "string", "description": "比例(可选)：1:1 / 3:4 / 9:16 / 16:9，默认 1:1"},
+        },
+        "required": ["description"],
+    },
+)
+async def generate_image(args: dict, ctx) -> str:
+    """通用生图：把扩写好的画面描述交给门店自带的生图模型(BYOK)出图、当成品返回（不弹确认）。
+    复用 poster_service 的配额/并发护栏 + 每用户单张在跑锁；固定 count=1、quality=medium 控成本。"""
+    from services import poster_service  # 延迟导入，避免 import 期重负载/循环依赖
+
+    desc = (args.get("description") or "").strip()
+    if not desc:
+        return "缺少图片描述，没法生成。说清你想要张什么样的图。"
+    # 老板选定的图片（如门店 logo）→ 第一张当 logo 传给生图（融进画面、尽量不变形），其余当风格参考图。
+    from services.agent.multimodal import is_image
+    _sel_imgs = [p for p in (getattr(ctx, "allowed_paths", None) or []) if is_image(p)]
+    _logo_path = _sel_imgs[0] if _sel_imgs else None
+    _refs = _sel_imgs[1:] or None
+    if getattr(ctx, "_image_generated_this_run", False):
+        return "本轮已生成过一张图，一轮只出一张；除非老板明确要多张，否则别再调用生图工具。"
+    uid = str(getattr(ctx.user, "id", "") or "")
+    if uid and uid in _POSTER_GENERATING:
+        return "上一张图还在生成中，等它出完再来下一张～"
+    if uid:
+        _POSTER_GENERATING.add(uid)
+    try:
+        result = await poster_service.generate_images(
+            db=ctx.db, store=ctx.store, user_id=ctx.user.id, prompt=desc,
+            image_model=None, ratio=args.get("ratio", "1:1"),  # 不写死；BYOK model 优先、无则 provider 兜底
+            quality="medium", count=1, image_prompt=desc, background_mode="ai_generate",
+            logo_path=_logo_path, reference_image_paths=_refs,
+        )
+        ctx._image_generated_this_run = True  # 本轮已出图 → 后续重复生成被上面护栏挡下
+    finally:
+        if uid:
+            _POSTER_GENERATING.discard(uid)
+    images = result.get("images") or []
+    if not images:
+        return "图片这次没生成出来，稍后再试一下。"
+    first = images[0]
+    url = first.get("poster_url") if isinstance(first, dict) else getattr(first, "poster_url", None)
+    if not url:
+        return "图片已生成（但没拿到链接，去生成历史看看）。"
+    return f"做好啦！👇\n\n![生成的图片]({url})"
 
 
 # ---- 平台定制内容(抖音/小红书/快手/视频号)：内容生成 + 复制 handoff，不自动发 ----
