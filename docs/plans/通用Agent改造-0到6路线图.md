@@ -14,7 +14,7 @@
 
 - **引擎内核已对标 CC**：~25 项硬机制（ReAct/工具+校验/3档权限+审批闸HMAC/Pre·Post·Stop Hook/microcompact+三级压缩/anti-spin/token预算早停/超大结果落盘/文件沙箱/run_command/子代理基础版/多模态/RAG/失败切BYOK档/prompt-cache纪律），30+ 测试钉死，前后端 SSE 链路完整无断点。
 - **差距 = 生态/扩展层 + 前端专业门面**：Slash / Skills / Plugins / MCP / OutputStyles / ComputerUse / 后台任务通知 + 门面文案与呈现。
-- **cc-haha 参考库**（只读研学、**绝不抄码**）：`~/Desktop/cc-haha-ref`。金矿文件：
+- **cc-haha 参考库**（**可直接抄用**）：`~/Desktop/cc-haha-ref`。金矿文件：
   - `desktop/src/i18n/locales/en.ts` + `zh.ts`（完整专业文案库，1946 行）
   - `docs/ui-clone/02-ui-design-spec.md`（配色/布局/呈现规范，施工图）
   - `docs/skills/`、`docs/agent/01·02·03`、`src/schemas/hooks.ts`、`src/utils/plugins/schemas.ts`、`src/services/mcp/types.ts`（各系统数据契约，原样复刻以兼容生态）
@@ -28,7 +28,7 @@
 
 ## 守的铁律（每阶段都守）
 
-纯 BYOK（没配即空 key 不回退）/ SQLite 兼容（PG 专属 SQL 按方言兜底）/ 文件沙箱+改前备份 / 审批闸+不自动触达 / POS 只读 / 安全红线不可旁路 / prompt-cache 前缀纪律 / 同步+流式两入口对称 / **不抄 cc-haha 源码**（只学机制、自己 Python/TS 写）。
+纯 BYOK（没配即空 key 不回退）/ SQLite 兼容（PG 专属 SQL 按方言兜底）/ 文件沙箱+改前备份 / 审批闸+不自动触达 / POS 只读 / 安全红线不可旁路 / prompt-cache 前缀纪律 / 同步+流式两入口对称 / **可抄 cc-haha 源码**（搬进来按本项目结构整合）。
 
 ---
 
