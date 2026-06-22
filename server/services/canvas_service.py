@@ -42,23 +42,35 @@ async def canvas_edit(
     dtype = (deliverable_type or "内容").strip() or "内容"
     if not instruction:
         return {"content": content, "mode": "noop"}
+    # 网页(HTML) 改写：要让模型保住标签结构、返回 HTML 片段（用于网页"可圈可点"点选元素改）
+    is_html = ("html" in dtype.lower()) or ("网页" in dtype)
 
     sel = (selection or "").strip()
     # —— 定向改写：只换圈中那段（核心）——
     if sel and sel in content:
-        prompt = (
-            f"下面是一份已经写好的{dtype}成品。老板圈中了其中一段，要你【只改这一段】、其余一个字都别动。\n"
-            f"直接返回改写后的【这一段】文本即可——不要返回整篇、不要解释、不要加引号或任何前后缀。\n\n"
-            f"【整篇成品（仅供你理解上下文，不要返回它）】\n{content}\n\n"
-            f"【老板圈中、要你改的这一段】\n{sel}\n\n"
-            f"【怎么改】{instruction}"
-        )
+        if is_html:
+            prompt = (
+                "下面是一段网页(HTML)成品。老板点中了其中一个元素，要你【只改这个元素】、页面其余部分一个字都别动。\n"
+                "返回改写后的【这一段 HTML】即可——保持标签结构合法、可直接替换原元素；"
+                "不要返回整页、不要解释、不要加 ``` 代码块标记或任何前后缀。\n\n"
+                f"【整页 HTML（仅供理解上下文，不要返回它）】\n{content}\n\n"
+                f"【老板点中、要你改的这个元素】\n{sel}\n\n"
+                f"【怎么改】{instruction}"
+            )
+        else:
+            prompt = (
+                f"下面是一份已经写好的{dtype}成品。老板圈中了其中一段，要你【只改这一段】、其余一个字都别动。\n"
+                f"直接返回改写后的【这一段】文本即可——不要返回整篇、不要解释、不要加引号或任何前后缀。\n\n"
+                f"【整篇成品（仅供你理解上下文，不要返回它）】\n{content}\n\n"
+                f"【老板圈中、要你改的这一段】\n{sel}\n\n"
+                f"【怎么改】{instruction}"
+            )
         gen = await run_generation(
             db, store, user, prompt=prompt, gen_type="canvas_edit", sub_type="span",
             user_input=instruction, max_tokens=_SPAN_MAX_TOKENS,
             thinking={"type": "disabled"},  # 机械改写不需思考：关掉，省额度、避免思考型模型吐空
         )
-        new_span = (gen.result or "").strip()
+        new_span = _strip_code_fence((gen.result or "").strip()) if is_html else (gen.result or "").strip()
         if not new_span:
             return {"content": content, "mode": "span", "changed_span": ""}
         # 服务端精确拼回：只替换第一处命中，其余原样 → 改这里不动别处
@@ -66,14 +78,34 @@ async def canvas_edit(
         return {"content": new_content, "mode": "span", "changed_span": new_span}
 
     # —— 整篇修订：没圈选 / 圈的内容已找不到（成品被改过）/ 影响全篇的指令 ——
-    prompt = (
-        f"下面是一份已经写好的{dtype}成品。按老板的要求整体修订，返回【完整修订后的成品】，"
-        f"保留原有结构与风格，只按要求改动，不要解释、不要加引号。\n\n"
-        f"【成品】\n{content}\n\n【怎么改】{instruction}"
-    )
+    if is_html:
+        prompt = (
+            "下面是一份网页(HTML)成品。按老板的要求整体修订，返回【完整修订后的 HTML】，"
+            "保留原有结构与样式，只按要求改动；不要解释、不要加 ``` 代码块标记。\n\n"
+            f"【HTML】\n{content}\n\n【怎么改】{instruction}"
+        )
+    else:
+        prompt = (
+            f"下面是一份已经写好的{dtype}成品。按老板的要求整体修订，返回【完整修订后的成品】，"
+            f"保留原有结构与风格，只按要求改动，不要解释、不要加引号。\n\n"
+            f"【成品】\n{content}\n\n【怎么改】{instruction}"
+        )
     gen = await run_generation(
         db, store, user, prompt=prompt, gen_type="canvas_edit", sub_type="whole",
         user_input=instruction, max_tokens=_WHOLE_MAX_TOKENS,
         thinking={"type": "disabled"},  # 整篇修订同样不需思考
     )
-    return {"content": (gen.result or "").strip() or content, "mode": "whole"}
+    result = _strip_code_fence((gen.result or "").strip()) if is_html else (gen.result or "").strip()
+    return {"content": result or content, "mode": "whole"}
+
+
+def _strip_code_fence(s: str) -> str:
+    """去掉模型偶尔包裹的 ```html ... ``` 代码块标记，拿到纯 HTML。"""
+    t = s.strip()
+    if t.startswith("```"):
+        nl = t.find("\n")
+        if nl != -1:
+            t = t[nl + 1:]
+        if t.rstrip().endswith("```"):
+            t = t.rstrip()[:-3]
+    return t.strip()

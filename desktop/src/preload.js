@@ -41,5 +41,7 @@ contextBridge.exposeInMainWorld("electron", {
     // 弹系统文件选择器,返回 { canceled, paths: [绝对路径] }。
     // 选定的文件随对话以 selected_files 传给后端,Agent 才被授权读/改它(沙箱机制)。
     pick: (opts) => ipcRenderer.invoke("files:pick", opts || {}),
+    // 系统「另存为」：把成品(base64)写到老板选的位置，返回 { canceled, path?, error? }。
+    save: (opts) => ipcRenderer.invoke("files:save", opts || {}),
   },
 });

@@ -201,6 +201,19 @@ export function DesktopChatShell({
       : `右侧预览的「${preview.title || "成品"}」里`;
     void chat.send(`只改${where}下面这段，别动其它部分：\n\n【选中的原文】\n${selectedText}\n\n【改成】\n${instruction}`);
   };
+  // 右侧"确认采用/重做一版"定稿闸：看完拍板，把决定发回管家定稿或重出
+  const onFinalize = (action: "accept" | "redo", finalText?: string) => {
+    if (chat.generating || !preview) return;
+    const label = preview.title || "这一版";
+    if (action === "accept") {
+      void chat.send(finalText && finalText.trim()
+        ? `✅ 就用这一版定稿，按它继续后续步骤：\n\n${finalText}`
+        : `✅ 我确认采用「${label}」这一版，按它定稿、继续后续步骤。`);
+    } else {
+      void chat.send(`「${label}」这一版我不太满意，请换个思路重做一版。`);
+    }
+    setPreview(null);
+  };
 
   const empty = chat.messages.length === 0 && !chat.generating;
 
@@ -219,7 +232,7 @@ export function DesktopChatShell({
           onOpenSettings={() => setSettingsOpen(true)}
         />
       }
-      preview={preview ? <DesktopPreviewPanel item={preview} onClose={() => setPreview(null)} onRefine={onRefine} onRefineSelection={onRefineSelection} /> : undefined}
+      preview={preview ? <DesktopPreviewPanel item={preview} onClose={() => setPreview(null)} onRefine={onRefine} onRefineSelection={onRefineSelection} onFinalize={onFinalize} /> : undefined}
     >
       <div className="app-drag flex h-[44px] items-center gap-2 border-b border-black/[0.08] px-5 dark:border-white/[0.06]">
         <span className="h-1.5 w-1.5 rounded-full bg-[#10a37f]" />
@@ -331,6 +344,7 @@ export function DesktopChatShell({
         selectedFiles={selectedFiles}
         onPickFiles={electron?.files?.pick ? pickFiles : undefined}
         onRemoveFile={removeFile}
+        onOpenFile={(p) => setPreview(/\.(xlsx|xlsm)$/i.test(p) ? { kind: "sheet", path: p } : { kind: "doc", path: p })}
         disabled={chat.generating}
       />
     </DesktopShell>

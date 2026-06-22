@@ -127,6 +127,26 @@ ipcMain.handle("files:pick", async (_e, opts = {}) => {
   return { canceled: result.canceled, paths: result.filePaths || [] };
 });
 
+// 系统「另存为」：把成品(base64 字节)写到老板自己选的位置(桌面/任意文件夹)。
+// 用于画板「定稿 → 另存为 Word/Markdown/…」。opts: { defaultName, base64, filters, title }
+ipcMain.handle("files:save", async (_e, opts = {}) => {
+  const fs = require("fs");
+  const path = require("path");
+  const dialogOpts = {
+    title: opts.title || "保存到本机",
+    defaultPath: path.join(app.getPath("desktop"), opts.defaultName || "成品"),
+  };
+  if (Array.isArray(opts.filters) && opts.filters.length) dialogOpts.filters = opts.filters;
+  const result = await dialog.showSaveDialog(mainWindow || undefined, dialogOpts);
+  if (result.canceled || !result.filePath) return { canceled: true };
+  try {
+    fs.writeFileSync(result.filePath, Buffer.from(opts.base64 || "", "base64"));
+    return { canceled: false, path: result.filePath };
+  } catch (err) {
+    return { canceled: false, error: String((err && err.message) || err) };
+  }
+});
+
 // 是否运行在桌面端 + 本地后端地址(前端运行时据此连本地后端,不依赖 build 期 env)
 ipcMain.handle("desktop:info", () => ({
   isDesktop: true,
