@@ -19,6 +19,7 @@
 
 const path = require("path");
 const fs = require("fs");
+const { spawnSync } = require("child_process");
 
 const ROOT = path.join(__dirname, "..", "..");   // 仓库根
 const WEB = path.join(ROOT, "web");
@@ -29,12 +30,19 @@ function rmrf(p) { fs.rmSync(p, { recursive: true, force: true }); }
 function cp(src, dst) { fs.cpSync(src, dst, { recursive: true }); }
 
 function main() {
+  // ① 先用【正确的反代目标】出 standalone —— 防漏设 API_PROXY_URL（默认会变 8000 → 前端连不上后端 8077 → 登录 500）。
+  //    把构建收进本脚本，打包流程就不会再忘设这个 env。
+  const proxy = process.env.API_PROXY_URL || "http://127.0.0.1:8077";
+  console.log(`① 构建前端 standalone（API_PROXY_URL=${proxy}，server.js 反代到后端）…`);
+  const built = spawnSync("pnpm", ["build"], { cwd: WEB, env: { ...process.env, API_PROXY_URL: proxy }, stdio: "inherit" });
+  if (built.status !== 0) { console.error("❌ 前端构建失败"); process.exit(1); }
+
   if (!fs.existsSync(path.join(STANDALONE, "server.js"))) {
     console.error(`❌ 未找到 standalone 产物：${STANDALONE}/server.js`);
     console.error("   先跑：cd web && API_PROXY_URL=http://127.0.0.1:8077 pnpm build");
     process.exit(1);
   }
-  console.log("组装前端 standalone → resources/frontend/app/ …");
+  console.log("② 组装前端 standalone → resources/frontend/app/ …");
   rmrf(OUT);
   fs.mkdirSync(OUT, { recursive: true });
 
