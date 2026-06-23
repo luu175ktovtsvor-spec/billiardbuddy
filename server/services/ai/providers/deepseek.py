@@ -10,6 +10,16 @@ from services.ai.base import TextProvider, TextRequest, TextResponse
 
 logger = logging.getLogger(__name__)
 
+# 各家"上传大本地视频文件换引用"方案（均据官方文档核实；引用可直接用于 Chat Completions 的 video_url）：
+#   (base_url 关键词元组, files.create 的 purpose, 引用前缀)
+# ⚠️ 前缀需与 multimodal._VIDEO_REF_SCHEMES 保持同步（那边据此识别"已是视频引用、直通不读盘"）。
+# 豆包/火山方舟也支持(上限 512MB/2GB)但其 file-id 引用走 Responses API + 需轮询，与本项目 Chat Completions
+# 架构不同，暂未纳入(其 base64≤50MB / URL 仍走通用 video_url 路径)。MiMo/Qwen/GLM/文心/混元只支持 URL/base64。
+_VIDEO_UPLOAD_PROVIDERS = (
+    (("moonshot", "kimi"), "video", "ms://"),       # Moonshot/Kimi：purpose=video → ms://<id>
+    (("stepfun",), "storage", "stepfile://"),       # 阶跃星辰 StepFun：purpose=storage → stepfile://<id>
+)
+
 
 class DeepSeekProvider(TextProvider):
     """DeepSeek 文本模型 Provider（兼容 OpenAI SDK）"""
@@ -39,6 +49,33 @@ class DeepSeekProvider(TextProvider):
                 timeout=httpx.Timeout(self._timeout, connect=10.0),
             )
         return self._client
+
+    async def upload_video(self, path: str) -> str | None:
+        """把本地视频上传到 provider 的 OpenAI 兼容 Files API，返回可在 video_url 里引用的文件引用。
+
+        命中 `_VIDEO_UPLOAD_PROVIDERS`（按 base_url 关键词）才上传：Moonshot/Kimi → `purpose=video`/`ms://<id>`；
+        阶跃星辰 StepFun → `purpose=storage`/`stepfile://<id>`。这俩的引用都能直接进 Chat Completions 的 video_url。
+        未命中（MiMo/Qwen/GLM/文心/混元只支持 URL/base64；豆包 file-id 需 Responses API）→ 返回 None，
+        交由上层跳过该视频、走纯文字降级。故障安全：任何失败返回 None，绝不阻断对话。"""
+        import asyncio
+        import os
+        base = (self._base_url or settings.deepseek_base_url or "").lower()
+        purpose = scheme = None
+        for keys, p, prefix in _VIDEO_UPLOAD_PROVIDERS:
+            if any(k in base for k in keys):
+                purpose, scheme = p, prefix
+                break
+        if scheme is None:
+            return None
+        try:
+            data = await asyncio.to_thread(lambda: open(path, "rb").read())
+            client = self._get_client()
+            uploaded = await client.files.create(file=(os.path.basename(path), data), purpose=purpose)
+            fid = getattr(uploaded, "id", None)
+            return f"{scheme}{fid}" if fid else None
+        except Exception:
+            logger.warning("视频上传失败(provider Files API)，跳过该视频走纯文字降级", exc_info=True)
+            return None
 
     async def generate(self, request: TextRequest) -> TextResponse:
         if request.messages:

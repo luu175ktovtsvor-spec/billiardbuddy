@@ -40,7 +40,7 @@ from models.user import User
 from services.agent.context import AgentContext
 from services.agent import denial_tracker
 from services.agent.loop import _action_key, run_agent_loop, run_agent_loop_stream
-from services.agent.multimodal import is_image
+from services.agent.multimodal import is_media, needs_video_upload, resolve_media_for_upload
 from services.agent.proactive import generate_daily_drafts
 from services.ai.failover import build_resilient_text_provider  # BYOK 失败自动切备用配置档
 from services.ai.prompt_engine import get_prompt_engine  # L0 核心层(core.*)注入台球 system prompt
@@ -774,6 +774,16 @@ async def agent_chat(
         tools_used: list[str] = []    # 可观测：本轮模型选了哪些工具（含待审批的）
         tool_failures = 0             # 可观测：工具执行失败次数（喂"哪个工具/选择老出问题"）
         turns = 0
+        # 多模态：老板随消息选的图片/视频。大视频(超内联上限)先上传 provider 换文件引用(仅 Moonshot/Kimi 端点支持)；
+        # 其余(图片/小视频/非 Moonshot 端点)原样——build_user_content 据类型塞 image_url/video_url。
+        _media = [p for p in (body.selected_files or []) if is_media(p)] if os.environ.get("DESKTOP_LOCAL") == "1" else None
+        if _media and needs_video_upload(_media):
+            try:
+                from services.ai.factory import ProviderFactory
+                _up = ProviderFactory.get_text_provider_for_store(store)
+                _media = await resolve_media_for_upload(_media, getattr(_up, "upload_video", None))
+            except Exception:
+                logger.warning("大视频预上传失败，保留原路径(超限视频将跳过)", exc_info=True)
         try:
             async for event in run_agent_loop_stream(
                 user_message=effective_message,
@@ -782,8 +792,8 @@ async def agent_chat(
                 ctx=ctx,
                 system_prompt=system_prompt,
                 history=history,
-                # 多模态：老板随消息选的图片直接进 user 消息（image_url），模型自带识图就能看。
-                user_images=[p for p in (body.selected_files or []) if is_image(p)] if os.environ.get("DESKTOP_LOCAL") == "1" else None,
+                # 多模态：图片/视频进 user 消息（image_url / video_url），大视频已换 provider 文件引用。
+                user_images=_media,
                 model=body.model,
                 provider=build_resilient_text_provider(store),  # BYOK：对话走门店自带 key；某家挂了自动切备用档
             ):

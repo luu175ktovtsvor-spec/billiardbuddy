@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 # 只要命中任一即判为"疑似不支持图片"。宁可稍宽——误判的代价仅是"多花一次纯文字重试"，而漏判会让带图请求彻底失败。
 _VISION_ERROR_KEYWORDS = (
     "image_url",
+    "video_url",
+    "audio_url",
     "expected 'text'",
     "expected `text`",
     "expected text",
@@ -28,26 +30,34 @@ _VISION_ERROR_KEYWORDS = (
     "multi-modal",
     "image input",
     "image content",
+    "video input",
     "does not support image",
     "not support image",
     "image is not supported",
+    "does not support video",
+    "not support video",
+    "video is not supported",
     "unsupported content",
     "unknown variant",
 )
 
+# 壳子能塞进多模态 content 的媒体项类型（image/video/audio_url）——判定"带媒体"与"去媒"都按这套。
+_MEDIA_TYPES = ("image_url", "video_url", "audio_url")
+
 # 降级发生时，加进最终答复的温和提示（开头一句）。措辞去钱味、面向不懂技术的老板，并给可操作的下一步。
 VISION_DEGRADED_HINT = (
-    "⚠️ 你的文字模型看不了图，这次我按你的文字来的；"
-    "要让我能看图，请到设置换一个带视觉的模型（如 mimo-v2.5）。"
+    "⚠️ 你的文字模型看不了图片/视频，这次我按你的文字来的；"
+    "要让我能看图/视频，请到设置换一个带视觉的模型（如 mimo-v2.5 / Kimi-VL / Qwen-VL）。"
 )
 
 
 def _content_has_image(content) -> bool:
-    """单条消息的 content 是否含 image_url 项（多模态 content 是 [{type:text}, {type:image_url}] 这样的数组）。"""
+    """单条消息的 content 是否含媒体项（image_url/video_url/audio_url）。
+    多模态 content 是 [{type:text}, {type:image_url}, {type:video_url}, ...] 这样的数组。"""
     if not isinstance(content, list):
         return False
     for item in content:
-        if isinstance(item, dict) and item.get("type") == "image_url":
+        if isinstance(item, dict) and item.get("type") in _MEDIA_TYPES:
             return True
     return False
 
@@ -135,7 +145,7 @@ def _flatten_content_to_text(content) -> str:
 
 # 降级后某条消息文字为空时的占位（如老板只发了图、没配文字）——别给端点一个空 content，
 # 也让模型知道"这里本来有张图、但你看不了"，免得它以为老板啥也没说。
-_EMPTY_AFTER_STRIP_PLACEHOLDER = "[这里原本有一张图片，但当前模型看不了图，已省略]"
+_EMPTY_AFTER_STRIP_PLACEHOLDER = "[这里原本有图片/视频，但当前模型看不了，已省略]"
 
 
 def strip_images_from_messages(messages) -> bool:

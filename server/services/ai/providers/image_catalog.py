@@ -34,8 +34,10 @@ IMAGE_PROVIDER_CATALOG: list[dict] = [
             # Qwen-Image-Edit-2509：图像编辑模型，支持最多 3 张参考图（image/image2/image3），叠 Logo/二维码首选
             {"id": "Qwen/Qwen-Image-Edit-2509", "supports_edit": True,
              "note": "图像编辑·支持多参考图（最多3张）·叠 Logo/二维码首选"},
-            # Kolors：综合强的文生图，也能走单张 image+image_size 做图生图
-            {"id": "Kwai-Kolors/Kolors", "supports_edit": True, "note": "综合强·单张参考图（image+image_size）"},
+            # Qwen-Image：阿里通义·当前主流文生图（开源权重·硅基托管），纯文生图首选
+            {"id": "Qwen/Qwen-Image", "supports_edit": False, "note": "通义·当前主流文生图·纯文生图首选"},
+            # Kolors：较早的综合文生图，轻量备选，也能走单张 image+image_size 做图生图
+            {"id": "Kwai-Kolors/Kolors", "supports_edit": True, "note": "较早·轻量备选·单张参考图（image+image_size）"},
         ],
         "response": "url(1h)", "recommended": True, "supports_edit": True,
         "note": "一个 key 多模型；叠 Logo/二维码选 Qwen-Image-Edit；按量充值无订阅、新人送额度。最省事、首选。",
@@ -55,8 +57,8 @@ IMAGE_PROVIDER_CATALOG: list[dict] = [
         "base_url": "https://dashscope.aliyuncs.com/api/v1",
         "models": [
             # 万相本 provider 只接文生图端点；编辑/参考图在另一组 native 端点、优先级低，本轮不接 → supports_edit=False
-            {"id": "wanx2.1-t2i-turbo", "supports_edit": False, "note": "主流文生图·快"},
-            {"id": "wan2.6-t2i", "supports_edit": False, "note": "新版文生图·更强"},
+            # 旧版 wanx2.1-t2i-turbo 已下（型号过时），统一用当前版 wan2.6-t2i。
+            {"id": "wan2.6-t2i", "supports_edit": False, "note": "阿里通义·当前版文生图·更强"},
         ],
         "response": "url(24h)", "supports_edit": False,
         "note": "阿里主流·强文生图；原生异步1-2分钟；叠 Logo/二维码暂走硅基 Qwen-Image-Edit 或火山 Seedream。",
