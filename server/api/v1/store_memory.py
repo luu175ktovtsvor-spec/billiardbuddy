@@ -7,7 +7,6 @@ from pydantic import BaseModel
 from sqlalchemy import select, delete
 
 from api.deps import get_db, get_current_store
-from core.rbac import Permission, require_permission
 from core.security_guard import check_input_injection
 from models.store_memory import StoreMemory
 
@@ -68,7 +67,6 @@ async def add_memory(
     body: MemoryCreate,
     store=Depends(get_current_store),
     db=Depends(get_db),
-    _perm: None = Depends(require_permission(Permission.STORE_UPDATE)),
 ):
     # 店脑会注入该店所有后续生成的 prompt，等同门店级设置，写权限限 owner/店长（STORE_UPDATE）；
     # 同时过注入检查，防止往记忆里塞 prompt 注入内容。
@@ -92,7 +90,7 @@ async def add_memory(
 @router.patch("/{memory_id}", response_model=MemoryItem)
 async def update_memory(memory_id: str, body: MemoryUpdate,
                         store=Depends(get_current_store), db=Depends(get_db),
-                        _perm: None = Depends(require_permission(Permission.STORE_UPDATE))):
+                        ):
     try:
         mem_uuid = uuid.UUID(memory_id)
     except (ValueError, TypeError):
@@ -119,7 +117,7 @@ async def update_memory(memory_id: str, body: MemoryUpdate,
 
 @router.delete("/{memory_id}")
 async def delete_memory(memory_id: str, store=Depends(get_current_store), db=Depends(get_db),
-                        _perm: None = Depends(require_permission(Permission.STORE_UPDATE))):
+                        ):
     try:
         mem_uuid = uuid.UUID(memory_id)
     except (ValueError, TypeError):

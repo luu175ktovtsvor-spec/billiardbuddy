@@ -6,7 +6,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_db, get_current_user, get_current_store
-from core.rbac import Permission, require_permission
 from models.user import User
 from models.store import Store, StoreMember
 from schemas.store import (
@@ -86,7 +85,6 @@ async def update_my_store(
     current_user: Annotated[User, Depends(get_current_user)],
     store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    _perm: None = Depends(require_permission(Permission.STORE_UPDATE)),
 ):
     store = await update_store(db, store, body.model_dump(exclude_unset=True))
     return _store_to_response(store)
@@ -98,7 +96,6 @@ async def upload_store_logo(
     current_user: Annotated[User, Depends(get_current_user)],
     store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    _perm: None = Depends(require_permission(Permission.STORE_UPDATE)),
 ):
     url, temp_path, final_path = await upload_logo(store.id, file)
     try:
@@ -118,7 +115,6 @@ async def upload_store_qrcode(
     current_user: Annotated[User, Depends(get_current_user)],
     store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    _perm: None = Depends(require_permission(Permission.STORE_UPDATE)),
 ):
     url, temp_path, final_path = await upload_qrcode(store.id, file)
     try:
@@ -198,7 +194,6 @@ async def update_byok_config(
     store: Annotated[Store, Depends(get_current_store)],
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    _perm: None = Depends(require_permission(Permission.STORE_UPDATE)),
 ):
     """写门店 BYOK 配置。api_key 加密存；不传 api_key 保留原 key，传空串显式清除。"""
     from core.crypto import encrypt, CryptoNotConfigured
@@ -297,7 +292,6 @@ async def save_byok_profile(
     body: BYOKProfileIn,
     store: Annotated[Store, Depends(get_current_store)],
     current_user: Annotated[User, Depends(get_current_user)],
-    _perm: None = Depends(require_permission(Permission.STORE_UPDATE)),
 ):
     """新增/更新一套配置档。传 api_key 则加密更新 key，不传则只改 base_url/model。"""
     _ensure_store_owner(store, current_user)
@@ -324,7 +318,6 @@ async def activate_byok_profile(
     store: Annotated[Store, Depends(get_current_store)],
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    _perm: None = Depends(require_permission(Permission.STORE_UPDATE)),
 ):
     """激活某套配置档：把它的值写进门店真正生效的 BYOK 配置（factory 照读 store.byok_*）。"""
     _ensure_store_owner(store, current_user)
@@ -349,7 +342,6 @@ async def delete_byok_profile(
     name: str,
     store: Annotated[Store, Depends(get_current_store)],
     current_user: Annotated[User, Depends(get_current_user)],
-    _perm: None = Depends(require_permission(Permission.STORE_UPDATE)),
 ):
     _ensure_store_owner(store, current_user)
     from services import byok_profiles

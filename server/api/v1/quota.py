@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 
 from api.deps import get_db, get_current_store
-from core.rbac import Permission, require_permission
 from core.timezone import business_now
 from models.generation import Generation
 
@@ -25,7 +24,6 @@ _FEATURE_LABELS = {
 
 @router.get("/cost")
 async def get_cost(
-    _perm: None = Depends(require_permission(Permission.QUOTA_VIEW)),
     store=Depends(get_current_store),
     db=Depends(get_db),
 ):

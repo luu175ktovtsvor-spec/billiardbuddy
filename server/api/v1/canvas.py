@@ -11,7 +11,6 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_current_user, get_current_store, get_db
-from core.rbac import Permission, require_permission
 from models.store import Store
 from models.user import User
 from services.agent.local_tools import _resolve as _sandbox_resolve
@@ -59,7 +58,6 @@ async def render_deliverable(
     body: RenderRequest,
     _user: Annotated[User, Depends(get_current_user)],
     _store: Annotated[Store, Depends(get_current_store)],
-    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
 ):
     """把成品渲染成指定格式的字节(base64)，给前端走系统「另存为」写到本机任意位置。"""
     from services.canvas_io import SUPPORTED, render_bytes
@@ -83,7 +81,6 @@ async def save_to_library_endpoint(
     body: SaveLibraryRequest,
     _user: Annotated[User, Depends(get_current_user)],
     _store: Annotated[Store, Depends(get_current_store)],
-    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
 ):
     """把成品存进「内容库/成品」（桌面专属，重名自动备份）。返回写入路径。"""
     _require_desktop()
@@ -103,7 +100,6 @@ async def canvas_edit_endpoint(
     user: Annotated[User, Depends(get_current_user)],
     store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
 ):
     """圈了段只改那段（改这里不动别处），没圈则整篇修订。复用统一管道(配额/合规/落库/BYOK)。"""
     return await canvas_edit(
@@ -132,7 +128,6 @@ async def read_sheet(
     body: SheetRequest,
     _user: Annotated[User, Depends(get_current_user)],
     _store: Annotated[Store, Depends(get_current_store)],
-    _perm: None = Depends(require_permission(Permission.QUOTA_VIEW)),
 ):
     """读本机报表 → 结构化表格(供前端可视化展示)。桌面专属、只读、限行列防超大。"""
     _require_desktop()
@@ -176,7 +171,6 @@ async def excel_edit(
     body: ExcelCellEdit,
     _user: Annotated[User, Depends(get_current_user)],
     _store: Annotated[Store, Depends(get_current_store)],
-    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
 ):
     """点格改：改本机报表一个单元格。桌面专属、改前自动备份、返回前后对比(diff)。"""
     _require_desktop()
@@ -326,7 +320,6 @@ async def read_doc(
     body: DocRequest,
     _user: Annotated[User, Depends(get_current_user)],
     _store: Annotated[Store, Depends(get_current_store)],
-    _perm: None = Depends(require_permission(Permission.QUOTA_VIEW)),
 ):
     """读本机文档 → 前端可渲染的数据。桌面专属、只读。
     返回 render：pdf(base64原样) / page(网页原文) / richtext(Word转HTML片段) / slides(PPT逐页大纲) / toobig。"""
@@ -371,7 +364,6 @@ async def read_doc_blocks(
     body: DocRequest,
     _user: Annotated[User, Depends(get_current_user)],
     _store: Annotated[Store, Depends(get_current_store)],
-    _perm: None = Depends(require_permission(Permission.QUOTA_VIEW)),
 ):
     """读 Word/PPT → 带稳定 id 的文本块（供前端逐块编辑）。"""
     _require_desktop()
@@ -396,7 +388,6 @@ async def save_doc_blocks(
     body: DocSaveRequest,
     _user: Annotated[User, Depends(get_current_user)],
     _store: Annotated[Store, Depends(get_current_store)],
-    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
 ):
     """把改动按 id 原地写回原 Word/PPT（保留结构、改前自动备份）。"""
     _require_desktop()
