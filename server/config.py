@@ -23,10 +23,8 @@ class Settings(BaseSettings):
     # 别名 DATABASE_URL：env DATABASE_URL 设了就走它，否则保持 PG。
     database_url_override: str = Field(default="", alias="DATABASE_URL")
 
-    # JWT
+    # SECRET_KEY：审批签名 HMAC 用（services/agent/approval.py）。JWT 登录已删，不再有 jwt_* 配置。
     secret_key: str = ""
-    jwt_algorithm: str = "HS256"
-    jwt_expire_minutes: int = 10080  # 7 天
 
     # 文件上传（绝对路径）
     upload_dir: str = str(_PROJECT_ROOT / "uploads")
@@ -119,7 +117,7 @@ def validate_production_config() -> list[str]:
         return warnings
 
     if not settings.secret_key:
-        warnings.append("secret_key 为空，JWT 签名不安全，请设置随机密钥")
+        warnings.append("secret_key 为空，审批签名 HMAC 不安全，请设置随机密钥")
 
     if settings.postgres_password == "postgres":
         warnings.append("postgres_password 使用默认值 'postgres'，生产环境请设置强密码")

@@ -45,42 +45,14 @@ export interface AgentChatPayload {
 }
 
 class ApiClient {
-  private token: string | null = null;
   baseUrl: string;
   private storeId: string | null = null;
-  private refreshPromise: Promise<string | null> | null = null;
 
   constructor() {
     this.baseUrl = BASE_URL;
     if (typeof window !== "undefined") {
       this.storeId = localStorage.getItem("current_store_id");
     }
-  }
-
-  setToken(token: string | null) {
-    this.token = token;
-    if (token) {
-      localStorage.setItem("access_token", token);
-      if (typeof document !== "undefined") {
-        const secure = window.location.protocol === "https:" ? "; Secure" : "";
-        // max-age 与 7 天 JWT 同寿命(604800s)。否则是会话级 cookie：微信 WebView 回收进程后
-        // cookie 即丢，而 middleware 只认这个 cookie → 已登录用户被误踢回登录页(微信第一天高频)。
-        document.cookie = `token=${token}; path=/; max-age=604800; SameSite=Lax${secure}`;
-      }
-    } else {
-      localStorage.removeItem("access_token");
-      if (typeof document !== "undefined") {
-        document.cookie = "token=; path=/; SameSite=Lax; max-age=0";
-      }
-    }
-  }
-
-  getToken(): string | null {
-    return this.token;
-  }
-
-  isAuthenticated(): boolean {
-    return !!this.token;
   }
 
   getStoreId(): string | null {
@@ -116,9 +88,6 @@ class ApiClient {
     const headers: Record<string, string> = {};
     if (!isFormData) {
       headers["Content-Type"] = "application/json";
-    }
-    if (this.token) {
-      headers["Authorization"] = `Bearer ${this.token}`;
     }
     if (this.storeId) {
       headers["X-Store-Id"] = this.storeId;
@@ -322,7 +291,6 @@ class ApiClient {
       "Content-Type": "application/json",
       "Accept": "text/event-stream",
     };
-    if (this.token) headers["Authorization"] = `Bearer ${this.token}`;
     if (this.storeId) headers["X-Store-Id"] = this.storeId;
 
     const url = `${this.baseUrl}/api/v1/agent/chat`;
