@@ -34,7 +34,7 @@ def test_extracts_known_live_wiring():
     wired, _dead, _orphan = bcm.match(calls, routes)
     wired_pairs = {(c.method, c.endpoint) for c, _ in wired}
     # 单窗口产品的真实活接线（任一断 = 接线脚本坏了或产品大改）
-    assert ("login", "/api/v1/auth/login") in wired_pairs
+    assert ("getMe", "/api/v1/auth/me") in wired_pairs
     assert ("getMyStore", "/api/v1/stores/me") in wired_pairs
     assert ("listSkills", "/api/v1/agent/skills") in wired_pairs
     assert ("getTodayDashboard", "/api/v1/dashboard/today") in wired_pairs
