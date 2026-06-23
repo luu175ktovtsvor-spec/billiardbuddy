@@ -131,26 +131,4 @@ class StoreMember(Base):
     )
 
 
-class StoreInvitation(Base):
-    __tablename__ = "store_invitations"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        GUID, primary_key=True, default=uuid.uuid4
-    )
-    store_id: Mapped[uuid.UUID] = mapped_column(
-        GUID, ForeignKey("stores.id"), nullable=False, index=True
-    )
-    code: Mapped[str] = mapped_column(String(8), nullable=False, unique=True, index=True)
-    role: Mapped[str] = mapped_column(String(20), nullable=False)
-    created_by: Mapped[uuid.UUID] = mapped_column(
-        GUID, ForeignKey("users.id"), nullable=False
-    )
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    max_uses: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    use_count: Mapped[int] = mapped_column(Integer, default=0)
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+# StoreInvitation（凭邀请码入店）= 多成员团队 SaaS 遗留，2026-06-23 已删（桌面单用户无此概念）。

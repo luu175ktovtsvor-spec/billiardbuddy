@@ -64,7 +64,6 @@ async def register(
 ):
     user, token = await register_user(
         db, body.phone, body.password, body.name,
-        invite_code=body.invite_code,
     )
     return TokenResponse(access_token=token)
 

@@ -10,7 +10,7 @@ interface AuthState {
   isLoading: boolean;
   isAuthenticated: boolean;
   login: (phone: string, password: string) => Promise<void>;
-  register: (phone: string, password: string, name?: string, inviteCode?: string) => Promise<void>;
+  register: (phone: string, password: string, name?: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -50,8 +50,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     router.push("/dashboard/chat");
   }, [router]);
 
-  const register = useCallback(async (phone: string, password: string, name?: string, inviteCode?: string) => {
-    const res = await api.register({ phone, password, name, invite_code: inviteCode });
+  const register = useCallback(async (phone: string, password: string, name?: string) => {
+    const res = await api.register({ phone, password, name });
     api.setToken(res.access_token);
     const u = await api.getMe();
     setUser(u);

@@ -321,18 +321,11 @@ def test_poster_quality_three_tiers_no_auto():
     assert '("low", "medium", "high")' in src, "未把 quality 收敛到三档(去 auto)"
 
 
-def test_quota_route_no_trailing_slash():
-    """路由回归：quota 不带尾斜杠（带斜杠会 307 重定向剥离认证头）。"""
+def test_cost_route_registered():
+    """路由回归：/quota/cost 成本看板在册（SaaS 套餐查询 get_quota 已删，只剩成本看板）。"""
     from api.v1.router import router as v1_router
     paths = {r.path for r in v1_router.routes}
-    assert "/quota" in paths and "/quota/" not in paths
-
-
-def test_invitation_response_id_is_uuid():
-    """契约回归：InvitationResponse.id 必须是 UUID 类型（声明 str 会让响应校验 500）。"""
-    import uuid as _uuid
-    from api.v1.members import InvitationResponse
-    assert InvitationResponse.model_fields["id"].annotation is _uuid.UUID
+    assert "/quota/cost" in paths
 
 
 def test_store_update_accepts_brand_style():

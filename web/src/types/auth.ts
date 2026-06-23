@@ -2,7 +2,6 @@ export interface RegisterRequest {
   phone: string;
   password: string;
   name?: string;
-  invite_code?: string;
 }
 
 export interface LoginRequest {
