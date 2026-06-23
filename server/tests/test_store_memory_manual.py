@@ -143,7 +143,7 @@ async def test_post_marks_manual(session_maker):
     store = type("S", (), {"id": sid})()
     async with session_maker() as db:
         item = await add_memory(MemoryCreate(content="老板亲定：禁止外带酒水"),
-                                store=store, db=db, _perm=None)
+                                store=store, db=db)
     assert item.source == "manual"
     assert item.source_label == "店主定"
 
@@ -161,7 +161,7 @@ async def test_patch_marks_manual(session_maker):
     store = type("S", (), {"id": sid})()
     async with session_maker() as db:
         item = await update_memory(mid, MemoryUpdate(content="老板改后的正确说法"),
-                                   store=store, db=db, _perm=None)
+                                   store=store, db=db)
     assert item.source == "manual"
     assert item.source_label == "店主定"
     # 落库确认

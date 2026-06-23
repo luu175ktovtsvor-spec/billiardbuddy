@@ -33,7 +33,6 @@ from starlette.background import BackgroundTask
 
 from api.deps import get_current_store, get_current_user, get_db
 from core.exceptions import AIServiceError, AppException
-from core.rbac import Permission, require_permission
 from core.security_guard import check_input_injection
 from db.session import async_session
 from models.user import User
@@ -399,7 +398,6 @@ async def list_agent_conversations(
     user: User = Depends(get_current_user),
     store=Depends(get_current_store),
     db=Depends(get_db),
-    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
 ):
     """列出本店的 agent 会话（标题/最近时间），供桌面侧栏回看与切换。"""
     from sqlalchemy import select
@@ -421,7 +419,6 @@ async def get_agent_conversation(
     user: User = Depends(get_current_user),
     store=Depends(get_current_store),
     db=Depends(get_db),
-    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
 ):
     """取某个 agent 会话的全部消息（user/assistant 文本对），供桌面端点开回看（不含步骤卡，仅文本）。"""
     import uuid as _uuid
@@ -684,7 +681,6 @@ async def agent_chat(
     user: User = Depends(get_current_user),
     store=Depends(get_current_store),
     db=Depends(get_db),
-    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
 ):
     injection = check_input_injection(body.message or "")
     if injection:
@@ -869,7 +865,6 @@ async def agent_execute(
     user: User = Depends(get_current_user),
     store=Depends(get_current_store),
     db=Depends(get_db),
-    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
 ):
     """确认后执行一个需审批的工具（proposal 模式的执行端点）。
 
@@ -977,7 +972,6 @@ async def agent_reject(
     user: User = Depends(get_current_user),
     store=Depends(get_current_store),
     db=Depends(get_db),
-    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
 ):
     """SH-8：老板点了审批卡的「拒绝/取消」→ 记一次该动作的拒绝。
 
@@ -992,7 +986,6 @@ async def agent_daily_drafts(
     user: User = Depends(get_current_user),
     store=Depends(get_current_store),
     db=Depends(get_db),
-    _perm: None = Depends(require_permission(Permission.GENERATION_CREATE)),
 ):
     """主动出击：据今日推荐，预生成几条【文字草稿】给老板过目（只产草稿、不自动发；海报类不碰）。
 

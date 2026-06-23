@@ -5,7 +5,6 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_db, get_current_user, get_current_store
-from core.rbac import Permission, require_permission
 from models.user import User
 from models.store import Store
 from schemas.dashboard import DashboardTodayResponse, CardSignalsResponse
@@ -19,7 +18,6 @@ async def dashboard_today(
     current_user: Annotated[User, Depends(get_current_user)],
     store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    _perm: None = Depends(require_permission(Permission.DASHBOARD_VIEW)),
 ):
     return await get_today_dashboard(db=db, store=store)
 
@@ -29,7 +27,6 @@ async def dashboard_card_signals(
     current_user: Annotated[User, Depends(get_current_user)],
     store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    _perm: None = Depends(require_permission(Permission.DASHBOARD_VIEW)),
 ):
     return await get_card_signals(db=db, store=store)
 
@@ -44,7 +41,6 @@ async def dashboard_adopt_rec(
     current_user: Annotated[User, Depends(get_current_user)],
     store: Annotated[Store, Depends(get_current_store)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    _perm: None = Depends(require_permission(Permission.DASHBOARD_VIEW)),
 ):
     """隐式反馈·采纳上浮：老板点某条今日推荐去做时调一下，记一次"采纳"弱正反馈。
     轻量、不建表——落成 usage 事件（喂分析）；真正影响排序的是随后那条对话生成上带的 source_rec_id
