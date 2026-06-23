@@ -1,20 +1,14 @@
-import uuid
 from typing import Annotated
 
-from fastapi import Depends, Header
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-import jwt
+from fastapi import Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.exceptions import UnauthorizedException, ForbiddenException
-from core.security import decode_access_token
 from core.tenant import set_tenant
 from db.session import async_session
 from models.user import User
-from models.store import Store, StoreMember
-
-security_scheme = HTTPBearer()
+from models.store import Store
 
 
 async def get_db():
@@ -25,69 +19,25 @@ async def get_db():
             await session.close()
 
 
-async def get_current_user(
-    credentials: Annotated[HTTPAuthorizationCredentials, Depends(security_scheme)],
-    db: Annotated[AsyncSession, Depends(get_db)],
-) -> User:
-    try:
-        user_id = decode_access_token(credentials.credentials)
-    except (jwt.InvalidTokenError, ValueError):
-        raise UnauthorizedException("token 无效或已过期")
+async def get_current_user(db: Annotated[AsyncSession, Depends(get_db)]) -> User:
+    """本地单用户身份：返回库里唯一的 owner（首启 `init_local._seed_local_owner` 已建）。
 
-    user = await db.get(User, user_id)
+    桌面=装老板自己电脑上的本机单人 App，已删 SaaS 的手机号/密码/JWT 登录——不再解析
+    Authorization/token，直接取本地 owner。签名保持返回 User，故所有 `Depends(get_current_user)`
+    的业务路由零改动。"""
+    user = (await db.execute(select(User).order_by(User.created_at).limit(1))).scalars().first()
     if not user:
-        raise UnauthorizedException("用户不存在")
-    if not user.is_active:
-        raise UnauthorizedException("账号已被禁用")
+        raise UnauthorizedException("本地用户未初始化（请重启 App 完成首启 seed）")
     return user
 
 
-async def get_current_store(
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[AsyncSession, Depends(get_db)],
-    x_store_id: Annotated[str | None, Header()] = None,
-) -> Store:
-    """获取当前用户所属门店。
+async def get_current_store(db: Annotated[AsyncSession, Depends(get_db)]) -> Store:
+    """本地单门店：返回库里唯一门店并设租户上下文。
 
-    优先使用 X-Store-Id header 指定的门店 ID；
-    如果没有 header，则回退到用户关联的第一个门店。
-    """
-    if x_store_id:
-        try:
-            target_store_id = uuid.UUID(x_store_id)
-        except ValueError:
-            raise ForbiddenException("X-Store-Id 格式无效")
-
-        # 验证用户属于该门店
-        result = await db.execute(
-            select(StoreMember).where(
-                StoreMember.store_id == target_store_id,
-                StoreMember.user_id == current_user.id,
-            )
-        )
-        member = result.scalar_one_or_none()
-        if not member:
-            raise ForbiddenException("您不属于该门店")
-
-        store = await db.get(Store, target_store_id)
-        if not store:
-            raise ForbiddenException("门店不存在")
-        set_tenant(store.id)
-        return store
-
-    # 回退：取用户关联的第一个门店（多门店用户用 .first()，
-    # scalar_one_or_none 在多行时会抛 MultipleResultsFound → 500）
-    result = await db.execute(
-        select(StoreMember)
-        .where(StoreMember.user_id == current_user.id)
-        .order_by(StoreMember.created_at)
-        .limit(1)
-    )
-    member = result.scalars().first()
-    if not member:
-        raise ForbiddenException("您不属于任何门店")
-    store = await db.get(Store, member.store_id)
+    门店/store_id/租户自动过滤是"数据组织地基"（不是 SaaS 鉴权），保留——set_tenant 必须有真实
+    store_id，否则租户过滤把数据读空。"""
+    store = (await db.execute(select(Store).order_by(Store.created_at).limit(1))).scalars().first()
     if not store:
-        raise ForbiddenException("门店不存在")
+        raise ForbiddenException("本地门店未初始化")
     set_tenant(store.id)
     return store

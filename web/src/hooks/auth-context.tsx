@@ -22,15 +22,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
 
   const fetchUser = useCallback(async () => {
-    if (!api.isAuthenticated()) {
-      setIsLoading(false);
-      return;
-    }
+    // 桌面免登录：直接取本地 owner（后端 get_current_user 返回 seed 的单用户，无需 token）。
     try {
       const u = await api.getMe();
       setUser(u);
     } catch {
-      api.setToken(null);
       setUser(null);
     } finally {
       setIsLoading(false);

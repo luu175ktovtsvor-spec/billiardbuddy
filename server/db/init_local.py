@@ -63,9 +63,35 @@ def _reconcile_columns(sync_conn) -> None:
             logger.info("补列 %s.%s（老库升级）", table.name, col.name)
 
 
+async def _seed_local_owner() -> None:
+    """桌面本机单用户：库里没有任何 user 时，seed 一个固定 owner + 门店 + 成员关系。
+
+    免登录的本地身份（`api/deps.py` 的 get_current_user/get_current_store）就返回这唯一的
+    owner/store。幂等：已有用户（老库/已注册过）则跳过。门店/store_id/租户过滤作为"数据组织
+    地基"保留——seed 出一个真实门店让 set_tenant 有值可喂，否则租户自动过滤会把数据读空。"""
+    from sqlalchemy import select
+    from db.session import async_session
+    from models.user import User
+    from models.store import Store, StoreMember
+
+    async with async_session() as db:
+        if (await db.execute(select(User).limit(1))).scalars().first():
+            return  # 已有用户（含老库已注册的 owner）→ 不重复 seed
+        user = User(phone="local-owner", password_hash="", name="店主", is_active=True)
+        db.add(user)
+        await db.flush()
+        store = Store(owner_id=user.id, name="我的球房")
+        db.add(store)
+        await db.flush()
+        db.add(StoreMember(store_id=store.id, user_id=user.id, role="owner"))
+        await db.commit()
+    logger.info("已 seed 本地 owner + 门店（首启单用户，免登录）")
+
+
 async def init_local_db() -> None:
-    """SQLite 本地库：表不存在则按模型建全；已存在的表补上新增列（老库平滑升级）。"""
+    """SQLite 本地库：表不存在则按模型建全；已存在的表补上新增列（老库平滑升级）；首启 seed 单 owner。"""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_reconcile_columns)
-    logger.info("本地 SQLite 数据库已就绪（create_all + 补缺列）")
+    await _seed_local_owner()
+    logger.info("本地 SQLite 数据库已就绪（create_all + 补缺列 + seed owner）")
