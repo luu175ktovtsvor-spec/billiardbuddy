@@ -72,7 +72,14 @@ async def _view_handler(args: dict, ctx) -> str:
     out, err = _run_py(f"import pyautogui; pyautogui.screenshot().save({str(path)!r})")
     if err:
         return f"[截屏失败] {err}"
-    return f"已截屏并保存：{path}"
+    # 把截图路径挂给 loop：本批 tool 结果追加完后会拼成一条 user 图片消息回灌，让我下一轮真【看见】这张屏。
+    pending = getattr(ctx, "pending_view_images", None)
+    if pending is not None:
+        try:
+            pending.append(str(path))
+        except Exception:
+            pass
+    return f"已截屏并保存：{path}（图已附给我，下一步我会据此画面继续）"
 
 
 async def _control_handler(args: dict, ctx) -> str:

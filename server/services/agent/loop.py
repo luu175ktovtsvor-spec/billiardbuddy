@@ -436,6 +436,29 @@ async def _vision_degrade_stream(provider, request, messages, ctx, **sinks):
         raise
 
 
+_VIEW_FEEDBACK_MSG = "（这是刚才看屏/截图工具截取的屏幕画面，请据此判断与继续。）"
+
+
+def _drain_view_images(messages: list[dict], ctx) -> None:
+    """把工具产出、待回灌的图片（ctx.pending_view_images）拼成一条 user 图片消息追加进 messages，让模型真看见。
+
+    ⚠️ 必须在【本批 tool 结果全部追加、tool_call 配对完整之后】调用——user 消息不能插在 tool 结果中间（破坏
+    OpenAI 的 tool_call_id 配对）。走 build_user_content 的 image_url 通道（带原始尺寸标签、可被 vision_degrade
+    接住）。取后清空 ctx.pending_view_images，防串到下一轮。故障安全：无图/编码全失败 → 不注入空消息。"""
+    paths = list(getattr(ctx, "pending_view_images", None) or [])
+    if not paths:
+        return
+    ctx.pending_view_images = []
+    from services.agent.multimodal import build_user_content, is_image
+    imgs = [p for p in paths if p and is_image(p)]
+    if not imgs:
+        return
+    content = build_user_content(_VIEW_FEEDBACK_MSG, imgs)
+    if isinstance(content, str):  # 没有任何图成功编码（build_user_content 退回纯串）→ 别注入空图消息
+        return
+    messages.append({"role": "user", "content": content})
+
+
 _PLAN_MODE_SKIP_MSG = (
     "[计划模式] 现在只规划、不动手：「{name}」是会实际操作的步骤，已跳过。"
     "请先把完整、分步的计划讲清楚给老板；等老板切到执行模式或确认后再实际做。"
@@ -668,6 +691,9 @@ async def run_agent_loop(
             steps.append(AgentStep(type="tool_result", tool_name=plan.name,
                                    tool_call_id=plan.tool_call_id, content=result_str, meta=_meta))
             messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": result_str})
+
+        # 工具产出图片回灌：本批 tool 结果已全部追加、配对完整 → 把截图等拼成一条 user 图片消息注入，让模型下一轮真看见。
+        _drain_view_images(messages, ctx)
 
     # 达到 max_turns 仍未收敛（兜底，防止循环跑飞）：强制模型基于已有结果给最终答复，不返回空。
     logger.warning("agent loop 达到 max_turns=%s 仍未结束，强制收尾", max_turns)
@@ -1125,6 +1151,9 @@ async def run_agent_loop_stream(
             ctx.last_knowledge_used = None
             yield _evt
             messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": result})
+
+        # 工具产出图片回灌：本批 tool 结果已全部追加、配对完整 → 把截图等拼成一条 user 图片消息注入，让模型下一轮真看见。
+        _drain_view_images(messages, ctx)
 
     # 达到 max_turns 仍未收敛：强制模型基于已有结果给最终答复（不再给工具），逐片流式吐出，不返回空。
     logger.warning("agent stream loop 达到 max_turns=%s 仍未结束，强制收尾", max_turns)

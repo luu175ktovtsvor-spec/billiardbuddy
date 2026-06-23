@@ -19,18 +19,23 @@ const INPUT =
   "w-full rounded-lg border border-black/[0.08] bg-black/[0.02] px-3 py-2 text-[13px] text-[#1d1d1f] outline-none transition placeholder:text-[#b0b0b5] focus:border-[#10a37f]/50 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-[#e6e7e9] dark:placeholder:text-[#56585f]";
 const LABEL = "mb-1 block text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]";
 
-// 一键选供应商预设：店主点一下 → 自动填好地址+模型，只需再贴自己的 key。端点均已验证（生图取自后端 IMAGE_PROVIDER_CATALOG）。
+// 一键选供应商预设：店主点一下 → 自动填好地址+模型，只需再贴自己的 key。端点均已验证（2026-06 实爬各家官方文档）。
+// 排序≈真实用量（OpenRouter 全球榜 + 国内调用量）：DeepSeek/MiniMax/千问/Kimi/GLM 居前；豆包国内调用量第一。
+// 模型名是【可改的合理默认】（各家型号更新快，base_url 才是关键、已逐一核验）。文心/混元因调用量偏低未纳入。
 const TEXT_PRESETS = [
-  { name: "DeepSeek", base: "https://api.deepseek.com/v1", model: "deepseek-chat" },
-  { name: "硅基流动", base: "https://api.siliconflow.cn/v1", model: "deepseek-ai/DeepSeek-V3" },
-  { name: "小米 MiMo", base: "https://api.xiaomimimo.com/v1", model: "mimo-v2.5" },
+  { name: "DeepSeek", base: "https://api.deepseek.com/v1", model: "deepseek-v4-flash" },
+  { name: "MiniMax", base: "https://api.minimaxi.com/v1", model: "MiniMax-M2.5" },
   { name: "通义千问", base: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus" },
-  { name: "Kimi 月之暗面", base: "https://api.moonshot.cn/v1", model: "moonshot-v1-8k" },
+  { name: "Kimi 月之暗面", base: "https://api.moonshot.cn/v1", model: "kimi-k2.6" },
+  { name: "智谱 GLM", base: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4.6" },
+  { name: "豆包 火山方舟", base: "https://ark.cn-beijing.volces.com/api/v3", model: "doubao-seed-1-6-251015" },
+  { name: "小米 MiMo", base: "https://api.xiaomimimo.com/v1", model: "mimo-v2.5" },
+  { name: "硅基流动", base: "https://api.siliconflow.cn/v1", model: "deepseek-ai/DeepSeek-V3.2" },
 ];
 const IMAGE_PRESETS = [
   { name: "硅基流动·叠Logo首选", base: "https://api.siliconflow.cn/v1", model: "Qwen/Qwen-Image-Edit-2509" },
   { name: "即梦 Seedream", base: "https://ark.cn-beijing.volces.com/api/v3", model: "doubao-seedream-4-0" },
-  { name: "通义万相", base: "https://dashscope.aliyuncs.com/api/v1", model: "wanx2.1-t2i-turbo" },
+  { name: "通义万相", base: "https://dashscope.aliyuncs.com/api/v1", model: "wan2.6-t2i" },
   { name: "智谱 CogView", base: "https://open.bigmodel.cn/api/paas/v4", model: "cogview-4" },
 ];
 const PRESET_CHIP = "rounded-md border border-black/[0.1] bg-black/[0.02] px-2 py-1 text-[11.5px] text-[#3a3a3c] transition hover:border-[#007AFF]/40 hover:bg-[#007AFF]/10 hover:text-[#007AFF] active:scale-[0.97] dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#c8cace]";
@@ -260,7 +265,7 @@ export function SettingsDrawer({
                 <div><label className={LABEL}>接口地址 Base URL</label><input className={INPUT} value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.deepseek.com/v1" /></div>
                 <div><label className={LABEL}>API Key</label><input className={INPUT} type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={keyMask ? `已配置（${keyMask}），留空不改` : "sk-…"} autoComplete="off" />
                   <p className="mt-1 text-[11px] leading-snug text-[#a1a1a6] dark:text-[#6e7077]">还没有 key？到上面选的那家供应商官网注册登录，在「API 密钥 / API Keys」页新建一个，复制回来贴上即可。</p></div>
-                <div><label className={LABEL}>模型名</label><input className={INPUT} value={model} onChange={(e) => setModel(e.target.value)} placeholder="deepseek-chat" /></div>
+                <div><label className={LABEL}>模型名</label><input className={INPUT} value={model} onChange={(e) => setModel(e.target.value)} placeholder="deepseek-v4-flash" /></div>
               </div>
               <button onClick={testText} disabled={testing}
                 className="mt-2.5 inline-flex items-center gap-1.5 rounded-md border border-black/[0.1] bg-black/[0.02] px-3 py-1.5 text-[12.5px] text-[#3a3a3c] transition hover:bg-black/[0.04] active:scale-[0.98] disabled:opacity-50 dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#c8cace] dark:hover:bg-white/[0.06]">
@@ -282,7 +287,7 @@ export function SettingsDrawer({
               <div className="space-y-2.5">
                 <div><label className={LABEL}>接口地址 Base URL</label><input className={INPUT} value={imgBaseUrl} onChange={(e) => setImgBaseUrl(e.target.value)} onBlur={(e) => checkImageModel(e.target.value, imgModel)} placeholder="https://api.siliconflow.cn/v1" /></div>
                 <div><label className={LABEL}>API Key</label><input className={INPUT} type="password" value={imgApiKey} onChange={(e) => setImgApiKey(e.target.value)} placeholder={imgKeyMask ? `已配置（${imgKeyMask}），留空不改` : "sk-…"} autoComplete="off" /></div>
-                <div><label className={LABEL}>模型名</label><input className={INPUT} value={imgModel} onChange={(e) => setImgModel(e.target.value)} onBlur={(e) => checkImageModel(imgBaseUrl, e.target.value)} placeholder="Kwai-Kolors/Kolors" /></div>
+                <div><label className={LABEL}>模型名</label><input className={INPUT} value={imgModel} onChange={(e) => setImgModel(e.target.value)} onBlur={(e) => checkImageModel(imgBaseUrl, e.target.value)} placeholder="Qwen/Qwen-Image" /></div>
               </div>
               {imgWarn && (
                 <p className="mt-2 flex items-start gap-1.5 rounded-md bg-[#ff9500]/10 px-2.5 py-1.5 text-[11.5px] leading-snug text-[#bf6a00] dark:text-[#ffb454]">

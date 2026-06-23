@@ -120,6 +120,8 @@ ipcMain.handle("files:pick", async (_e, opts = {}) => {
   if (!opts.directory) {
     dialogOpts.filters = opts.filters || [
       { name: "报表/文档", extensions: ["xlsx", "xlsm", "csv", "txt", "md"] },
+      // 图片/视频:让老板能直接选图/录屏给 AI 看(多模态)。视频走 video_url 原生送、图片走 image_url。
+      { name: "图片/视频", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "heic", "tiff", "tif", "mp4", "mov", "webm", "mkv", "avi", "m4v"] },
       { name: "所有文件", extensions: ["*"] },
     ];
   }

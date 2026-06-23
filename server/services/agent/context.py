@@ -85,3 +85,8 @@ class AgentContext:
     # 并把这个标记置 True；拼最终答复处据此加一句温和提示（"看不了图，这次按文字来的，要看图换个带视觉的模型"）。
     # 不靠任何"识图/非识图模型清单"，纯靠"报错→去图重试"反应式判定（呼应壳子不分识图模型的原则）。默认 False。
     vision_degraded: bool = False
+    # ── 工具产出图片回灌（让 computer-use 真能「看见」自己截的屏）──
+    # 工具（如 computer screenshot）执行时把产出的本地图片路径 append 这里；loop 在一批 tool 结果
+    # 全部追加、配对完整后，把这些图拼成一条 user 图片消息注入（走已验证的 image_url 通道、可被 vision_degrade
+    # 接住），让模型在下一轮真看见图。取后清空，防串到下一轮。借 Kimi Code 把工具产出的图当 content 回灌的做法。
+    pending_view_images: list = field(default_factory=list)

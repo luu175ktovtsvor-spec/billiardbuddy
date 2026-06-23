@@ -194,7 +194,7 @@ def test_dashscope_provider_async_submit_poll(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAC)
     from services.ai.providers.dashscope_image import DashScopeImageProvider
     out = asyncio.run(DashScopeImageProvider("sk-w").generate_image(
-        prompt="台球房周末活动海报", model="wanx2.1-t2i-turbo", size="1024x1024"))
+        prompt="台球房周末活动海报", model="wan2.6-t2i", size="1024x1024"))
     assert out == b"WANXDATA"
     assert seen["submit_body"]["parameters"]["size"] == "1024*1024"     # 转成星号 *
     assert seen["submit_body"]["input"]["prompt"] == "台球房周末活动海报"
