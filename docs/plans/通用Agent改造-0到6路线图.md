@@ -43,7 +43,7 @@
   - Spinner：动词库随机轮换 + 计时 + token + "esc/点击中断" + 卡顿(3s无token)变色。
   - thinking 默认折叠灰块；word-level diff；审批卡三档措辞（允许一次/本会话允许/拒绝+反馈框）。
 - **改动文件**：`welcome-screen.tsx`、`desktop-composer.tsx`、`chat-thread.tsx`、`chat-shell.tsx`（用 `agent-copy.ts`）。
-- **测试**：`pnpm exec tsc --noEmit` 全过；关键路径 Playwright 截图对照（登录→进聊天→发消息→工具卡/审批卡）。
+- **测试**：`pnpm exec tsc --noEmit` 全过；关键路径 Playwright 截图对照（进聊天→发消息→工具卡/审批卡）。
 - **守**：配色不变；不破现有 SSE 消费链路（onToolCall/onToolResult 按 id 回填、成品卡/审批卡/提问卡逻辑）。
 
 ### 阶段1 · Slash 命令 + Skills + Output Styles（扩展总地基）
@@ -72,7 +72,7 @@
 
 ### 阶段4 · Computer Use 能力 + 桌面测试编排
 - **能力**：`computer` 工具（screenshot/click/type/key/scroll…）经 `desktop-control`(pyautogui+osascript) 执行——"通用电脑执行器"（建文件夹/操作其他 app）。对外动作走审批闸。
-- **测试编排**：① Playwright `_electron` 确定性 E2E（登录→聊天→审批卡 关键路径回归）；② desktop-control 截图喂 Opus 做真人验收脚本（agent loop，执行器=本机）。
+- **测试编排**：① Playwright `_electron` 确定性 E2E（进聊天→审批卡 关键路径回归）；② desktop-control 截图喂 Opus 做真人验收脚本（agent loop，执行器=本机）。
 - **守**：操作真桌面=高风险，默认需"完全访问模式"+审批；macOS 辅助功能/屏幕录制授权引导。
 
 ### 阶段5 · Plugins + Marketplace
@@ -103,7 +103,7 @@ SSH 服务端 + 远程触发 + 守护进程（对标 cc-haha `src/ssh`、`src/da
 - [x] 调研（5 路并行：CC 核心引擎 / 扩展系统 / 前端UI+文案 / ComputerUse测试 / 自有现状审计）— 2026-06-21
 - [x] **完整功能矩阵** `docs/plans/cc-haha功能矩阵-全搬对照.md`（全功能×我们状态，驱动"全搬"）— 2026-06-21
 - [x] **plan 计划模式**（权限 4 档全，只读探索不执行，3测试）+ 工具 **⏺ 状态点**（灰运行/绿完成）— 2026-06-21
-- [x] **打包 + 真机启动验证**（2026-06-21）：修打包脚本（带上内置 skills/output-styles 数据目录 + 补 hooks_config/im_telegram/output_styles 的 hidden-import）→ **后端 PyInstaller ✓ + 前端 standalone ✓ + electron-builder → dmg ✓**（`dist/台球运营管家-0.2.0-arm64.dmg` 241M，未签名）→ **启动打包 app：前台=台球运营管家、PyInstaller 后端 8077 在服务、前端渲染登录页（配色完好）**。warn 无漏我新增模块、内置技能/风格已进 `_internal/`。**+ 直跑打包后端二进制 → 注册(201) + curl：`/agent/skills` 真返回内置 commit/review、`/output-styles` 真返回 concise/explanatory(source:bundled)、`/plugins`/`/mcp` 全 200** —— 打包运行时端点 + 内置内容加载 + 前后端衔接数据源验证通过。**+ 真机可视化验收（desktop-control 真人走查）✓**：装包后台跑→注册→UI 登录→进**新门面**（"新会话"/CC式副标题/"完全访问模式"/"默认风格"/新 placeholder 全渲染正确）→`/help` 命令面板弹出、列出命令+真实技能（带"命令/技能"徽标）。**⚠️ 过程中逮出静态检查全漏的真 bug**：`build_frontend.js` 只拷贝不构建、漏设 `API_PROXY_URL` → 前端 next.config rewrites 反代默认到 **8000**（后端在 8077）→ 登录 **500**、前后端衔接断。**已修**：build_frontend.js 改为自带 `pnpm build`(烘入 `API_PROXY_URL=http://127.0.0.1:8077`) → 重建前端 + 重打 dmg → curl 前端 3100 login 返 token、UI 登录通、门面/`/`面板正确。**这就是"Computer Use 式真机测试"的价值**（正是用户强调的"前后端衔接别出问题"）。待：AI 生成全流程（需 BYOK key，人在场时走一遍）
+- [x] **打包 + 真机启动验证**（2026-06-21·历史记录：当时仍有登录/注册页，2026-06-23 已改为免登录单用户，下文"登录页/注册/UI 登录"均为当时旧形态）：修打包脚本（带上内置 skills/output-styles 数据目录 + 补 hooks_config/im_telegram/output_styles 的 hidden-import）→ **后端 PyInstaller ✓ + 前端 standalone ✓ + electron-builder → dmg ✓**（`dist/台球运营管家-0.2.0-arm64.dmg` 241M，未签名）→ **启动打包 app：前台=台球运营管家、PyInstaller 后端 8077 在服务、前端渲染登录页（配色完好）**。warn 无漏我新增模块、内置技能/风格已进 `_internal/`。**+ 直跑打包后端二进制 → 注册(201) + curl：`/agent/skills` 真返回内置 commit/review、`/output-styles` 真返回 concise/explanatory(source:bundled)、`/plugins`/`/mcp` 全 200** —— 打包运行时端点 + 内置内容加载 + 前后端衔接数据源验证通过。**+ 真机可视化验收（desktop-control 真人走查）✓**：装包后台跑→注册→UI 登录→进**新门面**（"新会话"/CC式副标题/"完全访问模式"/"默认风格"/新 placeholder 全渲染正确）→`/help` 命令面板弹出、列出命令+真实技能（带"命令/技能"徽标）。**⚠️ 过程中逮出静态检查全漏的真 bug**：`build_frontend.js` 只拷贝不构建、漏设 `API_PROXY_URL` → 前端 next.config rewrites 反代默认到 **8000**（后端在 8077）→ 登录 **500**、前后端衔接断。**已修**：build_frontend.js 改为自带 `pnpm build`(烘入 `API_PROXY_URL=http://127.0.0.1:8077`) → 重建前端 + 重打 dmg → curl 前端 3100 login 返 token、UI 登录通、门面/`/`面板正确。**这就是"Computer Use 式真机测试"的价值**（正是用户强调的"前后端衔接别出问题"）。待：AI 生成全流程（需 BYOK key，人在场时走一遍）
 - [~] 阶段0 前端门面专业化（保配色）— 进行中。已:`agent-copy.ts`文案库 / 权限三档照CC(询问权限·自动接受编辑·完全访问模式) / `agent-spinner.tsx`(✻+动词库+计时+esc中断) / 欢迎页去客服腔 / esc中断接线 / **右侧预览扩成代码画布(file·code视图 + 步骤"⤢右侧打开")**。待:工具进行时·过去式动词 + word-level diff + 审批三档措辞(Yes / Yes不再询问 / No+反馈)
 - [~] 阶段1 Slash + Skills + Output Styles — 已:**Skills 端到端**(frontmatter解析/多源加载去重/渐进披露注入/`skill`工具/`/name`slash展开/`GET /agent/skills`/前端`/`命令面板/2内置技能commit·review) + **Output Styles 端到端**(loader/系统提示注入/`GET /agent/output-styles`/工具条风格下拉/2内置风格explanatory·concise) — 后端 **499 测试全绿**、前端 tsc 绿。待:更多内置命令(/model·/compact·/context·/cost…) + `.claude/commands/*.md` 自定义命令
 - [x] 阶段2 子代理专家池 + 后台任务+通知 + Cron + /goal — **全做**：子代理专家池(general-purpose/explore/plan) + notify 通知 + /goal 目标驱动 + **run_background 后台任务**(审批闸·跑完系统通知+输出落盘) + **Cron-lite 定时提醒**(schedule_reminder/list/cancel + 进程内loop)。13+测试

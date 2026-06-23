@@ -68,8 +68,8 @@ async def add_memory(
     store=Depends(get_current_store),
     db=Depends(get_db),
 ):
-    # 店脑会注入该店所有后续生成的 prompt，等同门店级设置，写权限限 owner/店长（STORE_UPDATE）；
-    # 同时过注入检查，防止往记忆里塞 prompt 注入内容。
+    # 店脑会注入该店所有后续生成的 prompt，等同门店级设置；
+    # 过注入检查，防止往记忆里塞 prompt 注入内容（本地单用户，无多角色权限闸）。
     content = body.content.strip()
     if not content:
         raise HTTPException(status_code=400, detail="内容不能为空")

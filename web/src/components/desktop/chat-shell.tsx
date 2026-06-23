@@ -2,7 +2,7 @@
 
 /**
  * 桌面端 Agent 对话整壳：侧栏 + （空态欢迎页 | 对话流）+ 输入区，接 useAgentChat 真后端管道。
- * 由 chat/page.tsx 在 isDesktop 时早返回渲染；手机网页版走原有页面，二者物理隔离。
+ * chat 路由唯一渲染本壳（单窗口产品，旧手机网页版分支已随单窗口化删除）。
  */
 import { useCallback, useEffect, useState } from "react";
 
