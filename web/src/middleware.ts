@@ -1,21 +1,7 @@
 import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
 
-export function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl;
-
-  // Skip login page to avoid redirect loops
-  if (pathname === "/login" || pathname.startsWith("/login/")) {
-    return NextResponse.next();
-  }
-
-  const token = request.cookies.get("token")?.value;
-
-  if (!token) {
-    const loginUrl = new URL("/login", request.url);
-    return NextResponse.redirect(loginUrl);
-  }
-
+// 桌面本机单用户·免登录：已删 SaaS 登录鉴权，不再做 token 门，全部放行。
+export function middleware() {
   return NextResponse.next();
 }
 

@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-/* 首页直达登录（桌面版同样从登录进）。 */
+/* 桌面本机单用户·免登录：首页直达 AI 对话窗口。 */
 export default function Home() {
-  redirect("/login");
+  redirect("/dashboard/chat");
 }
