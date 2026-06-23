@@ -1,6 +1,6 @@
 import { ApiError } from "@/types/api";
 import type { User } from "@/types/auth";
-import type { StoreCreate, StoreResponse, StoreUpdate, StoreListItem, UploadResponse, StoreMemoryItem, ByokConfigOut, ByokConfigIn, ByokValidateResult, ByokProfile } from "@/types/store";
+import type { StoreCreate, StoreResponse, StoreUpdate, UploadResponse, StoreMemoryItem, ByokConfigOut, ByokConfigIn, ByokValidateResult, ByokProfile } from "@/types/store";
 import type { DashboardTodayResponse, CardSignals } from "@/types/dashboard";
 
 const configuredBaseUrl = process.env.NEXT_PUBLIC_API_URL;
@@ -46,26 +46,9 @@ export interface AgentChatPayload {
 
 class ApiClient {
   baseUrl: string;
-  private storeId: string | null = null;
 
   constructor() {
     this.baseUrl = BASE_URL;
-    if (typeof window !== "undefined") {
-      this.storeId = localStorage.getItem("current_store_id");
-    }
-  }
-
-  getStoreId(): string | null {
-    return this.storeId;
-  }
-
-  setStoreId(id: string | null) {
-    this.storeId = id;
-    if (id) {
-      localStorage.setItem("current_store_id", id);
-    } else {
-      localStorage.removeItem("current_store_id");
-    }
   }
 
   /** 将相对路径（如 /uploads/...）解析为完整 API URL */
@@ -88,9 +71,6 @@ class ApiClient {
     const headers: Record<string, string> = {};
     if (!isFormData) {
       headers["Content-Type"] = "application/json";
-    }
-    if (this.storeId) {
-      headers["X-Store-Id"] = this.storeId;
     }
 
     let res: Response;
@@ -145,10 +125,6 @@ class ApiClient {
 
   getMyStore() {
     return this.request<StoreResponse>("GET", "/api/v1/stores/me");
-  }
-
-  listStores() {
-    return this.request<StoreListItem[]>("GET", "/api/v1/stores/list");
   }
 
   updateStore(data: StoreUpdate) {
@@ -291,7 +267,6 @@ class ApiClient {
       "Content-Type": "application/json",
       "Accept": "text/event-stream",
     };
-    if (this.storeId) headers["X-Store-Id"] = this.storeId;
 
     const url = `${this.baseUrl}/api/v1/agent/chat`;
     try {

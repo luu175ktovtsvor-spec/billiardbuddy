@@ -14,11 +14,11 @@ from services.ai.prompt_engine import get_prompt_engine
 # 有 store_id 列、但**故意不进自动过滤**、靠各处手写 .where(store_id) 隔离的表。
 # 不能随便加进 _TENANT_TABLES：admin 等无租户上下文的查询会被 fail-safe 清空。
 _MANUAL_FILTER_TABLES = {
-    "store_members", "store_invitations",
-    "store_subscriptions", "store_memories", "collab_tasks",
-    # usage_events：admin-only 分析表，刻意跨店做统计聚合、不参与租户隔离；
-    # 需要按店看时由 admin 显式 .where(store_id)。绝不能进 _TENANT_TABLES(会被 fail-safe 清空)。
+    "store_members", "store_memories",
+    # usage_events：使用事件分析表，刻意跨店做统计聚合、不参与租户隔离；
+    # 需要按店看时显式 .where(store_id)。绝不能进 _TENANT_TABLES(会被 fail-safe 清空)。
     "usage_events",
+    # 注：store_invitations/store_subscriptions/collab_tasks 是已删的 SaaS 表名，已从此集合清除。
 }
 
 

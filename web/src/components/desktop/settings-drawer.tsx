@@ -129,7 +129,6 @@ export function SettingsDrawer({
     } else {
       const res = await api.createStore({ name });
       setStoreId(res.id);
-      api.setStoreId(res.id);
     }
     onStoreNameChange?.(name);
     return true;
