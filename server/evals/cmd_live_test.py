@@ -67,7 +67,7 @@ async def run_task(client, store, msg):
     evs = []
     body = {"message": msg, "permission_mode": "full", "full_disk_access": True}
     async with client.stream("POST", "/api/v1/agent/chat", json=body,
-                             headers={"X-Store-Id": str(store.id)}, timeout=300.0) as resp:
+                             timeout=300.0) as resp:
         async for line in resp.aiter_lines():
             if not line.startswith("data:"):
                 continue

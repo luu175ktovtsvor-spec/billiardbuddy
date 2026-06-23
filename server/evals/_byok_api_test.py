@@ -12,12 +12,8 @@ MIMO = os.environ.get("MIMO_KEY", "")
 
 async def go():
     async with httpx.AsyncClient(base_url=BASE, timeout=180, trust_env=False) as c:
-        r = await c.post("/auth/register", json={"phone": PHONE, "password": PWD, "name": "BYOK测试老板"})
-        print("register:", r.status_code, "" if r.status_code < 400 else r.text[:80])
-        r = await c.post("/auth/login", json={"phone": PHONE, "password": PWD})
-        print("login:", r.status_code)
-        tok = r.json()["access_token"]
-        H = {"Authorization": f"Bearer {tok}"}
+        # 免登录单用户：后端 deps 直接返回本地 seed 的 owner/店，无需 register/login/token。
+        H: dict = {}
         # 建店（已存则取现有）
         r = await c.post("/stores", json={"name": "BYOK验证台球", "city": "成都"}, headers=H)
         if r.status_code < 400:
@@ -27,7 +23,6 @@ async def go():
             r = await c.get("/stores/me", headers=H)
             sid = r.json()["id"]
             print("已有门店:", sid)
-        H["X-Store-Id"] = sid
         # GET（无需主密钥）
         r = await c.get("/stores/me/byok", headers=H)
         print("GET byok:", r.status_code, r.text[:160])

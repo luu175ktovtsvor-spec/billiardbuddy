@@ -95,7 +95,7 @@ async def run_one(client, store, title, message):
     try:
         async with client.stream("POST", "/api/v1/agent/chat",
                                  json={"message": message, "permission_mode": "full"},
-                                 headers={"X-Store-Id": str(store.id)}, timeout=300.0) as resp:
+                                 timeout=300.0) as resp:
             async for line in resp.aiter_lines():
                 if not line.startswith("data:"):
                     continue

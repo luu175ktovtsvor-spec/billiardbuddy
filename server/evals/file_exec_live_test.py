@@ -120,7 +120,7 @@ async def run_task(client, store, msg, files):
         body["selected_files"] = files
     try:
         async with client.stream("POST", "/api/v1/agent/chat", json=body,
-                                 headers={"X-Store-Id": str(store.id)}, timeout=300.0) as resp:
+                                 timeout=300.0) as resp:
             async for line in resp.aiter_lines():
                 if not line.startswith("data:"):
                     continue

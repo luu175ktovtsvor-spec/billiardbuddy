@@ -44,7 +44,7 @@
 - 设计语言：macOS 原生质感(无边框窗口毛玻璃 + SF 字体 + #007AFF)；权限用词照搬 Claude Code（逐项确认/自动接受修改/跳过确认）。设计规范见 `docs/design/桌面Agent-macOS设计规范.md`。
 
 ### 后端
-- API 前缀 `/api/v1/`；Pydantic v2；async SQLAlchemy；JWT(HS256)
+- API 前缀 `/api/v1/`；Pydantic v2；async SQLAlchemy。**免登录单用户**：已删 SaaS 登录鉴权，`api/deps.py` 的 `get_current_user/get_current_store` 返回本地 seed 的唯一 owner/店
 - **桌面用 SQLite**：UUID 列别传字符串(`db/types.py` 已兜)、PG 专属 SQL(jsonb/make_interval/advisory_lock/pg_insert)要按 `db.bind.dialect.name` 分支兜底，否则 SQLite 崩。建库走 `db/init_local.py` 的 `Base.metadata.create_all`（无 Alembic）。
 - 上传/海报落点用 `UPLOAD_DIR`(指 userData 可写目录，app 包内只读)
 - AI 调用结果写 `generations` 表；所有 Generation 查询加 `is_deleted == False`
