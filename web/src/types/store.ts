@@ -150,10 +150,6 @@ export interface StoreResponse {
   updated_at: string;
 }
 
-export interface StoreListItem {
-  id: string;
-  name: string;
-}
 
 export interface UploadResponse {
   url: string;

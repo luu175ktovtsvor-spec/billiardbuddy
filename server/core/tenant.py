@@ -24,7 +24,7 @@ _current_store_id: contextvars.ContextVar[uuid.UUID | None] = contextvars.Contex
 #    它们的跨店隔离**完全依赖各处手写 `.where(<Model>.store_id == ...)`**，没有 fail-safe 兜底。
 #    新增对这些表的查询若漏带 store_id 过滤 = 静默跨店泄露。改本集合前务必确认 admin 等无租户上下文的
 #    查询不会被 fail-safe 清空（见 test_tenant_isolation.py 的分类断言）。
-_TENANT_TABLES = {"stores", "generations", "usage_quotas", "conversations"}
+_TENANT_TABLES = {"stores", "generations", "usage_quotas"}
 
 
 def set_tenant(store_id: uuid.UUID | None) -> contextvars.Token:

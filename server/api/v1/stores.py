@@ -12,7 +12,6 @@ from schemas.store import (
     StoreCreate,
     StoreUpdate,
     StoreResponse,
-    StoreListItem,
     UploadResponse,
 )
 from services.store_service import (
@@ -35,21 +34,6 @@ def _store_to_response(store: Store, my_role: str | None = None) -> StoreRespons
         completeness=calculate_completeness(store),
         my_role=my_role,
     )
-
-
-@router.get("/list", response_model=list[StoreListItem])
-async def list_my_stores(
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[AsyncSession, Depends(get_db)],
-):
-    """返回当前用户关联的所有门店列表（id + name）"""
-    result = await db.execute(
-        select(Store.id, Store.name)
-        .join(StoreMember, StoreMember.store_id == Store.id)
-        .where(StoreMember.user_id == current_user.id)
-    )
-    rows = result.all()
-    return [StoreListItem(id=row.id, name=row.name) for row in rows]
 
 
 @router.post("", response_model=StoreResponse, status_code=201)
