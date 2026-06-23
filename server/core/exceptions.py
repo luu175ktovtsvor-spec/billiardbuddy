@@ -25,7 +25,7 @@ class ValidationException(AppException):
 
 
 class UnauthorizedException(AppException):
-    def __init__(self, message: str = "未登录或登录已过期"):
+    def __init__(self, message: str = "本地身份未就绪"):
         super().__init__(message, status_code=401)
 
 

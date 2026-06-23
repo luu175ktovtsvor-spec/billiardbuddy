@@ -94,7 +94,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="球房 AI 运营助手",
-    description="面向台球房行业的 AI 运营辅助 SaaS 工具",
+    description="面向台球房行业的本地 AI 运营助手（单用户·纯 BYOK）",
     version="0.1.0",
     lifespan=lifespan,
 )

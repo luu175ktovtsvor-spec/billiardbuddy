@@ -11,7 +11,7 @@ export const viewport: Viewport = {
 
 export const metadata: Metadata = {
   title: "球房 AI 运营助手",
-  description: "台球房行业 AI 运营辅助 SaaS 工具",
+  description: "台球房行业本地 AI 运营助手",
   manifest: "/manifest.json",
   icons: {
     icon: "/icon.svg",

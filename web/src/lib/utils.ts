@@ -88,12 +88,12 @@ export async function copyPlainText(plain: string): Promise<boolean> {
 export function getErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
     switch (err.status) {
-      case 401: return "请重新登录";
+      case 401: return "本地身份异常，请重启 App";
       case 404: return "请先创建或完善门店资料";
       case 422: return "请检查输入内容";
       // 429 透传后端文案:带具体上限和提额引导("联系您的服务商"),
       // 别替换成"下月再试"——那是把想付费的用户劝走
-      case 429: return err.detail || "本月生成次数已达上限。如需提升额度，请联系您的服务商";
+      case 429: return err.detail || "本月生成次数已达上限。";
       case 500: return "生成失败，请稍后重试";
       default: return err.detail || `请求失败 (${err.status})`;
     }

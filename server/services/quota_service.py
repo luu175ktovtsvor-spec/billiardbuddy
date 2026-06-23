@@ -12,7 +12,7 @@ from models.quota import UsageQuota
 
 logger = logging.getLogger(__name__)
 
-# token 上限由"次数上限"自动推导,二者永不错配——管理员/套餐只需设置生成次数,
+# token 上限由"次数上限"自动推导,二者永不错配——只需设置生成次数,
 # token 仅作防滥用安全网(单次约 3-5k token,留足余量按 8000/次)。
 TOKENS_PER_GENERATION = 8000
 
@@ -22,14 +22,11 @@ def token_ceiling(generation_limit: int) -> int:
     return max(0, generation_limit) * TOKENS_PER_GENERATION
 
 
-# 默认配额 = 试用档（未开通套餐的新门店）。
-# 30 次/月：店长日均 3-5 次可体验约一周，足够判断"好不好用"；
-# 生图与文本共用此池，30 次全用于生图的成本也可控。
-# 开通套餐后由 plan 的限额覆盖；管理后台也可单店调整。
+# 非桌面回退路径的默认生成上限（桌面 DESKTOP_LOCAL 直接短路、不限额，纯 BYOK 自付）。
 DEFAULT_GENERATION_LIMIT = 30
 DEFAULT_TOKENS_LIMIT = token_ceiling(DEFAULT_GENERATION_LIMIT)
 
-# 海报独立额度池默认值（试用店）。生图贵得多，免费/试用只给少量，开套餐后由 plan.poster_limit 覆盖。
+# 海报独立额度池默认值（非桌面回退路径用；桌面短路跳过、不限额）。
 DEFAULT_POSTER_LIMIT = 3
 
 
@@ -108,14 +105,14 @@ async def check_quota(db: AsyncSession, store_id: str) -> UsageQuota:
     if quota.monthly_generations_used >= quota.monthly_generation_limit:
         from core.exceptions import QuotaExceededError
         raise QuotaExceededError(
-            f"本月生成次数已达上限（{quota.monthly_generation_limit} 次）。如需提升额度，请联系您的服务商"
+            f"本月生成次数已达上限（{quota.monthly_generation_limit} 次）。"
         )
     # token 安全网由次数上限推导(而非读 stored 字段),保证永远不会先于次数触发,
     # 只拦截异常的超大用量(防滥用)。stored monthly_tokens_limit 仅供展示。
     ceiling = token_ceiling(quota.monthly_generation_limit)
     if ceiling and quota.monthly_tokens_used >= ceiling:
         from core.exceptions import QuotaExceededError
-        raise QuotaExceededError("本月 AI 用量异常偏高，已达安全上限，请联系您的服务商")
+        raise QuotaExceededError("本月 AI 用量异常偏高，已达安全上限。")
     return quota
 
 
@@ -147,7 +144,7 @@ async def check_poster_quota(db: AsyncSession, store_id: str) -> UsageQuota:
         from core.exceptions import QuotaExceededError
         raise QuotaExceededError(
             f"本月海报生成已达上限（{quota.monthly_poster_limit} 张）。生图算力成本较高，"
-            "如需更多请联系您的服务商升级套餐"
+            "（纯 BYOK 自付，桌面本地不限额）"
         )
     return quota
 

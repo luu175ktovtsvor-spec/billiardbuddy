@@ -251,7 +251,7 @@ class ApiClient {
       // 非 JSON 响应,走默认文案
     }
     if (res.status === 429) {
-      return detail || "本月生成次数已达上限。如需提升额度，请联系您的服务商";
+      return detail || "本月生成次数已达上限。";
     }
     if (res.status >= 400 && res.status < 500 && detail) return detail;
     return `生成失败，请稍后重试 (${res.status})`;

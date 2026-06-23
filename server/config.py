@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     openai_image_timeout: float = 900.0
     # 每个 worker 同时在跑的生图数上限（asyncio 信号量）。生产 2 worker → 实际全局并发≈2×本值。
     # 当前账户 L2（IPM=20）：默认 4/worker → 实际≈8 并发，远低于 20；生图慢，一分钟根本起不到 20 张，
-    # 超出的请求只是排队等待、不会触发 OpenAI 429。升级套餐(IPM 更高)或想让用户少排队，经环境变量 POSTER_MAX_CONCURRENCY 上调即可。
+    # 超出的请求只是排队等待、不会触发 OpenAI 429。BYOK 供应商账号提额(IPM 更高)或想让用户少排队，经环境变量 POSTER_MAX_CONCURRENCY 上调即可。
     poster_max_concurrency: int = 4
 
     # 阿里云 OSS

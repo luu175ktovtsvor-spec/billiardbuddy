@@ -52,7 +52,7 @@ async def get_my_store(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    # 带上当前用户在本店的角色:前端工作台默认选中用户自己的岗位 tab
+    # 本地单用户恒为 owner（RBAC 多角色已删），带上 role 仅为兼容旧响应结构
     result = await db.execute(
         select(StoreMember.role).where(
             StoreMember.store_id == store.id,
@@ -142,7 +142,7 @@ class BYOKConfigOut(BaseModel):
 
 
 def _ensure_store_owner(store: Store, user: User) -> None:
-    """BYOK Key 敏感（影响计费），仅门店所有者或平台管理员可管理。"""
+    """BYOK Key 敏感，仅本地 owner 可管理（单用户本机，恒成立）。"""
     if str(store.owner_id) != str(user.id):
         raise HTTPException(status_code=403, detail="仅门店所有者可管理 AI Key")
 
