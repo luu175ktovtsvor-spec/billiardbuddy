@@ -1,5 +1,5 @@
 import { ApiError } from "@/types/api";
-import type { LoginRequest, RegisterRequest, TokenResponse, User } from "@/types/auth";
+import type { User } from "@/types/auth";
 import type { StoreCreate, StoreResponse, StoreUpdate, StoreListItem, UploadResponse, StoreMemoryItem, ByokConfigOut, ByokConfigIn, ByokValidateResult, ByokProfile } from "@/types/store";
 import type { DashboardTodayResponse, CardSignals } from "@/types/dashboard";
 
@@ -53,7 +53,6 @@ class ApiClient {
   constructor() {
     this.baseUrl = BASE_URL;
     if (typeof window !== "undefined") {
-      this.token = localStorage.getItem("access_token");
       this.storeId = localStorage.getItem("current_store_id");
     }
   }
@@ -94,40 +93,6 @@ class ApiClient {
       localStorage.setItem("current_store_id", id);
     } else {
       localStorage.removeItem("current_store_id");
-    }
-  }
-
-  /** 刷新 access_token，带全局锁防止并发刷新 */
-  async refreshAccessToken(): Promise<string | null> {
-    if (this.refreshPromise) {
-      return this.refreshPromise;
-    }
-    this.refreshPromise = this._doRefresh();
-    try {
-      return await this.refreshPromise;
-    } finally {
-      this.refreshPromise = null;
-    }
-  }
-
-  private async _doRefresh(): Promise<string | null> {
-    const currentToken = this.token;
-    if (!currentToken) return null;
-    try {
-      const res = await fetch(`${this.baseUrl}/api/v1/auth/refresh`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ access_token: currentToken }),
-      });
-      if (!res.ok) return null;
-      const data = await res.json();
-      const newToken: string | null = data.access_token ?? null;
-      if (newToken) {
-        this.setToken(newToken);
-      }
-      return newToken;
-    } catch {
-      return null;
     }
   }
 
@@ -175,19 +140,8 @@ class ApiClient {
     }
 
     if (res.status === 401) {
-      // 如果不是重试，尝试用全局锁刷新 token
-      if (!_isRetry && this.token) {
-        const newToken = await this.refreshAccessToken();
-        if (newToken) {
-          // 重试原请求
-          return this.request<T>(method, path, body, isFormData, true);
-        }
-      }
-      this.setToken(null);
-      if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-        window.location.href = "/login";
-      }
-      throw new ApiError(res.status, "登录已过期，请重新登录");
+      // 桌面免登录：本地身份不会 401（已删 SaaS 鉴权）；万一出现直接抛，不再刷新/跳登录。
+      throw new ApiError(res.status, "本地身份异常，请重启 App");
     }
 
     if (!res.ok) {
@@ -208,28 +162,10 @@ class ApiClient {
     return res.json();
   }
 
-  // ─── Auth ───
-
-  login(phone: string, password: string) {
-    return this.request<TokenResponse>("POST", "/api/v1/auth/login", {
-      phone,
-      password,
-    } satisfies LoginRequest);
-  }
-
-  register(data: RegisterRequest) {
-    return this.request<TokenResponse>("POST", "/api/v1/auth/register", data);
-  }
+  // ─── Auth（桌面免登录：只剩取本地 owner 身份） ───
 
   getMe() {
     return this.request<User>("GET", "/api/v1/auth/me");
-  }
-
-  changePassword(oldPassword: string, newPassword: string) {
-    return this.request<{ status: string }>("PUT", "/api/v1/auth/password", {
-      old_password: oldPassword,
-      new_password: newPassword,
-    });
   }
 
   // ─── Store ───
@@ -393,30 +329,6 @@ class ApiClient {
     try {
       const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(data), signal });
       if (!res.ok) {
-        if (res.status === 401 && this.token) {
-          const newToken = await this.refreshAccessToken();
-          if (newToken) {
-            headers["Authorization"] = `Bearer ${newToken}`;
-            const retryRes = await fetch(url, { method: "POST", headers, body: JSON.stringify(data), signal });
-            if (!retryRes.ok) {
-              if (retryRes.status === 401) {
-                this.setToken(null);
-                if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-                  window.location.href = "/login";
-                }
-              }
-              handlers.onError?.(await this.friendlyStreamError(retryRes));
-              return;
-            }
-            return this._consumeAgentSSEStream(retryRes, handlers);
-          }
-        }
-        if (res.status === 401) {
-          this.setToken(null);
-          if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-            window.location.href = "/login";
-          }
-        }
         handlers.onError?.(await this.friendlyStreamError(res));
         return;
       }

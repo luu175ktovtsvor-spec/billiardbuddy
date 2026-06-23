@@ -159,7 +159,7 @@ class BYOKConfigOut(BaseModel):
 
 def _ensure_store_owner(store: Store, user: User) -> None:
     """BYOK Key 敏感（影响计费），仅门店所有者或平台管理员可管理。"""
-    if not (getattr(user, "is_admin", False) or str(store.owner_id) == str(user.id)):
+    if str(store.owner_id) != str(user.id):
         raise HTTPException(status_code=403, detail="仅门店所有者可管理 AI Key")
 
 
