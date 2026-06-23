@@ -10,7 +10,6 @@ from api.v1.auth import router as auth_router
 from api.v1.stores import router as stores_router
 from api.v1.dashboard import router as dashboard_router
 from api.v1.quota import router as quota_router
-from api.v1.members import router as members_router
 from api.v1.client_logs import router as client_logs_router
 from api.v1.store_memory import router as store_memory_router
 from api.v1.agent import router as agent_router
@@ -22,7 +21,6 @@ router.include_router(auth_router, prefix="/auth", tags=["认证"])
 router.include_router(stores_router, prefix="/stores", tags=["门店"])
 router.include_router(dashboard_router, prefix="/dashboard", tags=["今日工作台"])
 router.include_router(quota_router, prefix="/quota", tags=["配额"])
-router.include_router(members_router, prefix="/members", tags=["成员管理"])
 router.include_router(client_logs_router, prefix="/logs", tags=["客户端日志"])
 router.include_router(store_memory_router, prefix="/store-memory", tags=["店脑·门店记忆"])
 router.include_router(agent_router, prefix="/agent", tags=["AI Agent 对话"])

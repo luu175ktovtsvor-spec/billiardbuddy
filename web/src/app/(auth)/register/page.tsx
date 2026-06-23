@@ -1,8 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
 import { Eye, EyeOff } from "lucide-react";
 import { useAuth } from "@/hooks/auth-context";
 import { ApiError } from "@/types/api";
@@ -14,19 +13,12 @@ const LABEL = "mb-1.5 block text-[13px] font-medium text-[#3a3a3c] dark:text-[#c
 
 export default function RegisterPage() {
   const { register } = useAuth();
-  const searchParams = useSearchParams();
   const [phone, setPhone] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [inviteCode, setInviteCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    const code = searchParams.get("invite");
-    if (code) setInviteCode(code.toUpperCase());
-  }, [searchParams]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,7 +37,7 @@ export default function RegisterPage() {
     }
     setLoading(true);
     try {
-      await register(phone, password, name || undefined, inviteCode || undefined);
+      await register(phone, password, name || undefined);
     } catch (err) {
       if (err instanceof ApiError) {
         setError(err.status === 409 ? "该手机号已注册" : err.detail || "注册失败");
@@ -90,15 +82,7 @@ export default function RegisterPage() {
           </div>
         </div>
 
-        <div>
-          <label htmlFor="inviteCode" className={LABEL}>邀请码 <span className="text-[#a1a1a6] dark:text-[#6e7077]">(选填)</span></label>
-          <input id="inviteCode" type="text" maxLength={8} value={inviteCode}
-            onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
-            className={INPUT} placeholder="输入邀请码加入门店" autoComplete="off" />
-          <p className="mt-1 text-[12px] text-[#a1a1a6] dark:text-[#6e7077]">有邀请码可直接加入对应门店</p>
-        </div>
-
-        {error && <p className="text-[13px] text-[#ff3b30] dark:text-[#ff8585]">{error}</p>}
+        {error &&<p className="text-[13px] text-[#ff3b30] dark:text-[#ff8585]">{error}</p>}
 
         <button type="submit" disabled={loading}
           className="w-full rounded-lg bg-[#10a37f] px-4 py-2.5 text-[14px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.99] disabled:opacity-50">

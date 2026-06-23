@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from core.exceptions import AppException
 from core.security import hash_password, verify_password, create_access_token
 from models.user import User
-from models.store import StoreMember, StoreInvitation
+from models.store import StoreMember
 
 
 class PhoneAlreadyRegisteredError(AppException):
@@ -20,11 +20,6 @@ class InvalidCredentialsError(AppException):
         super().__init__("手机号或密码错误", status_code=401)
 
 
-class InvalidInviteCodeError(AppException):
-    def __init__(self):
-        super().__init__("邀请码无效或已过期，请向管理员索取新的邀请码", status_code=400)
-
-
 class IncorrectPasswordError(AppException):
     def __init__(self):
         super().__init__("当前密码不正确", status_code=400)
@@ -32,7 +27,6 @@ class IncorrectPasswordError(AppException):
 
 async def register_user(
     db: AsyncSession, phone: str, password: str, name: str | None,
-    invite_code: str | None = None,
 ) -> tuple[User, str]:
     existing = await db.execute(select(User).where(User.phone == phone))
     if existing.scalar_one_or_none():
@@ -45,35 +39,6 @@ async def register_user(
     )
     db.add(user)
     await db.flush()
-
-    # 如果提供了邀请码，自动加入门店
-    if invite_code:
-        code = invite_code.strip().upper()
-        # 行级锁，串行化并发注册，避免 use_count 竞态突破次数上限
-        result = await db.execute(
-            select(StoreInvitation).where(StoreInvitation.code == code).with_for_update()
-        )
-        invitation = result.scalar_one_or_none()
-
-        now = datetime.now(timezone.utc)
-        valid = (
-            invitation is not None
-            and invitation.is_active
-            and (not invitation.expires_at or invitation.expires_at > now)
-            and (invitation.max_uses is None or invitation.use_count < invitation.max_uses)
-        )
-        # 邀请码失效不能静默放过：否则会建出"未入店的孤儿号"，员工再自建店 → 脱离老板门店、
-        # 团队数据散架。此时整单注册失败回滚(未 commit → 不建号)，让员工拿新码重试。
-        if not valid:
-            raise InvalidInviteCodeError()
-
-        member = StoreMember(
-            store_id=invitation.store_id,
-            user_id=user.id,
-            role=invitation.role,
-        )
-        db.add(member)
-        invitation.use_count += 1
 
     # 防并发/重复提交：SELECT 检查与 INSERT 之间若有竞态（如连点两次「注册」），
     # 第二条会撞 phone 唯一约束 → IntegrityError。这里兜成友好的 409，绝不暴露成裸 500。
