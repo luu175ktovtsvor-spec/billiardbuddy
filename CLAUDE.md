@@ -4,9 +4,9 @@
 > - **这是什么**：装在用户电脑上的**通用 AI Agent**——能读写/改本机文件、跑命令、上网查抓、生图、列清单、派子代理，实打实把活干完。对标 Claude Code 的本机执行助手。**台球房运营**是**可 `@挂载` 的领域知识库**（`knowledge_packs=["billiards"]`），不是产品边界。
 > - **接手先读** `交接-给新会话/现状与待办.md`（上下文 + 已完成 + 待办）。
 > - **当前路线** → `docs/plans/通用Agent改造-0到6路线图.md`（主路线图：做成通用偏代码 Agent、对标 Claude Code）+ `docs/plans/cc-haha功能矩阵-全搬对照.md`（配套进度）。
-> - **看懂产品/架构事实** → `docs/桌面版AI-Agent-产品形态/README.md`（壳/脑/知识/数据流/桌面专属 vs 共享/纯 BYOK 边界，含目录结构权威清单）。
+> - **看懂产品/架构事实** → `docs/桌面版AI-Agent-产品形态/README.md`（壳/脑/知识/数据流/桌面专属 vs 共享/全内置 key 边界，含目录结构权威清单）。
 > - **改前必看跨模块影响** → `docs/耦合地图与改动检查清单.md`；**文档索引** → `docs/README.md`。
-> - ⚠️ **与原仓库关系**：本仓库（`billiards-desktop-agent`）和云端 `billiards-ai-ops` **共享大量代码**（`server/`/`web/`/`prompts/` 基本共享）。桌面专属的只有 Electron 壳（`desktop/`）+ Agent 大脑（`services/agent/`）+ 桌面 UI（`web/src/components/desktop/`）+ 纯 BYOK 守卫 + 本地 SQLite。**改共享逻辑两仓库会漂移，注意同步。**
+> - ⚠️ **与原仓库关系**：本仓库（`billiards-desktop-agent`）和云端 `billiards-ai-ops` **共享大量代码**（`server/`/`web/`/`prompts/` 基本共享）。桌面专属的只有 Electron 壳（`desktop/`）+ Agent 大脑（`services/agent/`）+ 桌面 UI（`web/src/components/desktop/`）+ 模型 key 内置守卫 + 本地 SQLite。**改共享逻辑两仓库会漂移，注意同步。**
 > - ⚠️ **项目 auto-memory 不在本路径**（原记忆按旧文件夹路径存）。关键上下文/教训以本文件 + 交接文档为准。
 > - 🧑‍✈️ **owner 最高做主**：技术栈/语言/架构/抄不抄/用不用库一切 owner 拍板、不锁死（现状 Electron+FastAPI+SQLite+Next.js，但"现状≠限制"，要换随时换）。参考代码(cc-haha/Claude Code)可抄、好库直接用，别硬造轮子。助手只提示风险**一次**再照办，不设规矩挡他。唯一不松 = 产品对终端用户的安全红线（见末节）。
 
@@ -16,9 +16,9 @@
 
 **台球房运营**只是一个**可挂载的领域知识库**：前端 `@「台球行业知识库」` → `billiards_mode=True` → 才追加台球人设 + 门店画像 + 店脑记忆 + 台球工具集；**默认不挂时就是个通用电脑助手**。
 
-**形态 = 全本地 + 纯 BYOK + 真 Agent：**
+**形态 = 全本地 + 全内置(模型 key 打包) + 真 Agent：**
 - **全本地**：Electron 壳 + 本地 FastAPI + 本地 SQLite + 加密知识库（`prompts.enc`）。数据全在用户机器上，不连云。
-- **纯 BYOK**：盒子**不内置任何平台大模型 key**。用户自带文字/生图 key（任意 OpenAI 兼容端点），花自己的钱。**代码层强制**：`DESKTOP_LOCAL=1` 没配 key 即空 key、**绝不回退平台 key**。多供应商 CC-Switch 式快切。详见 `docs/product-brain/BYOK-门店自带模型-实现.md`。
+- **全内置 key**：盒子**内置 owner 自己的全部模型 key**（文字/生图/视频，均 OpenAI 兼容端点），**用户零配置、不填 key**，开箱即用。⚠️ 内置 key 须在各平台后台设**消费上限**防被扒盗刷；海外模型（GPT Image-2）国内仍需"国外出口"。详见 `docs/待改清单-真机验收与打包-2026-06-23.md` 专题D。
 - **真 Agent**：ReAct 循环自主调工具；**只有真对外/不可逆动作（发布/群发/私信、删数据）走审批闸**（弹卡片，人点确认才执行）。做出成品给用户看、读写本机文件（写改前自动备份、可回滚）都不算对外，直接做。
 
 > 技术栈、目录结构、已落地能力清单：见根 `README.md` + `docs/桌面版AI-Agent-产品形态/README.md`（单一权威，不在此重复以免漂移）。
@@ -27,8 +27,8 @@
 ## 核心架构原则
 
 1. **通用 Agent 为默认，领域知识可挂载** — `compose_agent_system_prompt`（`api/v1/agent.py`）三段拼装：`_GENERIC_BASE_PROMPT`（通用助手身份，永远注入）+ `_SAFETY_REDLINE`（安全红线，永远注入、与挂没挂领域无关）+ `_BILLIARDS_PERSONA`（仅 `billiards_mode` 时追加）。工具也分层：`general_registry()` vs `billiards_registry()`，由 `_build_agent_registry(billiards_mode)` 选。
-2. **真 Agent（ReAct + 工具 + 审批闸 + BYOK）** — `services/agent/loop.py` 真循环(think→调工具→结果回灌→再推理)，真 function calling。本机文件/命令/网络/生图/子代理等工具实打实执行。
-3. **纯 BYOK，绝不内置平台 key** — `factory.get_image_config_for_store` 在 `DESKTOP_LOCAL=1` 没配即空 key、不回退平台；文字 provider 无 BYOK 落空 key → 友好 503。全仓无硬编码平台 key。
+2. **真 Agent（ReAct + 工具 + 审批闸）** — `services/agent/loop.py` 真循环(think→调工具→结果回灌→再推理)，真 function calling。本机文件/命令/网络/生图/子代理等工具实打实执行。
+3. **全内置模型 key（owner 提供）** — 模型 key 内置打包、用户零配置；`factory` 返回内置 key + 各自 base_url。⚠️ 内置 key 设消费上限防盗刷（原"纯 BYOK·空 key 不回退"逻辑作废，见待改清单专题D）。
 4. **四层防御** — ① 权限模式(逐项确认/自动接受修改/跳过确认)；② 工具 allow-ask-deny + 审批闸；③ 本地文件沙箱(改前备份)；④ 审批签名绑定 args。
 5. **对外/花钱动作走审批闸** — 生图/发布等标 `requires_approval=True`，循环里不直接执行，吐 `approval_request` 弹卡片、人确认后经 `/agent/execute` 才跑。绝不自动群发/私信。
 6. **本地文件操作有护栏** — `local_tools` 沙箱（内容库 + 用户选定文件；`full_disk_access` 时放开）；`..` 穿越/越界抛错；写/改前自动备份。
@@ -79,7 +79,7 @@ cd desktop && npm install && npm run dev   # Electron 起壳 + 本地后端 + �
 ## 关键约束（铁律 · 违反即破坏产品）
 
 1. **安全红线永远注入**（`_SAFETY_REDLINE`，与挂没挂领域无关、用户偏好松不开）：不营销实际性交易、不帮开赌场/坐庄抽水等刑事级犯罪、未成年保护、法律文书提示专业把关、不照搬绝对化广告词。
-2. **纯 BYOK**：绝不内置/泄漏任何平台大模型 key（`DESKTOP_LOCAL=1` 没配即空 key、不回退）。
+2. **全内置模型 key**：内置 owner 的 key、用户不填；须设消费上限防被扒盗刷（原"纯 BYOK·不内置"铁律已废，owner 2026-06-24 拍板，见待改清单专题D）。
 3. **不自动触达**：不自动群发/私信，对外/花钱动作一律走审批闸；做成品给用户看、读写本机文件（带备份）不算对外，直接做。
 4. **本地文件有护栏**：沙箱 + 改前自动备份可回滚；危险命令(删根/提权/格式化)直接拒；`..` 越界抛错。
 5. **SQLite 兼容**：PG 专属 SQL/类型要按方言兜底，别让桌面崩。
