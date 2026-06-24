@@ -86,8 +86,10 @@ async def _a_call_tool(cfg: dict, name: str, arguments: dict) -> str:
     return await asyncio.wait_for(_go(), timeout=_OP_TIMEOUT)
 
 
-def _load_mcp_config() -> dict:
-    """合并各处 .mcp.json 的 mcpServers（先出现者优先）。"""
+def _load_mcp_config(include_disabled: bool = False) -> dict:
+    """合并各处 .mcp.json 的 mcpServers（先出现者优先）。
+    默认跳过 disabled（供 load_mcp_tools 用，停用的不挂工具）；include_disabled=True 时连停用的也返回
+    （供 mcp_status/前端展示，让老板看见并一键开回——否则停用即从列表消失、再也开不回来）。"""
     servers: dict = {}
     lib = os.environ.get("DESKTOP_LIBRARY_DIR")
     # 桌面产品【绝不扫 ~/.claude/】：那是开发者私有配置。只读门店自己库里的 .mcp.json（店主自配 MCP）。
@@ -103,8 +105,9 @@ def _load_mcp_config() -> dict:
             if p.is_file():
                 data = json.loads(p.read_text(encoding="utf-8"))
                 for name, cfg in (data.get("mcpServers") or {}).items():
-                    # 老板在界面停用的 server 标了 disabled:true → 跳过（不连、不发现工具），但配置仍留着可一键开回。
-                    if isinstance(cfg, dict) and not cfg.get("disabled"):
+                    # 老板在界面停用的 server 标了 disabled:true：默认跳过（不连、不发现工具）；
+                    # include_disabled 时也返回（前端列表要看见它才能一键开回，否则停用即消失）。
+                    if include_disabled or (isinstance(cfg, dict) and not cfg.get("disabled")):
                         servers.setdefault(name, cfg)
         except Exception:
             continue
@@ -205,8 +208,15 @@ def mcp_status(force: bool = False) -> list[dict]:
     if not force and _status_cache is not None and (time.monotonic() - _status_cache[0]) < _STATUS_TTL:
         return _status_cache[1]
     items = []
-    for name, cfg in _load_mcp_config().items():
-        entry = {"name": name, "command": cfg.get("command", ""), "status": "failed", "tools": 0}
+    for name, cfg in _load_mcp_config(include_disabled=True).items():
+        disabled = bool(isinstance(cfg, dict) and cfg.get("disabled"))
+        entry = {"name": name, "command": cfg.get("command", ""), "status": "failed",
+                 "tools": 0, "disabled": disabled}
+        if disabled:
+            # 老板在界面停用的：不去连(省握手)、标 disabled，前端据此显示"已停用"+可一键开回。
+            entry["status"] = "disabled"
+            items.append(entry)
+            continue
         if not cfg.get("command"):
             entry["status"] = "misconfigured"
             items.append(entry)

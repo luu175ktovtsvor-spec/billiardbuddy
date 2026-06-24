@@ -650,6 +650,7 @@ async def agent_mcp_toggle(body: McpToggleRequest, user: User = Depends(get_curr
     if ok:
         try:
             from services.agent import mcp_client as _mc
+            _mc.invalidate_mcp_cache()  # 清状态+工具缓存，前端立刻看到启用/停用结果（不等 30s TTL）
             _mc.load_mcp_tools(force=True)
         except Exception:
             pass

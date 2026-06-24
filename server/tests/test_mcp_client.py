@@ -30,7 +30,7 @@ def test_initialize_list_call():
 
 
 def test_load_mcp_tools_wraps(monkeypatch):
-    monkeypatch.setattr(mc, "_load_mcp_config", lambda: {"fake": _cfg()})
+    monkeypatch.setattr(mc, "_load_mcp_config", lambda **k: {"fake": _cfg()})
     tools = mc.load_mcp_tools(force=True)
     names = [t.name for t in tools]
     assert "mcp__fake__echo" in names
@@ -40,14 +40,14 @@ def test_load_mcp_tools_wraps(monkeypatch):
 
 
 def test_mcp_tool_handler_calls(monkeypatch):
-    monkeypatch.setattr(mc, "_load_mcp_config", lambda: {"fake": _cfg()})
+    monkeypatch.setattr(mc, "_load_mcp_config", lambda **k: {"fake": _cfg()})
     echo = next(t for t in mc.load_mcp_tools(force=True) if t.name == "mcp__fake__echo")
     out = asyncio.run(echo.handler({"text": "yo"}, None))
     assert "echo: yo" in out
 
 
 def test_mcp_status(monkeypatch):
-    monkeypatch.setattr(mc, "_load_mcp_config", lambda: {"fake": _cfg()})
+    monkeypatch.setattr(mc, "_load_mcp_config", lambda **k: {"fake": _cfg()})
     st = mc.mcp_status()
     assert st[0]["name"] == "fake"
     assert st[0]["status"] == "connected"
@@ -55,5 +55,5 @@ def test_mcp_status(monkeypatch):
 
 
 def test_no_config_no_tools(monkeypatch):
-    monkeypatch.setattr(mc, "_load_mcp_config", lambda: {})
+    monkeypatch.setattr(mc, "_load_mcp_config", lambda **k: {})
     assert mc.load_mcp_tools(force=True) == []
