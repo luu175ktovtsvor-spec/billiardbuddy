@@ -1,5 +1,6 @@
 """OpenAI ImageProvider -- gpt-image-2"""
 
+import asyncio
 import base64
 import io
 import logging
@@ -8,6 +9,35 @@ from config import settings
 from services.ai.base import ImageProvider
 
 logger = logging.getLogger(__name__)
+
+# 429 限流退避重试次数（并发治理）：多用户共用一把内置 key 走同一中转，瞬时并发超 IPM 会 429。
+# 429 = 服务端"还没干活就挡回来了、没扣费" → 重试安全（与超时不同：超时可能图已生成会重复扣费，故那条绝不重试）。
+_IMG_429_RETRIES = int(__import__("os").environ.get("DESKTOP_IMAGE_429_RETRIES", "") or 3)
+
+
+async def _image_call_with_429_retry(coro_factory, max_retries: int = _IMG_429_RETRIES):
+    """对 429 做指数退避重试（优先 Retry-After），其它异常立刻抛、绝不重试（防超时重复扣费）。
+    coro_factory：无参可调用，每次都【新建】一个请求 coroutine（重试要重置上传流，故由调用方重建）。"""
+    try:
+        from openai import RateLimitError
+    except Exception:  # SDK 结构异常时退化为不重试，至少不崩
+        return await coro_factory()
+    delay = 2.0
+    for attempt in range(max_retries + 1):
+        try:
+            return await coro_factory()
+        except RateLimitError as e:
+            if attempt >= max_retries:
+                raise
+            ra = None
+            try:
+                ra = float((getattr(e, "response", None).headers or {}).get("retry-after", "") or 0)
+            except Exception:
+                ra = None
+            wait = ra if (ra and ra > 0) else min(delay, 30.0)
+            logger.info("生图 429 限流，第 %d/%d 次退避 %.1fs 后重试", attempt + 1, max_retries, wait)
+            await asyncio.sleep(wait)
+            delay *= 2
 
 OPENAI_IMAGE_MODELS: dict[str, dict[str, str]] = {
     "gpt-image-2": {
@@ -141,26 +171,20 @@ class OpenAIImageProvider(ImageProvider):
                 f.name = f"image_{idx}.{ext}"
                 return f
 
-            # OpenAI images.edit 支持单张或多张图片
-            if len(images) == 1:
-                image_file = _make_file(images[0], 0)
-            else:
-                image_file = [_make_file(img, i) for i, img in enumerate(images[:16])]
+            # OpenAI images.edit 支持单张或多张图片。每次（含 429 重试）都重建上传流——BytesIO 读过一次会到 EOF。
+            def _build_edit():
+                image_file = (_make_file(images[0], 0) if len(images) == 1
+                              else [_make_file(img, i) for i, img in enumerate(images[:16])])
+                return client.images.edit(
+                    model=use_model, prompt=prompt, image=image_file, size=openai_size, **extra,
+                )
 
-            response = await client.images.edit(
-                model=use_model,
-                prompt=prompt,
-                image=image_file,
-                size=openai_size,
-                **extra,
-            )
+            response = await _image_call_with_429_retry(_build_edit)
         else:
-            response = await client.images.generate(
-                model=use_model,
-                prompt=prompt,
-                n=1,
-                size=openai_size,
-                **extra,
+            response = await _image_call_with_429_retry(
+                lambda: client.images.generate(
+                    model=use_model, prompt=prompt, n=1, size=openai_size, **extra,
+                )
             )
 
         return await self._extract_image_bytes(response)
