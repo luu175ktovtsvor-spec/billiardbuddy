@@ -158,7 +158,7 @@ def tool(
 # 台球行业专用工具名（通用模式下不暴露给模型；@ 台球知识库时才加进来）。
 # 注：recall_my_content（翻你以前写的）M1 已移出 → 通用模式也能用（让通用助手能回看自己过往产出，是长期记忆的一部分）。
 BILLIARDS_TOOL_NAMES: set[str] = {
-    "get_today_recommendation", "find_scenario", "look_up_knowledge",
+    "get_today_recommendation", "find_scenario", "look_up_knowledge", "read_knowledge",
     "write_operation_content", "write_batch", "plan_activity", "assistant_outreach",
     "diagnose_operation", "recommend_games", "make_poster", "make_platform_content",
     "make_groupbuy_content", "diagnose_from_pos",
