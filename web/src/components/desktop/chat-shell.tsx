@@ -57,8 +57,8 @@ export function DesktopChatShell({
   const [liveToday, setLiveToday] = useState<string | undefined>();
   // 今日建议的 rec.id：点「帮我写」时随对话回传后端做"采纳上浮"隐式反馈（拿不到就只发文本，不影响功能）
   const [liveTodayRecId, setLiveTodayRecId] = useState<string | undefined>();
-  // 当前在用的文字模型名（侧栏底部显示「正在用：xxx」）：BYOK 启用且配了 key 才算在用
-  const [liveModel, setLiveModel] = useState<string | undefined>();
+  // D.5：全内置 key·零配置 → 默认显示内置大脑原名「MiMo V2.5」；老板自带 BYOK 时再覆盖成他的模型名。
+  const [liveModel, setLiveModel] = useState<string | undefined>("MiMo V2.5");
   // 没配 AI key 时门面顶部弹一条引导（非技术老板最容易卡在"不知道要先配 key"）；配好/关掉设置后重查、自动消失
   const [needsKey, setNeedsKey] = useState(false);
   const [keyHintDismissed, setKeyHintDismissed] = useState(false);
@@ -82,21 +82,14 @@ export function DesktopChatShell({
         if (rec) { setLiveToday(rec.description || rec.title); setLiveTodayRecId(rec.id); }
       }
       if (b.status === "fulfilled" && b.value?.enabled && b.value?.key_configured && b.value?.model) {
-        setLiveModel(b.value.model);
+        setLiveModel(b.value.model);  // 老板自带 BYOK → 显示他的模型名（覆盖内置默认）
       }
     })();
     return () => { cancelled = true; };
   }, []);
 
-  // 设置关掉后重查 key 状态：老板配好了，顶部引导条就消失
-  useEffect(() => {
-    if (settingsOpen) return;
-    let cancelled = false;
-    api.getByokConfig()
-      .then((b) => { if (!cancelled) setNeedsKey(!(b?.enabled && b?.key_configured)); })
-      .catch(() => { /* 拿不到不弹，避免误扰 */ });
-    return () => { cancelled = true; };
-  }, [settingsOpen]);
+  // D.5 全内置 key·开箱即用：不再"必须先配 key"。BYOK 是可选高级档，没配也能用 → 不再弹"要配 key"引导。
+  // （needsKey 维持 false；真没 key 的极端情况由生成时的错误提示兜底，不在门面常驻吓非技术老板。）
 
   // 会话历史列表（侧栏）：进页面拉一次 + 每拿到新会话 id 后刷新（新会话冒头）
   const [conversations, setConversations] = useState<DesktopConversation[]>([]);
