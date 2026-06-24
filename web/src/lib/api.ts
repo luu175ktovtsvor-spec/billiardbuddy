@@ -18,6 +18,8 @@ export interface ApprovalReason {
 /** Agent 流式对话事件回调（对应后端 /agent/chat 的 SSE 事件：token/tool_call/tool_result/final/done/error）。 */
 export interface AgentStreamHandlers {
   onToken?: (token: string) => void;
+  // F.1 思考过程：模型 reasoning_content 流式片段（灰斜体思考块展示，不是正文）。
+  onReasoning?: (chunk: string) => void;
   onToolCall?: (tool: string, args: Record<string, unknown>, id?: string) => void;
   onToolResult?: (tool: string, content: string, id?: string, knowledgeUsed?: string[]) => void;
   // 命令边跑边显示：工具执行中实时推来的输出片段（chunk），按 id 累进对应步骤的终端块。
@@ -302,6 +304,7 @@ class ApiClient {
             const ev = JSON.parse(line.slice(6));
             switch (ev.type) {
               case "token": handlers.onToken?.(ev.content || ""); break;
+              case "reasoning": handlers.onReasoning?.(ev.content || ""); break;
               case "tool_call": handlers.onToolCall?.(ev.tool, ev.args || {}, ev.id); break;
               case "tool_result": handlers.onToolResult?.(ev.tool, ev.content || "", ev.id, Array.isArray(ev.knowledge_used) ? ev.knowledge_used : undefined); break;
               case "tool_progress": handlers.onToolProgress?.(ev.tool, ev.id, ev.chunk || "", ev.stream); break;

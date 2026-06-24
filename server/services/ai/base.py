@@ -17,6 +17,15 @@ class TextRequest:
 
 
 @dataclass
+class ReasoningChunk:
+    """流式里携带【思考过程 reasoning_content】的片段——与正文 token（普通 str）区分。F.1。
+    mimo-v2.5 默认开思考、思考走 reasoning_content（我们之前直接丢了、白付费）。provider 流式遇到它就 yield 本类，
+    loop 据 isinstance 把它转成 reasoning 事件给前端展示。**绝不进 messages 历史**（避免 mimo 多轮+工具的 reasoning
+    回灌 400 风险——仅展示，不参与上下文）。"""
+    text: str
+
+
+@dataclass
 class TextResponse:
     content: str
     model: str
