@@ -44,8 +44,9 @@ export function DesktopChatShell({
   // @ 挂载的知识库（如 ["billiards"]）：挂上=该领域专家，不挂=通用 Agent。随每次对话透传后端。
   const [knowledgePacks, setKnowledgePacks] = useState<string[]>([]);
   const [outputStyle, setOutputStyle] = useState<string>("");
+  const [deepThinking, setDeepThinking] = useState(true); // F.2 深度思考默认开（mimo 默认就开）
   const [goal, setGoal] = useState<string>("");
-  const chat = useAgentChat({ permissionMode: mode, selectedFiles, knowledgePacks, outputStyle, goal });
+  const chat = useAgentChat({ permissionMode: mode, selectedFiles, knowledgePacks, outputStyle, goal, deepThinking });
   const [preview, setPreview] = useState<PreviewItem | null>(null);
   // 设置抽屉（门店名 + AI key）：单窗口内打开，替代老 web 的门店设置页
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -163,6 +164,14 @@ export function DesktopChatShell({
   const updateOutputStyle = (name: string) => {
     setOutputStyle(name);
     try { localStorage.setItem("agent_output_style", name); } catch { /* 忽略 */ }
+  };
+  // F.2 深度思考开关持久化（默认开；存了 "0" 才是关）
+  useEffect(() => {
+    try { if (localStorage.getItem("agent_deep_thinking") === "0") setDeepThinking(false); } catch { /* 忽略 */ }
+  }, []);
+  const updateDeepThinking = (v: boolean) => {
+    setDeepThinking(v);
+    try { localStorage.setItem("agent_deep_thinking", v ? "1" : "0"); } catch { /* 忽略 */ }
   };
 
   // 选本机文件/文件夹：弹系统选择器，把绝对路径加进 selectedFiles（去重）。授权管家读/改它们。
@@ -301,6 +310,8 @@ export function DesktopChatShell({
         onKnowledgePacksChange={updateKnowledgePacks}
         outputStyle={outputStyle}
         onOutputStyleChange={updateOutputStyle}
+        deepThinking={deepThinking}
+        onDeepThinkingChange={updateDeepThinking}
         onCommand={(name) => {
           if (name === "new" || name === "clear") newChat();
           else if (name === "model" || name === "settings") setSettingsOpen(true);

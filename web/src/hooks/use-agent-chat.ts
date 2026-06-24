@@ -60,6 +60,7 @@ export interface AgentChatOptions {
   knowledgePacks?: string[]; // @ 挂载的知识库（如 ["billiards"]）：挂上=领域专家，不挂=通用 Agent
   outputStyle?: string; // 输出风格名（explanatory/concise…），空=默认
   goal?: string; // /goal 目标驱动：本次会话目标条件
+  deepThinking?: boolean; // F.2 深度思考开关：true=开/false=关/undefined=跟随模型默认
 }
 
 export function useAgentChat(opts: AgentChatOptions) {
@@ -118,6 +119,7 @@ export function useAgentChat(opts: AgentChatOptions) {
             knowledge_packs: o.knowledgePacks?.length ? o.knowledgePacks : undefined,
             output_style: o.outputStyle || undefined,
             goal: o.goal || undefined,
+            deep_thinking: o.deepThinking,
             source_rec_id: recId,
           },
           {

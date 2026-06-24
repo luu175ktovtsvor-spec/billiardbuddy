@@ -43,6 +43,7 @@ export interface AgentChatPayload {
   knowledge_packs?: string[]; // @ 挂载的知识库（如 ["billiards"]）；含 billiards → 台球专家模式，否则通用
   output_style?: string; // 输出风格名（explanatory/concise…），空=默认
   goal?: string; // /goal 目标驱动：本次会话目标条件
+  deep_thinking?: boolean; // F.2 深度思考：true=开/false=关/省略=跟随模型默认（mimo 默认开）
   source_rec_id?: string; // 隐式反馈：本次对话由今日推荐哪一条触发（rec.id）→ 后端落到 generation 做"采纳上浮"
 }
 
