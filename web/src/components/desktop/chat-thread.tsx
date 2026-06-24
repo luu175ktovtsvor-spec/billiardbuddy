@@ -7,7 +7,7 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, FileEdit, Terminal, ChevronRight } from "lucide-react";
+import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, FileEdit, Terminal, ChevronRight, Brain } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
@@ -130,6 +130,31 @@ function ResultDisclosure({ text, onOpen }: { text: string; onOpen?: () => void 
         <pre className="mt-1 max-h-[280px] overflow-auto whitespace-pre-wrap rounded-md border border-black/[0.06] bg-black/[0.02] px-2.5 py-2 font-mono text-[12px] leading-relaxed text-[#3a3a3c] dark:border-white/[0.06] dark:bg-white/[0.02] dark:text-[#9a9ca3]">
           {text}
         </pre>
+      )}
+    </div>
+  );
+}
+
+/** F.1 思考块（抄 cc-haha ThinkingBlock）：灰斜体可折叠的"思考过程"。流式时默认展开看它想、答案落定后默认收起。 */
+function ThinkingBlock({ text, active, defaultOpen }: { text: string; active?: boolean; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(!!defaultOpen);
+  if (!text && !active) return null;
+  return (
+    <div className="ml-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 font-mono text-[11.5px] text-[#a1a1a6] transition hover:text-[#6e6e73] dark:text-[#6e7077] dark:hover:text-[#9a9ca3]"
+      >
+        <ChevronRight className={`h-3 w-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
+        <Brain className="h-3 w-3 shrink-0" />
+        <span>{active ? "思考中…" : "已思考"}</span>
+        {active && <span className="animate-pulse">▍</span>}
+      </button>
+      {open && text && (
+        <div className="mt-1 whitespace-pre-wrap border-l-2 border-black/[0.06] pl-2.5 text-[12.5px] italic leading-relaxed text-[#86868b] dark:border-white/[0.08] dark:text-[#6e7077]">
+          {text}
+        </div>
       )}
     </div>
   );
@@ -463,6 +488,7 @@ function MacQuestionCard({ q, onAnswer }: { q: QuestionData; onAnswer: (label: s
 export function DesktopChatThread({
   messages,
   draft,
+  reasoningDraft = "",
   liveSteps,
   generating,
   executingIdx,
@@ -475,6 +501,7 @@ export function DesktopChatThread({
 }: {
   messages: ChatMessage[];
   draft: string;
+  reasoningDraft?: string;
   liveSteps: ToolStep[];
   generating: boolean;
   executingIdx: number | null;
@@ -502,6 +529,7 @@ export function DesktopChatThread({
                 </div>
               ) : (
                 <>
+                  {m.reasoning && <ThinkingBlock text={m.reasoning} />}
                   {m.steps && <MacStepList steps={m.steps} active={false} onPreview={onPreview} />}
                   {m.steps && <MacDeliverables steps={m.steps} onPublish={onPublish} onPreview={onPreview} />}
                   {m.content &&
@@ -533,6 +561,7 @@ export function DesktopChatThread({
 
         {generating && (
           <div className="space-y-2.5">
+            {reasoningDraft && <ThinkingBlock text={reasoningDraft} active defaultOpen />}
             {liveSteps.length > 0 && <MacStepList steps={liveSteps} active onPreview={onPreview} />}
             {draft ? (
               <div className={PROSE}>

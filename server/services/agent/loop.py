@@ -36,7 +36,7 @@ from services.agent.vision_degrade import (
     prepend_degrade_hint,
     strip_images_from_messages,
 )
-from services.ai.base import TextProvider, TextRequest
+from services.ai.base import TextProvider, TextRequest, ReasoningChunk
 from services.ai.factory import ProviderFactory
 
 logger = logging.getLogger(__name__)
@@ -1083,6 +1083,9 @@ async def run_agent_loop_stream(
             finish_sink=finish,
             usage_sink=usage,
         ):
+            if isinstance(tok, ReasoningChunk):  # F.1 思考过程：只展示、不进正文 parts（不污染历史/不参与上下文）
+                yield {"type": "reasoning", "content": tok.text}
+                continue
             parts.append(tok)
             yield {"type": "token", "content": tok}
         text = "".join(parts)

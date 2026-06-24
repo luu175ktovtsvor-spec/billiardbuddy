@@ -43,6 +43,7 @@ export interface QuestionData {
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  reasoning?: string; // F.1：本轮模型的思考过程（reasoning_content），灰斜体可折叠展示，默认收起
   steps?: ToolStep[];
   approval?: ApprovalState;
   question?: QuestionData; // AskUserQuestion：管家给老板的选项，老板点选后作为下一句消息发回
@@ -64,6 +65,7 @@ export interface AgentChatOptions {
 export function useAgentChat(opts: AgentChatOptions) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
+  const [reasoningDraft, setReasoningDraft] = useState(""); // F.1：当前轮的实时思考流（答案落定后并进消息）
   const [liveSteps, setLiveSteps] = useState<ToolStep[]>([]);
   const [generating, setGenerating] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -92,6 +94,7 @@ export function useAgentChat(opts: AgentChatOptions) {
 
     async function runSend(message: string, history: { role: string; content: string }[]) {
       setDraft("");
+      setReasoningDraft("");
       setLiveSteps([]);
       setGenerating(true);
       const controller = new AbortController();
@@ -99,6 +102,7 @@ export function useAgentChat(opts: AgentChatOptions) {
 
       const steps: ToolStep[] = [];
       let finalText = "";
+      let reasoningText = "";
       let approval: ApprovalState | undefined;
       let question: QuestionData | undefined;
 
@@ -118,6 +122,7 @@ export function useAgentChat(opts: AgentChatOptions) {
           },
           {
             onToken: (t) => setDraft((prev) => prev + t),
+            onReasoning: (c) => { reasoningText += c; setReasoningDraft((prev) => prev + c); },
             onToolCall: (tool, args, id) => {
               steps.push({ tool, args, id, done: false });
               setLiveSteps([...steps]);
@@ -152,10 +157,12 @@ export function useAgentChat(opts: AgentChatOptions) {
             onDone: (info) => {
               setMessages((prev) => [
                 ...prev,
-                { role: "assistant", content: finalText, steps: steps.length ? [...steps] : undefined, approval, question },
+                { role: "assistant", content: finalText, reasoning: reasoningText || undefined,
+                  steps: steps.length ? [...steps] : undefined, approval, question },
               ]);
               if (info?.conversation_id) setConversationId(info.conversation_id);
               setDraft("");
+              setReasoningDraft("");
               setLiveSteps([]);
             },
             onError: (m) => {
@@ -169,6 +176,7 @@ export function useAgentChat(opts: AgentChatOptions) {
                   next.push({
                     role: "assistant",
                     content: finalText,
+                    reasoning: reasoningText || undefined,
                     steps: steps.length ? [...steps] : undefined,
                     approval,
                     question,
@@ -178,6 +186,7 @@ export function useAgentChat(opts: AgentChatOptions) {
                 return next;
               });
               setDraft("");
+              setReasoningDraft("");
               setLiveSteps([]);
             },
           },
@@ -244,6 +253,7 @@ export function useAgentChat(opts: AgentChatOptions) {
     setMessages([]);
     setConversationId(null);
     setDraft("");
+    setReasoningDraft("");
     setLiveSteps([]);
   }, [generating]);
 
@@ -258,6 +268,7 @@ export function useAgentChat(opts: AgentChatOptions) {
     setMessages(msgs);
     setConversationId(id);
     setDraft("");
+    setReasoningDraft("");
     setLiveSteps([]);
     setGenerating(false);
   }, []);
@@ -268,7 +279,7 @@ export function useAgentChat(opts: AgentChatOptions) {
   }, []);
 
   return {
-    messages, draft, liveSteps, generating, conversationId, executingIdx,
+    messages, draft, reasoningDraft, liveSteps, generating, conversationId, executingIdx,
     send, confirmApproval, cancelApproval, startNewChat, stop, loadConversation,
     pushAssistantMessage,
   };

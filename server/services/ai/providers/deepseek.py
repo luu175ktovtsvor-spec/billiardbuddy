@@ -6,7 +6,7 @@ from openai import AsyncOpenAI, APIStatusError, APITimeoutError, APIConnectionEr
 
 from config import settings
 from core.exceptions import AIProviderError
-from services.ai.base import TextProvider, TextRequest, TextResponse
+from services.ai.base import TextProvider, TextRequest, TextResponse, ReasoningChunk
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +224,12 @@ class DeepSeekProvider(TextProvider):
                 if fr and finish_sink is not None:
                     finish_sink["finish_reason"] = fr
                 delta = choice0.delta
+                # F.1 思考过程：reasoning_content 是 DeepSeek/通义/智谱/Kimi/硅基/火山/MiMo 通用约定（非 SDK 声明字段，
+                # 用 getattr + model_extra 兜底，绝不裸点否则 AttributeError）。yield ReasoningChunk 与正文区分、只供展示。
+                reasoning = (getattr(delta, "reasoning_content", None)
+                             or (getattr(delta, "model_extra", None) or {}).get("reasoning_content"))
+                if reasoning:
+                    yield ReasoningChunk(reasoning)
                 # 累积流式工具调用增量（id/name 在首片，arguments 分片拼接）
                 if getattr(delta, "tool_calls", None):
                     _accumulate_tool_call_deltas(tool_acc, delta.tool_calls)

@@ -265,6 +265,7 @@ export function DesktopChatShell({
         <DesktopChatThread
           messages={chat.messages}
           draft={chat.draft}
+          reasoningDraft={chat.reasoningDraft}
           liveSteps={chat.liveSteps}
           generating={chat.generating}
           executingIdx={chat.executingIdx}
