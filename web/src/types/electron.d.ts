@@ -48,6 +48,7 @@ export interface ElectronBridge {
       title?: string;
       multi?: boolean;
       directory?: boolean; // true=选文件夹(授权整个目录),否则选文件
+      filesAndFolders?: boolean; // true=一个弹窗里文件或文件夹都能选(macOS),且不按类型过滤(P0-1)
       filters?: { name: string; extensions: string[] }[];
     }): Promise<{ canceled: boolean; paths: string[] }>;
     /** 系统「另存为」：把成品(base64 字节)写到用户选定的位置(桌面/任意文件夹)。 */

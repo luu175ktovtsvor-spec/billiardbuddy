@@ -110,14 +110,20 @@ ipcMain.handle("video:run", (_e, { op, args }) =>
 // 本地文件选择器:老板选定文件 → 返回绝对路径,前端随对话以 selected_files 传后端,
 // Agent 沙箱据此授权可读/改这些文件(默认 Excel/文本报表;可传 opts.filters/properties 定制)。
 ipcMain.handle("files:pick", async (_e, opts = {}) => {
-  // opts.directory=true → 选文件夹(授权 AI 在整个文件夹里读改,如"我的报表"目录);否则选文件。
-  const base = opts.directory ? ["openDirectory"] : ["openFile"];
+  // P0-1：opts.filesAndFolders=true → 一个弹窗里【文件或文件夹都能选】(macOS 支持;授权整个文件夹给 AI 读改、
+  // 且不再按类型过滤把 .py 等灰掉);opts.directory=true → 只选文件夹;否则只选文件。
+  let base;
+  if (opts.filesAndFolders && process.platform === "darwin") base = ["openFile", "openDirectory"];
+  else if (opts.directory) base = ["openDirectory"];
+  else base = ["openFile"];
   const properties = opts.multi ? [...base, "multiSelections"] : base;
+  const canPickDir = base.includes("openDirectory");
   const dialogOpts = {
-    title: opts.title || (opts.directory ? "选择要让 AI 处理的文件夹" : "选择要让 AI 处理的文件"),
+    title: opts.title || (canPickDir ? "选择要让 AI 处理的文件 / 文件夹" : "选择要让 AI 处理的文件"),
     properties,
   };
-  if (!opts.directory) {
+  // 只有"纯选文件"才挂类型过滤;一旦允许选文件夹 → 不挂过滤(否则 .py 等非白名单被灰、整文件夹也选不了)。
+  if (!canPickDir) {
     dialogOpts.filters = opts.filters || [
       { name: "报表/文档", extensions: ["xlsx", "xlsm", "csv", "txt", "md"] },
       // 图片/视频:让老板能直接选图/录屏给 AI 看(多模态)。视频走 video_url 原生送、图片走 image_url。
