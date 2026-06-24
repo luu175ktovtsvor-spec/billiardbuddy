@@ -580,6 +580,13 @@ async def agent_list_skills(billiards: bool = False, user: User = Depends(get_cu
     return {"skills": items}
 
 
+@router.get("/file-diff")
+async def agent_file_diff(path: str, user: User = Depends(get_current_user)):
+    """B.2：给 AI 改过的本机文件返回"改前/改后"对比数据（old=最近备份、new=当前内容），供右侧 diff 视图让老板确认。只读。"""
+    from services.agent.local_tools import get_file_backup_diff
+    return get_file_backup_diff(path)
+
+
 @router.get("/output-styles")
 async def agent_list_output_styles(user: User = Depends(get_current_user)):
     """列出可用输出风格，供前端切换。"""

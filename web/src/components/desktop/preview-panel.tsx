@@ -31,7 +31,9 @@ export type PreviewItem =
   | { kind: "file"; title?: string; path?: string; text: string }
   | { kind: "sheet"; title?: string; path: string }
   // 文档原样预览：PDF / Word(.docx) / PPT(.pptx) / 网页(.html)，由后端 /canvas/doc 读成可渲染数据
-  | { kind: "doc"; title?: string; path: string };
+  | { kind: "doc"; title?: string; path: string }
+  // B.2：AI 改了本机已有文件 → 拉"改前/改后"对比让老板确认（复用 DiffBlock）
+  | { kind: "diff"; title?: string; path: string };
 
 /** 0 基列序号 → Excel 列字母（0→A, 25→Z, 26→AA…）。 */
 function colLetter(idx: number): string {
@@ -357,6 +359,28 @@ const QUICK_ACTIONS: { label: string; instruction: string }[] = [
 
 // DiffBlock 已抽到 ./diff-block（文案、网页 HTML 等改写共用）。
 
+/** B.2：AI 改了本机已有文件 → 拉"改前/改后"对比（old=最近备份、new=当前），复用 DiffBlock 渲染。 */
+function DiffPreview({ path }: { path: string }) {
+  const [data, setData] = useState<{ old: string; neu: string } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setData(null); setErr(null);
+    api.fileDiff(path)
+      .then((r) => { if (cancelled) return; if (r.ok) setData({ old: r.old || "", neu: r.new || "" }); else setErr(r.error || "拿不到对比"); })
+      .catch(() => { if (!cancelled) setErr("拿不到对比"); });
+    return () => { cancelled = true; };
+  }, [path]);
+  if (err) return <div className="flex-1 p-4 text-[12.5px] text-[#86868b] dark:text-[#6e7077]">{err}</div>;
+  if (!data) return <div className="flex-1 p-4 text-[12.5px] text-[#a1a1a6]">读取改动中…</div>;
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="shrink-0 px-4 pt-3 text-[12px] text-[#86868b] dark:text-[#6e7077]">这份文件改了哪几处（红删绿增）：</div>
+      <div className="min-h-0 flex-1 overflow-auto p-4"><DiffBlock before={data.old} after={data.neu} /></div>
+    </div>
+  );
+}
+
 export function DesktopPreviewPanel({
   item,
   onClose,
@@ -542,6 +566,7 @@ export function DesktopPreviewPanel({
     (item.kind === "poster" ? "海报预览"
       : item.kind === "sheet" ? fileName(item.path)
       : item.kind === "doc" ? fileName(item.path)
+      : item.kind === "diff" ? `${fileName(item.path)} · 改动对比`
       : item.kind === "file" ? fileName(item.path)
       : "成品预览");
 
@@ -581,6 +606,8 @@ export function DesktopPreviewPanel({
         ) : item.kind === "doc" ? (
           // Word/PPT → 文字级编辑(写回原文件)；PDF/网页 → DocView(网页可圈可点 / PDF 原样)
           /\.(docx|pptx)$/i.test(item.path) ? <DocEditView path={item.path} title={item.title || fileName(item.path)} /> : <DocView path={item.path} />
+        ) : item.kind === "diff" ? (
+          <DiffPreview path={item.path} />
         ) : item.kind === "file" ? (
           <div className="flex-1 overflow-auto p-4">
             <pre className="whitespace-pre-wrap break-words rounded-lg border border-black/[0.08] bg-white p-3.5 font-mono text-[12px] leading-relaxed text-[#1d1d1f] shadow-sm dark:border-white/[0.08] dark:bg-[#16181d] dark:text-[#c8cace] dark:shadow-none">{workText}</pre>

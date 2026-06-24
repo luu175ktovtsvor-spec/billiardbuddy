@@ -228,8 +228,11 @@ function MacStepList({ steps, active, onPreview }: { steps: ToolStep[]; active: 
                     text={s.result as string}
                     onOpen={(onPreview && filePath) ? () => {
                       const p = filePath as string;
+                      // B.2：AI 改了本机文本文件(edit_file/write_file)→右侧给"改前/改后"对比让老板确认；
                       // 报表→表格(可点格改)；PDF/Word/PPT/网页→文档原样预览；其它本机文件→纯文本预览
-                      if (/\.(xlsx|xlsm)$/i.test(p)) onPreview({ kind: "sheet", title: label, path: p });
+                      if ((s.tool === "edit_file" || s.tool === "write_file") && !/\.(xlsx|xlsm|pdf|docx|pptx|htm|html)$/i.test(p)) {
+                        onPreview({ kind: "diff", title: label, path: p });
+                      } else if (/\.(xlsx|xlsm)$/i.test(p)) onPreview({ kind: "sheet", title: label, path: p });
                       else if (/\.(pdf|docx|pptx|html|htm)$/i.test(p)) onPreview({ kind: "doc", title: label, path: p });
                       else onPreview({ kind: "file", title: label, path: p, text: s.result as string });
                     } : undefined}

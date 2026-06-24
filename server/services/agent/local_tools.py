@@ -85,6 +85,31 @@ def _backup(path: Path) -> str | None:
     return str(dest)
 
 
+def get_file_backup_diff(raw_path: str) -> dict:
+    """B.2：给一个被 AI 改过的本机文件，返回 {ok, path, old, new}——old=最近一次备份、new=当前内容，
+    供前端右侧渲染"改前/改后"对比让老板确认。只读、故障安全。找不到备份→old=""(当新建处理)。"""
+    try:
+        p = Path(raw_path).expanduser()
+        if not p.is_file():
+            return {"ok": False, "error": "文件不在了"}
+        if p.stat().st_size > 2 * 1024 * 1024:
+            return {"ok": False, "error": "文件太大，不便逐字对比"}
+        new = p.read_text(encoding="utf-8", errors="replace")
+        old = ""
+        bdir = _library_root() / ".backups"
+        if bdir.is_dir():
+            # 备份名 {stem}.{YYYYMMDD-HHMMSS}{suffix}.bak → 字典序最大 = 最近一次
+            cands = sorted(bdir.glob(f"{p.stem}.*{p.suffix}.bak"))
+            if cands:
+                try:
+                    old = cands[-1].read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    old = ""
+        return {"ok": True, "path": str(p), "old": old, "new": new}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:120]}
+
+
 # ────────────────────────────── 真 Agent 文件/命令工具的公共护栏 ──────────────────────────────
 
 # 搜文件内容时只扫这些「文本类」扩展（没装 ripgrep 退回 Python os.walk 时用）；

@@ -417,6 +417,12 @@ class ApiClient {
       "DELETE", `/api/v1/agent/conversations/${encodeURIComponent(id)}`);
   }
 
+  // 桌面端：取 AI 改过的本机文件的"改前/改后"对比数据（B.2 右侧 diff 视图）
+  fileDiff(path: string) {
+    return this.request<{ ok: boolean; path?: string; old?: string; new?: string; error?: string }>(
+      "GET", `/api/v1/agent/file-diff?path=${encodeURIComponent(path)}`);
+  }
+
   // 桌面端：列出已安装技能(Skill)，供 `/` 命令面板展示
   listSkills() {
     return this.request<{ skills: SkillMeta[] }>("GET", "/api/v1/agent/skills");
