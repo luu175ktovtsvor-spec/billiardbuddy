@@ -1035,8 +1035,11 @@ async def run_agent_loop_stream(
     max_turns: int = 8,
     max_tokens: int = _DEFAULT_AGENT_MAX_TOKENS,
     temperature: float = _ORCH_TEMPERATURE,
+    thinking: dict | None = None,
 ):
     """流式版 ReAct 循环：边跑边 yield 事件 dict，供 SSE 推给前端。
+    thinking（F.2 思考强度）：如 {"type":"enabled"}/{"type":"disabled"}，透传进 TextRequest → provider 的 extra_body；
+    None＝跟随模型默认（mimo 默认开思考）。归一由端点做（前端"开/关" → 这里的 enabled/disabled）。
 
     与同步版 `run_agent_loop` 共享审批闸/入参解析逻辑（`_plan_tool_call`），只在"逐片调模型 +
     逐事件吐给前端"上不同。事件类型：
@@ -1077,7 +1080,7 @@ async def run_agent_loop_stream(
         async for tok in _vision_degrade_stream(
             provider,
             TextRequest(messages=messages, tools=tools, tool_choice="auto", model=model,
-                        max_tokens=max_tokens, temperature=temperature),
+                        max_tokens=max_tokens, temperature=temperature, thinking=thinking),
             messages, ctx,
             tool_calls_sink=sink,
             finish_sink=finish,

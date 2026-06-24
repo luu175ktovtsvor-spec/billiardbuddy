@@ -226,6 +226,15 @@ def _model_ctx_window() -> int | None:
     return None
 
 
+def _deep_thinking_to_param(deep: bool | None) -> dict | None:
+    """F.2 深度思考"开/关" → 归一成 provider 的 thinking 参数。
+    True=开→{"type":"enabled"}；False=关→{"type":"disabled"}（更快、省思考 token）；None=跟随模型默认（mimo 默认开）。
+    mimo/Kimi 只有开/关；若将来接"档位制"模型（OpenAI reasoning_effort 等），在这一层再扩成档位映射即可。"""
+    if deep is None:
+        return None
+    return {"type": "enabled"} if deep else {"type": "disabled"}
+
+
 def _build_agent_registry(billiards_mode: bool):
     """本次请求的工具表 = 通用/台球工具 + 已配置 MCP server 的工具（动态发现，缓存）。"""
     reg = billiards_registry() if billiards_mode else general_registry()
@@ -526,6 +535,7 @@ class AgentChatRequest(BaseModel):
     knowledge_packs: list[str] | None = None  # @ 挂载的知识库（如 ["billiards"]）；含 "billiards" → 切台球专家模式
     output_style: str | None = None  # 输出风格名（如 "explanatory"/"concise"），空=默认
     goal: str | None = None  # /goal 目标驱动：本次会话的目标条件，空=不启用
+    deep_thinking: bool | None = None  # F.2 深度思考开关：True=开/False=关/None=跟随模型默认（mimo 默认开）
     source_rec_id: str | None = None  # 隐式反馈：本次对话由今日推荐哪一条触发（rec.id），落到 generation 上做"采纳上浮"
 
 
@@ -868,6 +878,7 @@ async def agent_chat(
                 user_images=_media,
                 model=body.model,
                 provider=build_resilient_text_provider(store),  # BYOK：对话走门店自带 key；某家挂了自动切备用档
+                thinking=_deep_thinking_to_param(body.deep_thinking),  # F.2 深度思考 开/关 → 归一成 provider 参数
             ):
                 et = event.get("type")
                 if et == "final":

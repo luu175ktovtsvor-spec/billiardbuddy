@@ -6,7 +6,7 @@
  * - 运行权限：后端那套 ask / auto_files / full，收进克制的弹出菜单。完全磁盘访问并入同一菜单。
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Paperclip, ArrowUp, ChevronDown, ShieldCheck, Check, X, FileText, BookOpen, Palette } from "lucide-react";
+import { Paperclip, ArrowUp, ChevronDown, ShieldCheck, Check, X, FileText, BookOpen, Palette, Brain } from "lucide-react";
 import { PERMISSION_MODES, WELCOME } from "@/lib/agent-copy";
 import { api, type SkillMeta, type OutputStyleMeta } from "@/lib/api";
 import { SlashPalette, type PaletteItem } from "./slash-palette";
@@ -55,6 +55,8 @@ export function DesktopComposer({
   onKnowledgePacksChange,
   outputStyle = "",
   onOutputStyleChange,
+  deepThinking = true,
+  onDeepThinkingChange,
   onCommand,
   disabled,
   placeholder = WELCOME.placeholder,
@@ -73,6 +75,8 @@ export function DesktopComposer({
   onKnowledgePacksChange?: (packs: string[]) => void;
   outputStyle?: string;
   onOutputStyleChange?: (name: string) => void;
+  deepThinking?: boolean; // F.2 深度思考开关（默认开）
+  onDeepThinkingChange?: (v: boolean) => void;
   onCommand?: (name: string) => void;
   disabled?: boolean;
   placeholder?: string;
@@ -238,6 +242,24 @@ export function DesktopComposer({
             >
               <Paperclip className="h-[16px] w-[16px]" />
             </button>
+
+            {/* F.2 深度思考 开/关：mimo 默认开，关掉更快更省思考 token。措辞大白话、不堆术语。 */}
+            {onDeepThinkingChange && (
+              <button
+                type="button"
+                onClick={() => onDeepThinkingChange(!deepThinking)}
+                title={deepThinking ? "深度思考：开（更稳，慢一点）。点一下关掉" : "深度思考：关（更快）。点一下打开"}
+                aria-pressed={deepThinking}
+                className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] transition ${
+                  deepThinking
+                    ? "bg-[#10a37f]/10 text-[#10a37f]"
+                    : "text-[#86868b] hover:bg-black/[0.05] hover:text-[#1d1d1f] dark:text-[#6e7077] dark:hover:bg-white/[0.06]"
+                }`}
+              >
+                <Brain className="h-3.5 w-3.5" />
+                深度思考{deepThinking ? "" : " · 关"}
+              </button>
+            )}
 
             <div className="relative">
               <button
