@@ -43,5 +43,7 @@ contextBridge.exposeInMainWorld("electron", {
     pick: (opts) => ipcRenderer.invoke("files:pick", opts || {}),
     // 系统「另存为」：把成品(base64)写到老板选的位置，返回 { canceled, path?, error? }。
     save: (opts) => ipcRenderer.invoke("files:save", opts || {}),
+    // 贴图/拖图：把粘贴/拖入的图片(base64)存临时文件，返回 { ok, path?, error? }；路径塞 selected_files 给 AI 看。
+    saveTemp: (opts) => ipcRenderer.invoke("files:saveTemp", opts || {}),
   },
 });

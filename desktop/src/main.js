@@ -155,6 +155,24 @@ ipcMain.handle("files:save", async (_e, opts = {}) => {
   }
 });
 
+// 贴图/拖图：把"剪贴板粘贴 / 拖入"的图片字节(base64)存成临时文件,返回绝对路径,
+// 前端塞进 selected_files → AI 沙箱据此被授权读它(让老板能把截图/店照直接贴进对话给 AI 看)。
+ipcMain.handle("files:saveTemp", async (_e, opts = {}) => {
+  const fs = require("fs");
+  const path = require("path");
+  try {
+    const dir = path.join(app.getPath("userData"), "uploads", "pasted");
+    fs.mkdirSync(dir, { recursive: true });
+    const ext = String(opts.ext || "png").replace(/[^a-z0-9]/gi, "").slice(0, 5) || "png";
+    const name = `paste_${require("crypto").randomBytes(6).toString("hex")}.${ext}`;
+    const fp = path.join(dir, name);
+    fs.writeFileSync(fp, Buffer.from(opts.base64 || "", "base64"));
+    return { ok: true, path: fp };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
 // 是否运行在桌面端 + 本地后端地址(前端运行时据此连本地后端,不依赖 build 期 env)
 ipcMain.handle("desktop:info", () => ({
   isDesktop: true,

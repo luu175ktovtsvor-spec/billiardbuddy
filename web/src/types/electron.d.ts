@@ -51,6 +51,8 @@ export interface ElectronBridge {
       filesAndFolders?: boolean; // true=一个弹窗里文件或文件夹都能选(macOS),且不按类型过滤(P0-1)
       filters?: { name: string; extensions: string[] }[];
     }): Promise<{ canceled: boolean; paths: string[] }>;
+    /** 贴图/拖图：把粘贴/拖入的图片(base64)存临时文件，返回路径；塞进 selected_files 让 AI 看。 */
+    saveTemp(opts: { base64: string; ext?: string }): Promise<{ ok: boolean; path?: string; error?: string }>;
     /** 系统「另存为」：把成品(base64 字节)写到用户选定的位置(桌面/任意文件夹)。 */
     save(opts: {
       defaultName?: string;

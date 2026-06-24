@@ -41,6 +41,16 @@ function baseName(p: string): string {
   return parts[parts.length - 1] || p;
 }
 
+// 贴图用：把图片 Blob 读成纯 base64（去掉 data:...;base64, 前缀）。
+function fileToBase64(file: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => { const s = String(r.result || ""); resolve(s.includes(",") ? s.split(",")[1] : s); };
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+
 export function DesktopComposer({
   value,
   onChange,
@@ -49,6 +59,7 @@ export function DesktopComposer({
   onPermissionChange,
   selectedFiles = [],
   onPickFiles,
+  onAddFiles,
   onRemoveFile,
   onOpenFile,
   knowledgePacks = [],
@@ -68,6 +79,7 @@ export function DesktopComposer({
   onPermissionChange?: (m: PermissionMode) => void;
   selectedFiles?: string[];
   onPickFiles?: () => void;
+  onAddFiles?: (paths: string[]) => void; // 贴图/拖图：把图片落成路径后加进附件（授权 AI 看）
   onRemoveFile?: (path: string) => void;
   /** 点开附件：报表(.xlsx/.xlsm) 在右侧用表格视图打开（可点格改）。 */
   onOpenFile?: (path: string) => void;
@@ -154,10 +166,39 @@ export function DesktopComposer({
     return () => window.removeEventListener("keydown", onKey);
   }, [menuOpen, kbMenuOpen, styleMenuOpen]);
 
+  // 贴图：剪贴板里有图片 → 存临时文件 → 路径加进附件（让老板把截图直接粘进来给 AI 看）。
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    if (!onAddFiles || !window.electron?.files?.saveTemp) return;
+    const items = Array.from(e.clipboardData?.items || []);
+    const imgs = items.filter((it) => it.kind === "file" && it.type.startsWith("image/"));
+    if (imgs.length === 0) return;
+    e.preventDefault();
+    const paths: string[] = [];
+    for (const it of imgs) {
+      const file = it.getAsFile();
+      if (!file) continue;
+      const b64 = await fileToBase64(file);
+      const ext = (file.type.split("/")[1] || "png").replace("jpeg", "jpg");
+      const r = await window.electron.files.saveTemp({ base64: b64, ext });
+      if (r?.ok && r.path) paths.push(r.path);
+    }
+    if (paths.length) onAddFiles(paths);
+  };
+  // 拖入：从访达拖图片/文件进来 → Electron 的 File 带绝对路径 → 直接加进附件。
+  const handleDrop = (e: React.DragEvent) => {
+    if (!onAddFiles) return;
+    const files = Array.from(e.dataTransfer?.files || []) as (File & { path?: string })[];
+    const paths = files.map((f) => f.path).filter((p): p is string => !!p);
+    if (paths.length) { e.preventDefault(); onAddFiles(paths); }
+  };
+
   return (
     <div className="px-4 pb-4 pt-1">
       <div className="mx-auto max-w-[820px]">
-        <div className="rounded-xl border border-black/[0.1] bg-white shadow-sm transition-colors focus-within:border-[#10a37f]/45 dark:border-white/[0.09] dark:bg-[#16181d] dark:shadow-[0_8px_28px_-16px_rgba(0,0,0,0.6)]">
+        <div
+          onDrop={handleDrop}
+          onDragOver={(e) => { if (onAddFiles) e.preventDefault(); }}
+          className="rounded-xl border border-black/[0.1] bg-white shadow-sm transition-colors focus-within:border-[#10a37f]/45 dark:border-white/[0.09] dark:bg-[#16181d] dark:shadow-[0_8px_28px_-16px_rgba(0,0,0,0.6)]">
           {/* 已选文件（附件） */}
           {selectedFiles.length > 0 && (
             <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
@@ -211,6 +252,7 @@ export function DesktopComposer({
               rows={1}
               value={value}
               onChange={(e) => handleChange(e.target.value)}
+              onPaste={handlePaste}
               onCompositionStart={() => setComposing(true)}
               onCompositionEnd={() => setComposing(false)}
               onKeyDown={(e) => {
