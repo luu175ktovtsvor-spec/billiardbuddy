@@ -5,7 +5,7 @@
  * 浅色为默认、跟随系统深浅色（dark: 变体）。仅桌面端渲染；整窗自己掌控外观。
  * 顶部留给原生红绿灯（Electron titleBarStyle:'hiddenInset'），可拖拽区用 .app-drag。
  */
-import { Plus, Settings, Cpu, Terminal } from "lucide-react";
+import { Plus, Settings, Cpu, Terminal, Trash2 } from "lucide-react";
 
 import { useHorizontalResize } from "./use-resize";
 
@@ -24,6 +24,7 @@ export function DesktopSidebar({
   activeId,
   onNewChat,
   onSelect,
+  onDelete,
   onOpenSettings,
 }: {
   storeName?: string;
@@ -33,6 +34,7 @@ export function DesktopSidebar({
   activeId?: string;
   onNewChat?: () => void;
   onSelect?: (id: string) => void;
+  onDelete?: (id: string) => void;
   onOpenSettings?: () => void;
 }) {
   const groups: { name: string; items: DesktopConversation[] }[] = [];
@@ -71,17 +73,31 @@ export function DesktopSidebar({
           <div key={g.name} className="mb-2.5">
             <div className="mb-1 px-2 font-mono text-[10px] uppercase tracking-wider text-[#a1a1a6] dark:text-[#54565d]">{g.name}</div>
             {g.items.map((c) => (
-              <button
+              <div
                 key={c.id}
-                onClick={() => onSelect?.(c.id)}
-                className={`mb-px block w-full rounded-md px-2.5 py-1.5 text-left transition ${
+                className={`group app-no-drag mb-px flex items-center rounded-md transition ${
                   c.id === activeId
                     ? "bg-black/[0.06] text-[#1d1d1f] dark:bg-white/[0.07] dark:text-[#e6e7e9]"
                     : "text-[#6e6e73] hover:bg-black/[0.04] dark:text-[#9a9ca3] dark:hover:bg-white/[0.035]"
                 }`}
               >
-                <div className="truncate text-[12.5px]">{c.title}</div>
-              </button>
+                <button
+                  onClick={() => onSelect?.(c.id)}
+                  className="min-w-0 flex-1 px-2.5 py-1.5 text-left"
+                >
+                  <div className="truncate text-[12.5px]">{c.title}</div>
+                </button>
+                {onDelete && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onDelete(c.id); }}
+                    aria-label="删除会话"
+                    title="删除这条会话"
+                    className="mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-[#86868b] opacity-0 transition hover:bg-black/[0.08] hover:text-[#d93025] group-hover:opacity-100 dark:text-[#6e7077] dark:hover:bg-white/[0.08]"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
             ))}
           </div>
         ))}
