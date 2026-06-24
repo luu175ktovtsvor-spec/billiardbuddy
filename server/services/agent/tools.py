@@ -18,6 +18,7 @@ from services.content_service import (
     generate_activity,
     generate_workbench,
     rank_knowledge_for_topic,
+    render_knowledge_bodies,
     run_generation,
 )
 from services.dashboard_service import get_today_dashboard
@@ -117,14 +118,43 @@ async def look_up_knowledge(args: dict, ctx) -> str:
     lines = []
     for h in hits:
         desc = h.get("description") or ""
-        line = f"【{h['name']}】{desc}" if desc else f"【{h['name']}】"
+        # C.2：带上 key，模型据此用 read_knowledge 读整篇正文（要细则/话术时）。
+        head = f"【{h['name']}】(key: {h.get('key', '')})"
+        line = f"{head} {desc}" if desc else head
         facts = h.get("key_facts") or []
         if facts:
             # 钉死的硬数字直接带回——这就是准数，照用，别再上网搜。
             line += "\n  ▸ 硬数字(以此为准)：" + "；".join(facts)
         lines.append(line)
-    return ("行业知识参考（判断该不该做/是不是红线/有没有更专业打法；带【硬数字】的直接照用、别上网搜覆盖）：\n"
-            + "\n".join(lines))
+    return ("行业知识【目录】（判断该不该做/是不是红线/有没有更专业打法；带【硬数字】的直接照用、别上网搜覆盖）：\n"
+            + "\n".join(lines)
+            + "\n\n要某条的具体细则/话术/步骤时，用 read_knowledge(keys=[上面的 key]) 读它整篇正文，据读到的内容写，别凭空编。")
+
+
+@tool(
+    name="read_knowledge",
+    read_only=True,
+    max_result_chars=14000,  # 单条最大~5641字、读2条最坏~11k，留足余量防被截
+    description="读一条/两条台球行业知识的【整篇正文】（细则、话术、步骤、完整硬数字）。"
+                "配合 look_up_knowledge 用：先用 look_up_knowledge 查目录拿到要的 key，再用本工具按 key 读整篇——"
+                "要写具体内容/给确切做法/引用细节时必须先 read 再写，**只引用读到的内容，没读到的别编**。"
+                "一次最多读 2 条（挑最相关的）。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "keys": {"type": "array", "items": {"type": "string"},
+                     "description": "要读整篇的知识 key（取自 look_up_knowledge 目录里的 key），1-2 个"},
+        },
+        "required": ["keys"],
+    },
+)
+async def read_knowledge(args: dict, ctx) -> str:
+    raw = args.get("keys")
+    keys = raw if isinstance(raw, list) else ([raw] if raw else [])
+    keys = [str(k) for k in keys][:2]  # 一次最多读 2 条，护住 token
+    if not keys:
+        return "没给要读的知识 key。先用 look_up_knowledge 查目录，挑中后把它的 key 传进来。"
+    return render_knowledge_bodies(keys, getattr(ctx, "store", None))
 
 
 @tool(

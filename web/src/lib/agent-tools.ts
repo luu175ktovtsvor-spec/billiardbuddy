@@ -6,7 +6,7 @@
 import {
   CalendarDays, Lightbulb, PenLine, UserPlus, Stethoscope, Dices, ImageIcon, Sparkles,
   FileText, PartyPopper, Search, History, FolderOpen, Save, FilePen, FileSpreadsheet, Layers, Wrench,
-  FileSearch, Terminal, Globe, ListChecks, Users, Monitor, MousePointerClick, Plug, Bell, Clock,
+  FileSearch, Terminal, Globe, ListChecks, Users, Monitor, MousePointerClick, Plug, Bell, Clock, BookOpen,
 } from "lucide-react";
 
 export const TOOL_META: Record<string, { label: string; Icon: typeof Wrench }> = {
@@ -23,6 +23,8 @@ export const TOOL_META: Record<string, { label: string; Icon: typeof Wrench }> =
   make_groupbuy_content: { label: "写团购套餐", Icon: FileText },
   plan_activity: { label: "策划活动", Icon: PartyPopper },
   find_scenario: { label: "找合适的方案", Icon: Search },
+  look_up_knowledge: { label: "查知识库目录", Icon: FileSearch },
+  read_knowledge: { label: "读知识库", Icon: BookOpen },
   recall_my_content: { label: "翻你以前写的", Icon: History },
   list_files: { label: "翻看你的文件", Icon: FolderOpen },
   read_file: { label: "读文件", Icon: FileText },

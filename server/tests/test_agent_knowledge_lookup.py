@@ -64,8 +64,9 @@ def test_rank_knowledge_empty_topic_deterministic():
 
 def test_look_up_knowledge_tool_returns_reference_text():
     out = asyncio.run(agent_tools.look_up_knowledge({"topic": "能不能涨价"}, ctx=None))
-    assert "行业知识参考" in out
-    assert "【" in out and "】" in out  # 每条带【name】
+    assert "行业知识【目录】" in out
+    assert "【" in out and "】" in out          # 每条带【name】
+    assert "key:" in out and "read_knowledge" in out  # C.2：目录带 key + 指引用 read_knowledge 读整篇
 
 
 # ---- A-5/C-3 write_operation_content 兜底 ----

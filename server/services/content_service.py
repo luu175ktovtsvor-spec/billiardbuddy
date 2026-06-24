@@ -414,6 +414,28 @@ def _all_knowledge_keys() -> list[str]:
     return [t["key"] for t in prompt_engine.list_templates(category="knowledge") if t.get("key")]
 
 
+def render_knowledge_bodies(keys: list[str], store) -> str:
+    """C.2 导航式取知识：按 key 列表渲染【整篇 knowledge template 正文】（给 read_knowledge 读整篇用，
+    与写作那条的 _load_knowledge_for_role 共用同一个 prompt_engine.render 底层，不另写一份）。
+    key 不存在/缺变量 → 跳过该条并附一句提示，绝不抛（故障安全）。一次只读 1-2 条由调用方控（token 才稳）。"""
+    valid = set(_all_knowledge_keys())
+    out: list[str] = []
+    for raw in (keys or []):
+        k = str(raw or "").strip()
+        if not k:
+            continue
+        if k not in valid and f"knowledge.{k}" in valid:  # 容错：模型只给了短 key
+            k = f"knowledge.{k}"
+        try:
+            body = prompt_engine.render(k, store, {}, lenient=True).strip()
+            out.append(f"【{k}】\n{body}")
+        except PromptTemplateNotFoundError:
+            out.append(f"【{k}】没找到这条（key 可能不对），用 look_up_knowledge 重查目录。")
+        except Exception:
+            continue
+    return "\n\n".join(out) if out else "（没读到内容，先用 look_up_knowledge 查目录拿到准确的 key 再 read。）"
+
+
 def rank_knowledge_for_topic(topic: str, top: int = 5) -> list[dict]:
     """按 topic 相关度给【全部】行业 knowledge 排序，返回前 top 条的 {key, name, description}。
 
