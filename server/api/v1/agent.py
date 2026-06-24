@@ -226,6 +226,26 @@ def _model_ctx_window() -> int | None:
     return None
 
 
+def _agent_max_turns() -> int:
+    """G.1 P2：Agent 循环最大轮数。默认从 8 提到 12——"读5文件→改3处→跑测试→修"这类多步任务 8 轮偏小。
+    可经 DESKTOP_AGENT_MAX_TURNS 调；越界钳到 [1,50]。"""
+    try:
+        v = int(os.environ.get("DESKTOP_AGENT_MAX_TURNS") or 12)
+        return max(1, min(v, 50))
+    except (TypeError, ValueError):
+        return 12
+
+
+def _agent_token_budget() -> int | None:
+    """G.1 P2：交互式对话的 token 总量刹车（防发散打转空烧，BYOK/内置 key 自费场景兜底）。
+    默认 None=不限（行为不变）；配 DESKTOP_AGENT_TOKEN_BUDGET=如 200000 启用。"""
+    try:
+        v = int(os.environ.get("DESKTOP_AGENT_TOKEN_BUDGET") or 0)
+        return v if v > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _deep_thinking_to_param(deep: bool | None) -> dict | None:
     """F.2 深度思考"开/关" → 归一成 provider 的 thinking 参数。
     True=开→{"type":"enabled"}；False=关→{"type":"disabled"}（更快、省思考 token）；None=跟随模型默认（mimo 默认开）。
@@ -829,6 +849,7 @@ async def agent_chat(
         permission_mode=perm_mode, full_disk_access=full_disk,
         auto_spend_limit=getattr(store, "agent_auto_spend_limit", None),
         model_ctx_window=_model_ctx_window(),  # SH-6：配了 DESKTOP_MODEL_CTX_WINDOW 才启用自动瘦身
+        token_budget=_agent_token_budget(),    # G.1 P2：交互式 token 总量刹车（默认不限，配环境变量启用）
         goal=body.goal or "",
     )
 
@@ -883,6 +904,7 @@ async def agent_chat(
                 model=body.model,
                 provider=build_resilient_text_provider(store),  # BYOK：对话走门店自带 key；某家挂了自动切备用档
                 thinking=_deep_thinking_to_param(body.deep_thinking),  # F.2 深度思考 开/关 → 归一成 provider 参数
+                max_turns=_agent_max_turns(),  # G.1 P2：默认 12（多步任务 8 偏小），可经 DESKTOP_AGENT_MAX_TURNS 调
             ):
                 et = event.get("type")
                 if et == "final":

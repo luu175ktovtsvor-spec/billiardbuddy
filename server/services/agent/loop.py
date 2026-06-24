@@ -44,7 +44,12 @@ logger = logging.getLogger(__name__)
 # 编排（选工具/规划）用低温度：实测 0.7（TextRequest 默认）下 DeepSeek 会"有时兴起自己聊、
 # 不调工具"，导致该写文案/推玩法的需求被直接闲聊掉。工具选择要的是稳定可复现，不是创意——
 # 故循环统一压到 0.3。真正要创意的内容生成在各工具内部走 run_generation（自带 0.7），不受此影响。
-_ORCH_TEMPERATURE = 0.3
+# G.1 P2：编排温度做成可配。0.3 是为防 DeepSeek 跑题打的补丁，一刀切会压死强模型的发挥；
+# 强模型(mimo 等)想放开创意可经 DESKTOP_ORCH_TEMPERATURE 调高。非法值回落 0.3。
+try:
+    _ORCH_TEMPERATURE = float(os.environ.get("DESKTOP_ORCH_TEMPERATURE") or 0.3)
+except (TypeError, ValueError):
+    _ORCH_TEMPERATURE = 0.3
 
 # G.1/E.3.7 工具调用统一超时兜底（秒）：任何不自带超时的工具挂死时，外层 asyncio.wait_for 兜底掐断，
 # 把"超时"作为工具结果回灌让模型自纠，绝不让单个工具无限期卡住整个请求 / SSE 流 / 循环。
