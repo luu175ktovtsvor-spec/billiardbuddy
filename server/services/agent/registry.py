@@ -49,6 +49,11 @@ class Tool:
     # SH-3 工具结果落盘阈值（单位：字符）：超阈值且非成品/非自读类 → 落盘 tool-results/，回灌路径+预览。
     #   None = 用全局默认 _MAX_TOOL_RESULT_CHARS；给 read 类自读工具设很大值/特判可避免"读出来又落盘读不回"。
     max_result_chars: int | None = None
+    # G.1/E.3.7 工具调用统一超时兜底（秒）：循环执行该工具时外层包 asyncio.wait_for。
+    #   防"不自带超时的工具（网络抓取 / DB / 将来的视频生图）挂死 → 无限期卡住整个请求、SSE 流挂住、
+    #   max_turns 也救不了（到不了下一轮）"。None = 用全局默认 _DEFAULT_TOOL_TIMEOUT；
+    #   <=0 = 不设兜底（极少数确需无限期跑的流式工具）。run_command/MCP 自带超时，被这层更宽的兜底罩着不受影响。
+    timeout: float | None = None
 
     def to_openai_schema(self) -> dict:
         """导出成 DeepSeek/OpenAI 兼容的 tools 数组元素。"""
@@ -107,6 +112,7 @@ def tool(
     force_confirm: bool = False,
     is_question: bool = False,
     max_result_chars: int | None = None,
+    timeout: float | None = None,
     approval_reason: Callable[[dict, Any], dict] | None = None,
     registry: ToolRegistry | None = None,
 ) -> Callable[[ToolHandler], ToolHandler]:
@@ -133,6 +139,7 @@ def tool(
                 force_confirm=force_confirm,
                 is_question=is_question,
                 max_result_chars=max_result_chars,
+                timeout=timeout,
                 approval_reason=approval_reason,
             )
         )

@@ -40,7 +40,9 @@ def _output_style_dirs() -> list[tuple[str, Path]]:
     b = _bundled_output_styles_dir()
     if b:
         dirs.append(("bundled", b))
-    dirs.append(("user", Path.home() / ".claude" / "output-styles"))
+    # 桌面产品绝不扫 ~/.claude（开发者私有配置，会把无关个人风格漏进给非技术店主看的面板）——同 skills.py 的隔离（G.5 P3）。
+    if os.environ.get("DESKTOP_LOCAL") != "1":
+        dirs.append(("user", Path.home() / ".claude" / "output-styles"))
     lib = os.environ.get("DESKTOP_LIBRARY_DIR")
     if lib:
         dirs.append(("project", Path(lib) / "output-styles"))

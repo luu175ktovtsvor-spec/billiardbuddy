@@ -18,6 +18,30 @@ let _stopping = false;
 
 function backendUrl() { return `http://${HOST}:${_port}`; }
 
+// 读取【内置 bundle 密钥】并注入后端进程 env（全内置·用户零配置；key 不写进 git 源码，只放 gitignored 文件/打包资源）。
+// 找几个位置：dev 用 server/.env.bundled.local；prod 用打进 resources 的 bundled.env。解析 KEY=VALUE（# 注释、空行跳过）。
+function _loadBundledEnv(repoRoot) {
+  const candidates = [
+    process.resourcesPath ? path.join(process.resourcesPath, "bundled.env") : null,
+    repoRoot ? path.join(repoRoot, "server", ".env.bundled.local") : null,
+  ].filter(Boolean);
+  for (const f of candidates) {
+    try {
+      if (!fs.existsSync(f)) continue;
+      const out = {};
+      for (const line of fs.readFileSync(f, "utf-8").split(/\r?\n/)) {
+        const s = line.trim();
+        if (!s || s.startsWith("#")) continue;
+        const i = s.indexOf("=");
+        if (i <= 0) continue;
+        out[s.slice(0, i).trim()] = s.slice(i + 1).trim();
+      }
+      return out;
+    } catch { /* ignore, 试下一个 */ }
+  }
+  return {};
+}
+
 // SQLite 数据库文件:userData/billiards.db(用户数据,本机)
 function dbUrl(userDataDir) {
   const dbFile = path.join(userDataDir, "billiards.db");
@@ -76,6 +100,7 @@ function byokEncryptKey(userDataDir) {
 function _spawnProc({ userDataDir, repoRoot, onLog }) {
   const env = {
     ...process.env,
+    ..._loadBundledEnv(repoRoot),   // 内置模型 key（MiMo/Seedream/Seedance…）；放最前，下面的基建 env 仍能覆盖它
     DATABASE_URL: dbUrl(userDataDir),
     DESKTOP_LOCAL: "1",
     SECRET_KEY: secretKey(userDataDir),
@@ -92,13 +117,16 @@ function _spawnProc({ userDataDir, repoRoot, onLog }) {
     ? path.join(process.resourcesPath, "backend", "billiards_backend", exeName)
     : null;
 
+  // detached(非 Windows):子进程自成进程组(setsid),退出时能"负 pid"整组掐断——尤其 dev 下 uv 会再 fork
+  // uvicorn 子进程,只杀 uv 父进程会留下 uvicorn 继续占 8077,下次开 app "端口被占"起不来(实测踩到)。
+  const _detached = process.platform !== "win32";
   if (packedExe && fs.existsSync(packedExe)) {
     // prod:跑打包的 PyInstaller 可执行
-    _proc = spawn(packedExe, ["--host", HOST, "--port", String(_port)], { env, cwd: path.dirname(packedExe) });
+    _proc = spawn(packedExe, ["--host", HOST, "--port", String(_port)], { env, cwd: path.dirname(packedExe), detached: _detached });
   } else {
     // dev:server/ 目录跑 uv uvicorn(本机 SQLite)
     const serverDir = path.join(repoRoot, "server");
-    _proc = spawn("uv", ["run", "uvicorn", "main:app", "--host", HOST, "--port", String(_port)], { env, cwd: serverDir });
+    _proc = spawn("uv", ["run", "uvicorn", "main:app", "--host", HOST, "--port", String(_port)], { env, cwd: serverDir, detached: _detached });
   }
   // spawn 失败(命令不存在/无权限/exe 损坏)时 stdout/stderr 为 null,直接 .on 会 TypeError 崩主进程。
   if (_proc.stdout) _proc.stdout.on("data", (d) => onLog && onLog(d.toString()));
@@ -134,9 +162,25 @@ async function start({ userDataDir, repoRoot, onLog }) {
   return { ok: ready, url: backendUrl(), port: _port };
 }
 
+// 整组掐断后端进程：避免"杀了父进程、子进程(uvicorn)还活着占 8077"留孤儿。
+function _killTree(proc) {
+  if (!proc || !proc.pid) return;
+  if (process.platform === "win32") {
+    // Windows 无进程组负 pid 语义 → taskkill /T 连子树一起杀
+    try { spawn("taskkill", ["/pid", String(proc.pid), "/T", "/F"]); return; } catch { /* fallthrough */ }
+  } else {
+    // detached 启动 → 进程组 id = pid，负号杀整组(连 uv 拉起的 uvicorn)。先 SIGTERM 优雅退、500ms 后没退再 SIGKILL。
+    try { process.kill(-proc.pid, "SIGTERM"); }
+    catch { try { proc.kill("SIGTERM"); } catch { /* ignore */ } }
+    setTimeout(() => { try { process.kill(-proc.pid, "SIGKILL"); } catch { /* ignore */ } }, 500);
+    return;
+  }
+  try { proc.kill(); } catch { /* ignore */ }
+}
+
 function stop() {
   _stopping = true;
-  if (_proc) { try { _proc.kill(); } catch { /* ignore */ } _proc = null; }
+  if (_proc) { _killTree(_proc); _proc = null; }
 }
 
 module.exports = { start, stop, backendUrl };

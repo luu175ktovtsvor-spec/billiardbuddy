@@ -85,17 +85,23 @@ def test_extract_handles_url_response(monkeypatch):
     assert out == b"URLDATA"   # 国内端点回 url → 下载成 bytes
 
 
-def test_desktop_box_is_pure_byok_never_platform_key(monkeypatch):
-    """桌面盒子=纯 BYOK：没配 BYOK 时绝不回退用平台 key（哪怕 env/config 里有），返回空 key 逼老板填自己的。
-    云端 web 版相反：无 BYOK 回退平台默认（垫付）。"""
+def test_desktop_box_uses_bundled_key_zero_config(monkeypatch):
+    """专题D（owner 2026-06-24 拍板·反转旧"纯 BYOK"铁律）：桌面盒子=全内置 key、用户零配置——
+    内置生图 key 已注入时直接用它（哪怕没配门店 BYOK）；没内置 key 才返回空（逼填 BYOK）。
+    云端 web 版：无 BYOK 回退平台默认（行为不变）。"""
     from config import settings
     from services.ai.factory import ProviderFactory
-    monkeypatch.setattr(settings, "openai_api_key", "PLATFORM_KEY", raising=False)
+    monkeypatch.setattr(settings, "openai_api_key", "BUNDLED_KEY", raising=False)
 
     monkeypatch.setenv("DESKTOP_LOCAL", "1")
     key_desktop, _, _ = ProviderFactory.get_image_config_for_store(None)
-    assert key_desktop == ""          # 盒子：绝不用平台 key
+    assert key_desktop == "BUNDLED_KEY"   # 盒子：内置 key 已注入 → 零配置直用
 
+    monkeypatch.setattr(settings, "openai_api_key", "", raising=False)
+    key_empty, _, _ = ProviderFactory.get_image_config_for_store(None)
+    assert key_empty == ""                # 盒子：没内置 key → 空（不动平台 key、逼填 BYOK）
+
+    monkeypatch.setattr(settings, "openai_api_key", "PLATFORM_KEY", raising=False)
     monkeypatch.delenv("DESKTOP_LOCAL", raising=False)
     key_web, _, _ = ProviderFactory.get_image_config_for_store(None)
-    assert key_web == "PLATFORM_KEY"  # web：行为不变，回退平台默认
+    assert key_web == "PLATFORM_KEY"      # web：行为不变，回退平台默认

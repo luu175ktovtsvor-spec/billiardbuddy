@@ -46,6 +46,15 @@ logger = logging.getLogger(__name__)
 # 故循环统一压到 0.3。真正要创意的内容生成在各工具内部走 run_generation（自带 0.7），不受此影响。
 _ORCH_TEMPERATURE = 0.3
 
+# G.1/E.3.7 工具调用统一超时兜底（秒）：任何不自带超时的工具挂死时，外层 asyncio.wait_for 兜底掐断，
+# 把"超时"作为工具结果回灌让模型自纠，绝不让单个工具无限期卡住整个请求 / SSE 流 / 循环。
+# 取值要足够宽，别误杀正经慢活（生图 settings.openai_image_timeout≈900s、子代理递归多轮）——它是"防挂死"
+# 的最后一道，不是性能闸。可经 DESKTOP_TOOL_TIMEOUT 覆盖；工具自身可用 Tool.timeout 收紧或（<=0）豁免。
+try:
+    _DEFAULT_TOOL_TIMEOUT = float(os.environ.get("DESKTOP_TOOL_TIMEOUT") or 1200)
+except (TypeError, ValueError):
+    _DEFAULT_TOOL_TIMEOUT = 1200.0
+
 # 审批闸（proposal 模式）：requires_approval 的工具不在循环里执行，
 # 改提请用户确认；这条作为工具结果回灌给模型，让它把方案讲给用户、不要假装已完成。
 _APPROVAL_PENDING_MSG = (
@@ -758,8 +767,17 @@ async def _execute_tool(registry: ToolRegistry, name: str | None, args: dict, ct
     deny = await run_pre_tool_hooks(name, args, ctx)
     if deny:
         return f"[已被拦截] {name}：{deny}"
+    # 统一超时兜底：tool.timeout 优先（<=0 表示该工具不设兜底），否则全局 _DEFAULT_TOOL_TIMEOUT。
+    to = tool.timeout if getattr(tool, "timeout", None) is not None else _DEFAULT_TOOL_TIMEOUT
     try:
-        result = await tool.handler(args, ctx)
+        if to and to > 0:
+            result = await asyncio.wait_for(tool.handler(args, ctx), timeout=to)
+        else:
+            result = await tool.handler(args, ctx)
+    except (asyncio.TimeoutError, TimeoutError):  # 挂死兜底：掐断并回灌超时，让模型换路子，别卡死整轮
+        logger.warning("工具执行超时(%.0fs)，已掐断: %s", to, name)
+        return (f"[工具超时] {name} 跑了超过 {int(to)} 秒还没回，已自动掐断。"
+                f"换个更小的输入/参数，或改用别的办法，别再用同样的方式重试。")
     except Exception as e:  # 工具失败不崩循环：错误（带类型，给模型更多自纠信号）回灌，让它决定补救
         logger.exception("工具执行失败: %s", name)
         return f"[工具执行失败] {name}（{type(e).__name__}）: {e}"
@@ -836,17 +854,33 @@ def _microcompact(messages: list[dict], registry: ToolRegistry) -> None:
         messages[i] = {**messages[i], "content": _CLEARED_RESULT_MARK}
 
 
+# G.1 单张内联图片的粗略 token 估值：多数视觉模型一图≈数百~上千 token。估算时按固定值计入，
+# 绝不把 base64 图片正文当普通文本去数字符（base64 动辄几十万字符，会把估算抬到天文数字、且毫无意义）。
+_IMG_TOKEN_EST = 1000
+
+
 def _estimate_tokens(messages: list[dict]) -> int:
     """粗估 messages 占用的 token 数，分中英文计权——CJK（中/日/韩）一字≈1 token，英文/JSON/符号约 4 字符≈1 token。
     只为 autocompact 阈值判断服务（求"快且零依赖"）。旧版一律 //4 会把中文低估约 4 倍 → 顶满窗口还不触发压缩、
-    真溢出；本产品以中文为主，故必须分别计权。任何取值异常都按 0 处理（绝不抛错拖垮主流程）。"""
-    cjk = other = 0
+    真溢出；本产品以中文为主，故必须分别计权。多模态 content（list of parts）里的图片按 _IMG_TOKEN_EST 固定计入、
+    不数 base64 正文（G.1：旧版 str(list) 会把内联图片要么严重低估、要么把 base64 当字符乱算）。
+    任何取值异常都按 0 处理（绝不抛错拖垮主流程）。"""
+    cjk = other = imgs = 0
     for m in messages:
         try:
             text = ""
             c = m.get("content")
             if isinstance(c, str):
                 text += c
+            elif isinstance(c, list):
+                # 多模态 content：逐 part 处理——text 段计字符，image_url 段按固定 token 计、不数 base64 正文。
+                for part in c:
+                    if not isinstance(part, dict):
+                        text += str(part)
+                    elif part.get("type") == "image_url" or "image_url" in part:
+                        imgs += 1
+                    else:
+                        text += str(part.get("text") or "")
             elif c is not None:
                 text += str(c)
             tcs = m.get("tool_calls")
@@ -859,7 +893,7 @@ def _estimate_tokens(messages: list[dict]) -> int:
                     other += 1
         except (TypeError, ValueError):
             continue
-    return cjk + other // 4
+    return cjk + other // 4 + imgs * _IMG_TOKEN_EST
 
 
 def _split_for_autocompact(messages: list[dict], keep: int) -> int:

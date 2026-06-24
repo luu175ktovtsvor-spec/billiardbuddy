@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sys
@@ -20,6 +21,8 @@ from pathlib import Path
 from typing import Any
 
 from services.agent.registry import tool
+
+logger = logging.getLogger(__name__)
 
 # 解析 "---\n<yaml>\n---\n<body>"。无 frontmatter → ({}, 全文)。
 _FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
@@ -88,6 +91,10 @@ class Skill:
     allowed_tools: list[str] = field(default_factory=list)
     paths: list[str] = field(default_factory=list)  # 条件激活 glob（本期解析留存）
     version: str = ""
+    # G.2 领域包归属：标了 "billiards" 的技能只在 @台球行业知识库（billiards_mode）时披露——
+    # 守"通用 Agent 为默认、台球只是可挂载领域"的核心定位，别让擦边/上钟等台球技能漏进普通用户的命令面板/系统提示。
+    # 门店自建技能可在 frontmatter 写 `knowledge_pack: billiards` 自我归属；内置技能走下方 _BILLIARDS_BUNDLED_SKILLS 兜底。
+    knowledge_pack: str = ""
 
     def render_invocation(self, args: str = "") -> str:
         """展开技能正文，替换 $ARGUMENTS / ${ARGUMENTS} 占位（对标 cc-haha）。"""
@@ -165,6 +172,7 @@ def _load_skill_dir(skill_dir: Path, source: str) -> Skill | None:
         allowed_tools=_as_list(_get(meta, "allowed-tools", "allowed_tools")),
         paths=_as_list(_get(meta, "paths")),
         version=str(_get(meta, "version", default="") or "").strip(),
+        knowledge_pack=str(_get(meta, "knowledge_pack", "knowledge-pack", "pack", default="") or "").strip().lower(),
     )
 
 
@@ -187,6 +195,7 @@ def load_skills(dirs: list[tuple[str, Path]] | None = None) -> list[Skill]:
                 if sk and sk.name:
                     found[sk.name] = sk
         except Exception:
+            logger.debug("加载技能源失败 source=%s root=%s（跳过）", source, root, exc_info=True)
             continue
     return list(found.values())
 
@@ -227,13 +236,40 @@ def maybe_expand_slash(message: str, skills: list[Skill] | None = None) -> str |
     return s.render_invocation(args)
 
 
-def render_skills_for_prompt(skills: list[Skill] | None = None, budget_chars: int = 1500) -> str:
+# G.2 内置台球领域技能名单（与 registry.BILLIARDS_TOOL_NAMES 同理）：通用模式下不披露给模型/不进 / 面板，
+# 仅 @台球行业知识库（billiards_mode）时才放出。门店自建技能可改用 frontmatter `knowledge_pack: billiards` 自我归属。
+_BILLIARDS_BUNDLED_SKILLS: set[str] = {
+    "build-persona", "call-customers-batch", "daily-report", "dating-app-traffic",
+    "escort-service-sop", "fill-empty-tables", "find-problems", "groupbuy-to-private",
+    "launch-groupbuy", "manage-stakes-customers", "monthly-review", "open-new-store",
+    "pk-incentive", "positioning-slogan", "raise-price-safely", "recruit-assistant",
+    "run-activity", "save-bad-review", "segment-casual-customers", "tournament",
+    "what-to-post-today",
+}
+
+
+def is_billiards_skill(s: Skill) -> bool:
+    """该技能是否属台球领域包（通用模式下应隐藏）：frontmatter 显式标 billiards，或在内置台球技能名单里。"""
+    return s.knowledge_pack == "billiards" or s.name in _BILLIARDS_BUNDLED_SKILLS
+
+
+def filter_skills_by_mode(skills: list[Skill], billiards_mode: bool) -> list[Skill]:
+    """按是否挂载台球知识库过滤：通用模式（billiards_mode=False）剔除台球领域技能，守通用定位。"""
+    if billiards_mode:
+        return skills
+    return [s for s in skills if not is_billiards_skill(s)]
+
+
+def render_skills_for_prompt(skills: list[Skill] | None = None, budget_chars: int = 1500,
+                             billiards_mode: bool = False) -> str:
     """渐进式披露：把可用技能渲染成"名字 + 描述"清单，注入系统提示（不含正文）。
 
     - 跳过 disable-model-invocation（这些只允许用户 `/name` 手调，模型不主动调）。
+    - G.2：通用模式（billiards_mode=False）剔除台球领域技能，别把擦边/上钟等漏进普通用户的系统提示。
     - 按 name 排序（前缀缓存稳定）；总长封顶 budget_chars。
     """
     skills = skills if skills is not None else load_skills()
+    skills = filter_skills_by_mode(skills, billiards_mode)
     usable = sorted(
         [s for s in skills if not s.disable_model_invocation and s.description],
         key=lambda s: s.name,
