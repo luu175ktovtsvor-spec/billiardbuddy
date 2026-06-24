@@ -6,10 +6,11 @@
  * 从侧栏齿轮点开。BYOK 走和原来一致的接口：getByokConfig / updateByokConfig / validateByokConfig。
  */
 import { useEffect, useState } from "react";
-import { X, Loader2, Check, Cpu, Image as ImageIcon, Store, ShieldCheck, Puzzle, Plus, Trash2, AlertTriangle, Download } from "lucide-react";
+import { X, Loader2, Check, Cpu, Image as ImageIcon, Store, ShieldCheck, Puzzle, Plus, Trash2, AlertTriangle, Download, Brain } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
+import type { StoreMemoryItem } from "@/types/store";
 
 type McpServer = { name: string; command?: string; status?: string; tools?: number; disabled?: boolean };
 type McpPreset = { id: string; name: string; desc: string; command: string; args: string[] };
@@ -56,6 +57,12 @@ export function SettingsDrawer({
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [qrcodeUrl, setQrcodeUrl] = useState<string | null>(null);
   const [uploadingKind, setUploadingKind] = useState<"logo" | "qrcode" | null>(null);
+  // M3 店脑记忆管理面：AI 记的事（看/改/删）+ 手动加"我的店规矩"
+  const [memories, setMemories] = useState<StoreMemoryItem[]>([]);
+  const [newRule, setNewRule] = useState("");
+  const [memBusy, setMemBusy] = useState<string | null>(null);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
   // 文字模型
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -118,6 +125,7 @@ export function SettingsDrawer({
       if (pl.status === "fulfilled") setPlugins(pl.value.plugins || []);
       if (mc.status === "fulfilled") setMcp(mc.value.servers || []);
       if (mp.status === "fulfilled") setMcpPresets(mp.value.presets || []);
+      void refreshMemories();  // M3：拉店脑记忆
       setApiKey("");
       setImgApiKey("");
       setLoading(false);
@@ -126,6 +134,34 @@ export function SettingsDrawer({
   }, [open]);
 
   if (!open) return null;
+
+  // M3：拉店脑记忆 + 增删改
+  async function refreshMemories() {
+    try { setMemories(await api.getStoreMemory()); } catch { /* 拿不到就空 */ }
+  }
+  async function addRule() {
+    const c = newRule.trim();
+    if (!c) return;
+    setMemBusy("add"); setMsg(null);
+    try { await api.addStoreMemory(c); setNewRule(""); await refreshMemories(); setMsg({ kind: "ok", text: "已记下你的店规矩" }); }
+    catch (e) { setMsg({ kind: "err", text: getErrorMessage(e) }); }
+    finally { setMemBusy(null); }
+  }
+  async function deleteMem(id: string) {
+    setMemBusy(id); setMsg(null);
+    try { await api.deleteStoreMemory(id); await refreshMemories(); }
+    catch (e) { setMsg({ kind: "err", text: getErrorMessage(e) }); }
+    finally { setMemBusy(null); }
+  }
+  async function saveEdit() {
+    if (!editId) return;
+    const c = editText.trim();
+    if (!c) { setEditId(null); return; }
+    setMemBusy(editId); setMsg(null);
+    try { await api.updateStoreMemory(editId, c); setEditId(null); await refreshMemories(); }
+    catch (e) { setMsg({ kind: "err", text: getErrorMessage(e) }); }
+    finally { setMemBusy(null); }
+  }
 
   async function uploadAsset(kind: "logo" | "qrcode", file: File) {
     setUploadingKind(kind); setMsg(null);
@@ -289,6 +325,52 @@ export function SettingsDrawer({
                 ))}
               </div>
               <p className="mt-1.5 text-[11.5px] leading-snug text-[#a1a1a6] dark:text-[#6e7077]">传了 Logo / 收款码，做海报时管家能帮你叠到图上。</p>
+            </section>
+
+            {/* M3 店脑记忆：AI 记的事（看/改/删）+ 我定的店规矩 */}
+            <section className="mb-6">
+              <p className="mb-2 flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-[#a1a1a6] dark:text-[#6e7077]">
+                <Brain className="h-3.5 w-3.5" /> AI 记的事（店脑）
+              </p>
+              <p className="mb-2 text-[11.5px] leading-snug text-[#86868b] dark:text-[#8a8c93]">这里能看见管家记住的关于你/你店的事，随时改或删。你亲定的"店规矩"管家绝不会覆盖。</p>
+              <div className="mb-2.5 flex gap-1.5">
+                <input className={INPUT} value={newRule} onChange={(e) => setNewRule(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") void addRule(); }}
+                  placeholder="加一条你的店规矩，比如：周二会员日五折" />
+                <button onClick={() => void addRule()} disabled={memBusy === "add" || !newRule.trim()}
+                  className="shrink-0 rounded-md bg-[#10a37f] px-3 text-[12.5px] text-white transition hover:bg-[#0d8c6d] disabled:opacity-50">
+                  {memBusy === "add" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "加"}
+                </button>
+              </div>
+              {memories.length === 0 ? (
+                <div className="text-[11.5px] text-[#a1a1a6]">还没记下什么。聊着聊着管家会慢慢记住你的偏好；你也可以上面手动加店规矩。</div>
+              ) : (
+                <div className="space-y-1.5">
+                  {[...memories].sort((a, b) => (a.source === "manual" ? 0 : 1) - (b.source === "manual" ? 0 : 1)).map((m) => (
+                    <div key={m.id} className="flex items-start gap-2 rounded-md border border-black/[0.06] bg-black/[0.015] px-2.5 py-1.5 dark:border-white/[0.06] dark:bg-white/[0.02]">
+                      <span className={`mt-0.5 shrink-0 rounded px-1 py-px text-[9px] ${m.source === "manual" ? "bg-[#10a37f]/12 text-[#10a37f]" : "bg-black/[0.05] text-[#86868b] dark:bg-white/[0.06] dark:text-[#8a8c93]"}`}>
+                        {m.source === "manual" ? "我定的" : "AI学到"}
+                      </span>
+                      {editId === m.id ? (
+                        <input className={`${INPUT} min-w-0 flex-1`} value={editText} autoFocus
+                          onChange={(e) => setEditText(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") void saveEdit(); if (e.key === "Escape") setEditId(null); }} />
+                      ) : (
+                        <span className="min-w-0 flex-1 text-[12px] leading-snug text-[#3a3a3c] dark:text-[#c8cace]">{m.content}</span>
+                      )}
+                      {editId === m.id ? (
+                        <button onClick={() => void saveEdit()} className="shrink-0 text-[11px] font-medium text-[#10a37f]">存</button>
+                      ) : (
+                        <button onClick={() => { setEditId(m.id); setEditText(m.content); }} className="shrink-0 text-[11px] text-[#a1a1a6] transition hover:text-[#10a37f]">改</button>
+                      )}
+                      <button onClick={() => void deleteMem(m.id)} disabled={memBusy === m.id} title="删除"
+                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[#a1a1a6] transition hover:bg-[#ff3b30]/10 hover:text-[#ff3b30] disabled:opacity-50">
+                        {memBusy === m.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
 
             {/* D.5：全内置·开箱即用 —— 让非技术老板一眼知道默认不用配 key */}
