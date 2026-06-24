@@ -7,7 +7,7 @@
 import { Sparkles, Command } from "lucide-react";
 
 export type PaletteItem =
-  | { kind: "builtin"; name: string; description: string }
+  | { kind: "builtin"; name: string; description: string; cn?: string }
   | { kind: "skill"; name: string; description: string; argHint?: string };
 
 export function SlashPalette({
@@ -44,7 +44,15 @@ export function SlashPalette({
           )}
           <span className="min-w-0 flex-1">
             <span className="flex items-center gap-1.5">
-              <span className="font-mono text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">/{it.name}</span>
+              {/* G.3：中文做主视觉、/英文退成小灰字（中专老板看中文、不记英文斜杠命令） */}
+              {it.kind === "builtin" && it.cn ? (
+                <>
+                  <span className="text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{it.cn}</span>
+                  <span className="font-mono text-[11px] text-[#a1a1a6] dark:text-[#6e7077]">/{it.name}</span>
+                </>
+              ) : (
+                <span className="font-mono text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">/{it.name}</span>
+              )}
               {it.kind === "skill" && it.argHint && (
                 <span className="font-mono text-[11px] text-[#a1a1a6] dark:text-[#6e7077]">{it.argHint}</span>
               )}

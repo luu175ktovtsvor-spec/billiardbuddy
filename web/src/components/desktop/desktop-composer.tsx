@@ -14,20 +14,21 @@ import { SlashPalette, type PaletteItem } from "./slash-palette";
 export type PermissionMode = "ask" | "auto_files" | "full" | "plan";
 
 // 内置 `/` 命令（cc-haha 风，先放能即时接上的；其余随命令系统扩展）。
-const BUILTIN_COMMANDS: { name: string; description: string }[] = [
-  { name: "new", description: "开个新会话" },
-  { name: "clear", description: "清空当前会话" },
-  { name: "model", description: "配置 AI 模型 / Key" },
-  { name: "settings", description: "打开设置" },
-  { name: "goal", description: "设定目标，让我对照它自检直到完成" },
-  { name: "cost", description: "本月 AI 用量" },
-  { name: "agents", description: "可用的子代理专家" },
-  { name: "mcp", description: "MCP 外部工具服务器状态" },
-  { name: "skills", description: "已安装的技能" },
-  { name: "plugins", description: "已安装的插件" },
-  { name: "context", description: "当前会话信息" },
-  { name: "export", description: "导出当前对话为 Markdown" },
-  { name: "help", description: "查看命令与能力" },
+// G.3：每条带中文名(cn,做主视觉) + 中文/拼音别名(aliases,让 /导出 /用量 也能搜到)。
+const BUILTIN_COMMANDS: { name: string; cn: string; description: string; aliases?: string[] }[] = [
+  { name: "new", cn: "新会话", description: "开个新会话", aliases: ["新对话", "xinhuihua", "xin"] },
+  { name: "clear", cn: "清空会话", description: "清空当前会话", aliases: ["清空", "qingkong"] },
+  { name: "model", cn: "模型设置", description: "配置 AI 模型 / Key", aliases: ["模型", "moxing", "key"] },
+  { name: "settings", cn: "设置", description: "打开设置", aliases: ["shezhi"] },
+  { name: "goal", cn: "设目标", description: "设定目标，让我对照它自检直到完成", aliases: ["目标", "mubiao"] },
+  { name: "cost", cn: "用量", description: "本月 AI 用量", aliases: ["花费", "账单", "yongliang", "huafei"] },
+  { name: "agents", cn: "子代理", description: "可用的子代理专家", aliases: ["代理", "daili"] },
+  { name: "mcp", cn: "外接工具", description: "MCP 外部工具服务器状态", aliases: ["waijiegongju"] },
+  { name: "skills", cn: "技能", description: "已安装的技能", aliases: ["jineng"] },
+  { name: "plugins", cn: "插件", description: "已安装的插件", aliases: ["chajian"] },
+  { name: "context", cn: "会话信息", description: "当前会话信息", aliases: ["上下文", "huihuaxinxi"] },
+  { name: "export", cn: "导出对话", description: "导出当前对话为 Markdown", aliases: ["导出", "保存对话", "daochu"] },
+  { name: "help", cn: "帮助", description: "查看命令与能力", aliases: ["能干嘛", "bangzhu"] },
 ];
 
 // 可 @ 挂载的知识库：挂上 = 该领域专家，不挂 = 通用 Agent。目前一个，后续可扩展为多个领域包。
@@ -103,8 +104,12 @@ export function DesktopComposer({
   const slashQuery = value.startsWith("/") && !value.slice(1).includes(" ") ? value.slice(1).toLowerCase() : null;
   const paletteItems: PaletteItem[] = slashQuery !== null ? [
     ...BUILTIN_COMMANDS
-      .filter((c) => c.name.toLowerCase().includes(slashQuery))
-      .map((c): PaletteItem => ({ kind: "builtin", name: c.name, description: c.description })),
+      // G.3：英文名 / 中文名 / 描述 / 中文拼音别名 任一命中即列出（打 /导出 /用量 也搜得到）
+      .filter((c) => c.name.toLowerCase().includes(slashQuery)
+        || c.cn.includes(slashQuery)
+        || c.description.includes(slashQuery)
+        || (c.aliases || []).some((a) => a.toLowerCase().includes(slashQuery)))
+      .map((c): PaletteItem => ({ kind: "builtin", name: c.name, cn: c.cn, description: c.description })),
     ...skills
       .filter((s) => s.user_invocable && (s.name.toLowerCase().includes(slashQuery) || (s.description || "").toLowerCase().includes(slashQuery)))
       .map((s): PaletteItem => ({ kind: "skill", name: s.name, description: s.description, argHint: s.argument_hint })),
