@@ -488,6 +488,33 @@ async def get_agent_conversation(
     return {"conversation_id": conversation_id, "messages": messages}
 
 
+@router.delete("/conversations/{conversation_id}")
+async def delete_agent_conversation(
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+):
+    """删除（软删）某个 agent 会话：把该会话所有记录 is_deleted=True（可恢复，跟现有 generations 软删规矩一致）。
+    多租户：限定 store_id 防跨店删。P1-3b（前端侧栏垃圾桶按钮经此删历史会话）。"""
+    import uuid as _uuid
+    from sqlalchemy import update as _update
+    from models.generation import Generation as _Gen
+    try:
+        cid = _uuid.UUID(conversation_id)
+    except (ValueError, TypeError):
+        raise AIServiceError("会话 id 不对")
+    await db.execute(
+        _update(_Gen).where(
+            _Gen.store_id == store.id,            # 防跨店删
+            _Gen.conversation_id == cid,
+            _Gen.type == "agent",
+        ).values(is_deleted=True)
+    )
+    await db.commit()
+    return {"ok": True, "conversation_id": conversation_id}
+
+
 class AgentChatRequest(BaseModel):
     message: str
     history: list[dict] | None = None

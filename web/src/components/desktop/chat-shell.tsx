@@ -122,6 +122,16 @@ export function DesktopChatShell({
   }, [chat]);
   const newChat = useCallback(() => { setSelectedFiles([]); chat.startNewChat(); }, [chat]);
 
+  // 删除一条历史会话（侧栏垃圾桶）：删前确认 → 软删 → 从列表移除；删的是当前会话则切到新会话。P1-3b。
+  const deleteConv = useCallback(async (id: string) => {
+    if (!window.confirm("删除这条会话？它会从列表里消失（后台软删、可恢复）。")) return;
+    try {
+      await api.deleteAgentConversation(id);
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+      if (chat.conversationId === id) { setSelectedFiles([]); chat.startNewChat(); }
+    } catch { /* 删失败：下次 refreshConversations 会纠正 */ }
+  }, [chat]);
+
   // 权限偏好持久化（与手机页同一套 localStorage key，体验一致）
   useEffect(() => {
     try {
@@ -229,6 +239,7 @@ export function DesktopChatShell({
           activeId={chat.conversationId ?? undefined}
           onNewChat={newChat}
           onSelect={loadConv}
+          onDelete={deleteConv}
           onOpenSettings={() => setSettingsOpen(true)}
         />
       }

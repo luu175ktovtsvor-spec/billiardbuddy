@@ -407,6 +407,12 @@ class ApiClient {
       "GET", `/api/v1/agent/conversations/${encodeURIComponent(id)}`);
   }
 
+  // 桌面端：删除（软删）某个 agent 会话（侧栏垃圾桶按钮）。P1-3b。
+  deleteAgentConversation(id: string) {
+    return this.request<{ ok: boolean; conversation_id: string }>(
+      "DELETE", `/api/v1/agent/conversations/${encodeURIComponent(id)}`);
+  }
+
   // 桌面端：列出已安装技能(Skill)，供 `/` 命令面板展示
   listSkills() {
     return this.request<{ skills: SkillMeta[] }>("GET", "/api/v1/agent/skills");
