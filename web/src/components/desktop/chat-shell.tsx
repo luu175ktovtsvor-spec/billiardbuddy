@@ -165,11 +165,12 @@ export function DesktopChatShell({
     try { localStorage.setItem("agent_output_style", name); } catch { /* 忽略 */ }
   };
 
-  // 选本机文件：弹系统选择器，把绝对路径加进 selectedFiles（去重）。授权管家读/改这些文件。
+  // 选本机文件/文件夹：弹系统选择器，把绝对路径加进 selectedFiles（去重）。授权管家读/改它们。
+  // P0-1：filesAndFolders → 一个弹窗里文件或【整个文件夹】都能选(macOS)，且不按类型过滤(.py 等不再被灰)。
   const pickFiles = useCallback(async () => {
     if (!electron?.files?.pick) return;
     try {
-      const r = await electron.files.pick({ multi: true });
+      const r = await electron.files.pick({ multi: true, filesAndFolders: true });
       if (r.canceled || !r.paths?.length) return;
       setSelectedFiles((prev) => Array.from(new Set([...prev, ...r.paths])));
     } catch { /* 取消/失败：忽略 */ }
