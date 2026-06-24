@@ -171,7 +171,7 @@ def test_handrolled_workbench_paths_inject_store_brain():
       3) 店脑必须是最后一次 append——其后不得再有 brand_voice / concise_directive
          等改写 rendered_prompt 的语句（近因效应，店脑须压过它们）。"""
     import services.content_service as cs
-    for fn_name in ("generate_workbench", "generate_copywriting", "generate_activity", "generate_operation"):
+    for fn_name in ("generate_workbench", "generate_copywriting", "generate_activity"):  # generate_operation 已退役(孤儿)
         fn = getattr(cs, fn_name)
         src = inspect.getsource(fn)
         assert "with_store_brain" in src, f"{fn_name} 未注入店脑"
