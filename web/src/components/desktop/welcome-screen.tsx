@@ -4,7 +4,7 @@
  * 空状态/欢迎（浅色默认 · 跟随系统）：CC 式专业 agent 基调 + 今日建议 + 起手卡片（点了直接派活）。
  */
 import type { LucideIcon } from "lucide-react";
-import { FileText, BarChart3, Image as ImageIcon, CalendarDays, Lightbulb, Terminal } from "lucide-react";
+import { FileText, BarChart3, Image as ImageIcon, CalendarDays, Lightbulb, Terminal, Loader2, Sparkles } from "lucide-react";
 import { WELCOME } from "@/lib/agent-copy";
 
 export type StarterCard = {
@@ -28,6 +28,8 @@ export function WelcomeScreen({
   todaySuggestionRecId,
   starters = DEFAULT_STARTERS,
   onPick,
+  onDailyDrafts,
+  dailyDraftsBusy = false,
 }: {
   greeting?: string;
   subtitle?: string;
@@ -35,6 +37,8 @@ export function WelcomeScreen({
   todaySuggestionRecId?: string; // 今日建议对应的 rec.id：点「帮我写」时回传做"采纳上浮"
   starters?: StarterCard[];
   onPick?: (prompt: string, recId?: string) => void;
+  onDailyDrafts?: () => void;    // P1-4：点一下让管家把今天能发的内容草稿备好
+  dailyDraftsBusy?: boolean;
 }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center overflow-y-auto px-8">
@@ -61,6 +65,19 @@ export function WelcomeScreen({
               帮我写
             </button>
           </div>
+        )}
+
+        {/* P1-4 每日草稿：点一下让管家把今天能发的几条内容备好（后端预生成+缓存，挑着用） */}
+        {onDailyDrafts && (
+          <button
+            onClick={onDailyDrafts}
+            disabled={dailyDraftsBusy}
+            className="mb-3 flex w-full items-center justify-center gap-2 rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-[12.5px] text-[#3a3a3c] shadow-sm transition hover:bg-black/[0.02] active:scale-[0.99] disabled:opacity-60 dark:border-white/[0.08] dark:bg-white/[0.02] dark:text-[#c8cace] dark:hover:bg-white/[0.05]"
+          >
+            {dailyDraftsBusy
+              ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> 正在备……</>
+              : <><Sparkles className="h-3.5 w-3.5 text-[#10a37f]" /> 不知道今天发啥？帮我备好几条</>}
+          </button>
         )}
 
         <div className="grid grid-cols-2 gap-2">

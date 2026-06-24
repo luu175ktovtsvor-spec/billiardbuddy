@@ -130,6 +130,24 @@ export function DesktopChatShell({
     } catch { /* 删失败：下次 refreshConversations 会纠正 */ }
   }, [chat]);
 
+  // P1-4 每日草稿：点欢迎页按钮 → 拉后端预生成的草稿(有当天缓存)→ 作为一条消息塞进对话,挑着用。
+  const [dailyDraftsBusy, setDailyDraftsBusy] = useState(false);
+  const loadDailyDrafts = useCallback(async () => {
+    if (dailyDraftsBusy) return;
+    setDailyDraftsBusy(true);
+    try {
+      const r = await api.dailyDrafts();
+      const drafts = r.drafts || [];
+      if (!drafts.length) { chat.pushAssistantMessage("今天暂时没现成的草稿，直接说你想发啥（朋友圈/活动/海报文案），我现写。"); return; }
+      const body = drafts.map((d, i) => `**${i + 1}. ${d.title}**\n\n${d.content}`).join("\n\n---\n\n");
+      chat.pushAssistantMessage(`帮你备好了今天能发的几条，挑一条改改就能用：\n\n${body}`);
+    } catch {
+      chat.pushAssistantMessage("这会儿备不了草稿（可能网络或额度问题）。直接说你想发啥，我现写。");
+    } finally {
+      setDailyDraftsBusy(false);
+    }
+  }, [chat, dailyDraftsBusy]);
+
   // 权限偏好持久化（与手机页同一套 localStorage key，体验一致）
   useEffect(() => {
     try {
@@ -266,7 +284,7 @@ export function DesktopChatShell({
       )}
 
       {empty ? (
-        <WelcomeScreen todaySuggestion={liveToday || todaySuggestion} todaySuggestionRecId={liveTodayRecId} onPick={pick} />
+        <WelcomeScreen todaySuggestion={liveToday || todaySuggestion} todaySuggestionRecId={liveTodayRecId} onPick={pick} onDailyDrafts={loadDailyDrafts} dailyDraftsBusy={dailyDraftsBusy} />
       ) : (
         <DesktopChatThread
           messages={chat.messages}
