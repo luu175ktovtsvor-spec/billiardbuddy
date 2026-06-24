@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: str = "http://localhost:3000,http://localhost:3001"
 
+    # 内置模型对用户的【展示名】：换内置模型时只改这里(.env.bundled.local 里的 BUNDLED_*_LABEL)，
+    # 前端跟着变、不用动代码——支持以后把 MiMo 换成别的模型还保持界面一致。
+    bundled_model_label: str = "MiMo V2.5"     # 对话/看图大脑
+    bundled_image_label: str = "GPT Image-2"   # 生图
+    bundled_video_label: str = "Seedance 2.0"  # 视频
+
     # 当前启用的模型 Provider
     text_model_provider: str = "deepseek"
     text_model_name: str = "deepseek-v4-flash"

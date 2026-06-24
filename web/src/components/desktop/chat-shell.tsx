@@ -81,8 +81,12 @@ export function DesktopChatShell({
         const rec = t.value?.recommendations?.[0];
         if (rec) { setLiveToday(rec.description || rec.title); setLiveTodayRecId(rec.id); }
       }
-      if (b.status === "fulfilled" && b.value?.enabled && b.value?.key_configured && b.value?.model) {
-        setLiveModel(b.value.model);  // 老板自带 BYOK → 显示他的模型名（覆盖内置默认）
+      if (b.status === "fulfilled" && b.value) {
+        if (b.value.enabled && b.value.key_configured && b.value.model) {
+          setLiveModel(b.value.model);            // 老板自带 BYOK → 显示他的模型名
+        } else if (b.value.bundled_model_label) {
+          setLiveModel(b.value.bundled_model_label);  // 否则显示内置模型展示名（换模型只改后端配置）
+        }
       }
     })();
     return () => { cancelled = true; };

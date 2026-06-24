@@ -139,6 +139,10 @@ class BYOKConfigOut(BaseModel):
     image_key_configured: bool = False
     image_key_mask: str = ""
     agent_auto_spend_limit: int | None = None
+    # 内置模型展示名（换内置模型只改后端配置、前端跟着变）
+    bundled_model_label: str = "MiMo V2.5"
+    bundled_image_label: str = "GPT Image-2"
+    bundled_video_label: str = "Seedance 2.0"
 
 
 def _ensure_store_owner(store: Store, user: User) -> None:
@@ -149,6 +153,7 @@ def _ensure_store_owner(store: Store, user: User) -> None:
 
 def _byok_out(store: Store) -> BYOKConfigOut:
     from core.crypto import mask, try_decrypt
+    from config import settings
     plain = try_decrypt(store.byok_api_key_enc) if store.byok_api_key_enc else None
     iplain = try_decrypt(store.byok_image_api_key_enc) if getattr(store, "byok_image_api_key_enc", None) else None
     return BYOKConfigOut(
@@ -159,6 +164,9 @@ def _byok_out(store: Store) -> BYOKConfigOut:
         image_model=getattr(store, "byok_image_model", None),
         image_key_configured=bool(iplain), image_key_mask=mask(iplain) if iplain else "",
         agent_auto_spend_limit=getattr(store, "agent_auto_spend_limit", None),
+        bundled_model_label=settings.bundled_model_label,
+        bundled_image_label=settings.bundled_image_label,
+        bundled_video_label=settings.bundled_video_label,
     )
 
 
