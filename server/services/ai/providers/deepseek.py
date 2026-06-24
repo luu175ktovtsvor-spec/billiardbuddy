@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import AsyncIterator
 
 import httpx
@@ -7,6 +8,22 @@ from openai import AsyncOpenAI, APIStatusError, APITimeoutError, APIConnectionEr
 from config import settings
 from core.exceptions import AIProviderError
 from services.ai.base import TextProvider, TextRequest, TextResponse, ReasoningChunk
+
+# P0-2：国产/国内模型端点关键词 —— 这些端点【绝不能走系统/环境代理(Clash 等)】，否则连不上国产域名、
+# 挂死等满超时（实测 MiMo 直连 148ms vs 走代理 5.3s 失败）。境外端点(api.openai.com 等)仍走代理(走出海)。
+_DOMESTIC_API_HINTS = (
+    "xiaomimimo.com", "volces.com", "dashscope", "aliyuncs", "siliconflow",
+    "deepseek.com", "bigmodel.cn", "zhipu", "moonshot.cn", "baichuan", "qianfan", "baidubce", ".cn/",
+)
+
+
+def _bypass_proxy_for(base_url: str | None) -> bool:
+    """该模型端点是否应直连（绕开系统代理）。国产/国内域名 → True（直连）；境外 → False（走代理出海）。
+    DESKTOP_MODEL_USE_PROXY=1 可全局关掉直连（极端网络下的逃生开关）。"""
+    if os.environ.get("DESKTOP_MODEL_USE_PROXY") == "1":
+        return False
+    host = (base_url or "").lower()
+    return any(h in host for h in _DOMESTIC_API_HINTS)
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +60,16 @@ class DeepSeekProvider(TextProvider):
                     message="AI 服务未配置，请联系管理员设置 API Key",
                     status_code=503,
                 )
+            # P0-2：国产模型端点直连、绕开系统代理(Clash)；境外端点仍走代理。
+            http_client = None
+            if _bypass_proxy_for(base_url):
+                http_client = httpx.AsyncClient(trust_env=False,
+                                                timeout=httpx.Timeout(self._timeout, connect=10.0))
             self._client = AsyncOpenAI(
                 base_url=base_url,
                 api_key=api_key,
                 timeout=httpx.Timeout(self._timeout, connect=10.0),
+                http_client=http_client,
             )
         return self._client
 

@@ -128,6 +128,24 @@ def _looks_like_js_shell(raw_html: str, text: str) -> bool:
     return script_count >= _JS_SHELL_MIN_SCRIPTS
 
 
+# P0-2：国产/国内站点关键词。命中 → web_fetch 直连(绕开系统代理 Clash，国产站走代理会慢/挂死)；
+# 未命中(疑似境外) → 仍 trust_env=True 走代理(够得到境外站)。web_search 命中的是境外搜索引擎，不走这条、始终用代理。
+_DOMESTIC_WEB_HINTS = (
+    ".cn", "tianqi", "weather.com", "baidu", "qq.com", "163.com", "sina.com", "sohu",
+    "taobao", "tmall", "jd.com", "douban", "zhihu", "bilibili", "weibo", "meituan",
+    "dianping", "xiaohongshu", "douyin", "kuaishou", "aliyun", "volces", "12306",
+)
+
+
+def _domestic_web_host(url: str) -> bool:
+    from urllib.parse import urlparse
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return False
+    return any(h in host for h in _DOMESTIC_WEB_HINTS)
+
+
 async def web_fetch(args: dict, ctx) -> str:
     """抓取一个网页的正文内容（GET → 粗清 HTML 成纯文本 → 截断）。
     args: url（必填），extract（可选，想重点看什么——只作提示拼进开头，不做二次 LLM 抽取）。只读、故障安全。"""
@@ -138,6 +156,7 @@ async def web_fetch(args: dict, ctx) -> str:
     try:
         async with httpx.AsyncClient(
             timeout=_HTTP_TIMEOUT, follow_redirects=True,
+            trust_env=not _domestic_web_host(url),  # P0-2：国产站直连不走代理；境外站走代理
             headers={"User-Agent": _UA, "Accept": "text/html,application/xhtml+xml,*/*"},
         ) as client:
             resp = await client.get(url)
