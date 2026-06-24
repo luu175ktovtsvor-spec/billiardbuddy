@@ -367,6 +367,7 @@ export function DesktopChatShell({
         }}
         selectedFiles={selectedFiles}
         onPickFiles={electron?.files?.pick ? pickFiles : undefined}
+        onAddFiles={electron?.files?.saveTemp ? ((paths) => setSelectedFiles((prev) => Array.from(new Set([...prev, ...paths])))) : undefined}
         onRemoveFile={removeFile}
         onOpenFile={(p) => setPreview(/\.(xlsx|xlsm)$/i.test(p) ? { kind: "sheet", path: p } : { kind: "doc", path: p })}
         disabled={chat.generating}
