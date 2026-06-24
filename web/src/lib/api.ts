@@ -1,7 +1,7 @@
 import { ApiError } from "@/types/api";
 import type { User } from "@/types/auth";
 import type { StoreCreate, StoreResponse, StoreUpdate, UploadResponse, StoreMemoryItem, ByokConfigOut, ByokConfigIn, ByokValidateResult, ByokProfile } from "@/types/store";
-import type { DashboardTodayResponse, CardSignals } from "@/types/dashboard";
+import type { DashboardTodayResponse } from "@/types/dashboard";
 
 const configuredBaseUrl = process.env.NEXT_PUBLIC_API_URL;
 const BASE_URL = !configuredBaseUrl
@@ -472,9 +472,7 @@ class ApiClient {
     return this.request<{ ok: boolean; level: string; message: string; provider: string; known_models: string[] }>("POST", "/api/v1/agent/image/validate", { base_url, model });
   }
 
-  getCardSignals() {
-    return this.request<CardSignals>("GET", "/api/v1/dashboard/card-signals");
-  }
+  // 注：getCardSignals(工作台卡片排序信号)前端已不接——单窗口无卡片网格消费场景；后端接口保留供个性化。
 
   // ─── Quota ───
 
