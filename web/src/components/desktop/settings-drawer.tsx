@@ -65,6 +65,8 @@ export function SettingsDrawer({
   const [editText, setEditText] = useState("");
   // 文字模型
   const [baseUrl, setBaseUrl] = useState("");
+  // 内置模型展示名（后端配置驱动，换模型时跟着变）
+  const [labels, setLabels] = useState({ text: "MiMo V2.5", image: "GPT Image-2", video: "Seedance 2.0" });
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [keyMask, setKeyMask] = useState("");
@@ -114,6 +116,11 @@ export function SettingsDrawer({
         setStoreName("");
       }
       if (b.status === "fulfilled" && b.value) {
+        setLabels({
+          text: b.value.bundled_model_label || "MiMo V2.5",
+          image: b.value.bundled_image_label || "GPT Image-2",
+          video: b.value.bundled_video_label || "Seedance 2.0",
+        });
         setBaseUrl(b.value.base_url || "");
         setModel(b.value.model || "");
         setKeyMask(b.value.key_configured ? b.value.key_mask || "已配置" : "");
@@ -379,7 +386,7 @@ export function SettingsDrawer({
                 <Cpu className="h-3.5 w-3.5" /> 已内置、开箱即用
               </p>
               <p className="mt-1 text-[11.5px] leading-snug text-[#3a3a3c] dark:text-[#c8cace]">
-                对话和看图用 <b>MiMo V2.5</b>、做海报用 <b>GPT Image-2</b>、视频用 <b>Seedance 2.0</b>——都已内置，<b>不用你填任何 key</b>。下面是「高级」，只有想换成你自己的模型时才填。
+                对话和看图用 <b>{labels.text}</b>、做海报用 <b>{labels.image}</b>、视频用 <b>{labels.video}</b>——都已内置，<b>不用你填任何 key</b>。下面是「高级」，只有想换成你自己的模型时才填。
               </p>
             </section>
 
@@ -388,7 +395,7 @@ export function SettingsDrawer({
               <p className="mb-2 flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-[#a1a1a6] dark:text-[#6e7077]">
                 <Cpu className="h-3.5 w-3.5" /> 高级 · 文字模型（用我自己的 key · 可选）
               </p>
-              <p className="mb-2 text-[11.5px] leading-snug text-[#86868b] dark:text-[#8a8c93]">默认已内置 MiMo V2.5、不用填这里。只有想换成自己的文字模型才填：点一下供应商自动填好地址和模型，再贴你的 key。</p>
+              <p className="mb-2 text-[11.5px] leading-snug text-[#86868b] dark:text-[#8a8c93]">默认已内置 {labels.text}、不用填这里。只有想换成自己的文字模型才填：点一下供应商自动填好地址和模型，再贴你的 key。</p>
               <div className="mb-2.5 flex flex-wrap gap-1.5">
                 {TEXT_PRESETS.map((p) => (
                   <button key={p.name} type="button" onClick={() => { setBaseUrl(p.base); setModel(p.model); }} className={PRESET_CHIP}>{p.name}</button>
@@ -411,7 +418,7 @@ export function SettingsDrawer({
               <p className="mb-2 flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-[#a1a1a6] dark:text-[#6e7077]">
                 <ImageIcon className="h-3.5 w-3.5" /> 高级 · 生图模型（用我自己的 key · 选填）
               </p>
-              <p className="mb-2 text-[11.5px] leading-snug text-[#86868b] dark:text-[#8a8c93]">默认已内置 GPT Image-2、不用填。想换自己的生图模型才填——同样一键选；叠 Logo/二维码选「硅基流动·叠Logo首选」最稳。</p>
+              <p className="mb-2 text-[11.5px] leading-snug text-[#86868b] dark:text-[#8a8c93]">默认已内置 {labels.image}、不用填。想换自己的生图模型才填——同样一键选；叠 Logo/二维码选「硅基流动·叠Logo首选」最稳。</p>
               <div className="mb-2.5 flex flex-wrap gap-1.5">
                 {IMAGE_PRESETS.map((p) => (
                   <button key={p.name} type="button" onClick={() => { setImgBaseUrl(p.base); setImgModel(p.model); setImgWarn(""); }} className={PRESET_CHIP}>{p.name}</button>
