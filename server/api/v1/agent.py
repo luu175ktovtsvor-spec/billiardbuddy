@@ -307,16 +307,19 @@ def compose_agent_system_prompt(profile_text: str, brain_text: str, full_disk: b
         if core_layer:
             parts.append(core_layer)
         parts.append(_BILLIARDS_PERSONA)
-    # —— 动态尾段：当天日期（通用也需要）→ 仅 @台球 时：门店画像 + 店脑记忆 ——
+    # —— 动态尾段：当天日期（通用也需要）→ 门店画像（仅台球）+ 店脑记忆（M1：通用也注入）——
     today = _today_line()
     if today:
         parts.append(today)
-    if billiards_mode:
-        if profile_text and profile_text.strip():
-            parts.append("【这家店的情况】\n" + profile_text.strip())
-        if brain_text and brain_text.strip():
-            # format_memories_for_prompt 自带"如与其他资料冲突以此为准"的前缀
-            parts.append(brain_text.strip())
+    # 门店画像（台球房档案：台数/定价/会员卡）= 台球专属领域数据 → 仅 @台球 时注入，
+    # 别把台球档案渗进通用对话（守 G.2「通用 Agent 为默认」定位）。
+    if billiards_mode and profile_text and profile_text.strip():
+        parts.append("【这家店的情况】\n" + profile_text.strip())
+    # M1：店脑记忆（AI 学到的关于你/你店的事）= 通用助手的【长期记忆】，通用模式也注入——
+    # 治"通用模式零长期记忆"的致命缺口，让助手越用越懂你。放在动态尾段、不进可缓存静态前缀。
+    if brain_text and brain_text.strip():
+        # format_memories_for_prompt 自带"如与其他资料冲突以此为准"的前缀
+        parts.append(brain_text.strip())
     return "\n\n".join(parts)
 
 

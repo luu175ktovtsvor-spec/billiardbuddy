@@ -1,7 +1,8 @@
 """通用 Agent 化 · 系统提示三段验证。
 
 钉死本轮核心反转：
-- 默认（未 @ 台球知识库）= 通用 AI 助手，绝不自报台球身份、不注入门店画像/店脑。
+- 默认（未 @ 台球知识库）= 通用 AI 助手，绝不自报台球身份、不注入门店画像（台球档案）。
+  （M1 后：店脑记忆=通用助手长期记忆，通用模式也注入；只有门店画像这种台球档案才门控。）
 - 安全红线【永远注入】，与 billiards_mode 无关——没 @ 台球也守得住。
 - billiards_mode=True 才挂台球人设 + 门店画像 + 店脑。
 """
@@ -18,8 +19,8 @@ def test_default_is_general_not_billiards():
     assert "通用 AI 助手" in p
     assert "你是台球房运营助手" not in p          # 默认不再自报台球身份
     assert "挂载了「台球行业知识库」" not in p     # 默认不挂台球人设
-    assert "门店画像XYZ" not in p                  # 默认不注入门店画像
-    assert "店脑记忆ABC" not in p                  # 默认不注入店脑
+    assert "门店画像XYZ" not in p                  # 默认不注入门店画像（台球档案，守通用定位）
+    assert "店脑记忆ABC" in p                       # M1：店脑记忆(长期记忆)通用模式也注入，让助手越用越懂你
 
 
 def test_safety_redline_always_present_in_both_modes():
