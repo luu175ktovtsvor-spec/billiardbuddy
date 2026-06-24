@@ -89,13 +89,20 @@ export function getErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
     switch (err.status) {
       case 401: return "本地身份异常，请重启 App";
+      // 400 多是友好的业务校验提示(短),可透传;但过长/像技术细节(堆栈/异常类名)的别甩给老板(G.3)
+      case 400: return err.detail && err.detail.length < 100 && !/Error|Exception|Traceback|\bat\b/i.test(err.detail)
+        ? err.detail : "这次请求有点问题，调整一下再试试";
       case 404: return "请先创建或完善门店资料";
       case 422: return "请检查输入内容";
       // 429 透传后端文案:带具体上限和提额引导("联系您的服务商"),
       // 别替换成"下月再试"——那是把想付费的用户劝走
       case 429: return err.detail || "本月生成次数已达上限。";
-      case 500: return "生成失败，请稍后重试";
-      default: return err.detail || `请求失败 (${err.status})`;
+      // G.3：5xx 多是后端 Python 异常,绝不把技术细节(堆栈/异常类名)原样甩给非技术店主 → 统一人话
+      case 500:
+      case 502:
+      case 503:
+      case 504: return "服务出了点小状况，稍等一下再试一次";
+      default: return "服务出了点小状况，稍等一下再试一次";
     }
   }
   if (err instanceof TypeError && err.message === "Failed to fetch") {
