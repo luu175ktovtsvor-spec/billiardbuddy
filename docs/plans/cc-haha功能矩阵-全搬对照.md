@@ -13,11 +13,11 @@
 | 权限模式 UI（三档） | ✅ 4档(含plan) | ⚠️ | 三档已照 CC（询问/自动接受编辑/完全访问）；**缺 plan 模式** |
 | `/` 命令面板 | ✅ | ✅ | `slash-palette.tsx`（内置命令+技能，↑↓选） |
 | 技能选择器 | ✅ | ✅ | `/` 面板 + **设置抽屉「扩展」面板**（列技能/插件/MCP） |
-| 右侧预览（代码画布） | ✅ 文件/diff/产物 | ⚠️ | 海报/文案/**file·code 视图**已做；缺 diff 视图、HTML 渲染 |
+| 右侧预览（代码画布） | ✅ 文件/diff/产物 | ✅ | 海报/文案/**file·code 视图** + **diff 视图**（`diff-block.tsx` 行级+字符级高亮，AI 改本机文件给改前/改后确认）+ **HTML 渲染**（`html-edit-view.tsx`）均已做 |
 | 工具调用呈现（⏺+进行/过去动词+⎿） | ✅ | ⚠️ | 已加 **⏺ 状态点**(灰运行/绿完成)+图标+标签+折叠结果；仍缺进行时/过去式动词、连续同类分组 |
 | todo 列表（贴 spinner 下） | ✅ | ✅ | `todo_write` + 前端常驻清单卡（☐待办/◐进行中/☑完成） |
-| thinking 折叠块 | ✅ | ❌ | 缺（我们 reasoning 暂不单独渲染） |
-| word-level diff | ✅ | ❌ | 审批预览是整段文本，缺逐词高亮 |
+| thinking 折叠块 | ✅ | ✅ | 已做（`F.1`：显示模型"思考过程"，mimo `reasoning_content`，抄 cc-haha ThinkingBlock）+ `F.2` 深度思考开/关开关 |
+| word-level diff | ✅ | ⚠️ | **文件/文档改写**已做字符级高亮（`diff-block.tsx` 的 `diffChars`）；**审批卡预览**仍是整段文本（`MacApprovalCard` 渲染 `ap.preview` 为纯文本，未接 DiffBlock）|
 | 子 agent 彩色 chip + 可点开 transcript | ✅ | ❌ | |
 | status line（底部状态栏） | ✅ | ⚠️ | 有顶栏"新会话/会话"；缺 git 分支/模型/用量状态行 |
 | 上下文/成本指示器 | ✅ `N% until autocompact` | ⚠️ | 侧栏有本月花费；缺会话级上下文占用条 |
@@ -45,7 +45,7 @@
 | worktree | EnterWorktree/ExitWorktree | ❌ |
 | 交互 | **AskUserQuestion** | ✅ ask_user_question |
 | | Config/Snip/TerminalCapture/ReviewArtifact/SendUserFile | ❌ |
-| 生图(我们扩展) | — | ✅ generate_image/make_poster（BYOK 国内生图） |
+| 生图(我们扩展) | — | ✅ generate_image/make_poster（内置生图 key·BYOK 可覆盖；GPT Image-2 走美国机中转、国内走硅基/通义/即梦） |
 
 ## C · 命令系统（slash · cc-haha 内置 ~120）
 
@@ -132,7 +132,7 @@
 ## 还差什么 · 按优先级（驱动后续 0→6）
 
 1. **阶段1 收尾**：~~Output Styles~~ ✅ 已；更多内置 slash 命令（/model /compact /context /cost /memory…，多为前端 UI 动作）；`.claude/commands/*.md` 自定义命令接入。
-2. **门面补全（阶段0 尾）**：工具进行时/过去式动词 + ⏺/⎿ 字形 + 连续分组；word-level diff；thinking 折叠；todo 实时清单；上下文占用条；status line。
+2. **门面补全（阶段0 尾）**：工具进行时/过去式动词 + ⏺/⎿ 字形 + 连续分组；word-level diff（文件改写已字符级高亮 ✅，审批卡预览仍纯文本待补）；~~thinking 折叠~~ ✅ 已（F.1/F.2）；~~todo 实时清单~~ ✅ 已；上下文占用条；status line。
 3. **阶段2**：AgentDef 子代理专家池（Explore/Plan/verification）+ 异步后台任务 + `<task-notification>` 通知 + Cron 工具 + `/goal`。
 4. **阶段3**：MCP 客户端（官方 Python SDK）。
 5. **阶段4**：`computer` 工具（desktop-control 执行）+ Playwright-Electron 回归脚本。

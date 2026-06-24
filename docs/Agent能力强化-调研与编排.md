@@ -5,9 +5,9 @@
 ## 框架：两个维度
 
 - **维度 A · 内置机制**：盒子出厂自带，非技术老板开箱即用、**不用配任何东西**。
-- **维度 B · 设置**：老板可配/可选（BYOK 模型、插件开关、MCP 管理、装 Skill）。
+- **维度 B · 设置**：老板可配/可选（BYOK 模型 = 可选高级档·默认走全内置 key 零配置、插件开关、MCP 管理、装 Skill）。
 
-判据：免费 + 零配置 + 刚需 → 内置；要 key/要选择/进阶 → 设置。
+判据：免费 + 零配置 + 刚需 → 内置；要选择/进阶 → 设置（注：模型 key 已全内置，此判据中的"要 key"仅适用于 BYOK 高级档 / 第三方付费插件）。
 
 ---
 
@@ -50,10 +50,10 @@
 
 ## 二、生图模型内置与选择机制（已验证）
 
-**链路**：`get_image_config_for_store`(取BYOK配置，DESKTOP_LOCAL没配=空key不回退) → `build_image_provider`→`resolve_image_kind(base_url)` 按域名子串路由(siliconflow/dashscope/openai_compatible) → `poster_service` 第366行 `image_model_cfg or image_model`(**门店配的model优先**)执行。
+**链路**：`get_image_config_for_store`(门店 BYOK 优先、否则返回内置生图 key+base_url；内置未注入才空 key 由下游失败) → `build_image_provider`→`resolve_image_kind(base_url)` 按域名子串路由(siliconflow/dashscope/openai_compatible) → `poster_service` 第366行 `image_model_cfg or image_model`(**门店配的model优先**)执行。
 
-**结论：核心可靠**（老板选了供应商、填对 base_url+model+key，后端正确路由+用对 model 出图；硅基/万相/OpenAI兼容三家适配器路由正确、字段差异已处理）。**但 3 处隐患**：
-1. ⚠️ **工具层硬编码 `image_model="gpt-image-2"`**（tools.py:443,508）—— 目前被门店 BYOK model 覆盖不出事，但是**埋雷**，建议改传 `None` 单点收口。
+**结论：核心可靠**（内置生图 key 默认零配置出图；启用 BYOK 高级档时老板选供应商、填对 base_url+model+key，后端正确路由+用对 model 出图；硅基/万相/OpenAI兼容三家适配器路由正确、字段差异已处理）。**隐患复核**：
+1. ✅ **已修**：工具层不再硬编码 model —— `tools.py` 现传 `image_model=None`，门店 BYOK model 优先、无则 provider 兜底（单点收口，见 tools.py:482/548 注释）。
 2. ❌ **resolve_image_kind 路由盲区**：未知域名静默归 openai_compatible；碰上万相那种原生异步协议的冷门厂商会出图失败。
 3. ❌ **无 model↔供应商一致性校验**：base_url 填硅基、model 填万相的，会发错报错。前端预设卡能约束，但手填易错、后端无二次校验。
 
@@ -70,7 +70,7 @@
 | **memory** | 跨会话记门店设定/老板偏好(知识图谱) | 补强「店脑」长期记忆 |
 | **time** | 时间/时区(排档期/算回访) | 零成本零配置 |
 
-> 这四个不花大模型 key、只给 Agent 加手脚，契合纯 BYOK 铁律。
+> 这四个不花大模型 key、只给 Agent 加手脚，契合零配置内置策略。
 > ⚠️ 我们**已有自己的** web_search(走DuckDuckGo html)/web_fetch/StoreMemory —— 故「内置MCP」更多是**升级/兜底**：现有 web_search 单一来源易限流、web_fetch 纯静态抓不了JS/反爬页，可用 MCP 版增强。
 
 ### 3.2 可选插件（要 key/进阶 → 设置里按需装）
@@ -110,13 +110,13 @@
 ## 四、顺手揪到的真 bug（研究员审计发现）
 
 1. ❌ **plugins.py 路径不一致(真bug)**：`install_plugin` 克隆到 `~/.claude/plugins`，但 `DESKTOP_LOCAL=1` 下 `_plugin_roots()` 只扫 `DESKTOP_LIBRARY_DIR/plugins` → **桌面装的插件发现不了**(plugins.py:18-23 vs 109-110)。
-2. ⚠️ **生图工具硬编码 gpt-image-2**(tools.py:443,508)：脆弱设计，应传 None。
+2. ✅ **已修**：生图工具不再硬编码 gpt-image-2 —— 现传 `image_model=None`（tools.py:482/548 单点收口）。
 
 ---
 
 ## 五、建议优先级（待用户确认）
 
-**P0 修 bug**（小、立刻）：plugins.py 路径统一 + 生图硬编码改 None。
+**P0 修 bug**（小、立刻）：plugins.py 路径统一（生图硬编码改 None ✅ 已完成）。
 **P1 内置核心能力**（大众刚需、零配置）：① PDF/Word/PPT 读取工具(老板日常文件) ② 内置免费搜索/抓取增强(DuckDuckGo+fetch 兜底现有) ③ 图像处理工具暴露给 Agent。
 **P2 内置 Skill**：先落 Top 5（拉满空台/救差评/约客一批/今天发什么/写日报）。
 **P3 设置界面化**：MCP/插件/Skill 的 UI 管理写端点(非技术老板才用得上扩展) + 生图 model↔供应商校验。

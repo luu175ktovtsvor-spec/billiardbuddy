@@ -7,7 +7,7 @@
 
 **一个装在用户自己电脑上的桌面软件**（不是网页、不连我们的云），本质是**通用本机 AI Agent**：
 - **全本地**：Electron 外壳 + 本地 FastAPI 后端 + 本地 SQLite 数据库 + 加密知识库（`prompts.enc`）。数据全在用户自己机器上。
-- **纯 BYOK**：盒子**不内置任何平台大模型 key**。用户自带大模型 key（文字/生图各自配），花的是自己的钱、自担成本与并发。代码层强制：桌面没配 key 就空 key、绝不偷用平台 key。
+- **全内置 key**：盒子**内置 owner 自己的全部模型 key**，**用户零配置、不填 key**，开箱即用。⚠️ 内置 key 须在各平台设消费上限防被扒盗刷（详见 `docs/待改清单-真机验收与打包-2026-06-23.md` 专题D）。
 - **真 Agent**：用户说一句话 → AI 大脑（ReAct 循环）自己想 → 调工具实打实干（读写/改本机文件、跑命令、上网查抓、生图、列清单、派子代理）→ 花钱或对外的动作走**审批闸**（弹卡片，人点确认才执行）。
 - **台球运营=可挂载领域包**：`@「台球行业知识库」`（`billiards_mode`）时才追加台球人设 + 门店画像 + 店脑 + 台球工具集（写文案/海报/诊断/约客/改报表）；默认不挂就是通用电脑助手。
 - **macOS 原生质感** UI（无边框窗口 + 毛玻璃侧栏 + 红绿灯 + 双栏 + 右侧预览）。
@@ -18,7 +18,7 @@
 ┌─────────────────────────────────────────────────────────────┐
 │  Electron 外壳 (desktop/)                                     │
 │  主进程 main.js ──拉起──> 本地 FastAPI (子进程)               │
-│       │  注入 DATABASE_URL/DESKTOP_LOCAL=1/BYOK key/UPLOAD_DIR │
+│       │  注入 DATABASE_URL/DESKTOP_LOCAL=1/内置key/UPLOAD_DIR │
 │       │  自动更新 updater.js · 一键发布 publish.js/video.js    │
 │  渲染进程 = 桌面前端 UI (web/ 的 Next.js, 加载本地 server.js)  │
 └───────────────┬─────────────────────────────────────────────┘
@@ -37,7 +37,7 @@
 │  知识库 prompts/(57知识+72场景, 桌面=加密 prompts.enc)        │
 │  本地语义模型 bge-zh (RAG 按意思找料)                         │
 │  SQLite (init_local.py 建库/平滑补列)                         │
-│  大模型: 文字BYOK / 生图BYOK(国内硅基/通义/即梦…) ← 老板的key │
+│  大模型: 文字/生图全内置 key(owner 提供·用户零配置)·BYOK可选档│
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -85,13 +85,13 @@
 | `../hooks/use-agent-chat.ts` | 对话状态机（send/审批/提问/会话加载，SSE 处理）|
 | `../lib/agent-tools.ts` | 工具元信息（中文标签/成品判定/审批文案）|
 
-### 5. 国内生图 BYOK 口子 — `server/services/ai/providers/`
+### 5. 国内生图供应商口子 — `server/services/ai/providers/`（内置 key 默认，BYOK 可覆盖）
 | 文件 | 干什么 |
 |------|------|
 | `image_catalog.py` | 生图供应商目录 + `resolve_image_kind`(按 base_url 路由) + 下载 |
 | `siliconflow_image.py` / `dashscope_image.py` | 硅基流动(OpenAI式) / 通义万相(native异步) 适配器 |
 | `openai_image.py` | gpt-image-2 + 兼容端点（用配置 model、不写死）|
-| `../factory.py` | `get_image_config_for_store`：桌面纯 BYOK 守卫（没配即空 key、绝不回退平台）|
+| `../factory.py` | `get_image_config_for_store`：桌面 key 守卫——门店 BYOK 优先，否则返回内置 key + 各自 base_url（全内置已落地，见专题D；BYOK 可选）|
 
 ## 四、一次对话的数据流
 
@@ -99,21 +99,21 @@
 老板在输入框说"给我做张周末双人优惠海报"
   → 桌面前端 use-agent-chat.send() → POST /api/v1/agent/chat (SSE)
   → loop.run_agent_loop_stream(): 注入门店画像+店脑记忆+红线规则
-  → 模型(老板BYOK)想 → 决定调 make_poster + 扩写成丰富中文画面描述
+  → 模型(内置 key·BYOK 时用自带)想 → 决定调 make_poster + 扩写成丰富中文画面描述
   → make_poster 标 requires_approval → 不直接执行, 吐 approval_request
   → 前端弹审批卡, 老板点"确认" → POST /agent/execute (签名校验 args)
-  → 真调生图(老板生图BYOK key) → 出图存 UPLOAD_DIR → SSE 推回 → 右侧预览展示
+  → 真调生图(内置生图 key·BYOK 时用自带) → 出图存 UPLOAD_DIR → SSE 推回 → 右侧预览展示
 ```
 
 ## 五、桌面专属 vs 与 web 共享（重要）
 
-- **桌面专属（上面 1/3/4 大部分 + 5 的 BYOK 守卫 + 2 的 local_tools/hooks/microcompact）**：这些是把 web SaaS"变成"本地桌面 Agent 的部分。
+- **桌面专属（上面 1/3/4 大部分 + 5 的全内置 key 守卫 + 2 的 local_tools/hooks/microcompact）**：这些是把 web SaaS"变成"本地桌面 Agent 的部分。
 - **与 web 共享（不在本文清单、但桌面也用）**：`server/prompts/`（57+72 知识库，桌面是加密版）、`server/services/`（content/poster/memory/dashboard 等服务）、`web/src/` 的大部分页面与 `lib/api.ts`、`models/`、`schemas/`。
 - 所以"桌面产品"≠ 一个干净独立目录，它是**在共享 SaaS 之上加了一层本地化 + Agent 化**。这也是为什么单独开仓库 = 复制整套、会和原仓库共享码漂移（取舍见下）。
 
-## 六、纯 BYOK 边界 + 四层防御
+## 六、全内置 key 边界 + 四层防御
 
-- **纯 BYOK**：`factory.get_image_config_for_store` 在 `DESKTOP_LOCAL=1` 没配 key 时返回空 key、**绝不回退平台**；文字 provider 无 BYOK 落到空 key → 友好 503。全仓无硬编码平台 key。
+- **当前代码（全内置已落地·见专题D）**：`factory.get_image_config_for_store` 在 `DESKTOP_LOCAL=1` 下，门店 BYOK 优先、否则返回内置 key + 各自 base_url；内置 key 未注入时才友好报错（不静默落到无关平台 key）。BYOK = 可选高级档。
 - **四层防御**：① 权限模式（逐项确认/自动接受修改/跳过确认）；② 工具 allow-ask-deny + 审批闸；③ 本地文件沙箱（内容库+选定文件、改前备份）；④ 审批签名绑定 args。
 
 ## 七、怎么跑

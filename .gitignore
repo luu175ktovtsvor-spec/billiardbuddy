@@ -67,3 +67,10 @@ server/billiards_local.db
 # Playwright 本地截图/快照产物(验证用,不入库)
 .playwright-mcp/
 desktop-*.png
+
+# 打包产物(PyInstaller后端+构建前端+node_modules)——绝不进仓库
+desktop/resources/
+# 根目录参考截图杂物
+codex-*.png
+# 真机验收/打包待改清单:含美国机IP/SSH/中转端点等运营细节,本地工作文档不入 git(其自身亦明示"绝不写进git")
+docs/待改清单-真机验收与打包-2026-06-23.md
