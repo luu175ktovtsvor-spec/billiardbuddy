@@ -52,6 +52,10 @@ export function SettingsDrawer({
   const [loading, setLoading] = useState(true);
   const [storeId, setStoreId] = useState<string | null>(null);
   const [storeName, setStoreName] = useState("");
+  // P1-6 门店素材：logo / 收款码（生图叠图、海报留资用）
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const [qrcodeUrl, setQrcodeUrl] = useState<string | null>(null);
+  const [uploadingKind, setUploadingKind] = useState<"logo" | "qrcode" | null>(null);
   // 文字模型
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -96,6 +100,8 @@ export function SettingsDrawer({
       if (s.status === "fulfilled" && s.value) {
         setStoreId(s.value.id);
         setStoreName(s.value.name || "");
+        setLogoUrl(s.value.logo_url || null);
+        setQrcodeUrl(s.value.qrcode_url || null);
       } else {
         setStoreId(null);
         setStoreName("");
@@ -120,6 +126,19 @@ export function SettingsDrawer({
   }, [open]);
 
   if (!open) return null;
+
+  async function uploadAsset(kind: "logo" | "qrcode", file: File) {
+    setUploadingKind(kind); setMsg(null);
+    try {
+      const r = kind === "logo" ? await api.uploadLogo(file) : await api.uploadQrcode(file);
+      if (kind === "logo") setLogoUrl(r.url); else setQrcodeUrl(r.url);
+      setMsg({ kind: "ok", text: kind === "logo" ? "门店 Logo 已上传" : "收款码已上传" });
+    } catch (e) {
+      setMsg({ kind: "err", text: getErrorMessage(e) });
+    } finally {
+      setUploadingKind(null);
+    }
+  }
 
   async function saveStore() {
     const name = storeName.trim();
@@ -247,6 +266,29 @@ export function SettingsDrawer({
               <label className={LABEL}>门店名称</label>
               <input className={INPUT} value={storeName} onChange={(e) => setStoreName(e.target.value)} placeholder="例如：楠米台球·万象城店" />
               <p className="mt-1.5 text-[11.5px] leading-snug text-[#a1a1a6] dark:text-[#6e7077]">门店名会用进管家给你写的文案里。填得越准，越像你自己的店。</p>
+
+              {/* P1-6 门店素材：logo / 收款码（做海报时叠到图上） */}
+              <p className="mb-2 mt-4 flex items-center gap-1.5 text-[12.5px] font-medium text-[#3a3a3c] dark:text-[#c8cace]">
+                <ImageIcon className="h-3.5 w-3.5 text-[#86868b] dark:text-[#6e7077]" /> 门店素材（做海报叠图用·选填）
+              </p>
+              <div className="flex gap-3">
+                {([["logo", "门店 Logo", logoUrl], ["qrcode", "收款码", qrcodeUrl]] as const).map(([kind, label, url]) => (
+                  <label key={kind} title={`点击上传${label}`}
+                    className="group flex h-24 w-24 cursor-pointer flex-col items-center justify-center gap-1 overflow-hidden rounded-lg border border-dashed border-black/[0.15] bg-black/[0.015] text-[11px] text-[#86868b] transition hover:border-[#10a37f]/50 hover:bg-[#10a37f]/[0.04] dark:border-white/[0.12] dark:bg-white/[0.02] dark:text-[#6e7077]">
+                    <input type="file" accept="image/*" className="hidden"
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadAsset(kind, f); e.currentTarget.value = ""; }} />
+                    {uploadingKind === kind ? (
+                      <Loader2 className="h-5 w-5 animate-spin text-[#10a37f]" />
+                    ) : url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={api.resolveUrl(url)} alt={label} className="h-full w-full object-contain p-1" />
+                    ) : (
+                      <><Plus className="h-4 w-4" /><span>{label}</span></>
+                    )}
+                  </label>
+                ))}
+              </div>
+              <p className="mt-1.5 text-[11.5px] leading-snug text-[#a1a1a6] dark:text-[#6e7077]">传了 Logo / 收款码，做海报时管家能帮你叠到图上。</p>
             </section>
 
             {/* D.5：全内置·开箱即用 —— 让非技术老板一眼知道默认不用配 key */}
