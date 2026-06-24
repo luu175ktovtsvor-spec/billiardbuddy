@@ -179,7 +179,7 @@ def test_mcp_status_cached_within_ttl(monkeypatch):
     mc.invalidate_mcp_cache()
     calls = {"n": 0}
 
-    def fake_cfg():
+    def fake_cfg(include_disabled=False):
         calls["n"] += 1
         return {}  # 空配置：不 spawn 任何 server，但仍走探测+缓存路径
 

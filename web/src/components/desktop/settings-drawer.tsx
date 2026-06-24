@@ -360,11 +360,17 @@ export function SettingsDrawer({
                       const ok = x.status === "connected";
                       return (
                         <div key={x.name} className="flex items-center gap-2 rounded-md border border-black/[0.06] bg-black/[0.015] px-2.5 py-1.5 dark:border-white/[0.06] dark:bg-white/[0.02]">
-                          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${ok ? "bg-[#10a37f]" : "bg-[#ff9500]"}`} />
+                          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${x.disabled ? "bg-[#b0b0b5]" : ok ? "bg-[#10a37f]" : "bg-[#ff9500]"}`} />
                           <span className="min-w-0 flex-1 truncate text-[12px] text-[#3a3a3c] dark:text-[#c8cace]">
                             {x.name}
-                            <span className="ml-1.5 text-[11px] text-[#a1a1a6]">{ok ? `已连上 · ${x.tools ?? 0} 个工具` : "没连上"}</span>
+                            <span className="ml-1.5 text-[11px] text-[#a1a1a6]">{x.disabled ? "已停用" : ok ? `已连上 · ${x.tools ?? 0} 个工具` : "没连上"}</span>
                           </span>
+                          {/* P1：启用/停用开关（之前只有删除）。停用=不删配置、只是这次不挂它的工具。 */}
+                          <button type="button" title={x.disabled ? "已停用 · 点击启用" : "已启用 · 点击停用"} disabled={extBusy === `mcp-tog-${x.name}`}
+                            onClick={() => runExt(`mcp-tog-${x.name}`, () => api.toggleMcp(x.name, !x.disabled))}
+                            className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] transition disabled:opacity-50 ${x.disabled ? "text-[#a1a1a6] hover:bg-black/[0.05] dark:hover:bg-white/[0.06]" : "bg-[#10a37f]/10 text-[#10a37f] hover:bg-[#10a37f]/15"}`}>
+                            {extBusy === `mcp-tog-${x.name}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : (x.disabled ? "已停用" : "已启用")}
+                          </button>
                           <button type="button" title="删除" disabled={extBusy === `mcp-del-${x.name}`}
                             onClick={() => runExt(`mcp-del-${x.name}`, () => api.removeMcp(x.name))}
                             className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[#a1a1a6] transition hover:bg-[#ff3b30]/10 hover:text-[#ff3b30] disabled:opacity-50">
