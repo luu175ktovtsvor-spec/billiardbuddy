@@ -29,11 +29,11 @@ def test_billiards_mode_includes_profile_and_brain():
     assert "李伟" in out
 
 
-def test_default_general_omits_profile_and_brain():
-    # 默认通用：传了画像/店脑也不注入（没 @ 台球）
+def test_default_general_omits_profile_keeps_brain():
+    # M1：默认通用(没 @ 台球)——门店画像(台球档案)不注入；店脑记忆(长期记忆)注入，让通用助手越用越懂你。
     out = compose_agent_system_prompt("门店定位：社区店", "请记住：老板叫李伟")
-    assert "社区店" not in out
-    assert "李伟" not in out
+    assert "社区店" not in out          # 门店画像 → 通用不注入（守通用定位）
+    assert "李伟" in out                # 店脑记忆 → 通用也注入（M1 治"通用零长期记忆"）
     assert _BILLIARDS_PERSONA not in out
 
 
