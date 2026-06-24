@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 from datetime import timedelta
 from pathlib import Path
 
@@ -163,6 +164,17 @@ def _make_mcp_tool(server_name: str, cfg: dict, t: dict) -> Tool:
 
 
 _cached_tools: list[Tool] | None = None
+# MCP 状态缓存：每次冷拉要 spawn npx/uvx 跟每个 server 握手（5 个 server ≈ 9s）。设置页"外接工具"反复打开
+# 不该每次都重握手 → 短 TTL 缓存（默认 30s）。配置变更（add/remove）即失效，手动 refresh 也能强刷。
+_STATUS_TTL = 30.0
+_status_cache: tuple[float, list[dict]] | None = None
+
+
+def invalidate_mcp_cache() -> None:
+    """配置变更后清空工具 + 状态缓存，下次取即重握手（add/remove server 后调）。"""
+    global _cached_tools, _status_cache
+    _cached_tools = None
+    _status_cache = None
 
 
 def load_mcp_tools(force: bool = False) -> list[Tool]:
@@ -186,8 +198,12 @@ def load_mcp_tools(force: bool = False) -> list[Tool]:
     return out
 
 
-def mcp_status() -> list[dict]:
-    """各 MCP server 的连接状态 + 工具数（供前端 /mcp 展示）。"""
+def mcp_status(force: bool = False) -> list[dict]:
+    """各 MCP server 的连接状态 + 工具数（供前端 /mcp 展示）。短 TTL 缓存：避免设置页反复打开每次都重握手。
+    force=True 强制重探（用户手动刷新）；配置变更后由 invalidate_mcp_cache() 失效。"""
+    global _status_cache
+    if not force and _status_cache is not None and (time.monotonic() - _status_cache[0]) < _STATUS_TTL:
+        return _status_cache[1]
     items = []
     for name, cfg in _load_mcp_config().items():
         entry = {"name": name, "command": cfg.get("command", ""), "status": "failed", "tools": 0}
@@ -202,4 +218,5 @@ def mcp_status() -> list[dict]:
         except Exception as e:  # noqa: BLE001
             entry["status_detail"] = str(e)[:200]
         items.append(entry)
+    _status_cache = (time.monotonic(), items)
     return items

@@ -18,14 +18,51 @@ OPENAI_IMAGE_MODELS: dict[str, dict[str, str]] = {
     },
 }
 
-# gpt-image 系列（gpt-image-1/2）只接受这几种尺寸。poster_service 按比例算出的 2048x1152(16:9)、
-# 1152x1536(3:4) 等会被 OpenAI 400 拒（Invalid size）→ 整条生图链失败。按宽高比吸附到最接近的受支持尺寸。
-_GPT_IMAGE_SIZES = {"1024x1024", "1024x1536", "1536x1024", "auto"}
+# gpt-image-1 只接受这三种尺寸。poster_service 按比例算出的 2048x1152(16:9)、1152x1536(3:4) 等会被 400 拒。
+_GPT_IMAGE1_SIZES = {"1024x1024", "1024x1536", "1536x1024", "auto"}
+# GPT Image-2 约束宽很多（官方）：宽高均 16 整除、比例 1:3~3:1、总像素 655360~8294400、最大边 3840（D.4-附）。
+_GPT2_MIN_PIXELS = 655360
+_GPT2_MAX_PIXELS = 8294400
+_GPT2_MAX_EDGE = 3840
 
 
-def _snap_gpt_image_size(size: str) -> str:
-    """把任意尺寸吸附到 gpt-image 支持的尺寸：方→1024x1024，横→1536x1024，竖→1024x1536。"""
-    if size in _GPT_IMAGE_SIZES:
+def _snap16(v: int) -> int:
+    """吸附到最接近的 16 倍数，至少 16。"""
+    return max(16, ((v + 8) // 16) * 16)
+
+
+def _snap_gpt_image2_size(size: str) -> str:
+    """GPT Image-2 尺寸吸附：尽量保住请求比例（不再一律压成 1024 三档），只把它钳进官方约束
+    （比例 1:3~3:1、总像素区间、最大边 3840、宽高 16 整除）。非法回退 1024x1024。"""
+    if size == "auto":
+        return "auto"
+    try:
+        w, h = (int(x) for x in size.lower().split("x"))
+    except Exception:
+        return "1024x1024"
+    if w <= 0 or h <= 0:
+        return "1024x1024"
+    import math
+    r = w / h                                   # 比例钳到 [1/3, 3]
+    if r > 3.0:
+        w = int(h * 3)
+    elif r < 1 / 3:
+        h = int(w * 3)
+    px = w * h                                  # 总像素等比缩放进 [min, max]
+    if px > _GPT2_MAX_PIXELS:
+        s = math.sqrt(_GPT2_MAX_PIXELS / px); w, h = int(w * s), int(h * s)
+    elif px < _GPT2_MIN_PIXELS:
+        s = math.sqrt(_GPT2_MIN_PIXELS / px); w, h = int(w * s), int(h * s)
+    if w > _GPT2_MAX_EDGE:                       # 最大边 3840
+        h = int(h * _GPT2_MAX_EDGE / w); w = _GPT2_MAX_EDGE
+    if h > _GPT2_MAX_EDGE:
+        w = int(w * _GPT2_MAX_EDGE / h); h = _GPT2_MAX_EDGE
+    return f"{_snap16(w)}x{_snap16(h)}"
+
+
+def _snap_gpt_image1_size(size: str) -> str:
+    """gpt-image-1：只有方/横/竖三档，把任意尺寸吸附过去。"""
+    if size in _GPT_IMAGE1_SIZES:
         return size
     try:
         w, h = (int(x) for x in size.lower().split("x"))
@@ -34,6 +71,11 @@ def _snap_gpt_image_size(size: str) -> str:
     if w == h:
         return "1024x1024"
     return "1536x1024" if w > h else "1024x1536"
+
+
+def _snap_gpt_image_size(size: str, model: str = "gpt-image-2") -> str:
+    """按模型吸附尺寸：gpt-image-1 走三档；gpt-image-2（及未指定）走宽约束、尽量保比例。"""
+    return _snap_gpt_image1_size(size) if (model or "").startswith("gpt-image-1") else _snap_gpt_image2_size(size)
 
 
 class OpenAIImageProvider(ImageProvider):
@@ -79,7 +121,7 @@ class OpenAIImageProvider(ImageProvider):
         openai_size = size.replace("*", "x")
         use_model = model or "gpt-image-2"
         if use_model.startswith("gpt-image"):
-            openai_size = _snap_gpt_image_size(openai_size)  # 防 16:9/3:4 等尺寸被 gpt-image 400 拒
+            openai_size = _snap_gpt_image_size(openai_size, use_model)  # 按模型吸附（gpt-image-2 更宽、保比例）
         extra = {"quality": quality} if use_model.startswith("gpt-image") else {}
 
         if image:

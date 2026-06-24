@@ -14,6 +14,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -308,6 +309,23 @@ def _check_command_safety(command: str) -> str | None:
     return None
 
 
+def _kill_proc_group(proc, posix: bool) -> None:
+    """超时掐断：POSIX 下整组 SIGKILL（连子进程 fork 出的孙子进程一起杀，不留孤儿占端口/吃 CPU）；
+    取不到组（已退出/无权限）或非 POSIX → 退回只杀直接子进程。绝不抛。"""
+    if proc is None or getattr(proc, "pid", None) is None:
+        return
+    try:
+        if posix:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            return
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+
+
 async def run_command(args: dict, ctx) -> str:
     """在老板本机跑一条命令（Claude Code 的 Bash 等价物·最危险）。
     硬门控：必须开「完全访问模式」(full_disk_access)；禁 shell 操作符；危险黑名单；shell=False；超时；输出截断。
@@ -354,9 +372,13 @@ async def run_command(args: dict, ctx) -> str:
                 except Exception:
                     pass
 
+    _posix = (os.name == "posix")
     try:
         proc = await asyncio.create_subprocess_exec(
             *parts, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd,
+            # POSIX：子进程自成会话/进程组(setsid) → 超时能整组掐断，连它 fork 的孙子进程一起杀，不留孤儿。
+            # Windows 忽略此参数（无害），仍走下方 proc.kill() 兜底。
+            start_new_session=_posix,
         )
     except FileNotFoundError:
         return f"找不到这个命令（没装或不在 PATH 里）：{parts[0]}"
@@ -373,9 +395,10 @@ async def run_command(args: dict, ctx) -> str:
             timeout=timeout_sec,
         )
     except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
+        _kill_proc_group(proc, _posix)
+        try:  # 回收已杀进程，别留僵尸
+            await asyncio.wait_for(proc.wait(), timeout=3)
+        except (asyncio.TimeoutError, ProcessLookupError, Exception):
             pass
         return f"命令跑超时了（超过 {int(timeout_sec)} 秒自动掐断）：{command}"
 

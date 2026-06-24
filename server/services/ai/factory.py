@@ -49,12 +49,16 @@ class ProviderFactory:
             logger.warning("BYOK key 解密失败 store_id=%s", getattr(store, "id", None))
         elif store is not None and getattr(store, "byok_enabled", False):
             logger.warning("门店启用 BYOK 但未配置 key store_id=%s", getattr(store, "id", None))
-        # 桌面纯 BYOK：没有可用的门店 key 就友好报错，绝不落到平台 key；云端 web 才回退平台默认。
+        # 桌面盒子：门店 BYOK（上面已处理）优先；否则用【内置 bundle key】（全内置·用户零配置，owner 2026-06-24
+        # 拍板，推翻"纯 BYOK 绝不内置平台 key"铁律）。内置 key 由 backend.js 经 .env.bundled.local 注入进程 env。
+        # 内置 key 未配（测试/未注入）→ 仍友好报错、绝不静默落到无关平台 key（保留旧守卫作不变量）。
         import os
         if os.environ.get("DESKTOP_LOCAL") == "1":
+            if settings.deepseek_api_key:
+                return cls.get_text_provider()  # 内置文字/看图大脑（默认 MiMo v2.5）
             from core.exceptions import AIProviderError
             raise AIProviderError(
-                message="还没配置你自己的文字模型 Key，请在「模型设置」里填写后再用",
+                message="还没配置文字模型 Key（内置 key 未注入、也未填自带 key），请检查安装或在「模型设置」里填写",
                 status_code=503,
             )
         return cls.get_text_provider()
@@ -151,8 +155,13 @@ class ProviderFactory:
                     getattr(store, "byok_image_model", None) or None,
                 )
             logger.warning("生图 BYOK key 解密失败 store_id=%s", getattr(store, "id", None))
-        # 桌面盒子：没配 BYOK 就给空 key（纯 BYOK，绝不动平台 key）；云端 web：回退平台默认。
+        # 桌面盒子：门店 BYOK（上面）优先；否则用【内置 bundle 生图 key】（零配置·全内置）。
+        # 内置生图 key/base_url 经 .env.bundled.local 注入到 openai_api_key/openai_base_url（默认走 Seedream/火山方舟，
+        # build_image_provider 按 base_url 路由）；GPT Image-2 海外走美国机 relay（base_url 指向 relay，见专题 D.3）。
+        # 内置 key 未配（测试/未注入）→ 维持空 key（不动无关平台 key，逼填 BYOK），保留旧守卫作不变量。
         if os.environ.get("DESKTOP_LOCAL") == "1":
+            if settings.openai_api_key:
+                return (settings.openai_api_key, settings.openai_base_url, settings.image_model_name or None)
             return ("", settings.openai_base_url, None)
         return (settings.openai_api_key, settings.openai_base_url, None)
 

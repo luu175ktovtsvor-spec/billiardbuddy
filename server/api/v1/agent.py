@@ -43,7 +43,7 @@ from services.agent.multimodal import is_media, needs_video_upload, resolve_medi
 from services.agent.proactive import generate_daily_drafts
 from services.ai.failover import build_resilient_text_provider  # BYOK 失败自动切备用配置档
 from services.ai.prompt_engine import get_prompt_engine  # L0 核心层(core.*)注入台球 system prompt
-from services.agent.registry import default_registry, general_registry, billiards_registry
+from services.agent.registry import default_registry, general_registry, billiards_registry, BILLIARDS_TOOL_NAMES
 from services.memory_service import format_memories_for_prompt, load_store_memory, remember
 from services.quota_service import check_quota
 from services.store_profile_service import render_operation_profile_context
@@ -193,15 +193,37 @@ def _resolve_permission(mode: str | None, full_disk: bool | None) -> tuple[str, 
     return m, fd
 
 
+# 已知模型的上下文窗口（token）：给 autocompact 一道"模型自适应"的默认安全网。
+# 只登记我们确知窗口的模型（内置 mimo-v2.5 = 1M·小米官方）——给它一道防溢出兜底，长任务顶满前自动语义瘦身，
+# 不再"默认全关、几十轮长任务裸奔顶满窗口被 provider 直接报错"（G.1 P0）。窗口 1M 下触发点≈700k token，
+# 正常对话永远碰不到 → 不会过早压缩、不伤质量/缓存，只在真·失控长任务时兜底。
+# 表外/未知 BYOK 模型保持 None＝沿用旧的"默认不启用、需 DESKTOP_MODEL_CTX_WINDOW 显式开"
+# （窗口未知，乱设一个常数反而误触发/迟触发）。子串匹配 → mimo-v2.5 / mimo-v2.5-pro 都命中。
+_KNOWN_MODEL_CTX_WINDOWS = {
+    "mimo-v2.5": 1_000_000,
+}
+
+
 def _model_ctx_window() -> int | None:
-    """SH-6 autocompact 触发用的模型上下文窗口（token）。默认 None＝不启用（不同 BYOK 模型窗口大小不一，
-    乱设会误触发/迟触发，故不默认开）。要在超长对话时启用自动瘦身，配 DESKTOP_MODEL_CTX_WINDOW＝如 64000。
+    """SH-6/G.1 autocompact 触发用的模型上下文窗口（token）。
+    优先级：① 环境变量 DESKTOP_MODEL_CTX_WINDOW 显式配置（最高，覆盖一切）；② 当前编排模型在已知窗口表里
+    → 用其窗口（给内置 mimo 这类已知模型防溢出安全网）；③ 表外/未知 BYOK 模型 → None＝默认不启用。
     非法值按 None。"""
     try:
         v = int(os.environ.get("DESKTOP_MODEL_CTX_WINDOW", "") or 0)
-        return v if v > 0 else None
+        if v > 0:
+            return v
     except (TypeError, ValueError):
-        return None
+        pass
+    try:
+        from config import settings
+        name = (settings.effective_orchestration_model or "").strip().lower()
+    except Exception:
+        name = ""
+    for key, win in _KNOWN_MODEL_CTX_WINDOWS.items():
+        if key in name:
+            return win
+    return None
 
 
 def _build_agent_registry(billiards_mode: bool):
@@ -252,8 +274,9 @@ def compose_agent_system_prompt(profile_text: str, brain_text: str, full_disk: b
         if full_disk:
             parts.append(_DESKTOP_FULL_ACCESS_HINT)
         # 渐进式披露：已安装技能(Skill)的"名字+描述"清单(正文调用时才展开)。session 稳定，放动态日期之前(守前缀缓存)。
+        # G.2：通用模式不披露台球领域技能（擦边/上钟等仅 @台球 时才进系统提示），守"通用 Agent 为默认"定位。
         try:
-            _sk_section = _agent_skills.render_skills_for_prompt()
+            _sk_section = _agent_skills.render_skills_for_prompt(billiards_mode=billiards_mode)
             if _sk_section:
                 parts.append(_sk_section)
         except Exception:
@@ -342,8 +365,27 @@ def _cap_history(history: list[dict] | None) -> list[dict] | None:
         return history
     out: list[dict] = []
     for m in history[-_HIST_MAX_MSGS:]:
-        c = m.get("content") or ""
-        out.append({**m, "content": c[:_HIST_MAX_CHARS]} if len(c) > _HIST_MAX_CHARS else m)
+        c = m.get("content")
+        if isinstance(c, str):
+            out.append({**m, "content": c[:_HIST_MAX_CHARS]} if len(c) > _HIST_MAX_CHARS else m)
+        elif isinstance(c, list):
+            # 多模态历史（list of parts）：逐 text 段按预算截断、图片段原样保留。
+            # （旧版 len(list)/list[:N] 把"段数"当字符数 → 对带图历史截断完全失效，G.1 类型 bug。）
+            budget = _HIST_MAX_CHARS
+            capped: list = []
+            for part in c:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    t = str(part.get("text") or "")
+                    if budget <= 0:
+                        continue
+                    t = t[:budget]
+                    budget -= len(t)
+                    capped.append({**part, "text": t})
+                else:
+                    capped.append(part)
+            out.append({**m, "content": capped})
+        else:
+            out.append(m)
     return out
 
 
@@ -461,14 +503,17 @@ class AgentChatRequest(BaseModel):
 
 
 @router.get("/skills")
-async def agent_list_skills(user: User = Depends(get_current_user)):
-    """列出已安装技能(Skill)，供前端 `/` 命令面板展示。技能=文件系统全局、与门店无关。"""
+async def agent_list_skills(billiards: bool = False, user: User = Depends(get_current_user)):
+    """列出已安装技能(Skill)，供前端 `/` 命令面板展示。技能=文件系统全局、与门店无关。
+    G.2：默认（billiards=false）只列通用技能，台球领域技能（擦边/上钟/团购等）仅在前端挂了
+    台球知识库、传 billiards=true 时才列出——别让普通用户的命令面板看到台球擦边技能。"""
+    skills = _agent_skills.filter_skills_by_mode(_agent_skills.load_skills(), billiards)
     items = [
         {
             "name": s.name, "description": s.description, "source": s.source,
             "argument_hint": s.argument_hint, "user_invocable": s.user_invocable,
         }
-        for s in _agent_skills.load_skills()
+        for s in skills
     ]
     return {"skills": items}
 
@@ -485,14 +530,16 @@ async def agent_list_output_styles(user: User = Depends(get_current_user)):
 
 
 @router.get("/mcp")
-async def agent_list_mcp(user: User = Depends(get_current_user)):
-    """列出已配置 MCP server 的连接状态 + 工具数；顺带刷新工具缓存（新配置下次对话即生效）。"""
+async def agent_list_mcp(refresh: bool = False, user: User = Depends(get_current_user)):
+    """列出已配置 MCP server 的连接状态 + 工具数。P2：默认走短 TTL 缓存（设置页反复打开不再每次重握手 5 个
+    server ≈ 9s）；refresh=true 强制重探。配置变更（add/remove）已自动失效缓存，故无需每次都强刷工具缓存。"""
     from services.agent import mcp_client as _mc
-    status = _mc.mcp_status()
-    try:
-        _mc.load_mcp_tools(force=True)
-    except Exception:
-        pass
+    status = _mc.mcp_status(force=refresh)
+    if refresh:
+        try:
+            _mc.load_mcp_tools(force=True)
+        except Exception:
+            pass
     return {"servers": status}
 
 
@@ -525,6 +572,7 @@ async def agent_mcp_add(body: McpAddRequest, user: User = Depends(get_current_us
     if ok:
         try:
             from services.agent import mcp_client as _mc
+            _mc.invalidate_mcp_cache()  # 清工具+状态缓存，下次取即重握手（新 server 生效）
             _mc.load_mcp_tools(force=True)
         except Exception:
             pass
@@ -544,6 +592,7 @@ async def agent_mcp_remove(body: McpNameRequest, user: User = Depends(get_curren
     if ok:
         try:
             from services.agent import mcp_client as _mc
+            _mc.invalidate_mcp_cache()  # 清工具+状态缓存，下次取即重握手（删掉的 server 不再出现）
             _mc.load_mcp_tools(force=True)
         except Exception:
             pass
@@ -883,14 +932,18 @@ async def agent_execute(
             tool = None
     if tool is None or not tool.requires_approval:
         raise AIServiceError("该操作不可执行，或无需经此确认")
+    # P2 收紧：execute 端走与对话端【同一套 billiards 过滤】——没挂台球知识库就不让执行台球专用工具，
+    # 别让执行端比对话端权限更宽（绕过 _build_agent_registry 的 billiards 门控）。
+    billiards_mode = bool(body.knowledge_packs and "billiards" in body.knowledge_packs)
+    if (not billiards_mode) and body.tool in BILLIARDS_TOOL_NAMES:
+        raise AIServiceError("该操作需要先挂载台球行业知识库才能执行")
 
     args = body.args or {}
-    # 审批参数绑定（P3.2）：带了 token 就必须匹配本组 args（防"改了参数再确认"）；
-    # 没带 token 放行（向后兼容旧客户端）——前端现都会回传 token，实际即绑定。
-    if body.token is not None:
-        from services.agent.approval import verify_approval
-        if not verify_approval(body.tool, args, body.token):
-            raise AIServiceError("确认信息已变化，请重新发起这次操作（请勿手动改动待确认的内容）")
+    # 审批参数绑定（P3.2）：execute 端【强制】要带签名 token 且匹配本组 args（防"改了参数再确认"/无 token 裸调）。
+    # P2 收紧：去掉"没带 token 放行"的向后兼容缺口——前端现都会回传 token，强制即彻底绑定、堵住直接 POST 绕过审批。
+    from services.agent.approval import verify_approval
+    if not verify_approval(body.tool, args, body.token):
+        raise AIServiceError("确认信息缺失或已变化，请重新发起这次操作（请勿手动改动待确认的内容）")
     injection = check_input_injection(
         " ".join(str(v) for v in args.values() if isinstance(v, (str, int, float)))
     )
