@@ -64,6 +64,12 @@ export const DELIVERABLE_TOOLS = new Set([
   "make_poster", "generate_image",
 ]);
 
+// 内部/指令注入类工具（P1-8 + 专题B.1）：结果是【给 AI 看的操作手册/检索原文】，对老板零价值还吓人
+// （满屏 ## 守则 / prompt_key=… 的内部指令稿）。这些工具只显示"做了一步"的标签，绝不把原文 dump 给用户、也不进右侧预览。
+export const INTERNAL_TOOLS = new Set([
+  "skill", "find_scenario", "recall_my_content", "look_up_knowledge", "read_knowledge",
+]);
+
 /** 待确认动作的标题（对外发出 / 在本机执行的动作，经审批闸先确认）。前置「需要确认」徽标已表态，标题只点动作。 */
 export function approvalLabel(tool: string, args?: Record<string, unknown>): string {
   if (tool === "edit_excel") return "修改这份报表";

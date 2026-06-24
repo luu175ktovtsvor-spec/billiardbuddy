@@ -12,7 +12,7 @@ import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag,
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
 import { CopyButton } from "@/components/generators/copy-button";
-import { toolMeta, DELIVERABLE_TOOLS, approvalLabel, approvalConfirmText } from "@/lib/agent-tools";
+import { toolMeta, DELIVERABLE_TOOLS, INTERNAL_TOOLS, approvalLabel, approvalConfirmText } from "@/lib/agent-tools";
 import type { ChatMessage, ToolStep, ApprovalState, QuestionData } from "@/hooks/use-agent-chat";
 import type { PreviewItem } from "./preview-panel";
 import { AgentSpinner } from "./agent-spinner";
@@ -155,17 +155,29 @@ function MacStepList({ steps, active, onPreview }: { steps: ToolStep[]; active: 
         {steps.map((s, i) => {
           const { label, Icon } = toolMeta(s.tool);
           const running = active && !s.done && i === steps.length - 1;
-          // 非成品工具（跑命令/抓网页/搜文件/读文件…）把结果摊开展示；成品工具走下方成品卡，不在此重复。
-          const showResult = s.done && !!s.result && !DELIVERABLE_TOOLS.has(s.tool);
+          // P1-8 + B.1：内部/指令类工具（用技能/检索）结果是给 AI 看的原文，对老板零价值还吓人 → 绝不 dump、不进右侧。
+          const isInternal = INTERNAL_TOOLS.has(s.tool);
+          // 非成品、非内部工具（跑命令/抓网页/搜文件/读文件…）才把结果摊开展示；成品走成品卡，内部只留一行标签。
+          const showResult = s.done && !!s.result && !DELIVERABLE_TOOLS.has(s.tool) && !isInternal;
           // 命令边跑边显示：未结束 + 已有实时输出 → 渲染滚动中的终端块
           const showLiveCmd = !s.done && s.tool === "run_command" && !!s.progress;
           const cmdText = typeof s.args?.command === "string" ? s.args.command : "";
+          // 内部工具补一句人话副标题（用了哪个技能/查了什么）——从 args 取，绝不从结果原文截（截出来是乱码/指令稿）。
+          const internalNote = isInternal
+            ? (typeof s.args?.skill === "string" ? s.args.skill
+              : typeof s.args?.name === "string" ? s.args.name
+              : typeof s.args?.topic === "string" ? s.args.topic
+              : typeof s.args?.query === "string" ? s.args.query : "")
+            : "";
+          // B.1：右侧只接"真有本机文件路径"的结果；任意工具文本不再借 file 兜底污染右侧成品台。
+          const filePath = typeof s.args?.path === "string" ? s.args.path
+            : typeof s.args?.file_path === "string" ? s.args.file_path : undefined;
           return (
             <div key={i} className="flex flex-col gap-1">
               <div className="flex items-center gap-2 text-[13px] text-[#3a3a3c] dark:text-[#9a9ca3]">
                 <span className={`shrink-0 text-[9px] leading-none ${running ? "animate-pulse text-[#d4901f]" : s.done ? "text-[#10a37f]" : "text-[#b0b0b5] dark:text-[#56585f]"}`}>⏺</span>
                 <Icon className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
-                <span>{label}</span>
+                <span>{label}{internalNote ? <span className="text-[#86868b] dark:text-[#6e7077]"> · {internalNote}</span> : null}</span>
                 {running && <Loader2 className="h-3 w-3 animate-spin text-[#b0b0b5] dark:text-[#56585f]" />}
               </div>
               {showLiveCmd && <LiveTerminalBlock command={cmdText} output={s.progress as string} />}
@@ -177,13 +189,12 @@ function MacStepList({ steps, active, onPreview }: { steps: ToolStep[]; active: 
                 ) : (
                   <ResultDisclosure
                     text={s.result as string}
-                    onOpen={onPreview ? () => {
-                      const path = typeof s.args?.path === "string" ? s.args.path
-                        : typeof s.args?.file_path === "string" ? s.args.file_path : undefined;
-                      // 报表→表格(可点格改)；PDF/Word/PPT/网页→文档原样预览；其它→纯文本
-                      if (path && /\.(xlsx|xlsm)$/i.test(path)) onPreview({ kind: "sheet", title: label, path });
-                      else if (path && /\.(pdf|docx|pptx|html|htm)$/i.test(path)) onPreview({ kind: "doc", title: label, path });
-                      else onPreview({ kind: "file", title: label, path, text: s.result as string });
+                    onOpen={(onPreview && filePath) ? () => {
+                      const p = filePath as string;
+                      // 报表→表格(可点格改)；PDF/Word/PPT/网页→文档原样预览；其它本机文件→纯文本预览
+                      if (/\.(xlsx|xlsm)$/i.test(p)) onPreview({ kind: "sheet", title: label, path: p });
+                      else if (/\.(pdf|docx|pptx|html|htm)$/i.test(p)) onPreview({ kind: "doc", title: label, path: p });
+                      else onPreview({ kind: "file", title: label, path: p, text: s.result as string });
                     } : undefined}
                   />
                 ))}
