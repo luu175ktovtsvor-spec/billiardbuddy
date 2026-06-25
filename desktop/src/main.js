@@ -116,8 +116,9 @@ ipcMain.handle("files:pick", async (_e, opts = {}) => {
   if (opts.filesAndFolders && process.platform === "darwin") base = ["openFile", "openDirectory"];
   else if (opts.directory) base = ["openDirectory"];
   else base = ["openFile"];
-  const properties = opts.multi ? [...base, "multiSelections"] : base;
+  const properties = opts.multi ? [...base, "multiSelections"] : [...base];
   const canPickDir = base.includes("openDirectory");
+  if (canPickDir && opts.createDirectory) properties.push("createDirectory");
   const dialogOpts = {
     title: opts.title || (canPickDir ? "选择要让 AI 处理的文件 / 文件夹" : "选择要让 AI 处理的文件"),
     properties,

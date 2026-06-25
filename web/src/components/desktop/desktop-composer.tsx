@@ -166,23 +166,34 @@ export function DesktopComposer({
     return () => window.removeEventListener("keydown", onKey);
   }, [menuOpen, kbMenuOpen, styleMenuOpen]);
 
-  // 贴图：剪贴板里有图片 → 存临时文件 → 路径加进附件（让老板把截图直接粘进来给 AI 看）。
+  // 粘贴文件：① 访达复制的文件有真实路径 → 直接拿（与拖拽同路）；② 只有字节没路径的（截图工具图片）→ saveTemp 落临时文件。
   const handlePaste = async (e: React.ClipboardEvent) => {
-    if (!onAddFiles || !window.electron?.files?.saveTemp) return;
+    if (!onAddFiles) return;
     const items = Array.from(e.clipboardData?.items || []);
-    const imgs = items.filter((it) => it.kind === "file" && it.type.startsWith("image/"));
-    if (imgs.length === 0) return;
-    e.preventDefault();
-    const paths: string[] = [];
-    for (const it of imgs) {
-      const file = it.getAsFile();
-      if (!file) continue;
-      const b64 = await fileToBase64(file);
-      const ext = (file.type.split("/")[1] || "png").replace("jpeg", "jpg");
-      const r = await window.electron.files.saveTemp({ base64: b64, ext });
-      if (r?.ok && r.path) paths.push(r.path);
+    const fileItems = items.filter((it) => it.kind === "file");
+    if (fileItems.length === 0) return;
+    // ① 有真实路径的文件(从访达复制任意文件)→ 直接拿 path(走与拖拽同一条路)
+    const direct: string[] = [];
+    const needTemp: File[] = [];
+    for (const it of fileItems) {
+      const f = it.getAsFile() as (File & { path?: string }) | null;
+      if (!f) continue;
+      if (f.path) direct.push(f.path);
+      else needTemp.push(f);
     }
-    if (paths.length) onAddFiles(paths);
+    // ② 只有字节没路径的(截图工具图片等)→ saveTemp 落临时文件
+    const saved: string[] = [];
+    if (needTemp.length && window.electron?.files?.saveTemp) {
+      for (const f of needTemp) {
+        if (!f.type.startsWith("image/")) continue;  // 无路径的非图字节跳过(没法可靠保存)
+        const b64 = await fileToBase64(f);
+        const ext = (f.type.split("/")[1] || "png").replace("jpeg", "jpg");
+        const r = await window.electron.files.saveTemp({ base64: b64, ext });
+        if (r?.ok && r.path) saved.push(r.path);
+      }
+    }
+    const paths = [...direct, ...saved];
+    if (paths.length) { e.preventDefault(); onAddFiles(paths); }
   };
   // 拖入：从访达拖图片/文件进来 → Electron 的 File 带绝对路径 → 直接加进附件。
   const handleDrop = (e: React.DragEvent) => {
@@ -278,8 +289,8 @@ export function DesktopComposer({
             <button
               type="button"
               onClick={onPickFiles}
-              title="添加本机文件，授权助手读取或修改"
-              aria-label="添加文件"
+              title="加文件 · 图片 · 视频 · 文件夹都行(授权助手读取或修改)"
+              aria-label="添加文件、图片、视频或文件夹"
               className="flex h-7 w-7 items-center justify-center rounded-md text-[#86868b] transition hover:bg-black/[0.05] hover:text-[#1d1d1f] dark:text-[#6e7077] dark:hover:bg-white/[0.06] dark:hover:text-[#c8cace]"
             >
               <Paperclip className="h-[16px] w-[16px]" />

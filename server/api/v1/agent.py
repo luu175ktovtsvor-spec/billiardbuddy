@@ -283,7 +283,8 @@ def _selected_files_note(paths: list[str] | None) -> str:
 
 
 def compose_agent_system_prompt(profile_text: str, brain_text: str, full_disk: bool = False,
-                                billiards_mode: bool = False, output_style: str = "") -> str:
+                                billiards_mode: bool = False, output_style: str = "",
+                                working_dir: str = "") -> str:
     """拼 agent 的 system prompt。
 
     本体是【通用 AI Agent】：默认只注入通用身份 + 安全红线 + 通用/桌面文件能力。
@@ -333,6 +334,12 @@ def compose_agent_system_prompt(profile_text: str, brain_text: str, full_disk: b
     today = _today_line()
     if today:
         parts.append(today)
+    # 工作目录(选项一·对标 CC)：告诉模型默认在哪干活——不是牢笼，出界改文件会弹卡。放动态尾段不破前缀缓存。
+    if working_dir and working_dir.strip():
+        parts.append(
+            f"当前工作目录：{working_dir.strip()}。新建/保存文件、跑命令默认在这里；"
+            "你仍可访问电脑别处的文件，但改工作目录外的文件会先弹卡请用户确认。"
+        )
     # 门店画像（台球房档案：台数/定价/会员卡）= 台球专属领域数据 → 仅 @台球 时注入，
     # 别把台球档案渗进通用对话（守 G.2「通用 Agent 为默认」定位）。
     if billiards_mode and profile_text and profile_text.strip():
@@ -562,6 +569,7 @@ class AgentChatRequest(BaseModel):
     goal: str | None = None  # /goal 目标驱动：本次会话的目标条件，空=不启用
     deep_thinking: bool | None = None  # F.2 深度思考开关：True=开/False=关/None=跟随模型默认（mimo 默认开）
     source_rec_id: str | None = None  # 隐式反馈：本次对话由今日推荐哪一条触发（rec.id），落到 generation 上做"采纳上浮"
+    working_dir: str | None = None  # 本会话工作目录:相对路径默认落它 + 自动接受编辑的范围(可达范围不收,对标 CC)
 
 
 @router.get("/skills")
@@ -829,6 +837,7 @@ async def agent_chat(
     system_prompt = compose_agent_system_prompt(
         profile_text, format_memories_for_prompt(memories, intent=body.message),
         full_disk=full_disk, billiards_mode=billiards_mode, output_style=body.output_style or "",
+        working_dir=body.working_dir or "",
     )
     # 桌面版：老板当场选定的文件 → 注入 prompt（告诉大脑路径）+ 进 ctx.allowed_paths（授权工具可动）
     if body.selected_files and os.environ.get("DESKTOP_LOCAL") == "1":
@@ -856,6 +865,7 @@ async def agent_chat(
     ctx = AgentContext(
         db=db, store=store, user=user, allowed_paths=body.selected_files or [],
         permission_mode=perm_mode, full_disk_access=full_disk,
+        working_dir=body.working_dir,
         auto_spend_limit=getattr(store, "agent_auto_spend_limit", None),
         model_ctx_window=_model_ctx_window(),  # SH-6：配了 DESKTOP_MODEL_CTX_WINDOW 才启用自动瘦身
         token_budget=_agent_token_budget(),    # G.1 P2：交互式 token 总量刹车（默认不限，配环境变量启用）
@@ -979,6 +989,7 @@ class AgentExecuteRequest(BaseModel):
     token: str | None = None                 # 审批提案签名（绑定本组 args，防前端篡改后再确认）
     conversation_id: str | None = None       # 审批回灌：执行后据此取历史，让管家基于结果自然接话
     knowledge_packs: list[str] | None = None  # 同 chat：续接也按是否 @ 台球决定身份/工具集
+    working_dir: str | None = None  # 本会话工作目录:相对路径默认落它 + 自动接受编辑的范围(可达范围不收,对标 CC)
 
 
 @router.post("/execute")
@@ -1027,6 +1038,7 @@ async def agent_execute(
     ctx = AgentContext(
         db=db, store=store, user=user, allowed_paths=body.selected_files or [],
         full_disk_access=full_disk,
+        working_dir=body.working_dir,
         auto_spend_limit=getattr(store, "agent_auto_spend_limit", None),
         model_ctx_window=_model_ctx_window(),  # SH-6：同 chat，配了环境变量才启用
     )
@@ -1050,7 +1062,8 @@ async def agent_execute(
         memories = await load_store_memory(db, store.id)
         billiards_mode = bool(body.knowledge_packs and "billiards" in body.knowledge_packs)
         sys_prompt = compose_agent_system_prompt(profile_text, format_memories_for_prompt(memories),
-                                                 full_disk=full_disk, billiards_mode=billiards_mode)
+                                                 full_disk=full_disk, billiards_mode=billiards_mode,
+                                                 working_dir=body.working_dir or "")
         history = await _load_agent_history(db, store, body.conversation_id)
         synth = (
             f"[系统提示·非用户输入] 老板已确认、你刚请求的「{body.tool}」已执行完成。"
