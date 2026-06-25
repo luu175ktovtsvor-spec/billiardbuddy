@@ -74,3 +74,7 @@ desktop/resources/
 codex-*.png
 # 真机验收/打包待改清单:含美国机IP/SSH/中转端点等运营细节,本地工作文档不入 git(其自身亦明示"绝不写进git")
 docs/待改清单-真机验收与打包-2026-06-23.md
+
+# 网关配置(含 MiMo/中转 key)——只在服务器,绝不进 git
+gateway/*.env
+gateway/gw.env
