@@ -53,6 +53,9 @@ server/prompts.enc
 
 .superpowers/
 
+# Claude Code 受管 worktree(隔离开发用,不入库)
+.claude/worktrees/
+
 # 桌面本地试用产物(不进git)
 .dev-byok-key
 server/billiards_local.db
