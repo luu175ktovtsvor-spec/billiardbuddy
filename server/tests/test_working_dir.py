@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from services.agent.context import AgentContext
-from services.agent.local_tools import _resolve
+from services.agent.local_tools import _resolve, path_in_workspace
 from api.v1.agent import AgentChatRequest, AgentExecuteRequest, compose_agent_system_prompt
 
 
@@ -47,3 +47,14 @@ def test_resolve_rejects_outside_when_sandboxed(tmp_path):
     ctx = SimpleNamespace(working_dir=str(wd), allowed_paths=[], full_disk_access=False)
     with pytest.raises(ValueError):
         _resolve(str(outside), ctx)
+
+
+def test_path_in_workspace(tmp_path):
+    wd = tmp_path / "proj"; wd.mkdir()
+    sel = tmp_path / "picked.txt"; sel.write_text("x")
+    ctx = SimpleNamespace(working_dir=str(wd), allowed_paths=[str(sel)], full_disk_access=False)
+    assert path_in_workspace(str(wd / "a.md"), ctx) is True      # 工作目录内
+    assert path_in_workspace("a.md", ctx) is True                # 相对→落工作目录
+    assert path_in_workspace(str(sel), ctx) is True              # 选定文件
+    assert path_in_workspace(str(tmp_path / "nope.txt"), ctx) is False  # 区外
+    assert path_in_workspace("", ctx) is False                   # 空→安全 False
