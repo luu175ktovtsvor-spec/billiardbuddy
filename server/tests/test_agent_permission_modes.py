@@ -31,9 +31,9 @@ def test_full_mode_spend_cap_forces_confirm_after_limit(monkeypatch):
     monkeypatch.setenv("DESKTOP_AGENT_AUTO_SPEND_LIMIT", "2")
     tool = _spend_tool()
     ctx = AgentContext(permission_mode="full")
-    assert _auto_approve(tool, ctx) is True    # 第1张：自动
-    assert _auto_approve(tool, ctx) is True    # 第2张：自动
-    assert _auto_approve(tool, ctx) is False   # 第3张：超上限 → 强制确认
+    assert _auto_approve(tool, {}, ctx) is True    # 第1张：自动
+    assert _auto_approve(tool, {}, ctx) is True    # 第2张：自动
+    assert _auto_approve(tool, {}, ctx) is False   # 第3张：超上限 → 强制确认
     assert ctx.auto_spend_count == 2           # 只计自动放行的花钱次数
 
 
@@ -42,8 +42,8 @@ def test_full_mode_file_tool_not_capped(monkeypatch):
     monkeypatch.setenv("DESKTOP_AGENT_AUTO_SPEND_LIMIT", "1")
     tool = _file_tool()
     ctx = AgentContext(permission_mode="full")
-    assert _auto_approve(tool, ctx) is True
-    assert _auto_approve(tool, ctx) is True
+    assert _auto_approve(tool, {}, ctx) is True
+    assert _auto_approve(tool, {}, ctx) is True
     assert ctx.auto_spend_count == 0
 
 
@@ -51,7 +51,7 @@ def test_spend_cap_zero_means_full_never_auto_spends(monkeypatch):
     """上限设 0 = full 模式也从不自动花钱（等价于花钱永远先确认）。"""
     monkeypatch.setenv("DESKTOP_AGENT_AUTO_SPEND_LIMIT", "0")
     ctx = AgentContext(permission_mode="full")
-    assert _auto_approve(_spend_tool(), ctx) is False
+    assert _auto_approve(_spend_tool(), {}, ctx) is False
     assert ctx.auto_spend_count == 0
 
 
@@ -60,7 +60,7 @@ def test_owner_can_disable_cap_via_negative_limit():
     ctx = AgentContext(permission_mode="full", auto_spend_limit=-1)
     tool = _spend_tool()
     for _ in range(20):
-        assert _auto_approve(tool, ctx) is True
+        assert _auto_approve(tool, {}, ctx) is True
 
 
 def test_ctx_limit_overrides_env(monkeypatch):
@@ -68,8 +68,8 @@ def test_ctx_limit_overrides_env(monkeypatch):
     monkeypatch.setenv("DESKTOP_AGENT_AUTO_SPEND_LIMIT", "100")
     ctx = AgentContext(permission_mode="full", auto_spend_limit=1)
     tool = _spend_tool()
-    assert _auto_approve(tool, ctx) is True
-    assert _auto_approve(tool, ctx) is False  # 本店上限=1 优先于环境的 100
+    assert _auto_approve(tool, {}, ctx) is True
+    assert _auto_approve(tool, {}, ctx) is False  # 本店上限=1 优先于环境的 100
 
 
 def _tc(name, arguments="{}", call_id="c1"):

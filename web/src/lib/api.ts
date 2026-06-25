@@ -45,6 +45,7 @@ export interface AgentChatPayload {
   goal?: string; // /goal 目标驱动：本次会话目标条件
   deep_thinking?: boolean; // F.2 深度思考：true=开/false=关/省略=跟随模型默认（mimo 默认开）
   source_rec_id?: string; // 隐式反馈：本次对话由今日推荐哪一条触发（rec.id）→ 后端落到 generation 做"采纳上浮"
+  working_dir?: string; // 本会话工作目录:相对路径默认落它 + 自动接受编辑范围
 }
 
 class ApiClient {
@@ -343,6 +344,7 @@ class ApiClient {
     token?: string,
     conversationId?: string | null,
     knowledgePacks?: string[],
+    workingDir?: string,
   ): Promise<{
     tool: string;
     result: string;
@@ -357,6 +359,7 @@ class ApiClient {
       token,
       conversation_id: conversationId,
       knowledge_packs: knowledgePacks,
+      working_dir: workingDir,
     });
   }
 

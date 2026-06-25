@@ -45,24 +45,31 @@ def _allowed_paths(ctx) -> list[Path]:
 
 
 def _resolve(rel_or_abs: str, ctx=None) -> Path:
-    """把传入路径解析进沙箱并校验不越界。沙箱 = 内容库 + 用户当场选定的文件/目录。
-    返回绝对 Path；越界抛 ValueError。相对路径一律落到内容库内。
-    ctx.full_disk_access=True 时不限范围（高级·全盘模式，老板显式开启）。"""
-    root = _library_root().resolve()
+    """把传入路径解析进沙箱并校验不越界。沙箱 = 内容库 + 工作目录 + 用户当场选定的文件/目录。
+    返回绝对 Path；越界抛 ValueError。相对路径落工作目录(没设则落内容库)。
+    ctx.full_disk_access=True 时不限范围(桌面应用默认 True；沙箱模式才传 False·对标 CC 全盘可达)。"""
+    lib = _library_root().resolve()
+    wd = None
+    raw_wd = (getattr(ctx, "working_dir", None) or "").strip() or None  # 与 Task1 一致:纯空白当没设
+    if raw_wd:
+        try:
+            wd = Path(raw_wd).resolve()
+        except (OSError, ValueError):
+            wd = None
+    base = wd or lib
     p = Path(rel_or_abs)
-    path = (p if p.is_absolute() else root / p).resolve()
-    # 高级·全盘模式：老板显式开启 → 不限范围（可碰任意路径）
+    path = (p if p.is_absolute() else base / p).resolve()
     if getattr(ctx, "full_disk_access", False):
         return path
-    # ① 内容库内 → 放行
-    if path == root or root in path.parents:
-        return path
-    # ② 用户经文件选择器当场选定的文件/目录（或其子文件）→ 放行（显式授权）
+    # 内容库内 / 工作目录内 → 放行
+    for rootp in (lib, wd):
+        if rootp and (path == rootp or rootp in path.parents):
+            return path
+    # 用户经文件选择器当场选定的文件/目录(或其子文件)→ 放行(显式授权)
     for a in _allowed_paths(ctx):
         if path == a or a in path.parents:
             return path
-    # ③ SH-3：Agent 自己落盘的超大工具结果目录（UPLOAD_DIR/tool-results/）→ 放行，
-    #    否则模型 read 不回自己刚落盘的结果（落盘走 tool_result_store.persist，是 Agent 内部产物、非外部文件）。
+    # Agent 自己落盘的超大工具结果目录 → 放行
     try:
         from services.agent.tool_result_store import results_root
         tr_root = results_root().resolve()
@@ -70,7 +77,39 @@ def _resolve(rel_or_abs: str, ctx=None) -> Path:
             return path
     except Exception:
         pass
-    raise ValueError(f"越界：只能操作内容库或你当场选定的文件，拒绝 {rel_or_abs}")
+    raise ValueError(f"越界：只能操作内容库、工作目录或你当场选定的文件，拒绝 {rel_or_abs}")
+
+
+def path_in_workspace(raw_path: str, ctx) -> bool:
+    """目标路径是否在【工作区】内 = 内容库 ∪ 工作目录 ∪ 用户选定文件/目录 ∪ tool-results。
+    相对路径按 (ctx.working_dir or 内容库) 解析。用于 auto_files 判"改这文件要不要免确认"。
+    不抛、故障安全(判不了→False=更安全的弹卡)。与 full_disk_access 无关(它管免不免确认、不管能不能碰)。"""
+    if not raw_path:
+        return False
+    try:
+        lib = _library_root().resolve()
+        wd = None
+        raw_wd = (getattr(ctx, "working_dir", None) or "").strip() or None  # 与 _resolve 一致：纯空白当没设
+        if raw_wd:
+            try:
+                wd = Path(raw_wd).resolve()
+            except (OSError, ValueError):  # 与 _resolve 一致：坏路径优雅降级落内容库，而非整体返 False
+                wd = None
+        base = wd or lib
+        p = Path(raw_path)
+        path = (p if p.is_absolute() else base / p).resolve()
+        roots = [lib] + ([wd] if wd else []) + _allowed_paths(ctx)
+        try:
+            from services.agent.tool_result_store import results_root
+            roots.append(results_root().resolve())
+        except Exception:
+            pass
+        for r in roots:
+            if r and (path == r or r in path.parents):
+                return True
+        return False
+    except Exception:
+        return False
 
 
 def _backup(path: Path) -> str | None:
@@ -367,7 +406,7 @@ async def run_command(args: dict, ctx) -> str:
     except (TypeError, ValueError):
         timeout_sec = 30.0
     timeout_sec = max(1.0, min(timeout_sec, 300.0))
-    cwd = (args.get("cwd") or "").strip() or None
+    cwd = (args.get("cwd") or "").strip() or (getattr(ctx, "working_dir", None) or None)
     if cwd and not Path(cwd).is_dir():
         return f"工作目录不存在：{cwd}"
     try:
