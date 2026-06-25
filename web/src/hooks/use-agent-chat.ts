@@ -61,6 +61,7 @@ export interface AgentChatOptions {
   outputStyle?: string; // 输出风格名（explanatory/concise…），空=默认
   goal?: string; // /goal 目标驱动：本次会话目标条件
   deepThinking?: boolean; // F.2 深度思考开关：true=开/false=关/undefined=跟随模型默认
+  workingDir?: string | null; // 本会话工作目录(选/新建的文件夹)
 }
 
 export function useAgentChat(opts: AgentChatOptions) {
@@ -121,6 +122,7 @@ export function useAgentChat(opts: AgentChatOptions) {
             goal: o.goal || undefined,
             deep_thinking: o.deepThinking,
             source_rec_id: recId,
+            working_dir: o.workingDir || undefined,
           },
           {
             onToken: (t) => setDraft((prev) => prev + t),
@@ -212,6 +214,7 @@ export function useAgentChat(opts: AgentChatOptions) {
         ap.token,
         conversationId,
         o.knowledgePacks?.length ? o.knowledgePacks : undefined,
+        o.workingDir || undefined,
       );
       setMessages((prev) =>
         prev.map((m, j) => (j === idx && m.approval ? { ...m, approval: { ...m.approval, status: "done" } } : m)),
