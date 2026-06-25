@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>欢迎页重设计 · demo</title>
+<!--
+  ============================================================================
+  欢迎页重设计 demo —— 对标 Claude Code / Codex 的「克制·有上下文」基调
+  ----------------------------------------------------------------------------
+  怎么改：
+   1) 文字：直接搜中文改。起手示例在 <main> 的 .cards 里，一张卡一个 <button>。
+   2) 配色：全在下面 :root / [data-theme=dark] 的 CSS 变量里改，改一处全局变。
+   3) 主题：右上角按钮切浅/深；想默认深色把 <html data-theme="light"> 改成 "dark"。
+   4) 这是纯静态预览，按钮不真触发功能（仿真用）。
+  设计要点（相对旧版的改动）：
+   · 顶部加 macOS 红绿灯 + 毛玻璃标题栏，贴近真窗口
+   · ✻ 标记带微 shimmer（Codex 风），时间问候让空状态有「人味」
+   · 仿输入框引导 + 下面一行能力提示（↵ / 命令 / 工作目录 / 风格）
+   · 起手示例混入通用能力（文件/上网/脚本），体现「通用 Agent 默认，台球可挂载」
+   · 底部一条上下文状态行（模型·全本地·工作目录），对标 Claude Code 的 context line
+  ============================================================================
+-->
+<style>
+  /* ---------- 主题变量（改色改这里） ---------- */
+  :root {
+    --bg:            #f6f6f8;       /* 窗口外底色 */
+    --panel:         #ffffff;       /* 主面板 */
+    --titlebar:      rgba(255,255,255,.72);
+    --text:          #1d1d1f;       /* 主文字 */
+    --text-soft:     #5f6066;       /* 次文字 */
+    --text-mute:     #8a8c93;       /* 弱文字/说明 */
+    --border:        rgba(0,0,0,.08);
+    --border-strong: rgba(0,0,0,.14);
+    --card:          #ffffff;
+    --card-hover:    #fbfbfc;
+    --accent:        #10a37f;       /* 主题绿（Codex 风），想换蓝改 #007AFF */
+    --accent-weak:   rgba(16,163,127,.08);
+    --accent-line:   rgba(16,163,127,.22);
+    --shadow:        0 1px 2px rgba(0,0,0,.04), 0 8px 24px -16px rgba(0,0,0,.18);
+    --mono:          "SF Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans:          -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  [data-theme="dark"] {
+    --bg:            #0e0f12;
+    --panel:         #16181d;
+    --titlebar:      rgba(22,24,29,.72);
+    --text:          #e6e7e9;
+    --text-soft:     #b3b5bb;
+    --text-mute:     #6e7077;
+    --border:        rgba(255,255,255,.09);
+    --border-strong: rgba(255,255,255,.16);
+    --card:          #141519;
+    --card-hover:    #191b21;
+    --accent:        #1bbf95;
+    --accent-weak:   rgba(27,191,149,.10);
+    --accent-line:   rgba(27,191,149,.26);
+    --shadow:        0 1px 2px rgba(0,0,0,.4), 0 12px 40px -18px rgba(0,0,0,.7);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    display: flex; align-items: center; justify-content: center;
+    padding: 32px;
+  }
+
+  /* ---------- 模拟应用窗口 ---------- */
+  .window {
+    width: 100%; max-width: 860px; height: min(712px, 92vh);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .titlebar {
+    height: 44px; flex: 0 0 44px;
+    display: flex; align-items: center; gap: 10px;
+    padding: 0 14px;
+    background: var(--titlebar);
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    border-bottom: 1px solid var(--border);
+  }
+  .lights { display: flex; gap: 8px; }
+  .lights i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+  .lights .r { background: #ff5f57; }
+  .lights .y { background: #febc2e; }
+  .lights .g { background: #28c840; }
+  .titlebar .where {
+    margin-left: 6px; font-family: var(--mono); font-size: 12px; color: var(--text-mute);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .titlebar .where .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
+  .titlebar .spacer { flex: 1; }
+  .theme-btn {
+    font: inherit; font-size: 12px; color: var(--text-soft);
+    background: transparent; border: 1px solid var(--border);
+    border-radius: 7px; padding: 5px 10px; cursor: pointer;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .theme-btn:hover { background: var(--card-hover); color: var(--text); }
+
+  /* ---------- 欢迎内容 ---------- */
+  /* grid + 子元素 margin:auto 居中——内容超高时自动顶对齐 + 可滚动，不裁掉头部（比 flex/align-content 居中安全） */
+  .stage { flex: 1; overflow-y: auto; display: grid; padding: 16px 28px; }
+  .inner { width: 100%; max-width: 640px; margin: auto; }
+
+  /* 头部：✻ 标记 + 时间问候 + 副标题 */
+  .head { text-align: center; margin-bottom: 16px; }
+  .mark {
+    width: 48px; height: 48px; margin: 0 auto 16px;
+    display: grid; place-items: center;
+    color: var(--accent); font-size: 26px; line-height: 1;
+    border: 1px solid var(--border); border-radius: 14px;
+    background: var(--card); box-shadow: var(--shadow);
+    position: relative; overflow: hidden;
+  }
+  /* Codex 风微 shimmer：一道高光斜扫过 ✻ 标记 */
+  .mark::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(115deg, transparent 35%, rgba(255,255,255,.55) 50%, transparent 65%);
+    transform: translateX(-120%);
+    animation: shimmer 4.5s ease-in-out infinite;
+  }
+  [data-theme="dark"] .mark::after { background: linear-gradient(115deg, transparent 35%, rgba(255,255,255,.14) 50%, transparent 65%); }
+  @keyframes shimmer { 0%,60% { transform: translateX(-120%);} 80%,100% { transform: translateX(120%);} }
+  .star { position: relative; z-index: 1; }
+
+  .greeting { font-size: 23px; font-weight: 600; letter-spacing: -.01em; }
+  .sub { margin-top: 7px; font-size: 13.5px; line-height: 1.6; color: var(--text-mute); max-width: 460px; margin-left: auto; margin-right: auto; }
+
+  /* 仿输入框（引导用，点了只是聚焦动画） */
+  .fauxbar {
+    display: flex; align-items: center; gap: 10px;
+    border: 1px solid var(--border-strong); border-radius: 12px;
+    background: var(--card); padding: 13px 15px; cursor: text;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .fauxbar:hover, .fauxbar.focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-weak); }
+  .fauxbar .caret { color: var(--accent); font-family: var(--mono); font-size: 14px; }
+  .fauxbar .ph { color: var(--text-mute); font-size: 14px; flex: 1; }
+  .fauxbar .send { width: 26px; height: 26px; border-radius: 7px; background: var(--accent); color: #fff; display: grid; place-items: center; }
+
+  .hints { display: flex; flex-wrap: wrap; gap: 14px; margin: 9px 2px 0; font-family: var(--mono); font-size: 11px; color: var(--text-mute); }
+  .hints span { display: inline-flex; align-items: center; gap: 5px; }
+  kbd { font-family: var(--mono); font-size: 10.5px; color: var(--text-soft); background: var(--card-hover); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; }
+
+  /* 今日建议（克制版，单行内联） */
+  .today {
+    margin-top: 16px; display: flex; align-items: center; gap: 11px;
+    border: 1px solid var(--accent-line); background: var(--accent-weak);
+    border-radius: 11px; padding: 11px 13px;
+  }
+  .today .ic { color: var(--accent); flex: 0 0 auto; display: grid; place-items: center; }
+  .today .body { min-width: 0; flex: 1; }
+  .today .label { font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+  .today .text { margin-top: 2px; font-size: 12.5px; color: var(--text-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .today .go { flex: 0 0 auto; font: inherit; font-size: 12px; color: #fff; background: var(--accent); border: none; border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  .today .go:hover { filter: brightness(1.05); }
+
+  /* 起手示例 */
+  .seclabel { margin: 16px 2px 8px; font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-mute); display: flex; align-items: center; gap: 8px; }
+  .seclabel::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+  .card {
+    text-align: left; font: inherit; cursor: pointer;
+    border: 1px solid var(--border); background: var(--card);
+    border-radius: 11px; padding: 13px;
+    display: flex; gap: 11px; align-items: flex-start;
+    transition: border-color .15s, background .15s, transform .06s;
+  }
+  .card:hover { border-color: var(--border-strong); background: var(--card-hover); }
+  .card:active { transform: scale(.992); }
+  .card .cic { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; color: var(--accent); background: var(--accent-weak); }
+  .card .t { font-size: 13px; font-weight: 550; color: var(--text); }
+  .card .h { margin-top: 3px; font-size: 11.5px; line-height: 1.45; color: var(--text-mute); }
+
+  /* 底部上下文状态行（对标 Claude Code 的 context line） */
+  .status {
+    flex: 0 0 auto; height: 34px;
+    display: flex; align-items: center; gap: 16px;
+    padding: 0 16px; border-top: 1px solid var(--border);
+    font-family: var(--mono); font-size: 11px; color: var(--text-mute);
+    background: var(--titlebar);
+  }
+  .status .seg { display: inline-flex; align-items: center; gap: 6px; }
+  .status .seg .d { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  .status .spacer { flex: 1; }
+
+  svg { display: block; }
+</style>
+</head>
+<body>
+  <div class="window">
+    <!-- 标题栏：红绿灯 + 当前位置 + 主题切换 -->
+    <div class="titlebar">
+      <div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+      <div class="where"><span class="dot"></span>球房运营管家 · 新会话</div>
+      <div class="spacer"></div>
+      <button class="theme-btn" onclick="toggleTheme()"><span id="themeIc">🌙</span><span id="themeTx">深色</span></button>
+    </div>
+
+    <!-- 欢迎主体 -->
+    <div class="stage">
+      <div class="inner">
+        <div class="head">
+          <div class="mark"><span class="star">✻</span></div>
+          <div class="greeting" id="greeting">晚上好</div>
+          <div class="sub">把要办的活交给我，一句话就行——写文案、做海报、读报表，或在你电脑上读写文件、跑命令、上网查料。</div>
+        </div>
+
+        <!-- 仿输入框引导 -->
+        <div class="fauxbar" id="faux" onclick="focusFaux()">
+          <span class="caret">›</span>
+          <span class="ph">说一件要办的事…</span>
+          <span class="send">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+          </span>
+        </div>
+        <div class="hints">
+          <span><kbd>↵</kbd> 发送</span>
+          <span><kbd>/</kbd> 命令与技能</span>
+          <span>📁 工作目录</span>
+          <span>🎨 输出风格</span>
+          <span>🛡 运行权限</span>
+        </div>
+
+        <!-- 今日建议（克制版） -->
+        <div class="today">
+          <span class="ic">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V18h6v-1.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg>
+          </span>
+          <div class="body">
+            <div class="label">今日建议</div>
+            <div class="text">周末快到了——发条「双人优惠」朋友圈引流，带个钩子</div>
+          </div>
+          <button class="go">帮我写 →</button>
+        </div>
+
+        <!-- 起手示例：台球运营 + 通用本机 agent 混排 -->
+        <div class="seclabel">试试这些</div>
+        <div class="cards">
+          <button class="card">
+            <span class="cic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg></span>
+            <span><span class="t">写条周末活动朋友圈</span><span class="h">双人优惠、发圈引流，带钩子</span></span>
+          </button>
+          <button class="card">
+            <span class="cic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18M7 16l4-4 3 3 5-6"/></svg></span>
+            <span><span class="t">照报表看这月经营</span><span class="h">选张导出的表，我来诊断</span></span>
+          </button>
+          <button class="card">
+            <span class="cic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></svg></span>
+            <span><span class="t">做张拉新海报</span><span class="h">描述想要的，我生图（先确认）</span></span>
+          </button>
+          <button class="card">
+            <span class="cic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></svg></span>
+            <span><span class="t">整理这个文件夹</span><span class="h">选个工作目录，我读写、建文件</span></span>
+          </button>
+          <button class="card">
+            <span class="cic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20"/></svg></span>
+            <span><span class="t">上网查行业最新玩法</span><span class="h">抓页面、做对比，给结论</span></span>
+          </button>
+          <button class="card">
+            <span class="cic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-6-6M12 19h8"/></svg></span>
+            <span><span class="t">跑个脚本 / 改本地报表</span><span class="h">像 Claude Code 那样动手</span></span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 底部上下文状态行 -->
+    <div class="status">
+      <span class="seg"><span class="d"></span>内置 MiMo V2.5</span>
+      <span class="seg">⛭ 全本地 · 开箱即用</span>
+      <span class="seg">📁 工作目录：未设</span>
+      <span class="spacer"></span>
+      <span class="seg">⌘K 命令</span>
+    </div>
+  </div>
+
+<script>
+  // 时间问候（让空状态有「人味」；改时段文案在这）
+  (function () {
+    var h = new Date().getHours();
+    var g = h < 6 ? "夜深了" : h < 11 ? "早上好" : h < 14 ? "中午好" : h < 18 ? "下午好" : "晚上好";
+    document.getElementById('greeting').textContent = g;
+  })();
+  // 浅/深主题切换
+  function toggleTheme() {
+    var root = document.documentElement;
+    var dark = root.getAttribute('data-theme') === 'dark';
+    root.setAttribute('data-theme', dark ? 'light' : 'dark');
+    document.getElementById('themeIc').textContent = dark ? '🌙' : '☀️';
+    document.getElementById('themeTx').textContent = dark ? '深色' : '浅色';
+  }
+  // 仿输入框聚焦动画（纯演示）
+  function focusFaux() {
+    var f = document.getElementById('faux');
+    f.classList.add('focus');
+    setTimeout(function(){ f.classList.remove('focus'); }, 1400);
+  }
+</script>
+</body>
+</html>
