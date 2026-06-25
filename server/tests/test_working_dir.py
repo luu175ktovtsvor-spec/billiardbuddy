@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from services.agent.context import AgentContext
-from services.agent.local_tools import _resolve, path_in_workspace
+from services.agent.local_tools import _resolve, path_in_workspace, run_command
 from api.v1.agent import AgentChatRequest, AgentExecuteRequest, compose_agent_system_prompt
 from services.agent.loop import _auto_approve
 from services.agent.registry import Tool
@@ -80,3 +80,11 @@ def test_auto_approve_scopes_to_workspace(tmp_path):
 def test_auto_approve_ask_mode_unchanged(tmp_path):
     ctx = SimpleNamespace(permission_mode="ask", working_dir=None, allowed_paths=[], full_disk_access=False)
     assert _auto_approve(_file_tool(), {"path": "a.md"}, ctx) is False
+
+
+@pytest.mark.asyncio
+async def test_run_command_defaults_cwd_to_working_dir(tmp_path):
+    wd = tmp_path / "proj"; wd.mkdir()
+    ctx = SimpleNamespace(working_dir=str(wd), full_disk_access=True, progress_emit=None)
+    out = await run_command({"command": "pwd"}, ctx)
+    assert str(wd.resolve()) in out

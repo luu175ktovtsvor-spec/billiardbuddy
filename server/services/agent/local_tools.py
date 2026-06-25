@@ -406,7 +406,7 @@ async def run_command(args: dict, ctx) -> str:
     except (TypeError, ValueError):
         timeout_sec = 30.0
     timeout_sec = max(1.0, min(timeout_sec, 300.0))
-    cwd = (args.get("cwd") or "").strip() or None
+    cwd = (args.get("cwd") or "").strip() or (getattr(ctx, "working_dir", None) or None)
     if cwd and not Path(cwd).is_dir():
         return f"工作目录不存在：{cwd}"
     try:
