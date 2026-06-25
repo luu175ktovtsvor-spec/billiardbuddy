@@ -574,7 +574,7 @@ _VIDEO_GENERATING: set[str] = set()
     deliverable=True,
     requires_approval=True,   # 视频贵+不可逆产出 → 花钱前弹确认（生图便宜不弹、视频弹，符合防盗刷/控成本）
     approval_class="spend",
-    timeout=1260.0,           # 异步轮询可能几分钟，给足；别用默认短超时把它掐了（>settings.video_timeout 兜底）
+    timeout=1860.0,           # 异步轮询波动大(实测达13.5分钟)，外层兜底设31分钟(略大于 video_timeout 30分钟)，别被默认短超时掐了
     description=(
         "生成一段短视频（AI 文生视频 / 图生视频）。当用户要『做个视频 / 生成视频 / 让这张图动起来』时调用。"
         "你要当『提示词扩写师』：把用户的大白话需求扩写成一段【中文】画面+运镜描述——写清主体动作、"
