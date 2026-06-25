@@ -48,6 +48,7 @@ export interface ElectronBridge {
       title?: string;
       multi?: boolean;
       directory?: boolean; // true=选文件夹(授权整个目录),否则选文件
+      createDirectory?: boolean; // true=弹窗里显示"新建文件夹"按钮(Task 9 壳层支持)
       filesAndFolders?: boolean; // true=一个弹窗里文件或文件夹都能选(macOS),且不按类型过滤(P0-1)
       filters?: { name: string; extensions: string[] }[];
     }): Promise<{ canceled: boolean; paths: string[] }>;

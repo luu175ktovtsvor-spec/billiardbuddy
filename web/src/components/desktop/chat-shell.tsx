@@ -46,7 +46,15 @@ export function DesktopChatShell({
   const [outputStyle, setOutputStyle] = useState<string>("");
   const [deepThinking, setDeepThinking] = useState(true); // F.2 深度思考默认开（mimo 默认就开）
   const [goal, setGoal] = useState<string>("");
-  const chat = useAgentChat({ permissionMode: mode, selectedFiles, knowledgePacks, outputStyle, goal, deepThinking });
+  const [workingDir, setWorkingDir] = useState<string | null>(null);
+  const wdKey = (id: string) => `agent_working_dir:${id}`;
+  const persistWorkingDir = (id: string | null, wd: string | null) => {
+    if (!id) return;
+    try { wd ? localStorage.setItem(wdKey(id), wd) : localStorage.removeItem(wdKey(id)); } catch { /* 忽略 */ }
+  };
+  const chat = useAgentChat({ permissionMode: mode, selectedFiles, knowledgePacks, outputStyle, goal, deepThinking, workingDir });
+  // 注：updateWorkingDir 必须声明在 chat 之后——它闭包引用 chat.conversationId，提前声明会触发 TDZ。
+  const updateWorkingDir = (wd: string | null) => { setWorkingDir(wd); persistWorkingDir(chat.conversationId, wd); };
   const [preview, setPreview] = useState<PreviewItem | null>(null);
   // 设置抽屉（门店名 + AI key）：单窗口内打开，替代老 web 的门店设置页
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -109,16 +117,19 @@ export function DesktopChatShell({
   }, []);
   useEffect(() => { void refreshConversations(); }, [refreshConversations]);
   useEffect(() => { if (chat.conversationId) void refreshConversations(); }, [chat.conversationId, refreshConversations]);
+  // 新会话首条消息后拿到 id → 把用户此前设的工作目录落盘到这个 id
+  useEffect(() => { if (chat.conversationId) persistWorkingDir(chat.conversationId, workingDir); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [chat.conversationId]);
 
   // 点开一条历史会话 → 拉它的消息加载进来（可继续聊）
   const loadConv = useCallback(async (id: string) => {
     try {
       const r = await api.getAgentConversation(id);
       setSelectedFiles([]); // 切换会话：清掉上个会话的附件，避免误带
+      try { setWorkingDir(localStorage.getItem(wdKey(id)) || null); } catch { setWorkingDir(null); }
       chat.loadConversation(id, (r.messages || []) as ChatMessage[]);
     } catch { /* 忽略 */ }
   }, [chat]);
-  const newChat = useCallback(() => { setSelectedFiles([]); chat.startNewChat(); }, [chat]);
+  const newChat = useCallback(() => { setSelectedFiles([]); setWorkingDir(null); chat.startNewChat(); }, [chat]);
 
   // 删除一条历史会话（侧栏垃圾桶）：删前确认 → 软删 → 从列表移除；删的是当前会话则切到新会话。P1-3b。
   const deleteConv = useCallback(async (id: string) => {
@@ -199,6 +210,14 @@ export function DesktopChatShell({
       setSelectedFiles((prev) => Array.from(new Set([...prev, ...r.paths])));
     } catch { /* 取消/失败：忽略 */ }
   }, [electron]);
+  const pickWorkingDir = async () => {
+    if (!electron?.files?.pick) return;
+    try {
+      const r = await electron.files.pick({ directory: true, createDirectory: true });
+      if (r.canceled || !r.paths?.length) return;
+      updateWorkingDir(r.paths[0]);
+    } catch { /* 取消/失败:忽略 */ }
+  };
   const removeFile = useCallback((p: string) => {
     setSelectedFiles((prev) => prev.filter((x) => x !== p));
   }, []);
@@ -299,6 +318,21 @@ export function DesktopChatShell({
           onAnswer={(label) => { void chat.send(label); }}
           onStop={chat.stop}
         />
+      )}
+
+      {electron?.files?.pick && (
+        <div className="mx-auto w-full max-w-[820px] px-4 pb-1">
+          {workingDir ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#10a37f]/10 px-2.5 py-1 text-[12px] text-[#10a37f]" title={`${workingDir}（AI 默认在这建文件;碰别处会先问你）`}>
+              📁 工作目录：{workingDir.split(/[\\/]/).pop()}
+              <button type="button" onClick={() => updateWorkingDir(null)} className="ml-1 font-bold leading-none hover:opacity-70" aria-label="清除工作目录">×</button>
+            </span>
+          ) : (
+            <button type="button" onClick={pickWorkingDir} className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] text-[#86868b] transition hover:bg-black/[0.04] hover:text-[#1d1d1f] dark:hover:bg-white/[0.05]" title="选/新建一个文件夹当工作区:AI 默认在这建文件、跑命令(仍能访问别处文件,改别处会先问你)">
+              📁 设工作目录
+            </button>
+          )}
+        </div>
       )}
 
       {goal && (
