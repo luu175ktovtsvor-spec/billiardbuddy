@@ -47,7 +47,7 @@ export interface ChatMessage {
   steps?: ToolStep[];
   approval?: ApprovalState;
   question?: QuestionData; // AskUserQuestion：管家给老板的选项，老板点选后作为下一句消息发回
-  kind?: "command"; // 审批通过后执行的 run_command 结果：渲染成终端式块（完整命令+输出+退出码）
+  kind?: "command" | "video"; // 审批通过后执行的结果渲染方式：run_command→终端块；generate_video→<video> 播放器
   error?: boolean;
 }
 
@@ -217,11 +217,13 @@ export function useAgentChat(opts: AgentChatOptions) {
         prev.map((m, j) => (j === idx && m.approval ? { ...m, approval: { ...m.approval, status: "done" } } : m)),
       );
       setMessages((prev) => {
-        // 跑命令的结果渲染成终端式块（完整命令+输出+退出码）；其它工具结果走普通文本。
+        // 跑命令的结果渲染成终端式块（命令+输出+退出码）；生视频结果渲染成 <video> 播放器；其它工具结果走普通文本。
         const first: ChatMessage =
           ap.tool === "run_command"
             ? { role: "assistant", content: res.result, kind: "command" }
-            : { role: "assistant", content: res.result };
+            : ap.tool === "generate_video"
+              ? { role: "assistant", content: res.result, kind: "video" }
+              : { role: "assistant", content: res.result };
         const next: ChatMessage[] = [...prev, first];
         if (res.continuation && res.continuation.trim()) {
           next.push({

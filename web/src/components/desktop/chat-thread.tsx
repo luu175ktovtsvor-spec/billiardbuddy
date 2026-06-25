@@ -36,6 +36,17 @@ function extractImageUrl(text: string): string | null {
 
 const IMAGE_TOOLS = new Set(["make_poster", "generate_image"]);
 
+// 从生视频工具结果里稳健抓出视频地址——markdown 链接 `[..](url)` ∪ 裸 URL ∪ 本机 /uploads 路径 ∪ 视频扩展名。
+function extractVideoUrl(text: string): string | null {
+  if (!text) return null;
+  const md = text.match(/\[[^\]]*\]\(([^)\s]+\.(?:mp4|mov|webm|m4v)[^)\s]*)\)/i);
+  if (md) return md[1];
+  const url = text.match(/(https?:\/\/[^\s)"']+\.(?:mp4|mov|webm|m4v)|\/uploads\/[^\s)"']+\.(?:mp4|mov|webm|m4v)|[^\s)"']+\.(?:mp4|mov|webm|m4v))/i);
+  return url ? url[1] : null;
+}
+
+const VIDEO_TOOLS = new Set(["generate_video"]);
+
 /** 解析 run_command 的结果文本（后端固定格式：命令／返回码／【标准输出】／【错误输出】）。 */
 function parseCommandResult(
   text: string,
@@ -342,6 +353,8 @@ function DeliverableCard({
   const { label, Icon } = toolMeta(step.tool);
   // G.3：生图工具 → 直接抓出图片地址渲染成真 <img>（不靠结果恰好是 markdown 图片语法），点开看大图。
   const imgUrl = IMAGE_TOOLS.has(step.tool) ? extractImageUrl(step.result || "") : null;
+  // 生视频工具 → 抓出视频地址渲染成 <video controls>（带播放器、可下载）。
+  const vidUrl = VIDEO_TOOLS.has(step.tool) ? extractVideoUrl(step.result || "") : null;
   return (
     <div className="overflow-hidden rounded-lg border border-black/[0.08] bg-white shadow-sm dark:border-white/[0.08] dark:bg-[#16181d] dark:shadow-none">
       <div className="flex items-center justify-between border-b border-black/[0.06] bg-black/[0.015] px-4 py-2 dark:border-white/[0.06] dark:bg-white/[0.02]">
@@ -350,7 +363,16 @@ function DeliverableCard({
         </span>
         <CopyButton text={step.result || ""} />
       </div>
-      {imgUrl ? (
+      {vidUrl ? (
+        <div className="px-4 py-3">
+          {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+          <video
+            src={vidUrl}
+            controls
+            className="max-h-[420px] w-auto rounded-md border border-black/[0.06] dark:border-white/[0.06]"
+          />
+        </div>
+      ) : imgUrl ? (
         <div className="px-4 py-3">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
@@ -373,7 +395,7 @@ function DeliverableCard({
       )}
       {(onPreview || (onPublish && step.tool === "make_platform_content")) && (
         <div className="flex items-center gap-2 px-4 pb-1">
-          {onPreview && !imgUrl && (
+          {onPreview && !imgUrl && !vidUrl && (
             <button
               type="button"
               onClick={() => onPreview({ kind: "content", title: label, text: step.result || "" })}
@@ -573,6 +595,15 @@ export function DesktopChatThread({
                   {m.content &&
                     (m.kind === "command" ? (
                       <TerminalBlock text={m.content} />
+                    ) : m.kind === "video" && extractVideoUrl(m.content) ? (
+                      <div className="py-1">
+                        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                        <video
+                          src={extractVideoUrl(m.content) as string}
+                          controls
+                          className="max-h-[420px] w-auto rounded-md border border-black/[0.06] dark:border-white/[0.06]"
+                        />
+                      </div>
                     ) : (
                       <div className={PROSE}>
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>

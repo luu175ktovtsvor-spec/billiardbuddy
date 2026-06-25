@@ -67,6 +67,15 @@ class Settings(BaseSettings):
     image_model_provider: str = "openai"
     image_model_name: str = ""
 
+    # 视频生成（火山方舟 Seedance，原生异步：建任务→轮询，约 1-8 分钟）。内置 key 经 .env.bundled.local 注入。
+    # ⚠️ 联调期可放本地 .env.bundled.local（不进仓库），但【发版前务必挪到服务端网关/relay】——与 GPT Image-2
+    #    走 zzyppz.cn relay 同理，key 裸打进 asar 会被扒（见 memory: bundled-key-concurrency-and-gateway）。
+    ark_api_key: str = ""                                              # env ARK_API_KEY
+    video_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"   # env VIDEO_BASE_URL
+    video_model_name: str = "doubao-seedance-1-5-pro-251215"          # env VIDEO_MODEL_NAME（按账号实际开通的型号填）
+    # 视频异步生成耗时长（1-8 分钟），轮询超时要覆盖真实最慢出片，否则慢但已成功的视频被判超时=钱花了片没拿到。
+    video_timeout: float = 1200.0                                      # env VIDEO_TIMEOUT
+
     # 编排大脑（Agent 规划/选工具用）——与「内容生成」分离，可独立切换。
     # 留空 = 跟随 text_model_*（零配置即全 DeepSeek，不改现状）。
     # 规划可靠性不足时，把 provider/name 切到 GLM-4.6（OpenAI 兼容：注册 GLM provider + 配 base_url/key 即可）。
