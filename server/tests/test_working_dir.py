@@ -6,6 +6,8 @@ import pytest
 from services.agent.context import AgentContext
 from services.agent.local_tools import _resolve, path_in_workspace
 from api.v1.agent import AgentChatRequest, AgentExecuteRequest, compose_agent_system_prompt
+from services.agent.loop import _auto_approve
+from services.agent.registry import Tool
 
 
 def test_agent_context_working_dir_default_none():
@@ -58,3 +60,23 @@ def test_path_in_workspace(tmp_path):
     assert path_in_workspace(str(sel), ctx) is True              # 选定文件
     assert path_in_workspace(str(tmp_path / "nope.txt"), ctx) is False  # 区外
     assert path_in_workspace("", ctx) is False                   # 空→安全 False
+
+
+def _file_tool():
+    return Tool(name="edit_file", description="", parameters={}, handler=lambda a, c: "",
+                requires_approval=True, approval_class="file")
+
+
+def test_auto_approve_scopes_to_workspace(tmp_path):
+    wd = tmp_path / "proj"; wd.mkdir()
+    ctx = SimpleNamespace(permission_mode="auto_files", working_dir=str(wd),
+                          allowed_paths=[], full_disk_access=False)
+    t = _file_tool()
+    assert _auto_approve(t, {"path": str(wd / "a.md")}, ctx) is True       # 区内→免确认
+    assert _auto_approve(t, {"path": str(tmp_path / "out.md")}, ctx) is False  # 区外→弹卡
+    assert _auto_approve(t, {}, ctx) is True                               # 无path的文件类→保守兼容(防回归)
+
+
+def test_auto_approve_ask_mode_unchanged(tmp_path):
+    ctx = SimpleNamespace(permission_mode="ask", working_dir=None, allowed_paths=[], full_disk_access=False)
+    assert _auto_approve(_file_tool(), {"path": "a.md"}, ctx) is False
