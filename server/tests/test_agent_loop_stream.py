@@ -77,6 +77,29 @@ def test_agent_chat_route_registered():
     assert "/agent/chat" in paths
 
 
+def test_stream_keepalive_during_slow_tool():
+    """M1 修复: 长工具执行(生图等)静默期应 yield keepalive 防 SSE 代理断流。"""
+    async def slow_handler(args, ctx):
+        await asyncio.sleep(6)
+        return "生成完成"
+
+    reg = _registry_with(slow_handler, "slow_tool")
+    provider = MockTextProvider(scripted=[
+        TextResponse(content="", model="mock", tool_calls=[_tc("slow_tool")], finish_reason="tool_calls"),
+        TextResponse(content="好了", model="mock", finish_reason="stop"),
+    ])
+    events = asyncio.run(_collect(run_agent_loop_stream(
+        user_message="做海报", registry=reg, provider=provider)))
+
+    keepalives = [e for e in events if e.get("type") == "keepalive"]
+    assert len(keepalives) >= 1, f"expected keepalive during 6s silence, got {len(keepalives)}"
+    types = [e["type"] for e in events]
+    tc_idx = types.index("tool_call")
+    tr_idx = types.index("tool_result")
+    ka_idx = types.index("keepalive")
+    assert tc_idx < ka_idx < tr_idx, "keepalive should appear between tool_call and tool_result"
+
+
 def test_stream_loop_done_always_last():
     async def handler(args, ctx):
         return "ok"

@@ -926,6 +926,9 @@ async def agent_chat(
                 max_turns=_agent_max_turns(),  # G.1 P2：默认 12（多步任务 8 偏小），可经 DESKTOP_AGENT_MAX_TURNS 调
             ):
                 et = event.get("type")
+                if et == "keepalive":
+                    yield ": keepalive\n\n"
+                    continue
                 if et == "final":
                     final_content = event.get("content", "") or final_content
                 if et in ("tool_call", "approval_request") and event.get("tool"):
@@ -959,15 +962,29 @@ async def agent_chat(
                     await _persist_agent_chat(db, store, user, body.message, persist_text, gen_id, conv_uuid,
                                               turns, tokens_used=tokens_used, source_rec_id=_rec_id)
                     event = {**event, "generation_id": gen_id, "conversation_id": str(conv_uuid)}
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
         except AppException as e:
             # 业务异常（含 BYOK 守卫的"还没配 key"友好 503 AIProviderError）：把明确的中文引导透传给前端，
             # 让用户知道去「模型设置」配自己的 key，而不是看笼统的"出现错误请重试"。need_byok=True 时前端弹「去设置」。
             logger.info("agent chat 业务异常→前端: %s (status=%s)", e.message, e.status_code)
+            if deliverables or final_content.strip():
+                try:
+                    _pt = "\n\n".join(deliverables) + (f"\n\n{final_content}" if final_content.strip() else "") if deliverables else final_content
+                    await _persist_agent_chat(db, store, user, body.message, _pt, gen_id, conv_uuid, turns, tokens_used=0)
+                except Exception:
+                    logger.exception("error path: 成品落库失败")
             yield f"data: {json.dumps({'type': 'error', 'error': e.message, 'need_byok': e.status_code == 503}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'turns': turns, 'stopped_reason': 'error', 'generation_id': gen_id, 'conversation_id': str(conv_uuid)}, ensure_ascii=False)}\n\n"
         except Exception:
             logger.exception("agent chat stream error")
+            if deliverables or final_content.strip():
+                try:
+                    _pt = "\n\n".join(deliverables) + (f"\n\n{final_content}" if final_content.strip() else "") if deliverables else final_content
+                    await _persist_agent_chat(db, store, user, body.message, _pt, gen_id, conv_uuid, turns, tokens_used=0)
+                except Exception:
+                    logger.exception("error path: 成品落库失败")
             yield f"data: {json.dumps({'type': 'error', 'error': '生成过程中出现错误，请重试'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'turns': turns, 'stopped_reason': 'error', 'generation_id': gen_id, 'conversation_id': str(conv_uuid)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_generator(),
