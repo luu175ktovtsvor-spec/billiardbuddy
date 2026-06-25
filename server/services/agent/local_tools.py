@@ -80,6 +80,38 @@ def _resolve(rel_or_abs: str, ctx=None) -> Path:
     raise ValueError(f"越界：只能操作内容库、工作目录或你当场选定的文件，拒绝 {rel_or_abs}")
 
 
+def path_in_workspace(raw_path: str, ctx) -> bool:
+    """目标路径是否在【工作区】内 = 内容库 ∪ 工作目录 ∪ 用户选定文件/目录 ∪ tool-results。
+    相对路径按 (ctx.working_dir or 内容库) 解析。用于 auto_files 判"改这文件要不要免确认"。
+    不抛、故障安全(判不了→False=更安全的弹卡)。与 full_disk_access 无关(它管免不免确认、不管能不能碰)。"""
+    if not raw_path:
+        return False
+    try:
+        lib = _library_root().resolve()
+        wd = None
+        raw_wd = (getattr(ctx, "working_dir", None) or "").strip() or None  # 与 _resolve 一致：纯空白当没设
+        if raw_wd:
+            try:
+                wd = Path(raw_wd).resolve()
+            except (OSError, ValueError):  # 与 _resolve 一致：坏路径优雅降级落内容库，而非整体返 False
+                wd = None
+        base = wd or lib
+        p = Path(raw_path)
+        path = (p if p.is_absolute() else base / p).resolve()
+        roots = [lib] + ([wd] if wd else []) + _allowed_paths(ctx)
+        try:
+            from services.agent.tool_result_store import results_root
+            roots.append(results_root().resolve())
+        except Exception:
+            pass
+        for r in roots:
+            if r and (path == r or r in path.parents):
+                return True
+        return False
+    except Exception:
+        return False
+
+
 def _backup(path: Path) -> str | None:
     """改/写前备份原件，返回备份路径（原件不存在则 None）。"""
     if not path.exists():
