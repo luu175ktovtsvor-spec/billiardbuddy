@@ -159,11 +159,13 @@ export function useAgentChat(opts: AgentChatOptions) {
               finalText = content;
             },
             onDone: (info) => {
-              setMessages((prev) => [
-                ...prev,
-                { role: "assistant", content: finalText, reasoning: reasoningText || undefined,
-                  steps: steps.length ? [...steps] : undefined, approval, question },
-              ]);
+              if (info.stopped_reason !== "error") {
+                setMessages((prev) => [
+                  ...prev,
+                  { role: "assistant", content: finalText, reasoning: reasoningText || undefined,
+                    steps: steps.length ? [...steps] : undefined, approval, question },
+                ]);
+              }
               if (info?.conversation_id) setConversationId(info.conversation_id);
               setDraft("");
               setReasoningDraft("");

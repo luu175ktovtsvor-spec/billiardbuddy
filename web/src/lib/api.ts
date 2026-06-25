@@ -314,7 +314,7 @@ class ApiClient {
               case "ask_question": handlers.onAskQuestion?.({ question: ev.question || "", options: ev.options || [], multi: ev.multi, id: ev.id }); break;
               case "final": handlers.onFinal?.(ev.content || ""); break;
               case "done": handlers.onDone?.({ turns: ev.turns, stopped_reason: ev.stopped_reason, conversation_id: ev.conversation_id, generation_id: ev.generation_id }); return;
-              case "error": handlers.onError?.(ev.error || "生成出错，请重试"); return;
+              case "error": handlers.onError?.(ev.error || "生成出错，请重试"); break;
             }
           } catch {
             // 跳过非法 JSON 行

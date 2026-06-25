@@ -1183,12 +1183,17 @@ async def run_agent_loop_stream(
             _pq: asyncio.Queue = asyncio.Queue()
             ctx.progress_emit = lambda ev, _q=_pq, _id=plan.tool_call_id: _q.put_nowait({**ev, "id": _id})
             _exec = asyncio.create_task(_execute_tool(registry, plan.name, plan.args, ctx))
+            _ka = 0
             try:
                 while not _exec.done():
                     try:
                         yield await asyncio.wait_for(_pq.get(), timeout=0.15)
+                        _ka = 0
                     except asyncio.TimeoutError:
-                        pass
+                        _ka += 1
+                        if _ka >= 33:
+                            yield {"type": "keepalive"}
+                            _ka = 0
                 while not _pq.empty():  # 收尾把残余进度吐净
                     yield _pq.get_nowait()
                 result = await _exec
