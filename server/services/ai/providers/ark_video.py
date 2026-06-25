@@ -48,26 +48,33 @@ class ArkVideoProvider:
         model: str,
         *,
         ratio: str = "16:9",
-        resolution: str = "720p",
+        resolution: str | None = None,
         duration: int = 5,
         first_frame_url: str | None = None,
         generate_audio: bool = False,
+        watermark: bool = False,
     ) -> str:
-        """提交 + 轮询，返回成片远端 URL。first_frame_url 已是可直接塞进 image_url 的值（http url 或 data-uri）。"""
-        task_id = await self._submit(prompt, model, ratio, resolution, duration, first_frame_url, generate_audio)
+        """提交 + 轮询，返回成片远端 URL。first_frame_url 已是可直接塞进 image_url 的值（http url 或 data-uri）。
+
+        resolution：Seedance 2.0 用 ratio(可填 adaptive/16:9…)+duration 控画幅、**请求体里没有 resolution**
+        （2026-06-25 用真 key 跑通官方 2.0 请求体确认）；老的 1.x 系列才用 resolution → 这里改成「给了才发、不给就省」，
+        兼容两代、又不给 2.0 塞它不认的字段。watermark 默认 False（不打水印）。"""
+        task_id = await self._submit(prompt, model, ratio, resolution, duration, first_frame_url, generate_audio, watermark)
         return await self._poll(task_id)
 
-    async def _submit(self, prompt, model, ratio, resolution, duration, first_frame_url, generate_audio) -> str:
+    async def _submit(self, prompt, model, ratio, resolution, duration, first_frame_url, generate_audio, watermark) -> str:
         content: list[dict] = [{"type": "text", "text": prompt}]
         if first_frame_url:  # 图生视频：把首帧图当 content 的一项（role=first_frame）
             content.append({"type": "image_url", "image_url": {"url": first_frame_url}, "role": "first_frame"})
-        body = {
+        body: dict = {
             "model": model,
             "content": content,
             "ratio": ratio,
-            "resolution": resolution,
             "duration": int(duration),
+            "watermark": bool(watermark),
         }
+        if resolution:  # 只有显式给了才发（2.0 不收 resolution，硬塞会出错；1.x 才用）
+            body["resolution"] = resolution
         if generate_audio:
             body["generate_audio"] = True
         timeout = httpx.Timeout(60.0, connect=30.0)

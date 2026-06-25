@@ -77,7 +77,7 @@ async def generate_video(
     user_id,
     prompt: str,
     ratio: str = "16:9",
-    resolution: str = "720p",
+    resolution: str | None = None,   # Seedance 2.0 用 ratio+duration 控画幅、不收 resolution；给了才发(兼容 1.x)
     duration: int = 5,
     first_frame: str | None = None,
     allow_paths: set[str] | None = None,
