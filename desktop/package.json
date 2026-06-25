@@ -48,6 +48,10 @@
         "from": "resources/frontend",
         "to": "frontend",
         "filter": ["**/*"]
+      },
+      {
+        "from": "bundled.env",
+        "to": "bundled.env"
       }
     ],
     "asar": true,
