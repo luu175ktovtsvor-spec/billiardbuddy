@@ -281,11 +281,11 @@ def test_run_command_follows_permission_level():
     register_local_tools(reg)
     run = reg.get("run_command")
     # L1 逐项确认 → 弹卡
-    assert _auto_approve(run, AgentContext(permission_mode="ask", full_disk_access=True)) is False
+    assert _auto_approve(run, {}, AgentContext(permission_mode="ask", full_disk_access=True)) is False
     # L2 自动接受修改 → 命令不是文件类，仍弹卡
-    assert _auto_approve(run, AgentContext(permission_mode="auto_files", full_disk_access=True)) is False
+    assert _auto_approve(run, {}, AgentContext(permission_mode="auto_files", full_disk_access=True)) is False
     # L3 完全访问 + 关闭上限闸 → 自己跑、不逐个问
-    assert _auto_approve(run, AgentContext(permission_mode="full", full_disk_access=True, auto_spend_limit=-1)) is True
+    assert _auto_approve(run, {}, AgentContext(permission_mode="full", full_disk_access=True, auto_spend_limit=-1)) is True
 
 
 def test_run_command_preview_shows_command_text():

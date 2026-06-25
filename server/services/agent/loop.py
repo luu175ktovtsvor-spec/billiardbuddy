@@ -28,6 +28,7 @@ from config import settings
 from services.agent.approval import sign_approval
 from services.agent.context import AgentContext
 from services.agent.hooks import run_post_tool_hooks, run_pre_tool_hooks, run_stop_hooks
+from services.agent.local_tools import path_in_workspace  # auto_files 收口判定(无循环依赖;注册 DESKTOP_LOCAL 门控,云端 import 无副作用)
 from services.agent.message_repair import ensure_tool_pairing
 from services.agent.registry import ToolRegistry
 from services.agent.vision_degrade import (
@@ -244,11 +245,11 @@ def _auto_spend_limit() -> int:
         return 5
 
 
-def _auto_approve(tool, ctx) -> bool:
+def _auto_approve(tool, args, ctx) -> bool:
     """据 ctx.permission_mode 决定一个 requires_approval 工具是否免确认、直接自动执行。
     有序判定（借鉴 cc-haha 权限瀑布）：force_confirm（bypass-immune）> 权限模式。
     - force_confirm=True 的高危不可逆/对外操作（未来的群发/平台发布/删数据）**任何模式都强制确认**；
-    - ask=都弹确认（默认）；auto_files=仅文件类(可逆、已自动备份)免确认；full=全部免确认（含对外/写入）。"""
+    - ask=都弹确认（默认）；auto_files=仅文件类且在工作区内免确认；full=全部免确认（含对外/写入）。"""
     # bypass-immune：高危操作的人工确认永不被放行模式旁路。放在最前，优先级高于一切模式。
     if getattr(tool, "force_confirm", False):
         return False
@@ -257,7 +258,12 @@ def _auto_approve(tool, ctx) -> bool:
         return False
     kind = getattr(tool, "approval_class", "spend")
     if mode == "auto_files":
-        return kind == "file"
+        if kind != "file":
+            return False
+        path = (args or {}).get("path")
+        if not path:                       # 没 path 的文件类(理论不出现)→ 保守维持原免确认,防回归
+            return True
+        return path_in_workspace(path, ctx)   # 工作区内免确认;区外→False(弹卡)
     if mode == "full":
         # full=所有动作免确认；但「对外/写入类」(发布、群发等)加一道【一轮内自动放行上限闸】：
         # 老板切到"跳过确认"后，模型批量自动对外/写入会失控(痛点#7)——超上限即使 full 也强制弹安全确认。
@@ -515,7 +521,7 @@ def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _Too
                 name=name, args=args, tool_call_id=tc_id, fallback=True,
                 fallback_msg=_PLAN_MODE_SKIP_MSG.format(name=name),
             )
-        if tool.requires_approval and not _auto_approve(tool, ctx):
+        if tool.requires_approval and not _auto_approve(tool, args, ctx):
             # SH-8 连续拒绝自动回退：同一动作老板已反复拒（或全局累计拒太多）→ 不再提请该动作，
             # 改回灌"这个先不做了、换个法子"，让模型走文本答复/替代方案，别没完没了地弹同一张确认卡。
             if _denial_fallback(name, args, ctx):
