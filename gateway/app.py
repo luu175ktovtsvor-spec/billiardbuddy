@@ -30,6 +30,9 @@ CFG = {
     "relay_token": os.environ["GW_RELAY_TOKEN"],
     "admin_token": os.environ.get("GW_ADMIN_TOKEN", "change-me"),
     "db": os.environ.get("GW_DB", "/opt/qfgw/usage.db"),
+    # Seedance 视频(火山方舟,国内→国内直连,异步:提交→轮询)。key 只从 gw.env 读、不进库。
+    "ark_key": os.environ.get("GW_ARK_KEY", ""),
+    "ark_base": os.environ.get("GW_ARK_BASE", "https://ark.cn-beijing.volces.com/api/v3").rstrip("/"),
 }
 APP_TOKENS = json.loads(os.environ.get("GW_APP_TOKENS", "{}"))  # {app令牌: 用户标识}
 
@@ -42,6 +45,7 @@ Q_CHAT = int(os.environ.get("GW_Q_CHAT", "300"))         # 每人每日对话上
 Q_IMG = int(os.environ.get("GW_Q_IMG", "20"))
 Q_VIDEO = int(os.environ.get("GW_Q_VIDEO", "5"))
 QUEUE_MAX_WAIT = float(os.environ.get("GW_QUEUE_MAX_WAIT", "60"))  # 排队最多等;超时=背压拒
+VIDEO_TIMEOUT = float(os.environ.get("GW_VIDEO_TIMEOUT", "1800"))  # 视频轮询上限(实测出片 3.5~13.5 分钟,留 30 分钟)
 
 CST = timezone(timedelta(hours=8))
 
@@ -222,7 +226,46 @@ async def images(request: Request, authorization: str = Header(None)):
 
 @app.post("/v1/video/generations")
 async def video(request: Request, authorization: str = Header(None)):
+    """Seedance 视频:客户端传 ARK 格式 body(model/content/ratio/duration…),网关注入真 key、
+    提交异步任务→轮询出片→回 {video_url}。video_sem 卡死并发(火山个人户 3),配额按 user 计。"""
     user = auth(authorization)
     quota_check(user, "video", Q_VIDEO)
-    # 接口位已留;火山方舟 key 到位后:async with video_sem → 提交异步任务→轮询→落盘
-    raise HTTPException(503, "视频功能还没接(等火山方舟 ARK key);并发位已留 3,key 到即通")
+    if not CFG["ark_key"]:
+        raise HTTPException(503, "视频功能未配置(缺 GW_ARK_KEY)")
+    body = await request.body()
+    ark_h = {"Authorization": f"Bearer {CFG['ark_key']}", "Content-Type": "application/json"}
+    tasks_url = CFG["ark_base"] + "/contents/generations/tasks"
+    async with video_sem:                            # ① 视频并发(个人户 3)③ 满了在此排队
+        t0 = time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=60.0)) as cli:
+                sub = await cli.post(tasks_url, content=body, headers=ark_h)   # 提交异步任务
+                if sub.status_code >= 400:
+                    log(user, "video", False, sub.status_code, int((time.monotonic() - t0) * 1000), sub.text[:120])
+                    ct = sub.headers.get("content-type", "")
+                    return JSONResponse(status_code=sub.status_code,
+                                        content=sub.json() if ct.startswith("application/json") else {"raw": sub.text[:500]})
+                task_id = (sub.json() or {}).get("id")
+                if not task_id:
+                    log(user, "video", False, 502, int((time.monotonic() - t0) * 1000), "no task_id")
+                    raise HTTPException(502, "视频上游未返回任务号")
+                deadline = time.monotonic() + VIDEO_TIMEOUT                    # 轮询直到出片(背压由 video_sem 兜)
+                while time.monotonic() < deadline:
+                    await asyncio.sleep(8)
+                    g = await cli.get(f"{tasks_url}/{task_id}", headers=ark_h)
+                    j = g.json() or {}
+                    st = str(j.get("status") or "").lower()
+                    if st == "succeeded":
+                        url = (j.get("content") or {}).get("video_url") or j.get("video_url")
+                        log(user, "video", True, 200, int((time.monotonic() - t0) * 1000), f"task={task_id}")
+                        return {"video_url": url, "task_id": task_id}
+                    if st in ("failed", "expired", "cancelled", "canceled"):
+                        log(user, "video", False, 502, int((time.monotonic() - t0) * 1000), f"{st}")
+                        raise HTTPException(502, f"视频生成失败:{st}")
+                log(user, "video", False, 504, int((time.monotonic() - t0) * 1000), "poll timeout")
+                raise HTTPException(504, "视频生成超时")
+        except HTTPException:
+            raise
+        except Exception as e:
+            log(user, "video", False, 599, int((time.monotonic() - t0) * 1000), str(e)[:120])
+            raise HTTPException(502, f"视频上游出错:{str(e)[:120]}")
