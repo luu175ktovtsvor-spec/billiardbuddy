@@ -339,7 +339,7 @@ export function SettingsDrawer({
               <p className="mb-2 flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-[#a1a1a6] dark:text-[#6e7077]">
                 <Brain className="h-3.5 w-3.5" /> AI 记的事（店脑）
               </p>
-              <p className="mb-2 text-[11.5px] leading-snug text-[#86868b] dark:text-[#8a8c93]">这里能看见管家记住的关于你/你店的事，随时改或删。你亲定的"店规矩"管家绝不会覆盖。</p>
+              <p className="mb-2 text-[11.5px] leading-snug text-[#86868b] dark:text-[#8a8c93]">这里能看见管家记住的关于你/你店的事，随时改或删。你亲定的「店规矩」管家绝不会覆盖。</p>
               <div className="mb-2.5 flex gap-1.5">
                 <input className={INPUT} value={newRule} onChange={(e) => setNewRule(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") void addRule(); }}
