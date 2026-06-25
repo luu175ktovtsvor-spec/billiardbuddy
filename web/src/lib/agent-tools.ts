@@ -6,7 +6,7 @@
 import {
   CalendarDays, Lightbulb, PenLine, UserPlus, Stethoscope, Dices, ImageIcon, Sparkles,
   FileText, PartyPopper, Search, History, FolderOpen, Save, FilePen, FileSpreadsheet, Layers, Wrench,
-  FileSearch, Terminal, Globe, ListChecks, Users, Monitor, MousePointerClick, Plug, Bell, Clock, BookOpen,
+  FileSearch, Terminal, Globe, ListChecks, Users, Monitor, MousePointerClick, Plug, Bell, Clock, BookOpen, Film,
 } from "lucide-react";
 
 export const TOOL_META: Record<string, { label: string; Icon: typeof Wrench }> = {
@@ -19,6 +19,7 @@ export const TOOL_META: Record<string, { label: string; Icon: typeof Wrench }> =
   recommend_games: { label: "想玩法", Icon: Dices },
   make_poster: { label: "做海报", Icon: ImageIcon },
   generate_image: { label: "生成图片", Icon: ImageIcon },
+  generate_video: { label: "生成视频", Icon: Film },
   make_platform_content: { label: "写平台内容", Icon: Sparkles },
   make_groupbuy_content: { label: "写团购套餐", Icon: FileText },
   plan_activity: { label: "策划活动", Icon: PartyPopper },
@@ -63,7 +64,7 @@ export function toolMeta(name: string) {
 export const DELIVERABLE_TOOLS = new Set([
   "write_operation_content", "write_batch", "plan_activity", "assistant_outreach",
   "diagnose_operation", "recommend_games", "make_platform_content", "make_groupbuy_content",
-  "make_poster", "generate_image",
+  "make_poster", "generate_image", "generate_video",
 ]);
 
 // 内部/指令注入类工具（P1-8 + 专题B.1）：结果是【给 AI 看的操作手册/检索原文】，对老板零价值还吓人
@@ -74,6 +75,10 @@ export const INTERNAL_TOOLS = new Set([
 
 /** 待确认动作的标题（对外发出 / 在本机执行的动作，经审批闸先确认）。前置「需要确认」徽标已表态，标题只点动作。 */
 export function approvalLabel(tool: string, args?: Record<string, unknown>): string {
+  if (tool === "generate_video") {
+    const ff = typeof args?.first_frame === "string" && args.first_frame ? "图生视频" : "文生视频";
+    return `生成一条视频（${ff}）`;
+  }
   if (tool === "edit_excel") return "修改这份报表";
   if (tool === "write_file" || tool === "edit_file") return "修改这个文件";
   if (tool === "run_command") {
@@ -98,6 +103,7 @@ export function approvalLabel(tool: string, args?: Record<string, unknown>): str
 
 /** 确认按钮文案。 */
 export function approvalConfirmText(tool: string): string {
+  if (tool === "generate_video") return "确认生成视频";
   if (tool === "edit_excel" || tool === "write_file" || tool === "edit_file") return "确认修改";
   if (tool === "run_command") return "确认执行命令";
   return "确认执行";

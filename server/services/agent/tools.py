@@ -563,6 +563,80 @@ async def generate_image(args: dict, ctx) -> str:
     return f"做好啦！👇\n\n![生成的图片]({url})"
 
 
+# ---- 生视频工具（文生视频 / 图生视频，火山方舟 Seedance 异步）----
+# 与生图不同：视频慢(1-几分钟)且贵(单条比图贵一个量级) → 走审批闸 requires_approval（花钱前先弹确认让老板点头），
+# 并发/重复护栏同生图：每用户单条在跑锁 + 每轮只出一个。
+_VIDEO_GENERATING: set[str] = set()
+
+
+@tool(
+    name="generate_video",
+    deliverable=True,
+    requires_approval=True,   # 视频贵+不可逆产出 → 花钱前弹确认（生图便宜不弹、视频弹，符合防盗刷/控成本）
+    approval_class="spend",
+    timeout=1260.0,           # 异步轮询可能几分钟，给足；别用默认短超时把它掐了（>settings.video_timeout 兜底）
+    description=(
+        "生成一段短视频（AI 文生视频 / 图生视频）。当用户要『做个视频 / 生成视频 / 让这张图动起来』时调用。"
+        "你要当『提示词扩写师』：把用户的大白话需求扩写成一段【中文】画面+运镜描述——写清主体动作、"
+        "镜头运动(推/拉/摇/移/环绕)、场景、节奏、氛围，别只丢一句话（那样出片很烂）。"
+        "**图生视频**：把上一步 generate_image/make_poster 产出的图片地址（markdown 里的 /uploads/... 路径或 http 链接），"
+        "或老板当场选定的图片，填进 first_frame，视频就会从这张图开始动起来。"
+        "视频生成较慢（约 1-几分钟）且要花钱，会先弹确认让老板点头后才真正生成。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "description": {"type": "string", "description": "你扩写好的【中文】画面+运镜描述：主体动作 / 镜头运动(推拉摇移环绕) / 场景 / 节奏 / 氛围，越具体出片越好"},
+            "first_frame": {"type": "string", "description": "首帧图片地址(可选)：上一步生成图片的 /uploads/... 路径或 http 链接；填了就做『图生视频』(从这张图动起来)，不填就纯文生视频"},
+            "ratio": {"type": "string", "description": "画面比例(可选)：16:9 / 9:16 / 1:1，默认 16:9"},
+            "duration": {"type": "integer", "description": "时长秒数(可选)：默认 5"},
+        },
+        "required": ["description"],
+    },
+)
+async def generate_video(args: dict, ctx) -> str:
+    """文生视频/图生视频：审批通过后由 /agent/execute 执行（提交→轮询，几分钟）。
+    每轮只出一个视频 + 每用户单条在跑锁（护成本，与生图同款）。"""
+    from services import video_service  # 延迟导入，避免 import 期重负载/循环依赖
+
+    desc = (args.get("description") or "").strip()
+    if not desc:
+        return "缺少视频描述，没法生成。说清你想要个什么样的视频（画面 + 运镜）。"
+
+    # 首帧图：模型显式给的优先；没给则回退老板当场选定的第一张图（"选了张图说让它动起来"）。
+    from services.agent.multimodal import is_image
+    sel_imgs = [p for p in (getattr(ctx, "allowed_paths", None) or []) if is_image(p)]
+    first_frame = (args.get("first_frame") or "").strip() or (sel_imgs[0] if sel_imgs else None)
+
+    if getattr(ctx, "_video_generated_this_run", False):
+        return "本轮已生成过一个视频，一轮只出一个；除非老板明确要多个，别再调用生视频工具。"
+    uid = str(getattr(ctx.user, "id", "") or "")
+    if uid and uid in _VIDEO_GENERATING:
+        return "你上一个视频还在生成中，等它出完再来下一个～"
+    if uid:
+        _VIDEO_GENERATING.add(uid)
+    try:
+        result = await video_service.generate_video(
+            db=ctx.db, store=ctx.store, user_id=ctx.user.id,
+            prompt=desc, ratio=args.get("ratio", "16:9"),
+            duration=int(args.get("duration", 5) or 5),
+            first_frame=first_frame,
+            allow_paths=set(getattr(ctx, "allowed_paths", None) or []),
+        )
+        ctx._video_generated_this_run = True
+    except Exception as e:  # 失败给人话、别把异常栈丢给模型
+        return f"视频没生成出来：{e}"
+    finally:
+        if uid:
+            _VIDEO_GENERATING.discard(uid)
+
+    url = result.get("video_url")
+    if not url:
+        return "视频已生成（但没拿到链接，去生成历史看看）。"
+    # 前端 VIDEO_TOOLS 分支据此抓出 url 渲染成 <video>；markdown 链接同时作可点击兜底。
+    return f"做好啦！👇\n\n[点击查看视频]({url})"
+
+
 # ---- 平台定制内容(抖音/小红书/快手/视频号)：内容生成 + 复制 handoff，不自动发 ----
 # 平台 prompt 只设"格式/调性"，行业知识/门店画像/合规由 run_generation 管道自动注入。
 
