@@ -1062,7 +1062,8 @@ async def agent_execute(
         memories = await load_store_memory(db, store.id)
         billiards_mode = bool(body.knowledge_packs and "billiards" in body.knowledge_packs)
         sys_prompt = compose_agent_system_prompt(profile_text, format_memories_for_prompt(memories),
-                                                 full_disk=full_disk, billiards_mode=billiards_mode)
+                                                 full_disk=full_disk, billiards_mode=billiards_mode,
+                                                 working_dir=body.working_dir or "")
         history = await _load_agent_history(db, store, body.conversation_id)
         synth = (
             f"[系统提示·非用户输入] 老板已确认、你刚请求的「{body.tool}」已执行完成。"
