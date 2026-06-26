@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import random
 from typing import AsyncIterator
 
 import httpx
@@ -12,6 +13,97 @@ from services.ai.base import TextProvider, TextRequest, TextResponse, ReasoningC
 from services.ai.providers._net import bypass_proxy_for as _bypass_proxy_for, _extract_host, _is_gateway_host
 
 logger = logging.getLogger(__name__)
+
+# ---------- Gap A 重试退避（对齐官方做法，见 docs/references/harness缺口审计-对照ClaudeCode-2026-06-26.md A）----------
+# 可重试错误集合：请求超时(408)/限流(429)/服务器(500)/网关(502)/不可用(503)/网关超时(504)/过载(529)
+# + 连接错误(APIConnectionError→视作 502) + 读超时(APITimeoutError→视作 504)。这些都是上游"抖一下"，
+# 同一档退避重试几次往往就过去了。不可重试(400 参数 / 401 认证 / 402 余额)退了也没用 → 直接抛。
+_RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504, 529}
+# 一般可重试错误最多退避重试几次（共 _MAX_RETRIES+1 次尝试）。上限取中(官方 10 次)——我们下游还有
+# failover 切 BYOK 档兜底，本档不必试满 10 次，4~6 次足够吸收瞬时抖动、剩下的交给 failover。
+_MAX_RETRIES = 5
+# 529(他家过载)：只少试几次就把可重试错误抛出，让 FailoverTextProvider 切下一套配置档（他过载、等他不如换一家）。
+_OVERLOAD_MAX_RETRIES = 2
+_BACKOFF_BASE = 0.5      # 退避基数秒：0.5→1→2→4…
+_BACKOFF_CAP = 30.0      # 单次退避封顶秒（指数涨到此为止）
+_RETRY_AFTER_CAP = 60.0  # 尊重 Retry-After 头，但封顶——防服务端给个超大值把请求挂死
+# full jitter 的随机源：用独立 Random 实例（非 time 播种的"真随机时钟"，每请求独立、可在测试里注入替换），
+# 等待 = rand()*delay ∈ [0, delay)，打散重试时刻、避免大量客户端同一时刻齐步重试再次打爆上游。
+_BACKOFF_RNG = random.Random()
+
+
+def _retry_status(e: Exception) -> int | None:
+    """该异常用于【重试决策】的状态码；None = 不可重试。
+
+    用【原始】状态码判定（非分类后的）：超时→504、连接→502、状态错误看其原码是否在可重试集合；
+    AIProviderError 分支只为接住流式 idle 看门狗抛出的可重试错误（status_code 已是 504 等）。"""
+    if isinstance(e, APITimeoutError):
+        return 504
+    if isinstance(e, APIConnectionError):
+        return 502
+    if isinstance(e, APIStatusError):
+        return e.status_code if e.status_code in _RETRYABLE_STATUS else None
+    if isinstance(e, AIProviderError):
+        sc = getattr(e, "status_code", None)
+        return sc if sc in _RETRYABLE_STATUS else None
+    return None
+
+
+def _classify_call_error(e: Exception) -> AIProviderError:
+    """把一次调用抛出的 SDK 异常统一分类成用户友好的 AIProviderError（带 status_code 供 failover 接力）。"""
+    if isinstance(e, AIProviderError):
+        return e
+    if isinstance(e, APITimeoutError):
+        return AIProviderError(message="AI 服务响应超时，请稍后重试", status_code=504, provider_error=e)
+    if isinstance(e, APIConnectionError):
+        return AIProviderError(message="AI 服务连接失败，请稍后重试", status_code=502, provider_error=e)
+    if isinstance(e, APIStatusError):
+        return _classify_api_error(e)
+    return AIProviderError(message="AI 生成失败，请稍后重试", status_code=502, provider_error=e)
+
+
+def _parse_retry_after(e: Exception) -> float | None:
+    """从 429/503 响应头解析 Retry-After（秒）；缺失/非法/负值 → None（改用退避兜底）。封顶 _RETRY_AFTER_CAP。"""
+    if not isinstance(e, APIStatusError):
+        return None
+    ra = e.response.headers.get("Retry-After") or e.response.headers.get("retry-after")
+    if ra is None:
+        return None
+    try:
+        val = float(ra)
+    except (ValueError, TypeError):
+        return None
+    if val < 0:
+        return None
+    return min(val, _RETRY_AFTER_CAP)
+
+
+def _backoff_wait(e: Exception, attempt: int, rand) -> float:
+    """本次失败应等待的秒数：有合法 Retry-After 头就尊重它（已封顶，不再叠 jitter）；
+    否则【指数退避 + full jitter】：delay=min(base*2**attempt, cap)，wait=rand()*delay ∈ [0, delay)。"""
+    ra = _parse_retry_after(e)
+    if ra is not None:
+        return ra
+    delay = min(_BACKOFF_BASE * (2 ** attempt), _BACKOFF_CAP)
+    return rand() * delay
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        return default
+
+
+# ---------- Gap K 流式 idle 看门狗（配合 Gap A，见审计 K）----------
+# 逐块取 chunk 加 idle 计时（asyncio.wait_for 包每次 __anext__）：上游建流后"卡住不吐 token"不再干等
+# httpx 读超时（生产 factory 给 300s = 转圈到天荒地老），超时即中断、按可重试错误(504)抛 → 被 A/failover 接住。
+# 首块预算更长（MiMo 这种带 reasoning 的模型首字慢），之后每块从严。可用环境变量覆盖。
+_STREAM_FIRST_CHUNK_TIMEOUT = _env_float("DESKTOP_STREAM_FIRST_CHUNK_TIMEOUT", 120.0)
+_STREAM_IDLE_TIMEOUT = _env_float("DESKTOP_STREAM_IDLE_TIMEOUT", 90.0)
+# 建流/首块前失败（yielded=False）可整流退避重试几次；一旦吐过 token 就不再重试（重复执行已展示内容不安全）。
+# 1~2 即可——剩下交给 FailoverTextProvider 切下一套 BYOK 档，两层不各自狂试。
+_STREAM_MAX_RETRIES = 2
 
 # ---------- 客户端并发信号量（避免一瞬间打爆上游限流） ----------
 _gateway_sem_limit = int(os.environ.get("GATEWAY_MAX_CONCURRENCY", "5"))
@@ -99,47 +191,39 @@ class DeepSeekProvider(TextProvider):
             return None
 
     @staticmethod
-    async def _call_with_retry(client: AsyncOpenAI, kwargs: dict):
-        """调用 chat.completions.create，遇 429 + Retry-After 头自动等一次再重试。
+    async def _call_with_retry(client: AsyncOpenAI, kwargs: dict, *,
+                               max_retries: int = _MAX_RETRIES, sleep=None, rand=None):
+        """调用 chat.completions.create，对可重试错误做【指数退避 + full jitter】重试（Gap A）。
 
-        只重试一次；没有 Retry-After 头或重试仍 429 则直接抛错。
+        可重试集合见 `_RETRYABLE_STATUS` + 连接错误 + 读超时；不可重试(400/401/402…)直接抛。
+        529(过载)只试 `_OVERLOAD_MAX_RETRIES` 次就抛、交给 FailoverTextProvider 切下一档。
+        有合法 Retry-After 头则尊重它（封顶 `_RETRY_AFTER_CAP`），否则指数退避。
+
+        与 failover 分层：本函数只在【同一档】退避重试，仍抛可重试 AIProviderError 才由上层切档——
+        两层不各自狂试。sleep/rand 可注入（测试用，不真睡、确定性）。
         """
-        try:
-            return await client.chat.completions.create(**kwargs)
-        except APIStatusError as e:
-            if e.status_code == 429:
-                retry_after = (e.response.headers.get("Retry-After")
-                               or e.response.headers.get("retry-after"))
-                if retry_after is not None:
-                    try:
-                        wait = float(retry_after)
-                    except (ValueError, TypeError):
-                        raise _classify_api_error(e) from e
-                    logger.info("429 Retry-After=%.1fs，等待后重试一次", wait)
-                    await asyncio.sleep(wait)
-                    try:
-                        return await client.chat.completions.create(**kwargs)
-                    except APIStatusError as e2:
-                        raise _classify_api_error(e2) from e2
-            raise _classify_api_error(e) from e
-        except APITimeoutError as e:
-            raise AIProviderError(
-                message="AI 服务响应超时，请稍后重试",
-                status_code=504,
-                provider_error=e,
-            ) from e
-        except APIConnectionError as e:
-            raise AIProviderError(
-                message="AI 服务连接失败，请稍后重试",
-                status_code=502,
-                provider_error=e,
-            ) from e
-        except Exception as e:
-            logger.exception("DeepSeek unexpected error")
-            raise AIProviderError(
-                message="AI 生成失败，请稍后重试",
-                provider_error=e,
-            ) from e
+        _sleep = sleep or asyncio.sleep
+        _rand = rand or _BACKOFF_RNG.random
+        attempt = 0
+        while True:
+            try:
+                return await client.chat.completions.create(**kwargs)
+            except (APIStatusError, APITimeoutError, APIConnectionError) as e:
+                status = _retry_status(e)  # 原始码判定；None=不可重试
+                cap = _OVERLOAD_MAX_RETRIES if status == 529 else max_retries
+                if status is None or attempt >= cap:
+                    raise _classify_call_error(e) from e
+                wait = _backoff_wait(e, attempt, _rand)
+                logger.info("可重试错误 status=%s，第 %d/%d 次退避 %.2fs 后重试",
+                            status, attempt + 1, cap, wait)
+                await _sleep(wait)
+                attempt += 1
+            except Exception as e:
+                logger.exception("DeepSeek unexpected error")
+                raise AIProviderError(
+                    message="AI 生成失败，请稍后重试",
+                    provider_error=e,
+                ) from e
 
     async def generate(self, request: TextRequest) -> TextResponse:
         if request.messages:
@@ -172,9 +256,17 @@ class DeepSeekProvider(TextProvider):
             response = await self._call_with_retry(client, kwargs)
 
         tokens = response.usage.total_tokens if response.usage else 0
+        # Gap C：透出输入 token 数(prompt_tokens)给 autocompact 触发判据当真值。防御取值：
+        # 端点没返回/类型异常(如测试里的 MagicMock)一律按 0，绝不让它污染估算。
+        prompt_tokens = 0
+        if response.usage is not None:
+            _raw_pt = getattr(response.usage, "prompt_tokens", 0)
+            if isinstance(_raw_pt, int):
+                prompt_tokens = _raw_pt
         if not response.choices:
             logger.warning("DeepSeek returned empty choices")
-            return TextResponse(content="", model=model_name, tokens_used=tokens)
+            return TextResponse(content="", model=model_name, tokens_used=tokens,
+                                prompt_tokens=prompt_tokens)
 
         choice = response.choices[0]
         content = choice.message.content or ""
@@ -192,6 +284,7 @@ class DeepSeekProvider(TextProvider):
             tokens_used=tokens,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
+            prompt_tokens=prompt_tokens,
         )
 
     async def generate_stream(
@@ -227,52 +320,83 @@ class DeepSeekProvider(TextProvider):
             if request.tool_choice is not None:
                 kwargs["tool_choice"] = request.tool_choice
 
+        # Gap A/K：建流 + 逐块 idle 看门狗包成一个可整流重试的循环。
+        # 只在【还没吐出任何 token（含 reasoning）】时才整流重试（建流即错 / 首块前卡住）——
+        # 一旦吐过 token，重试会重复执行已展示内容、不安全，只能把可重试错误抛给上层（failover 据 yielded 决定切不切）。
+        _rand = _BACKOFF_RNG.random
         async with _get_semaphore():
-            stream = await self._call_with_retry(client, kwargs)
-
-            tool_acc: dict[int, dict] = {}
-            try:
-                async for chunk in stream:
-                    # 收集 usage 统计，写入调用方传入的 usage_sink（按请求独立，避免并发串号）
-                    if chunk.usage and usage_sink is not None:
-                        usage_sink.update({
-                            "prompt_tokens": chunk.usage.prompt_tokens,
-                            "completion_tokens": chunk.usage.completion_tokens,
-                            "total_tokens": chunk.usage.total_tokens,
-                            "cache_hit_tokens": getattr(chunk.usage, 'prompt_cache_hit_tokens', 0),
-                        })
-                    if not chunk.choices:
-                        continue
-                    choice0 = chunk.choices[0]
-                    # SH-4：截断恢复需要 finish_reason。流式里它在末片随 choice 返回（content 片为 None），
-                    # 累计最后一个非空值写进 finish_sink，供 Agent 循环判断 ="length" 续写。
-                    fr = getattr(choice0, "finish_reason", None)
-                    if fr and finish_sink is not None:
-                        finish_sink["finish_reason"] = fr
-                    delta = choice0.delta
-                    # F.1 思考过程：reasoning_content 是 DeepSeek/通义/智谱/Kimi/硅基/火山/MiMo 通用约定（非 SDK 声明字段，
-                    # 用 getattr + model_extra 兜底，绝不裸点否则 AttributeError）。yield ReasoningChunk 与正文区分、只供展示。
-                    reasoning = (getattr(delta, "reasoning_content", None)
-                                 or (getattr(delta, "model_extra", None) or {}).get("reasoning_content"))
-                    if reasoning:
-                        yield ReasoningChunk(reasoning)
-                    # 累积流式工具调用增量（id/name 在首片，arguments 分片拼接）
-                    if getattr(delta, "tool_calls", None):
-                        _accumulate_tool_call_deltas(tool_acc, delta.tool_calls)
-                    if getattr(delta, "content", None):
-                        yield delta.content
-            except APIStatusError as e:
-                raise _classify_api_error(e) from e
-            except Exception as e:
-                logger.exception("DeepSeek stream chunk error")
-                raise AIProviderError(
-                    message="AI 流式生成中断，请重试",
-                    provider_error=e,
-                ) from e
-
-            # 流正常结束后回填累积的工具调用（供 Agent 循环消费）
-            if tool_acc and tool_calls_sink is not None:
-                tool_calls_sink.extend(tool_acc[i] for i in sorted(tool_acc))
+            attempt = 0
+            while True:
+                yielded = False
+                tool_acc: dict[int, dict] = {}
+                try:
+                    stream = await client.chat.completions.create(**kwargs)
+                    aiter = stream.__aiter__()
+                    first = True
+                    while True:
+                        budget = _STREAM_FIRST_CHUNK_TIMEOUT if first else _STREAM_IDLE_TIMEOUT
+                        try:
+                            # idle 看门狗：budget 内没等到下一个 chunk 即中断（上游卡住不吐）
+                            chunk = await asyncio.wait_for(aiter.__anext__(), timeout=budget)
+                        except StopAsyncIteration:
+                            break
+                        except TimeoutError as te:  # asyncio.TimeoutError 即 TimeoutError(3.11+)
+                            raise AIProviderError(
+                                message="AI 流式响应卡住（长时间无新内容），请重试",
+                                status_code=504, provider_error=te) from te
+                        first = False
+                        # 收集 usage 统计，写入调用方传入的 usage_sink（按请求独立，避免并发串号）
+                        if chunk.usage and usage_sink is not None:
+                            usage_sink.update({
+                                "prompt_tokens": chunk.usage.prompt_tokens,
+                                "completion_tokens": chunk.usage.completion_tokens,
+                                "total_tokens": chunk.usage.total_tokens,
+                                "cache_hit_tokens": getattr(chunk.usage, 'prompt_cache_hit_tokens', 0),
+                            })
+                        if not chunk.choices:
+                            continue
+                        choice0 = chunk.choices[0]
+                        # SH-4：截断恢复需要 finish_reason。流式里它在末片随 choice 返回（content 片为 None），
+                        # 累计最后一个非空值写进 finish_sink，供 Agent 循环判断 ="length" 续写。
+                        fr = getattr(choice0, "finish_reason", None)
+                        if fr and finish_sink is not None:
+                            finish_sink["finish_reason"] = fr
+                        delta = choice0.delta
+                        # F.1 思考过程：reasoning_content 是 DeepSeek/通义/智谱/Kimi/硅基/火山/MiMo 通用约定（非 SDK 声明字段，
+                        # 用 getattr + model_extra 兜底，绝不裸点否则 AttributeError）。yield ReasoningChunk 与正文区分、只供展示。
+                        reasoning = (getattr(delta, "reasoning_content", None)
+                                     or (getattr(delta, "model_extra", None) or {}).get("reasoning_content"))
+                        if reasoning:
+                            yielded = True  # 吐过 reasoning 也算"已展示"→ 之后不再整流重试（不重复展示）
+                            yield ReasoningChunk(reasoning)
+                        # 累积流式工具调用增量（id/name 在首片，arguments 分片拼接）
+                        if getattr(delta, "tool_calls", None):
+                            _accumulate_tool_call_deltas(tool_acc, delta.tool_calls)
+                        if getattr(delta, "content", None):
+                            yielded = True
+                            yield delta.content
+                    # 流正常结束后回填累积的工具调用（供 Agent 循环消费）
+                    if tool_acc and tool_calls_sink is not None:
+                        tool_calls_sink.extend(tool_acc[i] for i in sorted(tool_acc))
+                    return
+                except (APIStatusError, APITimeoutError, APIConnectionError, AIProviderError) as e:
+                    status = _retry_status(e)  # None=不可重试
+                    # 已吐 token / 不可重试 / 超过整流重试上限 → 抛（交给上层 failover 按 yielded 决定切不切）
+                    if yielded or status is None or attempt >= _STREAM_MAX_RETRIES:
+                        if isinstance(e, AIProviderError):
+                            raise
+                        raise _classify_call_error(e) from e
+                    wait = _backoff_wait(e, attempt, _rand)
+                    logger.info("流式建流/首响应失败 status=%s，第 %d/%d 次退避 %.2fs 整流重试",
+                                status, attempt + 1, _STREAM_MAX_RETRIES, wait)
+                    await asyncio.sleep(wait)
+                    attempt += 1
+                except Exception as e:
+                    logger.exception("DeepSeek stream chunk error")
+                    raise AIProviderError(
+                        message="AI 流式生成中断，请重试",
+                        provider_error=e,
+                    ) from e
 
 
 def _serialize_tool_calls(raw) -> list[dict] | None:

@@ -168,6 +168,12 @@ _AUTOCOMPACT_SUMMARY_MARK = "[此前对话摘要]"
 # prompt 反复报错时，上下文已顶到窗口*ratio 之上，否则每一轮都会再徒劳地试一次摘要、白烧 token）。借鉴 CC s08。
 _AUTOCOMPACT_FAIL_MAX = 3
 
+# Gap C：autocompact 触发阈值口径——"窗口 − 固定 buffer"（官方做法，留 13k；我们大窗放宽到留约 48k）。
+# 旧口径"窗口×0.7"在 1M 大窗下 700k 就压（太早、白丢上下文、毁 prompt cache）。改成留固定余量 →
+# 接近顶满(~952k)才压。阈值 = max(窗口−buffer, 窗口×ratio)：大窗由 buffer 主导(压得更晚)，小窗仍由 ratio
+# 兜底(buffer 若吃掉过半小窗，ratio 下限护住、不至于"永远触发")。可被 ctx.autocompact_buffer 覆盖。
+_AUTOCOMPACT_BUFFER_TOKENS = 48000
+
 # SH-4 截断恢复：模型一轮输出被 max_tokens 砍断时 finish_reason="length"（不是正常 "stop"）。
 # 收尾分支识别它 → 把已输出的半句 append 回去 + 提示"接着写完"再要一轮，多轮片段拼成完整 final，
 # 用户不再看到被砍断的半句。_MAX_CONTINUATIONS 是续写次数上限，防"一直被截一直续"死循环（呼应 max_turns 兜底哲学）。
@@ -193,10 +199,13 @@ _BUDGET_PUSH = "push"    # 还有预算但已过半且本轮有产出 → 回灌
 _BUDGET_STOP = "stop"    # 到 90% 或 diminishing → 强制停（优先级高于 Stop hook，不让 hook 拉回空转）
 
 
-def _accumulate_usage(ctx, resp_tokens: int, fallback_text: str) -> None:
+def _accumulate_usage(ctx, resp_tokens: int, fallback_text: str, *, prompt_tokens: int = 0) -> None:
     """把本轮 provider usage 累加进 ctx.tokens_used，并更新 last_total/last_delta + diminishing 计数。
     端点没返回（resp_tokens<=0）则按 len//4 粗估。token_budget=None 也照常累加（顺带喂成本看板，零行为影响）。
-    diminishing 判定靠 budget_continuations 当"连续低增量轮"计数：本轮 delta 极小则 +1、否则归零。"""
+    diminishing 判定靠 budget_continuations 当"连续低增量轮"计数：本轮 delta 极小则 +1、否则归零。
+
+    Gap C：prompt_tokens（本轮真实输入 token = 上下文有多大）>0 时记进 ctx.last_prompt_tokens，
+    供 autocompact 触发判据当真值（0/未知则不动，保留上一轮真值或退回估算）。"""
     if ctx is None:
         return
     delta = resp_tokens if (resp_tokens and resp_tokens > 0) else (len(fallback_text or "") // 4)
@@ -208,6 +217,8 @@ def _accumulate_usage(ctx, resp_tokens: int, fallback_text: str) -> None:
         ctx.budget_continuations = getattr(ctx, "budget_continuations", 0) + 1
     else:
         ctx.budget_continuations = 0
+    if prompt_tokens and prompt_tokens > 0:
+        ctx.last_prompt_tokens = prompt_tokens
 
 
 def _check_budget(ctx) -> str:
@@ -644,7 +655,9 @@ async def run_agent_loop(
             temperature=temperature,
         ), messages, ctx)
         # SH-2：累加本轮真实 token 用量（端点没返回则粗估），喂预算判定 + 成本看板。
-        _accumulate_usage(ctx, getattr(resp, "tokens_used", 0), resp.content or "")
+        # Gap C：同时把真实输入 token(prompt_tokens)喂给 autocompact 触发判据(经 ctx.last_prompt_tokens)。
+        _accumulate_usage(ctx, getattr(resp, "tokens_used", 0), resp.content or "",
+                          prompt_tokens=getattr(resp, "prompt_tokens", 0) or 0)
 
         # 无工具调用 → 准备收尾。Stop hook 可阻断停止让它继续（默认无 hook → 直接收尾）。
         if not resp.tool_calls:
@@ -897,9 +910,10 @@ def _microcompact(messages: list[dict], registry: ToolRegistry) -> None:
         messages[i] = {**messages[i], "content": _CLEARED_RESULT_MARK}
 
 
-# G.1 单张内联图片的粗略 token 估值：多数视觉模型一图≈数百~上千 token。估算时按固定值计入，
+# G.1 单张内联图片的粗略 token 估值：多数视觉模型一图≈数百~数千 token。估算时按固定值计入，
 # 绝不把 base64 图片正文当普通文本去数字符（base64 动辄几十万字符，会把估算抬到天文数字、且毫无意义）。
-_IMG_TOKEN_EST = 1000
+# Gap C：原 1000 偏低（高分辨率图常 1500~2500+），上调到 2000 让"带图的长对话"不被低估而漏触发压缩。
+_IMG_TOKEN_EST = 2000
 
 
 def _estimate_tokens(messages: list[dict]) -> int:
@@ -1020,6 +1034,9 @@ async def _autocompact(messages: list[dict], ctx, provider, model, temperature: 
         summary_msg = {"role": "assistant", "content": f"{_AUTOCOMPACT_SUMMARY_MARK}\n{summary}"}
         rebuilt = messages[:sys_end] + [summary_msg] + messages[idx:]
         ctx.autocompact_fail_streak = 0  # 压成功 → 清零连续失败计数
+        # Gap C：复位真实 token 信号——刚压短了 messages，上一轮的大 prompt_tokens 已过时；
+        # 若不清零，下一轮触发判据会拿这个旧大值立刻又压一次（双重压缩）。清零后退回估算，待下一轮真值重填。
+        ctx.last_prompt_tokens = 0
         return rebuilt
     except Exception:
         # 摘要 LLM 抛错 = 真失败 → 计入连续失败，达上限即熔断（防顶满时每轮空烧一次昂贵 LLM）
@@ -1039,8 +1056,15 @@ async def _compact_pipeline(messages: list[dict], registry: ToolRegistry, ctx,
     window = getattr(ctx, "model_ctx_window", None) if ctx is not None else None
     if not window or window <= 0:
         return messages  # 未配窗口 → autocompact 整段跳过（交互式零影响）
+    # Gap C 阈值口径：max(窗口−buffer, 窗口×ratio)——大窗由固定 buffer 主导(接近满才压)、小窗由 ratio 兜底(不回归)。
     ratio = getattr(ctx, "autocompact_ratio", 0.7) or 0.7
-    if _estimate_tokens(messages) < window * ratio:
+    buffer = getattr(ctx, "autocompact_buffer", None) or _AUTOCOMPACT_BUFFER_TOKENS
+    threshold = max(window - buffer, window * ratio)
+    # Gap C 触发判据：用真实输入 token(若有)兜住估算误差——effective = max(估算, 上一轮真实 prompt_tokens)。
+    # 估算反映"当前 messages"(catch 本轮新增的大块)，真值反映"上次发出时上下文多大"(catch 估算的系统性低估)，
+    # 取 max 两头都不漏。压缩成功后真值会被 _autocompact 复位，避免旧的大真值在下一轮立刻再触发。
+    effective = max(_estimate_tokens(messages), getattr(ctx, "last_prompt_tokens", 0) or 0)
+    if effective < threshold:
         return messages  # 没临近窗口 → 不花那次昂贵 LLM，原样返回
     # 熔断：autocompact 已连续真失败 _AUTOCOMPACT_FAIL_MAX 次 → 不再每轮空烧昂贵摘要 LLM，直接用原 messages 继续。
     if getattr(ctx, "autocompact_fail_streak", 0) >= _AUTOCOMPACT_FAIL_MAX:
@@ -1136,7 +1160,9 @@ async def run_agent_loop_stream(
             yield {"type": "token", "content": tok}
         text = "".join(parts)
         # SH-2：累加本轮真实 token 用量（端点没返回 total_tokens 则按 len//4 粗估），喂预算判定 + 成本看板。
-        _accumulate_usage(ctx, usage.get("total_tokens", 0) or 0, text)
+        # Gap C：把真实输入 token(prompt_tokens，由 usage_sink 写回)喂给 autocompact 触发判据。
+        _accumulate_usage(ctx, usage.get("total_tokens", 0) or 0, text,
+                          prompt_tokens=usage.get("prompt_tokens", 0) or 0)
 
         # 无工具调用 → 准备收尾。Stop hook 可阻断停止让它继续（默认无 hook → 直接收尾）。
         if not sink:
