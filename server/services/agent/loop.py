@@ -669,6 +669,14 @@ async def run_agent_loop(
                 stopped_reason=_STOP_FINAL, messages=messages,
             )
 
+        # M10 #1：截断续写途中模型改去调工具 → 之前收集的半截续写片段(final_segments)已被工具路径取代，
+        # 清掉它，别让那截悬空半句被拼进最终答复（半句串台）。半截原文仍在 messages 里(模型保有上下文，下面会
+        # append assistant)，最终答复由收敛轮的 resp.content 重新产出。续写计数 continuations 不清——它是"防一直
+        # 被截一直续"的兜底上限，工具打断不该把它清零让上限重新放开（不清只会更早触顶、是安全方向）。
+        # ⚠️ 流式路径 run_agent_loop_stream 同样逻辑，别只改一处。
+        if final_segments:
+            final_segments.clear()
+
         # 工具调用前可能带一段思考文本，记一笔
         if resp.content:
             steps.append(AgentStep(type="thinking", content=resp.content))
@@ -1150,6 +1158,11 @@ async def run_agent_loop_stream(
             yield {"type": "done", "turns": turn, "stopped_reason": _STOP_FINAL,
                    "tokens_used": getattr(ctx, "tokens_used", 0)}
             return
+
+        # M10 #1：截断续写途中模型改去调工具 → 清掉旧的半截续写片段，别让它被拼进最终答复（半句串台）。
+        # 同步路径 run_agent_loop 同样逻辑（见上）。半截原文仍随下面 assistant 消息留在 messages、模型保有上下文。
+        if final_segments:
+            final_segments.clear()
 
         # 工具调用轮：assistant(tool_calls) 回灌 → 逐个处理 → 结果回灌
         messages.append({"role": "assistant", "content": text, "tool_calls": _sanitize_tool_calls(sink)})
