@@ -93,3 +93,7 @@ class AgentContext:
     # 全部追加、配对完整后，把这些图拼成一条 user 图片消息注入（走已验证的 image_url 通道、可被 vision_degrade
     # 接住），让模型在下一轮真看见图。取后清空，防串到下一轮。借 Kimi Code 把工具产出的图当 content 回灌的做法。
     pending_view_images: list = field(default_factory=list)
+    # ── 跨轮记忆（照 Claude Code 做对）：流式 loop 收尾时把【完整对话轨迹】（含 tool_calls/结果 + 补上的
+    #    最终 assistant 答复）写到这里，供端点整段落盘成 JSONL，下一轮整段读回当 history → 模型真记得住前面。
+    #    含 system（落盘由 transcript 层剥）。None = 没跑流式 loop / 未收尾。
+    final_messages: list | None = None
