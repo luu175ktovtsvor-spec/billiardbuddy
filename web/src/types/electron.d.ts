@@ -54,6 +54,8 @@ export interface ElectronBridge {
     }): Promise<{ canceled: boolean; paths: string[] }>;
     /** 贴图/拖图：把粘贴/拖入的图片(base64)存临时文件，返回路径；塞进 selected_files 让 AI 看。 */
     saveTemp(opts: { base64: string; ext?: string }): Promise<{ ok: boolean; path?: string; error?: string }>;
+    /** Electron 33+ 拿拖入/粘贴文件的本机路径（替代已移除的 File.path）。 */
+    getPathForFile(file: File): string;
     /** 系统「另存为」：把成品(base64 字节)写到用户选定的位置(桌面/任意文件夹)。 */
     save(opts: {
       defaultName?: string;
