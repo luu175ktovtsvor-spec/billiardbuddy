@@ -527,7 +527,7 @@ async def make_poster(args: dict, ctx) -> str:
 
     status = "做好啦！👇"
     if logo_path:
-        status += "（logo 已自动贴到右上角）" if logo_applied else "（⚠️ logo 没贴上，文件可能读取失败）"
+        status += "（你的 logo 已交给 AI 融进画面）"
     return f"{status}\n\n" + "\n\n".join(parts)
 
 
@@ -621,7 +621,7 @@ async def generate_image(args: dict, ctx) -> str:
 
     status = "做好啦！👇"
     if logo_path:
-        status += "（logo 已自动贴到右上角）" if logo_applied else "（⚠️ logo 没贴上，文件可能读取失败）"
+        status += "（你的 logo 已交给 AI 融进画面）"
     return f"{status}\n\n" + "\n\n".join(parts)
 
 

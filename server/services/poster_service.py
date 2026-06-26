@@ -331,7 +331,8 @@ async def generate_images(
         preserve_imgs.append(base_image)
     if qr_bytes:
         preserve_imgs.append(qr_bytes)
-    # logo 不再塞给模型渲染（模型会把店名文字画成乱码）——改为生成后用 PIL 像素级贴上（见下方 _overlay_logo）。
+    if logo_bytes:
+        preserve_imgs.append(logo_bytes)  # owner 拍板：所有上传物料(含 logo)原样喂 GPT 融合，不再 PIL 贴
     max_refs = max(0, _MAX_INPUT_IMAGES - len(preserve_imgs))
     ref_bytes = ref_bytes[:max_refs]
     input_images: list[bytes] = preserve_imgs + ref_bytes
@@ -353,7 +354,7 @@ async def generate_images(
         store_name=store.name or "",
         city=store.city or "",
         no_text=no_text,
-        has_logo=False,  # logo 不让模型画（会糊店名）→ 改 PIL 贴；prompt 不再要求"整合 logo"
+        has_logo=logo_bytes is not None,  # owner 拍板：logo 也喂 GPT 融合，prompt 声明让模型整合
         has_qr=qr_bytes is not None,
     )
 
@@ -391,10 +392,7 @@ async def generate_images(
                     image=input_images if input_images else None,
                 )
 
-            # 门店真实 logo：生成后用 PIL 像素级贴上（不经模型→店名文字不糊）。
-            if logo_bytes:
-                image_bytes = _overlay_logo(image_bytes, logo_bytes)
-
+            # owner 拍板：不再 PIL 贴 logo——所有上传物料(含 logo)已原样进 input_images 喂 GPT 融合。
             # 保存图片（JPEG 格式，减小文件体积）；Pillow 解码+编码是同步 CPU，放线程池
             output_path_jpg = output_path.with_suffix(".jpg")
             await asyncio.to_thread(_save_png_as_jpeg, image_bytes, output_path_jpg)

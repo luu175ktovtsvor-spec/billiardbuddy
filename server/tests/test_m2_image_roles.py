@@ -245,11 +245,11 @@ def test_logo_applied_reported(monkeypatch):
     out = asyncio.run(agent_tools.make_poster({
         "description": "海报", "logo_path": "/tmp/logo.png",
     }, ctx))
-    assert "logo 已自动贴到" in out
+    assert "融进画面" in out  # owner 拍板:logo 喂 GPT 融合,不再 PIL 贴
 
 
-def test_logo_failed_reported(monkeypatch):
-    """指定了 logo_path 但没贴上 → 返回文本含警告。"""
+def test_logo_to_ai_message(monkeypatch):
+    """owner 拍板:logo 一律喂 GPT 融合(不再 PIL 贴)——给了 logo_path 就提示"交给 AI"，不再有"没贴上"。"""
     from services.agent import tools as agent_tools
     import services.poster_service as ps
 
@@ -262,7 +262,7 @@ def test_logo_failed_reported(monkeypatch):
     out = asyncio.run(agent_tools.make_poster({
         "description": "海报", "logo_path": "/tmp/logo.png",
     }, ctx))
-    assert "没贴上" in out
+    assert "融进画面" in out and "没贴上" not in out
 
 
 def test_no_logo_no_status(monkeypatch):
