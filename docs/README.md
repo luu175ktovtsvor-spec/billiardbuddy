@@ -41,6 +41,8 @@
 |------|------|
 | `plans/通用Agent改造-0到6路线图.md` | **当前主路线图**：把盒子做成通用偏代码 Agent、对标 Claude Code（台球=可挂载知识库主题） |
 | `plans/cc-haha功能矩阵-全搬对照.md` | cc-haha 全功能×本项目状态进度表（配套上面路线图） |
+| `plans/待办总账-没做好清单-2026-06-27.md` | **待办总账**：审查收官后的尾巴/真机没验/功能缺口/待owner决策/代码没写完,排好优先级供派活 |
+| `plans/老web能力融回桌面-清单.md` | 老 web 有、桌面丢了的能力(发布/剪辑/日报/效果闭环…),带证据,做前回验 |
 | `design/桌面Agent-macOS设计规范.md` + `design/mockups/` | 桌面 UI 设计规范 + 设计图（写码最高优先参考） |
 | `references/Anthropic-Agent-SDK-参考架构.md` | 官方 Agent SDK 参考（学机制用 Python 实现） |
 | `references/P3对外平台-官方文档与资质清单.md` | 对外发布平台资质与官方文档 |
