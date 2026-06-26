@@ -60,3 +60,92 @@ def test_writeback_empty_noop(tmp_path):
     d.save(str(p))
     canvas_docedit.write_blocks(p, {})  # 不抛错
     assert "一" in {b["text"] for b in canvas_docedit.read_blocks(p)["blocks"]}
+
+
+# ────────── #M6-3: 段落编辑保留内联格式（加粗/颜色/字号） ──────────
+
+def test_docx_edit_preserves_bold_run(tmp_path, monkeypatch):
+    """部分编辑段落文字时，未改动 run 的加粗格式应保留。"""
+    monkeypatch.setenv("DESKTOP_LIBRARY_DIR", str(tmp_path / "lib"))
+    p = tmp_path / "bold.docx"
+    d = docx.Document()
+    para = d.add_paragraph()
+    run1 = para.add_run("半价畅打 ")
+    run2 = para.add_run("超值体验")
+    run2.bold = True
+    d.save(str(p))
+
+    data = canvas_docedit.read_blocks(p)
+    target = next(b for b in data["blocks"] if "半价畅打" in b["text"])
+    canvas_docedit.write_blocks(p, {target["id"]: "半价畅打 极致体验"})
+
+    d2 = docx.Document(str(p))
+    para2 = [pp for pp in d2.paragraphs if pp.text.strip()][0]
+    assert para2.text == "半价畅打 极致体验"
+    runs = para2.runs
+    assert len(runs) >= 2
+    assert runs[0].bold is not True
+    assert runs[1].bold is True
+
+
+def test_docx_edit_preserves_font_size(tmp_path, monkeypatch):
+    """编辑只改后半段时，前段的字号应原封不动。"""
+    from docx.shared import Pt
+    monkeypatch.setenv("DESKTOP_LIBRARY_DIR", str(tmp_path / "lib"))
+    p = tmp_path / "size.docx"
+    d = docx.Document()
+    para = d.add_paragraph()
+    r1 = para.add_run("标题")
+    r1.font.size = Pt(24)
+    r2 = para.add_run("正文内容")
+    r2.font.size = Pt(12)
+    d.save(str(p))
+
+    data = canvas_docedit.read_blocks(p)
+    target = next(b for b in data["blocks"] if "标题" in b["text"])
+    canvas_docedit.write_blocks(p, {target["id"]: "标题改过的正文"})
+
+    d2 = docx.Document(str(p))
+    para2 = [pp for pp in d2.paragraphs if pp.text.strip()][0]
+    assert para2.text == "标题改过的正文"
+    assert para2.runs[0].font.size == Pt(24)
+    assert para2.runs[0].text == "标题"
+
+
+# ────────── #M6-4: 段落编辑保留超链接 ──────────
+
+def test_docx_edit_preserves_hyperlink(tmp_path, monkeypatch):
+    """编辑含超链接段落的非链接部分时，超链接元素和文字应保留。"""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    monkeypatch.setenv("DESKTOP_LIBRARY_DIR", str(tmp_path / "lib"))
+
+    p = tmp_path / "link.docx"
+    d = docx.Document()
+    para = d.add_paragraph()
+    para.add_run("点击 ")
+    # 手动构建超链接（python-docx 无高层 API）
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), "rId99")
+    run_el = OxmlElement("w:r")
+    t_el = OxmlElement("w:t")
+    t_el.text = "这里"
+    run_el.append(t_el)
+    hyperlink.append(run_el)
+    para._element.append(hyperlink)
+    para.add_run(" 查看详情")
+    d.save(str(p))
+
+    data = canvas_docedit.read_blocks(p)
+    target = next(b for b in data["blocks"] if "点击" in b["text"])
+    canvas_docedit.write_blocks(p, {target["id"]: "点击 这里 了解更多"})
+
+    d2 = docx.Document(str(p))
+    para2 = [pp for pp in d2.paragraphs if "点击" in (pp.text or "")][0]
+    assert "了解更多" in para2.text
+    # 超链接元素仍在、文字未变
+    hlinks = para2._element.findall(qn("w:hyperlink"))
+    assert len(hlinks) >= 1
+    hlink_runs = hlinks[0].findall(qn("w:r"))
+    hlink_text = "".join((r.find(qn("w:t")).text or "") for r in hlink_runs if r.find(qn("w:t")) is not None)
+    assert hlink_text == "这里"

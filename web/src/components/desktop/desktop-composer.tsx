@@ -166,19 +166,26 @@ export function DesktopComposer({
     return () => window.removeEventListener("keydown", onKey);
   }, [menuOpen, kbMenuOpen, styleMenuOpen]);
 
+  // Electron 33+ 移除了 File.path，统一用 webUtils.getPathForFile 桥拿本机路径
+  const getFilePath = (f: File): string | undefined => {
+    try { return window.electron?.files?.getPathForFile?.(f); } catch { /* non-Electron / 无路径 */ }
+    return (f as File & { path?: string }).path; // Electron 32 及以下回退
+  };
+
   // 粘贴文件：① 访达复制的文件有真实路径 → 直接拿（与拖拽同路）；② 只有字节没路径的（截图工具图片）→ saveTemp 落临时文件。
   const handlePaste = async (e: React.ClipboardEvent) => {
     if (!onAddFiles) return;
     const items = Array.from(e.clipboardData?.items || []);
     const fileItems = items.filter((it) => it.kind === "file");
     if (fileItems.length === 0) return;
-    // ① 有真实路径的文件(从访达复制任意文件)→ 直接拿 path(走与拖拽同一条路)
+    // ① 有真实路径的文件(从访达复制任意文件)→ 通过 getPathForFile 拿路径
     const direct: string[] = [];
     const needTemp: File[] = [];
     for (const it of fileItems) {
-      const f = it.getAsFile() as (File & { path?: string }) | null;
+      const f = it.getAsFile();
       if (!f) continue;
-      if (f.path) direct.push(f.path);
+      const fpath = getFilePath(f);
+      if (fpath) direct.push(fpath);
       else needTemp.push(f);
     }
     // ② 只有字节没路径的(截图工具图片等)→ saveTemp 落临时文件
@@ -195,11 +202,11 @@ export function DesktopComposer({
     const paths = [...direct, ...saved];
     if (paths.length) { e.preventDefault(); onAddFiles(paths); }
   };
-  // 拖入：从访达拖图片/文件进来 → Electron 的 File 带绝对路径 → 直接加进附件。
+  // 拖入：从访达拖图片/文件进来 → 通过 getPathForFile 拿绝对路径 → 直接加进附件。
   const handleDrop = (e: React.DragEvent) => {
     if (!onAddFiles) return;
-    const files = Array.from(e.dataTransfer?.files || []) as (File & { path?: string })[];
-    const paths = files.map((f) => f.path).filter((p): p is string => !!p);
+    const files = Array.from(e.dataTransfer?.files || []);
+    const paths = files.map((f) => getFilePath(f)).filter((p): p is string => !!p);
     if (paths.length) { e.preventDefault(); onAddFiles(paths); }
   };
 

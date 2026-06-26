@@ -113,3 +113,57 @@ async def test_edit_excel_denies_unselected_outside(library, tmp_path):
     # 没把它放进 allowed_paths → edit_excel 应因越界抛
     with pytest.raises(ValueError):
         await lt.edit_excel({"path": str(report), "changes": [{"cell": "A1", "value": 2}]}, AgentContext())
+
+
+# ────────── #M6-2: 不同目录同名文件备份不撞名 + diff 取对原件 ──────────
+
+def test_backup_no_collision_different_dirs(library):
+    """两个不同目录下的同名文件，备份应各自独立、互不覆盖。"""
+    from services.agent import local_tools as lt
+
+    dir_a = library / "reports" / "a"
+    dir_b = library / "reports" / "b"
+    dir_a.mkdir(parents=True)
+    dir_b.mkdir(parents=True)
+
+    file_a = dir_a / "data.txt"
+    file_b = dir_b / "data.txt"
+    file_a.write_text("content A")
+    file_b.write_text("content B")
+
+    bak_a = lt._backup(file_a)
+    bak_b = lt._backup(file_b)
+
+    assert bak_a != bak_b
+    from pathlib import Path
+    assert Path(bak_a).read_text() == "content A"
+    assert Path(bak_b).read_text() == "content B"
+
+
+def test_backup_diff_correct_for_same_name_files(library):
+    """同名不同目录文件各自备份后修改，diff 应取回各自正确的原件。"""
+    from services.agent import local_tools as lt
+
+    dir_a = library / "a"
+    dir_b = library / "b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+
+    file_a = dir_a / "report.txt"
+    file_b = dir_b / "report.txt"
+    file_a.write_text("original A")
+    file_b.write_text("original B")
+
+    lt._backup(file_a)
+    lt._backup(file_b)
+    file_a.write_text("modified A")
+    file_b.write_text("modified B")
+
+    diff_a = lt.get_file_backup_diff(str(file_a))
+    diff_b = lt.get_file_backup_diff(str(file_b))
+    assert diff_a["ok"]
+    assert diff_b["ok"]
+    assert diff_a["old"] == "original A"
+    assert diff_b["old"] == "original B"
+    assert diff_a["new"] == "modified A"
+    assert diff_b["new"] == "modified B"

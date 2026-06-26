@@ -2,7 +2,7 @@
 // 渲染层(web 前端)只能调这些函数,拿不到 Node/ipcRenderer 本体。
 // web 前端检测 window.electron 存在 → 启用"发布/剪辑"入口;浏览器版没有它,自动隐藏。
 
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 // 事件订阅小工具:返回取消函数,组件卸载时调用,防泄漏
 function on(channel, cb) {
@@ -45,5 +45,7 @@ contextBridge.exposeInMainWorld("electron", {
     save: (opts) => ipcRenderer.invoke("files:save", opts || {}),
     // 贴图/拖图：把粘贴/拖入的图片(base64)存临时文件，返回 { ok, path?, error? }；路径塞 selected_files 给 AI 看。
     saveTemp: (opts) => ipcRenderer.invoke("files:saveTemp", opts || {}),
+    // Electron 33+ 移除了 File.path，用 webUtils.getPathForFile 替代：拖入/粘贴文件拿本机路径。
+    getPathForFile: (file) => webUtils.getPathForFile(file),
   },
 });

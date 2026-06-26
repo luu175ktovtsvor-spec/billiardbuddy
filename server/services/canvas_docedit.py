@@ -85,14 +85,92 @@ def read_blocks(path: Path) -> dict:
 # ───────────────── 写：把改动按 id 原地写回原文件 ─────────────────
 
 def _set_para_runs(para, text: str) -> None:
-    """把段落文字换成 text，保留段落样式：改第一个 run、清空其余；无 run 则新建。"""
-    runs = para.runs
-    if runs:
-        runs[0].text = text
-        for r in runs[1:]:
-            r.text = ""
+    """把段落文字换成 text，尽量保留每个 run 原有的内联格式（加粗/颜色/字号）和超链接。
+    算法：找新旧文本的公共前缀 + 后缀，只动变化区间里的 run，未变区间的 run 原封不动。
+    同时兼容 docx（w:r + w:hyperlink）和 pptx（a:r）段落。"""
+    # 判断 docx 还是 pptx（XML 命名空间不同）
+    tag = para._element.tag or ""
+    is_docx = "wordprocessingml" in tag
+
+    if is_docx:
+        from docx.oxml.ns import qn
+        from docx.text.run import Run as _Run
+        all_runs = []
+        for child in para._element:
+            if child.tag == qn("w:r"):
+                all_runs.append(_Run(child, para))
+            elif child.tag == qn("w:hyperlink"):
+                for r_elem in child.findall(qn("w:r")):
+                    all_runs.append(_Run(r_elem, para))
     else:
-        para.add_run(text)
+        all_runs = list(para.runs)
+
+    if not all_runs:
+        if is_docx:
+            para.add_run(text)
+        else:
+            r = para.add_run()
+            r.text = text
+        return
+
+    old_text = "".join(r.text or "" for r in all_runs)
+    if old_text == text:
+        return
+
+    # 公共前缀长度
+    plen = 0
+    for a, b in zip(old_text, text):
+        if a != b:
+            break
+        plen += 1
+
+    # 公共后缀长度（前缀之后的部分）
+    slen = 0
+    if plen < len(old_text) and plen < len(text):
+        for a, b in zip(reversed(old_text[plen:]), reversed(text[plen:])):
+            if a != b:
+                break
+            slen += 1
+
+    new_mid = text[plen : len(text) - slen] if slen else text[plen:]
+    old_cs = plen
+    old_ce = len(old_text) - slen
+
+    # 每个 run 对应 [start, end) 字符位置
+    pos = 0
+    run_spans = []
+    for r in all_runs:
+        rlen = len(r.text or "")
+        run_spans.append((pos, pos + rlen, r))
+        pos += rlen
+
+    placed = False
+    if old_cs == old_ce:
+        # 纯插入：找到插入点所在的 run，把新文本嵌入
+        for start, end, run in run_spans:
+            if start <= old_cs <= end:
+                offset = old_cs - start
+                rtxt = run.text or ""
+                run.text = rtxt[:offset] + new_mid + rtxt[offset:]
+                placed = True
+                break
+    else:
+        for start, end, run in run_spans:
+            if end <= old_cs or start >= old_ce:
+                continue
+            rtxt = run.text or ""
+            before = rtxt[: max(0, old_cs - start)]
+            after = rtxt[min(len(rtxt), old_ce - start) :]
+            if not placed:
+                run.text = before + new_mid + after
+                placed = True
+            else:
+                run.text = after
+
+    if not placed:
+        all_runs[0].text = text
+        for r in all_runs[1:]:
+            r.text = ""
 
 
 def _docx_write(path: Path, edits: dict) -> None:

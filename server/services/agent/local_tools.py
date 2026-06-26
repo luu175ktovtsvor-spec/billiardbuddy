@@ -9,6 +9,7 @@
 ⚠️ 云端 web 版（PostgreSQL，多租户）绝不注册这些——文件操作只在用户自己机器上的本地后端有意义。
 """
 import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -112,14 +113,21 @@ def path_in_workspace(raw_path: str, ctx) -> bool:
         return False
 
 
+def _path_hash(path: Path) -> str:
+    """路径 hash 前缀（8 位），防不同目录同名文件的备份撞名。"""
+    return hashlib.md5(str(path.resolve()).encode()).hexdigest()[:8]
+
+
 def _backup(path: Path) -> str | None:
-    """改/写前备份原件，返回备份路径（原件不存在则 None）。"""
+    """改/写前备份原件，返回备份路径（原件不存在则 None）。
+    备份名带路径 hash 前缀，不同目录的同名文件不会互相覆盖。"""
     if not path.exists():
         return None
     bdir = _library_root() / ".backups"
     bdir.mkdir(exist_ok=True)
     stamp = business_now().strftime("%Y%m%d-%H%M%S")
-    dest = bdir / f"{path.stem}.{stamp}{path.suffix}.bak"
+    prefix = _path_hash(path)
+    dest = bdir / f"{prefix}_{path.stem}.{stamp}{path.suffix}.bak"
     shutil.copy2(path, dest)
     return str(dest)
 
@@ -137,8 +145,11 @@ def get_file_backup_diff(raw_path: str) -> dict:
         old = ""
         bdir = _library_root() / ".backups"
         if bdir.is_dir():
-            # 备份名 {stem}.{YYYYMMDD-HHMMSS}{suffix}.bak → 字典序最大 = 最近一次
-            cands = sorted(bdir.glob(f"{p.stem}.*{p.suffix}.bak"))
+            # 新格式: {hash}_{stem}.{stamp}{suffix}.bak；旧格式兜底: {stem}.{stamp}{suffix}.bak
+            prefix = _path_hash(p)
+            cands = sorted(bdir.glob(f"{prefix}_{p.stem}.*{p.suffix}.bak"))
+            if not cands:
+                cands = sorted(bdir.glob(f"{p.stem}.*{p.suffix}.bak"))
             if cands:
                 try:
                     old = cands[-1].read_text(encoding="utf-8", errors="replace")
