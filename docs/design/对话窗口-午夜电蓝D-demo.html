@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>对话窗口 · 模板 demo</title>
+<!--
+  ============================================================================
+  对话窗口 · 模板 demo  ——  premium 质感 + 果冻惯性滚动 + agent UI（思考/工具/结果）
+  ----------------------------------------------------------------------------
+  这是给后续微调用的【模板】，重点演示一个对话窗口里这些前端块怎么呈现：
+   1) 思考过程块  .think   —— 折叠的「已思考 N 秒」，点开看推理（<details>）
+   2) 工具调用块  .steps   —— 「执行过程」时间线：每步=状态点+图标+标签
+   3) 工具结果    —— 终端块 .term（跑命令）/ 折叠结果 .res（读文件·抓网页）
+   4) 成品卡      .deliver —— 文案/海报，带复制·预览·依据
+   5) 输入框      .composer + .toolbar —— 仿真，含工具条
+  动效（触控板上下滑能明显感到）：果冻惯性滚动 / 极光视差 / 块入场 / 顶栏收紧。
+  调参：最下面 <script> 顶部 CONFIG（EASE/JELLY/RUBBER/PARALLAX）。
+  配色：全在 :root，已对齐前端品牌绿 #10a37f。文案搜中文改。纯静态，按钮不真触发。
+  ============================================================================
+-->
+<style>
+  :root{
+    --bg0:#070b14; --bg1:#0c1322;
+    --ink:#f3f4f8; --ink-soft:#aeb2c2; --ink-mute:#6b7088;
+    --glass:rgba(20,22,32,.55); --glass-line:rgba(255,255,255,.08);
+    --line:rgba(255,255,255,.06);
+    --a1:#2f6bff; --a2:#4d8bff; --a3:#7db4ff;     /* 品牌绿系，跟前端一致 */
+    --a-weak:rgba(47,107,255,.12);
+    --bubble-u:linear-gradient(135deg,#2f6bff,#1e5bff);
+    --bubble-a:rgba(255,255,255,.045);
+    --mono:"SF Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Segoe UI",system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:var(--sans);background:#000;color:var(--ink);-webkit-font-smoothing:antialiased;display:grid;place-items:center;padding:30px}
+
+  .win{position:relative;width:100%;max-width:880px;height:min(760px,93vh);border-radius:18px;overflow:hidden;
+       background:radial-gradient(120% 120% at 50% -10%,var(--bg1),var(--bg0));
+       border:1px solid rgba(255,255,255,.07);box-shadow:0 40px 120px -30px rgba(0,0,0,.9),0 0 0 1px rgba(255,255,255,.02) inset}
+
+  /* 极光 + 噪点 */
+  .aurora{position:absolute;inset:-20% -10%;z-index:0;pointer-events:none;filter:blur(60px) saturate(130%);opacity:.5}
+  .aurora b{position:absolute;display:block;border-radius:50%;mix-blend-mode:screen;animation:drift 18s ease-in-out infinite}
+  .aurora .b1{width:46%;height:46%;left:6%;top:2%;background:var(--a1);animation-delay:-2s}
+  .aurora .b2{width:42%;height:42%;right:4%;top:10%;background:var(--a2);animation-delay:-7s}
+  .aurora .b3{width:40%;height:40%;left:28%;bottom:-6%;background:var(--a3);animation-delay:-12s}
+  @keyframes drift{0%,100%{transform:translate(0,0) scale(1)}33%{transform:translate(6%,-5%) scale(1.08)}66%{transform:translate(-5%,4%) scale(.96)}}
+  .grain{position:absolute;inset:0;z-index:1;pointer-events:none;opacity:.04;mix-blend-mode:overlay;
+         background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>")}
+
+  /* 顶栏 */
+  .top{position:absolute;top:0;left:0;right:0;z-index:5;height:58px;display:flex;align-items:center;gap:12px;padding:0 20px;
+       background:linear-gradient(to bottom,rgba(8,9,14,.7),rgba(8,9,14,0));transition:height .3s,background .3s,backdrop-filter .3s}
+  .top.shrunk{height:50px;background:var(--glass);backdrop-filter:saturate(160%) blur(18px);border-bottom:1px solid var(--glass-line)}
+  .lights{display:flex;gap:8px}.lights i{width:12px;height:12px;border-radius:50%}.r{background:#ff5f57}.y{background:#febc2e}.g{background:#28c840}
+  .brand{margin-left:6px;font-weight:600;letter-spacing:.02em;font-size:14px;background:linear-gradient(90deg,#fff,#bcd4ff);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .brand small{font-weight:400;color:var(--ink-mute);margin-left:8px;font-size:11px;font-family:var(--mono)}
+  .top .sp{flex:1}
+  .pill{font-family:var(--mono);font-size:11px;color:var(--ink-soft);border:1px solid var(--glass-line);border-radius:20px;padding:5px 11px;display:flex;align-items:center;gap:7px;background:rgba(255,255,255,.03)}
+  .pill .d{width:6px;height:6px;border-radius:50%;background:var(--a3);box-shadow:0 0 10px var(--a3)}
+
+  /* 滚动视口 */
+  .viewport{position:absolute;inset:0;z-index:3;overflow:hidden}
+  .scroller{will-change:transform;padding:92px 0 188px;transform-origin:50% 50%}
+  .col{width:100%;max-width:700px;margin:0 auto;padding:0 28px}
+
+  /* Hero */
+  .hero{text-align:center;padding:30px 0 26px}
+  .hero h1{font-size:clamp(28px,4.2vw,44px);font-weight:600;line-height:1.1;letter-spacing:-.02em;background:linear-gradient(180deg,#fff,#c9dbff);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero p{margin:14px auto 0;max-width:430px;font-size:14px;line-height:1.7;color:var(--ink-soft)}
+  .scrollcue{margin-top:26px;display:inline-flex;flex-direction:column;align-items:center;gap:7px;color:var(--ink-mute);font-family:var(--mono);font-size:10.5px;letter-spacing:.12em}
+  .scrollcue .m{width:22px;height:34px;border:1.5px solid var(--ink-mute);border-radius:12px;position:relative}
+  .scrollcue .m::after{content:"";position:absolute;left:50%;top:6px;width:3px;height:6px;border-radius:2px;background:var(--ink-soft);transform:translateX(-50%);animation:wheel 1.6s ease-in-out infinite}
+  @keyframes wheel{0%{opacity:0;transform:translate(-50%,0)}30%{opacity:1}100%{opacity:0;transform:translate(-50%,12px)}}
+
+  /* 入场动画（每个 .msg 进视野时触发） */
+  .msg{margin:20px 0;opacity:0;transform:translateY(24px);will-change:transform,opacity}
+  .msg.in{opacity:1;transform:none;transition:opacity .65s cubic-bezier(.2,.7,.2,1),transform .65s cubic-bezier(.2,.7,.2,1)}
+
+  /* 用户气泡（右） */
+  .urow{display:flex;justify-content:flex-end}
+  .ub{max-width:80%;padding:12px 16px;border-radius:18px;border-bottom-right-radius:6px;font-size:14px;line-height:1.6;color:#fff;background:var(--bubble-u);box-shadow:0 12px 30px -12px #10a37f}
+
+  /* 助手区：左侧头像 + 内容列（process 块缩进对齐头像右侧） */
+  .aturn{display:flex;gap:12px}
+  .av{flex:0 0 auto;width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:14px;color:#06241c;
+      background:linear-gradient(135deg,var(--a1),var(--a3));box-shadow:0 6px 18px -6px var(--a1)}
+  .acol{min-width:0;flex:1;display:flex;flex-direction:column;gap:10px}
+
+  /* 1) 思考过程块 */
+  details.think{border-left:2px solid var(--a-weak);padding-left:12px}
+  details.think>summary{list-style:none;cursor:pointer;display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11.5px;color:var(--ink-mute);user-select:none}
+  details.think>summary::-webkit-details-marker{display:none}
+  details.think>summary .cv{transition:transform .2s}
+  details.think[open]>summary .cv{transform:rotate(90deg)}
+  details.think .body{margin-top:8px;font-size:12.5px;line-height:1.7;font-style:italic;color:var(--ink-soft)}
+
+  /* 2) 工具调用块（执行过程 时间线） */
+  .steps{border:1px solid var(--glass-line);background:rgba(255,255,255,.025);border-radius:13px;padding:12px 14px;backdrop-filter:blur(6px)}
+  .steps .h{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-mute);margin-bottom:10px;display:flex;align-items:center;gap:7px}
+  .strow{position:relative;display:flex;align-items:center;gap:10px;padding:5px 0 5px 4px;font-size:13px;color:var(--ink-soft)}
+  /* 时间线竖线 */
+  .strow::before{content:"";position:absolute;left:9px;top:-4px;bottom:-4px;width:1px;background:var(--glass-line)}
+  .strow:first-of-type::before{top:14px}.strow:last-of-type::before{bottom:auto;height:14px}
+  .strow .dot{position:relative;z-index:1;flex:0 0 auto;width:18px;height:18px;border-radius:50%;display:grid;place-items:center;background:var(--bg1);border:1px solid var(--glass-line)}
+  .strow.done .dot{border-color:var(--a1);color:var(--a3)}
+  .strow.run .dot{border-color:var(--a3)}
+  .strow.run .dot::after{content:"";width:8px;height:8px;border-radius:50%;border:1.5px solid var(--a3);border-top-color:transparent;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .strow .nm{color:var(--ink)}
+  .strow .sub{color:var(--ink-mute);font-family:var(--mono);font-size:11.5px}
+  .strow.run .nm{color:var(--ink-soft)}
+
+  /* 3a) 工具结果·折叠（读文件/抓网页） */
+  details.res>summary{list-style:none;cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11.5px;color:var(--ink-mute);padding-left:4px}
+  details.res>summary::-webkit-details-marker{display:none}
+  details.res>summary .cv{transition:transform .2s}
+  details.res[open]>summary .cv{transform:rotate(90deg)}
+  details.res .body{margin-top:8px;border:1px solid var(--glass-line);background:rgba(0,0,0,.25);border-radius:10px;padding:10px 12px;font-family:var(--mono);font-size:12px;line-height:1.6;color:var(--ink-soft);white-space:pre-wrap;max-height:200px;overflow:auto}
+
+  /* 3b) 工具结果·终端块（跑命令） */
+  .term{border:1px solid var(--glass-line);border-radius:11px;overflow:hidden;background:#0a0c10}
+  .term .th{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;border-bottom:1px solid var(--glass-line);font-family:var(--mono);font-size:12px;color:var(--ink-soft)}
+  .term .th .cmd{display:flex;align-items:center;gap:7px;min-width:0}.term .th .cmd b{color:var(--a3);font-weight:400}
+  .term .exit{font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;background:var(--a-weak);color:var(--a3)}
+  .term pre{padding:10px 12px;font-family:var(--mono);font-size:12px;line-height:1.6;color:#cfd3dc;white-space:pre-wrap;max-height:200px;overflow:auto}
+
+  /* 4) 成品卡 */
+  .deliver{border:1px solid var(--glass-line);border-radius:14px;overflow:hidden;background:var(--bubble-a);backdrop-filter:blur(8px)}
+  .deliver .dh{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--glass-line);font-family:var(--mono);font-size:11.5px;color:var(--ink-soft)}
+  .deliver .dh .lab{display:flex;align-items:center;gap:7px;color:var(--a3)}
+  .deliver .dh .copy{color:var(--ink-mute);cursor:pointer}
+  .deliver .dbody{padding:13px 14px;font-size:14px;line-height:1.65;color:var(--ink)}
+  .poster{margin:0 14px 12px;height:130px;border-radius:11px;border:1px solid var(--glass-line);position:relative;overflow:hidden;
+          background:linear-gradient(135deg,#0e2a24,#08201c),radial-gradient(60% 80% at 30% 20%,rgba(47,107,255,.55),transparent)}
+  .poster::after{content:"周末双人 · 第二位半价";position:absolute;left:16px;bottom:14px;font-weight:600;color:#fff;text-shadow:0 2px 12px rgba(0,0,0,.5)}
+  .deliver .basis{padding:0 14px 11px;font-size:11.5px;color:var(--ink-mute);display:flex;gap:6px;align-items:center}
+  .acts{padding:0 14px 13px;display:flex;gap:8px;flex-wrap:wrap}
+  .chip{font-size:12px;color:var(--ink-soft);border:1px solid var(--glass-line);border-radius:18px;padding:6px 12px;background:rgba(255,255,255,.03);cursor:pointer}
+  .chip.pri{color:var(--a3);border-color:var(--a-weak);background:var(--a-weak)}
+
+  /* 助手收尾文字气泡 */
+  .ab{font-size:14px;line-height:1.65;color:var(--ink);border:1px solid var(--glass-line);background:var(--bubble-a);backdrop-filter:blur(8px);border-radius:16px;border-bottom-left-radius:6px;padding:13px 16px}
+  .ab b{color:#fff}
+
+  /* 底部输入：玻璃 + 工具条 */
+  .dock{position:absolute;left:0;right:0;bottom:0;z-index:6;padding:14px 22px 18px;background:linear-gradient(to top,var(--bg0) 32%,rgba(7,8,12,0))}
+  .composer{max-width:700px;margin:0 auto;display:flex;align-items:center;gap:12px;background:var(--glass);border:1px solid var(--glass-line);border-radius:16px;padding:13px 15px;backdrop-filter:saturate(160%) blur(18px);box-shadow:0 18px 50px -20px rgba(0,0,0,.8);transition:border-color .2s,box-shadow .2s}
+  .composer:hover{border-color:rgba(47,107,255,.5);box-shadow:0 18px 50px -16px rgba(47,107,255,.35)}
+  .composer .caret{color:var(--a3);font-family:var(--mono);font-size:14px}
+  .composer .ph{flex:1;color:var(--ink-mute);font-size:14.5px}
+  .composer .go{width:34px;height:34px;border-radius:11px;display:grid;place-items:center;color:#06241c;background:linear-gradient(135deg,var(--a1),var(--a3));box-shadow:0 10px 24px -8px var(--a1)}
+  .toolbar{max-width:700px;margin:10px auto 0;display:flex;gap:8px;flex-wrap:wrap}
+  .tchip{font-family:var(--mono);font-size:11px;color:var(--ink-mute);border:1px solid var(--glass-line);border-radius:9px;padding:5px 10px;display:inline-flex;align-items:center;gap:6px;background:rgba(255,255,255,.025);cursor:pointer}
+  .tchip.on{color:var(--a3);border-color:var(--a-weak);background:var(--a-weak)}
+  .tchip .sp{flex:1}
+  svg{display:block}
+</style>
+</head>
+<body>
+  <div class="win">
+    <div class="aurora" id="aurora"><b class="b1"></b><b class="b2"></b><b class="b3"></b></div>
+    <div class="grain"></div>
+
+    <div class="top" id="top">
+      <div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+      <div class="brand">球房管家<small>本地 · 私有</small></div>
+      <div class="sp"></div>
+      <div class="pill"><span class="d"></span>MiMo V2.5 就绪</div>
+    </div>
+
+    <div class="viewport" id="vp">
+      <div class="scroller" id="scroller">
+        <div class="col">
+
+          <!-- Hero -->
+          <div class="hero" id="hero">
+            <h1>球房的活，<br/>一句话交给它。</h1>
+            <p>懂台球运营的 AI 助手，开口就办——全程在你电脑上跑。</p>
+            <div class="scrollcue"><span class="m"></span>下滑感受一下</div>
+          </div>
+
+          <!-- 用户 -->
+          <div class="msg"><div class="urow"><div class="ub">看看这个月经营，再顺手出条引流朋友圈。</div></div></div>
+
+          <!-- 助手一轮：头像 + [思考 / 执行过程 / 结果 / 成品 / 收尾] -->
+          <div class="msg"><div class="aturn">
+            <div class="av">✦</div>
+            <div class="acol">
+
+              <!-- 1) 思考过程（折叠） -->
+              <details class="think">
+                <summary><span class="cv">›</span>✦ 已思考 6 秒</summary>
+                <div class="body">先读这个月的报表，确认是营收还是上座出了问题；再对照台球运营的常识——淡季白天通常靠「会员时段」做钩子；最后把诊断结论、文案、海报一起产出，省得你来回问。</div>
+              </details>
+
+              <!-- 2) 工具调用（执行过程时间线） -->
+              <div class="steps">
+                <div class="h">🔧 执行过程</div>
+                <div class="strow done"><span class="dot">✓</span><span class="nm">读报表</span><span class="sub">· 经营数据-6月.xlsx</span></div>
+                <div class="strow done"><span class="dot">✓</span><span class="nm">经营诊断</span></div>
+                <div class="strow done"><span class="dot">✓</span><span class="nm">查台球知识库</span><span class="sub">· 淡季白天引流</span></div>
+                <div class="strow done"><span class="dot">✓</span><span class="nm">写朋友圈文案</span></div>
+                <div class="strow run"><span class="dot"></span><span class="nm">生成海报…</span></div>
+              </div>
+
+              <!-- 3) 工具结果：折叠结果 + 终端块 各演示一个 -->
+              <details class="res">
+                <summary><span class="cv">›</span>结果：读到 6 月营收 ¥86,400，周中白天上座 41%…</summary>
+                <div class="body">营收 ¥86,400（环比 +8%）｜客单价 ¥48（+8%）｜翻台 3.2｜周中白天上座 41%（低于周末 78%）｜会员占比 36%。瓶颈：周中白天空台。</div>
+              </details>
+
+              <div class="term">
+                <div class="th"><span class="cmd">⌘ <b>整理进 本周运营/</b></span><span class="exit">exit 0</span></div>
+                <pre>已创建 本周运营/
+├─ 朋友圈-周末双人.txt
+├─ 海报-周末双人.png
+└─ 本周运营.md（诊断 + 文案 + 海报 汇总）</pre>
+              </div>
+
+              <!-- 4) 成品卡：文案 + 海报 -->
+              <div class="deliver">
+                <div class="dh"><span class="lab">✦ 朋友圈 · 文案</span><span class="copy">⧉ 复制</span></div>
+                <div class="dbody">这周末，约个人来打球吧 🎱 —— 双人同行第二位半价，再送一小时延时。台子刚养好、灯也调亮了，赢的请奶茶、输的……也请奶茶。位置有限，私我占台。</div>
+                <div class="poster"></div>
+                <div class="basis">📖 依据：周末双人优惠 · 朋友圈钩子 · 延时赠送</div>
+                <div class="acts"><span class="chip pri">在右侧看大图</span><span class="chip">换个色调</span><span class="chip">保存到本机</span><span class="chip">去发布</span></div>
+              </div>
+
+              <!-- 5) 收尾 -->
+              <div class="ab">诊断和文案、海报都齐了，已顺手整理进工作目录 <b>本周运营/</b>。要不要我再起一版「周中白天会员时段」的活动方案，专治那个空台问题？</div>
+
+            </div>
+          </div></div>
+
+          <!-- 再来一轮短的（给点滚动长度） -->
+          <div class="msg"><div class="urow"><div class="ub">好，那版方案也来一份。</div></div></div>
+          <div class="msg"><div class="aturn">
+            <div class="av">✦</div>
+            <div class="acol">
+              <div class="steps">
+                <div class="h">🔧 执行过程</div>
+                <div class="strow done"><span class="dot">✓</span><span class="nm">策划活动</span><span class="sub">· 周中白天 · 会员时段</span></div>
+                <div class="strow done"><span class="dot">✓</span><span class="nm">写文件</span><span class="sub">· 本周运营/白天会员时段.md</span></div>
+              </div>
+              <div class="ab">方案写好了：周中 14:00–18:00「会员半价时段」+ 邀请有礼，目标把空台填到六成。已存进 <b>本周运营/</b>，改哪条直接说，我就地改。</div>
+            </div>
+          </div></div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- 输入框 + 工具条 -->
+    <div class="dock">
+      <div class="composer">
+        <span class="caret">›</span>
+        <span class="ph">今天想办点什么…</span>
+        <span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></span>
+      </div>
+      <div class="toolbar">
+        <span class="tchip">📎 文件 / 文件夹</span>
+        <span class="tchip on">🧠 深度思考</span>
+        <span class="tchip">🛡 询问权限</span>
+        <span class="tchip">📁 工作目录</span>
+        <span class="tchip">🎨 风格</span>
+        <span class="sp"></span>
+        <span class="tchip" style="border:none;background:none">本地运行 · 数据不出门</span>
+      </div>
+    </div>
+  </div>
+
+<script>
+  /* ============ 动效参数（随手调） ============ */
+  const CONFIG = { EASE:0.085, JELLY:0.0016, JELLYMAX:0.085, RUBBER:0.10, PARALLAX:0.18, HERO:0.5 };
+
+  const vp=document.getElementById('vp'), scroller=document.getElementById('scroller'),
+        aurora=document.getElementById('aurora'), hero=document.getElementById('hero'),
+        topbar=document.getElementById('top'), msgs=[].slice.call(document.querySelectorAll('.msg'));
+  let target=0,current=0,max=0;
+  function recalc(){ max=Math.max(0,scroller.scrollHeight-vp.clientHeight); }
+  recalc(); window.addEventListener('resize',recalc);
+  vp.addEventListener('wheel',function(e){ e.preventDefault(); target+=e.deltaY; target=Math.max(-90,Math.min(max+90,target)); },{passive:false});
+  function frame(){
+    const clamped=Math.max(0,Math.min(max,target));
+    target+=(clamped-target)*CONFIG.RUBBER;
+    current+=(target-current)*CONFIG.EASE;
+    const vel=target-current;
+    const stretch=Math.max(-CONFIG.JELLYMAX,Math.min(CONFIG.JELLYMAX,vel*CONFIG.JELLY));
+    scroller.style.transformOrigin='50% '+(current+vp.clientHeight/2)+'px';
+    scroller.style.transform='translate3d(0,'+(-current)+'px,0) scaleY('+(1+stretch)+')';
+    aurora.style.transform='translateY('+(-current*CONFIG.PARALLAX)+'px)';
+    const hp=Math.min(1,current/240);
+    hero.style.transform='translateY('+(current*CONFIG.HERO)+'px)'; hero.style.opacity=String(1-hp);
+    topbar.classList.toggle('shrunk',current>24);
+    const vh=vp.clientHeight;
+    for(const m of msgs){ if(m.offsetTop-current<vh*0.9) m.classList.add('in'); }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>
