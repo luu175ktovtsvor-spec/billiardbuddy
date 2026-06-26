@@ -31,13 +31,9 @@ MCP_PRESETS: list[dict] = [
         "command": "uvx",
         "args": ["mcp-server-time"],
     },
-    {
-        "id": "memory",
-        "name": "长期记忆 memory",
-        "desc": "让管家把关键信息记成一张知识图谱、以后用得上。免 key。",
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-memory"],
-    },
+    # 注意：故意不预设 @modelcontextprotocol/server-memory。它是和「店脑记忆」竞争、且不互通的
+    # 第二套记忆系统（各记各的、各注入各的），一键装上只会让老板困惑、两套记忆打架。
+    # 老板真要它仍可在界面手动添加（add_server），但出厂预设不主动推它。
     {
         "id": "ddg",
         "name": "联网搜索 DuckDuckGo",

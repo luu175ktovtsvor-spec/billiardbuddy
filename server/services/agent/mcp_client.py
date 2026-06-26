@@ -53,14 +53,14 @@ def _run_async(coro_factory):
     return box.get("v")
 
 
-async def _a_list_tools(cfg: dict) -> list[dict]:
+async def _a_list_tools(cfg: dict, timeout: float = _OP_TIMEOUT) -> list[dict]:
     async def _go():
         async with stdio_client(_server_params(cfg)) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 res = await session.list_tools()
                 return [t.model_dump(by_alias=True, exclude_none=True) for t in res.tools]
-    return await asyncio.wait_for(_go(), timeout=_OP_TIMEOUT)
+    return await asyncio.wait_for(_go(), timeout=timeout)
 
 
 def _format_call_result(res) -> str:
@@ -170,7 +170,32 @@ _cached_tools: list[Tool] | None = None
 # MCP 状态缓存：每次冷拉要 spawn npx/uvx 跟每个 server 握手（5 个 server ≈ 9s）。设置页"外接工具"反复打开
 # 不该每次都重握手 → 短 TTL 缓存（默认 30s）。配置变更（add/remove）即失效，手动 refresh 也能强刷。
 _STATUS_TTL = 30.0
+# 状态探测的单 server 超时：比 _OP_TIMEOUT(120s·含 npx/uvx 首启下载) 短得多。
+# 设置页只是"看看哪个连得上"，要快反馈——某个 server 配错/卡住，15s 内判失败、不该让用户干等两分钟。
+# （真正用工具时仍走 _OP_TIMEOUT 的长超时，给冷启动留足时间。）
+_STATUS_PROBE_TIMEOUT = 15.0
 _status_cache: tuple[float, list[dict]] | None = None
+
+
+async def _a_probe_server(name: str, cfg: dict) -> dict:
+    """探测单个 server 的连接状态 + 工具数（短超时，供并行探测用）。不抛异常，失败写进 entry。"""
+    disabled = bool(isinstance(cfg, dict) and cfg.get("disabled"))
+    entry = {"name": name, "command": (cfg.get("command", "") if isinstance(cfg, dict) else ""),
+             "status": "failed", "tools": 0, "disabled": disabled}
+    if disabled:
+        # 老板在界面停用的：不去连(省握手)、标 disabled，前端据此显示"已停用"+可一键开回。
+        entry["status"] = "disabled"
+        return entry
+    if not (isinstance(cfg, dict) and cfg.get("command")):
+        entry["status"] = "misconfigured"
+        return entry
+    try:
+        tools = await _a_list_tools(cfg, timeout=_STATUS_PROBE_TIMEOUT)
+        entry["tools"] = len(tools)
+        entry["status"] = "connected"
+    except Exception as e:  # noqa: BLE001
+        entry["status_detail"] = str(e)[:200]
+    return entry
 
 
 def invalidate_mcp_cache() -> None:
@@ -203,30 +228,20 @@ def load_mcp_tools(force: bool = False) -> list[Tool]:
 
 def mcp_status(force: bool = False) -> list[dict]:
     """各 MCP server 的连接状态 + 工具数（供前端 /mcp 展示）。短 TTL 缓存：避免设置页反复打开每次都重握手。
-    force=True 强制重探（用户手动刷新）；配置变更后由 invalidate_mcp_cache() 失效。"""
+    force=True 强制重探（用户手动刷新）；配置变更后由 invalidate_mcp_cache() 失效。
+
+    并行探测（asyncio.gather）+ 单 server 短超时（_STATUS_PROBE_TIMEOUT）：配了几个 server 时，
+    一个挂掉/卡住不拖累其它，总耗时≈最慢的那个而非各 server 串行相加，设置页不被拖死。
+    返回顺序与配置顺序一致（gather 保序）。"""
     global _status_cache
     if not force and _status_cache is not None and (time.monotonic() - _status_cache[0]) < _STATUS_TTL:
         return _status_cache[1]
-    items = []
-    for name, cfg in _load_mcp_config(include_disabled=True).items():
-        disabled = bool(isinstance(cfg, dict) and cfg.get("disabled"))
-        entry = {"name": name, "command": cfg.get("command", ""), "status": "failed",
-                 "tools": 0, "disabled": disabled}
-        if disabled:
-            # 老板在界面停用的：不去连(省握手)、标 disabled，前端据此显示"已停用"+可一键开回。
-            entry["status"] = "disabled"
-            items.append(entry)
-            continue
-        if not cfg.get("command"):
-            entry["status"] = "misconfigured"
-            items.append(entry)
-            continue
-        try:
-            with _StdioMCP(cfg) as s:
-                entry["tools"] = len(s.list_tools())
-                entry["status"] = "connected"
-        except Exception as e:  # noqa: BLE001
-            entry["status_detail"] = str(e)[:200]
-        items.append(entry)
+    cfgs = list(_load_mcp_config(include_disabled=True).items())
+    if not cfgs:
+        items: list[dict] = []
+    else:
+        async def _go():
+            return list(await asyncio.gather(*(_a_probe_server(name, cfg) for name, cfg in cfgs)))
+        items = _run_async(_go)
     _status_cache = (time.monotonic(), items)
     return items

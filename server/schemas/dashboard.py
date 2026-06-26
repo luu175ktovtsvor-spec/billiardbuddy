@@ -13,15 +13,17 @@ class DashboardSummary(BaseModel):
 
 
 class DashboardRecommendation(BaseModel):
+    # 单窗口化后：桌面前端只读 title/description/id（见 chat-shell.tsx），不再有可点的 action 按钮。
+    # 故退役 action_label / action_type（含已废的 generate_operation）——纯死字段、无任何读取方。
+    # action_url + suggested_payload 保留：不是给前端跳转，而是主动出击(proactive.py)据此挑出
+    # "海报/生图类"跳过、并用 suggested_payload 的 user_intent/prompt_key 预生成文字草稿。
     id: str
     title: str
     description: str
-    action_label: str
     action_url: str
-    action_type: str
     priority: Literal["high", "medium", "low"]
-    # 推荐理由类目（前端打标签让老板知道"为什么推这个"）：
-    # focus 今日重点 | frequent 你常用 | gap 补缺口 | good 复刻好评 | setup 完善资料 | festival 节日
+    # 推荐理由类目（让老板知道"为什么推这个"）：
+    # focus 今日重点 | frequent 你常用 | gap 补缺口 | good 复刻好评 | setup 完善资料 | festival 节日 | store 店情专属
     category: str = "focus"
     suggested_payload: dict | None = None
 

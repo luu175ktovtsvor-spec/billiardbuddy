@@ -18,7 +18,7 @@ from schemas.dashboard import (
 from services.store_service import calculate_completeness
 from services.behavior_service import BehaviorSnapshot, get_behavior_snapshot
 from services.ai.prompt_engine import get_prompt_engine
-from services.memory_service import Memory, load_store_memory, select_relevant_memories
+from services.memory_service import Memory, load_store_memory
 
 WEEKDAY_NAMES = [
     "Monday",
@@ -61,11 +61,13 @@ async def get_today_dashboard(
     snap = await get_behavior_snapshot(db, store.id)
 
     # 店脑：读这家店的长期记忆，让今日推荐"认得这家店"（主打学生/会员/助教…就顶相关建议）。
-    # 按"今日运营内容"为意图筛相关记忆（避免全量、与生成管道一致的按需召回）；故障安全、空记忆无影响。
+    # 直接喂全量记忆给 _memory_recs（它只做关键词子串匹配、不需要语义排序）：
+    #   ① 省掉每次开 app 的"按 intent 重嵌入"——桌面只展示一条推荐，不值当为它跑嵌入（>15 条才触发）；
+    #   ② 避免语义 cap(15) 把含关键词的记忆挤掉而漏判这家店的客群/打法（召回反而更全）。
+    # 故障安全：读失败 → 空记忆，不影响其它推荐。
     memories: list[Memory] = []
     try:
-        all_mem = await load_store_memory(db, store.id)
-        memories = select_relevant_memories(all_mem, "今天该发什么运营内容、做什么活动")
+        memories = await load_store_memory(db, store.id)
     except Exception:
         memories = []
 
@@ -213,9 +215,7 @@ def _festival_recs(store: Store, now: datetime) -> list[DashboardRecommendation]
             category="festival",
             title=f"{fest.name}{when}，提前备好节日文案",
             description=f"{fest.name}临近，提前生成节日朋友圈/活动，抢占客户注意力。",
-            action_label="做节日文案",
             action_url="/dashboard/workbench",
-            action_type="generate_copywriting",
             priority="high",
             suggested_payload={
                 "prompt_key": "copywriting.moments",
@@ -231,9 +231,7 @@ def _festival_recs(store: Store, now: datetime) -> list[DashboardRecommendation]
                 category="festival",
                 title=f"做一张{fest.name}海报",
                 description=f"{fest.name}临近，生成一张节日海报，自动带上门店 Logo 和二维码。",
-                action_label="做节日海报",
                 action_url=f"/dashboard/posters/new?prompt={quote(fest.poster_theme)}",
-                action_type="generate_poster",
                 priority="high",
             )
         )
@@ -244,9 +242,7 @@ def _festival_recs(store: Store, now: datetime) -> list[DashboardRecommendation]
                 category="festival",
                 title=f"补个 Logo，{fest.name}海报一键出",
                 description="上传门店 Logo 和二维码后，就能生成带品牌的节日海报。",
-                action_label="去上传 Logo",
                 action_url="/dashboard/store-settings/branding",
-                action_type="edit_store",
                 priority="high",
             )
         )
@@ -309,9 +305,7 @@ def _frequency_rec(snap: BehaviorSnapshot) -> DashboardRecommendation | None:
         category="frequent",
         title=f"再做一次「{name}」" + ("（你标过效果好）" if is_good else ""),
         description="你常做、还标过效果好，再来一条。" if is_good else "这是你最近最常做的，一键打开继续。",
-        action_label="去生成",
         action_url="/dashboard/workbench",
-        action_type="generate_workbench",
         priority="medium",
         suggested_payload={"prompt_key": pk},
     )
@@ -332,7 +326,7 @@ def _gap_recs(snap: BehaviorSnapshot) -> list[DashboardRecommendation]:
         recs.append(DashboardRecommendation(
             id="gap_group", category="gap",
             title="顺手发条群公告", description="最近都在发朋友圈，群里也热乎下，约球接龙更直接。",
-            action_label="去生成", action_url="/dashboard/workbench", action_type="generate_copywriting",
+            action_url="/dashboard/workbench",
             priority="medium",
             suggested_payload={"prompt_key": "copywriting.group_notice", "user_intent": "写一条会员群约球的群公告"},
         ))
@@ -341,14 +335,14 @@ def _gap_recs(snap: BehaviorSnapshot) -> list[DashboardRecommendation]:
         recs.append(DashboardRecommendation(
             id="gap_poster", category="gap",
             title="给文案配张海报", description="你最近发了文案还没配过海报——图文一起发，转化更好。",
-            action_label="去做海报", action_url="/dashboard/posters", action_type="generate_poster",
+            action_url="/dashboard/posters",
             priority="medium",
         ))
     if n >= 5 and snap.type_counts.get("activity", 0) == 0:
         recs.append(DashboardRecommendation(
             id="gap_activity", category="gap",
             title="该策划个活动了", description="光发内容不够，办场活动能直接带客流。",
-            action_label="去策划", action_url="/dashboard/workbench", action_type="generate_activity",
+            action_url="/dashboard/workbench",
             priority="medium",
             suggested_payload={"activity_goal": "traffic", "budget_level": "light"},
         ))
@@ -356,18 +350,19 @@ def _gap_recs(snap: BehaviorSnapshot) -> list[DashboardRecommendation]:
         recs.append(DashboardRecommendation(
             id="gap_diagnosis", category="gap",
             title="让 AI 给你做次经营诊断", description="你已经很活跃了，试试更深的——看哪块还能再提升。",
-            action_label="去诊断", action_url="/dashboard/workbench", action_type="generate_workbench",
+            action_url="/dashboard/workbench",
             priority="medium",
             suggested_payload={"prompt_key": "operation.diagnosis_tool", "user_intent": "帮我诊断一下门店经营，哪里能提升"},
         ))
     return recs[:2]  # 最多 2 条，别刷屏
 
 
-def _rec(rid: str, category: str, title: str, desc: str, *, action_label: str,
-         action_url: str = "/dashboard/workbench", action_type: str = "generate_copywriting",
+def _rec(rid: str, category: str, title: str, desc: str, *,
+         action_url: str = "/dashboard/workbench",
          priority: str = "high", prompt_key: str | None = None,
          intent: str | None = None, payload: dict | None = None) -> DashboardRecommendation:
-    """简洁构造一条推荐（给阶段/缺口等新规则用，省掉重复样板）。"""
+    """简洁构造一条推荐（给阶段/缺口等新规则用，省掉重复样板）。
+    action_url 保留：主动出击(proactive.py)用它把"海报/生图类"推荐挑出来跳过（只备文字草稿）。"""
     sp: dict = dict(payload) if payload else {}
     if prompt_key:
         sp["prompt_key"] = prompt_key
@@ -375,8 +370,7 @@ def _rec(rid: str, category: str, title: str, desc: str, *, action_label: str,
         sp["user_intent"] = intent
     return DashboardRecommendation(
         id=rid, category=category, title=title, description=desc,
-        action_label=action_label, action_url=action_url, action_type=action_type,
-        priority=priority, suggested_payload=sp or None,
+        action_url=action_url, priority=priority, suggested_payload=sp or None,
     )
 
 
@@ -400,22 +394,22 @@ def _stage_recs(stage: str) -> list[DashboardRecommendation]:
         return [
             _rec("stage_preopen_invite", "stage", "邀约储备客户到店",
                  "开业前 7 天最关键——把攒的客户一个个约到店，开业当天就有人气。",
-                 action_label="去生成", intent="写一条邀约储备客户来新店体验的私聊话术"),
+                 intent="写一条邀约储备客户来新店体验的私聊话术"),
             _rec("stage_preopen_warmup", "stage", "做开业预热内容",
                  "开业前发预热朋友圈/海报，把声势造起来。",
-                 action_label="去生成", prompt_key="copywriting.moments", intent="写一条新店开业预热朋友圈"),
+                 prompt_key="copywriting.moments", intent="写一条新店开业预热朋友圈"),
         ]
     if stage == "newopen":
         return [
             _rec("stage_newopen_group", "stage", "把到店客户拉进群",
                  "新店蜜月期，趁热把第一批客户沉淀到私域，别让他们只来一次。",
-                 action_label="去生成", prompt_key="copywriting.group_notice", intent="写一条邀请新客进群的话术"),
+                 prompt_key="copywriting.group_notice", intent="写一条邀请新客进群的话术"),
         ]
     if stage == "mature":
         return [
             _rec("stage_mature_recall", "stage", "唤醒一批沉睡老客",
                  "成熟店增长靠复购——挑一批好久没来的老客，发条召回。",
-                 action_label="去生成", priority="medium",
+                 priority="medium",
                  prompt_key="operation.old_customer_recall", intent="写一条召回沉睡老客户的私聊话术"),
         ]
     return []
@@ -472,7 +466,7 @@ def _memory_recs(memories: list[Memory]) -> list[DashboardRecommendation]:
         if any(k in blob for k in keywords):
             return [
                 _rec(spec["id"], "store", spec["title"], spec["desc"],
-                     action_label="去生成", intent=spec["intent"]),
+                     intent=spec["intent"]),
             ]
     return []
 
@@ -528,9 +522,7 @@ async def _build_rules(
                 category="focus",
                 title=f_title,
                 description=f_desc,
-                action_label="去生成",
                 action_url="/dashboard/workbench",
-                action_type="generate_copywriting",
                 priority="high",
                 suggested_payload={
                     "prompt_key": "copywriting.moments",
@@ -547,9 +539,7 @@ async def _build_rules(
                 category="report",
                 title="今天的日报还没写",
                 description="填几个数，AI 帮你写好总结、一键导出 Excel。",
-                action_label="去写日报",
                 action_url="/dashboard/report",
-                action_type="navigate",
                 priority="high",
             )
         )
@@ -568,9 +558,7 @@ async def _build_rules(
                 category="setup",
                 title="完善门店资料",
                 description="门店资料越完整，AI 生成的文案和海报越准确。",
-                action_label="去完善资料",
                 action_url="/dashboard/store-settings",
-                action_type="edit_store",
                 priority="high",
             )
         )
@@ -589,9 +577,7 @@ async def _build_rules(
                 category="setup",
                 title=f"上传{'和'.join(missing_parts)}",
                 description="上传 Logo 和二维码后，生成海报会自动带上门店品牌和联系方式。",
-                action_label="去上传",
                 action_url="/dashboard/store-settings",
-                action_type="edit_store",
                 priority="high",
             )
         )
@@ -603,9 +589,7 @@ async def _build_rules(
                 id="no_generation_today",
                 title="今天还没生成运营内容",
                 description="先生成一条朋友圈或群公告，开始今天的运营。",
-                action_label="去生成内容",
                 action_url="/dashboard/workbench",
-                action_type="generate_copywriting",
                 priority="high",
                 suggested_payload={
                     "sub_type": "moments",
@@ -626,9 +610,7 @@ async def _build_rules(
                 id="friday_operation",
                 title="运营场景：周末赛事/搭子局预热",
                 description="用经营场景一键生成周末赛事报名通知和搭子局邀约。",
-                action_label="去生成运营内容",
                 action_url="/dashboard/workbench",
-                action_type="generate_operation",
                 priority="high",
                 suggested_payload={
                     "scenario": "tournament",
@@ -673,9 +655,7 @@ async def _build_rules(
                 category="good",
                 title=f"上次的{type_label}效果不错，再来一条？",
                 description="基于上次效果好的内容，生成类似的。",
-                action_label="一键复刻",
                 action_url="/dashboard/workbench",
-                action_type="generate_workbench",
                 priority="medium",
                 suggested_payload=payload,
             )
@@ -690,9 +670,7 @@ async def _build_rules(
                 category="gap",
                 title="距上次活动已超过一周",
                 description="定期做活动能保持顾客活跃度。",
-                action_label="策划新活动",
                 action_url="/dashboard/workbench",
-                action_type="generate_activity",
                 priority="medium",
             )
         )
@@ -704,9 +682,7 @@ async def _build_rules(
                 id="default_generate",
                 title="生成运营内容",
                 description="前往 AI 生成页面，制作今日的运营内容。",
-                action_label="去生成",
                 action_url="/dashboard/workbench",
-                action_type="generate_copywriting",
                 priority="medium",
             )
         )
@@ -787,9 +763,7 @@ def _weekday_recs(label: str) -> list[DashboardRecommendation]:
             id="weekday_moments",
             title="发一条朋友圈文案",
             description=f"{extra}工作日适合提醒附近顾客下班后来打几局。",
-            action_label="去生成朋友圈",
             action_url="/dashboard/workbench",
-            action_type="generate_copywriting",
             priority="high",
             suggested_payload={
                 "sub_type": "moments",
@@ -802,9 +776,7 @@ def _weekday_recs(label: str) -> list[DashboardRecommendation]:
             id="weekday_group_notice",
             title="发一条微信群公告",
             description="在会员群发起约球接龙，活跃群氛围。",
-            action_label="去生成群公告",
             action_url="/dashboard/workbench",
-            action_type="generate_copywriting",
             priority="medium",
             suggested_payload={
                 "sub_type": "group_notice",
@@ -816,9 +788,7 @@ def _weekday_recs(label: str) -> list[DashboardRecommendation]:
             id="weekday_activity",
             title="策划一个轻活动",
             description="下午场/晚场优惠，带动非高峰时段客流。",
-            action_label="去生成活动",
             action_url="/dashboard/workbench",
-            action_type="generate_activity",
             priority="medium",
             suggested_payload={
                 "activity_goal": "traffic",
@@ -835,9 +805,7 @@ def _friday_recs() -> list[DashboardRecommendation]:
             id="friday_moments",
             title="发一条周末预热朋友圈",
             description="周五是推周末活动的最佳时机，提醒顾客提前约局。",
-            action_label="去生成朋友圈",
             action_url="/dashboard/workbench",
-            action_type="generate_copywriting",
             priority="high",
             suggested_payload={
                 "sub_type": "moments",
@@ -850,9 +818,7 @@ def _friday_recs() -> list[DashboardRecommendation]:
             id="friday_group_notice",
             title="发一条周末活动群公告",
             description="在微信群预告周末活动和优惠。",
-            action_label="去生成群公告",
             action_url="/dashboard/workbench",
-            action_type="generate_copywriting",
             priority="high",
             suggested_payload={
                 "sub_type": "group_notice",
@@ -864,9 +830,7 @@ def _friday_recs() -> list[DashboardRecommendation]:
             id="friday_poster",
             title="生成一张周末宣传海报",
             description="用海报吸引眼球，周末活动效果更好。",
-            action_label="去生成海报",
             action_url="/dashboard/posters",
-            action_type="generate_poster",
             priority="high",
         ),
     ]
@@ -878,9 +842,7 @@ def _weekend_recs(weekday: str) -> list[DashboardRecommendation]:
             id="weekend_checkin",
             title="发一条今日到店提醒",
             description="提醒老顾客今天到店打球，带动周末客流。",
-            action_label="去生成朋友圈",
             action_url="/dashboard/workbench",
-            action_type="generate_copywriting",
             priority="high",
             suggested_payload={
                 "sub_type": "moments",
@@ -893,18 +855,14 @@ def _weekend_recs(weekday: str) -> list[DashboardRecommendation]:
             id="weekend_poster",
             title="生成一张活动海报",
             description="周末比赛或活动宣传，用海报吸引客流。",
-            action_label="去生成海报",
             action_url="/dashboard/posters",
-            action_type="generate_poster",
             priority="high",
         ),
         DashboardRecommendation(
             id="weekend_member",
             title="发一条储值/一卡通活动文案",
             description="周末客流多，适合推广储值/一卡通锁客。",
-            action_label="去生成",
             action_url="/dashboard/workbench",
-            action_type="generate_activity",
             priority="medium",
             suggested_payload={
                 "activity_goal": "membership",

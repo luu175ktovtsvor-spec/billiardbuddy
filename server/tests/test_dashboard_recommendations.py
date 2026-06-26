@@ -243,8 +243,7 @@ def test_memory_recs_only_one_even_if_multiple_match():
 
 def _r(rid, priority="medium"):
     return DashboardRecommendation(
-        id=rid, title=rid, description=rid, action_label="去",
-        action_url="/x", action_type="generate_copywriting", priority=priority,
+        id=rid, title=rid, description=rid, action_url="/x", priority=priority,
     )
 
 
@@ -286,3 +285,75 @@ def test_adoption_rank_helper():
     snap = _snap(adopted={"festival": 2})
     assert snap.adoption_rank("festival") == 2
     assert snap.adoption_rank("missing") == 0
+
+
+# ─── 死 action 管线清理（M13#1）：退役 action_label/action_type + generate_operation ───
+
+def test_recommendation_schema_dropped_dead_action_fields():
+    """单窗口化后前端只读 title/description/id，不点 action → action_label/action_type 是死字段，已退役。"""
+    fields = set(DashboardRecommendation.model_fields)
+    assert "action_label" not in fields
+    assert "action_type" not in fields
+
+
+def test_recommendation_schema_keeps_live_action_url_and_payload():
+    """action_url + suggested_payload 不是死字段：主动出击(proactive.py)据此挑海报/喂草稿意图 → 必须保留。"""
+    fields = set(DashboardRecommendation.model_fields)
+    assert "action_url" in fields
+    assert "suggested_payload" in fields
+
+
+def test_no_retired_generate_operation_referenced():
+    """退役的 generate_operation（全 server 零调用的孤儿）不再被 dashboard_service 引用。"""
+    import inspect
+    import services.dashboard_service as ds
+    assert "generate_operation" not in inspect.getsource(ds)
+
+
+# ─── /today 记忆路径（M13#2）：喂全量记忆给关键词匹配，不再每次开 app 重嵌入 ───
+
+async def test_today_dashboard_feeds_full_memory_without_embedding(monkeypatch):
+    """get_today_dashboard 直接喂全量记忆给 _memory_recs（关键词匹配），不再走语义召回：
+    ① 关键词"学生"即便只在靠后的记忆里也能命中（证明喂的是全量、没被 cap 挤掉）；
+    ② 全程不调嵌入器（证明省掉了每次开 app 的重嵌入）。"""
+    import uuid
+    import services.dashboard_service as ds
+    import services.rag.embedder as emb
+
+    # 20 条记忆，关键词"学生"只落在最后一条（旧逻辑语义 cap=15 时可能被挤掉）
+    mems = [ds.Memory("semantic", f"无关杂记{i}") for i in range(19)]
+    mems.append(ds.Memory("semantic", "这家店主打附近大学的学生客群"))
+
+    async def fake_load(db, sid):
+        return mems
+
+    async def fake_stats(db, sid, a, b):
+        return (0, 0, 0, 0, None)
+
+    async def fake_snap(db, sid):
+        return BehaviorSnapshot(Counter(), Counter(), Counter(), [], set(), Counter(), 0)
+
+    async def fake_report(db, sid, now):
+        return True  # 当作"日报已写"，跳过那条 rec 的 DB 查询
+
+    async def fake_none(db, sid):
+        return None
+
+    monkeypatch.setattr(ds, "load_store_memory", fake_load)
+    monkeypatch.setattr(ds, "_get_generation_stats", fake_stats)
+    monkeypatch.setattr(ds, "get_behavior_snapshot", fake_snap)
+    monkeypatch.setattr(ds, "_report_written_today", fake_report)
+    monkeypatch.setattr(ds, "_get_last_good_generation", fake_none)
+    monkeypatch.setattr(ds, "_days_since_last_activity", fake_none)
+    monkeypatch.setattr(ds, "calculate_completeness", lambda store: 100)
+
+    # 间谍：嵌入器一旦被调到就计数——dashboard 记忆路径不该再嵌入
+    called = {"n": 0}
+    monkeypatch.setattr(emb, "get_embedder", lambda *a, **k: called.__setitem__("n", called["n"] + 1))
+
+    store = SimpleNamespace(id=uuid.uuid4(), operation_profile={},
+                            logo_url="l.png", qrcode_url="q.png", has_coaching=False)
+    resp = await ds.get_today_dashboard(db=None, store=store)
+
+    assert any(r.category == "store" and r.id == "store_student" for r in resp.recommendations)
+    assert called["n"] == 0
