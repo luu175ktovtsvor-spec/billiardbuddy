@@ -115,6 +115,7 @@ async def canvas_edit_endpoint(
 
 _MAX_ROWS = 200
 _MAX_COLS = 30
+_XLSX_OPEN_ERR = "这个 Excel 打不开，可能正被别的程序占用或文件已损坏，请关掉占用它的程序或换个文件再试"
 
 
 class SheetRequest(BaseModel):
@@ -133,7 +134,10 @@ async def read_sheet(
     _require_desktop()
     p = _safe_xlsx(body.path, body.selected_files, body.full_disk_access)
     from openpyxl import load_workbook
-    wb = load_workbook(p, data_only=True)
+    try:
+        wb = load_workbook(p, data_only=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail=_XLSX_OPEN_ERR)
     truncated = len(wb.worksheets) > 5
     sheets = []
     for ws in wb.worksheets[:5]:
@@ -182,7 +186,10 @@ async def excel_edit(
     bdir = p.parent / ".billiards-backups"
     bdir.mkdir(exist_ok=True)
     backup = bdir / f"{p.stem}.{business_now().strftime('%Y%m%d-%H%M%S')}{p.suffix}.bak"
-    wb = load_workbook(p)
+    try:
+        wb = load_workbook(p)
+    except Exception:
+        raise HTTPException(status_code=400, detail=_XLSX_OPEN_ERR)
     ws = wb[body.sheet] if (body.sheet and body.sheet in wb.sheetnames) else wb.active
     try:
         old = ws[body.cell].value
