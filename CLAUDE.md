@@ -68,13 +68,39 @@
 ## 开发 / 测试
 
 ```bash
-# 测试(快速门，不花钱不联网)
-cd server && uv run pytest tests/ -q
+# —— 一条命令跑全套快速门（不花钱、不联网AI）：后端 pytest + 前端 vitest + tsc --noEmit ——
+bash scripts/test.sh
+bash scripts/test.sh --eval        # 额外跑店脑 LLM 验收（真实模型·慢·花钱·需 key），平时别加
 
-# 桌面开发
-cd desktop && npm install && npm run dev   # Electron 起壳 + 本地后端 + 本地前端
-# 打包(CI): .github/workflows/desktop-build-win.yml → PyInstaller 后端 + electron-builder nsis
+# —— 后端单测（uv sync 建出 .venv 后）——
+cd server && uv sync               # 装依赖（首次/改 pyproject 后）
+uv run pytest tests/ -q                              # 全跑（107 个 test_*.py）
+uv run pytest tests/test_agent_loop.py -q            # 跑单文件
+uv run pytest tests/test_agent_loop.py -k stream -q  # 跑单个用例（-k 匹配名）
+
+# —— 前端：web 没有 vitest 用例（pnpm test 空过），真正的前端门是类型检查 ——
+cd web && pnpm install
+npx tsc --noEmit                   # 前端"测试"实质＝这条；改前端后必过
+pnpm lint                          # next lint（可选）
+
+# —— 桌面开发 / 端到端 / 打包 ——
+cd desktop && npm install && npm run dev   # Electron 起壳 + 自动拉起本地 FastAPI + 本地 Next.js
+node desktop/e2e-pw/run.js                 # Playwright-Electron 端到端回归（脚本可能过时需修）
+# 打包(CI): .github/workflows/desktop-build-win.yml → PyInstaller 后端 + electron-builder nsis/dmg
+# 改前端后想看真效果必须重打包（dev 模式≠装机包行为）
+
+# —— 改了承重接口后必跑（否则 test_coupling_map_fresh.py 红）——
+python3 scripts/build_coupling_map.py --write
 ```
+
+## 代码流向地图（一次对话怎么跑完，跨文件读才看得懂）
+
+1. **前端发起**：`web/src/components/desktop/`(composer) → `web/src/lib/api.ts` 的 `streamAgent`(SSE) → `POST /api/v1/agent`。
+2. **组装大脑**（`server/api/v1/agent.py`）：`compose_agent_system_prompt` 三段拼装（通用身份 + 安全红线永远注入 + 仅 `billiards_mode` 追加台球人设）；工具选择 `billiards_registry() if billiards_mode else general_registry()`（`agent.py:262`，定义在 `services/agent/registry.py`）。
+3. **ReAct 循环**（`server/services/agent/loop.py`）：同步 `run_agent_loop` / 流式 `run_agent_loop_stream` 共享状态机，只在"怎么调模型/怎么对外吐"分叉。一轮＝调模型 → 有 `tool_calls` 就逐个经 `_plan_tool_call`(审批闸判定 or 直接执行) → 结果作 `role:tool` 回灌 → 再调模型，直到收敛或 `max_turns` 兜底。工具报错不崩循环、错误文本回灌让模型自救。
+4. **审批闸**：标 `requires_approval=True` 的工具（发布/群发/删数据等对外·不可逆动作）不在循环里直接跑，吐 `approval_request` 弹卡片，人确认后经 `POST /api/v1/agent/execute`（签名绑定 args）才执行。做成品给用户看 / 读写本机文件（带备份）不算对外，直接做。
+5. **工具实现**：`services/agent/` 下 `tools.py`(运营) `local_tools.py`(本机文件·沙箱) `web_tools.py`(查抓) `image_tools.py`(生图) `computer_tools.py` `skills.py` `background_tools.py` `mcp_client.py` 等，由 `registry.py` 分层登记。
+6. **模型出口**：`services/ai/factory.py` 返回内置 key + base_url；生图按 `resolve_image_kind(base_url)` 路由到 `services/ai/providers/`(硅基流动/通义万相/openai_image)。桌面高并发统一走 `gateway/app.py`（国内总闸·三层阀门·藏 key·客户端只带 app 令牌）。
 
 ## 关键约束（铁律 · 违反即破坏产品）
 
