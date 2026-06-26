@@ -22,6 +22,7 @@ import logging
 import httpx
 
 from config import settings
+from services.ai.providers._net import bypass_proxy_for
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,8 @@ class ArkVideoProvider:
         if generate_audio:
             body["generate_audio"] = True
         timeout = httpx.Timeout(60.0, connect=30.0)
-        async with httpx.AsyncClient(timeout=timeout) as hc:
+        direct = bypass_proxy_for(self._base_url)
+        async with httpx.AsyncClient(timeout=timeout, trust_env=not direct) as hc:
             r = await hc.post(
                 f"{self._base_url}/contents/generations/tasks",
                 headers=self._headers(), json=body,
@@ -95,8 +97,9 @@ class ArkVideoProvider:
         deadline = float(settings.video_timeout)
         waited = 0.0
         timeout = httpx.Timeout(60.0, connect=30.0)
+        direct = bypass_proxy_for(self._base_url)
         while True:
-            async with httpx.AsyncClient(timeout=timeout) as hc:
+            async with httpx.AsyncClient(timeout=timeout, trust_env=not direct) as hc:
                 r = await hc.get(
                     f"{self._base_url}/contents/generations/tasks/{task_id}",
                     headers=self._headers(),
@@ -105,8 +108,9 @@ class ArkVideoProvider:
                 out = r.json() or {}
             status = str(out.get("status") or "").lower()
             if status == "succeeded":
-                content = out.get("content") or {}
-                url = content.get("video_url") or out.get("video_url")
+                raw_content = out.get("content")
+                content = raw_content[0] if isinstance(raw_content, list) and raw_content else (raw_content or {})
+                url = (content.get("video_url") if isinstance(content, dict) else None) or out.get("video_url")
                 if url:
                     return url
                 raise RuntimeError("火山方舟视频任务成功但响应里无 video_url")
@@ -123,7 +127,8 @@ class ArkVideoProvider:
 async def fetch_video_bytes(url: str) -> bytes:
     """把生成的视频 URL 即时下载成 bytes（火山方舟 url 短期有效，必须立刻取回落盘）。"""
     timeout = httpx.Timeout(settings.video_timeout, connect=30.0)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as hc:
+    direct = bypass_proxy_for(url)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, trust_env=not direct) as hc:
         r = await hc.get(url)
         r.raise_for_status()
         return r.content

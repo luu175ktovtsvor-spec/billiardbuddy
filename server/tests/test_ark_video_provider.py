@@ -138,3 +138,125 @@ def test_resolve_first_frame_blocks_outside_sandbox(monkeypatch, tmp_path):
     # 但若老板当场显式选定了它（allow_paths）→ 放行
     out = video_service._resolve_first_frame(str(outside), allow_paths={str(outside)})
     assert out.startswith("data:")
+
+
+# ---- #1 bypass_proxy_for：国内 volces.com 端点绕开系统代理直连 ----
+
+def test_ark_video_bypass_proxy_for_volces():
+    """volces.com（火山方舟）命中国内域名列表 → bypass=True → trust_env=False。"""
+    from services.ai.providers._net import bypass_proxy_for
+    assert bypass_proxy_for("https://ark.cn-beijing.volces.com/api/v3") is True
+
+def test_ark_video_bypass_proxy_for_foreign():
+    """非国内端点 → 走代理。"""
+    from services.ai.providers._net import bypass_proxy_for
+    assert bypass_proxy_for("https://api.openai.com/v1") is False
+
+def test_ark_video_httpx_gets_trust_env_false(monkeypatch):
+    """提交/轮询创建的 httpx.AsyncClient 传 trust_env=False（国内端点时）。"""
+    import httpx
+    captured = []
+    _OrigAC = httpx.AsyncClient
+
+    class _SpyAC:
+        def __init__(self, *a, **k):
+            captured.append(k)
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def post(self, url, **k):
+            return _FakeResp(json_data={"id": "spy-1"})
+        async def get(self, url, **k):
+            return _FakeResp(json_data={"status": "succeeded", "content": {"video_url": "http://v/s.mp4"}})
+
+    monkeypatch.setattr(httpx, "AsyncClient", _SpyAC)
+    from services.ai.providers.ark_video import ArkVideoProvider
+    asyncio.run(ArkVideoProvider("k", "https://ark.cn-beijing.volces.com/api/v3").generate_video(prompt="x", model="m"))
+    assert len(captured) >= 2
+    for kw in captured:
+        assert kw.get("trust_env") is False, f"国内端点应 trust_env=False, got {kw}"
+
+
+# ---- #2 早查 key：未配 ARK key 时审批前就友好提示 ----
+
+def test_generate_video_early_key_check_no_key(monkeypatch):
+    """未配 ARK key → generate_video 工具直接返回友好提示，不走到审批/轮询。"""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "services.ai.factory.ProviderFactory.get_video_config_for_store",
+        classmethod(lambda cls, store: ("", "https://ark.cn-beijing.volces.com/api/v3", None)),
+    )
+    from services.agent.tools import generate_video
+    ctx = SimpleNamespace(
+        store=SimpleNamespace(id="s1"),
+        user=SimpleNamespace(id="u1"),
+        db=None, allowed_paths=[], _video_generated_this_run=False,
+    )
+    result = asyncio.run(generate_video({"description": "测试视频"}, ctx))
+    assert "配" in result and ("Key" in result or "key" in result.lower())
+
+
+def test_generate_video_early_key_check_has_key(monkeypatch):
+    """已配 ARK key → generate_video 不因 key 检查挡住（会继续走到 video_service 调用）。"""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "services.ai.factory.ProviderFactory.get_video_config_for_store",
+        classmethod(lambda cls, store: ("ark-real-key", "https://ark.cn-beijing.volces.com/api/v3", "m")),
+    )
+
+    async def _fake_gen(**kw):
+        return {"video_url": "/uploads/videos/fake.mp4", "generation_id": "g1", "conversation_id": "c1"}
+
+    monkeypatch.setattr("services.video_service.generate_video", _fake_gen)
+    from services.agent.tools import generate_video
+    ctx = SimpleNamespace(
+        store=SimpleNamespace(id="s1"),
+        user=SimpleNamespace(id="u1"),
+        db=None, allowed_paths=[], _video_generated_this_run=False,
+    )
+    result = asyncio.run(generate_video({"description": "台球开业视频"}, ctx))
+    assert "fake.mp4" in result or "做好" in result
+
+
+# ---- #3 content list 健壮：API 返 content 为 list 时不 AttributeError ----
+
+def test_ark_video_content_as_list(monkeypatch):
+    """轮询返回 content=[{video_url:...}]（list 而非 dict）→ 正确取到 url。"""
+    import httpx
+
+    def router(method, url, k):
+        if method == "POST":
+            return _FakeResp(json_data={"id": "cgt-list"})
+        return _FakeResp(json_data={
+            "status": "succeeded",
+            "content": [{"video_url": "http://v/list.mp4"}],
+        })
+
+    _FakeAC.router = staticmethod(router)
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAC)
+    from services.ai.providers.ark_video import ArkVideoProvider
+    out = asyncio.run(ArkVideoProvider("ark-x").generate_video(prompt="x", model="m"))
+    assert out == "http://v/list.mp4"
+
+
+def test_ark_video_content_as_empty_list_fallback(monkeypatch):
+    """content=[] → 回退到顶层 video_url。"""
+    import httpx
+
+    def router(method, url, k):
+        if method == "POST":
+            return _FakeResp(json_data={"id": "cgt-el"})
+        return _FakeResp(json_data={
+            "status": "succeeded",
+            "content": [],
+            "video_url": "http://v/top.mp4",
+        })
+
+    _FakeAC.router = staticmethod(router)
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAC)
+    from services.ai.providers.ark_video import ArkVideoProvider
+    out = asyncio.run(ArkVideoProvider("ark-x").generate_video(prompt="x", model="m"))
+    assert out == "http://v/top.mp4"
