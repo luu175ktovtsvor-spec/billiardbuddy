@@ -8,8 +8,10 @@
 - 严禁编造：prompt 明确"没提到的不写"，并在评估里用防幻觉用例守住。
 - 验收标准见 tests/eval_store_brain.py。
 """
+import hashlib
 import json
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 
@@ -82,7 +84,7 @@ def _provider_client_and_model(store=None) -> tuple[AsyncOpenAI, str]:
     return _get_client(), settings.text_model_name
 
 
-async def _json_call(system: str, user: str, store=None) -> dict:
+async def _json_call(system: str, user: str, store=None, max_tokens: int = 900) -> dict:
     """调 JSON 模式（BYOK 门店走门店自带模型），解析/调用失败返回 {}（不抛，调用方兜底）。
     店脑学习是【辅助功能】：没配 key（纯 BYOK 未配 → 构造空 key client 即报错）或 provider 任何报错，
     都静默跳过、绝不让主对话崩——"还没配 key"的友好引导由主生成的 503 守卫负责给。"""
@@ -92,8 +94,8 @@ async def _json_call(system: str, user: str, store=None) -> dict:
             model=model,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             response_format={"type": "json_object"},
-            temperature=0,  # 记忆抽取/整合求稳定可复现，温度拉到 0
-            max_tokens=900,
+            temperature=0,
+            max_tokens=max_tokens,
         )
         raw = resp.choices[0].message.content or ""
     except Exception as e:
@@ -113,11 +115,55 @@ _EXTRACT_SYS = (
     "（没提价格就不写价格，没提助教/包厢就不写）。\n"
     "2. 否定也要如实记（说'没有包厢'就记'没有包厢'，不能记成有）。\n"
     "3. 每条精炼成一句可复用的事实/偏好；天气、吃饭等与门店运营无关的闲聊不要记。\n"
+    "4. **一次性任务诉求不要记**：用户让做海报、写文案、做个图、查个数据——这些是临时指令，"
+    "不是门店事实/偏好/运营模式，**不要抽取**。\n"
     "type 取值（英文）：semantic(门店客观事实) | preference(老板的风格/喜好) | "
     "operational(运营模式/客流节奏) | episodic(发生过的具体事件)\n"
     '格式：{"memories":[{"type":"semantic","content":"...","confidence":"high|medium|low"}]}\n'
     '没有值得记的就返回 {"memories":[]}。'
 )
+
+_TASK_PATTERNS = re.compile(
+    r"^(帮我|请|麻烦|给我)?(做|写|画|生成|制作|设计|弄|搞|出|来)(一?[张个份篇条幅])?",
+)
+
+_REDLINE_PATTERNS = re.compile(
+    r"陪伴服务|陪侍|性服务|色情|卖淫|嫖|赌[场博]|坐庄|抽水|定盘口|放高利贷|洗钱|贩毒",
+)
+
+
+def _is_one_off_task(text: str) -> bool:
+    text = text.strip()
+    if len(text) > 80:
+        return False
+    return bool(_TASK_PATTERNS.search(text))
+
+
+def _extract_key_phrases(text: str) -> list[str]:
+    """从文本提取关键短语（2~6字的中文/英文连续片段）用于接地校验。不依赖分词库。"""
+    phrases: list[str] = []
+    for seg in re.findall(r"[一-鿿]+", text):
+        for length in (4, 3, 2):
+            for i in range(len(seg) - length + 1):
+                phrases.append(seg[i:i + length])
+    phrases.extend(re.findall(r"[a-zA-Z]{3,}", text))
+    phrases.extend(re.findall(r"\d{2,}", text))
+    return phrases
+
+
+def _grounding_check(memory: Memory, source_text: str) -> bool:
+    """接地校验：记忆里的关键短语至少 30% 在源文中出现，否则判定为脑补、丢弃。"""
+    phrases = _extract_key_phrases(memory.content)
+    if not phrases:
+        return True
+    source_lower = source_text.lower()
+    matched = sum(1 for p in phrases if p.lower() in source_lower)
+    return matched / len(phrases) >= 0.3
+
+
+def _redline_filter(memory: Memory) -> bool:
+    """红线过滤：记忆内容触犯安全红线则丢弃。"""
+    return not bool(_REDLINE_PATTERNS.search(memory.content))
 
 _CONSOLIDATE_SYS = (
     "你是门店记忆整合器。给你这家店的【已有记忆】和【新记忆】，"
@@ -145,15 +191,20 @@ def _to_memories(data: dict) -> list[Memory]:
 
 
 async def extract_memories(interaction_text: str, store=None) -> list[Memory]:
-    """从一次交互（对话/生成需求/反馈）里抽取值得长期记住的门店记忆。store 给定且 BYOK 则走门店模型。"""
+    """从一次交互（对话/生成需求/反馈）里抽取值得长期记住的门店记忆。store 给定且 BYOK 则走门店模型。
+    抽取后三道过滤：一次性任务跳过 → 接地校验 → 红线过滤。"""
     if not interaction_text or not interaction_text.strip():
         return []
-    return _to_memories(await _json_call(_EXTRACT_SYS, interaction_text.strip(), store))
+    text = interaction_text.strip()
+    if _is_one_off_task(text):
+        return []
+    raw = _to_memories(await _json_call(_EXTRACT_SYS, text, store))
+    return [m for m in raw if _grounding_check(m, text) and _redline_filter(m)]
 
 
 async def consolidate_memories(existing: list[Memory], new: list[Memory], store=None) -> list[Memory]:
     """把新记忆并入已有记忆，返回去重、最新的**完整列表**。store 给定且 BYOK 则走门店模型。
-    解析失败时兜底返回并集（宁可暂时重复，也不丢信息）。"""
+    整合失败时保留旧集合（不回退 union，从根上止住膨胀）。"""
     if not new:
         return list(existing)
     payload = (
@@ -162,12 +213,37 @@ async def consolidate_memories(existing: list[Memory], new: list[Memory], store=
         + "\n【新记忆】\n"
         + json.dumps([{"type": m.type, "content": m.content} for m in new], ensure_ascii=False)
     )
-    merged = _to_memories(await _json_call(_CONSOLIDATE_SYS, payload, store))
-    return merged if merged else list(existing) + list(new)
+    token_budget = max(4096, len(payload) // 2)
+    merged = _to_memories(await _json_call(_CONSOLIDATE_SYS, payload, store, max_tokens=token_budget))
+    if merged:
+        return merged
+    logger.warning("consolidate_memories 整合失败，保留旧集合（不 union、止膨胀）")
+    return list(existing)
 
 
 # 店脑按需召回阈值：记忆多于这个数才启用相关性筛选（少则全留，无 context rot 风险）
 _MEMORY_INJECT_CAP = 15
+
+_embed_cache: dict[str, list[float]] = {}
+_embed_cache_hash: str = ""
+
+
+def _get_cached_embedding(emb, text: str, cache_key: str) -> list[float]:
+    """带缓存的嵌入：记忆集合没变就不重嵌入。"""
+    global _embed_cache, _embed_cache_hash
+    if cache_key != _embed_cache_hash:
+        _embed_cache.clear()
+        _embed_cache_hash = cache_key
+    if text not in _embed_cache:
+        _embed_cache[text] = emb.embed(text)
+    return _embed_cache[text]
+
+
+def _memories_hash(memories: list[Memory]) -> str:
+    h = hashlib.md5()
+    for m in memories:
+        h.update((m.content or "").encode())
+    return h.hexdigest()
 
 
 def select_relevant_memories(memories: list[Memory], intent, cap: int = _MEMORY_INJECT_CAP) -> list[Memory]:
@@ -188,16 +264,18 @@ def select_relevant_memories(memories: list[Memory], intent, cap: int = _MEMORY_
     try:
         from services.rag.embedder import get_embedder, cosine
         emb = get_embedder()
+        cache_key = _memories_hash(auto)
         q = emb.embed(str(intent))
         bonus = {"high": 0.10, "medium": 0.0, "low": -0.05}
         scored = [
-            (cosine(q, emb.embed(m.content or "")) + bonus.get(getattr(m, "confidence", "medium"), 0.0), m)
+            (cosine(q, _get_cached_embedding(emb, m.content or "", cache_key))
+             + bonus.get(getattr(m, "confidence", "medium"), 0.0), m)
             for m in auto
         ]
         scored.sort(key=lambda x: x[0], reverse=True)
         return manual + [m for _, m in scored[:cap]]
     except Exception:
-        return manual + auto  # 召回失败不影响主流程，回退 auto 全量（manual 始终在前）
+        return manual + auto
 
 
 def format_memories_for_prompt(memories: list[Memory], intent=None) -> str:
@@ -223,7 +301,9 @@ def format_memories_for_prompt(memories: list[Memory], intent=None) -> str:
             "【这家店的最新记忆（AI 长期积累的最新最准信息）】\n"
             "（用法：**回答关于本店的问题**——卖什么、有没有某项、哪个套餐/活动火、客流规律、店里定的做法等"
             "——优先用下面这些记忆直接答，**别张口说『没数据/没报表』**，除非这里确实没有；"
-            "写内容时如与其他门店资料/价格冲突一律以这里为准；自然运用、不要照抄、不要无关硬塞。）\n"
+            "写内容时如与其他门店资料/价格冲突一律以这里为准；自然运用、不要照抄、不要无关硬塞。"
+            "**但用户在本次对话中明确说的信息优先于这里的旧记忆**——"
+            "例如用户说'台费改成80了'，即使记忆里写60，也以用户本次所说为准。）\n"
             + "\n".join(f"- {m.content}" for m in auto)
         )
     return "\n\n".join(blocks)
