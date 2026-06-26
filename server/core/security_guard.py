@@ -6,33 +6,27 @@ import re
 from typing import Optional
 
 # 输入侧：检测prompt注入尝试
+# M5 放宽：桌面单用户场景下"你是什么模型/你用什么AI/你的配置"是老板正常好奇心，
+# 不是攻击——误拦返 500 是纯负收益。只保留真正的"覆盖/绕过系统指令"企图。
 INJECTION_PATTERNS = [
-    # 中文
-    r"你的(系统|prompt|指令|规则|提示词|设定|配置)",
-    r"(告诉我|说出|显示|输出|打印)\s*(你的|系统|后台)\s*(prompt|指令|规则|提示词)",
-    r"(忘记|忽略|无视|跳过)(你(之前|上面)的|所有)(指令|规则|设定|限制)",
+    r"(忘记|忽略|无视|跳过).{0,10}(之前|上面|以前|所有|全部).{0,6}(指令|规则|设定|限制)",
     r"(假装|假设|扮演|模拟)(你是|你没有)(一个)?(没有|不限|无)(限制|规则|约束)",
-    r"(用|以)(base64|编码|加密)(方式)?(告诉我|输出|显示)",
-    r"(repeat|print|show|display|output|reveal)\s*(your|the|system)\s*(prompt|instructions|rules)",
     r"ignore.*(previous|above|all).*(instructions|rules|prompts)",
-    r"system\s*prompt",
-    r"你(是|叫|叫什么)(什么|谁|啥)(模型|AI|机器人|助手)",
-    r"(你用|用的|什么)(模型|AI|大模型|LLM)",
 ]
 
 # 输出侧：检测系统信息泄露
+# M5 收窄：只拦真正的系统内部结构泄露（代码路径/提示词变量名/系统指令原文），
+# 不拦 AI 品牌词（GPT/Claude/DeepSeek）和"我是AI"——老板经常让写含这些词的正当营销文案，
+# 静默删整行是纯负收益。
 LEAK_PATTERNS = [
     r"(我的|系统的|后台的)(prompt|指令|规则|提示词)(是|为|如下)",
-    r"(system\s*prompt|系统指令|后台指令)",
-    r"(DeepSeek|deepseek|GPT|gpt|Claude|claude|OpenAI|openai)",
-    r"(我是|我是一个)(AI|人工智能|大模型|语言模型|LLM)",
     r"(baseline_rules|role_rules|customer_rules|knowledge_context)",
     r"(content_service|stream\.py|prompt_engine)",
     r"(server/prompts|rules/role|rules/customer)",
 ]
 
 # 命中泄露时统一替换为这句安全提示
-LEAK_REPLACEMENT = "我是球房AI运营助手，专注于帮你生成球房运营内容。如果你有运营方面的需求，随时告诉我。"
+LEAK_REPLACEMENT = "我是你的 AI 助手，有什么需要帮忙的随时说。"
 
 # AI 回应口水前缀（流式与非流式共用同一份，避免两处维护）
 AI_RESPONSE_PREFIXES = [

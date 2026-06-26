@@ -38,11 +38,13 @@ def test_web_tools_export_openai_schema():
 
 
 def test_web_tools_metadata():
-    # 查资料/子代理是只读、不需审批；TodoWrite 不需审批
-    for n in ["web_fetch", "web_search", "run_subagent"]:
+    # web_search/run_subagent 只读、不需审批；web_fetch 走审批闸（防注入外传）；TodoWrite 不需审批
+    for n in ["web_search", "run_subagent"]:
         t = default_registry.get(n)
         assert t.read_only is True, f"{n} 应为 read_only"
         assert t.requires_approval is False
+    wf = default_registry.get("web_fetch")
+    assert wf.requires_approval is True, "web_fetch 应走审批闸（防注入外传）"
     assert default_registry.get("todo_write").requires_approval is False
 
 
@@ -85,8 +87,13 @@ class _FakeClient:
         return self._resp
 
 
+async def _ssrf_pass(url):
+    return False
+
+
 def _patch_httpx(monkeypatch, resp=None, exc=None):
     monkeypatch.setattr(web_tools.httpx, "AsyncClient", lambda *a, **k: _FakeClient(resp=resp, exc=exc))
+    monkeypatch.setattr(web_tools, "_is_ssrf_target_async", _ssrf_pass)
 
 
 def test_web_fetch_cleans_html(monkeypatch):
