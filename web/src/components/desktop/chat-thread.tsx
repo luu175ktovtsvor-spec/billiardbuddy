@@ -7,7 +7,7 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, FileEdit, Terminal, ChevronRight, Brain } from "lucide-react";
+import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, FileEdit, Terminal, ChevronRight, Brain, RotateCcw } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
@@ -558,6 +558,7 @@ export function DesktopChatThread({
   onPreview,
   onAnswer,
   onStop,
+  onRetry,
 }: {
   messages: ChatMessage[];
   draft: string;
@@ -571,6 +572,7 @@ export function DesktopChatThread({
   onPreview?: (item: PreviewItem) => void;
   onAnswer?: (label: string) => void;
   onStop?: () => void;
+  onRetry?: () => void;
 }) {
   return (
     <div className="flex-1 overflow-y-auto">
@@ -584,8 +586,17 @@ export function DesktopChatThread({
           ) : (
             <div key={idx} className="space-y-2.5">
               {m.error ? (
-                <div className="flex items-center gap-1.5 text-[14px] text-[#ff3b30] dark:text-[#ff8585]">
+                <div className="flex flex-wrap items-center gap-1.5 text-[14px] text-[#ff3b30] dark:text-[#ff8585]">
                   <AlertTriangle className="h-4 w-4 shrink-0" /> {m.content.replace(/^⚠️\s*/, "")}
+                  {onRetry && !generating && idx === messages.length - 1 && (
+                    <button
+                      type="button"
+                      onClick={onRetry}
+                      className="ml-1 inline-flex items-center gap-1 rounded-md border border-[#ff3b30]/30 bg-[#ff3b30]/[0.06] px-2 py-0.5 text-[12px] font-medium text-[#ff3b30] transition hover:bg-[#ff3b30]/[0.12] active:scale-[0.97] dark:border-[#ff8585]/30 dark:text-[#ff8585]"
+                    >
+                      <RotateCcw className="h-3 w-3" /> 重试
+                    </button>
+                  )}
                 </div>
               ) : (
                 <>
@@ -637,7 +648,7 @@ export function DesktopChatThread({
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft}</ReactMarkdown>
               </div>
             ) : (
-              <AgentSpinner onStop={onStop} />
+              <AgentSpinner onStop={onStop} activeToolName={liveSteps.length ? (() => { const last = liveSteps[liveSteps.length - 1]; return !last.done ? last.tool : undefined; })() : undefined} />
             )}
           </div>
         )}

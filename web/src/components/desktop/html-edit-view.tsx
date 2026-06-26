@@ -25,6 +25,7 @@ export function HtmlEditView({ initialHtml, title }: { initialHtml: string; titl
   const [picked, setPicked] = useState<{ outerHTML: string; label: string } | null>(null);
   const [promptText, setPromptText] = useState("");
   const [busy, setBusy] = useState(false);
+  const editReqIdRef = useRef(0);
   const [err, setErr] = useState<string | null>(null);
   const [pending, setPending] = useState<{ before: string; after: string; label: string } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -89,18 +90,23 @@ export function HtmlEditView({ initialHtml, title }: { initialHtml: string; titl
   const submitEdit = async () => {
     const ins = promptText.trim();
     if (!ins || !picked || busy) return;
+    const rid = ++editReqIdRef.current;
     setBusy(true);
     setErr(null);
     try {
       const res = await api.canvasEdit(html, ins, picked.outerHTML, "网页");
+      if (rid !== editReqIdRef.current) return;
       if (res.content === html) setErr("这处没改出不一样的内容，换个说法再试");
       else setPending({ before: html, after: res.content, label: ins.slice(0, 16) });
     } catch (e) {
+      if (rid !== editReqIdRef.current) return;
       setErr(getErrorMessage(e));
     } finally {
-      setBusy(false);
-      setPicked(null);
-      setPromptText("");
+      if (rid === editReqIdRef.current) {
+        setBusy(false);
+        setPicked(null);
+        setPromptText("");
+      }
     }
   };
   const accept = () => {
