@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -177,4 +178,14 @@ def get_prompt_engine() -> PromptEngine:
     global _instance
     if _instance is None:
         _instance = PromptEngine()
+    return _instance
+
+
+async def prewarm_prompt_engine() -> PromptEngine:
+    """Startup 时异步预热，不阻塞事件循环。"""
+    global _instance
+    if _instance is None:
+        _instance = PromptEngine.__new__(PromptEngine)
+        _instance._templates = {}
+        await asyncio.to_thread(_instance._load_all)
     return _instance

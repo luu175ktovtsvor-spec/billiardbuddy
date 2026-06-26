@@ -14,6 +14,7 @@ import httpx
 
 from config import settings
 from services.ai.base import ImageProvider
+from services.ai.providers._net import bypass_proxy_for
 from services.ai.providers.image_catalog import fetch_image_bytes
 
 logger = logging.getLogger(__name__)
@@ -62,7 +63,7 @@ class DashScopeImageProvider(ImageProvider):
             "parameters": {"size": size.replace("x", "*"), "n": 1},  # 万相用星号 *
         }
         timeout = httpx.Timeout(60.0, connect=30.0)
-        async with httpx.AsyncClient(timeout=timeout) as hc:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=not bypass_proxy_for(self._base_url)) as hc:
             r = await hc.post(
                 f"{self._base_url}/services/aigc/text2image/image-synthesis",
                 headers=self._headers(async_submit=True), json=body,
@@ -79,7 +80,7 @@ class DashScopeImageProvider(ImageProvider):
         waited = 0.0
         timeout = httpx.Timeout(60.0, connect=30.0)
         while True:
-            async with httpx.AsyncClient(timeout=timeout) as hc:
+            async with httpx.AsyncClient(timeout=timeout, trust_env=not bypass_proxy_for(self._base_url)) as hc:
                 r = await hc.get(f"{self._base_url}/tasks/{task_id}", headers=self._headers())
                 r.raise_for_status()
                 out = (r.json() or {}).get("output") or {}

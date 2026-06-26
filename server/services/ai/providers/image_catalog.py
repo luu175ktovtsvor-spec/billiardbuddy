@@ -141,8 +141,9 @@ def validate_image_model(base_url: str | None, model: str | None) -> dict:
 
 async def fetch_image_bytes(url: str) -> bytes:
     """把生图返回的图片 URL 即时下载成 bytes（国内端点 url 多为 1-24h 短期有效，必须立刻取回落盘）。"""
+    from services.ai.providers._net import bypass_proxy_for
     timeout = httpx.Timeout(settings.openai_image_timeout, connect=30.0)
-    async with httpx.AsyncClient(timeout=timeout) as hc:
+    async with httpx.AsyncClient(timeout=timeout, trust_env=not bypass_proxy_for(url)) as hc:
         r = await hc.get(url)
         r.raise_for_status()
         return r.content
