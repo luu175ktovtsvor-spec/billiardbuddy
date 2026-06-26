@@ -179,6 +179,20 @@ _DANGEROUS_PATTERNS = [
     r"\bmkfs|\bfdisk|\bparted",         # 分区/格式化
     r"\bcurl\b.*\|\s*(sh|bash)",        # curl ... | sh 远程执行
     r"\bwget\b.*\|\s*(sh|bash)",        # wget ... | sh
+    # ── 数据外传命令（M5 ★2 堵注入→外传；注意 _check_command_safety 先 .lower() 再匹配） ──
+    r"\bcurl\b.*\s-[a-z]*[dft]",        # curl -d/-F/-T 发送数据/上传文件（已转小写）
+    r"\bcurl\b.*--data",                # curl --data/--data-binary/--data-urlencode
+    r"\bcurl\b.*--upload-file",         # curl --upload-file
+    r"\bcurl\b.*\s@",                   # curl @file 读本机文件发出
+    r"\bscp\b",                         # scp 外传文件
+    r"\bsftp\b",                        # sftp 外传文件
+    r"\brsync\b",                       # rsync 同步文件到外部
+    r"\bnc\b",                          # nc/netcat 网络外传
+    r"\bncat\b",                        # ncat 网络外传
+    r"\bnetcat\b",                      # netcat 网络外传
+    r"\bwget\b.*--(post-data|post-file|body-data|body-file)",  # wget POST 外传
+    r"\btftp\b",                        # tftp 文件传输
+    r"\btelnet\b",                      # telnet 远程连接
 ]
 # 禁用的 shell 操作符（防命令拼接/重定向/管道/子命令绕过黑名单）。命中即拒。
 _SHELL_OPERATORS = ["&&", "||", "|", ";", ">", "<", "`", "$(", "&"]

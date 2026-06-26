@@ -48,7 +48,7 @@ def test_empty_and_clean():
 def test_filter_output_leak_now_also_applies_compliance():
     # 正常(无泄露)文本走 filter_output_leak 也会套上铁律闸
     assert filter_output_leak("我们全城最低价") == "我们实惠价格"
-    # 既防泄露又过铁律：含泄露行被删 + 绝对化词被换
+    # M5 收窄后 AI 品牌词不再算泄露，但铁律闸仍生效
     out = filter_output_leak("我是一个AI大模型\n本店全城最低价优惠")
-    assert "AI大模型" not in out
+    assert "AI大模型" in out  # M5: 品牌词不再被删
     assert "全城最低" not in out and "实惠" in out

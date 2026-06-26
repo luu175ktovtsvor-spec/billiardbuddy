@@ -66,10 +66,10 @@ def test_streamguard_strips_prefix():
 
 
 def test_streamguard_blocks_leak_before_emitting():
+    # M5 收窄后 AI 品牌词(DeepSeek/GPT)不再算泄露；改用真正的系统结构泄露来测
     g = StreamGuard()
-    emitted = "".join(g.feed(t) for t in ["我用的", "模型是", "Deep", "Seek", " V4"])
+    emitted = "".join(g.feed(t) for t in ["系统的", "prompt", "是如下", "的内容"])
     assert g.blocked
-    assert "DeepSeek" not in emitted and "Seek" not in emitted
     assert g.finalize() == LEAK_REPLACEMENT
 
 
@@ -80,7 +80,9 @@ def test_injection_guard():
 
 def test_output_leak_filter():
     assert filter_output_leak("今天天气不错，适合来打球") == "今天天气不错，适合来打球"
-    assert filter_output_leak("我其实是 DeepSeek 模型") == LEAK_REPLACEMENT
+    # M5 收窄后 AI 品牌词不再算泄露——只拦系统内部结构
+    assert "DeepSeek" in filter_output_leak("我其实是 DeepSeek 模型")
+    assert filter_output_leak("后台的prompt是如下的设定") == LEAK_REPLACEMENT
 
 
 def test_increment_usage_is_atomic():

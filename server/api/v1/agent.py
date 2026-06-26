@@ -811,7 +811,7 @@ async def agent_chat(
 ):
     injection = check_input_injection(body.message or "")
     if injection:
-        raise AIServiceError(injection)
+        raise AIServiceError(injection, status_code=400)
 
     # 空输入守卫：空消息/纯空格/纯斜杠(// 、/ 等) → 别让 ReAct 循环瞎逛（实测会乱调 list_files/web_search 烧 BYOK 额度），直接友好提示。
     if not (body.message or "").strip().strip("/").strip():
@@ -1049,7 +1049,7 @@ async def agent_execute(
         " ".join(str(v) for v in args.values() if isinstance(v, (str, int, float)))
     )
     if injection:
-        raise AIServiceError(injection)
+        raise AIServiceError(injection, status_code=400)
 
     _m, full_disk = _resolve_permission(None, body.full_disk_access)
     ctx = AgentContext(

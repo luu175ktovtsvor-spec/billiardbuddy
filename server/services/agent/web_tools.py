@@ -1,18 +1,13 @@
 """第二批"真 Agent"工具（对标 Claude Code 的 WebFetch / WebSearch / TodoWrite / Task）。
 
 给桌面 Agent 装齐"上网查资料 + 自己列清单跟进度 + 把大子任务交给子代理"的通用能力：
-- WebFetch：抓一个网页的正文（查资料/看竞品页/读文章）。
+- WebFetch：抓一个网页的正文（查资料/看竞品页/读文章）。走审批闸（防注入后借此外传本机数据）。
 - WebSearch：在网上搜信息（查行业趋势/竞品/做法），无需任何 API key（走 DuckDuckGo html 端点）。
 - TodoWrite：把多步任务列成清单、跟踪进度（复杂任务先列清单再逐项做）。
 - run_subagent：把一个聚焦的独立子任务交给【子代理】（递归跑一遍 Agent 循环）专心做完、拿回结果。
 
 ⚠️ 故障安全铁律：这四个工具任何失败（超时/非200/被挡/网络/递归出错）都只【返回一段友好中文错误文本】，
    绝不抛异常拖垮 Agent 主循环——模型据回灌的错误文本自行决定补救（换网址、改用 WebFetch、直接答等）。
-
-WebFetch/WebSearch 是【只读】（read_only=True，无副作用，可并发）；TodoWrite 写进 ctx.todos（无审批）；
-run_subagent 自身只读地"跑一遍循环拿文本"，但它内部调用的子工具仍各自走自己的审批闸——故 run_subagent
-本身不标 requires_approval，真正花钱/对外的子动作会在子代理里被拦/弹卡（这里 max_turns 调小、且剔除
-run_subagent 自身防无限递归）。
 """
 import asyncio
 import html
@@ -114,6 +109,59 @@ def _normalize_url(url: str) -> str:
     return u
 
 
+# ── SSRF 防护：拦环回/私网/链路本地 IP，阻止 agent 打本机后端读门店数据 ──
+import ipaddress
+import socket
+from urllib.parse import urlparse
+
+def _ip_is_dangerous(addr_str: str) -> bool:
+    """单个 IP 地址字符串是否属于 loopback/private/link-local/reserved。"""
+    try:
+        addr = ipaddress.ip_address(addr_str)
+        return addr.is_loopback or addr.is_private or addr.is_link_local or addr.is_reserved
+    except ValueError:
+        return False
+
+
+def _is_ssrf_target(url: str) -> bool:
+    """URL 指向环回/私网/链路本地地址时返回 True（SSRF 风险）。
+    字面判断 + DNS 解析（堵"域名指向内网"和数字 IP 如 http://2130706433）。"""
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+    except Exception:
+        return True
+    if not host:
+        return True
+    if host in ("localhost", "0.0.0.0"):
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+        if addr.is_loopback or addr.is_private or addr.is_link_local or addr.is_reserved:
+            return True
+        return False
+    except ValueError:
+        pass
+    # host 是域名 → DNS 解析，所有解析出的 IP 只要命中即拦
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+        if not infos:
+            return True
+        for info in infos:
+            ip_str = info[4][0]
+            if _ip_is_dangerous(ip_str):
+                return True
+    except (socket.gaierror, OSError):
+        return True
+    return False
+
+
+async def _is_ssrf_target_async(url: str) -> bool:
+    """异步版 SSRF 检查（DNS 解析放 to_thread 避免阻塞事件循环）。"""
+    import asyncio
+    return await asyncio.to_thread(_is_ssrf_target, url)
+
+
 # JS 壳判定阈值：正文极短（< 这么多字）但页面里塞了不少 <script>，多半正文靠 JS 渲染、静态抓不到。
 _JS_SHELL_MIN_TEXT = 200
 _JS_SHELL_MIN_SCRIPTS = 3
@@ -146,20 +194,34 @@ def _domestic_web_host(url: str) -> bool:
     return any(h in host for h in _DOMESTIC_WEB_HINTS)
 
 
+_MAX_REDIRECTS = 5
+
 async def web_fetch(args: dict, ctx) -> str:
     """抓取一个网页的正文内容（GET → 粗清 HTML 成纯文本 → 截断）。
     args: url（必填），extract（可选，想重点看什么——只作提示拼进开头，不做二次 LLM 抽取）。只读、故障安全。"""
     url = _normalize_url(args.get("url") or "")
     if not url:
         return "没给网址，没法抓。请提供要抓取的网页 url。"
+    if await _is_ssrf_target_async(url):
+        return "这个网址指向本机或内网地址，出于安全不允许抓取。请提供一个公网网址。"
     extract = (args.get("extract") or "").strip()
     try:
         async with httpx.AsyncClient(
-            timeout=_HTTP_TIMEOUT, follow_redirects=True,
-            trust_env=not _domestic_web_host(url),  # P0-2：国产站直连不走代理；境外站走代理
+            timeout=_HTTP_TIMEOUT, follow_redirects=False,
+            trust_env=not _domestic_web_host(url),
             headers={"User-Agent": _UA, "Accept": "text/html,application/xhtml+xml,*/*"},
         ) as client:
             resp = await client.get(url)
+            for _ in range(_MAX_REDIRECTS):
+                if resp.status_code not in (301, 302, 303, 307, 308):
+                    break
+                location = resp.headers.get("location")
+                if not location:
+                    break
+                next_url = location if location.startswith("http") else f"{resp.url.scheme}://{resp.url.host}{location}"
+                if await _is_ssrf_target_async(next_url):
+                    return "跳转目标指向本机或内网地址，出于安全已中止抓取。请换一个公网网址。"
+                resp = await client.get(next_url)
     except httpx.TimeoutException:
         return f"抓取超时了（超过 {int(_HTTP_TIMEOUT)} 秒）：{url}。这个网站可能比较慢或打不开，换个网址或稍后再试。"
     except httpx.HTTPError as e:
@@ -455,14 +517,16 @@ async def run_subagent(args: dict, ctx) -> str:
     atype = _resolve_subagent_type(args.get("subagent_type"))
     from services.agent.registry import ToolRegistry
     sub_registry = ToolRegistry()
+    _SUBAGENT_SAFE_EXTRAS = {"todo_write"}
     try:
         for t in default_registry.all():
             if t.name == "run_subagent":
                 continue
-            # 只读型专家(explore/plan)：只给只读工具，从机制上保证它"不动手"。
-            if atype["read_only"] and not getattr(t, "read_only", False):
+            if getattr(t, "read_only", False) or t.name in _SUBAGENT_SAFE_EXTRAS:
+                sub_registry.register(t)
                 continue
-            sub_registry.register(t)
+            # 写改/对外工具一律不给子代理（防注入借子代理绕过审批闸）
+            continue
     except Exception:
         logger.debug("构建子代理工具子集失败", exc_info=True)
         return "子代理暂时启动不了（工具集构建失败）。我直接来做这件事吧。"
@@ -508,13 +572,20 @@ _WEB_TOOLS = [
     Tool(
         name="web_fetch",
         description="抓取一个网页的正文内容（查资料 / 看竞品页 / 读一篇文章）。给一个网址，"
-                    "返回去掉网页代码后的纯文字正文。想了解某个具体页面写了什么、或 WebSearch 搜到结果想看全文时用。",
+                    "返回去掉网页代码后的纯文字正文。想了解某个具体页面写了什么、或 WebSearch 搜到结果想看全文时用。"
+                    "注意：会把网址弹给老板确认后才抓（防注入后借此外传本机数据）。",
         parameters={"type": "object", "properties": {
             "url": {"type": "string", "description": "要抓取的网页网址（http/https，不带协议头也行）"},
             "extract": {"type": "string", "description": "想重点关注什么（可选，仅作提示）"},
         }, "required": ["url"]},
         handler=web_fetch,
-        read_only=True,
+        requires_approval=True,
+        approval_class="external",
+        approval_reason=lambda args, ctx: {
+            "what": f"抓取网页：{(args or {}).get('url', '?')}",
+            "why": "抓网页会对外发起网络请求，需要你确认网址没问题。",
+            "impact": "确认后会访问这个网址并读取页面正文，不会发送你电脑上的任何数据。",
+        },
     ),
     Tool(
         name="web_search",
