@@ -87,3 +87,6 @@ desktop/bundled.env
 
 # Playwright-Electron 测试输出(可再生,不入库)
 desktop/e2e-pw/test-results/
+
+# 验收报告写仓库外 ~/Desktop/球房-验收报告/,仓库内出现的不提交
+球房-验收报告/
