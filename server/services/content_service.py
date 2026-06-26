@@ -354,7 +354,14 @@ def _content_bigrams(key: str) -> set:
     return grams
 
 
-_KNOWLEDGE_EMB_CACHE: dict[str, list] = {}
+# 缓存键带 (embedder 名, 维度)：换后端/重载后旧向量自动失效重嵌，
+# 否则旧维度向量与新查询 cosine 维度不符返 0、知识被静默判不相关（M11 #3）。
+_KNOWLEDGE_EMB_CACHE: dict[tuple, list] = {}
+
+
+def _embedder_sig(embedder) -> tuple:
+    """嵌入器身份指纹（名 + 维度），作缓存键的一部分。"""
+    return (getattr(embedder, "name", "?"), int(getattr(embedder, "dim", 0) or 0))
 
 
 def _semantic_available() -> bool:
@@ -367,18 +374,22 @@ def _semantic_available() -> bool:
 
 
 def _knowledge_emb(key: str):
-    """某条知识片段（名+正文截断）的语义向量，缓存。"""
-    cached = _KNOWLEDGE_EMB_CACHE.get(key)
+    """某条知识片段（名+正文截断）的语义向量，缓存。
+
+    缓存键含 embedder 身份（名+维度）：换后端/重载后自动重嵌，绝不返回旧维度的陈旧向量。"""
+    from services.rag.embedder import get_embedder
+    embedder = get_embedder()
+    cache_key = (*_embedder_sig(embedder), key)
+    cached = _KNOWLEDGE_EMB_CACHE.get(cache_key)
     if cached is not None:
         return cached
-    from services.rag.embedder import get_embedder
     data = prompt_engine._templates.get(key) or {}
     name = str(data.get("name", ""))
     # A-2：有 description(知识索引)就优先用它做语义向量——比一股脑塞正文更准、更稳；没有再退回正文截断。
     desc = str(data.get("description", "")).strip()
     text = desc if desc else " ".join(str(v) for v in data.values() if isinstance(v, str))
-    emb = get_embedder().embed((name + "。" + text)[:400])
-    _KNOWLEDGE_EMB_CACHE[key] = emb
+    emb = embedder.embed((name + "。" + text)[:400])
+    _KNOWLEDGE_EMB_CACHE[cache_key] = emb
     return emb
 
 

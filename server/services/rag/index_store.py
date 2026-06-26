@@ -6,7 +6,9 @@
 - 主键 (store_id, source_type, source_id) → 同一条记录重复索引就覆盖，不会重。
 
 向量按 struct 打包成 BLOB 存；维度随行存，搜索时按"与查询同维度"过滤，换嵌入后端后的旧向量自动忽略。
+另存一列 fp（内容指纹）：源记录被编辑后指纹变、补建时据此重嵌，不再永远返回旧向量（M11 #2a）。
 """
+import heapq
 import os
 import sqlite3
 import struct
@@ -31,9 +33,13 @@ def _conn() -> sqlite3.Connection:
         c.execute(
             "CREATE TABLE IF NOT EXISTS vectors ("
             "store_id TEXT, source_type TEXT, source_id TEXT, "
-            "text TEXT, dim INTEGER, emb BLOB, ts TEXT, "
+            "text TEXT, dim INTEGER, emb BLOB, ts TEXT, fp TEXT DEFAULT '', "
             "PRIMARY KEY (store_id, source_type, source_id))"
         )
+        # 老库迁移：缺 fp 列就补（幂等，老安装包升级后第一次连接时执行）
+        cols = {r[1] for r in c.execute("PRAGMA table_info(vectors)").fetchall()}
+        if "fp" not in cols:
+            c.execute("ALTER TABLE vectors ADD COLUMN fp TEXT DEFAULT ''")
         c.commit()
         _conn_cache[key] = c
     return c
@@ -44,13 +50,14 @@ def reset_for_test() -> None:
     _conn_cache.clear()
 
 
-def upsert(store_id: str, source_type: str, source_id: str, text: str, emb: list[float], ts: str = "") -> None:
+def upsert(store_id: str, source_type: str, source_id: str, text: str, emb: list[float],
+           ts: str = "", fp: str = "") -> None:
     blob = struct.pack(f"{len(emb)}f", *emb)
     c = _conn()
     c.execute(
-        "INSERT OR REPLACE INTO vectors (store_id, source_type, source_id, text, dim, emb, ts) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (str(store_id), source_type, source_id, text, len(emb), blob, ts),
+        "INSERT OR REPLACE INTO vectors (store_id, source_type, source_id, text, dim, emb, ts, fp) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (str(store_id), source_type, source_id, text, len(emb), blob, ts, fp),
     )
     c.commit()
 
@@ -65,22 +72,36 @@ def existing_ids(store_id: str, source_type: str) -> set[str]:
     return {r[0] for r in rows}
 
 
+def existing_fingerprints(store_id: str, source_type: str) -> dict[str, str]:
+    """某店某来源已索引的 {source_id: fp} 指纹表（供增量补建：指纹变了才重嵌）。"""
+    c = _conn()
+    rows = c.execute(
+        "SELECT source_id, fp FROM vectors WHERE store_id=? AND source_type=?",
+        (str(store_id), source_type),
+    ).fetchall()
+    return {r[0]: (r[1] or "") for r in rows}
+
+
 def search(store_id: str, query_emb: list[float], top: int = 5, min_score: float = 0.05) -> list[dict]:
     """暴力 cosine 搜本店向量，返回 top 条 [{source_type, source_id, text, score, ts}]。
     只比同维度向量（换嵌入后端后旧向量自动忽略）；分数低于 min_score 的丢弃。"""
+    if top <= 0:
+        return []
     qdim = len(query_emb)
     c = _conn()
     rows = c.execute(
         "SELECT source_type, source_id, text, dim, emb, ts FROM vectors WHERE store_id=?",
         (str(store_id),),
     ).fetchall()
-    scored = []
-    for st, sid, text, dim, blob, ts in rows:
-        if dim != qdim:
-            continue
-        emb = list(struct.unpack(f"{dim}f", blob))
-        score = cosine(query_emb, emb)
-        if score >= min_score:
-            scored.append({"source_type": st, "source_id": sid, "text": text, "score": score, "ts": ts})
-    scored.sort(key=lambda x: x["score"], reverse=True)
-    return scored[:top]
+
+    def _candidates():
+        # 流式打分：同维度 + 过门槛的才产出，配合 heapq 只留 top 条，不把全店算完再整列排序
+        for st, sid, text, dim, blob, ts in rows:
+            if dim != qdim:
+                continue
+            score = cosine(query_emb, list(struct.unpack(f"{dim}f", blob)))
+            if score >= min_score:
+                yield (score, {"source_type": st, "source_id": sid, "text": text, "score": score, "ts": ts})
+
+    best = heapq.nlargest(top, _candidates(), key=lambda x: x[0])
+    return [d for _, d in best]

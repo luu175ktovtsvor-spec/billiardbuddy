@@ -3,6 +3,8 @@
 真 RAG 用在【老板本机越攒越多的数据】（生成历史/报表/反馈/店脑）——"找我上次效果最好那条""我三月那份"。
 不用在 171 条策展模板上（那个用清单法，见 scenario_catalog）。
 """
+import hashlib
+import json
 import logging
 
 from services.rag import index_store
@@ -73,8 +75,16 @@ def build_context_prefix(meta: dict | None) -> str:
     return ("【" + " · ".join(parts) + "】")[:_MAX_PREFIX]
 
 
+def _content_fingerprint(text: str, ts: str, meta: dict | None, embedder) -> str:
+    """一条记录入库内容的指纹：覆盖原文 + 时间 + 拼前缀用的元数据 + 嵌入器身份(名/维度)。
+    源记录被编辑（含改文案/标题/评级/收藏）或换了嵌入后端，指纹都会变 → 补建时据此重嵌、不留陈旧向量。"""
+    sig = [getattr(embedder, "name", "?"), int(getattr(embedder, "dim", 0) or 0)]
+    payload = json.dumps([text, ts, meta or {}, sig], sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
 def index_text(store_id, source_type: str, source_id: str, text: str, ts: str = "",
-               meta: dict | None = None) -> None:
+               meta: dict | None = None, fp: str = "") -> None:
     if not text or not text.strip():
         return
     # A-7：带元数据则在原文前拼确定性上下文前缀，一起 embed（前缀也进索引文本，召回时能命中）
@@ -82,7 +92,7 @@ def index_text(store_id, source_type: str, source_id: str, text: str, ts: str = 
     body = text[:_MAX_INDEX_TEXT]
     indexed = f"{prefix}\n{body}" if prefix else body
     emb = get_embedder().embed(indexed)
-    index_store.upsert(str(store_id), source_type, str(source_id), indexed, emb, ts)
+    index_store.upsert(str(store_id), source_type, str(source_id), indexed, emb, ts, fp=fp)
 
 
 def recall(store_id, query: str, top: int = 5) -> list[dict]:
@@ -100,7 +110,8 @@ async def backfill_from_generations(db, store_id, limit: int = 300) -> int:
 
         from models.generation import Generation
 
-        done = index_store.existing_ids(str(store_id), "generation")
+        done = index_store.existing_fingerprints(str(store_id), "generation")
+        embedder = get_embedder()
         rows = (await db.execute(
             select(
                 Generation.id, Generation.title, Generation.result, Generation.created_at,
@@ -114,19 +125,23 @@ async def backfill_from_generations(db, store_id, limit: int = 300) -> int:
         n = 0
         for gid, title, result, created, sub_type, input_params, effect_rating, is_favorite in rows:
             sid = str(gid)
-            if sid in done:
-                continue
             text = ((title or "") + "\n" + (result or "")).strip()
-            if text:
-                # A-7：把场景/意图/效果等元数据带上，index_text 拼成确定性上下文前缀一起 embed
-                meta = {
-                    "sub_type": sub_type,
-                    "input_params": input_params,
-                    "effect_rating": effect_rating,
-                    "is_favorite": is_favorite,
-                }
-                index_text(store_id, "generation", sid, text, ts=str(created or ""), meta=meta)
-                n += 1
+            if not text:
+                continue
+            # A-7：把场景/意图/效果等元数据带上，index_text 拼成确定性上下文前缀一起 embed
+            meta = {
+                "sub_type": sub_type,
+                "input_params": input_params,
+                "effect_rating": effect_rating,
+                "is_favorite": is_favorite,
+            }
+            ts = str(created or "")
+            fp = _content_fingerprint(text, ts, meta, embedder)
+            # 指纹一致 = 内容/元数据/嵌入后端都没变 → 跳过；变了（被编辑/换后端）才重嵌
+            if done.get(sid) == fp:
+                continue
+            index_text(store_id, "generation", sid, text, ts=ts, meta=meta, fp=fp)
+            n += 1
         return n
     except Exception:
         logger.exception("RAG 补建索引失败（忽略，仍可召回已索引部分）")
