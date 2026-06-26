@@ -58,7 +58,15 @@ class AgentContext:
     #   N>0  = 估算上下文 token 超过 N*ratio 时，把较早的非近 N 轮消息压成一段摘要（花一次 LLM）。
     model_ctx_window: int | None = None
     # autocompact 触发比例（窗口的百分之多少算"临近顶满"）；默认 0.7。
+    # ⚠️ Gap C：现在阈值 = max(窗口−autocompact_buffer, 窗口×ratio)——大窗(如 1M)由固定 buffer 主导(接近满才压、
+    #    不再 700k 就压)，小窗仍由 ratio 兜底(不回归)。ratio 仅作小窗下限。
     autocompact_ratio: float = 0.7
+    # autocompact 固定余量(token)：阈值留这么多给"本轮输出+下一轮输入"。None = 用 loop 的 _AUTOCOMPACT_BUFFER_TOKENS。
+    # 大窗(1M)留几万即可确保接近满才压；官方留 13k，我们大窗放宽。
+    autocompact_buffer: int | None = None
+    # autocompact 触发判据的【真实输入 token 数】信号：每轮 provider 返回后由 loop 写入(prompt_tokens)。
+    # 触发判据 effective = max(估算, last_prompt_tokens)——有真值兜住估算误差。压缩成功后复位 0(防旧真值致双重压缩)。
+    last_prompt_tokens: int = 0
     # autocompact 触发时保留原文的"最近消息"条数（更早的才压成摘要）；保护近几轮上下文不被压糊。
     autocompact_keep: int = 12
     # autocompact 连续"真失败"（摘要 LLM 抛错 / 返回空摘要）次数；达 _AUTOCOMPACT_FAIL_MAX 即熔断、不再每轮空烧 LLM。

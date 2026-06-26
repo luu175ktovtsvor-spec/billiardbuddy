@@ -32,6 +32,9 @@ class TextResponse:
     tokens_used: int = 0
     tool_calls: list[dict] | None = None  # 模型要调用的工具，标准化为 provider 无关 dict，可回灌进 messages
     finish_reason: str | None = None  # stop / tool_calls / length / content_filter / ...
+    # 本次请求的输入(prompt)token 数——即"发出去时上下文有多大"，是 autocompact 触发判据的真值信号(Gap C)。
+    # 0 = 端点没返回/未知，由调用方退回估算兜底。流式路径的同名值走 usage_sink["prompt_tokens"]。
+    prompt_tokens: int = 0
 
 
 class TextProvider(ABC):
