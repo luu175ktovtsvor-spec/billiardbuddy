@@ -121,13 +121,17 @@ class OpenAIImageProvider(ImageProvider):
         if self._client is None:
             import httpx
             from openai import AsyncOpenAI
+            from services.ai.providers._net import bypass_proxy_for
+            _timeout = httpx.Timeout(settings.openai_image_timeout, connect=30.0)
+            http_client = None
+            if bypass_proxy_for(self._base_url):
+                http_client = httpx.AsyncClient(trust_env=False, timeout=_timeout)
             self._client = AsyncOpenAI(
                 api_key=self._api_key,
                 base_url=self._base_url,
-                # 读超时必须覆盖真实生图耗时（gpt-image-2 单张可能 5-10 分钟）。设太短(如旧的300s)会把
-                # "还在生成"误判为超时失败，但服务端其实已生成并扣费——钱花了图没拿到。详见 CLAUDE.md「AI 并发与限流」
-                timeout=httpx.Timeout(settings.openai_image_timeout, connect=30.0),
-                max_retries=0,  # 生图慢且贵：SDK 默认会在连接/超时失败时自动重试，但生图"已生成完才断"会被重复扣费——关掉自动重试防烧钱
+                timeout=_timeout,
+                max_retries=0,
+                http_client=http_client,
             )
         return self._client
 
@@ -200,7 +204,9 @@ class OpenAIImageProvider(ImageProvider):
         url = getattr(data0, "url", None)
         if url:
             import httpx
-            async with httpx.AsyncClient(timeout=httpx.Timeout(settings.openai_image_timeout, connect=30.0)) as hc:
+            from services.ai.providers._net import bypass_proxy_for
+            _t = httpx.Timeout(settings.openai_image_timeout, connect=30.0)
+            async with httpx.AsyncClient(timeout=_t, trust_env=not bypass_proxy_for(self._base_url)) as hc:
                 r = await hc.get(url)
                 r.raise_for_status()
                 return r.content

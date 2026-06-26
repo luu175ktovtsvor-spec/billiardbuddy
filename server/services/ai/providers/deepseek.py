@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from typing import AsyncIterator
@@ -8,24 +9,21 @@ from openai import AsyncOpenAI, APIStatusError, APITimeoutError, APIConnectionEr
 from config import settings
 from core.exceptions import AIProviderError
 from services.ai.base import TextProvider, TextRequest, TextResponse, ReasoningChunk
-
-# P0-2：国产/国内模型端点关键词 —— 这些端点【绝不能走系统/环境代理(Clash 等)】，否则连不上国产域名、
-# 挂死等满超时（实测 MiMo 直连 148ms vs 走代理 5.3s 失败）。境外端点(api.openai.com 等)仍走代理(走出海)。
-_DOMESTIC_API_HINTS = (
-    "xiaomimimo.com", "volces.com", "dashscope", "aliyuncs", "siliconflow",
-    "deepseek.com", "bigmodel.cn", "zhipu", "moonshot.cn", "baichuan", "qianfan", "baidubce", ".cn/",
-)
-
-
-def _bypass_proxy_for(base_url: str | None) -> bool:
-    """该模型端点是否应直连（绕开系统代理）。国产/国内域名 → True（直连）；境外 → False（走代理出海）。
-    DESKTOP_MODEL_USE_PROXY=1 可全局关掉直连（极端网络下的逃生开关）。"""
-    if os.environ.get("DESKTOP_MODEL_USE_PROXY") == "1":
-        return False
-    host = (base_url or "").lower()
-    return any(h in host for h in _DOMESTIC_API_HINTS)
+from services.ai.providers._net import bypass_proxy_for as _bypass_proxy_for, _extract_host, _is_gateway_host
 
 logger = logging.getLogger(__name__)
+
+# ---------- 客户端并发信号量（避免一瞬间打爆上游限流） ----------
+_gateway_sem_limit = int(os.environ.get("GATEWAY_MAX_CONCURRENCY", "5"))
+_gateway_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    """惰性初始化：asyncio.Semaphore 需要事件循环，不能在模块加载时创建。"""
+    global _gateway_semaphore
+    if _gateway_semaphore is None:
+        _gateway_semaphore = asyncio.Semaphore(_gateway_sem_limit)
+    return _gateway_semaphore
 
 # 各家"上传大本地视频文件换引用"方案（均据官方文档核实；引用可直接用于 Chat Completions 的 video_url）：
 #   (base_url 关键词元组, files.create 的 purpose, 引用前缀)
@@ -100,35 +98,29 @@ class DeepSeekProvider(TextProvider):
             logger.warning("视频上传失败(provider Files API)，跳过该视频走纯文字降级", exc_info=True)
             return None
 
-    async def generate(self, request: TextRequest) -> TextResponse:
-        if request.messages:
-            messages = request.messages
-        else:
-            messages = []
-            if request.system_prompt:
-                messages.append({"role": "system", "content": request.system_prompt})
-            messages.append({"role": "user", "content": request.prompt})
+    @staticmethod
+    async def _call_with_retry(client: AsyncOpenAI, kwargs: dict):
+        """调用 chat.completions.create，遇 429 + Retry-After 头自动等一次再重试。
 
-        client = self._get_client()
-        # default_model 优先：BYOK 实例的 default_model=门店模型名，门店 key 只认它，
-        # 不能被调用方传入的平台模型名(如 loop 默认的 deepseek-v4-flash)覆盖否则第三方平台 400。
-        # 非 BYOK(default_model=None)时退回 request.model(编排 per-call 覆盖)→ settings 默认。
-        model_name = self._default_model or request.model or settings.text_model_name
+        只重试一次；没有 Retry-After 头或重试仍 429 则直接抛错。
+        """
         try:
-            kwargs = {
-                "model": model_name,
-                "messages": messages,
-                "max_tokens": request.max_tokens,
-                "temperature": request.temperature,
-            }
-            if request.thinking:
-                kwargs["extra_body"] = {"thinking": request.thinking}
-            if request.tools:
-                kwargs["tools"] = request.tools
-                if request.tool_choice is not None:
-                    kwargs["tool_choice"] = request.tool_choice
-            response = await client.chat.completions.create(**kwargs)
+            return await client.chat.completions.create(**kwargs)
         except APIStatusError as e:
+            if e.status_code == 429:
+                retry_after = (e.response.headers.get("Retry-After")
+                               or e.response.headers.get("retry-after"))
+                if retry_after is not None:
+                    try:
+                        wait = float(retry_after)
+                    except (ValueError, TypeError):
+                        raise _classify_api_error(e) from e
+                    logger.info("429 Retry-After=%.1fs，等待后重试一次", wait)
+                    await asyncio.sleep(wait)
+                    try:
+                        return await client.chat.completions.create(**kwargs)
+                    except APIStatusError as e2:
+                        raise _classify_api_error(e2) from e2
             raise _classify_api_error(e) from e
         except APITimeoutError as e:
             raise AIProviderError(
@@ -148,6 +140,36 @@ class DeepSeekProvider(TextProvider):
                 message="AI 生成失败，请稍后重试",
                 provider_error=e,
             ) from e
+
+    async def generate(self, request: TextRequest) -> TextResponse:
+        if request.messages:
+            messages = request.messages
+        else:
+            messages = []
+            if request.system_prompt:
+                messages.append({"role": "system", "content": request.system_prompt})
+            messages.append({"role": "user", "content": request.prompt})
+
+        client = self._get_client()
+        # default_model 优先：BYOK 实例的 default_model=门店模型名，门店 key 只认它，
+        # 不能被调用方传入的平台模型名(如 loop 默认的 deepseek-v4-flash)覆盖否则第三方平台 400。
+        # 非 BYOK(default_model=None)时退回 request.model(编排 per-call 覆盖)→ settings 默认。
+        model_name = self._default_model or request.model or settings.text_model_name
+        kwargs = {
+            "model": model_name,
+            "messages": messages,
+            "max_tokens": request.max_tokens,
+            "temperature": request.temperature,
+        }
+        if request.thinking:
+            kwargs["extra_body"] = {"thinking": request.thinking}
+        if request.tools:
+            kwargs["tools"] = request.tools
+            if request.tool_choice is not None:
+                kwargs["tool_choice"] = request.tool_choice
+
+        async with _get_semaphore():
+            response = await self._call_with_retry(client, kwargs)
 
         tokens = response.usage.total_tokens if response.usage else 0
         if not response.choices:
@@ -190,86 +212,67 @@ class DeepSeekProvider(TextProvider):
         # 不能被调用方传入的平台模型名(如 loop 默认的 deepseek-v4-flash)覆盖否则第三方平台 400。
         # 非 BYOK(default_model=None)时退回 request.model(编排 per-call 覆盖)→ settings 默认。
         model_name = self._default_model or request.model or settings.text_model_name
-        try:
-            kwargs = {
-                "model": model_name,
-                "messages": messages,
-                "max_tokens": request.max_tokens,
-                "temperature": request.temperature,
-                "stream": True,
-                "stream_options": {"include_usage": True},
-            }
-            if request.thinking:
-                kwargs["extra_body"] = {"thinking": request.thinking}
-            if request.tools:
-                kwargs["tools"] = request.tools
-                if request.tool_choice is not None:
-                    kwargs["tool_choice"] = request.tool_choice
-            stream = await client.chat.completions.create(**kwargs)
-        except APIStatusError as e:
-            raise _classify_api_error(e) from e
-        except APITimeoutError as e:
-            raise AIProviderError(
-                message="AI 服务响应超时，请稍后重试",
-                status_code=504,
-                provider_error=e,
-            ) from e
-        except APIConnectionError as e:
-            raise AIProviderError(
-                message="AI 服务连接失败，请稍后重试",
-                status_code=502,
-                provider_error=e,
-            ) from e
-        except Exception as e:
-            logger.exception("DeepSeek stream unexpected error")
-            raise AIProviderError(
-                message="AI 生成失败，请稍后重试",
-                provider_error=e,
-            ) from e
+        kwargs = {
+            "model": model_name,
+            "messages": messages,
+            "max_tokens": request.max_tokens,
+            "temperature": request.temperature,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if request.thinking:
+            kwargs["extra_body"] = {"thinking": request.thinking}
+        if request.tools:
+            kwargs["tools"] = request.tools
+            if request.tool_choice is not None:
+                kwargs["tool_choice"] = request.tool_choice
 
-        tool_acc: dict[int, dict] = {}
-        try:
-            async for chunk in stream:
-                # 收集 usage 统计，写入调用方传入的 usage_sink（按请求独立，避免并发串号）
-                if chunk.usage and usage_sink is not None:
-                    usage_sink.update({
-                        "prompt_tokens": chunk.usage.prompt_tokens,
-                        "completion_tokens": chunk.usage.completion_tokens,
-                        "total_tokens": chunk.usage.total_tokens,
-                        "cache_hit_tokens": getattr(chunk.usage, 'prompt_cache_hit_tokens', 0),
-                    })
-                if not chunk.choices:
-                    continue
-                choice0 = chunk.choices[0]
-                # SH-4：截断恢复需要 finish_reason。流式里它在末片随 choice 返回（content 片为 None），
-                # 累计最后一个非空值写进 finish_sink，供 Agent 循环判断 ="length" 续写。
-                fr = getattr(choice0, "finish_reason", None)
-                if fr and finish_sink is not None:
-                    finish_sink["finish_reason"] = fr
-                delta = choice0.delta
-                # F.1 思考过程：reasoning_content 是 DeepSeek/通义/智谱/Kimi/硅基/火山/MiMo 通用约定（非 SDK 声明字段，
-                # 用 getattr + model_extra 兜底，绝不裸点否则 AttributeError）。yield ReasoningChunk 与正文区分、只供展示。
-                reasoning = (getattr(delta, "reasoning_content", None)
-                             or (getattr(delta, "model_extra", None) or {}).get("reasoning_content"))
-                if reasoning:
-                    yield ReasoningChunk(reasoning)
-                # 累积流式工具调用增量（id/name 在首片，arguments 分片拼接）
-                if getattr(delta, "tool_calls", None):
-                    _accumulate_tool_call_deltas(tool_acc, delta.tool_calls)
-                if getattr(delta, "content", None):
-                    yield delta.content
-        except APIStatusError as e:
-            raise _classify_api_error(e) from e
-        except Exception as e:
-            logger.exception("DeepSeek stream chunk error")
-            raise AIProviderError(
-                message="AI 流式生成中断，请重试",
-                provider_error=e,
-            ) from e
+        async with _get_semaphore():
+            stream = await self._call_with_retry(client, kwargs)
 
-        # 流正常结束后回填累积的工具调用（供 Agent 循环消费）
-        if tool_acc and tool_calls_sink is not None:
-            tool_calls_sink.extend(tool_acc[i] for i in sorted(tool_acc))
+            tool_acc: dict[int, dict] = {}
+            try:
+                async for chunk in stream:
+                    # 收集 usage 统计，写入调用方传入的 usage_sink（按请求独立，避免并发串号）
+                    if chunk.usage and usage_sink is not None:
+                        usage_sink.update({
+                            "prompt_tokens": chunk.usage.prompt_tokens,
+                            "completion_tokens": chunk.usage.completion_tokens,
+                            "total_tokens": chunk.usage.total_tokens,
+                            "cache_hit_tokens": getattr(chunk.usage, 'prompt_cache_hit_tokens', 0),
+                        })
+                    if not chunk.choices:
+                        continue
+                    choice0 = chunk.choices[0]
+                    # SH-4：截断恢复需要 finish_reason。流式里它在末片随 choice 返回（content 片为 None），
+                    # 累计最后一个非空值写进 finish_sink，供 Agent 循环判断 ="length" 续写。
+                    fr = getattr(choice0, "finish_reason", None)
+                    if fr and finish_sink is not None:
+                        finish_sink["finish_reason"] = fr
+                    delta = choice0.delta
+                    # F.1 思考过程：reasoning_content 是 DeepSeek/通义/智谱/Kimi/硅基/火山/MiMo 通用约定（非 SDK 声明字段，
+                    # 用 getattr + model_extra 兜底，绝不裸点否则 AttributeError）。yield ReasoningChunk 与正文区分、只供展示。
+                    reasoning = (getattr(delta, "reasoning_content", None)
+                                 or (getattr(delta, "model_extra", None) or {}).get("reasoning_content"))
+                    if reasoning:
+                        yield ReasoningChunk(reasoning)
+                    # 累积流式工具调用增量（id/name 在首片，arguments 分片拼接）
+                    if getattr(delta, "tool_calls", None):
+                        _accumulate_tool_call_deltas(tool_acc, delta.tool_calls)
+                    if getattr(delta, "content", None):
+                        yield delta.content
+            except APIStatusError as e:
+                raise _classify_api_error(e) from e
+            except Exception as e:
+                logger.exception("DeepSeek stream chunk error")
+                raise AIProviderError(
+                    message="AI 流式生成中断，请重试",
+                    provider_error=e,
+                ) from e
+
+            # 流正常结束后回填累积的工具调用（供 Agent 循环消费）
+            if tool_acc and tool_calls_sink is not None:
+                tool_calls_sink.extend(tool_acc[i] for i in sorted(tool_acc))
 
 
 def _serialize_tool_calls(raw) -> list[dict] | None:

@@ -38,8 +38,8 @@ async def lifespan(app: FastAPI):
 
     # 启动时打印知识库加载情况：桌面打包版据此确认加密块(prompts.enc)解密成功（模板数应=171），
     # 而非静默回退到明文 prompts/（打包里已删明文 → 回退会是 0，立刻能看出护城河失效）。
-    from services.ai.prompt_engine import get_prompt_engine
-    _pe = get_prompt_engine()
+    from services.ai.prompt_engine import prewarm_prompt_engine
+    _pe = await prewarm_prompt_engine()
     _src = "加密块(prompts.enc)" if __import__("os").environ.get("PROMPTS_PACK_KEY") else "明文YAML"
     logger.info("知识库已加载：%d 模板（来源：%s）", len(_pe._templates), _src)
 

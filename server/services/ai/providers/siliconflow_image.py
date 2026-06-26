@@ -64,8 +64,9 @@ class SiliconFlowImageProvider(ImageProvider):
             if "image" in body and (model or "").startswith("Qwen/Qwen-Image-Edit"):
                 body.pop("image_size", None)
 
+        from services.ai.providers._net import bypass_proxy_for
         timeout = httpx.Timeout(settings.openai_image_timeout, connect=30.0)
-        async with httpx.AsyncClient(timeout=timeout) as hc:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=not bypass_proxy_for(self._base_url)) as hc:
             r = await hc.post(
                 f"{self._base_url}/images/generations",
                 headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},

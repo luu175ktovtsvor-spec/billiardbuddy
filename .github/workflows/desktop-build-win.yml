@@ -26,6 +26,45 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      # ── 注入内置 key(bundled.env 已 gitignore,CI 必须从 Secrets 写入) ──
+      # 需要在 GitHub 仓库 Settings → Secrets → Actions 配好以下 secrets:
+      #   BUNDLED_DEEPSEEK_API_KEY, BUNDLED_DEEPSEEK_BASE_URL,
+      #   BUNDLED_OPENAI_API_KEY,   BUNDLED_OPENAI_BASE_URL,
+      #   BUNDLED_ARK_API_KEY,
+      #   BUNDLED_VIDEO_BASE_URL,   BUNDLED_VIDEO_MODEL_NAME,
+      #   BUNDLED_TEXT_MODEL_NAME,   BUNDLED_IMAGE_MODEL_NAME,
+      #   BUNDLED_PROMPTS_PACK_KEY,
+      #   BUNDLED_MODEL_LABEL,      BUNDLED_IMAGE_LABEL,
+      #   BUNDLED_VIDEO_LABEL
+      - name: 注入内置模型配置(bundled.env)
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          @"
+          DESKTOP_LOCAL=1
+          DEEPSEEK_API_KEY=${{ secrets.BUNDLED_DEEPSEEK_API_KEY }}
+          DEEPSEEK_BASE_URL=${{ secrets.BUNDLED_DEEPSEEK_BASE_URL }}
+          OPENAI_API_KEY=${{ secrets.BUNDLED_OPENAI_API_KEY }}
+          OPENAI_BASE_URL=${{ secrets.BUNDLED_OPENAI_BASE_URL }}
+          ARK_API_KEY=${{ secrets.BUNDLED_ARK_API_KEY }}
+          VIDEO_BASE_URL=${{ secrets.BUNDLED_VIDEO_BASE_URL }}
+          VIDEO_MODEL_NAME=${{ secrets.BUNDLED_VIDEO_MODEL_NAME }}
+          TEXT_MODEL_NAME=${{ secrets.BUNDLED_TEXT_MODEL_NAME }}
+          IMAGE_MODEL_NAME=${{ secrets.BUNDLED_IMAGE_MODEL_NAME }}
+          PROMPTS_PACK_KEY=${{ secrets.BUNDLED_PROMPTS_PACK_KEY }}
+          BUNDLED_MODEL_LABEL=${{ secrets.BUNDLED_MODEL_LABEL }}
+          BUNDLED_IMAGE_LABEL=${{ secrets.BUNDLED_IMAGE_LABEL }}
+          BUNDLED_VIDEO_LABEL=${{ secrets.BUNDLED_VIDEO_LABEL }}
+          "@ | Set-Content -Path bundled.env -Encoding utf8
+
+      - name: 校验 bundled.env 已生成
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          if (!(Test-Path bundled.env)) { Write-Error "bundled.env 未生成!"; exit 1 }
+          $lines = (Get-Content bundled.env | Where-Object { $_ -match '=' }).Count
+          Write-Host "bundled.env 已生成, $lines 行配置"
+
       # ── 工具链:Node + pnpm + Python + uv ──
       - name: 装 pnpm
         uses: pnpm/action-setup@v4
