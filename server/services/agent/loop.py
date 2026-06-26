@@ -392,6 +392,23 @@ class _ToolPlan:
     fallback_msg: str | None = None  # fallback 时回灌给模型的"这个先不做了、换法子"提示
 
 
+def _trajectory_with_final(messages: list[dict], final_content: str | None) -> list[dict]:
+    """跨轮记忆：把本轮最终答复补成尾部 assistant 消息，得到【完整轨迹】（供端点落盘/续接）。
+
+    loop 内部 messages 只到"最后一轮工具结果/续写片段"，无 tool_calls 的最终答复正文历来没 append 进去——
+    续接时下一轮就看不到自己上轮答了啥。这里把它补上。返回【新列表】、不改 messages 本身（零副作用）。
+    final_content 为空、或尾部已是同一条 assistant（防御重复）→ 不重复添加。
+    注：续写场景（finish=length 多段）各分段早已作为 assistant 消息在 messages 里，这里只补"收敛轮的本段"
+    （调用方传本轮 text/final_text，不是拼接后的全文），故不会重复。"""
+    if not (final_content and final_content.strip()):
+        return list(messages)
+    last = messages[-1] if messages else None
+    if (isinstance(last, dict) and last.get("role") == "assistant"
+            and not last.get("tool_calls") and last.get("content") == final_content):
+        return list(messages)
+    return list(messages) + [{"role": "assistant", "content": final_content}]
+
+
 def _init_messages(
     system_prompt: str | None,
     history: list[dict] | None,
@@ -1136,6 +1153,7 @@ async def run_agent_loop_stream(
             _budget = _check_budget(ctx)
             if _budget == _BUDGET_STOP:
                 full_final = _finalize_text("".join(final_segments) + text, ctx)
+                ctx.final_messages = _trajectory_with_final(messages, text)  # 跨轮记忆：暴露完整轨迹供落盘
                 yield {"type": "final", "content": full_final}
                 yield {"type": "done", "turns": turn, "stopped_reason": _STOP_FINAL,
                        "tokens_used": getattr(ctx, "tokens_used", 0)}
@@ -1154,6 +1172,7 @@ async def run_agent_loop_stream(
                     messages.append({"role": "user", "content": cont})
                     continue
             full_final = _finalize_text("".join(final_segments) + text, ctx)
+            ctx.final_messages = _trajectory_with_final(messages, text)  # 跨轮记忆：暴露完整轨迹供落盘
             yield {"type": "final", "content": full_final}
             yield {"type": "done", "turns": turn, "stopped_reason": _STOP_FINAL,
                    "tokens_used": getattr(ctx, "tokens_used", 0)}
@@ -1248,6 +1267,10 @@ async def run_agent_loop_stream(
     final_text = "".join(final_parts).strip() or _FALLBACK_FINAL
     if ctx is not None and getattr(ctx, "vision_degraded", False):
         final_text = prepend_degrade_hint(final_text)
+    # 跨轮记忆：暴露完整轨迹供落盘。剥掉刚 append 的 _FORCE_FINAL_MSG 内部催收语（不该进续接历史），补真·最终答复。
+    _traj = (messages[:-1] if (messages and isinstance(messages[-1], dict)
+                               and messages[-1].get("content") == _FORCE_FINAL_MSG) else messages)
+    ctx.final_messages = _trajectory_with_final(_traj, final_text)
     yield {"type": "final", "content": final_text}
     yield {"type": "done", "turns": max_turns, "stopped_reason": _STOP_MAX_TURNS,
            "tokens_used": getattr(ctx, "tokens_used", 0)}

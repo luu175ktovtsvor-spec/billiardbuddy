@@ -395,13 +395,17 @@ async def _persist_agent_chat(db, store, user, message: str, content: str, gen_i
         pass
 
 
-_HIST_MAX_MSGS = 12      # 最多保留最近 12 条历史（约 6 轮 user+assistant），超出丢最旧的
-_HIST_MAX_CHARS = 2000   # 每条历史内容截断上限
+# 跨轮记忆：封顶只当【极端兜底】（损坏轨迹文件/恶意全量回传），正常长度交给 loop 的
+# autocompact/microcompact 正经控（内置 mimo-v2.5 = 1M 窗口，autocompact ≈700k 触发）。
+# 旧值 12 条 / 每条 2000 字会把工具结果截烂、把长历史砍没，和"全历史一直带"冲突，故抬到很高。
+_HIST_MAX_MSGS = 2000        # 安全上限：超过才兜底裁（留最近），正常对话永远碰不到
+_HIST_MAX_CHARS = 100_000    # 单条安全上限：不再截工具结果，只挡"单条爆炸"撑爆上下文
 
 
 def _cap_history(history: list[dict] | None) -> list[dict] | None:
-    """控住 context 体积：只留最近 _HIST_MAX_MSGS 条、每条截断 _HIST_MAX_CHARS 字。
-    防长对话撑爆上下文窗口——尤其堵住"前端全量回传 history"那条没封顶的路径。"""
+    """极端兜底：只在条数/单条字数超【高安全上限】时才裁（留最近 _HIST_MAX_MSGS 条、单条截 _HIST_MAX_CHARS 字）。
+    正常长度不动——长度由 loop 的三级压缩（snip/microcompact/autocompact）正经处理。
+    仍兜底堵住"前端全量回传 history / 损坏轨迹"这两条没护栏的极端路径。"""
     if not history:
         return history
     out: list[dict] = []
@@ -431,9 +435,23 @@ def _cap_history(history: list[dict] | None) -> list[dict] | None:
 
 
 async def _load_agent_history(db, store, conversation_id: str | None) -> list[dict]:
-    """按 conversation_id 从 DB 取本会话最近 5 轮历史（user/assistant 对），供续接。失败返回空。"""
+    """供续接的本会话历史。两条路径，优先级如下：
+
+    ① 有【完整轨迹文件】（跨轮记忆，照 Claude Code 做对）→ 整段读回（含工具调用/结果/中间思考），
+       模型真看得到自己上轮干了啥，不用老板反复交代。新会话都走这条。
+    ② 无轨迹文件（老会话/读失败）→ 兜底：DB 最近 5 轮"user/assistant 文本对"（旧逻辑，保证老会话续聊不崩）。
+    失败一律返回空。"""
     if not conversation_id:
         return []
+    # ① 完整轨迹优先
+    try:
+        from services.agent.transcript import load_transcript
+        tr = load_transcript(conversation_id)
+        if tr:  # 有文件且非空 → 用完整轨迹
+            return tr
+    except Exception:
+        logger.warning("agent 轨迹读取失败，回退文本对 conversation_id=%s", conversation_id, exc_info=True)
+    # ② 兜底：DB 最近 5 轮文本对
     try:
         import uuid as _uuid
         from sqlalchemy import select
@@ -964,6 +982,13 @@ async def agent_chat(
                     _rec_id = body.source_rec_id if not body.conversation_id else None
                     await _persist_agent_chat(db, store, user, body.message, persist_text, gen_id, conv_uuid,
                                               turns, tokens_used=tokens_used, source_rec_id=_rec_id)
+                    # 跨轮记忆：把 loop 暴露的【完整轨迹】（含工具调用/结果 + 最终答复）整段落盘成 JSONL，
+                    # 下一轮 _load_agent_history 整段读回当 history → 模型真记得住前面聊的。故障安全：失败不阻断 SSE。
+                    try:
+                        from services.agent.transcript import save_transcript
+                        save_transcript(str(conv_uuid), getattr(ctx, "final_messages", None))
+                    except Exception:
+                        logger.warning("agent 轨迹落盘失败，跳过", exc_info=True)
                     event = {**event, "generation_id": gen_id, "conversation_id": str(conv_uuid)}
                 yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
         except AppException as e:
@@ -1111,6 +1136,16 @@ async def agent_execute(
                 conv_uuid = _uuid.UUID(body.conversation_id)
                 await _persist_agent_chat(db, store, user, f"（已确认执行 {body.tool}）",
                                           continuation, str(_uuid.uuid4()), conv_uuid, cont.turns)
+                # 跨轮记忆：把"已确认执行 + 续接答复"接到主会话轨迹尾部，否则审批一发生轨迹就停在"待确认"、
+                # 下一轮主对话读回的历史看不到这次执行（审批流的记忆断点）。故障安全：失败不影响已执行结果。
+                try:
+                    from services.agent.transcript import append_transcript
+                    append_transcript(body.conversation_id, [
+                        {"role": "user", "content": f"（已确认执行 {body.tool}）"},
+                        {"role": "assistant", "content": continuation},
+                    ])
+                except Exception:
+                    logger.warning("审批续接轨迹追加失败，跳过", exc_info=True)
             except (ValueError, TypeError):
                 pass
     except Exception:
