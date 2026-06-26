@@ -46,6 +46,7 @@ export function DocEditView({ path, title }: { path: string; title: string }) {
   const [aiText, setAiText] = useState("");          // 让 AI 改的指令
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<{ id: string; before: string; after: string } | null>(null);
+  const aiReqIdRef = useRef(0);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<{ text: string; bad?: boolean } | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -85,17 +86,20 @@ export function DocEditView({ path, title }: { path: string; title: string }) {
   const runAi = async (b: Block) => {
     const ins = aiText.trim();
     if (!ins || busy) return;
+    const rid = ++aiReqIdRef.current;
     setBusy(true);
     setErr(null);
     try {
       const cur = textOf(b);
       const res = await api.canvasEdit(cur, ins, cur, "文档");
+      if (rid !== aiReqIdRef.current) return;
       if (res.content === cur) setErr("这段没改出不一样的内容，换个说法再试");
       else setPending({ id: b.id, before: cur, after: res.content });
     } catch (e) {
+      if (rid !== aiReqIdRef.current) return;
       setErr(getErrorMessage(e));
     } finally {
-      setBusy(false);
+      if (rid === aiReqIdRef.current) setBusy(false);
     }
   };
   const acceptPending = () => {

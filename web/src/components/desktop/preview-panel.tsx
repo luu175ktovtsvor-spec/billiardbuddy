@@ -416,6 +416,7 @@ export function DesktopPreviewPanel({
   const resetHistory = vh.reset; // 稳定引用，供换预览对象时清时间线
   const [busy, setBusy] = useState(false);
   const [editErr, setEditErr] = useState<string | null>(null);
+  const reqIdRef = useRef(0);
   // 待确认的改写（对齐 cc-haha：改完不直接落，先出 diff 给老板 接受/放弃）
   const [pending, setPending] = useState<{ before: string; after: string; label: string } | null>(null);
   // 切换预览对象时重置时间线/待确认
@@ -449,19 +450,22 @@ export function DesktopPreviewPanel({
   // 调定向改接口：selection 传则只改那段，否则整篇修订。改完不直接落 → 进 pending 等老板看 diff 后拍板。
   const runCanvasEdit = async (instruction: string, selection: string | undefined, label: string) => {
     if (busy) return;
+    const rid = ++reqIdRef.current;
     setBusy(true);
     setEditErr(null);
     try {
       const res = await api.canvasEdit(workText, instruction, selection, item.title);
+      if (rid !== reqIdRef.current) return;
       if (res.content === workText) {
         setEditErr("这次没改出不一样的内容，换个说法再试试");
       } else {
         setPending({ before: workText, after: res.content, label });
       }
     } catch (e) {
+      if (rid !== reqIdRef.current) return;
       setEditErr(getErrorMessage(e));
     } finally {
-      setBusy(false);
+      if (rid === reqIdRef.current) setBusy(false);
     }
   };
   // 接受 diff：存为新一版（进版本时间线）

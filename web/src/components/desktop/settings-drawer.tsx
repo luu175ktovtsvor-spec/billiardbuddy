@@ -286,7 +286,7 @@ export function SettingsDrawer({
 
   return (
     <>
-      <button type="button" aria-label="关闭设置" onClick={onClose} className="fixed inset-0 z-[60] cursor-default bg-black/30 dark:bg-black/50" />
+      <button type="button" aria-label="关闭设置" onClick={onClose} data-modal-open className="fixed inset-0 z-[60] cursor-default bg-black/30 dark:bg-black/50" />
       <aside className="fixed right-0 top-0 z-[61] flex h-full w-[440px] max-w-[92vw] flex-col border-l border-black/[0.08] bg-white shadow-2xl dark:border-white/[0.08] dark:bg-[#16181d]">
         <div className="flex h-[52px] items-center justify-between border-b border-black/[0.08] px-5 dark:border-white/[0.06]">
           <span className="font-mono text-[13px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">设置</span>

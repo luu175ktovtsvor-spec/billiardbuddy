@@ -11,10 +11,10 @@ import type { PermissionMode } from "@/hooks/use-agent-chat";
  * 后端值仍是 ask / auto_files / full（不改），只统一显示文案与描述。
  */
 export const PERMISSION_MODES: { value: PermissionMode; label: string; desc: string }[] = [
-  { value: "ask", label: "询问权限", desc: "执行工具前先确认（文件编辑、高风险命令）" },
-  { value: "auto_files", label: "自动接受编辑", desc: "自动批准文件编辑，其它操作仍询问" },
-  { value: "plan", label: "计划模式", desc: "只探索和规划、不执行任何写入或操作" },
-  { value: "full", label: "完全访问模式", desc: "对 Shell 和文件系统的完整访问，跳过所有确认" },
+  { value: "ask", label: "询问权限", desc: "改文件、跑命令前先问你" },
+  { value: "auto_files", label: "自动接受编辑", desc: "改文件直接做，其它操作仍先问" },
+  { value: "plan", label: "计划模式", desc: "只看只想、不动手" },
+  { value: "full", label: "完全访问", desc: "所有操作直接做，不再逐个确认" },
 ];
 
 /** 空状态 / 欢迎 —— 去客服腔，专业 agent 基调（对标 cc-haha empty state）。 */

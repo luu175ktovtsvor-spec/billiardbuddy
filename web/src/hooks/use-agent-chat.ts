@@ -73,6 +73,9 @@ export function useAgentChat(opts: AgentChatOptions) {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [executingIdx, setExecutingIdx] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const lastUserMsgRef = useRef<string | null>(null);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
 
   // 让异步回调里始终读到最新的 opts（权限/选定文件），而不是闭包里的旧值
   const optsRef = useRef(opts);
@@ -85,9 +88,10 @@ export function useAgentChat(opts: AgentChatOptions) {
     // 采纳信号只在推荐触发的首轮、且是新会话时带上（同会话续接不重复计采纳）。
     const recId = sourceRecId && !conversationId ? sourceRecId : undefined;
 
-    // 在 updater 外算好 history（读当前 messages），updater 只追加 user 气泡。
+    // 用 messagesRef 读最新状态（retry 场景下 setMessages 已排队但 messages 闭包可能还是旧值）。
     // 副作用 runSend 绝不放进 setMessages 更新函数里——否则 React StrictMode 开发态会把 updater 跑两次→同一条消息双发请求。
-    const history = messages
+    lastUserMsgRef.current = msg;
+    const history = messagesRef.current
       .filter((m) => !m.error)
       .slice(-12)
       .map((m) => ({ role: m.role, content: m.content.slice(0, 2000) }));
@@ -202,7 +206,7 @@ export function useAgentChat(opts: AgentChatOptions) {
         if (!controller.signal.aborted) setGenerating(false);
       }
     }
-  }, [generating, conversationId, messages]);
+  }, [generating, conversationId]);
 
   const confirmApproval = useCallback(async (idx: number, ap: ApprovalState) => {
     const o = optsRef.current;
@@ -287,9 +291,22 @@ export function useAgentChat(opts: AgentChatOptions) {
     setMessages((prev) => [...prev, { role: "assistant", content }]);
   }, []);
 
+  const retry = useCallback(() => {
+    const msg = lastUserMsgRef.current;
+    if (!msg || generating) return;
+    setMessages((prev) => {
+      const trimmed = [...prev];
+      while (trimmed.length && trimmed[trimmed.length - 1].role === "assistant") trimmed.pop();
+      if (trimmed.length && trimmed[trimmed.length - 1].role === "user") trimmed.pop();
+      return trimmed;
+    });
+    // send uses messagesRef internally for history, no stale closure issue
+    void send(msg);
+  }, [generating, send]);
+
   return {
     messages, draft, reasoningDraft, liveSteps, generating, conversationId, executingIdx,
     send, confirmApproval, cancelApproval, startNewChat, stop, loadConversation,
-    pushAssistantMessage,
+    pushAssistantMessage, retry,
   };
 }

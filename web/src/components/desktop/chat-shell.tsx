@@ -4,7 +4,7 @@
  * 桌面端 Agent 对话整壳：侧栏 + （空态欢迎页 | 对话流）+ 输入区，接 useAgentChat 真后端管道。
  * chat 路由唯一渲染本壳（单窗口产品，旧手机网页版分支已随单窗口化删除）。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "@/lib/api";
 import { HELP_TEXT } from "@/lib/agent-copy";
@@ -16,6 +16,7 @@ import { DesktopComposer } from "./desktop-composer";
 import { DesktopChatThread } from "./chat-thread";
 import { DesktopPreviewPanel, type PreviewItem } from "./preview-panel";
 import { SettingsDrawer } from "./settings-drawer";
+import { ConfirmDialog } from "./confirm-dialog";
 
 function groupByDate(iso: string | null): string {
   if (!iso) return "更早";
@@ -58,6 +59,7 @@ export function DesktopChatShell({
   const [preview, setPreview] = useState<PreviewItem | null>(null);
   // 设置抽屉（门店名 + AI key）：单窗口内打开，替代老 web 的门店设置页
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
   // 侧栏真数据：门店名 + 本月 AI 用量（拿不到就用传入的默认/占位，不阻断）
   const [liveStoreName, setLiveStoreName] = useState<string | undefined>();
@@ -131,15 +133,18 @@ export function DesktopChatShell({
   }, [chat]);
   const newChat = useCallback(() => { setSelectedFiles([]); setWorkingDir(null); chat.startNewChat(); }, [chat]);
 
-  // 删除一条历史会话（侧栏垃圾桶）：删前确认 → 软删 → 从列表移除；删的是当前会话则切到新会话。P1-3b。
-  const deleteConv = useCallback(async (id: string) => {
-    if (!window.confirm("删除这条会话？它会从列表里消失（后台软删、可恢复）。")) return;
+  // 删除一条历史会话（侧栏垃圾桶）：弹确认 → 软删 → 从列表移除；删的是当前会话则切到新会话。P1-3b。
+  const deleteConv = useCallback((id: string) => { setDeleteTarget(id); }, []);
+  const confirmDelete = useCallback(async () => {
+    const id = deleteTarget;
+    if (!id) return;
+    setDeleteTarget(null);
     try {
       await api.deleteAgentConversation(id);
       setConversations((prev) => prev.filter((c) => c.id !== id));
       if (chat.conversationId === id) { setSelectedFiles([]); chat.startNewChat(); }
     } catch { /* 删失败：下次 refreshConversations 会纠正 */ }
-  }, [chat]);
+  }, [deleteTarget, chat]);
 
   // P1-4 每日草稿：点欢迎页按钮 → 拉后端预生成的草稿(有当天缓存)→ 作为一条消息塞进对话,挑着用。
   const [dailyDraftsBusy, setDailyDraftsBusy] = useState(false);
@@ -271,22 +276,24 @@ export function DesktopChatShell({
 
   const empty = chat.messages.length === 0 && !chat.generating;
 
+  const sidebarEl = useMemo(() => (
+    <DesktopSidebar
+      storeName={liveStoreName || storeName}
+      monthlySpend={liveSpend ?? monthlySpend}
+      modelLabel={liveModel}
+      conversations={conversations}
+      activeId={chat.conversationId ?? undefined}
+      onNewChat={newChat}
+      onSelect={loadConv}
+      onDelete={deleteConv}
+      onOpenSettings={() => setSettingsOpen(true)}
+    />
+  ), [liveStoreName, storeName, liveSpend, monthlySpend, liveModel, conversations, chat.conversationId, newChat, loadConv, deleteConv]);
+
   return (
     <>
     <DesktopShell
-      sidebar={
-        <DesktopSidebar
-          storeName={liveStoreName || storeName}
-          monthlySpend={liveSpend ?? monthlySpend}
-          modelLabel={liveModel}
-          conversations={conversations}
-          activeId={chat.conversationId ?? undefined}
-          onNewChat={newChat}
-          onSelect={loadConv}
-          onDelete={deleteConv}
-          onOpenSettings={() => setSettingsOpen(true)}
-        />
-      }
+      sidebar={sidebarEl}
       preview={preview ? <DesktopPreviewPanel item={preview} onClose={() => setPreview(null)} onRefine={onRefine} onRefineSelection={onRefineSelection} onFinalize={onFinalize} /> : undefined}
     >
       <div className="app-drag flex h-[44px] items-center gap-2 border-b border-black/[0.08] px-5 dark:border-white/[0.06]">
@@ -317,6 +324,7 @@ export function DesktopChatShell({
           onPreview={setPreview}
           onAnswer={(label) => { void chat.send(label); }}
           onStop={chat.stop}
+          onRetry={chat.retry}
         />
       )}
 
@@ -423,6 +431,15 @@ export function DesktopChatShell({
       />
     </DesktopShell>
     <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} onStoreNameChange={setLiveStoreName} />
+    <ConfirmDialog
+      open={!!deleteTarget}
+      title="删除这条会话？"
+      message="它会从列表里消失（后台软删、可恢复）。"
+      confirmLabel="删除"
+      destructive
+      onConfirm={confirmDelete}
+      onCancel={() => setDeleteTarget(null)}
+    />
     </>
   );
 }
