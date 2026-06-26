@@ -142,9 +142,10 @@ async def check_poster_quota(db: AsyncSession, store_id: str) -> UsageQuota:
         return quota
     if poster_quota_exceeded(quota):
         from core.exceptions import QuotaExceededError
+        # 注意：桌面版(DESKTOP_LOCAL=1)在上面已短路返回、不会走到这里，故此文案只用于非桌面回退路径，
+        # 那条路径额度是真的——不再画蛇添足说"不限额"自相矛盾。
         raise QuotaExceededError(
-            f"本月海报生成已达上限（{quota.monthly_poster_limit} 张）。生图算力成本较高，"
-            "（纯 BYOK 自付，桌面本地不限额）"
+            f"本月海报生成已达上限（{quota.monthly_poster_limit} 张）。生图算力成本较高，已暂停本月配额。"
         )
     return quota
 

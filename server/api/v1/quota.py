@@ -1,5 +1,7 @@
 """成本查询 API（桌面 BYOK：只保留成本看板；套餐/订阅查询是 SaaS 计费遗留，2026-06-23 已删）。"""
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 
@@ -8,6 +10,16 @@ from core.timezone import business_now
 from models.generation import Generation
 
 router = APIRouter()
+
+
+def _month_window(now: datetime | None = None) -> tuple[datetime, str]:
+    """本月窗口：返回 (UTC 起点, 展示用月份标签)。
+
+    起点先在业务时区(北京)取月初零点、再转 UTC——Generation.created_at 以 UTC 存，
+    若直接拿北京墙钟去比，月初头 8 小时(东八区)的记录(UTC 还停在上月)会被错分到上月。
+    与 quota_service._period_start_now 同一套口径。"""
+    local = (now or business_now()).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return local.astimezone(timezone.utc), local.strftime("%Y-%m")
 
 
 # BYOK 成本粗估费率(¥/百万 tokens)。按 DeepSeek 级别廉价模型混合均价粗估；老板实际成本以其供应商账单为准。
@@ -29,7 +41,7 @@ async def get_cost(
 ):
     """本月 AI 用量与粗估花费——给 BYOK 老板看自己的 key 这个月花了多少 token、约多少钱。
     token 数精确(库里逐条记的)；花费是粗估(按廉价模型均价)，实际以供应商账单为准。"""
-    month_start = business_now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    month_start, month_label = _month_window()
     rows = (
         await db.execute(
             select(
@@ -57,7 +69,7 @@ async def get_cost(
     total_tokens = sum(f["tokens"] for f in by_feature)
     total_count = sum(f["count"] for f in by_feature)
     return {
-        "month": month_start.strftime("%Y-%m"),
+        "month": month_label,
         "total_tokens": total_tokens,
         "total_count": total_count,
         "est_cost_yuan": round(total_tokens / 1_000_000 * _COST_RATE_PER_M, 2),

@@ -42,6 +42,11 @@ async def create_my_store(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    # 单用户单店：首启 init_local 已 seed 一家店、get_current_store 永远取第一家。
+    # 再 POST 只会建出永远取不到的孤儿店（污染库），挡掉——改资料请走 PUT /me。
+    existing = (await db.execute(select(Store).limit(1))).scalars().first()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="本机已有门店，只支持一家门店；如需修改请用「编辑门店」")
     store = await create_store(db, current_user.id, body.model_dump(exclude_unset=True))
     return _store_to_response(store)
 
@@ -190,7 +195,10 @@ async def update_byok_config(
     """写门店 BYOK 配置。api_key 加密存；不传 api_key 保留原 key，传空串显式清除。"""
     from core.crypto import encrypt, CryptoNotConfigured
     _ensure_store_owner(store, current_user)
-    store.byok_enabled = bool(body.enabled)
+    # 仅当显式传了 enabled 才更新（model_fields_set 守法，同 agent_auto_spend_limit）——
+    # 否则首启向导那种只传部分字段的 PUT 会用默认 False 把老板开着的开关静默冲掉。
+    if "enabled" in body.model_fields_set:
+        store.byok_enabled = bool(body.enabled)
     if body.base_url is not None:
         store.byok_base_url = body.base_url.strip() or None
     if body.model is not None:
@@ -204,7 +212,8 @@ async def update_byok_config(
         else:
             store.byok_api_key_enc = None
     # 生图模型配置（与文字同样规则：不传 key 保留原 key，传空串清除）
-    store.byok_image_enabled = bool(body.image_enabled)
+    if "image_enabled" in body.model_fields_set:
+        store.byok_image_enabled = bool(body.image_enabled)
     if body.image_base_url is not None:
         store.byok_image_base_url = body.image_base_url.strip() or None
     if body.image_model is not None:
