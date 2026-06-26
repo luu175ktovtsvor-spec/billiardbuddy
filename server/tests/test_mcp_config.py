@@ -35,6 +35,14 @@ def test_add_requires_name_and_command():
     assert mcfg.add_server("x", "")[0] is False
 
 
+def test_memory_preset_removed():
+    """长期记忆 memory 预设已从出厂清单移除：它和店脑记忆是竞争且不互通的第二套记忆，
+    一键装上只会让两套记忆打架。其余免 key 预设（fetch/time/ddg）保留。"""
+    ids = {p["id"] for p in mcfg.MCP_PRESETS}
+    assert "memory" not in ids
+    assert {"fetch", "time", "ddg"} <= ids
+
+
 def test_add_overwrites_existing(tmp_path):
     mcfg.add_server("a", "npx", ["one"])
     ok, msg = mcfg.add_server("a", "uvx", ["two"])

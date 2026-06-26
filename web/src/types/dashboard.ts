@@ -16,14 +16,14 @@ export interface CardSignals {
 }
 
 export interface DashboardRecommendation {
+  // 单窗口化后桌面只读 title/description/id；action_label/action_type 已退役（死字段，无读取方）。
+  // action_url + suggested_payload 后端主动出击(proactive)仍用，前端不消费。
   id: string
   title: string
   description: string
-  action_label: string
   action_url: string
-  action_type: string
   priority: "high" | "medium" | "low"
-  /** 推荐理由类目：focus 今日重点 | frequent 你常用 | gap 补缺口 | good 复刻好评 | setup 完善资料 | festival 节日 */
+  /** 推荐理由类目：focus 今日重点 | frequent 你常用 | gap 补缺口 | good 复刻好评 | setup 完善资料 | festival 节日 | store 店情专属 */
   category?: string
   suggested_payload?: Record<string, unknown> | null
 }

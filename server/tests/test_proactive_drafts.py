@@ -20,8 +20,8 @@ def _rec(rid, title, intent=None, prompt_key=None, action_url="/dashboard/workbe
     if prompt_key:
         payload["prompt_key"] = prompt_key
     return SimpleNamespace(
-        id=rid, title=title, description="", action_label="去做", action_url=action_url,
-        action_type="navigate", priority="medium", category=category,
+        id=rid, title=title, description="", action_url=action_url,
+        priority="medium", category=category,
         suggested_payload=payload or None,
     )
 
