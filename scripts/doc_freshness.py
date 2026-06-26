@@ -5,6 +5,9 @@
 这样每个新窗口一开机就被动看到该处理的过时文档,不靠人自觉。清爽时静默、不打扰。
 手动也行:python3 scripts/doc_freshness.py。深度体检(交叉验代码是否落地)走 `/文档体检` skill。
 
+只看【入 git 的文档】——`.gitignore` 的本地工作档(如含敏感运营细节、不入库的"待改清单")不纳入,
+免得它合法的"历史/本地档"措辞被误判成"该清"而每次开机瞎唠叨。
+
 约定(见 CLAUDE.md「文档维护规约」):每份文档顶部一行状态 banner,如
     > 📌 状态:✅现行 · 最后核对 2026-06-26
     > 📌 状态:📦历史 · 工作已落地(提交 abc1234)· 可删
@@ -12,6 +15,7 @@
 分类靠 banner 关键词:可删/历史/已落地/已否决/废弃/📦/❌ → "该清";现行+最后核对日期 → 超期提醒。
 """
 import re
+import subprocess
 from datetime import date
 from pathlib import Path
 
@@ -24,33 +28,48 @@ DATE_RE = re.compile(r"最后核对\s*(\d{4})-(\d{1,2})-(\d{1,2})")
 REMOVABLE = ("可删", "历史", "已落地", "已否决", "废弃", "弃用", "📦", "❌")
 
 
+def _ignored(paths):
+    """这些路径里被 .gitignore 忽略的集合(本地工作档不入 git、不纳入唠叨)。git 不可用则返回空集。"""
+    if not paths:
+        return set()
+    try:
+        # core.quotePath=false:别把中文路径转义输出,否则下面 str(f) 匹配不上
+        r = subprocess.run(["git", "-C", str(ROOT), "-c", "core.quotePath=false",
+                            "check-ignore"] + [str(p) for p in paths],
+                           capture_output=True, text=True, timeout=5)
+        return set(r.stdout.splitlines())  # check-ignore 原样回显被忽略的路径
+    except Exception:
+        return set()
+
+
 def scan():
     removable, stale = [], []
     today = date.today()
-    for d in DOC_DIRS:
-        if not d.exists():
+    files = [f for d in DOC_DIRS if d.exists() for f in sorted(d.rglob("*.md"))]
+    ignored = _ignored(files)
+    for f in files:
+        if str(f) in ignored:
+            continue  # gitignore 的本地工作档不纳入
+        rel = f.relative_to(ROOT)
+        try:
+            head = f.read_text(encoding="utf-8", errors="ignore").splitlines()[:8]
+        except Exception:
             continue
-        for f in sorted(d.rglob("*.md")):
-            rel = f.relative_to(ROOT)
+        banner = next((ln for ln in head if BANNER_RE.search(ln)), None)
+        if banner is None:
+            continue  # 没 banner 不在自动唠叨里(交给 /文档体检 深扫),避免噪音
+        if any(k in banner for k in REMOVABLE):
+            removable.append(str(rel))
+            continue
+        m = DATE_RE.search(banner)
+        if m:
+            y, mo, dy = map(int, m.groups())
             try:
-                head = f.read_text(encoding="utf-8", errors="ignore").splitlines()[:8]
-            except Exception:
-                continue
-            banner = next((ln for ln in head if BANNER_RE.search(ln)), None)
-            if banner is None:
-                continue  # 没 banner 不在自动唠叨里(交给 /文档体检 深扫),避免噪音
-            if any(k in banner for k in REMOVABLE):
-                removable.append(str(rel))
-                continue
-            m = DATE_RE.search(banner)
-            if m:
-                y, mo, dy = map(int, m.groups())
-                try:
-                    age = (today - date(y, mo, dy)).days
-                    if age > STALE_DAYS:
-                        stale.append(f"{rel}(核对于 {y}-{mo:02d}-{dy:02d},{age} 天前)")
-                except ValueError:
-                    pass
+                age = (today - date(y, mo, dy)).days
+                if age > STALE_DAYS:
+                    stale.append(f"{rel}(核对于 {y}-{mo:02d}-{dy:02d},{age} 天前)")
+            except ValueError:
+                pass
     return removable, stale
 
 
