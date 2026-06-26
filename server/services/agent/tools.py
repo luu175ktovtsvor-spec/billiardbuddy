@@ -665,6 +665,11 @@ async def generate_video(args: dict, ctx) -> str:
     if not desc:
         return "缺少视频描述，没法生成。说清你想要个什么样的视频（画面 + 运镜）。"
 
+    from services.ai.factory import ProviderFactory
+    api_key, _base, _model = ProviderFactory.get_video_config_for_store(ctx.store)
+    if not api_key:
+        return "还没配好视频模型：请在「模型设置」里填写火山方舟（ARK）的 API Key 并开通 Seedance 模型，配好了再来生成视频。"
+
     # 首帧图：模型显式给的优先；没给则回退老板当场选定的第一张图（"选了张图说让它动起来"）。
     from services.agent.multimodal import is_image
     sel_imgs = [p for p in (getattr(ctx, "allowed_paths", None) or []) if is_image(p)]
