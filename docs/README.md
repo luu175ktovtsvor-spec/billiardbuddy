@@ -45,6 +45,6 @@
 | `references/Anthropic-Agent-SDK-参考架构.md` | 官方 Agent SDK 参考（学机制用 Python 实现） |
 | `references/P3对外平台-官方文档与资质清单.md` | 对外发布平台资质与官方文档 |
 | `references/AI-Agent-harness全景与参考.md` | **动手前先看**：主流 agent/harness 的类型/代表/架构 + 研究入口 |
-| `learn-claude-code借鉴改造记录.md` | Harness 借鉴的已落地改造 + Task5 待办 |
+| `references/harness缺口审计-对照ClaudeCode-2026-06-26.md` | **harness 对照 Claude Code 缺口审计**(取代旧 learn-claude-code 记录):分级真缺口 + 已对齐清单 + 别建项 |
 | `苹果与Windows-签名与分发.md` | 打包签名/分发（当前"打包+真机验收"阶段直接用） |
 | `暂不做项-SH-5-7-10-记录.md` | 有意暂不做项的取舍记录（防过度设计） |
