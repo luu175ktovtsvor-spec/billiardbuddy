@@ -54,6 +54,8 @@ class Tool:
     #   max_turns 也救不了（到不了下一轮）"。None = 用全局默认 _DEFAULT_TOOL_TIMEOUT；
     #   <=0 = 不设兜底（极少数确需无限期跑的流式工具）。run_command/MCP 自带超时，被这层更宽的兜底罩着不受影响。
     timeout: float | None = None
+    # M5b 动态审批钩子：(args, ctx) -> bool。部分调用才需审批的工具（如 read_file 读敏感文件）用此替代静态 requires_approval=True。
+    requires_approval_for: Callable[[dict, Any], bool] | None = None
 
     def to_openai_schema(self) -> dict:
         """导出成 DeepSeek/OpenAI 兼容的 tools 数组元素。"""
@@ -114,6 +116,7 @@ def tool(
     max_result_chars: int | None = None,
     timeout: float | None = None,
     approval_reason: Callable[[dict, Any], dict] | None = None,
+    requires_approval_for: Callable[[dict, Any], bool] | None = None,
     registry: ToolRegistry | None = None,
 ) -> Callable[[ToolHandler], ToolHandler]:
     """装饰器：把一个 async 函数登记为工具。
@@ -141,6 +144,7 @@ def tool(
                 max_result_chars=max_result_chars,
                 timeout=timeout,
                 approval_reason=approval_reason,
+                requires_approval_for=requires_approval_for,
             )
         )
         return fn

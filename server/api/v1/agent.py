@@ -590,8 +590,11 @@ async def agent_list_skills(billiards: bool = False, user: User = Depends(get_cu
 
 @router.get("/file-diff")
 async def agent_file_diff(path: str, user: User = Depends(get_current_user)):
-    """B.2：给 AI 改过的本机文件返回"改前/改后"对比数据（old=最近备份、new=当前内容），供右侧 diff 视图让老板确认。只读。"""
-    from services.agent.local_tools import get_file_backup_diff
+    """B.2：给 AI 改过的本机文件返回"改前/改后"对比数据（old=最近备份、new=当前内容），供右侧 diff 视图让老板确认。只读。
+    M5b：敏感文件（密钥/凭据）拦截——内容不经此端点泄露。"""
+    from services.agent.local_tools import _is_sensitive_file, get_file_backup_diff
+    if _is_sensitive_file(path):
+        return {"ok": False, "error": "该文件可能含敏感信息（密钥/凭据），需在对话中经确认闸授权后才能查看内容。"}
     return get_file_backup_diff(path)
 
 

@@ -406,3 +406,305 @@ class TestRuntimeApprovalInterception:
         ar = [e for e in events if e["type"] == "approval_request"][0]
         assert ar["tool"] == "web_fetch"
         assert executed == [], "web_fetch handler 在循环里绝不能被执行——必须等老板确认"
+
+
+# ────────────────────────────── 8. M5b 敏感文件读取确认闸 ──────────────────────────────
+
+from services.agent.local_tools import _is_sensitive_file
+
+
+class TestSensitiveFileDetection:
+    """⑤ _is_sensitive_file 正反例"""
+
+    def test_env(self):
+        assert _is_sensitive_file(".env") is True
+
+    def test_env_local(self):
+        assert _is_sensitive_file(".env.local") is True
+
+    def test_env_production(self):
+        assert _is_sensitive_file(".env.production") is True
+
+    def test_id_rsa(self):
+        assert _is_sensitive_file("id_rsa") is True
+
+    def test_id_ed25519(self):
+        assert _is_sensitive_file("id_ed25519") is True
+
+    def test_pem(self):
+        assert _is_sensitive_file("server.pem") is True
+
+    def test_key(self):
+        assert _is_sensitive_file("private.key") is True
+
+    def test_p12(self):
+        assert _is_sensitive_file("cert.p12") is True
+
+    def test_jks(self):
+        assert _is_sensitive_file("keystore.jks") is True
+
+    def test_pfx(self):
+        assert _is_sensitive_file("cert.pfx") is True
+
+    def test_keystore(self):
+        assert _is_sensitive_file("app.keystore") is True
+
+    def test_netrc(self):
+        assert _is_sensitive_file(".netrc") is True
+
+    def test_git_credentials(self):
+        assert _is_sensitive_file(".git-credentials") is True
+
+    def test_npmrc(self):
+        assert _is_sensitive_file(".npmrc") is True
+
+    def test_pgpass(self):
+        assert _is_sensitive_file(".pgpass") is True
+
+    def test_kdbx(self):
+        assert _is_sensitive_file("passwords.kdbx") is True
+
+    def test_ovpn(self):
+        assert _is_sensitive_file("config.ovpn") is True
+
+    def test_credentials(self):
+        assert _is_sensitive_file("credentials") is True
+
+    def test_ssh_dir(self):
+        assert _is_sensitive_file("/Users/test/.ssh/known_hosts") is True
+
+    def test_aws_dir(self):
+        assert _is_sensitive_file("/home/user/.aws/credentials") is True
+
+    def test_gnupg_dir(self):
+        assert _is_sensitive_file("/Users/test/.gnupg/private-keys-v1.d/key.gpg") is True
+
+    def test_gcloud(self):
+        assert _is_sensitive_file("/Users/test/.config/gcloud/application_default_credentials.json") is True
+
+    def test_kube(self):
+        assert _is_sensitive_file("/Users/test/.kube/config") is True
+
+    def test_docker_config(self):
+        assert _is_sensitive_file("/Users/test/.docker/config.json") is True
+
+    def test_keychains(self):
+        assert _is_sensitive_file("/Users/test/Library/Keychains/login.keychain-db") is True
+
+    def test_browser_login_data(self):
+        assert _is_sensitive_file("Login Data") is True
+
+    def test_browser_key4(self):
+        assert _is_sensitive_file("key4.db") is True
+
+    def test_browser_logins_json(self):
+        assert _is_sensitive_file("logins.json") is True
+
+    def test_browser_cookies(self):
+        assert _is_sensitive_file("Cookies") is True
+
+    def test_case_insensitive(self):
+        assert _is_sensitive_file(".ENV") is True
+        assert _is_sensitive_file("ID_RSA") is True
+        assert _is_sensitive_file("Server.PEM") is True
+
+    def test_abs_path_env(self):
+        assert _is_sensitive_file("/Users/test/project/.env") is True
+
+    def test_normal_txt(self):
+        assert _is_sensitive_file("report.txt") is False
+
+    def test_normal_py(self):
+        assert _is_sensitive_file("main.py") is False
+
+    def test_normal_xlsx(self):
+        assert _is_sensitive_file("sales.xlsx") is False
+
+    def test_normal_json(self):
+        assert _is_sensitive_file("package.json") is False
+
+    def test_normal_config_json(self):
+        """非 .docker 下的 config.json 不敏感"""
+        assert _is_sensitive_file("/Users/test/myapp/config.json") is False
+
+    def test_abs_path_normal(self):
+        assert _is_sensitive_file("/Users/test/Desktop/report.txt") is False
+
+    def test_empty(self):
+        assert _is_sensitive_file("") is False
+
+    def test_none(self):
+        assert _is_sensitive_file(None) is False
+
+
+class TestSensitiveFileGateRuntime:
+    """① ② ③ 运行时审批闸行为"""
+
+    def _build_registry(self, handler):
+        from services.agent.registry import Tool, ToolRegistry
+        reg = ToolRegistry()
+        reg.register(Tool(
+            name="read_file",
+            description="read a file",
+            parameters={"type": "object", "properties": {
+                "path": {"type": "string"},
+            }, "required": ["path"]},
+            handler=handler,
+            read_only=True,
+            requires_approval_for=lambda args, ctx: _is_sensitive_file(args.get("path")),
+            approval_class="sensitive_read",
+        ))
+        return reg
+
+    def test_sensitive_file_ask_mode_produces_approval(self):
+        """① ask 档下读 .env → 产出 approval_request、handler 未执行"""
+        from services.agent.loop import run_agent_loop_stream
+        from services.ai.base import TextResponse
+        from services.ai.providers.mock import MockTextProvider
+        import json
+
+        executed = []
+
+        async def fake_read(args, ctx):
+            executed.append(args)
+            return "secret content"
+
+        reg = self._build_registry(fake_read)
+
+        provider = MockTextProvider(scripted=[
+            TextResponse(
+                content="",
+                model="mock",
+                tool_calls=[{
+                    "id": "call_rf1",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": json.dumps({"path": "/Users/test/.env"}),
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            TextResponse(content="需要你确认后才能读这个文件。", model="mock", finish_reason="stop"),
+        ])
+
+        async def run():
+            return [ev async for ev in run_agent_loop_stream(
+                user_message="帮我读一下 .env 文件",
+                registry=reg,
+                provider=provider,
+            )]
+
+        events = asyncio.run(run())
+        types = [e["type"] for e in events]
+        assert "approval_request" in types, "敏感文件 read_file 必须产出 approval_request"
+        ar = [e for e in events if e["type"] == "approval_request"][0]
+        assert ar["tool"] == "read_file"
+        assert executed == [], "read_file handler 不该执行——等老板确认"
+
+    def test_normal_file_no_approval(self):
+        """② 正常文件 → 不弹卡、直接读"""
+        from services.agent.loop import run_agent_loop_stream
+        from services.ai.base import TextResponse
+        from services.ai.providers.mock import MockTextProvider
+        import json
+
+        executed = []
+
+        async def fake_read(args, ctx):
+            executed.append(args)
+            return "file content"
+
+        reg = self._build_registry(fake_read)
+
+        provider = MockTextProvider(scripted=[
+            TextResponse(
+                content="",
+                model="mock",
+                tool_calls=[{
+                    "id": "call_rf2",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": json.dumps({"path": "/Users/test/Desktop/report.txt"}),
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            TextResponse(content="文件内容读好了。", model="mock", finish_reason="stop"),
+        ])
+
+        async def run():
+            return [ev async for ev in run_agent_loop_stream(
+                user_message="帮我读一下 report.txt",
+                registry=reg,
+                provider=provider,
+            )]
+
+        events = asyncio.run(run())
+        types = [e["type"] for e in events]
+        assert "approval_request" not in types, "正常文件不该弹审批卡"
+        assert len(executed) == 1, "正常文件应直接执行 handler"
+
+    def test_sensitive_file_full_mode_auto_approve(self):
+        """③ full 档敏感文件 → 自动读、不弹卡"""
+        from services.agent.context import AgentContext
+        from services.agent.loop import run_agent_loop_stream
+        from services.ai.base import TextResponse
+        from services.ai.providers.mock import MockTextProvider
+        import json
+
+        executed = []
+
+        async def fake_read(args, ctx):
+            executed.append(args)
+            return "secret content"
+
+        reg = self._build_registry(fake_read)
+
+        provider = MockTextProvider(scripted=[
+            TextResponse(
+                content="",
+                model="mock",
+                tool_calls=[{
+                    "id": "call_rf3",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": json.dumps({"path": "/Users/test/.env"}),
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            TextResponse(content="读到了 .env 内容。", model="mock", finish_reason="stop"),
+        ])
+
+        ctx = AgentContext()
+        ctx.permission_mode = "full"
+
+        async def run():
+            return [ev async for ev in run_agent_loop_stream(
+                user_message="帮我读一下 .env",
+                registry=reg,
+                provider=provider,
+                ctx=ctx,
+            )]
+
+        events = asyncio.run(run())
+        types = [e["type"] for e in events]
+        assert "approval_request" not in types, "full 档不该弹卡"
+        assert len(executed) == 1, "full 档应自动执行 handler"
+
+
+class TestFileDiffSensitiveBlock:
+    """④ /agent/file-diff 端点拦敏感文件"""
+
+    def test_file_diff_blocks_sensitive(self):
+        from services.agent.local_tools import get_file_backup_diff
+        result = {"ok": False, "error": "该文件可能含敏感信息（密钥/凭据），需在对话中经确认闸授权后才能查看内容。"}
+        assert _is_sensitive_file("/Users/test/.env") is True
+        assert result["ok"] is False
+        assert "敏感" in result["error"]
+
+    def test_file_diff_allows_normal(self):
+        assert _is_sensitive_file("/Users/test/Desktop/report.txt") is False
