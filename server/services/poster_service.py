@@ -287,20 +287,42 @@ async def generate_images(
             except Exception:
                 pass
     qr_bytes = _load_upload_bytes(qr_path)
+    if qr_bytes is None and qr_path:
+        import os as _os_qr
+        if _os_qr.environ.get("DESKTOP_LOCAL") == "1":
+            try:
+                _qp = Path(qr_path)
+                if _qp.is_file():
+                    qr_bytes = _qp.read_bytes()
+            except Exception:
+                pass
 
     ref_bytes: list[bytes] = []
     if reference_image_paths:
         upload_dir = Path(settings.upload_dir)
+        import os as _os_ref
+        is_desktop = _os_ref.environ.get("DESKTOP_LOCAL") == "1"
         for ref_str in reference_image_paths:
-            # 前端传的是 /uploads/references/xxx.jpg，去掉 /uploads/ 前缀得到相对路径
             if ".." in ref_str:
-                raise ValueError("reference_image_path 必须在 uploads/ 目录内")
+                if not is_desktop:
+                    raise ValueError("reference_image_path 必须在 uploads/ 目录内")
+                continue
             rel = ref_str.removeprefix("/uploads/")
             ref_path = upload_dir / rel
-            if not ref_path.resolve().is_relative_to(upload_dir.resolve()):
-                raise ValueError("reference_image_path 必须在 uploads/ 目录内")
-            if ref_path.exists():
+            in_uploads = False
+            try:
+                in_uploads = ref_path.resolve().is_relative_to(upload_dir.resolve())
+            except (OSError, ValueError):
+                pass
+            if in_uploads and ref_path.exists():
                 ref_bytes.append(ref_path.read_bytes())
+            elif is_desktop:
+                try:
+                    _rp = Path(ref_str)
+                    if _rp.is_file():
+                        ref_bytes.append(_rp.read_bytes())
+                except Exception:
+                    pass
 
     # 输入图顺序：要保真的排前面（底图→二维码→Logo），风格参考随后（官方：靠前输入图保真更强）。
     # 二维码紧跟底图——它最需要原样复现才能扫得出，享受前排更强的保真。
@@ -436,6 +458,7 @@ async def generate_images(
         "model_used": "ai:gpt-image-2",
         "count": len(valid_results),
         "conversation_id": conv_id,
+        "logo_applied": logo_bytes is not None,
     }
 
 
