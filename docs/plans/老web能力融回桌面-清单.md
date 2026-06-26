@@ -18,10 +18,12 @@
 | 7 | **好评差评回灌写作** | 🟡 `brand_voice_service`(点赞学风格/点踩进避免清单 → 喂写作 prompt)**没搬**;桌面 recall 只给老板看、不自动改写作 | 把 `get_brand_voice_context` 接进 `write_operation_content`/`write_batch` 的 prompt 拼装(和 #4 一条线) | ⭐⭐⭐ |
 | 8 | **多岗位协同**(orchestrator) | 🟡 `orchestrator`(指挥官+多岗位并行+汇总对齐口径)整块没搬;桌面只有单个 `run_subagent` | 看定位:要接"策划完整开业季/大型赛事"才值得融成 `plan_big_activity`;单店轻量可暂缓 | ⭐⭐ |
 
-## 📦 运营内容损失(operation/ 少 5 个精修玩法 · 守 PPT-only)
-| 模板 | 玩法 | 桌面现状 | 是否补 |
+## 📦 运营内容("少掉"的 5 个玩法模板)——⚠️ 大概率是有意清的,别当损失补回
+> **owner 2026-06-27 纠正**:**老 web 知识库本身错乱、没完全对照 PPT;桌面端知识库是有意按 PPT-only 重新校准的修正版。** 所以下面这些"老 web 有、桌面没有"的模板,**很可能是桌面照 PPT-only 政策故意清掉的(PPT 没据/借鉴别处/错乱),不是丢了。** 子代理说的"知识库有据"**不可信、必须逐条对本地 PPT 底本(`~/Desktop/球房-PPT底本-本地存档/`,见 [[ppt-source-of-truth-location]])亲自核实**——真有据才考虑补,且**一律以桌面 PPT-aligned 版为准、绝不以老 web 为准**。下表的"是否补"列已作废,改成"先验 PPT"。
+
+| 模板 | 玩法 | 桌面现状 | 验后再说(别直接补) |
 |---|---|---|---|
-| **corporate_team_building** 企业团建**获客** | 开发企业HR包场+团建后转长期客裂变 | ⚠️ 桌面 `team_building_plan` 是**内部排班·完全不同义**,被误挤掉 | **第一优先补**(知识库 business_cases/scale_guide 有据;只补获客方法别编报价) |
+| **corporate_team_building** 企业团建**获客** | 开发企业HR包场+团建后转长期客裂变 | 桌面 `team_building_plan` 是**内部排班·不同义**(别混) | **先验 PPT**:PPT 真有"企业团建获客"打法才补(只补方法别编报价);PPT 无据=桌面有意清的,不补 |
 | **theme_night** 主题之夜 | 单身夜/闺蜜场/情侣场,氛围社交拉人不靠折扣 | 🟡 退化成泛 `plan_activity` | **补**(知识库有据·高频可复用) |
 | **sports_event_watching** 看球活动 | 蹭世界杯/斯诺克世锦赛热点 | 🟡 退化成泛 `plan_activity` | **补**(知识库有据·蹭大赛现成获客) |
 | **opening_event** 开业致辞脚本 | 致辞+主持稿+流程节点 | 🟡 有开业文案但无脚本 | 中(与现有部分重叠) |
