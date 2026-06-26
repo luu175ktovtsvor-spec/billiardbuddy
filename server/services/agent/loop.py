@@ -267,8 +267,8 @@ def _auto_approve(tool, args, ctx) -> bool:
     if mode == "full":
         # full=所有动作免确认；但「对外/写入类」(发布、群发等)加一道【一轮内自动放行上限闸】：
         # 老板切到"跳过确认"后，模型批量自动对外/写入会失控(痛点#7)——超上限即使 full 也强制弹安全确认。
-        # 文件类(可逆、改前已自动备份)不计入、不设限。
-        if kind == "file":
+        # 文件类(可逆、改前已自动备份)及敏感读取(只读、owner 拍板 full 不 force_confirm)不计入、不设限。
+        if kind in ("file", "sensitive_read"):
             return True
         # 上限值：优先用本店设置 ctx.auto_spend_limit（老板可在 UI 调高/调低/关闭），没设才用环境默认。
         # 这是老板自己机器上的对外动作、应由他掌控：负数 = 老板关闭上限闸，full 下对外/写入也全自动。
@@ -521,7 +521,14 @@ def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _Too
                 name=name, args=args, tool_call_id=tc_id, fallback=True,
                 fallback_msg=_PLAN_MODE_SKIP_MSG.format(name=name),
             )
-        if tool.requires_approval and not _auto_approve(tool, args, ctx):
+        needs_approval = tool.requires_approval
+        if not needs_approval and callable(getattr(tool, "requires_approval_for", None)):
+            try:
+                needs_approval = tool.requires_approval_for(args, ctx)
+            except Exception:
+                logger.exception("动态审批钩子出错，保守弹卡: %s", name)
+                needs_approval = True
+        if needs_approval and not _auto_approve(tool, args, ctx):
             # SH-8 连续拒绝自动回退：同一动作老板已反复拒（或全局累计拒太多）→ 不再提请该动作，
             # 改回灌"这个先不做了、换个法子"，让模型走文本答复/替代方案，别没完没了地弹同一张确认卡。
             if _denial_fallback(name, args, ctx):

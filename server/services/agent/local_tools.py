@@ -740,6 +740,72 @@ async def diagnose_from_pos(args: dict, ctx) -> str:
     return gen.result
 
 
+# ────────────────────────────── M5b 敏感文件读取确认闸 ──────────────────────────────
+
+_SENSITIVE_EXACT_NAMES: set[str] = {
+    ".env", ".netrc", ".git-credentials", ".npmrc", ".pgpass", "credentials",
+    "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+}
+
+_SENSITIVE_EXTS: set[str] = {
+    ".pem", ".key", ".p12", ".pfx", ".keystore", ".jks", ".kdbx", ".ovpn",
+}
+
+_SENSITIVE_DIR_SEGMENTS: set[str] = {
+    ".ssh", ".aws", ".gnupg", ".kube",
+}
+
+_BROWSER_LOGIN_DBS: set[str] = {
+    "login data", "key4.db", "logins.json", "cookies",
+}
+
+
+def _is_sensitive_file(path: str | None) -> bool:
+    """判断路径是否指向可能含密钥/凭据的敏感文件（大小写不敏感）。"""
+    if not path or not path.strip():
+        return False
+    normalized = path.strip().replace("\\", "/").lower()
+    parts = normalized.split("/")
+    basename = parts[-1]
+    if not basename:
+        return False
+    if basename in _SENSITIVE_EXACT_NAMES:
+        return True
+    if basename.startswith(".env."):
+        return True
+    dot = basename.rfind(".")
+    if dot > 0 and basename[dot:] in _SENSITIVE_EXTS:
+        return True
+    dirs = parts[:-1]
+    for seg in dirs:
+        if seg in _SENSITIVE_DIR_SEGMENTS:
+            return True
+    joined = "/" + "/".join(parts) + "/"
+    if "/.config/gcloud/" in joined:
+        return True
+    if basename == "config.json" and len(parts) >= 2 and parts[-2] == ".docker":
+        return True
+    if "/library/keychains/" in joined:
+        return True
+    if basename in _BROWSER_LOGIN_DBS:
+        return True
+    return False
+
+
+def _sensitive_read_reason(args: dict, ctx) -> dict:
+    name = Path(args.get("path", "?") or "?").name
+    return {
+        "what": f"读取文件「{name}」",
+        "why": "该文件可能含密钥/密码/凭据等敏感信息。读取后内容会发给 AI 模型处理，存在泄露风险。",
+        "impact": "确认后才会读取文件内容；拒绝则跳过、不读。文件本身不会被修改。",
+    }
+
+
+def _sensitive_read_preview(args: dict, ctx) -> str:
+    path = args.get("path", "?")
+    return f"将读取可能含敏感信息的文件「{path}」。读取后内容会发给 AI 处理。"
+
+
 # ────────────────────────────── 审批预览（确认前给老板看"会改成什么"，不再瞎确认） ──────────────────────────────
 
 def _name_of(args: dict) -> str:
@@ -908,6 +974,10 @@ _LOCAL_TOOLS = [
         parameters={"type": "object", "properties": {"path": {"type": "string", "description": "内容库内的文件名/相对路径，或老板当场选定文件的完整路径"}}, "required": ["path"]},
         handler=read_file,
         read_only=True,
+        requires_approval_for=lambda args, ctx: _is_sensitive_file(args.get("path")),
+        approval_class="sensitive_read",
+        approval_reason=_sensitive_read_reason,
+        preview=_sensitive_read_preview,
     ),
     Tool(
         name="write_file",
