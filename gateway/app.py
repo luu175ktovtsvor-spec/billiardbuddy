@@ -224,6 +224,33 @@ async def images(request: Request, authorization: str = Header(None)):
             raise HTTPException(502, f"生图上游出错:{str(e)[:120]}")
 
 
+@app.post("/v1/images/edits")
+async def images_edits(request: Request, authorization: str = Header(None)):
+    # 图生图(multipart 传图):保留原始 Content-Type(含 boundary)透传,转发美国 relay 的 /images/edits。
+    user = auth(authorization)
+    quota_check(user, "img", Q_IMG)
+    await img_bucket.acquire(QUEUE_MAX_WAIT)
+    async with img_sem:
+        body = await request.body()
+        t0 = time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(900.0, read=900.0)) as cli:
+                r = await cli.post(
+                    CFG["relay_base"] + "/images/edits", content=body,
+                    headers={"Authorization": f"Bearer {CFG['relay_token']}",
+                             "Content-Type": request.headers.get("content-type", "application/octet-stream")},
+                )
+            ms = int((time.monotonic() - t0) * 1000)
+            log(user, "img", r.status_code < 400, r.status_code, ms)
+            ct = r.headers.get("content-type", "")
+            if ct.startswith("application/json"):
+                return JSONResponse(status_code=r.status_code, content=r.json())
+            return JSONResponse(status_code=r.status_code, content={"raw": r.text[:500]})
+        except Exception as e:
+            log(user, "img", False, 599, int((time.monotonic() - t0) * 1000), str(e)[:120])
+            raise HTTPException(502, f"图生图上游出错:{str(e)[:120]}")
+
+
 @app.post("/v1/video/generations")
 async def video(request: Request, authorization: str = Header(None)):
     """Seedance 视频:客户端传 ARK 格式 body(model/content/ratio/duration…),网关注入真 key、
