@@ -44,6 +44,8 @@
 | `plans/待办总账-没做好清单-2026-06-27.md` | **待办总账**：审查收官后的尾巴/真机没验/功能缺口/待owner决策/代码没写完,排好优先级供派活 |
 | `plans/老web能力融回桌面-清单.md` | 老 web 有、桌面丢了的能力(发布/剪辑/日报/效果闭环…),带证据,做前回验 |
 | `design/桌面Agent-macOS设计规范.md` + `design/mockups/` | 桌面 UI 设计规范 + 设计图（写码最高优先参考） |
+| `design/生成工作室-设计.md` + `生成工作室-{UI-demo,架构图}.html` | **生成工作室**设计:出图⇄图生视频一条龙 + 简单/调试双档(配 UI demo + 架构图 网页可打开看) |
+| `design/配色决策-午夜电蓝D.md` + `对话窗口-午夜电蓝D-demo.html` | 对话窗口配色定 D 午夜电蓝(暂只定色·文案待改) |
 | `references/Anthropic-Agent-SDK-参考架构.md` | 官方 Agent SDK 参考（学机制用 Python 实现） |
 | `references/P3对外平台-官方文档与资质清单.md` | 对外发布平台资质与官方文档 |
 | `references/AI-Agent-harness全景与参考.md` | **动手前先看**：主流 agent/harness 的类型/代表/架构 + 研究入口 |
