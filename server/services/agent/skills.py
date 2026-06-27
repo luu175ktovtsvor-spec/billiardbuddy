@@ -286,6 +286,15 @@ def render_skills_for_prompt(skills: list[Skill] | None = None, budget_chars: in
     return text
 
 
+# 缺口 G·指令框：技能正文【正经注入】对话——套一句"要照做的指令"框，让模型清楚这是【要执行的工作流】、
+# 不是供查阅的资料(裸 dump 易被当背景信息忽略)。对标官方 Agent Skills「把 SKILL.md 指令注入对话让主模型
+# 照做」(非 fork 子代理)。框 + 正文一起回灌。
+_SKILL_INSTRUCTION_FRAME = (
+    "以下是技能「{name}」的工作流指令——请把它当作【现在就要照着执行的步骤】来做"
+    "（这是指令、不是供你阅读的资料；按它一步步推进当前任务）：\n\n{body}"
+)
+
+
 @tool(
     name="skill",
     description=(
@@ -300,7 +309,9 @@ def render_skills_for_prompt(skills: list[Skill] | None = None, budget_chars: in
         },
         "required": ["skill"],
     },
-    read_only=True,
+    # 缺口 G：故意【不】标 read_only——技能结果是"要照做的指令"，不是"纯查询只读结果"：
+    #   ① read_only 会被 microcompact 当旧只读结果清成占位符 → 执行到一半指令没了；不标则一直留在上下文。
+    #   ② read_only 在 _cap_tool_result 走硬截断(砍后半段)；不标则超长走落盘(给路径+预览、正文全量不丢)。
 )
 async def _skill_tool(args: dict, ctx) -> str:
     name = str(args.get("skill") or args.get("name") or "").strip()
@@ -309,4 +320,4 @@ async def _skill_tool(args: dict, ctx) -> str:
     if out is None:
         avail = ", ".join(s.name for s in load_skills()) or "(当前没有已安装的技能)"
         return f"[技能不存在] {name}。可用技能：{avail}"
-    return out
+    return _SKILL_INSTRUCTION_FRAME.format(name=name, body=out)

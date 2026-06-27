@@ -633,6 +633,11 @@ async def run_agent_loop(
         ctx.model = model
 
     messages = _init_messages(system_prompt, history, user_message, user_images)
+    # 缺口 F：进循环前先 drain 一次【已存在】的待回灌图片。多数调用方此处 pending 为空、纯 no-op；
+    # 唯一非空场景＝审批后 /agent/execute 先跑完写/处理类工具(edit_image 等已往 ctx.pending_view_images
+    # 塞了图)再续接 run_agent_loop——若不在首调前 drain，模型这一轮看不到刚处理好的图(循环内 _drain
+    # 只在每批 tool 结果之后触发，而续接的收尾轮常常不再调工具→永远 drain 不到)，append 就成了死代码。
+    _drain_view_images(messages, ctx)
     tools = registry.to_openai_tools()
     steps: list[AgentStep] = []
     stop_blocked = False  # Stop hook 每轮最多阻断一次（防死循环；仍受 max_turns 兜底）

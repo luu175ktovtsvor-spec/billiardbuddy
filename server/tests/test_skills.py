@@ -1,4 +1,5 @@
 """Skills 系统测试（对标 Claude Code SKILL.md 的加载/渐进披露/调用）。"""
+import asyncio
 from pathlib import Path
 
 from services.agent import skills as sk
@@ -146,7 +147,68 @@ def test_skill_tool_registered_in_default_registry():
     from services.agent.registry import default_registry
     t = default_registry.get("skill")
     assert t is not None
-    assert t.read_only is True
+    # 缺口 G：技能结果是【要照做的指令】，故意 NOT read_only——
+    #   ① 不被 microcompact 当"旧只读结果"清掉(指令要在执行期间一直留在上下文)；
+    #   ② 超长时走 _cap_tool_result 的落盘路径而非 read_only 的硬截断(长技能正文给得全)。
+    assert t.read_only is False
+
+
+# ──────────────── G: 技能正经注入(指令框 + 非可截断只读) ────────────────
+
+def test_skill_tool_frames_body_as_instructions(monkeypatch):
+    """技能正文要套'照做的工作流指令'框注入，让模型清楚这是【要执行的指令】而非资料(裸 dump)。"""
+    monkeypatch.setattr(sk, "expand_skill",
+                        lambda name, extra="": "步骤一：先 A。步骤二：再 B。" if name == "demo" else None)
+    out = asyncio.run(sk._skill_tool({"skill": "demo"}, ctx=None))
+    assert "步骤一：先 A" in out                       # 正文完整在
+    assert "指令" in out                                # 有指令框
+    assert out.strip() != "步骤一：先 A。步骤二：再 B。"   # 不是裸 dump
+    assert out.index("指令") < out.index("步骤一")       # 框在正文前面、领着模型照做
+
+
+def test_skill_tool_passes_args_through(monkeypatch):
+    """args 仍照常替换进正文(框不破坏 $ARGUMENTS 展开)。"""
+    captured = {}
+
+    def _fake_expand(name, extra=""):
+        captured["extra"] = extra
+        return f"对 {extra} 做事"
+
+    monkeypatch.setattr(sk, "expand_skill", _fake_expand)
+    out = asyncio.run(sk._skill_tool({"skill": "demo", "args": "老王"}, ctx=None))
+    assert captured["extra"] == "老王"
+    assert "对 老王 做事" in out
+
+
+def test_skill_tool_unknown_still_reports_missing(monkeypatch):
+    """技能不存在：原样报'[技能不存在]'+可用清单，不套指令框(那不是指令)。"""
+    monkeypatch.setattr(sk, "expand_skill", lambda name, extra="": None)
+    monkeypatch.setattr(sk, "load_skills", lambda *a, **k: [])
+    out = asyncio.run(sk._skill_tool({"skill": "nope"}, ctx=None))
+    assert "[技能不存在]" in out
+    assert "指令" not in out  # 缺失提示不该被当成"要照做的指令"
+
+
+def test_long_skill_result_persisted_not_hard_truncated(tmp_path, monkeypatch):
+    """超长技能正文经 _cap_tool_result 必须【落盘(完整)】而非【硬截断(砍掉后半段)】。
+    去掉 read_only=True 后，超长结果走 persist(给路径+预览)，read_only 的硬截断分支不再吞掉技能指令。"""
+    from config import settings
+    from services.agent.context import AgentContext
+    from services.agent.loop import _cap_tool_result, _MAX_TOOL_RESULT_CHARS
+    from services.agent.registry import default_registry
+    from services.agent import tool_result_store as trs
+
+    up = tmp_path / "uploads"
+    up.mkdir()
+    monkeypatch.setattr(settings, "upload_dir", str(up))
+
+    skill_tool = default_registry.get("skill")
+    long_text = "以下是要照做的工作流指令：\n" + ("照做步骤。" * (_MAX_TOOL_RESULT_CHARS + 3000))
+    out = _cap_tool_result(skill_tool, long_text, AgentContext())
+    assert "结果较长已截断" not in out      # 不是硬截断
+    assert "<persisted-output>" in out       # 走落盘
+    files = list((up / trs.TOOL_RESULTS_DIRNAME).rglob("*.txt"))
+    assert files and files[0].read_text(encoding="utf-8") == long_text  # 技能正文全量落盘、一字不丢
 
 
 def test_bundled_skills_present():

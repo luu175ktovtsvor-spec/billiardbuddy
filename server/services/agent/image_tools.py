@@ -315,6 +315,15 @@ async def edit_image(args: dict, ctx) -> str:
         size_str = f"，{size_kb:.0f} KB"
     except OSError:
         size_str = ""
+    # 缺口 F：把处理后的图挂进回灌队列(ctx.pending_view_images)，让模型下一轮真【看见】P 完的结果、能自检
+    #（裁歪了/水印挡住主体了能发现）。复用截屏/读图同一管道(_drain_view_images)。edit_image 走审批闸、
+    # 真正执行在 /agent/execute，续接的 run_agent_loop 会在首调前 drain 出来喂回模型。尽力而为，绝不因此崩。
+    pending = getattr(ctx, "pending_view_images", None)
+    if pending is not None:
+        try:
+            pending.append(str(out))
+        except Exception:  # noqa: BLE001
+            pass
     where = "已覆盖原图" if overwrite else f"已另存为 {out.name}"
     msg = f"图片处理完成：{note}。{where}（{out.name}{size_str}）。"
     if backup:
