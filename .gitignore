@@ -90,3 +90,8 @@ desktop/e2e-pw/test-results/
 
 # 验收报告写仓库外 ~/Desktop/球房-验收报告/,仓库内出现的不提交
 球房-验收报告/
+
+# Codex / 跨 AI 工具脚手架(本地用·不进仓库;源真相以 CLAUDE.md + .claude/skills 为准,避免双份漂移)
+AGENTS.md
+.codex/
+.agents/
