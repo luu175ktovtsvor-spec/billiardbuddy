@@ -27,7 +27,30 @@ const STANDALONE = path.join(WEB, ".next", "standalone");
 const OUT = path.join(__dirname, "..", "resources", "frontend", "app");
 
 function rmrf(p) { fs.rmSync(p, { recursive: true, force: true }); }
-function cp(src, dst) { fs.cpSync(src, dst, { recursive: true }); }
+function cp(src, dst, opts = {}) { fs.cpSync(src, dst, { recursive: true, ...opts }); }
+
+// pnpm 的 node_modules 软链指向【绝对路径】(开发机 .pnpm 仓库) → 原样打到别的机器就断、前端起不来。
+// 把 dir 内所有"指向 srcRoot 自己"的绝对软链改写成【相对软链】(指向 outRoot 内对应位置)→ 自包含、可移植。
+// 保留 pnpm 的 .pnpm 结构不展平(next 靠 .pnpm 同级软链找 @next/env 等依赖)。不跟随软链递归(避环)。
+function relinkInto(dir, srcRoot, outRoot) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    const p = path.join(dir, e.name);
+    if (e.isSymbolicLink()) {
+      let target;
+      try { target = fs.readlinkSync(p); } catch { continue; }
+      if (path.isAbsolute(target) && target.startsWith(srcRoot)) {
+        const outTarget = path.join(outRoot, path.relative(srcRoot, target));
+        const relLink = path.relative(path.dirname(p), outTarget);
+        fs.rmSync(p, { force: true });
+        fs.symlinkSync(relLink, p);
+      }
+    } else if (e.isDirectory()) {
+      relinkInto(p, srcRoot, outRoot);
+    }
+  }
+}
 
 function main() {
   // ① 先用【正确的反代目标】出 standalone —— 防漏设 API_PROXY_URL（默认会变 8000 → 前端连不上后端 8077 → 登录 500）。
@@ -46,8 +69,11 @@ function main() {
   rmrf(OUT);
   fs.mkdirSync(OUT, { recursive: true });
 
-  // 1) 整个 standalone（server.js + package.json + 精简 node_modules）
+  // 1) 整个 standalone（server.js + package.json + 精简 node_modules）保结构原样拷(含 .pnpm + 软链)
   cp(STANDALONE, OUT);
+  // ⚠️ 关键:pnpm 软链是绝对路径(指开发机),不改写 → 装到别机(或本机重打后)next 模块丢、
+  //    server.js 崩「Cannot find module 'next'」→ 前端起不来 → app 打不开。改成相对软链=自包含可移植。
+  relinkInto(path.join(OUT, "node_modules"), STANDALONE, OUT);
 
   // 2) .next/static（standalone 不含，必须补）
   const staticSrc = path.join(WEB, ".next", "static");
