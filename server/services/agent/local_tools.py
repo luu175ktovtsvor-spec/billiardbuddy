@@ -608,6 +608,19 @@ async def read_file(args: dict, ctx) -> str:
         return _read_docx(path)
     if path.suffix.lower() == ".pptx":
         return _read_pptx(path)
+    # 缺口 F：图片不是"二进制不便读取"——把路径挂进回灌队列(ctx.pending_view_images)，
+    # loop 在本批 tool 结果配对完整后经 _drain_view_images 拼成一条 user 图片消息注入(走带原始尺寸
+    # 标签的 multimodal 通道、自动缩到 <=1568)，模型【下一轮】就真看见这张图。对标官方 FileReadTool
+    # 读图自动转 image block 回灌。沙箱/敏感闸已在到这之前走过(_resolve + read_file 的 requires_approval_for)。
+    from services.agent.multimodal import is_image
+    if is_image(path):
+        pending = getattr(ctx, "pending_view_images", None)
+        if pending is not None:
+            try:
+                pending.append(str(path))
+            except Exception:  # noqa: BLE001 — 回灌是尽力而为，绝不让读图崩掉工具
+                pass
+        return f"已读取图片〈{path.name}〉，将在下一轮直接看到它的画面（据此判断与继续）。"
     try:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
