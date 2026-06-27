@@ -296,3 +296,49 @@ async def video(request: Request, authorization: str = Header(None)):
         except Exception as e:
             log(user, "video", False, 599, int((time.monotonic() - t0) * 1000), str(e)[:120])
             raise HTTPException(502, f"视频上游出错:{str(e)[:120]}")
+
+
+# ── Seedance 视频·透传代理(客户端 ark_video.py 自己 submit+轮询,每次短请求避开 nginx 长连接超时;
+#    真 ARK key 只在网关 gw.env、客户端只带 app 令牌。这是收编视频 key 的正式通道,优于上面"一次全包"那条)──
+@app.post("/v1/contents/generations/tasks")
+async def video_submit(request: Request, authorization: str = Header(None)):
+    """提交 Seedance 任务:auth 令牌 + 配额 + 注入真 ARK key 转火山,原样回任务号。"""
+    user = auth(authorization)
+    quota_check(user, "video", Q_VIDEO)
+    if not CFG["ark_key"]:
+        raise HTTPException(503, "视频功能未配置(缺 GW_ARK_KEY)")
+    body = await request.body()
+    ark_h = {"Authorization": f"Bearer {CFG['ark_key']}", "Content-Type": "application/json"}
+    url = CFG["ark_base"] + "/contents/generations/tasks"
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=60.0)) as cli:
+            r = await cli.post(url, content=body, headers=ark_h)
+        log(user, "video", r.status_code < 400, r.status_code, int((time.monotonic() - t0) * 1000), "submit")
+        ct = r.headers.get("content-type", "")
+        if ct.startswith("application/json"):
+            return JSONResponse(status_code=r.status_code, content=r.json())
+        return JSONResponse(status_code=r.status_code, content={"raw": r.text[:500]})
+    except Exception as e:
+        log(user, "video", False, 599, int((time.monotonic() - t0) * 1000), str(e)[:120])
+        raise HTTPException(502, f"视频提交出错:{str(e)[:120]}")
+
+
+@app.get("/v1/contents/generations/tasks/{task_id}")
+async def video_poll(task_id: str, authorization: str = Header(None)):
+    """轮询 Seedance 任务:auth 令牌 + 注入真 ARK key 转火山,原样回(status / content.video_url)。
+    出片的 video_url 是火山短期签名直链,客户端直接下载,不经网关、也不含 key。"""
+    user = auth(authorization)
+    if not CFG["ark_key"]:
+        raise HTTPException(503, "视频功能未配置(缺 GW_ARK_KEY)")
+    ark_h = {"Authorization": f"Bearer {CFG['ark_key']}"}
+    url = CFG["ark_base"] + f"/contents/generations/tasks/{task_id}"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=60.0)) as cli:
+            r = await cli.get(url, headers=ark_h)
+        ct = r.headers.get("content-type", "")
+        if ct.startswith("application/json"):
+            return JSONResponse(status_code=r.status_code, content=r.json())
+        return JSONResponse(status_code=r.status_code, content={"raw": r.text[:500]})
+    except Exception as e:
+        raise HTTPException(502, f"视频轮询出错:{str(e)[:120]}")
