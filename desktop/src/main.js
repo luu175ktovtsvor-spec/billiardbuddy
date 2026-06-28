@@ -88,8 +88,11 @@ function createWindow(opts = {}) {
 }
 
 // 进度/状态回推渲染层(扫码就绪、发布进度、剪辑进度)
-function emit(channel, payload) {
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+// 多窗口并行：优先投给【发起该动作的窗口】(target=event.sender)，不串到当前焦点窗口；没传 target 才退回焦点窗口。
+function emit(channel, payload, target) {
+  const wc = (target && !target.isDestroyed()) ? target
+    : (mainWindow && !mainWindow.isDestroyed()) ? mainWindow.webContents : null;
+  if (wc && !wc.isDestroyed()) wc.send(channel, payload);
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -104,19 +107,19 @@ ipcMain.handle("publish:available", () => publish.checkAvailable());
 
 // 扫码登录:启动登录流,二维码 data-url 经 publish:login:qrcode 事件推前端展示;
 // 登录完成/失败经 publish:login:status 推。返回一个 sessionId 供前端跟踪。
-ipcMain.handle("publish:login:start", (_e, { platform }) =>
+ipcMain.handle("publish:login:start", (e, { platform }) =>
   publish.startLogin(platform, {
-    onQrcode: (dataUrl) => emit("publish:login:qrcode", { platform, dataUrl }),
-    onStatus: (status) => emit("publish:login:status", { platform, status }),
+    onQrcode: (dataUrl) => emit("publish:login:qrcode", { platform, dataUrl }, e.sender),
+    onStatus: (status) => emit("publish:login:status", { platform, status }, e.sender),
   })
 );
 
 ipcMain.handle("publish:login:check", (_e, { platform }) => publish.checkLogin(platform));
 
 // 发布:人确认后调用。content = { videoPath, title, tags, coverPath, scheduleAt? }
-ipcMain.handle("publish:post", (_e, { platform, content }) =>
+ipcMain.handle("publish:post", (e, { platform, content }) =>
   publish.post(platform, content, {
-    onProgress: (p) => emit("publish:progress", { platform, ...p }),
+    onProgress: (p) => emit("publish:progress", { platform, ...p }, e.sender),
   })
 );
 
@@ -124,8 +127,8 @@ ipcMain.handle("publish:post", (_e, { platform, content }) =>
 // IPC:视频剪辑(ffmpeg)。基础能力:裁剪/拼接/竖屏转码/烧字幕/水印/变速。
 // ──────────────────────────────────────────────────────────────
 ipcMain.handle("video:probe", (_e, { inputPath }) => video.probe(inputPath));
-ipcMain.handle("video:run", (_e, { op, args }) =>
-  video.run(op, args, { onProgress: (p) => emit("video:progress", { op, ...p }) })
+ipcMain.handle("video:run", (e, { op, args }) =>
+  video.run(op, args, { onProgress: (p) => emit("video:progress", { op, ...p }, e.sender) })
 );
 
 // 本地文件选择器:老板选定文件 → 返回绝对路径,前端随对话以 selected_files 传后端,
