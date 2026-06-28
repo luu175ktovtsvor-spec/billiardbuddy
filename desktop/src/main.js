@@ -56,6 +56,7 @@ function createWindow(opts = {}) {
   // prod：本地前端就绪 → 它的 URL；否则用 DESKTOP_APP_URL(dev) 或兜底 localhost:3000。
   const baseUrl = frontendUrl || FORCED_APP_URL || "http://localhost:3000";
   const url = new URL(baseUrl);
+  if (opts.route) url.pathname = opts.route;             // 生成工作室等独立路由窗口
   if (opts.workbenchId) url.searchParams.set("workbench", opts.workbenchId);
   win.loadURL(url.toString());
 
@@ -292,6 +293,22 @@ ipcMain.handle("desktop:newWindow", () => {
   const workbenchId = `wb_${crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(12).toString("hex")}`;
   const w = createWindow({ workbenchId });
   return { ok: true, windowCount: BrowserWindow.getAllWindows().length, id: w.id, workbenchId };
+});
+
+// 生成工作室：独立窗口（自带 /dashboard/studio 路由，状态隔离）。
+ipcMain.handle("desktop:openStudio", () => {
+  const w = createWindow({ route: "/dashboard/studio" });
+  return { ok: true, id: w.id };
+});
+
+// M2 工作室成品同步：子窗（工作室）出了成品 → 广播给其它窗口，主窗"最近作品"据此刷新。
+ipcMain.handle("desktop:studioArtifact", (e, payload) => {
+  for (const w of windows) {
+    if (w && !w.isDestroyed() && w.webContents !== e.sender) {
+      w.webContents.send("studio:artifact", payload || {});
+    }
+  }
+  return { ok: true };
 });
 
 app.whenReady().then(async () => {

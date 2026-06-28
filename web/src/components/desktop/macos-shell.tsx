@@ -5,7 +5,7 @@
  * 浅色为默认、跟随系统深浅色（dark: 变体）。仅桌面端渲染；整窗自己掌控外观。
  * 顶部留给原生红绿灯（Electron titleBarStyle:'hiddenInset'），可拖拽区用 .app-drag。
  */
-import { Plus, Settings, Cpu, Terminal, Trash2, PanelsTopLeft } from "lucide-react";
+import { Plus, Settings, Cpu, Terminal, Trash2, PanelsTopLeft, Wand2 } from "lucide-react";
 
 import { useHorizontalResize } from "./use-resize";
 
@@ -25,6 +25,7 @@ export function DesktopSidebar({
   activeId,
   onNewChat,
   onNewWorkspace,
+  onOpenStudio,
   onSelect,
   onDelete,
   onOpenSettings,
@@ -37,6 +38,7 @@ export function DesktopSidebar({
   activeId?: string;
   onNewChat?: () => void;
   onNewWorkspace?: () => void;
+  onOpenStudio?: () => void;
   onSelect?: (id: string) => void;
   onDelete?: (id: string) => void;
   onOpenSettings?: () => void;
@@ -70,6 +72,16 @@ export function DesktopSidebar({
         >
           <Plus className="h-3.5 w-3.5 text-[#10a37f]" /> 新会话
         </button>
+        {onOpenStudio && (
+          <button
+            onClick={onOpenStudio}
+            title="打开生成工作室（做图/改图）"
+            aria-label="生成工作室"
+            className="app-no-drag flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-black/[0.08] bg-white text-[#86868b] shadow-sm transition hover:bg-black/[0.02] hover:text-[#10a37f] active:scale-[0.99] dark:border-white/[0.08] dark:bg-white/[0.02] dark:text-[#6e7077] dark:shadow-none dark:hover:bg-white/[0.05] dark:hover:text-[#10a37f]"
+          >
+            <Wand2 className="h-3.5 w-3.5" />
+          </button>
+        )}
         {onNewWorkspace && (
           <button
             onClick={onNewWorkspace}

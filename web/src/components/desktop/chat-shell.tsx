@@ -294,6 +294,11 @@ export function DesktopChatShell({
   useEffect(() => { void refreshRecentItems(); }, [refreshRecentItems]);
   useEffect(() => { if (chat.conversationId) void refreshConversations(); }, [chat.conversationId, refreshConversations]);
   useEffect(() => { if (chat.conversationId) void refreshRecentItems(); }, [chat.conversationId, refreshRecentItems]);
+  // M2:生成工作室(独立窗口)出了成品 → 刷新主窗"最近作品",看得到工作室的产出
+  useEffect(() => {
+    if (!electron?.onStudioArtifact) return;
+    return electron.onStudioArtifact(() => { void refreshRecentItems(); });
+  }, [electron, refreshRecentItems]);
   // 新会话首条消息后拿到 id → 把用户此前设的工作目录落盘到这个 id
   useEffect(() => { if (chat.conversationId) persistWorkingDir(chat.conversationId, workingDir); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [chat.conversationId]);
 
@@ -685,6 +690,7 @@ export function DesktopChatShell({
       activeId={chat.conversationId ?? undefined}
       onNewChat={newChat}
       onNewWorkspace={electron?.newWindow ? newWorkspace : undefined}
+      onOpenStudio={electron?.openStudio ? () => { void electron.openStudio?.(); } : undefined}
       onSelect={loadConv}
       onDelete={deleteConv}
       onOpenSettings={() => setSettingsOpen(true)}

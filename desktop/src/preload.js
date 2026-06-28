@@ -15,6 +15,14 @@ contextBridge.exposeInMainWorld("electron", {
   // 桌面信息(前端据 isDesktop 决定显不显发布/剪辑入口)
   info: () => ipcRenderer.invoke("desktop:info"),
   newWindow: () => ipcRenderer.invoke("desktop:newWindow"),
+  openStudio: () => ipcRenderer.invoke("desktop:openStudio"),
+  // M2 工作室成品同步：子窗报一声、其它窗口订阅刷新"最近作品"
+  notifyStudioArtifact: (payload) => ipcRenderer.invoke("desktop:studioArtifact", payload),
+  onStudioArtifact: (cb) => {
+    const h = (_e, payload) => cb(payload);
+    ipcRenderer.on("studio:artifact", h);
+    return () => ipcRenderer.removeListener("studio:artifact", h);
+  },
   captureScreen: () => ipcRenderer.invoke("desktop:captureScreen"),
 
   // ── 发布(RPA · 半自动 · 扫码登录 · 人点确认才发) ──
