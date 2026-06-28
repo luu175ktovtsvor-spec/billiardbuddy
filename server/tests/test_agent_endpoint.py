@@ -226,3 +226,15 @@ def test_stale_test_store_names_are_sanitized_from_brain_context():
     assert "请记住：[门店名]在泉州，[门店名]常做周赛" in out
     assert "鑫和台球在泉州" not in out
     assert "测试球城常做周赛" not in out
+
+
+def test_stale_test_store_names_are_sanitized_from_profile_too():
+    """门店画像(profile_text)也要清旧测试店名——别让旧档案把未确认店名带进正式回答。
+    注：prompt 本就有"不要把鑫和台球当门店名"的指令，故裸词存在；这里断言 profile 段的具体写法被清。"""
+    out = compose_agent_system_prompt(
+        "本店鑫和台球，26 张球台，主做竞技客户",  # profile_text 里带历史测试店名
+        "",
+        billiards_mode=True,
+    )
+    assert "本店[门店名]，26 张球台" in out  # 店名清成占位、真实档案数据(26张台)保留
+    assert "本店鑫和台球" not in out          # 档案里的旧店名写法不再注入
