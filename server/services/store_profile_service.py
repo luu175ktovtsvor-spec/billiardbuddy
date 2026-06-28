@@ -71,10 +71,39 @@ TABLE_TYPE_LABELS = {
 }
 
 
+def _render_store_columns(store: Store) -> list[str]:
+    """从 Store 稳定列(设置/快速补全写入的真实事实)渲染门店基本情况。
+
+    桌面常态没有结构化 operation_profile，但用户在设置里填的店名、城市、台数等是真实事实，
+    必须也能进台球系统提示——否则 agent 连这家店叫啥都不知道(DUAL-13/STORE-2)。
+    """
+    lines: list[str] = []
+    name = (store.name or "").strip()
+    if name and name not in ("我的球房", "我的台球房", "我的台球店"):
+        lines.append(f"门店名称：{name}")
+    if store.city:
+        lines.append("城市：" + store.city + (f"·{store.district}" if store.district else ""))
+    if store.business_hours:
+        lines.append(f"营业时间：{store.business_hours}")
+    if store.table_count:
+        lines.append(f"球桌数量：{store.table_count}张")
+    if store.table_types:
+        lines.append(f"桌型：{store.table_types}")
+    if store.coach_count:
+        lines.append(f"助教人数：{store.coach_count}人")
+    elif store.has_coaching:
+        lines.append("有助教/陪练服务")
+    if store.has_tournament:
+        lines.append("有竞技/比赛活动")
+    return lines
+
+
 def render_operation_profile_context(store: Store) -> str:
     profile = store.operation_profile
     if not profile or not isinstance(profile, dict):
-        return ""
+        # 桌面常态：没结构化档案，但设置/快速补全写入了稳定列 → 至少把这些真实事实注入台球提示
+        cols = _render_store_columns(store)
+        return ("【这家店的基本情况】\n" + "\n".join(f"- {l}" for l in cols)) if cols else ""
 
     parts: list[str] = []
 

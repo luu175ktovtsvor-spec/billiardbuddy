@@ -171,6 +171,7 @@ export function DesktopChatShell({
       const params = new URLSearchParams(window.location.search);
       if (params.get("e2e_answer") !== "1" || e2eAnswerSeededRef.current) return;
       e2eAnswerSeededRef.current = true;
+      setKnowledgePacks(["billiards"]);  // 种子是台球拉客答案 → 工作台设台球模式，对口下一步动作才会出(与 billiardsMode 门控一致)
       chat.pushAssistantMessage("今晚下雨没人，可以先做三件事：1. 客户群发雨天到店福利；2. 让助教约老客打练习局；3. 朋友圈发周赛预告。重点是今晚能执行，不写长篇理论。");
     } catch { /* E2E helper only */ }
   }, [chat]);
@@ -762,6 +763,7 @@ export function DesktopChatShell({
           onSaveArtifact={onSaveArtifact}
           onExportArtifact={onExportArtifact}
           onFollowUp={onFollowUp}
+          billiardsMode={knowledgePacks.includes("billiards")}
         />
       )}
 
