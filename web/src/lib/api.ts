@@ -506,6 +506,30 @@ class ApiClient {
     return this.request<MediaJobStatus>("GET", `/api/v1/agent/media-jobs/${encodeURIComponent(id)}`);
   }
 
+  // 阶段2 生成工作室：文生图（绕 LLM 直连，异步出图，返回 job_id 后轮询 getMediaJob）
+  studioGenerate(input: { prompt: string; ratio?: string; style?: string; count?: number; reference_image_paths?: string[]; conversation_id?: string | null }) {
+    return this.request<{ job_id: string }>("POST", "/api/v1/studio/generate", input);
+  }
+
+  // 阶段2 生成工作室：基于这张改（原图当底图 + 一句话指令），异步出图，返回 job_id
+  studioEdit(input: { prompt: string; base_image: string; parent_generation_id?: string; ratio?: string; count?: number; conversation_id?: string | null }) {
+    return this.request<{ job_id: string }>("POST", "/api/v1/studio/edit", input);
+  }
+
+  // 轮询一个 media job 到结束（done/error），onTick 给进度回调。失败/超时抛错。
+  async pollMediaJob(id: string, onTick?: (j: MediaJobStatus) => void, timeoutMs = 1_200_000): Promise<MediaJobStatus> {
+    const start = Date.now();
+    // 出图慢（gpt-image-2 单张可能 5-10 分），轮询间隔 2s，整体上限默认 20 分钟
+    for (;;) {
+      const j = await this.getMediaJob(id);
+      onTick?.(j);
+      if (j.status === "done") return j;
+      if (j.status === "error") throw new Error(j.error || "生成失败");
+      if (Date.now() - start > timeoutMs) throw new Error("生成超时了，稍后到「最近作品」看看，或重试");
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+
   // 桌面端：最近删除（轻量找回）
   listDeletedItems(limit = 30) {
     return this.request<{ items: RecentArtifact[] }>(

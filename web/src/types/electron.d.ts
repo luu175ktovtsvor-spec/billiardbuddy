@@ -32,6 +32,12 @@ export interface ElectronBridge {
   info(): Promise<DesktopInfo>;
   /** 新开一个独立工作台窗口（各自有自己的会话、工作目录、任务订阅）。 */
   newWindow?(): Promise<{ ok: boolean; windowCount?: number; id?: number; workbenchId?: string }>;
+  /** 打开「生成工作室」独立窗口（/dashboard/studio 路由）。 */
+  openStudio?(): Promise<{ ok: boolean; id?: number }>;
+  /** M2：工作室出了成品，通知其它窗口刷新「最近作品」。 */
+  notifyStudioArtifact?(payload: { kind?: string; generationId?: string; url?: string }): Promise<{ ok: boolean }>;
+  /** M2：订阅其它窗口（工作室）的成品事件，回调里刷新「最近作品」。返回取消订阅函数。 */
+  onStudioArtifact?(cb: (p: { kind?: string; generationId?: string; url?: string }) => void): () => void;
   /** 截取当前屏幕并保存为临时 PNG，返回本机路径；前端作为附件发给 Agent。 */
   captureScreen?(): Promise<{ ok: boolean; path?: string; width?: number; height?: number; error?: string; needsPermission?: boolean }>;
   publish: {
