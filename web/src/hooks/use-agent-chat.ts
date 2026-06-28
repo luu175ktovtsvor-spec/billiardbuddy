@@ -58,6 +58,7 @@ export interface ChatMessage {
   question?: QuestionData; // AskUserQuestion：管家给老板的选项，老板点选后作为下一句消息发回
   kind?: "command" | "video"; // 审批通过后执行的结果渲染方式：run_command→终端块；generate_video→<video> 播放器
   error?: boolean;
+  generationId?: string; // P1-4 效果反馈：本轮成品对应的 generation id，成品卡 👍 据此写 effect_rating="good"
 }
 
 export type PermissionMode = "ask" | "auto_files" | "full" | "plan";
@@ -203,7 +204,8 @@ export function useAgentChat(opts: AgentChatOptions) {
               setMessages((prev) => [
                 ...prev,
                 { role: "assistant", content: finalText, reasoning: reasoningText || undefined,
-                  steps: steps.length ? [...steps] : undefined, approval, question, memoryRefs: info.memory_refs },
+                  steps: steps.length ? [...steps] : undefined, approval, question, memoryRefs: info.memory_refs,
+                  generationId: info.generation_id },
               ]);
             }
             if (info?.conversation_id) setConversationId(info.conversation_id);

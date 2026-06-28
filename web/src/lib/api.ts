@@ -484,6 +484,12 @@ class ApiClient {
       "DELETE", `/api/v1/agent/recent-artifacts/${encodeURIComponent(id)}`);
   }
 
+  // P1-4 效果反馈：给成品打 👍good/👎bad，写 effect_rating（好评喂 RAG 召回/brand voice，闭环不空转）
+  rateGeneration(id: string, rating: "good" | "bad", note?: string) {
+    return this.request<{ ok: boolean; id: string; rating: string }>(
+      "POST", `/api/v1/agent/recent-artifacts/${encodeURIComponent(id)}/rating`, { rating, note });
+  }
+
   // 桌面端：最近删除（轻量找回）
   listDeletedItems(limit = 30) {
     return this.request<{ items: RecentArtifact[] }>(

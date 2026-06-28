@@ -763,6 +763,7 @@ export function DesktopChatShell({
           onSaveArtifact={onSaveArtifact}
           onExportArtifact={onExportArtifact}
           onFollowUp={onFollowUp}
+          onRate={(id, r) => { void api.rateGeneration(id, r); }}
           billiardsMode={knowledgePacks.includes("billiards")}
         />
       )}

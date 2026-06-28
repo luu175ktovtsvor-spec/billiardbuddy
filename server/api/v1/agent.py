@@ -801,6 +801,11 @@ class DeletedItemAction(BaseModel):
     kind: str | None = None
 
 
+class ArtifactRating(BaseModel):
+    rating: str            # "good"(👍) | "bad"(👎)
+    note: str | None = None
+
+
 class SavedArtifactIn(BaseModel):
     title: str | None = None
     content: str
@@ -878,6 +883,48 @@ async def delete_recent_artifact(
     )
     await db.commit()
     return {"ok": True, "id": artifact_id}
+
+
+@router.post("/recent-artifacts/{artifact_id}/rating")
+async def rate_recent_artifact(
+    artifact_id: str,
+    body: ArtifactRating,
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+):
+    """给单条成品打效果反馈(👍good / 👎bad):写 effect_rating + effect_note + rated_at。
+
+    P1-4 效果闭环:好评成品下游(RAG 召回 / brand voice / dashboard 好评墙)早已只读消费
+    effect_rating=="good",全仓却没有写入口。这里补上,只改本店成品(多租户),不弹钱味文案。
+    """
+    import uuid as _uuid
+    from datetime import datetime, timezone
+    from sqlalchemy import update as _update
+    from models.generation import Generation as _Gen
+
+    rating = (body.rating or "").strip().lower()
+    if rating not in ("good", "bad"):
+        raise AIServiceError("评价只能是 good 或 bad")
+    try:
+        gid = _uuid.UUID(artifact_id)
+    except (ValueError, TypeError):
+        raise AIServiceError("作品 id 不对")
+    result = await db.execute(
+        _update(_Gen).where(
+            _Gen.store_id == store.id,
+            _Gen.id == gid,
+            _Gen.is_deleted == False,  # noqa: E712
+        ).values(
+            effect_rating=rating,
+            effect_note=(body.note or None),
+            rated_at=datetime.now(timezone.utc),
+        )
+    )
+    await db.commit()
+    if not result.rowcount:
+        raise AIServiceError("没找到这条成品")
+    return {"ok": True, "id": artifact_id, "rating": rating}
 
 
 @router.post("/deleted-items/restore")
