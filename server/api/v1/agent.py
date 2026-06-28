@@ -1455,6 +1455,7 @@ async def _stream_agent_events(body: AgentChatRequest, user: User, store, db):
         db=db, store=store, user=user, allowed_paths=body.selected_files or [],
         permission_mode=perm_mode, full_disk_access=full_disk,
         working_dir=body.working_dir,
+        conversation_id=body.conversation_id,
         auto_spend_limit=getattr(store, "agent_auto_spend_limit", None),
         model_ctx_window=_model_ctx_window(),
         token_budget=_agent_token_budget(),
@@ -1757,6 +1758,7 @@ async def agent_execute(
         db=db, store=store, user=user, allowed_paths=body.selected_files or [],
         full_disk_access=full_disk,
         working_dir=body.working_dir,
+        conversation_id=body.conversation_id,
         auto_spend_limit=getattr(store, "agent_auto_spend_limit", None),
         model_ctx_window=_model_ctx_window(),  # SH-6：同 chat，配了环境变量才启用
     )
