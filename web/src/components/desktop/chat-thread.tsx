@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, FileEdit, Terminal, ChevronRight, Brain, RotateCcw, ClipboardList, Save, MessageSquareText, Megaphone, ClipboardCheck, Paperclip, Download } from "lucide-react";
+import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, FileEdit, Terminal, ChevronRight, Brain, RotateCcw, ClipboardList, Save, MessageSquareText, Megaphone, ClipboardCheck, Paperclip, Download, ThumbsUp } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
@@ -633,6 +633,22 @@ function MacQuestionCard({ q, onAnswer }: { q: QuestionData; onAnswer: (label: s
   );
 }
 
+/** P1-4 成品好评:点一下写 effect_rating="good"(喂 RAG 召回/brand voice),自管已评状态,不弹钱味文案。 */
+function RateGoodButton({ generationId, onRate }: { generationId: string; onRate: (id: string, rating: "good" | "bad") => void }) {
+  const [rated, setRated] = useState(false);
+  return (
+    <button
+      type="button"
+      disabled={rated}
+      onClick={() => { onRate(generationId, "good"); setRated(true); }}
+      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#86868b] transition hover:bg-[#10a37f]/10 hover:text-[#10a37f] active:scale-[0.97] disabled:text-[#10a37f] disabled:hover:bg-transparent dark:text-[#8a8c93]"
+      title="标记好评：以后多照这个来"
+    >
+      <ThumbsUp className="h-3.5 w-3.5" /> {rated ? "记下了" : "好评"}
+    </button>
+  );
+}
+
 export function DesktopChatThread({
   messages,
   draft,
@@ -654,6 +670,7 @@ export function DesktopChatThread({
   onSaveArtifact,
   onExportArtifact,
   onFollowUp,
+  onRate,
   billiardsMode,
 }: {
   messages: ChatMessage[];
@@ -676,6 +693,7 @@ export function DesktopChatThread({
   onSaveArtifact?: (content: string) => void;
   onExportArtifact?: (content: string) => void;
   onFollowUp?: (prompt: string) => void;
+  onRate?: (generationId: string, rating: "good" | "bad") => void;
   billiardsMode?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -846,6 +864,9 @@ export function DesktopChatThread({
                       )}
                       <div className="flex flex-wrap items-center gap-1.5">
                         <CopyButton text={m.content} label="复制到微信" />
+                        {onRate && m.generationId && !generating && (
+                          <RateGoodButton generationId={m.generationId} onRate={onRate} />
+                        )}
                         {onPreview && (
                           <button
                             type="button"
