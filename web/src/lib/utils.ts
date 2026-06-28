@@ -118,7 +118,7 @@ export function getErrorMessage(err: unknown): string {
 export function humanizeErrorText(msg: string | undefined | null): string {
   const m = (msg || "").trim();
   if (!m) return "刚才没成功，请稍后再试一次。";
-  const technical = /Traceback|Exception|Error:|\bat \w+[.(]|https?:\/\/|api[_ ]?key|base[_ ]?url|\bsk-|0x[0-9a-fA-F]{4,}|NoneType|KeyError|TypeError|\[object |status\s*\d{3}|\b5\d{2}\b/i;
+  const technical = /Traceback|Exception|Error:|\bat \w+[.(]|https?:\/\/|api[_ ]?key|base[_ ]?url|\bsk-|0x[0-9a-fA-F]{4,}|NoneType|KeyError|TypeError|\[object |status\s*\d{3}|\b5\d{2}\b|timeout of \d+|ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|ENOENT|EPIPE|socket hang up|fetch failed|AbortError|NetworkError/i;
   if (technical.test(m)) return "刚才没成功，请稍后再试一次；如果一直不行，可以换个说法或到设置里看看。";
   return m;
 }
