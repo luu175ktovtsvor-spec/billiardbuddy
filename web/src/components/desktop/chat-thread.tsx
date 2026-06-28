@@ -654,6 +654,7 @@ export function DesktopChatThread({
   onSaveArtifact,
   onExportArtifact,
   onFollowUp,
+  billiardsMode,
 }: {
   messages: ChatMessage[];
   draft: string;
@@ -675,6 +676,7 @@ export function DesktopChatThread({
   onSaveArtifact?: (content: string) => void;
   onExportArtifact?: (content: string) => void;
   onFollowUp?: (prompt: string) => void;
+  billiardsMode?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -803,7 +805,7 @@ export function DesktopChatThread({
                   )}
                   {m.content && !m.kind && !posterPreviewFromText(m.content) && (
                     <div className="space-y-1.5">
-                      {onFollowUp && !generating && billiardsFollowUpActions(m.content).length > 0 && (
+                      {onFollowUp && billiardsMode && !generating && billiardsFollowUpActions(m.content).length > 0 && (
                         <div className="flex flex-wrap items-center gap-1.5">
                           {billiardsFollowUpActions(m.content).map((action) => (
                             <button

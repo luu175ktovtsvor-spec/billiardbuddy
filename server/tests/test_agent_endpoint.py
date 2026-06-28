@@ -247,3 +247,37 @@ def test_billiards_prompt_forbids_narrating_internal_process():
     assert "知识读完了" in out  # 反例被显式列为"别说"
     # 通用模式不该带这条台球人设里的指令
     assert "别念叨内部过程" not in compose_agent_system_prompt("", "", billiards_mode=False)
+
+
+def test_store_columns_reach_prompt_without_operation_profile():
+    """DUAL-13/STORE-2：桌面没结构化 operation_profile，但设置/快速补全写入的店名/城市/台数等稳定列
+    也要进台球提示——否则 agent 连这家店叫啥都不知道。"""
+    from types import SimpleNamespace
+    from services.store_profile_service import render_operation_profile_context
+
+    store = SimpleNamespace(
+        operation_profile=None, name="星耀台球(城东店)", city="杭州", district="江干区",
+        business_hours="10:00-次日2:00", table_count=26, table_types="九球台·斯诺克台",
+        coach_count=8, has_coaching=True, has_tournament=True,
+    )
+    out = render_operation_profile_context(store)
+    assert "星耀台球(城东店)" in out and "杭州" in out and "26张" in out and "助教人数：8人" in out
+    # 经台球提示注入(profile_text 会过 stale-name 清洗)
+    full = compose_agent_system_prompt(out, "", billiards_mode=True)
+    assert "星耀台球(城东店)" in full and "26张" in full
+
+    # 默认占位店名 + 全空 → 不注入(不污染)
+    empty = SimpleNamespace(operation_profile=None, name="我的球房", city=None, district=None,
+                            business_hours=None, table_count=None, table_types=None,
+                            coach_count=None, has_coaching=False, has_tournament=False)
+    assert render_operation_profile_context(empty) == ""
+
+
+def test_billiards_prompt_supports_role_as_viewpoint():
+    """DUAL-9/10/12：角色只是回答视角不是权限——按店长/前厅/教练视角产出、不因角色拒绝、可跨视角。"""
+    out = compose_agent_system_prompt("", "", billiards_mode=True)
+    assert "角色只是" in out and "回答视角" in out
+    assert "不因为" in out and "拒绝" in out
+    assert "跨视角" in out
+    # 通用模式不带
+    assert "回答视角" not in compose_agent_system_prompt("", "", billiards_mode=False)
