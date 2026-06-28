@@ -85,7 +85,7 @@ export function DesktopSidebar({
       <div className="mt-3 flex-1 overflow-y-auto px-1.5">
         {groups.map((g) => (
           <div key={g.name} className="mb-2.5">
-            <div className="mb-1 px-2 font-mono text-[10px] uppercase tracking-wider text-[#a1a1a6] dark:text-[#54565d]">{g.name}</div>
+            <div className="mb-1 px-2 text-[11px] font-medium tracking-wide text-[#a1a1a6] dark:text-[#54565d]">{g.name}</div>
             {g.items.map((c) => (
               <div
                 key={c.id}
