@@ -11,11 +11,14 @@ from api.v1.agent import (
     _GENERIC_BASE_PROMPT,
     _SAFETY_REDLINE,
     _BILLIARDS_PERSONA,
+    _BILLIARDS_P0A_BOUNDARY,
     _DESKTOP_FILE_OPS_HINT,
     _WEB_AGENT_TOOLS_HINT,
     _today_line,
     compose_agent_system_prompt,
+    _recent_artifact_item,
 )
+from services.memory_service import Memory, filter_memories_for_mode, format_memories_for_prompt
 
 
 def test_billiards_mode_includes_profile_and_brain():
@@ -29,12 +32,34 @@ def test_billiards_mode_includes_profile_and_brain():
     assert "李伟" in out
 
 
-def test_default_general_omits_profile_keeps_brain():
-    # M1：默认通用(没 @ 台球)——门店画像(台球档案)不注入；店脑记忆(长期记忆)注入，让通用助手越用越懂你。
-    out = compose_agent_system_prompt("门店定位：社区店", "请记住：老板叫李伟")
+def test_default_general_omits_profile_keeps_general_memory_only():
+    # 默认通用(没 @ 台球)——门店画像不注入；台球门店事实也不应污染普通任务。
+    out = compose_agent_system_prompt("门店定位：社区店", "请记住：老板叫李伟，说话喜欢简洁")
     assert "社区店" not in out          # 门店画像 → 通用不注入（守通用定位）
-    assert "李伟" in out                # 店脑记忆 → 通用也注入（M1 治"通用零长期记忆"）
+    assert "李伟" in out                # 非台球领域的长期用户偏好/事实仍可注入
     assert _BILLIARDS_PERSONA not in out
+
+
+def test_general_memory_filter_drops_billiards_store_facts():
+    memories = [
+        Memory("semantic", "我店在杭州，26 张台，主做竞技客户", source="manual"),
+        Memory("preference", "老板喜欢回答短一点", source="manual"),
+        Memory("operational", "周赛一般放周五晚上", source="auto"),
+    ]
+    general = filter_memories_for_mode(memories, billiards_mode=False)
+    billiards = filter_memories_for_mode(memories, billiards_mode=True)
+
+    assert [m.content for m in general] == ["老板喜欢回答短一点"]
+    assert [m.content for m in billiards] == [m.content for m in memories]
+
+    general_prompt = compose_agent_system_prompt(
+        "",
+        format_memories_for_prompt(general, intent="帮我整理下载文件夹"),
+        billiards_mode=False,
+    )
+    assert "老板喜欢回答短一点" in general_prompt
+    assert "26 张台" not in general_prompt
+    assert "周赛" not in general_prompt
 
 
 def test_compose_empty_general_is_base_redline_web_today():
@@ -100,3 +125,104 @@ def test_safety_redline_always_present_even_in_general():
     out = compose_agent_system_prompt("", "")
     assert _SAFETY_REDLINE in out
     assert "实际性交易" in out and "组织赌博" in out
+
+
+def test_billiards_p0a_boundary_frontloads_risk_and_store_name_rules():
+    out = compose_agent_system_prompt("", "", billiards_mode=True)
+    assert _BILLIARDS_P0A_BOUNDARY in out
+    for word in ("追分", "玩大", "彩头", "抽水", "坐庄"):
+        assert word in out
+    for alternative in ("正规周赛", "技术挑战", "台费优惠", "会员积分"):
+        assert alternative in out
+    assert "[门店名]" in out
+    assert "鑫和台球" in out and "测试球城" in out
+
+
+def test_billiards_mode_enforces_operational_answer_shape():
+    out = compose_agent_system_prompt("", "", billiards_mode=True)
+    assert "先给一句判断" in out
+    assert "3 条以内今晚/明天能做的动作" in out
+    assert "可复制话术" in out
+    assert "最后给下一步" in out
+    assert "不要输出课程式长文" in out
+
+
+def test_general_mode_does_not_inject_billiards_p0a_boundary():
+    out = compose_agent_system_prompt("", "", billiards_mode=False)
+    assert _BILLIARDS_P0A_BOUNDARY not in out
+    assert "追分、玩大、彩头" not in out
+    assert "3 条以内今晚/明天能做的动作" not in out
+
+
+def test_recent_artifact_video_keeps_ratio_duration_and_url():
+    from types import SimpleNamespace
+    from uuid import uuid4
+    from datetime import datetime, timezone
+
+    g = SimpleNamespace(
+        id=uuid4(),
+        type="video",
+        title=None,
+        result="/uploads/videos/demo.mp4",
+        input_params={"prompt": "周赛海报做成同城视频", "ratio": "9:16", "duration": 5},
+        sub_type="9:16",
+        conversation_id=uuid4(),
+        created_at=datetime(2026, 6, 27, tzinfo=timezone.utc),
+    )
+    item = _recent_artifact_item(g)
+
+    assert item["kind"] == "video"
+    assert item["url"] == "/uploads/videos/demo.mp4"
+    assert item["ratio"] == "9:16"
+    assert item["duration"] == 5
+    assert item["subtitle"] == "视频任务"
+
+
+async def test_stream_agent_done_carries_memory_refs(monkeypatch):
+    import api.v1.agent as agent_mod
+    from types import SimpleNamespace
+
+    seen = {}
+
+    async def fake_load_memory(db, store_id, working_dir=None):
+        seen["working_dir"] = working_dir
+        return [Memory("semantic", "我店在杭州，26 张台", source="manual")]
+
+    async def fake_loop(**kwargs):
+        yield {"type": "final", "content": "按你店情况给建议"}
+        yield {"type": "done", "turns": 1, "stopped_reason": "stop", "tokens_used": 0}
+
+    async def noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(agent_mod, "check_quota", noop)
+    monkeypatch.setattr(agent_mod, "load_scoped_store_memory", fake_load_memory)
+    monkeypatch.setattr(agent_mod, "render_operation_profile_context", lambda store: "")
+    monkeypatch.setattr(agent_mod, "run_agent_loop_stream", fake_loop)
+    monkeypatch.setattr(agent_mod, "_persist_agent_chat", noop)
+    monkeypatch.setattr(agent_mod.denial_tracker, "load_into_ctx", lambda ctx, cid: None)
+    monkeypatch.setattr(agent_mod, "build_resilient_text_provider", lambda store: object())
+
+    body = agent_mod.AgentChatRequest(message="帮我写活动文案", working_dir="/tmp/六月报表")
+    events = [
+        e async for e in agent_mod._stream_agent_events(
+            body,
+            SimpleNamespace(id="u1"),
+            SimpleNamespace(id="s1", agent_auto_spend_limit=None),
+            SimpleNamespace(),
+        )
+    ]
+    done = [e for e in events if e["type"] == "done"][0]
+    assert done["memory_refs"] == ["我店在杭州，26 张台"]
+    assert seen["working_dir"] == "/tmp/六月报表"
+
+
+def test_stale_test_store_names_are_sanitized_from_brain_context():
+    out = compose_agent_system_prompt(
+        "",
+        "请记住：鑫和台球在泉州，测试球城常做周赛",
+        billiards_mode=True,
+    )
+    assert "请记住：[门店名]在泉州，[门店名]常做周赛" in out
+    assert "鑫和台球在泉州" not in out
+    assert "测试球城常做周赛" not in out

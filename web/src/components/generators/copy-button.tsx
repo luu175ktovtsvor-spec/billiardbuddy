@@ -6,7 +6,17 @@ import { markdownToPlainText, copyPlainText } from "@/lib/utils";
 
 type CopyState = "idle" | "copied" | "failed";
 
-export function CopyButton({ text }: { text: string }) {
+export function CopyButton({
+  text,
+  label = "一键复制",
+  copiedLabel = "已复制",
+  hint = "去微信粘贴吧",
+}: {
+  text: string;
+  label?: string;
+  copiedLabel?: string;
+  hint?: string;
+}) {
   const [state, setState] = useState<CopyState>("idle");
 
   const handleCopy = async () => {
@@ -32,7 +42,7 @@ export function CopyButton({ text }: { text: string }) {
         {state === "copied" ? (
           <>
             <Check className="h-4 w-4" />
-            已复制
+            {copiedLabel}
           </>
         ) : state === "failed" ? (
           <>
@@ -42,13 +52,13 @@ export function CopyButton({ text }: { text: string }) {
         ) : (
           <>
             <Copy className="h-4 w-4" />
-            一键复制
+            {label}
           </>
         )}
       </button>
       {state === "copied" && (
         <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 px-3 py-1.5 bg-slate-900 text-white text-xs rounded-md whitespace-nowrap z-50" style={{animation: "fadeIn 0.2s ease-in"}}>
-          去微信粘贴吧
+          {hint}
           <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-slate-900 rotate-45" />
         </div>
       )}

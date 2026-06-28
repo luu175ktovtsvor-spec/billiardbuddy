@@ -28,8 +28,27 @@ export interface AgentStreamHandlers {
   onApprovalRequest?: (tool: string, args: Record<string, unknown>, id?: string, token?: string, preview?: string, reason?: ApprovalReason) => void;
   onAskQuestion?: (q: { question: string; options: { label: string; description?: string }[]; multi?: boolean; id?: string }) => void;
   onFinal?: (content: string) => void;
-  onDone?: (info: { turns: number; stopped_reason: string; conversation_id?: string; generation_id?: string }) => void;
+  onDone?: (info: { turns: number; stopped_reason: string; conversation_id?: string; generation_id?: string; task_id?: string; offset?: number; memory_refs?: string[] }) => void;
   onError?: (error: string) => void;
+  onEvent?: (event: Record<string, unknown>) => void;
+}
+
+export interface RecentArtifact {
+  id: string;
+  kind: "poster" | "video" | "content" | "task" | "memory" | "file_change";
+  type: string;
+  title: string;
+  subtitle: string;
+  url?: string | null;
+  content?: string | null;
+  conversation_id?: string | null;
+  created_at?: string | null;
+  ratio?: string | null;
+  duration?: number | null;
+  width?: number | null;
+  height?: number | null;
+  path?: string | null;
+  backup_path?: string | null;
 }
 
 export interface AgentChatPayload {
@@ -46,6 +65,11 @@ export interface AgentChatPayload {
   deep_thinking?: boolean; // F.2 深度思考：true=开/false=关/省略=跟随模型默认（mimo 默认开）
   source_rec_id?: string; // 隐式反馈：本次对话由今日推荐哪一条触发（rec.id）→ 后端落到 generation 做"采纳上浮"
   working_dir?: string; // 本会话工作目录:相对路径默认落它 + 自动接受编辑范围
+}
+
+export interface AgentTaskStartResponse {
+  task_id: string;
+  status: "running" | "done" | "error" | "cancelled" | string;
 }
 
 class ApiClient {
@@ -285,6 +309,34 @@ class ApiClient {
     }
   }
 
+  async startAgentTask(data: AgentChatPayload): Promise<AgentTaskStartResponse> {
+    return this.request<AgentTaskStartResponse>("POST", "/api/v1/agent/tasks", data);
+  }
+
+  async subscribeAgentTask(
+    taskId: string,
+    handlers: AgentStreamHandlers,
+    signal?: AbortSignal,
+    after = -1,
+  ): Promise<void> {
+    const url = `${this.baseUrl}/api/v1/agent/tasks/${encodeURIComponent(taskId)}/events?after=${encodeURIComponent(String(after))}`;
+    try {
+      const res = await fetch(url, { method: "GET", headers: { "Accept": "text/event-stream" }, signal });
+      if (!res.ok) {
+        handlers.onError?.(await this.friendlyStreamError(res));
+        return;
+      }
+      return this._consumeAgentSSEStream(res, handlers);
+    } catch {
+      if (signal?.aborted) return;
+      handlers.onError?.("网络异常，请检查后重试");
+    }
+  }
+
+  async cancelAgentTask(taskId: string): Promise<{ ok: boolean; task_id: string; status: string }> {
+    return this.request("POST", `/api/v1/agent/tasks/${encodeURIComponent(taskId)}/cancel`, {});
+  }
+
   private async _consumeAgentSSEStream(res: Response, handlers: AgentStreamHandlers): Promise<void> {
     const reader = res.body?.getReader();
     if (!reader) {
@@ -304,6 +356,7 @@ class ApiClient {
           if (!line.startsWith("data: ")) continue;
           try {
             const ev = JSON.parse(line.slice(6));
+            handlers.onEvent?.(ev);
             switch (ev.type) {
               case "token": handlers.onToken?.(ev.content || ""); break;
               case "reasoning": handlers.onReasoning?.(ev.content || ""); break;
@@ -313,7 +366,7 @@ class ApiClient {
               case "approval_request": handlers.onApprovalRequest?.(ev.tool, ev.args || {}, ev.id, ev.token, ev.preview, ev.reason); break;
               case "ask_question": handlers.onAskQuestion?.({ question: ev.question || "", options: ev.options || [], multi: ev.multi, id: ev.id }); break;
               case "final": handlers.onFinal?.(ev.content || ""); break;
-              case "done": handlers.onDone?.({ turns: ev.turns, stopped_reason: ev.stopped_reason, conversation_id: ev.conversation_id, generation_id: ev.generation_id }); return;
+              case "done": handlers.onDone?.({ turns: ev.turns, stopped_reason: ev.stopped_reason, conversation_id: ev.conversation_id, generation_id: ev.generation_id, task_id: ev.task_id, offset: ev.offset, memory_refs: Array.isArray(ev.memory_refs) ? ev.memory_refs : undefined }); return;
               case "error": handlers.onError?.(ev.error || "生成出错，请重试"); break;
             }
           } catch {
@@ -381,11 +434,17 @@ class ApiClient {
   async getStoreMemory(): Promise<StoreMemoryItem[]> {
     return this.request<StoreMemoryItem[]>("GET", "/api/v1/store-memory");
   }
-  async addStoreMemory(content: string, type = "semantic"): Promise<StoreMemoryItem> {
-    return this.request<StoreMemoryItem>("POST", "/api/v1/store-memory", { content, type });
+  async addStoreMemory(content: string, type = "semantic", workingDir?: string | null): Promise<StoreMemoryItem> {
+    return this.request<StoreMemoryItem>("POST", "/api/v1/store-memory", { content, type, working_dir: workingDir || undefined });
+  }
+  async addStoreMemoryCandidate(content: string, type = "semantic", workingDir?: string | null): Promise<StoreMemoryItem> {
+    return this.request<StoreMemoryItem>("POST", "/api/v1/store-memory/candidates", { content, type, working_dir: workingDir || undefined });
   }
   async updateStoreMemory(id: string, content: string): Promise<StoreMemoryItem> {
     return this.request<StoreMemoryItem>("PATCH", `/api/v1/store-memory/${id}`, { content });
+  }
+  async confirmStoreMemory(id: string): Promise<StoreMemoryItem> {
+    return this.request<StoreMemoryItem>("POST", `/api/v1/store-memory/${id}/confirm`, {});
   }
   async deleteStoreMemory(id: string): Promise<void> {
     await this.request("DELETE", `/api/v1/store-memory/${id}`);
@@ -408,6 +467,41 @@ class ApiClient {
       "GET", "/api/v1/agent/conversations");
   }
 
+  // 桌面端：最近作品/最近任务（轻量找回，不是完整素材库）
+  listRecentArtifacts(limit = 12) {
+    return this.request<{ items: RecentArtifact[] }>(
+      "GET", `/api/v1/agent/recent-artifacts?limit=${encodeURIComponent(String(limit))}`);
+  }
+
+  // 桌面端：用户明确点“保存成品”后，把普通回答/诊断/文案放进最近作品
+  saveRecentArtifact(input: { title?: string; content: string; conversation_id?: string | null; kind?: string }) {
+    return this.request<RecentArtifact>("POST", "/api/v1/agent/saved-artifacts", input);
+  }
+
+  // 桌面端：把单条最近作品移入最近删除（可恢复，彻底删除走 deleted-items/purge）
+  deleteRecentArtifact(id: string) {
+    return this.request<{ ok: boolean; id: string }>(
+      "DELETE", `/api/v1/agent/recent-artifacts/${encodeURIComponent(id)}`);
+  }
+
+  // 桌面端：最近删除（轻量找回）
+  listDeletedItems(limit = 30) {
+    return this.request<{ items: RecentArtifact[] }>(
+      "GET", `/api/v1/agent/deleted-items?limit=${encodeURIComponent(String(limit))}`);
+  }
+
+  restoreDeletedItem(item: { id?: string | null; conversation_id?: string | null; kind?: string | null }) {
+    return this.request<{ ok: boolean }>("POST", "/api/v1/agent/deleted-items/restore", item);
+  }
+
+  purgeDeletedItem(item: { id?: string | null; conversation_id?: string | null; kind?: string | null }) {
+    return this.request<{ ok: boolean }>("POST", "/api/v1/agent/deleted-items/purge", item);
+  }
+
+  clearDeletedItems() {
+    return this.request<{ ok: boolean; removed_file_backups?: number }>("POST", "/api/v1/agent/deleted-items/clear", {});
+  }
+
   // 桌面端：取某个 agent 会话的全部消息（点开回看）
   getAgentConversation(id: string) {
     return this.request<{ conversation_id: string; messages: { role: "user" | "assistant"; content: string }[] }>(
@@ -421,9 +515,16 @@ class ApiClient {
   }
 
   // 桌面端：取 AI 改过的本机文件的"改前/改后"对比数据（B.2 右侧 diff 视图）
-  fileDiff(path: string) {
-    return this.request<{ ok: boolean; path?: string; old?: string; new?: string; error?: string }>(
-      "GET", `/api/v1/agent/file-diff?path=${encodeURIComponent(path)}`);
+  fileDiff(path: string, backupPath?: string | null) {
+    const q = new URLSearchParams({ path });
+    if (backupPath) q.set("backup_path", backupPath);
+    return this.request<{ ok: boolean; path?: string; backup_path?: string | null; old?: string; new?: string; error?: string }>(
+      "GET", `/api/v1/agent/file-diff?${q.toString()}`);
+  }
+
+  fileRestore(path: string, backupPath?: string | null) {
+    return this.request<{ ok: boolean; path?: string; backup_path?: string; current_backup_path?: string; error?: string }>(
+      "POST", "/api/v1/agent/file-restore", { path, backup_path: backupPath });
   }
 
   // 桌面端：列出已安装技能(Skill)，供 `/` 命令面板展示

@@ -8,7 +8,7 @@
  * - 审批走 /agent/execute，确认后回灌结果 + 可能的续接审批卡
  * 调用同一个平台无关管道 api.streamAgent / api.executeAgentTool。
  */
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, type ApprovalReason } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
@@ -23,6 +23,14 @@ export interface ToolStep {
   knowledgeUsed?: string[]; // B-2「依据可见」：本次注入的知识【大白话name】，成品卡显示"依据：…"
   progress?: string; // 命令边跑边显示：工具执行中实时累进的输出（run_command 终端块据此实时渲染）
   done: boolean;
+}
+
+export interface GeneratedImageArtifact {
+  imageUrl: string;
+  title?: string;
+  ratio?: string;
+  width?: number;
+  height?: number;
 }
 
 export interface ApprovalState {
@@ -44,6 +52,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   reasoning?: string; // F.1：本轮模型的思考过程（reasoning_content），灰斜体可折叠展示，默认收起
+  memoryRefs?: string[]; // 本轮回答引用的门店资料摘要，给用户可见可改
   steps?: ToolStep[];
   approval?: ApprovalState;
   question?: QuestionData; // AskUserQuestion：管家给老板的选项，老板点选后作为下一句消息发回
@@ -62,6 +71,26 @@ export interface AgentChatOptions {
   goal?: string; // /goal 目标驱动：本次会话目标条件
   deepThinking?: boolean; // F.2 深度思考开关：true=开/false=关/undefined=跟随模型默认
   workingDir?: string | null; // 本会话工作目录(选/新建的文件夹)
+  onGeneratedImage?: (item: GeneratedImageArtifact) => void;
+}
+
+const IMAGE_TOOLS = new Set(["make_poster", "generate_image"]);
+const ACTIVE_TASK_STORAGE_KEY = "agent_active_task";
+
+function imageArtifactFromToolResult(tool: string, content: string): GeneratedImageArtifact | null {
+  if (!IMAGE_TOOLS.has(tool) || !content) return null;
+  const md = content.match(/!\[([^\]]*)\]\(([^)\s]+)\)/);
+  const imageUrl = md?.[2] || content.match(/(https?:\/\/[^\s)"']+\.(?:png|jpg|jpeg|webp|gif)|\/uploads\/[^\s)"']+\.(?:png|jpg|jpeg|webp|gif)|[^\s)"']+\.(?:png|jpg|jpeg|webp|gif))/i)?.[1];
+  if (!imageUrl) return null;
+  const ratio = content.match(/(?:尺寸|比例)：\s*([0-9]+:[0-9]+)/)?.[1];
+  const dims = content.match(/([0-9]{2,5})x([0-9]{2,5})/i);
+  return {
+    imageUrl,
+    title: md?.[1] || (tool === "make_poster" ? "海报预览" : "图片预览"),
+    ratio,
+    width: dims ? Number(dims[1]) : undefined,
+    height: dims ? Number(dims[2]) : undefined,
+  };
 }
 
 export function useAgentChat(opts: AgentChatOptions) {
@@ -73,15 +102,185 @@ export function useAgentChat(opts: AgentChatOptions) {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [executingIdx, setExecutingIdx] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const activeTaskRef = useRef<string | null>(null);
+  const lastOffsetRef = useRef(-1);
   const lastUserMsgRef = useRef<string | null>(null);
+  const stopNoticeTaskRef = useRef<string | null>(null);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  const conversationIdRef = useRef(conversationId);
+  conversationIdRef.current = conversationId;
 
   // 让异步回调里始终读到最新的 opts（权限/选定文件），而不是闭包里的旧值
   const optsRef = useRef(opts);
   optsRef.current = opts;
 
-  const send = useCallback(async (text: string, sourceRecId?: string) => {
+  const pushStopNotice = useCallback((taskId: string | null) => {
+    if (taskId && stopNoticeTaskRef.current === taskId) return;
+    stopNoticeTaskRef.current = taskId || "__manual__";
+    setMessages((prev) => [...prev, { role: "assistant", content: "已停止这次任务。需要继续的话，可以直接重新说要做什么。" }]);
+  }, []);
+
+  const clearActiveTaskSnapshot = useCallback(() => {
+    try { sessionStorage.removeItem(ACTIVE_TASK_STORAGE_KEY); } catch { /* 忽略 */ }
+  }, []);
+
+  const saveActiveTaskSnapshot = useCallback((data: { taskId: string; userMessage: string; offset?: number; conversationId?: string | null }) => {
+    try {
+      sessionStorage.setItem(ACTIVE_TASK_STORAGE_KEY, JSON.stringify({
+        task_id: data.taskId,
+        user_message: data.userMessage,
+        offset: typeof data.offset === "number" ? data.offset : -1,
+        conversation_id: data.conversationId || conversationIdRef.current || null,
+      }));
+    } catch { /* 忽略 */ }
+  }, []);
+
+  const subscribeToTask = useCallback(async (taskId: string, userMessage: string, after = -1, controller?: AbortController, recovered = false) => {
+    const ctrl = controller || new AbortController();
+    abortRef.current = ctrl;
+    activeTaskRef.current = taskId;
+    lastOffsetRef.current = after;
+    setGenerating(true);
+
+    const steps: ToolStep[] = [];
+    let finalText = "";
+    let reasoningText = "";
+    let approval: ApprovalState | undefined;
+    let question: QuestionData | undefined;
+
+    try {
+      if (recovered) {
+        setDraft("正在接回刚才没完成的任务…");
+      }
+      await api.subscribeAgentTask(
+        taskId,
+        {
+          onEvent: (ev) => {
+            const off = typeof ev.offset === "number" ? ev.offset : undefined;
+            if (off !== undefined) {
+              lastOffsetRef.current = Math.max(lastOffsetRef.current, off);
+              saveActiveTaskSnapshot({ taskId, userMessage, offset: lastOffsetRef.current });
+            }
+          },
+          onToken: (t) => setDraft((prev) => (recovered && prev === "正在接回刚才没完成的任务…" ? "" : prev) + t),
+          onReasoning: (c) => { reasoningText += c; setReasoningDraft((prev) => prev + c); },
+          onToolCall: (tool, args, id) => {
+            steps.push({ tool, args, id, done: false });
+            setLiveSteps([...steps]);
+          },
+          onToolProgress: (_tool, id, chunk) => {
+            const st = id ? steps.find((s) => s.id === id) : steps[steps.length - 1];
+            if (st) {
+              st.progress = (st.progress || "") + chunk;
+              setLiveSteps([...steps]);
+            }
+          },
+          onToolResult: (_tool, content, id, knowledgeUsed) => {
+            const st = id ? steps.find((s) => s.id === id) : steps[steps.length - 1];
+            if (st) {
+              st.done = true;
+              st.result = content;
+              if (knowledgeUsed && knowledgeUsed.length) st.knowledgeUsed = knowledgeUsed;
+              setLiveSteps([...steps]);
+            }
+            const image = imageArtifactFromToolResult(_tool, content);
+            if (image) optsRef.current.onGeneratedImage?.(image);
+          },
+          onApprovalRequest: (tool, args, _id, token, preview, reason) => {
+            approval = { tool, args, token, preview, reason, status: "pending" };
+          },
+          onAskQuestion: (q) => {
+            question = { question: q.question, options: q.options, multi: q.multi };
+          },
+          onFinal: (content) => {
+            finalText = content;
+          },
+          onDone: (info) => {
+            if (info.stopped_reason === "cancelled") {
+              pushStopNotice(info.task_id || taskId);
+            } else if (info.stopped_reason !== "error") {
+              setMessages((prev) => [
+                ...prev,
+                { role: "assistant", content: finalText, reasoning: reasoningText || undefined,
+                  steps: steps.length ? [...steps] : undefined, approval, question, memoryRefs: info.memory_refs },
+              ]);
+            }
+            if (info?.conversation_id) setConversationId(info.conversation_id);
+            activeTaskRef.current = null;
+            clearActiveTaskSnapshot();
+            setDraft("");
+            setReasoningDraft("");
+            setLiveSteps([]);
+          },
+          onError: (m) => {
+            if (ctrl.signal.aborted) return;
+            const salvaged = steps.length > 0 || !!approval || !!question || !!finalText.trim();
+            setMessages((prev) => {
+              const next: ChatMessage[] = [...prev];
+              if (salvaged) {
+                next.push({
+                  role: "assistant",
+                  content: finalText,
+                  reasoning: reasoningText || undefined,
+                  steps: steps.length ? [...steps] : undefined,
+                  approval,
+                  question,
+                });
+              }
+              next.push({ role: "assistant", content: `⚠️ ${m}`, error: true });
+              return next;
+            });
+            activeTaskRef.current = null;
+            clearActiveTaskSnapshot();
+            setDraft("");
+            setReasoningDraft("");
+            setLiveSteps([]);
+          },
+        },
+        ctrl.signal,
+        after,
+      );
+    } catch (e) {
+      if (!ctrl.signal.aborted) {
+        setMessages((prev) => [...prev, { role: "assistant", content: `⚠️ ${getErrorMessage(e)}`, error: true }]);
+        activeTaskRef.current = null;
+        clearActiveTaskSnapshot();
+        setDraft("");
+        setReasoningDraft("");
+        setLiveSteps([]);
+      }
+    } finally {
+      if (!ctrl.signal.aborted) setGenerating(false);
+    }
+  }, [clearActiveTaskSnapshot, pushStopNotice, saveActiveTaskSnapshot]);
+
+  useEffect(() => {
+    let raw: string | null = null;
+    try { raw = sessionStorage.getItem(ACTIVE_TASK_STORAGE_KEY); } catch { raw = null; }
+    if (!raw) return;
+    try {
+      const data = JSON.parse(raw) as { task_id?: string; user_message?: string; offset?: number; conversation_id?: string | null };
+      if (!data.task_id || !data.user_message) {
+        clearActiveTaskSnapshot();
+        return;
+      }
+      setMessages((prev) => prev.length ? prev : [{ role: "user", content: data.user_message || "继续刚才的任务" }]);
+      if (data.conversation_id) setConversationId(data.conversation_id);
+      setDraft("");
+      setReasoningDraft("");
+      setLiveSteps([]);
+      const controller = new AbortController();
+      // 页面刷新后本地 draft/steps 已经丢了，必须从头重放后端缓存事件来重建完整回答。
+      // offset 只用于当前页面记录进度，不用于刷新恢复，否则可能只收到 done，落成空消息。
+      void subscribeToTask(data.task_id, data.user_message, -1, controller, true);
+      return () => controller.abort();
+    } catch {
+      clearActiveTaskSnapshot();
+    }
+  }, [clearActiveTaskSnapshot, subscribeToTask]);
+
+  const send = useCallback(async (text: string, sourceRecId?: string, overrides?: { selectedFiles?: string[] }) => {
     const msg = text.trim();
     if (!msg || generating) return;
     const o = optsRef.current;
@@ -105,103 +304,39 @@ export function useAgentChat(opts: AgentChatOptions) {
       setGenerating(true);
       const controller = new AbortController();
       abortRef.current = controller;
-
-      const steps: ToolStep[] = [];
-      let finalText = "";
-      let reasoningText = "";
-      let approval: ApprovalState | undefined;
-      let question: QuestionData | undefined;
+      activeTaskRef.current = null;
+      stopNoticeTaskRef.current = null;
+      lastOffsetRef.current = -1;
 
       try {
-        await api.streamAgent(
-          {
-            message,
-            history,
-            conversation_id: conversationId,
-            selected_files: o.selectedFiles?.length ? o.selectedFiles : undefined,
-            permission_mode: o.permissionMode,
-            full_disk_access: o.fullDisk ? true : undefined,
-            knowledge_packs: o.knowledgePacks?.length ? o.knowledgePacks : undefined,
-            output_style: o.outputStyle || undefined,
-            goal: o.goal || undefined,
-            deep_thinking: o.deepThinking,
-            source_rec_id: recId,
-            working_dir: o.workingDir || undefined,
-          },
-          {
-            onToken: (t) => setDraft((prev) => prev + t),
-            onReasoning: (c) => { reasoningText += c; setReasoningDraft((prev) => prev + c); },
-            onToolCall: (tool, args, id) => {
-              steps.push({ tool, args, id, done: false });
-              setLiveSteps([...steps]);
-            },
-            onToolProgress: (_tool, id, chunk) => {
-              // 命令边跑边显示：把实时输出片段累进对应步骤，终端块据此滚动更新
-              const st = id ? steps.find((s) => s.id === id) : steps[steps.length - 1];
-              if (st) {
-                st.progress = (st.progress || "") + chunk;
-                setLiveSteps([...steps]);
-              }
-            },
-            onToolResult: (_tool, content, id, knowledgeUsed) => {
-              // 按 id 定位回填——不能盲取末尾：审批工具先发占位结果，盲取会覆盖成品卡
-              const st = id ? steps.find((s) => s.id === id) : steps[steps.length - 1];
-              if (st) {
-                st.done = true;
-                st.result = content;
-                if (knowledgeUsed && knowledgeUsed.length) st.knowledgeUsed = knowledgeUsed;
-                setLiveSteps([...steps]);
-              }
-            },
-            onApprovalRequest: (tool, args, _id, token, preview, reason) => {
-              approval = { tool, args, token, preview, reason, status: "pending" };
-            },
-            onAskQuestion: (q) => {
-              question = { question: q.question, options: q.options, multi: q.multi };
-            },
-            onFinal: (content) => {
-              finalText = content;
-            },
-            onDone: (info) => {
-              if (info.stopped_reason !== "error") {
-                setMessages((prev) => [
-                  ...prev,
-                  { role: "assistant", content: finalText, reasoning: reasoningText || undefined,
-                    steps: steps.length ? [...steps] : undefined, approval, question },
-                ]);
-              }
-              if (info?.conversation_id) setConversationId(info.conversation_id);
-              setDraft("");
-              setReasoningDraft("");
-              setLiveSteps([]);
-            },
-            onError: (m) => {
-              if (controller.signal.aborted) return;
-              // 流在 done 前断开时，已攒到的 steps/审批/提问/正文不能直接丢——
-              // 先把这些已生成内容落成一条正常 assistant 消息（成品卡/审批卡照常可用），再追加一条错误提示。
-              const salvaged = steps.length > 0 || !!approval || !!question || !!finalText.trim();
-              setMessages((prev) => {
-                const next: ChatMessage[] = [...prev];
-                if (salvaged) {
-                  next.push({
-                    role: "assistant",
-                    content: finalText,
-                    reasoning: reasoningText || undefined,
-                    steps: steps.length ? [...steps] : undefined,
-                    approval,
-                    question,
-                  });
-                }
-                next.push({ role: "assistant", content: `⚠️ ${m}`, error: true });
-                return next;
-              });
-              setDraft("");
-              setReasoningDraft("");
-              setLiveSteps([]);
-            },
-          },
-          controller.signal,
-        );
+        const payload = {
+          message,
+          history,
+          conversation_id: conversationId,
+          selected_files: overrides?.selectedFiles?.length
+            ? overrides.selectedFiles
+            : o.selectedFiles?.length ? o.selectedFiles : undefined,
+          permission_mode: o.permissionMode,
+          full_disk_access: o.fullDisk ? true : undefined,
+          knowledge_packs: o.knowledgePacks?.length ? o.knowledgePacks : undefined,
+          output_style: o.outputStyle || undefined,
+          goal: o.goal || undefined,
+          deep_thinking: o.deepThinking,
+          source_rec_id: recId,
+          working_dir: o.workingDir || undefined,
+        };
+        const task = await api.startAgentTask(payload);
+        saveActiveTaskSnapshot({ taskId: task.task_id, userMessage: message, offset: -1, conversationId });
+        await subscribeToTask(task.task_id, message, lastOffsetRef.current, controller);
+      } catch (e) {
+        if (!controller.signal.aborted) {
+          setMessages((prev) => [...prev, { role: "assistant", content: `⚠️ ${getErrorMessage(e)}`, error: true }]);
+          activeTaskRef.current = null;
+          clearActiveTaskSnapshot();
+          setDraft("");
+          setReasoningDraft("");
+          setLiveSteps([]);
+        }
       } finally {
         if (!controller.signal.aborted) setGenerating(false);
       }
@@ -271,20 +406,35 @@ export function useAgentChat(opts: AgentChatOptions) {
   }, [generating]);
 
   const stop = useCallback(() => {
+    const taskId = activeTaskRef.current;
+    if (taskId) api.cancelAgentTask(taskId).catch(() => {});
+    activeTaskRef.current = null;
+    clearActiveTaskSnapshot();
     abortRef.current?.abort();
     setGenerating(false);
-  }, []);
+    setDraft("");
+    setReasoningDraft("");
+    setLiveSteps([]);
+    pushStopNotice(taskId);
+  }, [clearActiveTaskSnapshot, pushStopNotice]);
 
   // 点开历史会话：加载其消息 + 设 conversationId（后续可在此基础上续接）
   const loadConversation = useCallback((id: string, msgs: ChatMessage[]) => {
+    if (generating || activeTaskRef.current) {
+      setMessages((prev) => [...prev, { role: "assistant", content: "当前任务还在跑，先别切换会话。等它完成后再打开历史记录；要停掉就点「中断」。" }]);
+      return false;
+    }
     abortRef.current?.abort();
+    activeTaskRef.current = null;
+    clearActiveTaskSnapshot();
     setMessages(msgs);
     setConversationId(id);
     setDraft("");
     setReasoningDraft("");
     setLiveSteps([]);
     setGenerating(false);
-  }, []);
+    return true;
+  }, [clearActiveTaskSnapshot, generating]);
 
   // 往会话里塞一条本地 assistant 消息（如 /help 的说明），不走后端。
   const pushAssistantMessage = useCallback((content: string) => {

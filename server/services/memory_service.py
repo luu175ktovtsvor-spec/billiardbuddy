@@ -11,6 +11,7 @@
 import hashlib
 import json
 import logging
+import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -35,6 +36,22 @@ class Memory:
     source: str = "auto"  # manual=老板亲定的店规矩(AI 绝不删改、注入最高优先) | auto=AI 学到
 
 
+def memory_reference_labels(memories: list[Memory], intent=None, limit: int = 5) -> list[str]:
+    """给前端展示的“用了这些资料”摘要；与 prompt 召回同源，pending 不会出现在这里。"""
+    if not memories:
+        return []
+    selected = select_relevant_memories(memories, intent) if intent else memories
+    out: list[str] = []
+    for m in selected:
+        content = (m.content or "").strip().replace("\n", " ")
+        if not content:
+            continue
+        out.append(content[:36] + ("…" if len(content) > 36 else ""))
+        if len(out) >= limit:
+            break
+    return out
+
+
 _TYPE_MAP = {
     "semantic": "semantic", "语义事实": "semantic", "语义": "semantic", "事实": "semantic",
     "preference": "preference", "偏好": "preference",
@@ -42,6 +59,7 @@ _TYPE_MAP = {
     "episodic": "episodic", "情景": "episodic", "事件": "episodic",
 }
 _CONF_MAP = {"high": "high", "medium": "medium", "low": "low", "高": "high", "中": "medium", "低": "low"}
+_WORKDIR_MARK_RE = re.compile(r"^【工作目录:([^】]+)】\s*")
 
 
 def _norm_type(t: str) -> str:
@@ -50,6 +68,43 @@ def _norm_type(t: str) -> str:
 
 def _norm_conf(c: str) -> str:
     return _CONF_MAP.get((c or "").strip(), "medium")
+
+
+def _workdir_keys(path: str | None) -> set[str]:
+    """把工作目录归一成可比较的 key：完整路径 + 文件夹名。
+
+    不做硬数据库迁移，先用内容前缀 `【工作目录:...】` 表示项目记忆；这里负责召回时隔离。
+    """
+    raw = (path or "").strip()
+    if not raw:
+        return set()
+    expanded = os.path.expanduser(raw)
+    keys = {raw, expanded, raw.rstrip("/\\")}
+    try:
+        keys.add(os.path.abspath(expanded).rstrip("/\\"))
+    except Exception:
+        pass
+    base = os.path.basename(raw.rstrip("/\\")) or raw
+    if base:
+        keys.add(base)
+    return {k for k in keys if k}
+
+
+def _memory_workdir(content: str | None) -> str | None:
+    m = _WORKDIR_MARK_RE.match(content or "")
+    return m.group(1).strip() if m else None
+
+
+def _strip_workdir_mark(content: str | None) -> str:
+    return _WORKDIR_MARK_RE.sub("", content or "").strip()
+
+
+def memory_matches_workdir(content: str | None, working_dir: str | None) -> bool:
+    """带工作目录标签的记忆只在对应工作目录召回；无标签记忆是门店/用户全局记忆。"""
+    scope = _memory_workdir(content)
+    if not scope:
+        return True
+    return scope in _workdir_keys(working_dir)
 
 
 _client: AsyncOpenAI | None = None
@@ -131,6 +186,12 @@ _REDLINE_PATTERNS = re.compile(
     r"陪伴服务|陪侍|性服务|色情|卖淫|嫖|赌[场博]|坐庄|抽水|定盘口|放高利贷|洗钱|贩毒",
 )
 
+_BILLIARDS_MEMORY_PATTERNS = re.compile(
+    r"台球|球房|球馆|球厅|球台|台费|开台|翻台|助教|陪打|陪练|教练|前厅|收银|店长|"
+    r"会员卡|一卡通|充值|团购|美团|大众点评|抖音同城|小红书|好评|周赛|会员赛|"
+    r"追分|彩头|包厢|吧台|商品费|器材|球杆|台泥|竞技客户|散客|客流|到店|拉客"
+)
+
 
 def _is_one_off_task(text: str) -> bool:
     text = text.strip()
@@ -164,6 +225,27 @@ def _grounding_check(memory: Memory, source_text: str) -> bool:
 def _redline_filter(memory: Memory) -> bool:
     """红线过滤：记忆内容触犯安全红线则丢弃。"""
     return not bool(_REDLINE_PATTERNS.search(memory.content))
+
+
+def memory_is_billiards_domain(memory: Memory) -> bool:
+    """判断一条记忆是否属于台球门店事实。
+
+    通用 Agent 也应该有长期记忆，但不能把“26 张台、台费、助教、周赛”这类门店事实
+    带进普通文件/代码/合同任务。没有台球行业词的偏好和用户习惯（如“老板喜欢简洁”）
+    仍可在通用模式注入。
+    """
+    return bool(_BILLIARDS_MEMORY_PATTERNS.search(memory.content or ""))
+
+
+def filter_memories_for_mode(memories: list[Memory], billiards_mode: bool) -> list[Memory]:
+    """按当前行业包过滤可注入记忆。
+
+    - @台球：全部确认记忆可注入。
+    - 通用：只注入非台球领域的长期偏好/用户事实，避免门店旧资料污染普通任务。
+    """
+    if billiards_mode:
+        return memories
+    return [m for m in memories if not memory_is_billiards_domain(m)]
 
 _CONSOLIDATE_SYS = (
     "你是门店记忆整合器。给你这家店的【已有记忆】和【新记忆】，"
@@ -328,11 +410,13 @@ def _sid(store_id) -> uuid.UUID:
 
 
 async def load_store_memory(db: AsyncSession, store_id) -> list[Memory]:
-    """读一家店的全部记忆（manual + auto 都返回，带 source）。"""
+    """读一家店已确认/可注入的记忆（manual + auto；pending 候选不进 prompt）。"""
     rows = (
         await db.execute(
             select(StoreMemory)
             .where(StoreMemory.store_id == _sid(store_id))
+            .where(StoreMemory.is_deleted == False)  # noqa: E712
+            .where(StoreMemory.source != "pending")
             .order_by(StoreMemory.created_at)
         )
     ).scalars().all()
@@ -340,6 +424,22 @@ async def load_store_memory(db: AsyncSession, store_id) -> list[Memory]:
         Memory(r.type, r.content, r.confidence, getattr(r, "source", None) or "auto")
         for r in rows
     ]
+
+
+async def load_scoped_store_memory(db: AsyncSession, store_id, working_dir: str | None = None) -> list[Memory]:
+    """按工作目录过滤后的可注入记忆。
+
+    - 普通记忆：始终可用。
+    - `【工作目录:xxx】...` 项目记忆：只有当前工作目录匹配 xxx 时可用。
+    - 当前没有工作目录：不注入任何项目记忆，避免 A 项目背景污染 B 会话。
+    """
+    memories = await load_store_memory(db, store_id)
+    out: list[Memory] = []
+    for m in memories:
+        if not memory_matches_workdir(m.content, working_dir):
+            continue
+        out.append(Memory(m.type, _strip_workdir_mark(m.content), m.confidence, m.source))
+    return out
 
 
 async def _replace_store_memory(db: AsyncSession, store_id, memories: list[Memory]) -> None:
@@ -351,7 +451,9 @@ async def _replace_store_memory(db: AsyncSession, store_id, memories: list[Memor
     sid = _sid(store_id)
     await db.execute(
         delete(StoreMemory).where(
-            StoreMemory.store_id == sid, StoreMemory.source != "manual"
+            StoreMemory.store_id == sid,
+            StoreMemory.source == "auto",
+            StoreMemory.is_deleted == False,  # noqa: E712
         )
     )
     for m in memories:
@@ -360,6 +462,34 @@ async def _replace_store_memory(db: AsyncSession, store_id, memories: list[Memor
             confidence=m.confidence, source="auto",
         ))
     await db.commit()
+
+
+async def add_pending_memory_candidate(db: AsyncSession, store_id, content: str, type_: str = "semantic") -> StoreMemory | None:
+    """把 AI 推断/文件提取出的长期候选先放到 pending，用户确认后才会进入 prompt。"""
+    content = (content or "").strip()
+    if not content:
+        return None
+    sid = _sid(store_id)
+    exists = await db.scalar(
+        select(StoreMemory).where(
+            StoreMemory.store_id == sid,
+            StoreMemory.content == content,
+            StoreMemory.is_deleted == False,  # noqa: E712
+        )
+    )
+    if exists:
+        return exists
+    row = StoreMemory(
+        store_id=sid,
+        type=type_,
+        content=content[:1200],
+        confidence="low",
+        source="pending",
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return row
 
 
 # 上限：防止店脑无限膨胀（耐久事实全留；情景类是会累积的，单独设较小上限）

@@ -10,6 +10,7 @@
 """
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
@@ -118,6 +119,25 @@ def _path_hash(path: Path) -> str:
     return hashlib.md5(str(path.resolve()).encode()).hexdigest()[:8]
 
 
+def _backup_meta_path(backup: Path) -> Path:
+    return backup.with_suffix(backup.suffix + ".json")
+
+
+def _read_backup_meta(backup: Path) -> dict:
+    try:
+        meta = json.loads(_backup_meta_path(backup).read_text(encoding="utf-8"))
+        return meta if isinstance(meta, dict) else {}
+    except Exception:
+        return {}
+
+
+def _same_resolved_path(left: str | Path, right: str | Path) -> bool:
+    try:
+        return Path(left).expanduser().resolve() == Path(right).expanduser().resolve()
+    except (OSError, ValueError):
+        return False
+
+
 def _backup(path: Path) -> str | None:
     """改/写前备份原件，返回备份路径（原件不存在则 None）。
     备份名带路径 hash 前缀，不同目录的同名文件不会互相覆盖。"""
@@ -125,37 +145,129 @@ def _backup(path: Path) -> str | None:
         return None
     bdir = _library_root() / ".backups"
     bdir.mkdir(exist_ok=True)
-    stamp = business_now().strftime("%Y%m%d-%H%M%S")
+    stamp = business_now().strftime("%Y%m%d-%H%M%S-%f")
     prefix = _path_hash(path)
     dest = bdir / f"{prefix}_{path.stem}.{stamp}{path.suffix}.bak"
     shutil.copy2(path, dest)
+    try:
+        _backup_meta_path(dest).write_text(json.dumps({
+            "original_path": str(path.resolve()),
+            "backup_path": str(dest.resolve()),
+            "created_at": business_now().isoformat(),
+            "size": path.stat().st_size,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        logger.debug("failed to write backup metadata for %s", dest, exc_info=True)
     return str(dest)
 
 
-def get_file_backup_diff(raw_path: str) -> dict:
+def _backup_candidates(path: Path) -> list[Path]:
+    bdir = _library_root() / ".backups"
+    if not bdir.is_dir():
+        return []
+    prefix = _path_hash(path)
+    cands = sorted(bdir.glob(f"{prefix}_{path.stem}.*{path.suffix}.bak"))
+    if not cands:
+        cands = sorted(bdir.glob(f"{path.stem}.*{path.suffix}.bak"))
+    return [p for p in cands if p.is_file()]
+
+
+def list_file_backups(limit: int = 20) -> list[dict]:
+    """列出最近文件备份，供前端轻量找回“AI 改过/删过的文件”。"""
+    bdir = _library_root() / ".backups"
+    if not bdir.is_dir():
+        return []
+    rows: list[dict] = []
+    for backup in bdir.glob("*.bak"):
+        if not backup.is_file():
+            continue
+        meta = _read_backup_meta(backup)
+        original = meta.get("original_path") or ""
+        rows.append({
+            "backup_path": str(backup),
+            "path": original,
+            "name": Path(original).name if original else backup.name.replace(".bak", ""),
+            "created_at": meta.get("created_at") or datetime.fromtimestamp(backup.stat().st_mtime).isoformat(),
+            "size": meta.get("size") or backup.stat().st_size,
+            "exists": Path(original).exists() if original else False,
+        })
+    rows.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+    return rows[:max(1, min(int(limit or 20), 80))]
+
+
+def get_file_backup_diff(raw_path: str, backup_path: str | None = None) -> dict:
     """B.2：给一个被 AI 改过的本机文件，返回 {ok, path, old, new}——old=最近一次备份、new=当前内容，
     供前端右侧渲染"改前/改后"对比让老板确认。只读、故障安全。找不到备份→old=""(当新建处理)。"""
     try:
         p = Path(raw_path).expanduser()
-        if not p.is_file():
+        if p.exists() and not p.is_file():
+            return {"ok": False, "error": "这不是一个文件"}
+        if not p.exists() and backup_path is None:
             return {"ok": False, "error": "文件不在了"}
-        if p.stat().st_size > 2 * 1024 * 1024:
+        if p.exists() and p.stat().st_size > 2 * 1024 * 1024:
             return {"ok": False, "error": "文件太大，不便逐字对比"}
-        new = p.read_text(encoding="utf-8", errors="replace")
+        new = p.read_text(encoding="utf-8", errors="replace") if p.is_file() else ""
         old = ""
-        bdir = _library_root() / ".backups"
-        if bdir.is_dir():
-            # 新格式: {hash}_{stem}.{stamp}{suffix}.bak；旧格式兜底: {stem}.{stamp}{suffix}.bak
-            prefix = _path_hash(p)
-            cands = sorted(bdir.glob(f"{prefix}_{p.stem}.*{p.suffix}.bak"))
+        backup = Path(backup_path).expanduser() if backup_path else None
+        if backup is not None:
+            bdir = (_library_root() / ".backups").resolve()
+            try:
+                backup = backup.resolve()
+            except (OSError, ValueError):
+                return {"ok": False, "error": "备份路径不对"}
+            if backup.parent != bdir or backup.suffix != ".bak":
+                return {"ok": False, "error": "只能查看自动备份里的文件"}
+            meta = _read_backup_meta(backup)
+            original = meta.get("original_path")
+            if original and not _same_resolved_path(original, p):
+                return {"ok": False, "error": "备份和文件不匹配"}
+            cands = [backup] if backup.is_file() else []
+        else:
+            cands = _backup_candidates(p)
+        if cands:
+            try:
+                old = cands[-1].read_text(encoding="utf-8", errors="replace")
+                backup = cands[-1]
+            except Exception:
+                old = ""
+        return {"ok": True, "path": str(p), "backup_path": str(backup) if backup else None, "old": old, "new": new}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:120]}
+
+
+def restore_file_backup(raw_path: str, backup_path: str | None = None) -> dict:
+    """把某个文件恢复到最近备份。恢复前也备份当前版本，避免“回退”本身不可逆。"""
+    try:
+        p = Path(raw_path).expanduser()
+        backup = Path(backup_path).expanduser() if backup_path else None
+        if backup is None:
+            cands = _backup_candidates(p)
             if not cands:
-                cands = sorted(bdir.glob(f"{p.stem}.*{p.suffix}.bak"))
-            if cands:
-                try:
-                    old = cands[-1].read_text(encoding="utf-8", errors="replace")
-                except Exception:
-                    old = ""
-        return {"ok": True, "path": str(p), "old": old, "new": new}
+                return {"ok": False, "error": "没有找到这份文件的备份"}
+            backup = cands[-1]
+        bdir = (_library_root() / ".backups").resolve()
+        try:
+            backup = backup.resolve()
+        except (OSError, ValueError):
+            return {"ok": False, "error": "备份路径不对"}
+        if backup.parent != bdir or backup.suffix != ".bak" or not backup.is_file():
+            return {"ok": False, "error": "只能恢复自动备份里的文件"}
+        meta = _read_backup_meta(backup)
+        original = str(meta.get("original_path") or raw_path)
+        if meta.get("original_path") and raw_path and not _same_resolved_path(original, raw_path):
+            return {"ok": False, "error": "备份和文件不匹配"}
+        p = Path(original).expanduser()
+        if p.exists() and p.is_dir():
+            return {"ok": False, "error": "目标是文件夹，不能用文件备份覆盖"}
+        current_backup = _backup(p) if p.exists() else None
+        p.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(backup, p)
+        return {
+            "ok": True,
+            "path": str(p),
+            "backup_path": str(backup),
+            "current_backup_path": current_backup,
+        }
     except Exception as e:
         return {"ok": False, "error": str(e)[:120]}
 
@@ -218,16 +330,24 @@ def _resolve_dir(root_path: str, ctx=None) -> Path:
 # ────────────────────────────── 只读工具（无需审批） ──────────────────────────────
 
 async def list_files(args: dict, ctx) -> str:
-    """列文件。不传 path=列内容库（原行为）；传 path=列该目录（沙箱内随时、沙箱外要全盘）。"""
+    """列文件。不传 path=列工作目录(没设则内容库)；传 path=列该目录（沙箱内随时、沙箱外要全盘）。"""
     raw = (args.get("path") or "").strip()
     if not raw:
-        # 原行为：列内容库全部文件（递归）
-        root = _library_root()
+        # 工作目录是当前会话的默认作业区。没设工作目录时，才回退到内容库。
+        root = _resolve(".", ctx)
+        if not root.exists():
+            return f"当前工作目录不存在：{root}"
+        if not root.is_dir():
+            return f"当前工作目录不是文件夹：{root}"
         items = []
-        for p in sorted(root.rglob("*")):
-            if p.is_file() and ".backups" not in p.parts:
-                items.append(f"- {p.relative_to(root)}  ({p.stat().st_size} 字节)")
-        return "内容库文件：\n" + ("\n".join(items) if items else "（空）")
+        for p in sorted(root.iterdir()):
+            if ".backups" in p.parts:
+                continue
+            kind = "📁" if p.is_dir() else "📄"
+            size = "" if p.is_dir() else f"  ({p.stat().st_size} 字节)"
+            items.append(f"- {kind} {p.name}{size}")
+        title = "当前工作目录" if (getattr(ctx, "working_dir", None) or "").strip() else "内容库文件"
+        return f"{title} {root}：\n" + ("\n".join(items) if items else "（空目录）")
     # 传了 path：列指定目录（仅该层，不递归）
     try:
         d = _resolve_dir(raw, ctx)
@@ -744,9 +864,20 @@ async def diagnose_from_pos(args: dict, ctx) -> str:
             path = Path(fallback)
         else:
             return f"没找到这个文件：{file}。麻烦用文件选择器重新选一下导出的报表。"
+    from services.report_reader import extract_report_indicators
+    _indicators, summary = extract_report_indicators(str(path))
+    if _indicators:
+        try:
+            from services.agent.tools import _memory_candidate_from_report_summary
+            from services.memory_service import add_pending_memory_candidate
+            candidate = _memory_candidate_from_report_summary(summary)
+            if candidate and getattr(ctx, "db", None) is not None and getattr(ctx, "store", None) is not None:
+                await add_pending_memory_candidate(ctx.db, ctx.store.id, candidate, "operational")
+        except Exception:
+            logger.debug("failed to add pending memory from POS report", exc_info=True)
     # 复用 read_file 的读法（Excel 列出非空单元格）拿到真实数字。
     # ⚠️ 必须读【解析/兜底后的 path】，不是原始 file——否则给的路径不存在时会把"文件不存在"当数据喂给诊断引擎。
-    data_text = await read_file({"path": str(path)}, ctx)
+    data_text = summary if _indicators else await read_file({"path": str(path)}, ctx)
     situation = (
         "以下是这家店从收银系统导出的【真实经营数据】。请**基于这些具体数字**诊断："
         "引用关键数字、算出关键比率(如台费占比/空台时段)、指出异常项，再给可落地建议，别泛泛而谈：\n"
@@ -940,10 +1071,10 @@ _LOCAL_TOOLS = [
     ),
     Tool(
         name="list_files",
-        description="列文件。不传 path＝列本机「内容库」里已有的文件（之前生成的文案/报表/海报等）；"
+        description="列文件。不传 path＝列当前工作目录（没选工作目录时才列本机内容库）；"
                     "传 path＝列那个目录里有什么（沙箱内随时可用；沙箱外的任意目录需老板开「完全访问模式」）。",
         parameters={"type": "object", "properties": {
-            "path": {"type": "string", "description": "要列的目录绝对路径（可选）；不传＝列内容库"},
+            "path": {"type": "string", "description": "要列的目录绝对路径（可选）；不传＝列当前工作目录，没设工作目录则列内容库"},
         }},
         handler=list_files,
         read_only=True,

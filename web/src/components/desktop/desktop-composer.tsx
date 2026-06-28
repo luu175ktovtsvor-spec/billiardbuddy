@@ -6,7 +6,7 @@
  * - 运行权限：后端那套 ask / auto_files / full，收进克制的弹出菜单。完全磁盘访问并入同一菜单。
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Paperclip, ArrowUp, ChevronDown, ShieldCheck, Check, X, FileText, BookOpen, Palette, Brain } from "lucide-react";
+import { Paperclip, ArrowUp, ChevronDown, ShieldCheck, Check, X, FileText, BookOpen, Palette, Brain, FolderDown, History } from "lucide-react";
 import { PERMISSION_MODES, WELCOME } from "@/lib/agent-copy";
 import { api, type SkillMeta, type OutputStyleMeta } from "@/lib/api";
 import { SlashPalette, type PaletteItem } from "./slash-palette";
@@ -15,26 +15,34 @@ export type PermissionMode = "ask" | "auto_files" | "full" | "plan";
 
 // 内置 `/` 命令（cc-haha 风，先放能即时接上的；其余随命令系统扩展）。
 // G.3：每条带中文名(cn,做主视觉) + 中文/拼音别名(aliases,让 /导出 /用量 也能搜到)。
-const BUILTIN_COMMANDS: { name: string; cn: string; description: string; aliases?: string[] }[] = [
+const BASIC_COMMANDS: { name: string; cn: string; description: string; aliases?: string[] }[] = [
   { name: "new", cn: "新会话", description: "开个新会话", aliases: ["新对话", "xinhuihua", "xin"] },
   { name: "clear", cn: "清空会话", description: "清空当前会话", aliases: ["清空", "qingkong"] },
-  { name: "model", cn: "模型设置", description: "配置 AI 模型 / Key", aliases: ["模型", "moxing", "key"] },
   { name: "settings", cn: "设置", description: "打开设置", aliases: ["shezhi"] },
   { name: "goal", cn: "设目标", description: "设定目标，让我对照它自检直到完成", aliases: ["目标", "mubiao"] },
   { name: "cost", cn: "用量", description: "本月 AI 用量", aliases: ["花费", "账单", "yongliang", "huafei"] },
+  { name: "export", cn: "导出对话", description: "导出当前对话为 Markdown", aliases: ["导出", "保存对话", "daochu"] },
+  { name: "help", cn: "帮助", description: "查看命令与能力", aliases: ["能干嘛", "bangzhu"] },
+];
+
+const ADVANCED_COMMANDS: { name: string; cn: string; description: string; aliases?: string[] }[] = [
+  { name: "model", cn: "模型设置", description: "配置 AI 模型 / Key", aliases: ["模型", "moxing", "key"] },
   { name: "agents", cn: "子代理", description: "可用的子代理专家", aliases: ["代理", "daili"] },
   { name: "mcp", cn: "外接工具", description: "MCP 外部工具服务器状态", aliases: ["waijiegongju"] },
   { name: "skills", cn: "技能", description: "已安装的技能", aliases: ["jineng"] },
   { name: "plugins", cn: "插件", description: "已安装的插件", aliases: ["chajian"] },
   { name: "context", cn: "会话信息", description: "当前会话信息", aliases: ["上下文", "huihuaxinxi"] },
-  { name: "export", cn: "导出对话", description: "导出当前对话为 Markdown", aliases: ["导出", "保存对话", "daochu"] },
-  { name: "help", cn: "帮助", description: "查看命令与能力", aliases: ["能干嘛", "bangzhu"] },
 ];
 
 // 可 @ 挂载的知识库：挂上 = 该领域专家，不挂 = 通用 Agent。目前一个，后续可扩展为多个领域包。
 const KNOWLEDGE_SOURCES: { id: string; label: string; desc: string }[] = [
-  { id: "billiards", label: "台球运营知识库", desc: "开启后，AI 按台球行业的专业运营知识来答" },
+  { id: "billiards", label: "行业模式：台球房", desc: "开启后，AI 按台球行业的专业运营知识来答" },
 ];
+
+const OUTPUT_STYLE_LABELS: Record<string, string> = {
+  concise: "简短点",
+  explanatory: "边做边讲",
+};
 
 function baseName(p: string): string {
   const parts = p.split(/[\\/]/);
@@ -59,6 +67,9 @@ export function DesktopComposer({
   onPermissionChange,
   selectedFiles = [],
   onPickFiles,
+  onPickDownloads,
+  recentFiles = [],
+  onPickRecentFile,
   onAddFiles,
   onRemoveFile,
   onOpenFile,
@@ -66,6 +77,7 @@ export function DesktopComposer({
   onKnowledgePacksChange,
   outputStyle = "",
   onOutputStyleChange,
+  advancedMode = false,
   deepThinking = true,
   onDeepThinkingChange,
   onCommand,
@@ -79,6 +91,9 @@ export function DesktopComposer({
   onPermissionChange?: (m: PermissionMode) => void;
   selectedFiles?: string[];
   onPickFiles?: () => void;
+  onPickDownloads?: () => void;
+  recentFiles?: string[];
+  onPickRecentFile?: (path: string) => void;
   onAddFiles?: (paths: string[]) => void; // 贴图/拖图：把图片落成路径后加进附件（授权 AI 看）
   onRemoveFile?: (path: string) => void;
   /** 点开附件：报表(.xlsx/.xlsm) 在右侧用表格视图打开（可点格改）。 */
@@ -87,6 +102,7 @@ export function DesktopComposer({
   onKnowledgePacksChange?: (packs: string[]) => void;
   outputStyle?: string;
   onOutputStyleChange?: (name: string) => void;
+  advancedMode?: boolean;
   deepThinking?: boolean; // F.2 深度思考开关（默认开）
   onDeepThinkingChange?: (v: boolean) => void;
   onCommand?: (name: string) => void;
@@ -96,6 +112,7 @@ export function DesktopComposer({
   const [composing, setComposing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [kbMenuOpen, setKbMenuOpen] = useState(false);
+  const [recentMenuOpen, setRecentMenuOpen] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const current = PERMISSION_MODES.find((m) => m.value === permissionMode) ?? PERMISSION_MODES[0];
   const activePacks = knowledgePacks ?? [];
@@ -110,23 +127,29 @@ export function DesktopComposer({
   const [styleMenuOpen, setStyleMenuOpen] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    api.listSkills().then((r) => { if (!cancelled) setSkills(r.skills || []); }).catch(() => {});
+    if (advancedMode) {
+      api.listSkills().then((r) => { if (!cancelled) setSkills(r.skills || []); }).catch(() => {});
+    } else {
+      setSkills([]);
+    }
     api.listOutputStyles().then((r) => { if (!cancelled) setStyles(r.output_styles || []); }).catch(() => {});
     return () => { cancelled = true; };
-  }, []);
+  }, [advancedMode]);
   const styleOptions = [{ name: "", description: "默认（大白话）" }, ...styles.map((s) => ({ name: s.name, description: s.description }))];
   const activeStyleName = styles.find((s) => s.name === outputStyle)?.name;
+  const activeStyleLabel = activeStyleName ? (OUTPUT_STYLE_LABELS[activeStyleName] || activeStyleName) : undefined;
 
   const slashQuery = value.startsWith("/") && !value.slice(1).includes(" ") ? value.slice(1).toLowerCase() : null;
+  const visibleCommands = advancedMode ? [...BASIC_COMMANDS, ...ADVANCED_COMMANDS] : BASIC_COMMANDS;
   const paletteItems: PaletteItem[] = slashQuery !== null ? [
-    ...BUILTIN_COMMANDS
+    ...visibleCommands
       // G.3：英文名 / 中文名 / 描述 / 中文拼音别名 任一命中即列出（打 /导出 /用量 也搜得到）
       .filter((c) => c.name.toLowerCase().includes(slashQuery)
         || c.cn.includes(slashQuery)
         || c.description.includes(slashQuery)
         || (c.aliases || []).some((a) => a.toLowerCase().includes(slashQuery)))
       .map((c): PaletteItem => ({ kind: "builtin", name: c.name, cn: c.cn, description: c.description })),
-    ...skills
+    ...(advancedMode ? skills : [])
       .filter((s) => s.user_invocable && (s.name.toLowerCase().includes(slashQuery) || (s.description || "").toLowerCase().includes(slashQuery)))
       .map((s): PaletteItem => ({ kind: "skill", name: s.name, description: s.description, argHint: s.argument_hint })),
   ] : [];
@@ -160,11 +183,18 @@ export function DesktopComposer({
   }, [value]);
 
   useEffect(() => {
-    if (!menuOpen && !kbMenuOpen && !styleMenuOpen) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { setMenuOpen(false); setKbMenuOpen(false); setStyleMenuOpen(false); } };
+    if (!menuOpen && !kbMenuOpen && !styleMenuOpen && !recentMenuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setMenuOpen(false);
+        setKbMenuOpen(false);
+        setStyleMenuOpen(false);
+        setRecentMenuOpen(false);
+      }
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [menuOpen, kbMenuOpen, styleMenuOpen]);
+  }, [menuOpen, kbMenuOpen, styleMenuOpen, recentMenuOpen]);
 
   // Electron 33+ 移除了 File.path，统一用 webUtils.getPathForFile 桥拿本机路径
   const getFilePath = (f: File): string | undefined => {
@@ -260,6 +290,7 @@ export function DesktopComposer({
               <SlashPalette
                 items={paletteItems}
                 activeIndex={paletteIndex}
+                title={advancedMode ? "命令与技能" : "常用命令"}
                 onSelect={selectPaletteItem}
                 onHover={setPaletteIndex}
               />
@@ -296,12 +327,64 @@ export function DesktopComposer({
             <button
               type="button"
               onClick={onPickFiles}
-              title="加文件 · 图片 · 视频 · 文件夹都行(授权助手读取或修改)"
-              aria-label="添加文件、图片、视频或文件夹"
+              title="添加参考文件、图片或视频。文件夹请用上方“工作文件夹”"
+              aria-label="添加参考文件、图片或视频"
               className="flex h-7 w-7 items-center justify-center rounded-md text-[#86868b] transition hover:bg-black/[0.05] hover:text-[#1d1d1f] dark:text-[#6e7077] dark:hover:bg-white/[0.06] dark:hover:text-[#c8cace]"
             >
               <Paperclip className="h-[16px] w-[16px]" />
             </button>
+
+            {onPickDownloads && (
+              <button
+                type="button"
+                onClick={onPickDownloads}
+                title="从下载文件夹选素材。微信、浏览器、相册导出的文件常在这里"
+                aria-label="从下载文件夹选素材"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-[#86868b] transition hover:bg-black/[0.05] hover:text-[#1d1d1f] dark:text-[#6e7077] dark:hover:bg-white/[0.06] dark:hover:text-[#c8cace]"
+              >
+                <FolderDown className="h-[16px] w-[16px]" />
+              </button>
+            )}
+
+            {recentFiles.length > 0 && onPickRecentFile && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setRecentMenuOpen((v) => !v)}
+                  title="最近用过的素材、报表和文件"
+                  aria-label="最近素材"
+                  aria-haspopup="menu"
+                  aria-expanded={recentMenuOpen}
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-[#86868b] transition hover:bg-black/[0.05] hover:text-[#1d1d1f] dark:text-[#6e7077] dark:hover:bg-white/[0.06] dark:hover:text-[#c8cace]"
+                >
+                  <History className="h-[16px] w-[16px]" />
+                </button>
+                {recentMenuOpen && (
+                  <>
+                    <button type="button" aria-hidden tabIndex={-1} onClick={() => setRecentMenuOpen(false)} className="fixed inset-0 z-40 cursor-default" />
+                    <div role="menu" className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[330px] rounded-lg border border-black/[0.1] bg-white p-1.5 shadow-[0_12px_40px_-10px_rgba(0,0,0,0.25)] dark:border-white/[0.1] dark:bg-[#1c1e24] dark:shadow-[0_12px_40px_-10px_rgba(0,0,0,0.7)]">
+                      <div className="px-2.5 pb-1 pt-1.5 font-mono text-[10px] uppercase tracking-wider text-[#a1a1a6] dark:text-[#6e7077]">最近素材</div>
+                      {recentFiles.slice(0, 8).map((p) => (
+                        <button
+                          key={p}
+                          type="button"
+                          role="menuitem"
+                          title={p}
+                          onClick={() => { onPickRecentFile(p); setRecentMenuOpen(false); }}
+                          className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+                        >
+                          <FileText className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+                          <span className="min-w-0">
+                            <span className="block truncate text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{baseName(p)}</span>
+                            <span className="block truncate text-[11px] text-[#86868b] dark:text-[#8a8c93]">{p}</span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
 
             {/* F.2 深度思考 开/关：mimo 默认开，关掉更快更省思考 token。措辞大白话、不堆术语。 */}
             {onDeepThinkingChange && (
@@ -354,6 +437,13 @@ export function DesktopComposer({
                           <span className="min-w-0">
                             <span className="block text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{m.label}</span>
                             <span className="mt-0.5 block text-[11.5px] leading-snug text-[#6e6e73] dark:text-[#8a8c93]">{m.desc}</span>
+                            <span className="mt-1 flex flex-wrap gap-1">
+                              {m.effects.map((effect) => (
+                                <span key={effect} className="rounded bg-black/[0.035] px-1.5 py-0.5 text-[10.5px] text-[#86868b] dark:bg-white/[0.05] dark:text-[#8a8c93]">
+                                  {effect}
+                                </span>
+                              ))}
+                            </span>
                           </span>
                         </button>
                       );
@@ -377,7 +467,7 @@ export function DesktopComposer({
                 }`}
               >
                 <BookOpen className="h-3.5 w-3.5" />
-                {activeLabel ?? "台球运营知识库"}
+                {activeLabel ?? "通用助手"}
                 <ChevronDown className={`h-3 w-3 transition ${kbMenuOpen ? "rotate-180" : ""}`} />
               </button>
 
@@ -385,7 +475,7 @@ export function DesktopComposer({
                 <>
                   <button type="button" aria-hidden tabIndex={-1} onClick={() => setKbMenuOpen(false)} className="fixed inset-0 z-40 cursor-default" />
                   <div role="menu" className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[306px] rounded-lg border border-black/[0.1] bg-white p-1.5 shadow-[0_12px_40px_-10px_rgba(0,0,0,0.25)] dark:border-white/[0.1] dark:bg-[#1c1e24] dark:shadow-[0_12px_40px_-10px_rgba(0,0,0,0.7)]">
-                    <div className="px-2.5 pb-1 pt-1.5 font-mono text-[10px] uppercase tracking-wider text-[#a1a1a6] dark:text-[#6e7077]">台球运营知识库</div>
+                    <div className="px-2.5 pb-1 pt-1.5 font-mono text-[10px] uppercase tracking-wider text-[#a1a1a6] dark:text-[#6e7077]">行业模式</div>
                     {KNOWLEDGE_SOURCES.map((k) => {
                       const on = activePacks.includes(k.id);
                       return (
@@ -424,7 +514,7 @@ export function DesktopComposer({
                 className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] text-[#6e6e73] transition hover:bg-black/[0.05] hover:text-[#1d1d1f] dark:text-[#9a9ca3] dark:hover:bg-white/[0.06] dark:hover:text-[#c8cace]"
               >
                 <Palette className="h-3.5 w-3.5 text-[#86868b] dark:text-[#6e7077]" />
-                {activeStyleName ?? "默认风格"}
+                {activeStyleLabel ?? "默认风格"}
                 <ChevronDown className={`h-3 w-3 text-[#b0b0b5] transition dark:text-[#56585f] ${styleMenuOpen ? "rotate-180" : ""}`} />
               </button>
               {styleMenuOpen && (
@@ -445,7 +535,7 @@ export function DesktopComposer({
                         >
                           <Check className={`mt-[2px] h-3.5 w-3.5 shrink-0 ${active ? "text-[#10a37f]" : "text-transparent"}`} />
                           <span className="min-w-0">
-                            <span className="block text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{s.name || "默认"}</span>
+                            <span className="block text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{s.name ? (OUTPUT_STYLE_LABELS[s.name] || s.name) : "默认"}</span>
                             {s.description && <span className="mt-0.5 block text-[11.5px] leading-snug text-[#6e6e73] dark:text-[#8a8c93]">{s.description}</span>}
                           </span>
                         </button>

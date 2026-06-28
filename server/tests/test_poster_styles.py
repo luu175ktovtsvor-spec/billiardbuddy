@@ -43,6 +43,23 @@ def test_make_poster_injects_style_into_model_prompt(monkeypatch):
     assert "做好啦" in out  # 返回 markdown 图片给老板
 
 
+def test_make_poster_returns_ratio_and_dimensions(monkeypatch):
+    from services.agent import tools as agent_tools
+    import services.poster_service as ps
+
+    async def fake_generate_images(**kwargs):
+        return {"images": [{"poster_url": "http://x/p.png", "ratio": "9:16", "width": 1152, "height": 2048}]}
+
+    monkeypatch.setattr(ps, "generate_images", fake_generate_images)
+    ctx = types.SimpleNamespace(db=None, store=types.SimpleNamespace(id="s1"),
+                                user=types.SimpleNamespace(id="u-test-3"))
+    out = asyncio.run(agent_tools.make_poster(
+        {"description": "周赛海报", "ratio": "9:16"}, ctx))
+
+    assert "![门店海报](http://x/p.png)" in out
+    assert "尺寸：9:16 · 1152x2048" in out
+
+
 def test_make_poster_custom_style_appended_raw(monkeypatch):
     """老板"自己说"一个不在预设里的风格 → 原样拼进提示词（不丢）。"""
     from services.agent import tools as agent_tools

@@ -5,7 +5,7 @@
  * 浅色为默认、跟随系统深浅色（dark: 变体）。仅桌面端渲染；整窗自己掌控外观。
  * 顶部留给原生红绿灯（Electron titleBarStyle:'hiddenInset'），可拖拽区用 .app-drag。
  */
-import { Plus, Settings, Cpu, Terminal, Trash2 } from "lucide-react";
+import { Plus, Settings, Cpu, Terminal, Trash2, PanelsTopLeft } from "lucide-react";
 
 import { useHorizontalResize } from "./use-resize";
 
@@ -20,9 +20,11 @@ export function DesktopSidebar({
   storeName = "我的台球房",
   monthlySpend,
   modelLabel,
+  advancedMode = false,
   conversations = [],
   activeId,
   onNewChat,
+  onNewWorkspace,
   onSelect,
   onDelete,
   onOpenSettings,
@@ -30,9 +32,11 @@ export function DesktopSidebar({
   storeName?: string;
   monthlySpend?: string;
   modelLabel?: string;
+  advancedMode?: boolean;
   conversations?: DesktopConversation[];
   activeId?: string;
   onNewChat?: () => void;
+  onNewWorkspace?: () => void;
   onSelect?: (id: string) => void;
   onDelete?: (id: string) => void;
   onOpenSettings?: () => void;
@@ -56,16 +60,26 @@ export function DesktopSidebar({
         <span className="flex h-6 w-6 items-center justify-center rounded-md bg-[#10a37f]/15 text-[#10a37f]">
           <Terminal className="h-3.5 w-3.5" />
         </span>
-        <span className="font-mono text-[13px] font-medium tracking-tight text-[#1d1d1f] dark:text-[#e6e7e9]">台球运营管家</span>
+        <span className="font-mono text-[13px] font-medium tracking-tight text-[#1d1d1f] dark:text-[#e6e7e9]">本机 AI 助手</span>
       </div>
 
-      <div className="px-2.5">
+      <div className="flex gap-1.5 px-2.5">
         <button
           onClick={onNewChat}
-          className="app-no-drag flex h-8 w-full items-center gap-2 rounded-md border border-black/[0.08] bg-white px-2.5 text-[12.5px] text-[#3a3a3c] shadow-sm transition hover:bg-black/[0.02] active:scale-[0.99] dark:border-white/[0.08] dark:bg-white/[0.02] dark:text-[#c8cace] dark:shadow-none dark:hover:bg-white/[0.05]"
+          className="app-no-drag flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md border border-black/[0.08] bg-white px-2.5 text-[12.5px] text-[#3a3a3c] shadow-sm transition hover:bg-black/[0.02] active:scale-[0.99] dark:border-white/[0.08] dark:bg-white/[0.02] dark:text-[#c8cace] dark:shadow-none dark:hover:bg-white/[0.05]"
         >
           <Plus className="h-3.5 w-3.5 text-[#10a37f]" /> 新会话
         </button>
+        {onNewWorkspace && (
+          <button
+            onClick={onNewWorkspace}
+            title="新开一个独立工作台窗口"
+            aria-label="新工作台"
+            className="app-no-drag flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-black/[0.08] bg-white text-[#86868b] shadow-sm transition hover:bg-black/[0.02] hover:text-[#10a37f] active:scale-[0.99] dark:border-white/[0.08] dark:bg-white/[0.02] dark:text-[#6e7077] dark:shadow-none dark:hover:bg-white/[0.05] dark:hover:text-[#10a37f]"
+          >
+            <PanelsTopLeft className="h-3.5 w-3.5" />
+          </button>
+        )}
       </div>
 
       <div className="mt-3 flex-1 overflow-y-auto px-1.5">
@@ -83,6 +97,7 @@ export function DesktopSidebar({
               >
                 <button
                   onClick={() => onSelect?.(c.id)}
+                  aria-label={`打开会话 ${c.title}`}
                   className="min-w-0 flex-1 px-2.5 py-1.5 text-left"
                 >
                   <div className="truncate text-[12.5px]">{c.title}</div>
@@ -103,16 +118,17 @@ export function DesktopSidebar({
         ))}
       </div>
 
+      {/* 普通路径只显示"AI 已就绪"，不甩模型品牌名(技术词)给非技术老板；高级模式才露真实模型名。 */}
       <button
         onClick={onOpenSettings}
         className="app-no-drag mx-1.5 mb-1 mt-1.5 flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition hover:bg-black/[0.04] dark:hover:bg-white/[0.04]"
-        aria-label={modelLabel ? `正在用模型 ${modelLabel}，点击修改` : "未配置模型，点击去设置"}
+        aria-label={advancedMode && modelLabel ? `正在用模型 ${modelLabel}，点击修改` : "AI 已就绪，点击打开设置"}
       >
-        <Cpu className={`h-3.5 w-3.5 shrink-0 ${modelLabel ? "text-[#10a37f]" : "text-[#86868b] dark:text-[#6e7077]"}`} />
-        {modelLabel ? (
+        <Cpu className="h-3.5 w-3.5 shrink-0 text-[#10a37f]" />
+        {advancedMode && modelLabel ? (
           <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-[#6e6e73] dark:text-[#9a9ca3]">{modelLabel}</span>
         ) : (
-          <span className="min-w-0 flex-1 truncate text-[11px] text-[#86868b] dark:text-[#6e7077]">未配置模型 · 去设置</span>
+          <span className="min-w-0 flex-1 truncate text-[11px] text-[#6e6e73] dark:text-[#9a9ca3]">AI 已就绪</span>
         )}
       </button>
 

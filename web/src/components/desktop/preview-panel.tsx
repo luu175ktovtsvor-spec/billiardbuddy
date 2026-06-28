@@ -12,7 +12,7 @@
  */
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { X, Download, Wand2, Copy, Check, Loader2, RotateCcw, Table2, FileText, CheckCircle2, RefreshCw, Save, ChevronDown, FolderHeart } from "lucide-react";
+import { X, Download, Wand2, Copy, Check, Loader2, RotateCcw, Table2, FileText, CheckCircle2, RefreshCw, Save, ChevronDown, FolderHeart, Clapperboard } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
@@ -26,14 +26,15 @@ import { useVersionHistory } from "./use-version-history";
 import { VersionBar } from "./version-bar";
 
 export type PreviewItem =
-  | { kind: "poster"; title?: string; imageUrl: string; ratio?: string }
+  | { kind: "poster"; title?: string; imageUrl: string; ratio?: string; width?: number; height?: number }
+  | { kind: "video"; title?: string; videoUrl: string; ratio?: string; duration?: number }
   | { kind: "content"; title?: string; text: string }
   | { kind: "file"; title?: string; path?: string; text: string }
   | { kind: "sheet"; title?: string; path: string }
   // 文档原样预览：PDF / Word(.docx) / PPT(.pptx) / 网页(.html)，由后端 /canvas/doc 读成可渲染数据
   | { kind: "doc"; title?: string; path: string }
   // B.2：AI 改了本机已有文件 → 拉"改前/改后"对比让老板确认（复用 DiffBlock）
-  | { kind: "diff"; title?: string; path: string };
+  | { kind: "diff"; title?: string; path: string; backupPath?: string };
 
 /** 0 基列序号 → Excel 列字母（0→A, 25→Z, 26→AA…）。 */
 function colLetter(idx: number): string {
@@ -360,22 +361,54 @@ const QUICK_ACTIONS: { label: string; instruction: string }[] = [
 // DiffBlock 已抽到 ./diff-block（文案、网页 HTML 等改写共用）。
 
 /** B.2：AI 改了本机已有文件 → 拉"改前/改后"对比（old=最近备份、new=当前），复用 DiffBlock 渲染。 */
-function DiffPreview({ path }: { path: string }) {
-  const [data, setData] = useState<{ old: string; neu: string } | null>(null);
+function DiffPreview({ path, backupPath }: { path: string; backupPath?: string }) {
+  const [data, setData] = useState<{ old: string; neu: string; backupPath?: string | null } | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    setData(null); setErr(null);
-    api.fileDiff(path)
-      .then((r) => { if (cancelled) return; if (r.ok) setData({ old: r.old || "", neu: r.new || "" }); else setErr(r.error || "拿不到对比"); })
+    setData(null); setErr(null); setMsg(null);
+    api.fileDiff(path, backupPath)
+      .then((r) => { if (cancelled) return; if (r.ok) setData({ old: r.old || "", neu: r.new || "", backupPath: r.backup_path || backupPath }); else setErr(r.error || "拿不到对比"); })
       .catch(() => { if (!cancelled) setErr("拿不到对比"); });
     return () => { cancelled = true; };
-  }, [path]);
+  }, [path, backupPath]);
+  const restore = async () => {
+    if (busy || !data) return;
+    setBusy(true); setMsg(null); setErr(null);
+    try {
+      const r = await api.fileRestore(path, data.backupPath || backupPath);
+      if (!r.ok) {
+        setErr(r.error || "恢复失败");
+        return;
+      }
+      const diff = await api.fileDiff(path, r.current_backup_path || undefined);
+      setData({ old: diff.old || "", neu: diff.new || "", backupPath: diff.backup_path || r.current_backup_path || data.backupPath });
+      setMsg("已恢复到备份。当前版本也已另存一份备份，可再回退。");
+    } catch (e) {
+      setErr(getErrorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
   if (err) return <div className="flex-1 p-4 text-[12.5px] text-[#86868b] dark:text-[#6e7077]">{err}</div>;
   if (!data) return <div className="flex-1 p-4 text-[12.5px] text-[#a1a1a6]">读取改动中…</div>;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 px-4 pt-3 text-[12px] text-[#86868b] dark:text-[#6e7077]">这份文件改了哪几处（红删绿增）：</div>
+      <div className="flex shrink-0 items-center gap-2 px-4 pt-3 text-[12px] text-[#86868b] dark:text-[#6e7077]">
+        <span className="min-w-0 flex-1">这份文件改了哪几处（红删绿增）：</span>
+        <button
+          type="button"
+          onClick={restore}
+          disabled={busy || !data.backupPath}
+          className="flex h-7 items-center gap-1 rounded-md border border-black/[0.08] bg-white px-2 text-[11.5px] text-[#3a3a3c] transition hover:bg-black/[0.03] disabled:opacity-50 dark:border-white/[0.08] dark:bg-[#16181d] dark:text-[#c8cace] dark:hover:bg-white/[0.05]"
+        >
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+          恢复到备份
+        </button>
+      </div>
+      {msg && <div className="mx-4 mt-2 rounded-md bg-[#10a37f]/10 px-2.5 py-1.5 text-[12px] text-[#10a37f]">{msg}</div>}
       <div className="min-h-0 flex-1 overflow-auto p-4"><DiffBlock before={data.old} after={data.neu} /></div>
     </div>
   );
@@ -387,6 +420,7 @@ export function DesktopPreviewPanel({
   onRefine,
   onRefineSelection,
   onFinalize,
+  onMakeVideo,
 }: {
   item: PreviewItem;
   onClose: () => void;
@@ -395,6 +429,7 @@ export function DesktopPreviewPanel({
   onRefineSelection?: (selectedText: string, instruction: string) => void;
   /** 定稿闸：老板看完拍板。accept=确认采用这一版(content/file 带最终文字)；redo=重做一版。 */
   onFinalize?: (action: "accept" | "redo", finalText?: string) => void;
+  onMakeVideo?: (item: Extract<PreviewItem, { kind: "poster" }>) => void;
 }) {
   const { electron } = useDesktop();
   const [copied, setCopied] = useState(false);
@@ -403,6 +438,7 @@ export function DesktopPreviewPanel({
   const [saveFmt, setSaveFmt] = useState("docx");
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<{ text: string; bad?: boolean } | null>(null);
+  const [savedPath, setSavedPath] = useState<string | null>(null);
   const { width, onHandleMouseDown } = useHorizontalResize({
     storageKey: "desktop.previewWidth", defaultWidth: 440, min: 320, max: 720, edge: "left",
   });
@@ -439,7 +475,7 @@ export function DesktopPreviewPanel({
   const directEdit = item.kind === "content"; // content 直连 canvasEdit；file 走管家
 
   const copy = async () => {
-    if (item.kind === "poster" || item.kind === "sheet") return;
+    if (item.kind === "poster" || item.kind === "video" || item.kind === "sheet") return;
     try {
       await navigator.clipboard.writeText(workText);
       setCopied(true);
@@ -528,6 +564,51 @@ export function DesktopPreviewPanel({
     setSaveMsg({ text, bad });
     setTimeout(() => setSaveMsg(null), 3500);
   };
+  const showSavedLocation = async () => {
+    if (!savedPath || !electron?.files?.showInFolder) return;
+    const r = await electron.files.showInFolder(savedPath);
+    if (!r.ok && r.error) flashSave(r.error, true);
+  };
+  const saveMediaAsFile = async () => {
+    if (saving || (item.kind !== "poster" && item.kind !== "video")) return;
+    if (!electron?.files?.save) { flashSave("当前环境不支持保存到电脑", true); return; }
+    const url = item.kind === "poster" ? item.imageUrl : item.videoUrl;
+    const isVideo = item.kind === "video";
+    const defaultExt = isVideo ? "mp4" : "png";
+    const fromUrl = url.split("?")[0].split("#")[0].split("/").pop() || `${saveTitle}.${defaultExt}`;
+    const cleanName = fromUrl.includes(".") ? fromUrl : `${saveTitle}.${defaultExt}`;
+    setSaving(true);
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("下载成品失败，请稍后再试");
+      const blob = await res.blob();
+      const buffer = await blob.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+      }
+      const r = await electron.files.save({
+        defaultName: cleanName.replace(/[\\/:*?"<>|]/g, "") || `${saveTitle}.${defaultExt}`,
+        base64: btoa(binary),
+        title: isVideo ? "保存视频到本机" : "保存图片到本机",
+        filters: isVideo
+          ? [{ name: "视频", extensions: ["mp4", "mov", "webm"] }]
+          : [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp"] }],
+      });
+      if (r.canceled) flashSave("已取消");
+      else if (r.error) flashSave(r.error, true);
+      else {
+        setSavedPath(r.path || null);
+        flashSave(`已存到电脑：${r.path}`);
+      }
+    } catch (e) {
+      flashSave(getErrorMessage(e), true);
+    } finally {
+      setSaving(false);
+    }
+  };
   // 另存为：渲染成所选格式 → 走系统「保存」对话框写到老板选的位置
   const saveAsFile = async (f: { fmt: string; label: string; ext: string }) => {
     if (saving) return;
@@ -543,7 +624,10 @@ export function DesktopPreviewPanel({
       });
       if (r.canceled) flashSave("已取消");
       else if (r.error) flashSave(r.error, true);
-      else flashSave(`已存到电脑：${r.path}`);
+      else {
+        setSavedPath(r.path || null);
+        flashSave(`已存到电脑：${r.path}`);
+      }
     } catch (e) {
       flashSave(getErrorMessage(e), true);
     } finally {
@@ -557,6 +641,7 @@ export function DesktopPreviewPanel({
     setSaving(true);
     try {
       const r = await api.saveToLibrary(workText, f.fmt, saveTitle);
+      setSavedPath(r.path || null);
       flashSave(`已放进素材库：${r.path}`);
     } catch (e) {
       flashSave(getErrorMessage(e), true);
@@ -568,6 +653,7 @@ export function DesktopPreviewPanel({
   const headerName =
     item.title ||
     (item.kind === "poster" ? "海报预览"
+      : item.kind === "video" ? "视频预览"
       : item.kind === "sheet" ? fileName(item.path)
       : item.kind === "doc" ? fileName(item.path)
       : item.kind === "diff" ? `${fileName(item.path)} · 改动对比`
@@ -605,13 +691,21 @@ export function DesktopPreviewPanel({
               className="max-h-full max-w-full rounded-xl object-contain shadow-[0_10px_34px_rgba(0,0,0,0.2)] dark:shadow-[0_10px_34px_rgba(0,0,0,0.5)]"
             />
           </div>
+        ) : item.kind === "video" ? (
+          <div className="flex flex-1 items-center justify-center overflow-hidden bg-black/[0.04] p-4 dark:bg-black/40">
+            <video
+              src={item.videoUrl}
+              controls
+              className="max-h-full max-w-full rounded-xl bg-black shadow-[0_10px_34px_rgba(0,0,0,0.2)] dark:shadow-[0_10px_34px_rgba(0,0,0,0.5)]"
+            />
+          </div>
         ) : item.kind === "sheet" ? (
           <SheetView path={item.path} />
         ) : item.kind === "doc" ? (
           // Word/PPT → 文字级编辑(写回原文件)；PDF/网页 → DocView(网页可圈可点 / PDF 原样)
           /\.(docx|pptx)$/i.test(item.path) ? <DocEditView path={item.path} title={item.title || fileName(item.path)} /> : <DocView path={item.path} />
         ) : item.kind === "diff" ? (
-          <DiffPreview path={item.path} />
+          <DiffPreview path={item.path} backupPath={item.backupPath} />
         ) : item.kind === "file" ? (
           <div className="flex-1 overflow-auto p-4">
             <pre className="whitespace-pre-wrap break-words rounded-lg border border-black/[0.08] bg-white p-3.5 font-mono text-[12px] leading-relaxed text-[#1d1d1f] shadow-sm dark:border-white/[0.08] dark:bg-[#16181d] dark:text-[#c8cace] dark:shadow-none">{workText}</pre>
@@ -707,8 +801,20 @@ export function DesktopPreviewPanel({
       {/* 工具条（海报/文案/文件 + 定稿闸；报表不需要——点格即改；doc 仅在有定稿闸时显示底栏） */}
       {item.kind !== "sheet" && item.kind !== "doc" && (
         <div className="border-t border-black/[0.08] p-3 dark:border-white/[0.06]">
-          {item.kind === "poster" && item.ratio && (
-            <div className="mb-2 text-center font-mono text-[11px] text-[#86868b] dark:text-[#6e7077]">{item.ratio}</div>
+          {item.kind === "poster" && (item.ratio || item.width || item.height) && (
+            <div className="mb-2 text-center font-mono text-[11px] text-[#86868b] dark:text-[#6e7077]">
+              {[item.ratio, item.width && item.height ? `${item.width}x${item.height}` : ""].filter(Boolean).join(" · ")}
+            </div>
+          )}
+          {item.kind === "poster" && onMakeVideo && (
+            <div className="mb-2 rounded-md bg-[#ff9500]/10 px-2 py-1.5 text-center text-[11.5px] leading-relaxed text-[#9a5b00] dark:text-[#ffcc80]">
+              做成视频会先弹确认卡；确认后才消耗视频额度，通常要等几分钟。
+            </div>
+          )}
+          {item.kind === "video" && (item.ratio || item.duration) && (
+            <div className="mb-2 text-center font-mono text-[11px] text-[#86868b] dark:text-[#6e7077]">
+              {[item.ratio, item.duration ? `${item.duration}秒` : ""].filter(Boolean).join(" · ")}
+            </div>
           )}
           {editErr && <div className="mb-2 text-[12px] text-[#ff3b30] dark:text-[#ff8585]">{editErr}</div>}
           {/* 待确认改写：接受/放弃这处 diff（对齐 cc-haha 的逐处采纳纪律） */}
@@ -750,13 +856,25 @@ export function DesktopPreviewPanel({
           {!pending && (
             <div className="flex items-center gap-2">
               {item.kind === "poster" ? (
-                <a
-                  href={item.imageUrl}
-                  download
+                <button
+                  type="button"
+                  onClick={() => void saveMediaAsFile()}
+                  disabled={saving}
                   className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md bg-[#10a37f] text-[13px] text-white transition hover:bg-[#0e906f] active:scale-[0.98]"
                 >
-                  <Download className="h-3.5 w-3.5" /> 保存到本机
-                </a>
+                  {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                  {saving ? "正在保存…" : "保存到本机"}
+                </button>
+              ) : item.kind === "video" ? (
+                <button
+                  type="button"
+                  onClick={() => void saveMediaAsFile()}
+                  disabled={saving}
+                  className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md bg-[#10a37f] text-[13px] text-white transition hover:bg-[#0e906f] active:scale-[0.98]"
+                >
+                  {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                  {saving ? "正在保存…" : "保存到本机"}
+                </button>
               ) : (
                 <button
                   onClick={copy}
@@ -783,6 +901,15 @@ export function DesktopPreviewPanel({
                   <Wand2 className="h-3.5 w-3.5" /> 整张重做
                 </button>
               ) : null}
+              {item.kind === "poster" && onMakeVideo && (
+                <button
+                  onClick={() => onMakeVideo(item)}
+                  className="flex h-9 items-center justify-center gap-1.5 rounded-md border border-black/[0.1] bg-white px-3 text-[13px] text-[#1d1d1f] transition hover:bg-black/[0.03] active:scale-[0.98] dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#c8cace] dark:hover:bg-white/[0.06]"
+                  title="用这张图作为首帧发起图生视频，确认后才会真正消耗视频额度"
+                >
+                  <Clapperboard className="h-3.5 w-3.5" /> 做成视频
+                </button>
+              )}
               {edited && (
                 <button
                   onClick={reset}
@@ -802,8 +929,19 @@ export function DesktopPreviewPanel({
           )}
           {/* 定稿保存提示 */}
           {saveMsg && (
-            <div className={`mt-2 truncate text-[12px] ${saveMsg.bad ? "text-[#ff3b30] dark:text-[#ff8585]" : "text-[#10a37f]"}`} title={saveMsg.text}>
-              {saving ? "" : saveMsg.text}
+            <div className="mt-2 flex min-w-0 items-center gap-2">
+              <div className={`min-w-0 flex-1 truncate text-[12px] ${saveMsg.bad ? "text-[#ff3b30] dark:text-[#ff8585]" : "text-[#10a37f]"}`} title={saveMsg.text}>
+                {saving ? "" : saveMsg.text}
+              </div>
+              {!saveMsg.bad && savedPath && electron?.files?.showInFolder && (
+                <button
+                  type="button"
+                  onClick={() => void showSavedLocation()}
+                  className="shrink-0 rounded-md px-2 py-1 text-[12px] text-[#007AFF] transition hover:bg-[#007AFF]/10"
+                >
+                  打开位置
+                </button>
+              )}
             </div>
           )}
           {/* 文案：定稿 = 保存到电脑（存成 Word/网页/纯文字/Markdown，另存为或放进素材库）+ 重做一版 */}

@@ -5,7 +5,11 @@
 - 每个比例映射出的宽高真的对应它声称的比例（修复 3:4/9:16/16:9 全发错尺寸的 bug）。
 - 宽高都是 16 的倍数（gpt-image-2 的尺寸约束）。
 """
-from services.poster_service import SIZE_MAP, get_size_options
+import pytest
+from PIL import Image
+
+from core.exceptions import AIServiceError
+from services.poster_service import SIZE_MAP, _assert_saved_ratio, get_size_options
 
 # 声称的比例 → 期望宽高比（宽/高）
 _EXPECTED_RATIO = {
@@ -41,3 +45,16 @@ def test_distinct_ratios_get_distinct_sizes():
 def test_size_options_keys_all_have_mapping():
     for opt in get_size_options():
         assert opt["value"] in SIZE_MAP
+
+
+def test_saved_image_ratio_validation_accepts_matching_file(tmp_path):
+    p = tmp_path / "poster.jpg"
+    Image.new("RGB", (1152, 2048), "white").save(p)
+    assert _assert_saved_ratio(p, "9:16") == (1152, 2048)
+
+
+def test_saved_image_ratio_validation_rejects_wrong_file(tmp_path):
+    p = tmp_path / "poster.jpg"
+    Image.new("RGB", (1024, 1024), "white").save(p)
+    with pytest.raises(AIServiceError, match="图片比例校验失败"):
+        _assert_saved_ratio(p, "9:16")

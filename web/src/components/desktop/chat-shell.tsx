@@ -4,12 +4,13 @@
  * 桌面端 Agent 对话整壳：侧栏 + （空态欢迎页 | 对话流）+ 输入区，接 useAgentChat 真后端管道。
  * chat 路由唯一渲染本壳（单窗口产品，旧手机网页版分支已随单窗口化删除）。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { api } from "@/lib/api";
+import { api, type RecentArtifact } from "@/lib/api";
 import { HELP_TEXT } from "@/lib/agent-copy";
 import { useDesktop } from "@/hooks/use-desktop";
 import { useAgentChat, type PermissionMode, type ChatMessage } from "@/hooks/use-agent-chat";
+import { safeFileName } from "@/lib/utils";
 import { DesktopShell, DesktopSidebar, type DesktopConversation } from "./macos-shell";
 import { WelcomeScreen } from "./welcome-screen";
 import { DesktopComposer } from "./desktop-composer";
@@ -17,6 +18,8 @@ import { DesktopChatThread } from "./chat-thread";
 import { DesktopPreviewPanel, type PreviewItem } from "./preview-panel";
 import { SettingsDrawer } from "./settings-drawer";
 import { ConfirmDialog } from "./confirm-dialog";
+import { StoreMemoryPanel } from "./store-memory-panel";
+import { DeletedItemsPanel } from "./deleted-items-panel";
 
 function groupByDate(iso: string | null): string {
   if (!iso) return "更早";
@@ -25,6 +28,54 @@ function groupByDate(iso: string | null): string {
   if (d.toDateString() === now.toDateString()) return "今天";
   const days = Math.floor((now.getTime() - d.getTime()) / 86400000);
   return days < 7 ? "前 7 天" : "更早";
+}
+
+type PersistedWorkbenchState = {
+  workingDir?: string | null;
+  resourceDirs?: string[];
+  selectedFiles?: string[];
+  knowledgePacks?: string[];
+  outputStyle?: string;
+  deepThinking?: boolean;
+  advancedMode?: boolean;
+  permissionMode?: PermissionMode;
+  preview?: PreviewItem | null;
+};
+
+function getWorkbenchId(): string {
+  if (typeof window === "undefined") return "main";
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const fromUrl = params.get("workbench");
+    if (fromUrl) return fromUrl;
+  } catch { /* 忽略 */ }
+  return "main";
+}
+
+function baseName(path: string): string {
+  const parts = path.split(/[\\/]/);
+  return parts[parts.length - 1] || path;
+}
+
+function utf8ToBase64(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function isRestorablePreview(value: unknown): value is PreviewItem {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<PreviewItem>;
+  if (item.kind === "poster") return typeof item.imageUrl === "string";
+  if (item.kind === "video") return typeof item.videoUrl === "string";
+  if (item.kind === "content") return typeof item.text === "string";
+  if (item.kind === "file") return typeof item.text === "string";
+  if (item.kind === "sheet" || item.kind === "doc" || item.kind === "diff") return typeof item.path === "string";
+  return false;
 }
 
 export function DesktopChatShell({
@@ -37,29 +88,143 @@ export function DesktopChatShell({
   todaySuggestion?: string;
 }) {
   const { electron } = useDesktop();
+  const [workbenchId] = useState(getWorkbenchId);
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<PermissionMode>("ask");
   // 已选定的本机文件（绝对路径）：授权管家读/改它们，像 Claude Code 一样改本地文件。随每次对话透传后端沙箱。
   // 注：桌面版后端默认放开「完全本地访问」（找/读/改任意文件+跑命令），无需前端再开开关；权限模式即安全闸。
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
+  const [recentFiles, setRecentFiles] = useState<string[]>([]);
   // @ 挂载的知识库（如 ["billiards"]）：挂上=该领域专家，不挂=通用 Agent。随每次对话透传后端。
   const [knowledgePacks, setKnowledgePacks] = useState<string[]>([]);
   const [outputStyle, setOutputStyle] = useState<string>("");
+  const [advancedMode, setAdvancedMode] = useState(false);
   const [deepThinking, setDeepThinking] = useState(true); // F.2 深度思考默认开（mimo 默认就开）
   const [goal, setGoal] = useState<string>("");
   const [workingDir, setWorkingDir] = useState<string | null>(null);
+  const [resourceDirs, setResourceDirs] = useState<string[]>([]);
+  const [downloadsPath, setDownloadsPath] = useState<string | null>(null);
+  const e2eAnswerSeededRef = useRef(false);
+  const recentFilesKey = "agent_recent_files";
+  const rememberFiles = useCallback((paths: string[]) => {
+    const clean = paths.filter(Boolean);
+    if (!clean.length) return;
+    setRecentFiles((prev) => {
+      const next = [...clean, ...prev.filter((p) => !clean.includes(p))].slice(0, 12);
+      try { localStorage.setItem(recentFilesKey, JSON.stringify(next)); } catch { /* 忽略 */ }
+      return next;
+    });
+  }, []);
+  const addSelectedFiles = useCallback((paths: string[]) => {
+    const clean = paths.filter(Boolean);
+    if (!clean.length) return;
+    setSelectedFiles((prev) => Array.from(new Set([...prev, ...clean])));
+    rememberFiles(clean);
+  }, [rememberFiles]);
   const wdKey = (id: string) => `agent_working_dir:${id}`;
   const persistWorkingDir = (id: string | null, wd: string | null) => {
     if (!id) return;
     try { wd ? localStorage.setItem(wdKey(id), wd) : localStorage.removeItem(wdKey(id)); } catch { /* 忽略 */ }
   };
-  const chat = useAgentChat({ permissionMode: mode, selectedFiles, knowledgePacks, outputStyle, goal, deepThinking, workingDir });
+  const contextFiles = useMemo(
+    () => Array.from(new Set([...resourceDirs, ...selectedFiles])),
+    [resourceDirs, selectedFiles],
+  );
+  const chat = useAgentChat({
+    permissionMode: mode,
+    selectedFiles: contextFiles,
+    knowledgePacks,
+    outputStyle,
+    goal,
+    deepThinking,
+    workingDir,
+    onGeneratedImage: (item) => setPreview({ kind: "poster", ...item }),
+  });
   // 注：updateWorkingDir 必须声明在 chat 之后——它闭包引用 chat.conversationId，提前声明会触发 TDZ。
   const updateWorkingDir = (wd: string | null) => { setWorkingDir(wd); persistWorkingDir(chat.conversationId, wd); };
   const [preview, setPreview] = useState<PreviewItem | null>(null);
   // 设置抽屉（门店名 + AI key）：单窗口内打开，替代老 web 的门店设置页
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const [deletedOpen, setDeletedOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [workbenchLoaded, setWorkbenchLoaded] = useState(false);
+  const workbenchStateKey = `agent_workbench_state:${workbenchId}`;
+
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("e2e_poster") !== "1") return;
+      setPreview({
+        kind: "poster",
+        title: "E2E 海报预览",
+        imageUrl: "/e2e-poster.svg",
+        ratio: "9:16",
+        width: 360,
+        height: 640,
+      });
+    } catch { /* E2E helper only */ }
+  }, []);
+
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("e2e_answer") !== "1" || e2eAnswerSeededRef.current) return;
+      e2eAnswerSeededRef.current = true;
+      chat.pushAssistantMessage("今晚下雨没人，可以先做三件事：1. 客户群发雨天到店福利；2. 让助教约老客打练习局；3. 朋友圈发周赛预告。重点是今晚能执行，不写长篇理论。");
+    } catch { /* E2E helper only */ }
+  }, [chat]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(workbenchStateKey);
+      if (!raw) { setWorkbenchLoaded(true); return; }
+      const saved = JSON.parse(raw) as PersistedWorkbenchState;
+      if (saved.permissionMode === "ask" || saved.permissionMode === "auto_files" || saved.permissionMode === "full" || saved.permissionMode === "plan") {
+        setMode(saved.permissionMode);
+      }
+      if (Array.isArray(saved.resourceDirs)) setResourceDirs(saved.resourceDirs.filter((p): p is string => typeof p === "string").slice(0, 8));
+      if (Array.isArray(saved.selectedFiles)) setSelectedFiles(saved.selectedFiles.filter((p): p is string => typeof p === "string").slice(0, 20));
+      if (Array.isArray(saved.knowledgePacks)) setKnowledgePacks(saved.knowledgePacks.filter((p): p is string => typeof p === "string"));
+      if (typeof saved.outputStyle === "string") setOutputStyle(saved.outputStyle);
+      if (typeof saved.advancedMode === "boolean") setAdvancedMode(saved.advancedMode);
+      if (typeof saved.deepThinking === "boolean") setDeepThinking(saved.deepThinking);
+      if (typeof saved.workingDir === "string" || saved.workingDir === null) setWorkingDir(saved.workingDir || null);
+      if (isRestorablePreview(saved.preview)) setPreview(saved.preview);
+    } catch { /* 忽略坏快照 */ }
+    finally { setWorkbenchLoaded(true); }
+  }, [workbenchStateKey]);
+
+  useEffect(() => {
+    if (!workbenchLoaded) return;
+    const payload: PersistedWorkbenchState = {
+      workingDir,
+      resourceDirs,
+      selectedFiles,
+      knowledgePacks,
+      outputStyle,
+      advancedMode,
+      deepThinking,
+      permissionMode: mode,
+      preview,
+    };
+    try { localStorage.setItem(workbenchStateKey, JSON.stringify(payload)); } catch { /* 忽略 */ }
+  }, [advancedMode, deepThinking, knowledgePacks, mode, outputStyle, preview, resourceDirs, selectedFiles, workbenchLoaded, workbenchStateKey, workingDir]);
+
+  useEffect(() => {
+    let cancelled = false;
+    electron?.info?.()
+      .then((info) => { if (!cancelled && info.downloadsPath) setDownloadsPath(info.downloadsPath); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [electron]);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(recentFilesKey);
+      const arr = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(arr)) setRecentFiles(arr.filter((p): p is string => typeof p === "string").slice(0, 12));
+    } catch { /* 忽略 */ }
+  }, []);
 
   // 侧栏真数据：门店名 + 本月 AI 用量（拿不到就用传入的默认/占位，不阻断）
   const [liveStoreName, setLiveStoreName] = useState<string | undefined>();
@@ -69,7 +234,7 @@ export function DesktopChatShell({
   const [liveTodayRecId, setLiveTodayRecId] = useState<string | undefined>();
   // D.5：全内置 key·零配置 → 默认显示内置大脑原名「MiMo V2.5」；老板自带 BYOK 时再覆盖成他的模型名。
   const [liveModel, setLiveModel] = useState<string | undefined>("MiMo V2.5");
-  // 没配 AI key 时门面顶部弹一条引导（非技术老板最容易卡在"不知道要先配 key"）；配好/关掉设置后重查、自动消失
+  // 极端情况下内置模型不可用时的兜底提示；正常桌面产品不要求用户先配 key。
   const [needsKey, setNeedsKey] = useState(false);
   const [keyHintDismissed, setKeyHintDismissed] = useState(false);
   useEffect(() => {
@@ -107,6 +272,7 @@ export function DesktopChatShell({
 
   // 会话历史列表（侧栏）：进页面拉一次 + 每拿到新会话 id 后刷新（新会话冒头）
   const [conversations, setConversations] = useState<DesktopConversation[]>([]);
+  const [recentItems, setRecentItems] = useState<RecentArtifact[]>([]);
   const refreshConversations = useCallback(async () => {
     try {
       const r = await api.listAgentConversations();
@@ -117,13 +283,25 @@ export function DesktopChatShell({
       })));
     } catch { /* 拿不到就空 */ }
   }, []);
+  const refreshRecentItems = useCallback(async () => {
+    try {
+      const r = await api.listRecentArtifacts(8);
+      setRecentItems(r.items || []);
+    } catch { /* 拿不到不影响聊天 */ }
+  }, []);
   useEffect(() => { void refreshConversations(); }, [refreshConversations]);
+  useEffect(() => { void refreshRecentItems(); }, [refreshRecentItems]);
   useEffect(() => { if (chat.conversationId) void refreshConversations(); }, [chat.conversationId, refreshConversations]);
+  useEffect(() => { if (chat.conversationId) void refreshRecentItems(); }, [chat.conversationId, refreshRecentItems]);
   // 新会话首条消息后拿到 id → 把用户此前设的工作目录落盘到这个 id
   useEffect(() => { if (chat.conversationId) persistWorkingDir(chat.conversationId, workingDir); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [chat.conversationId]);
 
   // 点开一条历史会话 → 拉它的消息加载进来（可继续聊）
   const loadConv = useCallback(async (id: string) => {
+    if (chat.generating) {
+      chat.pushAssistantMessage("当前任务还在跑，先别切换会话。等它完成后再打开历史记录，避免把这次任务中断。");
+      return;
+    }
     try {
       const r = await api.getAgentConversation(id);
       setSelectedFiles([]); // 切换会话：清掉上个会话的附件，避免误带
@@ -131,13 +309,76 @@ export function DesktopChatShell({
       chat.loadConversation(id, (r.messages || []) as ChatMessage[]);
     } catch { /* 忽略 */ }
   }, [chat]);
-  const newChat = useCallback(() => { setSelectedFiles([]); setWorkingDir(null); chat.startNewChat(); }, [chat]);
+  const openRecent = useCallback((item: RecentArtifact) => {
+    if (item.kind === "poster" && item.url) {
+      setPreview({
+        kind: "poster",
+        title: item.title,
+        imageUrl: item.url,
+        ratio: item.ratio || undefined,
+        width: item.width || undefined,
+        height: item.height || undefined,
+      });
+      return;
+    }
+    if (item.kind === "video" && item.url) {
+      setPreview({
+        kind: "video",
+        title: item.title,
+        videoUrl: item.url,
+        ratio: item.ratio || undefined,
+        duration: item.duration || undefined,
+      });
+      return;
+    }
+    if (item.kind === "task" && item.conversation_id) {
+      void loadConv(item.conversation_id);
+      return;
+    }
+    if (item.kind === "file_change" && item.path) {
+      setPreview({ kind: "diff", title: item.title, path: item.path, backupPath: item.backup_path || item.id });
+      return;
+    }
+    if (item.content) {
+      setPreview({ kind: "content", title: item.title, text: item.content });
+    }
+  }, [chat, loadConv]);
+  const deleteRecent = useCallback(async (item: RecentArtifact) => {
+    if (!item.id || item.kind === "file_change") return;
+    const ok = window.confirm(`把「${item.title || "这条作品"}」移入最近删除？之后可以从「最近删除」恢复。`);
+    if (!ok) return;
+    try {
+      await api.deleteRecentArtifact(item.id);
+      await refreshRecentItems();
+      chat.pushAssistantMessage("已移入「最近删除」，需要的话可以从右上角恢复。");
+    } catch {
+      chat.pushAssistantMessage("删除失败了。可以稍后再试一次。");
+    }
+  }, [chat, refreshRecentItems]);
+  const continueLast = useCallback(() => {
+    const last = conversations[0];
+    if (last) { void loadConv(last.id); return; }
+    const recentTask = recentItems.find((item) => item.conversation_id);
+    if (recentTask?.conversation_id) void loadConv(recentTask.conversation_id);
+  }, [conversations, recentItems, loadConv]);
+  const newChat = useCallback(() => { setSelectedFiles([]); setPreview(null); chat.startNewChat(); }, [chat]);
+  const newWorkspace = useCallback(() => {
+    if (!electron?.newWindow) return;
+    electron.newWindow().catch(() => {
+      chat.pushAssistantMessage("新工作台没能打开。你可以先用当前窗口继续做，稍后再试一次。");
+    });
+  }, [electron, chat]);
 
   // 删除一条历史会话（侧栏垃圾桶）：弹确认 → 软删 → 从列表移除；删的是当前会话则切到新会话。P1-3b。
   const deleteConv = useCallback((id: string) => { setDeleteTarget(id); }, []);
   const confirmDelete = useCallback(async () => {
     const id = deleteTarget;
     if (!id) return;
+    if (chat.generating && chat.conversationId === id) {
+      setDeleteTarget(null);
+      chat.pushAssistantMessage("当前会话的任务还在跑，等它完成后再删除。");
+      return;
+    }
     setDeleteTarget(null);
     try {
       await api.deleteAgentConversation(id);
@@ -163,14 +404,41 @@ export function DesktopChatShell({
       setDailyDraftsBusy(false);
     }
   }, [chat, dailyDraftsBusy]);
+  const viewCurrentScreen = useCallback(async () => {
+    if (chat.generating) return;
+    if (!electron?.captureScreen) {
+      void chat.send("先看一下我当前电脑屏幕，告诉我你看到了什么；如果需要点按或输入，先说明要做什么并等我确认。");
+      return;
+    }
+    try {
+      const r = await electron.captureScreen();
+      if (!r?.ok || !r.path) {
+        chat.pushAssistantMessage(`当前屏幕没截下来。${r?.error ? `原因：${r.error}` : "可以稍后再试一次，或直接粘贴截图给我看。"}`);
+        return;
+      }
+      addSelectedFiles([r.path]);
+      void chat.send(
+        `我刚截了一张当前屏幕图，文件名是 ${r.path.split(/[\\/]/).pop()}。先根据这张截图告诉我你看到了什么；如果需要点按或输入，先说明要做什么并等我确认。`,
+        undefined,
+        { selectedFiles: Array.from(new Set([...resourceDirs, r.path])) },
+      );
+    } catch {
+      chat.pushAssistantMessage("当前屏幕没截下来。可以稍后再试一次，或直接粘贴截图给我看。");
+    }
+  }, [chat, electron, addSelectedFiles, resourceDirs]);
+  const startResearch = useCallback(() => {
+    if (chat.generating) return;
+    setInput("帮我查资料：");
+  }, [chat.generating]);
 
   // 权限偏好持久化（与手机页同一套 localStorage key，体验一致）
   useEffect(() => {
     try {
+      if (localStorage.getItem(workbenchStateKey)) return;
       const m = localStorage.getItem("agent_permission_mode");
       if (m === "ask" || m === "auto_files" || m === "full" || m === "plan") setMode(m);
     } catch { /* 忽略 */ }
-  }, []);
+  }, [workbenchStateKey]);
   const updateMode = (m: PermissionMode) => {
     setMode(m);
     try { localStorage.setItem("agent_permission_mode", m); } catch { /* 忽略 */ }
@@ -179,10 +447,11 @@ export function DesktopChatShell({
   // @ 知识库挂载偏好持久化（记住上次挂了哪些领域包）
   useEffect(() => {
     try {
+      if (localStorage.getItem(workbenchStateKey)) return;
       const k = localStorage.getItem("agent_knowledge_packs");
       if (k) { const arr = JSON.parse(k); if (Array.isArray(arr)) setKnowledgePacks(arr.filter((x): x is string => typeof x === "string")); }
     } catch { /* 忽略 */ }
-  }, []);
+  }, [workbenchStateKey]);
   const updateKnowledgePacks = (packs: string[]) => {
     setKnowledgePacks(packs);
     try { localStorage.setItem("agent_knowledge_packs", JSON.stringify(packs)); } catch { /* 忽略 */ }
@@ -190,41 +459,78 @@ export function DesktopChatShell({
 
   // 输出风格偏好持久化
   useEffect(() => {
-    try { const s = localStorage.getItem("agent_output_style"); if (s) setOutputStyle(s); } catch { /* 忽略 */ }
-  }, []);
+    try {
+      if (localStorage.getItem(workbenchStateKey)) return;
+      const s = localStorage.getItem("agent_output_style");
+      if (s) setOutputStyle(s);
+    } catch { /* 忽略 */ }
+  }, [workbenchStateKey]);
   const updateOutputStyle = (name: string) => {
     setOutputStyle(name);
     try { localStorage.setItem("agent_output_style", name); } catch { /* 忽略 */ }
   };
   // F.2 深度思考开关持久化（默认开；存了 "0" 才是关）
   useEffect(() => {
-    try { if (localStorage.getItem("agent_deep_thinking") === "0") setDeepThinking(false); } catch { /* 忽略 */ }
-  }, []);
+    try {
+      if (localStorage.getItem(workbenchStateKey)) return;
+      if (localStorage.getItem("agent_deep_thinking") === "0") setDeepThinking(false);
+    } catch { /* 忽略 */ }
+  }, [workbenchStateKey]);
   const updateDeepThinking = (v: boolean) => {
     setDeepThinking(v);
     try { localStorage.setItem("agent_deep_thinking", v ? "1" : "0"); } catch { /* 忽略 */ }
   };
 
-  // 选本机文件/文件夹：弹系统选择器，把绝对路径加进 selectedFiles（去重）。授权管家读/改它们。
-  // P0-1：filesAndFolders → 一个弹窗里文件或【整个文件夹】都能选(macOS)，且不按类型过滤(.py 等不再被灰)。
+  // 选参考文件/图片/视频：回形针只做附件授权；文件夹统一走“工作文件夹”入口，避免用户把目录当附件。
   const pickFiles = useCallback(async () => {
     if (!electron?.files?.pick) return;
     try {
-      const r = await electron.files.pick({ multi: true, filesAndFolders: true });
+      const r = await electron.files.pick({ multi: true });
       if (r.canceled || !r.paths?.length) return;
-      setSelectedFiles((prev) => Array.from(new Set([...prev, ...r.paths])));
+      addSelectedFiles(r.paths);
     } catch { /* 取消/失败：忽略 */ }
-  }, [electron]);
-  const pickWorkingDir = async () => {
+  }, [electron, addSelectedFiles]);
+  const pickDownloads = useCallback(async () => {
+    if (!electron?.files?.pick || !downloadsPath) return;
+    try {
+      const r = await electron.files.pick({
+        title: "从下载文件夹选择素材",
+        defaultPath: downloadsPath,
+        multi: true,
+      });
+      if (r.canceled || !r.paths?.length) return;
+      addSelectedFiles(r.paths);
+    } catch { /* 取消/失败：忽略 */ }
+  }, [electron, downloadsPath, addSelectedFiles]);
+  const pickWorkingDir = async (mode: "new" | "existing" = "existing") => {
     if (!electron?.files?.pick) return;
     try {
-      const r = await electron.files.pick({ directory: true, createDirectory: true });
+      const r = await electron.files.pick({
+        directory: true,
+        createDirectory: mode === "new",
+        title: mode === "new" ? "新建或选择一个空白工作文件夹" : "选择要让 AI 工作的文件夹",
+      });
       if (r.canceled || !r.paths?.length) return;
       updateWorkingDir(r.paths[0]);
     } catch { /* 取消/失败:忽略 */ }
   };
+  const pickResourceDir = async () => {
+    if (!electron?.files?.pick) return;
+    try {
+      const r = await electron.files.pick({
+        directory: true,
+        title: "添加资料文件夹",
+      });
+      if (r.canceled || !r.paths?.length) return;
+      const dir = r.paths[0];
+      setResourceDirs((prev) => Array.from(new Set([...prev, dir])).slice(0, 8));
+    } catch { /* 取消/失败:忽略 */ }
+  };
   const removeFile = useCallback((p: string) => {
     setSelectedFiles((prev) => prev.filter((x) => x !== p));
+  }, []);
+  const removeResourceDir = useCallback((p: string) => {
+    setResourceDirs((prev) => prev.filter((x) => x !== p));
   }, []);
 
   const onSend = () => {
@@ -252,6 +558,96 @@ export function DesktopChatShell({
   const onRefine = (kind: PreviewItem["kind"]) => {
     setInput(kind === "poster" ? "把刚才那张海报改成：" : "把刚才这条改成：");
   };
+  const onMakeVideo = (item: Extract<PreviewItem, { kind: "poster" }>) => {
+    if (chat.generating) return;
+    setInput("");
+    void chat.send(
+      [
+        "把这张图做成一条抖音/视频号同城营销短视频。",
+        `首帧图片：${item.imageUrl}`,
+        `比例：${item.ratio || "9:16"}`,
+        "时长：5 秒左右。",
+        "要求：画面从这张图自然动起来，适合台球房周赛/活动宣传；先生成视频任务确认卡，说明耗时和额度，等我确认后再真正生成。",
+      ].join("\n"),
+    );
+  };
+  // 结果动作：把一段普通回答直接收束成门店员工能照着干的任务清单。
+  const onMakeTask = useCallback((content: string) => {
+    if (chat.generating) return;
+    void chat.send(
+      `把下面这段内容整理成门店员工能照着执行的任务清单。要求：按“负责人 / 今天什么时候做 / 具体动作 / 检查标准”输出，最多 6 条，优先今晚或明天能做的动作；不要写长篇解释。\n\n【原内容】\n${content.slice(0, 4000)}`,
+    );
+  }, [chat]);
+  const onSaveArtifact = useCallback(async (content: string) => {
+    if (!content.trim()) return;
+    const title = content
+      .split("\n")
+      .map((line) => line.replace(/^#+\s*/, "").trim())
+      .find(Boolean)
+      ?.slice(0, 48) || "保存的成品";
+    try {
+      await api.saveRecentArtifact({
+        title,
+        content,
+        conversation_id: chat.conversationId,
+        kind: "assistant_answer",
+      });
+      await refreshRecentItems();
+      chat.pushAssistantMessage("已保存到「最近作品 / 任务」，之后在首页可以找回。");
+    } catch {
+      chat.pushAssistantMessage("保存失败了。你可以先复制这段内容，稍后再试一次。");
+    }
+  }, [chat, refreshRecentItems]);
+  const onExportArtifact = useCallback(async (content: string) => {
+    if (!content.trim()) return;
+    if (!electron?.files?.save) {
+      chat.pushAssistantMessage("当前环境暂时不能弹出保存窗口。你可以先点「复制到微信」，或者点「保存成品」放进最近作品。");
+      return;
+    }
+    const rawTitle = content
+      .split("\n")
+      .map((line) => line.replace(/^#+\s*/, "").trim())
+      .find(Boolean)
+      ?.slice(0, 36) || "AI成品";
+    const defaultName = `${safeFileName(rawTitle)}.md`;
+    try {
+      const r = await electron.files.save({
+        defaultName,
+        base64: utf8ToBase64(content),
+        title: "导出文本成品到电脑",
+        filters: [
+          { name: "Markdown 文档", extensions: ["md"] },
+          { name: "文本", extensions: ["txt"] },
+        ],
+      });
+      if (r.canceled) return;
+      if (r.error || !r.path) {
+        chat.pushAssistantMessage(`导出失败了。${r.error || "可以稍后再试一次。"}`);
+        return;
+      }
+      const path = r.path;
+      chat.pushAssistantMessage(`已导出到电脑：${path}\n\n你可以直接把这个文件发给微信，也可以点“打开文件位置”找到它。`);
+      if (electron.files.showInFolder) {
+        window.setTimeout(() => { void electron.files.showInFolder?.(path); }, 300);
+      }
+    } catch {
+      chat.pushAssistantMessage("导出失败了。可以先点「复制到微信」，或者稍后再试。");
+    }
+  }, [chat, electron]);
+  const onRedoAnswer = useCallback((content: string) => {
+    if (chat.generating) return;
+    void chat.send(
+      `刚才这一版先保留，不要覆盖。请换一个思路重新做一版，适合直接拿去用；如果是台球门店场景，优先给今晚/明天能执行的版本。\n\n【上一版】\n${content.slice(0, 3000)}`,
+    );
+  }, [chat]);
+  const onRecoverFromError = useCallback((content: string) => {
+    const clean = content.replace(/^⚠️\s*/, "").trim();
+    setInput(`我换了素材/工作文件夹后再试一次。上次失败原因：${clean}\n\n这次请继续帮我：`);
+  }, []);
+  const onFollowUp = useCallback((prompt: string) => {
+    if (chat.generating) return;
+    void chat.send(prompt);
+  }, [chat]);
   // 右侧"选中一段→基于此调整"（对齐 ChatGPT Canvas/Codex）：把【选中的原文 + 要改成啥】拼进消息直接发给管家，AI 只改这段。
   const onRefineSelection = (selectedText: string, instruction: string) => {
     if (chat.generating || !preview) return;
@@ -281,36 +677,68 @@ export function DesktopChatShell({
       storeName={liveStoreName || storeName}
       monthlySpend={liveSpend ?? monthlySpend}
       modelLabel={liveModel}
+      advancedMode={advancedMode}
       conversations={conversations}
       activeId={chat.conversationId ?? undefined}
       onNewChat={newChat}
+      onNewWorkspace={electron?.newWindow ? newWorkspace : undefined}
       onSelect={loadConv}
       onDelete={deleteConv}
       onOpenSettings={() => setSettingsOpen(true)}
     />
-  ), [liveStoreName, storeName, liveSpend, monthlySpend, liveModel, conversations, chat.conversationId, newChat, loadConv, deleteConv]);
+  ), [liveStoreName, storeName, liveSpend, monthlySpend, liveModel, advancedMode, conversations, chat.conversationId, newChat, newWorkspace, electron, loadConv, deleteConv]);
 
   return (
     <>
     <DesktopShell
       sidebar={sidebarEl}
-      preview={preview ? <DesktopPreviewPanel item={preview} onClose={() => setPreview(null)} onRefine={onRefine} onRefineSelection={onRefineSelection} onFinalize={onFinalize} /> : undefined}
+      preview={preview ? <DesktopPreviewPanel item={preview} onClose={() => setPreview(null)} onRefine={onRefine} onRefineSelection={onRefineSelection} onFinalize={onFinalize} onMakeVideo={onMakeVideo} /> : undefined}
     >
       <div className="app-drag flex h-[44px] items-center gap-2 border-b border-black/[0.08] px-5 dark:border-white/[0.06]">
         <span className="h-1.5 w-1.5 rounded-full bg-[#10a37f]" />
         <span className="font-mono text-[12.5px] text-[#6e6e73] dark:text-[#9a9ca3]">{empty ? "新会话" : "会话"}</span>
+        <button
+          type="button"
+          onClick={() => setMemoryOpen(true)}
+          className="app-no-drag ml-auto rounded-md px-2 py-1 text-[12px] text-[#6e6e73] transition hover:bg-black/[0.04] hover:text-[#10a37f] dark:text-[#9a9ca3] dark:hover:bg-white/[0.06]"
+        >
+          我的球房资料
+        </button>
+        <button
+          type="button"
+          onClick={() => setDeletedOpen(true)}
+          className="app-no-drag rounded-md px-2 py-1 text-[12px] text-[#6e6e73] transition hover:bg-black/[0.04] hover:text-[#10a37f] dark:text-[#9a9ca3] dark:hover:bg-white/[0.06]"
+        >
+          最近删除
+        </button>
       </div>
 
       {needsKey && !keyHintDismissed && (
         <div className="flex items-center gap-3 border-b border-[#007AFF]/20 bg-[#007AFF]/[0.06] px-5 py-2.5 text-[12.5px] text-[#1d1d1f] dark:text-[#e6e7e9]">
-          <span className="flex-1">👋 先花 1 分钟配一下你的 AI 钥匙，管家才能开工——点「去配置」选个供应商、贴上 key 就行。</span>
+          <span className="flex-1">AI 服务暂时没准备好。普通使用不用自己配 key；可以先重试，或到高级设置里检查自带模型配置。</span>
           <button onClick={() => setSettingsOpen(true)} className="shrink-0 rounded-md bg-[#007AFF] px-3 py-1 text-[12px] font-medium text-white transition hover:bg-[#0066d6] active:scale-[0.97]">去配置</button>
           <button onClick={() => setKeyHintDismissed(true)} aria-label="关闭" className="shrink-0 px-1 text-[#86868b] transition hover:text-[#1d1d1f] dark:hover:text-[#e6e7e9]">✕</button>
         </div>
       )}
 
       {empty ? (
-        <WelcomeScreen todaySuggestion={liveToday || todaySuggestion} todaySuggestionRecId={liveTodayRecId} onPick={pick} onDailyDrafts={loadDailyDrafts} dailyDraftsBusy={dailyDraftsBusy} />
+        <WelcomeScreen
+          todaySuggestion={liveToday || todaySuggestion}
+          todaySuggestionRecId={liveTodayRecId}
+          onPick={pick}
+          onPickWorkingDir={electron?.files?.pick ? () => pickWorkingDir("existing") : undefined}
+          workingDir={workingDir}
+          onDailyDrafts={loadDailyDrafts}
+          dailyDraftsBusy={dailyDraftsBusy}
+          continueTitle={conversations[0]?.title || recentItems.find((item) => item.conversation_id)?.title}
+          onContinueLast={(conversations[0] || recentItems.some((item) => item.conversation_id)) ? continueLast : undefined}
+          recentItems={recentItems}
+          onOpenRecent={openRecent}
+          onDeleteRecent={deleteRecent}
+          onOpenStoreMemory={() => setMemoryOpen(true)}
+          onViewScreen={electron ? viewCurrentScreen : undefined}
+          onResearch={startResearch}
+        />
       ) : (
         <DesktopChatThread
           messages={chat.messages}
@@ -325,21 +753,70 @@ export function DesktopChatShell({
           onAnswer={(label) => { void chat.send(label); }}
           onStop={chat.stop}
           onRetry={chat.retry}
+          onRedoAnswer={onRedoAnswer}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onRecoverFromError={onRecoverFromError}
+          onMakeTask={onMakeTask}
+          onSaveArtifact={onSaveArtifact}
+          onExportArtifact={onExportArtifact}
+          onFollowUp={onFollowUp}
         />
       )}
 
       {electron?.files?.pick && (
         <div className="mx-auto w-full max-w-[820px] px-4 pb-1">
-          {workingDir ? (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#10a37f]/10 px-2.5 py-1 text-[12px] text-[#10a37f]" title={`${workingDir}（AI 默认在这建文件;碰别处会先问你）`}>
-              📁 工作目录：{workingDir.split(/[\\/]/).pop()}
-              <button type="button" onClick={() => updateWorkingDir(null)} className="ml-1 font-bold leading-none hover:opacity-70" aria-label="清除工作目录">×</button>
+          <div className="flex flex-wrap items-center gap-2 text-[12px]">
+            <span
+              className={`inline-flex items-center rounded-md px-2.5 py-1 ${
+                knowledgePacks.includes("billiards")
+                  ? "bg-[#10a37f]/10 text-[#10a37f]"
+                  : "bg-black/[0.04] text-[#6e6e73] dark:bg-white/[0.05] dark:text-[#9a9ca3]"
+              }`}
+              title={knowledgePacks.includes("billiards") ? "台球项目：会自动挂上台球行业知识" : "通用项目：不注入台球门店知识"}
+            >
+              工作台：{knowledgePacks.includes("billiards") ? "台球项目" : "通用项目"}
             </span>
-          ) : (
-            <button type="button" onClick={pickWorkingDir} className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] text-[#86868b] transition hover:bg-black/[0.04] hover:text-[#1d1d1f] dark:hover:bg-white/[0.05]" title="选/新建一个文件夹当工作区:AI 默认在这建文件、跑命令(仍能访问别处文件,改别处会先问你)">
-              📁 设工作目录
+            {workingDir ? (
+              <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md bg-[#10a37f]/10 px-2.5 py-1 text-[#10a37f]" title={`${workingDir}（AI 默认在这里读写改查；完全访问下仍能处理别处文件）`}>
+                <span className="truncate">工作文件夹：{baseName(workingDir)}</span>
+                <button type="button" onClick={() => updateWorkingDir(null)} className="ml-1 font-bold leading-none hover:opacity-70" aria-label="清除工作文件夹">×</button>
+              </span>
+            ) : (
+              <span className="text-[#86868b] dark:text-[#6e7077]">还没选工作文件夹</span>
+            )}
+            {resourceDirs.map((dir) => (
+              <span
+                key={dir}
+                className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md bg-[#007AFF]/10 px-2.5 py-1 text-[#007AFF]"
+                title={`${dir}（资料位置：AI 可参考这里的素材、报表或下载文件）`}
+              >
+                <span className="truncate">资料文件夹：{baseName(dir)}</span>
+                <button type="button" onClick={() => removeResourceDir(dir)} className="ml-1 font-bold leading-none hover:opacity-70" aria-label={`移除资料文件夹 ${baseName(dir)}`}>×</button>
+              </span>
+            ))}
+            <button type="button" onClick={() => pickWorkingDir("new")} className="rounded-md px-2 py-1 text-[#007AFF] transition hover:bg-[#007AFF]/10" title="新建或选择一个空白文件夹，让 AI 默认在里面干活">
+              新建空白文件夹
             </button>
-          )}
+            <button type="button" onClick={() => pickWorkingDir("existing")} className="rounded-md px-2 py-1 text-[#007AFF] transition hover:bg-[#007AFF]/10" title="打开现有文件夹作为这次工作区">
+              使用现有文件夹
+            </button>
+            <button type="button" onClick={pickResourceDir} className="rounded-md px-2 py-1 text-[#007AFF] transition hover:bg-[#007AFF]/10" title="把微信下载、素材图、财务报表等目录挂进当前工作台">
+              添加资料文件夹
+            </button>
+            <button
+              type="button"
+              onClick={() => setAdvancedMode((v) => !v)}
+              aria-pressed={advancedMode}
+              className={`rounded-md px-2 py-1 transition ${
+                advancedMode
+                  ? "bg-[#1d1d1f]/10 text-[#1d1d1f] dark:bg-white/[0.1] dark:text-[#e6e7e9]"
+                  : "text-[#86868b] hover:bg-black/[0.04] hover:text-[#3a3a3c] dark:text-[#6e7077] dark:hover:bg-white/[0.06] dark:hover:text-[#c8cace]"
+              }`}
+              title="只影响当前工作台。打开后 / 命令面板会显示 MCP、插件、技能、子代理等高级入口"
+            >
+              高级模式{advancedMode ? "：开" : ""}
+            </button>
+          </div>
         </div>
       )}
 
@@ -367,6 +844,7 @@ export function DesktopChatShell({
         onKnowledgePacksChange={updateKnowledgePacks}
         outputStyle={outputStyle}
         onOutputStyleChange={updateOutputStyle}
+        advancedMode={advancedMode}
         deepThinking={deepThinking}
         onDeepThinkingChange={updateDeepThinking}
         onCommand={(name) => {
@@ -424,13 +902,22 @@ export function DesktopChatShell({
         }}
         selectedFiles={selectedFiles}
         onPickFiles={electron?.files?.pick ? pickFiles : undefined}
-        onAddFiles={electron?.files?.saveTemp ? ((paths) => setSelectedFiles((prev) => Array.from(new Set([...prev, ...paths])))) : undefined}
+        onPickDownloads={electron?.files?.pick && downloadsPath ? pickDownloads : undefined}
+        recentFiles={recentFiles}
+        onPickRecentFile={(path) => addSelectedFiles([path])}
+        onAddFiles={electron?.files?.saveTemp ? addSelectedFiles : undefined}
         onRemoveFile={removeFile}
         onOpenFile={(p) => setPreview(/\.(xlsx|xlsm)$/i.test(p) ? { kind: "sheet", path: p } : { kind: "doc", path: p })}
         disabled={chat.generating}
       />
     </DesktopShell>
     <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} onStoreNameChange={setLiveStoreName} />
+    <StoreMemoryPanel open={memoryOpen} onClose={() => setMemoryOpen(false)} workingDir={workingDir} />
+    <DeletedItemsPanel
+      open={deletedOpen}
+      onClose={() => setDeletedOpen(false)}
+      onRestored={() => { void refreshConversations(); void refreshRecentItems(); }}
+    />
     <ConfirmDialog
       open={!!deleteTarget}
       title="删除这条会话？"

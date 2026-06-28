@@ -76,7 +76,7 @@ async def generate_video(
     store,
     user_id,
     prompt: str,
-    ratio: str = "16:9",
+    ratio: str = "9:16",   # 默认竖屏：视频是发社交媒体账号的营销内容(抖音/视频号/快手/小红书/朋友圈)，不是店内大屏
     resolution: str | None = None,   # Seedance 2.0 用 ratio+duration 控画幅、不收 resolution；给了才发(兼容 1.x)
     duration: int = 5,
     first_frame: str | None = None,

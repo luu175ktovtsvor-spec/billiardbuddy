@@ -81,6 +81,41 @@ def test_diagnose_maps_args(monkeypatch):
     assert captured["current_situation"] == "周中没人"
 
 
+def test_diagnose_with_report_adds_pending_memory(monkeypatch, tmp_path):
+    captured = {}
+    added = {}
+    report = tmp_path / "经营数据.xlsx"
+    report.write_text("fake", encoding="utf-8")
+
+    async def fake_diag(db, store, user, **kwargs):
+        captured.update(kwargs)
+        return _gen("诊断建议")
+
+    def fake_resolve(path, ctx):
+        assert path == str(report)
+        return report
+
+    def fake_extract(path):
+        assert path == str(report)
+        return {"total_revenue": 10000}, "【报表关键指标】\n- 总营业额：10000\n- 团购占比：42%"
+
+    async def fake_add(db, store_id, content, type_="semantic"):
+        added.update({"store_id": store_id, "content": content, "type": type_})
+
+    monkeypatch.setattr(agent_tools, "analyze_diagnosis", fake_diag)
+    monkeypatch.setattr("services.agent.local_tools._resolve", fake_resolve)
+    monkeypatch.setattr("services.report_reader.extract_report_indicators", fake_extract)
+    monkeypatch.setattr("services.memory_service.add_pending_memory_candidate", fake_add)
+
+    ctx = _ctx()
+    out = asyncio.run(agent_tools.diagnose_operation({"situation": "帮我看报表", "report_path": str(report)}, ctx))
+    assert out == "诊断建议"
+    assert "总营业额：10000" in captured["current_situation"]
+    assert added["type"] == "operational"
+    assert "从报表提取的待确认经营资料" in added["content"]
+    assert "团购占比：42%" in added["content"]
+
+
 def test_recommend_games_maps_args(monkeypatch):
     captured = {}
 
@@ -116,6 +151,44 @@ def test_make_poster_is_deliverable_and_no_approval():
     assert t.deliverable is True         # 成品卡直接展示海报，并进会话 result 落库
 
 
+def test_generate_video_requires_explicit_confirmation_and_explains_cost():
+    t = default_registry.get("generate_video")
+    assert t is not None
+    assert t.requires_approval is True
+    assert t.force_confirm is True        # 视频慢且贵：full/跳过确认也必须先让老板确认
+    assert t.deliverable is True
+
+    reason = t.approval_reason(
+        {"description": "周赛海报动起来", "first_frame": "/uploads/posters/x.png", "ratio": "9:16", "duration": 5},
+        _ctx(),
+    )
+    assert "9:16" in reason["what"]
+    assert "图生视频" in reason["what"]
+    assert "成本" in reason["why"]
+    assert "1-8 分钟" in reason["impact"]
+
+
+def test_generate_video_defaults_to_vertical_9_16():
+    """总表：视频是发社交媒体账号的营销内容，默认竖屏 9:16（不是店内大屏 16:9）。
+    不写比例/写'抖音同城'都应落 9:16；只有明确要横版大屏才 16:9。"""
+    from services.agent.tools import _normalize_video_ratio
+
+    # 不指定比例 → 默认 9:16
+    assert _normalize_video_ratio({"description": "店里今晚人气视频"}) == "9:16"
+    # 抖音同城短视频（无显式比例）→ 9:16
+    assert _normalize_video_ratio({"description": "用助教照片做抖音同城引流视频"}) == "9:16"
+    # 明确要横版/大屏/电视 → 16:9
+    assert _normalize_video_ratio({"description": "做个店内电视大屏横版循环视频"}) == "16:9"
+    # 显式比例优先
+    assert _normalize_video_ratio({"ratio": "16:9", "description": "随便"}) == "16:9"
+    assert _normalize_video_ratio({"ratio": "9:16", "description": "横版大屏"}) == "9:16"
+
+    # 审批卡默认也应显示 9:16（不传 ratio 时）
+    t = default_registry.get("generate_video")
+    reason = t.approval_reason({"description": "做个抖音同城引流视频"}, _ctx())
+    assert "9:16" in reason["what"]
+
+
 def test_make_poster_calls_generate_images_and_returns_image(monkeypatch):
     captured = {}
 
@@ -131,8 +204,76 @@ def test_make_poster_calls_generate_images_and_returns_image(monkeypatch):
     assert "/uploads/posters/x.png" in out and "![" in out  # 返回 markdown 图片
     assert captured["count"] == 1          # 强制单张
     assert captured["quality"] == "medium"  # 成本可控
-    assert captured["prompt"] == "周末活动海报，热闹风"
+    assert "周末活动海报，热闹风" in captured["prompt"]
+    assert "中间安全区" in captured["prompt"]
     assert captured["ratio"] == "9:16"
+
+
+def test_make_poster_maps_scene_to_ratio(monkeypatch):
+    captured = {}
+
+    async def fake_gen(**kwargs):
+        captured.update(kwargs)
+        return {"images": [{"poster_url": "/uploads/posters/x.png", "ratio": kwargs["ratio"], "width": 1152, "height": 2048}], "count": 1}
+
+    import services.poster_service as ps
+    monkeypatch.setattr(ps, "generate_images", fake_gen)
+    ctx = SimpleNamespace(db=object(), store=SimpleNamespace(id="s1"), user=SimpleNamespace(id="u-map-1"))
+    out = asyncio.run(agent_tools.make_poster({"description": "做一张手机全屏竖版宣传图"}, ctx))
+
+    assert captured["ratio"] == "9:16"
+    assert "中间安全区" in captured["prompt"]
+    assert "尺寸：9:16" in out
+
+
+def test_make_poster_maps_large_screen_to_16_9(monkeypatch):
+    captured = {}
+
+    async def fake_gen(**kwargs):
+        captured.update(kwargs)
+        return {"images": [{"poster_url": "/uploads/posters/x.png", "ratio": kwargs["ratio"], "width": 2048, "height": 1152}], "count": 1}
+
+    import services.poster_service as ps
+    monkeypatch.setattr(ps, "generate_images", fake_gen)
+    ctx = SimpleNamespace(db=object(), store=SimpleNamespace(id="s1"), user=SimpleNamespace(id="u-map-2"))
+    asyncio.run(agent_tools.make_poster({"description": "店里电视上循环播放的周赛宣传图"}, ctx))
+
+    assert captured["ratio"] == "16:9"
+    assert "远距离可读" in captured["prompt"]
+
+
+def test_make_poster_rejects_unsupported_public_account_header(monkeypatch):
+    called = []
+
+    async def fake_gen(**kwargs):
+        called.append(kwargs)
+        return {"images": []}
+
+    import services.poster_service as ps
+    monkeypatch.setattr(ps, "generate_images", fake_gen)
+    ctx = SimpleNamespace(db=object(), store=SimpleNamespace(id="s1"), user=SimpleNamespace(id="u-no-1"))
+    out = asyncio.run(agent_tools.make_poster({"description": "做一张公众号头图"}, ctx))
+
+    assert called == []
+    assert "2.35:1" in out
+    assert "不适合直接用普通海报生图来冒充完成" in out
+
+
+def test_generate_image_rejects_print_material_before_spend(monkeypatch):
+    called = []
+
+    async def fake_gen(**kwargs):
+        called.append(kwargs)
+        return {"images": []}
+
+    import services.poster_service as ps
+    monkeypatch.setattr(ps, "generate_images", fake_gen)
+    ctx = SimpleNamespace(db=object(), store=SimpleNamespace(id="s1"), user=SimpleNamespace(id="u-no-2"))
+    out = asyncio.run(agent_tools.generate_image({"description": "做一张 A4 打印海报，贴门口"}, ctx))
+
+    assert called == []
+    assert "打印/线下物料" in out
+    assert "不是完整打印模板" in out
 
 
 def test_make_poster_empty_desc_skips_generation(monkeypatch):

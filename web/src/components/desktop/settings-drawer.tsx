@@ -2,11 +2,11 @@
 
 /**
  * Codex 风「设置」抽屉（替代老 web 的门店设置/BYOK 抽屉）：右侧滑出、浅色默认·跟随系统。
- * 只保留单窗口产品真正需要的两件事：① 门店名（没有则自动建一个）；② AI 模型 key（纯 BYOK，管家的钥匙）。
- * 从侧栏齿轮点开。BYOK 走和原来一致的接口：getByokConfig / updateByokConfig / validateByokConfig。
+ * 普通路径只放门店信息、素材、店脑和“AI 已内置”；自带 key/MCP/插件都收进高级区。
+ * BYOK 仍复用原接口：getByokConfig / updateByokConfig / validateByokConfig。
  */
 import { useEffect, useState } from "react";
-import { X, Loader2, Check, Cpu, Image as ImageIcon, Store, ShieldCheck, Puzzle, Plus, Trash2, AlertTriangle, Download, Brain } from "lucide-react";
+import { X, Loader2, Check, Cpu, Image as ImageIcon, Store, ShieldCheck, Puzzle, Plus, Trash2, AlertTriangle, Download, Brain, ChevronRight } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
@@ -93,6 +93,7 @@ export function SettingsDrawer({
 
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
   useEffect(() => {
@@ -100,6 +101,7 @@ export function SettingsDrawer({
     let cancelled = false;
     setLoading(true);
     setMsg(null);
+    setShowAdvanced(false);
     (async () => {
       const [s, b, sk, pl, mc, mp] = await Promise.allSettled([
         api.getMyStore(), api.getByokConfig(),
@@ -202,18 +204,20 @@ export function SettingsDrawer({
     try {
       const okStore = await saveStore();
       if (!okStore) { setSaving(false); return; }
-      await api.updateByokConfig({
-        enabled: true,
-        base_url: baseUrl.trim() || null,
-        api_key: apiKey.trim() || undefined, // 不传=保留原 key
-        model: model.trim() || null,
-        image_enabled: !!(imgBaseUrl.trim() || imgModel.trim() || imgApiKey.trim()),
-        image_base_url: imgBaseUrl.trim() || null,
-        image_api_key: imgApiKey.trim() || undefined,
-        image_model: imgModel.trim() || null,
-      });
-      setApiKey("");
-      setImgApiKey("");
+      if (showAdvanced) {
+        await api.updateByokConfig({
+          enabled: true,
+          base_url: baseUrl.trim() || null,
+          api_key: apiKey.trim() || undefined, // 不传=保留原 key
+          model: model.trim() || null,
+          image_enabled: !!(imgBaseUrl.trim() || imgModel.trim() || imgApiKey.trim()),
+          image_base_url: imgBaseUrl.trim() || null,
+          image_api_key: imgApiKey.trim() || undefined,
+          image_model: imgModel.trim() || null,
+        });
+        setApiKey("");
+        setImgApiKey("");
+      }
       setMsg({ kind: "ok", text: "已保存" });
     } catch (e) {
       setMsg({ kind: "err", text: getErrorMessage(e) });
@@ -386,10 +390,27 @@ export function SettingsDrawer({
                 <Cpu className="h-3.5 w-3.5" /> 已内置、开箱即用
               </p>
               <p className="mt-1 text-[11.5px] leading-snug text-[#3a3a3c] dark:text-[#c8cace]">
-                对话和看图用 <b>{labels.text}</b>、做海报用 <b>{labels.image}</b>、视频用 <b>{labels.video}</b>——都已内置，<b>不用你填任何 key</b>。下面是「高级」，只有想换成你自己的模型时才填。
+                对话、看图、做海报、做视频的 AI 都已经内置好了，<b>打开就能用，什么都不用配</b>。会折腾的人想换成自己的，再点下面的高级设置。
               </p>
             </section>
 
+            <section className="mb-5">
+              <button
+                type="button"
+                onClick={() => setShowAdvanced((v) => !v)}
+                className="flex w-full items-center justify-between rounded-lg border border-black/[0.08] bg-black/[0.015] px-3.5 py-2.5 text-left transition hover:bg-black/[0.03] dark:border-white/[0.08] dark:bg-white/[0.02] dark:hover:bg-white/[0.05]"
+                aria-expanded={showAdvanced}
+              >
+                <span className="min-w-0">
+                  <span className="block text-[12.5px] font-medium text-[#3a3a3c] dark:text-[#c8cace]">高级设置</span>
+                  <span className="mt-0.5 block text-[11.5px] leading-snug text-[#86868b] dark:text-[#8a8c93]">会折腾的人才用的进阶选项。普通使用不用管这里。</span>
+                </span>
+                <ChevronRight className={`h-4 w-4 shrink-0 text-[#a1a1a6] transition-transform ${showAdvanced ? "rotate-90" : ""}`} />
+              </button>
+            </section>
+
+            {showAdvanced && (
+              <>
             {/* AI 文字模型（高级·可选 BYOK） */}
             <section className="mb-6">
               <p className="mb-2 flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-[#a1a1a6] dark:text-[#6e7077]">
@@ -556,6 +577,8 @@ export function SettingsDrawer({
                 ) : <div className="text-[11.5px] text-[#a1a1a6]">还没有技能。装个插件就会带技能进来，出现在 / 命令面板里。</div>}
               </div>
             </section>
+              </>
+            )}
           </div>
         )}
 

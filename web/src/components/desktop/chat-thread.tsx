@@ -4,10 +4,10 @@
  * Codex 风对话流（浅色默认 · 跟随系统深浅色）：用户输入(› 前导) / 工具步骤块 / 成品卡 / 内联审批 / 提问卡。
  * 纯展示组件，状态与逻辑由 useAgentChat 提供。
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, FileEdit, Terminal, ChevronRight, Brain, RotateCcw } from "lucide-react";
+import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, FileEdit, Terminal, ChevronRight, Brain, RotateCcw, ClipboardList, Save, MessageSquareText, Megaphone, ClipboardCheck, Paperclip, Download } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
@@ -22,6 +22,21 @@ const PROSE = "prose prose-sm prose-slate dark:prose-invert max-w-none leading-r
 function posterUrl(content: string): string | null {
   const m = content.match(/!\[[^\]]*\]\(([^)\s]+)/);
   return m ? m[1] : null;
+}
+
+function posterPreviewFromText(content: string, title = "图片预览"): PreviewItem | null {
+  const imageUrl = extractImageUrl(content);
+  if (!imageUrl) return null;
+  const ratio = content.match(/(?:尺寸|比例)：\s*([0-9]+:[0-9]+)/)?.[1];
+  const dims = content.match(/([0-9]{2,5})x([0-9]{2,5})/i);
+  return {
+    kind: "poster",
+    title,
+    imageUrl,
+    ratio,
+    width: dims ? Number(dims[1]) : undefined,
+    height: dims ? Number(dims[2]) : undefined,
+  };
 }
 
 // G.3：从生图工具结果里稳健抓出图片地址——markdown 图片语法 ∪ 裸 URL ∪ 本机 /uploads 路径 ∪ 图片扩展名。
@@ -46,6 +61,50 @@ function extractVideoUrl(text: string): string | null {
 }
 
 const VIDEO_TOOLS = new Set(["generate_video"]);
+
+type FollowUpAction = {
+  label: string;
+  prompt: string;
+  Icon: typeof ClipboardCheck;
+};
+
+function buildFollowUp(label: string, instruction: string, content: string, Icon: FollowUpAction["Icon"]): FollowUpAction {
+  return {
+    label,
+    Icon,
+    prompt: `${instruction}\n\n要求：直接给可复制成品，少讲道理；适合台球房今晚或明天就执行。\n\n【原回答】\n${content.slice(0, 3000)}`,
+  };
+}
+
+function billiardsFollowUpActions(content: string): FollowUpAction[] {
+  const text = content.replace(/\s+/g, "");
+  const actions: FollowUpAction[] = [];
+  const push = (action: FollowUpAction) => {
+    if (!actions.some((a) => a.label === action.label) && actions.length < 3) actions.push(action);
+  };
+  if (/拉客|下雨|没人|客流|获客|引流|到店|复购|客户群|朋友圈/.test(text)) {
+    push(buildFollowUp("写客户群话术", "把原回答改成 3 条今晚能发到客户群的话术，每条 80 字以内，带一个明确到店理由。", content, MessageSquareText));
+    push(buildFollowUp("做朋友圈文案", "把原回答改成一条朋友圈文案：标题、正文、配图建议、评论区引导都给出来。", content, Megaphone));
+    push(buildFollowUp("转成今晚员工动作", "把原回答改成今晚员工执行清单，按前厅、助教、店长分工。", content, ClipboardCheck));
+  }
+  if (/报表|营业额|台费|助教费|商品费|充值|团购|经营数据|日报|月报/.test(text)) {
+    push(buildFollowUp("整理老板汇报", "把原回答整理成老板能听懂的汇报：一句结论、3 个问题、3 个改法。", content, ClipboardList));
+    push(buildFollowUp("转成整改清单", "把原回答转成明天整改清单，写清负责人、动作和检查标准。", content, ClipboardCheck));
+  }
+  if (/招聘|招人|助教|教练|前厅|员工|团队/.test(text)) {
+    push(buildFollowUp("写招聘文案", "把原回答改成一条招聘文案，适合发朋友圈、同城群和小红书。", content, Megaphone));
+    push(buildFollowUp("做招聘海报", "把原回答改成一段生图任务描述，生成台球房招聘海报，默认 9:16。", content, ClipboardList));
+  }
+  if (/客诉|投诉|差评|台泥|球杆|服务不好|脏|态度/.test(text)) {
+    push(buildFollowUp("写平台回复", "把原回答改成一条平台差评/客诉回复，语气真诚、不甩锅、能挽回。", content, MessageSquareText));
+    push(buildFollowUp("转成整改任务", "把原回答改成门店内部整改任务，写清谁去查、怎么补救、怎么复盘。", content, ClipboardCheck));
+  }
+  if (/周赛|比赛|活动|会员赛|挑战赛|赛事/.test(text)) {
+    push(buildFollowUp("做活动海报", "把原回答改成一段台球活动海报生图任务描述，默认 9:16，避免虚假承诺。", content, ClipboardList));
+    push(buildFollowUp("写朋友圈文案", "把原回答改成活动朋友圈文案，包含标题、时间、参与理由和报名引导。", content, Megaphone));
+  }
+  return actions;
+}
 
 /** 解析 run_command 的结果文本（后端固定格式：命令／返回码／【标准输出】／【错误输出】）。 */
 function parseCommandResult(
@@ -158,7 +217,7 @@ function ResultDisclosure({ text, onOpen }: { text: string; onOpen?: () => void 
   );
 }
 
-/** F.1 思考块（抄 cc-haha ThinkingBlock）：灰斜体可折叠的"思考过程"。流式时默认展开看它想、答案落定后默认收起。 */
+/** F.1 思考块：保留透明度，但默认折叠，避免普通用户被 raw reasoning 淹没。 */
 function ThinkingBlock({ text, active, defaultOpen }: { text: string; active?: boolean; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(!!defaultOpen);
   if (!text && !active) return null;
@@ -193,13 +252,42 @@ function TodoCard({ text }: { text: string }) {
 }
 
 function MacStepList({ steps, active, onPreview }: { steps: ToolStep[]; active: boolean; onPreview?: (item: PreviewItem) => void }) {
+  const [open, setOpen] = useState(active);
   if (steps.length === 0) return null;
+  const doneCount = steps.filter((s) => s.done).length;
+  const last = steps[steps.length - 1];
+  const lastLabel = last ? toolMeta(last.tool).label : "";
   return (
     <div className="rounded-lg border border-black/[0.06] bg-black/[0.02] px-3 py-2.5 dark:border-white/[0.06] dark:bg-white/[0.02]">
-      <p className="mb-1.5 flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-[#86868b] dark:text-[#6e7077]">
-        <Wrench className="h-3 w-3" /> 执行过程
-      </p>
-      <div className="flex flex-col gap-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-3 text-left"
+      >
+        <span className="flex min-w-0 items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-[#86868b] dark:text-[#6e7077]">
+          <Wrench className="h-3 w-3 shrink-0" />
+          <span>执行过程</span>
+          <span className="font-sans text-[11px] normal-case tracking-normal text-[#a1a1a6] dark:text-[#6e7077]">
+            {active ? `正在${lastLabel ? `：${lastLabel}` : ""}` : `${doneCount}/${steps.length} 步完成`}
+          </span>
+        </span>
+        <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[#a1a1a6] transition-transform ${open ? "rotate-90" : ""}`} />
+      </button>
+      {!open && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {steps.slice(0, 4).map((s, i) => {
+            const { label, Icon } = toolMeta(s.tool);
+            return (
+              <span key={i} className="inline-flex max-w-[180px] items-center gap-1 rounded-md bg-white px-2 py-1 text-[11.5px] text-[#6e6e73] dark:bg-white/[0.04] dark:text-[#8a8c93]">
+                <Icon className="h-3 w-3 shrink-0 text-[#86868b]" />
+                <span className="truncate">{label}</span>
+              </span>
+            );
+          })}
+          {steps.length > 4 && <span className="rounded-md px-2 py-1 text-[11.5px] text-[#a1a1a6]">+{steps.length - 4}</span>}
+        </div>
+      )}
+      {open && <div className="mt-2 flex flex-col gap-1.5">
         {steps.map((s, i) => {
           const { label, Icon } = toolMeta(s.tool);
           const running = active && !s.done && i === steps.length - 1;
@@ -252,7 +340,7 @@ function MacStepList({ steps, active, onPreview }: { steps: ToolStep[]; active: 
             </div>
           );
         })}
-      </div>
+      </div>}
     </div>
   );
 }
@@ -378,7 +466,7 @@ function DeliverableCard({
           <img
             src={imgUrl}
             alt={label}
-            onClick={onPreview ? () => onPreview({ kind: "poster", imageUrl: imgUrl }) : undefined}
+            onClick={onPreview ? () => onPreview(posterPreviewFromText(step.result || "", label) || { kind: "poster", title: label, imageUrl: imgUrl }) : undefined}
             className={`max-h-[420px] w-auto rounded-md border border-black/[0.06] dark:border-white/[0.06] ${onPreview ? "cursor-zoom-in" : ""}`}
           />
         </div>
@@ -407,7 +495,7 @@ function DeliverableCard({
           {onPreview && imgUrl && (
             <button
               type="button"
-              onClick={() => onPreview({ kind: "poster", imageUrl: imgUrl })}
+              onClick={() => onPreview(posterPreviewFromText(step.result || "", label) || { kind: "poster", title: label, imageUrl: imgUrl })}
               className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/10 active:scale-[0.97]"
             >
               <Maximize2 className="h-3.5 w-3.5" /> 在右侧看大图
@@ -559,6 +647,13 @@ export function DesktopChatThread({
   onAnswer,
   onStop,
   onRetry,
+  onRedoAnswer,
+  onOpenSettings,
+  onRecoverFromError,
+  onMakeTask,
+  onSaveArtifact,
+  onExportArtifact,
+  onFollowUp,
 }: {
   messages: ChatMessage[];
   draft: string;
@@ -573,30 +668,80 @@ export function DesktopChatThread({
   onAnswer?: (label: string) => void;
   onStop?: () => void;
   onRetry?: () => void;
+  onRedoAnswer?: (content: string) => void;
+  onOpenSettings?: () => void;
+  onRecoverFromError?: (content: string) => void;
+  onMakeTask?: (content: string) => void;
+  onSaveArtifact?: (content: string) => void;
+  onExportArtifact?: (content: string) => void;
+  onFollowUp?: (prompt: string) => void;
 }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) return;
+    const raf = window.requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ block: "end" });
+      scrollEl.scrollTop = scrollEl.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [messages.length, draft, reasoningDraft, liveSteps.length, generating]);
+
   return (
-    <div className="flex-1 overflow-y-auto">
+    <div ref={scrollRef} data-testid="desktop-chat-scroll" className="flex-1 overflow-y-auto">
       <div className="mx-auto max-w-[820px] space-y-5 px-5 py-6">
         {messages.map((m, idx) =>
           m.role === "user" ? (
-            <div key={idx} className="flex gap-2.5">
-              <span className="mt-0.5 select-none font-mono text-[14px] leading-relaxed text-[#10a37f]">›</span>
-              <div className="min-w-0 flex-1 whitespace-pre-wrap text-[14px] leading-relaxed text-[#1d1d1f] dark:text-[#e6e7e9]">{m.content}</div>
+            <div key={idx} className="flex justify-end">
+              <div className="max-w-[78%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-[#007AFF] px-3.5 py-2 text-[14px] leading-relaxed text-white shadow-sm">
+                {m.content}
+              </div>
             </div>
           ) : (
             <div key={idx} className="space-y-2.5">
               {m.error ? (
-                <div className="flex flex-wrap items-center gap-1.5 text-[14px] text-[#ff3b30] dark:text-[#ff8585]">
-                  <AlertTriangle className="h-4 w-4 shrink-0" /> {m.content.replace(/^⚠️\s*/, "")}
-                  {onRetry && !generating && idx === messages.length - 1 && (
-                    <button
-                      type="button"
-                      onClick={onRetry}
-                      className="ml-1 inline-flex items-center gap-1 rounded-md border border-[#ff3b30]/30 bg-[#ff3b30]/[0.06] px-2 py-0.5 text-[12px] font-medium text-[#ff3b30] transition hover:bg-[#ff3b30]/[0.12] active:scale-[0.97] dark:border-[#ff8585]/30 dark:text-[#ff8585]"
-                    >
-                      <RotateCcw className="h-3 w-3" /> 重试
-                    </button>
-                  )}
+                <div className="rounded-lg border border-[#ff3b30]/20 bg-[#ff3b30]/[0.035] px-3.5 py-3 dark:border-[#ff8585]/20 dark:bg-[#ff8585]/[0.05]">
+                  <div className="flex items-start gap-2 text-[14px] leading-relaxed text-[#ff3b30] dark:text-[#ff8585]">
+                    <AlertTriangle className="mt-[2px] h-4 w-4 shrink-0" />
+                    <div>
+                      <div>{m.content.replace(/^⚠️\s*/, "")}</div>
+                      <div className="mt-1 text-[12.5px] text-[#8a3a34] dark:text-[#e6a19a]">
+                        可以先重试；也可以换素材或工作文件夹后再试。普通使用不用自己配 key，高级用户可打开高级设置检查服务配置。
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    {onRetry && !generating && idx === messages.length - 1 && (
+                      <button
+                        type="button"
+                        onClick={onRetry}
+                        className="inline-flex items-center gap-1 rounded-md border border-[#ff3b30]/30 bg-white px-2 py-1 text-[12px] font-medium text-[#ff3b30] transition hover:bg-[#ff3b30]/[0.08] active:scale-[0.97] dark:border-[#ff8585]/30 dark:bg-white/[0.04] dark:text-[#ff8585]"
+                      >
+                        <RotateCcw className="h-3 w-3" /> 重试
+                      </button>
+                    )}
+                    {onRecoverFromError && !generating && (
+                      <button
+                        type="button"
+                        onClick={() => onRecoverFromError(m.content)}
+                        className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-[12px] font-medium text-[#6e6e73] transition hover:bg-black/[0.04] hover:text-[#1d1d1f] active:scale-[0.97] dark:bg-white/[0.04] dark:text-[#c8cace] dark:hover:bg-white/[0.08]"
+                      >
+                        <Paperclip className="h-3 w-3" /> 换素材再试
+                      </button>
+                    )}
+                    <CopyButton text={m.content.replace(/^⚠️\s*/, "")} />
+                    {onOpenSettings && !generating && (
+                      <button
+                        type="button"
+                        onClick={onOpenSettings}
+                        className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-[12px] font-medium text-[#6e6e73] transition hover:bg-black/[0.04] hover:text-[#1d1d1f] active:scale-[0.97] dark:bg-white/[0.04] dark:text-[#c8cace] dark:hover:bg-white/[0.08]"
+                      >
+                        <Maximize2 className="h-3 w-3" /> 高级设置
+                      </button>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <>
@@ -620,14 +765,89 @@ export function DesktopChatThread({
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
                       </div>
                     ))}
-                  {onPreview && posterUrl(m.content) && (
+                  {onPreview && posterPreviewFromText(m.content) && (
                     <button
                       type="button"
-                      onClick={() => onPreview({ kind: "poster", imageUrl: posterUrl(m.content) as string })}
+                      onClick={() => {
+                        const item = posterPreviewFromText(m.content);
+                        if (item) onPreview(item);
+                      }}
                       className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/10 active:scale-[0.97]"
                     >
                       <Maximize2 className="h-3.5 w-3.5" /> 在右侧看大图
                     </button>
+                  )}
+                  {m.memoryRefs && m.memoryRefs.length > 0 && (
+                    <div className="flex items-start gap-1.5 rounded-md bg-black/[0.025] px-2.5 py-1.5 text-[12px] leading-relaxed text-[#86868b] dark:bg-white/[0.035] dark:text-[#8a8c93]">
+                      <BookOpen className="mt-[1px] h-3.5 w-3.5 shrink-0" />
+                      <span>用了这些资料：{m.memoryRefs.join(" · ")}</span>
+                    </div>
+                  )}
+                  {m.content && !m.kind && !posterPreviewFromText(m.content) && (
+                    <div className="space-y-1.5">
+                      {onFollowUp && !generating && billiardsFollowUpActions(m.content).length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {billiardsFollowUpActions(m.content).map((action) => (
+                            <button
+                              key={action.label}
+                              type="button"
+                              onClick={() => onFollowUp(action.prompt)}
+                              className="inline-flex items-center gap-1 rounded-md border border-[#007AFF]/15 bg-[#007AFF]/[0.05] px-2 py-1 text-[12px] font-medium text-[#007AFF] transition hover:bg-[#007AFF]/10 active:scale-[0.97] dark:border-[#66aaff]/20 dark:bg-[#66aaff]/10 dark:text-[#9bc8ff]"
+                            >
+                              <action.Icon className="h-3.5 w-3.5" /> {action.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <CopyButton text={m.content} label="复制到微信" />
+                        {onPreview && (
+                          <button
+                            type="button"
+                            onClick={() => onPreview({ kind: "content", title: "回答", text: m.content })}
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/10 active:scale-[0.97]"
+                          >
+                            <Maximize2 className="h-3.5 w-3.5" /> 右侧打开
+                          </button>
+                        )}
+                        {onRedoAnswer && !generating && (
+                          <button
+                            type="button"
+                            onClick={() => onRedoAnswer(m.content)}
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#86868b] transition hover:bg-black/[0.04] hover:text-[#1d1d1f] active:scale-[0.97] dark:text-[#8a8c93] dark:hover:bg-white/[0.06] dark:hover:text-[#e6e7e9]"
+                          >
+                            <RotateCcw className="h-3.5 w-3.5" /> 重做一版
+                          </button>
+                        )}
+                        {onSaveArtifact && !generating && (
+                          <button
+                            type="button"
+                            onClick={() => onSaveArtifact(m.content)}
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#86868b] transition hover:bg-black/[0.04] hover:text-[#1d1d1f] active:scale-[0.97] dark:text-[#8a8c93] dark:hover:bg-white/[0.06] dark:hover:text-[#e6e7e9]"
+                          >
+                            <Save className="h-3.5 w-3.5" /> 保存成品
+                          </button>
+                        )}
+                        {onExportArtifact && !generating && (
+                          <button
+                            type="button"
+                            onClick={() => onExportArtifact(m.content)}
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#86868b] transition hover:bg-black/[0.04] hover:text-[#1d1d1f] active:scale-[0.97] dark:text-[#8a8c93] dark:hover:bg-white/[0.06] dark:hover:text-[#e6e7e9]"
+                          >
+                            <Download className="h-3.5 w-3.5" /> 导出到电脑
+                          </button>
+                        )}
+                        {onMakeTask && !generating && (
+                          <button
+                            type="button"
+                            onClick={() => onMakeTask(m.content)}
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#86868b] transition hover:bg-black/[0.04] hover:text-[#1d1d1f] active:scale-[0.97] dark:text-[#8a8c93] dark:hover:bg-white/[0.06] dark:hover:text-[#e6e7e9]"
+                          >
+                            <ClipboardList className="h-3.5 w-3.5" /> 转成任务
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   )}
                   {m.approval && (
                     <MacApprovalCard ap={m.approval} idx={idx} executing={executingIdx === idx} onConfirm={onConfirm} onCancel={onCancel} />
@@ -641,7 +861,7 @@ export function DesktopChatThread({
 
         {generating && (
           <div className="space-y-2.5">
-            {reasoningDraft && <ThinkingBlock text={reasoningDraft} active defaultOpen />}
+            {reasoningDraft && <ThinkingBlock text={reasoningDraft} active />}
             {liveSteps.length > 0 && <MacStepList steps={liveSteps} active onPreview={onPreview} />}
             {draft ? (
               <div className={PROSE}>
@@ -652,6 +872,7 @@ export function DesktopChatThread({
             )}
           </div>
         )}
+        <div ref={bottomRef} data-testid="desktop-chat-bottom" className="h-px" />
       </div>
     </div>
   );

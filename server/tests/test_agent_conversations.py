@@ -1,8 +1,9 @@
-"""agent 会话列表分组逻辑：按 conversation_id 分组，标题=会话第一句，最新会话在前。"""
+"""agent 会话/最近作品列表分组逻辑。"""
 import types
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 
-from api.v1.agent import _group_agent_conversations
+from api.v1.agent import _group_agent_conversations, _recent_artifact_item
 
 
 def _row(cid, msg, day, title=None):
@@ -36,3 +37,60 @@ def test_title_truncated_and_title_field_wins():
     # 没 title 时截断到 30
     rows2 = [_row("c2", long_msg, 19)]
     assert len(_group_agent_conversations(rows2)[0]["title"]) == 30
+
+
+def test_recent_artifact_poster_includes_size_and_ratio():
+    cid = uuid.uuid4()
+    g = types.SimpleNamespace(
+        id=uuid.uuid4(),
+        type="poster",
+        title=None,
+        sub_type="9:16",
+        result="/uploads/posters/p.jpg",
+        conversation_id=cid,
+        created_at=datetime(2026, 6, 28, tzinfo=timezone.utc),
+        input_params={"prompt": "周赛海报", "ratio": "9:16", "width": 1152, "height": 2048},
+    )
+    item = _recent_artifact_item(g)
+    assert item["kind"] == "poster"
+    assert item["title"] == "周赛海报"
+    assert item["url"] == "/uploads/posters/p.jpg"
+    assert item["ratio"] == "9:16"
+    assert item["width"] == 1152 and item["height"] == 2048
+    assert item["conversation_id"] == str(cid)
+
+
+def test_recent_artifact_agent_is_task_with_content_preview():
+    g = types.SimpleNamespace(
+        id=uuid.uuid4(),
+        type="agent",
+        title=None,
+        sub_type="chat",
+        result="我已经整理好了文件清单",
+        conversation_id=uuid.uuid4(),
+        created_at=datetime(2026, 6, 28, tzinfo=timezone.utc),
+        input_params={"message": "整理这个文件夹"},
+    )
+    item = _recent_artifact_item(g)
+    assert item["kind"] == "task"
+    assert item["title"] == "整理这个文件夹"
+    assert item["subtitle"] == "最近任务"
+    assert item["content"] == "我已经整理好了文件清单"
+
+
+def test_saved_artifact_is_content_item():
+    g = types.SimpleNamespace(
+        id=uuid.uuid4(),
+        type="workbench",
+        title="今晚拉客清单",
+        sub_type="saved_text",
+        result="1. 前厅今晚 7 点前发客户群",
+        conversation_id=uuid.uuid4(),
+        created_at=datetime(2026, 6, 28, tzinfo=timezone.utc),
+        input_params={"source": "assistant_action"},
+    )
+    item = _recent_artifact_item(g)
+    assert item["kind"] == "content"
+    assert item["title"] == "今晚拉客清单"
+    assert item["subtitle"] == "文案作品"
+    assert item["content"] == "1. 前厅今晚 7 点前发客户群"
