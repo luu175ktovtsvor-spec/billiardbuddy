@@ -413,7 +413,9 @@ export function DesktopChatShell({
     try {
       const r = await electron.captureScreen();
       if (!r?.ok || !r.path) {
-        chat.pushAssistantMessage(`当前屏幕没截下来。${r?.error ? `原因：${r.error}` : "可以稍后再试一次，或直接粘贴截图给我看。"}`);
+        // 缺屏幕录制权限：错误文案本身已是完整人话引导，直接给，不再套"没截下来。原因："
+        if (r?.needsPermission && r?.error) chat.pushAssistantMessage(r.error);
+        else chat.pushAssistantMessage(`当前屏幕没截下来。${r?.error ? `原因：${r.error}` : "可以稍后再试一次，或直接粘贴截图给我看。"}`);
         return;
       }
       addSelectedFiles([r.path]);

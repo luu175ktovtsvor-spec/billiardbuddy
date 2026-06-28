@@ -7,7 +7,7 @@
 // 安全默认全保持:contextIsolation 开 / sandbox 开 / nodeIntegration 关。
 // 加载的页面只能通过 preload 的 contextBridge 白名单调用原生能力,拿不到 Node。
 
-const { app, BrowserWindow, ipcMain, shell, dialog, nativeTheme, desktopCapturer, screen } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, dialog, nativeTheme, desktopCapturer, screen, systemPreferences } = require("electron");
 const path = require("path");
 const publish = require("./publish");
 const video = require("./video");
@@ -225,6 +225,17 @@ ipcMain.handle("desktop:captureScreen", async () => {
   const fs = require("fs");
   const path = require("path");
   try {
+    // macOS：用户明确拒绝过「屏幕录制」权限时 desktopCapturer 截出来是黑屏/只剩自己窗口——直接给人话引导，
+    // 别静默返回黑图让用户以为坏了。只拦 denied/restricted（明确不可用）；granted/not-determined 仍走截图，
+    // 避免在 getMediaAccessStatus 对屏幕录制返回不准时误伤已授权用户。Windows 无此系统级开关，跳过。
+    const _screenPerm = process.platform === "darwin" ? systemPreferences.getMediaAccessStatus("screen") : "granted";
+    if (_screenPerm === "denied" || _screenPerm === "restricted") {
+      return {
+        ok: false,
+        needsPermission: true,
+        error: "还没拿到「屏幕录制」权限，我看不到你的屏幕。请到 系统设置 → 隐私与安全性 → 屏幕录制 里勾上「本机 AI 助手」，再重开一次 App 就能用了。",
+      };
+    }
     const timeout = (ms, value = null) => new Promise((resolve) => setTimeout(() => resolve(value), ms));
     const saveScreenshot = (image, prefix = "screen") => {
       if (!image || image.isEmpty()) return null;

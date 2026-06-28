@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, type ApprovalReason } from "@/lib/api";
-import { getErrorMessage } from "@/lib/utils";
+import { getErrorMessage, humanizeErrorText } from "@/lib/utils";
 
 export type { ApprovalReason };
 
@@ -228,7 +228,7 @@ export function useAgentChat(opts: AgentChatOptions) {
                   question,
                 });
               }
-              next.push({ role: "assistant", content: `⚠️ ${m}`, error: true });
+              next.push({ role: "assistant", content: `⚠️ ${humanizeErrorText(m)}`, error: true });
               return next;
             });
             activeTaskRef.current = null;

@@ -678,13 +678,31 @@ export function DesktopChatThread({
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const pinnedRef = useRef(true);            // 用户是否贴在底部——只有贴底才跟随流式刷新
+  const prevMsgLenRef = useRef(messages.length);
+
+  // 监听滚动：用户上滑离开底部 → 取消跟随；滑回底部 → 恢复跟随
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
 
   useEffect(() => {
     const scrollEl = scrollRef.current;
     if (!scrollEl) return;
+    const isNewMessage = messages.length > prevMsgLenRef.current;
+    prevMsgLenRef.current = messages.length;
+    // 新消息(刚发/刚落)总是滚到底；流式 token/步骤更新只在用户贴底时跟随——上滑看历史不被拽回(G8)
+    if (!isNewMessage && !pinnedRef.current) return;
     const raf = window.requestAnimationFrame(() => {
       bottomRef.current?.scrollIntoView({ block: "end" });
       scrollEl.scrollTop = scrollEl.scrollHeight;
+      pinnedRef.current = true;
     });
     return () => window.cancelAnimationFrame(raf);
   }, [messages.length, draft, reasoningDraft, liveSteps.length, generating]);

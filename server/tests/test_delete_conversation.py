@@ -193,6 +193,48 @@ def test_recent_and_deleted_items_include_file_backups(tmp_path, monkeypatch):
     asyncio.run(main())
 
 
+def test_recent_file_changes_dedup_by_file(tmp_path, monkeypatch):
+    """同一文件改了多次，『最近作品』里只算一条(最近的)，别让一个文件的多份备份刷屏、挤掉别的成品。"""
+    import services.agent.local_tools as lt
+    monkeypatch.setattr(lt, "_library_root", lambda: tmp_path)
+
+    f = tmp_path / "work" / "plan.txt"
+    f.parent.mkdir()
+    f.write_text("v1", encoding="utf-8")
+    lt._backup(f)
+    f.write_text("v2", encoding="utf-8")
+    lt._backup(f)  # 同一文件第二次备份（微秒戳防撞名→两个 .bak）
+    g = tmp_path / "work" / "note.md"
+    g.write_text("x", encoding="utf-8")
+    lt._backup(g)
+    assert len(list((tmp_path / ".backups").glob("*.bak"))) >= 3  # 底层确有 3 份备份
+
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        store_id, other_store_id = uuid.uuid4(), uuid.uuid4()
+        set_tenant(store_id)
+        async with Session() as db:
+            await _seed_stores(db, store_id, other_store_id)
+            from api.v1.agent import list_recent_artifacts
+            recent = await list_recent_artifacts(user=None, store=SimpleNamespace(id=store_id), db=db)
+            paths = [i["path"] for i in recent["items"] if i["kind"] == "file_change"]
+            assert paths.count(str(f.resolve())) == 1   # plan.txt 两份备份 → 只 1 条
+            assert str(g.resolve()) in paths            # note.md 没被同名文件刷掉
+
+            # 文件被删 → 从"最近作品"消失(归"最近删除")，指向已删文件的僵尸备份不刷屏
+            g.unlink()
+            recent2 = await list_recent_artifacts(user=None, store=SimpleNamespace(id=store_id), db=db)
+            paths2 = [i["path"] for i in recent2["items"] if i["kind"] == "file_change"]
+            assert str(g.resolve()) not in paths2
+            assert str(f.resolve()) in paths2           # 还在的文件仍在
+        set_tenant(None)
+
+    asyncio.run(main())
+
+
 def test_save_agent_artifact_enters_recent_items():
     async def main():
         eng = create_async_engine("sqlite+aiosqlite:///:memory:")

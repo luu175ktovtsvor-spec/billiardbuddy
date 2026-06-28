@@ -446,7 +446,8 @@ def compose_agent_system_prompt(profile_text: str, brain_text: str, full_disk: b
     # 门店画像（台球房档案：台数/定价/会员卡）= 台球专属领域数据 → 仅 @台球 时注入，
     # 别把台球档案渗进通用对话（守 G.2「通用 Agent 为默认」定位）。
     if billiards_mode and profile_text and profile_text.strip():
-        parts.append("【这家店的情况】\n" + profile_text.strip())
+        # 门店画像同样清掉历史测试店名（鑫和台球/测试球城等），别让旧档案把未确认店名带进正式回答
+        parts.append("【这家店的情况】\n" + _sanitize_stale_store_names(profile_text).strip())
     # M1：店脑记忆（AI 学到的关于你/你店的事）= 通用助手的【长期记忆】，通用模式也注入——
     # 治"通用模式零长期记忆"的致命缺口，让助手越用越懂你。放在动态尾段、不进可缓存静态前缀。
     if brain_text and brain_text.strip():
@@ -723,9 +724,15 @@ async def list_recent_artifacts(
         if not item["url"] and not item["content"]:
             continue
         items.append(item)
-    for row in list_file_backups(limit=limit):
-        if row.get("path"):
-            items.append(_file_change_item(row, deleted=not bool(row.get("exists"))))
+    # 文件改动按"原文件"去重 + 只留还在的文件：同一文件多次备份只留最近一条；原文件已不存在的属于"最近删除"、
+    # 不进"最近作品"(否则指向已删文件的僵尸备份会刷屏挤掉真成品)。多取些(已按时间倒序)再筛，保证清单干净。
+    seen_backup_files: set[str] = set()
+    for row in list_file_backups(limit=80):
+        p = str(row.get("path") or "")
+        if not p or not row.get("exists") or p in seen_backup_files:
+            continue
+        seen_backup_files.add(p)
+        items.append(_file_change_item(row, deleted=False))
     items.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
     return {"items": items[:limit]}
 
