@@ -13,11 +13,13 @@ export type PaletteItem =
 export function SlashPalette({
   items,
   activeIndex,
+  title = "命令与技能",
   onSelect,
   onHover,
 }: {
   items: PaletteItem[];
   activeIndex: number;
+  title?: string;
   onSelect: (item: PaletteItem) => void;
   onHover: (i: number) => void;
 }) {
@@ -25,7 +27,7 @@ export function SlashPalette({
   return (
     <div className="absolute bottom-[calc(100%+8px)] left-0 z-50 max-h-[300px] w-[440px] overflow-y-auto rounded-lg border border-black/[0.1] bg-white p-1.5 shadow-[0_12px_40px_-10px_rgba(0,0,0,0.25)] dark:border-white/[0.1] dark:bg-[#1c1e24] dark:shadow-[0_12px_40px_-10px_rgba(0,0,0,0.7)]">
       <div className="px-2.5 pb-1 pt-1.5 font-mono text-[10px] uppercase tracking-wider text-[#a1a1a6] dark:text-[#6e7077]">
-        命令与技能
+        {title}
       </div>
       {items.map((it, i) => (
         <button

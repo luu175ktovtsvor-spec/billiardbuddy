@@ -30,6 +30,22 @@ logger = logging.getLogger(__name__)
 
 _WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
+
+def _memory_candidate_from_report_summary(summary: str) -> str:
+    """把报表摘要压成一条待确认记忆；不把整张表或完整诊断长期保存。"""
+    lines: list[str] = []
+    for raw in (summary or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("【"):
+            continue
+        if line.startswith("- "):
+            lines.append(line[2:])
+        if len(lines) >= 5:
+            break
+    if not lines:
+        return ""
+    return "从报表提取的待确认经营资料：" + "；".join(lines)
+
 # 交付类工具（成品）= 在各 @tool 上标 deliverable=True；本模块底部据注册表自动汇总成 DELIVERABLE_TOOLS。
 # 落库时把成品并进会话 result，才能①历史里看到真内容 ②下一轮"把刚才那条改一下"大脑读得到自己上轮写了啥。
 # 感知类(查日期/今日推荐/找场景/查知识) 不标 deliverable。make_poster 已是 deliverable(成品卡显示海报)。
@@ -372,10 +388,15 @@ async def diagnose_operation(args: dict, ctx) -> str:
         try:
             from services.agent.local_tools import _resolve  # 复用沙箱校验：越界即 ValueError
             from services.report_reader import extract_report_indicators
+            from services.memory_service import add_pending_memory_candidate
             safe = _resolve(report_path, ctx)  # 沙箱：内容库 + 当场选定文件，越界拒
             _ind, summary = extract_report_indicators(str(safe))
             if summary:
                 situation = f"{summary}\n\n老板补充：{situation}"
+            if _ind:
+                candidate = _memory_candidate_from_report_summary(summary)
+                if candidate:
+                    await add_pending_memory_candidate(ctx.db, ctx.store.id, candidate, "operational")
         except ValueError as e:  # 越界
             situation = f"（你选的报表不在我能读的范围里：{e}。这次按你说的情况诊断。）\n\n{situation}"
         except Exception as e:  # noqa: BLE001 — 任何读表异常都降级，不崩
@@ -420,6 +441,57 @@ async def recommend_games(args: dict, ctx) -> str:
 # 每用户同一时刻只允许一张 agent 生图在跑（护住每分钟出图限额 + 防误触多次重复出图）。
 # 进程内即可：真正的全局并发由 poster_service 的信号量兜底；这里只防同一用户连点。
 _POSTER_GENERATING: set[str] = set()
+_SUPPORTED_IMAGE_RATIOS = {"1:1", "3:4", "9:16", "16:9"}
+
+
+def _normalize_image_request(description: str, ratio: str | None) -> tuple[str, str, str | None]:
+    """把真实用户说法收敛成当前生图工具能执行的比例；不支持的物料直接返回提示。
+
+    这层只管硬边界：明确比例必须执行；平台/场景有默认映射；公众号头图、A4/A3、
+    展架、易拉宝等当前不完整支持的尺寸不能静默冒充成 3:4。
+    """
+    text = (description or "").strip()
+    compact = text.replace(" ", "")
+    raw_ratio = (ratio or "").strip()
+
+    unsupported: list[str] = []
+    if any(k in compact for k in ("公众号头图", "公众号封面", "公众号首图")):
+        unsupported.append("公众号头图通常是约 2.35:1，本版本还没有这个专门尺寸")
+    if any(k in compact for k in ("A4", "A3", "打印", "贴门口", "门口张贴", "桌牌", "台卡", "展架", "易拉宝", "价目表")):
+        unsupported.append("打印/线下物料需要高清尺寸、出血和二维码扫码距离，本版本还不是完整打印模板")
+    if unsupported:
+        return text, raw_ratio if raw_ratio in _SUPPORTED_IMAGE_RATIOS else "3:4", (
+            "这个需求现在不适合直接用普通海报生图来冒充完成："
+            + "；".join(unsupported)
+            + "。我可以先帮你做一版线上预览图，或等你确认后按后续打印/专门尺寸流程处理。"
+        )
+
+    ratio_value = raw_ratio if raw_ratio in _SUPPORTED_IMAGE_RATIOS else ""
+    for candidate in ("9:16", "16:9", "3:4", "1:1"):
+        if candidate in compact:
+            ratio_value = candidate
+            break
+    if not ratio_value:
+        if any(k in compact for k in ("抖音", "视频号", "快手", "竖屏", "手机全屏", "手机竖版", "同城视频", "短视频封面")):
+            ratio_value = "9:16"
+        elif any(k in compact for k in ("店内电视", "店里电视", "电视上", "电视屏", "大屏", "投屏", "横版")):
+            ratio_value = "16:9"
+        elif any(k in compact for k in ("九宫格", "方图", "头像")):
+            ratio_value = "1:1"
+        elif any(k in compact for k in ("朋友圈", "微信群", "客户群", "小红书", "活动海报", "周赛海报", "招聘海报")):
+            ratio_value = "3:4"
+        else:
+            ratio_value = "3:4"
+
+    scene_notes = {
+        "9:16": "构图按手机竖屏 9:16，主体和标题放中间安全区，底部预留平台按钮/转发区，不要贴边。",
+        "16:9": "构图按横版 16:9，适合店内电视/大屏，文字更大、远距离可读。",
+        "1:1": "构图按方图 1:1，信息少而集中，主体居中。",
+        "3:4": "构图按竖版 3:4，适合朋友圈/微信群活动海报，标题和福利一眼看懂。",
+    }[ratio_value]
+    if scene_notes not in text:
+        text = f"{text}。{scene_notes}"
+    return text, ratio_value, None
 
 
 @tool(
@@ -462,6 +534,9 @@ async def make_poster(args: dict, ctx) -> str:
     desc = (args.get("description") or "").strip()
     if not desc:
         return "缺少海报描述，没法生成。"
+    desc, ratio, unsupported_msg = _normalize_image_request(desc, args.get("ratio"))
+    if unsupported_msg:
+        return unsupported_msg
     style = (args.get("style") or "").strip()
     if style:
         frag = resolve_style_prompt(style) or style
@@ -496,7 +571,7 @@ async def make_poster(args: dict, ctx) -> str:
             user_id=ctx.user.id,
             prompt=desc,
             image_model=None,
-            ratio=args.get("ratio", "3:4"),
+            ratio=ratio,
             quality="medium",
             count=count,
             image_prompt=desc,
@@ -522,6 +597,12 @@ async def make_poster(args: dict, ctx) -> str:
         if url:
             label = "门店海报" if len(images) == 1 else f"海报{i+1}"
             parts.append(f"![{label}]({url})")
+            ratio = img.get("ratio") if isinstance(img, dict) else None
+            width = img.get("width") if isinstance(img, dict) else None
+            height = img.get("height") if isinstance(img, dict) else None
+            if ratio or (width and height):
+                meta = " · ".join(str(x) for x in (ratio, f"{width}x{height}" if width and height else "") if x)
+                parts.append(f"尺寸：{meta}")
     if not parts:
         return "海报已生成（但没拿到图片链接，去生成历史看看）。"
 
@@ -567,6 +648,9 @@ async def generate_image(args: dict, ctx) -> str:
     desc = (args.get("description") or "").strip()
     if not desc:
         return "缺少图片描述，没法生成。说清你想要张什么样的图。"
+    desc, ratio, unsupported_msg = _normalize_image_request(desc, args.get("ratio"))
+    if unsupported_msg:
+        return unsupported_msg
 
     logo_path = (args.get("logo_path") or "").strip() or None
     qr_path = (args.get("qr_path") or "").strip() or None
@@ -593,7 +677,7 @@ async def generate_image(args: dict, ctx) -> str:
     try:
         result = await poster_service.generate_images(
             db=ctx.db, store=ctx.store, user_id=ctx.user.id, prompt=desc,
-            image_model=None, ratio=args.get("ratio", "3:4"),
+            image_model=None, ratio=ratio,
             quality="medium", count=count, image_prompt=desc,
             background_mode=background_mode,
             logo_path=logo_path, qr_path=qr_path,
@@ -616,6 +700,12 @@ async def generate_image(args: dict, ctx) -> str:
         if url:
             label = "生成的图片" if len(images) == 1 else f"图片{i+1}"
             parts.append(f"![{label}]({url})")
+            ratio = img.get("ratio") if isinstance(img, dict) else None
+            width = img.get("width") if isinstance(img, dict) else None
+            height = img.get("height") if isinstance(img, dict) else None
+            if ratio or (width and height):
+                meta = " · ".join(str(x) for x in (ratio, f"{width}x{height}" if width and height else "") if x)
+                parts.append(f"尺寸：{meta}")
     if not parts:
         return "图片已生成（但没拿到链接，去生成历史看看）。"
 
@@ -631,11 +721,41 @@ async def generate_image(args: dict, ctx) -> str:
 _VIDEO_GENERATING: set[str] = set()
 
 
+def _normalize_video_ratio(args: dict) -> str:
+    """视频默认社交媒体竖屏 9:16（抖音/视频号/快手/小红书/朋友圈）；
+    只有用户/模型明确要横版、大屏、电视、电脑、16:9 才给 16:9；明确方形给 1:1。
+    总表口径：视频是发社交媒体账号的营销内容，默认 9:16，不是店内大屏物料。"""
+    a = args or {}
+    raw = str(a.get("ratio") or "").strip()
+    if raw in ("9:16", "16:9", "1:1"):
+        return raw
+    blob = str(a.get("description") or "")
+    if any(k in blob for k in ("横版", "横屏", "横向", "大屏", "电视", "投屏", "电脑", "宽屏", "16:9")):
+        return "16:9"
+    if any(k in blob for k in ("方形", "方图", "1:1")):
+        return "1:1"
+    return "9:16"
+
+
+def _video_approval_reason(args: dict, ctx) -> dict:
+    ratio = _normalize_video_ratio(args)
+    duration = int((args or {}).get("duration") or 5)
+    first_frame = str((args or {}).get("first_frame") or "").strip()
+    mode = "图生视频" if first_frame else "文生视频"
+    return {
+        "what": f"生成一条{duration}秒左右的{ratio}短视频（{mode}），用于抖音/视频号/快手/小红书这类社交媒体营销。",
+        "why": "视频生成比图片慢、成本更高，确认后才会真正提交到视频模型。",
+        "impact": "确认后会消耗视频额度，通常需要等待 1-8 分钟；生成结果会保存到最近作品里，可回来继续查看。",
+    }
+
+
 @tool(
     name="generate_video",
     deliverable=True,
     requires_approval=True,   # 视频贵+不可逆产出 → 花钱前弹确认（生图便宜不弹、视频弹，符合防盗刷/控成本）
     approval_class="spend",
+    force_confirm=True,
+    approval_reason=_video_approval_reason,
     timeout=1860.0,           # 异步轮询波动大(实测达13.5分钟)，外层兜底设31分钟(略大于 video_timeout 30分钟)，别被默认短超时掐了
     description=(
         "生成一段短视频（AI 文生视频 / 图生视频）。当用户要『做个视频 / 生成视频 / 让这张图动起来』时调用。"
@@ -650,7 +770,7 @@ _VIDEO_GENERATING: set[str] = set()
         "properties": {
             "description": {"type": "string", "description": "你扩写好的【中文】画面+运镜描述：主体动作 / 镜头运动(推拉摇移环绕) / 场景 / 节奏 / 氛围，越具体出片越好"},
             "first_frame": {"type": "string", "description": "首帧图片地址(可选)：上一步生成图片的 /uploads/... 路径或 http 链接；填了就做『图生视频』(从这张图动起来)，不填就纯文生视频"},
-            "ratio": {"type": "string", "description": "画面比例(可选)：16:9 / 9:16 / 1:1，默认 16:9"},
+            "ratio": {"type": "string", "description": "画面比例(可选)：9:16(默认·竖屏，发抖音/视频号/快手/小红书/朋友圈) / 16:9(横版·店内大屏/电视/电脑) / 1:1。不填默认 9:16；只有用户明确要横版大屏才用 16:9"},
             "duration": {"type": "integer", "description": "时长秒数(可选)：默认 5"},
         },
         "required": ["description"],
@@ -685,7 +805,7 @@ async def generate_video(args: dict, ctx) -> str:
     try:
         result = await video_service.generate_video(
             db=ctx.db, store=ctx.store, user_id=ctx.user.id,
-            prompt=desc, ratio=args.get("ratio", "16:9"),
+            prompt=desc, ratio=_normalize_video_ratio(args),
             duration=int(args.get("duration", 5) or 5),
             first_frame=first_frame,
             allow_paths=set(getattr(ctx, "allowed_paths", None) or []),

@@ -58,7 +58,7 @@ class ProviderFactory:
                 return cls.get_text_provider()  # 内置文字/看图大脑（默认 MiMo v2.5）
             from core.exceptions import AIProviderError
             raise AIProviderError(
-                message="还没配置文字模型 Key（内置 key 未注入、也未填自带 key），请检查安装或在「模型设置」里填写",
+                message="AI 服务还没准备好，请联系管理员处理",
                 status_code=503,
             )
         return cls.get_text_provider()

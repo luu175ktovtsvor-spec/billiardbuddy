@@ -162,10 +162,14 @@ export interface StoreMemoryItem {
   type_label: string;
   content: string;
   confidence: string;
-  /** manual=老板亲定的「我的店规矩」 | auto=AI 从使用里学到的 */
-  source: "manual" | "auto";
-  /** 大白话来源标签：店主定 / AI学到 */
+  /** manual=老板亲定 | auto=AI 学到且可注入 | pending=待确认候选 */
+  source: "manual" | "auto" | "pending";
+  /** 大白话来源标签：店主定 / AI学到 / 待确认 */
   source_label: string;
+  /** global=全局门店资料 | working_dir=仅某个工作目录/项目使用 */
+  scope?: "global" | "working_dir";
+  /** 大白话作用域标签 */
+  scope_label?: string;
 }
 
 /** BYOK：门店自带大模型 Key 配置（读，不含明文 key） */

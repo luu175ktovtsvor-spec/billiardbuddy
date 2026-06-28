@@ -15,6 +15,10 @@ TODO(后续)：agent 会话本身落库(type=agent) + 多轮 conversation_id 续
 import json
 import logging
 import os
+import re
+import asyncio
+import uuid as _uuid_mod
+from dataclasses import dataclass, field
 
 from fastapi import APIRouter, Depends, Form, Header, HTTPException
 from fastapi.responses import StreamingResponse
@@ -44,7 +48,7 @@ from services.agent.proactive import generate_daily_drafts
 from services.ai.failover import build_resilient_text_provider  # BYOK 失败自动切备用配置档
 from services.ai.prompt_engine import get_prompt_engine  # L0 核心层(core.*)注入台球 system prompt
 from services.agent.registry import default_registry, general_registry, billiards_registry, BILLIARDS_TOOL_NAMES
-from services.memory_service import format_memories_for_prompt, load_store_memory, remember
+from services.memory_service import filter_memories_for_mode, format_memories_for_prompt, load_scoped_store_memory, load_store_memory, memory_reference_labels, remember
 from services.quota_service import check_quota
 from services.store_profile_service import render_operation_profile_context
 import services.agent.tools  # noqa: F401  导入即把内置工具登记进 default_registry
@@ -52,6 +56,76 @@ import services.agent.web_tools  # noqa: F401  第二批：WebFetch/WebSearch/To
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@dataclass
+class _AgentTask:
+    id: str
+    conversation_id: str | None = None
+    generation_id: str | None = None
+    status: str = "running"
+    events: list[str] = field(default_factory=list)
+    total: int = 0      # 累计追加事件数=逻辑 offset 高水位，永不回退（队尾截断也不变）
+    dropped: int = 0    # 已从队首丢弃的事件数，把"逻辑 offset"映射成"当前列表下标": idx = offset - dropped
+    condition: asyncio.Condition = field(default_factory=asyncio.Condition)
+    runner: asyncio.Task | None = None
+
+
+_AGENT_TASKS: dict[str, _AgentTask] = {}
+_AGENT_TASK_LIMIT = 40
+
+
+def _sse_line(event: dict) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+
+
+_TASK_EVENT_CAP = 800  # 内存里每个任务最多保留多少条最近事件（队首超额截断）
+
+
+async def _task_append(task: _AgentTask, event: dict) -> None:
+    """追加一条事件：用单调递增的"逻辑 offset"（task.total），不受队尾截断影响。
+
+    历史 bug：旧实现把 events 截成最近 800 条，但 offset/订阅游标按列表绝对下标算——
+    一旦事件数 > 800（长回复每 token 一条，主路径极易触发），队首移位导致订阅者
+    要么静默卡死收不到新事件、要么重连越界。这里改成逻辑 offset + dropped 映射，彻底修掉。
+    """
+    async with task.condition:
+        offset = task.total
+        line = _sse_line({**event, "task_id": task.id, "offset": offset})
+        task.events.append(line)
+        task.total += 1
+        if len(task.events) > _TASK_EVENT_CAP:
+            extra = len(task.events) - _TASK_EVENT_CAP
+            del task.events[:extra]
+            task.dropped += extra
+        task.condition.notify_all()
+
+
+def _drain_events(task: _AgentTask, cursor: int) -> tuple[list[str], int]:
+    """从逻辑 offset `cursor` 起把当前可用事件取出，返回 (事件行, 新游标)。
+
+    cursor 是逻辑 offset；idx = cursor - dropped 映射到当前列表下标。
+    若 cursor 落在已被队首丢弃的区间（idx<0），跳到当前最早可用的一条，不报错也不重复。
+    供订阅端点与单测共用，保证读取逻辑单一来源。
+    """
+    out: list[str] = []
+    while cursor < task.total:
+        idx = cursor - task.dropped
+        if idx < 0:
+            cursor = task.dropped
+            idx = 0
+        out.append(task.events[idx])
+        cursor += 1
+    return out, cursor
+
+
+def _trim_agent_tasks() -> None:
+    if len(_AGENT_TASKS) <= _AGENT_TASK_LIMIT:
+        return
+    done = [t for t in _AGENT_TASKS.values() if t.status != "running"]
+    done.sort(key=lambda t: t.id)
+    for t in done[: max(0, len(_AGENT_TASKS) - _AGENT_TASK_LIMIT)]:
+        _AGENT_TASKS.pop(t.id, None)
 
 # ══════════════════════════════════════════════════════════════════════════
 # 系统提示三段（通用 Agent 化）：
@@ -103,6 +177,24 @@ _BILLIARDS_PERSONA = (
     "【把方向带正】客人差评/投诉是帮老板『专业体面地回应』而非怼客人——真诚、有格局、让围观的人觉得店家大气，绝不写嘲讽贬低顾客的话。"
     "【知识要接地·别编】要写具体做法/话术/细则/硬数字时：先 look_up_knowledge 查目录、再 read_knowledge 读你挑中那条的整篇正文，"
     "据读到的内容写；没查到/没读到的具体数字或细则，就说『按一般经验』或让老板提供，绝不凭空编造台球行业的数字和打法。"
+)
+
+_BILLIARDS_P0A_BOUNDARY = (
+    "【台球行业 P0-A 对话边界】"
+    "1. 用户提到追分、玩大、彩头、赌、押注、盘口、抽水、坐庄这类词时，第一句话先把边界说清："
+    "门店不能组织赌博、不能坐庄/定盘口/抽水、不能把输赢付款或赌彩头包装成活动。"
+    "边界说完，再给正路替代：正规周赛/会员赛、技术挑战、积分榜、奖杯荣誉、台费优惠、会员积分、饮品小奖品、报名费透明奖池等。"
+    "2. 助教/陪打/加微信/私域导流可以按真实运营给建议，但必须保持职业分寸，不写性暗示、性交易、灰色服务。"
+    "3. 回答台球运营问题时按这个顺序：先给一句判断，再给 3 条以内今晚/明天能做的动作，再给可复制话术，最后给下一步；不要输出课程式长文。"
+    "4. 行业知识、门店事实、本机使用习惯分层：PPT/知识库是行业方法，门店资料/店脑才是这家店事实。"
+    "没有明确确认的店名、城市、价格、活动时间，用 [门店名] / [城市] / [价格] 占位或追问，不要私自套用旧会话、测试数据里的店名。"
+    "尤其不要把「鑫和台球」「泉州鑫和台球」「测试球城」当作当前门店名，除非用户在当前对话或门店资料里明确确认。"
+)
+
+_STALE_STORE_NAME_PATTERNS = (
+    re.compile(r"泉州\s*鑫和台球"),
+    re.compile(r"鑫和台球"),
+    re.compile(r"测试球城"),
 )
 
 
@@ -282,6 +374,16 @@ def _selected_files_note(paths: list[str] | None) -> str:
     )
 
 
+def _sanitize_stale_store_names(text: str | None) -> str:
+    """清掉历史测试店名，避免店脑/旧会话把未确认门店名带进正式回答。"""
+    if not text:
+        return ""
+    cleaned = text
+    for pat in _STALE_STORE_NAME_PATTERNS:
+        cleaned = pat.sub("[门店名]", cleaned)
+    return cleaned
+
+
 def compose_agent_system_prompt(profile_text: str, brain_text: str, full_disk: bool = False,
                                 billiards_mode: bool = False, output_style: str = "",
                                 working_dir: str = "") -> str:
@@ -330,6 +432,7 @@ def compose_agent_system_prompt(profile_text: str, brain_text: str, full_disk: b
         if core_layer:
             parts.append(core_layer)
         parts.append(_BILLIARDS_PERSONA)
+        parts.append(_BILLIARDS_P0A_BOUNDARY)
     # —— 动态尾段：当天日期（通用也需要）→ 门店画像（仅台球）+ 店脑记忆（M1：通用也注入）——
     today = _today_line()
     if today:
@@ -348,7 +451,7 @@ def compose_agent_system_prompt(profile_text: str, brain_text: str, full_disk: b
     # 治"通用模式零长期记忆"的致命缺口，让助手越用越懂你。放在动态尾段、不进可缓存静态前缀。
     if brain_text and brain_text.strip():
         # format_memories_for_prompt 自带"如与其他资料冲突以此为准"的前缀
-        parts.append(brain_text.strip())
+        parts.append(_sanitize_stale_store_names(brain_text).strip())
     return "\n\n".join(parts)
 
 
@@ -494,6 +597,453 @@ def _group_agent_conversations(rows) -> list[dict]:
     return list(convs.values())[:40]
 
 
+def _recent_artifact_item(g) -> dict:
+    """把 Generation 统一压成普通用户能看懂的最近作品/任务条目。"""
+    params = g.input_params or {}
+    typ = g.type or ""
+    result = g.result or ""
+    title = (
+        g.title
+        or params.get("prompt")
+        or params.get("need")
+        or params.get("message")
+        or {
+            "poster": "生成的图片",
+            "video": "生成的视频",
+            "agent": "最近任务",
+            "diagnosis": "报表诊断",
+            "platform_content": "平台内容",
+            "groupbuy": "团购文案",
+        }.get(typ, "生成内容")
+    )
+    title = str(title).replace("\n", " ").strip()[:48] or "生成内容"
+    kind = "task" if typ == "agent" else "content"
+    if typ == "poster":
+        kind = "poster"
+    elif typ == "video":
+        kind = "video"
+    subtitle = {
+        "poster": "图片作品",
+        "video": "视频任务",
+        "agent": "最近任务",
+        "diagnosis": "报表诊断",
+        "platform_content": "平台内容",
+        "groupbuy": "团购文案",
+        "workbench": "文案作品",
+        "activity": "活动方案",
+    }.get(typ, typ or "作品")
+    return {
+        "id": str(g.id),
+        "kind": kind,
+        "type": typ,
+        "title": title,
+        "subtitle": subtitle,
+        "url": result if kind in {"poster", "video"} else None,
+        "content": result[:1200] if kind in {"content", "task"} else None,
+        "conversation_id": str(g.conversation_id) if g.conversation_id else None,
+        "created_at": g.created_at.isoformat() if g.created_at else None,
+        "ratio": params.get("ratio") or g.sub_type,
+        "duration": params.get("duration"),
+        "width": params.get("width"),
+        "height": params.get("height"),
+    }
+
+
+def _deleted_memory_item(m) -> dict:
+    return {
+        "id": str(m.id),
+        "kind": "memory",
+        "type": "store_memory",
+        "title": str(m.content or "门店资料").replace("\n", " ").strip()[:48] or "门店资料",
+        "subtitle": "门店资料",
+        "url": None,
+        "content": m.content,
+        "conversation_id": None,
+        "created_at": (m.deleted_at or m.updated_at or m.created_at).isoformat()
+        if (m.deleted_at or m.updated_at or m.created_at) else None,
+        "ratio": None,
+        "duration": None,
+        "width": None,
+        "height": None,
+    }
+
+
+def _file_change_item(row: dict, *, deleted: bool = False) -> dict:
+    path = str(row.get("path") or "")
+    name = str(row.get("name") or path.split("/")[-1] or "文件改动")
+    backup_path = str(row.get("backup_path") or "")
+    return {
+        "id": backup_path,
+        "kind": "file_change",
+        "type": "file_backup",
+        "title": name,
+        "subtitle": "已删除文件备份" if deleted else "文件改动",
+        "url": None,
+        "content": path,
+        "conversation_id": None,
+        "created_at": row.get("created_at"),
+        "ratio": None,
+        "duration": None,
+        "width": None,
+        "height": None,
+        "path": path,
+        "backup_path": backup_path,
+    }
+
+
+@router.get("/recent-artifacts")
+async def list_recent_artifacts(
+    limit: int = 12,
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+):
+    """P0-B 轻量找回：最近图片/视频/文案/报表诊断/任务，不做完整素材库。"""
+    from sqlalchemy import select
+    from models.generation import Generation as _Gen
+    from services.agent.local_tools import list_file_backups
+
+    limit = max(1, min(int(limit or 12), 30))
+    rows = (await db.execute(
+        select(_Gen).where(
+            _Gen.store_id == store.id,
+            _Gen.is_deleted == False,  # noqa: E712
+        ).order_by(_Gen.created_at.desc()).limit(200)
+    )).scalars().all()
+
+    items: list[dict] = []
+    seen_task_conversations: set[str] = set()
+    for g in rows:
+        if g.type == "agent":
+            cid = str(g.conversation_id) if g.conversation_id else str(g.id)
+            if cid in seen_task_conversations:
+                continue
+            seen_task_conversations.add(cid)
+        item = _recent_artifact_item(g)
+        if not item["url"] and not item["content"]:
+            continue
+        items.append(item)
+    for row in list_file_backups(limit=limit):
+        if row.get("path"):
+            items.append(_file_change_item(row, deleted=not bool(row.get("exists"))))
+    items.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+    return {"items": items[:limit]}
+
+
+@router.get("/deleted-items")
+async def list_deleted_items(
+    limit: int = 30,
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+):
+    """P0-B 轻量最近删除：会话/作品先能找回，不做完整回收站。"""
+    from sqlalchemy import select
+    from models.generation import Generation as _Gen
+    from models.store_memory import StoreMemory as _Mem
+    from services.agent.local_tools import list_file_backups
+
+    limit = max(1, min(int(limit or 30), 80))
+    rows = (await db.execute(
+        select(_Gen).where(
+            _Gen.store_id == store.id,
+            _Gen.is_deleted == True,  # noqa: E712
+        ).order_by(_Gen.updated_at.desc(), _Gen.created_at.desc()).limit(200)
+    )).scalars().all()
+    mem_rows = (await db.execute(
+        select(_Mem).where(
+            _Mem.store_id == store.id,
+            _Mem.is_deleted == True,  # noqa: E712
+        ).order_by(_Mem.deleted_at.desc(), _Mem.updated_at.desc(), _Mem.created_at.desc()).limit(80)
+    )).scalars().all()
+
+    items: list[dict] = []
+    seen_task_conversations: set[str] = set()
+    for g in rows:
+        if g.type == "agent" and g.conversation_id:
+            cid = str(g.conversation_id)
+            if cid in seen_task_conversations:
+                continue
+            seen_task_conversations.add(cid)
+        items.append(_recent_artifact_item(g))
+        if len(items) >= limit:
+            break
+    if len(items) < limit:
+        for m in mem_rows:
+            items.append(_deleted_memory_item(m))
+            if len(items) >= limit:
+                break
+    if len(items) < limit:
+        for row in list_file_backups(limit=limit):
+            if row.get("path") and not row.get("exists"):
+                items.append(_file_change_item(row, deleted=True))
+                if len(items) >= limit:
+                    break
+    return {"items": items}
+
+
+class DeletedItemAction(BaseModel):
+    id: str | None = None
+    conversation_id: str | None = None
+    kind: str | None = None
+
+
+class SavedArtifactIn(BaseModel):
+    title: str | None = None
+    content: str
+    conversation_id: str | None = None
+    kind: str | None = None
+
+
+@router.post("/saved-artifacts")
+async def save_agent_artifact(
+    body: SavedArtifactIn,
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+):
+    """把用户明确点过“保存”的回答/诊断/文案落进最近作品。
+
+    这是 P0-B 的轻量成品闭环：不做完整成品库，但让有价值的文字结果可找回、可恢复/彻底删除。
+    """
+    from models.generation import Generation as _Gen
+
+    content = (body.content or "").strip()
+    if not content:
+        raise AIServiceError("没有可保存的内容")
+    title = (body.title or "保存的成品").replace("\n", " ").strip()[:80] or "保存的成品"
+    conv_uuid = None
+    if body.conversation_id:
+        try:
+            conv_uuid = _uuid_mod.UUID(body.conversation_id)
+        except (ValueError, TypeError):
+            conv_uuid = None
+    gen = _Gen(
+        store_id=store.id,
+        user_id=getattr(user, "id", None),
+        type="workbench",
+        sub_type=(body.kind or "saved_text")[:50],
+        title=title,
+        input_params={"source": "assistant_action", "kind": body.kind or "saved_text"},
+        prompt_used="保存成品",
+        result=content,
+        model_used="agent",
+        tokens_used=0,
+        conversation_id=conv_uuid,
+    )
+    db.add(gen)
+    await db.commit()
+    return _recent_artifact_item(gen)
+
+
+@router.delete("/recent-artifacts/{artifact_id}")
+async def delete_recent_artifact(
+    artifact_id: str,
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+):
+    """把单条最近作品移入最近删除。
+
+    P0-B：成品不只要能保存/找回，也要能误删后恢复。这里仅软删本店生成记录；
+    真正彻底删除走 /agent/deleted-items/purge。
+    """
+    import uuid as _uuid
+    from sqlalchemy import update as _update
+    from models.generation import Generation as _Gen
+
+    try:
+        gid = _uuid.UUID(artifact_id)
+    except (ValueError, TypeError):
+        raise AIServiceError("作品 id 不对")
+    await db.execute(
+        _update(_Gen).where(
+            _Gen.store_id == store.id,
+            _Gen.id == gid,
+            _Gen.is_deleted == False,  # noqa: E712
+        ).values(is_deleted=True)
+    )
+    await db.commit()
+    return {"ok": True, "id": artifact_id}
+
+
+@router.post("/deleted-items/restore")
+async def restore_deleted_item(
+    body: DeletedItemAction,
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+):
+    """恢复最近删除的单条作品或整条会话。"""
+    import uuid as _uuid
+    from sqlalchemy import update as _update
+    from models.generation import Generation as _Gen
+    from models.store_memory import StoreMemory as _Mem
+
+    if body.kind == "file_change":
+        from services.agent.local_tools import restore_file_backup
+        result = restore_file_backup(body.conversation_id or "", body.id)
+        if not result.get("ok"):
+            raise AIServiceError(str(result.get("error") or "恢复文件失败"))
+        return result
+    if body.kind == "memory":
+        try:
+            mid = _uuid.UUID(body.id or "")
+        except (ValueError, TypeError):
+            raise AIServiceError("记忆 id 不对")
+        await db.execute(
+            _update(_Mem).where(
+                _Mem.store_id == store.id,
+                _Mem.id == mid,
+            ).values(is_deleted=False, deleted_at=None)
+        )
+    elif body.conversation_id:
+        try:
+            cid = _uuid.UUID(body.conversation_id)
+        except (ValueError, TypeError):
+            raise AIServiceError("会话 id 不对")
+        await db.execute(
+            _update(_Gen).where(
+                _Gen.store_id == store.id,
+                _Gen.conversation_id == cid,
+            ).values(is_deleted=False)
+        )
+    elif body.id:
+        try:
+            gid = _uuid.UUID(body.id)
+        except (ValueError, TypeError):
+            raise AIServiceError("记录 id 不对")
+        await db.execute(
+            _update(_Gen).where(
+                _Gen.store_id == store.id,
+                _Gen.id == gid,
+            ).values(is_deleted=False)
+        )
+    else:
+        raise AIServiceError("缺少要恢复的内容")
+    await db.commit()
+    return {"ok": True}
+
+
+@router.post("/deleted-items/purge")
+async def purge_deleted_item(
+    body: DeletedItemAction,
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+):
+    """彻底删除最近删除里的单条作品或整条会话。"""
+    import uuid as _uuid
+    from sqlalchemy import delete as _delete
+    from models.generation import Generation as _Gen
+    from models.store_memory import StoreMemory as _Mem
+
+    if body.kind == "file_change":
+        from pathlib import Path
+        try:
+            from services.agent.local_tools import _library_root
+            backup = Path(body.id or "").expanduser().resolve()
+            bdir = (_library_root() / ".backups").resolve()
+            if backup.parent != bdir or backup.suffix != ".bak":
+                raise AIServiceError("只能清理自动备份")
+            if backup.exists():
+                backup.unlink()
+            meta = backup.with_suffix(backup.suffix + ".json")
+            if meta.exists():
+                meta.unlink()
+        except AIServiceError:
+            raise
+        except Exception as e:
+            raise AIServiceError(str(e)[:120])
+        return {"ok": True}
+    if body.kind == "memory":
+        try:
+            mid = _uuid.UUID(body.id or "")
+        except (ValueError, TypeError):
+            raise AIServiceError("记忆 id 不对")
+        await db.execute(
+            _delete(_Mem).where(
+                _Mem.store_id == store.id,
+                _Mem.id == mid,
+                _Mem.is_deleted == True,  # noqa: E712
+            )
+        )
+    elif body.conversation_id:
+        try:
+            cid = _uuid.UUID(body.conversation_id)
+        except (ValueError, TypeError):
+            raise AIServiceError("会话 id 不对")
+        await db.execute(
+            _delete(_Gen).where(
+                _Gen.store_id == store.id,
+                _Gen.conversation_id == cid,
+                _Gen.is_deleted == True,  # noqa: E712
+            )
+        )
+    elif body.id:
+        try:
+            gid = _uuid.UUID(body.id)
+        except (ValueError, TypeError):
+            raise AIServiceError("记录 id 不对")
+        await db.execute(
+            _delete(_Gen).where(
+                _Gen.store_id == store.id,
+                _Gen.id == gid,
+                _Gen.is_deleted == True,  # noqa: E712
+            )
+        )
+    else:
+        raise AIServiceError("缺少要彻底删除的内容")
+    await db.commit()
+    return {"ok": True}
+
+
+@router.post("/deleted-items/clear")
+async def clear_deleted_items(
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+):
+    """清空最近删除：彻底删除本店已删除的会话/作品/门店资料，并清理已删除文件的备份。"""
+    from pathlib import Path
+    from sqlalchemy import delete as _delete
+    from models.generation import Generation as _Gen
+    from models.store_memory import StoreMemory as _Mem
+    from services.agent.local_tools import _library_root, list_file_backups
+
+    await db.execute(
+        _delete(_Gen).where(
+            _Gen.store_id == store.id,
+            _Gen.is_deleted == True,  # noqa: E712
+        )
+    )
+    await db.execute(
+        _delete(_Mem).where(
+            _Mem.store_id == store.id,
+            _Mem.is_deleted == True,  # noqa: E712
+        )
+    )
+    removed_backups = 0
+    bdir = (_library_root() / ".backups").resolve()
+    for row in list_file_backups(limit=80):
+        if row.get("exists") or not row.get("backup_path"):
+            continue
+        try:
+            backup = Path(str(row["backup_path"])).expanduser().resolve()
+            if backup.parent != bdir or backup.suffix != ".bak":
+                continue
+            if backup.exists():
+                backup.unlink()
+                removed_backups += 1
+            meta = backup.with_suffix(backup.suffix + ".json")
+            if meta.exists():
+                meta.unlink()
+        except Exception:
+            logger.debug("failed to purge deleted file backup", exc_info=True)
+    await db.commit()
+    return {"ok": True, "removed_file_backups": removed_backups}
+
+
 @router.get("/conversations")
 async def list_agent_conversations(
     user: User = Depends(get_current_user),
@@ -607,13 +1157,30 @@ async def agent_list_skills(billiards: bool = False, user: User = Depends(get_cu
 
 
 @router.get("/file-diff")
-async def agent_file_diff(path: str, user: User = Depends(get_current_user)):
+async def agent_file_diff(path: str, backup_path: str | None = None, user: User = Depends(get_current_user)):
     """B.2：给 AI 改过的本机文件返回"改前/改后"对比数据（old=最近备份、new=当前内容），供右侧 diff 视图让老板确认。只读。
     M5b：敏感文件（密钥/凭据）拦截——内容不经此端点泄露。"""
     from services.agent.local_tools import _is_sensitive_file, get_file_backup_diff
     if _is_sensitive_file(path):
         return {"ok": False, "error": "该文件可能含敏感信息（密钥/凭据），需在对话中经确认闸授权后才能查看内容。"}
-    return get_file_backup_diff(path)
+    return get_file_backup_diff(path, backup_path)
+
+
+class FileRestoreRequest(BaseModel):
+    path: str
+    backup_path: str | None = None
+
+
+@router.post("/file-restore")
+async def agent_file_restore(body: FileRestoreRequest, user: User = Depends(get_current_user)):
+    """把 AI 改过/删过的文件恢复到自动备份。恢复前会再备份当前版本。"""
+    from services.agent.local_tools import _is_sensitive_file, restore_file_backup
+    if _is_sensitive_file(body.path):
+        return {"ok": False, "error": "该文件可能含敏感信息，需要在对话中经确认后处理。"}
+    result = restore_file_backup(body.path, body.backup_path)
+    if not result.get("ok"):
+        return result
+    return result
 
 
 @router.get("/output-styles")
@@ -823,50 +1390,38 @@ async def im_wechat(
     return {"success": True, "data": {"type": "text", "content": reply}}
 
 
-@router.post("/chat")
-async def agent_chat(
-    body: AgentChatRequest,
-    user: User = Depends(get_current_user),
-    store=Depends(get_current_store),
-    db=Depends(get_db),
-):
+async def _stream_agent_events(body: AgentChatRequest, user: User, store, db):
     injection = check_input_injection(body.message or "")
     if injection:
         raise AIServiceError(injection, status_code=400)
 
-    # 空输入守卫：空消息/纯空格/纯斜杠(// 、/ 等) → 别让 ReAct 循环瞎逛（实测会乱调 list_files/web_search 烧 BYOK 额度），直接友好提示。
     if not (body.message or "").strip().strip("/").strip():
-        async def _empty_gen():
-            tip = "你还没说要做什么呢～告诉我一句就行，比如「写条周末活动朋友圈」「看看这个报表」「做张拉新海报」。"
-            yield f"data: {json.dumps({'type': 'final', 'content': tip}, ensure_ascii=False)}\n\n"
-            yield f"data: {json.dumps({'type': 'done', 'turns': 0}, ensure_ascii=False)}\n\n"
-        return StreamingResponse(_empty_gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
+        tip = "你还没说要做什么呢～告诉我一句就行，比如「写条周末活动朋友圈」「看看这个报表」「做张拉新海报」。"
+        yield {"type": "final", "content": tip}
+        yield {"type": "done", "turns": 0, "stopped_reason": "stop"}
+        return
 
-    # Slash 命令：'/name args' 且 name 是可调用技能 → 展开技能正文喂模型（前端仍显示用户原文 body.message）。
     effective_message = _agent_skills.maybe_expand_slash(body.message) or body.message
-
     await check_quota(db, str(store.id))
 
-    # 注入"懂这家店"：门店画像（同步）+ 店脑记忆 → system prompt
     profile_text = render_operation_profile_context(store)
-    memories = await load_store_memory(db, store.id)
     perm_mode, full_disk = _resolve_permission(body.permission_mode, body.full_disk_access)
-    # @ 知识库：前端 @ 选了「台球行业知识库」→ knowledge_packs 含 "billiards" → 挂台球人设+门店画像+台球工具集；
-    # 否则默认通用 Agent。安全红线两种模式都常驻（由 compose 内部保证）。
     billiards_mode = bool(body.knowledge_packs and "billiards" in body.knowledge_packs)
-    # 店脑按需召回：按老板这句话的相关性筛记忆，避免全量注入撑大 prompt（context rot）
+    memories = filter_memories_for_mode(
+        await load_scoped_store_memory(db, store.id, body.working_dir),
+        billiards_mode,
+    )
+    memory_refs = memory_reference_labels(memories, intent=body.message)
     system_prompt = compose_agent_system_prompt(
         profile_text, format_memories_for_prompt(memories, intent=body.message),
         full_disk=full_disk, billiards_mode=billiards_mode, output_style=body.output_style or "",
         working_dir=body.working_dir or "",
     )
-    # 桌面版：老板当场选定的文件 → 注入 prompt（告诉大脑路径）+ 进 ctx.allowed_paths（授权工具可动）
     if body.selected_files and os.environ.get("DESKTOP_LOCAL") == "1":
         note = _selected_files_note(body.selected_files)
         if note:
             system_prompt = system_prompt + "\n\n" + note
 
-    # 事件 Hooks：UserPromptSubmit（可注入上下文/拦截）+ SessionStart（新会话注入上下文）。无配置时 no-op。
     try:
         from services.agent.hooks import run_event_hooks
         _ups_block, _ups_ctx = await run_event_hooks("UserPromptSubmit", {"prompt": body.message})
@@ -888,21 +1443,18 @@ async def agent_chat(
         permission_mode=perm_mode, full_disk_access=full_disk,
         working_dir=body.working_dir,
         auto_spend_limit=getattr(store, "agent_auto_spend_limit", None),
-        model_ctx_window=_model_ctx_window(),  # SH-6：配了 DESKTOP_MODEL_CTX_WINDOW 才启用自动瘦身
-        token_budget=_agent_token_budget(),    # G.1 P2：交互式 token 总量刹车（默认不限，配环境变量启用）
+        model_ctx_window=_model_ctx_window(),
+        token_budget=_agent_token_budget(),
         goal=body.goal or "",
     )
 
-    # 多轮续接：有 conversation_id 则从 DB 查本会话历史(替代前端全量回传——刷新不丢、省 token、更可靠);否则用前端 history。
-    # 统一走 _load_agent_history（与 /agent/execute 同一函数，单一来源，不再两处各抄一份"最近5轮"查询）。
     import uuid as _uuid
     history = body.history
     if body.conversation_id:
         db_hist = await _load_agent_history(db, store, body.conversation_id)
-        if db_hist:  # DB 查到本会话历史 → 用它；查不到/失败则保留前端回传的 history
+        if db_hist:
             history = db_hist
-
-    history = _cap_history(history)  # 统一封顶：覆盖 DB 与前端两条路径，长对话不撑爆
+    history = _cap_history(history)
 
     gen_id = str(_uuid.uuid4())
     try:
@@ -910,109 +1462,114 @@ async def agent_chat(
     except (ValueError, TypeError):
         conv_uuid = _uuid.UUID(gen_id)
 
-    # SH-8：把本会话已累积的「连续拒绝」计数注入 ctx，让循环里 _denial_fallback 能据此对【反复被拒的动作】
-    # 自动回退（不再提请、改走文本/换方案）。故障安全：注不进就当无历史拒绝。
     denial_tracker.load_into_ctx(ctx, str(conv_uuid))
 
-    async def event_generator():
-        from services.agent.tools import DELIVERABLE_TOOLS
-        final_content = ""
-        deliverables: list[str] = []  # 交付类工具的产出(成品)，需并进 result 落库——否则下一轮看不到、改不了
-        tools_used: list[str] = []    # 可观测：本轮模型选了哪些工具（含待审批的）
-        tool_failures = 0             # 可观测：工具执行失败次数（喂"哪个工具/选择老出问题"）
-        turns = 0
-        # 多模态：老板随消息选的图片/视频。大视频(超内联上限)先上传 provider 换文件引用(仅 Moonshot/Kimi 端点支持)；
-        # 其余(图片/小视频/非 Moonshot 端点)原样——build_user_content 据类型塞 image_url/video_url。
-        _media = [p for p in (body.selected_files or []) if is_media(p)] if os.environ.get("DESKTOP_LOCAL") == "1" else None
-        if _media and needs_video_upload(_media):
-            try:
-                from services.ai.factory import ProviderFactory
-                _up = ProviderFactory.get_text_provider_for_store(store)
-                _media = await resolve_media_for_upload(_media, getattr(_up, "upload_video", None))
-            except Exception:
-                logger.warning("大视频预上传失败，保留原路径(超限视频将跳过)", exc_info=True)
+    from services.agent.tools import DELIVERABLE_TOOLS
+    final_content = ""
+    deliverables: list[str] = []
+    tools_used: list[str] = []
+    tool_failures = 0
+    turns = 0
+    _media = [p for p in (body.selected_files or []) if is_media(p)] if os.environ.get("DESKTOP_LOCAL") == "1" else None
+    if _media and needs_video_upload(_media):
         try:
-            async for event in run_agent_loop_stream(
-                user_message=effective_message,
-                # 通用 Agent 默认走通用工具集；@ 了台球知识库则用全集；再并入已配置的 MCP server 工具
-                registry=_build_agent_registry(billiards_mode),
-                ctx=ctx,
-                system_prompt=system_prompt,
-                history=history,
-                # 多模态：图片/视频进 user 消息（image_url / video_url），大视频已换 provider 文件引用。
-                user_images=_media,
-                model=body.model,
-                provider=build_resilient_text_provider(store),  # BYOK：对话走门店自带 key；某家挂了自动切备用档
-                thinking=_deep_thinking_to_param(body.deep_thinking),  # F.2 深度思考 开/关 → 归一成 provider 参数
-                max_turns=_agent_max_turns(),  # G.1 P2：默认 12（多步任务 8 偏小），可经 DESKTOP_AGENT_MAX_TURNS 调
-            ):
-                et = event.get("type")
-                if et == "keepalive":
-                    yield ": keepalive\n\n"
-                    continue
-                if et == "final":
-                    final_content = event.get("content", "") or final_content
-                if et in ("tool_call", "approval_request") and event.get("tool"):
-                    tools_used.append(event.get("tool"))
-                if et == "tool_result":
-                    c = event.get("content") or ""
-                    if c.startswith(("[工具执行失败]", "[工具不存在]")):
-                        tool_failures += 1
-                    if event.get("tool") in DELIVERABLE_TOOLS and c.strip():
-                        deliverables.append(c)
-                    # B-2 依据可见：loop 已把 knowledge_used 直接放进该 tool_result 事件，
-                    # 下面 json.dumps(event) 原样透传给前端成品卡（无需在此重组，{**event,...} 也会保留它）。
-                if et == "done":
-                    turns = event.get("turns", 0) or 0
-                    tokens_used = event.get("tokens_used", 0) or 0  # SH-2：循环累加的真实编排消耗
-                    try:  # 工具使用可观测（故障安全，不影响 SSE）
-                        from services.usage_event_service import log_event
-                        await log_event("agent_tools", store_id=str(store.id),
-                                        user_id=(str(user.id) if user else None),
-                                        props={"tools": tools_used[:20], "failures": tool_failures,
-                                               "turns": turns, "tokens_used": tokens_used})
-                    except Exception:
-                        pass
-                    # 落库 result = 交付成品 + 收尾语：① 历史里看得到真内容 ② 下一轮"把刚才那条改一下"大脑读得到
-                    persist_text = final_content
-                    if deliverables:
-                        tail = f"\n\n{final_content}" if final_content.strip() else ""
-                        persist_text = "\n\n".join(deliverables) + tail
-                    # 采纳信号只记在推荐触发的那一轮（首轮、无续接 id）；同会话后续追问不重复计采纳。
-                    _rec_id = body.source_rec_id if not body.conversation_id else None
-                    await _persist_agent_chat(db, store, user, body.message, persist_text, gen_id, conv_uuid,
-                                              turns, tokens_used=tokens_used, source_rec_id=_rec_id)
-                    # 跨轮记忆：把 loop 暴露的【完整轨迹】（含工具调用/结果 + 最终答复）整段落盘成 JSONL，
-                    # 下一轮 _load_agent_history 整段读回当 history → 模型真记得住前面聊的。故障安全：失败不阻断 SSE。
-                    try:
-                        from services.agent.transcript import save_transcript
-                        save_transcript(str(conv_uuid), getattr(ctx, "final_messages", None))
-                    except Exception:
-                        logger.warning("agent 轨迹落盘失败，跳过", exc_info=True)
-                    event = {**event, "generation_id": gen_id, "conversation_id": str(conv_uuid)}
-                yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
-        except AppException as e:
-            # 业务异常（含 BYOK 守卫的"还没配 key"友好 503 AIProviderError）：把明确的中文引导透传给前端，
-            # 让用户知道去「模型设置」配自己的 key，而不是看笼统的"出现错误请重试"。need_byok=True 时前端弹「去设置」。
-            logger.info("agent chat 业务异常→前端: %s (status=%s)", e.message, e.status_code)
-            if deliverables or final_content.strip():
-                try:
-                    _pt = "\n\n".join(deliverables) + (f"\n\n{final_content}" if final_content.strip() else "") if deliverables else final_content
-                    await _persist_agent_chat(db, store, user, body.message, _pt, gen_id, conv_uuid, turns, tokens_used=0)
-                except Exception:
-                    logger.exception("error path: 成品落库失败")
-            yield f"data: {json.dumps({'type': 'error', 'error': e.message, 'need_byok': e.status_code == 503}, ensure_ascii=False)}\n\n"
-            yield f"data: {json.dumps({'type': 'done', 'turns': turns, 'stopped_reason': 'error', 'generation_id': gen_id, 'conversation_id': str(conv_uuid)}, ensure_ascii=False)}\n\n"
+            from services.ai.factory import ProviderFactory
+            _up = ProviderFactory.get_text_provider_for_store(store)
+            _media = await resolve_media_for_upload(_media, getattr(_up, "upload_video", None))
         except Exception:
-            logger.exception("agent chat stream error")
-            if deliverables or final_content.strip():
+            logger.warning("大视频预上传失败，保留原路径(超限视频将跳过)", exc_info=True)
+    try:
+        async for event in run_agent_loop_stream(
+            user_message=effective_message,
+            registry=_build_agent_registry(billiards_mode),
+            ctx=ctx,
+            system_prompt=system_prompt,
+            history=history,
+            user_images=_media,
+            model=body.model,
+            provider=build_resilient_text_provider(store),
+            thinking=_deep_thinking_to_param(body.deep_thinking),
+            max_turns=_agent_max_turns(),
+        ):
+            et = event.get("type")
+            if et == "final":
+                final_content = event.get("content", "") or final_content
+            if et in ("tool_call", "approval_request") and event.get("tool"):
+                tools_used.append(event.get("tool"))
+            if et == "tool_result":
+                c = event.get("content") or ""
+                if c.startswith(("[工具执行失败]", "[工具不存在]")):
+                    tool_failures += 1
+                if event.get("tool") in DELIVERABLE_TOOLS and c.strip():
+                    deliverables.append(c)
+            if et == "done":
+                turns = event.get("turns", 0) or 0
+                tokens_used = event.get("tokens_used", 0) or 0
                 try:
-                    _pt = "\n\n".join(deliverables) + (f"\n\n{final_content}" if final_content.strip() else "") if deliverables else final_content
-                    await _persist_agent_chat(db, store, user, body.message, _pt, gen_id, conv_uuid, turns, tokens_used=0)
+                    from services.usage_event_service import log_event
+                    await log_event("agent_tools", store_id=str(store.id),
+                                    user_id=(str(user.id) if user else None),
+                                    props={"tools": tools_used[:20], "failures": tool_failures,
+                                           "turns": turns, "tokens_used": tokens_used})
                 except Exception:
-                    logger.exception("error path: 成品落库失败")
-            yield f"data: {json.dumps({'type': 'error', 'error': '生成过程中出现错误，请重试'}, ensure_ascii=False)}\n\n"
-            yield f"data: {json.dumps({'type': 'done', 'turns': turns, 'stopped_reason': 'error', 'generation_id': gen_id, 'conversation_id': str(conv_uuid)}, ensure_ascii=False)}\n\n"
+                    pass
+                persist_text = final_content
+                if deliverables:
+                    tail = f"\n\n{final_content}" if final_content.strip() else ""
+                    persist_text = "\n\n".join(deliverables) + tail
+                _rec_id = body.source_rec_id if not body.conversation_id else None
+                await _persist_agent_chat(db, store, user, body.message, persist_text, gen_id, conv_uuid,
+                                          turns, tokens_used=tokens_used, source_rec_id=_rec_id)
+                try:
+                    from services.agent.transcript import save_transcript
+                    save_transcript(str(conv_uuid), getattr(ctx, "final_messages", None))
+                except Exception:
+                    logger.warning("agent 轨迹落盘失败，跳过", exc_info=True)
+                event = {**event, "generation_id": gen_id, "conversation_id": str(conv_uuid)}
+                if memory_refs:
+                    event["memory_refs"] = memory_refs
+            yield event
+    except AppException as e:
+        logger.info("agent chat 业务异常→前端: %s (status=%s)", e.message, e.status_code)
+        if deliverables or final_content.strip():
+            try:
+                _pt = "\n\n".join(deliverables) + (f"\n\n{final_content}" if final_content.strip() else "") if deliverables else final_content
+                await _persist_agent_chat(db, store, user, body.message, _pt, gen_id, conv_uuid, turns, tokens_used=0)
+            except Exception:
+                logger.exception("error path: 成品落库失败")
+        yield {"type": "error", "error": e.message, "need_byok": e.status_code == 503}
+        event = {"type": "done", "turns": turns, "stopped_reason": "error", "generation_id": gen_id, "conversation_id": str(conv_uuid)}
+        if memory_refs:
+            event["memory_refs"] = memory_refs
+        yield event
+    except Exception:
+        logger.exception("agent chat stream error")
+        if deliverables or final_content.strip():
+            try:
+                _pt = "\n\n".join(deliverables) + (f"\n\n{final_content}" if final_content.strip() else "") if deliverables else final_content
+                await _persist_agent_chat(db, store, user, body.message, _pt, gen_id, conv_uuid, turns, tokens_used=0)
+            except Exception:
+                logger.exception("error path: 成品落库失败")
+        yield {"type": "error", "error": "生成过程中出现错误，请重试"}
+        event = {"type": "done", "turns": turns, "stopped_reason": "error", "generation_id": gen_id, "conversation_id": str(conv_uuid)}
+        if memory_refs:
+            event["memory_refs"] = memory_refs
+        yield event
+
+
+@router.post("/chat")
+async def agent_chat(
+    body: AgentChatRequest,
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+):
+    async def event_generator():
+        async for event in _stream_agent_events(body, user, store, db):
+            if event.get("type") == "keepalive":
+                yield ": keepalive\n\n"
+            else:
+                yield _sse_line(event)
 
     return StreamingResponse(
         event_generator(),
@@ -1024,6 +1581,109 @@ async def agent_chat(
         },
         background=BackgroundTask(_learn_in_background, str(store.id), body.message),
     )
+
+
+@router.post("/tasks")
+async def start_agent_task(
+    body: AgentChatRequest,
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+):
+    """P0-B 最小后台任务：创建 task_id 后在服务进程内后台跑 Agent，前端只订阅事件。
+
+    v1 边界：任务状态保存在本进程内存，App/后端重启后丢失；不做全局任务中心。
+    """
+    if not (body.message or "").strip().strip("/").strip():
+        task_id = _uuid_mod.uuid4().hex
+        task = _AgentTask(id=task_id, status="done")
+        task.events = [
+            _sse_line({"type": "final", "content": "你还没说要做什么呢～告诉我一句就行，比如「写条周末活动朋友圈」「看看这个报表」「做张拉新海报」。", "task_id": task_id, "offset": 0}),
+            _sse_line({"type": "done", "turns": 0, "stopped_reason": "stop", "task_id": task_id, "offset": 1}),
+        ]
+        task.total = len(task.events)  # 手工建的事件也要把逻辑 offset 高水位对齐，订阅端才取得到
+        _AGENT_TASKS[task_id] = task
+        _trim_agent_tasks()
+        return {"task_id": task_id, "status": task.status}
+
+    task_id = _uuid_mod.uuid4().hex
+    task = _AgentTask(id=task_id)
+    _AGENT_TASKS[task_id] = task
+    _trim_agent_tasks()
+
+    async def _runner():
+        try:
+            async with async_session() as bg_db:
+                db_user = await bg_db.get(User, user.id)
+                from models.store import Store
+                db_store = await bg_db.get(Store, store.id)
+                async for event in _stream_agent_events(body, db_user or user, db_store or store, bg_db):
+                    if event.get("type") == "keepalive":
+                        continue
+                    if event.get("type") == "done":
+                        task.status = "done" if event.get("stopped_reason") != "error" else "error"
+                        task.conversation_id = event.get("conversation_id") or task.conversation_id
+                        task.generation_id = event.get("generation_id") or task.generation_id
+                    await _task_append(task, event)
+        except asyncio.CancelledError:
+            task.status = "cancelled"
+            await _task_append(task, {"type": "done", "turns": 0, "stopped_reason": "cancelled"})
+        except Exception:
+            logger.exception("agent task failed: %s", task.id)
+            task.status = "error"
+            await _task_append(task, {"type": "error", "error": "后台任务执行失败，请重试"})
+            await _task_append(task, {"type": "done", "turns": 0, "stopped_reason": "error"})
+        finally:
+            await _learn_in_background(str(store.id), body.message)
+            async with task.condition:
+                task.condition.notify_all()
+
+    task.runner = asyncio.create_task(_runner())
+    return {"task_id": task_id, "status": task.status}
+
+
+@router.get("/tasks/{task_id}/events")
+async def subscribe_agent_task_events(task_id: str, after: int = -1):
+    task = _AGENT_TASKS.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+
+    async def event_generator():
+        cursor = max(0, int(after) + 1)  # 逻辑 offset：下一条要发的事件
+        while True:
+            batch, cursor = _drain_events(task, cursor)
+            for line in batch:
+                yield line
+            if task.status != "running":
+                break
+            try:
+                async with task.condition:
+                    await asyncio.wait_for(task.condition.wait(), timeout=15)
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/tasks/{task_id}/cancel")
+async def cancel_agent_task(task_id: str):
+    task = _AGENT_TASKS.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    if task.status == "running":
+        task.status = "cancelled"
+        if task.runner and not task.runner.done():
+            task.runner.cancel()
+        else:
+            await _task_append(task, {"type": "done", "turns": 0, "stopped_reason": "cancelled"})
+    return {"ok": True, "task_id": task_id, "status": task.status}
 
 
 class AgentExecuteRequest(BaseModel):
@@ -1104,8 +1764,11 @@ async def agent_execute(
     new_approval = None
     try:
         profile_text = render_operation_profile_context(store)
-        memories = await load_store_memory(db, store.id)
         billiards_mode = bool(body.knowledge_packs and "billiards" in body.knowledge_packs)
+        memories = filter_memories_for_mode(
+            await load_scoped_store_memory(db, store.id, body.working_dir),
+            billiards_mode,
+        )
         sys_prompt = compose_agent_system_prompt(profile_text, format_memories_for_prompt(memories),
                                                  full_disk=full_disk, billiards_mode=billiards_mode,
                                                  working_dir=body.working_dir or "")

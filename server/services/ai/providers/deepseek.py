@@ -147,7 +147,7 @@ class DeepSeekProvider(TextProvider):
             base_url = self._base_url or settings.deepseek_base_url
             if not api_key:
                 raise AIProviderError(
-                    message="AI 服务未配置，请联系管理员设置 API Key",
+                    message="AI 服务还没准备好，请联系管理员处理",
                     status_code=503,
                 )
             # P0-2：国产模型端点直连、绕开系统代理(Clash)；境外端点仍走代理。
@@ -447,7 +447,7 @@ def _classify_api_error(e: APIStatusError) -> AIProviderError:
 
     if status == 401:
         return AIProviderError(
-            message="AI 服务认证失败，请联系管理员检查 API Key",
+            message="AI 服务认证失败，请联系管理员处理",
             status_code=503,
             provider_error=e,
         )

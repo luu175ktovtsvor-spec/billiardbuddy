@@ -1,4 +1,4 @@
-// 台球运营管家 · 桌面端 Electron 主进程
+// 本机 AI 助手 · 桌面端 Electron 主进程
 //
 // 职责:① 开窗口加载现有 web 前端(连云后端出内容/跑 Agent);
 //      ② 把"本地原生能力"(发布 RPA / 视频剪辑)经 IPC 暴露给前端;
@@ -7,13 +7,14 @@
 // 安全默认全保持:contextIsolation 开 / sandbox 开 / nodeIntegration 关。
 // 加载的页面只能通过 preload 的 contextBridge 白名单调用原生能力,拿不到 Node。
 
-const { app, BrowserWindow, ipcMain, shell, dialog, nativeTheme } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, dialog, nativeTheme, desktopCapturer, screen } = require("electron");
 const path = require("path");
 const publish = require("./publish");
 const video = require("./video");
 const backend = require("./backend");
 const frontend = require("./frontend");
 const updater = require("./updater");
+const crypto = require("crypto");
 
 // 加载哪个前端:dev 跑本地 web(含发布UI,在 feat/desktop-agent 分支),prod 起打包的 Next.js standalone。
 // 云端 main(zzyppz.cn)没有发布UI,故默认不直连云端页面。
@@ -27,17 +28,18 @@ const MANAGE_FRONTEND = process.env.DESKTOP_MANAGE_FRONTEND !== "0" && !FORCED_A
 const REPO_ROOT = path.join(__dirname, "..", "..");
 
 let mainWindow = null;
+const windows = new Set();
 let backendReady = false;
 let frontendUrl = null; // prod 本地前端就绪后的 URL
 
-function createWindow() {
+function createWindow(opts = {}) {
   const isMac = process.platform === "darwin";
-  mainWindow = new BrowserWindow({
+  const win = new BrowserWindow({
     width: 1280,
     height: 860,
     minWidth: 960,
     minHeight: 640,
-    title: "台球运营管家",
+    title: "本机 AI 助手",
     // 跟随系统深浅色：暗色用深底，浅色用白底（避免启动闪屏与界面不一致）
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#0e0f11" : "#ffffff",
     // macOS 原生质感:隐藏标题栏(保留红绿灯,内容延伸到顶),红绿灯位对齐桌面壳侧栏顶部 52px 区(见 web 的 .app-drag)。
@@ -52,18 +54,37 @@ function createWindow() {
   });
 
   // prod：本地前端就绪 → 它的 URL；否则用 DESKTOP_APP_URL(dev) 或兜底 localhost:3000。
-  const url = frontendUrl || FORCED_APP_URL || "http://localhost:3000";
-  mainWindow.loadURL(url);
+  const baseUrl = frontendUrl || FORCED_APP_URL || "http://localhost:3000";
+  const url = new URL(baseUrl);
+  if (opts.workbenchId) url.searchParams.set("workbench", opts.workbenchId);
+  win.loadURL(url.toString());
+
+  // 锁定壳层窗口标题=通用产品名。web/ 与云端共享，layout.tsx 的 document.title 是"球房 AI 运营助手"，
+  // 默认会覆盖窗口标题(任务切换/调度中心/窗口菜单都显示旧名)。仅 preventDefault 在 Next 客户端路由下不够稳，
+  // 这里 preventDefault + 主动 setTitle 双保险：任何时候页面想改标题都强制拉回"本机 AI 助手"(台球只是内置行业包)，
+  // 又不改共享 web 文案、不影响云端。
+  const PRODUCT_TITLE = "本机 AI 助手";
+  const lockTitle = () => { if (!win.isDestroyed()) win.setTitle(PRODUCT_TITLE); };
+  win.webContents.on("page-title-updated", (e) => { e.preventDefault(); lockTitle(); });
+  win.webContents.on("dom-ready", lockTitle);
+  win.webContents.on("did-finish-load", lockTitle);
 
   // 外链用系统浏览器打开,不在 app 内导航走丢
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  win.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("http")) shell.openExternal(url);
     return { action: "deny" };
   });
 
-  if (process.env.DESKTOP_DEVTOOLS === "1") mainWindow.webContents.openDevTools({ mode: "detach" });
+  if (process.env.DESKTOP_DEVTOOLS === "1") win.webContents.openDevTools({ mode: "detach" });
 
-  mainWindow.on("closed", () => { mainWindow = null; });
+  mainWindow = win;
+  windows.add(win);
+  win.on("focus", () => { mainWindow = BrowserWindow.getFocusedWindow() || win; });
+  win.on("closed", () => {
+    windows.delete(win);
+    mainWindow = BrowserWindow.getAllWindows()[0] || null;
+  });
+  return win;
 }
 
 // 进度/状态回推渲染层(扫码就绪、发布进度、剪辑进度)
@@ -123,6 +144,7 @@ ipcMain.handle("files:pick", async (_e, opts = {}) => {
     title: opts.title || (canPickDir ? "选择要让 AI 处理的文件 / 文件夹" : "选择要让 AI 处理的文件"),
     properties,
   };
+  if (opts.defaultPath) dialogOpts.defaultPath = opts.defaultPath;
   // 只有"纯选文件"才挂类型过滤;一旦允许选文件夹 → 不挂过滤(否则 .py 等非白名单被灰、整文件夹也选不了)。
   if (!canPickDir) {
     dialogOpts.filters = opts.filters || [
@@ -156,6 +178,29 @@ ipcMain.handle("files:save", async (_e, opts = {}) => {
   }
 });
 
+// 打开某个文件在系统文件管理器里的位置。用于“保存到电脑”后让用户立刻找到成品。
+ipcMain.handle("files:showInFolder", async (_e, opts = {}) => {
+  const target = String(opts.path || "");
+  if (!target) return { ok: false, error: "没有文件路径" };
+  try {
+    shell.showItemInFolder(target);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle("files:openPath", async (_e, opts = {}) => {
+  const target = String(opts.path || "");
+  if (!target) return { ok: false, error: "没有文件路径" };
+  try {
+    const error = await shell.openPath(target);
+    return error ? { ok: false, error } : { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
 // 贴图/拖图：把"剪贴板粘贴 / 拖入"的图片字节(base64)存成临时文件,返回绝对路径,
 // 前端塞进 selected_files → AI 沙箱据此被授权读它(让老板能把截图/店照直接贴进对话给 AI 看)。
 ipcMain.handle("files:saveTemp", async (_e, opts = {}) => {
@@ -174,6 +219,49 @@ ipcMain.handle("files:saveTemp", async (_e, opts = {}) => {
   }
 });
 
+// 看当前屏幕：由桌面壳直接截图并保存成临时文件，前端把路径作为附件传给 Agent。
+// 这样入口不依赖模型先主动调用工具；用户点了就确定把当前屏幕放进本轮上下文。
+ipcMain.handle("desktop:captureScreen", async () => {
+  const fs = require("fs");
+  const path = require("path");
+  try {
+    const timeout = (ms, value = null) => new Promise((resolve) => setTimeout(() => resolve(value), ms));
+    const saveScreenshot = (image, prefix = "screen") => {
+      if (!image || image.isEmpty()) return null;
+      const dir = path.join(app.getPath("userData"), "uploads", "screenshots");
+      fs.mkdirSync(dir, { recursive: true });
+      const fp = path.join(dir, `${prefix}_${Date.now()}_${require("crypto").randomBytes(4).toString("hex")}.png`);
+      fs.writeFileSync(fp, image.toPNG());
+      return { path: fp, size: image.getSize() };
+    };
+    const display = screen.getPrimaryDisplay();
+    const { width, height } = display.size;
+    const sources = await Promise.race([
+      desktopCapturer.getSources({
+        types: ["screen"],
+        thumbnailSize: { width: Math.max(width, 1280), height: Math.max(height, 720) },
+      }).catch(() => []),
+      timeout(1800, []),
+    ]);
+    const source = Array.isArray(sources) ? (sources.find((s) => String(s.display_id) === String(display.id)) || sources[0]) : null;
+    const captured = source ? saveScreenshot(source.thumbnail, "screen") : null;
+    if (captured) {
+      return { ok: true, path: captured.path, width: captured.size.width, height: captured.size.height, source: "screen" };
+    }
+    const win = BrowserWindow.getFocusedWindow() || mainWindow || BrowserWindow.getAllWindows()[0];
+    if (win && !win.isDestroyed()) {
+      const windowImage = await win.capturePage();
+      const fallback = saveScreenshot(windowImage, "screen_window");
+      if (fallback) {
+        return { ok: true, path: fallback.path, width: fallback.size.width, height: fallback.size.height, source: "window" };
+      }
+    }
+    return { ok: false, error: "没有拿到屏幕截图" };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
 // 是否运行在桌面端 + 本地后端地址(前端运行时据此连本地后端,不依赖 build 期 env)
 ipcMain.handle("desktop:info", () => ({
   isDesktop: true,
@@ -181,7 +269,16 @@ ipcMain.handle("desktop:info", () => ({
   platform: process.platform,
   backendUrl: MANAGE_BACKEND ? backend.backendUrl() : null,
   backendReady,
+  downloadsPath: app.getPath("downloads"),
+  windowCount: BrowserWindow.getAllWindows().length,
 }));
+
+// 多窗口/多工作台最小闭环：新开一个独立窗口，前端状态、工作目录、任务订阅自然隔离。
+ipcMain.handle("desktop:newWindow", () => {
+  const workbenchId = `wb_${crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(12).toString("hex")}`;
+  const w = createWindow({ workbenchId });
+  return { ok: true, windowCount: BrowserWindow.getAllWindows().length, id: w.id, workbenchId };
+});
 
 app.whenReady().then(async () => {
   if (MANAGE_BACKEND) {
@@ -197,7 +294,7 @@ app.whenReady().then(async () => {
       console.error("本地后端未在超时内就绪,前端可能连不上");
       const port = r.port || 8077;
       dialog.showErrorBox(
-        "台球运营管家启动失败",
+        "本机 AI 助手启动失败",
         `后端服务没能起来(${port} 端口可能被别的程序占用)。\n\n` +
         `请关闭占用该端口的程序后,重新打开本软件。`
       );
@@ -218,7 +315,7 @@ app.whenReady().then(async () => {
       const port = f.port || 3100;
       console.error("本地前端未在超时内就绪");
       dialog.showErrorBox(
-        "台球运营管家启动失败",
+        "本机 AI 助手启动失败",
         `界面服务没能起来(${port} 端口可能被别的程序占用)。\n\n` +
         `请关闭占用该端口的程序后,重新打开本软件。`
       );

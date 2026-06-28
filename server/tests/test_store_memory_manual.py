@@ -18,6 +18,9 @@ import services.memory_service as ms
 from db.base import Base
 from services.memory_service import (
     Memory,
+    load_scoped_store_memory,
+    memory_reference_labels,
+    memory_matches_workdir,
     select_relevant_memories,
     format_memories_for_prompt,
 )
@@ -58,6 +61,24 @@ def test_format_marks_manual_block_highest_priority():
     # auto 那条仍在原来的"最新记忆"块里，没被打成店规矩
     auto_block = text.split("周一闭店", 1)[1]
     assert "台费60/小时" in auto_block
+
+
+def test_memory_reference_labels_match_injected_confirmed_memories():
+    mems = [
+        Memory("semantic", "我店在杭州，26 张台，主做竞技客户", source="manual"),
+        Memory("semantic", "老板喜欢回答短一点", source="auto"),
+    ]
+    refs = memory_reference_labels(mems, intent="帮我写活动文案")
+    assert refs == ["我店在杭州，26 张台，主做竞技客户", "老板喜欢回答短一点"]
+
+
+def test_workdir_scoped_memory_matcher():
+    scoped = "【工作目录:六月报表】这个项目按老板版口径输出"
+    assert memory_matches_workdir(scoped, "/tmp/六月报表")
+    assert memory_matches_workdir(scoped, "六月报表")
+    assert not memory_matches_workdir(scoped, "/tmp/七月报表")
+    assert not memory_matches_workdir(scoped, None)
+    assert memory_matches_workdir("全局资料", None)
 
 
 def test_format_no_manual_keeps_legacy_shape():
@@ -135,6 +156,73 @@ async def test_load_store_memory_returns_both(session_maker):
     assert srcs == {"手填的": "manual", "AI学的": "auto"}
 
 
+async def test_deleted_store_memory_not_loaded_or_listed(session_maker):
+    sid = uuid.uuid4()
+    async with session_maker() as db:
+        db.add(StoreMemory(store_id=sid, type="semantic", content="正常记忆",
+                           confidence="high", source="manual"))
+        db.add(StoreMemory(store_id=sid, type="semantic", content="已删记忆",
+                           confidence="high", source="manual", is_deleted=True))
+        await db.commit()
+
+        mems = await ms.load_store_memory(db, sid)
+        assert [m.content for m in mems] == ["正常记忆"]
+
+        from api.v1.store_memory import list_memories
+        store = type("S", (), {"id": sid})()
+        items = await list_memories(store=store, db=db)
+        assert [m.content for m in items] == ["正常记忆"]
+
+
+async def test_pending_memory_listed_but_not_injected(session_maker):
+    sid = uuid.uuid4()
+    async with session_maker() as db:
+        db.add(StoreMemory(store_id=sid, type="semantic", content="待确认：可能主做竞技客户",
+                           confidence="low", source="pending"))
+        await db.commit()
+
+        assert await ms.load_store_memory(db, sid) == []
+
+        from api.v1.store_memory import list_memories
+        items = await list_memories(store=type("S", (), {"id": sid})(), db=db)
+        assert len(items) == 1
+        assert items[0].source == "pending"
+        assert items[0].source_label == "待确认"
+
+
+async def test_workdir_scoped_memory_only_loaded_for_matching_workdir(session_maker):
+    sid = uuid.uuid4()
+    async with session_maker() as db:
+        db.add(StoreMemory(store_id=sid, type="semantic", content="全局门店资料",
+                           confidence="high", source="manual"))
+        db.add(StoreMemory(store_id=sid, type="preference", content="【工作目录:六月报表】本项目用老板版摘要",
+                           confidence="high", source="manual"))
+        db.add(StoreMemory(store_id=sid, type="preference", content="【工作目录:七月报表】本项目用财务版摘要",
+                           confidence="high", source="manual"))
+        await db.commit()
+
+        no_wd = await load_scoped_store_memory(db, sid)
+        assert [m.content for m in no_wd] == ["全局门店资料"]
+
+        june = await load_scoped_store_memory(db, sid, "/Users/me/六月报表")
+        assert [m.content for m in june] == ["全局门店资料", "本项目用老板版摘要"]
+
+        july = await load_scoped_store_memory(db, sid, "/Users/me/七月报表")
+        assert [m.content for m in july] == ["全局门店资料", "本项目用财务版摘要"]
+
+
+async def test_add_pending_memory_candidate_is_deduped_and_not_injected(session_maker):
+    sid = uuid.uuid4()
+    async with session_maker() as db:
+        first = await ms.add_pending_memory_candidate(db, sid, "从报表提取：团购占比偏高", "operational")
+        second = await ms.add_pending_memory_candidate(db, sid, "从报表提取：团购占比偏高", "operational")
+        assert first.id == second.id
+        rows = (await db.execute(select(StoreMemory).where(StoreMemory.store_id == sid))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].source == "pending"
+        assert await ms.load_store_memory(db, sid) == []
+
+
 # ── 3. API：POST/PATCH 标 manual ─────────────────────────────────
 
 async def test_post_marks_manual(session_maker):
@@ -146,6 +234,35 @@ async def test_post_marks_manual(session_maker):
                                 store=store, db=db)
     assert item.source == "manual"
     assert item.source_label == "店主定"
+
+
+async def test_candidate_confirm_becomes_manual(session_maker):
+    from api.v1.store_memory import add_memory_candidate, confirm_memory, MemoryCandidateCreate
+    sid = uuid.uuid4()
+    store = type("S", (), {"id": sid})()
+    async with session_maker() as db:
+        item = await add_memory_candidate(MemoryCandidateCreate(content="看起来主做竞技客群"),
+                                          store=store, db=db)
+        assert item.source == "pending"
+        confirmed = await confirm_memory(item.id, store=store, db=db)
+        assert confirmed.source == "manual"
+        assert confirmed.confidence == "high"
+
+
+async def test_workdir_scope_hidden_in_memory_api_item(session_maker):
+    from api.v1.store_memory import add_memory, list_memories, MemoryCreate
+    sid = uuid.uuid4()
+    store = type("S", (), {"id": sid})()
+    async with session_maker() as db:
+        item = await add_memory(MemoryCreate(content="这个项目用老板版摘要", working_dir="/tmp/六月报表"),
+                                store=store, db=db)
+        assert item.content == "这个项目用老板版摘要"
+        assert item.scope == "working_dir"
+        assert item.scope_label == "工作目录：六月报表"
+
+        listed = await list_memories(store=store, db=db)
+        assert listed[0].content == "这个项目用老板版摘要"
+        assert listed[0].scope_label == "工作目录：六月报表"
 
 
 async def test_patch_marks_manual(session_maker):
@@ -168,3 +285,42 @@ async def test_patch_marks_manual(session_maker):
     async with session_maker() as db:
         r = await db.get(StoreMemory, uuid.UUID(mid))
         assert r.source == "manual" and r.content == "老板改后的正确说法"
+
+
+async def test_patch_preserves_workdir_scope(session_maker):
+    from api.v1.store_memory import add_memory, update_memory, MemoryCreate, MemoryUpdate
+    sid = uuid.uuid4()
+    store = type("S", (), {"id": sid})()
+    async with session_maker() as db:
+        item = await add_memory(MemoryCreate(content="这个项目用老板版摘要", working_dir="/tmp/六月报表"),
+                                store=store, db=db)
+        updated = await update_memory(item.id, MemoryUpdate(content="这个项目用店长版摘要"),
+                                      store=store, db=db)
+        assert updated.content == "这个项目用店长版摘要"
+        assert updated.scope == "working_dir"
+        assert updated.scope_label == "工作目录：六月报表"
+
+        no_wd = await load_scoped_store_memory(db, sid)
+        assert [m.content for m in no_wd] == []
+
+        june = await load_scoped_store_memory(db, sid, "/Users/me/六月报表")
+        assert [m.content for m in june] == ["这个项目用店长版摘要"]
+
+
+async def test_delete_store_memory_soft_deletes(session_maker):
+    from api.v1.store_memory import delete_memory
+    sid = uuid.uuid4()
+    async with session_maker() as db:
+        m = StoreMemory(store_id=sid, type="semantic", content="误删的资料",
+                        confidence="medium", source="manual")
+        db.add(m)
+        await db.commit()
+        mid = str(m.id)
+
+        res = await delete_memory(mid, store=type("S", (), {"id": sid})(), db=db)
+        assert res["status"] == "ok"
+
+    async with session_maker() as db:
+        r = await db.get(StoreMemory, uuid.UUID(mid))
+        assert r.is_deleted is True
+        assert r.deleted_at is not None

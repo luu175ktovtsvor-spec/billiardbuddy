@@ -6,6 +6,10 @@ export interface DesktopInfo {
   isDesktop: boolean;
   version: string;
   platform: string;
+  backendUrl?: string | null;
+  backendReady?: boolean;
+  downloadsPath?: string;
+  windowCount?: number;
 }
 
 export type LoginStatus = "waiting" | "scanned" | "success" | "expired" | "error";
@@ -26,6 +30,10 @@ export interface PublishPlatform {
 
 export interface ElectronBridge {
   info(): Promise<DesktopInfo>;
+  /** 新开一个独立工作台窗口（各自有自己的会话、工作目录、任务订阅）。 */
+  newWindow?(): Promise<{ ok: boolean; windowCount?: number; id?: number; workbenchId?: string }>;
+  /** 截取当前屏幕并保存为临时 PNG，返回本机路径；前端作为附件发给 Agent。 */
+  captureScreen?(): Promise<{ ok: boolean; path?: string; width?: number; height?: number; error?: string }>;
   publish: {
     /** 发布功能是否可用(发布内核存在或本机有 python3);不可用时前端隐藏入口/给说人话提示。 */
     available(): Promise<{ ok: boolean; reason?: "no_worker" | "no_python" }>;
@@ -46,6 +54,7 @@ export interface ElectronBridge {
     /** 弹系统文件/文件夹选择器,返回绝对路径;随对话以 selected_files 传后端授权 Agent 读/改。 */
     pick(opts?: {
       title?: string;
+      defaultPath?: string; // 弹窗默认打开的位置，例如用户的下载文件夹
       multi?: boolean;
       directory?: boolean; // true=选文件夹(授权整个目录),否则选文件
       createDirectory?: boolean; // true=弹窗里显示"新建文件夹"按钮(Task 9 壳层支持)
@@ -63,6 +72,10 @@ export interface ElectronBridge {
       title?: string;
       filters?: { name: string; extensions: string[] }[];
     }): Promise<{ canceled: boolean; path?: string; error?: string }>;
+    /** 在系统文件管理器中定位文件。 */
+    showInFolder?(path: string): Promise<{ ok: boolean; error?: string }>;
+    /** 用系统默认应用打开文件。 */
+    openPath?(path: string): Promise<{ ok: boolean; error?: string }>;
   };
 }
 

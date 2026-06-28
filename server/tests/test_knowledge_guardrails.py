@@ -54,3 +54,46 @@ def test_render_class_yaml_have_template_field():
                 and "template" not in d and "templates" not in d and "examples" not in d):
             bad.append((f, d.get("key")))
     assert not bad, f"渲染类 YAML 缺 template（render 时 KeyError）：{bad}"
+
+
+# 来源名永不外泄：台球行业知识库的底本 PPT《学球房运营 找台球赋能》属于第三方「台球赋能」，
+# 只作项目内部行业知识底料，**绝不能出现在会注入模型的提示词/知识 YAML 或显示给用户的前端里**。
+# 注入一律用中性表述"台球行业真实运营逻辑"。这道护栏钉死：未来任何编辑都不能把来源名混回去。
+# 含：底本来源方(台球赋能/学球房运营/学球帮) + 桌面资料文件夹里出现的第三方机构/连锁/俱乐部名
+# (唐希台球连锁、恺九/YOUME 台球俱乐部、长沙小满满)。这些是第三方机构牌子，不是通用器材产品牌——
+# 乔氏/独牙/星牌 这类市场通用器材品牌**保留**，不在此列。
+_FORBIDDEN_SOURCE_NAMES = [
+    "台球赋能", "学球房运营", "学球帮",  # 知识底本的来源方
+    "唐希", "恺九", "YOUME", "小满满",   # 资料文件夹里的第三方门店/连锁/俱乐部
+]
+_WEB_SRC = _ROOT / "web" / "src"
+
+
+def test_source_name_never_leaks_into_prompts_or_frontend():
+    """来源名只能留在仓库外底本/内部文档；提示词知识 + 前端代码里出现即失败。"""
+    hits = []
+    # 1) 提示词/知识 YAML（会被渲染、注入进模型上下文）
+    for f in glob.glob(str(_PROMPTS / "**" / "*.yaml"), recursive=True) + \
+             glob.glob(str(_PROMPTS / "**" / "*.yml"), recursive=True):
+        try:
+            text = Path(f).read_text("utf-8")
+        except Exception:
+            continue
+        for name in _FORBIDDEN_SOURCE_NAMES:
+            if name in text:
+                hits.append((f, name))
+    # 2) 前端源码（会显示给终端用户）
+    if _WEB_SRC.exists():
+        for f in glob.glob(str(_WEB_SRC / "**" / "*.ts"), recursive=True) + \
+                 glob.glob(str(_WEB_SRC / "**" / "*.tsx"), recursive=True):
+            try:
+                text = Path(f).read_text("utf-8")
+            except Exception:
+                continue
+            for name in _FORBIDDEN_SOURCE_NAMES:
+                if name in text:
+                    hits.append((f, name))
+    assert not hits, (
+        "来源名（PPT 来自第三方「台球赋能」）泄漏进提示词/知识/前端——必须改成中性"
+        f"『台球行业真实运营逻辑』，绝不出现来源名：{hits}"
+    )

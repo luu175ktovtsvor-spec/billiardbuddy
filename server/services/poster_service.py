@@ -51,6 +51,31 @@ def _get_api_size(ratio: str) -> str:
     return SIZE_MAP.get(ratio, SIZE_MAP["3:4"])
 
 
+def _ratio_value(ratio: str) -> float:
+    try:
+        w, h = ratio.split(":", 1)
+        return int(w) / int(h)
+    except Exception:
+        return 3 / 4
+
+
+def _read_image_dimensions(path: Path) -> tuple[int, int]:
+    with Image.open(path) as img:
+        return img.size
+
+
+def _assert_saved_ratio(path: Path, ratio: str) -> tuple[int, int]:
+    """读取落盘图片真实宽高，确保 provider/保存链路没有悄悄改比例。"""
+    width, height = _read_image_dimensions(path)
+    expected = _ratio_value(ratio if ratio in SIZE_MAP else "3:4")
+    actual = width / height
+    if abs(actual - expected) > 0.02:
+        raise AIServiceError(
+            f"图片比例校验失败：需要 {ratio}，实际 {width}x{height}（{actual:.3f}）"
+        )
+    return width, height
+
+
 # API 单次请求最多接受的输入图片数
 _MAX_INPUT_IMAGES = 16
 
@@ -396,6 +421,7 @@ async def generate_images(
             # 保存图片（JPEG 格式，减小文件体积）；Pillow 解码+编码是同步 CPU，放线程池
             output_path_jpg = output_path.with_suffix(".jpg")
             await asyncio.to_thread(_save_png_as_jpeg, image_bytes, output_path_jpg)
+            actual_width, actual_height = await asyncio.to_thread(_assert_saved_ratio, output_path_jpg, ratio)
 
             poster_url = f"/uploads/posters/{output_path_jpg.name}"
             created_at = datetime.now(timezone.utc)
@@ -417,6 +443,9 @@ async def generate_images(
                     "store_photo_path": store_photo_path,
                     "logo_path": logo_path,
                     "qr_path": qr_path,
+                    "width": actual_width,
+                    "height": actual_height,
+                    "actual_ratio": f"{actual_width}:{actual_height}",
                 },
                 prompt_used=full_prompt,
                 result=poster_url,
@@ -430,6 +459,9 @@ async def generate_images(
             results.append({
                 "generation_id": generation.id,
                 "poster_url": poster_url,
+                "width": actual_width,
+                "height": actual_height,
+                "ratio": ratio,
                 "created_at": created_at,
             })
 

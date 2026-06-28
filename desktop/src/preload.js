@@ -14,6 +14,8 @@ function on(channel, cb) {
 contextBridge.exposeInMainWorld("electron", {
   // 桌面信息(前端据 isDesktop 决定显不显发布/剪辑入口)
   info: () => ipcRenderer.invoke("desktop:info"),
+  newWindow: () => ipcRenderer.invoke("desktop:newWindow"),
+  captureScreen: () => ipcRenderer.invoke("desktop:captureScreen"),
 
   // ── 发布(RPA · 半自动 · 扫码登录 · 人点确认才发) ──
   publish: {
@@ -43,6 +45,9 @@ contextBridge.exposeInMainWorld("electron", {
     pick: (opts) => ipcRenderer.invoke("files:pick", opts || {}),
     // 系统「另存为」：把成品(base64)写到老板选的位置，返回 { canceled, path?, error? }。
     save: (opts) => ipcRenderer.invoke("files:save", opts || {}),
+    // 在系统文件管理器里定位/打开文件，保存后帮用户马上找得到。
+    showInFolder: (path) => ipcRenderer.invoke("files:showInFolder", { path }),
+    openPath: (path) => ipcRenderer.invoke("files:openPath", { path }),
     // 贴图/拖图：把粘贴/拖入的图片(base64)存临时文件，返回 { ok, path?, error? }；路径塞 selected_files 给 AI 看。
     saveTemp: (opts) => ipcRenderer.invoke("files:saveTemp", opts || {}),
     // Electron 33+ 移除了 File.path，用 webUtils.getPathForFile 替代：拖入/粘贴文件拿本机路径。
