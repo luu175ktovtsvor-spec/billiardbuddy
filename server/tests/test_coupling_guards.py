@@ -18,6 +18,9 @@ _MANUAL_FILTER_TABLES = {
     # usage_events：使用事件分析表，刻意跨店做统计聚合、不参与租户隔离；
     # 需要按店看时显式 .where(store_id)。绝不能进 _TENANT_TABLES(会被 fail-safe 清空)。
     "usage_events",
+    # media_jobs：生成工作室异步任务,隔离靠 media_jobs_service 各方法显式 .where(store_id==store.id);
+    # 不进自动过滤(后台 runner 无租户上下文,会被 fail-safe 清空 → 任务永远查不到)。
+    "media_jobs",
     # 注：store_invitations/store_subscriptions/collab_tasks 是已删的 SaaS 表名，已从此集合清除。
 }
 

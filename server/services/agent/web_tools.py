@@ -196,6 +196,18 @@ def _domestic_web_host(url: str) -> bool:
 
 _MAX_REDIRECTS = 5
 
+def _emit_progress(ctx, tool: str, text: str) -> None:
+    """P0-1 任意工具进度:把一句大白话经 ctx.progress_emit 推给前端(流式循环 yield tool_progress,
+    前端取最新一行展示)。故障安全:没挂 progress_emit(同步入口)或推送失败都不影响工具本身。"""
+    emit = getattr(ctx, "progress_emit", None)
+    if not emit:
+        return
+    try:
+        emit({"type": "tool_progress", "tool": tool, "chunk": text.rstrip("\n") + "\n"})
+    except Exception:
+        pass
+
+
 async def web_fetch(args: dict, ctx) -> str:
     """抓取一个网页的正文内容（GET → 粗清 HTML 成纯文本 → 截断）。
     args: url（必填），extract（可选，想重点看什么——只作提示拼进开头，不做二次 LLM 抽取）。只读、故障安全。"""
@@ -205,6 +217,7 @@ async def web_fetch(args: dict, ctx) -> str:
     if await _is_ssrf_target_async(url):
         return "这个网址指向本机或内网地址，出于安全不允许抓取。请提供一个公网网址。"
     extract = (args.get("extract") or "").strip()
+    _emit_progress(ctx, "web_fetch", "正在打开网页…")
     try:
         async with httpx.AsyncClient(
             timeout=_HTTP_TIMEOUT, follow_redirects=False,
@@ -237,6 +250,7 @@ async def web_fetch(args: dict, ctx) -> str:
         body = resp.text or ""
     except Exception:
         return f"网页内容读取失败（编码问题）：{url}。"
+    _emit_progress(ctx, "web_fetch", "读到内容了，正在整理…")
     text = _html_to_text(body)
     if not text:
         return (f"抓到了页面但没解析出正文：{url}。这页大概率靠 JavaScript 动态渲染、或有反爬，"
@@ -374,6 +388,7 @@ async def web_search(args: dict, ctx) -> str:
     except (TypeError, ValueError):
         max_results = 5
     max_results = max(1, min(max_results, 10))
+    _emit_progress(ctx, "web_search", f"正在搜：{query[:30]}…")
     results: list[dict] = []
     # 区分"请求层失败"(None，限流/网络问题 → 该说"受限稍后再试")与"成功但没结果"([]，冷门词 → 该说"没搜到")。
     both_request_failed = True
@@ -515,6 +530,7 @@ async def run_subagent(args: dict, ctx) -> str:
         return "没给子任务内容，没法交给子代理。请说清要它做完什么。"
     focus = (args.get("focus") or "").strip()
     atype = _resolve_subagent_type(args.get("subagent_type"))
+    _emit_progress(ctx, "run_subagent", "正在派一个子代理专心做这件子任务…")
     from services.agent.registry import ToolRegistry
     sub_registry = ToolRegistry()
     _SUBAGENT_SAFE_EXTRAS = {"todo_write"}
@@ -548,6 +564,7 @@ async def run_subagent(args: dict, ctx) -> str:
             provider=getattr(ctx, "provider", None),
             model=getattr(ctx, "model", None),
         )
+        _emit_progress(ctx, "run_subagent", "子代理在做了，稍候…")
         result = await run_agent_loop(
             user_message=user_msg,
             registry=sub_registry,

@@ -298,6 +298,11 @@ function MacStepList({ steps, active, onPreview }: { steps: ToolStep[]; active: 
           // 命令边跑边显示：未结束 + 已有实时输出 → 渲染滚动中的终端块
           const showLiveCmd = !s.done && s.tool === "run_command" && !!s.progress;
           const cmdText = typeof s.args?.command === "string" ? s.args.command : "";
+          // P0-1 任意工具进度:非命令工具(抓网页/子代理/生图/视频…)的实时进度用大白话单行露出,
+          // 不套终端块(那是命令专用)。后端 handler 经 ctx.progress_emit 推大白话短句、这里只取最新一句。
+          const liveNote = (!s.done && s.tool !== "run_command" && typeof s.progress === "string")
+            ? (s.progress.split("\n").map((x) => x.trim()).filter(Boolean).pop() || "")
+            : "";
           // 内部工具补一句人话副标题（用了哪个技能/查了什么）——从 args 取，绝不从结果原文截（截出来是乱码/指令稿）。
           const internalNote = isInternal
             ? (typeof s.args?.skill === "string" ? s.args.skill
@@ -317,6 +322,7 @@ function MacStepList({ steps, active, onPreview }: { steps: ToolStep[]; active: 
                 {running && <Loader2 className="h-3 w-3 animate-spin text-[#b0b0b5] dark:text-[#56585f]" />}
               </div>
               {showLiveCmd && <LiveTerminalBlock command={cmdText} output={s.progress as string} />}
+              {liveNote && <div className="ml-5 text-[12px] leading-relaxed text-[#86868b] dark:text-[#6e7077]">{liveNote}</div>}
               {showResult &&
                 (s.tool === "run_command" ? (
                   <TerminalBlock text={s.result as string} />
