@@ -31,7 +31,10 @@ def test_docx_read_edit_writeback(tmp_path, monkeypatch):
     assert (tmp_path / "lib" / ".backups").exists()
 
 
-def test_pptx_read_edit_writeback(tmp_path):
+def test_pptx_read_edit_writeback(tmp_path, monkeypatch):
+    # 隔离备份库到 tmp（同文件其它 docx 测试都设了，这条漏了→会把备份写进真实 ~/.billiards-desktop/library，
+    # 污染真机"最近作品/文件改动"列表）。补上 DESKTOP_LIBRARY_DIR 让 write_blocks 的自动备份落 tmp。
+    monkeypatch.setenv("DESKTOP_LIBRARY_DIR", str(tmp_path / "lib"))
     p = tmp_path / "培训.pptx"
     prs = Presentation()
     slide = prs.slides.add_slide(prs.slide_layouts[1])

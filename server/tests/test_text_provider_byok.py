@@ -6,6 +6,7 @@
 这条之前只靠"盒子里碰巧没注入平台 key"这一部署约定撑着；现在 factory 里有显式守卫，
 本测试把它钉成代码不变量——纵使 env/config 里误带了平台 key，盒子也不会静默用上。
 """
+import services.ai.factory as _factory_mod
 from core.exceptions import AIProviderError
 from services.ai.factory import ProviderFactory
 
@@ -14,6 +15,9 @@ def test_desktop_box_text_provider_pure_byok_never_platform_key(monkeypatch):
     sentinel = object()
     # get_text_provider() = 平台默认 provider；用哨兵替身，断言桌面盒子绝不会拿到它。
     monkeypatch.setattr(ProviderFactory, "get_text_provider", classmethod(lambda cls: sentinel))
+    # 本测试钉的是"既没 BYOK、也没内置 key → 503"这条不变量，故显式清空内置 key——
+    # 否则本地 .env 里真带了内置 key 时(盒子会正确用内置 key、不抛 503)会误判失败。让测试 hermetic、不靠 .env 缺省为空。
+    monkeypatch.setattr(_factory_mod.settings, "deepseek_api_key", "", raising=False)
 
     # 桌面盒子：store=None（没配 BYOK）→ 必须抛 503，绝不落到平台 provider。
     monkeypatch.setenv("DESKTOP_LOCAL", "1")
