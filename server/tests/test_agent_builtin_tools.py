@@ -411,3 +411,16 @@ def test_make_poster_passes_conversation_id_for_traceability(monkeypatch):
                           conversation_id="conv-123")
     asyncio.run(agent_tools.make_poster({"description": "周末活动海报", "ratio": "9:16"}, ctx))
     assert captured.get("conversation_id") == "conv-123"
+
+
+def test_gen_lock_key_per_conversation_allows_multiwindow():
+    """DUAL-5：生图锁键=(用户:会话)——两个窗口(两个会话)键不同→能并行；同会话→同键→互斥防连点。"""
+    from services.agent.tools import _gen_lock_key
+    a = SimpleNamespace(user=SimpleNamespace(id="u1"), conversation_id="convA")
+    b = SimpleNamespace(user=SimpleNamespace(id="u1"), conversation_id="convB")
+    assert _gen_lock_key(a) != _gen_lock_key(b)          # 同用户不同会话(多窗口)→键不同→可并行
+    a2 = SimpleNamespace(user=SimpleNamespace(id="u1"), conversation_id="convA")
+    assert _gen_lock_key(a) == _gen_lock_key(a2)         # 同会话→同键→互斥
+    # 无会话→退回按用户(保守)
+    n = SimpleNamespace(user=SimpleNamespace(id="u1"), conversation_id=None)
+    assert _gen_lock_key(n) == "u1"

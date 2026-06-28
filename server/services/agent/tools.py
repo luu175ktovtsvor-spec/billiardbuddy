@@ -438,10 +438,20 @@ async def recommend_games(args: dict, ctx) -> str:
 
 # ---- 生图工具（deliverable 成品，直接执行出图——纯 BYOK 老板自带 key、本就花自己的钱，不弹确认） ----
 
-# 每用户同一时刻只允许一张 agent 生图在跑（护住每分钟出图限额 + 防误触多次重复出图）。
-# 进程内即可：真正的全局并发由 poster_service 的信号量兜底；这里只防同一用户连点。
+# 每【用户+会话】同一时刻只允许一张 agent 生图在跑（护住出图限额 + 防误触重复出图）。
+# 用(用户,会话)而非纯用户：DUAL-5 多窗口——A 窗口(一个会话)做海报、B 窗口(另一个会话)也做海报应能并行，
+# 不被"上一张还在生成中"互相挡；单个窗口内仍防连点。真正的全局并发由 poster_service 信号量兜底。
 _POSTER_GENERATING: set[str] = set()
 _SUPPORTED_IMAGE_RATIOS = {"1:1", "3:4", "9:16", "16:9"}
+
+
+def _gen_lock_key(ctx) -> str:
+    """生图/生视频的并发锁键：有会话→(用户:会话)，让多窗口(多会话)各自并行；无会话→退回按用户(保守)。"""
+    uid = str(getattr(getattr(ctx, "user", None), "id", "") or "")
+    if not uid:
+        return ""
+    conv = getattr(ctx, "conversation_id", None)
+    return f"{uid}:{conv}" if conv else uid
 
 
 def _normalize_image_request(description: str, ratio: str | None) -> tuple[str, str, str | None]:
@@ -559,7 +569,7 @@ async def make_poster(args: dict, ctx) -> str:
         return "本轮已生成 4 张图，到上限了。"
     count = min(count, _remaining)
 
-    uid = str(getattr(ctx.user, "id", "") or "")
+    uid = _gen_lock_key(ctx)  # 锁键=(用户:会话)，多窗口并行不互挡（DUAL-5）
     if uid and uid in _POSTER_GENERATING:
         return "你上一张海报还在生成中，等它出完再来下一张～"
     if uid:
@@ -670,7 +680,7 @@ async def generate_image(args: dict, ctx) -> str:
         return "本轮已生成 4 张图，到上限了。"
     count = min(count, _remaining)
 
-    uid = str(getattr(ctx.user, "id", "") or "")
+    uid = _gen_lock_key(ctx)  # 锁键=(用户:会话)，多窗口并行不互挡（DUAL-5）
     if uid and uid in _POSTER_GENERATING:
         return "上一张图还在生成中，等它出完再来下一张～"
     if uid:
@@ -799,7 +809,7 @@ async def generate_video(args: dict, ctx) -> str:
 
     if getattr(ctx, "_video_generated_this_run", False):
         return "本轮已生成过一个视频，一轮只出一个；除非老板明确要多个，别再调用生视频工具。"
-    uid = str(getattr(ctx.user, "id", "") or "")
+    uid = _gen_lock_key(ctx)  # 锁键=(用户:会话)，多窗口并行不互挡（DUAL-5）
     if uid and uid in _VIDEO_GENERATING:
         return "你上一个视频还在生成中，等它出完再来下一个～"
     if uid:
