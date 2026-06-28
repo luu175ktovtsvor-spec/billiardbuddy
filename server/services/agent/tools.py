@@ -580,6 +580,7 @@ async def make_poster(args: dict, ctx) -> str:
             qr_path=qr_path,
             store_photo_path=store_photo_path,
             reference_image_paths=_refs,
+            conversation_id=getattr(ctx, "conversation_id", None),
         )
         ctx._images_generated_this_run = _done + (result.get("count") or count)
     finally:
@@ -683,6 +684,7 @@ async def generate_image(args: dict, ctx) -> str:
             logo_path=logo_path, qr_path=qr_path,
             store_photo_path=store_photo_path,
             reference_image_paths=_refs,
+            conversation_id=getattr(ctx, "conversation_id", None),
         )
         ctx._images_generated_this_run = _done + (result.get("count") or count)
     finally:
@@ -809,6 +811,7 @@ async def generate_video(args: dict, ctx) -> str:
             duration=int(args.get("duration", 5) or 5),
             first_frame=first_frame,
             allow_paths=set(getattr(ctx, "allowed_paths", None) or []),
+            conversation_id=getattr(ctx, "conversation_id", None),
         )
         ctx._video_generated_this_run = True
     except Exception as e:  # 失败给人话、别把异常栈丢给模型

@@ -395,3 +395,19 @@ def test_make_groupbuy_content_empty_skips(monkeypatch):
     out = asyncio.run(agent_tools.make_groupbuy_content({"need": "  "}, ctx))
     assert called == []
     assert "团购" in out
+
+
+def test_make_poster_passes_conversation_id_for_traceability(monkeypatch):
+    """V-GEN-2/成品归并：生图要把当前会话 id 传给 poster_service，海报才落在同一会话里(不孤立)。"""
+    captured = {}
+
+    async def fake_gen(**kwargs):
+        captured.update(kwargs)
+        return {"images": [{"poster_url": "/uploads/posters/x.png", "generation_id": "g1"}], "count": 1}
+
+    import services.poster_service as ps
+    monkeypatch.setattr(ps, "generate_images", fake_gen)
+    ctx = SimpleNamespace(db=object(), store=SimpleNamespace(id="s1"), user=SimpleNamespace(id="u1"),
+                          conversation_id="conv-123")
+    asyncio.run(agent_tools.make_poster({"description": "周末活动海报", "ratio": "9:16"}, ctx))
+    assert captured.get("conversation_id") == "conv-123"
