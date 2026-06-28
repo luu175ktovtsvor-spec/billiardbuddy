@@ -6,10 +6,12 @@ from models.generation import Generation
 from models.quota import UsageQuota
 from models.store_memory import StoreMemory
 from models.usage_event import UsageEvent
+from models.media_job import MediaJob
 
 __all__ = [
     "User", "Store", "StoreMember", "Generation",
     "UsageQuota",
     "StoreMemory",
     "UsageEvent",
+    "MediaJob",
 ]
