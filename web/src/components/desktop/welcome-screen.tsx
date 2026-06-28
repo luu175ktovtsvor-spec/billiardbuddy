@@ -74,7 +74,7 @@ export function WelcomeScreen({
           <div className="mb-3 flex items-center gap-3 rounded-lg border border-[#10a37f]/25 bg-[#10a37f]/[0.06] p-3">
             <Lightbulb className="h-4 w-4 shrink-0 text-[#10a37f]" />
             <div className="min-w-0 flex-1">
-              <div className="font-mono text-[10px] uppercase tracking-wider text-[#10a37f]">今日建议</div>
+              <div className="text-[11px] font-medium tracking-wide text-[#10a37f]">今日建议</div>
               <div className="mt-0.5 truncate text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">{todaySuggestion}</div>
             </div>
             <button
@@ -87,8 +87,9 @@ export function WelcomeScreen({
         )}
 
         {/* P1-4 每日草稿：点一下让管家把今天能发的几条内容备好（后端预生成+缓存，挑着用） */}
+        {/* P1-7 首屏别过载:5 连按钮改自适应换行的轻量快捷项(不删功能、读作次级),让 3 张起手卡是主角。 */}
         {(onContinueLast || onDailyDrafts || onOpenStoreMemory || onViewScreen || onResearch) && (
-          <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-5">
+          <div className="mb-3 flex flex-wrap gap-2">
             {onContinueLast && (
               <button
                 type="button"
@@ -185,7 +186,7 @@ export function WelcomeScreen({
         {recentItems.length > 0 && (
           <div className="mt-5">
             <div className="mb-2 flex items-center justify-between">
-              <div className="font-mono text-[10px] uppercase tracking-wider text-[#86868b] dark:text-[#6e7077]">最近作品 / 任务</div>
+              <div className="text-[11px] font-medium tracking-wide text-[#86868b] dark:text-[#6e7077]">最近作品 / 任务</div>
             </div>
             <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
               {recentItems.slice(0, 4).map((item) => {

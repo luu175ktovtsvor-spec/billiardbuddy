@@ -264,7 +264,7 @@ function MacStepList({ steps, active, onPreview }: { steps: ToolStep[]; active: 
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center justify-between gap-3 text-left"
       >
-        <span className="flex min-w-0 items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-[#86868b] dark:text-[#6e7077]">
+        <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] font-medium tracking-wide text-[#86868b] dark:text-[#6e7077]">
           <Wrench className="h-3 w-3 shrink-0" />
           <span>执行过程</span>
           <span className="font-sans text-[11px] normal-case tracking-normal text-[#a1a1a6] dark:text-[#6e7077]">
@@ -562,7 +562,7 @@ function MacApprovalCard({
     <div className="overflow-hidden rounded-lg border border-[#e0b84a]/40 bg-[#fffaf0] dark:border-[#d4a72c]/25 dark:bg-[#211c0d]">
       <div className="px-4 py-3">
         <div className="mb-2.5 flex items-center gap-2 text-[13px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">
-          <span className="rounded bg-[#d4a72c]/15 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-[#b9770f] dark:text-[#e0b84a]">需要确认</span>
+          <span className="rounded bg-[#d4a72c]/15 px-1.5 py-0.5 text-[11px] font-medium tracking-wide text-[#b9770f] dark:text-[#e0b84a]">需要确认</span>
           {approvalLabel(ap.tool, ap.args)}
         </div>
         {r ? (
