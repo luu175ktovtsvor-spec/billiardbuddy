@@ -73,9 +73,11 @@ def test_memory_reference_labels_match_injected_confirmed_memories():
 
 
 def test_workdir_scoped_memory_matcher():
-    scoped = "【工作目录:六月报表】这个项目按老板版口径输出"
-    assert memory_matches_workdir(scoped, "/tmp/六月报表")
-    assert memory_matches_workdir(scoped, "六月报表")
+    # 项目记忆 marker 存完整路径，按完整路径隔离（不再按文件夹名，避免同名目录串记忆）
+    scoped = "【工作目录:/Users/me/六月报表】这个项目按老板版口径输出"
+    assert memory_matches_workdir(scoped, "/Users/me/六月报表")          # 完整路径匹配
+    assert not memory_matches_workdir(scoped, "/Users/other/六月报表")    # 同名不同路径 → 隔离不串（修复点）
+    assert not memory_matches_workdir(scoped, "六月报表")                 # 裸文件夹名不再匹配完整路径 marker
     assert not memory_matches_workdir(scoped, "/tmp/七月报表")
     assert not memory_matches_workdir(scoped, None)
     assert memory_matches_workdir("全局资料", None)
@@ -195,9 +197,9 @@ async def test_workdir_scoped_memory_only_loaded_for_matching_workdir(session_ma
     async with session_maker() as db:
         db.add(StoreMemory(store_id=sid, type="semantic", content="全局门店资料",
                            confidence="high", source="manual"))
-        db.add(StoreMemory(store_id=sid, type="preference", content="【工作目录:六月报表】本项目用老板版摘要",
+        db.add(StoreMemory(store_id=sid, type="preference", content="【工作目录:/Users/me/六月报表】本项目用老板版摘要",
                            confidence="high", source="manual"))
-        db.add(StoreMemory(store_id=sid, type="preference", content="【工作目录:七月报表】本项目用财务版摘要",
+        db.add(StoreMemory(store_id=sid, type="preference", content="【工作目录:/Users/me/七月报表】本项目用财务版摘要",
                            confidence="high", source="manual"))
         await db.commit()
 
@@ -209,6 +211,10 @@ async def test_workdir_scoped_memory_only_loaded_for_matching_workdir(session_ma
 
         july = await load_scoped_store_memory(db, sid, "/Users/me/七月报表")
         assert [m.content for m in july] == ["全局门店资料", "本项目用财务版摘要"]
+
+        # 同名不同路径不串（完整路径隔离修复点）
+        other = await load_scoped_store_memory(db, sid, "/Users/other/六月报表")
+        assert [m.content for m in other] == ["全局门店资料"]
 
 
 async def test_add_pending_memory_candidate_is_deduped_and_not_injected(session_maker):
@@ -303,7 +309,8 @@ async def test_patch_preserves_workdir_scope(session_maker):
         no_wd = await load_scoped_store_memory(db, sid)
         assert [m.content for m in no_wd] == []
 
-        june = await load_scoped_store_memory(db, sid, "/Users/me/六月报表")
+        # 用与创建时相同的完整路径召回（marker 现存完整路径，按整路径隔离）
+        june = await load_scoped_store_memory(db, sid, "/tmp/六月报表")
         assert [m.content for m in june] == ["这个项目用店长版摘要"]
 
 

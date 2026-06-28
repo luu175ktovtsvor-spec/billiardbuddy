@@ -52,10 +52,10 @@ class MemoryCandidateCreate(BaseModel):
 
 
 def _workdir_label(path: str | None) -> str:
-    raw = (path or "").strip()
-    if not raw:
-        return ""
-    return raw.rstrip("/\\").split("/")[-1].split("\\")[-1] or raw
+    """marker 里存【完整规范路径】（按整路径隔离项目记忆，避免同名文件夹串记忆）；
+    UI 显示见 _split_scope（取文件夹名，对用户友好）。"""
+    from services.memory_service import canon_workdir_path
+    return canon_workdir_path(path)
 
 
 def _apply_workdir_scope(content: str, working_dir: str | None) -> str:
@@ -68,7 +68,9 @@ def _split_scope(content: str) -> tuple[str, str, str]:
     wd = _memory_workdir(content)
     if not wd:
         return "global", "全局", content
-    return "working_dir", f"工作目录：{wd}", _strip_workdir_mark(content)
+    # marker 里存的是完整路径(隔离用)，UI 只显示文件夹名(友好)
+    display = wd.rstrip("/\\").replace("\\", "/").split("/")[-1] or wd
+    return "working_dir", f"工作目录：{display}", _strip_workdir_mark(content)
 
 
 def _replace_content_preserving_scope(old_content: str, new_content: str) -> str:

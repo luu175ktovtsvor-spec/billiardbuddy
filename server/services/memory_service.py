@@ -70,23 +70,30 @@ def _norm_conf(c: str) -> str:
     return _CONF_MAP.get((c or "").strip(), "medium")
 
 
-def _workdir_keys(path: str | None) -> set[str]:
-    """把工作目录归一成可比较的 key：完整路径 + 文件夹名。
+def canon_workdir_path(path: str | None) -> str:
+    """工作目录归一成可比较的规范路径（展开 ~ + 绝对路径 + 去尾斜杠）。
 
-    不做硬数据库迁移，先用内容前缀 `【工作目录:...】` 表示项目记忆；这里负责召回时隔离。
+    marker 写入(store_memory)与召回匹配(本文件)共用这一把尺，保证项目记忆**按完整路径隔离**——
+    不同位置但同名的两个文件夹(如桌面/下载里都叫「素材」)不会互相串记忆。
+    """
+    raw = (path or "").strip()
+    if not raw:
+        return ""
+    try:
+        return os.path.abspath(os.path.expanduser(raw)).rstrip("/\\")
+    except Exception:
+        return raw.rstrip("/\\")
+
+
+def _workdir_keys(path: str | None) -> set[str]:
+    """当前工作目录的可比较 key 集：完整规范路径 + 原始/展开变体（容忍 marker 的轻微格式差）。
+
+    **不含纯文件夹名**——否则不同路径下的同名目录会互相串记忆。改用完整路径隔离（2026-06-28）。
     """
     raw = (path or "").strip()
     if not raw:
         return set()
-    expanded = os.path.expanduser(raw)
-    keys = {raw, expanded, raw.rstrip("/\\")}
-    try:
-        keys.add(os.path.abspath(expanded).rstrip("/\\"))
-    except Exception:
-        pass
-    base = os.path.basename(raw.rstrip("/\\")) or raw
-    if base:
-        keys.add(base)
+    keys = {raw, raw.rstrip("/\\"), os.path.expanduser(raw).rstrip("/\\"), canon_workdir_path(raw)}
     return {k for k in keys if k}
 
 
