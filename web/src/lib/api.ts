@@ -51,6 +51,17 @@ export interface RecentArtifact {
   backup_path?: string | null;
 }
 
+// 阶段1 生成工作室异步任务进度(轮询返回)
+export interface MediaJobStatus {
+  id: string;
+  kind: string;
+  status: "queued" | "running" | "done" | "error";
+  progress: number;          // 0-100
+  stage: string | null;      // 大白话阶段文案
+  result: Record<string, unknown> | null;
+  error: string | null;
+}
+
 export interface AgentChatPayload {
   message: string;
   history?: unknown[];
@@ -488,6 +499,11 @@ class ApiClient {
   rateGeneration(id: string, rating: "good" | "bad", note?: string) {
     return this.request<{ ok: boolean; id: string; rating: string }>(
       "POST", `/api/v1/agent/recent-artifacts/${encodeURIComponent(id)}/rating`, { rating, note });
+  }
+
+  // 阶段1 生成工作室：查异步任务进度/结果（轮询）。status: queued/running/done/error；progress 0-100
+  getMediaJob(id: string) {
+    return this.request<MediaJobStatus>("GET", `/api/v1/agent/media-jobs/${encodeURIComponent(id)}`);
   }
 
   // 桌面端：最近删除（轻量找回）

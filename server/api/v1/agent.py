@@ -927,6 +927,30 @@ async def rate_recent_artifact(
     return {"ok": True, "id": artifact_id, "rating": rating}
 
 
+@router.get("/media-jobs/{job_id}")
+async def get_media_job(
+    job_id: str,
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+):
+    """查异步任务进度/结果(生成工作室生图/改图/视频轮询用)。本店作用域。"""
+    from services import media_jobs_service as _mj
+
+    job = await _mj.get_job(db, job_id, store.id)
+    if job is None:
+        raise AIServiceError("没找到这个任务")
+    return {
+        "id": str(job.id),
+        "kind": job.kind,
+        "status": job.status,        # queued / running / done / error
+        "progress": job.progress,    # 0-100
+        "stage": job.stage,          # 大白话阶段文案
+        "result": job.result,        # 产物 {urls/generation_ids...}
+        "error": job.error,
+    }
+
+
 @router.post("/deleted-items/restore")
 async def restore_deleted_item(
     body: DeletedItemAction,
