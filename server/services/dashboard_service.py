@@ -531,15 +531,16 @@ async def _build_rules(
             )
         )
 
-    # Rule 0.55: 今天还没写日报就提醒（非筹备店）—— 日报功能的主动触发入口
+    # Rule 0.55: 今天还没写日报就提醒（非筹备店）—— 直接在对话里写,别指向已删的报告页/Excel 导出(那是空承诺)。
+    # description 点"帮我写"时作为用户 prompt 发给 agent,agent 真能写总结 → 真能接的指令,不是假提醒。
     if stage != "preopen" and not await _report_written_today(db, store.id, datetime.now(BUSINESS_TZ)):
         recs.append(
             DashboardRecommendation(
                 id="report_due",
                 category="report",
                 title="今天的日报还没写",
-                description="填几个数，AI 帮你写好总结、一键导出 Excel。",
-                action_url="/dashboard/report",
+                description="帮我写一条今天的日报小结，来客、台费、活动我报给你。",
+                action_url="/dashboard/chat",
                 priority="high",
             )
         )
