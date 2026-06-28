@@ -727,9 +727,19 @@ export function DesktopChatThread({
                     <AlertTriangle className="mt-[2px] h-4 w-4 shrink-0" />
                     <div>
                       <div>{m.content.replace(/^⚠️\s*/, "")}</div>
-                      <div className="mt-1 text-[12.5px] text-[#8a3a34] dark:text-[#e6a19a]">
-                        可以先重试；也可以换素材或工作文件夹后再试。普通使用不用自己配 key，高级用户可打开高级设置检查服务配置。
-                      </div>
+                      {(() => {
+                        // 报错副文案按错因分流(别每次甩同一句、别塞"配 key/服务配置"这种开发者词):
+                        // 额度类不加"换素材"的误导;网络/超时给"稍等再试";其余给通用一句。
+                        const c = m.content || "";
+                        const hint = /上限|额度|次数已达/.test(c)
+                          ? null
+                          : /网络|超时|连接|稍等|小状况|忙/.test(c)
+                            ? "稍等一下再试一次；要是一直不行，换个说法或换个工作文件夹再试。"
+                            : "可以先重试；也可以换个说法或换素材后再试。";
+                        return hint ? (
+                          <div className="mt-1 text-[12.5px] text-[#8a3a34] dark:text-[#e6a19a]">{hint}</div>
+                        ) : null;
+                      })()}
                     </div>
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
