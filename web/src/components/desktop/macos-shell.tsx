@@ -138,7 +138,8 @@ export function DesktopSidebar({
         </div>
         <div className="min-w-0 flex-1">
           <div className="truncate text-[12px] text-[#3a3a3c] dark:text-[#c8cace]">{storeName}</div>
-          {monthlySpend && (
+          {/* 别提醒花钱:默认藏花费,只在高级模式露(和上面模型名同档) */}
+          {advancedMode && monthlySpend && (
             <div className="truncate font-mono text-[10.5px] text-[#86868b] dark:text-[#6e7077]">本月 ≈ {monthlySpend}</div>
           )}
         </div>

@@ -709,6 +709,21 @@ export function DesktopChatThread({
     return () => window.cancelAnimationFrame(raf);
   }, [messages.length, draft, reasoningDraft, liveSteps.length, generating]);
 
+  // 停止键流式期间常驻:draft 一出现 AgentSpinner(连同它内部的 esc 监听)就卸载 →
+  // 出字阶段在 thread 级补一个 esc 监听,让流式全程都能 esc 中断(配合下方常驻"停止"按钮)。
+  useEffect(() => {
+    if (!generating || !onStop || !draft) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.isComposing) return;
+      const tag = (document.activeElement?.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+      if (document.querySelector("[role=dialog], [data-modal-open]")) return;
+      onStop();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [generating, onStop, draft]);
+
   return (
     <div ref={scrollRef} data-testid="desktop-chat-scroll" className="flex-1 overflow-y-auto">
       <div className="mx-auto max-w-[820px] space-y-5 px-5 py-6">
@@ -894,9 +909,20 @@ export function DesktopChatThread({
             {reasoningDraft && <ThinkingBlock text={reasoningDraft} active />}
             {liveSteps.length > 0 && <MacStepList steps={liveSteps} active onPreview={onPreview} />}
             {draft ? (
-              <div className={PROSE}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft}</ReactMarkdown>
-              </div>
+              <>
+                <div className={PROSE}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft}</ReactMarkdown>
+                </div>
+                {onStop && (
+                  <button
+                    type="button"
+                    onClick={onStop}
+                    className="mt-1.5 inline-flex items-center gap-1 rounded-md border border-black/[0.08] bg-white px-2 py-0.5 text-[11.5px] text-[#86868b] transition hover:bg-black/[0.03] hover:text-[#1d1d1f] active:scale-[0.97] dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-[#8a8c93] dark:hover:bg-white/[0.06] dark:hover:text-[#e6e7e9]"
+                  >
+                    停止 · esc
+                  </button>
+                )}
+              </>
             ) : (
               <AgentSpinner onStop={onStop} activeToolName={liveSteps.length ? (() => { const last = liveSteps[liveSteps.length - 1]; return !last.done ? last.tool : undefined; })() : undefined} />
             )}
