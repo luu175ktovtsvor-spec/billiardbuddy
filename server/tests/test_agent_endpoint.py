@@ -238,3 +238,12 @@ def test_stale_test_store_names_are_sanitized_from_profile_too():
     )
     assert "本店[门店名]，26 张球台" in out  # 店名清成占位、真实档案数据(26张台)保留
     assert "本店鑫和台球" not in out          # 档案里的旧店名写法不再注入
+
+
+def test_billiards_prompt_forbids_narrating_internal_process():
+    """H6：台球回答不该念叨内部过程('好，知识读完了'/'这模板太笼统我重写')——提示词要明令禁止。"""
+    out = compose_agent_system_prompt("", "", billiards_mode=True)
+    assert "别念叨内部过程" in out
+    assert "知识读完了" in out  # 反例被显式列为"别说"
+    # 通用模式不该带这条台球人设里的指令
+    assert "别念叨内部过程" not in compose_agent_system_prompt("", "", billiards_mode=False)
