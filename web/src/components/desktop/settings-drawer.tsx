@@ -10,6 +10,7 @@ import { X, Loader2, Check, Cpu, Image as ImageIcon, Store, ShieldCheck, Puzzle,
 
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
+import { applyTheme, getTheme, type ThemeMode } from "@/lib/theme";
 import type { StoreMemoryItem } from "@/types/store";
 
 type McpServer = { name: string; command?: string; status?: string; tools?: number; disabled?: boolean };
@@ -50,6 +51,9 @@ export function SettingsDrawer({
   onClose: () => void;
   onStoreNameChange?: (name: string) => void;
 }) {
+  // P1-10 深浅色:亮/暗/跟随系统。客户端再读真实偏好(避免 SSR 不一致)。
+  const [themeMode, setThemeMode] = useState<ThemeMode>("system");
+  useEffect(() => { setThemeMode(getTheme()); }, []);
   const [loading, setLoading] = useState(true);
   const [storeId, setStoreId] = useState<string | null>(null);
   const [storeName, setStoreName] = useState("");
@@ -399,6 +403,27 @@ export function SettingsDrawer({
               <p className="mt-1 text-[11.5px] leading-snug text-[#3a3a3c] dark:text-[#c8cace]">
                 对话、看图、做海报、做视频的 AI 都已经内置好了，<b>打开就能用，什么都不用配</b>。会折腾的人想换成自己的，再点下面的高级设置。
               </p>
+            </section>
+
+            {/* P1-10 外观:亮/暗/跟随系统(默认跟随)。普通路径就能切,不用进高级。 */}
+            <section className="mb-5">
+              <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">外观</div>
+              <div className="inline-flex rounded-lg border border-black/[0.08] bg-black/[0.015] p-0.5 dark:border-white/[0.08] dark:bg-white/[0.03]">
+                {([["light", "亮"], ["dark", "暗"], ["system", "跟随系统"]] as const).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => { applyTheme(mode); setThemeMode(mode); }}
+                    className={`rounded-md px-3 py-1.5 text-[12px] font-medium transition ${
+                      themeMode === mode
+                        ? "bg-white text-[#1d1d1f] shadow-sm dark:bg-white/[0.12] dark:text-[#e6e7e9]"
+                        : "text-[#86868b] hover:text-[#1d1d1f] dark:text-[#8a8c93] dark:hover:text-[#e6e7e9]"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </section>
 
             <section className="mb-5">

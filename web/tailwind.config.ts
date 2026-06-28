@@ -1,8 +1,9 @@
 import type { Config } from "tailwindcss";
 
 const config: Config = {
-  // 跟随系统深浅色（prefers-color-scheme）：dark: 变体在系统暗色时自动生效。浅色为默认。
-  darkMode: "media",
+  // P1-10 改 class 策略:支持 app 内"亮/暗/跟随系统"手动切(见 lib/theme.ts)。
+  // 跟随系统时由 layout 内联脚本 + watchSystemTheme 按 prefers-color-scheme 给 <html> 加/去 .dark。
+  darkMode: ["class"],
   content: [
     "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
     "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
