@@ -353,11 +353,18 @@ export function SettingsDrawer({
                   {memBusy === "add" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "加"}
                 </button>
               </div>
-              {memories.length === 0 ? (
+              {/* 待确认(pending)无确认按钮、放这里只会误导(会被错标"AI学到")→ 从可编辑列表过滤掉，
+                  引导去「我的球房资料」确认；这里只管已生效的"我定的/AI学到"。 */}
+              {memories.some((m) => m.source === "pending") && (
+                <div className="mb-2 rounded-md bg-[#d4901f]/10 px-2.5 py-1.5 text-[11px] leading-snug text-[#9a6a10] dark:text-[#d4a843]">
+                  有 {memories.filter((m) => m.source === "pending").length} 条「待确认」资料，去顶部「我的球房资料」里确认后才会用于回答。
+                </div>
+              )}
+              {memories.filter((m) => m.source !== "pending").length === 0 ? (
                 <div className="text-[11.5px] text-[#a1a1a6]">还没记下什么。聊着聊着管家会慢慢记住你的偏好；你也可以上面手动加店规矩。</div>
               ) : (
                 <div className="space-y-1.5">
-                  {[...memories].sort((a, b) => (a.source === "manual" ? 0 : 1) - (b.source === "manual" ? 0 : 1)).map((m) => (
+                  {memories.filter((m) => m.source !== "pending").sort((a, b) => (a.source === "manual" ? 0 : 1) - (b.source === "manual" ? 0 : 1)).map((m) => (
                     <div key={m.id} className="flex items-start gap-2 rounded-md border border-black/[0.06] bg-black/[0.015] px-2.5 py-1.5 dark:border-white/[0.06] dark:bg-white/[0.02]">
                       <span className={`mt-0.5 shrink-0 rounded px-1 py-px text-[9px] ${m.source === "manual" ? "bg-[#10a37f]/12 text-[#10a37f]" : "bg-black/[0.05] text-[#86868b] dark:bg-white/[0.06] dark:text-[#8a8c93]"}`}>
                         {m.source === "manual" ? "我定的" : "AI学到"}
