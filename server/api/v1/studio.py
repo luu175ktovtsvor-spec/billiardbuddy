@@ -18,7 +18,7 @@ from core.safety import check_generation_safety
 from db.session import async_session
 from models.store import Store
 from models.user import User
-from services import media_jobs_runner, poster_service
+from services import media_jobs_runner, poster_service, video_service
 from services.agent.poster_styles import resolve_style_prompt
 
 router = APIRouter()
@@ -44,6 +44,18 @@ class StudioEditIn(BaseModel):
     count: int = 1                    # 出几版(变体)
     conversation_id: str | None = None
     quality: str = "medium"
+
+
+class StudioI2vIn(BaseModel):
+    first_frame: str                  # 首帧图(/uploads/...):把这张图动起来
+    prompt: str = ""                  # 运镜/画面描述(可空=让它自然动)
+    source_generation_id: str | None = None  # 血缘父(由哪张图做的视频)
+    ratio: str = "9:16"               # 视频默认竖屏(发社媒)
+    duration: int = 5                 # 时长(秒,4-15)
+    generate_audio: bool = False      # 音画同生
+    image_refs: list[str] | None = None  # 多图参考(锁人物·助教多生活照,/uploads 内)
+    last_frame: str | None = None     # 尾帧承接
+    conversation_id: str | None = None
 
 
 def _clamp_count(n) -> int:
@@ -159,5 +171,48 @@ async def studio_edit(
     job_id = await media_jobs_runner.submit(
         store_id, "edit", work_fn,
         params={"prompt": body.prompt, "source": src, "count": count, "mask": bool(mask)}, conversation_id=conv,
+    )
+    return {"job_id": job_id}
+
+
+@router.post("/i2v")
+async def studio_i2v(
+    body: StudioI2vIn,
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+):
+    """图生视频:把一张成品图动起来(可配音 / 多图锁人物 / 首尾帧)。异步:返回 {job_id}。
+    视频慢(几分钟)且费——前端在用户【显式点「做成视频」】时才调它,那一下就是人确认(不另弹审批闸)。"""
+    if not (body.first_frame or "").strip():
+        raise AIServiceError("没给要动起来的图")
+    check_generation_safety(body.prompt or "")               # H1:prompt 文本红线(图本身已过生图红线)
+    store_id, user_id, conv = store.id, user.id, body.conversation_id
+    ff, prompt, ratio, dur = body.first_frame, body.prompt, body.ratio, int(body.duration or 5)
+    audio, refs, lf, parent = body.generate_audio, body.image_refs, body.last_frame, body.source_generation_id
+
+    async def work_fn(progress):
+        from core.tenant import set_tenant
+        set_tenant(store_id)
+        try:
+            await progress(5, "正在让画面动起来…(视频要等几分钟)")
+            async with async_session() as wdb:
+                st = await wdb.get(Store, store_id)
+                res = await video_service.generate_video(
+                    db=wdb, store=st, user_id=user_id,
+                    prompt=prompt or "让画面自然地动起来，运镜流畅、主体不变形",
+                    ratio=ratio, duration=dur, first_frame=ff, last_frame=lf,
+                    image_refs=refs, generate_audio=audio, parent_generation_id=parent,
+                    conversation_id=conv,
+                )
+            return {"urls": [res["video_url"]], "generation_ids": [str(res["generation_id"])],
+                    "ratio": ratio, "is_video": True}
+        finally:
+            set_tenant(None)
+
+    job_id = await media_jobs_runner.submit(
+        store_id, "i2v", work_fn,
+        params={"first_frame": ff, "duration": dur, "audio": audio, "refs": len(refs or [])},
+        conversation_id=conv,
     )
     return {"job_id": job_id}

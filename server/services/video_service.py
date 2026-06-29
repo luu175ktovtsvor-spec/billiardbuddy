@@ -80,6 +80,10 @@ async def generate_video(
     resolution: str | None = None,   # Seedance 2.0 用 ratio+duration 控画幅、不收 resolution；给了才发(兼容 1.x)
     duration: int = 5,
     first_frame: str | None = None,
+    last_frame: str | None = None,                  # 首尾帧:尾帧承接
+    image_refs: list[str] | None = None,            # 多图参考(主体一致/锁人物·助教多生活照)
+    generate_audio: bool = False,                   # 音画同生(Seedance provider 已支持)
+    parent_generation_id=None,                      # 血缘:由哪张图/哪条成品做成的视频
     allow_paths: set[str] | None = None,
     conversation_id=None,
 ) -> dict:
@@ -89,16 +93,23 @@ async def generate_video(
         raise AIServiceError("还没配置视频模型 Key（内置 key 未注入），请检查安装或在「模型设置」里填写")
 
     first_frame_url = _resolve_first_frame(first_frame, allow_paths)
+    last_frame_url = _resolve_first_frame(last_frame, allow_paths)
+    resolved_refs: list[dict] = []
+    for ref in (image_refs or []):
+        u = _resolve_first_frame(ref, allow_paths)
+        if u:
+            resolved_refs.append({"url": u, "role": "reference"})
     provider = ArkVideoProvider(api_key=api_key, base_url=base_url)
 
-    logger.info("AI 生视频: ratio=%s, res=%s, dur=%s, i2v=%s, model=%s",
-                ratio, resolution, duration, bool(first_frame_url), model)
+    logger.info("AI 生视频: ratio=%s, res=%s, dur=%s, i2v=%s, refs=%d, audio=%s, model=%s",
+                ratio, resolution, duration, bool(first_frame_url), len(resolved_refs), generate_audio, model)
 
     # 提交 + 轮询（耗时 1-8 分钟；超时由 settings.video_timeout 兜底）
     video_url = await provider.generate_video(
         prompt=prompt, model=model or settings.video_model_name,
         ratio=ratio, resolution=resolution, duration=int(duration or 5),
-        first_frame_url=first_frame_url,
+        first_frame_url=first_frame_url, last_frame_url=last_frame_url,
+        image_refs=resolved_refs or None, generate_audio=generate_audio,
     )
     # 即时下载落盘（远端 url 短期有效）
     video_bytes = await fetch_video_bytes(video_url)
@@ -113,6 +124,12 @@ async def generate_video(
 
     local_url = f"/uploads/videos/{filename}"
     conv_id = str(conversation_id) if conversation_id else str(uuid.uuid4())
+    _parent = None
+    if parent_generation_id:
+        try:
+            _parent = uuid.UUID(str(parent_generation_id))
+        except (ValueError, TypeError):
+            _parent = None
     generation = Generation(
         store_id=store.id,
         user_id=user_id,
@@ -120,14 +137,16 @@ async def generate_video(
         sub_type=ratio,
         input_params={
             "prompt": prompt, "ratio": ratio, "resolution": resolution,
-            "duration": duration, "first_frame": first_frame,
+            "duration": duration, "first_frame": first_frame, "last_frame": last_frame,
             "image_to_video": bool(first_frame_url),
+            "generate_audio": generate_audio, "ref_count": len(resolved_refs),
         },
         prompt_used=prompt,
         result=local_url,
         model_used=f"ai:{model or settings.video_model_name}",
         tokens_used=0,
         conversation_id=uuid.UUID(conv_id),
+        parent_generation_id=_parent,
     )
     db.add(generation)
     await db.flush()

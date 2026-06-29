@@ -93,6 +93,35 @@ def test_ark_video_image2video_first_frame(monkeypatch):
     assert c[1]["role"] == "first_frame"
 
 
+def test_ark_video_audio_lastframe_and_refs(monkeypatch):
+    """阶段4:音画同生 + 首尾帧 + 多图参考(锁人物)都进 body/content。"""
+    import httpx
+
+    def router(method, url, k):
+        if method == "POST":
+            router.body = k.get("json")
+            return _FakeResp(json_data={"id": "cgt-multi"})
+        return _FakeResp(json_data={"status": "succeeded", "content": {"video_url": "http://v/m.mp4"}})
+
+    _FakeAC.router = staticmethod(router)
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAC)
+    from services.ai.providers.ark_video import ArkVideoProvider
+    out = asyncio.run(ArkVideoProvider("ark-x").generate_video(
+        prompt="助教出镜，主体不变", model="m",
+        first_frame_url="https://img/first.jpg", last_frame_url="https://img/last.jpg",
+        image_refs=[{"url": "https://img/p1.jpg", "role": "reference"}, {"url": "https://img/p2.jpg"}],
+        generate_audio=True))
+    assert out == "http://v/m.mp4"
+    b = router.body
+    assert b["generate_audio"] is True
+    imgs = [x for x in b["content"] if x["type"] == "image_url"]
+    roles = [x.get("role") for x in imgs]
+    assert "first_frame" in roles and "last_frame" in roles
+    assert roles.count("reference") == 2                       # 两张参考图都进了(无 role 默认 reference)
+    urls = [x["image_url"]["url"] for x in imgs]
+    assert "https://img/p1.jpg" in urls and "https://img/p2.jpg" in urls
+
+
 def test_ark_video_failed_task_raises(monkeypatch):
     import httpx
 
