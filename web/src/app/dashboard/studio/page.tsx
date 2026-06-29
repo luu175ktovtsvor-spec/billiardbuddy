@@ -6,8 +6,8 @@
  * 直连 /studio/generate、/studio/edit(绕 LLM),异步出图轮询 media-jobs。白底偏绿 macOS。
  * 治"改不动图":基于当前这张就地改(原图当底图),不跳回输入框重掷。
  */
-import { useCallback, useState } from "react";
-import { Image as ImageIcon, Wand2, Copy, Download, ThumbsUp, Loader2, RefreshCw, Check, AlertTriangle } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Image as ImageIcon, Wand2, Copy, Download, ThumbsUp, Loader2, RefreshCw, Check, AlertTriangle, Layers } from "lucide-react";
 import { api, type MediaJobStatus } from "@/lib/api";
 
 const RATIOS = [
@@ -33,6 +33,7 @@ export default function StudioPage() {
   const [prompt, setPrompt] = useState("");
   const [style, setStyle] = useState<string | null>(null);
   const [ratio, setRatio] = useState("9:16");
+  const [count, setCount] = useState(1);             // 出几版(变体)
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState("");
   const [current, setCurrent] = useState<Shot | null>(null);
@@ -40,6 +41,10 @@ export default function StudioPage() {
   const [editText, setEditText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // 用 ref 跟踪当前图,runJob 里读它把上一张推进历史——别在 setState 更新函数里塞 setState 副作用(StrictMode 会双跑)。
+  const currentRef = useRef<Shot | null>(null);
+  useEffect(() => { currentRef.current = current; }, [current]);
 
   const onTick = (j: MediaJobStatus) =>
     setStage(j.stage || (j.status === "queued" ? "排队中…" : "正在出图…"));
@@ -53,9 +58,12 @@ export default function StudioPage() {
       const ids = (done.result?.generation_ids as string[] | undefined) || [];
       const r = (done.result?.ratio as string | undefined) || keepRatio;
       if (!urls.length) throw new Error("这次没出来图，换个说法再试一次。");
-      const shot: Shot = { url: urls[0], generationId: ids[0], ratio: r };
-      setCurrent((prev) => { if (prev) setHistory((h) => [prev, ...h].slice(0, 12)); return shot; });
-      window.electron?.notifyStudioArtifact?.({ kind: "poster", generationId: shot.generationId, url: shot.url });
+      const shots: Shot[] = urls.map((u, i) => ({ url: u, generationId: ids[i], ratio: r }));
+      const prev = currentRef.current;
+      // 上一张 + 多出来的变体都进历史可回看(无嵌套 setState)
+      setHistory((h) => [...(prev ? [prev] : []), ...shots.slice(1), ...h].slice(0, 12));
+      setCurrent(shots[0]);
+      window.electron?.notifyStudioArtifact?.({ kind: "poster", generationId: shots[0].generationId, url: shots[0].url });
     } catch (e) {
       setError(e instanceof Error ? e.message : "生成失败，请稍后再试。");
     } finally {
@@ -65,18 +73,19 @@ export default function StudioPage() {
 
   const onGenerate = () => {
     if (!prompt.trim() || busy) return;
-    void runJob(() => api.studioGenerate({ prompt: prompt.trim(), ratio, style: style || undefined }), ratio);
+    void runJob(() => api.studioGenerate({ prompt: prompt.trim(), ratio, style: style || undefined, count }), ratio);
   };
   const onEdit = () => {
     if (!current || !editText.trim() || busy) return;
+    if (!current.generationId) { setError("这张图没有来源记录，改不了；重新生成一张再改。"); return; }
     const instruction = editText.trim();
     setEditText("");
-    void runJob(() => api.studioEdit({ prompt: instruction, base_image: current.url, parent_generation_id: current.generationId, ratio: current.ratio }), current.ratio);
+    void runJob(() => api.studioEdit({ prompt: instruction, source_generation_id: current.generationId as string, ratio: current.ratio }), current.ratio);
   };
   const onChangeRatio = (r: string) => {
     setRatio(r);
-    if (current && !busy) {
-      void runJob(() => api.studioEdit({ prompt: "保持画面主体和风格不变，换成这个画幅比例重新构图", base_image: current.url, parent_generation_id: current.generationId, ratio: r }), r);
+    if (current?.generationId && !busy) {
+      void runJob(() => api.studioEdit({ prompt: "保持画面主体和风格不变，换成这个画幅比例重新构图", source_generation_id: current.generationId as string, ratio: r }), r);
     }
   };
   const onCopy = async () => {
@@ -137,6 +146,12 @@ export default function StudioPage() {
             <div className="flex flex-wrap gap-1.5">
               <button type="button" onClick={() => setStyle(null)} className={chip(style === null)}>不指定</button>
               {STYLES.map((s) => <button key={s} type="button" onClick={() => setStyle(s)} className={chip(style === s)}>{s}</button>)}
+            </div>
+          </div>
+          <div>
+            <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">出几版（多挑一张）</div>
+            <div className="flex flex-wrap gap-1.5">
+              {[1, 2, 3, 4].map((n) => <button key={n} type="button" onClick={() => setCount(n)} className={chip(count === n)}>{n} 版</button>)}
             </div>
           </div>
           <button
