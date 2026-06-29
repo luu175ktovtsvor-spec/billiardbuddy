@@ -386,8 +386,8 @@ export function DesktopComposer({
               </div>
             )}
 
-            {/* F.2 深度思考 开/关：mimo 默认开，关掉更快更省思考 token。措辞大白话、不堆术语。 */}
-            {onDeepThinkingChange && (
+            {/* F.2 深度思考 开/关：开发者概念,Task9 输入区精简——默认收进高级模式,普通用户不堆术语;高级才露。 */}
+            {advancedMode && onDeepThinkingChange && (
               <button
                 type="button"
                 onClick={() => onDeepThinkingChange(!deepThinking)}
@@ -504,6 +504,8 @@ export function DesktopComposer({
               )}
             </div>
 
+            {/* 输出风格:开发者概念,Task9 输入区精简——默认收进高级模式;高级才露。 */}
+            {advancedMode && (
             <div className="relative">
               <button
                 type="button"
@@ -545,6 +547,7 @@ export function DesktopComposer({
                 </>
               )}
             </div>
+            )}
 
             <span className="ml-1 hidden font-mono text-[11px] text-[#b0b0b5] sm:inline dark:text-[#54565d]">↵ 发送 · ⇧↵ 换行</span>
 
