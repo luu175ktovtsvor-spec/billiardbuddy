@@ -23,6 +23,15 @@ _TONEMAP = (
 # 社媒响度标准(铁律14)
 _LUFS_I, _LUFS_TP, _LUFS_LRA = -14.0, -1.0, 11.0
 
+# 字幕样式(铁律16:MarginV≈90 避开抖音/Reels 底部 UI 安全区;白字黑边)
+_SUB_STYLE = (
+    "FontName=PingFang SC,FontSize=15,Bold=1,"
+    "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,"
+    "BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=90"
+)
+# CJK 字体目录(打包时要带一份 CJK 字体进包;dev 用系统字体)
+_FONTS_DIR = "/System/Library/Fonts"
+
 _GRADE_PRESETS = {
     "warm_cinematic": "eq=contrast=1.06:saturation=1.05:gamma=0.98,colorbalance=rs=.04:bs=-.03",
     "neutral_punch": "eq=contrast=1.05:saturation=1.02",
@@ -101,6 +110,17 @@ def _add_music(base: Path, music: str, out: Path) -> None:
     ])
 
 
+def _burn_subtitles(src: Path, srt: str, out: Path) -> None:
+    """烧字幕(铁律1:最后一步;铁律16:安全区 MarginV)。CJK 走 fontsdir 指定字体目录。"""
+    esc = str(Path(srt).resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
+    vf = f"subtitles='{esc}':fontsdir='{_FONTS_DIR}':force_style='{_SUB_STYLE}'"
+    _run([
+        ffmpeg_bin(), "-y", "-i", str(src), "-vf", vf,
+        "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
+        "-c:a", "copy", "-movflags", "+faststart", str(out),
+    ])
+
+
 def _loudnorm(src: Path, out: Path) -> None:
     """响度归一化到社媒标准(铁律14)。单遍近似(够用·快)。"""
     f = f"loudnorm=I={_LUFS_I}:TP={_LUFS_TP}:LRA={_LUFS_LRA}"
@@ -142,7 +162,13 @@ def render_edl(edl: Edl, out_path: str, *, edit_dir: str | None = None) -> str:
     else:  # keep
         pre = base
 
-    # ④ 响度归一化(有声才做)
+    # ④ 烧字幕(铁律1:在响度归一化前完成视频侧合成;无 overlay 时直接烧在拼接视频上)
+    if edl.subtitles:
+        subbed = work / "subbed.mp4"
+        _burn_subtitles(pre, edl.subtitles, subbed)
+        pre = subbed
+
+    # ⑤ 响度归一化(有声才做;视频 -c copy 保留已烧的字幕)
     if edl.audio_mode == "mute":
         _run([ffmpeg_bin(), "-y", "-i", str(pre), "-c", "copy", str(out)])
     else:
