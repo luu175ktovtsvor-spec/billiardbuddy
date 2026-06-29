@@ -511,8 +511,8 @@ class ApiClient {
     return this.request<{ job_id: string }>("POST", "/api/v1/studio/generate", input);
   }
 
-  // 阶段2 生成工作室：基于这张改（原图当底图 + 一句话指令），异步出图，返回 job_id
-  studioEdit(input: { prompt: string; base_image: string; parent_generation_id?: string; ratio?: string; count?: number; conversation_id?: string | null }) {
+  // 阶段2/3 生成工作室：基于这张成品改（source_generation_id=底图来源+血缘父；可选 mask_path 局部重绘），异步出图
+  studioEdit(input: { prompt: string; source_generation_id: string; mask_path?: string; ratio?: string; count?: number; conversation_id?: string | null }) {
     return this.request<{ job_id: string }>("POST", "/api/v1/studio/edit", input);
   }
 
