@@ -62,6 +62,45 @@ class StudioComposeIn(BaseModel):
     generation_ids: list[str]         # 要拼成一条的视频成品(按顺序)
 
 
+class StudioStoryboardIn(BaseModel):
+    theme: str                        # 短片主题(如"咖啡馆日常·清新 vibe")
+    shots: int = 3                    # 几个分镜(2-6)
+    subject: str = ""                 # 主体/人物描述(如"年轻女生,台球助教"),锁人物用
+
+
+def _storyboard_prompt(theme: str, n: int, subject: str) -> str:
+    subj = f"主体/人物:{subject}(每个分镜都要是同一个人,长相/体态不变)。" if subject else ""
+    return (
+        f"你是短视频分镜师。主题:{theme}。{subj}"
+        f"请写 {n} 个分镜,每个是一句给 AI 视频模型的【画面 + 运镜】描述(具体、可拍、几秒一镜),"
+        "再写一条适合发抖音/小红书/朋友圈的配文案(口语、有钩子)。"
+        "守安全红线:不露骨色情、不涉及实际性交易、未成年保护、不开赌场/不带赌博。"
+        '只输出 JSON,格式:{"shots": ["分镜1","分镜2"], "caption": "配文案"}。不要任何额外说明。'
+    )
+
+
+def _parse_storyboard(text: str, n: int) -> tuple[list[str], str]:
+    import json as _json
+    import re as _re
+    shots: list[str] = []
+    caption = ""
+    m = _re.search(r"\{.*\}", text or "", _re.S)
+    if m:
+        try:
+            j = _json.loads(m.group(0))
+            raw = j.get("shots") or j.get("分镜") or []
+            shots = [str(s).strip() for s in raw if str(s).strip()][:n]
+            caption = str(j.get("caption") or j.get("文案") or "").strip()
+        except Exception:
+            pass
+    if not shots:  # 兜底:按行/序号切
+        lines = [ln.strip(" -·。.0123456789、)）:：") for ln in (text or "").splitlines()]
+        shots = [ln for ln in lines if len(ln) > 4][:n]
+    if not shots:
+        raise AIServiceError("没生成出分镜,换个主题再试。")
+    return shots[:n], caption
+
+
 def _clamp_count(n) -> int:
     try:
         n = int(n or 1)
@@ -269,3 +308,23 @@ async def studio_compose(
         "output_path": str(udir / "videos" / out_name),
         "output_url": f"/uploads/videos/{out_name}",
     }
+
+
+@router.post("/storyboard")
+async def studio_storyboard(
+    body: StudioStoryboardIn,
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+):
+    """LLM 分镜 + 配文案:主题 → N 个分镜画面描述 + 一条配文案。助教一条龙的"写脚本/分镜"那步。同步(LLM 快)。"""
+    check_generation_safety(body.theme, body.subject)        # H1(输入)
+    n = max(2, min(int(body.shots or 3), 6))
+    from services.ai.factory import ProviderFactory
+    from services.ai.base import TextRequest
+
+    provider = ProviderFactory.get_text_provider_for_store(store)
+    resp = await provider.generate(TextRequest(prompt=_storyboard_prompt(body.theme, n, body.subject), max_tokens=1200))
+    shots, caption = _parse_storyboard(getattr(resp, "content", "") or "", n)
+    check_generation_safety(" ".join(shots), caption)        # H1(输出:模型可能跑偏)
+    return {"shots": shots, "caption": caption}
