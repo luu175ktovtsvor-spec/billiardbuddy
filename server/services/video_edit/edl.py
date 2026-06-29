@@ -34,6 +34,9 @@ class Edl(BaseModel):
     title: str | None = None                      # 可选:开头烧一行标题(drawtext)
     overlays: list[EdlOverlay] = Field(default_factory=list)
     subtitles: str | None = None                  # master.srt 路径,最后烧
+    subtitle_font: str = "PingFang SC"            # 字幕字体家族名(可换:得意黑/思源黑体/楷体…)
+    subtitle_fontsdir: str | None = None          # 字体文件所在目录(None=系统字体目录)
+    subtitle_fontsize: int = 15
     target_w: int = 1080                          # 成片尺寸(竖屏默认 1080x1920)
     target_h: int = 1920
     total_duration_s: float | None = None
