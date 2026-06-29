@@ -59,10 +59,12 @@ const scenarios = JSON.parse(fs.readFileSync(path.join(__dirname, "scenarios.jso
     const shot = `${String(n).padStart(2, "0")}_${(sc.who || "user").replace(/[^\w一-龥]/g, "")}.png`;
     await win.screenshot({ path: path.join(RESULTS, shot), fullPage: false }).catch(() => {});
     const replyText = await win.evaluate(() => {
-      const sels = ['.markdown', '[class*="assistant"]', '[class*="message"]'];
-      let nodes = [];
-      for (const s of sels) { nodes = [...document.querySelectorAll(s)]; if (nodes.length) break; }
-      return nodes.length ? (nodes[nodes.length - 1].innerText || "").slice(0, 600) : "(未抓到文本)";
+      // 抓整段对话区文本(找文字最多的容器=transcript),取末尾一大块(=最近这条回复)
+      const all = [...document.querySelectorAll("main, [class*='thread'], [class*='transcript'], [class*='conversation'], div")];
+      let best = document.body, max = 0;
+      for (const el of all) { const t = (el.innerText || "").length; if (t > max && t < 20000) { max = t; best = el; } }
+      const txt = (best.innerText || "");
+      return txt.slice(Math.max(0, txt.length - 2500));
     }).catch(() => "(读取失败)");
     log(`   结果=${how} 用时=${elapsed}s 截图=${shot}`);
     results.push({ n, who: sc.who, theme: sc.theme, say: sc.say, expect: sc.expect, how, elapsed, shot, replyText });
