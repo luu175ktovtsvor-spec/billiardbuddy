@@ -37,11 +37,11 @@ class StudioGenerateIn(BaseModel):
 
 
 class StudioEditIn(BaseModel):
+    source_generation_id: str         # 要改的成品 id(= refine_from 底图,也是血缘父)。底图从该成品解析。
     prompt: str                       # 改图指令(一句话说怎么改)
-    base_image: str                   # 原图(底图)路径——"在这张上改"
-    parent_generation_id: str | None = None  # 血缘:这张从哪条成品派生
+    mask_path: str | None = None      # 局部重绘:同尺寸 alpha mask 的本机路径(透明处=要改);无=整图改
     ratio: str = "3:4"
-    count: int = 1
+    count: int = 1                    # 出几版(变体)
     conversation_id: str | None = None
     quality: str = "medium"
 
@@ -130,34 +130,34 @@ async def studio_edit(
     store=Depends(get_current_store),
     db=Depends(get_db),
 ):
-    """基于这张改(整张):原图当底图 + 一句话指令 → 改出新图(治"改不动图、只能跳回输入框")。
-    异步:返回 {job_id}。"""
-    if not (body.base_image or "").strip():
-        raise AIServiceError("没给要改的底图")
+    """基于这张改:原成品当底图 + 一句话指令 →（可选 mask 局部重绘）改出新图(治"改不动图、只能跳回输入框")。
+    底图由 source_generation_id 解析(refine_from=成品 id,不是 URL)。异步:返回 {job_id}。"""
+    if not (body.source_generation_id or "").strip():
+        raise AIServiceError("没指定要改的成品")
     check_generation_safety(body.prompt)                     # H1
     count = _clamp_count(body.count)                          # H3
     store_id, user_id, conv = store.id, user.id, body.conversation_id
-    prompt, base, ratio, quality = body.prompt, body.base_image, body.ratio, body.quality
-    parent_id = body.parent_generation_id
+    prompt, src, ratio, quality, mask = body.prompt, body.source_generation_id, body.ratio, body.quality, body.mask_path
 
     async def work_fn(progress):
         from core.tenant import set_tenant
         set_tenant(store_id)
         try:
-            await progress(8, "正在按你说的改…")
+            await progress(8, "正在按你圈的地方改…" if mask else "正在按你说的改…")
             async with async_session() as wdb:
                 st = await wdb.get(Store, store_id)
                 res = await poster_service.generate_images(
                     wdb, st, user_id, prompt, image_model=None, ratio=ratio,
-                    refine_from=base, count=count, conversation_id=conv, quality=quality,
+                    refine_from=src, mask_path=mask, count=count, conversation_id=conv, quality=quality,
                 )
-                await _backfill_parent(wdb, res.get("images", []), parent_id, store_id)
+                # 血缘父 = 被改的源成品
+                await _backfill_parent(wdb, res.get("images", []), src, store_id)
             return _result_payload(res)
         finally:
             set_tenant(None)
 
     job_id = await media_jobs_runner.submit(
         store_id, "edit", work_fn,
-        params={"prompt": body.prompt, "base_image": base, "count": count}, conversation_id=conv,
+        params={"prompt": body.prompt, "source": src, "count": count, "mask": bool(mask)}, conversation_id=conv,
     )
     return {"job_id": job_id}

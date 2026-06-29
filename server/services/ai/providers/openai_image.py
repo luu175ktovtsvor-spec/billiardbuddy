@@ -142,6 +142,7 @@ class OpenAIImageProvider(ImageProvider):
         size: str = "1024*1024",
         quality: str = "medium",
         image: bytes | list[bytes] | None = None,
+        mask: bytes | None = None,
         **kwargs,
     ) -> bytes:
         """调用 OpenAI 兼容的生图 API 生成图片。支持多图输入（最多16张）。
@@ -177,6 +178,13 @@ class OpenAIImageProvider(ImageProvider):
 
             # OpenAI images.edit 支持单张或多张图片。每次（含 429 重试）都重建上传流——BytesIO 读过一次会到 EOF。
             def _build_edit():
+                # 局部重绘:有 mask 时只用单底图(images[0]) + 同尺寸 alpha mask(透明 alpha=0 处=要改),
+                # 多图融合与 mask 互斥(OpenAI edit 的 mask 作用于单底图)。
+                if mask is not None:
+                    return client.images.edit(
+                        model=use_model, prompt=prompt, image=_make_file(images[0], 0),
+                        mask=_make_file(mask, 0), size=openai_size, **extra,
+                    )
                 image_file = (_make_file(images[0], 0) if len(images) == 1
                               else [_make_file(img, i) for i, img in enumerate(images[:16])])
                 return client.images.edit(
