@@ -68,5 +68,26 @@
     "theme": "数据诊断",
     "say": "上个月流水掉了不少，帮我看看可能是啥原因，该咋办",
     "expect": "诊断框架+要哪些数据+对策，而不是空话"
+  },
+  {
+    "n": 11,
+    "who": "老板",
+    "theme": "读Excel数据诊断",
+    "say": "帮我看看这张上月营业额表，流水为啥掉了、咋办。表在这：/private/tmp/claude-502/-Users-swl-Desktop-----AI------/fb159070-6d7b-48ab-9299-b4a06b05524e/scratchpad/上月营业额表.xlsx",
+    "expect": "真读表→拆项找失血点(台费助教费跌/低价团购涨)→对策"
+  },
+  {
+    "n": 12,
+    "who": "老板",
+    "theme": "联网查资料",
+    "say": "上网帮我查一下现在美团做团购套餐有啥讲究、怎么设引流款,给我两条能用的",
+    "expect": "真联网查到+落地建议"
+  },
+  {
+    "n": 13,
+    "who": "店长",
+    "theme": "写文件落盘",
+    "say": "给我做一套店长日报模板，存成 markdown 文件放到 /private/tmp/claude-502/-Users-swl-Desktop-----AI------/fb159070-6d7b-48ab-9299-b4a06b05524e/scratchpad/store_files 文件夹",
+    "expect": "真在该文件夹生成日报模板文件"
   }
 ]
