@@ -99,7 +99,11 @@ class ArkVideoProvider:
                 f"{self._base_url}/contents/generations/tasks",
                 headers=self._headers(), json=body,
             )
-            r.raise_for_status()
+            if r.status_code >= 400:
+                # 把网关/火山返回的 400 响应体带出来(不然只剩"400 Bad Request"没法查)。
+                detail = (r.text or "")[:500]
+                logger.warning("Seedance 视频提交 %s:%s", r.status_code, detail)
+                raise RuntimeError(f"视频生成提交失败({r.status_code}):{detail}")
             out = r.json() or {}
         # 兼容 {"id":...} 与少数情况下包一层 {"data":{"id":...}}
         task_id = out.get("id") or (out.get("data") or {}).get("id")
