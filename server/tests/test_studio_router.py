@@ -50,13 +50,13 @@ def test_studio_generate_blocks_redline():
     asyncio.run(main())
 
 
-def test_studio_edit_requires_base_image():
+def test_studio_edit_requires_source_generation():
     async def main():
-        body = studio.StudioEditIn(prompt="改亮一点", base_image="")
+        body = studio.StudioEditIn(prompt="改亮一点", source_generation_id="")
         try:
             await studio.studio_edit(body, user=SimpleNamespace(id=uuid.uuid4()),
                                      store=SimpleNamespace(id=uuid.uuid4()), db=None)
-            assert False, "没底图应报错"
+            assert False, "没指定要改的成品应报错"
         except AIServiceError:
             pass
     asyncio.run(main())
@@ -115,16 +115,17 @@ def test_studio_edit_backfills_parent_lineage(monkeypatch):
         new_gid = uuid.uuid4()
 
         async def fake_gen(db, store, user_id, prompt, image_model=None, ratio="3:4",
-                           refine_from=None, count=1, **kw):
-            assert refine_from == "/uploads/orig.png"  # 原图当底图
+                           refine_from=None, mask_path=None, count=1, **kw):
+            assert refine_from == str(parent_gid)        # 源成品 id 当 refine_from 底图(不是 URL)
+            assert mask_path == "/tmp/mask.png"          # mask 透传(局部重绘)
             db.add(Generation(id=new_gid, store_id=store.id, type="poster",
                               result="/uploads/edited.png", model_used="gpt-image-2"))
             await db.flush()
             return {"images": [{"generation_id": new_gid, "poster_url": "/uploads/edited.png", "ratio": ratio}]}
         monkeypatch.setattr(studio.poster_service, "generate_images", fake_gen)
 
-        body = studio.StudioEditIn(prompt="把背景换成夜晚", base_image="/uploads/orig.png",
-                                   parent_generation_id=str(parent_gid))
+        body = studio.StudioEditIn(prompt="把这块改成夜晚", source_generation_id=str(parent_gid),
+                                   mask_path="/tmp/mask.png")
         out = await studio.studio_edit(body, user=SimpleNamespace(id=uid),
                                        store=SimpleNamespace(id=sid), db=None)
         jid = out["job_id"]

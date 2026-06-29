@@ -200,6 +200,7 @@ async def generate_images(
     reference_image_paths: list[str] | None = None,
     count: int = 1,
     refine_from: str | None = None,
+    mask_path: str | None = None,
     add_store_info: bool = False,
     no_text: bool = False,
     conversation_id: str | None = None,
@@ -349,6 +350,26 @@ async def generate_images(
                 except Exception:
                     pass
 
+    # 局部重绘:读 mask(同尺寸 alpha PNG,透明 alpha=0 处=要改);没有底图无从局部改 → 忽略 mask 走整图。
+    mask_bytes: bytes | None = None
+    if mask_path and base_image is not None:
+        import os as _os_mask
+        _mask_desktop = _os_mask.environ.get("DESKTOP_LOCAL") == "1"
+        try:
+            _udir = Path(settings.upload_dir)
+            _mp = _udir / mask_path.removeprefix("/uploads/")
+            _in_uploads = False
+            try:
+                _in_uploads = _mp.resolve().is_relative_to(_udir.resolve())
+            except (OSError, ValueError):
+                pass
+            if _in_uploads and _mp.exists():
+                mask_bytes = _mp.read_bytes()
+            elif _mask_desktop and Path(mask_path).is_file():
+                mask_bytes = Path(mask_path).read_bytes()
+        except Exception:
+            logger.warning("读取 mask 失败,忽略 mask 走整图改", exc_info=True)
+
     # 输入图顺序：要保真的排前面（底图→二维码→Logo），风格参考随后（官方：靠前输入图保真更强）。
     # 二维码紧跟底图——它最需要原样复现才能扫得出，享受前排更强的保真。
     preserve_imgs: list[bytes] = []
@@ -415,6 +436,7 @@ async def generate_images(
                     size=size,
                     quality=quality,
                     image=input_images if input_images else None,
+                    mask=mask_bytes,  # 局部重绘:同尺寸 alpha mask(透明处=要改);None=整图改
                 )
 
             # owner 拍板：不再 PIL 贴 logo——所有上传物料(含 logo)已原样进 input_images 喂 GPT 融合。
