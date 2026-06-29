@@ -13,6 +13,10 @@ os.environ.setdefault("PROMPTS_PACK_KEY", "__PROMPTS_PACK_KEY__")
 # 不覆盖外部已设的值。
 os.environ.setdefault("SECRET_KEY", "billiards-desktop-local-secret-change-me")
 
+# 语义检索：装机包内置了 bge 模型(打包进 fastembed_cache)，默认启用真语义嵌入(店脑/知识"按
+# 意思找料"，不再是词面匹配)。模型加载失败会自动回退词面版，不崩。外部已设则尊重。
+os.environ.setdefault("RAG_EMBEDDER", "fastembed")
+
 import sys  # noqa: E402
 
 import uvicorn  # noqa: E402

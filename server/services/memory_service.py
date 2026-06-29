@@ -320,12 +320,12 @@ _MEMORY_INJECT_CAP = 15
 # episodic（"发生过的具体事件"，如"老顾客小张半个月没来""今天安排盘货"）相关性下限：
 # 这类一次性情景【只有跟当前任务相关时才注入】，否则会串到不相关任务里（用户："我问做视频，
 # 你提小张干嘛"）。durable（semantic/preference/operational=店规矩/客群/定价/打法）是稳定店情、始终注入。
-# 阈值按【装机包实际用的 DeterministicEmbedder 词面相似度】标定(0.10：小张/盘货串到无关任务≈-0.06~0.09<0.10
-# 被挡；串到相关任务≈0.13~0.26>0.10 留下)。装了真 bge 也成立(相关分更高)。可经 env 调。
+# 阈值按【装机包内置的 bge 语义嵌入】标定(实测:小张串到"做视频"≈0.385<0.45 被挡;串到"唤回老顾客"
+# ≈0.767>0.45 留下)。若 bge 没加载成回退词面嵌器,episodic 一律不注入(那条路判不准,见 select_relevant_memories)。
 try:
-    _EPISODIC_RELEVANCE_FLOOR = float(os.environ.get("DESKTOP_EPISODIC_RELEVANCE_FLOOR") or 0.10)
+    _EPISODIC_RELEVANCE_FLOOR = float(os.environ.get("DESKTOP_EPISODIC_RELEVANCE_FLOOR") or 0.45)
 except (TypeError, ValueError):
-    _EPISODIC_RELEVANCE_FLOOR = 0.10
+    _EPISODIC_RELEVANCE_FLOOR = 0.45
 
 _embed_cache: dict[str, list[float]] = {}
 _embed_cache_hash: str = ""

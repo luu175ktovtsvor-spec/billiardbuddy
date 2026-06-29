@@ -13,6 +13,7 @@ import hashlib
 import logging
 import math
 import os
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,16 @@ class FastEmbedEmbedder:
         self._model_name = model_name or os.environ.get(
             "RAG_FASTEMBED_MODEL", "BAAI/bge-small-zh-v1.5"
         )
-        self._m = TextEmbedding(model_name=self._model_name)
+        # 装机包：模型(~90MB)预打包在 _MEIPASS/fastembed_cache，离线直接加载、不联网下载。
+        # dev：cache_dir=None 走默认缓存(已下/会下)。FASTEMBED_CACHE_DIR 可显式覆盖。
+        cache_dir = None
+        base = getattr(sys, "_MEIPASS", None)
+        if base:
+            d = os.path.join(base, "fastembed_cache")
+            if os.path.isdir(d):
+                cache_dir = d
+        cache_dir = cache_dir or os.environ.get("FASTEMBED_CACHE_DIR") or None
+        self._m = TextEmbedding(model_name=self._model_name, cache_dir=cache_dir)
         # 用一次探测维度
         probe = list(self._m.embed(["维度探测"]))[0]
         self.dim = len(probe)
