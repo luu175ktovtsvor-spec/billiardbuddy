@@ -46,6 +46,7 @@ def cosine(a: list[float], b: list[float]) -> float:
 class DeterministicEmbedder:
     """零依赖哈希嵌入：字 bigram → 带符号哈希进 256 维 → L2 归一化。词面相似度。"""
     name = "deterministic"
+    semantic = False  # 只能比词面重叠、判不准语义相关性（调用方据此决定相关性门控要不要信它）
     dim = _DET_DIM
 
     def embed(self, text: str) -> list[float]:
@@ -61,6 +62,7 @@ class DeterministicEmbedder:
 class FastEmbedEmbedder:
     """本地 ONNX 小模型（语义相似）。懒加载；模型首次用时下载到缓存。"""
     name = "fastembed"
+    semantic = True  # 真语义嵌入，相关性可信
 
     def __init__(self, model_name: str | None = None):
         from fastembed import TextEmbedding  # 懒导入：没装也不影响 deterministic

@@ -177,8 +177,11 @@ _EXTRACT_SYS = (
     "（没提价格就不写价格，没提助教/包厢就不写）。\n"
     "2. 否定也要如实记（说'没有包厢'就记'没有包厢'，不能记成有）。\n"
     "3. 每条精炼成一句可复用的事实/偏好；天气、吃饭等与门店运营无关的闲聊不要记。\n"
-    "4. **一次性任务诉求不要记**：用户让做海报、写文案、做个图、查个数据——这些是临时指令，"
-    "不是门店事实/偏好/运营模式，**不要抽取**。\n"
+    "4. **一次性任务诉求/临时情景不要记**：用户让做海报、写文案、做个图、查个数据——这些是临时指令；"
+    "还有【为完成这次任务顺带提到的一次性情景】也不要记——比如'某客户多久没来了(让你写挽回话)'、"
+    "'今天/这次的待办或安排(让你列清单)'、'这次活动的临时细节'——这些是任务上下文、不是长期门店事实，**不要抽取**。\n"
+    "   反例(不要记)：'老顾客小张半个月没来'、'今天安排上午盘货下午发抖音'。\n"
+    "   正例(可记)：'本店主打学生和竞技客群'、'老板偏好简洁直接的文案'、'周二会员日台费五折'。\n"
     "type 取值（英文）：semantic(门店客观事实) | preference(老板的风格/喜好) | "
     "operational(运营模式/客流节奏) | episodic(发生过的具体事件)\n"
     '格式：{"memories":[{"type":"semantic","content":"...","confidence":"high|medium|low"}]}\n'
@@ -186,7 +189,8 @@ _EXTRACT_SYS = (
 )
 
 _TASK_PATTERNS = re.compile(
-    r"^(帮我|请|麻烦|给我)?(做|写|画|生成|制作|设计|弄|搞|出|来)(一?[张个份篇条幅])?",
+    r"^(帮我|请|麻烦|给我|我想|帮忙)?(把.{0,12}?)?"
+    r"(做|写|画|生成|制作|设计|弄|搞|出|来|想|列|算|查|看看|拟|编|排|回复?)(一?[张个份篇条幅])?",
 )
 
 _REDLINE_PATTERNS = re.compile(
@@ -313,6 +317,16 @@ async def consolidate_memories(existing: list[Memory], new: list[Memory], store=
 # 店脑按需召回阈值：记忆多于这个数才启用相关性筛选（少则全留，无 context rot 风险）
 _MEMORY_INJECT_CAP = 15
 
+# episodic（"发生过的具体事件"，如"老顾客小张半个月没来""今天安排盘货"）相关性下限：
+# 这类一次性情景【只有跟当前任务相关时才注入】，否则会串到不相关任务里（用户："我问做视频，
+# 你提小张干嘛"）。durable（semantic/preference/operational=店规矩/客群/定价/打法）是稳定店情、始终注入。
+# 阈值按【装机包实际用的 DeterministicEmbedder 词面相似度】标定(0.10：小张/盘货串到无关任务≈-0.06~0.09<0.10
+# 被挡；串到相关任务≈0.13~0.26>0.10 留下)。装了真 bge 也成立(相关分更高)。可经 env 调。
+try:
+    _EPISODIC_RELEVANCE_FLOOR = float(os.environ.get("DESKTOP_EPISODIC_RELEVANCE_FLOOR") or 0.10)
+except (TypeError, ValueError):
+    _EPISODIC_RELEVANCE_FLOOR = 0.10
+
 _embed_cache: dict[str, list[float]] = {}
 _embed_cache_hash: str = ""
 
@@ -348,23 +362,42 @@ def select_relevant_memories(memories: list[Memory], intent, cap: int = _MEMORY_
         return memories
     manual = [m for m in memories if getattr(m, "source", "auto") == "manual"]
     auto = [m for m in memories if getattr(m, "source", "auto") != "manual"]
-    if not intent or not str(intent).strip() or len(auto) <= cap:
-        return manual + auto
+    if not intent or not str(intent).strip():
+        return manual + auto  # 无意图(如批量/无上下文)：全留，向后兼容
+    # durable=稳定店情(始终注入)；episodic=一次性情景(发生过的事)。
+    # ★ episodic 不靠注入也在场——用户要做的任务相关的一次性情景，本来就在【当前这句话里】
+    #   (例:"有个老顾客小张半个月没来,帮我写挽回话"——小张就在输入里,模型看得到)。
+    #   所以 episodic 只该在【真能判准相关性】时按需注入,判不准就别注入,否则纯噪音串台。
+    durable = [m for m in auto if getattr(m, "type", "") != "episodic"]
+    episodic = [m for m in auto if getattr(m, "type", "") == "episodic"]
     try:
         from services.rag.embedder import get_embedder, cosine
         emb = get_embedder()
         cache_key = _memories_hash(auto)
         q = emb.embed(str(intent))
+
+        def _sim(m):
+            return cosine(q, _get_cached_embedding(emb, m.content or "", cache_key))
         bonus = {"high": 0.10, "medium": 0.0, "low": -0.05}
-        scored = [
-            (cosine(q, _get_cached_embedding(emb, m.content or "", cache_key))
-             + bonus.get(getattr(m, "confidence", "medium"), 0.0), m)
-            for m in auto
-        ]
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return manual + [m for _, m in scored[:cap]]
+        # episodic：只有【语义嵌器(真bge)】才信它的相关性,过下限才注入;
+        #           词面回退嵌器判不准(实测"盘货todo"对"列今日清单"反而比对"做视频"还低)→ 一律不注入,防串台。
+        if getattr(emb, "semantic", False):
+            kept_epi = [m for m in episodic if _sim(m) >= _EPISODIC_RELEVANCE_FLOOR]
+        else:
+            kept_epi = []
+        # durable：≤cap 全留(店情就该一直在场)；多了才按相关性截到 cap，防 context rot
+        if len(durable) <= cap:
+            kept_dur = durable
+        else:
+            kept_dur = sorted(
+                durable,
+                key=lambda m: _sim(m) + bonus.get(getattr(m, "confidence", "medium"), 0.0),
+                reverse=True,
+            )[:cap]
+        return manual + kept_dur + kept_epi
     except Exception:
-        return manual + auto
+        # 嵌入异常(极少)：店情全留；episodic 无法判定相关性 → 不注入(宁缺毋滥防串台)。
+        return manual + durable
 
 
 def format_memories_for_prompt(memories: list[Memory], intent=None) -> str:
