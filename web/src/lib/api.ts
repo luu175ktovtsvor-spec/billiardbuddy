@@ -516,6 +516,11 @@ class ApiClient {
     return this.request<{ job_id: string }>("POST", "/api/v1/studio/edit", input);
   }
 
+  // 阶段4 生成工作室：把一张图做成视频（可配音/多图锁人物/首尾帧），异步出片，返回 job_id
+  studioI2v(input: { first_frame: string; prompt?: string; source_generation_id?: string; ratio?: string; duration?: number; generate_audio?: boolean; image_refs?: string[]; conversation_id?: string | null }) {
+    return this.request<{ job_id: string }>("POST", "/api/v1/studio/i2v", input);
+  }
+
   // 轮询一个 media job 到结束（done/error），onTick 给进度回调。失败/超时抛错。
   async pollMediaJob(id: string, onTick?: (j: MediaJobStatus) => void, timeoutMs = 1_200_000): Promise<MediaJobStatus> {
     const start = Date.now();
