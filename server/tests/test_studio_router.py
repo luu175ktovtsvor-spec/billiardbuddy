@@ -209,3 +209,72 @@ def test_studio_i2v_submits_video_job(monkeypatch):
         assert got.result["urls"] == ["/uploads/videos/v.mp4"]
         assert got.result["is_video"] is True
     asyncio.run(main())
+
+
+# ── 阶段5 /studio/compose 多镜合成(路径解析,真 ffmpeg 在前端 Electron) ──
+
+def test_studio_compose_resolves_ordered_paths(monkeypatch, tmp_path):
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        sid = uuid.uuid4()
+        set_tenant(sid)
+        vdir = tmp_path / "videos"; vdir.mkdir(parents=True)
+        (vdir / "a.mp4").write_bytes(b"AAAA"); (vdir / "b.mp4").write_bytes(b"BBBB")
+        import config as _cfg
+        monkeypatch.setattr(_cfg.settings, "upload_dir", str(tmp_path))
+
+        g1, g2 = uuid.uuid4(), uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed(db, sid)
+            db.add(Generation(id=g1, store_id=sid, type="video", result="/uploads/videos/a.mp4", model_used="m"))
+            db.add(Generation(id=g2, store_id=sid, type="video", result="/uploads/videos/b.mp4", model_used="m"))
+            await db.commit()
+
+            # 给的顺序 [g2,g1] → inputs 必须是 [b.mp4, a.mp4](拼接顺序就是给的顺序)
+            body = studio.StudioComposeIn(generation_ids=[str(g2), str(g1)])
+            out = await studio.studio_compose(body, user=SimpleNamespace(id=uid),
+                                              store=SimpleNamespace(id=sid), db=db)
+            assert out["inputs"] == [str((vdir / "b.mp4").resolve()), str((vdir / "a.mp4").resolve())]
+            assert out["output_url"].startswith("/uploads/videos/composed_") and out["output_url"].endswith(".mp4")
+        set_tenant(None)
+    asyncio.run(main())
+
+
+def test_studio_compose_needs_two():
+    async def main():
+        body = studio.StudioComposeIn(generation_ids=["only-one"])
+        try:
+            await studio.studio_compose(body, user=SimpleNamespace(id=uuid.uuid4()),
+                                        store=SimpleNamespace(id=uuid.uuid4()), db=None)
+            assert False, "少于两段应报错"
+        except AIServiceError:
+            pass
+    asyncio.run(main())
+
+
+def test_studio_compose_blocks_missing_or_cross_store(monkeypatch, tmp_path):
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        sid = uuid.uuid4()
+        set_tenant(sid)
+        import config as _cfg
+        monkeypatch.setattr(_cfg.settings, "upload_dir", str(tmp_path))
+        (tmp_path / "videos").mkdir(parents=True)
+        async with Session() as db:
+            uid = await _seed(db, sid)
+            # 两个 id 都不存在 → 报错(找不到)
+            body = studio.StudioComposeIn(generation_ids=[str(uuid.uuid4()), str(uuid.uuid4())])
+            try:
+                await studio.studio_compose(body, user=SimpleNamespace(id=uid),
+                                            store=SimpleNamespace(id=sid), db=db)
+                assert False, "找不到的视频应报错"
+            except AIServiceError:
+                pass
+        set_tenant(None)
+    asyncio.run(main())

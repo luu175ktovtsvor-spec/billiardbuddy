@@ -58,6 +58,10 @@ class StudioI2vIn(BaseModel):
     conversation_id: str | None = None
 
 
+class StudioComposeIn(BaseModel):
+    generation_ids: list[str]         # 要拼成一条的视频成品(按顺序)
+
+
 def _clamp_count(n) -> int:
     try:
         n = int(n or 1)
@@ -216,3 +220,52 @@ async def studio_i2v(
         conversation_id=conv,
     )
     return {"job_id": job_id}
+
+
+@router.post("/compose")
+async def studio_compose(
+    body: StudioComposeIn,
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+):
+    """多镜合成准备:把多段视频成品按顺序解析成本机路径,交给前端用 Electron ffmpeg(video.js)concat。
+    ffmpeg 在 Electron 主进程跑(后端拿不到它),所以这里只做【路径解析+越界校验】,真拼由前端 IPC 调 video.js。
+    本店作用域:只认本店 type=video 且文件在 uploads/videos 内的成品(挡跨店/越界)。返回 {inputs(有序), output_path, output_url}。"""
+    import uuid as _uuid
+    from pathlib import Path as _Path
+    from sqlalchemy import select as _sel
+    from config import settings as _settings
+    from models.generation import Generation as _G
+
+    raw = [g for g in (body.generation_ids or []) if g]
+    if len(raw) < 2:
+        raise AIServiceError("至少选两段视频才能拼")
+    parsed: list = []
+    for gid in raw:
+        try:
+            parsed.append(_uuid.UUID(str(gid)))
+        except (ValueError, TypeError):
+            raise AIServiceError("视频 id 不对")
+    res = await db.execute(
+        _sel(_G).where(_G.id.in_(parsed), _G.store_id == store.id,
+                       _G.type == "video", _G.is_deleted == False)  # noqa: E712
+    )
+    gens = {g.id: g for g in res.scalars().all()}
+    udir = _Path(_settings.upload_dir).resolve()
+    inputs: list[str] = []
+    for u in parsed:  # 保持用户给的顺序(concat 顺序=拼接顺序)
+        g = gens.get(u)
+        if not g or not g.result:
+            raise AIServiceError("有视频找不到（可能已删，或不是本店的）")
+        p = (udir / str(g.result).removeprefix("/uploads/")).resolve()
+        in_uploads = str(p) == str(udir) or str(p).startswith(str(udir) + "/")
+        if not in_uploads or not p.exists():
+            raise AIServiceError("视频文件不在本应用目录内")
+        inputs.append(str(p))
+    out_name = f"composed_{_uuid.uuid4().hex[:8]}.mp4"
+    return {
+        "inputs": inputs,
+        "output_path": str(udir / "videos" / out_name),
+        "output_url": f"/uploads/videos/{out_name}",
+    }
