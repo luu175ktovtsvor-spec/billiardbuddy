@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { Image as ImageIcon, Wand2, Copy, Download, ThumbsUp, Loader2, RefreshCw, Check, AlertTriangle, Layers } from "lucide-react";
+import { Image as ImageIcon, Wand2, Copy, Download, ThumbsUp, Loader2, RefreshCw, Check, AlertTriangle, Layers, Film } from "lucide-react";
 import { api, type MediaJobStatus } from "@/lib/api";
 
 // react-konva 碰 canvas/window,不能 SSR → dynamic ssr:false(M4)
@@ -23,7 +23,7 @@ const RATIOS = [
 // 风格只是起点、不是牢笼(关键词真拼进提示词,见后端 poster_styles)
 const STYLES = ["清新", "高级感", "活力满满", "港风", "ins 风", "简约", "国潮", "暖色温馨"];
 
-type Shot = { url: string; generationId?: string; ratio: string };
+type Shot = { url: string; generationId?: string; ratio: string; isVideo?: boolean };
 
 async function blobToBase64(blob: Blob): Promise<string> {
   const buf = await blob.arrayBuffer();
@@ -44,6 +44,8 @@ export default function StudioPage() {
   const [history, setHistory] = useState<Shot[]>([]);
   const [editText, setEditText] = useState("");
   const [maskMode, setMaskMode] = useState(false);   // 局部重绘模式
+  const [vDuration, setVDuration] = useState(5);     // 视频时长(秒)
+  const [vAudio, setVAudio] = useState(false);       // 视频配音
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -62,8 +64,9 @@ export default function StudioPage() {
       const urls = (done.result?.urls as string[] | undefined) || [];
       const ids = (done.result?.generation_ids as string[] | undefined) || [];
       const r = (done.result?.ratio as string | undefined) || keepRatio;
-      if (!urls.length) throw new Error("这次没出来图，换个说法再试一次。");
-      const shots: Shot[] = urls.map((u, i) => ({ url: u, generationId: ids[i], ratio: r }));
+      if (!urls.length) throw new Error("这次没出来，换个说法再试一次。");
+      const isVideo = !!done.result?.is_video;
+      const shots: Shot[] = urls.map((u, i) => ({ url: u, generationId: ids[i], ratio: r, isVideo }));
       const prev = currentRef.current;
       // 上一张 + 多出来的变体都进历史可回看(无嵌套 setState)
       setHistory((h) => [...(prev ? [prev] : []), ...shots.slice(1), ...h].slice(0, 12));
@@ -107,6 +110,13 @@ export default function StudioPage() {
       setError(e instanceof Error ? e.message : "局部重绘失败，稍后再试。");
     }
   };
+  // 做成视频:把当前这张图动起来(人确认=点这个按钮 + 一次确认)。复用"基于这张改"输入框当运镜描述。
+  const onMakeVideo = () => {
+    if (!current || current.isVideo || busy) return;
+    if (typeof window !== "undefined" && !window.confirm("做成视频要等几分钟、也比较费，确定吗？")) return;
+    const ff = current.url, gid = current.generationId, rr = current.ratio, motion = editText.trim() || undefined;
+    void runJob(() => api.studioI2v({ first_frame: ff, source_generation_id: gid, prompt: motion, ratio: rr, duration: vDuration, generate_audio: vAudio }), rr);
+  };
   const onCopy = async () => {
     if (!current) return;
     try {
@@ -121,7 +131,7 @@ export default function StudioPage() {
     if (!current?.url || !window.electron?.files) return;
     try {
       const blob = await (await fetch(current.url)).blob();
-      await window.electron.files.save({ defaultName: "工作室作品.png", base64: await blobToBase64(blob), title: "保存图片" });
+      await window.electron.files.save({ defaultName: current.isVideo ? "工作室视频.mp4" : "工作室作品.png", base64: await blobToBase64(blob), title: current.isVideo ? "保存视频" : "保存图片" });
     } catch {
       setError("保存没成功，稍后再试。");
     }
@@ -200,7 +210,11 @@ export default function StudioPage() {
               <div className="text-[11.5px]">出图大概要几十秒到几分钟，做好了直接显示在这。</div>
             </div>
           ) : current ? (
-            <img src={current.url} alt="生成结果" className="max-h-full max-w-full rounded-xl object-contain shadow-sm" />
+            current.isVideo ? (
+              <video src={current.url} controls autoPlay loop className="max-h-full max-w-full rounded-xl shadow-sm" />
+            ) : (
+              <img src={current.url} alt="生成结果" className="max-h-full max-w-full rounded-xl object-contain shadow-sm" />
+            )
           ) : (
             <div className="flex flex-col items-center gap-2 text-[#b0b0b5] dark:text-[#56585f]">
               <ImageIcon className="h-10 w-10" />
@@ -213,6 +227,7 @@ export default function StudioPage() {
         <aside className="flex w-[280px] shrink-0 flex-col gap-4 overflow-y-auto border-l border-black/[0.06] p-4 dark:border-white/[0.06]">
           {current ? (
             <>
+              {!current.isVideo && (<>
               <div>
                 <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">基于这张改（就地改，不用重头说）</div>
                 <textarea
@@ -246,10 +261,30 @@ export default function StudioPage() {
                   {RATIOS.map((r) => <button key={r.id} type="button" disabled={busy} onClick={() => onChangeRatio(r.id)} className={chip(current.ratio === r.id)}>{r.label}</button>)}
                 </div>
               </div>
+              {/* 做成视频(图生视频):时长 + 配音 + 一次确认 */}
+              <div>
+                <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">做成视频</div>
+                <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+                  {[5, 8, 10].map((d) => <button key={d} type="button" onClick={() => setVDuration(d)} className={chip(vDuration === d)}>{d} 秒</button>)}
+                  <button type="button" onClick={() => setVAudio((v) => !v)} className={chip(vAudio)}>{vAudio ? "带配音" : "无配音"}</button>
+                </div>
+                <button
+                  type="button"
+                  onClick={onMakeVideo}
+                  disabled={busy || !current.generationId}
+                  title="把这张图动起来，做成几秒短视频（要等几分钟）"
+                  className="flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-[#007AFF]/30 bg-[#007AFF]/[0.06] text-[13px] font-medium text-[#007AFF] transition hover:bg-[#007AFF]/[0.12] active:scale-[0.99] disabled:opacity-50"
+                >
+                  <Film className="h-3.5 w-3.5" /> 让这张动起来（做成视频）
+                </button>
+              </div>
+              </>)}
               <div className="flex flex-wrap gap-1.5">
+                {!current.isVideo && (
                 <button type="button" onClick={onCopy} className="flex items-center gap-1 rounded-md border border-black/[0.08] bg-white px-2.5 py-1.5 text-[12px] font-medium text-[#3a3a3c] transition hover:bg-black/[0.03] active:scale-[0.97] dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-[#c8cace]">
                   {copied ? <><Check className="h-3.5 w-3.5 text-[#10a37f]" /> 已复制</> : <><Copy className="h-3.5 w-3.5" /> 复制图片</>}
                 </button>
+                )}
                 <button type="button" onClick={onSave} className="flex items-center gap-1 rounded-md border border-black/[0.08] bg-white px-2.5 py-1.5 text-[12px] font-medium text-[#3a3a3c] transition hover:bg-black/[0.03] active:scale-[0.97] dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-[#c8cace]">
                   <Download className="h-3.5 w-3.5" /> 保存到本机
                 </button>
@@ -263,7 +298,9 @@ export default function StudioPage() {
                   <div className="grid grid-cols-3 gap-1.5">
                     {history.map((h, i) => (
                       <button key={i} type="button" onClick={() => !busy && setCurrent(h)} title="点回到这一版" className="overflow-hidden rounded-md border border-black/[0.08] transition hover:border-[#10a37f]/50 dark:border-white/[0.08]">
-                        <img src={h.url} alt={`版本 ${i + 1}`} className="aspect-square w-full object-cover" />
+                        {h.isVideo
+                          ? <video src={h.url} muted className="aspect-square w-full object-cover" />
+                          : <img src={h.url} alt={`版本 ${i + 1}`} className="aspect-square w-full object-cover" />}
                       </button>
                     ))}
                   </div>
