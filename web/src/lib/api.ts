@@ -521,6 +521,12 @@ class ApiClient {
     return this.request<{ job_id: string }>("POST", "/api/v1/studio/i2v", input);
   }
 
+  // 阶段5 生成工作室：多镜合成准备——多段视频成品 id（有序）→ 本机路径，交前端 Electron ffmpeg(video.js) concat
+  studioCompose(generation_ids: string[]) {
+    return this.request<{ inputs: string[]; output_path: string; output_url: string }>(
+      "POST", "/api/v1/studio/compose", { generation_ids });
+  }
+
   // 轮询一个 media job 到结束（done/error），onTick 给进度回调。失败/超时抛错。
   async pollMediaJob(id: string, onTick?: (j: MediaJobStatus) => void, timeoutMs = 1_200_000): Promise<MediaJobStatus> {
     const start = Date.now();
