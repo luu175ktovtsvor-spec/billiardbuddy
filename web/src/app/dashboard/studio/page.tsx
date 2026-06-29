@@ -7,8 +7,12 @@
  * 治"改不动图":基于当前这张就地改(原图当底图),不跳回输入框重掷。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { Image as ImageIcon, Wand2, Copy, Download, ThumbsUp, Loader2, RefreshCw, Check, AlertTriangle, Layers } from "lucide-react";
 import { api, type MediaJobStatus } from "@/lib/api";
+
+// react-konva 碰 canvas/window,不能 SSR → dynamic ssr:false(M4)
+const StudioMaskCanvas = dynamic(() => import("@/components/desktop/studio-mask-canvas"), { ssr: false });
 
 const RATIOS = [
   { id: "9:16", label: "竖版 9:16" },
@@ -39,6 +43,7 @@ export default function StudioPage() {
   const [current, setCurrent] = useState<Shot | null>(null);
   const [history, setHistory] = useState<Shot[]>([]);
   const [editText, setEditText] = useState("");
+  const [maskMode, setMaskMode] = useState(false);   // 局部重绘模式
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -86,6 +91,20 @@ export default function StudioPage() {
     setRatio(r);
     if (current?.generationId && !busy) {
       void runJob(() => api.studioEdit({ prompt: "保持画面主体和风格不变，换成这个画幅比例重新构图", source_generation_id: current.generationId as string, ratio: r }), r);
+    }
+  };
+  // 局部重绘:把涂出来的 mask 存临时文件 → /studio/edit 带 mask_path 只改涂的那块
+  const onApplyMask = async (maskBase64: string, instruction: string) => {
+    if (!current?.generationId) return;
+    if (!window.electron?.files?.saveTemp) { setError("局部重绘需要桌面版（要把蒙版存成临时文件）。"); return; }
+    try {
+      const saved = await window.electron.files.saveTemp({ base64: maskBase64, ext: "png" });
+      if (!saved.ok || !saved.path) throw new Error("蒙版没存成功，重试一下。");
+      const gid = current.generationId, rr = current.ratio, maskPath = saved.path;
+      setMaskMode(false);
+      void runJob(() => api.studioEdit({ prompt: instruction, source_generation_id: gid, mask_path: maskPath, ratio: rr }), rr);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "局部重绘失败，稍后再试。");
     }
   };
   const onCopy = async () => {
@@ -172,7 +191,9 @@ export default function StudioPage() {
 
         {/* 中·预览 */}
         <main className="flex min-w-0 flex-1 items-center justify-center overflow-auto bg-[#fafafa] p-6 dark:bg-[#0b0c0e]">
-          {busy ? (
+          {maskMode && current && !busy ? (
+            <StudioMaskCanvas imageUrl={current.url} busy={busy} onApply={onApplyMask} onCancel={() => setMaskMode(false)} />
+          ) : busy ? (
             <div className="flex flex-col items-center gap-3 text-[#86868b] dark:text-[#6e7077]">
               <div className="h-[320px] w-[240px] animate-pulse rounded-xl bg-black/[0.05] dark:bg-white/[0.05]" />
               <div className="flex items-center gap-2 text-[13px]"><Loader2 className="h-4 w-4 animate-spin text-[#10a37f]" />{stage || "正在出图…"}</div>
@@ -207,7 +228,16 @@ export default function StudioPage() {
                   disabled={busy || !editText.trim()}
                   className="mt-1.5 flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-[#10a37f] text-[13px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.99] disabled:opacity-50"
                 >
-                  <Wand2 className="h-3.5 w-3.5" /> 改这张
+                  <Wand2 className="h-3.5 w-3.5" /> 改这张（整张）
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMaskMode(true)}
+                  disabled={busy || !current.generationId}
+                  title="只改图上你圈出来的那一块"
+                  className="mt-1.5 flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-[#10a37f]/30 bg-[#10a37f]/[0.06] text-[13px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/[0.12] active:scale-[0.99] disabled:opacity-50"
+                >
+                  <Layers className="h-3.5 w-3.5" /> 圈一块局部改
                 </button>
               </div>
               <div>
