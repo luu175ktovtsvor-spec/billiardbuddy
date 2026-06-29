@@ -67,6 +67,26 @@ const bundledSkills = path.join(SERVER, "skills");
 if (fs.existsSync(bundledSkills)) addData.push(`--add-data=${bundledSkills}${sep}skills`);
 const bundledStyles = path.join(SERVER, "output-styles");
 if (fs.existsSync(bundledStyles)) addData.push(`--add-data=${bundledStyles}${sep}output-styles`);
+// bge 语义模型(~90MB)：构建期下到 .fastembed-model/fastembed_cache/，--add-data 进包根的
+// fastembed_cache/。装机后 embedder.py 据 sys._MEIPASS 找它、离线直接语义嵌入(不联网下载)。
+const fembedCache = ensureFastembedModel();
+if (fembedCache) addData.push(`--add-data=${fembedCache}${sep}fastembed_cache`);
+
+function ensureFastembedModel() {
+  // 构建期把 bge-small-zh 语义模型下到 .fastembed-model/fastembed_cache/(gitignore)，供 --add-data 进包。
+  // 已下过就复用(下一次构建不重下)。下载失败返回 null → 不打模型，运行时自动回退词面嵌器(不崩)。
+  const cacheDir = path.join(__dirname, "..", ".fastembed-model", "fastembed_cache");
+  const hasModel = () => fs.existsSync(cacheDir) &&
+    fs.readdirSync(cacheDir).some((d) => d.toLowerCase().includes("bge-small-zh"));
+  if (hasModel()) { console.log("② bge 语义模型已就绪(复用) →", cacheDir); return cacheDir; }
+  fs.mkdirSync(cacheDir, { recursive: true });
+  console.log("② 下载 bge-small-zh 语义模型(~90MB) →", cacheDir, "…");
+  const r = spawnSync("uv", ["run", "python", "-c",
+    `from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-zh-v1.5', cache_dir=r'${cacheDir}'); print('bge ready')`],
+    { cwd: SERVER, stdio: "inherit" });
+  if (r.status !== 0 || !hasModel()) { console.error("⚠️ bge 模型下载失败，本次不打包模型(运行时回退词面嵌器)"); return null; }
+  return cacheDir;
+}
 
 function genFernetKey() {
   // 用后端环境的 cryptography 生成一个 Fernet key（与解密同库，避免格式不匹配）
@@ -129,10 +149,11 @@ function runPyInstaller() {
     "--collect-all", "mcp",
     "--collect-all", "jsonschema",
     "--collect-all", "jsonschema_specifications",
-    // 明确排除本地语义模型相关重型库：lazy import、运行时缺它会优雅回退到零依赖词面嵌入。
-    // 不打进包 → 包更小、纯离线可用、不联网下 90MB 模型（语义"按意思找料"关闭，其余功能不受影响）。
-    "--exclude-module", "fastembed",
-    "--exclude-module", "onnxruntime",
+    // 语义检索(店脑/知识"按意思找料")：把 fastembed + onnxruntime 收进包，bge 模型(~90MB)经
+    // 上面 addData 预打包 → 装机后离线直接语义嵌入(不再退化成词面匹配)。这俩库内部大量动态
+    // import + 原生动态库，必须 --collect-all 才收全。torch 不需要(fastembed 用 onnxruntime 推理)继续排除。
+    "--collect-all", "fastembed",
+    "--collect-all", "onnxruntime",
     "--exclude-module", "torch",
     ...addData,
     ENTRY,

@@ -92,3 +92,4 @@ desktop/e2e-pw/test-results-studio/
 # 验收报告写仓库外 ~/Desktop/球房-验收报告/,仓库内出现的不提交
 球房-验收报告/
 desktop/e2e-pw/test-results-scenarios/
+desktop/.fastembed-model/
