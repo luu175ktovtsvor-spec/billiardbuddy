@@ -117,6 +117,24 @@ export default function StudioPage() {
     const ff = current.url, gid = current.generationId, rr = current.ratio, motion = editText.trim() || undefined;
     void runJob(() => api.studioI2v({ first_frame: ff, source_generation_id: gid, prompt: motion, ratio: rr, duration: vDuration, generate_audio: vAudio }), rr);
   };
+  // 多镜合成:把当前+历史里有来源记录的视频片段拼成一条(真 ffmpeg 在本机 Electron 跑)
+  const videoShots = [current, ...history].filter((s): s is Shot => !!s && !!s.isVideo && !!s.generationId);
+  const onCompose = async () => {
+    if (videoShots.length < 2 || busy) return;
+    if (!window.electron?.video?.run) { setError("拼视频需要桌面版（用本机的 ffmpeg）。"); return; }
+    setBusy(true); setError(null); setStage("正在把几段视频拼成一条…");
+    try {
+      const plan = await api.studioCompose(videoShots.map((s) => s.generationId as string));
+      await window.electron.video.run("concat", { inputs: plan.inputs, output: plan.output_path });
+      const prev = currentRef.current;
+      setHistory((h) => [...(prev ? [prev] : []), ...h].slice(0, 12));
+      setCurrent({ url: plan.output_url, ratio: current?.ratio || "9:16", isVideo: true });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "拼接没成功，稍后再试。");
+    } finally {
+      setBusy(false); setStage("");
+    }
+  };
   const onCopy = async () => {
     if (!current) return;
     try {
@@ -292,6 +310,17 @@ export default function StudioPage() {
                   <ThumbsUp className="h-3.5 w-3.5" /> 好评
                 </button>
               </div>
+              {videoShots.length >= 2 && (
+                <button
+                  type="button"
+                  onClick={onCompose}
+                  disabled={busy}
+                  title="把做过的几段视频按顺序拼成一条(在本机用 ffmpeg,不上传)"
+                  className="flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-[#007AFF]/30 bg-[#007AFF]/[0.06] text-[13px] font-medium text-[#007AFF] transition hover:bg-[#007AFF]/[0.12] active:scale-[0.99] disabled:opacity-50"
+                >
+                  <Film className="h-3.5 w-3.5" /> 把这 {videoShots.length} 段拼成一条
+                </button>
+              )}
               {history.length > 0 && (
                 <div>
                   <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">改过的版本</div>
