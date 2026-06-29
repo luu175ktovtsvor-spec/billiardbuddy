@@ -70,6 +70,22 @@ def _resolve_first_frame(first_frame: str | None, allow_paths: set[str] | None =
     return f"data:{mime};base64,{b64}"
 
 
+# 视频模型出于隐私会拦"含真人脸的输入图"(火山 Seedance: InputImageSensitiveContentDetected.
+# PrivacyInformation)。老板对着助教美图点"做成视频"必撞——把原始英文报错翻成大白话 + 给退路。
+_REAL_PERSON_MARKERS = ("InputImageSensitiveContentDetected", "PrivacyInformation", "real person", "may contain")
+
+
+def _humanize_video_error(msg: str) -> str | None:
+    """已知 provider 报错翻成大白话+退路；认不出返回 None(原样抛)。"""
+    if any(k in (msg or "") for k in _REAL_PERSON_MARKERS):
+        return (
+            "这张图里有真人脸，视频模型出于隐私保护不让用它生成视频。"
+            "建议：① 用没有真人脸的图来做视频（海报、球房环境、桌台/灯光特写都行）；"
+            "② 要做真人（比如助教本人）的视频，得走真人授权或换个允许真人的视频模型，可以找管理员设置。"
+        )
+    return None
+
+
 async def generate_video(
     *,
     db: AsyncSession,
@@ -105,12 +121,18 @@ async def generate_video(
                 ratio, resolution, duration, bool(first_frame_url), len(resolved_refs), generate_audio, model)
 
     # 提交 + 轮询（耗时 1-8 分钟；超时由 settings.video_timeout 兜底）
-    video_url = await provider.generate_video(
-        prompt=prompt, model=model or settings.video_model_name,
-        ratio=ratio, resolution=resolution, duration=int(duration or 5),
-        first_frame_url=first_frame_url, last_frame_url=last_frame_url,
-        image_refs=resolved_refs or None, generate_audio=generate_audio,
-    )
+    try:
+        video_url = await provider.generate_video(
+            prompt=prompt, model=model or settings.video_model_name,
+            ratio=ratio, resolution=resolution, duration=int(duration or 5),
+            first_frame_url=first_frame_url, last_frame_url=last_frame_url,
+            image_refs=resolved_refs or None, generate_audio=generate_audio,
+        )
+    except Exception as e:
+        friendly = _humanize_video_error(str(e))
+        if friendly:
+            raise AIServiceError(friendly) from e
+        raise
     # 即时下载落盘（远端 url 短期有效）
     video_bytes = await fetch_video_bytes(video_url)
 
