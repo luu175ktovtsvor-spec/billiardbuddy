@@ -93,3 +93,7 @@ desktop/e2e-pw/test-results-studio/
 球房-验收报告/
 desktop/e2e-pw/test-results-scenarios/
 desktop/.fastembed-model/
+
+# 本地 whisper 模型权重(大·打包时单独打进包,不进git)
+# 注:别用 server/models/(那是 ORM 模型包·源码),用独立 ml_models/
+server/ml_models/

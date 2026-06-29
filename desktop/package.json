@@ -32,22 +32,34 @@
       {
         "from": "publisher",
         "to": "publisher",
-        "filter": ["**/*", "!**/__pycache__/**", "!**/*.pyc", "!**/.venv/**", "!**/cookies/**"]
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc",
+          "!**/.venv/**",
+          "!**/cookies/**"
+        ]
       },
       {
         "from": "resources/publisher-bin",
         "to": "publisher-bin",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "resources/backend",
         "to": "backend",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "resources/frontend",
         "to": "frontend",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "bundled.env",
@@ -69,13 +81,17 @@
       }
     ],
     "mac": {
-      "target": ["dmg"],
+      "target": [
+        "dmg"
+      ],
       "category": "public.app-category.business",
       "hardenedRuntime": false,
       "identity": null
     },
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "artifactName": "${productName}-Setup-${version}.${ext}"
     },
     "nsis": {
@@ -87,7 +103,9 @@
       "shortcutName": "本机 AI 助手"
     },
     "linux": {
-      "target": ["AppImage"]
+      "target": [
+        "AppImage"
+      ]
     }
   }
 }
