@@ -324,7 +324,8 @@ async def studio_storyboard(
     from services.ai.base import TextRequest
 
     provider = ProviderFactory.get_text_provider_for_store(store)
-    resp = await provider.generate(TextRequest(prompt=_storyboard_prompt(body.theme, n, body.subject), max_tokens=1200))
+    # thinking=False:要的是直接的 JSON 输出;开思考(MiMo 默认开)会把额度耗在 reasoning_content、content 反而空。
+    resp = await provider.generate(TextRequest(prompt=_storyboard_prompt(body.theme, n, body.subject), max_tokens=1200, thinking=False))
     shots, caption = _parse_storyboard(getattr(resp, "content", "") or "", n)
     check_generation_safety(" ".join(shots), caption)        # H1(输出:模型可能跑偏)
     return {"shots": shots, "caption": caption}
