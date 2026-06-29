@@ -527,6 +527,11 @@ class ApiClient {
       "POST", "/api/v1/studio/compose", { generation_ids });
   }
 
+  // 阶段5 助教一条龙：LLM 分镜 + 配文案（主题 → N 个分镜画面描述 + 一条社媒文案）
+  studioStoryboard(input: { theme: string; shots?: number; subject?: string }) {
+    return this.request<{ shots: string[]; caption: string }>("POST", "/api/v1/studio/storyboard", input);
+  }
+
   // 轮询一个 media job 到结束（done/error），onTick 给进度回调。失败/超时抛错。
   async pollMediaJob(id: string, onTick?: (j: MediaJobStatus) => void, timeoutMs = 1_200_000): Promise<MediaJobStatus> {
     const start = Date.now();

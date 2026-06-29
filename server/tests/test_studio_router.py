@@ -278,3 +278,46 @@ def test_studio_compose_blocks_missing_or_cross_store(monkeypatch, tmp_path):
                 pass
         set_tenant(None)
     asyncio.run(main())
+
+
+# ── 阶段5 助教一条龙:/studio/storyboard(LLM 分镜+文案) ──
+
+def test_studio_storyboard_parses_shots_and_caption(monkeypatch):
+    async def main():
+        class FakeProvider:
+            async def generate(self, req):
+                return SimpleNamespace(content='好的。{"shots":["镜头1:缓缓推进台球桌","镜头2:黑八入袋特写","镜头3:全景欢呼"],"caption":"今晚台球之夜，来战！"}')
+        monkeypatch.setattr("services.ai.factory.ProviderFactory.get_text_provider_for_store",
+                            classmethod(lambda cls, store: FakeProvider()))
+        body = studio.StudioStoryboardIn(theme="台球之夜", shots=3, subject="台球助教")
+        out = await studio.studio_storyboard(body, user=SimpleNamespace(id=uuid.uuid4()),
+                                             store=SimpleNamespace(id=uuid.uuid4()), db=None)
+        assert out["shots"] == ["镜头1:缓缓推进台球桌", "镜头2:黑八入袋特写", "镜头3:全景欢呼"]
+        assert "台球之夜" in out["caption"]
+    asyncio.run(main())
+
+
+def test_studio_storyboard_blocks_redline_theme():
+    async def main():
+        body = studio.StudioStoryboardIn(theme="性交易上门服务短片")
+        try:
+            await studio.studio_storyboard(body, user=SimpleNamespace(id=uuid.uuid4()),
+                                           store=SimpleNamespace(id=uuid.uuid4()), db=None)
+            assert False, "红线主题应被拦"
+        except AIServiceError:
+            pass
+    asyncio.run(main())
+
+
+def test_studio_storyboard_fallback_line_split(monkeypatch):
+    async def main():
+        class FakeProvider:
+            async def generate(self, req):
+                return SimpleNamespace(content="1. 推镜头到台球桌全景\n2. 特写黑八稳稳入袋\n3. 全场起立欢呼")
+        monkeypatch.setattr("services.ai.factory.ProviderFactory.get_text_provider_for_store",
+                            classmethod(lambda cls, store: FakeProvider()))
+        body = studio.StudioStoryboardIn(theme="台球", shots=3)
+        out = await studio.studio_storyboard(body, user=SimpleNamespace(id=uuid.uuid4()),
+                                             store=SimpleNamespace(id=uuid.uuid4()), db=None)
+        assert len(out["shots"]) == 3 and "台球桌" in out["shots"][0]  # 非 JSON → 按行兜底
+    asyncio.run(main())

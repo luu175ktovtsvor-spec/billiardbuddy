@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { Image as ImageIcon, Wand2, Copy, Download, ThumbsUp, Loader2, RefreshCw, Check, AlertTriangle, Layers, Film } from "lucide-react";
+import { Image as ImageIcon, Wand2, Copy, Download, ThumbsUp, Loader2, RefreshCw, Check, AlertTriangle, Layers, Film, Sparkles } from "lucide-react";
 import { api, type MediaJobStatus } from "@/lib/api";
 
 // react-konva 碰 canvas/window,不能 SSR → dynamic ssr:false(M4)
@@ -46,6 +46,8 @@ export default function StudioPage() {
   const [maskMode, setMaskMode] = useState(false);   // 局部重绘模式
   const [vDuration, setVDuration] = useState(5);     // 视频时长(秒)
   const [vAudio, setVAudio] = useState(false);       // 视频配音
+  const [filmTheme, setFilmTheme] = useState("");    // 助教一条龙:短片主题
+  const [caption, setCaption] = useState("");        // 助教一条龙:配文案
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -131,6 +133,38 @@ export default function StudioPage() {
       setCurrent({ url: plan.output_url, ratio: current?.ratio || "9:16", isVideo: true });
     } catch (e) {
       setError(e instanceof Error ? e.message : "拼接没成功，稍后再试。");
+    } finally {
+      setBusy(false); setStage("");
+    }
+  };
+  // 助教一条龙:当前图当主体+首帧 → LLM 分镜 → 逐镜 i2v(同一张当锁人物参考+配音)→ 拼成一条 + 配文案
+  const onAutoFilm = async () => {
+    if (!current || current.isVideo || busy || !current.generationId) return;
+    if (!filmTheme.trim()) { setError("先填一个短片主题/感觉。"); return; }
+    if (!window.electron?.video?.run) { setError("一条龙合成需要桌面版（用本机 ffmpeg 拼接）。"); return; }
+    setBusy(true); setError(null); setCaption("");
+    const ff = current.url, gid = current.generationId, rr = current.ratio;
+    try {
+      setStage("正在写分镜…");
+      const sb = await api.studioStoryboard({ theme: filmTheme.trim(), shots: 3, subject: "门店真实助教本人" });
+      const ids: string[] = [];
+      for (let i = 0; i < sb.shots.length; i++) {
+        setStage(`第 ${i + 1}/${sb.shots.length} 镜出片中…（每镜几分钟）`);
+        const { job_id } = await api.studioI2v({ first_frame: ff, source_generation_id: gid, image_refs: [ff], prompt: sb.shots[i], ratio: rr, generate_audio: true });
+        const done = await api.pollMediaJob(job_id, (j) => setStage(`第 ${i + 1}/${sb.shots.length} 镜：${j.stage || "出片中…"}`));
+        const g = (done.result?.generation_ids as string[] | undefined)?.[0];
+        if (g) ids.push(g);
+      }
+      if (ids.length < 2) throw new Error("没出够片段拼接，稍后再试。");
+      setStage("正在把几镜拼成一条…");
+      const plan = await api.studioCompose(ids);
+      await window.electron.video.run("concat", { inputs: plan.inputs, output: plan.output_path });
+      const prev = currentRef.current;
+      setHistory((h) => [...(prev ? [prev] : []), ...h].slice(0, 12));
+      setCurrent({ url: plan.output_url, ratio: rr, isVideo: true });
+      setCaption(sb.caption || "");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "一条龙没成功，稍后再试。");
     } finally {
       setBusy(false); setStage("");
     }
@@ -296,7 +330,35 @@ export default function StudioPage() {
                   <Film className="h-3.5 w-3.5" /> 让这张动起来（做成视频）
                 </button>
               </div>
+              {/* 助教短片一条龙:主题 → LLM 分镜 → 逐镜 i2v(同一张当锁人物参考) → 拼成一条 + 配文案 */}
+              <div>
+                <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">助教短片（一条龙）</div>
+                <input
+                  value={filmTheme}
+                  onChange={(e) => setFilmTheme(e.target.value)}
+                  placeholder="主题/感觉，比如：台球之夜 vibe、咖啡馆日常"
+                  className="mb-1.5 w-full rounded-lg border border-black/[0.08] bg-black/[0.02] px-3 py-2 text-[13px] outline-none transition placeholder:text-[#b0b0b5] focus:border-[#10a37f]/50 dark:border-white/[0.08] dark:bg-white/[0.03] dark:placeholder:text-[#56585f]"
+                />
+                <button
+                  type="button"
+                  onClick={onAutoFilm}
+                  disabled={busy || !current.generationId || !filmTheme.trim()}
+                  title="用这张当主体：自动写分镜→逐镜出片（锁同一个人）→拼成一条短片+配文案（要等十几分钟）"
+                  className="flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-[#007AFF]/30 bg-[#007AFF]/[0.06] text-[13px] font-medium text-[#007AFF] transition hover:bg-[#007AFF]/[0.12] active:scale-[0.99] disabled:opacity-50"
+                >
+                  <Sparkles className="h-3.5 w-3.5" /> 一键生成助教短片
+                </button>
+              </div>
               </>)}
+              {caption && (
+                <div className="rounded-lg border border-[#10a37f]/20 bg-[#10a37f]/[0.06] p-2.5">
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="text-[11.5px] font-medium text-[#10a37f]">配文案</span>
+                    <button type="button" onClick={() => { void navigator.clipboard?.writeText(caption); }} className="text-[11px] text-[#10a37f] hover:underline">复制</button>
+                  </div>
+                  <div className="text-[12.5px] leading-relaxed text-[#3a3a3c] dark:text-[#c8cace]">{caption}</div>
+                </div>
+              )}
               <div className="flex flex-wrap gap-1.5">
                 {!current.isVideo && (
                 <button type="button" onClick={onCopy} className="flex items-center gap-1 rounded-md border border-black/[0.08] bg-white px-2.5 py-1.5 text-[12px] font-medium text-[#3a3a3c] transition hover:bg-black/[0.03] active:scale-[0.97] dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-[#c8cace]">
