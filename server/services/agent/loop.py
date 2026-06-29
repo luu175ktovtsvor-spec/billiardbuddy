@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 
 from config import settings
@@ -112,6 +113,57 @@ def _finalize_text(text: str, ctx) -> str:
 # 循环退出原因（命名常量，值保持稳定——落库/前端/测试据此判断；不要随意改字面值）。
 _STOP_FINAL = "final"          # 模型不再调工具，收敛到最终答复
 _STOP_MAX_TURNS = "max_turns"  # 达到 max_turns 兜底强制收尾
+_STOP_TIMEOUT = "timeout"      # 模型(网关)迟迟不响应，墙钟兜底友好收尾
+
+# 模型【首片】墙钟兜底（秒）：上游(网关/模型)连不上 / 读超时 / 重试+failover 打转，迟迟不吐首个 token →
+# 到点掐断、给一段友好收尾，绝不让对话无限期挂住。实测网关抽风时单请求"重试×failover"累计可达十几分钟
+# （owner 真机：做视频转 1003s 不出确认卡，根因就是文字模型卡在这一步）。取值要宽到容下正常连接 + 一两次
+# 退避重试（provider 自身 60s 读超时），又不至于让用户干等太久。**只管"首片到没到"**——首片一到说明流已通，
+# 之后交给 provider 自带的逐片 idle watchdog，不再受此限。可经 DESKTOP_MODEL_CALL_TIMEOUT 覆盖。
+try:
+    _MODEL_CALL_BUDGET = float(os.environ.get("DESKTOP_MODEL_CALL_TIMEOUT") or 150)
+except (TypeError, ValueError):
+    _MODEL_CALL_BUDGET = 150.0
+
+# 首片超时给用户的友好收尾（别甩"timeout/网关"黑话；指条退路：重试 or 去工作室）。
+_MODEL_TIMEOUT_FALLBACK = (
+    "这次 AI 服务没及时响应（可能是网络或模型服务在抖），先停下了、没让你一直干等。"
+    "稍等一下重试通常就好；要做图 / 视频也可以去「生成工作室」，那边是后台慢慢出、不会卡住对话。"
+)
+
+
+class _ModelStallError(Exception):
+    """模型首片墙钟到点仍无响应——内部信号，由循环捕获转成友好收尾(_STOP_TIMEOUT)，不外泄。"""
+
+
+async def _first_token_bounded(agen):
+    """给上游流的【首个 token】加墙钟兜底(_MODEL_CALL_BUDGET)：迟迟不吐首片 → 抛 _ModelStallError。
+    首片到了说明流已通，之后透传（逐片 idle 由 provider 自带 watchdog 兜，不在这儿重复设）。
+    超时时尽力 aclose 上游生成器（关掉底层 httpx 流），关不动也不卡住兜底。"""
+    deadline = time.monotonic() + _MODEL_CALL_BUDGET
+    first = True
+    while True:
+        if first:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise _ModelStallError()
+            try:
+                tok = await asyncio.wait_for(agen.__anext__(), timeout=remaining)
+            except StopAsyncIteration:
+                return
+            except (asyncio.TimeoutError, TimeoutError) as e:
+                try:
+                    await asyncio.wait_for(agen.aclose(), timeout=1.0)
+                except Exception:
+                    pass
+                raise _ModelStallError() from e
+            first = False
+        else:
+            try:
+                tok = await agen.__anext__()
+            except StopAsyncIteration:
+                return
+        yield tok
 
 # 单个工具结果回灌给模型的字符上限（借鉴 cc-haha maxResultSizeChars）：超出则截断 + 提示，
 # 护住上下文窗口与 BYOK token 成本。只作用于"喂回模型推理"的查询/读取类结果；成品不截断。
@@ -445,9 +497,12 @@ async def _generate_with_vision_degrade(provider, request, messages, ctx):
     带图请求若报错 且 错误像"不支持图片"（看 provider_error 里的 image_url/expected text 等）
     且 messages 里确实有图 → 把所有多模态 content 去图成纯文字（就地改共享 list，后续轮也不再带图）→
     用纯文字重试一次，并置 ctx.vision_degraded=True（拼最终答复处据此加温和提示）。
-    其它错误 / 本就没图 / 重试仍失败 → 原样抛出（不吞错，行为与原来一致）。"""
+    其它错误 / 本就没图 / 重试仍失败 → 原样抛出（不吞错，行为与原来一致）。
+    模型迟迟不响应（_MODEL_CALL_BUDGET 到点）→ _ModelStallError，交循环转友好收尾（不无限挂住）。"""
     try:
-        return await provider.generate(request)
+        return await asyncio.wait_for(provider.generate(request), timeout=_MODEL_CALL_BUDGET)
+    except (asyncio.TimeoutError, TimeoutError) as e:
+        raise _ModelStallError() from e
     except Exception as e:
         if (ctx is not None
                 and looks_like_vision_error(e)
@@ -455,7 +510,10 @@ async def _generate_with_vision_degrade(provider, request, messages, ctx):
                 and strip_images_from_messages(messages)):
             ctx.vision_degraded = True
             logger.info("文字模型疑似不支持图片(%s)，已去图改纯文字重试一次", type(e).__name__)
-            return await provider.generate(request)
+            try:
+                return await asyncio.wait_for(provider.generate(request), timeout=_MODEL_CALL_BUDGET)
+            except (asyncio.TimeoutError, TimeoutError) as e2:
+                raise _ModelStallError() from e2
         raise
 
 
@@ -464,12 +522,16 @@ async def _vision_degrade_stream(provider, request, messages, ctx, **sinks):
 
     与同步版同理：第三方端点对【带图却不支持】的请求在【建流时】就抛 400（DeepSeekProvider 里 create() 先 await、
     报错发生在任何 token 之前）——故只要还【没吐过任何 token】就能安全去图重试，不会重复输出。
-    一旦开始吐 token 再出错，则照常抛出（已无法干净重试）。"""
+    一旦开始吐 token 再出错，则照常抛出（已无法干净重试）。
+    首片墙钟兜底(_first_token_bounded)：上游迟迟不吐首片 → _ModelStallError 直接上抛给循环转友好收尾，
+    不被下面 vision-degrade 当成图片错误吞掉。"""
     yielded = False
     try:
-        async for tok in provider.generate_stream(request, **sinks):
+        async for tok in _first_token_bounded(provider.generate_stream(request, **sinks)):
             yielded = True
             yield tok
+    except _ModelStallError:
+        raise
     except Exception as e:
         if (not yielded
                 and ctx is not None
@@ -478,7 +540,7 @@ async def _vision_degrade_stream(provider, request, messages, ctx, **sinks):
                 and strip_images_from_messages(messages)):
             ctx.vision_degraded = True
             logger.info("文字模型疑似不支持图片(%s)，已去图改纯文字重试一次(流式)", type(e).__name__)
-            async for tok in provider.generate_stream(request, **sinks):
+            async for tok in _first_token_bounded(provider.generate_stream(request, **sinks)):
                 yield tok
             return
         raise
@@ -651,14 +713,21 @@ async def run_agent_loop(
         # SH-1：发请求前补缺失/删孤儿/去重 tool_result，堵 OpenAI 兼容端点的配对 400（纯函数返回新列表，就地替换内容）。
         messages[:] = ensure_tool_pairing(messages)
         # 非识图模型撞图片报错 → 自动去图、纯文字重试一次（模型无关·反应式降级）；置 ctx.vision_degraded 供收尾加提示。
-        resp = await _generate_with_vision_degrade(provider, TextRequest(
-            messages=messages,
-            tools=tools,
-            tool_choice="auto",
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        ), messages, ctx)
+        try:
+            resp = await _generate_with_vision_degrade(provider, TextRequest(
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            ), messages, ctx)
+        except _ModelStallError:
+            # 模型(网关)迟迟不响应：友好收尾，绝不无限挂住（owner 真机：做视频转 16 分钟不出卡）。
+            logger.warning("agent loop: 模型首片超时(>%.0fs)，第 %d 轮友好收尾(timeout)", _MODEL_CALL_BUDGET, turn)
+            steps.append(AgentStep(type="final", content=_MODEL_TIMEOUT_FALLBACK))
+            return AgentResult(final_text=_MODEL_TIMEOUT_FALLBACK, steps=steps, turns=turn,
+                               stopped_reason=_STOP_TIMEOUT, messages=messages)
         # SH-2：累加本轮真实 token 用量（端点没返回则粗估），喂预算判定 + 成本看板。
         # Gap C：同时把真实输入 token(prompt_tokens)喂给 autocompact 触发判据(经 ctx.last_prompt_tokens)。
         _accumulate_usage(ctx, getattr(resp, "tokens_used", 0), resp.content or "",
@@ -1149,20 +1218,29 @@ async def run_agent_loop_stream(
         parts: list[str] = []
         # 非识图模型撞图片报错 → 自动去图、纯文字重试一次（建流时即 400、尚未吐 token，可干净重试）；
         # 置 ctx.vision_degraded 供收尾加提示。⚠️ 同步路径同样逻辑，别只改一处。
-        async for tok in _vision_degrade_stream(
-            provider,
-            TextRequest(messages=messages, tools=tools, tool_choice="auto", model=model,
-                        max_tokens=max_tokens, temperature=temperature, thinking=thinking),
-            messages, ctx,
-            tool_calls_sink=sink,
-            finish_sink=finish,
-            usage_sink=usage,
-        ):
-            if isinstance(tok, ReasoningChunk):  # F.1 思考过程：只展示、不进正文 parts（不污染历史/不参与上下文）
-                yield {"type": "reasoning", "content": tok.text}
-                continue
-            parts.append(tok)
-            yield {"type": "token", "content": tok}
+        try:
+            async for tok in _vision_degrade_stream(
+                provider,
+                TextRequest(messages=messages, tools=tools, tool_choice="auto", model=model,
+                            max_tokens=max_tokens, temperature=temperature, thinking=thinking),
+                messages, ctx,
+                tool_calls_sink=sink,
+                finish_sink=finish,
+                usage_sink=usage,
+            ):
+                if isinstance(tok, ReasoningChunk):  # F.1 思考过程：只展示、不进正文 parts（不污染历史/不参与上下文）
+                    yield {"type": "reasoning", "content": tok.text}
+                    continue
+                parts.append(tok)
+                yield {"type": "token", "content": tok}
+        except _ModelStallError:
+            # 模型(网关)迟迟不响应：友好收尾 + done(timeout)，前端据此停转、显示退路（owner 真机 16 分钟卡死的根治）。
+            # 首片前才会触发，parts 此时必为空，吐一段全新 final 干净利落。
+            logger.warning("agent stream loop: 模型首片超时(>%.0fs)，第 %d 轮友好收尾(timeout)", _MODEL_CALL_BUDGET, turn)
+            yield {"type": "final", "content": _MODEL_TIMEOUT_FALLBACK}
+            yield {"type": "done", "turns": turn, "stopped_reason": _STOP_TIMEOUT,
+                   "tokens_used": getattr(ctx, "tokens_used", 0)}
+            return
         text = "".join(parts)
         # SH-2：累加本轮真实 token 用量（端点没返回 total_tokens 则按 len//4 粗估），喂预算判定 + 成本看板。
         # Gap C：把真实输入 token(prompt_tokens，由 usage_sink 写回)喂给 autocompact 触发判据。
