@@ -145,3 +145,67 @@ def test_studio_edit_backfills_parent_lineage(monkeypatch):
             assert g is not None and g.parent_generation_id == parent_gid  # 血缘已回填
         set_tenant(None)
     asyncio.run(main())
+
+
+# ── 阶段4 /studio/i2v 图生视频 ──
+
+def test_studio_i2v_requires_first_frame():
+    async def main():
+        body = studio.StudioI2vIn(first_frame="")
+        try:
+            await studio.studio_i2v(body, user=SimpleNamespace(id=uuid.uuid4()),
+                                    store=SimpleNamespace(id=uuid.uuid4()), db=None)
+            assert False, "没首帧图应报错"
+        except AIServiceError:
+            pass
+    asyncio.run(main())
+
+
+def test_studio_i2v_blocks_redline():
+    async def main():
+        body = studio.StudioI2vIn(first_frame="/uploads/posters/x.jpg", prompt="加上性交易上门服务字样")
+        try:
+            await studio.studio_i2v(body, user=SimpleNamespace(id=uuid.uuid4()),
+                                    store=SimpleNamespace(id=uuid.uuid4()), db=None)
+            assert False, "红线内容应被拦"
+        except AIServiceError:
+            pass
+    asyncio.run(main())
+
+
+def test_studio_i2v_submits_video_job(monkeypatch):
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        monkeypatch.setattr(studio, "async_session", Session)
+        sid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed(db, sid)
+
+        async def fake_video(*, db, store, user_id, prompt, ratio="9:16", duration=5,
+                             first_frame=None, generate_audio=False, image_refs=None, **kw):
+            assert first_frame == "/uploads/posters/x.jpg"      # 把这张图动起来
+            assert generate_audio is True                       # 配音透传
+            assert image_refs == ["/uploads/a.jpg"]             # 多图锁人物透传
+            return {"video_url": "/uploads/videos/v.mp4", "generation_id": uuid.uuid4(), "conversation_id": "c1"}
+        monkeypatch.setattr(studio.video_service, "generate_video", fake_video)
+
+        body = studio.StudioI2vIn(first_frame="/uploads/posters/x.jpg", prompt="自然地动起来",
+                                  generate_audio=True, image_refs=["/uploads/a.jpg"])
+        out = await studio.studio_i2v(body, user=SimpleNamespace(id=uid),
+                                      store=SimpleNamespace(id=sid), db=None)
+        jid = out["job_id"]
+        got = None
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            async with Session() as db:
+                got = await mj.get_job(db, jid, sid)
+            if got and got.status in ("done", "error"):
+                break
+        assert got is not None and got.status == "done", (got.status, got.error)
+        assert got.result["urls"] == ["/uploads/videos/v.mp4"]
+        assert got.result["is_video"] is True
+    asyncio.run(main())
