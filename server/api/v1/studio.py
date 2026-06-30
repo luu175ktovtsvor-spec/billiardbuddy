@@ -175,8 +175,9 @@ async def studio_expand(
     from services.ai.factory import ProviderFactory
     from services.ai.base import TextRequest
     provider = ProviderFactory.get_text_provider_for_store(store)
-    # thinking=False:要直接的成品文本;开思考(MiMo 默认开)会把额度耗在 reasoning、content 反而空。
-    resp = await provider.generate(TextRequest(system_prompt=_EXPAND_SYS, prompt=raw, max_tokens=600, thinking=False))
+    # 关思考:要直接的成品文本;开思考(MiMo 默认开)会把额度耗在 reasoning、content 反而空。
+    # ⚠️ thinking 字段是 dict(非 bool):必须传 {"type":"disabled"}——传 False 是 falsy、provider 当没关、白开思考。
+    resp = await provider.generate(TextRequest(system_prompt=_EXPAND_SYS, prompt=raw, max_tokens=600, thinking={"type": "disabled"}))
     optimized = (getattr(resp, "content", "") or "").strip() or raw
     check_generation_safety(optimized)                        # H1(输出:模型可能跑偏)
     return {"image_prompt": optimized}
@@ -367,8 +368,8 @@ async def studio_storyboard(
     from services.ai.base import TextRequest
 
     provider = ProviderFactory.get_text_provider_for_store(store)
-    # thinking=False:要的是直接的 JSON 输出;开思考(MiMo 默认开)会把额度耗在 reasoning_content、content 反而空。
-    resp = await provider.generate(TextRequest(prompt=_storyboard_prompt(body.theme, n, body.subject), max_tokens=1200, thinking=False))
+    # 关思考(dict 非 bool,传 False 不生效):要的是直接的 JSON 输出;开思考(MiMo 默认开)会把额度耗在 reasoning_content、content 反而空。
+    resp = await provider.generate(TextRequest(prompt=_storyboard_prompt(body.theme, n, body.subject), max_tokens=1200, thinking={"type": "disabled"}))
     shots, caption = _parse_storyboard(getattr(resp, "content", "") or "", n)
     check_generation_safety(" ".join(shots), caption)        # H1(输出:模型可能跑偏)
     return {"shots": shots, "caption": caption}
