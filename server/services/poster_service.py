@@ -225,7 +225,10 @@ async def generate_images(
     # 生图 BYOK：门店配了自带生图模型 → 用门店的 key/base_url（自担成本）；否则回退平台默认。
     api_key, image_base_url, image_model_cfg = ProviderFactory.get_image_config_for_store(store)
     # 模型选择：调用方选了火山 Seedream 且门店没 BYOK 覆盖 → 切到火山方舟（复用内置 ARK key，与视频同平台同 key）。
-    if image_model and "seedream" in image_model.lower() and not image_model_cfg:
+    # ⚠️ 判据必须是「门店有没有 BYOK 生图」，不能用 `not image_model_cfg`：内置默认 IMAGE_MODEL_NAME=gpt-image-2
+    #    会让 image_model_cfg 恒非空，导致火山分支永远进不去、选火山被错路由到 gpt-image-2（真机日志实锤）。
+    _store_byok_image = bool(getattr(store, "byok_image_enabled", False) and getattr(store, "byok_image_api_key_enc", None))
+    if image_model and "seedream" in image_model.lower() and not _store_byok_image:
         import os as _os_sd
         from config import settings as _s_sd
         if _os_sd.environ.get("DESKTOP_LOCAL") == "1" and getattr(_s_sd, "ark_api_key", ""):
@@ -479,7 +482,9 @@ async def generate_images(
                 },
                 prompt_used=full_prompt,
                 result=poster_url,
-                model_used="ai:gpt-image-2",
+                # 实际用的模型(火山 Seedream / gpt-image-2 / 门店 BYOK)，与第 443 行传给 provider 的一致，
+                # 别硬编码成 gpt-image-2（否则火山出的图也被错标成 gpt-image-2，DB 归因失真）
+                model_used=f"ai:{image_model_cfg or image_model or 'gpt-image-2'}",
                 tokens_used=0,
                 conversation_id=uuid.UUID(conv_id),
             )
@@ -515,7 +520,7 @@ async def generate_images(
 
     return {
         "images": valid_results,
-        "model_used": "ai:gpt-image-2",
+        "model_used": f"ai:{image_model_cfg or image_model or 'gpt-image-2'}",
         "count": len(valid_results),
         "conversation_id": conv_id,
         "logo_applied": logo_bytes is not None,

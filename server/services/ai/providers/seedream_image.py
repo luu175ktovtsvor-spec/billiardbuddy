@@ -30,6 +30,27 @@ logger = logging.getLogger(__name__)
 _SEEDREAM_429_RETRIES = int(os.environ.get("DESKTOP_IMAGE_429_RETRIES", "") or 3)
 _DEFAULT_BASE = "https://ark.cn-beijing.volces.com/api/v3"
 _DEFAULT_MODEL = "doubao-seedream-4-5-251128"
+# 火山方舟真机实测(2026-06-30):size 至少 3,686,400 像素(≈1920²),小于此报 InvalidParameter「image size must be
+# at least 3686400 pixels」。gpt-image-2 那套小尺寸(如 1024x1024)直接喂过来会被拒 → 按比例放大到下限。
+_SEEDREAM_MIN_PIXELS = 3_686_400
+
+
+def _normalize_seedream_size(size: str) -> str:
+    """把传入 WxH 放大到 Seedream 像素下限以上，保持宽高比，各边取 16 的倍数（ceil 保证不低于下限）。"""
+    import math
+    s = (size or "").lower().replace("*", "x")
+    try:
+        w, h = (int(x) for x in s.split("x")[:2])
+    except (ValueError, TypeError):
+        return "2048x2048"
+    if w <= 0 or h <= 0:
+        return "2048x2048"
+    px = w * h
+    if px < _SEEDREAM_MIN_PIXELS:
+        scale = math.sqrt(_SEEDREAM_MIN_PIXELS / px)
+        w = math.ceil(w * scale / 16) * 16
+        h = math.ceil(h * scale / 16) * 16
+    return f"{w}x{h}"
 
 
 def _to_data_uri(img: bytes) -> str:
@@ -67,7 +88,7 @@ class SeedreamImageProvider(ImageProvider):
         body: dict = {
             "model": model or _DEFAULT_MODEL,
             "prompt": prompt,
-            "size": size.replace("*", "x"),   # WxH 编码宽高比;Seedream 也收 1K/2K/4K 预设
+            "size": _normalize_seedream_size(size),   # WxH 编码宽高比;放大到火山像素下限(≥3,686,400)
             "watermark": False,
             "response_format": "url",
         }

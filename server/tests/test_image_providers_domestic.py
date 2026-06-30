@@ -43,7 +43,7 @@ def test_resolve_kind():
     from services.ai.providers.image_catalog import resolve_image_kind
     assert resolve_image_kind("https://api.siliconflow.cn/v1") == "siliconflow"
     assert resolve_image_kind("https://dashscope.aliyuncs.com/api/v1") == "dashscope"
-    assert resolve_image_kind("https://ark.cn-beijing.volces.com/api/v3") == "openai_compatible"
+    assert resolve_image_kind("https://ark.cn-beijing.volces.com/api/v3") == "seedream"  # 火山方舟·Seedream 原生
     assert resolve_image_kind("https://api.minimaxi.com/v1") == "minimax"
     assert resolve_image_kind("") == "openai_compatible"  # 兜底最通用
 
@@ -70,9 +70,11 @@ def test_build_image_provider_routing():
     from services.ai.providers.siliconflow_image import SiliconFlowImageProvider
     from services.ai.providers.dashscope_image import DashScopeImageProvider
     from services.ai.providers.openai_image import OpenAIImageProvider
+    from services.ai.providers.seedream_image import SeedreamImageProvider
     assert isinstance(ProviderFactory.build_image_provider("k", "https://api.siliconflow.cn/v1", None), SiliconFlowImageProvider)
     assert isinstance(ProviderFactory.build_image_provider("k", "https://dashscope.aliyuncs.com/api/v1", None), DashScopeImageProvider)
-    assert isinstance(ProviderFactory.build_image_provider("k", "https://ark.cn-beijing.volces.com/api/v3", None), OpenAIImageProvider)
+    # 火山方舟 → Seedream 原生 provider（非 OpenAI multipart edits；真机已验证 ark 走 SeedreamImageProvider 出图）
+    assert isinstance(ProviderFactory.build_image_provider("k", "https://ark.cn-beijing.volces.com/api/v3", None), SeedreamImageProvider)
     assert isinstance(ProviderFactory.build_image_provider("k", "https://api.openai.com/v1", None), OpenAIImageProvider)
     with pytest.raises(ValueError):  # 原生适配器待写 → 清晰报错引导
         ProviderFactory.build_image_provider("k", "https://api.minimaxi.com/v1", None)
