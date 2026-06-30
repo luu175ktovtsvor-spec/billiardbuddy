@@ -54,31 +54,36 @@ async function shot(win, name, expectation, dom, machinePass) {
     提示词框: await win.locator('textarea[placeholder*="一句话说清楚"]').count().catch(() => 0),
     比例竖版: await win.locator('button:has-text("竖版 9:16")').count().catch(() => 0),
     出几版: await win.locator("text=出几版").count().catch(() => 0),
+    上传参考图: await win.locator('button:has-text("上传参考图")').count().catch(() => 0),
     生成按钮: await win.locator('button:has-text("生成")').count().catch(() => 0),
   };
-  await shot(win, "C1_工作室渲染+Electron胶水", "真 Electron 壳里工作室正常渲染(标题/提示词框/比例/出几版/生成);window.electron.video.run 与 files.saveTemp 真存在(=多镜合成与局部改图的本机能力可用,这是浏览器 dev 验不到的关键)。",
-    c1, c1.hasElectron && c1.hasVideoRun && c1.hasSaveTemp && c1.标题 > 0 && c1.提示词框 > 0 && c1.生成按钮 > 0);
+  await shot(win, "C1_工作室渲染+Electron胶水", "真 Electron 壳里工作室正常渲染(标题/提示词框/比例/出几版/上传参考图/生成);window.electron.video.run 与 files.saveTemp 真存在(=多镜合成与局部改图的本机能力可用,这是浏览器 dev 验不到的关键)。",
+    c1, c1.hasElectron && c1.hasVideoRun && c1.hasSaveTemp && c1.标题 > 0 && c1.提示词框 > 0 && c1.上传参考图 > 0 && c1.生成按钮 > 0);
 
   // C2: 真出图(点生成→等→图渲染)
   await win.locator('textarea[placeholder*="一句话说清楚"]').first().fill("做一张9:16台球之夜霓虹海报，醒目标题，给报名留白").catch(() => {});
   await win.waitForTimeout(300);
   await win.locator('button:has-text("生成")').first().click().catch(() => {});
   // 等出图(gpt-image-2 几十秒~几分钟);出图按钮变"出图中…",成图后中间 <img>
+  // 默认出 2 版→中间走"挑变体"视图(alt=选中的版本);出 1 版才是 alt=生成结果。两种都算成图。
+  const RESULT_IMG = 'main img[alt="生成结果"], main img[alt="选中的版本"]';
   let imaged = false;
   for (let i = 0; i < 90; i++) {
     await win.waitForTimeout(4000);
-    imaged = (await win.locator('main img[alt="生成结果"]').count().catch(() => 0)) > 0;
+    imaged = (await win.locator(RESULT_IMG).count().catch(() => 0)) > 0;
     const failed = (await win.locator("text=/生成失败|红线|网络/").count().catch(() => 0)) > 0;
     if (imaged || failed) break;
   }
   const c2 = {
     成图: imaged,
+    变体挑选条: await win.locator("text=/出了.*版/").count().catch(() => 0),
+    变体小图: await win.locator('main img[alt^="第"]').count().catch(() => 0),
     操控台_基于这张改: await win.locator("text=基于这张改").count().catch(() => 0),
     操控台_圈一块局部改: await win.locator('button:has-text("圈一块局部改")').count().catch(() => 0),
     操控台_做成视频: await win.locator('button:has-text("做成视频")').count().catch(() => 0),
   };
-  await shot(win, "C2_真出图+操控台", "真 key 在工作室出一张 9:16 海报,中间显示图,右侧操控台出现 基于这张改/圈一块局部改/做成视频。",
-    c2, c2.成图 && c2.操控台_圈一块局部改 > 0 && c2.操控台_做成视频 > 0);
+  await shot(win, "C2_真出图+变体挑选+操控台", "真 key 出 2 版海报:中间显示选中大图 + 下方变体小图条(出了N版·可点挑),右侧操控台出现 基于这张改/圈一块局部改/做成视频。",
+    c2, c2.成图 && c2.变体挑选条 > 0 && c2.操控台_圈一块局部改 > 0 && c2.操控台_做成视频 > 0);
 
   // C3: 进局部改图 → konva 蒙版画布加载真图
   if (imaged) {
