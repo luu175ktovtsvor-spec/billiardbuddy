@@ -2,7 +2,7 @@
 
 /**
  * 生成工作室(阶段2 MVP·独立窗口 /dashboard/studio):
- * 左·控制台(一句话+比例+风格→生成) · 中·预览(出图骨架+进度+成品) · 右·操控台(基于这张改/换比例/复制/保存/好评)。
+ * 左·控制台(大白话+✨优化提示词+参考图+比例+模型→生成) · 中·预览(出图+变体挑选) · 右·操控台(基于这张改/局部改/换比例/做视频)。
  * 直连 /studio/generate、/studio/edit(绕 LLM),异步出图轮询 media-jobs。白底偏绿 macOS。
  * 治"改不动图":基于当前这张就地改(原图当底图),不跳回输入框重掷。
  */
@@ -20,8 +20,12 @@ const RATIOS = [
   { id: "1:1", label: "方形 1:1" },
   { id: "16:9", label: "横版 16:9" },
 ];
-// 风格只是起点、不是牢笼(关键词真拼进提示词,见后端 poster_styles)
-const STYLES = ["清新", "高级感", "活力满满", "港风", "ins 风", "简约", "国潮", "暖色温馨"];
+// 生图模型(前端可选)。火山 Seedream 首选(国内直连·近第一梯队);gpt-image-2 当前默认(已可用)。
+// ⚠️ 默认先用 gpt-image-2(火山需开通图像权限才能跑);开通后把下面 useState 默认值改成 seedream id 即可。
+const MODELS = [
+  { id: "doubao-seedream-4-5-251128", label: "火山 Seedream" },
+  { id: "gpt-image-2", label: "gpt-image-2" },
+];
 
 type Shot = { url: string; generationId?: string; ratio: string; isVideo?: boolean };
 
@@ -35,7 +39,9 @@ async function blobToBase64(blob: Blob): Promise<string> {
 
 export default function StudioPage() {
   const [prompt, setPrompt] = useState("");
-  const [style, setStyle] = useState<string | null>(null);
+  const [optimized, setOptimized] = useState("");    // 优化后的提示词(可改;有则当真实 prompt 送模型)
+  const [optimizing, setOptimizing] = useState(false);
+  const [imageModel, setImageModel] = useState("gpt-image-2");  // 选的生图模型;默认先用能跑的 gpt(火山需开权限)
   const [ratio, setRatio] = useState("9:16");
   const [count, setCount] = useState(2);             // 出几版(变体)·默认2张给"一眼挑"
   const [busy, setBusy] = useState(false);
@@ -48,8 +54,6 @@ export default function StudioPage() {
   const [maskMode, setMaskMode] = useState(false);   // 局部重绘模式
   const [vDuration, setVDuration] = useState(5);     // 视频时长(秒)
   const [vAudio, setVAudio] = useState(false);       // 视频配音
-  const [filmTheme, setFilmTheme] = useState("");    // 助教一条龙:短片主题
-  const [caption, setCaption] = useState("");        // 助教一条龙:配文案
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -91,7 +95,23 @@ export default function StudioPage() {
 
   const onGenerate = () => {
     if (!prompt.trim() || busy) return;
-    void runJob(() => api.studioGenerate({ prompt: prompt.trim(), ratio, style: style || undefined, count, reference_image_paths: refs.length ? refs : undefined }), ratio, "generate");
+    void runJob(() => api.studioGenerate({
+      prompt: prompt.trim(), ratio, count,
+      reference_image_paths: refs.length ? refs : undefined,
+      image_model: imageModel,
+      image_prompt: optimized.trim() || undefined,   // 有优化后的就当真实 prompt;没有就发原话
+    }), ratio, "generate");
+  };
+  // 提示词优化:把大白话改写成优化的提示词,填进可编辑框(这条就是真正发给模型的)
+  const onOptimize = async () => {
+    if (!prompt.trim() || optimizing || busy) return;
+    setOptimizing(true); setError(null);
+    try {
+      const r = await api.studioExpand({ prompt: prompt.trim() });
+      setOptimized(r.image_prompt || "");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "优化没成功，直接生成也行。");
+    } finally { setOptimizing(false); }
   };
   // 在这一批变体里挑一张:切成选中的那张;若当前是改出来的(不在变体里),先存进历史别弄丢
   const pickVariant = (s: Shot) => {
@@ -167,38 +187,6 @@ export default function StudioPage() {
       setBusy(false); setStage("");
     }
   };
-  // 助教一条龙:当前图当主体+首帧 → LLM 分镜 → 逐镜 i2v(同一张当锁人物参考+配音)→ 拼成一条 + 配文案
-  const onAutoFilm = async () => {
-    if (!current || current.isVideo || busy || !current.generationId) return;
-    if (!filmTheme.trim()) { setError("先填一个短片主题/感觉。"); return; }
-    if (!window.electron?.video?.run) { setError("一条龙合成需要桌面版（用本机 ffmpeg 拼接）。"); return; }
-    setBusy(true); setError(null); setCaption("");
-    const ff = current.url, gid = current.generationId, rr = current.ratio;
-    try {
-      setStage("正在写分镜…");
-      const sb = await api.studioStoryboard({ theme: filmTheme.trim(), shots: 3, subject: "门店真实助教本人" });
-      const ids: string[] = [];
-      for (let i = 0; i < sb.shots.length; i++) {
-        setStage(`第 ${i + 1}/${sb.shots.length} 镜出片中…（每镜几分钟）`);
-        const { job_id } = await api.studioI2v({ first_frame: ff, source_generation_id: gid, image_refs: [ff], prompt: sb.shots[i], ratio: rr, generate_audio: true });
-        const done = await api.pollMediaJob(job_id, (j) => setStage(`第 ${i + 1}/${sb.shots.length} 镜：${j.stage || "出片中…"}`));
-        const g = (done.result?.generation_ids as string[] | undefined)?.[0];
-        if (g) ids.push(g);
-      }
-      if (ids.length < 2) throw new Error("没出够片段拼接，稍后再试。");
-      setStage("正在把几镜拼成一条…");
-      const plan = await api.studioCompose(ids);
-      await window.electron.video.run("concat", { inputs: plan.inputs, output: plan.output_path });
-      const prev = currentRef.current;
-      setHistory((h) => [...(prev ? [prev] : []), ...h].slice(0, 12));
-      setCurrent({ url: plan.output_url, ratio: rr, isVideo: true });
-      setCaption(sb.caption || "");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "一条龙没成功，稍后再试。");
-    } finally {
-      setBusy(false); setStage("");
-    }
-  };
   const onCopy = async () => {
     if (!current) return;
     try {
@@ -241,10 +229,34 @@ export default function StudioPage() {
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              placeholder="一句话说清楚，比如：周五台球之夜海报，霓虹灯氛围，醒目标题"
+              placeholder="大白话说想做啥就行，比如：周五台球之夜海报，霓虹灯氛围，醒目标题"
               rows={4}
               className="w-full resize-none rounded-lg border border-black/[0.08] bg-black/[0.02] px-3 py-2 text-[13px] outline-none transition placeholder:text-[#b0b0b5] focus:border-[#10a37f]/50 dark:border-white/[0.08] dark:bg-white/[0.03] dark:placeholder:text-[#56585f]"
             />
+            <button
+              type="button"
+              onClick={onOptimize}
+              disabled={busy || optimizing || !prompt.trim()}
+              title="把你的大白话改写成更出好图的提示词，可以再改；改完就是真正发给模型的"
+              className="mt-1.5 flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border border-[#10a37f]/30 bg-[#10a37f]/[0.06] text-[12.5px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/[0.12] active:scale-[0.99] disabled:opacity-50"
+            >
+              {optimizing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+              {optimizing ? "优化中…" : "优化提示词"}
+            </button>
+            {optimized && (
+              <div className="mt-1.5">
+                <div className="mb-1 flex items-center justify-between text-[11px] text-[#6e6e73] dark:text-[#9a9ca3]">
+                  <span>优化后（可改，这就是真正发给模型的）</span>
+                  <button type="button" onClick={() => setOptimized("")} className="text-[#b0b0b5] transition hover:text-[#ff3b30]">清空</button>
+                </div>
+                <textarea
+                  value={optimized}
+                  onChange={(e) => setOptimized(e.target.value)}
+                  rows={4}
+                  className="w-full resize-none rounded-lg border border-[#10a37f]/30 bg-[#10a37f]/[0.04] px-3 py-2 text-[12.5px] leading-relaxed outline-none transition focus:border-[#10a37f]/60 dark:border-[#10a37f]/30 dark:bg-[#10a37f]/[0.08]"
+                />
+              </div>
+            )}
           </div>
           <div>
             <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">参考图（可选，拿它当风格/参考）</div>
@@ -274,10 +286,9 @@ export default function StudioPage() {
             </div>
           </div>
           <div>
-            <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">风格（可选）</div>
+            <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">模型</div>
             <div className="flex flex-wrap gap-1.5">
-              <button type="button" onClick={() => setStyle(null)} className={chip(style === null)}>不指定</button>
-              {STYLES.map((s) => <button key={s} type="button" onClick={() => setStyle(s)} className={chip(style === s)}>{s}</button>)}
+              {MODELS.map((m) => <button key={m.id} type="button" onClick={() => setImageModel(m.id)} className={chip(imageModel === m.id)}>{m.label}</button>)}
             </div>
           </div>
           <div>
@@ -400,35 +411,7 @@ export default function StudioPage() {
                   <Film className="h-3.5 w-3.5" /> 让这张动起来（做成视频）
                 </button>
               </div>
-              {/* 助教短片一条龙:主题 → LLM 分镜 → 逐镜 i2v(同一张当锁人物参考) → 拼成一条 + 配文案 */}
-              <div>
-                <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">助教短片（一条龙）</div>
-                <input
-                  value={filmTheme}
-                  onChange={(e) => setFilmTheme(e.target.value)}
-                  placeholder="主题/感觉，比如：台球之夜 vibe、咖啡馆日常"
-                  className="mb-1.5 w-full rounded-lg border border-black/[0.08] bg-black/[0.02] px-3 py-2 text-[13px] outline-none transition placeholder:text-[#b0b0b5] focus:border-[#10a37f]/50 dark:border-white/[0.08] dark:bg-white/[0.03] dark:placeholder:text-[#56585f]"
-                />
-                <button
-                  type="button"
-                  onClick={onAutoFilm}
-                  disabled={busy || !current.generationId || !filmTheme.trim()}
-                  title="用这张当主体：自动写分镜→逐镜出片（锁同一个人）→拼成一条短片+配文案（要等十几分钟）"
-                  className="flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-[#007AFF]/30 bg-[#007AFF]/[0.06] text-[13px] font-medium text-[#007AFF] transition hover:bg-[#007AFF]/[0.12] active:scale-[0.99] disabled:opacity-50"
-                >
-                  <Sparkles className="h-3.5 w-3.5" /> 一键生成助教短片
-                </button>
-              </div>
               </>)}
-              {caption && (
-                <div className="rounded-lg border border-[#10a37f]/20 bg-[#10a37f]/[0.06] p-2.5">
-                  <div className="mb-1 flex items-center justify-between">
-                    <span className="text-[11.5px] font-medium text-[#10a37f]">配文案</span>
-                    <button type="button" onClick={() => { void navigator.clipboard?.writeText(caption); }} className="text-[11px] text-[#10a37f] hover:underline">复制</button>
-                  </div>
-                  <div className="text-[12.5px] leading-relaxed text-[#3a3a3c] dark:text-[#c8cace]">{caption}</div>
-                </div>
-              )}
               <div className="flex flex-wrap gap-1.5">
                 {!current.isVideo && (
                 <button type="button" onClick={onCopy} className="flex items-center gap-1 rounded-md border border-black/[0.08] bg-white px-2.5 py-1.5 text-[12px] font-medium text-[#3a3a3c] transition hover:bg-black/[0.03] active:scale-[0.97] dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-[#c8cace]">
