@@ -56,6 +56,8 @@ export default function StudioPage() {
   const [vAudio, setVAudio] = useState(false);       // 视频配音
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [leftW, setLeftW] = useState(280);    // 左栏宽(拖分隔条调)
+  const [rightW, setRightW] = useState(280);   // 右栏宽(拖分隔条调)
 
   // 用 ref 跟踪当前图,runJob 里读它把上一张推进历史——别在 setState 更新函数里塞 setState 副作用(StrictMode 会双跑)。
   const currentRef = useRef<Shot | null>(null);
@@ -207,6 +209,27 @@ export default function StudioPage() {
     }
   };
   const onRate = () => { if (current?.generationId) void api.rateGeneration(current.generationId, "good"); };
+  // 拖分隔条调左/右栏宽:按下记起点,全局监听 mousemove 调宽、mouseup 收尾;clamp 200~480px。
+  const startDrag = (side: "left" | "right") => (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = side === "left" ? leftW : rightW;
+    const setW = side === "left" ? setLeftW : setRightW;
+    const onMove = (ev: MouseEvent) => {
+      const delta = ev.clientX - startX;
+      setW(Math.max(200, Math.min(480, side === "left" ? startW + delta : startW - delta)));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
 
   const chip = (active: boolean) =>
     `rounded-md px-2.5 py-1 text-[12px] font-medium transition active:scale-[0.97] ${
@@ -223,7 +246,7 @@ export default function StudioPage() {
 
       <div className="flex min-h-0 flex-1">
         {/* 左·控制台 */}
-        <aside className="flex w-[280px] shrink-0 flex-col gap-4 overflow-y-auto border-r border-black/[0.06] p-4 dark:border-white/[0.06]">
+        <aside style={{ width: leftW }} className="flex shrink-0 flex-col gap-4 overflow-y-auto border-r border-black/[0.06] p-4 dark:border-white/[0.06]">
           <div>
             <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">想做张什么图？</div>
             <textarea
@@ -313,6 +336,8 @@ export default function StudioPage() {
           )}
         </aside>
 
+        {/* 拖分隔条:调左栏宽 */}
+        <div onMouseDown={startDrag("left")} title="拖动调整左栏宽度" className="w-1.5 shrink-0 cursor-col-resize transition hover:bg-[#10a37f]/30" />
         {/* 中·预览 */}
         <main className="flex min-w-0 flex-1 items-center justify-center overflow-auto bg-[#fafafa] p-6 dark:bg-[#0b0c0e]">
           {maskMode && current && !busy ? (
@@ -356,8 +381,10 @@ export default function StudioPage() {
           )}
         </main>
 
+        {/* 拖分隔条:调右栏宽 */}
+        <div onMouseDown={startDrag("right")} title="拖动调整右栏宽度" className="w-1.5 shrink-0 cursor-col-resize transition hover:bg-[#10a37f]/30" />
         {/* 右·操控台 */}
-        <aside className="flex w-[280px] shrink-0 flex-col gap-4 overflow-y-auto border-l border-black/[0.06] p-4 dark:border-white/[0.06]">
+        <aside style={{ width: rightW }} className="flex shrink-0 flex-col gap-4 overflow-y-auto border-l border-black/[0.06] p-4 dark:border-white/[0.06]">
           {current ? (
             <>
               {!current.isVideo && (<>
