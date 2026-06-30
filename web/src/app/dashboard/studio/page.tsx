@@ -37,11 +37,12 @@ export default function StudioPage() {
   const [prompt, setPrompt] = useState("");
   const [style, setStyle] = useState<string | null>(null);
   const [ratio, setRatio] = useState("9:16");
-  const [count, setCount] = useState(1);             // 出几版(变体)
+  const [count, setCount] = useState(2);             // 出几版(变体)·默认2张给"一眼挑"
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState("");
   const [current, setCurrent] = useState<Shot | null>(null);
   const [history, setHistory] = useState<Shot[]>([]);
+  const [batch, setBatch] = useState<Shot[]>([]);    // 刚出的这一批变体(2-4张),给用户一眼挑
   const [editText, setEditText] = useState("");
   const [maskMode, setMaskMode] = useState(false);   // 局部重绘模式
   const [vDuration, setVDuration] = useState(5);     // 视频时长(秒)
@@ -58,7 +59,7 @@ export default function StudioPage() {
   const onTick = (j: MediaJobStatus) =>
     setStage(j.stage || (j.status === "queued" ? "排队中…" : "正在出图…"));
 
-  const runJob = useCallback(async (start: () => Promise<{ job_id: string }>, keepRatio: string) => {
+  const runJob = useCallback(async (start: () => Promise<{ job_id: string }>, keepRatio: string, mode: "generate" | "edit" = "edit") => {
     setBusy(true); setError(null); setStage("正在出图…");
     try {
       const { job_id } = await start();
@@ -70,8 +71,14 @@ export default function StudioPage() {
       const isVideo = !!done.result?.is_video;
       const shots: Shot[] = urls.map((u, i) => ({ url: u, generationId: ids[i], ratio: r, isVideo }));
       const prev = currentRef.current;
-      // 上一张 + 多出来的变体都进历史可回看(无嵌套 setState)
-      setHistory((h) => [...(prev ? [prev] : []), ...shots.slice(1), ...h].slice(0, 12));
+      if (mode === "generate") {
+        // 新出的一批是"待挑的变体":上一张存进历史,整批进 batch,默认选第一张(用户点着挑)
+        setHistory((h) => [...(prev ? [prev] : []), ...h].slice(0, 12));
+        setBatch(shots);
+      } else {
+        // 改图/换比例等派生:上一张 + 多出来的变体进历史可回看,变体条不动
+        setHistory((h) => [...(prev ? [prev] : []), ...shots.slice(1), ...h].slice(0, 12));
+      }
       setCurrent(shots[0]);
       window.electron?.notifyStudioArtifact?.({ kind: "poster", generationId: shots[0].generationId, url: shots[0].url });
     } catch (e) {
@@ -83,7 +90,14 @@ export default function StudioPage() {
 
   const onGenerate = () => {
     if (!prompt.trim() || busy) return;
-    void runJob(() => api.studioGenerate({ prompt: prompt.trim(), ratio, style: style || undefined, count }), ratio);
+    void runJob(() => api.studioGenerate({ prompt: prompt.trim(), ratio, style: style || undefined, count }), ratio, "generate");
+  };
+  // 在这一批变体里挑一张:切成选中的那张;若当前是改出来的(不在变体里),先存进历史别弄丢
+  const pickVariant = (s: Shot) => {
+    if (busy) return;
+    const cur = currentRef.current;
+    if (cur && !batch.some((b) => b.url === cur.url)) setHistory((h) => [cur, ...h].slice(0, 12));
+    setCurrent(s);
   };
   const onEdit = () => {
     if (!current || !editText.trim() || busy) return;
@@ -264,6 +278,25 @@ export default function StudioPage() {
           ) : current ? (
             current.isVideo ? (
               <video src={current.url} controls autoPlay loop className="max-h-full max-w-full rounded-xl shadow-sm" />
+            ) : batch.length > 1 ? (
+              <div className="flex h-full w-full flex-col items-center gap-3">
+                <div className="shrink-0 text-[12px] text-[#86868b] dark:text-[#6e7077]">出了 {batch.length} 版，点下面的小图挑一张最满意的，再到右边改</div>
+                <div className="flex min-h-0 flex-1 items-center justify-center">
+                  <img src={current.url} alt="选中的版本" className="max-h-full max-w-full rounded-xl object-contain shadow-sm" />
+                </div>
+                <div className="flex shrink-0 flex-wrap items-center justify-center gap-2 pb-1">
+                  {batch.map((s, i) => {
+                    const active = s.url === current.url;
+                    return (
+                      <button key={i} type="button" onClick={() => pickVariant(s)} title={`第 ${i + 1} 版`}
+                        className={`relative overflow-hidden rounded-lg border-2 transition ${active ? "border-[#10a37f]" : "border-transparent hover:border-[#10a37f]/40"}`}>
+                        <img src={s.url} alt={`第 ${i + 1} 版`} className="h-16 w-16 object-cover" />
+                        {active && <span className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-[#10a37f] text-white"><Check className="h-2.5 w-2.5" /></span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             ) : (
               <img src={current.url} alt="生成结果" className="max-h-full max-w-full rounded-xl object-contain shadow-sm" />
             )
