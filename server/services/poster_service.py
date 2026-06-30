@@ -224,6 +224,14 @@ async def generate_images(
 
     # 生图 BYOK：门店配了自带生图模型 → 用门店的 key/base_url（自担成本）；否则回退平台默认。
     api_key, image_base_url, image_model_cfg = ProviderFactory.get_image_config_for_store(store)
+    # 模型选择：调用方选了火山 Seedream 且门店没 BYOK 覆盖 → 切到火山方舟（复用内置 ARK key，与视频同平台同 key）。
+    if image_model and "seedream" in image_model.lower() and not image_model_cfg:
+        import os as _os_sd
+        from config import settings as _s_sd
+        if _os_sd.environ.get("DESKTOP_LOCAL") == "1" and getattr(_s_sd, "ark_api_key", ""):
+            api_key = _s_sd.ark_api_key
+            image_base_url = "https://ark.cn-beijing.volces.com/api/v3"
+            image_model_cfg = image_model   # 选的 seedream id（带日期）;build_image_provider 按 ark base_url 路由到 SeedreamImageProvider
     if not api_key:
         import os
         if os.environ.get("DESKTOP_LOCAL") == "1":  # 桌面纯 BYOK：没有"平台默认"，别误导老板留空

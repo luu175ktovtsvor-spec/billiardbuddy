@@ -531,8 +531,14 @@ class ApiClient {
   }
 
   // 阶段2 生成工作室：文生图（绕 LLM 直连，异步出图，返回 job_id 后轮询 getMediaJob）
-  studioGenerate(input: { prompt: string; ratio?: string; style?: string; count?: number; reference_image_paths?: string[]; conversation_id?: string | null }) {
+  // image_model=选的生图模型(gpt-image-2 / doubao-seedream-4-5-251128…)；image_prompt=优化后的提示词(有则当真实 prompt)
+  studioGenerate(input: { prompt: string; ratio?: string; style?: string; count?: number; reference_image_paths?: string[]; image_model?: string; image_prompt?: string; conversation_id?: string | null }) {
     return this.request<{ job_id: string }>("POST", "/api/v1/studio/generate", input);
+  }
+
+  // 提示词优化：大白话 → 优化后的文生图提示词（前端展示+可改，改后即真实送模型）。同步返回。
+  studioExpand(input: { prompt: string }) {
+    return this.request<{ image_prompt: string }>("POST", "/api/v1/studio/expand", input);
   }
 
   // 阶段2/3 生成工作室：基于这张成品改（source_generation_id=底图来源+血缘父；可选 mask_path 局部重绘），异步出图

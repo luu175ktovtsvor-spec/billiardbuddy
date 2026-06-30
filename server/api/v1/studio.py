@@ -25,6 +25,17 @@ router = APIRouter()
 
 _MAX_VARIANTS = 4  # H3:每次最多 4 张(和 ReAct 工具层 ≤4 一致)
 
+# 提示词优化师:把老板的大白话改写成高质量文生图提示词(展示给用户、可改;改后即真实送模型)。通用、不绑台球。
+_EXPAND_SYS = (
+    "你是顶级的图片生成提示词优化师。把用户的大白话需求改写成一段【可直接喂给文生图模型、能出好图】的提示词。\n"
+    "要求:\n"
+    "- 保留用户的核心意图与明确写出的文字/数字/品牌(绝不杜撰价格、电话、地址或没提到的信息);\n"
+    "- 补充有助于出好图的具体视觉细节:主体、构图、镜头视角、光线、色调、风格、质感、清晰度;\n"
+    "- 用中文输出一段连贯描述,不分点、不解释、不加引号或任何前后缀;\n"
+    "- 守安全红线:不露骨色情、不涉及实际性交易、不赌博、保护未成年。\n"
+    "只输出优化后的提示词本身。"
+)
+
 
 class StudioGenerateIn(BaseModel):
     prompt: str
@@ -32,8 +43,14 @@ class StudioGenerateIn(BaseModel):
     style: str | None = None
     count: int = 1
     reference_image_paths: list[str] | None = None
+    image_model: str | None = None    # 选的生图模型(gpt-image-2 / doubao-seedream-4-5-251128…);None=门店/内置默认
+    image_prompt: str | None = None   # 优化后的提示词(前端可改后回传);有则当真实 prompt 送模型,无则用 prompt 原文
     conversation_id: str | None = None
     quality: str = "medium"
+
+
+class StudioExpandIn(BaseModel):
+    prompt: str                       # 用户的大白话需求
 
 
 class StudioEditIn(BaseModel):
@@ -142,6 +159,28 @@ async def _backfill_parent(wdb, images, parent_id, store_id) -> None:
     await wdb.commit()
 
 
+@router.post("/expand")
+async def studio_expand(
+    body: StudioExpandIn,
+    user: User = Depends(get_current_user),
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+):
+    """提示词优化:把大白话改写成优化的文生图提示词,返回前端展示+可改(改后即真实送模型)。同步(LLM 快)。"""
+    raw = (body.prompt or "").strip()
+    if not raw:
+        raise AIServiceError("先说一句你想做什么图")
+    check_generation_safety(raw)                              # H1(输入)
+    from services.ai.factory import ProviderFactory
+    from services.ai.base import TextRequest
+    provider = ProviderFactory.get_text_provider_for_store(store)
+    # thinking=False:要直接的成品文本;开思考(MiMo 默认开)会把额度耗在 reasoning、content 反而空。
+    resp = await provider.generate(TextRequest(system_prompt=_EXPAND_SYS, prompt=raw, max_tokens=600, thinking=False))
+    optimized = (getattr(resp, "content", "") or "").strip() or raw
+    check_generation_safety(optimized)                        # H1(输出:模型可能跑偏)
+    return {"image_prompt": optimized}
+
+
 @router.post("/generate")
 async def studio_generate(
     body: StudioGenerateIn,
@@ -155,6 +194,7 @@ async def studio_generate(
     prompt = _compose_prompt(body.prompt, body.style)
     store_id, user_id, conv = store.id, user.id, body.conversation_id
     ratio, refs, quality = body.ratio, body.reference_image_paths, body.quality
+    img_model, img_prompt = body.image_model, body.image_prompt
 
     async def work_fn(progress):
         from core.tenant import set_tenant
@@ -164,8 +204,9 @@ async def studio_generate(
             async with async_session() as wdb:
                 st = await wdb.get(Store, store_id)
                 res = await poster_service.generate_images(
-                    wdb, st, user_id, prompt, image_model=None, ratio=ratio,
+                    wdb, st, user_id, prompt, image_model=img_model, ratio=ratio,
                     reference_image_paths=refs, count=count, conversation_id=conv, quality=quality,
+                    image_prompt=img_prompt,
                 )
             return _result_payload(res)
         finally:

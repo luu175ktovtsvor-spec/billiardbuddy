@@ -51,17 +51,19 @@ async function shot(win, name, expectation, dom, machinePass) {
   const c1 = {
     ...glue,
     标题: await win.locator("text=生成工作室").count().catch(() => 0),
-    提示词框: await win.locator('textarea[placeholder*="一句话说清楚"]').count().catch(() => 0),
+    提示词框: await win.locator('textarea[placeholder*="大白话说想做啥"]').count().catch(() => 0),
     比例竖版: await win.locator('button:has-text("竖版 9:16")').count().catch(() => 0),
+    模型选择: await win.locator('button:has-text("火山 Seedream")').count().catch(() => 0),
+    优化按钮: await win.locator('button:has-text("优化提示词")').count().catch(() => 0),
     出几版: await win.locator("text=出几版").count().catch(() => 0),
     上传参考图: await win.locator('button:has-text("上传参考图")').count().catch(() => 0),
     生成按钮: await win.locator('button:has-text("生成")').count().catch(() => 0),
   };
-  await shot(win, "C1_工作室渲染+Electron胶水", "真 Electron 壳里工作室正常渲染(标题/提示词框/比例/出几版/上传参考图/生成);window.electron.video.run 与 files.saveTemp 真存在(=多镜合成与局部改图的本机能力可用,这是浏览器 dev 验不到的关键)。",
-    c1, c1.hasElectron && c1.hasVideoRun && c1.hasSaveTemp && c1.标题 > 0 && c1.提示词框 > 0 && c1.上传参考图 > 0 && c1.生成按钮 > 0);
+  await shot(win, "C1_工作室渲染+Electron胶水", "真 Electron 壳里工作室正常渲染(标题/提示词框/比例/模型选择/优化提示词/出几版/上传参考图/生成);window.electron.video.run 与 files.saveTemp 真存在(浏览器 dev 验不到的关键)。",
+    c1, c1.hasElectron && c1.hasVideoRun && c1.hasSaveTemp && c1.标题 > 0 && c1.提示词框 > 0 && c1.模型选择 > 0 && c1.优化按钮 > 0 && c1.上传参考图 > 0 && c1.生成按钮 > 0);
 
   // C2: 真出图(点生成→等→图渲染)
-  await win.locator('textarea[placeholder*="一句话说清楚"]').first().fill("做一张9:16台球之夜霓虹海报，醒目标题，给报名留白").catch(() => {});
+  await win.locator('textarea[placeholder*="大白话说想做啥"]').first().fill("做一张9:16台球之夜霓虹海报，醒目标题，给报名留白").catch(() => {});
   await win.waitForTimeout(300);
   await win.locator('button:has-text("生成")').first().click().catch(() => {});
   // 等出图(gpt-image-2 几十秒~几分钟);出图按钮变"出图中…",成图后中间 <img>
