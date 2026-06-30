@@ -45,12 +45,17 @@ IMAGE_PROVIDER_CATALOG: list[dict] = [
     {
         "name": "火山方舟·即梦 Seedream", "kind": "openai_compatible",
         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        # ⚠️ model id 必须带日期后缀,无日期(如 doubao-seedream-4-5)=NotFound(同 Seedance 视频坑)。官方文档核实 2026-06-30。
+        # ⚠️ 图生图≠OpenAI multipart images.edit:Seedream 走同一个 /images/generations,JSON 里传 image(base64 data-uri 或 url)
+        #    + sequential_image_generation,详见 seedream_image.py。文生图才与 OpenAI 兼容、可复用 OpenAIImageProvider。
         "models": [
-            {"id": "doubao-seedream-4-0", "supports_edit": True,
-             "note": "字节·强·OpenAI兼容·支持传图编辑（images.edit 多图）·能叠 Logo/二维码"},
+            {"id": "doubao-seedream-4-5-251128", "supports_edit": True,
+             "note": "字节·4.5·稳妥默认·图生图传 image(base64/url)·能叠 Logo/二维码"},
+            {"id": "doubao-seedream-5-0-260128", "supports_edit": True, "note": "字节·5.0·最新最强·更贵"},
+            {"id": "doubao-seedream-4-0-250828", "supports_edit": True, "note": "字节·4.0·更便宜"},
         ],
         "response": "url/b64", "supports_edit": True,
-        "note": "字节·强·OpenAI 兼容·支持传图编辑；约0.2元/张。",
+        "note": "字节·强;文生图 OpenAI 兼容,图生图走 /images/generations 传 image 参数(非 multipart edits);500 IPM/版本/账号;约0.2元/张。",
     },
     {
         "name": "通义万相（阿里）", "kind": "dashscope",

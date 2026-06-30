@@ -36,7 +36,7 @@ const TEXT_PRESETS = [
 ];
 const IMAGE_PRESETS = [
   { name: "硅基流动·叠Logo首选", base: "https://api.siliconflow.cn/v1", model: "Qwen/Qwen-Image-Edit-2509" },
-  { name: "即梦 Seedream", base: "https://ark.cn-beijing.volces.com/api/v3", model: "doubao-seedream-4-0" },
+  { name: "即梦 Seedream", base: "https://ark.cn-beijing.volces.com/api/v3", model: "doubao-seedream-4-5-251128" },
   { name: "通义万相", base: "https://dashscope.aliyuncs.com/api/v1", model: "wan2.6-t2i" },
   { name: "智谱 CogView", base: "https://open.bigmodel.cn/api/paas/v4", model: "cogview-4" },
 ];
