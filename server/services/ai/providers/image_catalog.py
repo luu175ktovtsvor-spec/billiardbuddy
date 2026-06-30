@@ -102,6 +102,8 @@ def resolve_image_kind(base_url: str | None) -> str:
         return "siliconflow"
     if "dashscope.aliyuncs" in u:
         return "dashscope"
+    if "volces.com" in u or "ark.cn-beijing" in u:   # 火山方舟·Seedream(原生 /images/generations,非 OpenAI multipart edits)
+        return "seedream"
     if "minimaxi" in u or "minimax" in u:
         return "minimax"
     if "hunyuan" in u or "tencentcloudapi" in u:
