@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { Image as ImageIcon, Wand2, Copy, Download, ThumbsUp, Loader2, RefreshCw, Check, AlertTriangle, Layers, Film, Sparkles } from "lucide-react";
+import { Image as ImageIcon, ImagePlus, X, Wand2, Copy, Download, ThumbsUp, Loader2, RefreshCw, Check, AlertTriangle, Layers, Film, Sparkles } from "lucide-react";
 import { api, type MediaJobStatus } from "@/lib/api";
 
 // react-konva 碰 canvas/window,不能 SSR → dynamic ssr:false(M4)
@@ -43,6 +43,7 @@ export default function StudioPage() {
   const [current, setCurrent] = useState<Shot | null>(null);
   const [history, setHistory] = useState<Shot[]>([]);
   const [batch, setBatch] = useState<Shot[]>([]);    // 刚出的这一批变体(2-4张),给用户一眼挑
+  const [refs, setRefs] = useState<string[]>([]);    // 参考图(本机绝对路径),图生图:当风格/参考喂给模型
   const [editText, setEditText] = useState("");
   const [maskMode, setMaskMode] = useState(false);   // 局部重绘模式
   const [vDuration, setVDuration] = useState(5);     // 视频时长(秒)
@@ -90,7 +91,7 @@ export default function StudioPage() {
 
   const onGenerate = () => {
     if (!prompt.trim() || busy) return;
-    void runJob(() => api.studioGenerate({ prompt: prompt.trim(), ratio, style: style || undefined, count }), ratio, "generate");
+    void runJob(() => api.studioGenerate({ prompt: prompt.trim(), ratio, style: style || undefined, count, reference_image_paths: refs.length ? refs : undefined }), ratio, "generate");
   };
   // 在这一批变体里挑一张:切成选中的那张;若当前是改出来的(不在变体里),先存进历史别弄丢
   const pickVariant = (s: Shot) => {
@@ -99,6 +100,21 @@ export default function StudioPage() {
     if (cur && !batch.some((b) => b.url === cur.url)) setHistory((h) => [cur, ...h].slice(0, 12));
     setCurrent(s);
   };
+  // 上传参考图:弹系统文件框选本机图(返回绝对路径),桌面后端按路径读;图生图当风格/参考用
+  const pickRefs = async () => {
+    if (busy) return;
+    if (!window.electron?.files?.pick) { setError("上传参考图需要桌面版。"); return; }
+    try {
+      const r = await window.electron.files.pick({
+        title: "选参考图（拿它当风格/参考，不会照抄内容）",
+        multi: true,
+        filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"] }],
+      });
+      if (r.canceled || !r.paths?.length) return;
+      setRefs((prev) => Array.from(new Set([...prev, ...r.paths])).slice(0, 6));
+    } catch { /* 取消/失败:忽略 */ }
+  };
+  const removeRef = (p: string) => setRefs((prev) => prev.filter((x) => x !== p));
   const onEdit = () => {
     if (!current || !editText.trim() || busy) return;
     if (!current.generationId) { setError("这张图没有来源记录，改不了；重新生成一张再改。"); return; }
@@ -229,6 +245,27 @@ export default function StudioPage() {
               rows={4}
               className="w-full resize-none rounded-lg border border-black/[0.08] bg-black/[0.02] px-3 py-2 text-[13px] outline-none transition placeholder:text-[#b0b0b5] focus:border-[#10a37f]/50 dark:border-white/[0.08] dark:bg-white/[0.03] dark:placeholder:text-[#56585f]"
             />
+          </div>
+          <div>
+            <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">参考图（可选，拿它当风格/参考）</div>
+            <button
+              type="button"
+              onClick={pickRefs}
+              disabled={busy}
+              className="flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-dashed border-black/[0.12] bg-black/[0.015] text-[13px] font-medium text-[#3a3a3c] transition hover:border-[#10a37f]/40 hover:bg-[#10a37f]/[0.04] active:scale-[0.99] disabled:opacity-50 dark:border-white/[0.12] dark:bg-white/[0.02] dark:text-[#c8cace]"
+            >
+              <ImagePlus className="h-3.5 w-3.5" /> 上传参考图
+            </button>
+            {refs.length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {refs.map((p) => (
+                  <span key={p} className="flex items-center gap-1 rounded-md bg-black/[0.04] py-1 pl-2 pr-1 text-[11.5px] text-[#3a3a3c] dark:bg-white/[0.06] dark:text-[#c8cace]">
+                    <span className="max-w-[150px] truncate">{p.split(/[\\/]/).pop()}</span>
+                    <button type="button" onClick={() => removeRef(p)} title="移除" className="shrink-0 text-[#b0b0b5] transition hover:text-[#ff3b30]"><X className="h-3 w-3" /></button>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
           <div>
             <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">比例</div>
