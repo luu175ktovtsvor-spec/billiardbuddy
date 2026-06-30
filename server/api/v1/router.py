@@ -15,6 +15,7 @@ from api.v1.store_memory import router as store_memory_router
 from api.v1.agent import router as agent_router
 from api.v1.canvas import router as canvas_router
 from api.v1.studio import router as studio_router
+from api.v1.video_edit import router as video_edit_router
 
 router = APIRouter()
 
@@ -27,6 +28,7 @@ router.include_router(store_memory_router, prefix="/store-memory", tags=["店脑
 router.include_router(agent_router, prefix="/agent", tags=["AI Agent 对话"])
 router.include_router(canvas_router, prefix="/canvas", tags=["画布定向改写"])
 router.include_router(studio_router, prefix="/studio", tags=["生成工作室·直连"])
+router.include_router(video_edit_router, prefix="/video-edit", tags=["AI 剪辑台·直连"])
 
 
 @router.get("/health")

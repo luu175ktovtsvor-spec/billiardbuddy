@@ -75,15 +75,34 @@ def ffprobe_bin() -> str:
 _HDR_TRANSFERS = {"smpte2084", "arib-std-b67"}  # PQ(HDR10) 和 HLG
 
 
+def _rotation(stream: dict) -> int:
+    """从 side_data_list 读旋转角(手机竖拍常是"横存+旋转标记")。无则 0。"""
+    for sd in stream.get("side_data_list") or []:
+        if "rotation" in sd:
+            try:
+                return int(sd["rotation"])
+            except (TypeError, ValueError):
+                pass
+    # 老式 rotate tag 兜底
+    try:
+        return int((stream.get("tags") or {}).get("rotate") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def probe_video(path: str) -> dict:
-    """ffprobe 探规格,返回 {width,height,duration_s,fps,codec,color_transfer,is_hdr,is_portrait}。"""
+    """ffprobe 探规格,返回 {width,height,duration_s,fps,codec,color_transfer,is_hdr,is_portrait,rotation}。
+
+    ★宽高按【旋转后的真实显示尺寸】返回:手机竖拍视频常是 1920x1080 横存 + -90° 旋转标记,
+      ffmpeg 解码时会自动转正成 1080x1920 竖屏;探测也必须把宽高转正,否则 is_portrait 误判(曾踩坑)。
+    """
     out = subprocess.run(
         [
             ffprobe_bin(),
             "-v", "error",
             "-select_streams", "v:0",
-            "-show_entries", "stream=width,height,r_frame_rate,codec_name,color_transfer",
-            "-show_entries", "format=duration",
+            "-show_streams",      # 含 side_data_list(旋转)
+            "-show_format",       # 含 duration
             "-of", "json",
             path,
         ],
@@ -94,6 +113,9 @@ def probe_video(path: str) -> dict:
     fmt = data.get("format") or {}
     w = int(stream.get("width") or 0)
     h = int(stream.get("height") or 0)
+    rot = _rotation(stream)
+    if abs(rot) % 180 == 90:   # 旋转 ±90/±270 → 真实显示宽高互换
+        w, h = h, w
     # r_frame_rate 形如 "30000/1001"
     rate = stream.get("r_frame_rate") or "0/1"
     try:
@@ -111,4 +133,5 @@ def probe_video(path: str) -> dict:
         "color_transfer": ct,
         "is_hdr": ct in _HDR_TRANSFERS,
         "is_portrait": h > w,
+        "rotation": rot,
     }

@@ -17,6 +17,7 @@ import { DesktopComposer } from "./desktop-composer";
 import { DesktopChatThread } from "./chat-thread";
 import { DesktopPreviewPanel, type PreviewItem } from "./preview-panel";
 import { SettingsDrawer } from "./settings-drawer";
+import { VideoStudioDrawer } from "./video-studio-drawer";
 import { ConfirmDialog } from "./confirm-dialog";
 import { StoreMemoryPanel } from "./store-memory-panel";
 import { DeletedItemsPanel } from "./deleted-items-panel";
@@ -145,6 +146,7 @@ export function DesktopChatShell({
   const [preview, setPreview] = useState<PreviewItem | null>(null);
   // 设置抽屉（门店名 + AI key）：单窗口内打开，替代老 web 的门店设置页
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [videoStudioOpen, setVideoStudioOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [deletedOpen, setDeletedOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
@@ -861,6 +863,7 @@ export function DesktopChatShell({
         onCommand={(name) => {
           if (name === "new" || name === "clear") newChat();
           else if (name === "model" || name === "settings") setSettingsOpen(true);
+          else if (name === "video-studio") setVideoStudioOpen(true);
           else if (name === "help") chat.pushAssistantMessage(HELP_TEXT);
           else if (name === "cost") chat.pushAssistantMessage(`本月 AI 用量 ≈ ${liveSpend || "—"}`);
           else if (name === "agents") chat.pushAssistantMessage("可用子代理专家（用 run_subagent 派）：\n- general-purpose — 全能，可动手\n- explore — 只读探索·只查不改\n- plan — 只读规划·只出计划不执行");
@@ -923,6 +926,7 @@ export function DesktopChatShell({
       />
     </DesktopShell>
     <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} onStoreNameChange={setLiveStoreName} />
+    <VideoStudioDrawer open={videoStudioOpen} onClose={() => setVideoStudioOpen(false)} conversationId={chat.conversationId} />
     <StoreMemoryPanel open={memoryOpen} onClose={() => setMemoryOpen(false)} workingDir={workingDir} />
     <DeletedItemsPanel
       open={deletedOpen}
