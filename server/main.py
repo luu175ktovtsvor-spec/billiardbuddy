@@ -128,8 +128,11 @@ class UploadSecurityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         path = request.url.path
         if path.startswith("/uploads/"):
-            # 只允许图片扩展名
-            allowed_exts = {".jpg", ".jpeg", ".png", ".webp"}
+            # 只允许图片 + 视频/音频扩展名(防可执行文件;视频/音频不会被执行,剪辑台成片要能播)
+            allowed_exts = {
+                ".jpg", ".jpeg", ".png", ".webp",
+                ".mp4", ".mov", ".webm", ".m4v", ".m4a", ".mp3", ".aac", ".srt",
+            }
             if not any(path.lower().endswith(ext) for ext in allowed_exts):
                 from starlette.responses import Response
                 return Response(status_code=403, content="Forbidden")

@@ -62,6 +62,30 @@ export interface MediaJobStatus {
   error: string | null;
 }
 
+// AI 剪辑台：inventory 返回的候选片段(前端渲染选段卡片)
+export interface VideoCandidate {
+  media: string;
+  name: string;
+  duration: number;
+  is_portrait: boolean;
+  has_speech: boolean;
+  scenes: [number, number][];
+  phrases: { start: number; end: number; text: string }[];
+}
+
+// AI 剪辑台：时间轴文档的前端视图(分段卡片 + 字幕 + 概况)
+export interface VideoDocView {
+  width: number;
+  height: number;
+  fps: number;
+  duration: number;
+  media: Record<string, { src: string; duration: number }>;
+  clips: { id: string; media: string | null; src_in: number; src_out: number; order: number }[];
+  captions: { id: string; text: string | null; start: number | null; end: number | null; style: string | null }[];
+  music: string | null;
+  grade: string | null;
+}
+
 export interface AgentChatPayload {
   message: string;
   history?: unknown[];
@@ -530,6 +554,36 @@ class ApiClient {
   // 阶段5 助教一条龙：LLM 分镜 + 配文案（主题 → N 个分镜画面描述 + 一条社媒文案）
   studioStoryboard(input: { theme: string; shots?: number; subject?: string }) {
     return this.request<{ shots: string[]; caption: string }>("POST", "/api/v1/studio/storyboard", input);
+  }
+
+  // ── AI 剪辑台（/video-edit）：面板直接操作时间轴文档（与 AI 共用同一份真相源）──
+  // 理解本机视频素材（转写+切镜头）→ 候选片段菜单 + 草稿文档。慢 → 返回 job_id，轮询 getMediaJob 拿 result.{project,candidates,has_speech}
+  videoEditInventory(input: { video_paths: string[]; project?: string; conversation_id?: string | null }) {
+    return this.request<{ job_id: string; project: string }>("POST", "/api/v1/video-edit/inventory", input);
+  }
+
+  // 读当前时间轴文档（面板渲染分段卡片/字幕用）
+  getVideoProject(project: string) {
+    return this.request<{ project: string; doc: VideoDocView }>(
+      "GET", `/api/v1/video-edit/projects/${encodeURIComponent(project)}`);
+  }
+
+  // 对文档发原子操作（挑段/裁剪/排序/加删字幕/配乐）；校验不过整批回滚（ok=false 时 doc 不变）
+  applyVideoOps(project: string, operations: Record<string, unknown>[]) {
+    return this.request<{ ok: boolean; errors: string[]; doc: VideoDocView }>(
+      "POST", `/api/v1/video-edit/projects/${encodeURIComponent(project)}/ops`, { operations });
+  }
+
+  // 把已挑片段里的口播自动配成字幕
+  autoCaptionVideo(project: string, track = "sub") {
+    return this.request<{ ok: boolean; added?: number; errors?: string[]; doc: VideoDocView }>(
+      "POST", `/api/v1/video-edit/projects/${encodeURIComponent(project)}/auto_caption`, { track });
+  }
+
+  // 时间轴文档 → 成片 mp4。慢 → 返回 job_id，轮询 getMediaJob 拿 result.{urls,duration}
+  renderVideoProject(project: string, output_name = "成片", conversation_id?: string | null) {
+    return this.request<{ job_id: string }>(
+      "POST", `/api/v1/video-edit/projects/${encodeURIComponent(project)}/render`, { output_name, conversation_id });
   }
 
   // 轮询一个 media job 到结束（done/error），onTick 给进度回调。失败/超时抛错。

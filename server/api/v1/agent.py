@@ -28,6 +28,7 @@ from services.agent import skills as _agent_skills  # noqa: F401  注册 skill �
 from services.agent import computer_tools as _agent_computer  # noqa: F401  注册 computer_view/computer_control（DESKTOP_LOCAL）
 from services.agent import image_tools as _agent_image  # noqa: F401  注册 edit_image 本机改图（DESKTOP_LOCAL）
 from services.agent import background_tools as _agent_bg  # noqa: F401  注册 run_background（DESKTOP_LOCAL）
+from services.agent import video_edit_tools as _agent_videdit  # noqa: F401  注册 inventory_footage/edit_timeline/auto_caption/render_video（DESKTOP_LOCAL）
 from services.agent import reminders as _agent_reminders  # noqa: F401  注册 schedule_reminder/list/cancel（DESKTOP_LOCAL）
 from services.agent import plugins as _agent_plugins  # noqa: F401  注册 install_plugin（DESKTOP_LOCAL）
 from services.agent import mcp_client as _agent_mcp  # noqa: F401  MCP 客户端（动态发现外部 server 工具）
