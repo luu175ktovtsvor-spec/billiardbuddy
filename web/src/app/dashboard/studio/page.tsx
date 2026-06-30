@@ -142,12 +142,12 @@ export default function StudioPage() {
     if (!current.generationId) { setError("这张图没有来源记录，改不了；重新生成一张再改。"); return; }
     const instruction = editText.trim();
     setEditText("");
-    void runJob(() => api.studioEdit({ prompt: instruction, source_generation_id: current.generationId as string, ratio: current.ratio }), current.ratio);
+    void runJob(() => api.studioEdit({ prompt: instruction, source_generation_id: current.generationId as string, ratio: current.ratio, image_model: imageModel }), current.ratio);
   };
   const onChangeRatio = (r: string) => {
     setRatio(r);
     if (current?.generationId && !busy) {
-      void runJob(() => api.studioEdit({ prompt: "保持画面主体和风格不变，换成这个画幅比例重新构图", source_generation_id: current.generationId as string, ratio: r }), r);
+      void runJob(() => api.studioEdit({ prompt: "保持画面主体和风格不变，换成这个画幅比例重新构图", source_generation_id: current.generationId as string, ratio: r, image_model: imageModel }), r);
     }
   };
   // 局部重绘:把涂出来的 mask 存临时文件 → /studio/edit 带 mask_path 只改涂的那块
@@ -159,7 +159,7 @@ export default function StudioPage() {
       if (!saved.ok || !saved.path) throw new Error("蒙版没存成功，重试一下。");
       const gid = current.generationId, rr = current.ratio, maskPath = saved.path;
       setMaskMode(false);
-      void runJob(() => api.studioEdit({ prompt: instruction, source_generation_id: gid, mask_path: maskPath, ratio: rr }), rr);
+      void runJob(() => api.studioEdit({ prompt: instruction, source_generation_id: gid, mask_path: maskPath, ratio: rr, image_model: imageModel }), rr);
     } catch (e) {
       setError(e instanceof Error ? e.message : "局部重绘失败，稍后再试。");
     }
@@ -235,6 +235,7 @@ export default function StudioPage() {
     `rounded-md px-2.5 py-1 text-[12px] font-medium transition active:scale-[0.97] ${
       active ? "bg-[#10a37f] text-white" : "bg-black/[0.04] text-[#3a3a3c] hover:bg-black/[0.07] dark:bg-white/[0.06] dark:text-[#c8cace] dark:hover:bg-white/[0.1]"
     }`;
+  const isSeedream = imageModel.includes("seedream");   // 火山不支持 mask 局部重绘 → 局部改按钮禁用+提示
 
   return (
     <div className="flex h-screen w-full flex-col bg-white text-[#1d1d1f] antialiased dark:bg-[#0e0f11] dark:text-[#e6e7e9]">
@@ -408,8 +409,8 @@ export default function StudioPage() {
                 <button
                   type="button"
                   onClick={() => setMaskMode(true)}
-                  disabled={busy || !current.generationId}
-                  title="只改图上你圈出来的那一块"
+                  disabled={busy || !current.generationId || isSeedream}
+                  title={isSeedream ? "火山 Seedream 不支持局部重绘；想局部改请切到 gpt-image-2" : "只改图上你圈出来的那一块"}
                   className="mt-1.5 flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-[#10a37f]/30 bg-[#10a37f]/[0.06] text-[13px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/[0.12] active:scale-[0.99] disabled:opacity-50"
                 >
                   <Layers className="h-3.5 w-3.5" /> 圈一块局部改

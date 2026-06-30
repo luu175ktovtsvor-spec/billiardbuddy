@@ -59,6 +59,7 @@ class StudioEditIn(BaseModel):
     mask_path: str | None = None      # 局部重绘:同尺寸 alpha mask 的本机路径(透明处=要改);无=整图改
     ratio: str = "3:4"
     count: int = 1                    # 出几版(变体)
+    image_model: str | None = None    # 跟随前端选的模型(改图也用同一个);火山 Seedream 不支持 mask,局部重绘前端已禁用
     conversation_id: str | None = None
     quality: str = "medium"
 
@@ -234,6 +235,7 @@ async def studio_edit(
     count = _clamp_count(body.count)                          # H3
     store_id, user_id, conv = store.id, user.id, body.conversation_id
     prompt, src, ratio, quality, mask = body.prompt, body.source_generation_id, body.ratio, body.quality, body.mask_path
+    img_model = body.image_model
 
     async def work_fn(progress):
         from core.tenant import set_tenant
@@ -243,7 +245,7 @@ async def studio_edit(
             async with async_session() as wdb:
                 st = await wdb.get(Store, store_id)
                 res = await poster_service.generate_images(
-                    wdb, st, user_id, prompt, image_model=None, ratio=ratio,
+                    wdb, st, user_id, prompt, image_model=img_model, ratio=ratio,
                     refine_from=src, mask_path=mask, count=count, conversation_id=conv, quality=quality,
                 )
                 # 血缘父 = 被改的源成品
