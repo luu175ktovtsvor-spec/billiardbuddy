@@ -301,6 +301,12 @@ ipcMain.handle("desktop:openStudio", () => {
   return { ok: true, id: w.id };
 });
 
+// 视频创作工作区：独立窗口（/dashboard/video：挑高光→配文案→秒级预览→对话改任何东西→出片）。
+ipcMain.handle("desktop:openVideoStudio", () => {
+  const w = createWindow({ route: "/dashboard/video" });
+  return { ok: true, id: w.id };
+});
+
 // M2 工作室成品同步：子窗（工作室）出了成品 → 广播给其它窗口，主窗"最近作品"据此刷新。
 ipcMain.handle("desktop:studioArtifact", (e, payload) => {
   for (const w of windows) {
@@ -312,6 +318,19 @@ ipcMain.handle("desktop:studioArtifact", (e, payload) => {
 });
 
 app.whenReady().then(async () => {
+  // ── V2 视频渲染 worker 模式:后端设 env 拉起本 app 的 Chromium 做离屏逐帧渲染,渲完即退。──
+  // dev 和装机包同一套(复用自带 Chromium,不额外打 Playwright)。不开窗、不起后端。
+  if (process.env.QF_RENDER_MANIFEST) {
+    try {
+      const { runRenderWorker } = require("./render-worker");
+      await runRenderWorker(process.env.QF_RENDER_MANIFEST, process.env.QF_RENDER_OUT);
+      app.exit(0);
+    } catch (e) {
+      console.error("[render-worker] 失败:", e);
+      app.exit(1);
+    }
+    return;
+  }
   if (MANAGE_BACKEND) {
     // 全本地:先拉起本地后端(本地 SQLite),就绪后再开窗口
     const r = await backend.start({

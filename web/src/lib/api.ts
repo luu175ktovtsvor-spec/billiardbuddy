@@ -568,6 +568,18 @@ class ApiClient {
     return this.request<{ job_id: string; project: string }>("POST", "/api/v1/video-edit/inventory", input);
   }
 
+  // 一键智能出方案（氛围模式=切窗+VLM挑高光+拼片）。慢 → 返回 job_id，轮询拿 result.{project,report,used_vlm}
+  videoEditAutoPlan(input: {
+    video_paths: string[];
+    mode?: "ambient" | "speech";
+    ratio?: "9:16" | "1:1" | "16:9" | "original";
+    target_duration?: number;
+    project?: string;
+    conversation_id?: string | null;
+  }) {
+    return this.request<{ job_id: string; project: string }>("POST", "/api/v1/video-edit/auto_plan", input);
+  }
+
   // 读当前时间轴文档（面板渲染分段卡片/字幕用）
   getVideoProject(project: string) {
     return this.request<{ project: string; doc: VideoDocView }>(
@@ -590,6 +602,41 @@ class ApiClient {
   renderVideoProject(project: string, output_name = "成片", conversation_id?: string | null) {
     return this.request<{ job_id: string }>(
       "POST", `/api/v1/video-edit/projects/${encodeURIComponent(project)}/render`, { output_name, conversation_id });
+  }
+
+  // ── V2 自研模板渲染器（氛围·有包装·可对话改文案）──
+  // V2 出方案+配文案（不渲染）。慢(VLM) → job_id，轮询拿 result.{project,report,brand,captions,used_vlm}
+  videoEditAutoPlanV2(input: {
+    video_paths: string[];
+    mode?: "ambient" | "speech";
+    ratio?: "9:16" | "1:1" | "16:9" | "original";
+    target_duration?: number;
+    project?: string;
+    conversation_id?: string | null;
+  }) {
+    return this.request<{ job_id: string; project: string }>("POST", "/api/v1/video-edit/auto_plan_v2", input);
+  }
+
+  // 对话改文案（快·同步）：店主大白话指令 → 新文案（前端即时刷新预览）
+  recaptionVideo(project: string, tonality: string) {
+    return this.request<{ ok: boolean; brand: string; captions: string[] }>(
+      "POST", `/api/v1/video-edit/projects/${encodeURIComponent(project)}/recaption`, { tonality });
+  }
+
+  // 对话改任何东西（快·同步）：店主大白话反馈 → LLM 理解 → 改方案（换段/删段/改序/短长/调色/配乐/文案）
+  // 返回 shots(带 src/start/end/caption) 供前端重建预览 + reply(大白话回执)
+  editVideoFeedback(project: string, feedback: string) {
+    return this.request<{
+      ok: boolean; reply: string; brand: string;
+      shots: { src: string; start: number; end: number; caption: string }[];
+      grade?: string; ratio?: string; music_mood?: string;
+    }>("POST", `/api/v1/video-edit/projects/${encodeURIComponent(project)}/edit_feedback`, { feedback });
+  }
+
+  // V2 出片（带包装）。慢(逐帧渲染) → job_id，轮询拿 result.{urls,duration}
+  renderVideoV2(project: string, output_name = "成片", conversation_id?: string | null) {
+    return this.request<{ job_id: string }>(
+      "POST", `/api/v1/video-edit/projects/${encodeURIComponent(project)}/render_v2`, { output_name, conversation_id });
   }
 
   // 轮询一个 media job 到结束（done/error），onTick 给进度回调。失败/超时抛错。

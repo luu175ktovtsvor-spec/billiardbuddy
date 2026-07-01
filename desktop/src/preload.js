@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld("electron", {
   info: () => ipcRenderer.invoke("desktop:info"),
   newWindow: () => ipcRenderer.invoke("desktop:newWindow"),
   openStudio: () => ipcRenderer.invoke("desktop:openStudio"),
+  openVideoStudio: () => ipcRenderer.invoke("desktop:openVideoStudio"),
   // M2 工作室成品同步：子窗报一声、其它窗口订阅刷新"最近作品"
   notifyStudioArtifact: (payload) => ipcRenderer.invoke("desktop:studioArtifact", payload),
   onStudioArtifact: (cb) => {

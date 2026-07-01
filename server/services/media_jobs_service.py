@@ -11,7 +11,7 @@ from sqlalchemy import select, update as sa_update
 from core.exceptions import AIServiceError
 from models.media_job import MediaJob
 
-VALID_KINDS = {"generate", "edit", "variations", "i2v", "compose", "video_inventory", "video_render"}
+VALID_KINDS = {"generate", "edit", "variations", "i2v", "compose", "video_inventory", "video_render", "video_auto_plan"}
 _ACTIVE = ("queued", "running")
 
 
