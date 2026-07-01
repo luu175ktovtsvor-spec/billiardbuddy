@@ -71,6 +71,15 @@ if (fs.existsSync(bundledStyles)) addData.push(`--add-data=${bundledStyles}${sep
 // fastembed_cache/。装机后 embedder.py 据 sys._MEIPASS 找它、离线直接语义嵌入(不联网下载)。
 const fembedCache = ensureFastembedModel();
 if (fembedCache) addData.push(`--add-data=${fembedCache}${sep}fastembed_cache`);
+// 视频渲染资产：V2 模板/渲染脚本 + CJK 字体 + whisper 权重。装机出片/口播必需(见审查 P0-2)。
+// 运行时用 sys._MEIPASS 解析(template_render._bundled_dir / transcribe / ffbin 的 frozen 分支)。
+const videoAssets = path.join(SERVER, "services", "video_edit", "assets");
+if (fs.existsSync(videoAssets)) addData.push(`--add-data=${videoAssets}${sep}video_edit_assets`);
+const cjkFonts = path.join(SERVER, "assets", "fonts");
+if (fs.existsSync(cjkFonts)) addData.push(`--add-data=${cjkFonts}${sep}assets_fonts`);
+const whisperDir = path.join(SERVER, "ml_models", "faster-whisper-medium");
+if (fs.existsSync(whisperDir)) addData.push(`--add-data=${whisperDir}${sep}faster-whisper-medium`);
+else console.warn("⚠️ 未找到 whisper 权重(server/ml_models/faster-whisper-medium)——口播转录装机版将不可用");
 
 function ensureFastembedModel() {
   // 构建期把 bge-small-zh 语义模型下到 .fastembed-model/fastembed_cache/(gitignore)，供 --add-data 进包。

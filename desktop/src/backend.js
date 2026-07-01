@@ -16,6 +16,16 @@ let _port = parseInt(process.env.DESKTOP_BACKEND_PORT || "8077", 10);
 let _proc = null;
 let _stopping = false;
 
+// 解析 ffmpeg/ffprobe 二进制路径注入后端(装机版 ffbin.py 回退路径不存在)。
+// asar 内二进制不可执行 → 指到 app.asar.unpacked(需 build.asarUnpack 带 ffmpeg-static/ffprobe-static)。
+function resolveFfBins() {
+  const out = {};
+  const unpack = (p) => (typeof p === "string" ? p.replace("app.asar", "app.asar.unpacked") : p);
+  try { const f = require("ffmpeg-static"); if (f) out.FFMPEG_BIN = unpack(f); } catch { /* 没装则不注入,ffbin 自兜底 */ }
+  try { const p = require("ffprobe-static"); if (p && p.path) out.FFPROBE_BIN = unpack(p.path); } catch { /* ignore */ }
+  return out;
+}
+
 function backendUrl() { return `http://${HOST}:${_port}`; }
 
 // 读取【内置 bundle 密钥】并注入后端进程 env（全内置·用户零配置；key 不写进 git 源码，只放 gitignored 文件/打包资源）。
@@ -110,6 +120,13 @@ function _spawnProc({ userDataDir, repoRoot, onLog }) {
     // 上传/海报/Logo/二维码落点:app 包内是【只读】的(装到 /Applications 或 Gatekeeper translocation),
     // 不指开会让生图写盘崩、最坏首启 mkdir 崩。指到 userData 可写目录。
     UPLOAD_DIR: path.join(userDataDir, "uploads"),
+    // V2 视频渲染:后端拉起本 app 自带的 Chromium 做离屏渲染(不额外打 Playwright,见开发文档 §8)。
+    // ELECTRON_BIN=本 app 二进制;QF_RENDER_MAIN=要传的脚本(dev 传 main.js;装机包 baked main → 空,不传)。
+    ELECTRON_BIN: process.execPath,
+    QF_RENDER_MAIN: require("electron").app.isPackaged ? "" : path.join(__dirname, "main.js"),
+    // ffmpeg/ffprobe 二进制路径(装机版 ffbin.py 的回退写死 desktop/node_modules,装机包不存在 → 必须显式注入)。
+    // asar 里的二进制不可执行 → 指到 app.asar.unpacked(需 package.json build.asarUnpack 带 ffmpeg-static/ffprobe-static)。
+    ...resolveFfBins(),
   };
   // PyInstaller onedir 产物:resources/backend/billiards_backend/billiards_backend(目录里的内层 exe)。
   const exeName = process.platform === "win32" ? "billiards_backend.exe" : "billiards_backend";

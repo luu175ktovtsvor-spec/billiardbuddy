@@ -8,14 +8,17 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from functools import lru_cache
 from pathlib import Path
 
 # 默认模型:打包预置的 medium(离线加载)。env 可覆盖(如换 large-v3 或开发机用 small)。
-_DEFAULT_MODEL = os.environ.get(
-    "WHISPER_MODEL_DIR",
-    str(Path(__file__).resolve().parents[2] / "ml_models" / "faster-whisper-medium"),
-)
+# 装机包(PyInstaller frozen)从 sys._MEIPASS/faster-whisper-medium 取(见审查 P0-2)。
+if getattr(sys, "frozen", False):
+    _DEV_WHISPER = str(Path(sys._MEIPASS) / "faster-whisper-medium")  # type: ignore[attr-defined]
+else:
+    _DEV_WHISPER = str(Path(__file__).resolve().parents[2] / "ml_models" / "faster-whisper-medium")
+_DEFAULT_MODEL = os.environ.get("WHISPER_MODEL_DIR", _DEV_WHISPER)
 
 
 @lru_cache(maxsize=2)
@@ -60,10 +63,14 @@ def transcribe(
         video_path,
         language=language,
         word_timestamps=True,
-        vad_filter=True,  # ★防无语音幻觉
+        vad_filter=True,  # ★防无语音幻觉(第一道)
     )
     words: list[dict] = []
     for seg in segments:
+        # ★第二道防幻觉:VAD 偶尔漏网,摆拍片对着背景音乐会幻听出"啊啊啊/by bwd6"之类垃圾。
+        #   用 whisper 自带的置信度挡:no_speech_prob 高(像没人说话)或 avg_logprob 低(模型自己没把握)→ 整段丢。
+        if getattr(seg, "no_speech_prob", 0.0) > 0.6 or getattr(seg, "avg_logprob", 0.0) < -1.0:
+            continue
         for w in seg.words or []:
             words.append({"text": w.word, "start": round(w.start, 3), "end": round(w.end, 3)})
 

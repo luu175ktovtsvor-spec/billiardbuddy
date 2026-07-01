@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 from .ffbin import probe_video
+from .operations import apply_operations
 from .render import render_edl
 from .scene_detect import detect_scenes
 from .subtitles import _ts
@@ -162,3 +163,156 @@ def render_timeline(doc: TimelineDoc, out_path: str, *, edit_dir: str) -> str:
         build_srt_from_doc(doc, srt)
     edl = doc.to_edl(subtitles_srt=srt)
     return render_edl(edl, out_path, edit_dir=str(work))
+
+
+# ── V2 方案 = 一份可编辑的 plan(shots 是真相源)。对话改任何东西 = 改这份 plan。──
+
+def _plan_path(edit_dir: str) -> Path:
+    return Path(edit_dir) / "v2_plan.json"
+
+
+def load_v2_plan(edit_dir: str) -> dict:
+    f = _plan_path(edit_dir)
+    return json.loads(f.read_text()) if f.exists() else {}
+
+
+def save_v2_plan(edit_dir: str, plan: dict) -> None:
+    import os
+    p = _plan_path(edit_dir)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(plan, ensure_ascii=False))
+    os.replace(tmp, p)   # 原子替换,防写一半崩坏
+
+
+def plan_to_doc(plan: dict) -> TimelineDoc:
+    """把 plan.shots 建成可预览/渲染的时间轴文档(每 shot = add_clip;去重登记 media)。"""
+    doc = new_doc(width=int(plan.get("width", 1080)), height=int(plan.get("height", 1920)))
+    doc.tracks["v"] = Track(kind="video", order=0)
+    doc.tracks["sub"] = Track(kind="caption", order=1)
+    src_to_mid: dict[str, str] = {}
+    ops: list[dict] = []
+    for s in plan.get("shots", []):
+        src = s["src"]
+        mid = src_to_mid.get(src)
+        if mid is None:
+            mid = f"m{len(src_to_mid) + 1}"
+            src_to_mid[src] = mid
+            doc.media[mid] = MediaRef(src=src, duration=probe_video(src)["duration_s"], kind="video")
+        ops.append({"op": "add_clip", "track": "v", "media": mid, "src_in": s["start"], "src_out": s["end"]})
+    if plan.get("grade"):
+        ops.append({"op": "set_grade", "grade": plan["grade"]})
+    doc, errs = apply_operations(doc, ops)
+    if errs:
+        raise RuntimeError("plan→doc 失败:" + "；".join(errs))
+    return doc
+
+
+def auto_plan_v2(
+    video_paths: list[str],
+    edit_dir: str,
+    *,
+    ratio: str = "9:16",
+    target_duration: float = 16.0,
+    grade: str = "warm_cinematic",
+) -> dict:
+    """氛围模式【出方案 + 配文案】(不渲染,快):挑高光(VLM) → 导演配文案 → 落可编辑 plan。
+
+    v2_plan.json = {width,height,grade,ratio,brand,music_mood,shots[],pool[]};shots 是后续对话编辑的真相源。
+    返回 {doc, report, brand, captions, used_vlm}。渲染走 render_v2_project(慢·导出时才跑)。
+    """
+    import glob as _glob
+
+    from .director import caption_shots, plan_style
+    from .planners.ambient import plan_ambient
+    from .vlm import classify_content
+
+    res = plan_ambient(video_paths, edit_dir, ratio=ratio, target_duration=target_duration, grade=grade)
+    picked = res["report"]["picked"]                       # {media,start,end,subject,score,...}
+    media_src = {mid: m["src"] for mid, m in res["doc"]["media"].items()}
+
+    # ── ★内容检测:是不是台球 + 哪类场景(通用兜底 + 台球加持的开关)──
+    sample = sorted(_glob.glob(str(Path(edit_dir) / "frames" / "*.jpg")))[:8]
+    cls = classify_content(sample)
+    is_bil, scene = cls["is_billiards"], cls["scene"]
+    cap_ctx = sty_ctx = None
+    mhint = None
+    if is_bil:
+        from .billiards_video_kb import caption_guidance, music_hint, style_guidance
+        cap_ctx, sty_ctx, mhint = caption_guidance(scene), style_guidance(scene), music_hint(scene)
+
+    cap = caption_shots(picked, domain_ctx=cap_ctx)
+    shots = [{
+        "src": media_src.get(p["media"], ""), "start": p["start"], "end": p["end"],
+        "subject": p.get("subject", ""), "score": p.get("score", 5),
+        "caption": cap["captions"][i] if i < len(cap["captions"]) else "",
+    } for i, p in enumerate(picked)]
+    sty = plan_style(shots, domain_ctx=sty_ctx, mood=(mhint["mood"] if mhint else None))
+    for s, st in zip(shots, sty["shots_style"]):
+        s["style"] = st
+
+    # 音乐:导演给的 mood+key;台球场景则用场景建议的 mood。
+    music = sty.get("music", {"mood": "auto", "key": 0})
+    if mhint and mhint.get("mood") not in (None, "auto"):
+        music = {"mood": mhint["mood"], "key": music.get("key", 0)}
+    # ★内容派生 key:不同素材(片段/时长指纹)必得不同调,保证音乐不千篇一律(不靠 LLM 变)。
+    import hashlib
+
+    from .bgm import beat_for_mood
+
+    sig = "|".join(f"{s['src']}:{s['start']}:{s['end']}" for s in shots)
+    content_key = int(hashlib.md5(sig.encode()).hexdigest(), 16) % 12
+    music["key"] = (int(music.get("key", 0)) + content_key) % 12
+
+    # ★卡点:把每段时长吸附到整数拍,切点就落在鼓点上(超出源片则往下取整,至少 2 拍)。
+    beat = beat_for_mood(music["mood"])
+    for s in shots:
+        srcdur = probe_video(s["src"])["duration_s"]
+        beats = max(2, round((s["end"] - s["start"]) / beat))
+        end = s["start"] + beats * beat
+        if end > srcdur:                       # 超界 → 往下取整到能放下的拍数
+            beats = max(1, int((srcdur - s["start"]) / beat))
+            end = s["start"] + beats * beat
+        s["end"] = round(end, 3)
+
+    w, h = res["size"]
+    plan = {"width": w, "height": h, "grade": grade, "ratio": ratio, "brand": cap["brand"],
+            "domain": "billiards" if is_bil else "general", "scene": scene,
+            "music": music, "theme": sty["theme"], "customCss": sty.get("customCss", ""),
+            "shots": shots, "pool": res.get("pool", [])}
+    save_v2_plan(edit_dir, plan)
+    return {"doc": plan_to_doc(plan).model_dump(), "report": res["report"], "brand": cap["brand"],
+            "captions": [s["caption"] for s in shots], "used_vlm": res["used_vlm"]}
+
+
+def recaption_v2(edit_dir: str, tonality: str) -> dict:
+    """对话改文案(不渲染,快):读 plan.shots + 店主指令 → LLM 带上下文重写 → 存回。返回 {brand, captions}。"""
+    from .director import caption_shots
+
+    plan = load_v2_plan(edit_dir)
+    shots = plan.get("shots", [])
+    dctx = None
+    if plan.get("domain") == "billiards":
+        from .billiards_video_kb import caption_guidance
+        dctx = caption_guidance(plan.get("scene", ""))
+    cap = caption_shots(shots, tonality=tonality, prev_captions=[s.get("caption", "") for s in shots], domain_ctx=dctx)
+    for s, c in zip(shots, cap["captions"]):
+        s["caption"] = c
+    plan["brand"] = cap["brand"]
+    save_v2_plan(edit_dir, plan)
+    return {"brand": cap["brand"], "captions": [s["caption"] for s in shots]}
+
+
+def render_v2_project(edit_dir: str, out_path: str) -> str:
+    """按当前 plan 把方案渲成 V2 包装成片(慢·导出时跑)。返回成片路径。"""
+    from .template_render import render_v2
+
+    plan = load_v2_plan(edit_dir)
+    doc = plan_to_doc(plan)
+    shots = plan.get("shots", [])
+    music = plan.get("music", {}) if isinstance(plan.get("music"), dict) else {}
+    return render_v2(doc, out_path, edit_dir=edit_dir, brand=plan.get("brand", "精彩瞬间"),
+                     captions=[s.get("caption", "") for s in shots],
+                     styles=[s.get("style") for s in shots],
+                     theme=plan.get("theme"), custom_css=plan.get("customCss", ""),
+                     grade=plan.get("grade", "warm_cinematic"),
+                     music_mood=music.get("mood", "auto"), music_key=int(music.get("key", 0)))

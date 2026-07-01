@@ -34,6 +34,7 @@ export interface ElectronBridge {
   newWindow?(): Promise<{ ok: boolean; windowCount?: number; id?: number; workbenchId?: string }>;
   /** 打开「生成工作室」独立窗口（/dashboard/studio 路由）。 */
   openStudio?(): Promise<{ ok: boolean; id?: number }>;
+  openVideoStudio?(): Promise<{ ok: boolean; id?: number }>;
   /** M2：工作室出了成品，通知其它窗口刷新「最近作品」。 */
   notifyStudioArtifact?(payload: { kind?: string; generationId?: string; url?: string }): Promise<{ ok: boolean }>;
   /** M2：订阅其它窗口（工作室）的成品事件，回调里刷新「最近作品」。返回取消订阅函数。 */
