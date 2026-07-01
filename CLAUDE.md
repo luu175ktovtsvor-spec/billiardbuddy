@@ -50,6 +50,7 @@
 - AI 调用结果写 `generations` 表；所有 Generation 查询加 `is_deleted == False`
 - **多租户**：`core/tenant.py` 自动过滤只覆盖 generations/usage_quotas；其它带 store_id 的表靠手写 `.where(store_id==)`，漏写=跨店泄露
 - **改接口后跑 `python3 scripts/build_coupling_map.py --write`** 刷新耦合地图接线表，否则 `test_coupling_map_fresh.py` 红。
+- **测试期用真 OpenAI key 联调生图/改图，别本机直连 `api.openai.com`**：本机若挂了本地代理（Clash 等），生图这类慢请求（gpt-image-2 编辑可能要等几分钟才有响应）会被代理隧道中途断线——但 OpenAI 那头其实已经生成完并扣费，图片结果传不回来、钱白花。已在美国 relay 服务器（`zzyppz.cn`）加了一条**测试专用**路由 `/relay/openai-test/`（与生产 `/relay/openai/` 完全隔离，2026-07-01 新加，owner 要求做成可长期复用的网关形态，不是单次任务专用）；具体 base_url/令牌/测试 key 记在 `server/.env.usrelay.local`（gitignored，本地已有，别再问 owner 要）。免费验证鉴权可用 `GET /relay/openai-test/v1/models`（不计费）。
 
 ### Prompt 模板（YAML）
 - 必须有 `key:`；渲染类(knowledge/operation/copywriting/activity)还需 `template:`（缺它是 `render()` 时 KeyError）
