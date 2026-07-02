@@ -82,8 +82,9 @@ docs/待改清单-真机验收与打包-2026-06-23.md
 gateway/*.env
 gateway/gw.env
 
-# 桌面 app 内置配置(含 app 令牌+网关地址)——打包时打进包,不进 git
+# 桌面 app 内置配置(含 app 令牌+网关地址)——打包时打进包,不进 git;.bak 是含 key 的手工备份,同样绝不进 git
 desktop/bundled.env
+desktop/bundled.env.bak*
 
 # Playwright-Electron 测试输出(可再生,不入库)
 desktop/e2e-pw/test-results/
