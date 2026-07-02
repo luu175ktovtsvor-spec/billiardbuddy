@@ -81,6 +81,7 @@
       }
     ],
     "mac": {
+      "icon": "build/icon.icns",
       "target": [
         "dmg"
       ],
@@ -89,6 +90,7 @@
       "identity": null
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "nsis"
       ],
@@ -103,7 +105,10 @@
       "shortcutName": "台球运营助手",
       "language": "2052",
       "installerLanguages": ["zh_CN", "en_US"],
-      "license": "build/license_zh.txt"
+      "license": "build/license_zh.txt",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerSidebar": "build/installerSidebar.bmp"
     },
     "linux": {
       "target": [
