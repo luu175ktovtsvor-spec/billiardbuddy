@@ -49,7 +49,7 @@ function init({ app, getWindow, onLog }) {
       defaultId: 0,
       cancelId: 1,
       title: "有新版本",
-      message: `本机 AI 助手 ${info.version} 已下载完成`,
+      message: `台球运营助手 ${info.version} 已下载完成`,
       detail: "重启后即可用上新版本。也可以稍后退出软件时自动更新。",
     });
     if (response === 0) {

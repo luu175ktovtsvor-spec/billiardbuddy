@@ -62,7 +62,7 @@ export function DesktopSidebar({
         <span className="flex h-6 w-6 items-center justify-center rounded-md bg-[#10a37f]/15 text-[#10a37f]">
           <Terminal className="h-3.5 w-3.5" />
         </span>
-        <span className="font-mono text-[13px] font-medium tracking-tight text-[#1d1d1f] dark:text-[#e6e7e9]">本机 AI 助手</span>
+        <span className="font-mono text-[13px] font-medium tracking-tight text-[#1d1d1f] dark:text-[#e6e7e9]">台球运营助手</span>
       </div>
 
       <div className="flex gap-1.5 px-2.5">

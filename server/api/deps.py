@@ -27,7 +27,15 @@ async def get_current_user(db: Annotated[AsyncSession, Depends(get_db)]) -> User
     的业务路由零改动。"""
     user = (await db.execute(select(User).order_by(User.created_at).limit(1))).scalars().first()
     if not user:
-        raise UnauthorizedException("本地用户未初始化（请重启 App 完成首启 seed）")
+        # 自愈：首启建库被中断（强杀/断电/超时闸刀）会留下"库在、身份没种上"的残局——重启也修不好，
+        # 前端每个请求都 401"本地身份异常"（1.0.0 真机事故）。这里按需补种一次（幂等，内部有
+        # "已有用户则跳过"守卫），补完重查；仍然没有才报错。
+        from db.init_local import _seed_local_owner
+
+        await _seed_local_owner()
+        user = (await db.execute(select(User).order_by(User.created_at).limit(1))).scalars().first()
+        if not user:
+            raise UnauthorizedException("本地用户未初始化（请重启 App 完成首启 seed）")
     return user
 
 
