@@ -4,7 +4,6 @@
 // 免登录：本地 owner 由 getMe 自动加载，不再有登录守卫/跳转。
 import { useAuth } from "@/hooks/auth-context";
 import { ErrorBoundary } from "@/components/error-boundary";
-import { ToastProvider } from "@/components/ui/toast";
 import { ClientErrorReporter } from "@/components/client-error-reporter";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -28,10 +27,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <ErrorBoundary>
-      <ToastProvider>
-        <ClientErrorReporter />
-        {children}
-      </ToastProvider>
+      <ClientErrorReporter />
+      {children}
     </ErrorBoundary>
   );
 }
