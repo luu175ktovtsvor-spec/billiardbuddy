@@ -227,3 +227,17 @@ systemctl restart dataeye-receiver
 - `curl` 返回 401 → 令牌没在 `INGEST_TOKENS` 清单里,或 systemd env 改了没 `daemon-reload` + `restart`。
 - `curl` 返回 200 但 `accepted:0 duplicated:0` → 检查 batch 是不是空数组,或 `kind` 拼写是否是 `event|gen|trace|store` 四选一之外的值(未知 kind 只落 raw_inbox,不整理,也算 accepted)。
 - 磁盘涨得快 → 先看 `transcripts/` 目录,轨迹原文默认永久保留,吃紧时再定滚动清理策略(见计划 PART 6)。
+
+## ⚠️ 重部署代码(改了 receiver 后同步到服务器)
+
+服务器 `/opt/dataeye/` 下有几样**只在服务器、开发机没有**的东西:`.venv/`(依赖)、`dataeye.env`(密钥)、`transcripts/`(数据)。
+用 `rsync --delete` 从开发机同步 `dataeye/` 会把它们当"多余文件"删掉(踩过一次)。**重部署务必带排除**:
+
+```bash
+rsync -az --delete \
+  --exclude '.venv' --exclude 'dataeye.env' --exclude 'transcripts' --exclude '__pycache__' \
+  dataeye/ root@<app机>:/opt/dataeye/
+systemctl restart dataeye-receiver
+```
+
+万一误删了 `.venv`/`dataeye.env`:重跑幂等部署脚本即可重建 venv + 重生成密钥(DB/schema 不受影响;但**密钥会换新**,记得同步更新已发出去的客户端令牌)。
