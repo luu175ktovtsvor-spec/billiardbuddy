@@ -11,6 +11,7 @@ import { X, Loader2, Check, Cpu, Image as ImageIcon, Store, ShieldCheck, Puzzle,
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
 import { applyTheme, getTheme, type ThemeMode } from "@/lib/theme";
+import { applyFontSize, getFontSize, type FontSizeMode } from "@/lib/font-size";
 import type { StoreMemoryItem } from "@/types/store";
 
 type McpServer = { name: string; command?: string; status?: string; tools?: number; disabled?: boolean };
@@ -54,6 +55,9 @@ export function SettingsDrawer({
   // P1-10 深浅色:亮/暗/跟随系统。客户端再读真实偏好(避免 SSR 不一致)。
   const [themeMode, setThemeMode] = useState<ThemeMode>("system");
   useEffect(() => { setThemeMode(getTheme()); }, []);
+  // B4：字号三档(标准/大/特大)，客户端再读真实偏好(避免 SSR 不一致)。
+  const [fontSizeMode, setFontSizeMode] = useState<FontSizeMode>("standard");
+  useEffect(() => { setFontSizeMode(getFontSize()); }, []);
   const [loading, setLoading] = useState(true);
   const [storeId, setStoreId] = useState<string | null>(null);
   const [storeName, setStoreName] = useState("");
@@ -424,6 +428,26 @@ export function SettingsDrawer({
                   </button>
                 ))}
               </div>
+
+              {/* B4：字号三档(标准/大/特大)，老板年龄层高感知，同一「外观」区紧跟深浅色切换。 */}
+              <div className="mb-1.5 mt-4 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">字号大小</div>
+              <div className="inline-flex rounded-lg border border-black/[0.08] bg-black/[0.015] p-0.5 dark:border-white/[0.08] dark:bg-white/[0.03]">
+                {([["standard", "标准"], ["large", "大"], ["xlarge", "特大"]] as const).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => { applyFontSize(mode); setFontSizeMode(mode); }}
+                    className={`rounded-md px-3 py-1.5 text-[12px] font-medium transition ${
+                      fontSizeMode === mode
+                        ? "bg-white text-[#1d1d1f] shadow-sm dark:bg-white/[0.12] dark:text-[#e6e7e9]"
+                        : "text-[#86868b] hover:text-[#1d1d1f] dark:text-[#8a8c93] dark:hover:text-[#e6e7e9]"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1.5 text-[11.5px] leading-snug text-[#a1a1a6] dark:text-[#6e7077]">看不清小字就选「大」或「特大」，界面文字和按钮跟着一起放大。</p>
             </section>
 
             <section className="mb-5">
@@ -626,6 +650,8 @@ export function SettingsDrawer({
               className="flex h-9 w-full items-center justify-center gap-1.5 rounded-lg bg-[#10a37f] text-[13px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.99] disabled:opacity-50">
               {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />} 保存
             </button>
+            {/* B-Task-2 合规署名：MiSans 官方 EULA 要求嵌入使用需署名。 */}
+            <p className="mt-2 text-center text-[10.5px] leading-snug text-[#c7c7cc] dark:text-[#4a4c52]">本软件界面字体使用小米 MiSans</p>
           </div>
         )}
       </aside>
