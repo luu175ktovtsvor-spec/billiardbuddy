@@ -33,6 +33,14 @@ export default function RootLayout({
               '(function(){try{var t=localStorage.getItem("theme");var d=t==="dark"||((!t||t==="system")&&window.matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.classList.toggle("dark",d);}catch(e){}})();',
           }}
         />
+        {/* B4 字号三档防闪烁:paint 前按 localStorage("fontSize") 给 <html> 设 CSS zoom,避免先标准后变大的跳一下。
+            用法和取值见 lib/font-size.ts(标准/大/特大 三档,换算成相对标准档的缩放比例)。 */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              '(function(){try{var f=localStorage.getItem("fontSize");var z=f==="large"?17.5/16:f==="xlarge"?19/16:1;if(z!==1){document.documentElement.style.zoom=String(z);}}catch(e){}})();',
+          }}
+        />
       </head>
       <body className="min-h-screen bg-[#F2F2F7] antialiased">
         <Providers>{children}</Providers>

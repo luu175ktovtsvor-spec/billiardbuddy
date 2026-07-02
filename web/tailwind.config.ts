@@ -11,6 +11,23 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      // B-Task-2：内置中文字体 MiSans（web/src/app/globals.css 里 @font-face 已注册 400/600 两个字重）。
+      // Tailwind Preflight 默认把 html { font-family: theme('fontFamily.sans', ...) } 套到根节点、
+      // 全站继承，这里覆盖 sans 键即可全局生效，不用逐组件加 class。
+      // Mac：PingFang SC 排在 MiSans 前面先命中，观感和之前一样不变。
+      // Windows：没有 PingFang，落到内置的 MiSans，不再是系统微软雅黑（雅黑无中间字重、小字发糊）。
+      fontFamily: {
+        sans: [
+          "-apple-system",
+          "BlinkMacSystemFont",
+          "PingFang SC",
+          "MiSans",
+          "Microsoft YaHei",
+          "Segoe UI",
+          "Arial",
+          "sans-serif",
+        ],
+      },
       colors: {
         // 品牌主色:iOS 系统蓝(2026-06-12 用户拍板苹果风,tint 用法:只给可点元素)
         brand: {

@@ -2,6 +2,26 @@
 @tailwind components;
 @tailwind utilities;
 
+/* B-Task-2：内置中文字体 MiSans（小米官方 EULA 允许商用嵌入，需署名/不可改编/不可单独再分发——
+   许可文件随包放在 public/fonts/、署名句见设置抽屉底部）。只打 Regular(400) + Semibold(600) 两个
+   字重（全 app 字重纪律只用这两档，禁 700）。原始 TTF 不子集化、不转 woff2（许可禁止改编）。
+   Mac 上 tailwind.config.ts 的 font-sans 栈里 PingFang SC 排在 MiSans 前面，先命中、观感不变；
+   Windows 没有 PingFang，才落到这里内置的 MiSans，不再是系统雅黑（雅黑无中间字重、UI 层级会塌）。 */
+@font-face {
+  font-family: "MiSans";
+  src: url("/fonts/MiSans-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "MiSans";
+  src: url("/fonts/MiSans-Semibold.ttf") format("truetype");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
 @layer base {
   :root {
     --background: #ffffff;
