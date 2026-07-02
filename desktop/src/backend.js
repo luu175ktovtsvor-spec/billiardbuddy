@@ -69,7 +69,7 @@ function pingHealth() {
   });
 }
 
-async function _waitReady(timeoutMs = 60000) {  // 冷启(解密知识库+建库+import)在老机/机械盘较慢,给足 60s
+async function _waitReady(timeoutMs = 180000) {  // 首启要解密知识库+建库,老机/机械盘远超 60s(1.0.0 真机事故:60s 闸刀把建库拦腰杀掉留下半截库)。就绪即返回,好机器不受影响
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (await pingHealth()) return true;

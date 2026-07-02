@@ -1,8 +1,8 @@
 {
   "name": "billiards-desktop-agent",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
-  "description": "通用本机 AI 助手 · 桌面端（Electron 壳 + 本地后端 + 本地发布RPA + 视频剪辑；全本地出内容/跑 Agent，台球房是内置行业包）",
+  "description": "帮台球房写文案、做海报、剪视频、整理文件的 AI 助手",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
@@ -24,7 +24,7 @@
   },
   "build": {
     "appId": "cn.zzyppz.billiards.desktop",
-    "productName": "本机 AI 助手",
+    "productName": "台球运营助手",
     "files": [
       "src/**/*"
     ],

@@ -1,4 +1,4 @@
-// 本机 AI 助手 · 桌面端 Electron 主进程
+// 台球运营助手 · 桌面端 Electron 主进程
 //
 // 职责:① 开窗口加载现有 web 前端(连云后端出内容/跑 Agent);
 //      ② 把"本地原生能力"(发布 RPA / 视频剪辑)经 IPC 暴露给前端;
@@ -16,6 +16,24 @@ const modelDownloader = require("./model-downloader");
 const frontend = require("./frontend");
 const updater = require("./updater");
 const crypto = require("crypto");
+const fs = require("fs");
+
+// ── 运行日志落盘(userData/logs/desktop.log) ─────────────────────
+// 1.0.0 真机事故教训:装机包不写日志=用户机上出问题只能盲猜。后端/前端/更新器输出全部落盘,
+// 超 5MB 滚动成 .old。报错弹窗直接指向这个文件,用户把文件发回来就能定位。
+let _logStream = null;
+function logFilePath() { return path.join(app.getPath("userData"), "logs", "desktop.log"); }
+function fileLog(prefix, s) {
+  try {
+    if (!_logStream) {
+      const p = logFilePath();
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      try { if (fs.existsSync(p) && fs.statSync(p).size > 5 * 1024 * 1024) fs.renameSync(p, `${p}.old`); } catch { /* 滚动失败不阻塞 */ }
+      _logStream = fs.createWriteStream(p, { flags: "a" });
+    }
+    _logStream.write(`[${new Date().toISOString()}] ${prefix}${String(s).trimEnd()}\n`);
+  } catch { /* 日志绝不阻塞主流程 */ }
+}
 
 // ── 单实例锁 ──────────────────────────────────────────────────
 // 客户手滑双击两次图标(或没反应又点一次) → 第二个进程会跟第一个抢同一个本地后端端口，
@@ -71,7 +89,7 @@ function createWindow(opts = {}) {
     height: 860,
     minWidth: 960,
     minHeight: 640,
-    title: "本机 AI 助手",
+    title: "台球运营助手",
     // 跟随系统深浅色：暗色用深底，浅色用白底（避免启动闪屏与界面不一致）
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#0e0f11" : "#ffffff",
     // macOS 原生质感:隐藏标题栏(保留红绿灯,内容延伸到顶),红绿灯位对齐桌面壳侧栏顶部 52px 区(见 web 的 .app-drag)。
@@ -92,11 +110,11 @@ function createWindow(opts = {}) {
   if (opts.workbenchId) url.searchParams.set("workbench", opts.workbenchId);
   win.loadURL(url.toString());
 
-  // 锁定壳层窗口标题=通用产品名。web/ 与云端共享，layout.tsx 的 document.title 是"球房 AI 运营助手"，
-  // 默认会覆盖窗口标题(任务切换/调度中心/窗口菜单都显示旧名)。仅 preventDefault 在 Next 客户端路由下不够稳，
-  // 这里 preventDefault + 主动 setTitle 双保险：任何时候页面想改标题都强制拉回"本机 AI 助手"(台球只是内置行业包)，
+  // 锁定壳层窗口标题=产品名(owner 2026-07-02 定名「台球运营助手」)。web/ 与云端共享，layout.tsx 的
+  // document.title 是"球房 AI 运营助手"，默认会覆盖窗口标题(任务切换/调度中心/窗口菜单都显示旧名)。
+  // 仅 preventDefault 在 Next 客户端路由下不够稳，这里 preventDefault + 主动 setTitle 双保险，
   // 又不改共享 web 文案、不影响云端。
-  const PRODUCT_TITLE = "本机 AI 助手";
+  const PRODUCT_TITLE = "台球运营助手";
   const lockTitle = () => { if (!win.isDestroyed()) win.setTitle(PRODUCT_TITLE); };
   win.webContents.on("page-title-updated", (e) => { e.preventDefault(); lockTitle(); });
   win.webContents.on("dom-ready", lockTitle);
@@ -288,7 +306,7 @@ ipcMain.handle("desktop:captureScreen", async () => {
       return {
         ok: false,
         needsPermission: true,
-        error: "还没拿到「屏幕录制」权限，我看不到你的屏幕。请到 系统设置 → 隐私与安全性 → 屏幕录制 里勾上「本机 AI 助手」，再重开一次 App 就能用了。",
+        error: "还没拿到「屏幕录制」权限，我看不到你的屏幕。请到 系统设置 → 隐私与安全性 → 屏幕录制 里勾上「台球运营助手」，再重开一次 App 就能用了。",
       };
     }
     const timeout = (ms, value = null) => new Promise((resolve) => setTimeout(() => resolve(value), ms));
@@ -385,22 +403,40 @@ app.whenReady().then(async () => {
     }
     return;
   }
+  // 首启进度窗:第一次打开要在用户机上解密知识库+建库,可能要一两分钟。
+  // 没有它,用户只看到"点了没反应"→反复双击/以为坏了(1.0.0 真机事故)。仅装机包显示,dev 不弹。
+  let splash = null;
+  if (app.isPackaged && MANAGE_BACKEND) {
+    const dark = nativeTheme.shouldUseDarkColors;
+    splash = new BrowserWindow({
+      width: 420, height: 180, frame: false, resizable: false,
+      backgroundColor: dark ? "#0e0f11" : "#ffffff",
+      webPreferences: { sandbox: true },
+    });
+    const splashHtml = `<!doctype html><meta charset="utf-8"><body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;font-family:system-ui,'Microsoft YaHei',sans-serif;background:${dark ? "#0e0f11" : "#ffffff"};color:${dark ? "#e6e7e9" : "#1d1d1f"}"><div style="text-align:center"><div style="font-size:15px;font-weight:600">台球运营助手</div><div style="margin-top:10px;font-size:12.5px;line-height:1.7;color:${dark ? "#9a9ca3" : "#6e6e73"}">正在启动…第一次打开需要准备数据<br>可能要一两分钟,请不要关闭</div></div></body>`;
+    splash.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(splashHtml)}`);
+  }
+  const closeSplash = () => { if (splash && !splash.isDestroyed()) splash.close(); splash = null; };
+
   if (MANAGE_BACKEND) {
     // 全本地:先拉起本地后端(本地 SQLite),就绪后再开窗口
     const r = await backend.start({
       userDataDir: app.getPath("userData"),
       repoRoot: REPO_ROOT,
-      onLog: (s) => { if (process.env.DESKTOP_DEVTOOLS === "1") process.stdout.write(`[backend] ${s}`); },
+      onLog: (s) => { fileLog("[backend] ", s); if (process.env.DESKTOP_DEVTOOLS === "1") process.stdout.write(`[backend] ${s}`); },
     });
     backendReady = r.ok;
     if (!r.ok) {
-      // 不静默回落到打不开的空白页:明确弹一条人话报错,告诉用户端口可能被占用。
+      // 不静默回落到打不开的空白页:明确弹一条人话报错。"端口被占"只是可能之一,别当唯一原因误导用户。
       console.error("本地后端未在超时内就绪,前端可能连不上");
       const port = r.port || 8077;
+      fileLog("[shell] ", `后端未在超时内就绪,弹启动失败窗(port=${port})`);
+      closeSplash();
       dialog.showErrorBox(
-        "本机 AI 助手启动失败",
-        `后端服务没能起来(${port} 端口可能被别的程序占用)。\n\n` +
-        `请关闭占用该端口的程序后,重新打开本软件。`
+        "台球运营助手启动失败",
+        `后端服务没能在预期时间内启动。\n\n` +
+        `可能原因:第一次启动准备数据比较慢、安全软件拦截了程序、或 ${port} 端口被别的程序占用。\n\n` +
+        `请重新打开软件再试一次;还不行的话,把下面这个日志文件发给我们,一看就能定位:\n${logFilePath()}`
       );
     }
   }
@@ -408,7 +444,7 @@ app.whenReady().then(async () => {
     // prod:后端就绪后起本地 Next.js standalone(它把 /api/v1/* 反代到本地后端)。
     // 无 standalone 产物(dev 直接运行 electron .)则 ok=false,回落 DESKTOP_APP_URL/localhost:3000。
     const f = await frontend.start({
-      onLog: (s) => { if (process.env.DESKTOP_DEVTOOLS === "1") process.stdout.write(`[frontend] ${s}`); },
+      onLog: (s) => { fileLog("[frontend] ", s); if (process.env.DESKTOP_DEVTOOLS === "1") process.stdout.write(`[frontend] ${s}`); },
     });
     if (f.ok) frontendUrl = f.url;
     else if (f.reason === "no-standalone") {
@@ -418,13 +454,16 @@ app.whenReady().then(async () => {
       // 有 standalone 产物却没起来:端口被占用等真故障。不静默回落到打不开的页,弹人话报错。
       const port = f.port || 3100;
       console.error("本地前端未在超时内就绪");
+      fileLog("[shell] ", `前端未在超时内就绪,弹启动失败窗(port=${port})`);
+      closeSplash();
       dialog.showErrorBox(
-        "本机 AI 助手启动失败",
-        `界面服务没能起来(${port} 端口可能被别的程序占用)。\n\n` +
-        `请关闭占用该端口的程序后,重新打开本软件。`
+        "台球运营助手启动失败",
+        `界面服务没能在预期时间内启动(${port} 端口可能被别的程序占用)。\n\n` +
+        `请重新打开软件再试一次;还不行的话,把下面这个日志文件发给我们:\n${logFilePath()}`
       );
     }
   }
+  closeSplash();
   createWindow();
   // 口播模型(whisper 1.4G)不打进包,首启后台下载(不阻塞主界面:聊天/生图/基础视频立刻能用)。
   // 进度推给前端角标显示,下好前"做口播视频"按钮由前端灰掉。
@@ -433,7 +472,7 @@ app.whenReady().then(async () => {
   updater.init({
     app,
     getWindow: () => mainWindow,
-    onLog: (s) => { if (process.env.DESKTOP_DEVTOOLS === "1") process.stdout.write(s); },
+    onLog: (s) => { fileLog("", s); if (process.env.DESKTOP_DEVTOOLS === "1") process.stdout.write(s); },
   });
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
