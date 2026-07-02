@@ -57,7 +57,10 @@ function main() {
   //    把构建收进本脚本，打包流程就不会再忘设这个 env。
   const proxy = process.env.API_PROXY_URL || "http://127.0.0.1:8077";
   console.log(`① 构建前端 standalone（API_PROXY_URL=${proxy}，server.js 反代到后端）…`);
-  const built = spawnSync("pnpm", ["build"], { cwd: WEB, env: { ...process.env, API_PROXY_URL: proxy }, stdio: "inherit" });
+  // shell:true 必须——Windows 上 pnpm 是 pnpm.cmd 批处理,Node 22 起(CVE-2024-27980 修复后)
+  // 不加 shell 直接 spawn .cmd 会 EINVAL/瞬间失败(macOS 上 pnpm 是真可执行文件不受影响)。
+  // 参数只有 "build" 无空格/特殊字符,shell:true 拼接安全。
+  const built = spawnSync("pnpm", ["build"], { cwd: WEB, env: { ...process.env, API_PROXY_URL: proxy }, stdio: "inherit", shell: true });
   if (built.status !== 0) { console.error("❌ 前端构建失败"); process.exit(1); }
 
   if (!fs.existsSync(path.join(STANDALONE, "server.js"))) {
