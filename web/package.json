@@ -11,7 +11,6 @@
   },
   "dependencies": {
     "@tailwindcss/typography": "^0.5.19",
-    "clsx": "^2.1.1",
     "diff": "^8.0.4",
     "konva": "^9.3.22",
     "lucide-react": "^0.468.0",
@@ -20,8 +19,7 @@
     "react-dom": "^18.3.1",
     "react-konva": "^18.2.16",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1",
-    "tailwind-merge": "^2.6.0"
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
