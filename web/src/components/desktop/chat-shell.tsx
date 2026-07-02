@@ -692,7 +692,7 @@ export function DesktopChatShell({
       sidebar={sidebarEl}
       preview={preview ? <DesktopPreviewPanel item={preview} onClose={() => setPreview(null)} onRefine={onRefine} onRefineSelection={onRefineSelection} onFinalize={onFinalize} onMakeVideo={onMakeVideo} /> : undefined}
     >
-      <div className="app-drag flex h-[44px] items-center gap-2 border-b border-black/[0.08] px-5 dark:border-white/[0.06]">
+      <div className="app-drag app-titlebar-safe-right flex h-[44px] items-center gap-2 border-b border-black/[0.08] px-5 dark:border-white/[0.06]">
         <span className="h-1.5 w-1.5 rounded-full bg-[#10a37f]" />
         <span className="font-mono text-[12.5px] text-[#6e6e73] dark:text-[#9a9ca3]">{empty ? "新会话" : "会话"}</span>
         <button

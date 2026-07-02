@@ -81,3 +81,14 @@
 .app-no-drag {
   -webkit-app-region: no-drag;
 }
+
+/* Windows 专属(Electron titleBarOverlay)：贴着窗口右边缘、内部有可点击按钮（关闭/清空等）的
+   面板头会被系统最小化/最大化/关闭三个原生按钮盖住、抢点击。titleBarOverlay 打开后 Electron/
+   Chromium 会提供 WCO 的 env(titlebar-area-x/width) 这组 CSS 环境变量，用「窗口总宽 − 安全可拖拽宽
+   − 安全区左偏移」反推出按钮区实际宽度，追加一段 margin-right 把内容推出这块安全区
+   （用 margin 叠加、不覆盖各处已有的 px-4/px-5，改动最小）。
+   macOS / 普通网页没开 titleBarOverlay 时这几个 env 都取不到值，各自退回 100vw / 0，算出来正好是
+   0，不产生任何视觉变化——只在 Windows 真机验证时看这条是否生效。 */
+.app-titlebar-safe-right {
+  margin-right: calc(100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px));
+}

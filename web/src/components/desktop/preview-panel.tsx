@@ -663,7 +663,7 @@ export function DesktopPreviewPanel({
   return (
     <section style={{ width }} className="relative flex shrink-0 flex-col border-l border-black/[0.08] bg-[#f5f5f7] dark:border-white/[0.06] dark:bg-[#0b0c0e]">
       {/* 面板头 */}
-      <div className="app-drag flex h-[44px] items-center justify-between border-b border-black/[0.08] px-4 dark:border-white/[0.06]">
+      <div className="app-drag app-titlebar-safe-right flex h-[44px] items-center justify-between border-b border-black/[0.08] px-4 dark:border-white/[0.06]">
         <div className="min-w-0 truncate font-mono text-[12.5px] text-[#6e6e73] dark:text-[#9a9ca3]">
           {item.kind === "sheet" && <Table2 className="mr-1.5 inline h-3.5 w-3.5 align-[-2px] text-[#10a37f]" />}
           {item.kind === "doc" && <FileText className="mr-1.5 inline h-3.5 w-3.5 align-[-2px] text-[#10a37f]" />}

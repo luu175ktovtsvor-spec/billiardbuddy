@@ -79,7 +79,7 @@ export function DeletedItemsPanel({
 
   return (
     <aside className="fixed right-0 top-0 z-[63] flex h-full w-[420px] max-w-[92vw] flex-col border-l border-black/[0.08] bg-white shadow-2xl dark:border-white/[0.08] dark:bg-[#16181d]">
-      <div className="app-drag flex h-[44px] items-center justify-between border-b border-black/[0.08] px-4 dark:border-white/[0.06]">
+      <div className="app-drag app-titlebar-safe-right flex h-[44px] items-center justify-between border-b border-black/[0.08] px-4 dark:border-white/[0.06]">
         <div className="font-mono text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">最近删除</div>
         <div className="app-no-drag flex items-center gap-1.5">
           {items.length > 0 && (
