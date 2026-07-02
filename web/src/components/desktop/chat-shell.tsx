@@ -418,7 +418,11 @@ export function DesktopChatShell({
   const viewCurrentScreen = useCallback(async () => {
     if (chat.generating) return;
     if (!electron?.captureScreen) {
-      void chat.send("先看一下我当前电脑屏幕，告诉我你看到了什么；如果需要点按或输入，先说明要做什么并等我确认。");
+      void chat.send(
+        "先看一下我当前电脑屏幕，告诉我你看到了什么；如果需要点按或输入，先说明要做什么并等我确认。",
+        undefined,
+        { displayText: "看当前屏幕" },
+      );
       return;
     }
     try {
@@ -436,7 +440,7 @@ export function DesktopChatShell({
       void chat.send(
         `我刚截了一张当前屏幕图，文件名是 ${r.path.split(/[\\/]/).pop()}。先根据这张截图告诉我你看到了什么；如果需要点按或输入，先说明要做什么并等我确认。`,
         undefined,
-        { selectedFiles: Array.from(new Set([...selectedFiles, r.path])) },
+        { selectedFiles: Array.from(new Set([...selectedFiles, r.path])), displayText: "看当前屏幕" },
       );
     } catch {
       toast.error("当前屏幕没截下来，可以直接粘贴截图给我看");
@@ -573,6 +577,8 @@ export function DesktopChatShell({
         "时长：5 秒左右。",
         "要求：画面从这张图自然动起来，适合台球房周赛/活动宣传；先生成视频任务确认卡，说明耗时和额度，等我确认后再真正生成。",
       ].join("\n"),
+      undefined,
+      { displayText: "做成视频" },
     );
   };
   // 结果动作：把一段普通回答直接收束成门店员工能照着干的任务清单。
@@ -580,6 +586,8 @@ export function DesktopChatShell({
     if (chat.generating) return;
     void chat.send(
       `把下面这段内容整理成门店员工能照着执行的任务清单。要求：按“负责人 / 今天什么时候做 / 具体动作 / 检查标准”输出，最多 6 条，优先今晚或明天能做的动作；不要写长篇解释。\n\n【原内容】\n${content.slice(0, 4000)}`,
+      undefined,
+      { displayText: "转成任务" },
     );
   }, [chat]);
   const onSaveArtifact = useCallback(async (content: string) => {
@@ -643,15 +651,17 @@ export function DesktopChatShell({
     if (chat.generating) return;
     void chat.send(
       `刚才这一版先保留，不要覆盖。请换一个思路重新做一版，适合直接拿去用；如果是台球门店场景，优先给今晚/明天能执行的版本。\n\n【上一版】\n${content.slice(0, 3000)}`,
+      undefined,
+      { displayText: "重做一版" },
     );
   }, [chat]);
   const onRecoverFromError = useCallback((content: string) => {
     const clean = content.replace(/^⚠️\s*/, "").trim();
     setInput(`我换了素材/工作文件夹后再试一次。上次失败原因：${clean}\n\n这次请继续帮我：`);
   }, []);
-  const onFollowUp = useCallback((prompt: string) => {
+  const onFollowUp = useCallback((prompt: string, label?: string) => {
     if (chat.generating) return;
-    void chat.send(prompt);
+    void chat.send(prompt, undefined, label ? { displayText: label } : undefined);
   }, [chat]);
   // 右侧"选中一段→基于此调整"（对齐 ChatGPT Canvas/Codex）：把【选中的原文 + 要改成啥】拼进消息直接发给管家，AI 只改这段。
   const onRefineSelection = (selectedText: string, instruction: string) => {
@@ -659,18 +669,30 @@ export function DesktopChatShell({
     const where = preview.kind === "file" && preview.path
       ? `文件「${preview.path}」里`
       : `右侧预览的「${preview.title || "成品"}」里`;
-    void chat.send(`只改${where}下面这段，别动其它部分：\n\n【选中的原文】\n${selectedText}\n\n【改成】\n${instruction}`);
+    void chat.send(
+      `只改${where}下面这段，别动其它部分：\n\n【选中的原文】\n${selectedText}\n\n【改成】\n${instruction}`,
+      undefined,
+      { displayText: "基于此调整" },
+    );
   };
   // 右侧"确认采用/重做一版"定稿闸：看完拍板，把决定发回管家定稿或重出
   const onFinalize = (action: "accept" | "redo", finalText?: string) => {
     if (chat.generating || !preview) return;
     const label = preview.title || "这一版";
     if (action === "accept") {
-      void chat.send(finalText && finalText.trim()
-        ? `✅ 就用这一版定稿，按它继续后续步骤：\n\n${finalText}`
-        : `✅ 我确认采用「${label}」这一版，按它定稿、继续后续步骤。`);
+      void chat.send(
+        finalText && finalText.trim()
+          ? `✅ 就用这一版定稿，按它继续后续步骤：\n\n${finalText}`
+          : `✅ 我确认采用「${label}」这一版，按它定稿、继续后续步骤。`,
+        undefined,
+        { displayText: "确认采用" },
+      );
     } else {
-      void chat.send(`「${label}」这一版我不太满意，请换个思路重做一版。`);
+      void chat.send(
+        `「${label}」这一版我不太满意，请换个思路重做一版。`,
+        undefined,
+        { displayText: "重做一版" },
+      );
     }
     setPreview(null);
   };

@@ -52,6 +52,7 @@ export interface QuestionData {
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  displayContent?: string; // C2：快捷按钮发的长工程 prompt 在气泡里只显示这个短标签；真实 content 原样发后端不变
   reasoning?: string; // F.1：本轮模型的思考过程（reasoning_content），灰斜体可折叠展示，默认收起
   memoryRefs?: string[]; // 本轮回答引用的门店资料摘要，给用户可见可改
   steps?: ToolStep[];
@@ -359,15 +360,17 @@ export function useAgentChat(opts: AgentChatOptions) {
     }
   }, [conversationId, clearActiveTaskSnapshot, saveActiveTaskSnapshot, subscribeToTask, setActiveTask]);
 
-  const send = useCallback(async (text: string, sourceRecId?: string, overrides?: { selectedFiles?: string[] }) => {
+  const send = useCallback(async (text: string, sourceRecId?: string, overrides?: { selectedFiles?: string[]; displayText?: string }) => {
     const msg = text.trim();
     if (!msg) return;
+    // C2：快捷按钮传了短标签就用它做气泡显示，不传时 displayContent 是 undefined（行为不变，渲染层落回 content）。
+    const displayContent = overrides?.displayText;
     // 方向盘：任务跑动中再打字 = 插话纠偏（不是新任务）。乐观上屏 + 排进该任务的插话队列，
     // AI 下一轮注入、当场改道；任务没在跑时行为不变（走下面的新任务路径）。
     if (generating) {
       const taskId = activeTaskRef.current;
       if (!taskId) return; // 在跑但没有可捎话的任务（如正在执行审批工具）→ 维持原来的"运行中不发"
-      setMessages((prev) => [...prev, { role: "user", content: msg }]);
+      setMessages((prev) => [...prev, { role: "user", content: msg, ...(displayContent ? { displayContent } : {}) }]);
       pendingSteerEchoRef.current.push(msg);
       api.sendTaskMessage(taskId, msg).catch((e) => {
         // 没送进去（任务刚结束/队列满）：撤掉去重记录并提示；话还留在屏上，等任务停了直接重发即可。
@@ -384,7 +387,7 @@ export function useAgentChat(opts: AgentChatOptions) {
       .slice(-12)
       .map((m) => ({ role: m.role, content: m.content.slice(0, 2000) }));
     // 副作用 sendWithHistory 绝不放进 setMessages 更新函数里——否则 React StrictMode 开发态会把 updater 跑两次→同一条消息双发请求。
-    setMessages((prev) => [...prev, { role: "user", content: msg }]);
+    setMessages((prev) => [...prev, { role: "user", content: msg, ...(displayContent ? { displayContent } : {}) }]);
     void sendWithHistory(msg, history, sourceRecId, overrides);
   }, [generating, sendWithHistory]);
 

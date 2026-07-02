@@ -698,7 +698,7 @@ export function DesktopChatThread({
   onMakeTask?: (content: string) => void;
   onSaveArtifact?: (content: string) => void;
   onExportArtifact?: (content: string) => void;
-  onFollowUp?: (prompt: string) => void;
+  onFollowUp?: (prompt: string, label?: string) => void;
   onRate?: (generationId: string, rating: "good" | "bad") => void;
   billiardsMode?: boolean;
 }) {
@@ -755,7 +755,7 @@ export function DesktopChatThread({
           m.role === "user" ? (
             <div key={idx} className="flex justify-end">
               <div className="max-w-[78%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-[#007AFF] px-3.5 py-2 text-[14px] leading-relaxed text-white shadow-sm">
-                {m.content}
+                {m.displayContent ?? m.content}
               </div>
             </div>
           ) : (
@@ -860,7 +860,7 @@ export function DesktopChatThread({
                             <button
                               key={action.label}
                               type="button"
-                              onClick={() => onFollowUp(action.prompt)}
+                              onClick={() => onFollowUp(action.prompt, action.label)}
                               className="inline-flex items-center gap-1 rounded-md border border-[#007AFF]/15 bg-[#007AFF]/[0.05] px-2 py-1 text-[12px] font-medium text-[#007AFF] transition hover:bg-[#007AFF]/10 active:scale-[0.97] dark:border-[#66aaff]/20 dark:bg-[#66aaff]/10 dark:text-[#9bc8ff]"
                             >
                               <action.Icon className="h-3.5 w-3.5" /> {action.label}
