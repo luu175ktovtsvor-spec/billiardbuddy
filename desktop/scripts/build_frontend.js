@@ -56,6 +56,9 @@ function main() {
   // ① 先用【正确的反代目标】出 standalone —— 防漏设 API_PROXY_URL（默认会变 8000 → 前端连不上后端 8077 → 登录 500）。
   //    把构建收进本脚本，打包流程就不会再忘设这个 env。
   const proxy = process.env.API_PROXY_URL || "http://127.0.0.1:8077";
+  // 先清旧 .next：残留的上一次 standalone 会让本次 build 的文件追踪 scandir 到它
+  // → Windows EPERM(node_modules/react)。清掉保证每次都是干净单次构建(本地重打也受益)。
+  rmrf(path.join(WEB, ".next"));
   console.log(`① 构建前端 standalone（API_PROXY_URL=${proxy}，server.js 反代到后端）…`);
   // shell:true 必须——Windows 上 pnpm 是 pnpm.cmd 批处理,Node 22 起(CVE-2024-27980 修复后)
   // 不加 shell 直接 spawn .cmd 会 EINVAL/瞬间失败(macOS 上 pnpm 是真可执行文件不受影响)。
