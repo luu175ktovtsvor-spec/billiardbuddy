@@ -1,6 +1,6 @@
 # 桌面版 AI Agent · 产品形态架构地图
 
-> 📌 状态:✅现行 · 最后核对 2026-06-26
+> 📌 状态:✅现行 · 最后核对 2026-07-02
 
 > 这一份把"桌面版通用 AI Agent"整个产品**从壳到脑到知识**讲透，一张文档全看懂。（产品=通用本机 AI Agent 默认；台球运营=可 `@挂载` 的领域知识库，不是产品边界。）
 > 本仓库就是「桌面版 AI Agent」独立仓库，`main` = 桌面产品全部代码（历史上从云端 web SaaS 仓库独立而来，与原仓库 `billiards-ai-ops` 仍共享后端 `server/`、前端 `web/`、知识库 `prompts/`）。本文标清**哪些是桌面专属、哪些与 web 共享**。
@@ -95,6 +95,19 @@
 | `openai_image.py` | gpt-image-2 + 兼容端点（用配置 model、不写死）|
 | `../factory.py` | `get_image_config_for_store`：桌面 key 守卫——门店 BYOK 优先，否则返回内置 key + 各自 base_url（全内置已落地，见专题D；BYOK 可选）|
 
+### 6. 视频创作 / 剪辑引擎 — `server/services/video_edit/`(~20 文件)+ 前端 `web/src/app/dashboard/video/`
+| 文件 | 干什么 |
+|------|------|
+| `server/services/video_edit/` | 视频剪辑引擎（`assemble.py`/`director.py`/`edit_agent.py`/`planners/`/`template_render.py`/`vlm.py`/`bgm.py`/`transcribe.py`/`scene_detect.py`/`subtitles.py` 等 ~20 文件）：口播/口播+B-roll/纯氛围燃剪三档，V2 自研模板渲染引擎（复用 Chromium 离屏渲染）+ 对话式改任何东西（换段/删段/调色/配乐/文案）|
+| `web/src/app/dashboard/video/page.tsx` | 视频创作工作区前端页面 |
+| `desktop/src/render-worker.js` | Electron 渲染 worker（承接视频渲染任务，与主进程解耦） |
+
+### 7. 并发阀门网关 — `gateway/`
+| 文件 | 干什么 |
+|------|------|
+| `gateway/app.py` | 国内总闸：三层阀门 + 藏真 key + per-user 配额；文字/生图/视频/VLM 全走这里代理出站，客户端只带可吊销 app 令牌 |
+| `gateway/deploy.sh` | 部署脚本（CN 服务器） |
+
 ## 四、一次对话的数据流
 
 ```
@@ -115,7 +128,7 @@
 
 ## 六、全内置 key 边界 + 四层防御
 
-- **当前代码（全内置已落地·见专题D）**：`factory.get_image_config_for_store` 在 `DESKTOP_LOCAL=1` 下，门店 BYOK 优先、否则返回内置 key + 各自 base_url；内置 key 未注入时才友好报错（不静默落到无关平台 key）。BYOK = 可选高级档。
+- **现行安全模型（2026-07 已落地）**：真平台 key **只落在网关服务器（`gateway/`·CN 机）与 relay（US 机）**，客户端 `desktop/bundled.env` **只带网关地址 + 可吊销的 app 令牌**，不含任何真 key——文字/生图/视频/VLM 全经网关代理出站，扒包扒不到真 key。`factory.get_image_config_for_store` 在 `DESKTOP_LOCAL=1` 下，门店 BYOK 优先、否则走网关内置通道；仅当内置通道也未配置时才友好报错（不静默落到无关平台 key）。BYOK = 可选高级档（走自己的 key，不经网关）。
 - **四层防御**：① 权限模式（逐项确认/自动接受修改/跳过确认）；② 工具 allow-ask-deny + 审批闸；③ 本地文件沙箱（内容库+选定文件、改前备份）；④ 审批签名绑定 args。
 
 ## 七、怎么跑
