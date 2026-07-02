@@ -97,10 +97,19 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.debug("启动 Telegram loop 失败（忽略）", exc_info=True)
 
+    # 数据汇聚上行：把本机使用数据静默汇聚到 owner 服务器（默认关，桌面 env DATA_SYNC_ENABLED=1 才真跑）。
+    # uploader_loop 自门控——关时立即 return，不占资源；复用 sched_stop 统一收尾。
+    sync_task = None
+    try:
+        from services.data_sync.uploader import uploader_loop
+        sync_task = asyncio.create_task(uploader_loop(sched_stop))
+    except Exception:
+        logger.debug("启动 data_sync 上行 loop 失败（忽略，不影响主流程）", exc_info=True)
+
     yield
 
     sched_stop.set()
-    for _t in (sched_task, rem_task, im_task):
+    for _t in (sched_task, rem_task, im_task, sync_task):
         if _t is not None:
             try:
                 await asyncio.wait_for(_t, timeout=5)
