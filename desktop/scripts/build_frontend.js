@@ -35,18 +35,25 @@ function cp(src, dst, opts = {}) { fs.cpSync(src, dst, { recursive: true, ...opt
 // 重建软链会 EPERM/静默崩)。这里自己 realpath 逐个实体化,才真正自包含可移植。
 // visited 防 pnpm 潜在环形软链导致无限递归。
 function copyResolved(src, dst, visited = new Set()) {
-  const st = fs.statSync(src); // statSync 跟随软链 → 拿到真目标类型
-  if (st.isDirectory()) {
-    const real = fs.realpathSync(src);
-    if (visited.has(real)) return;   // 环形保护
-    visited.add(real);
+  // 必须用 lstatSync(不跟随软链):Windows 上对"指向目录的软链"做跟随式 statSync 会 EPERM。
+  // 遇软链就自己 readlink 解析目标路径、递归拷【真实体】,全程不触发跟随式 stat。
+  const lst = fs.lstatSync(src);
+  if (lst.isSymbolicLink()) {
+    let target = fs.readlinkSync(src);
+    if (!path.isAbsolute(target)) target = path.resolve(path.dirname(src), target);
+    if (visited.has(target)) return;   // 环形保护(A→B→A)
+    visited.add(target);
+    copyResolved(target, dst, visited); // 递归拷软链真目标 → 产物是实体、无软链
+    visited.delete(target);
+    return;
+  }
+  if (lst.isDirectory()) {
     fs.mkdirSync(dst, { recursive: true });
     for (const name of fs.readdirSync(src)) {
       copyResolved(path.join(src, name), path.join(dst, name), visited);
     }
-    visited.delete(real);
   } else {
-    fs.copyFileSync(src, dst);       // 文件(含软链指向的文件)直接拷实体
+    fs.copyFileSync(src, dst);
   }
 }
 
