@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, type ApprovalReason } from "@/lib/api";
 import { getErrorMessage, humanizeErrorText } from "@/lib/utils";
+import { useToast } from "@/components/desktop/toast";
 
 export type { ApprovalReason };
 
@@ -95,6 +96,7 @@ function imageArtifactFromToolResult(tool: string, content: string): GeneratedIm
 }
 
 export function useAgentChat(opts: AgentChatOptions) {
+  const toast = useToast();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [reasoningDraft, setReasoningDraft] = useState(""); // F.1：当前轮的实时思考流（答案落定后并进消息）
@@ -127,11 +129,12 @@ export function useAgentChat(opts: AgentChatOptions) {
     setActiveTaskId(id);
   }, []);
 
+  // C1：停止是应用状态通知，不是 AI 说的话——改走 toast，不再落进对话历史。
   const pushStopNotice = useCallback((taskId: string | null) => {
     if (taskId && stopNoticeTaskRef.current === taskId) return;
     stopNoticeTaskRef.current = taskId || "__manual__";
-    setMessages((prev) => [...prev, { role: "assistant", content: "已停止这次任务。需要继续的话，可以直接重新说要做什么。" }]);
-  }, []);
+    toast.success("已停止");
+  }, [toast]);
 
   const clearActiveTaskSnapshot = useCallback(() => {
     try { sessionStorage.removeItem(ACTIVE_TASK_STORAGE_KEY); } catch { /* 忽略 */ }
@@ -466,7 +469,8 @@ export function useAgentChat(opts: AgentChatOptions) {
   // 点开历史会话：加载其消息 + 设 conversationId（后续可在此基础上续接）
   const loadConversation = useCallback((id: string, msgs: ChatMessage[]) => {
     if (generating || activeTaskRef.current) {
-      setMessages((prev) => [...prev, { role: "assistant", content: "当前任务还在跑，先别切换会话。等它完成后再打开历史记录；要停掉就点「中断」。" }]);
+      // C1：这是 UI 限制解释（任务运行中不让切会话），不是 AI 说的话——删掉伪 AI 消息。
+      // TODO(C4): 改为禁用态(历史会话项在任务运行中置灰 + tooltip，而不是拦截后干等用户自己发现)
       return false;
     }
     abortRef.current?.abort();
