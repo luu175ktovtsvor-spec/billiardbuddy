@@ -6,7 +6,8 @@
 // 产物：desktop/resources/backend/billiards_backend/（可执行 + 依赖），electron-builder 拷进 app。
 //
 // 知识库护城河（关键）：
-//   ① 本脚本先生成一个一次性 Fernet key；
+//   ① 本脚本先拿一个 Fernet key——CI 上读 env.BUNDLED_PROMPTS_PACK_KEY(与运行时 bundled.env 解密同一把，
+//      见 resolveFernetKey 的注释)，本地开发机没设这个变量就随机生成一次性 key；
 //   ② 用它跑 server/scripts/build_prompts_pack.py，把明文 prompts/*.yaml 加密成 server/prompts.enc；
 //   ③ 把同一个 key 烘进 PyInstaller 入口 desktop_entry.py（os.environ.setdefault）；
 //   ④ PyInstaller 用 --add-data 只带【加密块 prompts.enc】+ report_forms，绝不带明文 prompts/ 目录；
@@ -106,6 +107,45 @@ function genFernetKey() {
   return out.trim();
 }
 
+// Fernet key 合法性校验：32 字节原始数据，urlsafe-base64 编码后固定 44 个字符、末位 1 个 '=' 填充。
+// 跟 cryptography.fernet.Fernet() 内部的校验规则同源(base64 解码后必须正好 32 字节)，这里用纯 JS
+// 判断，不需要再拉起一次 python 子进程。
+function isValidFernetKey(key) {
+  if (typeof key !== "string" || !/^[A-Za-z0-9_-]{43}=$/.test(key)) return false;
+  const raw = Buffer.from(key.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+  return raw.length === 32;
+}
+
+// ── CI 知识库密钥"双源冲突"坑（打包前必读）──────────────────────
+// 本函数原来每次构建都随机生成一把新 key 去加密 prompts.enc、再烘进 desktop_entry.py 供运行时解密——
+// 这本身自洽(加密/解密用同一把随机 key)。但 CI workflow（.github/workflows/desktop-build-win.yml）
+// 另外把仓库 secret `BUNDLED_PROMPTS_PACK_KEY` 写进了 desktop/bundled.env 的 `PROMPTS_PACK_KEY` 行，
+// 而 desktop_entry.py 用 `os.environ.setdefault("PROMPTS_PACK_KEY", "<烘进的随机 key>")`——
+// setdefault 只在变量【未被设置过】时才生效，bundled.env 里已存在的 PROMPTS_PACK_KEY 会先一步
+// 被读进环境、压过烘进去的值 → 运行时拿去解密的 key 变成了 secret 里那把，跟当初加密用的随机 key
+// 对不上 → 台球知识库在 CI 出的包上整个解不开(本地手动打包没配这个环境变量，走不到这条坑)。
+// 修法：加密阶段也去读同一个 `BUNDLED_PROMPTS_PACK_KEY`——CI 上就用它同时加密 + 烘入(两边天然一致)；
+// 没设这个变量的本地开发机，行为不变(仍随机生成，跟以前一样能跑，只是不需要跟任何外部 secret 对齐)。
+function resolveFernetKey() {
+  const envKey = process.env.BUNDLED_PROMPTS_PACK_KEY;
+  if (envKey && envKey.trim()) {
+    const key = envKey.trim();
+    if (!isValidFernetKey(key)) {
+      // 格式不对就硬报错退出，绝不静默回退随机 key——静默回退会让这次"看似成功"的构建
+      // 其实又双写了一把新 key，CI 包照样解不开，且更难排查(表面上流程走完了)。
+      console.error(
+        "❌ 环境变量 BUNDLED_PROMPTS_PACK_KEY 不是合法的 Fernet key" +
+        "(应为 32 字节数据的 urlsafe-base64 编码，固定 44 个字符、末位 1 个 '=')。" +
+        "请检查该 secret 是否被截断/误填/换行污染，修好后重新构建。"
+      );
+      process.exit(1);
+    }
+    console.log("① 使用 BUNDLED_PROMPTS_PACK_KEY 加密知识库(与运行时 bundled.env 解密用同一把 key，CI 场景)");
+    return key;
+  }
+  return genFernetKey();
+}
+
 function buildPromptsPack(key) {
   console.log("① 加密知识库 → server/prompts.enc …");
   const r = spawnSync("uv", ["run", "python", "scripts/build_prompts_pack.py"], {
@@ -172,7 +212,7 @@ function runPyInstaller() {
 }
 
 function main() {
-  const key = genFernetKey();
+  const key = resolveFernetKey();
   buildPromptsPack(key);
   bakeKeyIntoEntry(key);
   try {

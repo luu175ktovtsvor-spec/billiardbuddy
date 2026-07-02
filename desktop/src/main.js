@@ -16,6 +16,37 @@ const frontend = require("./frontend");
 const updater = require("./updater");
 const crypto = require("crypto");
 
+// ── 单实例锁 ──────────────────────────────────────────────────
+// 客户手滑双击两次图标(或没反应又点一次) → 第二个进程会跟第一个抢同一个本地后端端口，
+// 表现成一个"程序坏了"式的端口冲突错误框。用 Electron 单实例锁挡掉：抢不到锁的第二实例
+// 直接退出，把已经开着的窗口拉到前台，而不是再起一份全套后端/前端。
+// ⚠️ 但 QF_RENDER_MANIFEST 分支(见下方 app.whenReady 里约 320 行起)是"渲染 worker 模式"——
+// 本 App 运行期间，后端会再拉起一份自身二进制做离屏逐帧渲染，这是设计如此的自我调用，
+// 绝不能被单实例锁当成"重复启动"挡下来(挡下来 = 渲染 worker 永远起不来、V2 出片必败)。
+// 所以锁只在"非 worker 模式"下才申请，worker 模式完全跳过这段、不受影响。
+let gotSingleInstanceLock = true; // worker 模式恒 true(不参与抢锁)；主模式下取真实抢锁结果
+if (!process.env.QF_RENDER_MANIFEST) {
+  gotSingleInstanceLock = app.requestSingleInstanceLock();
+  if (!gotSingleInstanceLock) {
+    app.quit();
+  } else {
+    app.on("second-instance", () => {
+      // 用户又点了一次图标：别开新窗口，把已有窗口拉到前台。
+      const win = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : BrowserWindow.getAllWindows()[0];
+      if (win && !win.isDestroyed()) {
+        if (win.isMinimized()) win.restore();
+        win.focus();
+      }
+    });
+  }
+} else {
+  // 渲染 worker 模式:主 App 还开着,worker 是第二个 Electron 进程。若共用同一份 userData,
+  // 两个 Chromium 会抢 GPU cache / LevelDB 文件锁(Windows 上尤其容易),轻则刷错误日志、
+  // 重则离屏渲染起不来。给 worker 一个独立的临时 userData,进程隔离、互不抢锁。
+  // 必须在 app ready 之前设置(ready 后改 userData 不生效),所以放在文件顶部这里。
+  app.setPath("userData", path.join(app.getPath("temp"), `qf-render-worker-${process.pid}`));
+}
+
 // 加载哪个前端:dev 跑本地 web(含发布UI,在 feat/desktop-agent 分支),prod 起打包的 Next.js standalone。
 // 云端 main(zzyppz.cn)没有发布UI,故默认不直连云端页面。
 // DESKTOP_APP_URL 显式设了就优先用它(dev 调试);否则 prod 走本地前端(frontend.js 起 server.js)。
@@ -74,6 +105,22 @@ function createWindow(opts = {}) {
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("http")) shell.openExternal(url);
     return { action: "deny" };
+  });
+
+  // 只拦了 window.open 还不够:聊天气泡里的裸 <a> 一点(不经 window.open，是同一个 webContents
+  // 直接导航)、或页面任何脚本改 location，都会让这个无边框窗口被整个导航到外部网址、回不来
+  // (没有地址栏/前进后退，只能强杀重开)。will-navigate 补拦：目标 origin 跟本窗口自己加载的
+  // origin(本地前端 baseUrl，见上面 `url`)不一样就挡住导航；只有 http(s):// 链接才转交系统浏览器打开
+  // (防 file://、javascript: 等协议被滥用 openExternal)。同源的 Next.js 客户端路由走 History API，
+  // 属于"页内导航"，不会触发这个事件，不受影响。
+  const selfOrigin = url.origin;
+  win.webContents.on("will-navigate", (event, navigationUrl) => {
+    let targetOrigin = null;
+    try { targetOrigin = new URL(navigationUrl).origin; } catch { /* 非法 URL 直接当作外链拦 */ }
+    if (targetOrigin !== selfOrigin) {
+      event.preventDefault();
+      if (/^https?:\/\//i.test(navigationUrl)) shell.openExternal(navigationUrl);
+    }
   });
 
   if (process.env.DESKTOP_DEVTOOLS === "1") win.webContents.openDevTools({ mode: "detach" });
@@ -143,7 +190,10 @@ ipcMain.handle("files:pick", async (_e, opts = {}) => {
   else base = ["openFile"];
   const properties = opts.multi ? [...base, "multiSelections"] : [...base];
   const canPickDir = base.includes("openDirectory");
-  if (canPickDir && opts.createDirectory) properties.push("createDirectory");
+  // 只要弹窗允许选文件夹，就一律带上 "createDirectory"，让 macOS 系统对话框自带"新建文件夹"按钮——
+  // 不再依赖调用方显式传 opts.createDirectory。这样前端"新建空白文件夹 / 使用现有文件夹"两个按钮
+  // 合并成一个之后，不用改调用参数就能兜住"新建"这条路径(用户在同一个弹窗里直接点新建即可)。
+  if (canPickDir) properties.push("createDirectory");
   const dialogOpts = {
     title: opts.title || (canPickDir ? "选择要让 AI 处理的文件 / 文件夹" : "选择要让 AI 处理的文件"),
     properties,
@@ -318,6 +368,9 @@ ipcMain.handle("desktop:studioArtifact", (e, payload) => {
 });
 
 app.whenReady().then(async () => {
+  // 抢锁失败的第二实例：app.quit() 在 ready 前调用并不保证 ready 回调不执行(Electron 时序未承诺)，
+  // 不加这道守卫，第二实例仍可能抢跑到 backend.start() 去占 8077 端口——正是单实例锁要防的事。
+  if (!gotSingleInstanceLock) return;
   // ── V2 视频渲染 worker 模式:后端设 env 拉起本 app 的 Chromium 做离屏逐帧渲染,渲完即退。──
   // dev 和装机包同一套(复用自带 Chromium,不额外打 Playwright)。不开窗、不起后端。
   if (process.env.QF_RENDER_MANIFEST) {

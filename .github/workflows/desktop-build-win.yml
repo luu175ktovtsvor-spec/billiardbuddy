@@ -109,6 +109,10 @@ jobs:
 
       - name: 后端打包(PyInstaller → resources/backend)
         working-directory: desktop
+        env:
+          # 必须与上面写进 bundled.env 的 PROMPTS_PACK_KEY 同源:build_backend.js 用它加密 prompts.enc,
+          # 运行时 bundled.env 的值会压过烘进包里的随机 key(desktop_entry.py setdefault),两把 key 不一致=知识库解不开。
+          BUNDLED_PROMPTS_PACK_KEY: ${{ secrets.BUNDLED_PROMPTS_PACK_KEY }}
         run: node scripts/build_backend.js
 
       # ── ③ 发布 worker(patchright RPA):打成独立 exe,用户免装 Python ──
