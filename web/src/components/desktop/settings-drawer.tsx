@@ -651,7 +651,7 @@ export function SettingsDrawer({
               {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />} 保存
             </button>
             {/* B-Task-2 合规署名：MiSans 官方 EULA 要求嵌入使用需署名。 */}
-            <p className="mt-2 text-center text-[10.5px] leading-snug text-[#c7c7cc] dark:text-[#4a4c52]">本软件界面字体使用小米 MiSans</p>
+            <p className="mt-2 text-center text-[10.5px] leading-snug text-[#6e6e73] dark:text-[#98989d]">本软件界面字体使用小米 MiSans</p>
           </div>
         )}
       </aside>
