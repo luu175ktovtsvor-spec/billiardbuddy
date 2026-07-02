@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import gzip
+import io
 import json
 import logging
 import os
@@ -23,10 +24,27 @@ logger = logging.getLogger("dataeye.app")
 
 app = FastAPI(title="dataeye-receiver")
 
+# 解压体积上限(防 gzip 炸弹 OOM:令牌半公开,不能信任压缩比)。nginx 限压缩包 50m,这里限解压后 256m。
+_MAX_DECOMPRESSED = 256 * 1024 * 1024
+
 
 def _allowed_tokens() -> set[str]:
     """现读 env(而非模块级冻结常量),方便单测 monkeypatch.setenv 直接生效、不必 importlib.reload。"""
     return set(filter(None, os.environ.get("INGEST_TOKENS", "").split(",")))
+
+
+def _gunzip_bounded(raw: bytes, limit: int = _MAX_DECOMPRESSED) -> bytes:
+    """流式解压,超上限即中止(防小压缩包膨胀成几十 GB 打爆内存)。"""
+    out = bytearray()
+    with gzip.GzipFile(fileobj=io.BytesIO(raw)) as gz:
+        while True:
+            chunk = gz.read(1024 * 1024)
+            if not chunk:
+                break
+            out += chunk
+            if len(out) > limit:
+                raise HTTPException(status_code=413, detail="decompressed body too large")
+    return bytes(out)
 
 
 @app.get("/health")
@@ -44,7 +62,7 @@ async def ingest(request: Request):
 
     raw = await request.body()
     if (request.headers.get("content-encoding") or "").lower() == "gzip":
-        raw = gzip.decompress(raw)
+        raw = _gunzip_bounded(raw)
 
     try:
         body = json.loads(raw)

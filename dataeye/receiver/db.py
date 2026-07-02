@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,18 @@ import asyncpg
 logger = logging.getLogger("dataeye.db")
 
 TRANSCRIPT_STORE_DIR = os.environ.get("TRANSCRIPT_STORE_DIR", "/data/transcripts")
+
+# ⚠️ 安全:machine_id / conversation_id 来自客户端 payload,且 ingest 令牌随安装包分发(半公开),
+#    绝不能直接拼进文件路径——否则 conversation_id="../../etc/cron.d/x" 就是服务器任意文件写(root→RCE)。
+#    只放行安全字符;非法值拒绝落盘(原文仍安全留在 raw_inbox 可审计)。
+_SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _safe_component(value: Any, *, field: str) -> str:
+    s = str(value or "")
+    if not s or ".." in s or "/" in s or "\\" in s or not _SAFE_COMPONENT.match(s):
+        raise ValueError(f"unsafe path component for {field}: {value!r}")
+    return s
 
 _pool: asyncpg.Pool | None = None
 
@@ -196,9 +209,15 @@ async def _handle_trace(conn: asyncpg.Connection, machine_id: str, payload: dict
     if content:
         turns = len(content.splitlines())
         summary = content[:200]
-        dest_dir = Path(TRANSCRIPT_STORE_DIR) / str(machine_id)
+        # 路径分量先清洗(防穿越),再用 realpath 复核最终路径确实落在 store 目录下(双保险)。
+        safe_mid = _safe_component(machine_id, field="machine_id")
+        safe_cid = _safe_component(conversation_id, field="conversation_id")
+        base = Path(TRANSCRIPT_STORE_DIR).resolve()
+        dest_dir = (base / safe_mid).resolve()
+        dest_file = (dest_dir / f"{safe_cid}.jsonl").resolve()
+        if os.path.commonpath([str(base), str(dest_file)]) != str(base):
+            raise ValueError(f"path escapes store dir: {dest_file}")
         dest_dir.mkdir(parents=True, exist_ok=True)
-        dest_file = dest_dir / f"{conversation_id}.jsonl"
         dest_file.write_text(content, encoding="utf-8")
         file_path = str(dest_file)
     await conn.execute(

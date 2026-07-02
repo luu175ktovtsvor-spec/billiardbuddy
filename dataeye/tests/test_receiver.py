@@ -24,6 +24,7 @@ if str(RECEIVER_DIR) not in sys.path:
     sys.path.insert(0, str(RECEIVER_DIR))
 
 import app as app_module  # noqa: E402  (必须在 sys.path 插入之后 import)
+import db as db_module  # noqa: E402  (受测:路径分量清洗)
 
 
 def _gzip_json(body: dict) -> bytes:
@@ -128,6 +129,33 @@ def test_empty_batch_is_valid_and_accepted_zero(client, fake_insert_batch):
     )
     assert resp.status_code == 200
     assert resp.json() == {"accepted": 0, "duplicated": 0}
+
+
+# ── C1 安全:trace 落盘路径分量清洗(防路径穿越→任意文件写)──────────────────
+@pytest.mark.parametrize("bad", ["../etc/passwd", "..", "a/b", "a\\b", "", None, "x/../y", "foo/"])
+def test_safe_component_rejects_traversal(bad):
+    with pytest.raises(ValueError):
+        db_module._safe_component(bad, field="conversation_id")
+
+
+@pytest.mark.parametrize("good", ["conv-1", "abc_123", "a.b-c", "smoke-machine-1"])
+def test_safe_component_allows_clean(good):
+    assert db_module._safe_component(good, field="x") == good
+
+
+# ── M3 安全:gzip 炸弹解压上限 ────────────────────────────────────────────
+def test_gunzip_bounded_rejects_bomb():
+    from fastapi import HTTPException
+
+    payload = gzip.compress(b"A" * 10000)
+    with pytest.raises(HTTPException) as ei:
+        app_module._gunzip_bounded(payload, limit=100)
+    assert ei.value.status_code == 413
+
+
+def test_gunzip_bounded_ok_under_limit():
+    data = b'{"machine_id":"m","batch":[]}'
+    assert app_module._gunzip_bounded(gzip.compress(data)) == data
 
 
 def test_non_gzip_content_encoding_treats_body_as_plain_json(client, fake_insert_batch):
