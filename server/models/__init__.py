@@ -7,6 +7,8 @@ from models.quota import UsageQuota
 from models.store_memory import StoreMemory
 from models.usage_event import UsageEvent
 from models.media_job import MediaJob
+from models.sync_outbox import SyncOutbox
+from models.sync_state import SyncState
 
 __all__ = [
     "User", "Store", "StoreMember", "Generation",
@@ -14,4 +16,6 @@ __all__ = [
     "StoreMemory",
     "UsageEvent",
     "MediaJob",
+    "SyncOutbox",
+    "SyncState",
 ]
