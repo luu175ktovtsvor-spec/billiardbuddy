@@ -108,11 +108,17 @@ function byokEncryptKey(userDataDir) {
 }
 
 function _spawnProc({ userDataDir, repoRoot, onLog }) {
+  const bundled = _loadBundledEnv(repoRoot);   // 内置模型 key + 数据汇聚端点/令牌（DATA_SYNC_ENDPOINT/TOKEN）
   const env = {
     ...process.env,
-    ..._loadBundledEnv(repoRoot),   // 内置模型 key（MiMo/Seedream/Seedance…）；放最前，下面的基建 env 仍能覆盖它
+    ...bundled,   // 放最前，下面的基建 env 仍能覆盖它
     DATABASE_URL: dbUrl(userDataDir),
     DESKTOP_LOCAL: "1",
+    // 数据汇聚上行：真 endpoint/token 走 .env.bundled.local（同内置 key，不写死进 git）。
+    // 默认只在「确实内置了接收端点」时才开——没配端点的机器不白跑采集、不撑本地队列。
+    // 显式 env / bundled 里写了 DATA_SYNC_ENABLED 则以它为准（可强制开/关）。
+    DATA_SYNC_ENABLED:
+      process.env.DATA_SYNC_ENABLED ?? bundled.DATA_SYNC_ENABLED ?? (bundled.DATA_SYNC_ENDPOINT ? "1" : "0"),
     SECRET_KEY: secretKey(userDataDir),
     BYOK_ENCRYPT_KEY: byokEncryptKey(userDataDir), // 纯 BYOK:加密老板自带 key,缺它则 PUT /me/byok 503
     RAG_EMBEDDER: "fastembed", // 本地语义模型(bge-zh ~90MB):知识/店脑/历史"按意思找料",换说法也能找对。
