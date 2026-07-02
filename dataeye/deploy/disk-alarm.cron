@@ -1,0 +1,8 @@
+# dataeye/deploy/disk-alarm.cron
+# 装到服务器: /etc/cron.d/dataeye-disk (root 权限,文件权限建议 644)
+#
+# 每小时查一次 /data 用量,超过 85% 打印告警行到 syslog(可自行接现有通知渠道,
+# 比如把下面这行的输出改成 curl 一下企业微信/飞书机器人 webhook)。
+#
+# 字段: 分 时 日 月 周 用户 命令
+0 * * * * root df -h /data | awk 'NR==2{gsub(/%/,"",$5); if ($5+0 > 85) print "[dataeye] disk usage high on /data: " $5 "%"}' | logger -t dataeye-disk
