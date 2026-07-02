@@ -1,12 +1,15 @@
 """视觉理解(VLM)轻客户端 —— 让大脑"看懂"视频帧,给氛围 Planner 挑高光用。
 
 **上游可切(落地文档 §6"网关上游可切"设计),env VLM_PROVIDER 选:**
-- `doubao`(默认·主用):火山豆包视觉 `doubao-seed-1-6-250615`。项目已内置 ARK key(Seedance 同一把),
-  付费基建、限流正常、便宜(一次任务几厘)。⚠️模型要在方舟控制台开通+受限 key 授权(同 Seedance)。
-- `zhipu`(兜底):智谱 `glm-4.6v-flash`,零成本但**免费档限流狠**(实测密集调 429 锁死),只当兜底。
+- `doubao`(默认·主用):火山豆包视觉 `doubao-seed-1-6-250615`。**生产经网关**(gateway/app.py 的
+  `/v1/ark/chat/completions`)反代,真 ARK key 全在服务器,客户端只带可吊销的 app 令牌
+  (`QF_GATEWAY_URL`/`QF_GATEWAY_TOKEN`)。⚠️模型要在方舟控制台开通+受限 key 授权(同 Seedance)。
+- `zhipu`(兜底):智谱 `glm-4.6v-flash`,零成本但**免费档限流狠**(实测密集调 429 锁死),量小不收编,
+  继续直连(`ZHIPU_API_KEY`)。
 
 owner 2026-07-01 拍板:VLM 一律走云端 API(店主机弱扛不住本地 7B)。
-⚠️ 切片阶段直连(key 走 env)。正式版收进网关(gateway/app.py 藏 key + 转发,店主 app 只带令牌)。
+⚠️ `QF_GATEWAY_URL`/`QF_GATEWAY_TOKEN` 没配时,退到 `ARK_API_KEY`/`VLM_API_KEY` 直连火山——这是
+**dev-only 开发机后门**(联调图快),生产 / 客户盒子必须配网关,不能把真 ARK key 打进客户端。
 
 铁律(实测踩坑):
 - 图片必须 **base64 直传**,别喂外网 URL(智谱国内服务器拉不动海外图床报 1210;统一 base64 最稳)。
@@ -28,24 +31,47 @@ import httpx
 logger = logging.getLogger(__name__)
 
 # ── VLM 上游(可切换)——落地"网关上游可切"设计 ─────────────────────────────
-# 默认走【火山豆包视觉】(项目已内置 ARK key·付费基建·限流正常);
-# 智谱免费档留兜底(零成本但限流狠)。env VLM_PROVIDER 切换。
+# 默认走【火山豆包视觉】,生产经网关(藏 key);智谱免费档留兜底(零成本但限流狠,量小不收编)。
+# env VLM_PROVIDER 切换。
 _PROVIDERS = {
     "doubao": {
-        "endpoint": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+        "gateway": True,   # 生产走网关(真 key 全在服务器)
+        "dev_endpoint": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",  # dev-only 直连后门
         "model": os.environ.get("VLM_MODEL_DOUBAO", "doubao-seed-1-6-250615"),
-        "key_envs": ("ARK_API_KEY", "VLM_API_KEY"),
+        "dev_key_envs": ("ARK_API_KEY", "VLM_API_KEY"),
     },
     "zhipu": {
-        "endpoint": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        "gateway": False,  # 免费兜底档,量小不值得收编,继续直连
+        "dev_endpoint": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
         "model": os.environ.get("VLM_MODEL_ZHIPU", "glm-4.6v-flash"),
-        "key_envs": ("ZHIPU_API_KEY", "VLM_API_KEY"),
+        "dev_key_envs": ("ZHIPU_API_KEY", "VLM_API_KEY"),
     },
 }
+
+# 网关地址/令牌(生产形态):真 ARK key 在服务器 gw.env,客户端只带这个可吊销的 app 令牌。
+_GATEWAY_URL = os.environ.get("QF_GATEWAY_URL", "").rstrip("/")   # 如 http://<网关IP>/gw/v1
+_GATEWAY_TOKEN = os.environ.get("QF_GATEWAY_TOKEN", "")
+_GATEWAY_PATH = "/ark/chat/completions"   # gateway/app.py 的火山豆包视觉/文本通道
 
 
 def _provider() -> dict:
     return _PROVIDERS.get(os.environ.get("VLM_PROVIDER", "doubao"), _PROVIDERS["doubao"])
+
+
+def _resolve_endpoint() -> tuple[str, str] | None:
+    """算这次请求打哪个 url、带哪个 token;没配(网关没配、dev key 也没)→ None,调用方降级启发式。
+
+    生产:走网关(`QF_GATEWAY_URL`+`QF_GATEWAY_TOKEN`),真 ARK key 全在服务器。
+    dev-only 后门:开发机联调图快,设了 `ARK_API_KEY`/`VLM_API_KEY` 就直连火山(生产/客户盒子别这么配)。
+    """
+    p = _provider()
+    if p.get("gateway") and _GATEWAY_URL and _GATEWAY_TOKEN:
+        return _GATEWAY_URL + _GATEWAY_PATH, _GATEWAY_TOKEN
+    for env in p["dev_key_envs"]:
+        v = os.environ.get(env)
+        if v:
+            return p["dev_endpoint"], v
+    return None
 
 # 免费档有速率限制(实测密集调会 429)。串行节流 + 429 指数退避重试。
 _MIN_INTERVAL = float(os.environ.get("VLM_MIN_INTERVAL", "1.3"))  # 两次请求最小间隔(秒)
@@ -72,16 +98,8 @@ _SCORE_PROMPT = (
 
 
 def vlm_available() -> bool:
-    """有没有配 VLM key(没有则 Planner 走启发式)。"""
-    return bool(_api_key())
-
-
-def _api_key() -> str | None:
-    for env in _provider()["key_envs"]:
-        v = os.environ.get(env)
-        if v:
-            return v
-    return None
+    """有没有配 VLM 通道(网关或 dev key 直连)——没有则 Planner 走启发式。"""
+    return _resolve_endpoint() is not None
 
 
 def _b64_data_uri(image_path: str) -> str:
@@ -137,9 +155,10 @@ def classify_content(image_paths: list[str], *, timeout: float = 60.0) -> dict:
 
     没 key / 失败 → {is_billiards: False, scene: 通用}(优雅降级到通用,不崩)。
     """
-    key = _api_key()
-    if not key or not image_paths:
+    resolved = _resolve_endpoint()
+    if not resolved or not image_paths:
         return {"is_billiards": False, "scene": "通用"}
+    url, token = resolved
     try:
         grid = _compose_grid_datauri(image_paths[:8])
     except Exception:  # noqa: BLE001
@@ -152,7 +171,7 @@ def classify_content(image_paths: list[str], *, timeout: float = 60.0) -> dict:
         ]}],
         "temperature": 0.1, "max_tokens": 200,
     }
-    content = _post_with_retry(payload, key, timeout)
+    content = _post_with_retry(url, token, payload, timeout)
     data = _parse_json_loose(content or "") or {}
     scene = str(data.get("scene") or "通用")
     is_bil = bool(data.get("is_billiards"))
@@ -164,9 +183,10 @@ def score_frames_grid(image_paths: list[str], *, timeout: float = 90.0) -> list[
 
     返回与 image_paths 等长的打分列表;整批失败(没key/网络/格式)则 None → 调用方对整批走启发式。
     """
-    key = _api_key()
-    if not key or not image_paths:
+    resolved = _resolve_endpoint()
+    if not resolved or not image_paths:
         return None
+    url, token = resolved
     n = len(image_paths)
     try:
         grid_uri = _compose_grid_datauri(image_paths)
@@ -183,7 +203,7 @@ def score_frames_grid(image_paths: list[str], *, timeout: float = 90.0) -> list[
         "temperature": 0.2,
         "max_tokens": 1200,
     }
-    content = _post_with_retry(payload, key, timeout)
+    content = _post_with_retry(url, token, payload, timeout)
     if content is None:
         return None
     arr = _parse_json_array_loose(content)
@@ -240,13 +260,16 @@ def _parse_json_array_loose(text: str) -> list | None:
         return None
 
 
-def _post_with_retry(payload: dict, key: str, timeout: float) -> str | None:
-    """带节流 + 429/5xx 退避的 POST,返回 message content 文本;失败 None。"""
+def _post_with_retry(url: str, token: str, payload: dict, timeout: float) -> str | None:
+    """带节流 + 429/5xx 退避的 POST(url/token 由 _resolve_endpoint 给,网关或 dev 直连都走这一条),
+    返回 message content 文本;失败 None。"""
+    from services.ai.providers._net import bypass_proxy_for
+    direct = bypass_proxy_for(url)
     for attempt in range(_MAX_RETRIES):
         _throttle()
         try:
-            r = httpx.post(_provider()["endpoint"], headers={"Authorization": f"Bearer {key}"},
-                           json=payload, timeout=timeout)
+            r = httpx.post(url, headers={"Authorization": f"Bearer {token}"},
+                           json=payload, timeout=timeout, trust_env=not direct)
             if r.status_code == 429 or r.status_code >= 500:
                 back = 2.0 * (2 ** attempt)
                 logger.warning("VLM %s,第%d次退避 %.0fs", r.status_code, attempt + 1, back)
@@ -264,11 +287,12 @@ def _post_with_retry(payload: dict, key: str, timeout: float) -> str | None:
 def score_frame(image_path: str, *, timeout: float = 30.0) -> dict | None:
     """给一帧图打分。返回 {subject, quality(0-10), usable(bool), reason}；不可用则 None。
 
-    None = 没 key 或调用失败 → 调用方(Planner)应退回启发式,别把 None 当"差帧"。
+    None = 没配通道(网关/dev key 都没)或调用失败 → 调用方(Planner)应退回启发式,别把 None 当"差帧"。
     """
-    key = _api_key()
-    if not key:
+    resolved = _resolve_endpoint()
+    if not resolved:
         return None
+    url, token = resolved
     payload = {
         "model": _provider()["model"],
         "messages": [{
@@ -281,39 +305,11 @@ def score_frame(image_path: str, *, timeout: float = 30.0) -> dict | None:
         "temperature": 0.2,
         "max_tokens": 512,
     }
-    content = None
-    for attempt in range(_MAX_RETRIES):
-        _throttle()
-        try:
-            r = httpx.post(_provider()["endpoint"], headers={"Authorization": f"Bearer {key}"},
-                           json=payload, timeout=timeout)
-            if r.status_code == 429 or r.status_code >= 500:
-                back = 2.0 * (2 ** attempt)  # 2s,4s,8s,16s
-                logger.warning("VLM %s,第%d次退避 %.0fs", r.status_code, attempt + 1, back)
-                time.sleep(back)
-                continue
-            r.raise_for_status()
-            content = r.json()["choices"][0]["message"]["content"]
-            break
-        except Exception as e:  # noqa: BLE001 —— 网络/超时/格式全兜底降级
-            logger.warning("VLM score_frame 失败(降级启发式):%s", e)
-            return None
+    content = _post_with_retry(url, token, payload, timeout)
     if content is None:
-        logger.warning("VLM 多次 429/5xx 仍失败,降级启发式")
         return None
-
     data = _parse_json_loose(content)
     if not isinstance(data, dict):
         logger.warning("VLM 回复非 JSON,降级:%r", content[:120])
         return None
-    # 规整字段
-    try:
-        q = float(data.get("quality", 5))
-    except (TypeError, ValueError):
-        q = 5.0
-    return {
-        "subject": str(data.get("subject") or "未知"),
-        "quality": max(0.0, min(10.0, q)),
-        "usable": bool(data.get("usable", True)),
-        "reason": str(data.get("reason") or "").strip(),
-    }
+    return _norm_score(data)

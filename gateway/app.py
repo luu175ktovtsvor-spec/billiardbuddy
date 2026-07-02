@@ -1,9 +1,12 @@
 """球房 AI 网关阀门(lean FastAPI)——国内机当总闸。
 
 路由:
-- MiMo 对话  /v1/chat/completions   → 直连小米(国内→国内,快;含流式透传)
-- GPT 生图   /v1/images/generations → 转发美国机 /relay(OpenAI 出口)
-- Seedance   /v1/video/generations  → 留接口位(等火山方舟 key)
+- MiMo 对话     /v1/chat/completions            → 直连小米(国内→国内,快;含流式透传)
+- GPT 生图      /v1/images/generations|edits     → 转发美国机 /relay(OpenAI 出口)
+- Seedance 视频 /v1/contents/generations/tasks(+轮询) → 直连火山方舟(国内→国内,异步任务)
+- 火山豆包视觉/文本 /v1/ark/chat/completions      → 直连火山方舟(视频剪辑台"看懂画面"+"配文案/编排风格"用,
+                                                     与 vlm.py/director.py 配对)
+- 火山 Seedream 生图 /v1/ark/images/generations   → 直连火山方舟(原生 JSON 端点,非 OpenAI multipart edits)
 
 三层阀门:
   ① 每家真实限流:MiMo 令牌桶(账号 100 RPM 留余量)、生图 IPM 令牌桶 + 并发信号量、视频并发信号量(个人户 3)
@@ -47,6 +50,14 @@ Q_VIDEO = int(os.environ.get("GW_Q_VIDEO", "5"))
 QUEUE_MAX_WAIT = float(os.environ.get("GW_QUEUE_MAX_WAIT", "60"))  # 排队最多等;超时=背压拒
 VIDEO_TIMEOUT = float(os.environ.get("GW_VIDEO_TIMEOUT", "1800"))  # 视频轮询上限(实测出片 3.5~13.5 分钟,留 30 分钟)
 
+# 火山豆包视觉/文本(VLM 打分 + 导演配文案/编排风格,视频剪辑台一条流水线内多次调用,量比对话小、比生图大)
+ARK_CHAT_RPM = int(os.environ.get("GW_ARK_CHAT_RPM", "30"))
+Q_ARK_CHAT = int(os.environ.get("GW_Q_ARK_CHAT", "500"))     # 每人每日调用次数上限(打分是逐帧/逐网格调,给宽松点)
+# 火山 Seedream 生图(原生端点,预留通道;真实限流 500 IPM/账号,自己收紧留余量)
+ARK_IMG_IPM = int(os.environ.get("GW_ARK_IMG_IPM", "20"))
+ARK_IMG_CONC = int(os.environ.get("GW_ARK_IMG_CONC", "6"))
+Q_ARK_IMG = int(os.environ.get("GW_Q_ARK_IMG", "20"))
+
 CST = timezone(timedelta(hours=8))
 
 
@@ -80,6 +91,9 @@ mimo_bucket = TokenBucket(MIMO_RPM)
 img_bucket = TokenBucket(IMG_IPM)
 img_sem = asyncio.Semaphore(IMG_CONC)
 video_sem = asyncio.Semaphore(VIDEO_CONC)
+ark_chat_bucket = TokenBucket(ARK_CHAT_RPM)
+ark_img_bucket = TokenBucket(ARK_IMG_IPM)
+ark_img_sem = asyncio.Semaphore(ARK_IMG_CONC)
 
 
 def _db():
@@ -145,8 +159,10 @@ app = FastAPI(title="球房AI网关阀门")
 @app.get("/healthz")
 async def health():
     return {"ok": True, "limits": {"mimo_rpm": MIMO_RPM, "img_ipm": IMG_IPM,
-            "img_conc": IMG_CONC, "video_conc": VIDEO_CONC},
-            "quota": {"chat": Q_CHAT, "img": Q_IMG, "video": Q_VIDEO}}
+            "img_conc": IMG_CONC, "video_conc": VIDEO_CONC,
+            "ark_chat_rpm": ARK_CHAT_RPM, "ark_img_ipm": ARK_IMG_IPM, "ark_img_conc": ARK_IMG_CONC},
+            "quota": {"chat": Q_CHAT, "img": Q_IMG, "video": Q_VIDEO,
+                      "ark_chat": Q_ARK_CHAT, "ark_img": Q_ARK_IMG}}
 
 
 @app.get("/admin/usage")
@@ -342,3 +358,63 @@ async def video_poll(task_id: str, authorization: str = Header(None)):
         return JSONResponse(status_code=r.status_code, content={"raw": r.text[:500]})
     except Exception as e:
         raise HTTPException(502, f"视频轮询出错:{str(e)[:120]}")
+
+
+# ── 火山豆包视觉/文本(收编 vlm.py + director.py 的直连)────────────────────
+# 视频剪辑台"看懂画面"(VLM 打分/分类)+ "配文案/编排风格"(AI 导演)都调这一条,与 Seedance
+# 共用同一把 GW_ARK_KEY(同账号)。非流式:调用方是一次性请求(不是对话主链路),等整包回即可。
+@app.post("/v1/ark/chat/completions")
+async def ark_chat(request: Request, authorization: str = Header(None)):
+    user = auth(authorization)
+    quota_check(user, "ark_chat", Q_ARK_CHAT)
+    if not CFG["ark_key"]:
+        raise HTTPException(503, "视觉/文案功能未配置(缺 GW_ARK_KEY)")
+    await ark_chat_bucket.acquire(QUEUE_MAX_WAIT)     # ① 限流 ③ 排队
+    body = await request.body()
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, read=120.0)) as cli:
+            r = await cli.post(
+                CFG["ark_base"] + "/chat/completions", content=body,
+                headers={"Authorization": f"Bearer {CFG['ark_key']}", "Content-Type": "application/json"},
+            )
+        ms = int((time.monotonic() - t0) * 1000)
+        log(user, "ark_chat", r.status_code < 400, r.status_code, ms)
+        ct = r.headers.get("content-type", "")
+        if ct.startswith("application/json"):
+            return JSONResponse(status_code=r.status_code, content=r.json())
+        return JSONResponse(status_code=r.status_code, content={"raw": r.text[:500]})
+    except Exception as e:
+        log(user, "ark_chat", False, 599, int((time.monotonic() - t0) * 1000), str(e)[:120])
+        raise HTTPException(502, f"视觉/文案上游出错:{str(e)[:120]}")
+
+
+# ── 火山方舟·Seedream 生图(原生 JSON /images/generations,非 OpenAI multipart edits)──
+# 预留通道:与 GPT 生图(/v1/images/generations,转发美国 relay)路径不同、互不影响。
+# 客户端接入待办(见部署清单文档「遗留风险清单」):poster_service.py 目前桌面盒子内置 Seedream 仍直连火山,
+# 未接这条网关通道。
+@app.post("/v1/ark/images/generations")
+async def ark_images(request: Request, authorization: str = Header(None)):
+    user = auth(authorization)
+    quota_check(user, "ark_img", Q_ARK_IMG)
+    if not CFG["ark_key"]:
+        raise HTTPException(503, "生图功能未配置(缺 GW_ARK_KEY)")
+    await ark_img_bucket.acquire(QUEUE_MAX_WAIT)      # ① IPM 限流 ③ 排队
+    async with ark_img_sem:                           # ① 在途并发
+        body = await request.body()
+        t0 = time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, read=300.0)) as cli:
+                r = await cli.post(
+                    CFG["ark_base"] + "/images/generations", content=body,
+                    headers={"Authorization": f"Bearer {CFG['ark_key']}", "Content-Type": "application/json"},
+                )
+            ms = int((time.monotonic() - t0) * 1000)
+            log(user, "ark_img", r.status_code < 400, r.status_code, ms)
+            ct = r.headers.get("content-type", "")
+            if ct.startswith("application/json"):
+                return JSONResponse(status_code=r.status_code, content=r.json())
+            return JSONResponse(status_code=r.status_code, content={"raw": r.text[:500]})
+        except Exception as e:
+            log(user, "ark_img", False, 599, int((time.monotonic() - t0) * 1000), str(e)[:120])
+            raise HTTPException(502, f"生图上游出错:{str(e)[:120]}")

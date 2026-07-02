@@ -4,7 +4,11 @@
 - 对话改文案(recaption):带上「店主指令 + 上一版文案」再调一次,LLM 带上下文重写。
 - 文案与素材解耦:本模块只产出文字,不碰帧;换文案 = 重跑本模块 + 重渲文案层。
 
-模型走豆包(ARK key 已内置,与 VLM/Seedance 同一把)。env VIDEO_LLM_* 可覆盖。失败优雅降级到规则文案。
+模型走豆包(与 VLM/Seedance 同一把 ARK key)。**生产经网关**(gateway/app.py 的 `/v1/ark/chat/completions`)
+反代,真 key 全在服务器,客户端只带可吊销的 app 令牌(`QF_GATEWAY_URL`/`QF_GATEWAY_TOKEN`,与 vlm.py 共用同一条
+通道)。`QF_GATEWAY_URL`/`QF_GATEWAY_TOKEN` 没配时,退到 `ARK_API_KEY`/`VIDEO_LLM_API_KEY`/`VLM_API_KEY` 直连
+火山——这是 **dev-only 开发机后门**,生产/客户盒子必须配网关,不能把真 ARK key 打进客户端。
+env VIDEO_LLM_MODEL/VIDEO_LLM_ENDPOINT 可覆盖。失败优雅降级到规则文案。
 """
 from __future__ import annotations
 
@@ -17,16 +21,30 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-_ENDPOINT = os.environ.get("VIDEO_LLM_ENDPOINT", "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
 _MODEL = os.environ.get("VIDEO_LLM_MODEL", "doubao-seed-1-6-250615")
-_KEY_ENVS = ("ARK_API_KEY", "VIDEO_LLM_API_KEY", "VLM_API_KEY")
+
+# 网关地址/令牌(生产形态,与 vlm.py 共用同一条网关通道):真 ARK key 在服务器 gw.env。
+_GATEWAY_URL = os.environ.get("QF_GATEWAY_URL", "").rstrip("/")   # 如 http://<网关IP>/gw/v1
+_GATEWAY_TOKEN = os.environ.get("QF_GATEWAY_TOKEN", "")
+_GATEWAY_PATH = "/ark/chat/completions"   # gateway/app.py 的火山豆包视觉/文本通道
+
+# dev-only 直连后门(开发机联调用,生产别配这几个 env)
+_DEV_ENDPOINT = os.environ.get("VIDEO_LLM_ENDPOINT", "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
+_DEV_KEY_ENVS = ("ARK_API_KEY", "VIDEO_LLM_API_KEY", "VLM_API_KEY")
 
 
-def _api_key() -> str | None:
-    for env in _KEY_ENVS:
+def _resolve_endpoint() -> tuple[str, str] | None:
+    """算这次请求打哪个 url、带哪个 token;都没配 → None,调用方降级到规则文案。
+
+    生产:走网关(`QF_GATEWAY_URL`+`QF_GATEWAY_TOKEN`),真 ARK key 全在服务器。
+    dev-only 后门:开发机联调图快,设了 dev key 就直连火山(生产/客户盒子别这么配)。
+    """
+    if _GATEWAY_URL and _GATEWAY_TOKEN:
+        return _GATEWAY_URL + _GATEWAY_PATH, _GATEWAY_TOKEN
+    for env in _DEV_KEY_ENVS:
         v = os.environ.get(env)
         if v:
-            return v
+            return _DEV_ENDPOINT, v
     return None
 
 
@@ -43,16 +61,22 @@ def _parse_obj_loose(text: str) -> dict | None:
 
 
 def chat_json(prompt: str, *, timeout: float = 90.0, retries: int = 3) -> dict | None:
-    """通用:发一段 prompt 给豆包,抠出 JSON 对象返回。带重试(网络/SSL 抖动常见)。失败/无 key → None。"""
+    """通用:发一段 prompt 给豆包,抠出 JSON 对象返回。带重试(网络/SSL 抖动常见)。失败/无配置 → None。"""
     import time as _time
-    key = _api_key()
-    if not key:
+
+    from services.ai.providers._net import bypass_proxy_for
+
+    resolved = _resolve_endpoint()
+    if not resolved:
         return None
+    url, token = resolved
+    direct = bypass_proxy_for(url)
     payload = {"model": _MODEL, "messages": [{"role": "user", "content": prompt}],
                "temperature": 0.4, "max_tokens": 1800}
     for attempt in range(retries):
         try:
-            r = httpx.post(_ENDPOINT, headers={"Authorization": f"Bearer {key}"}, json=payload, timeout=timeout)
+            r = httpx.post(url, headers={"Authorization": f"Bearer {token}"}, json=payload,
+                           timeout=timeout, trust_env=not direct)
             r.raise_for_status()
             return _parse_obj_loose(r.json()["choices"][0]["message"]["content"])
         except Exception as e:  # noqa: BLE001
@@ -88,7 +112,7 @@ def plan_style(shots: list[dict], *, mood: str | None = None, prev: dict | None 
         _styles[0]["transition"] = "none"   # 首段不入场转场(默认也保持,与 LLM 路径一致)
     _def = {"theme": {"accent": "#12E0C8"}, "shots_style": _styles,
             "customCss": "", "music": {"mood": "auto", "key": 0}}
-    if n == 0 or not _api_key():
+    if n == 0 or _resolve_endpoint() is None:
         return _def
 
     lines = [f"第{i + 1}段: 画面={s.get('subject', '') or '未知'} 文案='{s.get('caption', '')}'" for i, s in enumerate(shots)]
@@ -163,9 +187,10 @@ def caption_shots(
     domain_ctx: 识别到台球时注入的场景打法(billiards_video_kb);通用则 None。
     """
     n = len(shots)
-    key = _api_key()
-    if not key or n == 0:
+    resolved = _resolve_endpoint()
+    if not resolved or n == 0:
         return _fallback(shots, n)
+    url, token = resolved
 
     lines = [f"{i}. 画面={s.get('subject', '未知')} 备注={s.get('reason', '')}" for i, s in enumerate(shots)]
     if tonality and prev_captions:
@@ -190,8 +215,12 @@ def caption_shots(
         "temperature": 0.7,
         "max_tokens": 1500,
     }
+    from services.ai.providers._net import bypass_proxy_for
+
+    direct = bypass_proxy_for(url)
     try:
-        r = httpx.post(_ENDPOINT, headers={"Authorization": f"Bearer {key}"}, json=payload, timeout=timeout)
+        r = httpx.post(url, headers={"Authorization": f"Bearer {token}"}, json=payload,
+                       timeout=timeout, trust_env=not direct)
         r.raise_for_status()
         data = _parse_obj_loose(r.json()["choices"][0]["message"]["content"])
     except Exception as e:  # noqa: BLE001
