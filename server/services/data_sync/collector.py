@@ -96,8 +96,16 @@ async def collect_once(db) -> int:
         await _advance(db, "usage_events", rows[-1].created_at)
 
     # —— 生成记录（is_deleted==False）：全列快照 ——
+    # ⚠️ 绕开 core/tenant.py 的自动租户过滤：它对不带 store_id 条件的 generations 查询,
+    #    在「无租户上下文」(我们这个后台 loop 正是)时 fail-safe 成 `WHERE store_id IS NULL`→ 一条都取不到。
+    #    采集器是**跨店**汇聚器,要的就是所有门店的生成记录。显式带上 `store_id IS NOT NULL`
+    #    (语义=全部真实生成记录)即命中该监听器的"已自带 store_id 过滤则不插手"约定,取回全量。
     cur = await _cursor(db, "generations")
-    q = select(Generation).where(Generation.is_deleted == False).order_by(Generation.created_at)  # noqa: E712
+    q = (
+        select(Generation)
+        .where(Generation.store_id.isnot(None), Generation.is_deleted == False)  # noqa: E712
+        .order_by(Generation.created_at)
+    )
     if cur is not None:
         q = q.where(Generation.created_at > cur)
     rows = (await db.execute(q)).scalars().all()

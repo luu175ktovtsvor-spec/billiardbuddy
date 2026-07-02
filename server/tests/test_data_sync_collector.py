@@ -48,6 +48,26 @@ async def test_collect_generation_full_column_snapshot(db_session):
 
 
 @pytest.mark.asyncio
+async def test_collect_generation_bypasses_tenant_filter(db_session):
+    """采集器是跨店后台 loop:core/tenant.py 的自动过滤会把「非当前租户」的 generations 查询清空。
+    这里把租户上下文设成**别的店**,采集器仍须取到我们这条(跨店全量)。回归后台采集被租户过滤清空的坑。"""
+    from models.generation import Generation
+    from core.tenant import set_tenant, _current_store_id
+
+    token = set_tenant(uuid.uuid4())  # 当前上下文=另一家店
+    try:
+        db_session.add(Generation(store_id=uuid.uuid4(), type="poster"))  # 属于第三家店
+        await db_session.commit()
+        await collect_once(db_session)
+        gens = (await db_session.execute(
+            select(SyncOutbox).where(SyncOutbox.kind == "gen")
+        )).scalars().all()
+        assert len(gens) == 1  # 没被租户过滤挡掉 = 跨店全量
+    finally:
+        _current_store_id.reset(token)  # 复位,别污染其它测试
+
+
+@pytest.mark.asyncio
 async def test_collect_skips_deleted_generation(db_session):
     """软删的生成记录不上行（查询带 is_deleted==False）。"""
     from models.generation import Generation
