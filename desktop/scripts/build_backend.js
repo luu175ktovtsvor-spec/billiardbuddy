@@ -101,7 +101,26 @@ function ensureFastembedModel() {
     `from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-zh-v1.5', cache_dir=r'${cacheDir}'); print('bge ready')`],
     { cwd: SERVER, stdio: "inherit" });
   if (r.status !== 0 || !hasModel()) { console.error("⚠️ bge 模型下载失败，本次不打包模型(运行时回退词面嵌器)"); return null; }
+  // HuggingFace 缓存 snapshots/<hash>/*.json 是【软链】指向 ../../blobs/<sha>。PyInstaller 原样打进包后,
+  // Windows 上 NSIS 处理这些软链会报"目录名无效"、整个安装包做不出来(Mac 无此限)。就地把软链换成实体文件。
+  dereferenceSymlinksInPlace(cacheDir);
   return cacheDir;
+}
+
+// 就地把目录树里所有软链替换成其真目标的实体拷贝(bge 缓存的 HF 软链 → 实体,Windows NSIS 才吞得下)。
+function dereferenceSymlinksInPlace(dir) {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isSymbolicLink()) {
+      const real = fs.realpathSync(p);
+      const isDir = fs.statSync(real).isDirectory();
+      fs.rmSync(p, { force: true });
+      if (isDir) fs.cpSync(real, p, { recursive: true, dereference: true });
+      else fs.copyFileSync(real, p);
+    } else if (e.isDirectory()) {
+      dereferenceSymlinksInPlace(p);
+    }
+  }
 }
 
 function genFernetKey() {
