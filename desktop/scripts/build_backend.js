@@ -84,9 +84,28 @@ const videoAssets = path.join(SERVER, "services", "video_edit", "assets");
 if (fs.existsSync(videoAssets)) addData.push(`--add-data=${videoAssets}${sep}video_edit_assets`);
 const cjkFonts = path.join(SERVER, "assets", "fonts");
 if (fs.existsSync(cjkFonts)) addData.push(`--add-data=${cjkFonts}${sep}assets_fonts`);
-const whisperDir = path.join(SERVER, "ml_models", "faster-whisper-medium");
-if (fs.existsSync(whisperDir)) addData.push(`--add-data=${whisperDir}${sep}faster-whisper-medium`);
-else console.warn("⚠️ 未找到 whisper 权重(server/ml_models/faster-whisper-medium)——口播转录装机版将不可用");
+const whisperDir = ensureWhisperModel();
+if (whisperDir) addData.push(`--add-data=${whisperDir}${sep}faster-whisper-medium`);
+else console.warn("⚠️ whisper 权重缺失且下载失败——口播转录装机版将不可用(其余功能不受影响)");
+
+function ensureWhisperModel() {
+  // 口播转录用的 faster-whisper-medium(~1.4G)。本地有就复用(开发机/复跑不重下);
+  // CI 上没有 → 用 faster_whisper.download_model 下到 server/ml_models/faster-whisper-medium(扁平实体),
+  // 供 --add-data 打进包。装机后 transcribe.py 从 sys._MEIPASS/faster-whisper-medium 离线加载。
+  // 下载失败返回 null → 不打 whisper,运行时口播不可用但其余功能正常(非致命)。
+  const dir = path.join(SERVER, "ml_models", "faster-whisper-medium");
+  const hasModel = () => fs.existsSync(path.join(dir, "model.bin"));
+  if (hasModel()) { console.log("③ whisper 权重已就绪(复用) →", dir); return dir; }
+  fs.mkdirSync(dir, { recursive: true });
+  console.log("③ 下载 faster-whisper-medium 权重(~1.4G,较慢) →", dir, "…");
+  const r = spawnSync("uv", ["run", "python", "-c",
+    `from faster_whisper import download_model; download_model('medium', output_dir=r'${dir}'); print('whisper ready')`],
+    { cwd: SERVER, stdio: "inherit" });
+  if (r.status !== 0 || !hasModel()) { console.error("⚠️ whisper 权重下载失败，本次不打包(口播转录装机版不可用)"); return null; }
+  // 与 bge 同理:HF 下载可能留软链,Windows NSIS 处理软链会报"目录名无效"。就地实体化兜底。
+  dereferenceSymlinksInPlace(dir);
+  return dir;
+}
 
 function ensureFastembedModel() {
   // 构建期把 bge-small-zh 语义模型下到 .fastembed-model/fastembed_cache/(gitignore)，供 --add-data 进包。
