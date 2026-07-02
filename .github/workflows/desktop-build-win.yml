@@ -69,7 +69,10 @@ jobs:
       - name: 装 pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          # 对齐本地 pnpm 版本:web/pnpm-workspace.yaml 用的是 pnpm 10+ 语法
+          # (allowBuilds/onlyBuiltDependencies 从 .npmrc 挪进 workspace 文件)+ lockfile 由 pnpm 11 生成。
+          # 旧 version:9 见到该 workspace 文件会报 "packages field missing or empty"(pnpm9 要求必须有 packages:)。
+          version: 11.0.9
 
       - name: 装 Node 20
         uses: actions/setup-node@v4
