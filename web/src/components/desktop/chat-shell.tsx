@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, type RecentArtifact } from "@/lib/api";
 import { HELP_TEXT } from "@/lib/agent-copy";
+import { toolMeta } from "@/lib/agent-tools";
 import { useDesktop } from "@/hooks/use-desktop";
 import { useAgentChat, type PermissionMode, type ChatMessage } from "@/hooks/use-agent-chat";
 import { safeFileName } from "@/lib/utils";
@@ -21,6 +22,7 @@ import { VideoStudioDrawer } from "./video-studio-drawer";
 import { ConfirmDialog } from "./confirm-dialog";
 import { StoreMemoryPanel } from "./store-memory-panel";
 import { DeletedItemsPanel } from "./deleted-items-panel";
+import { useToast } from "./toast";
 
 function groupByDate(iso: string | null): string {
   if (!iso) return "更早";
@@ -88,6 +90,7 @@ export function DesktopChatShell({
   todaySuggestion?: string;
 }) {
   const { electron } = useDesktop();
+  const toast = useToast();
   const [workbenchId] = useState(getWorkbenchId);
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<PermissionMode>("ask");
@@ -305,7 +308,8 @@ export function DesktopChatShell({
   // 点开一条历史会话 → 拉它的消息加载进来（可继续聊）
   const loadConv = useCallback(async (id: string) => {
     if (chat.generating) {
-      chat.pushAssistantMessage("当前任务还在跑，先别切换会话。等它完成后再打开历史记录，避免把这次任务中断。");
+      // C1：UI 限制解释，不是 AI 说的话——删掉伪 AI 消息。
+      // TODO(C4): 改为禁用态(侧栏会话项运行中置灰 + tooltip"任务完成后可切换")
       return;
     }
     try {
@@ -356,11 +360,11 @@ export function DesktopChatShell({
     try {
       await api.deleteRecentArtifact(item.id);
       await refreshRecentItems();
-      chat.pushAssistantMessage("已移入「最近删除」，需要的话可以从右上角恢复。");
+      toast.success("已移入最近删除");
     } catch {
-      chat.pushAssistantMessage("删除失败了。可以稍后再试一次。");
+      toast.error("删除失败，可以稍后再试");
     }
-  }, [chat, refreshRecentItems]);
+  }, [refreshRecentItems, toast]);
   const continueLast = useCallback(() => {
     const last = conversations[0];
     if (last) { void loadConv(last.id); return; }
@@ -371,9 +375,9 @@ export function DesktopChatShell({
   const newWorkspace = useCallback(() => {
     if (!electron?.newWindow) return;
     electron.newWindow().catch(() => {
-      chat.pushAssistantMessage("新工作台没能打开。你可以先用当前窗口继续做，稍后再试一次。");
+      toast.error("新工作台没能打开，可以稍后再试");
     });
-  }, [electron, chat]);
+  }, [electron, toast]);
 
   // 删除一条历史会话（侧栏垃圾桶）：弹确认 → 软删 → 从列表移除；删的是当前会话则切到新会话。P1-3b。
   const deleteConv = useCallback((id: string) => { setDeleteTarget(id); }, []);
@@ -382,7 +386,8 @@ export function DesktopChatShell({
     if (!id) return;
     if (chat.generating && chat.conversationId === id) {
       setDeleteTarget(null);
-      chat.pushAssistantMessage("当前会话的任务还在跑，等它完成后再删除。");
+      // C1：UI 限制解释，不是 AI 说的话——删掉伪 AI 消息。
+      // TODO(C4): 改为禁用态(运行中会话的删除按钮置灰)
       return;
     }
     setDeleteTarget(null);
@@ -401,15 +406,15 @@ export function DesktopChatShell({
     try {
       const r = await api.dailyDrafts();
       const drafts = r.drafts || [];
-      if (!drafts.length) { chat.pushAssistantMessage("今天暂时没现成的草稿，直接说你想发啥（朋友圈/活动/海报文案），我现写。"); return; }
+      if (!drafts.length) { toast.success("今天没有现成草稿"); return; }
       const body = drafts.map((d, i) => `**${i + 1}. ${d.title}**\n\n${d.content}`).join("\n\n---\n\n");
       chat.pushAssistantMessage(`帮你备好了今天能发的几条，挑一条改改就能用：\n\n${body}`);
     } catch {
-      chat.pushAssistantMessage("这会儿备不了草稿（可能网络或额度问题）。直接说你想发啥，我现写。");
+      toast.error("草稿加载失败，可以稍后再试");
     } finally {
       setDailyDraftsBusy(false);
     }
-  }, [chat, dailyDraftsBusy]);
+  }, [chat, dailyDraftsBusy, toast]);
   const viewCurrentScreen = useCallback(async () => {
     if (chat.generating) return;
     if (!electron?.captureScreen) {
@@ -419,9 +424,10 @@ export function DesktopChatShell({
     try {
       const r = await electron.captureScreen();
       if (!r?.ok || !r.path) {
-        // 缺屏幕录制权限：错误文案本身已是完整人话引导，直接给，不再套"没截下来。原因："
-        if (r?.needsPermission && r?.error) chat.pushAssistantMessage(r.error);
-        else chat.pushAssistantMessage(`当前屏幕没截下来。${r?.error ? `原因：${r.error}` : "可以稍后再试一次，或直接粘贴截图给我看。"}`);
+        // C1：截屏结果通知（成功/失败）走 toast，不再进对话历史。
+        // 缺屏幕录制权限：错误文案本身已是完整人话引导，直接给。
+        if (r?.needsPermission && r?.error) toast.error(r.error);
+        else toast.error(r?.error ? `当前屏幕没截下来：${r.error}` : "当前屏幕没截下来，可以直接粘贴截图给我看");
         return;
       }
       addSelectedFiles([r.path]);
@@ -432,9 +438,9 @@ export function DesktopChatShell({
         { selectedFiles: Array.from(new Set([...selectedFiles, r.path])) },
       );
     } catch {
-      chat.pushAssistantMessage("当前屏幕没截下来。可以稍后再试一次，或直接粘贴截图给我看。");
+      toast.error("当前屏幕没截下来，可以直接粘贴截图给我看");
     }
-  }, [chat, electron, addSelectedFiles, selectedFiles]);
+  }, [chat, electron, addSelectedFiles, selectedFiles, toast]);
   const startResearch = useCallback(() => {
     if (chat.generating) return;
     setInput("帮我查资料：");
@@ -536,8 +542,8 @@ export function DesktopChatShell({
     // /goal <条件>：设/清目标（本地处理，不发给 agent；之后每轮带 goal 让它对照自检）。
     if (t === "/goal" || t.startsWith("/goal ")) {
       const cond = t.slice(5).trim();
-      if (!cond || cond === "clear") { setGoal(""); chat.pushAssistantMessage("目标已清除。"); }
-      else { setGoal(cond); chat.pushAssistantMessage(`目标已设定：${cond}\n（之后每轮我会对照它自检；没完成就继续做）`); }
+      if (!cond || cond === "clear") { setGoal(""); toast.success("目标已清除"); }
+      else { setGoal(cond); toast.success(`目标已设定：${cond}`); }
       setInput("");
       return;
     }
@@ -590,15 +596,16 @@ export function DesktopChatShell({
         kind: "assistant_answer",
       });
       await refreshRecentItems();
-      chat.pushAssistantMessage("已保存到「最近作品 / 任务」，之后在首页可以找回。");
+      toast.success("已保存到最近作品");
     } catch {
-      chat.pushAssistantMessage("保存失败了。你可以先复制这段内容，稍后再试一次。");
+      toast.error("保存失败，可以稍后再试");
     }
-  }, [chat, refreshRecentItems]);
+  }, [chat.conversationId, refreshRecentItems, toast]);
   const onExportArtifact = useCallback(async (content: string) => {
     if (!content.trim()) return;
     if (!electron?.files?.save) {
-      chat.pushAssistantMessage("当前环境暂时不能弹出保存窗口。你可以先点「复制到微信」，或者点「保存成品」放进最近作品。");
+      // C1：UI 限制解释（当前环境没有这个能力），不是 AI 说的话——删掉伪 AI 消息。
+      // TODO(C4): 改为禁用态(没有 electron.files.save 能力时隐藏/禁用"导出到电脑"按钮)
       return;
     }
     const rawTitle = content
@@ -619,18 +626,18 @@ export function DesktopChatShell({
       });
       if (r.canceled) return;
       if (r.error || !r.path) {
-        chat.pushAssistantMessage(`导出失败了。${r.error || "可以稍后再试一次。"}`);
+        toast.error(r.error ? `导出失败：${r.error}` : "导出失败，可以稍后再试");
         return;
       }
       const path = r.path;
-      chat.pushAssistantMessage(`已导出到电脑：${path}\n\n你可以直接把这个文件发给微信，也可以点“打开文件位置”找到它。`);
+      toast.success(`已导出到电脑：${baseName(path)}`);
       if (electron.files.showInFolder) {
         window.setTimeout(() => { void electron.files.showInFolder?.(path); }, 300);
       }
     } catch {
-      chat.pushAssistantMessage("导出失败了。可以先点「复制到微信」，或者稍后再试。");
+      toast.error("导出失败，可以稍后再试");
     }
-  }, [chat, electron]);
+  }, [electron, toast]);
   const onRedoAnswer = useCallback((content: string) => {
     if (chat.generating) return;
     void chat.send(
@@ -810,7 +817,7 @@ export function DesktopChatShell({
             🎯 目标：{goal}
             <button
               type="button"
-              onClick={() => { setGoal(""); chat.pushAssistantMessage("目标已清除。"); }}
+              onClick={() => { setGoal(""); toast.success("目标已清除"); }}
               className="ml-1 font-bold leading-none hover:opacity-70"
               aria-label="清除目标"
             >×</button>
@@ -838,7 +845,7 @@ export function DesktopChatShell({
           else if (name === "video-workspace") { void electron?.openVideoStudio?.(); }
           else if (name === "help") chat.pushAssistantMessage(HELP_TEXT);
           else if (name === "cost") chat.pushAssistantMessage(`本月 AI 用量 ≈ ${liveSpend || "—"}`);
-          else if (name === "agents") chat.pushAssistantMessage("可用子代理专家（用 run_subagent 派）：\n- general-purpose — 全能，可动手\n- explore — 只读探索·只查不改\n- plan — 只读规划·只出计划不执行");
+          else if (name === "agents") chat.pushAssistantMessage(`可用子代理专家（我需要时会用「${toolMeta("run_subagent").label}」派工）：\n- general-purpose — 全能，可动手\n- explore — 只读探索·只查不改\n- plan — 只读规划·只出计划不执行`);
           else if (name === "mcp") {
             api.listMcp()
               .then((r) => {
@@ -865,7 +872,7 @@ export function DesktopChatShell({
                 const p = r.plugins || [];
                 chat.pushAssistantMessage(p.length
                   ? "已装插件：\n" + p.map((x) => `- ${x.name}${x.enabled ? "" : "（停用）"} — 技能${x.components.skills}/风格${x.components["output-styles"]}/MCP${x.components.mcp}`).join("\n")
-                  : "还没装插件（用 install_plugin，或放进 ~/.claude/plugins）。");
+                  : "还没装插件（跟我说要装哪个插件，或放进 ~/.claude/plugins）。");
               })
               .catch(() => chat.pushAssistantMessage("插件：暂时拿不到。"));
           }
@@ -880,9 +887,9 @@ export function DesktopChatShell({
               const a = document.createElement("a");
               a.href = url; a.download = "对话.md"; a.click();
               URL.revokeObjectURL(url);
-              chat.pushAssistantMessage("已导出当前对话为 Markdown。");
+              toast.success("已导出为 Markdown");
             } catch {
-              chat.pushAssistantMessage("导出失败。");
+              toast.error("导出失败");
             }
           }
         }}
