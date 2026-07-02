@@ -29,6 +29,9 @@ def _is_gateway_host(base_url: str | None) -> bool:
     gateway_urls = (
         getattr(settings, "deepseek_base_url", None),
         getattr(settings, "openai_base_url", None),
+        # 视频剪辑台的火山豆包视觉/文本通道(vlm.py/director.py)独立于 Settings,直接读 env——
+        # 一并登记为网关 host，不依赖它恰好与上面两个 base_url 撞同一 IP。
+        os.environ.get("QF_GATEWAY_URL") or None,
     )
     for gw in gateway_urls:
         gw_host = _extract_host(gw)
