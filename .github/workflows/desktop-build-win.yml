@@ -55,6 +55,9 @@ jobs:
           BUNDLED_MODEL_LABEL=${{ secrets.BUNDLED_MODEL_LABEL }}
           BUNDLED_IMAGE_LABEL=${{ secrets.BUNDLED_IMAGE_LABEL }}
           BUNDLED_VIDEO_LABEL=${{ secrets.BUNDLED_VIDEO_LABEL }}
+          QF_MODEL_BASE_URL=${{ secrets.BUNDLED_MODEL_BASE_URL }}
+          QF_GATEWAY_URL=${{ secrets.BUNDLED_VIDEO_BASE_URL }}
+          QF_GATEWAY_TOKEN=${{ secrets.BUNDLED_ARK_API_KEY }}
           "@ | Set-Content -Path bundled.env -Encoding utf8
 
       - name: 校验 bundled.env 已生成

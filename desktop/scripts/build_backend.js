@@ -84,9 +84,11 @@ const videoAssets = path.join(SERVER, "services", "video_edit", "assets");
 if (fs.existsSync(videoAssets)) addData.push(`--add-data=${videoAssets}${sep}video_edit_assets`);
 const cjkFonts = path.join(SERVER, "assets", "fonts");
 if (fs.existsSync(cjkFonts)) addData.push(`--add-data=${cjkFonts}${sep}assets_fonts`);
-const whisperDir = ensureWhisperModel();
-if (whisperDir) addData.push(`--add-data=${whisperDir}${sep}faster-whisper-medium`);
-else console.warn("⚠️ whisper 权重缺失且下载失败——口播转录装机版将不可用(其余功能不受影响)");
+// ⚠️ whisper 口播权重(~1.4G)【不再打进包】——装包会到 1.7G 劝退用户。改成"按需下载":
+// 抽出来放 owner 服务器(见 desktop/src/model-downloader.js + bundled.env 的 QF_MODEL_BASE_URL),
+// 用户首次打开主界面时后台下、存 userData/models,以后不再下。核心程序装完立刻能用,只口播要等它。
+// (ensureWhisperModel 保留:仅用于"把模型下到本地→上传服务器托管"这条运维路径,不进 --add-data。)
+console.log("③ whisper 口播权重不打进包(按需下载),安装包体积由此从 ~1.7G 降到 ~500M");
 
 function ensureWhisperModel() {
   // 口播转录用的 faster-whisper-medium(~1.4G)。本地有就复用(开发机/复跑不重下);

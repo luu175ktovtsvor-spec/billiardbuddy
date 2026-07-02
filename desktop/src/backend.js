@@ -120,6 +120,9 @@ function _spawnProc({ userDataDir, repoRoot, onLog }) {
     // 上传/海报/Logo/二维码落点:app 包内是【只读】的(装到 /Applications 或 Gatekeeper translocation),
     // 不指开会让生图写盘崩、最坏首启 mkdir 崩。指到 userData 可写目录。
     UPLOAD_DIR: path.join(userDataDir, "uploads"),
+    // 口播模型(whisper ~1.4G)不打进包(省体积),首启后台下到 userData/models(见 model-downloader.js)。
+    // 指到那个落点:下好前 transcribe.py 判目录不存在→口播不可用(前端已灰掉按钮),下好后自动可用。
+    WHISPER_MODEL_DIR: path.join(userDataDir, "models", "faster-whisper-medium"),
     // V2 视频渲染:后端拉起本 app 自带的 Chromium 做离屏渲染(不额外打 Playwright,见开发文档 §8)。
     // ELECTRON_BIN=本 app 二进制;QF_RENDER_MAIN=要传的脚本(dev 传 main.js;装机包 baked main → 空,不传)。
     ELECTRON_BIN: process.execPath,
@@ -200,4 +203,4 @@ function stop() {
   if (_proc) { _killTree(_proc); _proc = null; }
 }
 
-module.exports = { start, stop, backendUrl };
+module.exports = { start, stop, backendUrl, loadBundledEnv: _loadBundledEnv };
