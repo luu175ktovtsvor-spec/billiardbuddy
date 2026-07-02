@@ -1,0 +1,20 @@
+# dataeye/deploy/dataeye-receiver.service
+# 装到服务器: /etc/systemd/system/dataeye-receiver.service
+# 装法见 dataeye/deploy/runbook.md
+[Unit]
+Description=Dataeye Ingest Receiver
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/dataeye/receiver
+Environment=INGEST_TOKENS=<令牌1,令牌2>
+Environment=PGDSN=postgresql://dataeye:<db密码>@127.0.0.1/dataeye
+Environment=TRANSCRIPT_STORE_DIR=/data/transcripts
+ExecStart=/opt/dataeye/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 9100
+Restart=always
+RestartSec=3
+User=<运行用户,如 dataeye 或 root>
+
+[Install]
+WantedBy=multi-user.target
