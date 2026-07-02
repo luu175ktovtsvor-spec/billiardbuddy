@@ -425,8 +425,9 @@ export function DesktopChatShell({
       const r = await electron.captureScreen();
       if (!r?.ok || !r.path) {
         // C1：截屏结果通知（成功/失败）走 toast，不再进对话历史。
-        // 缺屏幕录制权限：错误文案本身已是完整人话引导，直接给。
-        if (r?.needsPermission && r?.error) toast.error(r.error);
+        // 例外：缺屏幕录制权限时,错误文案是「去系统设置→隐私与安全性→屏幕录制→勾选→重开 App」这种多步操作
+        // 指引,用户要离开 App 照着做几分钟,2.5s 一闪而过的 toast 留不住、也没法滚回看——这条保留在对话流里。
+        if (r?.needsPermission && r?.error) chat.pushAssistantMessage(r.error);
         else toast.error(r?.error ? `当前屏幕没截下来：${r.error}` : "当前屏幕没截下来，可以直接粘贴截图给我看");
         return;
       }
