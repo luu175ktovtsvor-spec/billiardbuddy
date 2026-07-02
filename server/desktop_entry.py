@@ -17,6 +17,14 @@ os.environ.setdefault("SECRET_KEY", "billiards-desktop-local-secret-change-me")
 # 意思找料"，不再是词面匹配)。模型加载失败会自动回退词面版，不崩。外部已设则尊重。
 os.environ.setdefault("RAG_EMBEDDER", "fastembed")
 
+# ⚠️ 铁律：装机包开箱即用、运行时零联网下载。强制 HuggingFace 全离线——bge 语义模型 / whisper
+# 口播权重等本地模型只用【打包进来的文件】，绝不联网校验或下载(用户断网/网差也不会卡、不会偷偷下)。
+# 若包内文件缺失则优雅降级(bge→词面版、whisper→报错跳过),而不是静默下 1.4G。
+# 云端 AI(文字/生图/视频/VLM)走的是网关 HTTP 接口，不是 HuggingFace，不受这些开关影响。
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+
 import sys  # noqa: E402
 
 import uvicorn  # noqa: E402
