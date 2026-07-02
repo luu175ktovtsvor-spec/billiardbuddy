@@ -351,3 +351,43 @@ def test_run_subagent_fault_safe_on_loop_error(monkeypatch):
     monkeypatch.setattr(loop_mod, "run_agent_loop", boom)
     out = asyncio.run(web_tools.run_subagent({"task": "做点啥"}, _ctx()))
     assert "子代理这次没跑成" in out or "直接来" in out
+
+
+# ────────────────────────────── run_subagent · 安全红线必须跟着子代理走 ──────────────────────────────
+# 子代理独立递归跑一遍 run_agent_loop，system_prompt 若只给"角色提示"就会漏掉主循环里【永远注入】的
+# 安全红线（不营销实际性交易/不协助赌博坐庄/未成年保护等）——没有红线兜底＝主 Agent 的安全闸可以被
+# "派个子代理去做"绕过。这里钉住：① 正常路径下红线真的被拼进了子代理的 system_prompt；
+# ② 与主循环 _SAFETY_REDLINE 口径一致（同一份文本，不是另起一套）；③ 主模块 import 失败时兜底红线仍在。
+
+def test_run_subagent_system_prompt_includes_safety_redline(monkeypatch):
+    """run_subagent 传给子循环的 system_prompt 必须含安全红线关键句，不能只有角色提示。"""
+    import services.agent.loop as loop_mod
+
+    captured = {}
+
+    async def fake_loop(**kw):
+        captured.update(kw)
+        return SimpleNamespace(final_text="子代理做完了")
+
+    monkeypatch.setattr(loop_mod, "run_agent_loop", fake_loop)
+    out = asyncio.run(web_tools.run_subagent({"task": "写一段朋友圈文案"}, _ctx()))
+    assert "子代理已完成" in out
+    sp = captured.get("system_prompt") or ""
+    assert "实际性交易" in sp  # 红线关键点：不营销实际性交易
+    assert "赌场" in sp or "赌博" in sp  # 红线关键点：不协助赌博/坐庄
+    assert "安全红线" in sp
+
+
+def test_resolve_subagent_safety_redline_matches_main_loop():
+    """正常路径下，子代理红线应等于主循环那份 _SAFETY_REDLINE（同一口径，不是另写一套）。"""
+    from api.v1.agent import _SAFETY_REDLINE
+    assert web_tools._resolve_subagent_safety_redline() == _SAFETY_REDLINE
+
+
+def test_resolve_subagent_safety_redline_falls_back_when_import_fails(monkeypatch):
+    """api.v1.agent 导入失败（极端情况）时，子代理仍要拿到内联兜底红线，不能没有红线。"""
+    import sys
+    monkeypatch.setitem(sys.modules, "api.v1.agent", None)  # None 会让 import 直接抛 ImportError
+    redline = web_tools._resolve_subagent_safety_redline()
+    assert redline == web_tools._FALLBACK_SAFETY_REDLINE
+    assert "实际性交易" in redline and ("赌场" in redline or "赌博" in redline)

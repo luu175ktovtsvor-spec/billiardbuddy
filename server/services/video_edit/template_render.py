@@ -14,11 +14,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from .bgm import BEAT, synth_beat_bgm
+from .bgm import beat_for_mood, synth_beat_bgm
 from .ffbin import ffmpeg_bin, probe_video
 from .render import _TONEMAP, _grade_filter
 
@@ -126,68 +127,74 @@ def render_v2(
     frames_root = work / "v2frames"
     frames_root.mkdir(parents=True, exist_ok=True)
     tw, th = int(doc.width), int(doc.height)
-
-    # ── ① 逐段抽帧 + 建镜头清单 ──
-    clips = doc.video_clips_ordered()
-    if not clips:
-        raise RuntimeError("时间轴里没有视频段,没法渲染。")
-    shots: list[dict] = []
-    gf = 0
-    for i, (_cid, c) in enumerate(clips):
-        src = doc.media[c.media].src
-        dur = max(0.1, (c.src_out or 0) - (c.src_in or 0))
-        sdir = frames_root / f"s{i:02d}"
-        cached = len(list(sdir.glob("*.png"))) if sdir.exists() else 0
-        if reuse_frames and cached > 0:
-            nfr = cached   # 改文案重渲:复用已抽的帧,不重抽
-        else:
-            nfr = _extract_shot_frames(src, c.src_in or 0, dur, tw, th, grade, sdir, fps)
-        if nfr <= 0:
-            continue
-        cap = captions[i] if i < len(captions) else ""
-        st = styles[i] if styles and i < len(styles) and styles[i] else None
-        shots.append({"dir": str(sdir), "nFrames": nfr, "startFrame": gf, "endFrame": gf + nfr,
-                      "caption": cap, "style": st})
-        gf += nfr
-    if not shots:
-        raise RuntimeError("抽帧失败,没有可渲染的镜头。")
-    total = gf
-
-    manifest = {
-        "width": tw, "height": th, "fps": fps, "totalFrames": total,
-        "beatFrames": int(fps * BEAT), "font": str(_FONT), "brand": brand,
-        "tag": brand, "template": str(_TEMPLATE_HTML), "shots": shots,  # tag=角标水印(默认=品牌词;传 "" 可隐藏)
-        "theme": theme or {"accent": "#12E0C8"}, "customCss": custom_css or "",
-    }
-    manifest_path = work / "v2_manifest.json"
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False))
-
-    # ── ② 逐帧渲染(Electron 离屏优先,回退 Playwright)──
     out_frames = work / "v2_out"
-    logger.info("V2 渲染:%d 帧 (%.1fs)", total, total / fps)
-    _render_html_frames(manifest_path, out_frames)
-
-    # ── ③ 编码 + BGM + 响度 ──
     base = work / "v2_base.mp4"
-    subprocess.run(
-        [ffmpeg_bin(), "-y", "-loglevel", "error", "-framerate", str(fps), "-i", str(out_frames / "f_%05d.jpg"),
-         "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p", str(base)],
-        check=True,
-    )
-    bgm = synth_beat_bgm(total / fps, str(work / "v2_bgm.wav"), mood=music_mood, key=music_key)
-    out = Path(out_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [ffmpeg_bin(), "-y", "-loglevel", "error", "-i", str(base), "-i", bgm,
-         "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-         "-af", "loudnorm=I=-14:TP=-1", "-shortest", "-movflags", "+faststart", str(out)],
-        check=True,
-    )
-    # 中间帧/临时物清理(逐帧 PNG/JPG 很占地方,内存紧张机器必清;成片已出)
-    import shutil
-    for junk in (frames_root, out_frames, base):
-        try:
-            shutil.rmtree(junk) if junk.is_dir() else junk.unlink(missing_ok=True)
-        except Exception:  # noqa: BLE001
-            pass
-    return str(out)
+
+    try:
+        # ── ① 逐段抽帧 + 建镜头清单 ──
+        clips = doc.video_clips_ordered()
+        if not clips:
+            raise RuntimeError("时间轴里没有视频段,没法渲染。")
+        shots: list[dict] = []
+        gf = 0
+        for i, (_cid, c) in enumerate(clips):
+            src = doc.media[c.media].src
+            dur = max(0.1, (c.src_out or 0) - (c.src_in or 0))
+            sdir = frames_root / f"s{i:02d}"
+            cached = len(list(sdir.glob("*.png"))) if sdir.exists() else 0
+            if reuse_frames and cached > 0:
+                nfr = cached   # 改文案重渲:复用已抽的帧,不重抽
+            else:
+                nfr = _extract_shot_frames(src, c.src_in or 0, dur, tw, th, grade, sdir, fps)
+            if nfr <= 0:
+                continue
+            cap = captions[i] if i < len(captions) else ""
+            st = styles[i] if styles and i < len(styles) and styles[i] else None
+            shots.append({"dir": str(sdir), "nFrames": nfr, "startFrame": gf, "endFrame": gf + nfr,
+                          "caption": cap, "style": st})
+            gf += nfr
+        if not shots:
+            raise RuntimeError("抽帧失败,没有可渲染的镜头。")
+        total = gf
+
+        manifest = {
+            "width": tw, "height": th, "fps": fps, "totalFrames": total,
+            # 卡点脉冲要跟着这条片子实际的音乐情绪走(chill 慢/hype 快),别用固定拍长——
+            # 否则视觉脉冲和 bgm.py 真实合成的鼓点对不上(卡点错拍)。
+            "beatFrames": max(1, round(fps * beat_for_mood(music_mood))), "font": str(_FONT), "brand": brand,
+            "tag": brand, "template": str(_TEMPLATE_HTML), "shots": shots,  # tag=角标水印(默认=品牌词;传 "" 可隐藏)
+            "theme": theme or {"accent": "#12E0C8"}, "customCss": custom_css or "",
+        }
+        manifest_path = work / "v2_manifest.json"
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False))
+
+        # ── ② 逐帧渲染(Electron 离屏优先,回退 Playwright)──
+        logger.info("V2 渲染:%d 帧 (%.1fs)", total, total / fps)
+        _render_html_frames(manifest_path, out_frames)
+
+        # ── ③ 编码 + BGM + 响度 ──
+        subprocess.run(
+            [ffmpeg_bin(), "-y", "-loglevel", "error", "-framerate", str(fps), "-i", str(out_frames / "f_%05d.jpg"),
+             "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p", str(base)],
+            check=True,
+        )
+        bgm = synth_beat_bgm(total / fps, str(work / "v2_bgm.wav"), mood=music_mood, key=music_key)
+        out = Path(out_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [ffmpeg_bin(), "-y", "-loglevel", "error", "-i", str(base), "-i", bgm,
+             "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+             "-af", "loudnorm=I=-14:TP=-1", "-shortest", "-movflags", "+faststart", str(out)],
+            check=True,
+        )
+        return str(out)
+    finally:
+        # 中间帧/临时物清理(逐帧 PNG/JPG 很占地方,内存紧张机器必清;成片已出)。
+        # 挪进 finally:哪怕半路抛异常(抽帧/渲染/编码失败),已生成的部分帧也要清掉,不留占地方的垃圾;
+        # 清单只含 frames_root/out_frames/base 这三个"过程中间物",v2_plan.json/manifest/最终成片 out
+        # 都不在这份清单里,不会被误删。
+        for junk in (frames_root, out_frames, base):
+            try:
+                shutil.rmtree(junk) if junk.is_dir() else junk.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass

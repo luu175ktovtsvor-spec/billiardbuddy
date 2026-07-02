@@ -91,7 +91,7 @@ def is_due(store_id: str, now_hour: int, today: str, t_hour: int | None) -> bool
 
 
 async def _run_due_stores(now_hour: int, today: str) -> int:
-    """一次定时检查：对每个 BYOK 门店，若到点且今天没备过 → 生成并缓存。
+    """一次定时检查：对每个门店，若到点且今天没备过 → 生成并缓存。
     故障安全：单店失败不影响其余；整体异常被上层 loop 吞掉。返回本次备好的门店数。"""
     t = target_hour()
     if t is None or now_hour < t:
@@ -104,7 +104,13 @@ async def _run_due_stores(now_hour: int, today: str) -> int:
 
     done = 0
     async with async_session() as db:
-        stores = (await db.execute(select(Store).where(Store.byok_enabled.is_(True)))).scalars().all()
+        stmt = select(Store)
+        # 桌面版全内置 key、不走 BYOK：按 byok_enabled 过滤会让每日草稿这个功能在桌面上永远
+        # 服务不到任何店（死锁）。只有云端 SaaS（店主自带 key、自担 token 成本）才需要这道门槛——
+        # 桌面用户没配也没关系，本来就是内置 key 生成、不该被这条云端专属护栏挡住。
+        if os.environ.get("DESKTOP_LOCAL") != "1":
+            stmt = stmt.where(Store.byok_enabled.is_(True))
+        stores = (await db.execute(stmt)).scalars().all()
         for store in stores:
             if get_cached_drafts(str(store.id), today) is not None:
                 continue  # 今天已备过（定时或老板手点过）→ 跳过，不重复花 token

@@ -9,7 +9,13 @@ from openai import AsyncOpenAI, APIStatusError, APITimeoutError, APIConnectionEr
 
 from config import settings
 from core.exceptions import AIProviderError
-from services.ai.base import TextProvider, TextRequest, TextResponse, ReasoningChunk
+from services.ai.base import (
+    TEXT_PROVIDER_TIMEOUT_SECONDS,
+    TextProvider,
+    TextRequest,
+    TextResponse,
+    ReasoningChunk,
+)
 from services.ai.providers._net import bypass_proxy_for as _bypass_proxy_for, _extract_host, _is_gateway_host
 
 logger = logging.getLogger(__name__)
@@ -128,13 +134,46 @@ _VIDEO_UPLOAD_PROVIDERS = (
 )
 
 
+def _thinking_disabled(thinking: dict | None) -> bool:
+    """本次请求是否【显式关闭】了思考。MiMo v2.5 默认开思考——thinking=None（没传）也算"开"。"""
+    return bool(thinking) and thinking.get("type") == "disabled"
+
+
+def _should_send_temperature(model_name: str, thinking: dict | None) -> bool:
+    """温度分叉只对 MiMo 生效：MiMo 思考模式(默认开)下自定义 temperature 会被官方强制改回 1.0，
+    发了是假旋钮 → 不发。但本 provider 也是 BYOK 任意 OpenAI 兼容端点的通用实现——
+    非 MiMo 模型(GPT/Kimi/DeepSeek…)thinking=None 就是没思考,温度是真旋钮,必须照发,
+    否则编排 0.3 防跑题这类调校会被静默吞掉(复扫发现的误伤面)。"""
+    return _thinking_disabled(thinking) or "mimo" not in (model_name or "").lower()
+
+
+def _cached_prompt_tokens(usage) -> int:
+    """从 usage 里读【prompt cache 命中 token 数】，兼容两种字段形态（1-7 缓存可观测）：
+    ① OpenAI 风格 usage.prompt_tokens_details.cached_tokens——MiMo 走这个，优先；
+    ② DeepSeek 风格 usage.prompt_cache_hit_tokens——兜底兼容。
+    防御取值：字段缺失/类型异常(如测试里的 MagicMock)一律按 0，绝不抛错污染主流程。"""
+    if usage is None:
+        return 0
+    details = getattr(usage, "prompt_tokens_details", None)
+    if isinstance(details, dict):
+        cached = details.get("cached_tokens")
+    else:
+        cached = getattr(details, "cached_tokens", None) if details is not None else None
+    if isinstance(cached, int):
+        return cached
+    hit = getattr(usage, "prompt_cache_hit_tokens", None)
+    return hit if isinstance(hit, int) else 0
+
+
 class DeepSeekProvider(TextProvider):
     """DeepSeek 文本模型 Provider（兼容 OpenAI SDK）"""
 
     def __init__(self, api_key: str | None = None, base_url: str | None = None,
-                 default_model: str | None = None, timeout: float = 60.0):
+                 default_model: str | None = None, timeout: float = TEXT_PROVIDER_TIMEOUT_SECONDS):
         # 默认全 None → fallback settings（平台默认行为 100% 不变）。
         # BYOK 时由 ProviderFactory 传入门店自带的 key/base_url/model（可接任意 OpenAI 兼容模型）。
+        # timeout 默认 300s（TEXT_PROVIDER_TIMEOUT_SECONDS）：内置 key 主路径不传 timeout 走这里，
+        # 与 BYOK 路径同档，且 > 流式 idle 看门狗首块预算(120s)——保证看门狗先于 httpx 起作用（1-6 超时对齐）。
         self._client: AsyncOpenAI | None = None
         self._api_key = api_key
         self._base_url = base_url
@@ -243,8 +282,11 @@ class DeepSeekProvider(TextProvider):
             "model": model_name,
             "messages": messages,
             "max_tokens": request.max_tokens,
-            "temperature": request.temperature,
         }
+        # 1-3 温度分叉（MiMo 官方）：MiMo 思考模式(默认开)下自定义 temperature 无效(官方强制改回 1.0)，
+        # 不发假旋钮；显式关思考才发。非 MiMo 模型(BYOK 通用端点)温度是真旋钮，照发不误伤。top_p 我们本就不发。
+        if _should_send_temperature(model_name, request.thinking):
+            kwargs["temperature"] = request.temperature
         if request.thinking:
             kwargs["extra_body"] = {"thinking": request.thinking}
         if request.tools:
@@ -263,10 +305,12 @@ class DeepSeekProvider(TextProvider):
             _raw_pt = getattr(response.usage, "prompt_tokens", 0)
             if isinstance(_raw_pt, int):
                 prompt_tokens = _raw_pt
+        # 1-7 缓存可观测：兼容读两种字段（OpenAI 风格优先），透出给调用方记账/打日志。
+        cached_tokens = _cached_prompt_tokens(response.usage)
         if not response.choices:
             logger.warning("DeepSeek returned empty choices")
             return TextResponse(content="", model=model_name, tokens_used=tokens,
-                                prompt_tokens=prompt_tokens)
+                                prompt_tokens=prompt_tokens, cached_tokens=cached_tokens)
 
         choice = response.choices[0]
         content = choice.message.content or ""
@@ -285,6 +329,7 @@ class DeepSeekProvider(TextProvider):
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             prompt_tokens=prompt_tokens,
+            cached_tokens=cached_tokens,
         )
 
     async def generate_stream(
@@ -309,10 +354,12 @@ class DeepSeekProvider(TextProvider):
             "model": model_name,
             "messages": messages,
             "max_tokens": request.max_tokens,
-            "temperature": request.temperature,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        # 1-3 温度分叉：与 generate() 同款——只对 MiMo 在思考模式下不发温度；非 MiMo 模型照发（真旋钮）。
+        if _should_send_temperature(model_name, request.thinking):
+            kwargs["temperature"] = request.temperature
         if request.thinking:
             kwargs["extra_body"] = {"thinking": request.thinking}
         if request.tools:
@@ -351,7 +398,9 @@ class DeepSeekProvider(TextProvider):
                                 "prompt_tokens": chunk.usage.prompt_tokens,
                                 "completion_tokens": chunk.usage.completion_tokens,
                                 "total_tokens": chunk.usage.total_tokens,
-                                "cache_hit_tokens": getattr(chunk.usage, 'prompt_cache_hit_tokens', 0),
+                                # 1-7：旧代码只读 DeepSeek 字段名 prompt_cache_hit_tokens，MiMo 走 OpenAI 风格
+                                # prompt_tokens_details.cached_tokens → 命中率恒 0 不可见。改兼容读两种（OpenAI 优先）。
+                                "cache_hit_tokens": _cached_prompt_tokens(chunk.usage),
                             })
                         if not chunk.choices:
                             continue

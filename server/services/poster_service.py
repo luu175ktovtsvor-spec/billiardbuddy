@@ -1,6 +1,7 @@
 import asyncio
 import io
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -119,6 +120,56 @@ def _load_upload_bytes(path_str: str | None) -> bytes | None:
     return p.read_bytes() if p.exists() else None
 
 
+# ────────────────────────────── 安全护栏：logo/qr/底图/参考图/mask 路径校验 ──────────────────────────────
+# 这几个参数(logo_path/qr_path/store_photo_path/reference_image_paths/mask_path)桌面版下经【Agent 工具
+# 调用】传入——而工具的入参是【模型自己填的】，不能假设它一定落在 uploads 沙箱或老板真选过的文件里。
+# 旧实现在 DESKTOP_LOCAL 下对"沙箱外的绝对路径"来者不拒(Path(path).read_bytes())，等于让模型/prompt注入
+# 拿这几个参数当"读任意本机文件并把内容发给外部生图 API"的后门。对齐 video_service._resolve_first_frame
+# 的 allow_paths 校验模式：沙箱外的绝对路径必须 ∈ 老板当场经 OS 文件选择器选定的 allowed_paths(含选中
+# 目录内的文件)，否则视为越界——抛人话错误而不是静默略过(静默会把"读到了别的敏感文件"悄悄含糊过去)。
+
+def _resolve_allowed_paths(allowed_paths) -> set[Path]:
+    """把调用方给的 allowed_paths（老板当场选定的文件/目录绝对路径）解析成一组 resolved Path，
+    坏路径丢弃、故障安全。空/None → 空集合（=沙箱外绝对路径一律拒绝，安全默认）。"""
+    out: set[Path] = set()
+    for raw in (allowed_paths or []):
+        try:
+            out.add(Path(raw).resolve())
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def _is_path_allowed(resolved: Path, allowed: set[Path]) -> bool:
+    for a in allowed:
+        if resolved == a or a in resolved.parents:
+            return True
+    return False
+
+
+def _resolve_agent_selected_bytes(path_str: str | None, allowed: set[Path], kind: str) -> bytes | None:
+    """读一张【可能来自 Agent 工具模型入参】的图片：先试 uploads 沙箱（_load_upload_bytes，云端/桌面通用）；
+    沙箱外的绝对路径只在 DESKTOP_LOCAL 且该路径 ∈ allowed（老板当场选定的文件/目录）时才读，
+    越界抛 AIServiceError 人话错误（不是静默忽略——防止一个"看着正常"实为别的敏感文件的路径蒙混过关）。
+    云端 web 版沙箱外一律不读（没有"老板当场选定本机文件"这个概念）。"""
+    if not path_str:
+        return None
+    b = _load_upload_bytes(path_str)
+    if b is not None:
+        return b
+    if os.environ.get("DESKTOP_LOCAL") != "1":
+        return None  # 云端沙箱外静默跳过，与旧行为一致（未越权也未收紧）
+    try:
+        resolved = Path(path_str).resolve()
+    except (OSError, ValueError):
+        raise AIServiceError(f"{kind}路径无效，没法读取：{path_str}")
+    if not _is_path_allowed(resolved, allowed):
+        raise AIServiceError(f"{kind}不在你当场选定的文件范围内，出于安全没有读取：{path_str}")
+    if not resolved.is_file():
+        return None
+    return resolved.read_bytes()
+
+
 def _format_poster_text(poster_text: dict | None) -> str:
     """把结构化「要写的字」(标题/多行信息/联系方式)拼成给模型的渲染指令，中文逐字保留。
     未走扩写直接出图时用它确保文字进入提示词——扩写路径已由引擎把文字编进 image_prompt，故不在那条路重复。"""
@@ -211,6 +262,7 @@ async def generate_images(
     store_photo_path: str | None = None,
     logo_path: str | None = None,
     qr_path: str | None = None,
+    allowed_paths: list[str] | set[str] | None = None,
 ) -> dict:
     """AI 生图，支持多轮调整（底图）与参考图（风格）同时传入。
 
@@ -218,6 +270,11 @@ async def generate_images(
     - 底图（refine_from 指向的上一张生成图）= "在这张上改"，永远排第一张
     - 参考图（用户上传）= "照这个感觉来"，对话级有效，由前端每轮全量传入
     两者不互斥——修复旧版 elif 导致调整模式下新参考图被静默丢弃的问题。
+
+    allowed_paths：老板当场经 OS 文件选择器选定、显式授权的文件/目录绝对路径（= AgentContext.allowed_paths）。
+    logo_path/qr_path/store_photo_path/reference_image_paths/mask_path 若指向 uploads 沙箱外的绝对路径，
+    必须落在这个集合里才会读取，否则越界拒绝——防 Agent 工具的模型入参把任意本机文件读出来发给外部生图 API。
+    调用方不传（默认 None）＝沙箱外一律不读（安全默认）。
     """
     from services.ai.providers.openai_image import OpenAIImageProvider
     from services.ai.factory import ProviderFactory
@@ -267,10 +324,13 @@ async def generate_images(
         if not original or not original.result:
             raise AIServiceError("要调整的图片不存在")
 
-    injection_check = check_input_injection(prompt)
+    # image_prompt(扩写后/前端可改的真实送模型提示词)同样要查注入——只查 prompt 会被
+    # "prompt 正常、image_prompt 改成越线内容"绕过（与上面 studio.py 的红线预检同一个漏洞）。
+    injection_check = check_input_injection(prompt) or check_input_injection(image_prompt or "")
     if injection_check:
         raise AIServiceError(injection_check)
     await check_poster_quota(db, str(store.id))
+    _allowed_resolved = _resolve_allowed_paths(allowed_paths)
 
     # ── 2. 多轮对话：收集历史设计要求（最近 5 轮）──
     history_prompts: list[str] = []
@@ -306,39 +366,21 @@ async def generate_images(
 
     # 门店照优化：上传的门店实拍照作为底图（与 refine_from 互斥，refine_from 优先）
     if base_image is None and background_mode == "store_photo" and store_photo_path:
-        sp = _load_upload_bytes(store_photo_path)
+        sp = _resolve_agent_selected_bytes(store_photo_path, _allowed_resolved, "门店底图")
         if sp is not None:
             base_image = sp
             logger.info("门店照优化底图: %s", store_photo_path)
 
     # 品牌资产：门店 Logo / 二维码。Logo 不再交模型渲染（会糊店名），改 PIL 像素级贴（见 _overlay_logo）。
-    logo_bytes = _load_upload_bytes(logo_path)
-    if logo_bytes is None and logo_path:
-        # 桌面版：老板经文件选择器选定的 logo 常在 uploads 之外（桌面/任意已授权路径）→ _load_upload_bytes 会拒，这里直接读。
-        import os as _os
-        if _os.environ.get("DESKTOP_LOCAL") == "1":
-            try:
-                _lp = Path(logo_path)
-                if _lp.is_file():
-                    logo_bytes = _lp.read_bytes()
-            except Exception:
-                pass
-    qr_bytes = _load_upload_bytes(qr_path)
-    if qr_bytes is None and qr_path:
-        import os as _os_qr
-        if _os_qr.environ.get("DESKTOP_LOCAL") == "1":
-            try:
-                _qp = Path(qr_path)
-                if _qp.is_file():
-                    qr_bytes = _qp.read_bytes()
-            except Exception:
-                pass
+    # 桌面版：老板经文件选择器选定的 logo/二维码常在 uploads 之外 → 只在其 ∈ 当场选定的 allowed_paths 时才读，
+    # 越界（模型入参乱填的绝对路径）直接抛人话错误，不再来者不拒。
+    logo_bytes = _resolve_agent_selected_bytes(logo_path, _allowed_resolved, "Logo 图片")
+    qr_bytes = _resolve_agent_selected_bytes(qr_path, _allowed_resolved, "二维码图片")
 
     ref_bytes: list[bytes] = []
     if reference_image_paths:
         upload_dir = Path(settings.upload_dir)
-        import os as _os_ref
-        is_desktop = _os_ref.environ.get("DESKTOP_LOCAL") == "1"
+        is_desktop = os.environ.get("DESKTOP_LOCAL") == "1"
         for ref_str in reference_image_paths:
             if ".." in ref_str:
                 if not is_desktop:
@@ -354,30 +396,21 @@ async def generate_images(
             if in_uploads and ref_path.exists():
                 ref_bytes.append(ref_path.read_bytes())
             elif is_desktop:
-                try:
-                    _rp = Path(ref_str)
-                    if _rp.is_file():
-                        ref_bytes.append(_rp.read_bytes())
-                except Exception:
-                    pass
+                # 沙箱外的参考图路径：必须 ∈ 老板当场选定的 allowed_paths，越界抛人话错误（不再来者不拒）。
+                rb = _resolve_agent_selected_bytes(ref_str, _allowed_resolved, "参考图")
+                if rb is not None:
+                    ref_bytes.append(rb)
 
     # 局部重绘:读 mask(同尺寸 alpha PNG,透明 alpha=0 处=要改);没有底图无从局部改 → 忽略 mask 走整图。
+    # mask 目前只走 studio.py(人工画蒙版上传)、不经模型入参，但沙箱外绝对路径同样按 allowed_paths 校验，
+    # 读取失败(含越界)一律降级为"忽略 mask、走整图改"而不是硬失败——mask 本就是可选的局部重绘增强。
     mask_bytes: bytes | None = None
     if mask_path and base_image is not None:
-        import os as _os_mask
-        _mask_desktop = _os_mask.environ.get("DESKTOP_LOCAL") == "1"
         try:
-            _udir = Path(settings.upload_dir)
-            _mp = _udir / mask_path.removeprefix("/uploads/")
-            _in_uploads = False
-            try:
-                _in_uploads = _mp.resolve().is_relative_to(_udir.resolve())
-            except (OSError, ValueError):
-                pass
-            if _in_uploads and _mp.exists():
-                mask_bytes = _mp.read_bytes()
-            elif _mask_desktop and Path(mask_path).is_file():
-                mask_bytes = Path(mask_path).read_bytes()
+            mask_bytes = _resolve_agent_selected_bytes(mask_path, _allowed_resolved, "局部重绘蒙版")
+        except AIServiceError:
+            logger.warning("mask 路径越界或不在允许范围内，忽略 mask 走整图改: %s", mask_path)
+            mask_bytes = None
         except Exception:
             logger.warning("读取 mask 失败,忽略 mask 走整图改", exc_info=True)
 

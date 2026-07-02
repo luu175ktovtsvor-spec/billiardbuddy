@@ -18,13 +18,13 @@ _current_store_id: contextvars.ContextVar[uuid.UUID | None] = contextvars.Contex
 )
 
 # 自动租户过滤的目标表。
-# ⚠️ 实际只对 **generations / usage_quotas** 真正生效：stores 表主键是 id 没有 store_id 列、
-#    conversations 运行时从不被 ORM 查询（对话靠 Generation.conversation_id 裸列）——这两个是"死配置"。
-# ⚠️ 同样有 store_id 列但**不在本集合、无自动保护**的表：store_subscriptions / store_memories / collab_tasks。
+# ⚠️ 只对 **generations / usage_quotas** 真正生效——这两张表有 store_id 列且被本集合自动过滤兜底。
+#    （原集合里的 "stores" 是死配置：Store 模型主键是 id，没有 store_id 列，永远匹配不上任何查询，已删除。）
+# ⚠️ 同样有 store_id 列但**不在本集合、无自动保护**的表：media_jobs / store_members / store_memories / usage_events。
 #    它们的跨店隔离**完全依赖各处手写 `.where(<Model>.store_id == ...)`**，没有 fail-safe 兜底。
 #    新增对这些表的查询若漏带 store_id 过滤 = 静默跨店泄露。改本集合前务必确认 admin 等无租户上下文的
-#    查询不会被 fail-safe 清空（见 test_tenant_isolation.py 的分类断言）。
-_TENANT_TABLES = {"stores", "generations", "usage_quotas"}
+#    查询不会被 fail-safe 清空（见 tests/test_coupling_guards.py 的 `_MANUAL_FILTER_TABLES` 分类断言）。
+_TENANT_TABLES = {"generations", "usage_quotas"}
 
 
 def set_tenant(store_id: uuid.UUID | None) -> contextvars.Token:

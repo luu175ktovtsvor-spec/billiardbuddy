@@ -108,3 +108,14 @@ class AgentContext:
     #    最终 assistant 答复）写到这里，供端点整段落盘成 JSONL，下一轮整段读回当 history → 模型真记得住前面。
     #    含 system（落盘由 transcript 层剥）。None = 没跑流式 loop / 未收尾。
     final_messages: list | None = None
+    # ── 方向盘 · 跑动中插话纠偏（对标 Claude Code 的 steering）──
+    # 任务跑着时用户补发的话（POST /agent/tasks/{id}/message 塞进来的原文，一条一个字符串）。
+    # loop 在每批工具执行完、下一次调模型前 drain 出来，按序【追加在消息尾部】成 user 消息
+    # （绝不改前面历史 → 保住 prompt-cache 前缀），模型下一轮当场看到、当场改道。
+    # 路由侧封顶 10 条防灌爆。同步/流式两个 loop 都会 drain（子代理/审批续接用的是各自新建的 ctx、
+    # 队列恒空，不会截胡主循环的插话）。
+    steer_inbox: list = field(default_factory=list)
+    # ── 取消不丢记忆：loop 一开跑就把【活的 messages 列表引用】挂这——用户点停止（CancelledError）时
+    # 端点用它照样落轨迹，"停掉的活"下一轮还接得上，不再失忆。loop 内部对 messages 全是就地变更
+    # （append / 切片赋值），这个引用全程有效。None = loop 还没跑起来。
+    live_messages: list | None = None

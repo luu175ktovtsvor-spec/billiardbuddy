@@ -18,7 +18,7 @@ def test_agent_task_replays_cached_events(monkeypatch):
 
         agent._AGENT_TASKS.clear()
 
-        async def fake_stream(body, user, store, db):
+        async def fake_stream(body, user, store, db, task=None):
             yield {"type": "token", "content": "你好"}
             yield {"type": "final", "content": "完成"}
             yield {"type": "done", "turns": 1, "stopped_reason": "stop", "conversation_id": "c1", "generation_id": "g1"}
@@ -61,7 +61,7 @@ def test_agent_task_cancel_emits_cancelled_done(monkeypatch):
 
         agent._AGENT_TASKS.clear()
 
-        async def fake_stream(body, user, store, db):
+        async def fake_stream(body, user, store, db, task=None):
             yield {"type": "token", "content": "开始"}
             await asyncio.sleep(10)
 
@@ -99,7 +99,7 @@ def test_agent_task_subscription_disconnect_does_not_cancel_runner(monkeypatch):
         agent._AGENT_TASKS.clear()
         emitted_second = asyncio.Event()
 
-        async def fake_stream(body, user, store, db):
+        async def fake_stream(body, user, store, db, task=None):
             yield {"type": "token", "content": "第一段"}
             await asyncio.sleep(0.05)
             yield {"type": "token", "content": "第二段"}
@@ -195,7 +195,7 @@ def test_agent_task_long_stream_endpoint_delivers_tail(monkeypatch):
         agent._AGENT_TASKS.clear()
         n_tokens = agent._TASK_EVENT_CAP + 150  # 触发截断
 
-        async def fake_stream(body, user, store, db):
+        async def fake_stream(body, user, store, db, task=None):
             for i in range(n_tokens):
                 yield {"type": "token", "content": f"t{i}"}
             yield {"type": "final", "content": "完成"}

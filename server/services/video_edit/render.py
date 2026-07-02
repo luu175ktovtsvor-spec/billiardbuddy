@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 from .edl import Edl
@@ -23,8 +24,18 @@ _TONEMAP = (
 # 社媒响度标准(铁律14)
 _LUFS_I, _LUFS_TP, _LUFS_LRA = -14.0, -1.0, 11.0
 
-# CJK 字体目录(打包时要带选定字体进包;dev 用系统字体目录)
-_FONTS_DIR = "/System/Library/Fonts"
+# CJK 字体目录：macOS 用系统字体目录(有 PingFang SC)；Windows/Linux 及装机包用打包自带的
+# 得意黑——"PingFang SC"+"/System/Library/Fonts" 是 macOS 专属,别的平台指过去=字幕烧不出中文。
+# 装机包资产名 assets_fonts 与 build_backend.js 的 --add-data 对齐(同 template_render._asset)。
+def _bundled_fonts_dir() -> str:
+    if getattr(sys, "frozen", False):
+        return str(Path(sys._MEIPASS) / "assets_fonts")  # type: ignore[attr-defined]
+    return str(Path(__file__).resolve().parents[3] / "server" / "assets" / "fonts")
+
+
+_IS_MAC = sys.platform == "darwin"
+_FONTS_DIR = "/System/Library/Fonts" if _IS_MAC else _bundled_fonts_dir()
+_FALLBACK_CJK_FONT = "Smiley Sans Oblique"  # 打包自带的得意黑(SmileySans-Oblique.ttf)的英文家族名
 
 
 def _sub_style(font: str, fontsize: int) -> str:
@@ -170,7 +181,8 @@ def render_edl(edl: Edl, out_path: str, *, edit_dir: str | None = None) -> str:
         subbed = work / "subbed.mp4"
         _burn_subtitles(
             pre, edl.subtitles, subbed,
-            font=edl.subtitle_font,
+            # 非 macOS 且没显式指定字体目录时,默认的 "PingFang SC" 不存在 → 换打包自带的得意黑
+            font=edl.subtitle_font if (_IS_MAC or edl.subtitle_fontsdir) else _FALLBACK_CJK_FONT,
             fontsdir=edl.subtitle_fontsdir or _FONTS_DIR,
             fontsize=edl.subtitle_fontsize,
         )

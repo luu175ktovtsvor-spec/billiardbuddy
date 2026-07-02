@@ -43,7 +43,8 @@ from db.session import async_session
 from models.user import User
 from services.agent.context import AgentContext
 from services.agent import denial_tracker
-from services.agent.loop import _action_key, run_agent_loop, run_agent_loop_stream
+from services.agent.hooks import run_pre_tool_hooks, run_post_tool_hooks
+from services.agent.loop import _action_key, _cap_tool_result, _DEFAULT_TOOL_TIMEOUT, run_agent_loop, run_agent_loop_stream
 from services.agent.multimodal import is_media, needs_video_upload, resolve_media_for_upload
 from services.agent.proactive import generate_daily_drafts
 from services.ai.failover import build_resilient_text_provider  # BYOK 失败自动切备用配置档
@@ -70,6 +71,10 @@ class _AgentTask:
     dropped: int = 0    # 已从队首丢弃的事件数，把"逻辑 offset"映射成"当前列表下标": idx = offset - dropped
     condition: asyncio.Condition = field(default_factory=asyncio.Condition)
     runner: asyncio.Task | None = None
+    # 方向盘：本任务运行中的 AgentContext（_stream_agent_events 建好后挂上来）。两个用途：
+    # ① 插话路由 POST /tasks/{id}/message 往 ctx.steer_inbox 塞话，loop 下一轮注入；
+    # ② 取消（CancelledError）时用 ctx.live_messages 照样落轨迹——停掉的活不失忆。
+    ctx: AgentContext | None = None
 
 
 _AGENT_TASKS: dict[str, _AgentTask] = {}
@@ -149,6 +154,9 @@ _GENERIC_BASE_PROMPT = (
     "【真正对外/不可逆的动作才需用户点头】只有真的把内容发出去/对外触达（发布到平台、群发或私信），"
     "或删除数据这类不可逆动作，才会弹一张确认卡让用户点一下——这是防自动对外的安全确认；"
     "做出成品给用户看、读写本机文件（写改前自动备份、可回滚）这些都不算对外，直接做、不弹确认。"
+    "【交付前自己核一遍】说『做完了』之前，对照用户最初的要求过一遍：步骤有没有漏、改动是不是真的生效了"
+    "（别只是说改了，读回去看看确实改对了）；生成图片后如果系统把图回传给你看，顺手扫一眼是否符合要求"
+    "（文字有没有糊、构图对不对），明显翻车就重画一次，别翻车了还直接扔给用户。"
 )
 
 _SAFETY_REDLINE = (
@@ -296,7 +304,8 @@ def _resolve_permission(mode: str | None, full_disk: bool | None) -> tuple[str, 
 
 # 已知模型的上下文窗口（token）：给 autocompact 一道"模型自适应"的默认安全网。
 # 只登记我们确知窗口的模型（内置 mimo-v2.5 = 1M·小米官方）——给它一道防溢出兜底，长任务顶满前自动语义瘦身，
-# 不再"默认全关、几十轮长任务裸奔顶满窗口被 provider 直接报错"（G.1 P0）。窗口 1M 下触发点≈700k token，
+# 不再"默认全关、几十轮长任务裸奔顶满窗口被 provider 直接报错"（G.1 P0）。触发阈值口径见 loop.py 的
+# max(窗口−48k, 窗口×0.7)：窗口 1M 时≈952k token 才触发（大窗由固定余量主导、接近顶满才压，不是 700k）。
 # 正常对话永远碰不到 → 不会过早压缩、不伤质量/缓存，只在真·失控长任务时兜底。
 # 表外/未知 BYOK 模型保持 None＝沿用旧的"默认不启用、需 DESKTOP_MODEL_CTX_WINDOW 显式开"
 # （窗口未知，乱设一个常数反而误触发/迟触发）。子串匹配 → mimo-v2.5 / mimo-v2.5-pro 都命中。
@@ -507,7 +516,7 @@ async def _persist_agent_chat(db, store, user, message: str, content: str, gen_i
 
 
 # 跨轮记忆：封顶只当【极端兜底】（损坏轨迹文件/恶意全量回传），正常长度交给 loop 的
-# autocompact/microcompact 正经控（内置 mimo-v2.5 = 1M 窗口，autocompact ≈700k 触发）。
+# autocompact/microcompact 正经控（内置 mimo-v2.5 = 1M 窗口，autocompact 阈值 max(窗口−48k, 窗口×0.7)≈952k 才触发）。
 # 旧值 12 条 / 每条 2000 字会把工具结果截烂、把长历史砍没，和"全历史一直带"冲突，故抬到很高。
 _HIST_MAX_MSGS = 2000        # 安全上限：超过才兜底裁（留最近），正常对话永远碰不到
 _HIST_MAX_CHARS = 100_000    # 单条安全上限：不再截工具结果，只挡"单条爆炸"撑爆上下文
@@ -1475,7 +1484,9 @@ async def im_wechat(
     return {"success": True, "data": {"type": "text", "content": reply}}
 
 
-async def _stream_agent_events(body: AgentChatRequest, user: User, store, db):
+async def _stream_agent_events(body: AgentChatRequest, user: User, store, db, task: "_AgentTask | None" = None):
+    """跑一次 Agent 对话并逐事件产出。task（可选）：后台任务模式由 _runner 传进来，
+    好把运行中的 ctx 挂回 task——插话路由与取消落轨迹都靠它拿到活的 ctx。/chat 直连路径不传，行为不变。"""
     injection = check_input_injection(body.message or "")
     if injection:
         raise AIServiceError(injection, status_code=400)
@@ -1533,6 +1544,9 @@ async def _stream_agent_events(body: AgentChatRequest, user: User, store, db):
         token_budget=_agent_token_budget(),
         goal=body.goal or "",
     )
+    # 方向盘：后台任务模式把活的 ctx 挂回 task——插话路由塞 steer_inbox / 取消时取 live_messages 落轨迹。
+    if task is not None:
+        task.ctx = ctx
 
     import uuid as _uuid
     history = body.history
@@ -1702,7 +1716,7 @@ async def start_agent_task(
                 db_user = await bg_db.get(User, user.id)
                 from models.store import Store
                 db_store = await bg_db.get(Store, store.id)
-                async for event in _stream_agent_events(body, db_user or user, db_store or store, bg_db):
+                async for event in _stream_agent_events(body, db_user or user, db_store or store, bg_db, task=task):
                     if event.get("type") == "keepalive":
                         continue
                     if event.get("type") == "done":
@@ -1712,6 +1726,19 @@ async def start_agent_task(
                     await _task_append(task, event)
         except asyncio.CancelledError:
             task.status = "cancelled"
+            # 取消不丢记忆：把跑到一半的活轨迹（loop 挂在 ctx.live_messages 的引用）照 done 分支的写法落盘，
+            # 停掉的活下一轮"接着做"能接得上。只在会话已有 id 时落——新会话首轮还没有 conversation_id，
+            # 落成孤儿文件也没人读得回（前端下一轮不带这个 id）。先落盘再 await（sync 写文件），
+            # 即使后面的 await 在取消语义下再抛也不丢。
+            try:
+                _c = task.ctx
+                _cid = getattr(_c, "conversation_id", None) if _c is not None else None
+                _live = getattr(_c, "live_messages", None) if _c is not None else None
+                if _cid and _live:
+                    from services.agent.transcript import save_transcript
+                    save_transcript(str(_cid), _live)
+            except Exception:
+                logger.warning("取消路径轨迹落盘失败，跳过", exc_info=True)
             await _task_append(task, {"type": "done", "turns": 0, "stopped_reason": "cancelled"})
         except Exception:
             logger.exception("agent task failed: %s", task.id)
@@ -1719,6 +1746,9 @@ async def start_agent_task(
             await _task_append(task, {"type": "error", "error": "后台任务执行失败，请重试"})
             await _task_append(task, {"type": "done", "turns": 0, "stopped_reason": "error"})
         finally:
+            # 任务收尾即释放运行时引用（ctx 里挂着 messages/db/store 等大对象）：
+            # _AGENT_TASKS 会缓存最近 40 个任务的事件供重放，别让完成的任务把整段对话上下文拖在内存里。
+            task.ctx = None
             await _learn_in_background(str(store.id), body.message)
             async with task.condition:
                 task.condition.notify_all()
@@ -1772,6 +1802,43 @@ async def cancel_agent_task(task_id: str):
     return {"ok": True, "task_id": task_id, "status": task.status}
 
 
+class AgentTaskMessageRequest(BaseModel):
+    message: str
+
+
+# 方向盘：跑动中插话队列封顶（条）。防手快连发/脚本狂灌把一轮上下文塞爆；到顶让用户等 AI 消化完再说。
+_STEER_INBOX_CAP = 10
+
+
+@router.post("/tasks/{task_id}/message")
+async def send_agent_task_message(task_id: str, body: AgentTaskMessageRequest):
+    """任务跑动中给它捎话（steering，对标 Claude Code 运行中打字排队）：
+    新话进该任务 ctx 的插话队列，loop 在每批工具做完、下一次调模型前注入成 user 消息，模型当场改道。
+    不新起任务、不打断当前轮——只排队等下一轮。任务不存在 404 / 已结束 409 / 队列满 429，错误都说人话。"""
+    task = _AGENT_TASKS.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    if task.status != "running":
+        raise HTTPException(status_code=409, detail="这个任务已经结束了，直接发新消息就行")
+    msg = (body.message or "").strip()
+    if not msg:
+        raise HTTPException(status_code=400, detail="补充的内容是空的，写点什么再发")
+    injection = check_input_injection(msg)
+    if injection:
+        raise HTTPException(status_code=400, detail=injection)
+    ctx = task.ctx
+    if ctx is None:
+        # 任务刚创建、循环还没跑起来（ctx 尚未挂上，窗口极短）：别静默吞话，让前端稍后重试
+        raise HTTPException(status_code=409, detail="任务刚启动还没就绪，等一两秒再发一次")
+    inbox = getattr(ctx, "steer_inbox", None)
+    if inbox is None:
+        raise HTTPException(status_code=409, detail="这个任务不支持中途捎话")
+    if len(inbox) >= _STEER_INBOX_CAP:
+        raise HTTPException(status_code=429, detail="补充的话有点多啦，等 AI 消化一下前面的再说")
+    inbox.append(msg)
+    return {"ok": True, "task_id": task_id, "queued": len(inbox)}
+
+
 class AgentExecuteRequest(BaseModel):
     tool: str
     args: dict | None = None
@@ -1796,6 +1863,11 @@ async def agent_execute(
     （未来的平台发布、群发客户等：对外不可逆，需人点头防自动对外/封号）。普通工具在循环里直接执行，不经此路径。
     工具自身的护栏（配额/限流/落库）由其 handler 负责；这里让其异常（如配额不足）正常抛出，
     由全局异常处理转成对用户友好的提示。
+
+    P1 关联项（全仓七路审查 2026-07-02「关联」）：此前直调 tool.handler，绕过了主循环 _execute_tool
+    的 PreToolUse hook / 超时兜底 / 结果封顶——这里补齐同款三件套（见下方执行段落），但【异常传播行为
+    不变】：不像主循环那样把工具异常吞成字符串回灌模型，execute 是非流式 JSON 端点，工具自身抛出的
+    AppException/AIServiceError 等仍正常向上抛，交给上面这句"由全局异常处理转成提示"承接，返回契约不破。
     """
     tool = default_registry.get(body.tool)
     if tool is None and body.tool.startswith("mcp__"):
@@ -1838,12 +1910,37 @@ async def agent_execute(
     denial_tracker.clear_denial(body.conversation_id, _action_key(body.tool, args))
     # 续接循环用本会话最新拒绝计数（清完零的），让后续若再提别的动作仍受回退保护。
     denial_tracker.load_into_ctx(ctx, body.conversation_id)
-    result = await tool.handler(args, ctx)
-    if not isinstance(result, str):
+    # 三件套之一·PreToolUse hook：与主循环 _execute_tool 一致，执行前可拦截（故障安全，hook 抛错不影响执行）。
+    deny = await run_pre_tool_hooks(body.tool, args, ctx)
+    if deny:
+        result = f"[已被拦截] {body.tool}：{deny}"
+    else:
+        # 三件套之二·统一超时兜底：工具自带 timeout 优先，否则用全局默认（同主循环 _DEFAULT_TOOL_TIMEOUT），
+        # 绝不让审批执行的请求无限期挂住（此前 generate_image 等慢工具在这条路径完全没有超时保护）。
+        _timeout = tool.timeout if getattr(tool, "timeout", None) is not None else _DEFAULT_TOOL_TIMEOUT
+        _timed_out = False
         try:
-            result = json.dumps(result, ensure_ascii=False)
-        except (TypeError, ValueError):
-            result = str(result)
+            if _timeout and _timeout > 0:
+                result = await asyncio.wait_for(tool.handler(args, ctx), timeout=_timeout)
+            else:
+                result = await tool.handler(args, ctx)
+        except (asyncio.TimeoutError, TimeoutError):
+            _timed_out = True
+            logger.warning("审批执行超时(%.0fs)，已掐断: %s", _timeout, body.tool)
+            result = (f"[工具超时] {body.tool} 跑了超过 {int(_timeout)} 秒还没回，已自动掐断。"
+                     f"可以重新发起这次操作，或换个更小的输入再试。")
+        if not isinstance(result, str):
+            try:
+                result = json.dumps(result, ensure_ascii=False)
+            except (TypeError, ValueError):
+                result = str(result)
+        if not _timed_out:
+            # 三件套之三·结果封顶：deliverable 工具（生图/生视频/发布等成品）不截断，行为零变化；
+            # 只对非成品的超大结果落盘/截断，护住返回体大小（同主循环 _cap_tool_result 口径）。
+            result = _cap_tool_result(tool, result, ctx)
+            # PostToolUse hook：与主循环一致，只在成功路径跑（超时同主循环 _execute_tool 直接跳过，
+            # 别把"超时"提示文案当工具结果喂给用户配置的 hook）。
+            await run_post_tool_hooks(body.tool, args, result, ctx)
 
     # 审批回灌（修"断流"缝）：把执行结果喂回推理循环，让管家"知道"自己做了什么、
     # 自然地接话（"做好啦，要不要我配条文案？"），而不是对话死在这。失败不影响已执行结果。

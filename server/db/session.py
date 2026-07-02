@@ -1,3 +1,4 @@
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from config import settings
@@ -15,6 +16,17 @@ if _url.startswith("sqlite"):
         echo=False,
         connect_args={"check_same_thread": False},
     )
+
+    # SQLite 默认日志模式(rollback journal)写时独占锁库，稍微并发一点(生图任务后台写进度 +
+    # 前端同时轮询读)就容易"database is locked"。WAL 让读写不互斥；busy_timeout 兜底剩下的
+    # 写写冲突——遇到锁时等最多 5s 重试，而不是立刻报错。每条新连接都要设一次(SQLite 的 PRAGMA
+    # 是连接级、不持久化在库文件里的那几个除外，journal_mode=WAL 会持久化，但 busy_timeout 不会)。
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.close()
 else:
     engine = create_async_engine(
         _url,

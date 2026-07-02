@@ -36,6 +36,24 @@ async def lifespan(app: FastAPI):
         from db.init_local import init_local_db
         await init_local_db()
 
+        # 僵尸任务恢复：上次是被强杀/崩溃退出的，media_jobs 里可能还留着 queued/running 的任务——
+        # 但跑它的那个 asyncio 任务早随进程没了，永远不会再推进，前端会对着一个空转的任务一直转圈。
+        # 桌面单进程重启＝上一轮生命周期彻底结束，直接把这些残留任务标失败，用户能看到原因、重新发起。
+        # 只在 SQLite(桌面单进程)下做：云端多 worker 场景下"我这个进程刚起"不代表全局没人在跑这个任务。
+        try:
+            from sqlalchemy import update as _upd
+            from db.session import async_session as _async_session
+            from models.media_job import MediaJob
+            async with _async_session() as _jdb:
+                await _jdb.execute(
+                    _upd(MediaJob)
+                    .where(MediaJob.status.in_(("queued", "running")))
+                    .values(status="error", error="应用重启，任务已中断，请重新发起")
+                )
+                await _jdb.commit()
+        except Exception:
+            logger.exception("僵尸任务恢复失败（已忽略，不阻塞启动）")
+
     # 启动时打印知识库加载情况：桌面打包版据此确认加密块(prompts.enc)解密成功（模板数应=171），
     # 而非静默回退到明文 prompts/（打包里已删明文 → 回退会是 0，立刻能看出护城河失效）。
     from services.ai.prompt_engine import prewarm_prompt_engine

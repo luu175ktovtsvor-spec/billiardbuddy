@@ -191,7 +191,9 @@ async def studio_generate(
     db=Depends(get_db),
 ):
     """文生图(可带风格/参考图/变体张数)。异步:返回 {job_id},前端轮询 media-jobs/{id}。"""
-    check_generation_safety(body.prompt, body.style or "")   # H1
+    # image_prompt(前端可改的"优化后提示词")才是真送模型的那份，不能只查 body.prompt——
+    # 否则 prompt 写安全的话、image_prompt 改成越线的话就绕过了这道红线预检。
+    check_generation_safety(body.prompt, body.style or "", body.image_prompt or "")   # H1
     count = _clamp_count(body.count)                          # H3
     prompt = _compose_prompt(body.prompt, body.style)
     store_id, user_id, conv = store.id, user.id, body.conversation_id
@@ -209,6 +211,9 @@ async def studio_generate(
                     wdb, st, user_id, prompt, image_model=img_model, ratio=ratio,
                     reference_image_paths=refs, count=count, conversation_id=conv, quality=quality,
                     image_prompt=img_prompt,
+                    # studio 页的参考图是用户在本次请求里经系统文件框亲手选的(可信前端直传，
+                    # 不是模型自己填的)，原样进白名单——否则沙箱外路径护栏会把它们误拒。
+                    allowed_paths=list(refs or []),
                 )
             return _result_payload(res)
         finally:
@@ -248,6 +253,9 @@ async def studio_edit(
                 res = await poster_service.generate_images(
                     wdb, st, user_id, prompt, image_model=img_model, ratio=ratio,
                     refine_from=src, mask_path=mask, count=count, conversation_id=conv, quality=quality,
+                    # mask 是本次请求里前端刚落盘的文件，显式进白名单——现在能过纯靠它恰好
+                    # 落在 uploads 沙箱里(隐性巧合)，落点以后一变局部重绘就会静默失效。
+                    allowed_paths=[mask] if mask else [],
                 )
                 # 血缘父 = 被改的源成品
                 await _backfill_parent(wdb, res.get("images", []), src, store_id)

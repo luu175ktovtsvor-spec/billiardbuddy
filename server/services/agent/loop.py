@@ -26,6 +26,7 @@ import time
 from dataclasses import dataclass, field
 
 from config import settings
+from core.security_guard import filter_compliance
 from services.agent.approval import sign_approval
 from services.agent.context import AgentContext
 from services.agent.hooks import run_post_tool_hooks, run_pre_tool_hooks, run_stop_hooks
@@ -43,11 +44,12 @@ from services.ai.factory import ProviderFactory
 
 logger = logging.getLogger(__name__)
 
-# 编排（选工具/规划）用低温度：实测 0.7（TextRequest 默认）下 DeepSeek 会"有时兴起自己聊、
-# 不调工具"，导致该写文案/推玩法的需求被直接闲聊掉。工具选择要的是稳定可复现，不是创意——
-# 故循环统一压到 0.3。真正要创意的内容生成在各工具内部走 run_generation（自带 0.7），不受此影响。
-# G.1 P2：编排温度做成可配。0.3 是为防 DeepSeek 跑题打的补丁，一刀切会压死强模型的发挥；
-# 强模型(mimo 等)想放开创意可经 DESKTOP_ORCH_TEMPERATURE 调高。非法值回落 0.3。
+# 编排（选工具/规划）温度。历史：0.3 是给 DeepSeek 打的旧补丁（实测 0.7 下它"有时兴起自己聊、不调工具"）。
+# ⚠️ 对现役 MiMo v2.5 的真实效力（1-3，官方文档）：思考模式下不支持自定义 temperature/top_p，传了会被
+# 强制改回 1.0/0.95——MiMo 默认开思考，所以这个值在思考模式下【无效、纯摆设】；provider（deepseek.py）
+# 现在也只在显式关思考时才发送 temperature 字段。即：本值只在用户关掉深度思考时才真正生效。
+# G.1 P2：保持 env 可配（DESKTOP_ORCH_TEMPERATURE），非法值回落 0.3。真正要创意的内容生成在各工具内部
+# 走 run_generation（自带 0.7），不受此影响。
 try:
     _ORCH_TEMPERATURE = float(os.environ.get("DESKTOP_ORCH_TEMPERATURE") or 0.3)
 except (TypeError, ValueError):
@@ -103,9 +105,15 @@ def _final_or_fallback(text: str) -> str:
 
 
 def _finalize_text(text: str, ctx) -> str:
-    """收尾统一出口：先空白兜底，再【若本轮发生过非识图降级】在开头加一句温和提示。
-    所有 final 文本（同步/流式、正常/预算停/强制收尾）都过这道，确保降级提示一定带上。"""
+    """收尾统一出口：先空白兜底，再过合规闸（P1-2：违广告法绝对化用语确定性替换——主对话正文此前
+    完全没过闸，只有生成类工具内部经 filter_output_leak 才带；这里补上，让主对话 final 也确定性兜底、
+    不靠模型自觉），最后【若本轮发生过非识图降级】在开头加一句温和提示。
+    所有 final 文本（同步/流式、正常/预算停/强制收尾）都过这道，确保合规替换 + 降级提示一定带上。"""
     out = _final_or_fallback(text)
+    filtered = filter_compliance(out)
+    if filtered != out:
+        logger.debug("合规闸命中：final 文本已做确定性替换（原文 %d 字 → 过滤后 %d 字）", len(out), len(filtered))
+    out = filtered
     if ctx is not None and getattr(ctx, "vision_degraded", False):
         out = prepend_degrade_hint(out)
     return out
@@ -190,13 +198,15 @@ _MAX_SAME_CALL = 3
 #    换掉一大段顶满窗口的旧文 + 续命不让请求溢出」的划算交易，且仅临近窗口才发生（低频）。除本函数外任何
 #    代码都不应重建前缀，详见 docs/耦合地图与改动检查清单.md「prompt-cache 前缀稳定纪律」。
 # 故障安全：估算/总结任一步抛错 → 跳过压缩、用原 messages 继续，绝不让主循环崩。
-# 循环每轮响应的 max_tokens 默认值（可配）。原 2000 偏小：写运营方案/长文案常超 2000 token，
-# 会把【工具调用的超长 content 参数】截断 → 入参 JSON 不完整 → 解析失败 → 写空文件 → 打转到 502。
-# 提到 4096 让多数方案一次写完；仍超长的由 _plan_tool_call 的"截断专属回灌"兜底（让模型写精简/分次）。
+# 循环每轮响应的 max_tokens 默认值（可配，env DESKTOP_AGENT_MAX_TOKENS 覆盖）。演进：2000 → 4096 → 16384。
+# 2000 偏小：写运营方案/长文案常超，会把【工具调用的超长 content 参数】截断 → 入参 JSON 不完整 → 解析失败
+# → 写空文件 → 打转到 502。1-5 再提到 16384：MiMo v2.5 官方输出上限 128K、输出按实际生成计费——调大无成本，
+# 而过小的上限逼着截断续写(SH-4)每次重发全部上下文，更贵更慢。续写/入参截断回灌仍留作兜底。
+# 内部工具性调用（autocompact 摘要等）不用这个值，保留各自的小上限（已显式关思考，正文够用）。
 try:
-    _DEFAULT_AGENT_MAX_TOKENS = max(2000, int(os.environ.get("DESKTOP_AGENT_MAX_TOKENS", "4096") or 4096))
+    _DEFAULT_AGENT_MAX_TOKENS = max(2000, int(os.environ.get("DESKTOP_AGENT_MAX_TOKENS", "16384") or 16384))
 except (TypeError, ValueError):
-    _DEFAULT_AGENT_MAX_TOKENS = 4096
+    _DEFAULT_AGENT_MAX_TOKENS = 16384
 
 # 工具入参被截断（raw 非空却 JSON 解析不出，多半是 content 太长撞上 max_tokens）时回灌给模型的指令：
 # 不拿空参去执行(会写空文件/反复重试同一个超大写入→打转到502)，而是明确让它换策略——写精简或分次。
@@ -251,13 +261,18 @@ _BUDGET_PUSH = "push"    # 还有预算但已过半且本轮有产出 → 回灌
 _BUDGET_STOP = "stop"    # 到 90% 或 diminishing → 强制停（优先级高于 Stop hook，不让 hook 拉回空转）
 
 
-def _accumulate_usage(ctx, resp_tokens: int, fallback_text: str, *, prompt_tokens: int = 0) -> None:
+def _accumulate_usage(ctx, resp_tokens: int, fallback_text: str, *, prompt_tokens: int = 0,
+                      cached_tokens: int = 0) -> None:
     """把本轮 provider usage 累加进 ctx.tokens_used，并更新 last_total/last_delta + diminishing 计数。
     端点没返回（resp_tokens<=0）则按 len//4 粗估。token_budget=None 也照常累加（顺带喂成本看板，零行为影响）。
     diminishing 判定靠 budget_continuations 当"连续低增量轮"计数：本轮 delta 极小则 +1、否则归零。
 
     Gap C：prompt_tokens（本轮真实输入 token = 上下文有多大）>0 时记进 ctx.last_prompt_tokens，
-    供 autocompact 触发判据当真值（0/未知则不动，保留上一轮真值或退回估算）。"""
+    供 autocompact 触发判据当真值（0/未知则不动，保留上一轮真值或退回估算）。
+
+    1-7 缓存可观测：cached_tokens（本轮 prompt cache 命中 token 数，provider 已兼容 OpenAI/DeepSeek 两种字段）
+    记进 ctx.last_cached_tokens（本轮值）+ ctx.cached_tokens_total（会话累计），DEBUG 打一行——
+    SH-9 前缀纪律换没换来命中，从此看得见（MiMo 命中 ¥0.02/M vs 未命中 ¥1/M，50 倍价差）。"""
     if ctx is None:
         return
     delta = resp_tokens if (resp_tokens and resp_tokens > 0) else (len(fallback_text or "") // 4)
@@ -271,6 +286,13 @@ def _accumulate_usage(ctx, resp_tokens: int, fallback_text: str, *, prompt_token
         ctx.budget_continuations = 0
     if prompt_tokens and prompt_tokens > 0:
         ctx.last_prompt_tokens = prompt_tokens
+    # 缓存命中记账（防御：mock/异常类型一律按 0 处理，不污染统计）
+    _cached = cached_tokens if isinstance(cached_tokens, int) and cached_tokens > 0 else 0
+    ctx.last_cached_tokens = _cached
+    ctx.cached_tokens_total = getattr(ctx, "cached_tokens_total", 0) + _cached
+    if _cached:
+        logger.debug("prompt cache 命中 %d tokens（本轮输入 %d，会话累计命中 %d）",
+                     _cached, prompt_tokens, ctx.cached_tokens_total)
 
 
 def _check_budget(ctx) -> str:
@@ -546,6 +568,37 @@ async def _vision_degrade_stream(provider, request, messages, ctx, **sinks):
         raise
 
 
+# ── 方向盘 · 跑动中插话纠偏（对标 Claude Code 的 steering：任务跑着用户还能捎话，下一轮注入当场改道）──
+# 插话注入为 user 消息时的前缀标记：让模型明白这是"跑动中的补充/纠偏"，应当场调整当前任务的方向，
+# 而不是当成一个全新任务从头再来。
+_STEER_MARK = "[用户补充/纠偏]"
+# 每 drain 到一批插话给轮次上限的"续命"轮数：用户捎话 = 他还要你继续干，原上限可能不够收完新要求。
+# 每批 +2 轮；总续命封顶在原上限的一半（见循环内 steer_extra_cap），防"边聊边跑"无限续命跑飞——
+# 这与 max_turns 兜底哲学一致：方向盘可以小幅松，安全带不解。
+_STEER_EXTRA_TURNS = 2
+
+
+def _drain_steering(messages: list[dict], ctx) -> list[str]:
+    """把 ctx.steer_inbox 里攒着的用户插话按序 append 成 user 消息（带 _STEER_MARK 前缀）。
+
+    ⚠️ 位置纪律与 _drain_view_images 相同：只能在【一批 tool 结果全部追加、配对完整之后】或
+    【无 tool_calls 的收尾判定处（先把本轮 assistant 文本 append 回去）】调用——user 消息插进
+    tool 配对中间会触发 OpenAI 兼容端点的 400。
+    ⚠️ 只在尾部追加、绝不动前面历史（SH-9 prompt-cache 前缀稳定纪律）。
+    返回本次注入的插话原文列表（流式入口据此逐条吐 steering 事件给前端"有回应感"；空列表=没插话）。
+    同步/流式两入口共用（子代理/审批续接的 ctx 队列恒空 → 纯 no-op），不写死只流式可用。"""
+    inbox = getattr(ctx, "steer_inbox", None) if ctx is not None else None
+    if not inbox:
+        return []
+    drained: list[str] = []
+    # 就地 pop（不换新列表）：路由端持有的是同一个 ctx.steer_inbox 引用，换列表会让后续插话丢进旧列表。
+    while inbox:
+        drained.append(inbox.pop(0))
+    for msg in drained:
+        messages.append({"role": "user", "content": f"{_STEER_MARK} {msg}"})
+    return drained
+
+
 _VIEW_FEEDBACK_MSG = "（这是刚才看屏/截图工具截取的屏幕画面，请据此判断与继续。）"
 
 
@@ -695,6 +748,9 @@ async def run_agent_loop(
         ctx.model = model
 
     messages = _init_messages(system_prompt, history, user_message, user_images)
+    # 取消不丢记忆：把活的 messages 引用挂上 ctx——中断（CancelledError）时端点照样能拿它落轨迹。
+    # loop 内对 messages 全是就地变更（append/切片赋值），引用全程有效。
+    ctx.live_messages = messages
     # 缺口 F：进循环前先 drain 一次【已存在】的待回灌图片。多数调用方此处 pending 为空、纯 no-op；
     # 唯一非空场景＝审批后 /agent/execute 先跑完写/处理类工具(edit_image 等已往 ctx.pending_view_images
     # 塞了图)再续接 run_agent_loop——若不在首调前 drain，模型这一轮看不到刚处理好的图(循环内 _drain
@@ -705,8 +761,13 @@ async def run_agent_loop(
     stop_blocked = False  # Stop hook 每轮最多阻断一次（防死循环；仍受 max_turns 兜底）
     final_segments: list[str] = []  # SH-4：被 length 截断的最终答复，多轮续写片段在此拼接
     continuations = 0               # SH-4：续写次数（防"一直被截一直续"死循环）
-
-    for turn in range(1, max_turns + 1):
+    # 方向盘：插话可给轮次上限小幅续命（每批 +_STEER_EXTRA_TURNS，总续命封顶原上限一半、至少一批）。
+    # 用 while + 可变上限替代 range：语义与原 for turn in range(1, max_turns+1) 完全一致，只多了续命。
+    turns_limit = max_turns
+    steer_extra_cap = max(_STEER_EXTRA_TURNS, max_turns // 2)
+    turn = 0
+    while turn < turns_limit:
+        turn += 1
         # SH-6 三级压缩流水线（snip→microcompact→autocompact）：临近窗口才语义压、平时只清旧只读结果。
         # autocompact 可能重建前缀（唯一允许点）→ 用返回值重绑 messages（就地切片同步，保后续 append 落到新列表）。
         messages[:] = await _compact_pipeline(messages, registry, ctx, provider, model, temperature)
@@ -730,8 +791,10 @@ async def run_agent_loop(
                                stopped_reason=_STOP_TIMEOUT, messages=messages)
         # SH-2：累加本轮真实 token 用量（端点没返回则粗估），喂预算判定 + 成本看板。
         # Gap C：同时把真实输入 token(prompt_tokens)喂给 autocompact 触发判据(经 ctx.last_prompt_tokens)。
+        # 1-7：cached_tokens = 本轮 prompt cache 命中数（记 ctx + DEBUG 日志，命中率可观测）。
         _accumulate_usage(ctx, getattr(resp, "tokens_used", 0), resp.content or "",
-                          prompt_tokens=getattr(resp, "prompt_tokens", 0) or 0)
+                          prompt_tokens=getattr(resp, "prompt_tokens", 0) or 0,
+                          cached_tokens=getattr(resp, "cached_tokens", 0) or 0)
 
         # 无工具调用 → 准备收尾。Stop hook 可阻断停止让它继续（默认无 hook → 直接收尾）。
         if not resp.tool_calls:
@@ -742,6 +805,15 @@ async def run_agent_loop(
                 messages.append({"role": "assistant", "content": resp.content or ""})
                 messages.append({"role": "user", "content": _CONTINUE_MSG})
                 continuations += 1
+                continue
+            # 方向盘：即将收尾时若攒着插话 → 不收尾。先把本轮答复 append 回去（保持 assistant→user 顺序），
+            # 再注入插话继续循环，让模型基于新指令当场接着干（放在预算/Stop hook 之前：用户主动捎话优先级最高）。
+            # ⚠️ 流式路径同样逻辑，别只改一处。
+            if getattr(ctx, "steer_inbox", None):
+                if resp.content:
+                    messages.append({"role": "assistant", "content": resp.content})
+                _drain_steering(messages, ctx)
+                turns_limit = min(max_turns + steer_extra_cap, turns_limit + _STEER_EXTRA_TURNS)
                 continue
             # SH-2 token 预算（放在 Stop hook 之前：预算到了优先级最高，不让 Stop hook 把空转拉回来）。
             #   budget=None → _BUDGET_OK，整段跳过（交互式零影响）。
@@ -833,14 +905,17 @@ async def run_agent_loop(
 
         # 工具产出图片回灌：本批 tool 结果已全部追加、配对完整 → 把截图等拼成一条 user 图片消息注入，让模型下一轮真看见。
         _drain_view_images(messages, ctx)
+        # 方向盘：本批工具做完、下次调模型前，把跑动中用户捎的话注入（尾部追加，保前缀缓存），下一轮当场改道。
+        if _drain_steering(messages, ctx):
+            turns_limit = min(max_turns + steer_extra_cap, turns_limit + _STEER_EXTRA_TURNS)
 
-    # 达到 max_turns 仍未收敛（兜底，防止循环跑飞）：强制模型基于已有结果给最终答复，不返回空。
-    logger.warning("agent loop 达到 max_turns=%s 仍未结束，强制收尾", max_turns)
+    # 达到轮次上限仍未收敛（兜底，防止循环跑飞）：强制模型基于已有结果给最终答复，不返回空。
+    logger.warning("agent loop 达到 max_turns=%s 仍未结束，强制收尾", turns_limit)
     final_text = await _force_final_text(provider, messages, model, max_tokens, temperature, ctx=ctx)
-    if ctx is not None and getattr(ctx, "vision_degraded", False):
-        final_text = prepend_degrade_hint(final_text)
+    # P1-2：强制收尾同样走 _finalize_text（合规闸 + 降级提示统一出口），别改一处漏一处。
+    final_text = _finalize_text(final_text, ctx)
     steps.append(AgentStep(type="final", content=final_text))
-    return AgentResult(final_text=final_text, steps=steps, turns=max_turns,
+    return AgentResult(final_text=final_text, steps=steps, turns=turn,
                        stopped_reason=_STOP_MAX_TURNS, messages=messages)
 
 
@@ -1092,12 +1167,16 @@ async def _autocompact(messages: list[dict], ctx, provider, model, temperature: 
         transcript = _render_transcript(old)
         if not transcript.strip():
             return None
+        # 1-1 内部工具性调用显式关思考（照 studio.py 的修法）：MiMo 默认开思考，reasoning 会把
+        # 1024 的 max_tokens 吃光、content 返回空 → 记失败 → 连续 3 次熔断 = 压缩从来没成功过。
+        # 关思考后 1024 全给摘要正文，够用；温度此时才真正生效（见 deepseek.py 温度分叉）。
         resp = await provider.generate(TextRequest(
             messages=[{"role": "user",
                        "content": _AUTOCOMPACT_SUMMARY_PROMPT.format(transcript=transcript)}],
             model=model,
             max_tokens=_AUTOCOMPACT_SUMMARY_MAX_TOKENS,
             temperature=temperature,
+            thinking={"type": "disabled"},
         ))
         summary = (resp.content or "").strip()
         if not summary:
@@ -1153,8 +1232,11 @@ async def _force_final_text(provider, messages: list[dict], model, max_tokens: i
     自身失败也不崩，走静态兜底，绝不返回空。带 ctx 时同样走非识图降级（去图重试一次）。"""
     messages.append({"role": "user", "content": _FORCE_FINAL_MSG})
     try:
+        # 1-1：强制收尾是内部工具性调用，显式关思考——要的是"基于已有结果直接给答复"，
+        # 不关的话 MiMo 默认开思考，reasoning 抢 max_tokens、content 可能为空 → 落静态兜底白瞎一轮。
         resp = await _generate_with_vision_degrade(provider, TextRequest(
             messages=messages, model=model, max_tokens=max_tokens, temperature=temperature,
+            thinking={"type": "disabled"},
         ), messages, ctx)
         final_text = (resp.content or "").strip()
     except Exception:
@@ -1188,6 +1270,8 @@ async def run_agent_loop_stream(
     - {"type": "tool_call", "tool", "args", "id"}  模型决定调某工具
     - {"type": "approval_request", "tool", "args", "id", "token", "preview"}  受审批工具待确认
     - {"type": "tool_result", "tool", "id", "content"}  工具执行结果/待确认提示
+    - {"type": "steering", "content": <插话原文>}   跑动中用户捎的话已注入（下一轮模型当场看到；前端据此
+      把插话固定进对话流，刷新重放不丢）
     - {"type": "final", "content": <完整答复>}     收敛的最终答复全文
     - {"type": "done", "turns", "stopped_reason"}  收尾（恒为最后一条）
     """
@@ -1201,12 +1285,19 @@ async def run_agent_loop_stream(
         ctx.model = model
 
     messages = _init_messages(system_prompt, history, user_message, user_images)
+    # 取消不丢记忆：把活的 messages 引用挂上 ctx——用户点停止（CancelledError）时端点照样能拿它落轨迹，
+    # "停掉的活"下一轮接得上。⚠️ 同步路径同样逻辑，别只改一处。
+    ctx.live_messages = messages
     tools = registry.to_openai_tools()
     stop_blocked = False  # Stop hook 每轮最多阻断一次（防死循环；仍受 max_turns 兜底）
     final_segments: list[str] = []  # SH-4：被 length 截断的最终答复，多轮续写片段在此拼接
     continuations = 0               # SH-4：续写次数（防"一直被截一直续"死循环）
-
-    for turn in range(1, max_turns + 1):
+    # 方向盘：插话给轮次上限小幅续命（同 run_agent_loop，while + 可变上限，语义与原 range 一致）。
+    turns_limit = max_turns
+    steer_extra_cap = max(_STEER_EXTRA_TURNS, max_turns // 2)
+    turn = 0
+    while turn < turns_limit:
+        turn += 1
         # SH-6 三级压缩流水线（snip→microcompact→autocompact）：临近窗口才语义压、平时只清旧只读结果。
         # ⚠️ 同步路径同样逻辑，别只改一处（见上面 run_agent_loop）。autocompact 可能重建前缀（唯一允许点）。
         messages[:] = await _compact_pipeline(messages, registry, ctx, provider, model, temperature)
@@ -1244,8 +1335,10 @@ async def run_agent_loop_stream(
         text = "".join(parts)
         # SH-2：累加本轮真实 token 用量（端点没返回 total_tokens 则按 len//4 粗估），喂预算判定 + 成本看板。
         # Gap C：把真实输入 token(prompt_tokens，由 usage_sink 写回)喂给 autocompact 触发判据。
+        # 1-7：cache_hit_tokens = 本轮 prompt cache 命中数（provider 兼容两种字段写回；记 ctx + DEBUG 日志）。
         _accumulate_usage(ctx, usage.get("total_tokens", 0) or 0, text,
-                          prompt_tokens=usage.get("prompt_tokens", 0) or 0)
+                          prompt_tokens=usage.get("prompt_tokens", 0) or 0,
+                          cached_tokens=usage.get("cache_hit_tokens", 0) or 0)
 
         # 无工具调用 → 准备收尾。Stop hook 可阻断停止让它继续（默认无 hook → 直接收尾）。
         if not sink:
@@ -1257,12 +1350,29 @@ async def run_agent_loop_stream(
                 messages.append({"role": "user", "content": _CONTINUE_MSG})
                 continuations += 1
                 continue
+            # 方向盘：即将收尾时攒着插话 → 不收尾。先把本轮答复 append 回去，再注入插话继续循环；
+            # 逐条吐 steering 事件让前端"有回应感"。放在预算/Stop hook 之前：用户主动捎话优先级最高。
+            # ⚠️ 同步路径同样逻辑，别只改一处。
+            if getattr(ctx, "steer_inbox", None):
+                if text:
+                    messages.append({"role": "assistant", "content": text})
+                for _s in _drain_steering(messages, ctx):
+                    yield {"type": "steering", "content": _s}
+                turns_limit = min(max_turns + steer_extra_cap, turns_limit + _STEER_EXTRA_TURNS)
+                continue
             # SH-2 token 预算（放在 Stop hook 之前：预算到了优先级最高，不让 Stop hook 把空转拉回来）。
             #   budget=None → _BUDGET_OK，整段跳过（交互式零影响）。⚠️ 同步路径同样逻辑，别只改一处。
             _budget = _check_budget(ctx)
             if _budget == _BUDGET_STOP:
                 full_final = _finalize_text("".join(final_segments) + text, ctx)
-                ctx.final_messages = _trajectory_with_final(messages, text)  # 跨轮记忆：暴露完整轨迹供落盘
+                # P1-2：轨迹/回灌历史同样要过合规闸（不能只让对外展示的 full_final 过滤、落盘的还是原文）；
+                # 不用 full_final 直接替（它可能叠了 final_segments 续写片段，那些早已单独落进 messages），
+                # 只对本轮新增的 text 做合规替换，避免重复内容。不一致时 DEBUG 记一行，便于观测命中率。
+                _traj_text = filter_compliance(text)
+                if _traj_text != text:
+                    logger.debug("合规闸命中：流式落库轨迹文本已做确定性替换（原文 %d 字 → 过滤后 %d 字）",
+                                len(text), len(_traj_text))
+                ctx.final_messages = _trajectory_with_final(messages, _traj_text)  # 跨轮记忆：暴露完整轨迹供落盘
                 yield {"type": "final", "content": full_final}
                 yield {"type": "done", "turns": turn, "stopped_reason": _STOP_FINAL,
                        "tokens_used": getattr(ctx, "tokens_used", 0)}
@@ -1281,7 +1391,12 @@ async def run_agent_loop_stream(
                     messages.append({"role": "user", "content": cont})
                     continue
             full_final = _finalize_text("".join(final_segments) + text, ctx)
-            ctx.final_messages = _trajectory_with_final(messages, text)  # 跨轮记忆：暴露完整轨迹供落盘
+            # P1-2：同上（budget-stop 分支）——轨迹用合规过滤后的本轮 text，不一致时 DEBUG 记一行。
+            _traj_text = filter_compliance(text)
+            if _traj_text != text:
+                logger.debug("合规闸命中：流式落库轨迹文本已做确定性替换（原文 %d 字 → 过滤后 %d 字）",
+                            len(text), len(_traj_text))
+            ctx.final_messages = _trajectory_with_final(messages, _traj_text)  # 跨轮记忆：暴露完整轨迹供落盘
             yield {"type": "final", "content": full_final}
             yield {"type": "done", "turns": turn, "stopped_reason": _STOP_FINAL,
                    "tokens_used": getattr(ctx, "tokens_used", 0)}
@@ -1358,15 +1473,25 @@ async def run_agent_loop_stream(
 
         # 工具产出图片回灌：本批 tool 结果已全部追加、配对完整 → 把截图等拼成一条 user 图片消息注入，让模型下一轮真看见。
         _drain_view_images(messages, ctx)
+        # 方向盘：本批工具做完、下次调模型前注入跑动中的插话（尾部追加，保前缀缓存），模型下一轮当场改道。
+        # 逐条吐 steering 事件：前端把插话固定进对话流（刷新重放也不丢）。⚠️ 同步路径同样逻辑，别只改一处。
+        _steered = _drain_steering(messages, ctx)
+        for _s in _steered:
+            yield {"type": "steering", "content": _s}
+        if _steered:
+            turns_limit = min(max_turns + steer_extra_cap, turns_limit + _STEER_EXTRA_TURNS)
 
-    # 达到 max_turns 仍未收敛：强制模型基于已有结果给最终答复（不再给工具），逐片流式吐出，不返回空。
-    logger.warning("agent stream loop 达到 max_turns=%s 仍未结束，强制收尾", max_turns)
+    # 达到轮次上限仍未收敛：强制模型基于已有结果给最终答复（不再给工具），逐片流式吐出，不返回空。
+    logger.warning("agent stream loop 达到 max_turns=%s 仍未结束，强制收尾", turns_limit)
     messages.append({"role": "user", "content": _FORCE_FINAL_MSG})
     final_parts: list[str] = []
     try:
+        # 1-1：流式强制收尾同样显式关思考（与同步版 _force_final_text 一致，别只改一处）。
+        # 顺带避免此处 ReasoningChunk 混进 final_parts（本分支没做 isinstance 过滤，关思考后不会再吐）。
         async for tok in _vision_degrade_stream(
             provider,
-            TextRequest(messages=messages, model=model, max_tokens=max_tokens, temperature=temperature),
+            TextRequest(messages=messages, model=model, max_tokens=max_tokens, temperature=temperature,
+                        thinking={"type": "disabled"}),
             messages, ctx,
         ):
             final_parts.append(tok)
@@ -1374,6 +1499,13 @@ async def run_agent_loop_stream(
     except Exception:  # 强制收尾失败也不崩，走静态兜底
         logger.exception("max_turns 强制收尾(流式)失败")
     final_text = "".join(final_parts).strip() or _FALLBACK_FINAL
+    # P1-2：合规闸（保留 _FALLBACK_FINAL 兜底语义不变，只在此基础上过滤——不改走 _finalize_text，
+    # 因为它对空文本的兜底语是 _EMPTY_FINAL_FALLBACK，与这里"轮次耗尽"的 _FALLBACK_FINAL 措辞不同）。
+    _filtered = filter_compliance(final_text)
+    if _filtered != final_text:
+        logger.debug("合规闸命中：max_turns 强制收尾(流式) final 文本已做确定性替换（原文 %d 字 → 过滤后 %d 字）",
+                    len(final_text), len(_filtered))
+    final_text = _filtered
     if ctx is not None and getattr(ctx, "vision_degraded", False):
         final_text = prepend_degrade_hint(final_text)
     # 跨轮记忆：暴露完整轨迹供落盘。剥掉刚 append 的 _FORCE_FINAL_MSG 内部催收语（不该进续接历史），补真·最终答复。
@@ -1381,5 +1513,5 @@ async def run_agent_loop_stream(
                                and messages[-1].get("content") == _FORCE_FINAL_MSG) else messages)
     ctx.final_messages = _trajectory_with_final(_traj, final_text)
     yield {"type": "final", "content": final_text}
-    yield {"type": "done", "turns": max_turns, "stopped_reason": _STOP_MAX_TURNS,
+    yield {"type": "done", "turns": turn, "stopped_reason": _STOP_MAX_TURNS,
            "tokens_used": getattr(ctx, "tokens_used", 0)}

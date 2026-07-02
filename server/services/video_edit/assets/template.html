@@ -4,10 +4,12 @@
 <meta charset="utf-8">
 <style>
   html,body{margin:0;padding:0;background:#000;overflow:hidden}
-  #stage{position:relative;width:1080px;height:1920px;overflow:hidden;background:#000}
+  /* 渲染进程 viewport 已按 manifest 宽高开(render_frames.js/render-worker.js),100vw/100vh 天然贴合;
+     init() 里再显式按 m.width/m.height 覆盖一遍(防御性,不依赖 viewport 100%准) —— 竖屏/横屏/任意比例都适配。 */
+  #stage{position:relative;width:100vw;height:100vh;overflow:hidden;background:#000}
   #clip{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform-origin:50% 50%}
   #vig{position:absolute;inset:0;background:radial-gradient(ellipse at 50% 42%,transparent 55%,rgba(0,0,0,.45) 100%);pointer-events:none}
-  #grad{position:absolute;left:0;right:0;bottom:0;height:620px;background:linear-gradient(transparent,rgba(0,0,0,.72));pointer-events:none}
+  #grad{position:absolute;left:0;right:0;bottom:0;height:32%;background:linear-gradient(transparent,rgba(0,0,0,.72));pointer-events:none}
   #cap{position:absolute;left:60px;right:60px;font-family:'SS';font-weight:700;font-size:96px;line-height:1.1;letter-spacing:2px;text-shadow:0 4px 24px rgba(0,0,0,.6);text-align:center}
   #capbar{position:absolute;left:64px;height:10px;border-radius:6px}
   #tag{position:absolute;left:60px;top:80px;font-family:'SS';font-weight:700;color:#0a0a0a;padding:10px 22px;font-size:34px;border-radius:8px;letter-spacing:3px}
@@ -31,13 +33,16 @@
   <div id="brand"><div class="b1"></div><div class="b2"></div></div>
 </div>
 <script>
-let M, FPS=30, BEAT=15, ACCENT="#12E0C8";
+let M, FPS=30, BEAT=15, ACCENT="#12E0C8", W=1080, H=1920;
 const $=(id)=>document.getElementById(id);
 const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
 const ease=(x)=>1-Math.pow(1-clamp(x,0,1),3);
 
 window.init=(m)=>{
   M=m; FPS=m.fps; BEAT=m.beatFrames||15;
+  W=m.width||1080; H=m.height||1920;
+  // 比例不写死:舞台尺寸按 manifest 实际宽高来(竖屏9:16/横屏16:9/方屏都适配)。
+  $('stage').style.width=W+'px'; $('stage').style.height=H+'px';
   ACCENT=(m.theme&&m.theme.accent)||"#12E0C8";
   const s=document.createElement('style');
   s.textContent="@font-face{font-family:'SS';src:url('file://"+m.font+"')}";
@@ -99,7 +104,7 @@ function applyCaption(cap, style, lf, nFrames){
   const el=$('cap'), bar=$('capbar');
   el.textContent=cap||''; el.style.color=style.color||'#fff';
   if(!cap){ el.style.opacity=0; bar.style.opacity=0; return; }
-  const posY = style.pos==='top' ? 210 : style.pos==='center' ? 900 : 1590; // 三档
+  const posY = style.pos==='top' ? H*0.11 : style.pos==='center' ? H*0.47 : H*0.83; // 三档(按舞台高度百分比,不写死竖屏像素)
   bar.style.top=(posY+120)+'px';
   const inA=ease(lf/10.5), outA=1-ease((lf-(nFrames-9))/9);
   const a=clamp(Math.min(inA,outA),0,1);

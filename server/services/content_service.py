@@ -515,50 +515,60 @@ def _select_knowledge_keys(required_keys: list[str], intent_text: str) -> list[s
     """根据用户意图筛选需要注入的知识键。
 
     - intent_text 为空时不筛选，返回全部（保持非工作台路径的原有行为）。
-    - 核心知识始终注入。
+    - 核心知识始终注入——且是【无条件】的：不管某个岗位规则的 required_knowledge 里有没有
+      声明 CORE_KNOWLEDGE_KEYS（合规/白名单/核心运营/服务理念），最后都会被补进返回结果，
+      不会因为角色规则漏列、或被场景筛选挤掉而静默失效。
     - 场景知识（A-2 改造）：装了语义模型时【语义召回为主路径】——按"意思"统一打分，关键词命中
       降为【加分项】(不再是必须先命中的门槛)，所以"换说法/没配暗号"但相关的知识也能进；没装语义
       模型时回退原行为（关键词命中为主 + bigram 字面补）。取前 _MAX_SCENE_KNOWLEDGE 条。
-    - 保留 required_keys 的原始顺序，确保 prompt 结构稳定。
+    - 保留 required_keys 的原始顺序，确保 prompt 结构稳定（核心知识例外：无条件的那部分排最前）。
     """
     if not intent_text or not intent_text.strip():
-        return required_keys
-
-    intent_lower = intent_text.lower()
-    core = [k for k in required_keys if _is_core_knowledge(k)]
-    scene = [k for k in required_keys if not _is_core_knowledge(k)]
-    cap = _scene_cap()  # A-3：动态上限（默认 8、可配），不再死 4
-
-    def _kw_hits(key: str) -> int:
-        return sum(1 for w in KNOWLEDGE_KEYWORDS.get(key, []) if w.lower() in intent_lower)
-
-    if _semantic_available():
-        # 【语义为主】对所有场景候选按意思打分；关键词命中作加分项、不当门槛。
-        sem = _semantic_scores(intent_text, scene)
-        scored: list[tuple[float, str]] = []
-        for key in scene:
-            s = sem.get(key, 0.0)
-            kw = _kw_hits(key)
-            # 纳入：语义够相关 或 有关键词命中（任一即可）——语义不再只是"填空位"，而是主路径。
-            if s >= _SEM_THRESHOLD or kw > 0:
-                scored.append((s + _KW_BONUS * kw, key))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        selected_keys = [k for _, k in scored[:cap]]
-        _log_recall(intent_text, scored, cap)  # X-4 可观测打点：选中/截掉
+        picked = required_keys
     else:
-        # 回退（没装语义模型）：关键词命中为主，按命中数排序取前 N；不足再 bigram 字面补。保持原行为。
-        kw_scored = sorted(((_kw_hits(k), k) for k in scene if _kw_hits(k) > 0),
-                           key=lambda x: x[0], reverse=True)
-        selected_keys = [k for _, k in kw_scored[:cap]]
-        if len(selected_keys) < cap:
-            candidates = [k for k in scene if k not in selected_keys]
-            for key in _bigram_fill(intent_text, candidates):
-                if len(selected_keys) >= cap:
-                    break
-                selected_keys.append(key)
+        intent_lower = intent_text.lower()
+        core = [k for k in required_keys if _is_core_knowledge(k)]
+        scene = [k for k in required_keys if not _is_core_knowledge(k)]
+        cap = _scene_cap()  # A-3：动态上限（默认 8、可配），不再死 4
 
-    selected = set(selected_keys) | set(core)
-    return [k for k in required_keys if k in selected]
+        def _kw_hits(key: str) -> int:
+            return sum(1 for w in KNOWLEDGE_KEYWORDS.get(key, []) if w.lower() in intent_lower)
+
+        if _semantic_available():
+            # 【语义为主】对所有场景候选按意思打分；关键词命中作加分项、不当门槛。
+            sem = _semantic_scores(intent_text, scene)
+            scored: list[tuple[float, str]] = []
+            for key in scene:
+                s = sem.get(key, 0.0)
+                kw = _kw_hits(key)
+                # 纳入：语义够相关 或 有关键词命中（任一即可）——语义不再只是"填空位"，而是主路径。
+                if s >= _SEM_THRESHOLD or kw > 0:
+                    scored.append((s + _KW_BONUS * kw, key))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            selected_keys = [k for _, k in scored[:cap]]
+            _log_recall(intent_text, scored, cap)  # X-4 可观测打点：选中/截掉
+        else:
+            # 回退（没装语义模型）：关键词命中为主，按命中数排序取前 N；不足再 bigram 字面补。保持原行为。
+            kw_scored = sorted(((_kw_hits(k), k) for k in scene if _kw_hits(k) > 0),
+                               key=lambda x: x[0], reverse=True)
+            selected_keys = [k for _, k in kw_scored[:cap]]
+            if len(selected_keys) < cap:
+                candidates = [k for k in scene if k not in selected_keys]
+                for key in _bigram_fill(intent_text, candidates):
+                    if len(selected_keys) >= cap:
+                        break
+                    selected_keys.append(key)
+
+        selected = set(selected_keys) | set(core)
+        picked = [k for k in required_keys if k in selected]
+
+    # 核心知识集合（CORE_KNOWLEDGE_KEYS）无条件并入——不看它在不在 required_keys/picked 里，
+    # 去重后排最前。修复：此前只从 required_keys 里挑，某岗位规则若没把这几条列进
+    # required_knowledge，合规红线/术语白名单等核心知识就会整条漏注、静默失效。
+    # （_is_core_knowledge 这层过滤对真实调用是恒真——CORE_KNOWLEDGE_KEYS 定义就是它的判据之一；
+    #  只在测试 monkeypatch 掉 _is_core_knowledge 时才会收窄，不影响生产行为。）
+    missing_core = [k for k in sorted(CORE_KNOWLEDGE_KEYS) if _is_core_knowledge(k) and k not in picked]
+    return missing_core + picked
 
 
 def _load_knowledge_for_role(role: str, store: Store, intent_text: str = "") -> tuple[str, list[str]]:

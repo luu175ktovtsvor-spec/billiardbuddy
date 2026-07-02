@@ -229,6 +229,57 @@ class TestDangerousCommandsExfil:
         assert _check_command_safety("ssh user@host") is None
 
 
+# ─────────────────── 3b. 环境变量泄漏黑名单（内置模型 key 在进程 env 里，裸读=喂给模型） ───────────────────
+
+class TestDangerousCommandsEnvLeak:
+    def test_bare_env_blocked(self):
+        r = _check_command_safety("env")
+        assert r is not None and "环境变量" in r
+
+    def test_env_with_flag_blocked(self):
+        assert _check_command_safety("env -0") is not None
+
+    def test_bare_printenv_blocked(self):
+        r = _check_command_safety("printenv")
+        assert r is not None and "环境变量" in r
+
+    def test_printenv_with_arg_blocked(self):
+        """printenv 加单个变量名也拦——模型可能刚好猜中存密钥的变量名"""
+        assert _check_command_safety("printenv OPENAI_API_KEY") is not None
+
+    def test_bare_set_blocked(self):
+        r = _check_command_safety("set")
+        assert r is not None and "环境变量" in r
+
+    def test_set_with_flag_blocked(self):
+        assert _check_command_safety("set -x") is not None
+
+    def test_env_piped_blocked_by_operator_check(self):
+        """env | grep KEY 已被更早一步的 shell 操作符检查拦下（防拼接一样有效，只是理由文案不同）"""
+        assert _check_command_safety("env | grep KEY") is not None
+
+    def test_prefix_assignment_not_blocked(self):
+        """VAR=x command 前缀赋值形态不是在跑 env/printenv/set 本身，不该被误杀"""
+        assert _check_command_safety("NODE_ENV=production node app.js") is None
+
+    def test_env_file_flag_not_blocked(self):
+        """node --env-file=... 只是参数里带 env 字样，第一个词是 node，不该被误杀"""
+        assert _check_command_safety("node --env-file=.env server.js") is None
+
+    def test_env_prefixed_script_name_not_blocked(self):
+        """脚本名以 env 开头但后面紧跟单词字符（如 environment.sh）不应被裸 env 规则误杀"""
+        assert _check_command_safety("environment.sh --check") is None
+        assert _check_command_safety("env_check.py") is None
+
+    def test_set_as_subcommand_not_blocked(self):
+        """set 出现在第二个词（如 npm set ...）不是"跑 set 这个命令"，不该被误杀"""
+        assert _check_command_safety("npm set registry https://registry.example.com") is None
+
+    def test_safe_commands_still_allowed(self):
+        assert _check_command_safety("ls -la /tmp") is None
+        assert _check_command_safety("python3 script.py") is None
+
+
 # ────────────────────────────── 4. 子代理只拿只读工具 ──────────────────────────────
 
 class TestSubagentToolRestriction:

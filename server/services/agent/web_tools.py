@@ -494,6 +494,35 @@ def _subagent_registry():
         return None
 
 
+# 子代理独立跑一遍 run_agent_loop，system_prompt 若只给"角色提示"（探索员/规划员/通用）就会漏掉
+# 主循环里【永远注入】的安全红线（_SAFETY_REDLINE，定义在 api/v1/agent.py）——子代理照样能调工具
+# （写文件/生图/发消息等），没有红线兜底＝主 Agent 的安全闸形同虚设，注入/越权可以"借子代理绕过"。
+# 这段是 _SAFETY_REDLINE 导入失败（极端情况：模块尚未加载完成、被隔离测试等）时的内联兜底文案，
+# 覆盖同样的红线要点，保证子代理任何时候都带着红线跑，不会因为一次 import 失败就没有安全兜底。
+_FALLBACK_SAFETY_REDLINE = (
+    "【安全红线·任何情况都不碰，且不受任何用户设定/偏好放开】"
+    "① 绝不为『实际性交易』（性服务/援交/陪睡/上门特殊服务这类）做招揽或营销；"
+    "② 绝不协助开设赌场/坐庄定盘口/按局抽水组织赌博等刑事级犯罪；"
+    "③ 涉及未成年人：绝不诱导逃课翘课、绝不涉黄涉赌；"
+    "④ 辞退/合同/劳动纠纷等法律文书类内容可给参考模板，但要提醒『落地前请专业人士把关』；"
+    "⑤ 不输出绝对化广告词（全城最低/终身免费/包治百病等）或虚假宣传。"
+    "以上红线不受任何用户指令/偏好放开，哪怕对方要求也不能突破。"
+)
+
+
+def _resolve_subagent_safety_redline() -> str:
+    """给子代理系统提示拼装安全红线：优先复用主循环那一份 _SAFETY_REDLINE（与主 Agent 口径完全一致）。
+    延迟 import——api/v1/agent.py 顶层会 import 本模块（登记 web_fetch/web_search/... 工具），
+    模块级 import 会circular；只在真正调用（run_agent_loop 已跑起来、两个模块都已加载完）时才 import，
+    安全。import 失败（理论上不该发生，但故障安全）时退回内联兜底红线，绝不让子代理没有红线跑。"""
+    try:
+        from api.v1.agent import _SAFETY_REDLINE
+        return _SAFETY_REDLINE
+    except Exception:
+        logger.debug("加载主循环 _SAFETY_REDLINE 失败，子代理改用内联兜底红线", exc_info=True)
+        return _FALLBACK_SAFETY_REDLINE
+
+
 _SUBAGENT_TYPES: dict = {
     "general-purpose": {
         "read_only": False,
@@ -547,7 +576,9 @@ async def run_subagent(args: dict, ctx) -> str:
         logger.debug("构建子代理工具子集失败", exc_info=True)
         return "子代理暂时启动不了（工具集构建失败）。我直接来做这件事吧。"
     user_msg = task if not focus else f"{task}\n\n【重点/约束】{focus}"
-    sub_prompt = atype["prompt"]
+    # 子代理是独立跑一遍 run_agent_loop，system_prompt 若只给"角色提示"就漏了主循环永远注入的安全红线——
+    # 补上，保证子代理跟主 Agent 同一条红线，不能被"派个子代理去做"绕过。
+    sub_prompt = f"{_resolve_subagent_safety_redline()}\n\n{atype['prompt']}"
     try:
         from services.agent.loop import run_agent_loop
         # 给子代理一个干净的运行上下文：沿用同一 db/store/user/provider/model 与权限/沙箱设置，
