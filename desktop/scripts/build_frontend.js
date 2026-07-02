@@ -29,32 +29,78 @@ const OUT = path.join(__dirname, "..", "resources", "frontend", "app");
 function rmrf(p) { fs.rmSync(p, { recursive: true, force: true }); }
 function cp(src, dst, opts = {}) { fs.cpSync(src, dst, { recursive: true, ...opts }); }
 
-// ⚠️ 别再改成"深拷贝拍扁软链"！(2026-07-02 踩过:copyResolved 把 node_modules/next 软链拍成实体目录,
-// 丢了它在 .pnpm 树里跟 styled-jsx 的兄弟关系 → next 内部 require styled-jsx 失败、前端起不来、界面空白。
-// pnpm 靠"node_modules/next 是软链→realpath 进 .pnpm/next@X/node_modules/→在那找同级 styled-jsx"解析。)
-// 正确做法见下 relinkInto:保留 .pnpm 软链结构不动,只把【绝对路径软链】改写成【相对软链】(可移植 + Windows 可读)。
+// pnpm 软链树在跨平台打包上两难:①保留软链→Windows fs.cpSync 拷不动 + NSIS 报"目录名无效"打不出安装包;
+// ②按软链拍扁→丢 .pnpm 兄弟关系,next 找不到 styled-jsx 前端起不来(2026-07-02 两个坑都踩过)。
+// 解法=hoisted 扁平化:把 .pnpm 里每个包都提到顶层 node_modules/<包名> 成实体,next 和它的兄弟依赖
+// (styled-jsx/@next/env…)全在顶层同级 → 标准 node 解析找得到、产物零软链、Windows/NSIS 都吞得下。
+// 这是 OS 无关的(纯实体文件),Mac 上 server.js 能起=Windows 也能起。
 
-// pnpm 的 node_modules 软链指向【绝对路径】(开发机 .pnpm 仓库) → 原样打到别的机器就断、前端起不来。
-// 把 dir 内所有"指向 srcRoot 自己"的绝对软链改写成【相对软链】(指向 outRoot 内对应位置)→ 自包含、可移植。
-// 保留 pnpm 的 .pnpm 结构不展平(next 靠 .pnpm 同级软链找 @next/env 等依赖)。不跟随软链递归(避环)。
-function relinkInto(dir, srcRoot, outRoot) {
-  let entries;
-  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-  for (const e of entries) {
-    const p = path.join(dir, e.name);
+// 把一个真实包目录拷成实体(其内部一般无嵌套 node_modules,深拷即可;遇软链跟随实体化兜底)。
+function copyRealDir(src, dst) {
+  fs.mkdirSync(dst, { recursive: true });
+  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, e.name), d = path.join(dst, e.name);
     if (e.isSymbolicLink()) {
-      let target;
-      try { target = fs.readlinkSync(p); } catch { continue; }
-      if (path.isAbsolute(target) && target.startsWith(srcRoot)) {
-        const outTarget = path.join(outRoot, path.relative(srcRoot, target));
-        const relLink = path.relative(path.dirname(p), outTarget);
-        fs.rmSync(p, { force: true });
-        fs.symlinkSync(relLink, p);
-      }
+      const real = fs.realpathSync(s);
+      if (fs.statSync(real).isDirectory()) copyRealDir(real, d);
+      else fs.copyFileSync(real, d);
     } else if (e.isDirectory()) {
-      relinkInto(p, srcRoot, outRoot);
+      copyRealDir(s, d);
+    } else {
+      fs.copyFileSync(s, d);
     }
   }
+}
+
+// 扫 .pnpm 收集每个包的【真实体目录】,提升到 outNM/<包名>(顶层扁平)。scoped 包(@scope/name)一并处理。
+function hoistPnpm(srcNM, outNM) {
+  fs.mkdirSync(outNM, { recursive: true });
+  const pnpmDir = path.join(srcNM, ".pnpm");
+  const seen = new Set();
+  // 先扫 .pnpm/<pkg@ver>/node_modules/ 下的真实包(每个 .pnpm 条目自己那个包是实体,兄弟依赖是软链跳过)
+  if (fs.existsSync(pnpmDir)) {
+    for (const verDir of fs.readdirSync(pnpmDir)) {
+      const nm = path.join(pnpmDir, verDir, "node_modules");
+      if (!fs.existsSync(nm)) continue;
+      for (const e of fs.readdirSync(nm, { withFileTypes: true })) {
+        if (e.name.startsWith("@")) {                       // scoped: @scope/name
+          for (const sub of fs.readdirSync(path.join(nm, e.name), { withFileTypes: true })) {
+            hoistOne(path.join(nm, e.name, sub.name), `${e.name}/${sub.name}`, outNM, seen);
+          }
+        } else {
+          hoistOne(path.join(nm, e.name), e.name, outNM, seen);
+        }
+      }
+    }
+  }
+  // 再扫顶层 node_modules 里的实体(非软链)包,补齐(如 .pnpm 没覆盖到的)
+  for (const e of fs.readdirSync(srcNM, { withFileTypes: true })) {
+    if (e.name === ".pnpm") continue;
+    if (e.name.startsWith("@")) {
+      for (const sub of fs.readdirSync(path.join(srcNM, e.name), { withFileTypes: true })) {
+        maybeHoistTop(path.join(srcNM, e.name, sub.name), `${e.name}/${sub.name}`, outNM, seen);
+      }
+    } else {
+      maybeHoistTop(path.join(srcNM, e.name), e.name, outNM, seen);
+    }
+  }
+}
+function hoistOne(srcPkg, name, outNM, seen) {
+  if (seen.has(name)) return;                 // 同名只提第一个(traced standalone 基本单版本,冲突概率低)
+  let st; try { st = fs.lstatSync(srcPkg); } catch { return; }
+  if (st.isSymbolicLink()) return;            // .pnpm 里的软链是"指向别的包"的兄弟链,跳过(别的条目会提它)
+  if (!st.isDirectory()) return;
+  seen.add(name);
+  copyRealDir(srcPkg, path.join(outNM, name));
+}
+function maybeHoistTop(srcPkg, name, outNM, seen) {
+  if (seen.has(name)) return;
+  let st; try { st = fs.lstatSync(srcPkg); } catch { return; }
+  const realDir = st.isSymbolicLink() ? (() => { try { return fs.realpathSync(srcPkg); } catch { return null; } })() : srcPkg;
+  if (!realDir) return;
+  try { if (!fs.statSync(realDir).isDirectory()) return; } catch { return; }
+  seen.add(name);
+  copyRealDir(realDir, path.join(outNM, name));
 }
 
 function main() {
@@ -80,12 +126,14 @@ function main() {
   rmrf(OUT);
   fs.mkdirSync(OUT, { recursive: true });
 
-  // 1) 整个 standalone（server.js + package.json + node_modules）原样拷(含 .pnpm + 软链保结构),
-  //    再 relinkInto 把指向开发机/构建机的【绝对软链】改成【相对软链】。
-  //    保住 pnpm 兄弟依赖解析(next 靠 realpath 进 .pnpm 找 styled-jsx)+ 相对软链可移植可读。
-  //    cpSync 默认 dereference:false = 软链拷成软链、不拍扁(拍扁会丢兄弟关系,2026-07-02 踩过)。
-  cp(STANDALONE, OUT);
-  relinkInto(path.join(OUT, "node_modules"), STANDALONE, OUT);
+  // 1a) 先拷 standalone 里 node_modules 以外的东西(server.js / package.json / 应用自身产物…)。
+  for (const e of fs.readdirSync(STANDALONE, { withFileTypes: true })) {
+    if (e.name === "node_modules") continue;
+    const s = path.join(STANDALONE, e.name), d = path.join(OUT, e.name);
+    if (e.isDirectory()) cp(s, d); else fs.copyFileSync(s, d);
+  }
+  // 1b) node_modules 走 hoisted 扁平化(见上方注释):零软链、跨平台、Windows/NSIS 吞得下。
+  hoistPnpm(path.join(STANDALONE, "node_modules"), path.join(OUT, "node_modules"));
 
   // 2) .next/static（standalone 不含，必须补）
   const staticSrc = path.join(WEB, ".next", "static");
