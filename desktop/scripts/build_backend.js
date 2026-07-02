@@ -21,6 +21,12 @@ const { spawnSync, execSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
+// Windows 上 Python 默认 stdout 是 cp1252,打印脚本里的 ✅/❌/① 等非 ASCII 会 UnicodeEncodeError
+// 直接崩(明明加密/打包本身成功了,只是打成功消息时挂)。强制所有 python 子进程用 UTF-8 输出。
+// 放在这里 → 下面所有 spawnSync("uv"/python...) 都继承(macOS 本就 UTF-8,设了无副作用)。
+process.env.PYTHONUTF8 = "1";
+process.env.PYTHONIOENCODING = "utf-8";
+
 const ROOT = path.join(__dirname, "..", "..");      // 仓库根
 const SERVER = path.join(ROOT, "server");
 const OUT = path.join(__dirname, "..", "resources", "backend");
