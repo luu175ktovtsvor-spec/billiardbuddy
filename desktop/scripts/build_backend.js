@@ -244,6 +244,9 @@ function runPyInstaller() {
     "--collect-all", "mcp",
     "--collect-all", "jsonschema",
     "--collect-all", "jsonschema_specifications",
+    // tzdata：Windows 系统不带时区库，zoneinfo("Asia/Shanghai") 靠 pip 的 tzdata 提供数据。
+    // 漏收 → 后端首启即崩 ZoneInfoNotFoundError（1.0.1 真机事故根因，日志实锤）。纯数据包，collect-all 收全。
+    "--collect-all", "tzdata",
     // 语义检索(店脑/知识"按意思找料")：把 fastembed + onnxruntime 收进包，bge 模型(~90MB)经
     // 上面 addData 预打包 → 装机后离线直接语义嵌入(不再退化成词面匹配)。这俩库内部大量动态
     // import + 原生动态库，必须 --collect-all 才收全。torch 不需要(fastembed 用 onnxruntime 推理)继续排除。

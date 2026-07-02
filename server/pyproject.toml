@@ -25,6 +25,7 @@ dependencies = [
     "faster-whisper>=1.2.1",
     "scenedetect[opencv]>=0.7",
     "imageio-ffmpeg>=0.6.0",
+    "tzdata>=2024.1",
 ]
 
 [dependency-groups]
