@@ -217,7 +217,7 @@ export default function VideoWorkspacePage() {
             ) : (
               <div className="flex flex-col items-center gap-2 text-[#8e8e93]">
                 <Film size={34} />
-                <span className="text-[12px]">选素材后点"生成方案"</span>
+                <span className="text-[12px]">选素材后点“生成方案”</span>
               </div>
             )}
           </div>
@@ -282,7 +282,7 @@ export default function VideoWorkspacePage() {
           {project && mode === "ambient" && (
             <div className="flex flex-col gap-2 rounded-xl bg-black/[0.03] p-3 dark:bg-white/[0.04]">
               <div className="text-[12px] font-semibold text-[#6e6e73] dark:text-[#9a9ca3]">💬 说大白话改(文案/镜头/节奏/配乐…)</div>
-              <div className="text-[11px] text-[#8e8e93]">如"文案甜一点""第2段换掉""配乐慢些""整体短点""调色别这么暖"。改完预览即时刷新。</div>
+              <div className="text-[11px] text-[#8e8e93]">如“文案甜一点”“第2段换掉”“配乐慢些”“整体短点”“调色别这么暖”。改完预览即时刷新。</div>
               {reply && <div className="rounded-lg bg-[#10a37f]/10 px-2.5 py-1.5 text-[12px] text-[#0e906f]">{reply}</div>}
               <div className="flex gap-1.5">
                 <input value={recapText} onChange={(e) => setRecapText(e.target.value)}
