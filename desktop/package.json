@@ -14,7 +14,7 @@
     "build:win": "electron-builder --win"
   },
   "devDependencies": {
-    "electron": "^33.2.0",
+    "electron": "^34.5.8",
     "electron-builder": "^25.1.8"
   },
   "dependencies": {
@@ -100,7 +100,10 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "台球运营助手"
+      "shortcutName": "台球运营助手",
+      "language": "2052",
+      "installerLanguages": ["zh_CN", "en_US"],
+      "license": "build/license_zh.txt"
     },
     "linux": {
       "target": [
