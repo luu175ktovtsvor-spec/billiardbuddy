@@ -158,3 +158,32 @@ jobs:
             desktop/dist/latest.yml
           if-no-files-found: error
           retention-days: 30
+
+  # ── ⑥ 发布到更新私服(仅打 tag v* 时)──
+  # 构建产物在 GitHub 的 Linux 机上直接 scp 到更新服务器 zzyppz.cn/desktop/,
+  # 不经开发机中转(避免大文件跨太平洋来回)。用受限 deploy 账号(非 root、只写更新目录)。
+  publish:
+    needs: build-win
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: 台球运营管家-Windows安装包
+          path: dist
+
+      - name: scp 发布到更新私服
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          SSHOPT="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $HOME/.ssh/id_ed25519"
+          echo "产物:"; ls -la dist/
+          scp $SSHOPT dist/*.exe dist/latest.yml "deploy@${DEPLOY_HOST}:/var/www/desktop-updates/"
+          # 只保留最新一个 exe,老版本删掉省磁盘(latest.yml 已指向新版)
+          ssh $SSHOPT "deploy@${DEPLOY_HOST}" 'cd /var/www/desktop-updates && ls -t *.exe 2>/dev/null | tail -n +2 | xargs -r rm -f; echo "更新私服现状:"; ls -la'
+          echo "✅ 已发布到更新私服,用户下次启动即自动更新"
