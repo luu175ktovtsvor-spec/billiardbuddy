@@ -4,7 +4,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_db
-# 单窗口产品：只保留 AI agent 会话 + 其所需路由（鉴权/门店&BYOK/今日建议/配额/店脑/成员/客户端日志/画布）。
+# 单窗口产品：只保留 AI agent 会话 + 其所需路由（鉴权/门店&BYOK/今日建议/配额/店脑/客户端日志/画布/生成工作室/AI剪辑台）。
 # 旧的内容生成/海报/历史/报表/工作台/协作等页面路由已随单窗口化删除（agent 直接调用底层 service，不经这些 HTTP 路由）。
 from api.v1.auth import router as auth_router
 from api.v1.stores import router as stores_router

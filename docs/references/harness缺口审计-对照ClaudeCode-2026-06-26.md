@@ -1,6 +1,6 @@
 # Harness 缺口审计 · 对照 Claude Code(2026-06-26)
 
-> 📌 状态:✅现行 · 最后核对 2026-06-26
+> 📌 状态:✅现行 · 最后核对 2026-07-02
 
 > **目的**:系统排查我们的 Agent harness 哪些机制**没对齐 Claude Code**,防"一部分参照了、一部分没"。
 > **方法**:5 个子代理并行,逐簇对照**本地 cc-haha 参考实现**(社区复刻)读双边真码给 file:line 证据 → 再用 **Anthropic 官方文档**逐个校准(cc-haha≠官方真相,防它自己有缺漏/或有它自创官方没有的)。
@@ -31,7 +31,7 @@
 
 ## 🔴 真缺口(分级 · 已官方校准)
 
-> **进度(2026-06-27)**:✅ **A 重试退避 / K 流式看门狗 / C autocompact 真token+阈值** 已修并合并 main(提交 `85d322c`,见 `模块修复-遗留与注意事项.md` 的「harness 韧性」段)。⏳ 待做:**E 工具并行**、**B 长任务后台化+完成回灌**(=交接的 Task5)、**F 图片回灌(read_file/edit_image)**、**G 技能正经注入**;Tier3(H/I/J)靠后,**别建项不变**(context-editing/memory-tool/前缀缓存/CLI专属)。
+> **进度(2026-07-02)**:✅ **A 重试退避 / K 流式看门狗 / C autocompact 真token+阈值** 已修并合并 main(提交 `85d322c`,见 `模块修复-遗留与注意事项.md` 的「harness 韧性」段)。✅ **F 图片回灌(read_file/edit_image)** 已做(2026-06-27·`60107ed`,`local_tools.py:790-802`);✅ **G 技能正经注入** 已做(2026-06-27·`60107ed`,`skills.py:289-323`)。2026-07-02 又落地(见 `0a9b739`):运行中插话纠偏(steering,`loop.py:571` 起)、`run_command` 输出保头30尾70(`local_tools.py:667`)、生图回灌模型自检(`tools.py:452`/`image_tools.py:318`)。⏳ 待做:**E 工具并行**、**B 长任务后台化+完成回灌**(=交接的 Task5);Tier3(H/I/J)靠后,**别建项不变**(context-editing/memory-tool/前缀缓存/CLI专属)。
 
 ### Tier 1(高价值,建议优先)
 | # | 缺口 | 现状 vs 官方 | 来源 |

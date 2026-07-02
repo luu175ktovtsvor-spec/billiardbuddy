@@ -1,8 +1,8 @@
 # BYOK（门店自带大模型 Key）— 后端实现（可选高级档）
 
-> 📌 状态:✅现行 · 最后核对 2026-06-26
+> 📌 状态:✅现行 · 最后核对 2026-07-02
 
-> ⚠️ **现状口径（2026-06-24 owner 拍板，见 `docs/待改清单-真机验收与打包-2026-06-23.md` 专题D）**：产品已转向**全内置 owner 的 key、用户零配置不填 key**，"纯 BYOK·绝不内置平台 key"旧铁律作废。**BYOK 降为可选高级档**——老板可在高级设置里填自带 key 覆盖内置；未启用 BYOK 时回退到内置 key（而非吐 503）。下文加密 / 多供应商快切 / CC Switch 等实现仍有效，只是默认不走、作为可选档存在。
+> ⚠️ **现状口径（2026-06-24 owner 拍板，见 `docs/待改清单-真机验收与打包-2026-06-23.md` 专题D，该文件已 gitignore 为本地档）**：产品已转向**全内置 owner 的 key、用户零配置不填 key**，"纯 BYOK·绝不内置平台 key"旧铁律作废。**BYOK 降为可选高级档**——老板可在高级设置里填自带 key 覆盖内置；未启用 BYOK 时回退到内置 key（而非吐 503）。下文加密 / 多供应商快切 / CC Switch 等实现仍有效，只是默认不走、作为可选档存在。
 
 > 装在老板自己电脑上的桌面软件，默认 AI 文字/生图模型**全部走全内置 key（owner 提供）**；启用 BYOK 高级档时改由老板自带 key，**此时 token 成本与并发由门店自担**。
 > key 取用次序：门店 BYOK（若启用）优先 → 否则内置 key；仅当内置 key 也未注入时才友好报错（不静默落到无关平台 key，这条守卫作不变量保留）。门店数据全在老板机器上的本地 SQLite，不连云。
@@ -28,7 +28,7 @@
 | **AI 对话管家**（agent ReAct 循环）| ✅ for_store |
 | **协作任务**（orchestrator 规划/岗位/汇总 3 处）| ✅ for_store |
 | 店脑记忆学习（memory_service 后台旁路）| ✅ for_store（启用 BYOK 时同走门店 key；否则走内置 key） |
-| 海报生图 | ✅ for_store（门店自带生图 key，`byok_image_*`，`factory.get_image_config_for_store` 按门店路由；硅基流动 Kolors / 通义万相 / 即梦 等国内模型） |
+| 海报生图 | ✅ for_store（门店自带生图 key，`byok_image_*`，`factory.get_image_config_for_store` 按门店路由；硅基流动 Kolors / 通义万相 / 即梦 / 火山 Seedream 原生 provider(`c6bac0c`,按 base_url 路由,图生图 base64) 等国内模型） |
 
 ## 安全（3 路对抗 review 验证通过）
 

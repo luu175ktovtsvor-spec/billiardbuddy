@@ -1,6 +1,6 @@
 # 老 web 能力融回桌面 · 清单(2026-06-27)
 
-> 📌 状态:✅现行 · 最后核对 2026-06-27
+> 📌 状态:✅现行 · 最后核对 2026-07-02
 
 > **怎么来的**:桌面端是单窗口**重新开发**,老 web(早期检出 `~/Desktop/球房 ai 运营助手`,保留了被砍的全部页面/服务)做过很多事。两个只读子代理系统盘点了"老 web 有、桌面丢了/够不到、值得融回"的。下面带证据(file:line),**真要做某条前先回验该证据再动手**(子代理结论需复核)。
 > **框架**:老 web 大头能力已被桌面 agent 包成工具(诊断/海报/活动/约客/玩法/改写都在)。缺口只两类:① **装好了没接线**(原生/service 在,agent 没暴露/UI 丢了,老板够不到);② **整块删了**(能力真没了)。
@@ -12,7 +12,7 @@
 | 1 | **一键发布**(抖音/快手/视频号/小红书) | 🟡 `desktop/src/publish.js` + `desktop/publisher/*.py` + `main.js` 的 `publish:*` ipc + `preload.js` 的 `electron.publish.*` **全在**;但 `web/src` 零引用、`publish/page.tsx` 删了、agent 无发布工具 | 做 agent 工具 `publish_to_platform`(`requires_approval`/`force_confirm`,对外动作)+ 扫码登录/确认浮层(复用 confirm-dialog + preview-panel 事件通道)。老板"把这视频发抖音,标题用刚那条"→弹扫码→人确认才发 | ⭐⭐⭐⭐⭐ |
 | 2 | **视频剪辑**(本机 ffmpeg) | 🟡 `desktop/src/video.js`(转竖屏/裁剪/字幕/水印/变速 ffmpeg 命令全在)+ `video:*` ipc + `preload.electron.video.*` + `ffmpeg-static` **全在**;无工具/UI | 做工具 `edit_video`(op+参数);和发布是**一条流水线**(剪→发),一起搬 | ⭐⭐⭐⭐ |
 | 3 | **日报 + 一键 Excel** | 🟡/❌ `report_service/report_excel/report_schema` + `report_forms/` 5 张表 **整块删了**(只剩 `report_reader` 读 POS 报表做诊断·方向相反)。**且桌面 dashboard 仍弹"今天日报没写→去写"假提醒,点过去是空的** | 做工具 `write_daily_report`(老板说几个数→算环比/本月累计/排名→AI 写三段→复用 `edit_excel` 导 Excel);老 report_service 纯函数可直接捞。**或先把假提醒摘掉** | ⭐⭐⭐⭐ |
-| 4 | **效果好/收藏 反馈闭环** | 🟡 `behavior_service.py` **仍读 `effect_rating`、仍算 `good_prompt_keys`**(学习引擎在转),**但老板已无处点👍/⭐**(`web/src` 0 处 toggleFavorite,API 删了)→ 引擎空转、永远喂不到料 | 成品卡(preview-panel 已渲染)加轻量 👍/⭐ → 回写 `effect_rating`。投入极小,让"越用越懂你的店"真正活 | ⭐⭐⭐ |
+| 4 | **✅ 效果好/收藏 反馈闭环(已落地 `f238927`)** | ✅ 已落地：`chat-thread.tsx` `RateGoodButton` 成品卡点👍写 `effect_rating`，闭环不再空转（原判"无处点👍/⭐"已过时） | ~~成品卡(preview-panel 已渲染)加轻量 👍/⭐ → 回写 `effect_rating`~~ | ⭐⭐⭐ |
 | 5 | **前台/投诉 SOP** | 🟡 模板全在(`operation/frontdesk_sop.yaml`/`complaint_handling.yaml`/`opening_closing_sop.yaml`),但 `sop_service` 没搬、agent 无工具 | 做 `query_sop`(岗位+场景);老板"前台迎宾怎么说""客人投诉了怎么接"立刻有标准话术。轻量高频 | ⭐⭐⭐ |
 | 6 | **绩效考核模板** | 🟡 `performance_template.yaml` 在 + `scenario_role_map` 登记,但 `performance_service` 没搬、无工具 | 做 `make_performance_template`(岗位+周期),或保证 `find_scenario` 稳命中它 | ⭐⭐⭐ |
 | 7 | **好评差评回灌写作** | 🟡 `brand_voice_service`(点赞学风格/点踩进避免清单 → 喂写作 prompt)**没搬**;桌面 recall 只给老板看、不自动改写作 | 把 `get_brand_voice_context` 接进 `write_operation_content`/`write_batch` 的 prompt 拼装(和 #4 一条线) | ⭐⭐⭐ |
