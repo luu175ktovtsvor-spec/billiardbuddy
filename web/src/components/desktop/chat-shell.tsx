@@ -33,7 +33,6 @@ function groupByDate(iso: string | null): string {
 
 type PersistedWorkbenchState = {
   workingDir?: string | null;
-  resourceDirs?: string[];
   selectedFiles?: string[];
   knowledgePacks?: string[];
   outputStyle?: string;
@@ -103,7 +102,6 @@ export function DesktopChatShell({
   const [deepThinking, setDeepThinking] = useState(true); // F.2 深度思考默认开（mimo 默认就开）
   const [goal, setGoal] = useState<string>("");
   const [workingDir, setWorkingDir] = useState<string | null>(null);
-  const [resourceDirs, setResourceDirs] = useState<string[]>([]);
   const [downloadsPath, setDownloadsPath] = useState<string | null>(null);
   const e2eAnswerSeededRef = useRef(false);
   const recentFilesKey = "agent_recent_files";
@@ -127,9 +125,10 @@ export function DesktopChatShell({
     if (!id) return;
     try { wd ? localStorage.setItem(wdKey(id), wd) : localStorage.removeItem(wdKey(id)); } catch { /* 忽略 */ }
   };
+  // 桌面默认全盘访问，模型本来就能读任何目录，"资料文件夹"概念已去掉；这里只对已选文件去重。
   const contextFiles = useMemo(
-    () => Array.from(new Set([...resourceDirs, ...selectedFiles])),
-    [resourceDirs, selectedFiles],
+    () => Array.from(new Set(selectedFiles)),
+    [selectedFiles],
   );
   const chat = useAgentChat({
     permissionMode: mode,
@@ -186,7 +185,7 @@ export function DesktopChatShell({
       if (saved.permissionMode === "ask" || saved.permissionMode === "auto_files" || saved.permissionMode === "full" || saved.permissionMode === "plan") {
         setMode(saved.permissionMode);
       }
-      if (Array.isArray(saved.resourceDirs)) setResourceDirs(saved.resourceDirs.filter((p): p is string => typeof p === "string").slice(0, 8));
+      // 旧存档里的 resourceDirs（已废弃的"资料文件夹"）直接忽略，不再读取。
       if (Array.isArray(saved.selectedFiles)) setSelectedFiles(saved.selectedFiles.filter((p): p is string => typeof p === "string").slice(0, 20));
       if (Array.isArray(saved.knowledgePacks)) setKnowledgePacks(saved.knowledgePacks.filter((p): p is string => typeof p === "string"));
       if (typeof saved.outputStyle === "string") setOutputStyle(saved.outputStyle);
@@ -202,7 +201,6 @@ export function DesktopChatShell({
     if (!workbenchLoaded) return;
     const payload: PersistedWorkbenchState = {
       workingDir,
-      resourceDirs,
       selectedFiles,
       knowledgePacks,
       outputStyle,
@@ -212,7 +210,7 @@ export function DesktopChatShell({
       preview,
     };
     try { localStorage.setItem(workbenchStateKey, JSON.stringify(payload)); } catch { /* 忽略 */ }
-  }, [advancedMode, deepThinking, knowledgePacks, mode, outputStyle, preview, resourceDirs, selectedFiles, workbenchLoaded, workbenchStateKey, workingDir]);
+  }, [advancedMode, deepThinking, knowledgePacks, mode, outputStyle, preview, selectedFiles, workbenchLoaded, workbenchStateKey, workingDir]);
 
   useEffect(() => {
     let cancelled = false;
@@ -427,15 +425,16 @@ export function DesktopChatShell({
         return;
       }
       addSelectedFiles([r.path]);
+      // addSelectedFiles 是异步 setState，这一刻 state 还没刷新到位，显式带上"已选文件 + 这张截图"防止漏发。
       void chat.send(
         `我刚截了一张当前屏幕图，文件名是 ${r.path.split(/[\\/]/).pop()}。先根据这张截图告诉我你看到了什么；如果需要点按或输入，先说明要做什么并等我确认。`,
         undefined,
-        { selectedFiles: Array.from(new Set([...resourceDirs, r.path])) },
+        { selectedFiles: Array.from(new Set([...selectedFiles, r.path])) },
       );
     } catch {
       chat.pushAssistantMessage("当前屏幕没截下来。可以稍后再试一次，或直接粘贴截图给我看。");
     }
-  }, [chat, electron, addSelectedFiles, resourceDirs]);
+  }, [chat, electron, addSelectedFiles, selectedFiles]);
   const startResearch = useCallback(() => {
     if (chat.generating) return;
     setInput("帮我查资料：");
@@ -512,40 +511,28 @@ export function DesktopChatShell({
       addSelectedFiles(r.paths);
     } catch { /* 取消/失败：忽略 */ }
   }, [electron, downloadsPath, addSelectedFiles]);
-  const pickWorkingDir = async (mode: "new" | "existing" = "existing") => {
+  // 打开文件夹：一个入口既能选现有文件夹、也能在系统弹窗里当场新建文件夹（桌面主进程已支持 createDirectory）。
+  const pickWorkingDir = async () => {
     if (!electron?.files?.pick) return;
     try {
       const r = await electron.files.pick({
         directory: true,
-        createDirectory: mode === "new",
-        title: mode === "new" ? "新建或选择一个空白工作文件夹" : "选择要让 AI 工作的文件夹",
+        createDirectory: true,
+        title: "选择或新建一个文件夹，AI 默认在里面干活",
       });
       if (r.canceled || !r.paths?.length) return;
       updateWorkingDir(r.paths[0]);
     } catch { /* 取消/失败:忽略 */ }
   };
-  const pickResourceDir = async () => {
-    if (!electron?.files?.pick) return;
-    try {
-      const r = await electron.files.pick({
-        directory: true,
-        title: "添加资料文件夹",
-      });
-      if (r.canceled || !r.paths?.length) return;
-      const dir = r.paths[0];
-      setResourceDirs((prev) => Array.from(new Set([...prev, dir])).slice(0, 8));
-    } catch { /* 取消/失败:忽略 */ }
-  };
   const removeFile = useCallback((p: string) => {
     setSelectedFiles((prev) => prev.filter((x) => x !== p));
-  }, []);
-  const removeResourceDir = useCallback((p: string) => {
-    setResourceDirs((prev) => prev.filter((x) => x !== p));
   }, []);
 
   const onSend = () => {
     const t = input.trim();
-    if (!t || chat.generating) return;
+    // 方向盘：任务跑动中也放行——send 会自动走"插话纠偏"路径（排队下一轮注入）；
+    // 只有"在生成但没有可捎话的任务"（如审批工具执行中）才维持原来的不发。
+    if (!t || (chat.generating && !chat.canSteer)) return;
     // /goal <条件>：设/清目标（本地处理，不发给 agent；之后每轮带 goal 让它对照自检）。
     if (t === "/goal" || t.startsWith("/goal ")) {
       const cond = t.slice(5).trim();
@@ -737,7 +724,7 @@ export function DesktopChatShell({
           todaySuggestion={liveToday || todaySuggestion}
           todaySuggestionRecId={liveTodayRecId}
           onPick={pick}
-          onPickWorkingDir={electron?.files?.pick ? () => pickWorkingDir("existing") : undefined}
+          onPickWorkingDir={electron?.files?.pick ? () => pickWorkingDir() : undefined}
           workingDir={workingDir}
           onDailyDrafts={loadDailyDrafts}
           dailyDraftsBusy={dailyDraftsBusy}
@@ -797,24 +784,8 @@ export function DesktopChatShell({
             ) : (
               <span className="text-[#86868b] dark:text-[#6e7077]">还没选工作文件夹</span>
             )}
-            {resourceDirs.map((dir) => (
-              <span
-                key={dir}
-                className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md bg-[#007AFF]/10 px-2.5 py-1 text-[#007AFF]"
-                title={`${dir}（资料位置：AI 可参考这里的素材、报表或下载文件）`}
-              >
-                <span className="truncate">资料文件夹：{baseName(dir)}</span>
-                <button type="button" onClick={() => removeResourceDir(dir)} className="ml-1 font-bold leading-none hover:opacity-70" aria-label={`移除资料文件夹 ${baseName(dir)}`}>×</button>
-              </span>
-            ))}
-            <button type="button" onClick={() => pickWorkingDir("new")} className="rounded-md px-2 py-1 text-[#007AFF] transition hover:bg-[#007AFF]/10" title="新建或选择一个空白文件夹，让 AI 默认在里面干活">
-              新建空白文件夹
-            </button>
-            <button type="button" onClick={() => pickWorkingDir("existing")} className="rounded-md px-2 py-1 text-[#007AFF] transition hover:bg-[#007AFF]/10" title="打开现有文件夹作为这次工作区">
-              使用现有文件夹
-            </button>
-            <button type="button" onClick={pickResourceDir} className="rounded-md px-2 py-1 text-[#007AFF] transition hover:bg-[#007AFF]/10" title="把微信下载、素材图、财务报表等目录挂进当前工作台">
-              添加资料文件夹
+            <button type="button" onClick={() => pickWorkingDir()} className="rounded-md px-2 py-1 text-[#007AFF] transition hover:bg-[#007AFF]/10" title="选择或新建一个文件夹，AI 默认在里面干活">
+              打开文件夹
             </button>
             <button
               type="button"
@@ -923,7 +894,8 @@ export function DesktopChatShell({
         onAddFiles={electron?.files?.saveTemp ? addSelectedFiles : undefined}
         onRemoveFile={removeFile}
         onOpenFile={(p) => setPreview(/\.(xlsx|xlsm)$/i.test(p) ? { kind: "sheet", path: p } : { kind: "doc", path: p })}
-        disabled={chat.generating}
+        disabled={chat.generating && !chat.canSteer}
+        placeholder={chat.canSteer ? "任务进行中，可以随时补充或纠偏…" : undefined}
       />
     </DesktopShell>
     <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} onStoreNameChange={setLiveStoreName} />

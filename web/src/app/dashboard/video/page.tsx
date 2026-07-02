@@ -94,9 +94,15 @@ export default function VideoWorkspacePage() {
     setPaths(r.paths); setError(null); setProject(null); setSegs([]); setFinalUrl(null);
   }, [electron]);
 
+  // 当前正在跑的轮询请求：组件卸载时 abort，防卸载后 setState。
+  const pollAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => { pollAbortRef.current?.abort(); }, []);
+
   const runJob = useCallback(async (submit: () => Promise<{ job_id: string }>): Promise<MediaJobStatus> => {
     const { job_id } = await submit();
-    return api.pollMediaJob(job_id, (j) => setStage(j.stage || ""));
+    const controller = new AbortController();
+    pollAbortRef.current = controller;
+    return api.pollMediaJob(job_id, (j) => setStage(j.stage || ""), undefined, controller.signal);
   }, []);
 
   // 出方案 + 配文案 → 建预览段(客户端)
@@ -132,8 +138,11 @@ export default function VideoWorkspacePage() {
       }
       setPlayIdx(0);
     } catch (e) {
+      if (pollAbortRef.current?.signal.aborted) return; // 组件已卸载：别再 setState
       setError(getErrorMessage(e));
-    } finally { setBusy(false); setStage(""); }
+    } finally {
+      if (!pollAbortRef.current?.signal.aborted) { setBusy(false); setStage(""); }
+    }
   }, [paths, mode, ratio, targetDur, runJob, buildSegs]);
 
   // 对话改任何东西(快·同步)→ 用返回的 shots 重建预览(换段/删段/改序都可能变结构)
@@ -165,8 +174,11 @@ export default function VideoWorkspacePage() {
       if (!url) throw new Error("没拿到成片链接");
       setFinalUrl(url);
     } catch (e) {
+      if (pollAbortRef.current?.signal.aborted) return; // 组件已卸载：别再 setState
       setError(getErrorMessage(e));
-    } finally { setBusy(false); setStage(""); }
+    } finally {
+      if (!pollAbortRef.current?.signal.aborted) { setBusy(false); setStage(""); }
+    }
   }, [project, mode, runJob]);
 
   const curCap = segs.length ? segs[Math.min(playIdx, segs.length - 1)].caption : "";
