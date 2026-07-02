@@ -58,6 +58,9 @@ jobs:
           QF_MODEL_BASE_URL=${{ secrets.BUNDLED_MODEL_BASE_URL }}
           QF_GATEWAY_URL=${{ secrets.BUNDLED_VIDEO_BASE_URL }}
           QF_GATEWAY_TOKEN=${{ secrets.BUNDLED_ARK_API_KEY }}
+          DATA_SYNC_ENDPOINT=${{ secrets.BUNDLED_DATA_SYNC_ENDPOINT }}
+          DATA_SYNC_TOKEN=${{ secrets.BUNDLED_DATA_SYNC_TOKEN }}
+          DATA_SYNC_ENABLED=1
           "@ | Set-Content -Path bundled.env -Encoding utf8
 
       - name: 校验 bundled.env 已生成
