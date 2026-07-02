@@ -77,6 +77,27 @@ const MANAGE_FRONTEND = process.env.DESKTOP_MANAGE_FRONTEND !== "0" && !FORCED_A
 // 仓库根(dev 用 uv 跑 server/);desktop/src → desktop → repo
 const REPO_ROOT = path.join(__dirname, "..", "..");
 
+// ── Windows 系统版本探测(B3 · 标题栏现代化用) ──────────────────────────────
+// process.getSystemVersion() 在 Windows 上返回形如 "10.0.22631" 的三段号,第三段是 build 号。
+// 22621 = Windows 11 22H2(2022-09)。选它做阈值是因为 Electron 官方文档明确写 BrowserWindow
+// win.setBackgroundMaterial('mica') "只支持 Windows 11 22H2 及以上"(低于这个 build 调用要么
+// 无效要么行为不确定)。低于这个阈值时:① 不启用 Mica 材质(下面 WIN_MICA_ENABLED 直接判否);
+// ② titleBarOverlay 的颜色只给不透明纯色(不带 rgba 半透明/vibrancy 花活),规避旧版 Windows +
+// 较旧 Chromium 组合下 titleBarOverlay 已知的重绘/主题跟随问题(见 electron/electron#45958
+// "dark mode 不跟随 titleBarStyle"、#39959 "backgroundMaterial 直到 resize 才生效")。
+// ⚠️ titleBarOverlay 本身官方文档未标注最低 Windows 版本要求(Win10 同样能用、不受这个阈值限制),
+// 所以下面只用这个阈值门 Mica,不整体关闭 Windows 现代标题栏。
+function _winBuildNumber() {
+  if (process.platform !== "win32") return 0;
+  const parts = String(process.getSystemVersion() || "").split(".");
+  return parseInt(parts[2], 10) || 0;
+}
+const IS_WIN11_22H2_PLUS = process.platform === "win32" && _winBuildNumber() >= 22621;
+// Mica 材质(win.setBackgroundMaterial('mica')/构造期 backgroundMaterial:'mica')官方以外已知
+// issue 较多(拖拽/resize 才生效、多屏行为不一致等),做成默认关的加分项——只有显式设
+// QF_WIN_MICA=1 环境变量、且系统满足 Win11 22H2+ 才会真正启用;默认永远是纯色 titleBarOverlay。
+const WIN_MICA_ENABLED = process.env.QF_WIN_MICA === "1" && IS_WIN11_22H2_PLUS;
+
 let mainWindow = null;
 const windows = new Set();
 let backendReady = false;
@@ -84,6 +105,7 @@ let frontendUrl = null; // prod 本地前端就绪后的 URL
 
 function createWindow(opts = {}) {
   const isMac = process.platform === "darwin";
+  const isWin = process.platform === "win32";
   const win = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -95,6 +117,21 @@ function createWindow(opts = {}) {
     // macOS 原生质感:隐藏标题栏(保留红绿灯,内容延伸到顶),红绿灯位对齐桌面壳侧栏顶部 52px 区(见 web 的 .app-drag)。
     // 毛玻璃 vibrancy 暂不开——需配合侧栏背景透明 + 真机调，先用 CSS 近似(bg-sidebar/85 + backdrop-blur)。
     ...(isMac ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 16, y: 18 } } : {}),
+    // Windows 现代标题栏:走 VS Code 路线——titleBarStyle:'hidden' + titleBarOverlay,不用全自绘
+    // frameless(frame:false)。frameless 会丢 Win11 Snap Layouts(悬停最大化按钮弹出的四宫格分屏
+    // 菜单是系统直接绑定在原生最大化按钮上的,自绘窗口没有那颗按钮本体就没有这个菜单);
+    // titleBarOverlay 保留系统原生窗口控制按钮(最小化/最大化/关闭)本体、只是把它们"扣"进网页画布
+    // 右上角,Windows 依然认得到这是标准窗口,Snap Layouts/贴边分屏照常。
+    // overlay 颜色跟随当前深浅色主题、只用不透明纯色(原因见上方 IS_WIN11_22H2_PLUS 注释);
+    // height 40 与 macOS 侧的 40px 拖拽区(见下方 web 的 .app-drag)对齐,视觉上南北一致。
+    ...(isWin ? {
+      titleBarStyle: "hidden",
+      titleBarOverlay: nativeTheme.shouldUseDarkColors
+        ? { color: "#1c1d1f", symbolColor: "#e6e7e9", height: 40 }
+        : { color: "#ffffff", symbolColor: "#3a3a3c", height: 40 },
+      // Mica 材质默认关,见上方 WIN_MICA_ENABLED 注释;只有显式开关 + Win11 22H2+ 才加这个字段。
+      ...(WIN_MICA_ENABLED ? { backgroundMaterial: "mica" } : {}),
+    } : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true, // 默认即开,显式声明
@@ -464,6 +501,13 @@ app.whenReady().then(async () => {
     }
   }
   closeSplash();
+  // Windows 任务栏身份标识(App User Model ID)。不设它,Windows 会按"启动它的可执行文件路径"猜
+  // 一个身份——同一个 app 换个安装路径/开发跑法就被当成不同程序,表现为:任务栏图标不归并分组、
+  // "固定到任务栏"认不出重开的窗口、toast 通知来源对不上号(Windows 通知系统硬性要求 AUMID 才能
+  // 正确路由/分组)。必须和 package.json 里 build.appId 逐字一致,否则打包身份(安装器/卸载信息用
+  // appId)和运行时身份(这里设的 AUMID)对不上,一样会出现上述错乱。仅 Windows 生效,其它平台
+  // app.setAppUserModelId 是空操作,不用额外判断平台。
+  app.setAppUserModelId("cn.zzyppz.billiards.desktop");
   createWindow();
   // 口播模型(whisper 1.4G)不打进包,首启后台下载(不阻塞主界面:聊天/生图/基础视频立刻能用)。
   // 进度推给前端角标显示,下好前"做口播视频"按钮由前端灰掉。
