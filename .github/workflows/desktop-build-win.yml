@@ -96,13 +96,10 @@ jobs:
         working-directory: web
         run: pnpm install --frozen-lockfile
 
-      - name: 前端构建(standalone)
-        working-directory: web
-        env:
-          API_PROXY_URL: http://127.0.0.1:8077
-        run: pnpm build
-
-      - name: 组装前端到 desktop/resources
+      # 不在这里单独 pnpm build——build_frontend.js 内部已带正确 API_PROXY_URL 建一次;
+      # 若这里先建出 .next/standalone,脚本内第二次 build 的文件追踪会去 scandir 旧 standalone
+      # → Windows EPERM(node_modules/react 权限)。单次构建即可,也更快。
+      - name: 组装前端到 desktop/resources(内部含 standalone 构建)
         working-directory: desktop
         run: node scripts/build_frontend.js
 
