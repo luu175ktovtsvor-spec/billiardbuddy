@@ -28,6 +28,15 @@ export interface PublishPlatform {
   enabled: boolean;
 }
 
+export interface ModelStatus {
+  phase: "idle" | "downloading" | "ready" | "error";
+  percent: number;
+  downloadedBytes?: number;
+  totalBytes?: number;
+  file?: string;
+  error?: string;
+}
+
 export interface ElectronBridge {
   info(): Promise<DesktopInfo>;
   /** 新开一个独立工作台窗口（各自有自己的会话、工作目录、任务订阅）。 */
@@ -41,6 +50,12 @@ export interface ElectronBridge {
   onStudioArtifact?(cb: (p: { kind?: string; generationId?: string; url?: string }) => void): () => void;
   /** 截取当前屏幕并保存为临时 PNG，返回本机路径；前端作为附件发给 Agent。 */
   captureScreen?(): Promise<{ ok: boolean; path?: string; width?: number; height?: number; error?: string; needsPermission?: boolean }>;
+  /** 口播模型(whisper 1.4G)按需下载:首启后台下,下好前口播功能灰掉。 */
+  models?: {
+    status(): Promise<ModelStatus>;
+    retry(): Promise<{ ok: boolean }>;
+    onProgress(cb: (s: ModelStatus) => void): () => void;
+  };
   publish: {
     /** 发布功能是否可用(发布内核存在或本机有 python3);不可用时前端隐藏入口/给说人话提示。 */
     available(): Promise<{ ok: boolean; reason?: "no_worker" | "no_python" }>;

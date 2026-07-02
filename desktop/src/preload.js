@@ -26,6 +26,16 @@ contextBridge.exposeInMainWorld("electron", {
   },
   captureScreen: () => ipcRenderer.invoke("desktop:captureScreen"),
 
+  // ── 口播模型按需下载(whisper 1.4G,首启后台下;下好前口播功能灰掉) ──
+  models: {
+    // 拿当前态 {phase:idle|downloading|ready|error, percent, error?}
+    status: () => ipcRenderer.invoke("model:status"),
+    // 下载失败后手动重试
+    retry: () => ipcRenderer.invoke("model:retry"),
+    // 订阅进度推送(返回取消订阅函数)
+    onProgress: (cb) => on("model:progress", cb),
+  },
+
   // ── 发布(RPA · 半自动 · 扫码登录 · 人点确认才发) ──
   publish: {
     // 发布功能是否可用(发布内核存在或本机有 python3)。前端显入口前先问。

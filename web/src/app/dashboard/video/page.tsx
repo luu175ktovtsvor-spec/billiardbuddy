@@ -40,6 +40,17 @@ export default function VideoWorkspacePage() {
   const [segs, setSegs] = useState<Seg[]>([]);
   const [brand, setBrand] = useState("");
   const [mode, setMode] = useState<"ambient" | "speech">("ambient");
+  // 口播模型(whisper 1.4G)按需下载状态:下好前"口播"模式灰掉。桌面外(web)无 electron.models → 视作就绪不挡。
+  const [modelStatus, setModelStatus] = useState<import("@/types/electron").ModelStatus>({ phase: "ready", percent: 100 });
+  useEffect(() => {
+    const m = typeof window !== "undefined" ? window.electron?.models : undefined;
+    if (!m) return;
+    let alive = true;
+    m.status().then((s) => { if (alive) setModelStatus(s); }).catch(() => {});
+    const off = m.onProgress((s) => { if (alive) setModelStatus(s); });
+    return () => { alive = false; off?.(); };
+  }, []);
+  const speechReady = modelStatus.phase === "ready";
   const [ratio, setRatio] = useState<"9:16" | "1:1" | "16:9" | "original">("9:16");
   const [targetDur, setTargetDur] = useState(16);
   const [busy, setBusy] = useState(false);
@@ -248,14 +259,28 @@ export default function VideoWorkspacePage() {
           <div className="flex flex-col gap-2">
             <div className="text-[12px] font-semibold text-[#6e6e73] dark:text-[#9a9ca3]">② 模式</div>
             <div className="flex gap-1.5">
-              {([["ambient", "氛围片", "挑高光+特效+配乐"], ["speech", "口播", "转录+字幕+保原声"]] as const).map(([id, label, hint]) => (
-                <button key={id} onClick={() => { setMode(id); setProject(null); setSegs([]); setFinalUrl(null); }}
-                  title={hint}
-                  className={`flex-1 rounded-md px-2 py-1.5 text-[12px] transition ${mode === id ? "bg-[#10a37f] text-white" : "bg-black/[0.05] text-[#3a3a3c] hover:bg-black/[0.1] dark:bg-white/[0.06] dark:text-[#c7c7cc]"}`}>
-                  {label}
-                </button>
-              ))}
+              {([["ambient", "氛围片", "挑高光+特效+配乐"], ["speech", "口播", "转录+字幕+保原声"]] as const).map(([id, label, hint]) => {
+                const locked = id === "speech" && !speechReady;   // 口播模型没下好前锁住
+                return (
+                  <button key={id} disabled={locked}
+                    onClick={() => { if (locked) return; setMode(id); setProject(null); setSegs([]); setFinalUrl(null); }}
+                    title={locked ? "口播功能正在准备中（首次使用需下载语音模型）" : hint}
+                    className={`flex-1 rounded-md px-2 py-1.5 text-[12px] transition ${locked ? "cursor-not-allowed bg-black/[0.03] text-[#c7c7cc] dark:bg-white/[0.03] dark:text-[#5a5c63]" : mode === id ? "bg-[#10a37f] text-white" : "bg-black/[0.05] text-[#3a3a3c] hover:bg-black/[0.1] dark:bg-white/[0.06] dark:text-[#c7c7cc]"}`}>
+                    {label}{id === "speech" && !speechReady && (modelStatus.phase === "error" ? " ⚠" : " ⏳")}
+                  </button>
+                );
+              })}
             </div>
+            {/* 口播模型下载态提示(仅未就绪时显示) */}
+            {!speechReady && (
+              <div className="text-[11px] text-[#8e8e93]">
+                {modelStatus.phase === "downloading"
+                  ? `口播功能准备中：正在下载语音模型 ${modelStatus.percent || 0}%（约 1.4G，仅首次，下好自动可用）`
+                  : modelStatus.phase === "error"
+                    ? <>口播模型下载失败。<button onClick={() => window.electron?.models?.retry()} className="text-[#007AFF] hover:underline">重试</button></>
+                    : "口播功能准备中…"}
+              </div>
+            )}
           </div>
 
           {/* 参数 */}

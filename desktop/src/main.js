@@ -12,6 +12,7 @@ const path = require("path");
 const publish = require("./publish");
 const video = require("./video");
 const backend = require("./backend");
+const modelDownloader = require("./model-downloader");
 const frontend = require("./frontend");
 const updater = require("./updater");
 const crypto = require("crypto");
@@ -425,6 +426,9 @@ app.whenReady().then(async () => {
     }
   }
   createWindow();
+  // 口播模型(whisper 1.4G)不打进包,首启后台下载(不阻塞主界面:聊天/生图/基础视频立刻能用)。
+  // 进度推给前端角标显示,下好前"做口播视频"按钮由前端灰掉。
+  startModelDownload();
   // 自动更新:打包后后台静默检查(dev/mac 内部自跳过,不阻塞、不打扰)
   updater.init({
     app,
@@ -435,6 +439,46 @@ app.whenReady().then(async () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
+
+// ── 口播模型按需下载编排 ──────────────────────────────────────
+// _modelStatus 是全局单一真相:前端进 UI 时 invoke("model:status") 拿当前态,之后靠 "model:progress" 推送更新。
+let _modelStatus = { phase: "idle", percent: 0 }; // idle|downloading|ready|error
+let _modelDownloading = false;
+
+function _broadcastModel() {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) { try { w.webContents.send("model:progress", _modelStatus); } catch {} }
+  }
+}
+
+async function startModelDownload() {
+  if (_modelDownloading) return;
+  const userDataDir = app.getPath("userData");
+  // 已就绪(下过了)直接标 ready,不重下
+  try {
+    if (modelDownloader.isReadySync(userDataDir, null) && require("fs").existsSync(require("path").join(modelDownloader.modelDir(userDataDir), "model.bin"))) {
+      _modelStatus = { phase: "ready", percent: 100 }; _broadcastModel(); return;
+    }
+  } catch {}
+  _modelDownloading = true;
+  _modelStatus = { phase: "downloading", percent: 0 }; _broadcastModel();
+  try {
+    // 下载源(QF_MODEL_BASE_URL)在 bundled.env:主进程 process.env 里没有,从 backend 的加载器读出来传进去。
+    const bundled = backend.loadBundledEnv(REPO_ROOT) || {};
+    const r = await modelDownloader.ensureModel(userDataDir, {
+      baseUrl: bundled.QF_MODEL_BASE_URL || process.env.QF_MODEL_BASE_URL,
+      onProgress: (o) => { _modelStatus = { ..._modelStatus, ...o }; _broadcastModel(); },
+    });
+    _modelStatus = r.ok ? { phase: "ready", percent: 100 } : { phase: "error", percent: _modelStatus.percent || 0, error: r.error };
+  } catch (e) {
+    _modelStatus = { phase: "error", percent: _modelStatus.percent || 0, error: String(e && e.message || e) };
+  } finally {
+    _modelDownloading = false; _broadcastModel();
+  }
+}
+
+ipcMain.handle("model:status", () => _modelStatus);
+ipcMain.handle("model:retry", () => { startModelDownload(); return { ok: true }; });
 
 app.on("window-all-closed", () => {
   publish.dispose();
