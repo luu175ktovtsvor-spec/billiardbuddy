@@ -29,33 +29,10 @@ const OUT = path.join(__dirname, "..", "resources", "frontend", "app");
 function rmrf(p) { fs.rmSync(p, { recursive: true, force: true }); }
 function cp(src, dst, opts = {}) { fs.cpSync(src, dst, { recursive: true, ...opts }); }
 
-// 显式解析软链的深拷贝：遇软链就 realpath 到真目标、拷【实体】,产物里【零软链】。
-// 为什么不用 fs.cpSync({dereference:true})：Node 的 dereference 对 pnpm 的软链树有已知 bug——
-// 部分软链不被跟随、原样拷成【指向开发机绝对路径的软链】(换机/Windows 即断链崩、且 Windows
-// 重建软链会 EPERM/静默崩)。这里自己 realpath 逐个实体化,才真正自包含可移植。
-// visited 防 pnpm 潜在环形软链导致无限递归。
-function copyResolved(src, dst, visited = new Set()) {
-  // 必须用 lstatSync(不跟随软链):Windows 上对"指向目录的软链"做跟随式 statSync 会 EPERM。
-  // 遇软链就自己 readlink 解析目标路径、递归拷【真实体】,全程不触发跟随式 stat。
-  const lst = fs.lstatSync(src);
-  if (lst.isSymbolicLink()) {
-    let target = fs.readlinkSync(src);
-    if (!path.isAbsolute(target)) target = path.resolve(path.dirname(src), target);
-    if (visited.has(target)) return;   // 环形保护(A→B→A)
-    visited.add(target);
-    copyResolved(target, dst, visited); // 递归拷软链真目标 → 产物是实体、无软链
-    visited.delete(target);
-    return;
-  }
-  if (lst.isDirectory()) {
-    fs.mkdirSync(dst, { recursive: true });
-    for (const name of fs.readdirSync(src)) {
-      copyResolved(path.join(src, name), path.join(dst, name), visited);
-    }
-  } else {
-    fs.copyFileSync(src, dst);
-  }
-}
+// ⚠️ 别再改成"深拷贝拍扁软链"！(2026-07-02 踩过:copyResolved 把 node_modules/next 软链拍成实体目录,
+// 丢了它在 .pnpm 树里跟 styled-jsx 的兄弟关系 → next 内部 require styled-jsx 失败、前端起不来、界面空白。
+// pnpm 靠"node_modules/next 是软链→realpath 进 .pnpm/next@X/node_modules/→在那找同级 styled-jsx"解析。)
+// 正确做法见下 relinkInto:保留 .pnpm 软链结构不动,只把【绝对路径软链】改写成【相对软链】(可移植 + Windows 可读)。
 
 // pnpm 的 node_modules 软链指向【绝对路径】(开发机 .pnpm 仓库) → 原样打到别的机器就断、前端起不来。
 // 把 dir 内所有"指向 srcRoot 自己"的绝对软链改写成【相对软链】(指向 outRoot 内对应位置)→ 自包含、可移植。
@@ -103,13 +80,12 @@ function main() {
   rmrf(OUT);
   fs.mkdirSync(OUT, { recursive: true });
 
-  // 1) 整个 standalone（server.js + package.json + node_modules）拷进去。
-  //    dereference:true = 跟随软链把【真实文件】拷进来,产物里【没有任何软链】→
-  //    ① 彻底自包含可移植(不再有指向开发机的绝对软链,免 relink 改写);
-  //    ② Windows 打包不用创建 dir 软链(fs.cpSync 拷 pnpm .pnpm 软链树在 Windows 会
-  //       静默崩/EPERM/EINVAL——本地 Mac 不暴露、CI Windows 才炸)。
-  //    代价=体积变大(软链目标被实体化),owner 已定调"体积大无所谓、运行得好优先"。
-  copyResolved(STANDALONE, OUT);
+  // 1) 整个 standalone（server.js + package.json + node_modules）原样拷(含 .pnpm + 软链保结构),
+  //    再 relinkInto 把指向开发机/构建机的【绝对软链】改成【相对软链】。
+  //    保住 pnpm 兄弟依赖解析(next 靠 realpath 进 .pnpm 找 styled-jsx)+ 相对软链可移植可读。
+  //    cpSync 默认 dereference:false = 软链拷成软链、不拍扁(拍扁会丢兄弟关系,2026-07-02 踩过)。
+  cp(STANDALONE, OUT);
+  relinkInto(path.join(OUT, "node_modules"), STANDALONE, OUT);
 
   // 2) .next/static（standalone 不含，必须补）
   const staticSrc = path.join(WEB, ".next", "static");
