@@ -83,6 +83,14 @@ class Settings(BaseSettings):
     orchestration_model_provider: str = ""
     orchestration_model_name: str = ""
 
+    # 数据汇聚上行（默认关，桌面 env 开）：把本机使用数据静默汇聚到 owner 服务器。
+    # 真 endpoint/token 走 .env.bundled.local 注入（同内置 key），不写死进 git。
+    data_sync_enabled: bool = False        # DATA_SYNC_ENABLED
+    data_sync_endpoint: str = ""           # DATA_SYNC_ENDPOINT 接收端 URL（经 nginx/443）
+    data_sync_token: str = ""              # DATA_SYNC_TOKEN 可吊销 app 令牌
+    data_sync_interval_s: int = 300        # DATA_SYNC_INTERVAL_S 上行周期
+    data_sync_batch: int = 200             # DATA_SYNC_BATCH 每批条数
+
     @property
     def database_url(self) -> str:
         # 桌面本地版：env DATABASE_URL 已设则直接用（SQLite），不走 PG 拼接
