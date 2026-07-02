@@ -241,3 +241,13 @@ systemctl restart dataeye-receiver
 ```
 
 万一误删了 `.venv`/`dataeye.env`:重跑幂等部署脚本即可重建 venv + 重生成密钥(DB/schema 不受影响;但**密钥会换新**,记得同步更新已发出去的客户端令牌)。
+
+## ✅ 已上线记录(2026-07-03 · 大陆数据机 39.106.214.21 北京)
+
+数据接收端 + 看板已在大陆机全线部署并验证(数据全境内、不出境):
+- **域名/证书**:`data.zzyppz.cn`(阿里云 DNS A 记录 → 39.106.214.21)。Let's Encrypt 证书(acme.sh 签发,`/root/.acme.sh/` 每天 cron 自动续期 + reload nginx,**无需人工**)。
+- **收货门(数据进)**:`https://data.zzyppz.cn/ingest` → nginx → `127.0.0.1:9100`(dataeye-receiver systemd,MemoryMax 256M)。已从墙外实测端到端入真 PG。
+- **看板(人看)**:`https://data.zzyppz.cn/board` → nginx(**Basic Auth**,htpasswd `/etc/nginx/.htpasswd-board`,SHA-512,**权限须 644 否则 www-data 读不了→500**)→ `127.0.0.1:9200`(dataeye-board systemd,MemoryMax 200M,只读 FastAPI)。登录凭据在服务器 `/opt/dataeye/board.auth`(chmod600)。
+- **nginx**:`/etc/nginx/sites-available/dataeye-ingest`(443 块含 /ingest + /health + /board;80 块跳 https + acme 挑战)。改前备份 `/root/nginx-backup-*.tgz`。
+- **客户端**:`server/.env.bundled.local` 已填 `DATA_SYNC_ENDPOINT=https://data.zzyppz.cn/ingest` + `DATA_SYNC_TOKEN`(=服务器 `/opt/dataeye/dataeye.env` 的 INGEST_TOKENS)。**剩:重打包 dmg/nsis + 用户更新,数据即开始流。**
+- 三服务与网关共存:qfgw(命根子)/receiver/board 均 active + 开机自启,各自 MemoryMax 封顶,互不挤占(整机 4G,空 ~2.7G)。
