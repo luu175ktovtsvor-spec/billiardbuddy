@@ -246,7 +246,7 @@ export default function StudioPage() {
   return (
     <div className="flex h-screen w-full flex-col bg-white text-[#1d1d1f] antialiased dark:bg-[#0e0f11] dark:text-[#e6e7e9]">
       {/* 顶部可拖拽条(macOS 红绿灯区) */}
-      <div className="app-drag flex h-[44px] shrink-0 items-center gap-2 border-b border-black/[0.06] px-20 dark:border-white/[0.06]">
+      <div className="app-drag app-titlebar-safe-right flex h-[44px] shrink-0 items-center gap-2 border-b border-black/[0.06] px-20 dark:border-white/[0.06]">
         <span className="flex h-6 w-6 items-center justify-center rounded-md bg-[#10a37f]/15 text-[#10a37f]"><ImageIcon className="h-3.5 w-3.5" /></span>
         <span className="text-[13px] font-semibold tracking-tight">生成工作室</span>
       </div>

@@ -440,6 +440,12 @@ app.whenReady().then(async () => {
     }
     return;
   }
+  // Windows 任务栏身份标识(AUMID)必须在【任何窗口创建之前】设好——含首启闪屏窗。
+  // SetCurrentProcessExplicitAppUserModelID 只对其后创建的窗口生效;放晚了会漏掉更早创建、
+  // 且首启可能挂一两分钟的 splash,令它挂错任务栏身份/默认图标。放这里(两个早退分支之后、
+  // 建任何窗口之前):worker 模式已 return 不会执行到、主流程则先于 splash 生效。必须与
+  // package.json build.appId 逐字一致(否则打包身份 vs 运行时身份对不上,任务栏分组/通知照样错乱)。仅 Windows 生效。
+  app.setAppUserModelId("cn.zzyppz.billiards.desktop");
   // 首启进度窗:第一次打开要在用户机上解密知识库+建库,可能要一两分钟。
   // 没有它,用户只看到"点了没反应"→反复双击/以为坏了(1.0.0 真机事故)。仅装机包显示,dev 不弹。
   let splash = null;
@@ -501,13 +507,6 @@ app.whenReady().then(async () => {
     }
   }
   closeSplash();
-  // Windows 任务栏身份标识(App User Model ID)。不设它,Windows 会按"启动它的可执行文件路径"猜
-  // 一个身份——同一个 app 换个安装路径/开发跑法就被当成不同程序,表现为:任务栏图标不归并分组、
-  // "固定到任务栏"认不出重开的窗口、toast 通知来源对不上号(Windows 通知系统硬性要求 AUMID 才能
-  // 正确路由/分组)。必须和 package.json 里 build.appId 逐字一致,否则打包身份(安装器/卸载信息用
-  // appId)和运行时身份(这里设的 AUMID)对不上,一样会出现上述错乱。仅 Windows 生效,其它平台
-  // app.setAppUserModelId 是空操作,不用额外判断平台。
-  app.setAppUserModelId("cn.zzyppz.billiards.desktop");
   createWindow();
   // 口播模型(whisper 1.4G)不打进包,首启后台下载(不阻塞主界面:聊天/生图/基础视频立刻能用)。
   // 进度推给前端角标显示,下好前"做口播视频"按钮由前端灰掉。
