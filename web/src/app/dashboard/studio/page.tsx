@@ -62,15 +62,20 @@ export default function StudioPage() {
   // 用 ref 跟踪当前图,runJob 里读它把上一张推进历史——别在 setState 更新函数里塞 setState 副作用(StrictMode 会双跑)。
   const currentRef = useRef<Shot | null>(null);
   useEffect(() => { currentRef.current = current; }, [current]);
+  // 当前正在跑的轮询请求：组件卸载时 abort，防卸载后 setState。
+  const pollAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => { pollAbortRef.current?.abort(); }, []);
 
   const onTick = (j: MediaJobStatus) =>
     setStage(j.stage || (j.status === "queued" ? "排队中…" : "正在出图…"));
 
   const runJob = useCallback(async (start: () => Promise<{ job_id: string }>, keepRatio: string, mode: "generate" | "edit" = "edit") => {
     setBusy(true); setError(null); setStage("正在出图…");
+    const controller = new AbortController();
+    pollAbortRef.current = controller;
     try {
       const { job_id } = await start();
-      const done = await api.pollMediaJob(job_id, onTick);
+      const done = await api.pollMediaJob(job_id, onTick, undefined, controller.signal);
       const urls = (done.result?.urls as string[] | undefined) || [];
       const ids = (done.result?.generation_ids as string[] | undefined) || [];
       const r = (done.result?.ratio as string | undefined) || keepRatio;
@@ -89,9 +94,10 @@ export default function StudioPage() {
       setCurrent(shots[0]);
       window.electron?.notifyStudioArtifact?.({ kind: "poster", generationId: shots[0].generationId, url: shots[0].url });
     } catch (e) {
+      if (controller.signal.aborted) return; // 组件已卸载：别再 setState
       setError(e instanceof Error ? e.message : "生成失败，请稍后再试。");
     } finally {
-      setBusy(false); setStage("");
+      if (!controller.signal.aborted) { setBusy(false); setStage(""); }
     }
   }, []);
 

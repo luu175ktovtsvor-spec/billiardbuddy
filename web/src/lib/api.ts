@@ -27,6 +27,8 @@ export interface AgentStreamHandlers {
   // SH-8：reason = 结构化审批理由 {what 要做什么 / why 为什么要你确认 / impact 影响}，让审批卡说清楚再让老板点头。
   onApprovalRequest?: (tool: string, args: Record<string, unknown>, id?: string, token?: string, preview?: string, reason?: ApprovalReason) => void;
   onAskQuestion?: (q: { question: string; options: { label: string; description?: string }[]; multi?: boolean; id?: string }) => void;
+  // 方向盘：跑动中捎的话已注入下一轮（content=插话原文）。本窗口发的已乐观上屏、据此去重；刷新重放据此把插话补回对话流。
+  onSteering?: (content: string) => void;
   onFinal?: (content: string) => void;
   onDone?: (info: { turns: number; stopped_reason: string; conversation_id?: string; generation_id?: string; task_id?: string; offset?: number; memory_refs?: string[] }) => void;
   onError?: (error: string) => void;
@@ -372,6 +374,12 @@ class ApiClient {
     return this.request("POST", `/api/v1/agent/tasks/${encodeURIComponent(taskId)}/cancel`, {});
   }
 
+  /** 方向盘：任务跑动中给它捎话（补充/纠偏）。新话排进任务的插话队列，AI 下一轮注入、当场改道；
+   * 不新起任务、不打断当前正在跑的工具。任务已结束 409 / 队列满 429（错误文案由后端说人话）。 */
+  async sendTaskMessage(taskId: string, message: string): Promise<{ ok: boolean; task_id: string; queued: number }> {
+    return this.request("POST", `/api/v1/agent/tasks/${encodeURIComponent(taskId)}/message`, { message });
+  }
+
   private async _consumeAgentSSEStream(res: Response, handlers: AgentStreamHandlers): Promise<void> {
     const reader = res.body?.getReader();
     if (!reader) {
@@ -400,6 +408,7 @@ class ApiClient {
               case "tool_progress": handlers.onToolProgress?.(ev.tool, ev.id, ev.chunk || "", ev.stream); break;
               case "approval_request": handlers.onApprovalRequest?.(ev.tool, ev.args || {}, ev.id, ev.token, ev.preview, ev.reason); break;
               case "ask_question": handlers.onAskQuestion?.({ question: ev.question || "", options: ev.options || [], multi: ev.multi, id: ev.id }); break;
+              case "steering": handlers.onSteering?.(ev.content || ""); break;
               case "final": handlers.onFinal?.(ev.content || ""); break;
               case "done": handlers.onDone?.({ turns: ev.turns, stopped_reason: ev.stopped_reason, conversation_id: ev.conversation_id, generation_id: ev.generation_id, task_id: ev.task_id, offset: ev.offset, memory_refs: Array.isArray(ev.memory_refs) ? ev.memory_refs : undefined }); return;
               case "error": handlers.onError?.(ev.error || "生成出错，请重试"); break;
@@ -526,8 +535,8 @@ class ApiClient {
   }
 
   // 阶段1 生成工作室：查异步任务进度/结果（轮询）。status: queued/running/done/error；progress 0-100
-  getMediaJob(id: string) {
-    return this.request<MediaJobStatus>("GET", `/api/v1/agent/media-jobs/${encodeURIComponent(id)}`);
+  getMediaJob(id: string, signal?: AbortSignal) {
+    return this.request<MediaJobStatus>("GET", `/api/v1/agent/media-jobs/${encodeURIComponent(id)}`, undefined, undefined, undefined, signal);
   }
 
   // 阶段2 生成工作室：文生图（绕 LLM 直连，异步出图，返回 job_id 后轮询 getMediaJob）
@@ -639,17 +648,37 @@ class ApiClient {
       "POST", `/api/v1/video-edit/projects/${encodeURIComponent(project)}/render_v2`, { output_name, conversation_id });
   }
 
-  // 轮询一个 media job 到结束（done/error），onTick 给进度回调。失败/超时抛错。
-  async pollMediaJob(id: string, onTick?: (j: MediaJobStatus) => void, timeoutMs = 1_200_000): Promise<MediaJobStatus> {
-    const start = Date.now();
-    // 出图慢（gpt-image-2 单张可能 5-10 分），轮询间隔 2s，整体上限默认 20 分钟
+  // 轮询一个 media job 到结束（done/error），onTick 给进度回调。
+  // 只要还能拿到 status（running/queued）就不做客户端超时——任务多久算超时是服务端自己的事（它跑久了会把 status 置 error）；
+  // noResponseTimeoutMs 只兜底"长时间连状态响应都拿不到"（网络断/后端挂了）的极端情况，避免用户对着转圈干等。
+  // signal：可选，传入后可在组件卸载等场景中途取消轮询（AbortError 会原样往外抛，调用方按需吞掉）。
+  async pollMediaJob(
+    id: string,
+    onTick?: (j: MediaJobStatus) => void,
+    noResponseTimeoutMs = 1_200_000,
+    signal?: AbortSignal,
+  ): Promise<MediaJobStatus> {
+    const wait = (ms: number) => new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) { reject(new DOMException("已取消", "AbortError")); return; }
+      const timer = setTimeout(resolve, ms);
+      signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new DOMException("已取消", "AbortError")); }, { once: true });
+    });
+    let lastOkAt = Date.now();
     for (;;) {
-      const j = await this.getMediaJob(id);
+      let j: MediaJobStatus;
+      try {
+        j = await this.getMediaJob(id, signal);
+      } catch (e) {
+        if (e instanceof DOMException && e.name === "AbortError") throw e;
+        if (Date.now() - lastOkAt > noResponseTimeoutMs) throw e;
+        await wait(2000);
+        continue;
+      }
+      lastOkAt = Date.now();
       onTick?.(j);
       if (j.status === "done") return j;
       if (j.status === "error") throw new Error(j.error || "生成失败");
-      if (Date.now() - start > timeoutMs) throw new Error("生成超时了，稍后到「最近作品」看看，或重试");
-      await new Promise((r) => setTimeout(r, 2000));
+      await wait(2000);
     }
   }
 

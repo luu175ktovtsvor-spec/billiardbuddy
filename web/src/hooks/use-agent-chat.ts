@@ -104,6 +104,11 @@ export function useAgentChat(opts: AgentChatOptions) {
   const [executingIdx, setExecutingIdx] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const activeTaskRef = useRef<string | null>(null);
+  // 方向盘：活跃任务 id 的**响应式**镜像（ref 变了不触发渲染，输入框"运行中可插话"的启停要靠 state）。
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  // 本窗口刚发出的插话（乐观上屏了）：steering 事件回流时据此去重——匹配到就跳过（屏上已有那条），
+  // 匹配不到（页面刷新后重放）才把插话补回对话流。
+  const pendingSteerEchoRef = useRef<string[]>([]);
   const lastOffsetRef = useRef(-1);
   const lastUserMsgRef = useRef<string | null>(null);
   const stopNoticeTaskRef = useRef<string | null>(null);
@@ -115,6 +120,12 @@ export function useAgentChat(opts: AgentChatOptions) {
   // 让异步回调里始终读到最新的 opts（权限/选定文件），而不是闭包里的旧值
   const optsRef = useRef(opts);
   optsRef.current = opts;
+
+  // ref + state 同步更新（ref 给异步回调读最新值，state 给 UI 响应）。
+  const setActiveTask = useCallback((id: string | null) => {
+    activeTaskRef.current = id;
+    setActiveTaskId(id);
+  }, []);
 
   const pushStopNotice = useCallback((taskId: string | null) => {
     if (taskId && stopNoticeTaskRef.current === taskId) return;
@@ -140,7 +151,7 @@ export function useAgentChat(opts: AgentChatOptions) {
   const subscribeToTask = useCallback(async (taskId: string, userMessage: string, after = -1, controller?: AbortController, recovered = false) => {
     const ctrl = controller || new AbortController();
     abortRef.current = ctrl;
-    activeTaskRef.current = taskId;
+    setActiveTask(taskId);
     lastOffsetRef.current = after;
     setGenerating(true);
 
@@ -194,6 +205,14 @@ export function useAgentChat(opts: AgentChatOptions) {
           onAskQuestion: (q) => {
             question = { question: q.question, options: q.options, multi: q.multi };
           },
+          // 方向盘：后端确认插话已注入。本窗口刚发的（乐观上屏过）→ 去重跳过；
+          // 刷新恢复重放时本地没这条 → 补回对话流，插话不因刷新而消失。
+          onSteering: (content) => {
+            const pend = pendingSteerEchoRef.current;
+            const i = pend.indexOf(content);
+            if (i >= 0) { pend.splice(i, 1); return; }
+            setMessages((prev) => [...prev, { role: "user", content }]);
+          },
           onFinal: (content) => {
             finalText = content;
           },
@@ -209,7 +228,7 @@ export function useAgentChat(opts: AgentChatOptions) {
               ]);
             }
             if (info?.conversation_id) setConversationId(info.conversation_id);
-            activeTaskRef.current = null;
+            setActiveTask(null);
             clearActiveTaskSnapshot();
             setDraft("");
             setReasoningDraft("");
@@ -233,7 +252,7 @@ export function useAgentChat(opts: AgentChatOptions) {
               next.push({ role: "assistant", content: `⚠️ ${humanizeErrorText(m)}`, error: true });
               return next;
             });
-            activeTaskRef.current = null;
+            setActiveTask(null);
             clearActiveTaskSnapshot();
             setDraft("");
             setReasoningDraft("");
@@ -246,7 +265,7 @@ export function useAgentChat(opts: AgentChatOptions) {
     } catch (e) {
       if (!ctrl.signal.aborted) {
         setMessages((prev) => [...prev, { role: "assistant", content: `⚠️ ${getErrorMessage(e)}`, error: true }]);
-        activeTaskRef.current = null;
+        setActiveTask(null);
         clearActiveTaskSnapshot();
         setDraft("");
         setReasoningDraft("");
@@ -255,7 +274,7 @@ export function useAgentChat(opts: AgentChatOptions) {
     } finally {
       if (!ctrl.signal.aborted) setGenerating(false);
     }
-  }, [clearActiveTaskSnapshot, pushStopNotice, saveActiveTaskSnapshot]);
+  }, [clearActiveTaskSnapshot, pushStopNotice, saveActiveTaskSnapshot, setActiveTask]);
 
   useEffect(() => {
     let raw: string | null = null;
@@ -282,68 +301,89 @@ export function useAgentChat(opts: AgentChatOptions) {
     }
   }, [clearActiveTaskSnapshot, subscribeToTask]);
 
-  const send = useCallback(async (text: string, sourceRecId?: string, overrides?: { selectedFiles?: string[] }) => {
-    const msg = text.trim();
-    if (!msg || generating) return;
+  // 真正发起请求的内部路径：history 由调用方显式算好传入，不在这里再去读 messagesRef——
+  // 这样 retry() 可以传自己裁剪过的 history，不会因为 messagesRef 还没跟上刚发出的 setMessages 而带出脏数据。
+  const sendWithHistory = useCallback(async (
+    message: string,
+    history: { role: string; content: string }[],
+    sourceRecId?: string,
+    overrides?: { selectedFiles?: string[] },
+  ) => {
     const o = optsRef.current;
     // 采纳信号只在推荐触发的首轮、且是新会话时带上（同会话续接不重复计采纳）。
     const recId = sourceRecId && !conversationId ? sourceRecId : undefined;
+    setDraft("");
+    setReasoningDraft("");
+    setLiveSteps([]);
+    setGenerating(true);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setActiveTask(null);
+    stopNoticeTaskRef.current = null;
+    lastOffsetRef.current = -1;
 
-    // 用 messagesRef 读最新状态（retry 场景下 setMessages 已排队但 messages 闭包可能还是旧值）。
-    // 副作用 runSend 绝不放进 setMessages 更新函数里——否则 React StrictMode 开发态会把 updater 跑两次→同一条消息双发请求。
+    try {
+      const payload = {
+        message,
+        history,
+        conversation_id: conversationId,
+        selected_files: overrides?.selectedFiles?.length
+          ? overrides.selectedFiles
+          : o.selectedFiles?.length ? o.selectedFiles : undefined,
+        permission_mode: o.permissionMode,
+        full_disk_access: o.fullDisk ? true : undefined,
+        knowledge_packs: o.knowledgePacks?.length ? o.knowledgePacks : undefined,
+        output_style: o.outputStyle || undefined,
+        goal: o.goal || undefined,
+        deep_thinking: o.deepThinking,
+        source_rec_id: recId,
+        working_dir: o.workingDir || undefined,
+      };
+      const task = await api.startAgentTask(payload);
+      saveActiveTaskSnapshot({ taskId: task.task_id, userMessage: message, offset: -1, conversationId });
+      await subscribeToTask(task.task_id, message, lastOffsetRef.current, controller);
+    } catch (e) {
+      if (!controller.signal.aborted) {
+        setMessages((prev) => [...prev, { role: "assistant", content: `⚠️ ${getErrorMessage(e)}`, error: true }]);
+        setActiveTask(null);
+        clearActiveTaskSnapshot();
+        setDraft("");
+        setReasoningDraft("");
+        setLiveSteps([]);
+      }
+    } finally {
+      if (!controller.signal.aborted) setGenerating(false);
+    }
+  }, [conversationId, clearActiveTaskSnapshot, saveActiveTaskSnapshot, subscribeToTask, setActiveTask]);
+
+  const send = useCallback(async (text: string, sourceRecId?: string, overrides?: { selectedFiles?: string[] }) => {
+    const msg = text.trim();
+    if (!msg) return;
+    // 方向盘：任务跑动中再打字 = 插话纠偏（不是新任务）。乐观上屏 + 排进该任务的插话队列，
+    // AI 下一轮注入、当场改道；任务没在跑时行为不变（走下面的新任务路径）。
+    if (generating) {
+      const taskId = activeTaskRef.current;
+      if (!taskId) return; // 在跑但没有可捎话的任务（如正在执行审批工具）→ 维持原来的"运行中不发"
+      setMessages((prev) => [...prev, { role: "user", content: msg }]);
+      pendingSteerEchoRef.current.push(msg);
+      api.sendTaskMessage(taskId, msg).catch((e) => {
+        // 没送进去（任务刚结束/队列满）：撤掉去重记录并提示；话还留在屏上，等任务停了直接重发即可。
+        const i = pendingSteerEchoRef.current.indexOf(msg);
+        if (i >= 0) pendingSteerEchoRef.current.splice(i, 1);
+        setMessages((prev) => [...prev, { role: "assistant", content: `⚠️ ${getErrorMessage(e)}`, error: true }]);
+      });
+      return;
+    }
+    // 用 messagesRef 读最新状态（这里读没问题：本次调用还没触发任何 setMessages，ref 与当前渲染的 messages 一致）。
     lastUserMsgRef.current = msg;
     const history = messagesRef.current
       .filter((m) => !m.error)
       .slice(-12)
       .map((m) => ({ role: m.role, content: m.content.slice(0, 2000) }));
+    // 副作用 sendWithHistory 绝不放进 setMessages 更新函数里——否则 React StrictMode 开发态会把 updater 跑两次→同一条消息双发请求。
     setMessages((prev) => [...prev, { role: "user", content: msg }]);
-    void runSend(msg, history);
-
-    async function runSend(message: string, history: { role: string; content: string }[]) {
-      setDraft("");
-      setReasoningDraft("");
-      setLiveSteps([]);
-      setGenerating(true);
-      const controller = new AbortController();
-      abortRef.current = controller;
-      activeTaskRef.current = null;
-      stopNoticeTaskRef.current = null;
-      lastOffsetRef.current = -1;
-
-      try {
-        const payload = {
-          message,
-          history,
-          conversation_id: conversationId,
-          selected_files: overrides?.selectedFiles?.length
-            ? overrides.selectedFiles
-            : o.selectedFiles?.length ? o.selectedFiles : undefined,
-          permission_mode: o.permissionMode,
-          full_disk_access: o.fullDisk ? true : undefined,
-          knowledge_packs: o.knowledgePacks?.length ? o.knowledgePacks : undefined,
-          output_style: o.outputStyle || undefined,
-          goal: o.goal || undefined,
-          deep_thinking: o.deepThinking,
-          source_rec_id: recId,
-          working_dir: o.workingDir || undefined,
-        };
-        const task = await api.startAgentTask(payload);
-        saveActiveTaskSnapshot({ taskId: task.task_id, userMessage: message, offset: -1, conversationId });
-        await subscribeToTask(task.task_id, message, lastOffsetRef.current, controller);
-      } catch (e) {
-        if (!controller.signal.aborted) {
-          setMessages((prev) => [...prev, { role: "assistant", content: `⚠️ ${getErrorMessage(e)}`, error: true }]);
-          activeTaskRef.current = null;
-          clearActiveTaskSnapshot();
-          setDraft("");
-          setReasoningDraft("");
-          setLiveSteps([]);
-        }
-      } finally {
-        if (!controller.signal.aborted) setGenerating(false);
-      }
-    }
-  }, [generating, conversationId]);
+    void sendWithHistory(msg, history, sourceRecId, overrides);
+  }, [generating, sendWithHistory]);
 
   const confirmApproval = useCallback(async (idx: number, ap: ApprovalState) => {
     const o = optsRef.current;
@@ -405,20 +445,23 @@ export function useAgentChat(opts: AgentChatOptions) {
     setDraft("");
     setReasoningDraft("");
     setLiveSteps([]);
+    pendingSteerEchoRef.current = [];
   }, [generating]);
 
   const stop = useCallback(() => {
     const taskId = activeTaskRef.current;
     if (taskId) api.cancelAgentTask(taskId).catch(() => {});
-    activeTaskRef.current = null;
+    setActiveTask(null);
     clearActiveTaskSnapshot();
     abortRef.current?.abort();
     setGenerating(false);
     setDraft("");
     setReasoningDraft("");
     setLiveSteps([]);
+    // 任务被掐掉后 steering 回声事件永远不会来了，清掉待回声队列防滞留
+    pendingSteerEchoRef.current = [];
     pushStopNotice(taskId);
-  }, [clearActiveTaskSnapshot, pushStopNotice]);
+  }, [clearActiveTaskSnapshot, pushStopNotice, setActiveTask]);
 
   // 点开历史会话：加载其消息 + 设 conversationId（后续可在此基础上续接）
   const loadConversation = useCallback((id: string, msgs: ChatMessage[]) => {
@@ -427,7 +470,7 @@ export function useAgentChat(opts: AgentChatOptions) {
       return false;
     }
     abortRef.current?.abort();
-    activeTaskRef.current = null;
+    setActiveTask(null);
     clearActiveTaskSnapshot();
     setMessages(msgs);
     setConversationId(id);
@@ -435,8 +478,9 @@ export function useAgentChat(opts: AgentChatOptions) {
     setReasoningDraft("");
     setLiveSteps([]);
     setGenerating(false);
+    pendingSteerEchoRef.current = [];
     return true;
-  }, [clearActiveTaskSnapshot, generating]);
+  }, [clearActiveTaskSnapshot, generating, setActiveTask]);
 
   // 往会话里塞一条本地 assistant 消息（如 /help 的说明），不走后端。
   const pushAssistantMessage = useCallback((content: string) => {
@@ -446,18 +490,26 @@ export function useAgentChat(opts: AgentChatOptions) {
   const retry = useCallback(() => {
     const msg = lastUserMsgRef.current;
     if (!msg || generating) return;
-    setMessages((prev) => {
-      const trimmed = [...prev];
-      while (trimmed.length && trimmed[trimmed.length - 1].role === "assistant") trimmed.pop();
-      if (trimmed.length && trimmed[trimmed.length - 1].role === "user") trimmed.pop();
-      return trimmed;
-    });
-    // send uses messagesRef internally for history, no stale closure issue
-    void send(msg);
-  }, [generating, send]);
+    // 在这里同步读 messagesRef.current（还没调用任何 setMessages，值是新鲜的），自己算好裁剪后的 history 显式传下去——
+    // 不能指望 sendWithHistory 内部再读 messagesRef：state 更新是异步的，此刻发出 setMessages 后 ref 要等下一次渲染才会跟上，
+    // 届时读到的还是裁剪前的旧数组，history 末尾会带着刚裁掉的那条 user 消息，和重发的这条重复。
+    const trimmed = [...messagesRef.current];
+    while (trimmed.length && trimmed[trimmed.length - 1].role === "assistant") trimmed.pop();
+    if (trimmed.length && trimmed[trimmed.length - 1].role === "user") trimmed.pop();
+    const history = trimmed
+      .filter((m) => !m.error)
+      .slice(-12)
+      .map((m) => ({ role: m.role, content: m.content.slice(0, 2000) }));
+    setMessages([...trimmed, { role: "user", content: msg }]);
+    void sendWithHistory(msg, history);
+  }, [generating, sendWithHistory]);
+
+  // 方向盘：任务跑动中可插话（有活跃后台任务才行；审批执行等非任务态的 generating 不算）。
+  // 输入框据此"运行中不再禁用"，send 自动走插话路径。
+  const canSteer = generating && !!activeTaskId;
 
   return {
-    messages, draft, reasoningDraft, liveSteps, generating, conversationId, executingIdx,
+    messages, draft, reasoningDraft, liveSteps, generating, conversationId, executingIdx, canSteer,
     send, confirmApproval, cancelApproval, startNewChat, stop, loadConversation,
     pushAssistantMessage, retry,
   };
