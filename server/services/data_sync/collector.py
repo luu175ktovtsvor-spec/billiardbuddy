@@ -78,10 +78,13 @@ async def collect_once(db) -> int:
     n = 0
 
     # —— 使用事件 ——
+    # 游标用 >=(而非 >):usage_events.created_at 是 SQLite func.now() 的**秒级**时间戳,
+    # 同一秒内"SELECT 已跑、事件稍后才 commit"会让 created_at == 游标而被 > 永久漏采。
+    # >= 会把边界秒重扫一遍,靠 outbox 的 (kind,ref_id) 唯一约束幂等去重(重复不入队),不丢不重。
     cur = await _cursor(db, "usage_events")
     q = select(UsageEvent).order_by(UsageEvent.created_at)
     if cur is not None:
-        q = q.where(UsageEvent.created_at > cur)
+        q = q.where(UsageEvent.created_at >= cur)
     rows = (await db.execute(q)).scalars().all()
     for r in rows:
         n += await _enqueue(db, "event", str(r.id), {
@@ -107,7 +110,7 @@ async def collect_once(db) -> int:
         .order_by(Generation.created_at)
     )
     if cur is not None:
-        q = q.where(Generation.created_at > cur)
+        q = q.where(Generation.created_at >= cur)  # 同 usage_events:>= + outbox 幂等,防边界丢采
     rows = (await db.execute(q)).scalars().all()
     for r in rows:
         n += await _enqueue(db, "gen", str(r.id), _full_snapshot(r))
@@ -128,7 +131,15 @@ async def collect_once(db) -> int:
         if tdir.exists():
             for p in tdir.glob("*.jsonl"):
                 cid = p.stem
-                n += await _enqueue(db, "trace", cid, {"conversation_id": cid, "path": str(p)})
+                # ref_id 带上文件 mtime:对话续聊→文件变长→mtime 变→新 ref_id→重新入队上行,
+                # 服务器按 conversation_id 做 ON CONFLICT DO UPDATE 覆盖成最新整段(否则首同步后
+                # 的后续轮次永远传不上去,违背全量)。mtime 没变则同 ref_id 幂等跳过、不空跑。
+                try:
+                    mtime = int(p.stat().st_mtime)
+                except Exception:
+                    mtime = 0
+                n += await _enqueue(db, "trace", f"{cid}:{mtime}",
+                                    {"conversation_id": cid, "path": str(p)})
     except Exception:
         # 轨迹目录不可用不影响其它源
         pass
