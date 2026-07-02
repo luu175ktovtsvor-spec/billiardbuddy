@@ -146,10 +146,12 @@ def _provider_client_and_model(store=None) -> tuple[AsyncOpenAI, str]:
     return _get_client(), settings.text_model_name
 
 
-async def _json_call(system: str, user: str, store=None, max_tokens: int = 900) -> dict:
+async def _json_call(system: str, user: str, store=None, max_tokens: int = 2000) -> dict:
     """调 JSON 模式（BYOK 门店走门店自带模型），解析/调用失败返回 {}（不抛，调用方兜底）。
     店脑学习是【辅助功能】：没配 key（纯 BYOK 未配 → 构造空 key client 即报错）或 provider 任何报错，
-    都静默跳过、绝不让主对话崩——"还没配 key"的友好引导由主生成的 503 守卫负责给。"""
+    都静默跳过、绝不让主对话崩——"还没配 key"的友好引导由主生成的 503 守卫负责给。
+    1-2 修复：显式关思考（MiMo 默认开，reasoning 会把 max_tokens 挤光、JSON 被截断 → 静默返回 {}，
+    店脑一直学不到东西）；max_tokens 默认 900 → 2000 留余量。temperature=0 在关思考后才真正生效。"""
     try:
         client, model = _provider_client_and_model(store)
         resp = await client.chat.completions.create(
@@ -158,6 +160,7 @@ async def _json_call(system: str, user: str, store=None, max_tokens: int = 900) 
             response_format={"type": "json_object"},
             temperature=0,
             max_tokens=max_tokens,
+            extra_body={"thinking": {"type": "disabled"}},
         )
         raw = resp.choices[0].message.content or ""
     except Exception as e:

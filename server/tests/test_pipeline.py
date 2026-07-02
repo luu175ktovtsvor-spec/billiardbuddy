@@ -38,7 +38,13 @@ def test_required_knowledge_references_resolve():
 
 def test_knowledge_filtering_empty_intent_returns_all():
     keys = ["knowledge.core_operations", "knowledge.tournament_rules", "knowledge.profit_model"]
-    assert _select_knowledge_keys(keys, "") == keys
+    out = _select_knowledge_keys(keys, "")
+    # 空 intent 时不做场景筛选，原始三条原样保留（相对顺序不变）；
+    # 核心知识（CORE_KNOWLEDGE_KEYS）无条件补全——即便调用方没把 term_whitelist/service_philosophy
+    # 之类列进来，也不该因为"空 intent 不筛选"这条路而漏注（对应"核心知识恒注入"的修复）。
+    assert keys == [k for k in out if k in keys]
+    from services.content_service import CORE_KNOWLEDGE_KEYS
+    assert CORE_KNOWLEDGE_KEYS <= set(out)
 
 
 def test_knowledge_filtering_by_intent():
@@ -56,6 +62,22 @@ def test_diagnostic_logic_gated_on_diagnosis_intent():
     keys = ["knowledge.core_operations", "knowledge.diagnostic_logic", "knowledge.profit_model"]
     assert "knowledge.diagnostic_logic" in _select_knowledge_keys(keys, "生意冷清营业额上不去")
     assert "knowledge.diagnostic_logic" not in _select_knowledge_keys(keys, "发个朋友圈招呼大家")
+
+
+def test_core_knowledge_always_present_for_every_role():
+    """守门：不管哪个岗位角色、不管带不带用户意图，_select_knowledge_keys 选出来的知识
+    必须含全部 CORE_KNOWLEDGE_KEYS——防止某岗位规则的 required_knowledge 漏列了合规红线/
+    术语白名单/核心运营/服务理念中的某几条，导致这些核心知识静默不注入。"""
+    from services.content_service import CORE_KNOWLEDGE_KEYS
+    pe = get_prompt_engine()
+    role_keys = [k for k in pe._templates if k.startswith("rules.role.")]
+    assert role_keys
+    for rk in role_keys:
+        required = pe._templates[rk].get("required_knowledge", [])
+        for intent in ("", "帮我写个活动方案"):
+            out = _select_knowledge_keys(required, intent)
+            missing = CORE_KNOWLEDGE_KEYS - set(out)
+            assert not missing, f"{rk}(intent={intent!r}) 漏了核心知识:{missing}"
 
 
 def test_streamguard_strips_prefix():

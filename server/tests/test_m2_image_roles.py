@@ -317,3 +317,110 @@ def test_generate_image_default_ratio_3_4(monkeypatch):
     ctx = _ctx()
     asyncio.run(agent_tools.generate_image({"description": "画一幅画"}, ctx))
     assert captured["ratio"] == "3:4"
+
+
+# ────────────────── 2-3 生图回灌自检：出图后 append 进 ctx.pending_view_images ──────────────────
+
+
+def test_make_poster_appends_real_file_to_pending_view_images(tmp_path, monkeypatch):
+    """海报真落盘 → 本机路径要 append 进 ctx.pending_view_images，供 loop 下一轮回灌给模型自检。"""
+    from services.agent import tools as agent_tools
+    import services.poster_service as ps
+    from config import settings as cfg_settings
+
+    monkeypatch.setattr(cfg_settings, "upload_dir", str(tmp_path))
+    posters_dir = tmp_path / "posters"
+    posters_dir.mkdir()
+    real_file = posters_dir / "p0.jpg"
+    real_file.write_bytes(b"\xff\xd8\xff")  # 假装是张 jpg
+
+    async def fake(**kwargs):
+        return {"images": [{"poster_url": "/uploads/posters/p0.jpg"}], "count": 1, "logo_applied": False}
+
+    monkeypatch.setattr(ps, "generate_images", fake)
+
+    ctx = _ctx(pending_view_images=[])
+    out = asyncio.run(agent_tools.make_poster({"description": "海报"}, ctx))
+    assert "做好啦" in out
+    assert ctx.pending_view_images == [str(real_file)]
+
+
+def test_generate_image_appends_real_file_to_pending_view_images(tmp_path, monkeypatch):
+    """generate_image 同款：真实落盘的图要挂进回灌队列。"""
+    from services.agent import tools as agent_tools
+    import services.poster_service as ps
+    from config import settings as cfg_settings
+
+    monkeypatch.setattr(cfg_settings, "upload_dir", str(tmp_path))
+    posters_dir = tmp_path / "posters"
+    posters_dir.mkdir()
+    real_file = posters_dir / "p0.jpg"
+    real_file.write_bytes(b"\xff\xd8\xff")
+
+    async def fake(**kwargs):
+        return {"images": [{"poster_url": "/uploads/posters/p0.jpg"}], "count": 1, "logo_applied": False}
+
+    monkeypatch.setattr(ps, "generate_images", fake)
+
+    ctx = _ctx(pending_view_images=[])
+    asyncio.run(agent_tools.generate_image({"description": "画一幅画"}, ctx))
+    assert ctx.pending_view_images == [str(real_file)]
+
+
+def test_pending_view_images_skips_missing_file(tmp_path, monkeypatch):
+    """poster_url 指向的本机文件其实不存在(极端场景) → 不挂假路径进回灌队列，故障安全。"""
+    from services.agent import tools as agent_tools
+    import services.poster_service as ps
+    from config import settings as cfg_settings
+
+    monkeypatch.setattr(cfg_settings, "upload_dir", str(tmp_path))
+
+    async def fake(**kwargs):
+        return {"images": [{"poster_url": "/uploads/posters/不存在.jpg"}], "count": 1, "logo_applied": False}
+
+    monkeypatch.setattr(ps, "generate_images", fake)
+
+    ctx = _ctx(pending_view_images=[])
+    asyncio.run(agent_tools.make_poster({"description": "海报"}, ctx))
+    assert ctx.pending_view_images == []
+
+
+def test_pending_view_images_capped_at_4(tmp_path, monkeypatch):
+    """一次出多张图 → 最多挂 4 张进回灌队列，防一次性撑爆下一轮请求。"""
+    from services.agent import tools as agent_tools
+    import services.poster_service as ps
+    from config import settings as cfg_settings
+
+    monkeypatch.setattr(cfg_settings, "upload_dir", str(tmp_path))
+    posters_dir = tmp_path / "posters"
+    posters_dir.mkdir()
+    for i in range(6):
+        (posters_dir / f"p{i}.jpg").write_bytes(b"\xff\xd8\xff")
+
+    async def fake(**kwargs):
+        return {
+            "images": [{"poster_url": f"/uploads/posters/p{i}.jpg"} for i in range(6)],
+            "count": 6, "logo_applied": False,
+        }
+
+    monkeypatch.setattr(ps, "generate_images", fake)
+
+    ctx = _ctx(pending_view_images=[])
+    asyncio.run(agent_tools.make_poster({"description": "海报", "count": 4}, ctx))
+    assert len(ctx.pending_view_images) <= 4
+
+
+def test_pending_view_images_noop_when_ctx_has_no_field(monkeypatch):
+    """ctx 没有 pending_view_images 属性（旧调用方/最小 ctx）→ 静默跳过，不报错。"""
+    from services.agent import tools as agent_tools
+    import services.poster_service as ps
+
+    async def fake(**kwargs):
+        return _fake_result()
+
+    monkeypatch.setattr(ps, "generate_images", fake)
+
+    ctx = _ctx()  # 没带 pending_view_images
+    out = asyncio.run(agent_tools.make_poster({"description": "海报"}, ctx))
+    assert "做好啦" in out
+    assert not hasattr(ctx, "pending_view_images")

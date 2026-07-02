@@ -2,6 +2,13 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import AsyncIterator
 
+# 文本 provider 的 httpx 读超时（秒）——内置 key 主路径与 BYOK 路径统一用这一个值。
+# 300s 是为 reasoning 模型（MiMo v2.5）慢首字/长输出留的；⚠️ 必须 > 流式 idle 看门狗的首块预算
+# （deepseek.py _STREAM_FIRST_CHUNK_TIMEOUT，默认 120s），否则 httpx 会先掐断、看门狗形同虚设。
+# 旧状态：内置路径没传 timeout 落到 60s 默认、BYOK 反而 300s——层级矛盾，慢请求在内置路径被
+# 60s 掐掉重试 5 次 = 服务端已生成扣费、客户端放弃（和 OpenAI relay 那课同一个钱坑模式）。
+TEXT_PROVIDER_TIMEOUT_SECONDS = 300.0
+
 
 @dataclass
 class TextRequest:
@@ -35,6 +42,10 @@ class TextResponse:
     # 本次请求的输入(prompt)token 数——即"发出去时上下文有多大"，是 autocompact 触发判据的真值信号(Gap C)。
     # 0 = 端点没返回/未知，由调用方退回估算兜底。流式路径的同名值走 usage_sink["prompt_tokens"]。
     prompt_tokens: int = 0
+    # 本次请求命中 prompt cache 的输入 token 数（1-7 缓存可观测：MiMo 命中 ¥0.02/M vs 未命中 ¥1/M，50 倍价差）。
+    # provider 兼容读 OpenAI 风格 usage.prompt_tokens_details.cached_tokens（MiMo 用这个，优先）与
+    # DeepSeek 风格 usage.prompt_cache_hit_tokens。0 = 没命中/端点没返回。流式走 usage_sink["cache_hit_tokens"]。
+    cached_tokens: int = 0
 
 
 class TextProvider(ABC):

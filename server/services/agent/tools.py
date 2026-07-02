@@ -8,6 +8,7 @@
    故不再做成单独工具（避免 agent 多绕一轮去"查"它本就知道的东西）。
 """
 import logging
+from pathlib import Path
 
 from core.timezone import business_today
 from services.agent.registry import default_registry, tool
@@ -445,6 +446,36 @@ _POSTER_GENERATING: set[str] = set()
 _SUPPORTED_IMAGE_RATIOS = {"1:1", "3:4", "9:16", "16:9"}
 
 
+def _append_generated_images_for_view(ctx, images: list) -> None:
+    """2-3 修复：把生成成功、真实落盘的图片路径 append 进 ctx.pending_view_images——
+    这是现成的回灌管道（loop._drain_view_images 会在本轮工具结果配对完整后自动拼成一条图片消息喂给模型），
+    之前生图工具只吐链接就收工，模型自己从没"看过"出的图，没法自检文字有没有糊、构图对不对。
+    只挂【真实存在】的本地文件（poster_url 是 /uploads/... 相对路径，换算回 settings.upload_dir 下的本机路径再核实存在）；
+    最多挂 4 张，防一次多图撑爆下一轮的回灌请求。"""
+    pending = getattr(ctx, "pending_view_images", None)
+    if pending is None:
+        return
+    from config import settings
+    added = 0
+    for img in images:
+        if added >= 4:
+            break
+        url = img.get("poster_url") if isinstance(img, dict) else getattr(img, "poster_url", None)
+        if not url or not isinstance(url, str) or not url.startswith("/uploads/"):
+            continue
+        try:
+            local_path = Path(settings.upload_dir) / url[len("/uploads/"):]
+        except Exception:  # noqa: BLE001
+            continue
+        if not local_path.exists():
+            continue
+        try:
+            pending.append(str(local_path))
+            added += 1
+        except Exception:  # noqa: BLE001 — 回灌是尽力而为，绝不让生图工具因此报错
+            pass
+
+
 def _gen_lock_key(ctx) -> str:
     """生图/生视频的并发锁键：有会话→(用户:会话)，让多窗口(多会话)各自并行；无会话→退回按用户(保守)。"""
     uid = str(getattr(getattr(ctx, "user", None), "id", "") or "")
@@ -591,6 +622,8 @@ async def make_poster(args: dict, ctx) -> str:
             store_photo_path=store_photo_path,
             reference_image_paths=_refs,
             conversation_id=getattr(ctx, "conversation_id", None),
+            # 用户当场选定的文件白名单：沙箱外绝对路径只有在这里面才许读（与 generate_video 的 allow_paths 同款）
+            allowed_paths=list(getattr(ctx, "allowed_paths", None) or []),
         )
         ctx._images_generated_this_run = _done + (result.get("count") or count)
     finally:
@@ -600,6 +633,7 @@ async def make_poster(args: dict, ctx) -> str:
     images = result.get("images") or []
     if not images:
         return "海报这次没生成出来，稍后再试一下。"
+    _append_generated_images_for_view(ctx, images)  # 2-3：挂进回灌队列，让模型下一轮亲眼看看出的图对不对
 
     logo_applied = result.get("logo_applied", False)
     parts = []
@@ -695,6 +729,8 @@ async def generate_image(args: dict, ctx) -> str:
             store_photo_path=store_photo_path,
             reference_image_paths=_refs,
             conversation_id=getattr(ctx, "conversation_id", None),
+            # 用户当场选定的文件白名单：沙箱外绝对路径只有在这里面才许读（与 generate_video 的 allow_paths 同款）
+            allowed_paths=list(getattr(ctx, "allowed_paths", None) or []),
         )
         ctx._images_generated_this_run = _done + (result.get("count") or count)
     finally:
@@ -704,6 +740,7 @@ async def generate_image(args: dict, ctx) -> str:
     images = result.get("images") or []
     if not images:
         return "图片这次没生成出来，稍后再试一下。"
+    _append_generated_images_for_view(ctx, images)  # 2-3：挂进回灌队列，让模型下一轮亲眼看看出的图对不对
 
     logo_applied = result.get("logo_applied", False)
     parts = []

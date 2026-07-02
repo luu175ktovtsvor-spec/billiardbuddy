@@ -320,6 +320,37 @@ _DANGEROUS_PATTERNS = [
 # 禁用的 shell 操作符（防命令拼接/重定向/管道/子命令绕过黑名单）。命中即拒。
 _SHELL_OPERATORS = ["&&", "||", "|", ";", ">", "<", "`", "$(", "&"]
 
+# 环境变量泄漏专项：内置模型 key 打包在进程 env 里，裸读整包环境变量＝把 key 喂进模型上下文
+# （模型看得到工具结果，读到 key 就等于泄露给了模型/prompt 注入）。只锚定「裸命令」形态——
+# 整条命令(已 strip 过、无 shell 操作符残留)第一个词就是 env/printenv/set 本身：
+#   - 会拦：`env`、`env -0`、`printenv`、`printenv PATH`、`set`、`set -x`
+#   - 不误杀：`NODE_ENV=production node app.js`（第一个词是 NODE_ENV=..., 不是 env 本身）、
+#     `node --env-file=.env server.js`（第一个词是 node）、`environment.sh`/`env_check.py`
+#     这类以 env 开头但后面紧跟着单词字符的脚本名（\b 卡住，不会在词中间断开算命中）。
+_ENV_LEAK_PATTERNS: list[tuple[str, str]] = [
+    (r"^\s*env\b",
+     "这条命令会读取整个环境变量表（env），本机进程的环境变量里存着内置模型的密钥——"
+     "环境变量不能整包读出来喂给模型，出于安全拒绝执行。"),
+    (r"^\s*printenv\b",
+     "这条命令会读取环境变量（printenv），本机进程的环境变量里存着内置模型的密钥——"
+     "环境变量不能整包读出来喂给模型，出于安全拒绝执行。"),
+    (r"^\s*set\b",
+     "这条命令会打印所有 shell 变量（set），本机进程的环境变量里存着内置模型的密钥——"
+     "环境变量不能整包读出来喂给模型，出于安全拒绝执行。"),
+]
+
+# 上面的黑名单只能拦「裸命令」形态，`bash -c "env"`/`python3 -c "print(os.environ)"`/`/usr/bin/env`
+# 套一层解释器就绕过了（复扫实测可达）。治本在下面：跑用户命令的子进程环境里直接剥掉密钥类变量——
+# 用户的 shell 命令根本用不到模型 key，子进程里没有，怎么套壳都读不到。黑名单保留作第一道（报错话术友好）。
+_SENSITIVE_ENV_KEY_PAT = re.compile(
+    r"(API_KEY|APIKEY|SECRET|TOKEN|PASSWORD|PASSWD|PACK_KEY|PRIVATE_KEY|CREDENTIAL)", re.IGNORECASE
+)
+
+
+def sanitized_child_env() -> dict[str, str]:
+    """给 run_command/run_background 子进程用的净化环境：剥掉密钥类变量，其余(PATH/HOME/LANG…)原样保留。"""
+    return {k: v for k, v in os.environ.items() if not _SENSITIVE_ENV_KEY_PAT.search(k)}
+
 
 def _resolve_dir(root_path: str, ctx=None) -> Path:
     """把一个【目录根】解析进沙箱并校验。语义同 _resolve（内容库/选定文件/全盘门控），
@@ -501,7 +532,7 @@ async def search_in_files(args: dict, ctx) -> str:
 
 def _check_command_safety(command: str) -> str | None:
     """命令安全检查。安全返回 None；不安全返回【拒绝原因】（人话）。
-    顺序：① 必须开全盘（由 handler 在调用前先判，这里不重复）② 禁 shell 操作符 ③ 危险黑名单。"""
+    顺序：① 必须开全盘（由 handler 在调用前先判，这里不重复）② 禁 shell 操作符 ③ 环境变量泄漏专项 ④ 危险黑名单。"""
     cmd = (command or "").strip()
     if not cmd:
         return "命令是空的，没东西可跑。"
@@ -510,8 +541,12 @@ def _check_command_safety(command: str) -> str | None:
         if op in cmd:
             return (f"命令里有 shell 操作符「{op}」，不允许（防止命令拼接/重定向绕过安全检查）。"
                     "请一次只跑一条简单命令，不要用 && || | ; > < 反引号 $() 这些。")
-    # ③ 危险黑名单
     low = cmd.lower()
+    # ③ 环境变量泄漏专项（裸 env/printenv/set：内置模型 key 在进程 env 里，读出来就是喂给模型）
+    for pat, reason in _ENV_LEAK_PATTERNS:
+        if re.search(pat, low):
+            return reason
+    # ④ 危险黑名单
     for pat in _DANGEROUS_PATTERNS:
         if re.search(pat, low):
             return f"这条命令命中了危险操作黑名单（{pat}），出于安全拒绝执行。"
@@ -588,6 +623,9 @@ async def run_command(args: dict, ctx) -> str:
             # POSIX：子进程自成会话/进程组(setsid) → 超时能整组掐断，连它 fork 的孙子进程一起杀，不留孤儿。
             # Windows 忽略此参数（无害），仍走下方 proc.kill() 兜底。
             start_new_session=_posix,
+            # 密钥类环境变量不给子进程：黑名单只能拦裸 `env`，`bash -c "env"`/`python3 -c "os.environ"`
+            # 一包一层就绕过了。治本 = 子进程环境里压根没有 key（用户命令也用不到模型 key）。
+            env=sanitized_child_env(),
         )
     except FileNotFoundError:
         return f"找不到这个命令（没装或不在 PATH 里）：{parts[0]}"
@@ -623,15 +661,36 @@ async def run_command(args: dict, ctx) -> str:
     return "\n".join(out)
 
 
-def _truncate_output(text: str, max_lines: int = 100) -> str:
-    """命令输出按行截断：超 max_lines 行只留前 max_lines 行并提示。"""
+_TRUNC_MAX_LINE_CHARS = 4000  # 单行字符护栏：防一行塞几十万字符（压成一行的 JSON/日志）把输出撑爆
+
+
+def _truncate_output(text: str, head_lines: int = 30, tail_lines: int = 70) -> str:
+    """命令输出按行截断：保头 head_lines 行 + 保尾 tail_lines 行，中间插一行省略提示。
+
+    2-2 修复：旧版"只留前 100 行"会把报错切没——脚本/测试失败信息几乎总在输出末尾，模型看到
+    开头一片正常就误判"跑成了"。改成头尾各留一截（Claude Code 的截中间保头尾做法），报错保留得住。
+    另加单行字符护栏：任何一行超 _TRUNC_MAX_LINE_CHARS 字符也再截一道，防单行内容本身就撑爆上下文。
+    """
     if not text:
         return ""
     lines = text.splitlines()
-    if len(lines) <= max_lines:
-        return text.rstrip()
-    kept = "\n".join(lines[:max_lines])
-    return f"{kept}\n…[输出共 {len(lines)} 行，只显示前 {max_lines} 行]"
+    total = len(lines)
+    max_lines = head_lines + tail_lines
+    if total <= max_lines:
+        kept = lines
+        omitted = 0
+    else:
+        omitted = total - max_lines
+        kept = lines[:head_lines] + [f"…（中间省略 {omitted} 行）…"] + lines[-tail_lines:]
+    capped = [
+        (ln if len(ln) <= _TRUNC_MAX_LINE_CHARS
+         else f"{ln[:_TRUNC_MAX_LINE_CHARS]}…[本行过长共 {len(ln)} 字符，已截断]")
+        for ln in kept
+    ]
+    result = "\n".join(capped).rstrip()
+    if omitted:
+        result += f"\n…[输出共 {total} 行，已保留头 {head_lines} 行 + 尾 {tail_lines} 行]"
+    return result
 
 
 _DOC_MAX_CHARS = 9000  # PDF/Word/PPT 提取文字封顶，防撑爆上下文；超了给清晰提示
@@ -761,6 +820,24 @@ async def write_file(args: dict, ctx) -> str:
     return msg
 
 
+_EDIT_RECEIPT_CONTEXT_LINES = 3   # 改动位置前后各留几行，让模型能看清周边代码没被误伤
+_EDIT_RECEIPT_MAX_LINES = 200     # 片段太大（整段替换几百行）再兜底截，防回执本身撑爆上下文
+
+
+def _numbered_snippet(full_text: str, start_line: int, end_line: int, context: int) -> str:
+    """按 1-based 行号取 [start_line, end_line] 及前后各 context 行，拼成带行号的片段（新内容视角）。"""
+    lines = full_text.splitlines()
+    total = len(lines)
+    lo = max(1, start_line - context)
+    hi = min(total, end_line + context)
+    if hi - lo + 1 > _EDIT_RECEIPT_MAX_LINES:
+        half = _EDIT_RECEIPT_MAX_LINES // 2
+        head = [f"{i:>5}\t{lines[i - 1]}" for i in range(lo, lo + half)]
+        tail = [f"{i:>5}\t{lines[i - 1]}" for i in range(hi - half + 1, hi + 1)]
+        return "\n".join(head) + f"\n      …（片段太长，中间省略 {hi - lo + 1 - _EDIT_RECEIPT_MAX_LINES} 行）…\n" + "\n".join(tail)
+    return "\n".join(f"{i:>5}\t{lines[i - 1]}" for i in range(lo, hi + 1))
+
+
 async def edit_file(args: dict, ctx) -> str:
     """改文本文件的某一段：把 old_text 精确替换成 new_text（同我改代码的方式）。改前备份。
     args: path, old_text, new_text。"""
@@ -774,9 +851,18 @@ async def edit_file(args: dict, ctx) -> str:
         return f"没找到要替换的内容，未改动。"
     if n > 1:
         return f"要替换的内容出现 {n} 次（不唯一），为安全未改动；请给更具体的上下文。"
+    idx = text.find(old)
+    start_line = text.count("\n", 0, idx) + 1
+    new_full = text.replace(old, new)
+    end_line = start_line + new.count("\n")
     backup = _backup(path)
-    path.write_text(text.replace(old, new), encoding="utf-8")
-    return f"已修改 {path.name}：\n- 原：{old[:80]}\n+ 新：{new[:80]}\n（原件已备份，可回滚）"
+    path.write_text(new_full, encoding="utf-8")
+    snippet = _numbered_snippet(new_full, start_line, end_line, _EDIT_RECEIPT_CONTEXT_LINES)
+    where = f"第 {start_line} 行" if end_line == start_line else f"第 {start_line}-{end_line} 行"
+    receipt = f"已修改 {path.name}（{where}附近，改动后的样子）：\n{snippet}"
+    if backup:
+        receipt += "\n（原件已备份，可回滚）"
+    return receipt
 
 
 async def edit_excel(args: dict, ctx) -> str:

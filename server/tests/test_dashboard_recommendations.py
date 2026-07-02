@@ -357,3 +357,52 @@ async def test_today_dashboard_feeds_full_memory_without_embedding(monkeypatch):
 
     assert any(r.category == "store" and r.id == "store_student" for r in resp.recommendations)
     assert called["n"] == 0
+
+
+# ─── _days_since_last_activity 时区集成测试（不 mock，真走 SQLite 往返）───
+
+def test_days_since_last_activity_survives_sqlite_naive_roundtrip():
+    """SQLite 上 DateTime(timezone=True) 往返会丢 tzinfo（读回来是 naive），
+    _days_since_last_activity 拿 aware 的 now() 去减就会 TypeError。
+    这里真建一张 SQLite 表、插一条 type="activity" 的 Generation，用【新会话】重新查出来
+    （确保拿到的是数据库实际吐出的裸值，不是同一 session 里还留着 tzinfo 的 Python 对象），
+    再直接调该函数——不 mock，真触发过 SQLite 往返。"""
+    import asyncio
+    import uuid as _uuid
+    from datetime import datetime, timezone
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+
+    import models  # noqa: F401  触发全模型注册
+    from db.base import Base
+    from models.user import User
+    from models.store import Store
+    from models.generation import Generation
+    from services.dashboard_service import _days_since_last_activity
+
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+
+        async with Session() as db:
+            u = User(id=_uuid.uuid4(), phone="1", password_hash="x", name="t")
+            db.add(u)
+            await db.flush()
+            s = Store(id=_uuid.uuid4(), owner_id=u.id, name="店")
+            db.add(s)
+            await db.flush()
+            db.add(Generation(
+                id=_uuid.uuid4(), store_id=s.id, type="activity", is_deleted=False,
+                created_at=datetime.now(timezone.utc),
+            ))
+            await db.commit()
+            store_id = s.id
+
+        # 新会话（新 identity map）→ 逼真触发一次真正从 DB 反序列化，而不是复用内存里还带 tzinfo 的对象。
+        async with Session() as db2:
+            days = await _days_since_last_activity(db2, store_id)
+
+        assert days == 0  # 刚插入，距今不到一天
+
+    asyncio.run(main())

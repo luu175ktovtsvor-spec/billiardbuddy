@@ -238,13 +238,20 @@ async def test_run_command_timeout(library):
 
 @pytest.mark.asyncio
 async def test_run_command_output_truncated(library):
+    """2-2 修复：保头 30 行 + 保尾 70 行（不再只留前 100 行），报错常出现在尾部才不会被切没。"""
     from services.agent import local_tools as lt
 
-    # seq 300 输出 300 行 → 截断到 100 行并提示
+    # seq 300 输出 300 行（1..300）→ 头 30 行(1..30) + 尾 70 行(231..300) 都要保留，中间省略提示
     res = await lt.run_command(
         {"command": "seq 300"}, AgentContext(full_disk_access=True)
     )
-    assert "只显示前 100 行" in res
+    assert "已保留头 30 行 + 尾 70 行" in res
+    assert "中间省略 200 行" in res
+    lines = res.splitlines()
+    assert "30" in lines  # 头部保留到第 30 行
+    assert "231" in lines  # 尾部从第 231 行开始保留
+    assert "300" in lines  # 尾部保留到最后一行
+    assert "31" not in lines  # 中间（第 31~230 行）被省略掉了
 
 
 # ────────────────────────────── 注册 + 审批位 ──────────────────────────────
@@ -294,3 +301,115 @@ def test_run_command_preview_shows_command_text():
     txt = preview_run_command({"command": "git status", "cwd": "/tmp", "timeout_sec": 10}, AgentContext())
     assert "git status" in txt
     assert "/tmp" in txt
+
+
+# ────────────────────────────── _truncate_output（2-2：保头保尾语义） ──────────────────────────────
+
+def test_truncate_output_short_text_untouched():
+    """行数不超头尾之和 → 原样返回（不加任何省略提示）。"""
+    from services.agent.local_tools import _truncate_output
+
+    text = "\n".join(str(i) for i in range(1, 51))  # 50 行 < 30+70
+    out = _truncate_output(text)
+    assert out == text
+    assert "省略" not in out
+
+
+def test_truncate_output_keeps_head_and_tail():
+    """超头尾之和 → 保头 30 行 + 保尾 70 行，中间插省略提示；尾部（报错常在的位置）不会被切没。"""
+    from services.agent.local_tools import _truncate_output
+
+    text = "\n".join(f"line{i}" for i in range(1, 301))  # 300 行
+    out = _truncate_output(text)
+    lines = out.splitlines()
+    assert lines[:30] == [f"line{i}" for i in range(1, 31)]       # 头 30 行完整保留
+    assert "…（中间省略 200 行）…" in out                            # 中间省略提示
+    assert "line231" in out and "line300" in out                  # 尾 70 行完整保留（含末行报错信息）
+    assert "line150" not in out                                    # 中段确实被切掉
+    assert "已保留头 30 行 + 尾 70 行" in out
+
+
+def test_truncate_output_custom_head_tail():
+    from services.agent.local_tools import _truncate_output
+
+    text = "\n".join(str(i) for i in range(1, 21))  # 20 行
+    out = _truncate_output(text, head_lines=5, tail_lines=5)
+    assert out.splitlines()[:5] == ["1", "2", "3", "4", "5"]
+    assert "16" in out and "20" in out
+    assert "中间省略 10 行" in out
+
+
+def test_truncate_output_single_line_char_guard():
+    """单行超长字符护栏：即便只有一行，超字符上限也要再截一道，防单行本身撑爆上下文。"""
+    from services.agent.local_tools import _truncate_output, _TRUNC_MAX_LINE_CHARS
+
+    huge_line = "x" * (_TRUNC_MAX_LINE_CHARS + 500)
+    out = _truncate_output(huge_line)
+    assert len(out) < len(huge_line)
+    assert "截断" in out
+
+
+def test_truncate_output_empty():
+    from services.agent.local_tools import _truncate_output
+
+    assert _truncate_output("") == ""
+
+
+# ────────────────────────────── edit_file（2-6：回执带行号片段） ──────────────────────────────
+
+@pytest.mark.asyncio
+async def test_edit_file_receipt_has_numbered_context(library):
+    """edit_file 回执要带 ±3 行、带行号的片段（新内容视角），让模型能确认改对了、看清周边代码。"""
+    from services.agent import local_tools as lt
+
+    f = library / "demo.py"
+    body_lines = [f"line{i}" for i in range(1, 21)]
+    body_lines[9] = "TARGET_OLD"  # 第 10 行
+    f.write_text("\n".join(body_lines), encoding="utf-8")
+
+    res = await lt.edit_file(
+        {"path": "demo.py", "old_text": "TARGET_OLD", "new_text": "TARGET_NEW_CONTENT"},
+        AgentContext(),
+    )
+    assert "demo.py" in res
+    assert "第 10 行" in res
+    assert "TARGET_NEW_CONTENT" in res
+    # 带行号：第 10 行前后各 3 行（第 7~13 行）都该出现在片段里
+    for i in list(range(7, 10)) + list(range(11, 14)):
+        assert f"line{i}" in res, f"缺第 {i} 行上下文"
+    assert f"{10:>5}" in res  # 带行号（右对齐 5 位）
+    # 改动确实真落盘
+    assert f.read_text(encoding="utf-8").splitlines()[9] == "TARGET_NEW_CONTENT"
+    # 原件已备份
+    assert "备份" in res
+
+
+@pytest.mark.asyncio
+async def test_edit_file_receipt_multiline_replacement_shows_all_new_lines(library):
+    """new_text 跨多行时，回执的行号范围要覆盖新内容的全部行（不是只有第一行）。"""
+    from services.agent import local_tools as lt
+
+    f = library / "multi.py"
+    f.write_text("A\nB\nOLD\nD\nE", encoding="utf-8")
+
+    res = await lt.edit_file(
+        {"path": "multi.py", "old_text": "OLD", "new_text": "NEW1\nNEW2\nNEW3"},
+        AgentContext(),
+    )
+    assert "第 3-5 行" in res
+    assert "NEW1" in res and "NEW2" in res and "NEW3" in res
+
+
+@pytest.mark.asyncio
+async def test_edit_file_not_found_and_ambiguous_unchanged(library):
+    """不存在的文件 / 匹配不唯一 —— 行为不变（未改动 + 明确提示），不因加回执改坏安全语义。"""
+    from services.agent import local_tools as lt
+
+    missing = await lt.edit_file({"path": "nope.txt", "old_text": "a", "new_text": "b"}, AgentContext())
+    assert "不存在" in missing
+
+    f = library / "dup.txt"
+    f.write_text("same\nsame\n", encoding="utf-8")
+    res = await lt.edit_file({"path": "dup.txt", "old_text": "same", "new_text": "x"}, AgentContext())
+    assert "不唯一" in res or "2 次" in res
+    assert f.read_text(encoding="utf-8") == "same\nsame\n"  # 未改动

@@ -39,12 +39,15 @@ class ProviderFactory:
             from core.crypto import try_decrypt
             key = try_decrypt(enc)
             if key:
+                from services.ai.base import TEXT_PROVIDER_TIMEOUT_SECONDS
                 from services.ai.providers.deepseek import DeepSeekProvider
                 return DeepSeekProvider(
                     api_key=key,
                     base_url=getattr(store, "byok_base_url", None) or None,
                     default_model=getattr(store, "byok_model", None) or None,
-                    timeout=300.0,  # 兼容 reasoning 模型（如 MiMo v2.5）较慢的首字延迟
+                    # 1-6 超时对齐：与内置 key 主路径统一走 TEXT_PROVIDER_TIMEOUT_SECONDS(300s)——
+                    # 兼容 reasoning 模型(MiMo v2.5)慢首字，且保证 流式看门狗首块预算(120s) < httpx 超时。
+                    timeout=TEXT_PROVIDER_TIMEOUT_SECONDS,
                 )
             logger.warning("BYOK key 解密失败 store_id=%s", getattr(store, "id", None))
         elif store is not None and getattr(store, "byok_enabled", False):
@@ -55,7 +58,10 @@ class ProviderFactory:
         import os
         if os.environ.get("DESKTOP_LOCAL") == "1":
             if settings.deepseek_api_key:
-                return cls.get_text_provider()  # 内置文字/看图大脑（默认 MiMo v2.5）
+                # 内置文字/看图大脑（默认 MiMo v2.5）。走 provider_cls() 默认构造 → timeout 落
+                # DeepSeekProvider 的默认值 TEXT_PROVIDER_TIMEOUT_SECONDS(300s)，与上面 BYOK 路径同档
+                # （1-6：旧默认 60s 会先于流式看门狗首块预算 120s 掐断慢请求——服务端已生成扣费、客户端放弃）。
+                return cls.get_text_provider()
             from core.exceptions import AIProviderError
             raise AIProviderError(
                 message="AI 服务还没准备好，请联系管理员处理",

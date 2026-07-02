@@ -752,6 +752,11 @@ async def _days_since_last_activity(db: AsyncSession, store_id: uuid.UUID) -> in
     last_activity = result.scalar_one_or_none()
     if not last_activity:
         return None
+    if last_activity.tzinfo is None:
+        # SQLite 往返会丢 tzinfo（DateTime(timezone=True)在 SQLite 上只是存字符串，读回来变 naive）；
+        # 存的时候一律用 datetime.now(timezone.utc)，补回 UTC 才能跟下面 aware 的 now 相减，
+        # 否则 aware − naive 直接 TypeError（照 quota_service._is_new_period 的既有写法补齐）。
+        last_activity = last_activity.replace(tzinfo=timezone.utc)
     now = datetime.now(timezone.utc)
     delta = now - last_activity
     return delta.days
