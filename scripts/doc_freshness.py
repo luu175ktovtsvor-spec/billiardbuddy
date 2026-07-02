@@ -13,6 +13,10 @@
     > 📌 状态:📦历史 · 工作已落地(提交 abc1234)· 可删
     > 📌 状态:❌已否决 · 仅参考
 分类靠 banner 关键词:可删/历史/已落地/已否决/废弃/📦/❌ → "该清";现行+最后核对日期 → 超期提醒。
+
+`docs/归档/` 是历史存档区(完工文档的最终归宿)——扫描时整目录跳过,不再被唠叨"该清"。
+但如果一份"已完成/已否决"的文档还留在归档区**之外**(现行区),提醒"该挪进 docs/归档/"
+(落实 CLAUDE.md 文档维护规约第 3 条「完工即处置」)。目录不存在时正常跳过、不报错。
 """
 import re
 import subprocess
@@ -21,11 +25,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DOC_DIRS = [ROOT / "docs", ROOT / "交接-给新会话"]
+ARCHIVE_DIR = ROOT / "docs" / "归档"
 STALE_DAYS = 45  # 现行文档超这么多天没核对 → 提醒顺手核对
 
 BANNER_RE = re.compile(r"📌\s*(?:文档)?状态")
 DATE_RE = re.compile(r"最后核对\s*(\d{4})-(\d{1,2})-(\d{1,2})")
 REMOVABLE = ("可删", "历史", "已落地", "已否决", "废弃", "弃用", "📦", "❌")
+
+
+def _is_archived(f: Path) -> bool:
+    """文档是否已在 docs/归档/ 下(该目录不存在时一律 False,不报错)。"""
+    if not ARCHIVE_DIR.exists():
+        return False
+    try:
+        f.relative_to(ARCHIVE_DIR)
+        return True
+    except ValueError:
+        return False
 
 
 def _ignored(paths):
@@ -48,6 +64,8 @@ def scan():
     files = [f for d in DOC_DIRS if d.exists() for f in sorted(d.rglob("*.md"))]
     ignored = _ignored(files)
     for f in files:
+        if _is_archived(f):
+            continue  # docs/归档/ 是历史存档区,已经"处置"过了,不再唠叨
         if str(f) in ignored:
             continue  # gitignore 的本地工作档不纳入
         rel = f.relative_to(ROOT)
@@ -79,7 +97,8 @@ def main():
         return  # 清爽 → 静默,不打扰
     print("📚 文档维护提醒(本项目规约见 CLAUDE.md「文档维护规约」):")
     if removable:
-        print(f"🧹 这 {len(removable)} 份标了【可删/历史/已否决】却还留着——本会话完工前清掉(git rm,历史可恢复):")
+        print(f"🧹 这 {len(removable)} 份标了【可删/历史/已否决】却还留在现行区——建议挪进 docs/归档/(git mv,只搬不删、历史可查;"
+              f"也可用 /整理归档 一键处理):")
         for x in removable:
             print(f"   · {x}")
     if stale:
