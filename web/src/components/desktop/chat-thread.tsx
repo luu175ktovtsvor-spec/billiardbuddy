@@ -16,6 +16,7 @@ import { toolMeta, DELIVERABLE_TOOLS, INTERNAL_TOOLS, approvalLabel, approvalCon
 import type { ChatMessage, ToolStep, ApprovalState, QuestionData } from "@/hooks/use-agent-chat";
 import type { PreviewItem } from "./preview-panel";
 import { AgentSpinner } from "./agent-spinner";
+import { OverflowMenu, type OverflowMenuItem } from "./overflow-menu";
 
 const PROSE = "prose prose-sm prose-slate dark:prose-invert max-w-none leading-relaxed prose-p:my-1.5";
 
@@ -80,7 +81,8 @@ function billiardsFollowUpActions(content: string): FollowUpAction[] {
   const text = content.replace(/\s+/g, "");
   const actions: FollowUpAction[] = [];
   const push = (action: FollowUpAction) => {
-    if (!actions.some((a) => a.label === action.label) && actions.length < 3) actions.push(action);
+    // C3：动作栏整体收敛，追问 chip 上限从 3 个降到 2 个，别再跟按钮一起挤成一排。
+    if (!actions.some((a) => a.label === action.label) && actions.length < 2) actions.push(action);
   };
   if (/拉客|下雨|没人|客流|获客|引流|到店|复购|客户群|朋友圈/.test(text)) {
     push(buildFollowUp("写客户群话术", "把原回答改成 3 条今晚能发到客户群的话术，每条 80 字以内，带一个明确到店理由。", content, MessageSquareText));
@@ -351,8 +353,11 @@ function MacStepList({ steps, active, onPreview }: { steps: ToolStep[]; active: 
   );
 }
 
-function CorrectionAction() {
-  const [open, setOpen] = useState(false);
+/**
+ * C3：「这条不太合适」的触发按钮已收进成品卡头部的「…」溢出菜单(见 DeliverableCard)，
+ * 这里只负责受控展开的表单本体——open/onOpenChange 由外部(溢出菜单项)驱动。
+ */
+function CorrectionAction({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const [text, setText] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -366,7 +371,7 @@ function CorrectionAction() {
     try {
       await api.addStoreMemory(rule, "rule");
       setSaved(true);
-      setOpen(false);
+      onOpenChange(false);
       setText("");
       setTimeout(() => setSaved(false), 3000);
     } catch (e) {
@@ -384,19 +389,7 @@ function CorrectionAction() {
     );
   }
 
-  if (!open) {
-    return (
-      <div className="px-4 pb-3">
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] text-[#86868b] transition hover:text-[#1d1d1f] active:scale-[0.97] dark:text-[#6e7077] dark:hover:text-[#c8cace]"
-        >
-          <Flag className="h-3.5 w-3.5" /> 这条不太合适
-        </button>
-      </div>
-    );
-  }
+  if (!open) return null;
 
   return (
     <div className="px-4 pb-3">
@@ -414,7 +407,7 @@ function CorrectionAction() {
         <div className="mt-2 flex items-center justify-end gap-2">
           <button
             type="button"
-            onClick={() => { setOpen(false); setText(""); setErr(null); }}
+            onClick={() => { onOpenChange(false); setText(""); setErr(null); }}
             disabled={saving}
             className="rounded-md px-3 py-1 text-[12.5px] text-[#86868b] transition hover:text-[#1d1d1f] active:scale-[0.97] disabled:opacity-40 dark:text-[#9a9ca3] dark:hover:text-[#e6e7e9]"
           >
@@ -449,13 +442,18 @@ function DeliverableCard({
   const imgUrl = IMAGE_TOOLS.has(step.tool) ? extractImageUrl(step.result || "") : null;
   // 生视频工具 → 抓出视频地址渲染成 <video controls>（带播放器、可下载）。
   const vidUrl = VIDEO_TOOLS.has(step.tool) ? extractVideoUrl(step.result || "") : null;
+  // C3：「这条不太合适」不再常驻一个文字按钮，收进头部「…」溢出菜单；点了才展开下面的纠偏表单。
+  const [correctionOpen, setCorrectionOpen] = useState(false);
   return (
     <div className="overflow-hidden rounded-lg border border-black/[0.08] bg-white shadow-sm dark:border-white/[0.08] dark:bg-[#16181d] dark:shadow-none">
       <div className="flex items-center justify-between border-b border-black/[0.06] bg-black/[0.015] px-4 py-2 dark:border-white/[0.06] dark:bg-white/[0.02]">
         <span className="flex items-center gap-1.5 font-mono text-[12px] text-[#1d1d1f] dark:text-[#c8cace]">
           <Icon className="h-3.5 w-3.5 text-[#10a37f]" /> {label}
         </span>
-        <CopyButton text={step.result || ""} />
+        <div className="flex items-center gap-1">
+          <CopyButton text={step.result || ""} />
+          <OverflowMenu items={[{ key: "flag", label: "这条不太合适", Icon: Flag, onClick: () => setCorrectionOpen(true) }]} />
+        </div>
       </div>
       {vidUrl ? (
         <div className="px-4 py-3">
@@ -518,7 +516,7 @@ function DeliverableCard({
           )}
         </div>
       )}
-      <CorrectionAction />
+      <CorrectionAction open={correctionOpen} onOpenChange={setCorrectionOpen} />
     </div>
   );
 }
@@ -647,10 +645,10 @@ function RateGoodButton({ generationId, onRate }: { generationId: string; onRate
       type="button"
       disabled={rated}
       onClick={() => { onRate(generationId, "good"); setRated(true); }}
-      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#86868b] transition hover:bg-[#10a37f]/10 hover:text-[#10a37f] active:scale-[0.97] disabled:text-[#10a37f] disabled:hover:bg-transparent dark:text-[#8a8c93]"
-      title="标记好评：以后多照这个来"
+      className="flex h-7 w-7 items-center justify-center rounded-md text-[#86868b] transition hover:bg-[#10a37f]/10 hover:text-[#10a37f] active:scale-[0.97] disabled:text-[#10a37f] disabled:hover:bg-transparent dark:text-[#8a8c93]"
+      title={rated ? "已好评" : "好评：以后多照这个来"}
     >
-      <ThumbsUp className="h-3.5 w-3.5" /> {rated ? "记下了" : "好评"}
+      <ThumbsUp className="h-3.5 w-3.5" />
     </button>
   );
 }
@@ -869,55 +867,29 @@ export function DesktopChatThread({
                         </div>
                       )}
                       <div className="flex flex-wrap items-center gap-1.5">
-                        <CopyButton text={m.content} label="复制到微信" />
+                        {/* C3：动作栏收敛——常驻只留 3 个高频纯图标(复制/好评/重做一版)，其余次要动作收进「…」溢出菜单 */}
+                        <CopyButton text={m.content} label="复制" iconOnly />
                         {onRate && m.generationId && !generating && (
                           <RateGoodButton generationId={m.generationId} onRate={onRate} />
-                        )}
-                        {onPreview && (
-                          <button
-                            type="button"
-                            onClick={() => onPreview({ kind: "content", title: "回答", text: m.content })}
-                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/10 active:scale-[0.97]"
-                          >
-                            <Maximize2 className="h-3.5 w-3.5" /> 右侧打开
-                          </button>
                         )}
                         {onRedoAnswer && !generating && (
                           <button
                             type="button"
                             onClick={() => onRedoAnswer(m.content)}
-                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#86868b] transition hover:bg-black/[0.04] hover:text-[#1d1d1f] active:scale-[0.97] dark:text-[#8a8c93] dark:hover:bg-white/[0.06] dark:hover:text-[#e6e7e9]"
+                            title="重做一版"
+                            className="flex h-7 w-7 items-center justify-center rounded-md text-[#86868b] transition hover:bg-black/[0.04] hover:text-[#1d1d1f] active:scale-[0.97] dark:text-[#8a8c93] dark:hover:bg-white/[0.06] dark:hover:text-[#e6e7e9]"
                           >
-                            <RotateCcw className="h-3.5 w-3.5" /> 重做一版
+                            <RotateCcw className="h-3.5 w-3.5" />
                           </button>
                         )}
-                        {onSaveArtifact && !generating && (
-                          <button
-                            type="button"
-                            onClick={() => onSaveArtifact(m.content)}
-                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#86868b] transition hover:bg-black/[0.04] hover:text-[#1d1d1f] active:scale-[0.97] dark:text-[#8a8c93] dark:hover:bg-white/[0.06] dark:hover:text-[#e6e7e9]"
-                          >
-                            <Save className="h-3.5 w-3.5" /> 保存成品
-                          </button>
-                        )}
-                        {onExportArtifact && !generating && (
-                          <button
-                            type="button"
-                            onClick={() => onExportArtifact(m.content)}
-                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#86868b] transition hover:bg-black/[0.04] hover:text-[#1d1d1f] active:scale-[0.97] dark:text-[#8a8c93] dark:hover:bg-white/[0.06] dark:hover:text-[#e6e7e9]"
-                          >
-                            <Download className="h-3.5 w-3.5" /> 导出到电脑
-                          </button>
-                        )}
-                        {onMakeTask && !generating && (
-                          <button
-                            type="button"
-                            onClick={() => onMakeTask(m.content)}
-                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#86868b] transition hover:bg-black/[0.04] hover:text-[#1d1d1f] active:scale-[0.97] dark:text-[#8a8c93] dark:hover:bg-white/[0.06] dark:hover:text-[#e6e7e9]"
-                          >
-                            <ClipboardList className="h-3.5 w-3.5" /> 转成任务
-                          </button>
-                        )}
+                        {!generating && (() => {
+                          const moreItems: OverflowMenuItem[] = [];
+                          if (onPreview) moreItems.push({ key: "open", label: "右侧打开", Icon: Maximize2, onClick: () => onPreview({ kind: "content", title: "回答", text: m.content }) });
+                          if (onSaveArtifact) moreItems.push({ key: "save", label: "保存成品", Icon: Save, onClick: () => onSaveArtifact(m.content) });
+                          if (onExportArtifact) moreItems.push({ key: "export", label: "导出到电脑", Icon: Download, onClick: () => onExportArtifact(m.content) });
+                          if (onMakeTask) moreItems.push({ key: "task", label: "转成任务", Icon: ClipboardList, onClick: () => onMakeTask(m.content) });
+                          return <OverflowMenu items={moreItems} />;
+                        })()}
                       </div>
                     </div>
                   )}
