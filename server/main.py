@@ -87,6 +87,21 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.debug("启动提醒 loop 失败（忽略）", exc_info=True)
 
+    # 定时任务（Scheduled Tasks）：配指令+定时规则,到点自动跑一遍 agent 任务、干完写结果+播报。
+    # 桌面专属。先补跑一次(app 关着睡过点了)，再起进程内轮询 loop（复用 sched_stop 统一收尾）。
+    sctask_task = None
+    if __import__("os").environ.get("DESKTOP_LOCAL") == "1":
+        try:
+            from db.session import async_session as _sctask_session
+            from services.agent.scheduled_tasks import catch_up_on_startup, scheduled_tasks_loop
+            async with _sctask_session() as _sc_db:
+                _caught = await catch_up_on_startup(_sc_db)
+                if _caught:
+                    logger.info("定时任务补跑 %d 条（睡过点）", _caught)
+            sctask_task = asyncio.create_task(scheduled_tasks_loop(sched_stop))
+        except Exception:
+            logger.debug("启动定时任务 loop 失败（忽略）", exc_info=True)
+
     # IM 适配 · Telegram：长轮询 bot（配了 TELEGRAM_BOT_TOKEN 才起）。
     im_task = None
     if __import__("os").environ.get("TELEGRAM_BOT_TOKEN"):
@@ -109,7 +124,7 @@ async def lifespan(app: FastAPI):
     yield
 
     sched_stop.set()
-    for _t in (sched_task, rem_task, im_task, sync_task):
+    for _t in (sched_task, rem_task, sctask_task, im_task, sync_task):
         if _t is not None:
             try:
                 await asyncio.wait_for(_t, timeout=5)
