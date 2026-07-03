@@ -27,6 +27,14 @@ function pad2(n: number | undefined): string {
   return String(n ?? 0).padStart(2, "0");
 }
 
+/** 数字输入框清空/非法输入会得 NaN，JSON.stringify 会把 NaN 变成 null，后端会静默兜底成 0
+ * 让用户无感知（见 CLAUDE.md 铁律）。这里挡在 state 这一层：解析不出数字就退回合理默认值，
+ * 绝不让 NaN 进 state。 */
+function toSafeInt(raw: string, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 /** 把 schedule_kind + schedule_spec 翻成大白话，绝不露 cron/UTC 这类词。 */
 function scheduleLabel(kind: string, spec: Record<string, number>): string {
   if (kind === "daily") return `每天 ${pad2(spec.hour)}:${pad2(spec.minute)}`;
@@ -305,16 +313,16 @@ export function ScheduledTasksPanel({ open, onClose }: { open: boolean; onClose:
                 )}
                 <span className="text-[12px] text-[#6e6e73] dark:text-[#9a9ca3]">几点</span>
                 <input type="number" min={0} max={23} className={NUM_INPUT} value={hour}
-                  onChange={(e) => setHour(Number(e.target.value))} />
+                  onChange={(e) => setHour(toSafeInt(e.target.value, 0))} />
                 <span className="text-[12px] text-[#6e6e73] dark:text-[#9a9ca3]">:</span>
                 <input type="number" min={0} max={59} className={NUM_INPUT} value={minute}
-                  onChange={(e) => setMinute(Number(e.target.value))} />
+                  onChange={(e) => setMinute(toSafeInt(e.target.value, 0))} />
               </div>
             ) : (
               <div className="mb-2.5 flex items-center gap-2">
                 <span className="text-[12px] text-[#6e6e73] dark:text-[#9a9ca3]">每隔</span>
                 <input type="number" min={1} className={NUM_INPUT} value={intervalMinutes}
-                  onChange={(e) => setIntervalMinutes(Number(e.target.value))} />
+                  onChange={(e) => setIntervalMinutes(toSafeInt(e.target.value, 1))} />
                 <span className="text-[12px] text-[#6e6e73] dark:text-[#9a9ca3]">分钟跑一次</span>
               </div>
             )}
