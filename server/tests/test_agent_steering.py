@@ -283,7 +283,7 @@ def test_cancel_saves_transcript_from_live_messages(monkeypatch):
         from types import SimpleNamespace
         monkeypatch.setattr(agent, "_stream_agent_events", fake_stream)
         monkeypatch.setattr(agent, "async_session", lambda: _Session())
-        monkeypatch.setattr(agent, "_learn_in_background", lambda store_id, text: asyncio.sleep(0))
+        monkeypatch.setattr(agent, "_learn_in_background", lambda store_id, text, delivery=None: asyncio.sleep(0))
 
         body = agent.AgentChatRequest(message="测试取消落轨迹")
         res = await agent.start_agent_task(body, user=SimpleNamespace(id="u1"), store=SimpleNamespace(id="s1"))
@@ -326,7 +326,7 @@ def test_cancel_without_conversation_id_skips_transcript(monkeypatch):
         from types import SimpleNamespace
         monkeypatch.setattr(agent, "_stream_agent_events", fake_stream)
         monkeypatch.setattr(agent, "async_session", lambda: _Session())
-        monkeypatch.setattr(agent, "_learn_in_background", lambda store_id, text: asyncio.sleep(0))
+        monkeypatch.setattr(agent, "_learn_in_background", lambda store_id, text, delivery=None: asyncio.sleep(0))
 
         body = agent.AgentChatRequest(message="测试新会话取消")
         res = await agent.start_agent_task(body, user=SimpleNamespace(id="u1"), store=SimpleNamespace(id="s1"))

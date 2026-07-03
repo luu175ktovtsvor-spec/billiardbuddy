@@ -101,6 +101,21 @@ _ABSTAIN = [
     ("含糊", "最近生意一般吧。", ["%", "30", "因为价格", "活动"]),
 ]
 
+# ── F-3b：喂进【本轮助手交付】的生成物，绝不能被误记成门店事实 ──
+# (名称, 带交付标记的输入, 生成物里编出来的、不得进 semantic/preference/operational 的值)
+# 这条守的正是"AI 交付喂进学习会不会把生成文案当成门店真事实"这个风险——
+# episodic("帮老板做了 XX")允许提这些词，只有 durable 三类(长期事实/偏好/运营模式)不许。
+_DELIVERY_ABSTAIN = [
+    ("海报文案里的编造价格/福利",
+     "【用户说】帮我写个国庆活动文案\n"
+     "【本轮助手交付】国庆巨惠来袭！本店台费直降至98元一小时，进店还送一份北京烤鸭！",
+     ["98", "烤鸭"]),
+    ("客流预测表里的编造数字",
+     "【用户说】帮我做个本周客流预测表\n"
+     "【本轮助手交付】周一300人 周二320人 周三280人，预计周末突破500人。",
+     ["300", "320", "500"]),
+]
+
 
 def test_extraction_recall_and_no_hallucination():
     # LLM 行为评估是统计性的（非确定）：防幻觉=信任底线，必须 0；
@@ -139,6 +154,21 @@ def test_abstention_no_fabrication():
         if halluc:
             fails.append(f"[{name}] 瞎编={halluc} | {blob[:120]}")
     assert not fails, "防幻觉未达标:\n" + "\n".join(fails)
+
+
+def test_delivery_marker_not_recorded_as_fact():
+    """F-3b 乙：抽取器要认得【本轮助手交付】——那是这次生成出来的东西，不是门店事实。
+    生成物里的编造价格/数字/福利绝不能被抽成 semantic/preference/operational 门店记忆
+    （允许有一条 episodic「帮老板做了什么」，不强求一定出现——只守"不误记成事实"这条底线）。"""
+    fails = []
+    for name, text, forbidden in _DELIVERY_ABSTAIN:
+        mems = _run(extract_memories(text))
+        durable = [m for m in mems if m.type in ("semantic", "preference", "operational")]
+        blob = _joined(durable)
+        halluc = [f for f in forbidden if f in blob]
+        if halluc:
+            fails.append(f"[{name}] 把交付物内容误记成门店事实={halluc} | durable={blob[:150]}")
+    assert not fails, "交付摘要被误记成门店事实(信任底线，必须 0):\n" + "\n".join(fails)
 
 
 def test_extraction_returns_valid_memory_objects():
