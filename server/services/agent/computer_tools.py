@@ -15,6 +15,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
+from services import notify_service
 from services.agent.registry import tool
 
 
@@ -122,18 +123,14 @@ async def _control_handler(args: dict, ctx) -> str:
 
 
 async def _notify_handler(args: dict, ctx) -> str:
-    title = str(args.get("title") or "台球运营管家").replace('"', "'")
-    message = str(args.get("message") or "").replace('"', "'")
+    title = str(args.get("title") or "台球运营管家")
+    message = str(args.get("message") or "")
     if not message:
         return "[参数缺失] notify 需要 message"
-    try:
-        subprocess.run(
-            ["osascript", "-e", f'display notification "{message}" with title "{title}"'],
-            capture_output=True, timeout=8,
-        )
-        return f"已弹出系统通知：{message}"
-    except Exception as e:  # noqa: BLE001
-        return f"[通知失败] {e}"
+    # F1b：归一到通知中心（跨平台，Electron 侧轮询转发成真系统通知），不再直连 osascript
+    # （旧实现 mac-only，Windows 装机包上静默失败）。push() 故障安全，这里不需要再包 try/except。
+    notify_service.push(title, message, kind="agent_notify")
+    return f"已通知老板：{message}"
 
 
 _VIEW_PARAMS = {

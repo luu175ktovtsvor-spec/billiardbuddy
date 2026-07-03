@@ -76,18 +76,26 @@ def test_run_py_no_python(monkeypatch):
 
 
 def test_notify(monkeypatch):
+    # F1b：通知归一到 notify_service.push()，不再直连 osascript（mac-only，Windows 静默失败）。
     calls = {}
 
-    def fake_run(cmd, **kw):
-        calls["cmd"] = cmd
-        class R:
-            returncode = 0
-        return R()
+    def fake_push(title, body, kind="info", **meta):
+        calls["title"] = title
+        calls["body"] = body
+        calls["kind"] = kind
 
-    monkeypatch.setattr(ct.subprocess, "run", fake_run)
+    monkeypatch.setattr(ct.notify_service, "push", fake_push)
     out = _run(ct._notify_handler({"message": "完成了"}, ctx=None))
-    assert "已弹出系统通知" in out
-    assert any("display notification" in str(c) for c in calls["cmd"])
+    assert "已通知老板" in out
+    assert calls["body"] == "完成了"
+    assert calls["kind"] == "agent_notify"
+
+
+def test_notify_custom_title(monkeypatch):
+    calls = {}
+    monkeypatch.setattr(ct.notify_service, "push", lambda title, body, kind="info", **m: calls.update(title=title))
+    _run(ct._notify_handler({"title": "老板你好", "message": "有客到店"}, ctx=None))
+    assert calls["title"] == "老板你好"
 
 
 def test_notify_missing_message():

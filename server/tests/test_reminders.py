@@ -31,3 +31,26 @@ def test_schedule_handler(monkeypatch, tmp_path):
     assert "5" in out and "测试" in out
     assert "[参数缺失]" in asyncio.run(rm._schedule_handler({"message": ""}, None))
     assert "[参数错误]" in asyncio.run(rm._schedule_handler({"in_minutes": "x", "message": "y"}, None))
+
+
+# F1b：到点提醒归一到 notify_service.push()，不再直连 osascript（mac-only，Windows 静默失败）。
+def test_fire_calls_notify_service_push(monkeypatch):
+    calls = {}
+
+    def fake_push(title, body, kind="info", **meta):
+        calls["title"] = title
+        calls["body"] = body
+        calls["kind"] = kind
+
+    monkeypatch.setattr(rm.notify_service, "push", fake_push)
+    rm._fire("该喝水了")
+    assert calls["title"] == "定时提醒"
+    assert calls["body"] == "该喝水了"
+    assert calls["kind"] == "reminder"
+
+
+def test_fire_truncates_long_message(monkeypatch):
+    calls = {}
+    monkeypatch.setattr(rm.notify_service, "push", lambda title, body, kind="info", **m: calls.update(body=body))
+    rm._fire("x" * 500)
+    assert len(calls["body"]) == 120

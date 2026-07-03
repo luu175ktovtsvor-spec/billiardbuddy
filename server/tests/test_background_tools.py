@@ -103,3 +103,28 @@ def test_run_background_command_not_found_friendly(tmp_path, monkeypatch):
     monkeypatch.setattr(bt, "_bg_dir", lambda: tmp_path)
     out = asyncio.run(bt._run_background_handler({"command": "this-binary-does-not-exist-xyz"}, _ctx()))
     assert "找不到这个命令" in out
+
+
+# ────────────────────────────── F1b：完成通知归一到 notify_service.push() ──────────────────────────────
+# 不再直连 osascript（mac-only，Windows 装机包上静默失败）。
+
+def test_notify_calls_notify_service_push(monkeypatch):
+    calls = {}
+
+    def fake_push(title, body, kind="info", **meta):
+        calls["title"] = title
+        calls["body"] = body
+        calls["kind"] = kind
+
+    monkeypatch.setattr(bt.notify_service, "push", fake_push)
+    bt._notify("后台任务完成", "echo hi")
+    assert calls["title"] == "后台任务完成"
+    assert calls["body"] == "echo hi"
+    assert calls["kind"] == "background_task"
+
+
+def test_notify_truncates_long_message(monkeypatch):
+    calls = {}
+    monkeypatch.setattr(bt.notify_service, "push", lambda title, body, kind="info", **m: calls.update(body=body))
+    bt._notify("标题", "x" * 500)
+    assert len(calls["body"]) == 120

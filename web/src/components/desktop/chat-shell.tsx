@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Target, X } from "lucide-react";
 
-import { api, type RecentArtifact } from "@/lib/api";
+import { api, type NotificationItem, type RecentArtifact } from "@/lib/api";
 import { HELP_TEXT } from "@/lib/agent-copy";
 import { toolMeta } from "@/lib/agent-tools";
 import { useDesktop } from "@/hooks/use-desktop";
@@ -87,7 +87,7 @@ export function DesktopChatShell({
   storeName?: string;
   todaySuggestion?: string;
 }) {
-  const { electron } = useDesktop();
+  const { isDesktop, electron } = useDesktop();
   const toast = useToast();
   const [workbenchId] = useState(getWorkbenchId);
   const [input, setInput] = useState("");
@@ -225,6 +225,53 @@ export function DesktopChatShell({
       .catch(() => {});
     return () => { cancelled = true; };
   }, [electron]);
+
+  // F1b 统一跨平台通知层：App 开着就持久轮询后端通知中心，拿到新条目就"叫一声"——
+  // 桌面端调 Electron 桥弹系统原生通知（跨平台，替代旧的 mac-only osascript）；
+  // 非桌面(web)兜底：优先浏览器原生 Notification，拿不到权限/不支持就退回全局 toast。
+  // 旁路通知，不写进 chat.messages、不进对话历史。
+  useEffect(() => {
+    let cancelled = false;
+    let after = -1;
+
+    const showNotification = (n: NotificationItem) => {
+      if (electron?.notification?.show) {
+        electron.notification.show({ title: n.title, body: n.body }).catch(() => {});
+        return;
+      }
+      if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+        try {
+          new Notification(n.title || "台球运营助手", { body: n.body });
+          return;
+        } catch { /* 降级到 toast */ }
+      }
+      toast.success(n.body ? `${n.title}：${n.body}` : n.title);
+    };
+
+    // 非桌面端顺手问一次浏览器通知权限；用户拒绝也不重复打扰，代码会自动落回 toast。
+    if (!isDesktop && typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+
+    const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+    (async () => {
+      while (!cancelled) {
+        try {
+          const res = await api.getNotifications(after);
+          if (cancelled) return;
+          for (const item of res.items) showNotification(item);
+          after = res.cursor;
+        } catch {
+          // 尽力而为：网络抖动/后端还没起来，不打扰用户，下一轮再试
+        }
+        await wait(4000);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [isDesktop, electron, toast]);
+
   // A4 零仪式：某会话/窗口没有已持久化的工作目录时，默认落到作品文件夹，不再要求用户开场先选。
   // 等 workbenchLoaded（已尝试读过窗口级缓存）+ workspaceDir 到手，workingDir 仍空才补上默认值——
   // 不覆盖用户已选过/历史会话记住的目录。

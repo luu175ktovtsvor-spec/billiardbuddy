@@ -112,6 +112,15 @@ export interface AgentChatPayload {
   working_dir?: string; // 本会话工作目录:相对路径默认落它 + 自动接受编辑范围
 }
 
+// F1b 通知中心：GET /api/v1/notifications?after= 返回的单条通知
+export interface NotificationItem {
+  id: number;
+  title: string;
+  body: string;
+  kind: string;
+  meta: Record<string, unknown>;
+}
+
 export interface AgentTaskStartResponse {
   task_id: string;
   status: "running" | "done" | "error" | "cancelled" | string;
@@ -708,6 +717,13 @@ class ApiClient {
 
   clearDeletedItems() {
     return this.request<{ ok: boolean; removed_file_backups?: number }>("POST", "/api/v1/agent/deleted-items/clear", {});
+  }
+
+  // F1b 通知中心：渲染进程持久轮询，after=已拿到的最后一条 id，返回新通知 + 下次要用的游标。
+  getNotifications(after: number, signal?: AbortSignal) {
+    return this.request<{ items: NotificationItem[]; cursor: number }>(
+      "GET", `/api/v1/notifications?after=${encodeURIComponent(String(after))}`,
+      undefined, undefined, undefined, signal);
   }
 
   // 桌面端：取某个 agent 会话的全部消息（点开回看）

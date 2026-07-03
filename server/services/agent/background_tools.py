@@ -1,7 +1,8 @@
 """后台任务 —— 对标 Claude Code 的 background task：长命令丢后台跑、立即返回，完成弹系统通知。
 
 桌面专属 DESKTOP_LOCAL=1。asyncio 子进程在【服务进程的事件循环】里跑完（SSE 关了也不影响）；
-完成后 notify(osascript) + 输出落盘 `UPLOAD_DIR/background/<id>.txt`（agent 可后续 read_file 拿回）。
+完成后经 `services.notify_service.push()` 通知（F1b 统一通知中心，跨平台）+ 输出落盘
+`UPLOAD_DIR/background/<id>.txt`（agent 可后续 read_file 拿回）。
 
 安全护栏（与 local_tools.run_command 同一套，不是两条平行的规矩）：
 - 硬门控：必须先开「完全访问模式」(full_disk_access) 才能跑后台命令——普通模式下不给跑。
@@ -15,10 +16,10 @@ import asyncio
 import logging
 import os
 import shlex
-import subprocess
 import uuid
 from pathlib import Path
 
+from services import notify_service
 from services.agent.local_tools import _check_command_safety
 from services.agent.registry import Tool, default_registry
 
@@ -33,13 +34,8 @@ def _bg_dir() -> Path:
 
 
 def _notify(title: str, message: str):
-    try:
-        t = title.replace('"', "'")
-        m = message.replace('"', "'")[:120]
-        subprocess.run(["osascript", "-e", f'display notification "{m}" with title "{t}"'],
-                       capture_output=True, timeout=8)
-    except Exception:
-        pass
+    # F1b：归一到通知中心（跨平台），不再直连 osascript（mac-only）。push() 故障安全，不需要再包 try/except。
+    notify_service.push(title, (message or "")[:120], kind="background_task")
 
 
 async def _watch(task_id: str, command: str, proc, out_path: Path):

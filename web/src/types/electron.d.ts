@@ -52,6 +52,11 @@ export interface ElectronBridge {
   onStudioArtifact?(cb: (p: { kind?: string; generationId?: string; url?: string }) => void): () => void;
   /** 截取当前屏幕并保存为临时 PNG，返回本机路径；前端作为附件发给 Agent。 */
   captureScreen?(): Promise<{ ok: boolean; path?: string; width?: number; height?: number; error?: string; needsPermission?: boolean }>;
+  /** F1b：弹一条系统原生通知(跨平台)。渲染进程轮询后端通知中心拿到新条目后调用；
+   *  故障安全——不支持/失败都返回 { ok:false }，不抛异常。 */
+  notification?: {
+    show(opts: { title?: string; body: string }): Promise<{ ok: boolean; error?: string }>;
+  };
   /** 口播模型(whisper 1.4G)按需下载:首启后台下,下好前口播功能灰掉。 */
   models?: {
     status(): Promise<ModelStatus>;
