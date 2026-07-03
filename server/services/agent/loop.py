@@ -31,7 +31,10 @@ from services.agent.approval import sign_approval
 from services.agent.context import AgentContext
 from services.agent.context_overflow import looks_like_context_overflow_error
 from services.agent.hooks import run_post_tool_hooks, run_pre_tool_hooks, run_stop_hooks
-from services.agent.local_tools import path_in_workspace  # auto_files 收口判定(无循环依赖;注册 DESKTOP_LOCAL 门控,云端 import 无副作用)
+from services.agent.local_tools import (  # 无循环依赖;注册 DESKTOP_LOCAL 门控,云端 import 无副作用
+    is_path_allowed,  # 审批闸 2.0 ①：文件类工具目标越界预判（薄封装，语义与 _resolve 一致）
+    path_in_workspace,  # auto_files 收口判定
+)
 from services.agent.message_repair import ensure_tool_pairing
 from services.agent.registry import ToolRegistry
 from services.agent.vision_degrade import (
@@ -343,6 +346,17 @@ def _auto_approve(tool, args, ctx) -> bool:
     # bypass-immune：高危操作的人工确认永不被放行模式旁路。放在最前，优先级高于一切模式。
     if getattr(tool, "force_confirm", False):
         return False
+    # 审批闸 2.0 · ③ Roo 式安全前缀白名单（bypass-safe，与上面 force_confirm 的 bypass-immune 相对）：
+    # 命中即【任何权限档】（含 ask）都可自动放行，不受下面按模式判定影响。判定壳子出错就不放行
+    # （故障安全，落到下面常规模式判断）。⚠️ 调用方 _plan_tool_call 若已把这次调用判定为
+    # risk_escalated（模型自评 high 风险），会直接跳过整个 _auto_approve，白名单不会覆盖那个升级。
+    _safe_prefix = getattr(tool, "safe_prefix_for", None)
+    if callable(_safe_prefix):
+        try:
+            if _safe_prefix(args, ctx):
+                return True
+        except Exception:
+            logger.exception("安全前缀白名单判定出错，回落常规权限档判断: %s", getattr(tool, "name", "?"))
     mode = getattr(ctx, "permission_mode", "ask") or "ask"
     if mode == "ask":
         return False
@@ -669,6 +683,75 @@ _PLAN_MODE_SKIP_MSG = (
     "请先把完整、分步的计划讲清楚给老板；等老板切到执行模式或确认后再实际做。"
 )
 
+# 有效的模型自评风险档位（其它取值/缺失都当没填，不产生任何效果——见 _pop_security_risk）。
+_SECURITY_RISK_LEVELS = ("low", "medium", "high")
+
+
+def _pop_security_risk(args: dict) -> str | None:
+    """审批闸 2.0 · ② 从解析出的入参里剥离模型自评的 `security_risk`（不是工具真参数）。
+
+    必须【剥离】而不是留在 args 里往下传，理由三条都关键：① 别把这个信号喂进工具 handler
+    （多数 handler 用 `.get()` 取值，混进去虽不至于报错，但不该让每个 handler 都要意识到它的存在）；
+    ② 别让它进 `sign_approval`/`_action_key` 的签名——否则同一个"越界文件写"或"重复调用"仅因这个
+    自评值飘一下，就被误判成不同签名，形同放开了 anti-spin/审批 token 校验的一个后门；
+    ③ 它本身"仅供参考"，不该出现在回灌模型的工具结果或审批卡展示的 args 里，徒增噪音。
+    只认 low/medium/high；其它值（拼写错/多语言/幻觉出别的词）一律当没填——按保守处理，
+    不能让"给了个奇怪值"意外触发或绕开任何判定。"""
+    if not isinstance(args, dict):
+        return None
+    val = args.pop("security_risk", None)
+    return val if val in _SECURITY_RISK_LEVELS else None
+
+
+def _file_target_oob(tool, args: dict, ctx) -> str | None:
+    """审批闸 2.0 · ① 文件类越界预判：写改类文件工具（`approval_class == "file"`）给了 `path` 时，
+    判断这个目标此刻会不会撞沙箱墙——复用 `local_tools.is_path_allowed`（语义与 `_resolve` 实际
+    执行时完全一致，full_disk_access/内容库/工作目录/用户选定/tool-results 判据都不重造），
+    不在这里自己发明一套沙箱规则。命中越界返回模型给的原始路径字符串（供拼审批理由用）；
+    非文件类工具 / 没给 path / 没越界 / 判定本身出错 → None（故障安全：判不出就当没越界，
+    退回既有的静态审批闸逻辑兜底，不因这一步出错而拖垮整个审批判定）。"""
+    if getattr(tool, "approval_class", None) != "file":
+        return None
+    path = (args or {}).get("path") if isinstance(args, dict) else None
+    if not path:
+        return None
+    try:
+        if is_path_allowed(path, ctx):
+            return None
+    except Exception:
+        return None
+    return path
+
+
+def _risk_escalation_reason(tool, args, ctx) -> dict:
+    """审批闸 2.0 · ② 模型自评 high 风险时的专属审批理由。这类调用本身不是静态声明的高危动作
+    （否则根本不会走到 risk_escalated 这条分支），是模型自己判断"这次给的参数看着有风险"才被
+    临时升级——理由要如实说明这一点，不能套用 `_build_approval_reason` 的"对外/不可逆动作"
+    话术把一个普通查询类工具说成从来不是的高危类型（那样只会让老板看不懂"这个平时不问的东西
+    怎么突然要确认"）。"""
+    name = getattr(tool, "name", "?")
+    desc = (getattr(tool, "description", "") or "").split("。")[0]
+    what = desc if desc else f"执行「{name}」"
+    return {
+        "what": what,
+        "why": "AI 自己判断这次调用可能有点风险（给的参数看着不太寻常），所以多问你一句再继续。",
+        "impact": "确认后会照常执行；如果这不是你想要的，直接拒绝就行，AI 会换个法子。",
+    }
+
+
+def _oob_approval_reason(tool, oob_path: str) -> dict:
+    """越界文件写入的专属审批理由——比 `_build_approval_reason` 的"file"通用文案更直接地
+    说清楚"为什么这次要额外问一句"：不是因为"要改文件"（那本来就都会问），而是因为目标根本
+    不在老板划的工作区里。"""
+    name = getattr(tool, "name", "?")
+    desc = (getattr(tool, "description", "") or "").split("。")[0]
+    what = desc if desc else f"执行「{name}」"
+    return {
+        "what": what,
+        "why": f"它想写到工作区外的 `{oob_path}`，这不在你划定的内容库/工作目录范围内，需要你点头才能碰。",
+        "impact": f"确认后才会真正改动：{oob_path}。改前会自动备份、可回滚；不确认就先不动它。",
+    }
+
 
 def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _ToolPlan:
     """解析一个 tool_call 的入参，并据审批闸判定它该"待确认"还是"可直接执行"。
@@ -684,12 +767,30 @@ def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _Too
         return _ToolPlan(name=name, args={}, tool_call_id=tc_id,
                          error=_ARGS_TRUNCATED_MSG.format(name=name or "该工具"))
 
+    # 审批闸 2.0 · ②：剥离模型自评的风险档位（不是工具真参数，见 _pop_security_risk 注释）。
+    security_risk = _pop_security_risk(args)
+
     tool = registry.get(name) if name else None
     if tool is not None:
         # 入参校验先于审批闸：参数都不合法就别提请确认，直接把错误回灌让模型改参数重试。
         err = _validate_args(tool, args)
         if err:
             return _ToolPlan(name=name, args=args, tool_call_id=tc_id, error=err)
+
+        # 审批闸 2.0 · ①"撞墙才问"的命令类判据：命中即永不允许执行（如 run_command 的危险黑名单）→
+        # 直接把原因回灌，既不占审批卡名额（ask/auto_files 档不必让老板看一张"点了也没用"的确认卡），
+        # 也不会让 full 档出现"看着已自动放行、执行时才失败"的糊涂账。判定壳子出错时保守直接拒
+        # （故障安全：这类判据本就是"宁可错拒也不错放"）。
+        _fatal_fn = getattr(tool, "fatal_reason_for", None)
+        if callable(_fatal_fn):
+            try:
+                fatal = _fatal_fn(args, ctx)
+            except Exception:
+                logger.exception("危险判定钩子出错，保守直接拒: %s", name)
+                fatal = "系统判定这次调用有异常风险，出于安全直接拒绝执行。"
+            if fatal:
+                return _ToolPlan(name=name, args=args, tool_call_id=tc_id, error=f"[拒绝执行] {fatal}")
+
         if getattr(tool, "is_question", False):
             return _ToolPlan(
                 name=name, args=args, tool_call_id=tc_id, is_question=True,
@@ -713,20 +814,42 @@ def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _Too
             except Exception:
                 logger.exception("动态审批钩子出错，保守弹卡: %s", name)
                 needs_approval = True
-        if needs_approval and not _auto_approve(tool, args, ctx):
-            # SH-8 连续拒绝自动回退：同一动作老板已反复拒（或全局累计拒太多）→ 不再提请该动作，
-            # 改回灌"这个先不做了、换个法子"，让模型走文本答复/替代方案，别没完没了地弹同一张确认卡。
-            if _denial_fallback(name, args, ctx):
+
+        # 审批闸 2.0 · ①：写改类文件工具目标是否会撞沙箱墙（越界）。
+        oob_path = _file_target_oob(tool, args, ctx)
+
+        # 审批闸 2.0 · ②：模型自评 high 风险 → 把"本来不需要审批"的调用升级为需要审批。
+        # 只加严不放松——只在原本 needs_approval=False 时才可能生效；已经需要审批/已判越界的动作，
+        # 不会因为模型说 low/medium 就被放松（这里从未读取 low/medium 做任何"减免"判断）。
+        risk_escalated = bool(security_risk == "high" and not needs_approval and not oob_path)
+        if risk_escalated:
+            needs_approval = True
+
+        if needs_approval:
+            # 越界 / 被模型自评升级为高危的调用：不给既有"信任模式/全自动"开口子，一律直接弹卡
+            # （不调 _auto_approve）——尤其越界这条，_auto_approve 在 full 档对"file"类历来无条件放行，
+            # 若走它判定会重新踩回"full 档静默放行→执行时才 ValueError"的老坑。
+            auto_ok = False if (oob_path or risk_escalated) else _auto_approve(tool, args, ctx)
+            if not auto_ok:
+                # SH-8 连续拒绝自动回退：同一动作老板已反复拒（或全局累计拒太多）→ 不再提请该动作，
+                # 改回灌"这个先不做了、换个法子"，让模型走文本答复/替代方案，别没完没了地弹同一张确认卡。
+                if _denial_fallback(name, args, ctx):
+                    return _ToolPlan(
+                        name=name, args=args, tool_call_id=tc_id, fallback=True,
+                        fallback_msg=_DENIAL_FALLBACK_MSG.format(name=name),
+                    )
+                if oob_path:
+                    reason = _oob_approval_reason(tool, oob_path)
+                elif risk_escalated:
+                    reason = _risk_escalation_reason(tool, args, ctx)
+                else:
+                    reason = _build_approval_reason(tool, args, ctx)
                 return _ToolPlan(
-                    name=name, args=args, tool_call_id=tc_id, fallback=True,
-                    fallback_msg=_DENIAL_FALLBACK_MSG.format(name=name),
+                    name=name, args=args, tool_call_id=tc_id, needs_approval=True,
+                    pending_msg=_APPROVAL_PENDING_MSG.format(name=name),
+                    preview=_approval_preview(tool, args, ctx),
+                    reason=reason,
                 )
-            return _ToolPlan(
-                name=name, args=args, tool_call_id=tc_id, needs_approval=True,
-                pending_msg=_APPROVAL_PENDING_MSG.format(name=name),
-                preview=_approval_preview(tool, args, ctx),
-                reason=_build_approval_reason(tool, args, ctx),
-            )
     return _ToolPlan(name=name, args=args, tool_call_id=tc_id)
 
 

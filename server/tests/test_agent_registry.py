@@ -46,14 +46,20 @@ def test_duplicate_register_raises():
 def test_to_openai_tools_format():
     reg = ToolRegistry()
     reg.register(_make_tool())
-    assert reg.to_openai_tools() == [{
+    schema = reg.to_openai_tools()
+    # 审批闸 2.0 ②：security_risk 是无条件追加给每个工具的自评字段（见 test_agent_approval_gate_v2.py
+    # 的 test_security_risk_property_injected_unconditionally），这里只锁其余结构不变、不重复断言它。
+    props = schema[0]["function"]["parameters"]["properties"]
+    assert "security_risk" in props
+    assert {k: v for k, v in props.items() if k != "security_risk"} == {"text": {"type": "string"}}
+    assert schema == [{
         "type": "function",
         "function": {
             "name": "echo",
             "description": "回显输入",
             "parameters": {
                 "type": "object",
-                "properties": {"text": {"type": "string"}},
+                "properties": {"text": {"type": "string"}, "security_risk": props["security_risk"]},
                 "required": ["text"],
             },
         },

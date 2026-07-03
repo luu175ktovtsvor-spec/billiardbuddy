@@ -114,6 +114,18 @@ def path_in_workspace(raw_path: str, ctx) -> bool:
         return False
 
 
+def is_path_allowed(raw_path: str, ctx) -> bool:
+    """审批闸 2.0 · ① 薄封装：给 loop 用的"这条路径 `_resolve` 时会不会越界抛错"判定（不抛错版）。
+
+    语义必须与 `_resolve` 完全一致——先看 `full_disk_access`（开了就不限范围，任意路径放行，
+    与 `_resolve` 的门控行为对齐），没开才落到 `path_in_workspace`（内容库/工作目录/用户选定/
+    tool-results 白名单）。特意薄封装成一个函数，让 loop.py 判"文件类工具目标是否越界"时直接调用，
+    不在 loop 里重抄一遍沙箱规则（沙箱规则的唯一真相源永远在这个模块）。"""
+    if getattr(ctx, "full_disk_access", False):
+        return True
+    return path_in_workspace(raw_path, ctx)
+
+
 def _path_hash(path: Path) -> str:
     """路径 hash 前缀（8 位），防不同目录同名文件的备份撞名。"""
     return hashlib.md5(str(path.resolve()).encode()).hexdigest()[:8]
@@ -551,6 +563,73 @@ def _check_command_safety(command: str) -> str | None:
         if re.search(pat, low):
             return f"这条命令命中了危险操作黑名单（{pat}），出于安全拒绝执行。"
     return None
+
+
+def _run_command_fatal_reason(args: dict, ctx) -> str | None:
+    """审批闸 2.0 · ①"撞墙才问"的命令类判据（挂到 run_command 的 `Tool.fatal_reason_for`）。
+
+    判据跟 handler 内部 `_check_command_safety` 完全一致（同一个函数，不新造一套黑名单）——
+    命中的都是【致命/永不批】类（删根/提权/裸盘/格式化/fork炸弹/关机/远程执行/外传数据等，
+    见 `_DANGEROUS_PATTERNS`/`_ENV_LEAK_PATTERNS`/`_SHELL_OPERATORS`），黑名单优先级最高、
+    任何权限档都不给开口子（这三份清单里的模式经安全评审后判定"没有正当理由需要 Agent 自主跑"，
+    故意不设"可挽救、批准后放行"的中间档——这不是本单新引入的收紧，只是把原本【approval 卡通过后
+    handler 才二次拒绝】的既有行为，挪到 `_plan_tool_call` 更早的地方直接说清楚原因，
+    别让老板在 ask/auto_files 档看一张"确认执行"卡、点了也没用，也别让 full 档看着"已自动执行"、
+    结果其实是执行时才失败的糊涂账。"""
+    command = (args or {}).get("command") or ""
+    return _check_command_safety(command)
+
+
+# 审批闸 2.0 · ③ Roo 式安全前缀白名单：只读、无副作用的命令前缀，最长前缀匹配命中 → 任何权限档
+# （含"逐项确认"）都可以自动放行、不用弹卡。刻意保持这份清单短小、每条都明显无副作用——
+# 白名单越大风险面越大，宁可漏放（仍会走既有"跑权限档"的普通审批流程）也不错放。
+_SAFE_COMMAND_PREFIXES: tuple[str, ...] = (
+    "ls", "cat", "pwd", "echo", "head", "tail",
+    "git status", "git log", "git diff", "git branch",
+    "whoami", "date", "wc", "file", "stat", "df", "du", "which", "uname",
+)
+
+
+def _matches_safe_prefix(command: str) -> bool:
+    """最长前缀匹配：命令原文（原样或后跟一个空格）等于清单里的某条 → 命中。
+    按长度从长到短比对，防"git"这种裸前缀（本清单没有，注释留痕）误吞"git status"之外的危险子命令。"""
+    cmd = (command or "").strip().lower()
+    if not cmd:
+        return False
+    for prefix in sorted(_SAFE_COMMAND_PREFIXES, key=len, reverse=True):
+        if cmd == prefix or cmd.startswith(prefix + " "):
+            return True
+    return False
+
+
+# cat/head/tail 会把文件【内容】读进模型上下文——即便命令前缀在白名单里，也不能豁免过一遍
+# read_file 同款的敏感文件识别（_is_sensitive_file），否则 "cat ~/.ssh/id_rsa" 这种就绕开了
+# read_file 本该有的确认闸、零点击把密钥灌进模型上下文。ls/pwd/echo/git status 等不读文件内容，
+# 不受此限（只读文件名/状态列表，不算"内容"）。
+_CONTENT_READING_PREFIXES = ("cat", "head", "tail")
+
+
+def _run_command_safe_prefix(args: dict, ctx) -> bool:
+    """挂到 run_command 的 `Tool.safe_prefix_for`：命令命中安全前缀白名单 → 免弹审批卡直接跑。
+    先复核一遍 `_check_command_safety`（双保险，理论上安全前缀不会同时命中危险黑名单，
+    但判定壳子出错/清单以后被改坏时，危险黑名单必须优先赢）；
+    再对 cat/head/tail 这类"读文件内容"的命令，逐个参数过一遍 `_is_sensitive_file`——
+    命中就不豁免（退回常规审批流程，不是拒绝），防止零点击读敏感文件。"""
+    command = (args or {}).get("command") or ""
+    if _check_command_safety(command) is not None:
+        return False
+    if not _matches_safe_prefix(command):
+        return False
+    cmd = command.strip().lower()
+    if any(cmd == p or cmd.startswith(p + " ") for p in _CONTENT_READING_PREFIXES):
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            return False  # 参数解析不了（引号没配对等）→ 保守不豁免，走常规审批
+        for token in parts[1:]:
+            if not token.startswith("-") and _is_sensitive_file(token):
+                return False
+    return True
 
 
 def _kill_proc_group(proc, posix: bool) -> None:
@@ -1208,6 +1287,10 @@ _LOCAL_TOOLS = [
         approval_class="command",
         force_confirm=False,  # 跟权限档走:L1/L2弹卡确认、L3完全访问自己跑;危险黑名单在handler、与档位无关永远拦
         preview=preview_run_command,
+        # 审批闸 2.0：①命中危险黑名单 → _plan_tool_call 直接拒绝、不占审批卡名额（判据同 handler 内部）；
+        # ③命中安全前缀白名单 → 任何权限档都可自动放行、不弹卡。
+        fatal_reason_for=_run_command_fatal_reason,
+        safe_prefix_for=_run_command_safe_prefix,
     ),
     Tool(
         name="read_file",
