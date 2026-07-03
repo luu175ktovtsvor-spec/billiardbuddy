@@ -88,7 +88,9 @@ export function DesktopComposer({
   onRemoveFile,
   onOpenFile,
   workingDir,
+  workspaceDir,
   onPickWorkingDir,
+  onResetWorkingDir,
   knowledgePacks = [],
   onKnowledgePacksChange,
   outputStyle = "",
@@ -115,7 +117,10 @@ export function DesktopComposer({
   onOpenFile?: (path: string) => void;
   /** A4：当前存放位置（默认是首启自动建的作品文件夹），「+」菜单里显示当前值 + 换一个入口。 */
   workingDir?: string | null;
+  /** A4：首启自动建的默认作品文件夹；用于「换位置」后提供「恢复默认位置」入口。 */
+  workspaceDir?: string | null;
   onPickWorkingDir?: () => void;
+  onResetWorkingDir?: () => void;
   knowledgePacks?: string[];
   onKnowledgePacksChange?: (packs: string[]) => void;
   outputStyle?: string;
@@ -439,6 +444,19 @@ export function DesktopComposer({
                           <span className="block text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">换个存放位置</span>
                           {workingDir && <span className="block truncate text-[11px] text-[#86868b] dark:text-[#8a8c93]">当前：{baseName(workingDir)}</span>}
                         </span>
+                      </button>
+                    )}
+
+                    {/* A4：换过位置后，给一条回到默认作品文件夹的低调入口（去仪式化但不去控制权）。 */}
+                    {onResetWorkingDir && workingDir && workspaceDir && workingDir !== workspaceDir && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => { onResetWorkingDir(); setPlusMenuOpen(false); }}
+                        className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+                      >
+                        <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+                        <span className="block text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">恢复默认位置</span>
                       </button>
                     )}
 
