@@ -21,6 +21,10 @@ _MANUAL_FILTER_TABLES = {
     # media_jobs：生成工作室异步任务,隔离靠 media_jobs_service 各方法显式 .where(store_id==store.id);
     # 不进自动过滤(后台 runner 无租户上下文,会被 fail-safe 清空 → 任务永远查不到)。
     "media_jobs",
+    # scheduled_tasks：定时任务(D-Task-3)，进程内轮询 loop / 启动补跑都无租户上下文(不进自动过滤
+    # 会被 fail-safe 清空→到点永远查不到自己)；隔离靠 api/v1/scheduled_tasks.py 与
+    # services/agent/scheduled_tasks.py 各处显式 .where(store_id==)。
+    "scheduled_tasks",
     # 注：store_invitations/store_subscriptions/collab_tasks 是已删的 SaaS 表名，已从此集合清除。
 }
 
