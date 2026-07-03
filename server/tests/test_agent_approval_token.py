@@ -31,3 +31,9 @@ def test_missing_token_false():
 def test_empty_args_consistent():
     tok = sign_approval("make_poster", None)
     assert verify_approval("make_poster", {}, tok)  # None 与 {} 规范化一致
+
+
+def test_non_ascii_token_rejected_not_crashed():
+    """F-12 复审顺手修：`hmac.compare_digest` 比较 str 要求全 ASCII，畸形/非 ASCII 的伪造 token
+    此前会让 TypeError 冒出去（对调用方等于意外 500）；现在应该干净地判定"校验不通过"。"""
+    assert not verify_approval("make_poster", {"x": 1}, "这是伪造的token")

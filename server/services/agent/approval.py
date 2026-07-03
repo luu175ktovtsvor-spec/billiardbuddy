@@ -28,7 +28,16 @@ def sign_approval(tool: str, args: dict | None) -> str:
 
 
 def verify_approval(tool: str, args: dict | None, token: str | None) -> bool:
-    """token 与 (tool,args) 是否匹配。token 为空 → False（由调用方决定是否放行旧客户端）。"""
+    """token 与 (tool,args) 是否匹配。token 为空 → False（由调用方决定是否放行旧客户端）。
+
+    F-12 复审顺手修：`hmac.compare_digest` 比较两个 `str` 时要求全 ASCII，传入非 ASCII 字符的
+    伪造/畸形 token（用户手滑传中文、被篡改成乱码等）会直接抛 `TypeError`，把一次本该返回
+    "校验不通过"的正常业务判断变成未捕获异常（对调用方而言等于意外 500）。这里当作"校验失败"
+    统一处理，不再让格式不对的 token 变成异常——语义不变（依然只有精确匹配的合法 token 才通过），
+    只是把"格式非法"也归进"校验失败"这一个分支，而不是让它成为另一种（更糟的）失败模式。"""
     if not token:
         return False
-    return hmac.compare_digest(sign_approval(tool, args), token)
+    try:
+        return hmac.compare_digest(sign_approval(tool, args), token)
+    except TypeError:
+        return False

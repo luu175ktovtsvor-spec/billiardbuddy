@@ -137,6 +137,15 @@ jobs:
           else { Write-Host "BUILD_PUBLISHER!=1,跳过发布 worker 打包(安装包不含发布内核,核心功能不受影响)" }
         shell: pwsh
 
+      # ── ③b 影子 git 检查点(F-12)用的可移植 git 二进制:同 publisher-bin 的 gate 模式 ──
+      # 目前只建空目录让 electron-builder 不因缺源报错;真的下载/打包 Windows MinGit 便携版进
+      # resources/git-bin/ 是 G2(真机打包验收)的活——服务端 shadow_git.py 在没有这个二进制时
+      # 会自动退去找系统 git,再没有就静默降级到单文件备份,不影响出包/不影响核心功能。
+      - name: 影子 git 二进制占位目录
+        working-directory: desktop
+        run: New-Item -ItemType Directory -Force -Path resources/git-bin | Out-Null
+        shell: pwsh
+
       # ── ④ Electron 壳:打成 nsis 安装包 ──
       - name: desktop 依赖
         working-directory: desktop
