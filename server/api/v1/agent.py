@@ -1317,7 +1317,7 @@ async def agent_list_mcp(refresh: bool = False, user: User = Depends(get_current
 
 @router.get("/mcp/presets")
 async def agent_mcp_presets(user: User = Depends(get_current_user)):
-    """免 key 的官方 MCP server 预设（fetch/time/memory/DuckDuckGo），供界面"一键加"。"""
+    """出厂 MCP server 预设（现为空——原 fetch/time/DuckDuckGo 与内置工具重复已下线）；机制保留，供将来按需加。"""
     from services.agent.mcp_config import MCP_PRESETS
     return {"presets": MCP_PRESETS}
 

@@ -731,7 +731,7 @@ export function DesktopChatShell({
 
       {needsKey && !keyHintDismissed && (
         <div className="flex items-center gap-3 border-b border-[#007AFF]/20 bg-[#007AFF]/[0.06] px-5 py-2.5 text-[12.5px] text-[#1d1d1f] dark:text-[#e6e7e9]">
-          <span className="flex-1">AI 服务暂时没准备好。普通使用不用自己配 key；可以先重试，或到高级设置里检查自带模型配置。</span>
+          <span className="flex-1">AI 服务暂时没准备好。普通使用不用自己配 key；可以先重试。</span>
           <button onClick={() => setSettingsOpen(true)} className="shrink-0 rounded-md bg-[#007AFF] px-3 py-1 text-[12px] font-medium text-white transition hover:bg-[#0066d6] active:scale-[0.97]">去配置</button>
           <button onClick={() => setKeyHintDismissed(true)} aria-label="关闭" className="shrink-0 px-1 text-[#86868b] transition hover:text-[#1d1d1f] dark:hover:text-[#e6e7e9]">✕</button>
         </div>

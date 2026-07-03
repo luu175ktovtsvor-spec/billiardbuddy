@@ -668,7 +668,6 @@ export function DesktopChatThread({
   onStop,
   onRetry,
   onRedoAnswer,
-  onOpenSettings,
   onRecoverFromError,
   onMakeTask,
   onSaveArtifact,
@@ -799,15 +798,6 @@ export function DesktopChatThread({
                       </button>
                     )}
                     <CopyButton text={m.content.replace(/^⚠️\s*/, "")} />
-                    {onOpenSettings && !generating && (
-                      <button
-                        type="button"
-                        onClick={onOpenSettings}
-                        className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-[12px] font-medium text-[#6e6e73] transition hover:bg-black/[0.04] hover:text-[#1d1d1f] active:scale-[0.97] dark:bg-white/[0.04] dark:text-[#c8cace] dark:hover:bg-white/[0.08]"
-                      >
-                        <Maximize2 className="h-3 w-3" /> 高级设置
-                      </button>
-                    )}
                   </div>
                 </div>
               ) : (
