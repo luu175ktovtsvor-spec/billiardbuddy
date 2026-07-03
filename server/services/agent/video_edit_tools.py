@@ -10,11 +10,14 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
 from pathlib import Path
 
+from services import media_jobs_runner
+from services.agent.media_job_notify import make_video_job_done_hook
 from services.video_edit.projects import doc_path as _doc_path
 from services.video_edit.projects import load_doc as _load_doc
 from services.video_edit.projects import project_dir as _project_dir
@@ -123,7 +126,10 @@ async def auto_caption(args: dict, ctx) -> str:
 
 
 async def render_video(args: dict, ctx) -> str:
-    """把时间轴文档渲染成成片 mp4(给老板看的成品)。"""
+    """把时间轴文档提交到后台渲染成成片 mp4(给老板看的成品)，立即返回任务号(F-10：出片可能
+    几分钟，别在这里干等——旧版直接同步渲染会占死整轮对话，`loop.py` 的 wait_for(1800s) 只能兜底
+    不炸，救不了"卡住无进度")。做完后由 media_job_notify 把结果回灌进这条会话的对话轨迹 + 弹通知。
+    """
     from services.video_edit.assemble import render_timeline
 
     project = Path(str(args.get("project") or "")).name
@@ -139,15 +145,45 @@ async def render_video(args: dict, ctx) -> str:
     name = Path(str(args.get("output_name") or "成片")).name
     if not name.endswith(".mp4"):
         name += ".mp4"
-    out = _project_dir(project) / name
-    try:
-        render_timeline(doc, str(out), edit_dir=str(_project_dir(project)))
-    except Exception as e:  # noqa: BLE001
-        logger.exception("render_video 失败")
-        return f"出片时出错:{e}"
-
+    out_dir = _project_dir(project)
+    out = out_dir / name
     url = f"/uploads/edits/{project}/{name}"
-    return f"成片做好啦!👇(时长≈{doc.duration():.1f}秒)\n\n[点击查看视频]({url})"
+    duration = doc.duration()
+
+    store_id = getattr(getattr(ctx, "store", None), "id", None)
+    if store_id is None:
+        # 真实调用(agent 端点)ctx.store 恒为真;理论上不该发生——退化成人话报错，别让老板对着 500 发呆。
+        return "没有门店上下文，没法把出片交给后台任务（这通常不该发生，重开一次对话再试）。"
+    conv = getattr(ctx, "conversation_id", None)
+
+    async def work_fn(progress):
+        from core.tenant import set_tenant
+
+        set_tenant(store_id)
+        try:
+            await progress(15, "在出片了,好了叫你…")
+            await asyncio.to_thread(render_timeline, doc, str(out), edit_dir=str(out_dir))
+            return {"urls": [url], "is_video": True, "duration": duration}
+        finally:
+            set_tenant(None)
+
+    on_done = make_video_job_done_hook(
+        conversation_id=conv, success_title="视频剪好了", fail_title="视频没剪成",
+        format_success=lambda result: (
+            f"视频剪好了!👇(时长≈{duration:.1f}秒)\n\n"
+            f"[点击查看视频]({(result or {}).get('urls', [None])[0] or url})"
+        ),
+    )
+    try:
+        job_id = await media_jobs_runner.submit(
+            store_id, "video_render", work_fn,
+            params={"project": project, "name": name}, conversation_id=conv, on_done=on_done,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("render_video 提交后台任务失败")
+        return f"出片任务没提交成功:{e}"
+
+    return f"已经在后台出片了（任务号 {job_id}），好了我会告诉你，你先聊别的，不用干等。"
 
 
 # ────────────────────────────── 工具定义 + 注册 ──────────────────────────────
@@ -203,8 +239,9 @@ _VIDEO_EDIT_TOOLS = [
     ),
     Tool(
         name="render_video",
-        description="【出片】把时间轴渲染成最终竖屏成片 mp4 给老板看。挑好片段、配好字幕后调它。"
-                    "出的是给老板看的成品(不是对外发布),直接出、会返回视频链接。出片前最好先把方案讲给老板、他点头再出。",
+        description="【出片】把时间轴交给后台渲染成最终竖屏成片 mp4 给老板看，立即返回任务号，"
+                    "做好会告诉老板。挑好片段、配好字幕后调它。出的是给老板看的成品(不是对外发布)。"
+                    "出片前最好先把方案讲给老板、他点头再出。",
         parameters={"type": "object", "properties": {
             "project": {"type": "string", "description": "项目号"},
             "output_name": {"type": "string", "description": "成片文件名(可选,默认'成片')"},
@@ -212,7 +249,8 @@ _VIDEO_EDIT_TOOLS = [
         handler=render_video,
         deliverable=True,          # 给老板看的成品(前端渲染成可播视频)
         requires_approval=False,   # 出成品不弹安全审批(铁律:做成品给老板看≠对外动作)
-        timeout=1800,              # 渲染可能几分钟,给足超时
+        timeout=60,                # F-10：handler 只负责提交后台任务、近乎瞬间返回；真正渲染
+                                    # (可能几分钟)挪进 media_jobs 后台任务跑，不用再给几十分钟兜底。
     ),
 ]
 

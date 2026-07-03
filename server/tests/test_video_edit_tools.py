@@ -1,11 +1,25 @@
-"""视频剪辑 Agent 工具端到端:inventory → edit_timeline → render_video 全链(真 ffmpeg,打桩 whisper)。"""
+"""视频剪辑 Agent 工具端到端:inventory → edit_timeline → render_video 全链(真 ffmpeg,打桩 whisper)。
+
+F-10：render_video 改成"提交 media job 立即返回任务号"，真正渲染挪进后台任务——下面全链测试
+（test_full_pipeline）也跟着改成"给 ctx 一个真实 store/user(内存 DB) → 拿任务号 → 轮询 media_jobs
+到 done"，而不是直接断言同步返回值里有视频链接（那是旧的同步行为，已随实现一起作废）。
+"""
 import asyncio
 import json
 import subprocess
+import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
+import models  # noqa: F401
+from db.base import Base
+from models.store import Store
+from models.user import User
+from services import media_jobs_service as mj
+from services import media_jobs_runner as runner
 from services.agent import video_edit_tools as vt
 from services.agent.context import AgentContext
 from services.agent.registry import ToolRegistry
@@ -40,6 +54,33 @@ def setup(tmp_path, monkeypatch):
     return src
 
 
+async def _seed_store(db, sid):
+    u = User(id=uuid.uuid4(), phone="13800000002", password_hash="x", name="t")
+    db.add(u)
+    await db.flush()
+    db.add(Store(id=sid, owner_id=u.id, name="店"))
+    await db.commit()
+    return u.id
+
+
+async def _poll_job_done(sid, jid, tries=500):
+    got = None
+    for _ in range(tries):
+        await asyncio.sleep(0.01)
+        async with runner.async_session() as db:
+            got = await mj.get_job(db, jid, sid)
+        if got and got.status in ("done", "error"):
+            break
+    return got
+
+
+def _extract_job_id(tool_result: str) -> str:
+    import re
+    m = re.search(r"任务号\s*([0-9a-fA-F-]{8,})", tool_result)
+    assert m, f"没在工具返回文本里找到任务号:{tool_result}"
+    return m.group(1)
+
+
 def test_tools_registered():
     reg = ToolRegistry()
     n = vt.register_video_edit_tools(reg)
@@ -49,31 +90,160 @@ def test_tools_registered():
     assert reg.get("render_video").requires_approval is False  # 出成品不弹安全审批
 
 
-def test_full_pipeline(setup):
+def test_full_pipeline(setup, monkeypatch, tmp_path):
+    """全链路(真 ffmpeg)：inventory → edit_timeline → auto_caption 仍是同步；出片(render_video)
+    F-10 起改成提交 media job 立即返回任务号，这里轮询到 done 再断言真视频文件已经渲出来。"""
     src = setup
-    ctx = AgentContext()
 
-    # ① 理解素材
-    r1 = asyncio.run(vt.inventory_footage({"video_paths": [str(src)], "project": "proj1"}, ctx))
-    assert "项目号" in r1 and "proj1" in r1
-    assert vt._doc_path("proj1").exists()
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        sid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed_store(db, sid)
+        ctx = AgentContext(store=SimpleNamespace(id=sid), user=SimpleNamespace(id=uid),
+                           conversation_id="33333333-3333-3333-3333-333333333333")
 
-    # ② 挑两段进视频轨
-    r2 = asyncio.run(vt.edit_timeline({"project": "proj1", "operations": [
+        # ① 理解素材
+        r1 = await vt.inventory_footage({"video_paths": [str(src)], "project": "proj1"}, ctx)
+        assert "项目号" in r1 and "proj1" in r1
+        assert vt._doc_path("proj1").exists()
+
+        # ② 挑两段进视频轨
+        r2 = await vt.edit_timeline({"project": "proj1", "operations": [
+            {"op": "add_clip", "track": "v", "media": "m1", "src_in": 0.0, "src_out": 2.0},
+            {"op": "add_clip", "track": "v", "media": "m1", "src_in": 3.0, "src_out": 5.0},
+        ]}, ctx)
+        assert "改好了" in r2
+
+        # ③ 自动配字幕(口播 1-2s 落在第一段里)
+        r3 = await vt.auto_caption({"project": "proj1"}, ctx)
+        assert "字幕" in r3
+
+        # ④ 出片：立即拿到任务号(不再硬等)，轮询后台任务到 done
+        r4 = await vt.render_video({"project": "proj1", "output_name": "探店成片"}, ctx)
+        assert "后台" in r4 and "任务号" in r4
+        got = await _poll_job_done(sid, _extract_job_id(r4))
+        assert got is not None and got.status == "done", (got and got.status, got and got.error)
+        assert got.result["urls"] == ["/uploads/edits/proj1/探店成片.mp4"]
+
+        out = vt._project_dir("proj1") / "探店成片.mp4"
+        assert out.exists() and out.stat().st_size > 1000
+
+    asyncio.run(main())
+
+
+def test_render_video_job_completion_appends_transcript_and_notifies(setup, monkeypatch, tmp_path):
+    """render_video 完成后要把结果回灌进该会话的对话轨迹 + 弹通知(F-10)。用 fake render_timeline
+    顶掉真 ffmpeg(这条只验证 job/transcript/notify 三件事的接线，渲染本身已被 test_full_pipeline 验过)。"""
+    import services.agent.transcript as Tr
+
+    src = setup
+
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        monkeypatch.setattr(Tr.settings, "upload_dir", str(tmp_path / "uploads"))
+
+        notified = {}
+        monkeypatch.setattr(
+            "services.notify_service.push",
+            lambda title, body, kind="info", **m: notified.update(kind=kind, title=title),
+        )
+
+        def fake_render(doc, out_path, edit_dir):
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(out_path).write_bytes(b"FAKE-MP4")
+
+        monkeypatch.setattr("services.video_edit.assemble.render_timeline", fake_render)
+
+        sid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed_store(db, sid)
+        cid = "44444444-4444-4444-4444-444444444444"
+        ctx = AgentContext(store=SimpleNamespace(id=sid), user=SimpleNamespace(id=uid), conversation_id=cid)
+
+        await vt.inventory_footage({"video_paths": [str(src)], "project": "proj4"}, ctx)
+        await vt.edit_timeline({"project": "proj4", "operations": [
+            {"op": "add_clip", "track": "v", "media": "m1", "src_in": 0.0, "src_out": 2.0},
+        ]}, ctx)
+
+        r = await vt.render_video({"project": "proj4", "output_name": "成片4"}, ctx)
+        got = await _poll_job_done(sid, _extract_job_id(r))
+        assert got is not None and got.status == "done"
+
+        out = Tr.load_transcript(cid)
+        assert out is not None and len(out) == 1
+        assert "/uploads/edits/proj4/成片4.mp4" in out[0]["content"]
+        assert notified["kind"] == "media_job_done"
+
+    asyncio.run(main())
+
+
+def test_render_video_job_failure_appends_transcript_and_notifies(setup, monkeypatch, tmp_path):
+    """渲染半路炸了(如 ffmpeg 崩)→ 也要落一条"没剪成、原因 X" + 弹失败通知，别让老板干等。"""
+    import services.agent.transcript as Tr
+
+    src = setup
+
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        monkeypatch.setattr(Tr.settings, "upload_dir", str(tmp_path / "uploads"))
+
+        notified = {}
+        monkeypatch.setattr(
+            "services.notify_service.push",
+            lambda title, body, kind="info", **m: notified.update(kind=kind, body=body),
+        )
+
+        def boom_render(doc, out_path, edit_dir):
+            raise RuntimeError("ffmpeg 崩了")
+
+        monkeypatch.setattr("services.video_edit.assemble.render_timeline", boom_render)
+
+        sid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed_store(db, sid)
+        cid = "55555555-5555-5555-5555-555555555555"
+        ctx = AgentContext(store=SimpleNamespace(id=sid), user=SimpleNamespace(id=uid), conversation_id=cid)
+
+        await vt.inventory_footage({"video_paths": [str(src)], "project": "proj5"}, ctx)
+        await vt.edit_timeline({"project": "proj5", "operations": [
+            {"op": "add_clip", "track": "v", "media": "m1", "src_in": 0.0, "src_out": 2.0},
+        ]}, ctx)
+
+        r = await vt.render_video({"project": "proj5", "output_name": "成片5"}, ctx)
+        got = await _poll_job_done(sid, _extract_job_id(r))
+        assert got is not None and got.status == "error"
+        assert "ffmpeg 崩了" in (got.error or "")
+
+        out = Tr.load_transcript(cid)
+        assert out is not None and "没剪成" in out[0]["content"] and "ffmpeg 崩了" in out[0]["content"]
+        assert notified["kind"] == "media_job_failed"
+
+    asyncio.run(main())
+
+
+def test_render_video_without_store_context_returns_friendly_message(setup):
+    """理论上不该发生(真实调用 ctx.store 恒为真)，但 ctx.store 缺失时也不能崩、要给人话。"""
+    src = setup
+    ctx = AgentContext()  # store=None(默认)
+    asyncio.run(vt.inventory_footage({"video_paths": [str(src)], "project": "proj6"}, ctx))
+    asyncio.run(vt.edit_timeline({"project": "proj6", "operations": [
         {"op": "add_clip", "track": "v", "media": "m1", "src_in": 0.0, "src_out": 2.0},
-        {"op": "add_clip", "track": "v", "media": "m1", "src_in": 3.0, "src_out": 5.0},
     ]}, ctx))
-    assert "改好了" in r2
-
-    # ③ 自动配字幕(口播 1-2s 落在第一段里)
-    r3 = asyncio.run(vt.auto_caption({"project": "proj1"}, ctx))
-    assert "字幕" in r3
-
-    # ④ 出片
-    r4 = asyncio.run(vt.render_video({"project": "proj1", "output_name": "探店成片"}, ctx))
-    assert "/uploads/edits/proj1/探店成片.mp4" in r4
-    out = vt._project_dir("proj1") / "探店成片.mp4"
-    assert out.exists() and out.stat().st_size > 1000
+    r = asyncio.run(vt.render_video({"project": "proj6"}, ctx))
+    assert "门店上下文" in r
 
 
 def test_edit_rollback_on_bad_op(setup):

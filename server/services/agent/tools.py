@@ -26,6 +26,8 @@ from services.dashboard_service import get_today_dashboard
 from services.diagnosis_service import analyze_diagnosis
 from services.games_service import recommend_games as _recommend_games
 from services.outreach_service import generate_outreach
+from services import media_jobs_runner
+from services.agent.media_job_notify import make_video_job_done_hook
 
 logger = logging.getLogger(__name__)
 
@@ -805,7 +807,7 @@ def _video_approval_reason(args: dict, ctx) -> dict:
     return {
         "what": f"生成一条{duration}秒左右的{ratio}短视频（{mode}），用于抖音/视频号/快手/小红书这类社交媒体营销。",
         "why": "视频生成比图片慢、成本更高，确认后才会真正提交到视频模型。",
-        "impact": "确认后会消耗视频额度，通常需要等待 1-8 分钟；生成结果会保存到最近作品里，可回来继续查看。",
+        "impact": "确认后会在后台生成（通常 1-8 分钟），做好会告诉你，不用干等；生成结果会保存到最近作品里，可回来继续查看。",
     }
 
 
@@ -816,14 +818,16 @@ def _video_approval_reason(args: dict, ctx) -> dict:
     approval_class="spend",
     force_confirm=True,
     approval_reason=_video_approval_reason,
-    timeout=1860.0,           # 异步轮询波动大(实测达13.5分钟)，外层兜底设31分钟(略大于 video_timeout 30分钟)，别被默认短超时掐了
+    timeout=60.0,             # F-10：handler 只负责【提交后台任务】、近乎瞬间返回；真正生成(1-8分钟，
+                              # provider 内部按 settings.video_timeout=30分钟自行兜底)挪进 media_jobs
+                              # 后台任务跑，不再需要这里给几十分钟的外层超时（旧 1860s 已随之作废）。
     description=(
         "生成一段短视频（AI 文生视频 / 图生视频）。当用户要『做个视频 / 生成视频 / 让这张图动起来』时调用。"
         "你要当『提示词扩写师』：把用户的大白话需求扩写成一段【中文】画面+运镜描述——写清主体动作、"
         "镜头运动(推/拉/摇/移/环绕)、场景、节奏、氛围，别只丢一句话（那样出片很烂）。"
         "**图生视频**：把上一步 generate_image/make_poster 产出的图片地址（markdown 里的 /uploads/... 路径或 http 链接），"
         "或老板当场选定的图片，填进 first_frame，视频就会从这张图开始动起来。"
-        "视频生成较慢（约 1-几分钟）且要花钱，会先弹确认让老板点头后才真正生成。"
+        "视频生成较慢（约 1-几分钟）且要花钱，会先弹确认让老板点头；点头后在后台生成，做好会告诉老板，不用干等。"
     ),
     parameters={
         "type": "object",
@@ -837,8 +841,14 @@ def _video_approval_reason(args: dict, ctx) -> dict:
     },
 )
 async def generate_video(args: dict, ctx) -> str:
-    """文生视频/图生视频：审批通过后由 /agent/execute 执行（提交→轮询，几分钟）。
-    每轮只出一个视频 + 每用户单条在跑锁（护成本，与生图同款）。"""
+    """文生视频/图生视频：审批通过后由 /agent/execute 执行，但这里只负责【提交后台任务】立即
+    返回任务号——真正的生成挪进 media_jobs 后台跑（F-10：别再让老板对着一次裸 HTTP 硬等最多
+    31 分钟）。做完(成功/失败/超时统统会走到 media_jobs_runner 的 try/except)后由
+    `media_job_notify.make_video_job_done_hook` 把结果回灌进这条会话的对话轨迹 + 弹系统通知。
+
+    每轮只出一个视频 + 每用户单条在跑锁（护成本，与生图同款）；锁在【任务真正完成】时才由
+    on_done 释放——提交成功就放锁的话，第一条还没做完第二条就能抢跑，等于没锁。
+    """
     from services import video_service  # 延迟导入，避免 import 期重负载/循环依赖
 
     desc = (args.get("description") or "").strip()
@@ -862,27 +872,55 @@ async def generate_video(args: dict, ctx) -> str:
         return "你上一个视频还在生成中，等它出完再来下一个～"
     if uid:
         _VIDEO_GENERATING.add(uid)
-    try:
-        result = await video_service.generate_video(
-            db=ctx.db, store=ctx.store, user_id=ctx.user.id,
-            prompt=desc, ratio=_normalize_video_ratio(args),
-            duration=int(args.get("duration", 5) or 5),
-            first_frame=first_frame,
-            allow_paths=set(getattr(ctx, "allowed_paths", None) or []),
-            conversation_id=getattr(ctx, "conversation_id", None),
-        )
-        ctx._video_generated_this_run = True
-    except Exception as e:  # 失败给人话、别把异常栈丢给模型
-        return f"视频没生成出来：{e}"
-    finally:
+
+    store_id = getattr(ctx.store, "id", None)
+    user_id = getattr(ctx.user, "id", None)
+    conv = getattr(ctx, "conversation_id", None)
+    ratio = _normalize_video_ratio(args)
+    duration = int(args.get("duration", 5) or 5)
+    allow_paths = set(getattr(ctx, "allowed_paths", None) or [])
+
+    async def work_fn(progress):
+        from core.tenant import set_tenant
+        from db.session import async_session
+        from models.store import Store
+
+        set_tenant(store_id)
+        try:
+            await progress(5, "在生成视频…(要等几分钟)")
+            async with async_session() as wdb:
+                st = await wdb.get(Store, store_id)
+                res = await video_service.generate_video(
+                    db=wdb, store=st, user_id=user_id,
+                    prompt=desc, ratio=ratio, duration=duration,
+                    first_frame=first_frame, allow_paths=allow_paths, conversation_id=conv,
+                )
+            return {"video_url": res.get("video_url")}
+        finally:
+            set_tenant(None)
+
+    def _release_lock() -> None:
         if uid:
             _VIDEO_GENERATING.discard(uid)
 
-    url = result.get("video_url")
-    if not url:
-        return "视频已生成（但没拿到链接，去生成历史看看）。"
-    # 前端 VIDEO_TOOLS 分支据此抓出 url 渲染成 <video>；markdown 链接同时作可点击兜底。
-    return f"做好啦！👇\n\n[点击查看视频]({url})"
+    on_done = make_video_job_done_hook(
+        conversation_id=conv, on_release=_release_lock,
+        success_title="视频做好了", fail_title="视频没做成",
+    )
+    try:
+        job_id = await media_jobs_runner.submit(
+            store_id, "video", work_fn,
+            params={"description": desc[:200], "ratio": ratio, "duration": duration,
+                    "first_frame": bool(first_frame)},
+            conversation_id=conv, on_done=on_done,
+        )
+    except Exception as e:  # noqa: BLE001 — 连提交都没成功，锁不能焊死给下一条挡路
+        _release_lock()
+        return f"视频任务没提交成功：{e}"
+
+    ctx._video_generated_this_run = True
+    # 前端 DELIVERABLE_TOOLS 会把这段文本渲成卡片；真视频链接等 on_done 回灌进对话轨迹后才出现。
+    return f"已经在后台开始做这条视频了（任务号 {job_id}），做好我会告诉你，你先聊别的，不用干等。"
 
 
 # ---- 平台定制内容(抖音/小红书/快手/视频号)：内容生成 + 复制 handoff，不自动发 ----
