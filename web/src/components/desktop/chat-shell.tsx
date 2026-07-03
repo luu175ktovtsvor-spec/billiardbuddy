@@ -672,7 +672,8 @@ export function DesktopChatShell({
     void chat.send(
       `只改${where}下面这段，别动其它部分：\n\n【选中的原文】\n${selectedText}\n\n【改成】\n${instruction}`,
       undefined,
-      { displayText: "基于此调整" },
+      // 气泡显示用户实际敲的改法（而非通用"基于此调整"），让老板看得到自己说了啥；真实长 prompt 照常发后端。
+      { displayText: instruction.trim() ? `基于此调整：${instruction.trim()}` : "基于此调整" },
     );
   };
   // 右侧"确认采用/重做一版"定稿闸：看完拍板，把决定发回管家定稿或重出

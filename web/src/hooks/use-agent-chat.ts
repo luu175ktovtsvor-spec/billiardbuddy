@@ -388,7 +388,8 @@ export function useAgentChat(opts: AgentChatOptions) {
       .map((m) => ({ role: m.role, content: m.content.slice(0, 2000) }));
     // 副作用 sendWithHistory 绝不放进 setMessages 更新函数里——否则 React StrictMode 开发态会把 updater 跑两次→同一条消息双发请求。
     setMessages((prev) => [...prev, { role: "user", content: msg, ...(displayContent ? { displayContent } : {}) }]);
-    void sendWithHistory(msg, history, sourceRecId, overrides);
+    // 只把 selectedFiles 转发给 sendWithHistory；displayText 是纯渲染字段，绝不能进请求路径（守 C2 不变量：真实 content 不变）。
+    void sendWithHistory(msg, history, sourceRecId, { selectedFiles: overrides?.selectedFiles });
   }, [generating, sendWithHistory]);
 
   const confirmApproval = useCallback(async (idx: number, ap: ApprovalState) => {
