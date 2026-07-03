@@ -26,6 +26,13 @@ contextBridge.exposeInMainWorld("electron", {
   },
   captureScreen: () => ipcRenderer.invoke("desktop:captureScreen"),
 
+  // ── 系统通知(跨平台原生通知 · F1b) ──
+  // 渲染进程持久轮询后端通知中心(GET /api/v1/notifications?after=)，拿到新条目就调这里弹一条
+  // 系统原生通知(mac 通知中心 / Windows Toast)；不支持/失败会走 { ok:false }，故障安全不抛异常。
+  notification: {
+    show: (opts) => ipcRenderer.invoke("notification:show", opts || {}),
+  },
+
   // ── 口播模型按需下载(whisper 1.4G,首启后台下;下好前口播功能灰掉) ──
   models: {
     // 拿当前态 {phase:idle|downloading|ready|error, percent, error?}

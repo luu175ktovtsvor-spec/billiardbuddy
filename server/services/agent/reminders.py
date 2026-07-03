@@ -5,11 +5,11 @@ v1：仅"N 分钟后"相对定时（最简、无时区歧义）；app 关了不�
 """
 import json
 import os
-import subprocess
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from services import notify_service
 from services.agent.registry import tool
 
 
@@ -76,12 +76,8 @@ def due_reminders(now: datetime | None = None) -> list:
 
 
 def _fire(message: str) -> None:
-    try:
-        m = (message or "").replace('"', "'")[:120]
-        subprocess.run(["osascript", "-e", f'display notification "{m}" with title "定时提醒"'],
-                       capture_output=True, timeout=8)
-    except Exception:
-        pass
+    # F1b：归一到通知中心（跨平台），不再直连 osascript（mac-only）。push() 故障安全，不需要再包 try/except。
+    notify_service.push("定时提醒", (message or "")[:120], kind="reminder")
 
 
 async def reminders_loop(stop_event) -> None:
