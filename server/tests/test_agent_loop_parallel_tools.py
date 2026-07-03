@@ -316,7 +316,9 @@ def test_sync_loop_one_bad_read_does_not_sink_the_batch(monkeypatch):
 
 def test_sync_loop_call_counts_exact_under_concurrent_identical_calls():
     """并发安全：N 个并发调用同一工具+同参数（同一批里模型偶尔会重复调），anti-spin 计数不能因
-    并发而丢更新/错乱——最终计数必须恰好等于并发调用次数（借助 call_counts_lock 防御性加锁）。"""
+    并发而丢更新/错乱——最终计数必须恰好等于并发调用次数（借助 call_counts_lock 防御性加锁）。
+    F-8/F3：阈值改成"连续 5 次即断"（对齐 Gemini），第 5 次起才被拦，前 4 次正常执行——
+    这里跑够 _MAX_SAME_CALL+2 次，确保"正常执行"与"被拦"两段都覆盖到。"""
     from services.agent.context import AgentContext
     from services.agent.loop import _execute_tool, _MAX_SAME_CALL
 
@@ -326,18 +328,20 @@ def test_sync_loop_call_counts_exact_under_concurrent_identical_calls():
 
     reg = _reg(_ro_tool("probe", handler))
     ctx = AgentContext()
+    n = _MAX_SAME_CALL + 2
 
     async def _run():
-        return await asyncio.gather(*(_execute_tool(reg, "probe", {}, ctx) for _ in range(5)))
+        return await asyncio.gather(*(_execute_tool(reg, "probe", {}, ctx) for _ in range(n)))
 
     results = asyncio.run(_run())
     sig = 'probe|{}'
-    assert ctx.call_counts[sig] == 5
-    # 前 _MAX_SAME_CALL 次正常执行，超出的被"别重复了"拦下（无论并发调度顺序，计数总数都对）
+    assert ctx.call_counts[sig] == n
+    # 连续第 _MAX_SAME_CALL 次起被"别重复了"拦下，前 _MAX_SAME_CALL-1 次正常执行
+    # （无论并发调度顺序，总数都对——同签名之间没有别的签名打断，"连续"计数就是总数）。
     blocked = [r for r in results if "别重复了" in r]
     normal = [r for r in results if r == "x"]
-    assert len(blocked) == 5 - _MAX_SAME_CALL
-    assert len(normal) == _MAX_SAME_CALL
+    assert len(blocked) == n - (_MAX_SAME_CALL - 1)
+    assert len(normal) == _MAX_SAME_CALL - 1
 
 
 # ══════════════════════════════ 行为层：真跑计时（流式 run_agent_loop_stream） ══════════════════════════════
