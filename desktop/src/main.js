@@ -103,6 +103,22 @@ const windows = new Set();
 let backendReady = false;
 let frontendUrl = null; // prod 本地前端就绪后的 URL
 
+// ── 作品文件夹:首启自动建好一个固定目录,用户全程不用选"工作文件夹"。──────
+// 建在系统文档目录下(mac ~/Documents/台球助手,Windows 文档\台球助手)。这不是 Claude Code
+// 那种"选工作文件夹"的开发者仪式——只是"产出默认存哪",用户从头到尾不用知道这个概念。
+// 建失败(权限/磁盘异常等)优雅退回 null:前端据此退回旧的"无默认"行为,不崩、不弹错。
+let workspaceDir = null;
+function ensureWorkspaceDir() {
+  try {
+    const dir = path.join(app.getPath("documents"), "台球助手");
+    fs.mkdirSync(dir, { recursive: true });
+    workspaceDir = dir;
+  } catch (err) {
+    fileLog("[workspace] ", `作品文件夹创建失败,退回无默认:${String((err && err.message) || err)}`);
+    workspaceDir = null;
+  }
+}
+
 function createWindow(opts = {}) {
   const isMac = process.platform === "darwin";
   const isWin = process.platform === "win32";
@@ -391,6 +407,7 @@ ipcMain.handle("desktop:info", () => ({
   backendUrl: MANAGE_BACKEND ? backend.backendUrl() : null,
   backendReady,
   downloadsPath: app.getPath("downloads"),
+  workspaceDir, // 自动建好的作品文件夹(建失败则 null,前端退回旧的"无默认"行为)
   windowCount: BrowserWindow.getAllWindows().length,
 }));
 
@@ -446,6 +463,8 @@ app.whenReady().then(async () => {
   // 建任何窗口之前):worker 模式已 return 不会执行到、主流程则先于 splash 生效。必须与
   // package.json build.appId 逐字一致(否则打包身份 vs 运行时身份对不上,任务栏分组/通知照样错乱)。仅 Windows 生效。
   app.setAppUserModelId("cn.zzyppz.billiards.desktop");
+  // 作品文件夹要在窗口打开、前端第一次问 desktop:info 之前就建好(同步 mkdir,极快,不影响启动时长)。
+  ensureWorkspaceDir();
   // 首启进度窗:第一次打开要在用户机上解密知识库+建库,可能要一两分钟。
   // 没有它,用户只看到"点了没反应"→反复双击/以为坏了(1.0.0 真机事故)。仅装机包显示,dev 不弹。
   let splash = null;
