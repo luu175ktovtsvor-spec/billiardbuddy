@@ -5,6 +5,7 @@
  * chat 路由唯一渲染本壳（单窗口产品，旧手机网页版分支已随单窗口化删除）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Target, X } from "lucide-react";
 
 import { api, type RecentArtifact } from "@/lib/api";
 import { HELP_TEXT } from "@/lib/agent-copy";
@@ -535,7 +536,7 @@ export function DesktopChatShell({
       const r = await electron.files.pick({
         directory: true,
         createDirectory: true,
-        title: "选择或新建一个文件夹，AI 产出改存到这里",
+        title: "选择或新建一个文件夹，管家的产出都存到这里",
       });
       if (r.canceled || !r.paths?.length) return;
       updateWorkingDir(r.paths[0]);
@@ -749,7 +750,7 @@ export function DesktopChatShell({
         <div className="flex items-center gap-3 border-b border-[#007AFF]/20 bg-[#007AFF]/[0.06] px-5 py-2.5 text-[12.5px] text-[#1d1d1f] dark:text-[#e6e7e9]">
           <span className="flex-1">AI 服务暂时没准备好。普通使用不用自己配 key；可以先重试。</span>
           <button onClick={() => setSettingsOpen(true)} className="shrink-0 rounded-md bg-[#007AFF] px-3 py-1 text-[12px] font-medium text-white transition hover:bg-[#0066d6] active:scale-[0.97]">去配置</button>
-          <button onClick={() => setKeyHintDismissed(true)} aria-label="关闭" className="shrink-0 px-1 text-[#86868b] transition hover:text-[#1d1d1f] dark:hover:text-[#e6e7e9]">✕</button>
+          <button onClick={() => setKeyHintDismissed(true)} aria-label="关闭" className="shrink-0 px-1 text-[#86868b] transition hover:text-[#1d1d1f] dark:hover:text-[#e6e7e9]"><X className="h-3.5 w-3.5" /></button>
         </div>
       )}
 
@@ -813,7 +814,7 @@ export function DesktopChatShell({
             {workingDir && (
               <span
                 className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md bg-black/[0.04] px-2.5 py-1 text-[#6e6e73] dark:bg-white/[0.05] dark:text-[#9a9ca3]"
-                title={`${workingDir}（AI 产出默认存到这里；完全访问下仍能处理别处文件，想换个地方存就在输入框「+」菜单里选）`}
+                title={`${workingDir}（管家的产出默认存到这里；完全访问下仍能处理别处文件，想换个地方存就在输入框「+」菜单里选）`}
               >
                 <span className="truncate">存放位置：{baseName(workingDir)}</span>
               </span>
@@ -825,7 +826,7 @@ export function DesktopChatShell({
       {goal && (
         <div className="mx-auto w-full max-w-[820px] px-4 pb-1">
           <span className="inline-flex items-center gap-1.5 rounded-full bg-[#10a37f]/10 px-2.5 py-1 text-[12px] text-[#10a37f]">
-            🎯 目标：{goal}
+            <Target className="h-3 w-3 shrink-0" /> 目标：{goal}
             <button
               type="button"
               onClick={() => { setGoal(""); toast.success("目标已清除"); }}

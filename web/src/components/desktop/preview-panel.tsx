@@ -218,7 +218,7 @@ function SheetView({ path }: { path: string }) {
           <span className="flex items-center gap-1.5 text-[#86868b] dark:text-[#6e7077]"><Loader2 className="h-3 w-3 animate-spin" /> 正在保存到报表…</span>
         ) : toast ? (
           <span className={toast.bad ? "text-[#ff3b30] dark:text-[#ff8585]" : "text-[#10a37f]"}>
-            {toast.bad ? "改不了：" : "已改 · "}{toast.msg}
+            {toast.bad ? "修改失败：" : "已改 · "}{toast.msg}
           </span>
         ) : (
           <span className="text-[#86868b] dark:text-[#6e7077]">
@@ -370,8 +370,8 @@ function DiffPreview({ path, backupPath }: { path: string; backupPath?: string }
     let cancelled = false;
     setData(null); setErr(null); setMsg(null);
     api.fileDiff(path, backupPath)
-      .then((r) => { if (cancelled) return; if (r.ok) setData({ old: r.old || "", neu: r.new || "", backupPath: r.backup_path || backupPath }); else setErr(r.error || "拿不到对比"); })
-      .catch(() => { if (!cancelled) setErr("拿不到对比"); });
+      .then((r) => { if (cancelled) return; if (r.ok) setData({ old: r.old || "", neu: r.new || "", backupPath: r.backup_path || backupPath }); else setErr(r.error || "暂时打不开改动对比"); })
+      .catch(() => { if (!cancelled) setErr("暂时打不开改动对比"); });
     return () => { cancelled = true; };
   }, [path, backupPath]);
   const restore = async () => {

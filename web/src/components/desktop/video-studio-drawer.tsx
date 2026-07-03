@@ -69,7 +69,7 @@ export function VideoStudioDrawer({ open, onClose, conversationId }: Props) {
 
   const runInventory = useCallback(async () => {
     if (!paths.length) return;
-    setBusy(true); setError(null); setStage("正在听你视频里讲了啥、看有哪些镜头…");
+    setBusy(true); setError(null); setStage("正在识别视频里的语音和镜头…");
     try {
       const job = await runJob(() => api.videoEditInventory({ video_paths: paths, conversation_id: conversationId }));
       const res = (job.result || {}) as { project?: string; candidates?: VideoCandidate[] };
@@ -129,9 +129,9 @@ export function VideoStudioDrawer({ open, onClose, conversationId }: Props) {
     setBusy(true); setError(null);
     try {
       const r = await api.autoCaptionVideo(project);
-      if (!r.ok) setError((r.errors || []).join("；") || "自动字幕没加成");
+      if (!r.ok) setError((r.errors || []).join("；") || "自动字幕添加失败");
       setDoc(r.doc);
-      if (r.added === 0) setError("这些片段里没识别到口播,可手写促销字幕。");
+      if (r.added === 0) setError("这些片段里没识别到口播，可以手动添加字幕。");
     } catch (e) {
       setError(getErrorMessage(e));
     } finally { setBusy(false); }
@@ -139,7 +139,7 @@ export function VideoStudioDrawer({ open, onClose, conversationId }: Props) {
 
   const doRender = useCallback(async () => {
     if (!project) return;
-    setBusy(true); setError(null); setVideoUrl(null); setStage("在出片了,好了叫你…");
+    setBusy(true); setError(null); setVideoUrl(null); setStage("正在合成视频，完成后会提醒你…");
     try {
       const job = await runJob(() => api.renderVideoProject(project, "成片", conversationId));
       const res = (job.result || {}) as { urls?: string[] };
@@ -183,7 +183,7 @@ export function VideoStudioDrawer({ open, onClose, conversationId }: Props) {
             <div className="flex flex-col items-center gap-4 py-10 text-center">
               <Film size={40} className="text-[#c7c7cc]" />
               <div className="text-[13px] text-[#6e6e73] dark:text-[#9a9ca3]">
-                把你手机拍的视频丢进来,AI 帮你剪成竖屏成品短视频。
+                把你手机拍的视频丢进来，管家帮你剪成竖屏成品短视频。
               </div>
               <button className={BTN_PRIMARY} onClick={pickVideos}><Plus size={15} /> 选本机视频</button>
               {paths.length > 0 && (
