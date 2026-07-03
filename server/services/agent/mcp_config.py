@@ -16,31 +16,16 @@ from pathlib import Path
 
 # 免 key / 免费的官方 MCP server 预设：老板点一下就加，不用懂命令行。
 # 命令参照官方 modelcontextprotocol/servers 仓库（Python 系用 uvx，Node 系用 npx）。
+#
+# A2(2026-07-03)：出厂预设已清空。原先的 fetch/time/ddg 三条与内置工具重复（本项目已有内置网页
+# 抓取工具、模型自带时间感知、内置联网搜索工具），一键装上只是白白多一份下载和维护负担，对小白
+# 老板没有增量价值。memory 此前也因为和「店脑记忆」打架被移除（见下方历史注释）。
+# 机制本身（add_server/list_servers/.mcp.json 读写）原样保留，老板仍可在界面「自己加」手动配置
+# 任意 MCP server；未来如果真有值得推荐的免 key 预设，往这个列表里加回即可。
 MCP_PRESETS: list[dict] = [
-    {
-        "id": "fetch",
-        "name": "网页抓取 fetch",
-        "desc": "给个网址，抓回正文给管家读（看某篇文章/某个竞品页写了啥）。免 key。",
-        "command": "uvx",
-        "args": ["mcp-server-fetch"],
-    },
-    {
-        "id": "time",
-        "name": "时间 time",
-        "desc": "查当前时间、做时区换算。免 key。",
-        "command": "uvx",
-        "args": ["mcp-server-time"],
-    },
     # 注意：故意不预设 @modelcontextprotocol/server-memory。它是和「店脑记忆」竞争、且不互通的
     # 第二套记忆系统（各记各的、各注入各的），一键装上只会让老板困惑、两套记忆打架。
     # 老板真要它仍可在界面手动添加（add_server），但出厂预设不主动推它。
-    {
-        "id": "ddg",
-        "name": "联网搜索 DuckDuckGo",
-        "desc": "上网搜资料，不用申请任何 key（DuckDuckGo 免费搜）。",
-        "command": "uvx",
-        "args": ["duckduckgo-mcp-server"],
-    },
 ]
 
 
