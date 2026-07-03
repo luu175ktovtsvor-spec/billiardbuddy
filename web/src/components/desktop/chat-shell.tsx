@@ -316,7 +316,13 @@ export function DesktopChatShell({
       const r = await api.getAgentConversation(id);
       setSelectedFiles([]); // 切换会话：清掉上个会话的附件，避免误带
       try { setWorkingDir(localStorage.getItem(wdKey(id)) || null); } catch { setWorkingDir(null); }
-      chat.loadConversation(id, (r.messages || []) as ChatMessage[]);
+      // C2 历史回放半：后端 display_content 映射成前端约定的 displayContent 字段，没有则不带（落回 content 全文）。
+      const msgs: ChatMessage[] = (r.messages || []).map((m) => ({
+        role: m.role,
+        content: m.content,
+        ...(m.display_content ? { displayContent: m.display_content } : {}),
+      }));
+      chat.loadConversation(id, msgs);
     } catch { /* 忽略 */ }
   }, [chat]);
   const openRecent = useCallback((item: RecentArtifact) => {
