@@ -692,7 +692,6 @@ export function DesktopChatThread({
   onStop?: () => void;
   onRetry?: () => void;
   onRedoAnswer?: (content: string) => void;
-  onOpenSettings?: () => void;
   onRecoverFromError?: (content: string) => void;
   onMakeTask?: (content: string) => void;
   onSaveArtifact?: (content: string) => void;

@@ -795,7 +795,6 @@ export function DesktopChatShell({
           onStop={chat.stop}
           onRetry={chat.retry}
           onRedoAnswer={onRedoAnswer}
-          onOpenSettings={() => setSettingsOpen(true)}
           onRecoverFromError={onRecoverFromError}
           onMakeTask={onMakeTask}
           onSaveArtifact={onSaveArtifact}
@@ -923,7 +922,9 @@ export function DesktopChatShell({
         onRemoveFile={removeFile}
         onOpenFile={(p) => setPreview(/\.(xlsx|xlsm)$/i.test(p) ? { kind: "sheet", path: p } : { kind: "doc", path: p })}
         workingDir={workingDir}
+        workspaceDir={workspaceDir}
         onPickWorkingDir={electron?.files?.pick ? pickWorkingDir : undefined}
+        onResetWorkingDir={() => updateWorkingDir(workspaceDir)}
         disabled={chat.generating && !chat.canSteer}
         placeholder={chat.canSteer ? "任务进行中，可以随时补充或纠偏…" : undefined}
       />
