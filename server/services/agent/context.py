@@ -30,8 +30,20 @@ class AgentContext:
     goal: str = ""
     # 范围越界开关：True = 文件工具不再限于"内容库+选定文件"，可碰任意路径（高级·带风险）。
     full_disk_access: bool = False
-    # 防打转计数：同一工具+完全相同参数的调用次数（_execute_tool 跨轮维护），超阈值拦下逼模型换思路。
+    # ── 防打转（anti-spin）第一层：同一工具+完全相同参数【连续】调用次数 ──
+    # F-8/F3：语义从"跨轮累计"改成"连续"——被别的调用（哪怕是别的参数）打断就清零重来，不再是
+    # 只要出现过就一直往上加。实现：last_call_sig 记"上一次调用的签名"，签名一变就清空 call_counts
+    # 重新计（见 loop.py `_execute_tool`）；同一签名不间断反复出现时，call_counts[sig] 就是它的
+    # 连续次数，语义与旧版完全一致（这也是保留 dict 结构、没有直接改成单个整数计数器的原因——
+    # 老测试 `ctx.call_counts[sig]` 这种按签名取值的读法不用改）。
     call_counts: dict = field(default_factory=dict)
+    # 见上：与 call_counts 配合维护"连续"语义的哨兵——记上一次调用（不论有没有被拦）的签名。
+    last_call_sig: str | None = None
+    # ── 防打转第二层（F-8/F3）：抄 OpenHands StuckDetector 四模式，命中后回灌一句"我好像在原地
+    # 打转，要不要换个思路？"——本轮打转只问一次，别刷屏；这里记"这轮还没消退的打转是不是已经问过了"。
+    # detect_stuck 再次判定为"不打转"（老板插了话 / 模型自己换了思路 / 窗口自然滑出）→ 清 False，
+    # 下次再命中新的打转会重新问一次。见 loop.py `_maybe_flag_stuck`。
+    stuck_hint_active: bool = False
     # full(跳过确认)模式下，本轮 Agent 运行内已「免确认自动放行的对外/写入动作」次数；
     # 幕后静默兜底：超上限即使 full 也强制弹确认——防批量自动对外/写入失控(B-5/C-1)。
     auto_spend_count: int = 0

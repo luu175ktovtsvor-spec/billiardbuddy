@@ -37,6 +37,7 @@ from services.agent.local_tools import (  # 无循环依赖;注册 DESKTOP_LOCAL
 )
 from services.agent.message_repair import ensure_tool_pairing
 from services.agent.registry import ToolRegistry
+from services.agent.stuck_detector import detect_stuck  # F-8/F3 防打转第二层：四模式打转检测（纯函数）
 from services.agent.web_tools import (  # F4 Focus Chain：与 todo_write 共用同一份清单真相源/渲染，不重复实现
     _normalize_todos,
     format_todo_checklist,
@@ -191,8 +192,11 @@ _MAX_TOOL_RESULT_CHARS = 12000
 _MICROCOMPACT_KEEP = 4
 _CLEARED_RESULT_MARK = "[旧的查询结果已清理以省上下文；需要可重新查]"
 
-# 防打转（anti-spin）：同一工具 + 完全相同参数最多放行几次；再多结果也不会变（是在空转），拦下逼模型换思路。
-_MAX_SAME_CALL = 3
+# 防打转（anti-spin）第一层：同一工具 + 完全相同参数【连续】达到这个次数就断（第 5 次直接拦、不执行）。
+# F-8/F3：阈值对齐 Gemini CLI 的 TOOL_CALL_LOOP_THRESHOLD=5（"连续 5 次同签名即断"）；语义从旧版
+# "跨轮累计超过 3 次"改成"连续"——中途被别的调用（哪怕参数不同）打断就清零重来，见 context.py
+# call_counts/last_call_sig 注释与下面 `_execute_tool` 的实现。
+_MAX_SAME_CALL = 5
 
 # ── SH-6 三级上下文压缩 · 第三级 autocompact（超长对话顶满窗口时的语义兜底）──
 # 前两级（SH-3 落盘 _cap_tool_result / microcompact 清旧只读结果）都是零 LLM 的轻压缩；
@@ -799,6 +803,57 @@ def _maybe_remind_progress(messages: list[dict], ctx) -> bool:
     return True
 
 
+# ══════════════════════════════ F-8/F3 防打转第二层（抄 OpenHands StuckDetector 四模式）══════════════════════════════
+# 第一层（上面 _MAX_SAME_CALL）只挡"字面完全相同的单个调用连续出现"；第二层额外挡"跨轮花样打转"——
+# 同一个操作一直报错、纯 A-B-A-B 交替、纯文本空转独白——这些第一层看不见（因为参数没变但夹了别的
+# 调用，或参数根本没重复）。命中后不硬停（那是第一层/max_turns 的活），而是【软提醒】：回灌一句
+# 大白话原话 + 一条系统指令逼模型换思路，让老板当场能看见、能纠偏，不是默默烧到 max_turns 才发现。
+#
+# 注入手法照抄 loop 里已有的"预算催促/续写恢复"那套 nudge 惯用法（append 一条 assistant 消息 +
+# 一条 user 角色的系统提示、然后照常 continue 循环）——不新起一套机制。⚠️ 展示给老板看这句话的
+# 具体通道，同步/流式两路要分开处理（同步没有事件通道，只回灌文本进 messages 即可）：
+#   - 流式：额外吐一个 `context_note` 事件（F9 已有的"低调系统提示、灰色内联、不算真实对话"通道——
+#     复用它而不是字面重用 "steering" 事件类型，是刻意的：前端 onSteering 把内容当【用户说的话】渲染
+#     成 role=user 的聊天气泡（见 web/src/hooks/use-agent-chat.ts），"我好像在原地打转"这句明明是
+#     AI/系统自己的判断，若套用 steering 通道会在界面上显示成"老板自己说了这句话"，是真实的展示
+#     bug；context_note 通道语义（"系统的一句旁白，不是对话正文"）与这里完全对上，且同样是现成
+#     机制、零新增前端代码）。
+#   - 同步：没有事件通道，`_maybe_flag_stuck` 只把这两条消息回灌进 `messages`，调用方不必再额外
+#     记一笔 step（同步调用方多是子代理/程序化场景，能在 messages 里看到这两条已经足够）。
+_STUCK_HINT_MSG = "我好像在原地打转，要不要换个思路？"
+_STUCK_NUDGE_MSG = (
+    "[系统提醒] 检测到你可能卡在重复模式里（{pattern}），没有实质进展。"
+    "别再重复刚才的调用/说法了——换一个完全不同的角度重新想，或者跟老板说清楚卡在哪、"
+    "问他要不要调整方向。"
+)
+
+
+def _maybe_flag_stuck(messages: list[dict], ctx) -> str | None:
+    """第二层打转检测：命中且这轮打转还没问过 → 回灌【assistant 说了这句原话 + 一条系统提示逼它
+    换思路】，返回这句原话（调用方据此再决定要不要吐事件/记步骤）。
+
+    "只问一次、别刷屏"：`ctx.stuck_hint_active` 记这轮打转是不是已经问过；`detect_stuck` 只要一次
+    判定为"不打转"（老板插了话 / 模型自己换了思路让窗口不再匹配 / 窗口自然滑出）就清 False，
+    下次再命中新的打转会重新问一次。"用户插话清零"不需要在这里单独处理——`detect_stuck` 本身
+    只看【最后一条真人 user 消息】之后的部分，老板一插话，窗口边界自然就往后挪了。
+
+    ⚠️ 位置纪律同 `_drain_steering`/`_maybe_remind_progress`：只能在【一批 tool 结果全部追加、
+    配对完整之后】，或【已经把本轮 assistant 文本 append 回去之后】调用——user 消息不能插在
+    tool 结果配对中间。"""
+    if ctx is None:
+        return None
+    result = detect_stuck(messages)
+    if not result.stuck:
+        ctx.stuck_hint_active = False
+        return None
+    if getattr(ctx, "stuck_hint_active", False):
+        return None  # 这轮打转已经问过一次了，别刷屏；等它自然消退或老板插话后才会再问
+    ctx.stuck_hint_active = True
+    messages.append({"role": "assistant", "content": _STUCK_HINT_MSG})
+    messages.append({"role": "user", "content": _STUCK_NUDGE_MSG.format(pattern=result.detail or "反复重复")})
+    return _STUCK_HINT_MSG
+
+
 def _file_target_oob(tool, args: dict, ctx) -> str | None:
     """审批闸 2.0 · ① 文件类越界预判：写改类文件工具（`approval_class == "file"`）给了 `path`/
     `output_path` 时，判断这些目标此刻会不会撞沙箱墙——复用 `local_tools.is_path_allowed`（语义与
@@ -1207,6 +1262,9 @@ async def run_agent_loop(
             if _budget == _BUDGET_PUSH:
                 if resp.content:
                     messages.append({"role": "assistant", "content": resp.content})
+                # F-8/F3 第二层：这条分支是"模型一直只出文本、不调工具"最可能反复走到的地方
+                # （独白模式的现实触发口），先查一遍打转再照常推预算催促语，两条 nudge 不冲突。
+                _maybe_flag_stuck(messages, ctx)
                 messages.append({"role": "user", "content": _BUDGET_PUSH_MSG})
                 continue
             if not stop_blocked:
@@ -1337,6 +1395,10 @@ async def run_agent_loop(
         # 方向盘：本批工具做完、下次调模型前，把跑动中用户捎的话注入（尾部追加，保前缀缓存），下一轮当场改道。
         if _drain_steering(messages, ctx):
             turns_limit = min(max_turns + steer_extra_cap, turns_limit + _STEER_EXTRA_TURNS)
+        # F-8/F3 第二层：本批工具执行完、结果都已回灌 → 查一遍最近历史是不是在打转（同 action+同
+        # observation 重复/同 action 连续报错/独白/ABAB 交替），命中就回灌一句"我好像在原地打转"
+        # + 换思路指令，别默默烧到 max_turns。同步入口没有事件通道，只回灌文本即可。
+        _maybe_flag_stuck(messages, ctx)
         # F4 Focus Chain：连续多次工具调用都没更新进度清单 → 尾部追加一句提醒（带百分比），下一轮模型看到。
         _maybe_remind_progress(messages, ctx)
 
@@ -1390,7 +1452,10 @@ async def _execute_tool(registry: ToolRegistry, name: str | None, args: dict, ct
     tool = registry.get(name) if name else None
     if tool is None:
         return f"[工具不存在] {name}"
-    # 防打转（anti-spin）：同一工具+完全相同参数反复调 → 结果不会变，拦下逼它换思路（计数存 ctx、跨轮累计）
+    # 防打转（anti-spin）第一层：同一工具+完全相同参数【连续】反复调 → 结果不会变，拦下逼它换思路。
+    # F-8/F3："连续"语义——签名一变（哪怕只是中途穿插了别的调用）就清零重来，不是只要出现过就
+    # 跨轮累计；实现：last_call_sig 记上一次调用的签名，不同就清空 call_counts 重新计数（详见
+    # context.py 对应字段注释）。
     try:
         sig = f"{name}|{json.dumps(args, sort_keys=True, ensure_ascii=False)}"
     except (TypeError, ValueError):
@@ -1398,13 +1463,20 @@ async def _execute_tool(registry: ToolRegistry, name: str | None, args: dict, ct
     # F-7 并发安全：同一批只读工具经 asyncio.gather 并发跑时，这段计数读改写可能被多个协程"同时"碰。
     # 加锁是防御性的（见 context.py call_counts_lock 注释）——保证临界区里不管以后加不加 await，
     # 计数都不会丢/错乱。惰性建锁：同一个 ctx 全程只建一次、复用同一把。
+    # ⚠️ 并发下"连续"语义仍然成立：多个签名并发到达时，谁先抢到锁谁先把 last_call_sig 改成自己的、
+    # 顺带清掉别人刚记的计数——这不是 bug，是"这几个调用彼此打断了对方的连续性"的正确体现（它们
+    # 各自在被清空前已经检查过、可以正常执行；只有真·同签名的连续出现才会让计数一路涨上去，
+    # 与调度顺序无关，见 tests/test_agent_loop_parallel_tools.py 的并发正确性验证）。
     if ctx.call_counts_lock is None:
         ctx.call_counts_lock = asyncio.Lock()
     async with ctx.call_counts_lock:
+        if ctx.last_call_sig != sig:
+            ctx.call_counts.clear()
+            ctx.last_call_sig = sig
         ctx.call_counts[sig] = ctx.call_counts.get(sig, 0) + 1
         call_count = ctx.call_counts[sig]
-    if call_count > _MAX_SAME_CALL:
-        return (f"[别重复了] 你已用完全相同的参数调用 {name} {call_count} 次，结果不会变。"
+    if call_count >= _MAX_SAME_CALL:
+        return (f"[别重复了] 你已经连续用完全相同的参数调用 {name} {call_count} 次，结果不会变。"
                 f"请换个参数/思路，或直接根据已有信息回答老板，别再重复调它。")
     # PreToolUse hook（借鉴 cc-haha）：工具执行前可拦截（如发布前敏感词检查 / 群发前校验名单）。故障安全。
     deny = await run_pre_tool_hooks(name, args, ctx)
@@ -1828,6 +1900,11 @@ async def run_agent_loop_stream(
             if _budget == _BUDGET_PUSH:
                 if text:
                     messages.append({"role": "assistant", "content": text})
+                # F-8/F3 第二层：同步路径同样逻辑，别只改一处（见上面 run_agent_loop）——流式这里
+                # 额外吐一个 context_note 事件，让老板看得见这句大白话提醒。
+                _stuck_hint = _maybe_flag_stuck(messages, ctx)
+                if _stuck_hint:
+                    yield {"type": "context_note", "content": _stuck_hint}
                 messages.append({"role": "user", "content": _BUDGET_PUSH_MSG})
                 continue
             if not stop_blocked:
@@ -1988,6 +2065,11 @@ async def run_agent_loop_stream(
             yield {"type": "steering", "content": _s}
         if _steered:
             turns_limit = min(max_turns + steer_extra_cap, turns_limit + _STEER_EXTRA_TURNS)
+        # F-8/F3 第二层：本批工具执行完、结果都已回灌 → 查一遍是不是在打转，命中就回灌大白话提醒 +
+        # 吐一个 context_note 事件让老板看得见。⚠️ 同步路径同样逻辑，别只改一处（见上面 run_agent_loop）。
+        _stuck_hint = _maybe_flag_stuck(messages, ctx)
+        if _stuck_hint:
+            yield {"type": "context_note", "content": _stuck_hint}
         # F4 Focus Chain：连续多次工具调用都没更新进度清单 → 尾部追加一句提醒（带百分比）。
         # ⚠️ 同步路径同样逻辑，别只改一处（见上面 run_agent_loop）。
         _maybe_remind_progress(messages, ctx)
