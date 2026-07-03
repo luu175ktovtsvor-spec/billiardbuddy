@@ -11,11 +11,14 @@ export function CopyButton({
   label = "一键复制",
   copiedLabel = "已复制",
   hint = "去微信粘贴吧",
+  iconOnly = false,
 }: {
   text: string;
   label?: string;
   copiedLabel?: string;
   hint?: string;
+  /** C3：动作栏收敛成纯图标常驻位——只留图标，靠 title 做 hover 提示，文字不再上墙。 */
+  iconOnly?: boolean;
 }) {
   const [state, setState] = useState<CopyState>("idle");
 
@@ -26,33 +29,46 @@ export function CopyButton({
     setTimeout(() => setState("idle"), ok ? 3000 : 4500);
   };
 
+  const idleTitle = state === "copied" ? copiedLabel : state === "failed" ? "复制失败" : label;
+
   return (
     <div className="relative">
       <button
         type="button"
         onClick={handleCopy}
-        className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-          state === "copied"
-            ? "bg-emerald-50 text-emerald-600 border border-emerald-200"
-            : state === "failed"
-              ? "bg-red-50 text-red-600 border border-red-200"
-              : "bg-white text-slate-700 hover:bg-slate-50"
-        }`}
+        title={iconOnly ? idleTitle : undefined}
+        className={
+          iconOnly
+            ? `flex h-7 w-7 items-center justify-center rounded-md transition active:scale-[0.97] ${
+                state === "copied"
+                  ? "text-emerald-600"
+                  : state === "failed"
+                    ? "text-red-600"
+                    : "text-[#86868b] hover:bg-black/[0.04] hover:text-[#1d1d1f] dark:text-[#8a8c93] dark:hover:bg-white/[0.06] dark:hover:text-[#e6e7e9]"
+              }`
+            : `inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                state === "copied"
+                  ? "bg-emerald-50 text-emerald-600 border border-emerald-200"
+                  : state === "failed"
+                    ? "bg-red-50 text-red-600 border border-red-200"
+                    : "bg-white text-slate-700 hover:bg-slate-50"
+              }`
+        }
       >
         {state === "copied" ? (
           <>
             <Check className="h-4 w-4" />
-            {copiedLabel}
+            {!iconOnly && copiedLabel}
           </>
         ) : state === "failed" ? (
           <>
             <AlertCircle className="h-4 w-4" />
-            复制失败
+            {!iconOnly && "复制失败"}
           </>
         ) : (
           <>
             <Copy className="h-4 w-4" />
-            {label}
+            {!iconOnly && label}
           </>
         )}
       </button>
