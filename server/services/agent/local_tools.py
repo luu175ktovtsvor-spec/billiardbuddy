@@ -575,7 +575,13 @@ def _run_command_fatal_reason(args: dict, ctx) -> str | None:
     故意不设"可挽救、批准后放行"的中间档——这不是本单新引入的收紧，只是把原本【approval 卡通过后
     handler 才二次拒绝】的既有行为，挪到 `_plan_tool_call` 更早的地方直接说清楚原因，
     别让老板在 ask/auto_files 档看一张"确认执行"卡、点了也没用，也别让 full 档看着"已自动执行"、
-    结果其实是执行时才失败的糊涂账。"""
+    结果其实是执行时才失败的糊涂账。
+
+    Minor #4（审批闸 2.0 复审留痕）：这个钩子（以及下面 `_run_command_safe_prefix`）故意不看
+    `ctx.full_disk_access`——即使它是 False，安全前缀照样会被判定"可放行"、不弹卡。这不是漏洞：
+    `run_command` 的 handler 一开头有硬门控（见 `run_command` 内 `if not ctx.full_disk_access:
+    return "跑命令需要先开启「完全访问模式」"`），没开完全访问模式时无论这里判不判"安全"，
+    工具最终都跑不起来、只会吐这句提示——这两个钩子只影响"要不要弹审批卡"，兜底闸门始终在 handler。"""
     command = (args or {}).get("command") or ""
     return _check_command_safety(command)
 
@@ -583,22 +589,68 @@ def _run_command_fatal_reason(args: dict, ctx) -> str | None:
 # 审批闸 2.0 · ③ Roo 式安全前缀白名单：只读、无副作用的命令前缀，最长前缀匹配命中 → 任何权限档
 # （含"逐项确认"）都可以自动放行、不用弹卡。刻意保持这份清单短小、每条都明显无副作用——
 # 白名单越大风险面越大，宁可漏放（仍会走既有"跑权限档"的普通审批流程）也不错放。
+#
+# ⚠️ 审批闸 2.0 复审修复（Important #2）：`date` 整条移除——`date -s ...` 能改系统时间，不是只读。
+# `git branch`/`git log`/`git diff` 保留前缀本身，但额外过 `_SAFE_PREFIX_EXTRA_VALIDATORS`：
+# 光"前缀对上"不够，`git branch <name>`/`git branch -D <name>` 能建/删/改分支，
+# `git log --output=<file>`/`git diff --output=<file>` 是文档化的真实参数、能把内容写到沙箱外
+# 任意文件路径——都不是"只读无副作用"。命中前缀但没过 extra 校验 → 不豁免（退回常规审批，不是拒绝）。
 _SAFE_COMMAND_PREFIXES: tuple[str, ...] = (
     "ls", "cat", "pwd", "echo", "head", "tail",
     "git status", "git log", "git diff", "git branch",
-    "whoami", "date", "wc", "file", "stat", "df", "du", "which", "uname",
+    "whoami", "wc", "file", "stat", "df", "du", "which", "uname",
 )
 
 
+def _git_branch_extra_safe(tokens: list[str]) -> bool:
+    """裸 `git branch`（列出分支）是真只读；一旦带参数——不管是分支名（新建）还是
+    `-d/-D/-m/-M/-c/-C/--delete/--move/--copy/--set-upstream-to` 等（删/改名/建）——
+    都可能改动分支，一律不豁免（退回常规审批）。"""
+    return len(tokens) == 0
+
+
+def _git_log_diff_extra_safe(tokens: list[str]) -> bool:
+    """`git log`/`git diff` 本身只读，但 `--output`/`--output=<file>` 是文档化的真实参数，
+    能把命令输出写到任意文件路径（不受咱们的文件工具沙箱约束）——命中就不豁免；
+    修订号/路径/格式化等其它参数不改动仓库状态、也不写文件，放行。"""
+    for t in tokens:
+        if t == "--output" or t.startswith("--output="):
+            return False
+    return True
+
+
+# 命中前缀后还要过的"额外参数"校验器——没登记的前缀（ls/cat/pwd/...等）视为整条前缀本身
+# 已经无条件安全，不需要再看后面跟了什么。
+_SAFE_PREFIX_EXTRA_VALIDATORS: dict = {
+    "git branch": _git_branch_extra_safe,
+    "git log": _git_log_diff_extra_safe,
+    "git diff": _git_log_diff_extra_safe,
+}
+
+
 def _matches_safe_prefix(command: str) -> bool:
-    """最长前缀匹配：命令原文（原样或后跟一个空格）等于清单里的某条 → 命中。
-    按长度从长到短比对，防"git"这种裸前缀（本清单没有，注释留痕）误吞"git status"之外的危险子命令。"""
+    """最长前缀匹配：命令原文（原样或后跟一个空格）等于清单里的某条 → 命中；
+    若该前缀在 `_SAFE_PREFIX_EXTRA_VALIDATORS` 登记了校验器，命中后还要让"前缀之后的部分"
+    过一遍它——校验不过就不算命中（退回常规审批），不会因为前缀对上就无脑放行。
+    按长度从长到短比对，防"git"这种裸前缀（本清单没有，注释留痕）误吞"git push --force"之外的危险子命令。"""
     cmd = (command or "").strip().lower()
     if not cmd:
         return False
     for prefix in sorted(_SAFE_COMMAND_PREFIXES, key=len, reverse=True):
-        if cmd == prefix or cmd.startswith(prefix + " "):
+        if cmd == prefix:
+            extra = ""
+        elif cmd.startswith(prefix + " "):
+            extra = cmd[len(prefix):].strip()
+        else:
+            continue
+        validator = _SAFE_PREFIX_EXTRA_VALIDATORS.get(prefix)
+        if validator is None:
             return True
+        try:
+            extra_tokens = shlex.split(extra) if extra else []
+        except ValueError:
+            return False  # 参数解析不了（引号没配对等）→ 保守不豁免，走常规审批
+        return validator(extra_tokens)
     return False
 
 

@@ -21,6 +21,7 @@ import pytest
 from api.v1.agent import agent_execute, AgentExecuteRequest
 from core.exceptions import AIServiceError
 from services.agent import hooks as hooks_mod
+from services.agent import local_tools as lt
 from services.agent.approval import sign_approval
 from services.agent.registry import Tool, default_registry
 
@@ -173,5 +174,81 @@ def test_execute_business_exception_still_propagates():
             _exec(body)
         assert ei.value.status_code == 429
         assert ei.value.message == "本月使用量已达上限"
+    finally:
+        _unregister(name)
+
+
+# ══════════════════ 审批闸 2.0 复审修复 · Critical #1：批后重跑要真的跑通 ══════════════════
+#
+# 背景：越界文件写会被 loop 转成审批卡（`_file_target_oob`）；老板点"允许"后，前端带着
+# 当初提案的 tool/args/token 回调 /agent/execute。这里重建的 ctx 若只信 body.selected_files
+# 拼 allowed_paths（不含刚被批准的越界路径），write_file/edit_image 里的 `_resolve` 会照样
+# 抛 ValueError——而这条端点跟主循环不同、没有把工具异常吞成字符串回灌的机制，未捕获的
+# ValueError 会一路冒到全局异常处理变成一句不知所云的 500。对 full 档是行为倒退：原来至少
+# 静默失败还能给老板回灌人话，现在弹卡点了确认反而收到"服务器内部错误"。
+#
+# 修法：签名验证（HMAC 绑定 (tool, 完整 args)，含 path/output_path）通过后，才把这组 args 里
+# 的 path/output_path 一次性并入本次请求的 ctx.allowed_paths——这是兑现闸已经放行的授权，
+# 不做跨请求持久化。下面三条测试锁：① path 越界，签名对得上就能真写成功；② output_path
+# 越界（edit_image 这类另存场景）同样被一并授权；③ 签名对不上/缺失，绝不能白拿到这份
+# 一次性授权（防止这个修复本身变成绕过闸的后门）。
+
+def test_execute_authorizes_signed_oob_path_write(tmp_path, monkeypatch):
+    lib = tmp_path / "library"
+    lib.mkdir()
+    monkeypatch.setenv("DESKTOP_LIBRARY_DIR", str(lib))
+    outside = tmp_path / "外部报表.txt"
+
+    name = f"__test_exec_oob_write_{uuid.uuid4().hex[:8]}"
+    _register_temp_tool(name, lt.write_file, approval_class="file")
+    try:
+        args = {"path": str(outside), "content": "老板批准写这份"}
+        token = sign_approval(name, args)
+        body = AgentExecuteRequest(tool=name, args=args, token=token, full_disk_access=False)
+        res = _exec(body)
+        assert "已写入" in res["result"], f"越界写在签名批准后应真正执行成功，而不是 500/异常：{res}"
+        assert outside.exists()
+        assert outside.read_text(encoding="utf-8") == "老板批准写这份"
+    finally:
+        _unregister(name)
+
+
+def test_execute_authorizes_signed_oob_output_path(tmp_path, monkeypatch):
+    """edit_image 一类工具目标另存路径叫 output_path（不是 path）——同样要被一并授权。
+    用一个直接调用真实 `lt._resolve` 的临时 handler 验证：不依赖真跑图像处理，只验证
+    execute 端确实把 output_path 塞进了 ctx.allowed_paths、沙箱判定因此真的放行。"""
+    lib = tmp_path / "library"
+    lib.mkdir()
+    monkeypatch.setenv("DESKTOP_LIBRARY_DIR", str(lib))
+    outside = tmp_path / "另存.txt"
+
+    async def handler(args, ctx):
+        path = lt._resolve(args["output_path"], ctx)  # noqa: SLF001 —— 直接复用真实沙箱判定
+        path.write_text(args["content"], encoding="utf-8")
+        return "已另存"
+
+    name = f"__test_exec_oob_output_{uuid.uuid4().hex[:8]}"
+    _register_temp_tool(name, handler, approval_class="file")
+    try:
+        args = {"output_path": str(outside), "content": "另存内容"}
+        token = sign_approval(name, args)
+        body = AgentExecuteRequest(tool=name, args=args, token=token, full_disk_access=False)
+        res = _exec(body)
+        assert res["result"] == "已另存"
+        assert outside.read_text(encoding="utf-8") == "另存内容"
+    finally:
+        _unregister(name)
+
+
+def test_execute_does_not_authorize_oob_path_without_valid_signature():
+    """反向对照：签名对不上（老板没点这个/参数被篡改）不能白拿到这份"一次性授权"——
+    验签失败在授权逻辑之前就该拦下，文件不该被写、也不该绕过签名闸。"""
+    name = f"__test_exec_oob_reject_{uuid.uuid4().hex[:8]}"
+    _register_temp_tool(name, lt.write_file, approval_class="file")
+    try:
+        args = {"path": "/tmp/不该被写的越界路径.txt", "content": "不该落盘"}
+        body = AgentExecuteRequest(tool=name, args=args, token="wrong-token-not-matching", full_disk_access=False)
+        with pytest.raises(AIServiceError):
+            _exec(body)
     finally:
         _unregister(name)

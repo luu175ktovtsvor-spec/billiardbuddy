@@ -704,23 +704,34 @@ def _pop_security_risk(args: dict) -> str | None:
 
 
 def _file_target_oob(tool, args: dict, ctx) -> str | None:
-    """审批闸 2.0 · ① 文件类越界预判：写改类文件工具（`approval_class == "file"`）给了 `path` 时，
-    判断这个目标此刻会不会撞沙箱墙——复用 `local_tools.is_path_allowed`（语义与 `_resolve` 实际
-    执行时完全一致，full_disk_access/内容库/工作目录/用户选定/tool-results 判据都不重造），
-    不在这里自己发明一套沙箱规则。命中越界返回模型给的原始路径字符串（供拼审批理由用）；
-    非文件类工具 / 没给 path / 没越界 / 判定本身出错 → None（故障安全：判不出就当没越界，
+    """审批闸 2.0 · ① 文件类越界预判：写改类文件工具（`approval_class == "file"`）给了 `path`/
+    `output_path` 时，判断这些目标此刻会不会撞沙箱墙——复用 `local_tools.is_path_allowed`（语义与
+    `_resolve` 实际执行时完全一致，full_disk_access/内容库/工作目录/用户选定/tool-results 判据都
+    不重造），不在这里自己发明一套沙箱规则。
+
+    Important #3（审批闸 2.0 复审修复）：原先只查 `path`，漏了 `edit_image` 这类同为
+    `approval_class == "file"` 但目标另存路径叫 `output_path` 的工具——越界的 output_path
+    过去会绕开这里的预判、直到真正执行（`/agent/execute`）才在 `_out_path`/`_resolve` 里报错。
+    现在对 `path` 和 `output_path` 各跑一次同款越界检查，两个键里任一个越界就转审批卡
+    （`path` 优先，先查到谁越界就先报谁——两个都越界时不重复弹两张卡，一次讲清一个就够）。
+
+    非文件类工具 / 两个键都没给 / 都没越界 / 判定本身出错 → None（故障安全：判不出就当没越界，
     退回既有的静态审批闸逻辑兜底，不因这一步出错而拖垮整个审批判定）。"""
     if getattr(tool, "approval_class", None) != "file":
         return None
-    path = (args or {}).get("path") if isinstance(args, dict) else None
-    if not path:
+    if not isinstance(args, dict):
         return None
-    try:
-        if is_path_allowed(path, ctx):
-            return None
-    except Exception:
-        return None
-    return path
+    for key in ("path", "output_path"):
+        target = args.get(key)
+        if not target:
+            continue
+        try:
+            if is_path_allowed(target, ctx):
+                continue
+        except Exception:
+            continue
+        return target
+    return None
 
 
 def _risk_escalation_reason(tool, args, ctx) -> dict:
