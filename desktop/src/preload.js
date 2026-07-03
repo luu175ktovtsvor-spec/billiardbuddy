@@ -78,5 +78,7 @@ contextBridge.exposeInMainWorld("electron", {
     saveTemp: (opts) => ipcRenderer.invoke("files:saveTemp", opts || {}),
     // Electron 33+ 移除了 File.path，用 webUtils.getPathForFile 替代：拖入/粘贴文件拿本机路径。
     getPathForFile: (file) => webUtils.getPathForFile(file),
+    // C1 首启特例：扫 桌面+作品文件夹 找最近一份表格报表(只读文件名)，返回 { name, path } | null。
+    scanReports: () => ipcRenderer.invoke("files:scanReports"),
   },
 });
