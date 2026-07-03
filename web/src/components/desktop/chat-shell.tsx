@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Target, X } from "lucide-react";
 
 import { api, type NotificationItem, type RecentArtifact } from "@/lib/api";
+import type { DashboardRecommendation } from "@/types/dashboard";
 import { HELP_TEXT } from "@/lib/agent-copy";
 import { toolMeta } from "@/lib/agent-tools";
 import { useDesktop } from "@/hooks/use-desktop";
@@ -82,10 +83,8 @@ function isRestorablePreview(value: unknown): value is PreviewItem {
 
 export function DesktopChatShell({
   storeName = "我的台球房",
-  todaySuggestion,
 }: {
   storeName?: string;
-  todaySuggestion?: string;
 }) {
   const { electron } = useDesktop();
   const toast = useToast();
@@ -299,9 +298,8 @@ export function DesktopChatShell({
   // 侧栏真数据：门店名 + 本月 AI 用量（拿不到就用传入的默认/占位，不阻断）
   const [liveStoreName, setLiveStoreName] = useState<string | undefined>();
   const [liveSpend, setLiveSpend] = useState<string | undefined>();
-  const [liveToday, setLiveToday] = useState<string | undefined>();
-  // 今日建议的 rec.id：点「帮我写」时随对话回传后端做"采纳上浮"隐式反馈（拿不到就只发文本，不影响功能）
-  const [liveTodayRecId, setLiveTodayRecId] = useState<string | undefined>();
+  // C1 当日店况简报：AI 先开口的多条洞察（含出处 category），欢迎屏用 BriefingCard 渲染
+  const [briefing, setBriefing] = useState<{ greeting: string; weekday: string; items: DashboardRecommendation[] } | null>(null);
   // 极端情况下内置模型不可用时的兜底提示；正常桌面产品不要求用户先配 key。
   const [needsKey, setNeedsKey] = useState(false);
   const [keyHintDismissed, setKeyHintDismissed] = useState(false);
@@ -319,9 +317,8 @@ export function DesktopChatShell({
       if (c.status === "fulfilled" && typeof c.value?.est_cost_yuan === "number") {
         setLiveSpend(`¥${c.value.est_cost_yuan.toFixed(2)}`);
       }
-      if (t.status === "fulfilled") {
-        const rec = t.value?.recommendations?.[0];
-        if (rec) { setLiveToday(rec.description || rec.title); setLiveTodayRecId(rec.id); }
+      if (t.status === "fulfilled" && t.value) {
+        setBriefing({ greeting: t.value.greeting, weekday: t.value.weekday, items: t.value.recommendations || [] });
       }
     })();
     return () => { cancelled = true; };
@@ -632,6 +629,11 @@ export function DesktopChatShell({
     if (recId) api.adoptRecommendation(recId).catch(() => {});
     void chat.send(prompt, recId);
   };
+  // 简报卡「不感兴趣」：后端记「今天收起」（故障安全，不阻断），本地当场移除该条
+  const onDismissRec = useCallback((recId: string) => {
+    api.dismissRecommendation(recId).catch(() => {});
+    setBriefing((b) => (b ? { ...b, items: b.items.filter((r) => r.id !== recId) } : b));
+  }, []);
   // 右侧"基于此调整"：把输入框预填好引子，老板补上要改什么、发出去，管家在原件上接着改
   const onRefine = (kind: PreviewItem["kind"]) => {
     setInput(kind === "poster" ? "把刚才那张海报改成：" : "把刚才这条改成：");
@@ -822,8 +824,8 @@ export function DesktopChatShell({
 
       {empty ? (
         <WelcomeScreen
-          todaySuggestion={liveToday || todaySuggestion}
-          todaySuggestionRecId={liveTodayRecId}
+          briefing={briefing ?? undefined}
+          onDismissRec={onDismissRec}
           billiardsMode={knowledgePacks.includes("billiards")}
           onPick={pick}
           onDailyDrafts={loadDailyDrafts}

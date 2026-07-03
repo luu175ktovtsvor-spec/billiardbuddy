@@ -4,9 +4,11 @@
  * 空状态/欢迎（浅色默认 · 跟随系统）：CC 式专业 agent 基调 + 今日建议 + 起手卡片（点了直接派活）。
  */
 import type { LucideIcon } from "lucide-react";
-import { MessageSquareText, Image as ImageIcon, Lightbulb, Monitor, Loader2, Sparkles, Brain, MousePointerClick, Search, History, Trash2, FileClock, FileSpreadsheet, Star, Users, Clapperboard, FolderCog } from "lucide-react";
+import { MessageSquareText, Image as ImageIcon, Monitor, Loader2, Sparkles, Brain, MousePointerClick, Search, History, Trash2, FileClock, FileSpreadsheet, Star, Users, Clapperboard, FolderCog } from "lucide-react";
 import { WELCOME } from "@/lib/agent-copy";
 import type { RecentArtifact } from "@/lib/api";
+import type { DashboardRecommendation } from "@/types/dashboard";
+import { BriefingCard } from "./briefing-card";
 
 export type StarterCard = {
   Icon: LucideIcon;
@@ -38,11 +40,11 @@ export const GENERIC_STARTERS: StarterCard[] = [
 export function WelcomeScreen({
   greeting = WELCOME.title,
   subtitle = WELCOME.subtitle,
-  todaySuggestion,
-  todaySuggestionRecId,
+  briefing,
   starters,
   billiardsMode = false,
   onPick,
+  onDismissRec,
   onDailyDrafts,
   dailyDraftsBusy = false,
   continueTitle,
@@ -56,11 +58,11 @@ export function WelcomeScreen({
 }: {
   greeting?: string;
   subtitle?: string;
-  todaySuggestion?: string;
-  todaySuggestionRecId?: string; // 今日建议对应的 rec.id：点「帮我写」时回传做"采纳上浮"
+  briefing?: { greeting: string; weekday: string; items: DashboardRecommendation[] }; // 当日店况简报（C1）：AI 先开口的多条洞察
   starters?: StarterCard[];
   billiardsMode?: boolean; // 挂台球知识库时展示台球 6 张场景卡，否则展示通用 5 张
   onPick?: (prompt: string, recId?: string) => void;
+  onDismissRec?: (recId: string) => void; // 简报卡「不感兴趣」：故障安全踩一下、后端记今天收起
   onDailyDrafts?: () => void;    // P1-4：点一下让管家把今天能发的内容草稿备好
   dailyDraftsBusy?: boolean;
   continueTitle?: string;
@@ -84,19 +86,15 @@ export function WelcomeScreen({
           <div className="mt-1.5 max-w-[440px] text-[13px] leading-relaxed text-[#86868b] dark:text-[#6e7077]">{subtitle}</div>
         </div>
 
-        {todaySuggestion && (
-          <div className="mb-3 flex items-center gap-3 rounded-lg border border-[#10a37f]/25 bg-[#10a37f]/[0.06] p-3">
-            <Lightbulb className="h-4 w-4 shrink-0 text-[#10a37f]" />
-            <div className="min-w-0 flex-1">
-              <div className="text-[11px] font-medium tracking-wide text-[#10a37f]">今日建议</div>
-              <div className="mt-0.5 truncate text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">{todaySuggestion}</div>
-            </div>
-            <button
-              onClick={() => onPick?.(todaySuggestion, todaySuggestionRecId)}
-              className="whitespace-nowrap rounded-md bg-[#10a37f] px-3 py-1.5 text-[12px] text-white transition hover:bg-[#0e906f] active:scale-[0.98]"
-            >
-              帮我写
-            </button>
+        {billiardsMode && briefing && onPick && onDismissRec && (
+          <div className="mb-3">
+            <BriefingCard
+              greeting={briefing.greeting}
+              weekday={briefing.weekday}
+              items={briefing.items}
+              onPick={onPick}
+              onDismiss={onDismissRec}
+            />
           </div>
         )}
 
