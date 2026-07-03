@@ -87,7 +87,7 @@ export function DesktopChatShell({
   storeName?: string;
   todaySuggestion?: string;
 }) {
-  const { isDesktop, electron } = useDesktop();
+  const { electron } = useDesktop();
   const toast = useToast();
   const [workbenchId] = useState(getWorkbenchId);
   const [input, setInput] = useState("");
@@ -249,7 +249,10 @@ export function DesktopChatShell({
     };
 
     // 非桌面端顺手问一次浏览器通知权限；用户拒绝也不重复打扰，代码会自动落回 toast。
-    if (!isDesktop && typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
+    // 用 electron 判断而非 isDesktop：两者语义等价（isDesktop 也是由 window.electron 派生），
+    // 但 electron 在首次渲染就已就绪、不像 isDesktop 要等一次 mount effect 才 false→true，
+    // 避免把 isDesktop 放进下面的依赖数组导致这个轮询 effect 多重启一次、after 游标被重置。
+    if (!electron && typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
       Notification.requestPermission().catch(() => {});
     }
 
@@ -270,7 +273,7 @@ export function DesktopChatShell({
     })();
 
     return () => { cancelled = true; };
-  }, [isDesktop, electron, toast]);
+  }, [electron, toast]);
 
   // A4 零仪式：某会话/窗口没有已持久化的工作目录时，默认落到作品文件夹，不再要求用户开场先选。
   // 等 workbenchLoaded（已尝试读过窗口级缓存）+ workspaceDir 到手，workingDir 仍空才补上默认值——

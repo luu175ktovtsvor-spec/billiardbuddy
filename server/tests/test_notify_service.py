@@ -61,5 +61,28 @@ def test_push_default_kind_is_info():
 
 def test_push_never_raises_on_odd_input():
     # 故障安全：调用方（agent 工具/定时提醒/后台任务）不该因为通知失败被打断。
+    # 注：None 走 `str(None or "") == ""`，根本不抛异常，此用例其实没打到 push() 内部
+    # 的 except 分支——真正覆盖 except 见下面 test_push_never_raises_when_title_raises。
     n = ns.push(None, None)  # type: ignore[arg-type]
     assert n is not None
+
+
+class _RaisesOnTruthOrStr:
+    """title/body 传入这种怪对象时，`title or ""` 求真值和兜底 `str(...)` 都会抛异常——
+    用来真正命中 push() 内部的 except 兜底分支（None 输入做不到这点）。"""
+
+    def __bool__(self) -> bool:
+        raise RuntimeError("boom: __bool__")
+
+    def __str__(self) -> str:
+        raise RuntimeError("boom: __str__")
+
+
+def test_push_never_raises_when_title_raises():
+    # 故障安全：即便 title/body 是访问即抛异常的怪对象，push() 也必须吞掉异常、不向
+    # 调用方传播，且落回约定的兜底 Notification（id=-1，空标题/内容）。
+    n = ns.push(_RaisesOnTruthOrStr(), _RaisesOnTruthOrStr())  # type: ignore[arg-type]
+    assert n is not None
+    assert n.id == -1
+    assert n.title == ""
+    assert n.body == ""
