@@ -16,7 +16,7 @@ export type StarterCard = {
 };
 
 const DEFAULT_STARTERS: StarterCard[] = [
-  { Icon: MessageSquareText, title: "直接说要做什么", hint: "写文案、看报表、整理资料都从这里开始", prompt: "今天店里该干啥，你给我排一下" },
+  { Icon: MessageSquareText, title: "直接说要做什么", hint: "写文案、看报表、整理资料都从这里开始", prompt: "帮我安排一下今天店里要做的事" },
   { Icon: ImageIcon, title: "做图片 / 视频", hint: "海报、封面、朋友圈图，先从一句话生成", prompt: "做一张 9:16 的台球周赛海报，适合发朋友圈" },
 ];
 
@@ -105,8 +105,8 @@ export function WelcomeScreen({
               className="flex items-center justify-center gap-2 rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-[12.5px] text-[#3a3a3c] shadow-sm transition hover:bg-black/[0.02] active:scale-[0.99] disabled:opacity-60 dark:border-white/[0.08] dark:bg-white/[0.02] dark:text-[#c8cace] dark:hover:bg-white/[0.05]"
             >
               {dailyDraftsBusy
-                ? <><Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> <span className="truncate">正在备……</span></>
-                : <><Sparkles className="h-3.5 w-3.5 shrink-0 text-[#10a37f]" /> <span className="truncate">不知道今天发啥？帮我备好几条</span></>}
+                ? <><Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> <span className="truncate">正在准备…</span></>
+                : <><Sparkles className="h-3.5 w-3.5 shrink-0 text-[#10a37f]" /> <span className="truncate">帮我准备今天能发的内容</span></>}
             </button>
             )}
             {onOpenStoreMemory && (

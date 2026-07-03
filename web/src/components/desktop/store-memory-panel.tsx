@@ -151,7 +151,7 @@ export function StoreMemoryPanel({
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <p className="mb-3 text-[12.5px] leading-relaxed text-[#6e6e73] dark:text-[#9a9ca3]">
-          这里是 AI 记住的门店事实和你的偏好。“待确认”的内容不会影响回答，确认后才会用于后续文案、海报、报表诊断。
+          这里是管家记住的门店事实和你的偏好。“待确认”的内容不会影响回答，确认后才会用于后续文案、海报、报表诊断。
         </p>
 
         <div className="mb-3 rounded-lg border border-black/[0.06] bg-black/[0.015] p-2.5 dark:border-white/[0.06] dark:bg-white/[0.02]">
@@ -269,7 +269,7 @@ export function StoreMemoryPanel({
                         ? "bg-[#10a37f]/12 text-[#10a37f]"
                         : "bg-black/[0.05] text-[#86868b] dark:bg-white/[0.06] dark:text-[#8a8c93]"
                     }`}>
-                      {m.source === "pending" ? "待确认" : m.source === "manual" ? "我确认的" : "AI学到"}
+                      {m.source === "pending" ? "待确认" : m.source === "manual" ? "我确认的" : "自动记住"}
                     </span>
                     {m.scope_label && (
                       <span className="truncate rounded bg-black/[0.035] px-1.5 py-0.5 text-[10.5px] text-[#86868b] dark:bg-white/[0.05] dark:text-[#8a8c93]">

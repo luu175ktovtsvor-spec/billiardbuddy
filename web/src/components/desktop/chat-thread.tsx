@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, FileEdit, Terminal, ChevronRight, Brain, RotateCcw, ClipboardList, Save, MessageSquareText, Megaphone, ClipboardCheck, Paperclip, Download, ThumbsUp } from "lucide-react";
+import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, MessageCircleQuestion, FileEdit, Terminal, ChevronRight, Brain, RotateCcw, ClipboardList, Save, MessageSquareText, Megaphone, ClipboardCheck, Paperclip, Download, ThumbsUp } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
@@ -204,9 +204,9 @@ function ResultDisclosure({ text, onOpen }: { text: string; onOpen?: () => void 
           <button
             type="button"
             onClick={onOpen}
-            className="shrink-0 font-mono text-[11px] text-[#10a37f] transition hover:underline"
+            className="inline-flex shrink-0 items-center gap-1 font-mono text-[11px] text-[#10a37f] transition hover:underline"
           >
-            ⤢ 右侧打开
+            <Maximize2 className="h-3 w-3" /> 右侧打开
           </button>
         )}
       </div>
@@ -555,10 +555,10 @@ function MacApprovalCard({
   onCancel: (idx: number, ap?: ApprovalState) => void;
 }) {
   if (ap.status === "cancelled") {
-    return <div className="text-[13px] text-[#86868b] dark:text-[#6e7077]">已取消。</div>;
+    return <div className="text-[13px] text-[#86868b] dark:text-[#6e7077]">已取消</div>;
   }
   if (ap.status === "done") {
-    return <div className="flex items-center gap-1.5 text-[13px] text-[#10a37f]"><Check className="h-3.5 w-3.5" /> 已确认执行。</div>;
+    return <div className="flex items-center gap-1.5 text-[13px] text-[#10a37f]"><Check className="h-3.5 w-3.5" /> 已确认执行</div>;
   }
   const r = ap.reason;
   const previewBox = "rounded-md border border-black/[0.08] bg-black/[0.03] px-3 py-2 font-mono text-[12.5px] text-[#3a3a3c] whitespace-pre-line dark:border-white/[0.08] dark:bg-black/30 dark:text-[#c8cace]";
@@ -619,7 +619,9 @@ function MacApprovalCard({
 function MacQuestionCard({ q, onAnswer }: { q: QuestionData; onAnswer: (label: string) => void }) {
   return (
     <div className="overflow-hidden rounded-lg border border-black/[0.08] bg-white shadow-sm dark:border-white/[0.08] dark:bg-[#16181d] dark:shadow-none">
-      <div className="border-b border-black/[0.06] px-4 py-2.5 text-[13px] font-medium text-[#1d1d1f] dark:border-white/[0.06] dark:text-[#e6e7e9]">🤔 {q.question}</div>
+      <div className="flex items-center gap-1.5 border-b border-black/[0.06] px-4 py-2.5 text-[13px] font-medium text-[#1d1d1f] dark:border-white/[0.06] dark:text-[#e6e7e9]">
+        <MessageCircleQuestion className="h-3.5 w-3.5 shrink-0 text-[#10a37f]" /> {q.question}
+      </div>
       <div className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2">
         {q.options.map((o, i) => (
           <button
@@ -770,8 +772,8 @@ export function DesktopChatThread({
                         const hint = /上限|额度|次数已达/.test(c)
                           ? null
                           : /网络|超时|连接|稍等|小状况|忙/.test(c)
-                            ? "稍等一下再试一次；要是一直不行，换个说法或换个工作文件夹再试。"
-                            : "可以先重试；也可以换个说法或换素材后再试。";
+                            ? "稍等片刻后点「重试」。"
+                            : "可以点「重试」，或换个说法再发一次。";
                         return hint ? (
                           <div className="mt-1 text-[12.5px] text-[#8a3a34] dark:text-[#e6a19a]">{hint}</div>
                         ) : null;

@@ -377,7 +377,7 @@ export function SettingsDrawer({
                   {memories.filter((m) => m.source !== "pending").sort((a, b) => (a.source === "manual" ? 0 : 1) - (b.source === "manual" ? 0 : 1)).map((m) => (
                     <div key={m.id} className="flex items-start gap-2 rounded-md border border-black/[0.06] bg-black/[0.015] px-2.5 py-1.5 dark:border-white/[0.06] dark:bg-white/[0.02]">
                       <span className={`mt-0.5 shrink-0 rounded px-1 py-px text-[9px] ${m.source === "manual" ? "bg-[#10a37f]/12 text-[#10a37f]" : "bg-black/[0.05] text-[#86868b] dark:bg-white/[0.06] dark:text-[#8a8c93]"}`}>
-                        {m.source === "manual" ? "我定的" : "AI学到"}
+                        {m.source === "manual" ? "我定的" : "自动记住"}
                       </span>
                       {editId === m.id ? (
                         <input className={`${INPUT} min-w-0 flex-1`} value={editText} autoFocus
@@ -466,7 +466,7 @@ export function SettingsDrawer({
               >
                 <span className="min-w-0">
                   <span className="block text-[12.5px] font-medium text-[#3a3a3c] dark:text-[#c8cace]">高级设置</span>
-                  <span className="mt-0.5 block text-[11.5px] leading-snug text-[#86868b] dark:text-[#8a8c93]">会折腾的人才用的进阶选项。普通使用不用管这里。</span>
+                  <span className="mt-0.5 block text-[11.5px] leading-snug text-[#86868b] dark:text-[#8a8c93]">进阶选项。日常使用不需要改这里。</span>
                 </span>
                 <ChevronRight className={`h-4 w-4 shrink-0 text-[#a1a1a6] transition-transform ${showAdvanced ? "rotate-90" : ""}`} />
               </button>
