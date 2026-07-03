@@ -25,6 +25,9 @@ _MANUAL_FILTER_TABLES = {
     # 会被 fail-safe 清空→到点永远查不到自己)；隔离靠 api/v1/scheduled_tasks.py 与
     # services/agent/scheduled_tasks.py 各处显式 .where(store_id==)。
     "scheduled_tasks",
+    # store_doc_libraries：店铺资料库配置(D-Task-5)，隔离靠 api/v1/store_docs.py 各处显式
+    # .where(store_id==)；不进自动过滤(那套只覆盖 generations/usage_quotas)。
+    "store_doc_libraries",
     # 注：store_invitations/store_subscriptions/collab_tasks 是已删的 SaaS 表名，已从此集合清除。
 }
 
