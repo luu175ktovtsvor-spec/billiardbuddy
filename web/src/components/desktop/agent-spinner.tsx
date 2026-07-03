@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Agent 加载指示 —— 对标 Claude Code 的 spinner：✻ + 随机轮换动词 + 计时 + esc 中断。
+ * Agent 加载指示 —— 对标 Claude Code 的 spinner：✻ + 随机轮换动词 + 计时 + 按 Esc 停止。
  * 配色沿用现有 #10a37f；不引入新依赖。
  */
 import { useEffect, useRef, useState } from "react";
@@ -40,7 +40,7 @@ export function AgentSpinner({ onStop, activeToolName }: { onStop?: () => void; 
       <span className="animate-pulse text-[#10a37f]">✻</span>
       <span>{stageLabel ? `${stageLabel}…` : `${SPINNER_VERBS[idx]}…`}</span>
       <span className="text-[#b0b0b5] dark:text-[#54565d]">{elapsed}s</span>
-      {onStop && <span className="text-[#b0b0b5] dark:text-[#54565d]">· esc 中断</span>}
+      {onStop && <span className="text-[#b0b0b5] dark:text-[#54565d]">· 按 Esc 停止</span>}
     </div>
   );
 }
