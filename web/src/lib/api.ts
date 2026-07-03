@@ -39,6 +39,11 @@ export interface AgentStreamHandlers {
   onFinal?: (content: string) => void;
   onDone?: (info: { turns: number; stopped_reason: string; conversation_id?: string; generation_id?: string; task_id?: string; offset?: number; memory_refs?: string[] }) => void;
   onError?: (error: string) => void;
+  // F1c 断线重连：连接本身断了（网络抖动/连接中途被掐断，含发起阶段就没连上），跟 onError（应用层/后端主动
+  // 吐的 error 事件，语义上属于"正常收到了结果只是结果是失败"）区分开——onDone 恒在 onError 之后收尾，
+  // 但断线时既不会有 onError 也不会有 onDone。调用方据此判断"要不要自动重连"，别跟 onError 的报错文案混在一起。
+  // 不传时退回旧行为（走 onError，兼容还没接手这个信号的调用方）。
+  onDisconnect?: () => void;
   onEvent?: (event: Record<string, unknown>) => void;
 }
 
@@ -367,6 +372,8 @@ class ApiClient {
     return this.request<AgentTaskStartResponse>("POST", "/api/v1/agent/tasks", data);
   }
 
+  /** 单次订阅一个任务的事件流（GET .../events?after=N）。只负责这一次连接——断了要不要重连、
+   * 从哪个 offset 续，是调用方（use-agent-chat 的 subscribeToTask）的事，这里不做重试循环。 */
   async subscribeAgentTask(
     taskId: string,
     handlers: AgentStreamHandlers,
@@ -377,13 +384,16 @@ class ApiClient {
     try {
       const res = await fetch(url, { method: "GET", headers: { "Accept": "text/event-stream" }, signal });
       if (!res.ok) {
+        // 明确的 HTTP 错误（如任务已过期 404）：不是"网络断了"，重试也没用，走 onError 终止。
         handlers.onError?.(await this.friendlyStreamError(res));
         return;
       }
       return this._consumeAgentSSEStream(res, handlers);
     } catch {
+      // fetch 本身就没连上（DNS/连接被拒等）：跟流中途断掉一样，都算"断线"，交给 onDisconnect。
       if (signal?.aborted) return;
-      handlers.onError?.("网络异常，请检查后重试");
+      if (handlers.onDisconnect) handlers.onDisconnect();
+      else handlers.onError?.("网络异常，请检查后重试");
     }
   }
 
@@ -403,12 +413,22 @@ class ApiClient {
       handlers.onError?.("无法读取流式响应");
       return;
     }
+    // F1c：区分"正常收尾"和"异常断线"。正常收尾恒经 case "done" 直接 return；这里的 disconnect()
+    // 只在两种"没收到 done 就没了"的场景触发——连接中途抛异常，或读到 EOF 但压根没见过 done 事件。
+    const disconnect = () => {
+      if (handlers.onDisconnect) handlers.onDisconnect();
+      else handlers.onError?.("连接中断，请检查网络后重试");
+    };
     const decoder = new TextDecoder();
     let buffer = "";
     try {
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          // 流被提前关掉、没等到后端的 done 事件收尾——当异常断线处理，让调用方决定要不要重连。
+          disconnect();
+          return;
+        }
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
@@ -439,7 +459,7 @@ class ApiClient {
       }
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
-      handlers.onError?.("连接中断，请检查网络后重试");
+      disconnect();
     }
   }
 
