@@ -882,13 +882,15 @@ export function DesktopChatThread({
                             <RotateCcw className="h-3.5 w-3.5" />
                           </button>
                         )}
-                        {!generating && (() => {
+                        {(() => {
                           const moreItems: OverflowMenuItem[] = [];
+                          // 右侧打开:原逻辑不受 generating 门控(流式生成时也能把历史消息开到右侧面板)——别裹进 !generating。
                           if (onPreview) moreItems.push({ key: "open", label: "右侧打开", Icon: Maximize2, onClick: () => onPreview({ kind: "content", title: "回答", text: m.content }) });
-                          if (onSaveArtifact) moreItems.push({ key: "save", label: "保存成品", Icon: Save, onClick: () => onSaveArtifact(m.content) });
-                          if (onExportArtifact) moreItems.push({ key: "export", label: "导出到电脑", Icon: Download, onClick: () => onExportArtifact(m.content) });
-                          if (onMakeTask) moreItems.push({ key: "task", label: "转成任务", Icon: ClipboardList, onClick: () => onMakeTask(m.content) });
-                          return <OverflowMenu items={moreItems} />;
+                          // 保存/导出/转任务:原逻辑各带 !generating(生成中不出)——保持。
+                          if (!generating && onSaveArtifact) moreItems.push({ key: "save", label: "保存成品", Icon: Save, onClick: () => onSaveArtifact(m.content) });
+                          if (!generating && onExportArtifact) moreItems.push({ key: "export", label: "导出到电脑", Icon: Download, onClick: () => onExportArtifact(m.content) });
+                          if (!generating && onMakeTask) moreItems.push({ key: "task", label: "转成任务", Icon: ClipboardList, onClick: () => onMakeTask(m.content) });
+                          return moreItems.length > 0 ? <OverflowMenu items={moreItems} /> : null;
                         })()}
                       </div>
                     </div>
