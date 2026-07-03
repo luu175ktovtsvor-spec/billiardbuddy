@@ -7,6 +7,8 @@
 - 火山豆包视觉/文本 /v1/ark/chat/completions      → 直连火山方舟(视频剪辑台"看懂画面"+"配文案/编排风格"用,
                                                      与 vlm.py/director.py 配对)
 - 火山 Seedream 生图 /v1/ark/images/generations   → 直连火山方舟(原生 JSON 端点,非 OpenAI multipart edits)
+- 高德地图      /v1/amap/{path}                  → 直连高德(桌面 Agent 内置工具:天气/周边地点/地理编码/
+                                                     路线规划,与 amap_tools.py 配对,只读查询无并发阀门)
 
 三层阀门:
   ① 每家真实限流:MiMo 令牌桶(账号 100 RPM 留余量)、生图 IPM 令牌桶 + 并发信号量、视频并发信号量(个人户 3)
@@ -36,6 +38,9 @@ CFG = {
     # Seedance 视频(火山方舟,国内→国内直连,异步:提交→轮询)。key 只从 gw.env 读、不进库。
     "ark_key": os.environ.get("GW_ARK_KEY", ""),
     "ark_base": os.environ.get("GW_ARK_BASE", "https://ark.cn-beijing.volces.com/api/v3").rstrip("/"),
+    # 高德地图 Web 服务 API(桌面 Agent 内置工具:天气/周边地点/地理编码/路线规划,国内→国内直连)。
+    "amap_key": os.environ.get("GW_AMAP_KEY", ""),
+    "amap_base": os.environ.get("GW_AMAP_BASE", "https://restapi.amap.com").rstrip("/"),
 }
 APP_TOKENS = json.loads(os.environ.get("GW_APP_TOKENS", "{}"))  # {app令牌: 用户标识}
 
@@ -57,6 +62,9 @@ Q_ARK_CHAT = int(os.environ.get("GW_Q_ARK_CHAT", "500"))     # 每人每日调�
 ARK_IMG_IPM = int(os.environ.get("GW_ARK_IMG_IPM", "20"))
 ARK_IMG_CONC = int(os.environ.get("GW_ARK_IMG_CONC", "6"))
 Q_ARK_IMG = int(os.environ.get("GW_Q_ARK_IMG", "20"))
+
+# 高德地图(纯查询·官方个人认证限流很宽松,天气 200QPS/300000次天·这里只是防单用户/单店把配额刷爆)
+Q_AMAP = int(os.environ.get("GW_Q_AMAP", "300"))          # 每人每日调用次数上限
 
 CST = timezone(timedelta(hours=8))
 
@@ -418,3 +426,31 @@ async def ark_images(request: Request, authorization: str = Header(None)):
         except Exception as e:
             log(user, "ark_img", False, 599, int((time.monotonic() - t0) * 1000), str(e)[:120])
             raise HTTPException(502, f"生图上游出错:{str(e)[:120]}")
+
+
+# ── 高德地图 Web 服务 API(桌面 Agent 内置工具:天气/周边地点/地理编码/路线规划)──────
+# 一条通用 {path:path} 转发路由覆盖全部子端点(v3/weather/weatherInfo、v3/place/around|text、
+# v3/geocode/geo|regeo、v3/direction/driving|walking|transit/integrated),客户端
+# (server/services/agent/amap_tools.py)只传业务 query 参数、不带 key,真高德 key 只在这里注入。
+@app.get("/v1/amap/{path:path}")
+async def amap_proxy(path: str, request: Request, authorization: str = Header(None)):
+    user = auth(authorization)
+    quota_check(user, "amap", Q_AMAP)
+    if not CFG["amap_key"]:
+        raise HTTPException(503, "地图功能未配置(缺 GW_AMAP_KEY)")
+    params = dict(request.query_params)
+    params["key"] = CFG["amap_key"]
+    url = f"{CFG['amap_base']}/{path}"
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, read=15.0)) as cli:
+            r = await cli.get(url, params=params)
+        ms = int((time.monotonic() - t0) * 1000)
+        log(user, "amap", r.status_code < 400, r.status_code, ms)
+        ct = r.headers.get("content-type", "")
+        if ct.startswith("application/json"):
+            return JSONResponse(status_code=r.status_code, content=r.json())
+        return JSONResponse(status_code=r.status_code, content={"raw": r.text[:500]})
+    except Exception as e:
+        log(user, "amap", False, 599, int((time.monotonic() - t0) * 1000), str(e)[:120])
+        raise HTTPException(502, f"地图上游出错:{str(e)[:120]}")

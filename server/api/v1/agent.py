@@ -57,6 +57,7 @@ from services.quota_service import check_quota
 from services.store_profile_service import render_operation_profile_context
 import services.agent.tools  # noqa: F401  导入即把内置工具登记进 default_registry
 import services.agent.web_tools  # noqa: F401  第二批：WebFetch/WebSearch/TodoWrite/run_subagent 登记进 default_registry
+import services.agent.amap_tools  # noqa: F401  高德地图内置工具：amap_weather/amap_search_nearby/amap_geocode/amap_route
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
