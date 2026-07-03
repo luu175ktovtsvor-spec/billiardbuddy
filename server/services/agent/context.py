@@ -75,6 +75,11 @@ class AgentContext:
     # autocompact 连续"真失败"（摘要 LLM 抛错 / 返回空摘要）次数；达 _AUTOCOMPACT_FAIL_MAX 即熔断、不再每轮空烧 LLM。
     # 压成功 → 清零；"较早段太短 / 空 transcript"这类"不值得压"不算失败、不计数。借鉴 CC s08 的连续失败熔断器。
     autocompact_fail_streak: int = 0
+    # F9 快满大白话提示：`_autocompact` 每次【真的重建了 messages】（不管是常规每轮压缩流水线触发的，
+    # 还是 F8甲 结构性超限安全网强制触发的）都会把这里置 True。流式循环在每轮调完 `_compact_pipeline`
+    # 后检查这个标记，命中就吐一次 context_note 事件给前端（大白话告诉老板"刚归纳了前文"）、随即清零，
+    # 绝不刷屏。同步入口没有事件通道，不检查也不清这个标记（对它零影响）。
+    just_autocompacted: bool = False
     # ── SH-8 连续拒绝自动回退（老板反复拒同一动作 → 别再反复提，自动换法子）──
     # 按【动作 key（工具名|规范化 args）】记的"连续被拒次数"：审批卡老板点拒绝 → +1；
     # 同一动作连续达 _DENIAL_FALLBACK_N 次 → loop 不再提请该动作，改走文本答复/换方案。

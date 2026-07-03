@@ -58,7 +58,8 @@ export interface ChatMessage {
   steps?: ToolStep[];
   approval?: ApprovalState;
   question?: QuestionData; // AskUserQuestion：管家给老板的选项，老板点选后作为下一句消息发回
-  kind?: "command" | "video"; // 审批通过后执行的结果渲染方式：run_command→终端块；generate_video→<video> 播放器
+  kind?: "command" | "video" | "context_note"; // 审批通过后执行的结果渲染方式：run_command→终端块；generate_video→<video> 播放器；
+  // context_note→F9 低调系统提示（AI 归纳了前文），渲成灰色内联条，不是命令/视频/普通对话
   error?: boolean;
   generationId?: string; // P1-4 效果反馈：本轮成品对应的 generation id，成品卡 👍 据此写 effect_rating="good"
 }
@@ -216,6 +217,11 @@ export function useAgentChat(opts: AgentChatOptions) {
             const i = pend.indexOf(content);
             if (i >= 0) { pend.splice(i, 1); return; }
             setMessages((prev) => [...prev, { role: "user", content }]);
+          },
+          // F9：AI 刚归纳了前文（autocompact 真发生），插一条低调的系统提示到对话流里，
+          // 解释"接下来它可能记不清最前面的细节"。只发一次，不算真正的对话内容。
+          onContextNote: (content) => {
+            setMessages((prev) => [...prev, { role: "assistant", content, kind: "context_note" }]);
           },
           onFinal: (content) => {
             finalText = content;
@@ -385,7 +391,7 @@ export function useAgentChat(opts: AgentChatOptions) {
     // 用 messagesRef 读最新状态（这里读没问题：本次调用还没触发任何 setMessages，ref 与当前渲染的 messages 一致）。
     lastUserMsgRef.current = msg;
     const history = messagesRef.current
-      .filter((m) => !m.error)
+      .filter((m) => !m.error && m.kind !== "context_note")
       .slice(-12)
       .map((m) => ({ role: m.role, content: m.content.slice(0, 2000) }));
     // 副作用 sendWithHistory 绝不放进 setMessages 更新函数里——否则 React StrictMode 开发态会把 updater 跑两次→同一条消息双发请求。
@@ -509,7 +515,7 @@ export function useAgentChat(opts: AgentChatOptions) {
     while (trimmed.length && trimmed[trimmed.length - 1].role === "assistant") trimmed.pop();
     if (trimmed.length && trimmed[trimmed.length - 1].role === "user") trimmed.pop();
     const history = trimmed
-      .filter((m) => !m.error)
+      .filter((m) => !m.error && m.kind !== "context_note")
       .slice(-12)
       .map((m) => ({ role: m.role, content: m.content.slice(0, 2000) }));
     setMessages([...trimmed, { role: "user", content: msg }]);
