@@ -115,13 +115,15 @@ async def test_manual_survives_remember(session_maker, monkeypatch):
                            content="旧的AI记忆-台费50", confidence="medium", source="auto"))
         await db.commit()
 
-    # AI 学到一条新事实，且 consolidate 故意想把所有都"整合"掉（模拟 AI 想覆盖）
+    # AI 学到一条新事实（高置信，走 auto 即时路径——本测试测的是"manual 不受牵连"，
+    # 不是置信度分流，故意用 high 避开 F7②的 pending 分流，让下面照旧走 consolidate/auto）
+    # 且 consolidate 故意想把所有都"整合"掉（模拟 AI 想覆盖）
     async def fake_extract(text, store=None):
-        return [Memory("semantic", "新学到-台费60", source="auto")]
+        return [Memory("semantic", "新学到-台费60", "high", source="auto")]
 
     async def fake_consolidate(existing, new, store=None):
         # 即便 AI 返回的整合结果里完全不含 manual 内容，manual 也不能被删
-        return [Memory("semantic", "新学到-台费60", source="auto")]
+        return [Memory("semantic", "新学到-台费60", "high", source="auto")]
 
     monkeypatch.setattr(ms, "extract_memories", fake_extract)
     monkeypatch.setattr(ms, "consolidate_memories", fake_consolidate)
