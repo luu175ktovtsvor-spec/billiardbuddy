@@ -67,7 +67,10 @@ def _norm_type(t: str) -> str:
 
 
 def _norm_conf(c: str) -> str:
-    return _CONF_MAP.get((c or "").strip(), "medium")
+    """归一置信度（审查 Minor #3：补大小写归一——LLM 偶吐 "High"/"HIGH" 这类变体，
+    之前精确匹配字典键会落空默认成 "medium"，静默变成"拿不准"。.lower() 对中文键
+    （高/中/低）是 no-op，不影响既有语义。"""
+    return _CONF_MAP.get((c or "").strip().lower(), "medium")
 
 
 def canon_workdir_path(path: str | None) -> str:
@@ -242,22 +245,29 @@ _HARD_SIGNAL_RE = re.compile(r"\d{2,}|[a-zA-Z]{3,}")
 
 
 def _grounding_check(memory: Memory, source_text: str) -> bool:
-    """接地校验：防"凭空脑补没提过的信息"（M4尾巴②）。
+    """接地校验：防"凭空脑补没提过的信息"（M4尾巴② + 审查修复：阈值分档）。
     - 硬信号（数字/长英文串）是改写也不会变的强证据：记忆里若带硬信号，必须原样出现在源文，
-      否则直接判脑补——这条不因下面阈值下调而放松，护栏没塌。
-    - 字面短语（2~4字中文片段）重叠比例阈值从 30% 降到 20%：容忍纯措辞层面的重度改写造成的
-      字面误杀（LLM 把事实换了种说法，短语重叠天然会降，但没编造新信息就不该被误杀）。
+      否则直接判脑补——这条独立生效，不因下面的阈值分档而放松，护栏没塌。
+    - 字面短语（2~4字中文片段）重叠比例阈值**分档**、不再是"一律降到 20%"：
+      · 记忆带硬信号且硬信号都命中源文 → 硬信号已把记忆锚定住，用宽松阈值 20%，
+        容忍纯措辞层面的重度改写造成的字面误杀（LLM 把事实换了种说法，短语重叠天然会降，
+        但没编造新信息就不该被误杀）。
+      · 记忆不带硬信号 → 仍用严格阈值 30%——这类记忆没有可验证的锚点，"借用源文话题常见词、
+        贴近话题但编造细节"（如源文提"会员日/老会员/台费/来"，记忆编出"额外收现金"）实测重叠
+        比例正落在 20%~30% 之间，是 LLM 幻觉高发模式，20% 阈值会误放行，护栏必须收紧。
     """
     content = memory.content or ""
     source_lower = source_text.lower()
-    for sig in _HARD_SIGNAL_RE.findall(content):
+    hard_signals = _HARD_SIGNAL_RE.findall(content)
+    for sig in hard_signals:
         if sig.lower() not in source_lower:
             return False
     phrases = _extract_key_phrases(content)
     if not phrases:
         return True
     matched = sum(1 for p in phrases if p.lower() in source_lower)
-    return matched / len(phrases) >= 0.2
+    threshold = 0.2 if hard_signals else 0.3
+    return matched / len(phrases) >= threshold
 
 
 def _redline_filter(memory: Memory) -> bool:
@@ -603,8 +613,10 @@ async def remember(db: AsyncSession, store_id, interaction_text: str) -> list[Me
         new = await extract_memories(interaction_text, store)
         if not new:
             return await load_store_memory(db, store_id)
-        new_high = [m for m in new if m.confidence == "high"]
-        new_low = [m for m in new if m.confidence != "high"]
+        # 审查 Minor #3：路由判定用 _norm_conf 归一大小写再比较（与项目既有归一方式一致），
+        # 防模型/上游直接传入的 "High"/"HIGH" 因精确匹配失配被静默路由去 pending。
+        new_high = [m for m in new if _norm_conf(m.confidence) == "high"]
+        new_low = [m for m in new if _norm_conf(m.confidence) != "high"]
         for m in new_low:
             await add_pending_memory_candidate(db, store_id, m.content, m.type)
         if not new_high:

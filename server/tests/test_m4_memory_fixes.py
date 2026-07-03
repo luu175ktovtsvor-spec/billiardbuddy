@@ -45,14 +45,18 @@ class TestGroundingCheck:
         assert _grounding_check(m, "我们店在商场三楼，旁边是电影院") is True
 
 
-# ── M4尾巴② 接地校验阈值误杀重度改写 ────────────────────────────
+# ── M4尾巴② 接地校验阈值误杀重度改写 + 审查修复(阈值分档) ────────
 
 class TestGroundingCheckHeavyRewrite:
-    def test_heavy_rewrite_grounded_memory_no_longer_falsely_rejected(self):
-        """改好了:重度改写但忠于源文的记忆——原 30% 字面阈值会误杀(实测比例 0.242)，
-        降阈值到 20% 后应通过（没编造新信息，只是换了说法）。"""
-        m = Memory("operational", "周二给老会员打五折优惠台费")
-        source = "我们球房这周二会员日搞活动台费打五折老会员来的可以享受"
+    def test_heavy_rewrite_with_hard_signal_grounded_not_falsely_rejected(self):
+        """改好了(审查修复后):重度改写但**带硬信号**(数字/长英文)且硬信号忠于源文的记忆——
+        硬信号已把记忆锚定到源文，字面短语重叠比例落在 20%~30% 区间(实测 0.213)时，
+        用宽松阈值 20% 放行，不因纯措辞层面的重度改写被误杀。
+        （原 test_heavy_rewrite_grounded_memory_no_longer_falsely_rejected 的例子不带硬信号，
+        审查发现这类例子和"无硬信号编造"结构上无法区分，见下面 TestGroundingCheckThresholdTiering，
+        已改用带硬信号的例子来验证"重度改写不误杀"这个目标。）"""
+        m = Memory("operational", "会员日期间老顾客光临享受40元一小时台费优惠价格待遇")
+        source = "我们球房这周二会员日搞活动台费打五折，现在40元一小时，老会员来的可以享受，晚上生意一般顾客不算多"
         assert _grounding_check(m, source) is True
 
     def test_fabricated_memory_still_rejected_guardrail_intact(self):
@@ -62,10 +66,34 @@ class TestGroundingCheckHeavyRewrite:
 
     def test_hard_signal_number_mismatch_rejected_even_with_high_literal_overlap(self):
         """护栏还在(硬信号判据):记忆里编了一个源文没提过的具体数字，
-        哪怕字面短语整体重叠很高，也要判定脑补——数字/长英文串是改写不会变的强证据。"""
+        哪怕字面短语整体重叠很高，也要判定脑补——数字/长英文串是改写不会变的强证据。
+        （审查必补测试#3:硬信号在源文没出现——数字编造，仍被拒。此判据独立于下面的阈值分档，
+        不受阈值下调/分档影响。）"""
         m = Memory("semantic", "门店台费100元每小时")
         source = "门店台费元每小时是我们定的价"  # 源文没提具体数字
         assert _grounding_check(m, source) is False
+
+
+class TestGroundingCheckThresholdTiering:
+    """审查 Important #1 修复:阈值下调只在命中硬信号时才生效，无硬信号仍用严格阈值。
+
+    背景(可复现反例):"会员日老会员来打台费额外收现金"——源文完全没提"额外收现金"，纯脑补，
+    但因为借用了源文的常见词(会员日/老会员/台费/来)，字面重叠比例实测 0.256，落在
+    0.2~0.3 之间。旧的"阈值一律下调到 0.2"会误放行；这正是 LLM 幻觉高发模式
+    (借题发挥、贴近话题但编造细节)，护栏不能对这类无硬信号的编造失效。
+    """
+
+    def test_no_hard_signal_borderline_fabrication_rejected(self):
+        """审查必补测试#1:0.2~0.3 区间、无硬信号的编造反例——必须被拒。"""
+        source = "我们球房这周二会员日搞活动台费打五折老会员来的可以享受，晚上生意一般顾客不算多"
+        m = Memory("operational", "会员日老会员来打台费额外收现金")
+        assert _grounding_check(m, source) is False
+
+    def test_no_hard_signal_still_passes_above_strict_threshold(self):
+        """无硬信号但重叠比例过硬(≥30%)的正常场景不受影响，仍照常通过——
+        分档只收紧了 20%~30% 这个此前被误放行的灰色地带。"""
+        m = Memory("semantic", "门店位于商场三楼")
+        assert _grounding_check(m, "我们店在商场三楼，旁边是电影院") is True
 
 
 # ── #1 红线过滤 ──────────────────────────────────────────────────

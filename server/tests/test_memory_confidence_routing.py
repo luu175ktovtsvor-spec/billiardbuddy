@@ -102,6 +102,25 @@ async def test_all_low_confidence_no_auto_change_but_pending_added(session_maker
     assert rows[0].content == "拿不准的信息"
 
 
+async def test_confidence_case_insensitive_routing(session_maker, monkeypatch):
+    """审查 Minor #3:置信度路由用 confidence == "high" 精确匹配，模型偶吐 "High"/"HIGH"
+    这类大小写变体时不该静默落 pending——路由判定要做大小写归一，"High" 仍应走 auto。"""
+    sid = uuid.uuid4()
+
+    async def fake_extract(text, store=None):
+        return [Memory("semantic", "门店台费60元每小时", "High")]
+
+    monkeypatch.setattr(ms, "extract_memories", fake_extract)
+
+    async with session_maker() as db:
+        await ms.remember(db, sid, "随便聊了几句")
+
+    async with session_maker() as db:
+        rows = (await db.execute(select(StoreMemory).where(StoreMemory.store_id == sid))).scalars().all()
+    by_content = {r.content: r.source for r in rows}
+    assert by_content.get("门店台费60元每小时") == "auto"
+
+
 async def test_manual_untouched_by_confidence_routing(session_maker, monkeypatch):
     """边界:置信度分流只影响新抽取出的记忆走 auto 还是 pending，
     manual(老板亲定的店规矩)全程不受影响、不被牵连。"""
