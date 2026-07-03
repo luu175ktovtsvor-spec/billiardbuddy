@@ -670,10 +670,15 @@ _WEB_TOOLS = [
         name="run_subagent",
         description="把一个复杂、独立的子任务交给【子代理专家】专心做完、拿回结果（会多花一次完整模型调用，"
                     "只在真需要拆分的大任务时用）。可选 subagent_type 指定专家："
-                    "general-purpose(默认·全能·可动手) / explore(只读探索·只查不改) / plan(只读规划·只出计划不执行)。",
+                    "general-purpose(默认·全能·可动手) / explore(只读探索·只查不改) / plan(只读规划·只出计划不执行)。"
+                    "派活时 task 尽量写成一条自包含的指令，别甩个模糊话题就完事——子代理看不到你俩之前的聊天，"
+                    "说清楚这四件事效果最好：①要它做成什么（目标）②想要什么形式的结果（一段文字/一份清单/一个判断）"
+                    "③可以用什么办法或工具（有没有它该查的资料、该读的文件）④哪些不用管、做到哪就算完（边界，别让它越界发挥）。",
         parameters={"type": "object", "properties": {
-            "task": {"type": "string", "description": "要交给子代理做完的子任务（说清楚、自包含）"},
-            "focus": {"type": "string", "description": "重点 / 约束 / 期望产出（可选）"},
+            "task": {"type": "string", "description": "要交给子代理做完的子任务。写清楚、自包含："
+                                                        "目标是什么、想要什么形式的结果、能用什么办法/工具、不用管哪些"},
+            "focus": {"type": "string", "description": "重点 / 约束 / 边界（可选，比如"
+                                                        "「别改代码只读」「结果控制在200字内」这类补充限定）"},
             "subagent_type": {"type": "string", "enum": ["general-purpose", "explore", "plan"],
                               "description": "专家类型（可选，默认 general-purpose）"},
         }, "required": ["task"]},

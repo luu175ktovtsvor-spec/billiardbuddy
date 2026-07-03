@@ -146,6 +146,17 @@ def test_bundled_skills_do_not_leak_to_general():
         assert leaked not in txt
 
 
+def test_bundled_skills_all_names_survive_budget_truncation():
+    """真·扫内置技能：技能数已长到 50+，别让 budget_chars 硬截断把排序靠后的技能整条吃掉
+    （曾实测：老逻辑下 51 个技能只剩前 8 个可见，模型永远不知道后面 43 个存在）。"""
+    for mode in (False, True):
+        skills = sk.filter_skills_by_mode(sk.load_skills(), billiards_mode=mode)
+        usable = [s for s in skills if not s.disable_model_invocation and s.description]
+        txt = sk.render_skills_for_prompt(billiards_mode=mode)
+        missing = [s.name for s in usable if s.name not in txt]
+        assert not missing, f"billiards_mode={mode} 时这些技能的名字消失了：{missing}"
+
+
 # ---------- G.1 autocompact 默认窗口 ----------
 
 def test_model_ctx_window_env_override(monkeypatch):

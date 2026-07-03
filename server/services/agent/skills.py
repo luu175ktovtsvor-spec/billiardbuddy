@@ -267,6 +267,9 @@ def render_skills_for_prompt(skills: list[Skill] | None = None, budget_chars: in
     - 跳过 disable-model-invocation（这些只允许用户 `/name` 手调，模型不主动调）。
     - G.2：通用模式（billiards_mode=False）剔除台球领域技能，别把擦边/上钟等漏进普通用户的系统提示。
     - 按 name 排序（前缀缓存稳定）；总长封顶 budget_chars。
+    - 技能一多、整份清单超预算时，别按老逻辑从尾部一刀切（会让排序靠后的技能连名字都不剩，模型永远不知道
+      它存在）；改成先压缩每条描述的可留字数，让所有技能的名字都露出来，只是简介变短。压到 0 字还超预算
+      （技能多到离谱的极端情况）才退回老的整体硬截断兜底。
     """
     skills = skills if skills is not None else load_skills()
     skills = filter_skills_by_mode(skills, billiards_mode)
@@ -276,11 +279,20 @@ def render_skills_for_prompt(skills: list[Skill] | None = None, budget_chars: in
     )
     if not usable:
         return ""
-    lines = ["【可用技能 Skills】需要时用 skill 工具按名调用（仅在确实匹配该技能场景时调）："]
-    for s in usable:
-        d = s.description.replace("\n", " ").strip()[:200]
-        lines.append(f"- {s.name}: {d}")
-    text = "\n".join(lines)
+    header = "【可用技能 Skills】需要时用 skill 工具按名调用（仅在确实匹配该技能场景时调）："
+    prefixes = [f"- {s.name}: " for s in usable]
+    descs = [s.description.replace("\n", " ").strip() for s in usable]
+
+    def _render(desc_cap: int) -> str:
+        lines = [header] + [f"{p}{d[:desc_cap]}" for p, d in zip(prefixes, descs)]
+        return "\n".join(lines)
+
+    text = _render(200)
+    if len(text) > budget_chars:
+        # 换行符：header 到第一条、以及每条之间各一个，共 len(usable) 个。
+        overhead = len(header) + len(usable) + sum(len(p) for p in prefixes)
+        per_desc_budget = max(0, (budget_chars - overhead) // len(usable))
+        text = _render(per_desc_budget)
     if len(text) > budget_chars:
         text = text[:budget_chars].rstrip() + "…"
     return text
