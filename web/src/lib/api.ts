@@ -166,6 +166,18 @@ export interface ScheduledTaskUpdatePayload {
   enabled?: boolean;
 }
 
+// D-Task-6：店铺资料库(老板自己店里的合同/价目表/排班表/进货单，选个文件夹后台自动语义索引，
+// 对话里 AI 用 search_store_docs 工具检索、带出处回答)。跟"台球行业知识库"(懂行业打法)分开——
+// 这个是"懂你家"。字段跟后端 server/api/v1/store_docs.py 的 StoreDocLibraryItem 严格一致。
+export interface StoreDocLibraryItem {
+  folder_path: string | null;
+  status: "idle" | "indexing" | "ready" | "error";
+  indexed_file_count: number;
+  indexed_chunk_count: number;
+  last_indexed_at: string | null;
+  last_error: string | null;
+}
+
 class ApiClient {
   baseUrl: string;
 
@@ -580,6 +592,20 @@ class ApiClient {
   }
   async deleteScheduledTask(id: string): Promise<{ status: string }> {
     return this.request<{ status: string }>("DELETE", `/api/v1/scheduled-tasks/${id}`);
+  }
+
+  // ── 店铺资料库：懂你家(合同/价目表/排班表/进货单)，跟台球行业知识库(懂行)分开呈现 ──
+  async getStoreDocs(): Promise<StoreDocLibraryItem> {
+    return this.request<StoreDocLibraryItem>("GET", "/api/v1/store-docs");
+  }
+  async setStoreDocsFolder(folderPath: string): Promise<StoreDocLibraryItem> {
+    return this.request<StoreDocLibraryItem>("PUT", "/api/v1/store-docs", { folder_path: folderPath });
+  }
+  async reindexStoreDocs(): Promise<StoreDocLibraryItem> {
+    return this.request<StoreDocLibraryItem>("POST", "/api/v1/store-docs/reindex", {});
+  }
+  async clearStoreDocs(): Promise<{ status: string }> {
+    return this.request<{ status: string }>("DELETE", "/api/v1/store-docs");
   }
 
   // ─── Dashboard ───
