@@ -82,17 +82,28 @@ def existing_fingerprints(store_id: str, source_type: str) -> dict[str, str]:
     return {r[0]: (r[1] or "") for r in rows}
 
 
-def search(store_id: str, query_emb: list[float], top: int = 5, min_score: float = 0.05) -> list[dict]:
+def search(store_id: str, query_emb: list[float], top: int = 5, min_score: float = 0.05,
+           source_type: str | None = None) -> list[dict]:
     """暴力 cosine 搜本店向量，返回 top 条 [{source_type, source_id, text, score, ts}]。
-    只比同维度向量（换嵌入后端后旧向量自动忽略）；分数低于 min_score 的丢弃。"""
+    只比同维度向量（换嵌入后端后旧向量自动忽略）；分数低于 min_score 的丢弃。
+
+    source_type=None（默认）＝ 不分来源，全店所有 source_type 一起搜（原有行为，向后兼容）。
+    传具体值（如 "store_doc"）＝ 只搜这一类来源——店铺资料检索(search_store_docs)靠这个参数
+    与 recall_my_content(只搜 "generation") 互相隔离，别把老板过去的生成记录跟他导入的文档混着搜。"""
     if top <= 0:
         return []
     qdim = len(query_emb)
     c = _conn()
-    rows = c.execute(
-        "SELECT source_type, source_id, text, dim, emb, ts FROM vectors WHERE store_id=?",
-        (str(store_id),),
-    ).fetchall()
+    if source_type is not None:
+        rows = c.execute(
+            "SELECT source_type, source_id, text, dim, emb, ts FROM vectors WHERE store_id=? AND source_type=?",
+            (str(store_id), source_type),
+        ).fetchall()
+    else:
+        rows = c.execute(
+            "SELECT source_type, source_id, text, dim, emb, ts FROM vectors WHERE store_id=?",
+            (str(store_id),),
+        ).fetchall()
 
     def _candidates():
         # 流式打分：同维度 + 过门槛的才产出，配合 heapq 只留 top 条，不把全店算完再整列排序
@@ -105,3 +116,29 @@ def search(store_id: str, query_emb: list[float], top: int = 5, min_score: float
 
     best = heapq.nlargest(top, _candidates(), key=lambda x: x[0])
     return [d for _, d in best]
+
+
+def delete_ids(store_id: str, source_type: str, source_ids: list[str]) -> int:
+    """删掉指定 source_id 集合的向量行。用于店铺资料增量索引时清掉"文件改小/删段落后不再存在"
+    的陈旧 chunk（否则搜索会一直命中已经不在文档里的旧内容）。返回删除行数。"""
+    if not source_ids:
+        return 0
+    c = _conn()
+    placeholders = ",".join("?" for _ in source_ids)
+    cur = c.execute(
+        f"DELETE FROM vectors WHERE store_id=? AND source_type=? AND source_id IN ({placeholders})",
+        (str(store_id), source_type, *source_ids),
+    )
+    c.commit()
+    return cur.rowcount
+
+
+def delete_by_source_type(store_id: str, source_type: str) -> int:
+    """删掉某店某来源的【全部】向量行。用于老板清除店铺资料库配置时整批清库。返回删除行数。"""
+    c = _conn()
+    cur = c.execute(
+        "DELETE FROM vectors WHERE store_id=? AND source_type=?",
+        (str(store_id), source_type),
+    )
+    c.commit()
+    return cur.rowcount

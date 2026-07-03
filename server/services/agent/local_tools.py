@@ -1074,7 +1074,9 @@ async def recall_my_content(args, ctx) -> str:
         return "（拿不到当前门店，没法翻历史。）"
     from services.rag.recall import backfill_from_generations, recall
     await backfill_from_generations(ctx.db, store.id)
-    hits = recall(str(store.id), args.get("query", "") or "", top=5)
+    # source_type="generation"：只翻老板过去生成过的内容，别把他导入的店铺资料(store_doc)也搜进来——
+    # 两条检索线分开呈现，"翻旧文案"跟"查店铺资料"是两回事，混着搜会让老板看不懂这条结果哪来的。
+    hits = recall(str(store.id), args.get("query", "") or "", top=5, source_type="generation")
     if not hits:
         return "没在你过去的内容里找到相关的。要不直接说需求，我现写一条。"
     lines = []
@@ -1082,6 +1084,27 @@ async def recall_my_content(args, ctx) -> str:
         snippet = " ".join((h["text"] or "").split())[:200]
         lines.append(f"- {snippet}")
     return "翻到这些你以前写过的相关内容（可参考/在此基础上改）：\n" + "\n".join(lines)
+
+
+# ────────────────────────────── 店铺资料库：检索老板导入的自家文档（合同/进货单/排班表/价目表…） ──────────────────────────────
+# 跟 recall_my_content(翻老板以前生成过的内容) 和 look_up_knowledge(查台球行业通用知识) 都不是一回事：
+# 这条是"懂你家"——老板自己选一个文件夹让 AI 索引，问到自家资料时带出处引用。见 services/rag/store_docs.py。
+
+async def search_store_docs(args: dict, ctx) -> str:
+    """检索店铺自家资料库（老板导入的合同/进货单/排班表/价目表等文档）。工具式 RAG：需要时主动调，
+    不做每轮自动注入。"""
+    store = getattr(ctx, "store", None)
+    if store is None or getattr(store, "id", None) is None:
+        return "（拿不到当前门店，没法查店铺资料。）"
+    query = (args.get("query") or "").strip()
+    if not query:
+        return "没给要查的内容。"
+    from services.rag.store_docs import search_store_docs_impl
+    hits = search_store_docs_impl(str(store.id), query, top=5)
+    if not hits:
+        return "没在店铺资料里找到相关内容（可能还没导入资料文件夹，或资料里确实没有这块——可以如实告诉老板，别编）。"
+    lines = [f"《{h['file_name']}》：{h['snippet']}" for h in hits]
+    return "在店铺自家资料里找到这些相关内容（回答时可引用出处，如「依据《XX合同》」）：\n" + "\n".join(lines)
 
 
 # ────────────────────────────── POS 真诊断：读老板导出的报表 → 基于真实数字诊断 ──────────────────────────────
@@ -1301,6 +1324,22 @@ _LOCAL_TOOLS = [
         read_only=True,
         # F-7 复审：⚠️ 不标 concurrent_safe——handler 内 `await backfill_from_generations(ctx.db, ...)`
         # 真碰 ctx.db（AsyncSession），并发跑会撞 InvalidRequestError（Critical 竞态，见 loop.py 顶部说明）。
+    ),
+    Tool(
+        name="search_store_docs",
+        description="查店铺自家资料（老板导入的合同/进货单/排班表/价目表等文档）。当老板问到"
+                    "『我们合同怎么写的』『这个月排班表』『进货价目』『店里那份XX文件』这类**自家资料**时用我，"
+                    "答案会带出处（文件名），别凭空编——跟 look_up_knowledge(行业通用知识/懂行) 不是一回事，"
+                    "那个是懂行业，这个是懂这家店自己的原始文档。",
+        parameters={"type": "object", "properties": {
+            "query": {"type": "string", "description": "要查的内容，原话即可，如'我们店的续费价目''这个月排班表'"},
+        }, "required": ["query"]},
+        handler=search_store_docs,
+        read_only=True,
+        # handler 只读 ctx.store.id（同步取值，非 await），真正检索走独立的 rag/index.db
+        # （sqlite3 直连，不经 ctx.db 这条 AsyncSession）——不碰主库，判据同 look_up_knowledge/
+        # read_knowledge：不 await ctx.db，纯查询，并发安全。
+        concurrent_safe=True,
     ),
     Tool(
         name="diagnose_from_pos",
