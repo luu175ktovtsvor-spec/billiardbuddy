@@ -164,6 +164,103 @@ def test_generate_video_job_failure_releases_lock_and_notifies_failure(monkeypat
     asyncio.run(main())
 
 
+def test_generate_video_job_completion_visible_via_get_agent_conversation(monkeypatch, tmp_path):
+    """F-10 审查 Important 修复：老板『打开历史会话』唯一走的是 GET /agent/conversations/{id}
+    (get_agent_conversation)，它只读 Generation 表、完全不读 transcript JSONL——不补一条
+    Generation 完成行，这条 UI 路径永远只看得到提交时的占位文案。这里走真实
+    `get_agent_conversation` 函数(不是直接读 transcript)断言完成消息真出现在历史查询里，
+    且挂对了 conversation_id(另一个会话查不到)。"""
+    T._VIDEO_GENERATING.clear()
+
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        monkeypatch.setattr("db.session.async_session", Session)
+        monkeypatch.setattr(Tr.settings, "upload_dir", str(tmp_path))
+        monkeypatch.setattr("services.notify_service.push", lambda *a, **k: None)
+        _patch_key(monkeypatch)
+
+        async def fake_gen(**kw):
+            return {"video_url": "/uploads/videos/real3.mp4"}
+
+        monkeypatch.setattr("services.video_service.generate_video", fake_gen)
+
+        sid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed(db, sid)
+
+        cid = "99999999-9999-9999-9999-999999999999"
+        other_cid = "88888888-8888-8888-8888-888888888888"
+        ctx = SimpleNamespace(
+            store=SimpleNamespace(id=sid), user=SimpleNamespace(id=uid),
+            db=None, allowed_paths=[], conversation_id=cid, _video_generated_this_run=False,
+        )
+        result = await T.generate_video({"description": "开业宣传片三"}, ctx)
+        got = await _poll_done(sid, _extract_job_id(result))
+        assert got is not None and got.status == "done", (got and got.status, got and got.error)
+
+        from api.v1.agent import get_agent_conversation
+
+        async with Session() as db:
+            res = await get_agent_conversation(cid, user=None, store=SimpleNamespace(id=sid), db=db)
+        assistant_texts = [m["content"] for m in res["messages"] if m["role"] == "assistant"]
+        assert any("视频做好了" in t and "/uploads/videos/real3.mp4" in t for t in assistant_texts), assistant_texts
+
+        # 挂对了 conversation_id：别的会话查不到这条完成消息
+        async with Session() as db2:
+            res_other = await get_agent_conversation(other_cid, user=None, store=SimpleNamespace(id=sid), db=db2)
+        assert res_other["messages"] == []
+
+    asyncio.run(main())
+
+
+def test_generate_video_job_failure_visible_via_get_agent_conversation(monkeypatch, tmp_path):
+    """失败路径同样要能被 get_agent_conversation 查到（"没做成、原因是什么"），不能只有成功
+    路径才补 Generation 行。"""
+    T._VIDEO_GENERATING.clear()
+
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        monkeypatch.setattr("db.session.async_session", Session)
+        monkeypatch.setattr(Tr.settings, "upload_dir", str(tmp_path))
+        monkeypatch.setattr("services.notify_service.push", lambda *a, **k: None)
+        _patch_key(monkeypatch)
+
+        async def boom_gen(**kw):
+            raise RuntimeError("火山方舟又超时了")
+
+        monkeypatch.setattr("services.video_service.generate_video", boom_gen)
+
+        sid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed(db, sid)
+
+        cid = "77777777-7777-7777-7777-777777777777"
+        ctx = SimpleNamespace(
+            store=SimpleNamespace(id=sid), user=SimpleNamespace(id=uid),
+            db=None, allowed_paths=[], conversation_id=cid, _video_generated_this_run=False,
+        )
+        result = await T.generate_video({"description": "开业宣传片四"}, ctx)
+        got = await _poll_done(sid, _extract_job_id(result))
+        assert got is not None and got.status == "error"
+
+        from api.v1.agent import get_agent_conversation
+
+        async with Session() as db:
+            res = await get_agent_conversation(cid, user=None, store=SimpleNamespace(id=sid), db=db)
+        assistant_texts = [m["content"] for m in res["messages"] if m["role"] == "assistant"]
+        assert any("视频没做成" in t and "火山方舟又超时了" in t for t in assistant_texts), assistant_texts
+
+    asyncio.run(main())
+
+
 def _extract_job_id(tool_result: str) -> str:
     import re
     m = re.search(r"任务号\s*([0-9a-fA-F-]{8,})", tool_result)

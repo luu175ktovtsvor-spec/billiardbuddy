@@ -154,6 +154,7 @@ async def render_video(args: dict, ctx) -> str:
     if store_id is None:
         # 真实调用(agent 端点)ctx.store 恒为真;理论上不该发生——退化成人话报错，别让老板对着 500 发呆。
         return "没有门店上下文，没法把出片交给后台任务（这通常不该发生，重开一次对话再试）。"
+    user_id = getattr(getattr(ctx, "user", None), "id", None)
     conv = getattr(ctx, "conversation_id", None)
 
     async def work_fn(progress):
@@ -173,6 +174,7 @@ async def render_video(args: dict, ctx) -> str:
             f"视频剪好了!👇(时长≈{duration:.1f}秒)\n\n"
             f"[点击查看视频]({(result or {}).get('urls', [None])[0] or url})"
         ),
+        store_id=store_id, user_id=user_id,
     )
     try:
         job_id = await media_jobs_runner.submit(
