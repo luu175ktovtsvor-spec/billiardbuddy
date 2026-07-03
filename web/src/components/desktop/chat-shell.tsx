@@ -60,6 +60,13 @@ function baseName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
+// 报表提示「今天不再提示」的 localStorage key：按用户机器本地日期算，不用 toISOString()（那是 UTC，
+// 国内用户的"当天"边界会错落到早 8 点：晚 11 点点了不感兴趣、次日早 6 点还会被当成"同一天"继续压着不提示）。
+function reportDismissDayKey(): string {
+  const d = new Date();
+  return `report_hint_dismissed:${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function utf8ToBase64(text: string): string {
   const bytes = new TextEncoder().encode(text);
   let binary = "";
@@ -782,7 +789,7 @@ export function DesktopChatShell({
     const scan = electron?.files?.scanReports;
     if (!scan || !empty) return;
     let cancelled = false;
-    const dayKey = `report_hint_dismissed:${new Date().toISOString().slice(0, 10)}`;
+    const dayKey = reportDismissDayKey();
     try { if (localStorage.getItem(dayKey)) return; } catch { /* 忽略 */ }
     (async () => {
       try {
@@ -798,17 +805,18 @@ export function DesktopChatShell({
     if (chat.generating) return;
     addSelectedFiles([filePath]);
     setReportHint(null);
+    // addSelectedFiles 是异步 setState，这一刻 state 还没刷新到位，显式带上"已选文件 + 这份报表"防止漏发（同 viewCurrentScreen 的坑）。
     void chat.send(
       `帮我读一下这份报表《${name}》，挑 3 个我最该关注的问题，用大白话讲，别念数字。`,
       undefined,
-      { displayText: `诊断《${name}》` },
+      { selectedFiles: Array.from(new Set([...selectedFiles, filePath])), displayText: `诊断《${name}》` },
     );
-  }, [chat, addSelectedFiles]);
+  }, [chat, addSelectedFiles, selectedFiles]);
 
   // 不感兴趣：当场收起 + 记「当天不再提示」
   const onDismissReport = useCallback(() => {
     setReportHint(null);
-    try { localStorage.setItem(`report_hint_dismissed:${new Date().toISOString().slice(0, 10)}`, "1"); } catch { /* 忽略 */ }
+    try { localStorage.setItem(reportDismissDayKey(), "1"); } catch { /* 忽略 */ }
   }, []);
 
   const sidebarEl = useMemo(() => (
