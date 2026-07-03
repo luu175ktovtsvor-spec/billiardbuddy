@@ -35,12 +35,12 @@ def test_add_requires_name_and_command():
     assert mcfg.add_server("x", "")[0] is False
 
 
-def test_memory_preset_removed():
-    """长期记忆 memory 预设已从出厂清单移除：它和店脑记忆是竞争且不互通的第二套记忆，
-    一键装上只会让两套记忆打架。其余免 key 预设（fetch/time/ddg）保留。"""
-    ids = {p["id"] for p in mcfg.MCP_PRESETS}
-    assert "memory" not in ids
-    assert {"fetch", "time", "ddg"} <= ids
+def test_all_presets_removed_redundant_with_builtin_tools():
+    """出厂 MCP 预设已全部下线（A2·2026-07-03）：fetch/time/ddg 都与内置工具重复
+    （内置网页抓取/模型自带时间感知/内置联网搜索），白装徒增维护负担，对小白老板没有增量价值。
+    memory 更早前就已移除——它和店脑记忆是竞争且不互通的第二套记忆，一键装上只会让两套记忆打架。
+    机制本身（add_server/list_servers）仍保留，老板可在界面手动加任意 MCP server。"""
+    assert mcfg.MCP_PRESETS == []
 
 
 def test_add_overwrites_existing(tmp_path):
