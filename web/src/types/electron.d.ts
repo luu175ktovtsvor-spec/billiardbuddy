@@ -9,6 +9,8 @@ export interface DesktopInfo {
   backendUrl?: string | null;
   backendReady?: boolean;
   downloadsPath?: string;
+  /** 首启自动建好的作品文件夹(如 ~/Documents/台球助手)，AI 产出默认落这里；建失败为 null。 */
+  workspaceDir?: string | null;
   windowCount?: number;
 }
 

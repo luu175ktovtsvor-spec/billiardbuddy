@@ -4,7 +4,7 @@
  * 空状态/欢迎（浅色默认 · 跟随系统）：CC 式专业 agent 基调 + 今日建议 + 起手卡片（点了直接派活）。
  */
 import type { LucideIcon } from "lucide-react";
-import { MessageSquareText, FolderOpen, Image as ImageIcon, Lightbulb, Monitor, Loader2, Sparkles, Brain, MousePointerClick, Search, History, Trash2, FileClock } from "lucide-react";
+import { MessageSquareText, Image as ImageIcon, Lightbulb, Monitor, Loader2, Sparkles, Brain, MousePointerClick, Search, History, Trash2, FileClock } from "lucide-react";
 import { WELCOME } from "@/lib/agent-copy";
 import type { RecentArtifact } from "@/lib/api";
 
@@ -27,8 +27,6 @@ export function WelcomeScreen({
   todaySuggestionRecId,
   starters = DEFAULT_STARTERS,
   onPick,
-  onPickWorkingDir,
-  workingDir,
   onDailyDrafts,
   dailyDraftsBusy = false,
   continueTitle,
@@ -46,8 +44,6 @@ export function WelcomeScreen({
   todaySuggestionRecId?: string; // 今日建议对应的 rec.id：点「帮我写」时回传做"采纳上浮"
   starters?: StarterCard[];
   onPick?: (prompt: string, recId?: string) => void;
-  onPickWorkingDir?: () => void;
-  workingDir?: string | null;
   onDailyDrafts?: () => void;    // P1-4：点一下让管家把今天能发的内容草稿备好
   dailyDraftsBusy?: boolean;
   continueTitle?: string;
@@ -87,7 +83,8 @@ export function WelcomeScreen({
         )}
 
         {/* P1-4 每日草稿：点一下让管家把今天能发的几条内容备好（后端预生成+缓存，挑着用） */}
-        {/* P1-7 首屏别过载:5 连按钮改自适应换行的轻量快捷项(不删功能、读作次级),让 3 张起手卡是主角。 */}
+        {/* P1-7 首屏别过载:5 连按钮改自适应换行的轻量快捷项(不删功能、读作次级),让起手卡是主角。
+            A4:工作文件夹卡已撤(零仪式,首启自动建作品文件夹,用户不用选),起手卡从 3 张变 2 张。 */}
         {(onContinueLast || onDailyDrafts || onOpenStoreMemory || onViewScreen || onResearch) && (
           <div className="mb-3 flex flex-wrap gap-2">
             {onContinueLast && (
@@ -143,7 +140,7 @@ export function WelcomeScreen({
           </div>
         )}
 
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           <button
             type="button"
             onClick={() => onPick?.(starters[0]?.prompt || "")}
@@ -152,22 +149,6 @@ export function WelcomeScreen({
             <MessageSquareText className="mb-2 h-4 w-4 text-[#007AFF]" />
             <div className="text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">直接说要做什么</div>
             <div className="mt-1 text-[11.5px] leading-snug text-[#86868b] dark:text-[#6e7077]">一句话交代任务，我来判断要不要读文件、查资料、做图。</div>
-          </button>
-
-          <button
-            type="button"
-            onClick={onPickWorkingDir}
-            className={`group min-h-[104px] rounded-lg border p-3 text-left shadow-sm transition active:scale-[0.99] dark:shadow-none ${
-              workingDir
-                ? "border-[#10a37f]/25 bg-[#10a37f]/[0.06] hover:border-[#10a37f]/40"
-                : "border-black/[0.07] bg-white hover:border-black/[0.12] hover:bg-black/[0.01] dark:border-white/[0.07] dark:bg-[#141519] dark:hover:border-white/[0.14] dark:hover:bg-[#181a1f]"
-            }`}
-          >
-            <FolderOpen className={`mb-2 h-4 w-4 ${workingDir ? "text-[#10a37f]" : "text-[#007AFF]"}`} />
-            <div className="text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">选择工作文件夹</div>
-            <div className="mt-1 text-[11.5px] leading-snug text-[#86868b] dark:text-[#6e7077]">
-              {workingDir ? `当前：${workingDir.split(/[\\/]/).pop()}` : "新建或打开一个文件夹，让 AI 默认在这里干活。"}
-            </div>
           </button>
 
           {starters.filter((s) => s.title !== "直接说要做什么").map((s) => (

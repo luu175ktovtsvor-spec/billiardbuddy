@@ -8,7 +8,7 @@
  *   统一收进一个「+」菜单(分区展示)，行为不变、只换入口——照 Warp/Dia 的「按需出现」思路减少默认可见按钮数。
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Paperclip, ArrowUp, ShieldCheck, Check, X, FileText, BookOpen, Palette, Brain, FolderDown, History, Plus, type LucideIcon } from "lucide-react";
+import { Paperclip, ArrowUp, ShieldCheck, Check, X, FileText, BookOpen, Palette, Brain, FolderDown, FolderOpen, History, Plus, type LucideIcon } from "lucide-react";
 import { PERMISSION_MODES, WELCOME } from "@/lib/agent-copy";
 import { api, type SkillMeta, type OutputStyleMeta } from "@/lib/api";
 import { SlashPalette, type PaletteItem } from "./slash-palette";
@@ -87,6 +87,8 @@ export function DesktopComposer({
   onAddFiles,
   onRemoveFile,
   onOpenFile,
+  workingDir,
+  onPickWorkingDir,
   knowledgePacks = [],
   onKnowledgePacksChange,
   outputStyle = "",
@@ -111,6 +113,9 @@ export function DesktopComposer({
   onRemoveFile?: (path: string) => void;
   /** 点开附件：报表(.xlsx/.xlsm) 在右侧用表格视图打开（可点格改）。 */
   onOpenFile?: (path: string) => void;
+  /** A4：当前存放位置（默认是首启自动建的作品文件夹），「+」菜单里显示当前值 + 换一个入口。 */
+  workingDir?: string | null;
+  onPickWorkingDir?: () => void;
   knowledgePacks?: string[];
   onKnowledgePacksChange?: (packs: string[]) => void;
   outputStyle?: string;
@@ -419,7 +424,25 @@ export function DesktopComposer({
                       </button>
                     )}
 
-                    {(recentFiles.length > 0 && onPickRecentFile) || onPickDownloads ? (
+                    {/* A4：换个存放位置——默认已经是首启自动建好的作品文件夹，用户不用先选；
+                        想换个地方存产出，这是低调的任务内入口（不再是开场必选项）。 */}
+                    {onPickWorkingDir && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        title={workingDir || undefined}
+                        onClick={() => { onPickWorkingDir(); setPlusMenuOpen(false); }}
+                        className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+                      >
+                        <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+                        <span className="min-w-0">
+                          <span className="block text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">换个存放位置</span>
+                          {workingDir && <span className="block truncate text-[11px] text-[#86868b] dark:text-[#8a8c93]">当前：{baseName(workingDir)}</span>}
+                        </span>
+                      </button>
+                    )}
+
+                    {(recentFiles.length > 0 && onPickRecentFile) || onPickDownloads || onPickWorkingDir ? (
                       <div className="my-1 h-px bg-black/[0.06] dark:bg-white/[0.06]" />
                     ) : null}
 
