@@ -13,6 +13,14 @@ append 会翻倍，故覆盖）。原子写（临时文件 + os.replace）防写
 
 不存 system：system 每轮由 compose_agent_system_prompt 重新拼，读回当 history 时 loop 的 _init_messages
 会自己加 system——轨迹只存对话轮，避免把会变的系统提示固化进历史。
+
+F-10 复审 Critical 修复（跨单元竞态）：上面说的"整体覆盖写"曾经有个坑——`media_job_notify.py`
+挂在聊天里的慢工具（视频/剪辑）做完时，会在【本轮聊天进行中途】用 `append_transcript` 往磁盘追加一条
+"做好了"；但轮收尾的整体覆盖写用的是【轮开始时加载的历史】拼出来的内容，对这次外部追加一无所知，
+一覆盖就把它冲掉了。`capture_transcript_baseline_len`（轮开始记基准）+ `merge_external_tail`
+（收尾前把磁盘上超出基准的尾部拼回去）+ `save_transcript_preserving_external_tail`（合并+覆盖写一步
+到位）三个函数就是补这个坑的——agent.py 的两处"整轮覆盖写"（done 分支 + 取消分支）都已经改用后者，
+不再直接调裸的 `save_transcript`。
 """
 from __future__ import annotations
 
@@ -95,6 +103,57 @@ def append_transcript(conversation_id: str | None, new_messages: list[dict] | No
         return
     existing = load_transcript(conversation_id) or []
     save_transcript(conversation_id, existing + list(new_messages))
+
+
+def capture_transcript_baseline_len(conversation_id: str | None) -> int | None:
+    """F-10 复审 Critical 修复：轮开始时（loop 还没跑）调一次，记下磁盘现存转录文件的行数基准，
+    供轮收尾 `merge_external_tail`/`save_transcript_preserving_external_tail` 用——判断磁盘内容是否
+    已被外部（media_job_notify 完成回调等）追加过。
+
+    - 文件不存在（新会话/还没建过轨迹）→ 0（"当前磁盘等价于空"这一有效基准，仍能让 merge 正确捕捉
+      轮进行中才出现的外部追加行）。
+    - `load_transcript` 本身故障安全（内部已 try/except，异常只返回 None、不外抛），这里对"文件不存在"
+      和"读取异常"统一按 0 处理——两者在收尾合并逻辑里都意味着"没有可信的既有内容需要跳过"，宁可多做
+      一次(无害的)合并尝试，也不要因为一次读取失败就整体放弃合并、退回旧 bug 行为。"""
+    tr = load_transcript(conversation_id)
+    return len(tr) if tr is not None else 0
+
+
+def merge_external_tail(
+    conversation_id: str | None, final_messages: list[dict] | None, baseline_len: int | None,
+) -> list[dict] | None:
+    """F-10 复审 Critical 修复：轮收尾整份覆盖写前，把"轮进行中被外部（如 media_job_notify 完成回调）
+    追加进磁盘"的尾部消息拼回 `final_messages` 末尾——防止覆盖写把它们冲掉。
+
+    baseline_len：本轮开始时（loop 跑之前）磁盘轨迹的行数基准，由调用方在轮开始时读一次记下
+    （`capture_transcript_baseline_len` 的返回值）。传 None 表示基准不可靠，本函数原样返回
+    `final_messages`、不做任何合并——退化为原覆盖写行为，故障安全。
+
+    对 autocompact 鲁棒：不假设 `final_messages` 是 baseline 的简单前缀延伸——autocompact 可能已经把
+    本轮内部的前缀整段重建成摘要，长度/内容都变了，没法拿"多出来的部分"去跟 final_messages 做 diff。
+    这里只在【磁盘现存文件】上判断：现在文件行数比 baseline_len 多出来的尾部就是外部追加（这段时间里，
+    除了 media_job_notify 这类完成回调，没人会去写同一个会话的转录文件）——不管 final_messages 自己
+    经历了什么压缩重建，把这段尾部原样接到它后面即可。磁盘现存内容 ≤ baseline_len（没变化，或中途被
+    截断/回滚过）→ 不强行拼接，原样返回。读取失败也原样返回（故障安全）。"""
+    if baseline_len is None or not final_messages:
+        return final_messages
+    current = load_transcript(conversation_id)
+    if not current or len(current) <= baseline_len:
+        return final_messages
+    tail = current[baseline_len:]
+    return list(final_messages) + tail
+
+
+def save_transcript_preserving_external_tail(
+    conversation_id: str | None, final_messages: list[dict] | None, baseline_len: int | None,
+) -> None:
+    """轮收尾整份覆盖写的安全版本：先按 baseline_len 把外部追加的尾部并回，再走 save_transcript。
+
+    调用方两处同款用法（agent.py）：主循环"done"收尾的 `ctx.final_messages` + 用户取消时落的
+    `ctx.live_messages`——都是"拿一份在轮开始时就定型/只在内存里累积的消息列表，整段覆盖写文件"，
+    都会撞上同一个竞态（F-10 复审 Critical：异步媒体任务完成回灌 × 主循环整轮覆盖写的跨单元竞态），
+    用同一个安全版本收口，别各自维护一份合并逻辑。"""
+    save_transcript(conversation_id, merge_external_tail(conversation_id, final_messages, baseline_len))
 
 
 def load_transcript(conversation_id: str | None) -> list[dict] | None:

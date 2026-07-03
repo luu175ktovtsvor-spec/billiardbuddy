@@ -1624,6 +1624,15 @@ async def _stream_agent_events(body: AgentChatRequest, user: User, store, db, ta
 
     denial_tracker.load_into_ctx(ctx, str(conv_uuid))
 
+    # F-10 复审 Critical 修复(跨单元竞态)：轮开始时(loop 还没跑)先记一份磁盘轨迹行数基准——供轮收尾
+    # "整份覆盖写"(下面 done 分支的 save_transcript_preserving_external_tail + 取消分支落
+    # live_messages)判断磁盘现存内容是否已被外部(media_job_notify 完成回调等)追加过，见
+    # transcript.py 的 capture_transcript_baseline_len/merge_external_tail docstring。
+    # 用 str(conv_uuid)（跟下面收尾时 save 用的键完全一致），不用 body.conversation_id 原始字符串，
+    # 防止大小写/格式不规范导致两处文件名对不上。
+    from services.agent.transcript import capture_transcript_baseline_len
+    ctx.transcript_baseline_len = capture_transcript_baseline_len(str(conv_uuid))
+
     from services.agent.tools import DELIVERABLE_TOOLS
     final_content = ""
     deliverables: list[str] = []
@@ -1689,8 +1698,13 @@ async def _stream_agent_events(body: AgentChatRequest, user: User, store, db, ta
                                           turns, tokens_used=tokens_used, source_rec_id=_rec_id,
                                           display_text=body.display_text)
                 try:
-                    from services.agent.transcript import save_transcript
-                    save_transcript(str(conv_uuid), getattr(ctx, "final_messages", None))
+                    # F-10 复审 Critical 修复：不直接整份覆盖写——先把轮进行中被外部(媒体任务完成
+                    # 回调等)追加进磁盘的尾部并回，再写，防止把它们冲掉(见 transcript.py 顶部说明)。
+                    from services.agent.transcript import save_transcript_preserving_external_tail
+                    save_transcript_preserving_external_tail(
+                        str(conv_uuid), getattr(ctx, "final_messages", None),
+                        getattr(ctx, "transcript_baseline_len", None),
+                    )
                 except Exception:
                     logger.warning("agent 轨迹落盘失败，跳过", exc_info=True)
                 event = {**event, "generation_id": gen_id, "conversation_id": str(conv_uuid)}
@@ -1809,8 +1823,12 @@ async def start_agent_task(
                 _cid = getattr(_c, "conversation_id", None) if _c is not None else None
                 _live = getattr(_c, "live_messages", None) if _c is not None else None
                 if _cid and _live:
-                    from services.agent.transcript import save_transcript
-                    save_transcript(str(_cid), _live)
+                    # F-10 复审 Critical 修复：跟 done 分支同款——_live 也是"轮开始时旧快照+跑到一半"
+                    # 的整份内容，同样可能撞上媒体任务完成回调进行中追加、被这里整份覆盖冲掉的竞态。
+                    from services.agent.transcript import save_transcript_preserving_external_tail
+                    save_transcript_preserving_external_tail(
+                        str(_cid), _live, getattr(_c, "transcript_baseline_len", None),
+                    )
             except Exception:
                 logger.warning("取消路径轨迹落盘失败，跳过", exc_info=True)
             await _task_append(task, {"type": "done", "turns": 0, "stopped_reason": "cancelled"})
