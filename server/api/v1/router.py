@@ -18,6 +18,7 @@ from api.v1.studio import router as studio_router
 from api.v1.video_edit import router as video_edit_router
 from api.v1.notifications import router as notifications_router
 from api.v1.checkpoints import router as checkpoints_router
+from api.v1.scheduled_tasks import router as scheduled_tasks_router
 
 router = APIRouter()
 
@@ -33,6 +34,7 @@ router.include_router(studio_router, prefix="/studio", tags=["生成工作室·�
 router.include_router(video_edit_router, prefix="/video-edit", tags=["AI 剪辑台·直连"])
 router.include_router(notifications_router, prefix="/notifications", tags=["通知中心"])
 router.include_router(checkpoints_router, prefix="/checkpoints", tags=["检查点·影子git回滚"])
+router.include_router(scheduled_tasks_router, prefix="/scheduled-tasks", tags=["定时任务"])
 
 
 @router.get("/health")
