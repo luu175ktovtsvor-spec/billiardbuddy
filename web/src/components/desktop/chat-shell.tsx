@@ -102,6 +102,8 @@ export function DesktopChatShell({
   const [goal, setGoal] = useState<string>("");
   const [workingDir, setWorkingDir] = useState<string | null>(null);
   const [downloadsPath, setDownloadsPath] = useState<string | null>(null);
+  // A4：Electron 首启自动建的作品文件夹（desktop:info 的 workspaceDir）；workingDir 没有已持久化值时的默认落点。
+  const [workspaceDir, setWorkspaceDir] = useState<string | null>(null);
   const e2eAnswerSeededRef = useRef(false);
   const recentFilesKey = "agent_recent_files";
   const rememberFiles = useCallback((paths: string[]) => {
@@ -212,10 +214,22 @@ export function DesktopChatShell({
   useEffect(() => {
     let cancelled = false;
     electron?.info?.()
-      .then((info) => { if (!cancelled && info.downloadsPath) setDownloadsPath(info.downloadsPath); })
+      .then((info) => {
+        if (cancelled) return;
+        if (info.downloadsPath) setDownloadsPath(info.downloadsPath);
+        // A4：首启自动建好的作品文件夹（~/Documents/台球助手），下面的默认值效果据此兜底 workingDir。
+        if (info.workspaceDir) setWorkspaceDir(info.workspaceDir);
+      })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [electron]);
+  // A4 零仪式：某会话/窗口没有已持久化的工作目录时，默认落到作品文件夹，不再要求用户开场先选。
+  // 等 workbenchLoaded（已尝试读过窗口级缓存）+ workspaceDir 到手，workingDir 仍空才补上默认值——
+  // 不覆盖用户已选过/历史会话记住的目录。
+  useEffect(() => {
+    if (!workbenchLoaded || workingDir || !workspaceDir) return;
+    setWorkingDir(workspaceDir);
+  }, [workbenchLoaded, workingDir, workspaceDir]);
   useEffect(() => {
     try {
       const raw = localStorage.getItem(recentFilesKey);
@@ -299,7 +313,8 @@ export function DesktopChatShell({
     try {
       const r = await api.getAgentConversation(id);
       setSelectedFiles([]); // 切换会话：清掉上个会话的附件，避免误带
-      try { setWorkingDir(localStorage.getItem(wdKey(id)) || null); } catch { setWorkingDir(null); }
+      // A4：这条历史会话没单独记过工作目录时，落回作品文件夹默认值（不再是 null）。
+      try { setWorkingDir(localStorage.getItem(wdKey(id)) || workspaceDir); } catch { setWorkingDir(workspaceDir); }
       // C2 历史回放半：后端 display_content 映射成前端约定的 displayContent 字段，没有则不带（落回 content 全文）。
       const msgs: ChatMessage[] = (r.messages || []).map((m) => ({
         role: m.role,
@@ -308,7 +323,7 @@ export function DesktopChatShell({
       }));
       chat.loadConversation(id, msgs);
     } catch { /* 忽略 */ }
-  }, [chat]);
+  }, [chat, workspaceDir]);
   const openRecent = useCallback((item: RecentArtifact) => {
     if (item.kind === "poster" && item.url) {
       setPreview({
@@ -491,7 +506,7 @@ export function DesktopChatShell({
     try { localStorage.setItem("agent_deep_thinking", v ? "1" : "0"); } catch { /* 忽略 */ }
   };
 
-  // 选参考文件/图片/视频：回形针只做附件授权；文件夹统一走“工作文件夹”入口，避免用户把目录当附件。
+  // 选参考文件/图片/视频：回形针只做附件授权；换存放位置统一走「+」菜单，避免用户把目录当附件。
   const pickFiles = useCallback(async () => {
     if (!electron?.files?.pick) return;
     try {
@@ -512,14 +527,15 @@ export function DesktopChatShell({
       addSelectedFiles(r.paths);
     } catch { /* 取消/失败：忽略 */ }
   }, [electron, downloadsPath, addSelectedFiles]);
-  // 打开文件夹：一个入口既能选现有文件夹、也能在系统弹窗里当场新建文件夹（桌面主进程已支持 createDirectory）。
+  // A4：换个存放位置——不再是开场必选项，收进「+」菜单当低调菜单项。一个入口既能选现有文件夹、
+  // 也能在系统弹窗里当场新建文件夹（桌面主进程已支持 createDirectory）。不选的话默认就用作品文件夹。
   const pickWorkingDir = async () => {
     if (!electron?.files?.pick) return;
     try {
       const r = await electron.files.pick({
         directory: true,
         createDirectory: true,
-        title: "选择或新建一个文件夹，AI 默认在里面干活",
+        title: "选择或新建一个文件夹，AI 产出改存到这里",
       });
       if (r.canceled || !r.paths?.length) return;
       updateWorkingDir(r.paths[0]);
@@ -742,8 +758,6 @@ export function DesktopChatShell({
           todaySuggestion={liveToday || todaySuggestion}
           todaySuggestionRecId={liveTodayRecId}
           onPick={pick}
-          onPickWorkingDir={electron?.files?.pick ? () => pickWorkingDir() : undefined}
-          workingDir={workingDir}
           onDailyDrafts={loadDailyDrafts}
           dailyDraftsBusy={dailyDraftsBusy}
           continueTitle={conversations[0]?.title || recentItems.find((item) => item.conversation_id)?.title}
@@ -781,6 +795,8 @@ export function DesktopChatShell({
         />
       )}
 
+      {/* A4 零仪式：工作目录默认落作品文件夹，不再需要用户开场先选——这里只留纯提示信息，
+          没有"还没选"欠账文案；换存放位置的动作已收进输入区「+」菜单（低调、任务内动作）。 */}
       {electron?.files?.pick && (
         <div className="mx-auto w-full max-w-[820px] px-4 pb-1">
           <div className="flex flex-wrap items-center gap-2 text-[12px]">
@@ -794,17 +810,14 @@ export function DesktopChatShell({
             >
               工作台：{knowledgePacks.includes("billiards") ? "台球项目" : "通用项目"}
             </span>
-            {workingDir ? (
-              <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md bg-[#10a37f]/10 px-2.5 py-1 text-[#10a37f]" title={`${workingDir}（AI 默认在这里读写改查；完全访问下仍能处理别处文件）`}>
-                <span className="truncate">工作文件夹：{baseName(workingDir)}</span>
-                <button type="button" onClick={() => updateWorkingDir(null)} className="ml-1 font-bold leading-none hover:opacity-70" aria-label="清除工作文件夹">×</button>
+            {workingDir && (
+              <span
+                className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md bg-black/[0.04] px-2.5 py-1 text-[#6e6e73] dark:bg-white/[0.05] dark:text-[#9a9ca3]"
+                title={`${workingDir}（AI 产出默认存到这里；完全访问下仍能处理别处文件，想换个地方存就在输入框「+」菜单里选）`}
+              >
+                <span className="truncate">存放位置：{baseName(workingDir)}</span>
               </span>
-            ) : (
-              <span className="text-[#86868b] dark:text-[#6e7077]">还没选工作文件夹</span>
             )}
-            <button type="button" onClick={() => pickWorkingDir()} className="rounded-md px-2 py-1 text-[#007AFF] transition hover:bg-[#007AFF]/10" title="选择或新建一个文件夹，AI 默认在里面干活">
-              打开文件夹
-            </button>
           </div>
         </div>
       )}
@@ -898,6 +911,8 @@ export function DesktopChatShell({
         onAddFiles={electron?.files?.saveTemp ? addSelectedFiles : undefined}
         onRemoveFile={removeFile}
         onOpenFile={(p) => setPreview(/\.(xlsx|xlsm)$/i.test(p) ? { kind: "sheet", path: p } : { kind: "doc", path: p })}
+        workingDir={workingDir}
+        onPickWorkingDir={electron?.files?.pick ? pickWorkingDir : undefined}
         disabled={chat.generating && !chat.canSteer}
         placeholder={chat.canSteer ? "任务进行中，可以随时补充或纠偏…" : undefined}
       />
