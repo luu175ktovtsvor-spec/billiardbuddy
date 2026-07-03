@@ -177,7 +177,7 @@ export function StoreMemoryPanel({
                   ? "bg-white text-[#1d1d1f] shadow-sm dark:bg-[#24262d] dark:text-[#e6e7e9]"
                   : "text-[#6e6e73] hover:bg-white/60 dark:text-[#8a8c93] dark:hover:bg-white/[0.06]"
               }`}
-              title={workingDir ? workingDir : "先选择工作文件夹，再保存当前项目资料"}
+              title={workingDir ? workingDir : "还没有工作文件夹，暂时只能存全局资料"}
             >
               当前工作文件夹
             </button>
@@ -187,7 +187,7 @@ export function StoreMemoryPanel({
               ? `只在「${baseName(workingDir)}」这个工作文件夹里使用，避免污染其它项目。`
               : workingDir
                 ? "全局资料会用于所有工作台；项目资料请切到「当前工作文件夹」。"
-                : "还没选工作文件夹；现在新增的是全局资料。"}
+                : "现在新增的是全局资料，所有工作台通用。"}
           </div>
         </div>
 

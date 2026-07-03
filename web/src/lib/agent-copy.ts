@@ -20,7 +20,7 @@ export const PERMISSION_MODES: { value: PermissionMode; label: string; desc: str
 /** 空状态 / 欢迎 —— 去客服腔，专业 agent 基调（对标 cc-haha empty state）。 */
 export const WELCOME = {
   title: "帮你把电脑上的事办完",
-  subtitle: "直接说要办什么。也可以先选一个工作文件夹，我会在里面读写文件、整理资料、做图做文案。",
+  subtitle: "直接说要办什么——看报表、整理文件、写文案、做海报都行，做好的东西会自动存好。",
   placeholder: "说说要办什么，比如：整理这个文件夹 / 看这份报表 / 写条朋友圈",
 };
 
