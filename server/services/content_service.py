@@ -304,7 +304,7 @@ KNOWLEDGE_KEYWORDS: dict[str, list[str]] = {
     "knowledge.scale_guide": ["规模", "几台", "小店", "独立店", "台数", "10台", "20台", "连锁", "中小店", "夫妻店", "大店", "门店大小", "多少台", "台球桌数量", "几张台"],
     "knowledge.gaming_customer_ops": ["追分", "约局", "博弈", "台费局", "赢一把", "小赌", "下注", "对局", "围观", "高手局", "追分客", "彩头"],
     "knowledge.assistant_overtime_service": ["超休", "买超休", "陪出去", "出去吃饭", "陪客户出去", "外出陪", "陪伴服务", "超休时长", "超休奖励"],
-    "knowledge.cost_control": ["控成本", "成本控制", "成材率", "损耗", "耗材", "电费", "台呢更换", "皮头", "巧粉", "降本", "省成本", "能耗"],
+    "knowledge.cost_control": ["控成本", "成本控制", "成材率", "损耗", "耗材", "电费", "台呢", "台呢更换", "皮头", "巧粉", "降本", "省成本", "能耗"],
     "knowledge.positioning_design": ["定位", "差异化", "卖点", "口号", "slogan", "心智", "竞争对手", "凭什么选", "宣传特色", "品牌传播", "找搭子", "怎么宣传", "占领心智"],
     "knowledge.price_raise": ["涨价", "提价", "上调价格", "调价", "价格上调", "提毛利", "加价", "能不能涨", "敢不敢涨", "提价格"],
     "knowledge.assistant_persona_building": ["人设", "美女人设", "形象", "颜值", "气质", "风格", "穿搭", "妆容", "妆造", "出镜", "包装助教", "助教形象", "性感", "可爱", "飒爽", "潮酷"],
@@ -420,6 +420,53 @@ def _semantic_scores(intent_text: str, candidates: list[str]) -> dict:
     return out
 
 
+def _keyword_bigram_ranking(topic: str, keys: list[str]) -> list[str]:
+    """确定性【关键词命中 + 名称/内容 bigram 重叠】排序（字面回退路径）。
+
+    独立成纯函数，两处复用：① 没装语义模型时 rank_knowledge_for_topic 的唯一排序；
+    ② 装了语义模型时，作为 RRF 融合的第二路——专有黑话（追分/上钟/超休 等 2 字词）
+    是精确关键词强信号，语义向量对短黑话未必稳，融合进来兜底不丢召回。"""
+    topic_lower = topic.lower()
+    ib = _intent_bigrams(topic)
+
+    def _score(key: str) -> float:
+        kw = sum(1 for w in KNOWLEDGE_KEYWORDS.get(key, []) if w.lower() in topic_lower)
+        data = prompt_engine._templates.get(key) or {}
+        nb = _intent_bigrams(str(data.get("name", "")))
+        cb = _content_bigrams(key)
+        overlap = (len(ib & nb) * 2 + len(ib & cb)) if ib else 0
+        return kw * 5.0 + overlap
+
+    scored = sorted(((_score(k), k) for k in keys), key=lambda x: x[0], reverse=True)
+    return [k for _, k in scored]
+
+
+def _rrf_fuse(rankings: list[list[str]], k: int = 60) -> list[str]:
+    """Reciprocal Rank Fusion：把多路【各自已按相关度降序排好】的 key 列表融合成一份排序。
+
+    某 key 在某路排名第 r 位（0 基，第一名 r=0）对该路贡献 1/(k + r + 1) 分
+    （等价经典 RRF 公式 1/(k + rank)，rank 从 1 起算）；一个 key 出现在多路时把各路贡献
+    累加；只出现在一路的 key 只拿那一路的分（不出现的路不贡献、也不惩罚）。
+    按融合总分降序返回全部出现过的 key（同分按各路中最早出现的顺序稳定排列）。
+
+    k 是经典 RRF 的平滑常数（默认 60，业界常用值）：k 越大，名次差异被压得越平——
+    避免某一路头部一两名的极端排名单方面支配融合结果。
+
+    用途：语义排序 + 关键词-bigram 排序各出一路，融合后台球黑话（专有 2 字词）在语义
+    模式下也能凭精确关键词命中拿到融合分、不被"语义向量对短词不敏感"吃掉召回。
+    """
+    scores: dict[str, float] = {}
+    order: list[str] = []  # 记录每个 key 首次出现的顺序，供同分 tie-break（保证纯函数确定性）
+    for ranking in rankings:
+        for r, key in enumerate(ranking):
+            if key not in scores:
+                scores[key] = 0.0
+                order.append(key)
+            scores[key] += 1.0 / (k + r + 1)
+    order_index = {key: i for i, key in enumerate(order)}
+    return sorted(scores.keys(), key=lambda key: (-scores[key], order_index[key]))
+
+
 def _all_knowledge_keys() -> list[str]:
     """全部 knowledge.* 模板 key（不含场景/文案模板）。供编排脑"查行业知识"用。"""
     return [t["key"] for t in prompt_engine.list_templates(category="knowledge") if t.get("key")]
@@ -454,8 +501,10 @@ def rank_knowledge_for_topic(topic: str, top: int = 5) -> list[dict]:
     红线/有没有更专业打法时，查行业知识再判断。只返回 name + description（知识索引），
     不返回整篇正文——省 token。
 
-    打分：装了 fastembed 语义模型 → 走 _semantic_scores（按意思找，"换说法"也能召回）；
-    没装则回退【关键词命中 + 内容/名称 bigram 字面重叠】，纯确定性、不依赖外部模型。
+    打分：装了 fastembed 语义模型 → 语义排序 + 关键词-bigram 排序【两路 RRF 融合】（_rrf_fuse）——
+    语义负责"换说法"也能召回，关键词-bigram 负责专有黑话（追分/上钟/超休 等 2 字词，语义向量
+    对短黑话未必稳）不被语义模式挤掉；没装语义模型则单走【关键词命中 + 内容/名称 bigram 字面
+    重叠】，纯确定性、不依赖外部模型（此单路径行为与融合前完全一致，不退化）。
     topic 为空时按固定顺序返回前 top 条（确定性）。
     """
     keys = _all_knowledge_keys()
@@ -478,26 +527,16 @@ def rank_knowledge_for_topic(topic: str, top: int = 5) -> list[dict]:
     if not topic:
         return [_shape(k) for k in keys[:top]]
 
-    scored: list[tuple[float, str]]
     if _semantic_available():
         sem = _semantic_scores(topic, keys)
-        scored = sorted(((sem.get(k, 0.0), k) for k in keys), key=lambda x: x[0], reverse=True)
+        sem_ranking = [k for _, k in sorted(((sem.get(k, 0.0), k) for k in keys), key=lambda x: x[0], reverse=True)]
+        kw_ranking = _keyword_bigram_ranking(topic, keys)
+        ranked_keys = _rrf_fuse([sem_ranking, kw_ranking])
     else:
-        # 字面回退：关键词命中（强信号）+ 内容/名称 bigram 重叠（兜没配关键词的）。
-        topic_lower = topic.lower()
-        ib = _intent_bigrams(topic)
+        # 字面回退单路径：行为与融合前完全一致（不因为加了 RRF 就退化这条无语义模型时的路径）。
+        ranked_keys = _keyword_bigram_ranking(topic, keys)
 
-        def _score(key: str) -> float:
-            kw = sum(1 for w in KNOWLEDGE_KEYWORDS.get(key, []) if w.lower() in topic_lower)
-            data = prompt_engine._templates.get(key) or {}
-            nb = _intent_bigrams(str(data.get("name", "")))
-            cb = _content_bigrams(key)
-            overlap = (len(ib & nb) * 2 + len(ib & cb)) if ib else 0
-            return kw * 5.0 + overlap
-
-        scored = sorted(((_score(k), k) for k in keys), key=lambda x: x[0], reverse=True)
-
-    return [_shape(k) for _, k in scored[:top]]
+    return [_shape(k) for k in ranked_keys[:top]]
 
 
 def _log_recall(intent_text: str, scored: list, cap: int) -> None:
