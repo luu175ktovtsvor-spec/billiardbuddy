@@ -8,14 +8,16 @@
  * 挂在根 Providers 里（见 components/providers.tsx），任意组件 useToast() 即可触发，不用逐层传 props。
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, XCircle } from "lucide-react";
+import { CheckCircle2, RefreshCw, XCircle } from "lucide-react";
 
-type ToastKind = "success" | "error";
+type ToastKind = "success" | "error" | "info";
 type ToastEntry = { id: number; message: string; kind: ToastKind };
 
 export interface ToastApi {
   success: (message: string) => void;
   error: (message: string) => void;
+  // 低调中性提示（灰色，非成功非报错）——F1c 断线重连这类"状态说明但不用大惊小怪"的场景用它。
+  info: (message: string) => void;
 }
 
 const ToastContext = createContext<ToastApi | null>(null);
@@ -44,6 +46,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const api = useMemo<ToastApi>(() => ({
     success: (message: string) => show(message, "success"),
     error: (message: string) => show(message, "error"),
+    info: (message: string) => show(message, "info"),
   }), [show]);
 
   return (
@@ -56,20 +59,24 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
 function ToastHost({ toast }: { toast: ToastEntry | null }) {
   if (!toast) return null;
-  const ok = toast.kind === "success";
+  const colorClass = toast.kind === "success"
+    ? "border-[#10a37f]/25 text-[#10a37f]"
+    : toast.kind === "error"
+      ? "border-[#ff3b30]/25 text-[#ff3b30] dark:text-[#ff8585]"
+      : "border-black/10 text-gray-500 dark:border-white/10 dark:text-gray-400"; // info：灰，低调不吵
   return (
     <div className="pointer-events-none fixed inset-x-0 top-4 z-[100] flex justify-center px-4">
       <div
         key={toast.id}
         role="status"
         aria-live="polite"
-        className={`pointer-events-auto flex max-w-[420px] items-start gap-2 rounded-lg border bg-white px-3.5 py-2.5 text-[13px] leading-snug shadow-lg animate-[fadeIn_0.2s_ease-out] dark:bg-[#1c1e24] ${
-          ok
-            ? "border-[#10a37f]/25 text-[#10a37f]"
-            : "border-[#ff3b30]/25 text-[#ff3b30] dark:text-[#ff8585]"
-        }`}
+        className={`pointer-events-auto flex max-w-[420px] items-start gap-2 rounded-lg border bg-white px-3.5 py-2.5 text-[13px] leading-snug shadow-lg animate-[fadeIn_0.2s_ease-out] dark:bg-[#1c1e24] ${colorClass}`}
       >
-        {ok ? <CheckCircle2 className="mt-px h-4 w-4 shrink-0" /> : <XCircle className="mt-px h-4 w-4 shrink-0" />}
+        {toast.kind === "success"
+          ? <CheckCircle2 className="mt-px h-4 w-4 shrink-0" />
+          : toast.kind === "error"
+            ? <XCircle className="mt-px h-4 w-4 shrink-0" />
+            : <RefreshCw className="mt-px h-4 w-4 shrink-0" />}
         <span>{toast.message}</span>
       </div>
     </div>

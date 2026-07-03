@@ -10,7 +10,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { api, type ApprovalReason } from "@/lib/api";
+import { api, type AgentStreamHandlers, type ApprovalReason } from "@/lib/api";
 import { getErrorMessage, humanizeErrorText } from "@/lib/utils";
 import { useToast } from "@/components/desktop/toast";
 
@@ -82,6 +82,26 @@ export interface AgentChatOptions {
 
 const IMAGE_TOOLS = new Set(["make_poster", "generate_image"]);
 const ACTIVE_TASK_STORAGE_KEY = "agent_active_task";
+
+// F1c 断线重连：有限次数 + 指数退避，别无限重连烧资源。抽成纯函数方便单独读/测，不依赖组件状态。
+const RECONNECT_MAX_ATTEMPTS = 5;
+const RECONNECT_BASE_DELAY_MS = 1000;
+const RECONNECT_MAX_DELAY_MS = 8000;
+
+/** 第 attempt 次重连（从 1 开始）前要等多久：1s/2s/4s/8s/8s… 封顶 8s。 */
+export function reconnectDelayMs(attempt: number): number {
+  return Math.min(RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1), RECONNECT_MAX_DELAY_MS);
+}
+
+/** 可被 abort 打断的 sleep：组件卸载/切会话/手动停止时 signal 一触发就立刻醒来，不再傻等满时长后台重连。 */
+function sleepAbortable(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const onAbort = () => { clearTimeout(timer); resolve(); };
+    const timer = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(); }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 function imageArtifactFromToolResult(tool: string, content: string): GeneratedImageArtifact | null {
   if (!IMAGE_TOOLS.has(tool) || !content) return null;
@@ -171,136 +191,164 @@ export function useAgentChat(opts: AgentChatOptions) {
     let question: QuestionData | undefined;
     // F4 Focus Chain：本轮最新的进度清单展示文本（原地覆盖——后端每次都吐完整最新状态，不是增量）。
     let todoText: string | undefined;
+    // F1c 断线重连：本次 api.subscribeAgentTask() 调用是不是"异常断线"收场——跟正常 done / 应用层
+    // error 区分开（那两种各自的 handler 已经收尾过），只有这个是 true 才需要重连循环再连一次。
+    let disconnected = false;
+    let reconnectNoticeShown = false; // 一轮对话里只提示一次，别每次重试都弹一条、显得吵。
 
-    try {
-      if (recovered) {
-        setDraft("正在接回刚才没完成的任务…");
-      }
-      await api.subscribeAgentTask(
-        taskId,
-        {
-          onEvent: (ev) => {
-            const off = typeof ev.offset === "number" ? ev.offset : undefined;
-            if (off !== undefined) {
-              lastOffsetRef.current = Math.max(lastOffsetRef.current, off);
-              saveActiveTaskSnapshot({ taskId, userMessage, offset: lastOffsetRef.current });
-            }
-          },
-          onToken: (t) => setDraft((prev) => (recovered && prev === "正在接回刚才没完成的任务…" ? "" : prev) + t),
-          onReasoning: (c) => { reasoningText += c; setReasoningDraft((prev) => prev + c); },
-          onToolCall: (tool, args, id) => {
-            steps.push({ tool, args, id, done: false });
-            setLiveSteps([...steps]);
-          },
-          onToolProgress: (_tool, id, chunk) => {
-            const st = id ? steps.find((s) => s.id === id) : steps[steps.length - 1];
-            if (st) {
-              st.progress = (st.progress || "") + chunk;
-              setLiveSteps([...steps]);
-            }
-          },
-          onToolResult: (_tool, content, id, knowledgeUsed) => {
-            const st = id ? steps.find((s) => s.id === id) : steps[steps.length - 1];
-            if (st) {
-              st.done = true;
-              st.result = content;
-              if (knowledgeUsed && knowledgeUsed.length) st.knowledgeUsed = knowledgeUsed;
-              setLiveSteps([...steps]);
-            }
-            const image = imageArtifactFromToolResult(_tool, content);
-            if (image) optsRef.current.onGeneratedImage?.(image);
-          },
-          onApprovalRequest: (tool, args, _id, token, preview, reason) => {
-            approval = { tool, args, token, preview, reason, status: "pending" };
-          },
-          onAskQuestion: (q) => {
-            question = { question: q.question, options: q.options, multi: q.multi };
-          },
-          // 方向盘：后端确认插话已注入。本窗口刚发的（乐观上屏过）→ 去重跳过；
-          // 刷新恢复重放时本地没这条 → 补回对话流，插话不因刷新而消失。
-          onSteering: (content) => {
-            const pend = pendingSteerEchoRef.current;
-            const i = pend.indexOf(content);
-            if (i >= 0) { pend.splice(i, 1); return; }
-            setMessages((prev) => [...prev, { role: "user", content }]);
-          },
-          // F9：AI 刚归纳了前文（autocompact 真发生），插一条低调的系统提示到对话流里，
-          // 解释"接下来它可能记不清最前面的细节"。只发一次，不算真正的对话内容。
-          onContextNote: (content) => {
-            setMessages((prev) => [...prev, { role: "assistant", content, kind: "context_note" }]);
-          },
-          // F4 Focus Chain：原地覆盖（不是 push）——task_progress 参数 / todo_write 工具两条路径
-          // 后端已归并成同一份最新状态，前端只需要显示"最新"，不需要保留历史每一版。
-          onTodoUpdate: (content) => {
-            todoText = content;
-            setLiveTodo(content);
-          },
-          onFinal: (content) => {
-            finalText = content;
-          },
-          onDone: (info) => {
-            if (info.stopped_reason === "cancelled") {
-              pushStopNotice(info.task_id || taskId);
-            } else if (info.stopped_reason !== "error") {
-              setMessages((prev) => [
-                ...prev,
-                { role: "assistant", content: finalText, reasoning: reasoningText || undefined,
-                  steps: steps.length ? [...steps] : undefined, approval, question, memoryRefs: info.memory_refs,
-                  generationId: info.generation_id, todo: todoText },
-              ]);
-            }
-            if (info?.conversation_id) setConversationId(info.conversation_id);
-            setActiveTask(null);
-            clearActiveTaskSnapshot();
-            setDraft("");
-            setReasoningDraft("");
-            setLiveSteps([]);
-            setLiveTodo(undefined);
-          },
-          onError: (m) => {
-            if (ctrl.signal.aborted) return;
-            const salvaged = steps.length > 0 || !!approval || !!question || !!finalText.trim();
-            setMessages((prev) => {
-              const next: ChatMessage[] = [...prev];
-              if (salvaged) {
-                next.push({
-                  role: "assistant",
-                  content: finalText,
-                  reasoning: reasoningText || undefined,
-                  steps: steps.length ? [...steps] : undefined,
-                  approval,
-                  question,
-                  todo: todoText,
-                });
-              }
-              next.push({ role: "assistant", content: `⚠️ ${humanizeErrorText(m)}`, error: true });
-              return next;
-            });
-            setActiveTask(null);
-            clearActiveTaskSnapshot();
-            setDraft("");
-            setReasoningDraft("");
-            setLiveSteps([]);
-            setLiveTodo(undefined);
-          },
-        },
-        ctrl.signal,
-        after,
-      );
-    } catch (e) {
-      if (!ctrl.signal.aborted) {
-        setMessages((prev) => [...prev, { role: "assistant", content: `⚠️ ${getErrorMessage(e)}`, error: true }]);
+    // 收尾到"这轮彻底失败、不会再有事件了"：能保留的先落一张成品卡（不因为断线/报错就把已经跑出来的
+    // 工具结果、思考过程全丢了），再补一条报错气泡。onError（应用层报错）/ 重连次数用完 / 意外异常
+    // 三条路径共用同一份收尾逻辑，避免各写一遍、行为跑偏。
+    const finishWithFailure = (displayText: string) => {
+      const salvaged = steps.length > 0 || !!approval || !!question || !!finalText.trim();
+      setMessages((prev) => {
+        const next: ChatMessage[] = [...prev];
+        if (salvaged) {
+          next.push({
+            role: "assistant",
+            content: finalText,
+            reasoning: reasoningText || undefined,
+            steps: steps.length ? [...steps] : undefined,
+            approval,
+            question,
+            todo: todoText,
+          });
+        }
+        next.push({ role: "assistant", content: `⚠️ ${displayText}`, error: true });
+        return next;
+      });
+      setActiveTask(null);
+      clearActiveTaskSnapshot();
+      setDraft("");
+      setReasoningDraft("");
+      setLiveSteps([]);
+      setLiveTodo(undefined);
+    };
+
+    const handlers: AgentStreamHandlers = {
+      onEvent: (ev) => {
+        const off = typeof ev.offset === "number" ? ev.offset : undefined;
+        if (off !== undefined) {
+          lastOffsetRef.current = Math.max(lastOffsetRef.current, off);
+          saveActiveTaskSnapshot({ taskId, userMessage, offset: lastOffsetRef.current });
+        }
+      },
+      onToken: (t) => setDraft((prev) => (recovered && prev === "正在接回刚才没完成的任务…" ? "" : prev) + t),
+      onReasoning: (c) => { reasoningText += c; setReasoningDraft((prev) => prev + c); },
+      onToolCall: (tool, args, id) => {
+        steps.push({ tool, args, id, done: false });
+        setLiveSteps([...steps]);
+      },
+      onToolProgress: (_tool, id, chunk) => {
+        const st = id ? steps.find((s) => s.id === id) : steps[steps.length - 1];
+        if (st) {
+          st.progress = (st.progress || "") + chunk;
+          setLiveSteps([...steps]);
+        }
+      },
+      onToolResult: (_tool, content, id, knowledgeUsed) => {
+        const st = id ? steps.find((s) => s.id === id) : steps[steps.length - 1];
+        if (st) {
+          st.done = true;
+          st.result = content;
+          if (knowledgeUsed && knowledgeUsed.length) st.knowledgeUsed = knowledgeUsed;
+          setLiveSteps([...steps]);
+        }
+        const image = imageArtifactFromToolResult(_tool, content);
+        if (image) optsRef.current.onGeneratedImage?.(image);
+      },
+      onApprovalRequest: (tool, args, _id, token, preview, reason) => {
+        approval = { tool, args, token, preview, reason, status: "pending" };
+      },
+      onAskQuestion: (q) => {
+        question = { question: q.question, options: q.options, multi: q.multi };
+      },
+      // 方向盘：后端确认插话已注入。本窗口刚发的（乐观上屏过）→ 去重跳过；
+      // 刷新恢复重放时本地没这条 → 补回对话流，插话不因刷新而消失。
+      onSteering: (content) => {
+        const pend = pendingSteerEchoRef.current;
+        const i = pend.indexOf(content);
+        if (i >= 0) { pend.splice(i, 1); return; }
+        setMessages((prev) => [...prev, { role: "user", content }]);
+      },
+      // F9：AI 刚归纳了前文（autocompact 真发生），插一条低调的系统提示到对话流里，
+      // 解释"接下来它可能记不清最前面的细节"。只发一次，不算真正的对话内容。
+      onContextNote: (content) => {
+        setMessages((prev) => [...prev, { role: "assistant", content, kind: "context_note" }]);
+      },
+      // F4 Focus Chain：原地覆盖（不是 push）——task_progress 参数 / todo_write 工具两条路径
+      // 后端已归并成同一份最新状态，前端只需要显示"最新"，不需要保留历史每一版。
+      onTodoUpdate: (content) => {
+        todoText = content;
+        setLiveTodo(content);
+      },
+      onFinal: (content) => {
+        finalText = content;
+      },
+      onDone: (info) => {
+        if (info.stopped_reason === "cancelled") {
+          pushStopNotice(info.task_id || taskId);
+        } else if (info.stopped_reason !== "error") {
+          setMessages((prev) => [
+            ...prev,
+            { role: "assistant", content: finalText, reasoning: reasoningText || undefined,
+              steps: steps.length ? [...steps] : undefined, approval, question, memoryRefs: info.memory_refs,
+              generationId: info.generation_id, todo: todoText },
+          ]);
+        }
+        if (info?.conversation_id) setConversationId(info.conversation_id);
         setActiveTask(null);
         clearActiveTaskSnapshot();
         setDraft("");
         setReasoningDraft("");
         setLiveSteps([]);
         setLiveTodo(undefined);
+      },
+      // F1c：连接本身断了（非正常 done、非应用层 error 事件）——只记个信号，外层的重连循环据此
+      // 决定要不要再连一次；这里不清消息、不报错、不动 generating，断这一下用户几乎感觉不到。
+      onDisconnect: () => { disconnected = true; },
+      onError: (m) => {
+        if (ctrl.signal.aborted) return;
+        finishWithFailure(humanizeErrorText(m));
+      },
+    };
+
+    try {
+      if (recovered) {
+        setDraft("正在接回刚才没完成的任务…");
+      }
+      let attempt = 0;
+      // F1c：单次连接交给 api.subscribeAgentTask；断没断由 onDisconnect 打个标记回来，这层只管
+      // "断了要不要再连一次、等多久再连"。steps/finalText/reasoningText 等累积状态是这层外面
+      // 闭包里的同一份，重连不会新起一份、也就不会把断线前已经跑出来的内容顶掉。
+      while (true) {
+        disconnected = false;
+        await api.subscribeAgentTask(taskId, handlers, ctrl.signal, lastOffsetRef.current);
+        // 卸载/切会话/手动停止：ctrl 已被 abort，直接收手，不重连、不再碰任何 state。
+        if (ctrl.signal.aborted) return;
+        if (!disconnected) break; // 正常 done 或应用层 error——对应 handler 已经收尾过了
+        attempt += 1;
+        if (attempt > RECONNECT_MAX_ATTEMPTS) {
+          finishWithFailure("网络连接总是断，请检查网络后重试");
+          break;
+        }
+        if (!reconnectNoticeShown) {
+          reconnectNoticeShown = true;
+          toast.info("网络好像抖了一下，我接着…");
+        }
+        await sleepAbortable(reconnectDelayMs(attempt), ctrl.signal);
+        if (ctrl.signal.aborted) return;
+        // lastOffsetRef.current 已经在上面 onEvent 里跟着实时更新到断线前最后处理到的 offset，
+        // 下一轮直接从这个断点续传（后端 after=N 是"下一条从 N+1 开始"语义，不重复、不遗漏）。
+      }
+    } catch (e) {
+      if (!ctrl.signal.aborted) {
+        finishWithFailure(getErrorMessage(e));
       }
     } finally {
       if (!ctrl.signal.aborted) setGenerating(false);
     }
-  }, [clearActiveTaskSnapshot, pushStopNotice, saveActiveTaskSnapshot, setActiveTask]);
+  }, [clearActiveTaskSnapshot, pushStopNotice, saveActiveTaskSnapshot, setActiveTask, toast]);
 
   useEffect(() => {
     let raw: string | null = null;
