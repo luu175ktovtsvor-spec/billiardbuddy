@@ -1,12 +1,14 @@
 "use client";
 
 /**
- * Codex 风底部输入区（浅色默认 · 跟随系统深浅色）：附件 + 前导提示符 › + 输入框 + 运行权限菜单 + 发送。
+ * Codex 风底部输入区（浅色默认 · 跟随系统深浅色）：附件 + 前导提示符 › + 输入框 + 工具条 + 发送。
  * - 附件：选定本机文件 → selected_files 授权 Agent 读/改（沙箱），像 Claude Code/Codex 那样改本地文件。
- * - 运行权限：后端那套 ask / auto_files / full，收进克制的弹出菜单。完全磁盘访问并入同一菜单。
+ * - A-Task-6「控件按需出现」：工具条常驻只留 附件 / 深度思考开关 / 发送；
+ *   最近文件、从下载选素材、运行权限(ask/auto_files/plan/full 单选)、输出风格、行业模式(台球知识库)
+ *   统一收进一个「+」菜单(分区展示)，行为不变、只换入口——照 Warp/Dia 的「按需出现」思路减少默认可见按钮数。
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Paperclip, ArrowUp, ChevronDown, ShieldCheck, Check, X, FileText, BookOpen, Palette, Brain, FolderDown, History } from "lucide-react";
+import { Paperclip, ArrowUp, ShieldCheck, Check, X, FileText, BookOpen, Palette, Brain, FolderDown, History, Plus, type LucideIcon } from "lucide-react";
 import { PERMISSION_MODES, WELCOME } from "@/lib/agent-copy";
 import { api, type SkillMeta, type OutputStyleMeta } from "@/lib/api";
 import { SlashPalette, type PaletteItem } from "./slash-palette";
@@ -49,6 +51,16 @@ const OUTPUT_STYLE_LABELS: Record<string, string> = {
 function baseName(p: string): string {
   const parts = p.split(/[\\/]/);
   return parts[parts.length - 1] || p;
+}
+
+// A-Task-6：「+」菜单里几个子分区(最近素材/运行权限/输出风格/行业模式)共用的小标题，图标+大写字距标签。
+function MenuSectionHeader({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
+  return (
+    <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-1.5">
+      <Icon className="h-3 w-3 text-[#a1a1a6] dark:text-[#6e7077]" />
+      <span className="font-mono text-[10px] uppercase tracking-wider text-[#a1a1a6] dark:text-[#6e7077]">{label}</span>
+    </div>
+  );
 }
 
 // 贴图用：把图片 Blob 读成纯 base64（去掉 data:...;base64, 前缀）。
@@ -110,21 +122,17 @@ export function DesktopComposer({
   placeholder?: string;
 }) {
   const [composing, setComposing] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [kbMenuOpen, setKbMenuOpen] = useState(false);
-  const [recentMenuOpen, setRecentMenuOpen] = useState(false);
+  // A-Task-6：附件/下载选素材/最近文件/运行权限/输出风格/行业模式 统一收进一个「+」菜单，只留一个开关状态。
+  const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
-  const current = PERMISSION_MODES.find((m) => m.value === permissionMode) ?? PERMISSION_MODES[0];
   const activePacks = knowledgePacks ?? [];
-  const activeLabel = KNOWLEDGE_SOURCES.find((k) => k.id === activePacks[0])?.label;
 
   // `/` 命令面板：已安装技能(拉一次) + 内置命令；输入以 / 开头且未输入空格时浮出。
   const [skills, setSkills] = useState<SkillMeta[]>([]);
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [paletteDismissed, setPaletteDismissed] = useState(false);
-  // 输出风格：拉一次可选风格，工具条一个下拉切换。
+  // 输出风格：拉一次可选风格，收进「+」菜单一个子分区切换。
   const [styles, setStyles] = useState<OutputStyleMeta[]>([]);
-  const [styleMenuOpen, setStyleMenuOpen] = useState(false);
   useEffect(() => {
     let cancelled = false;
     // A2：不再有"高级模式"门控——已安装的技能本来就是老板自己装的东西，直接常驻拉一次，
@@ -134,8 +142,6 @@ export function DesktopComposer({
     return () => { cancelled = true; };
   }, []);
   const styleOptions = [{ name: "", description: "默认（大白话）" }, ...styles.map((s) => ({ name: s.name, description: s.description }))];
-  const activeStyleName = styles.find((s) => s.name === outputStyle)?.name;
-  const activeStyleLabel = activeStyleName ? (OUTPUT_STYLE_LABELS[activeStyleName] || activeStyleName) : undefined;
 
   const slashQuery = value.startsWith("/") && !value.slice(1).includes(" ") ? value.slice(1).toLowerCase() : null;
   const paletteItems: PaletteItem[] = slashQuery !== null ? [
@@ -185,18 +191,16 @@ export function DesktopComposer({
   }, [value]);
 
   useEffect(() => {
-    if (!menuOpen && !kbMenuOpen && !styleMenuOpen && !recentMenuOpen) return;
+    if (!plusMenuOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        setMenuOpen(false);
-        setKbMenuOpen(false);
-        setStyleMenuOpen(false);
-        setRecentMenuOpen(false);
+        e.preventDefault();
+        setPlusMenuOpen(false);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [menuOpen, kbMenuOpen, styleMenuOpen, recentMenuOpen]);
+  }, [plusMenuOpen]);
 
   // Electron 33+ 移除了 File.path，统一用 webUtils.getPathForFile 桥拿本机路径
   const getFilePath = (f: File): string | undefined => {
@@ -324,77 +328,25 @@ export function DesktopComposer({
             />
           </div>
 
-          {/* 工具条 */}
+          {/* 工具条：常驻 附件 / 深度思考 / 发送；其余(最近文件/下载选素材/运行权限/输出风格/行业模式)收进「+」菜单(A-Task-6)。
+              slash 命令面板(输入 `/` 浮出)是输入区固有交互，不算按钮堆，不动。 */}
           <div className="flex items-center gap-0.5 px-2.5 pb-2 pt-1.5">
             <button
               type="button"
               onClick={onPickFiles}
-              title="添加参考文件、图片或视频。文件夹请用上方“工作文件夹”"
-              aria-label="添加参考文件、图片或视频"
+              title="添加文件、图片或视频"
+              aria-label="添加文件、图片或视频"
               className="flex h-7 w-7 items-center justify-center rounded-md text-[#86868b] transition hover:bg-black/[0.05] hover:text-[#1d1d1f] dark:text-[#6e7077] dark:hover:bg-white/[0.06] dark:hover:text-[#c8cace]"
             >
               <Paperclip className="h-[16px] w-[16px]" />
             </button>
 
-            {onPickDownloads && (
-              <button
-                type="button"
-                onClick={onPickDownloads}
-                title="从下载文件夹选素材。微信、浏览器、相册导出的文件常在这里"
-                aria-label="从下载文件夹选素材"
-                className="flex h-7 w-7 items-center justify-center rounded-md text-[#86868b] transition hover:bg-black/[0.05] hover:text-[#1d1d1f] dark:text-[#6e7077] dark:hover:bg-white/[0.06] dark:hover:text-[#c8cace]"
-              >
-                <FolderDown className="h-[16px] w-[16px]" />
-              </button>
-            )}
-
-            {recentFiles.length > 0 && onPickRecentFile && (
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setRecentMenuOpen((v) => !v)}
-                  title="最近用过的素材、报表和文件"
-                  aria-label="最近素材"
-                  aria-haspopup="menu"
-                  aria-expanded={recentMenuOpen}
-                  className="flex h-7 w-7 items-center justify-center rounded-md text-[#86868b] transition hover:bg-black/[0.05] hover:text-[#1d1d1f] dark:text-[#6e7077] dark:hover:bg-white/[0.06] dark:hover:text-[#c8cace]"
-                >
-                  <History className="h-[16px] w-[16px]" />
-                </button>
-                {recentMenuOpen && (
-                  <>
-                    <button type="button" aria-hidden tabIndex={-1} onClick={() => setRecentMenuOpen(false)} className="fixed inset-0 z-40 cursor-default" />
-                    <div role="menu" className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[330px] rounded-lg border border-black/[0.1] bg-white p-1.5 shadow-[0_12px_40px_-10px_rgba(0,0,0,0.25)] dark:border-white/[0.1] dark:bg-[#1c1e24] dark:shadow-[0_12px_40px_-10px_rgba(0,0,0,0.7)]">
-                      <div className="px-2.5 pb-1 pt-1.5 font-mono text-[10px] uppercase tracking-wider text-[#a1a1a6] dark:text-[#6e7077]">最近素材</div>
-                      {recentFiles.slice(0, 8).map((p) => (
-                        <button
-                          key={p}
-                          type="button"
-                          role="menuitem"
-                          title={p}
-                          onClick={() => { onPickRecentFile(p); setRecentMenuOpen(false); }}
-                          className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
-                        >
-                          <FileText className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
-                          <span className="min-w-0">
-                            <span className="block truncate text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{baseName(p)}</span>
-                            <span className="block truncate text-[11px] text-[#86868b] dark:text-[#8a8c93]">{p}</span>
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-
-            {/* F.2 深度思考 开/关：A2 解掉 advancedMode 门控(该常量已整体下线)，先保证不崩、常驻可用；
-                最终在 composer 里的常驻布局收纳是 A-Task-6 的事，这里不顺手重排。 */}
+            {/* F.2 深度思考 开/关：A5 已解除 advancedMode 门控，常驻可用，不进「+」菜单。 */}
             {onDeepThinkingChange && (
               <button
                 type="button"
                 onClick={() => onDeepThinkingChange(!deepThinking)}
-                title={deepThinking ? "深度思考：开（更稳，慢一点）。点一下关掉" : "深度思考：关（更快）。点一下打开"}
+                title={deepThinking ? "深度思考：开" : "深度思考：关"}
                 aria-pressed={deepThinking}
                 className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] transition ${
                   deepThinking
@@ -407,24 +359,72 @@ export function DesktopComposer({
               </button>
             )}
 
+            {/* 「+」收纳：最近文件 / 从下载选素材 / 运行权限(单选子分区) / 输出风格(单选子分区) / 行业模式(切换项)。
+                每项 onClick/切换行为与原独立菜单完全一致，只是换了入口——单选类点选即应用并收起整个「+」菜单；
+                行业模式切换后不收起(原 kbMenuOpen 行为如此，方便连续看勾选变化)。 */}
             <div className="relative">
               <button
                 type="button"
-                onClick={() => setMenuOpen((v) => !v)}
+                onClick={() => setPlusMenuOpen((v) => !v)}
+                title="更多"
+                aria-label="更多"
                 aria-haspopup="menu"
-                aria-expanded={menuOpen}
-                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] text-[#6e6e73] transition hover:bg-black/[0.05] hover:text-[#1d1d1f] dark:text-[#9a9ca3] dark:hover:bg-white/[0.06] dark:hover:text-[#c8cace]"
+                aria-expanded={plusMenuOpen}
+                className={`flex h-7 w-7 items-center justify-center rounded-md transition active:scale-[0.97] ${
+                  plusMenuOpen
+                    ? "bg-black/[0.04] text-[#1d1d1f] dark:bg-white/[0.06] dark:text-[#e6e7e9]"
+                    : "text-[#86868b] hover:bg-black/[0.05] hover:text-[#1d1d1f] dark:text-[#6e7077] dark:hover:bg-white/[0.06] dark:hover:text-[#c8cace]"
+                }`}
               >
-                <ShieldCheck className="h-3.5 w-3.5 text-[#86868b] dark:text-[#6e7077]" />
-                {current.label}
-                <ChevronDown className={`h-3 w-3 text-[#b0b0b5] transition dark:text-[#56585f] ${menuOpen ? "rotate-180" : ""}`} />
+                <Plus className="h-[16px] w-[16px]" />
               </button>
 
-              {menuOpen && (
+              {plusMenuOpen && (
                 <>
-                  <button type="button" aria-hidden tabIndex={-1} onClick={() => setMenuOpen(false)} className="fixed inset-0 z-40 cursor-default" />
-                  <div role="menu" className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[306px] rounded-lg border border-black/[0.1] bg-white p-1.5 shadow-[0_12px_40px_-10px_rgba(0,0,0,0.25)] dark:border-white/[0.1] dark:bg-[#1c1e24] dark:shadow-[0_12px_40px_-10px_rgba(0,0,0,0.7)]">
-                    <div className="px-2.5 pb-1 pt-1.5 font-mono text-[10px] uppercase tracking-wider text-[#a1a1a6] dark:text-[#6e7077]">运行权限</div>
+                  <button type="button" aria-hidden tabIndex={-1} onClick={() => setPlusMenuOpen(false)} className="fixed inset-0 z-40 cursor-default" />
+                  <div role="menu" className="absolute bottom-[calc(100%+8px)] left-0 z-50 max-h-[75vh] w-[320px] overflow-y-auto rounded-lg border border-black/[0.1] bg-white p-1.5 shadow-[0_12px_40px_-10px_rgba(0,0,0,0.25)] dark:border-white/[0.1] dark:bg-[#1c1e24] dark:shadow-[0_12px_40px_-10px_rgba(0,0,0,0.7)]">
+                    {/* 最近素材 */}
+                    {recentFiles.length > 0 && onPickRecentFile && (
+                      <>
+                        <MenuSectionHeader icon={History} label="最近素材" />
+                        {recentFiles.slice(0, 8).map((p) => (
+                          <button
+                            key={p}
+                            type="button"
+                            role="menuitem"
+                            title={p}
+                            onClick={() => { onPickRecentFile(p); setPlusMenuOpen(false); }}
+                            className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+                          >
+                            <FileText className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+                            <span className="min-w-0">
+                              <span className="block truncate text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{baseName(p)}</span>
+                              <span className="block truncate text-[11px] text-[#86868b] dark:text-[#8a8c93]">{p}</span>
+                            </span>
+                          </button>
+                        ))}
+                      </>
+                    )}
+
+                    {/* 从下载文件夹选素材：微信/浏览器/相册导出的文件常在这里 */}
+                    {onPickDownloads && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => { onPickDownloads(); setPlusMenuOpen(false); }}
+                        className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+                      >
+                        <FolderDown className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+                        <span className="text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">从下载文件夹选素材</span>
+                      </button>
+                    )}
+
+                    {(recentFiles.length > 0 && onPickRecentFile) || onPickDownloads ? (
+                      <div className="my-1 h-px bg-black/[0.06] dark:bg-white/[0.06]" />
+                    ) : null}
+
+                    {/* 运行权限：单选(ask/auto_files/plan/full)，当前档打勾 */}
+                    <MenuSectionHeader icon={ShieldCheck} label="运行权限" />
                     {PERMISSION_MODES.map((m) => {
                       const active = m.value === permissionMode;
                       return (
@@ -433,7 +433,7 @@ export function DesktopComposer({
                           type="button"
                           role="menuitemradio"
                           aria-checked={active}
-                          onClick={() => { onPermissionChange?.(m.value); setMenuOpen(false); }}
+                          onClick={() => { onPermissionChange?.(m.value); setPlusMenuOpen(false); }}
                           className="flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left transition hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
                         >
                           <Check className={`mt-[2px] h-3.5 w-3.5 shrink-0 ${active ? "text-[#10a37f]" : "text-transparent"}`} />
@@ -451,34 +451,35 @@ export function DesktopComposer({
                         </button>
                       );
                     })}
-                  </div>
-                </>
-              )}
-            </div>
 
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setKbMenuOpen((v) => !v)}
-                aria-haspopup="menu"
-                aria-expanded={kbMenuOpen}
-                title="开启后 AI 懂台球运营、按行业专业知识作答；不开则是通用助手"
-                className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] transition ${
-                  activePacks.length
-                    ? "bg-[#10a37f]/10 text-[#10a37f]"
-                    : "text-[#6e6e73] hover:bg-black/[0.05] hover:text-[#1d1d1f] dark:text-[#9a9ca3] dark:hover:bg-white/[0.06] dark:hover:text-[#c8cace]"
-                }`}
-              >
-                <BookOpen className="h-3.5 w-3.5" />
-                {activeLabel ?? "通用助手"}
-                <ChevronDown className={`h-3 w-3 transition ${kbMenuOpen ? "rotate-180" : ""}`} />
-              </button>
+                    <div className="my-1 h-px bg-black/[0.06] dark:bg-white/[0.06]" />
 
-              {kbMenuOpen && (
-                <>
-                  <button type="button" aria-hidden tabIndex={-1} onClick={() => setKbMenuOpen(false)} className="fixed inset-0 z-40 cursor-default" />
-                  <div role="menu" className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[306px] rounded-lg border border-black/[0.1] bg-white p-1.5 shadow-[0_12px_40px_-10px_rgba(0,0,0,0.25)] dark:border-white/[0.1] dark:bg-[#1c1e24] dark:shadow-[0_12px_40px_-10px_rgba(0,0,0,0.7)]">
-                    <div className="px-2.5 pb-1 pt-1.5 font-mono text-[10px] uppercase tracking-wider text-[#a1a1a6] dark:text-[#6e7077]">行业模式</div>
+                    {/* 输出风格：单选 */}
+                    <MenuSectionHeader icon={Palette} label="输出风格" />
+                    {styleOptions.map((s) => {
+                      const active = (s.name || "") === (outputStyle || "");
+                      return (
+                        <button
+                          key={s.name || "__default__"}
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={active}
+                          onClick={() => { onOutputStyleChange?.(s.name); setPlusMenuOpen(false); }}
+                          className="flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left transition hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+                        >
+                          <Check className={`mt-[2px] h-3.5 w-3.5 shrink-0 ${active ? "text-[#10a37f]" : "text-transparent"}`} />
+                          <span className="min-w-0">
+                            <span className="block text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{s.name ? (OUTPUT_STYLE_LABELS[s.name] || s.name) : "默认"}</span>
+                            {s.description && <span className="mt-0.5 block text-[11.5px] leading-snug text-[#6e6e73] dark:text-[#8a8c93]">{s.description}</span>}
+                          </span>
+                        </button>
+                      );
+                    })}
+
+                    <div className="my-1 h-px bg-black/[0.06] dark:bg-white/[0.06]" />
+
+                    {/* 行业模式(台球知识库)：切换项，可挂多个(目前一个)；勾选后菜单不收起，方便连续看变化 */}
+                    <MenuSectionHeader icon={BookOpen} label="行业模式" />
                     {KNOWLEDGE_SOURCES.map((k) => {
                       const on = activePacks.includes(k.id);
                       return (
@@ -507,50 +508,6 @@ export function DesktopComposer({
               )}
             </div>
 
-            {/* 输出风格：A2 解掉 advancedMode 门控，先保证常驻可访问、不崩；
-                收进「+菜单」是 A-Task-6 的事，这里不做。 */}
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setStyleMenuOpen((v) => !v)}
-                aria-haspopup="menu"
-                aria-expanded={styleMenuOpen}
-                title="输出风格"
-                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] text-[#6e6e73] transition hover:bg-black/[0.05] hover:text-[#1d1d1f] dark:text-[#9a9ca3] dark:hover:bg-white/[0.06] dark:hover:text-[#c8cace]"
-              >
-                <Palette className="h-3.5 w-3.5 text-[#86868b] dark:text-[#6e7077]" />
-                {activeStyleLabel ?? "默认风格"}
-                <ChevronDown className={`h-3 w-3 text-[#b0b0b5] transition dark:text-[#56585f] ${styleMenuOpen ? "rotate-180" : ""}`} />
-              </button>
-              {styleMenuOpen && (
-                <>
-                  <button type="button" aria-hidden tabIndex={-1} onClick={() => setStyleMenuOpen(false)} className="fixed inset-0 z-40 cursor-default" />
-                  <div role="menu" className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[306px] rounded-lg border border-black/[0.1] bg-white p-1.5 shadow-[0_12px_40px_-10px_rgba(0,0,0,0.25)] dark:border-white/[0.1] dark:bg-[#1c1e24] dark:shadow-[0_12px_40px_-10px_rgba(0,0,0,0.7)]">
-                    <div className="px-2.5 pb-1 pt-1.5 font-mono text-[10px] uppercase tracking-wider text-[#a1a1a6] dark:text-[#6e7077]">输出风格</div>
-                    {styleOptions.map((s) => {
-                      const active = (s.name || "") === (outputStyle || "");
-                      return (
-                        <button
-                          key={s.name || "__default__"}
-                          type="button"
-                          role="menuitemradio"
-                          aria-checked={active}
-                          onClick={() => { onOutputStyleChange?.(s.name); setStyleMenuOpen(false); }}
-                          className="flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left transition hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
-                        >
-                          <Check className={`mt-[2px] h-3.5 w-3.5 shrink-0 ${active ? "text-[#10a37f]" : "text-transparent"}`} />
-                          <span className="min-w-0">
-                            <span className="block text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{s.name ? (OUTPUT_STYLE_LABELS[s.name] || s.name) : "默认"}</span>
-                            {s.description && <span className="mt-0.5 block text-[11.5px] leading-snug text-[#6e6e73] dark:text-[#8a8c93]">{s.description}</span>}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-            </div>
-
             <span className="ml-1 hidden font-mono text-[11px] text-[#b0b0b5] sm:inline dark:text-[#54565d]">↵ 发送 · ⇧↵ 换行</span>
 
             <div className="flex-1" />
@@ -558,6 +515,7 @@ export function DesktopComposer({
             <button
               onClick={() => !disabled && value.trim() && onSend()}
               disabled={disabled || !value.trim()}
+              title="发送"
               className="flex h-7 w-7 items-center justify-center rounded-md bg-[#10a37f] text-white transition hover:bg-[#0e906f] active:scale-[0.95] disabled:opacity-30 dark:disabled:opacity-25"
               aria-label="发送"
             >
