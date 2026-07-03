@@ -6,7 +6,8 @@
  * - 同会话多轮带 history（最近 12 条、每条截 2000 字，后端再封顶一次）
  * - onToolResult **按 id 回填**对应步骤（防审批占位结果覆盖成品卡）
  * - 审批走 /agent/execute，确认后回灌结果 + 可能的续接审批卡
- * 调用同一个平台无关管道 api.streamAgent / api.executeAgentTool。
+ * 调用同一个平台无关管道 api.subscribeAgentTask（任务化 SSE 订阅，取代已无调用方的旧 api.streamAgent）
+ * / api.executeAgentTool。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -194,6 +195,12 @@ export function useAgentChat(opts: AgentChatOptions) {
     // F1c 断线重连：本次 api.subscribeAgentTask() 调用是不是"异常断线"收场——跟正常 done / 应用层
     // error 区分开（那两种各自的 handler 已经收尾过），只有这个是 true 才需要重连循环再连一次。
     let disconnected = false;
+    // 互斥标记：本次连接尝试里 onError 是否已经跑过 finishWithFailure（应用层报错已经收尾）。
+    // 隐含假设"error 事件后端必跟一条 done"如果被打破——报错后连接被意外掐断、没补 done——
+    // 流会走到 EOF 触发 onDisconnect（disconnected=true），但这轮其实已经终态收尾过了，
+    // 不该再重连（否则会对已结束的 task 多发一次请求 + 弹出跟报错矛盾的"网络抖了"提示）。
+    // 每次重连尝试开头都会重置，不会让上一轮的 error 误杀下一轮正常连接的断线重连判断。
+    let erroredThisAttempt = false;
     let reconnectNoticeShown = false; // 一轮对话里只提示一次，别每次重试都弹一条、显得吵。
 
     // 收尾到"这轮彻底失败、不会再有事件了"：能保留的先落一张成品卡（不因为断线/报错就把已经跑出来的
@@ -306,9 +313,12 @@ export function useAgentChat(opts: AgentChatOptions) {
       },
       // F1c：连接本身断了（非正常 done、非应用层 error 事件）——只记个信号，外层的重连循环据此
       // 决定要不要再连一次；这里不清消息、不报错、不动 generating，断这一下用户几乎感觉不到。
+      // 但若本次连接尝试里 onError 已经先跑过（erroredThisAttempt），外层判断会跳过重连——
+      // 那种情况这个信号已经没有意义（已有终态收尾），置不置 disconnected 都不影响结果。
       onDisconnect: () => { disconnected = true; },
       onError: (m) => {
         if (ctrl.signal.aborted) return;
+        erroredThisAttempt = true;
         finishWithFailure(humanizeErrorText(m));
       },
     };
@@ -323,10 +333,13 @@ export function useAgentChat(opts: AgentChatOptions) {
       // 闭包里的同一份，重连不会新起一份、也就不会把断线前已经跑出来的内容顶掉。
       while (true) {
         disconnected = false;
+        erroredThisAttempt = false; // 每轮重连尝试独立重置，不让上一轮的 error 误杀这一轮的断线重连判断
         await api.subscribeAgentTask(taskId, handlers, ctrl.signal, lastOffsetRef.current);
         // 卸载/切会话/手动停止：ctrl 已被 abort，直接收手，不重连、不再碰任何 state。
         if (ctrl.signal.aborted) return;
-        if (!disconnected) break; // 正常 done 或应用层 error——对应 handler 已经收尾过了
+        // 正常 done、或应用层 error（哪怕 error 后连接紧接着被掐断触发了 onDisconnect）——
+        // 都已经有 handler 收尾过，不再重连；只有"没报过错就断线"才真的需要重连。
+        if (!disconnected || erroredThisAttempt) break;
         attempt += 1;
         if (attempt > RECONNECT_MAX_ATTEMPTS) {
           finishWithFailure("网络连接总是断，请检查网络后重试");
