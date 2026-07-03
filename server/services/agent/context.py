@@ -23,6 +23,11 @@ class AgentContext:
     # 本会话工作目录(用户选/新建的文件夹绝对路径):相对路径默认落这 + 自动接受编辑的主范围。
     # 空 = 无工作目录(行为同今天:相对路径落内容库)。可达范围不受它影响(对标 CC,全盘可达靠权限档把关)。
     working_dir: str | None = None
+    # 本会话是否 @ 了「台球行业知识库」（主循环用它选 general_registry() vs billiards_registry()，
+    # 见 api/v1/agent.py 的 _build_agent_registry）。默认 False = 通用模式，向后兼容——旧的构造点不传
+    # 这个字段也不会炸。#55 修复：run_subagent 建子代理工具子集时也要按这个字段筛，不能无视模式
+    # 直接从全局 default_registry 筛只读工具，否则通用模式子代理会漏拿到台球专属只读工具。
+    billiards_mode: bool = False
     # 当前会话 id：让生图/生视频的 Generation 落在同一会话里(海报→视频可追溯、最近作品按会话归并)；
     # None = 新会话还没拿到 id，服务层会自建一个。
     conversation_id: str | None = None

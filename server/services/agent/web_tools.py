@@ -513,7 +513,13 @@ async def todo_write(args: dict, ctx) -> str:
 # ────────────────────────────── run_subagent：子代理（递归跑 Agent 循环） ──────────────────────────────
 
 def _subagent_registry():
-    """给子代理用的工具子集 = 默认注册表里【除 run_subagent 自身外】的全部工具（防无限递归）。
+    """⚠️ 死函数：生产路径（run_subagent 下方）早已改成内联构建 sub_registry（且会按 read_only 过滤、
+    #55 修复后还会按 billiards_mode 选模式对应注册表），不再调用这个函数。它只被
+    test_agent_web_tools.py::test_subagent_registry_excludes_itself 和
+    test_m5_security.py::TestSubagentToolRestriction 的两个用例直接调用锁旧行为，删掉会牵连这几个绿测试，
+    故保留不删（施工单 D-Task-1 判定：以不破坏现有测试为准）。别在新代码里再调它。
+
+    给子代理用的工具子集 = 默认注册表里【除 run_subagent 自身外】的全部工具（防无限递归）。
     每次新建一个临时 ToolRegistry，不污染全局。故障安全：取不到默认表就返回 None（调用方据此报错）。"""
     try:
         from services.agent.registry import ToolRegistry
@@ -595,10 +601,18 @@ async def run_subagent(args: dict, ctx) -> str:
     atype = _resolve_subagent_type(args.get("subagent_type"))
     _emit_progress(ctx, "run_subagent", "正在派一个子代理专心做这件子任务…")
     from services.agent.registry import ToolRegistry
+    billiards_mode = bool(getattr(ctx, "billiards_mode", False))
     sub_registry = ToolRegistry()
     _SUBAGENT_SAFE_EXTRAS = {"todo_write"}
     try:
-        for t in default_registry.all():
+        # #55 修复：不再无脑筛全局 default_registry（它恒含全部台球专属工具，与当前会话模式无关）——
+        # 改成先按当前会话的 billiards_mode 选出「模式对应的工具集」（通用模式 = general_registry()，
+        # 挂了台球知识库 = billiards_registry()，与主循环 _build_agent_registry 同一套门控口径），
+        # 再从这个已经按模式过滤过的集合里挑只读/安全工具。这样通用模式子代理就拿不到
+        # get_today_recommendation/find_scenario/look_up_knowledge/read_knowledge 这类台球专属只读工具了。
+        from services.agent.registry import billiards_registry, general_registry
+        mode_registry = billiards_registry() if billiards_mode else general_registry()
+        for t in mode_registry.all():
             if t.name == "run_subagent":
                 continue
             if getattr(t, "read_only", False) or t.name in _SUBAGENT_SAFE_EXTRAS:
@@ -628,6 +642,7 @@ async def run_subagent(args: dict, ctx) -> str:
             auto_spend_limit=getattr(ctx, "auto_spend_limit", None),
             provider=getattr(ctx, "provider", None),
             model=getattr(ctx, "model", None),
+            billiards_mode=billiards_mode,
         )
         _emit_progress(ctx, "run_subagent", "子代理在做了，稍候…")
         result = await run_agent_loop(

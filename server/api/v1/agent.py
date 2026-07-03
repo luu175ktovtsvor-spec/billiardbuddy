@@ -1603,6 +1603,7 @@ async def _stream_agent_events(body: AgentChatRequest, user: User, store, db, ta
         model_ctx_window=_model_ctx_window(),
         token_budget=_agent_token_budget(),
         goal=body.goal or "",
+        billiards_mode=billiards_mode,
     )
     # 方向盘：后台任务模式把活的 ctx 挂回 task——插话路由塞 steer_inbox / 取消时取 live_messages 落轨迹。
     if task is not None:
@@ -2034,6 +2035,7 @@ async def agent_execute(
         conversation_id=body.conversation_id,
         auto_spend_limit=getattr(store, "agent_auto_spend_limit", None),
         model_ctx_window=_model_ctx_window(),  # SH-6：同 chat，配了环境变量才启用
+        billiards_mode=billiards_mode,  # 已在上面(P2 收紧处)算出，execute 端与对话端同一套模式门控
     )
     # SH-8：老板成功确认执行了这个动作 → 该动作的「连续拒绝」计数清零（他改主意了，回到正常审批节奏）。
     denial_tracker.clear_denial(body.conversation_id, _action_key(body.tool, args))
