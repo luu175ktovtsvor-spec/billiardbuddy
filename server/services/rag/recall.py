@@ -40,10 +40,14 @@ def _cn_month(ts: str) -> str:
 
 
 def build_context_prefix(meta: dict | None) -> str:
-    """从生成记录的元数据【确定性】拼一段上下文前缀（不调 LLM）。
+    """从记录的元数据【确定性】拼一段上下文前缀（不调 LLM）。
 
-    拼入：场景(sub_type) · 日期(YYYY-MM-DD + 中文月) · 意图/活动(input_params) · 效果好(评级/收藏)。
-    全空则返回空串（不硬塞前缀）。形如：【朋友圈 · 2026-03-08 3月/三月 · 双十一五折 · 效果好】
+    原为生成记录设计，拼入：场景(sub_type) · 日期(YYYY-MM-DD + 中文月) · 意图/活动(input_params) ·
+    效果好(评级/收藏)。全空则返回空串（不硬塞前缀）。形如：【朋友圈 · 2026-03-08 3月/三月 · 双十一五折 · 效果好】
+
+    店铺资料库(store_doc)复用同一机制：meta 带 file_name 时拼成【文件名】前缀跟原文一起 embed，
+    让"价目表""排班表"这类按文件名找的查询也能经词面/语义命中——其余 sub_type/input_params 等
+    生成记录专属键对店铺资料 meta 天然是空，互不干扰。
     """
     meta = meta or {}
     parts: list[str] = []
@@ -51,6 +55,11 @@ def build_context_prefix(meta: dict | None) -> str:
     sub_type = (meta.get("sub_type") or "").strip()
     if sub_type:
         parts.append(sub_type)
+
+    file_name = (meta.get("file_name") or "").strip()
+    if file_name:
+        page = meta.get("page")
+        parts.append(f"{file_name}·第{page}页" if page else file_name)
 
     ts = str(meta.get("ts") or meta.get("created_at") or "").strip()
     if ts:
@@ -95,11 +104,13 @@ def index_text(store_id, source_type: str, source_id: str, text: str, ts: str = 
     index_store.upsert(str(store_id), source_type, str(source_id), indexed, emb, ts, fp=fp)
 
 
-def recall(store_id, query: str, top: int = 5) -> list[dict]:
+def recall(store_id, query: str, top: int = 5, source_type: str | None = None) -> list[dict]:
+    """source_type=None(默认)＝跨来源全搜(旧行为不变)；传具体值＝只搜这一类，隔开
+    "老板过去生成的内容"(generation) 和"老板导入的店铺资料"(store_doc)，别互相串。"""
     if not query or not query.strip():
         return []
     qe = get_embedder().embed(query)
-    return index_store.search(str(store_id), qe, top=top)
+    return index_store.search(str(store_id), qe, top=top, source_type=source_type)
 
 
 async def backfill_from_generations(db, store_id, limit: int = 300) -> int:
