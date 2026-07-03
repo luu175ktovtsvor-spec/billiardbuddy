@@ -56,17 +56,51 @@ class Tool:
     timeout: float | None = None
     # M5b 动态审批钩子：(args, ctx) -> bool。部分调用才需审批的工具（如 read_file 读敏感文件）用此替代静态 requires_approval=True。
     requires_approval_for: Callable[[dict, Any], bool] | None = None
+    # 审批闸 2.0 · ①"撞墙才问"的命令类判据：(args, ctx) -> str | None。命中返回【人话拒绝原因】，
+    #   命中即在 _plan_tool_call 里直接拒绝（plan.error，不进入审批卡、不执行 handler）——用于命中
+    #   即永不允许执行的判据（如 run_command 的危险黑名单），别让老板在 ask/auto_files 档看一张
+    #   "确认执行"卡、点了也没用（handler 内部还会再拒一次），也别让 full 档"自动放行→执行时才失败"。
+    #   None（默认）= 不做此类预判，走既有 requires_approval/审批闸流程。
+    fatal_reason_for: Callable[[dict, Any], str | None] | None = None
+    # 审批闸 2.0 · ③ Roo 式安全前缀白名单：(args, ctx) -> bool。命中 True 时【任何权限档】（含 ask）
+    #   都可自动放行、不弹审批卡——只用于登记过的、明确无副作用的只读命令前缀（如 ls/cat/pwd/git status），
+    #   由工具自身在判据里先复核一遍危险黑名单，双保险。None（默认）= 不启用此豁免。
+    safe_prefix_for: Callable[[dict, Any], bool] | None = None
 
     def to_openai_schema(self) -> dict:
-        """导出成 DeepSeek/OpenAI 兼容的 tools 数组元素。"""
+        """导出成 DeepSeek/OpenAI 兼容的 tools 数组元素。
+
+        审批闸 2.0 · ②（OpenHands 式）：无条件给每个工具的 parameters 追加一个可选 `security_risk`
+        自评字段——"无条件"是关键：所有工具一视同仁地加，不按条件开关，否则不同请求间 tools 前缀字节
+        不一致会打穿 prompt-cache（F8 铁律，见 docs/耦合地图与改动检查清单.md「prompt-cache 前缀稳定纪律」）。
+        每次都返回【新 dict】（不就地改 self.parameters）——工具对象在多个 ToolRegistry 间共享，
+        原地改会污染其它持有同一 Tool 实例的注册表。"""
+        params = dict(self.parameters or {})
+        props = dict(params.get("properties") or {})
+        props["security_risk"] = _SECURITY_RISK_SCHEMA_PROPERTY
+        params["properties"] = props
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.parameters,
+                "parameters": params,
             },
         }
+
+
+# 审批闸 2.0 · ② 模型自评风险的 schema 片段（单独提出来，供 to_openai_schema 复用、避免每次重建字面量）。
+# 只读、可选——模型不填不受影响；系统侧只信任它"加严"（high 时可能新增审批），绝不因它说 low 就放松
+# 既有 requires_approval（见 loop.py `_pop_security_risk` / `_plan_tool_call` 的用法与注释）。
+_SECURITY_RISK_SCHEMA_PROPERTY: dict = {
+    "type": "string",
+    "enum": ["low", "medium", "high"],
+    "description": (
+        "可选：你对本次调用风险的自评。low=常规只读/无副作用；medium=一般写入/有限影响；"
+        "high=有较大副作用或不可逆风险（如可能涉及删除、外传数据、危险系统命令等）。"
+        "仅供系统参考决定要不要额外找人确认，不替你做最终决定；拿不准可以不填。"
+    ),
+}
 
 
 class ToolRegistry:
@@ -117,6 +151,8 @@ def tool(
     timeout: float | None = None,
     approval_reason: Callable[[dict, Any], dict] | None = None,
     requires_approval_for: Callable[[dict, Any], bool] | None = None,
+    fatal_reason_for: Callable[[dict, Any], str | None] | None = None,
+    safe_prefix_for: Callable[[dict, Any], bool] | None = None,
     registry: ToolRegistry | None = None,
 ) -> Callable[[ToolHandler], ToolHandler]:
     """装饰器：把一个 async 函数登记为工具。
@@ -145,6 +181,8 @@ def tool(
                 timeout=timeout,
                 approval_reason=approval_reason,
                 requires_approval_for=requires_approval_for,
+                fatal_reason_for=fatal_reason_for,
+                safe_prefix_for=safe_prefix_for,
             )
         )
         return fn
