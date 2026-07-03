@@ -79,6 +79,130 @@ def test_runner_run_failure_marks_error(monkeypatch):
     asyncio.run(main())
 
 
+# ────────────────────────────── F-10：on_done 完成回调 ──────────────────────────────
+# generate_video/render_video 提交后立即返回，真正做完(成功/失败)靠这个钩子回灌通知/轨迹；
+# 钩子对 studio.py/video_edit.py 现有调用点是可选的(不传=None=零行为变化，上面几个测试已覆盖)。
+
+def test_runner_on_done_called_after_success(monkeypatch):
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        sid = uuid.uuid4()
+        async with Session() as db:
+            await _seed(db, sid)
+            job = await mj.create_job(db, sid, "video")
+            jid = str(job.id)
+
+        async def work_fn(progress):
+            return {"video_url": "/uploads/videos/a.mp4"}
+
+        seen = {}
+
+        async def on_done(job_id, status, result, error):
+            seen["job_id"] = job_id
+            seen["status"] = status
+            seen["result"] = result
+            seen["error"] = error
+
+        await runner._run(jid, sid, work_fn, on_done=on_done)
+
+        assert seen == {"job_id": jid, "status": "done",
+                        "result": {"video_url": "/uploads/videos/a.mp4"}, "error": None}
+
+    asyncio.run(main())
+
+
+def test_runner_on_done_called_after_failure(monkeypatch):
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        sid = uuid.uuid4()
+        async with Session() as db:
+            await _seed(db, sid)
+            job = await mj.create_job(db, sid, "video")
+            jid = str(job.id)
+
+        async def work_fn(progress):
+            raise RuntimeError("Ark 超时")
+
+        seen = {}
+
+        async def on_done(job_id, status, result, error):
+            seen["job_id"] = job_id
+            seen["status"] = status
+            seen["result"] = result
+            seen["error"] = error
+
+        await runner._run(jid, sid, work_fn, on_done=on_done)
+
+        assert seen["status"] == "error"
+        assert seen["result"] is None
+        assert "Ark 超时" in seen["error"]
+
+    asyncio.run(main())
+
+
+def test_runner_on_done_exception_does_not_break_run(monkeypatch):
+    """完成回调自己炸了也不能让 runner 崩、也不能盖掉已经落库的终态(job 仍标 done)。"""
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        sid = uuid.uuid4()
+        async with Session() as db:
+            await _seed(db, sid)
+            job = await mj.create_job(db, sid, "video")
+            jid = str(job.id)
+
+        async def work_fn(progress):
+            return {"ok": True}
+
+        async def bad_on_done(job_id, status, result, error):
+            raise RuntimeError("通知层炸了")
+
+        await runner._run(jid, sid, work_fn, on_done=bad_on_done)  # 不应向外抛
+
+        async with Session() as db:
+            got = await mj.get_job(db, jid, sid)
+            assert got.status == "done"
+
+    asyncio.run(main())
+
+
+def test_runner_no_on_done_is_backward_compatible(monkeypatch):
+    """不传 on_done(studio.py/video_edit.py 现状) → 行为跟改动前完全一样，不报错。"""
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        sid = uuid.uuid4()
+        async with Session() as db:
+            await _seed(db, sid)
+            job = await mj.create_job(db, sid, "generate")
+            jid = str(job.id)
+
+        async def work_fn(progress):
+            return {"urls": ["/uploads/a.png"]}
+
+        await runner._run(jid, sid, work_fn)  # 无 on_done
+
+        async with Session() as db:
+            got = await mj.get_job(db, jid, sid)
+            assert got.status == "done"
+
+    asyncio.run(main())
+
+
 def test_runner_submit_returns_id_and_runs(monkeypatch):
     async def main():
         eng = create_async_engine("sqlite+aiosqlite:///:memory:")

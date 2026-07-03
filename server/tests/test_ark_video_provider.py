@@ -230,7 +230,9 @@ def test_generate_video_early_key_check_no_key(monkeypatch):
 
 
 def test_generate_video_early_key_check_has_key(monkeypatch):
-    """已配 ARK key → generate_video 不因 key 检查挡住（会继续走到 video_service 调用）。"""
+    """已配 ARK key → generate_video 不因 key 检查挡住；F-10 起不再硬等出片，而是【提交后台任务
+    立即返回任务号】——真正调 video_service.generate_video 是在提交给 media_jobs_runner 的
+    work_fn 闭包里、等任务真正跑起来才会执行（这里不触发跑，只验证提交动作本身）。"""
     from types import SimpleNamespace
 
     monkeypatch.setattr(
@@ -238,18 +240,80 @@ def test_generate_video_early_key_check_has_key(monkeypatch):
         classmethod(lambda cls, store: ("ark-real-key", "https://ark.cn-beijing.volces.com/api/v3", "m")),
     )
 
-    async def _fake_gen(**kw):
-        return {"video_url": "/uploads/videos/fake.mp4", "generation_id": "g1", "conversation_id": "c1"}
+    submitted = {}
 
-    monkeypatch.setattr("services.video_service.generate_video", _fake_gen)
-    from services.agent.tools import generate_video
+    async def _fake_submit(store_id, kind, work_fn, params=None, conversation_id=None, on_done=None):
+        submitted["store_id"] = store_id
+        submitted["kind"] = kind
+        submitted["work_fn"] = work_fn
+        submitted["params"] = params
+        submitted["conversation_id"] = conversation_id
+        submitted["on_done"] = on_done
+        return "job-fake-1"
+
+    monkeypatch.setattr("services.media_jobs_runner.submit", _fake_submit)
+    from services.agent import tools as T
     ctx = SimpleNamespace(
         store=SimpleNamespace(id="s1"),
         user=SimpleNamespace(id="u1"),
         db=None, allowed_paths=[], _video_generated_this_run=False,
     )
-    result = asyncio.run(generate_video({"description": "台球开业视频"}, ctx))
-    assert "fake.mp4" in result or "做好" in result
+    result = asyncio.run(T.generate_video({"description": "台球开业视频"}, ctx))
+    # 立即返回任务号，不是最终视频链接（旧断言"fake.mp4" in result 已随行为一起作废）。
+    assert "job-fake-1" in result and "后台" in result
+    assert submitted["kind"] == "video"
+    assert submitted["store_id"] == "s1"
+    assert ctx._video_generated_this_run is True
+    # 锁在提交阶段就该占上（真正生成还没跑完），等 on_done 完成回调才释放。
+    assert "u1" in T._VIDEO_GENERATING
+    T._VIDEO_GENERATING.discard("u1")  # 测试收尾复位模块级状态，别漏到别的用例
+
+
+def test_generate_video_submit_failure_releases_lock(monkeypatch):
+    """提交后台任务本身就失败(如 DB 异常) → 锁不能焊死，得当场释放、给人话。"""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "services.ai.factory.ProviderFactory.get_video_config_for_store",
+        classmethod(lambda cls, store: ("ark-real-key", "https://ark.cn-beijing.volces.com/api/v3", "m")),
+    )
+
+    async def _boom_submit(*a, **k):
+        raise RuntimeError("DB 挂了")
+
+    monkeypatch.setattr("services.media_jobs_runner.submit", _boom_submit)
+    from services.agent import tools as T
+    ctx = SimpleNamespace(
+        store=SimpleNamespace(id="s2"),
+        user=SimpleNamespace(id="u2"),
+        db=None, allowed_paths=[], _video_generated_this_run=False,
+    )
+    result = asyncio.run(T.generate_video({"description": "台球开业视频"}, ctx))
+    assert "没提交成功" in result
+    assert "u2" not in T._VIDEO_GENERATING  # 锁没焊死
+    assert ctx._video_generated_this_run is False  # 没提交成功，不占"本轮已出过一个视频"的名额
+
+
+def test_generate_video_lock_blocks_concurrent_submit(monkeypatch):
+    """上一条还在后台跑(锁还没被 on_done 释放) → 第二次调用直接被挡，不会再提交一次。"""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "services.ai.factory.ProviderFactory.get_video_config_for_store",
+        classmethod(lambda cls, store: ("ark-real-key", "https://ark.cn-beijing.volces.com/api/v3", "m")),
+    )
+    from services.agent import tools as T
+    T._VIDEO_GENERATING.add("u3")
+    try:
+        ctx = SimpleNamespace(
+            store=SimpleNamespace(id="s3"),
+            user=SimpleNamespace(id="u3"),
+            db=None, allowed_paths=[], _video_generated_this_run=False,
+        )
+        result = asyncio.run(T.generate_video({"description": "台球开业视频"}, ctx))
+        assert "还在生成中" in result
+    finally:
+        T._VIDEO_GENERATING.discard("u3")
 
 
 # ---- #3 content list 健壮：API 返 content 为 list 时不 AttributeError ----
