@@ -147,6 +147,14 @@ class AgentContext:
     # 端点用它照样落轨迹，"停掉的活"下一轮还接得上，不再失忆。loop 内部对 messages 全是就地变更
     # （append / 切片赋值），这个引用全程有效。None = loop 还没跑起来。
     live_messages: list | None = None
+    # ── F-10 复审 Critical 修复(跨单元竞态)──
+    # 轮开始时(loop 跑之前)磁盘上转录文件的行数基准——供轮收尾"整份覆盖写"(done 分支的 save_transcript
+    # + 取消分支落 live_messages)判断磁盘现存内容是否已被外部(media_job_notify.append_transcript 等
+    # 完成回调)追加过、需要把追加的尾部原样接回再写(不能整份覆盖冲掉)。由 _stream_agent_events 在
+    # 轮开始、loop 跑之前用 transcript.capture_transcript_baseline_len 记下。
+    # None = 没记到可靠基准(比如读取失败)——收尾时 transcript.merge_external_tail 据此跳过合并，
+    # 退化为原样覆盖写，故障安全，不因这个新逻辑本身出错就把正常落盘搞崩。
+    transcript_baseline_len: int | None = None
     # ── F-7 只读并发（读写锁）：同一批只读工具经 asyncio.gather 并发跑时，_execute_tool 里的
     #   anti-spin 计数（call_counts 的读改写）可能被多个协程"同时"碰。CPython 单线程协作式调度下
     #   "读改写之间没有 await" 本身已天然原子（不会被其它协程插进来），这把锁是**防御性**的：
