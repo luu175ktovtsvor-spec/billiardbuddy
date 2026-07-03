@@ -20,10 +20,24 @@ import pytest
 
 from api.v1.agent import agent_execute, AgentExecuteRequest
 from core.exceptions import AIServiceError
+from services import shadow_git as sg
 from services.agent import hooks as hooks_mod
 from services.agent import local_tools as lt
 from services.agent.approval import sign_approval
 from services.agent.registry import Tool, default_registry
+
+
+@pytest.fixture(autouse=True)
+def _isolate_shadow_git_upload_dir(tmp_path, monkeypatch):
+    """F-12 复审 Important #1 修复后的连带发现：`api.v1.agent` 模块导入时会常驻装上影子 git
+    的 PostToolUse 钩子（`_install_shadow_git_hook()`，见 agent.py 顶部），且钩子判定写改类
+    工具的依据从"硬编码 4 个工具名"换成了"动态查 registry 的 approval_class=='file'"——本文件
+    往 `default_registry` 注册的临时测试工具大多带 `approval_class="file"`，会被这条新判据
+    正确识别成写改类。下面几个"越界路径经签名批准后真的能执行"用例（尤其带 `working_dir=` 的
+    相对路径越界那两个）会真的触发 `commit_checkpoint`，若不隔离 `sg.settings.upload_dir`，
+    会在**真实项目仓库**的 `uploads/shadow-git/` 下创建空的影子库脚手架目录（虽然内容无害、
+    已被 .gitignore 挡在版本控制外，但仍是往真实工作树里泄漏测试产物，违反测试纪律）。"""
+    monkeypatch.setattr(sg.settings, "upload_dir", str(tmp_path / "uploads"))
 
 
 class _FakeUser:

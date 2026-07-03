@@ -109,10 +109,18 @@ def truncate_chat_to_checkpoint(conversation_id: str, transcript_len_at_commit: 
 
     "逻辑截断"而不是"真删"——截断前先把当前完整轨迹整份备份到旁路文件（文件名带时间戳，
     不覆盖旧备份，可以手动找回），再用 `save_transcript` 覆盖写只保留前 N 条
-    （N = `transcript_len_at_commit`）。截断到 0 条时特判：`save_transcript([])` 会被它自己的
-    "空消息不建文件"防御逻辑短路掉（那是为了防"误判成有效空轨迹"），所以这里改成直接删掉
-    轨迹文件本身——效果等价于"这个会话还没聊过"，`load_transcript` 读不到会自然回落到老会话
-    5 轮文本对兜底，行为正确。
+    （N = `transcript_len_at_commit`）。
+
+    F-12 复审 Important #3 修复：截断到 0 条时，**不能**直接 `unlink()` 删掉轨迹文件本身——
+    那样 `load_transcript` 读到的是文件不存在 → 返回 `None`，跟"这个会话本来就从没建过轨迹文件"
+    （比如很老的会话）在返回值层面完全无法区分。`api/v1/agent.py` 的 `_load_agent_history` 靠
+    `load_transcript` 是不是 `None` 判断要不要落到 DB 最近 5 轮兜底——一旦分不清，"回退到最开始"
+    这个动作反而会让下一轮从 DB 兜底里把本该被忘掉的最近几轮聊天重新翻出来塞回上下文，等于回退
+    完全没生效。改成写一个【空但存在】的轨迹文件（绕开 `save_transcript([])` 自己"空消息不建
+    文件"的短路逻辑，那条短路是为了防"误判成有效空轨迹"，语义上是给"从没存过东西"的场景用的，
+    跟这里"确实存过、现在要清空"是两回事）——`load_transcript` 读到的是 `[]`（文件存在但没有
+    有效行），`_load_agent_history` 据此能把"真被截断到空"和"老会话根本没有轨迹文件"这两种语义
+    完全不同的情况分开处理（见 `_load_agent_history` 里 `if tr is not None:` 的判据）。
     """
     rows = load_transcript(conversation_id)
     if rows is None:
@@ -130,8 +138,9 @@ def truncate_chat_to_checkpoint(conversation_id: str, transcript_len_at_commit: 
             shutil.copy2(path, backup)
             backup_path = str(backup)
         if n == 0:
-            if path is not None and path.exists():
-                path.unlink()
+            if path is not None:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("", encoding="utf-8")  # 空但存在——不是 unlink，见上方 docstring
         else:
             save_transcript(conversation_id, rows[:n])
     except Exception:

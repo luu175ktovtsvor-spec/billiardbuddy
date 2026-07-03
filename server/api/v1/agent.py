@@ -601,14 +601,22 @@ async def _load_agent_history(db, store, conversation_id: str | None) -> list[di
     ① 有【完整轨迹文件】（跨轮记忆，照 Claude Code 做对）→ 整段读回（含工具调用/结果/中间思考），
        模型真看得到自己上轮干了啥，不用老板反复交代。新会话都走这条。
     ② 无轨迹文件（老会话/读失败）→ 兜底：DB 最近 5 轮"user/assistant 文本对"（旧逻辑，保证老会话续聊不崩）。
-    失败一律返回空。"""
+    失败一律返回空。
+
+    F-12 复审 Important #3 修复：判据从 `if tr:` 改成 `if tr is not None:`——
+    `load_transcript` 返回 `None` 代表"文件真不存在"（老会话/从没建过轨迹，① 路径确实没东西，
+    该走 DB 兜底），返回 `[]` 代表"文件存在但没有有效行"（比如 `checkpoint_index` 里
+    `chat_only`/`both` 恢复"回到最开始"——truncate 到 0 条后，写的是一个空但存在的轨迹文件，
+    见 `checkpoint_index.truncate_chat_to_checkpoint`）。原先 `if tr:` 把这两种情况混为一谈：
+    truncate 到 0 想让模型忘掉的历史，会因为 `tr == []` 判假而掉进 ② 的 DB 兜底，把 DB 里
+    同一个 conversation_id 的最近 5 轮又翻出来塞回上下文——"回退到最开始"等于没生效。"""
     if not conversation_id:
         return []
     # ① 完整轨迹优先
     try:
         from services.agent.transcript import load_transcript
         tr = load_transcript(conversation_id)
-        if tr:  # 有文件且非空 → 用完整轨迹
+        if tr is not None:  # 文件存在（哪怕是"截断到空"的空文件）→ 当权威源，不落 ② 的 DB 兜底
             return tr
     except Exception:
         logger.warning("agent 轨迹读取失败，回退文本对 conversation_id=%s", conversation_id, exc_info=True)
