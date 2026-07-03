@@ -116,6 +116,57 @@ def test_file_target_oob_ignored_for_non_file_tools(library, tmp_path):
     assert _file_target_oob(cmd_tool, {"path": outside}, AgentContext()) is None
 
 
+# ── Important #3 复审修复：output_path（edit_image 一类"另存"参数）也要过越界检测，不能只查 path ──
+
+def _out_path_tool(name="edit_image"):
+    return Tool(name=name, description="改图", approval_class="file",
+                parameters={"type": "object", "properties": {
+                    "path": {"type": "string"}, "output_path": {"type": "string"},
+                }}, handler=lambda args, ctx: None, requires_approval=True)
+
+
+def test_file_target_oob_detects_outside_output_path(library, tmp_path):
+    """原先只查 path，漏了 output_path 越界——edit_image 另存到工作区外时应被同样检测到。"""
+    outside = str(tmp_path / "另存到外面.png")
+    result = _file_target_oob(_out_path_tool(), {"path": "in.png", "output_path": outside}, AgentContext())
+    assert result == outside
+
+
+def test_file_target_oob_output_path_none_when_both_in_workspace(library):
+    result = _file_target_oob(_out_path_tool(), {"path": "in.png", "output_path": "out.png"}, AgentContext())
+    assert result is None
+
+
+def test_file_target_oob_reports_path_first_when_both_outside(library, tmp_path):
+    """path 和 output_path 都越界时只报一个（path 优先），不为同一次调用重复弹两张卡。"""
+    outside_in = str(tmp_path / "in外部.png")
+    outside_out = str(tmp_path / "out外部.png")
+    result = _file_target_oob(_out_path_tool(), {"path": outside_in, "output_path": outside_out}, AgentContext())
+    assert result == outside_in
+
+
+def test_file_target_oob_output_path_none_when_full_disk_access(library, tmp_path):
+    outside = str(tmp_path / "另存到外面.png")
+    result = _file_target_oob(_out_path_tool(), {"path": "in.png", "output_path": outside},
+                              AgentContext(full_disk_access=True))
+    assert result is None
+
+
+def test_file_target_oob_detects_real_edit_image_output_path(library, tmp_path):
+    """不用自造的假 Tool——用 image_tools 里真实注册的 edit_image 工具对象校验，
+    防止它的 approval_class/参数名以后漂移而悄悄让这里的越界检测失效。"""
+    from services.agent.image_tools import _IMAGE_TOOLS
+
+    edit_image_tool = next(t for t in _IMAGE_TOOLS if t.name == "edit_image")
+    outside = str(tmp_path / "另存到外面.png")
+    result = _file_target_oob(
+        edit_image_tool,
+        {"path": "in.png", "operation": "compress", "output_path": outside},
+        AgentContext(),
+    )
+    assert result == outside
+
+
 # ══════════════════════════════ ① 文件越界：_plan_tool_call / 流式循环端到端 ══════════════════════════════
 
 def _write_registry():
@@ -181,6 +232,26 @@ def test_oob_write_denial_fallback_still_applies(library, tmp_path):
     assert "approval_request" not in types
     trs = [e for e in events if e["type"] == "tool_result"]
     assert any("先不做了" in (e.get("content") or "") for e in trs)
+
+
+def test_oob_output_path_forces_approval_full_mode_end_to_end(library, tmp_path):
+    """Important #3 端到端回归：真实 edit_image 工具的 output_path 越界，在 full(跳过确认) 档
+    也必须转成审批卡——不能因为判定只查 path 而漏检，直到真正执行时才在 _out_path/_resolve 报错。"""
+    from services.agent.image_tools import register_image_tools
+
+    reg = ToolRegistry()
+    register_image_tools(reg)
+    outside = str(tmp_path / "另存到外面.png")
+    ctx = AgentContext(permission_mode="full", full_disk_access=False, auto_spend_limit=-1)
+    events = _run_stream(
+        reg, {"path": "in.png", "operation": "compress", "output_path": outside},
+        ctx, tool_name="edit_image",
+    )
+    types = [e["type"] for e in events]
+    assert "approval_request" in types, "output_path 越界也必须转成审批卡，不能只查 path 漏检"
+    ar = [e for e in events if e["type"] == "approval_request"][0]
+    assert "工作区外" in ar["reason"]["why"]
+    assert outside in ar["reason"]["why"] or outside in ar["reason"]["impact"]
 
 
 # ══════════════════════════════ ① run_command 危险命令：撞墙即拒、不占审批卡 ══════════════════════════════
@@ -278,6 +349,61 @@ def test_safe_prefix_does_not_match_bare_prefix_word():
     assert lt._matches_safe_prefix("git") is False
     assert lt._matches_safe_prefix("git push --force") is False
     assert lt._matches_safe_prefix("git status") is True
+
+
+# ── Important #2 复审修复：git branch / date 不是"只读无副作用"，白名单不能无脑豁免 ──
+
+def test_git_branch_write_variants_not_whitelisted():
+    """git branch 可删/建/改名分支，不是只读——带参数的调用一律不豁免（退回常规审批）；
+    裸 `git branch`（列分支）本身真只读，继续放行。"""
+    assert lt._matches_safe_prefix("git branch") is True
+    assert lt._matches_safe_prefix("git branch -D foo") is False
+    assert lt._matches_safe_prefix("git branch newbranch") is False
+    assert lt._matches_safe_prefix("git branch -m old new") is False
+
+
+def test_date_removed_from_safe_prefix_whitelist():
+    """`date -s ...` 能改系统时间，不是只读——`date` 整条从白名单移除（whoami/uname 够用）；
+    裸 `date`（只是显示当前时间）也一并退回常规审批，宁可漏放、不错放。"""
+    assert "date" not in lt._SAFE_COMMAND_PREFIXES
+    assert lt._matches_safe_prefix("date") is False
+    assert lt._matches_safe_prefix("date -s 2020-01-01") is False
+
+
+def test_git_log_diff_output_flag_not_whitelisted():
+    """git log/diff 本身只读，但 `--output(=<file>)` 是文档化的真实参数、能把内容写到任意
+    文件路径——命中就不豁免；修订号/格式化等普通只读用法仍然豁免。"""
+    assert lt._matches_safe_prefix("git log -5") is True
+    assert lt._matches_safe_prefix("git diff HEAD~1") is True
+    assert lt._matches_safe_prefix("git log --output=/tmp/x.txt") is False
+    assert lt._matches_safe_prefix("git diff --output=/tmp/x.txt") is False
+
+
+def test_git_status_ls_cat_still_whitelisted_after_tightening():
+    """收紧不能连带误伤：git status/ls/cat 这些真只读的命令仍然豁免。"""
+    assert lt._matches_safe_prefix("git status") is True
+    assert lt._matches_safe_prefix("ls -la") is True
+    assert lt._matches_safe_prefix("cat report.txt") is True
+
+
+def test_git_branch_write_variants_still_require_approval_end_to_end():
+    """端到端：`git branch -D foo` / `git branch newbranch` 在 ask 档要退回常规审批，
+    不再因为命中前缀字符串就零点击自动放行。"""
+    for cmd in ["git branch -D foo", "git branch newbranch"]:
+        reg, calls = _command_registry()
+        ctx = AgentContext(permission_mode="ask", full_disk_access=True)
+        events = _run_stream(reg, {"command": cmd}, ctx)
+        assert "approval_request" in [e["type"] for e in events], f"{cmd} 不该被安全前缀豁免"
+        assert calls == []
+
+
+def test_date_set_time_still_requires_approval_end_to_end():
+    """端到端：`date -s ...` 在 ask 档要退回常规审批，不再零点击自动放行。"""
+    reg, calls = _command_registry()
+    ctx = AgentContext(permission_mode="ask", full_disk_access=True)
+    events = _run_stream(reg, {"command": "date -s 2020-01-01"}, ctx)
+    assert "approval_request" in [e["type"] for e in events]
+    assert calls == []
 
 
 def test_safe_prefix_rechecks_blacklist_defense_in_depth():

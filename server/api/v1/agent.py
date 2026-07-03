@@ -1963,9 +1963,27 @@ async def agent_execute(
     if injection:
         raise AIServiceError(injection, status_code=400)
 
+    # 审批闸 2.0 复审修复（Critical #1）：越界文件写会被 loop 转成审批卡（`_file_target_oob`），
+    # 老板点"允许"后这次执行必须真的跑通——否则重建的 ctx.allowed_paths 只来自 body.selected_files
+    # （不含刚被批准的越界路径），write_file/edit_image 里的 `_resolve` 照样抛 ValueError，
+    # 而这里（跟主循环不同）没有把工具异常吞成字符串回灌的机制，未捕获的 ValueError 会一路
+    # 冒到全局异常处理变成一句不知所云的 500——对 full 档是行为倒退（原来至少静默失败还能让
+    # 老板看见回灌的人话，现在弹卡点了确认反而收到"服务器内部错误"）。
+    # 只在【签名验证已通过】（上面 verify_approval 那行）之后才做这件事：HMAC 签名绑的是
+    # (tool, 完整 args)（含 path/output_path，见 services/agent/approval.py 的 _canonical），
+    # 验证通过就等于老板已经明确点头允许了这组参数里的这个具体路径——把它一次性并进
+    # 这次请求的 allowed_paths 是兑现闸已经放行的授权，不是绕过闸的后门；且只对本次执行生效，
+    # 不做任何跨请求/跨会话的持久化（下一次主循环再摸这个路径，仍然会照常重新弹卡）。
+    approval_paths: list[str] = list(body.selected_files or [])
+    if getattr(tool, "approval_class", None) == "file":
+        for _key in ("path", "output_path"):
+            _val = args.get(_key)
+            if isinstance(_val, str) and _val.strip():
+                approval_paths.append(_val)
+
     _m, full_disk = _resolve_permission(None, body.full_disk_access)
     ctx = AgentContext(
-        db=db, store=store, user=user, allowed_paths=body.selected_files or [],
+        db=db, store=store, user=user, allowed_paths=approval_paths,
         full_disk_access=full_disk,
         working_dir=body.working_dir,
         conversation_id=body.conversation_id,
