@@ -9,6 +9,7 @@ from models.usage_event import UsageEvent
 from models.media_job import MediaJob
 from models.sync_outbox import SyncOutbox
 from models.sync_state import SyncState
+from models.scheduled_task import ScheduledTask
 
 __all__ = [
     "User", "Store", "StoreMember", "Generation",
@@ -18,4 +19,5 @@ __all__ = [
     "MediaJob",
     "SyncOutbox",
     "SyncState",
+    "ScheduledTask",
 ]
