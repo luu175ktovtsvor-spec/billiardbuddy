@@ -10,6 +10,7 @@ from models.media_job import MediaJob
 from models.sync_outbox import SyncOutbox
 from models.sync_state import SyncState
 from models.scheduled_task import ScheduledTask
+from models.store_doc_library import StoreDocLibrary
 
 __all__ = [
     "User", "Store", "StoreMember", "Generation",
@@ -20,4 +21,5 @@ __all__ = [
     "SyncOutbox",
     "SyncState",
     "ScheduledTask",
+    "StoreDocLibrary",
 ]
