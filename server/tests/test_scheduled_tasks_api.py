@@ -138,6 +138,50 @@ class TestScheduledTasksApiCrud:
             await eng.dispose()
         asyncio.run(main())
 
+    def test_reenable_after_fill_swap_rejected(self):
+        """建满上限→停用1条→新建1条占回名额→把停用那条重新启用 应该被拒绝(400)，
+        且启用中总数不能超过上限——堵住"停几条腾位置、新建顶上、再把旧的重新启用"绕过硬限的口子。
+        """
+        async def main():
+            eng, Session = await _make_db()
+            async with Session() as db:
+                store = await _seed_store(db)
+                for i in range(sc._MAX_TASKS_PER_STORE):
+                    db.add(ScheduledTask(
+                        store_id=store.id, name=f"任务{i}", instruction="x", schedule_kind="daily",
+                        schedule_spec={"hour": 8, "minute": 0},
+                        next_run_at=datetime.now(timezone.utc) + timedelta(hours=1), enabled=True,
+                    ))
+                await db.commit()
+                rows = (await db.execute(select(ScheduledTask))).scalars().all()
+                to_disable = rows[0]
+
+                disabled = await api_sc.update_scheduled_task_route(
+                    str(to_disable.id), api_sc.ScheduledTaskUpdate(enabled=False), store=store, db=db,
+                )
+                assert disabled.enabled is False
+
+                # 新建一条顶上名额，启用中总数重新回到上限
+                body = api_sc.ScheduledTaskCreate(name="顶替", instruction="y", schedule_kind="daily",
+                                                    schedule_spec={"hour": 9, "minute": 0})
+                created = await api_sc.create_scheduled_task_route(body, store=store, db=db)
+                assert created.enabled is True
+
+                # 再把之前停用的那条重新启用 —— 应该被挡住
+                try:
+                    await api_sc.update_scheduled_task_route(
+                        str(to_disable.id), api_sc.ScheduledTaskUpdate(enabled=True), store=store, db=db,
+                    )
+                    assert False, "重新启用应该因超过上限被拒绝"
+                except HTTPException as e:
+                    assert e.status_code == 400
+
+                all_rows = (await db.execute(select(ScheduledTask))).scalars().all()
+                enabled_count = sum(1 for t in all_rows if t.store_id == store.id and t.enabled)
+                assert enabled_count == sc._MAX_TASKS_PER_STORE
+            await eng.dispose()
+        asyncio.run(main())
+
     def test_delete_missing_returns_404(self):
         async def main():
             eng, Session = await _make_db()
