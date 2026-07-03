@@ -33,6 +33,12 @@ contextBridge.exposeInMainWorld("electron", {
     show: (opts) => ipcRenderer.invoke("notification:show", opts || {}),
   },
 
+  // ── 开机自动启动(D-Task-4：定时任务要 app 开着才会跑) ──
+  app: {
+    getAutoLaunch: () => ipcRenderer.invoke("app:getAutoLaunch"),
+    setAutoLaunch: (enabled) => ipcRenderer.invoke("app:setAutoLaunch", { enabled }),
+  },
+
   // ── 口播模型按需下载(whisper 1.4G,首启后台下;下好前口播功能灰掉) ──
   models: {
     // 拿当前态 {phase:idle|downloading|ready|error, percent, error?}
