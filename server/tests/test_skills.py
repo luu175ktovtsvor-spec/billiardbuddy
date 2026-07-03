@@ -238,6 +238,7 @@ def test_long_skill_result_persisted_not_hard_truncated(tmp_path, monkeypatch):
 
 def test_bundled_skills_present():
     # 仓库自带的内置技能（server/skills/）应被默认加载器发现。
+    # 通用（非台球灰色）技能：research/spreadsheet 目录的 frontmatter name 为中文。
     names = {s.name for s in sk.load_skills()}
-    assert "commit" in names
-    assert "review" in names
+    assert "网络调研" in names  # server/skills/research/SKILL.md
+    assert "表格分析" in names  # server/skills/spreadsheet/SKILL.md
