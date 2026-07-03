@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from api.deps import get_current_store, get_db
 from models.scheduled_task import ScheduledTask
-from services.agent.scheduled_tasks import _MAX_TASKS_PER_STORE, _compute_next_run
+from services.agent.scheduled_tasks import _MAX_TASKS_PER_STORE, _as_aware_utc, _compute_next_run
 
 router = APIRouter()
 
@@ -53,6 +53,10 @@ class ScheduledTaskItem(BaseModel):
 
 
 def _item(t: ScheduledTask) -> ScheduledTaskItem:
+    # ⚠️ SQLite 读出的 DateTime(timezone=True) 列会丢 tzinfo（M12 老坑）——裸 isoformat()
+    # 会吐出无时区后缀的串，前端 `new Date(iso)` 会当本地时间误解析，北京用户看到的时间会
+    # 错 8 小时。这里统一经 `_as_aware_utc()` 兜底成 UTC-aware 再序列化，ISO 串带 `+00:00`
+    # 后缀，前端才能按 UTC 正确解析再转本地显示。
     return ScheduledTaskItem(
         id=str(t.id),
         name=t.name,
@@ -60,8 +64,8 @@ def _item(t: ScheduledTask) -> ScheduledTaskItem:
         billiards_mode=bool(t.billiards_mode),
         schedule_kind=t.schedule_kind,
         schedule_spec=t.schedule_spec or {},
-        next_run_at=t.next_run_at.isoformat() if t.next_run_at else None,
-        last_run_at=t.last_run_at.isoformat() if t.last_run_at else None,
+        next_run_at=_as_aware_utc(t.next_run_at).isoformat() if t.next_run_at else None,
+        last_run_at=_as_aware_utc(t.last_run_at).isoformat() if t.last_run_at else None,
         last_run_status=t.last_run_status,
         last_result_summary=t.last_result_summary,
         enabled=bool(t.enabled),

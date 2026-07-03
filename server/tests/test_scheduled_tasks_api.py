@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 import models  # noqa: F401
 import api.v1.scheduled_tasks as api_sc
+from core.timezone import BUSINESS_TZ
 from db.base import Base
 from models.scheduled_task import ScheduledTask
 from models.store import Store
@@ -233,5 +234,54 @@ class TestScheduledTasksApiCrossStoreIsolation:
                 # A 店任务安然无恙
                 rows = (await db.execute(select(ScheduledTask))).scalars().all()
                 assert len(rows) == 1 and rows[0].store_id == store_a.id
+            await eng.dispose()
+        asyncio.run(main())
+
+
+class TestScheduledTasksApiTimezoneSerialization:
+    """Important 修复回归：`_item()` 序列化 next_run_at/last_run_at 必须经 `_as_aware_utc()`
+    兜底再 isoformat()，带上时区后缀。否则前端 `new Date(iso)` 会把这个 UTC 时刻当成本地时间
+    误解析——北京用户配"每天9点"，SQLite 读出来的 datetime 丢了 tzinfo，裸 isoformat() 出来的
+    串没有 +00:00/Z 后缀，面板会显示成凌晨1点（差 8 小时）。
+
+    这条测试在修复前（`_item()` 直接 `t.next_run_at.isoformat()`）会 RED：本地 aiosqlite 落盘
+    再读回，DateTime(timezone=True) 列的 tzinfo 会丢，isoformat() 吐出无后缀串。
+    """
+
+    def test_next_run_at_has_utc_suffix_and_matches_beijing_9am(self):
+        async def main():
+            eng, Session = await _make_db()
+            async with Session() as db:
+                store = await _seed_store(db)
+                body = api_sc.ScheduledTaskCreate(
+                    name="每日文案", instruction="每天9点写今日文案", schedule_kind="daily",
+                    schedule_spec={"hour": 9, "minute": 0},
+                )
+                created = await api_sc.create_scheduled_task_route(body, store=store, db=db)
+
+                iso = created.next_run_at
+                assert iso is not None
+                assert iso.endswith("+00:00") or iso.endswith("Z"), f"next_run_at 缺时区后缀: {iso!r}"
+
+                parsed = datetime.fromisoformat(iso)
+                assert parsed.tzinfo is not None
+                beijing = parsed.astimezone(BUSINESS_TZ)
+                assert beijing.hour == 9 and beijing.minute == 0, (
+                    f"UTC 时刻 {parsed} 换算北京时间应为 9:00，实际 {beijing}"
+                )
+
+                # list 接口返回的同一条记录也要带时区后缀（不止 create 的返回值）
+                lst = await api_sc.list_scheduled_tasks_route(store=store, db=db)
+                assert len(lst) == 1
+                assert lst[0].next_run_at.endswith("+00:00") or lst[0].next_run_at.endswith("Z")
+
+                # last_run_at 走的是同一段序列化逻辑，手工填一个值验它也带时区后缀
+                task = (await db.execute(select(ScheduledTask))).scalars().first()
+                task.last_run_at = datetime.now(timezone.utc)
+                await db.commit()
+                lst2 = await api_sc.list_scheduled_tasks_route(store=store, db=db)
+                last_iso = lst2[0].last_run_at
+                assert last_iso is not None
+                assert last_iso.endswith("+00:00") or last_iso.endswith("Z"), f"last_run_at 缺时区后缀: {last_iso!r}"
             await eng.dispose()
         asyncio.run(main())
