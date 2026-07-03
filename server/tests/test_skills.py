@@ -115,6 +115,31 @@ def test_render_skills_sorted_for_cache_stability():
     assert out.index("alpha") < out.index("zeta")
 
 
+def test_render_skills_for_prompt_keeps_all_names_when_over_budget():
+    """技能一多、总长超预算：老逻辑从尾部一刀切会让排序靠后的技能整条消失（模型永远不知道它存在）。
+    应改成先压缩每条描述，保证所有技能的名字都留在清单里，只是简介变短。"""
+    skills = [
+        sk.Skill(name=f"skill-{i:02d}", description="这是一段比较长的技能简介文字用来撑爆预算" * 3,
+                 body="", source="user", path=f"/x{i}")
+        for i in range(40)
+    ]
+    out = sk.render_skills_for_prompt(skills, budget_chars=1500)
+    for s in skills:
+        assert s.name in out, f"{s.name} 应该露出名字，不能因超预算被整条丢弃"
+
+
+def test_render_skills_for_prompt_extreme_overflow_falls_back_to_hard_truncate():
+    """就算技能多到连"每个只留个名字"都装不下的极端情况，也要有兜底（不抛异常、总长不超预算太多）。"""
+    skills = [
+        sk.Skill(name=f"very-long-skill-name-that-eats-budget-{i:03d}", description="d",
+                 body="", source="user", path=f"/x{i}")
+        for i in range(200)
+    ]
+    out = sk.render_skills_for_prompt(skills, budget_chars=1500)
+    assert out.endswith("…")
+    assert len(out) <= 1501
+
+
 def test_expand_skill_substitutes_arguments():
     skills = [sk.Skill(name="greet", description="d", body="对 $ARGUMENTS 说你好", source="user", path="/x")]
     assert sk.expand_skill("greet", "老王", skills) == "对 老王 说你好"
