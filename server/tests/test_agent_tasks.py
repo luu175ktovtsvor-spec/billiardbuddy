@@ -33,7 +33,7 @@ def test_agent_task_replays_cached_events(monkeypatch):
 
         monkeypatch.setattr(agent, "_stream_agent_events", fake_stream)
         monkeypatch.setattr(agent, "async_session", lambda: _Session())
-        monkeypatch.setattr(agent, "_learn_in_background", lambda store_id, text: asyncio.sleep(0))
+        monkeypatch.setattr(agent, "_learn_in_background", lambda store_id, text, delivery=None: asyncio.sleep(0))
 
         body = agent.AgentChatRequest(message="测试后台任务")
         res = await agent.start_agent_task(body, user=SimpleNamespace(id="u1"), store=SimpleNamespace(id="s1"))
@@ -75,7 +75,7 @@ def test_agent_task_cancel_emits_cancelled_done(monkeypatch):
 
         monkeypatch.setattr(agent, "_stream_agent_events", fake_stream)
         monkeypatch.setattr(agent, "async_session", lambda: _Session())
-        monkeypatch.setattr(agent, "_learn_in_background", lambda store_id, text: asyncio.sleep(0))
+        monkeypatch.setattr(agent, "_learn_in_background", lambda store_id, text, delivery=None: asyncio.sleep(0))
 
         body = agent.AgentChatRequest(message="测试取消")
         res = await agent.start_agent_task(body, user=SimpleNamespace(id="u1"), store=SimpleNamespace(id="s1"))
@@ -117,7 +117,7 @@ def test_agent_task_subscription_disconnect_does_not_cancel_runner(monkeypatch):
 
         monkeypatch.setattr(agent, "_stream_agent_events", fake_stream)
         monkeypatch.setattr(agent, "async_session", lambda: _Session())
-        monkeypatch.setattr(agent, "_learn_in_background", lambda store_id, text: asyncio.sleep(0))
+        monkeypatch.setattr(agent, "_learn_in_background", lambda store_id, text, delivery=None: asyncio.sleep(0))
 
         body = agent.AgentChatRequest(message="测试断开订阅")
         res = await agent.start_agent_task(body, user=SimpleNamespace(id="u1"), store=SimpleNamespace(id="s1"))
@@ -211,7 +211,7 @@ def test_agent_task_long_stream_endpoint_delivers_tail(monkeypatch):
 
         monkeypatch.setattr(agent, "_stream_agent_events", fake_stream)
         monkeypatch.setattr(agent, "async_session", lambda: _Session())
-        monkeypatch.setattr(agent, "_learn_in_background", lambda store_id, text: asyncio.sleep(0))
+        monkeypatch.setattr(agent, "_learn_in_background", lambda store_id, text, delivery=None: asyncio.sleep(0))
 
         body = agent.AgentChatRequest(message="超长回复")
         res = await agent.start_agent_task(body, user=SimpleNamespace(id="u1"), store=SimpleNamespace(id="s1"))

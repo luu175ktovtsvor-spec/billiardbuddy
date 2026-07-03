@@ -75,6 +75,9 @@ class _AgentTask:
     # ① 插话路由 POST /tasks/{id}/message 往 ctx.steer_inbox 塞话，loop 下一轮注入；
     # ② 取消（CancelledError）时用 ctx.live_messages 照样落轨迹——停掉的活不失忆。
     ctx: AgentContext | None = None
+    # F-3b：本轮 AI 交付摘要（persist_text 截断版）——_stream_agent_events 算出 persist_text 时回填，
+    # _runner() 收尾喂进 _learn_in_background，让店脑记得"上次帮老板做了什么"。默认空串=向后兼容。
+    delivery_text: str = ""
 
 
 _AGENT_TASKS: dict[str, _AgentTask] = {}
@@ -472,13 +475,43 @@ def compose_agent_system_prompt(profile_text: str, brain_text: str, full_disk: b
     return "\n\n".join(parts)
 
 
-async def _learn_in_background(store_id: str, text: str) -> None:
-    """对话后台学习：独立 session 从用户消息抽取门店记忆、整合进店脑。失败静默、不计配额。"""
+# F-3b：交付摘要喂进学习前的截断上限——别把整篇长文案/长表格塞进抽取器（既费 token 又没必要，
+# 抽取器只需要够判断"这次帮老板做了什么"的摘要）。
+_DELIVERY_LEARN_MAX_CHARS = 1600
+_DELIVERY_MARK_USER = "【用户说】"
+_DELIVERY_MARK_AI = "【本轮助手交付】"
+
+
+async def _learn_in_background(store_id: str, text: str, delivery: "dict | str | None" = None) -> None:
+    """对话后台学习：独立 session 从"用户消息 + 本轮 AI 交付摘要"抽取门店记忆、整合进店脑。
+    失败静默、不计配额。
+
+    delivery（F-3b 新增，可选）：本轮 AI 交付了什么的摘要，治"AI 记不住上次给你做了什么"——
+    - 传字符串：已经算好的 persist_text（非流式/任务路径，见 start_agent_task 的 _runner()）。
+    - 传可变容器 {"text": "..."}：流式路径专用——BackgroundTask 在响应流开始前就绑定，此刻
+      persist_text 还没算出来，靠流内（_stream_agent_events 的 done 分支）回填这个容器，
+      背景任务真正执行（响应发完之后）时再读，读到的就是完整值。
+    - 不传/交付为空：原样只喂用户消息，向后兼容、绝不因此报错或阻断 SSE。
+    """
     if not text or not text.strip():
         return
+    delivery_text = ""
+    try:
+        if isinstance(delivery, dict):
+            delivery_text = (delivery.get("text") or "").strip()
+        elif isinstance(delivery, str):
+            delivery_text = delivery.strip()
+    except Exception:
+        delivery_text = ""
+    interaction_text = text
+    if delivery_text:
+        interaction_text = (
+            f"{_DELIVERY_MARK_USER}{text}\n"
+            f"{_DELIVERY_MARK_AI}{delivery_text[:_DELIVERY_LEARN_MAX_CHARS]}"
+        )
     try:
         async with async_session() as bg_db:
-            await remember(bg_db, store_id, text)
+            await remember(bg_db, store_id, interaction_text)
     except Exception:
         logger.exception("agent 店脑后台学习失败 store_id=%s", store_id)
 
@@ -1497,9 +1530,13 @@ async def im_wechat(
     return {"success": True, "data": {"type": "text", "content": reply}}
 
 
-async def _stream_agent_events(body: AgentChatRequest, user: User, store, db, task: "_AgentTask | None" = None):
+async def _stream_agent_events(body: AgentChatRequest, user: User, store, db, task: "_AgentTask | None" = None,
+                               delivery_box: "dict | None" = None):
     """跑一次 Agent 对话并逐事件产出。task（可选）：后台任务模式由 _runner 传进来，
-    好把运行中的 ctx 挂回 task——插话路由与取消落轨迹都靠它拿到活的 ctx。/chat 直连路径不传，行为不变。"""
+    好把运行中的 ctx 挂回 task——插话路由与取消落轨迹都靠它拿到活的 ctx。/chat 直连路径不传，行为不变。
+    delivery_box（F-3b 新增，可选）：/chat 流式路径专用的可变容器——done 事件算出 persist_text 后
+    回填 delivery_box["text"]，供响应发完后才跑的 _learn_in_background 读到"本轮 AI 交付了什么"。
+    不传就跳过（向后兼容，/tasks 路径改用 task.delivery_text 承载，见下方 done 分支）。"""
     injection = check_input_injection(body.message or "")
     if injection:
         raise AIServiceError(injection, status_code=400)
@@ -1630,6 +1667,13 @@ async def _stream_agent_events(body: AgentChatRequest, user: User, store, db, ta
                 if deliverables:
                     tail = f"\n\n{final_content}" if final_content.strip() else ""
                     persist_text = "\n\n".join(deliverables) + tail
+                # F-3b：把本轮 AI 交付摘要（截断）旁路送去后台学习——只读 persist_text，不改它本身的
+                # 落库语义。delivery_box 走 /chat 流式路径；task.delivery_text 走 /tasks 路径。
+                _delivery_summary = persist_text.strip()[:_DELIVERY_LEARN_MAX_CHARS] if persist_text else ""
+                if delivery_box is not None:
+                    delivery_box["text"] = _delivery_summary
+                if task is not None:
+                    task.delivery_text = _delivery_summary
                 _rec_id = body.source_rec_id if not body.conversation_id else None
                 await _persist_agent_chat(db, store, user, body.message, persist_text, gen_id, conv_uuid,
                                           turns, tokens_used=tokens_used, source_rec_id=_rec_id,
@@ -1680,8 +1724,12 @@ async def agent_chat(
     store=Depends(get_current_store),
     db=Depends(get_db),
 ):
+    # F-3b：可变容器——BackgroundTask 在这里绑定时响应流还没跑，persist_text 没算出来；
+    # _stream_agent_events 的 done 分支会在流内回填它，背景任务真正执行（响应发完后）时再读。
+    delivery_box: dict = {"text": ""}
+
     async def event_generator():
-        async for event in _stream_agent_events(body, user, store, db):
+        async for event in _stream_agent_events(body, user, store, db, delivery_box=delivery_box):
             if event.get("type") == "keepalive":
                 yield ": keepalive\n\n"
             else:
@@ -1695,7 +1743,7 @@ async def agent_chat(
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
-        background=BackgroundTask(_learn_in_background, str(store.id), body.message),
+        background=BackgroundTask(_learn_in_background, str(store.id), body.message, delivery_box),
     )
 
 
@@ -1765,7 +1813,9 @@ async def start_agent_task(
             # 任务收尾即释放运行时引用（ctx 里挂着 messages/db/store 等大对象）：
             # _AGENT_TASKS 会缓存最近 40 个任务的事件供重放，别让完成的任务把整段对话上下文拖在内存里。
             task.ctx = None
-            await _learn_in_background(str(store.id), body.message)
+            # F-3b：此刻 _stream_agent_events 已跑完，task.delivery_text 已是算好的 persist_text
+            # 摘要（没有则默认空串，行为回退到只喂用户消息）。
+            await _learn_in_background(str(store.id), body.message, task.delivery_text)
             async with task.condition:
                 task.condition.notify_all()
 
