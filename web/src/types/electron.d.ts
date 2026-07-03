@@ -57,6 +57,12 @@ export interface ElectronBridge {
   notification?: {
     show(opts: { title?: string; body: string }): Promise<{ ok: boolean; error?: string }>;
   };
+  /** 开机自动启动(D-Task-4：定时任务要 app 开着才会跑，老板想按时出文案就得让软件开机自动打开)。
+   *  故障安全——不支持/失败都返回 { ok:false } 或 { enabled:false, error }，不抛异常。 */
+  app?: {
+    getAutoLaunch(): Promise<{ enabled: boolean; error?: string }>;
+    setAutoLaunch(enabled: boolean): Promise<{ ok: boolean; error?: string }>;
+  };
   /** 口播模型(whisper 1.4G)按需下载:首启后台下,下好前口播功能灰掉。 */
   models?: {
     status(): Promise<ModelStatus>;

@@ -131,6 +131,41 @@ export interface AgentTaskStartResponse {
   status: "running" | "done" | "error" | "cancelled" | string;
 }
 
+// D-Task-4：定时任务(到点自动跑一条 AI 任务，无人值守只出成品)。
+// schedule_spec 约定：daily→{hour,minute}；weekly→{weekday(0=周一…6=周日),hour,minute}；interval→{minutes}。
+export type ScheduleKind = "daily" | "weekly" | "interval";
+
+export interface ScheduledTaskItem {
+  id: string;
+  name: string;
+  instruction: string;
+  billiards_mode: boolean;
+  schedule_kind: ScheduleKind;
+  schedule_spec: Record<string, number>;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_run_status: "success" | "error" | null;
+  last_result_summary: string | null;
+  enabled: boolean;
+}
+
+export interface ScheduledTaskCreatePayload {
+  name: string;
+  instruction: string;
+  schedule_kind: ScheduleKind;
+  schedule_spec: Record<string, number>;
+  billiards_mode?: boolean;
+}
+
+export interface ScheduledTaskUpdatePayload {
+  name?: string;
+  instruction?: string;
+  schedule_kind?: ScheduleKind;
+  schedule_spec?: Record<string, number>;
+  billiards_mode?: boolean;
+  enabled?: boolean;
+}
+
 class ApiClient {
   baseUrl: string;
 
@@ -531,6 +566,20 @@ class ApiClient {
   }
   async deleteStoreMemory(id: string): Promise<void> {
     await this.request("DELETE", `/api/v1/store-memory/${id}`);
+  }
+
+  // ── 定时任务：到点自动跑一条 AI 任务(每早文案/每周报/每天汇总)，无人值守只出成品不对外 ──
+  async getScheduledTasks(): Promise<ScheduledTaskItem[]> {
+    return this.request<ScheduledTaskItem[]>("GET", "/api/v1/scheduled-tasks");
+  }
+  async createScheduledTask(body: ScheduledTaskCreatePayload): Promise<ScheduledTaskItem> {
+    return this.request<ScheduledTaskItem>("POST", "/api/v1/scheduled-tasks", body);
+  }
+  async updateScheduledTask(id: string, patch: ScheduledTaskUpdatePayload): Promise<ScheduledTaskItem> {
+    return this.request<ScheduledTaskItem>("PATCH", `/api/v1/scheduled-tasks/${id}`, patch);
+  }
+  async deleteScheduledTask(id: string): Promise<{ status: string }> {
+    return this.request<{ status: string }>("DELETE", `/api/v1/scheduled-tasks/${id}`);
   }
 
   // ─── Dashboard ───

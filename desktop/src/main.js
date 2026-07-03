@@ -484,6 +484,24 @@ ipcMain.handle("notification:show", (_e, opts = {}) => {
   }
 });
 
+// D-Task-4 开机自启：定时任务要 app 开着才会跑，老板想让"每天早上自动写文案"真的按时发生，
+// 就得让软件开机自动打开。故障安全：不支持/失败都不抛给渲染进程，返回 { ok:false, error? }。
+ipcMain.handle("app:getAutoLaunch", () => {
+  try {
+    return { enabled: app.getLoginItemSettings().openAtLogin };
+  } catch (err) {
+    return { enabled: false, error: String((err && err.message) || err) };
+  }
+});
+ipcMain.handle("app:setAutoLaunch", (_e, opts = {}) => {
+  try {
+    app.setLoginItemSettings({ openAtLogin: !!opts.enabled });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
 app.whenReady().then(async () => {
   // 抢锁失败的第二实例：app.quit() 在 ready 前调用并不保证 ready 回调不执行(Electron 时序未承诺)，
   // 不加这道守卫，第二实例仍可能抢跑到 backend.start() 去占 8077 端口——正是单实例锁要防的事。

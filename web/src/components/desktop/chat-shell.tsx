@@ -23,6 +23,7 @@ import { SettingsDrawer } from "./settings-drawer";
 import { VideoStudioDrawer } from "./video-studio-drawer";
 import { ConfirmDialog } from "./confirm-dialog";
 import { StoreMemoryPanel } from "./store-memory-panel";
+import { ScheduledTasksPanel } from "./scheduled-tasks-panel";
 import { DeletedItemsPanel } from "./deleted-items-panel";
 import { useToast } from "./toast";
 
@@ -155,6 +156,7 @@ export function DesktopChatShell({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [videoStudioOpen, setVideoStudioOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [scheduledTasksOpen, setScheduledTasksOpen] = useState(false);
   const [deletedOpen, setDeletedOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [deleteRecentTarget, setDeleteRecentTarget] = useState<RecentArtifact | null>(null);
@@ -852,6 +854,13 @@ export function DesktopChatShell({
         </button>
         <button
           type="button"
+          onClick={() => setScheduledTasksOpen(true)}
+          className="app-no-drag rounded-md px-2 py-1 text-[12px] text-[#6e6e73] transition hover:bg-black/[0.04] hover:text-[#10a37f] dark:text-[#9a9ca3] dark:hover:bg-white/[0.06]"
+        >
+          定时任务
+        </button>
+        <button
+          type="button"
           onClick={() => setDeletedOpen(true)}
           className="app-no-drag rounded-md px-2 py-1 text-[12px] text-[#6e6e73] transition hover:bg-black/[0.04] hover:text-[#10a37f] dark:text-[#9a9ca3] dark:hover:bg-white/[0.06]"
         >
@@ -1042,6 +1051,7 @@ export function DesktopChatShell({
     <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} onStoreNameChange={setLiveStoreName} />
     <VideoStudioDrawer open={videoStudioOpen} onClose={() => setVideoStudioOpen(false)} conversationId={chat.conversationId} />
     <StoreMemoryPanel open={memoryOpen} onClose={() => setMemoryOpen(false)} workingDir={workingDir} />
+    <ScheduledTasksPanel open={scheduledTasksOpen} onClose={() => setScheduledTasksOpen(false)} />
     <DeletedItemsPanel
       open={deletedOpen}
       onClose={() => setDeletedOpen(false)}

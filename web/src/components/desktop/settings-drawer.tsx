@@ -13,6 +13,7 @@ import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
 import { applyTheme, getTheme, type ThemeMode } from "@/lib/theme";
 import { applyFontSize, getFontSize, type FontSizeMode } from "@/lib/font-size";
+import { useDesktop } from "@/hooks/use-desktop";
 import type { StoreMemoryItem } from "@/types/store";
 
 type McpServer = { name: string; command?: string; status?: string; tools?: number; disabled?: boolean };
@@ -58,6 +59,10 @@ export function SettingsDrawer({
   onClose: () => void;
   onStoreNameChange?: (name: string) => void;
 }) {
+  const { isDesktop, electron } = useDesktop();
+  // D-Task-4 开机自动启动：定时任务要 app 开着才会跑。null=还没读到/不支持，桌面版才读取展示。
+  const [autoLaunch, setAutoLaunch] = useState<boolean | null>(null);
+  const [autoLaunchBusy, setAutoLaunchBusy] = useState(false);
   // P1-10 深浅色:亮/暗/跟随系统。客户端再读真实偏好(避免 SSR 不一致)。
   const [themeMode, setThemeMode] = useState<ThemeMode>("system");
   useEffect(() => { setThemeMode(getTheme()); }, []);
@@ -152,7 +157,41 @@ export function SettingsDrawer({
     return () => { cancelled = true; };
   }, [open]);
 
+  // D-Task-4 开机自启：只在桌面版、且这次抽屉真打开了才去读，浏览器版 electron?.app 不存在直接跳过。
+  useEffect(() => {
+    if (!open || !electron?.app) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await electron.app!.getAutoLaunch();
+        if (!cancelled) setAutoLaunch(r.enabled);
+      } catch {
+        if (!cancelled) setAutoLaunch(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open, electron]);
+
   if (!open) return null;
+
+  // D-Task-4：开机自启开关，失败故障安全(不抛，只提示)
+  async function toggleAutoLaunch() {
+    if (!electron?.app || autoLaunch === null) return;
+    const next = !autoLaunch;
+    setAutoLaunchBusy(true);
+    try {
+      const r = await electron.app.setAutoLaunch(next);
+      if (r.ok) {
+        setAutoLaunch(next);
+      } else {
+        setMsg({ kind: "err", text: r.error ? `没设成开机自启：${r.error}` : "没设成开机自启" });
+      }
+    } catch (e) {
+      setMsg({ kind: "err", text: getErrorMessage(e) });
+    } finally {
+      setAutoLaunchBusy(false);
+    }
+  }
 
   // M3：拉店脑记忆 + 增删改
   async function refreshMemories() {
@@ -451,6 +490,28 @@ export function SettingsDrawer({
               </div>
               <p className="mt-1.5 text-[11.5px] leading-snug text-[#a1a1a6] dark:text-[#6e7077]">看不清小字就选「大」或「特大」，界面文字和按钮跟着一起放大。</p>
             </section>
+
+            {/* D-Task-4 开机自动启动：定时任务(每天写文案/每周出周报)要 app 开着才会跑，
+                只在桌面版、且拿得到开关状态时才露出；浏览器版/取不到状态直接不挂载这段。 */}
+            {isDesktop && electron?.app && autoLaunch !== null && (
+              <section className="mb-5">
+                <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">开机自动启动</div>
+                <div className="flex items-center justify-between gap-3 rounded-lg border border-black/[0.08] bg-black/[0.015] px-3.5 py-2.5 dark:border-white/[0.08] dark:bg-white/[0.02]">
+                  <p className="text-[11.5px] leading-snug text-[#3a3a3c] dark:text-[#c8cace]">
+                    想要每天固定时间自动出文案/周报，需要开机就打开这个软件。默认关；开着 app 时定时任务才会跑。
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void toggleAutoLaunch()}
+                    disabled={autoLaunchBusy}
+                    aria-pressed={autoLaunch}
+                    className={`relative h-5 w-9 shrink-0 rounded-full transition disabled:opacity-50 ${autoLaunch ? "bg-[#10a37f]" : "bg-black/[0.15] dark:bg-white/[0.18]"}`}
+                  >
+                    <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${autoLaunch ? "left-[18px]" : "left-0.5"}`} />
+                  </button>
+                </div>
+              </section>
+            )}
 
             {/* A2：两套"高级模式"整体下线——设置抽屉只剩门店信息/AI 记的事/外观/字体大小四块，
                 零模型名、零 MCP 字样。下面这个入口按钮 + 它展开的整块高级内容原样留着不删，只是
