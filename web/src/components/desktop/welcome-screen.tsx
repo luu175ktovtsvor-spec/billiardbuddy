@@ -4,7 +4,7 @@
  * 空状态/欢迎（浅色默认 · 跟随系统）：CC 式专业 agent 基调 + 今日建议 + 起手卡片（点了直接派活）。
  */
 import type { LucideIcon } from "lucide-react";
-import { MessageSquareText, Image as ImageIcon, Lightbulb, Monitor, Loader2, Sparkles, Brain, MousePointerClick, Search, History, Trash2, FileClock } from "lucide-react";
+import { MessageSquareText, Image as ImageIcon, Lightbulb, Monitor, Loader2, Sparkles, Brain, MousePointerClick, Search, History, Trash2, FileClock, FileSpreadsheet, Star, Users, Clapperboard, FolderCog } from "lucide-react";
 import { WELCOME } from "@/lib/agent-copy";
 import type { RecentArtifact } from "@/lib/api";
 
@@ -15,9 +15,24 @@ export type StarterCard = {
   prompt: string;
 };
 
-const DEFAULT_STARTERS: StarterCard[] = [
-  { Icon: MessageSquareText, title: "直接说要做什么", hint: "写文案、看报表、整理资料都从这里开始", prompt: "帮我安排一下今天店里要做的事" },
-  { Icon: ImageIcon, title: "做图片 / 视频", hint: "海报、封面、朋友圈图，先从一句话生成", prompt: "做一张 9:16 的台球周赛海报，适合发朋友圈" },
+// C2 场景卡·台球套（6 张，计划钦定场景，别删别换主题）：文案写老板的事、不写 AI 功能名，
+// prompt 是"提示词代写"起手——需要用户补料的（报表/差评），让管家先开口问用户要料。
+export const BILLIARDS_STARTERS: StarterCard[] = [
+  { Icon: MessageSquareText, title: "写今晚的朋友圈", hint: "一句话交代场景，我来写今晚能发的", prompt: "帮我写一条今晚能发的朋友圈，突出今晚到店的理由" },
+  { Icon: ImageIcon, title: "做张周末对抗赛海报", hint: "9:16 竖版，适合发朋友圈和群", prompt: "做一张 9:16 的周末台球对抗赛海报，适合发朋友圈" },
+  { Icon: FileSpreadsheet, title: "把这份报表读给我听", hint: "把经营报表挑成你听得懂的几句", prompt: "我发你一份经营报表，帮我读一下，挑 3 个我最该关注的问题（报表我发给你、或告诉你在电脑哪）" },
+  { Icon: Star, title: "顾客差评帮我回", hint: "真诚、不甩锅、能挽回的回复", prompt: "顾客给了条差评，帮我写一条真诚、不甩锅、能挽回的平台回复（差评内容我发给你）" },
+  { Icon: Users, title: "策划散客转会员活动", hint: "把散客变成储值会员的活动", prompt: "帮我策划一个把散客转成储值会员的活动方案，力度合理、赠送别过度" },
+  { Icon: Clapperboard, title: "剪条 15 秒氛围短视频", hint: "台球房氛围燃剪，适合抖音", prompt: "帮我剪一条 15 秒左右的台球房氛围短视频，适合发抖音、视频号同城" },
+];
+
+// C2 场景卡·通用套（5 张，不挂台球知识库时展示）
+export const GENERIC_STARTERS: StarterCard[] = [
+  { Icon: FolderCog, title: "整理这个文件夹", hint: "归归类、该改名的改名", prompt: "帮我整理一下这个文件夹，把文件归归类、该改名的改名（文件夹拖给我、或告诉我路径）" },
+  { Icon: FileSpreadsheet, title: "把这份报表读给我听", hint: "表格/报表挑重点讲给你听", prompt: "我发你一份表格或报表，帮我读一下，挑几个重点讲给我听" },
+  { Icon: MessageSquareText, title: "写一段文案", hint: "说用途和大概意思，我来写", prompt: "帮我写一段文案，我说用途和大概意思" },
+  { Icon: ImageIcon, title: "做张图", hint: "一句话生成，海报/封面都行", prompt: "帮我做一张图，我说要什么样的" },
+  { Icon: Search, title: "上网帮我查点东西", hint: "查完给你挑重点", prompt: "帮我上网查一下：（我说查什么）" },
 ];
 
 export function WelcomeScreen({
@@ -25,7 +40,8 @@ export function WelcomeScreen({
   subtitle = WELCOME.subtitle,
   todaySuggestion,
   todaySuggestionRecId,
-  starters = DEFAULT_STARTERS,
+  starters,
+  billiardsMode = false,
   onPick,
   onDailyDrafts,
   dailyDraftsBusy = false,
@@ -43,6 +59,7 @@ export function WelcomeScreen({
   todaySuggestion?: string;
   todaySuggestionRecId?: string; // 今日建议对应的 rec.id：点「帮我写」时回传做"采纳上浮"
   starters?: StarterCard[];
+  billiardsMode?: boolean; // 挂台球知识库时展示台球 6 张场景卡，否则展示通用 5 张
   onPick?: (prompt: string, recId?: string) => void;
   onDailyDrafts?: () => void;    // P1-4：点一下让管家把今天能发的内容草稿备好
   dailyDraftsBusy?: boolean;
@@ -55,6 +72,7 @@ export function WelcomeScreen({
   onViewScreen?: () => void;
   onResearch?: () => void;
 }) {
+  const cards = starters ?? (billiardsMode ? BILLIARDS_STARTERS : GENERIC_STARTERS);
   return (
     <div className="flex flex-1 flex-col items-center justify-center overflow-y-auto px-8">
       <div className="-mt-4 w-full max-w-[640px]">
@@ -141,19 +159,10 @@ export function WelcomeScreen({
         )}
 
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <button
-            type="button"
-            onClick={() => onPick?.(starters[0]?.prompt || "")}
-            className="group min-h-[104px] rounded-lg border border-black/[0.07] bg-white p-3 text-left shadow-sm transition hover:border-black/[0.12] hover:bg-black/[0.01] active:scale-[0.99] dark:border-white/[0.07] dark:bg-[#141519] dark:shadow-none dark:hover:border-white/[0.14] dark:hover:bg-[#181a1f]"
-          >
-            <MessageSquareText className="mb-2 h-4 w-4 text-[#007AFF]" />
-            <div className="text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">直接说要做什么</div>
-            <div className="mt-1 text-[11.5px] leading-snug text-[#86868b] dark:text-[#6e7077]">一句话交代任务，我来判断要不要读文件、查资料、做图。</div>
-          </button>
-
-          {starters.filter((s) => s.title !== "直接说要做什么").map((s) => (
+          {cards.map((s) => (
             <button
               key={s.title}
+              type="button"
               onClick={() => onPick?.(s.prompt)}
               className="group min-h-[104px] rounded-lg border border-black/[0.07] bg-white p-3 text-left shadow-sm transition hover:border-black/[0.12] hover:bg-black/[0.01] active:scale-[0.99] dark:border-white/[0.07] dark:bg-[#141519] dark:shadow-none dark:hover:border-white/[0.14] dark:hover:bg-[#181a1f]"
             >
