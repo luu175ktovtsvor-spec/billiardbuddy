@@ -544,6 +544,11 @@ class ApiClient {
     return this.request<{ status: string; rec_id: string }>("POST", "/api/v1/dashboard/adopt-rec", { rec_id: recId });
   }
 
+  // 隐式反馈·今天先收起：老板踩某条今日推荐（不感兴趣）→ 当天工作台不再显示这条。故障安全，调用方 .catch 吞掉即可。
+  dismissRecommendation(recId: string) {
+    return this.request<{ status: string; rec_id: string }>("POST", "/api/v1/dashboard/dismiss-rec", { rec_id: recId });
+  }
+
   // 桌面端：列出本店 agent 会话（侧栏回看/切换）
   listAgentConversations() {
     return this.request<{ conversations: { conversation_id: string; title: string | null; last_at: string | null }[] }>(

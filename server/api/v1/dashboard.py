@@ -55,3 +55,31 @@ async def dashboard_adopt_rec(
         except Exception:
             pass
     return {"status": "ok", "rec_id": rec_id}
+
+
+class DismissRecRequest(BaseModel):
+    rec_id: str  # 被踩的今日推荐 id（rec.id）
+
+
+@router.post("/dismiss-rec")
+async def dashboard_dismiss_rec(
+    body: DismissRecRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    store: Annotated[Store, Depends(get_current_store)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """隐式反馈·今天先收起：老板点某条今日推荐的「踩/不感兴趣」时调一下，记一次「今日不看」。
+    落成 usage 事件(rec_dismissed)，当天的今日工作台会把这条过滤掉；次日照常出现（dismiss-for-today）。
+    故障安全：记录失败不影响前端。"""
+    rec_id = (body.rec_id or "").strip()[:50]
+    if rec_id:
+        try:
+            from services.usage_event_service import log_event
+            from core.timezone import BUSINESS_TZ
+            from datetime import datetime
+            await log_event("rec_dismissed", store_id=str(store.id),
+                            user_id=(str(current_user.id) if current_user else None),
+                            props={"rec_id": rec_id, "date": datetime.now(BUSINESS_TZ).strftime("%Y-%m-%d")})
+        except Exception:
+            pass
+    return {"status": "ok", "rec_id": rec_id}

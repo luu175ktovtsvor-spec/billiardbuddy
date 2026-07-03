@@ -82,6 +82,11 @@ async def get_today_dashboard(
         memories=memories,
     )
 
+    # 隐式反馈闭环的另一半：老板今天踩过(不感兴趣)的推荐，当天先收起（次日照常出现）。
+    dismissed = await _dismissed_rec_ids_today(db, store.id, today_start)
+    if dismissed:
+        recommendations = [r for r in recommendations if r.id not in dismissed]
+
     return DashboardTodayResponse(
         date=now.strftime("%Y-%m-%d"),
         weekday=weekday,
@@ -97,6 +102,23 @@ async def get_today_dashboard(
         recommendations=recommendations,
         tips=tips,
     )
+
+
+async def _dismissed_rec_ids_today(db: AsyncSession, store_id: uuid.UUID, today_start_utc: datetime) -> set[str]:
+    """今天被老板踩过(rec_dismissed)的推荐 id 集合（dismiss-for-today：只看今天，次日照常）。
+    usage_events 不参与租户自动过滤（_MANUAL_FILTER_TABLES）→ 手写 store_id。
+    故障安全：查失败返回空集，不影响工作台。"""
+    try:
+        from models.usage_event import UsageEvent
+        stmt = select(UsageEvent.props).where(
+            UsageEvent.event == "rec_dismissed",
+            UsageEvent.store_id == store_id,
+            UsageEvent.created_at >= today_start_utc,
+        )
+        rows = (await db.execute(stmt)).scalars().all()
+        return {str(p.get("rec_id")) for p in rows if isinstance(p, dict) and p.get("rec_id")}
+    except Exception:
+        return set()
 
 
 async def get_card_signals(db: AsyncSession, store: Store) -> dict:
