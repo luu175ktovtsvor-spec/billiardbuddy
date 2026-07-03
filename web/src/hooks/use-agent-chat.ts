@@ -311,7 +311,7 @@ export function useAgentChat(opts: AgentChatOptions) {
     message: string,
     history: { role: string; content: string }[],
     sourceRecId?: string,
-    overrides?: { selectedFiles?: string[] },
+    overrides?: { selectedFiles?: string[]; displayText?: string },
   ) => {
     const o = optsRef.current;
     // 采纳信号只在推荐触发的首轮、且是新会话时带上（同会话续接不重复计采纳）。
@@ -329,6 +329,8 @@ export function useAgentChat(opts: AgentChatOptions) {
     try {
       const payload = {
         message,
+        // C2 历史回放半：短标签单独进请求 body，不进 history 拼装（守 2a 不变量：真实 content 一字不改）。
+        display_text: overrides?.displayText || undefined,
         history,
         conversation_id: conversationId,
         selected_files: overrides?.selectedFiles?.length
@@ -388,8 +390,9 @@ export function useAgentChat(opts: AgentChatOptions) {
       .map((m) => ({ role: m.role, content: m.content.slice(0, 2000) }));
     // 副作用 sendWithHistory 绝不放进 setMessages 更新函数里——否则 React StrictMode 开发态会把 updater 跑两次→同一条消息双发请求。
     setMessages((prev) => [...prev, { role: "user", content: msg, ...(displayContent ? { displayContent } : {}) }]);
-    // 只把 selectedFiles 转发给 sendWithHistory；displayText 是纯渲染字段，绝不能进请求路径（守 C2 不变量：真实 content 不变）。
-    void sendWithHistory(msg, history, sourceRecId, { selectedFiles: overrides?.selectedFiles });
+    // selectedFiles 走原有转发；displayText 单独另走一条只送进【发后端的请求 body】（sendWithHistory 内部
+    // 组 payload 时用），绝不掺进上面 history 的拼装（守 2a 不变量：进历史续接的 content 一字不改）。
+    void sendWithHistory(msg, history, sourceRecId, { selectedFiles: overrides?.selectedFiles, displayText: overrides?.displayText });
   }, [generating, sendWithHistory]);
 
   const confirmApproval = useCallback(async (idx: number, ap: ApprovalState) => {

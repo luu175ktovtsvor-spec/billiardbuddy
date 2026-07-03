@@ -90,6 +90,7 @@ export interface VideoDocView {
 
 export interface AgentChatPayload {
   message: string;
+  display_text?: string; // C2 历史回放半：快捷按钮等场景的短标签，纯显示旁路，落库供历史会话回放时仍显示短版
   history?: unknown[];
   model?: string;
   conversation_id?: string | null;
@@ -701,8 +702,9 @@ class ApiClient {
   }
 
   // 桌面端：取某个 agent 会话的全部消息（点开回看）
+  // display_content：C2 历史回放半——该条 user 消息若是快捷按钮等短标签场景才带此字段，老会话没有（向后兼容）。
   getAgentConversation(id: string) {
-    return this.request<{ conversation_id: string; messages: { role: "user" | "assistant"; content: string }[] }>(
+    return this.request<{ conversation_id: string; messages: { role: "user" | "assistant"; content: string; display_content?: string }[] }>(
       "GET", `/api/v1/agent/conversations/${encodeURIComponent(id)}`);
   }
 
