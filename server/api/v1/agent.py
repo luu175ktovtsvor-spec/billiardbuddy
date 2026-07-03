@@ -1631,7 +1631,12 @@ async def _stream_agent_events(body: AgentChatRequest, user: User, store, db, ta
     # 用 str(conv_uuid)（跟下面收尾时 save 用的键完全一致），不用 body.conversation_id 原始字符串，
     # 防止大小写/格式不规范导致两处文件名对不上。
     from services.agent.transcript import capture_transcript_baseline_len
-    ctx.transcript_baseline_len = capture_transcript_baseline_len(str(conv_uuid))
+    try:
+        ctx.transcript_baseline_len = capture_transcript_baseline_len(str(conv_uuid))
+    except Exception:
+        # 故障安全：基准捕获本身出错也绝不能连累正常落盘——留默认 None，
+        # 收尾时 merge_external_tail 见 baseline 为 None 即退化成原样整份覆盖写(已验证路径)。
+        ctx.transcript_baseline_len = None
 
     from services.agent.tools import DELIVERABLE_TOOLS
     final_content = ""
