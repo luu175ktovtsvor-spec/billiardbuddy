@@ -172,7 +172,7 @@ if os.environ.get("DESKTOP_LOCAL") == "1":
     )(_control_handler)
     tool(
         name="notify",
-        description="弹一条 macOS 系统通知给老板（比如长任务完成时提醒）。",
+        description="弹一条系统通知给老板（比如长任务完成时提醒）。",
         parameters={"type": "object", "properties": {
             "title": {"type": "string", "description": "通知标题（可选）"},
             "message": {"type": "string", "description": "通知内容"},
