@@ -906,6 +906,7 @@ async def generate_video(args: dict, ctx) -> str:
     on_done = make_video_job_done_hook(
         conversation_id=conv, on_release=_release_lock,
         success_title="视频做好了", fail_title="视频没做成",
+        store_id=store_id, user_id=user_id,
     )
     try:
         job_id = await media_jobs_runner.submit(

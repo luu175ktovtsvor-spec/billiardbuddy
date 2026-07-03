@@ -101,6 +101,10 @@ def test_full_pipeline(setup, monkeypatch, tmp_path):
             await c.run_sync(Base.metadata.create_all)
         Session = async_sessionmaker(eng, expire_on_commit=False)
         monkeypatch.setattr(runner, "async_session", Session)
+        # render_video 完成后落 Generation 完成行(_write_completion_generation)也开自己的 DB
+        # session(`from db.session import async_session` 延迟导入)，得连源头一起换，否则打到
+        # 真实(未启动的)默认引擎去——虽有 try/except 兜底不炸测试，但这条链路就没被真正验证到。
+        monkeypatch.setattr("db.session.async_session", Session)
         sid = uuid.uuid4()
         async with Session() as db:
             uid = await _seed_store(db, sid)
@@ -149,6 +153,7 @@ def test_render_video_job_completion_appends_transcript_and_notifies(setup, monk
             await c.run_sync(Base.metadata.create_all)
         Session = async_sessionmaker(eng, expire_on_commit=False)
         monkeypatch.setattr(runner, "async_session", Session)
+        monkeypatch.setattr("db.session.async_session", Session)
         monkeypatch.setattr(Tr.settings, "upload_dir", str(tmp_path / "uploads"))
 
         notified = {}
@@ -198,6 +203,7 @@ def test_render_video_job_failure_appends_transcript_and_notifies(setup, monkeyp
             await c.run_sync(Base.metadata.create_all)
         Session = async_sessionmaker(eng, expire_on_commit=False)
         monkeypatch.setattr(runner, "async_session", Session)
+        monkeypatch.setattr("db.session.async_session", Session)
         monkeypatch.setattr(Tr.settings, "upload_dir", str(tmp_path / "uploads"))
 
         notified = {}
@@ -230,6 +236,54 @@ def test_render_video_job_failure_appends_transcript_and_notifies(setup, monkeyp
         out = Tr.load_transcript(cid)
         assert out is not None and "没剪成" in out[0]["content"] and "ffmpeg 崩了" in out[0]["content"]
         assert notified["kind"] == "media_job_failed"
+
+    asyncio.run(main())
+
+
+def test_render_video_job_completion_visible_via_get_agent_conversation(setup, monkeypatch, tmp_path):
+    """F-10 审查 Important 修复：render_video 完成后也要能被『打开历史会话』(get_agent_conversation)
+    真实查到——它只读 Generation 表,不读 transcript JSONL。"""
+    import services.agent.transcript as Tr
+
+    src = setup
+
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        monkeypatch.setattr("db.session.async_session", Session)
+        monkeypatch.setattr(Tr.settings, "upload_dir", str(tmp_path / "uploads"))
+        monkeypatch.setattr("services.notify_service.push", lambda *a, **k: None)
+
+        def fake_render(doc, out_path, edit_dir):
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(out_path).write_bytes(b"FAKE-MP4")
+
+        monkeypatch.setattr("services.video_edit.assemble.render_timeline", fake_render)
+
+        sid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed_store(db, sid)
+        cid = "66666666-6666-6666-6666-666666666666"
+        ctx = AgentContext(store=SimpleNamespace(id=sid), user=SimpleNamespace(id=uid), conversation_id=cid)
+
+        await vt.inventory_footage({"video_paths": [str(src)], "project": "proj6b"}, ctx)
+        await vt.edit_timeline({"project": "proj6b", "operations": [
+            {"op": "add_clip", "track": "v", "media": "m1", "src_in": 0.0, "src_out": 2.0},
+        ]}, ctx)
+
+        r = await vt.render_video({"project": "proj6b", "output_name": "成片6b"}, ctx)
+        got = await _poll_job_done(sid, _extract_job_id(r))
+        assert got is not None and got.status == "done"
+
+        from api.v1.agent import get_agent_conversation
+
+        async with Session() as db:
+            res = await get_agent_conversation(cid, user=None, store=SimpleNamespace(id=sid), db=db)
+        assistant_texts = [m["content"] for m in res["messages"] if m["role"] == "assistant"]
+        assert any("视频剪好了" in t and "/uploads/edits/proj6b/成片6b.mp4" in t for t in assistant_texts), assistant_texts
 
     asyncio.run(main())
 
