@@ -183,7 +183,13 @@ export function DesktopChatShell({
   useEffect(() => {
     try {
       const raw = localStorage.getItem(workbenchStateKey);
-      if (!raw) { setWorkbenchLoaded(true); return; }
+      if (!raw) {
+        // decision #7：真·首次启动（既无工作台快照、也无独立知识库偏好）→ 默认挂台球模式（产品名就是台球）。
+        // 不覆盖任何已保存选择：有 agent_knowledge_packs（哪怕是 [] = 用户特意选了通用）就交给下面的独立 effect 读。
+        if (!localStorage.getItem("agent_knowledge_packs")) setKnowledgePacks(["billiards"]);
+        setWorkbenchLoaded(true);
+        return;
+      }
       const saved = JSON.parse(raw) as PersistedWorkbenchState;
       if (saved.permissionMode === "ask" || saved.permissionMode === "auto_files" || saved.permissionMode === "full" || saved.permissionMode === "plan") {
         setMode(saved.permissionMode);
