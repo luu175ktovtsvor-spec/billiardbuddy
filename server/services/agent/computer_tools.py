@@ -162,6 +162,8 @@ if os.environ.get("DESKTOP_LOCAL") == "1":
         description="看电脑屏幕：截屏（save 到本地）或获取屏幕分辨率/当前前台应用。只读、不操作鼠标键盘。",
         parameters=_VIEW_PARAMS,
         read_only=True,
+        # F-7 复审：⚠️ 不标 concurrent_safe——截屏动作会 `pending.append(str(path))` 写
+        # ctx.pending_view_images（跨工具共享的可变列表），出于 fail-safe 保守不纳入并发组。
     )(_view_handler)
     tool(
         name="computer_control",

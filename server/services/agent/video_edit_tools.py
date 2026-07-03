@@ -176,6 +176,8 @@ _VIDEO_EDIT_TOOLS = [
         }, "required": ["video_paths"]},
         handler=inventory_footage,
         read_only=True,
+        # F-7 复审：不标 concurrent_safe——虽不碰 ctx.db，但会落盘写自己的项目 timeline.json、且是
+        # CPU 重活（转写+切镜头），出于 fail-safe 保守不纳入并发组（并发收益也不是这类慢重活的目标场景）。
     ),
     Tool(
         name="edit_timeline",
