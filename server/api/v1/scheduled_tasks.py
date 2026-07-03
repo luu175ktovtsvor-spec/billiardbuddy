@@ -151,7 +151,21 @@ async def update_scheduled_task_route(
         task.schedule_spec = body.schedule_spec
         schedule_changed = True
     if body.enabled is not None:
-        # 重新启用一个暂停过的任务不算"新建"，不重复占用 10 条上限校验(上限只挡新建时超额)。
+        # 重新启用一个暂停过的任务不算"新建"，但"停用->启用"这次切换仍要重查上限，
+        # 否则"建满10条→停几条→再新建几条→把停掉的重新启用"能绕过硬限，让启用中总数超过10条。
+        if body.enabled and not task.enabled:
+            count = (await db.execute(
+                select(sa_func.count()).select_from(ScheduledTask).where(
+                    ScheduledTask.store_id == store.id,
+                    ScheduledTask.enabled.is_(True),
+                    ScheduledTask.id != task.id,
+                )
+            )).scalar_one()
+            if count >= _MAX_TASKS_PER_STORE:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"每店最多同时开 {_MAX_TASKS_PER_STORE} 条定时任务，先关掉几条旧的再加",
+                )
         task.enabled = body.enabled
 
     if schedule_changed:
