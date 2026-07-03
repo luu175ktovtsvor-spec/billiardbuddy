@@ -39,7 +39,6 @@ type PersistedWorkbenchState = {
   knowledgePacks?: string[];
   outputStyle?: string;
   deepThinking?: boolean;
-  advancedMode?: boolean;
   permissionMode?: PermissionMode;
   preview?: PreviewItem | null;
 };
@@ -82,11 +81,9 @@ function isRestorablePreview(value: unknown): value is PreviewItem {
 
 export function DesktopChatShell({
   storeName = "我的台球房",
-  monthlySpend,
   todaySuggestion,
 }: {
   storeName?: string;
-  monthlySpend?: string;
   todaySuggestion?: string;
 }) {
   const { electron } = useDesktop();
@@ -101,7 +98,6 @@ export function DesktopChatShell({
   // @ 挂载的知识库（如 ["billiards"]）：挂上=该领域专家，不挂=通用 Agent。随每次对话透传后端。
   const [knowledgePacks, setKnowledgePacks] = useState<string[]>([]);
   const [outputStyle, setOutputStyle] = useState<string>("");
-  const [advancedMode, setAdvancedMode] = useState(false);
   const [deepThinking, setDeepThinking] = useState(true); // F.2 深度思考默认开（mimo 默认就开）
   const [goal, setGoal] = useState<string>("");
   const [workingDir, setWorkingDir] = useState<string | null>(null);
@@ -192,7 +188,6 @@ export function DesktopChatShell({
       if (Array.isArray(saved.selectedFiles)) setSelectedFiles(saved.selectedFiles.filter((p): p is string => typeof p === "string").slice(0, 20));
       if (Array.isArray(saved.knowledgePacks)) setKnowledgePacks(saved.knowledgePacks.filter((p): p is string => typeof p === "string"));
       if (typeof saved.outputStyle === "string") setOutputStyle(saved.outputStyle);
-      if (typeof saved.advancedMode === "boolean") setAdvancedMode(saved.advancedMode);
       if (typeof saved.deepThinking === "boolean") setDeepThinking(saved.deepThinking);
       if (typeof saved.workingDir === "string" || saved.workingDir === null) setWorkingDir(saved.workingDir || null);
       if (isRestorablePreview(saved.preview)) setPreview(saved.preview);
@@ -207,13 +202,12 @@ export function DesktopChatShell({
       selectedFiles,
       knowledgePacks,
       outputStyle,
-      advancedMode,
       deepThinking,
       permissionMode: mode,
       preview,
     };
     try { localStorage.setItem(workbenchStateKey, JSON.stringify(payload)); } catch { /* 忽略 */ }
-  }, [advancedMode, deepThinking, knowledgePacks, mode, outputStyle, preview, selectedFiles, workbenchLoaded, workbenchStateKey, workingDir]);
+  }, [deepThinking, knowledgePacks, mode, outputStyle, preview, selectedFiles, workbenchLoaded, workbenchStateKey, workingDir]);
 
   useEffect(() => {
     let cancelled = false;
@@ -236,8 +230,6 @@ export function DesktopChatShell({
   const [liveToday, setLiveToday] = useState<string | undefined>();
   // 今日建议的 rec.id：点「帮我写」时随对话回传后端做"采纳上浮"隐式反馈（拿不到就只发文本，不影响功能）
   const [liveTodayRecId, setLiveTodayRecId] = useState<string | undefined>();
-  // D.5：全内置 key·零配置 → 默认显示内置大脑原名「MiMo V2.5」；老板自带 BYOK 时再覆盖成他的模型名。
-  const [liveModel, setLiveModel] = useState<string | undefined>("MiMo V2.5");
   // 极端情况下内置模型不可用时的兜底提示；正常桌面产品不要求用户先配 key。
   const [needsKey, setNeedsKey] = useState(false);
   const [keyHintDismissed, setKeyHintDismissed] = useState(false);
@@ -245,11 +237,10 @@ export function DesktopChatShell({
     let cancelled = false;
     (async () => {
       // allSettled：任一接口挂了不拖垮其它，拿不到的就保持默认/占位
-      const [s, c, t, b] = await Promise.allSettled([
+      const [s, c, t] = await Promise.allSettled([
         api.getMyStore(),
         api.getCost(),
         api.getTodayDashboard(),
-        api.getByokConfig(),
       ]);
       if (cancelled) return;
       if (s.status === "fulfilled" && s.value?.name) setLiveStoreName(s.value.name);
@@ -259,13 +250,6 @@ export function DesktopChatShell({
       if (t.status === "fulfilled") {
         const rec = t.value?.recommendations?.[0];
         if (rec) { setLiveToday(rec.description || rec.title); setLiveTodayRecId(rec.id); }
-      }
-      if (b.status === "fulfilled" && b.value) {
-        if (b.value.enabled && b.value.key_configured && b.value.model) {
-          setLiveModel(b.value.model);            // 老板自带 BYOK → 显示他的模型名
-        } else if (b.value.bundled_model_label) {
-          setLiveModel(b.value.bundled_model_label);  // 否则显示内置模型展示名（换模型只改后端配置）
-        }
       }
     })();
     return () => { cancelled = true; };
@@ -709,9 +693,6 @@ export function DesktopChatShell({
   const sidebarEl = useMemo(() => (
     <DesktopSidebar
       storeName={liveStoreName || storeName}
-      monthlySpend={liveSpend ?? monthlySpend}
-      modelLabel={liveModel}
-      advancedMode={advancedMode}
       conversations={conversations}
       activeId={chat.conversationId ?? undefined}
       onNewChat={newChat}
@@ -721,7 +702,7 @@ export function DesktopChatShell({
       onDelete={deleteConv}
       onOpenSettings={() => setSettingsOpen(true)}
     />
-  ), [liveStoreName, storeName, liveSpend, monthlySpend, liveModel, advancedMode, conversations, chat.conversationId, newChat, newWorkspace, electron, loadConv, deleteConv]);
+  ), [liveStoreName, storeName, conversations, chat.conversationId, newChat, newWorkspace, electron, loadConv, deleteConv]);
 
   return (
     <>
@@ -824,19 +805,6 @@ export function DesktopChatShell({
             <button type="button" onClick={() => pickWorkingDir()} className="rounded-md px-2 py-1 text-[#007AFF] transition hover:bg-[#007AFF]/10" title="选择或新建一个文件夹，AI 默认在里面干活">
               打开文件夹
             </button>
-            <button
-              type="button"
-              onClick={() => setAdvancedMode((v) => !v)}
-              aria-pressed={advancedMode}
-              className={`rounded-md px-2 py-1 transition ${
-                advancedMode
-                  ? "bg-[#1d1d1f]/10 text-[#1d1d1f] dark:bg-white/[0.1] dark:text-[#e6e7e9]"
-                  : "text-[#86868b] hover:bg-black/[0.04] hover:text-[#3a3a3c] dark:text-[#6e7077] dark:hover:bg-white/[0.06] dark:hover:text-[#c8cace]"
-              }`}
-              title="只影响当前工作台。打开后 / 命令面板会显示 MCP、插件、技能、子代理等高级入口"
-            >
-              高级模式{advancedMode ? "：开" : ""}
-            </button>
           </div>
         </div>
       )}
@@ -865,7 +833,6 @@ export function DesktopChatShell({
         onKnowledgePacksChange={updateKnowledgePacks}
         outputStyle={outputStyle}
         onOutputStyleChange={updateOutputStyle}
-        advancedMode={advancedMode}
         deepThinking={deepThinking}
         onDeepThinkingChange={updateDeepThinking}
         onCommand={(name) => {

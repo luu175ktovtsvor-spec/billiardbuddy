@@ -2,8 +2,9 @@
 
 /**
  * Codex 风「设置」抽屉（替代老 web 的门店设置/BYOK 抽屉）：右侧滑出、浅色默认·跟随系统。
- * 普通路径只放门店信息、素材、店脑和“AI 已内置”；自带 key/MCP/插件都收进高级区。
- * BYOK 仍复用原接口：getByokConfig / updateByokConfig / validateByokConfig。
+ * A2(2026-07-03)：两套"高级模式"整体下线，普通老板看到的只剩四块——门店信息 / AI 记的事(店脑) /
+ * 外观 / 字体大小。自带 key/MCP/插件/技能那整块高级 UI 不再挂载（代码原样留着，见 SHOW_ADVANCED_SETTINGS）；
+ * 后端接口（getByokConfig / updateByokConfig / validateByokConfig / MCP / plugins / skills）全保留。
  */
 import { useEffect, useState } from "react";
 import { X, Loader2, Check, Cpu, Image as ImageIcon, Store, ShieldCheck, Puzzle, Plus, Trash2, AlertTriangle, Download, Brain, ChevronRight } from "lucide-react";
@@ -42,6 +43,11 @@ const IMAGE_PRESETS = [
   { name: "智谱 CogView", base: "https://open.bigmodel.cn/api/paas/v4", model: "cogview-4" },
 ];
 const PRESET_CHIP = "rounded-md border border-black/[0.1] bg-black/[0.02] px-2 py-1 text-[11.5px] text-[#3a3a3c] transition hover:border-[#007AFF]/40 hover:bg-[#007AFF]/10 hover:text-[#007AFF] active:scale-[0.97] dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#c8cace]";
+
+// A2(2026-07-03)：两套"高级模式"整体下线——小白产品零模型名、零 MCP 字样。BYOK/MCP/插件/技能的
+// 后端接口（/stores/me/byok、/agent/mcp/*、/agent/plugins、/agent/skills）全部保留，只是前端不再挂载
+// 这块 UI；下面这段代码原样留着不删，未来要接回只需把这个常量翻成 true（不用重写）。
+const SHOW_ADVANCED_SETTINGS = false;
 
 export function SettingsDrawer({
   open,
@@ -111,9 +117,9 @@ export function SettingsDrawer({
     setMsg(null);
     setShowAdvanced(false);
     (async () => {
-      const [s, b, sk, pl, mc, mp] = await Promise.allSettled([
+      // A2：高级区(BYOK/MCP/插件/技能)不再挂载，对应的加载请求也一并停掉，省无谓请求。
+      const [s, b] = await Promise.allSettled([
         api.getMyStore(), api.getByokConfig(),
-        api.listSkills(), api.listPlugins(), api.listMcp(), api.listMcpPresets(),
       ]);
       if (cancelled) return;
       if (s.status === "fulfilled" && s.value) {
@@ -138,10 +144,6 @@ export function SettingsDrawer({
         setImgModel(b.value.image_model || "");
         setImgKeyMask(b.value.image_key_configured ? b.value.image_key_mask || "已配置" : "");
       }
-      if (sk.status === "fulfilled") setSkills(sk.value.skills || []);
-      if (pl.status === "fulfilled") setPlugins(pl.value.plugins || []);
-      if (mc.status === "fulfilled") setMcp(mc.value.servers || []);
-      if (mp.status === "fulfilled") setMcpPresets(mp.value.presets || []);
       void refreshMemories();  // M3：拉店脑记忆
       setApiKey("");
       setImgApiKey("");
@@ -405,7 +407,7 @@ export function SettingsDrawer({
                 <Cpu className="h-3.5 w-3.5" /> 已内置、开箱即用
               </p>
               <p className="mt-1 text-[11.5px] leading-snug text-[#3a3a3c] dark:text-[#c8cace]">
-                对话、看图、做海报、做视频的 AI 都已经内置好了，<b>打开就能用，什么都不用配</b>。会折腾的人想换成自己的，再点下面的高级设置。
+                对话、看图、做海报、做视频的 AI 都已经内置好了，<b>打开就能用，什么都不用配</b>。
               </p>
             </section>
 
@@ -450,6 +452,11 @@ export function SettingsDrawer({
               <p className="mt-1.5 text-[11.5px] leading-snug text-[#a1a1a6] dark:text-[#6e7077]">看不清小字就选「大」或「特大」，界面文字和按钮跟着一起放大。</p>
             </section>
 
+            {/* A2：两套"高级模式"整体下线——设置抽屉只剩门店信息/AI 记的事/外观/字体大小四块，
+                零模型名、零 MCP 字样。下面这个入口按钮 + 它展开的整块高级内容原样留着不删，只是
+                不再挂载；SHOW_ADVANCED_SETTINGS 翻成 true 即可一日接回。 */}
+            {SHOW_ADVANCED_SETTINGS && (
+              <>
             <section className="mb-5">
               <button
                 type="button"
@@ -633,6 +640,8 @@ export function SettingsDrawer({
                 ) : <div className="text-[11.5px] text-[#a1a1a6]">还没有技能。装个插件就会带技能进来，出现在 / 命令面板里。</div>}
               </div>
             </section>
+              </>
+            )}
               </>
             )}
           </div>
