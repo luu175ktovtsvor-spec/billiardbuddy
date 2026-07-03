@@ -991,6 +991,63 @@ def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _Too
     return _ToolPlan(name=name, args=args, tool_call_id=tc_id, progress_snapshot=progress_snapshot)
 
 
+# ══════════════════════════════ F-7 只读并发（读写锁）══════════════════════════════
+# 一批 tool_calls 里，只读工具（Tool.read_only=True，registry.py 既有字段）互不影响、可以并发跑；
+# 写/有副作用的工具（含"需要审批/提问/入参错误/连续拒绝回退"这类根本不执行 handler 的非执行类计划）
+# 必须继续【独占串行】——不与任何东西同时跑，也不彼此并发（同一批里若有两个写类，也是一个个来）。
+# 抄 Codex 读写锁形态：读锁=多个读者可同时持有，写锁=独占。
+
+
+def _group_plans_for_concurrency(
+    plans: list["_ToolPlan"], registry: ToolRegistry,
+) -> list[tuple[str, list["_ToolPlan"]]]:
+    """把整批已判定好的 `_ToolPlan`（保持原 tool_calls 出现顺序）分组，供两个状态机据此
+    "只读并发执行、其余各自独占串行"。纯函数、无副作用，不执行任何工具、不碰 ctx。
+
+    - `"solo"`（恰好 1 条）：非执行类计划（error/is_question/fallback/needs_approval）、
+      可执行的写类、或【落单】的可执行只读——一律按【原有的单条顺序执行路径】处理，行为与改造前
+      完全一致（不必为唯一一个只读调用多绕一层 gather）。
+    - `"read"`（>=2 条）：【连续】的可执行只读计划——调用方用 `asyncio.gather` 并发跑它们
+      （读锁语义：多个只读同时跑，互不阻塞、互不等待）。
+
+    分组边界（保证"写要独占、不与任何东西同时跑"）：只读连续段一遇到非只读/非执行类的计划就立刻
+    结算（`_flush_pending`），该计划自己单独成一组；这样写类/非执行类永远排在某个只读段的【前面
+    或后面】、不会被并进同一个并发批次，天然满足"读连续段 gather，遇到写就等前面读全 done 再独占
+    跑写，写完再继续"。
+
+    只读判据：信 `tool.read_only=True` 这个既有契约（"无副作用、可并发"），不重新发明。
+    ⚠️ 模型自评 `security_risk=high` 会把一个【原本不需要审批】的只读工具临时升级成
+    `needs_approval=True`（审批闸 2.0 · ②，见 `_plan_tool_call`）——这类计划在下面的 `executable`
+    判定里已被排除，不会被并入并发只读组（这类调用根本不执行 handler，混进 gather 里没有意义，
+    也不能让"被判定要审批"的调用绕过审批闸）。
+    """
+    groups: list[tuple[str, list["_ToolPlan"]]] = []
+    pending_ro: list["_ToolPlan"] = []
+
+    def _flush_pending() -> None:
+        if pending_ro:
+            kind = "read" if len(pending_ro) >= 2 else "solo"
+            groups.append((kind, list(pending_ro)))
+            pending_ro.clear()
+
+    for plan in plans:
+        executable = not (plan.error or plan.is_question or plan.fallback or plan.needs_approval)
+        tool = registry.get(plan.name) if (executable and plan.name) else None
+        if executable and tool is not None and getattr(tool, "read_only", False):
+            pending_ro.append(plan)
+            continue
+        _flush_pending()
+        groups.append(("solo", [plan]))
+    _flush_pending()
+    return groups
+
+
+def _concurrent_tool_error(name: str | None, exc: BaseException) -> str:
+    """并发只读组里单个工具抛出的异常 → 转成与 `_execute_tool` 同款措辞的错误文本回灌，
+    绝不让 `asyncio.gather` 的一个异常拖垮整批（`return_exceptions=True` 配合本函数兜底转换）。"""
+    return f"[工具执行失败] {name}（{type(exc).__name__}）: {exc}"
+
+
 # JSON Schema 基本类型 → Python 类型（够覆盖工具入参那些简单 schema；纯标准库，不引第三方校验库，免打包/部署多依赖）
 _JSON_PY_TYPES: dict = {
     "string": str, "integer": int, "number": (int, float),
@@ -1163,59 +1220,96 @@ async def run_agent_loop(
         # 把 assistant 的 tool_calls 原样回灌（下一轮模型需要看到自己调了什么）
         messages.append({"role": "assistant", "content": resp.content or "", "tool_calls": _sanitize_tool_calls(resp.tool_calls)})
 
-        # 逐个处理工具调用：审批闸判定 → （待确认 回灌"待确认" | 执行 回灌结果）
-        for tc in resp.tool_calls:
-            plan = _plan_tool_call(tc, registry, ctx)
-            # F4 Focus Chain：本次调用带了能解析出合法项的 task_progress → 记一笔 todo_update，
-            # 让前端原地更新同一张清单卡。不管这次调用最终走哪个分支（错误/待确认/正常执行），
-            # 只要模型贴了清单就该让老板看到，所以放在分支判断之前、对所有分支都生效。
-            if plan.progress_snapshot:
-                steps.append(AgentStep(type="todo_update", content=plan.progress_snapshot))
-            if plan.error:  # 入参校验未过：记一笔调用 + 错误结果，回灌让模型改参数重试，不执行
+        # F-7 只读并发（读写锁）：先对整批 tool_calls 逐个 _plan_tool_call（同步、便宜，保序——
+        # 审批闸判定/task_progress 摘取/anti-spin 签名等都在这一步完成，与改造前顺序完全一致），
+        # 再按【只读连续段并发、其余各自独占串行】分组执行；分组编排见 _group_plans_for_concurrency。
+        plans = [_plan_tool_call(tc, registry, ctx) for tc in resp.tool_calls]
+        for kind, group in _group_plans_for_concurrency(plans, registry):
+            if kind == "solo":
+                # 单条计划——非执行类（错误/提问/回退/待确认）、可执行的写类、或落单的可执行只读，
+                # 走【与改造前完全一致】的单条顺序执行路径（下面这段就是原本 for tc in ... 的循环体）。
+                plan = group[0]
+                # F4 Focus Chain：本次调用带了能解析出合法项的 task_progress → 记一笔 todo_update，
+                # 让前端原地更新同一张清单卡。不管这次调用最终走哪个分支（错误/待确认/正常执行），
+                # 只要模型贴了清单就该让老板看到，所以放在分支判断之前、对所有分支都生效。
+                if plan.progress_snapshot:
+                    steps.append(AgentStep(type="todo_update", content=plan.progress_snapshot))
+                if plan.error:  # 入参校验未过：记一笔调用 + 错误结果，回灌让模型改参数重试，不执行
+                    steps.append(AgentStep(type="tool_call", tool_name=plan.name, tool_args=plan.args,
+                                           tool_call_id=plan.tool_call_id))
+                    steps.append(AgentStep(type="tool_result", tool_name=plan.name,
+                                           tool_call_id=plan.tool_call_id, content=plan.error))
+                    messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": plan.error})
+                    continue
+                if plan.is_question:  # 提问：记一笔 ask_question + 回灌"等用户选"，不执行
+                    steps.append(AgentStep(type="ask_question", tool_name=plan.name, tool_args=plan.question,
+                                           tool_call_id=plan.tool_call_id))
+                    steps.append(AgentStep(type="tool_result", tool_name=plan.name,
+                                           tool_call_id=plan.tool_call_id, content=_QUESTION_PENDING_MSG))
+                    messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": _QUESTION_PENDING_MSG})
+                    continue
+                if plan.fallback:  # SH-8 连续拒绝回退：不提请该动作，回灌"换个法子"让模型走文本/替代方案
+                    steps.append(AgentStep(type="tool_result", tool_name=plan.name,
+                                           tool_call_id=plan.tool_call_id, content=plan.fallback_msg))
+                    messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": plan.fallback_msg})
+                    continue
+                if plan.needs_approval:
+                    steps.append(AgentStep(type="approval_request", tool_name=plan.name, tool_args=plan.args,
+                                           tool_call_id=plan.tool_call_id, preview=plan.preview, reason=plan.reason))
+                    steps.append(AgentStep(type="tool_result", tool_name=plan.name,
+                                           tool_call_id=plan.tool_call_id, content=plan.pending_msg))
+                    messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": plan.pending_msg})
+                    continue
+
                 steps.append(AgentStep(type="tool_call", tool_name=plan.name, tool_args=plan.args,
                                        tool_call_id=plan.tool_call_id))
+                result_str = await _execute_tool(registry, plan.name, plan.args, ctx)
+                # F4 Focus Chain：todo_write 是另一条"更新进度"路径（与 task_progress 参数共用 ctx.todos）——
+                # 真给了合法清单才算数（别把一次校验失败的空调用也当成"更新过了"），同样清计数 + 记一笔 todo_update。
+                if plan.name == "todo_write" and _normalize_todos((plan.args or {}).get("todos")):
+                    ctx.requests_since_progress = 0
+                    if ctx.todos:
+                        steps.append(AgentStep(type="todo_update", content=format_todo_checklist(ctx.todos)))
+                # B-2 依据可见：工具若注入了行业知识（deliverable 工具写进 ctx.last_knowledge_used），
+                # 把名字挂到本条 tool_result 的 meta；取后立即复位，防串到下一个工具。
+                _meta = None
+                if ctx.last_knowledge_used:
+                    _meta = {"knowledge_used": ctx.last_knowledge_used}
+                ctx.last_knowledge_used = None
                 steps.append(AgentStep(type="tool_result", tool_name=plan.name,
-                                       tool_call_id=plan.tool_call_id, content=plan.error))
-                messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": plan.error})
-                continue
-            if plan.is_question:  # 提问：记一笔 ask_question + 回灌"等用户选"，不执行
-                steps.append(AgentStep(type="ask_question", tool_name=plan.name, tool_args=plan.question,
-                                       tool_call_id=plan.tool_call_id))
-                steps.append(AgentStep(type="tool_result", tool_name=plan.name,
-                                       tool_call_id=plan.tool_call_id, content=_QUESTION_PENDING_MSG))
-                messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": _QUESTION_PENDING_MSG})
-                continue
-            if plan.fallback:  # SH-8 连续拒绝回退：不提请该动作，回灌"换个法子"让模型走文本/替代方案
-                steps.append(AgentStep(type="tool_result", tool_name=plan.name,
-                                       tool_call_id=plan.tool_call_id, content=plan.fallback_msg))
-                messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": plan.fallback_msg})
-                continue
-            if plan.needs_approval:
-                steps.append(AgentStep(type="approval_request", tool_name=plan.name, tool_args=plan.args,
-                                       tool_call_id=plan.tool_call_id, preview=plan.preview, reason=plan.reason))
-                steps.append(AgentStep(type="tool_result", tool_name=plan.name,
-                                       tool_call_id=plan.tool_call_id, content=plan.pending_msg))
-                messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": plan.pending_msg})
+                                       tool_call_id=plan.tool_call_id, content=result_str, meta=_meta))
+                messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": result_str})
                 continue
 
-            steps.append(AgentStep(type="tool_call", tool_name=plan.name, tool_args=plan.args,
-                                   tool_call_id=plan.tool_call_id))
-            result_str = await _execute_tool(registry, plan.name, plan.args, ctx)
-            # F4 Focus Chain：todo_write 是另一条"更新进度"路径（与 task_progress 参数共用 ctx.todos）——
-            # 真给了合法清单才算数（别把一次校验失败的空调用也当成"更新过了"），同样清计数 + 记一笔 todo_update。
-            if plan.name == "todo_write" and _normalize_todos((plan.args or {}).get("todos")):
-                ctx.requests_since_progress = 0
-                if ctx.todos:
-                    steps.append(AgentStep(type="todo_update", content=format_todo_checklist(ctx.todos)))
-            # B-2 依据可见：工具若注入了行业知识（deliverable 工具写进 ctx.last_knowledge_used），
-            # 把名字挂到本条 tool_result 的 meta；取后立即复位，防串到下一个工具。
-            _meta = None
-            if ctx.last_knowledge_used:
-                _meta = {"knowledge_used": ctx.last_knowledge_used}
-            ctx.last_knowledge_used = None
-            steps.append(AgentStep(type="tool_result", tool_name=plan.name,
-                                   tool_call_id=plan.tool_call_id, content=result_str, meta=_meta))
-            messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": result_str})
+            # kind == "read"：>=2 个连续的可执行只读计划 → asyncio.gather 并发跑（读锁语义：互不阻塞）。
+            # 单只读异常不拖垮整批：return_exceptions=True + 逐条转错误文本回灌（不上抛）。
+            # 保序回灌：gather 结果按 group（=原 tool_calls 出现顺序）zip 归位后再依次 append，
+            # 与并发的实际完成顺序无关——tool_call_id 配对与顺序稳定，满足 provider 的严格配对要求。
+            for plan in group:
+                if plan.progress_snapshot:
+                    steps.append(AgentStep(type="todo_update", content=plan.progress_snapshot))
+                steps.append(AgentStep(type="tool_call", tool_name=plan.name, tool_args=plan.args,
+                                       tool_call_id=plan.tool_call_id))
+            results = await asyncio.gather(
+                *(_execute_tool(registry, p.name, p.args, ctx) for p in group),
+                return_exceptions=True,
+            )
+            for plan, result in zip(group, results):
+                if isinstance(result, BaseException):
+                    logger.exception("并发只读工具执行失败: %s", plan.name, exc_info=result)
+                    result_str = _concurrent_tool_error(plan.name, result)
+                else:
+                    result_str = result
+                # B-2 依据可见（同上 solo 分支）：只读工具目前不会写 ctx.last_knowledge_used（那是
+                # deliverable 类写工具的专属），这里仍按同一套逻辑读取+复位，保持两条路径行为一致、
+                # 也不怕以后有只读工具开始注入知识依据。
+                _meta = None
+                if ctx.last_knowledge_used:
+                    _meta = {"knowledge_used": ctx.last_knowledge_used}
+                ctx.last_knowledge_used = None
+                steps.append(AgentStep(type="tool_result", tool_name=plan.name,
+                                       tool_call_id=plan.tool_call_id, content=result_str, meta=_meta))
+                messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": result_str})
 
         # 工具产出图片回灌：本批 tool 结果已全部追加、配对完整 → 把截图等拼成一条 user 图片消息注入，让模型下一轮真看见。
         _drain_view_images(messages, ctx)
@@ -1280,9 +1374,16 @@ async def _execute_tool(registry: ToolRegistry, name: str | None, args: dict, ct
         sig = f"{name}|{json.dumps(args, sort_keys=True, ensure_ascii=False)}"
     except (TypeError, ValueError):
         sig = f"{name}|{args!r}"
-    ctx.call_counts[sig] = ctx.call_counts.get(sig, 0) + 1
-    if ctx.call_counts[sig] > _MAX_SAME_CALL:
-        return (f"[别重复了] 你已用完全相同的参数调用 {name} {ctx.call_counts[sig]} 次，结果不会变。"
+    # F-7 并发安全：同一批只读工具经 asyncio.gather 并发跑时，这段计数读改写可能被多个协程"同时"碰。
+    # 加锁是防御性的（见 context.py call_counts_lock 注释）——保证临界区里不管以后加不加 await，
+    # 计数都不会丢/错乱。惰性建锁：同一个 ctx 全程只建一次、复用同一把。
+    if ctx.call_counts_lock is None:
+        ctx.call_counts_lock = asyncio.Lock()
+    async with ctx.call_counts_lock:
+        ctx.call_counts[sig] = ctx.call_counts.get(sig, 0) + 1
+        call_count = ctx.call_counts[sig]
+    if call_count > _MAX_SAME_CALL:
+        return (f"[别重复了] 你已用完全相同的参数调用 {name} {call_count} 次，结果不会变。"
                 f"请换个参数/思路，或直接根据已有信息回答老板，别再重复调它。")
     # PreToolUse hook（借鉴 cc-haha）：工具执行前可拦截（如发布前敏感词检查 / 群发前校验名单）。故障安全。
     deny = await run_pre_tool_hooks(name, args, ctx)
@@ -1733,79 +1834,127 @@ async def run_agent_loop_stream(
         if final_segments:
             final_segments.clear()
 
-        # 工具调用轮：assistant(tool_calls) 回灌 → 逐个处理 → 结果回灌
+        # 工具调用轮：assistant(tool_calls) 回灌 → 分组处理（只读并发/其余独占串行）→ 结果回灌
         messages.append({"role": "assistant", "content": text, "tool_calls": _sanitize_tool_calls(sink)})
-        for tc in sink:
-            plan = _plan_tool_call(tc, registry, ctx)
-            # F4 Focus Chain：本次调用带了能解析出合法项的 task_progress → 吐 todo_update 事件，
-            # 前端据此原地更新同一张清单卡。⚠️ 同步路径同样逻辑，别只改一处（见上面 run_agent_loop）。
-            if plan.progress_snapshot:
-                yield {"type": "todo_update", "content": plan.progress_snapshot}
-            if plan.error:  # 入参校验未过：吐 tool_call + 错误结果，回灌让模型改参数重试，不执行
+        # F-7 只读并发（读写锁）：⚠️ 与同步路径 run_agent_loop 同样的分组编排，别只改一处——
+        # 先按序 _plan_tool_call（保序），再按 _group_plans_for_concurrency 分组执行。
+        plans = [_plan_tool_call(tc, registry, ctx) for tc in sink]
+        for kind, group in _group_plans_for_concurrency(plans, registry):
+            if kind == "solo":
+                # 单条计划——与改造前完全一致的单条顺序执行路径（下面就是原本 for tc in sink 的循环体）。
+                plan = group[0]
+                # F4 Focus Chain：本次调用带了能解析出合法项的 task_progress → 吐 todo_update 事件，
+                # 前端据此原地更新同一张清单卡。⚠️ 同步路径同样逻辑，别只改一处（见上面 run_agent_loop）。
+                if plan.progress_snapshot:
+                    yield {"type": "todo_update", "content": plan.progress_snapshot}
+                if plan.error:  # 入参校验未过：吐 tool_call + 错误结果，回灌让模型改参数重试，不执行
+                    yield {"type": "tool_call", "tool": plan.name, "args": plan.args, "id": plan.tool_call_id}
+                    yield {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": plan.error}
+                    messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": plan.error})
+                    continue
+                if plan.is_question:  # 提问：吐 ask_question 事件(带选项)让前端渲染卡片 + 回灌"等用户选"，不执行
+                    yield {"type": "ask_question", "tool": plan.name, "id": plan.tool_call_id, **(plan.question or {})}
+                    yield {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": _QUESTION_PENDING_MSG}
+                    messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": _QUESTION_PENDING_MSG})
+                    continue
+                if plan.fallback:  # SH-8 连续拒绝回退：不提请该动作，回灌"换个法子"让模型走文本/替代方案
+                    yield {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": plan.fallback_msg}
+                    messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": plan.fallback_msg})
+                    continue
+                if plan.needs_approval:
+                    # 审批闸（proposal 模式）：吐 approval_request 让前端弹确认，把"待确认"回灌让模型讲方案；
+                    # token 绑定本组 args，/agent/execute 校验防前端篡改（P3.2）。
+                    # SH-8：带结构化理由 reason{what/why/impact}，审批卡能说清"为什么要你确认"。
+                    yield {
+                        "type": "approval_request", "tool": plan.name, "args": plan.args, "id": plan.tool_call_id,
+                        "token": sign_approval(plan.name, plan.args),
+                        "preview": plan.preview,
+                        "reason": plan.reason,
+                    }
+                    yield {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": plan.pending_msg}
+                    messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": plan.pending_msg})
+                    continue
+
+                # 先吐 tool_call 事件（前端即时显示"正在调 X"），再跑工具（可能慢），最后吐结果
                 yield {"type": "tool_call", "tool": plan.name, "args": plan.args, "id": plan.tool_call_id}
-                yield {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": plan.error}
-                messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": plan.error})
-                continue
-            if plan.is_question:  # 提问：吐 ask_question 事件(带选项)让前端渲染卡片 + 回灌"等用户选"，不执行
-                yield {"type": "ask_question", "tool": plan.name, "id": plan.tool_call_id, **(plan.question or {})}
-                yield {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": _QUESTION_PENDING_MSG}
-                messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": _QUESTION_PENDING_MSG})
-                continue
-            if plan.fallback:  # SH-8 连续拒绝回退：不提请该动作，回灌"换个法子"让模型走文本/替代方案
-                yield {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": plan.fallback_msg}
-                messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": plan.fallback_msg})
-                continue
-            if plan.needs_approval:
-                # 审批闸（proposal 模式）：吐 approval_request 让前端弹确认，把"待确认"回灌让模型讲方案；
-                # token 绑定本组 args，/agent/execute 校验防前端篡改（P3.2）。
-                # SH-8：带结构化理由 reason{what/why/impact}，审批卡能说清"为什么要你确认"。
-                yield {
-                    "type": "approval_request", "tool": plan.name, "args": plan.args, "id": plan.tool_call_id,
-                    "token": sign_approval(plan.name, plan.args),
-                    "preview": plan.preview,
-                    "reason": plan.reason,
-                }
-                yield {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": plan.pending_msg}
-                messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": plan.pending_msg})
+                # 命令边跑边显示：挂一个 progress 通道给工具，执行期间把它推的 tool_progress 实时 yield 给前端
+                # （借鉴 Claude Code 的 onProgress/pendingProgress：进度与最终结果分流、边跑边出）。
+                # 这条路径【落单执行】（一次只有它一个在跑，不管是唯一的只读还是写类），ctx.progress_emit
+                # 这个单槽位回调只需绑定这一个 tool_call_id，不存在并发归属问题。
+                _pq: asyncio.Queue = asyncio.Queue()
+                ctx.progress_emit = lambda ev, _q=_pq, _id=plan.tool_call_id: _q.put_nowait({**ev, "id": _id})
+                _exec = asyncio.create_task(_execute_tool(registry, plan.name, plan.args, ctx))
+                _ka = 0
+                try:
+                    while not _exec.done():
+                        try:
+                            yield await asyncio.wait_for(_pq.get(), timeout=0.15)
+                            _ka = 0
+                        except asyncio.TimeoutError:
+                            _ka += 1
+                            if _ka >= 33:
+                                yield {"type": "keepalive"}
+                                _ka = 0
+                    while not _pq.empty():  # 收尾把残余进度吐净
+                        yield _pq.get_nowait()
+                    result = await _exec
+                finally:
+                    ctx.progress_emit = None
+                # F4 Focus Chain：todo_write 是另一条"更新进度"路径（与 task_progress 参数共用 ctx.todos）——
+                # 真给了合法清单才算数。⚠️ 同步路径同样逻辑，别只改一处（见上面 run_agent_loop）。
+                if plan.name == "todo_write" and _normalize_todos((plan.args or {}).get("todos")):
+                    ctx.requests_since_progress = 0
+                    if ctx.todos:
+                        yield {"type": "todo_update", "content": format_todo_checklist(ctx.todos)}
+                # B-2 依据可见：工具若注入了行业知识，把名字一并带进 tool_result 事件（前端成品卡显示「依据：…」）。
+                # 取后立即复位，防串到下一个工具。⚠️ 同步路径同样要改，别只改一处（见上面 run_agent_loop）。
+                _evt = {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": result}
+                if ctx.last_knowledge_used:
+                    _evt["knowledge_used"] = ctx.last_knowledge_used
+                ctx.last_knowledge_used = None
+                yield _evt
+                messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": result})
                 continue
 
-            # 先吐 tool_call 事件（前端即时显示"正在调 X"），再跑工具（可能慢），最后吐结果
-            yield {"type": "tool_call", "tool": plan.name, "args": plan.args, "id": plan.tool_call_id}
-            # 命令边跑边显示：挂一个 progress 通道给工具，执行期间把它推的 tool_progress 实时 yield 给前端
-            # （借鉴 Claude Code 的 onProgress/pendingProgress：进度与最终结果分流、边跑边出）。
-            _pq: asyncio.Queue = asyncio.Queue()
-            ctx.progress_emit = lambda ev, _q=_pq, _id=plan.tool_call_id: _q.put_nowait({**ev, "id": _id})
-            _exec = asyncio.create_task(_execute_tool(registry, plan.name, plan.args, ctx))
+            # kind == "read"：>=2 个连续的可执行只读计划 → asyncio.gather 并发跑（读锁语义）。
+            # 先把这一组的 tool_call 事件按序全部吐出（前端能立刻看到这几个都"正在跑"），再一起等它们跑完。
+            # ⚠️ 并发只读组【不】挂 ctx.progress_emit：它是单槽位回调，同一时刻只能安全绑定一个 tool_call_id，
+            # 多个协程真并发跑时谁最后赋值就"劫持"了它、会把进度错误地归到别的 tool_call_id 上——干脆不挂，
+            # 工具内部的实时进度推送（_emit_progress 系）读到 None 会安静地 no-op，只是这批并发跑期间前端
+            # 看不到逐字的"正在搜/正在抓"细粒度过程，改用 keepalive 兜底防 SSE 长时间无事件被代理断流。
+            # 落单的只读（len(group)==1）恒走上面的 "solo" 分支，实时进度体验不受任何影响。
+            for plan in group:
+                if plan.progress_snapshot:
+                    yield {"type": "todo_update", "content": plan.progress_snapshot}
+                yield {"type": "tool_call", "tool": plan.name, "args": plan.args, "id": plan.tool_call_id}
+            # asyncio.gather(...) 本身就是个 Future（不是协程），不能直接塞进 create_task
+            # （3.12 起会硬报 TypeError）；用 ensure_future 包一层，拿到可 .done() 轮询的对象。
+            _gather_task = asyncio.ensure_future(asyncio.gather(
+                *(_execute_tool(registry, p.name, p.args, ctx) for p in group),
+                return_exceptions=True,
+            ))
             _ka = 0
-            try:
-                while not _exec.done():
-                    try:
-                        yield await asyncio.wait_for(_pq.get(), timeout=0.15)
-                        _ka = 0
-                    except asyncio.TimeoutError:
-                        _ka += 1
-                        if _ka >= 33:
-                            yield {"type": "keepalive"}
-                            _ka = 0
-                while not _pq.empty():  # 收尾把残余进度吐净
-                    yield _pq.get_nowait()
-                result = await _exec
-            finally:
-                ctx.progress_emit = None
-            # F4 Focus Chain：todo_write 是另一条"更新进度"路径（与 task_progress 参数共用 ctx.todos）——
-            # 真给了合法清单才算数。⚠️ 同步路径同样逻辑，别只改一处（见上面 run_agent_loop）。
-            if plan.name == "todo_write" and _normalize_todos((plan.args or {}).get("todos")):
-                ctx.requests_since_progress = 0
-                if ctx.todos:
-                    yield {"type": "todo_update", "content": format_todo_checklist(ctx.todos)}
-            # B-2 依据可见：工具若注入了行业知识，把名字一并带进 tool_result 事件（前端成品卡显示「依据：…」）。
-            # 取后立即复位，防串到下一个工具。⚠️ 同步路径同样要改，别只改一处（见上面 run_agent_loop）。
-            _evt = {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": result}
-            if ctx.last_knowledge_used:
-                _evt["knowledge_used"] = ctx.last_knowledge_used
-            ctx.last_knowledge_used = None
-            yield _evt
-            messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": result})
+            while not _gather_task.done():
+                await asyncio.sleep(0.15)
+                _ka += 1
+                if _ka >= 33:
+                    yield {"type": "keepalive"}
+                    _ka = 0
+            results = await _gather_task
+            # 保序回灌：按 group（=原 tool_calls 出现顺序）zip 归位，与实际完成顺序无关——
+            # tool_call_id 配对与顺序稳定，满足 provider 的严格配对要求（错了会触发 400）。
+            for plan, result in zip(group, results):
+                if isinstance(result, BaseException):
+                    logger.exception("并发只读工具执行失败: %s", plan.name, exc_info=result)
+                    result_str = _concurrent_tool_error(plan.name, result)
+                else:
+                    result_str = result
+                _evt = {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": result_str}
+                if ctx.last_knowledge_used:
+                    _evt["knowledge_used"] = ctx.last_knowledge_used
+                ctx.last_knowledge_used = None
+                yield _evt
+                messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": result_str})
 
         # 工具产出图片回灌：本批 tool 结果已全部追加、配对完整 → 把截图等拼成一条 user 图片消息注入，让模型下一轮真看见。
         _drain_view_images(messages, ctx)
