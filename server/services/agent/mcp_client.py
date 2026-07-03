@@ -163,6 +163,10 @@ def _make_mcp_tool(server_name: str, cfg: dict, t: dict) -> Tool:
     return Tool(
         name=tool_name, description=f"[MCP·{server_name}] {desc}", parameters=schema, handler=handler,
         read_only=read_only, requires_approval=(not read_only), approval_class="spend",
+        # F-7 复审：故意【不】设 concurrent_safe——这里的 read_only 是外部 MCP server 自己上报的
+        # readOnlyHint，是未经我方审计的第三方自述，不能当作"确证并发安全"的依据（也无从审计一个
+        # 任意外部进程的 handler 有没有碰共享状态）。concurrent_safe 默认 False，MCP 工具因此恒
+        # 落单串行，这正是 fail-safe 想要的效果——不需要额外代码就自动排除。
     )
 
 

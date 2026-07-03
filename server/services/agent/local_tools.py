@@ -1299,6 +1299,8 @@ _LOCAL_TOOLS = [
         }, "required": ["query"]},
         handler=recall_my_content,
         read_only=True,
+        # F-7 复审：⚠️ 不标 concurrent_safe——handler 内 `await backfill_from_generations(ctx.db, ...)`
+        # 真碰 ctx.db（AsyncSession），并发跑会撞 InvalidRequestError（Critical 竞态，见 loop.py 顶部说明）。
     ),
     Tool(
         name="diagnose_from_pos",
@@ -1312,7 +1314,18 @@ _LOCAL_TOOLS = [
         }, "required": ["file"]},
         handler=diagnose_from_pos,
         read_only=True,
+        # F-7 复审：⚠️ 不标 concurrent_safe——本次审计新发现它也真碰 ctx.db：命中报表指标时
+        # `await add_pending_memory_candidate(ctx.db, ...)`，且总会 `await analyze_diagnosis(ctx.db, ...)`。
+        # 原施工单只点名 get_today_recommendation/recall_my_content，这条是复审时额外揪出来的同类风险。
     ),
+    # ── 以下 list_files/find_files/search_in_files/read_file：审计确认 handler 不碰 ctx.db/ctx.store，
+    #    纯文件系统 I/O（部分含 subprocess，如 search_in_files 优先走 ripgrep）。F-7 复审【故意】没有
+    #    把它们标 concurrent_safe=True——不是因为发现了并发不安全的证据，而是出于 fail-safe 的收敛范围：
+    #    本次要堵的 Critical 竞态是 ctx.db 并发访问，真正想要并发收益的场景是慢网络查询
+    #    （web_search 等），文件类工具单次已经很快、常见场景也很少一轮内被模型重复并发调用；
+    #    维持默认 solo 不影响正确性，只是不吃这份（收益本就不大的）并发红利，把范围留给以后有需要
+    #    再单独审计升级。read_file 还有一个额外理由：读到图片时会 `pending.append(...)` 写
+    #    ctx.pending_view_images（共享可变列表），保守起见也不纳入。
     Tool(
         name="list_files",
         description="列文件。不传 path＝列当前工作目录（没选工作目录时才列本机内容库）；"

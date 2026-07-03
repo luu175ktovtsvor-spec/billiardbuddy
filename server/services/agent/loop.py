@@ -992,49 +992,68 @@ def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _Too
 
 
 # ══════════════════════════════ F-7 只读并发（读写锁）══════════════════════════════
-# 一批 tool_calls 里，只读工具（Tool.read_only=True，registry.py 既有字段）互不影响、可以并发跑；
-# 写/有副作用的工具（含"需要审批/提问/入参错误/连续拒绝回退"这类根本不执行 handler 的非执行类计划）
-# 必须继续【独占串行】——不与任何东西同时跑，也不彼此并发（同一批里若有两个写类，也是一个个来）。
-# 抄 Codex 读写锁形态：读锁=多个读者可同时持有，写锁=独占。
+# 一批 tool_calls 里，确证安全的工具（Tool.concurrent_safe=True，registry.py 字段）互不影响、可以
+# 并发跑；写/有副作用的工具（含"需要审批/提问/入参错误/连续拒绝回退"这类根本不执行 handler 的非
+# 执行类计划）必须继续【独占串行】——不与任何东西同时跑，也不彼此并发（同一批里若有两个写类，也
+# 是一个个来）。抄 Codex 读写锁形态：读锁=多个读者可同时持有，写锁=独占。
+#
+# ⚠️ F-7 复审修复（Critical 竞态，2026-07-03）：判据【曾经】是 `read_only=True`——但"无副作用、可
+# 安全重复查"（read_only 的原始契约）不等于"可以被 asyncio.gather 并发跑"。审计发现 `read_only=True`
+# 的工具里，`get_today_recommendation`（`await get_today_dashboard(ctx.db, ...)`）、
+# `recall_my_content`（`await backfill_from_generations(ctx.db, ...)`）、
+# `diagnose_from_pos`（`await analyze_diagnosis(ctx.db, ...)`）handler 内部都真碰 `ctx.db`
+# （AsyncSession）——AsyncSession **不允许被多个协程并发操作**，一旦这类工具被并进同一个并发组，
+# `asyncio.gather` 同时 `await ctx.db.execute(...)` 会抛
+# `InvalidRequestError: This session is provisioning a new connection; concurrent operations are
+# not permitted`（真实用 sqlite+aiosqlite 复现 100% 必炸，不是理论风险，见
+# tests/test_agent_loop_db_concurrency_safety.py）。`run_subagent` 爆炸半径更大：它 read_only=True，
+# 且内部 `sub_ctx.db = ctx.db`（web_tools.py，与外层**同一个 session**），两个 run_subagent 并发、
+# 或 run_subagent 跟任何碰 db 的只读工具并发，只要嵌套里碰 ctx.db 就撞同样竞态。
+# 现改为 fail-safe：只有逐个审计确认"纯网络/纯内存查询、不碰 ctx.db/ctx 共享可变状态、不碰其它外部
+# 有状态资源"的工具才手动标 `concurrent_safe=True`（见 registry.py 字段注释）；`read_only` 字段保留
+# 给它原有的用途（plan 模式放行 / 子代理只读工具子集白名单等），两个字段各司其职、不再混用。
 
 
 def _group_plans_for_concurrency(
     plans: list["_ToolPlan"], registry: ToolRegistry,
 ) -> list[tuple[str, list["_ToolPlan"]]]:
     """把整批已判定好的 `_ToolPlan`（保持原 tool_calls 出现顺序）分组，供两个状态机据此
-    "只读并发执行、其余各自独占串行"。纯函数、无副作用，不执行任何工具、不碰 ctx。
+    "并发安全工具并发执行、其余各自独占串行"。纯函数、无副作用，不执行任何工具、不碰 ctx。
 
     - `"solo"`（恰好 1 条）：非执行类计划（error/is_question/fallback/needs_approval）、
-      可执行的写类、或【落单】的可执行只读——一律按【原有的单条顺序执行路径】处理，行为与改造前
-      完全一致（不必为唯一一个只读调用多绕一层 gather）。
-    - `"read"`（>=2 条）：【连续】的可执行只读计划——调用方用 `asyncio.gather` 并发跑它们
-      （读锁语义：多个只读同时跑，互不阻塞、互不等待）。
+      可执行的写类、【落单】的可执行并发安全工具、或【任何 concurrent_safe 不为 True 的可执行工具】
+      （含 read_only=True 但未经审计确认安全的工具）——一律按【原有的单条顺序执行路径】处理。
+    - `"read"`（>=2 条）：【连续】的、`Tool.concurrent_safe=True` 的可执行计划——调用方用
+      `asyncio.gather` 并发跑它们（读锁语义：多个并发安全工具同时跑，互不阻塞、互不等待）。
 
-    分组边界（保证"写要独占、不与任何东西同时跑"）：只读连续段一遇到非只读/非执行类的计划就立刻
-    结算（`_flush_pending`），该计划自己单独成一组；这样写类/非执行类永远排在某个只读段的【前面
-    或后面】、不会被并进同一个并发批次，天然满足"读连续段 gather，遇到写就等前面读全 done 再独占
+    分组边界（保证"写要独占、不与任何东西同时跑"）：并发安全连续段一遇到非并发安全/非执行类的计划
+    就立刻结算（`_flush_pending`），该计划自己单独成一组；这样写类/非执行类永远排在某个并发段的
+    【前面或后面】、不会被并进同一个并发批次，天然满足"并发段 gather，遇到写就等前面全 done 再独占
     跑写，写完再继续"。
 
-    只读判据：信 `tool.read_only=True` 这个既有契约（"无副作用、可并发"），不重新发明。
-    ⚠️ 模型自评 `security_risk=high` 会把一个【原本不需要审批】的只读工具临时升级成
+    并发安全判据：信 `tool.concurrent_safe=True` 这个【显式、默认 False】的白名单字段——fail-safe，
+    只信"明确标注过安全"，不再信 `read_only`（`read_only=True` 只代表"无副作用"，不代表"不碰
+    ctx.db/ctx 共享可变状态"，见上方模块注释）。未知工具名 / 找不到 Tool 对象 → 当非并发安全处理
+    （故障安全）。
+    ⚠️ 模型自评 `security_risk=high` 会把一个【原本不需要审批】的工具临时升级成
     `needs_approval=True`（审批闸 2.0 · ②，见 `_plan_tool_call`）——这类计划在下面的 `executable`
-    判定里已被排除，不会被并入并发只读组（这类调用根本不执行 handler，混进 gather 里没有意义，
+    判定里已被排除，不会被并入并发组（这类调用根本不执行 handler，混进 gather 里没有意义，
     也不能让"被判定要审批"的调用绕过审批闸）。
     """
     groups: list[tuple[str, list["_ToolPlan"]]] = []
-    pending_ro: list["_ToolPlan"] = []
+    pending_cs: list["_ToolPlan"] = []
 
     def _flush_pending() -> None:
-        if pending_ro:
-            kind = "read" if len(pending_ro) >= 2 else "solo"
-            groups.append((kind, list(pending_ro)))
-            pending_ro.clear()
+        if pending_cs:
+            kind = "read" if len(pending_cs) >= 2 else "solo"
+            groups.append((kind, list(pending_cs)))
+            pending_cs.clear()
 
     for plan in plans:
         executable = not (plan.error or plan.is_question or plan.fallback or plan.needs_approval)
         tool = registry.get(plan.name) if (executable and plan.name) else None
-        if executable and tool is not None and getattr(tool, "read_only", False):
-            pending_ro.append(plan)
+        if executable and tool is not None and getattr(tool, "concurrent_safe", False):
+            pending_cs.append(plan)
             continue
         _flush_pending()
         groups.append(("solo", [plan]))
@@ -1222,7 +1241,8 @@ async def run_agent_loop(
 
         # F-7 只读并发（读写锁）：先对整批 tool_calls 逐个 _plan_tool_call（同步、便宜，保序——
         # 审批闸判定/task_progress 摘取/anti-spin 签名等都在这一步完成，与改造前顺序完全一致），
-        # 再按【只读连续段并发、其余各自独占串行】分组执行；分组编排见 _group_plans_for_concurrency。
+        # 再按【concurrent_safe 连续段并发、其余各自独占串行】分组执行（判据不是 read_only，
+        # 见 _group_plans_for_concurrency 顶部的 Critical 竞态修复说明）。
         plans = [_plan_tool_call(tc, registry, ctx) for tc in resp.tool_calls]
         for kind, group in _group_plans_for_concurrency(plans, registry):
             if kind == "solo":
@@ -1281,8 +1301,9 @@ async def run_agent_loop(
                 messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": result_str})
                 continue
 
-            # kind == "read"：>=2 个连续的可执行只读计划 → asyncio.gather 并发跑（读锁语义：互不阻塞）。
-            # 单只读异常不拖垮整批：return_exceptions=True + 逐条转错误文本回灌（不上抛）。
+            # kind == "read"：>=2 个连续的、Tool.concurrent_safe=True 的可执行计划 → asyncio.gather
+            # 并发跑（读锁语义：互不阻塞；不是 read_only=True 就进这组，见 Critical 竞态修复说明）。
+            # 单条异常不拖垮整批：return_exceptions=True + 逐条转错误文本回灌（不上抛）。
             # 保序回灌：gather 结果按 group（=原 tool_calls 出现顺序）zip 归位后再依次 append，
             # 与并发的实际完成顺序无关——tool_call_id 配对与顺序稳定，满足 provider 的严格配对要求。
             for plan in group:
@@ -1837,7 +1858,8 @@ async def run_agent_loop_stream(
         # 工具调用轮：assistant(tool_calls) 回灌 → 分组处理（只读并发/其余独占串行）→ 结果回灌
         messages.append({"role": "assistant", "content": text, "tool_calls": _sanitize_tool_calls(sink)})
         # F-7 只读并发（读写锁）：⚠️ 与同步路径 run_agent_loop 同样的分组编排，别只改一处——
-        # 先按序 _plan_tool_call（保序），再按 _group_plans_for_concurrency 分组执行。
+        # 先按序 _plan_tool_call（保序），再按 _group_plans_for_concurrency 分组执行
+        # （判据是 concurrent_safe，不是 read_only，见 _group_plans_for_concurrency 顶部说明）。
         plans = [_plan_tool_call(tc, registry, ctx) for tc in sink]
         for kind, group in _group_plans_for_concurrency(plans, registry):
             if kind == "solo":
@@ -1916,7 +1938,8 @@ async def run_agent_loop_stream(
                 messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": result})
                 continue
 
-            # kind == "read"：>=2 个连续的可执行只读计划 → asyncio.gather 并发跑（读锁语义）。
+            # kind == "read"：>=2 个连续的、Tool.concurrent_safe=True 的可执行计划 → asyncio.gather
+            # 并发跑（读锁语义；不是 read_only=True 就进这组，见 Critical 竞态修复说明）。
             # 先把这一组的 tool_call 事件按序全部吐出（前端能立刻看到这几个都"正在跑"），再一起等它们跑完。
             # ⚠️ 并发只读组【不】挂 ctx.progress_emit：它是单槽位回调，同一时刻只能安全绑定一个 tool_call_id，
             # 多个协程真并发跑时谁最后赋值就"劫持"了它、会把进度错误地归到别的 tool_call_id 上——干脆不挂，

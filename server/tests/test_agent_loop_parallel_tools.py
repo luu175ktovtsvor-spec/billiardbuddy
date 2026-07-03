@@ -1,12 +1,20 @@
-"""F-7 只读并发（读写锁）：一批 tool_calls 里，只读工具（Tool.read_only=True）并发跑（asyncio.gather），
-写类/非执行类工具（错误/提问/回退/待确认/写改）继续独占串行，且回灌进 messages 的 tool 结果必须
-按原 tool_calls 顺序（保序 + tool_call_id 配对完整——错了会触发 provider 400）。
+"""F-7 只读并发（读写锁）：一批 tool_calls 里，【确证并发安全】的工具（Tool.concurrent_safe=True）
+并发跑（asyncio.gather），写类/非执行类工具（错误/提问/回退/待确认/写改）继续独占串行，且回灌进
+messages 的 tool 结果必须按原 tool_calls 顺序（保序 + tool_call_id 配对完整——错了会触发 provider 400）。
+
+⚠️ F-7 复审修复（Critical 竞态，2026-07-03）：分组判据【曾经】是 `read_only=True`，但审计发现部分
+read_only=True 的工具（如 get_today_recommendation/recall_my_content/diagnose_from_pos）handler 内部
+真碰 `ctx.db`（AsyncSession），并发跑会撞 `InvalidRequestError`（AsyncSession 不允许并发操作，真实用
+sqlite+aiosqlite 复现 100% 必炸）。现改为 fail-safe 的显式白名单字段 `concurrent_safe`（默认 False），
+本文件的 `_ro_tool` 测试替身相应改为同时设 `read_only=True, concurrent_safe=True`（模拟"审计确认过、
+真安全"的工具）；真实 ctx.db 竞态回归测试 + 真实注册表审计闸见 `test_agent_loop_db_concurrency_safety.py`。
 
 覆盖：
-- 纯算法层：`_group_plans_for_concurrency` 的分组编排（连续只读合并、写/非执行类打断连续段、
-  模型自评 high 风险升级为 needs_approval 的只读工具不进并发组）——不涉及真执行、瞬时跑完。
-- 行为层（真跑 asyncio.sleep 计时）：并发只读确实同时跑（更快）、保序回灌（与完成顺序无关）、
-  写类与只读互不重叠（不管写在前/在后/夹在两段只读中间）、单个只读抛错不拖垮整批且配对完整。
+- 纯算法层：`_group_plans_for_concurrency` 的分组编排（连续并发安全工具合并、写/非执行类打断连续段、
+  模型自评 high 风险升级为 needs_approval 的工具不进并发组、`concurrent_safe` 与 `read_only` 解耦——
+  只信前者）——不涉及真执行、瞬时跑完。
+- 行为层（真跑 asyncio.sleep 计时）：并发确实同时跑（更快）、保序回灌（与完成顺序无关）、
+  写类与并发段互不重叠（不管写在前/在后/夹在两段并发段中间）、单个并发调用抛错不拖垮整批且配对完整。
   两个状态机（同步 run_agent_loop / 流式 run_agent_loop_stream）都覆盖，别只测一处。
 """
 import asyncio
@@ -39,8 +47,11 @@ def _reg(*tools) -> ToolRegistry:
 
 
 def _ro_tool(name, handler=_noop):
+    """测试替身："审计确认过、真安全"的工具——同时设 read_only=True（无副作用契约）与
+    concurrent_safe=True（并发分组判据）。真实工具里两者不总是同时为 True（如 get_today_recommendation
+    是 read_only=True 但 concurrent_safe=False，见 test_agent_loop_db_concurrency_safety.py）。"""
     return Tool(name=name, description="t", parameters={"type": "object", "properties": {}},
-                handler=handler, read_only=True)
+                handler=handler, read_only=True, concurrent_safe=True)
 
 
 def _rw_tool(name, handler=_noop):
@@ -121,6 +132,37 @@ def test_group_unknown_tool_name_treated_as_non_readonly():
     ok_plan = _plan("r1")
     groups = _group_plans_for_concurrency([unknown, ok_plan], reg)
     assert groups == [("solo", [unknown]), ("solo", [ok_plan])]
+
+
+def test_group_readonly_true_without_concurrent_safe_stays_solo_even_if_contiguous():
+    """F-7 复审修复的核心判据变化：两个 read_only=True 但【没有】标 concurrent_safe（fail-safe
+    默认 False）的连续工具，不能再像旧代码那样被合并成一个并发 read 组——必须各自独立 solo。
+    这正是 get_today_recommendation/recall_my_content/diagnose_from_pos 这类真碰 ctx.db 的
+    read_only 工具在真实注册表里的形状（见 test_agent_loop_db_concurrency_safety.py 的真实复现）。"""
+    reg = _reg(
+        Tool(name="r1", description="t", parameters={"type": "object", "properties": {}},
+             handler=_noop, read_only=True),  # 故意不设 concurrent_safe
+        Tool(name="r2", description="t", parameters={"type": "object", "properties": {}},
+             handler=_noop, read_only=True),
+    )
+    plans = [_plan("r1"), _plan("r2")]
+    groups = _group_plans_for_concurrency(plans, reg)
+    assert groups == [("solo", [plans[0]]), ("solo", [plans[1]])]
+
+
+def test_group_concurrent_safe_true_without_read_only_still_becomes_read_group():
+    """反向验证判据已真正切换：两个 concurrent_safe=True 但 read_only=False（不寻常但用于证明
+    解耦）的连续工具，仍会被合并成并发 read 组——分组逻辑只看 concurrent_safe，不再受 read_only
+    影响（也不要求两者同时为 True）。"""
+    reg = _reg(
+        Tool(name="c1", description="t", parameters={"type": "object", "properties": {}},
+             handler=_noop, concurrent_safe=True),  # read_only 默认 False
+        Tool(name="c2", description="t", parameters={"type": "object", "properties": {}},
+             handler=_noop, concurrent_safe=True),
+    )
+    plans = [_plan("c1"), _plan("c2")]
+    groups = _group_plans_for_concurrency(plans, reg)
+    assert groups == [("read", plans)]
 
 
 # ══════════════════════════════ 行为层：真跑计时（同步 run_agent_loop） ══════════════════════════════

@@ -40,6 +40,18 @@ class Tool:
     #   read_only   纯查询、无副作用——同一轮里多个只读调用可安全并发执行。
     deliverable: bool = False
     read_only: bool = False
+    # F-7 复审修复（Critical 竞态）：read_only=True（无副作用、可安全重复查）不等于"可以被 asyncio.gather
+    #   并发跑"——get_today_recommendation/recall_my_content 这类工具虽 read_only=True，但 handler 内部
+    #   `await ctx.db.execute(...)`（AsyncSession），而 AsyncSession 不允许被多个协程并发操作（会抛
+    #   `InvalidRequestError: This session is provisioning a new connection; concurrent operations are
+    #   not permitted`，真实用 sqlite+aiosqlite 复现 100% 必炸，不是理论风险）。故并发分组判据
+    #   （loop.py:_group_plans_for_concurrency）从 read_only 改成这个新增、默认 False 的显式白名单字段——
+    #   fail-safe：只有逐个审计确认"纯网络/纯内存查询、不碰 ctx.db/ctx 共享可变状态、不碰其它外部有状态
+    #   资源"的工具才手动标 True（现为 get_current_date/find_scenario/look_up_knowledge/read_knowledge/
+    #   web_search）；其余一律保持默认 False（含所有碰 db 的 read_only 工具、run_subagent——它与外层共享
+    #   同一个 ctx.db、读写边界不透明，永远不能标 True——以及任何未来新增/未经审计的工具）。
+    #   与 read_only 各司其职、互不影响，别混用；不进 to_openai_schema（纯后端分组用字段，不发给模型）。
+    concurrent_safe: bool = False
     # 高危不可逆/对外操作（如未来的群发短信、平台发布、删数据）——即使在"全自动托管"(full) 模式也强制弹安全确认。
     # 借鉴 cc-haha 权限瀑布的 bypass-immune：某些操作的人工确认永不被任何"放行模式"旁路。
     force_confirm: bool = False
@@ -163,6 +175,7 @@ def tool(
     approval_class: str = "spend",
     deliverable: bool = False,
     read_only: bool = False,
+    concurrent_safe: bool = False,
     force_confirm: bool = False,
     is_question: bool = False,
     max_result_chars: int | None = None,
@@ -193,6 +206,7 @@ def tool(
                 approval_class=approval_class,
                 deliverable=deliverable,
                 read_only=read_only,
+                concurrent_safe=concurrent_safe,
                 force_confirm=force_confirm,
                 is_question=is_question,
                 max_result_chars=max_result_chars,

@@ -59,6 +59,8 @@ def _memory_candidate_from_report_summary(summary: str) -> str:
 @tool(
     name="get_current_date",
     read_only=True,
+    # F-7 复审：审计确认——纯内存日期计算（business_today()），不碰 ctx.db/ctx 任何字段，确证并发安全。
+    concurrent_safe=True,
     description="获取今天的日期（北京时间）和星期几。仅当用户直接问日期/星期，或你确实要据此判断时才调用；"
                 "写具体运营内容（朋友圈/活动/海报等）时系统已自动注入当天日期，不必为此单独查。",
     parameters={"type": "object", "properties": {}},
@@ -71,6 +73,8 @@ async def get_current_date(args: dict, ctx) -> str:
 @tool(
     name="get_today_recommendation",
     read_only=True,
+    # F-7 复审：⚠️ 不标 concurrent_safe——handler 内 `await get_today_dashboard(ctx.db, ctx.store)`
+    # 真碰 ctx.db（AsyncSession），并发跑会撞 InvalidRequestError（Critical 竞态，见 loop.py 顶部说明）。
     description="查这家店今天的运营推荐（综合日期/节日/门店画像/成长阶段算出来的）。"
                 "仅当老板开口问『今天/这几天该做点啥』『有没有什么建议/主意』这类开放求建议时才调用；"
                 "用户已经明确要做某件具体事（写文案/做海报/发平台/约客/诊断等）时，别调它，直接用对应工具。",
@@ -91,6 +95,8 @@ async def get_today_recommendation(args: dict, ctx) -> str:
 @tool(
     name="find_scenario",
     read_only=True,
+    # F-7 复审：审计确认——format_catalog_for_model(need) 不接收 ctx，纯内存目录匹配，确证并发安全。
+    concurrent_safe=True,
     description="查台球房有没有现成的『精修场景模板』可用。当老板要写某个具体运营场景的内容"
                 "（如强一比赛主持/赛事报名/助教推广/团购转私域/老客回流/开业活动/投诉应对/学生优惠局…）时，"
                 "**先调我**列出可用模板，挑一个最贴切的，再把它的 key 作为 write_operation_content 的 prompt_key 写——"
@@ -110,6 +116,8 @@ async def find_scenario(args: dict, ctx) -> str:
 @tool(
     name="look_up_knowledge",
     read_only=True,
+    # F-7 复审：审计确认——rank_knowledge_for_topic(topic) 是纯内存 YAML 目录排序，不接收/不碰 ctx，确证并发安全。
+    concurrent_safe=True,
     description="查台球行业知识库（真实运营知识：获客/客户运营/助教/店长/数据诊断/红线合规…，含硬数字）。"
                 "**拿不准某个运营做法该不该做、是不是踩红线、有没有更专业的打法、或要某个行业硬数字"
                 "（美团金牌线/充值档位/助教薪资PK系数/抢一大战奖金/人员配置等）时，用它查再判断**——"
@@ -151,6 +159,9 @@ async def look_up_knowledge(args: dict, ctx) -> str:
 @tool(
     name="read_knowledge",
     read_only=True,
+    # F-7 复审：审计确认——render_knowledge_bodies(keys, ctx.store) 是同步函数（无 await），只读
+    # ctx.store 上已加载好的标量字段（店名/地址/价目等，非懒加载关系），不碰 ctx.db，确证并发安全。
+    concurrent_safe=True,
     max_result_chars=14000,  # 单条最大~5641字、读2条最坏~11k，留足余量防被截
     description="读一条/两条台球行业知识的【整篇正文】（细则、话术、步骤、完整硬数字）。"
                 "配合 look_up_knowledge 用：先用 look_up_knowledge 查目录拿到要的 key，再用本工具按 key 读整篇——"

@@ -135,6 +135,8 @@ if os.environ.get("DESKTOP_LOCAL") == "1":
              "in_minutes": {"type": "number", "description": "几分钟后提醒"},
              "message": {"type": "string", "description": "提醒内容"},
          }, "required": ["in_minutes", "message"]})(_schedule_handler)
+    # F-7 复审：不标 concurrent_safe——_load()/_save() 读写同一个 reminders.json，出于 fail-safe
+    # 保守不纳入并发组（并发收益也不大，一轮很少重复调这个）。
     tool(name="list_reminders", description="列出当前待触发的提醒。",
          parameters={"type": "object", "properties": {}}, read_only=True)(_list_handler)
     tool(name="cancel_reminder", description="按 id 取消一个提醒。",

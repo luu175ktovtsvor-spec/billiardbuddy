@@ -680,6 +680,9 @@ _WEB_TOOLS = [
         }, "required": ["query"]},
         handler=web_search,
         read_only=True,
+        # F-7 复审：审计确认——纯 httpx 网络请求（DuckDuckGo/Bing html 端点），不碰 ctx.db/ctx 共享可变
+        # 状态（只 getattr 读 ctx.progress_emit，并发组内该字段恒为 None，见 loop.py 说明），确证并发安全。
+        concurrent_safe=True,
     ),
     Tool(
         name="todo_write",
@@ -718,6 +721,10 @@ _WEB_TOOLS = [
         }, "required": ["task"]},
         handler=run_subagent,
         read_only=True,
+        # F-7 复审：⚠️ 永远不能标 concurrent_safe——`sub_ctx.db = getattr(ctx, "db", None)` 与外层
+        # 主循环共享【同一个】AsyncSession（见上面 run_subagent 实现），读写边界不透明（子代理内部可能
+        # 递归调到碰 db 的工具）；两个 run_subagent 并发、或它跟任何碰 db 的工具并发，都会撞
+        # Critical 竞态（InvalidRequestError，见 loop.py 顶部说明）。不因为它 read_only=True 就放开。
     ),
 ]
 
