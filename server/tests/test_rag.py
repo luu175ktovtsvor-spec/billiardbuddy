@@ -4,7 +4,12 @@
 - 同文本相似度≈1；相关文本(共享词)比无关的高；空文本→零向量
 - 索引后召回把最相关的排前面；空查询→空
 - 主键去重(同一条重复索引不重复)
+- D-Task-5 复审修复（Critical）：index_store 的连接缓存跨线程复用不炸
+  （run_folder_reindex_job 用 asyncio.to_thread 在工作线程建索引，之后主线程/事件循环线程再
+  search/recall_my_content/backfill_from_generations 撞同一个缓存连接）
 """
+import asyncio
+
 import pytest
 
 from services.rag.embedder import DeterministicEmbedder, cosine
@@ -158,3 +163,37 @@ def test_recall_hits_via_context_prefix():
     hits = recall(sid, "三月 效果好的", top=2)
     assert hits, "应能借前缀里的月份/效果命中"
     assert hits[0]["source_id"] == "g1"            # 带前缀那条命中在前
+
+
+# ── D-Task-5 复审修复（Critical）：连接缓存跨线程复用 ──
+
+async def test_conn_cache_survives_cross_thread_reuse_index_then_search():
+    """真实生产顺序复现：PUT 触发的店铺资料后台索引（run_folder_reindex_job 内部用
+    `asyncio.to_thread(index_store_docs_folder, ...)`）在【工作线程】里第一次碰 `_conn()`、
+    把连接缓存进模块级 `_conn_cache`；之后同一进程里主线程（事件循环所在线程，
+    search_store_docs / recall_my_content / backfill_from_generations 都跑在这）再用
+    同一个 store 触发 `index_store.search`，会复用【工作线程创建的那个连接对象】。
+
+    修复前：`sqlite3.connect()` 没传 `check_same_thread=False`（默认 True），
+    非创建线程碰这个连接对象直接抛 `sqlite3.ProgrammingError`，且这个坏连接会一直赖在缓存里，
+    之后【任何线程】再用都继续崩，直到进程重启——不止新工具，连既有 recall_my_content/backfill
+    都被拖垮。这里断言：先在工作线程 upsert，再在主线程 search，不炸、且搜得到工作线程写的数据。
+    """
+    from services.rag import index_store
+
+    sid = "store-cross-thread"
+    # 模拟 run_folder_reindex_job：索引动作在 asyncio.to_thread 的工作线程里跑，
+    # 这是 _conn_cache 里这个 key 第一次被建连接的地方。
+    await asyncio.to_thread(
+        index_store.upsert, sid, "store_doc", "w1", "工作线程写入的内容", [0.0, 1.0],
+    )
+    # 模拟主线程（事件循环线程）随后调用 search（如 search_store_docs/recall_my_content）——
+    # 复用的是上面工作线程建好缓存的同一个 Connection 对象。
+    hits = index_store.search(sid, [0.0, 1.0], top=5)
+    assert hits and hits[0]["source_id"] == "w1"
+
+    # 反过来也要能跨线程复用：主线程建好的连接，工作线程也要能安全用（对称验证，
+    # 防止只修好了一个方向）。
+    await asyncio.to_thread(index_store.upsert, sid, "store_doc", "w2", "第二次工作线程写入", [1.0, 0.0])
+    hits2 = index_store.search(sid, [1.0, 0.0], top=5)
+    assert any(h["source_id"] == "w2" for h in hits2)
