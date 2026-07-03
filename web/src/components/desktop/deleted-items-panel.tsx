@@ -5,6 +5,7 @@ import { Loader2, RotateCcw, Trash2, X } from "lucide-react";
 
 import { api, type RecentArtifact } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
+import { ConfirmDialog } from "./confirm-dialog";
 
 export function DeletedItemsPanel({
   open,
@@ -18,6 +19,7 @@ export function DeletedItemsPanel({
   const [items, setItems] = useState<RecentArtifact[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
 
   async function refresh() {
     try {
@@ -59,10 +61,13 @@ export function DeletedItemsPanel({
     }
   }
 
-  async function clearAll() {
+  function requestClearAll() {
     if (!items.length || busy) return;
-    const ok = window.confirm("清空后，这里的会话、作品、门店资料和已删除文件备份将无法恢复。确定清空最近删除？");
-    if (!ok) return;
+    setConfirmClearOpen(true);
+  }
+
+  async function clearAll() {
+    setConfirmClearOpen(false);
     setBusy("clear"); setErr(null);
     try {
       await api.clearDeletedItems();
@@ -78,6 +83,7 @@ export function DeletedItemsPanel({
   if (!open) return null;
 
   return (
+    <>
     <aside className="fixed right-0 top-0 z-[63] flex h-full w-[420px] max-w-[92vw] flex-col border-l border-black/[0.08] bg-white shadow-2xl dark:border-white/[0.08] dark:bg-[#16181d]">
       <div className="app-drag app-titlebar-safe-right flex h-[44px] items-center justify-between border-b border-black/[0.08] px-4 dark:border-white/[0.06]">
         <div className="font-mono text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">最近删除</div>
@@ -85,7 +91,7 @@ export function DeletedItemsPanel({
           {items.length > 0 && (
             <button
               type="button"
-              onClick={() => void clearAll()}
+              onClick={requestClearAll}
               disabled={busy === "clear"}
               className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-[#ff3b30] transition hover:bg-[#ff3b30]/10 disabled:opacity-50"
             >
@@ -149,5 +155,15 @@ export function DeletedItemsPanel({
         )}
       </div>
     </aside>
+    <ConfirmDialog
+      open={confirmClearOpen}
+      title="清空最近删除？"
+      message="这里的会话、作品、门店资料和已删除文件备份将无法恢复。"
+      confirmLabel="清空"
+      destructive
+      onConfirm={() => void clearAll()}
+      onCancel={() => setConfirmClearOpen(false)}
+    />
+    </>
   );
 }

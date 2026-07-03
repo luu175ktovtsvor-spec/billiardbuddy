@@ -151,6 +151,7 @@ export function DesktopChatShell({
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [deletedOpen, setDeletedOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [deleteRecentTarget, setDeleteRecentTarget] = useState<RecentArtifact | null>(null);
   const [workbenchLoaded, setWorkbenchLoaded] = useState(false);
   const workbenchStateKey = `agent_workbench_state:${workbenchId}`;
 
@@ -308,7 +309,8 @@ export function DesktopChatShell({
   const loadConv = useCallback(async (id: string) => {
     if (chat.generating) {
       // C1：UI 限制解释，不是 AI 说的话——删掉伪 AI 消息。
-      // TODO(C4): 改为禁用态(侧栏会话项运行中置灰 + tooltip"任务完成后可切换")
+      // C4：侧栏会话项运行中已置灰 + tooltip"任务完成后可切换"(见 macos-shell.tsx DesktopSidebar
+      // 的 selectDisabled)，正常操作点不到这里；这个判断留作兜底防御。
       return;
     }
     try {
@@ -359,10 +361,14 @@ export function DesktopChatShell({
       setPreview({ kind: "content", title: item.title, text: item.content });
     }
   }, [chat, loadConv]);
-  const deleteRecent = useCallback(async (item: RecentArtifact) => {
+  const deleteRecent = useCallback((item: RecentArtifact) => {
     if (!item.id || item.kind === "file_change") return;
-    const ok = window.confirm(`把「${item.title || "这条作品"}」移入最近删除？之后可以从「最近删除」恢复。`);
-    if (!ok) return;
+    setDeleteRecentTarget(item);
+  }, []);
+  const confirmDeleteRecent = useCallback(async () => {
+    const item = deleteRecentTarget;
+    setDeleteRecentTarget(null);
+    if (!item?.id) return;
     try {
       await api.deleteRecentArtifact(item.id);
       await refreshRecentItems();
@@ -370,7 +376,7 @@ export function DesktopChatShell({
     } catch {
       toast.error("删除失败，可以稍后再试");
     }
-  }, [refreshRecentItems, toast]);
+  }, [deleteRecentTarget, refreshRecentItems, toast]);
   const continueLast = useCallback(() => {
     const last = conversations[0];
     if (last) { void loadConv(last.id); return; }
@@ -393,7 +399,8 @@ export function DesktopChatShell({
     if (chat.generating && chat.conversationId === id) {
       setDeleteTarget(null);
       // C1：UI 限制解释，不是 AI 说的话——删掉伪 AI 消息。
-      // TODO(C4): 改为禁用态(运行中会话的删除按钮置灰)
+      // C4：侧栏对运行中会话的删除按钮已做禁用态(见 macos-shell.tsx DesktopSidebar)，
+      // 正常操作不会走到这里；这个判断留作兜底防御。
       return;
     }
     setDeleteTarget(null);
@@ -621,7 +628,9 @@ export function DesktopChatShell({
     if (!content.trim()) return;
     if (!electron?.files?.save) {
       // C1：UI 限制解释（当前环境没有这个能力），不是 AI 说的话——删掉伪 AI 消息。
-      // TODO(C4): 改为禁用态(没有 electron.files.save 能力时隐藏/禁用"导出到电脑"按钮)
+      // C4：没有 electron.files.save 能力时，「导出到电脑」入口已在传给 DesktopChatThread 时
+      // 整个不渲染（见下方 onExportArtifact={electron?.files?.save ? onExportArtifact : undefined}）；
+      // 这里保留判断只作兜底防御，正常不会走到。
       return;
     }
     const rawTitle = content
@@ -712,6 +721,7 @@ export function DesktopChatShell({
       storeName={liveStoreName || storeName}
       conversations={conversations}
       activeId={chat.conversationId ?? undefined}
+      generating={chat.generating}
       onNewChat={newChat}
       onNewWorkspace={electron?.newWindow ? newWorkspace : undefined}
       onOpenStudio={electron?.openStudio ? () => { void electron.openStudio?.(); } : undefined}
@@ -719,7 +729,7 @@ export function DesktopChatShell({
       onDelete={deleteConv}
       onOpenSettings={() => setSettingsOpen(true)}
     />
-  ), [liveStoreName, storeName, conversations, chat.conversationId, newChat, newWorkspace, electron, loadConv, deleteConv]);
+  ), [liveStoreName, storeName, conversations, chat.conversationId, chat.generating, newChat, newWorkspace, electron, loadConv, deleteConv]);
 
   return (
     <>
@@ -789,7 +799,7 @@ export function DesktopChatShell({
           onRecoverFromError={onRecoverFromError}
           onMakeTask={onMakeTask}
           onSaveArtifact={onSaveArtifact}
-          onExportArtifact={onExportArtifact}
+          onExportArtifact={electron?.files?.save ? onExportArtifact : undefined}
           onFollowUp={onFollowUp}
           onRate={(id, r) => { void api.rateGeneration(id, r); }}
           billiardsMode={knowledgePacks.includes("billiards")}
@@ -934,6 +944,15 @@ export function DesktopChatShell({
       destructive
       onConfirm={confirmDelete}
       onCancel={() => setDeleteTarget(null)}
+    />
+    <ConfirmDialog
+      open={!!deleteRecentTarget}
+      title="移入最近删除？"
+      message={`把「${deleteRecentTarget?.title || "这条作品"}」移入最近删除？之后可以从「最近删除」恢复。`}
+      confirmLabel="移入删除"
+      destructive
+      onConfirm={confirmDeleteRecent}
+      onCancel={() => setDeleteRecentTarget(null)}
     />
     </>
   );

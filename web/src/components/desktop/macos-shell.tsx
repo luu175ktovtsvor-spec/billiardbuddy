@@ -20,6 +20,7 @@ export function DesktopSidebar({
   storeName = "我的台球房",
   conversations = [],
   activeId,
+  generating,
   onNewChat,
   onNewWorkspace,
   onOpenStudio,
@@ -30,6 +31,8 @@ export function DesktopSidebar({
   storeName?: string;
   conversations?: DesktopConversation[];
   activeId?: string;
+  /** 当前会话有任务在跑：非当前会话项禁止切换、当前会话的删除按钮禁止点。C4。 */
+  generating?: boolean;
   onNewChat?: () => void;
   onNewWorkspace?: () => void;
   onOpenStudio?: () => void;
@@ -92,34 +95,50 @@ export function DesktopSidebar({
         {groups.map((g) => (
           <div key={g.name} className="mb-2.5">
             <div className="mb-1 px-2 text-[11px] font-medium tracking-wide text-[#a1a1a6] dark:text-[#54565d]">{g.name}</div>
-            {g.items.map((c) => (
-              <div
-                key={c.id}
-                className={`group app-no-drag mb-px flex items-center rounded-md transition ${
-                  c.id === activeId
-                    ? "bg-black/[0.06] text-[#1d1d1f] dark:bg-white/[0.07] dark:text-[#e6e7e9]"
-                    : "text-[#6e6e73] hover:bg-black/[0.04] dark:text-[#9a9ca3] dark:hover:bg-white/[0.035]"
-                }`}
-              >
-                <button
-                  onClick={() => onSelect?.(c.id)}
-                  aria-label={`打开会话 ${c.title}`}
-                  className="min-w-0 flex-1 px-2.5 py-1.5 text-left"
+            {g.items.map((c) => {
+              const isActive = c.id === activeId;
+              // 任务在跑时：切别的会话会丢掉正在跑的任务，所以非当前会话项整个点不动；
+              // 当前会话本身不禁止切换（本来就在这），只禁它的删除按钮（跑着的会话不能删）。
+              const selectDisabled = !!generating && !isActive;
+              const deleteDisabled = !!generating && isActive;
+              return (
+                <div
+                  key={c.id}
+                  className={`group app-no-drag mb-px flex items-center rounded-md transition ${
+                    isActive
+                      ? "bg-black/[0.06] text-[#1d1d1f] dark:bg-white/[0.07] dark:text-[#e6e7e9]"
+                      : selectDisabled
+                      ? "text-[#c2c2c6] dark:text-[#4a4c52]"
+                      : "text-[#6e6e73] hover:bg-black/[0.04] dark:text-[#9a9ca3] dark:hover:bg-white/[0.035]"
+                  }`}
                 >
-                  <div className="truncate text-[12.5px]">{c.title}</div>
-                </button>
-                {onDelete && (
                   <button
-                    onClick={(e) => { e.stopPropagation(); onDelete(c.id); }}
-                    aria-label="删除会话"
-                    title="删除这条会话"
-                    className="mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-[#86868b] opacity-0 transition hover:bg-black/[0.08] hover:text-[#d93025] group-hover:opacity-100 dark:text-[#6e7077] dark:hover:bg-white/[0.08]"
+                    onClick={() => { if (!selectDisabled) onSelect?.(c.id); }}
+                    disabled={selectDisabled}
+                    aria-label={`打开会话 ${c.title}`}
+                    title={selectDisabled ? "任务完成后可切换" : undefined}
+                    className={`min-w-0 flex-1 px-2.5 py-1.5 text-left ${selectDisabled ? "cursor-not-allowed" : ""}`}
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
+                    <div className="truncate text-[12.5px]">{c.title}</div>
                   </button>
-                )}
-              </div>
-            ))}
+                  {onDelete && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); if (!deleteDisabled) onDelete(c.id); }}
+                      disabled={deleteDisabled}
+                      aria-label="删除会话"
+                      title={deleteDisabled ? "任务进行中，完成后可删除" : "删除这条会话"}
+                      className={`mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded transition ${
+                        deleteDisabled
+                          ? "cursor-not-allowed text-[#c2c2c6] opacity-60 dark:text-[#4a4c52]"
+                          : "text-[#86868b] opacity-0 hover:bg-black/[0.08] hover:text-[#d93025] group-hover:opacity-100 dark:text-[#6e7077] dark:hover:bg-white/[0.08]"
+                      }`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         ))}
       </div>

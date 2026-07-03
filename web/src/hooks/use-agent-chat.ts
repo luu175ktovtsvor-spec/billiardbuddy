@@ -477,7 +477,8 @@ export function useAgentChat(opts: AgentChatOptions) {
   const loadConversation = useCallback((id: string, msgs: ChatMessage[]) => {
     if (generating || activeTaskRef.current) {
       // C1：这是 UI 限制解释（任务运行中不让切会话），不是 AI 说的话——删掉伪 AI 消息。
-      // TODO(C4): 改为禁用态(历史会话项在任务运行中置灰 + tooltip，而不是拦截后干等用户自己发现)
+      // C4：侧栏历史会话项已在运行中做禁用态(置灰 + tooltip，见 macos-shell.tsx DesktopSidebar)，
+      // 正常操作不会走到这里；这个判断留作兜底防御。
       return false;
     }
     abortRef.current?.abort();
