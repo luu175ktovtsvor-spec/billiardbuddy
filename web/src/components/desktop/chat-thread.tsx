@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, MessageCircleQuestion, FileEdit, Terminal, ChevronRight, Brain, RotateCcw, ClipboardList, Save, MessageSquareText, Megaphone, ClipboardCheck, Paperclip, Download, ThumbsUp } from "lucide-react";
+import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, MessageCircleQuestion, FileEdit, Terminal, ChevronRight, Brain, RotateCcw, ClipboardList, Save, MessageSquareText, Megaphone, ClipboardCheck, Paperclip, Download, ThumbsUp, Smartphone } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
@@ -90,8 +90,8 @@ function billiardsFollowUpActions(content: string): FollowUpAction[] {
     push(buildFollowUp("转成今晚员工动作", "把原回答改成今晚员工执行清单，按前厅、助教、店长分工。", content, ClipboardCheck));
   }
   if (/报表|营业额|台费|助教费|商品费|充值|团购|经营数据|日报|月报/.test(text)) {
-    push(buildFollowUp("整理老板汇报", "把原回答整理成老板能听懂的汇报：一句结论、3 个问题、3 个改法。", content, ClipboardList));
-    push(buildFollowUp("转成整改清单", "把原回答转成明天整改清单，写清负责人、动作和检查标准。", content, ClipboardCheck));
+    push(buildFollowUp("出个活动方案", "针对原回答里最差的时段或品类，出一个能直接办的活动方案：目标、玩法、预算档、执行步骤，别写长理论。", content, ClipboardList));
+    push(buildFollowUp("整理老板汇报", "把原回答整理成老板能听懂的汇报：一句结论、3 个问题、3 个改法。", content, ClipboardCheck));
   }
   if (/招聘|招人|助教|教练|前厅|员工|团队/.test(text)) {
     push(buildFollowUp("写招聘文案", "把原回答改成一条招聘文案，适合发朋友圈、同城群和小红书。", content, Megaphone));
@@ -106,6 +106,17 @@ function billiardsFollowUpActions(content: string): FollowUpAction[] {
     push(buildFollowUp("写朋友圈文案", "把原回答改成活动朋友圈文案，包含标题、时间、参与理由和报名引导。", content, Megaphone));
   }
   return actions;
+}
+
+// C3：出完海报后的组合拳追问（海报消息不是纯文本、不走 billiardsFollowUpActions，单独给）。
+// prompt 自包含——"刚才那张海报"由对话历史解析。
+function billiardsPosterFollowUps(): FollowUpAction[] {
+  return [
+    { label: "配条朋友圈文案", Icon: Megaphone,
+      prompt: "给刚才这张海报配一条朋友圈文案：标题、正文、配图说明、评论区引导都给出来，适合台球房发。" },
+    { label: "改成抖音竖版", Icon: Smartphone,
+      prompt: "把刚才那张海报改成 9:16 抖音竖版（竖屏构图，适合发抖音、视频号同城）。" },
+  ];
 }
 
 /** 解析 run_command 的结果文本（后端固定格式：命令／返回码／【标准输出】／【错误输出】）。 */
@@ -848,6 +859,20 @@ export function DesktopChatThread({
                     >
                       <Maximize2 className="h-3.5 w-3.5" /> 在右侧看大图
                     </button>
+                  )}
+                  {onFollowUp && billiardsMode && !generating && posterPreviewFromText(m.content) && (
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {billiardsPosterFollowUps().map((action) => (
+                        <button
+                          key={action.label}
+                          type="button"
+                          onClick={() => onFollowUp(action.prompt, action.label)}
+                          className="inline-flex items-center gap-1 rounded-md border border-[#007AFF]/15 bg-[#007AFF]/[0.05] px-2 py-1 text-[12px] font-medium text-[#007AFF] transition hover:bg-[#007AFF]/10 active:scale-[0.97] dark:border-[#66aaff]/20 dark:bg-[#66aaff]/10 dark:text-[#9bc8ff]"
+                        >
+                          <action.Icon className="h-3.5 w-3.5" /> {action.label}
+                        </button>
+                      ))}
+                    </div>
                   )}
                   {m.memoryRefs && m.memoryRefs.length > 0 && (
                     <div className="flex items-start gap-1.5 rounded-md bg-black/[0.025] px-2.5 py-1.5 text-[12px] leading-relaxed text-[#86868b] dark:bg-white/[0.035] dark:text-[#8a8c93]">
