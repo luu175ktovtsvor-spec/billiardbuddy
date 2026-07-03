@@ -406,3 +406,193 @@ def test_days_since_last_activity_survives_sqlite_naive_roundtrip():
         assert days == 0  # 刚插入，距今不到一天
 
     asyncio.run(main())
+
+
+# ─── C-Task-2：「踩」= dismiss-for-today（今天先收起，次日照常）+ category 审计 ───
+
+async def _fresh_sqlite_session():
+    """建一个全新内存 SQLite 库(建全表，含 usage_events)，返回 (engine, sessionmaker)。"""
+    import models  # noqa: F401  触发全模型注册
+    from db.base import Base
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+
+    eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with eng.begin() as c:
+        await c.run_sync(Base.metadata.create_all)
+    return eng, async_sessionmaker(eng, expire_on_commit=False)
+
+
+def _dashboard_test_store():
+    import uuid as _uuid
+    return SimpleNamespace(
+        id=_uuid.uuid4(), operation_profile={}, logo_url="l.png", qrcode_url="q.png", has_coaching=False,
+    )
+
+
+def _patch_dashboard_stubs(monkeypatch, ds):
+    """把 get_today_dashboard 里"资料完整度/踩过滤"以外的分支打桩成确定性空值(同
+    test_today_dashboard_feeds_full_memory_without_embedding 的打桩方式)，让 dismiss 相关测试
+    只聚焦"today_start 计算 + 踩过滤"这条链路，不被星期/节日等易变分支干扰。"""
+    async def fake_stats(db, sid, a, b):
+        return (0, 0, 0, 0, None)
+
+    async def fake_snap(db, sid):
+        return BehaviorSnapshot(Counter(), Counter(), Counter(), [], set(), Counter(), 0)
+
+    async def fake_load(db, sid):
+        return []
+
+    async def fake_report_done(db, sid, now):
+        return True  # 日报已写，跳过 report_due，减少无关 rec
+
+    async def fake_none(db, sid):
+        return None
+
+    monkeypatch.setattr(ds, "_get_generation_stats", fake_stats)
+    monkeypatch.setattr(ds, "get_behavior_snapshot", fake_snap)
+    monkeypatch.setattr(ds, "load_store_memory", fake_load)
+    monkeypatch.setattr(ds, "_report_written_today", fake_report_done)
+    monkeypatch.setattr(ds, "_get_last_good_generation", fake_none)
+    monkeypatch.setattr(ds, "_days_since_last_activity", fake_none)
+    monkeypatch.setattr(ds, "calculate_completeness", lambda store: 50)  # <70 → incomplete_profile 恒出，做过滤靶子
+
+
+async def test_dashboard_shows_rec_when_not_dismissed(monkeypatch):
+    """基线：没人踩过 → incomplete_profile 正常出现在今日推荐里。"""
+    import services.dashboard_service as ds
+
+    _patch_dashboard_stubs(monkeypatch, ds)
+    eng, Session = await _fresh_sqlite_session()
+    store = _dashboard_test_store()
+    try:
+        async with Session() as db:
+            resp = await ds.get_today_dashboard(db=db, store=store)
+        assert "incomplete_profile" in {r.id for r in resp.recommendations}
+    finally:
+        await eng.dispose()
+
+
+async def test_dashboard_hides_rec_dismissed_today(monkeypatch):
+    """老板今天踩过某条推荐(rec_dismissed，今天) → 当天的今日工作台把它过滤掉。
+    这就是「踩」真影响输出的证据（铁律#8：不做鸡肋死按钮）。"""
+    import services.dashboard_service as ds
+    from datetime import timezone
+    from models.usage_event import UsageEvent
+
+    _patch_dashboard_stubs(monkeypatch, ds)
+    eng, Session = await _fresh_sqlite_session()
+    store = _dashboard_test_store()
+    try:
+        async with Session() as db:
+            db.add(UsageEvent(
+                event="rec_dismissed", store_id=store.id,
+                props={"rec_id": "incomplete_profile"},
+                created_at=datetime.now(timezone.utc),
+            ))
+            await db.commit()
+        async with Session() as db:
+            resp = await ds.get_today_dashboard(db=db, store=store)
+        assert "incomplete_profile" not in {r.id for r in resp.recommendations}
+    finally:
+        await eng.dispose()
+
+
+async def test_dashboard_dismiss_is_only_for_today_not_permanent(monkeypatch):
+    """踩的是"昨天"的事件 → 今天照常出现（证明 dismiss-for-today，不是永久学习版）。"""
+    import services.dashboard_service as ds
+    from datetime import timezone, timedelta
+    from models.usage_event import UsageEvent
+
+    _patch_dashboard_stubs(monkeypatch, ds)
+    eng, Session = await _fresh_sqlite_session()
+    store = _dashboard_test_store()
+    try:
+        async with Session() as db:
+            db.add(UsageEvent(
+                event="rec_dismissed", store_id=store.id,
+                props={"rec_id": "incomplete_profile"},
+                created_at=datetime.now(timezone.utc) - timedelta(days=1),
+            ))
+            await db.commit()
+        async with Session() as db:
+            resp = await ds.get_today_dashboard(db=db, store=store)
+        assert "incomplete_profile" in {r.id for r in resp.recommendations}
+    finally:
+        await eng.dispose()
+
+
+async def test_missing_assets_rec_has_setup_category(monkeypatch):
+    """category 审计：missing_assets(补 Logo/二维码) 属于"完善资料"类，须 category="setup"
+    （不能被 schema 默认值悄悄归到 "focus"）——供 C-Task-5 简报卡按 category 映射出处标签。"""
+    import services.dashboard_service as ds
+
+    _patch_dashboard_stubs(monkeypatch, ds)
+    monkeypatch.setattr(ds, "calculate_completeness", lambda store: 100)  # 避免 incomplete_profile 干扰
+    eng, Session = await _fresh_sqlite_session()
+    store = _dashboard_test_store()
+    store.logo_url = None
+    store.qrcode_url = None
+    try:
+        async with Session() as db:
+            resp = await ds.get_today_dashboard(db=db, store=store)
+        rec = next(r for r in resp.recommendations if r.id == "missing_assets")
+        assert rec.category == "setup"
+    finally:
+        await eng.dispose()
+
+
+async def test_dismiss_rec_endpoint_logs_event_and_echoes_rec_id(monkeypatch):
+    """POST /dashboard/dismiss-rec：记一条 rec_dismissed usage 事件，回显 rec_id。"""
+    import uuid as _uuid
+    import api.v1.dashboard as dash_api
+    from services import usage_event_service as ues
+
+    calls = []
+
+    async def fake_log(event, *, store_id=None, user_id=None, props=None):
+        calls.append((event, store_id, user_id, props))
+
+    monkeypatch.setattr(ues, "log_event", fake_log)
+
+    store = SimpleNamespace(id=_uuid.uuid4())
+    user = SimpleNamespace(id=_uuid.uuid4())
+    body = dash_api.DismissRecRequest(rec_id="incomplete_profile")
+    res = await dash_api.dashboard_dismiss_rec(body, current_user=user, store=store, db=None)
+
+    assert res == {"status": "ok", "rec_id": "incomplete_profile"}
+    assert len(calls) == 1
+    event, store_id, user_id, props = calls[0]
+    assert event == "rec_dismissed"
+    assert store_id == str(store.id)
+    assert user_id == str(user.id)
+    assert props["rec_id"] == "incomplete_profile"
+    assert "date" in props  # 带业务时区当天日期，便于分析
+
+
+async def test_dismiss_rec_endpoint_empty_rec_id_is_noop_and_failsafe(monkeypatch):
+    """空 rec_id 不记事件、不崩；接口本身对记录失败也故障安全。"""
+    import uuid as _uuid
+    import api.v1.dashboard as dash_api
+    from services import usage_event_service as ues
+
+    calls = []
+
+    async def fake_log(*a, **k):
+        calls.append(1)
+
+    monkeypatch.setattr(ues, "log_event", fake_log)
+
+    store = SimpleNamespace(id=_uuid.uuid4())
+    body = dash_api.DismissRecRequest(rec_id="   ")
+    res = await dash_api.dashboard_dismiss_rec(body, current_user=None, store=store, db=None)
+    assert res == {"status": "ok", "rec_id": ""}
+    assert calls == []  # 空 rec_id 不该打点
+
+    # 记录失败也不该冒泡（故障安全）
+    async def boom(*a, **k):
+        raise RuntimeError("usage event 挂了")
+
+    monkeypatch.setattr(ues, "log_event", boom)
+    body2 = dash_api.DismissRecRequest(rec_id="incomplete_profile")
+    res2 = await dash_api.dashboard_dismiss_rec(body2, current_user=None, store=store, db=None)
+    assert res2 == {"status": "ok", "rec_id": "incomplete_profile"}
