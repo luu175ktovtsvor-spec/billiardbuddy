@@ -230,6 +230,8 @@ def test_rrf_fuse_item_only_in_one_ranking_still_counted():
     assert set(fused) == {"x", "y", "z"}
     # x 在唯一一路里排第 0 名，分数最高 → 排最前
     assert fused[0] == "x"
+    # z 是"另一路排第 0 名"（1/61），应排在同路排第 1 名的 y（1/62，分更低）前面
+    assert fused.index("z") < fused.index("y")
 
 
 def test_rrf_fuse_agreement_beats_single_top_rank():
@@ -244,6 +246,8 @@ def test_rrf_fuse_agreement_beats_single_top_rank():
     # e 两路都在（0+61分之1, 62分之1量级）应该排到 d（只在一路且分数为 1/61）前面或紧邻，
     # 关键先验证两路都在的 e 排名不落后于只在单路的 d太多——即 e 一定进前二。
     assert fused.index("e") <= 1
+    # 钉死核心结论：两路共识（e）确实跑赢了只在单路极端置顶的 d，不只是"进前二"这种松断言。
+    assert fused.index("e") < fused.index("d")
 
 
 def test_rrf_fuse_empty_rankings_returns_empty():
@@ -252,10 +256,16 @@ def test_rrf_fuse_empty_rankings_returns_empty():
 
 
 def test_rrf_fuse_deterministic_tie_break_by_first_appearance():
-    """同分时按首次出现顺序稳定排列（纯函数确定性，不依赖 dict 迭代顺序等偶然因素）。"""
-    fused1 = _rrf_fuse([["p", "q"]], k=60)
-    fused2 = _rrf_fuse([["p", "q"]], k=60)
-    assert fused1 == fused2 == ["p", "q"]
+    """同分时按首次出现顺序稳定排列（纯函数确定性，不依赖 dict 迭代顺序等偶然因素）。
+
+    用 ["x"] 和 ["y"] 两路各自单元素：x、y 各在自己那一路排第 0 名，同拿 1/61 分——
+    真正撞上同分、才会走到 order_index 这条 tie-break 分支（若像旧用例那样把 x/y 塞进
+    同一路 ["p","q"]，两者排名 0/1 分数天然不同，tie-break 代码根本不会被执行到）。
+    x 所在的 ranking 先传入、先被记入 order，故同分时排在 y 前面。
+    """
+    fused1 = _rrf_fuse([["x"], ["y"]], k=60)
+    fused2 = _rrf_fuse([["x"], ["y"]], k=60)
+    assert fused1 == fused2 == ["x", "y"]
 
 
 # ═══════════════ F11 · 语义模式下 RRF 融合让黑话精确词不被语义挤掉 ═══════════════
