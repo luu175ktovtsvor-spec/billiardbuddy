@@ -135,3 +135,10 @@ class AgentContext:
     # 端点用它照样落轨迹，"停掉的活"下一轮还接得上，不再失忆。loop 内部对 messages 全是就地变更
     # （append / 切片赋值），这个引用全程有效。None = loop 还没跑起来。
     live_messages: list | None = None
+    # ── F-7 只读并发（读写锁）：同一批只读工具经 asyncio.gather 并发跑时，_execute_tool 里的
+    #   anti-spin 计数（call_counts 的读改写）可能被多个协程"同时"碰。CPython 单线程协作式调度下
+    #   "读改写之间没有 await" 本身已天然原子（不会被其它协程插进来），这把锁是**防御性**的：
+    #   保证即使以后有人在那段临界区里加了 await（比如把 hook 挪到计数前面），也不会悄悄引入竞态。
+    #   惰性创建（首次用到才 new 一个），同一个 ctx 全程复用同一把锁；子代理用的是各自新建的 ctx，
+    #   天然不共享这把锁（call_counts 本就按 ctx 隔离）。
+    call_counts_lock: Any = None
