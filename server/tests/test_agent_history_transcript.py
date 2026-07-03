@@ -123,6 +123,39 @@ def test_transcript_takes_priority_over_db(monkeypatch, tmp_path):
     asyncio.run(main())
 
 
+def test_truncate_to_zero_then_history_is_empty_not_db_fallback(monkeypatch, tmp_path):
+    """F-12 复审 Important #3 回归：chat_only/both 恢复到"最早一步"（truncate 到 0）之后，
+    下一轮真走 `_load_agent_history`——必须看到空历史，绝不能因为轨迹文件"看起来没了"就掉进
+    DB 兜底，把 truncate 本来想让模型忘掉的那几轮聊天重新翻出来塞回上下文。"""
+    monkeypatch.setattr(T.settings, "upload_dir", str(tmp_path))
+    from services.agent.checkpoint_index import truncate_chat_to_checkpoint
+
+    cid = uuid.uuid4()
+    T.save_transcript(str(cid), _trajectory(str(cid)))
+
+    async def main():
+        eng = _new_engine()
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        _db, s, u = await _seed(Session)
+        async with Session() as db:
+            # DB 里留着"该被忘掉"的一轮——如果 _load_agent_history 不小心走了兜底，这行就会被翻出来
+            db.add(Generation(
+                id=uuid.uuid4(), store_id=s.id, user_id=u.id, type="agent", sub_type="chat",
+                input_params={"message": "这轮该被忘掉"}, prompt_used="x",
+                result="这轮回复也该被忘掉", model_used="agent", conversation_id=cid,
+            ))
+            await db.commit()
+            result = truncate_chat_to_checkpoint(str(cid), 0)
+            assert result["ok"] is True
+            hist = await _load_agent_history(db, s, str(cid))
+        # 真正的空——不是 DB 兜底翻出来的那几轮
+        assert hist == []
+
+    asyncio.run(main())
+
+
 def test_no_conversation_id_returns_empty(monkeypatch, tmp_path):
     monkeypatch.setattr(T.settings, "upload_dir", str(tmp_path))
 

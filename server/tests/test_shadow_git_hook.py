@@ -15,6 +15,19 @@ from services.agent.shadow_git_hook import install_shadow_git_hook, _shadow_git_
 _CID = "11111111-1111-1111-1111-111111111111"
 
 
+def _ensure_file_tools_registered():
+    """F-12 复审 Important #1 修复后，`_is_write_tool` 动态查 `default_registry` 判
+    `approval_class=="file"`——而 write_file/edit_file/edit_excel/delete_file/edit_image 只在
+    `DESKTOP_LOCAL=1` 时于**模块导入那一刻**自动注册进这个进程级单例。单独跑本文件（不靠别的
+    测试文件恰好先用 `monkeypatch.setenv("DESKTOP_LOCAL","1")` 导入过这两个模块）时，
+    `default_registry` 里可能根本没有这几个工具，判据会全部落空。显式补注册一次（两个
+    `register_*` 函数本身幂等，可放心重复调用），不赌全局测试收集顺序。"""
+    from services.agent.local_tools import register_local_tools
+    from services.agent.image_tools import register_image_tools
+    register_local_tools()
+    register_image_tools()
+
+
 @pytest.fixture(autouse=True)
 def _clean_hooks():
     # install_shadow_git_hook() 是幂等安装（同 goal_hook 写法，靠模块级 _installed 标记防重复注册）——
@@ -24,6 +37,7 @@ def _clean_hooks():
     clear_hooks()
     sgh.reset_installed_flag_for_tests()
     sg.reset_git_probe_cache_for_tests()
+    _ensure_file_tools_registered()
     yield
     clear_hooks()
     sgh.reset_installed_flag_for_tests()
@@ -103,6 +117,44 @@ def test_delete_edit_edit_excel_all_trigger_checkpoint(workspace):
     asyncio.run(main())
     checkpoints = ci.list_checkpoints(_CID)
     assert [c["tool"] for c in checkpoints] == ["write_file", "edit_file", "delete_file"]
+
+
+def test_edit_image_triggers_checkpoint(workspace):
+    """F-12 复审 Important #1 回归：edit_image 跟 write_file/edit_file/edit_excel/delete_file 一样，
+    都是 `approval_class == "file"` 的写改类工具（image_tools.py 里登记），漏了它会导致"把海报裁个
+    方形"这类高频操作进不了影子 git 历史。硬编码名单必须换成动态查 registry 的 approval_class 判据，
+    这样以后任何新增的 file 类工具也自动被覆盖，不用再手改这份名单。"""
+    from PIL import Image
+    install_shadow_git_hook()  # edit_image 的注册由 autouse 的 _ensure_file_tools_registered() 保证
+    ctx = AgentContext(working_dir=str(workspace), conversation_id=_CID)
+    img_path = workspace / "poster.png"
+    Image.new("RGB", (20, 10), color="red").save(img_path)
+
+    async def main():
+        from services.agent.image_tools import edit_image
+        args = {"path": "poster.png", "operation": "resize", "scale": 0.5}
+        result = await edit_image(args, ctx)
+        await run_post_tool_hooks("edit_image", args, result, ctx)
+
+    asyncio.run(main())
+
+    checkpoints = ci.list_checkpoints(_CID)
+    assert len(checkpoints) == 1
+    assert checkpoints[0]["tool"] == "edit_image"
+    assert checkpoints[0]["target"] == "poster.png"
+
+
+def test_unknown_tool_name_does_not_trigger_checkpoint(workspace):
+    """动态判据的反面：查不到的工具名（比如打错字/还没注册）应该保守当只读处理，不触发检查点、
+    也不该因为 registry 查不到而抛异常。"""
+    install_shadow_git_hook()
+    ctx = AgentContext(working_dir=str(workspace), conversation_id=_CID)
+
+    async def main():
+        await run_post_tool_hooks("这个工具名根本不存在", {"path": "a.txt"}, "随便", ctx)
+
+    asyncio.run(main())
+    assert ci.list_checkpoints(_CID) == []
 
 
 def test_no_conversation_id_still_commits_but_skips_index(workspace):

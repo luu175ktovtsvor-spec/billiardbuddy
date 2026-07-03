@@ -8,6 +8,7 @@
 import asyncio
 
 import pytest
+from pydantic import ValidationError
 
 import api.v1.checkpoints as cp_api
 from core.exceptions import AIServiceError
@@ -26,6 +27,11 @@ def _clean(monkeypatch, tmp_path):
     clear_hooks()
     sgh.reset_installed_flag_for_tests()
     sg.reset_git_probe_cache_for_tests()
+    # F-12 复审 Important #1：_is_write_tool 动态查 default_registry 判 approval_class=="file"，
+    # write_file 只在 DESKTOP_LOCAL=1 时于模块导入那一刻自动注册进这个进程级单例——单独跑本文件时
+    # 不能赌别的测试文件恰好先导入过，显式补注册（幂等，可放心重复调用）。
+    from services.agent.local_tools import register_local_tools
+    register_local_tools()
     monkeypatch.setattr(sg.settings, "upload_dir", str(tmp_path / "uploads"))
     # ⚠️ 本文件经 _make_checkpoints() 真的调用 lt.write_file——它的 `_backup()` 不看 working_dir，
     # 固定写去 `_library_root()/.backups`（默认是开发机真实的 `~/.billiards-desktop/library`）。
@@ -62,7 +68,9 @@ def _make_checkpoints(workspace):
     return ci.list_checkpoints(_CID)
 
 
-def test_list_returns_signed_tokens(workspace):
+def test_list_returns_signed_tokens_per_mode(workspace):
+    """F-12 复审 Important #2 回归：每条检查点必须一次性签出三种 mode 各自的 token（而不是一个
+    只绑 (conversation_id, sha) 的裸 token）——否则任何一个 mode 的 token 都能被改 mode 提交。"""
     _make_checkpoints(workspace)
 
     async def main():
@@ -71,7 +79,9 @@ def test_list_returns_signed_tokens(workspace):
     resp = asyncio.run(main())
     assert len(resp["checkpoints"]) == 2
     for row in resp["checkpoints"]:
-        assert row.get("token")
+        assert set(row.get("tokens", {}).keys()) == {"files_only", "chat_only", "both"}
+        # 三个 token 必须互不相同（各自绑定自己的 mode，不是同一个东西发三份）
+        assert len(set(row["tokens"].values())) == 3
 
 
 def test_restore_files_only_reverts_content(workspace):
@@ -80,9 +90,9 @@ def test_restore_files_only_reverts_content(workspace):
 
     async def main():
         list_resp = await cp_api.list_checkpoints_route(conversation_id=_CID, user=None)
-        token = next(r["token"] for r in list_resp["checkpoints"] if r["sha"] == first["sha"])
+        row = next(r for r in list_resp["checkpoints"] if r["sha"] == first["sha"])
         req = cp_api.CheckpointRestoreRequest(
-            conversation_id=_CID, sha=first["sha"], mode="files_only", token=token,
+            conversation_id=_CID, sha=first["sha"], mode="files_only", token=row["tokens"]["files_only"],
         )
         return await cp_api.restore_checkpoint(req, user=None)
 
@@ -108,11 +118,34 @@ def test_restore_rejects_tampered_token(workspace):
     assert (workspace / "note.txt").read_text(encoding="utf-8") == "第二版"
 
 
+def test_restore_rejects_token_issued_for_a_different_mode(workspace):
+    """F-12 复审 Important #2 核心回归：拿到"只回文件"的合法 token，把 mode 换成 both/chat_only
+    再提交——必须被拒绝，不能因为 token 本身是合法签发的就放行成另一个更危险的模式。"""
+    checkpoints = _make_checkpoints(workspace)
+    first = checkpoints[0]
+
+    async def main():
+        list_resp = await cp_api.list_checkpoints_route(conversation_id=_CID, user=None)
+        row = next(r for r in list_resp["checkpoints"] if r["sha"] == first["sha"])
+        files_only_token = row["tokens"]["files_only"]
+        req = cp_api.CheckpointRestoreRequest(
+            conversation_id=_CID, sha=first["sha"], mode="both", token=files_only_token,
+        )
+        await cp_api.restore_checkpoint(req, user=None)
+
+    with pytest.raises(AIServiceError):
+        asyncio.run(main())
+    # 换 mode 被拒之后，聊天记录/文件都不该被 both 模式动过
+    assert (workspace / "note.txt").read_text(encoding="utf-8") == "第二版"
+
+
 def test_restore_rejects_mismatched_sha_in_token():
     """token 是给另一个 sha 签的，拿去恢复一个不同的 sha 应该被拒绝（防篡改参数裸调）。"""
     from services.agent.approval import sign_approval
 
-    token_for_other_sha = sign_approval("checkpoint_restore", {"conversation_id": _CID, "sha": "b" * 40})
+    token_for_other_sha = sign_approval(
+        "checkpoint_restore", {"conversation_id": _CID, "sha": "b" * 40, "mode": "files_only"}
+    )
 
     async def main():
         req = cp_api.CheckpointRestoreRequest(
@@ -129,7 +162,10 @@ def test_restore_rejects_unknown_mode(workspace):
     first = checkpoints[0]
     from services.agent.approval import sign_approval
 
-    token = sign_approval("checkpoint_restore", {"conversation_id": _CID, "sha": first["sha"]})
+    token = sign_approval(
+        "checkpoint_restore",
+        {"conversation_id": _CID, "sha": first["sha"], "mode": "delete_everything"},
+    )
 
     async def main():
         req = cp_api.CheckpointRestoreRequest(
@@ -139,6 +175,21 @@ def test_restore_rejects_unknown_mode(workspace):
 
     with pytest.raises(AIServiceError):
         asyncio.run(main())
+
+
+def test_restore_request_rejects_working_dir_field(workspace):
+    """F-12 复审 Important #2 回归：working_dir 不再是恢复请求体能填的字段——服务端只从检查点
+    索引里记的、由 PostToolUse 钩子当时真实的 ctx.working_dir 派生，不接受客户端指定任意目录。
+    传了这个字段应该在构造请求体这一步就被拒绝（pydantic 校验不过），而不是被静默接受又不生效、
+    更不能是被真的采用。"""
+    checkpoints = _make_checkpoints(workspace)
+    first = checkpoints[0]
+
+    with pytest.raises(ValidationError):
+        cp_api.CheckpointRestoreRequest(
+            conversation_id=_CID, sha=first["sha"], mode="files_only", token="随便",
+            working_dir="/etc",
+        )
 
 
 def test_restore_chat_only_truncates_transcript(workspace):
@@ -151,7 +202,9 @@ def test_restore_chat_only_truncates_transcript(workspace):
         {"role": "user", "content": "轮1"}, {"role": "assistant", "content": "回复1"},
         {"role": "user", "content": "轮2"}, {"role": "assistant", "content": "回复2"},
     ])
-    token = sign_approval("checkpoint_restore", {"conversation_id": _CID, "sha": second["sha"]})
+    token = sign_approval(
+        "checkpoint_restore", {"conversation_id": _CID, "sha": second["sha"], "mode": "chat_only"}
+    )
 
     async def main():
         req = cp_api.CheckpointRestoreRequest(
@@ -163,7 +216,8 @@ def test_restore_chat_only_truncates_transcript(workspace):
     assert resp["ok"] is True
     assert resp["chat"]["ok"] is True
     # 两条检查点都发生在 hook 触发时（transcript 还没落过盘，len=0），回退到"这一轮开始前"即清空
-    assert load_transcript(_CID) is None
+    # （截断到 0 条后文件"空但存在"，而不是 None——Important #3 回归，见 test_agent_history_transcript.py）
+    assert load_transcript(_CID) == []
     # 文件完全没被 chat_only 模式动过
     assert (workspace / "note.txt").read_text(encoding="utf-8") == "第二版"
 
@@ -175,7 +229,9 @@ def test_restore_both_mode_touches_files_and_chat(workspace):
     checkpoints = _make_checkpoints(workspace)
     first = checkpoints[0]
     save_transcript(_CID, [{"role": "user", "content": "轮1"}, {"role": "assistant", "content": "回复1"}])
-    token = sign_approval("checkpoint_restore", {"conversation_id": _CID, "sha": first["sha"]})
+    token = sign_approval(
+        "checkpoint_restore", {"conversation_id": _CID, "sha": first["sha"], "mode": "both"}
+    )
 
     async def main():
         req = cp_api.CheckpointRestoreRequest(
@@ -187,13 +243,15 @@ def test_restore_both_mode_touches_files_and_chat(workspace):
     assert resp["ok"] is True
     assert resp["files"]["ok"] is True and resp["chat"]["ok"] is True
     assert (workspace / "note.txt").read_text(encoding="utf-8") == "第一版"
-    assert load_transcript(_CID) is None
+    assert load_transcript(_CID) == []
 
 
 def test_restore_unknown_checkpoint_rejected():
     from services.agent.approval import sign_approval
 
-    token = sign_approval("checkpoint_restore", {"conversation_id": _CID, "sha": "a" * 40})
+    token = sign_approval(
+        "checkpoint_restore", {"conversation_id": _CID, "sha": "a" * 40, "mode": "files_only"}
+    )
 
     async def main():
         req = cp_api.CheckpointRestoreRequest(
