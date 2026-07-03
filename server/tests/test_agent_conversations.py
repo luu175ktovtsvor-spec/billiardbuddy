@@ -1,9 +1,19 @@
 """agent 会话/最近作品列表分组逻辑。"""
+import asyncio
 import types
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+
+import models  # noqa: F401  触发全模型注册
 from api.v1.agent import _group_agent_conversations, _recent_artifact_item
+from core.tenant import set_tenant
+from db.base import Base
+from models.generation import Generation
+from models.store import Store
+from models.user import User
 
 
 def _row(cid, msg, day, title=None):
@@ -94,3 +104,58 @@ def test_saved_artifact_is_content_item():
     assert item["title"] == "今晚拉客清单"
     assert item["subtitle"] == "文案作品"
     assert item["content"] == "1. 前厅今晚 7 点前发客户群"
+
+
+def test_get_agent_conversation_roundtrips_display_text():
+    """C2 历史回放半：input_params.display_text 落库后，GET /conversations/{id} 要把它当
+    display_content 带出来；没落 display_text 的老 Generation 回放时不带该字段（向后兼容）。"""
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        store_id, conv_id = uuid.uuid4(), uuid.uuid4()
+        set_tenant(store_id)
+        try:
+            async with Session() as db:
+                u = User(id=uuid.uuid4(), phone="13800000001", password_hash="x", name="tester")
+                db.add(u)
+                await db.flush()
+                db.add(Store(id=store_id, owner_id=u.id, name="本店"))
+                await db.flush()
+                # 显式给两个不同的 created_at，避免同一批 flush 时间戳相同导致 order_by 排序不稳（测试抖动）。
+                db.add(Generation(
+                    id=uuid.uuid4(), store_id=store_id, type="agent", sub_type="chat",
+                    conversation_id=conv_id,
+                    input_params={"message": "帮我把当前屏幕的情况分析一下，写份简要诊断报告给我", "display_text": "看当前屏幕"},
+                    result="诊断已完成",
+                    model_used="agent",
+                    created_at=datetime(2026, 6, 30, 10, 0, 0, tzinfo=timezone.utc),
+                ))
+                db.add(Generation(
+                    id=uuid.uuid4(), store_id=store_id, type="agent", sub_type="chat",
+                    conversation_id=conv_id,
+                    input_params={"message": "这个月经营怎么样"},  # 老会话：没有 display_text
+                    result="本月流水……",
+                    model_used="agent",
+                    created_at=datetime(2026, 6, 30, 10, 1, 0, tzinfo=timezone.utc),
+                ))
+                await db.commit()
+
+                from api.v1.agent import get_agent_conversation
+                res = await get_agent_conversation(str(conv_id), user=None,
+                                                   store=SimpleNamespace(id=store_id), db=db)
+                user_msgs = [m for m in res["messages"] if m["role"] == "user"]
+                assert len(user_msgs) == 2
+                # 带 display_text 的那条：回放要带 display_content，且等于落库时的短标签
+                first = user_msgs[0]
+                assert first["content"] == "帮我把当前屏幕的情况分析一下，写份简要诊断报告给我"
+                assert first["display_content"] == "看当前屏幕"
+                # 没 display_text 的老会话：不带 display_content 字段（向后兼容，前端据此落回 content 全文）
+                second = user_msgs[1]
+                assert second["content"] == "这个月经营怎么样"
+                assert "display_content" not in second
+        finally:
+            set_tenant(None)
+
+    asyncio.run(main())

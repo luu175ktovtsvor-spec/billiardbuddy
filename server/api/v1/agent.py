@@ -484,16 +484,22 @@ async def _learn_in_background(store_id: str, text: str) -> None:
 
 
 async def _persist_agent_chat(db, store, user, message: str, content: str, gen_id: str, conv_uuid, turns: int,
-                              tokens_used: int = 0, source_rec_id: str | None = None) -> None:
+                              tokens_used: int = 0, source_rec_id: str | None = None,
+                              display_text: str | None = None) -> None:
     """落库 agent 会话(type=agent)+conversation_id,供刷新续接/分析,并打点。故障安全:失败不阻断 SSE。
     SH-2：tokens_used 拿循环累加的真实编排消耗（喂 BYOK 成本看板），端点没返回时为粗估值。
-    source_rec_id：本次对话若由今日推荐触发，记下是哪条 → 隐式反馈"采纳上浮"（behavior_service 据此聚合）。"""
+    source_rec_id：本次对话若由今日推荐触发，记下是哪条 → 隐式反馈"采纳上浮"（behavior_service 据此聚合）。
+    display_text：C2 历史回放半——快捷按钮等场景的短标签，纯显示旁路，存进 input_params 供
+    get_agent_conversation 回放时带出；不传（多数场景）时 input_params 结构和以前完全一样，向后兼容。"""
     import uuid as _uuid
     try:
         from models.generation import Generation
+        _input_params: dict = {"message": message}
+        if display_text:
+            _input_params["display_text"] = display_text
         db.add(Generation(
             id=_uuid.UUID(gen_id), store_id=store.id, user_id=(user.id if user else None),
-            type="agent", sub_type="chat", input_params={"message": message},
+            type="agent", sub_type="chat", input_params=_input_params,
             prompt_used=message, result=(content or ""), model_used="agent",
             tokens_used=(tokens_used or 0),
             conversation_id=conv_uuid,
@@ -1185,7 +1191,13 @@ async def get_agent_conversation(
     for g in rows:
         uin = (g.input_params or {}).get("message") if g.input_params else None
         if uin:
-            messages.append({"role": "user", "content": uin})
+            _msg: dict = {"role": "user", "content": uin}
+            # C2 历史回放半：老会话/老客户端没落 display_text → 不带 display_content 字段，
+            # 前端 displayContent ?? content 自动落回全文（向后兼容天然成立）。
+            _dt = (g.input_params or {}).get("display_text") if g.input_params else None
+            if _dt:
+                _msg["display_content"] = _dt
+            messages.append(_msg)
         if g.result:
             messages.append({"role": "assistant", "content": g.result})
     return {"conversation_id": conversation_id, "messages": messages}
@@ -1220,6 +1232,7 @@ async def delete_agent_conversation(
 
 class AgentChatRequest(BaseModel):
     message: str
+    display_text: str | None = None  # C2：快捷按钮等场景，气泡只显示这个短标签；message 原文不变、照常处理
     history: list[dict] | None = None
     model: str | None = None
     conversation_id: str | None = None  # 多轮续接：传它则后端按会话查历史(刷新不丢、省token)
@@ -1619,7 +1632,8 @@ async def _stream_agent_events(body: AgentChatRequest, user: User, store, db, ta
                     persist_text = "\n\n".join(deliverables) + tail
                 _rec_id = body.source_rec_id if not body.conversation_id else None
                 await _persist_agent_chat(db, store, user, body.message, persist_text, gen_id, conv_uuid,
-                                          turns, tokens_used=tokens_used, source_rec_id=_rec_id)
+                                          turns, tokens_used=tokens_used, source_rec_id=_rec_id,
+                                          display_text=body.display_text)
                 try:
                     from services.agent.transcript import save_transcript
                     save_transcript(str(conv_uuid), getattr(ctx, "final_messages", None))
@@ -1634,7 +1648,8 @@ async def _stream_agent_events(body: AgentChatRequest, user: User, store, db, ta
         if deliverables or final_content.strip():
             try:
                 _pt = "\n\n".join(deliverables) + (f"\n\n{final_content}" if final_content.strip() else "") if deliverables else final_content
-                await _persist_agent_chat(db, store, user, body.message, _pt, gen_id, conv_uuid, turns, tokens_used=0)
+                await _persist_agent_chat(db, store, user, body.message, _pt, gen_id, conv_uuid, turns, tokens_used=0,
+                                          display_text=body.display_text)
             except Exception:
                 logger.exception("error path: 成品落库失败")
         yield {"type": "error", "error": e.message, "need_byok": e.status_code == 503}
@@ -1647,7 +1662,8 @@ async def _stream_agent_events(body: AgentChatRequest, user: User, store, db, ta
         if deliverables or final_content.strip():
             try:
                 _pt = "\n\n".join(deliverables) + (f"\n\n{final_content}" if final_content.strip() else "") if deliverables else final_content
-                await _persist_agent_chat(db, store, user, body.message, _pt, gen_id, conv_uuid, turns, tokens_used=0)
+                await _persist_agent_chat(db, store, user, body.message, _pt, gen_id, conv_uuid, turns, tokens_used=0,
+                                          display_text=body.display_text)
             except Exception:
                 logger.exception("error path: 成品落库失败")
         yield {"type": "error", "error": "生成过程中出现错误，请重试"}
