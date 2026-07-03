@@ -1974,12 +1974,24 @@ async def agent_execute(
     # 验证通过就等于老板已经明确点头允许了这组参数里的这个具体路径——把它一次性并进
     # 这次请求的 allowed_paths 是兑现闸已经放行的授权，不是绕过闸的后门；且只对本次执行生效，
     # 不做任何跨请求/跨会话的持久化（下一次主循环再摸这个路径，仍然会照常重新弹卡）。
+    #
+    # F-6 复审修复：批准的 path/output_path 若是【相对路径】（如 `../../外部.txt`），不能原样
+    # 塞进 allowed_paths——下面 `_allowed_paths()` 对列表每项是裸调 `Path(s).resolve()`（相对
+    # 【进程 CWD】解析），跟 `_resolve()` 判越界时"相对路径 = 相对 working_dir/内容库解析"的
+    # 坐标系对不上，会导致已批准的相对越界路径摆进 allowed_paths 后算出的绝对路径依然对不上号，
+    # `_resolve()` 里的比较照样失败、抛 ValueError（现象＝签名批准后仍 500）。
+    # 用 `local_tools.resolve_under_base` 把原始参数先归一成跟 `_resolve` 同坐标系的绝对路径字符串
+    # 再放进去——base 逻辑只在 local_tools 那一处维护，这里不重抄一份（会跟 `_resolve` 漂移）。
+    from services.agent.local_tools import resolve_under_base
     approval_paths: list[str] = list(body.selected_files or [])
     if getattr(tool, "approval_class", None) == "file":
         for _key in ("path", "output_path"):
             _val = args.get(_key)
             if isinstance(_val, str) and _val.strip():
-                approval_paths.append(_val)
+                try:
+                    approval_paths.append(resolve_under_base(_val, body.working_dir))
+                except Exception:
+                    approval_paths.append(_val)  # 归一失败极端兜底：退回原值，不比归一前更差
 
     _m, full_disk = _resolve_permission(None, body.full_disk_access)
     ctx = AgentContext(

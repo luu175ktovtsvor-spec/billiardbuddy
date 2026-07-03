@@ -750,17 +750,38 @@ def _risk_escalation_reason(tool, args, ctx) -> dict:
     }
 
 
-def _oob_approval_reason(tool, oob_path: str) -> dict:
+def _oob_approval_reason(tool, args: dict, ctx) -> dict:
     """越界文件写入的专属审批理由——比 `_build_approval_reason` 的"file"通用文案更直接地
     说清楚"为什么这次要额外问一句"：不是因为"要改文件"（那本来就都会问），而是因为目标根本
-    不在老板划的工作区里。"""
+    不在老板划的工作区里。
+
+    F-6 复审 Minor 修复：`_file_target_oob` 只返回【先命中】的那一个越界字段（path 优先，
+    避免同一次调用重复弹两张卡），但授权时（`/agent/execute`）path/output_path 两个越界字段
+    其实都会被一次性批准放行——文案只字不提第二个越界目标会让老板看不清自己到底点头允许了
+    什么。这里改成直接拿 `args`+`ctx` 重新过一遍 `is_path_allowed`（跟 `_file_target_oob`
+    同一个判据源，不重造），把 path/output_path 里【所有】越界的字段都列进 why/impact。"""
     name = getattr(tool, "name", "?")
     desc = (getattr(tool, "description", "") or "").split("。")[0]
     what = desc if desc else f"执行「{name}」"
+    oob_targets: list[str] = []
+    if isinstance(args, dict):
+        for key in ("path", "output_path"):
+            target = args.get(key)
+            if not target:
+                continue
+            try:
+                if is_path_allowed(target, ctx):
+                    continue
+            except Exception:
+                continue
+            oob_targets.append(target)
+    # 故障安全兜底：理论上走到这里前 `_file_target_oob` 已判定至少一个越界；
+    # 万一两次判定间环境突变导致一个都没重新命中，仍给个通用文案，不让空列表拼出空话。
+    joined = "、".join(f"`{t}`" for t in oob_targets) if oob_targets else "工作区外的目标路径"
     return {
         "what": what,
-        "why": f"它想写到工作区外的 `{oob_path}`，这不在你划定的内容库/工作目录范围内，需要你点头才能碰。",
-        "impact": f"确认后才会真正改动：{oob_path}。改前会自动备份、可回滚；不确认就先不动它。",
+        "why": f"它想写到工作区外的 {joined}，这不在你划定的内容库/工作目录范围内，需要你点头才能碰。",
+        "impact": f"确认后才会真正改动：{joined}。改前会自动备份、可回滚；不确认就先不动它。",
     }
 
 
@@ -850,7 +871,7 @@ def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _Too
                         fallback_msg=_DENIAL_FALLBACK_MSG.format(name=name),
                     )
                 if oob_path:
-                    reason = _oob_approval_reason(tool, oob_path)
+                    reason = _oob_approval_reason(tool, args, ctx)
                 elif risk_escalated:
                     reason = _risk_escalation_reason(tool, args, ctx)
                 else:

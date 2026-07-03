@@ -46,21 +46,48 @@ def _allowed_paths(ctx) -> list[Path]:
     return out
 
 
-def _resolve(rel_or_abs: str, ctx=None) -> Path:
-    """把传入路径解析进沙箱并校验不越界。沙箱 = 内容库 + 工作目录 + 用户当场选定的文件/目录。
-    返回绝对 Path；越界抛 ValueError。相对路径落工作目录(没设则落内容库)。
-    ctx.full_disk_access=True 时不限范围(桌面应用默认 True；沙箱模式才传 False·对标 CC 全盘可达)。"""
+def resolve_under_base(raw_path: str, working_dir: str | None = None) -> str:
+    """把路径按跟 `_resolve` 完全同源的 base 逻辑（工作目录 or 内容库）拼成绝对路径字符串。
+    只做"拼路径"这一步，不做沙箱越界校验、不抛错——越界判定的唯一真相源仍在 `_resolve`。
+
+    专供 `/agent/execute` 审批闸场景复用（F-6 复审修复）：老板签名批准了一个越界写的
+    path/output_path 后，服务端要把这个【已批准】的原始参数并进 `ctx.allowed_paths` 才能
+    让这次执行真的放行。但原始参数可能是相对路径（如 `../../外部.txt`），而
+    `_allowed_paths()` 对列表里每一项是裸调 `Path(s).resolve()`——相对【进程 CWD】解析；
+    这跟 `_resolve()` 判越界时"相对路径 = 相对 working_dir/内容库解析"的坐标系对不上，
+    会导致明明已经批准的相对越界路径，摆进 allowed_paths 后算出的绝对路径依然跟
+    `_resolve()` 里真正用来比较的绝对路径对不上号，越界判定照样失败、抛 ValueError。
+    调用方（如 `api/v1/agent.py` 的 execute 端点）在批准后、塞进 allowed_paths 前，
+    先用这个函数把原始参数归一成跟 `_resolve` 同坐标系的绝对路径字符串即可对齐。
+    绝对路径原样解析（不会被错当相对路径去拼 base）。"""
     lib = _library_root().resolve()
     wd = None
-    raw_wd = (getattr(ctx, "working_dir", None) or "").strip() or None  # 与 Task1 一致:纯空白当没设
+    raw_wd = (working_dir or "").strip() or None  # 与 _resolve 一致:纯空白当没设
     if raw_wd:
         try:
             wd = Path(raw_wd).resolve()
         except (OSError, ValueError):
             wd = None
     base = wd or lib
-    p = Path(rel_or_abs)
+    p = Path(raw_path)
     path = (p if p.is_absolute() else base / p).resolve()
+    return str(path)
+
+
+def _resolve(rel_or_abs: str, ctx=None) -> Path:
+    """把传入路径解析进沙箱并校验不越界。沙箱 = 内容库 + 工作目录 + 用户当场选定的文件/目录。
+    返回绝对 Path；越界抛 ValueError。相对路径落工作目录(没设则落内容库)。
+    ctx.full_disk_access=True 时不限范围(桌面应用默认 True；沙箱模式才传 False·对标 CC 全盘可达)。"""
+    lib = _library_root().resolve()
+    raw_wd = getattr(ctx, "working_dir", None)
+    wd = None
+    _stripped_wd = (raw_wd or "").strip() or None  # 与 resolve_under_base 一致:纯空白当没设
+    if _stripped_wd:
+        try:
+            wd = Path(_stripped_wd).resolve()
+        except (OSError, ValueError):
+            wd = None
+    path = Path(resolve_under_base(rel_or_abs, raw_wd))  # 拼路径这步与审批闸归一逻辑同源，不重造
     if getattr(ctx, "full_disk_access", False):
         return path
     # 内容库内 / 工作目录内 → 放行

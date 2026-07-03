@@ -240,6 +240,78 @@ def test_execute_authorizes_signed_oob_output_path(tmp_path, monkeypatch):
         _unregister(name)
 
 
+# ══════════════════ 审批闸 2.0 复审修复 · F-6：相对路径越界（`../` 逃逸）批准后坐标系对齐 ══════════════════
+#
+# 背景：上面 Critical #1 的三条测试用的都是【绝对路径】（tmp_path 拼出来），漏了"相对路径越界"这个
+# 形状。根因：agent.py 把 args["path"]/["output_path"] 的原始字符串（可能是相对路径，如
+# `../../外部.txt`）直接塞进 approval_paths → ctx.allowed_paths；但 `local_tools._allowed_paths()`
+# 对列表每项裸调 `Path(s).resolve()`——相对【进程 CWD】解析，跟 `_resolve()` 判越界时"相对路径 =
+# 相对 ctx.working_dir/内容库解析"的坐标系完全对不上，导致已签名批准的相对越界路径，摆进
+# allowed_paths 后算出的绝对路径依然跟 `_resolve()` 里真正比较用的绝对路径对不上号——越界判定
+# 照样失败、抛 ValueError（现象＝老板点了"允许"却收到 500）。
+#
+# 修法：`agent.py` 用 `local_tools.resolve_under_base()`（跟 `_resolve` 同源的 base 拼路径逻辑）
+# 把批准的原始参数先归一成绝对路径字符串，再塞进 allowed_paths。下面锁：① 相对路径越界（`../../`
+# 逃逸）批准后能真正写成功；② output_path 相对越界同样被归一授权；③ 归一不影响原有【绝对路径】
+# 越界用例（上面三条测试）仍然全绿——不能顾此失彼。
+
+def test_execute_authorizes_signed_oob_relative_path_write(tmp_path, monkeypatch):
+    """核心回归：`path` 是【相对路径】（`../../外部.txt`，相对 ctx.working_dir 逃逸出工作目录/
+    内容库）——签名批准后必须真正写成功，不能因坐标系不一致仍 500。"""
+    lib = tmp_path / "library"
+    lib.mkdir()
+    monkeypatch.setenv("DESKTOP_LIBRARY_DIR", str(lib))
+    workdir = tmp_path / "a" / "b"
+    workdir.mkdir(parents=True)
+    outside = tmp_path / "外部报表.txt"  # 相对 workdir 是 ../../外部报表.txt
+
+    name = f"__test_exec_oob_relpath_{uuid.uuid4().hex[:8]}"
+    _register_temp_tool(name, lt.write_file, approval_class="file")
+    try:
+        rel_path = "../../外部报表.txt"
+        args = {"path": rel_path, "content": "老板批准写这份(相对越界)"}
+        token = sign_approval(name, args)
+        body = AgentExecuteRequest(
+            tool=name, args=args, token=token, full_disk_access=False, working_dir=str(workdir),
+        )
+        res = _exec(body)
+        assert "已写入" in res["result"], f"相对越界写在签名批准后应真正执行成功，而不是 500/异常：{res}"
+        assert outside.exists()
+        assert outside.read_text(encoding="utf-8") == "老板批准写这份(相对越界)"
+    finally:
+        _unregister(name)
+
+
+def test_execute_authorizes_signed_oob_relative_output_path(tmp_path, monkeypatch):
+    """`output_path` 是相对路径越界（edit_image 一类"另存"参数）——同样要被归一授权。"""
+    lib = tmp_path / "library"
+    lib.mkdir()
+    monkeypatch.setenv("DESKTOP_LIBRARY_DIR", str(lib))
+    workdir = tmp_path / "a" / "b"
+    workdir.mkdir(parents=True)
+    outside = tmp_path / "另存.txt"
+
+    async def handler(args, ctx):
+        path = lt._resolve(args["output_path"], ctx)  # noqa: SLF001 —— 直接复用真实沙箱判定
+        path.write_text(args["content"], encoding="utf-8")
+        return "已另存"
+
+    name = f"__test_exec_oob_reloutput_{uuid.uuid4().hex[:8]}"
+    _register_temp_tool(name, handler, approval_class="file")
+    try:
+        rel_output = "../../另存.txt"
+        args = {"output_path": rel_output, "content": "另存内容(相对越界)"}
+        token = sign_approval(name, args)
+        body = AgentExecuteRequest(
+            tool=name, args=args, token=token, full_disk_access=False, working_dir=str(workdir),
+        )
+        res = _exec(body)
+        assert res["result"] == "已另存"
+        assert outside.read_text(encoding="utf-8") == "另存内容(相对越界)"
+    finally:
+        _unregister(name)
+
+
 def test_execute_does_not_authorize_oob_path_without_valid_signature():
     """反向对照：签名对不上（老板没点这个/参数被篡改）不能白拿到这份"一次性授权"——
     验签失败在授权逻辑之前就该拦下，文件不该被写、也不该绕过签名闸。"""
