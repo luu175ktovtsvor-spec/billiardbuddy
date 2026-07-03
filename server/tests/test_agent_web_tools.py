@@ -13,6 +13,8 @@ from types import SimpleNamespace
 
 import httpx
 
+import services.agent.tools  # noqa: F401  确保台球专属工具（read_only）已注册进 default_registry，
+                              # 不然本文件单独跑时 #55 泄漏测试会因为注册表里压根没有这几个工具而假绿。
 import services.agent.web_tools as web_tools
 from services.agent.registry import default_registry
 
@@ -391,3 +393,51 @@ def test_resolve_subagent_safety_redline_falls_back_when_import_fails(monkeypatc
     redline = web_tools._resolve_subagent_safety_redline()
     assert redline == web_tools._FALLBACK_SAFETY_REDLINE
     assert "实际性交易" in redline and ("赌场" in redline or "赌博" in redline)
+
+
+# ────────────────────────────── run_subagent · #55 通用模式不得泄漏台球专属工具 ──────────────────────────────
+# 根因：改前 run_subagent 内建 sub_registry 时遍历全局 default_registry、只按 read_only 过滤，完全不看
+# ctx.billiards_mode——4 个 read_only=True 的台球专属工具（get_today_recommendation/find_scenario/
+# look_up_knowledge/read_knowledge）会被塞进【通用模式】子代理，绕过主循环 general_registry() 的模式门控。
+# 这里钉住：通用模式子代理工具集里没有它们；billiards_mode=True 时仍能拿到（证明没误伤台球场景）。
+
+_BILLIARDS_READONLY_TOOLS = {
+    "get_today_recommendation", "find_scenario", "look_up_knowledge", "read_knowledge",
+}
+
+
+def test_run_subagent_general_mode_excludes_billiards_tools(monkeypatch):
+    import services.agent.loop as loop_mod
+
+    captured = {}
+
+    async def fake_loop(**kw):
+        captured.update(kw)
+        return SimpleNamespace(final_text="子代理做完了")
+
+    monkeypatch.setattr(loop_mod, "run_agent_loop", fake_loop)
+
+    ctx = _ctx()
+    ctx.billiards_mode = False
+    asyncio.run(web_tools.run_subagent({"task": "查一下资料"}, ctx))
+    sub_names = {t.name for t in captured["registry"].all()}
+    leaked = sub_names & _BILLIARDS_READONLY_TOOLS
+    assert not leaked, f"通用模式子代理不应拿到台球专属工具，泄漏了：{leaked}"
+
+
+def test_run_subagent_billiards_mode_includes_readonly_billiards_tools(monkeypatch):
+    import services.agent.loop as loop_mod
+
+    captured = {}
+
+    async def fake_loop(**kw):
+        captured.update(kw)
+        return SimpleNamespace(final_text="子代理做完了")
+
+    monkeypatch.setattr(loop_mod, "run_agent_loop", fake_loop)
+
+    ctx = _ctx()
+    ctx.billiards_mode = True
+    asyncio.run(web_tools.run_subagent({"task": "查一下资料"}, ctx))
+    sub_names = {t.name for t in captured["registry"].all()}
+    assert _BILLIARDS_READONLY_TOOLS <= sub_names, "billiards_mode=True 时子代理应仍能拿到台球只读工具"
