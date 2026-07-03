@@ -34,6 +34,8 @@ from services.agent import plugins as _agent_plugins  # noqa: F401  注册 insta
 from services.agent import mcp_client as _agent_mcp  # noqa: F401  MCP 客户端（动态发现外部 server 工具）
 from services.agent.goal_hook import install_goal_hook as _install_goal_hook
 _install_goal_hook()  # /goal 目标驱动 Stop hook（常驻；无 ctx.goal 时 no-op）
+from services.agent.shadow_git_hook import install_shadow_git_hook as _install_shadow_git_hook
+_install_shadow_git_hook()  # F-12 影子 git 检查点 PostToolUse hook（常驻；无 git/工作目录时静默降级）
 from starlette.background import BackgroundTask
 
 from api.deps import get_current_store, get_current_user, get_db

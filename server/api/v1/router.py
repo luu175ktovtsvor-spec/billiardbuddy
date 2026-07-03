@@ -17,6 +17,7 @@ from api.v1.canvas import router as canvas_router
 from api.v1.studio import router as studio_router
 from api.v1.video_edit import router as video_edit_router
 from api.v1.notifications import router as notifications_router
+from api.v1.checkpoints import router as checkpoints_router
 
 router = APIRouter()
 
@@ -31,6 +32,7 @@ router.include_router(canvas_router, prefix="/canvas", tags=["画布定向改写
 router.include_router(studio_router, prefix="/studio", tags=["生成工作室·直连"])
 router.include_router(video_edit_router, prefix="/video-edit", tags=["AI 剪辑台·直连"])
 router.include_router(notifications_router, prefix="/notifications", tags=["通知中心"])
+router.include_router(checkpoints_router, prefix="/checkpoints", tags=["检查点·影子git回滚"])
 
 
 @router.get("/health")

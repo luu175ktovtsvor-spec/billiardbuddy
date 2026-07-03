@@ -26,6 +26,38 @@ function resolveFfBins() {
   return out;
 }
 
+// F-12 影子 git 检查点用的 git 可执行文件:resources/git-bin/ 下浅层扫描找 git(.exe)。
+// 目前 resources/git-bin 只是个占位空目录（见 build.extraResources + CI 的"影子 git 二进制占位目录"
+// 步骤）——真的打进 Windows MinGit 便携版 / mac 静态 git 二进制是 G2(真机打包验收)的活。
+// 这里先把"找到就注入 env"的通路打通:用扫描而不是硬编码具体子路径,是因为不同的可移植 git 分发
+// 内部目录结构不一样(MinGit 是 cmd/git.exe，其它静态构建可能是 bin/git)，等 G2 真正落地二进制后
+// 不用再改这段代码，自动生效。找不到就不设 env，后端自己会退去找系统 git
+// （server/services/shadow_git.py 的 git_binary_path()，那边同样有"没有就优雅降级"的兜底）。
+function resolveGitBin() {
+  if (!process.resourcesPath) return {};
+  const base = path.join(process.resourcesPath, "git-bin");
+  if (!fs.existsSync(base)) return {};
+  const names = process.platform === "win32" ? ["git.exe"] : ["git"];
+  const found = _findFileShallow(base, names, 4); // 最多往下探 4 层，防目录树异常庞大时扫太久
+  return found ? { GIT_BIN: found } : {};
+}
+
+function _findFileShallow(dir, names, depthLeft) {
+  if (depthLeft < 0) return null;
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return null; }
+  for (const e of entries) {
+    if (e.isFile() && names.includes(e.name)) return path.join(dir, e.name);
+  }
+  for (const e of entries) {
+    if (e.isDirectory()) {
+      const hit = _findFileShallow(path.join(dir, e.name), names, depthLeft - 1);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
 function backendUrl() { return `http://${HOST}:${_port}`; }
 
 // 读取【内置 bundle 密钥】并注入后端进程 env（全内置·用户零配置；key 不写进 git 源码，只放 gitignored 文件/打包资源）。
@@ -136,6 +168,9 @@ function _spawnProc({ userDataDir, repoRoot, onLog }) {
     // ffmpeg/ffprobe 二进制路径(装机版 ffbin.py 的回退写死 desktop/node_modules,装机包不存在 → 必须显式注入)。
     // asar 里的二进制不可执行 → 指到 app.asar.unpacked(需 package.json build.asarUnpack 带 ffmpeg-static/ffprobe-static)。
     ...resolveFfBins(),
+    // F-12 影子 git 检查点:装机包若带了可移植 git(见 resolveGitBin 注释,真机打包归 G2)才注入;
+    // 没找到就不设，shadow_git.py 自己会退去找系统 git，再没有就优雅降级、不影响任何核心功能。
+    ...resolveGitBin(),
   };
   // PyInstaller onedir 产物:resources/backend/billiards_backend/billiards_backend(目录里的内层 exe)。
   const exeName = process.platform === "win32" ? "billiards_backend.exe" : "billiards_backend";

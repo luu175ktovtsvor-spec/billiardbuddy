@@ -48,6 +48,13 @@
         ]
       },
       {
+        "from": "resources/git-bin",
+        "to": "git-bin",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
         "from": "resources/backend",
         "to": "backend",
         "filter": [
