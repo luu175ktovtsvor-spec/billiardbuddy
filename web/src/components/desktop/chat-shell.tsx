@@ -786,6 +786,7 @@ export function DesktopChatShell({
           draft={chat.draft}
           reasoningDraft={chat.reasoningDraft}
           liveSteps={chat.liveSteps}
+          liveTodo={chat.liveTodo}
           generating={chat.generating}
           executingIdx={chat.executingIdx}
           onConfirm={chat.confirmApproval}

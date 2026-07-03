@@ -37,6 +37,11 @@ from services.agent.local_tools import (  # 无循环依赖;注册 DESKTOP_LOCAL
 )
 from services.agent.message_repair import ensure_tool_pairing
 from services.agent.registry import ToolRegistry
+from services.agent.web_tools import (  # F4 Focus Chain：与 todo_write 共用同一份清单真相源/渲染，不重复实现
+    _normalize_todos,
+    format_todo_checklist,
+    parse_progress_markdown,
+)
 from services.agent.vision_degrade import (
     looks_like_vision_error,
     messages_have_images,
@@ -494,6 +499,11 @@ class _ToolPlan:
     reason: dict | None = None      # SH-8 结构化审批理由 {what/why/impact}，随 approval_request 带给前端
     fallback: bool = False          # SH-8 连续拒绝回退：True=该动作老板已反复拒、不再提请，改走文本/换方案
     fallback_msg: str | None = None  # fallback 时回灌给模型的"这个先不做了、换法子"提示
+    # F4 Focus Chain：本次 tool_call 若带了能解析出合法项的 task_progress，这里放好渲染好的展示文本
+    # （"任务清单（共 N 步，已完成 M 步）：..."）——调用方（两状态机）据此吐一个 todo_update 事件/步骤，
+    # 让前端原地更新同一张清单卡。None = 这次没带有效清单，不吐事件。不管本次调用最终是否被执行/被拒/
+    # 待审批，只要模型贴了清单就该让老板看到最新进度——所以在 _plan_tool_call 里【所有分支都会带上它】。
+    progress_snapshot: str | None = None
 
 
 def _trajectory_with_final(messages: list[dict], final_content: str | None) -> list[dict]:
@@ -703,6 +713,92 @@ def _pop_security_risk(args: dict) -> str | None:
     return val if val in _SECURITY_RISK_LEVELS else None
 
 
+# ══════════════════════════════ F4 Focus Chain（抄 Cline）══════════════════════════════
+# 模型可在任意工具调用里顺手带一个可选 task_progress（markdown 复选清单），loop 摘出来更新
+# ctx.todos（与 todo_write 共用同一份真相源，见 web_tools.format_todo_checklist/parse_progress_markdown）+
+# 计数；连续 _PROGRESS_REMIND_EVERY 次都没更新就在下一轮调模型前提醒一句（带百分比）。
+
+# 连续多少次工具调用没更新进度清单就提醒一次（Cline 原型用 6，抄同款阈值）。
+_PROGRESS_REMIND_EVERY = 6
+
+_PROGRESS_REMIND_WITH_PCT = (
+    "[系统提醒] 你已经连续 {n} 次工具调用没有更新任务进度清单了（当前进度 {done}/{total}，{pct}%）。"
+    "如果任务还没做完，下次调用工具时顺手在 task_progress 参数里贴一份最新的 markdown 复选清单"
+    "（如 `- [x] 已做\n- [ ] 待做`），方便老板看你做到哪了，也帮你自己别跑偏。"
+)
+_PROGRESS_REMIND_NO_PROGRESS = (
+    "[系统提醒] 你已经连续 {n} 次工具调用了。如果这是个需要好几步才能做完的任务，"
+    "建议用 task_progress 参数列一个 markdown 复选清单（如 `- [x] 已做\n- [ ] 待做`），"
+    "方便老板看进度、也帮你自己别跑偏；一步到位的简单任务不用管这条提醒。"
+)
+
+
+def _pop_task_progress(args: dict) -> str | None:
+    """F4 Focus Chain：从解析出的入参里剥离模型顺手贴的 `task_progress`（不是工具真参数）。
+
+    剥离理由与 `_pop_security_risk` 一致（不喂进 handler / 不进签名 / 不进回灌噪音），不再重复展开。
+    这里只要求非空字符串——"能不能解析出合法清单项"留给 `parse_progress_markdown` 判断（见
+    `_update_task_progress`），别在这一步就挑剔格式，否则"格式差一点"会悄悄退化成"没更新"，
+    对模型不公平也难排查。"""
+    if not isinstance(args, dict):
+        return None
+    val = args.pop("task_progress", None)
+    return val if isinstance(val, str) and val.strip() else None
+
+
+def _todos_percent(todos) -> tuple[int, int] | None:
+    """从 ctx.todos 算 (已完成, 总数)；清单为空/不是列表 → None（供提醒文案判断"要不要带百分比"）。"""
+    if not isinstance(todos, list) or not todos:
+        return None
+    total = len(todos)
+    done = sum(1 for t in todos if isinstance(t, dict) and t.get("status") == "done")
+    return done, total
+
+
+def _update_task_progress(ctx: AgentContext, task_progress: str | None) -> str | None:
+    """把模型顺手贴的 markdown 复选清单解析进 `ctx.todos`（与 todo_write 同一份真相源），
+    并维护"连续几次没更新"的计数。返回本次若有有效更新时的人话展示文本（`format_todo_checklist`
+    渲染好的），供调用方吐 todo_update 事件/步骤；None = 这次没带 / 解析不出合法清单项，
+    此时按"没更新"计数 +1（不能让"贴了但格式不对"悄悄被当成已更新，那样提醒机制永远不会触发）。"""
+    if ctx is None:
+        return None
+    if not task_progress:
+        ctx.requests_since_progress = getattr(ctx, "requests_since_progress", 0) + 1
+        return None
+    todos = parse_progress_markdown(task_progress)
+    if not todos:
+        ctx.requests_since_progress = getattr(ctx, "requests_since_progress", 0) + 1
+        return None
+    ctx.task_progress = task_progress
+    ctx.todos = todos
+    ctx.requests_since_progress = 0
+    return format_todo_checklist(todos)
+
+
+def _maybe_remind_progress(messages: list[dict], ctx) -> bool:
+    """F4 Focus Chain 请求数提醒：连续 `_PROGRESS_REMIND_EVERY` 次工具调用都没更新进度清单
+    （task_progress 参数 / todo_write 工具，两条路径共用 `ctx.requests_since_progress` 这个计数）→
+    尾部追加一条提醒消息（只加在尾部、绝不动前面历史，保 prompt-cache 前缀），带百分比（若已有清单）。
+
+    位置纪律与 `_drain_steering`/`_drain_view_images` 一致：只能在【一批 tool 结果全部追加、
+    配对完整之后】调用。提醒发出即计数清零，不刷屏（不会连续两轮都提醒）。
+    返回是否真注入了提醒（供调用方按需感知，目前两个入口都不需要据此再做什么）。"""
+    if ctx is None:
+        return False
+    count = getattr(ctx, "requests_since_progress", 0)
+    if count < _PROGRESS_REMIND_EVERY:
+        return False
+    pct = _todos_percent(getattr(ctx, "todos", None))
+    if pct:
+        done, total = pct
+        msg = _PROGRESS_REMIND_WITH_PCT.format(n=count, done=done, total=total, pct=round(done * 100 / total))
+    else:
+        msg = _PROGRESS_REMIND_NO_PROGRESS.format(n=count)
+    messages.append({"role": "user", "content": msg})
+    ctx.requests_since_progress = 0
+    return True
+
+
 def _file_target_oob(tool, args: dict, ctx) -> str | None:
     """审批闸 2.0 · ① 文件类越界预判：写改类文件工具（`approval_class == "file"`）给了 `path`/
     `output_path` 时，判断这些目标此刻会不会撞沙箱墙——复用 `local_tools.is_path_allowed`（语义与
@@ -801,13 +897,18 @@ def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _Too
 
     # 审批闸 2.0 · ②：剥离模型自评的风险档位（不是工具真参数，见 _pop_security_risk 注释）。
     security_risk = _pop_security_risk(args)
+    # F4 Focus Chain：剥离模型顺手贴的进度清单（同样不是工具真参数），更新 ctx.todos + 计数。
+    # 不管这次调用最终是执行/待审批/被拒/入参错误，只要模型贴了清单就该更新——所以下面【每个
+    # 分支返回的 _ToolPlan 都带上 progress_snapshot】，不只挂在"正常执行"这一条路径上。
+    progress_snapshot = _update_task_progress(ctx, _pop_task_progress(args))
 
     tool = registry.get(name) if name else None
     if tool is not None:
         # 入参校验先于审批闸：参数都不合法就别提请确认，直接把错误回灌让模型改参数重试。
         err = _validate_args(tool, args)
         if err:
-            return _ToolPlan(name=name, args=args, tool_call_id=tc_id, error=err)
+            return _ToolPlan(name=name, args=args, tool_call_id=tc_id, error=err,
+                             progress_snapshot=progress_snapshot)
 
         # 审批闸 2.0 · ①"撞墙才问"的命令类判据：命中即永不允许执行（如 run_command 的危险黑名单）→
         # 直接把原因回灌，既不占审批卡名额（ask/auto_files 档不必让老板看一张"点了也没用"的确认卡），
@@ -821,7 +922,8 @@ def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _Too
                 logger.exception("危险判定钩子出错，保守直接拒: %s", name)
                 fatal = "系统判定这次调用有异常风险，出于安全直接拒绝执行。"
             if fatal:
-                return _ToolPlan(name=name, args=args, tool_call_id=tc_id, error=f"[拒绝执行] {fatal}")
+                return _ToolPlan(name=name, args=args, tool_call_id=tc_id, error=f"[拒绝执行] {fatal}",
+                                 progress_snapshot=progress_snapshot)
 
         if getattr(tool, "is_question", False):
             return _ToolPlan(
@@ -831,6 +933,7 @@ def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _Too
                     "options": args.get("options", []) or [],
                     "multi": bool(args.get("allow_multiple")),
                 },
+                progress_snapshot=progress_snapshot,
             )
         # 计划模式(plan)：只规划不动手——只读工具放行去探索，会动手的(写文件/跑命令/对外/操作电脑等)一律不执行，
         # 回灌"计划模式下跳过"，让模型把完整计划讲给老板（对标 Claude Code 的 plan mode）。
@@ -838,6 +941,7 @@ def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _Too
             return _ToolPlan(
                 name=name, args=args, tool_call_id=tc_id, fallback=True,
                 fallback_msg=_PLAN_MODE_SKIP_MSG.format(name=name),
+                progress_snapshot=progress_snapshot,
             )
         needs_approval = tool.requires_approval
         if not needs_approval and callable(getattr(tool, "requires_approval_for", None)):
@@ -869,6 +973,7 @@ def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _Too
                     return _ToolPlan(
                         name=name, args=args, tool_call_id=tc_id, fallback=True,
                         fallback_msg=_DENIAL_FALLBACK_MSG.format(name=name),
+                        progress_snapshot=progress_snapshot,
                     )
                 if oob_path:
                     reason = _oob_approval_reason(tool, args, ctx)
@@ -881,8 +986,9 @@ def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _Too
                     pending_msg=_APPROVAL_PENDING_MSG.format(name=name),
                     preview=_approval_preview(tool, args, ctx),
                     reason=reason,
+                    progress_snapshot=progress_snapshot,
                 )
-    return _ToolPlan(name=name, args=args, tool_call_id=tc_id)
+    return _ToolPlan(name=name, args=args, tool_call_id=tc_id, progress_snapshot=progress_snapshot)
 
 
 # JSON Schema 基本类型 → Python 类型（够覆盖工具入参那些简单 schema；纯标准库，不引第三方校验库，免打包/部署多依赖）
@@ -1060,6 +1166,11 @@ async def run_agent_loop(
         # 逐个处理工具调用：审批闸判定 → （待确认 回灌"待确认" | 执行 回灌结果）
         for tc in resp.tool_calls:
             plan = _plan_tool_call(tc, registry, ctx)
+            # F4 Focus Chain：本次调用带了能解析出合法项的 task_progress → 记一笔 todo_update，
+            # 让前端原地更新同一张清单卡。不管这次调用最终走哪个分支（错误/待确认/正常执行），
+            # 只要模型贴了清单就该让老板看到，所以放在分支判断之前、对所有分支都生效。
+            if plan.progress_snapshot:
+                steps.append(AgentStep(type="todo_update", content=plan.progress_snapshot))
             if plan.error:  # 入参校验未过：记一笔调用 + 错误结果，回灌让模型改参数重试，不执行
                 steps.append(AgentStep(type="tool_call", tool_name=plan.name, tool_args=plan.args,
                                        tool_call_id=plan.tool_call_id))
@@ -1090,6 +1201,12 @@ async def run_agent_loop(
             steps.append(AgentStep(type="tool_call", tool_name=plan.name, tool_args=plan.args,
                                    tool_call_id=plan.tool_call_id))
             result_str = await _execute_tool(registry, plan.name, plan.args, ctx)
+            # F4 Focus Chain：todo_write 是另一条"更新进度"路径（与 task_progress 参数共用 ctx.todos）——
+            # 真给了合法清单才算数（别把一次校验失败的空调用也当成"更新过了"），同样清计数 + 记一笔 todo_update。
+            if plan.name == "todo_write" and _normalize_todos((plan.args or {}).get("todos")):
+                ctx.requests_since_progress = 0
+                if ctx.todos:
+                    steps.append(AgentStep(type="todo_update", content=format_todo_checklist(ctx.todos)))
             # B-2 依据可见：工具若注入了行业知识（deliverable 工具写进 ctx.last_knowledge_used），
             # 把名字挂到本条 tool_result 的 meta；取后立即复位，防串到下一个工具。
             _meta = None
@@ -1105,6 +1222,8 @@ async def run_agent_loop(
         # 方向盘：本批工具做完、下次调模型前，把跑动中用户捎的话注入（尾部追加，保前缀缓存），下一轮当场改道。
         if _drain_steering(messages, ctx):
             turns_limit = min(max_turns + steer_extra_cap, turns_limit + _STEER_EXTRA_TURNS)
+        # F4 Focus Chain：连续多次工具调用都没更新进度清单 → 尾部追加一句提醒（带百分比），下一轮模型看到。
+        _maybe_remind_progress(messages, ctx)
 
     # 达到轮次上限仍未收敛（兜底，防止循环跑飞）：强制模型基于已有结果给最终答复，不返回空。
     logger.warning("agent loop 达到 max_turns=%s 仍未结束，强制收尾", turns_limit)
@@ -1618,6 +1737,10 @@ async def run_agent_loop_stream(
         messages.append({"role": "assistant", "content": text, "tool_calls": _sanitize_tool_calls(sink)})
         for tc in sink:
             plan = _plan_tool_call(tc, registry, ctx)
+            # F4 Focus Chain：本次调用带了能解析出合法项的 task_progress → 吐 todo_update 事件，
+            # 前端据此原地更新同一张清单卡。⚠️ 同步路径同样逻辑，别只改一处（见上面 run_agent_loop）。
+            if plan.progress_snapshot:
+                yield {"type": "todo_update", "content": plan.progress_snapshot}
             if plan.error:  # 入参校验未过：吐 tool_call + 错误结果，回灌让模型改参数重试，不执行
                 yield {"type": "tool_call", "tool": plan.name, "args": plan.args, "id": plan.tool_call_id}
                 yield {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": plan.error}
@@ -1669,6 +1792,12 @@ async def run_agent_loop_stream(
                 result = await _exec
             finally:
                 ctx.progress_emit = None
+            # F4 Focus Chain：todo_write 是另一条"更新进度"路径（与 task_progress 参数共用 ctx.todos）——
+            # 真给了合法清单才算数。⚠️ 同步路径同样逻辑，别只改一处（见上面 run_agent_loop）。
+            if plan.name == "todo_write" and _normalize_todos((plan.args or {}).get("todos")):
+                ctx.requests_since_progress = 0
+                if ctx.todos:
+                    yield {"type": "todo_update", "content": format_todo_checklist(ctx.todos)}
             # B-2 依据可见：工具若注入了行业知识，把名字一并带进 tool_result 事件（前端成品卡显示「依据：…」）。
             # 取后立即复位，防串到下一个工具。⚠️ 同步路径同样要改，别只改一处（见上面 run_agent_loop）。
             _evt = {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": result}
@@ -1687,6 +1816,9 @@ async def run_agent_loop_stream(
             yield {"type": "steering", "content": _s}
         if _steered:
             turns_limit = min(max_turns + steer_extra_cap, turns_limit + _STEER_EXTRA_TURNS)
+        # F4 Focus Chain：连续多次工具调用都没更新进度清单 → 尾部追加一句提醒（带百分比）。
+        # ⚠️ 同步路径同样逻辑，别只改一处（见上面 run_agent_loop）。
+        _maybe_remind_progress(messages, ctx)
 
     # 达到轮次上限仍未收敛：强制模型基于已有结果给最终答复（不再给工具），逐片流式吐出，不返回空。
     logger.warning("agent stream loop 达到 max_turns=%s 仍未结束，强制收尾", turns_limit)

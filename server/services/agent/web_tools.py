@@ -461,6 +461,41 @@ def _format_todos(todos: list[dict]) -> str:
     return "\n".join(f"{_TODO_MARK.get(t.get('status'), '☐')} {t.get('task', '')}" for t in todos)
 
 
+def format_todo_checklist(todos: list[dict]) -> str:
+    """任务清单 → 人话展示文本："任务清单（共 N 步，已完成 M 步）：\n☐/◐/☑ ..."。
+
+    F4 Focus Chain：todo_write 工具 和 loop.py 的 task_progress 参数是同一份进度真相源
+    （都落进 ctx.todos），两条更新路径共用这一份渲染，不各写一套、不让前端出现两种清单样式。
+    """
+    done = sum(1 for t in todos if t.get("status") == "done")
+    return f"任务清单（共 {len(todos)} 步，已完成 {done} 步）：\n{_format_todos(todos)}"
+
+
+# markdown 复选清单行：`- [x] 已做` / `- [ ] 待做`（`*` 也认，缩进不限）。
+_PROGRESS_LINE_RE = re.compile(r"^\s*[-*]\s*\[([ xX])\]\s*(.+?)\s*$")
+
+
+def parse_progress_markdown(text: str) -> list[dict]:
+    """F4 Focus Chain：把模型顺手贴的 markdown 复选清单解析成与 todo_write 同构的 [{task,status}]。
+
+    status 只有 pending/done 两态——markdown 复选框语法本就表达不出 in_progress，这是有意的简化
+    （Cline 的 Focus Chain 原型同样只有两态）。解析不出任何合法行 → 空列表，调用方（loop.py）
+    据此判断"这次给的不是有效清单，按没更新算"，不会把一段解析不出结构的文字悄悄当成"已更新"。
+    """
+    out: list[dict] = []
+    if not isinstance(text, str):
+        return out
+    for line in text.splitlines():
+        m = _PROGRESS_LINE_RE.match(line)
+        if not m:
+            continue
+        task = m.group(2).strip()
+        if not task:
+            continue
+        out.append({"task": task, "status": "done" if m.group(1).lower() == "x" else "pending"})
+    return out
+
+
 async def todo_write(args: dict, ctx) -> str:
     """把当前多步任务列成清单、写进 ctx.todos，返回格式化清单（☐ 待办 / ◐ 进行中 / ☑ 已完成）。
     复杂任务先列清单再逐项做；每完成一步可再调一次更新状态。无副作用、无审批、故障安全。"""
@@ -472,8 +507,7 @@ async def todo_write(args: dict, ctx) -> str:
             ctx.todos = todos
         except Exception:
             logger.debug("写入 ctx.todos 失败（ctx 不支持赋值），仅返回清单文本", exc_info=True)
-    done = sum(1 for t in todos if t.get("status") == "done")
-    return f"任务清单（共 {len(todos)} 步，已完成 {done} 步）：\n{_format_todos(todos)}"
+    return format_todo_checklist(todos)
 
 
 # ────────────────────────────── run_subagent：子代理（递归跑 Agent 循环） ──────────────────────────────
