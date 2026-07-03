@@ -337,11 +337,20 @@ def test_search_store_docs_impl_only_returns_store_doc_not_generation(tmp_path):
     assert all(h["file_name"] == "活动细则.txt" for h in hits), "不该混进 generation 的内容"
 
 
-def test_recall_my_content_source_type_does_not_leak_store_doc(tmp_path):
+async def test_recall_my_content_source_type_does_not_leak_store_doc(tmp_path, db_session):
     """反过来也要隔离：recall_my_content(翻旧生成记录) 不该被店铺资料(store_doc)污染。
     这是本单必然的连带修复——index_store.search 原本不分 source_type，加了 store_doc 这第二路
-    来源后，如果不显式过滤，老路径(recall_my_content)会开始搜到混进来的文档内容。"""
-    from services.rag.recall import index_text, recall
+    来源后，如果不显式过滤，老路径(recall_my_content)会开始搜到混进来的文档内容。
+
+    真调 Agent 工具 handler（services/agent/local_tools.py 的 recall_my_content），不是只调底层
+    recall(source_type="generation")——那样测不出"如果有人把 local_tools.py 里那行
+    source_type='generation' 删了"这种真实回归（曾验证：临时删掉那行，本测试确实变红，见 D-Task-5
+    修复报告；恢复后本测试变绿，闭环成立）。"""
+    from types import SimpleNamespace
+
+    from services.agent.local_tools import recall_my_content
+    from services.rag.recall import index_text
+
     sid = "store-reverse-isolation"
     index_text(sid, "generation", "g1", "双十一活动历史文案，全场五折")
 
@@ -350,9 +359,11 @@ def test_recall_my_content_source_type_does_not_leak_store_doc(tmp_path):
     (folder / "合同.txt").write_text("双十一活动合同条款细则", encoding="utf-8")
     index_store_docs_folder(sid, str(folder))
 
-    hits = recall(sid, "双十一活动", top=5, source_type="generation")
-    assert hits
-    assert all(h["source_type"] == "generation" for h in hits), "recall_my_content 不该被 store_doc 内容污染"
+    ctx = SimpleNamespace(db=db_session, store=SimpleNamespace(id=sid))
+    result = await recall_my_content({"query": "双十一活动"}, ctx)
+
+    assert "五折" in result or "双十一" in result, "该翻到之前索引的 generation 内容"
+    assert "合同" not in result, "recall_my_content 不该被 store_doc 内容污染"
 
 
 def test_cross_store_isolation_for_store_docs(tmp_path):
