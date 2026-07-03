@@ -824,6 +824,7 @@ export function DesktopChatShell({
         <WelcomeScreen
           todaySuggestion={liveToday || todaySuggestion}
           todaySuggestionRecId={liveTodayRecId}
+          billiardsMode={knowledgePacks.includes("billiards")}
           onPick={pick}
           onDailyDrafts={loadDailyDrafts}
           dailyDraftsBusy={dailyDraftsBusy}
