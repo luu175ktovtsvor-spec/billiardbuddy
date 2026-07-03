@@ -756,6 +756,14 @@ export function DesktopChatThread({
                 {m.displayContent ?? m.content}
               </div>
             </div>
+          ) : m.kind === "context_note" ? (
+            // F9：低调的灰色内联系统提示（AI 归纳了前文）——不是错误、不是 toast，就留在对话流里
+            // 解释"接下来它可能记不清最前面的细节"，别用红色/惊叹号这类会让人误以为出错的样式。
+            <div key={idx} className="flex justify-center">
+              <div className="max-w-[85%] rounded-full bg-black/[0.035] px-3 py-1 text-center text-[12px] leading-relaxed text-[#8a8a8e] dark:bg-white/[0.06] dark:text-[#98989d]">
+                {m.content}
+              </div>
+            </div>
           ) : (
             <div key={idx} className="space-y-2.5">
               {m.error ? (

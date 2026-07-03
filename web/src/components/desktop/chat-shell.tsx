@@ -900,7 +900,9 @@ export function DesktopChatShell({
             chat.pushAssistantMessage(`当前会话约 ${chat.messages.length} 条消息。聊长了可 /new 开新会话（更省、更准）。`);
           }
           else if (name === "export") {
-            const md = chat.messages.map((m) => `### ${m.role === "user" ? "我" : "助手"}\n\n${m.content}`).join("\n\n---\n\n");
+            // F9：context_note 是低调系统提示（非真实对话内容），导出的对话记录里不掺它。
+            const md = chat.messages.filter((m) => m.kind !== "context_note")
+              .map((m) => `### ${m.role === "user" ? "我" : "助手"}\n\n${m.content}`).join("\n\n---\n\n");
             try {
               const blob = new Blob([md || "（空对话）"], { type: "text/markdown" });
               const url = URL.createObjectURL(blob);

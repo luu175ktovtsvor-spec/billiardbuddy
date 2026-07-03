@@ -29,6 +29,9 @@ export interface AgentStreamHandlers {
   onAskQuestion?: (q: { question: string; options: { label: string; description?: string }[]; multi?: boolean; id?: string }) => void;
   // 方向盘：跑动中捎的话已注入下一轮（content=插话原文）。本窗口发的已乐观上屏、据此去重；刷新重放据此把插话补回对话流。
   onSteering?: (content: string) => void;
+  // F9：AI 自动把前文归纳了一次（autocompact 真发生），大白话告诉老板一句（不带机制细节）；
+  // 只在临近窗口时发一次，不刷屏。前端渲成低调的灰色内联提示，不是错误/toast。
+  onContextNote?: (content: string) => void;
   onFinal?: (content: string) => void;
   onDone?: (info: { turns: number; stopped_reason: string; conversation_id?: string; generation_id?: string; task_id?: string; offset?: number; memory_refs?: string[] }) => void;
   onError?: (error: string) => void;
@@ -410,6 +413,7 @@ class ApiClient {
               case "approval_request": handlers.onApprovalRequest?.(ev.tool, ev.args || {}, ev.id, ev.token, ev.preview, ev.reason); break;
               case "ask_question": handlers.onAskQuestion?.({ question: ev.question || "", options: ev.options || [], multi: ev.multi, id: ev.id }); break;
               case "steering": handlers.onSteering?.(ev.content || ""); break;
+              case "context_note": handlers.onContextNote?.(ev.content || ""); break;
               case "final": handlers.onFinal?.(ev.content || ""); break;
               case "done": handlers.onDone?.({ turns: ev.turns, stopped_reason: ev.stopped_reason, conversation_id: ev.conversation_id, generation_id: ev.generation_id, task_id: ev.task_id, offset: ev.offset, memory_refs: Array.isArray(ev.memory_refs) ? ev.memory_refs : undefined }); return;
               case "error": handlers.onError?.(ev.error || "生成出错，请重试"); break;

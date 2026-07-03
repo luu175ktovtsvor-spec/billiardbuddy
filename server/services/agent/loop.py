@@ -29,6 +29,7 @@ from config import settings
 from core.security_guard import filter_compliance
 from services.agent.approval import sign_approval
 from services.agent.context import AgentContext
+from services.agent.context_overflow import looks_like_context_overflow_error
 from services.agent.hooks import run_post_tool_hooks, run_pre_tool_hooks, run_stop_hooks
 from services.agent.local_tools import path_in_workspace  # auto_files 收口判定(无循环依赖;注册 DESKTOP_LOCAL 门控,云端 import 无副作用)
 from services.agent.message_repair import ensure_tool_pairing
@@ -235,6 +236,10 @@ _AUTOCOMPACT_FAIL_MAX = 3
 # 接近顶满(~952k)才压。阈值 = max(窗口−buffer, 窗口×ratio)：大窗由 buffer 主导(压得更晚)，小窗仍由 ratio
 # 兜底(buffer 若吃掉过半小窗，ratio 下限护住、不至于"永远触发")。可被 ctx.autocompact_buffer 覆盖。
 _AUTOCOMPACT_BUFFER_TOKENS = 48000
+
+# F9：autocompact 真发生一次重建时，用大白话告诉老板一句——不然他会觉得"AI 怎么突然记不清最前面说的了"。
+# 绝不报机制细节（不提 token/窗口/压缩/摘要这类黑话），只说人话；只在流式 UI 发一次，不刷屏。
+_CONTEXT_NOTE_MSG = "这个话题聊得有点长了，我先把前面聊的内容归纳一下，再接着往下聊。"
 
 # SH-4 截断恢复：模型一轮输出被 max_tokens 砍断时 finish_reason="length"（不是正常 "stop"）。
 # 收尾分支识别它 → 把已输出的半句 append 回去 + 提示"接着写完"再要一轮，多轮片段拼成完整 final，
@@ -513,13 +518,33 @@ def _init_messages(
     return messages
 
 
-async def _generate_with_vision_degrade(provider, request, messages, ctx):
-    """调 provider.generate，并对【非识图模型撞图片报错】做一次性优雅降级（同步路径）。
+# ── F8甲 结构性超限自愈（safety net）──
+# 即便前置三级压缩流水线（_compact_pipeline）每轮都在跑，单轮请求仍可能因某个恰好落在"最近段"里的超大
+# 内容被 provider 拒（结构性 400：上下文/token 超限）。命中时强制跑一次 _autocompact（不看阈值/是否临近
+# 窗口，直接压）+ 用压短后的 messages 重试一次；仍失败就走既有兜底（原样往外抛，不吞、不二次重试）。
+async def _force_recompact(messages, ctx, provider, model, temperature) -> bool:
+    """结构性超限自愈：强制跑一次 _autocompact，把 messages 就地压短。
+    返回是否真的压成功（messages 被替换）；ctx 未配窗口 / 较早段太短 / 摘要失败 → False（_autocompact
+    自身已故障安全，这里不必再包 try/except）。压成功时 _autocompact 内部会把 ctx.just_autocompacted
+    置 True，供 F9 大白话提示复用同一个信号——safety net 触发的压缩同样值得告诉老板"刚归纳了前文"。"""
+    if ctx is None:
+        return False
+    rebuilt = await _autocompact(messages, ctx, provider, model, temperature)
+    if rebuilt is None:
+        return False
+    messages[:] = rebuilt
+    return True
 
-    带图请求若报错 且 错误像"不支持图片"（看 provider_error 里的 image_url/expected text 等）
-    且 messages 里确实有图 → 把所有多模态 content 去图成纯文字（就地改共享 list，后续轮也不再带图）→
-    用纯文字重试一次，并置 ctx.vision_degraded=True（拼最终答复处据此加温和提示）。
-    其它错误 / 本就没图 / 重试仍失败 → 原样抛出（不吞错，行为与原来一致）。
+
+async def _generate_with_vision_degrade(provider, request, messages, ctx):
+    """调 provider.generate，并对两类可自愈的报错做一次性优雅重试（同步路径）：
+
+    ① 非识图模型撞图片：带图请求若报错 且 错误像"不支持图片"（看 provider_error 里的 image_url/
+       expected text 等）且 messages 里确实有图 → 把所有多模态 content 去图成纯文字（就地改共享 list，
+       后续轮也不再带图）→ 用纯文字重试一次，并置 ctx.vision_degraded=True（拼最终答复处据此加温和提示）。
+    ② F8甲 结构性上下文/token 超限：报错像"超限"（见 context_overflow.looks_like_context_overflow_error）
+       → 强制压一次 + 用压短后的 messages 重试一次。
+    两类都不命中 / 重试仍失败 → 原样抛出（不吞错，行为与原来一致）。
     模型迟迟不响应（_MODEL_CALL_BUDGET 到点）→ _ModelStallError，交循环转友好收尾（不无限挂住）。"""
     try:
         return await asyncio.wait_for(provider.generate(request), timeout=_MODEL_CALL_BUDGET)
@@ -536,17 +561,26 @@ async def _generate_with_vision_degrade(provider, request, messages, ctx):
                 return await asyncio.wait_for(provider.generate(request), timeout=_MODEL_CALL_BUDGET)
             except (asyncio.TimeoutError, TimeoutError) as e2:
                 raise _ModelStallError() from e2
+        elif (ctx is not None
+                and looks_like_context_overflow_error(e)
+                and await _force_recompact(messages, ctx, provider, request.model, request.temperature)):
+            logger.info("疑似结构性上下文超限(%s)，已强制压缩一次并重试", type(e).__name__)
+            try:
+                return await asyncio.wait_for(provider.generate(request), timeout=_MODEL_CALL_BUDGET)
+            except (asyncio.TimeoutError, TimeoutError) as e2:
+                raise _ModelStallError() from e2
         raise
 
 
 async def _vision_degrade_stream(provider, request, messages, ctx, **sinks):
-    """流式版 generate_stream 的一次性优雅降级包装（异步生成器）。
+    """流式版 generate_stream 的一次性优雅重试包装（异步生成器），与同步版 `_generate_with_vision_degrade`
+    对齐同两类自愈（非识图降级 / F8甲 结构性超限），⚠️ 改一处另一处也要改。
 
-    与同步版同理：第三方端点对【带图却不支持】的请求在【建流时】就抛 400（DeepSeekProvider 里 create() 先 await、
-    报错发生在任何 token 之前）——故只要还【没吐过任何 token】就能安全去图重试，不会重复输出。
+    与同步版同理：第三方端点对【带图却不支持】或【结构性超限】的请求通常在【建流时】就抛 400（DeepSeekProvider
+    里 create() 先 await、报错发生在任何 token 之前）——故只要还【没吐过任何 token】就能安全重试，不会重复输出。
     一旦开始吐 token 再出错，则照常抛出（已无法干净重试）。
     首片墙钟兜底(_first_token_bounded)：上游迟迟不吐首片 → _ModelStallError 直接上抛给循环转友好收尾，
-    不被下面 vision-degrade 当成图片错误吞掉。"""
+    不被下面两类自愈当成可重试错误吞掉。"""
     yielded = False
     try:
         async for tok in _first_token_bounded(provider.generate_stream(request, **sinks)):
@@ -562,6 +596,14 @@ async def _vision_degrade_stream(provider, request, messages, ctx, **sinks):
                 and strip_images_from_messages(messages)):
             ctx.vision_degraded = True
             logger.info("文字模型疑似不支持图片(%s)，已去图改纯文字重试一次(流式)", type(e).__name__)
+            async for tok in _first_token_bounded(provider.generate_stream(request, **sinks)):
+                yield tok
+            return
+        elif (not yielded
+                and ctx is not None
+                and looks_like_context_overflow_error(e)
+                and await _force_recompact(messages, ctx, provider, request.model, request.temperature)):
+            logger.info("疑似结构性上下文超限(%s)，已强制压缩一次并重试(流式)", type(e).__name__)
             async for tok in _first_token_bounded(provider.generate_stream(request, **sinks)):
                 yield tok
             return
@@ -1190,6 +1232,9 @@ async def _autocompact(messages: list[dict], ctx, provider, model, temperature: 
         # Gap C：复位真实 token 信号——刚压短了 messages，上一轮的大 prompt_tokens 已过时；
         # 若不清零，下一轮触发判据会拿这个旧大值立刻又压一次（双重压缩）。清零后退回估算，待下一轮真值重填。
         ctx.last_prompt_tokens = 0
+        # F9：真的重建了 messages（不管是本函数被 _compact_pipeline 常规调用触发，还是 F8甲 安全网
+        # 强制调用触发）→ 置一次性标记，流式循环据此吐一句大白话 context_note 告诉老板"刚归纳了前文"。
+        ctx.just_autocompacted = True
         return rebuilt
     except Exception:
         # 摘要 LLM 抛错 = 真失败 → 计入连续失败，达上限即熔断（防顶满时每轮空烧一次昂贵 LLM）
@@ -1272,6 +1317,8 @@ async def run_agent_loop_stream(
     - {"type": "tool_result", "tool", "id", "content"}  工具执行结果/待确认提示
     - {"type": "steering", "content": <插话原文>}   跑动中用户捎的话已注入（下一轮模型当场看到；前端据此
       把插话固定进对话流，刷新重放不丢）
+    - {"type": "context_note", "content": <大白话>}  F9：autocompact 真发生过一次重建（前文被归纳），只发
+      一次、不刷屏、绝不带机制细节；前端渲成低调的灰色内联提示，别当错误/toast
     - {"type": "final", "content": <完整答复>}     收敛的最终答复全文
     - {"type": "done", "turns", "stopped_reason"}  收尾（恒为最后一条）
     """
@@ -1301,6 +1348,11 @@ async def run_agent_loop_stream(
         # SH-6 三级压缩流水线（snip→microcompact→autocompact）：临近窗口才语义压、平时只清旧只读结果。
         # ⚠️ 同步路径同样逻辑，别只改一处（见上面 run_agent_loop）。autocompact 可能重建前缀（唯一允许点）。
         messages[:] = await _compact_pipeline(messages, registry, ctx, provider, model, temperature)
+        # F9：autocompact 真发生过一次重建（本轮常规压缩触发，或上一轮 F8甲 安全网强制触发）→ 吐一次大白话
+        # context_note、随即清标记（绝不刷屏）。只有流式 UI 有事件通道能展示这个，同步入口不检查这个标记。
+        if ctx is not None and getattr(ctx, "just_autocompacted", False):
+            ctx.just_autocompacted = False
+            yield {"type": "context_note", "content": _CONTEXT_NOTE_MSG}
         # SH-1：发请求前补缺失/删孤儿/去重 tool_result，堵 OpenAI 兼容端点的配对 400（纯函数返回新列表，就地替换内容）。
         messages[:] = ensure_tool_pairing(messages)
         sink: list[dict] = []
