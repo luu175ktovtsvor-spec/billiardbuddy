@@ -345,6 +345,32 @@ ipcMain.handle("files:saveTemp", async (_e, opts = {}) => {
   }
 });
 
+// C1 首启特例：扫「桌面 + 作品文件夹」两个目录顶层，找最近修改的一份表格报表(.xlsx/.xls/.csv)。
+// 只读文件名 + mtime，不读内容、不递归子目录。故障安全：任何一步出错都返回 null——
+// 扫不到就当没有，绝不因为这个"顺手一瞥"报错打扰用户。
+ipcMain.handle("files:scanReports", async () => {
+  try {
+    const exts = new Set([".xlsx", ".xls", ".csv"]);
+    const dirs = [app.getPath("desktop"), workspaceDir].filter(Boolean);
+    let best = null; // { name, path, mtime }
+    for (const dir of dirs) {
+      let entries = [];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+      for (const ent of entries) {
+        if (!ent.isFile()) continue;
+        const ext = path.extname(ent.name).toLowerCase();
+        if (!exts.has(ext)) continue;
+        if (ent.name.startsWith("~$")) continue; // Excel 临时锁文件
+        const full = path.join(dir, ent.name);
+        let mtime = 0;
+        try { mtime = fs.statSync(full).mtimeMs; } catch { continue; }
+        if (!best || mtime > best.mtime) best = { name: ent.name, path: full, mtime };
+      }
+    }
+    return best ? { name: best.name, path: best.path } : null;
+  } catch { return null; }
+});
+
 // 看当前屏幕：由桌面壳直接截图并保存成临时文件，前端把路径作为附件传给 Agent。
 // 这样入口不依赖模型先主动调用工具；用户点了就确定把当前屏幕放进本轮上下文。
 ipcMain.handle("desktop:captureScreen", async () => {

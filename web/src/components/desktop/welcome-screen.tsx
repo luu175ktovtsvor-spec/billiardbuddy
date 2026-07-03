@@ -41,6 +41,9 @@ export function WelcomeScreen({
   greeting = WELCOME.title,
   subtitle = WELCOME.subtitle,
   briefing,
+  reportHint,
+  onDiagnoseReport,
+  onDismissReport,
   starters,
   billiardsMode = false,
   onPick,
@@ -59,6 +62,9 @@ export function WelcomeScreen({
   greeting?: string;
   subtitle?: string;
   briefing?: { greeting: string; weekday: string; items: DashboardRecommendation[] }; // 当日店况简报（C1）：AI 先开口的多条洞察
+  reportHint?: { name: string; path: string }; // C1 首启特例：检测到的报表提示，出现在简报卡顶部
+  onDiagnoseReport?: (path: string, name: string) => void; // 点「诊断一下」：授权读该文件 + 发诊断指令
+  onDismissReport?: () => void; // 点「不感兴趣」：当天不再提示
   starters?: StarterCard[];
   billiardsMode?: boolean; // 挂台球知识库时展示台球 6 张场景卡，否则展示通用 5 张
   onPick?: (prompt: string, recId?: string) => void;
@@ -86,14 +92,17 @@ export function WelcomeScreen({
           <div className="mt-1.5 max-w-[440px] text-[13px] leading-relaxed text-[#86868b] dark:text-[#6e7077]">{subtitle}</div>
         </div>
 
-        {billiardsMode && briefing && onPick && onDismissRec && (
+        {billiardsMode && (briefing || reportHint) && onPick && onDismissRec && (
           <div className="mb-3">
             <BriefingCard
-              greeting={briefing.greeting}
-              weekday={briefing.weekday}
-              items={briefing.items}
+              greeting={briefing?.greeting ?? ""}
+              weekday={briefing?.weekday ?? ""}
+              items={briefing?.items ?? []}
               onPick={onPick}
               onDismiss={onDismissRec}
+              reportHint={reportHint}
+              onDiagnoseReport={onDiagnoseReport}
+              onDismissReport={onDismissReport}
             />
           </div>
         )}

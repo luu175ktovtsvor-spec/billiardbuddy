@@ -4,7 +4,7 @@
  * C-Task-5 C1 当日店况简报卡：欢迎屏单行「今日建议」banner 的升级版——
  * AI 先开口，多条洞察，每条带「出处/为什么推它」+ 去做 + 不感兴趣，没内容不硬凑。
  */
-import { Lightbulb, ArrowRight, X } from "lucide-react";
+import { Lightbulb, ArrowRight, X, FileSpreadsheet } from "lucide-react";
 import type { DashboardRecommendation } from "@/types/dashboard";
 
 // category → 「出处/为什么推它」标签（诚实版：说清依据、立信任）
@@ -35,16 +35,22 @@ export function BriefingCard({
   items,
   onPick,
   onDismiss,
+  reportHint,
+  onDiagnoseReport,
+  onDismissReport,
 }: {
   greeting: string;
   weekday: string;
   items: DashboardRecommendation[];
   onPick: (prompt: string, recId?: string) => void;
   onDismiss: (recId: string) => void;
+  reportHint?: { name: string; path: string }; // C1 首启特例：检测到的报表，出现在洞察行之上
+  onDiagnoseReport?: (path: string, name: string) => void;
+  onDismissReport?: () => void;
 }) {
-  // 「没东西可说就不硬凑」：滤掉纯兜底 default_generate；空了整卡不出
+  // 「没东西可说就不硬凑」：滤掉纯兜底 default_generate；洞察为空且没有报表提示才整卡不出
   const insights = items.filter((r) => r.id !== "default_generate").slice(0, 3);
-  if (insights.length === 0) return null;
+  if (insights.length === 0 && !reportHint) return null;
 
   return (
     <div className="rounded-lg border border-[#10a37f]/25 bg-[#10a37f]/[0.06] p-3">
@@ -56,6 +62,34 @@ export function BriefingCard({
       </div>
       {greeting && (
         <div className="mb-2.5 text-[12.5px] leading-relaxed text-[#3a3a3c] dark:text-[#c8cace]">{greeting}</div>
+      )}
+      {reportHint && onDiagnoseReport && (
+        <div className="mb-2 flex items-start gap-2 rounded-md border border-[#007AFF]/25 bg-[#007AFF]/[0.07] p-2.5">
+          <FileSpreadsheet className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#007AFF]" />
+          <div className="min-w-0 flex-1 text-[12.5px] leading-relaxed text-[#3a3a3c] dark:text-[#c8cace]">
+            我看到一份《{reportHint.name}》，要不要我先给你一句话诊断？
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={() => onDiagnoseReport(reportHint.path, reportHint.name)}
+              className="flex items-center gap-1 whitespace-nowrap rounded-md bg-[#007AFF] px-2.5 py-1 text-[11.5px] text-white transition hover:bg-[#0066d6] active:scale-[0.98]"
+            >
+              诊断一下 <ArrowRight className="h-3 w-3" />
+            </button>
+            {onDismissReport && (
+              <button
+                type="button"
+                onClick={onDismissReport}
+                aria-label="不感兴趣"
+                title="不感兴趣，今天先不提"
+                className="flex h-6 w-6 items-center justify-center rounded-md text-[#a1a1a6] transition hover:bg-black/[0.04] hover:text-[#1d1d1f] dark:hover:bg-white/[0.06] dark:hover:text-[#e6e7e9]"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
       )}
       <div className="flex flex-col gap-2">
         {insights.map((r) => {

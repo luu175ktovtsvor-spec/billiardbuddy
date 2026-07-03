@@ -105,6 +105,8 @@ export interface ElectronBridge {
     showInFolder?(path: string): Promise<{ ok: boolean; error?: string }>;
     /** 用系统默认应用打开文件。 */
     openPath?(path: string): Promise<{ ok: boolean; error?: string }>;
+    /** C1 首启特例：扫「桌面 + 作品文件夹」顶层，找最近一份表格报表(只读文件名)，返回 { name, path } | null。 */
+    scanReports?(): Promise<{ name: string; path: string } | null>;
   };
 }
 

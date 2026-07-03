@@ -300,6 +300,8 @@ export function DesktopChatShell({
   const [liveSpend, setLiveSpend] = useState<string | undefined>();
   // C1 当日店况简报：AI 先开口的多条洞察（含出处 category），欢迎屏用 BriefingCard 渲染
   const [briefing, setBriefing] = useState<{ greeting: string; weekday: string; items: DashboardRecommendation[] } | null>(null);
+  // C1 首启特例：桌面/作品文件夹里检测到的报表提示（{ name, path } | null），出现在简报卡顶部。
+  const [reportHint, setReportHint] = useState<{ name: string; path: string } | null>(null);
   // 极端情况下内置模型不可用时的兜底提示；正常桌面产品不要求用户先配 key。
   const [needsKey, setNeedsKey] = useState(false);
   const [keyHintDismissed, setKeyHintDismissed] = useState(false);
@@ -774,6 +776,41 @@ export function DesktopChatShell({
 
   const empty = chat.messages.length === 0 && !chat.generating;
 
+  // C1 首启特例：进欢迎屏时扫一次「桌面 + 作品文件夹」找最近一份报表，命中就在简报卡顶部主动开口。
+  // 当天已「不感兴趣」过就不再扫（localStorage 按日）；扫描本身故障安全，扫不到/出错都静默当没有。
+  useEffect(() => {
+    const scan = electron?.files?.scanReports;
+    if (!scan || !empty) return;
+    let cancelled = false;
+    const dayKey = `report_hint_dismissed:${new Date().toISOString().slice(0, 10)}`;
+    try { if (localStorage.getItem(dayKey)) return; } catch { /* 忽略 */ }
+    (async () => {
+      try {
+        const r = await scan();
+        if (!cancelled && r?.path && r?.name) setReportHint({ name: r.name, path: r.path });
+      } catch { /* 静默 */ }
+    })();
+    return () => { cancelled = true; };
+  }, [electron, empty]);
+
+  // 诊断：把报表加进 selectedFiles（授权 AI 读）+ 发一句诊断指令，复用现成的读文件授权机制，不自造读取逻辑。
+  const onDiagnoseReport = useCallback((filePath: string, name: string) => {
+    if (chat.generating) return;
+    addSelectedFiles([filePath]);
+    setReportHint(null);
+    void chat.send(
+      `帮我读一下这份报表《${name}》，挑 3 个我最该关注的问题，用大白话讲，别念数字。`,
+      undefined,
+      { displayText: `诊断《${name}》` },
+    );
+  }, [chat, addSelectedFiles]);
+
+  // 不感兴趣：当场收起 + 记「当天不再提示」
+  const onDismissReport = useCallback(() => {
+    setReportHint(null);
+    try { localStorage.setItem(`report_hint_dismissed:${new Date().toISOString().slice(0, 10)}`, "1"); } catch { /* 忽略 */ }
+  }, []);
+
   const sidebarEl = useMemo(() => (
     <DesktopSidebar
       storeName={liveStoreName || storeName}
@@ -826,6 +863,9 @@ export function DesktopChatShell({
         <WelcomeScreen
           briefing={briefing ?? undefined}
           onDismissRec={onDismissRec}
+          reportHint={reportHint ?? undefined}
+          onDiagnoseReport={onDiagnoseReport}
+          onDismissReport={onDismissReport}
           billiardsMode={knowledgePacks.includes("billiards")}
           onPick={pick}
           onDailyDrafts={loadDailyDrafts}
