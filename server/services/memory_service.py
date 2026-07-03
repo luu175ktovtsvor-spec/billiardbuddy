@@ -185,6 +185,10 @@ _EXTRACT_SYS = (
     "'今天/这次的待办或安排(让你列清单)'、'这次活动的临时细节'——这些是任务上下文、不是长期门店事实，**不要抽取**。\n"
     "   反例(不要记)：'老顾客小张半个月没来'、'今天安排上午盘货下午发抖音'。\n"
     "   正例(可记)：'本店主打学生和竞技客群'、'老板偏好简洁直接的文案'、'周二会员日台费五折'。\n"
+    "5. **confidence 就是路由**：客观门店事实(价格/设施/规则等明确信息) → confidence:\"high\"；"
+    "老板的风格/语气/喜好 → type 写 preference；**拿不准是不是长期事实、或者信息不全**"
+    "（说得模糊、可能只是这次的特殊情况、不确定会不会一直有效）→ 标**低置信**（confidence:\"low\"），"
+    "交人工确认，别硬记成 high。\n"
     "type 取值（英文）：semantic(门店客观事实) | preference(老板的风格/喜好) | "
     "operational(运营模式/客流节奏) | episodic(发生过的具体事件)\n"
     '格式：{"memories":[{"type":"semantic","content":"...","confidence":"high|medium|low"}]}\n'
@@ -214,6 +218,14 @@ def _is_one_off_task(text: str) -> bool:
     return bool(_TASK_PATTERNS.search(text))
 
 
+_CLAUSE_SPLIT_RE = re.compile(r"[。！？；，、\n]+")
+
+
+def _split_clauses(text: str) -> list[str]:
+    """按中文标点把文本切成小句，用于按小句判断"是不是纯一次性任务"（M4尾巴①）。"""
+    return [c.strip() for c in _CLAUSE_SPLIT_RE.split(text) if c.strip()]
+
+
 def _extract_key_phrases(text: str) -> list[str]:
     """从文本提取关键短语（2~6字的中文/英文连续片段）用于接地校验。不依赖分词库。"""
     phrases: list[str] = []
@@ -226,14 +238,26 @@ def _extract_key_phrases(text: str) -> list[str]:
     return phrases
 
 
+_HARD_SIGNAL_RE = re.compile(r"\d{2,}|[a-zA-Z]{3,}")
+
+
 def _grounding_check(memory: Memory, source_text: str) -> bool:
-    """接地校验：记忆里的关键短语至少 30% 在源文中出现，否则判定为脑补、丢弃。"""
-    phrases = _extract_key_phrases(memory.content)
+    """接地校验：防"凭空脑补没提过的信息"（M4尾巴②）。
+    - 硬信号（数字/长英文串）是改写也不会变的强证据：记忆里若带硬信号，必须原样出现在源文，
+      否则直接判脑补——这条不因下面阈值下调而放松，护栏没塌。
+    - 字面短语（2~4字中文片段）重叠比例阈值从 30% 降到 20%：容忍纯措辞层面的重度改写造成的
+      字面误杀（LLM 把事实换了种说法，短语重叠天然会降，但没编造新信息就不该被误杀）。
+    """
+    content = memory.content or ""
+    source_lower = source_text.lower()
+    for sig in _HARD_SIGNAL_RE.findall(content):
+        if sig.lower() not in source_lower:
+            return False
+    phrases = _extract_key_phrases(content)
     if not phrases:
         return True
-    source_lower = source_text.lower()
     matched = sum(1 for p in phrases if p.lower() in source_lower)
-    return matched / len(phrases) >= 0.3
+    return matched / len(phrases) >= 0.2
 
 
 def _redline_filter(memory: Memory) -> bool:
@@ -288,11 +312,17 @@ def _to_memories(data: dict) -> list[Memory]:
 
 async def extract_memories(interaction_text: str, store=None) -> list[Memory]:
     """从一次交互（对话/生成需求/反馈）里抽取值得长期记住的门店记忆。store 给定且 BYOK 则走门店模型。
-    抽取后三道过滤：一次性任务跳过 → 接地校验 → 红线过滤。"""
+    抽取后三道过滤：一次性任务跳过 → 接地校验 → 红线过滤。
+
+    M4尾巴①：一次性任务判定按【小句】拆开看，不再整句一杆子跳过——混合句
+    （"帮我写个海报，对了我们店周二会员日台费五折"）只要有一句不像纯任务，就照常送抽取器
+    （抽取器 system prompt 本就有"一次性任务不记"的规则，会正确只留事实那条）；
+    纯一次性任务（每个小句都像指令）仍整句跳过、不白烧一次 LLM 调用。"""
     if not interaction_text or not interaction_text.strip():
         return []
     text = interaction_text.strip()
-    if _is_one_off_task(text):
+    clauses = _split_clauses(text)
+    if clauses and all(_is_one_off_task(c) for c in clauses):
         return []
     raw = _to_memories(await _json_call(_EXTRACT_SYS, text, store))
     return [m for m in raw if _grounding_check(m, text) and _redline_filter(m)]
@@ -300,7 +330,10 @@ async def extract_memories(interaction_text: str, store=None) -> list[Memory]:
 
 async def consolidate_memories(existing: list[Memory], new: list[Memory], store=None) -> list[Memory]:
     """把新记忆并入已有记忆，返回去重、最新的**完整列表**。store 给定且 BYOK 则走门店模型。
-    整合失败时保留旧集合（不回退 union，从根上止住膨胀）。"""
+
+    M4尾巴③：整合失败（LLM 偶发失败/超时返回空）时不再把新记忆整批丢掉——
+    走【有界兜底】：existing+new 按 content 去重后拼上，再交给已有的 _cap_memories() 封顶。
+    这样既不丢新学到的事实，也不会无限膨胀（_cap 本身就是膨胀护栏，没被绕开）。"""
     if not new:
         return list(existing)
     payload = (
@@ -313,8 +346,15 @@ async def consolidate_memories(existing: list[Memory], new: list[Memory], store=
     merged = _to_memories(await _json_call(_CONSOLIDATE_SYS, payload, store, max_tokens=token_budget))
     if merged:
         return merged
-    logger.warning("consolidate_memories 整合失败，保留旧集合（不 union、止膨胀）")
-    return list(existing)
+    logger.warning("consolidate_memories 整合失败，走有界兜底（保留新记忆+去重+封顶，不再整批丢弃）")
+    seen: set[str] = set()
+    fallback: list[Memory] = []
+    for m in list(existing) + list(new):
+        if m.content in seen:
+            continue
+        seen.add(m.content)
+        fallback.append(m)
+    return _cap_memories(fallback)
 
 
 # 店脑按需召回阈值：记忆多于这个数才启用相关性筛选（少则全留，无 context rot 风险）
@@ -550,12 +590,24 @@ def _cap_memories(memories: list[Memory]) -> list[Memory]:
 async def remember(db: AsyncSession, store_id, interaction_text: str) -> list[Memory]:
     """从一次交互学习：抽取 → 与已有整合 → 存，返回整合后的店脑。
     设计为后台调用：失败静默（不影响主流程），不计用户配额。
-    **并发安全**：用每店事务级咨询锁串行化同一家店的学习，根治"删全部再插入"的丢记忆竞态。"""
+    **并发安全**：用每店事务级咨询锁串行化同一家店的学习，根治"删全部再插入"的丢记忆竞态。
+
+    F7②置信度分流：抽取出的 new 按 confidence 分两路——
+    high（客观门店事实、抽取器判断拿得准）→ 走 auto（consolidate + 落库，即时生效，保住
+    "越用越懂你"的即时性）；medium/low（拿不准/信息不全）→ 逐条进 pending 收件箱，
+    人审后才生效，不进 auto、不即时注入 prompt（记忆面板 pending 态已现成）。
+    manual（老板亲定的店规矩）不受这条分流影响，处理逻辑原样不动。"""
     try:
         from models.store import Store
         store = await db.get(Store, _sid(store_id))  # 取门店 BYOK 配置：开启则店脑学习也走门店自带 key
         new = await extract_memories(interaction_text, store)
         if not new:
+            return await load_store_memory(db, store_id)
+        new_high = [m for m in new if m.confidence == "high"]
+        new_low = [m for m in new if m.confidence != "high"]
+        for m in new_low:
+            await add_pending_memory_candidate(db, store_id, m.content, m.type)
+        if not new_high:
             return await load_store_memory(db, store_id)
         # 同店并发学习串行化（锁随本事务 commit/回滚释放；只挡同店、不挡跨店，不影响吞吐）
         # 仅 PostgreSQL 有 pg_advisory_xact_lock；桌面本地版 SQLite 单写、无多 worker 竞态，no-op 跳过即可。
@@ -569,7 +621,7 @@ async def remember(db: AsyncSession, store_id, interaction_text: str) -> list[Me
         existing_auto = [m for m in all_existing if m.source != "manual"]
         manual = [m for m in all_existing if m.source == "manual"]
         merged_auto = (
-            await consolidate_memories(existing_auto, new, store) if existing_auto else new
+            await consolidate_memories(existing_auto, new_high, store) if existing_auto else new_high
         )
         merged_auto = _cap_memories(merged_auto)
         # _replace 只删/换 auto 行，manual 行不动 → 落库后店脑 = manual（原样）+ merged_auto。
