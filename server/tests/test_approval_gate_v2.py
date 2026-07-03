@@ -145,6 +145,32 @@ def test_file_target_oob_reports_path_first_when_both_outside(library, tmp_path)
     assert result == outside_in
 
 
+# ── F-6 复审 Minor 修复：_file_target_oob 只报「先命中」的一个字段（上面这条测试锁的就是这个
+#    "只弹一张卡"的设计），但授权时 path/output_path 两个越界字段其实都会被一次性批准放行——
+#    审批理由文案（_oob_approval_reason）不该跟着只提一个，得把两个都说全，老板才看得清自己
+#    点头允许了什么。 ──
+
+def test_oob_approval_reason_lists_both_fields_when_both_outside(library, tmp_path):
+    from services.agent.loop import _oob_approval_reason
+
+    outside_in = str(tmp_path / "in外部.png")
+    outside_out = str(tmp_path / "out外部.png")
+    reason = _oob_approval_reason(_out_path_tool(), {"path": outside_in, "output_path": outside_out}, AgentContext())
+    why_impact = reason["why"] + reason["impact"]
+    assert outside_in in why_impact, "path 越界字段没被文案提到"
+    assert outside_out in why_impact, "output_path 越界字段没被文案提到"
+
+
+def test_oob_approval_reason_single_field_unchanged(library, tmp_path):
+    """只有一个字段越界时行为不变——不因这次改动多报一个不存在的字段。"""
+    from services.agent.loop import _oob_approval_reason
+
+    outside_in = str(tmp_path / "in外部.png")
+    reason = _oob_approval_reason(_out_path_tool(), {"path": outside_in, "output_path": "out.png"}, AgentContext())
+    assert outside_in in reason["why"]
+    assert "out.png" not in reason["why"] and "out.png" not in reason["impact"]
+
+
 def test_file_target_oob_output_path_none_when_full_disk_access(library, tmp_path):
     outside = str(tmp_path / "另存到外面.png")
     result = _file_target_oob(_out_path_tool(), {"path": "in.png", "output_path": outside},
@@ -252,6 +278,20 @@ def test_oob_output_path_forces_approval_full_mode_end_to_end(library, tmp_path)
     ar = [e for e in events if e["type"] == "approval_request"][0]
     assert "工作区外" in ar["reason"]["why"]
     assert outside in ar["reason"]["why"] or outside in ar["reason"]["impact"]
+
+
+def test_oob_reason_end_to_end_lists_both_fields(library, tmp_path):
+    """F-6 复审 Minor：path 和 output_path 都越界时，走完整 `_plan_tool_call` → 审批卡这条链路，
+    弹出的理由（不只是内部 `_oob_approval_reason` 的直接返回值）也要同时体现两个越界字段。"""
+    outside_in = str(tmp_path / "in外部.png")
+    outside_out = str(tmp_path / "out外部.png")
+    reg = ToolRegistry()
+    reg.register(_out_path_tool())
+    events = _run_stream(reg, {"path": outside_in, "output_path": outside_out}, tool_name="edit_image")
+    ar = [e for e in events if e["type"] == "approval_request"][0]
+    why_impact = ar["reason"]["why"] + ar["reason"]["impact"]
+    assert outside_in in why_impact
+    assert outside_out in why_impact
 
 
 # ══════════════════════════════ ① run_command 危险命令：撞墙即拒、不占审批卡 ══════════════════════════════
