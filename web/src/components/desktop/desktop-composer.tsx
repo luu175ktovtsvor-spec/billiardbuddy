@@ -79,7 +79,6 @@ export function DesktopComposer({
   onKnowledgePacksChange,
   outputStyle = "",
   onOutputStyleChange,
-  advancedMode = false,
   deepThinking = true,
   onDeepThinkingChange,
   onCommand,
@@ -104,7 +103,6 @@ export function DesktopComposer({
   onKnowledgePacksChange?: (packs: string[]) => void;
   outputStyle?: string;
   onOutputStyleChange?: (name: string) => void;
-  advancedMode?: boolean;
   deepThinking?: boolean; // F.2 深度思考开关（默认开）
   onDeepThinkingChange?: (v: boolean) => void;
   onCommand?: (name: string) => void;
@@ -129,29 +127,31 @@ export function DesktopComposer({
   const [styleMenuOpen, setStyleMenuOpen] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    if (advancedMode) {
-      api.listSkills().then((r) => { if (!cancelled) setSkills(r.skills || []); }).catch(() => {});
-    } else {
-      setSkills([]);
-    }
+    // A2：不再有"高级模式"门控——已安装的技能本来就是老板自己装的东西，直接常驻拉一次，
+    // 面板里没装就是空、不冒 MCP/模型这类技术词。
+    api.listSkills().then((r) => { if (!cancelled) setSkills(r.skills || []); }).catch(() => {});
     api.listOutputStyles().then((r) => { if (!cancelled) setStyles(r.output_styles || []); }).catch(() => {});
     return () => { cancelled = true; };
-  }, [advancedMode]);
+  }, []);
   const styleOptions = [{ name: "", description: "默认（大白话）" }, ...styles.map((s) => ({ name: s.name, description: s.description }))];
   const activeStyleName = styles.find((s) => s.name === outputStyle)?.name;
   const activeStyleLabel = activeStyleName ? (OUTPUT_STYLE_LABELS[activeStyleName] || activeStyleName) : undefined;
 
   const slashQuery = value.startsWith("/") && !value.slice(1).includes(" ") ? value.slice(1).toLowerCase() : null;
-  const visibleCommands = advancedMode ? [...BASIC_COMMANDS, ...ADVANCED_COMMANDS] : BASIC_COMMANDS;
   const paletteItems: PaletteItem[] = slashQuery !== null ? [
-    ...visibleCommands
+    ...BASIC_COMMANDS
       // G.3：英文名 / 中文名 / 描述 / 中文拼音别名 任一命中即列出（打 /导出 /用量 也搜得到）
       .filter((c) => c.name.toLowerCase().includes(slashQuery)
         || c.cn.includes(slashQuery)
         || c.description.includes(slashQuery)
         || (c.aliases || []).some((a) => a.toLowerCase().includes(slashQuery)))
       .map((c): PaletteItem => ({ kind: "builtin", name: c.name, cn: c.cn, description: c.description })),
-    ...(advancedMode ? skills : [])
+    // A2：model/agents/mcp/skills/plugins/context 这组高级命令不在浏览列表里宣传（零技术词），
+    // 但懂行的人手打出完整命令名/别名照样能用——给会折腾的人留门。
+    ...ADVANCED_COMMANDS
+      .filter((c) => c.name.toLowerCase() === slashQuery || (c.aliases || []).some((a) => a.toLowerCase() === slashQuery))
+      .map((c): PaletteItem => ({ kind: "builtin", name: c.name, cn: c.cn, description: c.description })),
+    ...skills
       .filter((s) => s.user_invocable && (s.name.toLowerCase().includes(slashQuery) || (s.description || "").toLowerCase().includes(slashQuery)))
       .map((s): PaletteItem => ({ kind: "skill", name: s.name, description: s.description, argHint: s.argument_hint })),
   ] : [];
@@ -292,7 +292,7 @@ export function DesktopComposer({
               <SlashPalette
                 items={paletteItems}
                 activeIndex={paletteIndex}
-                title={advancedMode ? "命令与技能" : "常用命令"}
+                title="常用命令"
                 onSelect={selectPaletteItem}
                 onHover={setPaletteIndex}
               />
@@ -388,8 +388,9 @@ export function DesktopComposer({
               </div>
             )}
 
-            {/* F.2 深度思考 开/关：开发者概念,Task9 输入区精简——默认收进高级模式,普通用户不堆术语;高级才露。 */}
-            {advancedMode && onDeepThinkingChange && (
+            {/* F.2 深度思考 开/关：A2 解掉 advancedMode 门控(该常量已整体下线)，先保证不崩、常驻可用；
+                最终在 composer 里的常驻布局收纳是 A-Task-6 的事，这里不顺手重排。 */}
+            {onDeepThinkingChange && (
               <button
                 type="button"
                 onClick={() => onDeepThinkingChange(!deepThinking)}
@@ -506,8 +507,8 @@ export function DesktopComposer({
               )}
             </div>
 
-            {/* 输出风格:开发者概念,Task9 输入区精简——默认收进高级模式;高级才露。 */}
-            {advancedMode && (
+            {/* 输出风格：A2 解掉 advancedMode 门控，先保证常驻可访问、不崩；
+                收进「+菜单」是 A-Task-6 的事，这里不做。 */}
             <div className="relative">
               <button
                 type="button"
@@ -549,7 +550,6 @@ export function DesktopComposer({
                 </>
               )}
             </div>
-            )}
 
             <span className="ml-1 hidden font-mono text-[11px] text-[#b0b0b5] sm:inline dark:text-[#54565d]">↵ 发送 · ⇧↵ 换行</span>
 

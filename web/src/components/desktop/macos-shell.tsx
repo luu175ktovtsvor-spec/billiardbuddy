@@ -18,9 +18,6 @@ export type DesktopConversation = {
 
 export function DesktopSidebar({
   storeName = "我的台球房",
-  monthlySpend,
-  modelLabel,
-  advancedMode = false,
   conversations = [],
   activeId,
   onNewChat,
@@ -31,9 +28,6 @@ export function DesktopSidebar({
   onOpenSettings,
 }: {
   storeName?: string;
-  monthlySpend?: string;
-  modelLabel?: string;
-  advancedMode?: boolean;
   conversations?: DesktopConversation[];
   activeId?: string;
   onNewChat?: () => void;
@@ -130,18 +124,14 @@ export function DesktopSidebar({
         ))}
       </div>
 
-      {/* 普通路径只显示"AI 已就绪"，不甩模型品牌名(技术词)给非技术老板；高级模式才露真实模型名。 */}
+      {/* A2：两套"高级模式"整体下线——恒显"AI 已就绪"，不露模型品牌名(技术词)。 */}
       <button
         onClick={onOpenSettings}
         className="app-no-drag mx-1.5 mb-1 mt-1.5 flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition hover:bg-black/[0.04] dark:hover:bg-white/[0.04]"
-        aria-label={advancedMode && modelLabel ? `正在用模型 ${modelLabel}，点击修改` : "AI 已就绪，点击打开设置"}
+        aria-label="AI 已就绪，点击打开设置"
       >
         <Cpu className="h-3.5 w-3.5 shrink-0 text-[#10a37f]" />
-        {advancedMode && modelLabel ? (
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-[#6e6e73] dark:text-[#9a9ca3]">{modelLabel}</span>
-        ) : (
-          <span className="min-w-0 flex-1 truncate text-[11px] text-[#6e6e73] dark:text-[#9a9ca3]">AI 已就绪</span>
-        )}
+        <span className="min-w-0 flex-1 truncate text-[11px] text-[#6e6e73] dark:text-[#9a9ca3]">AI 已就绪</span>
       </button>
 
       <div className="flex items-center gap-2 border-t border-black/[0.08] p-2.5 dark:border-white/[0.06]">
@@ -150,10 +140,6 @@ export function DesktopSidebar({
         </div>
         <div className="min-w-0 flex-1">
           <div className="truncate text-[12px] text-[#3a3a3c] dark:text-[#c8cace]">{storeName}</div>
-          {/* 别提醒花钱:默认藏花费,只在高级模式露(和上面模型名同档) */}
-          {advancedMode && monthlySpend && (
-            <div className="truncate font-mono text-[10.5px] text-[#86868b] dark:text-[#6e7077]">本月 ≈ {monthlySpend}</div>
-          )}
         </div>
         <button
           onClick={onOpenSettings}
