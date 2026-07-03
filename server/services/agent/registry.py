@@ -73,11 +73,18 @@ class Tool:
         审批闸 2.0 · ②（OpenHands 式）：无条件给每个工具的 parameters 追加一个可选 `security_risk`
         自评字段——"无条件"是关键：所有工具一视同仁地加，不按条件开关，否则不同请求间 tools 前缀字节
         不一致会打穿 prompt-cache（F8 铁律，见 docs/耦合地图与改动检查清单.md「prompt-cache 前缀稳定纪律」）。
+
+        F4 Focus Chain（抄 Cline）：同样无条件追加一个可选 `task_progress` 自评字段——模型顺手在
+        任意工具调用里贴一份 markdown 复选清单，loop.py 摘出来更新进度状态、渲染成前端常驻的清单卡。
+        与 security_risk 并存、互不覆盖（两个属性分开写进 properties，见下方两行）；同样"无条件"，
+        理由与 security_risk 一致——按条件开关会打穿 prompt-cache 前缀。
+
         每次都返回【新 dict】（不就地改 self.parameters）——工具对象在多个 ToolRegistry 间共享，
         原地改会污染其它持有同一 Tool 实例的注册表。"""
         params = dict(self.parameters or {})
         props = dict(params.get("properties") or {})
         props["security_risk"] = _SECURITY_RISK_SCHEMA_PROPERTY
+        props["task_progress"] = _TASK_PROGRESS_SCHEMA_PROPERTY
         params["properties"] = props
         return {
             "type": "function",
@@ -99,6 +106,17 @@ _SECURITY_RISK_SCHEMA_PROPERTY: dict = {
         "可选：你对本次调用风险的自评。low=常规只读/无副作用；medium=一般写入/有限影响；"
         "high=有较大副作用或不可逆风险（如可能涉及删除、外传数据、危险系统命令等）。"
         "仅供系统参考决定要不要额外找人确认，不替你做最终决定；拿不准可以不填。"
+    ),
+}
+
+# F4 Focus Chain 的 schema 片段（单独提出来，供 to_openai_schema 复用）。只读、可选——不填不受影响；
+# 只在处理多步骤任务时才有意义，一步到位的简单调用不需要。
+_TASK_PROGRESS_SCHEMA_PROPERTY: dict = {
+    "type": "string",
+    "description": (
+        "可选：如果当前是个需要好几步才能做完的任务，把最新的 markdown 复选清单贴这，顺手更新进度，"
+        "如 `- [x] 已做\n- [ ] 待做`。方便老板看到你做到哪了，也帮你自己别跑偏；"
+        "一步到位的简单任务不用管这个参数。"
     ),
 }
 

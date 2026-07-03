@@ -32,6 +32,10 @@ export interface AgentStreamHandlers {
   // F9：AI 自动把前文归纳了一次（autocompact 真发生），大白话告诉老板一句（不带机制细节）；
   // 只在临近窗口时发一次，不刷屏。前端渲成低调的灰色内联提示，不是错误/toast。
   onContextNote?: (content: string) => void;
+  // F4 Focus Chain：AI 顺手更新了任务进度清单（task_progress 参数 / todo_write 工具，两条路径
+  // 后端已归并成同一个事件），content 是渲染好的展示文本（"任务清单（共 N 步，已完成 M 步）：..."）。
+  // 每次都是【最新完整状态】，不是增量——前端应原地覆盖同一张清单卡，不要每次都新开一张。
+  onTodoUpdate?: (content: string) => void;
   onFinal?: (content: string) => void;
   onDone?: (info: { turns: number; stopped_reason: string; conversation_id?: string; generation_id?: string; task_id?: string; offset?: number; memory_refs?: string[] }) => void;
   onError?: (error: string) => void;
@@ -414,6 +418,7 @@ class ApiClient {
               case "ask_question": handlers.onAskQuestion?.({ question: ev.question || "", options: ev.options || [], multi: ev.multi, id: ev.id }); break;
               case "steering": handlers.onSteering?.(ev.content || ""); break;
               case "context_note": handlers.onContextNote?.(ev.content || ""); break;
+              case "todo_update": handlers.onTodoUpdate?.(ev.content || ""); break;
               case "final": handlers.onFinal?.(ev.content || ""); break;
               case "done": handlers.onDone?.({ turns: ev.turns, stopped_reason: ev.stopped_reason, conversation_id: ev.conversation_id, generation_id: ev.generation_id, task_id: ev.task_id, offset: ev.offset, memory_refs: Array.isArray(ev.memory_refs) ? ev.memory_refs : undefined }); return;
               case "error": handlers.onError?.(ev.error || "生成出错，请重试"); break;

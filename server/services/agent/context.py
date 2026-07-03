@@ -89,8 +89,19 @@ class AgentContext:
     denials_total: int = 0
     # ── 第二批真 Agent 工具（对标 Claude Code 的 TodoWrite / Task）──
     # TodoWrite 写进来的多步任务清单：每项 {"task": str, "status": "pending|in_progress|done"}。
-    #   让 Agent 把"这次要分几步做"列出来、逐项跟踪进度（复杂任务先列清单再逐项做）。默认空。
+    #   让 Agent 把"这次要分几步做"列出来、逐项跟踪进度（复杂任务先列清单再逐项做）。
+    #   F4 Focus Chain：这份清单不再是写了没人读的死状态——task_progress 参数(下方)解析出的清单
+    #   也统一写进这里，loop.py 据此渲染 todo_update 事件给前端(原地更新同一张卡)、也据此算提醒用的百分比。
     todos: list = field(default_factory=list)
+    # ── F4 Focus Chain（抄 Cline）：模型可在【任意工具调用】里顺手带一个可选 task_progress
+    #   参数（markdown 复选清单，如 `- [x] 已做\n- [ ] 待做`）——registry.py 无条件给每个工具
+    #   的 schema 注入这个可选属性（与审批闸 2.0 的 security_risk 并存，两者都进 properties）。
+    #   loop.py 摘到有效清单就存这里 + 同步解析进 ctx.todos（上面）+ 计数清零；没带就计数 +1。
+    task_progress: str | None = None  # 最近一次收到的原始 markdown 文本（供展示原文/调试）
+    # 连续多少次工具调用都没更新进度清单（task_progress 参数 / todo_write 工具，两条路径共用这个计数）。
+    # 达到 _PROGRESS_REMIND_EVERY（loop.py）时，下一轮调模型前会尾部注入一条带百分比的提醒；
+    # 提醒发出后清零，防刷屏。
+    requests_since_progress: int = 0
     # run_subagent（子代理）递归跑 run_agent_loop 时复用的【同一个文字 provider / 模型】——
     #   loop 启动时把当次用的 provider/model 写进 ctx，子代理据此复用（同一门店 BYOK key、同模型），
     #   不必再各自去 factory 取。None = 子代理自己回退到编排默认 provider/model。

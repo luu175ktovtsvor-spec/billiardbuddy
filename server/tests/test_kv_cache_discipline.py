@@ -107,15 +107,17 @@ def test_tool_parameters_key_order_preserved_not_sorted():
     """工具 parameters 里 properties 的 key 顺序 = 声明时写的顺序；json.dumps 默认 sort_keys=False，
     这里显式验证真到了"喂给模型的 tools 数组"这一步依然没被排序过。
 
-    审批闸 2.0 ②：to_openai_schema 无条件在末尾追加 security_risk 字段（见 registry.py），
-    这里的"顺序不被打乱"断言相应更新为"声明的 key 保序 + security_risk 固定追加在最后"。"""
+    审批闸 2.0 ②：to_openai_schema 无条件在末尾追加 security_risk 字段（见 registry.py）；
+    F4 Focus Chain：同样无条件紧接着追加 task_progress。这里的"顺序不被打乱"断言相应更新为
+    "声明的 key 保序 + 两个元数据字段固定追加在最后、顺序固定"。"""
     params = {"type": "object", "properties": {"zebra": {"type": "string"}, "apple": {"type": "string"}},
               "required": ["zebra", "apple"]}
     reg = ToolRegistry()
     reg.register(Tool(name="t", description="x", parameters=params, handler=lambda a, c: None))
     schema = reg.to_openai_tools()[0]
     prop_keys = list(schema["function"]["parameters"]["properties"].keys())
-    assert prop_keys == ["zebra", "apple", "security_risk"]
+    assert prop_keys == ["zebra", "apple", "security_risk", "task_progress"]
     # 序列化成真正发给 provider 的 JSON 串也保持顺序（default sort_keys=False）
     dumped = json.dumps(schema)
-    assert dumped.index('"zebra"') < dumped.index('"apple"') < dumped.index('"security_risk"')
+    assert (dumped.index('"zebra"') < dumped.index('"apple"')
+           < dumped.index('"security_risk"') < dumped.index('"task_progress"'))

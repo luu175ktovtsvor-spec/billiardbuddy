@@ -60,6 +60,8 @@ export interface ChatMessage {
   question?: QuestionData; // AskUserQuestion：管家给老板的选项，老板点选后作为下一句消息发回
   kind?: "command" | "video" | "context_note"; // 审批通过后执行的结果渲染方式：run_command→终端块；generate_video→<video> 播放器；
   // context_note→F9 低调系统提示（AI 归纳了前文），渲成灰色内联条，不是命令/视频/普通对话
+  todo?: string; // F4 Focus Chain：本轮最新的任务进度清单展示文本（task_progress 参数 / todo_write 归并同一份），
+  // 每次都是完整最新状态——渲染成一张常驻清单卡，原地覆盖，不随每次工具调用叠新卡。
   error?: boolean;
   generationId?: string; // P1-4 效果反馈：本轮成品对应的 generation id，成品卡 👍 据此写 effect_rating="good"
 }
@@ -103,6 +105,8 @@ export function useAgentChat(opts: AgentChatOptions) {
   const [draft, setDraft] = useState("");
   const [reasoningDraft, setReasoningDraft] = useState(""); // F.1：当前轮的实时思考流（答案落定后并进消息）
   const [liveSteps, setLiveSteps] = useState<ToolStep[]>([]);
+  // F4 Focus Chain：当前这轮最新的进度清单展示文本（原地覆盖，不是数组——同一时刻只有一份"最新状态"）。
+  const [liveTodo, setLiveTodo] = useState<string | undefined>(undefined);
   const [generating, setGenerating] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [executingIdx, setExecutingIdx] = useState<number | null>(null);
@@ -165,6 +169,8 @@ export function useAgentChat(opts: AgentChatOptions) {
     let reasoningText = "";
     let approval: ApprovalState | undefined;
     let question: QuestionData | undefined;
+    // F4 Focus Chain：本轮最新的进度清单展示文本（原地覆盖——后端每次都吐完整最新状态，不是增量）。
+    let todoText: string | undefined;
 
     try {
       if (recovered) {
@@ -223,6 +229,12 @@ export function useAgentChat(opts: AgentChatOptions) {
           onContextNote: (content) => {
             setMessages((prev) => [...prev, { role: "assistant", content, kind: "context_note" }]);
           },
+          // F4 Focus Chain：原地覆盖（不是 push）——task_progress 参数 / todo_write 工具两条路径
+          // 后端已归并成同一份最新状态，前端只需要显示"最新"，不需要保留历史每一版。
+          onTodoUpdate: (content) => {
+            todoText = content;
+            setLiveTodo(content);
+          },
           onFinal: (content) => {
             finalText = content;
           },
@@ -234,7 +246,7 @@ export function useAgentChat(opts: AgentChatOptions) {
                 ...prev,
                 { role: "assistant", content: finalText, reasoning: reasoningText || undefined,
                   steps: steps.length ? [...steps] : undefined, approval, question, memoryRefs: info.memory_refs,
-                  generationId: info.generation_id },
+                  generationId: info.generation_id, todo: todoText },
               ]);
             }
             if (info?.conversation_id) setConversationId(info.conversation_id);
@@ -243,6 +255,7 @@ export function useAgentChat(opts: AgentChatOptions) {
             setDraft("");
             setReasoningDraft("");
             setLiveSteps([]);
+            setLiveTodo(undefined);
           },
           onError: (m) => {
             if (ctrl.signal.aborted) return;
@@ -257,6 +270,7 @@ export function useAgentChat(opts: AgentChatOptions) {
                   steps: steps.length ? [...steps] : undefined,
                   approval,
                   question,
+                  todo: todoText,
                 });
               }
               next.push({ role: "assistant", content: `⚠️ ${humanizeErrorText(m)}`, error: true });
@@ -267,6 +281,7 @@ export function useAgentChat(opts: AgentChatOptions) {
             setDraft("");
             setReasoningDraft("");
             setLiveSteps([]);
+            setLiveTodo(undefined);
           },
         },
         ctrl.signal,
@@ -280,6 +295,7 @@ export function useAgentChat(opts: AgentChatOptions) {
         setDraft("");
         setReasoningDraft("");
         setLiveSteps([]);
+        setLiveTodo(undefined);
       }
     } finally {
       if (!ctrl.signal.aborted) setGenerating(false);
@@ -301,6 +317,7 @@ export function useAgentChat(opts: AgentChatOptions) {
       setDraft("");
       setReasoningDraft("");
       setLiveSteps([]);
+      setLiveTodo(undefined);
       const controller = new AbortController();
       // 页面刷新后本地 draft/steps 已经丢了，必须从头重放后端缓存事件来重建完整回答。
       // offset 只用于当前页面记录进度，不用于刷新恢复，否则可能只收到 done，落成空消息。
@@ -325,6 +342,7 @@ export function useAgentChat(opts: AgentChatOptions) {
     setDraft("");
     setReasoningDraft("");
     setLiveSteps([]);
+    setLiveTodo(undefined);
     setGenerating(true);
     const controller = new AbortController();
     abortRef.current = controller;
@@ -362,6 +380,7 @@ export function useAgentChat(opts: AgentChatOptions) {
         setDraft("");
         setReasoningDraft("");
         setLiveSteps([]);
+        setLiveTodo(undefined);
       }
     } finally {
       if (!controller.signal.aborted) setGenerating(false);
@@ -461,6 +480,7 @@ export function useAgentChat(opts: AgentChatOptions) {
     setDraft("");
     setReasoningDraft("");
     setLiveSteps([]);
+    setLiveTodo(undefined);
     pendingSteerEchoRef.current = [];
   }, [generating]);
 
@@ -474,6 +494,7 @@ export function useAgentChat(opts: AgentChatOptions) {
     setDraft("");
     setReasoningDraft("");
     setLiveSteps([]);
+    setLiveTodo(undefined);
     // 任务被掐掉后 steering 回声事件永远不会来了，清掉待回声队列防滞留
     pendingSteerEchoRef.current = [];
     pushStopNotice(taskId);
@@ -495,6 +516,7 @@ export function useAgentChat(opts: AgentChatOptions) {
     setDraft("");
     setReasoningDraft("");
     setLiveSteps([]);
+    setLiveTodo(undefined);
     setGenerating(false);
     pendingSteerEchoRef.current = [];
     return true;
@@ -527,7 +549,7 @@ export function useAgentChat(opts: AgentChatOptions) {
   const canSteer = generating && !!activeTaskId;
 
   return {
-    messages, draft, reasoningDraft, liveSteps, generating, conversationId, executingIdx, canSteer,
+    messages, draft, reasoningDraft, liveSteps, liveTodo, generating, conversationId, executingIdx, canSteer,
     send, confirmApproval, cancelApproval, startNewChat, stop, loadConversation,
     pushAssistantMessage, retry,
   };

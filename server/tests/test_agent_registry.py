@@ -48,10 +48,14 @@ def test_to_openai_tools_format():
     reg.register(_make_tool())
     schema = reg.to_openai_tools()
     # 审批闸 2.0 ②：security_risk 是无条件追加给每个工具的自评字段（见 test_agent_approval_gate_v2.py
-    # 的 test_security_risk_property_injected_unconditionally），这里只锁其余结构不变、不重复断言它。
+    # 的 test_security_risk_property_injected_unconditionally）；F4：task_progress 同样无条件追加
+    # （见 test_agent_focus_chain.py 的 test_task_progress_property_injected_unconditionally）。
+    # 这里只锁其余结构不变、不重复断言这两个自评/元数据字段本身。
     props = schema[0]["function"]["parameters"]["properties"]
     assert "security_risk" in props
-    assert {k: v for k, v in props.items() if k != "security_risk"} == {"text": {"type": "string"}}
+    assert "task_progress" in props
+    extra = {k: v for k, v in props.items() if k not in ("security_risk", "task_progress")}
+    assert extra == {"text": {"type": "string"}}
     assert schema == [{
         "type": "function",
         "function": {
@@ -59,7 +63,11 @@ def test_to_openai_tools_format():
             "description": "回显输入",
             "parameters": {
                 "type": "object",
-                "properties": {"text": {"type": "string"}, "security_risk": props["security_risk"]},
+                "properties": {
+                    "text": {"type": "string"},
+                    "security_risk": props["security_risk"],
+                    "task_progress": props["task_progress"],
+                },
                 "required": ["text"],
             },
         },

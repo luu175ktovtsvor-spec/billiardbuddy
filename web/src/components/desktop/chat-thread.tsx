@@ -296,7 +296,9 @@ function MacStepList({ steps, active, onPreview }: { steps: ToolStep[]; active: 
           // P1-8 + B.1：内部/指令类工具（用技能/检索）结果是给 AI 看的原文，对老板零价值还吓人 → 绝不 dump、不进右侧。
           const isInternal = INTERNAL_TOOLS.has(s.tool);
           // 非成品、非内部工具（跑命令/抓网页/搜文件/读文件…）才把结果摊开展示；成品走成品卡，内部只留一行标签。
-          const showResult = s.done && !!s.result && !DELIVERABLE_TOOLS.has(s.tool) && !isInternal;
+          // F4 Focus Chain：todo_write 的清单另有常驻卡片展示（见 message.todo / liveTodo，原地更新同一张），
+          // 这里只留"列任务清单"这一行步骤标签，不重复摊开原文——避免同一份清单出现两遍。
+          const showResult = s.done && !!s.result && !DELIVERABLE_TOOLS.has(s.tool) && !isInternal && s.tool !== "todo_write";
           // 命令边跑边显示：未结束 + 已有实时输出 → 渲染滚动中的终端块
           const showLiveCmd = !s.done && s.tool === "run_command" && !!s.progress;
           const cmdText = typeof s.args?.command === "string" ? s.args.command : "";
@@ -328,8 +330,6 @@ function MacStepList({ steps, active, onPreview }: { steps: ToolStep[]; active: 
               {showResult &&
                 (s.tool === "run_command" ? (
                   <TerminalBlock text={s.result as string} />
-                ) : s.tool === "todo_write" ? (
-                  <TodoCard text={s.result as string} />
                 ) : (
                   <ResultDisclosure
                     text={s.result as string}
@@ -660,6 +660,7 @@ export function DesktopChatThread({
   draft,
   reasoningDraft = "",
   liveSteps,
+  liveTodo,
   generating,
   executingIdx,
   onConfirm,
@@ -682,6 +683,8 @@ export function DesktopChatThread({
   draft: string;
   reasoningDraft?: string;
   liveSteps: ToolStep[];
+  // F4 Focus Chain：本轮最新的任务进度清单展示文本（原地覆盖，不是数组）。
+  liveTodo?: string;
   generating: boolean;
   executingIdx: number | null;
   onConfirm: (idx: number, ap: ApprovalState) => void;
@@ -813,6 +816,9 @@ export function DesktopChatThread({
                 <>
                   {m.reasoning && <ThinkingBlock text={m.reasoning} />}
                   {m.steps && <MacStepList steps={m.steps} active={false} onPreview={onPreview} />}
+                  {/* F4 Focus Chain：常驻清单卡，原地反映本轮最新进度（task_progress 参数 / todo_write 归并同一份），
+                      不随每次工具调用叠新卡。 */}
+                  {m.todo && <TodoCard text={m.todo} />}
                   {m.steps && <MacDeliverables steps={m.steps} onPublish={onPublish} onPreview={onPreview} />}
                   {m.content &&
                     (m.kind === "command" ? (
@@ -908,6 +914,7 @@ export function DesktopChatThread({
           <div className="space-y-2.5">
             {reasoningDraft && <ThinkingBlock text={reasoningDraft} active />}
             {liveSteps.length > 0 && <MacStepList steps={liveSteps} active onPreview={onPreview} />}
+            {liveTodo && <TodoCard text={liveTodo} />}
             {draft ? (
               <>
                 <div className={PROSE}>
