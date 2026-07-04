@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, MessageCircleQuestion, FileEdit, Terminal, ChevronRight, Brain, RotateCcw, ClipboardList, Save, MessageSquareText, Megaphone, ClipboardCheck, Paperclip, Download, ThumbsUp, Smartphone, Volume2 } from "lucide-react";
+import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, MessageCircleQuestion, FileEdit, Terminal, ChevronRight, Brain, RotateCcw, ClipboardList, Save, MessageSquareText, Megaphone, ClipboardCheck, Paperclip, Download, ThumbsUp, Smartphone, Volume2, Film, ImageIcon } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
@@ -217,7 +217,7 @@ function ResultDisclosure({ text, onOpen }: { text: string; onOpen?: () => void 
             onClick={onOpen}
             className="inline-flex shrink-0 items-center gap-1 font-mono text-[11px] text-[#10a37f] transition hover:underline"
           >
-            <Maximize2 className="h-3 w-3" /> 右侧打开
+            <Maximize2 className="h-3 w-3" /> 打开
           </button>
         )}
       </div>
@@ -439,6 +439,102 @@ function CorrectionAction({ open, onOpenChange }: { open: boolean; onOpenChange:
   );
 }
 
+/** 把 args 里可能是 number/string 的字段安全转成数字，转不出来就 undefined（不瞎猜）。 */
+function parseNum(v: unknown): number | undefined {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
+}
+
+// R2 替身卡的一行规格文案：海报/图片取尺寸比例，视频取比例+时长，文字类取字数——
+// 够老板一眼判断"是不是这个"，全文/大图留给右侧画布，别在这行堆信息。
+function posterSpecLine(noun: string, content: string): string {
+  const ratio = content.match(/(?:尺寸|比例)：\s*([0-9]+:[0-9]+)/)?.[1];
+  const dims = content.match(/([0-9]{2,5})x([0-9]{2,5})/i);
+  const size = ratio || (dims ? `${dims[1]}x${dims[2]}` : "");
+  return size ? `${noun} · ${size}` : noun;
+}
+
+function videoSpecLine(noun: string, args?: Record<string, unknown>): string {
+  const ratio = typeof args?.ratio === "string" && args.ratio ? args.ratio : "9:16";
+  const duration = parseNum(args?.duration) ?? 5;
+  return `${noun} · ${ratio} · ${duration}s`;
+}
+
+function textSpecLine(noun: string, content: string): string {
+  const chars = content.replace(/\s+/g, "").length;
+  return `${noun} · ${chars}字`;
+}
+
+/** markdown 图片语法里的 alt 文字（如「门店海报」），抽出来当替身卡标题；没有就交给调用方兜底。 */
+function imageAltFromText(text: string): string | null {
+  return text.match(/!\[([^\]]*)\]/)?.[1]?.trim() || null;
+}
+
+/** 文字成品没有天然缩略图，退而求其次：抽首行当"标题"用（去 markdown 符号、截断防溢出）。 */
+function firstLine(text: string, max = 26): string {
+  const line = text.split("\n").map((l) => l.trim()).find(Boolean) || "";
+  const clean = line.replace(/^#+\s*/, "").replace(/[*_`>]/g, "").trim();
+  if (!clean) return "文字成品";
+  return clean.length > max ? clean.slice(0, max) + "…" : clean;
+}
+
+/**
+ * R2 替身卡本体：缩略图（图片小图 / 视频首帧 / 文字用工具图标占位）+ 标题 + 一行规格 + 「打开」。
+ * 全文大图/完整视频/长文只活在右侧画布——点缩略图或「打开」都跳过去，气泡里不再整段渲染成品，
+ * 解决"成品在对话里全渲染一遍、画布里又一遍"的双重渲染 + 对话越滚越长。
+ */
+function PlaceholderRow({
+  thumbKind,
+  thumbSrc,
+  FallbackIcon,
+  title,
+  spec,
+  onOpen,
+}: {
+  thumbKind: "poster" | "video" | "none";
+  thumbSrc?: string;
+  FallbackIcon: typeof Wrench;
+  title: string;
+  spec: string;
+  onOpen: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 px-4 py-3">
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={`打开${title}`}
+        className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-md border border-black/[0.08] bg-black/[0.03] transition hover:opacity-80 dark:border-white/[0.08] dark:bg-white/[0.04]"
+      >
+        {thumbKind === "poster" && thumbSrc ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={thumbSrc} alt={title} className="h-full w-full object-cover" />
+        ) : thumbKind === "video" && thumbSrc ? (
+          // eslint-disable-next-line jsx-a11y/media-has-caption
+          <video src={thumbSrc} muted playsInline preload="metadata" className="h-full w-full object-cover" />
+        ) : (
+          <FallbackIcon className="h-5 w-5 text-[#86868b] dark:text-[#6e7077]" />
+        )}
+      </button>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[13px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{title}</div>
+        <div className="truncate text-[12px] text-[#86868b] dark:text-[#6e7077]">{spec}</div>
+      </div>
+      <button
+        type="button"
+        onClick={onOpen}
+        className="inline-flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1.5 text-[12px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/10 active:scale-[0.97]"
+      >
+        <Maximize2 className="h-3.5 w-3.5" /> 打开
+      </button>
+    </div>
+  );
+}
+
 function DeliverableCard({
   step,
   onPublish,
@@ -449,12 +545,32 @@ function DeliverableCard({
   onPreview?: (item: PreviewItem) => void;
 }) {
   const { label, Icon } = toolMeta(step.tool);
-  // G.3：生图工具 → 直接抓出图片地址渲染成真 <img>（不靠结果恰好是 markdown 图片语法），点开看大图。
-  const imgUrl = IMAGE_TOOLS.has(step.tool) ? extractImageUrl(step.result || "") : null;
-  // 生视频工具 → 抓出视频地址渲染成 <video controls>（带播放器、可下载）。
-  const vidUrl = VIDEO_TOOLS.has(step.tool) ? extractVideoUrl(step.result || "") : null;
+  const resultText = step.result || "";
+  // G.3：生图工具 → 直接抓出图片地址（不靠结果恰好是 markdown 图片语法）；生视频工具 → 抓出视频地址。
+  // 只用来判断替身卡缩略图该显示哪种——全文大图/完整视频不再整段内嵌，见下方 PlaceholderRow。
+  const imgUrl = IMAGE_TOOLS.has(step.tool) ? extractImageUrl(resultText) : null;
+  const vidUrl = VIDEO_TOOLS.has(step.tool) ? extractVideoUrl(resultText) : null;
   // C3：「这条不太合适」不再常驻一个文字按钮，收进头部「…」溢出菜单；点了才展开下面的纠偏表单。
   const [correctionOpen, setCorrectionOpen] = useState(false);
+
+  // R2：点缩略图/「打开」→ 把对应成品送去右侧画布看全（大图/完整视频/长文）。
+  const openDeliverable = () => {
+    if (!onPreview) return;
+    if (vidUrl) {
+      onPreview({
+        kind: "video",
+        title: label,
+        videoUrl: vidUrl,
+        ratio: typeof step.args?.ratio === "string" ? step.args.ratio : undefined,
+        duration: parseNum(step.args?.duration),
+      });
+    } else if (imgUrl) {
+      onPreview(posterPreviewFromText(resultText, label) || { kind: "poster", title: label, imageUrl: imgUrl });
+    } else {
+      onPreview({ kind: "content", title: label, text: resultText });
+    }
+  };
+
   return (
     <div className="overflow-hidden rounded-lg border border-black/[0.08] bg-white shadow-sm dark:border-white/[0.08] dark:bg-[#16181d] dark:shadow-none">
       <div className="flex items-center justify-between border-b border-black/[0.06] bg-black/[0.015] px-4 py-2 dark:border-white/[0.06] dark:bg-white/[0.02]">
@@ -462,32 +578,34 @@ function DeliverableCard({
           <Icon className="h-3.5 w-3.5 text-[#10a37f]" /> {label}
         </span>
         <div className="flex items-center gap-1">
-          <CopyButton text={step.result || ""} />
+          <CopyButton text={resultText} />
           <OverflowMenu items={[{ key: "flag", label: "这条不太合适", Icon: Flag, onClick: () => setCorrectionOpen(true) }]} />
         </div>
       </div>
-      {vidUrl ? (
+      {onPreview ? (
+        // R2 替身卡：不再整段渲染大图/完整视频/长文——只留缩略图+标题+规格+「打开」，全文只在右侧画布看。
+        <PlaceholderRow
+          thumbKind={vidUrl ? "video" : imgUrl ? "poster" : "none"}
+          thumbSrc={vidUrl || imgUrl || undefined}
+          FallbackIcon={Icon}
+          title={vidUrl ? label : imgUrl ? (imageAltFromText(resultText) || label) : firstLine(resultText)}
+          spec={vidUrl ? videoSpecLine(label, step.args) : imgUrl ? posterSpecLine(label, resultText) : textSpecLine(label, resultText)}
+          onOpen={openDeliverable}
+        />
+      ) : vidUrl ? (
+        // 没有 onPreview（没有画布可去）时的兜底：只能原样内嵌播放器，不然彻底看不到内容。
         <div className="px-4 py-3">
           {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-          <video
-            src={vidUrl}
-            controls
-            className="max-h-[420px] w-auto rounded-md border border-black/[0.06] dark:border-white/[0.06]"
-          />
+          <video src={vidUrl} controls className="max-h-[420px] w-auto rounded-md border border-black/[0.06] dark:border-white/[0.06]" />
         </div>
       ) : imgUrl ? (
         <div className="px-4 py-3">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={imgUrl}
-            alt={label}
-            onClick={onPreview ? () => onPreview(posterPreviewFromText(step.result || "", label) || { kind: "poster", title: label, imageUrl: imgUrl }) : undefined}
-            className={`max-h-[420px] w-auto rounded-md border border-black/[0.06] dark:border-white/[0.06] ${onPreview ? "cursor-zoom-in" : ""}`}
-          />
+          <img src={imgUrl} alt={label} className="max-h-[420px] w-auto rounded-md border border-black/[0.06] dark:border-white/[0.06]" />
         </div>
       ) : (
         <div className={`${PROSE} px-4 py-3`}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{step.result || ""}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{resultText}</ReactMarkdown>
         </div>
       )}
       {step.knowledgeUsed && step.knowledgeUsed.length > 0 && (
@@ -496,35 +614,15 @@ function DeliverableCard({
           <span><span>依据：</span>{step.knowledgeUsed.join(" · ")}</span>
         </div>
       )}
-      {(onPreview || (onPublish && step.tool === "make_platform_content")) && (
-        <div className="flex items-center gap-2 px-4 pb-1">
-          {onPreview && !imgUrl && !vidUrl && (
-            <button
-              type="button"
-              onClick={() => onPreview({ kind: "content", title: label, text: step.result || "" })}
-              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/10 active:scale-[0.97]"
-            >
-              <Maximize2 className="h-3.5 w-3.5" /> 展开预览
-            </button>
-          )}
-          {onPreview && imgUrl && (
-            <button
-              type="button"
-              onClick={() => onPreview(posterPreviewFromText(step.result || "", label) || { kind: "poster", title: label, imageUrl: imgUrl })}
-              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/10 active:scale-[0.97]"
-            >
-              <Maximize2 className="h-3.5 w-3.5" /> 在右侧看大图
-            </button>
-          )}
-          {onPublish && step.tool === "make_platform_content" && (
-            <button
-              type="button"
-              onClick={() => onPublish(step.args?.platform, step.result || "")}
-              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/10 active:scale-[0.97]"
-            >
-              <Send className="h-3.5 w-3.5" /> 去发布
-            </button>
-          )}
+      {onPublish && step.tool === "make_platform_content" && (
+        <div className="flex items-center gap-2 px-4 pb-2">
+          <button
+            type="button"
+            onClick={() => onPublish(step.args?.platform, resultText)}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/10 active:scale-[0.97]"
+          >
+            <Send className="h-3.5 w-3.5" /> 去发布
+          </button>
         </div>
       )}
       <CorrectionAction open={correctionOpen} onOpenChange={setCorrectionOpen} />
@@ -844,12 +942,44 @@ export function DesktopChatThread({
                     (m.kind === "command" ? (
                       <TerminalBlock text={m.content} />
                     ) : m.kind === "video" && extractVideoUrl(m.content) ? (
-                      <div className="py-1">
-                        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-                        <video
-                          src={extractVideoUrl(m.content) as string}
-                          controls
-                          className="max-h-[420px] w-auto rounded-md border border-black/[0.06] dark:border-white/[0.06]"
+                      onPreview ? (
+                        // R2：非工具卡的视频消息(如审批执行直接回灌的结果)同样只留替身卡，
+                        // 全文播放器搬去右侧画布——不然这里跟 DeliverableCard 是两条互不知情的全渲染路径。
+                        <div className="overflow-hidden rounded-lg border border-black/[0.08] bg-white shadow-sm dark:border-white/[0.08] dark:bg-[#16181d] dark:shadow-none">
+                          <PlaceholderRow
+                            thumbKind="video"
+                            thumbSrc={extractVideoUrl(m.content) as string}
+                            FallbackIcon={Film}
+                            title="视频"
+                            spec="视频成品"
+                            onOpen={() => onPreview({ kind: "video", title: "视频", videoUrl: extractVideoUrl(m.content) as string })}
+                          />
+                        </div>
+                      ) : (
+                        // 没有 onPreview（没有画布可去）时的兜底：只能原样内嵌播放器。
+                        <div className="py-1">
+                          {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                          <video
+                            src={extractVideoUrl(m.content) as string}
+                            controls
+                            className="max-h-[420px] w-auto rounded-md border border-black/[0.06] dark:border-white/[0.06]"
+                          />
+                        </div>
+                      )
+                    ) : onPreview && posterPreviewFromText(m.content) ? (
+                      // 同理：模型自己的回答文本里直接带图片 markdown（非经 DeliverableCard 那条路径）
+                      // 也只留替身卡，别让 ReactMarkdown 把图整张画出来又双重渲染一遍。
+                      <div className="overflow-hidden rounded-lg border border-black/[0.08] bg-white shadow-sm dark:border-white/[0.08] dark:bg-[#16181d] dark:shadow-none">
+                        <PlaceholderRow
+                          thumbKind="poster"
+                          thumbSrc={extractImageUrl(m.content) || undefined}
+                          FallbackIcon={ImageIcon}
+                          title={imageAltFromText(m.content) || "图片"}
+                          spec={posterSpecLine("图片", m.content)}
+                          onOpen={() => {
+                            const item = posterPreviewFromText(m.content);
+                            if (item) onPreview(item);
+                          }}
                         />
                       </div>
                     ) : (
@@ -857,18 +987,6 @@ export function DesktopChatThread({
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
                       </div>
                     ))}
-                  {onPreview && posterPreviewFromText(m.content) && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const item = posterPreviewFromText(m.content);
-                        if (item) onPreview(item);
-                      }}
-                      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/10 active:scale-[0.97]"
-                    >
-                      <Maximize2 className="h-3.5 w-3.5" /> 在右侧看大图
-                    </button>
-                  )}
                   {onFollowUp && billiardsMode && !generating && posterPreviewFromText(m.content) && (
                     <div className="flex flex-wrap items-center gap-1.5">
                       {billiardsPosterFollowUps().map((action) => (
@@ -923,8 +1041,8 @@ export function DesktopChatThread({
                         )}
                         {(() => {
                           const moreItems: OverflowMenuItem[] = [];
-                          // 右侧打开:原逻辑不受 generating 门控(流式生成时也能把历史消息开到右侧面板)——别裹进 !generating。
-                          if (onPreview) moreItems.push({ key: "open", label: "右侧打开", Icon: Maximize2, onClick: () => onPreview({ kind: "content", title: "回答", text: m.content }) });
+                          // 打开:原逻辑不受 generating 门控(流式生成时也能把历史消息开到右侧面板)——别裹进 !generating。
+                          if (onPreview) moreItems.push({ key: "open", label: "打开", Icon: Maximize2, onClick: () => onPreview({ kind: "content", title: "回答", text: m.content }) });
                           // 保存/导出/转任务:原逻辑各带 !generating(生成中不出)——保持。
                           if (!generating && onSaveArtifact) moreItems.push({ key: "save", label: "保存成品", Icon: Save, onClick: () => onSaveArtifact(m.content) });
                           if (!generating && onExportArtifact) moreItems.push({ key: "export", label: "导出到电脑", Icon: Download, onClick: () => onExportArtifact(m.content) });
