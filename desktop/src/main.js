@@ -7,7 +7,7 @@
 // 安全默认全保持:contextIsolation 开 / sandbox 开 / nodeIntegration 关。
 // 加载的页面只能通过 preload 的 contextBridge 白名单调用原生能力,拿不到 Node。
 
-const { app, BrowserWindow, ipcMain, shell, dialog, nativeTheme, desktopCapturer, screen, systemPreferences, Notification } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, dialog, nativeTheme, desktopCapturer, screen, systemPreferences, Notification, globalShortcut } = require("electron");
 const path = require("path");
 const publish = require("./publish");
 const video = require("./video");
@@ -103,6 +103,18 @@ let mainWindow = null;
 const windows = new Set();
 let backendReady = false;
 let frontendUrl = null; // prod 本地前端就绪后的 URL
+
+// ── D-Task-10 全局快捷键小窗(截图提问) ──────────────────────────────────
+// ⚠️ 坑1(侦察实锤)：createWindow() 里 `mainWindow = win` + focus 回写(见下方 createWindow 尾部)会把
+// 任何经它创建/聚焦的窗口"劫持"成全局 mainWindow。小窗如果走 createWindow()，小窗一创建/一获焦，
+// 全局 mainWindow 就被它占了，"回车带进主窗对话"会找错窗口——所以小窗【绝不走 createWindow】，
+// 单开 createQuickInputWindow()，不做那套赋值/focus 回写。
+// ⚠️ 坑2：触发快捷键那一刻就要把"内容送进哪个窗口"快照下来，而不是等小窗弹出、用户打完字提交时
+// 再去读全局 mainWindow——中间这段时间窗口焦点可能已经变化。快照存在 quickInputTargetWindow。
+let quickInputWindow = null;
+let quickInputTargetWindow = null;
+// Alt+Space 在 Windows 是系统窗口菜单快捷键、别用；选一个不撞常见系统/软件热键的组合。
+const QUICK_INPUT_HOTKEY = "CommandOrControl+Shift+Space";
 
 // ── 作品文件夹:首启自动建好一个固定目录,用户全程不用选"工作文件夹"。──────
 // 建在系统文档目录下(mac ~/Documents/台球助手,Windows 文档\台球助手)。这不是 Claude Code
@@ -207,6 +219,59 @@ function createWindow(opts = {}) {
   });
   return win;
 }
+
+// D-Task-10：全局快捷键唤起的置顶小输入窗——打字/截屏 → 回车带进主窗对话，老板截美团后台/对手海报
+// 就地问，不用切来切去。⚠️ 独立实现，不走 createWindow()（避免 mainWindow 被小窗劫持，见上方坑1注释）：
+// 不赋值 mainWindow、不挂 focus 回写、不加进 `windows` 广播集合(它不是"工作台窗口"，不参与多窗口成品同步)。
+function createQuickInputWindow() {
+  const dark = nativeTheme.shouldUseDarkColors;
+  const win = new BrowserWindow({
+    width: 640,
+    height: 168,
+    frame: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    show: false, // ready-to-show 后再显示，避免加载瞬间的白屏闪一下
+    center: true,
+    backgroundColor: dark ? "#0e0f11" : "#ffffff",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true, // 安全默认不破例
+      sandbox: true,
+      nodeIntegration: false,
+    },
+  });
+  // 复用主窗同一套 frontendUrl/FORCED_APP_URL 解析(main.js:160-165)，别自己另拼 3000/3100。
+  const baseUrl = frontendUrl || FORCED_APP_URL || "http://localhost:3000";
+  const url = new URL(baseUrl);
+  url.pathname = "/quick";
+  win.loadURL(url.toString());
+  win.once("ready-to-show", () => { if (!win.isDestroyed()) win.show(); });
+  // 失焦自动隐藏(体验加分：点别处/切走就收起，不用手动关)；隐藏而非销毁，下次唤起更快。
+  win.on("blur", () => { if (!win.isDestroyed()) win.hide(); });
+  win.on("closed", () => { if (quickInputWindow === win) quickInputWindow = null; });
+  return win;
+}
+
+// 触发入口(全局快捷键 → 这里)。⚠️ 坑2：先把"内容要送进哪个窗口"快照到 quickInputTargetWindow，
+// 再弹小窗——避免小窗弹出/获焦这段时间窗口焦点状态变化导致后续注入找错目标。
+function openQuickInput() {
+  quickInputTargetWindow = (mainWindow && !mainWindow.isDestroyed())
+    ? mainWindow
+    : (BrowserWindow.getAllWindows().find((w) => w !== quickInputWindow) || null);
+  if (quickInputWindow && !quickInputWindow.isDestroyed()) {
+    quickInputWindow.show();
+    quickInputWindow.focus();
+    return;
+  }
+  quickInputWindow = createQuickInputWindow();
+}
+// e2e 测试专用挂钩：main.js 是入口脚本、不是被 require 的模块，Playwright 的 electronApp.evaluate()
+// 在主进程里执行、拿不到这个文件内的闭包函数；挂一个引用到 global 供 e2e 直接调用等价函数触发——
+// 全局热键在无头/CI 自动化环境里真实按键未必可靠，这样测"触发后窗口数+1"更稳。不新增任何面向渲染进程/
+// 外部的能力面，仍是主进程内部自己调用同一个函数。
+global.__qfE2EOpenQuickInput = openQuickInput;
 
 // 进度/状态回推渲染层(扫码就绪、发布进度、剪辑进度)
 // 多窗口并行：优先投给【发起该动作的窗口】(target=event.sender)，不串到当前焦点窗口；没传 target 才退回焦点窗口。
@@ -396,7 +461,17 @@ ipcMain.handle("desktop:captureScreen", async () => {
       fs.mkdirSync(dir, { recursive: true });
       const fp = path.join(dir, `${prefix}_${Date.now()}_${require("crypto").randomBytes(4).toString("hex")}.png`);
       fs.writeFileSync(fp, image.toPNG());
-      return { path: fp, size: image.getSize() };
+      // D-Task-10：小窗里要给老板看一眼"截到了什么"的缩略图预览——注意这只是给小窗展示用的小图，
+      // 送进 AI 的原图仍是上面写盘的 fp 那份全尺寸文件，不受这个缩略图影响。缩略图生成失败不影响主流程
+      // (前端拿不到 thumbDataUrl 就退回不显示预览图，截图本身、AI 看图链路都不受影响)。
+      let thumbDataUrl;
+      try {
+        const size = image.getSize();
+        const thumbWidth = Math.min(280, size.width || 280);
+        const thumbHeight = size.width ? Math.round((size.height / size.width) * thumbWidth) : 0;
+        thumbDataUrl = image.resize({ width: thumbWidth, height: thumbHeight || undefined }).toDataURL();
+      } catch { /* 缩略图是加分项，失败不影响截图主流程 */ }
+      return { path: fp, size: image.getSize(), thumbDataUrl };
     };
     const display = screen.getPrimaryDisplay();
     const { width, height } = display.size;
@@ -410,14 +485,14 @@ ipcMain.handle("desktop:captureScreen", async () => {
     const source = Array.isArray(sources) ? (sources.find((s) => String(s.display_id) === String(display.id)) || sources[0]) : null;
     const captured = source ? saveScreenshot(source.thumbnail, "screen") : null;
     if (captured) {
-      return { ok: true, path: captured.path, width: captured.size.width, height: captured.size.height, source: "screen" };
+      return { ok: true, path: captured.path, width: captured.size.width, height: captured.size.height, source: "screen", thumbDataUrl: captured.thumbDataUrl };
     }
     const win = BrowserWindow.getFocusedWindow() || mainWindow || BrowserWindow.getAllWindows()[0];
     if (win && !win.isDestroyed()) {
       const windowImage = await win.capturePage();
       const fallback = saveScreenshot(windowImage, "screen_window");
       if (fallback) {
-        return { ok: true, path: fallback.path, width: fallback.size.width, height: fallback.size.height, source: "window" };
+        return { ok: true, path: fallback.path, width: fallback.size.width, height: fallback.size.height, source: "window", thumbDataUrl: fallback.thumbDataUrl };
       }
     }
     return { ok: false, error: "没有拿到屏幕截图" };
@@ -464,6 +539,30 @@ ipcMain.handle("desktop:studioArtifact", (e, payload) => {
       w.webContents.send("studio:artifact", payload || {});
     }
   }
+  return { ok: true };
+});
+
+// D-Task-10：小窗「回车提交」→ 把内容(文字+可选截图路径)注入到快捷键触发那一刻快照下来的目标窗口
+// (quickInputTargetWindow)，绝不用可能已被弄脏的全局 mainWindow(见 openQuickInput 上方坑2注释)。
+ipcMain.handle("quickinput:submit", (_e, payload = {}) => {
+  const targetWin = (quickInputTargetWindow && !quickInputTargetWindow.isDestroyed())
+    ? quickInputTargetWindow
+    : ((mainWindow && !mainWindow.isDestroyed()) ? mainWindow : (BrowserWindow.getAllWindows().find((w) => w !== quickInputWindow) || null));
+  const text = String(payload.text || "");
+  const imagePath = payload.imagePath || null;
+  if (targetWin && !targetWin.isDestroyed() && (text || imagePath)) {
+    targetWin.webContents.send("quickinput:inject", { text, imagePath });
+    if (targetWin.isMinimized()) targetWin.restore();
+    targetWin.show();
+    targetWin.focus();
+  }
+  if (quickInputWindow && !quickInputWindow.isDestroyed()) quickInputWindow.hide();
+  return { ok: !!(targetWin && !targetWin.isDestroyed()) };
+});
+
+// 小窗自己按 Esc / 点关闭：隐藏而非销毁(下次唤起更快，同 blur 自动隐藏的处理)。
+ipcMain.handle("quickinput:close", () => {
+  if (quickInputWindow && !quickInputWindow.isDestroyed()) quickInputWindow.hide();
   return { ok: true };
 });
 
@@ -616,6 +715,16 @@ app.whenReady().then(async () => {
   }
   closeSplash();
   createWindow();
+  // D-Task-10 全局快捷键：注册失败(被系统或其它程序占用)故障安全——log 一句，不崩、不弹错扰民。
+  // 只在主流程注册(这里已过滤掉 QF_RENDER_MANIFEST worker 分支的早退 return，见上方约行 610)。
+  try {
+    const registered = globalShortcut.register(QUICK_INPUT_HOTKEY, () => openQuickInput());
+    if (!registered) {
+      fileLog("[quickInput] ", `全局快捷键 ${QUICK_INPUT_HOTKEY} 注册失败(可能被系统或其它程序占用)，快捷唤起小窗功能本次不可用，不影响其它功能。`);
+    }
+  } catch (err) {
+    fileLog("[quickInput] ", `全局快捷键注册异常：${String((err && err.message) || err)}`);
+  }
   // 口播模型(whisper 1.4G)不打进包,首启后台下载(不阻塞主界面:聊天/生图/基础视频立刻能用)。
   // 进度推给前端角标显示,下好前"做口播视频"按钮由前端灰掉。
   startModelDownload();
@@ -677,4 +786,5 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-app.on("before-quit", () => { backend.stop(); frontend.stop(); });
+// D-Task-10：官方最佳实践——退出前解注册全局快捷键，防止进程异常退出/重复注册导致热键卡死残留。
+app.on("before-quit", () => { backend.stop(); frontend.stop(); globalShortcut.unregisterAll(); });
