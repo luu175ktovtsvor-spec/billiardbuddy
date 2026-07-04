@@ -596,6 +596,31 @@ async function waitForWelcome(win, maxMs = 8000) {
     await win.waitForTimeout(300);
   }
 
+  // D-Task-10 全局快捷键小窗：globalShortcut 真实按键在无头/CI 自动化环境里未必可靠，
+  // 绕过真按键，直接调主进程挂的测试挂钩 global.__qfE2EOpenQuickInput（等价于 openQuickInput()）
+  // 触发，断言"窗口数 +1"——只验证小窗真开了一扇独立窗口，不劫持/替换主窗。
+  log("D-Task-10 全局快捷键小窗");
+  {
+    const beforeWindowIds = await app.evaluate(async ({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.id));
+    const beforeWindows = beforeWindowIds.length;
+    await app.evaluate(() => { if (global.__qfE2EOpenQuickInput) global.__qfE2EOpenQuickInput(); });
+    await win.waitForTimeout(1500);
+    const afterWindowIds = await app.evaluate(async ({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.id));
+    const afterWindows = afterWindowIds.length;
+    await checkpoint(win, "D-Task-10", "全局快捷键唤起小窗", "触发快捷键等价函数后应新开一个独立置顶小窗（窗口数+1），且不该把主窗顶掉/劫持（主窗仍在窗口列表里）。", {
+      dom: { 点击前窗口数: beforeWindows, 点击后窗口数: afterWindows },
+      main: { beforeWindows, afterWindows, mainWindowStillPresent: beforeWindowIds.every((id) => afterWindowIds.includes(id)) },
+      machinePass: afterWindows > beforeWindows && beforeWindowIds.every((id) => afterWindowIds.includes(id)),
+    }, since);
+    // 清理：关掉这次新开的小窗，避免影响后续用例对窗口数的假设。
+    await app.evaluate(async ({ BrowserWindow }, beforeIds) => {
+      const keep = new Set(beforeIds);
+      const wins = BrowserWindow.getAllWindows();
+      for (const w of wins) if (!keep.has(w.id)) w.close();
+    }, beforeWindowIds).catch(() => {});
+    await win.waitForTimeout(300);
+  }
+
   // S1b 回答后的自然动作：台球高频回答底部应给客户群、朋友圈、员工动作等下一步。
   log("S1b 台球回答下一步动作");
   const e2eAnswerUrl = new URL("/dashboard/chat?e2e_answer=1", APP_URL).toString();
