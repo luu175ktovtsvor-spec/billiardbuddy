@@ -94,7 +94,10 @@
       ],
       "category": "public.app-category.business",
       "hardenedRuntime": false,
-      "identity": null
+      "identity": null,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "用于语音转文字输入，录音仅在本机处理，不上传。"
+      }
     },
     "win": {
       "icon": "build/icon.ico",
