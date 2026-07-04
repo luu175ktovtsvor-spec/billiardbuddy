@@ -1,6 +1,6 @@
 {
   "name": "billiards-desktop-agent",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "description": "帮台球房写文案、做海报、剪视频、整理文件的 AI 助手",
   "main": "src/main.js",
