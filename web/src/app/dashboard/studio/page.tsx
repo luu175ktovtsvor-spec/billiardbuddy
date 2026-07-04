@@ -16,7 +16,6 @@ import dynamic from "next/dynamic";
 import type { LucideIcon } from "lucide-react";
 import { Image as ImageIcon, ImagePlus, X, Wand2, Copy, Download, ThumbsUp, Loader2, RefreshCw, Check, AlertTriangle, Layers, Film, CreditCard, PartyPopper, UserPlus, Sparkles, Trophy, Camera, Repeat } from "lucide-react";
 import { api, type MediaJobStatus } from "@/lib/api";
-import { ConfirmDialog } from "@/components/desktop/confirm-dialog";
 
 // react-konva 碰 canvas/window,不能 SSR → dynamic ssr:false(M4)
 const StudioMaskCanvas = dynamic(() => import("@/components/desktop/studio-mask-canvas"), { ssr: false });
@@ -86,17 +85,11 @@ export default function StudioPage() {
   const [history, setHistory] = useState<Shot[]>([]);
   const [batch, setBatch] = useState<Shot[]>([]);    // 刚出的这一批变体(2-4张),给用户一眼挑
   const [refs, setRefs] = useState<string[]>([]);    // 参考图(本机绝对路径),图生图:当风格/参考喂给模型
-  // E2-3・原"改这张(整张)"输入框改名 motionText:合并进"圈选+说话"(StudioMaskCanvas 自带 instruction)后,
-  // 这个文本框改专职给"做成视频"当运镜描述用(原本就是复用同一个框,现在拆出来各司其职)。
-  const [motionText, setMotionText] = useState("");
   const [maskMode, setMaskMode] = useState(false);   // 圈选+说话(编辑操作台第二层)是否打开
-  const [vDuration, setVDuration] = useState(5);     // 视频时长(秒)
-  const [vAudio, setVAudio] = useState(false);       // 视频配音
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [leftW, setLeftW] = useState(280);    // 左栏宽(拖分隔条调)
   const [rightW, setRightW] = useState(280);   // 右栏宽(拖分隔条调·仅第二层出现编辑操作台时用)
-  const [videoConfirmOpen, setVideoConfirmOpen] = useState(false); // 做成视频的二次确认(ConfirmDialog)
 
   // E2-2・场景卡预填的落点:点卡只 setPrompt + 聚焦，不发消息、不调任何生成接口。
   const promptRef = useRef<HTMLTextAreaElement>(null);
@@ -253,17 +246,13 @@ export default function StudioPage() {
       void runJob(() => api.studioEdit({ prompt: "保持画面主体和风格不变，换成这个画幅比例重新构图", source_generation_id: current.generationId as string, ratio: r }), r);
     }
   };
-  // 做成视频:把当前这张图动起来(人确认=点这个按钮 → 弹 ConfirmDialog → 确认才真的起任务)。
-  // E2-3・window.confirm 换成 ConfirmDialog(受控 state,和 chat-shell/store-docs-panel 一致的用法)。
-  const askMakeVideo = () => {
-    if (!current || current.isVideo || busy) return;
-    setVideoConfirmOpen(true);
-  };
+  // 做成视频(R4・owner 6-30 拍板):不再就地生视频,改成带图跳进工作台的视频面板——
+  // 同一扇工作台窗口内"生图→视频"切面板 + 带 fromGen(轻标识,真图从不进 IPC),视频面板自己按 id 取图。
+  // 非桌面(web,没有 window.electron)降级成提示,不崩。
   const onMakeVideo = () => {
-    setVideoConfirmOpen(false);
-    if (!current || current.isVideo || busy) return;
-    const ff = current.url, gid = current.generationId, rr = current.ratio, motion = motionText.trim() || undefined;
-    void runJob(() => api.studioI2v({ first_frame: ff, source_generation_id: gid, prompt: motion, ratio: rr, duration: vDuration, generate_audio: vAudio }), rr);
+    if (!current || current.isVideo || busy || !current.generationId) return;
+    if (!window.electron?.openWorkbench) { setError("做成视频需要在桌面版里操作。"); return; }
+    void window.electron.openWorkbench("video", { fromGen: current.generationId });
   };
   // 多镜合成:把当前+历史里有来源记录的视频片段拼成一条(真 ffmpeg 在本机 Electron 跑)
   const videoShots = [current, ...history].filter((s): s is Shot => !!s && !!s.isVideo && !!s.generationId);
@@ -541,28 +530,16 @@ export default function StudioPage() {
                   <Repeat className="h-3.5 w-3.5" /> 要同款
                 </button>
               </div>
-              {/* 做成视频(图生视频):运镜描述(可选) + 时长 + 配音 + 一次确认 */}
+              {/* 做成视频(R4)：只跳转不就地出片——带这张图进工作台的视频面板，视频那边配运镜/时长/配音再出片 */}
               <div>
-                <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">做成视频</div>
-                <textarea
-                  value={motionText}
-                  onChange={(e) => setMotionText(e.target.value)}
-                  placeholder="运镜描述（可选），比如：镜头缓慢推进、灯光渐暗"
-                  rows={2}
-                  className="mb-1.5 w-full resize-none rounded-lg border border-black/[0.08] bg-black/[0.02] px-3 py-2 text-[13px] outline-none transition placeholder:text-[#b0b0b5] focus:border-[#10a37f]/50 dark:border-white/[0.08] dark:bg-white/[0.03] dark:placeholder:text-[#56585f]"
-                />
-                <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
-                  {[5, 8, 10].map((d) => <button key={d} type="button" onClick={() => setVDuration(d)} className={chip(vDuration === d)}>{d} 秒</button>)}
-                  <button type="button" onClick={() => setVAudio((v) => !v)} className={chip(vAudio)}>{vAudio ? "带配音" : "无配音"}</button>
-                </div>
                 <button
                   type="button"
-                  onClick={askMakeVideo}
+                  onClick={onMakeVideo}
                   disabled={busy || !current.generationId}
-                  title="把这张图动起来，做成几秒短视频（要等几分钟）"
+                  title="带这张图跳到视频工作台，在那边配运镜/时长/配音再生成"
                   className="flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-[#007AFF]/30 bg-[#007AFF]/[0.06] text-[13px] font-medium text-[#007AFF] transition hover:bg-[#007AFF]/[0.12] active:scale-[0.99] disabled:opacity-50"
                 >
-                  <Film className="h-3.5 w-3.5" /> 让这张动起来（做成视频）
+                  <Film className="h-3.5 w-3.5" /> 去视频台做成视频
                 </button>
               </div>
               </>)}
@@ -611,15 +588,6 @@ export default function StudioPage() {
           </>
         )}
       </div>
-
-      <ConfirmDialog
-        open={videoConfirmOpen}
-        title="做成视频？"
-        message="这张图会动起来做成一段短视频，要等几分钟，确定开始吗？"
-        confirmLabel="开始"
-        onConfirm={onMakeVideo}
-        onCancel={() => setVideoConfirmOpen(false)}
-      />
     </div>
   );
 }

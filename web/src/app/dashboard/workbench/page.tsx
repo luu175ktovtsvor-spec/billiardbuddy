@@ -16,7 +16,8 @@
  *  ① 首次开窗:main.js 把 mode/payload 拼进 URL query(?panel=video&fromGen=xxx),这里用
  *     useSearchParams 读初始面板 + payload(Next App Router 用 useSearchParams 必须包 Suspense)。
  *  ② 已开着的窗口再被 openWorkbench 调用:main.js 转发 "workbench:navigate" 事件,这里订阅切面板/换 payload。
- * payload 本单只存着透传(data 属性可查)供下一单 E1-C2 的"图带过去当素材"消费,不在本单发起任何生视频调用。
+ * payload 除了透传(data 属性可查)外,E1-C2 起也真传进视频面板(`initialFromGen`)——视频面板拿着这个
+ * 轻标识 id 自己去后端换真实图片 URL 当 i2v 素材,这里容器本身仍不碰图片内容。
  */
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -73,7 +74,7 @@ function WorkbenchContainer() {
       data-workbench-payload={payload ? JSON.stringify(payload) : undefined}
     >
       {panel === "image" && <StudioPage />}
-      {panel === "video" && <VideoWorkspacePage />}
+      {panel === "video" && <VideoWorkspacePage initialFromGen={payload?.fromGen} />}
       {panel === "template" && (
         <div className="flex h-screen w-full flex-col items-center justify-center gap-2 bg-white text-[#86868b] dark:bg-[#0e0f11] dark:text-[#6e7077]">
           <LayoutTemplate className="h-8 w-8" />

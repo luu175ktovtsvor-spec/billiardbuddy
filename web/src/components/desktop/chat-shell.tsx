@@ -434,6 +434,7 @@ export function DesktopChatShell({
         ratio: item.ratio || undefined,
         width: item.width || undefined,
         height: item.height || undefined,
+        generationId: item.id,   // RecentArtifact.id 本就是 Generation 的真实 id
       });
       return;
     }
@@ -683,20 +684,12 @@ export function DesktopChatShell({
   const onRefine = (kind: PreviewItem["kind"]) => {
     setInput(kind === "poster" ? "把刚才那张海报改成：" : "把刚才这条改成：");
   };
+  // R4(owner 6-30)：不再让 agent 就地生视频(长 prompt 走 chat.send)，改成带图跳进工作台的视频面板——
+  // 和生成工作室"做成视频"走同一条 openWorkbench handoff。非桌面(web，没有 window.electron)降级成提示。
   const onMakeVideo = (item: Extract<PreviewItem, { kind: "poster" }>) => {
-    if (chat.generating) return;
-    setInput("");
-    void chat.send(
-      [
-        "把这张图做成一条抖音/视频号同城营销短视频。",
-        `首帧图片：${item.imageUrl}`,
-        `比例：${item.ratio || "9:16"}`,
-        "时长：5 秒左右。",
-        "要求：画面从这张图自然动起来，适合台球房周赛/活动宣传；先生成视频任务确认卡，说明耗时和额度，等我确认后再真正生成。",
-      ].join("\n"),
-      undefined,
-      { displayText: "做成视频" },
-    );
+    if (!item.generationId) { toast.error("这张图还没归档好，稍后再试一下。"); return; }
+    if (!electron?.openWorkbench) { toast.error("做成视频需要在桌面版里操作。"); return; }
+    void electron.openWorkbench("video", { fromGen: item.generationId });
   };
   // 结果动作：把一段普通回答直接收束成门店员工能照着干的任务清单。
   const onMakeTask = useCallback((content: string) => {
