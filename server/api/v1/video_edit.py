@@ -316,13 +316,18 @@ async def video_render(
         try:
             await progress(15, "在出片了,好了叫你…")
             from services.video_edit.assemble import render_timeline
+            from services.video_edit.footage_qc import qc_caveat_message
             from services.video_edit.projects import load_doc as _ld, project_dir
 
             d = _ld(project)
             out = project_dir(project) / name
-            await asyncio.to_thread(render_timeline, d, str(out), edit_dir=str(project_dir(project)))
+            res = await asyncio.to_thread(render_timeline, d, str(out), edit_dir=str(project_dir(project)))
+            # E4①⑤渲染后体检结果别丢:一并带回 job.result,供前端(follow-up)展示"但有点问题"。
+            health, caption_health = res.get("health"), res.get("caption_health")
             return {"urls": [f"/uploads/edits/{project}/{name}"],
-                    "is_video": True, "duration": d.duration()}
+                    "is_video": True, "duration": d.duration(),
+                    "health": health, "caption_health": caption_health,
+                    "caveat": qc_caveat_message(health, caption_health)}
         finally:
             set_tenant(None)
 
@@ -456,12 +461,17 @@ async def video_render_v2(
         try:
             await progress(15, "在渲染成片(带包装),好了叫你…")
             from services.video_edit.assemble import render_v2_project
+            from services.video_edit.footage_qc import qc_caveat_message
             from services.video_edit.projects import load_doc as _ld, project_dir
 
             d = _ld(project)
             out = project_dir(project) / name
-            await asyncio.to_thread(render_v2_project, str(project_dir(project)), str(out))
-            return {"urls": [f"/uploads/edits/{project}/{name}"], "is_video": True, "duration": d.duration()}
+            res = await asyncio.to_thread(render_v2_project, str(project_dir(project)), str(out))
+            # E4⑤渲染后体检结果别丢:一并带回 job.result,供前端(follow-up)展示"但有点问题"。
+            health, caption_health = res.get("health"), res.get("caption_health")
+            return {"urls": [f"/uploads/edits/{project}/{name}"], "is_video": True, "duration": d.duration(),
+                    "health": health, "caption_health": caption_health,
+                    "caveat": qc_caveat_message(health, caption_health)}
         finally:
             set_tenant(None)
 

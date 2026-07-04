@@ -195,6 +195,67 @@ def test_render_video_job_completion_appends_transcript_and_notifies(setup, monk
     asyncio.run(main())
 
 
+def test_render_video_job_completion_carries_qc_caveat_when_health_is_red(setup, monkeypatch, tmp_path):
+    """Finding 1(全仓审查 Important)修复验证:render_timeline 的渲染后体检(E4⑤)如果重渲一次仍红
+    (如成片有异常黑段/整片静音),完成文案不能还是干干净净的"剪好了"——必须带上体检问题清单,
+    别把一个烂片静默递给老板。fake render_timeline 直接返回 assemble.render_timeline 真实的
+    dict 形状({"path","health","rerendered","caption_health"}),只是 health 标红。"""
+    import services.agent.transcript as Tr
+
+    src = setup
+
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        monkeypatch.setattr("db.session.async_session", Session)
+        monkeypatch.setattr(Tr.settings, "upload_dir", str(tmp_path / "uploads"))
+        monkeypatch.setattr("services.notify_service.push", lambda *a, **k: None)
+
+        def fake_render(doc, out_path, edit_dir):
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(out_path).write_bytes(b"FAKE-MP4")
+            return {
+                "path": out_path,
+                "health": {"ok": False, "reasons": ["成片有异常黑段(占比10%)"]},
+                "rerendered": True,
+                "caption_health": {"cues": [], "problems": [
+                    {"index": 0, "start": 0.0, "end": 1.0, "text": "促销文案",
+                     "reasons": ["这段字幕整段落在静音区间里,跟口播时间对不上,像是错位了,检查一下"]},
+                ], "ok": False},
+            }
+
+        monkeypatch.setattr("services.video_edit.assemble.render_timeline", fake_render)
+
+        sid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed_store(db, sid)
+        cid = "77777777-7777-7777-7777-777777777777"
+        ctx = AgentContext(store=SimpleNamespace(id=sid), user=SimpleNamespace(id=uid), conversation_id=cid)
+
+        await vt.inventory_footage({"video_paths": [str(src)], "project": "proj7"}, ctx)
+        await vt.edit_timeline({"project": "proj7", "operations": [
+            {"op": "add_clip", "track": "v", "media": "m1", "src_in": 0.0, "src_out": 2.0},
+        ]}, ctx)
+
+        r = await vt.render_video({"project": "proj7", "output_name": "成片7"}, ctx)
+        got = await _poll_job_done(sid, _extract_job_id(r))
+        assert got is not None and got.status == "done"
+
+        out = Tr.load_transcript(cid)
+        assert out is not None and len(out) == 1
+        text = out[0]["content"]
+        # 主体"剪好了"文案还在(没吓退老板),但要带上体检发现的问题、别静默糊弄过去。
+        assert "剪好了" in text
+        assert "体检发现还有点问题" in text
+        assert "异常黑段" in text
+        assert "错位了" in text
+
+    asyncio.run(main())
+
+
 def test_render_video_job_failure_appends_transcript_and_notifies(setup, monkeypatch, tmp_path):
     """渲染半路炸了(如 ffmpeg 崩)→ 也要落一条"没剪成、原因 X" + 弹失败通知，别让老板干等。"""
     import services.agent.transcript as Tr

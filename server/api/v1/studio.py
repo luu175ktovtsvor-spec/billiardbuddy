@@ -211,7 +211,12 @@ async def _resolve_reference_generation_paths(wdb, generation_ids, store_id) -> 
         p = (udir / str(g.result).removeprefix("/uploads/")).resolve()
         in_uploads = str(p) == str(udir) or str(p).startswith(str(udir) + "/")
         if in_uploads and p.exists():
-            paths.append(str(p))
+            # 按 "/uploads/..."-相对路径返回——这才是 poster_service.generate_images 参考图循环
+            # (reference_image_paths)真正按契约期望读的格式:它拿 `ref_str.removeprefix("/uploads/")`
+            # 再拼 upload_dir 去读文件，不是按绝对文件系统路径读。之前这里返回 str(p)(绝对路径)能
+            # 工作纯属 pathlib 巧合——`Path(upload_dir) / <绝对路径>` 会整个丢弃左操作数，只是凑巧这个
+            # 绝对路径本来就落在 uploads 内才蒙对，没有测试覆盖、不该继续依赖这个巧合(全仓审查 Important)。
+            paths.append("/uploads/" + str(p.relative_to(udir)))
     return paths
 
 
