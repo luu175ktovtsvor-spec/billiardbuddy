@@ -24,7 +24,7 @@ import { useSearchParams } from "next/navigation";
 import { Image as ImageIcon, Film, LayoutTemplate } from "lucide-react";
 
 import StudioPage from "@/app/dashboard/studio/page";
-import VideoWorkspacePage from "@/app/dashboard/video/page";
+import { VideoWorkspacePage } from "@/app/dashboard/video/VideoWorkspace";
 
 type Panel = "image" | "video" | "template";
 type WorkbenchPayload = Record<string, string> | null;
