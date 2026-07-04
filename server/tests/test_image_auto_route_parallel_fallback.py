@@ -131,6 +131,66 @@ def _patch_desktop_ark(monkeypatch):
     monkeypatch.setattr(settings, "image_model_name", "")
 
 
+# ─────────────── 1b. BYOK 门店 + 未指定模型时，自动路由不该硬塞模型 ID 给门店 endpoint ───────────────
+
+
+async def test_byok_store_without_model_does_not_force_routed_model_id(monkeypatch):
+    """回归：门店 byok_image_enabled=True 但没填 byok_image_model 时（image_model_cfg 恒为 None），
+    U2 自动路由绝不能把算出来的具体模型 ID（如 Seedream 专属的 doubao-seedream-*）硬塞给门店自己的
+    （非 ARK）endpoint——那是任意厂商 API，收到未知模型大概率直接报错，且这类失败不以 gpt-image
+    开头，降级安全网也救不了。同一门店只要 prompt 命中"硬文字要素"（poster_text 有 title）就会
+    触发自动路由算出 Seedream 模型 ID——本用例就覆盖这个"内容触发型回归"组合。
+
+    修复后：build_image_provider 拿到的 base_url 仍是门店自己的 endpoint（不切 ARK，符合既有行为）；
+    真正送进 provider.generate_image 的 model 必须是 None（交给门店 endpoint 自己的默认值），
+    不能是被自动路由算出来的 Seedream 模型 ID 字符串。
+    """
+    from unittest.mock import patch as _patch
+
+    engine, db, store, user = await _make_store_and_db()
+
+    # 门店自带生图 BYOK：已启用 + 已配 key，但没填具体模型（最常见的"填了 key 图省事没填模型"配置）。
+    store.byok_image_enabled = True
+    store.byok_image_api_key_enc = "enc-does-not-matter"  # 只要非空，实际解密结果由下面 patch 控制
+    store.byok_image_model = None
+    store.byok_image_base_url = "https://byok-vendor.example.com/v1"
+
+    captured = {}
+
+    async def _call(**kwargs):
+        captured["model"] = kwargs.get("model")
+        return _png_bytes(1152, 1536)
+
+    def fake_build_image_provider(api_key, base_url, model=None):
+        captured["base_url"] = base_url
+        captured["build_model"] = model
+        return _FakeProvider("byok-vendor", _call)
+
+    from services.ai.factory import ProviderFactory
+    monkeypatch.setattr(ProviderFactory, "build_image_provider", staticmethod(fake_build_image_provider))
+
+    poster_text = {"title": "开业大吉"}  # 命中"硬文字要素" → 自动路由会算出 Seedream 模型 ID
+
+    try:
+        with _patch("core.crypto.try_decrypt", return_value="byok-real-key"):
+            result = await poster_service.generate_images(
+                db=db, store=store, user_id=user.id, prompt="给我做个开业海报",
+                image_model=None, ratio="3:4", count=1, poster_text=poster_text,
+            )
+    finally:
+        await engine.dispose()
+
+    # base_url 必须仍是门店自己的 endpoint（没有被误切去 ARK）
+    assert captured["base_url"] == "https://byok-vendor.example.com/v1"
+    # build_image_provider 拿到的 model（image_model_cfg）本就该是 None（factory 层已保证，非本单范围）
+    assert captured["build_model"] is None
+    # 核心断言：真正送进 provider.generate_image 的 model 不能是自动路由算出的 Seedream 模型 ID
+    assert captured["model"] is None, (
+        f"BYOK 门店未指定模型时，不该把自动路由的模型 ID 塞给门店 endpoint，实际={captured['model']!r}"
+    )
+    assert result["count"] == 1
+
+
 # ────────────────────────────── 2. 默认路由端到端：不传 image_model → 不落 gpt-image-2 ──────────────────────────────
 
 
