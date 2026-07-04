@@ -19,6 +19,15 @@ from .subtitle_qc import validate_cues
 from .subtitles import _ts
 from .timeline import MediaRef, Track, new_doc, TimelineDoc
 
+# E5④口播+BGM 可达性接线的 provenance 标记:plan_speech(bgm=True) 登记配乐媒体时把
+# MediaRef.kind 设成这个值(不是常见的 "audio")。render_timeline 只认这个标记来决定要不要
+# 覆写成 voice_over_music——不能靠"doc 里有没有字幕轨"推断,因为 add_caption/set_music 是
+# 通用原子操作(services/agent/video_edit_tools.py 的 edit_timeline/render_video、
+# api/v1/video_edit.py 的 /projects/{project}/ops 都能调到),普通剪辑配"字幕+配乐"组合完全
+# 合法且当前可达,那种场景必须仍走 "music"(整段丢原声),否则会破坏 keep/music/mute 三态不受
+# 影响的不变式(见 tests/test_video_edit_assemble.py 的回归测试)。
+VOICE_OVER_BGM_KIND = "voice_over_bgm"
+
 
 def inventory_footage(video_paths: list[str], edit_dir: str, *, language: str = "zh") -> dict:
     """理解素材(只读):每个视频转写 + 切镜头,产出给 AI 读的候选菜单 + 已登记媒体的草稿文档。
@@ -220,13 +229,17 @@ def render_timeline(doc: TimelineDoc, out_path: str, *, edit_dir: str) -> dict:
         srt = str(work / "captions.srt")
         build_srt_from_doc(doc, srt, cues=caption_health["cues"])
     edl = doc.to_edl(subtitles_srt=srt)
-    # E5④口播+BGM 可达性接线:doc 同时有口播内容(字幕轨非空,当前只有口播线会填充 caption
-    # 片段——氛围线的 V2 项目走 render_v2_project/template_render,不经这里)+ 配乐(doc.music
-    # 已让 to_edl 把 audio_mode 定成 "music")→ 覆写成 voice_over_music,让 render_edl 走
-    # E4-U2 建好的混音引擎(口播原声 + BGM 同时混音),而不是 "music" 默认那样整段丢原声。
+    # E5④口播+BGM 可达性接线:只有 doc.music 指向的媒体是 plan_speech(bgm=True) 专门登记的
+    # VOICE_OVER_BGM_KIND(provenance 标记,见模块顶部注释)才覆写成 voice_over_music,让
+    # render_edl 走 E4-U2 建好的混音引擎(口播原声 + BGM 同时混音)。**不能**用"doc.caption_clips()
+    # 非空"推断是否口播——那会误伤通用场景:add_caption/set_music 是通用原子操作,一段普通氛围/
+    # 广告素材配了促销字幕 + 背景音乐(经 edit_timeline/render_video 或 /ops 接口)也会让
+    # caption_clips() 非空,此时用户明确要的是纯配乐(整段丢原声)而不是混音,老判据会把这种
+    # 主流场景静默改成 voice_over_music,破坏 keep/music/mute 三态不受影响的不变式。
     # 只在这一层覆写 edl 字段,不碰 timeline.py 的 to_edl 契约;不满足条件时 edl.audio_mode
     # 维持 to_edl 给的原值(keep/music/mute 三态一律不受影响)。
-    if edl.audio_mode == "music" and doc.caption_clips():
+    music_media = doc.media.get(doc.music) if doc.music else None
+    if edl.audio_mode == "music" and music_media is not None and music_media.kind == VOICE_OVER_BGM_KIND:
         edl.audio_mode = "voice_over_music"
     res = guarded_render(lambda: render_edl(edl, out_path, edit_dir=str(work)),
                           expected_duration=doc.duration())

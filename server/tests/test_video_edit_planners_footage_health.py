@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from services.video_edit.assemble import VOICE_OVER_BGM_KIND
 from services.video_edit.ffbin import ffmpeg_bin
 from services.video_edit.planners.ambient import plan_ambient
 from services.video_edit.planners.speech import plan_speech
@@ -224,6 +225,8 @@ def test_plan_speech_bgm_true_attaches_music_media(tmp_path, monkeypatch):
     res = plan_speech([str(good)], str(tmp_path / "edit"), target_duration=10.0, bgm=True)
     assert res["doc"]["music"] == "bgm"
     assert "bgm" in res["doc"]["media"]
-    assert res["doc"]["media"]["bgm"]["kind"] == "audio"
+    # kind 必须是 provenance 标记 VOICE_OVER_BGM_KIND(不是常见的 "audio")——这是 render_timeline
+    # 识别"这条 music 是 plan_speech(bgm=True) 产出的"唯一依据,不能靠字幕轨推断(见 assemble.py)。
+    assert res["doc"]["media"]["bgm"]["kind"] == VOICE_OVER_BGM_KIND
     from pathlib import Path as _P
     assert _P(res["doc"]["media"]["bgm"]["src"]).exists()   # 真合成了一条 wav,不是空引用

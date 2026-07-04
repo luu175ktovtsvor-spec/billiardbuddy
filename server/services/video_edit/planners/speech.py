@@ -124,10 +124,11 @@ def plan_speech(
     """口播模式出方案:转录 → 内容化挑讲话片段(E5①) → 排布 → 自动配字幕。返回 {doc, report, has_speech}。
 
     出片走 render_timeline(保留原声 + 烧字幕)。没识别到口播则抛错(引导改用氛围模式)。
-    bgm(E5④,默认 False):True 时给成片额外挂一条程序化配乐,配合 render_timeline 的
-    voice_over_music 接线——保留口播原声的同时垫 BGM;默认 False 时行为与升级前完全一致(纯 keep)。
+    bgm(E5④,默认 False):True 时给成片额外挂一条程序化配乐,并用 VOICE_OVER_BGM_KIND 这个
+    provenance 标记登记这条媒体,配合 render_timeline 的 voice_over_music 接线——保留口播原声的
+    同时垫 BGM;默认 False 时行为与升级前完全一致(纯 keep)。
     """
-    from ..assemble import _phrase_cues, auto_captions_from_speech, validate_captions_for_doc
+    from ..assemble import VOICE_OVER_BGM_KIND, _phrase_cues, auto_captions_from_speech, validate_captions_for_doc
     from ..ffbin import probe_video
     from ..footage_qc import footage_all_bad_message, probe_footage_health
     from ..operations import apply_operations
@@ -189,8 +190,10 @@ def plan_speech(
     caption_health = validate_captions_for_doc(doc) if doc.caption_clips() else {"cues": [], "problems": [], "ok": True}
 
     # ── E5④口播+BGM 可达性接线(default-off,不碰 timeline.py):bgm=True 才给 doc 挂配乐媒体 +
-    # set_music——doc 同时有口播字幕 + music 时,render_timeline 会把 audio_mode 覆写成
-    # voice_over_music(E4-U2 已建好的混音引擎),口播原声不会被这条配乐整段替换掉。
+    # set_music——用 VOICE_OVER_BGM_KIND(而非常见的 "audio")登记这条媒体的 kind,当 provenance
+    # 标记:render_timeline 只认这个标记才把 audio_mode 覆写成 voice_over_music(E4-U2 已建好的
+    # 混音引擎),口播原声不会被这条配乐整段替换掉;通用 add_media/set_music(kind 默认/常见值是
+    # "audio")不会碰巧带上这个标记,不会被误伤(也不会误伤别的场景)。
     # bgm=False(默认)完全不碰 doc.music,行为与升级前一字不变(纯 keep)。
     if bgm:
         from ..bgm import synth_beat_bgm
@@ -199,7 +202,7 @@ def plan_speech(
         dur = max(doc.duration(), 1.0)
         synth_beat_bgm(dur, bgm_path, mood="chill")   # 口播垫底配乐用柔和拍子,别抢话
         music_ops = [
-            {"op": "add_media", "id": "bgm", "src": bgm_path, "duration": dur, "kind": "audio"},
+            {"op": "add_media", "id": "bgm", "src": bgm_path, "duration": dur, "kind": VOICE_OVER_BGM_KIND},
             {"op": "set_music", "media": "bgm"},
         ]
         doc, merr = apply_operations(doc, music_ops)
