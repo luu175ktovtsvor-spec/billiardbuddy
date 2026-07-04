@@ -6,12 +6,18 @@
  * - A-Task-6「控件按需出现」：工具条常驻只留 附件 / 深度思考开关 / 发送；
  *   最近文件、从下载选素材、运行权限(ask/auto_files/plan/full 单选)、输出风格、行业模式(台球知识库)
  *   统一收进一个「+」菜单(分区展示)，行为不变、只换入口——照 Warp/Dia 的「按需出现」思路减少默认可见按钮数。
+ * - D-Task-9 语音输入：麦克风按钮插在 附件/深度思考 之间，走口播同一套「模型就绪门」
+ *   (useWhisperReady)；录音生命周期(getUserMedia → MediaRecorder → 转写 → 回填输入框)全在本组件内部
+ *   管理，仿贴图/拖拽的"内部处理+回调"模式，不上抛父层新状态。
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Paperclip, ArrowUp, ShieldCheck, Check, X, FileText, BookOpen, Palette, Brain, FolderDown, FolderOpen, History, Plus, type LucideIcon } from "lucide-react";
+import { Paperclip, ArrowUp, ShieldCheck, Check, X, FileText, BookOpen, Palette, Brain, FolderDown, FolderOpen, History, Plus, Mic, MicOff, Loader2, type LucideIcon } from "lucide-react";
 import { PERMISSION_MODES, WELCOME } from "@/lib/agent-copy";
 import { api, type SkillMeta, type OutputStyleMeta } from "@/lib/api";
+import { getErrorMessage } from "@/lib/utils";
+import { useWhisperReady } from "@/hooks/use-whisper-ready";
 import { SlashPalette, type PaletteItem } from "./slash-palette";
+import { useToast } from "./toast";
 
 export type PermissionMode = "ask" | "auto_files" | "full" | "plan";
 
@@ -136,6 +142,70 @@ export function DesktopComposer({
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const activePacks = knowledgePacks ?? [];
+  const toast = useToast();
+
+  // D-Task-9 语音输入：走口播同一套「模型就绪门」——whisper 没下好前麦克风灰掉+大白话提示。
+  const { ready: micReady, status: micStatus } = useWhisperReady();
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  // 组件卸载时若还在录音，停掉麦克风流，别让权限指示灯一直亮着。
+  useEffect(() => () => { micStreamRef.current?.getTracks().forEach((t) => t.stop()); }, []);
+
+  const startRecording = async () => {
+    if (!micReady || recording || transcribing) return;
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      toast.error("这台电脑不支持录音，换成打字输入吧");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = stream;
+      audioChunksRef.current = [];
+      const mr = new MediaRecorder(stream);
+      mr.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      mr.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        micStreamRef.current = null;
+        const chunks = audioChunksRef.current;
+        audioChunksRef.current = [];
+        setRecording(false);
+        if (!chunks.length) return;
+        const blob = new Blob(chunks, { type: mr.mimeType || "audio/webm" });
+        if (blob.size === 0) return;
+        setTranscribing(true);
+        const file = new File([blob], `voice_${Date.now()}.webm`, { type: blob.type || "audio/webm" });
+        api.transcribeAudio(file)
+          .then(({ text }) => {
+            const clean = text?.trim();
+            if (!clean) { toast.info("没听清，请再说一次"); return; }
+            const sep = value && !/[\s]$/.test(value) ? " " : "";
+            onChange(`${value}${sep}${clean}`);
+          })
+          .catch((e) => toast.error(getErrorMessage(e)))
+          .finally(() => setTranscribing(false));
+      };
+      mediaRecorderRef.current = mr;
+      mr.start();
+      setRecording(true);
+    } catch (err) {
+      const name = (err as DOMException)?.name;
+      if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+        const isMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
+        toast.error(isMac
+          ? "还没拿到麦克风权限：去 系统设置→隐私与安全性→麦克风 里允许本应用，再点一次麦克风试试"
+          : "还没拿到麦克风权限：去 设置→隐私→麦克风 里允许桌面应用访问，再点一次麦克风试试");
+      } else if (name === "NotFoundError") {
+        toast.error("没找到麦克风设备，检查一下电脑麦克风");
+      } else {
+        toast.error("打不开麦克风：" + getErrorMessage(err));
+      }
+    }
+  };
+
+  const stopRecording = () => { mediaRecorderRef.current?.stop(); };
 
   // `/` 命令面板：已安装技能(拉一次) + 内置命令；输入以 / 开头且未输入空格时浮出。
   const [skills, setSkills] = useState<SkillMeta[]>([]);
@@ -350,6 +420,43 @@ export function DesktopComposer({
             >
               <Paperclip className="h-[16px] w-[16px]" />
             </button>
+
+            {/* D-Task-9 语音输入：走口播同一套「模型就绪门」，没就绪灰掉+大白话提示；就绪时点击录音/再点停止。 */}
+            {!micReady ? (
+              <button
+                type="button"
+                onClick={() => { if (micStatus.phase === "error") void window.electron?.models?.retry(); }}
+                title={
+                  micStatus.phase === "downloading"
+                    ? `语音功能正在准备中（首次要下载语音模型${micStatus.percent ? ` ${micStatus.percent}%` : ""}）`
+                    : micStatus.phase === "error"
+                      ? "语音模型下载失败，点击重试"
+                      : "语音功能正在准备中…"
+                }
+                aria-label="语音输入（准备中）"
+                className={`flex h-7 w-7 items-center justify-center rounded-md text-[#86868b] opacity-40 dark:text-[#6e7077] ${
+                  micStatus.phase === "error" ? "cursor-pointer hover:opacity-70" : "cursor-not-allowed"
+                }`}
+              >
+                <MicOff className="h-[16px] w-[16px]" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => { if (recording) stopRecording(); else void startRecording(); }}
+                disabled={transcribing}
+                title={recording ? "点击停止录音" : transcribing ? "识别中…" : "语音输入"}
+                aria-label={recording ? "停止录音" : "语音输入"}
+                aria-pressed={recording}
+                className={`flex h-7 w-7 items-center justify-center rounded-md transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                  recording
+                    ? "bg-red-500/10 text-red-500 hover:bg-red-500/15"
+                    : "text-[#86868b] hover:bg-black/[0.05] hover:text-[#1d1d1f] dark:text-[#6e7077] dark:hover:bg-white/[0.06] dark:hover:text-[#c8cace]"
+                }`}
+              >
+                {transcribing ? <Loader2 className="h-[16px] w-[16px] animate-spin" /> : <Mic className={`h-[16px] w-[16px] ${recording ? "animate-pulse" : ""}`} />}
+              </button>
+            )}
 
             {/* F.2 深度思考 开/关：A5 已解除 advancedMode 门控，常驻可用，不进「+」菜单。 */}
             {onDeepThinkingChange && (
