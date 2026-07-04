@@ -459,12 +459,19 @@ def _infer_edit_type(prompt: str | None) -> str:
     return "text_fix" if any(kw in text for kw in _EDIT_TEXT_FIX_KEYWORDS) else "content"
 
 
+def _resolve_edit_type(prompt: str | None, edit_type: str | None) -> str:
+    """统一算出这轮改图的类型：调用方显式传了 edit_type 就用它(去空白转小写)，没传则从
+    prompt 文本推断——`_route_edit_model` 和 `generate_images` 都要这份判定结果，抽出来
+    避免两处各写一遍同样的表达式(review 发现的重复，见 u5-report.md 修复记录)。"""
+    return (edit_type or "").strip().lower() or _infer_edit_type(prompt)
+
+
 def _route_edit_model(prompt: str | None, user_choice: str, edit_type: str | None) -> str:
     """改图专用路由：调用方显式选了模型(user_choice)一律尊重(与 U2 手选优先级一致)；
     否则按 edit_type(显式传入或从 prompt 推断)：text_fix→Seedream，content→GPT。"""
     if user_choice:
         return user_choice
-    et = (edit_type or "").strip().lower() or _infer_edit_type(prompt)
+    et = _resolve_edit_type(prompt, edit_type)
     return _AUTO_ROUTE_SEEDREAM_MODEL if et == "text_fix" else _AUTO_ROUTE_GPT_MODEL
 
 
@@ -627,18 +634,23 @@ def detect_ocr_text_anomalies(ocr_texts: list[str], hard_values: dict[str, str])
     return anomalies
 
 
-async def _quality_check_image(output_path_jpg: Path, hard_values: dict[str, str]) -> tuple[bool, str]:
+async def _quality_check_image(output_path_jpg: Path, hard_values: dict[str, str]) -> tuple[bool, str, bool]:
     """一张已落盘图片的完整质检：先零依赖预筛，通过后（有硬文字要素时）再跑 OCR 比对。
-    两类检查都在线程池跑(CPU 密集：图像统计 / onnx 推理)，避免阻塞事件循环。"""
+    两类检查都在线程池跑(CPU 密集：图像统计 / onnx 推理)，避免阻塞事件循环。
+
+    返回 (ok, reason, is_ocr_only)——第三项标记这次判废是不是【纯粹因为 OCR 文字比对不过】
+    (画面本身已经过了零依赖预筛，不是黑图/纯色这类真正的生成失败)。改图轮 U5 修复用这个信号
+    区分"画面本身坏了"(仍要放弃)和"只是文字没对上"(可以 best-effort 放行+警告)，见调用方
+    `_generate_one`。fresh 生成路径不看这一项，行为不变。"""
     ok, reason = await asyncio.to_thread(_screen_generated_image, output_path_jpg)
     if not ok:
-        return False, reason
+        return False, reason, False
     if hard_values:
         ocr_texts = await asyncio.to_thread(_run_ocr_texts, output_path_jpg)
         anomalies = detect_ocr_text_anomalies(ocr_texts, hard_values)
         if anomalies:
-            return False, "；".join(anomalies.values())
-    return True, ""
+            return False, "；".join(anomalies.values()), True
+    return True, "", False
 
 
 def build_poster_prompt(
@@ -980,7 +992,7 @@ async def generate_images(
     # (非 text_fix)且真调用 GPT 系列模型时才会给 input_fidelity="high"(openai_image.py 内部会再按
     # 模型是不是 gpt-image-2 做一次防呆过滤，双保险)。
     _is_edit_round = bool(refine_from)
-    _resolved_edit_type = ((edit_type or "").strip().lower() or _infer_edit_type(prompt)) if _is_edit_round else None
+    _resolved_edit_type = _resolve_edit_type(prompt, edit_type) if _is_edit_round else None
 
     async def _produce_single_attempt(i: int) -> dict | None:
         rand = uuid.uuid4().hex[:4]
@@ -1067,11 +1079,18 @@ async def generate_images(
 
     async def _generate_one(i: int) -> dict | None:
         """U4・质检 + 抽风自动重出(仅 1 次)：预筛/OCR 不过 → 重出这一张一次；重出后仍不过 →
-        放弃这一张(如实计入拒绝原因，不拖累同批其它张，也不硬塞废图给用户)。"""
+        fresh 生成放弃这一张(如实计入拒绝原因，不拖累同批其它张，也不硬塞废图给用户)。
+
+        U5 修复(review 发现)：改图轮(`_is_edit_round`)是另一回事——preserve-list 承接的硬要素
+        本就可能和这次编辑诉求无关(比如"把背景换成蓝色"却承接了店名/电话)，编辑模型顺带把这些
+        不相关的字画漂移，不该让用户一次简单改图连图都拿不到。所以改图轮"重出后仍只是 OCR 文字
+        没对上"(`ocr_only`=True，画面本身已过预筍，不是黑图/纯色)时，尽力而为返回这张图 + 软性
+        警告标记，不再抛 AIServiceError 硬失败；画面本身就坏了(ocr_only=False)仍按原逻辑放弃。
+        fresh 生成路径完全不看 `_is_edit_round`，行为不变(仍会一路走到底部的诚实硬失败)。"""
         outcome = await _produce_single_attempt(i)
         if outcome is None:
             return None
-        ok, reason = await _quality_check_image(outcome["output_path_jpg"], _hard_values_for_qc)
+        ok, reason, _ = await _quality_check_image(outcome["output_path_jpg"], _hard_values_for_qc)
         if ok:
             return outcome
         logger.warning("第 %d 张质检未过(%s)，自动重出这一张 1 次", i + 1, reason)
@@ -1079,9 +1098,19 @@ async def generate_images(
         retry_outcome = await _produce_single_attempt(i)
         if retry_outcome is None:
             return None
-        ok2, reason2 = await _quality_check_image(retry_outcome["output_path_jpg"], _hard_values_for_qc)
+        ok2, reason2, ocr_only2 = await _quality_check_image(retry_outcome["output_path_jpg"], _hard_values_for_qc)
         if ok2:
             retry_outcome["quality_retried"] = True
+            return retry_outcome
+        if _is_edit_round and ocr_only2:
+            logger.warning(
+                "第 %d 张(改图轮)重出后 OCR 仍未对上(%s)，按最佳成果返回并打软性警告标记，不硬失败",
+                i + 1, reason2,
+            )
+            quality_rejection_notes.append(reason2)
+            retry_outcome["quality_retried"] = True
+            retry_outcome["text_quality_warning"] = True
+            retry_outcome["text_quality_warning_message"] = "文字可能有点偏差，可以再改一版"
             return retry_outcome
         logger.warning("第 %d 张重出后质检仍未过(%s)，放弃这一张", i + 1, reason2)
         quality_rejection_notes.append(reason2)
@@ -1130,6 +1159,9 @@ async def generate_images(
                 "model_switched": outcome["model_switched"],  # U2:这张是否触发了 GPT→Seedream 降级安全网
                 "edit_type": _resolved_edit_type,     # U5:这轮改图判定的类型(非改图轮恒 None)
                 "print_mode": print_mode,              # U5:这张是否叠了印刷级真二维码
+                # U5 修复:改图轮 OCR 重出后仍未对上时的软性警告(见 _generate_one)；非改图轮/未触发恒 False。
+                "text_quality_warning": outcome.get("text_quality_warning", False),
+                "text_quality_warning_message": outcome.get("text_quality_warning_message"),
             },
             prompt_used=full_prompt,
             result=poster_url,
@@ -1152,6 +1184,9 @@ async def generate_images(
             "created_at": created_at,
             "model_switched": outcome["model_switched"],  # U2:前端可据此提示"这张用了备用模型"
             "quality_retried": outcome.get("quality_retried", False),  # U4:这张是否因质检抽风重出过
+            # U5 修复:改图轮 OCR 抽风重出仍未过时按最佳成果放行的软性提示(不硬失败)，供前端展示。
+            "text_quality_warning": outcome.get("text_quality_warning", False),
+            "text_quality_warning_message": outcome.get("text_quality_warning_message"),
         })
 
         logger.info("AI 生图完成: %s (模型=%s%s)", poster_url, outcome["model_used"],
