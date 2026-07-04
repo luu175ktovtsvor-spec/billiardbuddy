@@ -171,6 +171,10 @@ def _make_mcp_tool(server_name: str, cfg: dict, t: dict) -> Tool:
 
 
 _cached_tools: list[Tool] | None = None
+# 缓存临界区锁：_build_agent_registry 现在经 asyncio.to_thread 跑在独立 OS 线程，多个请求可能同时撞冷缓存、
+# 各自重连一遍全部 MCP server(每个超时120s)。加锁串行化"检查-握手-写缓存"避免重复握手。跨 OS 线程必须用
+# threading.Lock(asyncio.Lock 跨线程/跨事件循环不生效)。load_mcp_tools 与 mcp_status 共用一把。
+_mcp_cache_lock = threading.Lock()
 # MCP 状态缓存：每次冷拉要 spawn npx/uvx 跟每个 server 握手（5 个 server ≈ 9s）。设置页"外接工具"反复打开
 # 不该每次都重握手 → 短 TTL 缓存（默认 30s）。配置变更（add/remove）即失效，手动 refresh 也能强刷。
 _STATUS_TTL = 30.0
@@ -214,20 +218,23 @@ def load_mcp_tools(force: bool = False) -> list[Tool]:
     global _cached_tools
     if _cached_tools is not None and not force:
         return _cached_tools
-    out: list[Tool] = []
-    for name, cfg in _load_mcp_config().items():
-        if not cfg.get("command"):
-            continue
-        try:
-            with _StdioMCP(cfg) as s:
-                for t in s.list_tools():
-                    if t.get("name"):
-                        out.append(_make_mcp_tool(name, cfg, t))
-        except Exception:
-            continue
-    out.sort(key=lambda t: t.name)  # 稳定排序，保前缀缓存
-    _cached_tools = out
-    return out
+    with _mcp_cache_lock:
+        if _cached_tools is not None and not force:  # 双检：等锁期间别的线程可能已握手填好，别重复连
+            return _cached_tools
+        out: list[Tool] = []
+        for name, cfg in _load_mcp_config().items():
+            if not cfg.get("command"):
+                continue
+            try:
+                with _StdioMCP(cfg) as s:
+                    for t in s.list_tools():
+                        if t.get("name"):
+                            out.append(_make_mcp_tool(name, cfg, t))
+            except Exception:
+                continue
+        out.sort(key=lambda t: t.name)  # 稳定排序，保前缀缓存
+        _cached_tools = out
+        return out
 
 
 def mcp_status(force: bool = False) -> list[dict]:
@@ -240,12 +247,15 @@ def mcp_status(force: bool = False) -> list[dict]:
     global _status_cache
     if not force and _status_cache is not None and (time.monotonic() - _status_cache[0]) < _STATUS_TTL:
         return _status_cache[1]
-    cfgs = list(_load_mcp_config(include_disabled=True).items())
-    if not cfgs:
-        items: list[dict] = []
-    else:
-        async def _go():
-            return list(await asyncio.gather(*(_a_probe_server(name, cfg) for name, cfg in cfgs)))
-        items = _run_async(_go)
-    _status_cache = (time.monotonic(), items)
-    return items
+    with _mcp_cache_lock:
+        if not force and _status_cache is not None and (time.monotonic() - _status_cache[0]) < _STATUS_TTL:
+            return _status_cache[1]  # 双检：等锁期间别的线程可能已探测填好
+        cfgs = list(_load_mcp_config(include_disabled=True).items())
+        if not cfgs:
+            items: list[dict] = []
+        else:
+            async def _go():
+                return list(await asyncio.gather(*(_a_probe_server(name, cfg) for name, cfg in cfgs)))
+            items = _run_async(_go)
+        _status_cache = (time.monotonic(), items)
+        return items

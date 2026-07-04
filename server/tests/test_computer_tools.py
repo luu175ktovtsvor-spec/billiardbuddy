@@ -9,31 +9,39 @@ def _run(coro):
 
 
 def test_screen_info(monkeypatch):
-    monkeypatch.setattr(ct, "_run_py", lambda code, timeout=20: ("1470x956", None))
-    monkeypatch.setattr(ct, "_frontmost_app", lambda: "Finder")
+    async def fake_run_py(code, timeout=20):
+        return ("1470x956", None)
+    async def fake_frontmost():
+        return "Finder"
+    monkeypatch.setattr(ct, "_run_py", fake_run_py)
+    monkeypatch.setattr(ct, "_frontmost_app", fake_frontmost)
     out = _run(ct._view_handler({"action": "screen_info"}, ctx=None))
     assert "1470x956" in out
     assert "Finder" in out
 
 
 def test_screenshot(monkeypatch, tmp_path):
+    async def fake_run_py(code, timeout=20):
+        return ("", None)
     monkeypatch.setattr(ct, "_screenshot_dir", lambda: tmp_path)
-    monkeypatch.setattr(ct, "_run_py", lambda code, timeout=20: ("", None))
+    monkeypatch.setattr(ct, "_run_py", fake_run_py)
     out = _run(ct._view_handler({"action": "screenshot"}, ctx=None))
     assert "已截屏" in out
     assert ".png" in out
 
 
 def test_screenshot_failure(monkeypatch, tmp_path):
+    async def fake_run_py(code, timeout=20):
+        return (None, "权限不足")
     monkeypatch.setattr(ct, "_screenshot_dir", lambda: tmp_path)
-    monkeypatch.setattr(ct, "_run_py", lambda code, timeout=20: (None, "权限不足"))
+    monkeypatch.setattr(ct, "_run_py", fake_run_py)
     out = _run(ct._view_handler({"action": "screenshot"}, ctx=None))
     assert "[截屏失败]" in out and "权限不足" in out
 
 
 def test_control_click(monkeypatch):
     captured = {}
-    def fake(code, timeout=20):
+    async def fake(code, timeout=20):
         captured["code"] = code
         return ("", None)
     monkeypatch.setattr(ct, "_run_py", fake)
@@ -49,7 +57,10 @@ def test_control_click_missing_coords():
 
 def test_control_type(monkeypatch):
     captured = {}
-    monkeypatch.setattr(ct, "_run_py", lambda code, timeout=20: (captured.update(code=code) or "", None))
+    async def fake_run_py(code, timeout=20):
+        captured["code"] = code
+        return ("", None)
+    monkeypatch.setattr(ct, "_run_py", fake_run_py)
     out = _run(ct._control_handler({"action": "type", "text": "hello"}, ctx=None))
     assert "已执行：type" in out
     assert "hello" in captured["code"]
@@ -57,7 +68,10 @@ def test_control_type(monkeypatch):
 
 def test_control_hotkey(monkeypatch):
     captured = {}
-    monkeypatch.setattr(ct, "_run_py", lambda code, timeout=20: (captured.update(code=code) or "", None))
+    async def fake_run_py(code, timeout=20):
+        captured["code"] = code
+        return ("", None)
+    monkeypatch.setattr(ct, "_run_py", fake_run_py)
     out = _run(ct._control_handler({"action": "key", "keys": "command,c"}, ctx=None))
     assert "已执行：key" in out
     assert "hotkey" in captured["code"]
@@ -70,7 +84,7 @@ def test_control_unsupported_action():
 
 def test_run_py_no_python(monkeypatch):
     monkeypatch.setattr(ct, "_computer_python", lambda: None)
-    out, err = ct._run_py("print('x')")
+    out, err = _run(ct._run_py("print('x')"))
     assert out is None
     assert "没找到" in err
 

@@ -10,6 +10,7 @@
 ⚠️ 云端 web 版（PostgreSQL，多租户）绝不注册——本机改图只在老板自己机器上的本地后端有意义。
 Pillow(PIL) 项目已装（海报贴 logo 用），这里只是把它的能力暴露给 Agent。
 """
+import asyncio
 import io
 import logging
 import os
@@ -264,25 +265,30 @@ async def edit_image(args: dict, ctx) -> str:
     if src.is_dir():
         return f"「{src.name}」是文件夹，不是图片。"
 
+    # ⚠️ 性能地基：PIL 打开/像素运算是同步阻塞 CPU/IO 活，手机大图做水印/PNG optimize
+    # 可到秒级——直接跑在 event loop 上会冻住整个后端(FastAPI 单 worker)，连 loop.py 的
+    # asyncio.wait_for 超时保护都救不了(循环本身被冻)。挪进线程池跑，事件循环不被卡。
+    # 只挪纯像素处理这几步——不碰 ctx / pending_view_images 等跨线程共享可变状态，
+    # 那部分(_resolve/_out_path/审批/回灌队列)仍在主协程里做，见下文。
     try:
-        img = _open_image(src)
+        img = await asyncio.to_thread(_open_image, src)
     except ValueError as e:
         return str(e)
 
     quality: int | None = None
     try:
         if operation == "crop":
-            out_img, note = _op_crop(img, args)
+            out_img, note = await asyncio.to_thread(_op_crop, img, args)
         elif operation == "resize":
-            out_img, note = _op_resize(img, args)
+            out_img, note = await asyncio.to_thread(_op_resize, img, args)
         elif operation == "rotate":
-            out_img, note = _op_rotate(img, args)
+            out_img, note = await asyncio.to_thread(_op_rotate, img, args)
         elif operation == "watermark":
-            out_img, note = _op_watermark(img, args)
+            out_img, note = await asyncio.to_thread(_op_watermark, img, args)
         elif operation == "compress":
-            out_img, note, quality = _op_compress(img, args)
+            out_img, note, quality = await asyncio.to_thread(_op_compress, img, args)
         else:  # convert
-            out_img, note = _op_convert(img, args)
+            out_img, note = await asyncio.to_thread(_op_convert, img, args)
     except ValueError as e:
         return f"处理失败：{e}"
     except Exception as e:  # noqa: BLE001 — 像素处理兜底，绝不让 Agent 循环崩
@@ -305,7 +311,9 @@ async def edit_image(args: dict, ctx) -> str:
         return f"输出路径不行：{e}（另存的位置也要在沙箱内）"
 
     try:
-        backup = _save_image(out_img, out, overwrite_src=overwrite, src=src, quality=quality)
+        backup = await asyncio.to_thread(
+            _save_image, out_img, out, overwrite_src=overwrite, src=src, quality=quality
+        )
     except Exception as e:  # noqa: BLE001
         logger.warning("edit_image 保存失败", exc_info=True)
         return f"图片处理好了但保存失败（{type(e).__name__}）：{e}"

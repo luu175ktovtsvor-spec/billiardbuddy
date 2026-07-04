@@ -9,6 +9,7 @@
   - `computer_control`（点击 / 键入 / 滚动 / 移动 / 热键）= 操作真机，requires_approval + **force_confirm**
     （任何权限模式都先弹确认，永不被旁路——操作真实鼠标键盘有后果）。
 """
+import asyncio
 import json
 import os
 import subprocess
@@ -26,13 +27,15 @@ def _computer_python() -> str | None:
     return p if Path(p).exists() else None
 
 
-def _run_py(code: str, timeout: int = 20) -> tuple[str | None, str | None]:
+async def _run_py(code: str, timeout: int = 20) -> tuple[str | None, str | None]:
     """跑一段 pyautogui 代码，返回 (stdout, err)。err 非空=失败。"""
     py = _computer_python()
     if not py:
         return None, "没找到可用的桌面控制运行环境（pyautogui）。请装好 desktop-control，或设 DESKTOP_COMPUTER_PYTHON。"
     try:
-        r = subprocess.run([py, "-c", code], capture_output=True, text=True, timeout=timeout)
+        r = await asyncio.to_thread(
+            subprocess.run, [py, "-c", code], capture_output=True, text=True, timeout=timeout
+        )
         if r.returncode != 0:
             return None, (r.stderr or r.stdout or "执行失败").strip()
         return (r.stdout or "").strip(), None
@@ -42,9 +45,10 @@ def _run_py(code: str, timeout: int = 20) -> tuple[str | None, str | None]:
         return None, str(e)
 
 
-def _frontmost_app() -> str:
+async def _frontmost_app() -> str:
     try:
-        r = subprocess.run(
+        r = await asyncio.to_thread(
+            subprocess.run,
             ["osascript", "-e", 'tell application "System Events" to get name of first process whose frontmost is true'],
             capture_output=True, text=True, timeout=8,
         )
@@ -63,14 +67,14 @@ def _screenshot_dir() -> Path:
 async def _view_handler(args: dict, ctx) -> str:
     action = str(args.get("action") or "screenshot").strip()
     if action == "screen_info":
-        out, err = _run_py("import pyautogui; s=pyautogui.size(); print(f'{s.width}x{s.height}')")
+        out, err = await _run_py("import pyautogui; s=pyautogui.size(); print(f'{s.width}x{s.height}')")
         if err:
             return f"[看屏失败] {err}"
-        app = _frontmost_app()
+        app = await _frontmost_app()
         return f"屏幕分辨率：{out}" + (f"；当前前台应用：{app}" if app else "")
     # default = screenshot
     path = _screenshot_dir() / f"{uuid.uuid4().hex}.png"
-    out, err = _run_py(f"import pyautogui; pyautogui.screenshot().save({str(path)!r})")
+    out, err = await _run_py(f"import pyautogui; pyautogui.screenshot().save({str(path)!r})")
     if err:
         return f"[截屏失败] {err}"
     # 把截图路径挂给 loop：本批 tool 结果追加完后会拼成一条 user 图片消息回灌，让我下一轮真【看见】这张屏。
@@ -94,27 +98,27 @@ async def _control_handler(args: dict, ctx) -> str:
         except (TypeError, ValueError):
             return "[参数错误] x, y 必须是数字"
         fn = {"click": "click", "double_click": "doubleClick", "right_click": "rightClick", "move": "moveTo"}[action]
-        out, err = _run_py(f"import pyautogui; pyautogui.{fn}({x},{y})")
+        out, err = await _run_py(f"import pyautogui; pyautogui.{fn}({x},{y})")
     elif action == "type":
         text = str(args.get("text") or "")
         if not text:
             return "[参数缺失] type 动作需要 text"
-        out, err = _run_py(f"import pyautogui; pyautogui.write({json.dumps(text)})")
+        out, err = await _run_py(f"import pyautogui; pyautogui.write({json.dumps(text)})")
     elif action == "key":
         keys = str(args.get("keys") or "")
         parts = [k.strip() for k in keys.split(",") if k.strip()]
         if not parts:
             return "[参数缺失] key 动作需要 keys（如 'enter' 或 'command,c'）"
         if len(parts) > 1:
-            out, err = _run_py(f"import pyautogui; pyautogui.hotkey(*{json.dumps(parts)})")
+            out, err = await _run_py(f"import pyautogui; pyautogui.hotkey(*{json.dumps(parts)})")
         else:
-            out, err = _run_py(f"import pyautogui; pyautogui.press({json.dumps(parts[0])})")
+            out, err = await _run_py(f"import pyautogui; pyautogui.press({json.dumps(parts[0])})")
     elif action == "scroll":
         try:
             amount = int(args.get("amount") or -3)
         except (TypeError, ValueError):
             amount = -3
-        out, err = _run_py(f"import pyautogui; pyautogui.scroll({amount})")
+        out, err = await _run_py(f"import pyautogui; pyautogui.scroll({amount})")
     else:
         return f"[不支持的动作] {action}（支持 click/double_click/right_click/move/type/key/scroll）"
     if err:

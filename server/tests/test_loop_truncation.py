@@ -5,6 +5,7 @@
 入参 JSON 不完整 → 解析失败。修复：_parse_args_ex 区分"截断"与"合法空参"；_plan_tool_call
 对截断回灌 _ARGS_TRUNCATED_MSG（截断专属指令），让模型换策略而非死循环。
 """
+import asyncio
 from types import SimpleNamespace
 
 from services.agent.loop import _parse_args_ex, _parse_args, _plan_tool_call, _ARGS_TRUNCATED_MSG
@@ -36,7 +37,7 @@ def test_plan_tool_call_truncated_args_feeds_back_retry_instruction():
     reg = ToolRegistry()
     tc = {"id": "tc1", "function": {"name": "write_file",
           "arguments": '{"path":"包厢营销方案.md","content":"# 方案\n一、定位\n（超长内容被截断'}}
-    plan = _plan_tool_call(tc, reg, _ctx())
+    plan = asyncio.run(_plan_tool_call(tc, reg, _ctx()))
     assert plan.error, "截断入参应回灌 error，而不是空参执行"
     assert "没收全" in plan.error or "截断" in plan.error
     assert ("精简" in plan.error and "分多次" in plan.error), "应明确指示写精简/分次重试"
@@ -47,6 +48,6 @@ def test_plan_tool_call_valid_empty_args_not_treated_as_truncation():
     """合法空参 '{}' 不能被误判成截断（否则无参工具永远报截断）。"""
     reg = ToolRegistry()
     tc = {"id": "tc2", "function": {"name": "get_current_date", "arguments": "{}"}}
-    plan = _plan_tool_call(tc, reg, _ctx())
+    plan = asyncio.run(_plan_tool_call(tc, reg, _ctx()))
     # 没有截断专属 error（可能因工具不存在/校验有别的提示，但不应是截断指令）
     assert not (plan.error and "没收全" in plan.error)

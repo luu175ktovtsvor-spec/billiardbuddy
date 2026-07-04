@@ -141,7 +141,9 @@ def test_stream_screenshot_fed_back_to_model(tmp_path):
 def test_computer_screenshot_records_path(monkeypatch, tmp_path):
     from services.agent import computer_tools as ct
     monkeypatch.setattr(ct, "_screenshot_dir", lambda: tmp_path)
-    monkeypatch.setattr(ct, "_run_py", lambda code, timeout=20: ("", None))
+    async def fake_run_py(code, timeout=20):
+        return ("", None)
+    monkeypatch.setattr(ct, "_run_py", fake_run_py)
     ctx = AgentContext()
     out = asyncio.run(ct._view_handler({"action": "screenshot"}, ctx=ctx))
     assert ".png" in out
@@ -152,7 +154,9 @@ def test_computer_screenshot_records_path(monkeypatch, tmp_path):
 def test_computer_screenshot_failure_records_nothing(monkeypatch, tmp_path):
     from services.agent import computer_tools as ct
     monkeypatch.setattr(ct, "_screenshot_dir", lambda: tmp_path)
-    monkeypatch.setattr(ct, "_run_py", lambda code, timeout=20: (None, "权限不足"))
+    async def fake_run_py(code, timeout=20):
+        return (None, "权限不足")
+    monkeypatch.setattr(ct, "_run_py", fake_run_py)
     ctx = AgentContext()
     out = asyncio.run(ct._view_handler({"action": "screenshot"}, ctx=ctx))
     assert "[截屏失败]" in out

@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -328,8 +329,11 @@ _SKILL_INSTRUCTION_FRAME = (
 async def _skill_tool(args: dict, ctx) -> str:
     name = str(args.get("skill") or args.get("name") or "").strip()
     extra = str(args.get("args") or "").strip()
-    out = expand_skill(name, extra)
+    # load_skills() 是同步磁盘扫描（iterdir + 逐个读 SKILL.md），挪线程池跑，别冻住 event loop；
+    # 一次扫描结果同时喂 expand_skill 和"不存在时列可用清单"两处，顺带省掉原来的重复扫描。
+    skills = await asyncio.to_thread(load_skills)
+    out = expand_skill(name, extra, skills)
     if out is None:
-        avail = ", ".join(s.name for s in load_skills()) or "(当前没有已安装的技能)"
+        avail = ", ".join(s.name for s in skills) or "(当前没有已安装的技能)"
         return f"[技能不存在] {name}。可用技能：{avail}"
     return _SKILL_INSTRUCTION_FRAME.format(name=name, body=out)

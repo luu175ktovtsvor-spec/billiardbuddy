@@ -46,7 +46,7 @@ async def _watch(task_id: str, command: str, proc, out_path: Path):
         err = (stderr or b"").decode("utf-8", "replace")
         body = f"命令：{command}\n返回码：{rc}\n\n【标准输出】\n{text}\n【错误输出】\n{err}"
         try:
-            out_path.write_text(body, encoding="utf-8")
+            await asyncio.to_thread(out_path.write_text, body, encoding="utf-8")
         except Exception:
             pass
         _notify("后台任务" + ("完成" if rc == 0 else f"失败(码{rc})"), command)

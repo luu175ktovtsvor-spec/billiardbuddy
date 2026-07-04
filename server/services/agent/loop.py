@@ -396,14 +396,15 @@ def _auto_approve(tool, args, ctx) -> bool:
     return False
 
 
-def _approval_preview(tool, args, ctx) -> str | None:
+async def _approval_preview(tool, args, ctx) -> str | None:
     """调工具自带预览器算"确认前给老板看的人话 diff"（如 edit_excel 的 B2 32000→38000）。
-    没有预览器或生成失败都返回 None——绝不因预览出错而拖垮审批。"""
+    没有预览器或生成失败都返回 None——绝不因预览出错而拖垮审批。
+    ⚠️ 预览器可能重(edit_excel 预览要 load_workbook 大报表)——丢线程池跑，别在弹审批卡之前冻住 event loop。"""
     fn = getattr(tool, "preview", None)
     if not fn:
         return None
     try:
-        return fn(args, ctx)
+        return await asyncio.to_thread(fn, args, ctx)
     except Exception:
         logger.exception("审批预览生成失败: %s", getattr(tool, "name", "?"))
         return None
@@ -936,7 +937,7 @@ def _oob_approval_reason(tool, args: dict, ctx) -> dict:
     }
 
 
-def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _ToolPlan:
+async def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _ToolPlan:
     """解析一个 tool_call 的入参，并据审批闸判定它该"待确认"还是"可直接执行"。
     审批闸（proposal 模式）：requires_approval 且未被 permission_mode 自动批准的工具不在循环里执行，
     改回灌"待确认"提示、让模型把方案讲给用户；用户确认后走独立的 /agent/execute 真正执行。"""
@@ -1039,7 +1040,7 @@ def _plan_tool_call(tc: dict, registry: ToolRegistry, ctx: AgentContext) -> _Too
                 return _ToolPlan(
                     name=name, args=args, tool_call_id=tc_id, needs_approval=True,
                     pending_msg=_APPROVAL_PENDING_MSG.format(name=name),
-                    preview=_approval_preview(tool, args, ctx),
+                    preview=await _approval_preview(tool, args, ctx),
                     reason=reason,
                     progress_snapshot=progress_snapshot,
                 )
@@ -1301,7 +1302,7 @@ async def run_agent_loop(
         # 审批闸判定/task_progress 摘取/anti-spin 签名等都在这一步完成，与改造前顺序完全一致），
         # 再按【concurrent_safe 连续段并发、其余各自独占串行】分组执行（判据不是 read_only，
         # 见 _group_plans_for_concurrency 顶部的 Critical 竞态修复说明）。
-        plans = [_plan_tool_call(tc, registry, ctx) for tc in resp.tool_calls]
+        plans = [await _plan_tool_call(tc, registry, ctx) for tc in resp.tool_calls]
         for kind, group in _group_plans_for_concurrency(plans, registry):
             if kind == "solo":
                 # 单条计划——非执行类（错误/提问/回退/待确认）、可执行的写类、或落单的可执行只读，
@@ -1941,7 +1942,7 @@ async def run_agent_loop_stream(
         # F-7 只读并发（读写锁）：⚠️ 与同步路径 run_agent_loop 同样的分组编排，别只改一处——
         # 先按序 _plan_tool_call（保序），再按 _group_plans_for_concurrency 分组执行
         # （判据是 concurrent_safe，不是 read_only，见 _group_plans_for_concurrency 顶部说明）。
-        plans = [_plan_tool_call(tc, registry, ctx) for tc in sink]
+        plans = [await _plan_tool_call(tc, registry, ctx) for tc in sink]
         for kind, group in _group_plans_for_concurrency(plans, registry):
             if kind == "solo":
                 # 单条计划——与改造前完全一致的单条顺序执行路径（下面就是原本 for tc in sink 的循环体）。
