@@ -3,8 +3,8 @@
 严格按顺序(16 铁律里的渲染部分,顺序错=静默废片):
   ① 逐段抽取:scale-cover 到目标竖屏尺寸 + 30ms 音频淡入淡出 + 可选调色 + HDR→SDR tonemap
   ② 无损 -c copy 拼接成 base
-  ③ 音频:keep(原声) / music(换背景乐) / mute
-  ④ 响度归一化 -14 LUFS / -1 dBTP / LRA 11(社媒标准)
+  ③ 音频:keep(原声) / music(换背景乐) / mute / voice_over_music(口播原声+BGM同时混音,E4④新增)
+  ④ 响度归一化 -14 LUFS / -1.5 dBTP / LRA 11(社媒标准,两遍法——见 mix.loudnorm_two_pass)
 所有 ffmpeg 调用走 ffbin,不用裸 "ffmpeg"(产品打包只能用内置二进制)。
 """
 from __future__ import annotations
@@ -13,6 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import mix
 from .edl import Edl
 from .ffbin import ffmpeg_bin, probe_video
 
@@ -21,8 +22,8 @@ _TONEMAP = (
     "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
     "tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
 )
-# 社媒响度标准(铁律14)
-_LUFS_I, _LUFS_TP, _LUFS_LRA = -14.0, -1.0, 11.0
+# 社媒响度标准(铁律14;E4④把 TP 从 -1 收紧到 -1.5,防真机限幅器二次削峰,且改两遍法测量校正)
+_LUFS_I, _LUFS_TP, _LUFS_LRA = -14.0, -1.5, 11.0
 
 # CJK 字体目录：macOS 用系统字体目录(有 PingFang SC)；Windows/Linux 及装机包用打包自带的
 # 得意黑——"PingFang SC"+"/System/Library/Fonts" 是 macOS 专属,别的平台指过去=字幕烧不出中文。
@@ -136,13 +137,9 @@ def _burn_subtitles(src: Path, srt: str, out: Path, *, font: str, fontsdir: str,
 
 
 def _loudnorm(src: Path, out: Path) -> None:
-    """响度归一化到社媒标准(铁律14)。单遍近似(够用·快)。"""
-    f = f"loudnorm=I={_LUFS_I}:TP={_LUFS_TP}:LRA={_LUFS_LRA}"
-    _run([
-        ffmpeg_bin(), "-y", "-i", str(src), "-c:v", "copy",
-        "-af", f, "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
-        "-movflags", "+faststart", str(out),
-    ])
+    """响度归一化到社媒标准(铁律14)。两遍法(先测真实积分响度,再按测量值精确校正,比单遍近似准)。"""
+    mix.loudnorm_two_pass(src, out, target_i=_LUFS_I, target_tp=_LUFS_TP, target_lra=_LUFS_LRA,
+                           copy_video=True)
 
 
 def render_edl(edl: Edl, out_path: str, *, edit_dir: str | None = None) -> str:
@@ -152,7 +149,9 @@ def render_edl(edl: Edl, out_path: str, *, edit_dir: str | None = None) -> str:
     clips_dir = work / "clips"
     clips_dir.mkdir(parents=True, exist_ok=True)
 
-    keep_audio = edl.audio_mode == "keep"
+    # voice_over_music 也要保留原声(混音要靠它)——没给 music_file 时兜底当 keep 处理(同 music
+    # 模式没给 music_file 的兜底逻辑:不崩,退化成保留原声)。
+    keep_audio = edl.audio_mode in ("keep", "voice_over_music")
 
     # ① 逐段抽取
     seg_paths: list[Path] = []
@@ -171,9 +170,15 @@ def render_edl(edl: Edl, out_path: str, *, edit_dir: str | None = None) -> str:
         withaudio = work / "with_music.mp4"
         _add_music(base, edl.music_file, withaudio)
         pre = withaudio
+    elif edl.audio_mode == "voice_over_music" and edl.music_file:
+        # E4④新增:口播原声 + BGM 同时混音(两遍法归一 + ducking,见 mix.py),不动 music/keep/mute
+        # 原来三条分支的判断结构(additive)。
+        mixed = work / "voice_over_music.mp4"
+        mix.mix_voice_over_with_bgm(str(base), edl.music_file, str(mixed), work_dir=str(work))
+        pre = mixed
     elif edl.audio_mode == "mute":
         pre = base  # 段是 -an 抽的,base 本就无声
-    else:  # keep
+    else:  # keep(以及 voice_over_music 没给 music_file 的兜底)
         pre = base
 
     # ④ 烧字幕(铁律1:在响度归一化前完成视频侧合成;无 overlay 时直接烧在拼接视频上)
@@ -189,7 +194,10 @@ def render_edl(edl: Edl, out_path: str, *, edit_dir: str | None = None) -> str:
         pre = subbed
 
     # ⑤ 响度归一化(有声才做;视频 -c copy 保留已烧的字幕)
-    if edl.audio_mode == "mute":
+    # voice_over_music(给了 music_file 的正常路径)在 mix_voice_over_with_bgm 内部已经对口播轨/
+    # BGM 轨各自两遍法归一过了,这里再整体 loudnorm 一遍等于重复处理、白白压一次动态范围——跟
+    # mute 一样直接原样拷贝落地就好。
+    if edl.audio_mode == "mute" or (edl.audio_mode == "voice_over_music" and edl.music_file):
         _run([ffmpeg_bin(), "-y", "-i", str(pre), "-c", "copy", str(out)])
     else:
         _loudnorm(pre, out)

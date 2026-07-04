@@ -11,10 +11,11 @@ import json
 from pathlib import Path
 
 from .ffbin import probe_video
-from .footage_qc import footage_all_bad_message, guarded_render, probe_footage_health
+from .footage_qc import footage_all_bad_message, guarded_render, probe_footage_health, silence_intervals
 from .operations import apply_operations
 from .render import render_edl
 from .scene_detect import detect_scenes
+from .subtitle_qc import validate_cues
 from .subtitles import _ts
 from .timeline import MediaRef, Track, new_doc, TimelineDoc
 
@@ -114,9 +115,16 @@ def _phrase_cues(words: list[dict], *, gap: float = 0.5, max_chars: int = 14) ->
     return cues
 
 
-def build_srt_from_doc(doc: TimelineDoc, out_path: str) -> str:
-    """字幕轨(显式 caption 片段,带成片时间轴 start/end)→ SRT。"""
-    cues = [(c.start or 0.0, c.end or 0.0, c.text or "") for _, c in doc.caption_clips()]
+def build_srt_from_doc(doc: TimelineDoc, out_path: str, *,
+                        cues: list[tuple[float, float, str]] | None = None) -> str:
+    """字幕轨(显式 caption 片段,带成片时间轴 start/end)→ SRT。
+
+    cues 不传:照旧从 doc.caption_clips() 读(默认行为不变,兼容原有调用方)。
+    cues 传了:直接用它写(render_timeline 用这个口子灌"门③校验+夹紧后"的时间戳,
+    夹紧只改时间不改字,详见 validate_captions_for_doc)。
+    """
+    if cues is None:
+        cues = [(c.start or 0.0, c.end or 0.0, c.text or "") for _, c in doc.caption_clips()]
     out_lines: list[str] = []
     for i, (a, b, t) in enumerate(cues, 1):
         if b <= a:
@@ -168,22 +176,54 @@ def auto_captions_from_speech(doc: TimelineDoc, edit_dir: str, *, track: str = "
     return ops
 
 
+def validate_captions_for_doc(doc: TimelineDoc) -> dict:
+    """门③字幕门:对文档字幕轨跑三条确定性规则校验(字速/静音错位/时间戳重叠),零 token。
+
+    静音错位复用 E4-U1 的 silencedetect(footage_qc.silence_intervals),按每段视频片段的
+    src_in/src_out 截取 + 累计偏移换算到成片时间轴——跟 auto_captions_from_speech 的偏移算法
+    (铁律5)一致,不能直接拿源文件的静音区间跟成片时间轴的字幕时间比,坐标系对不上。
+
+    返回 subtitle_qc.validate_cues() 的结果:{"cues", "problems", "ok"}。字速/静音错位只标记,
+    不改字幕内容;时间戳重叠允许确定性夹紧(改时间不改字)。
+    """
+    cues = [(c.start or 0.0, c.end or 0.0, c.text or "") for _, c in doc.caption_clips()]
+    silence: list[tuple[float, float]] = []
+    seg_offset = 0.0
+    for _cid, c in doc.video_clips_ordered():
+        if c.media:
+            src = doc.media[c.media].src
+            for s, e in silence_intervals(src):
+                a = max(c.src_in, s) - c.src_in + seg_offset
+                b = min(c.src_out, e) - c.src_in + seg_offset
+                if b > a:
+                    silence.append((a, b))
+        seg_offset += c.src_out - c.src_in
+    return validate_cues(cues, silence_intervals=silence)
+
+
 def render_timeline(doc: TimelineDoc, out_path: str, *, edit_dir: str) -> dict:
     """时间轴文档 → 成片 mp4。字幕轨→SRT,文档→Edl,复用 render_edl 的确定性 ffmpeg 管线。
 
+    E4③字幕门(零token·纯规则):渲染前先跑 validate_captions_for_doc——字速超限/静音错位只标记
+    回传(不改字幕内容),时间戳重叠夹紧后再写 SRT(所以最终烧进成片的字幕已经不重叠)。
     E4⑤渲染后体检(零token·纯ffmpeg):渲完用 guarded_render 体检(时长/黑段/静音/首帧);
     红→用同一份 EDL 重渲一次;仍红也不再重渲,把问题清单一并带回去(不静默塞给用户一个烂片)。
-    返回 {"path": str, "health": {...}, "rerendered": bool}(渲染管线本身 render_edl 一行不改)。
+    返回 {"path": str, "health": {...}, "rerendered": bool, "caption_health": {...}}
+    (渲染管线本身 render_edl 一行不改)。
     """
     work = Path(edit_dir)
     work.mkdir(parents=True, exist_ok=True)
     srt = None
+    caption_health = {"cues": [], "problems": [], "ok": True}
     if doc.caption_clips():
+        caption_health = validate_captions_for_doc(doc)
         srt = str(work / "captions.srt")
-        build_srt_from_doc(doc, srt)
+        build_srt_from_doc(doc, srt, cues=caption_health["cues"])
     edl = doc.to_edl(subtitles_srt=srt)
-    return guarded_render(lambda: render_edl(edl, out_path, edit_dir=str(work)),
+    res = guarded_render(lambda: render_edl(edl, out_path, edit_dir=str(work)),
                           expected_duration=doc.duration())
+    res["caption_health"] = caption_health
+    return res
 
 
 # ── V2 方案 = 一份可编辑的 plan(shots 是真相源)。对话改任何东西 = 改这份 plan。──

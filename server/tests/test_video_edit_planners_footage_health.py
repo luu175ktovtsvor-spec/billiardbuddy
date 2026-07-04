@@ -140,6 +140,10 @@ def test_plan_speech_reorders_healthy_footage_first(tmp_path, monkeypatch):
     fh = res["report"]["footage_health"]
     assert fh["m1"]["is_bad"] is True and fh["m2"]["is_bad"] is False   # m1=bad(先传入),m2=good
 
+    # E4③字幕门:出方案阶段就把字幕体检结果透明暴露(跟 footage_health 同款,渲染前就能看到)
+    assert "caption_health" in res["report"]
+    assert "ok" in res["report"]["caption_health"]
+
 
 def test_plan_speech_mixed_not_all_bad_does_not_raise(tmp_path, monkeypatch):
     """只要还有一个能用的,不该被"全废兜底"误伤。"""

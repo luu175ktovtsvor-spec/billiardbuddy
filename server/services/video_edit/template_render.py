@@ -19,6 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import mix
 from .bgm import beat_for_mood, synth_beat_bgm
 from .ffbin import ffmpeg_bin, probe_video
 from .render import _TONEMAP, _grade_filter
@@ -103,6 +104,27 @@ def _extract_shot_frames(src: str, start: float, dur: float, tw: int, th: int, g
     return len(list(out_dir.glob("*.png")))
 
 
+def _mux_bgm_and_loudnorm(base: Path, bgm_path: str, out_path: str, *, work: Path) -> str:
+    """把编码好的画面轨(base,无声)跟程序化 BGM 封装到一起 + 响度归一。
+
+    E4④升级:原来是"映射+loudnorm 一步到位"的单遍近似;现拆成两步——先无损混流出 premix,
+    再对 premix 的音频跑两遍法(mix.loudnorm_two_pass:第一遍测真实积分响度,第二遍按测量值
+    精确校正),TP 目标也从 -1 收紧到 -1.5(见 mix.TARGET_TP),比单遍近似准。
+    """
+    premix = work / "v2_premix.mp4"
+    subprocess.run(
+        [ffmpeg_bin(), "-y", "-loglevel", "error", "-i", str(base), "-i", bgm_path,
+         "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+         "-shortest", "-movflags", "+faststart", str(premix)],
+        check=True,
+    )
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    mix.loudnorm_two_pass(premix, out, target_i=mix.TARGET_I, target_tp=mix.TARGET_TP, copy_video=True)
+    premix.unlink(missing_ok=True)
+    return str(out)
+
+
 def render_v2(
     doc,
     out_path: str,
@@ -179,21 +201,14 @@ def render_v2(
             check=True,
         )
         bgm = synth_beat_bgm(total / fps, str(work / "v2_bgm.wav"), mood=music_mood, key=music_key)
-        out = Path(out_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            [ffmpeg_bin(), "-y", "-loglevel", "error", "-i", str(base), "-i", bgm,
-             "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-             "-af", "loudnorm=I=-14:TP=-1", "-shortest", "-movflags", "+faststart", str(out)],
-            check=True,
-        )
-        return str(out)
+        return _mux_bgm_and_loudnorm(base, bgm, out_path, work=work)
     finally:
         # 中间帧/临时物清理(逐帧 PNG/JPG 很占地方,内存紧张机器必清;成片已出)。
         # 挪进 finally:哪怕半路抛异常(抽帧/渲染/编码失败),已生成的部分帧也要清掉,不留占地方的垃圾;
-        # 清单只含 frames_root/out_frames/base 这三个"过程中间物",v2_plan.json/manifest/最终成片 out
-        # 都不在这份清单里,不会被误删。
-        for junk in (frames_root, out_frames, base):
+        # 清单只含 frames_root/out_frames/base/v2_premix 这几个"过程中间物"(v2_premix 正常路径下
+        # _mux_bgm_and_loudnorm 已经自己删了,这里是异常路径的兜底),v2_plan.json/manifest/最终
+        # 成片 out 都不在这份清单里,不会被误删。
+        for junk in (frames_root, out_frames, base, work / "v2_premix.mp4"):
             try:
                 shutil.rmtree(junk) if junk.is_dir() else junk.unlink(missing_ok=True)
             except Exception:  # noqa: BLE001
