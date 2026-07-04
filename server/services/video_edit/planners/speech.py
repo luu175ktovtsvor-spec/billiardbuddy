@@ -26,7 +26,7 @@ def plan_speech(
 
     出片走 render_timeline(保留原声 + 烧字幕)。没识别到口播则抛错(引导改用氛围模式)。
     """
-    from ..assemble import _phrase_cues, auto_captions_from_speech
+    from ..assemble import _phrase_cues, auto_captions_from_speech, validate_captions_for_doc
     from ..ffbin import probe_video
     from ..footage_qc import footage_all_bad_message, probe_footage_health
     from ..operations import apply_operations
@@ -90,6 +90,9 @@ def plan_speech(
         if cerr:
             logger.warning("口播配字幕部分失败:%s", cerr)
 
+    # ── E4③字幕门:出方案阶段就体检(字速/静音错位/时间戳重叠),让用户在渲染前就能看到问题 ──
+    caption_health = validate_captions_for_doc(doc) if doc.caption_clips() else {"cues": [], "problems": [], "ok": True}
+
     report = {
         "mode": "speech",
         "segments": len(picked),
@@ -98,5 +101,7 @@ def plan_speech(
         "quotes": [t.strip()[:24] for (_m, _a, _b, t) in picked],
         # E4①②:素材体检结果透明暴露(mid→health)——确认/渲染前让用户能看到"哪些素材有问题"。
         "footage_health": {f"m{ci + 1}": health_by_ci[ci] for ci in range(len(video_paths))},
+        # E4③:字幕体检结果透明暴露(字速/静音错位/时间戳重叠,红的只标记不改字)。
+        "caption_health": caption_health,
     }
     return {"doc": doc.model_dump(), "report": report, "has_speech": True}

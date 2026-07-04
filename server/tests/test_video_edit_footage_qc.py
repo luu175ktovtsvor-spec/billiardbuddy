@@ -118,6 +118,41 @@ def test_footage_health_partial_black_below_threshold_not_bad(tmp_path):
     assert h["is_bad"] is False
 
 
+def test_silence_intervals_detects_fully_silent_clip(tmp_path):
+    """E4③字幕门要复用这个函数判"字幕是否落在静音区间里"——这里先验证区间本身探测正确。"""
+    p = tmp_path / "silent.mp4"
+    _silent_only_clip(p, dur=3.0)
+    intervals = footage_qc.silence_intervals(str(p))
+    assert len(intervals) == 1
+    s, e = intervals[0]
+    assert s < 0.1                      # 从头就静音
+    assert e > 2.8                      # 一路静到接近片尾(兜底补齐逻辑,同 probe_footage_health)
+
+
+def test_silence_intervals_empty_for_normal_clip(tmp_path):
+    p = tmp_path / "normal.mp4"
+    _normal_clip(p, dur=3.0)
+    assert footage_qc.silence_intervals(str(p)) == []
+
+
+def test_silence_intervals_no_audio_stream_returns_empty(tmp_path):
+    p = tmp_path / "noaudio.mp4"
+    _synth(p, video="testsrc=size=320x240:duration=1.0:rate=15", audio=None, dur=1.0)
+    assert footage_qc.silence_intervals(str(p)) == []
+
+
+def test_silence_intervals_reuses_same_filter_as_footage_health(tmp_path):
+    """区间总时长应该跟 probe_footage_health 算出来的 silence_ratio*duration 对得上——
+    证明两者用的是同一套 silencedetect 探测(没有另起一套判定标准)。"""
+    p = tmp_path / "silent.mp4"
+    _silent_only_clip(p, dur=3.0)
+    health = footage_qc.probe_footage_health(str(p))
+    intervals = footage_qc.silence_intervals(str(p))
+    total = sum(e - s for s, e in intervals)
+    expected = health["silence_ratio"] * health["duration_s"]
+    assert abs(total - expected) < 0.05
+
+
 def test_footage_all_bad_message_none_when_one_ok(tmp_path):
     bad = {"is_bad": True, "reasons": ["大面积黑屏(占比92%)"]}
     ok = {"is_bad": False, "reasons": []}

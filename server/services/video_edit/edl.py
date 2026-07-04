@@ -30,7 +30,9 @@ class Edl(BaseModel):
     ranges: list[EdlRange]
     grade: str | None = None                      # 预设名 / 原始 ffmpeg 滤镜 / "auto" / None
     audio_mode: str = "keep"                      # keep=保留原声 / music=换背景乐(music_file) / mute
-    music_file: str | None = None                 # audio_mode="music" 时的背景乐路径
+                                                   # / voice_over_music=口播原声+BGM同时混音(E4④新增,
+                                                   #   见 render.py+mix.py;additive,不影响前三档)
+    music_file: str | None = None                 # audio_mode="music"/"voice_over_music" 时的背景乐路径
     title: str | None = None                      # 可选:开头烧一行标题(drawtext)
     overlays: list[EdlOverlay] = Field(default_factory=list)
     subtitles: str | None = None                  # master.srt 路径,最后烧

@@ -175,6 +175,30 @@ def probe_footage_health(path: str, *, info: dict | None = None,
     }
 
 
+def silence_intervals(path: str, *, info: dict | None = None) -> list[tuple[float, float]]:
+    """静音区间列表(源文件时间轴,秒)——给字幕门③"字幕是否落在静音区间里"用。
+
+    跟 probe_footage_health() 里 silence_ratio 用**同一套**探测(同一个 af 参数
+    `silencedetect=n=-30dB:d=0.5`、同一对正则),只是这里要精确区间而不是"占比数字"
+    (判断"一条字幕是否整段落在静音里"必须有区间,光有比例不够)——别为这个另起一套 filter/阈值。
+    """
+    info = info if info is not None else probe_video(path)
+    dur = float(info.get("duration_s") or 0.0)
+    if not _has_audio_stream(path):
+        return []
+    stderr = _ffmpeg_null_run(path, af="silencedetect=n=-30dB:d=0.5")
+    starts = [float(s) for s in _SILENCE_START_RE.findall(stderr)]
+    durs = [float(d) for d in _SILENCE_DUR_RE.findall(stderr)]
+    intervals: list[tuple[float, float]] = []
+    for i, s in enumerate(starts):
+        if i < len(durs):
+            intervals.append((round(s, 3), round(s + durs[i], 3)))
+        else:
+            # 最后一段静音一路到片尾,ffmpeg 没补发结束事件——按总时长兜底(同 _parse_interval_seconds)。
+            intervals.append((round(s, 3), round(dur, 3)))
+    return intervals
+
+
 def footage_all_bad_message(paths_health: dict[str, dict]) -> str | None:
     """一批素材(path→health)如果全部判废,给一句大白话汇总;否则 None(还有能用的,不阻断)。"""
     if not paths_health or not all(h["is_bad"] for h in paths_health.values()):

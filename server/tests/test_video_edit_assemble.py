@@ -10,6 +10,7 @@ from services.video_edit.assemble import (
     build_srt_from_doc,
     inventory_footage,
     render_timeline,
+    validate_captions_for_doc,
 )
 from services.video_edit.ffbin import ffmpeg_bin, probe_video
 from services.video_edit.operations import apply_operations
@@ -131,6 +132,91 @@ def test_auto_captions_maps_speech_to_output_timeline(tmp_path):
     # 施加后文档仍合法
     doc2, errs = apply_operations(doc, ops)
     assert errs == [] and len(doc2.caption_clips()) == 1
+
+
+def test_build_srt_from_doc_uses_override_cues_when_given(tmp_path):
+    """render_timeline 门③校验后要用夹紧过的 cues 写 SRT,而不是重新从 doc 读原始(未夹紧)时间——
+    通过一个可选 cues 参数覆盖默认读取路径,不改变默认行为(不传参照旧逻辑读 doc.caption_clips())。"""
+    doc = new_doc()
+    doc.tracks["sub"] = Track(kind="caption", order=0)
+    doc.clips["s1"] = Clip(track="sub", text="原始文字", start=0.0, end=5.0)   # 会被 override 盖掉
+
+    srt = build_srt_from_doc(doc, str(tmp_path / "c.srt"), cues=[(0.0, 1.5, "覆盖后的文字")])
+    body = Path(srt).read_text()
+    assert "覆盖后的文字" in body and "原始文字" not in body
+    assert "00:00:00,000 --> 00:00:01,500" in body
+
+
+def test_validate_captions_for_doc_flags_fast_rate(tmp_path):
+    """字速超限只标记,不改字幕内容。"""
+    src = tmp_path / "src.mp4"
+    _synth_clip(src, dur=3, size="320x240")
+    doc = new_doc()
+    doc.media["m1"] = MediaRef(src=str(src), duration=3.0)
+    doc.tracks["v"] = Track(kind="video", order=0)
+    doc.tracks["sub"] = Track(kind="caption", order=1)
+    doc.clips["c1"] = Clip(track="v", media="m1", src_in=0.0, src_out=3.0, order=1)
+    # 10 个字挤 1 秒 = 10 字/秒,超过 5 字/秒上限
+    doc.clips["s1"] = Clip(track="sub", text="一二三四五六七八九十", start=0.0, end=1.0)
+
+    res = validate_captions_for_doc(doc)
+    assert res["ok"] is False
+    assert any("字速过快" in r for p in res["problems"] for r in p["reasons"])
+    assert res["cues"][0][2] == "一二三四五六七八九十"    # 内容原样,没被拆/删
+
+
+def test_validate_captions_for_doc_flags_silence_misalignment(tmp_path):
+    """字幕落在源素材整段静音区间里(源没声,字幕却在)——复用 footage_qc.silence_intervals 判定。"""
+    src = tmp_path / "silent_src.mp4"
+    _black_silent_clip(src, dur=4)
+    doc = new_doc()
+    doc.media["m1"] = MediaRef(src=str(src), duration=4.0)
+    doc.tracks["v"] = Track(kind="video", order=0)
+    doc.tracks["sub"] = Track(kind="caption", order=1)
+    doc.clips["c1"] = Clip(track="v", media="m1", src_in=0.0, src_out=4.0, order=1)
+    doc.clips["s1"] = Clip(track="sub", text="正常语速内容", start=1.0, end=3.0)   # 6字/2秒=3字/秒,字速没问题
+
+    res = validate_captions_for_doc(doc)
+    assert res["ok"] is False
+    assert any("静音" in r for p in res["problems"] for r in p["reasons"])
+
+
+def test_validate_captions_for_doc_clean_case_ok(tmp_path):
+    src = tmp_path / "src.mp4"
+    _synth_clip(src, dur=6, size="320x240")
+    doc = new_doc()
+    doc.media["m1"] = MediaRef(src=str(src), duration=6.0)
+    doc.tracks["v"] = Track(kind="video", order=0)
+    doc.tracks["sub"] = Track(kind="caption", order=1)
+    doc.clips["c1"] = Clip(track="v", media="m1", src_in=0.0, src_out=6.0, order=1)
+    doc.clips["s1"] = Clip(track="sub", text="正常语速的一句话", start=0.0, end=3.0)   # 8字/3秒≈2.7字/秒
+
+    res = validate_captions_for_doc(doc)
+    assert res["ok"] is True
+    assert res["problems"] == []
+
+
+def test_render_timeline_reports_caption_health_and_clamps_overlap(tmp_path):
+    """render_timeline 返回带 caption_health;重叠的字幕时间戳应被夹紧后写进最终 SRT。"""
+    src = tmp_path / "src.mp4"
+    _synth_clip(src, dur=6, size="320x240")
+    doc = new_doc()
+    doc.media["m1"] = MediaRef(src=str(src), duration=6.0)
+    doc.tracks["v"] = Track(kind="video", order=0)
+    doc.tracks["sub"] = Track(kind="caption", order=1)
+    doc.clips["c1"] = Clip(track="v", media="m1", src_in=0.0, src_out=6.0, order=1)
+    doc.clips["s1"] = Clip(track="sub", text="你好", start=0.0, end=3.0)
+    doc.clips["s2"] = Clip(track="sub", text="再见", start=2.0, end=4.0)   # 跟 s1 重叠 1 秒
+
+    res = render_timeline(doc, str(tmp_path / "final.mp4"), edit_dir=str(tmp_path / "edit"))
+    assert "caption_health" in res
+    ch = res["caption_health"]
+    assert ch["ok"] is False
+    assert any("重叠" in r for p in ch["problems"] for r in p["reasons"])
+
+    srt_body = Path(tmp_path / "edit" / "captions.srt").read_text()
+    assert "00:00:00,000 --> 00:00:02,000" in srt_body    # s1 结束时间被夹紧到 s2 的开始(2.0s)
+    assert "你好" in srt_body and "再见" in srt_body        # 文字都还在,没被删
 
 
 def test_inventory_footage_raises_when_all_footage_bad(tmp_path, monkeypatch):
