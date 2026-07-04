@@ -283,8 +283,8 @@ async def expand_poster_text_with_llm(
     """统一扩写层（studio `/expand` 用；系统提示对所有调用方写死同一套规则，见 POSTER_EXPAND_SYSTEM_PROMPT）。
 
     调文本模型把大白话(+结构化硬要素)改写成可直接喂给生图模型的提示词；扩写完代码 string-match
-    校验硬文字要素是否一个不少：丢了先【程序补回】(纯文本拼接，非图片叠层)；补不回再重扩 1 次；
-    仍失败/调用异常/空返回 → 直接用原始 prompt 发，不卡生成流程。
+    校验硬文字要素是否一个不少：丢了就【程序补回】(纯文本拼接，非图片叠层——拼接后必然通过校验，
+    无需重扩)；调用异常/空返回 → 直接用原始 prompt 发，不卡生成流程。
     """
     from services.ai.base import TextRequest
 
@@ -317,18 +317,10 @@ async def expand_poster_text_with_llm(
     if not verify_hard_elements_preserved(expanded, hard_values):
         return expanded
 
-    patched = ensure_hard_elements_preserved(expanded, hard_values)
-    if not verify_hard_elements_preserved(patched, hard_values):
-        return patched
-
-    # 极端兜底：ensure_hard_elements_preserved 的拼接必然能通过校验，这里只防未来改动破坏该不变量。
-    try:
-        retry_expanded = await _call()
-    except Exception:
-        return raw_prompt
-    if retry_expanded and not verify_hard_elements_preserved(retry_expanded, hard_values):
-        return retry_expanded
-    return raw_prompt
+    # 程序补回=纯字符串拼接（ensure_hard_elements_preserved 把丢失的硬要素值原样追加到文本末尾），
+    # 补回后该值必然出现在文本里，string-match 校验必然通过——不存在"补不回"的情况，
+    # 因此无需（也没有可达路径需要）再重扩一次。
+    return ensure_hard_elements_preserved(expanded, hard_values)
 
 
 def build_poster_prompt(
@@ -581,6 +573,9 @@ async def generate_images(
         _hard_values = collect_hard_text_values(poster_text)
         if _hard_values:
             core_prompt = ensure_hard_elements_preserved(core_prompt, _hard_values)
+            # 补回后要让落库的 image_prompt 与真送模型的内容保持一致——否则审计"补回有没有
+            # 生效"时会对不上（DB 里仍是补回前的原始扩写文本，但实际送模型的是补回后的版本）。
+            image_prompt = core_prompt
     missing_elements = detect_missing_hard_elements(poster_text)
     full_prompt = build_poster_prompt(
         prompt=core_prompt,

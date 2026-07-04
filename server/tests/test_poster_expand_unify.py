@@ -163,6 +163,17 @@ def test_generate_images_wires_hard_element_guard():
     assert "detect_missing_hard_elements" in src, "缺 missing_elements 信号回传"
 
 
+def test_generate_images_syncs_patched_image_prompt_for_db():
+    """审查 Minor#1 回归：程序补回硬要素后，落库用的 image_prompt 必须同步成补回后的内容，
+    否则 DB 里 input_params.image_prompt 仍是补回前的原文、跟真送模型的 full_prompt 对不上，
+    审计"补回有没有生效"时会失真（沿用本文件白盒惯例：不起真实生图/DB，见上方同款测试）。"""
+    from services import poster_service
+    src = inspect.getsource(poster_service.generate_images)
+    assert "image_prompt = core_prompt" in src, (
+        "硬要素补回分支没有把 image_prompt 同步成补回后的 core_prompt——落库字段会跟真送模型内容不一致"
+    )
+
+
 # ────────────────────────── ReAct 路径：poster_text 结构化收集 + 缺就问 ──────────────────────────
 
 def _ctx(**overrides):
