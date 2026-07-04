@@ -330,7 +330,11 @@ async def expand_poster_text_with_llm(
 # 高保真人像改图"或调用方显式手选 GPT 时才路由 GPT，其余(含判断不出/内容空)一律默认落
 # Seedream(火山方舟，大陆机房，又快又稳，中文精确文字/海报排版第一梯队)——这是上线级安全底座。
 
-_AUTO_ROUTE_SEEDREAM_MODEL = "doubao-seedream-4-5-251128"  # 需与 seedream_image.py:_DEFAULT_MODEL 保持一致
+# 单一真相源：直接复用 seedream_image.py 的默认模型/base_url 常量，不再手写第二份字面量（防漂移）。
+from services.ai.providers.seedream_image import (
+    _DEFAULT_BASE as _ARK_BASE_URL,
+    _DEFAULT_MODEL as _AUTO_ROUTE_SEEDREAM_MODEL,
+)
 _AUTO_ROUTE_GPT_MODEL = "gpt-image-2"
 
 # 明显"复杂创意/高保真人像改图"的关键词——判据从简、可测，不做玄乎的 LLM 判断。
@@ -390,7 +394,7 @@ def _build_seedream_fallback_provider():
     if os.environ.get("DESKTOP_LOCAL") != "1" or not getattr(settings, "ark_api_key", ""):
         return None
     from services.ai.providers.seedream_image import SeedreamImageProvider
-    return SeedreamImageProvider(api_key=settings.ark_api_key, base_url="https://ark.cn-beijing.volces.com/api/v3")
+    return SeedreamImageProvider(api_key=settings.ark_api_key, base_url=_ARK_BASE_URL)
 
 
 def build_poster_prompt(
@@ -496,7 +500,7 @@ async def generate_images(
         from config import settings as _s_sd
         if _os_sd.environ.get("DESKTOP_LOCAL") == "1" and getattr(_s_sd, "ark_api_key", ""):
             api_key = _s_sd.ark_api_key
-            image_base_url = "https://ark.cn-beijing.volces.com/api/v3"
+            image_base_url = _ARK_BASE_URL
             image_model_cfg = image_model   # 选的 seedream id（带日期）;build_image_provider 按 ark base_url 路由到 SeedreamImageProvider
     if not api_key:
         import os
@@ -686,7 +690,13 @@ async def generate_images(
     # 结束后逐张串行做，顺序=请求下标——与 asyncio.gather 按输入顺序回填结果的语义天然一致，
     # 不会因为各张实际完成时机不同而错位。
     semaphore = _get_image_semaphore()
-    routed_model = image_model_cfg or image_model
+    # ⚠️ 门店生图 BYOK 且【没填】byok_image_model 时（image_model_cfg 恒为 None）：
+    # 绝不能把自动路由算出的具体模型 ID（如火山 Seedream 专属的 doubao-seedream-*）硬塞给
+    # 门店自己的 endpoint——那是任意厂商的 API，收到这个 ID 大概率不认识直接报错；且这类失败
+    # 不是 gpt-image 开头，降级安全网也救不了。这种情况必须让 model=None 传给 provider，
+    # 沿用 U2 之前的行为：交给门店自己的 endpoint 用它自身默认值。只有【非 BYOK（内置 key）】
+    # 路径才吃自动路由的具体模型串（image_model_cfg 为 None 时兜底 image_model）。
+    routed_model = image_model_cfg if _store_byok_image else (image_model_cfg or image_model)
 
     async def _generate_one(i: int) -> dict | None:
         rand = uuid.uuid4().hex[:4]
