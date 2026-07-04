@@ -1,7 +1,9 @@
 "use client";
 
 /**
- * 局部重绘画布(阶段3·react-konva MIT):在成品图上涂一块 → 导出同尺寸 alpha mask 喂 images.edit。
+ * 圈选+说话画布(阶段3·react-konva MIT):在成品图上圈一块(可选)+ 说一句指令。
+ * E2-3・合并原来并列的"整图改"+"局部重绘"两个入口——圈了(有笔触)= 导出同尺寸 alpha mask 走局部重绘,
+ * 不圈(没画一笔)= mask 传 undefined 走整图改,由外层 onApply 按有没有 mask 分流(page.tsx 的 onSubmitEdit)。
  * M1 关键:OpenAI mask 约定「透明(alpha=0)处=要改」,而涂的就是要改的地方 → 导出时用 destination-out
  * 把涂的区域抠成透明、其余不透明(自然尺寸 canvas 精确还原),不是直接拿笔触图当 mask。
  * 必须经 dynamic(ssr:false) 引入(konva 碰 canvas/window,不能 SSR)。
@@ -14,7 +16,7 @@ import { Undo2, Eraser, Check, X, Wand2 } from "lucide-react";
 type Props = {
   imageUrl: string;
   busy?: boolean;
-  onApply: (maskBase64: string, instruction: string) => void;
+  onApply: (maskBase64: string | undefined, instruction: string) => void;
   onCancel: () => void;
 };
 
@@ -87,11 +89,12 @@ export default function StudioMaskCanvas({ imageUrl, busy, onApply, onCancel }: 
     return c.toDataURL("image/png").split(",")[1];
   };
 
-  const canApply = lines.length > 0 && instruction.trim().length > 0 && !busy;
+  // E2-3・恢复合并语义:圈不圈都行,只要求说清楚想改什么——圈了 = 局部重绘,不圈 = 整图改。
+  const canApply = instruction.trim().length > 0 && !busy;
 
   return (
     <div className="flex flex-col items-center gap-3 p-4">
-      <div className="text-[12px] text-[#86868b] dark:text-[#6e7077]">在要改的地方涂一笔，再在下面说想改成什么</div>
+      <div className="text-[12px] text-[#86868b] dark:text-[#6e7077]">想改哪块就圈一下(可选)，再在下面说想改成什么；不圈就整张一起改</div>
       <div className="overflow-hidden rounded-xl shadow-sm" style={{ width: dispW, height: dispH }}>
         <Stage width={dispW} height={dispH} onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}>
           <Layer listening={false}><KonvaImage image={img} width={dispW} height={dispH} /></Layer>
@@ -119,7 +122,7 @@ export default function StudioMaskCanvas({ imageUrl, busy, onApply, onCancel }: 
       <textarea
         value={instruction}
         onChange={(e) => setInstruction(e.target.value)}
-        placeholder="涂的这块改成什么？比如：换成一张台球桌、把这里的字去掉、改成蓝色"
+        placeholder="想改成什么？比如：背景换成夜晚、圈的这块换成台球桌、把这里的字去掉"
         rows={2}
         className="w-full max-w-[560px] resize-none rounded-lg border border-black/[0.08] bg-black/[0.02] px-3 py-2 text-[13px] outline-none transition placeholder:text-[#b0b0b5] focus:border-[#10a37f]/50 dark:border-white/[0.08] dark:bg-white/[0.03] dark:placeholder:text-[#56585f]"
       />
@@ -128,9 +131,9 @@ export default function StudioMaskCanvas({ imageUrl, busy, onApply, onCancel }: 
           className="flex items-center gap-1 rounded-lg border border-black/[0.08] bg-white px-3 py-1.5 text-[13px] font-medium text-[#3a3a3c] transition hover:bg-black/[0.03] dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-[#c8cace]">
           <X className="h-3.5 w-3.5" /> 取消
         </button>
-        <button type="button" disabled={!canApply} onClick={() => onApply(exportMask(), instruction.trim())}
+        <button type="button" disabled={!canApply} onClick={() => onApply(lines.length > 0 ? exportMask() : undefined, instruction.trim())}
           className="flex items-center gap-1 rounded-lg bg-[#10a37f] px-3 py-1.5 text-[13px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.99] disabled:opacity-50">
-          {busy ? <Wand2 className="h-3.5 w-3.5 animate-pulse" /> : <Check className="h-3.5 w-3.5" />} 改这一块
+          {busy ? <Wand2 className="h-3.5 w-3.5 animate-pulse" /> : <Check className="h-3.5 w-3.5" />} {lines.length > 0 ? "改这一块" : "改整张"}
         </button>
       </div>
     </div>
