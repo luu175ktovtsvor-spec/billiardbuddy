@@ -25,7 +25,10 @@ function posterUrl(content: string): string | null {
   return m ? m[1] : null;
 }
 
-function posterPreviewFromText(content: string, title = "图片预览"): PreviewItem | null {
+// E1-C2・generationId 可选透传：调用方传了就带上，"做成视频"靠它 openWorkbench({fromGen})找图——
+// ⚠️ 不是 m.generationId(那是"本轮对话"这条 agent-chat 记录自己的 id，不是图的)，
+// 真图 id 来自 step.imageGenerationIds(工具执行完真实落库的 Generation.id，见 use-agent-chat.ts)。
+function posterPreviewFromText(content: string, title = "图片预览", generationId?: string): PreviewItem | null {
   const imageUrl = extractImageUrl(content);
   if (!imageUrl) return null;
   const ratio = content.match(/(?:尺寸|比例)：\s*([0-9]+:[0-9]+)/)?.[1];
@@ -37,6 +40,7 @@ function posterPreviewFromText(content: string, title = "图片预览"): Preview
     ratio,
     width: dims ? Number(dims[1]) : undefined,
     height: dims ? Number(dims[2]) : undefined,
+    generationId,
   };
 }
 
@@ -51,6 +55,19 @@ function extractImageUrl(text: string): string | null {
 }
 
 const IMAGE_TOOLS = new Set(["make_poster", "generate_image"]);
+
+// E1-C2・模型自己回答文本里直接带的图片 markdown(非经 DeliverableCard 那条路径)按图片 URL 反查
+// 同一条消息里对应的生图工具步骤，拿它落库的真实 Generation.id(m.generationId 是"本轮对话"记录，不是图)。
+function imageGenerationIdForContent(steps: ToolStep[] | undefined, content: string): string | undefined {
+  const url = extractImageUrl(content);
+  if (!url || !steps) return undefined;
+  for (const s of steps) {
+    if (IMAGE_TOOLS.has(s.tool) && s.imageGenerationIds?.length && extractImageUrl(s.result || "") === url) {
+      return s.imageGenerationIds[0];
+    }
+  }
+  return undefined;
+}
 
 // 从生视频工具结果里稳健抓出视频地址——markdown 链接 `[..](url)` ∪ 裸 URL ∪ 本机 /uploads 路径 ∪ 视频扩展名。
 function extractVideoUrl(text: string): string | null {
@@ -565,7 +582,8 @@ function DeliverableCard({
         duration: parseNum(step.args?.duration),
       });
     } else if (imgUrl) {
-      onPreview(posterPreviewFromText(resultText, label) || { kind: "poster", title: label, imageUrl: imgUrl });
+      const gid = step.imageGenerationIds?.[0];
+      onPreview(posterPreviewFromText(resultText, label, gid) || { kind: "poster", title: label, imageUrl: imgUrl, generationId: gid });
     } else {
       onPreview({ kind: "content", title: label, text: resultText });
     }
@@ -977,7 +995,7 @@ export function DesktopChatThread({
                           title={imageAltFromText(m.content) || "图片"}
                           spec={posterSpecLine("图片", m.content)}
                           onOpen={() => {
-                            const item = posterPreviewFromText(m.content);
+                            const item = posterPreviewFromText(m.content, undefined, imageGenerationIdForContent(m.steps, m.content));
                             if (item) onPreview(item);
                           }}
                         />

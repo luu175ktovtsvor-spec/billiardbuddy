@@ -21,7 +21,9 @@ export interface AgentStreamHandlers {
   // F.1 思考过程：模型 reasoning_content 流式片段（灰斜体思考块展示，不是正文）。
   onReasoning?: (chunk: string) => void;
   onToolCall?: (tool: string, args: Record<string, unknown>, id?: string) => void;
-  onToolResult?: (tool: string, content: string, id?: string, knowledgeUsed?: string[]) => void;
+  // imageGenerationIds：E1-C2・生图工具(make_poster/generate_image)这批图真实的 Generation.id
+  // （做成视频 openWorkbench({fromGen}) handoff 要用；本轮对话自己的 agent-chat generation_id 不是这个）。
+  onToolResult?: (tool: string, content: string, id?: string, knowledgeUsed?: string[], imageGenerationIds?: string[]) => void;
   // 命令边跑边显示：工具执行中实时推来的输出片段（chunk），按 id 累进对应步骤的终端块。
   onToolProgress?: (tool: string, id: string | undefined, chunk: string, stream?: string) => void;
   // SH-8：reason = 结构化审批理由 {what 要做什么 / why 为什么要你确认 / impact 影响}，让审批卡说清楚再让老板点头。
@@ -496,7 +498,7 @@ class ApiClient {
               case "token": handlers.onToken?.(ev.content || ""); break;
               case "reasoning": handlers.onReasoning?.(ev.content || ""); break;
               case "tool_call": handlers.onToolCall?.(ev.tool, ev.args || {}, ev.id); break;
-              case "tool_result": handlers.onToolResult?.(ev.tool, ev.content || "", ev.id, Array.isArray(ev.knowledge_used) ? ev.knowledge_used : undefined); break;
+              case "tool_result": handlers.onToolResult?.(ev.tool, ev.content || "", ev.id, Array.isArray(ev.knowledge_used) ? ev.knowledge_used : undefined, Array.isArray(ev.image_generation_ids) ? ev.image_generation_ids : undefined); break;
               case "tool_progress": handlers.onToolProgress?.(ev.tool, ev.id, ev.chunk || "", ev.stream); break;
               case "approval_request": handlers.onApprovalRequest?.(ev.tool, ev.args || {}, ev.id, ev.token, ev.preview, ev.reason); break;
               case "ask_question": handlers.onAskQuestion?.({ question: ev.question || "", options: ev.options || [], multi: ev.multi, id: ev.id }); break;
@@ -686,6 +688,12 @@ class ApiClient {
   // 阶段4 生成工作室：把一张图做成视频（可配音/多图锁人物/首尾帧），异步出片，返回 job_id
   studioI2v(input: { first_frame: string; prompt?: string; source_generation_id?: string; ratio?: string; duration?: number; generate_audio?: boolean; image_refs?: string[]; conversation_id?: string | null }) {
     return this.request<{ job_id: string }>("POST", "/api/v1/studio/i2v", input);
+  }
+
+  // E1-C2・openWorkbench handoff：视频面板拿着轻标识 fromGen（generation id）换成真实图片 URL 当 i2v 首帧
+  studioGetGeneration(id: string) {
+    return this.request<{ url: string; ratio: string; is_video: boolean }>(
+      "GET", `/api/v1/studio/generation/${encodeURIComponent(id)}`);
   }
 
   // 阶段5 生成工作室：多镜合成准备——多段视频成品 id（有序）→ 本机路径，交前端 Electron ffmpeg(video.js) concat

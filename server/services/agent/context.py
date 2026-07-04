@@ -60,6 +60,11 @@ class AgentContext:
     # B-2 本轮 deliverable 注入的知识名：deliverable 工具执行完把 gen.input_params["knowledge_used"]
     # 写进这里，loop 取后挂到该工具的 tool_result（step.meta / 流式事件），完即复位 None（防串到下一个工具）。
     last_knowledge_used: list | None = None
+    # E1-C2・做成视频 handoff：generate_image/make_poster 出图后把这批图的真实 Generation.id 写进来
+    # （同一套"写-取-复位"生命周期，照抄 last_knowledge_used），loop 取后挂到 tool_result 的
+    # image_generation_ids（step.meta / 流式事件）。前端"做成视频"按 id 找图（openWorkbench{fromGen}），
+    # 不能靠这轮对话本身的 agent-chat Generation id(那是整轮对话记录，不是图)。
+    last_image_generation_ids: list | None = None
     # ── SH-2 token 预算递减早停（防发散打转空转不收尾 + 真实编排消耗可观测）──
     # token_budget：本次 Agent 任务允许消耗的 token 上限。
     #   None = 交互式不限（默认，对话场景行为零变化）；N>0 = 到 90% 或连续多轮增量极小就停/推动。

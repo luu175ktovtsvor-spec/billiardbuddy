@@ -462,6 +462,16 @@ _POSTER_GENERATING: set[str] = set()
 _SUPPORTED_IMAGE_RATIOS = {"1:1", "3:4", "9:16", "16:9"}
 
 
+def _attach_image_generation_ids(ctx, images: list) -> None:
+    """E1-C2・做成视频 handoff：把这批图真实的 Generation.id 挂到 ctx.last_image_generation_ids
+    （loop 取后挂进 tool_result 事件，前端"做成视频"按 id 找图）。和 last_knowledge_used 同一套
+    写-取-复位生命周期，不需要这里复位（loop 每次工具结果都会读完置 None，防串到下一个工具）。"""
+    ids = [str(img.get("generation_id")) for img in images
+           if isinstance(img, dict) and img.get("generation_id")]
+    if ids:
+        ctx.last_image_generation_ids = ids
+
+
 def _append_generated_images_for_view(ctx, images: list) -> None:
     """2-3 修复：把生成成功、真实落盘的图片路径 append 进 ctx.pending_view_images——
     这是现成的回灌管道（loop._drain_view_images 会在本轮工具结果配对完整后自动拼成一条图片消息喂给模型），
@@ -692,6 +702,7 @@ async def make_poster(args: dict, ctx) -> str:
     if not images:
         return "海报这次没生成出来，稍后再试一下。"
     _append_generated_images_for_view(ctx, images)  # 2-3：挂进回灌队列，让模型下一轮亲眼看看出的图对不对
+    _attach_image_generation_ids(ctx, images)  # E1-C2：做成视频 handoff 要按真实 generation id 找图
 
     logo_applied = result.get("logo_applied", False)
     parts = []
@@ -826,6 +837,7 @@ async def generate_image(args: dict, ctx) -> str:
     if not images:
         return "图片这次没生成出来，稍后再试一下。"
     _append_generated_images_for_view(ctx, images)  # 2-3：挂进回灌队列，让模型下一轮亲眼看看出的图对不对
+    _attach_image_generation_ids(ctx, images)  # E1-C2：做成视频 handoff 要按真实 generation id 找图
 
     logo_applied = result.get("logo_applied", False)
     parts = []

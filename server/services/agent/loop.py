@@ -1350,10 +1350,14 @@ async def run_agent_loop(
                         steps.append(AgentStep(type="todo_update", content=format_todo_checklist(ctx.todos)))
                 # B-2 依据可见：工具若注入了行业知识（deliverable 工具写进 ctx.last_knowledge_used），
                 # 把名字挂到本条 tool_result 的 meta；取后立即复位，防串到下一个工具。
+                # E1-C2：同一套写-取-复位，生图工具挂了真实 generation id 就一并带上（做成视频 handoff 用）。
                 _meta = None
                 if ctx.last_knowledge_used:
                     _meta = {"knowledge_used": ctx.last_knowledge_used}
                 ctx.last_knowledge_used = None
+                if ctx.last_image_generation_ids:
+                    _meta = {**(_meta or {}), "image_generation_ids": ctx.last_image_generation_ids}
+                ctx.last_image_generation_ids = None
                 steps.append(AgentStep(type="tool_result", tool_name=plan.name,
                                        tool_call_id=plan.tool_call_id, content=result_str, meta=_meta))
                 messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": result_str})
@@ -2007,10 +2011,14 @@ async def run_agent_loop_stream(
                         yield {"type": "todo_update", "content": format_todo_checklist(ctx.todos)}
                 # B-2 依据可见：工具若注入了行业知识，把名字一并带进 tool_result 事件（前端成品卡显示「依据：…」）。
                 # 取后立即复位，防串到下一个工具。⚠️ 同步路径同样要改，别只改一处（见上面 run_agent_loop）。
+                # E1-C2：生图工具挂了真实 generation id 就一并带进事件（前端"做成视频"handoff 用）。
                 _evt = {"type": "tool_result", "tool": plan.name, "id": plan.tool_call_id, "content": result}
                 if ctx.last_knowledge_used:
                     _evt["knowledge_used"] = ctx.last_knowledge_used
                 ctx.last_knowledge_used = None
+                if ctx.last_image_generation_ids:
+                    _evt["image_generation_ids"] = ctx.last_image_generation_ids
+                ctx.last_image_generation_ids = None
                 yield _evt
                 messages.append({"role": "tool", "tool_call_id": plan.tool_call_id, "content": result})
                 continue

@@ -388,6 +388,28 @@ async def studio_i2v(
     return {"job_id": job_id}
 
 
+@router.get("/generation/{generation_id}")
+async def studio_get_generation(
+    generation_id: str,
+    store=Depends(get_current_store),
+    db=Depends(get_db),
+):
+    """E1-C2・按 id 查一张成品的图/视频地址(本店作用域)。openWorkbench handoff 只带轻标识 fromGen
+    (generation id)过去,真图从不进那条 IPC 通路——视频面板拿到 id 后靠这个接口换成真实 URL 当
+    i2v 首帧喂给 /studio/i2v(同一份底图解析逻辑，不是各自造一份)。"""
+    import uuid as _uuid
+    from models.generation import Generation as _G
+
+    try:
+        gid = _uuid.UUID(str(generation_id))
+    except (ValueError, TypeError):
+        raise AIServiceError("成品 id 不对")
+    g = await db.get(_G, gid)
+    if not g or g.store_id != store.id or g.is_deleted or not g.result:
+        raise AIServiceError("没找到这张成品（可能已删，或不是本店的）")
+    return {"url": g.result, "ratio": g.sub_type or "9:16", "is_video": g.type == "video"}
+
+
 @router.post("/compose")
 async def studio_compose(
     body: StudioComposeIn,

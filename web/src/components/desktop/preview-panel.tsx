@@ -26,7 +26,9 @@ import { useVersionHistory } from "./use-version-history";
 import { VersionBar } from "./version-bar";
 
 export type PreviewItem =
-  | { kind: "poster"; title?: string; imageUrl: string; ratio?: string; width?: number; height?: number }
+  // E1-C2・generationId：做成视频走 openWorkbench({fromGen}) handoff 要用它按 id 取图；只有等这轮
+  // 对话/成品卡真正落库后才拿得到，图刚流式出来那一刻(仍在生成中)可能还没有——没有就不露"做成视频"按钮。
+  | { kind: "poster"; title?: string; imageUrl: string; ratio?: string; width?: number; height?: number; generationId?: string }
   | { kind: "video"; title?: string; videoUrl: string; ratio?: string; duration?: number }
   | { kind: "content"; title?: string; text: string }
   | { kind: "file"; title?: string; path?: string; text: string }
@@ -806,9 +808,9 @@ export function DesktopPreviewPanel({
               {[item.ratio, item.width && item.height ? `${item.width}x${item.height}` : ""].filter(Boolean).join(" · ")}
             </div>
           )}
-          {item.kind === "poster" && onMakeVideo && (
+          {item.kind === "poster" && onMakeVideo && item.generationId && (
             <div className="mb-2 rounded-md bg-[#ff9500]/10 px-2 py-1.5 text-center text-[11.5px] leading-relaxed text-[#9a5b00] dark:text-[#ffcc80]">
-              做成视频会先弹确认卡；确认后才消耗视频额度，通常要等几分钟。
+              做成视频会带这张图跳到视频工作台，在那边配置运镜/时长再生成。
             </div>
           )}
           {item.kind === "video" && (item.ratio || item.duration) && (
@@ -901,11 +903,11 @@ export function DesktopPreviewPanel({
                   <Wand2 className="h-3.5 w-3.5" /> 整张重做
                 </button>
               ) : null}
-              {item.kind === "poster" && onMakeVideo && (
+              {item.kind === "poster" && onMakeVideo && item.generationId && (
                 <button
                   onClick={() => onMakeVideo(item)}
                   className="flex h-9 items-center justify-center gap-1.5 rounded-md border border-black/[0.1] bg-white px-3 text-[13px] text-[#1d1d1f] transition hover:bg-black/[0.03] active:scale-[0.98] dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#c8cace] dark:hover:bg-white/[0.06]"
-                  title="用这张图作为首帧发起图生视频，确认后才会真正消耗视频额度"
+                  title="带这张图跳到视频工作台，在那边配运镜/时长再生成"
                 >
                   <Clapperboard className="h-3.5 w-3.5" /> 做成视频
                 </button>

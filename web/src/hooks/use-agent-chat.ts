@@ -23,6 +23,7 @@ export interface ToolStep {
   result?: string;
   id?: string; // tool_call_id：按它回填 tool_result 到对应步骤
   knowledgeUsed?: string[]; // B-2「依据可见」：本次注入的知识【大白话name】，成品卡显示"依据：…"
+  imageGenerationIds?: string[]; // E1-C2：这条生图结果对应的真实 Generation.id（做成视频 handoff 用）
   progress?: string; // 命令边跑边显示：工具执行中实时累进的输出（run_command 终端块据此实时渲染）
   done: boolean;
 }
@@ -33,6 +34,9 @@ export interface GeneratedImageArtifact {
   ratio?: string;
   width?: number;
   height?: number;
+  // E1-C2・做成视频 handoff 用的真实 Generation.id（openWorkbench({fromGen})）；工具刚执行完就有，
+  // 不是"本轮对话"那个 agent-chat 记录 id。
+  generationId?: string;
 }
 
 export interface ApprovalState {
@@ -104,7 +108,9 @@ function sleepAbortable(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-function imageArtifactFromToolResult(tool: string, content: string): GeneratedImageArtifact | null {
+// generationIds：和 markdown 里图片出现的顺序对齐（tools.py 用同一个 images 数组按序拼两者），
+// 这里只解析第一张（正则本就只取首个 `![]()` 匹配），取 [0] 配对。
+function imageArtifactFromToolResult(tool: string, content: string, generationIds?: string[]): GeneratedImageArtifact | null {
   if (!IMAGE_TOOLS.has(tool) || !content) return null;
   const md = content.match(/!\[([^\]]*)\]\(([^)\s]+)\)/);
   const imageUrl = md?.[2] || content.match(/(https?:\/\/[^\s)"']+\.(?:png|jpg|jpeg|webp|gif)|\/uploads\/[^\s)"']+\.(?:png|jpg|jpeg|webp|gif)|[^\s)"']+\.(?:png|jpg|jpeg|webp|gif))/i)?.[1];
@@ -117,6 +123,7 @@ function imageArtifactFromToolResult(tool: string, content: string): GeneratedIm
     ratio,
     width: dims ? Number(dims[1]) : undefined,
     height: dims ? Number(dims[2]) : undefined,
+    generationId: generationIds?.[0],
   };
 }
 
@@ -253,15 +260,16 @@ export function useAgentChat(opts: AgentChatOptions) {
           setLiveSteps([...steps]);
         }
       },
-      onToolResult: (_tool, content, id, knowledgeUsed) => {
+      onToolResult: (_tool, content, id, knowledgeUsed, imageGenerationIds) => {
         const st = id ? steps.find((s) => s.id === id) : steps[steps.length - 1];
         if (st) {
           st.done = true;
           st.result = content;
           if (knowledgeUsed && knowledgeUsed.length) st.knowledgeUsed = knowledgeUsed;
+          if (imageGenerationIds && imageGenerationIds.length) st.imageGenerationIds = imageGenerationIds;
           setLiveSteps([...steps]);
         }
-        const image = imageArtifactFromToolResult(_tool, content);
+        const image = imageArtifactFromToolResult(_tool, content, imageGenerationIds);
         if (image) optsRef.current.onGeneratedImage?.(image);
       },
       onApprovalRequest: (tool, args, _id, token, preview, reason) => {
