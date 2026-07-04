@@ -104,6 +104,12 @@ def resolve_image_kind(base_url: str | None) -> str:
         return "dashscope"
     if "volces.com" in u or "ark.cn-beijing" in u:   # 火山方舟·Seedream(原生 /images/generations,非 OpenAI multipart edits)
         return "seedream"
+    # 内置网关代理透传火山原生 JSON（G1：客户端不再直连 volces.com，走 `{QF_GATEWAY_URL}/ark`
+    # → 网关 `/v1/ark/images/generations` → 真火山方舟；真 key 全在服务器，客户端只带 app 令牌）。
+    # 网关地址是裸 IP/自建域名，不含 volces/ark.cn-beijing 关键词，靠路径以 `/ark` 结尾识别——
+    # 见 services/ai/providers/seedream_image.py 的 resolve_builtin_seedream_credentials()。
+    if u.rstrip("/").endswith("/ark"):
+        return "seedream"
     if "minimaxi" in u or "minimax" in u:
         return "minimax"
     if "hunyuan" in u or "tencentcloudapi" in u:

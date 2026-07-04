@@ -131,8 +131,15 @@ class _FakeProvider:
 
 
 def _patch_desktop_ark(monkeypatch):
-    """桌面盒子 + 已配置 ark key 的通用前置（大多数用例都要这个环境）。"""
+    """桌面盒子 + 已配置 ark key 的通用前置（大多数用例都要这个环境）。
+
+    显式 delenv 网关变量（G1 新增判据）：本用例组测的是"网关没配 → 直连兜底"这条腿，
+    必须保证不受开发机 shell 里可能残留的 QF_GATEWAY_URL/QF_GATEWAY_TOKEN 干扰
+    （resolve_builtin_seedream_credentials 直接读 os.environ，不经 settings，
+    monkeypatch.setattr(settings, ...) 盖不住它）。"""
     monkeypatch.setenv("DESKTOP_LOCAL", "1")
+    monkeypatch.delenv("QF_GATEWAY_URL", raising=False)
+    monkeypatch.delenv("QF_GATEWAY_TOKEN", raising=False)
     from config import settings
 
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
@@ -474,3 +481,113 @@ async def test_non_gpt_failure_does_not_attempt_fallback(monkeypatch):
         await engine.dispose()
 
     assert fallback_called["n"] == 0, "非 GPT 路由的失败不该尝试构造降级 provider"
+
+
+# ─────────────── 5. G1：内置 Seedream 生图走网关（网关优先、直连兜底） ───────────────
+# 背景：U2 自动路由 + 安全网降级默认都会落到 Seedream，而在 G1 之前，内置 Seedream 的
+# base_url 恒是硬编码的 `_ARK_BASE_URL`（火山方舟直连），api_key 恒是 settings.ark_api_key——
+# 真 ARK key 被打包进客户端。G1 改成 resolve_builtin_seedream_credentials()：配了网关
+# (QF_GATEWAY_URL+QF_GATEWAY_TOKEN) 就优先走网关（客户端只带可吊销 app 令牌）；网关没配
+# （本地开发联调）才退回直连真 key——这条 dev-only 回退开关必须保留，不能因为改造而炸掉。
+
+
+def test_resolve_builtin_seedream_credentials_gateway_first(monkeypatch):
+    """网关配了(QF_GATEWAY_URL+QF_GATEWAY_TOKEN) → 优先用网关：base_url 落 `{网关}/ark`，
+    凭证是可吊销的 app 令牌，真 ark_api_key 即便配了也不会被用上。"""
+    from services.ai.providers.seedream_image import resolve_builtin_seedream_credentials
+    from config import settings
+
+    monkeypatch.setenv("QF_GATEWAY_URL", "http://1.2.3.4/gw/v1")
+    monkeypatch.setenv("QF_GATEWAY_TOKEN", "app-token-xyz")
+    monkeypatch.setattr(settings, "ark_api_key", "real-ark-key-should-not-be-used")
+
+    assert resolve_builtin_seedream_credentials() == ("app-token-xyz", "http://1.2.3.4/gw/v1/ark")
+
+
+def test_resolve_builtin_seedream_credentials_direct_fallback(monkeypatch):
+    """回退开关：网关没配(dev-only 开发机后门/本地联调) → 退到直连 ark_api_key + 火山原生 base_url，
+    行为与 G1 之前完全一致，不因为改造影响本地开发。"""
+    from services.ai.providers.seedream_image import _DEFAULT_BASE, resolve_builtin_seedream_credentials
+    from config import settings
+
+    monkeypatch.delenv("QF_GATEWAY_URL", raising=False)
+    monkeypatch.delenv("QF_GATEWAY_TOKEN", raising=False)
+    monkeypatch.setattr(settings, "ark_api_key", "dev-direct-ark-key")
+
+    assert resolve_builtin_seedream_credentials() == ("dev-direct-ark-key", _DEFAULT_BASE)
+
+
+def test_resolve_builtin_seedream_credentials_none_when_unconfigured(monkeypatch):
+    """网关和直连 key 都没配 → None，调用方据此判断"内置 Seedream 用不了"（如实报错，不静默）。"""
+    from services.ai.providers.seedream_image import resolve_builtin_seedream_credentials
+    from config import settings
+
+    monkeypatch.delenv("QF_GATEWAY_URL", raising=False)
+    monkeypatch.delenv("QF_GATEWAY_TOKEN", raising=False)
+    monkeypatch.setattr(settings, "ark_api_key", "")
+
+    assert resolve_builtin_seedream_credentials() is None
+
+
+async def test_generate_images_default_routes_through_gateway_when_configured(monkeypatch):
+    """G1 端到端：配了网关时，默认路由到 Seedream 真正构造出的 provider 是 SeedreamImageProvider，
+    且其 base_url/api_key 是网关地址/app 令牌（不是直连 volces.com、不是真 ARK key）。
+
+    不 fake `ProviderFactory.build_image_provider`——走真实 resolve_image_kind 路由验证"网关
+    ark 路径仍落 Seedream 适配器"这条 G1 关键改动；只在网络层(_post_with_429_retry)钉桩避免
+    真连网/真花钱。"""
+    from services.ai.providers.seedream_image import SeedreamImageProvider
+
+    engine, db, store, user = await _make_store_and_db()
+    _patch_desktop_ark(monkeypatch)
+    monkeypatch.setenv("QF_GATEWAY_URL", "http://1.2.3.4/gw/v1")
+    monkeypatch.setenv("QF_GATEWAY_TOKEN", "app-token-xyz")
+
+    captured = {}
+
+    async def _fake_post(self, body, max_retries=3):
+        captured["base_url"] = self._base_url
+        captured["api_key"] = self._api_key
+        captured["model"] = body.get("model")
+        return _png_bytes(1152, 1536)
+
+    monkeypatch.setattr(SeedreamImageProvider, "_post_with_429_retry", _fake_post)
+
+    try:
+        result = await poster_service.generate_images(
+            db=db, store=store, user_id=user.id, prompt="周年庆活动海报，店里搞活动",
+            image_model=None, ratio="3:4", count=1,
+        )
+    finally:
+        await engine.dispose()
+
+    assert captured["base_url"] == "http://1.2.3.4/gw/v1/ark", f"没走网关，实际={captured.get('base_url')}"
+    assert captured["api_key"] == "app-token-xyz", "真 ARK key 不该出现在这条路径，应为可吊销 app 令牌"
+    assert "gpt-image" not in (captured.get("model") or "")
+    assert result["count"] == 1
+
+
+def test_seedream_fallback_provider_routes_through_gateway_when_configured(monkeypatch):
+    """G1：GPT 失败降级安全网(_build_seedream_fallback_provider)同样网关优先——
+    配了网关时降级出的 provider 也不能带真 ARK key。"""
+    _patch_desktop_ark(monkeypatch)
+    monkeypatch.setenv("QF_GATEWAY_URL", "http://1.2.3.4/gw/v1")
+    monkeypatch.setenv("QF_GATEWAY_TOKEN", "app-token-xyz")
+
+    provider = poster_service._build_seedream_fallback_provider()
+    assert provider is not None
+    assert provider._base_url == "http://1.2.3.4/gw/v1/ark"
+    assert provider._api_key == "app-token-xyz"
+
+
+def test_seedream_fallback_provider_direct_when_gateway_unconfigured(monkeypatch):
+    """回退开关验证：网关没配(本地开发/联调) → 降级 provider 退回直连火山方舟，不因为
+    G1 改造而炸掉本地开发工作流。"""
+    from services.ai.providers.seedream_image import _DEFAULT_BASE
+
+    _patch_desktop_ark(monkeypatch)  # 已 delenv QF_GATEWAY_*，settings.ark_api_key = "ark-test-key"
+
+    provider = poster_service._build_seedream_fallback_provider()
+    assert provider is not None
+    assert provider._base_url == _DEFAULT_BASE
+    assert provider._api_key == "ark-test-key"

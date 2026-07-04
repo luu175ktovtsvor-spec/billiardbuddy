@@ -405,11 +405,10 @@ async def expand_poster_text_with_llm(
 # 高保真人像改图"或调用方显式手选 GPT 时才路由 GPT，其余(含判断不出/内容空)一律默认落
 # Seedream(火山方舟，大陆机房，又快又稳，中文精确文字/海报排版第一梯队)——这是上线级安全底座。
 
-# 单一真相源：直接复用 seedream_image.py 的默认模型/base_url 常量，不再手写第二份字面量（防漂移）。
-from services.ai.providers.seedream_image import (
-    _DEFAULT_BASE as _ARK_BASE_URL,
-    _DEFAULT_MODEL as _AUTO_ROUTE_SEEDREAM_MODEL,
-)
+# 单一真相源：直接复用 seedream_image.py 的默认模型常量，不再手写第二份字面量（防漂移）。
+# G1：内置 Seedream 的 base_url/api_key 改由 resolve_builtin_seedream_credentials()（同模块）解析
+# （网关优先、直连兜底），本文件不再直接引用 _DEFAULT_BASE（原 _ARK_BASE_URL 已随之删除）。
+from services.ai.providers.seedream_image import _DEFAULT_MODEL as _AUTO_ROUTE_SEEDREAM_MODEL
 _AUTO_ROUTE_GPT_MODEL = "gpt-image-2"
 
 # 明显"复杂创意/高保真人像改图"的关键词——判据从简、可测，不做玄乎的 LLM 判断。
@@ -505,15 +504,20 @@ def _route_edit_model(prompt: str | None, user_choice: str, edit_type: str | Non
 
 
 def _build_seedream_fallback_provider():
-    """GPT 失败降级安全网用：构造一个直连火山方舟 Seedream 的 provider。
+    """GPT 失败降级安全网用：构造一个 Seedream provider（G1：网关优先、直连兜底，
+    见 resolve_builtin_seedream_credentials）。
 
-    只有桌面盒子(DESKTOP_LOCAL=1)且配置了 ark_api_key 时才能造出来——造不出返回 None，
+    只有桌面盒子(DESKTOP_LOCAL=1)且解析得出凭证时才能造出来——造不出返回 None，
     调用方据此决定这次没法降级(如实报错，不装作有安全网)。"""
     import os
-    if os.environ.get("DESKTOP_LOCAL") != "1" or not getattr(settings, "ark_api_key", ""):
+    if os.environ.get("DESKTOP_LOCAL") != "1":
         return None
-    from services.ai.providers.seedream_image import SeedreamImageProvider
-    return SeedreamImageProvider(api_key=settings.ark_api_key, base_url=_ARK_BASE_URL)
+    from services.ai.providers.seedream_image import SeedreamImageProvider, resolve_builtin_seedream_credentials
+    creds = resolve_builtin_seedream_credentials()
+    if not creds:
+        return None
+    api_key, base_url = creds
+    return SeedreamImageProvider(api_key=api_key, base_url=base_url)
 
 
 # ────────────────── U4・确定性预筛(零依赖) + RapidOCR 中文文字校验 + 抽风自动重出 ──────────────────
@@ -795,17 +799,19 @@ async def generate_images(
 
     # 生图 BYOK：门店配了自带生图模型 → 用门店的 key/base_url（自担成本）；否则回退平台默认。
     api_key, image_base_url, image_model_cfg = ProviderFactory.get_image_config_for_store(store)
-    # 模型选择：调用方选了火山 Seedream 且门店没 BYOK 覆盖 → 切到火山方舟（复用内置 ARK key，与视频同平台同 key）。
+    # 模型选择：调用方选了火山 Seedream 且门店没 BYOK 覆盖 → 切到内置 Seedream 凭证（G1：网关优先、
+    # 直连兜底，见 resolve_builtin_seedream_credentials；生产客户盒子经网关，真 ARK key 不落客户端）。
     # ⚠️ 判据必须是「门店有没有 BYOK 生图」，不能用 `not image_model_cfg`：内置默认 IMAGE_MODEL_NAME=gpt-image-2
     #    会让 image_model_cfg 恒非空，导致火山分支永远进不去、选火山被错路由到 gpt-image-2（真机日志实锤）。
     _store_byok_image = bool(getattr(store, "byok_image_enabled", False) and getattr(store, "byok_image_api_key_enc", None))
     if image_model and "seedream" in image_model.lower() and not _store_byok_image:
         import os as _os_sd
-        from config import settings as _s_sd
-        if _os_sd.environ.get("DESKTOP_LOCAL") == "1" and getattr(_s_sd, "ark_api_key", ""):
-            api_key = _s_sd.ark_api_key
-            image_base_url = _ARK_BASE_URL
-            image_model_cfg = image_model   # 选的 seedream id（带日期）;build_image_provider 按 ark base_url 路由到 SeedreamImageProvider
+        if _os_sd.environ.get("DESKTOP_LOCAL") == "1":
+            from services.ai.providers.seedream_image import resolve_builtin_seedream_credentials
+            _creds = resolve_builtin_seedream_credentials()
+            if _creds:
+                api_key, image_base_url = _creds
+                image_model_cfg = image_model   # 选的 seedream id（带日期）;build_image_provider 按 base_url 路由到 SeedreamImageProvider
     if not api_key:
         # 别在这里再 `import os`——本文件顶部已 `import os`(模块级)，函数体内任何位置写
         # `import os` 都会让 Python 把 `os` 当成整个函数作用域的局部名，连累前面这段没执行到
