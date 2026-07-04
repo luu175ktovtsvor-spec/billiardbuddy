@@ -16,6 +16,7 @@ import { useAgentChat, type PermissionMode, type ChatMessage } from "@/hooks/use
 import { safeFileName } from "@/lib/utils";
 import { DesktopShell, DesktopSidebar, type DesktopConversation } from "./macos-shell";
 import { WelcomeScreen } from "./welcome-screen";
+import { OnboardingBanner, type OnboardingStep } from "./onboarding-banner";
 import { DesktopComposer } from "./desktop-composer";
 import { DesktopChatThread } from "./chat-thread";
 import { DesktopPreviewPanel, type PreviewItem } from "./preview-panel";
@@ -162,6 +163,14 @@ export function DesktopChatShell({
   const [deleteRecentTarget, setDeleteRecentTarget] = useState<RecentArtifact | null>(null);
   const [workbenchLoaded, setWorkbenchLoaded] = useState(false);
   const workbenchStateKey = `agent_workbench_state:${workbenchId}`;
+  // G-b 首次开箱引导：欢迎 → 引导点一张场景卡，只在"真·首次启动"（下面 workbenchStateKey 的
+  // !raw 分支）触发一次；agent_onboarding_seen 是全局标记（不分工作台），见过就不会再来。
+  const [onboardingStep, setOnboardingStep] = useState<OnboardingStep | null>(null);
+  const dismissOnboarding = useCallback(() => {
+    setOnboardingStep(null);
+    try { localStorage.setItem("agent_onboarding_seen", "1"); } catch { /* 忽略 */ }
+  }, []);
+  const advanceOnboarding = useCallback(() => setOnboardingStep("point-card"), []);
 
   useEffect(() => {
     try {
@@ -195,6 +204,10 @@ export function DesktopChatShell({
         // decision #7：真·首次启动（既无工作台快照、也无独立知识库偏好）→ 默认挂台球模式（产品名就是台球）。
         // 不覆盖任何已保存选择：有 agent_knowledge_packs（哪怕是 [] = 用户特意选了通用）就交给下面的独立 effect 读。
         if (!localStorage.getItem("agent_knowledge_packs")) setKnowledgePacks(["billiards"]);
+        // G-b：借同一个"真·首次启动"信号顺带触发开箱引导。哪怕以后开新工作台窗口也会命中这个
+        // !raw 分支（每个工作台各自的快照都是空的），但 agent_onboarding_seen 是全局标记——
+        // 只要有一个窗口显示过、点过跳过/知道了，其余窗口这里都会读到已置位而不再弹。
+        if (!localStorage.getItem("agent_onboarding_seen")) setOnboardingStep("welcome");
         setWorkbenchLoaded(true);
         return;
       }
@@ -842,6 +855,12 @@ export function DesktopChatShell({
 
   const empty = chat.messages.length === 0 && !chat.generating;
 
+  // G-b：欢迎屏一旦离开（发了消息/点了场景卡/开了每日草稿……不管走哪条路径）就不用再引导了，
+  // 在这统一收口，不用在 pick/onSend/dailyDrafts 等好几处各自补一遍"顺手关掉引导"的判断。
+  useEffect(() => {
+    if (!empty && onboardingStep) dismissOnboarding();
+  }, [empty, onboardingStep, dismissOnboarding]);
+
   // 修复#2：切会话／欢迎屏⇄对话流互相切换时，若还在念就先停掉——不然子进程在后台继续念、当前
   // 视图却没有按钮能停(孤儿朗读)。reading 状态收在这一层统一管，简报卡/对话流卸载不用各自猜
   // "是不是我在念"，也就不会出现"A 组件卸载把 B 组件的朗读也停了"的误伤(两者本就互斥挂载，
@@ -953,28 +972,35 @@ export function DesktopChatShell({
       )}
 
       {empty ? (
-        <WelcomeScreen
-          briefing={briefing ?? undefined}
-          onDismissRec={onDismissRec}
-          reportHint={reportHint ?? undefined}
-          onDiagnoseReport={onDiagnoseReport}
-          onDismissReport={onDismissReport}
-          billiardsMode={knowledgePacks.includes("billiards")}
-          onPick={pick}
-          onDailyDrafts={loadDailyDrafts}
-          dailyDraftsBusy={dailyDraftsBusy}
-          continueTitle={conversations[0]?.title || recentItems.find((item) => item.conversation_id)?.title}
-          onContinueLast={(conversations[0] || recentItems.some((item) => item.conversation_id)) ? continueLast : undefined}
-          recentItems={recentItems}
-          onOpenRecent={openRecent}
-          onDeleteRecent={deleteRecent}
-          onOpenStoreMemory={() => setMemoryOpen(true)}
-          onViewScreen={electron ? viewCurrentScreen : undefined}
-          onResearch={startResearch}
-          onReadAloud={electron?.tts ? onReadAloud : undefined}
-          onStopReadAloud={electron?.tts ? onStopReadAloud : undefined}
-          readingKey={readingKey}
-        />
+        <div className="flex flex-1 flex-col overflow-hidden">
+          {onboardingStep && (
+            <div className="px-8 pt-4">
+              <OnboardingBanner step={onboardingStep} onAdvance={advanceOnboarding} onDismiss={dismissOnboarding} />
+            </div>
+          )}
+          <WelcomeScreen
+            briefing={briefing ?? undefined}
+            onDismissRec={onDismissRec}
+            reportHint={reportHint ?? undefined}
+            onDiagnoseReport={onDiagnoseReport}
+            onDismissReport={onDismissReport}
+            billiardsMode={knowledgePacks.includes("billiards")}
+            onPick={pick}
+            onDailyDrafts={loadDailyDrafts}
+            dailyDraftsBusy={dailyDraftsBusy}
+            continueTitle={conversations[0]?.title || recentItems.find((item) => item.conversation_id)?.title}
+            onContinueLast={(conversations[0] || recentItems.some((item) => item.conversation_id)) ? continueLast : undefined}
+            recentItems={recentItems}
+            onOpenRecent={openRecent}
+            onDeleteRecent={deleteRecent}
+            onOpenStoreMemory={() => setMemoryOpen(true)}
+            onViewScreen={electron ? viewCurrentScreen : undefined}
+            onResearch={startResearch}
+            onReadAloud={electron?.tts ? onReadAloud : undefined}
+            onStopReadAloud={electron?.tts ? onStopReadAloud : undefined}
+            readingKey={readingKey}
+          />
+        </div>
       ) : (
         <DesktopChatThread
           messages={chat.messages}
