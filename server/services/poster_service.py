@@ -807,7 +807,12 @@ async def generate_images(
             image_base_url = _ARK_BASE_URL
             image_model_cfg = image_model   # 选的 seedream id（带日期）;build_image_provider 按 ark base_url 路由到 SeedreamImageProvider
     if not api_key:
-        import os
+        # 别在这里再 `import os`——本文件顶部已 `import os`(模块级)，函数体内任何位置写
+        # `import os` 都会让 Python 把 `os` 当成整个函数作用域的局部名，连累前面这段没执行到
+        # 时，函数后面(如参考图循环里 `is_desktop = os.environ.get(...)`)一引用 `os` 就
+        # UnboundLocalError——2026-07-02 引入参考图循环的 `is_desktop` 判据时踩过(全仓审查
+        # Important 修复时经真实集成测试发现:任何 api_key 已配置 + 传了 reference_image_paths
+        # 的正常请求都会崩，因为这个 if 分支根本不会执行到)。
         if os.environ.get("DESKTOP_LOCAL") == "1":  # 桌面纯 BYOK：没有"平台默认"，别误导老板留空
             raise ValueError("生图模型未配置：请在「模型设置」里填你自己的生图模型 Key（桌面版用你自己的 key，没有平台默认）")
         raise ValueError("生图模型未配置：请在「模型设置」里填生图模型的 Key（或留空用平台默认）")

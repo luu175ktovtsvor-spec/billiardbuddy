@@ -277,3 +277,29 @@ def guarded_render(render_fn: Callable[[], str], *, expected_duration: float | N
         health = probe_render_health(path, expected_duration=expected_duration)
         rerendered = True
     return {"path": path, "health": health, "rerendered": rerendered}
+
+
+def qc_caveat_message(health: dict | None, caption_health: dict | None) -> str:
+    """把渲染后体检(probe_render_health)+ 字幕门(validate_captions_for_doc)结果,翻成一句大白话
+    小尾巴——干净(没问题)时返回空字符串。
+
+    背景(E4-U1/U2 审查 Important 发现)：assemble.render_timeline/render_v2_project 早就把
+    guarded_render 重渲一次仍红时的问题清单一起带回去了({"health":..., "caption_health":...}),
+    但三个生产调用方(api/v1/video_edit.py 两个 /render* 端点 + agent 工具 render_video)都只取
+    预先算好的 out/url/duration 拼返回值,把这份体检结果整个丢在地上——用户收到的"剪好了"文案
+    不看实际质量,红了也当没事发生地把烂片递过去，违反 render_timeline 自己文档写的"不静默塞给
+    用户一个烂片"。调用方把 health/caption_health 传进来，这里统一翻译成一句人话，接在"剪好了"
+    后面（不改 QC 门本身的判定逻辑，只是不再把它的结果吞掉）。
+    """
+    if not health and not caption_health:
+        return ""
+    problems: list[str] = []
+    if health and not health.get("ok", True):
+        problems.extend(health.get("reasons") or [])
+    if caption_health and caption_health.get("problems"):
+        for p in caption_health["problems"]:
+            problems.extend(p.get("reasons") or [])
+    if not problems:
+        return ""
+    uniq = list(dict.fromkeys(problems))  # 去重保序
+    return "不过体检发现还有点问题:" + "；".join(uniq) + "。要不要我再调一版?"

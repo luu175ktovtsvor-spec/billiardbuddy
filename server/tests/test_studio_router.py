@@ -273,8 +273,9 @@ def test_studio_generate_resolves_reference_generation_ids_to_local_paths(monkey
             if got and got.status in ("done", "error"):
                 break
         assert got is not None and got.status == "done", (got.status, got.error)
-        expect_path = str((tmp_path / "posters" / "ref.png").resolve())
-        assert captured.get("reference_image_paths") == [expect_path]
+        # Finding 2 修复(全仓审查)：解析结果按 "/uploads/..."-相对路径返回(跟 poster_service 参考图
+        # 循环实际期望的契约一致)，不再是"绝对路径恰好落在 uploads 内"的 pathlib 巧合。
+        assert captured.get("reference_image_paths") == ["/uploads/posters/ref.png"]
     asyncio.run(main())
 
 
@@ -324,8 +325,8 @@ def test_studio_generate_merges_reference_generation_ids_with_explicit_refs(monk
             if got and got.status in ("done", "error"):
                 break
         assert got is not None and got.status == "done", (got.status, got.error)
-        expect_path = str((tmp_path / "posters" / "ref.png").resolve())
-        assert captured.get("reference_image_paths") == ["/tmp/user_picked.png", expect_path]
+        # Finding 2 修复:要同款解析出的路径是 "/uploads/..."-相对格式，不是绝对路径。
+        assert captured.get("reference_image_paths") == ["/tmp/user_picked.png", "/uploads/posters/ref.png"]
     asyncio.run(main())
 
 
@@ -446,6 +447,81 @@ def test_studio_generate_reference_generation_ids_none_leaves_refs_unchanged(mon
                 break
         assert got is not None and got.status == "done", (got.status, got.error)
         assert captured.get("reference_image_paths") is None
+    asyncio.run(main())
+
+
+def test_studio_reference_generation_id_real_load_into_generate_images(monkeypatch, tmp_path):
+    """Finding 2(全仓审查)真集成回归:不 mock poster_service.generate_images 本体——只顶掉最外层的
+    ProviderFactory.build_image_provider(避免真打生图 API)，让 _resolve_reference_generation_paths
+    产出的路径真的流进 generate_images 内部的参考图循环(reference_image_paths → ref_bytes →
+    input_images)，断言参考图字节确实被读出来喂给了 provider.generate_image。
+    这条要证的是"格式对了所以真能工作"，不是"格式对了、但 generate_images 是假的所以什么都测不出"
+    (旧覆盖只 mock 到 generate_images 这层，测不出 ref-loop 内部的路径格式契约)。"""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    def _striped_png(w, h, color=(120, 60, 200)) -> bytes:
+        # U4 出图质检会拒绝"疑似纯色/空白图"——画几条条纹给足内容方差，让假 provider 的产出能过质检
+        # (同 tests/test_edit_routing_brand_qr.py::_png_bytes 的写法)。
+        img = Image.new("RGB", (w, h), color)
+        d = ImageDraw.Draw(img)
+        for y in range(0, h, 60):
+            d.rectangle([0, y, w, y + 20], fill=(255, 255, 255))
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        return buf.getvalue()
+
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+
+        import config as _cfg
+        monkeypatch.setenv("DESKTOP_LOCAL", "1")
+        monkeypatch.setattr(_cfg.settings, "upload_dir", str(tmp_path))
+        monkeypatch.setattr(_cfg.settings, "openai_api_key", "sk-test")
+        monkeypatch.setattr(_cfg.settings, "ark_api_key", "ark-test-key")
+        monkeypatch.setattr(_cfg.settings, "image_model_name", "")
+
+        (tmp_path / "posters").mkdir(parents=True)
+
+        # 参考图本身随便什么内容都行(只从磁盘读字节，不过质检)，落盘一张简单纯色图即可。
+        ref_bytes_on_disk = _striped_png(200, 200, color=(10, 200, 10))
+        (tmp_path / "posters" / "ref.png").write_bytes(ref_bytes_on_disk)
+
+        sid = uuid.uuid4()
+        ref_gid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed(db, sid)
+            store = await db.get(Store, sid)
+            db.add(Generation(id=ref_gid, store_id=sid, type="poster",
+                              result="/uploads/posters/ref.png", model_used="m"))
+            await db.commit()
+
+            resolved = await studio._resolve_reference_generation_paths(db, [str(ref_gid)], sid)
+            assert resolved == ["/uploads/posters/ref.png"], resolved  # 按契约格式，不是绝对路径巧合
+
+            captured = {}
+
+            class _FakeProvider:
+                async def generate_image(self, **kwargs) -> bytes:
+                    captured.update(kwargs)
+                    return _striped_png(1152, 1536)  # 生成的"产出图"要过质检，必须有内容方差
+
+            from services.ai.factory import ProviderFactory
+            monkeypatch.setattr(ProviderFactory, "build_image_provider",
+                                staticmethod(lambda api_key, base_url, model=None: _FakeProvider()))
+
+            result = await studio.poster_service.generate_images(
+                db=db, store=store, user_id=uid, prompt="要同款氛围图",
+                image_model=None, ratio="3:4", count=1,
+                reference_image_paths=resolved,
+            )
+            assert result["count"] == 1
+            images_arg = captured.get("image") or []
+            assert ref_bytes_on_disk in images_arg, "要同款解析出的参考图字节没有真正流进 input_images"
     asyncio.run(main())
 
 

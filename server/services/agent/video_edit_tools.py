@@ -163,17 +163,27 @@ async def render_video(args: dict, ctx) -> str:
         set_tenant(store_id)
         try:
             await progress(15, "在出片了,好了叫你…")
-            await asyncio.to_thread(render_timeline, doc, str(out), edit_dir=str(out_dir))
-            return {"urls": [url], "is_video": True, "duration": duration}
+            res = await asyncio.to_thread(render_timeline, doc, str(out), edit_dir=str(out_dir))
+            # E4①⑤的渲染后体检结果(res 是 dict:{"health","caption_health",...})别再丢在地上——
+            # 传进返回值,让 media_job_notify 的 format_success 能翻成大白话小尾巴接在"剪好了"后面。
+            res = res if isinstance(res, dict) else {}
+            return {"urls": [url], "is_video": True, "duration": duration,
+                    "health": res.get("health"), "caption_health": res.get("caption_health")}
         finally:
             set_tenant(None)
 
+    def _format_success(result: dict | None) -> str:
+        from services.video_edit.footage_qc import qc_caveat_message
+
+        result = result or {}
+        video_url = (result.get("urls") or [None])[0] or url
+        text = f"视频剪好了!👇(时长≈{duration:.1f}秒)\n\n[点击查看视频]({video_url})"
+        caveat = qc_caveat_message(result.get("health"), result.get("caption_health"))
+        return f"{text}\n\n{caveat}" if caveat else text
+
     on_done = make_video_job_done_hook(
         conversation_id=conv, success_title="视频剪好了", fail_title="视频没剪成",
-        format_success=lambda result: (
-            f"视频剪好了!👇(时长≈{duration:.1f}秒)\n\n"
-            f"[点击查看视频]({(result or {}).get('urls', [None])[0] or url})"
-        ),
+        format_success=_format_success,
         store_id=store_id, user_id=user_id,
     )
     try:
