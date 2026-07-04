@@ -62,6 +62,9 @@ export interface ElectronBridge {
   tts?: {
     speak(text: string): Promise<{ ok: boolean; error?: string }>;
     stop(): Promise<{ ok: boolean; error?: string }>;
+    /** 念完(close)/spawn 失败如二进制缺失(error)都是异步事件——订阅这个拿到"真结束了"的广播，
+     *  用来把前端"正在朗读"UI 复位。返回取消订阅函数。 */
+    onEnd(cb: (p: { ok: boolean; error?: string }) => void): () => void;
   };
   /** 开机自动启动(D-Task-4：定时任务要 app 开着才会跑，老板想按时出文案就得让软件开机自动打开)。
    *  故障安全——不支持/失败都返回 { ok:false } 或 { enabled:false, error }，不抛异常。 */

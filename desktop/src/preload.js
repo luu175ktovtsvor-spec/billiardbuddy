@@ -38,6 +38,8 @@ contextBridge.exposeInMainWorld("electron", {
   tts: {
     speak: (text) => ipcRenderer.invoke("tts:speak", { text }),
     stop: () => ipcRenderer.invoke("tts:stop"),
+    // 念完(close)/spawn 失败(error)是异步事件——订阅这个拿到"真结束了"的广播，用来复位"正在朗读"UI。
+    onEnd: (cb) => on("tts:end", cb),
   },
 
   // ── 开机自动启动(D-Task-4：定时任务要 app 开着才会跑) ──
