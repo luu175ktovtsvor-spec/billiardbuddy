@@ -235,7 +235,7 @@ BILLIARDS_TOOL_NAMES: set[str] = {
     "get_today_recommendation", "find_scenario", "look_up_knowledge", "read_knowledge",
     "write_operation_content", "write_batch", "plan_activity", "assistant_outreach",
     "diagnose_operation", "recommend_games", "make_poster", "make_platform_content",
-    "make_groupbuy_content", "diagnose_from_pos",
+    "make_groupbuy_content", "diagnose_from_pos", "make_scene_plan",
 }
 
 

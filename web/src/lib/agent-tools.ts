@@ -18,6 +18,7 @@ export const TOOL_META: Record<string, { label: string; Icon: typeof Wrench }> =
   diagnose_operation: { label: "做经营诊断", Icon: Stethoscope },
   recommend_games: { label: "想玩法", Icon: Dices },
   make_poster: { label: "做海报", Icon: ImageIcon },
+  make_scene_plan: { label: "出场景方案", Icon: FileText },
   generate_image: { label: "生成图片", Icon: ImageIcon },
   generate_video: { label: "生成视频", Icon: Film },
   make_platform_content: { label: "写平台内容", Icon: Sparkles },
@@ -64,7 +65,7 @@ export function toolMeta(name: string) {
 export const DELIVERABLE_TOOLS = new Set([
   "write_operation_content", "write_batch", "plan_activity", "assistant_outreach",
   "diagnose_operation", "recommend_games", "make_platform_content", "make_groupbuy_content",
-  "make_poster", "generate_image", "generate_video",
+  "make_poster", "generate_image", "generate_video", "make_scene_plan",
 ]);
 
 // 内部/指令注入类工具（P1-8 + 专题B.1）：结果是【给 AI 看的操作手册/检索原文】，对老板零价值还吓人
