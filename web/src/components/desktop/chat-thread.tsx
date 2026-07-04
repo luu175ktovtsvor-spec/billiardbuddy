@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, MessageCircleQuestion, FileEdit, Terminal, ChevronRight, Brain, RotateCcw, ClipboardList, Save, MessageSquareText, Megaphone, ClipboardCheck, Paperclip, Download, ThumbsUp, Smartphone } from "lucide-react";
+import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, MessageCircleQuestion, FileEdit, Terminal, ChevronRight, Brain, RotateCcw, ClipboardList, Save, MessageSquareText, Megaphone, ClipboardCheck, Paperclip, Download, ThumbsUp, Smartphone, Volume2 } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
@@ -686,6 +686,8 @@ export function DesktopChatThread({
   onMakeTask,
   onSaveArtifact,
   onExportArtifact,
+  onReadAloud,
+  onStopReadAloud,
   onFollowUp,
   onRate,
   billiardsMode,
@@ -710,6 +712,9 @@ export function DesktopChatThread({
   onMakeTask?: (content: string) => void;
   onSaveArtifact?: (content: string) => void;
   onExportArtifact?: (content: string) => void;
+  // D-Task-8 读给我听：只在桌面版传入(electron?.tts 判空)，念系统 TTS；再点会先停掉上一段再念新的。
+  onReadAloud?: (content: string) => void;
+  onStopReadAloud?: () => void;
   onFollowUp?: (prompt: string, label?: string) => void;
   onRate?: (generationId: string, rating: "good" | "bad") => void;
   billiardsMode?: boolean;
@@ -718,6 +723,8 @@ export function DesktopChatThread({
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const pinnedRef = useRef(true);            // 用户是否贴在底部——只有贴底才跟随流式刷新
   const prevMsgLenRef = useRef(messages.length);
+  // 当前正在朗读哪一条消息(索引)；再点同一条 = 停止，点别的条 = 主进程先掐掉上一段再念新的。
+  const [readingIdx, setReadingIdx] = useState<number | null>(null);
 
   // 监听滚动：用户上滑离开底部 → 取消跟随；滑回底部 → 恢复跟随
   useEffect(() => {
@@ -920,6 +927,25 @@ export function DesktopChatThread({
                           if (!generating && onSaveArtifact) moreItems.push({ key: "save", label: "保存成品", Icon: Save, onClick: () => onSaveArtifact(m.content) });
                           if (!generating && onExportArtifact) moreItems.push({ key: "export", label: "导出到电脑", Icon: Download, onClick: () => onExportArtifact(m.content) });
                           if (!generating && onMakeTask) moreItems.push({ key: "task", label: "转成任务", Icon: ClipboardList, onClick: () => onMakeTask(m.content) });
+                          // D-Task-8 读给我听：只桌面版有(electron?.tts 判空后才传 onReadAloud)；
+                          // 再点同一条切成"停止朗读"，点别的条主进程会先掐掉上一段再念新的。
+                          if (!generating && onReadAloud) {
+                            const isReading = readingIdx === idx;
+                            moreItems.push({
+                              key: "read",
+                              label: isReading ? "停止朗读" : "读给我听",
+                              Icon: Volume2,
+                              onClick: () => {
+                                if (isReading) {
+                                  onStopReadAloud?.();
+                                  setReadingIdx(null);
+                                } else {
+                                  onReadAloud(m.content);
+                                  setReadingIdx(idx);
+                                }
+                              },
+                            });
+                          }
                           return moreItems.length > 0 ? <OverflowMenu items={moreItems} /> : null;
                         })()}
                       </div>

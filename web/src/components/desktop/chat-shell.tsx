@@ -734,6 +734,18 @@ export function DesktopChatShell({
       toast.error("导出失败，可以稍后再试");
     }
   }, [electron, toast]);
+  // D-Task-8 读给我听：主进程 spawn 系统自带 TTS 念出声，不用 Web Speech API。故障安全——
+  // electron.tts 拿不到/失败都只提示、不崩(入口本身已用 electron?.tts 判空只在桌面版露出)。
+  const onReadAloud = useCallback((content: string) => {
+    if (!electron?.tts || !content.trim()) return;
+    void electron.tts.speak(content).then((r) => {
+      if (!r?.ok) toast.error(r?.error ? `朗读失败：${r.error}` : "朗读失败，可以稍后再试");
+    });
+  }, [electron, toast]);
+  const onStopReadAloud = useCallback(() => {
+    if (!electron?.tts) return;
+    void electron.tts.stop();
+  }, [electron]);
   const onRedoAnswer = useCallback((content: string) => {
     if (chat.generating) return;
     void chat.send(
@@ -904,6 +916,8 @@ export function DesktopChatShell({
           onOpenStoreMemory={() => setMemoryOpen(true)}
           onViewScreen={electron ? viewCurrentScreen : undefined}
           onResearch={startResearch}
+          onReadAloud={electron?.tts ? onReadAloud : undefined}
+          onStopReadAloud={electron?.tts ? onStopReadAloud : undefined}
         />
       ) : (
         <DesktopChatThread
@@ -925,6 +939,8 @@ export function DesktopChatShell({
           onMakeTask={onMakeTask}
           onSaveArtifact={onSaveArtifact}
           onExportArtifact={electron?.files?.save ? onExportArtifact : undefined}
+          onReadAloud={electron?.tts ? onReadAloud : undefined}
+          onStopReadAloud={electron?.tts ? onStopReadAloud : undefined}
           onFollowUp={onFollowUp}
           onRate={(id, r) => { void api.rateGeneration(id, r); }}
           billiardsMode={knowledgePacks.includes("billiards")}

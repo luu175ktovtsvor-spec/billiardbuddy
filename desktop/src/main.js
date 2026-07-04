@@ -13,6 +13,7 @@ const publish = require("./publish");
 const video = require("./video");
 const backend = require("./backend");
 const modelDownloader = require("./model-downloader");
+const tts = require("./tts");
 const frontend = require("./frontend");
 const updater = require("./updater");
 const crypto = require("crypto");
@@ -479,6 +480,23 @@ ipcMain.handle("notification:show", (_e, opts = {}) => {
     const title = String(opts.title || "台球运营助手");
     new Notification({ title, body }).show();
     return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+// D-Task-8 朗读播报(读给我听)：渲染进程调这里,主进程 spawn 系统自带 TTS 命令念文案/简报——
+// 不用 Web Speech API(见 tts.js 顶部注释)。故障安全：失败/不支持都不抛给渲染进程，返回 { ok:false, error? }。
+ipcMain.handle("tts:speak", (_e, { text } = {}) => {
+  try {
+    return tts.speak(text);
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+ipcMain.handle("tts:stop", () => {
+  try {
+    return tts.stop();
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }

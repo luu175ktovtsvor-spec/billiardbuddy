@@ -58,6 +58,8 @@ export function WelcomeScreen({
   onOpenStoreMemory,
   onViewScreen,
   onResearch,
+  onReadAloud,
+  onStopReadAloud,
 }: {
   greeting?: string;
   subtitle?: string;
@@ -79,6 +81,9 @@ export function WelcomeScreen({
   onOpenStoreMemory?: () => void;
   onViewScreen?: () => void;
   onResearch?: () => void;
+  // D-Task-8 读给我听：只桌面版有(electron?.tts 判空后才传)，透传给简报卡念 greeting。
+  onReadAloud?: (content: string) => void;
+  onStopReadAloud?: () => void;
 }) {
   const cards = starters ?? (billiardsMode ? BILLIARDS_STARTERS : GENERIC_STARTERS);
   return (
@@ -103,6 +108,8 @@ export function WelcomeScreen({
               reportHint={reportHint}
               onDiagnoseReport={onDiagnoseReport}
               onDismissReport={onDismissReport}
+              onReadAloud={onReadAloud}
+              onStopReadAloud={onStopReadAloud}
             />
           </div>
         )}
