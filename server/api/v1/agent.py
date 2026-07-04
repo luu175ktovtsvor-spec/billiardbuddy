@@ -1297,7 +1297,7 @@ async def agent_list_skills(billiards: bool = False, user: User = Depends(get_cu
     """列出已安装技能(Skill)，供前端 `/` 命令面板展示。技能=文件系统全局、与门店无关。
     G.2：默认（billiards=false）只列通用技能，台球领域技能（擦边/上钟/团购等）仅在前端挂了
     台球知识库、传 billiards=true 时才列出——别让普通用户的命令面板看到台球擦边技能。"""
-    skills = _agent_skills.filter_skills_by_mode(_agent_skills.load_skills(), billiards)
+    skills = _agent_skills.filter_skills_by_mode(await asyncio.to_thread(_agent_skills.load_skills), billiards)
     items = [
         {
             "name": s.name, "description": s.description, "source": s.source,
@@ -1351,10 +1351,10 @@ async def agent_list_mcp(refresh: bool = False, user: User = Depends(get_current
     """列出已配置 MCP server 的连接状态 + 工具数。P2：默认走短 TTL 缓存（设置页反复打开不再每次重握手 5 个
     server ≈ 9s）；refresh=true 强制重探。配置变更（add/remove）已自动失效缓存，故无需每次都强刷工具缓存。"""
     from services.agent import mcp_client as _mc
-    status = _mc.mcp_status(force=refresh)
+    status = await asyncio.to_thread(_mc.mcp_status, force=refresh)  # 探活会串行连 N 个 MCP server(每个超时120s)，挪线程别冻 loop
     if refresh:
         try:
-            _mc.load_mcp_tools(force=True)
+            await asyncio.to_thread(_mc.load_mcp_tools, force=True)
         except Exception:
             pass
     return {"servers": status}
@@ -1390,7 +1390,7 @@ async def agent_mcp_add(body: McpAddRequest, user: User = Depends(get_current_us
         try:
             from services.agent import mcp_client as _mc
             _mc.invalidate_mcp_cache()  # 清工具+状态缓存，下次取即重握手（新 server 生效）
-            _mc.load_mcp_tools(force=True)
+            await asyncio.to_thread(_mc.load_mcp_tools, force=True)
         except Exception:
             pass
     return {"ok": ok, "message": msg}
@@ -1410,7 +1410,7 @@ async def agent_mcp_remove(body: McpNameRequest, user: User = Depends(get_curren
         try:
             from services.agent import mcp_client as _mc
             _mc.invalidate_mcp_cache()  # 清工具+状态缓存，下次取即重握手（删掉的 server 不再出现）
-            _mc.load_mcp_tools(force=True)
+            await asyncio.to_thread(_mc.load_mcp_tools, force=True)
         except Exception:
             pass
     return {"ok": ok, "message": msg}
@@ -1431,7 +1431,7 @@ async def agent_mcp_toggle(body: McpToggleRequest, user: User = Depends(get_curr
         try:
             from services.agent import mcp_client as _mc
             _mc.invalidate_mcp_cache()  # 清状态+工具缓存，前端立刻看到启用/停用结果（不等 30s TTL）
-            _mc.load_mcp_tools(force=True)
+            await asyncio.to_thread(_mc.load_mcp_tools, force=True)
         except Exception:
             pass
     return {"ok": ok, "message": msg}
@@ -1570,7 +1570,9 @@ async def _stream_agent_events(body: AgentChatRequest, user: User, store, db, ta
         billiards_mode,
     )
     memory_refs = memory_reference_labels(memories, intent=body.message)
-    system_prompt = compose_agent_system_prompt(
+    # compose 内部 render_skills_for_prompt 会同步扫技能目录(iterdir+读SKILL.md)——每条消息都调，整个拼接丢线程池别冻 loop。
+    system_prompt = await asyncio.to_thread(
+        compose_agent_system_prompt,
         profile_text, format_memories_for_prompt(memories, intent=body.message),
         full_disk=full_disk, billiards_mode=billiards_mode, output_style=body.output_style or "",
         working_dir=body.working_dir or "",
@@ -1655,10 +1657,12 @@ async def _stream_agent_events(body: AgentChatRequest, user: User, store, db, ta
             _media = await resolve_media_for_upload(_media, getattr(_up, "upload_video", None))
         except Exception:
             logger.warning("大视频预上传失败，保留原路径(超限视频将跳过)", exc_info=True)
+    # MCP 发现(load_mcp_tools)内部有 th.join 同步阻塞——整个注册表构建挪线程池，否则每轮对话都冻住 event loop。
+    _registry = await asyncio.to_thread(_build_agent_registry, billiards_mode)
     try:
         async for event in run_agent_loop_stream(
             user_message=effective_message,
-            registry=_build_agent_registry(billiards_mode),
+            registry=_registry,
             ctx=ctx,
             system_prompt=system_prompt,
             history=history,
@@ -1976,7 +1980,8 @@ async def agent_execute(
         # MCP 工具是按请求注入的（不在全局 default_registry）；审批执行端也要能找到它们，否则需确认的 MCP 动作无法落地。
         try:
             from services.agent.mcp_client import load_mcp_tools
-            tool = next((t for t in load_mcp_tools() if t.name == body.tool), None)
+            _mcp_tools = await asyncio.to_thread(load_mcp_tools)
+            tool = next((t for t in _mcp_tools if t.name == body.tool), None)
         except Exception:
             tool = None
     if tool is None or not tool.requires_approval:
@@ -2086,17 +2091,19 @@ async def agent_execute(
             await load_scoped_store_memory(db, store.id, body.working_dir),
             billiards_mode,
         )
-        sys_prompt = compose_agent_system_prompt(profile_text, format_memories_for_prompt(memories),
-                                                 full_disk=full_disk, billiards_mode=billiards_mode,
-                                                 working_dir=body.working_dir or "")
+        sys_prompt = await asyncio.to_thread(  # compose 内部同步扫技能目录，挪线程别冻 loop
+            compose_agent_system_prompt, profile_text, format_memories_for_prompt(memories),
+            full_disk=full_disk, billiards_mode=billiards_mode,
+            working_dir=body.working_dir or "")
         history = await _load_agent_history(db, store, body.conversation_id)
         synth = (
             f"[系统提示·非用户输入] 老板已确认、你刚请求的「{body.tool}」已执行完成。"
             f"结果摘要：{result[:300]}。请用一句话自然地告诉老板做好了，若合适顺带建议下一步该做什么；"
             f"不要重复粘贴上面的结果原文，也不要重新调用「{body.tool}」。"
         )
+        _registry2 = await asyncio.to_thread(_build_agent_registry, billiards_mode)  # 同上：MCP 发现挪线程别冻 loop
         cont = await run_agent_loop(
-            user_message=synth, registry=_build_agent_registry(billiards_mode), ctx=ctx,
+            user_message=synth, registry=_registry2, ctx=ctx,
             system_prompt=sys_prompt, history=history,
             provider=build_resilient_text_provider(store),  # 同上：失败自动切备用档
             max_turns=3,

@@ -399,6 +399,18 @@ def _resolve_dir(root_path: str, ctx=None) -> Path:
 
 # ────────────────────────────── 只读工具（无需审批） ──────────────────────────────
 
+def _list_dir_items_sync(d: Path, skip_backups: bool) -> list[str]:
+    """单层列目录：sorted(iterdir())+逐个 stat，大目录也会卡几秒，放线程池跑、别压 event loop。"""
+    items = []
+    for p in sorted(d.iterdir()):
+        if skip_backups and ".backups" in p.parts:
+            continue
+        kind = "📁" if p.is_dir() else "📄"
+        size = "" if p.is_dir() else f"  ({p.stat().st_size} 字节)"
+        items.append(f"- {kind} {p.name}{size}")
+    return items
+
+
 async def list_files(args: dict, ctx) -> str:
     """列文件。不传 path=列工作目录(没设则内容库)；传 path=列该目录（沙箱内随时、沙箱外要全盘）。"""
     raw = (args.get("path") or "").strip()
@@ -409,13 +421,7 @@ async def list_files(args: dict, ctx) -> str:
             return f"当前工作目录不存在：{root}"
         if not root.is_dir():
             return f"当前工作目录不是文件夹：{root}"
-        items = []
-        for p in sorted(root.iterdir()):
-            if ".backups" in p.parts:
-                continue
-            kind = "📁" if p.is_dir() else "📄"
-            size = "" if p.is_dir() else f"  ({p.stat().st_size} 字节)"
-            items.append(f"- {kind} {p.name}{size}")
+        items = await asyncio.to_thread(_list_dir_items_sync, root, True)
         title = "当前工作目录" if (getattr(ctx, "working_dir", None) or "").strip() else "内容库文件"
         return f"{title} {root}：\n" + ("\n".join(items) if items else "（空目录）")
     # 传了 path：列指定目录（仅该层，不递归）
@@ -427,15 +433,37 @@ async def list_files(args: dict, ctx) -> str:
         return f"目录不存在：{raw}"
     if not d.is_dir():
         return f"这不是目录（是个文件）：{raw}"
-    items = []
     try:
-        for p in sorted(d.iterdir()):
-            kind = "📁" if p.is_dir() else "📄"
-            size = "" if p.is_dir() else f"  ({p.stat().st_size} 字节)"
-            items.append(f"- {kind} {p.name}{size}")
+        items = await asyncio.to_thread(_list_dir_items_sync, d, False)
     except PermissionError:
         return f"没权限读这个目录：{raw}"
     return f"目录 {d}：\n" + ("\n".join(items) if items else "（空目录）")
+
+
+# find_files 的递归遍历放线程池跑：glob 大目录（如整个 home）会几十秒起，绝不能压在 async event
+# loop 上——一旦压上去，整个后端(通知/别的请求)全冻住(真机实测：店主让"在电脑上找文件"直接卡死全 app)。
+# 且找够 max_results 就停、总扫描量封顶 _FIND_SCAN_CAP，不把整棵树走完。
+_FIND_SCAN_CAP = 200000
+
+
+def _find_files_sync(root: Path, glob_pat: str, max_results: int) -> tuple[list[Path], int, bool]:
+    """返回 (前 max_results 个命中, 扫到的真实总匹配数, 是否因扫描量封顶没扫完)。
+    只对「列出的条数」封顶(max_results)、总匹配数照数(保留原契约)；「总扫描量」封顶 _FIND_SCAN_CAP
+    兜底超大目录(如全盘 home)——别把整棵百万级的树走完，但也别提前 break 导致 total 不准。"""
+    hits: list[Path] = []
+    total = 0
+    scanned = 0
+    scan_truncated = False
+    for p in root.glob(glob_pat):
+        scanned += 1
+        if p.is_file() and ".backups" not in p.parts:
+            total += 1
+            if len(hits) < max_results:
+                hits.append(p)
+        if scanned >= _FIND_SCAN_CAP:
+            scan_truncated = True
+            break
+    return hits, total, scan_truncated
 
 
 async def find_files(args: dict, ctx) -> str:
@@ -463,21 +491,22 @@ async def find_files(args: dict, ctx) -> str:
     # glob 默认只匹配当前层；想递归用户写 **/xxx。为贴合"递归按名字搜"的直觉，
     # 不含 / 的纯文件名模式（如 *.xlsx）自动当成 **/ 递归找。
     glob_pat = pattern if "/" in pattern else f"**/{pattern}"
-    hits: list[Path] = []
-    total = 0
     try:
-        for p in root.glob(glob_pat):
-            if p.is_file() and ".backups" not in p.parts:
-                total += 1
-                if len(hits) < max_results:
-                    hits.append(p)
+        hits, total, scan_truncated = await asyncio.to_thread(_find_files_sync, root, glob_pat, max_results)
     except (ValueError, OSError) as e:
         return f"搜的时候出错了：{e}"
     if total == 0:
+        if scan_truncated:
+            return (f"扫描了前 {_FIND_SCAN_CAP} 个文件还没找到匹配「{pattern}」的——这台电脑文件太多、没扫完，"
+                    f"把 root_path 缩到更具体的目录再找。")
         return f"在 {root} 下没找到匹配「{pattern}」的文件。"
-    lines = [f"在 {root} 下找到 {total} 个匹配「{pattern}」的文件" +
-             (f"（只列前 {max_results} 个）：" if total > len(hits) else "：")]
-    lines += [f"- {p}" for p in hits]
+    if scan_truncated:
+        head = f"在 {root} 下找到至少 {total} 个匹配「{pattern}」的文件（文件太多没扫完，只列前 {len(hits)} 个）："
+    elif total > len(hits):
+        head = f"在 {root} 下找到 {total} 个匹配「{pattern}」的文件（只列前 {max_results} 个）："
+    else:
+        head = f"在 {root} 下找到 {total} 个匹配「{pattern}」的文件："
+    lines = [head] + [f"- {p}" for p in hits]
     return "\n".join(lines)
 
 
@@ -558,9 +587,10 @@ async def search_in_files(args: dict, ctx) -> str:
         return f"目录不存在：{raw_root}"
     if not root.is_dir():
         return f"这不是目录：{raw_root}"
-    results = _grep_with_ripgrep(root, query, max_results)
+    # 搜内容也丢线程池：ripgrep 走 subprocess.run(最长卡 30s)、退路 os.walk 逐文件读，都会冻 event loop。
+    results = await asyncio.to_thread(_grep_with_ripgrep, root, query, max_results)
     if results is None:
-        results = _grep_with_python(root, query, max_results)
+        results = await asyncio.to_thread(_grep_with_python, root, query, max_results)
     if not results:
         return f"在 {root} 下没有内容含「{query}」的文件。"
     head = f"在 {root} 下搜到「{query}」（文件:行号:命中行）："
@@ -917,7 +947,7 @@ async def read_file(args: dict, ctx) -> str:
         return f"文件不存在：{args['path']}"
     if path.suffix.lower() in (".xlsx", ".xlsm"):
         from openpyxl import load_workbook
-        wb = load_workbook(path, data_only=True)
+        wb = await asyncio.to_thread(load_workbook, path, data_only=True)  # 大报表 load 可能几秒~几十秒，别冻 event loop
         # read_file 是 read_only：超长结果走硬截断、不落盘。大报表若逐格全列，会被通用截断把单元格切碎、
         # 语义全毁。故在此先按非空单元格数封顶，只给前若干行的完整内容 + 表尺寸提示，保证可读。
         MAX_CELLS = 1200
@@ -940,11 +970,11 @@ async def read_file(args: dict, ctx) -> str:
                         emitted += 1
         return "\n".join(lines) if lines else "（空表）"
     if path.suffix.lower() == ".pdf":
-        return _read_pdf(path)
+        return await asyncio.to_thread(_read_pdf, path)
     if path.suffix.lower() == ".docx":
-        return _read_docx(path)
+        return await asyncio.to_thread(_read_docx, path)
     if path.suffix.lower() == ".pptx":
-        return _read_pptx(path)
+        return await asyncio.to_thread(_read_pptx, path)
     # 缺口 F：图片不是"二进制不便读取"——把路径挂进回灌队列(ctx.pending_view_images)，
     # loop 在本批 tool 结果配对完整后经 _drain_view_images 拼成一条 user 图片消息注入(走带原始尺寸
     # 标签的 multimodal 通道、自动缩到 <=1568)，模型【下一轮】就真看见这张图。对标官方 FileReadTool
@@ -959,7 +989,7 @@ async def read_file(args: dict, ctx) -> str:
                 pass
         return f"已读取图片〈{path.name}〉，将在下一轮直接看到它的画面（据此判断与继续）。"
     try:
-        return path.read_text(encoding="utf-8")
+        return await asyncio.to_thread(path.read_text, encoding="utf-8")
     except UnicodeDecodeError:
         return f"（二进制文件，{path.stat().st_size} 字节，不便直接读取）"
 
@@ -969,9 +999,9 @@ async def read_file(args: dict, ctx) -> str:
 async def write_file(args: dict, ctx) -> str:
     """把内容写到内容库里的一个文件（新建或覆盖）。args: path, content。覆盖前自动备份。"""
     path = _resolve(args["path"], ctx)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    backup = _backup(path)
-    path.write_text(args["content"], encoding="utf-8")
+    await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
+    backup = await asyncio.to_thread(_backup, path)
+    await asyncio.to_thread(path.write_text, args["content"], encoding="utf-8")
     msg = f"已写入 {path.name}（{len(args['content'])} 字）。"
     if backup:
         msg += f" 原件已备份。"
@@ -1002,7 +1032,7 @@ async def edit_file(args: dict, ctx) -> str:
     path = _resolve(args["path"], ctx)
     if not path.exists():
         return f"文件不存在：{args['path']}"
-    text = path.read_text(encoding="utf-8")
+    text = await asyncio.to_thread(path.read_text, encoding="utf-8")
     old, new = args["old_text"], args["new_text"]
     n = text.count(old)
     if n == 0:
@@ -1013,8 +1043,8 @@ async def edit_file(args: dict, ctx) -> str:
     start_line = text.count("\n", 0, idx) + 1
     new_full = text.replace(old, new)
     end_line = start_line + new.count("\n")
-    backup = _backup(path)
-    path.write_text(new_full, encoding="utf-8")
+    backup = await asyncio.to_thread(_backup, path)
+    await asyncio.to_thread(path.write_text, new_full, encoding="utf-8")
     snippet = _numbered_snippet(new_full, start_line, end_line, _EDIT_RECEIPT_CONTEXT_LINES)
     where = f"第 {start_line} 行" if end_line == start_line else f"第 {start_line}-{end_line} 行"
     receipt = f"已修改 {path.name}（{where}附近，改动后的样子）：\n{snippet}"
@@ -1030,7 +1060,7 @@ async def edit_excel(args: dict, ctx) -> str:
     path = _resolve(args["path"], ctx)
     if not path.exists():
         return f"报表不存在：{args['path']}"
-    wb = load_workbook(path)
+    wb = await asyncio.to_thread(load_workbook, path)
     diffs = []
     for ch in args.get("changes", []):
         ws = wb[ch["sheet"]] if ch.get("sheet") else wb.active
@@ -1043,8 +1073,8 @@ async def edit_excel(args: dict, ctx) -> str:
         except (ValueError, KeyError):
             return f"坐标无效：{cell}。请用 A1 式坐标（如 B2）。"
         diffs.append(f"{ws.title}!{cell}: {old!r} → {ch['value']!r}")
-    backup = _backup(path)  # 改成功才备份，避免改失败留孤儿备份
-    wb.save(path)
+    backup = await asyncio.to_thread(_backup, path)  # 改成功才备份，避免改失败留孤儿备份
+    await asyncio.to_thread(wb.save, path)
     return f"已改 {path.name}：\n" + "\n".join(diffs) + ("\n（原件已备份，可回滚）" if backup else "")
 
 
@@ -1057,8 +1087,8 @@ async def delete_file(args: dict, ctx) -> str:
         return f"文件不存在：{args['path']}（无需删除）"
     if path.is_dir():
         return f"「{path.name}」是文件夹——为安全本工具只删单个文件，不删目录。请逐个文件删。"
-    backup = _backup(path)
-    path.unlink()
+    backup = await asyncio.to_thread(_backup, path)
+    await asyncio.to_thread(path.unlink)
     msg = f"已删除 {path.name}。"
     if backup:
         msg += " 原件已备份到 .backups，可恢复。"

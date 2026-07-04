@@ -183,7 +183,7 @@ def test_skill_tool_registered_in_default_registry():
 def test_skill_tool_frames_body_as_instructions(monkeypatch):
     """技能正文要套'照做的工作流指令'框注入，让模型清楚这是【要执行的指令】而非资料(裸 dump)。"""
     monkeypatch.setattr(sk, "expand_skill",
-                        lambda name, extra="": "步骤一：先 A。步骤二：再 B。" if name == "demo" else None)
+                        lambda name, extra="", skills=None: "步骤一：先 A。步骤二：再 B。" if name == "demo" else None)
     out = asyncio.run(sk._skill_tool({"skill": "demo"}, ctx=None))
     assert "步骤一：先 A" in out                       # 正文完整在
     assert "指令" in out                                # 有指令框
@@ -195,7 +195,7 @@ def test_skill_tool_passes_args_through(monkeypatch):
     """args 仍照常替换进正文(框不破坏 $ARGUMENTS 展开)。"""
     captured = {}
 
-    def _fake_expand(name, extra=""):
+    def _fake_expand(name, extra="", skills=None):
         captured["extra"] = extra
         return f"对 {extra} 做事"
 
@@ -207,7 +207,7 @@ def test_skill_tool_passes_args_through(monkeypatch):
 
 def test_skill_tool_unknown_still_reports_missing(monkeypatch):
     """技能不存在：原样报'[技能不存在]'+可用清单，不套指令框(那不是指令)。"""
-    monkeypatch.setattr(sk, "expand_skill", lambda name, extra="": None)
+    monkeypatch.setattr(sk, "expand_skill", lambda name, extra="", skills=None: None)
     monkeypatch.setattr(sk, "load_skills", lambda *a, **k: [])
     out = asyncio.run(sk._skill_tool({"skill": "nope"}, ctx=None))
     assert "[技能不存在]" in out
