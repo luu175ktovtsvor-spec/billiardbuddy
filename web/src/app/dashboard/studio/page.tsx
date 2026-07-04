@@ -17,14 +17,16 @@ import { api, type MediaJobStatus } from "@/lib/api";
 const StudioMaskCanvas = dynamic(() => import("@/components/desktop/studio-mask-canvas"), { ssr: false });
 
 // 大白话比例标签(id 不变,只把 label 换成"什么场合用"——沿用 chat-thread.tsx 的"抖音竖版"说法)。
-// ⚠️ 没加"易拉宝 2:5/横幅"新挡:后端 poster_service.SIZE_MAP 只硬编码这 4 个比例,不在表里的 ratio
-// 会静默 fallback 成 3:4(标签写 2:5、实际出 3:4——比不做还糟),要加新挡得先扩 SIZE_MAP,那是后端改动,
-// 本单"零后端改动"约束下不做,留给下一单(见 e2-1-report.md 里的 concern)。
+// E2-1b・易拉宝(2:5)/横幅(5:2)已在后端 poster_service.SIZE_MAP 补上专属映射(查证过的 Seedream
+// 合法尺寸,不再静默 fallback 成 3:4),且 generate_images 里强制这两挡走 Seedream(gpt-image-2
+// 出不了这么极端的长宽比),前端可以放心加这两个新挡了。
 const RATIOS = [
   { id: "9:16", label: "抖音竖版 9:16" },
   { id: "3:4", label: "海报竖版 3:4" },
   { id: "1:1", label: "朋友圈方图 1:1" },
   { id: "16:9", label: "店内横幅 16:9" },
+  { id: "2:5", label: "易拉宝(2:5 竖长条)" },
+  { id: "5:2", label: "横幅(宽版)" },
 ];
 // E2-1・模型选择收进后端自动路由,前端不再手选:
 // 生成走 poster_service._route_image_model——不传 image_model 时默认落 Seedream(国内直连快、不踩大陆
