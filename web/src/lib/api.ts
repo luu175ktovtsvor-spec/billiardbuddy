@@ -304,6 +304,14 @@ class ApiClient {
     return this.request<UploadResponse>("POST", "/api/v1/stores/me/qrcode", formData, true);
   }
 
+  /** D-Task-9 语音输入:录音 Blob(webm/wav)→ 文字。麦克风按钮走口播同一套「模型就绪门」，
+   * 未就绪前composer 不会调这个。 */
+  transcribeAudio(file: File) {
+    const formData = new FormData();
+    formData.append("file", file);
+    return this.request<{ text: string }>("POST", "/api/v1/voice/transcribe", formData, true);
+  }
+
   /** 画布定向改写：圈了段(selection)只改那段、不动别处；不传则整篇修订。 */
   canvasEdit(content: string, instruction: string, selection?: string, deliverableType?: string) {
     return this.request<{ content: string; mode: string; changed_span?: string }>("POST", "/api/v1/canvas/edit", {
