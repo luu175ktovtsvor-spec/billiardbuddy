@@ -26,6 +26,12 @@ dependencies = [
     "scenedetect[opencv]>=0.7",
     "imageio-ffmpeg>=0.6.0",
     "tzdata>=2024.1",
+    # U4(E3c)：生图后 OCR 校验硬文字要素(店名/日期/价格/联系方式)有没有被模型"抽风"画错。
+    # 选 rapidocr-onnxruntime(非新版 `rapidocr`)：中文检测/识别/方向分类三个 onnx 模型(~16MB)
+    # 直接打包在 wheel 里，装完就能离线用；新版 `rapidocr`(3.x) 改成运行时从 ModelScope 按需下载
+    # 模型，不满足"全打进包、不联网"的铁律(除非再照搬 bge 那套预下载+--add-data，本单选更简单可靠
+    # 的旧包，见 u4-report.md 的取舍说明)。
+    "rapidocr-onnxruntime>=1.4.4",
 ]
 
 [dependency-groups]
