@@ -66,6 +66,28 @@ def _to_data_uri(img: bytes) -> str:
     return f"data:image/{fmt};base64,{base64.b64encode(img).decode()}"
 
 
+def resolve_builtin_seedream_credentials() -> tuple[str, str] | None:
+    """内置(打包默认)Seedream 生图的 (api_key, base_url) 解析——G1：客户端不再直连火山方舟，
+    与 vlm.py / director.py 同款"网关优先、直连兜底"模式：
+
+    - **生产/客户盒子**：走网关(`QF_GATEWAY_URL` + `QF_GATEWAY_TOKEN`)，真 ARK key 全在服务器，
+      base_url = f"{QF_GATEWAY_URL}/ark"（网关 `/v1/ark/images/generations` 原生 JSON 透传通道，
+      见 gateway/app.py；`resolve_image_kind` 按路径尾段 `/ark` 识别，仍会路由回本 provider，
+      请求体/格式完全不变，只换了 base_url 和 key）。
+    - **dev-only 开发机后门**：`QF_GATEWAY_URL`/`QF_GATEWAY_TOKEN` 没配时，退到 `settings.ark_api_key`
+      直连 `_DEFAULT_BASE`（本机联调用真测试 key 图快；生产/客户盒子必须配网关，不能把真 ARK key
+      打进客户端——同 vlm.py 顶部注释的铁律）。
+    - 都没配 → None，调用方据此判断"内置 Seedream 用不了"（如实报错/走别的路由，不静默）。
+    """
+    gw_url = os.environ.get("QF_GATEWAY_URL", "").rstrip("/")
+    gw_token = os.environ.get("QF_GATEWAY_TOKEN", "")
+    if gw_url and gw_token:
+        return gw_token, gw_url + "/ark"
+    if settings.ark_api_key:
+        return settings.ark_api_key, _DEFAULT_BASE
+    return None
+
+
 class SeedreamImageProvider(ImageProvider):
     name = "seedream"
     supported_models = [

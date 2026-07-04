@@ -48,6 +48,17 @@ def test_resolve_kind():
     assert resolve_image_kind("") == "openai_compatible"  # 兜底最通用
 
 
+def test_resolve_kind_gateway_ark_path():
+    """G1：内置网关代理透传火山原生 JSON——base_url 是网关裸 IP + `/ark` 路径尾段（不含
+    volces/ark.cn-beijing 关键词），也必须落 seedream（不能落 openai_compatible，格式不对，
+    会把火山原生 body 当 OpenAI 格式发给网关的 ark 路由）。"""
+    from services.ai.providers.image_catalog import resolve_image_kind
+    assert resolve_image_kind("http://1.2.3.4/gw/v1/ark") == "seedream"
+    assert resolve_image_kind("http://1.2.3.4/gw/v1/ark/") == "seedream"  # 兼容末尾多个斜杠
+    # 只以 /ark 结尾才算——普通 OpenAI 兼容端点不会被误伤
+    assert resolve_image_kind("https://api.openai.com/v1") == "openai_compatible"
+
+
 def test_validate_image_model():
     """生图 model↔供应商温和校验：属于该家=ok；不属于=温和提示；未知端点不拦。"""
     from services.ai.providers.image_catalog import validate_image_model
@@ -75,6 +86,8 @@ def test_build_image_provider_routing():
     assert isinstance(ProviderFactory.build_image_provider("k", "https://dashscope.aliyuncs.com/api/v1", None), DashScopeImageProvider)
     # 火山方舟 → Seedream 原生 provider（非 OpenAI multipart edits；真机已验证 ark 走 SeedreamImageProvider 出图）
     assert isinstance(ProviderFactory.build_image_provider("k", "https://ark.cn-beijing.volces.com/api/v3", None), SeedreamImageProvider)
+    # G1：内置网关 ark 通道（客户端只带 app 令牌，真 key 全在服务器）同样要落 Seedream 原生 provider
+    assert isinstance(ProviderFactory.build_image_provider("k", "http://1.2.3.4/gw/v1/ark", None), SeedreamImageProvider)
     assert isinstance(ProviderFactory.build_image_provider("k", "https://api.openai.com/v1", None), OpenAIImageProvider)
     with pytest.raises(ValueError):  # 原生适配器待写 → 清晰报错引导
         ProviderFactory.build_image_provider("k", "https://api.minimaxi.com/v1", None)
