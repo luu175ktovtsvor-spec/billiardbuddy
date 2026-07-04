@@ -21,6 +21,7 @@ from api.v1.checkpoints import router as checkpoints_router
 from api.v1.scheduled_tasks import router as scheduled_tasks_router
 from api.v1.store_docs import router as store_docs_router
 from api.v1.voice import router as voice_router
+from api.v1.backup import router as backup_router
 
 router = APIRouter()
 
@@ -39,6 +40,7 @@ router.include_router(checkpoints_router, prefix="/checkpoints", tags=["检查�
 router.include_router(scheduled_tasks_router, prefix="/scheduled-tasks", tags=["定时任务"])
 router.include_router(store_docs_router, prefix="/store-docs", tags=["店铺资料库"])
 router.include_router(voice_router, prefix="/voice", tags=["语音输入"])
+router.include_router(backup_router, prefix="/backup", tags=["数据安全·一键导出"])
 
 
 @router.get("/health")
