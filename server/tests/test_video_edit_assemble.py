@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import services.video_edit.assemble as assemble_mod
 from services.video_edit.assemble import (
     auto_captions_from_speech,
     build_srt_from_doc,
@@ -217,6 +218,84 @@ def test_render_timeline_reports_caption_health_and_clamps_overlap(tmp_path):
     srt_body = Path(tmp_path / "edit" / "captions.srt").read_text()
     assert "00:00:00,000 --> 00:00:02,000" in srt_body    # s1 结束时间被夹紧到 s2 的开始(2.0s)
     assert "你好" in srt_body and "再见" in srt_body        # 文字都还在,没被删
+
+
+def _fake_render_edl_capturing(captured: dict, src: Path):
+    """假 render_edl:记录传进来的 edl.audio_mode,拿一份真实小片当"渲染产物"落地
+    (让 render_timeline 里的 guarded_render 后续体检能探到一个真文件,不用跑真渲染管线)。"""
+    import shutil
+
+    def fn(edl, out_path, *, edit_dir=None):
+        captured["audio_mode"] = edl.audio_mode
+        shutil.copy(str(src), out_path)
+        return out_path
+    return fn
+
+
+def test_render_timeline_overrides_to_voice_over_music_when_captions_and_music(tmp_path, monkeypatch):
+    """E5④接线:doc 同时有口播字幕轨 + music → render_timeline 应把 to_edl 默认给的 "music"
+    覆写成 "voice_over_music"——证明 E4-U2 建好的混音引擎现在真能从这条路径被触发到(此前 orphaned,
+    没有任何渲染入口能产出这个 audio_mode)。"""
+    src = tmp_path / "src.mp4"
+    _synth_clip(src, dur=4)
+    bgm_path = tmp_path / "bgm.wav"
+    bgm_path.write_bytes(b"RIFF\x00\x00\x00\x00WAVEfmt ")   # 内容无所谓,render_edl 被整个 mock 掉了
+
+    doc = new_doc()
+    doc.media["m1"] = MediaRef(src=str(src), duration=4.0)
+    doc.media["bgm"] = MediaRef(src=str(bgm_path), duration=4.0, kind="audio")
+    doc.tracks["v"] = Track(kind="video", order=0)
+    doc.tracks["sub"] = Track(kind="caption", order=1)
+    doc.clips["c1"] = Clip(track="v", media="m1", src_in=0.0, src_out=3.0, order=1)
+    doc.clips["s1"] = Clip(track="sub", text="你好世界", start=0.0, end=2.0)
+    doc.music = "bgm"
+
+    captured: dict = {}
+    monkeypatch.setattr(assemble_mod, "render_edl", _fake_render_edl_capturing(captured, src))
+
+    res = render_timeline(doc, str(tmp_path / "final.mp4"), edit_dir=str(tmp_path / "edit"))
+    assert captured["audio_mode"] == "voice_over_music"
+    assert Path(res["path"]).exists()
+
+
+def test_render_timeline_keeps_music_mode_when_no_captions(tmp_path, monkeypatch):
+    """没有口播字幕的 music 场景(如氛围线万一也走这条渲染入口)不该被误伤成 voice_over_music——
+    edl.audio_mode 该是 to_edl 原生给的 "music" 就还是 "music"。"""
+    src = tmp_path / "src.mp4"
+    _synth_clip(src, dur=4)
+    bgm_path = tmp_path / "bgm.wav"
+    bgm_path.write_bytes(b"RIFF\x00\x00\x00\x00WAVEfmt ")
+
+    doc = new_doc()
+    doc.media["m1"] = MediaRef(src=str(src), duration=4.0)
+    doc.media["bgm"] = MediaRef(src=str(bgm_path), duration=4.0, kind="audio")
+    doc.tracks["v"] = Track(kind="video", order=0)
+    doc.clips["c1"] = Clip(track="v", media="m1", src_in=0.0, src_out=3.0, order=1)
+    doc.music = "bgm"
+
+    captured: dict = {}
+    monkeypatch.setattr(assemble_mod, "render_edl", _fake_render_edl_capturing(captured, src))
+
+    render_timeline(doc, str(tmp_path / "final.mp4"), edit_dir=str(tmp_path / "edit"))
+    assert captured["audio_mode"] == "music"
+
+
+def test_render_timeline_keeps_keep_mode_when_no_music_even_with_captions(tmp_path, monkeypatch):
+    """有字幕但没配乐(doc.music 没设)→ 维持 keep,不受这次改动影响(回归)。"""
+    src = tmp_path / "src.mp4"
+    _synth_clip(src, dur=4)
+    doc = new_doc()
+    doc.media["m1"] = MediaRef(src=str(src), duration=4.0)
+    doc.tracks["v"] = Track(kind="video", order=0)
+    doc.tracks["sub"] = Track(kind="caption", order=1)
+    doc.clips["c1"] = Clip(track="v", media="m1", src_in=0.0, src_out=3.0, order=1)
+    doc.clips["s1"] = Clip(track="sub", text="你好世界", start=0.0, end=2.0)
+
+    captured: dict = {}
+    monkeypatch.setattr(assemble_mod, "render_edl", _fake_render_edl_capturing(captured, src))
+
+    render_timeline(doc, str(tmp_path / "final.mp4"), edit_dir=str(tmp_path / "edit"))
+    assert captured["audio_mode"] == "keep"
 
 
 def test_inventory_footage_raises_when_all_footage_bad(tmp_path, monkeypatch):

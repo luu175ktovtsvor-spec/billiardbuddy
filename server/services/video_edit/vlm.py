@@ -89,10 +89,14 @@ def _throttle() -> None:
         _last_call_ts[0] = time.monotonic()
 
 # 给一帧图打分的指令:强制吐 JSON,便于确定性解析。领域无关——适配任意视频(旅游/美食/宠物/产品/人物…)。
+# E5③新增 shot_size/camera_move/mood 三字段(理解层元数据升级):给 E5②叙事分组当依据
+# (景别/运镜决定镜头怎么组接、情绪决定叙事节奏),下游 planners/ambient.py 透传、_norm_score 缺省兜底。
 _SCORE_PROMPT = (
     "你在帮用户从视频里挑最适合发短视频(抖音/小红书)的高光画面。看这一帧,直接只回一个 JSON,不要思考过程、不要```包裹:\n"
     '{"subject":"画面主体一句话(如 人物特写/美食/风景/宠物/产品…)","quality":0到10整数分,'
-    '"usable":true或false,"reason":"12字内理由"}\n'
+    '"usable":true或false,"reason":"12字内理由",'
+    '"shot_size":"景别(远景/中景/近景/特写之一)","camera_move":"运镜(推/拉/摇/移/固定之一)",'
+    '"mood":"这一帧的情绪短词(如欢快/平静/紧张/温馨)"}\n'
     "参考:主体清晰好看/构图舒服/有信息量=高分;糊、动作中途、杂乱、过曝、空洞=低分且 usable=false。"
 )
 
@@ -123,12 +127,15 @@ def _parse_json_loose(text: str) -> dict | None:
 _GRID_PROMPT = (
     "下面是 {n} 张视频画面拼成的网格,每张左上角有红色编号(1 到 {n})。你在帮用户挑最适合发短视频(抖音/小红书)的高光画面。"
     "逐张判断,直接只回一个 JSON 数组(长度正好 {n},不要思考过程、不要```包裹):\n"
-    '[{{"index":1,"subject":"画面主体一句话(如 人物特写/美食/风景/宠物/产品…)","quality":0到10整数,"usable":true或false,"reason":"12字内"}}, ...]\n'
+    '[{{"index":1,"subject":"画面主体一句话(如 人物特写/美食/风景/宠物/产品…)","quality":0到10整数,"usable":true或false,"reason":"12字内",'
+    '"shot_size":"景别(远景/中景/近景/特写之一)","camera_move":"运镜(推/拉/摇/移/固定之一)","mood":"情绪短词(如欢快/平静/紧张/温馨)"}}, ...]\n'
     "参考:主体清晰好看/构图舒服/有信息量=高分;糊、动作中途、杂乱、过曝、空洞=低分且 usable=false。"
 )
 
 
 def _norm_score(data: dict) -> dict:
+    """把 VLM 回复归一成统一形状。E5③:shot_size/camera_move/mood 缺失/空 → 安全默认
+    (未知/固定/平静),不因为 VLM 漏答这三个新字段就让整条打分链路报错。"""
     try:
         q = float(data.get("quality", 5))
     except (TypeError, ValueError):
@@ -138,6 +145,9 @@ def _norm_score(data: dict) -> dict:
         "quality": max(0.0, min(10.0, q)),
         "usable": bool(data.get("usable", True)),
         "reason": str(data.get("reason") or "").strip(),
+        "shot_size": str(data.get("shot_size") or "").strip() or "未知",
+        "camera_move": str(data.get("camera_move") or "").strip() or "固定",
+        "mood": str(data.get("mood") or "").strip() or "平静",
     }
 
 
@@ -220,7 +230,8 @@ def score_frames_grid(image_paths: list[str], *, timeout: float = 90.0) -> list[
                 pass
     out: list[dict] = []
     for i in range(n):
-        out.append(by_idx.get(i + 1) or {"subject": "未知", "quality": 5.0, "usable": True, "reason": "VLM漏评"})
+        out.append(by_idx.get(i + 1) or {"subject": "未知", "quality": 5.0, "usable": True, "reason": "VLM漏评",
+                                          "shot_size": "未知", "camera_move": "固定", "mood": "平静"})
     return out
 
 

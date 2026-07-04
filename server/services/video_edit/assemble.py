@@ -220,6 +220,14 @@ def render_timeline(doc: TimelineDoc, out_path: str, *, edit_dir: str) -> dict:
         srt = str(work / "captions.srt")
         build_srt_from_doc(doc, srt, cues=caption_health["cues"])
     edl = doc.to_edl(subtitles_srt=srt)
+    # E5④口播+BGM 可达性接线:doc 同时有口播内容(字幕轨非空,当前只有口播线会填充 caption
+    # 片段——氛围线的 V2 项目走 render_v2_project/template_render,不经这里)+ 配乐(doc.music
+    # 已让 to_edl 把 audio_mode 定成 "music")→ 覆写成 voice_over_music,让 render_edl 走
+    # E4-U2 建好的混音引擎(口播原声 + BGM 同时混音),而不是 "music" 默认那样整段丢原声。
+    # 只在这一层覆写 edl 字段,不碰 timeline.py 的 to_edl 契约;不满足条件时 edl.audio_mode
+    # 维持 to_edl 给的原值(keep/music/mute 三态一律不受影响)。
+    if edl.audio_mode == "music" and doc.caption_clips():
+        edl.audio_mode = "voice_over_music"
     res = guarded_render(lambda: render_edl(edl, out_path, edit_dir=str(work)),
                           expected_duration=doc.duration())
     res["caption_health"] = caption_health
