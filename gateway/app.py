@@ -275,55 +275,9 @@ async def images_edits(request: Request, authorization: str = Header(None)):
             raise HTTPException(502, f"图生图上游出错:{str(e)[:120]}")
 
 
-@app.post("/v1/video/generations")
-async def video(request: Request, authorization: str = Header(None)):
-    """Seedance 视频:客户端传 ARK 格式 body(model/content/ratio/duration…),网关注入真 key、
-    提交异步任务→轮询出片→回 {video_url}。video_sem 卡死并发(火山个人户 3),配额按 user 计。"""
-    user = auth(authorization)
-    quota_check(user, "video", Q_VIDEO)
-    if not CFG["ark_key"]:
-        raise HTTPException(503, "视频功能未配置(缺 GW_ARK_KEY)")
-    body = await request.body()
-    ark_h = {"Authorization": f"Bearer {CFG['ark_key']}", "Content-Type": "application/json"}
-    tasks_url = CFG["ark_base"] + "/contents/generations/tasks"
-    async with video_sem:                            # ① 视频并发(个人户 3)③ 满了在此排队
-        t0 = time.monotonic()
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=60.0)) as cli:
-                sub = await cli.post(tasks_url, content=body, headers=ark_h)   # 提交异步任务
-                if sub.status_code >= 400:
-                    log(user, "video", False, sub.status_code, int((time.monotonic() - t0) * 1000), sub.text[:120])
-                    ct = sub.headers.get("content-type", "")
-                    return JSONResponse(status_code=sub.status_code,
-                                        content=sub.json() if ct.startswith("application/json") else {"raw": sub.text[:500]})
-                task_id = (sub.json() or {}).get("id")
-                if not task_id:
-                    log(user, "video", False, 502, int((time.monotonic() - t0) * 1000), "no task_id")
-                    raise HTTPException(502, "视频上游未返回任务号")
-                deadline = time.monotonic() + VIDEO_TIMEOUT                    # 轮询直到出片(背压由 video_sem 兜)
-                while time.monotonic() < deadline:
-                    await asyncio.sleep(8)
-                    g = await cli.get(f"{tasks_url}/{task_id}", headers=ark_h)
-                    j = g.json() or {}
-                    st = str(j.get("status") or "").lower()
-                    if st == "succeeded":
-                        url = (j.get("content") or {}).get("video_url") or j.get("video_url")
-                        log(user, "video", True, 200, int((time.monotonic() - t0) * 1000), f"task={task_id}")
-                        return {"video_url": url, "task_id": task_id}
-                    if st in ("failed", "expired", "cancelled", "canceled"):
-                        log(user, "video", False, 502, int((time.monotonic() - t0) * 1000), f"{st}")
-                        raise HTTPException(502, f"视频生成失败:{st}")
-                log(user, "video", False, 504, int((time.monotonic() - t0) * 1000), "poll timeout")
-                raise HTTPException(504, "视频生成超时")
-        except HTTPException:
-            raise
-        except Exception as e:
-            log(user, "video", False, 599, int((time.monotonic() - t0) * 1000), str(e)[:120])
-            raise HTTPException(502, f"视频上游出错:{str(e)[:120]}")
-
-
 # ── Seedance 视频·透传代理(客户端 ark_video.py 自己 submit+轮询,每次短请求避开 nginx 长连接超时;
-#    真 ARK key 只在网关 gw.env、客户端只带 app 令牌。这是收编视频 key 的正式通道,优于上面"一次全包"那条)──
+#    真 ARK key 只在网关 gw.env、客户端只带 app 令牌)──
+#    (旧的 /v1/video/generations「一次全包·阻塞轮询」版已删——客户端只走下面这套 submit+poll 分离版)
 @app.post("/v1/contents/generations/tasks")
 async def video_submit(request: Request, authorization: str = Header(None)):
     """提交 Seedance 任务:auth 令牌 + 配额 + 注入真 ARK key 转火山,原样回任务号。"""
