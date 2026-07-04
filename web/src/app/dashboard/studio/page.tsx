@@ -2,17 +2,21 @@
 
 /**
  * 生成工作室(阶段2 MVP·独立窗口 /dashboard/studio):
- * 左·控制台(大白话+参考图+比例+风格→生成) · 中·预览(出图+变体挑选) · 右·操控台(基于这张改/局部改/换比例/做视频)。
+ * 左·控制台(大白话+参考图+比例+风格→生成) · 中·预览(出图+变体挑选) · 右·操控台(第二层,圈选+说话/换比例/做视频)。
  * 直连 /studio/generate、/studio/edit(绕 LLM),异步出图轮询 media-jobs。白底偏绿 macOS。
  * 治"改不动图":基于当前这张就地改(原图当底图),不跳回输入框重掷。
  * E2-1・小白化:模型名(gpt-image-2/Seedream)、变体数量、"优化提示词"按钮已收进背后自动处理——
  * 明面只留 2 个参数(比例+风格),提示词优化默默做,数量固定出 4 张给"一眼挑"(见下方注释与 onGenerate)。
+ * E2-3・布局两态:首屏(current==null)只有左输入面板 + 中场景卡/空态,右边编辑操控台不渲染;打开/选中
+ * 一张图(current!=null)后编辑操控台才冒出来。编辑入口也合并:原来并列的"改这张(整张)"+"圈一块局部改"
+ * 两个按钮收成一个"圈选+说话"(StudioMaskCanvas),圈了=局部重绘、不圈=整图改,由 onSubmitEdit 分流。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import type { LucideIcon } from "lucide-react";
 import { Image as ImageIcon, ImagePlus, X, Wand2, Copy, Download, ThumbsUp, Loader2, RefreshCw, Check, AlertTriangle, Layers, Film, CreditCard, PartyPopper, UserPlus, Sparkles, Trophy, Camera } from "lucide-react";
 import { api, type MediaJobStatus } from "@/lib/api";
+import { ConfirmDialog } from "@/components/desktop/confirm-dialog";
 
 // react-konva 碰 canvas/window,不能 SSR → dynamic ssr:false(M4)
 const StudioMaskCanvas = dynamic(() => import("@/components/desktop/studio-mask-canvas"), { ssr: false });
@@ -80,14 +84,17 @@ export default function StudioPage() {
   const [history, setHistory] = useState<Shot[]>([]);
   const [batch, setBatch] = useState<Shot[]>([]);    // 刚出的这一批变体(2-4张),给用户一眼挑
   const [refs, setRefs] = useState<string[]>([]);    // 参考图(本机绝对路径),图生图:当风格/参考喂给模型
-  const [editText, setEditText] = useState("");
-  const [maskMode, setMaskMode] = useState(false);   // 局部重绘模式
+  // E2-3・原"改这张(整张)"输入框改名 motionText:合并进"圈选+说话"(StudioMaskCanvas 自带 instruction)后,
+  // 这个文本框改专职给"做成视频"当运镜描述用(原本就是复用同一个框,现在拆出来各司其职)。
+  const [motionText, setMotionText] = useState("");
+  const [maskMode, setMaskMode] = useState(false);   // 圈选+说话(编辑操作台第二层)是否打开
   const [vDuration, setVDuration] = useState(5);     // 视频时长(秒)
   const [vAudio, setVAudio] = useState(false);       // 视频配音
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [leftW, setLeftW] = useState(280);    // 左栏宽(拖分隔条调)
-  const [rightW, setRightW] = useState(280);   // 右栏宽(拖分隔条调)
+  const [rightW, setRightW] = useState(280);   // 右栏宽(拖分隔条调·仅第二层出现编辑操作台时用)
+  const [videoConfirmOpen, setVideoConfirmOpen] = useState(false); // 做成视频的二次确认(ConfirmDialog)
 
   // E2-2・场景卡预填的落点:点卡只 setPrompt + 聚焦，不发消息、不调任何生成接口。
   const promptRef = useRef<HTMLTextAreaElement>(null);
@@ -184,12 +191,30 @@ export default function StudioPage() {
     } catch { /* 取消/失败:忽略 */ }
   };
   const removeRef = (p: string) => setRefs((prev) => prev.filter((x) => x !== p));
-  const onEdit = () => {
-    if (!current || !editText.trim() || busy) return;
+  // E2-3・圈选+说话:合并原来并列的"改这张(整张)"+"圈一块局部改"两个入口,统一进一个 StudioMaskCanvas——
+  // 有没有圈(mask)由画布决定,圈了 = 局部重绘(带 mask_path 只改涂的那块)、不圈 = 整图改(不带 mask_path)。
+  // 恢复 mask 可用(删掉 E2-1 留的 maskUnsupported=true 硬禁用):审查已核实改内容默认路由 gpt-image-2(支持
+  // mask),且后端对不支持 mask 的模型会优雅降级成整图改(mask 读取失败/越界只是忽略、不是硬失败)。
+  const onSubmitEdit = async (maskBase64: string | undefined, instruction: string) => {
+    if (!current || !instruction.trim() || busy) return;
     if (!current.generationId) { setError("这张图没有来源记录，改不了；重新生成一张再改。"); return; }
-    const instruction = editText.trim();
-    setEditText("");
-    void runJob(() => api.studioEdit({ prompt: instruction, source_generation_id: current.generationId as string, ratio: current.ratio }), current.ratio);
+    const gid = current.generationId, rr = current.ratio;
+    if (!maskBase64) {
+      // 没圈 = 整图改
+      setMaskMode(false);
+      void runJob(() => api.studioEdit({ prompt: instruction, source_generation_id: gid, ratio: rr }), rr);
+      return;
+    }
+    // 圈了 = 局部重绘:先把涂出来的 mask 存临时文件 → /studio/edit 带 mask_path 只改涂的那块
+    if (!window.electron?.files?.saveTemp) { setError("局部重绘需要桌面版（要把蒙版存成临时文件）。"); return; }
+    try {
+      const saved = await window.electron.files.saveTemp({ base64: maskBase64, ext: "png" });
+      if (!saved.ok || !saved.path) throw new Error("蒙版没存成功，重试一下。");
+      setMaskMode(false);
+      void runJob(() => api.studioEdit({ prompt: instruction, source_generation_id: gid, mask_path: saved.path as string, ratio: rr }), rr);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "局部重绘失败，稍后再试。");
+    }
   };
   const onChangeRatio = (r: string) => {
     setRatio(r);
@@ -197,25 +222,16 @@ export default function StudioPage() {
       void runJob(() => api.studioEdit({ prompt: "保持画面主体和风格不变，换成这个画幅比例重新构图", source_generation_id: current.generationId as string, ratio: r }), r);
     }
   };
-  // 局部重绘:把涂出来的 mask 存临时文件 → /studio/edit 带 mask_path 只改涂的那块
-  const onApplyMask = async (maskBase64: string, instruction: string) => {
-    if (!current?.generationId) return;
-    if (!window.electron?.files?.saveTemp) { setError("局部重绘需要桌面版（要把蒙版存成临时文件）。"); return; }
-    try {
-      const saved = await window.electron.files.saveTemp({ base64: maskBase64, ext: "png" });
-      if (!saved.ok || !saved.path) throw new Error("蒙版没存成功，重试一下。");
-      const gid = current.generationId, rr = current.ratio, maskPath = saved.path;
-      setMaskMode(false);
-      void runJob(() => api.studioEdit({ prompt: instruction, source_generation_id: gid, mask_path: maskPath, ratio: rr }), rr);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "局部重绘失败，稍后再试。");
-    }
-  };
-  // 做成视频:把当前这张图动起来(人确认=点这个按钮 + 一次确认)。复用"基于这张改"输入框当运镜描述。
-  const onMakeVideo = () => {
+  // 做成视频:把当前这张图动起来(人确认=点这个按钮 → 弹 ConfirmDialog → 确认才真的起任务)。
+  // E2-3・window.confirm 换成 ConfirmDialog(受控 state,和 chat-shell/store-docs-panel 一致的用法)。
+  const askMakeVideo = () => {
     if (!current || current.isVideo || busy) return;
-    if (typeof window !== "undefined" && !window.confirm("做成视频要等几分钟、也比较费，确定吗？")) return;
-    const ff = current.url, gid = current.generationId, rr = current.ratio, motion = editText.trim() || undefined;
+    setVideoConfirmOpen(true);
+  };
+  const onMakeVideo = () => {
+    setVideoConfirmOpen(false);
+    if (!current || current.isVideo || busy) return;
+    const ff = current.url, gid = current.generationId, rr = current.ratio, motion = motionText.trim() || undefined;
     void runJob(() => api.studioI2v({ first_frame: ff, source_generation_id: gid, prompt: motion, ratio: rr, duration: vDuration, generate_audio: vAudio }), rr);
   };
   // 多镜合成:把当前+历史里有来源记录的视频片段拼成一条(真 ffmpeg 在本机 Electron 跑)
@@ -282,11 +298,6 @@ export default function StudioPage() {
     `rounded-md px-2.5 py-1 text-[12px] font-medium transition active:scale-[0.97] ${
       active ? "bg-[#10a37f] text-white" : "bg-black/[0.04] text-[#3a3a3c] hover:bg-black/[0.07] dark:bg-white/[0.06] dark:text-[#c8cace] dark:hover:bg-white/[0.1]"
     }`;
-  // E2-1・模型已收进后端自动路由(不再前端手选),生成默认落 Seedream、Seedream 不支持 mask 局部重绘
-  // → 局部重绘按钮维持禁用+提示;真按"这次实际路由到了哪个模型"动态判断,留给 E2-3(那时会有 per-request
-  // 的模型反馈可用,现在只有事后的 model_switched 标记,判断不了"这次会不会支持 mask")。
-  const maskUnsupported = true;
-
   return (
     <div className="flex h-screen w-full flex-col bg-white text-[#1d1d1f] antialiased dark:bg-[#0e0f11] dark:text-[#e6e7e9]">
       {/* 顶部可拖拽条(macOS 红绿灯区) */}
@@ -373,7 +384,7 @@ export default function StudioPage() {
         {/* 中·预览 */}
         <main className="flex min-w-0 flex-1 items-center justify-center overflow-auto bg-[#fafafa] p-6 dark:bg-[#0b0c0e]">
           {maskMode && current && !busy ? (
-            <StudioMaskCanvas imageUrl={current.url} busy={busy} onApply={onApplyMask} onCancel={() => setMaskMode(false)} />
+            <StudioMaskCanvas imageUrl={current.url} busy={busy} onApply={onSubmitEdit} onCancel={() => setMaskMode(false)} />
           ) : busy ? (
             <div className="flex flex-col items-center gap-3 text-[#86868b] dark:text-[#6e7077]">
               <div className="h-[320px] w-[240px] animate-pulse rounded-xl bg-black/[0.05] dark:bg-white/[0.05]" />
@@ -445,38 +456,28 @@ export default function StudioPage() {
           )}
         </main>
 
-        {/* 拖分隔条:调右栏宽 */}
-        <div onMouseDown={startDrag("right")} title="拖动调整右栏宽度" className="w-1.5 shrink-0 cursor-col-resize transition hover:bg-[#10a37f]/30" />
-        {/* 右·操控台 */}
-        <aside style={{ width: rightW }} className="flex shrink-0 flex-col gap-4 overflow-y-auto border-l border-black/[0.06] p-4 dark:border-white/[0.06]">
-          {current ? (
-            <>
+        {/* E2-3・两态第二层:编辑操控台只在打开了某张图(current!=null)时才冒出来,首屏(还没出图/没选中
+            任何一张)不渲染这一整块(含拖分隔条),别让刚进来的用户看见一堆专业按钮。选择"右侧面板"这个
+            形态(不用抽屉/图下)——出图后天然是"看图+调整"并排,和 macOS 常见的检查器面板顺手,改动也最小。 */}
+        {current && (
+          <>
+            {/* 拖分隔条:调右栏宽 */}
+            <div onMouseDown={startDrag("right")} title="拖动调整右栏宽度" className="w-1.5 shrink-0 cursor-col-resize transition hover:bg-[#10a37f]/30" />
+            {/* 右·操控台(第二层) */}
+            <aside style={{ width: rightW }} className="flex shrink-0 flex-col gap-4 overflow-y-auto border-l border-black/[0.06] p-4 dark:border-white/[0.06]">
               {!current.isVideo && (<>
+              {/* E2-3・圈选+说话:合并原来并列的"改这张(整张)"+"圈一块局部改"两个按钮成一个入口——
+                  点开后在中间画布里圈一块 = 局部重绘,不圈直接说 = 整图改,由 onSubmitEdit 按有没有 mask 分流。 */}
               <div>
-                <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">基于这张改（就地改，不用重头说）</div>
-                <textarea
-                  value={editText}
-                  onChange={(e) => setEditText(e.target.value)}
-                  placeholder="比如：把背景换成夜晚、标题再大一点、加点烟雾感"
-                  rows={3}
-                  className="w-full resize-none rounded-lg border border-black/[0.08] bg-black/[0.02] px-3 py-2 text-[13px] outline-none transition placeholder:text-[#b0b0b5] focus:border-[#10a37f]/50 dark:border-white/[0.08] dark:bg-white/[0.03] dark:placeholder:text-[#56585f]"
-                />
-                <button
-                  type="button"
-                  onClick={onEdit}
-                  disabled={busy || !editText.trim()}
-                  className="mt-1.5 flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-[#10a37f] text-[13px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.99] disabled:opacity-50"
-                >
-                  <Wand2 className="h-3.5 w-3.5" /> 改这张（整张）
-                </button>
+                <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">改这张（就地改，不用重头说）</div>
                 <button
                   type="button"
                   onClick={() => setMaskMode(true)}
-                  disabled={busy || !current.generationId || maskUnsupported}
-                  title={maskUnsupported ? "当前默认模型不支持局部重绘；说清楚要改哪一块，用上面「改这张」也行" : "只改图上你圈出来的那一块"}
-                  className="mt-1.5 flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-[#10a37f]/30 bg-[#10a37f]/[0.06] text-[13px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/[0.12] active:scale-[0.99] disabled:opacity-50"
+                  disabled={busy || !current.generationId}
+                  title="想圈哪块就圈一下、只改那一块；不圈就直接说，整张一起改"
+                  className="flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-[#10a37f] text-[13px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.99] disabled:opacity-50"
                 >
-                  <Layers className="h-3.5 w-3.5" /> 圈一块局部改
+                  <Layers className="h-3.5 w-3.5" /> 圈选 + 说话
                 </button>
               </div>
               <div>
@@ -485,16 +486,23 @@ export default function StudioPage() {
                   {RATIOS.map((r) => <button key={r.id} type="button" disabled={busy} onClick={() => onChangeRatio(r.id)} className={chip(current.ratio === r.id)}>{r.label}</button>)}
                 </div>
               </div>
-              {/* 做成视频(图生视频):时长 + 配音 + 一次确认 */}
+              {/* 做成视频(图生视频):运镜描述(可选) + 时长 + 配音 + 一次确认 */}
               <div>
                 <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">做成视频</div>
+                <textarea
+                  value={motionText}
+                  onChange={(e) => setMotionText(e.target.value)}
+                  placeholder="运镜描述（可选），比如：镜头缓慢推进、灯光渐暗"
+                  rows={2}
+                  className="mb-1.5 w-full resize-none rounded-lg border border-black/[0.08] bg-black/[0.02] px-3 py-2 text-[13px] outline-none transition placeholder:text-[#b0b0b5] focus:border-[#10a37f]/50 dark:border-white/[0.08] dark:bg-white/[0.03] dark:placeholder:text-[#56585f]"
+                />
                 <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
                   {[5, 8, 10].map((d) => <button key={d} type="button" onClick={() => setVDuration(d)} className={chip(vDuration === d)}>{d} 秒</button>)}
                   <button type="button" onClick={() => setVAudio((v) => !v)} className={chip(vAudio)}>{vAudio ? "带配音" : "无配音"}</button>
                 </div>
                 <button
                   type="button"
-                  onClick={onMakeVideo}
+                  onClick={askMakeVideo}
                   disabled={busy || !current.generationId}
                   title="把这张图动起来，做成几秒短视频（要等几分钟）"
                   className="flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-[#007AFF]/30 bg-[#007AFF]/[0.06] text-[13px] font-medium text-[#007AFF] transition hover:bg-[#007AFF]/[0.12] active:scale-[0.99] disabled:opacity-50"
@@ -541,17 +549,22 @@ export default function StudioPage() {
                   </div>
                 </div>
               )}
-            </>
-          ) : (
-            <div className="flex flex-1 items-center justify-center px-2 text-center text-[12px] text-[#b0b0b5] dark:text-[#56585f]">
-              出图后，这里能就地改图、复制、换比例、存到电脑。
-            </div>
-          )}
-          <div className="mt-auto flex items-center gap-1 pt-2 text-[11px] text-[#b0b0b5] dark:text-[#56585f]">
-            <RefreshCw className="h-3 w-3" /> 改图也会等几十秒到几分钟，正常。
-          </div>
-        </aside>
+              <div className="mt-auto flex items-center gap-1 pt-2 text-[11px] text-[#b0b0b5] dark:text-[#56585f]">
+                <RefreshCw className="h-3 w-3" /> 改图也会等几十秒到几分钟，正常。
+              </div>
+            </aside>
+          </>
+        )}
       </div>
+
+      <ConfirmDialog
+        open={videoConfirmOpen}
+        title="做成视频？"
+        message="这张图会动起来做成一段短视频，要等几分钟，确定开始吗？"
+        confirmLabel="开始"
+        onConfirm={onMakeVideo}
+        onCancel={() => setVideoConfirmOpen(false)}
+      />
     </div>
   );
 }
