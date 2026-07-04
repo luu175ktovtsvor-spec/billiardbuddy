@@ -60,6 +60,7 @@ export function WelcomeScreen({
   onResearch,
   onReadAloud,
   onStopReadAloud,
+  readingKey,
 }: {
   greeting?: string;
   subtitle?: string;
@@ -82,8 +83,11 @@ export function WelcomeScreen({
   onViewScreen?: () => void;
   onResearch?: () => void;
   // D-Task-8 读给我听：只桌面版有(electron?.tts 判空后才传)，透传给简报卡念 greeting。
-  onReadAloud?: (content: string) => void;
+  // key 由调用方传回(简报卡固定用 "greeting")，readingKey 是 chat-shell 层的单一状态源，
+  // 用来判断"现在念的是不是我这条"，简报卡自己不用管 reading 状态。
+  onReadAloud?: (content: string, key: string) => void;
   onStopReadAloud?: () => void;
+  readingKey?: string | number | null;
 }) {
   const cards = starters ?? (billiardsMode ? BILLIARDS_STARTERS : GENERIC_STARTERS);
   return (
@@ -110,6 +114,7 @@ export function WelcomeScreen({
               onDismissReport={onDismissReport}
               onReadAloud={onReadAloud}
               onStopReadAloud={onStopReadAloud}
+              reading={readingKey === "greeting"}
             />
           </div>
         )}

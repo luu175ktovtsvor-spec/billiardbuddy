@@ -688,6 +688,7 @@ export function DesktopChatThread({
   onExportArtifact,
   onReadAloud,
   onStopReadAloud,
+  readingKey,
   onFollowUp,
   onRate,
   billiardsMode,
@@ -713,8 +714,11 @@ export function DesktopChatThread({
   onSaveArtifact?: (content: string) => void;
   onExportArtifact?: (content: string) => void;
   // D-Task-8 读给我听：只在桌面版传入(electron?.tts 判空)，念系统 TTS；再点会先停掉上一段再念新的。
-  onReadAloud?: (content: string) => void;
+  // key 传消息下标给 chat-shell 层的单一 readingKey 状态源；readingKey 传回来判断"现在念的是不是
+  // 这一条"，本组件不再自己攥一份 readingIdx 状态（避免切会话/离开视图时状态跟子进程实际情况脱节）。
+  onReadAloud?: (content: string, key: number) => void;
   onStopReadAloud?: () => void;
+  readingKey?: string | number | null;
   onFollowUp?: (prompt: string, label?: string) => void;
   onRate?: (generationId: string, rating: "good" | "bad") => void;
   billiardsMode?: boolean;
@@ -723,8 +727,6 @@ export function DesktopChatThread({
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const pinnedRef = useRef(true);            // 用户是否贴在底部——只有贴底才跟随流式刷新
   const prevMsgLenRef = useRef(messages.length);
-  // 当前正在朗读哪一条消息(索引)；再点同一条 = 停止，点别的条 = 主进程先掐掉上一段再念新的。
-  const [readingIdx, setReadingIdx] = useState<number | null>(null);
 
   // 监听滚动：用户上滑离开底部 → 取消跟随；滑回底部 → 恢复跟随
   useEffect(() => {
@@ -929,8 +931,10 @@ export function DesktopChatThread({
                           if (!generating && onMakeTask) moreItems.push({ key: "task", label: "转成任务", Icon: ClipboardList, onClick: () => onMakeTask(m.content) });
                           // D-Task-8 读给我听：只桌面版有(electron?.tts 判空后才传 onReadAloud)；
                           // 再点同一条切成"停止朗读"，点别的条主进程会先掐掉上一段再念新的。
+                          // isReading 由 chat-shell 层的 readingKey 单一状态源算出来，本组件不再自
+                          // 己攥一份 readingIdx(念完/失败的复位、切会话时的 stop 都收在那一层做)。
                           if (!generating && onReadAloud) {
-                            const isReading = readingIdx === idx;
+                            const isReading = readingKey === idx;
                             moreItems.push({
                               key: "read",
                               label: isReading ? "停止朗读" : "读给我听",
@@ -938,10 +942,8 @@ export function DesktopChatThread({
                               onClick: () => {
                                 if (isReading) {
                                   onStopReadAloud?.();
-                                  setReadingIdx(null);
                                 } else {
-                                  onReadAloud(m.content);
-                                  setReadingIdx(idx);
+                                  onReadAloud(m.content, idx);
                                 }
                               },
                             });

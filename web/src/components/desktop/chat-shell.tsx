@@ -316,6 +316,10 @@ export function DesktopChatShell({
   // 极端情况下内置模型不可用时的兜底提示；正常桌面产品不要求用户先配 key。
   const [needsKey, setNeedsKey] = useState(false);
   const [keyHintDismissed, setKeyHintDismissed] = useState(false);
+  // D-Task-8 读给我听：单一状态源——念的是哪一条(简报卡问候语固定用 "greeting" 键、对话消息用消息
+  // 下标)。收在这一层统一管，简报卡/对话流两个展示组件不用各自一份 reading 状态，切换视图/会话时
+  // 不会互相打架或漏管(Important#2 修复：避免"A 组件卸载误停 B 组件朗读")。
+  const [readingKey, setReadingKey] = useState<string | number | null>(null);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -736,16 +740,34 @@ export function DesktopChatShell({
   }, [electron, toast]);
   // D-Task-8 读给我听：主进程 spawn 系统自带 TTS 念出声，不用 Web Speech API。故障安全——
   // electron.tts 拿不到/失败都只提示、不崩(入口本身已用 electron?.tts 判空只在桌面版露出)。
-  const onReadAloud = useCallback((content: string) => {
+  // key 标识"念的是哪一条"(简报卡问候语传 "greeting"、对话消息传消息下标)，读写 readingKey 这个
+  // 单一状态源——调用方(简报卡/对话流)不用自己攥一份 reading 状态。
+  const onReadAloud = useCallback((content: string, key: string | number) => {
     if (!electron?.tts || !content.trim()) return;
+    setReadingKey(key);
     void electron.tts.speak(content).then((r) => {
-      if (!r?.ok) toast.error(r?.error ? `朗读失败：${r.error}` : "朗读失败，可以稍后再试");
+      if (!r?.ok) {
+        toast.error(r?.error ? `朗读失败：${r.error}` : "朗读失败，可以稍后再试");
+        setReadingKey((k) => (k === key ? null : k)); // 只清自己这条,防止期间用户已经点了别的条
+      }
     });
   }, [electron, toast]);
   const onStopReadAloud = useCallback(() => {
     if (!electron?.tts) return;
     void electron.tts.stop();
+    setReadingKey(null);
   }, [electron]);
+  // 修复#1：spawn 后立即同步 return { ok:true } 不代表"念完了"——念完(close)/spawn 失败(error)是
+  // 主进程那边异步才到的事件，订阅 tts:end 广播，自然念完/spawn 失败(如 say 二进制缺失)都在这统一
+  // 复位，不然 UI 会一直卡在"正在朗读"，只能手动点停止或点别处顶掉。
+  useEffect(() => {
+    if (!electron?.tts?.onEnd) return;
+    const off = electron.tts.onEnd((p) => {
+      setReadingKey(null);
+      if (p && p.ok === false) toast.error(p.error ? `朗读没成功：${p.error}` : "朗读没启动成功");
+    });
+    return off;
+  }, [electron, toast]);
   const onRedoAnswer = useCallback((content: string) => {
     if (chat.generating) return;
     void chat.send(
@@ -798,6 +820,18 @@ export function DesktopChatShell({
   };
 
   const empty = chat.messages.length === 0 && !chat.generating;
+
+  // 修复#2：切会话／欢迎屏⇄对话流互相切换时，若还在念就先停掉——不然子进程在后台继续念、当前
+  // 视图却没有按钮能停(孤儿朗读)。reading 状态收在这一层统一管，简报卡/对话流卸载不用各自猜
+  // "是不是我在念"，也就不会出现"A 组件卸载把 B 组件的朗读也停了"的误伤(两者本就互斥挂载，
+  // 但切换到另一个「非空」会话时对话流并不会卸载，必须靠这里主动 stop 才补得上这个缺口)。
+  useEffect(() => {
+    electron?.tts?.stop?.();
+    setReadingKey(null);
+    // 只想在"看的是哪个会话／欢迎屏还是对话流"变化时触发一次；readingKey 自己不放依赖，否则
+    // 刚点开始朗读时 setReadingKey 也会触发这段，把刚开始念的又停掉。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chat.conversationId, empty]);
 
   // C1 首启特例：进欢迎屏时扫一次「桌面 + 作品文件夹」找最近一份报表，命中就在简报卡顶部主动开口。
   // 当天已「不感兴趣」过就不再扫（localStorage 按日）；扫描本身故障安全，扫不到/出错都静默当没有。
@@ -918,6 +952,7 @@ export function DesktopChatShell({
           onResearch={startResearch}
           onReadAloud={electron?.tts ? onReadAloud : undefined}
           onStopReadAloud={electron?.tts ? onStopReadAloud : undefined}
+          readingKey={readingKey}
         />
       ) : (
         <DesktopChatThread
@@ -941,6 +976,7 @@ export function DesktopChatShell({
           onExportArtifact={electron?.files?.save ? onExportArtifact : undefined}
           onReadAloud={electron?.tts ? onReadAloud : undefined}
           onStopReadAloud={electron?.tts ? onStopReadAloud : undefined}
+          readingKey={readingKey}
           onFollowUp={onFollowUp}
           onRate={(id, r) => { void api.rateGeneration(id, r); }}
           billiardsMode={knowledgePacks.includes("billiards")}
