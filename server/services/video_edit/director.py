@@ -86,6 +86,75 @@ def chat_json(prompt: str, *, timeout: float = 90.0, retries: int = 3) -> dict |
     return None
 
 
+# E5②氛围线叙事分组:四段叙事角色。hook=开场抓人,core=核心内容/信息量最大,
+# vibe=氛围渲染/情绪强化,end=收尾/余韵。
+_NARRATIVE_ROLES = ("hook", "core", "vibe", "end")
+
+
+def _has_narrative_zigzag(order: list[int], shots: list[dict]) -> bool:
+    """检测新顺序里有没有 A→B→A 场景横跳(同一来源的镜头被隔开一次又切回来,来回横跳)。
+
+    只看"来源"(shots[i].get('media'),同一素材来源)相邻三格 A,B,A 这种最扎眼的横跳模式——
+    足够挡住"跳回去用回同一段素材"这种最影响观感的编排错误,不追求穷举所有花样横跳。
+    """
+    srcs = [shots[i].get("media") for i in order]
+    for i in range(len(srcs) - 2):
+        a, b, c = srcs[i], srcs[i + 1], srcs[i + 2]
+        if a is not None and a == c and b != a:
+            return True
+    return False
+
+
+def group_narrative(shots: list[dict]) -> dict | None:
+    """让 LLM 把挑好的高光镜头重排成有叙事节奏的顺序:hook→core→vibe→end,禁止 A→B→A 场景横跳。
+
+    shots:氛围 Planner 挑好的高光镜头(带 subject/shot_size/camera_move/mood 等 E5③ VLM 元数据 +
+    media 来源标识)。返回 {"order":[原下标的一个全排列], "roles":[与 order 一一对应的叙事角色]};
+    LLM 失败/无网关配置/回复不合法(非法排列、出现 A→B→A 横跳)→ None,调用方(ambient.py)
+    保持原时序不变——这是确定性兜底,不能因为分组失败就让氛围线出不了片或顺序错乱。
+    """
+    n = len(shots)
+    if n < 2 or _resolve_endpoint() is None:
+        return None
+
+    lines = [
+        f"{i}. 画面={s.get('subject', '') or '未知'} 景别={s.get('shot_size', '未知')} "
+        f"运镜={s.get('camera_move', '固定')} 情绪={s.get('mood', '平静')} 来源={s.get('media', '')}"
+        for i, s in enumerate(shots)
+    ]
+    prompt = (
+        "你是短视频剪辑师,把下面挑好的高光镜头重新排成一条有叙事节奏的短片,分四段角色:\n"
+        "hook(开场抓人,把最吸引/最有反差的镜头放最前)→core(核心内容,信息量/看点最大的镜头)→"
+        "vibe(氛围渲染,强化情绪/画面感)→end(收尾,留个余韵或行动号召感)。\n"
+        "镜头(按原始出现顺序编号,不能新增/删减,只能重新排列):\n" + "\n".join(lines) + "\n\n"
+        "硬性要求:同一来源(来源字段相同)的镜头别在新顺序里来回横跳(用了A切到B又切回A),"
+        "尽量把同来源的镜头排得集中、别来回切换。每个原始编号必须且只能出现一次。\n"
+        f"只回 JSON,order 长度正好 {n}、是 0到{n - 1} 的一个排列,roles 与 order 一一对应"
+        f"(值只能是 hook/core/vibe/end 之一),不要解释、不要```包裹:\n"
+        '{"order":[2,0,1],"roles":["hook","core","end"]}'
+    )
+    data = chat_json(prompt, timeout=60)
+    if not isinstance(data, dict):
+        return None
+    order_raw, roles_raw = data.get("order"), data.get("roles")
+    if not isinstance(order_raw, list) or not isinstance(roles_raw, list) or len(order_raw) != n or len(roles_raw) != n:
+        logger.warning("group_narrative 回复形状不对,回退原时序")
+        return None
+    try:
+        order = [int(x) for x in order_raw]
+    except (TypeError, ValueError):
+        logger.warning("group_narrative order 不是整数列表,回退原时序")
+        return None
+    if sorted(order) != list(range(n)):
+        logger.warning("group_narrative order 不是合法全排列,回退原时序:%r", order)
+        return None
+    if _has_narrative_zigzag(order, shots):
+        logger.warning("group_narrative 回复出现 A→B→A 场景横跳,回退原时序")
+        return None
+    roles = [r if r in _NARRATIVE_ROLES else "core" for r in roles_raw]
+    return {"order": order, "roles": roles}
+
+
 # 视觉风格词汇表(引擎支持的)。大模型从中选,给每段编排;也可写 customCss 随意发挥。
 _TRANSITIONS = ["fade", "wipe", "slide-left", "slide-up", "zoom", "glitch", "flash", "none"]
 _MOTIONS = ["kenburns-in", "kenburns-out", "pan-left", "pan-right", "pan-up", "none"]

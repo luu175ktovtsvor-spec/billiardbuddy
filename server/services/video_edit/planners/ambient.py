@@ -83,11 +83,16 @@ def _extract_frame(video: str, at: float, out_path: str) -> bool:
 
 
 def _heuristic_score(idx: int, total: int) -> dict:
-    """没 VLM 时的兜底打分:偏中段(头尾常是举起放下手机/愣神),给个确定性分。"""
+    """没 VLM 时的兜底打分:偏中段(头尾常是举起放下手机/愣神),给个确定性分。
+
+    E5③:同样带上 shot_size/camera_move/mood 三个字段(启发式没法真判断,给安全默认),
+    保证不管走 VLM 还是启发式分支,scored 的结构形状都一致,下游(E5②分组)不用分支处理。
+    """
     mid = (total - 1) / 2 if total > 1 else 0
     closeness = 1 - (abs(idx - mid) / (mid + 1)) if mid else 1
     return {"subject": "未知(启发式)", "quality": round(5 + 3 * closeness, 2),
-            "usable": True, "reason": "无VLM,按位置启发式(偏中段)"}
+            "usable": True, "reason": "无VLM,按位置启发式(偏中段)",
+            "shot_size": "未知", "camera_move": "固定", "mood": "平静"}
 
 
 def plan_ambient(
@@ -162,6 +167,11 @@ def plan_ambient(
             "score": score, "usable": sc["usable"],
             "subject": sc["subject"], "reason": sc["reason"], "win_idx": it["win_idx"],
             "footage_ok": it["footage_ok"],
+            # E5③透传:景别/运镜/情绪(VLM 给的或启发式安全默认),供 E5②叙事分组当依据。
+            # 用 .get 兜底:老缓存文件(升级前写的 .score.json)可能没有这三个字段。
+            "shot_size": sc.get("shot_size", "未知"),
+            "camera_move": sc.get("camera_move", "固定"),
+            "mood": sc.get("mood", "平静"),
         })
 
     # ── ② 挑高光:先毙掉 usable=False,按分数降序贪心选到目标时长,每片设配额防独占 ──
@@ -188,6 +198,17 @@ def plan_ambient(
         else:
             merged.append(dict(x))
 
+    # ── E5②氛围线叙事分组:把"纯原时序"拼接换成 Hook→Core→Vibe→End 的叙事结构。
+    # 依据 E5③给每段镜头带上的景别/运镜/情绪,让 LLM(director.group_narrative)重排 merged;
+    # 失败/无网关配置/回复非法(含 A→B→A 场景横跳)→ group_narrative 返回 None,merged 保持
+    # 上面算出来的原时序不变——确定性兜底,分组这一步失败绝不能让氛围线出不了片。 ──
+    from ..director import group_narrative
+
+    narrative = group_narrative(merged)
+    if narrative is not None:
+        merged = [dict(merged[i], narrative_role=narrative["roles"][pos])
+                  for pos, i in enumerate(narrative["order"])]
+
     # ── ④ 落成时间轴文档:add_clip + 全局调色 ──
     ops = [{"op": "add_clip", "track": "v", "media": x["media"],
             "src_in": x["start"], "src_out": x["end"]} for x in merged]
@@ -203,7 +224,11 @@ def plan_ambient(
         "picked": [
             {"media": x["media"], "start": x["start"], "end": x["end"],
              "score": x["score"], "subject": x["subject"], "reason": x["reason"],
-             "footage_ok": x["footage_ok"]}
+             "footage_ok": x["footage_ok"],
+             "shot_size": x.get("shot_size", "未知"), "camera_move": x.get("camera_move", "固定"),
+             "mood": x.get("mood", "平静"),
+             # E5②:分组成功才有(hook/core/vibe/end);分组失败/跳过则 None(原时序,无叙事标签)。
+             "narrative_role": x.get("narrative_role")}
             for x in merged
         ],
         "duration": new_d.duration(),

@@ -99,6 +99,45 @@ def test_plan_ambient_falls_back_to_bad_footage_when_not_enough_good_material(tm
     assert footage_flags == {True, False}, "好素材不够用时,废素材应该被兜底选中(降权不等于硬删)"
 
 
+# ── E5② 氛围线叙事分组接入 plan_ambient ──────────────────────────────────
+
+def test_plan_ambient_reorders_merged_via_group_narrative(tmp_path, monkeypatch):
+    """mock group_narrative 重排:report.picked 顺序 + narrative_role 应该反映新叙事顺序,
+    不再是"纯原时序"(证明分组结果真的接进了 ambient 的落盘/落文档流程)。"""
+    clips = [tmp_path / f"c{i}.mp4" for i in range(3)]
+    for c in clips:
+        _good_clip(c, dur=3.0)
+
+    def fake_group_narrative(shots):
+        n = len(shots)
+        assert n == 3
+        return {"order": [2, 0, 1], "roles": ["hook", "core", "end"]}
+
+    monkeypatch.setattr("services.video_edit.director.group_narrative", fake_group_narrative)
+
+    res = plan_ambient([str(c) for c in clips], str(tmp_path / "edit"), target_duration=10.0, win=2.5)
+    picked = res["report"]["picked"]
+    assert len(picked) == 3
+    assert [p["media"] for p in picked] == ["m3", "m1", "m2"]           # 按 mock 的新顺序重排
+    assert [p["narrative_role"] for p in picked] == ["hook", "core", "end"]
+
+
+def test_plan_ambient_keeps_chronological_order_when_group_narrative_fails(tmp_path, monkeypatch):
+    """group_narrative 失败(网关挂了/回复不合法)返回 None → merged 保持原时序,narrative_role 为 None,
+    不能因为分组失败就让氛围线出不了片或顺序错乱(确定性兜底)。"""
+    clips = [tmp_path / f"c{i}.mp4" for i in range(3)]
+    for c in clips:
+        _good_clip(c, dur=3.0)
+
+    monkeypatch.setattr("services.video_edit.director.group_narrative", lambda shots: None)
+
+    res = plan_ambient([str(c) for c in clips], str(tmp_path / "edit"), target_duration=10.0, win=2.5)
+    picked = res["report"]["picked"]
+    assert len(picked) == 3
+    assert [p["media"] for p in picked] == ["m1", "m2", "m3"]           # 原时序不变
+    assert all(p["narrative_role"] is None for p in picked)
+
+
 # ── speech ───────────────────────────────────────────────────────────
 
 def test_plan_speech_raises_when_all_footage_bad(tmp_path, monkeypatch):
@@ -157,3 +196,34 @@ def test_plan_speech_mixed_not_all_bad_does_not_raise(tmp_path, monkeypatch):
     )
     res = plan_speech([str(bad), str(good)], str(tmp_path / "edit"))
     assert res["report"]["quotes"] == ["还能用"]
+
+
+# ── E5④ 口播+BGM 可达性接线:plan_speech(bgm=...) ────────────────────────
+
+def test_plan_speech_bgm_false_default_keeps_pure_keep_behavior(tmp_path, monkeypatch):
+    """默认(bgm=False)一字不变:doc 不该带 music,升级前后行为完全一致。"""
+    good = tmp_path / "good.mp4"
+    _good_clip(good, dur=3.0)
+    monkeypatch.setattr(
+        "services.video_edit.transcribe.transcribe",
+        _fake_transcribe_factory({"good": [{"text": "你好世界", "start": 0.2, "end": 0.8}]}),
+    )
+    res = plan_speech([str(good)], str(tmp_path / "edit"), target_duration=10.0)
+    assert res["doc"]["music"] is None
+    assert "bgm" not in res["doc"]["media"]
+
+
+def test_plan_speech_bgm_true_attaches_music_media(tmp_path, monkeypatch):
+    """bgm=True → doc 应该挂上一条 audio 媒体 + doc.music 指向它(可达性接线的产出端)。"""
+    good = tmp_path / "good.mp4"
+    _good_clip(good, dur=3.0)
+    monkeypatch.setattr(
+        "services.video_edit.transcribe.transcribe",
+        _fake_transcribe_factory({"good": [{"text": "你好世界", "start": 0.2, "end": 0.8}]}),
+    )
+    res = plan_speech([str(good)], str(tmp_path / "edit"), target_duration=10.0, bgm=True)
+    assert res["doc"]["music"] == "bgm"
+    assert "bgm" in res["doc"]["media"]
+    assert res["doc"]["media"]["bgm"]["kind"] == "audio"
+    from pathlib import Path as _P
+    assert _P(res["doc"]["media"]["bgm"]["src"]).exists()   # 真合成了一条 wav,不是空引用
