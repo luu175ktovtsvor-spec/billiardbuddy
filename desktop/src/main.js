@@ -115,11 +115,12 @@ let quickInputWindow = null;
 let quickInputTargetWindow = null;
 // Alt+Space 在 Windows 是系统窗口菜单快捷键、别用；选一个不撞常见系统/软件热键的组合。
 const QUICK_INPUT_HOTKEY = "CommandOrControl+Shift+Space";
-// ⚠️ 坑3(复审实锤)：openStudio/openVideoStudio 开出的独立路由窗口(/dashboard/studio、/dashboard/video)
-// 页面上没有 DesktopChatShell，没人订阅 quickinput:inject——如果老板正盯着这类窗口按快捷键，
-// 全局 mainWindow 又恰好在 createWindow() 的 focus 回写里被它顶替过(见坑1)，注入会静默送空。
+// ⚠️ 坑3(复审实锤)：openStudio/openVideoStudio/openWorkbench 开出的独立路由窗口(/dashboard/workbench，
+// 含 E1-C1 前的旧 /dashboard/studio、/dashboard/video)页面上没有 DesktopChatShell，没人订阅
+// quickinput:inject——如果老板正盯着这类窗口按快捷键，全局 mainWindow 又恰好在 createWindow() 的
+// focus 回写里被它顶替过(见坑1)，注入会静默送空。
 // 修法：只把"没有 route"的窗口(chat 根路由/新工作台，真有 DesktopChatShell)标记为 chat 窗，
-// 单独跟踪"最近聚焦的 chat 窗口"，快照目标时只在 chat 窗里选，绝不选中 studio/video 窗。
+// 单独跟踪"最近聚焦的 chat 窗口"，快照目标时只在 chat 窗里选，绝不选中 studio/video/workbench 窗。
 let lastFocusedChatWindow = null;
 
 // ── 作品文件夹:首启自动建好一个固定目录,用户全程不用选"工作文件夹"。──────
@@ -180,6 +181,14 @@ function createWindow(opts = {}) {
   const url = new URL(baseUrl);
   if (opts.route) url.pathname = opts.route;             // 生成工作室等独立路由窗口
   if (opts.workbenchId) url.searchParams.set("workbench", opts.workbenchId);
+  // E1-C1：openWorkbench 带参打开——mode 拼成 ?panel=image|video，payload 是轻标识(如 { fromGen })，
+  // 逐个键平铺进 query（不 JSON 塞大对象/图 bytes），容器页首次挂载时用 useSearchParams 读初始面板。
+  if (opts.workbenchMode) url.searchParams.set("panel", opts.workbenchMode);
+  if (opts.workbenchPayload && typeof opts.workbenchPayload === "object") {
+    for (const [k, v] of Object.entries(opts.workbenchPayload)) {
+      if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+    }
+  }
   win.loadURL(url.toString());
 
   // 锁定壳层窗口标题=产品名(owner 2026-07-02 定名「台球运营助手」)。web/ 与云端共享，layout.tsx 的
@@ -548,28 +557,47 @@ ipcMain.handle("desktop:newWindow", () => {
 });
 
 // P0-1 窗口单例化：studio/video 这类独立路由窗口重复打开时只 focus 已开的那扇、不再新开一扇。
-// 按 route 找(见 createWindow 里的 win.__qfRoute)——studio 和 video 各自的 route 不同，互相独立
-// 单例，不会互相顶掉；chat 窗口(newWindow 开的新工作台)route 为空不参与这个查找，仍可自由多开。
-function focusOrOpenByRoute(route) {
+// 按 route 找(见 createWindow 里的 win.__qfRoute)——不同 route 互相独立单例，不会互相顶掉；
+// chat 窗口(newWindow 开的新工作台)route 为空不参与这个查找，仍可自由多开。
+// E1-C1：加第三个参数 onFocusExisting——已开着的窗口需要"再收一次新参数"时(如工作台切面板/换
+// payload)用它把事件送进已开的那扇窗，不用另起一份查找逻辑。
+function focusOrOpenByRoute(route, createOpts = {}, onFocusExisting) {
   for (const w of windows) {
     if (w && !w.isDestroyed() && w.__qfRoute === route) {
       if (w.isMinimized()) w.restore();
       w.focus();
+      if (onFocusExisting) onFocusExisting(w);
       return w;
     }
   }
-  return createWindow({ route });
+  return createWindow({ route, ...createOpts });
 }
 
-// 生成工作室：独立窗口（自带 /dashboard/studio 路由，状态隔离；已开则聚焦不新开）。
-ipcMain.handle("desktop:openStudio", () => {
-  const w = focusOrOpenByRoute("/dashboard/studio");
+// E1-C1：工作台单例窗口(/dashboard/workbench，图片/视频双面板 + 模板占位)。已开就 focus + 推
+// workbench:navigate 事件切面板/带 payload；没开就带 mode/payload 拼进 URL query 新开一扇。
+// payload 只能是轻标识(如 { fromGen })，真图/大对象一律不进这条通路(容器页按 id 自己去取)。
+function openWorkbench(mode, payload) {
+  return focusOrOpenByRoute(
+    "/dashboard/workbench",
+    { workbenchMode: mode, workbenchPayload: payload },
+    (w) => w.webContents.send("workbench:navigate", { mode: mode || null, payload: payload || null }),
+  );
+}
+
+ipcMain.handle("desktop:openWorkbench", (_e, opts = {}) => {
+  const w = openWorkbench(opts.mode, opts.payload);
   return { ok: true, id: w.id };
 });
 
-// 视频创作工作区：独立窗口（/dashboard/video：挑高光→配文案→秒级预览→对话改任何东西→出片；已开则聚焦不新开）。
+// 生成工作室(旧 IPC，向后兼容保留)：重定向进工作台图片面板，不再单独开 /dashboard/studio 窗口。
+ipcMain.handle("desktop:openStudio", () => {
+  const w = openWorkbench("image");
+  return { ok: true, id: w.id };
+});
+
+// 视频创作工作区(旧 IPC，向后兼容保留)：重定向进工作台视频面板。
 ipcMain.handle("desktop:openVideoStudio", () => {
-  const w = focusOrOpenByRoute("/dashboard/video");
+  const w = openWorkbench("video");
   return { ok: true, id: w.id };
 });
 

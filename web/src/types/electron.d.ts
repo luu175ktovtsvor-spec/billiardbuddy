@@ -43,9 +43,18 @@ export interface ElectronBridge {
   info(): Promise<DesktopInfo>;
   /** 新开一个独立工作台窗口（各自有自己的会话、工作目录、任务订阅）。 */
   newWindow?(): Promise<{ ok: boolean; windowCount?: number; id?: number; workbenchId?: string }>;
-  /** 打开「生成工作室」独立窗口（/dashboard/studio 路由）。 */
+  /** 打开「生成工作室」独立窗口（/dashboard/studio 路由）。⚠️ E1-C1 起：主进程内部已重定向到
+   *  openWorkbench("image")，保留只为向后兼容旧调用点，别再新增调用，改用 openWorkbench。 */
   openStudio?(): Promise<{ ok: boolean; id?: number }>;
+  /** ⚠️ E1-C1 起：主进程内部已重定向到 openWorkbench("video")，同上，改用 openWorkbench。 */
   openVideoStudio?(): Promise<{ ok: boolean; id?: number }>;
+  /** E1-C1：工作台单例窗口(/dashboard/workbench，生图/视频双面板)带参打开。已开着就聚焦 + 切面板/
+   *  换 payload(经 onWorkbenchNavigate 事件)；没开就带 mode/payload 拼进 URL query 新开一扇。
+   *  payload 只能是轻标识(如 { fromGen: generationId }，值必须是字符串)，真图/大对象绝不进这条通路。 */
+  openWorkbench?(mode: "image" | "video", payload?: Record<string, string>): Promise<{ ok: boolean; id?: number }>;
+  /** E1-C1：订阅已开着的工作台窗口收到的"再次 openWorkbench(...)"事件——用来切面板/更新 payload。
+   *  返回取消订阅函数。 */
+  onWorkbenchNavigate?(cb: (p: { mode: "image" | "video" | null; payload: Record<string, string> | null }) => void): () => void;
   /** M2：工作室出了成品，通知其它窗口刷新「最近作品」。 */
   notifyStudioArtifact?(payload: { kind?: string; generationId?: string; url?: string }): Promise<{ ok: boolean }>;
   /** M2：订阅其它窗口（工作室）的成品事件，回调里刷新「最近作品」。返回取消订阅函数。 */
