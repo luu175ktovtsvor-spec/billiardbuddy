@@ -5,7 +5,7 @@
  * 浅色为默认、跟随系统深浅色（dark: 变体）。仅桌面端渲染；整窗自己掌控外观。
  * 顶部留给原生红绿灯（Electron titleBarStyle:'hiddenInset'），可拖拽区用 .app-drag。
  */
-import { Plus, Settings, Cpu, Terminal, Trash2, PanelsTopLeft, Wand2 } from "lucide-react";
+import { Plus, Settings, Cpu, Trash2, PanelsTopLeft, Wand2 } from "lucide-react";
 
 import { useHorizontalResize } from "./use-resize";
 
@@ -56,9 +56,7 @@ export function DesktopSidebar({
     <aside style={{ width }} className="relative flex shrink-0 flex-col border-r border-black/[0.08] bg-[#f5f5f7] dark:border-white/[0.06] dark:bg-[#0b0c0e]">
       <div className="app-drag h-[40px]" />
       <div className="app-drag flex items-center gap-2 px-3.5 pb-3">
-        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-[#10a37f]/15 text-[#10a37f]">
-          <Terminal className="h-3.5 w-3.5" />
-        </span>
+        <img src="/app-icon.png" alt="台球运营助手" className="h-6 w-6 rounded-md" />
         <span className="font-mono text-[13px] font-medium tracking-tight text-[#1d1d1f] dark:text-[#e6e7e9]">台球运营助手</span>
       </div>
 

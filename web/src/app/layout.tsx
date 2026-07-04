@@ -14,7 +14,7 @@ export const metadata: Metadata = {
   description: "台球房行业本地 AI 运营助手",
   manifest: "/manifest.json",
   icons: {
-    icon: "/icon.svg",
+    icon: "/app-icon.png",
   },
 };
 
