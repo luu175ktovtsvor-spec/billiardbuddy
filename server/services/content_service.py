@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import time
@@ -22,6 +23,12 @@ from services.brand_voice_service import get_brand_voice_context
 from services.memory_service import load_store_memory, with_store_brain
 from core.security_guard import check_input_injection, filter_output_leak, AI_RESPONSE_PREFIXES
 from services.scenario_role_map import SCENARIO_ROLE_MAP
+from services.scene_plan.manifest import (
+    PLAN_TYPE_LABELS,
+    PLAN_TYPE_TEMPLATE_KEYS,
+    parse_plan_json,
+    sanitize_recharge_plan,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -875,6 +882,130 @@ async def generate_activity(
     await _safe_refresh(db, generation)
 
     await increment_usage(db, str(store.id), tokens=response.tokens_used or 0)
+
+    return generation
+
+
+async def generate_scene_plan(
+    db: AsyncSession,
+    store: Store,
+    user: User | None,
+    *,
+    plan_type: str,
+    requirements: str = "",
+) -> Generation:
+    """AI 真智能生成台球场景方案（开业/会员卡/比赛）的结构化 JSON（D-Task-7）。
+
+    铁律#8：不做死模板填空——把对应场景的行业真实运营逻辑 YAML（PLAN_TYPE_TEMPLATE_KEYS）当参考
+    底料 + _append_guardrails 召回的行业知识一起交给模型，让模型自己组织方案内容；只在"输出格式"上
+    收口成严格 JSON（后面喂给 services.scene_plan.render 渲染成图片版/网页版）。
+
+    result 落的是 JSON 字符串（不是给人看的文案），调用方用 json.loads(gen.result) 取结构化方案。
+    """
+    if plan_type not in PLAN_TYPE_LABELS:
+        raise ValueError(f"未知方案类型: {plan_type}")
+
+    injection_check = check_input_injection(requirements)
+    if injection_check:
+        raise AIServiceError(injection_check)
+
+    await check_quota(db, str(store.id))
+    _validate_provider_for_production()
+
+    label = PLAN_TYPE_LABELS[plan_type]
+    ref_blocks: list[str] = []
+    for key in PLAN_TYPE_TEMPLATE_KEYS[plan_type]:
+        try:
+            ref_blocks.append(prompt_engine.render(
+                key, store,
+                extra_vars={
+                    "extra_note": requirements or "老板暂无补充，按行业通用逻辑给一版可直接用的方案",
+                    "tone": "亲切自然、接地气",
+                    "target": "老板需求里提到的客群，没提就默认全部客群",
+                    "positioning": store.style or "（未提供定位，按常见社区型球房处理，"
+                                                    "方案里可体现「若定位不符可调整」）",
+                },
+                lenient=True,
+            ))
+        except PromptTemplateNotFoundError:
+            logger.warning("场景方案引用模板缺失: %s", key)
+    reference_text = "\n\n---\n\n".join(b for b in ref_blocks if b)
+
+    body = (
+        f"你是台球房运营专家，要给老板产出一份《{label}》的结构化方案数据"
+        "（后面会被系统渲染成一份可直接看的方案单，给老板发朋友圈/贴店里/存档）。\n\n"
+        "## 可参考的台球行业真实运营逻辑\n\n"
+        "把下面这套真做法揉进方案，不要脱离它自由发挥；它没覆盖到的细节按你的专业判断补，"
+        "但不能与其抵触：\n\n"
+        f"{reference_text}\n\n"
+        "## 老板这次的具体需求（原话）\n\n"
+        f"{requirements or '（没有补充，按上面的行业逻辑给一版通用可用的方案）'}\n\n"
+        "## 输出要求（必须严格遵守）\n\n"
+        "只输出一段合法 JSON，不要 markdown 代码块标记（```），不要 JSON 之外的任何文字/解释。"
+        "JSON 字段：\n"
+        '{"title": "方案标题(不超过20字)", '
+        '"goal": "一句话方案目标", '
+        '"timeline": [{"time": "如\'开业前7天\'/\'第1天\'", "action": "这个时间点要做的事"}], '
+        '"materials": ["需要准备的物料/资源，每项一句话"], '
+        '"budget": "预算或优惠力度说明；没有真实数字就写占位符如【请补充：充值档位金额】，别编造具体数字", '
+        '"notes": ["执行注意事项/风险提示，每项一句话"], '
+        '"missing_info": ["老板没提供、但方案落地必须补的关键信息，如店名/具体日期/预算上限；'
+        '都不缺就给空数组"]}\n\n'
+        "只输出这段 JSON。"
+    )
+    body, knowledge_names = _append_guardrails(
+        body, store, role=getattr(user, "my_role", None) or "manager", intent_text=f"{label} {requirements}",
+    )
+    try:
+        body = with_store_brain(body, await load_store_memory(db, store.id), intent=f"{label} {requirements}")
+    except Exception:
+        logger.warning("generate_scene_plan 注入店脑失败，跳过 store_id=%s", store.id, exc_info=True)
+
+    provider = ProviderFactory.get_text_provider_for_store(store)
+    request = TextRequest(prompt=body, max_tokens=1800, thinking={"type": "disabled"})
+    _t0 = time.monotonic()
+    try:
+        response = await provider.generate(request)
+    except Exception as e:
+        await _safe_log_generation(store, user, "scene_plan", plan_type, outcome="failure",
+                                   error_type=type(e).__name__, t0=_t0)
+        if isinstance(e, AIProviderError):
+            raise AIServiceError(e.message, status_code=e.status_code) from e
+        if isinstance(e, AIServiceError):
+            raise
+        raise AIServiceError("AI 生成服务暂时不可用，请稍后重试") from e
+
+    try:
+        plan_data = parse_plan_json(response.content)
+    except ValueError:
+        await _safe_log_generation(store, user, "scene_plan", plan_type, outcome="failure",
+                                   error_type="PlanJsonParseError", t0=_t0)
+        raise AIServiceError("AI 这次没给出能解析的方案结构，换个说法或再试一次")
+
+    if plan_type == "recharge":
+        plan_data = sanitize_recharge_plan(plan_data)
+
+    result_json = json.dumps(plan_data, ensure_ascii=False)
+
+    generation = Generation(
+        id=uuid.uuid4(),
+        store_id=store.id,
+        user_id=user.id if user else None,
+        type="scene_plan",
+        sub_type=plan_type,
+        input_params={"plan_type": plan_type, "requirements": requirements, "knowledge_used": knowledge_names},
+        prompt_used=body,
+        result=result_json,
+        model_used=response.model,
+        tokens_used=response.tokens_used or 0,
+    )
+    db.add(generation)
+    await db.commit()
+    await _safe_refresh(db, generation)
+
+    await increment_usage(db, str(store.id), tokens=response.tokens_used or 0)
+    await _safe_log_generation(store, user, "scene_plan", plan_type, outcome="success",
+                               tokens=response.tokens_used or 0, t0=_t0)
 
     return generation
 
