@@ -13,6 +13,7 @@ import { Film, Plus, Loader2, Sparkles, Send, Download, Play, Pause, Clapperboar
 import { api, type MediaJobStatus, type VideoDocView } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
 import { useDesktop } from "@/hooks/use-desktop";
+import { useWhisperReady } from "@/hooks/use-whisper-ready";
 
 const BTN = "inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-[13px] font-medium transition active:scale-[0.97] disabled:opacity-40 disabled:active:scale-100";
 const BTN_PRIMARY = `${BTN} bg-[#10a37f] text-white hover:bg-[#0e906f]`;
@@ -41,16 +42,8 @@ export default function VideoWorkspacePage() {
   const [brand, setBrand] = useState("");
   const [mode, setMode] = useState<"ambient" | "speech">("ambient");
   // 口播模型(whisper 1.4G)按需下载状态:下好前"口播"模式灰掉。桌面外(web)无 electron.models → 视作就绪不挡。
-  const [modelStatus, setModelStatus] = useState<import("@/types/electron").ModelStatus>({ phase: "ready", percent: 100 });
-  useEffect(() => {
-    const m = typeof window !== "undefined" ? window.electron?.models : undefined;
-    if (!m) return;
-    let alive = true;
-    m.status().then((s) => { if (alive) setModelStatus(s); }).catch(() => {});
-    const off = m.onProgress((s) => { if (alive) setModelStatus(s); });
-    return () => { alive = false; off?.(); };
-  }, []);
-  const speechReady = modelStatus.phase === "ready";
+  // 共享 hook(D-Task-9 抽出，语音输入按钮复用同一套就绪门，别各造一份)。
+  const { ready: speechReady, status: modelStatus } = useWhisperReady();
   const [ratio, setRatio] = useState<"9:16" | "1:1" | "16:9" | "original">("9:16");
   const [targetDur, setTargetDur] = useState(16);
   const [busy, setBusy] = useState(false);
