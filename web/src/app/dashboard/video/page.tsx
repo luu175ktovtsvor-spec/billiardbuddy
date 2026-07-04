@@ -8,7 +8,7 @@
  * 「预览走客户端、导出走服务端」:改文案在浏览器 DOM 即时看到;点"出片"才服务端逐帧渲染成有包装的成品。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Film, Plus, Loader2, Sparkles, Send, Download, Play, Pause, Clapperboard } from "lucide-react";
+import { Film, Plus, Loader2, Sparkles, Send, Download, Play, Pause, Clapperboard, AlertTriangle } from "lucide-react";
 
 import { api, type MediaJobStatus, type VideoDocView } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
@@ -52,6 +52,8 @@ export default function VideoWorkspacePage({ initialFromGen }: { initialFromGen?
   const [recapText, setRecapText] = useState("");
   const [reply, setReply] = useState<string | null>(null);
   const [finalUrl, setFinalUrl] = useState<string | null>(null);
+  // G-A・渲染后体检门返回的软提醒(大白话·非空才有):复渲后仍有问题时的一句话caveat,不挡看片、不弹窗。
+  const [renderCaveat, setRenderCaveat] = useState<string | null>(null);
 
   // ── 客户端顺序预览播放器 ──
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -221,14 +223,15 @@ export default function VideoWorkspacePage({ initialFromGen }: { initialFromGen?
   // 出片(慢·服务端逐帧渲染)
   const doExport = useCallback(async () => {
     if (!project) return;
-    setBusy(true); setError(null); setFinalUrl(null);
+    setBusy(true); setError(null); setFinalUrl(null); setRenderCaveat(null);
     setStage(mode === "speech" ? "在出片(保原声+烧字幕),好了叫你…" : "在渲染成片(带包装),好了叫你…");
     try {
       const job = await runJob(() => (mode === "speech" ? api.renderVideoProject(project, "成片") : api.renderVideoV2(project, "成片")));
-      const res = (job.result || {}) as { urls?: string[] };
+      const res = (job.result || {}) as { urls?: string[]; caveat?: string };
       const url = res.urls?.[0];
       if (!url) throw new Error("没拿到成片链接");
       setFinalUrl(url);
+      setRenderCaveat(res.caveat && res.caveat.trim() ? res.caveat.trim() : null);
     } catch (e) {
       if (pollAbortRef.current?.signal.aborted) return; // 组件已卸载：别再 setState
       setError(getErrorMessage(e));
@@ -425,6 +428,14 @@ export default function VideoWorkspacePage({ initialFromGen }: { initialFromGen?
               <div className="text-[12px] font-semibold text-[#10a37f]">成片好了 ✓</div>
               {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
               <video src={finalUrl} controls className="w-full rounded-lg bg-black" />
+              {/* G-A・渲染后体检门caveat:软提醒不挡看片(风格同生图台text_quality_warning)。
+                  后端(qc_caveat_message)已经把"要不要我再调一版?"接在句尾,这里原样展示不重复加。 */}
+              {renderCaveat && (
+                <div className="flex items-start gap-1 text-[11px] text-[#b58a00] dark:text-[#e0b23a]">
+                  <AlertTriangle className="mt-[1px] h-3 w-3 shrink-0" />
+                  <span>{renderCaveat}</span>
+                </div>
+              )}
             </div>
           )}
         </div>
