@@ -372,6 +372,36 @@ export function DesktopChatShell({
     if (!electron?.onStudioArtifact) return;
     return electron.onStudioArtifact(() => { void refreshRecentItems(); });
   }, [electron, refreshRecentItems]);
+  // D-Task-10：全局快捷键小窗提交的内容 → 注入进当前对话。照 viewCurrentScreen(下方)的正确范式：
+  // addSelectedFiles 是异步 setState，这一刻 state 还没刷新到位，显式带上 selectedFiles override 防漏发
+  // ——别踩 C 批那个"addSelectedFiles 后紧接 send 漏 override"的时序坑。
+  useEffect(() => {
+    if (!electron?.onQuickInputInject) return;
+    return electron.onQuickInputInject((payload) => {
+      const text = String(payload?.text || "").trim();
+      const imagePath = payload?.imagePath || null;
+      if (!text && !imagePath) return;
+      if (chat.generating) {
+        // 任务跑动中弹的小窗内容暂不强行打断（同 viewCurrentScreen 的"运行中不发"约定）。
+        toast.error("AI 正在处理上一个任务，等它忙完再问这个");
+        return;
+      }
+      if (!imagePath) {
+        void chat.send(text);
+        return;
+      }
+      addSelectedFiles([imagePath]);
+      const shown = imagePath.split(/[\\/]/).pop();
+      void chat.send(
+        text || `我刚在小窗里截了一张屏幕图，文件名是 ${shown}。先根据这张截图告诉我你看到了什么；如果需要点按或输入，先说明要做什么并等我确认。`,
+        undefined,
+        {
+          selectedFiles: Array.from(new Set([...selectedFiles, imagePath])),
+          ...(text ? {} : { displayText: "看一张截图" }),
+        },
+      );
+    });
+  }, [electron, chat, addSelectedFiles, selectedFiles, toast]);
   // 新会话首条消息后拿到 id → 把用户此前设的工作目录落盘到这个 id
   useEffect(() => { if (chat.conversationId) persistWorkingDir(chat.conversationId, workingDir); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [chat.conversationId]);
 
