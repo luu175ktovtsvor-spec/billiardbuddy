@@ -186,7 +186,9 @@ async function waitStreamSettle(win, maxMs = 60000) {
   }
   return { ended: false, waitedMs: Date.now() - t0, friendlyError: 0 };
 }
-async function findInput(win) { return win.locator('[placeholder*="要办的事"], textarea, [contenteditable="true"]').first(); }
+// 输入框：现在是主 composer 的 textarea（placeholder＝WELCOME.placeholder「说说要办什么…」，
+// 老的「要办的事」已改）。优先 textarea（最稳、不依赖文案），再退 placeholder/可编辑区。
+async function findInput(win) { return win.locator('textarea, [placeholder*="要办什么"], [contenteditable="true"]').first(); }
 async function send(win, text) {
   const input = await findInput(win);
   await input.click();
