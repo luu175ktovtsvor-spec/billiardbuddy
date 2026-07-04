@@ -430,6 +430,89 @@ async def test_edit_round_carry_forward_triggers_ocr_quality_check(monkeypatch):
     assert result["count"] == 1
 
 
+async def test_edit_round_ocr_exhausted_soft_fails_with_warning_instead_of_raising(monkeypatch):
+    """review 发现的 Important 问题修复：改图轮承接了上一轮硬要素后，一次跟这些字完全无关的
+    编辑("把背景换成蓝色")如果被编辑模型顺带画漂移了承接来的店名/电话，OCR 质检会一直不过——
+    重出 1 次(防漂移的既有机制不变)后仍不过时，改图轮该【尽力而为返回这张图 + 软性警告标记】，
+    不能像 fresh 生成一样直接 AIServiceError 让用户"改个背景色，啥图都拿不到"。"""
+    engine, db, store, user = await _make_store_and_db()
+    _patch_desktop_ark(monkeypatch)
+
+    orig_id = uuid.uuid4()
+    db.add(Generation(
+        id=orig_id, store_id=store.id, type="poster", result="/uploads/orig.jpg",
+        input_params={"poster_text": {"title": "抢一大战", "contact": "15984632071"}},
+    ))
+    await db.commit()
+
+    provider_calls = {"n": 0}
+
+    async def _call(**kwargs):
+        provider_calls["n"] += 1
+        return _png_bytes(1152, 1536)
+
+    def fake_build_image_provider(api_key, base_url, model=None):
+        return _FakeProvider("seedream", _call)
+
+    from services.ai.factory import ProviderFactory
+    monkeypatch.setattr(ProviderFactory, "build_image_provider", staticmethod(fake_build_image_provider))
+
+    # OCR 每次都判定"没对上"——模拟编辑模型把承接来的店名/电话漂移了，且重出 1 次也没救回来。
+    monkeypatch.setattr(poster_service, "_run_ocr_texts", lambda path: ["无关内容"])
+    monkeypatch.setattr(
+        poster_service, "detect_ocr_text_anomalies",
+        lambda ocr_texts, hard_values: {"title": "店名没有识别到：应为「抢一大战」"},
+    )
+
+    try:
+        result = await poster_service.generate_images(
+            db=db, store=store, user_id=user.id, prompt="把背景换成蓝色的",
+            image_model=None, ratio="3:4", count=1,
+            refine_from=str(orig_id), poster_text=None,  # 走 preserve-list 承接
+        )
+    finally:
+        await engine.dispose()
+
+    assert provider_calls["n"] == 2, "该恰好是首次 + 重出 1 次(防漂移机制不变)，不该继续兜底整批重出"
+    assert result["count"] == 1, "改图轮 OCR 重出后仍不过，也该按最佳成果返回图片，不是硬失败啥都没有"
+    img = result["images"][0]
+    assert img.get("text_quality_warning") is True
+    assert img.get("text_quality_warning_message"), "该带一句大白话提示，不是只给个布尔位"
+
+
+async def test_fresh_generation_ocr_exhausted_still_raises_hard_failure(monkeypatch):
+    """对照组：确认这次修复只软化了改图轮——纯新生成(没有 refine_from)遇到同样 OCR 一直不过
+    的情况，U4 原有的诚实硬失败(AIServiceError)必须继续成立，不能被这次改图侧的修复连累变松。"""
+    from core.exceptions import AIServiceError
+
+    engine, db, store, user = await _make_store_and_db()
+    _patch_desktop_ark(monkeypatch)
+
+    async def _call(**kwargs):
+        return _png_bytes(1152, 1536)
+
+    def fake_build_image_provider(api_key, base_url, model=None):
+        return _FakeProvider("seedream", _call)
+
+    from services.ai.factory import ProviderFactory
+    monkeypatch.setattr(ProviderFactory, "build_image_provider", staticmethod(fake_build_image_provider))
+    monkeypatch.setattr(poster_service, "_run_ocr_texts", lambda path: ["无关内容"])
+    monkeypatch.setattr(
+        poster_service, "detect_ocr_text_anomalies",
+        lambda ocr_texts, hard_values: {"title": "店名没有识别到：应为「开业大吉」"},
+    )
+
+    try:
+        with pytest.raises(AIServiceError):
+            await poster_service.generate_images(
+                db=db, store=store, user_id=user.id, prompt="开业海报",
+                image_model=None, ratio="3:4", count=1,
+                poster_text={"title": "开业大吉"},  # 没有 refine_from → fresh 生成
+            )
+    finally:
+        await engine.dispose()
+
+
 # ────────────────────────────── 6. 门店品牌包自动附带 ──────────────────────────────
 
 
