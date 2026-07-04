@@ -41,12 +41,24 @@ def _get_image_semaphore() -> asyncio.Semaphore:
 # gpt-image-2 支持任意分辨率：单边≤3840，总像素 655360~8294400，宽高为16的倍数
 # 每个尺寸都精确等于声称的比例，且宽高均为 16 的倍数（见 tests/test_poster_sizing.py）。
 # 旧版 3:4 与 9:16 都误填 1024x1536(实为2:3)、16:9 误填 1536x1024(实为3:2)——选不同比例出同一张图。
+#
+# E2-1b・"2:5"(易拉宝竖长条)/"5:2"(横幅宽版)是 Seedream 专属挡(gpt-image-2 出不了这么极端的
+# 长宽比的海报场景，见 _SEEDREAM_ONLY_RATIOS + generate_images 里的强制路由)。尺寸查证 seedream_image.py
+# 真机实测的像素下限 _SEEDREAM_MIN_PIXELS=3,686,400——1216x3040(=3,696,640px)刚好压线越过下限，
+# 且两边都是 16 的倍数、比例精确等于 0.4/2.5，喂进 _normalize_seedream_size 时 px 已达标不会被
+# 二次缩放拉伸变形（会原样透传，见 test_poster_sizing.py 的验证）。
 SIZE_MAP = {
     "3:4": "1152x1536",   # 0.75
     "1:1": "1024x1024",   # 1.0
     "9:16": "1152x2048",  # 0.5625
     "16:9": "2048x1152",  # 1.7778
+    "2:5": "1216x3040",   # 0.4    易拉宝竖长条(Seedream 专属)
+    "5:2": "3040x1216",   # 2.5    横幅宽版(Seedream 专属)
 }
+
+# 这两挡只有 Seedream 能出（gpt-image-2 走极端长宽比不可靠，见模块顶部说明）——
+# generate_images 里据此在算完路由后强制切回 Seedream，不管内容启发式/改图路由/调用方显式选了什么。
+_SEEDREAM_ONLY_RATIOS = {"2:5", "5:2"}
 
 
 def _get_api_size(ratio: str) -> str:
@@ -67,7 +79,14 @@ def _read_image_dimensions(path: Path) -> tuple[int, int]:
 
 
 def _assert_saved_ratio(path: Path, ratio: str) -> tuple[int, int]:
-    """读取落盘图片真实宽高，确保 provider/保存链路没有悄悄改比例。"""
+    """读取落盘图片真实宽高，确保 provider/保存链路没有悄悄改比例。
+
+    `ratio if ratio in SIZE_MAP else "3:4"` 是安全网：只有 SIZE_MAP 里登记过的比例才信任它自己的
+    期望值，没登记的一律按 3:4 校验（E2-1b 前 "2:5"/"5:2" 没进 SIZE_MAP 时就是靠这条兜底防止
+    "标 2:5 实出 3:4"却被错误判定通过——现在两者都已登记，走各自真实比例，不再落这个兜底分支）。
+    0.02 绝对容差对新增的极端比例(0.4/2.5)同样够用：Seedream 若因内部取整产生 ±16px 级别的
+    像素偏差，换算到比例误差远小于 0.02（验证见 tests/test_poster_sizing.py）。
+    """
     width, height = _read_image_dimensions(path)
     expected = _ratio_value(ratio if ratio in SIZE_MAP else "3:4")
     actual = width / height
@@ -441,6 +460,16 @@ def _route_image_model(prompt: str | None, poster_text: dict | None, user_choice
     return _AUTO_ROUTE_SEEDREAM_MODEL
 
 
+def _force_seedream_for_ratio(image_model: str | None, ratio: str) -> str | None:
+    """E2-1b：ratio 落在 Seedream 专属挡(易拉宝 2:5/横幅 5:2)时，不管上面算出的路由结果是什么
+    (内容启发式、改图路由 _route_edit_model、甚至调用方显式手选 gpt-image-2)，一律强制切回
+    Seedream——gpt-image-2 对这种极端长宽比的海报场景没有把握(见模块顶部说明)，这两挡是
+    Seedream 差异化能力，绝不能落 GPT。已经是 Seedream 的直接原样返回，不重复判断。"""
+    if ratio in _SEEDREAM_ONLY_RATIOS and "seedream" not in (image_model or "").lower():
+        return _AUTO_ROUTE_SEEDREAM_MODEL
+    return image_model
+
+
 # ────────────────── U5(E3d)・改图侧独立路由(不改上面 U2 的生成路由) ──────────────────
 # 改图(refine_from 有值)按"这轮改的是文字还是内容"选模型：字错/改字 → Seedream(中文文字渲染强项，
 # 官方文档确认 doubao-seedream-4.0/4.5/5.0 不支持 seed 但文字编辑能力是其强项，见 u5-report.md 查证)；
@@ -761,6 +790,8 @@ async def generate_images(
     if refine_from:
         # U5・改图侧独立路由(不影响上面刚算出的 U2 生成路由值)：按"改文字/改内容"重新选模型。
         image_model = _route_edit_model(prompt, _explicit_image_model_choice, edit_type)
+    # E2-1b・易拉宝 2:5/横幅 5:2 是 Seedream 专属尺寸——不管上面路由算出什么，强制切回 Seedream。
+    image_model = _force_seedream_for_ratio(image_model, ratio)
 
     # 生图 BYOK：门店配了自带生图模型 → 用门店的 key/base_url（自担成本）；否则回退平台默认。
     api_key, image_base_url, image_model_cfg = ProviderFactory.get_image_config_for_store(store)
@@ -1320,4 +1351,6 @@ def get_size_options() -> list[dict]:
         {"value": "1:1", "label": "1:1 方形", "desc": "小红书/抖音图文"},
         {"value": "9:16", "label": "9:16 手机全屏", "desc": "短视频封面/抖音竖屏"},
         {"value": "16:9", "label": "16:9 横版", "desc": "公众号封面/视频封面"},
+        {"value": "2:5", "label": "2:5 易拉宝", "desc": "门口易拉宝/竖长条展架"},
+        {"value": "5:2", "label": "5:2 横幅", "desc": "店内横幅/长条广告位"},
     ]

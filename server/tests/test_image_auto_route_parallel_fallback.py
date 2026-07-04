@@ -240,6 +240,47 @@ async def test_generate_images_default_routes_to_seedream_not_gpt(monkeypatch):
     assert result["images"][0]["model_switched"] is False
 
 
+# ───────────── 2b. E2-1b：易拉宝 2:5/横幅 5:2 强制落 Seedream，即便显式选了 gpt-image-2 ─────────────
+
+
+async def test_generate_images_seedream_only_ratio_forces_seedream_even_with_explicit_gpt_choice(monkeypatch):
+    """端到端正确性要求：ratio="2:5"(易拉宝专属挡)即便调用方显式手选了 gpt-image-2，也必须强制
+    落地到 Seedream(ARK)——gpt-image-2 出不了这么极端的长宽比的海报场景，不能真送过去让它报错
+    或出走样的图。同一断言覆盖：base_url 落 ARK、routed_model 不含 gpt-image、真送 provider 的
+    size 就是 SIZE_MAP["2:5"]（没有被半路改回别的尺寸）。"""
+    engine, db, store, user = await _make_store_and_db()
+    _patch_desktop_ark(monkeypatch)
+
+    captured = {}
+    w, h = (int(x) for x in poster_service.SIZE_MAP["2:5"].split("x"))
+
+    async def _call(**kwargs):
+        captured.update(kwargs)
+        return _png_bytes(w, h)
+
+    def fake_build_image_provider(api_key, base_url, model=None):
+        captured["base_url"] = base_url
+        captured["routed_model"] = model
+        return _FakeProvider("seedream", _call)
+
+    from services.ai.factory import ProviderFactory
+    monkeypatch.setattr(ProviderFactory, "build_image_provider", staticmethod(fake_build_image_provider))
+
+    try:
+        result = await poster_service.generate_images(
+            db=db, store=store, user_id=user.id, prompt="给球房门口做个易拉宝",
+            image_model="gpt-image-2", ratio="2:5", count=1,
+        )
+    finally:
+        await engine.dispose()
+
+    assert "volces" in captured["base_url"], f"没落地到火山方舟 ARK，实际 base_url={captured['base_url']}"
+    assert "gpt-image" not in (captured["routed_model"] or ""), "易拉宝挡不能被送去 gpt-image 系列"
+    assert captured["size"] == poster_service.SIZE_MAP["2:5"], f"实际送 provider 的 size={captured['size']!r}"
+    assert "gpt-image-2" not in result["model_used"]
+    assert result["images"][0]["model_switched"] is False
+
+
 # ────────────────────────────── 3. 并行生成：真并行 + 闸内 + 顺序稳定 ──────────────────────────────
 
 
