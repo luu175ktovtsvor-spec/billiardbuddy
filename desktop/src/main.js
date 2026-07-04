@@ -115,6 +115,12 @@ let quickInputWindow = null;
 let quickInputTargetWindow = null;
 // Alt+Space 在 Windows 是系统窗口菜单快捷键、别用；选一个不撞常见系统/软件热键的组合。
 const QUICK_INPUT_HOTKEY = "CommandOrControl+Shift+Space";
+// ⚠️ 坑3(复审实锤)：openStudio/openVideoStudio 开出的独立路由窗口(/dashboard/studio、/dashboard/video)
+// 页面上没有 DesktopChatShell，没人订阅 quickinput:inject——如果老板正盯着这类窗口按快捷键，
+// 全局 mainWindow 又恰好在 createWindow() 的 focus 回写里被它顶替过(见坑1)，注入会静默送空。
+// 修法：只把"没有 route"的窗口(chat 根路由/新工作台，真有 DesktopChatShell)标记为 chat 窗，
+// 单独跟踪"最近聚焦的 chat 窗口"，快照目标时只在 chat 窗里选，绝不选中 studio/video 窗。
+let lastFocusedChatWindow = null;
 
 // ── 作品文件夹:首启自动建好一个固定目录,用户全程不用选"工作文件夹"。──────
 // 建在系统文档目录下(mac ~/Documents/台球助手,Windows 文档\台球助手)。这不是 Claude Code
@@ -210,12 +216,21 @@ function createWindow(opts = {}) {
 
   if (process.env.DESKTOP_DEVTOOLS === "1") win.webContents.openDevTools({ mode: "detach" });
 
+  // 没有 opts.route 的是 chat 根路由窗口(主 chat / desktop:newWindow 开的新工作台)——真渲染
+  // DesktopChatShell、能接 quickinput:inject；opts.route 有值的(studio/video)是独立路由窗口，
+  // 没有 DesktopChatShell，不能当快捷键小窗的注入目标(见上方坑3)。
+  win.__qfIsChat = !opts.route;
+
   mainWindow = win;
   windows.add(win);
-  win.on("focus", () => { mainWindow = BrowserWindow.getFocusedWindow() || win; });
+  win.on("focus", () => {
+    mainWindow = BrowserWindow.getFocusedWindow() || win;
+    if (win.__qfIsChat) lastFocusedChatWindow = win;
+  });
   win.on("closed", () => {
     windows.delete(win);
     mainWindow = BrowserWindow.getAllWindows()[0] || null;
+    if (lastFocusedChatWindow === win) lastFocusedChatWindow = null;
   });
   return win;
 }
@@ -256,10 +271,18 @@ function createQuickInputWindow() {
 
 // 触发入口(全局快捷键 → 这里)。⚠️ 坑2：先把"内容要送进哪个窗口"快照到 quickInputTargetWindow，
 // 再弹小窗——避免小窗弹出/获焦这段时间窗口焦点状态变化导致后续注入找错目标。
+// ⚠️ 坑3：目标必须是真有 DesktopChatShell 的 chat 窗，不能是全局 mainWindow(可能已被 studio/video
+// 窗的 focus 回写顶替，见坑1+坑3注释)——兜底链：当前聚焦窗若是 chat 窗 → 用它；否则最近聚焦过的
+// chat 窗若还活着 → 用它；否则随便找一个还活着的 chat 窗；实在一个 chat 窗都没有才退回 mainWindow
+// (极端兜底，至少不崩，但此时可能确实没有能接注入的窗口)。
 function openQuickInput() {
-  quickInputTargetWindow = (mainWindow && !mainWindow.isDestroyed())
-    ? mainWindow
-    : (BrowserWindow.getAllWindows().find((w) => w !== quickInputWindow) || null);
+  const focused = BrowserWindow.getFocusedWindow();
+  quickInputTargetWindow = (focused && !focused.isDestroyed() && focused.__qfIsChat)
+    ? focused
+    : (lastFocusedChatWindow && !lastFocusedChatWindow.isDestroyed())
+      ? lastFocusedChatWindow
+      : (BrowserWindow.getAllWindows().find((w) => w.__qfIsChat)
+        || ((mainWindow && !mainWindow.isDestroyed()) ? mainWindow : null));
   if (quickInputWindow && !quickInputWindow.isDestroyed()) {
     quickInputWindow.show();
     quickInputWindow.focus();
