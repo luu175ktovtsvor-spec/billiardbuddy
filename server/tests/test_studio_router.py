@@ -855,3 +855,154 @@ def test_studio_storyboard_fallback_line_split(monkeypatch):
                                              store=SimpleNamespace(id=uuid.uuid4()), db=None)
         assert len(out["shots"]) == 3 and "台球桌" in out["shots"][0]  # 非 JSON → 按行兜底
     asyncio.run(main())
+
+
+# ── E1-C2 修复(review Finding 1)：GET /studio/generation/{id} 做成视频 handoff 用的只读端点 ──
+#
+# ⚠️ generations 表受 core/tenant.py 的自动租户过滤保护(无租户上下文 fail-safe 清空结果)——真实
+# HTTP 请求里租户上下文由 `get_current_store` 依赖(api/deps.py:50 `set_tenant(store.id)`)在进
+# endpoint 前设好；这里绕开 FastAPI DI 直调函数，必须手动 set_tenant 模拟同样的请求前置条件，
+# 否则 db.get() 会被 fail-safe 清空、测出假阴性(这不是 studio_get_generation 本身的 bug)。
+
+def test_studio_get_generation_returns_own_store_generation():
+    """本店的成品：按 id 查得到 {url, ratio, is_video}，url/ratio 就是这张成品自己的字段
+    （不是别的成品、也不是拼出来的默认值）。"""
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        sid = uuid.uuid4()
+        gid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed(db, sid)
+            db.add(Generation(id=gid, store_id=sid, type="poster", sub_type="9:16",
+                              result="/uploads/posters/mine.png", model_used="m"))
+            await db.commit()
+
+            set_tenant(sid)  # 模拟 get_current_store 依赖已设好的请求前置条件
+            try:
+                out = await studio.studio_get_generation(
+                    str(gid), user=SimpleNamespace(id=uid), store=SimpleNamespace(id=sid), db=db)
+            finally:
+                set_tenant(None)
+            assert out == {"url": "/uploads/posters/mine.png", "ratio": "9:16", "is_video": False}
+    asyncio.run(main())
+
+
+def test_studio_get_generation_marks_video_type():
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        sid = uuid.uuid4()
+        gid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed(db, sid)
+            db.add(Generation(id=gid, store_id=sid, type="video", sub_type="9:16",
+                              result="/uploads/videos/mine.mp4", model_used="m"))
+            await db.commit()
+
+            set_tenant(sid)
+            try:
+                out = await studio.studio_get_generation(
+                    str(gid), user=SimpleNamespace(id=uid), store=SimpleNamespace(id=sid), db=db)
+            finally:
+                set_tenant(None)
+            assert out["is_video"] is True
+    asyncio.run(main())
+
+
+def test_studio_get_generation_rejects_cross_store():
+    """⚠️多租户铁律:别店的成品 id 不能被这个只读端点读出来(跨店泄露)。当前请求的租户上下文
+    是"我自己的店"(sid)，去查另一家店(other_sid)的成品 id——两道防线都该拦住(租户过滤先在
+    DB 层就查不到 + 端点自己的 store_id 显式校验)。"""
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        sid, other_sid = uuid.uuid4(), uuid.uuid4()
+        other_gid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed(db, sid)
+            db.add(Store(id=other_sid, owner_id=uid, name="别的店"))
+            db.add(Generation(id=other_gid, store_id=other_sid, type="poster",
+                              result="/uploads/posters/other.png", model_used="m"))
+            await db.commit()
+
+            set_tenant(sid)  # 当前请求的门店是 sid，不是 other_sid
+            try:
+                try:
+                    await studio.studio_get_generation(
+                        str(other_gid), user=SimpleNamespace(id=uid), store=SimpleNamespace(id=sid), db=db)
+                    assert False, "别店的成品不应被读到"
+                except AIServiceError:
+                    pass
+            finally:
+                set_tenant(None)
+    asyncio.run(main())
+
+
+def test_studio_get_generation_rejects_nonexistent_id():
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        sid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed(db, sid)
+
+            set_tenant(sid)
+            try:
+                try:
+                    await studio.studio_get_generation(
+                        str(uuid.uuid4()), user=SimpleNamespace(id=uid), store=SimpleNamespace(id=sid), db=db)
+                    assert False, "不存在的 id 不应返回成品"
+                except AIServiceError:
+                    pass
+            finally:
+                set_tenant(None)
+    asyncio.run(main())
+
+
+def test_studio_get_generation_rejects_malformed_id():
+    async def main():
+        try:
+            await studio.studio_get_generation(
+                "not-a-uuid", user=SimpleNamespace(id=uuid.uuid4()),
+                store=SimpleNamespace(id=uuid.uuid4()), db=None)
+            assert False, "格式不对的 id 不应被当成合法请求处理"
+        except AIServiceError:
+            pass
+    asyncio.run(main())
+
+
+def test_studio_get_generation_rejects_deleted_generation():
+    """软删的成品(is_deleted)不该再被这个端点读出来当作有效素材。"""
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        sid = uuid.uuid4()
+        gid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed(db, sid)
+            db.add(Generation(id=gid, store_id=sid, type="poster", is_deleted=True,
+                              result="/uploads/posters/gone.png", model_used="m"))
+            await db.commit()
+
+            set_tenant(sid)
+            try:
+                try:
+                    await studio.studio_get_generation(
+                        str(gid), user=SimpleNamespace(id=uid), store=SimpleNamespace(id=sid), db=db)
+                    assert False, "已删的成品不应被读到"
+                except AIServiceError:
+                    pass
+            finally:
+                set_tenant(None)
+    asyncio.run(main())
