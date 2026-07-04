@@ -95,6 +95,12 @@ class Store(Base):
     # None=用默认(env DESKTOP_AGENT_AUTO_SPEND_LIMIT，默认5)；>=0=上限(0=每张都先问)；-1=老板关闭上限闸(他自己的 BYOK key/钱)。
     agent_auto_spend_limit: Mapped[int | None] = mapped_column(Integer)
 
+    # U5(E3d)门店品牌包：生成海报时自动附带，保风格一致（poster_service.generate_images 读取）。
+    # 不塞 store_memory——那是语义检索表，不适合存结构化色值/图片路径。两个字段都可空：
+    # SQLite 由 init_local._reconcile_columns 自动给老库补列（ALTER 只接受常量默认，nullable 免此限制）。
+    brand_color: Mapped[str | None] = mapped_column(String(20))       # 品牌主色调 hex，如 "#1a73e8"
+    brand_reference_images: Mapped[list | None] = mapped_column(JSONType)  # 品牌参考图 /uploads 路径列表
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -268,6 +268,12 @@ function runPyInstaller() {
     // server/.venv 里 pyinstaller-hooks-contrib 依赖），pyclipper 是普通 C 扩展，PyInstaller
     // 默认的二进制依赖扫描能自动跟上，都不用手动 collect-all。
     "--collect-all", "rapidocr_onnxruntime",
+    // U5(E3d)：印刷/线下投放场景可选的真二维码叠层(owner §3-4 窄例外，默认不触发)。qrcode 是
+    // 纯 Python 库、_overlay_print_qr 里【懒加载】(import 在函数体内、PyInstaller 静态分析可能漏)，
+    // 且它内部按需切换 qrcode.image.pil/svg/base 等图片工厂子模块——保守 collect-all 收全，避免
+    // 装机后点"印刷模式"报 ModuleNotFound。cv2(二维码解码用 QRCodeDetector)已由 scenedetect[opencv]
+    // 传递依赖装好、走 hooks-contrib 自动收，不用额外处理。
+    "--collect-all", "qrcode",
     "--exclude-module", "torch",
     ...addData,
     ENTRY,

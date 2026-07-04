@@ -253,6 +253,114 @@ def test_studio_edit_backfills_parent_lineage(monkeypatch):
     asyncio.run(main())
 
 
+# ── U5(E3d)：edit_type / print_mode 参数入口透传（studio 层不做判断，只负责把请求体字段递给 generate_images）──
+
+def test_studio_edit_threads_edit_type_and_print_mode(monkeypatch):
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        monkeypatch.setattr(studio, "async_session", Session)
+        sid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed(db, sid)
+        parent_gid = uuid.uuid4()
+        captured = {}
+
+        async def fake_gen(db, store, user_id, prompt, image_model=None, ratio="3:4",
+                           refine_from=None, mask_path=None, count=1, **kw):
+            captured.update(kw)
+            return {"images": [{"generation_id": uuid.uuid4(), "poster_url": "/uploads/edited.png", "ratio": ratio}]}
+        monkeypatch.setattr(studio.poster_service, "generate_images", fake_gen)
+
+        body = studio.StudioEditIn(prompt="字打错了", source_generation_id=str(parent_gid),
+                                   edit_type="text_fix", print_mode=True)
+        out = await studio.studio_edit(body, user=SimpleNamespace(id=uid),
+                                       store=SimpleNamespace(id=sid), db=None)
+        jid = out["job_id"]
+
+        got = None
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            async with Session() as db:
+                got = await mj.get_job(db, jid, sid)
+            if got and got.status in ("done", "error"):
+                break
+        assert got is not None and got.status == "done", (got.status, got.error)
+        assert captured.get("edit_type") == "text_fix"
+        assert captured.get("print_mode") is True
+    asyncio.run(main())
+
+
+def test_studio_edit_default_print_mode_is_false(monkeypatch):
+    """请求体不传 print_mode → 默认 False，现状不变(owner 铁律：默认不做程序叠层)。"""
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        monkeypatch.setattr(studio, "async_session", Session)
+        sid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed(db, sid)
+        captured = {}
+
+        async def fake_gen(db, store, user_id, prompt, image_model=None, ratio="3:4",
+                           refine_from=None, mask_path=None, count=1, **kw):
+            captured.update(kw)
+            return {"images": [{"generation_id": uuid.uuid4(), "poster_url": "/uploads/edited.png", "ratio": ratio}]}
+        monkeypatch.setattr(studio.poster_service, "generate_images", fake_gen)
+
+        body = studio.StudioEditIn(prompt="改一下", source_generation_id=str(uuid.uuid4()))
+        out = await studio.studio_edit(body, user=SimpleNamespace(id=uid),
+                                       store=SimpleNamespace(id=sid), db=None)
+        jid = out["job_id"]
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            async with Session() as db:
+                got = await mj.get_job(db, jid, sid)
+            if got and got.status in ("done", "error"):
+                break
+        assert captured.get("edit_type") is None
+        assert captured.get("print_mode") is False
+    asyncio.run(main())
+
+
+def test_studio_generate_threads_print_mode(monkeypatch):
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        monkeypatch.setattr(studio, "async_session", Session)
+        sid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed(db, sid)
+        captured = {}
+
+        async def fake_gen(db, store, user_id, prompt, image_model=None, ratio="3:4", count=1, **kw):
+            captured.update(kw)
+            return {"images": [{"generation_id": uuid.uuid4(), "poster_url": "/uploads/a.png", "ratio": ratio}]}
+        monkeypatch.setattr(studio.poster_service, "generate_images", fake_gen)
+
+        body = studio.StudioGenerateIn(prompt="要拿去印刷的海报", print_mode=True)
+        out = await studio.studio_generate(body, user=SimpleNamespace(id=uid),
+                                           store=SimpleNamespace(id=sid), db=None)
+        jid = out["job_id"]
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            async with Session() as db:
+                got = await mj.get_job(db, jid, sid)
+            if got and got.status in ("done", "error"):
+                break
+        assert captured.get("print_mode") is True
+    asyncio.run(main())
+
+
 # ── 阶段4 /studio/i2v 图生视频 ──
 
 def test_studio_i2v_requires_first_frame():
