@@ -20,7 +20,6 @@ import { DesktopComposer } from "./desktop-composer";
 import { DesktopChatThread } from "./chat-thread";
 import { DesktopPreviewPanel, type PreviewItem } from "./preview-panel";
 import { SettingsDrawer } from "./settings-drawer";
-import { VideoStudioDrawer } from "./video-studio-drawer";
 import { ConfirmDialog } from "./confirm-dialog";
 import { StoreMemoryPanel } from "./store-memory-panel";
 import { ScheduledTasksPanel } from "./scheduled-tasks-panel";
@@ -155,7 +154,6 @@ export function DesktopChatShell({
   const [preview, setPreview] = useState<PreviewItem | null>(null);
   // 设置抽屉（门店名 + AI key）：单窗口内打开，替代老 web 的门店设置页
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [videoStudioOpen, setVideoStudioOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [scheduledTasksOpen, setScheduledTasksOpen] = useState(false);
   const [storeDocsOpen, setStoreDocsOpen] = useState(false);
@@ -1069,7 +1067,6 @@ export function DesktopChatShell({
         onCommand={(name) => {
           if (name === "new" || name === "clear") newChat();
           else if (name === "model" || name === "settings") setSettingsOpen(true);
-          else if (name === "video-studio") setVideoStudioOpen(true);
           else if (name === "video-workspace") { void electron?.openVideoStudio?.(); }
           else if (name === "help") chat.pushAssistantMessage(HELP_TEXT);
           else if (name === "cost") chat.pushAssistantMessage(`本月 AI 用量 ≈ ${liveSpend || "—"}`);
@@ -1140,7 +1137,6 @@ export function DesktopChatShell({
       />
     </DesktopShell>
     <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} onStoreNameChange={setLiveStoreName} />
-    <VideoStudioDrawer open={videoStudioOpen} onClose={() => setVideoStudioOpen(false)} conversationId={chat.conversationId} />
     <StoreMemoryPanel open={memoryOpen} onClose={() => setMemoryOpen(false)} workingDir={workingDir} />
     <ScheduledTasksPanel open={scheduledTasksOpen} onClose={() => setScheduledTasksOpen(false)} />
     <StoreDocsPanel open={storeDocsOpen} onClose={() => setStoreDocsOpen(false)} />

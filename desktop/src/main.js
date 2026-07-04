@@ -220,6 +220,10 @@ function createWindow(opts = {}) {
   // DesktopChatShell、能接 quickinput:inject；opts.route 有值的(studio/video)是独立路由窗口，
   // 没有 DesktopChatShell，不能当快捷键小窗的注入目标(见上方坑3)。
   win.__qfIsChat = !opts.route;
+  // P0-1 窗口单例化：记下这扇窗口是哪个 route 开的，供 focusOrOpenByRoute() 按 route 找已开窗口。
+  // chat 窗口(route 为空/newWindow 开的新工作台)不受影响——route 各不相同(或都是 undefined
+  // 时不参与单例查找，见下方函数)，仍可自由多开。
+  win.__qfRoute = opts.route || null;
 
   mainWindow = win;
   windows.add(win);
@@ -543,15 +547,29 @@ ipcMain.handle("desktop:newWindow", () => {
   return { ok: true, windowCount: BrowserWindow.getAllWindows().length, id: w.id, workbenchId };
 });
 
-// 生成工作室：独立窗口（自带 /dashboard/studio 路由，状态隔离）。
+// P0-1 窗口单例化：studio/video 这类独立路由窗口重复打开时只 focus 已开的那扇、不再新开一扇。
+// 按 route 找(见 createWindow 里的 win.__qfRoute)——studio 和 video 各自的 route 不同，互相独立
+// 单例，不会互相顶掉；chat 窗口(newWindow 开的新工作台)route 为空不参与这个查找，仍可自由多开。
+function focusOrOpenByRoute(route) {
+  for (const w of windows) {
+    if (w && !w.isDestroyed() && w.__qfRoute === route) {
+      if (w.isMinimized()) w.restore();
+      w.focus();
+      return w;
+    }
+  }
+  return createWindow({ route });
+}
+
+// 生成工作室：独立窗口（自带 /dashboard/studio 路由，状态隔离；已开则聚焦不新开）。
 ipcMain.handle("desktop:openStudio", () => {
-  const w = createWindow({ route: "/dashboard/studio" });
+  const w = focusOrOpenByRoute("/dashboard/studio");
   return { ok: true, id: w.id };
 });
 
-// 视频创作工作区：独立窗口（/dashboard/video：挑高光→配文案→秒级预览→对话改任何东西→出片）。
+// 视频创作工作区：独立窗口（/dashboard/video：挑高光→配文案→秒级预览→对话改任何东西→出片；已开则聚焦不新开）。
 ipcMain.handle("desktop:openVideoStudio", () => {
-  const w = createWindow({ route: "/dashboard/video" });
+  const w = focusOrOpenByRoute("/dashboard/video");
   return { ok: true, id: w.id };
 });
 

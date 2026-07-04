@@ -72,8 +72,8 @@ export function DesktopSidebar({
         {onOpenStudio && (
           <button
             onClick={onOpenStudio}
-            title="打开生成工作室（做图/改图）"
-            aria-label="生成工作室"
+            title="打开工作台（做图/改图）"
+            aria-label="工作台"
             className="app-no-drag flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-black/[0.08] bg-white text-[#86868b] shadow-sm transition hover:bg-black/[0.02] hover:text-[#10a37f] active:scale-[0.99] dark:border-white/[0.08] dark:bg-white/[0.02] dark:text-[#6e7077] dark:shadow-none dark:hover:bg-white/[0.05] dark:hover:text-[#10a37f]"
           >
             <Wand2 className="h-3.5 w-3.5" />
