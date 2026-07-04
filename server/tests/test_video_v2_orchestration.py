@@ -32,10 +32,16 @@ def _no_llm_keys(monkeypatch):
 
 
 def _synth_clip(path: Path, *, dur: int = 3, size: str = "320x568") -> None:
-    """合成一段纯色测试片(不依赖真人素材、无内容变化→镜头切分必是单场景,行为确定)。"""
+    """合成一段纯色测试片(不依赖真人素材、无内容变化→镜头切分必是单场景,行为确定)。
+
+    叠了层极轻微的时域噪点(noise=alls=6:allf=t):数学上逐帧像素完全相同的合成色块,会被 E4①
+    新加的 freezedetect 素材体检误判成"画面冻结/废素材"(真实摄像头素材因传感器噪声,几乎不会
+    出现这种"逐帧位级相同"的极端情况——这纯粹是合成测试片才有的假象)。加点噪点更像真实素材,
+    不影响"单场景/无镜头切点"这个测试本来要的确定性(scene_detect 仍判它是单场景)。
+    """
     subprocess.run([
         ffmpeg_bin(), "-y",
-        "-f", "lavfi", "-i", f"color=c=blue:size={size}:duration={dur}:rate=30",
+        "-f", "lavfi", "-i", f"color=c=blue:size={size}:duration={dur}:rate=30,noise=alls=6:allf=t",
         "-f", "lavfi", "-i", f"sine=frequency=440:duration={dur}",
         "-pix_fmt", "yuv420p", "-c:v", "libx264", "-c:a", "aac", "-shortest", str(path),
     ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)

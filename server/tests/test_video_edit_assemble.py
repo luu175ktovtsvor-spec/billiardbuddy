@@ -8,6 +8,7 @@ import pytest
 from services.video_edit.assemble import (
     auto_captions_from_speech,
     build_srt_from_doc,
+    inventory_footage,
     render_timeline,
 )
 from services.video_edit.ffbin import ffmpeg_bin, probe_video
@@ -25,6 +26,20 @@ def _synth_clip(path: Path, *, dur: int = 6, size: str = "720x1280") -> None:
     ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
 
+def _black_silent_clip(path: Path, *, dur: int = 3, size: str = "320x240") -> None:
+    """合成一段全黑+全静音的废素材(E4①素材体检要能逮到这种)。"""
+    subprocess.run([
+        ffmpeg_bin(), "-y",
+        "-f", "lavfi", "-i", f"color=c=black:size={size}:duration={dur}:rate=15",
+        "-f", "lavfi", "-i", f"anullsrc=r=48000:cl=stereo:d={dur}",
+        "-pix_fmt", "yuv420p", "-c:v", "libx264", "-c:a", "aac", "-shortest", str(path),
+    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+
+def _fake_transcribe_no_speech(video_path, edit_dir, **kw):
+    return {"words": [], "has_speech": False, "language": "zh"}
+
+
 def test_render_timeline_two_video_clips(tmp_path):
     """真 ffmpeg:文档(取 [0,2]+[4,6] 两段)渲成可播 mp4,时长≈两段之和(4s)。"""
     src = tmp_path / "src.mp4"
@@ -36,8 +51,11 @@ def test_render_timeline_two_video_clips(tmp_path):
     doc.clips["c1"] = Clip(track="v", media="m1", src_in=0.0, src_out=2.0, order=1)
     doc.clips["c2"] = Clip(track="v", media="m1", src_in=4.0, src_out=6.0, order=2)
 
-    out = render_timeline(doc, str(tmp_path / "final.mp4"), edit_dir=str(tmp_path / "edit"))
+    res = render_timeline(doc, str(tmp_path / "final.mp4"), edit_dir=str(tmp_path / "edit"))
+    out = res["path"]
     assert Path(out).exists()
+    assert res["rerendered"] is False           # 正常渲染不该触发重渲
+    assert res["health"]["ok"] is True           # E4⑤渲染后体检:时长/黑段/静音/首帧全过
     info = probe_video(out)
     assert 3.4 < info["duration_s"] < 4.6      # 两段≈4s
     assert info["width"] == 1080 and info["height"] == 1920   # 缩到竖屏
@@ -54,7 +72,8 @@ def test_render_timeline_with_captions(tmp_path):
     doc.clips["c1"] = Clip(track="v", media="m1", src_in=0.0, src_out=3.0, order=1)
     doc.clips["s1"] = Clip(track="sub", text="新到乔氏台子", start=0.0, end=2.5, style="promo")
 
-    out = render_timeline(doc, str(tmp_path / "final.mp4"), edit_dir=str(tmp_path / "edit"))
+    res = render_timeline(doc, str(tmp_path / "final.mp4"), edit_dir=str(tmp_path / "edit"))
+    out = res["path"]
     assert Path(out).exists() and probe_video(out)["duration_s"] > 2.5
 
 
@@ -112,3 +131,35 @@ def test_auto_captions_maps_speech_to_output_timeline(tmp_path):
     # 施加后文档仍合法
     doc2, errs = apply_operations(doc, ops)
     assert errs == [] and len(doc2.caption_clips()) == 1
+
+
+def test_inventory_footage_raises_when_all_footage_bad(tmp_path, monkeypatch):
+    """E4①素材全废兜底:全部素材都黑屏,别硬剪、直接抛清楚的大白话错误。"""
+    monkeypatch.setattr("services.video_edit.transcribe.transcribe", _fake_transcribe_no_speech)
+    bad1 = tmp_path / "废素材1.mp4"
+    bad2 = tmp_path / "废素材2.mp4"
+    _black_silent_clip(bad1, dur=3)
+    _black_silent_clip(bad2, dur=3)
+
+    with pytest.raises(RuntimeError) as exc:
+        inventory_footage([str(bad1), str(bad2)], str(tmp_path / "edit"))
+    msg = str(exc.value)
+    assert "废素材1.mp4" in msg and "废素材2.mp4" in msg
+    assert "黑屏" in msg
+
+
+def test_inventory_footage_marks_bad_footage_without_dropping_it(tmp_path, monkeypatch):
+    """混了一段好一段废:不抛错(还有能用的),废的那段在候选里标记 health.is_bad + packed 文案有警示,
+    但两段都还在候选池里(降权不硬删)。"""
+    monkeypatch.setattr("services.video_edit.transcribe.transcribe", _fake_transcribe_no_speech)
+    good = tmp_path / "good.mp4"
+    bad = tmp_path / "bad.mp4"
+    _synth_clip(good, dur=3, size="320x240")
+    _black_silent_clip(bad, dur=3)
+
+    res = inventory_footage([str(bad), str(good)], str(tmp_path / "edit"))
+    assert len(res["candidates"]) == 2          # 两段都还在,没被剔除
+    bad_cand, good_cand = res["candidates"]
+    assert bad_cand["health"]["is_bad"] is True
+    assert good_cand["health"]["is_bad"] is False
+    assert "⚠️" in res["packed"] and "质量差" in res["packed"]

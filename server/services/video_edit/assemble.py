@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 from .ffbin import probe_video
+from .footage_qc import footage_all_bad_message, guarded_render, probe_footage_health
 from .operations import apply_operations
 from .render import render_edl
 from .scene_detect import detect_scenes
@@ -23,8 +24,18 @@ def inventory_footage(video_paths: list[str], edit_dir: str, *, language: str = 
 
     返回 {"packed": <给模型读的文本>, "doc": TimelineDoc(JSON), "media": {...}, "has_speech": bool, "edit_dir": str}。
     AI 据 packed 里的"可选片段(时间戳)"发 add_clip 操作建片。**只读,不弹审批。**
+
+    E4①素材体检(零token·纯ffmpeg):先给每个素材跑黑屏/冻结体检(probe_footage_health)——全废
+    则直接抛错(别再花时间转写,让上层把"哪些素材废、为啥"大白话告诉用户);没全废的话,废素材只在
+    候选菜单里标"⚠️质量差"降权提示,不剔除(AI/前端自己决定要不要用,不硬塞也不硬删)。
     """
     from .transcribe import transcribe  # 延迟导入(whisper 重)
+
+    # ── 素材体检先行(便宜):全废就别浪费时间转写了 ──
+    health_by_path = {vp: probe_footage_health(vp) for vp in video_paths}
+    all_bad_msg = footage_all_bad_message(health_by_path)
+    if all_bad_msg:
+        raise RuntimeError(all_bad_msg)
 
     work = Path(edit_dir)
     work.mkdir(parents=True, exist_ok=True)
@@ -40,6 +51,7 @@ def inventory_footage(video_paths: list[str], edit_dir: str, *, language: str = 
         info = probe_video(vp)
         mid = f"m{i + 1}"
         doc.media[mid] = MediaRef(src=vp, duration=info["duration_s"], kind="video")
+        health = health_by_path[vp]
         scenes = detect_scenes(vp)
         tr = transcribe(vp, edit_dir, language=language)
         has_speech = tr.get("has_speech")
@@ -48,6 +60,8 @@ def inventory_footage(video_paths: list[str], edit_dir: str, *, language: str = 
 
         lines.append(f"## 素材 {mid}（{Path(vp).name}） 时长 {info['duration_s']}s "
                      f"{'竖屏' if info['is_portrait'] else '横屏'} {'有口播' if has_speech else '无口播/空镜'}")
+        if health["is_bad"]:
+            lines.append(f"⚠️ 这段素材质量差({'、'.join(health['reasons'])}),建议少用或别用。")
         lines.append(f"镜头切点({len(scenes)}段): " +
                      " ".join(f"[{s:.1f}-{e:.1f}]" for s, e in scenes[:20]))
         if has_speech:
@@ -64,6 +78,7 @@ def inventory_footage(video_paths: list[str], edit_dir: str, *, language: str = 
             "has_speech": has_speech,
             "scenes": [[round(s, 2), round(e, 2)] for s, e in scenes],
             "phrases": [{"start": round(a, 2), "end": round(b, 2), "text": t} for a, b, t in phrases],
+            "health": health,
         })
 
     return {
@@ -153,8 +168,13 @@ def auto_captions_from_speech(doc: TimelineDoc, edit_dir: str, *, track: str = "
     return ops
 
 
-def render_timeline(doc: TimelineDoc, out_path: str, *, edit_dir: str) -> str:
-    """时间轴文档 → 成片 mp4。字幕轨→SRT,文档→Edl,复用 render_edl 的确定性 ffmpeg 管线。"""
+def render_timeline(doc: TimelineDoc, out_path: str, *, edit_dir: str) -> dict:
+    """时间轴文档 → 成片 mp4。字幕轨→SRT,文档→Edl,复用 render_edl 的确定性 ffmpeg 管线。
+
+    E4⑤渲染后体检(零token·纯ffmpeg):渲完用 guarded_render 体检(时长/黑段/静音/首帧);
+    红→用同一份 EDL 重渲一次;仍红也不再重渲,把问题清单一并带回去(不静默塞给用户一个烂片)。
+    返回 {"path": str, "health": {...}, "rerendered": bool}(渲染管线本身 render_edl 一行不改)。
+    """
     work = Path(edit_dir)
     work.mkdir(parents=True, exist_ok=True)
     srt = None
@@ -162,7 +182,8 @@ def render_timeline(doc: TimelineDoc, out_path: str, *, edit_dir: str) -> str:
         srt = str(work / "captions.srt")
         build_srt_from_doc(doc, srt)
     edl = doc.to_edl(subtitles_srt=srt)
-    return render_edl(edl, out_path, edit_dir=str(work))
+    return guarded_render(lambda: render_edl(edl, out_path, edit_dir=str(work)),
+                          expected_duration=doc.duration())
 
 
 # ── V2 方案 = 一份可编辑的 plan(shots 是真相源)。对话改任何东西 = 改这份 plan。──
@@ -302,17 +323,25 @@ def recaption_v2(edit_dir: str, tonality: str) -> dict:
     return {"brand": cap["brand"], "captions": [s["caption"] for s in shots]}
 
 
-def render_v2_project(edit_dir: str, out_path: str) -> str:
-    """按当前 plan 把方案渲成 V2 包装成片(慢·导出时跑)。返回成片路径。"""
+def render_v2_project(edit_dir: str, out_path: str) -> dict:
+    """按当前 plan 把方案渲成 V2 包装成片(慢·导出时跑)。
+
+    E4⑤渲染后体检:同 render_timeline,渲完体检、红→用同一份 plan 重渲一次(template_render.render_v2
+    一行不改)。返回 {"path": str, "health": {...}, "rerendered": bool}。
+    """
     from .template_render import render_v2
 
     plan = load_v2_plan(edit_dir)
     doc = plan_to_doc(plan)
     shots = plan.get("shots", [])
     music = plan.get("music", {}) if isinstance(plan.get("music"), dict) else {}
-    return render_v2(doc, out_path, edit_dir=edit_dir, brand=plan.get("brand", "精彩瞬间"),
-                     captions=[s.get("caption", "") for s in shots],
-                     styles=[s.get("style") for s in shots],
-                     theme=plan.get("theme"), custom_css=plan.get("customCss", ""),
-                     grade=plan.get("grade", "warm_cinematic"),
-                     music_mood=music.get("mood", "auto"), music_key=int(music.get("key", 0)))
+
+    def _do() -> str:
+        return render_v2(doc, out_path, edit_dir=edit_dir, brand=plan.get("brand", "精彩瞬间"),
+                         captions=[s.get("caption", "") for s in shots],
+                         styles=[s.get("style") for s in shots],
+                         theme=plan.get("theme"), custom_css=plan.get("customCss", ""),
+                         grade=plan.get("grade", "warm_cinematic"),
+                         music_mood=music.get("mood", "auto"), music_key=int(music.get("key", 0)))
+
+    return guarded_render(_do, expected_duration=doc.duration())
