@@ -60,6 +60,9 @@ const hiddenImports = [
   // ── 生视频(火山方舟 Seedance)：generate_video 工具里【懒加载】services.video_service → ark_video，
   //    无任何顶层导入路径，PyInstaller 静态分析必漏 → 不补这里则打包后点"生成视频"运行时 ModuleNotFound。
   "services.video_service", "services.ai.providers.ark_video",
+  // ── 场景方案成品(开业/会员卡/比赛)：make_scene_plan 工具里【懒加载】services.scene_plan.render，
+  //    保守起见连同 manifest 一起显式列(与上面 video_service 同款风险，见 D-Task-7)。
+  "services.scene_plan.manifest", "services.scene_plan.render",
 ];
 
 // 运行时数据文件：加密知识库块(prompts.enc，放 bundle 根)、报表表单(report_forms)。
@@ -84,6 +87,10 @@ const videoAssets = path.join(SERVER, "services", "video_edit", "assets");
 if (fs.existsSync(videoAssets)) addData.push(`--add-data=${videoAssets}${sep}video_edit_assets`);
 const cjkFonts = path.join(SERVER, "assets", "fonts");
 if (fs.existsSync(cjkFonts)) addData.push(`--add-data=${cjkFonts}${sep}assets_fonts`);
+// 场景方案(开业/会员卡/比赛)成品模板：同一套离屏渲染管道(_render_html_frames)的另一份 template.html，
+// 运行时用 sys._MEIPASS 解析(services/scene_plan/render.py 的 _asset 落点，照抄视频模板的打包方式)。
+const scenePlanAssets = path.join(SERVER, "services", "scene_plan", "assets");
+if (fs.existsSync(scenePlanAssets)) addData.push(`--add-data=${scenePlanAssets}${sep}scene_plan_assets`);
 // ⚠️ whisper 口播权重(~1.4G)【不再打进包】——装包会到 1.7G 劝退用户。改成"按需下载":
 // 抽出来放 owner 服务器(见 desktop/src/model-downloader.js + bundled.env 的 QF_MODEL_BASE_URL),
 // 用户首次打开主界面时后台下、存 userData/models,以后不再下。核心程序装完立刻能用,只口播要等它。
