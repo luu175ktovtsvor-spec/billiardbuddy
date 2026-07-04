@@ -27,8 +27,9 @@ const BASIC_COMMANDS: { name: string; cn: string; description: string; aliases?:
   { name: "new", cn: "新会话", description: "开个新会话", aliases: ["新对话", "xinhuihua", "xin"] },
   { name: "clear", cn: "清空会话", description: "清空当前会话", aliases: ["清空", "qingkong"] },
   { name: "settings", cn: "设置", description: "打开设置", aliases: ["shezhi"] },
-  { name: "video-studio", cn: "剪辑台", description: "打开 AI 剪辑台：拖视频→挑段→配字幕→出片", aliases: ["剪辑", "剪视频", "剪辑台", "jianji", "jianjitai"] },
-  { name: "video-workspace", cn: "视频工作区", description: "AI 挑高光→配文案→秒级预览→说句话改任何东西→出带包装短视频", aliases: ["视频工作区", "氛围片", "视频创作", "shipin", "gongzuoqu"] },
+  // P0-2：原 /video-studio(剪辑台抽屉,V1) + /video-workspace(视频工作区,V2 独立窗口)两条命令合一——
+  // V1 抽屉已下线(P0-3)，统一开 V2 视频工作区；旧别名(剪辑/剪辑台等)保留，老习惯照样能找到。
+  { name: "video-workspace", cn: "视频工作区", description: "AI 挑高光→配文案→秒级预览→说句话改任何东西→出带包装短视频", aliases: ["视频工作区", "剪辑", "剪视频", "剪辑台", "氛围片", "视频创作", "jianji", "jianjitai", "shipin", "gongzuoqu"] },
   { name: "goal", cn: "设目标", description: "设定目标，让我对照它自检直到完成", aliases: ["目标", "mubiao"] },
   { name: "cost", cn: "用量", description: "本月 AI 用量", aliases: ["花费", "账单", "yongliang", "huafei"] },
   { name: "export", cn: "导出对话", description: "导出当前对话为 Markdown", aliases: ["导出", "保存对话", "daochu"] },
