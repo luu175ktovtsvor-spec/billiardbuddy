@@ -57,6 +57,12 @@ export interface ElectronBridge {
   notification?: {
     show(opts: { title?: string; body: string }): Promise<{ ok: boolean; error?: string }>;
   };
+  /** D-Task-8：朗读播报(读给我听)——主进程 spawn 系统自带 TTS 命令(mac `say` / Windows SAPI)
+   *  念文案/简报,不用 Web Speech API。故障安全——不支持/失败都返回 { ok:false, error? }，不抛异常。 */
+  tts?: {
+    speak(text: string): Promise<{ ok: boolean; error?: string }>;
+    stop(): Promise<{ ok: boolean; error?: string }>;
+  };
   /** 开机自动启动(D-Task-4：定时任务要 app 开着才会跑，老板想按时出文案就得让软件开机自动打开)。
    *  故障安全——不支持/失败都返回 { ok:false } 或 { enabled:false, error }，不抛异常。 */
   app?: {

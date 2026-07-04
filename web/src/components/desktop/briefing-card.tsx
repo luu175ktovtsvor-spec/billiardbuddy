@@ -4,7 +4,8 @@
  * C-Task-5 C1 当日店况简报卡：欢迎屏单行「今日建议」banner 的升级版——
  * AI 先开口，多条洞察，每条带「出处/为什么推它」+ 去做 + 不感兴趣，没内容不硬凑。
  */
-import { Lightbulb, ArrowRight, X, FileSpreadsheet } from "lucide-react";
+import { useState } from "react";
+import { Lightbulb, ArrowRight, X, FileSpreadsheet, Volume2 } from "lucide-react";
 import type { DashboardRecommendation } from "@/types/dashboard";
 
 // category → 「出处/为什么推它」标签（诚实版：说清依据、立信任）
@@ -38,6 +39,8 @@ export function BriefingCard({
   reportHint,
   onDiagnoseReport,
   onDismissReport,
+  onReadAloud,
+  onStopReadAloud,
 }: {
   greeting: string;
   weekday: string;
@@ -47,9 +50,13 @@ export function BriefingCard({
   reportHint?: { name: string; path: string }; // C1 首启特例：检测到的报表，出现在洞察行之上
   onDiagnoseReport?: (path: string, name: string) => void;
   onDismissReport?: () => void;
+  // D-Task-8 读给我听：只桌面版有(electron?.tts 判空后才传)，点喇叭念 greeting。
+  onReadAloud?: (content: string) => void;
+  onStopReadAloud?: () => void;
 }) {
   // 「没东西可说就不硬凑」：滤掉纯兜底 default_generate；洞察为空且没有报表提示才整卡不出
   const insights = items.filter((r) => r.id !== "default_generate").slice(0, 3);
+  const [reading, setReading] = useState(false);
   if (insights.length === 0 && !reportHint) return null;
 
   return (
@@ -61,7 +68,32 @@ export function BriefingCard({
         </span>
       </div>
       {greeting && (
-        <div className="mb-2.5 text-[12.5px] leading-relaxed text-[#3a3a3c] dark:text-[#c8cace]">{greeting}</div>
+        <div className="mb-2.5 flex items-start gap-1.5">
+          <div className="flex-1 text-[12.5px] leading-relaxed text-[#3a3a3c] dark:text-[#c8cace]">{greeting}</div>
+          {onReadAloud && (
+            <button
+              type="button"
+              onClick={() => {
+                if (reading) {
+                  onStopReadAloud?.();
+                  setReading(false);
+                } else {
+                  onReadAloud(greeting);
+                  setReading(true);
+                }
+              }}
+              aria-label={reading ? "停止朗读" : "读给我听"}
+              title={reading ? "停止朗读" : "读给我听"}
+              className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md transition active:scale-[0.97] ${
+                reading
+                  ? "bg-[#10a37f]/15 text-[#10a37f]"
+                  : "text-[#a1a1a6] hover:bg-black/[0.04] hover:text-[#10a37f] dark:hover:bg-white/[0.06]"
+              }`}
+            >
+              <Volume2 className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
       )}
       {reportHint && onDiagnoseReport && (
         <div className="mb-2 flex items-start gap-2 rounded-md border border-[#007AFF]/25 bg-[#007AFF]/[0.07] p-2.5">

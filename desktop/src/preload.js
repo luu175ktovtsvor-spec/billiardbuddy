@@ -33,6 +33,13 @@ contextBridge.exposeInMainWorld("electron", {
     show: (opts) => ipcRenderer.invoke("notification:show", opts || {}),
   },
 
+  // ── 朗读播报(读给我听 · D-Task-8：系统自带 TTS 念文案/简报，不用 Web Speech API) ──
+  // 故障安全——不支持/失败都返回 { ok:false, error? }，不抛异常。
+  tts: {
+    speak: (text) => ipcRenderer.invoke("tts:speak", { text }),
+    stop: () => ipcRenderer.invoke("tts:stop"),
+  },
+
   // ── 开机自动启动(D-Task-4：定时任务要 app 开着才会跑) ──
   app: {
     getAutoLaunch: () => ipcRenderer.invoke("app:getAutoLaunch"),
