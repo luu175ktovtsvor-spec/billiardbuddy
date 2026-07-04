@@ -4,7 +4,6 @@
  * C-Task-5 C1 当日店况简报卡：欢迎屏单行「今日建议」banner 的升级版——
  * AI 先开口，多条洞察，每条带「出处/为什么推它」+ 去做 + 不感兴趣，没内容不硬凑。
  */
-import { useState } from "react";
 import { Lightbulb, ArrowRight, X, FileSpreadsheet, Volume2 } from "lucide-react";
 import type { DashboardRecommendation } from "@/types/dashboard";
 
@@ -41,6 +40,7 @@ export function BriefingCard({
   onDismissReport,
   onReadAloud,
   onStopReadAloud,
+  reading = false,
 }: {
   greeting: string;
   weekday: string;
@@ -51,12 +51,14 @@ export function BriefingCard({
   onDiagnoseReport?: (path: string, name: string) => void;
   onDismissReport?: () => void;
   // D-Task-8 读给我听：只桌面版有(electron?.tts 判空后才传)，点喇叭念 greeting。
-  onReadAloud?: (content: string) => void;
+  onReadAloud?: (content: string, key: string) => void;
   onStopReadAloud?: () => void;
+  // 是否正在念这条 greeting——由 chat-shell 层的单一 readingKey 状态源算出来传入，本组件不自
+  // 己攥一份 reading 状态（避免和对话流各管一份、组件卸载/切视图时互相打架或漏管）。
+  reading?: boolean;
 }) {
   // 「没东西可说就不硬凑」：滤掉纯兜底 default_generate；洞察为空且没有报表提示才整卡不出
   const insights = items.filter((r) => r.id !== "default_generate").slice(0, 3);
-  const [reading, setReading] = useState(false);
   if (insights.length === 0 && !reportHint) return null;
 
   return (
@@ -76,10 +78,8 @@ export function BriefingCard({
               onClick={() => {
                 if (reading) {
                   onStopReadAloud?.();
-                  setReading(false);
                 } else {
-                  onReadAloud(greeting);
-                  setReading(true);
+                  onReadAloud(greeting, "greeting");
                 }
               }}
               aria-label={reading ? "停止朗读" : "读给我听"}
