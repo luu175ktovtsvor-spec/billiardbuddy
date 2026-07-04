@@ -156,6 +156,31 @@ def test_result_payload_model_switched_defaults_false_when_missing():
     assert out["model_switched"] == [False]
 
 
+def test_result_payload_carries_text_quality_warning_when_any_image_flagged():
+    """E2-4(收 U5 遗留)：poster_service 已把 OCR 重出后仍未对上的软警告放进每张图的 outcome，
+    但 _result_payload 白名单此前没带这两个字段、前端收不到——这里补上。整批"有一张就标"
+    (选简单方案，不做 per-image 精细展示)，message 取第一张触发警告的那句。"""
+    res = {
+        "images": [
+            {"poster_url": "/uploads/a.png", "generation_id": uuid.uuid4(), "ratio": "3:4",
+             "text_quality_warning": False, "text_quality_warning_message": None},
+            {"poster_url": "/uploads/b.png", "generation_id": uuid.uuid4(), "ratio": "3:4",
+             "text_quality_warning": True, "text_quality_warning_message": "文字可能有点偏差，可以再改一版"},
+        ],
+    }
+    out = studio._result_payload(res)
+    assert out["text_quality_warning"] is True
+    assert out["text_quality_warning_message"] == "文字可能有点偏差，可以再改一版"
+
+
+def test_result_payload_text_quality_warning_defaults_false_when_missing():
+    """旧调用方/没有触发软警告的正常一批 → 恒 False + None，不误报。"""
+    res = {"images": [{"poster_url": "/uploads/a.png", "generation_id": uuid.uuid4(), "ratio": "3:4"}]}
+    out = studio._result_payload(res)
+    assert out["text_quality_warning"] is False
+    assert out["text_quality_warning_message"] is None
+
+
 def test_studio_edit_requires_source_generation():
     async def main():
         body = studio.StudioEditIn(prompt="改亮一点", source_generation_id="")
@@ -202,6 +227,225 @@ def test_studio_generate_submits_job_and_completes(monkeypatch):
                 break
         assert got is not None and got.status == "done", (got.status, got.error)
         assert got.result["urls"] == ["/uploads/a.png"]
+    asyncio.run(main())
+
+
+# ── E2-4:要同款(reference_generation_ids → 本机路径,并进 reference_image_paths) ──
+
+def test_studio_generate_resolves_reference_generation_ids_to_local_paths(monkeypatch, tmp_path):
+    """本店成品 id → 解析成本机图片路径、并入 reference_image_paths 一起喂给 generate_images。"""
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        monkeypatch.setattr(studio, "async_session", Session)
+        import config as _cfg
+        monkeypatch.setattr(_cfg.settings, "upload_dir", str(tmp_path))
+        (tmp_path / "posters").mkdir(parents=True)
+        (tmp_path / "posters" / "ref.png").write_bytes(b"REF")
+
+        sid = uuid.uuid4()
+        ref_gid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed(db, sid)
+            db.add(Generation(id=ref_gid, store_id=sid, type="poster",
+                              result="/uploads/posters/ref.png", model_used="m"))
+            await db.commit()
+
+        captured = {}
+
+        async def fake_gen(db, store, user_id, prompt, image_model=None, ratio="3:4", count=1, **kw):
+            captured.update(kw)
+            return {"images": [{"generation_id": uuid.uuid4(), "poster_url": "/uploads/a.png", "ratio": ratio}]}
+        monkeypatch.setattr(studio.poster_service, "generate_images", fake_gen)
+
+        body = studio.StudioGenerateIn(prompt="要同款", reference_generation_ids=[str(ref_gid)])
+        out = await studio.studio_generate(body, user=SimpleNamespace(id=uid),
+                                           store=SimpleNamespace(id=sid), db=None)
+        jid = out["job_id"]
+        got = None
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            async with Session() as db:
+                got = await mj.get_job(db, jid, sid)
+            if got and got.status in ("done", "error"):
+                break
+        assert got is not None and got.status == "done", (got.status, got.error)
+        expect_path = str((tmp_path / "posters" / "ref.png").resolve())
+        assert captured.get("reference_image_paths") == [expect_path]
+    asyncio.run(main())
+
+
+def test_studio_generate_merges_reference_generation_ids_with_explicit_refs(monkeypatch, tmp_path):
+    """要同款不是"替换"，是"并入"：用户自己带的参考图 + 要同款解析出的路径要一起喂，且顺序保持
+    "用户传的在前、要同款解析的在后"(实现细节，但要能验证真的是拼接不是覆盖)。"""
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        monkeypatch.setattr(studio, "async_session", Session)
+        import config as _cfg
+        monkeypatch.setattr(_cfg.settings, "upload_dir", str(tmp_path))
+        (tmp_path / "posters").mkdir(parents=True)
+        (tmp_path / "posters" / "ref.png").write_bytes(b"REF")
+
+        sid = uuid.uuid4()
+        ref_gid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed(db, sid)
+            db.add(Generation(id=ref_gid, store_id=sid, type="poster",
+                              result="/uploads/posters/ref.png", model_used="m"))
+            await db.commit()
+
+        captured = {}
+
+        async def fake_gen(db, store, user_id, prompt, image_model=None, ratio="3:4", count=1, **kw):
+            captured.update(kw)
+            return {"images": [{"generation_id": uuid.uuid4(), "poster_url": "/uploads/a.png", "ratio": ratio}]}
+        monkeypatch.setattr(studio.poster_service, "generate_images", fake_gen)
+
+        body = studio.StudioGenerateIn(
+            prompt="要同款+自己带的参考图",
+            reference_image_paths=["/tmp/user_picked.png"],
+            reference_generation_ids=[str(ref_gid)],
+        )
+        out = await studio.studio_generate(body, user=SimpleNamespace(id=uid),
+                                           store=SimpleNamespace(id=sid), db=None)
+        jid = out["job_id"]
+        got = None
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            async with Session() as db:
+                got = await mj.get_job(db, jid, sid)
+            if got and got.status in ("done", "error"):
+                break
+        assert got is not None and got.status == "done", (got.status, got.error)
+        expect_path = str((tmp_path / "posters" / "ref.png").resolve())
+        assert captured.get("reference_image_paths") == ["/tmp/user_picked.png", expect_path]
+    asyncio.run(main())
+
+
+def test_studio_generate_skips_cross_store_reference_generation_id(monkeypatch, tmp_path):
+    """⚠️多租户铁律:别店的成品 id 绝不能被读进来当参考图(跨店读=泄露)——跳过、不崩、正常出图。"""
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        monkeypatch.setattr(studio, "async_session", Session)
+        import config as _cfg
+        monkeypatch.setattr(_cfg.settings, "upload_dir", str(tmp_path))
+        (tmp_path / "posters").mkdir(parents=True)
+        (tmp_path / "posters" / "other.png").write_bytes(b"OTHER")
+
+        sid, other_sid = uuid.uuid4(), uuid.uuid4()
+        other_gid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed(db, sid)
+            # 别的店:同一个 owner 开两家店也合法，这里只是为了避免 _seed 重复插入同手机号撞唯一约束——
+            # 测试要的是"店 id 不同"，owner 是不是同一人不影响本用例要验证的"跨店读不到"。
+            db.add(Store(id=other_sid, owner_id=uid, name="别的店"))
+            db.add(Generation(id=other_gid, store_id=other_sid, type="poster",
+                              result="/uploads/posters/other.png", model_used="m"))
+            await db.commit()
+
+        captured = {}
+
+        async def fake_gen(db, store, user_id, prompt, image_model=None, ratio="3:4", count=1, **kw):
+            captured.update(kw)
+            return {"images": [{"generation_id": uuid.uuid4(), "poster_url": "/uploads/a.png", "ratio": ratio}]}
+        monkeypatch.setattr(studio.poster_service, "generate_images", fake_gen)
+
+        body = studio.StudioGenerateIn(prompt="要同款", reference_generation_ids=[str(other_gid)])
+        out = await studio.studio_generate(body, user=SimpleNamespace(id=uid),
+                                           store=SimpleNamespace(id=sid), db=None)
+        jid = out["job_id"]
+        got = None
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            async with Session() as db:
+                got = await mj.get_job(db, jid, sid)
+            if got and got.status in ("done", "error"):
+                break
+        assert got is not None and got.status == "done", (got.status, got.error)  # 没崩,照常出图
+        assert captured.get("reference_image_paths") is None   # 跨店 id 被过滤,没混进参考图
+    asyncio.run(main())
+
+
+def test_studio_generate_skips_invalid_reference_generation_id(monkeypatch):
+    """格式不对的 id / 格式对但压根不存在的 id：都该被跳过、不崩，不是抛 500。"""
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        monkeypatch.setattr(studio, "async_session", Session)
+        sid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed(db, sid)
+
+        captured = {}
+
+        async def fake_gen(db, store, user_id, prompt, image_model=None, ratio="3:4", count=1, **kw):
+            captured.update(kw)
+            return {"images": [{"generation_id": uuid.uuid4(), "poster_url": "/uploads/a.png", "ratio": ratio}]}
+        monkeypatch.setattr(studio.poster_service, "generate_images", fake_gen)
+
+        body = studio.StudioGenerateIn(prompt="要同款", reference_generation_ids=["not-a-uuid", str(uuid.uuid4())])
+        out = await studio.studio_generate(body, user=SimpleNamespace(id=uid),
+                                           store=SimpleNamespace(id=sid), db=None)
+        jid = out["job_id"]
+        got = None
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            async with Session() as db:
+                got = await mj.get_job(db, jid, sid)
+            if got and got.status in ("done", "error"):
+                break
+        assert got is not None and got.status == "done", (got.status, got.error)
+        assert captured.get("reference_image_paths") is None
+    asyncio.run(main())
+
+
+def test_studio_generate_reference_generation_ids_none_leaves_refs_unchanged(monkeypatch):
+    """不传 reference_generation_ids(旧调用/绝大多数场景) → reference_image_paths 行为与改动前完全一致。"""
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        monkeypatch.setattr(studio, "async_session", Session)
+        sid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed(db, sid)
+
+        captured = {}
+
+        async def fake_gen(db, store, user_id, prompt, image_model=None, ratio="3:4", count=1, **kw):
+            captured.update(kw)
+            return {"images": [{"generation_id": uuid.uuid4(), "poster_url": "/uploads/a.png", "ratio": ratio}]}
+        monkeypatch.setattr(studio.poster_service, "generate_images", fake_gen)
+
+        body = studio.StudioGenerateIn(prompt="普通生成，不带要同款")
+        out = await studio.studio_generate(body, user=SimpleNamespace(id=uid),
+                                           store=SimpleNamespace(id=sid), db=None)
+        jid = out["job_id"]
+        got = None
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            async with Session() as db:
+                got = await mj.get_job(db, jid, sid)
+            if got and got.status in ("done", "error"):
+                break
+        assert got is not None and got.status == "done", (got.status, got.error)
+        assert captured.get("reference_image_paths") is None
     asyncio.run(main())
 
 

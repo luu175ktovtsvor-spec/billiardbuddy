@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import type { LucideIcon } from "lucide-react";
-import { Image as ImageIcon, ImagePlus, X, Wand2, Copy, Download, ThumbsUp, Loader2, RefreshCw, Check, AlertTriangle, Layers, Film, CreditCard, PartyPopper, UserPlus, Sparkles, Trophy, Camera } from "lucide-react";
+import { Image as ImageIcon, ImagePlus, X, Wand2, Copy, Download, ThumbsUp, Loader2, RefreshCw, Check, AlertTriangle, Layers, Film, CreditCard, PartyPopper, UserPlus, Sparkles, Trophy, Camera, Repeat } from "lucide-react";
 import { api, type MediaJobStatus } from "@/lib/api";
 import { ConfirmDialog } from "@/components/desktop/confirm-dialog";
 
@@ -64,7 +64,9 @@ const SCENARIOS: ScenarioCard[] = [
   { Icon: Camera, title: "球房氛围图", hint: "日常氛围，发圈发视频封面都能用", prompt: "做一张台球房日常营业的氛围图，灯光有质感、有人在打球的画面感，适合当短视频封面或朋友圈配图" },
 ];
 
-type Shot = { url: string; generationId?: string; ratio: string; isVideo?: boolean; modelSwitched?: boolean };
+// E2-4・text_quality_warning/Message：U5 的"改图轮 OCR 重出后仍未对上→best-effort 返图+软警告"信号，
+// 这批(job 级，不是精细到某一张)只要触发过就带出来，供中间预览区露一句很轻的大白话提示。
+type Shot = { url: string; generationId?: string; ratio: string; isVideo?: boolean; modelSwitched?: boolean; textQualityWarning?: boolean; textQualityWarningMessage?: string };
 
 async function blobToBase64(blob: Blob): Promise<string> {
   const buf = await blob.arrayBuffer();
@@ -124,10 +126,16 @@ export default function StudioPage() {
       const ids = (done.result?.generation_ids as string[] | undefined) || [];
       // U2 降级安全网标记:这张是不是"GPT 失败后自动切到了 Seedream 重试"——反映给用户一句很轻的提示(item 6)。
       const switched = (done.result?.model_switched as boolean[] | undefined) || [];
+      // E2-4・收 U5 遗留:这一批里是否有张图 OCR 重出后仍没对上、best-effort 放行了(job 级信号，不分张)。
+      const textWarn = !!done.result?.text_quality_warning;
+      const textWarnMsg = (done.result?.text_quality_warning_message as string | undefined) || undefined;
       const r = (done.result?.ratio as string | undefined) || keepRatio;
       if (!urls.length) throw new Error("这次没出来，换个说法再试一次。");
       const isVideo = !!done.result?.is_video;
-      const shots: Shot[] = urls.map((u, i) => ({ url: u, generationId: ids[i], ratio: r, isVideo, modelSwitched: !!switched[i] }));
+      const shots: Shot[] = urls.map((u, i) => ({
+        url: u, generationId: ids[i], ratio: r, isVideo, modelSwitched: !!switched[i],
+        textQualityWarning: textWarn, textQualityWarningMessage: textWarnMsg,
+      }));
       const prev = currentRef.current;
       if (mode === "generate") {
         // 新出的一批是"待挑的变体":上一张存进历史,整批进 batch,默认选第一张(用户点着挑)
@@ -168,6 +176,29 @@ export default function StudioPage() {
         image_prompt: imagePrompt,
       });
     }, ratio, "generate");
+  };
+  // E2-4・要同款(编辑第二层三件套第 3 件·新建):拿这张成品当参考图，重新生成一批相似的
+  // ——保主体/风格，不是"改这一张"(那是圈选+说话/换比例的活)。复用 onGenerate 的静默扩写套路，
+  // 用左边输入框里现在这句话当 prompt(留空则给个大白话兜底，别空 prompt 拦在红线预检前)。
+  const onSameStyle = () => {
+    if (!current || current.isVideo || busy || !current.generationId) return;
+    const raw = prompt.trim() || "跟这张图保持一样的风格和主体，再出一批新的";
+    const gid = current.generationId, rr = current.ratio;
+    void runJob(async () => {
+      let imagePrompt: string | undefined;
+      try {
+        const r = await api.studioExpand({ prompt: raw });
+        imagePrompt = r.image_prompt || undefined;
+      } catch {
+        imagePrompt = undefined;
+      }
+      return api.studioGenerate({
+        prompt: raw, ratio: rr, count: 4,
+        style: style || undefined,
+        reference_generation_ids: [gid],
+        image_prompt: imagePrompt,
+      });
+    }, rr, "generate");
   };
   // 在这一批变体里挑一张:切成选中的那张;若当前是改出来的(不在变体里),先存进历史别弄丢
   const pickVariant = (s: Shot) => {
@@ -402,6 +433,11 @@ export default function StudioPage() {
                   {current.modelSwitched && (
                     <div className="shrink-0 text-[11px] text-[#b0b0b5] dark:text-[#56585f]">这张用了备用模型完成，效果可能略有差异</div>
                   )}
+                  {current.textQualityWarning && (
+                    <div className="flex shrink-0 items-center gap-1 text-[11px] text-[#b58a00] dark:text-[#e0b23a]">
+                      <AlertTriangle className="h-3 w-3" />{current.textQualityWarningMessage || "文字可能有点偏差，可以再改一版"}
+                    </div>
+                  )}
                 </div>
                 <div className="flex shrink-0 flex-wrap items-center justify-center gap-2 pb-1">
                   {batch.map((s, i) => {
@@ -421,6 +457,11 @@ export default function StudioPage() {
                 <img src={current.url} alt="生成结果" className="max-h-full max-w-full rounded-xl object-contain shadow-sm" />
                 {current.modelSwitched && (
                   <div className="shrink-0 text-[11px] text-[#b0b0b5] dark:text-[#56585f]">这张用了备用模型完成，效果可能略有差异</div>
+                )}
+                {current.textQualityWarning && (
+                  <div className="flex shrink-0 items-center gap-1 text-[11px] text-[#b58a00] dark:text-[#e0b23a]">
+                    <AlertTriangle className="h-3 w-3" />{current.textQualityWarningMessage || "文字可能有点偏差，可以再改一版"}
+                  </div>
                 )}
               </div>
             )
@@ -485,6 +526,20 @@ export default function StudioPage() {
                 <div className="flex flex-wrap gap-1.5">
                   {RATIOS.map((r) => <button key={r.id} type="button" disabled={busy} onClick={() => onChangeRatio(r.id)} className={chip(current.ratio === r.id)}>{r.label}</button>)}
                 </div>
+              </div>
+              {/* E2-4・要同款(编辑第二层三件套第 3 件):拿这张当参考图，新出一批相似的——和上面
+                  "圈选+说话"(改这一张)、"换比例"(按这张重出同一张)是三种不同操作，别混。 */}
+              <div>
+                <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">要同款（拿这张当参考，新出一批相似的）</div>
+                <button
+                  type="button"
+                  onClick={onSameStyle}
+                  disabled={busy || !current.generationId}
+                  title="保持这张的风格/主体，重新生成一批新图（不是改这一张）"
+                  className="flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-black/[0.08] bg-black/[0.02] text-[13px] font-medium text-[#3a3a3c] transition hover:border-[#10a37f]/40 hover:bg-[#10a37f]/[0.04] active:scale-[0.99] disabled:opacity-50 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-[#c8cace]"
+                >
+                  <Repeat className="h-3.5 w-3.5" /> 要同款
+                </button>
               </div>
               {/* 做成视频(图生视频):运镜描述(可选) + 时长 + 配音 + 一次确认 */}
               <div>

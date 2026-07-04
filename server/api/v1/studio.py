@@ -32,6 +32,10 @@ class StudioGenerateIn(BaseModel):
     style: str | None = None
     count: int = 1
     reference_image_paths: list[str] | None = None
+    # E2-4・"要同款":拿一张已出的成品当参考、重新生成一批相似的(不是改这一张)。前端传
+    # current.generationId 进来,这里解析成本机图片路径并入 reference_image_paths 一起喂给
+    # generate_images(⚠️多租户:只认本店成品,别店/不存在/文件不在 → 跳过不崩，见 _resolve_reference_generation_paths)。
+    reference_generation_ids: list[str] | None = None
     image_model: str | None = None    # 选的生图模型(gpt-image-2 / doubao-seedream-4-5-251128…);None=门店/内置默认
     image_prompt: str | None = None   # 优化后的提示词(前端可改后回传);有则当真实 prompt 送模型,无则用 prompt 原文
     conversation_id: str | None = None
@@ -136,6 +140,10 @@ def _compose_prompt(prompt: str, style: str | None) -> str:
 
 def _result_payload(res) -> dict:
     imgs = res.get("images", []) if isinstance(res, dict) else []
+    # E2-4・收 U5 遗留:poster_service 已在每张图的 outcome 里放了 text_quality_warning(OCR 重出后仍
+    # 没对上、best-effort 放行的软警告)，但这里此前没透传出去、前端收不到。整批"有一张就标"
+    # (选简单方案，不做 per-image 精细展示)：这批里只要有一张触发了，就把警告 + 大白话提示带给前端。
+    warned = [i for i in imgs if i.get("text_quality_warning")]
     return {
         "urls": [i.get("poster_url") for i in imgs if i.get("poster_url")],
         "generation_ids": [str(i.get("generation_id")) for i in imgs if i.get("generation_id")],
@@ -145,6 +153,8 @@ def _result_payload(res) -> dict:
         # U2・降级安全网标记(与 urls 同下标对齐)：这张是否 GPT 失败后自动切到了 Seedream 重试——
         # 前端可据此提示"这张用了备用模型"（本单只落数据契约，UI 展示留给下一批处理模型选择器的任务接手）。
         "model_switched": [bool(i.get("model_switched")) for i in imgs if i.get("poster_url")],
+        "text_quality_warning": bool(warned),
+        "text_quality_warning_message": (warned[0].get("text_quality_warning_message") if warned else None),
     }
 
 
@@ -165,6 +175,44 @@ async def _backfill_parent(wdb, images, parent_id, store_id) -> None:
         _upd(_G).where(_G.id.in_(gen_ids), _G.store_id == store_id).values(parent_generation_id=parent_uuid)
     )
     await wdb.commit()
+
+
+async def _resolve_reference_generation_paths(wdb, generation_ids, store_id) -> list[str]:
+    """E2-4・"要同款":成品 id 列表 → 本机图片路径列表(喂进 reference_image_paths 当参考图)。
+    复用 studio_compose(studio.py 原 365-367 行)的"成品 id → 本机路径"解析模式，但更宽松:
+    找不到 / 不是本店的(⚠️多租户，绝不跨店读) / 结果为空 / 文件已不在 uploads 内或已被删——
+    一律静默跳过，不抛错、不崩(要同款是锦上添花，不该因为一个坏 id 拖垮整次生成)。"""
+    import uuid as _uuid
+    from pathlib import Path as _Path
+    from sqlalchemy import select as _sel
+    from config import settings as _settings
+    from models.generation import Generation as _G
+
+    parsed: list[_uuid.UUID] = []
+    for gid in (generation_ids or []):
+        try:
+            parsed.append(_uuid.UUID(str(gid)))
+        except (ValueError, TypeError):
+            continue  # 格式不对的 id：跳过不崩
+    if not parsed:
+        return []
+
+    res = await wdb.execute(
+        _sel(_G).where(_G.id.in_(parsed), _G.store_id == store_id, _G.is_deleted == False)  # noqa: E712
+    )
+    gens = {g.id: g for g in res.scalars().all()}  # 别店/不存在的 id 天然不在这里面(过滤已在查询里做)
+
+    udir = _Path(_settings.upload_dir).resolve()
+    paths: list[str] = []
+    for u in parsed:
+        g = gens.get(u)
+        if not g or not g.result:
+            continue
+        p = (udir / str(g.result).removeprefix("/uploads/")).resolve()
+        in_uploads = str(p) == str(udir) or str(p).startswith(str(udir) + "/")
+        if in_uploads and p.exists():
+            paths.append(str(p))
+    return paths
 
 
 @router.post("/expand")
@@ -210,6 +258,7 @@ async def studio_generate(
     ratio, refs, quality = body.ratio, body.reference_image_paths, body.quality
     img_model, img_prompt, poster_text = body.image_model, body.image_prompt, body.poster_text
     print_mode = body.print_mode
+    ref_gen_ids = body.reference_generation_ids   # E2-4・要同款:成品 id → 待解析成本机参考图路径
 
     async def work_fn(progress):
         from core.tenant import set_tenant
@@ -218,12 +267,18 @@ async def studio_generate(
             await progress(8, "正在出图…")
             async with async_session() as wdb:
                 st = await wdb.get(Store, store_id)
+                # E2-4・要同款:把"用作参考的成品 id"解析成本机路径、并进用户自己传的参考图一起喂。
+                # 空/None(绝大多数调用) → extra_refs=[]，行为与改动前完全一致。
+                extra_refs = await _resolve_reference_generation_paths(wdb, ref_gen_ids, store_id)
+                all_refs = list(refs or []) + extra_refs
                 res = await poster_service.generate_images(
                     wdb, st, user_id, prompt, image_model=img_model, ratio=ratio,
-                    reference_image_paths=refs, count=count, conversation_id=conv, quality=quality,
+                    reference_image_paths=all_refs or None, count=count, conversation_id=conv, quality=quality,
                     image_prompt=img_prompt, poster_text=poster_text,
                     # studio 页的参考图是用户在本次请求里经系统文件框亲手选的(可信前端直传，
                     # 不是模型自己填的)，原样进白名单——否则沙箱外路径护栏会把它们误拒。
+                    # 要同款解析出的路径本就在 uploads 沙箱内(_resolve_reference_generation_paths 已校验)，
+                    # 不需要、也不应该额外塞进 allowed_paths(那是给沙箱外路径开的口子)。
                     allowed_paths=list(refs or []),
                     print_mode=print_mode,
                 )
