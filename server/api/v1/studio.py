@@ -134,6 +134,9 @@ def _result_payload(res) -> dict:
         "ratio": imgs[0].get("ratio") if imgs else None,
         # U1・"缺就问"信号(不阻断生成)：调用方声明要用但没填值的硬要素，交给前端做缺项提示。
         "missing_elements": (res.get("missing_elements") or []) if isinstance(res, dict) else [],
+        # U2・降级安全网标记(与 urls 同下标对齐)：这张是否 GPT 失败后自动切到了 Seedream 重试——
+        # 前端可据此提示"这张用了备用模型"（本单只落数据契约，UI 展示留给下一批处理模型选择器的任务接手）。
+        "model_switched": [bool(i.get("model_switched")) for i in imgs if i.get("poster_url")],
     }
 
 

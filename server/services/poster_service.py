@@ -323,6 +323,76 @@ async def expand_poster_text_with_llm(
     return ensure_hard_elements_preserved(expanded, hard_values)
 
 
+# ────────────────── U2・自动路由 + 并行生成 + 失败降级(安全网) ──────────────────
+# 下一批(E2)要砍掉前端的模型选择器——请求不再传 image_model 时会落到这里的默认值。
+# ⚠️ 默认绝不能是 gpt-image-2：大陆客户机握到美国 relay 的长连接约 60s 会被网络掐断
+# =图丢+白扣 owner 的 key 钱(2026-07-03 实测确证)。只有明显判断为"复杂创意/西文为主/
+# 高保真人像改图"或调用方显式手选 GPT 时才路由 GPT，其余(含判断不出/内容空)一律默认落
+# Seedream(火山方舟，大陆机房，又快又稳，中文精确文字/海报排版第一梯队)——这是上线级安全底座。
+
+_AUTO_ROUTE_SEEDREAM_MODEL = "doubao-seedream-4-5-251128"  # 需与 seedream_image.py:_DEFAULT_MODEL 保持一致
+_AUTO_ROUTE_GPT_MODEL = "gpt-image-2"
+
+# 明显"复杂创意/高保真人像改图"的关键词——判据从简、可测，不做玄乎的 LLM 判断。
+_COMPLEX_CREATIVE_KEYWORDS = (
+    "写实人像", "高保真", "高保真度", "photorealistic", "photo-realistic",
+    "high fidelity", "high-fidelity", "复杂创意", "艺术级", "电影感人像", "肖像重塑",
+)
+
+
+def _has_hard_chinese_text_requirement(text: str, poster_text: dict | None) -> bool:
+    """判断这次生图是否有"中文精确文字/排版"的硬要求——这类交给 Seedream 更稳(中文渲染强项)。"""
+    if collect_hard_text_values(poster_text):
+        return True
+    return any(kw in (text or "") for kw in ("写上", "写着", "中文文案排版", "标题文字要"))
+
+
+def _is_western_dominant(text: str) -> bool:
+    """粗略估计文本是否"西文为主"(中文字符占比很低)。空文本不算西文为主——
+    没有信号时要安全落 Seedream，不能因为"判断不出"就滑向 GPT。"""
+    s = (text or "").strip()
+    if not s:
+        return False
+    cjk = sum(1 for ch in s if "一" <= ch <= "鿿")
+    letters = sum(1 for ch in s if ch.isascii() and ch.isalpha())
+    total = cjk + letters
+    if total == 0:
+        return False
+    return cjk / total < 0.3
+
+
+def _route_image_model(prompt: str | None, poster_text: dict | None, user_choice: str | None) -> str:
+    """自动选生图模型：调用方显式手选(user_choice)一律尊重(向后兼容 studio 现有手选)；
+    没手选时按内容启发式判断，默认落 Seedream。
+
+    ⚠️ 默认必须落 Seedream——本单最重要的正确性要求(见模块顶部说明)，配单测钉死
+    "不传 image_model → 不落 gpt-image-2"。只有明显复杂创意/西文为主/高保真人像改图才路由 GPT。
+    """
+    choice = (user_choice or "").strip()
+    if choice:
+        return choice
+    text = prompt or ""
+    if _has_hard_chinese_text_requirement(text, poster_text):
+        return _AUTO_ROUTE_SEEDREAM_MODEL
+    if any(kw in text for kw in _COMPLEX_CREATIVE_KEYWORDS):
+        return _AUTO_ROUTE_GPT_MODEL
+    if _is_western_dominant(text):
+        return _AUTO_ROUTE_GPT_MODEL
+    return _AUTO_ROUTE_SEEDREAM_MODEL
+
+
+def _build_seedream_fallback_provider():
+    """GPT 失败降级安全网用：构造一个直连火山方舟 Seedream 的 provider。
+
+    只有桌面盒子(DESKTOP_LOCAL=1)且配置了 ark_api_key 时才能造出来——造不出返回 None，
+    调用方据此决定这次没法降级(如实报错，不装作有安全网)。"""
+    import os
+    if os.environ.get("DESKTOP_LOCAL") != "1" or not getattr(settings, "ark_api_key", ""):
+        return None
+    from services.ai.providers.seedream_image import SeedreamImageProvider
+    return SeedreamImageProvider(api_key=settings.ark_api_key, base_url="https://ark.cn-beijing.volces.com/api/v3")
+
+
 def build_poster_prompt(
     prompt: str,
     history_prompts: list[str],
@@ -377,7 +447,7 @@ async def generate_images(
     store: Store,
     user_id: uuid.UUID,
     prompt: str,
-    image_model: str,
+    image_model: str | None,
     ratio: str = "3:4",
     reference_image_paths: list[str] | None = None,
     count: int = 1,
@@ -409,6 +479,11 @@ async def generate_images(
     """
     from services.ai.providers.openai_image import OpenAIImageProvider
     from services.ai.factory import ProviderFactory
+
+    # U2・自动路由：调用方没手选模型(image_model 为空)时，按内容启发式自动选；默认落 Seedream——
+    # 下一批(E2)要砍掉前端模型选择器，请求不传模型名时绝不能落到 gpt-image-2(大陆握美国 relay 长连接
+    # 约 60s 被掐断=图丢+白扣钱，2026-07-03 实测)。调用方显式传了 image_model 一律尊重(向后兼容手选)。
+    image_model = _route_image_model(image_prompt or prompt, poster_text, image_model)
 
     # 生图 BYOK：门店配了自带生图模型 → 用门店的 key/base_url（自担成本）；否则回退平台默认。
     api_key, image_base_url, image_model_cfg = ProviderFactory.get_image_config_for_store(store)
@@ -603,83 +678,141 @@ async def generate_images(
     conv_id = str(conv_uuid) if conv_uuid else str(uuid.uuid4())
 
     POSTERS_DIR.mkdir(parents=True, exist_ok=True)
-    results = []
 
-    for i in range(count):
+    # ── U2・并行生成 N 张 + GPT 失败自动降级 Seedream(安全网) ──
+    # 每张图的 provider 调用(含降级重试)在 _get_image_semaphore() 闸内并行跑(asyncio.gather)——
+    # 这段只碰 provider/文件系统，不碰 db：AsyncSession 不允许被多个协程并发操作(SQLAlchemy 官方
+    # 明文禁止，同 tests/test_agent_loop_db_concurrency_safety.py 揪出的那类竞态)。DB 写挪到 gather
+    # 结束后逐张串行做，顺序=请求下标——与 asyncio.gather 按输入顺序回填结果的语义天然一致，
+    # 不会因为各张实际完成时机不同而错位。
+    semaphore = _get_image_semaphore()
+    routed_model = image_model_cfg or image_model
+
+    async def _generate_one(i: int) -> dict | None:
         rand = uuid.uuid4().hex[:4]
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         sid = str(store.id).replace("-", "")[:8]
-        filename = f"ai_{sid}_{ts}_{rand}.png"
+        filename = f"ai_{sid}_{ts}_{rand}_{i}.png"
         output_path = POSTERS_DIR / filename
+        actual_model = routed_model
+        model_switched = False
 
         try:
-            # 经全局并发闸：超出 poster_max_concurrency 的请求在此排队，护住 OpenAI 每分钟出图限额(IPM)
-            async with _get_image_semaphore():
+            # 经全局并发闸：超出 poster_max_concurrency 的请求在此排队，护住每分钟出图限额(IPM)
+            async with semaphore:
                 image_bytes = await provider.generate_image(
                     prompt=full_prompt,
-                    # 门店 BYOK 配了生图模型→ 用它；否则回退调用方传入的 image_model（make_poster 传 gpt-image-2、生图页可传别的）
-                    model=image_model_cfg or image_model,
+                    model=actual_model,
                     size=size,
                     quality=quality,
                     image=input_images if input_images else None,
                     mask=mask_bytes,  # 局部重绘:同尺寸 alpha mask(透明处=要改);None=整图改
                 )
+        except Exception:
+            logger.warning("第 %d 张用 %s 生成失败", i + 1, actual_model, exc_info=True)
+            # 安全网：只有路由到 GPT 的才降级(治大陆连 gpt-image-2 长连接被掐的坑)——非 GPT 的失败
+            # 如实报错，不装作有安全网。降级最多一跳，造不出 Seedream provider(非桌面/没配 ark key)
+            # 也如实失败。非 429 异常本就立抛(现有 429 重试骨架)，这里只在"确实失败"后重试一次。
+            fallback = (
+                _build_seedream_fallback_provider()
+                if str(actual_model or "").startswith("gpt-image") else None
+            )
+            if fallback is None:
+                return None
+            try:
+                async with semaphore:
+                    image_bytes = await fallback.generate_image(
+                        prompt=full_prompt,
+                        model=_AUTO_ROUTE_SEEDREAM_MODEL,
+                        size=size,
+                        quality=quality,
+                        image=input_images if input_images else None,
+                        mask=mask_bytes,
+                    )
+                model_switched = True
+                actual_model = _AUTO_ROUTE_SEEDREAM_MODEL
+                logger.info("第 %d 张 GPT 失败，已自动降级 Seedream 重试成功", i + 1)
+            except Exception:
+                logger.warning("第 %d 张降级 Seedream 仍失败，放弃", i + 1, exc_info=True)
+                return None
 
+        try:
             # owner 拍板：不再 PIL 贴 logo——所有上传物料(含 logo)已原样进 input_images 喂 GPT 融合。
             # 保存图片（JPEG 格式，减小文件体积）；Pillow 解码+编码是同步 CPU，放线程池
             output_path_jpg = output_path.with_suffix(".jpg")
             await asyncio.to_thread(_save_png_as_jpeg, image_bytes, output_path_jpg)
             actual_width, actual_height = await asyncio.to_thread(_assert_saved_ratio, output_path_jpg, ratio)
+        except Exception:
+            logger.warning("第 %d 张落盘/比例校验失败", i + 1, exc_info=True)
+            return None
 
-            poster_url = f"/uploads/posters/{output_path_jpg.name}"
-            created_at = datetime.now(timezone.utc)
+        return {
+            "output_path_jpg": output_path_jpg,
+            "width": actual_width,
+            "height": actual_height,
+            "model_used": actual_model,
+            "model_switched": model_switched,
+        }
 
-            generation = Generation(
-                store_id=store.id,
-                user_id=user_id,
-                type="poster",
-                sub_type=ratio,
-                input_params={
-                    "prompt": prompt,
-                    "ratio": ratio,
-                    "reference_images": reference_image_paths,
-                    "refine_from": refine_from,
-                    # ── 生图重构：结构化保存，为"回退到 Pillow 合成"预留（不动数据模型）──
-                    "image_prompt": image_prompt,
-                    "poster_text": poster_text,
-                    "background_mode": background_mode,
-                    "store_photo_path": store_photo_path,
-                    "logo_path": logo_path,
-                    "qr_path": qr_path,
-                    "width": actual_width,
-                    "height": actual_height,
-                    "actual_ratio": f"{actual_width}:{actual_height}",
-                },
-                prompt_used=full_prompt,
-                result=poster_url,
-                # 实际用的模型(火山 Seedream / gpt-image-2 / 门店 BYOK)，与第 443 行传给 provider 的一致，
-                # 别硬编码成 gpt-image-2（否则火山出的图也被错标成 gpt-image-2，DB 归因失真）
-                model_used=f"ai:{image_model_cfg or image_model or 'gpt-image-2'}",
-                tokens_used=0,
-                conversation_id=uuid.UUID(conv_id),
-            )
-            db.add(generation)
-            await db.flush()
+    outcomes = await asyncio.gather(*(_generate_one(i) for i in range(count)))
 
-            results.append({
-                "generation_id": generation.id,
-                "poster_url": poster_url,
+    results = []
+    for outcome in outcomes:
+        if outcome is None:
+            results.append(None)
+            continue
+
+        output_path_jpg = outcome["output_path_jpg"]
+        actual_width, actual_height = outcome["width"], outcome["height"]
+        poster_url = f"/uploads/posters/{output_path_jpg.name}"
+        created_at = datetime.now(timezone.utc)
+
+        generation = Generation(
+            store_id=store.id,
+            user_id=user_id,
+            type="poster",
+            sub_type=ratio,
+            input_params={
+                "prompt": prompt,
+                "ratio": ratio,
+                "reference_images": reference_image_paths,
+                "refine_from": refine_from,
+                # ── 生图重构：结构化保存，为"回退到 Pillow 合成"预留（不动数据模型）──
+                "image_prompt": image_prompt,
+                "poster_text": poster_text,
+                "background_mode": background_mode,
+                "store_photo_path": store_photo_path,
+                "logo_path": logo_path,
+                "qr_path": qr_path,
                 "width": actual_width,
                 "height": actual_height,
-                "ratio": ratio,
-                "created_at": created_at,
-            })
+                "actual_ratio": f"{actual_width}:{actual_height}",
+                "model_switched": outcome["model_switched"],  # U2:这张是否触发了 GPT→Seedream 降级安全网
+            },
+            prompt_used=full_prompt,
+            result=poster_url,
+            # 实际用的模型(火山 Seedream / gpt-image-2 / 门店 BYOK / 降级后的 Seedream)——按这张图
+            # 真实用掉的模型记账，不是批次统一路由值(降级只发生在个别张失败时，各张可能不同)。
+            model_used=f"ai:{outcome['model_used'] or 'gpt-image-2'}",
+            tokens_used=0,
+            conversation_id=uuid.UUID(conv_id),
+        )
+        db.add(generation)
+        # 串行：同一个 AsyncSession 不允许被多个协程并发操作，DB 写必须逐张做(已在 gather 之外)。
+        await db.flush()
 
-            logger.info("AI 生图完成: %s", poster_url)
+        results.append({
+            "generation_id": generation.id,
+            "poster_url": poster_url,
+            "width": actual_width,
+            "height": actual_height,
+            "ratio": ratio,
+            "created_at": created_at,
+            "model_switched": outcome["model_switched"],  # U2:前端可据此提示"这张用了备用模型"
+        })
 
-        except Exception:
-            logger.warning("第 %d 张生成失败", i + 1, exc_info=True)
-            results.append(None)
+        logger.info("AI 生图完成: %s (模型=%s%s)", poster_url, outcome["model_used"],
+                    "·已降级" if outcome["model_switched"] else "")
 
     await db.commit()
 
@@ -695,7 +828,7 @@ async def generate_images(
 
     return {
         "images": valid_results,
-        "model_used": f"ai:{image_model_cfg or image_model or 'gpt-image-2'}",
+        "model_used": f"ai:{routed_model or 'gpt-image-2'}",
         "count": len(valid_results),
         "conversation_id": conv_id,
         "logo_applied": logo_bytes is not None,

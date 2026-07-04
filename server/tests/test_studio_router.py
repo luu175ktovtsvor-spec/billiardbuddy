@@ -135,6 +135,27 @@ def test_studio_generate_threads_poster_text_and_reports_missing(monkeypatch):
     asyncio.run(main())
 
 
+def test_result_payload_carries_model_switched_marker_aligned_with_urls():
+    """U2：_result_payload 必须把降级安全网标记(model_switched)透传出去、且与 urls 同下标对齐——
+    前端(下一批)据此提示"这张用了备用模型"，不能让这个标记在 poster_service 出来后就被丢在半路。"""
+    res = {
+        "images": [
+            {"poster_url": "/uploads/a.png", "generation_id": uuid.uuid4(), "ratio": "3:4", "model_switched": True},
+            {"poster_url": "/uploads/b.png", "generation_id": uuid.uuid4(), "ratio": "3:4", "model_switched": False},
+        ],
+    }
+    out = studio._result_payload(res)
+    assert out["model_switched"] == [True, False]
+    assert len(out["urls"]) == len(out["model_switched"])
+
+
+def test_result_payload_model_switched_defaults_false_when_missing():
+    """旧调用方/未来某条路径没带 model_switched 字段时，安全默认 False，不炸。"""
+    res = {"images": [{"poster_url": "/uploads/a.png", "generation_id": uuid.uuid4(), "ratio": "3:4"}]}
+    out = studio._result_payload(res)
+    assert out["model_switched"] == [False]
+
+
 def test_studio_edit_requires_source_generation():
     async def main():
         body = studio.StudioEditIn(prompt="改亮一点", source_generation_id="")
