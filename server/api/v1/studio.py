@@ -25,17 +25,6 @@ router = APIRouter()
 
 _MAX_VARIANTS = 4  # H3:每次最多 4 张(和 ReAct 工具层 ≤4 一致)
 
-# 提示词优化师:把老板的大白话改写成高质量文生图提示词(展示给用户、可改;改后即真实送模型)。通用、不绑台球。
-_EXPAND_SYS = (
-    "你是顶级的图片生成提示词优化师。把用户的大白话需求改写成一段【可直接喂给文生图模型、能出好图】的提示词。\n"
-    "要求:\n"
-    "- 保留用户的核心意图与明确写出的文字/数字/品牌(绝不杜撰价格、电话、地址或没提到的信息);\n"
-    "- 补充有助于出好图的具体视觉细节:主体、构图、镜头视角、光线、色调、风格、质感、清晰度;\n"
-    "- 用中文输出一段连贯描述,不分点、不解释、不加引号或任何前后缀;\n"
-    "- 守安全红线:不露骨色情、不涉及实际性交易、不赌博、保护未成年。\n"
-    "只输出优化后的提示词本身。"
-)
-
 
 class StudioGenerateIn(BaseModel):
     prompt: str
@@ -47,10 +36,15 @@ class StudioGenerateIn(BaseModel):
     image_prompt: str | None = None   # 优化后的提示词(前端可改后回传);有则当真实 prompt 送模型,无则用 prompt 原文
     conversation_id: str | None = None
     quality: str = "medium"
+    # U1・硬要素结构化收集(可选、向后兼容):店名/日期/价格/联系方式等要一字不差出现的硬文字。
+    # 未传(现状绝大多数调用)＝完全不影响原行为；传了会在 generate_images 里做扩写后校验兜底。
+    poster_text: dict | None = None
 
 
 class StudioExpandIn(BaseModel):
     prompt: str                       # 用户的大白话需求
+    # U1(同上)：有则连同大白话一起扩写、扩写后校验硬要素不丢；没有则行为与改动前一致。
+    poster_text: dict | None = None
 
 
 class StudioEditIn(BaseModel):
@@ -138,6 +132,8 @@ def _result_payload(res) -> dict:
         "urls": [i.get("poster_url") for i in imgs if i.get("poster_url")],
         "generation_ids": [str(i.get("generation_id")) for i in imgs if i.get("generation_id")],
         "ratio": imgs[0].get("ratio") if imgs else None,
+        # U1・"缺就问"信号(不阻断生成)：调用方声明要用但没填值的硬要素，交给前端做缺项提示。
+        "missing_elements": (res.get("missing_elements") or []) if isinstance(res, dict) else [],
     }
 
 
@@ -167,20 +163,23 @@ async def studio_expand(
     store=Depends(get_current_store),
     db=Depends(get_db),
 ):
-    """提示词优化:把大白话改写成优化的文生图提示词,返回前端展示+可改(改后即真实送模型)。同步(LLM 快)。"""
+    """提示词优化:把大白话改写成优化的文生图提示词,返回前端展示+可改(改后即真实送模型)。同步(LLM 快)。
+    U1・统一扩写层:实际调用 poster_service.expand_poster_text_with_llm(studio.py 与 ReAct 工具层
+    共用同一套系统提示规则+硬要素 string-match 校验/兜底,见该函数注释)。"""
     raw = (body.prompt or "").strip()
     if not raw:
         raise AIServiceError("先说一句你想做什么图")
     check_generation_safety(raw)                              # H1(输入)
     from services.ai.factory import ProviderFactory
-    from services.ai.base import TextRequest
     provider = ProviderFactory.get_text_provider_for_store(store)
-    # 关思考:要直接的成品文本;开思考(MiMo 默认开)会把额度耗在 reasoning、content 反而空。
-    # ⚠️ thinking 字段是 dict(非 bool):必须传 {"type":"disabled"}——传 False 是 falsy、provider 当没关、白开思考。
-    resp = await provider.generate(TextRequest(system_prompt=_EXPAND_SYS, prompt=raw, max_tokens=600, thinking={"type": "disabled"}))
-    optimized = (getattr(resp, "content", "") or "").strip() or raw
+    optimized = await poster_service.expand_poster_text_with_llm(provider, raw, poster_text=body.poster_text)
     check_generation_safety(optimized)                        # H1(输出:模型可能跑偏)
-    return {"image_prompt": optimized}
+    return {
+        "image_prompt": optimized,
+        # U1・"缺就问"信号(不阻断)：studio 是非对话直连页面，没有 LLM 回合可以现场追问，
+        # 只能把"缺哪个"报给前端，由它决定要不要提示老板补充。
+        "missing_elements": poster_service.detect_missing_hard_elements(body.poster_text),
+    }
 
 
 @router.post("/generate")
@@ -198,7 +197,7 @@ async def studio_generate(
     prompt = _compose_prompt(body.prompt, body.style)
     store_id, user_id, conv = store.id, user.id, body.conversation_id
     ratio, refs, quality = body.ratio, body.reference_image_paths, body.quality
-    img_model, img_prompt = body.image_model, body.image_prompt
+    img_model, img_prompt, poster_text = body.image_model, body.image_prompt, body.poster_text
 
     async def work_fn(progress):
         from core.tenant import set_tenant
@@ -210,7 +209,7 @@ async def studio_generate(
                 res = await poster_service.generate_images(
                     wdb, st, user_id, prompt, image_model=img_model, ratio=ratio,
                     reference_image_paths=refs, count=count, conversation_id=conv, quality=quality,
-                    image_prompt=img_prompt,
+                    image_prompt=img_prompt, poster_text=poster_text,
                     # studio 页的参考图是用户在本次请求里经系统文件框亲手选的(可信前端直传，
                     # 不是模型自己填的)，原样进白名单——否则沙箱外路径护栏会把它们误拒。
                     allowed_paths=list(refs or []),
