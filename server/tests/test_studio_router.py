@@ -50,6 +50,91 @@ def test_studio_generate_blocks_redline():
     asyncio.run(main())
 
 
+def test_studio_expand_uses_unified_expand_and_reports_missing_elements(monkeypatch):
+    """U1：/expand 改走 poster_service.expand_poster_text_with_llm(共享函数)，
+    并把 detect_missing_hard_elements 的信号一起报给前端(不阻断)。"""
+    async def main():
+        captured = {}
+
+        async def fake_expand(provider, raw, poster_text=None):
+            captured["raw"] = raw
+            captured["poster_text"] = poster_text
+            return "扩写后的提示词"
+
+        monkeypatch.setattr(studio.poster_service, "expand_poster_text_with_llm", fake_expand)
+        monkeypatch.setattr("services.ai.factory.ProviderFactory.get_text_provider_for_store",
+                            classmethod(lambda cls, store: object()))
+
+        body = studio.StudioExpandIn(prompt="周末台球活动海报", poster_text={"title": "老王台球", "price": None})
+        out = await studio.studio_expand(body, user=SimpleNamespace(id=uuid.uuid4()),
+                                         store=SimpleNamespace(id=uuid.uuid4()), db=None)
+        assert out["image_prompt"] == "扩写后的提示词"
+        assert out["missing_elements"] == ["price"]
+        assert captured["raw"] == "周末台球活动海报"
+        assert captured["poster_text"] == {"title": "老王台球", "price": None}
+    asyncio.run(main())
+
+
+def test_studio_expand_backward_compatible_without_poster_text(monkeypatch):
+    """不传 poster_text(旧调用/旧前端) → missing_elements 恒为空，行为与改动前一致。"""
+    async def main():
+        async def fake_expand(provider, raw, poster_text=None):
+            return raw + "（已扩写）"
+
+        monkeypatch.setattr(studio.poster_service, "expand_poster_text_with_llm", fake_expand)
+        monkeypatch.setattr("services.ai.factory.ProviderFactory.get_text_provider_for_store",
+                            classmethod(lambda cls, store: object()))
+
+        body = studio.StudioExpandIn(prompt="周末台球活动海报")
+        out = await studio.studio_expand(body, user=SimpleNamespace(id=uuid.uuid4()),
+                                         store=SimpleNamespace(id=uuid.uuid4()), db=None)
+        assert out["image_prompt"] == "周末台球活动海报（已扩写）"
+        assert out["missing_elements"] == []
+    asyncio.run(main())
+
+
+def test_studio_generate_threads_poster_text_and_reports_missing(monkeypatch):
+    """U1：/generate 把 poster_text 透传给 generate_images，且 missing_elements 出现在最终结果里
+    （studio 是非对话直连页面，没法现场追问——只能把信号交给前端）。"""
+    async def main():
+        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with eng.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(eng, expire_on_commit=False)
+        monkeypatch.setattr(runner, "async_session", Session)
+        monkeypatch.setattr(studio, "async_session", Session)
+        sid = uuid.uuid4()
+        async with Session() as db:
+            uid = await _seed(db, sid)
+
+        captured = {}
+
+        async def fake_gen(db, store, user_id, prompt, image_model=None, ratio="3:4", count=1, **kw):
+            captured.update(kw)
+            return {
+                "images": [{"generation_id": uuid.uuid4(), "poster_url": "/uploads/a.png", "ratio": ratio}],
+                "missing_elements": ["price"],
+            }
+        monkeypatch.setattr(studio.poster_service, "generate_images", fake_gen)
+
+        body = studio.StudioGenerateIn(prompt="周末台球活动海报", poster_text={"title": "老王台球", "price": None})
+        out = await studio.studio_generate(body, user=SimpleNamespace(id=uid),
+                                           store=SimpleNamespace(id=sid), db=None)
+        jid = out["job_id"]
+
+        got = None
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            async with Session() as db:
+                got = await mj.get_job(db, jid, sid)
+            if got and got.status in ("done", "error"):
+                break
+        assert got is not None and got.status == "done", (got.status, got.error)
+        assert captured.get("poster_text") == {"title": "老王台球", "price": None}
+        assert got.result["missing_elements"] == ["price"]
+    asyncio.run(main())
+
+
 def test_studio_edit_requires_source_generation():
     async def main():
         body = studio.StudioEditIn(prompt="改亮一点", source_generation_id="")

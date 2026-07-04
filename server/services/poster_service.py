@@ -171,7 +171,7 @@ def _resolve_agent_selected_bytes(path_str: str | None, allowed: set[Path], kind
 
 
 def _format_poster_text(poster_text: dict | None) -> str:
-    """把结构化「要写的字」(标题/多行信息/联系方式)拼成给模型的渲染指令，中文逐字保留。
+    """把结构化「要写的字」(标题/日期/价格/多行信息/联系方式)拼成给模型的渲染指令，中文逐字保留。
     未走扩写直接出图时用它确保文字进入提示词——扩写路径已由引擎把文字编进 image_prompt，故不在那条路重复。"""
     if not isinstance(poster_text, dict):
         return ""
@@ -179,6 +179,12 @@ def _format_poster_text(poster_text: dict | None) -> str:
     title = str(poster_text.get("title") or "").strip()
     if title:
         parts.append(f"标题「{title}」")
+    date = str(poster_text.get("date") or "").strip()
+    if date:
+        parts.append(f"日期/时间「{date}」")
+    price = str(poster_text.get("price") or "").strip()
+    if price:
+        parts.append(f"价格「{price}」")
     lines = poster_text.get("lines") or []
     if isinstance(lines, (list, tuple)):
         body_lines = [str(x).strip() for x in lines if str(x).strip()]
@@ -190,6 +196,139 @@ def _format_poster_text(poster_text: dict | None) -> str:
     if not parts:
         return ""
     return "在画面醒目位置原样渲染以下中文文字（一字不差、清晰可读、排版整齐）：" + "；".join(parts) + "。"
+
+
+# ────────────────── U1・硬要素结构化收集 + 扩写统一校验层 ──────────────────
+# owner 2026-07-04 铁律：所有元素全让大模型发挥，我们只提供物料，不做任何程序叠层——
+# 精确文字进 prompt 让模型自己画；logo/二维码原图进 input_images 融合（现状，不动）。
+# 下面这套"程序补回"是【纯文本层面】把丢失的硬文字要素拼回 prompt 字符串里，最终这段文字仍是
+# 交给模型自己画的——不是 PIL/像素级图片合成，不违反上面这条铁律（_overlay_logo 那类图片叠层
+# 依旧是死代码，本单未复活、未调用）。
+
+# 硬文字要素：店名/标题、日期/时间、价格、联系方式——海报上要一字不差出现的"硬信息"，不能瞎编。
+HARD_ELEMENT_LABELS: dict[str, str] = {
+    "title": "店名/标题",
+    "date": "日期/时间",
+    "price": "价格",
+    "contact": "联系方式(电话/微信等)",
+}
+
+
+def collect_hard_text_values(poster_text: dict | None) -> dict[str, str]:
+    """从结构化 poster_text 里提取【非空】的硬文字要素值，供扩写后 string-match 校验使用。"""
+    if not isinstance(poster_text, dict):
+        return {}
+    out: dict[str, str] = {}
+    for field in HARD_ELEMENT_LABELS:
+        text = str(poster_text.get(field) or "").strip()
+        if text:
+            out[field] = text
+    return out
+
+
+def detect_missing_hard_elements(poster_text: dict | None) -> list[str]:
+    """"缺就问用户不猜"：给定结构化 poster_text，返回其中【调用方已声明要用但没填值】的硬要素字段名。
+
+    判定规则：字段名要作为 key 出现在 poster_text 里(哪怕值是 None/空串)才算"这次海报打算用这个要素"——
+    没提过的字段不算缺失（不是每张海报都要日期/价格）。这里从不编造缺失值本身，只把"缺哪个"这个信号
+    报给上层：ReAct 对话路径据此在生成前先问老板（见 tools.py make_poster/generate_image）；
+    studio 直连路径把它放进返回结果，供前端未来做"缺项提示"用（不阻断生成，见 generate_images）。
+    """
+    if not isinstance(poster_text, dict):
+        return []
+    missing = []
+    for field in HARD_ELEMENT_LABELS:
+        if field not in poster_text:
+            continue  # 没声明要用这个要素，不算缺失
+        text = str(poster_text.get(field) or "").strip()
+        if not text:
+            missing.append(field)
+    return missing
+
+
+def verify_hard_elements_preserved(text: str, hard_values: dict[str, str]) -> list[str]:
+    """逐个 string-match 校验硬文字要素的值是否还在扩写后的文本里。返回丢失的字段名列表(空=一个不少)。"""
+    body = text or ""
+    return [field for field, val in hard_values.items() if val not in body]
+
+
+def ensure_hard_elements_preserved(text: str, hard_values: dict[str, str]) -> str:
+    """扩写后的文本层兜底校验：丢了哪个硬文字要素就原样拼回文本末尾（纯字符串拼接，
+    不做任何图片程序叠层——这段文字最终仍是喂给模型自己画）。已包含则原样返回，不重复拼。"""
+    missing = verify_hard_elements_preserved(text, hard_values)
+    if not missing:
+        return text
+    labels = "；".join(f"{HARD_ELEMENT_LABELS.get(f, f)}「{hard_values[f]}」" for f in missing)
+    body = (text or "").strip()
+    return f"{body}。必须原样包含以下文字：{labels}" if body else labels
+
+
+POSTER_EXPAND_SYSTEM_PROMPT = (
+    "你是顶级的图片生成提示词优化师。把用户的大白话需求改写成一段【可直接喂给文生图模型、能出好图】的中文提示词。\n"
+    "要求：\n"
+    "- 只丰富场景/构图/光影/风格/氛围/质感这些视觉细节，不改变用户的核心意图；\n"
+    "- 硬文字要素(店名/电话/价格/日期/地址等)必须原样保留、放在引号里逐字抄一遍，一个字都不能改、不能省、不能意译；\n"
+    "- 绝不杜撰用户没提供的价格、电话、地址、日期等具体信息；\n"
+    "- 用中文输出一段连贯描述，不分点、不解释、不加除了引用硬文字要素外的任何引号或前后缀；\n"
+    "- 守安全红线：不露骨色情、不涉及实际性交易、不赌博、保护未成年。\n"
+    "只输出优化后的提示词本身。"
+)
+
+
+async def expand_poster_text_with_llm(
+    provider,
+    raw_prompt: str,
+    poster_text: dict | None = None,
+) -> str:
+    """统一扩写层（studio `/expand` 用；系统提示对所有调用方写死同一套规则，见 POSTER_EXPAND_SYSTEM_PROMPT）。
+
+    调文本模型把大白话(+结构化硬要素)改写成可直接喂给生图模型的提示词；扩写完代码 string-match
+    校验硬文字要素是否一个不少：丢了先【程序补回】(纯文本拼接，非图片叠层)；补不回再重扩 1 次；
+    仍失败/调用异常/空返回 → 直接用原始 prompt 发，不卡生成流程。
+    """
+    from services.ai.base import TextRequest
+
+    raw = (raw_prompt or "").strip()
+    hard_values = collect_hard_text_values(poster_text)
+    hard_text = _format_poster_text(poster_text) if poster_text else ""
+    llm_input = f"{raw}。{hard_text}" if (hard_text and hard_text not in raw) else raw
+    if not llm_input:
+        return raw_prompt
+
+    async def _call() -> str:
+        resp = await provider.generate(
+            TextRequest(
+                system_prompt=POSTER_EXPAND_SYSTEM_PROMPT,
+                prompt=llm_input,
+                max_tokens=600,
+                thinking={"type": "disabled"},
+            )
+        )
+        return (getattr(resp, "content", "") or "").strip()
+
+    try:
+        expanded = await _call()
+    except Exception:
+        logger.warning("扩写调用失败，直接用原始 prompt", exc_info=True)
+        return raw_prompt
+    if not expanded:
+        return raw_prompt
+
+    if not verify_hard_elements_preserved(expanded, hard_values):
+        return expanded
+
+    patched = ensure_hard_elements_preserved(expanded, hard_values)
+    if not verify_hard_elements_preserved(patched, hard_values):
+        return patched
+
+    # 极端兜底：ensure_hard_elements_preserved 的拼接必然能通过校验，这里只防未来改动破坏该不变量。
+    try:
+        retry_expanded = await _call()
+    except Exception:
+        return raw_prompt
+    if retry_expanded and not verify_hard_elements_preserved(retry_expanded, hard_values):
+        return retry_expanded
+    return raw_prompt
 
 
 def build_poster_prompt(
@@ -435,6 +574,14 @@ async def generate_images(
         _pt = _format_poster_text(poster_text)
         if _pt:
             core_prompt = f"{core_prompt}。{_pt}" if core_prompt and core_prompt.strip() else _pt
+    else:
+        # U1・单一choke point：不管调用方是 studio /expand 独立扩写、还是 ReAct 工具里编排大模型
+        # 自己写的 image_prompt，两条路径都会走到这——扩写完硬文字要素(店名/日期/价格/联系方式)
+        # 可能被模型悄悄丢/改写，代码 string-match 兜底补回(纯文本拼接，不是图片程序叠层)。
+        _hard_values = collect_hard_text_values(poster_text)
+        if _hard_values:
+            core_prompt = ensure_hard_elements_preserved(core_prompt, _hard_values)
+    missing_elements = detect_missing_hard_elements(poster_text)
     full_prompt = build_poster_prompt(
         prompt=core_prompt,
         history_prompts=history_prompts,
@@ -557,6 +704,10 @@ async def generate_images(
         "count": len(valid_results),
         "conversation_id": conv_id,
         "logo_applied": logo_bytes is not None,
+        # U1・"缺就问不瞎编"：调用方声明要用但没填值的硬要素(见 detect_missing_hard_elements)，
+        # 不阻断本次生成——studio 直连路径把它交给前端做缺项提示；ReAct 路径在调这里之前
+        # 已经因为同样的检查直接问老板了(见 tools.py make_poster/generate_image)，这里恒为空。
+        "missing_elements": missing_elements,
     }
 
 

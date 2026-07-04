@@ -567,7 +567,11 @@ def _normalize_image_request(description: str, ratio: str | None) -> tuple[str, 
         "- 说『加个二维码 / 扫码关注』→ 填 qr_path\n"
         "- 说『用这张图做底图改一下 / 在这张上改』→ 填 store_photo_path\n"
         "- 说『参考这几张的感觉 / 照这个风格来』或没明说角色 → 不填角色参数，图自动当风格参考\n"
-        "别在 description 里描述 logo/二维码——系统会单独处理。"
+        "别在 description 里描述 logo/二维码——系统会单独处理。\n\n"
+        "**硬文字要素(店名/日期/价格/联系方式)**：老板要海报上出现这类要一字不差印对的文字时，"
+        "用 poster_text 结构化字段传(别只塞进 description 自由文本)。"
+        "老板明确要某个要素但没告诉你具体内容(比如说『写个价格』却没说多少钱)，"
+        "先用 ask_user_question 问清楚——别自己编价格/电话/日期/店名，问清楚前不要传这个字段的值。"
     ),
     parameters={
         "type": "object",
@@ -579,6 +583,19 @@ def _normalize_image_request(description: str, ratio: str | None) -> tuple[str, 
             "qr_path": {"type": "string", "description": "二维码图片路径(可选)：老板说『加个二维码 / 扫码关注』时填"},
             "store_photo_path": {"type": "string", "description": "底图路径(可选)：老板说『用这张做底图改一下』时填，会以这张为底做修改而非从零生成"},
             "count": {"type": "integer", "description": "出几张(可选)：默认 1，老板明确要多张时填(上限 4)"},
+            "poster_text": {
+                "type": "object",
+                "description": (
+                    "可选，海报上要一字不差出现的硬文字要素。老板要某个要素但没告诉你具体值时，"
+                    "先用 ask_user_question 问清楚，别自己编——问清楚前不要传这个字段。"
+                ),
+                "properties": {
+                    "title": {"type": "string", "description": "店名/标题文字，一字不差"},
+                    "date": {"type": "string", "description": "日期/时间文字，一字不差"},
+                    "price": {"type": "string", "description": "价格文字，一字不差"},
+                    "contact": {"type": "string", "description": "联系方式(电话/微信等)文字，一字不差"},
+                },
+            },
         },
         "required": ["description"],
     },
@@ -591,6 +608,11 @@ async def make_poster(args: dict, ctx) -> str:
     desc = (args.get("description") or "").strip()
     if not desc:
         return "缺少海报描述，没法生成。"
+    poster_text = args.get("poster_text") if isinstance(args.get("poster_text"), dict) else None
+    missing = poster_service.detect_missing_hard_elements(poster_text)
+    if missing:
+        labels = "、".join(poster_service.HARD_ELEMENT_LABELS.get(f, f) for f in missing)
+        return f"海报上要写的「{labels}」还没告诉我具体内容——这类硬信息我不会自己编，麻烦老板说清楚再生成。"
     desc, ratio, unsupported_msg = _normalize_image_request(desc, args.get("ratio"))
     if unsupported_msg:
         return unsupported_msg
@@ -632,6 +654,7 @@ async def make_poster(args: dict, ctx) -> str:
             quality="medium",
             count=count,
             image_prompt=desc,
+            poster_text=poster_text,
             background_mode=background_mode,
             logo_path=logo_path,
             qr_path=qr_path,
@@ -686,7 +709,11 @@ async def make_poster(args: dict, ctx) -> str:
         "- 说『加个二维码』→ 填 qr_path\n"
         "- 说『用这张做底图 / 在这上面改』→ 填 store_photo_path\n"
         "- 没明说角色 → 不填角色参数，图自动当风格参考\n"
-        "别在 description 里描述 logo/二维码——系统会单独处理。"
+        "别在 description 里描述 logo/二维码——系统会单独处理。\n\n"
+        "**硬文字要素(店名/日期/价格/联系方式)**：用户要图上出现这类要一字不差印对的文字时，"
+        "用 poster_text 结构化字段传(别只塞进 description 自由文本)。"
+        "用户明确要某个要素但没告诉你具体内容时，先用 ask_user_question 问清楚——"
+        "别自己编价格/电话/日期，问清楚前不要传这个字段的值。"
     ),
     parameters={
         "type": "object",
@@ -697,6 +724,19 @@ async def make_poster(args: dict, ctx) -> str:
             "qr_path": {"type": "string", "description": "二维码图片路径(可选)：用户说加二维码时填"},
             "store_photo_path": {"type": "string", "description": "底图路径(可选)：用户说在某张图上改时填"},
             "count": {"type": "integer", "description": "出几张(可选)：默认 1，用户明确要多张时填(上限 4)"},
+            "poster_text": {
+                "type": "object",
+                "description": (
+                    "可选，图上要一字不差出现的硬文字要素。用户要某个要素但没告诉你具体值时，"
+                    "先用 ask_user_question 问清楚，别自己编——问清楚前不要传这个字段。"
+                ),
+                "properties": {
+                    "title": {"type": "string", "description": "店名/标题文字，一字不差"},
+                    "date": {"type": "string", "description": "日期/时间文字，一字不差"},
+                    "price": {"type": "string", "description": "价格文字，一字不差"},
+                    "contact": {"type": "string", "description": "联系方式(电话/微信等)文字，一字不差"},
+                },
+            },
         },
         "required": ["description"],
     },
@@ -709,6 +749,11 @@ async def generate_image(args: dict, ctx) -> str:
     desc = (args.get("description") or "").strip()
     if not desc:
         return "缺少图片描述，没法生成。说清你想要张什么样的图。"
+    poster_text = args.get("poster_text") if isinstance(args.get("poster_text"), dict) else None
+    missing = poster_service.detect_missing_hard_elements(poster_text)
+    if missing:
+        labels = "、".join(poster_service.HARD_ELEMENT_LABELS.get(f, f) for f in missing)
+        return f"图上要写的「{labels}」还没告诉我具体内容——这类硬信息我不会自己编，麻烦说清楚再生成。"
     desc, ratio, unsupported_msg = _normalize_image_request(desc, args.get("ratio"))
     if unsupported_msg:
         return unsupported_msg
@@ -740,6 +785,7 @@ async def generate_image(args: dict, ctx) -> str:
             db=ctx.db, store=ctx.store, user_id=ctx.user.id, prompt=desc,
             image_model=None, ratio=ratio,
             quality="medium", count=count, image_prompt=desc,
+            poster_text=poster_text,
             background_mode=background_mode,
             logo_path=logo_path, qr_path=qr_path,
             store_photo_path=store_photo_path,
