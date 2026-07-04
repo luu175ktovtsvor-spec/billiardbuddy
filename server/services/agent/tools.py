@@ -7,7 +7,10 @@
 ⚠️ 门店画像 + 店脑记忆由 agent 端点注入 system prompt（见 api/v1/agent.py），始终在上下文里，
    故不再做成单独工具（避免 agent 多绕一轮去"查"它本就知道的东西）。
 """
+import json
 import logging
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from core.timezone import business_today
@@ -1061,6 +1064,85 @@ async def make_groupbuy_content(args: dict, ctx) -> str:
     )
     ctx.last_knowledge_used = (gen.input_params or {}).get("knowledge_used") or []  # B-2 依据可见
     return gen.result
+
+
+# ---- 场景方案成品（开业/会员卡/比赛）：结构化 JSON → app 自带 Chromium 离屏渲染出图片版 + 网页版 ----
+
+@tool(
+    name="make_scene_plan",
+    deliverable=True,
+    description=(
+        "给台球房出一份【结构化场景方案】的成品(开业方案/会员卡方案/比赛方案)——不是一段文案，"
+        "而是用店里自带的渲染引擎排版成『图片版方案』(可保存/发圈)+『网页版方案』(html，可打开细看)。"
+        "当老板说『做个开业方案/搞个会员卡方案/弄个比赛方案』这类要一份可视化方案单时调用；"
+        "只要一段现成文字用 write_operation_content，要一整套活动玩法/优惠传播用 plan_activity。\n"
+        "plan_type 三选一：开业/会员卡/比赛。requirements 把老板这次的具体要求(店名/日期/预算/想法等)"
+        "原话传进来——缺关键信息(如没说店名/日期)不会瞎编，会在结果里提示老板补充。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "plan_type": {"type": "string", "description": "方案类型：开业 / 会员卡 / 比赛（也认 opening/recharge/tournament）"},
+            "requirements": {"type": "string", "description": "老板这次的具体要求，原话即可，如店名/日期/预算/想法"},
+        },
+        "required": ["plan_type", "requirements"],
+    },
+)
+async def make_scene_plan(args: dict, ctx) -> str:
+    """LLM 生成结构化方案 JSON（services.content_service.generate_scene_plan）→ 拼 manifest
+    （services.scene_plan.manifest.build_manifest）→ 图片版走离屏渲染子进程 + 网页版存静态 html
+    （services.scene_plan.render），两个成品都落 UPLOAD_DIR/scene_plans/。"""
+    from config import settings
+    from services import content_service
+    from services.scene_plan.manifest import PLAN_TYPE_LABELS, build_manifest, normalize_plan_type
+    from services.scene_plan.render import TEMPLATE_HTML, render_html, render_image
+
+    raw_type = (args.get("plan_type") or "").strip()
+    plan_type = normalize_plan_type(raw_type)
+    if not plan_type:
+        return f"没识别出方案类型『{raw_type}』，请从 开业/会员卡/比赛 里选一个。"
+    requirements = (args.get("requirements") or "").strip()
+
+    gen = await content_service.generate_scene_plan(
+        ctx.db, ctx.store, ctx.user, plan_type=plan_type, requirements=requirements,
+    )
+    ctx.last_knowledge_used = (gen.input_params or {}).get("knowledge_used") or []  # B-2 依据可见
+    plan = json.loads(gen.result)
+
+    manifest = build_manifest(
+        plan, plan_type=plan_type, store_name=getattr(ctx.store, "name", "") or "",
+        template_path=str(TEMPLATE_HTML),
+    )
+
+    out_dir = Path(settings.upload_dir) / "scene_plans"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    rand = uuid.uuid4().hex[:6]
+    base_name = f"{plan_type}_{ts}_{rand}"
+    img_path = out_dir / f"{base_name}.jpg"
+    html_path = out_dir / f"{base_name}.html"
+
+    img_url = None
+    try:
+        render_image(manifest, str(img_path))
+        img_url = f"/uploads/scene_plans/{img_path.name}"
+    except Exception as e:  # noqa: BLE001 — 图片版渲染失败不影响网页版成品，降级仍给老板可用结果
+        logger.warning("场景方案图片版渲染失败: %s", e)
+
+    render_html(manifest, str(html_path))
+    html_url = f"/uploads/scene_plans/{html_path.name}"
+
+    label = PLAN_TYPE_LABELS[plan_type]
+    lines = [f"{label}做好了：{plan.get('title') or label}"]
+    if img_url:
+        lines.append(f"![{label}]({img_url})")
+    else:
+        lines.append("（图片版这次没渲出来，先看网页版）")
+    lines.append(f"网页版（可打开细看/发给同事）：{html_url}")
+    missing = plan.get("missing_info") or []
+    if missing:
+        lines.append("还差点信息，方案里先占位了，麻烦确认下：" + "；".join(missing))
+    return "\n".join(lines)
 
 
 # 桌面全本地版：导入本地文件操作工具（模块内按 DESKTOP_LOCAL 条件自注册；云端 web 版不设该 env → 不暴露文件操作）。
