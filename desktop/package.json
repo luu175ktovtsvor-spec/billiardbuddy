@@ -1,6 +1,6 @@
 {
   "name": "billiards-desktop-agent",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "private": true,
   "description": "帮台球房写文案、做海报、剪视频、整理文件的 AI 助手",
   "main": "src/main.js",
@@ -115,7 +115,7 @@
       "shortcutName": "台球运营助手",
       "language": "2052",
       "installerLanguages": ["zh_CN", "en_US"],
-      "license": "build/license_zh.txt",
+      "license": "build/windows-agreement-zh.txt",
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
       "installerSidebar": "build/installerSidebar.bmp"

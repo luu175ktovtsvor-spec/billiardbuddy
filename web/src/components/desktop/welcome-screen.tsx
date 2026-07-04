@@ -4,7 +4,7 @@
  * 空状态/欢迎（浅色默认 · 跟随系统）：CC 式专业 agent 基调 + 今日建议 + 起手卡片（点了直接派活）。
  */
 import type { LucideIcon } from "lucide-react";
-import { MessageSquareText, Image as ImageIcon, Monitor, Loader2, Sparkles, Brain, MousePointerClick, Search, History, Trash2, FileClock, FileSpreadsheet, Star, Users, Clapperboard, FolderCog } from "lucide-react";
+import { MessageSquareText, Image as ImageIcon, Loader2, Sparkles, Brain, MousePointerClick, Search, History, Trash2, FileClock, FileSpreadsheet, Star, Users, Clapperboard, FolderCog } from "lucide-react";
 import { WELCOME } from "@/lib/agent-copy";
 import type { RecentArtifact } from "@/lib/api";
 import type { DashboardRecommendation } from "@/types/dashboard";
@@ -94,9 +94,7 @@ export function WelcomeScreen({
     <div className="flex flex-1 flex-col items-center justify-center overflow-y-auto px-8">
       <div className="-mt-4 w-full max-w-[640px]">
         <div className="mb-7 flex flex-col items-center text-center">
-          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl border border-black/[0.07] bg-white text-[#007AFF] shadow-sm dark:border-white/[0.08] dark:bg-[#16181d] dark:shadow-none">
-            <Monitor className="h-6 w-6" />
-          </div>
+          <img src="/app-icon.png" alt="台球运营助手" className="mb-4 h-12 w-12 rounded-xl shadow-sm" />
           <div className="text-[22px] font-semibold tracking-tight text-[#1d1d1f] dark:text-[#e6e7e9]">{greeting}</div>
           <div className="mt-1.5 max-w-[440px] text-[13px] leading-relaxed text-[#86868b] dark:text-[#6e7077]">{subtitle}</div>
         </div>
