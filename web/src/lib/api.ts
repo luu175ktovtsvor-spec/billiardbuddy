@@ -668,7 +668,8 @@ class ApiClient {
 
   // 阶段2 生成工作室：文生图（绕 LLM 直连，异步出图，返回 job_id 后轮询 getMediaJob）
   // image_model=选的生图模型(gpt-image-2 / doubao-seedream-4-5-251128…)；image_prompt=优化后的提示词(有则当真实 prompt)
-  studioGenerate(input: { prompt: string; ratio?: string; style?: string; count?: number; reference_image_paths?: string[]; image_model?: string; image_prompt?: string; conversation_id?: string | null }) {
+  // E2-4・reference_generation_ids="要同款"：拿已出的成品 id 当参考图，重新生成一批相似的（不是改这一张）
+  studioGenerate(input: { prompt: string; ratio?: string; style?: string; count?: number; reference_image_paths?: string[]; reference_generation_ids?: string[]; image_model?: string; image_prompt?: string; conversation_id?: string | null }) {
     return this.request<{ job_id: string }>("POST", "/api/v1/studio/generate", input);
   }
 
