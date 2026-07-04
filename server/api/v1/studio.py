@@ -391,6 +391,7 @@ async def studio_i2v(
 @router.get("/generation/{generation_id}")
 async def studio_get_generation(
     generation_id: str,
+    user: User = Depends(get_current_user),
     store=Depends(get_current_store),
     db=Depends(get_db),
 ):
