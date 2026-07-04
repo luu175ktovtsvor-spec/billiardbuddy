@@ -166,7 +166,10 @@ jobs:
             desktop/dist/*.exe
             desktop/dist/latest.yml
           if-no-files-found: error
-          retention-days: 30
+          # 这个 artifact 只是 build-win → publish 同次流水线里传给 scp 步骤的中转品,
+          # publish 当场 download 完 scp 到更新私服就没用了。30 天太长会堆满账号 Actions 存储
+          # (0.5GB 免费额度·一次 ~416MB·一天调几次就爆)。缩到 3 天:够手动下载排查、又不堆积。
+          retention-days: 3
 
   # ── ⑥ 发布到更新私服(仅打 tag v* 时)──
   # 构建产物在 GitHub 的 Linux 机上直接 scp 到更新服务器 zzyppz.cn/desktop/,
