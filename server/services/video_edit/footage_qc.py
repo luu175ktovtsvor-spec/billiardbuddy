@@ -13,12 +13,15 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 from pathlib import Path
 from typing import Callable
 
 from .ffbin import ffmpeg_bin, ffprobe_bin, probe_video
+
+logger = logging.getLogger(__name__)
 
 # ── 体检阈值(全 ffmpeg 确定性检查,数值凭经验定;发现不合适可调,别改判断结构) ──
 # 素材入库门(门①):整段黑/冻占比够高才判废——阈值定高一点(0.85),只抓"这段基本没法用"的真废料,
@@ -73,7 +76,9 @@ def _ffmpeg_null_run(path: str, *, vf: str | None = None, af: str | None = None,
     cmd += ["-f", "null", "-"]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except (subprocess.TimeoutExpired, OSError):
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.warning("ffmpeg 探测失败,该项质量体检降级为“未探测到异常”:path=%s vf=%s af=%s %s: %s",
+                        path, vf, af, type(e).__name__, e)
         return ""
     return r.stderr or ""
 
@@ -85,9 +90,20 @@ def _has_audio_stream(path: str) -> bool:
              "-show_entries", "stream=index", "-of", "csv=p=0", path],
             capture_output=True, text=True, timeout=30.0,
         )
-    except (subprocess.TimeoutExpired, OSError):
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.warning("ffprobe 探测音轨失败,降级判定为“无音轨”:path=%s %s: %s",
+                        path, type(e).__name__, e)
         return False
     return bool((r.stdout or "").strip())
+
+
+def _black_ratio(path: str, dur: float) -> float:
+    """跑一遍 blackdetect,返回黑屏命中时长占全片时长的比例——门①②共用同一套探测+解析,别各写一遍。"""
+    black_s = _parse_interval_seconds(
+        _ffmpeg_null_run(path, vf="blackdetect=d=0.1:pic_th=0.98"),
+        start_re=_BLACK_START_RE, dur_re=_BLACK_DUR_RE, total_duration=dur,
+    )
+    return round(black_s / dur, 4) if dur else 0.0
 
 
 def _first_frame_black(path: str) -> bool:
@@ -98,26 +114,30 @@ def _first_frame_black(path: str) -> bool:
              "-frames:v", "1", "-an", "-f", "null", "-"],
             capture_output=True, text=True, timeout=30.0,
         )
-    except (subprocess.TimeoutExpired, OSError):
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.warning("ffmpeg 探测首帧是否纯黑失败,降级判定为“首帧不黑”:path=%s %s: %s",
+                        path, type(e).__name__, e)
         return False
     return "blackframe" in (r.stderr or "") and "pblack:" in (r.stderr or "")
 
 
 # ── 门①:素材入库前体检 ──
 
-def probe_footage_health(path: str, *, black_ratio_bad: float = BLACK_RATIO_BAD,
+def probe_footage_health(path: str, *, info: dict | None = None,
+                          black_ratio_bad: float = BLACK_RATIO_BAD,
                           freeze_ratio_bad: float = FREEZE_RATIO_BAD) -> dict:
     """一个素材(源视频文件)整体体检:黑屏/冻结/静音各自占全片时长的比例 + 是否判废 + 大白话原因。
 
     只按视觉(黑/冻)判 is_bad;静音只报比例、不独立判废(理由见模块顶部说明)。
+
+    info: 调用方若已探过 probe_video(path)(如 inventory_footage/plan_ambient/plan_speech 主循环
+    里为取 duration/is_portrait 各建媒体登记而调),可把结果传进来复用,省一次 ffprobe(纯性能优化,
+    不改判定逻辑)。不传则内部自己探一次(兼容旧调用)。
     """
-    info = probe_video(path)
+    info = info if info is not None else probe_video(path)
     dur = float(info.get("duration_s") or 0.0)
 
-    black_s = _parse_interval_seconds(
-        _ffmpeg_null_run(path, vf="blackdetect=d=0.1:pic_th=0.98"),
-        start_re=_BLACK_START_RE, dur_re=_BLACK_DUR_RE, total_duration=dur,
-    )
+    black_ratio = _black_ratio(path, dur)
     freeze_s = _parse_interval_seconds(
         _ffmpeg_null_run(path, vf="freezedetect=n=-60dB:d=0.5"),
         start_re=_FREEZE_START_RE, dur_re=_FREEZE_DUR_RE, total_duration=dur,
@@ -130,7 +150,6 @@ def probe_footage_health(path: str, *, black_ratio_bad: float = BLACK_RATIO_BAD,
             start_re=_SILENCE_START_RE, dur_re=_SILENCE_DUR_RE, total_duration=dur,
         )
 
-    black_ratio = round(black_s / dur, 4) if dur else 0.0
     freeze_ratio = round(freeze_s / dur, 4) if dur else 0.0
     silence_ratio = round(silence_s / dur, 4) if (dur and has_audio) else 0.0
 
@@ -176,11 +195,7 @@ def probe_render_health(path: str, *, expected_duration: float | None = None,
     info = probe_video(path)
     dur = float(info.get("duration_s") or 0.0)
 
-    black_s = _parse_interval_seconds(
-        _ffmpeg_null_run(path, vf="blackdetect=d=0.1:pic_th=0.98"),
-        start_re=_BLACK_START_RE, dur_re=_BLACK_DUR_RE, total_duration=dur,
-    )
-    black_ratio = round(black_s / dur, 4) if dur else 0.0
+    black_ratio = _black_ratio(path, dur)
 
     has_audio = _has_audio_stream(path)
     silence_ratio = 0.0
