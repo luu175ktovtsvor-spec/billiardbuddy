@@ -1,0 +1,168 @@
+<!-- 台球场景方案(开业/会员卡/比赛)成品单模板。静态文档(totalFrames=1)，不是视频那套
+     标题条/转场/卡拍脉冲——window.init(m) 按 m.plan 数据一次性把 DOM 建好，renderFrame(f)
+     只是满足渲染器"每帧调一次"的契约(单帧文档，直接返回)。
+     两种消费方式共用这一份文件：
+       ① Electron 离屏渲染(render-worker.js)：win.loadFile 后显式 executeJavaScript 调 init/renderFrame；
+       ② 网页版静态页：render.py 在文件末尾追加一段内联 <script> 直接调 init/renderFrame(0)。 -->
+<meta charset="utf-8">
+<style>
+  :root{ --accent:#10a37f; --ink:#1a1a1a; --sub:#6b7280; --line:#e6e8eb; --warn:#b45309; --warn-bg:#fff7ed; }
+  html,body{margin:0;padding:0;background:#f5f6f8;overflow:hidden}
+  *{box-sizing:border-box}
+  #stage{
+    position:relative;width:100vw;height:100vh;overflow:hidden;
+    background:#ffffff;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;
+    color:var(--ink);
+    padding:52px 64px 40px;
+  }
+  #header{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px}
+  #badge{
+    display:inline-flex;align-items:center;gap:10px;background:var(--accent);color:#fff;
+    font-size:22px;font-weight:700;padding:8px 20px;border-radius:999px;letter-spacing:1px;
+  }
+  #storeName{font-size:22px;font-weight:600;color:var(--ink);margin-left:14px}
+  #meta{font-size:16px;color:var(--sub)}
+  #title{font-size:44px;font-weight:800;line-height:1.25;margin:6px 0 22px;color:var(--ink)}
+  .card{border:1px solid var(--line);border-radius:16px;padding:24px 28px;margin-bottom:20px;background:#fff}
+  .sectionTitle{font-size:20px;font-weight:700;color:var(--accent);margin:0 0 14px;display:flex;align-items:center;gap:8px}
+  .sectionTitle::before{content:"";width:6px;height:20px;border-radius:3px;background:var(--accent);display:inline-block}
+  #goalCard{background:#f0faf7;border-color:#cdeee3}
+  #goalText{font-size:22px;font-weight:600;line-height:1.5;color:var(--ink)}
+  .timelineItem{display:flex;gap:18px;padding:10px 0}
+  .timelineItem:not(:last-child){border-bottom:1px dashed var(--line)}
+  .timeTag{
+    flex:0 0 auto;min-width:120px;font-size:16px;font-weight:700;color:#fff;background:var(--accent);
+    border-radius:8px;padding:6px 14px;height:fit-content;text-align:center;
+  }
+  .actionText{font-size:18px;line-height:1.55;color:var(--ink);padding-top:4px}
+  .chipRow{display:flex;flex-wrap:wrap;gap:10px}
+  .chip{
+    font-size:16px;color:var(--ink);background:#f3f4f6;border:1px solid var(--line);
+    border-radius:10px;padding:8px 16px;line-height:1.4;
+  }
+  .noteList{margin:0;padding-left:22px}
+  .noteList li{font-size:17px;line-height:1.7;color:var(--ink);margin-bottom:6px}
+  #budgetText{font-size:18px;line-height:1.7;color:var(--ink);white-space:pre-wrap}
+  #missingBanner{
+    display:none;background:var(--warn-bg);border:1px solid #fed7aa;border-radius:14px;
+    padding:18px 24px;margin-top:6px;
+  }
+  #missingBanner .sectionTitle{color:var(--warn)}
+  #missingBanner .sectionTitle::before{background:var(--warn)}
+  #missingList{margin:0;padding-left:22px}
+  #missingList li{font-size:16px;line-height:1.7;color:var(--warn);margin-bottom:4px}
+  #footer{margin-top:8px;font-size:14px;color:var(--sub);text-align:right}
+  .empty{display:none}
+</style>
+<div id="stage">
+  <div id="header">
+    <div style="display:flex;align-items:center">
+      <span id="badge"></span>
+      <span id="storeName"></span>
+    </div>
+    <span id="meta"></span>
+  </div>
+  <div id="title"></div>
+  <div class="card" id="goalCard">
+    <div class="sectionTitle">方案目标</div>
+    <div id="goalText"></div>
+  </div>
+  <div class="card" id="timelineCard">
+    <div class="sectionTitle">执行时间线</div>
+    <div id="timelineBody"></div>
+  </div>
+  <div class="card" id="materialsCard">
+    <div class="sectionTitle">物料 / 资源清单</div>
+    <div class="chipRow" id="materialsBody"></div>
+  </div>
+  <div class="card" id="budgetCard">
+    <div class="sectionTitle">预算 / 优惠力度</div>
+    <div id="budgetText"></div>
+  </div>
+  <div class="card" id="notesCard">
+    <div class="sectionTitle">执行注意事项</div>
+    <ul class="noteList" id="notesBody"></ul>
+  </div>
+  <div id="missingBanner">
+    <div class="sectionTitle">还差点信息，麻烦确认一下</div>
+    <ul id="missingList"></ul>
+  </div>
+  <div id="footer"></div>
+</div>
+<script>
+let M;
+const $=(id)=>document.getElementById(id);
+function esc(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function renderPlan(plan){
+  plan = plan || {};
+  $('badge').textContent = plan.plan_type_label || '运营方案';
+  $('storeName').textContent = plan.store_name || '';
+  $('meta').textContent = plan.generated_at ? ('生成于 ' + plan.generated_at) : '';
+  $('title').textContent = plan.title || (plan.plan_type_label || '运营方案');
+  $('goalText').textContent = plan.goal || '（暂未给出明确目标）';
+
+  const timeline = Array.isArray(plan.timeline) ? plan.timeline : [];
+  const tlBody = $('timelineBody');
+  tlBody.innerHTML = '';
+  if (timeline.length){
+    for (const item of timeline){
+      const row = document.createElement('div'); row.className = 'timelineItem';
+      const tag = document.createElement('div'); tag.className = 'timeTag'; tag.textContent = item.time || '·';
+      const act = document.createElement('div'); act.className = 'actionText'; act.textContent = item.action || '';
+      row.appendChild(tag); row.appendChild(act); tlBody.appendChild(row);
+    }
+  } else {
+    $('timelineCard').classList.add('empty');
+  }
+
+  const materials = Array.isArray(plan.materials) ? plan.materials : [];
+  const matBody = $('materialsBody');
+  matBody.innerHTML = '';
+  if (materials.length){
+    for (const m of materials){
+      const chip = document.createElement('span'); chip.className = 'chip'; chip.textContent = m;
+      matBody.appendChild(chip);
+    }
+  } else {
+    $('materialsCard').classList.add('empty');
+  }
+
+  $('budgetText').textContent = plan.budget || '（未给出预算/优惠力度说明）';
+
+  const notes = Array.isArray(plan.notes) ? plan.notes : [];
+  const notesBody = $('notesBody');
+  notesBody.innerHTML = '';
+  if (notes.length){
+    for (const n of notes){
+      const li = document.createElement('li'); li.textContent = n; notesBody.appendChild(li);
+    }
+  } else {
+    $('notesCard').classList.add('empty');
+  }
+
+  const missing = Array.isArray(plan.missing_info) ? plan.missing_info : [];
+  const missingList = $('missingList');
+  missingList.innerHTML = '';
+  if (missing.length){
+    $('missingBanner').style.display = 'block';
+    for (const m of missing){
+      const li = document.createElement('li'); li.textContent = m; missingList.appendChild(li);
+    }
+  }
+
+  $('footer').textContent = '台球运营 AI 助手 生成';
+}
+
+window.init = (m) => {
+  M = m || {};
+  const W = M.width || 1000, H = M.height || 1400;
+  $('stage').style.width = W + 'px'; $('stage').style.height = H + 'px';
+  if (M.theme && M.theme.accent){ document.documentElement.style.setProperty('--accent', M.theme.accent); }
+  renderPlan(M.plan);
+};
+
+// 单帧静态文档：renderFrame 只需满足渲染器"每帧调一次"的契约，内容已在 init() 里建好。
+window.renderFrame = (_f) => true;
+</script>
