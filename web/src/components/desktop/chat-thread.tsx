@@ -20,6 +20,12 @@ import { OverflowMenu, type OverflowMenuItem } from "./overflow-menu";
 
 const PROSE = "prose prose-sm prose-slate dark:prose-invert max-w-none leading-relaxed prose-p:my-1.5";
 
+// G-d(2026-07-04)：一键发布到平台整条线雪藏——默认安装包不带 publisher-bin，
+// 会静默回退 python3(用户机器没装)，点了会失败但用户看不出为什么。入口先全部隐藏，
+// 后端 /agent/publish 相关路由、window.electron.publish 桥接原样保留；
+// 未来发布线补齐(内置 publisher-bin 或换实现)后，把这个常量翻回 true 即可接回，不用重写。
+const SHOW_PUBLISH = false;
+
 function posterUrl(content: string): string | null {
   const m = content.match(/!\[[^\]]*\]\(([^)\s]+)/);
   return m ? m[1] : null;
@@ -632,7 +638,7 @@ function DeliverableCard({
           <span><span>依据：</span>{step.knowledgeUsed.join(" · ")}</span>
         </div>
       )}
-      {onPublish && step.tool === "make_platform_content" && (
+      {SHOW_PUBLISH && onPublish && step.tool === "make_platform_content" && (
         <div className="flex items-center gap-2 px-4 pb-2">
           <button
             type="button"
