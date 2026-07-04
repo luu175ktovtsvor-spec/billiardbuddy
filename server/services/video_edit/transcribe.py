@@ -82,3 +82,26 @@ def transcribe(
     }
     cache.write_text(json.dumps(result, ensure_ascii=False))
     return result
+
+
+def transcribe_short_audio(audio_path: str, *, language: str = "zh") -> str:
+    """短音频(语音输入按钮·D-Task-9)→ 整句文字。
+
+    薄封装,复用 `_get_model()` 省得重复加载模型;跟 `transcribe()` 不同——
+    不落缓存(一次性短音频,缓存没意义)、不要词级时间戳(只要整句)。
+    保留 vad_filter + 幻觉防护(同 transcribe() 的两道防线)。
+    """
+    model = _get_model(_DEFAULT_MODEL, "cpu", "int8")
+    segments, _info = model.transcribe(
+        audio_path,
+        language=language,
+        word_timestamps=False,
+        vad_filter=True,  # ★防无语音幻觉(第一道)
+    )
+    parts: list[str] = []
+    for seg in segments:
+        # ★第二道防幻觉:同 transcribe() 的置信度挡。
+        if getattr(seg, "no_speech_prob", 0.0) > 0.6 or getattr(seg, "avg_logprob", 0.0) < -1.0:
+            continue
+        parts.append(seg.text or "")
+    return "".join(parts).strip()
