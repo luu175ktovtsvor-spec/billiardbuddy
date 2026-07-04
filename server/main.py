@@ -69,6 +69,13 @@ async def lifespan(app: FastAPI):
     if engine.dialect.name == "sqlite" and daily_scheduler.target_hour() is not None:
         sched_task = asyncio.create_task(daily_scheduler.scheduler_loop(sched_stop))
 
+    # 数据安全兜底(G4)：主库定期备份，SQLite 桌面版默认开(不 opt-in——数据安全不该要老板自己找开关)。
+    # 启动即备一次 + 之后每天最多一次，旧份自动轮转只留最近 7 份。云端 PG 另有运维备份，非 SQLite 直接跳过。
+    from services import db_backup
+    backup_task = None
+    if engine.dialect.name == "sqlite":
+        backup_task = asyncio.create_task(db_backup.backup_loop(sched_stop))
+
     # 配置驱动 Hooks（settings.json 的 command 钩子）：自门控 DESKTOP_CONFIG_HOOKS=1 才装，测试零干扰。
     try:
         from services.agent.hooks_config import install_config_hooks
@@ -124,7 +131,7 @@ async def lifespan(app: FastAPI):
     yield
 
     sched_stop.set()
-    for _t in (sched_task, rem_task, sctask_task, im_task, sync_task):
+    for _t in (sched_task, backup_task, rem_task, sctask_task, im_task, sync_task):
         if _t is not None:
             try:
                 await asyncio.wait_for(_t, timeout=5)

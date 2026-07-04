@@ -196,6 +196,13 @@ class ApiClient {
     return `${this.baseUrl}${path}`;
   }
 
+  /** G-c 数据安全兜底：主库快照 + uploads 打包成 zip 的下载地址。配合 Electron「另存为」
+   * 写到本机任意位置（设置抽屉「备份店铺数据」按钮用，fetch 拿字节自己转 base64，不走
+   * JSON+base64——导出包可能带较大的历史图片/视频，直接走字节更省内存）。 */
+  exportDataUrl(): string {
+    return this.resolveUrl("/api/v1/backup/export");
+  }
+
   private async request<T>(
     method: string,
     path: string,

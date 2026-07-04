@@ -7,7 +7,7 @@
  * 后端接口（getByokConfig / updateByokConfig / validateByokConfig / MCP / plugins / skills）全保留。
  */
 import { useEffect, useState } from "react";
-import { X, Loader2, Check, Cpu, Image as ImageIcon, Store, ShieldCheck, Puzzle, Plus, Trash2, AlertTriangle, Download, Brain, ChevronRight } from "lucide-react";
+import { X, Loader2, Check, Cpu, Image as ImageIcon, Store, ShieldCheck, Puzzle, Plus, Trash2, AlertTriangle, Download, Brain, ChevronRight, DatabaseBackup } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
@@ -110,6 +110,9 @@ export function SettingsDrawer({
   // 生图 model↔供应商校验提示（温和，不拦保存）
   const [imgWarn, setImgWarn] = useState("");
 
+  // G-c 数据安全兜底：设置抽屉「备份店铺数据」一键导出(主库快照 + uploads 打包 zip)
+  const [exporting, setExporting] = useState(false);
+
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -190,6 +193,46 @@ export function SettingsDrawer({
       setMsg({ kind: "err", text: getErrorMessage(e) });
     } finally {
       setAutoLaunchBusy(false);
+    }
+  }
+
+  // G-c 数据安全兜底：把主库快照 + uploads(海报/二维码/视频等产出) 打包 zip，
+  // 走系统「另存为」写到用户自己选的位置(桌面/U盘/网盘同步文件夹)——电脑坏了也能找回。
+  // 直接拿字节自己转 base64(不走 JSON+base64 的 renderDeliverable 那条路)：导出包可能带较大的
+  // 历史图片/视频，JSON 包一层字符串对内存更不友好，字节流更省。
+  async function exportStoreData() {
+    if (!electron?.files?.save) { setMsg({ kind: "err", text: "当前环境不支持保存到电脑，请用桌面版" }); return; }
+    setExporting(true); setMsg(null);
+    try {
+      const res = await fetch(api.exportDataUrl());
+      if (!res.ok) {
+        let detail = "";
+        try { detail = (await res.json())?.detail || ""; } catch { /* 非 JSON 响应，走默认文案 */ }
+        throw new Error(detail || "导出失败，请稍后再试");
+      }
+      const buffer = await res.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+      }
+      const cd = res.headers.get("content-disposition") || "";
+      const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+      const defaultName = m ? decodeURIComponent(m[1]) : `球房数据备份-${Date.now()}.zip`;
+      const r = await electron.files.save({
+        defaultName,
+        base64: btoa(binary),
+        title: "备份店铺数据到电脑",
+        filters: [{ name: "压缩包", extensions: ["zip"] }],
+      });
+      if (r.canceled) setMsg({ kind: "ok", text: "已取消" });
+      else if (r.error) setMsg({ kind: "err", text: r.error });
+      else setMsg({ kind: "ok", text: `已备份到：${r.path}` });
+    } catch (e) {
+      setMsg({ kind: "err", text: getErrorMessage(e) });
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -508,6 +551,30 @@ export function SettingsDrawer({
                     className={`relative h-5 w-9 shrink-0 rounded-full transition disabled:opacity-50 ${autoLaunch ? "bg-[#10a37f]" : "bg-black/[0.15] dark:bg-white/[0.18]"}`}
                   >
                     <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${autoLaunch ? "left-[18px]" : "left-0.5"}`} />
+                  </button>
+                </div>
+              </section>
+            )}
+
+            {/* G-c 数据安全兜底：电脑坏了数据不至于全丢。软件已在后台每天自动备份主库，
+                这里再给一个"现在就要一份"的按钮，打包存到自己电脑/U盘/网盘同步文件夹。 */}
+            {isDesktop && (
+              <section className="mb-5">
+                <div className="mb-1.5 flex items-center gap-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">
+                  <DatabaseBackup className="h-3.5 w-3.5" /> 数据安全
+                </div>
+                <div className="rounded-lg border border-black/[0.08] bg-black/[0.015] px-3.5 py-2.5 dark:border-white/[0.08] dark:bg-white/[0.02]">
+                  <p className="mb-2.5 text-[11.5px] leading-snug text-[#3a3a3c] dark:text-[#c8cace]">
+                    软件已经每天自动在本机备份一份门店数据。想现在就存一份到别的地方（比如 U 盘、网盘同步文件夹），点这里打包下载——万一电脑坏了，数据不至于全丢。
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void exportStoreData()}
+                    disabled={exporting}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-black/[0.1] bg-black/[0.02] px-3 py-1.5 text-[12.5px] text-[#3a3a3c] transition hover:bg-black/[0.04] active:scale-[0.98] disabled:opacity-50 dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#c8cace] dark:hover:bg-white/[0.06]"
+                  >
+                    {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <DatabaseBackup className="h-3.5 w-3.5" />}
+                    {exporting ? "打包中…" : "备份店铺数据到电脑"}
                   </button>
                 </div>
               </section>
