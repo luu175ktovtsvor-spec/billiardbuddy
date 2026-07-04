@@ -2,11 +2,12 @@ import asyncio
 import io
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageStat
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -397,6 +398,167 @@ def _build_seedream_fallback_provider():
     return SeedreamImageProvider(api_key=settings.ark_api_key, base_url=_ARK_BASE_URL)
 
 
+# ────────────────── U4・确定性预筛(零依赖) + RapidOCR 中文文字校验 + 抽风自动重出 ──────────────────
+# owner 2026-07-04 真机实测拍板：Seedream 综合最好，唯一短板=中文精确文字偶发"抽风"(实测出过
+# "充充"这种重复字、多画一行没要求的促销文案)。这里做两道零 token 的确定性质检：
+# 1. 黑图/纯色/分辨率下限——只用 Pillow(已是硬依赖)算整图灰度均值/标准差，不引入 numpy/cv2，
+#    阈值刻意保守("宁漏勿误杀")：只拦"明显生成失败"的占位图，不误杀正常深色系/简约风格海报。
+# 2. RapidOCR 中文文字比对——只在 poster_text 声明了硬文字要素(店名/日期/价格/联系方式)时才查，
+#    要求【一字不差包含】(零容忍模糊匹配)：这类字段本就要求分毫不差，模糊匹配会放过"关键数字
+#    错一位"这种最不能接受的错误。装饰字/花体不在硬要素里，天然不会被拿来比对、不会被误杀。
+
+# 分辨率下限：远低于 SIZE_MAP 最小边(1024)才拦，避免卡到任何真实输出尺寸。
+_MIN_SCREEN_DIMENSION = 400
+# 灰度均值低于此值(0-255)→ 判定"近全黑"：只有几乎纯黑的画面才会踩到，
+# 深色主题但有文字/图形对比度的正常海报均值通常远高于这个数。
+_BLACK_MEAN_THRESHOLD = 8.0
+# 灰度标准差低于此值 → 判定"近纯色/空白图"：任何色调的真实海报只要有文字/图案就会有明显方差，
+# 只有整张几乎单一颜色(渲染失败的占位图)才会踩到。
+_SOLID_STD_THRESHOLD = 3.0
+
+
+def _screen_generated_image(path: Path) -> tuple[bool, str]:
+    """零依赖确定性预筛：黑图/纯色/分辨率下限。宁漏勿误杀——阈值刻意保守，只拦截"明显生成
+    失败"(纯色占位图/近全黑帧/异常小分辨率)，不误杀正常的深色系/简约风格海报。
+    返回 (ok, reason)：ok=False 时 reason 是给人看的中文原因；读图本身失败时故障安全放行(True)，
+    不能因为预筛自己读图出错就连累一张可能完全正常的图被判废。"""
+    try:
+        with Image.open(path) as img:
+            width, height = img.size
+            if width < _MIN_SCREEN_DIMENSION or height < _MIN_SCREEN_DIMENSION:
+                return False, f"分辨率异常偏低({width}x{height})"
+            stat = ImageStat.Stat(img.convert("L"))
+            mean = stat.mean[0]
+            std = stat.stddev[0]
+    except Exception:
+        logger.warning("预筛读图失败，视为通过(宁漏勿误杀): %s", path, exc_info=True)
+        return True, ""
+    if std < _SOLID_STD_THRESHOLD:
+        return False, "疑似纯色/空白图(没有实际内容)"
+    if mean < _BLACK_MEAN_THRESHOLD:
+        return False, "疑似近全黑图"
+    return True, ""
+
+
+_ocr_engine = None  # 懒加载单例：RapidOCR 初始化要读 onnx 模型，只在真用到时(有硬文字要素)才建
+
+
+def _get_ocr_engine():
+    """懒加载 RapidOCR 引擎单例（纯本地 onnx 推理，不联网，符合离线打包铁律）。"""
+    global _ocr_engine
+    if _ocr_engine is None:
+        from rapidocr_onnxruntime import RapidOCR
+        _ocr_engine = RapidOCR()
+    return _ocr_engine
+
+
+def _run_ocr_texts(path: Path) -> list[str]:
+    """跑本地 RapidOCR，识别图片里的文字行。任何异常（含模型加载失败）安全返回空列表——
+    OCR 本身故障不该拖垮生图，退化成"这次不校验文字"而不是硬失败。"""
+    try:
+        engine = _get_ocr_engine()
+        result, _elapse = engine(str(path))
+    except Exception:
+        logger.warning("OCR 识别失败，跳过文字校验(宁漏勿误杀): %s", path, exc_info=True)
+        return []
+    if not result:
+        return []
+    return [str(item[1]).strip() for item in result if len(item) >= 2 and str(item[1]).strip()]
+
+
+def _levenshtein(a: str, b: str) -> int:
+    """标准编辑距离（无第三方依赖的最短实现），仅用于给"文字有出入 vs 完全找不到"分类描述用。"""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            cost = 0 if ca == cb else 1
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+        prev = cur
+    return prev[-1]
+
+
+def _find_best_edit_distance(value: str, full_text: str) -> int:
+    """在整段 OCR 文本里滑窗找与 value 长度相近的子串，返回其中的最小编辑距离——
+    只用来把"文字有出入(离得很近)"和"压根没有(离得很远)"分类成不同的人话提示，不参与判定本身
+    (判定本身是零容忍的精确包含比对，见 detect_ocr_text_anomalies)。"""
+    n = len(value)
+    if n == 0:
+        return 0
+    if not full_text:
+        return n
+    best = _levenshtein(value, full_text)
+    for wlen in range(max(1, n - 2), n + 3):
+        for start in range(0, max(1, len(full_text) - wlen + 1)):
+            window = full_text[start:start + wlen]
+            d = _levenshtein(value, window)
+            if d < best:
+                best = d
+                if best == 0:
+                    return 0
+    return best
+
+
+def _has_clean_occurrence(value: str, full_text: str) -> bool:
+    """在 full_text 里找 value 的"干净"出现：要求紧邻处不是 value 自己首/尾字符的重复延伸——
+    排掉"续充"被"续充充"这种紧邻重复字污染的子串蒙混过关(纯 in 判断会把"续充充"误判成"含有
+    续充"，因为原字符串恰好是被污染文本的前缀)。用首尾字符各一个的负向环视实现，两侧都是定长
+    1 个字符，满足 Python re 对环视要求"定长"的限制。"""
+    if not value:
+        return True
+    pattern = re.compile(
+        f"(?<!{re.escape(value[0])})" + re.escape(value) + f"(?!{re.escape(value[-1])})"
+    )
+    return bool(pattern.search(full_text))
+
+
+def detect_ocr_text_anomalies(ocr_texts: list[str], hard_values: dict[str, str]) -> dict[str, str]:
+    """比对 OCR 读出的文字与硬要素期望值(店名/日期/价格/联系方式)，返回 {字段名: 人话原因}
+    (空 dict = 一个不少、都对得上)。
+
+    判定本身是【精确包含比对】(忽略空白)、零容忍模糊——硬要素必须一字不差、干净地出现在 OCR
+    结果里，任何偏差(缺字/多字/紧邻重复字/错位数字)都判定为"抽风"：这类字段本就要求分毫不差，
+    模糊匹配会放过"关键数字错一位"这种最不能接受的错误。编辑距离只用来给出更友好的原因文案
+    (离得近=像是画错了几个字，离得远=压根没画)，不影响判定结果。装饰字/花体不在 hard_values 里，
+    天然不查、不会被误杀。
+    """
+    if not hard_values:
+        return {}
+    full_text = re.sub(r"\s+", "", "".join(ocr_texts))
+    anomalies: dict[str, str] = {}
+    for field, value in hard_values.items():
+        norm_value = re.sub(r"\s+", "", str(value or ""))
+        if not norm_value or _has_clean_occurrence(norm_value, full_text):
+            continue
+        label = HARD_ELEMENT_LABELS.get(field, field)
+        distance = _find_best_edit_distance(norm_value, full_text)
+        if distance <= max(1, len(norm_value) // 2):
+            anomalies[field] = f"{label}文字疑似出错(如重复字/错位)：应为「{value}」"
+        else:
+            anomalies[field] = f"{label}没有识别到：应为「{value}」"
+    return anomalies
+
+
+async def _quality_check_image(output_path_jpg: Path, hard_values: dict[str, str]) -> tuple[bool, str]:
+    """一张已落盘图片的完整质检：先零依赖预筛，通过后（有硬文字要素时）再跑 OCR 比对。
+    两类检查都在线程池跑(CPU 密集：图像统计 / onnx 推理)，避免阻塞事件循环。"""
+    ok, reason = await asyncio.to_thread(_screen_generated_image, output_path_jpg)
+    if not ok:
+        return False, reason
+    if hard_values:
+        ocr_texts = await asyncio.to_thread(_run_ocr_texts, output_path_jpg)
+        anomalies = detect_ocr_text_anomalies(ocr_texts, hard_values)
+        if anomalies:
+            return False, "；".join(anomalies.values())
+    return True, ""
+
+
 def build_poster_prompt(
     prompt: str,
     history_prompts: list[str],
@@ -697,8 +859,12 @@ async def generate_images(
     # 沿用 U2 之前的行为：交给门店自己的 endpoint 用它自身默认值。只有【非 BYOK（内置 key）】
     # 路径才吃自动路由的具体模型串（image_model_cfg 为 None 时兜底 image_model）。
     routed_model = image_model_cfg if _store_byok_image else (image_model_cfg or image_model)
+    # U4・OCR 只在有硬文字要素时才查(装饰字/花体不查，不会被误杀)；一次性算好，每张图复用。
+    _hard_values_for_qc = collect_hard_text_values(poster_text)
+    # U4・"仍抽风:如实告知用户"——收集质检拒绝原因，供整批全废时拼进人话报错(而不是甩一句"生成失败"了事)。
+    quality_rejection_notes: list[str] = []
 
-    async def _generate_one(i: int) -> dict | None:
+    async def _produce_single_attempt(i: int) -> dict | None:
         rand = uuid.uuid4().hex[:4]
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         sid = str(store.id).replace("-", "")[:8]
@@ -764,7 +930,36 @@ async def generate_images(
             "model_switched": model_switched,
         }
 
+    async def _generate_one(i: int) -> dict | None:
+        """U4・质检 + 抽风自动重出(仅 1 次)：预筛/OCR 不过 → 重出这一张一次；重出后仍不过 →
+        放弃这一张(如实计入拒绝原因，不拖累同批其它张，也不硬塞废图给用户)。"""
+        outcome = await _produce_single_attempt(i)
+        if outcome is None:
+            return None
+        ok, reason = await _quality_check_image(outcome["output_path_jpg"], _hard_values_for_qc)
+        if ok:
+            return outcome
+        logger.warning("第 %d 张质检未过(%s)，自动重出这一张 1 次", i + 1, reason)
+        quality_rejection_notes.append(reason)
+        retry_outcome = await _produce_single_attempt(i)
+        if retry_outcome is None:
+            return None
+        ok2, reason2 = await _quality_check_image(retry_outcome["output_path_jpg"], _hard_values_for_qc)
+        if ok2:
+            retry_outcome["quality_retried"] = True
+            return retry_outcome
+        logger.warning("第 %d 张重出后质检仍未过(%s)，放弃这一张", i + 1, reason2)
+        quality_rejection_notes.append(reason2)
+        return None
+
     outcomes = await asyncio.gather(*(_generate_one(i) for i in range(count)))
+
+    if not any(o is not None for o in outcomes):
+        # U4・全废兜底：一整批全部被预筛/OCR 判废(或 API 全失败) → 自动补生成 1 轮(仅 1 次，
+        # 复用同一条并行入口 `_generate_one`——路由/信号量/降级安全网都原样生效)。这一轮不再
+        # 额外嵌套"全废再兜底"，避免无限重出/烧钱；仍全废就在下面走"图片生成失败"的诚实报错。
+        logger.warning("整批 %d 张全部失败/未过质检，自动补生成 1 轮(仅 1 次)", count)
+        outcomes = await asyncio.gather(*(_generate_one(i) for i in range(count)))
 
     results = []
     for outcome in outcomes:
@@ -819,6 +1014,7 @@ async def generate_images(
             "ratio": ratio,
             "created_at": created_at,
             "model_switched": outcome["model_switched"],  # U2:前端可据此提示"这张用了备用模型"
+            "quality_retried": outcome.get("quality_retried", False),  # U4:这张是否因质检抽风重出过
         })
 
         logger.info("AI 生图完成: %s (模型=%s%s)", poster_url, outcome["model_used"],
@@ -830,7 +1026,15 @@ async def generate_images(
 
     if not valid_results:
         # AIServiceError 而非 RuntimeError：后者落到通用兜底处理器变成无差别 500，
-        # 这句友好提示到不了用户
+        # 这句友好提示到不了用户。
+        # U4・"仍抽风:如实告知用户"——有质检拒绝原因就带出来，让用户知道是"文字没出准"而不是
+        # 笼统的"生成失败"，并给出可行动的建议；纯 API 失败(没有质检拒绝记录)沿用原提示。
+        if quality_rejection_notes:
+            unique_notes = "；".join(dict.fromkeys(quality_rejection_notes))
+            raise AIServiceError(
+                f"生成的图片文字没有对上（{unique_notes}），自动重试后还是不行——"
+                "要不要换个说法再试一次，或者这几个字你自己手动改一下？"
+            )
         raise AIServiceError("图片生成失败，请稍后重试")
 
     # 按实际成功生成的张数计入海报额度（独立池，不挤占文案次数）
@@ -846,6 +1050,9 @@ async def generate_images(
         # 不阻断本次生成——studio 直连路径把它交给前端做缺项提示；ReAct 路径在调这里之前
         # 已经因为同样的检查直接问老板了(见 tools.py make_poster/generate_image)，这里恒为空。
         "missing_elements": missing_elements,
+        # U4・质检诚实信号：这批里有几张因预筛/OCR 抽风重出过(即使最终成功了也带出来，
+        # 供上层将来想做"这张用了重出"提示用；不阻断、不改变现有 images 结构)。
+        "quality_retried_count": sum(1 for r in valid_results if r.get("quality_retried")),
     }
 
 

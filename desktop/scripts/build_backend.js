@@ -259,6 +259,15 @@ function runPyInstaller() {
     // import + 原生动态库，必须 --collect-all 才收全。torch 不需要(fastembed 用 onnxruntime 推理)继续排除。
     "--collect-all", "fastembed",
     "--collect-all", "onnxruntime",
+    // U4(E3c)：生图后 OCR 校验硬文字要素(店名/日期/价格/联系方式)有没有被模型"抽风"画错。
+    // rapidocr_onnxruntime 把中文检测/识别/方向分类三个 onnx 模型(~16MB，含 config.yaml)直接
+    // 放在自己包目录的 models/ 子目录里(不像 fastembed 那样要另外 --add-data 外部缓存目录)——
+    // 但这些是【数据文件】，PyInstaller 默认只跟 import 图走静态分析，不会自动带非代码文件，
+    // 必须显式 --collect-all 才能把 models/*.onnx + config.yaml 一起收进包。它依赖的 opencv/
+    // shapely 走 pyinstaller-hooks-contrib 的现成 hook 自动收（本项目已装该 hooks 包，见
+    // server/.venv 里 pyinstaller-hooks-contrib 依赖），pyclipper 是普通 C 扩展，PyInstaller
+    // 默认的二进制依赖扫描能自动跟上，都不用手动 collect-all。
+    "--collect-all", "rapidocr_onnxruntime",
     "--exclude-module", "torch",
     ...addData,
     ENTRY,

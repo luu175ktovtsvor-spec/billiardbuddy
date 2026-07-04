@@ -105,8 +105,17 @@ async def _make_store_and_db():
 
 
 def _png_bytes(w: int, h: int) -> bytes:
+    # U4(E3c) 加了零依赖确定性预筛后，纯白/纯色图会被判定为"疑似纯色占位图"而判废——
+    # 这里画几条横纹制造像素方差，让假图片能像正常海报一样通过预筛(这些用例测的是路由/
+    # 并行/降级逻辑，不是预筛本身，不该被预筛拦下)。
+    from PIL import ImageDraw
+
+    img = Image.new("RGB", (w, h), "white")
+    d = ImageDraw.Draw(img)
+    for y in range(0, h, 40):
+        d.rectangle([0, y, w, y + 15], fill=(20, 20, 20))
     buf = io.BytesIO()
-    Image.new("RGB", (w, h), "white").save(buf, "PNG")
+    img.save(buf, "PNG")
     return buf.getvalue()
 
 
@@ -170,6 +179,10 @@ async def test_byok_store_without_model_does_not_force_routed_model_id(monkeypat
     monkeypatch.setattr(ProviderFactory, "build_image_provider", staticmethod(fake_build_image_provider))
 
     poster_text = {"title": "开业大吉"}  # 命中"硬文字要素" → 自动路由会算出 Seedream 模型 ID
+
+    # 本用例测的是路由逻辑，不是 U4(E3c) 的 OCR 校验——假图片里并没有真的画上"开业大吉"四个字，
+    # 让 OCR 校验短路直接判定"有找到"，避免这里被质检重出逻辑干扰路由断言。
+    monkeypatch.setattr(poster_service, "_run_ocr_texts", lambda path: ["开业大吉"])
 
     try:
         with _patch("core.crypto.try_decrypt", return_value="byok-real-key"):
