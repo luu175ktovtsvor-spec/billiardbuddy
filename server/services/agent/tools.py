@@ -551,6 +551,21 @@ def _normalize_image_request(description: str, ratio: str | None) -> tuple[str, 
     return text, ratio_value, None
 
 
+def _reject_if_missing_hard_elements(poster_text: dict | None, subject: str, addressee: str = "") -> str | None:
+    """make_poster / generate_image 共用的"缺项就拒绝"检查：declares 了硬要素字段但没填值时，
+    返回一句人话拒绝理由（不调 generate_images、不花钱瞎编）；没缺就返回 None。
+
+    subject：出现在提示语开头的主体词（"海报上"/"图上"）；addressee：称呼老板与否的措辞差异。
+    """
+    from services import poster_service
+
+    missing = poster_service.detect_missing_hard_elements(poster_text)
+    if not missing:
+        return None
+    labels = "、".join(poster_service.HARD_ELEMENT_LABELS.get(f, f) for f in missing)
+    return f"{subject}要写的「{labels}」还没告诉我具体内容——这类硬信息我不会自己编，麻烦{addressee}说清楚再生成。"
+
+
 @tool(
     name="make_poster",
     deliverable=True,
@@ -609,10 +624,9 @@ async def make_poster(args: dict, ctx) -> str:
     if not desc:
         return "缺少海报描述，没法生成。"
     poster_text = args.get("poster_text") if isinstance(args.get("poster_text"), dict) else None
-    missing = poster_service.detect_missing_hard_elements(poster_text)
-    if missing:
-        labels = "、".join(poster_service.HARD_ELEMENT_LABELS.get(f, f) for f in missing)
-        return f"海报上要写的「{labels}」还没告诉我具体内容——这类硬信息我不会自己编，麻烦老板说清楚再生成。"
+    reject_msg = _reject_if_missing_hard_elements(poster_text, subject="海报上", addressee="老板")
+    if reject_msg:
+        return reject_msg
     desc, ratio, unsupported_msg = _normalize_image_request(desc, args.get("ratio"))
     if unsupported_msg:
         return unsupported_msg
@@ -750,10 +764,9 @@ async def generate_image(args: dict, ctx) -> str:
     if not desc:
         return "缺少图片描述，没法生成。说清你想要张什么样的图。"
     poster_text = args.get("poster_text") if isinstance(args.get("poster_text"), dict) else None
-    missing = poster_service.detect_missing_hard_elements(poster_text)
-    if missing:
-        labels = "、".join(poster_service.HARD_ELEMENT_LABELS.get(f, f) for f in missing)
-        return f"图上要写的「{labels}」还没告诉我具体内容——这类硬信息我不会自己编，麻烦说清楚再生成。"
+    reject_msg = _reject_if_missing_hard_elements(poster_text, subject="图上")
+    if reject_msg:
+        return reject_msg
     desc, ratio, unsupported_msg = _normalize_image_request(desc, args.get("ratio"))
     if unsupported_msg:
         return unsupported_msg
