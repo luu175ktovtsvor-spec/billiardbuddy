@@ -115,9 +115,22 @@ def parse_plan_json(raw: str) -> dict:
 # ── 会员卡/充值方案硬规则兜底（recharge_design.yaml：不做大额赠送/赠送只抵台费） ──────
 # Prompt 里已把这条红线交代给模型，这里是 code 侧最后一道防线——万一模型没听、编出违规
 # 数字/说法，拦下来，别把违规方案原样交给老板。
-
-_RECHARGE_RATIO_RE = re.compile(r"充\s*([\d,]+(?:\.\d+)?)\s*送\s*([\d,]+(?:\.\d+)?)")
-_RECHARGE_MAX_RATIO = 0.2  # 参考口径约 10%；20% 起判定"大额赠送"（覆盖 40%/50%/100% 这类明显违规，留出微调空间）
+#
+# 阈值口径：recharge_design.yaml 给的参考档位里赠送比例最高一档是
+# 充10000送1999 ≈ 19.99%，20% 正好是它自己划的"参考上限"，故沿用 0.2 作为
+# 绝对值比例和百分比写法共用的同一判定阈值（不是拍脑袋）。
+#
+# 覆盖三类常见换措辞（不穷举所有自然语言，够拦住常见的即可）：
+# ① "充N送M%"/裸的"送M%"——百分比写法，M 本身就是比例，别再除 paid 算成绝对值；
+# ② "充值/储值/预存/首充"当前缀词（不止认字面"充"）；
+# ③ "送……现金/提现/变现/返现/红包"——中间可插入具体金额（"送1000元现金"），不要求字面紧邻。
+_RECHARGE_RATIO_RE = re.compile(
+    r"(?:充值|储值|预存|首充|充)\s*([\d,]+(?:\.\d+)?)\s*(?:元)?\s*送\s*([\d,]+(?:\.\d+)?)\s*(%)?"
+)
+_RECHARGE_BARE_PERCENT_RE = re.compile(r"送\s*([\d,]+(?:\.\d+)?)\s*%")
+_RECHARGE_CASH_PHRASE_RE = re.compile(r"送[^，。;；\n]{0,10}(?:现金|提现|变现|返现|红包)")
+_RECHARGE_MAX_RATIO = 0.2  # 参考口径约 10%~20%；>20% 判定"大额赠送"（覆盖 40%/50%/100% 这类明显违规，留出微调空间）
+_RECHARGE_MAX_PERCENT = _RECHARGE_MAX_RATIO * 100  # 与绝对值比例同一口径的百分比阈值（20）
 _RECHARGE_SCOPE_BAD_PHRASES = (
     "送现金", "赠送可提现", "赠送可变现", "赠送变现", "赠送不限用途", "赠送全场通用",
     "赠送抵助教费", "赠送抵商品", "赠送抵器材", "无上限赠送", "买一送一无限", "充多少送多少",
@@ -133,8 +146,21 @@ def _violates_recharge_rule(text: str) -> bool:
             given = float(m.group(2).replace(",", ""))
         except ValueError:
             continue
+        if m.group(3):  # "充N送M%"：M 本身已是百分比，不用再除 paid
+            if given > _RECHARGE_MAX_PERCENT:
+                return True
+            continue
         if paid > 0 and (given / paid) > _RECHARGE_MAX_RATIO:
             return True
+    for m in _RECHARGE_BARE_PERCENT_RE.finditer(text):
+        try:
+            pct = float(m.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        if pct > _RECHARGE_MAX_PERCENT:
+            return True
+    if _RECHARGE_CASH_PHRASE_RE.search(text):
+        return True
     return any(p in text for p in _RECHARGE_SCOPE_BAD_PHRASES)
 
 

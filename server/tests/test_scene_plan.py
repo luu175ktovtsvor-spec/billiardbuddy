@@ -120,6 +120,36 @@ def test_sanitize_recharge_plan_blocks_cash_redemption_phrase():
     assert "可提现" not in out["budget"]
 
 
+def test_sanitize_recharge_plan_blocks_percentage_high_ratio_gift():
+    """百分比写法盲区：'充1000送30%' 曾被当"送30"(字面数值)算比例=3%漏拦，实际是 30% 大额赠送。"""
+    plan = {"title": "充值方案", "goal": "冲一波", "budget": "充1000送30%大促回馈",
+            "timeline": [], "materials": [], "notes": [], "missing_info": []}
+    out = sanitize_recharge_plan(plan)
+    assert "充1000送30%" not in out["budget"]
+    assert any("确认" in m for m in out["missing_info"])
+
+
+def test_sanitize_recharge_plan_blocks_reworded_cash_gift_phrases():
+    """关键词换措辞盲区：中间插入具体金额("送1000元现金")、储值/预存类前缀("预存送现金")都要拦。"""
+    plan1 = {"title": "充值方案", "goal": "冲一波", "budget": "充2000送1000元现金回馈老客",
+             "timeline": [], "materials": [], "notes": [], "missing_info": []}
+    out1 = sanitize_recharge_plan(plan1)
+    assert "现金" not in out1["budget"]
+
+    plan2 = {"title": "充值方案", "goal": "冲一波", "budget": "预存送现金，随时可取",
+             "timeline": [], "materials": [], "notes": [], "missing_info": []}
+    out2 = sanitize_recharge_plan(plan2)
+    assert "现金" not in out2["budget"]
+
+
+def test_sanitize_recharge_plan_does_not_over_block_compliant_plan():
+    """别过度：正常合规方案(充500送50元抵台费，比例10%且赠送只抵台费)不该被误杀。"""
+    plan = {"title": "一卡通方案", "goal": "锁客", "budget": "充500送50元抵台费",
+            "timeline": [], "materials": [], "notes": [], "missing_info": []}
+    out = sanitize_recharge_plan(plan)
+    assert out == plan
+
+
 def test_sanitize_recharge_plan_scrubs_violating_timeline_items():
     plan = {
         "title": "充值方案", "goal": "冲一波",
