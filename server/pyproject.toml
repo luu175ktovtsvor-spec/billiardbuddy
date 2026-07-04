@@ -32,6 +32,7 @@ dependencies = [
     # 模型，不满足"全打进包、不联网"的铁律(除非再照搬 bge 那套预下载+--add-data，本单选更简单可靠
     # 的旧包，见 u4-report.md 的取舍说明)。
     "rapidocr-onnxruntime>=1.4.4",
+    "qrcode>=8.2",
 ]
 
 [dependency-groups]

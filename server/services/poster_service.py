@@ -106,6 +106,61 @@ def _overlay_logo(image_bytes: bytes, logo_bytes: bytes) -> bytes:
         return image_bytes
 
 
+def _overlay_print_qr(image_bytes: bytes, qr_bytes: bytes) -> bytes:
+    """U5(E3d)・owner §3-4 窄例外：仅"印刷/关键投放"场景(调用方显式传 print_mode=True)才会被调用——
+    默认路径完全不碰这里(见 generate_images 的 print_mode 参数，默认 False，行为不变)。
+
+    从用户给的二维码图片里用 OpenCV(已是项目依赖，scenedetect[opencv] 带来)解码出真实编码内容，
+    再用 qrcode 库重新生成一张像素级精确、机器保证能扫的二维码，贴到成图右下角(白底留白/quiet zone，
+    避免贴在深色背景上扫不出)。任何一步失败(源图解码不出/不是合法二维码)→ 安全返回原图，
+    不让整张海报因为这步失败。
+
+    这是全新独立函数，绝不是 _overlay_logo——_overlay_logo 依旧是死代码，本函数不调用它、不复活它
+    (test_overlay_logo_still_dead_code 只守 `_overlay_logo(` 不出现在 generate_images 源码里，
+    与本函数无关)。
+    """
+    try:
+        import cv2
+        import numpy as np
+        import qrcode
+
+        arr = np.frombuffer(qr_bytes, dtype=np.uint8)
+        cv_img = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+        if cv_img is None:
+            logger.warning("印刷二维码源图解码失败(不是合法图片)，跳过叠层")
+            return image_bytes
+        content, _points, _ = cv2.QRCodeDetector().detectAndDecode(cv_img)
+        if not content:
+            logger.warning("印刷二维码识别不出编码内容(源图可能不是二维码)，跳过叠层")
+            return image_bytes
+
+        poster = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+        qr_img = qrcode.make(content).convert("RGBA")
+        target_w = max(1, int(poster.width * 0.18))  # 印刷用二维码要比风格 logo 更大、更好扫
+        qr_img = qr_img.resize((target_w, target_w), Image.LANCZOS)  # 二维码天然正方形
+        pad = max(4, int(target_w * 0.08))  # 白底留白(quiet zone)：即使贴在深色背景上也能识别边界
+        canvas = Image.new("RGBA", (target_w + pad * 2, target_w + pad * 2), (255, 255, 255, 255))
+        canvas.paste(qr_img, (pad, pad))
+        margin = int(poster.width * 0.04)
+        poster.alpha_composite(
+            canvas, (poster.width - canvas.width - margin, poster.height - canvas.height - margin)
+        )
+        out = io.BytesIO()
+        poster.convert("RGB").save(out, "PNG")
+        return out.getvalue()
+    except Exception:
+        logger.warning("印刷二维码叠层失败，返回原图", exc_info=True)
+        return image_bytes
+
+
+def _apply_print_qr_overlay(output_path_jpg: Path, qr_bytes: bytes) -> None:
+    """同步：读已落盘的成图 jpg → 贴印刷级真二维码 → 覆写回同一路径。由调用方经 to_thread 调用
+    (图像编解码是 CPU 密集操作，不能在事件循环里同步跑)。"""
+    current = output_path_jpg.read_bytes()
+    overlaid_png = _overlay_print_qr(current, qr_bytes)
+    _save_png_as_jpeg(overlaid_png, output_path_jpg)
+
+
 def _load_upload_bytes(path_str: str | None) -> bytes | None:
     """从 uploads 目录内安全加载图片字节；空/越界/不存在一律返回 None。"""
     if not path_str or ".." in path_str:
@@ -386,6 +441,33 @@ def _route_image_model(prompt: str | None, poster_text: dict | None, user_choice
     return _AUTO_ROUTE_SEEDREAM_MODEL
 
 
+# ────────────────── U5(E3d)・改图侧独立路由(不改上面 U2 的生成路由) ──────────────────
+# 改图(refine_from 有值)按"这轮改的是文字还是内容"选模型：字错/改字 → Seedream(中文文字渲染强项，
+# 官方文档确认 doubao-seedream-4.0/4.5/5.0 不支持 seed 但文字编辑能力是其强项，见 u5-report.md 查证)；
+# 改内容 → GPT edits(input_fidelity=high，见 openai_image.py——gpt-image-2 恒高保真、该参数只在
+# 非 gpt-image-2 的 GPT 模型上才会真正透传)。调用方可显式传 edit_type("text_fix"/"content")；
+# 不传则从改图指令文本粗略判断，默认 content(大多数改图诉求是换背景/加减元素，不是文字问题)。
+_EDIT_TEXT_FIX_KEYWORDS = (
+    "错别字", "打错", "改错字", "字错了", "文字错", "别字", "重复字",
+    "多了个字", "少了个字", "文字看不清", "文字模糊", "改文字", "改个字",
+)
+
+
+def _infer_edit_type(prompt: str | None) -> str:
+    """没有显式 edit_type 时，从改图指令文本粗略判断是"改文字"还是"改内容"，默认 content。"""
+    text = prompt or ""
+    return "text_fix" if any(kw in text for kw in _EDIT_TEXT_FIX_KEYWORDS) else "content"
+
+
+def _route_edit_model(prompt: str | None, user_choice: str, edit_type: str | None) -> str:
+    """改图专用路由：调用方显式选了模型(user_choice)一律尊重(与 U2 手选优先级一致)；
+    否则按 edit_type(显式传入或从 prompt 推断)：text_fix→Seedream，content→GPT。"""
+    if user_choice:
+        return user_choice
+    et = (edit_type or "").strip().lower() or _infer_edit_type(prompt)
+    return _AUTO_ROUTE_SEEDREAM_MODEL if et == "text_fix" else _AUTO_ROUTE_GPT_MODEL
+
+
 def _build_seedream_fallback_provider():
     """GPT 失败降级安全网用：构造一个直连火山方舟 Seedream 的 provider。
 
@@ -570,6 +652,7 @@ def build_poster_prompt(
     no_text: bool = False,
     has_logo: bool = False,
     has_qr: bool = False,
+    brand_color: str | None = None,
 ) -> str:
     """组装生图 prompt（纯函数，便于测试）。
 
@@ -584,6 +667,9 @@ def build_poster_prompt(
             parts.append(f"城市：{city}")
     if no_text:
         parts.append("no text, no words, no letters, no typography")
+    if brand_color:
+        # U5(E3d)・门店品牌包：只是提示模型延续品牌基调，不强求整图都是这个颜色。
+        parts.append(f"品牌主色调呼应 {brand_color}（背景/点缀色协调这个颜色，不要求整图都是它）")
 
     if has_base_image and ref_count > 0:
         parts.append(
@@ -630,6 +716,8 @@ async def generate_images(
     logo_path: str | None = None,
     qr_path: str | None = None,
     allowed_paths: list[str] | set[str] | None = None,
+    edit_type: str | None = None,
+    print_mode: bool = False,
 ) -> dict:
     """AI 生图，支持多轮调整（底图）与参考图（风格）同时传入。
 
@@ -642,6 +730,13 @@ async def generate_images(
     logo_path/qr_path/store_photo_path/reference_image_paths/mask_path 若指向 uploads 沙箱外的绝对路径，
     必须落在这个集合里才会读取，否则越界拒绝——防 Agent 工具的模型入参把任意本机文件读出来发给外部生图 API。
     调用方不传（默认 None）＝沙箱外一律不读（安全默认）。
+
+    edit_type：U5(E3d)改图侧专用，仅在 refine_from 有值(改图轮)时生效——"text_fix"(改文字/字错)
+    →路由 Seedream；"content"(改内容)→路由 GPT edits(高保真)；不传则从 prompt 文本推断。
+    对纯生成(refine_from 为空)无影响，不碰 U2 的生成路由。
+
+    print_mode：owner §3-4 窄例外，默认 False(现状不变，二维码原图交给模型融合)。True 时若提供了
+    qr_path，成图落盘后会额外贴一个程序生成、保证能扫的真二维码(见 _overlay_print_qr)。
     """
     from services.ai.providers.openai_image import OpenAIImageProvider
     from services.ai.factory import ProviderFactory
@@ -649,7 +744,11 @@ async def generate_images(
     # U2・自动路由：调用方没手选模型(image_model 为空)时，按内容启发式自动选；默认落 Seedream——
     # 下一批(E2)要砍掉前端模型选择器，请求不传模型名时绝不能落到 gpt-image-2(大陆握美国 relay 长连接
     # 约 60s 被掐断=图丢+白扣钱，2026-07-03 实测)。调用方显式传了 image_model 一律尊重(向后兼容手选)。
+    _explicit_image_model_choice = (image_model or "").strip()
     image_model = _route_image_model(image_prompt or prompt, poster_text, image_model)
+    if refine_from:
+        # U5・改图侧独立路由(不影响上面刚算出的 U2 生成路由值)：按"改文字/改内容"重新选模型。
+        image_model = _route_edit_model(prompt, _explicit_image_model_choice, edit_type)
 
     # 生图 BYOK：门店配了自带生图模型 → 用门店的 key/base_url（自担成本）；否则回退平台默认。
     api_key, image_base_url, image_model_cfg = ProviderFactory.get_image_config_for_store(store)
@@ -695,6 +794,11 @@ async def generate_images(
         original = result.scalar_one_or_none()
         if not original or not original.result:
             raise AIServiceError("要调整的图片不存在")
+        # U5・preserve list 拼回：调用方(如 studio_edit)目前没有 poster_text 入口，没显式传时
+        # 从被改的原图承接上一轮的硬文字要素(店名/日期/价格/联系方式)，让下面的"扩写统一层"
+        # 每轮改图都重新拼回 prompt，防止改着改着把这些字漂移/画丢。显式传了就以调用方为准。
+        if not poster_text and original.input_params:
+            poster_text = original.input_params.get("poster_text") or None
 
     # image_prompt(扩写后/前端可改的真实送模型提示词)同样要查注入——只查 prompt 会被
     # "prompt 正常、image_prompt 改成越线内容"绕过（与上面 studio.py 的红线预检同一个漏洞）。
@@ -773,6 +877,14 @@ async def generate_images(
                 if rb is not None:
                     ref_bytes.append(rb)
 
+    # U5(E3d)・门店品牌包：自动附带门店后台配置的品牌参考图，保风格一致。这些路径来自门店设置
+    # (受信任的运营配置，不是 Agent 工具的模型入参)，直接走 uploads 沙箱读取，不需要 allowed_paths
+    # 校验；单张读取失败(文件被移走/损坏)静默跳过，不拖垮整次生成。
+    for _bp in (getattr(store, "brand_reference_images", None) or []):
+        _bb = _load_upload_bytes(_bp if isinstance(_bp, str) else None)
+        if _bb is not None:
+            ref_bytes.append(_bb)
+
     # 局部重绘:读 mask(同尺寸 alpha PNG,透明 alpha=0 处=要改);没有底图无从局部改 → 忽略 mask 走整图。
     # mask 目前只走 studio.py(人工画蒙版上传)、不经模型入参，但沙箱外绝对路径同样按 allowed_paths 校验，
     # 读取失败(含越界)一律降级为"忽略 mask、走整图改"而不是硬失败——mask 本就是可选的局部重绘增强。
@@ -829,6 +941,7 @@ async def generate_images(
         no_text=no_text,
         has_logo=logo_bytes is not None,  # owner 拍板：logo 也喂 GPT 融合，prompt 声明让模型整合
         has_qr=qr_bytes is not None,
+        brand_color=getattr(store, "brand_color", None) or None,  # U5・门店品牌包：品牌色写进提示
     )
 
     # 质量收敛到三档：去掉 auto(让模型自挑→成本不可控)；非法/空值一律按 medium
@@ -863,6 +976,11 @@ async def generate_images(
     _hard_values_for_qc = collect_hard_text_values(poster_text)
     # U4・"仍抽风:如实告知用户"——收集质检拒绝原因，供整批全废时拼进人话报错(而不是甩一句"生成失败"了事)。
     quality_rejection_notes: list[str] = []
+    # U5・改图循环增强：这轮是否是"改图"(refine_from 有值)、以及推断出的改图类型——只在改内容
+    # (非 text_fix)且真调用 GPT 系列模型时才会给 input_fidelity="high"(openai_image.py 内部会再按
+    # 模型是不是 gpt-image-2 做一次防呆过滤，双保险)。
+    _is_edit_round = bool(refine_from)
+    _resolved_edit_type = ((edit_type or "").strip().lower() or _infer_edit_type(prompt)) if _is_edit_round else None
 
     async def _produce_single_attempt(i: int) -> dict | None:
         rand = uuid.uuid4().hex[:4]
@@ -873,6 +991,14 @@ async def generate_images(
         actual_model = routed_model
         model_switched = False
 
+        # U5・input_fidelity 只在"改内容"这轮、且真路由到 GPT 系列模型时才给 high——openai_image.py
+        # 内部还会再按模型是不是 gpt-image-2 过滤一次(gpt-image-2 恒高保真、API 不接受该参数)，
+        # 这里传了也不会打挂当前唯一在用的 gpt-image-2 请求。
+        _input_fidelity = (
+            "high" if (_is_edit_round and _resolved_edit_type == "content"
+                       and str(actual_model or "").startswith("gpt-image"))
+            else None
+        )
         try:
             # 经全局并发闸：超出 poster_max_concurrency 的请求在此排队，护住每分钟出图限额(IPM)
             async with semaphore:
@@ -883,6 +1009,7 @@ async def generate_images(
                     quality=quality,
                     image=input_images if input_images else None,
                     mask=mask_bytes,  # 局部重绘:同尺寸 alpha mask(透明处=要改);None=整图改
+                    input_fidelity=_input_fidelity,
                 )
         except Exception:
             logger.warning("第 %d 张用 %s 生成失败", i + 1, actual_model, exc_info=True)
@@ -921,6 +1048,14 @@ async def generate_images(
         except Exception:
             logger.warning("第 %d 张落盘/比例校验失败", i + 1, exc_info=True)
             return None
+
+        # U5・owner §3-4 窄例外：仅 print_mode=True 且确实提供了二维码物料时才叠层，默认路径
+        # (print_mode=False，绝大多数场景)完全不碰这里——不影响宽高，不需要重新校验比例。
+        if print_mode and qr_bytes:
+            try:
+                await asyncio.to_thread(_apply_print_qr_overlay, output_path_jpg, qr_bytes)
+            except Exception:
+                logger.warning("第 %d 张印刷二维码叠层失败，保留原图", i + 1, exc_info=True)
 
         return {
             "output_path_jpg": output_path_jpg,
@@ -993,6 +1128,8 @@ async def generate_images(
                 "height": actual_height,
                 "actual_ratio": f"{actual_width}:{actual_height}",
                 "model_switched": outcome["model_switched"],  # U2:这张是否触发了 GPT→Seedream 降级安全网
+                "edit_type": _resolved_edit_type,     # U5:这轮改图判定的类型(非改图轮恒 None)
+                "print_mode": print_mode,              # U5:这张是否叠了印刷级真二维码
             },
             prompt_used=full_prompt,
             result=poster_url,

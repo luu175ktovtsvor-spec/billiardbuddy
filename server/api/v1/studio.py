@@ -39,6 +39,9 @@ class StudioGenerateIn(BaseModel):
     # U1・硬要素结构化收集(可选、向后兼容):店名/日期/价格/联系方式等要一字不差出现的硬文字。
     # 未传(现状绝大多数调用)＝完全不影响原行为；传了会在 generate_images 里做扩写后校验兜底。
     poster_text: dict | None = None
+    # U5(E3d)・owner §3-4 窄例外:印刷/线下投放场景才传 True(默认 False=现状不变,二维码原图交模型融合)。
+    # 前端勾选入口不在本单(E2)——这里先开好后端参数口子。
+    print_mode: bool = False
 
 
 class StudioExpandIn(BaseModel):
@@ -56,6 +59,11 @@ class StudioEditIn(BaseModel):
     image_model: str | None = None    # 跟随前端选的模型(改图也用同一个);火山 Seedream 不支持 mask,局部重绘前端已禁用
     conversation_id: str | None = None
     quality: str = "medium"
+    # U5(E3d)・改图侧独立路由:"text_fix"(改文字/字错)→ Seedream;"content"(改内容)→ GPT edits(高保真)。
+    # 不传则从 prompt 文本推断；image_model 显式手选时优先于这个判据(向后兼容)。
+    edit_type: str | None = None
+    # U5・owner §3-4 窄例外:印刷/线下投放场景才传 True(默认 False=现状不变)。前端勾选入口不在本单(E2)。
+    print_mode: bool = False
 
 
 class StudioI2vIn(BaseModel):
@@ -201,6 +209,7 @@ async def studio_generate(
     store_id, user_id, conv = store.id, user.id, body.conversation_id
     ratio, refs, quality = body.ratio, body.reference_image_paths, body.quality
     img_model, img_prompt, poster_text = body.image_model, body.image_prompt, body.poster_text
+    print_mode = body.print_mode
 
     async def work_fn(progress):
         from core.tenant import set_tenant
@@ -216,6 +225,7 @@ async def studio_generate(
                     # studio 页的参考图是用户在本次请求里经系统文件框亲手选的(可信前端直传，
                     # 不是模型自己填的)，原样进白名单——否则沙箱外路径护栏会把它们误拒。
                     allowed_paths=list(refs or []),
+                    print_mode=print_mode,
                 )
             return _result_payload(res)
         finally:
@@ -244,6 +254,7 @@ async def studio_edit(
     store_id, user_id, conv = store.id, user.id, body.conversation_id
     prompt, src, ratio, quality, mask = body.prompt, body.source_generation_id, body.ratio, body.quality, body.mask_path
     img_model = body.image_model
+    edit_type, print_mode = body.edit_type, body.print_mode
 
     async def work_fn(progress):
         from core.tenant import set_tenant
@@ -258,6 +269,8 @@ async def studio_edit(
                     # mask 是本次请求里前端刚落盘的文件，显式进白名单——现在能过纯靠它恰好
                     # 落在 uploads 沙箱里(隐性巧合)，落点以后一变局部重绘就会静默失效。
                     allowed_paths=[mask] if mask else [],
+                    edit_type=edit_type,
+                    print_mode=print_mode,
                 )
                 # 血缘父 = 被改的源成品
                 await _backfill_parent(wdb, res.get("images", []), src, store_id)

@@ -143,6 +143,7 @@ class OpenAIImageProvider(ImageProvider):
         quality: str = "medium",
         image: bytes | list[bytes] | None = None,
         mask: bytes | None = None,
+        input_fidelity: str | None = None,
         **kwargs,
     ) -> bytes:
         """调用 OpenAI 兼容的生图 API 生成图片。支持多图输入（最多16张）。
@@ -150,6 +151,11 @@ class OpenAIImageProvider(ImageProvider):
         - **model 用传入值**：BYOK 门店配了国内模型（如硅基流动的 `Kwai-Kolors/Kolors`，走 OpenAI 兼容端点）
           时即用其模型名，不再写死 gpt-image-2（平台/未配 → 仍默认 gpt-image-2）。
         - **quality 是 gpt-image 系列专有参数**：国内 OpenAI 兼容端点多不接受，故仅 gpt-image 系列才附加。
+        - **input_fidelity 只对 gpt-image-2 以外的 gpt-image 系列生效**（U5・改图循环增强，官方文档核实
+          2026-07-04：gpt-image-2 恒以最高保真处理输入图，API 不接受该参数——传了会 400；只有
+          gpt-image-1/1.5/mini 等旧模型才接受 high/low）。本项目当前唯一注册/路由的 GPT 模型就是
+          gpt-image-2（见 OPENAI_IMAGE_MODELS），故这条分支现状下恒不触发，只为将来 BYOK 门店接
+          gpt-image-1 兼容端点时留好口子——不会影响任何现有调用。
         - 响应兼容两种：gpt-image 回 b64_json；国内端点（硅基流动等）多回图片 url——见 `_extract_image_bytes`。
         """
         client = self._get_client()
@@ -158,6 +164,9 @@ class OpenAIImageProvider(ImageProvider):
         if use_model.startswith("gpt-image"):
             openai_size = _snap_gpt_image_size(openai_size, use_model)  # 按模型吸附（gpt-image-2 更宽、保比例）
         extra = {"quality": quality} if use_model.startswith("gpt-image") else {}
+        use_input_fidelity = (
+            bool(input_fidelity) and use_model.startswith("gpt-image") and not use_model.startswith("gpt-image-2")
+        )
 
         if image:
             images = [image] if isinstance(image, bytes) else image
@@ -178,17 +187,20 @@ class OpenAIImageProvider(ImageProvider):
 
             # OpenAI images.edit 支持单张或多张图片。每次（含 429 重试）都重建上传流——BytesIO 读过一次会到 EOF。
             def _build_edit():
+                edit_extra = dict(extra)
+                if use_input_fidelity:
+                    edit_extra["input_fidelity"] = input_fidelity
                 # 局部重绘:有 mask 时只用单底图(images[0]) + 同尺寸 alpha mask(透明 alpha=0 处=要改),
                 # 多图融合与 mask 互斥(OpenAI edit 的 mask 作用于单底图)。
                 if mask is not None:
                     return client.images.edit(
                         model=use_model, prompt=prompt, image=_make_file(images[0], 0),
-                        mask=_make_file(mask, 0), size=openai_size, **extra,
+                        mask=_make_file(mask, 0), size=openai_size, **edit_extra,
                     )
                 image_file = (_make_file(images[0], 0) if len(images) == 1
                               else [_make_file(img, i) for i, img in enumerate(images[:16])])
                 return client.images.edit(
-                    model=use_model, prompt=prompt, image=image_file, size=openai_size, **extra,
+                    model=use_model, prompt=prompt, image=image_file, size=openai_size, **edit_extra,
                 )
 
             response = await _image_call_with_429_retry(_build_edit)

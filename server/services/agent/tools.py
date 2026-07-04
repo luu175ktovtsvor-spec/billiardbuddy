@@ -578,7 +578,7 @@ def _reject_if_missing_hard_elements(poster_text: dict | None, subject: str, add
         "别只丢一句活动名（那样出图很烂）。风格不是固定模板——老板说啥你就往那个感觉扩写。"
         "需求很明确就直接做、不必多问——风格定了就直接出图，出好的海报会原样展示给老板。\n\n"
         "**图片角色判定**：老板选了图片时，根据他的话判断每张图的角色——\n"
-        "- 说『这是我 logo / 加上我的店标』→ 填 logo_path（系统会用 PIL 像素级贴到右上角，清晰不糊）\n"
+        "- 说『这是我 logo / 加上我的店标』→ 填 logo_path（系统会把它原样喂给模型，融进画面设计里）\n"
         "- 说『加个二维码 / 扫码关注』→ 填 qr_path\n"
         "- 说『用这张图做底图改一下 / 在这张上改』→ 填 store_photo_path\n"
         "- 说『参考这几张的感觉 / 照这个风格来』或没明说角色 → 不填角色参数，图自动当风格参考\n"
@@ -586,7 +586,9 @@ def _reject_if_missing_hard_elements(poster_text: dict | None, subject: str, add
         "**硬文字要素(店名/日期/价格/联系方式)**：老板要海报上出现这类要一字不差印对的文字时，"
         "用 poster_text 结构化字段传(别只塞进 description 自由文本)。"
         "老板明确要某个要素但没告诉你具体内容(比如说『写个价格』却没说多少钱)，"
-        "先用 ask_user_question 问清楚——别自己编价格/电话/日期/店名，问清楚前不要传这个字段的值。"
+        "先用 ask_user_question 问清楚——别自己编价格/电话/日期/店名，问清楚前不要传这个字段的值。\n\n"
+        "**印刷/线下投放**：老板说『这个要拿去印刷/打印/贴出去』且给了二维码时，填 print_mode=true——"
+        "系统会额外生成一个程序保证能扫的真二维码贴上去，别的场景不用填(默认原图交给模型融合)。"
     ),
     parameters={
         "type": "object",
@@ -594,10 +596,11 @@ def _reject_if_missing_hard_elements(poster_text: dict | None, subject: str, add
             "description": {"type": "string", "description": "你扩写好的海报【详细中文画面描述】：主体/场景/色调/光线/构图/氛围/质感都写清，越具体出图越好；别只写活动名一句话。若有 logo/二维码，别在这里描述——系统单独处理"},
             "style": {"type": "string", "description": "海报风格(可选)：老板从 ask_user_question 选的那个风格 label，或他自己说的风格"},
             "ratio": {"type": "string", "description": "比例(可选)：1:1 / 3:4 / 9:16 / 16:9，默认 3:4"},
-            "logo_path": {"type": "string", "description": "门店 logo 图片路径(可选)：老板说『这是我 logo / 加上店标』时填，系统会用 PIL 精确贴到右上角"},
+            "logo_path": {"type": "string", "description": "门店 logo 图片路径(可选)：老板说『这是我 logo / 加上店标』时填，系统会把它原样喂给模型融合进画面"},
             "qr_path": {"type": "string", "description": "二维码图片路径(可选)：老板说『加个二维码 / 扫码关注』时填"},
             "store_photo_path": {"type": "string", "description": "底图路径(可选)：老板说『用这张做底图改一下』时填，会以这张为底做修改而非从零生成"},
             "count": {"type": "integer", "description": "出几张(可选)：默认 1，老板明确要多张时填(上限 4)"},
+            "print_mode": {"type": "boolean", "description": "印刷/线下投放场景才填 true(默认 false)：会额外贴一个程序生成的真二维码，保证印出来一定能扫；线上发朋友圈/群聊不用填"},
             "poster_text": {
                 "type": "object",
                 "description": (
@@ -639,6 +642,7 @@ async def make_poster(args: dict, ctx) -> str:
     qr_path = (args.get("qr_path") or "").strip() or None
     store_photo_path = (args.get("store_photo_path") or "").strip() or None
     background_mode = "store_photo" if store_photo_path else "ai_generate"
+    print_mode = bool(args.get("print_mode"))  # U5(E3d)：owner §3-4 窄例外，默认 False=原图交模型融合
 
     from services.agent.multimodal import is_image
     _sel_imgs = [p for p in (getattr(ctx, "allowed_paths", None) or []) if is_image(p)]
@@ -677,6 +681,7 @@ async def make_poster(args: dict, ctx) -> str:
             conversation_id=getattr(ctx, "conversation_id", None),
             # 用户当场选定的文件白名单：沙箱外绝对路径只有在这里面才许读（与 generate_video 的 allow_paths 同款）
             allowed_paths=list(getattr(ctx, "allowed_paths", None) or []),
+            print_mode=print_mode,
         )
         ctx._images_generated_this_run = _done + (result.get("count") or count)
     finally:
@@ -727,7 +732,9 @@ async def make_poster(args: dict, ctx) -> str:
         "**硬文字要素(店名/日期/价格/联系方式)**：用户要图上出现这类要一字不差印对的文字时，"
         "用 poster_text 结构化字段传(别只塞进 description 自由文本)。"
         "用户明确要某个要素但没告诉你具体内容时，先用 ask_user_question 问清楚——"
-        "别自己编价格/电话/日期，问清楚前不要传这个字段的值。"
+        "别自己编价格/电话/日期，问清楚前不要传这个字段的值。\n\n"
+        "**印刷/线下投放**：用户说『这个要拿去印刷/打印/贴出去』且给了二维码时，填 print_mode=true——"
+        "系统会额外生成一个程序保证能扫的真二维码贴上去，别的场景不用填(默认原图交给模型融合)。"
     ),
     parameters={
         "type": "object",
@@ -738,6 +745,7 @@ async def make_poster(args: dict, ctx) -> str:
             "qr_path": {"type": "string", "description": "二维码图片路径(可选)：用户说加二维码时填"},
             "store_photo_path": {"type": "string", "description": "底图路径(可选)：用户说在某张图上改时填"},
             "count": {"type": "integer", "description": "出几张(可选)：默认 1，用户明确要多张时填(上限 4)"},
+            "print_mode": {"type": "boolean", "description": "印刷/线下投放场景才填 true(默认 false)：会额外贴一个程序生成的真二维码，保证印出来一定能扫；线上发朋友圈/群聊不用填"},
             "poster_text": {
                 "type": "object",
                 "description": (
@@ -775,6 +783,7 @@ async def generate_image(args: dict, ctx) -> str:
     qr_path = (args.get("qr_path") or "").strip() or None
     store_photo_path = (args.get("store_photo_path") or "").strip() or None
     background_mode = "store_photo" if store_photo_path else "ai_generate"
+    print_mode = bool(args.get("print_mode"))  # U5(E3d)：owner §3-4 窄例外，默认 False=原图交模型融合
 
     from services.agent.multimodal import is_image
     _sel_imgs = [p for p in (getattr(ctx, "allowed_paths", None) or []) if is_image(p)]
@@ -806,6 +815,7 @@ async def generate_image(args: dict, ctx) -> str:
             conversation_id=getattr(ctx, "conversation_id", None),
             # 用户当场选定的文件白名单：沙箱外绝对路径只有在这里面才许读（与 generate_video 的 allow_paths 同款）
             allowed_paths=list(getattr(ctx, "allowed_paths", None) or []),
+            print_mode=print_mode,
         )
         ctx._images_generated_this_run = _done + (result.get("count") or count)
     finally:
