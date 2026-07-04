@@ -26,6 +26,15 @@ contextBridge.exposeInMainWorld("electron", {
   },
   captureScreen: () => ipcRenderer.invoke("desktop:captureScreen"),
 
+  // ── D-Task-10 全局快捷键小窗(截图提问) ──
+  // 小窗页面(/quick)调 submit 提交文字+截图路径 → 主进程注入到"快捷键触发那一刻"快照的目标主窗；
+  // 主窗订阅 onQuickInputInject 收到后把内容/图片带进当前对话(照 studio:artifact 的双窗通信模式)。
+  quickInput: {
+    submit: (payload) => ipcRenderer.invoke("quickinput:submit", payload || {}),
+    close: () => ipcRenderer.invoke("quickinput:close"),
+  },
+  onQuickInputInject: (cb) => on("quickinput:inject", cb),
+
   // ── 系统通知(跨平台原生通知 · F1b) ──
   // 渲染进程持久轮询后端通知中心(GET /api/v1/notifications?after=)，拿到新条目就调这里弹一条
   // 系统原生通知(mac 通知中心 / Windows Toast)；不支持/失败会走 { ok:false }，故障安全不抛异常。
