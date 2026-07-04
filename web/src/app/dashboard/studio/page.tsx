@@ -10,7 +10,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { Image as ImageIcon, ImagePlus, X, Wand2, Copy, Download, ThumbsUp, Loader2, RefreshCw, Check, AlertTriangle, Layers, Film } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import { Image as ImageIcon, ImagePlus, X, Wand2, Copy, Download, ThumbsUp, Loader2, RefreshCw, Check, AlertTriangle, Layers, Film, CreditCard, PartyPopper, UserPlus, Sparkles, Trophy, Camera } from "lucide-react";
 import { api, type MediaJobStatus } from "@/lib/api";
 
 // react-konva 碰 canvas/window,不能 SSR → dynamic ssr:false(M4)
@@ -44,6 +45,21 @@ const STYLES = [
   { key: "sporty", label: "活力运动", desc: "比赛、约球，有冲劲" },
 ];
 
+// E2-2・场景卡"例子先行":首屏空态(还没出图时)展示台球运营场景当例子，点卡=把一段可改草稿
+// 预填进左边的 prompt 输入框(setPrompt + 聚焦)，不发消息、不触发生成——和主聊天窗欢迎屏
+// StarterCard 语义不同(那边点了直接 chat.send 走 ReAct)，这里是"填表单草稿等用户改"。
+// 文案铁律:草稿只描述画面/场景，绝不编造具体店名/电话/价格/第三方品牌，留给用户自己填；
+// 招聘助教是正常岗位描述+明写"别写暧昧擦边"，守安全红线，不当擦边引流文案处理。
+type ScenarioCard = { Icon: LucideIcon; title: string; hint: string; prompt: string };
+const SCENARIOS: ScenarioCard[] = [
+  { Icon: CreditCard, title: "会员充值海报", hint: "推会员充值，吸引老顾客", prompt: "帮我做一张会员充值优惠海报，写清楚“充多少送多少”（具体金额我自己填），风格温馨大气，适合发朋友圈和贴在店里" },
+  { Icon: PartyPopper, title: "周末活动海报", hint: "周末场次活动，拉人气", prompt: "做一张本店周末台球活动的海报，写清楚活动亮点（具体时间地点我自己补），氛围热闹喜庆，适合发朋友圈" },
+  { Icon: UserPlus, title: "招聘助教", hint: "正常招聘，写清楚岗位要求", prompt: "帮我写一张招聘台球助教的海报，要求形象好、球技过关、有耐心教学（薪资和联系方式我自己填），风格干净大方，别写暧昧擦边的内容" },
+  { Icon: Sparkles, title: "新台/新设备上线", hint: "宣传新增球台或设备", prompt: "做一张海报，宣传本店新增了球台/设备，风格现代大气，标题醒目（具体台数和品牌我自己填）" },
+  { Icon: Trophy, title: "比赛报名海报", hint: "办比赛，吸引人报名", prompt: "做一张台球比赛报名海报，写清楚比赛形式和奖励亮点（具体日期和奖金我自己填），风格有冲劲、吸引年轻人参赛" },
+  { Icon: Camera, title: "球房氛围图", hint: "日常氛围，发圈发视频封面都能用", prompt: "做一张台球房日常营业的氛围图，灯光有质感、有人在打球的画面感，适合当短视频封面或朋友圈配图" },
+];
+
 type Shot = { url: string; generationId?: string; ratio: string; isVideo?: boolean; modelSwitched?: boolean };
 
 async function blobToBase64(blob: Blob): Promise<string> {
@@ -72,6 +88,13 @@ export default function StudioPage() {
   const [copied, setCopied] = useState(false);
   const [leftW, setLeftW] = useState(280);    // 左栏宽(拖分隔条调)
   const [rightW, setRightW] = useState(280);   // 右栏宽(拖分隔条调)
+
+  // E2-2・场景卡预填的落点:点卡只 setPrompt + 聚焦，不发消息、不调任何生成接口。
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+  const pickScenario = (s: ScenarioCard) => {
+    setPrompt(s.prompt);
+    promptRef.current?.focus();
+  };
 
   // 用 ref 跟踪当前图,runJob 里读它把上一张推进历史——别在 setState 更新函数里塞 setState 副作用(StrictMode 会双跑)。
   const currentRef = useRef<Shot | null>(null);
@@ -278,6 +301,7 @@ export default function StudioPage() {
           <div>
             <div className="mb-1.5 text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">想做张什么图？</div>
             <textarea
+              ref={promptRef}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder="大白话说想做啥就行，比如：周五台球之夜海报，霓虹灯氛围，醒目标题"
@@ -390,9 +414,33 @@ export default function StudioPage() {
               </div>
             )
           ) : (
-            <div className="flex flex-col items-center gap-2 text-[#b0b0b5] dark:text-[#56585f]">
-              <ImageIcon className="h-10 w-10" />
-              <div className="text-[13px]">左边说一句、点「生成」，图就出在这里</div>
+            // E2-2・首屏空态"例子先行":还没出过图时展示场景卡当例子；一出图这个分支就不再命中，
+            // 卡片自然让位给结果，不会挡着看图(满足"出图后淡出/收起"的要求)。
+            <div className="flex w-full max-w-[560px] flex-col items-center gap-5 px-4">
+              <div className="flex flex-col items-center gap-2 text-[#b0b0b5] dark:text-[#56585f]">
+                <ImageIcon className="h-10 w-10" />
+                <div className="text-[13px]">左边说一句、点「生成」，图就出在这里</div>
+              </div>
+              <div className="w-full">
+                <div className="mb-2 text-center text-[11.5px] text-[#86868b] dark:text-[#6e7077]">
+                  不知道怎么说？点个例子，会先填进左边输入框，改改再生成
+                </div>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {SCENARIOS.map((s) => (
+                    <button
+                      key={s.title}
+                      type="button"
+                      onClick={() => pickScenario(s)}
+                      title={s.prompt}
+                      className="group flex flex-col items-start gap-1 rounded-lg border border-black/[0.07] bg-white p-2.5 text-left shadow-sm transition hover:border-[#10a37f]/35 hover:bg-[#10a37f]/[0.04] active:scale-[0.98] dark:border-white/[0.07] dark:bg-[#141519] dark:shadow-none dark:hover:border-[#10a37f]/35 dark:hover:bg-white/[0.04]"
+                    >
+                      <s.Icon className="h-4 w-4 text-[#10a37f]" />
+                      <div className="text-[12px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{s.title}</div>
+                      <div className="text-[11px] leading-snug text-[#86868b] dark:text-[#6e7077]">{s.hint}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
         </main>
