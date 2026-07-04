@@ -7,6 +7,7 @@ import pytest
 
 import services.video_edit.assemble as assemble_mod
 from services.video_edit.assemble import (
+    VOICE_OVER_BGM_KIND,
     auto_captions_from_speech,
     build_srt_from_doc,
     inventory_footage,
@@ -233,9 +234,10 @@ def _fake_render_edl_capturing(captured: dict, src: Path):
 
 
 def test_render_timeline_overrides_to_voice_over_music_when_captions_and_music(tmp_path, monkeypatch):
-    """E5④接线:doc 同时有口播字幕轨 + music → render_timeline 应把 to_edl 默认给的 "music"
-    覆写成 "voice_over_music"——证明 E4-U2 建好的混音引擎现在真能从这条路径被触发到(此前 orphaned,
-    没有任何渲染入口能产出这个 audio_mode)。"""
+    """E5④可达性:plan_speech(bgm=True) 的产出(用 VOICE_OVER_BGM_KIND 登记配乐媒体)+ 口播字幕轨
+    → render_timeline 应把 to_edl 默认给的 "music" 覆写成 "voice_over_music"——证明 E4-U2 建好的
+    混音引擎现在真能从这条路径被触发到(此前 orphaned,没有任何渲染入口能产出这个 audio_mode)。
+    判据是 provenance 标记(media.kind),不是"有没有字幕轨"——见下面两个回归测试。"""
     src = tmp_path / "src.mp4"
     _synth_clip(src, dur=4)
     bgm_path = tmp_path / "bgm.wav"
@@ -243,7 +245,7 @@ def test_render_timeline_overrides_to_voice_over_music_when_captions_and_music(t
 
     doc = new_doc()
     doc.media["m1"] = MediaRef(src=str(src), duration=4.0)
-    doc.media["bgm"] = MediaRef(src=str(bgm_path), duration=4.0, kind="audio")
+    doc.media["bgm"] = MediaRef(src=str(bgm_path), duration=4.0, kind=VOICE_OVER_BGM_KIND)
     doc.tracks["v"] = Track(kind="video", order=0)
     doc.tracks["sub"] = Track(kind="caption", order=1)
     doc.clips["c1"] = Clip(track="v", media="m1", src_in=0.0, src_out=3.0, order=1)
@@ -259,7 +261,7 @@ def test_render_timeline_overrides_to_voice_over_music_when_captions_and_music(t
 
 
 def test_render_timeline_keeps_music_mode_when_no_captions(tmp_path, monkeypatch):
-    """没有口播字幕的 music 场景(如氛围线万一也走这条渲染入口)不该被误伤成 voice_over_music——
+    """没有口播字幕、music 媒体也不带 provenance 标记 → 不该被误伤成 voice_over_music——
     edl.audio_mode 该是 to_edl 原生给的 "music" 就还是 "music"。"""
     src = tmp_path / "src.mp4"
     _synth_clip(src, dur=4)
@@ -272,6 +274,35 @@ def test_render_timeline_keeps_music_mode_when_no_captions(tmp_path, monkeypatch
     doc.tracks["v"] = Track(kind="video", order=0)
     doc.clips["c1"] = Clip(track="v", media="m1", src_in=0.0, src_out=3.0, order=1)
     doc.music = "bgm"
+
+    captured: dict = {}
+    monkeypatch.setattr(assemble_mod, "render_edl", _fake_render_edl_capturing(captured, src))
+
+    render_timeline(doc, str(tmp_path / "final.mp4"), edit_dir=str(tmp_path / "edit"))
+    assert captured["audio_mode"] == "music"
+
+
+def test_render_timeline_generic_caption_and_music_stays_music_not_voice_over(tmp_path, monkeypatch):
+    """回归(Critical 修复):普通/氛围场景配了促销字幕(通用 add_caption)+ 背景音乐(通用
+    set_music,media.kind 是常见的 "audio",不是 plan_speech(bgm=True) 专用的
+    VOICE_OVER_BGM_KIND)——这条组合经 services/agent/video_edit_tools.py 的
+    edit_timeline/render_video 或 api/v1/video_edit.py 的 /projects/{project}/ops 都能真实调到,
+    是当前可达的主流场景,不是假设。旧判据(doc.caption_clips() 非空就覆写)会把它误判成
+    voice_over_music(保留原声+混音),而用户明确要的是纯配乐(整段丢原声)。修复后必须维持
+    "music",证明 keep/music/mute 三态不受影响的不变式没被破坏。"""
+    src = tmp_path / "src.mp4"
+    _synth_clip(src, dur=4)
+    music_path = tmp_path / "music.wav"
+    music_path.write_bytes(b"RIFF\x00\x00\x00\x00WAVEfmt ")
+
+    doc = new_doc()
+    doc.media["m1"] = MediaRef(src=str(src), duration=4.0)
+    doc.media["music"] = MediaRef(src=str(music_path), duration=4.0, kind="audio")   # 通用 add_media 默认 kind
+    doc.tracks["v"] = Track(kind="video", order=0)
+    doc.tracks["sub"] = Track(kind="caption", order=1)
+    doc.clips["c1"] = Clip(track="v", media="m1", src_in=0.0, src_out=3.0, order=1)
+    doc.clips["s1"] = Clip(track="sub", text="新到乔氏台子", start=0.0, end=2.0, style="promo")  # 通用 add_caption
+    doc.music = "music"   # 通用 set_music
 
     captured: dict = {}
     monkeypatch.setattr(assemble_mod, "render_edl", _fake_render_edl_capturing(captured, src))
