@@ -502,6 +502,15 @@ ipcMain.handle("tts:stop", () => {
   }
 });
 
+// 朗读"结束/失败"是异步事件(spawn 后立即同步 return { ok:true } 不代表念完了)——订阅 tts.onEnd,
+// 广播给所有窗口,前端才能复位"正在朗读"UI(自然念完 / spawn 失败如 say 二进制缺失都要复位,不然
+// UI 卡死在"正在朗读",只能手动点停止或点别处顶掉)。照 model:progress 的多窗口广播写法。
+tts.onEnd((p) => {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) { try { w.webContents.send("tts:end", p); } catch {} }
+  }
+});
+
 // D-Task-4 开机自启：定时任务要 app 开着才会跑，老板想让"每天早上自动写文案"真的按时发生，
 // 就得让软件开机自动打开。故障安全：不支持/失败都不抛给渲染进程，返回 { ok:false, error? }。
 ipcMain.handle("app:getAutoLaunch", () => {
