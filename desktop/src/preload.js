@@ -17,6 +17,10 @@ contextBridge.exposeInMainWorld("electron", {
   newWindow: () => ipcRenderer.invoke("desktop:newWindow"),
   openStudio: () => ipcRenderer.invoke("desktop:openStudio"),
   openVideoStudio: () => ipcRenderer.invoke("desktop:openVideoStudio"),
+  // E1-C1：工作台单例窗口带参打开(mode="image"|"video",payload 只是轻标识如 {fromGen}，绝不塞图 bytes)。
+  // 已开着的工作台窗口会收到 onWorkbenchNavigate 事件切面板/换 payload，不用新开窗口。
+  openWorkbench: (mode, payload) => ipcRenderer.invoke("desktop:openWorkbench", { mode, payload }),
+  onWorkbenchNavigate: (cb) => on("workbench:navigate", cb),
   // M2 工作室成品同步：子窗报一声、其它窗口订阅刷新"最近作品"
   notifyStudioArtifact: (payload) => ipcRenderer.invoke("desktop:studioArtifact", payload),
   onStudioArtifact: (cb) => {

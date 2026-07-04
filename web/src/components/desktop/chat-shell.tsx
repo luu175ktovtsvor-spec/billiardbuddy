@@ -905,7 +905,7 @@ export function DesktopChatShell({
       generating={chat.generating}
       onNewChat={newChat}
       onNewWorkspace={electron?.newWindow ? newWorkspace : undefined}
-      onOpenStudio={electron?.openStudio ? () => { void electron.openStudio?.(); } : undefined}
+      onOpenStudio={electron?.openWorkbench ? () => { void electron.openWorkbench?.("image"); } : undefined}
       onSelect={loadConv}
       onDelete={deleteConv}
       onOpenSettings={() => setSettingsOpen(true)}
@@ -1067,7 +1067,7 @@ export function DesktopChatShell({
         onCommand={(name) => {
           if (name === "new" || name === "clear") newChat();
           else if (name === "model" || name === "settings") setSettingsOpen(true);
-          else if (name === "video-workspace") { void electron?.openVideoStudio?.(); }
+          else if (name === "video-workspace") { void electron?.openWorkbench?.("video"); }
           else if (name === "help") chat.pushAssistantMessage(HELP_TEXT);
           else if (name === "cost") chat.pushAssistantMessage(`本月 AI 用量 ≈ ${liveSpend || "—"}`);
           else if (name === "agents") chat.pushAssistantMessage(`可用子代理专家（我需要时会用「${toolMeta("run_subagent").label}」派工）：\n- general-purpose — 全能，可动手\n- explore — 只读探索·只查不改\n- plan — 只读规划·只出计划不执行`);
