@@ -4,6 +4,7 @@ import type { Model } from '../types/model'
 import type { ToolContext } from '../tools/Tool'
 import type { ToolRegistry } from '../tools/registry'
 import type { Workspace } from '../workspace/workspace'
+import type { Sandbox } from '../sandbox/sandbox'
 
 export interface RunAgentLoopOptions {
   model: Model
@@ -13,6 +14,7 @@ export interface RunAgentLoopOptions {
   userMessage: string
   maxTurns?: number
   signal?: AbortSignal
+  sandbox?: Sandbox
 }
 
 /**
@@ -22,7 +24,7 @@ export interface RunAgentLoopOptions {
 export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<AgentEvent> {
   const { model, registry, workspace } = opts
   const maxTurns = opts.maxTurns ?? 12
-  const ctx: ToolContext = { workspace, signal: opts.signal }
+  const ctx: ToolContext = { workspace, signal: opts.signal, sandbox: opts.sandbox }
   const messages: Message[] = [
     { role: 'system', content: opts.systemPrompt },
     { role: 'user', content: opts.userMessage },
