@@ -13,12 +13,14 @@ test('GET /health returns 200 ok', async () => {
   expect(body.service).toBe('ts-harness')
 })
 
-test('GET /agent/hello streams the hello tool loop as SSE', async () => {
+test('GET /agent/hello streams the real agent loop as SSE', async () => {
   const res = await fetch(`http://127.0.0.1:${server.port}/agent/hello`)
   expect(res.headers.get('content-type')).toContain('text/event-stream')
   const text = await res.text()
+  // 真循环 demo:think → list_dir → 结果回灌 → final;真模型出口 = W6
   expect(text).toContain('event: tool_call')
-  expect(text).toContain('Hello, world!')
+  expect(text).toContain('list_dir')
+  expect(text).toContain('event: tool_result')
   expect(text).toContain('event: final')
   expect(text).toContain('event: done')
 })
