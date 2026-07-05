@@ -1,0 +1,40 @@
+# dependencies (bun install)
+node_modules
+
+# output
+out
+dist
+*.tgz
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+_.log
+report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# IntelliJ based IDEs
+.idea
+
+# Finder (MacOS) folder config
+.DS_Store
+
+# —— W1 立项脚手架追加 ——
+# 编译出的 Bun sidecar 二进制(可再生,别入库)
+desktop/binaries/
+# 原生插件 spike 下载的模型缓存(可再生)
+.transformers-cache/
