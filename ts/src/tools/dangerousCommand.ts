@@ -10,6 +10,9 @@ const DANGEROUS_PATTERNS: RegExp[] = [
   /\bdd\s+.*\bof=\/dev\//, // 覆写块设备
   /:\(\)\s*\{.*\}\s*;/, // fork 炸弹 :(){ :|:& };:
   /\b(shutdown|reboot|halt|poweroff)\b/,
+  /\brm\s+(-[a-z]*\s+)*(\*|\/\*)(\s|$)/, // rm * | rm /*（通配删大片）
+  /\brm\s+(-[a-z]*\s+)*[A-Za-z]:[\\/]?(\s|$)/i, // rm C:\ | rm D:/（盘符根）
+  /\\\\[^\s\\/]+[\\/]/, // 命令内 UNC \\server\...（凭据外泄面）
 ]
 
 export function isDangerousCommand(command: string): boolean {
