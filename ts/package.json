@@ -10,7 +10,6 @@
     "test": "bun test",
     "dev:server": "bun run desktop/sidecars/backend-sidecar.ts server --host 127.0.0.1 --port 8850",
     "build:sidecar": "bun run desktop/scripts/build-sidecar.ts",
-    "desktop:dev": "bun run build:sidecar && electron desktop/electron/main.ts",
     "smoke:native": "bun run scripts/smoke/native-plugins.smoke.ts",
     "smoke:sqlite": "bun run scripts/smoke/sqlite.smoke.ts"
   },
