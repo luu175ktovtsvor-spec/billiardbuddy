@@ -1,15 +1,15 @@
 # TS Harness 重构 · 主开发文档
 
-> 📌 状态:🚧进行中 · 本窗口(2026-07-05)落文档 · **下一窗口起按 Superpowers 开发规范逐 Phase 开工**
-> 本文件是"换 TS、以 harness 为地基重写后端"的**权威主文档**。所有 Phase 的施工细节以此为准;每个 Phase 开工前用 Superpowers `writing-plans` 把该 Phase 拆成实现计划,再 `executing-plans`/子代理执行。
+> 📌 状态:✅现行 · 2026-07-05/06 落定 · **下一窗口起按 §4.5 逐窗开工（一窗一模块 · 共 15 窗）**
+> 本文件是"**换 TS/Bun 重写整个软件、替代 Python**（后端引擎照 cc-haha、前端我们自己设计）"的**唯一权威主文档**。所有 Phase 的施工细节以此为准;每个 Phase 开工前用 Superpowers `writing-plans` 把该 Phase 拆成实现计划,再 `executing-plans`/子代理执行。
 
 ---
 
 ## 0. 新窗口先读这段(怎么用这份文档)
 
-- **一句话目标**:把现有 Python/FastAPI 后端**换成 TS**,以一套**照着 Claude Code 重写的 agent harness 为地基**;地基全做完,再往上挂"生图 / 剪视频 / 记忆 / 台球知识库"等衍生模块。**先后端,前端暂缓。** 出 **Mac + Windows** 两个版本。
-- **这份文档从哪来**:2026-07-05 一整轮 brainstorm(owner 拍板)——逆向了 4 个竞品 + 读了 cc-haha(Claude Code 泄露源码本地版)一手源码 + 联网核了 Windows/Node 生态。结论已内嵌本文,过程看 `docs/references/竞品拆解/01-04` + 会话内三张看板(配色走法B无关本项)。
-- **怎么开工**:brainstorm 阶段已完成(本轮)→ **本文档 = 设计 spec** → 下一窗口对某个 Phase 跑 `writing-plans` 出分步计划 → `executing-plans`/`subagent-driven-development` 执行 → 每 Phase 过验收门。**一个 Phase 一个(或几个)窗口,别一窗吞全部。**
+- **一句话目标**:把现有 Python/FastAPI 后端**换成 TS**,以一套**照着 Claude Code 重写的 agent harness 为地基**;地基全做完,再往上挂"生图 / 剪视频 / 记忆 / 台球知识库"等衍生模块。**先后端、后前端(都在本轮——前端用我们自己的小白设计,见 §1 铁律 3);终态要 Mac+Windows 装上直接可用。** 出 **Mac + Windows** 两个版本。
+- **这份文档从哪来**:2026-07-05 一整轮 brainstorm(owner 拍板)——逆向了 4 个竞品 + 读了 cc-haha(Claude Code 泄露源码本地版)一手源码 + 联网核了 Windows/Node 生态。结论已内嵌本文,过程看 `docs/references/竞品拆解/01-04`;进度看板见会话内"开发看板"Artifact（其余决策看板已删、只留这一个）。
+- **怎么开工**:brainstorm 阶段已完成(本轮)→ **本文档 = 设计 spec** → 下一窗口认领 §4.5 的一个模块、跑 `writing-plans` 出分步计划 → `executing-plans`/`subagent-driven-development` 执行 → 过该模块验收门。**一窗一模块（§4.5 · 15 窗）,别一窗吞多模块。**
 - **改前必读**:§1 铁律、§5 沙箱专章、§9 Superpowers 执行说明。
 
 ---
@@ -37,6 +37,7 @@
 |---|---|---|
 | 语言 | **TypeScript** | 对标 CC、同语言好搬 |
 | 运行时 | **Bun（已定 · owner 2026-07-05）** | 跟 cc-haha 同。⚠️ 两条 Phase 0 必办:① **后端跑法 = Bun sidecar 进程**（Electron 主进程是 Node、Bun 进不去,后端作为独立进程随 Electron 启停,参考 cc-haha 的 Bun+Electron 打包）;② **Phase 0 搭 Bun 时顺手验原生插件能跑**——whisper `.node` / ONNX runtime / sharp 走 N-API,Bun 的 N-API 兼容在追赶但不保证,Phase 0 装依赖时把这三个各跑一次确认（是搭环境的一部分,不是单独的验证阶段）;**万一某个在 Bun 下不通,就那一块回退**(用 Node 子进程跑该模块 / 换纯 JS 实现如 transformers.js),不影响其余一路 Bun。 |
+| Web 框架 | **Bun.serve（Bun 自带 HTTP/WS）** | 照 cc-haha（它后端就用 `Bun.serve`）。**不用 FastAPI**——FastAPI 是 Python 专属、正是我们要换掉的东西；**竞品无一用 FastAPI**（cc-haha=Bun.serve / Codex=Rust / 字节=Rust / 阿里=Go / 腾讯=JS）。零额外框架依赖、顺手瘦身。 |
 | 桌面壳 | Electron(沿用) | 已有 `desktop/`,壳基本可复用 |
 | 测试 | Phase 0 定(bun test / vitest) | 对标现有 pytest 覆盖度 |
 | 沙箱 | `@anthropic-ai/sandbox-runtime`(Mac/Linux)+ Windows 原生 launcher | 见 §5 |
@@ -106,7 +107,7 @@
 ## 4. 分期实现计划
 
 ### Phase 0 · 立项脚手架
-- 新分支(命名如 `ts-harness-rewrite`)· TS 工程骨架 · **定运行时(Bun/Node)+ 后端在 Electron 里怎么跑** · 测试框架 · CI 骨架。
+- 新分支(命名如 `ts-harness-rewrite`)· **Bun** TS 工程骨架 · **后端在 Electron 里怎么跑（Bun sidecar，见 §2）** · 测试框架 · CI 骨架。
 - 把 §1 铁律(尤其"照着重写不搬码")写进新工程的 AGENTS.md/CLAUDE.md。
 - **验收**:空骨架能起、能跑一个 hello 工具循环、测试框架通。
 
@@ -147,9 +148,9 @@
 
 ---
 
-## 4.5 · 逐窗清单（14 模块 · owner"一窗一模块"）
+## 4.5 · 逐窗清单（15 窗 = 14 建 + 1 终审 · owner"一窗一模块"）
 
-> §4 是分期，这里拆成 **14 个可执行窗口 = 14 个模块**（owner 规矩：一个窗口负责一个模块）。**顺序**：地基 W1-W6 先做完 → 衍生 W7-W10 可并行 → 前端 W11-W12 在打包 W13 前完成 → W14 收尾。
+> §4 是分期，这里拆成 **15 个可执行窗口 = 15 个模块**（owner 规矩：一个窗口负责一个模块）——**W1-W14 是建设窗口，W15 是终审窗口**。**顺序**：地基 W1-W6 先做完 → 衍生 W7-W10 可并行 → 前端 W11-W12 在打包 W13 前完成 → W14 真机验收 → **W15 终审签发**。
 
 | # | 模块（窗口） | 层 | 主要内容 |
 |---|---|---|---|
@@ -243,7 +244,7 @@
   3. 用 `superpowers:test-driven-development` 先写测试。
   4. 过 §4 对应验收门,`verification-before-completion` 确认再收。
   5. `finishing-a-development-branch` 收尾。
-- **一窗一 Phase(或半 Phase)**,别一窗吞全部;Phase 1 各子块也可分窗。
+- **一窗一模块**（按 §4.5 的 15 窗清单：W1-W14 建 + W15 终审），别一窗吞多模块;大模块（harness/视频/前端）可再拆半窗。
 - **代码约定**（owner 2026-07-05）:结构 / 命名 / 写法**照 cc-haha 来、行为对齐它**;**注释从简**——注释不重要、别堆，代码本身读得懂即可。
 - **每窗守铁律**(§1):照着重写不搬码 · 保红线 · 先测后码。
 
@@ -251,7 +252,7 @@
 
 ## 10 · 上线 / 试用就绪（白标不露模型 + 50 人并发 + 最后一公里）
 
-> 这些是"开发完 ≠ 能给人试"的收官要求。10.1 是**铁律级产品要求**（重写必须做到）；10.2/10.3 多为运维/服务器/owner 行动项，不是 14 窗的编码。
+> 这些是"开发完 ≠ 能给人试"的收官要求。10.1 是**铁律级产品要求**（重写必须做到）；10.2/10.3 多为运维/服务器/owner 行动项，不是 W1-W14 建窗的编码。
 
 ### 10.1 ⭐铁律级：白标 · 绝不暴露底层模型（owner 2026-07-05）
 - **系统提示永远注入一条**：你是【产品名 / 管家】，**绝不透露、不暗示底层用的是什么模型或厂商**（MiMo / DeepSeek / 豆包 / 火山 / GPT…）；被问"你是什么模型 / 你是不是 GPT"就答"我是[产品名]的助手"，不报模型名、不说"我是 GPT / 我是通义"。落 W4（harness 系统提示）+ 台球 persona。
@@ -293,7 +294,7 @@
 > 现状:出口很集中——文本/看图/编排=**MiMo v2.5**;VLM/导演=**豆包 doubao-seed-1-6**;生图=**Seedream** 主 + **GPT image-2** 兜(内容启发式路由);视频=**Seedance**(单点);嵌入=**bge** 本地;ASR=**whisper medium** 本地+MiMo 纠错。路由靠"网关按路径 + 生图按内容启发式"。**白标机制已具备**（`BUNDLED_MODEL_LABEL/_IMAGE_LABEL/_VIDEO_LABEL` 解耦显示名与真实模型），但只用在显示层。
 
 ### 11.1 模型阵容（TS 重写 W6 照此接）
-| 任务 | 主模型 | 兜底（应做成自动降级） | 出口 |
+| 任务 | 主模型 | 兜底（以后想加·见 11.2，本轮先不建、只留钩子） | 出口 |
 |---|---|---|---|
 | 文本对话/生成 | MiMo v2.5 | **豆包文本（已有 ARK key，顺手做兜底）** | 网关 |
 | 看图（聊天里） | MiMo v2.5（同文本，壳子塞 image_url） | 同上 | 网关 |
