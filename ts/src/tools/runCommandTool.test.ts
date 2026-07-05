@@ -76,3 +76,25 @@ describe('dangerousCommand W3 补强', () => {
     expect(isDangerousCommand('rm -rf node_modules/*')).toBe(false)
   })
 })
+
+describe('run_command × Sandbox 接线(Task 6)', () => {
+  test('run_command 用 sandbox 包裹后的 argv 跑(返回 {argv,env})', async () => {
+    const ws = new Workspace(realpathSync(mkdtempSync(join(tmpdir(), 'w3-rc-'))))
+    const fakeSandbox = {
+      async wrapCommand() {
+        return { argv: ['printf', 'WRAPPED'], env: {} as NodeJS.ProcessEnv }
+      },
+    }
+    const out = await runCommandTool.execute({ command: 'echo IGNORED' }, {
+      workspace: ws,
+      sandbox: fakeSandbox as unknown as import('../sandbox/sandbox').Sandbox,
+    })
+    expect(out).toContain('WRAPPED')
+  })
+
+  test('run_command 无 sandbox 时按明文命令跑(W2 行为不回归)', async () => {
+    const ws = new Workspace(realpathSync(mkdtempSync(join(tmpdir(), 'w3-rc-'))))
+    const out = await runCommandTool.execute({ command: 'echo PLAIN' }, { workspace: ws })
+    expect(out).toContain('PLAIN')
+  })
+})

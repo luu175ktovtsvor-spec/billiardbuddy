@@ -1,4 +1,5 @@
 import type { Workspace } from '../workspace/workspace'
+import type { Sandbox } from '../sandbox/sandbox'
 
 export type JSONSchema = {
   type: 'object'
@@ -10,6 +11,7 @@ export type JSONSchema = {
 export interface ToolContext {
   workspace: Workspace
   signal?: AbortSignal
+  sandbox?: Sandbox
 }
 
 /** 模型可见的工具描述(function-calling 线上格式)。 */
