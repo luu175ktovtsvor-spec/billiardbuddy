@@ -76,6 +76,10 @@ describe('validatePath', () => {
   })
   test('写/create 含 glob → 拒;读含 glob → 放行(工具按字面读)', () => {
     expect(() => validatePath('logs/*.txt', { ...base, operation: 'write' })).toThrow(PathValidationError)
-    expect(validatePath('logs/a.txt', { ...base, operation: 'read' })).toBe(join(ROOT, 'logs/a.txt'))
+    expect(validatePath('logs/*.txt', { ...base, operation: 'read' })).toBe(join(ROOT, 'logs/*.txt'))
+  })
+  test('首尾引号被剥离:干净路径放行,剥完仍含危险语法照样拒', () => {
+    expect(validatePath('"a/b.txt"', { ...base, operation: 'read' })).toBe(join(ROOT, 'a/b.txt'))
+    expect(() => validatePath('"$HOME/x"', { ...base, operation: 'read' })).toThrow(PathValidationError)
   })
 })
