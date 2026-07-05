@@ -48,8 +48,8 @@ export class Sandbox {
       return `命令在 OS 沙箱中运行：可写目录仅限工作区（${this.workspace.root}），越界写入会被系统拒绝。`
     }
     if (this.platform === 'win32') {
-      return '命令在本机直接运行（受应用层护栏：路径沙箱 + 改前备份 + 审批闸）。Windows Job Object 隔离待后续启用。'
+      return '命令直接在本机运行，仅拦截红线危险命令（删根/提权/格式化等）；OS 写围栏与审批闸、Windows Job Object 隔离待后续启用。'
     }
-    return '命令在本机直接运行（受应用层护栏：路径沙箱 + 改前备份 + 审批闸）。'
+    return '命令直接在本机运行，仅拦截红线危险命令（删根/提权/格式化等）；OS 写围栏与审批闸待启用。'
   }
 }
