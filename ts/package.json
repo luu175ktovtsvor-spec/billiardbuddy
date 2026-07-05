@@ -25,5 +25,8 @@
     "protobufjs",
     "smart-whisper"
   ],
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "^0.0.63"
+  }
 }
