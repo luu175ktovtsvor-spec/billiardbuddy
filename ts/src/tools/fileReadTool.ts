@@ -8,6 +8,6 @@ export const fileReadTool: Tool<{ path: string }> = {
   isReadOnly: true,
   async execute(input, ctx) {
     if (!input || typeof input.path !== 'string') throw new Error('read_file 需要 string 参数 path')
-    return await readFile(ctx.workspace.resolve(input.path), 'utf8')
+    return await readFile(ctx.workspace.resolve(input.path, 'read'), 'utf8')
   },
 }

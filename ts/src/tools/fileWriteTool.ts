@@ -16,7 +16,7 @@ export const fileWriteTool: Tool<{ path: string; content: string }> = {
     if (!input || typeof input.path !== 'string' || typeof input.content !== 'string') {
       throw new Error('write_file 需要 string 参数 path 和 content')
     }
-    const abs = ctx.workspace.resolve(input.path)
+    const abs = ctx.workspace.resolve(input.path, 'write')
     await ctx.workspace.backup(abs) // 红线:改文件前自动备份
     await mkdir(dirname(abs), { recursive: true })
     await writeFile(abs, input.content, 'utf8')
