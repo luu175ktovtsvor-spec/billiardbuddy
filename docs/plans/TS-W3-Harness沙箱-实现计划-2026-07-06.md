@@ -1,6 +1,6 @@
 # W3 · Harness 沙箱(双层)实现计划
 
-> 📌 状态:🚧进行中 · 任务〈W3 Harness·沙箱〉· 2026-07-06 立
+> 📌 状态:📦完工 · W3 8 任务全绿(commits 6839781..b6b929d · 76 pass / typecheck 0 / mac smoke 写围栏过 · Opus 终审 merge-ready)· 落在 ts-harness-rewrite 分支(未并 main、TS 重写进行中)· 2026-07-06
 > **For agentic workers:** REQUIRED SUB-SKILL: 用 `superpowers:subagent-driven-development`(推荐)或 `superpowers:executing-plans` 逐任务执行。步骤用 `- [ ]` 勾选跟踪。
 > 上级 spec:`docs/plans/TS-harness-重构-主开发文档-2026-07-05.md`(§5 沙箱专章 = 本窗权威)。前序:W1 立项脚手架、W2 Harness 核心(`ts/docs/W2-harness-core-findings.md` 已留 W3 扩展位)。
 
