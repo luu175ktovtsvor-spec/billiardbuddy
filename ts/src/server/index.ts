@@ -1,13 +1,16 @@
-import { runHelloLoop, helloModel } from '../harness/helloLoop'
-import { helloTool } from '../tools/helloTool'
+import { runAgentLoop } from '../harness/loop'
+import { buildSystemPrompt } from '../harness/systemPrompt'
+import { scriptedModel } from '../harness/fakeModel'
+import { buildGeneralRegistry } from '../tools/generalTools'
+import { Workspace } from '../workspace/workspace'
+import type { AssistantStep } from '../types/model'
 import type { AgentEvent } from '../types/events'
 
-function sseLine(ev: AgentEvent): string {
+function sseLine(ev: AgentEvent | { type: 'done' }): string {
   return `event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`
 }
 
-/** W1 起步后端。照 cc-haha src/server/index.ts 的形状,但只留 health + hello。
- *  真路由/WS/CORS/鉴权是 W2+。SSE 用 async-generator + server.timeout(req,0)。 */
+/** W2 后端。/health + /agent/hello(真主循环 demo:真列一次工作区再收敛;真模型出口 = W6)。 */
 export function startServer(opts: { host?: string; port?: number } = {}) {
   const host = opts.host ?? '127.0.0.1'
   const port = opts.port ?? 8850
@@ -23,12 +26,25 @@ export function startServer(opts: { host?: string; port?: number } = {}) {
       }
 
       if (url.pathname === '/agent/hello') {
-        server.timeout(req, 0) // 关掉 Bun 10s 空闲掐断,否则安静的 SSE 流会被杀(研究 Q4)
+        server.timeout(req, 0) // 关掉 Bun 空闲掐断,否则安静的 SSE 流会被杀
+        const workspace = new Workspace(process.cwd())
+        const systemPrompt = await buildSystemPrompt(workspace)
+        // demo model:请求列一次工作区,拿到结果后收敛。真模型出口留 W6。
+        const demoSteps: AssistantStep[] = [
+          { kind: 'tool_calls', text: '看看工作区里有什么', calls: [{ id: '1', name: 'list_dir', input: {} }] },
+          { kind: 'final', text: '这是当前工作区的内容(demo:真模型接入在 W6)。' },
+        ]
         const body = (async function* () {
-          for await (const ev of runHelloLoop({ tools: [helloTool], model: helloModel })) {
+          for await (const ev of runAgentLoop({
+            model: scriptedModel(demoSteps),
+            registry: buildGeneralRegistry(),
+            workspace,
+            systemPrompt,
+            userMessage: '列一下工作区',
+          })) {
             yield sseLine(ev)
           }
-          yield 'event: done\ndata: {}\n\n'
+          yield sseLine({ type: 'done' })
         })()
         return new Response(body, {
           headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
