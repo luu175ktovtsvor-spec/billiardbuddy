@@ -8,7 +8,7 @@ const GLOB_PATTERN_REGEX = /[*?[\]{}]/
 const WINDOWS_DRIVE_ROOT_REGEX = /^[A-Za-z]:\/?$/
 const WINDOWS_DRIVE_CHILD_REGEX = /^[A-Za-z]:\/[^/]+$/
 
-// UNC 检测(照 cc-haha readOnlyCommandValidation.containsVulnerableUncPath,自写):
+// UNC 检测:借 cc-haha readOnlyCommandValidation.containsVulnerableUncPath 的正则(§9 写法照它、行为对齐),放进我们自己的文件。
 // \\server\share · //server/share(排除 URL 的 (?<!:)) · 混合分隔 /\\server · \\/server
 const UNC_PATTERNS: RegExp[] = [
   /\\\\[^\s\\/]+(?:@(?:\d+|ssl))?(?:[\\/]|$|\s)/i,
