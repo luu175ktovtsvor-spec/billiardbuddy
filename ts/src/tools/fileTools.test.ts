@@ -1,8 +1,9 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../workspace/workspace'
+import { PathValidationError } from '../workspace/pathValidation'
 import type { ToolContext } from './Tool'
 import { fileReadTool } from './fileReadTool'
 import { fileWriteTool } from './fileWriteTool'
@@ -47,4 +48,12 @@ test('file tools reject a path that escapes the workspace', async () => {
 test('write_file throws on invalid input (missing content)', async () => {
   // @ts-expect-error 故意传非法入参,验证工具自校验抛错(主循环会把它回灌)
   await expect(fileWriteTool.execute({ path: 'x.txt' }, ctx)).rejects.toThrow()
+})
+
+test('write_file 拒 $ 展开路径(TOCTOU)', async () => {
+  const ws = new Workspace(realpathSync(mkdtempSync(join(tmpdir(), 'w3-ft-'))))
+  const ctx = { workspace: ws }
+  await expect(fileWriteTool.execute({ path: '$HOME/evil.txt', content: 'x' }, ctx)).rejects.toThrow(
+    PathValidationError,
+  )
 })

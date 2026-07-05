@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { copyFile, mkdir, stat } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
-import { resolveInWorkspace } from './pathBoundary'
+import { type FileOperation, validatePath } from './pathValidation'
 
 export type BackupHook = (absPath: string) => Promise<void>
 
@@ -15,8 +15,8 @@ export class Workspace {
     this.backupHook = opts.backupHook ?? defaultBackupHook(this.root)
   }
 
-  resolve(requested: string): string {
-    return resolveInWorkspace(this.root, requested)
+  resolve(requested: string, operation: FileOperation = 'read'): string {
+    return validatePath(requested, { root: this.root, operation })
   }
 
   async backup(absPath: string): Promise<void> {

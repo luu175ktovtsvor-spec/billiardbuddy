@@ -7,7 +7,7 @@ export const listDirTool: Tool<{ path?: string }> = {
   inputSchema: { type: 'object', properties: { path: { type: 'string' } } },
   isReadOnly: true,
   async execute(input, ctx) {
-    const abs = ctx.workspace.resolve(input?.path ?? '.')
+    const abs = ctx.workspace.resolve(input?.path ?? '.', 'read')
     const entries = await readdir(abs, { withFileTypes: true })
     return entries
       .map(e => (e.isDirectory() ? `${e.name}/` : e.name))
