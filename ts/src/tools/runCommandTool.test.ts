@@ -51,8 +51,16 @@ describe('dangerousCommand W3 补强', () => {
     expect(isDangerousCommand('rm -rf /*')).toBe(true)
     expect(isDangerousCommand('rm -rf C:\\')).toBe(true)
   })
-  test('命令内 UNC 命中', () => {
-    expect(isDangerousCommand('copy \\\\evil\\share\\x .')).toBe(true)
+  test('命令内「双反斜杠」文本不是 UNC,不误杀(behavior-align fix:命令内 UNC 正则已删)', () => {
+    // \\ 是 JSON / 双引号 shell / sed 里表示"一个字面反斜杠"的标准转义,和 UNC 的双反斜杠前缀肉眼无法区分;
+    // 命令内 UNC 检测本身就难做到不误杀、非灾难级,已删除该正则,推迟到 W4 完整分类器(路径级 UNC 已由 Task1 的 isVulnerableUncPath 兜底,不受影响)
+    expect(isDangerousCommand(`curl -d '{"path":"C:\\\\Users\\\\test"}' http://api/save`)).toBe(false)
+    expect(isDangerousCommand(`echo "C:\\\\Users\\\\foo"`)).toBe(false)
+    expect(isDangerousCommand(`sed -i 's#C:\\\\old\\\\path#C:\\\\new\\\\path#' file.txt`)).toBe(false)
+  })
+  test('rm 大写/混合大小写标志位命中(behavior-align fix:补 /i,catch -RF)', () => {
+    expect(isDangerousCommand('rm -RF *')).toBe(true)
+    expect(isDangerousCommand('rm -RF /')).toBe(true)
   })
   test('工作区内正常命令不误杀', () => {
     expect(isDangerousCommand('rm -rf build/cache')).toBe(false)
