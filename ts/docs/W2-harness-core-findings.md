@@ -48,7 +48,7 @@
 ## ⚠️ 给后面窗口的硬约束（务必带走）
 - **从 W5 业务翻译窗起,验收门加硬条件:先把对应的 Python 测试翻成 TS 测试、再让 TS 实现跑绿**,确保 5.7 万行 Python→TS 翻译不丢已修的 bug。
 - **W2 / W3 / W4 是 harness(照 cc-haha)、不受此条约束**——harness 无对应 Python 测试可翻,照 cc-haha 行为写测试即可。
-- 下一窗 = **W3 双层沙箱**(Mac/Linux 装 `@anthropic-ai/sandbox-runtime` + Windows app 护栏 + Job Object launcher)。W3 会在 W2 的 `pathBoundary`/`Workspace`/`run_command` 上补 OS 层与 TOCTOU,接口已留好扩展位。
+- ~~下一窗 = W3 双层沙箱~~ **W3 双层沙箱已建**(见 `W3-sandbox-findings.md`):应用层 TOCTOU 护栏 + Mac/Linux OS 真沙箱(接 `@anthropic-ai/sandbox-runtime`,mac 真机 smoke 写围栏过)+ 平台门面 + Windows Job Object 占位。下一窗按主文档 §4.5:**W4**(审批权限/plan/todo/reminder/压缩/轨迹/死循环/子代理/skills/hooks)或 **W3b**(Windows 原生 Job Object helper.exe)。
 
 ## 复跑
 ```bash
