@@ -1,6 +1,7 @@
 # W2 · Harness 核心（主循环 + 工具框架 + 文件夹工作区 + `<env>` 注入）Implementation Plan
 
-> 📌 状态:🚧进行中 · 任务〈W2 Harness 核心〉· 2026-07-06
+> 📌 状态:✅建设完成(本地分支 ts-harness-rewrite)· 待 owner 合 main 后按规约挪 docs/归档/ · 2026-07-06
+> 成果:10 Task 全过,全量 `bun test` 43 pass / 0 fail、`tsc --noEmit` 0 错;findings 见 `ts/docs/W2-harness-core-findings.md`。9 个功能提交(ad624cd..8c8e0b4)。
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把 W1 的桩脚手架升级成一套真的 agent 核心——真 ReAct 主循环 + 工具框架 + 文件夹工作区边界 + `<env>` 环境注入,照 cc-haha 重写(reimplement,不搬源码)。
