@@ -9,6 +9,13 @@ describe('denialTracking', () => {
     expect(actionKey('t', { a: 1 })).not.toBe(actionKey('t', { a: 2 }))
   })
 
+  test('actionKey 故障安全:循环引用 args 不抛,返稳定回退', () => {
+    const c: any = {}
+    c.self = c // 循环引用 → stableStringify 递归爆栈
+    expect(() => actionKey('t', c as unknown)).not.toThrow()
+    expect(actionKey('t', c as unknown)).toBe('t:<unserializable>')
+  })
+
   test('同一动作连续拒 2 次 → shouldStopAsking', () => {
     const k = actionKey('publish', { id: 1 })
     expect(shouldStopAsking('c1', k)).toBe(false)

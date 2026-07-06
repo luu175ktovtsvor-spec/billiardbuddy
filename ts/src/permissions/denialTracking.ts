@@ -13,7 +13,13 @@ interface Bucket {
 const store = new Map<string, Bucket>()
 
 export function actionKey(name: string, args: unknown): string {
-  return `${name}:${stableStringify(args ?? {})}`
+  try {
+    return `${name}:${stableStringify(args ?? {})}`
+  } catch {
+    // 故障安全:循环引用(sort 递归爆栈)/ BigInt 属性(JSON.stringify TypeError)等无法序列化 →
+    // 返稳定回退,别抛进 Task 5 审批闸。刻意用 <unserializable> 而非 {},免得撞正当空参拒绝。
+    return `${name}:<unserializable>`
+  }
 }
 
 function bucket(conversationId: string | undefined): Bucket | null {
