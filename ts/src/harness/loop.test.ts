@@ -295,3 +295,82 @@ test('无 steering 时行为不回归(W4a 收尾照常)', async () => {
   )
   expect(events).toEqual([{ type: 'final', text: '直接收尾' }])
 })
+
+// —— 追加:todo 发射 + 进度提醒 + plan 提醒 ——
+test('todo_write 调用后吐 todo_update 事件', async () => {
+  const steps: AssistantStep[] = [
+    { kind: 'tool_calls', calls: [{ id: '1', name: 'todo_write', input: { todos: ['一', '二'] } }] },
+    { kind: 'final', text: 'ok' },
+  ]
+  const events = await collect(
+    runAgentLoop({
+      model: scriptedModel(steps), registry: buildGeneralRegistry(), workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'x',
+    }),
+  )
+  const tu = events.find(e => e.type === 'todo_update')
+  expect(tu && tu.type === 'todo_update' && tu.content).toContain('共 2 步')
+})
+
+test('task_progress 内联清单被剥离 + 更新 todos + 吐 todo_update(工具本身照跑)', async () => {
+  const steps: AssistantStep[] = [
+    { kind: 'tool_calls', calls: [{ id: '1', name: 'list_dir', input: { path: '.', task_progress: '- [x] 建目录\n- [ ] 写文件' } }] },
+    { kind: 'final', text: 'ok' },
+  ]
+  let seenInput: unknown
+  const model: Model = {
+    async step(input) {
+      // 记录第 2 次 step 前 list_dir 实际收到的入参(task_progress 应已被剥掉)
+      return steps.shift()!
+    },
+  }
+  const events = await collect(
+    runAgentLoop({
+      model, registry: buildGeneralRegistry(), workspace: new Workspace(root), systemPrompt: 'SYS', userMessage: 'x',
+    }),
+  )
+  const tu = events.find(e => e.type === 'todo_update')
+  expect(tu && tu.type === 'todo_update' && tu.content).toContain('已完成 1 步')
+  // list_dir 仍成功执行(有 tool_result、不是"参数非法")
+  const tr = events.find(e => e.type === 'tool_result' && e.tool === 'list_dir')
+  expect(tr && tr.type === 'tool_result' && tr.output).not.toContain('错误')
+})
+
+test('plan 档:每轮注入 plan system-reminder(模型能在 messages 里看到)', async () => {
+  const received: { messages: import('../types/message').Message[] }[] = []
+  const model: Model = {
+    async step(input) {
+      received.push({ messages: input.messages.slice() })
+      return received.length === 1
+        ? { kind: 'tool_calls', calls: [{ id: '1', name: 'list_dir', input: {} }] }
+        : { kind: 'final', text: 'ok' }
+    },
+  }
+  await collect(
+    runAgentLoop({
+      model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'plan',
+    }),
+  )
+  // 第 2 次 step 的 messages 含 <system-reminder> 包壳的 plan 说明
+  expect(received[1]!.messages.some(m => m.role === 'user' && m.content.includes('<system-reminder>') && m.content.includes('计划模式'))).toBe(true)
+})
+
+test('连调 PROGRESS_REMIND_EVERY 次工具没更新进度 → 注入进度提醒', async () => {
+  // 6 次 list_dir 再 final(maxTurns 放大到能跑完)
+  const steps: AssistantStep[] = [
+    ...Array.from({ length: 6 }, (_, k) => ({ kind: 'tool_calls' as const, calls: [{ id: `${k}`, name: 'list_dir', input: {} }] })),
+    { kind: 'final' as const, text: 'ok' },
+  ]
+  const received: { messages: import('../types/message').Message[] }[] = []
+  const model: Model = { async step(input) { received.push({ messages: input.messages.slice() }); return steps.shift()! } }
+  await collect(
+    runAgentLoop({
+      model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'x', maxTurns: 8,
+    }),
+  )
+  // 最后一次 step 前,messages 里出现进度提醒 system-reminder
+  const last = received.at(-1)!
+  expect(last.messages.some(m => m.role === 'user' && m.content.includes('<system-reminder>') && m.content.includes('更新进度'))).toBe(true)
+})
