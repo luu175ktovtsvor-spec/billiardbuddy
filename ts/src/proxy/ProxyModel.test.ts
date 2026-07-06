@@ -119,3 +119,19 @@ test('组合顺序:先 normalize 后 pairing(交换会让真实 tool_result 被�
   expect(toolMsg?.content).toBe('real-result')
   expect(toolMsg?.content).not.toBe('[Tool result missing due to internal error]')
 })
+
+test('reasoningEffort 会进 OpenAI-compatible 请求体', async () => {
+  let sentBody: any = null
+  const model = new ProxyModel({
+    baseUrl: 'https://x/v1', apiKey: 'k', model: 'm', reasoningEffort: 'high',
+    fetchImpl: async (_u, init) => {
+      sentBody = JSON.parse(init!.body as string)
+      return sseResponse([
+        chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: 'stop' }] }),
+        '[DONE]',
+      ])
+    },
+  })
+  await model.step({ messages: [userText('x')], tools: [] })
+  expect(sentBody.reasoning_effort).toBe('high')
+})

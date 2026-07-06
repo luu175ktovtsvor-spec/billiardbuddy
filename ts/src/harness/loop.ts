@@ -12,6 +12,30 @@ import { actionKey, clearDenial, recordDenial, shouldStopAsking } from '../permi
 import { signApproval, verifyApproval } from '../permissions/approval'
 import { collectReminders, drainSteering, extendTurns, steerBlock, wrapReminder } from './reminders'
 import { formatTodoChecklist, parseProgressMarkdown } from '../types/todo'
+import { compactPipeline, looksLikeContextOverflow } from '../context/compaction'
+import { callKey, detectStuck, MAX_SAME_CALL, sameCallGuardMessage } from './stuckDetector'
+import {
+  isAskUserQuestionToolName,
+  isExitPlanToolName,
+  isPlanApprovalAnswer,
+  normalizeAskUserQuestion,
+  normalizeExitPlanQuestion,
+  questionEvent,
+} from '../tools/agentInteractionTools'
+import {
+  applyPostToolUseHooks,
+  applyPreToolUseHooks,
+  applySessionStartHooks,
+  applyStopHooks,
+  applyUserPromptSubmitHooks,
+  type HookRegistry,
+} from '../hooks/hooks'
+
+export interface TranscriptLike {
+  load(): Promise<Message[]>
+  captureBaselineLen(): Promise<number>
+  savePreservingExternalTail(messages: Message[], baselineLen: number): Promise<void>
+}
 
 export interface RunAgentLoopOptions {
   model: Model
@@ -19,12 +43,16 @@ export interface RunAgentLoopOptions {
   workspace: Workspace
   systemPrompt: string
   userMessage: string
+  initialMessages?: Message[]
   maxTurns?: number
   signal?: AbortSignal
   sandbox?: Sandbox
   permissionMode?: PermissionMode
   conversationId?: string
   steerInbox?: string[]
+  contextWindowChars?: number
+  transcript?: TranscriptLike
+  hooks?: HookRegistry
 }
 
 /**
@@ -36,6 +64,16 @@ export interface RunAgentLoopOptions {
 export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<AgentEvent> {
   const { model, registry } = opts
   const maxTurns = opts.maxTurns ?? 12
+  let transcriptBaseline = 0
+  let history: Message[] = opts.initialMessages ?? []
+  if (opts.transcript) {
+    try {
+      transcriptBaseline = await opts.transcript.captureBaselineLen()
+      history = await opts.transcript.load()
+    } catch {
+      history = opts.initialMessages ?? []
+    }
+  }
   const ctx: ToolContext = {
     workspace: opts.workspace,
     signal: opts.signal,
@@ -47,13 +85,89 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     todos: [],
     requestsSinceProgress: 0,
   }
-  const system = opts.systemPrompt
-  const messages: Message[] = [userText(opts.userMessage)]
+  let system = opts.systemPrompt
+  const sessionStart = await applySessionStartHooks(opts.hooks, ctx)
+  for (const extra of sessionStart.additionalContext) {
+    yield { type: 'context_note', text: extra }
+  }
+  if (sessionStart.additionalContext.length > 0) {
+    system = `${system}\n\n${hookContextBlock('SessionStart', sessionStart.additionalContext)}`
+  }
+
+  const userPrompt = await applyUserPromptSubmitHooks(opts.hooks, opts.userMessage, ctx)
+  for (const extra of userPrompt.additionalContext) {
+    yield { type: 'context_note', text: extra }
+  }
+  let messages: Message[]
+  if (userPrompt.deniedMessage) {
+    const text = `请求被 hook 拦截:${userPrompt.deniedMessage}`
+    messages = [...history, { role: 'assistant', content: [textBlock(text)] }]
+    if (opts.transcript) {
+      try {
+        await opts.transcript.savePreservingExternalTail(messages, transcriptBaseline)
+      } catch {
+        // hook 拦截后的落盘失败不能拖垮响应。
+      }
+    }
+    yield { type: 'context_note', text }
+    const stopHook = await applyStopHooks(opts.hooks, text, ctx)
+    for (const extra of stopHook.additionalContext) yield { type: 'context_note', text: extra }
+    yield { type: 'final', text }
+    return
+  }
+  const userContent: ContentBlock[] = []
+  if (userPrompt.additionalContext.length > 0) {
+    userContent.push(textBlock(hookContextBlock('UserPromptSubmit', userPrompt.additionalContext)))
+  }
+  userContent.push(textBlock(userPrompt.userPrompt))
+  messages = [...history, { role: 'user', content: userContent }]
+  const readOnlyToolNames = new Set(registry.list().filter(t => t.isReadOnly).map(t => t.name))
+  let compactionFailures = 0
+  let sameKey = ''
+  let sameKeyCount = 0
+  let toolCallsNoProgress = 0
+  let stuckNotified = false
+
+  const saveTranscript = async () => {
+    if (!opts.transcript) return
+    try {
+      await opts.transcript.savePreservingExternalTail(messages, transcriptBaseline)
+    } catch {
+      // transcript 是跨轮记忆底座,但写失败不能拖垮当前任务。
+    }
+  }
+
+  const maybeCompact = async (force = false): Promise<string | undefined> => {
+    const out = await compactPipeline({
+      messages,
+      model,
+      system,
+      contextWindowChars: opts.contextWindowChars,
+      readOnlyToolNames,
+      compactionFailures,
+      force,
+    })
+    messages = out.messages
+    compactionFailures = out.compactionFailures
+    return out.didCompact ? out.note : undefined
+  }
 
   let turnsLimit = maxTurns
   let turn = 0
   while (turn < turnsLimit) {
-    const step = await model.step({ system, messages, tools: registry.specs() })
+    const compactNote = await maybeCompact(false)
+    if (compactNote) yield { type: 'context_note', text: compactNote }
+
+    let step: Awaited<ReturnType<Model['step']>>
+    try {
+      step = await model.step({ system, messages, tools: registry.specs(), signal: opts.signal })
+    } catch (err) {
+      if (!looksLikeContextOverflow(err)) throw err
+      const note = await maybeCompact(true)
+      if (!note) throw err
+      yield { type: 'context_note', text: note }
+      step = await model.step({ system, messages, tools: registry.specs(), signal: opts.signal })
+    }
 
     if (step.kind === 'final') {
       if (step.thinking) yield { type: 'thinking', text: step.thinking }
@@ -67,6 +181,9 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
         turn++
         continue
       }
+      await saveTranscript()
+      const stopHook = await applyStopHooks(opts.hooks, step.text, ctx)
+      for (const extra of stopHook.additionalContext) yield { type: 'context_note', text: extra }
       yield { type: 'final', text: step.text }
       return
     }
@@ -88,15 +205,29 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       if (progress !== null) {
         ctx.todos = parseProgressMarkdown(progress)
         ctx.requestsSinceProgress = 0
+        toolCallsNoProgress = 0
+        stuckNotified = false
         yield { type: 'todo_update', content: formatTodoChecklist(ctx.todos) }
       }
       yield { type: 'tool_call', tool: call.name, input: call.input }
-      yield* gateOneCall(registry, call, ctx, toolResults)
+      const k = callKey(call.name, call.input)
+      sameKeyCount = k === sameKey ? sameKeyCount + 1 : 1
+      sameKey = k
+      if (sameKeyCount >= MAX_SAME_CALL) {
+        const output = sameCallGuardMessage(call.name)
+        toolResults.push(toolResultBlock(call.id, output, false))
+        yield { type: 'tool_result', tool: call.name, output }
+      } else {
+        yield* gateOneCall(registry, call, ctx, toolResults, opts.hooks)
+      }
       if (call.name === 'todo_write') {
         ctx.requestsSinceProgress = 0
+        toolCallsNoProgress = 0
+        stuckNotified = false
         yield { type: 'todo_update', content: formatTodoChecklist(ctx.todos ?? []) }
       } else {
         ctx.requestsSinceProgress = (ctx.requestsSinceProgress ?? 0) + 1
+        toolCallsNoProgress++
       }
     }
 
@@ -114,13 +245,30 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       followup.push(textBlock(wrapReminder(r.text)))
       if (r.kind === 'progress') ctx.requestsSinceProgress = 0
     }
+    if (!stuckNotified) {
+      const finding = detectStuck(messages, { totalToolCallsNoProgress: toolCallsNoProgress })
+      if (finding) {
+        followup.push(textBlock(wrapReminder(finding.message)))
+        yield { type: 'context_note', text: finding.message }
+        stuckNotified = true
+      }
+    }
     messages.push({ role: 'user', content: followup })
     turn++
   }
 
   // max_turns 兜底:强制一次无工具收敛(照 loop.py 的 _FINAL_NUDGE 哲学)。
-  const forced = await model.step({ system, messages, tools: [] })
-  yield { type: 'final', text: forced.kind === 'final' ? forced.text : '(已达最大轮次,未能收敛)' }
+  const forced = await model.step({ system, messages, tools: [], signal: opts.signal })
+  const text = forced.kind === 'final' ? forced.text : '(已达最大轮次,未能收敛)'
+  messages.push({ role: 'assistant', content: [textBlock(text)] })
+  await saveTranscript()
+  const stopHook = await applyStopHooks(opts.hooks, text, ctx)
+  for (const extra of stopHook.additionalContext) yield { type: 'context_note', text: extra }
+  yield { type: 'final', text }
+}
+
+function hookContextBlock(event: string, contexts: string[]): string {
+  return `<hook_context event="${event}">\n${contexts.join('\n\n')}\n</hook_context>`
 }
 
 /** 剥离工具入参里的 task_progress(Cline Focus-Chain 内联清单,非真工具参数)。原地删并返回其字符串;无则 null。永不抛。 */
@@ -144,9 +292,10 @@ async function* gateOneCall(
   call: ToolCall,
   ctx: ToolContext,
   toolResults: ToolResultBlock[],
+  hooks?: HookRegistry,
 ): AsyncGenerator<AgentEvent> {
-  const feedback = (output: string, isError = false): AgentEvent => {
-    const content = isError ? `<tool_use_error>\n${output}\n</tool_use_error>` : output
+  const feedback = (output: string, isError = false, modelContent = output): AgentEvent => {
+    const content = isError ? `<tool_use_error>\n${modelContent}\n</tool_use_error>` : modelContent
     toolResults.push(toolResultBlock(call.id, content, isError))
     return { type: 'tool_result', tool: call.name, output }
   }
@@ -157,29 +306,72 @@ async function* gateOneCall(
     return
   }
 
-  const decision = resolvePermission(tool, call.input, ctx)
+  if (isAskUserQuestionToolName(call.name)) {
+    try {
+      const question = normalizeAskUserQuestion(call.input, call.id)
+      const answerStartLen = ctx.steerInbox?.length ?? 0
+      yield questionEvent(question)
+      const answer = await waitForSteeringAnswer(ctx, question.timeoutMs, answerStartLen)
+      yield feedback(answer ? `<user_answer>\n${answer}\n</user_answer>` : '<user_answer status="timeout" />', false)
+    } catch (err) {
+      yield feedback(`错误:${err instanceof Error ? err.message : String(err)}`, true)
+    }
+    return
+  }
+
+  if (isExitPlanToolName(call.name)) {
+    try {
+      const { plan, question } = normalizeExitPlanQuestion(call.input, call.id)
+      const answerStartLen = ctx.steerInbox?.length ?? 0
+      yield questionEvent(question)
+      const answer = await waitForSteeringAnswer(ctx, question.timeoutMs, answerStartLen)
+      if (answer && isPlanApprovalAnswer(answer)) {
+        ctx.permissionMode = 'ask'
+        yield feedback(`<plan_approved>\n${plan}\n</plan_approved>\n用户已批准计划,当前回合已退出计划模式并切到 ask 权限档。`, false)
+      } else if (answer) {
+        yield feedback(`<plan_needs_revision>\n${answer}\n</plan_needs_revision>`, false)
+      } else {
+        yield feedback('<plan_approval status="timeout" />', false)
+      }
+    } catch (err) {
+      yield feedback(`错误:${err instanceof Error ? err.message : String(err)}`, true)
+    }
+    return
+  }
+
+  const hookResult = await applyPreToolUseHooks(hooks, call.name, call.input, ctx)
+  for (const extra of hookResult.additionalContext) {
+    yield { type: 'context_note', text: extra }
+  }
+  if (hookResult.deniedMessage) {
+    yield feedback(`[hook 拦截] ${hookResult.deniedMessage}`, false)
+    return
+  }
+  const hookInput = hookResult.input
+
+  const decision = resolvePermission(tool, hookInput, ctx)
   if (decision.behavior === 'deny') {
     yield feedback(decision.message, false)
     return
   }
   if (decision.behavior === 'ask') {
-    const key = actionKey(call.name, call.input)
+    const key = actionKey(call.name, hookInput)
     if (shouldStopAsking(ctx.conversationId, key)) {
       yield feedback(DENIAL_FALLBACK_MSG(call.name), false)
       return
     }
     let preview: string | undefined
     try {
-      preview = (await tool.previewFor?.(call.input, ctx)) ?? undefined
+      preview = (await tool.previewFor?.(hookInput, ctx)) ?? undefined
     } catch {
       preview = undefined
     }
     yield {
       type: 'approval_request',
       tool: call.name,
-      args: call.input,
+      args: hookInput,
       id: call.id,
-      token: signApproval(call.name, call.input),
+      token: signApproval(call.name, hookInput),
       preview,
       reason: decision.approvalReason,
     }
@@ -191,9 +383,17 @@ async function* gateOneCall(
   if (tool.approvalClass === 'spend' && ctx.permissionMode === 'full') {
     ctx.autoSpendCount = (ctx.autoSpendCount ?? 0) + 1
   }
-  const input = decision.updatedInput ?? call.input
+  const input = decision.updatedInput ?? hookInput
   try {
-    yield feedback(await tool.execute(input, ctx), false)
+    const output = await tool.execute(input, ctx)
+    const postHook = await applyPostToolUseHooks(hooks, call.name, input, output, ctx)
+    for (const extra of postHook.additionalContext) {
+      yield { type: 'context_note', text: extra }
+    }
+    const modelContent = postHook.additionalContext.length > 0
+      ? `${output}\n\n${hookContextBlock('PostToolUse', postHook.additionalContext)}`
+      : output
+    yield feedback(output, false, modelContent)
   } catch (err) {
     yield feedback(`错误:工具 ${tool.name} 执行失败:${err instanceof Error ? err.message : String(err)}`, true)
   }
@@ -225,4 +425,19 @@ export async function executeApproved(
 /** 老板拒绝某审批(给独立 /agent/reject 用):记一次拒绝,喂给下次的 shouldStopAsking。 */
 export function handleReject(tool: string, args: unknown, ctx: ToolContext): void {
   recordDenial(ctx.conversationId, actionKey(tool, args))
+}
+
+async function waitForSteeringAnswer(ctx: ToolContext, timeoutMs: number, startLen: number): Promise<string | null> {
+  const inbox = ctx.steerInbox
+  if (!inbox) return null
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() <= deadline) {
+    if (ctx.signal?.aborted) return null
+    if (inbox.length > startLen) {
+      const [answer] = inbox.splice(startLen, 1)
+      return typeof answer === 'string' ? answer : null
+    }
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+  return null
 }

@@ -11,7 +11,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { api, type AgentStreamHandlers, type ApprovalReason } from "@/lib/api";
+import { api, type AgentStreamHandlers, type ApprovalReason, type AskQuestionField, type AskQuestionOption } from "@/lib/api";
 import { getErrorMessage, humanizeErrorText } from "@/lib/utils";
 import { useToast } from "@/components/desktop/toast";
 
@@ -49,9 +49,14 @@ export interface ApprovalState {
 }
 
 export interface QuestionData {
+  id?: string;
   question: string;
-  options: { label: string; description?: string }[];
+  options: AskQuestionOption[];
   multi?: boolean;
+  allowFreeform?: boolean;
+  placeholder?: string;
+  fields?: AskQuestionField[];
+  url?: string;
 }
 
 export interface ChatMessage {
@@ -197,6 +202,7 @@ export function useAgentChat(opts: AgentChatOptions) {
     let reasoningText = "";
     let approval: ApprovalState | undefined;
     let question: QuestionData | undefined;
+    let questionFlushed = false;
     // F4 Focus Chain：本轮最新的进度清单展示文本（原地覆盖——后端每次都吐完整最新状态，不是增量）。
     let todoText: string | undefined;
     // F1c 断线重连：本次 api.subscribeAgentTask() 调用是不是"异常断线"收场——跟正常 done / 应用层
@@ -224,7 +230,7 @@ export function useAgentChat(opts: AgentChatOptions) {
             reasoning: reasoningText || undefined,
             steps: steps.length ? [...steps] : undefined,
             approval,
-            question,
+            question: questionFlushed ? undefined : question,
             todo: todoText,
           });
         }
@@ -276,7 +282,9 @@ export function useAgentChat(opts: AgentChatOptions) {
         approval = { tool, args, token, preview, reason, status: "pending" };
       },
       onAskQuestion: (q) => {
-        question = { question: q.question, options: q.options, multi: q.multi };
+        question = { id: q.id, question: q.question, options: q.options, multi: q.multi, allowFreeform: q.allowFreeform, placeholder: q.placeholder, fields: q.fields, url: q.url };
+        questionFlushed = true;
+        setMessages((prev) => [...prev, { role: "assistant", content: "", question }]);
       },
       // 方向盘：后端确认插话已注入。本窗口刚发的（乐观上屏过）→ 去重跳过；
       // 刷新恢复重放时本地没这条 → 补回对话流，插话不因刷新而消失。
@@ -306,9 +314,9 @@ export function useAgentChat(opts: AgentChatOptions) {
         } else if (info.stopped_reason !== "error") {
           setMessages((prev) => [
             ...prev,
-            { role: "assistant", content: finalText, reasoning: reasoningText || undefined,
-              steps: steps.length ? [...steps] : undefined, approval, question, memoryRefs: info.memory_refs,
-              generationId: info.generation_id, todo: todoText },
+	            { role: "assistant", content: finalText, reasoning: reasoningText || undefined,
+	              steps: steps.length ? [...steps] : undefined, approval, question: questionFlushed ? undefined : question, memoryRefs: info.memory_refs,
+	              generationId: info.generation_id, todo: todoText },
           ]);
         }
         if (info?.conversation_id) setConversationId(info.conversation_id);

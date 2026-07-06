@@ -19,7 +19,8 @@
     "build:sidecar": "bun run desktop/scripts/build-sidecar.ts",
     "smoke:native": "bun run scripts/smoke/native-plugins.smoke.ts",
     "smoke:sqlite": "bun run scripts/smoke/sqlite.smoke.ts",
-    "smoke:sandbox": "bun run scripts/smoke/sandbox.smoke.ts"
+    "smoke:sandbox": "bun run scripts/smoke/sandbox.smoke.ts",
+    "smoke:model": "bun run scripts/smoke/model-live.smoke.ts"
   },
   "trustedDependencies": [
     "onnxruntime-node",
@@ -28,6 +29,9 @@
   ],
   "type": "module",
   "dependencies": {
-    "@anthropic-ai/sandbox-runtime": "^0.0.63"
+    "@anthropic-ai/sandbox-runtime": "^0.0.63",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "diff": "^9.0.0",
+    "zod": "^4.4.3"
   }
 }

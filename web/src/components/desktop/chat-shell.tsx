@@ -26,6 +26,7 @@ import { StoreMemoryPanel } from "./store-memory-panel";
 import { ScheduledTasksPanel } from "./scheduled-tasks-panel";
 import { StoreDocsPanel } from "./store-docs-panel";
 import { DeletedItemsPanel } from "./deleted-items-panel";
+import { BackgroundTasksPanel } from "./background-tasks-panel";
 import { useToast } from "./toast";
 
 function groupByDate(iso: string | null): string {
@@ -156,6 +157,7 @@ export function DesktopChatShell({
   // 设置抽屉（门店名 + AI key）：单窗口内打开，替代老 web 的门店设置页
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [backgroundTasksOpen, setBackgroundTasksOpen] = useState(false);
   const [scheduledTasksOpen, setScheduledTasksOpen] = useState(false);
   const [storeDocsOpen, setStoreDocsOpen] = useState(false);
   const [deletedOpen, setDeletedOpen] = useState(false);
@@ -949,6 +951,13 @@ export function DesktopChatShell({
         </button>
         <button
           type="button"
+          onClick={() => setBackgroundTasksOpen(true)}
+          className="app-no-drag rounded-md px-2 py-1 text-[12px] text-[#6e6e73] transition hover:bg-black/[0.04] hover:text-[#10a37f] dark:text-[#9a9ca3] dark:hover:bg-white/[0.06]"
+        >
+          后台任务
+        </button>
+        <button
+          type="button"
           onClick={() => setStoreDocsOpen(true)}
           className="app-no-drag rounded-md px-2 py-1 text-[12px] text-[#6e6e73] transition hover:bg-black/[0.04] hover:text-[#10a37f] dark:text-[#9a9ca3] dark:hover:bg-white/[0.06]"
         >
@@ -1157,6 +1166,7 @@ export function DesktopChatShell({
     </DesktopShell>
     <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} onStoreNameChange={setLiveStoreName} />
     <StoreMemoryPanel open={memoryOpen} onClose={() => setMemoryOpen(false)} workingDir={workingDir} />
+    <BackgroundTasksPanel open={backgroundTasksOpen} onClose={() => setBackgroundTasksOpen(false)} />
     <ScheduledTasksPanel open={scheduledTasksOpen} onClose={() => setScheduledTasksOpen(false)} />
     <StoreDocsPanel open={storeDocsOpen} onClose={() => setStoreDocsOpen(false)} />
     <DeletedItemsPanel

@@ -15,6 +15,34 @@ export interface ApprovalReason {
   impact: string;
 }
 
+export interface AskQuestionOption {
+  label: string;
+  description?: string;
+  preview?: string;
+}
+
+export interface AskQuestionField {
+  name: string;
+  label: string;
+  type?: "text" | "textarea" | "number" | "boolean" | "select" | "multiselect";
+  required?: boolean;
+  description?: string;
+  defaultValue?: string | number | boolean | string[];
+  options?: string[];
+  placeholder?: string;
+}
+
+export interface AskQuestionPayload {
+  question: string;
+  options: AskQuestionOption[];
+  multi?: boolean;
+  id?: string;
+  allowFreeform?: boolean;
+  placeholder?: string;
+  fields?: AskQuestionField[];
+  url?: string;
+}
+
 /** Agent 流式对话事件回调（对应后端 /agent/chat 的 SSE 事件：token/tool_call/tool_result/final/done/error）。 */
 export interface AgentStreamHandlers {
   onToken?: (token: string) => void;
@@ -28,7 +56,7 @@ export interface AgentStreamHandlers {
   onToolProgress?: (tool: string, id: string | undefined, chunk: string, stream?: string) => void;
   // SH-8：reason = 结构化审批理由 {what 要做什么 / why 为什么要你确认 / impact 影响}，让审批卡说清楚再让老板点头。
   onApprovalRequest?: (tool: string, args: Record<string, unknown>, id?: string, token?: string, preview?: string, reason?: ApprovalReason) => void;
-  onAskQuestion?: (q: { question: string; options: { label: string; description?: string }[]; multi?: boolean; id?: string }) => void;
+  onAskQuestion?: (q: AskQuestionPayload) => void;
   // 方向盘：跑动中捎的话已注入下一轮（content=插话原文）。本窗口发的已乐观上屏、据此去重；刷新重放据此把插话补回对话流。
   onSteering?: (content: string) => void;
   // F9：AI 自动把前文归纳了一次（autocompact 真发生），大白话告诉老板一句（不带机制细节）；
@@ -76,6 +104,21 @@ export interface MediaJobStatus {
   stage: string | null;      // 大白话阶段文案
   result: Record<string, unknown> | null;
   error: string | null;
+}
+
+export interface BackgroundTaskItem {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  kind?: string;
+  conversationId?: string;
+  workspaceRoot?: string;
+  progress?: number;
+  stage?: string;
+  result?: unknown;
+  error?: string;
 }
 
 // AI 剪辑台：inventory 返回的候选片段(前端渲染选段卡片)
@@ -465,6 +508,26 @@ class ApiClient {
     return this.request("POST", `/api/v1/agent/tasks/${encodeURIComponent(taskId)}/cancel`, {});
   }
 
+  listBackgroundTasks(input: { conversationId?: string | null; status?: string; limit?: number } = {}) {
+    const qs = new URLSearchParams();
+    if (input.conversationId) qs.set("conversationId", input.conversationId);
+    if (input.status) qs.set("status", input.status);
+    if (input.limit) qs.set("limit", String(input.limit));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return this.request<{ tasks: BackgroundTaskItem[] }>("GET", `/tasks${suffix}`);
+  }
+
+  getBackgroundTask(id: string, includeEvents = false) {
+    return this.request<{ task: BackgroundTaskItem; events?: { seq: number; ts: string; event: Record<string, unknown> }[] }>(
+      "GET",
+      `/tasks/${encodeURIComponent(id)}${includeEvents ? "?includeEvents=1" : ""}`,
+    );
+  }
+
+  cancelBackgroundTask(id: string) {
+    return this.request<{ ok: boolean; cancelled: boolean }>("POST", `/tasks/${encodeURIComponent(id)}/cancel`, {});
+  }
+
   /** 方向盘：任务跑动中给它捎话（补充/纠偏）。新话排进任务的插话队列，AI 下一轮注入、当场改道；
    * 不新起任务、不打断当前正在跑的工具。任务已结束 409 / 队列满 429（错误文案由后端说人话）。 */
   async sendTaskMessage(taskId: string, message: string): Promise<{ ok: boolean; task_id: string; queued: number }> {
@@ -508,7 +571,7 @@ class ApiClient {
               case "tool_result": handlers.onToolResult?.(ev.tool, ev.content || "", ev.id, Array.isArray(ev.knowledge_used) ? ev.knowledge_used : undefined, Array.isArray(ev.image_generation_ids) ? ev.image_generation_ids : undefined); break;
               case "tool_progress": handlers.onToolProgress?.(ev.tool, ev.id, ev.chunk || "", ev.stream); break;
               case "approval_request": handlers.onApprovalRequest?.(ev.tool, ev.args || {}, ev.id, ev.token, ev.preview, ev.reason); break;
-              case "ask_question": handlers.onAskQuestion?.({ question: ev.question || "", options: ev.options || [], multi: ev.multi, id: ev.id }); break;
+              case "ask_question": handlers.onAskQuestion?.({ question: ev.question || "", options: ev.options || [], multi: ev.multi, id: ev.id, allowFreeform: ev.allowFreeform, placeholder: ev.placeholder, fields: Array.isArray(ev.fields) ? ev.fields : undefined, url: typeof ev.url === "string" ? ev.url : undefined }); break;
               case "steering": handlers.onSteering?.(ev.content || ""); break;
               case "context_note": handlers.onContextNote?.(ev.content || ""); break;
               case "todo_update": handlers.onTodoUpdate?.(ev.content || ""); break;
@@ -881,6 +944,11 @@ class ApiClient {
     return this.request<{ skills: SkillMeta[] }>("GET", "/api/v1/agent/skills");
   }
 
+  // 桌面端：列出后端 markdown slash commands（server/commands）
+  listCommands() {
+    return this.request<{ commands: CommandMeta[] }>("GET", "/commands");
+  }
+
   // 桌面端：列出可用输出风格
   listOutputStyles() {
     return this.request<{ output_styles: OutputStyleMeta[] }>("GET", "/api/v1/agent/output-styles");
@@ -955,6 +1023,16 @@ export interface SkillMeta {
   source: string;
   argument_hint?: string;
   user_invocable: boolean;
+}
+
+export interface CommandMeta {
+  name: string;
+  description: string;
+  whenToUse?: string;
+  allowedTools?: string[];
+  model?: string;
+  source: string;
+  contentLength: number;
 }
 
 export interface OutputStyleMeta {

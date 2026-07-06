@@ -8,6 +8,7 @@ import { Sparkles, Command } from "lucide-react";
 
 export type PaletteItem =
   | { kind: "builtin"; name: string; description: string; cn?: string }
+  | { kind: "command"; name: string; description: string; whenToUse?: string }
   | { kind: "skill"; name: string; description: string; argHint?: string };
 
 export function SlashPalette({
@@ -60,6 +61,9 @@ export function SlashPalette({
               )}
               {it.kind === "skill" && (
                 <span className="rounded bg-[#10a37f]/10 px-1 py-px text-[9px] font-medium uppercase tracking-wide text-[#10a37f]">技能</span>
+              )}
+              {it.kind === "command" && (
+                <span className="rounded bg-black/[0.05] px-1 py-px text-[9px] font-medium uppercase tracking-wide text-[#86868b] dark:bg-white/[0.06] dark:text-[#8a8c93]">命令</span>
               )}
             </span>
             {it.description && (

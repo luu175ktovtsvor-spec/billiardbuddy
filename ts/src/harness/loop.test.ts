@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../workspace/workspace'
@@ -13,6 +13,7 @@ import { ToolRegistry } from '../tools/registry'
 import { executeApproved, handleReject } from './loop'
 import { resetDenialStore } from '../permissions/denialTracking'
 import type { Tool } from '../tools/Tool'
+import { userText } from '../types/message'
 
 let root: string
 beforeEach(() => {
@@ -363,6 +364,79 @@ test('plan 档:每轮注入 plan system-reminder(模型能在 messages 里看到
   ).toBe(true)
 })
 
+test('AskUserQuestion emits question card and feeds the answer back as tool_result', async () => {
+  const inbox: string[] = []
+  const model = scriptedModel([
+    {
+      kind: 'tool_calls',
+      calls: [{
+        id: 'ask1',
+        name: 'AskUserQuestion',
+        input: {
+          question: '选择执行方式',
+          options: [{ label: '保守' }, { label: '直接做' }],
+          timeout_ms: 1000,
+        },
+      }],
+    },
+    { kind: 'final', text: '收到选择' },
+  ])
+  const events: AgentEvent[] = []
+  for await (const event of runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    steerInbox: inbox,
+  })) {
+    events.push(event)
+    if (event.type === 'ask_question') inbox.push('直接做')
+  }
+
+  const question = events.find(e => e.type === 'ask_question')
+  expect(question && question.type === 'ask_question' && question.question).toContain('选择执行方式')
+  const answerBlock = model.received[1]!.messages
+    .flatMap(m => m.content)
+    .find(b => b.type === 'tool_result' && b.tool_use_id === 'ask1')
+  expect(answerBlock && answerBlock.type === 'tool_result' && answerBlock.content).toContain('直接做')
+  expect(events.at(-1)).toEqual({ type: 'final', text: '收到选择' })
+})
+
+test('ExitPlanMode approval exits plan mode for the current turn', async () => {
+  const inbox: string[] = []
+  const model = scriptedModel([
+    {
+      kind: 'tool_calls',
+      calls: [{
+        id: 'plan1',
+        name: 'ExitPlanMode',
+        input: { plan: '1. 写入 approved.txt\n2. 校验文件内容', timeout_ms: 1000 },
+      }],
+    },
+    { kind: 'tool_calls', calls: [{ id: 'write1', name: 'write_file', input: { path: 'approved.txt', content: 'ok' } }] },
+    { kind: 'final', text: '计划已执行' },
+  ])
+  const events: AgentEvent[] = []
+  for await (const event of runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    permissionMode: 'plan',
+    steerInbox: inbox,
+  })) {
+    events.push(event)
+    if (event.type === 'ask_question') inbox.push('批准并执行')
+  }
+
+  expect(events.some(e => e.type === 'ask_question' && e.question.includes('approved.txt'))).toBe(true)
+  const planResult = events.find(e => e.type === 'tool_result' && e.tool === 'ExitPlanMode')
+  expect(planResult && planResult.type === 'tool_result' && planResult.output).toContain('<plan_approved>')
+  expect(readFileSync(join(root, 'approved.txt'), 'utf8')).toBe('ok')
+})
+
 test('连调 PROGRESS_REMIND_EVERY 次工具没更新进度 → 注入进度提醒', async () => {
   // 6 次 list_dir 再 final(maxTurns 放大到能跑完)
   const steps: AssistantStep[] = [
@@ -443,4 +517,276 @@ test('thinking 只展示、不进 assistant 历史(白标:reasoning 不回灌模
   // 第 2 次 step 看到的历史里,第一版的 assistant 消息只有 text 块、没有 thinking 块/字样
   const assistantMsgs = received[1]!.messages.filter(m => m.role === 'assistant')
   expect(assistantMsgs).toEqual([{ role: 'assistant', content: [{ type: 'text', text: '第一版' }] }])
+})
+
+test('W4c compaction:上下文过阈值时先摘要旧段,再把摘要喂给模型', async () => {
+  const initialMessages = Array.from({ length: 20 }, (_, i) => userText(`old-${i}-${'x'.repeat(40)}`))
+  const received: import('../types/model').ModelStepInput[] = []
+  let n = 0
+  const model: Model = {
+    async step(input) {
+      received.push(input)
+      n++
+      if (n === 1) {
+        expect(input.tools).toEqual([])
+        return { kind: 'final', text: '压缩摘要' }
+      }
+      return { kind: 'final', text: 'done' }
+    },
+  }
+  const events = await collect(
+    runAgentLoop({
+      model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'new', initialMessages, contextWindowChars: 120,
+    }),
+  )
+  expect(events.some(e => e.type === 'context_note' && e.text.includes('已压缩旧上下文'))).toBe(true)
+  expect(events.at(-1)).toEqual({ type: 'final', text: 'done' })
+  const firstReal = received[1]!
+  const summary = firstReal.messages[0]!.content[0]
+  expect(summary?.type).toBe('text')
+  if (summary?.type !== 'text') throw new Error('expected summary text')
+  expect(summary.text).toContain('压缩摘要')
+})
+
+test('W4c overflow:模型报 context overflow 时强制压缩并重试一次', async () => {
+  const initialMessages = Array.from({ length: 20 }, (_, i) => userText(`old-${i}-${'x'.repeat(40)}`))
+  let n = 0
+  const model: Model = {
+    async step(input) {
+      n++
+      if (n === 1) {
+        const err = new Error('maximum context length exceeded')
+        throw err
+      }
+      if (n === 2) {
+        expect(input.tools).toEqual([])
+        return { kind: 'final', text: 'overflow 后摘要' }
+      }
+      return { kind: 'final', text: '压缩后好了' }
+    },
+  }
+  const events = await collect(
+    runAgentLoop({
+      model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'new', initialMessages,
+    }),
+  )
+  expect(events.some(e => e.type === 'context_note' && e.text.includes('已压缩旧上下文'))).toBe(true)
+  expect(events.at(-1)).toEqual({ type: 'final', text: '压缩后好了' })
+})
+
+test('W4c hard guard:同一工具同参连续第 5 次被拒执行并回灌', async () => {
+  const calls = Array.from({ length: 5 }, (_, i): AssistantStep => ({
+    kind: 'tool_calls',
+    calls: [{ id: String(i + 1), name: 'list_dir', input: {} }],
+  }))
+  const model = scriptedModel([...calls, { kind: 'final', text: '停下来了' }])
+  const events = await collect(
+    runAgentLoop({
+      model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'x', maxTurns: 6,
+    }),
+  )
+  const repeated = events.filter(e => e.type === 'tool_result').at(-1)
+  expect(repeated && repeated.type === 'tool_result' && repeated.output).toContain('连续重复调用 list_dir')
+  expect(events.at(-1)).toEqual({ type: 'final', text: '停下来了' })
+})
+
+test('W4c transcript:收尾时保存完整 Anthropic 消息轨迹', async () => {
+  const saved: import('../types/message').Message[][] = []
+  const transcript = {
+    async load() { return [userText('old')] },
+    async captureBaselineLen() { return 1 },
+    async savePreservingExternalTail(messages: import('../types/message').Message[]) { saved.push(messages) },
+  }
+  const events = await collect(
+    runAgentLoop({
+      model: scriptedModel([{ kind: 'final', text: 'done' }]),
+      registry: buildGeneralRegistry(), workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'new', transcript,
+    }),
+  )
+  expect(events.at(-1)).toEqual({ type: 'final', text: 'done' })
+  expect(saved).toHaveLength(1)
+  expect(saved[0]!.some(m => m.role === 'user' && m.content.some(b => b.type === 'text' && b.text === 'old'))).toBe(true)
+  expect(saved[0]!.some(m => m.role === 'assistant' && m.content.some(b => b.type === 'text' && b.text === 'done'))).toBe(true)
+})
+
+test('hooks:PreToolUse 可改写工具参数后再执行', async () => {
+  writeFileSync(join(root, 'b.txt'), 'from-hook')
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: '1', name: 'read_file', input: { path: 'a.txt' } }] },
+    { kind: 'final', text: 'done' },
+  ])
+  const events = await collect(runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    hooks: {
+      rules: [
+        { event: 'PreToolUse', matcher: 'read_file', handler: () => ({ action: 'modify', updatedInput: { path: 'b.txt' } }) },
+        { event: 'PreToolUse', matcher: 'read_file', handler: () => ({ action: 'context', additionalContext: 'hook 已改成 b.txt' }) },
+      ],
+    },
+  }))
+  expect(events.some(e => e.type === 'context_note' && e.text.includes('hook 已改成 b.txt'))).toBe(true)
+  expect(events.some(e => e.type === 'tool_result' && e.output === 'from-hook')).toBe(true)
+})
+
+test('hooks:PreToolUse deny 会回灌普通 tool_result,不执行工具', async () => {
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: '1', name: 'write_file', input: { path: 'x.txt', content: 'bad' } }] },
+    { kind: 'final', text: '换个办法' },
+  ])
+  const events = await collect(runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    hooks: {
+      rules: [{ event: 'PreToolUse', matcher: 'write_file', handler: () => ({ action: 'deny', message: '禁止写这个文件' }) }],
+    },
+  }))
+  expect(events.some(e => e.type === 'tool_result' && e.output.includes('[hook 拦截] 禁止写这个文件'))).toBe(true)
+  expect(existsSync(join(root, 'x.txt'))).toBe(false)
+})
+
+test('hooks:SessionStart additionalContext 注入 system prompt', async () => {
+  const model = scriptedModel([{ kind: 'final', text: 'done' }])
+  const events = await collect(runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    conversationId: 'hook-session',
+    hooks: {
+      rules: [
+        { event: 'SessionStart', handler: payload => ({ action: 'context', additionalContext: `店脑上下文:${payload.sessionId}` }) },
+      ],
+    },
+  }))
+  expect(events.some(e => e.type === 'context_note' && e.text.includes('店脑上下文:hook-session'))).toBe(true)
+  expect(model.received[0]!.system).toContain('<hook_context event="SessionStart">')
+  expect(model.received[0]!.system).toContain('店脑上下文:hook-session')
+})
+
+test('hooks:UserPromptSubmit 可改写用户输入并追加上下文', async () => {
+  const model = scriptedModel([{ kind: 'final', text: 'done' }])
+  await collect(runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: '原始需求',
+    hooks: {
+      rules: [
+        { event: 'UserPromptSubmit', handler: () => ({ action: 'modify', updatedInput: '改写后的需求' }) },
+        { event: 'UserPromptSubmit', handler: () => ({ action: 'context', additionalContext: '用户输入附加上下文' }) },
+      ],
+    },
+  }))
+  const firstUser = model.received[0]!.messages.find(m => m.role === 'user')!
+  expect(firstUser.role).toBe('user')
+  expect(firstUser.content.some(b => b.type === 'text' && b.text.includes('<hook_context event="UserPromptSubmit">'))).toBe(true)
+  expect(firstUser.content.some(b => b.type === 'text' && b.text === '改写后的需求')).toBe(true)
+  expect(firstUser.content.some(b => b.type === 'text' && b.text === '原始需求')).toBe(false)
+})
+
+test('hooks:UserPromptSubmit deny 不进模型,直接 final', async () => {
+  let called = false
+  const model: Model = {
+    async step() {
+      called = true
+      return { kind: 'final', text: 'should-not-run' }
+    },
+  }
+  const events = await collect(runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: '发违规内容',
+    hooks: {
+      rules: [{ event: 'UserPromptSubmit', handler: () => ({ action: 'deny', message: '用户输入不允许继续' }) }],
+    },
+  }))
+  expect(called).toBe(false)
+  expect(events).toEqual([
+    { type: 'context_note', text: '请求被 hook 拦截:用户输入不允许继续' },
+    { type: 'final', text: '请求被 hook 拦截:用户输入不允许继续' },
+  ])
+})
+
+test('hooks:PostToolUse additionalContext 回灌进下一轮模型消息', async () => {
+  writeFileSync(join(root, 'a.txt'), 'payload')
+  const received: import('../types/message').Message[][] = []
+  const steps: AssistantStep[] = [
+    { kind: 'tool_calls', calls: [{ id: '1', name: 'read_file', input: { path: 'a.txt' } }] },
+    { kind: 'final', text: 'done' },
+  ]
+  const model: Model = {
+    async step(input) {
+      received.push(input.messages)
+      return steps.shift()!
+    },
+  }
+  const events = await collect(runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: '读文件',
+    hooks: {
+      rules: [
+        { event: 'PostToolUse', matcher: 'read_file', handler: payload => ({ action: 'context', additionalContext: `读完了:${payload.output}` }) },
+      ],
+    },
+  }))
+  expect(events.some(e => e.type === 'context_note' && e.text.includes('读完了:payload'))).toBe(true)
+  const toolResult = received[1]!.flatMap(m => m.content).find(b => b.type === 'tool_result')
+  expect(toolResult && toolResult.type === 'tool_result' && toolResult.content).toContain('<hook_context event="PostToolUse">')
+  expect(toolResult && toolResult.type === 'tool_result' && toolResult.content).toContain('读完了:payload')
+})
+
+test('hooks:Stop 在 final 前输出 context_note', async () => {
+  const events = await collect(runAgentLoop({
+    model: scriptedModel([{ kind: 'final', text: '收尾文本' }]),
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    hooks: {
+      rules: [{ event: 'Stop', handler: payload => ({ action: 'context', additionalContext: `收尾摘要:${payload.output}` }) }],
+    },
+  }))
+  expect(events).toEqual([
+    { type: 'context_note', text: '收尾摘要:收尾文本' },
+    { type: 'final', text: '收尾文本' },
+  ])
+})
+
+test('hooks:Stop 在 UserPromptSubmit deny 收敛时也执行', async () => {
+  const events = await collect(runAgentLoop({
+    model: scriptedModel([{ kind: 'final', text: 'should-not-run' }]),
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    hooks: {
+      rules: [
+        { event: 'UserPromptSubmit', handler: () => ({ action: 'deny', message: 'blocked' }) },
+        { event: 'Stop', handler: payload => ({ action: 'context', additionalContext: `stop:${payload.output}` }) },
+      ],
+    },
+  }))
+  expect(events).toEqual([
+    { type: 'context_note', text: '请求被 hook 拦截:blocked' },
+    { type: 'context_note', text: 'stop:请求被 hook 拦截:blocked' },
+    { type: 'final', text: '请求被 hook 拦截:blocked' },
+  ])
 })

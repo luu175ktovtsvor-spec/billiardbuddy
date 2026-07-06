@@ -1,6 +1,7 @@
 /** 合并 sidecar 入口(起步只 server 模式;cli/adapters 是后续)。照 cc-haha claude-sidecar.ts 的
  *  positional-mode 形状,但只解析 server + --host/--port。真多模式合并在 W13。 */
 import { startServer } from '../../src/server/index'
+import { applyEnvFiles } from '../../src/model/envLoader'
 
 function parseArgs(argv: string[]): { host: string; port: number } {
   let host = '127.0.0.1'
@@ -18,5 +19,6 @@ if (mode !== 'server') {
   process.exit(2)
 }
 const { host, port } = parseArgs(rest)
+applyEnvFiles()
 const server = startServer({ host, port })
 console.log(`[backend-sidecar] listening on http://${host}:${server.port}`)

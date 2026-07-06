@@ -2,7 +2,7 @@
 
 > 📌 状态:✅现行 · 2026-07-06 落地(ts-harness-rewrite 分支,未 push、未并 main)
 > 实现计划:`docs/plans/TS-W2返工+W6proxy-实现计划-2026-07-06.md`。上级 spec:主文档 §0.5/§2/§11 + `05-cc-haha能抄清单` ①。
-> 全绿:`cd ts && bun test` → 185 pass / 0 fail;`bun run typecheck` clean。
+> 全绿:`cd ts && bun test` → 217 pass / 0 fail;`bun run typecheck` clean。
 >
 > ⚠️ **方向修正（2026-07-06 · owner+审计后定，晚于本窗施工）**：主路径 = **内核 Anthropic 直连各家 Anthropic 端点**（MiMo `/anthropic`、豆包 `/api/coding`，都提供 Anthropic `/v1/messages`），**零翻译**。本文档描述的 Anthropic→OpenAI 翻译层**降级为"只给纯 OpenAI 端点模型"的兜底**——**W10 落地时把主路径接成直连 Anthropic 端点，别默认走翻译层**（否则白饶一圈、还可能踩 reasoning 400）。详见主文档 §0.6-1。
 
@@ -64,4 +64,11 @@
 
 ## 六、真机 smoke(不进自动化套件)
 
-本窗自动化测试全 hermetic(注入 fake fetch 喂罐装 SSE、不进网络)。真链路验证需 W10 的真实端点/key/网关路由,本窗不做。要手动核真链路:构造 `new ProxyModel({ baseUrl, apiKey, model })` 指向国产 OpenAI 兼容端点(MiMo/豆包,base_url/key 见仓库外 `server/.env.usrelay.local` 或网关令牌),发一句「你好」+ 一次工具调用验证。**别把它加进 `bun test`**(需网络+花钱)。
+2026-07-07 已补 W10 前置轻量实现:
+- `ts/src/model/AnthropicMessagesModel.ts`:Anthropic `/v1/messages` 直连出口,支持 `x-api-key`/`Authorization` 策略、SSE text/tool_use 累积、tool_result 配对清洗。
+- `ts/src/model/providerConfig.ts` + `modelFactory.ts`:从 cc-haha 风格 `ANTHROPIC_*` 或当前 `desktop/bundled.env` 的 `DEEPSEEK/OPENAI/TEXT_MODEL_*` 生成运行时 provider,不打印 key。
+- `ts/src/model/modelContextWindows.ts`:补 MiMo/DeepSeek/Claude/Qwen/GLM 等上下文窗口,支持 `CLAUDE_CODE_MODEL_CONTEXT_WINDOWS` 覆盖。
+- `ProxyModel` 已按 cc-haha v0.4.5 修复透传 `reasoning_effort`,并新增请求头响应前超时;流式 body 中途卡死仍由 `streamIdleTimeout` 管。
+- `ts/src/model/networkSettings.ts` 已补 direct/system/manual proxy 策略:默认 direct 不继承系统代理,显式 system 才继承,manual 才指定代理,loopback 永远合入 no_proxy。
+- `ts/src/server/index.ts` 已新增 `/agent/run`:真实 provider → `createModelFromProviderConfig` → `runAgentLoop` → JSONL transcript 的 SSE 入口;`/agent/hello` 只保留 demo/健康回归。
+- 真 key smoke 用 `cd ts && bun run smoke:model`。该脚本默认读 `../desktop/bundled.env` + `../server/.env.bundled.local`,只输出脱敏 provider summary,不进 `bun test`。2026-07-07 已用 MiMo v2.5 通过:tool call=true。

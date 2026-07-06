@@ -52,3 +52,12 @@ test('text_only 模式:图片块替换为占位文本', () => {
   expect(r.messages[0]!.content).toContain('看这张')
   expect(r.messages[0]!.content).toContain('[Image omitted')
 })
+
+test('reasoningEffort → reasoning_effort 透传', () => {
+  const r = toOpenAiChatRequest({
+    model: 'm',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    reasoningEffort: 'high',
+  })
+  expect(r.reasoning_effort).toBe('high')
+})

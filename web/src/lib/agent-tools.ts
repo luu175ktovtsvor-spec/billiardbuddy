@@ -6,7 +6,7 @@
 import {
   CalendarDays, Lightbulb, PenLine, UserPlus, Stethoscope, Dices, ImageIcon, Sparkles,
   FileText, PartyPopper, Search, History, FolderOpen, Save, FilePen, FileSpreadsheet, Layers, Wrench,
-  FileSearch, Terminal, Globe, ListChecks, Users, Monitor, MousePointerClick, Plug, Bell, Clock, BookOpen, Film,
+  FileSearch, Terminal, Globe, ListChecks, Users, Monitor, MousePointerClick, Plug, Bell, Clock, BookOpen, Film, MessageCircleQuestion,
 } from "lucide-react";
 
 export const TOOL_META: Record<string, { label: string; Icon: typeof Wrench }> = {
@@ -21,6 +21,10 @@ export const TOOL_META: Record<string, { label: string; Icon: typeof Wrench }> =
   make_scene_plan: { label: "出场景方案", Icon: FileText },
   generate_image: { label: "生成图片", Icon: ImageIcon },
   generate_video: { label: "生成视频", Icon: Film },
+  ask_user_question: { label: "询问用户", Icon: MessageCircleQuestion },
+  AskUserQuestion: { label: "询问用户", Icon: MessageCircleQuestion },
+  exit_plan: { label: "提交计划", Icon: ListChecks },
+  ExitPlanMode: { label: "提交计划", Icon: ListChecks },
   make_platform_content: { label: "写平台内容", Icon: Sparkles },
   make_groupbuy_content: { label: "写团购套餐", Icon: FileText },
   plan_activity: { label: "策划活动", Icon: PartyPopper },

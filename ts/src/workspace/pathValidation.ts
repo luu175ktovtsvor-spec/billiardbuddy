@@ -67,6 +67,13 @@ export function validatePath(
   requested: string,
   opts: { root: string; operation: FileOperation; platform?: NodeJS.Platform; home?: string },
 ): string {
+  return resolveInWorkspace(opts.root, normalizeRequestedPathForValidation(requested, opts))
+}
+
+export function normalizeRequestedPathForValidation(
+  requested: string,
+  opts: { operation: FileOperation; platform?: NodeJS.Platform; home?: string },
+): string {
   const platform = opts.platform ?? process.platform
   const home = opts.home ?? homedir()
   const cleaned = expandTilde(requested.replace(/^['"]|['"]$/g, ''), home, platform)
@@ -84,5 +91,5 @@ export function validatePath(
   if ((opts.operation === 'write' || opts.operation === 'create') && GLOB_PATTERN_REGEX.test(cleaned)) {
     throw new PathValidationError(requested, '写操作不允许 glob 通配，请给确切路径')
   }
-  return resolveInWorkspace(opts.root, cleaned)
+  return cleaned
 }

@@ -10,6 +10,7 @@ import { openaiChatResponseToAccumulated } from './openaiChatToAnthropic'
 import { normalizeMessagesForAPI, ensureToolResultPairing } from './messagePairing'
 import { withStreamIdleTimeout } from './streamIdleTimeout'
 import type { OpenAIChatResponse } from './types'
+import type { ReasoningEffort } from '../model/reasoningEffort'
 
 /**
  * 注入用的最小 fetch 形状——故意不用 `typeof fetch`:bun-types 把 fetch 声明成
@@ -25,6 +26,10 @@ export interface ProxyModelConfig {
   imageContentMode?: OpenAIChatImageContentMode
   /** 流空闲超时(默认 60s)。 */
   idleTimeoutMs?: number
+  /** 请求头响应前超时。流式 body 的中途卡死另由 idleTimeoutMs 管。 */
+  requestTimeoutMs?: number
+  /** cc-haha v0.4.5 对齐:OpenAI-compatible proxy 透传 reasoning_effort。 */
+  reasoningEffort?: ReasoningEffort
   /** 可注入 fetch(测试用 fake;默认 globalThis.fetch)。 */
   fetchImpl?: FetchLike
   /** 缺 tool_call id 时的自造工厂(测试用确定性;默认 streamAccumulate 内置递增)。 */
@@ -45,14 +50,14 @@ export class ProxyModel implements Model {
       tools: input.tools,
       stream: true,
       imageContentMode: this.cfg.imageContentMode,
+      reasoningEffort: this.cfg.reasoningEffort,
     })
 
-    const doFetch = this.cfg.fetchImpl ?? globalThis.fetch
-    const resp = await doFetch(`${this.cfg.baseUrl}/chat/completions`, {
+    const resp = await this.fetchWithTimeout(`${this.cfg.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${this.cfg.apiKey}` },
       body: JSON.stringify(body),
-    })
+    }, input.signal)
 
     if (!resp.ok) {
       const detail = await resp.text().catch(() => '')
@@ -61,6 +66,29 @@ export class ProxyModel implements Model {
 
     const acc = await this.readResponse(resp)
     return toAssistantStep(acc)
+  }
+
+  private async fetchWithTimeout(input: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
+    const doFetch = this.cfg.fetchImpl ?? globalThis.fetch
+    if (!this.cfg.requestTimeoutMs && !signal) return doFetch(input, init)
+    if (!this.cfg.requestTimeoutMs) return doFetch(input, { ...init, signal })
+
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    if (signal?.aborted) controller.abort()
+    else signal?.addEventListener('abort', abort, { once: true })
+    const timer = setTimeout(() => controller.abort(), this.cfg.requestTimeoutMs)
+    try {
+      return await doFetch(input, { ...init, signal: controller.signal })
+    } catch (err) {
+      if ((err as { name?: string }).name === 'AbortError') {
+        throw new Error(signal?.aborted ? '模型请求已中断' : `模型请求超时 ${this.cfg.requestTimeoutMs}ms`)
+      }
+      throw err
+    } finally {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+    }
   }
 
   private async readResponse(resp: Response): Promise<AccumulatedResponse> {
