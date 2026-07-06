@@ -78,9 +78,11 @@ export async function accumulateOpenAiStream(
     if (!trimmed.startsWith('data:')) return
     const payload = trimmed.slice(trimmed.indexOf(':') + 1).trim()
     if (payload === '[DONE]') return
-    let parsed: OpenAIChatStreamChunk
-    try { parsed = JSON.parse(payload) } catch { return } // 坏行跳过、不崩
-    handleChunk(parsed)
+    try {
+      handleChunk(JSON.parse(payload) as OpenAIChatStreamChunk)
+    } catch {
+      return // 坏行 / 坏形状(valid JSON 但结构不对)一律跳过、不崩:单块畸形不该丢掉整段累积
+    }
   }
 
   try {

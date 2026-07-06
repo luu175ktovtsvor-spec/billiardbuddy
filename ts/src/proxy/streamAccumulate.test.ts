@@ -139,3 +139,48 @@ test('缺省 idFactory 跨响应自造 id 不撞车(非纯 Date.now)', async () 
   expect(second.toolCalls[0]!.id).toBeTruthy()
   expect(first.toolCalls[0]!.id).not.toBe(second.toolCalls[0]!.id)
 })
+
+// 补充(review finding 1):合法 JSON 但形状不对(null/数组里塞 null)不该崩整段累积——
+// 坏形状跟坏 JSON 一样跳过、后面的正常块照样累积。
+test('坏形状(合法 JSON 但结构不对)跳过、不崩:data:null / tool_calls 含 null / thinking_blocks 含 null', async () => {
+  const acc = await accumulateOpenAiStream(sse([
+    'null', // chunk 本身是 null → handleChunk 里 chunk.usage 会炸
+    chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { content: '一' }, finish_reason: null }] }),
+    chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { tool_calls: [null] }, finish_reason: null }] }), // tc.index 会炸
+    chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { content: '二' }, finish_reason: null }] }),
+    chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { thinking_blocks: [null] }, finish_reason: null }] }), // tb[0].type 会炸
+    chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { content: '三' }, finish_reason: 'stop' }] }),
+    '[DONE]',
+  ]))
+  expect(acc.text).toBe('一二三')
+  expect(acc.finishReason).toBe('stop')
+})
+
+// 补充:最后一块没有末尾换行符(读循环退出时最后一行还留在 buffer 里),验证收尾 `if (buffer) processLine(buffer)` 真起作用。
+test('末尾无换行符也能 flush(最后一行留在 buffer 里,读循环结束后仍处理)', async () => {
+  const enc = new TextEncoder()
+  const payload = `data: ${chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { content: '尾' }, finish_reason: 'stop' }] })}` // 故意不加 \n
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      c.enqueue(enc.encode(payload))
+      c.close()
+    },
+  })
+  const acc = await accumulateOpenAiStream(stream)
+  expect(acc.text).toBe('尾')
+  expect(acc.finishReason).toBe('stop')
+})
+
+// 补充:工具调用排序按"首次出现顺序"(order 字段),不是数字 index——index 1 先到、index 0 后到时结果仍按到达顺序。
+test('工具调用排序按首次出现顺序、非数字 index:index 1 先到后 index 0 到', async () => {
+  const acc = await accumulateOpenAiStream(sse([
+    chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { tool_calls: [
+      { index: 1, id: 'b', function: { name: 't1', arguments: '{}' } },
+    ] }, finish_reason: null }] }),
+    chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { tool_calls: [
+      { index: 0, id: 'a', function: { name: 't0', arguments: '{}' } },
+    ] }, finish_reason: 'tool_calls' }] }),
+    '[DONE]',
+  ]))
+  expect(acc.toolCalls.map(t => t.name)).toEqual(['t1', 't0'])
+})
