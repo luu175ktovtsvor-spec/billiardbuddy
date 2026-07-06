@@ -1,5 +1,4 @@
 import { describe, expect, test } from 'bun:test'
-import type { Message } from '../types/message'
 import type { ToolContext } from '../tools/Tool'
 import {
   collectReminders,
@@ -7,6 +6,8 @@ import {
   extendTurns,
   PLAN_MODE_REMINDER,
   PROGRESS_REMIND_EVERY,
+  steerBlock,
+  STEER_MARK,
   wrapReminder,
 } from './reminders'
 
@@ -20,22 +21,20 @@ describe('wrapReminder', () => {
 })
 
 describe('drainSteering', () => {
-  test('取空 inbox、append [用户补充/纠偏] 用户消息、返回原文', () => {
-    const messages: Message[] = []
-    const ctx = baseCtx({ steerInbox: ['先别删', '改成蓝色'] })
-    const drained = drainSteering(messages, ctx)
-    expect(drained).toEqual(['先别删', '改成蓝色'])
-    expect(ctx.steerInbox).toEqual([]) // 原地取空(路由持同一引用)
-    expect(messages).toEqual([
-      { role: 'user', content: '[用户补充/纠偏] 先别删' },
-      { role: 'user', content: '[用户补充/纠偏] 改成蓝色' },
-    ])
+  test('drainSteering 清空 inbox 并返回原文(不碰 messages)', () => {
+    const c = baseCtx({ steerInbox: ['改成蓝色', '再大一号'] })
+    expect(drainSteering(c)).toEqual(['改成蓝色', '再大一号'])
+    expect(c.steerInbox).toEqual([])
   })
-  test('空 inbox → 不动 messages、返回 []', () => {
-    const messages: Message[] = []
-    expect(drainSteering(messages, baseCtx({ steerInbox: [] }))).toEqual([])
-    expect(drainSteering(messages, baseCtx())).toEqual([])
-    expect(messages).toEqual([])
+  test('drainSteering 空 inbox 返回空数组', () => {
+    expect(drainSteering(baseCtx())).toEqual([])
+    expect(drainSteering(baseCtx({ steerInbox: [] }))).toEqual([])
+  })
+})
+
+describe('steerBlock', () => {
+  test('steerBlock 把插话包成带标记的 text 块', () => {
+    expect(steerBlock('改蓝色')).toEqual({ type: 'text', text: `${STEER_MARK} 改蓝色` })
   })
 })
 

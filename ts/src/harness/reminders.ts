@@ -1,4 +1,4 @@
-import type { Message } from '../types/message'
+import { textBlock, type TextBlock } from '../types/message'
 import type { ToolContext } from '../tools/Tool'
 
 export const STEER_MARK = '[用户补充/纠偏]'
@@ -13,15 +13,18 @@ export function wrapReminder(content: string): string {
 }
 
 /**
- * 取空 steerInbox 的积压插话,作 [用户补充/纠偏] 用户消息 append 到 messages 尾部,返回取出的原文。
- * 原地 splice(路由持同一数组引用);空则不动 messages。只在安全点(批配对完/收尾)调用。
+ * 取空 steerInbox 的积压插话,返回取出的原文(FIFO)。**不再改 messages**——由循环决定把它作 text 块
+ * 拼进 tool_result 那条 user 消息(批内),或作独立 user 消息(收尾)。只在安全点调用。
  */
-export function drainSteering(messages: Message[], ctx: ToolContext): string[] {
+export function drainSteering(ctx: ToolContext): string[] {
   const inbox = ctx.steerInbox
   if (!inbox || inbox.length === 0) return []
-  const drained = inbox.splice(0)
-  for (const m of drained) messages.push({ role: 'user', content: `${STEER_MARK} ${m}` })
-  return drained
+  return inbox.splice(0)
+}
+
+/** 把一条插话包成带 [用户补充/纠偏] 标记的 text 块。 */
+export function steerBlock(m: string): TextBlock {
+  return textBlock(`${STEER_MARK} ${m}`)
 }
 
 /** steering 续命:每批插话给 turnsLimit 加 STEER_EXTRA_TURNS,封顶 maxTurns + floor(maxTurns/2)。 */
