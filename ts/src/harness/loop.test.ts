@@ -9,6 +9,10 @@ import { scriptedModel } from './fakeModel'
 import { runAgentLoop } from './loop'
 import type { AgentEvent } from '../types/events'
 import type { AssistantStep } from '../types/model'
+import { ToolRegistry } from '../tools/registry'
+import { executeApproved, handleReject } from './loop'
+import { resetDenialStore } from '../permissions/denialTracking'
+import type { Tool } from '../tools/Tool'
 
 let root: string
 beforeEach(() => {
@@ -114,4 +118,89 @@ test('max_turns fallback forces a final and terminates', async () => {
   expect(events.at(-1)?.type).toBe('final')
   // 强制收敛那一步是"无工具"的
   expect(model.received.at(-1)!.tools).toEqual([])
+})
+
+// —— 追加到 loop.test.ts:审批闸(顶部按需补 import)——
+
+const SECRET = 'loop-test-secret'
+
+/** fixture:一个"对外触达"工具,requiresApproval=true,execute 记录是否真跑过。 */
+function outreachTool(spy: { ran: boolean }): Tool<{ msg?: string }> {
+  return {
+    name: 'send_message', description: '', inputSchema: { type: 'object' },
+    isReadOnly: false, requiresApproval: true, approvalClass: 'outreach',
+    async execute() { spy.ran = true; return 'SENT' },
+  }
+}
+
+test('审批闸:requiresApproval 工具 → 吐 approval_request + 回灌待确认,不执行(提案模式)', async () => {
+  process.env.SECRET_KEY = SECRET
+  resetDenialStore()
+  const spy = { ran: false }
+  const reg = new ToolRegistry([outreachTool(spy)])
+  const steps: AssistantStep[] = [
+    { kind: 'tool_calls', calls: [{ id: 'a', name: 'send_message', input: { msg: 'hi' } }] },
+    { kind: 'final', text: '我打算给顾客发条消息,确认下?' },
+  ]
+  const events = await collect(
+    runAgentLoop({ model: scriptedModel(steps), registry: reg, workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'ask', conversationId: 'conv1' }),
+  )
+  const ap = events.find(e => e.type === 'approval_request')
+  expect(ap && ap.type === 'approval_request' && ap.tool).toBe('send_message')
+  expect(ap && ap.type === 'approval_request' && ap.token.length).toBeGreaterThan(0)
+  expect(spy.ran).toBe(false) // 关键:循环里没真发
+  const tr = events.find(e => e.type === 'tool_result')
+  expect(tr && tr.type === 'tool_result' && tr.output).toContain('待用户确认')
+})
+
+test('executeApproved:token 对 → 真执行;token 错 → 校验失败不执行', async () => {
+  process.env.SECRET_KEY = SECRET
+  resetDenialStore()
+  const spy = { ran: false }
+  const reg = new ToolRegistry([outreachTool(spy)])
+  const ctx = { workspace: new Workspace(root), conversationId: 'conv1' }
+  const { signApproval } = await import('../permissions/approval')
+  const good = await executeApproved(reg, 'send_message', { msg: 'hi' }, signApproval('send_message', { msg: 'hi' }, SECRET), ctx)
+  expect(good.ok).toBe(true)
+  expect(good.output).toContain('SENT')
+  expect(spy.ran).toBe(true)
+  const bad = await executeApproved(reg, 'send_message', { msg: 'TAMPERED' }, signApproval('send_message', { msg: 'hi' }, SECRET), ctx)
+  expect(bad.ok).toBe(false)
+  expect(bad.output).toContain('校验')
+})
+
+test('拒绝 2 次后:同一动作不再弹卡,回灌"先不做了"', async () => {
+  process.env.SECRET_KEY = SECRET
+  resetDenialStore()
+  const spy = { ran: false }
+  const reg = new ToolRegistry([outreachTool(spy)])
+  const ctx = { workspace: new Workspace(root), conversationId: 'conv2' }
+  handleReject('send_message', { msg: 'hi' }, ctx)
+  handleReject('send_message', { msg: 'hi' }, ctx)
+  const steps: AssistantStep[] = [
+    { kind: 'tool_calls', calls: [{ id: 'a', name: 'send_message', input: { msg: 'hi' } }] },
+    { kind: 'final', text: 'ok 不发了' },
+  ]
+  const events = await collect(
+    runAgentLoop({ model: scriptedModel(steps), registry: reg, workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'ask', conversationId: 'conv2' }),
+  )
+  expect(events.some(e => e.type === 'approval_request')).toBe(false) // 不再弹卡
+  const tr = events.find(e => e.type === 'tool_result')
+  expect(tr && tr.type === 'tool_result' && tr.output).toContain('先不做了')
+})
+
+test('Delta A:write_file 在 ask 档仍直接执行、不弹卡', async () => {
+  resetDenialStore()
+  const steps: AssistantStep[] = [
+    { kind: 'tool_calls', calls: [{ id: 'a', name: 'write_file', input: { path: 'o.txt', content: 'x' } }] },
+    { kind: 'final', text: '写好了' },
+  ]
+  const events = await collect(
+    runAgentLoop({ model: scriptedModel(steps), registry: buildGeneralRegistry(), workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'ask' }),
+  )
+  expect(events.some(e => e.type === 'approval_request')).toBe(false)
+  expect(readFileSync(join(root, 'o.txt'), 'utf8')).toBe('x')
 })
