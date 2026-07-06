@@ -1,5 +1,6 @@
 import type { AgentEvent } from '../types/events'
-import type { Message, ToolCall } from '../types/message'
+import type { Message, ContentBlock, ToolResultBlock, ToolCall } from '../types/message'
+import { textBlock, toolUseBlock, toolResultBlock, userText } from '../types/message'
 import type { Model } from '../types/model'
 import type { ToolContext } from '../tools/Tool'
 import type { ToolRegistry } from '../tools/registry'
@@ -9,7 +10,7 @@ import type { PermissionMode } from '../permissions/types'
 import { APPROVAL_PENDING_MSG, DENIAL_FALLBACK_MSG, resolvePermission } from '../permissions/resolve'
 import { actionKey, clearDenial, recordDenial, shouldStopAsking } from '../permissions/denialTracking'
 import { signApproval, verifyApproval } from '../permissions/approval'
-import { collectReminders, drainSteering, extendTurns, wrapReminder } from './reminders'
+import { collectReminders, drainSteering, extendTurns, steerBlock, wrapReminder } from './reminders'
 import { formatTodoChecklist, parseProgressMarkdown } from '../types/todo'
 
 export interface RunAgentLoopOptions {
@@ -27,12 +28,10 @@ export interface RunAgentLoopOptions {
 }
 
 /**
- * 真 ReAct 主循环(照 cc-haha query.ts / 现有 loop.py):think → 有 tool_calls 就逐个过权限闸再执行 →
- * 结果作 role:tool 回灌 → 再 think,直到收敛或 max_turns 兜底。
- * W4a 权限闸:deny 回灌拒绝文案不执行;ask 走提案(吐 approval_request + 回灌待确认、不阻塞);allow 才真跑。
- * W4b:每批工具全配对后的安全点上——先 drain 插话(steering,可续命 turnsLimit),再 tail-append 注入
- * collectReminders 给的系统提醒(进度提醒 / plan 档说明);task_progress 内联清单会被剥离并更新 todos、
- * todo_write 执行后吐 todo_update,都用于前端把任务进度渲成清单。
+ * 真 ReAct 主循环(照 cc-haha query.ts / 现有 loop.py),内核 = Anthropic content-block:
+ * think → 有 tool_use 就逐个过权限闸执行 → 一批 tool_result 装单条 user 消息回灌 → 再 think,直到收敛或 max_turns。
+ * 退出信号看"有没有 tool_use 块"(kind==='tool_calls'),不信 finish_reason(05 清单⑥)。
+ * 工具错误一律 <tool_use_error>+is_error 回灌不崩循环。system 走 ModelStepInput 独立字段。
  */
 export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<AgentEvent> {
   const { model, registry } = opts
@@ -48,20 +47,21 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     todos: [],
     requestsSinceProgress: 0,
   }
-  const messages: Message[] = [
-    { role: 'system', content: opts.systemPrompt },
-    { role: 'user', content: opts.userMessage },
-  ]
+  const system = opts.systemPrompt
+  const messages: Message[] = [userText(opts.userMessage)]
 
   let turnsLimit = maxTurns
   let turn = 0
   while (turn < turnsLimit) {
-    const step = await model.step({ messages, tools: registry.specs() })
+    const step = await model.step({ system, messages, tools: registry.specs() })
+
     if (step.kind === 'final') {
-      messages.push({ role: 'assistant', content: step.text })
-      // steering 优先于收尾:模型想结束但收件箱有插话 → 灌进去、别收尾,接着跑
-      const drained = drainSteering(messages, ctx)
+      if (step.thinking) yield { type: 'thinking', text: step.thinking }
+      messages.push({ role: 'assistant', content: [textBlock(step.text)] })
+      // steering 优先于收尾:模型想结束但收件箱有插话 → 灌进去接着跑
+      const drained = drainSteering(ctx)
       if (drained.length) {
+        messages.push({ role: 'user', content: drained.map(steerBlock) })
         for (const m of drained) yield { type: 'steering', content: m }
         turnsLimit = extendTurns(turnsLimit, maxTurns, drained.length)
         turn++
@@ -70,10 +70,20 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       yield { type: 'final', text: step.text }
       return
     }
-    if (step.text) yield { type: 'thinking', text: step.text }
-    messages.push({ role: 'assistant', content: step.text ?? '', toolCalls: step.calls })
+
+    // 展示:reasoning + 正文叙述合成一条 thinking 事件(保证每步≤1条,前端细分事件归 W16)
+    const display = [step.thinking, step.text].filter(Boolean).join('\n\n')
+    if (display) yield { type: 'thinking', text: display }
+
+    // assistant 历史块:正文 text(若有)+ tool_use 块(thinking 不进历史、不回灌模型)
+    const asstContent: ContentBlock[] = []
+    if (step.text) asstContent.push(textBlock(step.text))
+    for (const c of step.calls) asstContent.push(toolUseBlock(c))
+    messages.push({ role: 'assistant', content: asstContent })
+
+    // 逐个过闸,tool_result 块累积;稍后装单条 user 消息(tool_result 紧贴 tool_use)
+    const toolResults: ToolResultBlock[] = []
     for (const call of step.calls) {
-      // Cline Focus-Chain:任何工具调用可带 task_progress markdown 清单——剥离(非真工具参数)→ 更新 todos → 吐 todo_update
       const progress = popTaskProgress(call.input)
       if (progress !== null) {
         ctx.todos = parseProgressMarkdown(progress)
@@ -81,7 +91,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
         yield { type: 'todo_update', content: formatTodoChecklist(ctx.todos) }
       }
       yield { type: 'tool_call', tool: call.name, input: call.input }
-      yield* gateOneCall(registry, call, ctx, messages)
+      yield* gateOneCall(registry, call, ctx, toolResults)
       if (call.name === 'todo_write') {
         ctx.requestsSinceProgress = 0
         yield { type: 'todo_update', content: formatTodoChecklist(ctx.todos ?? []) }
@@ -89,25 +99,31 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
         ctx.requestsSinceProgress = (ctx.requestsSinceProgress ?? 0) + 1
       }
     }
-    // 一批工具全配对后(安全点):先 drain 插话,再注入系统提醒(进度 + plan);都只 tail-append
-    const drained = drainSteering(messages, ctx)
+
+    // 单条 user 消息:一批 tool_result 块 + steering + reminder(都作 text 块尾随)
+    const followup: ContentBlock[] = [...toolResults]
+    const drained = drainSteering(ctx)
     if (drained.length) {
-      for (const m of drained) yield { type: 'steering', content: m }
+      for (const m of drained) {
+        followup.push(steerBlock(m))
+        yield { type: 'steering', content: m }
+      }
       turnsLimit = extendTurns(turnsLimit, maxTurns, drained.length)
     }
     for (const r of collectReminders(ctx)) {
-      messages.push({ role: 'user', content: wrapReminder(r.text) })
+      followup.push(textBlock(wrapReminder(r.text)))
       if (r.kind === 'progress') ctx.requestsSinceProgress = 0
     }
+    messages.push({ role: 'user', content: followup })
     turn++
   }
 
   // max_turns 兜底:强制一次无工具收敛(照 loop.py 的 _FINAL_NUDGE 哲学)。
-  const forced = await model.step({ messages, tools: [] })
+  const forced = await model.step({ system, messages, tools: [] })
   yield { type: 'final', text: forced.kind === 'final' ? forced.text : '(已达最大轮次,未能收敛)' }
 }
 
-/** 剥离工具入参里的 task_progress(Cline Focus-Chain 内联清单,非真工具参数)。原地删除并返回其字符串;无则 null。永不抛。 */
+/** 剥离工具入参里的 task_progress(Cline Focus-Chain 内联清单,非真工具参数)。原地删并返回其字符串;无则 null。永不抛。 */
 function popTaskProgress(input: unknown): string | null {
   if (input && typeof input === 'object' && 'task_progress' in input) {
     const o = input as Record<string, unknown>
@@ -118,41 +134,44 @@ function popTaskProgress(input: unknown): string | null {
   return null
 }
 
-/** 单个 tool_call:权限闸(deny/ask/allow)→ 相应事件 + 回灌 role:tool。ask=提案模式,不执行、不阻塞。 */
+/**
+ * 单个 tool_call:权限闸(deny/ask/allow)→ 相应事件 + 累积 tool_result 块。ask=提案模式,不执行不阻塞。
+ * 工具执行/未知工具/异常 → is_error:true + <tool_use_error> 包壳回灌(OpenAI 侧没有 is_error 字段,
+ * 文本包壳是国产模型能看到的唯一报错信号);权限类消息(deny/pending)= 普通 tool_result 不当报错。
+ */
 async function* gateOneCall(
   registry: ToolRegistry,
   call: ToolCall,
   ctx: ToolContext,
-  messages: Message[],
+  toolResults: ToolResultBlock[],
 ): AsyncGenerator<AgentEvent> {
-  const feedback = (output: string): AgentEvent => {
-    messages.push({ role: 'tool', toolCallId: call.id, name: call.name, content: output })
+  const feedback = (output: string, isError = false): AgentEvent => {
+    const content = isError ? `<tool_use_error>\n${output}\n</tool_use_error>` : output
+    toolResults.push(toolResultBlock(call.id, content, isError))
     return { type: 'tool_result', tool: call.name, output }
   }
 
   const tool = registry.get(call.name)
   if (!tool) {
-    yield feedback(`错误:未知工具 ${call.name}`)
+    yield feedback(`错误:未知工具 ${call.name}`, true)
     return
   }
 
   const decision = resolvePermission(tool, call.input, ctx)
   if (decision.behavior === 'deny') {
-    yield feedback(decision.message)
+    yield feedback(decision.message, false)
     return
   }
   if (decision.behavior === 'ask') {
     const key = actionKey(call.name, call.input)
     if (shouldStopAsking(ctx.conversationId, key)) {
-      yield feedback(DENIAL_FALLBACK_MSG(call.name))
+      yield feedback(DENIAL_FALLBACK_MSG(call.name), false)
       return
     }
     let preview: string | undefined
     try {
       preview = (await tool.previewFor?.(call.input, ctx)) ?? undefined
     } catch {
-      // 红线「工具执行永不抛」也覆盖预览:previewFor 是工具自带代码、可能读文件算 diff(ENOENT/EACCES),
-      // 抛了就退化成无预览,绝不让审批卡的计算拖垮整个循环。
       preview = undefined
     }
     yield {
@@ -164,7 +183,7 @@ async function* gateOneCall(
       preview,
       reason: decision.approvalReason,
     }
-    yield feedback(APPROVAL_PENDING_MSG(call.name))
+    yield feedback(APPROVAL_PENDING_MSG(call.name), false)
     return
   }
 
@@ -173,21 +192,17 @@ async function* gateOneCall(
     ctx.autoSpendCount = (ctx.autoSpendCount ?? 0) + 1
   }
   const input = decision.updatedInput ?? call.input
-  yield feedback(await executeTool(tool, input, ctx))
-}
-
-/** 工具执行永不抛:执行异常转成错误文本回灌,让模型自救(照 loop.py)。 */
-async function executeTool(tool: { name: string; execute: (i: unknown, c: ToolContext) => Promise<string> }, input: unknown, ctx: ToolContext): Promise<string> {
   try {
-    return await tool.execute(input, ctx)
+    yield feedback(await tool.execute(input, ctx), false)
   } catch (err) {
-    return `错误:工具 ${tool.name} 执行失败:${err instanceof Error ? err.message : String(err)}`
+    yield feedback(`错误:工具 ${tool.name} 执行失败:${err instanceof Error ? err.message : String(err)}`, true)
   }
 }
 
 /**
  * 审批确认后的真执行入口(给独立 /agent/execute 用):验 token → 清该动作拒绝计数 → 跑工具。
- * token 不匹配一律拒(不信任前端回传的 args)。
+ * token 不匹配一律拒(不信任前端回传的 args)。返回纯 output 字符串——把它包成 tool_result 块重注入会话是
+ * 审批恢复流(W5/server)的活,本层不扩责。
  */
 export async function executeApproved(
   registry: ToolRegistry,
