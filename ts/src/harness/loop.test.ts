@@ -385,3 +385,62 @@ test('连调 PROGRESS_REMIND_EVERY 次工具没更新进度 → 注入进度提�
     ),
   ).toBe(true)
 })
+
+// —— 追加:thinking 白标契约(不回灌模型)—— tool_calls 分支(合并展示)与 final 分支(单独展示)都验一遍
+test('thinking 只展示、不进 assistant 历史(白标:reasoning 不回灌模型)——tool_calls 分支', async () => {
+  // 注:用会 .slice() 快照 messages 的自定义 model,而非 scriptedModel——scriptedModel.received[i].messages
+  // 存的是 loop 内部那个持续 push 的活引用,循环跑完后所有下标都会指向同一个"最终态"数组,不能拿来做
+  // "第 2 次调用时看到什么"的精确断言(其余用到 received[] 精确断言的用例也都遵循这个 .slice() 惯例)。
+  const steps: AssistantStep[] = [
+    { kind: 'tool_calls', text: '正文', thinking: '内心戏A', calls: [{ id: '1', name: 'list_dir', input: {} }] },
+    { kind: 'final', text: '收尾' },
+  ]
+  const received: { messages: import('../types/message').Message[] }[] = []
+  const model: Model = { async step(input) { received.push({ messages: input.messages.slice() }); return steps.shift()! } }
+  const events = await collect(
+    runAgentLoop({
+      model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'x',
+    }),
+  )
+  // thinking + 正文合并成一条 thinking 事件(展示用)
+  expect(events.some(e => e.type === 'thinking' && e.text === '内心戏A\n\n正文')).toBe(true)
+  // 第 2 次 step 看到的历史里,step1 的 assistant 消息只有 text+tool_use,没有 thinking 类型块/字样
+  const assistantMsgs = received[1]!.messages.filter(m => m.role === 'assistant')
+  expect(assistantMsgs).toEqual([{
+    role: 'assistant',
+    content: [
+      { type: 'text', text: '正文' },
+      { type: 'tool_use', id: '1', name: 'list_dir', input: {} },
+    ],
+  }])
+})
+
+test('thinking 只展示、不进 assistant 历史(白标:reasoning 不回灌模型)——final 分支', async () => {
+  // 自定义 model:第 1 步 final 但带 thinking;紧接着插一条话逼出第 2 次 step,好观察第 1 版的 assistant 历史。
+  const inbox: string[] = []
+  const received: { messages: import('../types/message').Message[] }[] = []
+  let calls = 0
+  const model: Model = {
+    async step(input) {
+      received.push({ messages: input.messages.slice() })
+      calls++
+      if (calls === 1) {
+        inbox.push('再想想')
+        return { kind: 'final', text: '第一版', thinking: '内心戏-final' }
+      }
+      return { kind: 'final', text: '第二版' }
+    },
+  }
+  const events = await collect(
+    runAgentLoop({
+      model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'x', steerInbox: inbox,
+    }),
+  )
+  // final 分支的 thinking 单独吐一条事件(不跟 text 合并,照 loop.ts 的 final 分支逻辑)
+  expect(events.some(e => e.type === 'thinking' && e.text === '内心戏-final')).toBe(true)
+  // 第 2 次 step 看到的历史里,第一版的 assistant 消息只有 text 块、没有 thinking 块/字样
+  const assistantMsgs = received[1]!.messages.filter(m => m.role === 'assistant')
+  expect(assistantMsgs).toEqual([{ role: 'assistant', content: [{ type: 'text', text: '第一版' }] }])
+})
