@@ -36,42 +36,44 @@ test('runs a multi-step tool task: think -> tool -> feed back -> think -> final'
     { kind: 'final', text: '完成:已把 src.txt 复制加工到 out.txt' },
   ]
   const model = scriptedModel(steps)
-  const events = await collect(
-    runAgentLoop({
-      model,
-      registry: buildGeneralRegistry(),
-      workspace: new Workspace(root),
-      systemPrompt: 'SYS',
-      userMessage: '把 src.txt 加工写进 out.txt',
-    }),
-  )
+  const events = await collect(runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: '把 src.txt 加工写进 out.txt',
+  }))
   expect(events.map(e => e.type)).toEqual([
     'thinking', 'tool_call', 'tool_result', 'thinking', 'tool_call', 'tool_result', 'final',
   ])
   expect(readFileSync(join(root, 'out.txt'), 'utf8')).toBe('payload!')
-  // 工具结果真的回灌进了 messages(第 2 次 model.step 应看到 role:tool 消息)
-  const secondCallMessages = model.received[1]!.messages
-  expect(secondCallMessages.some(m => m.role === 'tool' && m.content === 'payload')).toBe(true)
+  // 第 2 次 model.step:system 走独立字段 + 有一条 user 消息含 tool_result 块 content==='payload'
+  const second = model.received[1]!
+  expect(second.system).toBe('SYS')
+  const hasResult = second.messages.some(
+    m => m.role === 'user' && m.content.some(b => b.type === 'tool_result' && b.content === 'payload'),
+  )
+  expect(hasResult).toBe(true)
+  // 且没有任何 role:'tool' 消息(Anthropic 格式)
+  expect(second.messages.every(m => m.role === 'user' || m.role === 'assistant')).toBe(true)
 })
 
-test('a tool error is fed back as text, the loop keeps going (does not crash)', async () => {
+// 工具错误回灌不崩,且带 <tool_use_error> + is_error
+test('a tool error is fed back as tool_use_error, loop keeps going', async () => {
   const steps: AssistantStep[] = [
     { kind: 'tool_calls', calls: [{ id: '1', name: 'read_file', input: { path: 'missing.txt' } }] },
     { kind: 'final', text: '文件不在,我改用别的办法' },
   ]
   const model = scriptedModel(steps)
-  const events = await collect(
-    runAgentLoop({
-      model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
-      systemPrompt: 'SYS', userMessage: 'x',
-    }),
-  )
+  const events = await collect(runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x',
+  }))
   const result = events.find(e => e.type === 'tool_result')
   expect(result && result.type === 'tool_result' && result.output).toContain('错误')
   expect(events.at(-1)).toEqual({ type: 'final', text: '文件不在,我改用别的办法' })
-  // 模型在下一步确实收到了错误文本回灌
-  const fedBack = model.received[1]!.messages.some(m => m.role === 'tool' && m.content.includes('错误'))
-  expect(fedBack).toBe(true)
+  const errBlock = model.received[1]!.messages
+    .flatMap(m => m.content)
+    .find(b => b.type === 'tool_result' && b.tool_use_id === '1')
+  expect(errBlock && errBlock.type === 'tool_result' && errBlock.is_error).toBe(true)
+  expect(errBlock && errBlock.type === 'tool_result' && errBlock.content).toContain('<tool_use_error>')
 })
 
 test('an unknown tool is fed back as an error, not a crash', async () => {
@@ -89,7 +91,7 @@ test('an unknown tool is fed back as an error, not a crash', async () => {
   expect(result && result.type === 'tool_result' && result.output).toContain('未知工具')
 })
 
-test('the <env> block reaches the model in the system message', async () => {
+test('the <env> block reaches the model via the system field', async () => {
   const model = scriptedModel([{ kind: 'final', text: 'done' }])
   const ws = new Workspace(root)
   const systemPrompt = await buildSystemPrompt(ws)
@@ -99,10 +101,8 @@ test('the <env> block reaches the model in the system message', async () => {
       systemPrompt, userMessage: 'hi',
     }),
   )
-  const firstMessages = model.received[0]!.messages
-  const system = firstMessages.find(m => m.role === 'system')
-  expect(system?.content).toContain('<env>')
-  expect(system?.content).toContain(`Working directory: ${ws.root}`)
+  expect(model.received[0]!.system).toContain('<env>')
+  expect(model.received[0]!.system).toContain(`Working directory: ${ws.root}`)
 })
 
 test('max_turns fallback forces a final and terminates', async () => {
@@ -282,8 +282,12 @@ test('steering:每批工具后 drain,插话在下一次 model.step 前进 messag
       systemPrompt: 'SYS', userMessage: 'x', steerInbox: inbox,
     }),
   )
-  // 第 2 次 step 的 messages 里有 [用户补充/纠偏] 顺便看看 src
-  expect(received[1]!.messages.some(m => m.role === 'user' && m.content.includes('[用户补充/纠偏] 顺便看看 src'))).toBe(true)
+  // 第 2 次 step 的 messages 里有一条 user 消息、其中一个 text 块含 [用户补充/纠偏] 顺便看看 src
+  expect(
+    received[1]!.messages.some(
+      m => m.role === 'user' && m.content.some(b => b.type === 'text' && b.text.includes('[用户补充/纠偏] 顺便看看 src')),
+    ),
+  ).toBe(true)
 })
 
 test('无 steering 时行为不回归(W4a 收尾照常)', async () => {
@@ -317,9 +321,8 @@ test('task_progress 内联清单被剥离 + 更新 todos + 吐 todo_update(工�
     { kind: 'tool_calls', calls: [{ id: '1', name: 'list_dir', input: { path: '.', task_progress: '- [x] 建目录\n- [ ] 写文件' } }] },
     { kind: 'final', text: 'ok' },
   ]
-  let seenInput: unknown
   const model: Model = {
-    async step(input) {
+    async step() {
       // 记录第 2 次 step 前 list_dir 实际收到的入参(task_progress 应已被剥掉)
       return steps.shift()!
     },
@@ -352,8 +355,12 @@ test('plan 档:每轮注入 plan system-reminder(模型能在 messages 里看到
       systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'plan',
     }),
   )
-  // 第 2 次 step 的 messages 含 <system-reminder> 包壳的 plan 说明
-  expect(received[1]!.messages.some(m => m.role === 'user' && m.content.includes('<system-reminder>') && m.content.includes('计划模式'))).toBe(true)
+  // 第 2 次 step 的 messages 里有一条 user 消息、其中一个 text 块含 <system-reminder> 包壳的计划模式说明
+  expect(
+    received[1]!.messages.some(
+      m => m.role === 'user' && m.content.some(b => b.type === 'text' && b.text.includes('<system-reminder>') && b.text.includes('计划模式')),
+    ),
+  ).toBe(true)
 })
 
 test('连调 PROGRESS_REMIND_EVERY 次工具没更新进度 → 注入进度提醒', async () => {
@@ -370,7 +377,11 @@ test('连调 PROGRESS_REMIND_EVERY 次工具没更新进度 → 注入进度提�
       systemPrompt: 'SYS', userMessage: 'x', maxTurns: 8,
     }),
   )
-  // 最后一次 step 前,messages 里出现进度提醒 system-reminder
+  // 最后一次 step 前,messages 里出现一条 user 消息、含进度提醒 text 块
   const last = received.at(-1)!
-  expect(last.messages.some(m => m.role === 'user' && m.content.includes('<system-reminder>') && m.content.includes('更新进度'))).toBe(true)
+  expect(
+    last.messages.some(
+      m => m.role === 'user' && m.content.some(b => b.type === 'text' && b.text.includes('<system-reminder>') && b.text.includes('更新进度')),
+    ),
+  ).toBe(true)
 })
