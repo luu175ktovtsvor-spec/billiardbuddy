@@ -12,7 +12,13 @@ function defaultSecret(): string {
 }
 
 export function signApproval(tool: string, args: unknown, secret: string = defaultSecret()): string {
-  return createHmac('sha256', secret).update(canonical(tool, args), 'utf8').digest('hex')
+  let c: string
+  try {
+    c = canonical(tool, args)
+  } catch {
+    c = `${tool}:<unserializable>` // 不可序列化 args(循环引用/BigInt)→ 稳定回退,签名不抛;verify 走同一条路故一致
+  }
+  return createHmac('sha256', secret).update(c, 'utf8').digest('hex')
 }
 
 /** token 与 (tool,args) 是否匹配。空 token→false;畸形/长度不符→false(不抛,照 approval.py 的 TypeError 兜底)。 */

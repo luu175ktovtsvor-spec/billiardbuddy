@@ -81,4 +81,9 @@ describe('resolvePermission 瀑布', () => {
     const d = resolvePermission(tool({ requiresApprovalFor: () => true, approvalClass: 'outreach' }), {}, ctx('ask'))
     expect(d.behavior).toBe('ask')
   })
+
+  test('工具钩子抛异常 → 失败关闭到 ask(不崩、绝不静默放行)', () => {
+    expect(resolvePermission(tool({ fatalReasonFor: () => { throw new Error('boom') } }), {}, ctx('full')).behavior).toBe('ask')
+    expect(resolvePermission(tool({ requiresApprovalFor: () => { throw new Error('boom') } }), {}, ctx('ask')).behavior).toBe('ask')
+  })
 })

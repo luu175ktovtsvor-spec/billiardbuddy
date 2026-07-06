@@ -33,7 +33,7 @@ function ask(tool: Tool, ctx: ToolContext, input: unknown, reason: DecisionReaso
  *     4d auto_files 档:file 类 → allow,否则 ask
  *     4e ask/其它     → ask
  */
-export function resolvePermission(tool: Tool, input: unknown, ctx: ToolContext): PermissionDecision {
+function resolvePermissionInner(tool: Tool, input: unknown, ctx: ToolContext): PermissionDecision {
   const mode = ctx.permissionMode ?? 'ask'
 
   const fatal = tool.fatalReasonFor?.(input, ctx)
@@ -62,4 +62,21 @@ export function resolvePermission(tool: Tool, input: unknown, ctx: ToolContext):
   }
   // ask(默认)/ plan 档下走到这的只读+需审批工具 → 弹卡
   return ask(tool, ctx, input, { type: 'mode', mode })
+}
+
+/**
+ * 公开入口:包一层 try/catch。fatalReasonFor/requiresApprovalFor/safePrefixFor/approvalReasonFor
+ * 都是工具作者自带代码、可能抛异常(读文件/算逻辑出错)——抛了就算不出权限,失败关闭到"问人"
+ * (绝不静默放行 allow),守本模块「gate 路永不崩 + 不静默放行」红线。
+ */
+export function resolvePermission(tool: Tool, input: unknown, ctx: ToolContext): PermissionDecision {
+  try {
+    return resolvePermissionInner(tool, input, ctx)
+  } catch {
+    return {
+      behavior: 'ask',
+      message: APPROVAL_PENDING_MSG(tool.name),
+      reason: { type: 'mode', mode: ctx.permissionMode ?? 'ask' },
+    }
+  }
 }
