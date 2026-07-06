@@ -49,6 +49,7 @@
 - **从 W5 业务翻译窗起,验收门加硬条件:先把对应的 Python 测试翻成 TS 测试、再让 TS 实现跑绿**,确保 5.7 万行 Python→TS 翻译不丢已修的 bug。
 - **W2 / W3 / W4 是 harness(照 cc-haha)、不受此条约束**——harness 无对应 Python 测试可翻,照 cc-haha 行为写测试即可。
 - ~~下一窗 = W3 双层沙箱~~ **W3 双层沙箱已建**(见 `W3-sandbox-findings.md`):应用层 TOCTOU 护栏 + Mac/Linux OS 真沙箱(接 `@anthropic-ai/sandbox-runtime`,mac 真机 smoke 写围栏过)+ 平台门面 + Windows Job Object 占位。下一窗按主文档 §4.5:**W4**(审批权限/plan/todo/reminder/压缩/轨迹/死循环/子代理/skills/hooks)或 **W3b**(Windows 原生 Job Object helper.exe)。
+  - **⏩ 更新(2026-07-06)**:W4「Harness·其余」已拆 **5 子窗 W4a–e**(见 `docs/plans/TS-W4-拆窗与研究底稿-2026-07-06.md`);**W4a 审批权限已建**(见 `W4a-approval-permissions-findings.md`,107 pass),**下一窗 = W4b 定向脚手架** 或 **W3b**。
 
 ## 复跑
 ```bash

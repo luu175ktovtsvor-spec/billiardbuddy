@@ -61,3 +61,7 @@ bun test               # 75 pass / 0 fail / 15 files
 bun run typecheck      # exit 0
 bun run smoke:sandbox  # 工作区内写✓ / 工作区外写被拒✓(mac 真起 sandbox-exec)
 ```
+
+## 下一窗(2026-07-06 更新)
+W4「Harness·其余」已拆 **5 子窗 W4a–e**(见 `docs/plans/TS-W4-拆窗与研究底稿-2026-07-06.md`)。**W4a 审批权限已建**(审批闸/权限三档/plan 判定/拒绝跟踪/HMAC/白标 anti-reveal,见 `W4a-approval-permissions-findings.md`,107 pass)。**下一窗 = W4b 定向脚手架**(plan enter/exit + todo + system-reminder + steering);或 **W3b**(Windows 原生 Job Object)。
+本文件里点名交「W4」的那几件(shouldUseSandbox / 网络围栏 / 完整危险命令分类器 / 默认开沙箱)= **sandbox 尾巴**,不在 W4a–e 五窗内,owner 定当独立小窗(底稿 §5)。
