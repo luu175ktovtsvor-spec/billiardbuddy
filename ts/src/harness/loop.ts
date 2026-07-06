@@ -9,6 +9,7 @@ import type { PermissionMode } from '../permissions/types'
 import { APPROVAL_PENDING_MSG, DENIAL_FALLBACK_MSG, resolvePermission } from '../permissions/resolve'
 import { actionKey, clearDenial, recordDenial, shouldStopAsking } from '../permissions/denialTracking'
 import { signApproval, verifyApproval } from '../permissions/approval'
+import { drainSteering, extendTurns } from './reminders'
 
 export interface RunAgentLoopOptions {
   model: Model
@@ -21,6 +22,7 @@ export interface RunAgentLoopOptions {
   sandbox?: Sandbox
   permissionMode?: PermissionMode
   conversationId?: string
+  steerInbox?: string[]
 }
 
 /**
@@ -38,16 +40,29 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     permissionMode: opts.permissionMode ?? 'ask',
     conversationId: opts.conversationId,
     autoSpendCount: 0,
+    steerInbox: opts.steerInbox ?? [],
+    todos: [],
+    requestsSinceProgress: 0,
   }
   const messages: Message[] = [
     { role: 'system', content: opts.systemPrompt },
     { role: 'user', content: opts.userMessage },
   ]
 
-  for (let turn = 0; turn < maxTurns; turn++) {
+  let turnsLimit = maxTurns
+  let turn = 0
+  while (turn < turnsLimit) {
     const step = await model.step({ messages, tools: registry.specs() })
     if (step.kind === 'final') {
       messages.push({ role: 'assistant', content: step.text })
+      // steering 优先于收尾:模型想结束但收件箱有插话 → 灌进去、别收尾,接着跑
+      const drained = drainSteering(messages, ctx)
+      if (drained.length) {
+        for (const m of drained) yield { type: 'steering', content: m }
+        turnsLimit = extendTurns(turnsLimit, maxTurns, drained.length)
+        turn++
+        continue
+      }
       yield { type: 'final', text: step.text }
       return
     }
@@ -57,6 +72,13 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       yield { type: 'tool_call', tool: call.name, input: call.input }
       yield* gateOneCall(registry, call, ctx, messages)
     }
+    // 一批工具全配对后(安全点):drain 插话灌进去,给下一次 model.step 看
+    const drained = drainSteering(messages, ctx)
+    if (drained.length) {
+      for (const m of drained) yield { type: 'steering', content: m }
+      turnsLimit = extendTurns(turnsLimit, maxTurns, drained.length)
+    }
+    turn++
   }
 
   // max_turns 兜底:强制一次无工具收敛(照 loop.py 的 _FINAL_NUDGE 哲学)。
