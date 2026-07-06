@@ -3,7 +3,7 @@
 > 开发规则/铁律的**权威版在 `ts/CLAUDE.md`**(Claude Code 自动加载,内容一致);本文件是 Codex/其它读 AGENTS.md 的工具的入口镜像。上级 spec:`docs/plans/TS-harness-重构-主开发文档-2026-07-05.md`;逐窗计划 `docs/plans/TS-W*-…`。
 
 一句话铁律(细节见 CLAUDE.md):
-- **照 cc-haha 重写、不搬码**(唯一例外沙箱公开包);结构/命名/写法对齐它,注释从简。
+- **抄码口径:效果对齐唯一标准(owner 2026-07-06 松绑)**——能重写就重写、易漏边界的直接照搬进我们文件都行,用「行为对齐」(同输入同输出)证明;别把它整个 .ts 原样当产品发。结构/命名/写法对齐它,注释从简。
 - **Bun ≥ 1.3.13**;后端一律 **`bun test`**(用 Bun 全局,vitest 跑 Node 上跑不了),前端(W11/W12)才 vitest。
 - **DB = drizzle + `bun:sqlite`**;禁 better-sqlite3(Bun 下 ABI 断裂)。
 - **SSE 必 `server.timeout(req, 0)` + async-generator**(Bun 10s 掐空闲流)。
