@@ -6,9 +6,15 @@ import { buildGeneralRegistry } from './generalTools'
 import { Sandbox } from '../sandbox/sandbox'
 import { Workspace } from '../workspace/workspace'
 
-test('general registry contains the four core tools', () => {
+test('general registry contains the five core tools', () => {
   const reg = buildGeneralRegistry()
-  expect(reg.list().map(t => t.name).sort()).toEqual(['list_dir', 'read_file', 'run_command', 'write_file'])
+  expect(reg.list().map(t => t.name).sort()).toEqual([
+    'list_dir',
+    'read_file',
+    'run_command',
+    'todo_write',
+    'write_file',
+  ])
 })
 
 test('general registry specs are model-facing (have parameters)', () => {
