@@ -123,11 +123,11 @@ async function* gateOneCall(
 }
 
 /** 工具执行永不抛:执行异常转成错误文本回灌,让模型自救(照 loop.py)。 */
-async function executeTool(tool: { execute: (i: unknown, c: ToolContext) => Promise<string> }, input: unknown, ctx: ToolContext): Promise<string> {
+async function executeTool(tool: { name: string; execute: (i: unknown, c: ToolContext) => Promise<string> }, input: unknown, ctx: ToolContext): Promise<string> {
   try {
     return await tool.execute(input, ctx)
   } catch (err) {
-    return `错误:工具执行失败:${err instanceof Error ? err.message : String(err)}`
+    return `错误:工具 ${tool.name} 执行失败:${err instanceof Error ? err.message : String(err)}`
   }
 }
 
@@ -149,7 +149,7 @@ export async function executeApproved(
   try {
     return { ok: true, output: await t.execute(args, ctx) }
   } catch (err) {
-    return { ok: false, output: `执行失败:${err instanceof Error ? err.message : String(err)}` }
+    return { ok: false, output: `工具 ${tool} 执行失败:${err instanceof Error ? err.message : String(err)}` }
   }
 }
 

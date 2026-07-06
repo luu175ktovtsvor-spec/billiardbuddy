@@ -33,4 +33,13 @@ describe('approval HMAC', () => {
     const tok = signApproval('publish', { id: 1 }, SECRET)
     expect(verifyApproval('publish', { id: 1 }, tok, 'other-secret')).toBe(false)
   })
+  test('signApproval 对不可序列化 args 不抛,且 verify 一致(同回退)', () => {
+    const c: any = {}; c.self = c
+    expect(() => signApproval('publish', c, SECRET)).not.toThrow()
+    const tok = signApproval('publish', c, SECRET)
+    expect(verifyApproval('publish', c, tok, SECRET)).toBe(true)
+  })
+  test('UTF-16/UTF-8 长度撞车 token(64 CJK)→ false 不抛', () => {
+    expect(verifyApproval('publish', {}, '中'.repeat(64), SECRET)).toBe(false)
+  })
 })
