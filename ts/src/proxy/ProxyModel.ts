@@ -1,0 +1,84 @@
+/**
+ * ProxyModel:把 proxy 翻译层包成 Model 出口(对接 OpenAI 兼容国产模型 MiMo/豆包)。
+ * step 流程:配对清洗 → 出方向翻译 → fetch(stream) → 空闲超时 → 累积 → AssistantStep。
+ * 退出决策看"有没有 tool_use"、不看 finish_reason(05 清单⑥)。真实端点/key/网关路由/降级是 W10,这里只留可注入出口。
+ */
+import type { Model, ModelStepInput, AssistantStep } from '../types/model'
+import { toOpenAiChatRequest, type OpenAIChatImageContentMode } from './toOpenAiChatRequest'
+import { accumulateOpenAiStream, type AccumulatedResponse } from './streamAccumulate'
+import { openaiChatResponseToAccumulated } from './openaiChatToAnthropic'
+import { normalizeMessagesForAPI, ensureToolResultPairing } from './messagePairing'
+import { withStreamIdleTimeout } from './streamIdleTimeout'
+import type { OpenAIChatResponse } from './types'
+
+/**
+ * 注入用的最小 fetch 形状——故意不用 `typeof fetch`:bun-types 把 fetch 声明成
+ * "函数 + 挂 preconnect 静态方法的 namespace" 合并类型,会强迫测试里的 fake fetch 也得带 preconnect。
+ * 这里只留调用签名,globalThis.fetch 结构上兼容、可直接当默认值传入。
+ */
+export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+
+export interface ProxyModelConfig {
+  baseUrl: string
+  apiKey: string
+  model: string
+  imageContentMode?: OpenAIChatImageContentMode
+  /** 流空闲超时(默认 60s)。 */
+  idleTimeoutMs?: number
+  /** 可注入 fetch(测试用 fake;默认 globalThis.fetch)。 */
+  fetchImpl?: FetchLike
+  /** 缺 tool_call id 时的自造工厂(测试用确定性;默认 streamAccumulate 内置递增)。 */
+  idFactory?: (index: number) => string
+}
+
+const DEFAULT_IDLE_MS = 60_000
+
+export class ProxyModel implements Model {
+  constructor(private readonly cfg: ProxyModelConfig) {}
+
+  async step(input: ModelStepInput): Promise<AssistantStep> {
+    const cleaned = ensureToolResultPairing(normalizeMessagesForAPI(input.messages))
+    const body = toOpenAiChatRequest({
+      model: this.cfg.model,
+      system: input.system,
+      messages: cleaned,
+      tools: input.tools,
+      stream: true,
+      imageContentMode: this.cfg.imageContentMode,
+    })
+
+    const doFetch = this.cfg.fetchImpl ?? globalThis.fetch
+    const resp = await doFetch(`${this.cfg.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${this.cfg.apiKey}` },
+      body: JSON.stringify(body),
+    })
+
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '')
+      throw new Error(`模型请求失败 ${resp.status}:${detail.slice(0, 500)}`)
+    }
+
+    const acc = await this.readResponse(resp)
+    return toAssistantStep(acc)
+  }
+
+  private async readResponse(resp: Response): Promise<AccumulatedResponse> {
+    const ct = resp.headers.get('content-type') ?? ''
+    if (ct.includes('text/event-stream') && resp.body) {
+      const guarded = withStreamIdleTimeout(resp.body, this.cfg.idleTimeoutMs ?? DEFAULT_IDLE_MS)
+      return accumulateOpenAiStream(guarded, { idFactory: this.cfg.idFactory })
+    }
+    // 非 SSE(错误体已在上面拦掉;这里是 200 但 JSON 的兼容上游)。
+    const json = (await resp.json()) as OpenAIChatResponse
+    return openaiChatResponseToAccumulated(json)
+  }
+}
+
+/** 累积结果 → AssistantStep。kind 看 toolCalls 有无(needsFollowUp),不看 finishReason。 */
+function toAssistantStep(acc: AccumulatedResponse): AssistantStep {
+  if (acc.toolCalls.length > 0) {
+    return { kind: 'tool_calls', text: acc.text || undefined, thinking: acc.thinking || undefined, calls: acc.toolCalls }
+  }
+  return { kind: 'final', text: acc.text, thinking: acc.thinking || undefined }
+}
