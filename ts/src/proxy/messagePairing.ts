@@ -2,9 +2,10 @@
  * 消息配对清洗(不崩·核心)。逻辑照 cc-haha src/utils/messages.ts:2004(normalizeMessagesForAPI)/5275(ensureToolResultPairing),
  * 适配我方扁平 {role, content: ContentBlock[]}。不清洗则国产模型上循环隔三差五 400 卡死(05 清单①)。
  */
-import type { Message, ContentBlock, ToolResultBlock } from '../types/message'
+import { textBlock, type Message, type ContentBlock, type ToolResultBlock } from '../types/message'
 
 export const SYNTHETIC_TOOL_RESULT_PLACEHOLDER = '[Tool result missing due to internal error]'
+export const NO_CONTENT_PLACEHOLDER = '[No content]'
 
 /** 合并连续同角色消息的 content 数组、丢掉 content 全空的消息。 */
 export function normalizeMessagesForAPI(messages: Message[]): Message[] {
@@ -43,7 +44,12 @@ export function ensureToolResultPairing(messages: Message[]): Message[] {
       if (result.at(-1)?.role !== 'assistant') {
         const stripped = msg.content.filter((b) => !isToolResult(b))
         if (stripped.length !== msg.content.length) {
-          if (stripped.length > 0) result.push({ role: 'user', content: stripped })
+          if (stripped.length > 0) {
+            result.push({ role: 'user', content: stripped })
+          } else if (result.length === 0) {
+            // 清空后正好是数组最前一条 → 占位保持以 user 开头,否则直接以 assistant 开头 → 角色翻转 400。
+            result.push({ role: 'user', content: [textBlock('[Orphaned tool result removed]')] })
+          }
           continue
         }
       }
@@ -65,25 +71,25 @@ export function ensureToolResultPairing(messages: Message[]): Message[] {
     if (keptContent.length === 0) keptContent.push({ type: 'text', text: '[Tool use interrupted]' })
     result.push({ role: 'assistant', content: keptContent })
 
-    if (thisToolUseIds.length === 0) continue
+    // 不管本轮 tool_use 是否为空(文字轮/全被跨轮去重删空),都要看下一条 user 有没有孤儿/重复 tool_result 待清——
+    // 否则复用 id 被去重删掉的那个 tool_use,其旧 tool_result 会原样滞留、变成指向"本轮不存在的 tool_use"的孤儿。
     const toolUseIdSet = new Set(thisToolUseIds)
 
-    // 看下一条 user 的 tool_result:去重 + 删孤儿 + 找缺失。
+    // 看下一条 user 的 tool_result:去重 + 删孤儿(toolUseIdSet 为空时全删)+ 找缺失。
     const next = messages[i + 1]
     const existingResultIds = new Set<string>()
-    let patchedNext: Message | null = null
+    let cleaned: ContentBlock[] | null = null
 
     if (next && next.role === 'user') {
       const seenTr = new Set<string>()
-      const cleaned = next.content.filter((b) => {
+      cleaned = next.content.filter((b) => {
         if (!isToolResult(b)) return true
-        if (!toolUseIdSet.has(b.tool_use_id)) return false // 孤儿(指向别的/不存在的 tool_use)→ 删
+        if (!toolUseIdSet.has(b.tool_use_id)) return false // 孤儿(指向别的/不存在/本轮没有的 tool_use)→ 删
         if (seenTr.has(b.tool_use_id)) return false // 重复 tool_result → 删后者
         seenTr.add(b.tool_use_id)
         existingResultIds.add(b.tool_use_id)
         return true
       })
-      patchedNext = { role: 'user', content: cleaned }
     }
 
     const missing = thisToolUseIds.filter((id) => !existingResultIds.has(id))
@@ -91,9 +97,15 @@ export function ensureToolResultPairing(messages: Message[]): Message[] {
       type: 'tool_result', tool_use_id: id, content: SYNTHETIC_TOOL_RESULT_PLACEHOLDER, is_error: true,
     }))
 
-    if (patchedNext) {
-      const merged = [...synth, ...patchedNext.content]
-      if (merged.length > 0) result.push({ role: 'user', content: merged })
+    if (cleaned !== null) {
+      const merged = [...synth, ...cleaned]
+      if (merged.length > 0) {
+        result.push({ role: 'user', content: merged })
+      } else {
+        // 清洗后整条 user 被删空(孤儿/重复占了全部)→ 占位保持 user/assistant 交替,
+        // 否则下一条 assistant 紧邻本 assistant → 角色翻转 400。
+        result.push({ role: 'user', content: [textBlock(NO_CONTENT_PLACEHOLDER)] })
+      }
       i++ // 已消费 next
     } else if (synth.length > 0) {
       // 后面没有 user 消息 → 插一条合成 user 承接(保角色交替)。
