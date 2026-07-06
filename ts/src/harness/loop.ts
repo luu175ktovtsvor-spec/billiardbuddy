@@ -93,7 +93,14 @@ async function* gateOneCall(
       yield feedback(DENIAL_FALLBACK_MSG(call.name))
       return
     }
-    const preview = (await tool.previewFor?.(call.input, ctx)) ?? undefined
+    let preview: string | undefined
+    try {
+      preview = (await tool.previewFor?.(call.input, ctx)) ?? undefined
+    } catch {
+      // 红线「工具执行永不抛」也覆盖预览:previewFor 是工具自带代码、可能读文件算 diff(ENOENT/EACCES),
+      // 抛了就退化成无预览,绝不让审批卡的计算拖垮整个循环。
+      preview = undefined
+    }
     yield {
       type: 'approval_request',
       tool: call.name,
