@@ -1,0 +1,94 @@
+/**
+ * OpenAI Chat Completions 协议类型(照 cc-haha src/server/proxy/transform/types.ts 的 OpenAI 部分)。
+ * Anthropic 块类型复用 ../types/message,不在这里重造。
+ */
+export type OpenAIChatContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string; detail?: string } }
+
+export interface OpenAIToolCall {
+  id: string
+  type: 'function'
+  function: { name: string; arguments: unknown }
+}
+
+export interface OpenAIChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content?: string | OpenAIChatContentPart[] | null
+  name?: string
+  reasoning_content?: string
+  tool_calls?: OpenAIToolCall[]
+  tool_call_id?: string
+}
+
+export interface OpenAITool {
+  type: 'function'
+  function: { name: string; description?: string; parameters?: Record<string, unknown> }
+}
+
+export interface OpenAIChatRequest {
+  model: string
+  messages: OpenAIChatMessage[]
+  max_tokens?: number
+  temperature?: number
+  top_p?: number
+  stop?: string | string[]
+  stream?: boolean
+  stream_options?: { include_usage: boolean }
+  tools?: OpenAITool[]
+  tool_choice?: unknown
+  reasoning_effort?: 'low' | 'medium' | 'high'
+}
+
+export interface OpenAICompatibleUsage {
+  input_tokens?: number
+  output_tokens?: number
+  prompt_tokens?: number
+  completion_tokens?: number
+  total_tokens?: number
+  input_tokens_details?: { cached_tokens?: number }
+  prompt_tokens_details?: { cached_tokens?: number }
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+}
+
+export interface OpenAIChatResponse {
+  id: string
+  object: string
+  created: number
+  model: string
+  choices: Array<{
+    index: number
+    message: { role: string; content: string | null; reasoning_content?: string; tool_calls?: OpenAIToolCall[] }
+    finish_reason: string | null
+  }>
+  usage?: OpenAICompatibleUsage
+}
+
+export interface OpenAIChatStreamChunk {
+  id: string
+  object: string
+  created: number
+  model: string
+  choices: Array<{
+    index: number
+    delta: {
+      role?: string
+      content?: string | null
+      reasoning_content?: string
+      reasoning?: string
+      thinking_blocks?: Array<Record<string, unknown>>
+      tool_calls?: Array<{ index: number; id?: string; type?: string; function?: { name?: string; arguments?: unknown } }>
+    }
+    finish_reason: string | null
+  }>
+  usage?: OpenAICompatibleUsage
+}
+
+/** Anthropic usage 语义(input 排除 cache 命中,与 cc-haha usage.ts 对齐)。 */
+export interface AnthropicUsage {
+  input_tokens: number
+  output_tokens: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+}
