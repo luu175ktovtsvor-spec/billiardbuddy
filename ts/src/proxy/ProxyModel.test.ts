@@ -66,6 +66,15 @@ test('非 SSE JSON 响应 → 走非流式翻译', async () => {
   expect(step).toEqual({ kind: 'final', text: '非流式答' })
 })
 
+test('非 SSE 200 但 body 非 JSON:降级空 final,不崩 step()(final review finding belt-and-suspenders)', async () => {
+  const model = new ProxyModel({
+    baseUrl: 'https://x/v1', apiKey: 'k', model: 'm',
+    fetchImpl: async () => new Response('不是 JSON 的纯文本', { status: 200, headers: { 'content-type': 'application/json' } }),
+  })
+  const step = await model.step({ messages: [userText('x')], tools: [] })
+  expect(step).toEqual({ kind: 'final', text: '' })
+})
+
 test('发请求前跑配对清洗:孤儿 tool_use 会被补占位(不 400)', async () => {
   let sentBody: any = null
   const model = new ProxyModel({

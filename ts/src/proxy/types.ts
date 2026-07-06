@@ -59,7 +59,16 @@ export interface OpenAIChatResponse {
   model: string
   choices: Array<{
     index: number
-    message: { role: string; content: string | null; reasoning_content?: string; tool_calls?: OpenAIToolCall[] }
+    // message 整体、tool_calls[].id/.function、thinking_blocks 元素都按"不可信上游"松绑成 optional——
+    // 非流式响应跟流式分片一样可能畸形,运行时守卫见 openaiChatToAnthropic.ts。
+    message?: {
+      role: string
+      content?: string | null
+      reasoning_content?: string
+      reasoning?: string
+      thinking_blocks?: unknown[]
+      tool_calls?: Array<{ id?: string; type?: string; function?: { name?: string; arguments?: unknown } }>
+    }
     finish_reason: string | null
   }>
   usage?: OpenAICompatibleUsage

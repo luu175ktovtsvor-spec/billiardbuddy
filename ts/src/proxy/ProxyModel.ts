@@ -69,9 +69,15 @@ export class ProxyModel implements Model {
       const guarded = withStreamIdleTimeout(resp.body, this.cfg.idleTimeoutMs ?? DEFAULT_IDLE_MS)
       return accumulateOpenAiStream(guarded, { idFactory: this.cfg.idFactory })
     }
-    // 非 SSE(错误体已在上面拦掉;这里是 200 但 JSON 的兼容上游)。
-    const json = (await resp.json()) as OpenAIChatResponse
-    return openaiChatResponseToAccumulated(json)
+    // 非 SSE(错误体已在上面拦掉;这里是 200 但 JSON 的兼容上游)。belt-and-suspenders:整段不可解析
+    // (非 JSON / 结构畸形到翻译层也兜不住)时降级空结果,不让 step() 崩出去——SSE 分支的空闲超时+
+    // 逐行跳过、以及非 2xx 的抛错分支不受影响。
+    try {
+      const json = (await resp.json()) as OpenAIChatResponse
+      return openaiChatResponseToAccumulated(json, { idFactory: this.cfg.idFactory })
+    } catch {
+      return { text: '', thinking: '', toolCalls: [], finishReason: null, usage: { input_tokens: 0, output_tokens: 0 } }
+    }
   }
 }
 
