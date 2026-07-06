@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, MessageCircleQuestion, FileEdit, Terminal, ChevronRight, Brain, RotateCcw, ClipboardList, Save, MessageSquareText, Megaphone, ClipboardCheck, Paperclip, Download, ThumbsUp, Smartphone, Volume2, Film, ImageIcon } from "lucide-react";
+import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, MessageCircleQuestion, FileEdit, Terminal, ChevronRight, Brain, RotateCcw, ClipboardList, Save, MessageSquareText, Megaphone, ClipboardCheck, Paperclip, Download, ThumbsUp, Smartphone, Volume2, Film, ImageIcon, ExternalLink } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
@@ -750,24 +750,244 @@ function MacApprovalCard({
 }
 
 function MacQuestionCard({ q, onAnswer }: { q: QuestionData; onAnswer: (label: string) => void }) {
+  const [freeform, setFreeform] = useState("");
+  const [fieldValues, setFieldValues] = useState<Record<string, string | boolean | string[]>>(() => initialQuestionFieldValues(q));
+  const [formError, setFormError] = useState("");
+  const [submitted, setSubmitted] = useState(false);
+  const submit = (answer: string) => {
+    const text = answer.trim();
+    if (!text || submitted) return;
+    setSubmitted(true);
+    onAnswer(text);
+  };
+  const submitFields = () => {
+    if (!q.fields?.length || submitted) return;
+    const payload: Record<string, unknown> = {};
+    for (const field of q.fields) {
+      const raw = fieldValues[field.name];
+      const empty = Array.isArray(raw) ? raw.length === 0 : raw === "" || raw === undefined;
+      if (field.required && empty) {
+        setFormError(`请填写「${field.label}」`);
+        return;
+      }
+      if (empty) continue;
+      payload[field.name] = field.type === "number" ? Number(raw) : raw;
+    }
+    setFormError("");
+    submit(JSON.stringify(payload));
+  };
+  const hasFields = !!q.fields?.length;
   return (
     <div className="overflow-hidden rounded-lg border border-black/[0.08] bg-white shadow-sm dark:border-white/[0.08] dark:bg-[#16181d] dark:shadow-none">
-      <div className="flex items-center gap-1.5 border-b border-black/[0.06] px-4 py-2.5 text-[13px] font-medium text-[#1d1d1f] dark:border-white/[0.06] dark:text-[#e6e7e9]">
-        <MessageCircleQuestion className="h-3.5 w-3.5 shrink-0 text-[#10a37f]" /> {q.question}
+      <div className="flex items-start gap-1.5 border-b border-black/[0.06] px-4 py-2.5 text-[13px] font-medium text-[#1d1d1f] dark:border-white/[0.06] dark:text-[#e6e7e9]">
+        <MessageCircleQuestion className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#10a37f]" />
+        <span className="whitespace-pre-wrap leading-relaxed">{q.question}</span>
       </div>
-      <div className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2">
-        {q.options.map((o, i) => (
-          <button
-            key={i}
-            type="button"
-            onClick={() => onAnswer(o.label)}
-            className="rounded-md border border-black/[0.08] bg-black/[0.01] p-3 text-left transition hover:border-[#10a37f]/40 hover:bg-[#10a37f]/[0.06] active:scale-[0.99] dark:border-white/[0.08] dark:bg-white/[0.02]"
+      {q.url && (
+        <div className="border-b border-black/[0.06] px-3 py-2.5 dark:border-white/[0.06]">
+          <a
+            href={q.url}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-[#10a37f]/20 bg-[#10a37f]/[0.06] px-2.5 py-1.5 text-[12.5px] font-medium text-[#0b7f63] transition hover:bg-[#10a37f]/10 dark:text-[#70d7bd]"
           >
-            <div className="text-[13px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{o.label}</div>
-            {o.description && <div className="mt-0.5 text-[12px] text-[#6e6e73] dark:text-[#8a8c93]">{o.description}</div>}
-          </button>
-        ))}
+            <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{q.url}</span>
+          </a>
+        </div>
+      )}
+      {q.options.length > 0 && (
+        <div className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2">
+          {q.options.map((o, i) => (
+            <button
+              key={i}
+              type="button"
+              disabled={submitted}
+              onClick={() => submit(o.label)}
+              className="rounded-md border border-black/[0.08] bg-black/[0.01] p-3 text-left transition hover:border-[#10a37f]/40 hover:bg-[#10a37f]/[0.06] active:scale-[0.99] disabled:opacity-50 dark:border-white/[0.08] dark:bg-white/[0.02]"
+            >
+              <div className="text-[13px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{o.label}</div>
+              {o.description && <div className="mt-0.5 text-[12px] text-[#6e6e73] dark:text-[#8a8c93]">{o.description}</div>}
+              {o.preview && (
+                <pre className="mt-2 max-h-40 overflow-auto rounded-md bg-black/[0.04] p-2 text-[11px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.05] dark:text-[#c8cace]">
+                  {o.preview}
+                </pre>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+      {hasFields && (
+        <div className="space-y-3 border-t border-black/[0.06] p-3 dark:border-white/[0.06]">
+          {q.fields!.map((field) => (
+            <QuestionFieldInput
+              key={field.name}
+              field={field}
+              disabled={submitted}
+              value={fieldValues[field.name]}
+              onChange={(value) => setFieldValues((prev) => ({ ...prev, [field.name]: value }))}
+            />
+          ))}
+          {formError && <div className="text-[12px] text-[#ff3b30]">{formError}</div>}
+          <div className="flex justify-end">
+            <button
+              type="button"
+              disabled={submitted}
+              onClick={submitFields}
+              className="inline-flex items-center gap-1.5 rounded-md bg-[#10a37f] px-3 py-1.5 text-[13px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.98] disabled:opacity-45"
+            >
+              <Send className="h-3.5 w-3.5" /> 提交
+            </button>
+          </div>
+        </div>
+      )}
+      {q.allowFreeform && !hasFields && (
+        <div className="border-t border-black/[0.06] p-3 dark:border-white/[0.06]">
+          <textarea
+            value={freeform}
+            disabled={submitted}
+            onChange={(e) => setFreeform(e.target.value)}
+            placeholder={q.placeholder || "输入回复"}
+            rows={3}
+            className="min-h-[76px] w-full resize-y rounded-md border border-black/[0.08] bg-black/[0.015] px-3 py-2 text-[13px] leading-relaxed text-[#1d1d1f] outline-none transition placeholder:text-[#8a8a8e] focus:border-[#10a37f]/50 focus:bg-white disabled:opacity-50 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-[#e6e7e9] dark:focus:bg-white/[0.05]"
+          />
+          <div className="mt-2 flex justify-end">
+            <button
+              type="button"
+              disabled={submitted || !freeform.trim()}
+              onClick={() => submit(freeform)}
+              className="inline-flex items-center gap-1.5 rounded-md bg-[#10a37f] px-3 py-1.5 text-[13px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.98] disabled:opacity-45"
+            >
+              <Send className="h-3.5 w-3.5" /> 发送
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function initialQuestionFieldValues(q: QuestionData): Record<string, string | boolean | string[]> {
+  const values: Record<string, string | boolean | string[]> = {};
+  for (const field of q.fields ?? []) {
+    const value = field.defaultValue;
+    if (field.type === "boolean") values[field.name] = typeof value === "boolean" ? value : false;
+    else if (field.type === "multiselect") values[field.name] = Array.isArray(value) ? value : [];
+    else values[field.name] = value === undefined ? "" : String(value);
+  }
+  return values;
+}
+
+function QuestionFieldInput({
+  field,
+  value,
+  disabled,
+  onChange,
+}: {
+  field: NonNullable<QuestionData["fields"]>[number];
+  value: string | boolean | string[] | undefined;
+  disabled: boolean;
+  onChange: (value: string | boolean | string[]) => void;
+}) {
+  const label = (
+    <label className="block text-[12px] font-medium text-[#3a3a3c] dark:text-[#c8cace]">
+      {field.label}{field.required ? <span className="text-[#ff3b30]"> *</span> : null}
+    </label>
+  );
+  const help = field.description ? <div className="mt-1 text-[11.5px] leading-relaxed text-[#6e6e73] dark:text-[#8a8c93]">{field.description}</div> : null;
+  const inputCls = "mt-1 w-full rounded-md border border-black/[0.08] bg-black/[0.015] px-3 py-2 text-[13px] text-[#1d1d1f] outline-none transition placeholder:text-[#8a8a8e] focus:border-[#10a37f]/50 focus:bg-white disabled:opacity-50 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-[#e6e7e9] dark:focus:bg-white/[0.05]";
+
+  if (field.type === "boolean") {
+    return (
+      <div>
+        <label className="flex items-center gap-2 text-[13px] text-[#1d1d1f] dark:text-[#e6e7e9]">
+          <input
+            type="checkbox"
+            checked={value === true}
+            disabled={disabled}
+            onChange={(e) => onChange(e.target.checked)}
+            className="h-4 w-4 rounded border-black/[0.16] accent-[#10a37f] dark:border-white/[0.16]"
+          />
+          {field.label}{field.required ? <span className="text-[#ff3b30]">*</span> : null}
+        </label>
+        {help}
       </div>
+    );
+  }
+
+  if (field.type === "select") {
+    return (
+      <div>
+        {label}
+        <select
+          value={typeof value === "string" ? value : ""}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
+          className={inputCls}
+        >
+          <option value="">请选择</option>
+          {(field.options ?? []).map((option) => <option key={option} value={option}>{option}</option>)}
+        </select>
+        {help}
+      </div>
+    );
+  }
+
+  if (field.type === "multiselect") {
+    const selected = Array.isArray(value) ? value : [];
+    return (
+      <div>
+        {label}
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {(field.options ?? []).map((option) => {
+            const checked = selected.includes(option);
+            return (
+              <button
+                key={option}
+                type="button"
+                disabled={disabled}
+                onClick={() => onChange(checked ? selected.filter((x) => x !== option) : [...selected, option])}
+                className={`rounded-md border px-2 py-1 text-[12px] transition disabled:opacity-50 ${checked ? "border-[#10a37f]/40 bg-[#10a37f]/10 text-[#0b7f63] dark:text-[#70d7bd]" : "border-black/[0.08] bg-black/[0.015] text-[#3a3a3c] dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-[#c8cace]"}`}
+              >
+                {option}
+              </button>
+            );
+          })}
+        </div>
+        {help}
+      </div>
+    );
+  }
+
+  if (field.type === "textarea") {
+    return (
+      <div>
+        {label}
+        <textarea
+          value={typeof value === "string" ? value : ""}
+          disabled={disabled}
+          rows={3}
+          placeholder={field.placeholder || "输入内容"}
+          onChange={(e) => onChange(e.target.value)}
+          className={`${inputCls} min-h-[76px] resize-y`}
+        />
+        {help}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {label}
+      <input
+        type={field.type === "number" ? "number" : "text"}
+        value={typeof value === "string" ? value : ""}
+        disabled={disabled}
+        placeholder={field.placeholder || "输入内容"}
+        onChange={(e) => onChange(e.target.value)}
+        className={inputCls}
+      />
+      {help}
     </div>
   );
 }

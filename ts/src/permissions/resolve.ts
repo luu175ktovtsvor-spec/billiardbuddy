@@ -1,5 +1,5 @@
 import type { Tool, ToolContext } from '../tools/Tool'
-import type { DecisionReason, PermissionDecision } from './types'
+import type { ApprovalClass, DecisionReason, PermissionDecision } from './types'
 
 /** full(跳过确认)档下,spend 类动作连续自动放行到这个数,之后强制弹卡兜底(防一次 bug 循环烧钱)。 */
 export const AUTO_SPEND_LIMIT = 3
@@ -11,11 +11,11 @@ export const PLAN_SKIP_MSG = (name: string): string =>
 export const DENIAL_FALLBACK_MSG = (name: string): string =>
   `[这个先不做了] 老板已经多次没同意执行「${name}」,就别再反复请求确认了——换个思路,或直接用已有信息回答他。`
 
-function ask(tool: Tool, ctx: ToolContext, input: unknown, reason: DecisionReason): PermissionDecision {
+function ask(tool: Tool, ctx: ToolContext, input: unknown, reason: DecisionReason, approvalClass?: ApprovalClass): PermissionDecision {
   return {
     behavior: 'ask',
     message: APPROVAL_PENDING_MSG(tool.name),
-    approvalClass: tool.approvalClass,
+    approvalClass,
     approvalReason: tool.approvalReasonFor?.(input, ctx),
     reason,
   }
@@ -28,10 +28,12 @@ function ask(tool: Tool, ctx: ToolContext, input: unknown, reason: DecisionReaso
  *  3. 算 needsApproval;不需要 → allow(Delta A:本机可逆动作/文件读写直接放行)
  *  4. autoApprove:
  *     4a forceConfirm → ask(Delta B:在 mode 之前判,连 full 也拦,旁路免疫)
- *     4b safePrefix   → allow
- *     4c full 档:spend 过闸 → ask,否则 allow
- *     4d auto_files 档:file 类 → allow,否则 ask
- *     4e ask/其它     → ask
+ *     4b requiresUserInteraction → ask(连 bypassPermissions 也拦)
+ *     4c bypassPermissions → allow(但不越过 fatal/forceConfirm/userInteraction)
+ *     4d safePrefix   → allow
+ *     4e full 档:spend 过闸 → ask,否则 allow
+ *     4f auto_files 档:file 类 → allow,否则 ask
+ *     4g ask/其它     → ask
  */
 function resolvePermissionInner(tool: Tool, input: unknown, ctx: ToolContext): PermissionDecision {
   const mode = ctx.permissionMode ?? 'ask'
@@ -39,29 +41,37 @@ function resolvePermissionInner(tool: Tool, input: unknown, ctx: ToolContext): P
   const fatal = tool.fatalReasonFor?.(input, ctx)
   if (fatal) return { behavior: 'deny', message: `拒绝执行:${fatal}`, reason: { type: 'fatal', text: fatal } }
 
-  if (mode === 'plan' && !tool.isReadOnly) {
+  const readOnly = tool.isReadOnly || (tool.isReadOnlyFor?.(input, ctx) ?? false)
+  if (mode === 'plan' && !readOnly) {
     return { behavior: 'deny', message: PLAN_SKIP_MSG(tool.name), reason: { type: 'planSkip' } }
   }
 
+  const approvalClass = tool.approvalClassFor?.(input, ctx) ?? tool.approvalClass
   const needsApproval = tool.requiresApproval === true || (tool.requiresApprovalFor?.(input, ctx) ?? false)
   if (!needsApproval) return { behavior: 'allow', reason: { type: 'mode', mode } }
 
   // —— autoApprove ——
-  if (tool.forceConfirm) return ask(tool, ctx, input, { type: 'forceConfirm' })
+  if (tool.forceConfirm) return ask(tool, ctx, input, { type: 'forceConfirm' }, approvalClass)
+  if (tool.requiresUserInteraction || (tool.requiresUserInteractionFor?.(input, ctx) ?? false)) {
+    return ask(tool, ctx, input, { type: 'requiresUserInteraction' }, approvalClass)
+  }
+  if (mode === 'bypassPermissions') {
+    return { behavior: 'allow', reason: { type: 'mode', mode } }
+  }
   if (tool.safePrefixFor?.(input, ctx)) return { behavior: 'allow', reason: { type: 'safePrefix' } }
 
   if (mode === 'full') {
-    if (tool.approvalClass === 'spend' && (ctx.autoSpendCount ?? 0) >= AUTO_SPEND_LIMIT) {
-      return ask(tool, ctx, input, { type: 'mode', mode })
+    if (approvalClass === 'spend' && (ctx.autoSpendCount ?? 0) >= AUTO_SPEND_LIMIT) {
+      return ask(tool, ctx, input, { type: 'mode', mode }, approvalClass)
     }
     return { behavior: 'allow', reason: { type: 'mode', mode } }
   }
   if (mode === 'auto_files') {
-    if (tool.approvalClass === 'file') return { behavior: 'allow', reason: { type: 'mode', mode } }
-    return ask(tool, ctx, input, { type: 'mode', mode })
+    if (approvalClass === 'file') return { behavior: 'allow', reason: { type: 'mode', mode } }
+    return ask(tool, ctx, input, { type: 'mode', mode }, approvalClass)
   }
   // ask(默认)/ plan 档下走到这的只读+需审批工具 → 弹卡
-  return ask(tool, ctx, input, { type: 'mode', mode })
+  return ask(tool, ctx, input, { type: 'mode', mode }, approvalClass)
 }
 
 /**

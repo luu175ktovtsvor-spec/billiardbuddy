@@ -6,6 +6,8 @@ export interface ModelStepInput {
   system?: string
   messages: Message[]
   tools: ToolSpec[]
+  /** 外部中断信号;server interrupt 用它取消模型 fetch 与工具执行。 */
+  signal?: AbortSignal
 }
 
 /**

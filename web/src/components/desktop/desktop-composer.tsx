@@ -13,7 +13,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Paperclip, ArrowUp, ShieldCheck, Check, X, FileText, BookOpen, Palette, Brain, FolderDown, FolderOpen, History, Plus, Mic, MicOff, Loader2, type LucideIcon } from "lucide-react";
 import { PERMISSION_MODES, WELCOME } from "@/lib/agent-copy";
-import { api, type SkillMeta, type OutputStyleMeta } from "@/lib/api";
+import { api, type CommandMeta, type SkillMeta, type OutputStyleMeta } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
 import { useWhisperReady } from "@/hooks/use-whisper-ready";
 import { SlashPalette, type PaletteItem } from "./slash-palette";
@@ -44,6 +44,8 @@ const ADVANCED_COMMANDS: { name: string; cn: string; description: string; aliase
   { name: "plugins", cn: "插件", description: "已安装的插件", aliases: ["chajian"] },
   { name: "context", cn: "会话信息", description: "当前会话信息", aliases: ["上下文", "huihuaxinxi"] },
 ];
+
+const LOCAL_COMMAND_NAMES = new Set([...BASIC_COMMANDS, ...ADVANCED_COMMANDS].map((c) => c.name));
 
 // 可 @ 挂载的知识库：挂上 = 该领域专家，不挂 = 通用 Agent。目前一个，后续可扩展为多个领域包。
 const KNOWLEDGE_SOURCES: { id: string; label: string; desc: string }[] = [
@@ -210,6 +212,7 @@ export function DesktopComposer({
 
   // `/` 命令面板：已安装技能(拉一次) + 内置命令；输入以 / 开头且未输入空格时浮出。
   const [skills, setSkills] = useState<SkillMeta[]>([]);
+  const [commands, setCommands] = useState<CommandMeta[]>([]);
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [paletteDismissed, setPaletteDismissed] = useState(false);
   // 输出风格：拉一次可选风格，收进「+」菜单一个子分区切换。
@@ -219,6 +222,7 @@ export function DesktopComposer({
     // A2：不再有"高级模式"门控——已安装的技能本来就是老板自己装的东西，直接常驻拉一次，
     // 面板里没装就是空、不冒 MCP/模型这类技术词。
     api.listSkills().then((r) => { if (!cancelled) setSkills(r.skills || []); }).catch(() => {});
+    api.listCommands().then((r) => { if (!cancelled) setCommands(r.commands || []); }).catch(() => {});
     api.listOutputStyles().then((r) => { if (!cancelled) setStyles(r.output_styles || []); }).catch(() => {});
     return () => { cancelled = true; };
   }, []);
@@ -238,6 +242,12 @@ export function DesktopComposer({
     ...ADVANCED_COMMANDS
       .filter((c) => c.name.toLowerCase() === slashQuery || (c.aliases || []).some((a) => a.toLowerCase() === slashQuery))
       .map((c): PaletteItem => ({ kind: "builtin", name: c.name, cn: c.cn, description: c.description })),
+    ...commands
+      .filter((c) => !LOCAL_COMMAND_NAMES.has(c.name))
+      .filter((c) => c.name.toLowerCase().includes(slashQuery)
+        || (c.description || "").toLowerCase().includes(slashQuery)
+        || (c.whenToUse || "").toLowerCase().includes(slashQuery))
+      .map((c): PaletteItem => ({ kind: "command", name: c.name, description: c.description, whenToUse: c.whenToUse })),
     ...skills
       .filter((s) => s.user_invocable && (s.name.toLowerCase().includes(slashQuery) || (s.description || "").toLowerCase().includes(slashQuery)))
       .map((s): PaletteItem => ({ kind: "skill", name: s.name, description: s.description, argHint: s.argument_hint })),

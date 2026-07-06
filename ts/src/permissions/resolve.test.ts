@@ -56,6 +56,29 @@ describe('resolvePermission 瀑布', () => {
     expect(d.behavior === 'ask' && d.reason?.type).toBe('forceConfirm')
   })
 
+  test('bypassPermissions:跳过普通审批,但不跳过 fatal/forceConfirm/必须用户交互', () => {
+    expect(resolvePermission(tool({ requiresApproval: true, approvalClass: 'outreach' }), {}, ctx('bypassPermissions')).behavior).toBe('allow')
+
+    const fatal = resolvePermission(tool({ fatalReasonFor: () => '禁止' }), {}, ctx('bypassPermissions'))
+    expect(fatal.behavior).toBe('deny')
+
+    const forced = resolvePermission(
+      tool({ requiresApproval: true, forceConfirm: true, approvalClass: 'destructive' }),
+      {},
+      ctx('bypassPermissions'),
+    )
+    expect(forced.behavior).toBe('ask')
+    expect(forced.behavior === 'ask' && forced.reason?.type).toBe('forceConfirm')
+
+    const interactive = resolvePermission(
+      tool({ requiresApproval: true, requiresUserInteraction: true, approvalClass: 'outreach' }),
+      {},
+      ctx('bypassPermissions'),
+    )
+    expect(interactive.behavior).toBe('ask')
+    expect(interactive.behavior === 'ask' && interactive.reason?.type).toBe('requiresUserInteraction')
+  })
+
   test('ask 档:requiresApproval 工具 → ask', () => {
     expect(resolvePermission(tool({ requiresApproval: true, approvalClass: 'outreach' }), {}, ctx('ask')).behavior).toBe('ask')
   })

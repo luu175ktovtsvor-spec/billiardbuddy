@@ -1,27 +1,70 @@
 import { createHash } from 'node:crypto'
 import { copyFile, mkdir, stat } from 'node:fs/promises'
-import { basename, join, resolve } from 'node:path'
-import { type FileOperation, validatePath } from './pathValidation'
+import { basename, isAbsolute, join, relative, resolve } from 'node:path'
+import { existsSync, statSync } from 'node:fs'
+import { type FileOperation, normalizeRequestedPathForValidation, validatePath } from './pathValidation'
+import { WorkspaceBoundaryError } from './pathBoundary'
 
 export type BackupHook = (absPath: string) => Promise<void>
+
+export interface WorkspaceOptions {
+  backupHook?: BackupHook
+  allowedPaths?: string[]
+  fullDiskAccess?: boolean
+}
 
 /** 选一个文件夹当工作区:读/写/列/跑命令都经 resolve() 在边界内解析;写前经 backup() 备份。 */
 export class Workspace {
   readonly root: string
   private readonly backupHook: BackupHook
+  private readonly allowedPaths: Array<{ path: string; isDirectory: boolean }>
+  private readonly fullDiskAccess: boolean
 
-  constructor(root: string, opts: { backupHook?: BackupHook } = {}) {
+  constructor(root: string, opts: WorkspaceOptions = {}) {
     this.root = resolve(root)
     this.backupHook = opts.backupHook ?? defaultBackupHook(this.root)
+    this.fullDiskAccess = opts.fullDiskAccess === true
+    this.allowedPaths = (opts.allowedPaths ?? []).map(normalizeAllowedPath).filter((item): item is { path: string; isDirectory: boolean } => !!item)
   }
 
   resolve(requested: string, operation: FileOperation = 'read'): string {
-    return validatePath(requested, { root: this.root, operation })
+    try {
+      return validatePath(requested, { root: this.root, operation })
+    } catch (err) {
+      if (!(err instanceof WorkspaceBoundaryError)) throw err
+      const target = this.resolveOutsideRoot(requested, operation)
+      if (this.fullDiskAccess || this.isAllowedPath(target)) return target
+      throw err
+    }
   }
 
   async backup(absPath: string): Promise<void> {
     await this.backupHook(absPath)
   }
+
+  private resolveOutsideRoot(requested: string, operation: FileOperation): string {
+    const cleaned = normalizeRequestedPathForValidation(requested, { operation })
+    return isAbsolute(cleaned) ? resolve(cleaned) : resolve(this.root, cleaned)
+  }
+
+  private isAllowedPath(target: string): boolean {
+    return this.allowedPaths.some(item => item.isDirectory ? isInside(item.path, target) : item.path === target)
+  }
+}
+
+function normalizeAllowedPath(raw: string): { path: string; isDirectory: boolean } | null {
+  try {
+    const path = resolve(raw)
+    const s = existsSync(path) ? statSync(path) : null
+    return { path, isDirectory: s?.isDirectory() ?? false }
+  } catch {
+    return null
+  }
+}
+
+function isInside(parent: string, child: string): boolean {
+  const rel = relative(parent, child)
+  return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel))
 }
 
 function shortHash(s: string): string {

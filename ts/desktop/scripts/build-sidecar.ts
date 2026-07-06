@@ -66,8 +66,9 @@ if (!result.success) {
 }
 console.log(`[build-sidecar] -> ${outfile}`)
 
-// macOS:Bun 编译二进制签名坏(load code signature error 4 → SIGKILL),strip + ad-hoc 重签(研究 Q5)。
-if (process.platform === 'darwin') {
+// macOS target:Bun 编译二进制签名坏(load code signature error 4 → SIGKILL),strip + ad-hoc 重签(研究 Q5)。
+// Mac 上交叉编 Windows/Linux sidecar 时不能对 .exe/ELF 做 codesign。
+if (process.platform === 'darwin' && triple.includes('apple-darwin')) {
   await Bun.spawn(['codesign', '--remove-signature', outfile], { stdout: 'inherit', stderr: 'inherit' }).exited
   const sign = Bun.spawn(['codesign', '--sign', '-', '--force', '--timestamp=none', outfile], {
     stdout: 'inherit',

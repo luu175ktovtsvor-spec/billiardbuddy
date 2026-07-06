@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { Tool } from './Tool'
+import { recordFileSnapshot } from './fileHistory'
 
 export const fileWriteTool: Tool<{ path: string; content: string }> = {
   name: 'write_file',
@@ -17,6 +18,7 @@ export const fileWriteTool: Tool<{ path: string; content: string }> = {
       throw new Error('write_file 需要 string 参数 path 和 content')
     }
     const abs = ctx.workspace.resolve(input.path, 'write')
+    await recordFileSnapshot(ctx, input.path, abs, 'write_file')
     await ctx.workspace.backup(abs) // 红线:改文件前自动备份
     await mkdir(dirname(abs), { recursive: true })
     await writeFile(abs, input.content, 'utf8')

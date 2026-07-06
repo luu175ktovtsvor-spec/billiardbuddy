@@ -1,0 +1,89 @@
+import { expect, test } from 'bun:test'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Workspace } from '../workspace/workspace'
+import { createSkillTools, formatSkillIndex, loadSkillsDir } from './skillLoader'
+
+test('loadSkillsDir:只加载 */SKILL.md,frontmatter 变 PromptCommand', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'skills-'))
+  try {
+    mkdirSync(join(root, 'poster'), { recursive: true })
+    writeFileSync(join(root, 'poster', 'SKILL.md'), `---
+name: poster-maker
+description: Make posters
+allowedTools: [read_file, write_file]
+---
+# Poster
+
+Follow these steps.
+`)
+    const lib = await loadSkillsDir(root)
+    expect(lib.skills).toHaveLength(1)
+    expect(lib.skills[0]).toMatchObject({
+      type: 'prompt',
+      name: 'poster-maker',
+      description: 'Make posters',
+      allowedTools: ['read_file', 'write_file'],
+    })
+    expect(formatSkillIndex(lib)).toContain('poster-maker: Make posters')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('createSkillTools:渐进式披露,先 list 再 read 完整正文', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'skills-tools-'))
+  try {
+    mkdirSync(join(root, 'report'), { recursive: true })
+    writeFileSync(join(root, 'report', 'SKILL.md'), `---
+description: Write reports
+---
+Use store facts. ${'x'.repeat(20)}
+`)
+    const lib = await loadSkillsDir(root)
+    const [list, read] = createSkillTools(lib)
+    const ctx = { workspace: new Workspace(root) }
+    const listed = await list!.execute({}, ctx)
+    expect(listed).toContain('report: Write reports')
+    expect(listed).not.toContain('Use store facts')
+    const full = await read!.execute({ name: 'report', args: '今天' }, ctx)
+    expect(full).toContain('Use store facts')
+    expect(full).toContain('用户给这个技能的参数')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('createSkillTools:create_skill writes SKILL.md and updates current library', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'skills-create-'))
+  try {
+    const lib = await loadSkillsDir(root)
+    const tools = createSkillTools(lib, { skillRoot: root })
+    const create = tools.find(t => t.name === 'create_skill')!
+    const list = tools.find(t => t.name === 'list_skills')!
+    const read = tools.find(t => t.name === 'read_skill')!
+    const ctx = { workspace: new Workspace(root) }
+
+    const out = await create.execute({
+      name: 'Daily Report',
+      description: 'Write daily store reports',
+      whenToUse: '老板要日报时',
+      allowedTools: ['read_file', 'write_file'],
+      instructions: '# Daily Report\n\n1. 汇总流水。\n2. 给出明日动作。',
+    }, ctx)
+    expect(out).toContain('daily-report')
+    expect(formatSkillIndex(lib)).toContain('daily-report: Write daily store reports')
+    expect(await list.execute({}, ctx)).toContain('使用时机:老板要日报时')
+    const full = await read.execute({ name: 'daily-report' }, ctx)
+    expect(full).toContain('汇总流水')
+
+    await expect(create.execute({
+      name: 'Daily Report',
+      description: 'dup',
+      instructions: 'dup',
+    }, ctx)).rejects.toThrow(/已存在/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

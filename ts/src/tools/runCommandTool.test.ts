@@ -6,7 +6,8 @@ import { realpathSync } from 'node:fs'
 import { Workspace } from '../workspace/workspace'
 import type { ToolContext } from './Tool'
 import { runCommandTool } from './runCommandTool'
-import { isDangerousCommand } from './dangerousCommand'
+import { classifyCommandRisk, isDangerousCommand } from './dangerousCommand'
+import { resolvePermission } from '../permissions/resolve'
 
 let root: string
 let ctx: ToolContext
@@ -39,6 +40,30 @@ test('isDangerousCommand flags catastrophic commands', () => {
   expect(isDangerousCommand('rm -rf ~')).toBe(true)
   expect(isDangerousCommand('sudo reboot')).toBe(true)
   expect(isDangerousCommand('ls -la')).toBe(false)
+})
+
+test('classifyCommandRisk separates read/file/outreach/destructive commands', () => {
+  expect(classifyCommandRisk('ls -la')).toBe('read')
+  expect(classifyCommandRisk('git status --short')).toBe('read')
+  expect(classifyCommandRisk('echo hi > note.txt')).toBe('file')
+  expect(classifyCommandRisk('npm run build')).toBe('file')
+  expect(classifyCommandRisk('curl https://example.com')).toBe('outreach')
+  expect(classifyCommandRisk('npm install left-pad')).toBe('outreach')
+  expect(classifyCommandRisk('rm -rf build')).toBe('destructive')
+})
+
+test('run_command dynamic permission allows reads and classifies approval', () => {
+  expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'echo hi > note.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'curl https://example.com' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'rm -rf build' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'destructive',
+  })
 })
 
 test('run_command refuses a dangerous command', async () => {

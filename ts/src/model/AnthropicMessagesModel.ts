@@ -1,0 +1,304 @@
+import type { Model, ModelStepInput, AssistantStep } from '../types/model'
+import type { ContentBlock, Message, ToolCall } from '../types/message'
+import { ensureToolResultPairing, normalizeMessagesForAPI } from '../proxy/messagePairing'
+import { parseOpenAIToolArguments, stringifyOpenAIToolArguments } from '../proxy/toolArguments'
+import type { AnthropicUsage } from '../proxy/types'
+import type { FetchLike } from '../proxy/ProxyModel'
+import type { ProviderAuthStrategy } from './providerConfig'
+
+export interface AnthropicMessagesModelConfig {
+  baseUrl: string
+  model: string
+  apiKey?: string
+  authToken?: string
+  authStrategy?: ProviderAuthStrategy
+  maxTokens?: number
+  requestTimeoutMs?: number
+  stream?: boolean
+  fetchImpl?: FetchLike
+}
+
+interface AnthropicAccumulated {
+  text: string
+  thinking: string
+  toolCalls: ToolCall[]
+  usage: AnthropicUsage
+}
+
+type AnthropicRequestBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: unknown }
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }
+
+type AnthropicResponseContentBlock =
+  | { type: 'text'; text?: string }
+  | { type: 'thinking'; thinking?: string }
+  | { type: 'tool_use'; id?: string; name?: string; input?: unknown }
+
+interface AnthropicResponseJson {
+  content?: AnthropicResponseContentBlock[]
+  usage?: Partial<AnthropicUsage>
+}
+
+const DEFAULT_MAX_TOKENS = 4096
+const ANTHROPIC_VERSION = '2023-06-01'
+
+export class AnthropicMessagesModel implements Model {
+  constructor(private readonly cfg: AnthropicMessagesModelConfig) {}
+
+  async step(input: ModelStepInput): Promise<AssistantStep> {
+    const messages = ensureToolResultPairing(normalizeMessagesForAPI(input.messages))
+    const body = {
+      model: this.cfg.model,
+      max_tokens: this.cfg.maxTokens ?? DEFAULT_MAX_TOKENS,
+      stream: this.cfg.stream !== false,
+      ...(input.system ? { system: input.system } : {}),
+      messages: messages.map(toAnthropicMessage),
+      ...(input.tools.length > 0 ? { tools: input.tools.map(t => ({
+        name: t.name,
+        description: t.description,
+        input_schema: t.parameters,
+      })) } : {}),
+    }
+
+    const resp = await this.fetchWithTimeout(this.messagesEndpoint(), {
+      method: 'POST',
+      headers: this.headers(),
+      body: JSON.stringify(body),
+    }, input.signal)
+
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '')
+      throw new Error(`Anthropic 模型请求失败 ${resp.status}:${detail.slice(0, 500)}`)
+    }
+
+    const acc = await this.readResponse(resp)
+    return toAssistantStep(acc)
+  }
+
+  private messagesEndpoint(): string {
+    const base = this.cfg.baseUrl.replace(/\/+$/, '')
+    return base.endsWith('/messages') ? base : `${base}/messages`
+  }
+
+  private headers(): Record<string, string> {
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      'anthropic-version': ANTHROPIC_VERSION,
+    }
+
+    const key = this.cfg.apiKey ?? ''
+    const token = this.cfg.authToken ?? key
+    switch (this.cfg.authStrategy) {
+      case 'auth_token':
+      case 'auth_token_empty_api_key':
+        if (token) headers.authorization = `Bearer ${token}`
+        break
+      case 'dual_same_token':
+        if (token) {
+          headers['x-api-key'] = token
+          headers.authorization = `Bearer ${token}`
+        }
+        break
+      case 'dual_dummy':
+        headers['x-api-key'] = 'dummy'
+        headers.authorization = 'Bearer dummy'
+        break
+      case 'api_key':
+      default:
+        if (key) headers['x-api-key'] = key
+        else if (this.cfg.authToken) headers.authorization = `Bearer ${this.cfg.authToken}`
+        break
+    }
+    return headers
+  }
+
+  private async fetchWithTimeout(input: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
+    const doFetch = this.cfg.fetchImpl ?? globalThis.fetch
+    if (!this.cfg.requestTimeoutMs && !signal) return doFetch(input, init)
+    if (!this.cfg.requestTimeoutMs) return doFetch(input, { ...init, signal })
+
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    if (signal?.aborted) controller.abort()
+    else signal?.addEventListener('abort', abort, { once: true })
+    const timer = setTimeout(() => controller.abort(), this.cfg.requestTimeoutMs)
+    try {
+      return await doFetch(input, { ...init, signal: controller.signal })
+    } catch (err) {
+      if ((err as { name?: string }).name === 'AbortError') {
+        throw new Error(signal?.aborted ? 'Anthropic 模型请求已中断' : `Anthropic 模型请求超时 ${this.cfg.requestTimeoutMs}ms`)
+      }
+      throw err
+    } finally {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+    }
+  }
+
+  private async readResponse(resp: Response): Promise<AnthropicAccumulated> {
+    const contentType = resp.headers.get('content-type') ?? ''
+    if (contentType.includes('text/event-stream') && resp.body) {
+      return accumulateAnthropicStream(resp.body)
+    }
+    const json = (await resp.json().catch(() => ({}))) as AnthropicResponseJson
+    return anthropicJsonToAccumulated(json)
+  }
+}
+
+function toAnthropicMessage(message: Message): { role: Message['role']; content: AnthropicRequestBlock[] } {
+  const content = message.content.flatMap(toAnthropicBlock)
+  return { role: message.role, content: content.length > 0 ? content : [{ type: 'text', text: '' }] }
+}
+
+function toAnthropicBlock(block: ContentBlock): AnthropicRequestBlock[] {
+  if (block.type === 'text') return [{ type: 'text', text: block.text }]
+  if (block.type === 'tool_use') return [{ type: 'tool_use', id: block.id, name: block.name, input: block.input }]
+  if (block.type === 'tool_result') {
+    return [{
+      type: 'tool_result',
+      tool_use_id: block.tool_use_id,
+      content: block.content,
+      ...(block.is_error ? { is_error: true } : {}),
+    }]
+  }
+  return []
+}
+
+function anthropicJsonToAccumulated(json: AnthropicResponseJson): AnthropicAccumulated {
+  let text = ''
+  let thinking = ''
+  const toolCalls: ToolCall[] = []
+  for (const block of json.content ?? []) {
+    if (block.type === 'text' && typeof block.text === 'string') text += block.text
+    else if (block.type === 'thinking' && typeof block.thinking === 'string') thinking += block.thinking
+    else if (block.type === 'tool_use' && block.id && block.name) {
+      toolCalls.push({ id: block.id, name: block.name, input: parseToolInput(block.input) })
+    }
+  }
+  return { text, thinking, toolCalls, usage: normalizeUsage(json.usage) }
+}
+
+function parseToolInput(input: unknown): Record<string, unknown> {
+  return parseOpenAIToolArguments(input)
+}
+
+function normalizeUsage(usage: Partial<AnthropicUsage> | undefined): AnthropicUsage {
+  return {
+    input_tokens: typeof usage?.input_tokens === 'number' ? usage.input_tokens : 0,
+    output_tokens: typeof usage?.output_tokens === 'number' ? usage.output_tokens : 0,
+    ...(typeof usage?.cache_read_input_tokens === 'number' ? { cache_read_input_tokens: usage.cache_read_input_tokens } : {}),
+    ...(typeof usage?.cache_creation_input_tokens === 'number' ? { cache_creation_input_tokens: usage.cache_creation_input_tokens } : {}),
+  }
+}
+
+interface StreamFrag {
+  type: string
+  text: string
+  thinking: string
+  id: string
+  name: string
+  input: unknown
+  argsBuffer: string
+  order: number
+}
+
+async function accumulateAnthropicStream(stream: ReadableStream<Uint8Array>): Promise<AnthropicAccumulated> {
+  const decoder = new TextDecoder()
+  const reader = stream.getReader()
+  let buffer = ''
+  let orderSeq = 0
+  let usage: AnthropicUsage = { input_tokens: 0, output_tokens: 0 }
+  const frags = new Map<number, StreamFrag>()
+
+  const fragFor = (index: number): StreamFrag => {
+    let frag = frags.get(index)
+    if (!frag) {
+      frag = { type: '', text: '', thinking: '', id: '', name: '', input: undefined, argsBuffer: '', order: orderSeq++ }
+      frags.set(index, frag)
+    }
+    return frag
+  }
+
+  const handleEvent = (payload: unknown): void => {
+    if (!payload || typeof payload !== 'object') return
+    const event = payload as Record<string, unknown>
+    const index = typeof event.index === 'number' ? event.index : 0
+
+    if (event.type === 'content_block_start') {
+      const block = event.content_block as Record<string, unknown> | undefined
+      if (!block || typeof block !== 'object') return
+      const frag = fragFor(index)
+      frag.type = typeof block.type === 'string' ? block.type : frag.type
+      if (typeof block.text === 'string') frag.text += block.text
+      if (typeof block.thinking === 'string') frag.thinking += block.thinking
+      if (typeof block.id === 'string') frag.id = block.id
+      if (typeof block.name === 'string') frag.name = block.name
+      if ('input' in block) frag.input = block.input
+      return
+    }
+
+    if (event.type === 'content_block_delta') {
+      const delta = event.delta as Record<string, unknown> | undefined
+      if (!delta || typeof delta !== 'object') return
+      const frag = fragFor(index)
+      if (delta.type === 'text_delta' && typeof delta.text === 'string') frag.text += delta.text
+      else if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') frag.thinking += delta.thinking
+      else if (delta.type === 'input_json_delta') frag.argsBuffer += stringifyOpenAIToolArguments(delta.partial_json)
+      return
+    }
+
+    if (event.type === 'message_delta' && event.usage && typeof event.usage === 'object') {
+      usage = normalizeUsage(event.usage as Partial<AnthropicUsage>)
+    }
+  }
+
+  const processLine = (line: string): void => {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith(':') || !trimmed.startsWith('data:')) return
+    const raw = trimmed.slice(trimmed.indexOf(':') + 1).trim()
+    if (!raw || raw === '[DONE]') return
+    try {
+      handleEvent(JSON.parse(raw) as unknown)
+    } catch {
+      return
+    }
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) processLine(line)
+    }
+    if (buffer) processLine(buffer)
+  } finally {
+    reader.releaseLock()
+  }
+
+  let text = ''
+  let thinking = ''
+  const toolCalls: ToolCall[] = []
+  for (const frag of [...frags.values()].sort((a, b) => a.order - b.order)) {
+    if (frag.type === 'text') text += frag.text
+    else if (frag.type === 'thinking') thinking += frag.thinking
+    else if (frag.type === 'tool_use' && frag.id && frag.name) {
+      toolCalls.push({
+        id: frag.id,
+        name: frag.name,
+        input: frag.argsBuffer ? parseToolInput(frag.argsBuffer) : parseToolInput(frag.input),
+      })
+    }
+  }
+  return { text, thinking, toolCalls, usage }
+}
+
+function toAssistantStep(acc: AnthropicAccumulated): AssistantStep {
+  if (acc.toolCalls.length > 0) {
+    return { kind: 'tool_calls', text: acc.text || undefined, thinking: acc.thinking || undefined, calls: acc.toolCalls }
+  }
+  return { kind: 'final', text: acc.text, thinking: acc.thinking || undefined }
+}

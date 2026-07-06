@@ -2,6 +2,7 @@
 import type { Message, ContentBlock } from '../types/message'
 import type { ToolSpec } from '../tools/Tool'
 import type { OpenAIChatRequest, OpenAIChatMessage, OpenAIChatContentPart, OpenAIToolCall } from './types'
+import type { ReasoningEffort } from '../model/reasoningEffort'
 
 export type OpenAIChatImageContentMode = 'vision' | 'text_only'
 
@@ -12,6 +13,7 @@ export interface ProxyRequestInput {
   tools?: ToolSpec[]
   stream?: boolean
   imageContentMode?: OpenAIChatImageContentMode
+  reasoningEffort?: ReasoningEffort
 }
 
 const OMITTED_IMAGE_TEXT = '[Image omitted: this OpenAI-compatible chat endpoint only supports text content.]'
@@ -25,6 +27,7 @@ export function toOpenAiChatRequest(input: ProxyRequestInput): OpenAIChatRequest
 
   const result: OpenAIChatRequest = { model: input.model, messages, stream: input.stream === true }
   if (result.stream) result.stream_options = { include_usage: true }
+  if (input.reasoningEffort) result.reasoning_effort = input.reasoningEffort
   // max_tokens 故意不带:CC 会塞很大值,超多数国产上游上限;交由上游默认(照 cc-haha 注释)。
 
   if (input.tools && input.tools.length > 0) {

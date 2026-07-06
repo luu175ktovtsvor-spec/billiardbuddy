@@ -3,6 +3,12 @@ import type { Sandbox } from '../sandbox/sandbox'
 import type { ApprovalClass, ApprovalReason, PermissionMode } from '../permissions/types'
 import type { TodoItem } from '../types/todo'
 
+export interface FileReadSnapshot {
+  path: string
+  mtimeMs: number
+  size: number
+}
+
 export type JSONSchema = {
   type: 'object'
   properties?: Record<string, unknown>
@@ -26,6 +32,8 @@ export interface ToolContext {
   steerInbox?: string[]
   /** 距上次更新进度已连着调了几次工具(到 PROGRESS_REMIND_EVERY 提醒一次)。 */
   requestsSinceProgress?: number
+  /** 读前置编辑保护:read_file 记录快照,edit_file 改前校验 mtime/size 防覆盖外部改动。 */
+  fileReads?: Map<string, FileReadSnapshot>
 }
 
 /** 模型可见的工具描述(function-calling 线上格式)。 */
@@ -45,12 +53,19 @@ export interface Tool<Input = unknown> {
   description: string
   inputSchema: JSONSchema
   isReadOnly: boolean
+  /** 动态只读判定:同一个工具按入参可能是只读或会动手(run_command 是典型)。 */
+  isReadOnlyFor?(input: Input, ctx: ToolContext): boolean
   /** 静态:这工具总是要审批(发布/群发等)。 */
   requiresApproval?: boolean
   /** 审批类别,决定档位如何对待(见 ApprovalClass)。 */
   approvalClass?: ApprovalClass
+  /** 动态审批类别:按具体入参区分 file/outreach/destructive/spend。 */
+  approvalClassFor?(input: Input, ctx: ToolContext): ApprovalClass | undefined
   /** 旁路免疫:连 full(跳过确认)也强制弹卡。删数据这类真危险动作设它。 */
   forceConfirm?: boolean
+  /** 必须用户交互确认:连 bypassPermissions 也不能自动执行(如登录、支付、系统授权)。 */
+  requiresUserInteraction?: boolean
+  requiresUserInteractionFor?(input: Input, ctx: ToolContext): boolean
   /** 动态:按具体入参决定要不要审批(如"写到工作区外才要")。 */
   requiresApprovalFor?(input: Input, ctx: ToolContext): boolean
   /** 硬拒理由:非空 = 直接拒、永不执行(删根/提权等)。 */
