@@ -204,3 +204,29 @@ test('Delta A:write_file 在 ask 档仍直接执行、不弹卡', async () => {
   expect(events.some(e => e.type === 'approval_request')).toBe(false)
   expect(readFileSync(join(root, 'o.txt'), 'utf8')).toBe('x')
 })
+
+test('审批闸:previewFor 抛错 → 退化成无预览、照样弹卡不崩循环(工具执行永不抛也覆盖预览)', async () => {
+  process.env.SECRET_KEY = SECRET
+  resetDenialStore()
+  const spy = { ran: false }
+  const boomTool: Tool<{ msg?: string }> = {
+    name: 'send_message', description: '', inputSchema: { type: 'object' },
+    isReadOnly: false, requiresApproval: true, approvalClass: 'outreach',
+    previewFor() { throw new Error('boom') },
+    async execute() { spy.ran = true; return 'SENT' },
+  }
+  const reg = new ToolRegistry([boomTool])
+  const steps: AssistantStep[] = [
+    { kind: 'tool_calls', calls: [{ id: 'a', name: 'send_message', input: { msg: 'hi' } }] },
+    { kind: 'final', text: '算预览时崩了,但我还是先请示' },
+  ]
+  const events = await collect(
+    runAgentLoop({ model: scriptedModel(steps), registry: reg, workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'ask', conversationId: 'conv3' }),
+  )
+  const ap = events.find(e => e.type === 'approval_request')
+  expect(ap && ap.type === 'approval_request' && ap.tool).toBe('send_message') // (a) 照样弹卡
+  expect(ap && ap.type === 'approval_request' && ap.preview).toBeUndefined()   //     预览退化成 undefined
+  expect(events.at(-1)?.type).toBe('final')                                    // (b) 循环没崩、走到 final
+  expect(spy.ran).toBe(false)                                                  // (c) 仍是提案模式、没执行
+})
