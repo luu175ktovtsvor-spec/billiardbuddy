@@ -8,7 +8,7 @@ import { buildSystemPrompt } from './systemPrompt'
 import { scriptedModel } from './fakeModel'
 import { runAgentLoop } from './loop'
 import type { AgentEvent } from '../types/events'
-import type { AssistantStep } from '../types/model'
+import type { AssistantStep, Model } from '../types/model'
 import { ToolRegistry } from '../tools/registry'
 import { executeApproved, handleReject } from './loop'
 import { resetDenialStore } from '../permissions/denialTracking'
@@ -229,4 +229,69 @@ test('审批闸:previewFor 抛错 → 退化成无预览、照样弹卡不崩循
   expect(ap && ap.type === 'approval_request' && ap.preview).toBeUndefined()   //     预览退化成 undefined
   expect(events.at(-1)?.type).toBe('final')                                    // (b) 循环没崩、走到 final
   expect(spy.ran).toBe(false)                                                  // (c) 仍是提案模式、没执行
+})
+
+// —— 追加:steering(顶部补 import:`import type { Model } from '../types/model'`;Message/AssistantStep/collect/scriptedModel/buildGeneralRegistry/Workspace/root W4a 的 loop.test.ts 已备)——
+
+test('steering:模型想收尾但收件箱有插话 → 不收尾、灌进去接着跑、吐 steering 事件', async () => {
+  // 自定义 model:第 1 步就想 final;但我们在它被调用后往共享 inbox 塞一条插话,模拟老板中途说话。
+  const inbox: string[] = []
+  let calls = 0
+  const model: Model = {
+    async step() {
+      calls++
+      if (calls === 1) {
+        inbox.push('等一下,改成蓝色') // 老板在第 1 步后插话
+        return { kind: 'final', text: '好了(第一版)' }
+      }
+      return { kind: 'final', text: '改成蓝色了(第二版)' }
+    },
+  }
+  const events = await collect(
+    runAgentLoop({
+      model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: '做个东西', steerInbox: inbox,
+    }),
+  )
+  // 第一版没直接 final;吐了 steering;最终是第二版
+  expect(events.some(e => e.type === 'steering' && e.content === '等一下,改成蓝色')).toBe(true)
+  expect(events.at(-1)).toEqual({ type: 'final', text: '改成蓝色了(第二版)' })
+  // 模型第 2 次 step 时确实看到了 [用户补充/纠偏] 消息
+  // (calls===2 时 messages 已含 steering user 消息)
+  expect(calls).toBe(2)
+})
+
+test('steering:每批工具后 drain,插话在下一次 model.step 前进 messages', async () => {
+  const inbox: string[] = []
+  const steps: AssistantStep[] = [
+    { kind: 'tool_calls', calls: [{ id: '1', name: 'list_dir', input: {} }] },
+    { kind: 'final', text: 'done' },
+  ]
+  let i = 0
+  const received: { messages: import('../types/message').Message[] }[] = []
+  const model: Model = {
+    async step(input) {
+      received.push({ messages: input.messages.slice() })
+      if (i === 0) inbox.push('顺便看看 src') // 第 1 步(出工具)后插话
+      return steps[i++]!
+    },
+  }
+  await collect(
+    runAgentLoop({
+      model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'x', steerInbox: inbox,
+    }),
+  )
+  // 第 2 次 step 的 messages 里有 [用户补充/纠偏] 顺便看看 src
+  expect(received[1]!.messages.some(m => m.role === 'user' && m.content.includes('[用户补充/纠偏] 顺便看看 src'))).toBe(true)
+})
+
+test('无 steering 时行为不回归(W4a 收尾照常)', async () => {
+  const events = await collect(
+    runAgentLoop({
+      model: scriptedModel([{ kind: 'final', text: '直接收尾' }]),
+      registry: buildGeneralRegistry(), workspace: new Workspace(root), systemPrompt: 'SYS', userMessage: 'x',
+    }),
+  )
+  expect(events).toEqual([{ type: 'final', text: '直接收尾' }])
 })
