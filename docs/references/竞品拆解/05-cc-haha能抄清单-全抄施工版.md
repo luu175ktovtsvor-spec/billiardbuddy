@@ -125,7 +125,7 @@
 ---
 
 ## 两个要 owner 拍板的决策点
-1. **记忆检索:向量 RAG（现状 bge-zh）vs LLM 选择器（cc-haha，零向量库）**。LLM 选择器省掉装机包向量依赖、更贴"全本地零配置"，记忆条目不多时又准又省依赖，可能更适合桌面装机；向量 RAG 更快省调用但背 bge 权重。
+1. ✅ **已定（owner 2026-07-06 · 质量优先）：店脑记忆用 LLM 选择器**（cc-haha memdir，"理解意图 > 相似度"、Anthropic 亲选、便宜模型+按需+prefetch 控成本）；**台球知识库 = 可 @挂载技能包 + 包内向量定位**（不是纯向量捞碎片）。bge 保留（知识包内定位 + 未来记忆粗筛）。详见主文档 §6.1。
 2. **`billiards_mode` → 收成"包"**:泛化成 `enabled_packs`，`compose_agent_system_prompt` 三段拼装改成"遍历 packs 追加人设 + SessionStart hook 注入"，`_build_agent_registry` 改成"遍历 packs 合并工具"。收益:加行业=复制文件夹、能卖领域包、配 skillify 让用户自己加。
 
 ⚠️ **红线**:`_SAFETY_REDLINE` 挂在"包"**之外**、永远注入——否则卸台球包会把红线一起卸掉。
