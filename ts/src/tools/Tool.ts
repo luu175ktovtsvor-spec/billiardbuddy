@@ -1,6 +1,7 @@
 import type { Workspace } from '../workspace/workspace'
 import type { Sandbox } from '../sandbox/sandbox'
 import type { ApprovalClass, ApprovalReason, PermissionMode } from '../permissions/types'
+import type { TodoItem } from '../types/todo'
 
 export type JSONSchema = {
   type: 'object'
@@ -19,6 +20,12 @@ export interface ToolContext {
   conversationId?: string
   /** full 档下 spend 类动作已自动放行的次数(过 AUTO_SPEND_LIMIT 强制弹卡)。 */
   autoSpendCount?: number
+  /** 当前任务清单(todo_write / task_progress 内联维护,单一真相源)。 */
+  todos?: TodoItem[]
+  /** 老板插话收件箱(FIFO,路由 push、循环在安全点 drain)。 */
+  steerInbox?: string[]
+  /** 距上次更新进度已连着调了几次工具(到 PROGRESS_REMIND_EVERY 提醒一次)。 */
+  requestsSinceProgress?: number
 }
 
 /** 模型可见的工具描述(function-calling 线上格式)。 */
