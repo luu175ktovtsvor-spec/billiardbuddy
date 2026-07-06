@@ -3,6 +3,8 @@
 > 📌 状态:✅现行 · 2026-07-06 落地(ts-harness-rewrite 分支,未 push、未并 main)
 > 实现计划:`docs/plans/TS-W2返工+W6proxy-实现计划-2026-07-06.md`。上级 spec:主文档 §0.5/§2/§11 + `05-cc-haha能抄清单` ①。
 > 全绿:`cd ts && bun test` → 185 pass / 0 fail;`bun run typecheck` clean。
+>
+> ⚠️ **方向修正（2026-07-06 · owner+审计后定，晚于本窗施工）**：主路径 = **内核 Anthropic 直连各家 Anthropic 端点**（MiMo `/anthropic`、豆包 `/api/coding`，都提供 Anthropic `/v1/messages`），**零翻译**。本文档描述的 Anthropic→OpenAI 翻译层**降级为"只给纯 OpenAI 端点模型"的兜底**——**W10 落地时把主路径接成直连 Anthropic 端点，别默认走翻译层**（否则白饶一圈、还可能踩 reasoning 400）。详见主文档 §0.6-1。
 
 ## 一、内核已换 Anthropic content-block(W2 返工)
 

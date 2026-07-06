@@ -9,7 +9,7 @@
 4. **DB**:**drizzle ORM on `bun:sqlite`**(本地)+ drizzle-postgres(服务端);**禁 `better-sqlite3`**(Bun 下 ABI 断裂)。W5 建表。
 5. **SSE**:必 `server.timeout(req, 0)` 关掉 Bun 10s 空闲掐断 + 用 **async-generator** 流体(每 yield 即 flush,别用 ReadableStream)。
 6. **产品红线不因换语言丢**:审批闸只卡对外/不可逆动作 · 全本地 · 免登录单用户 · 内置 key 走网关藏 key · 改文件前自动备份可回滚 · **白标绝不暴露底层模型** · 台球是可 @挂载领域包不是产品边界。
-7. **原生插件**:`.node`(sharp/onnx/whisper)大概率**塞不进 `bun build --compile` 单二进制**,当 sidecar 文件随包发;嵌入走 `transformers.js` WASM,不引原生 `onnxruntime-node`。
+7. **原生插件**:`.node`(sharp/onnx/whisper)大概率**塞不进 `bun build --compile` 单二进制**,当 sidecar 文件随包发;嵌入走 `transformers.js`——⚠️**服务端就是原生 `onnxruntime-node`(不是 WASM,HF 官方证实)**,且在 **Bun+Windows 会段错误**(bun#28008),**放 Node 子进程 sidecar 跑、别在 Bun 进程内**(见主文档 §0.6-2)。
 8. **注释从简、结构照 cc-haha**(主文档 §9)。
 
 ## 对上面 Bun 默认建议的**本工程校正**(别被通用建议带偏)

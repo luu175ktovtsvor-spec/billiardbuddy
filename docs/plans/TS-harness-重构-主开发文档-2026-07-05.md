@@ -82,6 +82,19 @@
 
 ---
 
+## 0.6 · ⭐ 审查修正（2026-07-06 · 4 路联网审计 + owner 拍板 · 本节以此为准，覆盖前文任何冲突）
+
+> 4 路子代理联网查证 + owner 校准后的翻案/修正。**后文（§2/§5/§6/§11 等）若与本节冲突，一律以本节为准。**
+
+1. **内核 = Anthropic 格式 + 直连各家 Anthropic 端点（不做 OpenAI 翻译）**。MiMo(`api.xiaomimimo.com/anthropic`)、豆包(`ark.../api/coding`)都提供 Anthropic 兼容 `/v1/messages` 端点——内核 Anthropic 直发它们、**零翻译、零 reasoning strip**。W6 建的 Anthropic→OpenAI 翻译层**降级为"只给纯 OpenAI 端点模型"的兜底**，W10 落地把主路径接成直连 Anthropic 端点。（一度被审计判"内核 Anthropic 过度设计"，那前提"我们模型只有 OpenAI 端点"是错的——owner 用真实经验点破。）
+2. **嵌入 onnxruntime-node 走 Node 子进程，不在 Bun 进程内**。它在 Bun+Windows 有 OPEN 段错误(bun#28008)，W1 只测 Mac 没暴露。transformers.js 服务端**就是**原生 onnxruntime-node（不是 WASM，HF 官方证实）——§2 那句"换纯 JS transformers.js"兜底是错的。嵌入 + whisper 都塞 Node 子进程 sidecar。
+3. **记忆 LLM 选择器用中端模型（不是便宜 flash）**。cc-haha 用 Sonnet 中端；flash 砍掉"理解意图"质量优势 = 自毁选它的理由。§6.1 的"豆包 flash"作废。
+4. **Windows 沙箱务实降级，不当上线阻塞**。Job Object **管不了文件写入**（只管进程/资源/UI），"Job Object 做文件沙箱"是错的。Windows v1 = app 护栏+审批+改前备份（防 AI 手滑，够用）；OS 层白捡 sandbox-runtime 的 Windows alpha（塞安装器）；真隔离(restricted-token+ACL 照 Codex)放最后，别自研 Rust 强隔离当必答题（OpenAI 做了 8 个月）。
+5. **prompt-cache = 必做省 key 钱（不是跳过）**。MiMo 缓存**手动型**——壳子不加 cache 标记则 0% 命中、多花 5 倍（已有 GitHub 踩坑）。保持前缀稳定 + 给各家加缓存标记 + 监控 hit/miss。归 W10。
+6. **元规则**：地基决策 + "跳过/绑 Claude"判断，一律联网/真机/真 key 查证再定——这几轮翻的车(prompt-cache/嵌入/沙箱/端点)全是"没查证的假设"。
+7. **打包运维现在就排**：CI 双 runner 矩阵(mac+win，原生 `.node` 不能跨平台编) + Mac 签名证书($99/年，卡自动更新)。
+8. **另**：有更强中文嵌入 Qwen3-Embedding-0.6B，W7 拿真实台球 query 与 bge-m3 A/B 再定。
+
 ## 1. 决策与铁律(不可改,改需 owner)
 
 > **⭐ 总原则（owner 2026-07-05，最高优先）：整个后端照 cc-haha 的逻辑/做法重写——地基逐块照它做，「人家怎么做我们就怎么做」（行为与结构对齐、地基不自创架构、不加码）。生图 / 视频等是在这地基上的正常衍生、保证功能可用即可（不追求超越；所需依赖/模型/二进制随便下、打进包，体积/下载无所谓）。唯一边界 = 下方铁律 2（抄码口径:效果对齐唯一标准，搬/重写都行，别把它整个 .ts 原样当产品发）。**
@@ -113,7 +126,7 @@
 | 图像 | **`sharp`** 🟢 | 免编译预编译 libvips;Electron 要 `asarUnpack` |
 | 视频 | **spawn 打包的 ffmpeg/ffprobe 二进制** 🟢 | `ffmpeg-static` 打进包;`fluent-ffmpeg` 维护慢、只当可选糖 |
 | 本地转录 | **whisper.cpp 的带 prebuild 的 Node 绑定** 🟡 | 引擎同 whisper.cpp、质量不掉档;**坑在打包**——要预编译 `.node`(选带 prebuild 的绑定,或 CI 出各平台 `.node` 打进包),别选装机时编译的 |
-| 向量嵌入 | **`transformers.js` + `Xenova/bge-m3`** 🟢 | 多语言含中文、ONNX、免原生编译、Electron 友好;直接顶替 bge-zh(bge-m3 中文更强) |
+| 向量嵌入 | **`transformers.js` + `Xenova/bge-m3`**（走 Node 子进程）🟡 | 多语言含中文、ONNX;⚠️**服务端走原生 `onnxruntime-node` 不是 WASM**、Bun+Windows 会段错误 → 塞 Node 子进程 sidecar（见 §0.6-2）;bge-m3 中文强,W7 与 Qwen3-0.6B A/B |
 | MCP 客户端 | **`@modelcontextprotocol/sdk`(官方 TS SDK)** 🟢 | 跟现用 Python `mcp` SDK 同为一方,平迁无风险;stdio 起子进程 |
 | DB | Phase 0 定(better-sqlite3 / drizzle) | 对标现 SQLite;PG 兼容按方言兜底的逻辑照搬思路 |
 
@@ -287,7 +300,7 @@
 | **台球知识库**（"台球这行"的通用运营知识 · 固定、所有店共享、领域专业） | 懂"这行" | **可 @挂载的技能包（skill/pack）+ 包内向量定位** |
 
 **① 店脑记忆 → LLM 选择器（cc-haha `findRelevantMemories`），不用向量 RAG。**
-- 机制：扫所有记忆 frontmatter（名字+一句话描述）拼清单 → **便宜模型（豆包 flash 类）**读查询做选择题挑 ≤5 条 → 注入。配 cc-haha memdir 全套：MEMORY.md 索引常驻、老化警告、类型/去噪、后台抽取、AutoDream 整合。
+- 机制：扫所有记忆 frontmatter（名字+一句话描述）拼清单 → **中端模型（不是便宜 flash——cc-haha 用 Sonnet 中端；flash 砍掉理解意图的质量优势、自毁立论，见 §0.6-3）**读查询做选择题挑 ≤5 条 → 注入。配 cc-haha memdir 全套：MEMORY.md 索引常驻、老化警告、类型/去噪、后台抽取、AutoDream 整合。
 - 为什么（**质量优先**）：LLM 选择器是"理解意图"、向量是"相似度匹配"——对中文/复杂/组合/指代查询召回更准；**Anthropic 在 Claude Code 里亲自放弃向量选它 = 质量信号**，我们"对标 CC 要好用"不该在记忆召回质量上让步。成本可控：便宜模型 + 只在涉及个性化/门店时调 + prefetch 在主模型流式时预取。规模不大（几十上百条）不触发"清单塞爆"短板。
 
 **② 台球知识库 → 可 @挂载的技能包，不是纯向量捞碎片。**
