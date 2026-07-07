@@ -9,11 +9,25 @@ const nextConfig = {
     return config;
   },
   async rewrites() {
-    const proxyTarget = process.env.API_PROXY_URL || "http://localhost:8000";
+    // Source dev defaults to the TS sidecar. Packaged desktop builds still pass
+    // API_PROXY_URL explicitly from desktop/scripts/build_frontend.js.
+    const proxyTarget = process.env.API_PROXY_URL || "http://127.0.0.1:8850";
     return [
       {
         source: "/api/v1/:path*",
         destination: `${proxyTarget}/api/v1/:path*`,
+      },
+      {
+        source: "/api/commands/:path*",
+        destination: `${proxyTarget}/api/commands/:path*`,
+      },
+      {
+        source: "/api/model/:path*",
+        destination: `${proxyTarget}/api/model/:path*`,
+      },
+      {
+        source: "/api/providers/:path*",
+        destination: `${proxyTarget}/api/providers/:path*`,
       },
       {
         source: "/uploads/:path*",

@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld("electron", {
   // 系统原生通知(mac 通知中心 / Windows Toast)；不支持/失败会走 { ok:false }，故障安全不抛异常。
   notification: {
     show: (opts) => ipcRenderer.invoke("notification:show", opts || {}),
+    onClick: (cb) => on("notification:click", cb),
   },
 
   // ── 朗读播报(读给我听 · D-Task-8：系统自带 TTS 念文案/简报，不用 Web Speech API) ──
