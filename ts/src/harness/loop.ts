@@ -133,7 +133,21 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   for (const extra of userPrompt.additionalContext) {
     yield { type: 'context_note', text: extra }
   }
-  let messages: Message[]
+  let messages: Message[] = []
+  let stopHookActive = false
+  const applyStopHookContinuation = async (finalText: string): Promise<{ shouldContinue: boolean; events: AgentEvent[] }> => {
+    const events: AgentEvent[] = []
+    const stopHook = await applyStopHooks(opts.hooks, finalText, ctx, opts.subagent, { stopHookActive })
+    for (const extra of stopHook.additionalContext) events.push({ type: 'context_note', text: extra })
+    if (!stopHook.blockingFeedback?.length) {
+      stopHookActive = false
+      return { shouldContinue: false, events }
+    }
+    for (const feedback of stopHook.blockingFeedback) events.push({ type: 'context_note', text: feedback })
+    messages.push({ role: 'user', content: stopHook.blockingFeedback.map(text => textBlock(wrapReminder(text))) })
+    stopHookActive = true
+    return { shouldContinue: true, events }
+  }
   if (userPrompt.deniedMessage) {
     const text = `请求被 hook 拦截:${userPrompt.deniedMessage}`
     messages = [...history, { role: 'assistant', content: [textBlock(text)] }]
@@ -145,21 +159,24 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       }
     }
     yield { type: 'context_note', text }
-    const stopHook = await applyStopHooks(opts.hooks, text, ctx, opts.subagent)
-    for (const extra of stopHook.additionalContext) yield { type: 'context_note', text: extra }
-    yield { type: 'final', text }
-    return
+    const continuation = await applyStopHookContinuation(text)
+    for (const event of continuation.events) yield event
+    if (!continuation.shouldContinue) {
+      yield { type: 'final', text }
+      return
+    }
+  } else {
+    const userContent: ContentBlock[] = []
+    if (userPrompt.additionalContext.length > 0) {
+      userContent.push(textBlock(hookContextBlock('UserPromptSubmit', userPrompt.additionalContext)))
+    }
+    if (opts.teamInbox) {
+      const inboxContext = await opts.teamInbox.service.buildInboxContext(opts.teamInbox)
+      if (inboxContext) userContent.push(textBlock(inboxContext))
+    }
+    userContent.push(textBlock(userPrompt.userPrompt))
+    messages = [...history, { role: 'user', content: userContent }]
   }
-  const userContent: ContentBlock[] = []
-  if (userPrompt.additionalContext.length > 0) {
-    userContent.push(textBlock(hookContextBlock('UserPromptSubmit', userPrompt.additionalContext)))
-  }
-  if (opts.teamInbox) {
-    const inboxContext = await opts.teamInbox.service.buildInboxContext(opts.teamInbox)
-    if (inboxContext) userContent.push(textBlock(inboxContext))
-  }
-  userContent.push(textBlock(userPrompt.userPrompt))
-  messages = [...history, { role: 'user', content: userContent }]
   const readOnlyToolNames = new Set(registry.list().filter(t => t.isReadOnly).map(t => t.name))
   let compactionFailures = 0
   let lastCompactionAtMs = 0
@@ -268,8 +285,13 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
         turn++
         continue
       }
-      const stopHook = await applyStopHooks(opts.hooks, step.text, ctx, opts.subagent)
-      for (const extra of stopHook.additionalContext) yield { type: 'context_note', text: extra }
+      const continuation = await applyStopHookContinuation(step.text)
+      for (const event of continuation.events) yield event
+      if (continuation.shouldContinue) {
+        turnsLimit = Math.max(turnsLimit, turn + 2)
+        turn++
+        continue
+      }
       yield { type: 'final', text: step.text }
       return
     }
@@ -388,8 +410,20 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   const text = forced.kind === 'final' ? forced.text : '(已达最大轮次,未能收敛)'
   messages.push({ role: 'assistant', content: [textBlock(text)] })
   await saveTranscript()
-  const stopHook = await applyStopHooks(opts.hooks, text, ctx, opts.subagent)
-  for (const extra of stopHook.additionalContext) yield { type: 'context_note', text: extra }
+  const continuation = await applyStopHookContinuation(text)
+  for (const event of continuation.events) yield event
+  if (continuation.shouldContinue) {
+    const retry = await model.step({ system, messages, tools: [], signal: opts.signal })
+    const retryUsage = usageUpdateEvent(retry.usage, usageTotals, opts.contextWindowTokens)
+    if (retryUsage) yield retryUsage
+    const retryText = retry.kind === 'final' ? retry.text : '(Stop hook 要求继续,但模型仍未能收敛)'
+    messages.push({ role: 'assistant', content: [textBlock(retryText)] })
+    await saveTranscript()
+    const retryContinuation = await applyStopHookContinuation(retryText)
+    for (const event of retryContinuation.events) yield event
+    yield { type: 'final', text: retryText }
+    return
+  }
   yield { type: 'final', text }
 }
 

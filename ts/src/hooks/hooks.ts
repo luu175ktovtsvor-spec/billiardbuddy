@@ -17,6 +17,7 @@ export interface HookPayload {
   sessionId?: string
   agentId?: string
   agentType?: string
+  stopHookActive?: boolean
 }
 
 export type HookHandler = (payload: HookPayload, ctx: ToolContext) => HookDecision | HookDecision[] | null | undefined | Promise<HookDecision | HookDecision[] | null | undefined>
@@ -91,6 +92,7 @@ export interface PreToolUseResult {
 export interface HookContextResult {
   deniedMessage?: string
   additionalContext: string[]
+  blockingFeedback?: string[]
 }
 
 export interface UserPromptSubmitResult extends HookContextResult {
@@ -206,18 +208,22 @@ export async function applyStopHooks(
   finalText: string,
   ctx: ToolContext,
   subagent?: { agentId: string; agentType: string },
+  opts: { stopHookActive?: boolean } = {},
 ): Promise<HookContextResult> {
   const additionalContext: string[] = []
+  const blockingFeedback: string[] = []
+  const eventName = subagent ? 'SubagentStop' : 'Stop'
   const decisions = await runHookEvent(registry, {
-    event: subagent ? 'SubagentStop' : 'Stop',
+    event: eventName,
     output: finalText,
     sessionId: ctx.conversationId,
     agentId: subagent?.agentId,
     agentType: subagent?.agentType,
+    stopHookActive: opts.stopHookActive,
   }, ctx)
   for (const decision of decisions) {
     if (decision.action === 'context') additionalContext.push(decision.additionalContext)
-    if (decision.action === 'deny') additionalContext.push(`[${subagent ? 'SubagentStop' : 'Stop'} hook 警告] ${decision.message}`)
+    if (decision.action === 'deny') blockingFeedback.push(`${eventName} hook feedback:\n${decision.message}`)
   }
-  return { additionalContext }
+  return blockingFeedback.length > 0 ? { additionalContext, blockingFeedback } : { additionalContext }
 }
