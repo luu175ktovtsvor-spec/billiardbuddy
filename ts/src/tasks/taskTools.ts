@@ -357,6 +357,38 @@ export interface BackgroundAgentRunResult {
   agent: AgentDefinition
 }
 
+interface BackgroundAgentRunOptions {
+  replaceTaskId?: string
+}
+
+async function createOrReplaceBackgroundAgentTask(
+  opts: BackgroundAgentTaskOptions,
+  input: BackgroundAgentTaskInput,
+  ctx: ToolContext,
+  agent: AgentDefinition,
+  params: Record<string, unknown>,
+  replaceTaskId?: string,
+): Promise<TaskMeta> {
+  const payload = {
+    title: taskTitle(input, agent),
+    kind: 'background_agent',
+    conversationId: ctx.conversationId,
+    workspaceRoot: ctx.workspace.root,
+    progress: 0,
+    stage: undefined,
+    params,
+    result: undefined,
+    error: undefined,
+  }
+  if (!replaceTaskId) return opts.tasks.create(payload)
+  const existing = await opts.tasks.get(replaceTaskId)
+  if (existing?.status === 'queued' || existing?.status === 'running') {
+    throw new Error(`background agent task ${replaceTaskId} is already running`)
+  }
+  if (!existing) return opts.tasks.create({ id: replaceTaskId, ...payload })
+  return opts.tasks.touch(replaceTaskId, payload)
+}
+
 export async function startBackgroundAgentRun(
   opts: BackgroundAgentTaskOptions,
   input: BackgroundAgentTaskInput,
@@ -364,17 +396,12 @@ export async function startBackgroundAgentRun(
   extraParams: Record<string, unknown> = {},
   initialMessages: Message[] = [],
   initialContentReplacementRecords: ContentReplacementRecord[] = [],
+  runOptions: BackgroundAgentRunOptions = {},
 ): Promise<BackgroundAgentRunResult> {
   if (!input || typeof input.task !== 'string' || !input.task.trim()) throw new Error('start_background_agent_task 需要 string 参数 task')
   const agent = pickAgent(opts.agents, input.agent)
   if (!agent) throw new Error(`start_background_agent_task 需要指定 agent;可用 agent:\n${agentList(opts.agents)}`)
-  let task = await opts.tasks.create({
-    title: taskTitle(input, agent),
-    kind: 'background_agent',
-    conversationId: ctx.conversationId,
-    workspaceRoot: ctx.workspace.root,
-    params: backgroundTaskParams(input, agent, extraParams),
-  })
+  let task = await createOrReplaceBackgroundAgentTask(opts, input, ctx, agent, backgroundTaskParams(input, agent, extraParams), runOptions.replaceTaskId)
   const stableAgentId = stringTaskParam(task, 'agent_id') || stringTaskParam(task, 'agentId') || task.id
   if (!stringTaskParam(task, 'agent_id')) {
     task = await opts.tasks.touch(task.id, { params: { ...task.params, agent_id: stableAgentId } })
@@ -533,7 +560,6 @@ export async function resumeBackgroundAgentTask(
     context: resumeContext(previousTask, prompt, metadata),
     title: `${instanceName || agentName}: resumed: ${prompt.trim().slice(0, 60)}`,
   }, resumedContext.ctx, {
-    resumed_from: previousTask.id,
     resume_source: 'SendMessage',
     previous_status: previousTask.status,
     ...(metadata ? { resume_metadata: true } : {}),
@@ -541,7 +567,7 @@ export async function resumeBackgroundAgentTask(
     replayed_messages: previousMessages.length,
     tool_result_store_dir: toolResultStoreDir,
     ...resumedContext.params,
-  }, previousMessages, previousReplacementRecords)
+  }, previousMessages, previousReplacementRecords, { replaceTaskId: previousTask.id })
   await opts.tasks.appendEvent(previousTask.id, {
     type: 'context_note',
     text: `SendMessage resumed this background agent as task ${task.id}.`,
