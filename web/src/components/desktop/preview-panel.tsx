@@ -595,7 +595,7 @@ export function DesktopPreviewPanel({
   const [busy, setBusy] = useState(false);
   const [editErr, setEditErr] = useState<string | null>(null);
   const reqIdRef = useRef(0);
-  // 待确认的改写（对齐 cc-haha：改完不直接落，先出 diff 给老板 接受/放弃）
+  // 待确认的改写（对齐 cc：改完不直接落，先出 diff 给老板 接受/放弃）
   const [pending, setPending] = useState<{ before: string; after: string; label: string } | null>(null);
   // 切换预览对象时重置时间线/待确认
   useEffect(() => {
@@ -868,7 +868,7 @@ export function DesktopPreviewPanel({
             <pre className="whitespace-pre-wrap break-words rounded-lg border border-black/[0.08] bg-white p-3.5 font-mono text-[12px] leading-relaxed text-[#1d1d1f] shadow-sm dark:border-white/[0.08] dark:bg-[#16181d] dark:text-[#c8cace] dark:shadow-none">{workText}</pre>
           </div>
         ) : pending ? (
-          // 待确认改写：对齐 cc-haha——先看 diff(旧红/新绿带上下文)，再 接受/放弃
+          // 待确认改写：对齐 cc——先看 diff(旧红/新绿带上下文)，再 接受/放弃
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="shrink-0 px-4 pt-3 text-[12px] text-[#86868b] dark:text-[#6e7077]">
               <span className="rounded bg-[#10a37f]/12 px-1.5 py-0.5 font-medium text-[#10a37f]">{pending.label}</span>
@@ -974,7 +974,7 @@ export function DesktopPreviewPanel({
             </div>
           )}
           {editErr && <div className="mb-2 text-[12px] text-[#ff3b30] dark:text-[#ff8585]">{editErr}</div>}
-          {/* 待确认改写：接受/放弃这处 diff（对齐 cc-haha 的逐处采纳纪律） */}
+          {/* 待确认改写：接受/放弃这处 diff（对齐 cc 的逐处采纳纪律） */}
           {pending && (
             <div className="flex items-center gap-2">
               <button

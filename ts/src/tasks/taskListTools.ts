@@ -90,6 +90,14 @@ function statusFrom(value: unknown): StructuredTaskStatus | 'deleted' | undefine
     : undefined
 }
 
+function ccHahaAlias<T>(tool: Tool<T>, name: string): Tool<T> {
+  return {
+    ...tool,
+    name,
+    description: `${tool.description} CC-Haha-compatible alias for ${tool.name}.`,
+  }
+}
+
 export function createStructuredTaskTools(taskLists: TaskListService): Tool[] {
   const createTask: Tool<TaskCreateInput> = {
     name: 'task_create',
@@ -190,5 +198,14 @@ export function createStructuredTaskTools(taskLists: TaskListService): Tool[] {
     },
   }
 
-  return [createTask, listTasks, getTask, updateTask]
+  return [
+    createTask,
+    listTasks,
+    getTask,
+    updateTask,
+    ccHahaAlias(createTask, 'TaskCreate'),
+    ccHahaAlias(listTasks, 'TaskList'),
+    ccHahaAlias(getTask, 'TaskGet'),
+    ccHahaAlias(updateTask, 'TaskUpdate'),
+  ]
 }

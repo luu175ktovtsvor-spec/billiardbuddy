@@ -86,6 +86,10 @@ describe('tool_search', () => {
       tool('LSP', 'Interact with Language Server Protocol code intelligence features'),
       tool('PowerShell', 'Run PowerShell commands with PowerShell-aware security checks'),
       tool('REPL', 'Execute a structured batch of primitive coding tools'),
+      tool('TaskCreate', 'Create a structured task in the current conversation task list'),
+      tool('TaskList', 'List structured tasks in the current conversation task list'),
+      tool('TaskGet', 'Retrieve one structured task by id'),
+      tool('TaskUpdate', 'Update a structured task'),
       tool('TaskOutput', 'Read output from a background task'),
       tool('TaskStop', 'Stop a running background task'),
       tool('TeamCreate', 'Create a local agent team'),
@@ -123,6 +127,10 @@ describe('tool_search', () => {
     expect(searchTools(registry, { query: '语言服务 hover', limit: 1 })[0]?.tool.name).toBe('LSP')
     expect(searchTools(registry, { query: '执行 PowerShell 命令', limit: 1 })[0]?.tool.name).toBe('PowerShell')
     expect(searchTools(registry, { query: '多步代码操作', limit: 1 })[0]?.tool.name).toBe('REPL')
+    expect(searchTools(registry, { query: '创建结构化任务', limit: 1 })[0]?.tool.name).toBe('TaskCreate')
+    expect(searchTools(registry, { query: '查看任务列表', limit: 1 })[0]?.tool.name).toBe('TaskList')
+    expect(searchTools(registry, { query: '读取任务详情', limit: 1 })[0]?.tool.name).toBe('TaskGet')
+    expect(searchTools(registry, { query: '完成任务状态', limit: 1 })[0]?.tool.name).toBe('TaskUpdate')
     expect(searchTools(registry, { query: '读取任务输出', limit: 1 })[0]?.tool.name).toBe('TaskOutput')
     expect(searchTools(registry, { query: '停止任务', limit: 1 })[0]?.tool.name).toBe('TaskStop')
     expect(searchTools(registry, { query: '创建团队', limit: 1 })[0]?.tool.name).toBe('TeamCreate')

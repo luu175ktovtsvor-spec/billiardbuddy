@@ -76,7 +76,7 @@ export interface RunAgentLoopOptions {
   teamInbox?: TeamInboxContextOptions & { service: TeamService }
 }
 
-const TODO_UPDATE_TOOL_NAMES = new Set(['todo_write', 'task_create', 'task_update'])
+const TODO_UPDATE_TOOL_NAMES = new Set(['todo_write', 'task_create', 'task_update', 'TaskCreate', 'TaskUpdate'])
 const AGGREGATE_TOOL_RESULT_BUDGET_SKIP_TOOLS = new Set(['read_file', 'read_many_files'])
 
 /**

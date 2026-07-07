@@ -11,6 +11,10 @@ function makeCtx(root: string): ToolContext {
   return { workspace: new Workspace(root), conversationId: 'conv-tools' }
 }
 
+function toolsByName(root: string) {
+  return new Map(createStructuredTaskTools(new TaskListService(root)).map(tool => [tool.name, tool]))
+}
+
 test('structured task tools create, list, get and sync todo updates', async () => {
   const root = mkdtempSync(join(tmpdir(), 'task-list-tools-'))
   try {
@@ -30,6 +34,40 @@ test('structured task tools create, list, get and sync todo updates', async () =
     const updated = await update!.execute({ task_id: '1', status: 'completed', metadata: { migratedFrom: 'cc-haha' } }, ctx)
     expect(updated).toContain('Updated task #1')
     expect(ctx.todos).toEqual([{ task: '搬 Task 工具', status: 'done', activeForm: '正在搬 Task 工具' }])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('structured task tools expose CC-Haha PascalCase aliases over the same task list', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-list-tools-'))
+  try {
+    const tools = toolsByName(root)
+    const ctx = makeCtx(root)
+
+    expect([...tools.keys()]).toEqual([
+      'task_create',
+      'task_list',
+      'task_get',
+      'task_update',
+      'TaskCreate',
+      'TaskList',
+      'TaskGet',
+      'TaskUpdate',
+    ])
+
+    const created = await tools.get('TaskCreate')!.execute({ subject: '兼容 CC-Haha TaskCreate', description: 'PascalCase 工具名也要能直接创建任务' }, ctx)
+    expect(created).toContain('Task #1 created successfully')
+
+    const listedViaAlias = await tools.get('TaskList')!.execute({}, ctx)
+    expect(listedViaAlias).toContain('#1 [pending] 兼容 CC-Haha TaskCreate')
+
+    const updatedViaAlias = await tools.get('TaskUpdate')!.execute({ taskId: '1', status: 'in_progress', activeForm: '正在验证 TaskUpdate' }, ctx)
+    expect(updatedViaAlias).toContain('Updated task #1')
+    expect(ctx.todos).toEqual([{ task: '兼容 CC-Haha TaskCreate', status: 'in_progress', activeForm: '正在验证 TaskUpdate' }])
+
+    const detailViaLowercase = await tools.get('task_get')!.execute({ taskId: '1' }, ctx)
+    expect(detailViaLowercase).toContain('Active: 正在验证 TaskUpdate')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

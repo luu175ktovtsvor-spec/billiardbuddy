@@ -1,5 +1,5 @@
 /**
- * 集中文案 + 状态动词库 —— 对标 Claude Code / cc-haha 的呈现，中文落地、单一来源。
+ * 集中文案 + 状态动词库 —— 对标 Claude Code / cc 的呈现，中文落地、单一来源。
  * 覆盖：权限模式四档 / 空状态欢迎 / 输入框 placeholder / spinner 进行时动词库。
  * 改文案改这里，别散落进组件。配色不在这里（保留现有 #10a37f 等）。
  */
@@ -17,7 +17,7 @@ export const PERMISSION_MODES: { value: PermissionMode; label: string; desc: str
   { value: "full", label: "跳过确认", desc: "普通读写改查直接做，发布、删除、高成本动作仍确认", effects: ["改文件：直接做", "跑命令：直接跑", "对外发布：必须确认"] },
 ];
 
-/** 空状态 / 欢迎 —— 去客服腔，专业 agent 基调（对标 cc-haha empty state）。 */
+/** 空状态 / 欢迎 —— 去客服腔，专业 agent 基调（对标 cc empty state）。 */
 export const WELCOME = {
   title: "今天要处理什么？",
   subtitle: "可以改代码、查资料、整理文件、分析报表，也可以继续做图和视频。需要动文件或跑命令时会按权限确认。",
@@ -25,7 +25,7 @@ export const WELCOME = {
 };
 
 /**
- * Spinner 进行时动词库 —— 对标 cc-haha 的 spinnerVerbs（随机轮换），中文落地。
+ * Spinner 进行时动词库 —— 对标 cc 的 spinnerVerbs（随机轮换），中文落地。
  * 文案统改(A-Task-4a)：从 28 个随手写的口语动词精简为 6 个中性词，收敛"随便感"；
  * 有活跃工具时前端已优先显示工具标签(见 agent-spinner.tsx)，不受此列表影响。
  */
