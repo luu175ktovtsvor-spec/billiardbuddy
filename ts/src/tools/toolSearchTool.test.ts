@@ -74,6 +74,8 @@ describe('tool_search', () => {
       tool('git_status', 'Read git branch/status and optional bounded diff'),
       tool('git_history', 'Read recent git commit history and optional patch'),
       tool('read_stored_tool_result', 'Read a bounded window from an oversized stored tool result'),
+      tool('SendUserMessage', 'Send a message the user will read'),
+      tool('Brief', 'Legacy alias for SendUserMessage'),
       tool('read_agent_task_stored_result', 'Read a bounded window from an oversized stored tool result emitted inside an agent_task sidechain'),
       tool('restore_file', 'Restore a file snapshot'),
       tool('list_mcp_resources', 'List readable resources and resource templates exposed by connected MCP servers'),
@@ -110,6 +112,7 @@ describe('tool_search', () => {
     expect(searchTools(registry, { query: '这段代码谁改的', limit: 1 })[0]?.tool.name).toBe('git_history')
     expect(searchTools(registry, { query: '追溯修改原因', limit: 1 })[0]?.tool.name).toBe('git_history')
     expect(searchTools(registry, { query: '读取长结果', limit: 1 })[0]?.tool.name).toBe('read_stored_tool_result')
+    expect(searchTools(registry, { query: '给用户发消息', limit: 1 })[0]?.tool.name).toBe('SendUserMessage')
     expect(searchTools(registry, { query: '读取子代理长结果', limit: 1 })[0]?.tool.name).toBe('read_agent_task_stored_result')
     expect(searchTools(registry, { query: '回滚文件', limit: 1 })[0]?.tool.name).toBe('restore_file')
     expect(searchTools(registry, { query: '列 MCP 资源', limit: 1 })[0]?.tool.name).toBe('list_mcp_resources')
