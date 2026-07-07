@@ -139,7 +139,8 @@ test('applyStopHooks:final output 可用于生成收尾上下文', async () => {
       ],
     }, '完成', c)
     expect(result).toEqual({
-      additionalContext: ['final:完成', '[Stop hook 警告] stop warning'],
+      additionalContext: ['final:完成'],
+      blockingFeedback: ['Stop hook feedback:\nstop warning'],
     })
   } finally {
     rmSync(c.workspace.root, { recursive: true, force: true })
@@ -160,7 +161,10 @@ test('SubagentStart/SubagentStop:按 agentType matcher 派发并携带 agent id'
     const started = await applySubagentStartHooks(registry, 'agent-1', 'researcher', { ...c, conversationId: 'agent-1' })
     expect(started.additionalContext).toEqual(['start:agent-1:researcher'])
     const stopped = await applyStopHooks(registry, '完成', { ...c, conversationId: 'agent-1' }, { agentId: 'agent-1', agentType: 'researcher' })
-    expect(stopped.additionalContext).toEqual(['stop:agent-1:完成', '[SubagentStop hook 警告] stop warn'])
+    expect(stopped).toEqual({
+      additionalContext: ['stop:agent-1:完成'],
+      blockingFeedback: ['SubagentStop hook feedback:\nstop warn'],
+    })
   } finally {
     rmSync(c.workspace.root, { recursive: true, force: true })
   }

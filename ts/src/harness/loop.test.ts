@@ -1439,6 +1439,42 @@ test('hooks:Stop 在 final 前输出 context_note', async () => {
   ])
 })
 
+test('hooks:Stop deny 回灌 feedback 并继续模型循环', async () => {
+  let stopCalls = 0
+  const model = scriptedModel([
+    { kind: 'final', text: '第一版收尾' },
+    { kind: 'final', text: '补完验证后的收尾' },
+  ])
+  const events = await collect(runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    hooks: {
+      rules: [{
+        event: 'Stop',
+        handler: payload => {
+          stopCalls += 1
+          expect(payload.stopHookActive).toBe(stopCalls > 1)
+          return stopCalls === 1
+            ? { action: 'deny', message: '还缺测试证据' }
+            : { action: 'context', additionalContext: `收尾通过:${payload.output}` }
+        },
+      }],
+    },
+  }))
+  expect(events).toEqual([
+    { type: 'context_note', text: 'Stop hook feedback:\n还缺测试证据' },
+    { type: 'context_note', text: '收尾通过:补完验证后的收尾' },
+    { type: 'final', text: '补完验证后的收尾' },
+  ])
+  const secondInput = model.received[1]!
+  expect(secondInput.messages.some(
+    message => message.role === 'user' && message.content.some(block => block.type === 'text' && block.text.includes('Stop hook feedback:\n还缺测试证据')),
+  )).toBe(true)
+})
+
 test('hooks:Stop 在 UserPromptSubmit deny 收敛时也执行', async () => {
   const events = await collect(runAgentLoop({
     model: scriptedModel([{ kind: 'final', text: 'should-not-run' }]),
