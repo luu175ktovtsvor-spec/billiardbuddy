@@ -160,6 +160,12 @@ export class Transcript {
     await appendFile(this.contentReplacementPath, records.map(record => `${JSON.stringify(record)}\n`).join(''), 'utf8')
   }
 
+  async seedContentReplacementRecords(records: ContentReplacementRecord[]): Promise<void> {
+    if (records.length === 0) return
+    await mkdir(dirname(this.contentReplacementPath), { recursive: true })
+    await writeFile(this.contentReplacementPath, records.map(record => `${JSON.stringify(record)}\n`).join(''), 'utf8')
+  }
+
   private async writeLines(lines: string[]): Promise<void> {
     await mkdir(dirname(this.path), { recursive: true })
     const tmp = `${this.path}.${process.pid}.${Date.now()}.tmp`

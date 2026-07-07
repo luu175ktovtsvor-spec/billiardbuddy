@@ -784,3 +784,83 @@ test('SendMessage resumes background agents with inherited stored tool result ac
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('SendMessage resume inherits content replacement records before replaying transcript', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'team-tools-resume-replacements-'))
+  try {
+    const teams = new TeamService(root)
+    const tasks = new TaskService(root)
+    const agent: AgentDefinition = {
+      name: 'researcher',
+      description: '研究代理',
+      prompt: '研究并总结。',
+      filePath: join(root, 'researcher.md'),
+    }
+    const previous = await tasks.create({
+      id: 'replacement_agent_1',
+      title: 'researcher: replacement output',
+      kind: 'background_agent',
+      conversationId: 'c-resume-replacements',
+      workspaceRoot: root,
+      params: { agent: 'researcher', name: 'replacement-reader', task: '继承 replacement' },
+    })
+    const rawOutput = `RAW_HEAD\n${'raw-large-result'.repeat(18_000)}\nRAW_TAIL`
+    const replacement = [
+      '<stored_tool_result tool="run_command" call_id="big-replay" chars="250000" bytes="250000" path="/tmp/replayed.txt">',
+      '工具结果过长,已写入 path;模型上下文仅保留头尾预览。',
+      '<preview_head chars="8">',
+      'HEAD-OK',
+      '</preview_head>',
+      '<preview_tail chars="8">',
+      'TAIL-OK',
+      '</preview_tail>',
+      '</stored_tool_result>',
+    ].join('\n')
+    await tasks.touch(previous.id, { status: 'completed', result: '旧任务完成' })
+    await tasks.transcript(previous.id).save([
+      userText('历史任务:产生一个会被 replacement 的大结果。'),
+      { role: 'assistant', content: [toolUseBlock({ id: 'big-replay', name: 'run_command', input: { command: 'huge-output' } })] },
+      { role: 'user', content: [toolResultBlock('big-replay', rawOutput)] },
+    ])
+    await tasks.transcript(previous.id).appendContentReplacementRecords([
+      { kind: 'tool-result', toolUseId: 'big-replay', replacement },
+    ])
+
+    let firstStepText = ''
+    const model: Model = {
+      async step(input) {
+        firstStepText = input.messages.flatMap(message => message.content)
+          .map(block => block.type === 'text' ? block.text : block.type === 'tool_result' ? block.content : '')
+          .join('\n')
+        return { kind: 'final', text: 'replacement inherited' }
+      },
+    }
+    const [, , sendMessage] = createTeamTools(teams, {
+      tasks,
+      resumeBackgroundAgent: (task, message, ctx) => resumeBackgroundAgentTask({
+        tasks,
+        agents: [agent],
+        model,
+        baseTools: [],
+        baseSystemPrompt: 'base prompt',
+      }, task, message, ctx),
+    })
+
+    const ctx = { workspace: new Workspace(root), conversationId: 'c-resume-replacements', permissionMode: 'ask' as const }
+    const output = JSON.parse(await sendMessage!.execute({ to: 'replacement-reader', summary: 'resume replacements', message: '继续。' }, ctx))
+    expect(output.success).toBe(true)
+    const resumed = await waitFor(async () => {
+      const task = await tasks.get(output.task_id)
+      return task?.status === 'completed' ? task : null
+    })
+
+    expect(resumed.result).toBe('replacement inherited')
+    expect(firstStepText).toContain('<stored_tool_result tool="run_command"')
+    expect(firstStepText).toContain('HEAD-OK')
+    expect(firstStepText).not.toContain('raw-large-result')
+    const inheritedRecords = await tasks.transcript(output.task_id).loadContentReplacementRecords()
+    expect(inheritedRecords).toEqual([{ kind: 'tool-result', toolUseId: 'big-replay', replacement }])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
