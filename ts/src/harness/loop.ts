@@ -44,6 +44,7 @@ import {
   type HookRegistry,
 } from '../hooks/hooks'
 import type { TeamInboxContextOptions, TeamService } from '../tasks/teamService'
+import { clearThreadGoalHook, formatGoalContinuationStatusOutput, getThreadGoal, goalCompletionStatusOutput, goalLocalStatusMessage, hookRegistryHasGoalHook } from '../goals/goalState'
 
 export interface TranscriptLike {
   load(): Promise<Message[]>
@@ -134,17 +135,38 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     yield { type: 'context_note', text: extra }
   }
   let messages: Message[] = []
+  const saveTranscript = async () => {
+    if (!opts.transcript) return
+    try {
+      await opts.transcript.savePreservingExternalTail(messages, transcriptBaseline)
+    } catch {
+      // transcript 是跨轮记忆底座,但写失败不能拖垮当前任务。
+    }
+  }
+
   let stopHookActive = false
   const applyStopHookContinuation = async (finalText: string): Promise<{ shouldContinue: boolean; events: AgentEvent[] }> => {
     const events: AgentEvent[] = []
     const stopHook = await applyStopHooks(opts.hooks, finalText, ctx, opts.subagent, { stopHookActive })
+    const hasActiveGoalHook = hookRegistryHasGoalHook(opts.hooks, ctx.conversationId) && !!(ctx.conversationId && getThreadGoal(ctx.conversationId))
     for (const extra of stopHook.additionalContext) events.push({ type: 'context_note', text: extra })
     if (!stopHook.blockingFeedback?.length) {
+      if (ctx.conversationId && hasActiveGoalHook) {
+        messages.push(goalLocalStatusMessage(goalCompletionStatusOutput()))
+        clearThreadGoalHook(ctx.conversationId)
+        await saveTranscript()
+      }
       stopHookActive = false
       return { shouldContinue: false, events }
     }
-    for (const feedback of stopHook.blockingFeedback) events.push({ type: 'context_note', text: feedback })
+    for (const feedback of stopHook.blockingFeedback) {
+      events.push({ type: 'context_note', text: feedback })
+      if (hasActiveGoalHook) {
+        messages.push(goalLocalStatusMessage(formatGoalContinuationStatusOutput(feedback)))
+      }
+    }
     messages.push({ role: 'user', content: stopHook.blockingFeedback.map(text => textBlock(wrapReminder(text))) })
+    await saveTranscript()
     stopHookActive = true
     return { shouldContinue: true, events }
   }
@@ -191,15 +213,6 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     outputTokens: 0,
     cacheReadInputTokens: 0,
     cacheCreationInputTokens: 0,
-  }
-
-  const saveTranscript = async () => {
-    if (!opts.transcript) return
-    try {
-      await opts.transcript.savePreservingExternalTail(messages, transcriptBaseline)
-    } catch {
-      // transcript 是跨轮记忆底座,但写失败不能拖垮当前任务。
-    }
   }
 
   const applyAggregateToolResultBudget = async () => {

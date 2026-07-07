@@ -18,6 +18,7 @@ import { userText } from '../types/message'
 import { readStoredToolResultTool } from '../tools/storedToolResultTool'
 import { TeamService } from '../tasks/teamService'
 import { Transcript } from '../memory/transcript'
+import { createGoalHookRegistry, getThreadGoal, setThreadGoalHook } from '../goals/goalState'
 
 let root: string
 beforeEach(() => {
@@ -1473,6 +1474,51 @@ test('hooks:Stop deny 回灌 feedback 并继续模型循环', async () => {
   expect(secondInput.messages.some(
     message => message.role === 'user' && message.content.some(block => block.type === 'text' && block.text.includes('Stop hook feedback:\n还缺测试证据')),
   )).toBe(true)
+})
+
+test('goal Stop hook persists continuation and completion status anchors', async () => {
+  const transcriptRoot = mkdtempSync(join(tmpdir(), 'goal-loop-transcript-'))
+  try {
+    const transcript = new Transcript(transcriptRoot, 'goal-loop')
+    setThreadGoalHook('goal-loop', 'ship the feature with tests', 1_000)
+    let stopChecks = 0
+    const model: Model = {
+      async step(input) {
+        if ((input.system ?? '').includes('You are evaluating a hook in Claude Code')) {
+          stopChecks += 1
+          return stopChecks === 1
+            ? { kind: 'final', text: '{"ok":false,"reason":"missing tests"}' }
+            : { kind: 'final', text: '{"ok":true}' }
+        }
+        return stopChecks === 0
+          ? { kind: 'final', text: 'first final' }
+          : { kind: 'final', text: 'verified final' }
+      },
+    } as Model
+
+    const events = await collect(runAgentLoop({
+      model,
+      registry: buildGeneralRegistry(),
+      workspace: new Workspace(root),
+      systemPrompt: 'SYS',
+      userMessage: 'continue goal',
+      conversationId: 'goal-loop',
+      transcript,
+      hooks: createGoalHookRegistry('goal-loop'),
+    }))
+
+    expect(events).toEqual([
+      { type: 'context_note', text: 'Stop hook feedback:\nPrompt hook condition was not met: missing tests' },
+      { type: 'final', text: 'verified final' },
+    ])
+    const messages = await transcript.load()
+    const transcriptText = JSON.stringify(messages)
+    expect(transcriptText).toContain('Goal continuing: missing tests')
+    expect(transcriptText).toContain('Goal marked complete.')
+    expect(getThreadGoal('goal-loop')).toBeNull()
+  } finally {
+    rmSync(transcriptRoot, { recursive: true, force: true })
+  }
 })
 
 test('hooks:Stop 在 UserPromptSubmit deny 收敛时也执行', async () => {

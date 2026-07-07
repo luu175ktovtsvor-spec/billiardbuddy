@@ -2261,6 +2261,130 @@ description: 门店项目检查
   }
 })
 
+test('POST /agent/run handles builtin /goal set as local command before continuing model turn', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'server-goal-set-'))
+  let sentBody: any
+  const goalServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    env: {
+      OPENAI_BASE_URL: 'https://model.example/v1',
+      OPENAI_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init?.body as string)
+      const isHookEvaluation = JSON.stringify(body).includes('<cc-haha-goal-hook>')
+      if (!isHookEvaluation) sentBody = body
+      const content = isHookEvaluation ? '{"ok":true}' : '目标推进完成'
+      const enc = new TextEncoder()
+      return new Response(new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content }, finish_reason: 'stop' }] })}\n\n`))
+          c.enqueue(enc.encode('data: [DONE]\n\n'))
+          c.close()
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  try {
+    const res = await fetch(`http://127.0.0.1:${goalServer.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({ message: '/goal 完成迁移并跑绿测试', conversationId: 'goal-set', workspaceRoot: root, permissionMode: 'full' }),
+    })
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).toContain('event: command_invocation')
+    expect(text).toContain('Goal set: 完成迁移并跑绿测试')
+    expect(text).toContain('目标推进完成')
+    expect(JSON.stringify(sentBody.messages)).toContain('Goal set: 完成迁移并跑绿测试')
+    expect(JSON.stringify(sentBody.messages)).toContain('Continue working until this goal is complete: 完成迁移并跑绿测试')
+
+    const replay = await fetch(`http://127.0.0.1:${goalServer.port}/sessions/goal-set/events`)
+    const replayBody = await replay.json() as any
+    expect(replayBody.events.map((record: any) => record.event.type)).toEqual([
+      'command_invocation',
+      'context_note',
+      'final',
+      'done',
+    ])
+    const transcript = await new SessionService(root).loadTranscript('goal-set')
+    expect(JSON.stringify(transcript)).toContain('<command-name>/goal</command-name>')
+    expect(JSON.stringify(transcript)).toContain('Goal set: 完成迁移并跑绿测试')
+  } finally {
+    goalServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('POST /agent/run handles builtin /goal clear locally without calling model', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'server-goal-clear-'))
+  let fetchCalls = 0
+  const goalServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    env: {
+      OPENAI_BASE_URL: 'https://model.example/v1',
+      OPENAI_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async () => {
+      fetchCalls += 1
+      throw new Error('model should not be called for /goal clear')
+    },
+  })
+  try {
+    const res = await fetch(`http://127.0.0.1:${goalServer.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({ message: '/goal clear', conversationId: 'goal-clear', workspaceRoot: root, permissionMode: 'full' }),
+    })
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).toContain('event: command_invocation')
+    expect(text).toContain('No active goal.')
+    expect(text).toContain('event: final')
+    expect(fetchCalls).toBe(0)
+  } finally {
+    goalServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('POST /agent/run handles builtin /goal usage errors as local command output', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'server-goal-usage-'))
+  let fetchCalls = 0
+  const goalServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    env: {
+      OPENAI_BASE_URL: 'https://model.example/v1',
+      OPENAI_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async () => {
+      fetchCalls += 1
+      throw new Error('model should not be called for invalid /goal')
+    },
+  })
+  try {
+    const res = await fetch(`http://127.0.0.1:${goalServer.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({ message: '/goal status', conversationId: 'goal-usage', workspaceRoot: root, permissionMode: 'full' }),
+    })
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).toContain('Usage: /goal <condition> | clear')
+    expect(text).toContain('event: final')
+    expect(fetchCalls).toBe(0)
+  } finally {
+    goalServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('legacy /api/v1/agent/tasks starts a turn and streams frontend-compatible SSE events', async () => {
   const root = mkdtempSync(join(tmpdir(), 'legacy-agent-task-'))
   const legacyServer = startServer({
