@@ -1,16 +1,24 @@
+import { stat, utimes } from 'node:fs/promises'
 import { runAgentLoop } from '../harness/loop'
 import type { AgentDefinition } from '../agents/agentLoader'
 import { resolveAgentTools } from '../agents/agentLoader'
+import { loadAgentMcpRuntime, type AgentMcpRuntimeOptions } from '../agents/agentMcp'
 import type { Model } from '../types/model'
+import type { Message } from '../types/message'
 import type { Tool, ToolContext } from '../tools/Tool'
 import { ToolRegistry } from '../tools/registry'
-import type { TaskService, TaskStatus } from './taskService'
+import { Sandbox } from '../sandbox/sandbox'
+import { Workspace } from '../workspace/workspace'
+import type { BackgroundAgentMetadata, TaskEventRecord, TaskMeta, TaskService, TaskStatus } from './taskService'
+import { createIsolatedAgentWorktree, type AgentWorktreeCleanupResult } from '../tools/worktreeTools'
 
 export interface BackgroundAgentTaskInput {
   agent?: string
+  name?: string
   task: string
   context?: string
   title?: string
+  isolation?: 'worktree'
 }
 
 export interface BackgroundAgentTaskOptions {
@@ -20,6 +28,7 @@ export interface BackgroundAgentTaskOptions {
   baseTools: Tool[]
   baseSystemPrompt?: string
   maxTurns?: number
+  mcp?: AgentMcpRuntimeOptions
 }
 
 function pickAgent(agents: AgentDefinition[], name: unknown): AgentDefinition | null {
@@ -35,13 +44,23 @@ function agentList(agents: AgentDefinition[]): string {
 }
 
 function taskMessage(input: BackgroundAgentTaskInput): string {
-  return input.context?.trim()
-    ? `${input.task}\n\n<context>\n${input.context.trim()}\n</context>`
-    : input.task
+  const task = input.task.trim()
+  const context = input.context?.trim()
+  return context
+    ? `${task}\n\n<context>\n${context}\n</context>`
+    : task
+}
+
+function agentTaskMessage(agent: AgentDefinition, input: BackgroundAgentTaskInput): string {
+  const base = taskMessage(input)
+  return agent.initialPrompt?.trim()
+    ? `${agent.initialPrompt.trim()}\n\n${base}`
+    : base
 }
 
 function taskTitle(input: BackgroundAgentTaskInput, agent: AgentDefinition): string {
-  return input.title?.trim() || `${agent.name}: ${input.task.trim().slice(0, 80)}`
+  const displayName = normalizeAgentInstanceName(input.name) || agent.name
+  return input.title?.trim() || `${displayName}: ${input.task.trim().slice(0, 80)}`
 }
 
 function agentSystemPrompt(agent: AgentDefinition, baseSystemPrompt = ''): string {
@@ -52,6 +71,363 @@ function agentSystemPrompt(agent: AgentDefinition, baseSystemPrompt = ''): strin
     '</background_subagent>',
     'You are running in a background task. Keep progress concise and return a final result for the user.',
   ].filter(Boolean).join('\n\n')
+}
+
+function backgroundTaskParams(input: BackgroundAgentTaskInput, agent: AgentDefinition, extraParams: Record<string, unknown> = {}): Record<string, unknown> {
+  const name = normalizeAgentInstanceName(input.name)
+  const isolation = input.isolation ?? agent.isolation
+  return {
+    agent: agent.name,
+    ...(name ? { name } : {}),
+    task: input.task.trim(),
+    ...(input.context?.trim() ? { context: input.context.trim() } : {}),
+    ...(isolation === 'worktree' ? { isolation: 'worktree' } : {}),
+    ...(agent.permissionMode ? { permission_mode: agent.permissionMode } : {}),
+    ...(agent.maxTurns ? { max_turns: agent.maxTurns } : {}),
+    ...extraParams,
+  }
+}
+
+function normalizeAgentInstanceName(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const name = value.trim()
+  if (!name) return ''
+  if (name === '*' || name.includes('@')) throw new Error('background agent name must be a bare SendMessage recipient name')
+  if (name.length > 128) throw new Error('background agent name is too long')
+  return name
+}
+
+function stringMetadata(value: string | undefined): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : ''
+}
+
+function stringTaskParam(task: TaskMeta, key: string): string {
+  const value = task.params?.[key]
+  return typeof value === 'string' && value.trim() ? value.trim() : ''
+}
+
+function resumableAgentName(task: TaskMeta, metadata?: BackgroundAgentMetadata | null): string {
+  return stringMetadata(metadata?.agent) || stringMetadata(metadata?.agentType) || stringTaskParam(task, 'agent')
+}
+
+function resumableInstanceName(task: TaskMeta, metadata?: BackgroundAgentMetadata | null): string {
+  return stringMetadata(metadata?.name) || stringTaskParam(task, 'name') || stringTaskParam(task, 'agentName') || stringTaskParam(task, 'agent_name')
+}
+
+function resumableStableAgentId(task: TaskMeta, metadata?: BackgroundAgentMetadata | null): string {
+  return stringMetadata(metadata?.agentId) || stringTaskParam(task, 'agent_id') || stringTaskParam(task, 'agentId') || task.id
+}
+
+function resumableToolResultStoreDir(task: TaskMeta, tasks: TaskService, metadata?: BackgroundAgentMetadata | null): string {
+  return stringMetadata(metadata?.toolResultStoreDir) || stringTaskParam(task, 'tool_result_store_dir') || tasks.backgroundAgentToolResultStoreDir(task.id)
+}
+
+function originalTaskText(task: TaskMeta, metadata?: BackgroundAgentMetadata | null): string {
+  return stringMetadata(metadata?.task) || stringTaskParam(task, 'task') || task.title
+}
+
+function originalContextText(task: TaskMeta, metadata?: BackgroundAgentMetadata | null): string {
+  return stringMetadata(metadata?.context) || stringTaskParam(task, 'context')
+}
+
+function resumeContext(task: TaskMeta, prompt: string, metadata?: BackgroundAgentMetadata | null): string {
+  return [
+    `This is a resumed background agent run triggered by SendMessage for task ${task.id} (previous status: ${task.status}).`,
+    `Original task:\n${originalTaskText(task, metadata)}`,
+    originalContextText(task, metadata) ? `Original context:\n${originalContextText(task, metadata)}` : '',
+    `New message from team-lead:\n${prompt.trim()}`,
+  ].filter(Boolean).join('\n\n')
+}
+
+function filterUnresolvedToolUseMessages(messages: Message[]): Message[] {
+  const toolUseIds = new Set<string>()
+  const toolResultIds = new Set<string>()
+  for (const message of messages) {
+    for (const block of message.content) {
+      if (block.type === 'tool_use') toolUseIds.add(block.id)
+      if (block.type === 'tool_result') toolResultIds.add(block.tool_use_id)
+    }
+  }
+  const unresolved = new Set([...toolUseIds].filter(id => !toolResultIds.has(id)))
+  if (unresolved.size === 0) return messages
+  return messages.filter(message => {
+    if (message.role !== 'assistant') return true
+    const toolUseBlockIds = message.content
+      .filter(block => block.type === 'tool_use')
+      .map(block => block.id)
+    if (toolUseBlockIds.length === 0) return true
+    return !toolUseBlockIds.every(id => unresolved.has(id))
+  })
+}
+
+function filterWhitespaceOnlyAssistantMessages(messages: Message[]): Message[] {
+  return messages.filter(message => {
+    if (message.role !== 'assistant' || message.content.length === 0) return true
+    return !message.content.every(block => block.type === 'text' && !block.text.trim())
+  })
+}
+
+function filterOrphanedThinkingOnlyMessages(messages: Message[]): Message[] {
+  return messages.filter(message => {
+    if (message.role !== 'assistant' || message.content.length === 0) return true
+    return !message.content.every(block => block.type === 'thinking')
+  })
+}
+
+export function sanitizeBackgroundAgentResumeMessages(messages: Message[]): Message[] {
+  return filterWhitespaceOnlyAssistantMessages(
+    filterOrphanedThinkingOnlyMessages(
+      filterUnresolvedToolUseMessages(messages),
+    ),
+  )
+}
+
+async function directoryExists(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+async function touchDirectoryMtime(path: string): Promise<void> {
+  const now = new Date()
+  await utimes(path, now, now).catch(() => undefined)
+}
+
+function sandboxForWorkspace(base: Sandbox | undefined, workspace: Workspace): Sandbox | undefined {
+  return base?.isOsSandboxActive() ? new Sandbox({ workspace, enabled: true }) : base
+}
+
+function formatAgentWorktreeNote(cleanup: AgentWorktreeCleanupResult | null): string {
+  if (!cleanup) return ''
+  if (!cleanup.kept) return `Agent worktree was clean and removed. changed_files=${cleanup.changedFiles} commits=${cleanup.commits}`
+  return `Agent worktree kept at ${cleanup.worktreePath} on ${cleanup.worktreeBranch}. changed_files=${cleanup.changedFiles} commits=${cleanup.commits}`
+}
+
+async function resumeToolContext(previousTask: TaskMeta, ctx: ToolContext, metadata?: BackgroundAgentMetadata | null): Promise<{ ctx: ToolContext; params: Record<string, unknown> }> {
+  const worktreePath = stringMetadata(metadata?.worktreePath)
+  const workspaceRoot = stringMetadata(metadata?.workspaceRoot) ||
+    (typeof previousTask.workspaceRoot === 'string' && previousTask.workspaceRoot.trim() ? previousTask.workspaceRoot.trim() : '')
+  if (worktreePath) {
+    if (await directoryExists(worktreePath)) {
+      await touchDirectoryMtime(worktreePath)
+      const workspace = new Workspace(worktreePath)
+      const sandbox = ctx.sandbox?.isOsSandboxActive()
+        ? new Sandbox({ workspace, enabled: true })
+        : ctx.sandbox
+      return {
+        ctx: { ...ctx, workspace, sandbox },
+        params: {
+          resumed_workspace_root: workspace.root,
+          resumed_worktree_path: workspace.root,
+        },
+      }
+    }
+    if (!workspaceRoot || workspaceRoot === worktreePath) {
+      return {
+        ctx,
+        params: {
+          resumed_workspace_root: ctx.workspace.root,
+          resume_worktree_missing: worktreePath,
+        },
+      }
+    }
+  }
+  if (!workspaceRoot || workspaceRoot === ctx.workspace.root) {
+    return {
+      ctx,
+      params: {
+        ...(workspaceRoot ? { resumed_workspace_root: ctx.workspace.root } : {}),
+        ...(worktreePath ? { resume_worktree_missing: worktreePath } : {}),
+      },
+    }
+  }
+  if (!(await directoryExists(workspaceRoot))) {
+    return {
+      ctx,
+      params: {
+        resumed_workspace_root: ctx.workspace.root,
+        ...(worktreePath ? { resume_worktree_missing: worktreePath } : {}),
+        resume_workspace_missing: workspaceRoot,
+      },
+    }
+  }
+  const workspace = new Workspace(workspaceRoot)
+  const sandbox = ctx.sandbox?.isOsSandboxActive()
+    ? new Sandbox({ workspace, enabled: true })
+    : ctx.sandbox
+  return {
+    ctx: { ...ctx, workspace, sandbox },
+    params: {
+      resumed_workspace_root: workspace.root,
+      ...(worktreePath ? { resume_worktree_missing: worktreePath } : {}),
+    },
+  }
+}
+
+export interface BackgroundAgentRunResult {
+  task: TaskMeta
+  agent: AgentDefinition
+}
+
+export async function startBackgroundAgentRun(
+  opts: BackgroundAgentTaskOptions,
+  input: BackgroundAgentTaskInput,
+  ctx: ToolContext,
+  extraParams: Record<string, unknown> = {},
+  initialMessages: Message[] = [],
+): Promise<BackgroundAgentRunResult> {
+  if (!input || typeof input.task !== 'string' || !input.task.trim()) throw new Error('start_background_agent_task 需要 string 参数 task')
+  const agent = pickAgent(opts.agents, input.agent)
+  if (!agent) throw new Error(`start_background_agent_task 需要指定 agent;可用 agent:\n${agentList(opts.agents)}`)
+  let task = await opts.tasks.create({
+    title: taskTitle(input, agent),
+    kind: 'background_agent',
+    conversationId: ctx.conversationId,
+    workspaceRoot: ctx.workspace.root,
+    params: backgroundTaskParams(input, agent, extraParams),
+  })
+  const stableAgentId = stringTaskParam(task, 'agent_id') || stringTaskParam(task, 'agentId') || task.id
+  if (!stringTaskParam(task, 'agent_id')) {
+    task = await opts.tasks.touch(task.id, { params: { ...task.params, agent_id: stableAgentId } })
+  }
+  const effectiveIsolation = input.isolation ?? agent.isolation
+  const agentWorktree = effectiveIsolation === 'worktree'
+    ? await createIsolatedAgentWorktree(ctx.workspace.root, task.id, ctx.conversationId)
+    : null
+  const runWorkspace = agentWorktree ? new Workspace(agentWorktree.session.worktreePath) : ctx.workspace
+  const runSandbox = sandboxForWorkspace(ctx.sandbox, runWorkspace)
+  const resumedWorktreePath = typeof extraParams.resumed_worktree_path === 'string' && extraParams.resumed_worktree_path.trim()
+    ? extraParams.resumed_worktree_path.trim()
+    : ''
+  const metadataWorktreePath = agentWorktree?.session.worktreePath || resumedWorktreePath || ctx.worktreeSession?.worktreePath
+  const inheritedToolResultStoreDir = typeof extraParams.tool_result_store_dir === 'string' && extraParams.tool_result_store_dir.trim()
+    ? extraParams.tool_result_store_dir.trim()
+    : ''
+  const toolResultStoreDir = inheritedToolResultStoreDir || opts.tasks.backgroundAgentToolResultStoreDir(task.id)
+  void opts.tasks.writeBackgroundAgentMetadata(task.id, {
+    agentId: stableAgentId,
+    agent: agent.name,
+    agentType: agent.name,
+    ...(typeof task.params?.name === 'string' && task.params.name.trim() ? { name: task.params.name.trim() } : {}),
+    task: input.task.trim(),
+    ...(input.context?.trim() ? { context: input.context.trim() } : {}),
+    description: task.title,
+    conversationId: ctx.conversationId,
+    workspaceRoot: ctx.workspace.root,
+    ...(metadataWorktreePath ? { worktreePath: metadataWorktreePath } : {}),
+    toolResultStoreDir,
+  }).catch(() => undefined)
+  const baseAgentTools = resolveAgentTools(agent, opts.baseTools)
+    .filter(tool => tool.name !== 'start_background_agent_task' && tool.name !== 'cancel_background_task')
+  const steerInbox: string[] = []
+  const detachSteerInbox = opts.tasks.attachSteerInbox(task.id, steerInbox)
+  opts.tasks.start(task.id, async taskCtx => {
+    let finalText = ''
+    let cleanup: AgentWorktreeCleanupResult | null = null
+    let agentMcp: Awaited<ReturnType<typeof loadAgentMcpRuntime>> | undefined
+    try {
+      agentMcp = await loadAgentMcpRuntime({
+        agent,
+        baseTools: baseAgentTools,
+        workspaceRoot: runWorkspace.root,
+        signal: taskCtx.signal,
+        taskId: task.id,
+        mcpConfigPath: opts.mcp?.mcpConfigPath,
+        loadOptions: opts.mcp?.loadOptions,
+      })
+      for (const warning of agentMcp.warnings) {
+        await taskCtx.emit({ type: 'context_note', text: warning })
+      }
+      if (agentWorktree) await taskCtx.emit({ type: 'context_note', text: `Background agent using isolated worktree: ${agentWorktree.session.worktreePath}` })
+      for await (const event of runAgentLoop({
+        model: opts.model,
+        registry: new ToolRegistry(agentMcp.tools),
+        workspace: runWorkspace,
+        systemPrompt: agentSystemPrompt(agent, opts.baseSystemPrompt),
+        userMessage: agentTaskMessage(agent, input),
+        maxTurns: agent.maxTurns ?? opts.maxTurns ?? 8,
+        signal: taskCtx.signal,
+        sandbox: runSandbox,
+        permissionMode: agent.permissionMode ?? ctx.permissionMode,
+        conversationId: `${ctx.conversationId ?? task.id}_${agent.name}_bg`,
+        steerInbox,
+        transcript: opts.tasks.transcript(task.id),
+        toolResultStoreDir,
+        initialMessages,
+      })) {
+        await taskCtx.emit(event)
+        if (event.type === 'final') finalText = event.text
+      }
+    } finally {
+      await agentMcp?.close()
+      cleanup = agentWorktree ? await agentWorktree.cleanupIfClean().catch(() => ({
+        kept: true,
+        worktreePath: agentWorktree.session.worktreePath,
+        worktreeBranch: agentWorktree.session.worktreeBranch,
+        changedFiles: -1,
+        commits: -1,
+      })) : null
+      const worktreeNote = formatAgentWorktreeNote(cleanup)
+      if (worktreeNote) await taskCtx.emit({ type: 'context_note', text: worktreeNote }).catch(() => undefined)
+      if (cleanup) {
+        await opts.tasks.writeBackgroundAgentMetadata(task.id, {
+          agentId: stableAgentId,
+          agent: agent.name,
+          agentType: agent.name,
+          ...(typeof task.params?.name === 'string' && task.params.name.trim() ? { name: task.params.name.trim() } : {}),
+          task: input.task.trim(),
+          ...(input.context?.trim() ? { context: input.context.trim() } : {}),
+          description: task.title,
+          conversationId: ctx.conversationId,
+          workspaceRoot: ctx.workspace.root,
+          worktreePath: cleanup.kept && cleanup.worktreePath ? cleanup.worktreePath : undefined,
+          toolResultStoreDir,
+        }).catch(() => undefined)
+      }
+      detachSteerInbox()
+    }
+    return finalText
+  })
+  return { task, agent }
+}
+
+export async function resumeBackgroundAgentTask(
+  opts: BackgroundAgentTaskOptions,
+  previousTask: TaskMeta,
+  prompt: string,
+  ctx: ToolContext,
+): Promise<BackgroundAgentRunResult> {
+  const metadata = await opts.tasks.readBackgroundAgentMetadata(previousTask.id)
+  const agentName = resumableAgentName(previousTask, metadata)
+  if (!agentName) throw new Error(`Task ${previousTask.id} has no background agent name to resume`)
+  const previousMessages = sanitizeBackgroundAgentResumeMessages(await opts.tasks.transcript(previousTask.id).load())
+  const resumedContext = await resumeToolContext(previousTask, ctx, metadata)
+  const instanceName = resumableInstanceName(previousTask, metadata)
+  const stableAgentId = resumableStableAgentId(previousTask, metadata)
+  const toolResultStoreDir = resumableToolResultStoreDir(previousTask, opts.tasks, metadata)
+  const { task, agent } = await startBackgroundAgentRun(opts, {
+    agent: agentName,
+    ...(instanceName ? { name: instanceName } : {}),
+    task: prompt,
+    context: resumeContext(previousTask, prompt, metadata),
+    title: `${instanceName || agentName}: resumed: ${prompt.trim().slice(0, 60)}`,
+  }, resumedContext.ctx, {
+    resumed_from: previousTask.id,
+    resume_source: 'SendMessage',
+    previous_status: previousTask.status,
+    ...(metadata ? { resume_metadata: true } : {}),
+    agent_id: stableAgentId,
+    replayed_messages: previousMessages.length,
+    tool_result_store_dir: toolResultStoreDir,
+    ...resumedContext.params,
+  }, previousMessages)
+  await opts.tasks.appendEvent(previousTask.id, {
+    type: 'context_note',
+    text: `SendMessage resumed this background agent as task ${task.id}.`,
+  }).catch(() => undefined)
+  return { task, agent }
 }
 
 function recordInput(input: unknown): Record<string, unknown> {
@@ -75,13 +451,102 @@ function formatTasks(tasks: Awaited<ReturnType<TaskService['list']>>): string {
   }).join('\n')
 }
 
-function formatTaskEvents(task: NonNullable<Awaited<ReturnType<TaskService['get']>>>, events: Awaited<ReturnType<TaskService['loadEvents']>>): string {
+async function resolveTaskReference(
+  tasks: TaskService,
+  target: string,
+  ctx: ToolContext,
+  statuses?: TaskStatus[],
+): Promise<{ task: TaskMeta | null; requestedTaskId: string }> {
+  const requestedTaskId = target.trim()
+  const resolution = await tasks.resolveBackgroundAgentTarget(requestedTaskId, {
+    conversationId: ctx.conversationId,
+    ...(statuses ? { statuses } : {}),
+  })
+  if (resolution.ambiguous) throw new Error(resolution.reason || `Multiple background agents match "${requestedTaskId}". Use a task id.`)
+  if (resolution.task) return { task: resolution.task, requestedTaskId }
+  return { task: await tasks.get(requestedTaskId), requestedTaskId }
+}
+
+function formatTaskEvents(task: NonNullable<Awaited<ReturnType<TaskService['get']>>>, events: Awaited<ReturnType<TaskService['loadEvents']>>, requestedTaskId?: string): string {
+  const requested = requestedTaskId && requestedTaskId !== task.id ? ` requested_id="${xmlAttr(requestedTaskId)}"` : ''
+  const agentId = typeof task.params?.agent_id === 'string' && task.params.agent_id.trim() ? ` agent_id="${xmlAttr(task.params.agent_id.trim())}"` : ''
   const lines = [
-    `<background_task id="${task.id}" status="${task.status}" title="${task.title}">`,
+    `<background_task id="${xmlAttr(task.id)}"${requested}${agentId} status="${xmlAttr(task.status)}" title="${xmlAttr(task.title)}">`,
     ...events.map(record => `#${record.seq} ${record.event.type} ${JSON.stringify(record.event)}`),
     '</background_task>',
   ]
   return lines.join('\n')
+}
+
+function clampTimeoutMs(value: unknown): number {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 0) return 30_000
+  return Math.max(0, Math.min(600_000, Math.floor(n)))
+}
+
+function semanticBoolean(value: unknown, fallback: boolean): boolean {
+  if (value === undefined || value === null || value === '') return fallback
+  if (typeof value === 'boolean') return value
+  const text = String(value).trim().toLowerCase()
+  if (['1', 'true', 'yes', 'y', 'on'].includes(text)) return true
+  if (['0', 'false', 'no', 'n', 'off'].includes(text)) return false
+  return fallback
+}
+
+function taskIsSettled(task: TaskMeta): boolean {
+  return task.status !== 'queued' && task.status !== 'running'
+}
+
+async function waitForTask(tasks: TaskService, taskId: string, timeoutMs: number, signal?: AbortSignal): Promise<TaskMeta | null> {
+  const deadline = Date.now() + timeoutMs
+  let current = await tasks.get(taskId)
+  while (current && !taskIsSettled(current) && Date.now() <= deadline) {
+    if (signal?.aborted) throw new Error('TaskOutput 已取消等待')
+    await new Promise(resolve => setTimeout(resolve, 100))
+    current = await tasks.get(taskId)
+  }
+  return current
+}
+
+function taskEventText(record: TaskEventRecord): string {
+  const event = record.event
+  if ('text' in event && typeof event.text === 'string') return event.text
+  if ('output' in event && typeof event.output === 'string') return event.output
+  if ('content' in event && typeof event.content === 'string') return event.content
+  return JSON.stringify(event)
+}
+
+function extractTaskOutput(task: TaskMeta, events: TaskEventRecord[]): string {
+  if (typeof task.result === 'string' && task.result.trim()) return task.result
+  const finalTexts = events
+    .filter(record => record.event.type === 'final')
+    .map(taskEventText)
+    .filter(Boolean)
+  if (finalTexts.length > 0) return finalTexts.join('\n')
+  return events.map(record => `#${record.seq} ${record.event.type} ${taskEventText(record)}`).join('\n')
+}
+
+function formatCcTaskOutput(status: 'success' | 'timeout' | 'not_ready', task: TaskMeta | null, events: TaskEventRecord[] = [], requestedTaskId?: string): string {
+  const parts = [`<retrieval_status>${status}</retrieval_status>`]
+  if (!task) return parts.join('\n\n')
+  if (requestedTaskId && requestedTaskId !== task.id) parts.push(`<requested_task_id>${xmlText(requestedTaskId)}</requested_task_id>`)
+  parts.push(`<task_id>${xmlText(task.id)}</task_id>`)
+  if (typeof task.params?.agent_id === 'string' && task.params.agent_id.trim()) parts.push(`<agent_id>${xmlText(task.params.agent_id.trim())}</agent_id>`)
+  parts.push(`<task_type>${xmlText(task.kind ?? 'background_task')}</task_type>`)
+  parts.push(`<status>${xmlText(task.status)}</status>`)
+  parts.push(`<description>${xmlText(task.title)}</description>`)
+  if (task.error) parts.push(`<error>${xmlText(task.error)}</error>`)
+  const output = extractTaskOutput(task, events).trimEnd()
+  if (output) parts.push(`<output>\n${xmlText(output)}\n</output>`)
+  return parts.join('\n\n')
+}
+
+function xmlText(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+}
+
+function xmlAttr(value: string): string {
+  return xmlText(value).replaceAll('"', '&quot;')
 }
 
 export function createTaskTools(tasks: TaskService): Tool[] {
@@ -103,7 +568,7 @@ export function createTaskTools(tasks: TaskService): Tool[] {
         ? args.conversationId.trim()
         : ctx.conversationId
       const limit = typeof args.limit === 'number' ? args.limit : undefined
-      return formatTasks(await tasks.list({ conversationId, status: statusFrom(args.status), limit }))
+      return formatTasks(await tasks.list({ conversationId, status: statusFrom(args.status), limit, collapseResumedBackgroundAgents: true }))
     },
   }
 
@@ -120,14 +585,14 @@ export function createTaskTools(tasks: TaskService): Tool[] {
       required: ['task_id'],
     },
     isReadOnly: true,
-    async execute(input) {
+    async execute(input, ctx) {
       const args = recordInput(input)
       if (typeof args.task_id !== 'string' || !args.task_id.trim()) throw new Error('read_background_task 需要 string 参数 task_id')
-      const task = await tasks.get(args.task_id.trim())
+      const { task, requestedTaskId } = await resolveTaskReference(tasks, args.task_id, ctx)
       if (!task) return `没有找到后台任务:${args.task_id}`
       const after = typeof args.after === 'number' ? args.after : undefined
       const limit = typeof args.limit === 'number' ? args.limit : undefined
-      return formatTaskEvents(task, await tasks.loadEvents(task.id, { after, limit }))
+      return formatTaskEvents(task, await tasks.loadEvents(task.id, { after, limit }), requestedTaskId)
     },
   }
 
@@ -140,15 +605,105 @@ export function createTaskTools(tasks: TaskService): Tool[] {
       required: ['task_id'],
     },
     isReadOnly: false,
-    async execute(input) {
+    async execute(input, ctx) {
       const args = recordInput(input)
       if (typeof args.task_id !== 'string' || !args.task_id.trim()) throw new Error('cancel_background_task 需要 string 参数 task_id')
-      const cancelled = await tasks.cancel(args.task_id.trim())
-      return cancelled ? `已请求取消后台任务:${args.task_id}` : `后台任务未在运行:${args.task_id}`
+      const { task, requestedTaskId } = await resolveTaskReference(tasks, args.task_id, ctx, ['queued', 'running'])
+      const taskId = task?.id ?? requestedTaskId
+      const cancelled = await tasks.cancel(taskId)
+      const alias = task && task.id !== requestedTaskId ? ` (requested:${requestedTaskId})` : ''
+      return cancelled ? `已请求取消后台任务:${taskId}${alias}` : `后台任务未在运行:${requestedTaskId}`
     },
   }
 
-  return [listTasks, readTask, cancelTask]
+  const taskOutput: Tool = {
+    name: 'TaskOutput',
+    description: [
+      'Read output/logs from a background task by id. CC-Haha-compatible TaskOutput.',
+      'Input: { task_id, block?, timeout?, limit? }. block=true waits for completion up to timeout ms; block=false returns current status immediately.',
+    ].join(' '),
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string' },
+        block: { type: ['boolean', 'string'], description: 'Whether to wait for completion. Defaults true.' },
+        timeout: { type: ['number', 'string'], description: 'Max wait time in ms, capped at 600000. Defaults 30000.' },
+        limit: { type: 'number', description: 'Maximum event records to read. Defaults TaskService limit.' },
+      },
+      required: ['task_id'],
+    },
+    isReadOnly: true,
+    async execute(input, ctx) {
+      const args = recordInput(input)
+      if (typeof args.task_id !== 'string' || !args.task_id.trim()) throw new Error('TaskOutput 需要 string 参数 task_id')
+      const taskId = args.task_id.trim()
+      const block = semanticBoolean(args.block, true)
+      const timeout = clampTimeoutMs(args.timeout)
+      const limit = typeof args.limit === 'number' ? args.limit : undefined
+      const { task: initial, requestedTaskId } = await resolveTaskReference(tasks, taskId, ctx)
+      if (!initial) throw new Error(`No task found with ID: ${taskId}`)
+      const task = block ? await waitForTask(tasks, initial.id, timeout, ctx.signal) : initial
+      if (!task) return formatCcTaskOutput('timeout', null)
+      const events = await tasks.loadEvents(task.id, { limit })
+      if (!taskIsSettled(task)) return formatCcTaskOutput(block ? 'timeout' : 'not_ready', task, events, requestedTaskId)
+      return formatCcTaskOutput('success', task, events, requestedTaskId)
+    },
+  }
+
+  const taskStop: Tool = {
+    name: 'TaskStop',
+    description: 'Stop a running background task by ID. CC-Haha-compatible TaskStop. Input: { task_id } or deprecated { shell_id }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string' },
+        shell_id: { type: 'string', description: 'Deprecated alias for task_id.' },
+      },
+    },
+    isReadOnly: false,
+    requiresApproval: true,
+    approvalClass: 'destructive',
+    forceConfirm: true,
+    approvalReasonFor(input) {
+      const args = recordInput(input)
+      const taskId = typeof args.task_id === 'string' ? args.task_id : typeof args.shell_id === 'string' ? args.shell_id : ''
+      return {
+        what: `停止后台任务:${taskId || '(未指定)'}`,
+        why: '停止后台任务会中断正在运行的子代理或长任务。',
+        impact: '任务可能无法继续产出结果;仅在用户要求取消、任务失控、重复或明显无用时执行。',
+      }
+    },
+    async execute(input, ctx) {
+      const args = recordInput(input)
+      const taskId = typeof args.task_id === 'string' && args.task_id.trim()
+        ? args.task_id.trim()
+        : typeof args.shell_id === 'string' && args.shell_id.trim()
+          ? args.shell_id.trim()
+          : ''
+      if (!taskId) throw new Error('TaskStop 需要 task_id')
+      const { task, requestedTaskId } = await resolveTaskReference(tasks, taskId, ctx, ['queued', 'running'])
+      if (!task) throw new Error(`No task found with ID: ${taskId}`)
+      if (task.status !== 'running' && task.status !== 'queued') {
+        throw new Error(`Task ${taskId} is not running (status: ${task.status})`)
+      }
+      const stopped = await tasks.cancel(task.id)
+      if (!stopped) throw new Error(`Task ${task.id} is not running`)
+      const next = await tasks.get(task.id)
+      return [
+        '<task_stopped>',
+        `<message>Successfully stopped task: ${xmlText(task.id)}</message>`,
+        ...(requestedTaskId !== task.id ? [`<requested_task_id>${xmlText(requestedTaskId)}</requested_task_id>`] : []),
+        `<task_id>${xmlText(task.id)}</task_id>`,
+        ...(typeof task.params?.agent_id === 'string' && task.params.agent_id.trim() ? [`<agent_id>${xmlText(task.params.agent_id.trim())}</agent_id>`] : []),
+        `<task_type>${xmlText(task.kind ?? 'background_task')}</task_type>`,
+        `<status>${xmlText(next?.status ?? 'cancelled')}</status>`,
+        `<command>${xmlText(task.title)}</command>`,
+        '</task_stopped>',
+      ].join('\n')
+    },
+  }
+
+  return [listTasks, readTask, cancelTask, taskOutput, taskStop]
 }
 
 export function createBackgroundAgentTaskTool(opts: BackgroundAgentTaskOptions): Tool<BackgroundAgentTaskInput> {
@@ -159,9 +714,11 @@ export function createBackgroundAgentTaskTool(opts: BackgroundAgentTaskOptions):
       type: 'object',
       properties: {
         agent: { type: 'string', description: 'Agent name. Required when more than one agent is available.' },
+        name: { type: 'string', description: 'Optional instance name. Makes this background agent addressable via SendMessage({to:name}).' },
         task: { type: 'string' },
         context: { type: 'string' },
         title: { type: 'string' },
+        isolation: { type: 'string', enum: ['worktree'], description: 'Use "worktree" to run the background subagent in an isolated git worktree.' },
       },
       required: ['task'],
     },
@@ -176,36 +733,10 @@ export function createBackgroundAgentTaskTool(opts: BackgroundAgentTaskOptions):
       }
     },
     async execute(input, ctx: ToolContext) {
-      if (!input || typeof input.task !== 'string' || !input.task.trim()) throw new Error('start_background_agent_task 需要 string 参数 task')
-      const agent = pickAgent(opts.agents, input.agent)
-      if (!agent) throw new Error(`start_background_agent_task 需要指定 agent;可用 agent:\n${agentList(opts.agents)}`)
-      const task = await opts.tasks.create({
-        title: taskTitle(input, agent),
-        conversationId: ctx.conversationId,
-        workspaceRoot: ctx.workspace.root,
-      })
-      const tools = resolveAgentTools(agent, opts.baseTools)
-        .filter(tool => tool.name !== 'start_background_agent_task' && tool.name !== 'cancel_background_task')
-      opts.tasks.start(task.id, async taskCtx => {
-        let finalText = ''
-        for await (const event of runAgentLoop({
-          model: opts.model,
-          registry: new ToolRegistry(tools),
-          workspace: ctx.workspace,
-          systemPrompt: agentSystemPrompt(agent, opts.baseSystemPrompt),
-          userMessage: taskMessage(input),
-          maxTurns: opts.maxTurns ?? 8,
-          signal: taskCtx.signal,
-          sandbox: ctx.sandbox,
-          permissionMode: ctx.permissionMode,
-          conversationId: `${ctx.conversationId ?? task.id}_${agent.name}_bg`,
-        })) {
-          await taskCtx.emit(event)
-          if (event.type === 'final') finalText = event.text
-        }
-        return finalText
-      })
-      return `<background_task_started id="${task.id}" agent="${agent.name}" status="queued">\n${task.title}\n</background_task_started>`
+      const { task, agent } = await startBackgroundAgentRun(opts, input, ctx)
+      const name = typeof task.params?.name === 'string' ? ` name="${xmlAttr(task.params.name)}"` : ''
+      const agentId = typeof task.params?.agent_id === 'string' ? ` agent_id="${xmlAttr(task.params.agent_id)}"` : ''
+      return `<background_task_started id="${task.id}" agent="${agent.name}"${name}${agentId} status="queued">\n${task.title}\n</background_task_started>`
     },
   }
 }

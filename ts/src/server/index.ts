@@ -1,12 +1,18 @@
 import { executeApproved, handleReject, runAgentLoop } from '../harness/loop'
+import { getWorkspaceGitStatus } from '../harness/env'
 import { buildSystemPrompt } from '../harness/systemPrompt'
+import { summarizeWorkspaceProjectInstructions } from '../harness/projectInstructions'
 import { scriptedModel } from '../harness/fakeModel'
 import { compactPipeline } from '../context/compaction'
-import { createModelFromProviderConfig } from '../model/modelFactory'
+import { buildStoreMemoryContext } from '../memory/storeMemoryContext'
+import { createModelFromProviderCandidates } from '../model/modelFactory'
+import { getConfiguredOrBuiltInModelContextWindow } from '../model/modelContextWindows'
 import { SessionService, TurnRegistry, type SessionEventRecord, type SessionStatus, type SessionStreamEvent } from './services/sessionService'
-import { ProviderService } from './services/providerService'
+import { ProviderService, type RuntimeProviderResolution } from './services/providerService'
+import { ProviderHealthStore, type ProviderHealthEntry } from './services/providerHealthStore'
 import { LegacyAgentStore, type LegacyArtifact } from './services/legacyAgentStore'
 import { DesktopDataStore } from './services/desktopDataStore'
+import { StoreDocsService, createStoreDocsTool } from './services/storeDocsService'
 import {
   OfficeDocumentError,
   editXlsxCell,
@@ -21,11 +27,13 @@ import {
 } from './services/officeDocuments'
 import { VoiceTranscriptionError, transcribeVoiceFile } from './services/voiceTranscription'
 import { buildGeneralRegistry } from '../tools/generalTools'
+import { workspaceForActiveWorktree } from '../tools/worktreeTools'
 import { loadSkillsDir } from '../skills/skillLoader'
-import { loadCommandsDir, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
+import { loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
 import { loadHookRegistryFile } from '../hooks/hookConfig'
+import { createDomainPackCommandLibrary, createDomainPackHookRegistry, createDomainPackTools, listPublicDomainPacks, mergeHookRegistries, resolveEnabledPacks, suggestedSkillNamesForPacks, type DomainPack } from '../packs/domainPacks'
 import { loadAgentsDir } from '../agents/agentLoader'
-import { createAgentTaskTool } from '../agents/agentTool'
+import { createAgentTaskSidechainTools, createAgentTaskTool } from '../agents/agentTool'
 import {
   closeMcpConnections,
   defaultElicitationHandler,
@@ -35,8 +43,12 @@ import {
 } from '../mcp/client'
 import { loadMcpConfigFile } from '../mcp/config'
 import { addMcpServer, defaultWritableMcpConfigPath, MCP_PRESETS, removeMcpServer, setMcpServerDisabled } from '../mcp/configStore'
-import { TaskService, type TaskStatus } from '../tasks/taskService'
-import { createBackgroundAgentTaskTool, createTaskTools } from '../tasks/taskTools'
+import { TaskService, type TaskMeta, type TaskStatus } from '../tasks/taskService'
+import { TaskListService } from '../tasks/taskListService'
+import { createBackgroundAgentTaskTool, createTaskTools, resumeBackgroundAgentTask, startBackgroundAgentRun, type BackgroundAgentTaskOptions } from '../tasks/taskTools'
+import { createStructuredTaskTools } from '../tasks/taskListTools'
+import { TeamService } from '../tasks/teamService'
+import { createTeamTools } from '../tasks/teamTools'
 import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
 import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
@@ -48,9 +60,9 @@ import { textBlock, type Message } from '../types/message'
 import type { AgentEvent, AskQuestionField } from '../types/events'
 import type { FetchLike } from '../proxy/ProxyModel'
 import type { PermissionMode } from '../permissions/types'
-import { basename, dirname, extname, join, resolve } from 'node:path'
+import { basename, dirname, extname, join, relative, resolve } from 'node:path'
 import { existsSync } from 'node:fs'
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 
 function sseLine(ev: AgentEvent | { type: 'done' }): string {
   return `event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`
@@ -77,6 +89,121 @@ export interface StartServerOptions {
   agentsRoot?: string
   mcpConfigPath?: string
   mediaBackendUrl?: string
+}
+
+interface WorkspaceTreeEntry {
+  name: string
+  path: string
+  type: 'file' | 'directory'
+  children?: WorkspaceTreeEntry[]
+  truncated?: boolean
+}
+
+const WORKSPACE_TREE_SKIP = new Set([
+  '.git',
+  '.next',
+  '.agent-state',
+  '.cache',
+  '.mypy_cache',
+  '.playwright-cli',
+  '.pytest_cache',
+  '.ruff_cache',
+  '.superpowers',
+  '.venv',
+  '__pycache__',
+  'node_modules',
+  'dist',
+  'build',
+  'coverage',
+  'out',
+  'output',
+])
+
+async function summarizeWorkspaceTree(root: string, opts: { maxDepth?: number; maxEntries?: number } = {}) {
+  const maxDepth = opts.maxDepth ?? 2
+  const maxEntries = opts.maxEntries ?? 120
+  let total = 0
+  let truncated = false
+
+  async function walk(dir: string, depth: number): Promise<WorkspaceTreeEntry[]> {
+    if (total >= maxEntries) {
+      truncated = true
+      return []
+    }
+    let entries = await readdir(dir, { withFileTypes: true })
+    entries = entries
+      .filter(entry => entry.name !== '.DS_Store')
+      .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name, 'zh-Hans-CN'))
+
+    const out: WorkspaceTreeEntry[] = []
+    for (const entry of entries) {
+      if (total >= maxEntries) {
+        truncated = true
+        break
+      }
+      if (entry.isDirectory() && WORKSPACE_TREE_SKIP.has(entry.name)) continue
+      const abs = resolve(dir, entry.name)
+      const item: WorkspaceTreeEntry = {
+        name: entry.name,
+        path: relative(root, abs) || entry.name,
+        type: entry.isDirectory() ? 'directory' : 'file',
+      }
+      total += 1
+      if (entry.isDirectory() && depth < maxDepth) {
+        item.children = await walk(abs, depth + 1)
+        if (truncated) item.truncated = true
+      }
+      out.push(item)
+    }
+    return out
+  }
+
+  try {
+    return { root, entries: await walk(root, 0), total, truncated }
+  } catch (err) {
+    return { root, entries: [], total: 0, truncated: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+function localCorsOrigin(req: Request): string | undefined {
+  const origin = req.headers.get('origin')
+  if (!origin) return undefined
+  try {
+    const url = new URL(origin)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined
+    if (url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '[::1]' || url.hostname === '::1') {
+      return origin
+    }
+  } catch {
+    return undefined
+  }
+  return undefined
+}
+
+function withLocalCors(res: Response, req: Request): Response {
+  const origin = localCorsOrigin(req)
+  if (!origin) return res
+  const headers = new Headers(res.headers)
+  headers.set('Access-Control-Allow-Origin', origin)
+  headers.set('Access-Control-Allow-Credentials', 'true')
+  headers.append('Vary', 'Origin')
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers })
+}
+
+function localCorsPreflight(req: Request): Response | undefined {
+  const origin = localCorsOrigin(req)
+  if (!origin || req.method !== 'OPTIONS') return undefined
+  return new Response(null, {
+    status: 204,
+    headers: {
+      'Access-Control-Allow-Origin': origin,
+      'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
+      'Access-Control-Allow-Headers': req.headers.get('access-control-request-headers') || 'content-type,authorization',
+      'Access-Control-Max-Age': '600',
+      'Vary': 'Origin',
+    },
+  })
 }
 
 interface AgentWsData {
@@ -140,6 +267,45 @@ function imageProviderGuess(baseUrl: string | undefined): { provider: string; kn
   return { provider: 'unknown', known: [] }
 }
 
+function runtimeProviderLabel(runtime: RuntimeProviderResolution): string {
+  if (runtime.source === 'saved-provider') return runtime.providerName || runtime.providerId || runtime.config.model
+  return `环境变量:${runtime.config.model}`
+}
+
+function runtimeProviderKey(runtime: RuntimeProviderResolution): string {
+  if (runtime.source === 'saved-provider' && runtime.providerId) return `saved:${runtime.providerId}`
+  return `${runtime.source}:${runtime.config.apiFormat}:${runtime.config.baseUrl}:${runtime.config.model}`
+}
+
+function sanitizeProviderError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err)
+  return raw
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer [redacted]')
+    .replace(/(api[_-]?key["'\s:=]+)[A-Za-z0-9._~+/=-]+/gi, '$1[redacted]')
+    .slice(0, 180)
+}
+
+function createModelFromRuntimeProviders(
+  runtimes: RuntimeProviderResolution[],
+  fetchImpl?: StartServerOptions['fetchImpl'],
+  health?: {
+    onFailure?: (runtime: RuntimeProviderResolution, err: unknown) => void
+    onSuccess?: (runtime: RuntimeProviderResolution) => void
+  },
+): Model {
+  return createModelFromProviderCandidates(
+    runtimes.map(runtime => ({
+      label: runtimeProviderLabel(runtime),
+      config: runtime.config,
+      onFailure: err => health?.onFailure?.(runtime, err),
+      onSuccess: () => health?.onSuccess?.(runtime),
+    })),
+    { fetchImpl },
+  )
+}
+
+const LEGACY_BYOK_TEXT_PROVIDER_ID = 'byok-text'
+
 function validateImageModelPayload(body: Record<string, unknown>) {
   const baseUrl = typeof body.base_url === 'string' ? body.base_url : typeof body.baseUrl === 'string' ? body.baseUrl : ''
   const model = typeof body.model === 'string' ? body.model.trim() : ''
@@ -189,6 +355,21 @@ function defaultCommandsRoot(): string {
   return candidates.find(existsSync) ?? candidates[0]!
 }
 
+function workspaceCommandRoots(workspaceRoot: string): string[] {
+  return [
+    join(workspaceRoot, '.claude', 'commands'),
+    join(workspaceRoot, '.codex', 'commands'),
+  ].filter(existsSync)
+}
+
+async function loadCommandsForWorkspace(workspaceRoot: string, builtInRoot: string, packs: DomainPack[] = []) {
+  const [builtInCommands, workspaceCommands] = await Promise.all([
+    loadCommandsFromRoots([builtInRoot]),
+    loadCommandsFromRoots(workspaceCommandRoots(workspaceRoot)),
+  ])
+  return mergeCommandLibraries(builtInCommands, createDomainPackCommandLibrary(packs), workspaceCommands)
+}
+
 function defaultOutputStylesRoot(): string {
   const candidates = [
     join(process.cwd(), 'server', 'output-styles'),
@@ -230,6 +411,7 @@ function providerStatusFor(error: unknown): number {
   if (message.includes('not found')) return 404
   if (message.includes('already exists')) return 409
   if (message.includes('cannot delete active')) return 409
+  if (message.includes('cannot activate disabled')) return 409
   if (message.includes('required') || message.includes('非法')) return 400
   return 500
 }
@@ -265,14 +447,6 @@ function supportContext(rawBody: Record<string, unknown>): string {
   const goal = stringOr(rawBody.goal, '')
   if (goal) {
     blocks.push(`<user_goal>\n${goal}\n</user_goal>`)
-  }
-  const packs = new Set(stringArray(rawBody.knowledge_packs ?? rawBody.knowledgePacks))
-  if (packs.has('billiards')) {
-    blocks.push([
-      '<domain_context id="billiards">',
-      '当前工作台是台球房运营场景。回答经营、活动、客户、助教、赛事、团购、短视频、海报等任务时，要按台球门店的真实经营语境落地，不写空泛咨询话。',
-      '</domain_context>',
-    ].join('\n'))
   }
   if (rawBody.deep_thinking === true || rawBody.deepThinking === true) {
     blocks.push('用户打开了深度思考。遇到多步骤任务时，先简短拆解，再动手执行；不要只给建议。')
@@ -525,6 +699,31 @@ function wsError(ws: { send(data: string): unknown }, message: string): void {
   wsSend(ws, { type: 'error', error: message })
 }
 
+function backgroundTaskNotification(task: TaskMeta): Record<string, unknown> | null {
+  if (task.kind !== 'background_agent') return null
+  const title = task.status === 'completed'
+    ? '后台子代理已完成'
+    : task.status === 'failed'
+      ? '后台子代理失败'
+      : task.status === 'cancelled'
+        ? '后台子代理已取消'
+        : null
+  if (!title) return null
+  return {
+    title,
+    body: task.error ? `${task.title}: ${task.error}` : task.title,
+    kind: 'background_task',
+    meta: {
+      taskId: task.id,
+      status: task.status,
+      title: task.title,
+      conversationId: task.conversationId,
+      workspaceRoot: task.workspaceRoot,
+      agent: typeof task.params?.agent === 'string' ? task.params.agent : undefined,
+    },
+  }
+}
+
 /** W2/W6 后端。/health + /agent/hello(demo) + /agent/run(真实模型 Agent SSE)。 */
 export function startServer(opts: StartServerOptions = {}) {
   const host = opts.host ?? '127.0.0.1'
@@ -532,29 +731,159 @@ export function startServer(opts: StartServerOptions = {}) {
   const stateRoot = opts.transcriptRoot ?? join(process.cwd(), '.agent-state')
   const sessions = new SessionService(stateRoot)
   const providers = new ProviderService(opts.providerRoot ?? stateRoot)
-  const tasks = new TaskService(stateRoot)
+  const desktopData = new DesktopDataStore(stateRoot)
+  const tasks = new TaskService(stateRoot, {
+    onSettled: async task => {
+      const notification = backgroundTaskNotification(task)
+      if (notification) await desktopData.addNotification(notification)
+    },
+  })
+  const taskLists = new TaskListService(join(stateRoot, 'task-lists'))
+  const teams = new TeamService(stateRoot)
   const media = new MediaJobService({
     tasks,
     stateRoot,
     backendUrl: opts.mediaBackendUrl ?? resolveMediaBackendUrl(opts.env ?? process.env),
+    env: opts.env ?? process.env,
     fetchImpl: opts.fetchImpl,
     pollIntervalMs: 100,
+    prepareImageBody: (body, mode) => prepareStudioImageBody(body, mode),
   })
   const videoEdits = new VideoEditProjectStore(stateRoot)
   const legacyStore = new LegacyAgentStore(stateRoot)
-  const desktopData = new DesktopDataStore(stateRoot)
+  const storeDocs = new StoreDocsService(desktopData, stateRoot)
   const turns = new TurnRegistry()
   const steerInboxes = new Map<string, string[]>()
+  const providerHealth = new ProviderHealthStore(opts.providerRoot ?? stateRoot)
+
+  function registerProviderFailure(runtime: RuntimeProviderResolution, err: unknown): void {
+    const key = runtimeProviderKey(runtime)
+    providerHealth.recordFailure(key, runtimeProviderLabel(runtime), sanitizeProviderError(err))
+  }
+
+  function registerProviderSuccess(runtime: RuntimeProviderResolution): void {
+    providerHealth.recordSuccess(runtimeProviderKey(runtime))
+  }
+
+  function orderRuntimeProvidersForAttempt(runtimes: RuntimeProviderResolution[]): { runtimes: RuntimeProviderResolution[]; notices: string[] } {
+    const now = Date.now()
+    const healthy: RuntimeProviderResolution[] = []
+    const cooling: Array<{ runtime: RuntimeProviderResolution; health: ProviderHealthEntry }> = []
+    for (const runtime of runtimes) {
+      const key = runtimeProviderKey(runtime)
+      const health = providerHealth.get(key, now)
+      if (health) {
+        cooling.push({ runtime, health })
+      } else {
+        healthy.push(runtime)
+      }
+    }
+    if (healthy.length === 0 || cooling.length === 0) return { runtimes, notices: [] }
+    const firstHealthy = healthy[0]!
+    const notices = cooling
+      .filter(item => item.runtime === runtimes[0])
+      .map(item => `模型出口「${item.health.label}」最近失败:${item.health.lastError}；本轮先尝试「${runtimeProviderLabel(firstHealthy)}」。`)
+    return { runtimes: [...healthy, ...cooling.map(item => item.runtime)], notices }
+  }
+
+  const providerHealthCallbacks = {
+    onFailure: registerProviderFailure,
+    onSuccess: registerProviderSuccess,
+  }
+
+  async function resolveTaskEndpointTarget(id: string, statuses?: TaskStatus[]): Promise<{ task: TaskMeta | null; requestedTaskId: string }> {
+    const resolution = await tasks.resolveBackgroundAgentTarget(id, {
+      ...(statuses ? { statuses } : {}),
+    })
+    if (resolution.task) return { task: resolution.task, requestedTaskId: id }
+    return { task: await tasks.get(id), requestedTaskId: id }
+  }
+
+  function taskAliasPayload(task: TaskMeta, requestedTaskId: string): Record<string, string> {
+    const agentId = typeof task.params?.agent_id === 'string' && task.params.agent_id.trim()
+      ? task.params.agent_id.trim()
+      : ''
+    return {
+      ...(agentId ? { agentId } : {}),
+      ...(requestedTaskId !== task.id ? { requestedTaskId, resolvedTaskId: task.id } : {}),
+    }
+  }
+
+  function runtimeProviderHealthStatus(runtime: RuntimeProviderResolution, now = Date.now()) {
+    const key = runtimeProviderKey(runtime)
+    const health = providerHealth.get(key, now)
+    if (!health) {
+      return {
+        source: runtime.source,
+        providerId: runtime.providerId,
+        providerName: runtime.providerName,
+        label: runtimeProviderLabel(runtime),
+        model: runtime.config.model,
+        state: 'ready',
+        failureCount: 0,
+        cooldownMsRemaining: 0,
+      }
+    }
+    return {
+      source: runtime.source,
+      providerId: runtime.providerId,
+      providerName: runtime.providerName,
+      label: health.label,
+      model: runtime.config.model,
+      state: 'cooling',
+      failureCount: health.failureCount,
+      cooldownMsRemaining: Math.max(0, health.cooldownUntil - now),
+      lastError: health.lastError,
+      failureCategory: health.failureCategory,
+    }
+  }
+
+  async function syncLegacyByokTextProvider(input: Record<string, unknown>, saved: Record<string, unknown>): Promise<void> {
+    const existing = await providers.get(LEGACY_BYOK_TEXT_PROVIDER_ID).catch(() => null)
+    if (input.enabled !== true) {
+      const list = await providers.list()
+      if (existing && list.activeId === LEGACY_BYOK_TEXT_PROVIDER_ID) await providers.clearActive()
+      return
+    }
+
+    const baseUrl = stringOr(saved.base_url, '').trim()
+    const model = stringOr(saved.model, '').trim()
+    const apiKey = stringOr(input.api_key, '').trim()
+    if (!baseUrl || !model) return
+
+    const payload = {
+      id: LEGACY_BYOK_TEXT_PROVIDER_ID,
+      name: '自带文字模型',
+      apiFormat: 'openai_chat',
+      baseUrl,
+      model,
+      ...(apiKey ? { apiKey } : {}),
+    }
+    if (existing) await providers.update(LEGACY_BYOK_TEXT_PROVIDER_ID, payload)
+    else {
+      if (!apiKey) return
+      await providers.create(payload)
+    }
+    await providers.activate(LEGACY_BYOK_TEXT_PROVIDER_ID)
+  }
 
   async function currentModelStatus() {
-    const [list, runtime] = await Promise.all([
+    const [list, runtimes] = await Promise.all([
       providers.list(),
-      providers.resolveRuntimeConfig(opts.env ?? process.env),
+      providers.resolveRuntimeConfigs(opts.env ?? process.env),
     ])
+    const ordered = orderRuntimeProvidersForAttempt(runtimes)
+    const runtime = ordered.runtimes[0]
+    const now = Date.now()
+    const health = runtimes.map(item => runtimeProviderHealthStatus(item, now))
     return {
       ok: !!runtime,
       activeId: list.activeId,
       providers: list.providers,
+      fallbackCount: Math.max(0, runtimes.length - 1),
+      coolingCount: health.filter(item => item.state === 'cooling').length,
+      health,
+      healthHistory: providerHealth.listHistory(8),
       runtime: runtime
         ? {
             source: runtime.source,
@@ -564,6 +893,29 @@ export function startServer(opts: StartServerOptions = {}) {
           }
         : null,
     }
+  }
+
+  async function clearModelHealth(body: Record<string, unknown>) {
+    const all = body.all === true
+    const providerId = stringOr(body.providerId, '')
+    const source = stringOr(body.source, '')
+
+    if (!all && !providerId && !source) {
+      throw new Error('providerId/source required')
+    }
+
+    const runtimes = await providers.resolveRuntimeConfigs(opts.env ?? process.env)
+    const matched = all
+      ? runtimes
+      : runtimes.filter(runtime => (
+          providerId ? runtime.providerId === providerId : runtime.source === source
+        ))
+    if (!all && matched.length === 0) throw new Error('provider runtime not found')
+
+    const cleared = all
+      ? providerHealth.clearAll()
+      : providerHealth.clearAll(matched.map(runtimeProviderKey))
+    return { ok: true, cleared, status: await currentModelStatus() }
   }
 
   async function handleMcpElicitation(
@@ -629,11 +981,14 @@ export function startServer(opts: StartServerOptions = {}) {
     const rawUserMessage = stringOr(rawBody.message ?? rawBody.userMessage, '')
     if (!rawUserMessage) throw new TurnSetupError('message required', 400)
 
-    const providerRuntime = await providers.resolveRuntimeConfig(opts.env ?? process.env)
-    if (!providerRuntime) throw new TurnSetupError('model provider not configured', 503)
+    const resolvedProviderRuntimes = await providers.resolveRuntimeConfigs(opts.env ?? process.env)
+    if (resolvedProviderRuntimes.length === 0) throw new TurnSetupError('model provider not configured', 503)
+    const orderedProviderRuntimes = orderRuntimeProvidersForAttempt(resolvedProviderRuntimes)
+    const providerRuntimes = orderedProviderRuntimes.runtimes
+    const providerRuntime = providerRuntimes[0]!
 
-    const workspace = workspaceFromBody(rawBody)
     const conversationId = stringOr(rawBody.conversationId, crypto.randomUUID())
+    const workspace = workspaceForActiveWorktree(workspaceFromBody(rawBody), conversationId)
     const steerInbox = steerInboxes.get(conversationId) ?? []
     steerInboxes.set(conversationId, steerInbox)
     const transcript = sessions.transcript(conversationId)
@@ -645,14 +1000,22 @@ export function startServer(opts: StartServerOptions = {}) {
     let systemPrompt = await buildSystemPrompt(workspace)
     const outputStyles = await loadOutputStyles()
     const outputStylePrompt = renderOutputStylePrompt(outputStyles, stringOr(rawBody.output_style ?? rawBody.outputStyle, ''))
-    const extraContext = supportContext(rawBody)
+    const extraContext = [
+      supportContext(rawBody),
+      buildStoreMemoryContext(await desktopData.listMemories(), rawUserMessage, { workingDir: workspace.root }),
+    ].filter(Boolean).join('\n\n')
     if (outputStylePrompt || extraContext) {
       systemPrompt = [systemPrompt, outputStylePrompt, extraContext].filter(Boolean).join('\n\n')
     }
-    const model = createModelFromProviderConfig(providerRuntime.config, { fetchImpl: opts.fetchImpl })
+    const model = createModelFromRuntimeProviders(providerRuntimes, opts.fetchImpl, providerHealthCallbacks)
+    const requestedContextWindowTokens = numberFrom(rawBody.contextWindowTokens ?? rawBody.context_window_tokens, 0)
+    const contextWindowTokens = requestedContextWindowTokens > 0
+      ? requestedContextWindowTokens
+      : getConfiguredOrBuiltInModelContextWindow(providerRuntime.config.model, opts.env ?? process.env)
     const skillsRoot = opts.skillsRoot ?? defaultSkillsRoot()
     const skills = await loadSkillsDir(skillsRoot)
-    const commands = await loadCommandsDir(opts.commandsRoot ?? defaultCommandsRoot())
+    const enabledPacks = resolveEnabledPacks(rawBody)
+    const commands = await loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), enabledPacks)
     const parsedCommand = parseCommandInvocation(rawUserMessage)
     const matchedCommand = parsedCommand ? commands.byName.get(parsedCommand.name) : undefined
     const commandInvocation = parsedCommand && matchedCommand
@@ -666,7 +1029,10 @@ export function startServer(opts: StartServerOptions = {}) {
         }
       : undefined
     const userMessage = commandInvocation?.prompt ?? rawUserMessage
-    const hooks = await loadHookRegistryFile(opts.hooksPath ?? defaultHooksPath())
+    const skillRecommendations = suggestedSkillNamesForPacks(enabledPacks)
+    const domainPackTools = createDomainPackTools(enabledPacks)
+    const configuredHooks = await loadHookRegistryFile(opts.hooksPath ?? defaultHooksPath())
+    const hooks = mergeHookRegistries(createDomainPackHookRegistry(enabledPacks), configuredHooks)
     const agents = await loadAgentsDir(opts.agentsRoot ?? defaultAgentsRoot())
     const controller = turns.start(conversationId)
     const mcpConfigPath = typeof rawBody.mcpConfigPath === 'string' && rawBody.mcpConfigPath.trim()
@@ -685,28 +1051,59 @@ export function startServer(opts: StartServerOptions = {}) {
       }),
       samplingHandler: ({ params, signal }) => runMcpSampling(model, providerRuntime.config.model, params, signal ?? controller.signal),
     })
-    const taskTools = createTaskTools(tasks)
+    const taskTools = [...createTaskTools(tasks), ...createStructuredTaskTools(taskLists)]
+    let backgroundAgentOptions: BackgroundAgentTaskOptions | undefined
+    const teamTools = createTeamTools(teams, {
+      tasks,
+      resumeBackgroundAgent: (task, message, toolCtx) => {
+        if (!backgroundAgentOptions) throw new Error('background agent runner is not available')
+        return resumeBackgroundAgentTask(backgroundAgentOptions, task, message, toolCtx)
+      },
+    })
     const mediaTools = createMediaTools(media)
-    const backgroundBaseRegistry = buildGeneralRegistry({ skills, skillsRoot, commands, extraTools: [...taskTools, ...mediaTools] })
-    const baseRegistry = buildGeneralRegistry({ skills, skillsRoot, commands, extraTools: [...mcpTools.tools, ...taskTools, ...mediaTools] })
+    const storeDocTools = [createStoreDocsTool(storeDocs)]
+    const backgroundBaseRegistry = buildGeneralRegistry({ skills, skillsRoot, skillRecommendations, commands, extraTools: [...domainPackTools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
+    const baseRegistry = buildGeneralRegistry({ skills, skillsRoot, skillRecommendations, commands, extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
+    backgroundAgentOptions = {
+      tasks,
+      agents,
+      model,
+      baseTools: backgroundBaseRegistry.list(),
+      baseSystemPrompt: systemPrompt,
+      mcp: {
+        mcpConfigPath,
+        loadOptions: ({ workspaceRoot, signal, taskId }) => ({
+          cwd: workspaceRoot,
+          signal,
+          timeoutMs: 10000,
+          toolTimeoutMs: 120000,
+          fetchImpl: opts.fetchImpl,
+          elicitationHandler: input => handleMcpElicitation(input, {
+            conversationId,
+            taskId,
+            signal,
+          }),
+          samplingHandler: ({ params, signal: samplingSignal }) => runMcpSampling(model, providerRuntime.config.model, params, samplingSignal ?? signal ?? controller.signal),
+        }),
+      },
+    }
+    const agentSidechainRoot = join(stateRoot, 'agent-task-sidechains')
     const agentTools = agents.length > 0
       ? [createAgentTaskTool({
         agents,
         model,
-        baseTools: backgroundBaseRegistry.list(),
+        baseTools: backgroundAgentOptions.baseTools,
         baseSystemPrompt: systemPrompt,
+        sidechainRoot: agentSidechainRoot,
+        mcp: backgroundAgentOptions.mcp,
+        startBackgroundAgent: (input, toolCtx) => startBackgroundAgentRun(backgroundAgentOptions!, input, toolCtx),
       })]
       : []
+    const agentSidechainTools = agents.length > 0 ? createAgentTaskSidechainTools(agentSidechainRoot) : []
     const backgroundTools = agents.length > 0
-      ? [createBackgroundAgentTaskTool({
-        tasks,
-        agents,
-        model,
-        baseTools: backgroundBaseRegistry.list(),
-        baseSystemPrompt: systemPrompt,
-      })]
+      ? [createBackgroundAgentTaskTool(backgroundAgentOptions)]
       : []
-    const registry = buildGeneralRegistry({ skills, skillsRoot, commands, extraTools: [...mcpTools.tools, ...taskTools, ...mediaTools, ...agentTools, ...backgroundTools] })
+    const registry = buildGeneralRegistry({ skills, skillsRoot, skillRecommendations, commands, extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools, ...agentTools, ...agentSidechainTools, ...backgroundTools] })
     const stream = (async function* (): AsyncGenerator<SessionEventRecord> {
       let finalStatus: SessionStatus = 'idle'
       const record = async (event: SessionStreamEvent): Promise<SessionEventRecord> => {
@@ -728,6 +1125,9 @@ export function startServer(opts: StartServerOptions = {}) {
             contentLength: commandInvocation.contentLength,
           })
         }
+        for (const notice of orderedProviderRuntimes.notices) {
+          yield await record({ type: 'context_note', text: notice })
+        }
         for (const warning of mcpTools.warnings) {
           yield await record({ type: 'context_note', text: warning })
         }
@@ -743,7 +1143,10 @@ export function startServer(opts: StartServerOptions = {}) {
           signal: controller.signal,
           permissionMode: permissionModeFrom(rawBody.permissionMode),
           contextWindowChars: typeof rawBody.contextWindowChars === 'number' ? rawBody.contextWindowChars : undefined,
+          contextWindowTokens,
+          toolResultStoreDir: join(stateRoot, 'tool-results', conversationId),
           hooks,
+          teamInbox: { service: teams },
         })) {
           yield await record(event)
         }
@@ -790,7 +1193,9 @@ export function startServer(opts: StartServerOptions = {}) {
     if (event.type === 'thinking') return { ...base, type: 'reasoning', content: event.text }
     if (event.type === 'command_invocation') return { ...base, type: 'context_note', content: `已展开命令 /${event.name}${event.args ? ` ${event.args}` : ''}` }
     if (event.type === 'tool_call') return { ...base, type: 'tool_call', tool: event.tool, args: event.input }
+    if (event.type === 'tool_progress') return { ...base, type: 'tool_progress', tool: event.tool, id: event.id, chunk: event.chunk, stream: event.stream }
     if (event.type === 'tool_result') return { ...base, type: 'tool_result', tool: event.tool, content: event.output }
+    if (event.type === 'usage_update') return { ...base, ...event }
     if (event.type === 'ask_question') return { ...base, ...event }
     if (event.type === 'approval_request') return { ...base, ...event, args: event.args }
     if (event.type === 'steering') return { ...base, type: 'steering', content: event.content }
@@ -801,20 +1206,29 @@ export function startServer(opts: StartServerOptions = {}) {
     return null
   }
 
-  async function* legacyTaskEventStream(taskId: string, after: number): AsyncGenerator<string> {
+  async function* legacyTaskEventStream(requestedTaskId: string, after: number): AsyncGenerator<string> {
     let cursor = Math.max(0, after)
     for (let tick = 0; tick < 3000; tick++) {
-      const task = await tasks.get(taskId)
+      const resolved = await resolveTaskEndpointTarget(requestedTaskId)
+      const requestedId = resolved.requestedTaskId
+      const taskId = resolved.task?.id ?? requestedTaskId
+      const task = resolved.task ?? await tasks.get(taskId)
       if (!task) {
-        yield legacySseLine({ type: 'error', error: 'task not found', task_id: taskId, offset: cursor })
-        yield legacySseLine({ type: 'done', stopped_reason: 'error', task_id: taskId, offset: cursor })
+        yield legacySseLine({ type: 'error', error: 'task not found', task_id: taskId, requested_task_id: requestedId, offset: cursor })
+        yield legacySseLine({ type: 'done', stopped_reason: 'error', task_id: taskId, requested_task_id: requestedId, offset: cursor })
         return
       }
       const events = await tasks.loadEvents(taskId, { after: cursor, limit: 100 })
       for (const record of events) {
         cursor = Math.max(cursor, record.seq)
         const payload = legacyEventPayload(taskId, task.conversationId, record)
-        if (payload) yield legacySseLine(payload)
+        if (payload) {
+          yield legacySseLine({
+            ...payload,
+            ...(requestedId !== taskId ? { requested_task_id: requestedId, resolved_task_id: taskId } : {}),
+            ...(typeof task.params?.agent_id === 'string' && task.params.agent_id.trim() ? { agent_id: task.params.agent_id.trim() } : {}),
+          })
+        }
         if (record.event.type === 'done') return
       }
       if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') {
@@ -823,13 +1237,15 @@ export function startServer(opts: StartServerOptions = {}) {
           stopped_reason: task.status === 'failed' ? 'error' : task.status === 'cancelled' ? 'cancelled' : 'stop',
           conversation_id: task.conversationId,
           task_id: taskId,
+          ...(requestedId !== taskId ? { requested_task_id: requestedId, resolved_task_id: taskId } : {}),
+          ...(typeof task.params?.agent_id === 'string' && task.params.agent_id.trim() ? { agent_id: task.params.agent_id.trim() } : {}),
           offset: cursor,
         })
         return
       }
       await delay(100)
     }
-    yield legacySseLine({ type: 'error', error: 'task event stream timeout', task_id: taskId, offset: cursor })
+    yield legacySseLine({ type: 'error', error: 'task event stream timeout', task_id: requestedTaskId, offset: cursor })
   }
 
   async function startLegacyAgentTask(rawBody: Record<string, unknown>): Promise<{ task_id: string; status: string }> {
@@ -866,14 +1282,16 @@ export function startServer(opts: StartServerOptions = {}) {
     const session = await sessions.get(id)
     if (!session) throw new TurnSetupError('session not found', 404)
     if (session.status === 'running') throw new TurnSetupError('session is running', 409)
-    const providerRuntime = await providers.resolveRuntimeConfig(opts.env ?? process.env)
-    if (!providerRuntime) throw new TurnSetupError('model provider not configured', 503)
+    const resolvedProviderRuntimes = await providers.resolveRuntimeConfigs(opts.env ?? process.env)
+    if (resolvedProviderRuntimes.length === 0) throw new TurnSetupError('model provider not configured', 503)
+    const providerRuntimes = orderRuntimeProvidersForAttempt(resolvedProviderRuntimes).runtimes
+    const providerRuntime = providerRuntimes[0]!
 
     const transcript = sessions.transcript(id)
     const messages = await transcript.load()
     const keepRecentMessages = Math.max(1, Math.min(100, numberFrom(rawBody.keepRecentMessages ?? rawBody.keep_recent_messages, 12)))
     const minOldMessages = Math.max(1, Math.min(20, numberFrom(rawBody.minOldMessages ?? rawBody.min_old_messages, 1)))
-    const model = createModelFromProviderConfig(providerRuntime.config, { fetchImpl: opts.fetchImpl })
+    const model = createModelFromRuntimeProviders(providerRuntimes, opts.fetchImpl, providerHealthCallbacks)
     const compacted = await compactPipeline({
       messages,
       model,
@@ -903,18 +1321,22 @@ export function startServer(opts: StartServerOptions = {}) {
   }
 
   async function prewarm(rawBody: Record<string, unknown>) {
-    const providerRuntime = await providers.resolveRuntimeConfig(opts.env ?? process.env)
-    if (!providerRuntime) throw new TurnSetupError('model provider not configured', 503)
-    createModelFromProviderConfig(providerRuntime.config, { fetchImpl: opts.fetchImpl })
+    const resolvedProviderRuntimes = await providers.resolveRuntimeConfigs(opts.env ?? process.env)
+    if (resolvedProviderRuntimes.length === 0) throw new TurnSetupError('model provider not configured', 503)
+    const orderedProviderRuntimes = orderRuntimeProvidersForAttempt(resolvedProviderRuntimes)
+    const providerRuntimes = orderedProviderRuntimes.runtimes
+    const providerRuntime = providerRuntimes[0]!
+    createModelFromRuntimeProviders(providerRuntimes, opts.fetchImpl, providerHealthCallbacks)
 
     const workspace = workspaceFromBody(rawBody)
     const skillsRoot = opts.skillsRoot ?? defaultSkillsRoot()
     const commandsRoot = opts.commandsRoot ?? defaultCommandsRoot()
     const hooksPath = opts.hooksPath ?? defaultHooksPath()
     const agentsRoot = opts.agentsRoot ?? defaultAgentsRoot()
+    const enabledPacks = resolveEnabledPacks(rawBody)
     const [skills, commands, hooks, agents] = await Promise.all([
       loadSkillsDir(skillsRoot),
-      loadCommandsDir(commandsRoot),
+      loadCommandsForWorkspace(workspace.root, commandsRoot, enabledPacks),
       loadHookRegistryFile(hooksPath),
       loadAgentsDir(agentsRoot),
     ])
@@ -951,9 +1373,12 @@ export function startServer(opts: StartServerOptions = {}) {
         providerName: providerRuntime.providerName,
         summary: providerRuntime.summary,
       },
+      fallbackCount: Math.max(0, resolvedProviderRuntimes.length - 1),
+      ...(orderedProviderRuntimes.notices.length ? { notices: orderedProviderRuntimes.notices } : {}),
       workspaceRoot: workspace.root,
       skills: { root: skillsRoot, count: skills.skills.length },
       commands: { root: commandsRoot, count: commands.commands.length },
+      domainTools: { count: createDomainPackTools(enabledPacks).length },
       hooks: { path: hooksPath, count: hooks?.rules.length ?? 0 },
       agents: { root: agentsRoot, count: agents.length },
       ...(mcp ? { mcp } : {}),
@@ -964,9 +1389,11 @@ export function startServer(opts: StartServerOptions = {}) {
     const workspace = workspaceFromBody(rawBody)
     const skillsRoot = opts.skillsRoot ?? defaultSkillsRoot()
     const commandsRoot = opts.commandsRoot ?? defaultCommandsRoot()
+    const enabledPacks = resolveEnabledPacks(rawBody)
+    const domainPackTools = createDomainPackTools(enabledPacks)
     const [skills, commands] = await Promise.all([
       loadSkillsDir(skillsRoot),
-      loadCommandsDir(commandsRoot),
+      loadCommandsForWorkspace(workspace.root, commandsRoot, enabledPacks),
     ])
     const mcpConfigPath = typeof rawBody.mcpConfigPath === 'string' && rawBody.mcpConfigPath.trim()
       ? rawBody.mcpConfigPath.trim()
@@ -980,8 +1407,9 @@ export function startServer(opts: StartServerOptions = {}) {
     const registry = buildGeneralRegistry({
       skills,
       skillsRoot,
+      skillRecommendations: suggestedSkillNamesForPacks(enabledPacks),
       commands,
-      extraTools: [...mcpTools.tools, ...createTaskTools(tasks), ...createMediaTools(media)],
+      extraTools: [...domainPackTools, ...mcpTools.tools, ...createTaskTools(tasks), ...createStructuredTaskTools(taskLists), ...createTeamTools(teams, { tasks }), ...createMediaTools(media), createStoreDocsTool(storeDocs)],
     })
     return { workspace, registry, connections: mcpTools.connections }
   }
@@ -990,6 +1418,7 @@ export function startServer(opts: StartServerOptions = {}) {
     if (typeof body.tool !== 'string' || !body.tool.trim()) return jsonDetailError('tool required', 400)
     const tool = body.tool.trim()
     const args = body.args ?? {}
+    const approvalArgs = isRecord(body.approval_args) ? body.approval_args : isRecord(body.approvalArgs) ? body.approvalArgs : args
     const token = typeof body.token === 'string' ? body.token : undefined
     const conversationId = stringOr(body.conversation_id ?? body.conversationId, '')
     const built = await buildExecutionRegistry(body)
@@ -998,7 +1427,8 @@ export function startServer(opts: StartServerOptions = {}) {
         workspace: built.workspace,
         conversationId: conversationId || undefined,
         permissionMode: permissionModeFrom(body.permission_mode ?? body.permissionMode),
-      })
+        toolResultStoreDir: conversationId ? join(stateRoot, 'tool-results', conversationId) : undefined,
+      }, body.remember_approval === true || body.rememberApproval === true, approvalArgs)
       return Response.json({
         tool,
         result: result.output,
@@ -1163,7 +1593,9 @@ export function startServer(opts: StartServerOptions = {}) {
     const abs = join(stateRoot, 'uploads', 'local', basename(rel))
     await mkdir(dirname(abs), { recursive: true })
     await writeFile(abs, Buffer.from(await file.arrayBuffer()))
-    await desktopData.updateStore({ [`${kind}_url`]: rel })
+    const qrcodeContent = kind === 'qrcode' ? optionalString(form?.get('content')) : null
+    const extra = qrcodeContent ? { qrcode_text: qrcodeContent } : {}
+    await desktopData.updateStore({ [`${kind}_url`]: rel, ...extra })
     return Response.json({ url: rel })
   }
 
@@ -1172,6 +1604,127 @@ export function startServer(opts: StartServerOptions = {}) {
     const abs = join(stateRoot, 'uploads', 'local', basename(pathname))
     if (!existsSync(abs)) return null
     return new Response(await readFile(abs))
+  }
+
+  interface StudioBrandAsset {
+    role: 'logo' | 'qrcode' | 'brand'
+    url: string
+  }
+
+  function optionalString(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined
+  }
+
+  function uniqueStrings(values: string[]): string[] {
+    const seen = new Set<string>()
+    const out: string[] = []
+    for (const value of values) {
+      const trimmed = value.trim()
+      if (!trimmed || seen.has(trimmed)) continue
+      seen.add(trimmed)
+      out.push(trimmed)
+    }
+    return out
+  }
+
+  function existingUploadUrl(value: unknown): string | null {
+    const raw = optionalString(value)
+    if (!raw || !raw.startsWith('/uploads/')) return null
+    if (raw.includes('\0')) return null
+    const rel = raw.slice('/uploads/'.length)
+    if (!rel || rel.split(/[\\/]/).some(segment => segment === '..')) return null
+    const uploadsRoot = resolve(stateRoot, 'uploads')
+    const abs = resolve(uploadsRoot, rel)
+    if (abs !== uploadsRoot && !abs.startsWith(`${uploadsRoot}/`) && !abs.startsWith(`${uploadsRoot}\\`)) return null
+    return existsSync(abs) ? raw : null
+  }
+
+  function brandStyleText(value: unknown): string | undefined {
+    const raw = optionalString(value)
+    if (!raw) return undefined
+    const labels: Record<string, string> = {
+      lively: '热闹活力',
+      professional: '专业可信',
+      youthful: '年轻潮流',
+      premium: '高端质感',
+      minimal: '简约干净',
+      luxury: '高档大气',
+      sporty: '活力运动',
+    }
+    return labels[raw] ? `${labels[raw]}(${raw})` : raw
+  }
+
+  function storeBrandAssets(store: Record<string, unknown>): StudioBrandAsset[] {
+    const assets: StudioBrandAsset[] = []
+    const logo = existingUploadUrl(store.logo_url)
+    const qrcode = existingUploadUrl(store.qrcode_url)
+    if (logo) assets.push({ role: 'logo', url: logo })
+    if (qrcode) assets.push({ role: 'qrcode', url: qrcode })
+    for (const url of stringArray(store.brand_reference_images).map(existingUploadUrl).filter((item): item is string => !!item).slice(0, 4)) {
+      assets.push({ role: 'brand', url })
+    }
+    return assets
+  }
+
+  function storeBrandSuffix(store: Record<string, unknown>, assets: StudioBrandAsset[], body: Record<string, unknown>, mode: 'generate' | 'edit'): string {
+    const lines: string[] = []
+    const explicitStoreInfo = body.add_store_info === true
+    const storeName = optionalString(store.name)
+    const city = optionalString(store.city)
+    const district = optionalString(store.district)
+    const location = [city, district].filter(Boolean).join('')
+    const brandStyle = brandStyleText(store.brand_style ?? store.style)
+    const brandColor = optionalString(store.brand_color)
+    const hasCustomName = !!storeName && storeName !== '我的台球房'
+    const hasLogo = assets.some(asset => asset.role === 'logo')
+    const hasQrAsset = assets.some(asset => asset.role === 'qrcode')
+    const hasQrContent = !!optionalString(store.qrcode_text ?? store.qrcode_content ?? store.qr_content)
+    const hasQr = hasQrAsset || hasQrContent
+    const hasBrandRefs = assets.some(asset => asset.role === 'brand')
+    const hasContext = explicitStoreInfo || hasCustomName || !!location || !!brandStyle || !!brandColor || assets.length > 0
+    if (!hasContext) return ''
+
+    if ((explicitStoreInfo || hasCustomName) && storeName) lines.push(`门店名称:${storeName}`)
+    if (location) lines.push(`门店位置:${location}`)
+    if (brandStyle) lines.push(`品牌风格:${brandStyle}`)
+    if (brandColor) lines.push(`品牌主色调呼应 ${brandColor}，背景和点缀色协调即可，不要求整图都是这个颜色。`)
+    if (hasLogo) lines.push('已附带门店 Logo 作为输入图，可自然融入画面或留出安全位置；不要扭曲、改字或把它当成装饰纹理。')
+    if (hasQr) {
+      const printNote = body.print_mode === true
+        ? '这张图用于印刷/线下投放，二维码必须保持方正、清晰、可扫描，并留出足够静区。'
+        : '二维码可作为行动入口自然出现，但必须保持方正、清晰、可扫描，不要重绘成花纹。'
+      lines.push(`已附带门店二维码作为输入图，${printNote}`)
+    }
+    if (hasBrandRefs) lines.push('已附带品牌参考图，只提取品牌质感和配色，不要照搬无关内容。')
+    if (mode === 'edit' && assets.length > 0) {
+      lines.push('改图时第一张输入图是需要保留血缘的源图，门店素材只作为品牌融合参考。')
+    } else if (assets.length > 0) {
+      lines.push('输入素材用于品牌约束和版式参考，不要让参考图里的无关背景抢占主画面。')
+    }
+    return lines.length ? `门店品牌约束:\n${lines.map((line, index) => `${index + 1}. ${line}`).join('\n')}` : ''
+  }
+
+  async function prepareStudioImageBody(rawBody: Record<string, unknown>, mode: 'generate' | 'edit'): Promise<Record<string, unknown>> {
+    if (rawBody._store_brand_pack_applied === true) return rawBody
+    const store: Record<string, unknown> = await desktopData.getStore().catch(() => ({}))
+    const assets = storeBrandAssets(store)
+    const brandReferencePaths = assets.map(asset => asset.url)
+    const logoAsset = assets.find(asset => asset.role === 'logo')
+    const qrcodeAsset = assets.find(asset => asset.role === 'qrcode')
+    const qrcodeText = optionalString(store.qrcode_text ?? store.qrcode_content ?? store.qr_content)
+    const referenceImagePaths = uniqueStrings([...stringArray(rawBody.reference_image_paths), ...brandReferencePaths]).slice(0, 14)
+    const suffix = storeBrandSuffix(store, assets, rawBody, mode)
+    const prompt = optionalString(rawBody.image_prompt) ?? optionalString(rawBody.prompt) ?? optionalString(rawBody.description)
+    const body: Record<string, unknown> = {
+      ...rawBody,
+      _store_brand_pack_applied: true,
+    }
+    if (referenceImagePaths.length > 0) body.reference_image_paths = referenceImagePaths
+    if (logoAsset && !body._print_logo_path) body._print_logo_path = logoAsset.url
+    if (qrcodeAsset && !body._print_qr_path) body._print_qr_path = qrcodeAsset.url
+    if (qrcodeText && !body._print_qr_content) body._print_qr_content = qrcodeText
+    if (suffix && prompt) body.image_prompt = `${prompt}\n\n${suffix}`
+    return body
   }
 
   function costPayload() {
@@ -1598,14 +2151,20 @@ export function startServer(opts: StartServerOptions = {}) {
       return Response.json({ ok: false, detail: '没找到这张本地预览成品' }, { status: 404 })
     }
     if (action === 'generate' && req.method === 'POST') {
-      const body = await req.json().catch(() => ({})) as Record<string, unknown>
+      const rawBody = await req.json().catch(() => ({})) as Record<string, unknown>
+      const trusted = Array.isArray(rawBody.reference_image_paths)
+        ? rawBody.reference_image_paths.filter((item): item is string => typeof item === 'string')
+        : []
+      const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
       return Response.json(await media.startStudioGenerate(body, {
         conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
         workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, process.cwd()),
       }))
     }
     if (action === 'edit' && req.method === 'POST') {
-      const body = await req.json().catch(() => ({})) as Record<string, unknown>
+      const rawBody = await req.json().catch(() => ({})) as Record<string, unknown>
+      const trusted = typeof rawBody.mask_path === 'string' ? [rawBody.mask_path] : []
+      const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
       return Response.json(await media.startStudioEdit(body, {
         conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
         workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, process.cwd()),
@@ -1724,6 +2283,9 @@ export function startServer(opts: StartServerOptions = {}) {
     port,
     idleTimeout: 30,
     async fetch(req, server) {
+      const preflight = localCorsPreflight(req)
+      if (preflight) return preflight
+      const response = await (async (): Promise<Response | undefined> => {
       const url = new URL(req.url)
 
       if (url.pathname === '/agent/ws') {
@@ -1799,7 +2361,9 @@ export function startServer(opts: StartServerOptions = {}) {
         if (req.method === 'GET') return Response.json(await desktopData.getByok())
         if (req.method === 'PUT' || req.method === 'PATCH') {
           const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          return Response.json(await desktopData.updateByok(body))
+          const updated = await desktopData.updateByok(body)
+          await syncLegacyByokTextProvider(body, updated)
+          return Response.json(updated)
         }
         return new Response('Method not allowed', { status: 405 })
       }
@@ -1913,15 +2477,28 @@ export function startServer(opts: StartServerOptions = {}) {
         if (req.method === 'GET') return Response.json(await desktopData.getStoreDocs())
         if (req.method === 'PUT') {
           const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          return Response.json(await desktopData.updateStoreDocs({ folder_path: body.folder_path ?? null, status: body.folder_path ? 'ready' : 'idle' }))
+          return Response.json(await storeDocs.setFolder(typeof body.folder_path === 'string' ? body.folder_path : null))
         }
-        if (req.method === 'DELETE') return Response.json(await desktopData.updateStoreDocs({ folder_path: null, status: 'idle', indexed_file_count: 0, indexed_chunk_count: 0, last_indexed_at: null, last_error: null }))
+        if (req.method === 'DELETE') return Response.json(await storeDocs.clear())
         return new Response('Method not allowed', { status: 405 })
       }
 
       if (url.pathname === '/api/v1/store-docs/reindex') {
         if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        return Response.json(await desktopData.updateStoreDocs({ status: 'ready', last_indexed_at: new Date().toISOString(), last_error: null }))
+        return Response.json(await storeDocs.reindex())
+      }
+
+      if (url.pathname === '/api/v1/store-docs/search') {
+        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+        const body = await req.json().catch(() => ({})) as Record<string, unknown>
+        const query = typeof body.query === 'string' ? body.query : ''
+        const top = typeof body.top === 'number' ? body.top : 5
+        const paths = Array.isArray(body.paths)
+          ? body.paths.filter((item): item is string => typeof item === 'string')
+          : typeof body.path === 'string'
+            ? body.path
+            : undefined
+        return Response.json({ hits: await storeDocs.search(query, top, { paths }) })
       }
 
       if (url.pathname === '/api/v1/dashboard/today') {
@@ -1945,6 +2522,16 @@ export function startServer(opts: StartServerOptions = {}) {
       if (url.pathname === '/api/v1/quota/cost') {
         if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
         return Response.json(costPayload())
+      }
+
+      if (url.pathname === '/model/health/clear' || url.pathname === '/api/model/health/clear') {
+        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+        const body = await req.json().catch(() => ({})) as Record<string, unknown>
+        try {
+          return Response.json(await clearModelHealth(body))
+        } catch (err) {
+          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
+        }
       }
 
       if (url.pathname === '/model' || url.pathname === '/api/model') {
@@ -1991,9 +2578,26 @@ export function startServer(opts: StartServerOptions = {}) {
         return Response.json({ output_styles: styles.styles.map(publicOutputStyle) })
       }
 
+      if (url.pathname === '/api/v1/agent/packs') {
+        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
+        return Response.json({ packs: listPublicDomainPacks() })
+      }
+
       if (url.pathname === '/api/v1/agent/mcp') {
         if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
         return Response.json(await listMcpStatus({ workspaceRoot: url.searchParams.get('workspaceRoot') ?? undefined }))
+      }
+
+      if (url.pathname === '/api/v1/agent/workspace-status') {
+        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
+        const workspaceRoot = url.searchParams.get('working_dir') || url.searchParams.get('workspaceRoot') || process.cwd()
+        const workspace = new Workspace(workspaceRoot)
+        const [git, projectInstructions, tree] = await Promise.all([
+          getWorkspaceGitStatus(workspaceRoot),
+          summarizeWorkspaceProjectInstructions(workspace),
+          summarizeWorkspaceTree(workspaceRoot),
+        ])
+        return Response.json({ git, projectInstructions, tree })
       }
 
       if (url.pathname === '/api/v1/agent/mcp/presets') {
@@ -2209,22 +2813,35 @@ export function startServer(opts: StartServerOptions = {}) {
           })
         }
         if (action === 'cancel' && req.method === 'POST') {
-          const task = await tasks.get(id)
+          const { task, requestedTaskId } = await resolveTaskEndpointTarget(id, ['queued', 'running'])
           const interrupted = task?.conversationId ? turns.interrupt(task.conversationId) : false
-          const cancelled = await tasks.cancel(id)
-          return Response.json({ ok: true, task_id: id, status: cancelled || interrupted ? 'cancelled' : task?.status ?? 'unknown' })
+          const taskId = task?.id ?? id
+          const cancelled = await tasks.cancel(taskId)
+          return Response.json({
+            ok: true,
+            task_id: taskId,
+            ...(task && task.id !== requestedTaskId ? { requested_task_id: requestedTaskId, resolved_task_id: task.id } : {}),
+            ...(typeof task?.params?.agent_id === 'string' && task.params.agent_id.trim() ? { agent_id: task.params.agent_id.trim() } : {}),
+            status: cancelled || interrupted ? 'cancelled' : task?.status ?? 'unknown',
+          })
         }
         if (action === 'message' && req.method === 'POST') {
           const body = await req.json().catch(() => ({})) as Record<string, unknown>
           const message = typeof body.message === 'string' ? body.message.trim() : ''
           if (!message) return Response.json({ ok: false, detail: 'message required' }, { status: 400 })
-          const task = await tasks.get(id)
+          const { task, requestedTaskId } = await resolveTaskEndpointTarget(id)
           if (!task?.conversationId) return Response.json({ ok: false, detail: 'task not found' }, { status: 404 })
           const inbox = steerInboxes.get(task.conversationId) ?? []
           inbox.push(message)
           steerInboxes.set(task.conversationId, inbox)
-          await tasks.appendEvent(id, { type: 'steering', content: message }).catch(() => undefined)
-          return Response.json({ ok: true, task_id: id, queued: inbox.length })
+          await tasks.appendEvent(task.id, { type: 'steering', content: message }).catch(() => undefined)
+          return Response.json({
+            ok: true,
+            task_id: task.id,
+            ...(task.id !== requestedTaskId ? { requested_task_id: requestedTaskId, resolved_task_id: task.id } : {}),
+            ...(typeof task.params?.agent_id === 'string' && task.params.agent_id.trim() ? { agent_id: task.params.agent_id.trim() } : {}),
+            queued: inbox.length,
+          })
         }
         return new Response('Method not allowed', { status: 405 })
       }
@@ -2251,9 +2868,19 @@ export function startServer(opts: StartServerOptions = {}) {
             return new Response('Method not allowed', { status: 405 })
           }
 
+          if (id === 'reorder' && !action && req.method === 'POST') {
+            const body = await req.json().catch(() => ({})) as Record<string, unknown>
+            const ids = stringArray(body.ids ?? body.providerIds ?? body.order)
+            return Response.json(await providers.reorder(ids))
+          }
+
           if (id === 'active' && action === 'clear' && req.method === 'POST') {
             await providers.clearActive()
             return Response.json({ ok: true })
+          }
+
+          if (action === 'clear-health' && req.method === 'POST') {
+            return Response.json(await clearModelHealth({ providerId: id }))
           }
 
           if (id === 'test' && req.method === 'POST') {
@@ -2263,6 +2890,15 @@ export function startServer(opts: StartServerOptions = {}) {
 
           if (action === 'activate' && req.method === 'POST') {
             return Response.json({ provider: await providers.activate(id) })
+          }
+
+          if ((action === 'enable' || action === 'disable') && req.method === 'POST') {
+            return Response.json({ provider: await providers.setEnabled(id, action === 'enable') })
+          }
+
+          if (action === 'enabled' && (req.method === 'POST' || req.method === 'PATCH')) {
+            const body = await req.json().catch(() => ({})) as Record<string, unknown>
+            return Response.json({ provider: await providers.setEnabled(id, body.enabled !== false) })
           }
 
           if (action === 'test' && req.method === 'POST') {
@@ -2291,16 +2927,30 @@ export function startServer(opts: StartServerOptions = {}) {
 
       const commandRoute = url.pathname.match(/^\/(?:api\/)?commands(?:\/(expand))?$/)
       if (commandRoute) {
-        const commands = await loadCommandsDir(opts.commandsRoot ?? defaultCommandsRoot())
+        const queryPacks = [
+          ...url.searchParams.getAll('knowledge_packs'),
+          ...url.searchParams.getAll('knowledgePacks'),
+          ...url.searchParams.getAll('enabled_packs'),
+          ...url.searchParams.getAll('enabledPacks'),
+        ].filter(Boolean)
+        const bodyForWorkspace = req.method === 'GET'
+          ? {
+              working_dir: url.searchParams.get('working_dir') ?? undefined,
+              workspaceRoot: url.searchParams.get('workspaceRoot') ?? undefined,
+              knowledge_packs: queryPacks.length > 0 ? queryPacks : undefined,
+              billiards_mode: url.searchParams.get('billiards_mode') === 'true' || url.searchParams.get('billiardsMode') === 'true',
+            }
+          : await req.clone().json().catch(() => ({})) as Record<string, unknown>
+        const workspace = workspaceFromBody(bodyForWorkspace)
+        const commands = await loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), resolveEnabledPacks(bodyForWorkspace))
         if (!commandRoute[1] && req.method === 'GET') {
           return Response.json({ commands: commands.commands.map(publicCommand) })
         }
         if (commandRoute[1] === 'expand' && req.method === 'POST') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
+          const body = bodyForWorkspace
           if (typeof body.name !== 'string') return Response.json({ ok: false, error: 'name required' }, { status: 400 })
           const command = commands.byName.get(normalizeCommandName(body.name))
           if (!command) return Response.json({ ok: false, error: 'command not found' }, { status: 404 })
-          const workspace = workspaceFromBody(body)
           return Response.json({ command: publicCommand(command), prompt: await command.getPrompt(typeof body.args === 'string' ? body.args : '', { workspace }) })
         }
         return new Response('Method not allowed', { status: 405 })
@@ -2328,6 +2978,7 @@ export function startServer(opts: StartServerOptions = {}) {
               conversationId: url.searchParams.get('conversationId') ?? undefined,
               status: taskStatusFrom(url.searchParams.get('status')),
               limit: numberFrom(url.searchParams.get('limit'), 200),
+              collapseResumedBackgroundAgents: true,
             }),
           })
         }
@@ -2339,27 +2990,36 @@ export function startServer(opts: StartServerOptions = {}) {
         const id = taskMatch[1]!
         const action = taskMatch[2]
         if (!action && req.method === 'GET') {
-          const task = await tasks.get(id)
+          const { task, requestedTaskId } = await resolveTaskEndpointTarget(id)
           if (!task) return Response.json({ ok: false, error: 'task not found' }, { status: 404 })
           const includeEvents = url.searchParams.get('includeEvents') === '1'
           return Response.json({
             task,
-            ...(includeEvents ? { events: await tasks.loadEvents(id, { limit: 100 }) } : {}),
+            ...taskAliasPayload(task, requestedTaskId),
+            ...(includeEvents ? { events: await tasks.loadEvents(task.id, { limit: 100 }) } : {}),
           })
         }
         if (action === 'events' && req.method === 'GET') {
-          const task = await tasks.get(id)
+          const { task, requestedTaskId } = await resolveTaskEndpointTarget(id)
           if (!task) return Response.json({ ok: false, error: 'task not found' }, { status: 404 })
           const after = Number.parseInt(url.searchParams.get('after') ?? '0', 10)
           const limit = Number.parseInt(url.searchParams.get('limit') ?? '200', 10)
-          const events = await tasks.loadEvents(id, { after, limit })
+          const events = await tasks.loadEvents(task.id, { after, limit })
           return Response.json({
             events,
+            ...taskAliasPayload(task, requestedTaskId),
             nextSeq: events.at(-1)?.seq ?? (Number.isFinite(after) ? Math.max(0, after) : 0),
           })
         }
         if (action === 'cancel' && req.method === 'POST') {
-          return Response.json({ ok: true, cancelled: await tasks.cancel(id) })
+          const { task, requestedTaskId } = await resolveTaskEndpointTarget(id, ['queued', 'running'])
+          const taskId = task?.id ?? id
+          return Response.json({
+            ok: true,
+            cancelled: await tasks.cancel(taskId),
+            taskId,
+            ...(task && task.id !== requestedTaskId ? { requestedTaskId } : {}),
+          })
         }
         return new Response('Method not allowed', { status: 405 })
       }
@@ -2484,6 +3144,8 @@ export function startServer(opts: StartServerOptions = {}) {
       }
 
       return new Response('Not found', { status: 404 })
+      })()
+      return response ? withLocalCors(response, req) : undefined as unknown as Response
     },
     websocket: {
       open(ws) {

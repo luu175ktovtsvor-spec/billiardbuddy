@@ -12,9 +12,21 @@ test('loadAgentsDir:加载 .md agent frontmatter', async () => {
 name: billiards-ops
 description: 台球运营代理
 tools: [read_file, list_dir]
+disallowedTools: [list_dir]
 model: mimo-v2.5
 skills: [daily-report]
 memory: true
+permissionMode: plan
+maxTurns: 3
+initialPrompt: 先读约束。
+background: true
+isolation: worktree
+requiredMcpServers: [local fixture]
+mcpServers:
+  - local fixture
+  - inline fixture:
+      command: node
+      args: [server.js]
 ---
 你是台球运营代理。
 `)
@@ -24,9 +36,20 @@ memory: true
       name: 'billiards-ops',
       description: '台球运营代理',
       tools: ['read_file', 'list_dir'],
+      disallowedTools: ['list_dir'],
       model: 'mimo-v2.5',
       skills: ['daily-report'],
       memory: true,
+      permissionMode: 'plan',
+      maxTurns: 3,
+      initialPrompt: '先读约束。',
+      background: true,
+      isolation: 'worktree',
+      requiredMcpServers: ['local fixture'],
+      mcpServers: [
+        'local fixture',
+        { 'inline fixture': { command: 'node', args: ['server.js'] } },
+      ],
       prompt: '你是台球运营代理。',
     })
   } finally {
@@ -42,6 +65,10 @@ test('resolveAgentTools:按 tools 子集过滤,* 表示全量', () => {
   ] as Tool[]
   expect(resolveAgentTools({ name: 'a', description: '', prompt: '', filePath: '', tools: ['read_file'] }, tools).map(t => t.name))
     .toEqual(['read_file'])
-  expect(resolveAgentTools({ name: 'a', description: '', prompt: '', filePath: '', tools: ['*'] }, tools).map(t => t.name))
+  expect(resolveAgentTools({ name: 'a', description: '', prompt: '', filePath: '' }, tools).map(t => t.name))
     .toEqual(['read_file', 'write_file', 'list_dir'])
+  expect(resolveAgentTools({ name: 'a', description: '', prompt: '', filePath: '', disallowedTools: ['write_file'] }, tools).map(t => t.name))
+    .toEqual(['read_file', 'list_dir'])
+  expect(resolveAgentTools({ name: 'a', description: '', prompt: '', filePath: '', tools: ['read_file', 'write_file'], disallowedTools: ['write_file'] }, tools).map(t => t.name))
+    .toEqual(['read_file'])
 })
