@@ -43,6 +43,8 @@ export interface StoreCreate {
   target_customers?: string | null;
   style?: string | null;
   brand_style?: string | null;
+  brand_color?: string | null;
+  qrcode_text?: string | null;
   advantages?: string | null;
   common_activities?: string | null;
   // Expanded profile fields
@@ -80,6 +82,8 @@ export interface StoreUpdate {
   target_customers?: string | null;
   style?: string | null;
   brand_style?: string | null;
+  brand_color?: string | null;
+  qrcode_text?: string | null;
   advantages?: string | null;
   common_activities?: string | null;
   // Expanded profile fields
@@ -113,6 +117,7 @@ export interface StoreResponse {
   member_cards: MemberCard[] | null;
   logo_url: string | null;
   qrcode_url: string | null;
+  qrcode_text?: string | null;
   has_private_room: boolean;
   has_coaching: boolean;
   has_tournament: boolean;
@@ -120,6 +125,7 @@ export interface StoreResponse {
   target_customers: string | null;
   style: string | null;
   brand_style?: string | null;
+  brand_color?: string | null;
   advantages: string | null;
   common_activities: string | null;
   operation_profile: Record<string, unknown> | null;

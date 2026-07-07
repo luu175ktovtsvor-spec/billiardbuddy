@@ -5,19 +5,20 @@
  * chat 路由唯一渲染本壳（单窗口产品，旧手机网页版分支已随单窗口化删除）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Target, X } from "lucide-react";
+import { FileSearch, GitBranch, Target, X } from "lucide-react";
 
-import { api, type NotificationItem, type RecentArtifact } from "@/lib/api";
+import { api, type KnowledgePackMeta, type ModelStatusResponse, type NotificationItem, type RecentArtifact, type WorkspaceGitStatus, type WorkspaceProjectInstructionSummary, type WorkspaceTreeSummary } from "@/lib/api";
 import type { DashboardRecommendation } from "@/types/dashboard";
-import { HELP_TEXT } from "@/lib/agent-copy";
+import { HELP_TEXT, PERMISSION_MODES } from "@/lib/agent-copy";
 import { toolMeta } from "@/lib/agent-tools";
 import { useDesktop } from "@/hooks/use-desktop";
 import { useAgentChat, type PermissionMode, type ChatMessage } from "@/hooks/use-agent-chat";
+import { agentUsageStatusText, type AgentUsageStatus } from "@/hooks/agent-usage-status";
 import { safeFileName } from "@/lib/utils";
 import { DesktopShell, DesktopSidebar, type DesktopConversation } from "./macos-shell";
 import { WelcomeScreen } from "./welcome-screen";
 import { OnboardingBanner, type OnboardingStep } from "./onboarding-banner";
-import { DesktopComposer } from "./desktop-composer";
+import { DesktopComposer, type KnowledgePackOption } from "./desktop-composer";
 import { DesktopChatThread } from "./chat-thread";
 import { DesktopPreviewPanel, type PreviewItem } from "./preview-panel";
 import { SettingsDrawer } from "./settings-drawer";
@@ -27,7 +28,10 @@ import { ScheduledTasksPanel } from "./scheduled-tasks-panel";
 import { StoreDocsPanel } from "./store-docs-panel";
 import { DeletedItemsPanel } from "./deleted-items-panel";
 import { BackgroundTasksPanel } from "./background-tasks-panel";
+import { taskIdFromNotification, taskIdFromNotificationMeta } from "./notification-task-link";
 import { useToast } from "./toast";
+import { latestProjectInstructionScope, projectInstructionStatus } from "./project-instruction-status";
+import { isRestorablePreview, nextPreviewItem } from "./preview-state";
 
 function groupByDate(iso: string | null): string {
   if (!iso) return "更早";
@@ -47,6 +51,23 @@ type PersistedWorkbenchState = {
   permissionMode?: PermissionMode;
   preview?: PreviewItem | null;
 };
+
+const FALLBACK_KNOWLEDGE_PACK_OPTIONS: KnowledgePackOption[] = [
+  { id: "billiards", label: "台球运营专家", desc: "经营、活动、会员、短视频和海报工作流", defaultEnabled: false },
+];
+
+function knowledgePackOptionFromMeta(pack: KnowledgePackMeta): KnowledgePackOption {
+  return {
+    id: pack.id,
+    label: pack.name || pack.id,
+    desc: pack.description || "按这个专家的专业知识和技能来答",
+    defaultEnabled: pack.default_enabled,
+  };
+}
+
+function defaultKnowledgePackIds(options: KnowledgePackOption[]): string[] {
+  return options.filter((pack) => pack.defaultEnabled).map((pack) => pack.id);
+}
 
 function getWorkbenchId(): string {
   if (typeof window === "undefined") return "main";
@@ -80,15 +101,110 @@ function utf8ToBase64(text: string): string {
   return btoa(binary);
 }
 
-function isRestorablePreview(value: unknown): value is PreviewItem {
-  if (!value || typeof value !== "object") return false;
-  const item = value as Partial<PreviewItem>;
-  if (item.kind === "poster") return typeof item.imageUrl === "string";
-  if (item.kind === "video") return typeof item.videoUrl === "string";
-  if (item.kind === "content") return typeof item.text === "string";
-  if (item.kind === "file") return typeof item.text === "string";
-  if (item.kind === "sheet" || item.kind === "doc" || item.kind === "diff") return typeof item.path === "string";
-  return false;
+function permissionLabel(mode: PermissionMode): string {
+  return PERMISSION_MODES.find((item) => item.value === mode)?.label || "逐项确认";
+}
+
+function AgentStatusLine({
+  billiardsMode,
+  permissionMode,
+  messageCount,
+  selectedFileCount,
+  workingDir,
+  gitStatus,
+  projectInstructions,
+  projectScopeStatus,
+  modelStatus,
+  spend,
+  usage,
+  generating,
+}: {
+  billiardsMode: boolean;
+  permissionMode: PermissionMode;
+  messageCount: number;
+  selectedFileCount: number;
+  workingDir?: string | null;
+  gitStatus?: WorkspaceGitStatus | null;
+  projectInstructions?: WorkspaceProjectInstructionSummary | null;
+  projectScopeStatus?: ReturnType<typeof projectInstructionStatus>;
+  modelStatus?: ModelStatusResponse | null;
+  spend?: string;
+  usage?: AgentUsageStatus;
+  generating?: boolean;
+}) {
+  const chipBase = "inline-flex h-6 min-w-0 items-center rounded-md border border-black/[0.06] bg-black/[0.025] px-2 text-[11.5px] text-[#6e6e73] dark:border-white/[0.07] dark:bg-white/[0.035] dark:text-[#9a9ca3]";
+  const accentChip = "inline-flex h-6 min-w-0 items-center rounded-md border border-[#10a37f]/15 bg-[#10a37f]/[0.07] px-2 text-[11.5px] text-[#10a37f] dark:border-[#2fd39e]/20 dark:bg-[#2fd39e]/[0.08] dark:text-[#70d7bd]";
+  const gitLabel = gitStatus?.isGit
+    ? `${gitStatus.branch || "git"} · ${gitStatus.dirty ? `${gitStatus.changed}改` : "clean"}${gitStatus.ahead ? ` ↑${gitStatus.ahead}` : ""}${gitStatus.behind ? ` ↓${gitStatus.behind}` : ""}`
+    : "";
+  const gitTitle = gitStatus?.isGit
+    ? `Git：${gitStatus.branch || "未知分支"}，${gitStatus.dirty ? `${gitStatus.changed} 个改动（暂存 ${gitStatus.staged} / 未暂存 ${gitStatus.unstaged} / 新文件 ${gitStatus.untracked}）` : "干净"}${gitStatus.ahead ? `，领先 ${gitStatus.ahead}` : ""}${gitStatus.behind ? `，落后 ${gitStatus.behind}` : ""}`
+    : "";
+  const usageText = agentUsageStatusText(usage);
+  const usageChip = (usage?.contextPercent ?? 0) >= 70 ? accentChip : chipBase;
+  const ruleStatus = projectScopeStatus || projectInstructionStatus(projectInstructions, null);
+  const fallbackCount = Math.max(0, modelStatus?.fallbackCount ?? 0);
+  const providerLabel = modelStatus?.runtime?.providerName || modelStatus?.runtime?.summary.model || "";
+  const coolingProviders = (modelStatus?.health || []).filter((item) => item.state === "cooling");
+  const coolingTitle = coolingProviders
+    .map((item) => {
+      const seconds = Math.ceil((item.cooldownMsRemaining || 0) / 1000);
+      return `${item.label}：失败 ${item.failureCount} 次，约 ${seconds}s 后重试${item.lastError ? `；${item.lastError}` : ""}`;
+    })
+    .join("\n");
+  return (
+    <div className="mx-auto w-full max-w-[820px] px-4 pb-1">
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5 font-mono">
+        <span className={billiardsMode ? accentChip : chipBase}>{billiardsMode ? "台球运营专家" : "通用 Agent"}</span>
+        <span className={chipBase}>权限：{permissionLabel(permissionMode)}</span>
+        <span className={chipBase}>{messageCount} 条消息</span>
+        <span className={chipBase}>{selectedFileCount} 个附件</span>
+        {workingDir && (
+          <span
+            className={`${chipBase} max-w-[220px]`}
+            title={`${workingDir}（当前工作区，AI 会以它作为默认工作目录）`}
+          >
+            <span className="truncate">工作区：{baseName(workingDir)}</span>
+          </span>
+        )}
+        {gitStatus?.isGit && (
+          <span
+            className={`${gitStatus.dirty ? accentChip : chipBase} max-w-[190px] gap-1.5`}
+            title={gitTitle}
+          >
+            <GitBranch className="h-3 w-3 shrink-0" />
+            <span className="truncate">{gitLabel}</span>
+          </span>
+        )}
+        <span
+          className={`${ruleStatus.active ? accentChip : chipBase} max-w-[190px] gap-1.5`}
+          title={ruleStatus.title}
+        >
+          <FileSearch className="h-3 w-3 shrink-0" />
+          <span className="truncate">{ruleStatus.label}</span>
+        </span>
+        {fallbackCount > 0 && (
+          <span
+            className={chipBase}
+            title={`主出口${providerLabel ? `：${providerLabel}` : ""}；另有 ${fallbackCount} 个备用模型出口`}
+          >
+            备用出口：{fallbackCount}
+          </span>
+        )}
+        {coolingProviders.length > 0 && (
+          <span
+            className={accentChip}
+            title={`下次优先：${providerLabel || "当前可用出口"}\n${coolingTitle}`}
+          >
+            出口冷却：{coolingProviders.length}
+          </span>
+        )}
+        <span className={usageChip}>上下文：{usageText || "—"}</span>
+        <span className={chipBase}>本月：{spend || "—"}</span>
+        {generating && <span className={accentChip}>运行中</span>}
+      </div>
+    </div>
+  );
 }
 
 export function DesktopChatShell({
@@ -105,8 +221,9 @@ export function DesktopChatShell({
   // 注：桌面版后端默认放开「完全本地访问」（找/读/改任意文件+跑命令），无需前端再开开关；权限模式即安全闸。
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
   const [recentFiles, setRecentFiles] = useState<string[]>([]);
-  // @ 挂载的知识库（如 ["billiards"]）：挂上=该领域专家，不挂=通用 Agent。随每次对话透传后端。
+  // 专家挂载（如 ["billiards"]）：挂上=该领域专家，不挂=通用 Agent。随每次对话透传后端。
   const [knowledgePacks, setKnowledgePacks] = useState<string[]>([]);
+  const [knowledgePackOptions, setKnowledgePackOptions] = useState<KnowledgePackOption[]>(FALLBACK_KNOWLEDGE_PACK_OPTIONS);
   const [outputStyle, setOutputStyle] = useState<string>("");
   const [deepThinking, setDeepThinking] = useState(true); // F.2 深度思考默认开（mimo 默认就开）
   const [goal, setGoal] = useState<string>("");
@@ -150,14 +267,48 @@ export function DesktopChatShell({
     deepThinking,
     workingDir,
     onGeneratedImage: (item) => setPreview({ kind: "poster", ...item }),
+    onFileChange: (item) => setPreview((current) => nextPreviewItem(current, item)),
   });
+  const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceGitStatus | null>(null);
+  const [workspaceProjectInstructions, setWorkspaceProjectInstructions] = useState<WorkspaceProjectInstructionSummary | null>(null);
+  const [workspaceTree, setWorkspaceTree] = useState<WorkspaceTreeSummary | null>(null);
+  useEffect(() => {
+    if (!workingDir) {
+      setWorkspaceStatus(null);
+      setWorkspaceProjectInstructions(null);
+      setWorkspaceTree(null);
+      return;
+    }
+    let cancelled = false;
+    api.workspaceStatus(workingDir)
+      .then((r) => {
+        if (cancelled) return;
+        setWorkspaceStatus(r.git);
+        setWorkspaceProjectInstructions(r.projectInstructions || null);
+        setWorkspaceTree(r.tree || null);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setWorkspaceStatus(null);
+          setWorkspaceProjectInstructions(null);
+          setWorkspaceTree(null);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [workingDir, chat.generating]);
+  const projectScopeStatus = useMemo(() => {
+    const latestScope = latestProjectInstructionScope(chat.messages, chat.liveSteps);
+    return projectInstructionStatus(workspaceProjectInstructions, latestScope);
+  }, [chat.messages, chat.liveSteps, workspaceProjectInstructions]);
   // 注：updateWorkingDir 必须声明在 chat 之后——它闭包引用 chat.conversationId，提前声明会触发 TDZ。
   const updateWorkingDir = (wd: string | null) => { setWorkingDir(wd); persistWorkingDir(chat.conversationId, wd); };
   const [preview, setPreview] = useState<PreviewItem | null>(null);
   // 设置抽屉（门店名 + AI key）：单窗口内打开，替代老 web 的门店设置页
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [modelStatus, setModelStatus] = useState<ModelStatusResponse | null>(null);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [backgroundTasksOpen, setBackgroundTasksOpen] = useState(false);
+  const [backgroundTaskFocusId, setBackgroundTaskFocusId] = useState<string | null>(null);
   const [scheduledTasksOpen, setScheduledTasksOpen] = useState(false);
   const [storeDocsOpen, setStoreDocsOpen] = useState(false);
   const [deletedOpen, setDeletedOpen] = useState(false);
@@ -173,6 +324,31 @@ export function DesktopChatShell({
     try { localStorage.setItem("agent_onboarding_seen", "1"); } catch { /* 忽略 */ }
   }, []);
   const advanceOnboarding = useCallback(() => setOnboardingStep("point-card"), []);
+  useEffect(() => {
+    let cancelled = false;
+    api.getModelStatus()
+      .then((status) => { if (!cancelled) setModelStatus(status); })
+      .catch(() => { if (!cancelled) setModelStatus(null); });
+    return () => { cancelled = true; };
+  }, [chat.generating, settingsOpen]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.listKnowledgePacks()
+      .then((res) => {
+        if (cancelled) return;
+        const options = (res.packs || []).map(knowledgePackOptionFromMeta).filter((pack) => pack.id);
+        if (!options.length) return;
+        setKnowledgePackOptions(options);
+        try {
+          const hasWorkbenchSnapshot = !!localStorage.getItem(workbenchStateKey);
+          const hasPackPreference = localStorage.getItem("agent_knowledge_packs") !== null;
+          if (!hasWorkbenchSnapshot && !hasPackPreference) setKnowledgePacks(defaultKnowledgePackIds(options));
+        } catch { /* localStorage unavailable: keep fallback default */ }
+      })
+      .catch(() => { /* 旧后端/离线时沿用 fallback */ });
+    return () => { cancelled = true; };
+  }, [workbenchStateKey]);
 
   useEffect(() => {
     try {
@@ -203,9 +379,9 @@ export function DesktopChatShell({
     try {
       const raw = localStorage.getItem(workbenchStateKey);
       if (!raw) {
-        // decision #7：真·首次启动（既无工作台快照、也无独立知识库偏好）→ 默认挂台球模式（产品名就是台球）。
+        // 真·首次启动保持通用 Agent 底座；领域专家只有在后端显式 default_enabled 或用户已保存偏好时才挂载。
         // 不覆盖任何已保存选择：有 agent_knowledge_packs（哪怕是 [] = 用户特意选了通用）就交给下面的独立 effect 读。
-        if (!localStorage.getItem("agent_knowledge_packs")) setKnowledgePacks(["billiards"]);
+        if (!localStorage.getItem("agent_knowledge_packs")) setKnowledgePacks(defaultKnowledgePackIds(knowledgePackOptions));
         // G-b：借同一个"真·首次启动"信号顺带触发开箱引导。哪怕以后开新工作台窗口也会命中这个
         // !raw 分支（每个工作台各自的快照都是空的），但 agent_onboarding_seen 是全局标记——
         // 只要有一个窗口显示过、点过跳过/知道了，其余窗口这里都会读到已置位而不再弹。
@@ -264,17 +440,36 @@ export function DesktopChatShell({
     let after = -1;
 
     const showNotification = (n: NotificationItem) => {
+      const taskId = taskIdFromNotification(n);
+      const message = n.body ? `${n.title}：${n.body}` : n.title;
+      const openTask = taskId
+        ? () => {
+            setBackgroundTaskFocusId(taskId);
+            setBackgroundTasksOpen(true);
+          }
+        : null;
+      let nativeShown = false;
       if (electron?.notification?.show) {
-        electron.notification.show({ title: n.title, body: n.body }).catch(() => {});
-        return;
+        electron.notification.show({ title: n.title, body: n.body || n.title, meta: n.meta }).catch(() => {});
+        nativeShown = true;
       }
-      if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+      if (!nativeShown && typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
         try {
-          new Notification(n.title || "台球运营助手", { body: n.body });
-          return;
+          const browserNotification = new Notification(n.title || "台球运营助手", { body: n.body });
+          if (openTask) {
+            browserNotification.onclick = () => {
+              window.focus();
+              openTask();
+            };
+          }
+          nativeShown = true;
         } catch { /* 降级到 toast */ }
       }
-      toast.success(n.body ? `${n.title}：${n.body}` : n.title);
+      if (openTask) {
+        toast.info(message, { label: "查看", onClick: openTask });
+        return;
+      }
+      if (!nativeShown) toast.success(message);
     };
 
     // 非桌面端顺手问一次浏览器通知权限；用户拒绝也不重复打扰，代码会自动落回 toast。
@@ -303,6 +498,16 @@ export function DesktopChatShell({
 
     return () => { cancelled = true; };
   }, [electron, toast]);
+
+  useEffect(() => {
+    const unsubscribe = electron?.notification?.onClick?.((meta) => {
+      const taskId = taskIdFromNotificationMeta(meta);
+      if (!taskId) return;
+      setBackgroundTaskFocusId(taskId);
+      setBackgroundTasksOpen(true);
+    });
+    return () => { unsubscribe?.(); };
+  }, [electron]);
 
   // A4 零仪式：某会话/窗口没有已持久化的工作目录时，默认落到作品文件夹，不再要求用户开场先选。
   // 等 workbenchLoaded（已尝试读过窗口级缓存）+ workspaceDir 到手，workingDir 仍空才补上默认值——
@@ -591,7 +796,7 @@ export function DesktopChatShell({
     try { localStorage.setItem("agent_permission_mode", m); } catch { /* 忽略 */ }
   };
 
-  // @ 知识库挂载偏好持久化（记住上次挂了哪些领域包）
+  // 专家挂载偏好持久化（记住上次挂了哪些领域专家）
   useEffect(() => {
     try {
       if (localStorage.getItem(workbenchStateKey)) return;
@@ -628,7 +833,7 @@ export function DesktopChatShell({
     try { localStorage.setItem("agent_deep_thinking", v ? "1" : "0"); } catch { /* 忽略 */ }
   };
 
-  // 选参考文件/图片/视频：回形针只做附件授权；换存放位置统一走「+」菜单，避免用户把目录当附件。
+  // 选参考文件/图片/视频：回形针只做附件授权；切换工作区统一走「+」菜单，避免用户把目录当附件。
   const pickFiles = useCallback(async () => {
     if (!electron?.files?.pick) return;
     try {
@@ -649,15 +854,15 @@ export function DesktopChatShell({
       addSelectedFiles(r.paths);
     } catch { /* 取消/失败：忽略 */ }
   }, [electron, downloadsPath, addSelectedFiles]);
-  // A4：换个存放位置——不再是开场必选项，收进「+」菜单当低调菜单项。一个入口既能选现有文件夹、
-  // 也能在系统弹窗里当场新建文件夹（桌面主进程已支持 createDirectory）。不选的话默认就用作品文件夹。
+  // A4：切换工作区——一个入口既能选现有文件夹，也能在系统弹窗里当场新建文件夹。
+  // 不选的话默认用作品文件夹；一旦选择，这个目录同时作为前端目录树和模型 working_dir。
   const pickWorkingDir = async () => {
     if (!electron?.files?.pick) return;
     try {
       const r = await electron.files.pick({
         directory: true,
         createDirectory: true,
-        title: "选择或新建一个文件夹，管家的产出都存到这里",
+        title: "选择或新建一个文件夹作为当前工作区",
       });
       if (r.canceled || !r.paths?.length) return;
       updateWorkingDir(r.paths[0]);
@@ -855,6 +1060,11 @@ export function DesktopChatShell({
     setPreview(null);
   };
 
+  const openBackgroundTask = useCallback((taskId: string) => {
+    setBackgroundTaskFocusId(taskId);
+    setBackgroundTasksOpen(true);
+  }, []);
+
   const empty = chat.messages.length === 0 && !chat.generating;
 
   // G-b：欢迎屏一旦离开（发了消息/点了场景卡/开了每日草稿……不管走哪条路径）就不用再引导了，
@@ -920,11 +1130,14 @@ export function DesktopChatShell({
       onNewChat={newChat}
       onNewWorkspace={electron?.newWindow ? newWorkspace : undefined}
       onOpenStudio={electron?.openWorkbench ? () => { void electron.openWorkbench?.("image"); } : undefined}
+      workingDir={workingDir}
+      workspaceTree={workspaceTree}
+      onPickWorkingDir={electron?.files?.pick ? pickWorkingDir : undefined}
       onSelect={loadConv}
       onDelete={deleteConv}
       onOpenSettings={() => setSettingsOpen(true)}
     />
-  ), [liveStoreName, storeName, conversations, chat.conversationId, chat.generating, newChat, newWorkspace, electron, loadConv, deleteConv]);
+  ), [liveStoreName, storeName, conversations, chat.conversationId, chat.generating, newChat, newWorkspace, electron, workingDir, workspaceTree, pickWorkingDir, loadConv, deleteConv]);
 
   return (
     <>
@@ -937,15 +1150,8 @@ export function DesktopChatShell({
         <span className="font-mono text-[12.5px] text-[#6e6e73] dark:text-[#9a9ca3]">{empty ? "新会话" : "会话"}</span>
         <button
           type="button"
-          onClick={() => setMemoryOpen(true)}
-          className="app-no-drag ml-auto rounded-md px-2 py-1 text-[12px] text-[#6e6e73] transition hover:bg-black/[0.04] hover:text-[#10a37f] dark:text-[#9a9ca3] dark:hover:bg-white/[0.06]"
-        >
-          我的球房资料
-        </button>
-        <button
-          type="button"
           onClick={() => setScheduledTasksOpen(true)}
-          className="app-no-drag rounded-md px-2 py-1 text-[12px] text-[#6e6e73] transition hover:bg-black/[0.04] hover:text-[#10a37f] dark:text-[#9a9ca3] dark:hover:bg-white/[0.06]"
+          className="app-no-drag ml-auto rounded-md px-2 py-1 text-[12px] text-[#6e6e73] transition hover:bg-black/[0.04] hover:text-[#10a37f] dark:text-[#9a9ca3] dark:hover:bg-white/[0.06]"
         >
           定时任务
         </button>
@@ -961,7 +1167,7 @@ export function DesktopChatShell({
           onClick={() => setStoreDocsOpen(true)}
           className="app-no-drag rounded-md px-2 py-1 text-[12px] text-[#6e6e73] transition hover:bg-black/[0.04] hover:text-[#10a37f] dark:text-[#9a9ca3] dark:hover:bg-white/[0.06]"
         >
-          店铺资料库
+          资料库
         </button>
         <button
           type="button"
@@ -973,9 +1179,9 @@ export function DesktopChatShell({
       </div>
 
       {needsKey && !keyHintDismissed && (
-        <div className="flex items-center gap-3 border-b border-[#007AFF]/20 bg-[#007AFF]/[0.06] px-5 py-2.5 text-[12.5px] text-[#1d1d1f] dark:text-[#e6e7e9]">
+        <div className="flex items-center gap-3 border-b border-[#10a37f]/20 bg-[#10a37f]/[0.06] px-5 py-2.5 text-[12.5px] text-[#1d1d1f] dark:text-[#e6e7e9]">
           <span className="flex-1">AI 服务暂时没准备好。普通使用不用自己配 key；可以先重试。</span>
-          <button onClick={() => setSettingsOpen(true)} className="shrink-0 rounded-md bg-[#007AFF] px-3 py-1 text-[12px] font-medium text-white transition hover:bg-[#0066d6] active:scale-[0.97]">去配置</button>
+          <button onClick={() => setSettingsOpen(true)} className="app-primary-action shrink-0 rounded-md px-3 py-1 text-[12px] font-medium transition active:scale-[0.97]">去配置</button>
           <button onClick={() => setKeyHintDismissed(true)} aria-label="关闭" className="shrink-0 px-1 text-[#86868b] transition hover:text-[#1d1d1f] dark:hover:text-[#e6e7e9]"><X className="h-3.5 w-3.5" /></button>
         </div>
       )}
@@ -1002,7 +1208,7 @@ export function DesktopChatShell({
             recentItems={recentItems}
             onOpenRecent={openRecent}
             onDeleteRecent={deleteRecent}
-            onOpenStoreMemory={() => setMemoryOpen(true)}
+            onOpenStoreMemory={() => setStoreDocsOpen(true)}
             onViewScreen={electron ? viewCurrentScreen : undefined}
             onResearch={startResearch}
             onReadAloud={electron?.tts ? onReadAloud : undefined}
@@ -1017,12 +1223,14 @@ export function DesktopChatShell({
           reasoningDraft={chat.reasoningDraft}
           liveSteps={chat.liveSteps}
           liveTodo={chat.liveTodo}
+          retryStatus={chat.retryStatus}
           generating={chat.generating}
           executingIdx={chat.executingIdx}
           onConfirm={chat.confirmApproval}
           onCancel={chat.cancelApproval}
           onPreview={setPreview}
-          onAnswer={(label) => { void chat.send(label); }}
+          onOpenBackgroundTask={openBackgroundTask}
+          onAnswer={(answer, displayText) => { void chat.send(answer, undefined, displayText ? { displayText } : undefined); }}
           onStop={chat.stop}
           onRetry={chat.retry}
           onRedoAnswer={onRedoAnswer}
@@ -1039,32 +1247,20 @@ export function DesktopChatShell({
         />
       )}
 
-      {/* A4 零仪式：工作目录默认落作品文件夹，不再需要用户开场先选——这里只留纯提示信息，
-          没有"还没选"欠账文案；换存放位置的动作已收进输入区「+」菜单（低调、任务内动作）。 */}
-      {electron?.files?.pick && (
-        <div className="mx-auto w-full max-w-[820px] px-4 pb-1">
-          <div className="flex flex-wrap items-center gap-2 text-[12px]">
-            <span
-              className={`inline-flex items-center rounded-md px-2.5 py-1 ${
-                knowledgePacks.includes("billiards")
-                  ? "bg-[#10a37f]/10 text-[#10a37f]"
-                  : "bg-black/[0.04] text-[#6e6e73] dark:bg-white/[0.05] dark:text-[#9a9ca3]"
-              }`}
-              title={knowledgePacks.includes("billiards") ? "台球项目：会自动挂上台球行业知识" : "通用项目：不注入台球门店知识"}
-            >
-              工作台：{knowledgePacks.includes("billiards") ? "台球项目" : "通用项目"}
-            </span>
-            {workingDir && (
-              <span
-                className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md bg-black/[0.04] px-2.5 py-1 text-[#6e6e73] dark:bg-white/[0.05] dark:text-[#9a9ca3]"
-                title={`${workingDir}（管家的产出默认存到这里；完全访问下仍能处理别处文件，想换个地方存就在输入框「+」菜单里选）`}
-              >
-                <span className="truncate">存放位置：{baseName(workingDir)}</span>
-              </span>
-            )}
-          </div>
-        </div>
-      )}
+      <AgentStatusLine
+        billiardsMode={knowledgePacks.includes("billiards")}
+        permissionMode={mode}
+        messageCount={chat.messages.filter((m) => m.kind !== "context_note").length}
+        selectedFileCount={contextFiles.length}
+        workingDir={workingDir}
+        gitStatus={workspaceStatus}
+        projectInstructions={workspaceProjectInstructions}
+        projectScopeStatus={projectScopeStatus}
+        modelStatus={modelStatus}
+        spend={liveSpend}
+        usage={chat.usage}
+        generating={chat.generating}
+      />
 
       {goal && (
         <div className="mx-auto w-full max-w-[820px] px-4 pb-1">
@@ -1087,6 +1283,7 @@ export function DesktopChatShell({
         permissionMode={mode}
         onPermissionChange={updateMode}
         knowledgePacks={knowledgePacks}
+        knowledgePackOptions={knowledgePackOptions}
         onKnowledgePacksChange={updateKnowledgePacks}
         outputStyle={outputStyle}
         onOutputStyleChange={updateOutputStyle}
@@ -1166,9 +1363,17 @@ export function DesktopChatShell({
     </DesktopShell>
     <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} onStoreNameChange={setLiveStoreName} />
     <StoreMemoryPanel open={memoryOpen} onClose={() => setMemoryOpen(false)} workingDir={workingDir} />
-    <BackgroundTasksPanel open={backgroundTasksOpen} onClose={() => setBackgroundTasksOpen(false)} />
+    <BackgroundTasksPanel open={backgroundTasksOpen} onClose={() => setBackgroundTasksOpen(false)} focusTaskId={backgroundTaskFocusId} />
     <ScheduledTasksPanel open={scheduledTasksOpen} onClose={() => setScheduledTasksOpen(false)} />
-    <StoreDocsPanel open={storeDocsOpen} onClose={() => setStoreDocsOpen(false)} />
+    <StoreDocsPanel
+      open={storeDocsOpen}
+      onClose={() => setStoreDocsOpen(false)}
+      billiardsMode={knowledgePacks.includes("billiards")}
+      onOpenMemory={() => {
+        setStoreDocsOpen(false);
+        setMemoryOpen(true);
+      }}
+    />
     <DeletedItemsPanel
       open={deletedOpen}
       onClose={() => setDeletedOpen(false)}

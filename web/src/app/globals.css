@@ -24,16 +24,50 @@
 
 @layer base {
   :root {
-    --background: #ffffff;
-    --foreground: #0f172a;
+    --background: #f3f2ef;
+    --foreground: rgba(0, 0, 0, 0.9);
     --card: #ffffff;
-    --card-foreground: #0f172a;
-    --muted: #f1f5f9;
-    --muted-foreground: #64748b;
-    --border: #e2e8f0;
-    --input: #e2e8f0;
-    --ring: #6366f1;
+    --card-foreground: rgba(0, 0, 0, 0.9);
+    --muted: #eceae4;
+    --muted-foreground: rgba(0, 0, 0, 0.6);
+    --border: rgba(0, 0, 0, 0.1);
+    --input: rgba(0, 0, 0, 0.1);
+    --ring: #10a37f;
     --radius: 0.625rem;
+    --app-bg-page: #f3f2ef;
+    --app-bg-surface: #ffffff;
+    --app-bg-surface-2: #eceae4;
+    --app-border: rgba(0, 0, 0, 0.1);
+    --app-text-primary: rgba(0, 0, 0, 0.9);
+    --app-text-secondary: rgba(0, 0, 0, 0.6);
+    --app-text-tertiary: rgba(0, 0, 0, 0.4);
+    --app-accent: #10a37f;
+    --app-primary-bg: #1c1c1e;
+    --app-primary-bg-hover: #303033;
+    --app-primary-fg: #ffffff;
+  }
+
+  .dark {
+    --background: #141310;
+    --foreground: rgba(255, 255, 255, 0.92);
+    --card: #1d1c19;
+    --card-foreground: rgba(255, 255, 255, 0.92);
+    --muted: #26241f;
+    --muted-foreground: rgba(255, 255, 255, 0.65);
+    --border: rgba(255, 255, 255, 0.1);
+    --input: rgba(255, 255, 255, 0.1);
+    --ring: #2fd39e;
+    --app-bg-page: #141310;
+    --app-bg-surface: #1d1c19;
+    --app-bg-surface-2: #26241f;
+    --app-border: rgba(255, 255, 255, 0.1);
+    --app-text-primary: rgba(255, 255, 255, 0.92);
+    --app-text-secondary: rgba(255, 255, 255, 0.65);
+    --app-text-tertiary: rgba(255, 255, 255, 0.45);
+    --app-accent: #2fd39e;
+    --app-primary-bg: #f2efea;
+    --app-primary-bg-hover: #ffffff;
+    --app-primary-fg: #141310;
   }
 
   body {
@@ -67,6 +101,22 @@
   *:focus-visible {
     outline: 2px solid var(--ring);
     outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .app-primary-action {
+    background: var(--app-primary-bg);
+    color: var(--app-primary-fg);
+  }
+
+  .app-primary-action:hover:not(:disabled) {
+    background: var(--app-primary-bg-hover);
+  }
+
+  .app-active-neutral {
+    background: var(--app-primary-bg);
+    color: var(--app-primary-fg);
   }
 }
 

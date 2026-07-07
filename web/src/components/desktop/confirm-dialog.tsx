@@ -56,10 +56,10 @@ export function ConfirmDialog({
             ref={btnRef}
             type="button"
             onClick={onConfirm}
-            className={`rounded-md px-4 py-1.5 text-[13px] font-medium text-white transition active:scale-[0.98] ${
+            className={`rounded-md px-4 py-1.5 text-[13px] font-medium transition active:scale-[0.98] ${
               destructive
                 ? "bg-[#ff3b30] hover:bg-[#e0342b]"
-                : "bg-[#10a37f] hover:bg-[#0e906f]"
+                : "app-primary-action"
             }`}
           >
             {confirmLabel}

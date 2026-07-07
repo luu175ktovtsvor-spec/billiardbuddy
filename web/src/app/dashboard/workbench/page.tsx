@@ -3,7 +3,7 @@
 /**
  * 工作台容器窗口(/dashboard/workbench)· E1-C1 基建:
  * 把原先两扇独立窗口(生成工作室 /dashboard/studio、视频创作工作区 /dashboard/video)合成
- * 一扇窗口的两个面板(生图/视频)+ 一个模板占位面板(P2-9,本期不做模板引擎)。
+ * 一扇窗口的两个可用面板(生图/视频)。
  *
  * 改壳不改瓤:StudioPage/VideoWorkspacePage 内部零改动,原样 import 进来条件渲染——同一时刻只
  * 挂载当前激活的那一个,不用 display:none 同时挂两个(两页各自的根节点都是 `h-screen`,即视口整高;
@@ -21,22 +21,21 @@
  */
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Image as ImageIcon, Film, LayoutTemplate } from "lucide-react";
+import { Image as ImageIcon, Film } from "lucide-react";
 
 import StudioPage from "@/app/dashboard/studio/page";
 import { VideoWorkspacePage } from "@/app/dashboard/video/VideoWorkspace";
 
-type Panel = "image" | "video" | "template";
+type Panel = "image" | "video";
 type WorkbenchPayload = Record<string, string> | null;
 
 function isPanel(v: string | null | undefined): v is Panel {
-  return v === "image" || v === "video" || v === "template";
+  return v === "image" || v === "video";
 }
 
 const TABS: { id: Panel; label: string; Icon: typeof ImageIcon }[] = [
   { id: "image", label: "生图", Icon: ImageIcon },
   { id: "video", label: "视频", Icon: Film },
-  { id: "template", label: "模板", Icon: LayoutTemplate },
 ];
 
 function WorkbenchContainer() {
@@ -75,12 +74,6 @@ function WorkbenchContainer() {
     >
       {panel === "image" && <StudioPage />}
       {panel === "video" && <VideoWorkspacePage initialFromGen={payload?.fromGen} />}
-      {panel === "template" && (
-        <div className="flex h-screen w-full flex-col items-center justify-center gap-2 bg-white text-[#86868b] dark:bg-[#0e0f11] dark:text-[#6e7077]">
-          <LayoutTemplate className="h-8 w-8" />
-          <div className="text-[13px]">模板面板筹备中，先占个位置</div>
-        </div>
-      )}
 
       {/* tab 切换条:绝对定位浮在右上角,不占文档流高度(两页自己的顶部横条右侧都是空的,不挡标题)。 */}
       <div className="app-no-drag absolute right-4 top-2 z-10 flex items-center gap-1 rounded-full border border-black/[0.08] bg-white/90 p-1 shadow-sm backdrop-blur dark:border-white/[0.08] dark:bg-[#141519]/90">
@@ -92,7 +85,7 @@ function WorkbenchContainer() {
             title={t.label}
             className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[12px] font-medium transition active:scale-[0.97] ${
               panel === t.id
-                ? "bg-[#10a37f] text-white"
+                ? "app-active-neutral"
                 : "text-[#6e6e73] hover:bg-black/[0.05] dark:text-[#9a9ca3] dark:hover:bg-white/[0.08]"
             }`}
           >

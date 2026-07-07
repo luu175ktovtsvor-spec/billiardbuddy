@@ -3,7 +3,7 @@
 /**
  * D-Task-4：定时任务管理面板——让老板能建/看/删/开关"到点自动跑一条 AI 任务"（每早文案/每周报/
  * 每天汇总），跑完系统会弹通知，无人值守只出成品不对外。落点仿 store-memory-panel.tsx（独立
- * fixed 抽屉），入口挂在 chat-shell 顶部条("我的球房资料"/"最近删除"旁边)。
+ * fixed 抽屉），入口挂在 chat-shell 顶部条("知识库"/"最近删除"旁边)。
  *
  * 文案大白话去黑话：schedule_kind/schedule_spec/cron/UTC 这些技术词一律不出现在界面上，
  * 只留"每天几点/每周几几点/每隔多少分钟"人话。
@@ -177,7 +177,7 @@ export function ScheduledTasksPanel({ open, onClose }: { open: boolean; onClose:
     const n = name.trim();
     const ins = instruction.trim();
     if (!n || !ins) {
-      setMsg({ kind: "err", text: "先填个名字和要它干啥的指令" });
+      setMsg({ kind: "err", text: "请填写任务名称和执行内容。" });
       return;
     }
     setCreating(true);
@@ -256,13 +256,13 @@ export function ScheduledTasksPanel({ open, onClose }: { open: boolean; onClose:
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <p className="mb-3 text-[12.5px] leading-relaxed text-[#6e6e73] dark:text-[#9a9ca3]">
-          让管家到点自动帮你干一件事——比如每天早上写今日文案、每周一出周报。软件开着的时候才会跑，跑完会弹通知告诉你。
+          到指定时间自动执行一项任务，例如每天早上写今日文案、每周一生成周报。软件运行时才会执行，完成后会弹出通知。
         </p>
 
         <button
           type="button"
           onClick={() => setShowForm((v) => !v)}
-          className="mb-3 inline-flex items-center gap-1.5 rounded-lg bg-[#10a37f] px-3 py-1.5 text-[12.5px] font-medium text-white transition hover:bg-[#0d8c6d] active:scale-[0.98]"
+          className="app-primary-action mb-3 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12.5px] font-medium transition active:scale-[0.98]"
         >
           <Plus className="h-3.5 w-3.5" /> {showForm ? "收起" : "新建定时任务"}
         </button>
@@ -270,16 +270,16 @@ export function ScheduledTasksPanel({ open, onClose }: { open: boolean; onClose:
         {showForm && (
           <div className="mb-4 rounded-lg border border-black/[0.06] bg-black/[0.015] p-3 dark:border-white/[0.06] dark:bg-white/[0.02]">
             <div className="mb-2.5">
-              <label className="mb-1 block text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">起个名字</label>
+              <label className="mb-1 block text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">任务名称</label>
               <input className={INPUT} value={name} onChange={(e) => setName(e.target.value)} placeholder="比如：每日文案" />
             </div>
             <div className="mb-2.5">
-              <label className="mb-1 block text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">到点了要它干啥</label>
+              <label className="mb-1 block text-[12px] font-medium text-[#6e6e73] dark:text-[#9a9ca3]">执行内容</label>
               <textarea
                 className={`${INPUT} min-h-[64px] resize-none`}
                 value={instruction}
                 onChange={(e) => setInstruction(e.target.value)}
-                placeholder="比如：每天早上 9 点，自动帮我写一条今日朋友圈文案"
+                placeholder="比如：每天早上 9 点，写一条今日朋友圈文案"
               />
             </div>
             <div className="mb-2.5">
@@ -336,7 +336,7 @@ export function ScheduledTasksPanel({ open, onClose }: { open: boolean; onClose:
               type="button"
               onClick={() => void createTask()}
               disabled={creating || !name.trim() || !instruction.trim()}
-              className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-[#10a37f] px-3 py-2 text-[13px] font-medium text-white transition hover:bg-[#0d8c6d] disabled:opacity-50"
+              className="app-primary-action mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-medium transition disabled:opacity-50"
             >
               {creating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
               建好这条任务

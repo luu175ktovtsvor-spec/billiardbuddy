@@ -134,7 +134,7 @@ export function DeletedItemsPanel({
                     type="button"
                     onClick={() => void restore(item)}
                     disabled={busy === `r-${item.id}`}
-                    className="flex h-8 items-center gap-1 rounded-md bg-[#10a37f] px-2.5 text-[12px] text-white transition hover:bg-[#0d8c6d] disabled:opacity-50"
+                    className="app-primary-action flex h-8 items-center gap-1 rounded-md px-2.5 text-[12px] transition disabled:opacity-50"
                   >
                     {busy === `r-${item.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
                     恢复

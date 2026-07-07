@@ -131,7 +131,7 @@ export default function QuickInputPage() {
             onClick={() => void submit()}
             disabled={!canSubmit}
             aria-label="发送"
-            className="flex h-7 items-center gap-1 rounded-md bg-[#10a37f] px-2.5 text-[12px] font-medium text-white transition hover:bg-[#0e906f] disabled:opacity-30"
+            className="app-primary-action flex h-7 items-center gap-1 rounded-md px-2.5 text-[12px] font-medium transition disabled:opacity-30"
           >
             <CornerDownLeft className="h-3.5 w-3.5" />
             发送
