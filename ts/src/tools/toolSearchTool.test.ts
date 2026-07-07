@@ -91,6 +91,8 @@ describe('tool_search', () => {
       tool('TaskGet', 'Retrieve one structured task by id'),
       tool('TaskUpdate', 'Update a structured task'),
       tool('TaskOutput', 'Read output from a background task'),
+      tool('AgentOutputTool', 'Legacy alias for reading background agent output'),
+      tool('BashOutputTool', 'Legacy alias for reading background command output'),
       tool('TaskStop', 'Stop a running background task'),
       tool('TeamCreate', 'Create a local agent team'),
       tool('TeamDelete', 'Delete a local agent team'),
@@ -132,6 +134,8 @@ describe('tool_search', () => {
     expect(searchTools(registry, { query: '读取任务详情', limit: 1 })[0]?.tool.name).toBe('TaskGet')
     expect(searchTools(registry, { query: '完成任务状态', limit: 1 })[0]?.tool.name).toBe('TaskUpdate')
     expect(searchTools(registry, { query: '读取任务输出', limit: 1 })[0]?.tool.name).toBe('TaskOutput')
+    expect(searchTools(registry, { query: '读取代理输出', limit: 1 })[0]?.tool.name).toBe('AgentOutputTool')
+    expect(searchTools(registry, { query: '读取命令输出', limit: 1 })[0]?.tool.name).toBe('BashOutputTool')
     expect(searchTools(registry, { query: '停止任务', limit: 1 })[0]?.tool.name).toBe('TaskStop')
     expect(searchTools(registry, { query: '创建团队', limit: 1 })[0]?.tool.name).toBe('TeamCreate')
     expect(searchTools(registry, { query: '清理团队', limit: 1 })[0]?.tool.name).toBe('TeamDelete')

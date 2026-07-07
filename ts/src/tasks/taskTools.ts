@@ -694,6 +694,14 @@ function xmlAttr(value: string): string {
   return xmlText(value).replaceAll('"', '&quot;')
 }
 
+function taskOutputAlias(tool: Tool, name: string): Tool {
+  return {
+    ...tool,
+    name,
+    description: `${tool.description} Legacy CC-Haha alias for TaskOutput.`,
+  }
+}
+
 export function createTaskTools(tasks: TaskService): Tool[] {
   const listTasks: Tool = {
     name: 'list_background_tasks',
@@ -848,7 +856,15 @@ export function createTaskTools(tasks: TaskService): Tool[] {
     },
   }
 
-  return [listTasks, readTask, cancelTask, taskOutput, taskStop]
+  return [
+    listTasks,
+    readTask,
+    cancelTask,
+    taskOutput,
+    taskOutputAlias(taskOutput, 'AgentOutputTool'),
+    taskOutputAlias(taskOutput, 'BashOutputTool'),
+    taskStop,
+  ]
 }
 
 export function createBackgroundAgentTaskTool(opts: BackgroundAgentTaskOptions): Tool<BackgroundAgentTaskInput> {

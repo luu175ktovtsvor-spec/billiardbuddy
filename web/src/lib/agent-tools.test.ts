@@ -19,6 +19,9 @@ describe("toolActionText", () => {
     expect(toolActionText("task_create", "done")).toBe("已创建任务");
     expect(toolActionText("TaskCreate", "running")).toBe("正在创建任务");
     expect(toolActionText("TaskUpdate", "done")).toBe("已更新任务");
+    expect(toolActionText("TaskOutput", "done")).toBe("已读取任务输出");
+    expect(toolActionText("AgentOutputTool", "done")).toBe("已读取代理输出");
+    expect(toolActionText("BashOutputTool", "running")).toBe("正在读取命令输出");
     expect(toolActionText("agent_task", "running")).toBe("正在分派子代理");
     expect(toolActionText("patch_files", "running")).toBe("正在应用多文件补丁");
   });

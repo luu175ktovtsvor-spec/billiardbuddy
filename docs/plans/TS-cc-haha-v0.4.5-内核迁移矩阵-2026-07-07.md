@@ -2225,9 +2225,18 @@
 - 测试覆盖:worktree 隔离续跑仍在原 worktree 读写;普通 stopped agent、旧 task id、stable agent id、metadata sidecar 恢复、orphan metadata 恢复、stored tool result 继承、content replacement 继承全部在同一 task id 上完成;TaskService 旧 resume-chain 解析测试保留,保障历史兼容。
 - 验证:`cd ts && bun run typecheck` clean;`cd ts && bun test src/tasks/taskTools.test.ts src/tasks/teamTools.test.ts src/tasks/taskService.test.ts --timeout 40000` = 38 pass。
 
+## 3.268 2026-07-08 CC-Haha AgentOutputTool/BashOutputTool 旧名兼容迁移
+
+- 对照源:`~/Desktop/cc-haha-ref/src/tools/TaskOutputTool/TaskOutputTool.tsx`。关键行为:CC-Haha 的 `TaskOutputTool` 除主名 `TaskOutput` 外,还声明旧名 alias `AgentOutputTool`、`BashOutputTool`;历史 prompt 或模型记忆可能仍按旧名读取后台代理/命令输出。
+- `createTaskTools()` 现在注册 `AgentOutputTool` 与 `BashOutputTool` 两个浅 alias,共享 `TaskOutput` 的执行逻辑、schema、只读属性和 task id 解析层;因此旧名同样支持 `block/timeout/limit`、稳定 agent id、旧 task id 到最新/原槽任务的解析。
+- `tool_search` 热工具与中英文别名补齐两个旧名,可通过“读取代理输出/读取命令输出/agent output/bash output”召回;大工具集懒加载时不会因为只暴露 `TaskOutput` 而漏掉旧 prompt 习惯。
+- 前端工具文案新增 `AgentOutputTool`/`BashOutputTool`,桌面 trace 低噪显示“读取代理输出/读取命令输出”,不裸露旧内部工具名。
+- 测试覆盖:`AgentOutputTool` 与 `BashOutputTool` 读取同一后台任务输出,其中 `AgentOutputTool` 与 `TaskOutput` 字节级一致;`tool_search` 能按中文意图召回旧名;前端 `toolActionText` 渲染旧名。
+- 验证:`cd ts && bun run typecheck` clean;`cd ts && bun test src/tasks/taskTools.test.ts src/tools/toolSearchTool.test.ts --timeout 40000` = 21 pass;`cd web && pnpm exec vitest run src/lib/agent-tools.test.ts` = 2 pass;`cd web && pnpm exec tsc --noEmit` clean。
+
 ## 4. 下一批代码顺序
 
-1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复、后台 agent 确定性进度阶段、`SendUserMessage/Brief` 输出通道、agent memory / snapshot、后台续跑 content replacement records 继承、同 agent id 原任务槽续跑已落;下一步继续复制/移植/改写 content replacement full restore、forked agent progress summary/prompt-cache、UDS/remote teammate bridge。
+1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复、后台 agent 确定性进度阶段、`SendUserMessage/Brief` 输出通道、agent memory / snapshot、后台续跑 content replacement records 继承、同 agent id 原任务槽续跑、`AgentOutputTool/BashOutputTool` 旧名兼容已落;下一步继续复制/移植/改写 content replacement full restore、forked agent progress summary/prompt-cache、UDS/remote teammate bridge。
 2. **后台子代理事件流/UI drill-in polish**:同步 `agent_task` 轨迹、后台启动 chip、完成通知与点击跳转、事件过滤/摘要折叠、trace 搜索/失败节点/phase 分组已落;下一步做统一 trace 面板、按 `agent_id` 过滤/跳转、sidechain transcript drill-in。
 3. **provider failover 策略 polish**:active saved -> saved fallbacks -> env fallback、失败原因 `context_note`、sticky fallback、状态线备用出口/冷却 chip、设置抽屉简洁健康状态/折叠明细、旧 BYOK -> ProviderService 兼容桥、provider 健康冷却、跨重启持久化、手动清冷却、保存通道启停/排序、默认/接管中状态区分、prewarm 跟随冷却排序、冷却分类退避、最近排障历史已落;下一步只剩完整高级 provider 管理页与更深的趋势/导出排障。
 4. **领域包/知识库前端 polish**:`billiards` 已从硬编码 supportContext 收到 SessionStart pack,前端选择器已读 `/api/v1/agent/packs`,`list_skills` 已支持 pack 推荐/过滤,pack prompt commands 已合并进命令池;下一步把知识库 Q&A 做成更接近 Codex/Work Buddy 的低噪来源面板和专家挂载入口。
