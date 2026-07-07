@@ -73,7 +73,7 @@
 - Next.js App Router；交互组件加 `"use client"`；样式用 Tailwind 不写 CSS 文件（项目无 `cn` helper，用模板字符串）
 - `useDesktop().isDesktop` 区分桌面/web；桌面页面用 `web/src/components/desktop/`
 - API 统一走 `lib/api.ts`；SSE 流式用 `streamAgent`；useEffect 加 `cancelled` flag 防卸载后 setState；**副作用别放进 setState 更新函数**(StrictMode 会双跑)
-- 设计语言：macOS 原生质感(无边框窗口毛玻璃 + SF 字体 + #007AFF)；权限用词照搬 Claude Code（逐项确认/自动接受修改/跳过确认）。设计规范见 `docs/design/桌面Agent-macOS设计规范.md`。
+- 设计语言：macOS 原生质感(无边框窗口毛玻璃 + SF 字体 + 中性主按钮/气泡 + 绿色小点缀,禁回流蓝色主体系)；权限用词照搬 Claude Code（逐项确认/自动接受修改/跳过确认）。设计规范见 `docs/design/桌面Agent-macOS设计规范.md`。
 
 ### 后端
 - API 前缀 `/api/v1/`；Pydantic v2；async SQLAlchemy。**免登录单用户**：已删 SaaS 登录鉴权，`api/deps.py` 的 `get_current_user/get_current_store` 返回本地 seed 的唯一 owner/店
