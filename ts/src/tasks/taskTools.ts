@@ -14,6 +14,7 @@ import type { BackgroundAgentMetadata, TaskEventRecord, TaskMeta, TaskService, T
 import { createIsolatedAgentWorktree, type AgentWorktreeCleanupResult } from '../tools/worktreeTools'
 import { applySubagentStartHooks, mergeHookRegistries, type HookRegistry } from '../hooks/hooks'
 import { buildAgentMemoryPrompt, workspaceWithAgentMemory } from '../agents/agentMemory'
+import type { ContentReplacementRecord } from '../context/toolResultStorage'
 
 export interface BackgroundAgentTaskInput {
   agent?: string
@@ -362,6 +363,7 @@ export async function startBackgroundAgentRun(
   ctx: ToolContext,
   extraParams: Record<string, unknown> = {},
   initialMessages: Message[] = [],
+  initialContentReplacementRecords: ContentReplacementRecord[] = [],
 ): Promise<BackgroundAgentRunResult> {
   if (!input || typeof input.task !== 'string' || !input.task.trim()) throw new Error('start_background_agent_task 需要 string 参数 task')
   const agent = pickAgent(opts.agents, input.agent)
@@ -410,6 +412,9 @@ export async function startBackgroundAgentRun(
   const steerInbox: string[] = []
   const detachSteerInbox = opts.tasks.attachSteerInbox(task.id, steerInbox)
   const hooks = mergeHookRegistries(opts.hooks, agent.hooks)
+  if (initialContentReplacementRecords.length > 0) {
+    await opts.tasks.transcript(task.id).seedContentReplacementRecords(initialContentReplacementRecords)
+  }
   opts.tasks.start(task.id, async taskCtx => {
     let finalText = ''
     let cleanup: AgentWorktreeCleanupResult | null = null
@@ -511,7 +516,12 @@ export async function resumeBackgroundAgentTask(
   const metadata = await opts.tasks.readBackgroundAgentMetadata(previousTask.id)
   const agentName = resumableAgentName(previousTask, metadata)
   if (!agentName) throw new Error(`Task ${previousTask.id} has no background agent name to resume`)
-  const previousMessages = sanitizeBackgroundAgentResumeMessages(await opts.tasks.transcript(previousTask.id).load())
+  const previousTranscript = opts.tasks.transcript(previousTask.id)
+  const [previousRawMessages, previousReplacementRecords] = await Promise.all([
+    previousTranscript.load(),
+    previousTranscript.loadContentReplacementRecords(),
+  ])
+  const previousMessages = sanitizeBackgroundAgentResumeMessages(previousRawMessages)
   const resumedContext = await resumeToolContext(previousTask, ctx, metadata)
   const instanceName = resumableInstanceName(previousTask, metadata)
   const stableAgentId = resumableStableAgentId(previousTask, metadata)
@@ -531,7 +541,7 @@ export async function resumeBackgroundAgentTask(
     replayed_messages: previousMessages.length,
     tool_result_store_dir: toolResultStoreDir,
     ...resumedContext.params,
-  }, previousMessages)
+  }, previousMessages, previousReplacementRecords)
   await opts.tasks.appendEvent(previousTask.id, {
     type: 'context_note',
     text: `SendMessage resumed this background agent as task ${task.id}.`,
