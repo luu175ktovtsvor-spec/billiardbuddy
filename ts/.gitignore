@@ -38,3 +38,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 desktop/binaries/
 # 原生插件 spike 下载的模型缓存(可再生)
 .transformers-cache/
+
+# 后台 agent MCP 测试临时目录(可再生)
+.task-tools-agent-mcp-*/
