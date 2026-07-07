@@ -1,6 +1,6 @@
 # W1 · 原生插件 Bun-下 spike findings(2026-07-06 · macOS arm64 · Bun 1.3.14)
 
-> §2 Phase-0 风险闸:三个原生/运行时依赖 + `bun:sqlite` 在 Bun 下**各真跑一次**。结论:**Bun 1.3.14 能跑我们全部原生依赖**,剩的活集中在 W13 跨平台预编译打包(owner 已放开体积)。复跑:装依赖后 `bun run smoke:native` / `bun run smoke:sqlite`。
+> §2 Phase-0 风险闸:三个原生/运行时依赖 + `bun:sqlite` 在 Bun 下**各真跑一次**。结论:**Bun 1.3.14 能跑我们全部原生依赖**,剩的活集中在 W13 跨平台预编译打包(owner 已放开体积)。复跑:日常 `bun run smoke:native` 会把未安装的重依赖标为 skipped 并退出 0;严格复跑先安装依赖,再 `NATIVE_SMOKE_REQUIRE_DEPS=1 bun run smoke:native`。`bun run smoke:sqlite` 仍是普通硬 smoke。
 
 ## 结果(全绿)
 | 依赖 | Bun 下能跑? | 版本 / 实测细节 | 回退 / 决策 |
@@ -21,4 +21,4 @@
 - **sharp 版本去重**:transformers.js 会带自己的 sharp(0.34.5/libvips 8.17.3),与我们的 0.35.3 并存会有 objc duplicate-class 告警(无害)。生产打包时 dedupe sharp 到一份。
 
 ## W1 处置
-本轮只出结论,不把重依赖留在主 deps。spike 装的 `sharp`/`@huggingface/transformers`(带 onnxruntime-node/protobufjs)/`smart-whisper` **已从 `ts/package.json` 移除**;`smoke/*.ts` 脚本保留(用变量说明符 import,删依赖后仍 typecheck 通),W7/W8/W9 正式挂载时再装、按上面回退决策接。
+本轮只出结论,不把重依赖留在主 deps。spike 装的 `sharp`/`@huggingface/transformers`(带 onnxruntime-node/protobufjs)/`smart-whisper` **已从 `ts/package.json` 移除**;`smoke/*.ts` 脚本保留(用变量说明符 import,删依赖后仍 typecheck 通),W7/W8/W9 正式挂载时再装、按上面回退决策接。2026-07-07 追加:脚本改为默认 skipped / 严格模式失败,避免日常 `smoke:native` 因刻意未安装的重依赖常红。
