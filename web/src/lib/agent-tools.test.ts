@@ -16,6 +16,9 @@ describe("toolActionText", () => {
     expect(toolActionText("SendUserMessage", "done")).toBe("已发送用户消息");
     expect(toolActionText("Brief", "running")).toBe("正在发送用户消息");
     expect(toolActionText("project_diagnostics", "done")).toBe("已跑项目诊断");
+    expect(toolActionText("task_create", "done")).toBe("已创建任务");
+    expect(toolActionText("TaskCreate", "running")).toBe("正在创建任务");
+    expect(toolActionText("TaskUpdate", "done")).toBe("已更新任务");
     expect(toolActionText("agent_task", "running")).toBe("正在分派子代理");
     expect(toolActionText("patch_files", "running")).toBe("正在应用多文件补丁");
   });

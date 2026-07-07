@@ -2206,6 +2206,16 @@
 - 测试覆盖:`SendMessage resume inherits content replacement records before replaying transcript` 构造旧 task 原始大结果 + sidecar replacement,续跑首轮断言模型只看到 `<stored_tool_result>` 预览而不是 raw 大内容,并断言新 task sidecar 继承旧 records;既有 inherited stored result access 继续覆盖旧 tool-result store 可读。
 - 验证:`cd ts && bun run typecheck` clean;`cd ts && bun test src/tasks/teamTools.test.ts src/tasks/taskTools.test.ts --timeout 40000` = 30 pass。
 
+## 3.266 2026-07-08 CC-Haha TaskCreate/TaskList/TaskGet/TaskUpdate 工具名兼容迁移
+
+- 对照源:`~/Desktop/cc-haha-ref/src/tools/TaskCreateTool/constants.ts`、`TaskListTool/constants.ts`、`TaskGetTool/constants.ts`、`TaskUpdateTool/constants.ts` 与四个 `Task*Tool.ts`。关键事实:CC-Haha 的结构化任务工具真实名称是 `TaskCreate/TaskList/TaskGet/TaskUpdate`,不是本仓库早先落地的 `task_create/task_list/task_get/task_update`。
+- `ts/src/tasks/taskListTools.ts` 现在同时注册 lowercase 与 PascalCase 两套入口;PascalCase 是同一工具对象的 CC-Haha 兼容 alias,共享同一个 `TaskListService`、同一个 conversation/workspace scope、同一套 `taskId/task_id` 与 `activeForm/active_form` 兼容逻辑。口径:这类 CC-Haha 工具名可以直接抄/直接移植,但实现必须接到当前 TS runtime 的 registry、workspace 与持久化层。
+- `runAgentLoop()` 把 `TaskCreate/TaskUpdate` 与 `task_create/task_update` 一样视为进度更新工具,执行后立即发 `todo_update`;这保证模型按 CC-Haha prompt 习惯调用 PascalCase 工具时,前端中间/右侧的结构化任务进度仍能实时刷新。
+- `tool_search` 热工具与别名补齐 PascalCase 任务工具,大工具集懒加载时能通过“创建结构化任务/查看任务列表/读取任务详情/完成任务状态”等中文意图召回 CC-Haha 同名工具。
+- 前端共享工具元数据新增 `task_*` 与 `Task*` 文案,桌面对话流显示“创建任务/查看任务列表/查看任务详情/更新任务”,避免 coding trace 中裸露不友好的英文内部工具名。
+- 测试覆盖:PascalCase alias 可创建/列出/更新同一任务列表,lowercase 可读取 alias 写入的状态;`TaskCreate/TaskUpdate` 在 agent loop 中发出两次 `todo_update`;`tool_search` 可召回四个 PascalCase 任务工具;前端 `toolActionText` 渲染两套任务工具名。
+- 验证:`cd ts && bun run typecheck` clean;`cd ts && bun test src/tasks/taskListTools.test.ts src/harness/loop.test.ts src/tools/toolSearchTool.test.ts --timeout 40000` = 61 pass;`cd ts && bun test --timeout 60000` = 661 pass;`cd web && pnpm exec vitest run src/lib/agent-tools.test.ts` = 2 pass;`cd web && pnpm exec tsc --noEmit` clean。
+
 ## 4. 下一批代码顺序
 
 1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复、后台 agent 确定性进度阶段、`SendUserMessage/Brief` 输出通道、agent memory / snapshot、后台续跑 content replacement records 继承已落;下一步继续复制/移植/改写同 agent id 原地 task slot、content replacement full restore、forked agent progress summary/prompt-cache、UDS/remote teammate bridge。

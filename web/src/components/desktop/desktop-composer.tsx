@@ -21,7 +21,7 @@ import { useToast } from "./toast";
 
 export type PermissionMode = "ask" | "auto_files" | "full" | "plan";
 
-// 内置 `/` 命令（cc-haha 风，先放能即时接上的；其余随命令系统扩展）。
+// 内置 `/` 命令（cc 风，先放能即时接上的；其余随命令系统扩展）。
 // G.3：每条带中文名(cn,做主视觉) + 中文/拼音别名(aliases,让 /导出 /用量 也能搜到)。
 const BASIC_COMMANDS: { name: string; cn: string; description: string; aliases?: string[] }[] = [
   { name: "new", cn: "新会话", description: "开个新会话", aliases: ["新对话", "xinhuihua", "xin"] },

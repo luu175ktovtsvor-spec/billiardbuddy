@@ -19,6 +19,8 @@ import { readStoredToolResultTool } from '../tools/storedToolResultTool'
 import { TeamService } from '../tasks/teamService'
 import { Transcript } from '../memory/transcript'
 import { createGoalHookRegistry, getThreadGoal, setThreadGoalHook } from '../goals/goalState'
+import { TaskListService } from '../tasks/taskListService'
+import { createStructuredTaskTools } from '../tasks/taskListTools'
 
 let root: string
 beforeEach(() => {
@@ -787,6 +789,30 @@ test('todo_write 调用后吐 todo_update 事件', async () => {
   )
   const tu = events.find(e => e.type === 'todo_update')
   expect(tu && tu.type === 'todo_update' && tu.content).toContain('共 2 步')
+})
+
+test('CC-Haha TaskCreate and TaskUpdate aliases emit todo_update events', async () => {
+  const registry = buildGeneralRegistry({
+    extraTools: createStructuredTaskTools(new TaskListService(join(root, 'task-lists'))),
+  })
+  const steps: AssistantStep[] = [
+    { kind: 'tool_calls', calls: [{ id: '1', name: 'TaskCreate', input: { subject: '搬 TaskCreate', description: '兼容 CC-Haha 工具名' } }] },
+    { kind: 'tool_calls', calls: [{ id: '2', name: 'TaskUpdate', input: { taskId: '1', status: 'completed' } }] },
+    { kind: 'final', text: 'ok' },
+  ]
+
+  const events = await collect(runAgentLoop({
+    model: scriptedModel(steps),
+    registry,
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+  }))
+
+  const updates = events.filter((e): e is Extract<AgentEvent, { type: 'todo_update' }> => e.type === 'todo_update')
+  expect(updates).toHaveLength(2)
+  expect(updates[0]!.content).toContain('搬 TaskCreate')
+  expect(updates[1]!.content).toContain('已完成 1 步')
 })
 
 test('task_progress 内联清单被剥离 + 更新 todos + 吐 todo_update(工具本身照跑)', async () => {
