@@ -22,6 +22,28 @@ function coerceScalar(raw: string): unknown {
   return value
 }
 
+function parseYamlFrontmatter(raw: string): Record<string, unknown> | null {
+  try {
+    const parsed = Bun.YAML.parse(raw)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {}
+  } catch {
+    return null
+  }
+}
+
+function parseLooseFrontmatter(raw: string): Record<string, unknown> {
+  const frontmatter: Record<string, unknown> = {}
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim() || line.trim().startsWith('#')) continue
+    const m = line.match(/^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/)
+    if (!m) continue
+    frontmatter[m[1]!] = coerceScalar(m[2] ?? '')
+  }
+  return frontmatter
+}
+
 export function parseMarkdownDocument(text: string): MarkdownDocument {
   const normalized = text.replace(/^\uFEFF/, '')
   if (!normalized.startsWith('---\n') && !normalized.startsWith('---\r\n')) {
@@ -31,13 +53,8 @@ export function parseMarkdownDocument(text: string): MarkdownDocument {
   const end = lines.findIndex((line, index) => index > 0 && line.trim() === '---')
   if (end === -1) return { frontmatter: {}, body: normalized }
 
-  const frontmatter: Record<string, unknown> = {}
-  for (const line of lines.slice(1, end)) {
-    if (!line.trim() || line.trim().startsWith('#')) continue
-    const m = line.match(/^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/)
-    if (!m) continue
-    frontmatter[m[1]!] = coerceScalar(m[2] ?? '')
-  }
+  const rawFrontmatter = lines.slice(1, end).join('\n')
+  const frontmatter = parseYamlFrontmatter(rawFrontmatter) ?? parseLooseFrontmatter(rawFrontmatter)
   return { frontmatter, body: lines.slice(end + 1).join('\n').trimStart() }
 }
 

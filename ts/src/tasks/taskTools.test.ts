@@ -1,12 +1,19 @@
 import { expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { scriptedModel } from '../harness/fakeModel'
 import { Workspace } from '../workspace/workspace'
 import type { AgentDefinition } from '../agents/agentLoader'
+import { resolvePermission } from '../permissions/resolve'
+import type { Model } from '../types/model'
+import { textBlock, toolResultBlock, toolUseBlock, userText, type Message } from '../types/message'
+import type { Tool } from '../tools/Tool'
+import { fileReadTool } from '../tools/fileReadTool'
+import { fileWriteTool } from '../tools/fileWriteTool'
 import { TaskService } from './taskService'
-import { createBackgroundAgentTaskTool, createTaskTools } from './taskTools'
+import { createBackgroundAgentTaskTool, createTaskTools, resumeBackgroundAgentTask, sanitizeBackgroundAgentResumeMessages } from './taskTools'
 
 async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 1000): Promise<T> {
   const deadline = Date.now() + timeoutMs
@@ -17,6 +24,31 @@ async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 1000): Promis
   }
   throw new Error('waitFor timeout')
 }
+
+test('sanitizeBackgroundAgentResumeMessages removes incomplete transcript tails before resume', () => {
+  const resolvedAssistant: Message = {
+    role: 'assistant',
+    content: [textBlock('读取完成'), toolUseBlock({ id: 'ok1', name: 'read_file', input: { path: 'a.ts' } })],
+  }
+  const resolvedResult: Message = {
+    role: 'user',
+    content: [toolResultBlock('ok1', 'content')],
+  }
+  const messages: Message[] = [
+    userText('开始'),
+    { role: 'assistant', content: [toolUseBlock({ id: 'missing1', name: 'grep_files', input: { pattern: 'x' } })] },
+    { role: 'assistant', content: [textBlock('   \n\t')] },
+    { role: 'assistant', content: [{ type: 'thinking', thinking: 'hidden chain' }] },
+    resolvedAssistant,
+    resolvedResult,
+  ]
+
+  expect(sanitizeBackgroundAgentResumeMessages(messages)).toEqual([
+    userText('开始'),
+    resolvedAssistant,
+    resolvedResult,
+  ])
+})
 
 test('start_background_agent_task runs an isolated agent and read_background_task restores events', async () => {
   const root = mkdtempSync(join(tmpdir(), 'task-tools-'))
@@ -37,16 +69,35 @@ test('start_background_agent_task runs an isolated agent and read_background_tas
       baseSystemPrompt: 'base prompt',
     })
     const ctx = { workspace: new Workspace(root), conversationId: 'c1', permissionMode: 'full' as const }
-    const started = await start.execute({ task: '分析数据', title: '后台分析' }, ctx)
+    const started = await start.execute({ task: '分析数据', title: '后台分析', name: 'parser-auditor' }, ctx)
     expect(started).toContain('<background_task_started')
+    expect(started).toContain('name="parser-auditor"')
+    expect(started).toContain('agent_id=')
 
     const done = await waitFor(async () => {
       const list = await tasks.list({ conversationId: 'c1' })
       return list[0]?.status === 'completed' ? list[0] : null
     })
     expect(done.title).toBe('后台分析')
+    expect(done.kind).toBe('background_agent')
+    expect(done.params).toMatchObject({ agent: 'researcher', name: 'parser-auditor', task: '分析数据', agent_id: done.id })
+    expect(await tasks.readBackgroundAgentMetadata(done.id)).toMatchObject({
+      taskId: done.id,
+      agentId: done.id,
+      agent: 'researcher',
+      agentType: 'researcher',
+      name: 'parser-auditor',
+      description: '后台分析',
+      task: '分析数据',
+      conversationId: 'c1',
+    })
     expect(done.result).toBe('后台结论')
     expect(model.received[0]!.messages[0]!.content[0]).toMatchObject({ type: 'text', text: '分析数据' })
+    const transcript = await tasks.transcript(done.id).load()
+    expect(transcript).toEqual([
+      userText('分析数据'),
+      { role: 'assistant', content: [textBlock('后台结论')] },
+    ])
 
     const [, readTask] = createTaskTools(tasks)
     const restored = await readTask!.execute({ task_id: done.id }, ctx)
@@ -56,3 +107,532 @@ test('start_background_agent_task runs an isolated agent and read_background_tas
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('start_background_agent_task drains queued SendMessage-style steering into the running agent loop', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-tools-steer-'))
+  try {
+    const tasks = new TaskService(root)
+    const agent: AgentDefinition = {
+      name: 'researcher',
+      description: '研究代理',
+      prompt: '研究并总结。',
+      filePath: join(root, 'researcher.md'),
+    }
+    let releaseWait!: () => void
+    let waitStarted!: () => void
+    const waitStartedPromise = new Promise<void>(resolve => { waitStarted = resolve })
+    const waitReleasePromise = new Promise<void>(resolve => { releaseWait = resolve })
+    const waitTool: Tool = {
+      name: 'wait_gate',
+      description: 'Wait until the test releases the background tool.',
+      inputSchema: { type: 'object', properties: {} },
+      isReadOnly: true,
+      async execute() {
+        waitStarted()
+        await waitReleasePromise
+        return 'released'
+      },
+    }
+    const received: { messages: import('../types/message').Message[] }[] = []
+    let calls = 0
+    const model: Model = {
+      async step(input) {
+        received.push({ messages: input.messages.slice() })
+        calls++
+        if (calls === 1) {
+          return { kind: 'tool_calls', text: 'wait', calls: [{ id: 'wait1', name: 'wait_gate', input: {} }] }
+        }
+        return { kind: 'final', text: 'queued message received' }
+      },
+    }
+    const start = createBackgroundAgentTaskTool({
+      tasks,
+      agents: [agent],
+      model,
+      baseTools: [waitTool],
+      baseSystemPrompt: 'base prompt',
+    })
+    const ctx = { workspace: new Workspace(root), conversationId: 'c-steer', permissionMode: 'full' as const }
+    await start.execute({ task: '初始任务', title: '后台等待' }, ctx)
+    await waitStartedPromise
+    const running = await waitFor(async () => {
+      const list = await tasks.list({ conversationId: 'c-steer', status: 'running' })
+      return list[0] ?? null
+    })
+    expect(await tasks.queueSteerMessage(running.id, '追加检查测试覆盖。')).toBe(true)
+    releaseWait()
+    const done = await waitFor(async () => {
+      const task = await tasks.get(running.id)
+      return task?.status === 'completed' ? task : null
+    })
+    expect(done.result).toBe('queued message received')
+    const secondStepText = received[1]!.messages.flatMap(message => message.content)
+      .filter(block => block.type === 'text')
+      .map(block => block.text)
+      .join('\n')
+    expect(secondStepText).toContain('[用户补充/纠偏] 追加检查测试覆盖。')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('background agent isolation=worktree preserves dirty worktree and resume continues in it', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-tools-worktree-'))
+  try {
+    initGitRepo(root)
+    const tasks = new TaskService(root)
+    const agent: AgentDefinition = {
+      name: 'researcher',
+      description: '研究代理',
+      prompt: '研究并总结。',
+      filePath: join(root, 'researcher.md'),
+      tools: ['write_file', 'read_file'],
+    }
+    const model = scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: 'write1', name: 'write_file', input: { path: 'worker.txt', content: 'from isolated background agent' } }] },
+      { kind: 'final', text: '初始完成' },
+      { kind: 'tool_calls', calls: [{ id: 'read1', name: 'read_file', input: { path: 'worker.txt' } }] },
+      { kind: 'final', text: '续跑读到文件' },
+    ])
+    const opts = {
+      tasks,
+      agents: [agent],
+      model,
+      baseTools: [fileWriteTool, fileReadTool],
+      baseSystemPrompt: 'base prompt',
+    }
+    const start = createBackgroundAgentTaskTool(opts)
+    const ctx = { workspace: new Workspace(root), conversationId: 'c-worktree', permissionMode: 'full' as const }
+    await start.execute({ task: '在隔离 worktree 写文件', title: '后台隔离', isolation: 'worktree' }, ctx)
+
+    const first = await waitFor(async () => {
+      const list = await tasks.list({ conversationId: 'c-worktree' })
+      return list[0]?.status === 'completed' ? list[0] : null
+    })
+    const metadata = await tasks.readBackgroundAgentMetadata(first.id)
+    const worktreePath = metadata?.worktreePath
+    expect(worktreePath).toBeTruthy()
+    expect(existsSync(join(worktreePath!, 'worker.txt'))).toBe(true)
+    expect(readFileSync(join(worktreePath!, 'worker.txt'), 'utf8')).toBe('from isolated background agent')
+    expect(existsSync(join(root, 'worker.txt'))).toBe(false)
+
+    await resumeBackgroundAgentTask(opts, first, '继续读取刚才写入的文件', ctx)
+    const resumed = await waitFor(async () => {
+      const list = await tasks.list({ conversationId: 'c-worktree', collapseResumedBackgroundAgents: true })
+      return list[0]?.status === 'completed' && list[0].id !== first.id ? list[0] : null
+    })
+    const resumedMetadata = await tasks.readBackgroundAgentMetadata(resumed.id)
+    expect(resumedMetadata?.worktreePath).toBe(worktreePath)
+    expect(resumed.params?.agent_id).toBe(first.id)
+    expect(resumedMetadata?.agentId).toBe(first.id)
+    const finalModelCall = model.received.at(-1)
+    expect(finalModelCall?.messages.some(message => message.content.some(block => block.type === 'tool_result' && block.content.includes('from isolated background agent')))).toBe(true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('start_background_agent_task honors agent frontmatter defaults for prompt, permissions, tools and maxTurns', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-tools-agent-defaults-'))
+  try {
+    const tasks = new TaskService(root)
+    let seenPermission = ''
+    const inspectTool: Tool = {
+      name: 'inspect_ctx',
+      description: 'Inspect tool context.',
+      inputSchema: { type: 'object', properties: {} },
+      isReadOnly: true,
+      async execute(_, toolCtx) {
+        seenPermission = toolCtx.permissionMode ?? ''
+        return 'ok'
+      },
+    }
+    const agent: AgentDefinition = {
+      name: 'researcher',
+      description: '研究代理',
+      prompt: '研究并总结。',
+      filePath: join(root, 'researcher.md'),
+      tools: ['inspect_ctx', 'write_file'],
+      disallowedTools: ['write_file'],
+      initialPrompt: '后台 agent 初始提示。',
+      permissionMode: 'plan',
+      maxTurns: 1,
+    }
+    const model = scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: 'inspect1', name: 'inspect_ctx', input: {} }] },
+      { kind: 'final', text: 'max turns fallback should win' },
+    ])
+    const start = createBackgroundAgentTaskTool({
+      tasks,
+      agents: [agent],
+      model,
+      baseTools: [inspectTool, fileWriteTool],
+      baseSystemPrompt: 'base prompt',
+    })
+    const ctx = { workspace: new Workspace(root), conversationId: 'c-agent-defaults', permissionMode: 'full' as const }
+    await start.execute({ task: '检查后台默认值', title: '后台默认值' }, ctx)
+    const done = await waitFor(async () => {
+      const task = (await tasks.list({ conversationId: 'c-agent-defaults' }))[0]
+      return task?.status === 'completed' ? task : null
+    })
+
+    expect(model.received[0]!.messages[0]!.content[0]).toMatchObject({
+      type: 'text',
+      text: '后台 agent 初始提示。\n\n检查后台默认值',
+    })
+    expect(model.received[0]!.tools.map(tool => tool.name)).toEqual(['inspect_ctx'])
+    expect(seenPermission).toBe('plan')
+    expect(model.received[1]!.tools).toEqual([])
+    expect(done.result).toBe('max turns fallback should win')
+    expect(done.params).toMatchObject({
+      agent: 'researcher',
+      permission_mode: 'plan',
+      max_turns: 1,
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+function writeFixtureMcpServer(root: string): string {
+  const file = join(root, 'background-agent-fixture-mcp-server.ts')
+  writeFileSync(file, `
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import { z } from 'zod'
+
+const server = new McpServer({ name: 'background-agent-fixture', version: '1.0.0' })
+server.registerTool('agent_echo', {
+  description: 'Echo from a background agent-scoped MCP server',
+  inputSchema: { text: z.string() },
+  annotations: { readOnlyHint: true },
+}, async ({ text }) => ({
+  content: [{ type: 'text', text: 'background-agent-mcp:' + text }],
+}))
+await server.connect(new StdioServerTransport())
+`)
+  return file
+}
+
+test('start_background_agent_task connects agent frontmatter mcpServers and injects MCP tools', async () => {
+  const root = mkdtempSync(join(process.cwd(), '.task-tools-agent-mcp-'))
+  try {
+    const tasks = new TaskService(root)
+    const fixture = writeFixtureMcpServer(root)
+    const agent: AgentDefinition = {
+      name: 'researcher',
+      description: '研究代理',
+      prompt: '研究并总结。',
+      filePath: join(root, 'researcher.md'),
+      tools: ['mcp__background_agent_fixture__agent_echo'],
+      mcpServers: [{ 'background agent fixture': { command: process.execPath, args: [fixture] } }],
+      requiredMcpServers: ['background agent fixture'],
+    }
+    const model = scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: 'mcp-bg-1', name: 'mcp__background_agent_fixture__agent_echo', input: { text: 'hello' } }] },
+      { kind: 'final', text: '后台 MCP 完成' },
+    ])
+    const start = createBackgroundAgentTaskTool({
+      tasks,
+      agents: [agent],
+      model,
+      baseTools: [],
+      baseSystemPrompt: 'base prompt',
+    })
+    const ctx = { workspace: new Workspace(root), conversationId: 'c-agent-mcp', permissionMode: 'full' as const }
+    await start.execute({ task: '调用后台 agent MCP', title: '后台 MCP' }, ctx)
+    const done = await waitFor(async () => {
+      const task = (await tasks.list({ conversationId: 'c-agent-mcp' }))[0]
+      return task?.status === 'completed' ? task : null
+    })
+
+    expect(done.result).toBe('后台 MCP 完成')
+    expect(model.received[0]!.tools.map(tool => tool.name)).toContain('mcp__background_agent_fixture__agent_echo')
+    expect(model.received[1]!.messages.some(message =>
+      message.content.some(block => block.type === 'tool_result' && block.content.includes('background-agent-mcp:hello')),
+    )).toBe(true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('TaskOutput reads completed background task output and supports non-blocking running status', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-output-'))
+  try {
+    const tasks = new TaskService(root)
+    const task = await tasks.create({ title: '后台分析', kind: 'background_agent', conversationId: 'c2' })
+    await tasks.touch(task.id, { status: 'completed', result: '任务结论' })
+    await tasks.appendEvent(task.id, { type: 'final', text: '任务结论' })
+    const taskOutput = createTaskTools(tasks).find(tool => tool.name === 'TaskOutput')!
+    const ctx = { workspace: new Workspace(root), conversationId: 'c2', permissionMode: 'ask' as const }
+
+    const completed = await taskOutput.execute({ task_id: task.id, block: false }, ctx)
+    expect(completed).toContain('<retrieval_status>success</retrieval_status>')
+    expect(completed).toContain('<task_id>')
+    expect(completed).toContain('任务结论')
+
+    const running = await tasks.create({ title: '长任务', kind: 'background_agent', conversationId: 'c2' })
+    await tasks.touch(running.id, { status: 'running' })
+    const notReady = await taskOutput.execute({ task_id: running.id, block: false }, ctx)
+    expect(notReady).toContain('<retrieval_status>not_ready</retrieval_status>')
+    expect(notReady).toContain('<status>running</status>')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('TaskOutput can block until a running task completes', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-output-block-'))
+  try {
+    const tasks = new TaskService(root)
+    const task = await tasks.create({ title: '等待任务', kind: 'background_agent', conversationId: 'c3' })
+    tasks.start(task.id, async ctx => {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      await ctx.emit({ type: 'final', text: '稍后完成' })
+      return '稍后完成'
+    })
+    const taskOutput = createTaskTools(tasks).find(tool => tool.name === 'TaskOutput')!
+    const ctx = { workspace: new Workspace(root), conversationId: 'c3', permissionMode: 'ask' as const }
+
+    const output = await taskOutput.execute({ task_id: task.id, block: true, timeout: 1000 }, ctx)
+    expect(output).toContain('<retrieval_status>success</retrieval_status>')
+    expect(output).toContain('稍后完成')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('TaskOutput and read_background_task resolve old background agent ids to the latest resumed descendant', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-output-chain-'))
+  try {
+    const tasks = new TaskService(root)
+    const original = await tasks.create({
+      id: 'chain_root',
+      title: 'researcher: root',
+      kind: 'background_agent',
+      conversationId: 'c-chain-output',
+      params: { agent: 'researcher', name: 'chain-reader', task: '初始任务' },
+    })
+    await tasks.touch(original.id, { status: 'completed', result: '旧结论' })
+    await tasks.appendEvent(original.id, { type: 'final', text: '旧结论' })
+    const latest = await tasks.create({
+      id: 'chain_latest',
+      title: 'researcher: latest',
+      kind: 'background_agent',
+      conversationId: 'c-chain-output',
+      params: { agent: 'researcher', name: 'chain-reader', task: '续跑任务', resumed_from: original.id },
+    })
+    await tasks.touch(latest.id, { status: 'completed', result: '最新结论' })
+    await tasks.appendEvent(latest.id, { type: 'final', text: '最新结论' })
+
+    const tools = createTaskTools(tasks)
+    const readTask = tools.find(tool => tool.name === 'read_background_task')!
+    const taskOutput = tools.find(tool => tool.name === 'TaskOutput')!
+    const ctx = { workspace: new Workspace(root), conversationId: 'c-chain-output', permissionMode: 'ask' as const }
+
+    const events = await readTask.execute({ task_id: original.id }, ctx)
+    expect(events).toContain(`id="${latest.id}"`)
+    expect(events).toContain(`requested_id="${original.id}"`)
+    expect(events).toContain('最新结论')
+    expect(events).not.toContain('旧结论')
+
+    const output = await taskOutput.execute({ task_id: original.id, block: false }, ctx)
+    expect(output).toContain(`<requested_task_id>${original.id}</requested_task_id>`)
+    expect(output).toContain(`<task_id>${latest.id}</task_id>`)
+    expect(output).toContain('最新结论')
+    expect(output).not.toContain('旧结论')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('TaskOutput and read_background_task resolve stable background agent ids to the latest run', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-output-stable-id-'))
+  try {
+    const tasks = new TaskService(root)
+    const original = await tasks.create({
+      id: 'stable_output_root',
+      title: 'researcher: root',
+      kind: 'background_agent',
+      conversationId: 'c-stable-output',
+      params: { agent_id: 'stable_agent_output', agent: 'researcher', name: 'stable-output', task: '初始任务' },
+    })
+    await tasks.touch(original.id, { status: 'completed', result: '旧结论' })
+    const latest = await tasks.create({
+      id: 'stable_output_latest',
+      title: 'researcher: latest',
+      kind: 'background_agent',
+      conversationId: 'c-stable-output',
+      params: { agent_id: 'stable_agent_output', agent: 'researcher', name: 'stable-output', task: '续跑任务', resumed_from: original.id },
+    })
+    await tasks.touch(latest.id, { status: 'completed', result: '最新结论' })
+    await tasks.appendEvent(latest.id, { type: 'final', text: '最新结论' })
+
+    const tools = createTaskTools(tasks)
+    const readTask = tools.find(tool => tool.name === 'read_background_task')!
+    const taskOutput = tools.find(tool => tool.name === 'TaskOutput')!
+    const ctx = { workspace: new Workspace(root), conversationId: 'c-stable-output', permissionMode: 'ask' as const }
+
+    const events = await readTask.execute({ task_id: 'stable_agent_output' }, ctx)
+    expect(events).toContain(`id="${latest.id}"`)
+    expect(events).toContain('requested_id="stable_agent_output"')
+    expect(events).toContain('agent_id="stable_agent_output"')
+    expect(events).toContain('最新结论')
+
+    const output = await taskOutput.execute({ task_id: 'stable_agent_output', block: false }, ctx)
+    expect(output).toContain('<requested_task_id>stable_agent_output</requested_task_id>')
+    expect(output).toContain(`<task_id>${latest.id}</task_id>`)
+    expect(output).toContain('<agent_id>stable_agent_output</agent_id>')
+    expect(output).toContain('最新结论')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('list_background_tasks collapses resumed background agent chains to their latest leaves', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-list-chain-'))
+  try {
+    const tasks = new TaskService(root)
+    const original = await tasks.create({
+      id: 'tool_list_root',
+      title: 'researcher: root',
+      kind: 'background_agent',
+      conversationId: 'c-tool-list-chain',
+      params: { agent: 'researcher', name: 'tool-list-chain', task: '初始任务' },
+    })
+    await tasks.touch(original.id, { status: 'completed', result: '旧结论' })
+    const latest = await tasks.create({
+      id: 'tool_list_latest',
+      title: 'researcher: latest',
+      kind: 'background_agent',
+      conversationId: 'c-tool-list-chain',
+      params: { agent: 'researcher', name: 'tool-list-chain', task: '续跑任务', resumed_from: original.id },
+    })
+    await tasks.touch(latest.id, { status: 'running' })
+    const ctx = { workspace: new Workspace(root), conversationId: 'c-tool-list-chain', permissionMode: 'ask' as const }
+    const listTasks = createTaskTools(tasks).find(tool => tool.name === 'list_background_tasks')!
+
+    const all = await listTasks.execute({}, ctx)
+    expect(all).toContain(latest.id)
+    expect(all).not.toContain(original.id)
+
+    const completed = await listTasks.execute({ status: 'completed' }, ctx)
+    expect(completed).toBe('当前没有后台任务。')
+    const running = await listTasks.execute({ status: 'running' }, ctx)
+    expect(running).toContain(latest.id)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('TaskStop and cancel_background_task resolve old background agent ids to running descendants', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-stop-chain-'))
+  try {
+    const tasks = new TaskService(root)
+    const ctx = { workspace: new Workspace(root), conversationId: 'c-chain-stop', permissionMode: 'full' as const }
+    const tools = createTaskTools(tasks)
+    const cancelTask = tools.find(tool => tool.name === 'cancel_background_task')!
+    const taskStop = tools.find(tool => tool.name === 'TaskStop')!
+
+    const cancelRoot = await tasks.create({
+      id: 'cancel_root',
+      title: 'researcher: cancel root',
+      kind: 'background_agent',
+      conversationId: 'c-chain-stop',
+      params: { agent: 'researcher', name: 'cancel-chain', task: '初始取消任务' },
+    })
+    await tasks.touch(cancelRoot.id, { status: 'completed', result: '旧任务完成' })
+    const cancelRunning = await tasks.create({
+      id: 'cancel_running',
+      title: 'researcher: cancel running',
+      kind: 'background_agent',
+      conversationId: 'c-chain-stop',
+      params: { agent: 'researcher', name: 'cancel-chain', task: '运行中取消任务', resumed_from: cancelRoot.id },
+    })
+    tasks.start(cancelRunning.id, async taskCtx => {
+      await new Promise<void>(resolve => taskCtx.signal.addEventListener('abort', () => resolve(), { once: true }))
+    })
+    await waitFor(async () => (await tasks.get(cancelRunning.id))?.status === 'running' ? cancelRunning : null)
+    const cancelled = await cancelTask.execute({ task_id: cancelRoot.id }, ctx)
+    expect(cancelled).toContain(cancelRunning.id)
+    expect(cancelled).toContain(`requested:${cancelRoot.id}`)
+    await waitFor(async () => (await tasks.get(cancelRunning.id))?.status === 'cancelled' ? cancelRunning : null)
+
+    const stopRoot = await tasks.create({
+      id: 'stop_root',
+      title: 'researcher: stop root',
+      kind: 'background_agent',
+      conversationId: 'c-chain-stop',
+      params: { agent: 'researcher', name: 'stop-chain', task: '初始停止任务' },
+    })
+    await tasks.touch(stopRoot.id, { status: 'completed', result: '旧任务完成' })
+    const stopRunning = await tasks.create({
+      id: 'stop_running',
+      title: 'researcher: stop running',
+      kind: 'background_agent',
+      conversationId: 'c-chain-stop',
+      params: { agent: 'researcher', name: 'stop-chain', task: '运行中停止任务', resumed_from: stopRoot.id },
+    })
+    tasks.start(stopRunning.id, async taskCtx => {
+      await new Promise<void>(resolve => taskCtx.signal.addEventListener('abort', () => resolve(), { once: true }))
+    })
+    await waitFor(async () => (await tasks.get(stopRunning.id))?.status === 'running' ? stopRunning : null)
+    const stopped = await taskStop.execute({ task_id: stopRoot.id }, ctx)
+    expect(stopped).toContain(`<requested_task_id>${stopRoot.id}</requested_task_id>`)
+    expect(stopped).toContain(`<task_id>${stopRunning.id}</task_id>`)
+    await waitFor(async () => (await tasks.get(stopRunning.id))?.status === 'cancelled' ? stopRunning : null)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('TaskStop force-confirms and cancels a running background task', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-stop-'))
+  try {
+    const tasks = new TaskService(root)
+    const task = await tasks.create({ title: '可取消任务', kind: 'background_agent', conversationId: 'c4' })
+    tasks.start(task.id, async ctx => {
+      await new Promise<void>(resolve => {
+        ctx.signal.addEventListener('abort', () => resolve(), { once: true })
+      })
+      return 'cancelled'
+    })
+    await waitFor(async () => {
+      const current = await tasks.get(task.id)
+      return current?.status === 'running' ? current : null
+    })
+    const taskStop = createTaskTools(tasks).find(tool => tool.name === 'TaskStop')!
+    const ctx = { workspace: new Workspace(root), conversationId: 'c4', permissionMode: 'full' as const }
+
+    const decision = resolvePermission(taskStop, { task_id: task.id }, ctx)
+    expect(decision.behavior).toBe('ask')
+    const output = await taskStop.execute({ task_id: task.id }, ctx)
+    expect(output).toContain('<task_stopped>')
+    expect(output).toContain(task.id)
+    const stopped = await tasks.get(task.id)
+    expect(stopped?.status).toBe('cancelled')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+function initGitRepo(cwd: string): void {
+  git(cwd, ['init'])
+  git(cwd, ['config', 'user.email', 'codex@example.test'])
+  git(cwd, ['config', 'user.name', 'Codex Test'])
+  writeFileSync(join(cwd, 'README.md'), 'hello\n')
+  git(cwd, ['add', 'README.md'])
+  git(cwd, ['commit', '-m', 'initial'])
+}
+
+function git(cwd: string, args: string[]): string {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_ASKPASS: '',
+    },
+  })
+}
