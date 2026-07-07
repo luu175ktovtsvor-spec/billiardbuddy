@@ -5,6 +5,7 @@ import { resolveAgentTools } from '../agents/agentLoader'
 import { loadAgentMcpRuntime, type AgentMcpRuntimeOptions } from '../agents/agentMcp'
 import type { Model } from '../types/model'
 import { textBlock, type Message } from '../types/message'
+import type { AgentEvent } from '../types/events'
 import type { Tool, ToolContext } from '../tools/Tool'
 import { ToolRegistry } from '../tools/registry'
 import { Sandbox } from '../sandbox/sandbox'
@@ -92,6 +93,78 @@ function backgroundTaskParams(input: BackgroundAgentTaskInput, agent: AgentDefin
     ...(agent.permissionMode ? { permission_mode: agent.permissionMode } : {}),
     ...(agent.maxTurns ? { max_turns: agent.maxTurns } : {}),
     ...extraParams,
+  }
+}
+
+function oneLine(value: unknown, max = 160): string {
+  let raw = ''
+  if (typeof value === 'string') {
+    raw = value
+  } else if (value !== undefined && value !== null) {
+    try {
+      raw = JSON.stringify(value) ?? String(value)
+    } catch {
+      raw = String(value)
+    }
+  }
+  const clean = raw.replace(/\s+/g, ' ').trim()
+  return clean.length > max ? `${clean.slice(0, max)}...` : clean
+}
+
+function inputHint(input: unknown): string {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return ''
+  const record = input as Record<string, unknown>
+  for (const key of ['path', 'file_path', 'query', 'pattern', 'command', 'name', 'url', 'task']) {
+    const value = record[key]
+    if (typeof value === 'string' && value.trim()) return oneLine(value, 96)
+  }
+  return oneLine(input, 96)
+}
+
+function progressStageForEvent(event: AgentEvent): string {
+  if (event.type === 'thinking') {
+    const text = oneLine(event.text)
+    return text ? `思考:${text}` : ''
+  }
+  if (event.type === 'tool_call') {
+    const hint = inputHint(event.input)
+    return `调用 ${event.tool}${hint ? `: ${hint}` : ''}`
+  }
+  if (event.type === 'tool_progress') {
+    const chunk = oneLine(event.chunk)
+    return chunk ? `${event.tool} 进度:${chunk}` : `${event.tool} 运行中`
+  }
+  if (event.type === 'tool_result') return `${event.tool} 完成`
+  if (event.type === 'approval_request') return `等待确认:${event.tool}`
+  if (event.type === 'ask_question') return `等待补充:${oneLine(event.question, 120)}`
+  if (event.type === 'todo_update') return '更新任务清单'
+  if (event.type === 'context_note') return oneLine(event.text)
+  if (event.type === 'final') return '整理最终结果'
+  return ''
+}
+
+function progressValueForEvent(event: AgentEvent, current: number): number {
+  if (event.type === 'thinking' || event.type === 'context_note' || event.type === 'usage_update') return Math.max(current, 8)
+  if (event.type === 'tool_call') return Math.max(current + 4, 18)
+  if (event.type === 'tool_progress') return Math.max(current + 1, 22)
+  if (event.type === 'tool_result' || event.type === 'todo_update') return Math.max(current + 5, 28)
+  if (event.type === 'approval_request' || event.type === 'ask_question') return Math.max(current, 35)
+  if (event.type === 'final') return Math.max(current, 95)
+  return current
+}
+
+function createBackgroundAgentProgressReporter(update: (progress: number, stage: string) => Promise<void>) {
+  let progress = 5
+  let lastStage = ''
+
+  return async (event: AgentEvent): Promise<void> => {
+    const stage = progressStageForEvent(event)
+    const nextProgress = Math.min(95, progressValueForEvent(event, progress))
+    if (!stage) return
+    if (stage === lastStage && nextProgress === progress) return
+    progress = nextProgress
+    if (stage) lastStage = stage
+    await update(progress, stage || lastStage)
   }
 }
 
@@ -335,7 +408,12 @@ export async function startBackgroundAgentRun(
     let finalText = ''
     let cleanup: AgentWorktreeCleanupResult | null = null
     let agentMcp: Awaited<ReturnType<typeof loadAgentMcpRuntime>> | undefined
+    const updateProgress = async (progress: number, stage: string) => {
+      await opts.tasks.touch(task.id, { progress, stage }).catch(() => undefined)
+    }
+    const reportProgress = createBackgroundAgentProgressReporter(updateProgress)
     try {
+      await updateProgress(5, `启动 ${agent.name} 子代理`)
       agentMcp = await loadAgentMcpRuntime({
         agent,
         baseTools: baseAgentTools,
@@ -382,6 +460,7 @@ export async function startBackgroundAgentRun(
         subagent: { agentId: stableAgentId, agentType: agent.name },
       })) {
         await taskCtx.emit(event)
+        await reportProgress(event)
         if (event.type === 'final') finalText = event.text
       }
     } finally {

@@ -108,6 +108,69 @@ test('start_background_agent_task runs an isolated agent and read_background_tas
   }
 })
 
+test('start_background_agent_task updates task stage from live agent activity', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-tools-progress-'))
+  try {
+    const tasks = new TaskService(root)
+    const agent: AgentDefinition = {
+      name: 'researcher',
+      description: '研究代理',
+      prompt: '研究并总结。',
+      filePath: join(root, 'researcher.md'),
+    }
+    let releaseWait!: () => void
+    let waitStarted!: () => void
+    const waitStartedPromise = new Promise<void>(resolve => { waitStarted = resolve })
+    const waitReleasePromise = new Promise<void>(resolve => { releaseWait = resolve })
+    const waitTool: Tool = {
+      name: 'wait_gate',
+      description: 'Emit progress and wait until the test releases the background tool.',
+      inputSchema: { type: 'object', properties: { path: { type: 'string' } } },
+      isReadOnly: false,
+      async execute(_, toolCtx) {
+        waitStarted()
+        toolCtx.progressEmit?.({ stream: 'stdout', chunk: 'reading fixture\n' })
+        await waitReleasePromise
+        return 'released'
+      },
+    }
+    const model = scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: 'wait1', name: 'wait_gate', input: { path: 'src/agent.ts' } }] },
+      { kind: 'final', text: '后台进度完成' },
+    ])
+    const start = createBackgroundAgentTaskTool({
+      tasks,
+      agents: [agent],
+      model,
+      baseTools: [waitTool],
+      baseSystemPrompt: 'base prompt',
+    })
+    const ctx = { workspace: new Workspace(root), conversationId: 'c-progress', permissionMode: 'full' as const }
+    await start.execute({ task: '检查后台进度', title: '后台进度' }, ctx)
+    await waitStartedPromise
+
+    const running = await waitFor(async () => {
+      const task = (await tasks.list({ conversationId: 'c-progress', status: 'running' }))[0]
+      return task?.stage?.includes('wait_gate 进度:reading fixture') ? task : null
+    })
+    expect(running.progress).toBeGreaterThan(0)
+    expect(running.progress).toBeLessThan(100)
+
+    releaseWait()
+    const done = await waitFor(async () => {
+      const task = await tasks.get(running.id)
+      return task?.status === 'completed' ? task : null
+    })
+    expect(done.progress).toBe(100)
+    expect(done.stage).toBe('整理最终结果')
+    const events = await tasks.loadEvents(done.id)
+    expect(events.map(record => record.event.type)).toEqual(['started', 'tool_call', 'tool_progress', 'tool_result', 'final', 'done'])
+    expect(events.some(record => record.event.type === 'context_note' && 'text' in record.event && record.event.text.includes('wait_gate'))).toBe(false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('start_background_agent_task drains queued SendMessage-style steering into the running agent loop', async () => {
   const root = mkdtempSync(join(tmpdir(), 'task-tools-steer-'))
   try {

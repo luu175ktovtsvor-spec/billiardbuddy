@@ -2166,9 +2166,18 @@
 - 测试覆盖:goal parser/恢复/状态格式;generated hook registry ownership;Stop hook `ok:false -> ok:true` 的 continuation/completion transcript anchor;`POST /agent/run` 的 `/goal set` 继续模型 turn、`/goal clear` 不调模型、usage error 不调模型。
 - 验证:`cd ts && bun test src/goals/goalState.test.ts src/harness/loop.test.ts src/server/index.test.ts --timeout 40000` = 130 pass;`cd ts && bun run typecheck` clean。
 
+## 3.262 2026-07-08 CC-Haha 后台子代理进度阶段迁移
+
+- 对照源:`~/Desktop/cc-haha-ref/src/services/AgentSummary/agentSummary.ts`、`src/tasks/LocalAgentTask/LocalAgentTask.tsx`、`src/tools/AgentTool/AgentTool.tsx` 与 `src/tools/AgentTool/agentToolUtils.ts`。关键行为:后台/异步子代理运行时不能只是 task 卡片静止等待,需要把最近活动写入 task progress/summary,让 coding trace 在 UI 上持续可见。
+- `startBackgroundAgentRun()` 新增后台 agent progress reporter:把 `thinking/tool_call/tool_progress/tool_result/approval_request/ask_question/final` 归纳成短阶段文案,并更新 `TaskMeta.progress/stage`。前端后台任务抽屉原本已经读取 `task.stage/task.progress`,因此无需新增协议即可显示“调用哪个工具/正在输出什么/是否等待确认”。
+- 事件日志仍保留原始 `tool_call/tool_progress/tool_result/final` 流,progress reporter 直接 `touch()` metadata,不额外写 `context_note`,避免后台任务 trace 出现重复噪声。进度值只作为运行态扫描提示,完成仍由 `TaskService.run()` 统一落到 `progress:100`。
+- 口径:这一步先迁移 CC-Haha `AgentProgress` 的确定性活动追踪层;`AgentSummary` 那种每 30 秒 fork 一次模型、依赖 prompt-cache safe params 的 LLM 摘要还需等当前 TS fork/cache 参数链补齐后继续复制/移植/改写,避免为了形式相似引入不稳定 summarizer。
+- 测试覆盖:后台子代理调用长工具时,任务 metadata 在运行中实时变成工具 progress 阶段,完成后进度到 100,事件日志仍只包含原始 agent events,不会多出重复 `context_note`。
+- 验证:`cd ts && bun run typecheck` clean;`cd ts && bun test src/tasks/taskTools.test.ts --timeout 40000` = 15 pass;`cd ts && bun test --timeout 60000` = 651 pass。
+
 ## 4. 下一批代码顺序
 
-1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复已落;下一步继续复制/移植/改写同 agent id 原地 task slot、content replacement full restore、agent progress summary/prompt-cache、UDS/remote teammate bridge。
+1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复、后台 agent 确定性进度阶段已落;下一步继续复制/移植/改写同 agent id 原地 task slot、content replacement full restore、forked agent progress summary/prompt-cache、UDS/remote teammate bridge。
 2. **后台子代理事件流/UI drill-in polish**:同步 `agent_task` 轨迹、后台启动 chip、完成通知与点击跳转、事件过滤/摘要折叠、trace 搜索/失败节点/phase 分组已落;下一步做统一 trace 面板、按 `agent_id` 过滤/跳转、sidechain transcript drill-in。
 3. **provider failover 策略 polish**:active saved -> saved fallbacks -> env fallback、失败原因 `context_note`、sticky fallback、状态线备用出口/冷却 chip、设置抽屉简洁健康状态/折叠明细、旧 BYOK -> ProviderService 兼容桥、provider 健康冷却、跨重启持久化、手动清冷却、保存通道启停/排序、默认/接管中状态区分、prewarm 跟随冷却排序、冷却分类退避、最近排障历史已落;下一步只剩完整高级 provider 管理页与更深的趋势/导出排障。
 4. **领域包/知识库前端 polish**:`billiards` 已从硬编码 supportContext 收到 SessionStart pack,前端选择器已读 `/api/v1/agent/packs`,`list_skills` 已支持 pack 推荐/过滤,pack prompt commands 已合并进命令池;下一步把知识库 Q&A 做成更接近 Codex/Work Buddy 的低噪来源面板和专家挂载入口。
