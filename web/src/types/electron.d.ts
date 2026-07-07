@@ -73,7 +73,8 @@ export interface ElectronBridge {
   /** F1b：弹一条系统原生通知(跨平台)。渲染进程轮询后端通知中心拿到新条目后调用；
    *  故障安全——不支持/失败都返回 { ok:false }，不抛异常。 */
   notification?: {
-    show(opts: { title?: string; body: string }): Promise<{ ok: boolean; error?: string }>;
+    show(opts: { title?: string; body: string; meta?: Record<string, unknown> }): Promise<{ ok: boolean; error?: string }>;
+    onClick?(cb: (meta: Record<string, unknown>) => void): () => void;
   };
   /** D-Task-8：朗读播报(读给我听)——主进程 spawn 系统自带 TTS 命令(mac `say` / Windows SAPI)
    *  念文案/简报,不用 Web Speech API。故障安全——不支持/失败都返回 { ok:false, error? }，不抛异常。 */

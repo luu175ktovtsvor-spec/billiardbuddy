@@ -638,7 +638,7 @@ ipcMain.handle("quickinput:close", () => {
 // F1b 统一跨平台通知层：渲染进程轮询后端通知中心(GET /api/v1/notifications?after=)拿到新条目后
 // 喊这里弹一条【真·系统原生通知】——mac 走通知中心、Windows 走 Toast(靠上面 app.setAppUserModelId
 // 设好的 AUMID 才能在 Windows 任务栏正确落位)。故障安全：不支持/失败都不抛给渲染进程，返回 { ok:false }。
-ipcMain.handle("notification:show", (_e, opts = {}) => {
+ipcMain.handle("notification:show", (event, opts = {}) => {
   try {
     if (!Notification.isSupported()) {
       return { ok: false, error: "系统不支持原生通知" };
@@ -646,7 +646,18 @@ ipcMain.handle("notification:show", (_e, opts = {}) => {
     const body = String(opts.body || "");
     if (!body) return { ok: false, error: "通知内容为空" };
     const title = String(opts.title || "台球运营助手");
-    new Notification({ title, body }).show();
+    const targetWin = BrowserWindow.fromWebContents(event.sender)
+      || ((mainWindow && !mainWindow.isDestroyed()) ? mainWindow : BrowserWindow.getAllWindows()[0]);
+    const notification = new Notification({ title, body });
+    notification.on("click", () => {
+      if (targetWin && !targetWin.isDestroyed()) {
+        if (targetWin.isMinimized()) targetWin.restore();
+        targetWin.show();
+        targetWin.focus();
+        targetWin.webContents.send("notification:click", (opts && typeof opts.meta === "object" && !Array.isArray(opts.meta)) ? opts.meta : {});
+      }
+    });
+    notification.show();
     return { ok: true };
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
