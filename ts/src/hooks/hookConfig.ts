@@ -1,10 +1,28 @@
 import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { parseHookDecisionJSON, type HookDecision, type HookEvent, type HookPayload, type HookRegistry, type HookRule } from './hooks'
-import type { ToolContext } from '../tools/Tool'
+import type { Tool, ToolContext } from '../tools/Tool'
+import { ToolRegistry } from '../tools/registry'
+import { runAgentLoop } from '../harness/loop'
 import { textBlock, type Message } from '../types/message'
 
 const HOOK_EVENTS = new Set<HookEvent>(['PreToolUse', 'PostToolUse', 'Stop', 'UserPromptSubmit', 'SessionStart', 'SubagentStart', 'SubagentStop'])
+const STRUCTURED_OUTPUT_TOOL_NAME = 'StructuredOutput'
+const AGENT_HOOK_MAX_TURNS = 50
+const AGENT_HOOK_ALLOWED_TOOLS = new Set([
+  'read_file',
+  'read_many_files',
+  'list_dir',
+  'glob_files',
+  'grep_files',
+  'code_outline',
+  'git_status',
+  'git_history',
+  'LSP',
+  'list_project_instructions',
+  'project_diagnostics',
+  'read_stored_tool_result',
+])
 
 interface RawHookRule {
   event?: unknown
@@ -32,6 +50,13 @@ interface RawHttpHook {
 }
 
 interface RawPromptHook {
+  type?: unknown
+  prompt?: unknown
+  timeout?: unknown
+  model?: unknown
+}
+
+interface RawAgentHook {
   type?: unknown
   prompt?: unknown
   timeout?: unknown
@@ -219,6 +244,119 @@ function promptHookSystemPrompt(): string {
 Your response must be a JSON object matching one of the following schemas:
 1. If the condition is met, return: {"ok": true}
 2. If the condition is not met, return: {"ok": false, "reason": "Reason for why it is not met"}`
+}
+
+function createStructuredOutputTool(onOutput: (value: unknown) => void): Tool {
+  return {
+    name: STRUCTURED_OUTPUT_TOOL_NAME,
+    description: 'Return the hook verification result. You MUST call this exactly once at the end with { ok, reason? }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ok: { type: 'boolean', description: 'Whether the hook condition was met.' },
+        reason: { type: 'string', description: 'Reason when ok is false.' },
+      },
+      required: ['ok'],
+      additionalProperties: false,
+    },
+    isReadOnly: true,
+    async execute(input) {
+      onOutput(input)
+      return '<structured_output status="captured" />'
+    },
+  }
+}
+
+function agentHookTools(ctx: ToolContext, onOutput: (value: unknown) => void): ToolRegistry | null {
+  if (!ctx.registry) return null
+  const tools = ctx.registry.list()
+    .filter(tool => tool.name !== STRUCTURED_OUTPUT_TOOL_NAME)
+    .filter(tool => AGENT_HOOK_ALLOWED_TOOLS.has(tool.name))
+  return new ToolRegistry([...tools, createStructuredOutputTool(onOutput)])
+}
+
+function agentHookSystemPrompt(ctx: ToolContext): string {
+  return [
+    'You are verifying a stop condition in a coding agent.',
+    'Use the available read-only inspection and diagnostic tools to verify the condition efficiently.',
+    'Do not edit files, start subagents, ask the user, or enter plan mode.',
+    `The workspace root is: ${ctx.workspace.root}`,
+    `When done, call ${STRUCTURED_OUTPUT_TOOL_NAME} exactly once with:`,
+    '- ok: true if the condition is met',
+    '- ok: false with reason if the condition is not met',
+  ].join('\n')
+}
+
+function structuredOutputFrom(value: unknown): { ok: boolean; reason?: string } | null {
+  if (!isRecord(value) || typeof value.ok !== 'boolean') return null
+  if ('reason' in value && value.reason !== undefined && typeof value.reason !== 'string') return null
+  return { ok: value.ok, reason: typeof value.reason === 'string' ? value.reason : undefined }
+}
+
+async function runAgentHook(raw: RawAgentHook, payload: HookPayload, ctx: ToolContext): Promise<HookDecision | HookDecision[] | null> {
+  if (typeof raw.prompt !== 'string' || !raw.prompt.trim()) return null
+  const model = ctx.model
+  if (!model) {
+    return { action: 'context', additionalContext: `[${payload.event} agent hook 非阻塞错误] model was unavailable` }
+  }
+  let structuredOutput: { ok: boolean; reason?: string } | null = null
+  const registry = agentHookTools(ctx, value => { structuredOutput = structuredOutputFrom(value) })
+  if (!registry) {
+    return { action: 'context', additionalContext: `[${payload.event} agent hook 非阻塞错误] tool registry was unavailable` }
+  }
+  const jsonInput = JSON.stringify(commandHookPayload(payload, ctx))
+  const processedPrompt = addArgumentsToPrompt(raw.prompt, jsonInput)
+  const timeoutMs = hookTimeoutMs(raw.timeout, 60_000)
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  const timer = setTimeout(abort, timeoutMs)
+  ctx.signal?.addEventListener('abort', abort, { once: true })
+  try {
+    let finalText = ''
+    for await (const event of runAgentLoop({
+      model,
+      registry,
+      workspace: ctx.workspace,
+      systemPrompt: agentHookSystemPrompt(ctx),
+      userMessage: processedPrompt,
+      maxTurns: AGENT_HOOK_MAX_TURNS,
+      signal: controller.signal,
+      sandbox: ctx.sandbox,
+      permissionMode: 'plan',
+      conversationId: `${ctx.conversationId ?? payload.sessionId ?? 'hook'}:agent-hook`,
+      toolResultStoreDir: ctx.toolResultStoreDir,
+    })) {
+      if (event.type === 'final') finalText = event.text
+      if (structuredOutput) controller.abort()
+    }
+    if (!structuredOutput) {
+      const parsed = parsePromptHookJSON(finalText.trim())
+      structuredOutput = parsed.value ?? null
+    }
+    if (!structuredOutput) return null
+    if (!structuredOutput.ok) {
+      return {
+        action: 'deny',
+        message: `Agent hook condition was not met: ${structuredOutput.reason ?? 'condition was not met'}`,
+      }
+    }
+    return { action: 'allow' }
+  } catch (error) {
+    if (controller.signal.aborted && structuredOutput) {
+      if (!structuredOutput.ok) {
+        return {
+          action: 'deny',
+          message: `Agent hook condition was not met: ${structuredOutput.reason ?? 'condition was not met'}`,
+        }
+      }
+      return { action: 'allow' }
+    }
+    if (controller.signal.aborted || ctx.signal?.aborted) return null
+    return { action: 'context', additionalContext: `[${payload.event} agent hook 非阻塞错误] ${error instanceof Error ? error.message : String(error)}` }
+  } finally {
+    clearTimeout(timer)
+    ctx.signal?.removeEventListener('abort', abort)
+  }
 }
 
 async function runPromptHook(raw: RawPromptHook, payload: HookPayload, ctx: ToolContext): Promise<HookDecision | HookDecision[] | null> {
@@ -416,12 +554,9 @@ function normalizeHookCommand(event: HookEvent, matcher: string | undefined, raw
     return { event, matcher, handler: (payload, ctx) => runPromptHook(promptHook, payload, ctx) }
   }
 
-  if (raw.type === 'agent') {
-    return {
-      event,
-      matcher,
-      handler: () => ({ action: 'context', additionalContext: `[${event} hook] agent executor 待按 CC-Haha 继续移植,当前已保留 frontmatter 注册与匹配。` }),
-    }
+  if (raw.type === 'agent' && typeof raw.prompt === 'string' && raw.prompt.trim()) {
+    const agentHook = raw as RawAgentHook
+    return { event, matcher, handler: (payload, ctx) => runAgentHook(agentHook, payload, ctx) }
   }
 
   return null

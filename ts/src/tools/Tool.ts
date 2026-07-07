@@ -3,6 +3,7 @@ import type { Sandbox } from '../sandbox/sandbox'
 import type { ApprovalClass, ApprovalReason, PermissionMode } from '../permissions/types'
 import type { TodoItem } from '../types/todo'
 import type { Model } from '../types/model'
+import type { ToolRegistry } from './registry'
 
 export interface FileReadSnapshot {
   path: string
@@ -29,6 +30,8 @@ export interface ToolContext {
   workspace: Workspace
   /** 当前会话模型出口,供 prompt/agent hooks、子代理等内核扩展执行非流式校验。 */
   model?: Model
+  /** 当前会话工具注册表,供 agent hooks 启动受限 verifier agent。 */
+  registry?: ToolRegistry
   signal?: AbortSignal
   sandbox?: Sandbox
   /** 权限档,默认 'ask'。W4a 权限瀑布读它。 */
