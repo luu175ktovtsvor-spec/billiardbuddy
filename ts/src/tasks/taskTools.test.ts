@@ -533,6 +533,27 @@ test('TaskOutput reads completed background task output and supports non-blockin
   }
 })
 
+test('TaskOutput exposes CC-Haha AgentOutputTool and BashOutputTool aliases', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-output-aliases-'))
+  try {
+    const tasks = new TaskService(root)
+    const task = await tasks.create({ title: '后台输出 alias', kind: 'background_agent', conversationId: 'c-output-alias' })
+    await tasks.touch(task.id, { status: 'completed', result: 'alias output ok' })
+    await tasks.appendEvent(task.id, { type: 'final', text: 'alias output ok' })
+
+    const tools = createTaskTools(tasks)
+    const taskOutput = tools.find(tool => tool.name === 'TaskOutput')!
+    const agentOutput = tools.find(tool => tool.name === 'AgentOutputTool')!
+    const bashOutput = tools.find(tool => tool.name === 'BashOutputTool')!
+    const ctx = { workspace: new Workspace(root), conversationId: 'c-output-alias', permissionMode: 'ask' as const }
+
+    expect(await agentOutput.execute({ task_id: task.id, block: false }, ctx)).toBe(await taskOutput.execute({ task_id: task.id, block: false }, ctx))
+    expect(await bashOutput.execute({ task_id: task.id, block: false }, ctx)).toContain('alias output ok')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('TaskOutput can block until a running task completes', async () => {
   const root = mkdtempSync(join(tmpdir(), 'task-output-block-'))
   try {
