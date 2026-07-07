@@ -10,6 +10,7 @@ test('general registry contains the core tools', () => {
   const reg = buildGeneralRegistry()
   expect(reg.list().map(t => t.name).sort()).toEqual([
     'AskUserQuestion',
+    'Brief',
     'EnterPlanMode',
     'EnterWorktree',
     'ExitPlanMode',
@@ -18,6 +19,7 @@ test('general registry contains the core tools', () => {
     'NotebookEdit',
     'PowerShell',
     'REPL',
+    'SendUserMessage',
     'VerifyPlanExecution',
     'ask_user_question',
     'code_outline',

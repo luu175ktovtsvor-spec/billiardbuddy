@@ -20,6 +20,7 @@ import { projectDiagnosticsTool } from './projectDiagnosticsTool'
 import { projectInstructionsTool } from './projectInstructionsTool'
 import { askUserQuestionCompatTool, askUserQuestionTool, enterPlanCompatTool, enterPlanTool, exitPlanCompatTool, exitPlanTool } from './agentInteractionTools'
 import { verifyPlanExecutionCompatTool, verifyPlanExecutionTool } from './verifyPlanExecutionTool'
+import { briefCompatTool, sendUserMessageTool } from './briefTool'
 import type { Sandbox } from '../sandbox/sandbox'
 import { createSkillTools, type SkillLibrary } from '../skills/skillLoader'
 import { createCommandTools, type CommandLibrary } from '../commands/commandLoader'
@@ -50,6 +51,8 @@ export function buildGeneralRegistry(opts: { sandbox?: Sandbox; skills?: SkillLi
     enterWorktreeTool,
     exitWorktreeTool,
     readStoredToolResultTool,
+    sendUserMessageTool,
+    briefCompatTool,
     projectInstructionsTool,
     projectDiagnosticsTool,
     askUserQuestionTool,

@@ -55,6 +55,8 @@ export const TOOL_META: Record<string, { label: string; Icon: typeof Wrench }> =
   git_history: { label: "查看 Git 历史", Icon: GitBranch },
   read_stored_tool_result: { label: "读取长工具结果", Icon: FileText },
   read_agent_task_stored_result: { label: "读取子代理长结果", Icon: FileText },
+  SendUserMessage: { label: "发送用户消息", Icon: Bell },
+  Brief: { label: "发送用户消息", Icon: Bell },
   list_project_instructions: { label: "查项目规则", Icon: FileSearch },
   project_diagnostics: { label: "跑项目诊断", Icon: Stethoscope },
   run_command: { label: "执行命令", Icon: Terminal },

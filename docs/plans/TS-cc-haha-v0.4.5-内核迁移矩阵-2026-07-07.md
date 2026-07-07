@@ -2175,9 +2175,19 @@
 - 测试覆盖:后台子代理调用长工具时,任务 metadata 在运行中实时变成工具 progress 阶段,完成后进度到 100,事件日志仍只包含原始 agent events,不会多出重复 `context_note`。
 - 验证:`cd ts && bun run typecheck` clean;`cd ts && bun test src/tasks/taskTools.test.ts --timeout 40000` = 15 pass;`cd ts && bun test --timeout 60000` = 651 pass。
 
+## 3.263 2026-07-08 CC-Haha SendUserMessage/Brief 输出通道迁移
+
+- 对照源:`~/Desktop/cc-haha-ref/src/tools/BriefTool/BriefTool.ts`、`prompt.ts`、`attachments.ts`。关键行为:Brief 在 CC-Haha 中不是普通闲聊文案,而是模型明确给用户看的输出通道;主名为 `SendUserMessage`,旧别名为 `Brief`,入参为 `message/attachments/status`,附件需要校验存在且是普通文件。
+- 新增 `ts/src/tools/briefTool.ts`:提供 `SendUserMessage` 与 `Brief` 兼容工具,支持 markdown message、`status:"normal"|"proactive"`、workspace/allowed path 内附件解析、附件 size 与图片扩展名识别,返回稳定 `<user_message_delivered>` 结构。路径解析走现有 `Workspace.resolve(...,"read")`,越界附件直接拒绝。
+- 通用工具池默认注册 `SendUserMessage/Brief`;`tool_search` 热工具与中文/英文别名加入“给用户发消息/回复用户/用户可见消息/Brief/message user”,让大工具池懒加载时也能发现这条可见输出通道。
+- 前端工具文案新增 `SendUserMessage/Brief` 低噪标签“发送用户消息”,避免桌面对话流直接暴露原始工具名;真正专用消息卡/Brief-only 视图仍留后续 UI polish。
+- 口径:这一步迁移的是 CC-Haha Brief 的本地工具协议和可运行输出层;不迁入 GrowthBook entitlement、assistant-mode opt-in、private_api 附件上传和 Brief-only 终端 UI。前端目前先走普通工具结果展示,后续可继续做 Work Buddy/Codex 风格的低噪专用消息卡。
+- 测试覆盖:SendUserMessage 附件解析/图片识别/结构化输出;Brief legacy alias;缺失 status 与越界附件拒绝;通用 registry 工具清单与 tool_search 意图命中。
+- 验证:`cd ts && bun run typecheck` clean;`cd ts && bun test src/tools/briefTool.test.ts src/tools/generalTools.test.ts src/tools/toolSearchTool.test.ts --timeout 40000` = 10 pass;`cd ts && bun test --timeout 60000` = 654 pass;`cd web && pnpm exec vitest run src/lib/agent-tools.test.ts` = 2 pass;`cd web && pnpm exec tsc --noEmit` clean。
+
 ## 4. 下一批代码顺序
 
-1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复、后台 agent 确定性进度阶段已落;下一步继续复制/移植/改写同 agent id 原地 task slot、content replacement full restore、forked agent progress summary/prompt-cache、UDS/remote teammate bridge。
+1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复、后台 agent 确定性进度阶段、`SendUserMessage/Brief` 输出通道已落;下一步继续复制/移植/改写同 agent id 原地 task slot、content replacement full restore、forked agent progress summary/prompt-cache、UDS/remote teammate bridge。
 2. **后台子代理事件流/UI drill-in polish**:同步 `agent_task` 轨迹、后台启动 chip、完成通知与点击跳转、事件过滤/摘要折叠、trace 搜索/失败节点/phase 分组已落;下一步做统一 trace 面板、按 `agent_id` 过滤/跳转、sidechain transcript drill-in。
 3. **provider failover 策略 polish**:active saved -> saved fallbacks -> env fallback、失败原因 `context_note`、sticky fallback、状态线备用出口/冷却 chip、设置抽屉简洁健康状态/折叠明细、旧 BYOK -> ProviderService 兼容桥、provider 健康冷却、跨重启持久化、手动清冷却、保存通道启停/排序、默认/接管中状态区分、prewarm 跟随冷却排序、冷却分类退避、最近排障历史已落;下一步只剩完整高级 provider 管理页与更深的趋势/导出排障。
 4. **领域包/知识库前端 polish**:`billiards` 已从硬编码 supportContext 收到 SessionStart pack,前端选择器已读 `/api/v1/agent/packs`,`list_skills` 已支持 pack 推荐/过滤,pack prompt commands 已合并进命令池;下一步把知识库 Q&A 做成更接近 Codex/Work Buddy 的低噪来源面板和专家挂载入口。
