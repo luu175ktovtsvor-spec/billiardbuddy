@@ -5,6 +5,7 @@ import type { Tool } from '../tools/Tool'
 import type { PermissionMode } from '../permissions/types'
 import type { HookRegistry } from '../hooks/hooks'
 import { normalizeHookRegistry } from '../hooks/hookConfig'
+import { isAgentMemoryEnabled, parseAgentMemoryScope, type AgentMemoryScope } from './agentMemory'
 
 export type AgentMcpServerSpec = string | Record<string, unknown>
 
@@ -16,7 +17,7 @@ export interface AgentDefinition {
   disallowedTools?: string[]
   model?: string
   skills?: string[]
-  memory?: boolean
+  memory?: AgentMemoryScope
   permissionMode?: PermissionMode
   maxTurns?: number
   initialPrompt?: string
@@ -36,6 +37,15 @@ function parseTools(frontmatter: Record<string, unknown>, key: string): string[]
   const tools = stringArrayField(frontmatter, key)
   if (!tools) return undefined
   return tools.includes('*') ? undefined : tools
+}
+
+function withAgentMemoryTools(tools: string[] | undefined, memory: AgentMemoryScope | undefined): string[] | undefined {
+  if (!memory || !tools) return tools
+  const result = [...tools]
+  for (const name of ['write_file', 'edit_file', 'read_file']) {
+    if (!result.includes(name)) result.push(name)
+  }
+  return result
 }
 
 function booleanField(frontmatter: Record<string, unknown>, key: string): boolean | undefined {
@@ -84,14 +94,14 @@ export async function loadAgentFile(filePath: string): Promise<AgentDefinition> 
   const doc = parseMarkdownDocument(raw)
   const name = safeName(stringField(doc.frontmatter, 'name') ?? basename(filePath, '.md'))
   const description = stringField(doc.frontmatter, 'description') ?? extractDescription(doc.body) ?? name
-  const memory = doc.frontmatter.memory === true || doc.frontmatter.memory === 'true'
+  const memory = parseAgentMemoryScope(doc.frontmatter.memory)
   const isolation = stringField(doc.frontmatter, 'isolation') === 'worktree' ? 'worktree' : undefined
   const hooks = normalizeHookRegistry(doc.frontmatter.hooks, { agentFrontmatter: true })
   return {
     name,
     description,
     prompt: doc.body.trim(),
-    tools: parseTools(doc.frontmatter, 'tools'),
+    tools: withAgentMemoryTools(parseTools(doc.frontmatter, 'tools'), memory),
     disallowedTools: parseTools(doc.frontmatter, 'disallowedTools'),
     model: stringField(doc.frontmatter, 'model'),
     skills: stringArrayField(doc.frontmatter, 'skills'),
@@ -133,5 +143,6 @@ export async function loadAgentsDir(rootDir: string): Promise<AgentDefinition[]>
 export function resolveAgentTools(agent: AgentDefinition, allTools: Tool[]): Tool[] {
   const allowed = !agent.tools || agent.tools.length === 0 ? null : new Set(agent.tools)
   const disallowed = new Set(agent.disallowedTools ?? [])
-  return allTools.filter(tool => (!allowed || allowed.has(tool.name)) && !disallowed.has(tool.name))
+  const memoryTools = isAgentMemoryEnabled(agent.memory) ? new Set(['read_file', 'write_file', 'edit_file']) : null
+  return allTools.filter(tool => (!allowed || allowed.has(tool.name) || memoryTools?.has(tool.name)) && !disallowed.has(tool.name))
 }
