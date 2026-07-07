@@ -1,10 +1,13 @@
 import { spawn } from 'node:child_process'
+import { request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
 import { readFile } from 'node:fs/promises'
 import { parseHookDecisionJSON, type HookDecision, type HookEvent, type HookPayload, type HookRegistry, type HookRule } from './hooks'
 import type { Tool, ToolContext } from '../tools/Tool'
 import { ToolRegistry } from '../tools/registry'
 import { runAgentLoop } from '../harness/loop'
 import { textBlock, type Message } from '../types/message'
+import { assertHttpHookHostAllowed, ssrfGuardedLookup } from './ssrfGuard'
 
 const HOOK_EVENTS = new Set<HookEvent>(['PreToolUse', 'PostToolUse', 'Stop', 'UserPromptSubmit', 'SessionStart', 'SubagentStart', 'SubagentStop'])
 const STRUCTURED_OUTPUT_TOOL_NAME = 'StructuredOutput'
@@ -65,6 +68,10 @@ interface RawAgentHook {
 
 export interface NormalizeHookRegistryOptions {
   agentFrontmatter?: boolean
+  httpPolicy?: {
+    allowedUrls?: string[]
+    allowedEnvVars?: string[]
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -492,7 +499,94 @@ function normalizeHeaders(value: unknown, allowedEnvVars: Set<string>): Record<s
   return headers
 }
 
-async function runHttpHook(raw: RawHttpHook, payload: HookPayload, ctx: ToolContext): Promise<HookDecision | HookDecision[] | null> {
+function normalizeStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value
+    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    .map(item => item.trim())
+}
+
+function envList(name: string): string[] | undefined {
+  if (!(name in process.env)) return undefined
+  return (process.env[name] ?? '').split(',').map(value => value.trim()).filter(Boolean)
+}
+
+function urlMatchesPattern(url: string, pattern: string): boolean {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`^${escaped.replace(/\*/g, '.*')}$`).test(url)
+}
+
+function httpHookAllowedUrls(policy: NormalizeHookRegistryOptions['httpPolicy'] | undefined): string[] | undefined {
+  return policy?.allowedUrls ?? envList('HTTP_HOOK_ALLOWED_URLS')
+}
+
+function httpHookAllowedEnvVars(raw: RawHttpHook, policy: NormalizeHookRegistryOptions['httpPolicy'] | undefined): Set<string> {
+  const hookVars = normalizeStringArray(raw.allowedEnvVars) ?? []
+  const policyVars = policy?.allowedEnvVars ?? envList('HTTP_HOOK_ALLOWED_ENV_VARS')
+  const effective = policyVars ? hookVars.filter(name => policyVars.includes(name)) : hookVars
+  return new Set(effective.filter(Boolean))
+}
+
+function normalizeHttpPolicy(value: unknown, options?: NormalizeHookRegistryOptions): NormalizeHookRegistryOptions['httpPolicy'] | undefined {
+  if (!isRecord(value)) return options?.httpPolicy
+  const nested = isRecord(value.httpPolicy) ? value.httpPolicy : {}
+  const allowedUrls = options?.httpPolicy?.allowedUrls ??
+    normalizeStringArray(nested.allowedUrls) ??
+    normalizeStringArray(value.allowedHttpHookUrls)
+  const allowedEnvVars = options?.httpPolicy?.allowedEnvVars ??
+    normalizeStringArray(nested.allowedEnvVars) ??
+    normalizeStringArray(value.httpHookAllowedEnvVars)
+  return allowedUrls !== undefined || allowedEnvVars !== undefined ? { allowedUrls, allowedEnvVars } : options?.httpPolicy
+}
+
+function normalizeOptions(value: unknown, options?: NormalizeHookRegistryOptions): NormalizeHookRegistryOptions | undefined {
+  const httpPolicy = normalizeHttpPolicy(value, options)
+  return httpPolicy ? { ...options, httpPolicy } : options
+}
+
+function requestHostname(url: URL): string {
+  return url.hostname.startsWith('[') && url.hostname.endsWith(']') ? url.hostname.slice(1, -1) : url.hostname
+}
+
+async function postHttpHook(url: URL, body: string, headers: Record<string, string>, signal: AbortSignal): Promise<{ status: number; body: string }> {
+  const hostname = requestHostname(url)
+  assertHttpHookHostAllowed(hostname)
+  const transport = url.protocol === 'https:' ? httpsRequest : httpRequest
+  return await new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(Object.assign(new Error('HTTP hook aborted'), { name: 'AbortError' }))
+      return
+    }
+    const req = transport({
+      protocol: url.protocol,
+      hostname,
+      port: url.port,
+      path: `${url.pathname}${url.search}`,
+      method: 'POST',
+      headers: {
+        ...headers,
+        'Content-Length': Buffer.byteLength(body),
+      },
+      lookup: ssrfGuardedLookup,
+      timeout: 0,
+    }, res => {
+      const chunks: Buffer[] = []
+      res.on('data', chunk => { chunks.push(Buffer.from(chunk)) })
+      res.on('end', () => {
+        resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') })
+      })
+    })
+    const abort = () => {
+      req.destroy(Object.assign(new Error('HTTP hook aborted'), { name: 'AbortError' }))
+    }
+    signal.addEventListener('abort', abort, { once: true })
+    req.on('error', reject)
+    req.on('close', () => signal.removeEventListener('abort', abort))
+    req.end(body)
+  })
+}
+
+async function runHttpHook(raw: RawHttpHook, payload: HookPayload, ctx: ToolContext, policy?: NormalizeHookRegistryOptions['httpPolicy']): Promise<HookDecision | HookDecision[] | null> {
   if (typeof raw.url !== 'string' || !raw.url.trim()) return null
   let url: URL
   try {
@@ -503,25 +597,27 @@ async function runHttpHook(raw: RawHttpHook, payload: HookPayload, ctx: ToolCont
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     return { action: 'deny', message: `http hook url protocol not allowed: ${url.protocol}` }
   }
-  const allowedEnvVars = new Set(Array.isArray(raw.allowedEnvVars) ? raw.allowedEnvVars.filter((item): item is string => typeof item === 'string') : [])
+  const allowedUrls = httpHookAllowedUrls(policy)
+  if (allowedUrls !== undefined && !allowedUrls.some(pattern => urlMatchesPattern(url.toString(), pattern))) {
+    return { action: 'deny', message: `HTTP hook blocked: ${url.toString()} does not match any pattern in allowedHttpHookUrls` }
+  }
+  const allowedEnvVars = httpHookAllowedEnvVars(raw, policy)
   const timeoutMs = hookTimeoutMs(raw.timeout, 120_000)
   const controller = new AbortController()
   const abort = () => controller.abort()
   const timer = setTimeout(abort, timeoutMs)
   ctx.signal?.addEventListener('abort', abort, { once: true })
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: normalizeHeaders(raw.headers, allowedEnvVars),
-      body: JSON.stringify(commandHookPayload(payload, ctx)),
-      redirect: 'manual',
-      signal: controller.signal,
-    })
-    const body = await response.text()
-    if (!response.ok) {
-      return { action: 'context', additionalContext: `[${payload.event} http hook 非阻塞错误] HTTP ${response.status}${body.trim() ? `: ${body.trim()}` : ''}` }
+    const response = await postHttpHook(
+      url,
+      JSON.stringify(commandHookPayload(payload, ctx)),
+      normalizeHeaders(raw.headers, allowedEnvVars),
+      controller.signal,
+    )
+    if (response.status < 200 || response.status >= 300) {
+      return { action: 'context', additionalContext: `[${payload.event} http hook 非阻塞错误] HTTP ${response.status}${response.body.trim() ? `: ${response.body.trim()}` : ''}` }
     }
-    return parseCommandHookStdout(body)
+    return parseCommandHookStdout(response.body)
   } catch (error) {
     if (controller.signal.aborted) {
       return { action: 'deny', message: `http hook aborted or timed out after ${Math.round(timeoutMs / 1000)}s: ${url.toString()}` }
@@ -533,7 +629,7 @@ async function runHttpHook(raw: RawHttpHook, payload: HookPayload, ctx: ToolCont
   }
 }
 
-function normalizeHookCommand(event: HookEvent, matcher: string | undefined, raw: Record<string, unknown>): HookRule | null {
+function normalizeHookCommand(event: HookEvent, matcher: string | undefined, raw: Record<string, unknown>, options?: NormalizeHookRegistryOptions): HookRule | null {
   const staticDecisions = normalizeDecisionList(raw.decisions ?? raw.decision ?? (raw.action ? raw : undefined))
   if (staticDecisions.length > 0) {
     return { event, matcher, handler: () => staticDecisions }
@@ -546,7 +642,7 @@ function normalizeHookCommand(event: HookEvent, matcher: string | undefined, raw
 
   if (raw.type === 'http' && typeof raw.url === 'string' && raw.url.trim()) {
     const httpHook = raw as RawHttpHook
-    return { event, matcher, handler: (payload, ctx) => runHttpHook(httpHook, payload, ctx) }
+    return { event, matcher, handler: (payload, ctx) => runHttpHook(httpHook, payload, ctx, options?.httpPolicy) }
   }
 
   if (raw.type === 'prompt' && typeof raw.prompt === 'string' && raw.prompt.trim()) {
@@ -574,12 +670,12 @@ function normalizeEventMap(value: unknown, options?: NormalizeHookRegistryOption
       if (Array.isArray(matcherConfig.hooks)) {
         for (const hook of matcherConfig.hooks) {
           if (!isRecord(hook)) continue
-          const rule = normalizeHookCommand(event, matcher, hook)
+          const rule = normalizeHookCommand(event, matcher, hook, options)
           if (rule) rules.push(rule)
         }
         continue
       }
-      const rule = normalizeHookCommand(event, matcher, matcherConfig)
+      const rule = normalizeHookCommand(event, matcher, matcherConfig, options)
       if (rule) rules.push(rule)
     }
   }
@@ -587,13 +683,14 @@ function normalizeEventMap(value: unknown, options?: NormalizeHookRegistryOption
 }
 
 export function normalizeHookRegistry(value: unknown, options?: NormalizeHookRegistryOptions): HookRegistry {
+  const effectiveOptions = normalizeOptions(value, options)
   const rules: HookRule[] = []
-  if (Array.isArray(value)) rules.push(...normalizeFlatRules(value, options))
+  if (Array.isArray(value)) rules.push(...normalizeFlatRules(value, effectiveOptions))
   if (isRecord(value)) {
-    rules.push(...normalizeFlatRules(value.rules, options))
-    if (Array.isArray(value.hooks)) rules.push(...normalizeFlatRules(value.hooks, options))
-    else if (isRecord(value.hooks)) rules.push(...normalizeEventMap(value.hooks, options))
-    rules.push(...normalizeEventMap(value, options))
+    rules.push(...normalizeFlatRules(value.rules, effectiveOptions))
+    if (Array.isArray(value.hooks)) rules.push(...normalizeFlatRules(value.hooks, effectiveOptions))
+    else if (isRecord(value.hooks)) rules.push(...normalizeEventMap(value.hooks, effectiveOptions))
+    rules.push(...normalizeEventMap(value, effectiveOptions))
   }
   return { rules }
 }
