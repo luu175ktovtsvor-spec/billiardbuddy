@@ -69,6 +69,9 @@ server/billiards_local.db
 
 # Playwright 本地截图/快照产物(验证用,不入库)
 .playwright-mcp/
+.playwright-cli/
+web/.playwright-cli/
+output/
 desktop-*.png
 
 # 打包产物(PyInstaller后端+构建前端+node_modules)——绝不进仓库
