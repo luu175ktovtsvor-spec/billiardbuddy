@@ -7,6 +7,8 @@ import { loadHookRegistryFile, normalizeHookRegistry } from './hookConfig'
 import { runHookEvent } from './hooks'
 import { Workspace } from '../workspace/workspace'
 import type { AssistantStep, Model, ModelStepInput } from '../types/model'
+import type { Tool } from '../tools/Tool'
+import { ToolRegistry } from '../tools/registry'
 
 async function withHttpServer(handler: (req: IncomingMessage, res: ServerResponse) => void, run: (url: string) => Promise<void>): Promise<void> {
   const server: Server = createServer(handler)
@@ -28,6 +30,29 @@ function hookModel(step: AssistantStep): Model & { received: ModelStepInput[] } 
       received.push(input)
       return step
     },
+  }
+}
+
+function scriptedHookModel(steps: AssistantStep[]): Model & { received: ModelStepInput[] } {
+  const received: ModelStepInput[] = []
+  return {
+    received,
+    async step(input) {
+      received.push(input)
+      const step = steps.shift()
+      if (!step) throw new Error('scripted hook model exhausted')
+      return step
+    },
+  }
+}
+
+function testTool(name: string, execute: Tool['execute'], isReadOnly = true): Tool {
+  return {
+    name,
+    description: `${name} test tool`,
+    inputSchema: { type: 'object', properties: {} },
+    isReadOnly,
+    execute,
   }
 }
 
@@ -384,6 +409,125 @@ test('normalizeHookRegistry prompt hook turns goal evaluator invalid JSON into b
     expect(decisions[0]?.action).toBe('deny')
     expect(decisions[0]?.action === 'deny' ? decisions[0].message : '').toContain('Goal evaluator failed')
     expect(decisions[0]?.action === 'deny' ? decisions[0].message : '').toContain('continue working toward it')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('normalizeHookRegistry agent hook runs a verifier agent and allows ok true structured output', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-config-agent-ok-'))
+  try {
+    const registry = normalizeHookRegistry({
+      hooks: {
+        Stop: [
+          { hooks: [{ type: 'agent', prompt: 'verify final $ARGUMENTS' }] },
+        ],
+      },
+    })
+    const model = scriptedHookModel([
+      { kind: 'tool_calls', text: 'return structured result', calls: [{ id: 'structured-1', name: 'StructuredOutput', input: { ok: true } }] },
+      { kind: 'final', text: 'done' },
+    ])
+    const toolRegistry = new ToolRegistry([])
+    const decisions = await runHookEvent(registry, { event: 'Stop', output: 'done' }, {
+      workspace: new Workspace(root),
+      conversationId: 'agent-hook-ok',
+      model,
+      registry: toolRegistry,
+    })
+    expect(decisions).toEqual([{ action: 'allow' }])
+    expect(model.received[0]!.system).toContain('call StructuredOutput exactly once')
+    expect(model.received[0]!.tools.map(tool => tool.name)).toEqual(['StructuredOutput'])
+    expect(firstPromptText(model.received[0]!)).toContain('"hook_event_name":"Stop"')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('normalizeHookRegistry agent hook maps ok false structured output to deny', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-config-agent-deny-'))
+  try {
+    const registry = normalizeHookRegistry({
+      hooks: {
+        Stop: [
+          { hooks: [{ type: 'agent', prompt: 'verify final' }] },
+        ],
+      },
+    })
+    const model = scriptedHookModel([
+      { kind: 'tool_calls', calls: [{ id: 'structured-1', name: 'StructuredOutput', input: { ok: false, reason: 'missing verification' } }] },
+      { kind: 'final', text: 'done' },
+    ])
+    const decisions = await runHookEvent(registry, { event: 'Stop', output: 'done' }, {
+      workspace: new Workspace(root),
+      model,
+      registry: new ToolRegistry([]),
+    })
+    expect(decisions).toEqual([
+      { action: 'deny', message: 'Agent hook condition was not met: missing verification' },
+    ])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('normalizeHookRegistry agent hook can inspect with allowed tools before structured output', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-config-agent-tool-'))
+  try {
+    writeFileSync(join(root, 'result.txt'), 'verified payload')
+    const registry = normalizeHookRegistry({
+      hooks: {
+        Stop: [
+          { hooks: [{ type: 'agent', prompt: 'verify file exists' }] },
+        ],
+      },
+    })
+    const model = scriptedHookModel([
+      { kind: 'tool_calls', calls: [{ id: 'read-1', name: 'read_file', input: { path: 'result.txt' } }] },
+      { kind: 'tool_calls', calls: [{ id: 'structured-1', name: 'StructuredOutput', input: { ok: true } }] },
+      { kind: 'final', text: 'done' },
+    ])
+    const toolRegistry = new ToolRegistry([
+      testTool('read_file', async input => {
+        expect(input).toEqual({ path: 'result.txt' })
+        return 'verified payload'
+      }),
+      testTool('write_file', async () => {
+        throw new Error('write_file should not be available to agent hooks')
+      }, false),
+    ])
+    const decisions = await runHookEvent(registry, { event: 'Stop', output: 'done' }, {
+      workspace: new Workspace(root),
+      model,
+      registry: toolRegistry,
+    })
+    expect(decisions).toEqual([{ action: 'allow' }])
+    expect(model.received[0]!.tools.map(tool => tool.name).sort()).toEqual(['StructuredOutput', 'read_file'])
+    const feedback = model.received[1]!.messages.flatMap(message => message.content).find(block => block.type === 'tool_result')
+    expect(feedback && feedback.type === 'tool_result' ? feedback.content : '').toContain('verified payload')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('normalizeHookRegistry agent hook returns non-blocking context when registry is unavailable', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-config-agent-no-registry-'))
+  try {
+    const registry = normalizeHookRegistry({
+      hooks: {
+        Stop: [
+          { hooks: [{ type: 'agent', prompt: 'verify final' }] },
+        ],
+      },
+    })
+    const model = hookModel({ kind: 'final', text: '{"ok":true}' })
+    expect(await runHookEvent(registry, { event: 'Stop', output: 'done' }, {
+      workspace: new Workspace(root),
+      model,
+    })).toEqual([
+      { action: 'context', additionalContext: '[Stop agent hook 非阻塞错误] tool registry was unavailable' },
+    ])
+    expect(model.received).toHaveLength(0)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

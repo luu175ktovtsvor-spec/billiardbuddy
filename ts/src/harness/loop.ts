@@ -105,6 +105,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   const ctx: ToolContext = {
     workspace: opts.workspace,
     model,
+    registry,
     signal: opts.signal,
     sandbox: opts.sandbox,
     permissionMode: opts.permissionMode ?? 'ask',

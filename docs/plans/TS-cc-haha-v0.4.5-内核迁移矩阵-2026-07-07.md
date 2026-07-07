@@ -41,7 +41,7 @@
 | Skills/commands | `server/api/skills.ts`, `commands.ts`, Skill tools | `ts/src/skills/*`, `ts/src/commands/*` | discover/load/execute/历史恢复;skillify 是产品护城河 | ✅SKILL.md loader + command loader + 工作区 `.claude/.codex` commands + slash 自动展开/list/read/create_skill + `/model` 后端已落 |
 | Subagents/tasks | `tools/AgentTool/**`, `tools/Task*Tool/**`, `tools/TaskOutputTool/**`, `tools/TaskStopTool/**`, `tools/SendMessageTool/**`, `tools/TeamCreateTool/**`, `tools/TeamDeleteTool/**`, `tools/ListPeersTool/**`, `utils/teammateMailbox.ts`, `utils/swarm/teamHelpers.ts`, `tools/EnterPlanModeTool/**`, `tools/ExitPlanModeTool/**`, `tools/VerifyPlanExecutionTool/**`, `tasks/**` | `ts/src/agents/*`, `ts/src/tasks/*`, `ts/src/tools/agentInteractionTools.ts`, `ts/src/tools/verifyPlanExecutionTool.ts` | 子代理、结构化任务列表、后台任务 drawer、任务输出隔离/停止、team/mailbox、计划模式进入/退出/验证门 | 🟡Agent .md loader/工具子集 + 基础 runner + `task_create/list/get/update` + `TaskOutput/TaskStop` + `TeamCreate/TeamDelete/SendMessage/ListPeers` 本地 team/mailbox 主路径 + `SendMessage` running/stopped background agent 路由 + background agent metadata sidecar resume + `EnterPlanMode/ExitPlanMode/VerifyPlanExecution` 计划链路 + 后台 task service/API/tool + 前端后台任务 drawer 已落 |
 | Worktree | `tools/EnterWorktreeTool/**`, `tools/ExitWorktreeTool/**`, `utils/worktree.ts`, `utils/getWorktreePathsPortable.ts` | `ts/src/tools/worktreeTools.ts`, `ToolContext.worktreeSession` | git worktree 创建/进入、退出 keep/remove、删除前变更保护、会话工作区切换/恢复 | 🟡`EnterWorktree/ExitWorktree` 同名工具 + 真实 git worktree add/remove + dirty guard + 同 conversation 后续 turn 自动恢复 active worktree + `tool_search` 已落;hooks/tmux/磁盘 sessionStorage 待深化 |
-| Hooks | `utils/hooks/**`, hook config | `ts/src/hooks/*` | PreTool/PostTool/Stop/UserPromptSubmit/SessionStart | 🟡JSON 裁决 + PreTool/PostTool/SessionStart/UserPromptSubmit/Stop 主链已接;command/http/prompt executor 已按 CC-Haha 行为移植;agent executor 待继续 |
+| Hooks | `utils/hooks/**`, hook config | `ts/src/hooks/*` | PreTool/PostTool/Stop/UserPromptSubmit/SessionStart | 🟡JSON 裁决 + PreTool/PostTool/SessionStart/UserPromptSubmit/Stop 主链已接;command/http/prompt/agent executor 已按 CC-Haha 行为移植;settings policy/SSRF/goal 编排待深化 |
 | MCP/plugins | `server/api/mcp.ts`, `plugins.ts`, MCP tools | `ts/src/mcp/*`, `ts/src/plugins/*` | 官方 SDK + secret redaction + Unicode server names | 🟡配置/manifest/命名/审批映射 + SDK tool/resource/prompt/elicitation/task/sampling bridge 已落;MCP elicitation 基础问答桥已落,专用多字段表单 UI 待补 |
 | Desktop sidecar | `desktop/electron/services/sidecarManager.ts`, `serverRuntime.ts` | `ts/desktop/electron/services/*` | 等 `/health`、端口策略、tree kill、日志诊断、ARM64 | 🟡基础 sidecar 已落 |
 | Image module | 无直接 cc-haha 对应 | `ts/src/media/image/*`, 前端 studio | 自研工具,接审批/媒体任务/provider | 🟡TS 文生图/参考图/改图网关直连已落;品牌包/贴图/OCR 待迁 |
@@ -2127,9 +2127,20 @@
 - 口径:这一步补齐 prompt hook executor 的当前 TS 可运行等价层。剩余继续复制/移植/改写:CC-Haha `execAgentHook.ts`、更完整的 hook settings policy、goal 状态持久化与 stopHooks 继续工作编排。
 - 验证:`cd ts && bun test src/hooks/hookConfig.test.ts src/hooks/hooks.test.ts` = 21 pass;`cd ts && bun run typecheck` clean。
 
+## 3.258 2026-07-08 CC-Haha agent hook executor 迁移
+
+- 对照源:`~/Desktop/cc-haha-ref/src/utils/hooks/execAgentHook.ts` 与 `hookHelpers.ts`。关键行为:`type:"agent"` hook 不是单步 LLM 判定,而是启动一个临时 verifier agent,允许它用工具检查代码/历史,最后必须用 `StructuredOutput` 返回 `{ok, reason?}`。
+- `ToolContext` 新增当前会话 `registry`,主 `runAgentLoop` 创建上下文时注入;`ts/src/hooks/hookConfig.ts` 的 agent hook executor 现在可从当前工具池派生受限 verifier registry,而不是输出“待移植”占位。
+- 新增 hook 内部 `StructuredOutput` 工具:模型调用它时捕获 `{ok, reason?}`;`ok:true` 映射 `allow`, `ok:false` 映射 `deny: Agent hook condition was not met: ...`。没有结构化输出时按 CC-Haha 口径取消,不把普通 final 当成功。
+- 工具边界按 CC-Haha verifier 思路收窄:仅允许 `read_file/read_many_files/list_dir/glob_files/grep_files/code_outline/git_status/git_history/LSP/list_project_instructions/project_diagnostics/read_stored_tool_result` 这类只读检查/诊断入口;不暴露写文件、子代理、AskUser、Plan、VerifyPlanExecution、媒体/花钱等工具,避免 hook agent 变成新的执行入口。
+- agent hook 复用 `addArgumentsToPrompt` 处理 `$ARGUMENTS`,默认 60s timeout、最多 50 turn;内部 `runAgentLoop` 用 `permissionMode:"plan"` 进一步保证即使误暴露可写工具也会被权限层跳过。
+- 测试覆盖:agent hook 用 `StructuredOutput({ok:true})` 放行;`ok:false` 阻断;可先调用允许的 `read_file` 再结构化输出;缺少当前工具 registry 时返回非阻塞 context 且不打模型。
+- 口径:这一步补齐 CC-Haha `execAgentHook.ts` 的当前 TS 可运行等价层。剩余继续复制/移植/改写:hook settings policy、HTTP SSRF/DNS guard、goal 状态持久化与 stopHooks 继续工作编排、同 agent id 原地 task slot、agent progress summary/prompt-cache。
+- 验证:`cd ts && bun test src/hooks/hookConfig.test.ts src/hooks/hooks.test.ts` = 25 pass;`cd ts && bun run typecheck` clean。
+
 ## 4. 下一批代码顺序
 
-1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt hook executor 已落;下一步继续复制/移植/改写 agent hook executor、同 agent id 原地 task slot、content replacement full restore、agent progress summary/prompt-cache、UDS/remote teammate bridge。
+1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor 已落;下一步继续复制/移植/改写同 agent id 原地 task slot、content replacement full restore、agent progress summary/prompt-cache、UDS/remote teammate bridge,以及 hook settings policy/SSRF/goal 编排。
 2. **后台子代理事件流/UI drill-in polish**:同步 `agent_task` 轨迹、后台启动 chip、完成通知与点击跳转、事件过滤/摘要折叠、trace 搜索/失败节点/phase 分组已落;下一步做统一 trace 面板、按 `agent_id` 过滤/跳转、sidechain transcript drill-in。
 3. **provider failover 策略 polish**:active saved -> saved fallbacks -> env fallback、失败原因 `context_note`、sticky fallback、状态线备用出口/冷却 chip、设置抽屉简洁健康状态/折叠明细、旧 BYOK -> ProviderService 兼容桥、provider 健康冷却、跨重启持久化、手动清冷却、保存通道启停/排序、默认/接管中状态区分、prewarm 跟随冷却排序、冷却分类退避、最近排障历史已落;下一步只剩完整高级 provider 管理页与更深的趋势/导出排障。
 4. **领域包/知识库前端 polish**:`billiards` 已从硬编码 supportContext 收到 SessionStart pack,前端选择器已读 `/api/v1/agent/packs`,`list_skills` 已支持 pack 推荐/过滤,pack prompt commands 已合并进命令池;下一步把知识库 Q&A 做成更接近 Codex/Work Buddy 的低噪来源面板和专家挂载入口。
