@@ -13,6 +13,7 @@ import { Workspace } from '../workspace/workspace'
 import type { BackgroundAgentMetadata, TaskEventRecord, TaskMeta, TaskService, TaskStatus } from './taskService'
 import { createIsolatedAgentWorktree, type AgentWorktreeCleanupResult } from '../tools/worktreeTools'
 import { applySubagentStartHooks, mergeHookRegistries, type HookRegistry } from '../hooks/hooks'
+import { buildAgentMemoryPrompt, workspaceWithAgentMemory } from '../agents/agentMemory'
 
 export interface BackgroundAgentTaskInput {
   agent?: string
@@ -71,12 +72,16 @@ function taskTitle(input: BackgroundAgentTaskInput, agent: AgentDefinition): str
   return input.title?.trim() || `${displayName}: ${input.task.trim().slice(0, 80)}`
 }
 
-function agentSystemPrompt(agent: AgentDefinition, baseSystemPrompt = ''): string {
+async function agentSystemPrompt(agent: AgentDefinition, workspaceRoot: string, baseSystemPrompt = ''): Promise<string> {
+  const memoryPrompt = agent.memory
+    ? await buildAgentMemoryPrompt(agent.name, agent.memory, workspaceRoot)
+    : ''
   return [
     baseSystemPrompt,
     `<background_subagent name="${agent.name}">`,
     agent.prompt,
     '</background_subagent>',
+    memoryPrompt,
     'You are running in a background task. Keep progress concise and return a final result for the user.',
   ].filter(Boolean).join('\n\n')
 }
@@ -376,7 +381,8 @@ export async function startBackgroundAgentRun(
   const agentWorktree = effectiveIsolation === 'worktree'
     ? await createIsolatedAgentWorktree(ctx.workspace.root, task.id, ctx.conversationId)
     : null
-  const runWorkspace = agentWorktree ? new Workspace(agentWorktree.session.worktreePath) : ctx.workspace
+  const runWorkspaceBase = agentWorktree ? new Workspace(agentWorktree.session.worktreePath) : ctx.workspace
+  const runWorkspace = workspaceWithAgentMemory(runWorkspaceBase, agent.name, agent.memory)
   const runSandbox = sandboxForWorkspace(ctx.sandbox, runWorkspace)
   const resumedWorktreePath = typeof extraParams.resumed_worktree_path === 'string' && extraParams.resumed_worktree_path.trim()
     ? extraParams.resumed_worktree_path.trim()
@@ -442,7 +448,7 @@ export async function startBackgroundAgentRun(
         model: opts.model,
         registry: new ToolRegistry(agentMcp.tools),
         workspace: runWorkspace,
-        systemPrompt: agentSystemPrompt(agent, opts.baseSystemPrompt),
+        systemPrompt: await agentSystemPrompt(agent, runWorkspace.root, opts.baseSystemPrompt),
         userMessage: agentTaskMessage(agent, input),
         initialMessages: [
           ...initialMessages,

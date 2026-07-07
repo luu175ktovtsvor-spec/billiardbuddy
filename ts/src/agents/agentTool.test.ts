@@ -1,15 +1,16 @@
 import { expect, test } from 'bun:test'
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { scriptedModel } from '../harness/fakeModel'
 import { Workspace } from '../workspace/workspace'
 import { fileReadTool } from '../tools/fileReadTool'
 import { fileWriteTool } from '../tools/fileWriteTool'
 import { createAgentTaskSidechainTools, createAgentTaskTool } from './agentTool'
 import type { AgentDefinition } from './agentLoader'
+import { getAgentMemoryEntrypoint } from './agentMemory'
 
 function agent(partial: Partial<AgentDefinition> = {}): AgentDefinition {
   return {
@@ -265,6 +266,44 @@ test('agent_task runs agent frontmatter SubagentStart and Stop as SubagentStop h
     expect(progress.join('')).toContain(`子代理 researcher 提醒:stop:${agentId}:hooked final`)
     expect(out).toContain('hooked final')
   } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('agent_task loads persistent agent memory and allows writing to the memory dir', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-memory-'))
+  const oldClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR
+  process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+  try {
+    const memoryPath = getAgentMemoryEntrypoint('researcher', 'user', root)
+    mkdirSync(dirname(memoryPath), { recursive: true })
+    writeFileSync(memoryPath, 'remember preferred formatter: bun fmt\n', { flag: 'w' })
+    const topicPath = join(dirname(memoryPath), 'testing.md')
+    const model = scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: 'mem-write', name: 'write_file', input: { path: topicPath, content: 'remember test command: bun test\n' } }] },
+      { kind: 'final', text: '记忆已更新' },
+    ])
+    const tool = createAgentTaskTool({
+      agents: [agent({ memory: 'user', tools: ['read_file'] })],
+      model,
+      baseTools: [fileReadTool, fileWriteTool],
+      baseSystemPrompt: 'BASE',
+      sidechainRoot: join(root, 'sidechains'),
+    })
+
+    const out = await tool.execute({ task: '更新长期记忆' }, {
+      workspace: new Workspace(root),
+      permissionMode: 'full',
+    })
+
+    expect(model.received[0]!.system).toContain('# Persistent Agent Memory')
+    expect(model.received[0]!.system).toContain('remember preferred formatter: bun fmt')
+    expect(model.received[0]!.tools.map(tool => tool.name).sort()).toEqual(['read_file', 'write_file'])
+    expect(readFileSync(topicPath, 'utf8')).toContain('remember test command: bun test')
+    expect(out).toContain('记忆已更新')
+  } finally {
+    if (oldClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = oldClaudeConfigDir
     rmSync(root, { recursive: true, force: true })
   }
 })

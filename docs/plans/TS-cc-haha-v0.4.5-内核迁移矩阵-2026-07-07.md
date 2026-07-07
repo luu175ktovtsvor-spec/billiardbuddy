@@ -2185,9 +2185,20 @@
 - 测试覆盖:SendUserMessage 附件解析/图片识别/结构化输出;Brief legacy alias;缺失 status 与越界附件拒绝;通用 registry 工具清单与 tool_search 意图命中。
 - 验证:`cd ts && bun run typecheck` clean;`cd ts && bun test src/tools/briefTool.test.ts src/tools/generalTools.test.ts src/tools/toolSearchTool.test.ts --timeout 40000` = 10 pass;`cd ts && bun test --timeout 60000` = 654 pass;`cd web && pnpm exec vitest run src/lib/agent-tools.test.ts` = 2 pass;`cd web && pnpm exec tsc --noEmit` clean。
 
+## 3.264 2026-07-08 CC-Haha agent memory / snapshot 迁移
+
+- 对照源:`~/Desktop/cc-haha-ref/src/tools/AgentTool/agentMemory.ts`、`agentMemorySnapshot.ts`、`loadAgentsDir.ts`、`src/memdir/memdir.ts`。关键行为:agent frontmatter 的 `memory` 是 `user/project/local` scope,会给子代理追加 Persistent Agent Memory system prompt,创建/读取对应记忆目录,并在 restricted `tools` 配置下自动补 Read/Write/Edit;`user` scope 还会从项目 `.claude/agent-memory-snapshots/<agent>/snapshot.json` 初始化本地/用户记忆。
+- 新增 `ts/src/agents/agentMemory.ts`:实现 `AgentMemoryScope`、`parseAgentMemoryScope()`、三种记忆目录、`MEMORY.md` 截断加载、snapshot 初始化/替换元数据、`workspaceWithAgentMemory()`。`memory:true` 作为本仓库旧格式兼容映射到 `user`,新 agent 文件按 CC-Haha 口径推荐写 `memory:user|project|local`。
+- `ts/src/agents/agentLoader.ts` 把 `AgentDefinition.memory` 从 boolean 升级为 scope;加载 `.md` agent 时解析 CC-Haha memory 字段,如果 agent 工具白名单存在则自动注入 `read_file/write_file/edit_file`;`resolveAgentTools()` 也加了一层兜底,避免手写 AgentDefinition 时 memory agent 被白名单漏掉记忆工具。
+- `agent_task` 与 `start_background_agent_task` 现在都会在运行前构建 agent memory prompt,把 `MEMORY.md` 内容放入 `<subagent>`/`<background_subagent>` 系统提示之后;同时通过 `Workspace.withAllowedPaths()` 把记忆目录加入子代理 workspace allowlist,使 `user` scope 这种工作区外路径也能安全读写,不只是“看见但写不进去”。
+- `Workspace` 新增 `withAllowedPaths()` 保留原 selected files/full disk/backup hook,再追加 agent memory 路径;这是对齐 CC-Haha filesystem carve-out 的当前 TS 可运行等价层。
+- 口径:这一步完成 CC-Haha agent memory 主链和 snapshot 初始化的可运行迁移。暂未复制 GrowthBook/analytics/Kairos/team memory/更新快照交互弹窗;`prompt-update` 目前只检测到有更新而不打断用户弹选择,后续如果做 agent 管理 UI 再接。AgentTool/LocalAgentTask 仍需继续复制/移植/改写同 `agent_id` 原地 task slot、content replacement full restore、forked progress summary/prompt-cache、UDS/remote teammate bridge。
+- 测试覆盖:frontmatter `memory:user/project` 与旧 `memory:true` 兼容;restricted tools 自动补记忆读写工具;同步 `agent_task` 加载 user memory prompt 且能写入工作区外 user memory 目录;后台 agent 从 project snapshot 初始化 user memory 并注入系统提示;workspace allowlist 追加不丢已有授权。
+- 验证:`cd ts && bun run typecheck` clean;`cd ts && bun test src/agents/agentLoader.test.ts src/agents/agentTool.test.ts src/tasks/taskTools.test.ts src/workspace/workspace.test.ts --timeout 40000` = 38 pass。
+
 ## 4. 下一批代码顺序
 
-1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复、后台 agent 确定性进度阶段、`SendUserMessage/Brief` 输出通道已落;下一步继续复制/移植/改写同 agent id 原地 task slot、content replacement full restore、forked agent progress summary/prompt-cache、UDS/remote teammate bridge。
+1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复、后台 agent 确定性进度阶段、`SendUserMessage/Brief` 输出通道、agent memory / snapshot 已落;下一步继续复制/移植/改写同 agent id 原地 task slot、content replacement full restore、forked agent progress summary/prompt-cache、UDS/remote teammate bridge。
 2. **后台子代理事件流/UI drill-in polish**:同步 `agent_task` 轨迹、后台启动 chip、完成通知与点击跳转、事件过滤/摘要折叠、trace 搜索/失败节点/phase 分组已落;下一步做统一 trace 面板、按 `agent_id` 过滤/跳转、sidechain transcript drill-in。
 3. **provider failover 策略 polish**:active saved -> saved fallbacks -> env fallback、失败原因 `context_note`、sticky fallback、状态线备用出口/冷却 chip、设置抽屉简洁健康状态/折叠明细、旧 BYOK -> ProviderService 兼容桥、provider 健康冷却、跨重启持久化、手动清冷却、保存通道启停/排序、默认/接管中状态区分、prewarm 跟随冷却排序、冷却分类退避、最近排障历史已落;下一步只剩完整高级 provider 管理页与更深的趋势/导出排障。
 4. **领域包/知识库前端 polish**:`billiards` 已从硬编码 supportContext 收到 SessionStart pack,前端选择器已读 `/api/v1/agent/packs`,`list_skills` 已支持 pack 推荐/过滤,pack prompt commands 已合并进命令池;下一步把知识库 Q&A 做成更接近 Codex/Work Buddy 的低噪来源面板和专家挂载入口。

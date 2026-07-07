@@ -24,6 +24,7 @@ import { textBlock } from '../types/message'
 import type { AgentDefinition } from './agentLoader'
 import { resolveAgentTools } from './agentLoader'
 import { loadAgentMcpRuntime, type AgentMcpRuntimeOptions } from './agentMcp'
+import { buildAgentMemoryPrompt, workspaceWithAgentMemory } from './agentMemory'
 
 export interface AgentTaskInput {
   agent?: string
@@ -99,12 +100,16 @@ function agentList(agents: AgentDefinition[]): string {
   return agents.map(agent => `${agent.name}: ${agent.description}`).join('\n')
 }
 
-function buildAgentSystemPrompt(agent: AgentDefinition, baseSystemPrompt = ''): string {
+async function buildAgentSystemPrompt(agent: AgentDefinition, workspaceRoot: string, baseSystemPrompt = ''): Promise<string> {
+  const memoryPrompt = agent.memory
+    ? await buildAgentMemoryPrompt(agent.name, agent.memory, workspaceRoot)
+    : ''
   return [
     baseSystemPrompt,
     `<subagent name="${agent.name}">`,
     agent.prompt,
     '</subagent>',
+    memoryPrompt,
     'You are running as an isolated subagent. Return only the useful result for the parent agent.',
   ].filter(Boolean).join('\n\n')
 }
@@ -267,7 +272,8 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
       const agentWorktree = effectiveIsolation === 'worktree'
         ? await createIsolatedAgentWorktree(ctx.workspace.root, agentId, ctx.conversationId)
         : null
-      const workspace = agentWorktree ? new Workspace(agentWorktree.session.worktreePath) : ctx.workspace
+      const workspaceBase = agentWorktree ? new Workspace(agentWorktree.session.worktreePath) : ctx.workspace
+      const workspace = workspaceWithAgentMemory(workspaceBase, agent.name, agent.memory)
       const sandbox = sandboxForWorkspace(ctx.sandbox, workspace)
       if (sidechain) await writeAgentTaskMetadata(opts, sidechain, agent, input, ctx, agentWorktree?.session.worktreePath)
       let finalText = ''
@@ -300,7 +306,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
           model: opts.model,
           registry,
           workspace,
-          systemPrompt: buildAgentSystemPrompt(agent, opts.baseSystemPrompt),
+          systemPrompt: await buildAgentSystemPrompt(agent, workspace.root, opts.baseSystemPrompt),
           userMessage: agentTaskMessage(agent, input),
           initialMessages: [hookContextMessage('SubagentStart', subagentStart.additionalContext)].filter((message): message is Message => !!message),
           maxTurns: agent.maxTurns ?? opts.maxTurns ?? 8,

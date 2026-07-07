@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { scriptedModel } from '../harness/fakeModel'
@@ -14,6 +14,7 @@ import { fileReadTool } from '../tools/fileReadTool'
 import { fileWriteTool } from '../tools/fileWriteTool'
 import { TaskService } from './taskService'
 import { createBackgroundAgentTaskTool, createTaskTools, resumeBackgroundAgentTask, sanitizeBackgroundAgentResumeMessages } from './taskTools'
+import { getAgentMemoryEntrypoint } from '../agents/agentMemory'
 
 async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 1000): Promise<T> {
   const deadline = Date.now() + timeoutMs
@@ -396,6 +397,51 @@ test('start_background_agent_task runs agent frontmatter SubagentStart and Subag
     expect(notes.some(event => event.text === `bg-start:${done.id}:researcher`)).toBe(true)
     expect(notes.some(event => event.text === `bg-stop:${done.id}:后台 hook 结论`)).toBe(true)
   } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('start_background_agent_task initializes user memory from snapshot and injects it into system prompt', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-tools-agent-memory-'))
+    const oldClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR
+  process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+  try {
+    const snapshotDir = join(root, '.claude', 'agent-memory-snapshots', 'researcher')
+    mkdirSync(snapshotDir, { recursive: true })
+    writeFileSync(join(snapshotDir, 'snapshot.json'), JSON.stringify({ updatedAt: '2026-07-08T00:00:00.000Z' }), { flag: 'w' })
+    writeFileSync(join(snapshotDir, 'MEMORY.md'), 'snapshot says: always inspect failing tests first\n')
+    const tasks = new TaskService(root)
+    const agent: AgentDefinition = {
+      name: 'researcher',
+      description: '研究代理',
+      prompt: '研究并总结。',
+      filePath: join(root, 'researcher.md'),
+      memory: 'user',
+    }
+    const model = scriptedModel([{ kind: 'final', text: '后台记忆完成' }])
+    const start = createBackgroundAgentTaskTool({
+      tasks,
+      agents: [agent],
+      model,
+      baseTools: [],
+      baseSystemPrompt: 'base prompt',
+    })
+    const ctx = { workspace: new Workspace(root), conversationId: 'c-agent-memory', permissionMode: 'full' as const }
+    await start.execute({ task: '检查后台记忆', title: '后台记忆' }, ctx)
+    const done = await waitFor(async () => {
+      const task = (await tasks.list({ conversationId: 'c-agent-memory' }))[0]
+      return task?.status === 'completed' ? task : null
+    })
+
+    const memoryPath = getAgentMemoryEntrypoint('researcher', 'user', root)
+    expect(readFileSync(memoryPath, 'utf8')).toContain('always inspect failing tests first')
+    expect(readFileSync(join(process.env.CLAUDE_CONFIG_DIR, 'agent-memory', 'researcher', '.snapshot-synced.json'), 'utf8')).toContain('2026-07-08T00:00:00.000Z')
+    expect(model.received[0]!.system).toContain('# Persistent Agent Memory')
+    expect(model.received[0]!.system).toContain('snapshot says: always inspect failing tests first')
+    expect(done.result).toBe('后台记忆完成')
+  } finally {
+    if (oldClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = oldClaudeConfigDir
     rmSync(root, { recursive: true, force: true })
   }
 })

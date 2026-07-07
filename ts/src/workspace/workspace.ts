@@ -17,6 +17,7 @@ export interface WorkspaceOptions {
 export class Workspace {
   readonly root: string
   private readonly backupHook: BackupHook
+  private readonly allowedPathInputs: string[]
   private readonly allowedPaths: Array<{ path: string; isDirectory: boolean }>
   private readonly fullDiskAccess: boolean
 
@@ -24,7 +25,8 @@ export class Workspace {
     this.root = resolve(root)
     this.backupHook = opts.backupHook ?? defaultBackupHook(this.root)
     this.fullDiskAccess = opts.fullDiskAccess === true
-    this.allowedPaths = (opts.allowedPaths ?? []).map(normalizeAllowedPath).filter((item): item is { path: string; isDirectory: boolean } => !!item)
+    this.allowedPathInputs = opts.allowedPaths ?? []
+    this.allowedPaths = this.allowedPathInputs.map(normalizeAllowedPath).filter((item): item is { path: string; isDirectory: boolean } => !!item)
   }
 
   resolve(requested: string, operation: FileOperation = 'read'): string {
@@ -40,6 +42,14 @@ export class Workspace {
 
   async backup(absPath: string): Promise<void> {
     await this.backupHook(absPath)
+  }
+
+  withAllowedPaths(paths: string[]): Workspace {
+    return new Workspace(this.root, {
+      backupHook: this.backupHook,
+      allowedPaths: [...this.allowedPathInputs, ...paths],
+      fullDiskAccess: this.fullDiskAccess,
+    })
   }
 
   private resolveOutsideRoot(requested: string, operation: FileOperation): string {

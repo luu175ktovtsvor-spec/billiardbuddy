@@ -63,6 +63,20 @@ test('resolve allows explicitly selected external files and directories', () => 
   rmSync(externalRoot, { recursive: true, force: true })
 })
 
+test('withAllowedPaths preserves existing external grants and adds new ones', () => {
+  const externalRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ws-allowed-')))
+  const first = join(externalRoot, 'first')
+  const second = join(externalRoot, 'second')
+  mkdirSync(first, { recursive: true })
+  mkdirSync(second, { recursive: true })
+  const ws = new Workspace(root, { allowedPaths: [first] })
+  const widened = ws.withAllowedPaths([second])
+
+  expect(widened.resolve(join(first, 'a.txt'), 'write')).toBe(join(first, 'a.txt'))
+  expect(widened.resolve(join(second, 'b.txt'), 'write')).toBe(join(second, 'b.txt'))
+  rmSync(externalRoot, { recursive: true, force: true })
+})
+
 test('resolve fullDiskAccess allows external paths but keeps TOCTOU write guards', () => {
   const externalRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ws-full-')))
   const ws = new Workspace(root, { fullDiskAccess: true })
