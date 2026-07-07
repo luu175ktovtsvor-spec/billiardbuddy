@@ -3,6 +3,8 @@ import { basename, join } from 'node:path'
 import { extractDescription, parseMarkdownDocument, stringArrayField, stringField } from '../commands/frontmatter'
 import type { Tool } from '../tools/Tool'
 import type { PermissionMode } from '../permissions/types'
+import type { HookRegistry } from '../hooks/hooks'
+import { normalizeHookRegistry } from '../hooks/hookConfig'
 
 export type AgentMcpServerSpec = string | Record<string, unknown>
 
@@ -22,6 +24,7 @@ export interface AgentDefinition {
   isolation?: 'worktree'
   mcpServers?: AgentMcpServerSpec[]
   requiredMcpServers?: string[]
+  hooks?: HookRegistry
   filePath: string
 }
 
@@ -83,6 +86,7 @@ export async function loadAgentFile(filePath: string): Promise<AgentDefinition> 
   const description = stringField(doc.frontmatter, 'description') ?? extractDescription(doc.body) ?? name
   const memory = doc.frontmatter.memory === true || doc.frontmatter.memory === 'true'
   const isolation = stringField(doc.frontmatter, 'isolation') === 'worktree' ? 'worktree' : undefined
+  const hooks = normalizeHookRegistry(doc.frontmatter.hooks, { agentFrontmatter: true })
   return {
     name,
     description,
@@ -99,6 +103,7 @@ export async function loadAgentFile(filePath: string): Promise<AgentDefinition> 
     ...(isolation ? { isolation } : {}),
     mcpServers: mcpServersField(doc.frontmatter),
     requiredMcpServers: stringArrayField(doc.frontmatter, 'requiredMcpServers') ?? stringArrayField(doc.frontmatter, 'required_mcp_servers'),
+    ...(hooks.rules.length > 0 ? { hooks } : {}),
     filePath,
   }
 }

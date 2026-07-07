@@ -4,13 +4,14 @@ import type { AgentDefinition } from '../agents/agentLoader'
 import { resolveAgentTools } from '../agents/agentLoader'
 import { loadAgentMcpRuntime, type AgentMcpRuntimeOptions } from '../agents/agentMcp'
 import type { Model } from '../types/model'
-import type { Message } from '../types/message'
+import { textBlock, type Message } from '../types/message'
 import type { Tool, ToolContext } from '../tools/Tool'
 import { ToolRegistry } from '../tools/registry'
 import { Sandbox } from '../sandbox/sandbox'
 import { Workspace } from '../workspace/workspace'
 import type { BackgroundAgentMetadata, TaskEventRecord, TaskMeta, TaskService, TaskStatus } from './taskService'
 import { createIsolatedAgentWorktree, type AgentWorktreeCleanupResult } from '../tools/worktreeTools'
+import { applySubagentStartHooks, mergeHookRegistries, type HookRegistry } from '../hooks/hooks'
 
 export interface BackgroundAgentTaskInput {
   agent?: string
@@ -28,6 +29,7 @@ export interface BackgroundAgentTaskOptions {
   baseTools: Tool[]
   baseSystemPrompt?: string
   maxTurns?: number
+  hooks?: HookRegistry
   mcp?: AgentMcpRuntimeOptions
 }
 
@@ -56,6 +58,11 @@ function agentTaskMessage(agent: AgentDefinition, input: BackgroundAgentTaskInpu
   return agent.initialPrompt?.trim()
     ? `${agent.initialPrompt.trim()}\n\n${base}`
     : base
+}
+
+function hookContextMessage(event: string, contexts: string[]): Message | undefined {
+  if (contexts.length === 0) return undefined
+  return { role: 'user', content: [textBlock(`<hook_context event="${event}">\n${contexts.join('\n\n')}\n</hook_context>`)] }
 }
 
 function taskTitle(input: BackgroundAgentTaskInput, agent: AgentDefinition): string {
@@ -323,6 +330,7 @@ export async function startBackgroundAgentRun(
     .filter(tool => tool.name !== 'start_background_agent_task' && tool.name !== 'cancel_background_task')
   const steerInbox: string[] = []
   const detachSteerInbox = opts.tasks.attachSteerInbox(task.id, steerInbox)
+  const hooks = mergeHookRegistries(opts.hooks, agent.hooks)
   opts.tasks.start(task.id, async taskCtx => {
     let finalText = ''
     let cleanup: AgentWorktreeCleanupResult | null = null
@@ -341,21 +349,37 @@ export async function startBackgroundAgentRun(
         await taskCtx.emit({ type: 'context_note', text: warning })
       }
       if (agentWorktree) await taskCtx.emit({ type: 'context_note', text: `Background agent using isolated worktree: ${agentWorktree.session.worktreePath}` })
+      const subagentStart = await applySubagentStartHooks(hooks, stableAgentId, agent.name, {
+        ...ctx,
+        workspace: runWorkspace,
+        sandbox: runSandbox,
+        signal: taskCtx.signal,
+        conversationId: stableAgentId,
+        toolResultStoreDir,
+      })
+      for (const extra of subagentStart.additionalContext) {
+        await taskCtx.emit({ type: 'context_note', text: extra })
+      }
       for await (const event of runAgentLoop({
         model: opts.model,
         registry: new ToolRegistry(agentMcp.tools),
         workspace: runWorkspace,
         systemPrompt: agentSystemPrompt(agent, opts.baseSystemPrompt),
         userMessage: agentTaskMessage(agent, input),
+        initialMessages: [
+          ...initialMessages,
+          ...[hookContextMessage('SubagentStart', subagentStart.additionalContext)].filter((message): message is Message => !!message),
+        ],
         maxTurns: agent.maxTurns ?? opts.maxTurns ?? 8,
         signal: taskCtx.signal,
         sandbox: runSandbox,
         permissionMode: agent.permissionMode ?? ctx.permissionMode,
-        conversationId: `${ctx.conversationId ?? task.id}_${agent.name}_bg`,
+        conversationId: stableAgentId,
         steerInbox,
         transcript: opts.tasks.transcript(task.id),
         toolResultStoreDir,
-        initialMessages,
+        hooks,
+        subagent: { agentId: stableAgentId, agentType: agent.name },
       })) {
         await taskCtx.emit(event)
         if (event.type === 'final') finalText = event.text

@@ -1070,6 +1070,7 @@ export function startServer(opts: StartServerOptions = {}) {
       model,
       baseTools: backgroundBaseRegistry.list(),
       baseSystemPrompt: systemPrompt,
+      hooks,
       mcp: {
         mcpConfigPath,
         loadOptions: ({ workspaceRoot, signal, taskId }) => ({
@@ -1095,6 +1096,7 @@ export function startServer(opts: StartServerOptions = {}) {
         baseTools: backgroundAgentOptions.baseTools,
         baseSystemPrompt: systemPrompt,
         sidechainRoot: agentSidechainRoot,
+        hooks,
         mcp: backgroundAgentOptions.mcp,
         startBackgroundAgent: (input, toolCtx) => startBackgroundAgentRun(backgroundAgentOptions!, input, toolCtx),
       })]

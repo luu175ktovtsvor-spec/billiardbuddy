@@ -231,6 +231,44 @@ test('agent_task honors agent frontmatter defaults for prompt, permissions, maxT
   }
 })
 
+test('agent_task runs agent frontmatter SubagentStart and Stop as SubagentStop hooks', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-hooks-'))
+  try {
+    const model = scriptedModel([{ kind: 'final', text: 'hooked final' }])
+    const tool = createAgentTaskTool({
+      agents: [agent({
+        hooks: {
+          rules: [
+            { event: 'SubagentStart', matcher: 'researcher', handler: payload => ({ action: 'context', additionalContext: `start:${payload.agentId}:${payload.agentType}` }) },
+            { event: 'SubagentStop', matcher: 'researcher', handler: payload => ({ action: 'context', additionalContext: `stop:${payload.agentId}:${payload.output}` }) },
+          ],
+        },
+      })],
+      model,
+      baseTools: [],
+      sidechainRoot: join(root, 'sidechains'),
+    })
+    const progress: string[] = []
+    const out = await tool.execute({ task: '跑 hook' }, {
+      workspace: new Workspace(root),
+      permissionMode: 'full',
+      conversationId: 'parent-hooks',
+      progressEmit: event => progress.push(event.chunk),
+    })
+    const agentId = out.match(/agent_id="([^"]+)"/)?.[1]
+    expect(agentId).toBeTruthy()
+    expect(model.received[0]!.messages[0]!.content[0]).toMatchObject({
+      type: 'text',
+      text: `<hook_context event="SubagentStart">\nstart:${agentId}:researcher\n</hook_context>`,
+    })
+    expect(progress.join('')).toContain(`子代理 researcher hook:start:${agentId}:researcher`)
+    expect(progress.join('')).toContain(`子代理 researcher 提醒:stop:${agentId}:hooked final`)
+    expect(out).toContain('hooked final')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 function writeFixtureMcpServer(root: string): string {
   const file = join(root, 'agent-fixture-mcp-server.ts')
   writeFileSync(file, `

@@ -1,6 +1,6 @@
 import type { ToolContext } from '../tools/Tool'
 
-export type HookEvent = 'PreToolUse' | 'PostToolUse' | 'Stop' | 'UserPromptSubmit' | 'SessionStart'
+export type HookEvent = 'PreToolUse' | 'PostToolUse' | 'Stop' | 'UserPromptSubmit' | 'SessionStart' | 'SubagentStart' | 'SubagentStop'
 
 export type HookDecision =
   | { action: 'allow'; message?: string }
@@ -15,6 +15,8 @@ export interface HookPayload {
   output?: string
   userPrompt?: string
   sessionId?: string
+  agentId?: string
+  agentType?: string
 }
 
 export type HookHandler = (payload: HookPayload, ctx: ToolContext) => HookDecision | HookDecision[] | null | undefined | Promise<HookDecision | HookDecision[] | null | undefined>
@@ -54,8 +56,14 @@ export function parseHookDecisionJSON(text: string): HookDecision | null {
 function matches(rule: HookRule, payload: HookPayload): boolean {
   if (rule.event !== payload.event) return false
   if (!rule.matcher || rule.matcher === '*') return true
-  if (!payload.toolName) return false
-  return rule.matcher === payload.toolName
+  const target = payload.toolName ?? payload.agentType
+  if (!target) return false
+  return rule.matcher === target
+}
+
+export function mergeHookRegistries(...registries: Array<HookRegistry | undefined>): HookRegistry | undefined {
+  const rules = registries.flatMap(registry => registry?.rules ?? [])
+  return rules.length > 0 ? { rules } : undefined
 }
 
 export async function runHookEvent(registry: HookRegistry | undefined, payload: HookPayload, ctx: ToolContext): Promise<HookDecision[]> {
@@ -122,6 +130,26 @@ export async function applySessionStartHooks(
   return { additionalContext }
 }
 
+export async function applySubagentStartHooks(
+  registry: HookRegistry | undefined,
+  agentId: string,
+  agentType: string,
+  ctx: ToolContext,
+): Promise<HookContextResult> {
+  const additionalContext: string[] = []
+  const decisions = await runHookEvent(registry, {
+    event: 'SubagentStart',
+    sessionId: ctx.conversationId,
+    agentId,
+    agentType,
+  }, ctx)
+  for (const decision of decisions) {
+    if (decision.action === 'context') additionalContext.push(decision.additionalContext)
+    if (decision.action === 'deny') additionalContext.push(`[SubagentStart hook 警告] ${decision.message}`)
+  }
+  return { additionalContext }
+}
+
 export async function applyUserPromptSubmitHooks(
   registry: HookRegistry | undefined,
   userPrompt: string,
@@ -177,16 +205,19 @@ export async function applyStopHooks(
   registry: HookRegistry | undefined,
   finalText: string,
   ctx: ToolContext,
+  subagent?: { agentId: string; agentType: string },
 ): Promise<HookContextResult> {
   const additionalContext: string[] = []
   const decisions = await runHookEvent(registry, {
-    event: 'Stop',
+    event: subagent ? 'SubagentStop' : 'Stop',
     output: finalText,
     sessionId: ctx.conversationId,
+    agentId: subagent?.agentId,
+    agentType: subagent?.agentType,
   }, ctx)
   for (const decision of decisions) {
     if (decision.action === 'context') additionalContext.push(decision.additionalContext)
-    if (decision.action === 'deny') additionalContext.push(`[Stop hook 警告] ${decision.message}`)
+    if (decision.action === 'deny') additionalContext.push(`[${subagent ? 'SubagentStop' : 'Stop'} hook 警告] ${decision.message}`)
   }
   return { additionalContext }
 }

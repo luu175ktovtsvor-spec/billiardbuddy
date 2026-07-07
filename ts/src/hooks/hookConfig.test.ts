@@ -63,3 +63,66 @@ test('loadHookRegistryFile loads static JSON decisions', async () => {
   }
 })
 
+test('normalizeHookRegistry supports CC-Haha frontmatter event map and agent Stop conversion', async () => {
+  const registry = normalizeHookRegistry({
+    SubagentStart: [
+      {
+        matcher: 'researcher',
+        hooks: [
+          { decision: { action: 'context', additionalContext: '启动上下文' } },
+        ],
+      },
+    ],
+    Stop: [
+      {
+        matcher: 'researcher',
+        hooks: [
+          { decision: { action: 'context', additionalContext: '收尾上下文' } },
+        ],
+      },
+    ],
+  }, { agentFrontmatter: true })
+  expect(registry.rules.map(rule => [rule.event, rule.matcher])).toEqual([
+    ['SubagentStart', 'researcher'],
+    ['SubagentStop', 'researcher'],
+  ])
+
+  const ctx = { workspace: new Workspace(mkdtempSync(join(tmpdir(), 'hook-config-frontmatter-'))) }
+  try {
+    expect(await runHookEvent(registry, { event: 'SubagentStart', agentType: 'researcher', agentId: 'a1' }, ctx)).toEqual([
+      { action: 'context', additionalContext: '启动上下文' },
+    ])
+    expect(await runHookEvent(registry, { event: 'SubagentStop', agentType: 'researcher', agentId: 'a1', output: 'done' }, ctx)).toEqual([
+      { action: 'context', additionalContext: '收尾上下文' },
+    ])
+  } finally {
+    rmSync(ctx.workspace.root, { recursive: true, force: true })
+  }
+})
+
+test('normalizeHookRegistry command hook sends CC-Haha-style payload on stdin and parses stdout context', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-config-command-'))
+  try {
+    const registry = normalizeHookRegistry({
+      hooks: {
+        SubagentStart: [
+          {
+            matcher: 'researcher',
+            hooks: [
+              {
+                type: 'command',
+                command: `${process.execPath} -e "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const p=JSON.parse(s);console.log(JSON.stringify({action:'context',additionalContext:p.hook_event_name+':'+p.agent_type+':'+p.session_id}))})"`,
+              },
+            ],
+          },
+        ],
+      },
+    })
+    const ctx = { workspace: new Workspace(root), conversationId: 'session-1' }
+    expect(await runHookEvent(registry, { event: 'SubagentStart', agentType: 'researcher', agentId: 'agent-1', sessionId: 'agent-1' }, ctx)).toEqual([
+      { action: 'context', additionalContext: 'SubagentStart:researcher:agent-1' },
+    ])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
