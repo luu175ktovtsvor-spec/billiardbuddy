@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { parseHookDecisionJSON, type HookDecision, type HookEvent, type HookPayload, type HookRegistry, type HookRule } from './hooks'
 import type { ToolContext } from '../tools/Tool'
+import { textBlock, type Message } from '../types/message'
 
 const HOOK_EVENTS = new Set<HookEvent>(['PreToolUse', 'PostToolUse', 'Stop', 'UserPromptSubmit', 'SessionStart', 'SubagentStart', 'SubagentStop'])
 
@@ -28,6 +29,13 @@ interface RawHttpHook {
   allowedEnvVars?: unknown
   decision?: unknown
   decisions?: unknown
+}
+
+interface RawPromptHook {
+  type?: unknown
+  prompt?: unknown
+  timeout?: unknown
+  model?: unknown
 }
 
 export interface NormalizeHookRegistryOptions {
@@ -136,6 +144,138 @@ function parseCommandHookStdout(stdout: string): HookDecision | HookDecision[] |
     return decisions.length > 0 ? decisions : { action: 'context', additionalContext: text }
   } catch {
     return { action: 'context', additionalContext: text }
+  }
+}
+
+function parseHookArguments(args: string): string[] {
+  const out: string[] = []
+  let current = ''
+  let quote: '"' | "'" | '' = ''
+  let escaped = false
+  for (const ch of args) {
+    if (escaped) {
+      current += ch
+      escaped = false
+      continue
+    }
+    if (ch === '\\' && quote !== "'") {
+      escaped = true
+      continue
+    }
+    if ((ch === '"' || ch === "'") && (!quote || quote === ch)) {
+      quote = quote ? '' : ch
+      continue
+    }
+    if (!quote && /\s/.test(ch)) {
+      if (current) {
+        out.push(current)
+        current = ''
+      }
+      continue
+    }
+    current += ch
+  }
+  if (escaped) current += '\\'
+  if (current) out.push(current)
+  return out
+}
+
+function addArgumentsToPrompt(prompt: string, jsonInput: string): string {
+  let content = prompt
+  const original = content
+  const args = parseHookArguments(jsonInput)
+  content = content.replace(/\$ARGUMENTS\[(\d+)\]/g, (_, indexStr: string) => args[Number.parseInt(indexStr, 10)] ?? '')
+  content = content.replace(/\$(\d+)(?!\w)/g, (_, indexStr: string) => args[Number.parseInt(indexStr, 10)] ?? '')
+  content = content.replaceAll('$ARGUMENTS', jsonInput)
+  return content === original && jsonInput ? `${content}\n\nARGUMENTS: ${jsonInput}` : content
+}
+
+function isGoalPromptHookCommand(command: unknown): command is string {
+  return typeof command === 'string' && command.includes('<cc-haha-goal-hook>')
+}
+
+function goalPromptHookFailure(raw: RawPromptHook, reason: string): HookDecision | null {
+  if (!isGoalPromptHookCommand(raw.prompt)) return null
+  return {
+    action: 'deny',
+    message: `Goal evaluator failed: ${reason}. Treat the goal as incomplete and continue working toward it.`,
+  }
+}
+
+function parsePromptHookJSON(text: string): { value?: { ok: boolean; reason?: string }; error?: 'invalid_json' | 'schema' } {
+  try {
+    const raw = JSON.parse(text) as unknown
+    if (!isRecord(raw) || typeof raw.ok !== 'boolean') return { error: 'schema' }
+    if ('reason' in raw && raw.reason !== undefined && typeof raw.reason !== 'string') return { error: 'schema' }
+    return { value: { ok: raw.ok, reason: typeof raw.reason === 'string' ? raw.reason : undefined } }
+  } catch {
+    return { error: 'invalid_json' }
+  }
+}
+
+function promptHookSystemPrompt(): string {
+  return `You are evaluating a hook in Claude Code.
+
+Your response must be a JSON object matching one of the following schemas:
+1. If the condition is met, return: {"ok": true}
+2. If the condition is not met, return: {"ok": false, "reason": "Reason for why it is not met"}`
+}
+
+async function runPromptHook(raw: RawPromptHook, payload: HookPayload, ctx: ToolContext): Promise<HookDecision | HookDecision[] | null> {
+  if (typeof raw.prompt !== 'string' || !raw.prompt.trim()) return null
+  const model = ctx.model
+  if (!model) {
+    const goalFailure = goalPromptHookFailure(raw, 'model was unavailable')
+    if (goalFailure) return goalFailure
+    return { action: 'context', additionalContext: `[${payload.event} prompt hook 非阻塞错误] model was unavailable` }
+  }
+  const jsonInput = JSON.stringify(commandHookPayload(payload, ctx))
+  const processedPrompt = addArgumentsToPrompt(raw.prompt, jsonInput)
+  const timeoutMs = hookTimeoutMs(raw.timeout, 30_000)
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  const timer = setTimeout(abort, timeoutMs)
+  ctx.signal?.addEventListener('abort', abort, { once: true })
+  try {
+    const messages: Message[] = [{ role: 'user', content: [textBlock(processedPrompt)] }]
+    const step = await model.step({
+      system: promptHookSystemPrompt(),
+      messages,
+      tools: [],
+      signal: controller.signal,
+    })
+    const fullResponse = (step.kind === 'final' ? step.text : step.text ?? '').trim()
+    const parsed = parsePromptHookJSON(fullResponse)
+    if (!parsed.value) {
+      const reason = parsed.error === 'schema'
+        ? 'response did not match the expected schema'
+        : 'response was not valid JSON'
+      const goalFailure = goalPromptHookFailure(raw, reason)
+      if (goalFailure) return goalFailure
+      return {
+        action: 'context',
+        additionalContext: `[${payload.event} prompt hook 非阻塞错误] JSON validation failed${fullResponse ? `: ${fullResponse}` : ''}`,
+      }
+    }
+    if (!parsed.value.ok) {
+      return {
+        action: 'deny',
+        message: `Prompt hook condition was not met: ${parsed.value.reason ?? 'condition was not met'}`,
+      }
+    }
+    return { action: 'allow' }
+  } catch (error) {
+    const aborted = controller.signal.aborted || ctx.signal?.aborted
+    const reason = aborted && !ctx.signal?.aborted
+      ? 'evaluation timed out'
+      : error instanceof Error ? error.message : String(error)
+    const goalFailure = goalPromptHookFailure(raw, reason || 'evaluation failed')
+    if (goalFailure) return goalFailure
+    if (aborted && ctx.signal?.aborted) return null
+    return { action: 'context', additionalContext: `[${payload.event} prompt hook 非阻塞错误] ${reason || 'evaluation failed'}` }
+  } finally {
+    clearTimeout(timer)
+    ctx.signal?.removeEventListener('abort', abort)
   }
 }
 
@@ -271,12 +411,16 @@ function normalizeHookCommand(event: HookEvent, matcher: string | undefined, raw
     return { event, matcher, handler: (payload, ctx) => runHttpHook(httpHook, payload, ctx) }
   }
 
-  if (raw.type === 'prompt' || raw.type === 'agent') {
-    const hookType = raw.type
+  if (raw.type === 'prompt' && typeof raw.prompt === 'string' && raw.prompt.trim()) {
+    const promptHook = raw as RawPromptHook
+    return { event, matcher, handler: (payload, ctx) => runPromptHook(promptHook, payload, ctx) }
+  }
+
+  if (raw.type === 'agent') {
     return {
       event,
       matcher,
-      handler: () => ({ action: 'context', additionalContext: `[${event} hook] ${hookType} executor 待按 CC-Haha 继续移植,当前已保留 frontmatter 注册与匹配。` }),
+      handler: () => ({ action: 'context', additionalContext: `[${event} hook] agent executor 待按 CC-Haha 继续移植,当前已保留 frontmatter 注册与匹配。` }),
     }
   }
 

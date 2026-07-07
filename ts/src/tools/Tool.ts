@@ -2,6 +2,7 @@ import type { Workspace } from '../workspace/workspace'
 import type { Sandbox } from '../sandbox/sandbox'
 import type { ApprovalClass, ApprovalReason, PermissionMode } from '../permissions/types'
 import type { TodoItem } from '../types/todo'
+import type { Model } from '../types/model'
 
 export interface FileReadSnapshot {
   path: string
@@ -26,6 +27,8 @@ export type JSONSchema = {
 
 export interface ToolContext {
   workspace: Workspace
+  /** 当前会话模型出口,供 prompt/agent hooks、子代理等内核扩展执行非流式校验。 */
+  model?: Model
   signal?: AbortSignal
   sandbox?: Sandbox
   /** 权限档,默认 'ask'。W4a 权限瀑布读它。 */

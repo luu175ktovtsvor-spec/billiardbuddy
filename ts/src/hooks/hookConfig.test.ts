@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { loadHookRegistryFile, normalizeHookRegistry } from './hookConfig'
 import { runHookEvent } from './hooks'
 import { Workspace } from '../workspace/workspace'
+import type { AssistantStep, Model, ModelStepInput } from '../types/model'
 
 async function withHttpServer(handler: (req: IncomingMessage, res: ServerResponse) => void, run: (url: string) => Promise<void>): Promise<void> {
   const server: Server = createServer(handler)
@@ -17,6 +18,23 @@ async function withHttpServer(handler: (req: IncomingMessage, res: ServerRespons
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
   }
+}
+
+function hookModel(step: AssistantStep): Model & { received: ModelStepInput[] } {
+  const received: ModelStepInput[] = []
+  return {
+    received,
+    async step(input) {
+      received.push(input)
+      return step
+    },
+  }
+}
+
+function firstPromptText(input: ModelStepInput): string {
+  const block = input.messages[0]?.content[0]
+  if (!block || block.type !== 'text') throw new Error('expected first model message to be text')
+  return block.text
 }
 
 test('normalizeHookRegistry supports hooks/rules arrays and drops invalid entries', async () => {
@@ -225,6 +243,147 @@ test('normalizeHookRegistry http hook supports CC-Haha hookSpecificOutput and no
         { action: 'context', additionalContext: '[SubagentStart http hook 非阻塞错误] HTTP 500: backend down' },
       ])
     })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('normalizeHookRegistry prompt hook queries model with substituted CC-Haha payload and allows ok true', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-config-prompt-ok-'))
+  try {
+    const registry = normalizeHookRegistry({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'write_file',
+            hooks: [
+              {
+                type: 'prompt',
+                prompt: 'check payload $ARGUMENTS',
+              },
+            ],
+          },
+        ],
+      },
+    })
+    const model = hookModel({ kind: 'final', text: '{"ok":true}' })
+    const ctx = { workspace: new Workspace(root), conversationId: 'session-prompt', model }
+    const decisions = await runHookEvent(registry, { event: 'PreToolUse', toolName: 'write_file', input: { path: 'a.ts' } }, ctx)
+    expect(decisions).toEqual([{ action: 'allow' }])
+    expect(model.received).toHaveLength(1)
+    expect(model.received[0]!.system).toContain('{"ok": true}')
+    expect(model.received[0]!.tools).toEqual([])
+    const prompt = firstPromptText(model.received[0]!)
+    expect(prompt).toContain('"hook_event_name":"PreToolUse"')
+    expect(prompt).toContain('"tool_name":"write_file"')
+    expect(prompt).not.toContain('$ARGUMENTS')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('normalizeHookRegistry prompt hook supports indexed argument placeholders and appends arguments when missing', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-config-prompt-args-'))
+  try {
+    const first = normalizeHookRegistry({
+      hooks: {
+        SessionStart: [
+          { hooks: [{ type: 'prompt', prompt: 'first=$ARGUMENTS[0] short=$0 all=$ARGUMENTS' }] },
+        ],
+      },
+    })
+    const firstModel = hookModel({ kind: 'final', text: '{"ok":true}' })
+    await runHookEvent(first, { event: 'SessionStart', sessionId: 's1' }, { workspace: new Workspace(root), model: firstModel })
+    const firstPrompt = firstPromptText(firstModel.received[0]!)
+    expect(firstPrompt).toContain('first={hook_event_name:SessionStart')
+    expect(firstPrompt).toContain('short={hook_event_name:SessionStart')
+    expect(firstPrompt).toContain('all={"hook_event_name":"SessionStart"')
+
+    const second = normalizeHookRegistry({
+      hooks: {
+        SessionStart: [
+          { hooks: [{ type: 'prompt', prompt: 'plain prompt' }] },
+        ],
+      },
+    })
+    const secondModel = hookModel({ kind: 'final', text: '{"ok":true}' })
+    await runHookEvent(second, { event: 'SessionStart', sessionId: 's2' }, { workspace: new Workspace(root), model: secondModel })
+    const secondPrompt = firstPromptText(secondModel.received[0]!)
+    expect(secondPrompt).toContain('plain prompt\n\nARGUMENTS: {"hook_event_name":"SessionStart"')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('normalizeHookRegistry prompt hook maps ok false to deny', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-config-prompt-deny-'))
+  try {
+    const registry = normalizeHookRegistry({
+      hooks: {
+        Stop: [
+          { hooks: [{ type: 'prompt', prompt: 'verify final answer' }] },
+        ],
+      },
+    })
+    const model = hookModel({ kind: 'final', text: '{"ok":false,"reason":"missing tests"}' })
+    const ctx = { workspace: new Workspace(root), conversationId: 'session-deny', model }
+    expect(await runHookEvent(registry, { event: 'Stop', output: 'done' }, ctx)).toEqual([
+      { action: 'deny', message: 'Prompt hook condition was not met: missing tests' },
+    ])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('normalizeHookRegistry prompt hook keeps ordinary invalid JSON non-blocking', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-config-prompt-invalid-'))
+  try {
+    const registry = normalizeHookRegistry({
+      hooks: {
+        Stop: [
+          { hooks: [{ type: 'prompt', prompt: 'ordinary prompt hook' }] },
+        ],
+      },
+    })
+    const model = hookModel({ kind: 'final', text: 'not json' })
+    const ctx = { workspace: new Workspace(root), model }
+    expect(await runHookEvent(registry, { event: 'Stop', output: 'done' }, ctx)).toEqual([
+      { action: 'context', additionalContext: '[Stop prompt hook 非阻塞错误] JSON validation failed: not json' },
+    ])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('normalizeHookRegistry prompt hook turns goal evaluator invalid JSON into blocking continuation feedback', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-config-prompt-goal-'))
+  try {
+    const registry = normalizeHookRegistry({
+      hooks: {
+        Stop: [
+          {
+            hooks: [
+              {
+                type: 'prompt',
+                prompt: [
+                  '<cc-haha-goal-hook>',
+                  '<goal-objective>',
+                  'ship the goal',
+                  '</goal-objective>',
+                ].join('\n'),
+              },
+            ],
+          },
+        ],
+      },
+    })
+    const model = hookModel({ kind: 'final', text: '{"ok":"bad"}' })
+    const ctx = { workspace: new Workspace(root), model }
+    const decisions = await runHookEvent(registry, { event: 'Stop', output: 'done' }, ctx)
+    expect(decisions).toHaveLength(1)
+    expect(decisions[0]?.action).toBe('deny')
+    expect(decisions[0]?.action === 'deny' ? decisions[0].message : '').toContain('Goal evaluator failed')
+    expect(decisions[0]?.action === 'deny' ? decisions[0].message : '').toContain('continue working toward it')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
