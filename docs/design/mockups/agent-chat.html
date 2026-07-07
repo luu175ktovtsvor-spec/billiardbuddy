@@ -6,7 +6,7 @@
 <title>桌面 Agent · macOS 设计图</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
-  :root { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, "PingFang SC", sans-serif; }
+  :root { --app-accent:#10a37f; --app-primary-bg:#1c1c1e; --app-user-bubble:#eeeef0; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, "PingFang SC", sans-serif; }
   body { font-family: var(--app-font, -apple-system, BlinkMacSystemFont, system-ui, "PingFang SC", sans-serif); }
   .vibrancy { background: rgba(245,245,247,0.88); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
   .card-shadow { box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04); }
@@ -38,7 +38,7 @@
     <!-- 新对话 -->
     <div class="px-3 mt-1">
       <button class="w-full h-9 rounded-lg bg-white/70 hover:bg-white card-shadow text-[13px] text-[#1d1d1f] flex items-center justify-center gap-1.5 active:scale-[0.98] transition">
-        <span class="text-[#007AFF] text-[15px] leading-none">＋</span> 新对话
+        <span class="text-[#10a37f] text-[15px] leading-none">＋</span> 新对话
       </button>
     </div>
 
@@ -64,7 +64,7 @@
 
     <!-- 底部：门店 + 设置 -->
     <div class="border-t hairline p-3 flex items-center gap-2">
-      <div class="w-7 h-7 rounded-full bg-[#007AFF]/15 flex items-center justify-center text-[12px] text-[#007AFF] font-semibold">楠</div>
+      <div class="w-7 h-7 rounded-full bg-[#10a37f]/15 flex items-center justify-center text-[12px] text-[#10a37f] font-semibold">楠</div>
       <div class="flex-1 min-w-0">
         <div class="text-[12px] text-[#1d1d1f] truncate">楠米台球·万象城店</div>
         <div class="text-[11px] text-[#86868b] truncate">本月 AI 花费 ≈ ¥3.2</div>
@@ -88,7 +88,7 @@
 
       <!-- 用户气泡 -->
       <div class="flex justify-end">
-        <div class="max-w-[78%] rounded-2xl rounded-tr-md px-4 py-2.5 text-[14px] text-[#1d1d1f]" style="background:#007AFF14">
+        <div class="max-w-[78%] rounded-2xl rounded-tr-md px-4 py-2.5 text-[14px] text-[#1d1d1f]" style="background:var(--app-user-bubble)">
           帮我写条周末双人优惠的朋友圈，再做张海报
         </div>
       </div>
@@ -108,7 +108,7 @@
         <div class="rounded-xl border hairline bg-white card-shadow overflow-hidden">
           <div class="flex items-center justify-between px-4 py-2.5 border-b hairline bg-black/[0.015]">
             <div class="flex items-center gap-1.5 text-[13px] font-medium text-[#1d1d1f]">📝 朋友圈文案</div>
-            <button class="text-[12px] text-[#007AFF] hover:underline">复制</button>
+            <button class="text-[12px] text-[#10a37f] hover:underline">复制</button>
           </div>
           <div class="px-4 py-3 text-[14px] text-[#1d1d1f] leading-relaxed whitespace-pre-line">🎱 周末来一局！双人同行更划算～
 本周六日，两人开台享 8 折，再送一小时畅打体验。
@@ -125,9 +125,9 @@
           </div>
           <div class="p-3 grid grid-cols-3 gap-2.5">
             <!-- 选项1（推荐） -->
-            <button class="text-left rounded-lg border-2 p-3 transition active:scale-[0.98]" style="border-color:#007AFF;background:#007AFF08">
+            <button class="text-left rounded-lg border-2 p-3 transition active:scale-[0.98]" style="border-color:#10a37f;background:#10a37f0a">
               <div class="h-12 rounded-md mb-2" style="background:linear-gradient(135deg,#ff9966,#ff5e62)"></div>
-              <div class="text-[13px] font-medium text-[#1d1d1f] flex items-center gap-1">暖色温馨 <span class="text-[10px] text-white px-1.5 py-0.5 rounded-full" style="background:#007AFF">推荐</span></div>
+              <div class="text-[13px] font-medium text-[#1d1d1f] flex items-center gap-1">暖色温馨 <span class="text-[10px] text-white px-1.5 py-0.5 rounded-full" style="background:#10a37f">推荐</span></div>
               <div class="text-[11px] text-[#86868b] mt-0.5 leading-snug">情侣/朋友局，温暖有约会感</div>
             </button>
             <!-- 选项2 -->
@@ -146,7 +146,7 @@
           <div class="px-3 pb-3 flex items-center gap-2">
             <button class="text-[12px] text-[#86868b] px-3 py-1.5 rounded-md hover:bg-black/[0.04]">其它（自己说）…</button>
             <div class="flex-1"></div>
-            <button class="text-[13px] text-white px-4 py-1.5 rounded-lg active:scale-[0.98]" style="background:#007AFF">确定这个风格</button>
+            <button class="text-[13px] text-white px-4 py-1.5 rounded-lg active:scale-[0.98]" style="background:var(--app-primary-bg)">确定这个风格</button>
           </div>
         </div>
       </div>
@@ -160,7 +160,7 @@
           </div>
           <div class="px-4 pb-3 flex items-center gap-2 justify-end">
             <button class="text-[13px] text-[#1d1d1f] px-4 py-1.5 rounded-lg border hairline hover:bg-black/[0.03] active:scale-[0.98]">取消</button>
-            <button class="text-[13px] text-white px-4 py-1.5 rounded-lg active:scale-[0.98]" style="background:#007AFF">确认生成</button>
+            <button class="text-[13px] text-white px-4 py-1.5 rounded-lg active:scale-[0.98]" style="background:var(--app-primary-bg)">确认生成</button>
           </div>
         </div>
       </div>
@@ -183,7 +183,7 @@
       <div class="flex items-end gap-2 rounded-xl border hairline bg-white px-3 py-2 card-shadow">
         <button class="w-8 h-8 rounded-md hover:bg-black/[0.05] text-[#86868b] flex items-center justify-center text-[18px]">📎</button>
         <textarea rows="1" placeholder="回复球房管家…" class="flex-1 resize-none outline-none text-[14px] text-[#1d1d1f] placeholder:text-[#b0b0b5] py-1.5 bg-transparent"></textarea>
-        <button class="w-8 h-8 rounded-lg flex items-center justify-center text-white active:scale-[0.95]" style="background:#007AFF">↑</button>
+        <button class="w-8 h-8 rounded-lg flex items-center justify-center text-white active:scale-[0.95]" style="background:var(--app-primary-bg)">↑</button>
       </div>
     </div>
   </main>

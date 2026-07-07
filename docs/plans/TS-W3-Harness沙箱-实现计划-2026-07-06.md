@@ -1,6 +1,6 @@
 # W3 · Harness 沙箱(双层)实现计划
 
-> 📌 状态:📦完工 · W3 8 任务全绿(commits 6839781..b6b929d · 76 pass / typecheck 0 / mac smoke 写围栏过 · Opus 终审 merge-ready)· 落在 ts-harness-rewrite 分支(未并 main、TS 重写进行中)· 2026-07-06
+> 📌 状态:📦历史计划 · W3 8 任务全绿(commits 6839781..b6b929d · 76 pass / typecheck 0 / mac smoke 写围栏过 · Opus 终审 merge-ready)· 旧 `ts-harness-rewrite` 阶段记录,当前以 `main` + v0.4.5 迁移矩阵为准 · 2026-07-06
 > **For agentic workers:** REQUIRED SUB-SKILL: 用 `superpowers:subagent-driven-development`(推荐)或 `superpowers:executing-plans` 逐任务执行。步骤用 `- [ ]` 勾选跟踪。
 > 上级 spec:`docs/plans/TS-harness-重构-主开发文档-2026-07-05.md`(§5 沙箱专章 = 本窗权威)。前序:W1 立项脚手架、W2 Harness 核心(`ts/docs/W2-harness-core-findings.md` 已留 W3 扩展位)。
 
@@ -14,7 +14,7 @@
 
 > 每个任务的要求都隐含包含本节。数值/口径逐字照 spec。
 
-- **照 cc-haha 重写、借码 OK、别发整份源文件(owner 2026-07-06 定死 · 别再为此停下问)**:UNC/TOCTOU 正则、`isDangerousRemovalPath`、OS 沙箱 wrap 用法**借 cc-haha 的正则/命名/写法/结构进我们自己的文件即可**(§9「写法/命名照 cc-haha」);唯一红线 = **别把它整份 `.ts` 源文件原样当产品发 / 当文件拷进本仓库**。`~/Desktop/cc-haha-ref` 是参照。**装包例外**:`@anthropic-ai/sandbox-runtime` 是公开 npm 包,直接装直接用。
+- **CC-Haha 可直接复制/抄/移植/改写(owner 2026-07-07 更新 · 别再为此停下问)**:UNC/TOCTOU、`isDangerousRemovalPath`、OS 沙箱 wrap 等以 `~/Desktop/cc-haha-ref` 为源码规格,可直接复制/抄/移植/改写;边界测试必须覆盖。**装包例外**:`@anthropic-ai/sandbox-runtime` 是公开 npm 包,直接装直接用。
 - **⚠️ 行为对齐(owner 唯一较真 · 全 harness 窗通用)**:照 cc-haha 写的**确定性逻辑**(路径校验/沙箱/危险命令)必须「**同输入→同决策**」——验收拿刁钻边界(`../escape` / `\\server\share` / `~root/.ssh` / `rm -rf *` 等)断言判得跟 cc-haha **一模一样**,别只测自己想到的用例。
 - **Bun ≥ 1.3.13**;后端一律 **`bun test`**(用 Bun 全局,vitest 跑不了);跑命令前 `export PATH="$HOME/.bun/bin:$PATH"`。
 - **`noUncheckedIndexedAccess: true`**:数组/`.at()` 取值是 `T | undefined`,测试里用 `!`/可选链。
@@ -1078,7 +1078,7 @@ git commit -m "docs(ts): W3 findings — 双层沙箱决策与坑 + W3b Windows�
 
 - [ ] **Step 5: 收尾**
 
-用 `superpowers:finishing-a-development-branch`:本窗在 `ts-harness-rewrite` 分支持续(与 W1/W2 同分支,不新开),把本计划文档 banner 标 `📦历史` 挪 `docs/归档/`(照主文档文档规约)、findings 已进 `ts/docs/`、更新记忆(见下)。**push/并 main 由 owner 决定**(默认只本地,照 W1/W2)。
+收尾口径(2026-07-07 校正):本文件只作历史计划和验收记录;当前不再执行旧分支收尾或旧分支合并动作。后续若继续相关能力,直接在 `main` 上按当前矩阵补规格、测试和实现。
 
 ---
 

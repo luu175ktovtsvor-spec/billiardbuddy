@@ -1,46 +1,46 @@
 # TS Harness 重构 · 主开发文档
 
-> 📌 状态:✅现行 · 2026-07-05/06 落定 · **下一窗口起按 §4.5 逐窗开工（一窗一模块 · 共 15 窗）**
-> 本文件是"**换 TS/Bun 重写整个软件、替代 Python**（后端引擎照 cc-haha、前端我们自己设计）"的**唯一权威主文档**。所有 Phase 的施工细节以此为准;每个 Phase 开工前用 Superpowers `writing-plans` 把该 Phase 拆成实现计划,再 `executing-plans`/子代理执行。
+> 📌 状态:✅现行参考 · 2026-07-07 口径校准
+> 本文件记录 TS/Bun 重构战略和分层依据。**当前最高口径**见 `../当前目标与文档口径-2026-07-07.md`;**当前施工矩阵**见 `TS-cc-haha-v0.4.5-内核迁移矩阵-2026-07-07.md`。若本文件里的旧分支/旧窗口节奏与这两份冲突,以后两份为准。
 
 ---
 
-## 0. 新窗口先读这段(怎么用这份文档)
+## 0. 当前维护者先读这段(怎么用这份文档)
 
-- **一句话目标**:把现有 Python/FastAPI 后端**换成 TS**,以一套**照着 Claude Code 重写的 agent harness 为地基**;地基全做完,再往上挂"生图 / 剪视频 / 记忆 / 台球知识库"等衍生模块。**先后端、后前端(都在本轮——前端用我们自己的小白设计,见 §1 铁律 3);终态要 Mac+Windows 装上直接可用。** 出 **Mac + Windows** 两个版本。
-- **这份文档从哪来**:2026-07-05 一整轮 brainstorm(owner 拍板)——逆向了 4 个竞品 + 读了 cc-haha(Claude Code 泄露源码本地版)一手源码 + 联网核了 Windows/Node 生态。结论已内嵌本文,过程看 `docs/references/竞品拆解/01-04`;进度看板见会话内"开发看板"Artifact（其余决策看板已删、只留这一个）。
-- **怎么开工**:brainstorm 阶段已完成(本轮)→ **本文档 = 设计 spec** → 下一窗口认领 §4.5 的一个模块、跑 `writing-plans` 出分步计划 → `executing-plans`/`subagent-driven-development` 执行 → 过该模块验收门。**一窗一模块（§4.5 · 15 窗）,别一窗吞多模块。**
+- **一句话目标**:把产品收成一个 **coding 能力很强的桌面 AI Agent 外壳**。TS/Bun harness 是地基;CC-Haha 已有允许复制/修改/发布的 LICENSE,可直接复制/抄/移植/改写其内核能力;生图 / 剪视频 / 记忆 / 台球知识库是挂在地基上的延伸能力。当前直接在 `main` 维护,不再以旧分支名作为施工指令。
+- **这份文档从哪来**:2026-07-05 一整轮 brainstorm(owner 拍板)——逆向了 4 个竞品 + 对照 cc-haha/Claude Code 行为资料 + 联网核了 Windows/Node 生态。结论已内嵌本文,过程看 `docs/references/竞品拆解/01-04`;进度看板见会话内"开发看板"Artifact（其余决策看板已删、只留这一个）。
+- **怎么推进**:brainstorm 阶段已完成;本文档保留为设计 spec。当前以 `docs/当前目标与文档口径-2026-07-07.md` 和 `TS-cc-haha-v0.4.5-内核迁移矩阵-2026-07-07.md` 为最高施工入口,直接在 `main` 上按模块推进:先写行为规格和验收,CC-Haha 相关实现可直接复制/抄/移植/改写,最后跑对应测试与类型检查。旧窗口拆法只代表当时拆分方法,不再限制当前节奏。
 - **改前必读**:§1 铁律、§5 沙箱专章、§9 Superpowers 执行说明。
 
 ---
 
-## 0.5 · ⭐ 战略升级（2026-07-06 · owner 拍板）：从"最小 harness"到"全抄 cc-haha 内核"
+## 0.5 · ⭐ 战略升级（2026-07-06 · owner 拍板）：从"最小 harness"到"行为对齐 cc-haha 内核"
 
-> **本段优先级最高，与下方任何章节冲突处以本段为准。** 起因：5 路子代理源码级盘点 cc-haha（逐窗施工清单见 `docs/references/竞品拆解/05-cc-haha能抄清单-全抄施工版.md`，照它抄）+ owner 明确"全方位对标 Claude Code、内核全要"。
+> **本段优先级最高，与下方任何章节冲突处以本段为准。** 起因：5 路源码级盘点 cc-haha（逐窗施工清单见 `docs/references/竞品拆解/05-cc-haha行为对齐清单-可直接复制抄移植改写施工版.md`，按源码、行为和边界对齐）+ owner 明确"全方位对标 Claude Code、内核全要"。
 
-### 一、范围升级：从"够用"到"全抄内核"
+### 一、范围升级：从"够用"到"内核能力全对齐"
 - 原计划 = 重写一个"最小 harness"（~1.35万行）够跑就行。
-- **新方向 = cc-haha 内核里所有值得抄的机制全要**：不崩底盘 / 扩展·创造架构 / 抗失忆栈 / 掌控层 / 改文件回滚 / 内容管道 / 新工具。见 05 清单，它是逐窗施工依据。
-- **"全抄"的准确含义**（别误解成 git fork 整个仓库）：**内容全要 + 逐窗把它真逻辑抄透移植成我们的 TS**（抄码口径 = 效果对齐唯一标准:能重写就重写、易漏边界的直接照搬进我们文件，都行，别把整个 .ts 当产品发，见 §1 铁律 2）+ **外壳是我们的**（前端/交互/给谁用面向小白，不抄它"用户是程序员"的假设）。= **全要它的内核，换我们的皮。**
+- **新方向 = cc-haha 内核里所有有价值的机制全要**：不崩底盘 / 扩展·创造架构 / 抗失忆栈 / 掌控层 / 改文件回滚 / 内容管道 / 新工具。见 05 清单，它是逐窗施工依据。
+- **"全要"的准确含义**：**内容全要 + 源码可直接复制/抄/移植/改写 + 逐窗把真逻辑和边界行为吃透后落成我们的 TS**（迁移口径 = 效果对齐唯一标准:复杂边界先写行为测试,实现可直接用 CC-Haha 代码降低漏项风险）+ **外壳是我们的**（前端/交互/给谁用面向小白，不照搬它"用户是程序员"的假设）。= **全要它的内核能力，换我们的皮。**
 
 ### 二、⭐ 内核格式换 Anthropic + proxy 层（推翻 W2 的 OpenAI 格式）
 - **铁证（2026-07-06 核过源码）**：cc-haha 内核全用 **Anthropic content-block**（`query.ts` 里 `tool_use/tool_result` 23 次、`role:'tool'` **0 次**），靠一个 **2767 行 proxy 层**（`src/server/proxy/`）把 OpenAI 兼容模型（含国产）双向翻译进来。
-- **拍板：内核换 Anthropic 格式 + 抄整个 proxy 层。** 理由：① 要全抄内核，格式必须一致，否则每处改写引 bug、丢照抄价值；② **proxy 层正是"国产模型不崩底盘"所在**（流式分片/reasoning多方言/args容错/tool_call id补齐全在里面），本来就要抄；③ 接任何模型都统一（内核不动、proxy 加适配器）——正是 owner 要的"接模型方便"。
+- **拍板：内核换 Anthropic 格式 + proxy 层行为全对齐。** 理由：① 要对齐内核,格式必须一致,否则每处改写引 bug、丢行为参照价值；② **proxy 层正是"国产模型不崩底盘"所在**（流式分片/reasoning多方言/args容错/tool_call id补齐全在里面），必须按行为补齐；③ 接任何模型都统一（内核不动、proxy 加适配器）——正是 owner 要的"接模型方便"。
 - **代价：W2 已写的消息类型（OpenAI `role:'tool'`）+ 循环要返工成 Anthropic content-block 版。** 现在改最便宜（越往上建越贵）；W3 沙箱/路径校验不碰消息格式、不受影响。
 
 ### 三、产品定位：通用强 agent + 台球是一个可挂载 pack + skillify
-- **默认 = 通用强 agent**（抄 harness 就有 Claude Code 级创造力架构，不挂台球就是个能干很多事的通用 agent）；**台球只是一个 @挂载的 pack**（`billiards_mode` 硬编码 → 收成 `enabled_packs`，见 05 决策点 2）。
+- **默认 = 通用强 agent**（对齐 harness 就有 Claude Code 级创造力架构，不挂台球就是个能干很多事的通用 agent）；**台球只是一个 @挂载的 pack**（`billiards_mode` 硬编码 → 收成 `enabled_packs`，见 05 决策点 2）。
 - **为什么这样对**：代码 agent 秒杀垂直 agent，因为工具是"通用可组合原语"（文件/命令/网络/子代理）而非"预设几个按钮"。台球老板不写代码，但同样的原语（读写本地文件、跑命令处理数据、生图、定时、真浏览器操作）对他就是创造力。**别退化成"台球预设功能集"。**
 - **🌟 skillify 必做**：老板做一次操作一键存成 skill，产品越用越强——竞品（功能写死的垂直 agent）追不上的护城河。
 - ⚠️ **红线**：`_SAFETY_REDLINE` 挂在 pack **之外**、永远注入（卸台球包不能卸掉红线）。
 
-### 四、窗口据此重排（15 → ~20，分层）
-> 已完成 W1✅/W2✅（⚠️返工：换 Anthropic 格式）/W3✅。下面是新分层清单（编号可细调，优先级以"层"为准：地基全做完才往上）。每窗施工细节 → 05 清单对应条目。
+### 四、模块据此重排（15 → ~20，分层）
+> 已完成 W1✅/W2✅（⚠️返工：换 Anthropic 格式）/W3✅。下面是历史分层清单（编号可细调，优先级以"层"为准：地基全做完才往上）。后续按 v0.4.5 迁移矩阵确认已落/待落项。
 
 **地基层（全做完才往上）**
 - W1 立项脚手架 ✅ · W2 Harness 核心 ✅ **⚠️返工：换 Anthropic 格式** · W3 沙箱 ✅
 - **W4 掌控层·定向**（plan/todo/reminder/steering）← *正在跑，见下方冲突*
-- **W5 掌控层·审批权限**（审批闸/权限三档/危险动作分类表/ExitPlanMode=审批）
+- **W5 掌控层·审批权限**（审批闸/权限四档/危险动作分类表/ExitPlanMode=审批）
 - **W6 ⭐proxy 层 + 不崩底盘**（Anthropic⇄OpenAI 双向翻译 + 消息配对清洗 + 流式对接国产模型 + 压缩熔断）← *地基最优先之一，紧接 W2 返工*
 - **W7 抗失忆栈**（分级压缩 + 9节摘要 prompt + 大结果落盘 + 打转/max_turns）
 - **W8 扩展/创造架构**（技能/Agent/Pack/hooks/MCP/skillify）← *大块，可拆半窗*
@@ -95,24 +95,24 @@
 7. **打包运维现在就排**：CI 双 runner 矩阵(mac+win，原生 `.node` 不能跨平台编) + Mac 签名证书($99/年，卡自动更新)。
 8. **另**：有更强中文嵌入 Qwen3-Embedding-0.6B，W7 拿真实台球 query 与 bge-m3 A/B 再定。
 
-## 0.7 · ⭐ 执行口径再确认（2026-07-06 · owner 拍板）：本分支就是 Claude Code imitation branch
+## 0.7 · ⭐ 执行口径再确认（2026-07-07 · owner 目标更新）：main 上做强 coding agent,CC-Haha 可直接复制/抄/移植/改写
 
 > **本节是当前施工口径，覆盖“到底抄多少 / 按文档还是按源码”的摇摆。**
 
-1. **`ts-harness-rewrite` 的唯一目标**：专门仿写/移植 Claude Code/cc-haha 内核，质量达标后合并回 `main`，替换旧 Python 产品线。这个分支不做“半套 Agent 壳”，要做能接大模型后具备 Claude Code 那种持续创造能力的地基。
-2. **内核行为以源码为规格**：本地参考源码路径为 `~/Desktop/cc-haha-ref`。凡属于 harness 地基的机制（消息格式、工具配对、proxy 容错、权限、plan/todo/reminder/steering、压缩/轨迹/打转、skills/subagents/hooks/MCP、文件编辑/回滚、内容管道），优先读源码，按源码行为做行为对齐测试；开发文档负责路线和产品边界，不替代源码细节。
-   - 最新 `cc-haha v0.4.5` 迁移矩阵见 `docs/plans/TS-cc-haha-v0.4.5-内核迁移矩阵-2026-07-07.md`；后续每窗按该矩阵确认已落/待落项。
-3. **行为深搬，代码进我们自己的结构**：能重写清楚就重写；重写容易漏边界的复杂逻辑，先用 cc-haha 行为写失败测试，再在我们自己的模块里实现到同输入同输出/同决策。不要为了“看起来原创”引入质量风险；也不要把受限源码整文件原样并入发布树。
-4. **不能搬错外壳**：Claude Code/cc-haha 的用户假设是程序员，我们的用户是小白老板/通用桌面用户。前端 UI、文案、权限默认口径、内置 key、免登录、台球 pack、生图/视频/门店记忆这些仍按我们自己的产品文档做；只搬内核创造力，不搬开发者产品皮。
-5. **后续每窗默认动作**：开工先定位 `~/Desktop/cc-haha-ref` 对应文件，列出要对齐的边界行为，再写失败测试，最后实现。若开发文档与源码行为冲突：地基机制听源码，产品体验/安全红线听本文档和 owner。
+1. **当前工作树就是 `main`**：旧 `ts-harness-rewrite` / `cc-haha-direct-port` 等分支名只代表历史施工阶段,不再作为当前指令。目标不是半套 Agent 壳,而是可长期 coding、可改文件、可诊断、可恢复、可观测的强 Agent 地基。
+2. **内核行为以源码 + 可观察行为/边界为规格**：本地参考资料路径为 `~/Desktop/cc-haha-ref`。该库 LICENSE 允许 use/copy/modify/distribute/publish copies,所以凡属于 harness 地基的机制（消息格式、工具配对、proxy 容错、权限、plan/todo/reminder/steering、压缩/轨迹/打转、skills/subagents/hooks/MCP、文件编辑/回滚、内容管道），都可直接读源码、抄源码、改源码并按行为做对齐测试；开发文档负责路线和产品边界，不替代行为细节。
+   - 最新 `cc-haha v0.4.5` 迁移矩阵见 `docs/plans/TS-cc-haha-v0.4.5-内核迁移矩阵-2026-07-07.md`；后续每批按该矩阵确认已落/待落项。
+3. **行为深对齐，代码可直接复制/抄/移植/改写**：复杂逻辑先用可观察行为写失败测试,再在我们自己的模块里实现到同输入同输出/同决策。不要为了“看起来原创”引入质量风险。
+4. **产品假设分层搬迁**：Claude Code/cc-haha 的用户假设是程序员，我们的用户是小白老板/通用桌面用户。内核、权限、工具流、代码改动、diff、任务、工作区、低噪交互都可直接复制/抄/移植/改写；前端 UI、文案、权限默认口径、内置 key、免登录、台球 pack、生图/视频/门店记忆按本产品定位重新编排，不把开发者产品皮套到老板端。
+5. **后续每批默认动作**：开工先确认对应能力的可观察边界行为，列出要对齐的输入/输出/状态变化，再写失败测试，最后在本仓库自有模块里实现。若开发文档与参考行为冲突：地基机制听行为证据，产品体验/安全红线听本文档和 owner。
 
 ## 1. 决策与铁律(不可改,改需 owner)
 
-> **⭐ 总原则（owner 2026-07-05，最高优先）：整个后端照 cc-haha 的逻辑/做法重写——地基逐块照它做，「人家怎么做我们就怎么做」（行为与结构对齐、地基不自创架构、不加码）。生图 / 视频等是在这地基上的正常衍生、保证功能可用即可（不追求超越；所需依赖/模型/二进制随便下、打进包，体积/下载无所谓）。唯一边界 = 下方铁律 2（抄码口径:效果对齐唯一标准，搬/重写都行，别把它整个 .ts 原样当产品发）。**
+> **⭐ 总原则（owner 2026-07-07，最高优先）：整个后端照 cc-haha 的逻辑/做法重写或直接移植——地基逐块对齐，「人家怎么做我们就先看明白」。CC-Haha 许可允许复制/修改/发布,所以可直接复制/抄/移植/改写;生图 / 视频等是在这地基上的正常衍生、保证功能可用即可（不追求超越；所需依赖/模型/二进制随便下、打进包，体积/下载无所谓）。**
 
 1. **换 TS**。理由:要"真对标"就抄源头 CC,而 **CC/cc-haha 本身就是 TS**——同语言,harness 照着重写是 1:1、零跨语言摩擦;沙箱是 npm 包、MCP 官方 SDK 是 TS 原生。(注:换语言不是"对标"的必要条件——CC 自己是 Node 就是证据。)
    - **⚠️ 范围与工期真相(owner 2026-07-05 知情后仍拍板全 TS)**:后端共 **~7 万行**,harness 只占 **~19%**(1.35 万行,这块照 cc-haha);**另 ~81%(5.7 万行:生图/视频/剪辑/店脑/RAG/canvas/数据回传/建表/解密…)没有 cc-haha 可参考,是把我们自己已跑通、测试全绿的 Python 从零翻译成 TS——纯翻译、功能不涨、要全部重验**。全 TS ≈ **20 周**量级(只换前端+壳 ≈10 周);owner 选全 TS,接受翻倍工期,换"一套语言 + 彻底甩掉 PyInstaller 打包痛点"。详细重写清单见**附录 B**。
-2. **迁移口径:效果对齐是唯一硬标准（owner 2026-07-06 松绑，2026-07-07 校正发布口径）**。cc-haha 的逻辑——**能顺手重写清楚就重写，复杂边界必须用行为对齐测试锁住**；验收看「同输入→同输出/同决策跑绿」，不是看代码风格像不像。**别为「重写」而重写、在翻译时引 bug；也别把受限源码整文件原样并入发布树。** 沙箱 `@anthropic-ai/sandbox-runtime` 是公开 npm 包、直接装。
+2. **迁移口径:CC-Haha 可直接复制/抄/移植/改写,效果对齐是唯一硬标准（owner 2026-07-07 更新）**。cc-haha 的逻辑和源码都可直接参考、复制、移植、改写;复杂边界必须用行为对齐测试锁住。验收看「同输入→同输出/同决策跑绿」，不是看代码风格像不像。别为「重写」而重写、在翻译时引 bug。沙箱 `@anthropic-ai/sandbox-runtime` 是公开 npm 包、直接装。
 3. **本轮 = 重写整个软件到"直接可用"终态**（owner 2026-07-05 拍板"直接重写"）。顺序上后端优先，但**前端也在本轮内**（原"暂缓"作废）——终态要 Mac+Windows 装上直接能用。**前端用我们自己的小白产品设计**（配色走法B / 文案6条 / 创作界面收敛4件在此落地），**不照 cc-haha 的开发者 UI**：后端 harness 照 CC、**前端是我们的**。
    - **⭐ 战略（owner 2026-07-05）:TS 版 = 替代现 Python 产品**。「商品化收官」等 Python 线冻结/退场，**TS 成唯一产品**。Python 相关文档转历史（见 docs/README 归档）。
    - **双平台都本轮到位**:Mac + Windows 都要装上直接可用（Windows 真沙箱/中文字体是硬骨头、同批做）。
@@ -156,7 +156,7 @@
 | `registry.py` | 工具分层登记(general/billiards) | `src/tools.ts` / `Tool.ts` |
 | `local_tools.py` | 本机文件工具 + **应用层沙箱** | `src/tools/File*Tool` + `utils/permissions/pathValidation.ts` |
 | `web_tools.py` | 网页查抓工具 | `src/tools/WebFetchTool` 等 |
-| `approval.py` + 权限系统 | **审批/权限照 cc-haha 机制**（owner 2026-07-05 拍板;权限三档已照搬 CC）——权限三档 + 工具级 allow/ask/deny（deny 优先）+ "可逆性/爆炸半径"心智模型 + "授权只在指定范围·批准一次≠永久" + Bash 危险命令分类器。**但默认口径按我们产品调、红线不松**（见 §1 铁律 6）:① 本地文件读写（带备份）默认**直接做**（不像 CC 默认要确认——小白嫌烦）;② 对外/花钱/不可逆动作（发布/群发/私信/删数据/生图）弹**审批卡** + **绝不自动触达**（比 CC 还严一点） | `utils/permissions/` 全套 + `prompts.ts:getActionsSection` |
+| `approval.py` + 权限系统 | **审批/权限照 cc-haha 机制**（owner 2026-07-05 拍板;权限四档已接通 plan）——权限四档 + 工具级 allow/ask/deny（deny 优先）+ "可逆性/爆炸半径"心智模型 + "授权只在指定范围·批准一次≠永久" + Bash 危险命令分类器。**但默认口径按我们产品调、红线不松**（见 §1 铁律 6）:① 本地文件读写（带备份）默认**直接做**（不像 CC 默认要确认——小白嫌烦）;② 对外/花钱/不可逆动作（发布/群发/私信/删数据/生图）弹**审批卡** + **绝不自动触达**（比 CC 还严一点） | `utils/permissions/` 全套 + `prompts.ts:getActionsSection` |
 | `context.py` / `context_overflow.py` | 上下文管理 / 压缩 | `src/query.ts:399-471`(压缩栈) |
 | `reminders.py` | 提醒/steering 注入(**定向**) | `utils/attachments.ts` |
 | `transcript.py` | 完整轨迹落盘 JSONL(**跨轮记忆管道**) | `src/context.ts` + memdir |
@@ -200,8 +200,8 @@
 ## 4. 分期实现计划
 
 ### Phase 0 · 立项脚手架
-- 新分支(命名如 `ts-harness-rewrite`)· **Bun** TS 工程骨架 · **后端在 Electron 里怎么跑（Bun sidecar，见 §2）** · 测试框架 · CI 骨架。
-- 把 §1 铁律(尤其抄码口径:效果对齐唯一标准、搬/重写都行)写进新工程的 AGENTS.md/CLAUDE.md。
+- 旧阶段目标:建立 **Bun** TS 工程骨架 · **后端在 Electron 里怎么跑（Bun sidecar，见 §2）** · 测试框架 · CI 骨架。当前已收敛到 `main` 上持续维护,不再新开施工分支。
+- 把 §1 铁律(尤其迁移口径:效果对齐唯一标准、行为测试优先、CC-Haha 可直接复制/抄/移植/改写)写进新工程的 AGENTS.md/CLAUDE.md。
 - **验收**:空骨架能起、能跑一个 hello 工具循环、测试框架通。
 
 ### Phase 1 · Harness 地基(全做完才往上走)
@@ -210,7 +210,7 @@
 2. **系统提示 + `<env>` 环境注入 + git/工作区快照** ← 补强(我们最弱的定向)。
 3. **工具框架 + 核心文件/命令工具 + 文件夹工作区模型** ← `local_tools`。
 4. **双层沙箱**(见 §5)← 应用层移植+补 TOCTOU;OS 层 Mac/Linux 装包、Windows 走 launcher。
-5. **审批闸 + 权限三档** ← `approval.py`(保红线)。
+5. **审批闸 + 权限四档** ← `approval.py`(保红线，含 plan 只读探索)。
 6. **定向脚手架:plan 模式 + todo + system-reminder** ← `reminders.py` + 补 plan。
 7. **压缩 + 上下文 + 完整轨迹** ← `context_overflow` / `transcript`。
 8. **打转 + 工具死循环检测** ← `stuck_detector` + 补 4/40(抄腾讯)。
@@ -226,7 +226,7 @@
 ### Phase 3 · 平台打包(Mac + Windows)
 - **桌面壳 / 后端拉起 / 打包 / 自动更新 = 照 cc-haha 的 plumbing**（同构、可近乎照搬，且顺手解我们几个 P0）:后端 = **Bun 编译单文件二进制 → Electron spawn → 等端口就绪(`waitForServer` TCP 轮询) → 前端连**。白捡的:**端口策略(固定→sticky→随机)解"端口占用"· `taskkill /T`+退出同步杀解"backend 孤儿"· 启动日志捕获解"首启超时排障"· electron-updater+CI 矩阵+未签名兜底(带 install-macos-unsigned.sh)解"苹果签名卡点"**。参考 `desktop/electron/services/{serverRuntime,sidecarManager}.ts` + `desktop/scripts/build-sidecars.ts`。
   - ⚠️ **全 TS 重写必踩的两坑**:① macOS 上 Bun 编译的二进制签名是坏的(load code signature error 4 → 被 SIGKILL),要 `codesign --remove-signature` 再 ad-hoc 重签;② Windows 用 `bun-windows-x64-baseline` 目标(兼容老 CPU,否则老机器起后端崩)。
-  - ⛔ **UI/onboarding 不抄 cc-haha**(它是开发者工作台:终端/选项目文件夹/BYOK登录贴key)——我们保留自己的小白单窗口对话+创作面板+**内置 key 免登录 seed**(见 Phase 4 + §1 铁律 6)。
+  - **UI/onboarding 可直接复制/抄/移植/改写其低噪工作流和 plumbing**(项目文件夹、右侧代码改动、审批、Diff、状态与任务面板)，再按我们的小白单窗口对话+创作面板+**内置 key 免登录 seed**重排视觉和入口(见 Phase 4 + §1 铁律 6)。
 - Electron 打包 · **Windows 真沙箱 launcher**(见 §5)· 内置资产打进包(whisper 预编译 `.node` / ffmpeg 二进制 / bge-m3 ONNX / sharp libvips,全部 `asarUnpack`)。
 - **验收**:Mac dmg + Windows nsis 装干净机、开箱即用(内置 key)、沙箱在两平台各自生效、whisper/生图/视频真跑通。
 
@@ -241,13 +241,13 @@
 
 ---
 
-## 4.5 · 逐窗清单（15 窗 = 14 建 + 1 终审 · owner"一窗一模块"）
+## 4.5 · 历史分窗清单（15 个模块索引）
 
-> §4 是分期，这里拆成 **15 个可执行窗口 = 15 个模块**（owner 规矩：一个窗口负责一个模块）——**W1-W14 是建设窗口，W15 是终审窗口**。**顺序**：地基 W1-W6 先做完 → 衍生 W7-W10 可并行 → 前端 W11-W12 在打包 W13 前完成 → W14 真机验收 → **W15 终审签发**。
+> 本节保留 2026-07-05 的模块拆分,用于回查分层和验收范围,不再作为“开新分支/开新窗口”的当前指令。当前施工以 `main` 上的连续批次 + v0.4.5 迁移矩阵为准。原顺序仍有参考价值:地基 W1-W6 先做完 → 衍生 W7-W10 可并行 → 前端 W11-W12 在打包 W13 前完成 → W14 真机验收 → W15 终审签发。
 
 | # | 模块（窗口） | 层 | 主要内容 |
 |---|---|---|---|
-| **W1** | 立项脚手架 | 地基 | 新分支 · Bun 工程 · Electron spawn sidecar · 测试/CI（照 cc-haha plumbing 起步）|
+| **W1** | 立项脚手架 | 地基 | Bun 工程 · Electron spawn sidecar · 测试/CI（旧阶段脚手架,当前已收敛到 main）|
 | **W2** | Harness·核心 | 地基 | 主循环 + 工具框架 + 文件夹工作区 + 环境注入(`<env>`) |
 | **W3** | Harness·沙箱 | 地基 | 双层：Mac/Linux 装 sandbox-runtime + Win（app 护栏+Job Object launcher，见 §5）|
 | **W4** | Harness·其余 | 地基 | 审批权限(照 CC) + 定向(plan/todo/reminder) + 压缩/轨迹 + 死循环 + 子代理 + skills/hooks |
@@ -257,13 +257,13 @@
 | **W8** | 生图 | 衍生 | poster + 各 image provider（保可用、依赖随便下）|
 | **W9** | 视频 | 衍生 | video_service + video_edit(3.5K) + scene_plan + 离屏渲染 |
 | **W10** | canvas + 看板报表 + 领域服务 | 衍生 | 改文件 + dashboard/report + content/store_profile 等领域服务群 |
-| **W11** | 前端·对话核心 | 前端 | chat-shell/thread/composer + SSE 12 事件契约（我们的小白设计 · 见附录 B.1）|
+| **W11** | 前端·对话核心 | 前端 | chat-shell/thread/composer + SSE 14 事件契约（我们的小白设计 · 见附录 B.1）|
 | **W12** | 前端·创作+设置 | 前端 | 画布/studio/video 工作台/设置/记忆面板 |
 | **W13** | 桌面壳+打包+自动更新 | 壳/发版 | 照 cc-haha plumbing + IPC + 首启 + 内置资产 + 双平台出包（见 §10.4 体积）|
 | **W14** | 端到端真机验收 | 验收 | Mac + Win 各装干净机走全链路 + §10.3 试用就绪清单 |
 | **W15** | 🔎 终审 · 查验审核 | 收官 | **owner 自己开、用 Opus 4.8（非 Sonnet）**：对全部 14 窗产出**逐项查验审核**——对照铁律/验收门/§10 试用就绪/白标/文案红线，交叉核 + 对抗验证、逮漏补缺，签发"可给人试" |
 
-> 大模块（W2-W4 harness / W9 视频 / W11 前端）若一窗吞不下，可再拆半窗——但保持"一窗一模块"的边界清晰、别一窗吞多模块。每窗按 §9 走 Superpowers（writing-plans → 先测后码 → 过验收门）。
+> 大模块(W2-W4 harness / W9 视频 / W11 前端)继续按小批次拆验收边界;每批按 §9 走:行为规格/测试 → 可直接复制/抄/移植/改写实现 → 验收门 → 回写矩阵。
 >
 > **⚙️ 模型分配（owner 2026-07-05）**：**W1-W14 的执行子代理默认 Sonnet**；**W15 终审用 Opus 4.8**（owner 直接开、不派 Sonnet）。
 >
@@ -301,27 +301,27 @@
 
 **一句话**:地基管"记忆怎么进出模型",衍生管"记住什么台球/门店内容"。
 
-### ⭐ 6.1 检索机制决策（owner 2026-07-06 拍板 · 落 W11 记忆 / W8 知识包）
+### ⭐ 6.1 检索机制决策（owner 2026-07-06 拍板 · 落 W11 记忆 / W8 专家挂载与包内检索）
 
 **先分清两个维度（别混，它俩是两回事）：**
 
 | 维度 | 是什么 | 检索机制 |
 |---|---|---|
 | **店脑记忆**（记住"你这家店"：老板偏好/门店画像/历史/你纠正过的 · 个性化、会变、规模小） | 记住"你" | **LLM 选择器（cc-haha memdir）** |
-| **台球知识库**（"台球这行"的通用运营知识 · 固定、所有店共享、领域专业） | 懂"这行" | **可 @挂载的技能包（skill/pack）+ 包内向量定位** |
+| **台球运营专家**（"台球这行"的通用运营知识 · 固定、所有店共享、领域专业） | 懂"这行" | **可挂载专家（skill/pack）+ 包内向量定位** |
 
 **① 店脑记忆 → LLM 选择器（cc-haha `findRelevantMemories`），不用向量 RAG。**
 - 机制：扫所有记忆 frontmatter（名字+一句话描述）拼清单 → **中端模型（不是便宜 flash——cc-haha 用 Sonnet 中端；flash 砍掉理解意图的质量优势、自毁立论，见 §0.6-3）**读查询做选择题挑 ≤5 条 → 注入。配 cc-haha memdir 全套：MEMORY.md 索引常驻、老化警告、类型/去噪、后台抽取、AutoDream 整合。
 - 为什么（**质量优先**）：LLM 选择器是"理解意图"、向量是"相似度匹配"——对中文/复杂/组合/指代查询召回更准；**Anthropic 在 Claude Code 里亲自放弃向量选它 = 质量信号**，我们"对标 CC 要好用"不该在记忆召回质量上让步。成本可控：便宜模型 + 只在涉及个性化/门店时调 + prefetch 在主模型流式时预取。规模不大（几十上百条）不触发"清单塞爆"短板。
 
-**② 台球知识库 → 可 @挂载的技能包，不是纯向量捞碎片。**
-- 组织：台球知识做成一个 `billiards` 技能包（见 §0.5 三 · `billiards_mode` → pack）。**@ 了 = 台球专家上岗；不 @ = 通用强 Agent。**
+**② 台球运营专家 → 可挂载技能/领域包，不是纯向量捞碎片。**
+- 组织：台球知识做成一个 `billiards` 专家包（见 §0.5 三 · `billiards_mode` → pack）。**挂载 = 台球运营专家上岗；不挂 = 通用强 Agent。**
 - 包内检索：小知识/工作流**按需 Read 整块**（cc-haha bundledSkills `files`/baseDir，上下文完整）；129 条知识 YAML 要精确定位时，在**已挂载的包内**用向量（bge 保留）粗筛。
 - 为什么：纯向量 RAG"切碎捞片段"是上一代（切碎丢上下文、召回不一定是这次要的）；最前沿（Claude Code 做法）= "知识做成可挂载技能、按需读整块 + 大知识内向量定位"。owner 的"@就变专家"直觉正命中这条。
 
-**③ bge 保留、不砍**：用在台球知识包内的向量定位 + 未来记忆规模真大了当"向量粗筛 → LLM 精选"的粗筛层。**记忆检索本身用 LLM 选择器**。
+**③ bge 保留、不砍**：用在台球运营专家包内的向量定位 + 未来记忆规模真大了当"向量粗筛 → LLM 精选"的粗筛层。**记忆检索本身用 LLM 选择器**。
 
-**一句话总纲**：记住"你"（店脑记忆 → LLM 选择器）+ 懂"这行"（台球知识 → 可 @挂载技能包 + 包内向量）；**@ 了变专家、不 @ 是通用强 Agent。**
+**一句话总纲**：记住"你"（店脑记忆 → LLM 选择器）+ 懂"这行"（台球运营专家 → 可挂载技能/领域包 + 包内向量）；**挂了变专家、不挂是通用强 Agent。**
 
 ---
 
@@ -345,12 +345,12 @@
 2. **原生插件跨平台预编译打包**:whisper `.node` + ONNX runtime + sharp libvips 各平台各出一份打进包——打包活最重的地方。但 **owner 2026-07-05 明确"体积/下载无所谓、不用担心这些"**,可放开(大包 / 按需下载都行);**唯一硬要求 = 它们在 Bun 下能跑**(Phase 0 搭环境时验,见 §2)。
 3. **sandbox-runtime 版本/稳定性**:0.0.x + Windows alpha 设计在变,盯升级。
 4. **whisper Node 绑定活跃度**:`whisper-node-addon` 等社区维护,选型时自查活跃度或自建 CI prebuild。
-5. **工期**:换 TS 是整个后端重写(移植+补强),按 Phase/模块一块一块搬+测,别指望一次到位。owner 已表态愿投入、走新分支。
-6. **owner 决策（均已定 · 2026-07-05）**:① ~~运行时~~ **定 Bun**（跟 cc-haha 同;残留待验=whisper/ONNX/sharp 三原生插件在 Bun 下能否跑,Phase 0 搭环境时顺手验,见 §2）· ② ~~Windows 沙箱首发范围~~ **定**:首发 app 护栏 + Job Object（免管理员），restricted-token/WFP 放二期、交后续窗口（见 §5）· ③ ~~先 spike 验工期~~ **定:不 spike、直接开发**——下一窗口直接从 Phase 0 起步。
+5. **工期**:换 TS 是整个后端重写(移植+补强),按 Phase/模块一块一块搬+测,别指望一次到位。owner 已表态愿投入;2026-07-07 后按当前要求直接在 `main` 承接,不再开新施工分支。
+6. **owner 决策（均已定 · 2026-07-05）**:① ~~运行时~~ **定 Bun**（跟 cc-haha 同;残留待验=whisper/ONNX/sharp 三原生插件在 Bun 下能否跑,Phase 0 搭环境时顺手验,见 §2）· ② ~~Windows 沙箱首发范围~~ **定**:首发 app 护栏 + Job Object（免管理员），restricted-token/WFP 放二期、交后续阶段（见 §5）· ③ ~~先 spike 验工期~~ **定:不 spike、直接开发**——当前已进入 main 线持续施工。
 
 ---
 
-## 9. Superpowers 执行说明(下一窗口怎么开工)
+## 9. Superpowers 执行说明(当前怎么推进)
 
 - **已完成**:brainstorm(本轮,owner 拍板方向)。**本文档 = 设计 spec。**
 - **每个 Phase 一个执行循环**:
@@ -358,10 +358,10 @@
   2. 用 `superpowers:executing-plans` 或 `subagent-driven-development` 执行。
   3. 用 `superpowers:test-driven-development` 先写测试。
   4. 过 §4 对应验收门,`verification-before-completion` 确认再收。
-  5. `finishing-a-development-branch` 收尾。
-- **一窗一模块**（按 §4.5 的 15 窗清单：W1-W14 建 + W15 终审），别一窗吞多模块;大模块（harness/视频/前端）可再拆半窗。
-- **代码约定**（owner 2026-07-05）:结构 / 命名 / 写法**照 cc-haha 来、行为对齐它**;**注释从简**——注释不重要、别堆，代码本身读得懂即可。
-- **每窗守铁律**(§1):抄码效果对齐(搬/重写都行) · 保红线 · 先测后码。
+  5. 用 `git diff --check`、类型检查和相关测试收尾,并把已落/待落项回写到当前施工矩阵。
+- **按模块批次推进**:§4.5 的 15 窗清单只保留为历史拆分索引。当前按风险和收益在 `main` 上连续施工,大模块(harness/视频/前端)继续拆小批次验收。
+- **代码约定**（owner 2026-07-05）:责任边界和可观察行为贴近 cc-haha/Claude Code;实现落在本项目自己的模块里;**注释从简**——注释不重要、别堆，代码本身读得懂即可。
+- **每批守铁律**(§1):行为效果对齐(CC-Haha 可直接复制/抄/移植/改写) · 保红线 · 先测后码。
 
 ---
 
@@ -373,7 +373,7 @@
 - **系统提示永远注入一条**：你是【产品名 / 管家】，**绝不透露、不暗示底层用的是什么模型或厂商**（MiMo / DeepSeek / 豆包 / 火山 / GPT…）；被问"你是什么模型 / 你是不是 GPT"就答"我是[产品名]的助手"，不报模型名、不说"我是 GPT / 我是通义"。落 W4（harness 系统提示）+ 台球 persona。
 - **前端任何用户可见处不显示模型名**：studio 成品标签 / 设置 / 状态里都不露；模型选择若保留，藏进高级档。落 W11/W12。
 - ⚠️ **现状缺口**：`server/api/v1/agent.py` 的 `_GENERIC_BASE_PROMPT` 只设了"通用助手"身份、**没有 anti-reveal 指令**——重写时必须补上。
-- 参照:**这块不抄 cc-haha**——CC 的系统提示是"You are Claude Code"、大方暴露自己（它是模型自家产品），跟我们白标藏模型正相反；竞品拆解也没写"怎么藏模型"。**这是我们自己定的产品要求。**
+- 参照:**这块可直接复制/抄/移植/改写 cc-haha 的系统提示注入位置、测试方式和权限护栏**；白标身份内容按我们产品要求改写，因为 CC 的系统提示是"You are Claude Code"、会暴露自己，而我们必须隐藏底层模型和厂商。
 
 ### 10.2 50 人并发 / key 会不会被打爆——网关已解决（server 端，TS 客户端不重写）
 - **机制已建好**：`gateway/`（qfgw CN 39.106.214.21:8799）**三层阀门**——① 每家真实限流（令牌桶+信号量：MiMo 90 RPM / 生图 IPM+在途并发 / 视频并发 3 / 豆包 30 RPM / Seedream）② 每用户每日配额（防一个人烧光挤垮所有人）③ 满了排队（最多等 60s）超时背压拒、绝不硬撞 provider 触发 429/封号。**藏 key + 用量记录**。
@@ -454,7 +454,7 @@
 | 子代理 / 工具框架 | `tools/AgentTool/` · `Tool.ts` · `tools.ts` |
 | 记忆 | `utils/context.ts`(注入)+ `src/memdir/`(逻辑) |
 
-> ⚠️ 附录是照抄/重写时的定位索引。抄码口径见 §1 铁律 2(效果对齐唯一标准，搬/重写都行)。
+> ⚠️ 附录是行为对齐/迁移时的定位索引。迁移口径见 §1 铁律 2(效果对齐唯一标准，行为测试优先，CC-Haha 可直接复制/抄/移植/改写)。
 
 ---
 
@@ -465,8 +465,8 @@
 ### B.1 前端 `web/src`（~12.2K 行 / 57 文件 · 用我们自己的小白设计重写）
 - 单窗口:`/` → `/dashboard/chat` → 只渲染一个 `DesktopChatShell`（SaaS 登录已删、middleware 空穿透）。
 - **四个千行级"上帝组件"（重写重点，可顺手拆）**:`chat-shell.tsx`(1187,总编排:侧栏+对话流+输入+所有抽屉) · `chat-thread.tsx`(1137,对话流展示) · `preview-panel.tsx`(1042,右侧画布 Artifacts/Canvas) · `lib/api.ts`(966,**承重契约**)。
-- **承重契约 = 任务式 SSE 12 事件**:token / reasoning / tool_call / tool_result / tool_progress / approval_request / ask_question / steering / context_note / todo_update / final / done / error——新前端必须对齐这 12 个。
-- 其余组件:`desktop-composer`(输入框+**权限三档**+语音门控+知识包挂载开关) · `settings-drawer`(797) · `welcome-screen` · `briefing-card` · `store-memory-panel`(店脑CRUD) · `store-docs-panel` · `scheduled-tasks-panel`(426) · `studio/video/workbench` 三个创作工作台 · `studio-mask-canvas`(konva 圈选 mask) · `app/quick`(全局热键悬浮窗)。
+- **承重契约 = 任务式 SSE 14 事件**:token / reasoning / tool_call / tool_result / tool_progress / approval_request / ask_question / steering / context_note / todo_update / usage_update / final / done / error——新前端必须对齐这些事件。
+- 其余组件:`desktop-composer`(输入框+**权限四档**+语音门控+专家挂载入口) · `settings-drawer`(797) · `welcome-screen` · `briefing-card` · `store-memory-panel`(店脑CRUD) · `store-docs-panel` · `scheduled-tasks-panel`(426) · `studio/video/workbench` 三个创作工作台 · `studio-mask-canvas`(konva 圈选 mask) · `app/quick`(全局热键悬浮窗)。
 - 状态:**无 Zustand/Redux**,全在 `use-agent-chat.ts`(625:send→SSE→审批→5次指数退避重连→steering) + 两个 Context（`auth`本地owner免登录 / `toast`）。
 - 桌面 IPC 契约:`window.electron`（files/captureScreen/quickInput/notification/tts/models(whisper)/publish/video/newWindow）——**无后端端点、纯 IPC，新壳必重做**。
 - 依赖:next14/react18 · react-markdown+remark-gfm（**无代码高亮库**）· lucide · konva · **无组件库（全手写，重写可考虑补齐 shadcn 类）**。
