@@ -1,5 +1,5 @@
 /**
- * 消息配对清洗(不崩·核心)。逻辑照 cc-haha src/utils/messages.ts:2004(normalizeMessagesForAPI)/5275(ensureToolResultPairing),
+ * 消息配对清洗(不崩·核心):发送模型前保证 tool_use/tool_result 成对,
  * 适配我方扁平 {role, content: ContentBlock[]}。不清洗则国产模型上循环隔三差五 400 卡死(05 清单①)。
  */
 import { textBlock, type Message, type ContentBlock, type ToolResultBlock } from '../types/message'

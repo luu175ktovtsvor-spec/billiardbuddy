@@ -1,4 +1,4 @@
-// 逻辑照 cc-haha src/server/proxy/handler.ts:103(withStreamIdleTimeout)。国产模型/慢链路流卡死时空闲超时兜底(05 清单⑨)。
+// 国产模型/慢链路流卡死时的空闲超时兜底。
 export function withStreamIdleTimeout(
   upstream: ReadableStream<Uint8Array>,
   timeoutMs: number,

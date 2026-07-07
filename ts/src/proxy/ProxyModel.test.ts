@@ -63,7 +63,11 @@ test('非 SSE JSON 响应 → 走非流式翻译', async () => {
     }), { status: 200, headers: { 'content-type': 'application/json' } }),
   })
   const step = await model.step({ messages: [userText('x')], tools: [] })
-  expect(step).toEqual({ kind: 'final', text: '非流式答' })
+  expect(step).toEqual({
+    kind: 'final',
+    text: '非流式答',
+    notices: ['供应商本轮没有按流式返回,已自动按完整响应接回。'],
+  })
 })
 
 test('非 SSE 200 但 body 非 JSON:降级空 final,不崩 step()(final review finding belt-and-suspenders)', async () => {
@@ -72,7 +76,11 @@ test('非 SSE 200 但 body 非 JSON:降级空 final,不崩 step()(final review f
     fetchImpl: async () => new Response('不是 JSON 的纯文本', { status: 200, headers: { 'content-type': 'application/json' } }),
   })
   const step = await model.step({ messages: [userText('x')], tools: [] })
-  expect(step).toEqual({ kind: 'final', text: '' })
+  expect(step).toEqual({
+    kind: 'final',
+    text: '',
+    notices: ['供应商本轮返回了非流式但内容不可解析,已安全降级为空响应。'],
+  })
 })
 
 test('发请求前跑配对清洗:孤儿 tool_use 会被补占位(不 400)', async () => {

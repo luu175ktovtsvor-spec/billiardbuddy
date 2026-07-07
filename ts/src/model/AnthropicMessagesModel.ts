@@ -1,4 +1,4 @@
-import type { Model, ModelStepInput, AssistantStep } from '../types/model'
+import { MODEL_OUTPUT_TRUNCATED_NOTICE, type Model, type ModelStepInput, type AssistantStep } from '../types/model'
 import type { ContentBlock, Message, ToolCall } from '../types/message'
 import { ensureToolResultPairing, normalizeMessagesForAPI } from '../proxy/messagePairing'
 import { parseOpenAIToolArguments, stringifyOpenAIToolArguments } from '../proxy/toolArguments'
@@ -22,7 +22,8 @@ interface AnthropicAccumulated {
   text: string
   thinking: string
   toolCalls: ToolCall[]
-  usage: AnthropicUsage
+  stopReason?: string | null
+  usage?: AnthropicUsage
 }
 
 type AnthropicRequestBlock =
@@ -37,6 +38,7 @@ type AnthropicResponseContentBlock =
 
 interface AnthropicResponseJson {
   content?: AnthropicResponseContentBlock[]
+  stop_reason?: string | null
   usage?: Partial<AnthropicUsage>
 }
 
@@ -176,14 +178,15 @@ function anthropicJsonToAccumulated(json: AnthropicResponseJson): AnthropicAccum
       toolCalls.push({ id: block.id, name: block.name, input: parseToolInput(block.input) })
     }
   }
-  return { text, thinking, toolCalls, usage: normalizeUsage(json.usage) }
+  return { text, thinking, toolCalls, stopReason: json.stop_reason ?? null, usage: normalizeUsage(json.usage) }
 }
 
 function parseToolInput(input: unknown): Record<string, unknown> {
   return parseOpenAIToolArguments(input)
 }
 
-function normalizeUsage(usage: Partial<AnthropicUsage> | undefined): AnthropicUsage {
+function normalizeUsage(usage: Partial<AnthropicUsage> | undefined): AnthropicUsage | undefined {
+  if (!usage) return undefined
   return {
     input_tokens: typeof usage?.input_tokens === 'number' ? usage.input_tokens : 0,
     output_tokens: typeof usage?.output_tokens === 'number' ? usage.output_tokens : 0,
@@ -208,7 +211,8 @@ async function accumulateAnthropicStream(stream: ReadableStream<Uint8Array>): Pr
   const reader = stream.getReader()
   let buffer = ''
   let orderSeq = 0
-  let usage: AnthropicUsage = { input_tokens: 0, output_tokens: 0 }
+  let usage: AnthropicUsage | undefined
+  let stopReason: string | null = null
   const frags = new Map<number, StreamFrag>()
 
   const fragFor = (index: number): StreamFrag => {
@@ -248,8 +252,10 @@ async function accumulateAnthropicStream(stream: ReadableStream<Uint8Array>): Pr
       return
     }
 
-    if (event.type === 'message_delta' && event.usage && typeof event.usage === 'object') {
-      usage = normalizeUsage(event.usage as Partial<AnthropicUsage>)
+    if (event.type === 'message_delta') {
+      const delta = event.delta as Record<string, unknown> | undefined
+      if (delta && typeof delta.stop_reason === 'string') stopReason = delta.stop_reason
+      if (event.usage && typeof event.usage === 'object') usage = normalizeUsage(event.usage as Partial<AnthropicUsage>)
     }
   }
 
@@ -293,12 +299,18 @@ async function accumulateAnthropicStream(stream: ReadableStream<Uint8Array>): Pr
       })
     }
   }
-  return { text, thinking, toolCalls, usage }
+  return { text, thinking, toolCalls, stopReason, usage }
 }
 
 function toAssistantStep(acc: AnthropicAccumulated): AssistantStep {
-  if (acc.toolCalls.length > 0) {
-    return { kind: 'tool_calls', text: acc.text || undefined, thinking: acc.thinking || undefined, calls: acc.toolCalls }
+  const thinking = acc.thinking ? { thinking: acc.thinking } : {}
+  const usage = acc.usage ? { usage: acc.usage } : {}
+  const notices = acc.stopReason === 'max_tokens' ? { notices: [MODEL_OUTPUT_TRUNCATED_NOTICE] } : {}
+  if (acc.stopReason === 'max_tokens') {
+    return { kind: 'final', text: acc.text, ...thinking, ...usage, ...notices }
   }
-  return { kind: 'final', text: acc.text, thinking: acc.thinking || undefined }
+  if (acc.toolCalls.length > 0) {
+    return { kind: 'tool_calls', ...(acc.text ? { text: acc.text } : {}), ...thinking, calls: acc.toolCalls, ...usage }
+  }
+  return { kind: 'final', text: acc.text, ...thinking, ...usage }
 }

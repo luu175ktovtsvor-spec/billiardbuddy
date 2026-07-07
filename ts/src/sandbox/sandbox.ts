@@ -9,7 +9,7 @@ export interface WrappedCommand {
 
 /**
  * 双层沙箱门面(§5)。wrapCommand 返回 {argv,env} = 包进 OS 盒子跑;返回 null = 按明文命令跑(plain spawn)。
- * W3 姿态:enabled 默认 false(opt-in,照 cc-haha);"默认开 / 按命令决定沙箱 / 自动放行" = W4。
+ * W3 姿态:enabled 默认 false(opt-in);"默认开 / 按命令决定沙箱 / 自动放行" = W4。
  */
 export class Sandbox {
   readonly workspace: Workspace

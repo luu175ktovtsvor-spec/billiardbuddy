@@ -1,7 +1,7 @@
 /**
  * OpenAI Chat Completions SSE 流 → 内部块累积(不崩心脏)。
- * 逻辑照 cc-haha src/server/proxy/streaming/openaiChatStreamToAnthropic.ts 的分片累积/reasoning 归一,
- * 但目标是把结果累积成我们的 AssistantStep 素材(text/thinking/toolCalls),不 emit Anthropic SSE。
+ * OpenAI Chat Completions SSE 分片累积 + reasoning 归一。
+ * 目标是把结果累积成我们的 AssistantStep 素材(text/thinking/toolCalls),不 emit Anthropic SSE。
  * 不崩要点(05 清单②③):按 index 累 tool_call 分片、缺 id 收尾自造、reasoning 三方言归一、坏行跳过。
  */
 import type { ToolCall } from '../types/message'
@@ -14,7 +14,7 @@ export interface AccumulatedResponse {
   thinking: string
   toolCalls: ToolCall[]
   finishReason: string | null
-  usage: AnthropicUsage
+  usage?: AnthropicUsage
 }
 
 type ToolFrag = { id: string; name: string; argsBuffer: string; order: number }
@@ -45,7 +45,7 @@ export async function accumulateOpenAiStream(
   let text = ''
   let thinking = ''
   let finishReason: string | null = null
-  let usage: AnthropicUsage = { input_tokens: 0, output_tokens: 0 }
+  let usage: AnthropicUsage | undefined
   const tools = new Map<number, ToolFrag>()
   let orderSeq = 0
 

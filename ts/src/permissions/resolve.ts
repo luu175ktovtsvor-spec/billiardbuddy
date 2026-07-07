@@ -22,7 +22,7 @@ function ask(tool: Tool, ctx: ToolContext, input: unknown, reason: DecisionReaso
 }
 
 /**
- * 权限瀑布(照 cc-haha hasPermissionsToUseToolInner 顺序,按我们红线口径重排):
+ * 权限瀑布(按我们红线口径排序):
  *  1. fatal          → deny(硬拒,永不执行)
  *  2. plan + 非只读   → deny(planSkip:只规划不动手)
  *  3. 算 needsApproval;不需要 → allow(Delta A:本机可逆动作/文件读写直接放行)
@@ -51,7 +51,7 @@ function resolvePermissionInner(tool: Tool, input: unknown, ctx: ToolContext): P
   if (!needsApproval) return { behavior: 'allow', reason: { type: 'mode', mode } }
 
   // —— autoApprove ——
-  if (tool.forceConfirm) return ask(tool, ctx, input, { type: 'forceConfirm' }, approvalClass)
+  if (tool.forceConfirm || (tool.forceConfirmFor?.(input, ctx) ?? false)) return ask(tool, ctx, input, { type: 'forceConfirm' }, approvalClass)
   if (tool.requiresUserInteraction || (tool.requiresUserInteractionFor?.(input, ctx) ?? false)) {
     return ask(tool, ctx, input, { type: 'requiresUserInteraction' }, approvalClass)
   }

@@ -2,6 +2,7 @@ import type { AgentEvent, AskQuestionField } from '../types/events'
 import type { Tool } from './Tool'
 
 export const ASK_USER_QUESTION_TOOL_NAMES = ['ask_user_question', 'AskUserQuestion'] as const
+export const ENTER_PLAN_TOOL_NAMES = ['enter_plan', 'EnterPlanMode'] as const
 export const EXIT_PLAN_TOOL_NAMES = ['exit_plan', 'ExitPlanMode'] as const
 
 export type AskOption = { label: string; description?: string; preview?: string }
@@ -67,6 +68,24 @@ export const askUserQuestionCompatTool: Tool = {
   name: 'AskUserQuestion',
 }
 
+export const enterPlanTool = makeSpec(
+  'enter_plan',
+  [
+    'Request to enter plan mode before non-trivial implementation.',
+    'Use this when the task needs exploration, architectural choices, or user sign-off before edits.',
+    'After approval, only read-only exploration should happen until ExitPlanMode presents the plan.',
+  ].join(' '),
+  {
+    reason: { type: 'string', description: 'Short reason why plan mode is useful for this task.' },
+    timeout_ms: { type: 'number', description: `Wait timeout in ms, capped at ${MAX_QUESTION_TIMEOUT_MS}.` },
+  },
+)
+
+export const enterPlanCompatTool: Tool = {
+  ...enterPlanTool,
+  name: 'EnterPlanMode',
+}
+
 export const exitPlanTool = makeSpec(
   'exit_plan',
   [
@@ -91,6 +110,10 @@ export function isAskUserQuestionToolName(name: string): boolean {
   return (ASK_USER_QUESTION_TOOL_NAMES as readonly string[]).includes(name)
 }
 
+export function isEnterPlanToolName(name: string): boolean {
+  return (ENTER_PLAN_TOOL_NAMES as readonly string[]).includes(name)
+}
+
 export function isExitPlanToolName(name: string): boolean {
   return (EXIT_PLAN_TOOL_NAMES as readonly string[]).includes(name)
 }
@@ -111,6 +134,25 @@ export function normalizeAskUserQuestion(input: unknown, callId: string): Intera
     fields: normalizeFields(obj.fields),
     url: stringValue(obj.url) || undefined,
     timeoutMs: timeoutMs(obj.timeout_ms ?? obj.timeoutMs),
+  }
+}
+
+export function normalizeEnterPlanQuestion(input: unknown, callId: string): { reason: string; question: InteractionQuestion } {
+  const obj = asRecord(input)
+  const reason = stringValue(obj.reason) || stringValue(obj.task) || '这个任务可能涉及多步修改,需要先探索代码并确认方案。'
+  return {
+    reason,
+    question: {
+      id: `enter_plan_${safeId(callId)}`,
+      question: `是否进入计划模式？\n\n${reason}`,
+      options: [
+        { label: '进入计划模式', description: '先只读探索和设计方案,不直接改文件。' },
+        { label: '继续直接执行', description: '不切换计划模式,按当前权限档继续。' },
+      ],
+      allowFreeform: true,
+      placeholder: '也可以说明你希望怎么推进',
+      timeoutMs: timeoutMs(obj.timeout_ms ?? obj.timeoutMs),
+    },
   }
 }
 
@@ -166,6 +208,23 @@ export function isPlanApprovalAnswer(answer: string): boolean {
     'approve',
     'approved',
     'go',
+  ].some(word => text === word || text.includes(word))
+}
+
+export function isEnterPlanApprovalAnswer(answer: string): boolean {
+  const text = answer.trim().toLowerCase()
+  if (!text) return false
+  return [
+    '进入计划模式',
+    '计划模式',
+    '进入',
+    '同意',
+    '可以',
+    'yes',
+    'y',
+    'ok',
+    'approve',
+    'approved',
   ].some(word => text === word || text.includes(word))
 }
 

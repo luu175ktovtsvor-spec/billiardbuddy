@@ -8,7 +8,7 @@ const GLOB_PATTERN_REGEX = /[*?[\]{}]/
 const WINDOWS_DRIVE_ROOT_REGEX = /^[A-Za-z]:\/?$/
 const WINDOWS_DRIVE_CHILD_REGEX = /^[A-Za-z]:\/[^/]+$/
 
-// UNC 检测:借 cc-haha readOnlyCommandValidation.containsVulnerableUncPath 的正则(§9 写法照它、行为对齐),放进我们自己的文件。
+// UNC 检测:按安全行为要求拦截高风险网络共享路径,实现放在我们自己的 workspace 边界里。
 // \\server\share · //server/share(排除 URL 的 (?<!:)) · 混合分隔 /\\server · \\/server
 const UNC_PATTERNS: RegExp[] = [
   /\\\\[^\s\\/]+(?:@(?:\d+|ssl))?(?:[\\/]|$|\s)/i,
@@ -59,7 +59,7 @@ export function isDangerousRemovalPath(resolvedPath: string, home: string = home
 }
 
 /**
- * 应用层 TOCTOU 护栏(照 cc-haha pathValidation.validatePath 重写):在 resolveInWorkspace 边界判定之前,
+ * 应用层 TOCTOU 护栏:在 resolveInWorkspace 边界判定之前,
  * 先挡掉 shell 执行时会"变身"的输入,消除"校验路径 A、执行读/写路径 B"的缺口。
  * 通过 → 返回工作区内绝对路径;TOCTOU 违规 → PathValidationError;逃出工作区 → WorkspaceBoundaryError。
  */

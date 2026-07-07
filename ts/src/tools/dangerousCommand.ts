@@ -25,7 +25,7 @@ function normalize(command: string): string {
 }
 
 function splitSegments(command: string): string[] {
-  return normalize(command).split(/\s*(?:&&|;)\s*/).map(x => x.trim()).filter(Boolean)
+  return normalize(command).split(/\s*(?:&&|\|\||[;|])\s*/).map(x => x.trim()).filter(Boolean)
 }
 
 function hasWriteRedirection(command: string): boolean {
@@ -40,6 +40,10 @@ function classifySegment(segment: string): CommandRisk {
 
   if (/\bgit\s+clean\s+-/.test(command)) return 'destructive'
   if (/\brm\s+.*-[a-z]*r/.test(command)) return 'destructive'
+  if (/^git\s+push\b.*\s--(?:force|force-with-lease|mirror)\b/.test(command)) return 'destructive'
+  if (/^git\s+push\b.*\s-f(?:\s|$)/.test(command)) return 'destructive'
+  if (/^git\s+reset\b.*\s--hard\b/.test(command)) return 'destructive'
+  if (/^git\s+branch\s+-D\b/.test(command)) return 'destructive'
 
   if (/^(curl|wget|ssh|scp|sftp|ftp|telnet|nc|netcat|rsync)\b/.test(command)) return 'outreach'
   if (/^(gh|glab)\s+(api|auth|repo|pr|issue|release)\b/.test(command)) return 'outreach'

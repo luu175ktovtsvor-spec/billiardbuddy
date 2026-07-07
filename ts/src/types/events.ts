@@ -15,7 +15,20 @@ export type AgentEvent =
   | { type: 'thinking'; text: string }
   | { type: 'command_invocation'; name: string; args: string; raw: string; source: 'commands'; contentLength: number }
   | { type: 'tool_call'; tool: string; input: unknown }
+  | { type: 'tool_progress'; tool: string; id?: string; chunk: string; stream?: string }
   | { type: 'tool_result'; tool: string; output: string }
+  | {
+      type: 'usage_update'
+      input_tokens: number
+      output_tokens: number
+      total_tokens: number
+      last_input_tokens: number
+      last_output_tokens: number
+      cache_read_input_tokens?: number
+      cache_creation_input_tokens?: number
+      context_window?: number
+      context_percent?: number
+    }
   | {
       type: 'ask_question'
       id: string
@@ -36,6 +49,7 @@ export type AgentEvent =
       token: string
       preview?: string
       reason?: { what: string; why: string; impact: string }
+      rememberable?: boolean
     }
   | { type: 'steering'; content: string } // 老板插话纠偏,前端渲成用户气泡
   | { type: 'todo_update'; content: string } // 任务清单变化,前端渲成清单

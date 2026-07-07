@@ -1,5 +1,5 @@
 /**
- * OpenAI Chat Completions 协议类型(照 cc-haha src/server/proxy/transform/types.ts 的 OpenAI 部分)。
+ * OpenAI Chat Completions 协议类型:只保留当前 proxy 层需要的字段。
  * Anthropic 块类型复用 ../types/message,不在这里重造。
  */
 export type OpenAIChatContentPart =
@@ -94,7 +94,7 @@ export interface OpenAIChatStreamChunk {
   usage?: OpenAICompatibleUsage
 }
 
-/** Anthropic usage 语义(input 排除 cache 命中,与 cc-haha usage.ts 对齐)。 */
+/** Anthropic usage 语义(input 排除 cache 命中)。 */
 export interface AnthropicUsage {
   input_tokens: number
   output_tokens: number

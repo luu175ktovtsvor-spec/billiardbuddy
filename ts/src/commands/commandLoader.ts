@@ -98,6 +98,29 @@ export async function loadCommandsDir(rootDir: string): Promise<CommandLibrary> 
   return { commands: [...byName.values()], byName }
 }
 
+export async function loadCommandsFromRoots(rootDirs: string[]): Promise<CommandLibrary> {
+  const byName = new Map<string, PromptCommand>()
+  for (const rootDir of rootDirs) {
+    const library = await loadCommandsDir(rootDir)
+    for (const command of library.commands) byName.set(command.name, command)
+  }
+  return { commands: [...byName.values()], byName }
+}
+
+export function commandLibraryFromCommands(commands: PromptCommand[]): CommandLibrary {
+  const byName = new Map<string, PromptCommand>()
+  for (const command of commands) byName.set(command.name, command)
+  return { commands: [...byName.values()], byName }
+}
+
+export function mergeCommandLibraries(...libraries: Array<CommandLibrary | undefined>): CommandLibrary {
+  const byName = new Map<string, PromptCommand>()
+  for (const library of libraries) {
+    for (const command of library?.commands ?? []) byName.set(command.name, command)
+  }
+  return { commands: [...byName.values()], byName }
+}
+
 export function publicCommand(command: PromptCommand) {
   return {
     name: command.name,

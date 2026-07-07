@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../workspace/workspace'
-import { createCommandTools, formatCommandIndex, loadCommandsDir, normalizeCommandName, parseCommandInvocation, publicCommand } from './commandLoader'
+import { createCommandTools, formatCommandIndex, loadCommandsDir, loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from './commandLoader'
 
 test('parseCommandInvocation accepts cc-style slash command names', () => {
   expect(parseCommandInvocation('/plugin:name.run 参数 一二三')).toEqual({
@@ -62,6 +62,63 @@ Use the campaign planning checklist.
     expect(full).toContain('命令: /plan')
     expect(full).toContain('命令参数')
     expect(full).toContain('周末活动')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('loadCommandsFromRoots lets later roots override earlier commands', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'commands-merge-'))
+  const builtin = join(root, 'builtin')
+  const workspace = join(root, 'workspace', '.claude', 'commands')
+  try {
+    mkdirSync(builtin, { recursive: true })
+    mkdirSync(workspace, { recursive: true })
+    writeFileSync(join(builtin, 'review.md'), `---
+description: Builtin review
+---
+Use builtin review.
+`)
+    writeFileSync(join(workspace, 'review.md'), `---
+description: Workspace review
+---
+Use workspace review.
+`)
+    writeFileSync(join(workspace, 'fix.md'), `---
+description: Workspace fix
+---
+Use workspace fix.
+`)
+    const lib = await loadCommandsFromRoots([builtin, workspace])
+    expect(lib.commands.map(c => c.name).sort()).toEqual(['fix', 'review'])
+    expect(lib.byName.get('review')?.description).toBe('Workspace review')
+    expect(await lib.byName.get('review')?.getPrompt('', { workspace: new Workspace(root) })).toContain('Use workspace review.')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('mergeCommandLibraries lets later libraries override earlier commands', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'commands-library-merge-'))
+  const builtin = join(root, 'builtin')
+  const pack = join(root, 'pack')
+  try {
+    mkdirSync(builtin, { recursive: true })
+    mkdirSync(pack, { recursive: true })
+    writeFileSync(join(builtin, 'daily.md'), `---
+description: Builtin daily
+---
+Use builtin daily.
+`)
+    writeFileSync(join(pack, 'daily.md'), `---
+description: Pack daily
+---
+Use pack daily.
+`)
+    const merged = mergeCommandLibraries(await loadCommandsDir(builtin), await loadCommandsDir(pack))
+    expect(merged.commands).toHaveLength(1)
+    expect(merged.byName.get('daily')?.description).toBe('Pack daily')
+    expect(await merged.byName.get('daily')?.getPrompt('', { workspace: new Workspace(root) })).toContain('Use pack daily.')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

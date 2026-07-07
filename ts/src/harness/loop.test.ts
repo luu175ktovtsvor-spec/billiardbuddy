@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test'
-import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../workspace/workspace'
@@ -12,8 +12,12 @@ import type { AssistantStep, Model } from '../types/model'
 import { ToolRegistry } from '../tools/registry'
 import { executeApproved, handleReject } from './loop'
 import { resetDenialStore } from '../permissions/denialTracking'
+import { signApproval } from '../permissions/approval'
 import type { Tool } from '../tools/Tool'
 import { userText } from '../types/message'
+import { readStoredToolResultTool } from '../tools/storedToolResultTool'
+import { TeamService } from '../tasks/teamService'
+import { Transcript } from '../memory/transcript'
 
 let root: string
 beforeEach(() => {
@@ -54,6 +58,277 @@ test('runs a multi-step tool task: think -> tool -> feed back -> think -> final'
   expect(hasResult).toBe(true)
   // 且没有任何 role:'tool' 消息(Anthropic 格式)
   expect(second.messages.every(m => m.role === 'user' || m.role === 'assistant')).toBe(true)
+})
+
+test('parallelizes safe read-only tool calls while preserving model feedback order', async () => {
+  let releaseBoth!: () => void
+  const bothStarted = new Promise<void>(resolve => { releaseBoth = resolve })
+  const starts: string[] = []
+  const slowRead = (name: string): Tool => ({
+    name,
+    description: '',
+    inputSchema: { type: 'object' },
+    isReadOnly: true,
+    async execute() {
+      starts.push(name)
+      if (starts.length === 2) releaseBoth()
+      await Promise.race([
+        bothStarted,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('read-only tools did not run in parallel')), 120)),
+      ])
+      return `ok-${name}`
+    },
+  })
+  const reg = new ToolRegistry([slowRead('read_a'), slowRead('read_b')])
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'a', name: 'read_a', input: {} }, { id: 'b', name: 'read_b', input: {} }] },
+    { kind: 'final', text: 'done' },
+  ])
+  const events = await collect(runAgentLoop({
+    model, registry: reg, workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x',
+  }))
+
+  expect(starts).toEqual(['read_a', 'read_b'])
+  expect(events.filter(e => e.type === 'tool_result').map(e => e.type === 'tool_result' ? e.output : '')).toEqual(['ok-read_a', 'ok-read_b'])
+  const feedback = model.received[1]!.messages.flatMap(m => m.content).filter(b => b.type === 'tool_result')
+  expect(feedback.map(b => b.type === 'tool_result' ? b.tool_use_id : '')).toEqual(['a', 'b'])
+  expect(feedback.map(b => b.type === 'tool_result' ? b.content : '')).toEqual(['ok-read_a', 'ok-read_b'])
+})
+
+test('tool_search reveals cold tool schemas only after search in large registries', async () => {
+  const coldTools: Tool[] = Array.from({ length: 16 }, (_, index) => ({
+    name: index === 7 ? 'mcp__fixture__rare_invoice_import' : `mcp__fixture__cold_${index}`,
+    description: index === 7 ? 'Import rare invoices from an MCP accounting system.' : 'Cold MCP extension tool.',
+    inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
+    isReadOnly: true,
+    async execute() {
+      return index === 7 ? 'rare import ok' : `cold ${index}`
+    },
+  }))
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'search1', name: 'tool_search', input: { query: 'rare invoice accounting', limit: 4 } }] },
+    { kind: 'tool_calls', calls: [{ id: 'rare1', name: 'mcp__fixture__rare_invoice_import', input: { value: 'x' } }] },
+    { kind: 'final', text: 'done' },
+  ])
+  const events = await collect(runAgentLoop({
+    model,
+    registry: buildGeneralRegistry({ extraTools: coldTools }),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+  }))
+
+  const firstTools = model.received[0]!.tools.map(t => t.name)
+  expect(firstTools).toContain('tool_search')
+  expect(firstTools).not.toContain('mcp__fixture__rare_invoice_import')
+  const secondTools = model.received[1]!.tools.map(t => t.name)
+  expect(secondTools).toContain('mcp__fixture__rare_invoice_import')
+  expect(events.some(e => e.type === 'tool_result' && e.tool === 'mcp__fixture__rare_invoice_import' && e.output === 'rare import ok')).toBe(true)
+})
+
+test('streams tool_progress for a running non-parallel tool with the tool call id', async () => {
+  const tool: Tool = {
+    name: 'slow_command',
+    description: '',
+    inputSchema: { type: 'object' },
+    isReadOnly: false,
+    async execute(_input, ctx) {
+      ctx.progressEmit?.({ stream: 'stdout', chunk: 'first line\n' })
+      await new Promise(resolve => setTimeout(resolve, 5))
+      ctx.progressEmit?.({ stream: 'stderr', chunk: 'warning line\n' })
+      return 'command done'
+    },
+  }
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'cmd1', name: 'slow_command', input: {} }] },
+    { kind: 'final', text: 'done' },
+  ])
+  const events = await collect(runAgentLoop({
+    model, registry: new ToolRegistry([tool]), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x',
+  }))
+
+  expect(events.map(e => e.type)).toEqual(['tool_call', 'tool_progress', 'tool_progress', 'tool_result', 'final'])
+  const progress = events.filter((e): e is Extract<AgentEvent, { type: 'tool_progress' }> => e.type === 'tool_progress')
+  expect(progress.map(e => [e.id, e.stream, e.chunk])).toEqual([
+    ['cmd1', 'stdout', 'first line\n'],
+    ['cmd1', 'stderr', 'warning line\n'],
+  ])
+})
+
+test('stores oversized storable tool results and feeds only a preview back to the model', async () => {
+  const storeDir = join(root, 'tool-results')
+  const output = `HEAD\n${'x'.repeat(25_000)}\nTAIL`
+  const tool: Tool = {
+    name: 'run_command',
+    description: '',
+    inputSchema: { type: 'object' },
+    isReadOnly: true,
+    async execute() {
+      return output
+    },
+  }
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'big-1', name: 'run_command', input: {} }] },
+    { kind: 'final', text: 'done' },
+  ])
+
+  const events = await collect(runAgentLoop({
+    model,
+    registry: new ToolRegistry([tool]),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    toolResultStoreDir: storeDir,
+  }))
+
+  const eventOutput = events.find(e => e.type === 'tool_result')
+  expect(eventOutput && eventOutput.type === 'tool_result' && eventOutput.output).toContain('<stored_tool_result')
+  expect(eventOutput && eventOutput.type === 'tool_result' && eventOutput.output).toContain('HEAD')
+  expect(eventOutput && eventOutput.type === 'tool_result' && eventOutput.output).toContain('TAIL')
+  const feedback = model.received[1]!.messages.flatMap(m => m.content).find(b => b.type === 'tool_result')
+  expect(feedback && feedback.type === 'tool_result' && feedback.content).toContain('<stored_tool_result')
+  expect(feedback && feedback.type === 'tool_result' && feedback.content).not.toContain('x'.repeat(20_000))
+  const files = readdirSync(storeDir)
+  expect(files.length).toBe(1)
+  expect(readFileSync(join(storeDir, files[0]!), 'utf8')).toBe(output)
+})
+
+test('message-level aggregate tool result budget stores the largest result and persists replacement records', async () => {
+  const storeDir = join(root, 'aggregate-tool-results')
+  const transcript = new Transcript(join(root, 'state'), 'aggregate_conv')
+  const outputA = `A-HEAD\n${'a'.repeat(130_000)}\nA-TAIL`
+  const outputB = `B-HEAD\n${'b'.repeat(90_000)}\nB-TAIL`
+  const toolA: Tool = {
+    name: 'log_a',
+    description: '',
+    inputSchema: { type: 'object' },
+    isReadOnly: true,
+    async execute() {
+      return outputA
+    },
+  }
+  const toolB: Tool = {
+    name: 'log_b',
+    description: '',
+    inputSchema: { type: 'object' },
+    isReadOnly: true,
+    async execute() {
+      return outputB
+    },
+  }
+  const model = scriptedModel([
+    {
+      kind: 'tool_calls',
+      calls: [
+        { id: 'log-a-1', name: 'log_a', input: {} },
+        { id: 'log-b-1', name: 'log_b', input: {} },
+      ],
+    },
+    { kind: 'final', text: 'done' },
+  ])
+
+  await collect(runAgentLoop({
+    model,
+    registry: new ToolRegistry([toolA, toolB]),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'run both logs',
+    conversationId: 'aggregate_conv',
+    toolResultStoreDir: storeDir,
+    transcript,
+  }))
+
+  const feedback = model.received[1]!.messages.flatMap(message => message.content)
+    .filter(block => block.type === 'tool_result')
+  expect(feedback.filter(block => block.type === 'tool_result' && block.content.includes('<stored_tool_result')).length).toBe(1)
+  expect(readdirSync(storeDir).length).toBe(1)
+  const records = await transcript.loadContentReplacementRecords()
+  expect(records.length).toBe(1)
+  expect(records[0]!.replacement).toContain('<stored_tool_result')
+  const savedText = JSON.stringify(await transcript.load())
+  expect(savedText).toContain('<stored_tool_result')
+  expect(savedText).not.toContain('a'.repeat(80_000))
+})
+
+test('can read back a stored oversized tool result through the session-scoped tool', async () => {
+  const storeDir = join(root, 'tool-results')
+  const output = `HEAD\n${'x'.repeat(25_000)}\nTAIL`
+  const runCommand: Tool = {
+    name: 'run_command',
+    description: '',
+    inputSchema: { type: 'object' },
+    isReadOnly: true,
+    async execute() {
+      return output
+    },
+  }
+  let turn = 0
+  const received: any[] = []
+  const model: Model = {
+    async step(input: any) {
+      received.push(input)
+      turn += 1
+      if (turn === 1) return { kind: 'tool_calls', calls: [{ id: 'big-1', name: 'run_command', input: {} }] }
+      if (turn === 2) {
+        const text = JSON.stringify(input.messages)
+        const path = text.match(/path=\\?"([^"\\]+)\\?"/)?.[1]
+        return { kind: 'tool_calls', calls: [{ id: 'read-1', name: 'read_stored_tool_result', input: { path, tail: true, max_bytes: 16 } }] }
+      }
+      return { kind: 'final', text: 'done' }
+    },
+  } as Model
+
+  const events = await collect(runAgentLoop({
+    model,
+    registry: new ToolRegistry([runCommand, readStoredToolResultTool]),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    toolResultStoreDir: storeDir,
+  }))
+
+  const readBack = events.filter((e): e is Extract<AgentEvent, { type: 'tool_result' }> => e.type === 'tool_result').at(-1)
+  expect(readBack?.tool).toBe('read_stored_tool_result')
+  expect(readBack?.output).toContain('<stored_tool_result_read status="completed"')
+  expect(readBack?.output).toContain('TAIL')
+})
+
+test('executeApproved stores oversized approved tool results and returns a preview', async () => {
+  const storeDir = join(root, 'approved-tool-results')
+  const output = `HEAD\n${'x'.repeat(25_000)}\nTAIL`
+  const tool: Tool = {
+    name: 'run_command',
+    description: '',
+    inputSchema: { type: 'object' },
+    isReadOnly: true,
+    async execute() {
+      return output
+    },
+  }
+
+  const result = await executeApproved(
+    new ToolRegistry([tool]),
+    'run_command',
+    {},
+    signApproval('run_command', {}),
+    {
+      workspace: new Workspace(root),
+      conversationId: 'approved-conv',
+      toolResultStoreDir: storeDir,
+    },
+  )
+
+  expect(result.ok).toBe(true)
+  expect(result.output).toContain('<stored_tool_result')
+  expect(result.output).toContain('call_id="approved"')
+  expect(result.output).toContain('HEAD')
+  expect(result.output).toContain('TAIL')
+  expect(result.output).not.toContain('x'.repeat(20_000))
+  const files = readdirSync(storeDir)
+  expect(files.length).toBe(1)
+  expect(readFileSync(join(storeDir, files[0]!), 'utf8')).toBe(output)
 })
 
 // 工具错误回灌不崩,且带 <tool_use_error> + is_error
@@ -121,6 +396,73 @@ test('max_turns fallback forces a final and terminates', async () => {
   expect(model.received.at(-1)!.tools).toEqual([])
 })
 
+test('emits usage_update events with cumulative usage and context pressure', async () => {
+  const model = scriptedModel([
+    {
+      kind: 'tool_calls',
+      calls: [{ id: 'a', name: 'list_dir', input: {} }],
+      usage: { input_tokens: 100, output_tokens: 12, cache_read_input_tokens: 30 },
+    },
+    {
+      kind: 'final',
+      text: 'done',
+      usage: { input_tokens: 140, output_tokens: 20, cache_creation_input_tokens: 10 },
+    },
+  ])
+  const events = await collect(
+    runAgentLoop({
+      model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'x', contextWindowTokens: 1000,
+    }),
+  )
+  const usage = events.filter((e): e is Extract<AgentEvent, { type: 'usage_update' }> => e.type === 'usage_update')
+  expect(usage).toEqual([
+    {
+      type: 'usage_update',
+      input_tokens: 100,
+      output_tokens: 12,
+      total_tokens: 112,
+      last_input_tokens: 100,
+      last_output_tokens: 12,
+      cache_read_input_tokens: 30,
+      context_window: 1000,
+      context_percent: 10,
+    },
+    {
+      type: 'usage_update',
+      input_tokens: 240,
+      output_tokens: 32,
+      total_tokens: 272,
+      last_input_tokens: 140,
+      last_output_tokens: 20,
+      cache_read_input_tokens: 30,
+      cache_creation_input_tokens: 10,
+      context_window: 1000,
+      context_percent: 14,
+    },
+  ])
+  expect(events.map(e => e.type)).toEqual(['usage_update', 'tool_call', 'tool_result', 'usage_update', 'final'])
+})
+
+test('emits model notices as context_note events', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'loop-notice-'))
+  try {
+    const events: AgentEvent[] = []
+    for await (const ev of runAgentLoop({
+      model: scriptedModel([{ kind: 'final', text: 'ok', notices: ['供应商本轮没有按流式返回,已自动按完整响应接回。'] }]),
+      registry: new ToolRegistry([]),
+      workspace: new Workspace(root),
+      systemPrompt: '',
+      userMessage: 'hello',
+    })) events.push(ev)
+
+    expect(events.map(e => e.type)).toEqual(['context_note', 'final'])
+    expect((events[0] as Extract<AgentEvent, { type: 'context_note' }>).text).toContain('完整响应接回')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 // —— 追加到 loop.test.ts:审批闸(顶部按需补 import)——
 
 const SECRET = 'loop-test-secret'
@@ -169,6 +511,88 @@ test('executeApproved:token 对 → 真执行;token 错 → 校验失败不执�
   const bad = await executeApproved(reg, 'send_message', { msg: 'TAMPERED' }, signApproval('send_message', { msg: 'hi' }, SECRET), ctx)
   expect(bad.ok).toBe(false)
   expect(bad.output).toContain('校验')
+})
+
+test('executeApproved:用户改参后可用原审批 token 放行修改后的安全参数', async () => {
+  process.env.SECRET_KEY = SECRET
+  resetDenialStore()
+  const seen: unknown[] = []
+  const reg = new ToolRegistry([{
+    name: 'send_message', description: '', inputSchema: { type: 'object' },
+    isReadOnly: false, requiresApproval: true, approvalClass: 'outreach',
+    async execute(input) {
+      seen.push(input)
+      return `SENT:${(input as { msg?: string }).msg ?? ''}`
+    },
+  }])
+  const ctx = { workspace: new Workspace(root), conversationId: 'conv-edit-args' }
+  const { signApproval } = await import('../permissions/approval')
+  const original = { msg: '原文' }
+  const edited = { msg: '用户改过的文案' }
+
+  const approved = await executeApproved(reg, 'send_message', edited, signApproval('send_message', original, SECRET), ctx, false, original)
+
+  expect(approved).toEqual({ ok: true, output: 'SENT:用户改过的文案' })
+  expect(seen).toEqual([edited])
+})
+
+test('executeApproved remember=true lets the same action auto-run later in the same conversation', async () => {
+  process.env.SECRET_KEY = SECRET
+  resetDenialStore()
+  const spy = { count: 0 }
+  const rememberTool: Tool<{ msg?: string }> = {
+    name: 'send_message', description: '', inputSchema: { type: 'object' },
+    isReadOnly: false, requiresApproval: true, approvalClass: 'outreach',
+    async execute() { spy.count += 1; return `SENT-${spy.count}` },
+  }
+  const reg = new ToolRegistry([rememberTool])
+  const ctx = { workspace: new Workspace(root), conversationId: 'conv-remember', permissionMode: 'ask' as const }
+  const { signApproval } = await import('../permissions/approval')
+  const approved = await executeApproved(reg, 'send_message', { msg: 'hi' }, signApproval('send_message', { msg: 'hi' }, SECRET), ctx, true)
+  expect(approved.ok).toBe(true)
+
+  const events = await collect(
+    runAgentLoop({
+      model: scriptedModel([
+        { kind: 'tool_calls', calls: [{ id: 'a', name: 'send_message', input: { msg: 'hi' } }] },
+        { kind: 'final', text: 'sent' },
+      ]),
+      registry: reg,
+      workspace: new Workspace(root),
+      systemPrompt: 'SYS',
+      userMessage: 'x',
+      permissionMode: 'ask',
+      conversationId: 'conv-remember',
+    }),
+  )
+  expect(events.some(e => e.type === 'approval_request')).toBe(false)
+  expect(events.find(e => e.type === 'tool_result')).toMatchObject({ type: 'tool_result', output: 'SENT-2' })
+})
+
+test('forceConfirm approval requests are not rememberable', async () => {
+  process.env.SECRET_KEY = SECRET
+  resetDenialStore()
+  const reg = new ToolRegistry([{
+    name: 'dangerous_once', description: '', inputSchema: { type: 'object' },
+    isReadOnly: false, requiresApproval: true, forceConfirm: true, approvalClass: 'destructive',
+    async execute() { return 'DONE' },
+  }])
+  const events = await collect(
+    runAgentLoop({
+      model: scriptedModel([
+        { kind: 'tool_calls', calls: [{ id: 'a', name: 'dangerous_once', input: {} }] },
+        { kind: 'final', text: 'ok' },
+      ]),
+      registry: reg,
+      workspace: new Workspace(root),
+      systemPrompt: 'SYS',
+      userMessage: 'x',
+      permissionMode: 'ask',
+      conversationId: 'conv-force',
+    }),
+  )
+  const ap = events.find((e): e is Extract<AgentEvent, { type: 'approval_request' }> => e.type === 'approval_request')
+  expect(ap?.rememberable).toBe(false)
 })
 
 test('拒绝 2 次后:同一动作不再弹卡,回灌"先不做了"', async () => {
@@ -291,6 +715,53 @@ test('steering:每批工具后 drain,插话在下一次 model.step 前进 messag
   ).toBe(true)
 })
 
+test('team inbox: injects unread teammate messages and leaves structured protocol unread', async () => {
+  const teams = new TeamService(root)
+  await teams.createTeam({ teamName: 'alpha', cwd: root, conversationId: 'conv-team' })
+  await teams.writeToMailbox('team-lead', {
+    from: 'worker',
+    text: 'Parser migration is done.',
+    summary: 'parser done',
+    timestamp: '2026-07-08T00:00:00.000Z',
+  }, 'alpha')
+  await teams.writeToMailbox('team-lead', {
+    from: 'worker',
+    text: JSON.stringify({ type: 'shutdown_request', requestId: 'shutdown-worker-1', from: 'worker', timestamp: '2026-07-08T00:00:01.000Z' }),
+    timestamp: '2026-07-08T00:00:01.000Z',
+  }, 'alpha')
+
+  const received: { messages: import('../types/message').Message[] }[] = []
+  const model: Model = {
+    async step(input) {
+      received.push({ messages: input.messages.slice() })
+      return { kind: 'final', text: 'ok' }
+    },
+  }
+
+  await collect(runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'hi',
+    conversationId: 'conv-team',
+    teamInbox: { service: teams },
+  }))
+
+  const firstUserText = received[0]!.messages
+    .flatMap(message => message.content)
+    .filter(block => block.type === 'text')
+    .map(block => block.text)
+    .join('\n')
+  expect(firstUserText).toContain('<teammate-message teammate_id="worker" summary="parser done">')
+  expect(firstUserText).toContain('Parser migration is done.')
+  expect(firstUserText).not.toContain('shutdown_request')
+
+  const unread = await teams.readUnreadMessages('team-lead', 'alpha')
+  expect(unread).toHaveLength(1)
+  expect(JSON.parse(unread[0]!.text).type).toBe('shutdown_request')
+})
+
 test('无 steering 时行为不回归(W4a 收尾照常)', async () => {
   const events = await collect(
     runAgentLoop({
@@ -403,6 +874,72 @@ test('AskUserQuestion emits question card and feeds the answer back as tool_resu
   expect(events.at(-1)).toEqual({ type: 'final', text: '收到选择' })
 })
 
+test('EnterPlanMode approval switches current turn into read-only plan mode', async () => {
+  const inbox: string[] = []
+  const model = scriptedModel([
+    {
+      kind: 'tool_calls',
+      calls: [{
+        id: 'enter1',
+        name: 'EnterPlanMode',
+        input: { reason: '需要先看项目结构再决定实现方案', timeout_ms: 1000 },
+      }],
+    },
+    { kind: 'tool_calls', calls: [{ id: 'write1', name: 'write_file', input: { path: 'blocked-by-plan.txt', content: 'nope' } }] },
+    { kind: 'final', text: '已经在计划模式' },
+  ])
+  const events: AgentEvent[] = []
+  for await (const event of runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    steerInbox: inbox,
+  })) {
+    events.push(event)
+    if (event.type === 'ask_question') inbox.push('进入计划模式')
+  }
+
+  const enterResult = events.find(e => e.type === 'tool_result' && e.tool === 'EnterPlanMode')
+  expect(enterResult && enterResult.type === 'tool_result' && enterResult.output).toContain('<plan_mode_entered')
+  const writeResult = events.find(e => e.type === 'tool_result' && e.tool === 'write_file')
+  expect(writeResult && writeResult.type === 'tool_result' && writeResult.output).toContain('[计划模式]')
+  expect(existsSync(join(root, 'blocked-by-plan.txt'))).toBe(false)
+})
+
+test('EnterPlanMode rejection keeps the existing permission mode', async () => {
+  const inbox: string[] = []
+  const model = scriptedModel([
+    {
+      kind: 'tool_calls',
+      calls: [{
+        id: 'enter1',
+        name: 'EnterPlanMode',
+        input: { reason: '需要先规划', timeout_ms: 1000 },
+      }],
+    },
+    { kind: 'tool_calls', calls: [{ id: 'write1', name: 'write_file', input: { path: 'direct.txt', content: 'ok' } }] },
+    { kind: 'final', text: '直接执行完成' },
+  ])
+  const events: AgentEvent[] = []
+  for await (const event of runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    steerInbox: inbox,
+  })) {
+    events.push(event)
+    if (event.type === 'ask_question') inbox.push('继续直接执行')
+  }
+
+  const enterResult = events.find(e => e.type === 'tool_result' && e.tool === 'EnterPlanMode')
+  expect(enterResult && enterResult.type === 'tool_result' && enterResult.output).toContain('<plan_mode_rejected>')
+  expect(readFileSync(join(root, 'direct.txt'), 'utf8')).toBe('ok')
+})
+
 test('ExitPlanMode approval exits plan mode for the current turn', async () => {
   const inbox: string[] = []
   const model = scriptedModel([
@@ -415,6 +952,17 @@ test('ExitPlanMode approval exits plan mode for the current turn', async () => {
       }],
     },
     { kind: 'tool_calls', calls: [{ id: 'write1', name: 'write_file', input: { path: 'approved.txt', content: 'ok' } }] },
+    {
+      kind: 'tool_calls',
+      calls: [{
+        id: 'verify1',
+        name: 'VerifyPlanExecution',
+        input: {
+          status: 'pass',
+          evidence: [{ label: 'read approved.txt', output: 'read_file approved.txt -> ok' }],
+        },
+      }],
+    },
     { kind: 'final', text: '计划已执行' },
   ])
   const events: AgentEvent[] = []
@@ -434,7 +982,89 @@ test('ExitPlanMode approval exits plan mode for the current turn', async () => {
   expect(events.some(e => e.type === 'ask_question' && e.question.includes('approved.txt'))).toBe(true)
   const planResult = events.find(e => e.type === 'tool_result' && e.tool === 'ExitPlanMode')
   expect(planResult && planResult.type === 'tool_result' && planResult.output).toContain('<plan_approved>')
+  const verifyResult = events.find(e => e.type === 'tool_result' && e.tool === 'VerifyPlanExecution')
+  expect(verifyResult && verifyResult.type === 'tool_result' && verifyResult.output).toContain('status="pass"')
   expect(readFileSync(join(root, 'approved.txt'), 'utf8')).toBe('ok')
+})
+
+test('approved plan cannot finish after implementation until VerifyPlanExecution runs', async () => {
+  const inbox: string[] = []
+  const model = scriptedModel([
+    {
+      kind: 'tool_calls',
+      calls: [{
+        id: 'plan1',
+        name: 'ExitPlanMode',
+        input: { plan: '1. 写入 needs-verify.txt\n2. 校验文件内容', timeout_ms: 1000 },
+      }],
+    },
+    { kind: 'tool_calls', calls: [{ id: 'write1', name: 'write_file', input: { path: 'needs-verify.txt', content: 'ok' } }] },
+    { kind: 'final', text: '我想直接收尾' },
+    {
+      kind: 'tool_calls',
+      calls: [{
+        id: 'verify1',
+        name: 'VerifyPlanExecution',
+        input: {
+          status: 'pass',
+          evidence: [{ label: 'project_diagnostics', output: 'bun run typecheck passed' }],
+        },
+      }],
+    },
+    { kind: 'final', text: '已验证后收尾' },
+  ])
+  const events: AgentEvent[] = []
+  for await (const event of runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    permissionMode: 'plan',
+    steerInbox: inbox,
+    maxTurns: 8,
+  })) {
+    events.push(event)
+    if (event.type === 'ask_question') inbox.push('批准并执行')
+  }
+
+  expect(events.some(e => e.type === 'context_note' && e.text.includes('还没有通过 VerifyPlanExecution'))).toBe(true)
+  expect(events.at(-1)).toEqual({ type: 'final', text: '已验证后收尾' })
+})
+
+test('ExitPlanMode revision keeps plan mode and blocks write tools', async () => {
+  const inbox: string[] = []
+  const model = scriptedModel([
+    {
+      kind: 'tool_calls',
+      calls: [{
+        id: 'plan1',
+        name: 'ExitPlanMode',
+        input: { plan: '1. 写入 blocked.txt\n2. 校验文件内容', timeout_ms: 1000 },
+      }],
+    },
+    { kind: 'tool_calls', calls: [{ id: 'write1', name: 'write_file', input: { path: 'blocked.txt', content: 'nope' } }] },
+    { kind: 'final', text: '等待修改计划' },
+  ])
+  const events: AgentEvent[] = []
+  for await (const event of runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    permissionMode: 'plan',
+    steerInbox: inbox,
+  })) {
+    events.push(event)
+    if (event.type === 'ask_question') inbox.push('修改计划:先说明风险,不要动文件')
+  }
+
+  const planResult = events.find(e => e.type === 'tool_result' && e.tool === 'ExitPlanMode')
+  expect(planResult && planResult.type === 'tool_result' && planResult.output).toContain('<plan_needs_revision>')
+  const writeResult = events.find(e => e.type === 'tool_result' && e.tool === 'write_file')
+  expect(writeResult && writeResult.type === 'tool_result' && writeResult.output).toContain('[计划模式]')
+  expect(existsSync(join(root, 'blocked.txt'))).toBe(false)
 })
 
 test('连调 PROGRESS_REMIND_EVERY 次工具没更新进度 → 注入进度提醒', async () => {
@@ -576,8 +1206,47 @@ test('W4c overflow:模型报 context overflow 时强制压缩并重试一次', a
   expect(events.at(-1)).toEqual({ type: 'final', text: '压缩后好了' })
 })
 
-test('W4c hard guard:同一工具同参连续第 5 次被拒执行并回灌', async () => {
-  const calls = Array.from({ length: 5 }, (_, i): AssistantStep => ({
+test('W4c compaction:压缩后把最近读过的文件上下文恢复给模型', async () => {
+  writeFileSync(join(root, 'recent.ts'), 'export const marker = "keep-me";\n')
+  const initialMessages = Array.from({ length: 20 }, (_, i) => userText(`old-${i}-${'x'.repeat(40)}`))
+  const received: import('../types/model').ModelStepInput[] = []
+  let n = 0
+  const model: Model = {
+    async step(input) {
+      received.push(input)
+      n++
+      if (n === 1) {
+        return { kind: 'tool_calls', calls: [{ id: 'read-1', name: 'read_file', input: { path: 'recent.ts' } }] }
+      }
+      if (n === 2) {
+        throw new Error('maximum context length exceeded')
+      }
+      if (n === 3) {
+        expect(input.tools).toEqual([])
+        return { kind: 'final', text: '旧上下文摘要' }
+      }
+      return { kind: 'final', text: 'done' }
+    },
+  }
+
+  const events = await collect(runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'new', initialMessages,
+  }))
+
+  expect(events.some(e => e.type === 'context_note' && e.text.includes('已恢复最近文件上下文'))).toBe(true)
+  expect(events.at(-1)).toEqual({ type: 'final', text: 'done' })
+  const retried = received[3]!
+  const restored = retried.messages[1]!.content[0]
+  expect(restored?.type).toBe('text')
+  if (restored?.type !== 'text') throw new Error('expected restored file context text')
+  expect(restored.text).toContain('[压缩后恢复的最近文件上下文]')
+  expect(restored.text).toContain('path="recent.ts"')
+  expect(restored.text).toContain('export const marker = "keep-me";')
+})
+
+test('W4c hard guard:核心工具同参连续第 4 次被拒执行并回灌', async () => {
+  const calls = Array.from({ length: 4 }, (_, i): AssistantStep => ({
     kind: 'tool_calls',
     calls: [{ id: String(i + 1), name: 'list_dir', input: {} }],
   }))

@@ -5,7 +5,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { structuredPatch } from 'diff'
 import type { ToolContext } from './Tool'
 
-export type FileHistoryOperation = 'write_file' | 'edit_file' | 'restore_file'
+export type FileHistoryOperation = 'write_file' | 'edit_file' | 'multi_edit_file' | 'patch_file' | 'patch_files' | 'NotebookEdit' | 'restore_file'
 
 export interface FileHistoryRecord {
   id: string
@@ -135,12 +135,25 @@ export async function loadFileHistory(ctx: ToolContext): Promise<FileHistoryReco
   }
 }
 
-export async function listFileHistory(ctx: ToolContext, opts: { path?: string; limit?: number } = {}): Promise<FileHistoryRecord[]> {
+export async function listFileHistory(ctx: ToolContext, opts: { path?: string | string[]; paths?: string[]; limit?: number } = {}): Promise<FileHistoryRecord[]> {
   const records = await loadFileHistory(ctx)
-  const normalizedPath = opts.path ? relativePath(ctx, ctx.workspace.resolve(opts.path, 'read')) : undefined
-  const filtered = normalizedPath ? records.filter(record => record.path === normalizedPath) : records
+  const normalizedPaths = normalizePathFilters(ctx, opts)
+  const filtered = normalizedPaths ? records.filter(record => normalizedPaths.has(record.path)) : records
   const limit = Math.max(1, Math.min(200, opts.limit ?? 20))
   return filtered.slice(-limit).reverse()
+}
+
+function normalizePathFilters(ctx: ToolContext, opts: { path?: string | string[]; paths?: string[] }): Set<string> | undefined {
+  const raw = [
+    ...(Array.isArray(opts.path) ? opts.path : opts.path ? [opts.path] : []),
+    ...(Array.isArray(opts.paths) ? opts.paths : []),
+  ]
+  const out = new Set<string>()
+  for (const item of raw) {
+    if (typeof item !== 'string' || !item.trim()) continue
+    out.add(relativePath(ctx, ctx.workspace.resolve(item, 'read')))
+  }
+  return out.size > 0 ? out : undefined
 }
 
 function parseBool(value: unknown): boolean {
@@ -150,7 +163,15 @@ function parseBool(value: unknown): boolean {
   return v === 'true' || v === '1' || v === 'yes' || v === 'y'
 }
 
-function backupPath(ctx: ToolContext, record: FileHistoryRecord): string | undefined {
+function escapeAttr(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+export function fileHistoryBackupPath(ctx: ToolContext, record: FileHistoryRecord): string | undefined {
   if (!record.backupRel) return undefined
   const root = historyRoot(ctx)
   const abs = resolve(root, record.backupRel)
@@ -173,7 +194,7 @@ export async function previewRestore(ctx: ToolContext, input: { path: string; sn
   const record = await pickRestoreRecord(ctx, input)
   if (record.skippedReason) throw new Error(`restore_file 无法使用该快照:${record.skippedReason}`)
   const current = await readTextIfExists(abs)
-  const backup = backupPath(ctx, record)
+  const backup = fileHistoryBackupPath(ctx, record)
   if (record.existed && !backup) throw new Error('restore_file 快照内容不存在,无法回滚')
   const target = record.existed ? await readTextIfExists(backup!) : ''
   const patch = structuredPatch(record.path, record.path, current, target, 'current', 'restore', { context: 3 })
@@ -200,17 +221,28 @@ export async function restoreFileFromHistory(ctx: ToolContext, input: { path: st
   const record = await pickRestoreRecord(ctx, input)
   const diff = await previewRestore(ctx, input)
   if (parseBool(input.dry_run)) {
-    return `<restore_preview snapshot_id="${record.id}" path="${record.path}">\n${diff}\n</restore_preview>`
+    return `<restore_preview snapshot_id="${escapeAttr(record.id)}" path="${escapeAttr(record.path)}">\n${diff}\n</restore_preview>`
   }
 
-  await recordFileSnapshot(ctx, record.path, abs, 'restore_file')
+  const currentSnapshot = await recordFileSnapshot(ctx, record.path, abs, 'restore_file')
+  const currentBackupPath = fileHistoryBackupPath(ctx, currentSnapshot)
   if (record.existed) {
-    const backup = backupPath(ctx, record)
+    const backup = fileHistoryBackupPath(ctx, record)
     if (!backup || !existsSync(backup)) throw new Error('restore_file 快照内容不存在,无法回滚')
     await mkdir(dirname(abs), { recursive: true })
     await copyFile(backup, abs)
+    const info = await stat(abs)
+    recordRecentFileSnapshot(ctx, abs, { path: record.path, mtimeMs: info.mtimeMs, size: info.size })
   } else {
     await rm(abs, { force: true })
+    ctx.fileReads?.delete(abs)
   }
-  return `<restore_file snapshot_id="${record.id}" path="${record.path}">\n${diff}\n</restore_file>`
+  const backupAttr = currentBackupPath ? ` backup_path="${escapeAttr(currentBackupPath)}"` : ''
+  return `<restore_file snapshot_id="${escapeAttr(record.id)}" path="${escapeAttr(record.path)}"${backupAttr}>\n${diff}\n</restore_file>`
+}
+
+function recordRecentFileSnapshot(ctx: ToolContext, abs: string, snapshot: { path: string; mtimeMs: number; size: number }): void {
+  ctx.fileReads ??= new Map()
+  ctx.fileReads.delete(abs)
+  ctx.fileReads.set(abs, snapshot)
 }

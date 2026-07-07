@@ -1,4 +1,4 @@
-// 逻辑照 cc-haha src/server/proxy/transform/toolArguments.ts,行为对齐。args 容错 + {raw} 兜底(05 清单④)。
+// OpenAI-compatible 工具参数容错 + {raw} 兜底。
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

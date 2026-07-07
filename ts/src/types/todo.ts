@@ -2,6 +2,7 @@ export type TodoStatus = 'pending' | 'in_progress' | 'done'
 export interface TodoItem {
   task: string
   status: TodoStatus
+  activeForm?: string
 }
 
 const TODO_MARK: Record<TodoStatus, string> = { pending: '☐', in_progress: '◐', done: '☑' }
@@ -10,7 +11,7 @@ const VALID_STATUS: readonly TodoStatus[] = ['pending', 'in_progress', 'done']
 /** 渲染成大白话清单(照 Python format_todo_checklist)。 */
 export function formatTodoChecklist(todos: TodoItem[]): string {
   const done = todos.filter(t => t.status === 'done').length
-  const lines = todos.map(t => `${TODO_MARK[t.status]} ${t.task}`).join('\n')
+  const lines = todos.map(t => `${TODO_MARK[t.status]} ${displayTodoTask(t)}`).join('\n')
   return `任务清单(共 ${todos.length} 步,已完成 ${done} 步):\n${lines}`
 }
 
@@ -28,13 +29,18 @@ export function normalizeTodos(raw: unknown): TodoItem[] {
       const task = typeof o.task === 'string' ? o.task : typeof o.content === 'string' ? o.content : ''
       if (!task.trim()) continue
       const status = VALID_STATUS.includes(o.status as TodoStatus) ? (o.status as TodoStatus) : 'pending'
-      out.push({ task: task.trim(), status })
+      const activeForm = typeof o.activeForm === 'string'
+        ? o.activeForm.trim()
+        : typeof o.active_form === 'string'
+          ? o.active_form.trim()
+          : ''
+      out.push({ task: task.trim(), status, ...(activeForm ? { activeForm } : {}) })
     }
   }
-  return out
+  return enforceSingleInProgress(out)
 }
 
-/** 解析 markdown 勾选清单(task_progress 内联参数用);markdown 只能表达勾没勾 → done/pending。永不抛。 */
+/** 解析 markdown 勾选清单(task_progress 内联参数用);未勾选的第一项会作为 in_progress。永不抛。 */
 export function parseProgressMarkdown(md: string): TodoItem[] {
   if (typeof md !== 'string') return []
   const out: TodoItem[] = []
@@ -42,5 +48,27 @@ export function parseProgressMarkdown(md: string): TodoItem[] {
     const m = line.match(/^\s*[-*]\s*\[([ xX])\]\s*(.+?)\s*$/)
     if (m) out.push({ task: m[2]!, status: m[1]!.toLowerCase() === 'x' ? 'done' : 'pending' })
   }
-  return out
+  return enforceSingleInProgress(out)
+}
+
+function enforceSingleInProgress(todos: TodoItem[]): TodoItem[] {
+  let seenInProgress = false
+  const normalized = todos.map(item => {
+    if (item.status !== 'in_progress') return item
+    if (!seenInProgress) {
+      seenInProgress = true
+      return item
+    }
+    return { ...item, status: 'pending' as const }
+  })
+  if (!seenInProgress) {
+    const next = normalized.findIndex(item => item.status === 'pending')
+    if (next >= 0) normalized[next] = { ...normalized[next]!, status: 'in_progress' }
+  }
+  return normalized
+}
+
+function displayTodoTask(item: TodoItem): string {
+  if (item.status === 'in_progress' && item.activeForm) return item.activeForm
+  return item.task
 }

@@ -9,6 +9,19 @@ export interface SkillLibrary {
   byName: Map<string, PromptCommand>
 }
 
+export interface SkillIndexOptions {
+  recommendedSkillNames?: string[]
+  recommendedOnly?: boolean
+  query?: string
+  limit?: number
+}
+
+interface ListSkillsInput {
+  recommended_only?: boolean
+  query?: string
+  limit?: number
+}
+
 function safeName(value: string): string {
   return value.trim().replace(/\s+/g, '-').replace(/[^A-Za-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
 }
@@ -78,24 +91,56 @@ export async function loadSkillsDir(rootDir: string): Promise<SkillLibrary> {
   return { skills: [...byName.values()], byName }
 }
 
-export function formatSkillIndex(library: SkillLibrary): string {
+export function formatSkillIndex(library: SkillLibrary, opts: SkillIndexOptions = {}): string {
   if (library.skills.length === 0) return '当前没有可用技能。'
-  return library.skills
+  const recommended = normalizeSkillNames(opts.recommendedSkillNames)
+  const recommendedRank = new Map([...recommended].map((name, index) => [name, index]))
+  const query = opts.query?.trim().toLowerCase() ?? ''
+  const limit = clampLimit(opts.limit, 80)
+  const skills = library.skills
+    .filter(skill => !opts.recommendedOnly || recommended.has(skill.name))
+    .filter(skill => !query || skillMatchesQuery(skill, query))
+    .sort((a, b) => {
+      const ar = recommendedRank.get(a.name)
+      const br = recommendedRank.get(b.name)
+      if (ar !== undefined || br !== undefined) return (ar ?? Number.MAX_SAFE_INTEGER) - (br ?? Number.MAX_SAFE_INTEGER)
+      return a.name.localeCompare(b.name)
+    })
+    .slice(0, limit)
+
+  if (skills.length === 0) return '当前没有匹配技能。'
+  const prefix = recommended.size > 0
+    ? `已启用领域包推荐技能优先展示:${[...recommended].join(', ')}\n`
+    : ''
+  return prefix + skills
     .map(skill => {
+      const mark = recommended.has(skill.name) ? ' [推荐]' : ''
       const suffix = skill.whenToUse ? ` 使用时机:${skill.whenToUse}` : ''
-      return `- ${skill.name}: ${skill.description}${suffix}`
+      return `- ${skill.name}${mark}: ${skill.description}${suffix}`
     })
     .join('\n')
 }
 
-export function createSkillTools(library: SkillLibrary, opts: { skillRoot?: string } = {}): Tool[] {
-  const listSkills: Tool<Record<string, never>> = {
+export function createSkillTools(library: SkillLibrary, opts: { skillRoot?: string; recommendedSkillNames?: string[] } = {}): Tool[] {
+  const listSkills: Tool<ListSkillsInput> = {
     name: 'list_skills',
-    description: 'List available skills by name and short description. Use read_skill to load the full instructions only when a skill is relevant.',
-    inputSchema: { type: 'object', properties: {} },
+    description: 'List available skills by name and short description. Enabled domain packs are shown first. Use read_skill to load the full instructions only when a skill is relevant. Input: { query?, recommended_only?, limit? }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string' },
+        recommended_only: { type: 'boolean' },
+        limit: { type: 'number' },
+      },
+    },
     isReadOnly: true,
-    async execute() {
-      return formatSkillIndex(library)
+    async execute(input) {
+      return formatSkillIndex(library, {
+        recommendedSkillNames: opts.recommendedSkillNames,
+        recommendedOnly: input?.recommended_only === true,
+        query: typeof input?.query === 'string' ? input.query : undefined,
+        limit: typeof input?.limit === 'number' ? input.limit : undefined,
+      })
     },
   }
 
@@ -192,4 +237,29 @@ export function createSkillTools(library: SkillLibrary, opts: { skillRoot?: stri
   }
 
   return tools
+}
+
+function normalizeSkillNames(values: string[] | undefined): Set<string> {
+  const out = new Set<string>()
+  for (const value of values ?? []) {
+    const name = safeName(value)
+    if (name) out.add(name)
+  }
+  return out
+}
+
+function skillMatchesQuery(skill: PromptCommand, query: string): boolean {
+  const haystack = [
+    skill.name,
+    skill.description,
+    skill.whenToUse ?? '',
+    skill.allowedTools?.join(' ') ?? '',
+  ].join('\n').toLowerCase()
+  return haystack.includes(query)
+}
+
+function clampLimit(value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback
+  if (!Number.isFinite(value) || value <= 0) return fallback
+  return Math.max(1, Math.min(200, Math.floor(value)))
 }

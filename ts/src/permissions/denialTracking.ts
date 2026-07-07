@@ -1,5 +1,5 @@
 // 跨请求(chat/reject/execute 各自独立 HTTP)拒绝计数,按 conversationId 存进程内。
-// 我们的语义 = 拒够了就"别再烦老板"(跟 cc-haha 的"回退去问人"相反)。全故障安全:异常吞掉、退化成"无历史拒绝"。
+// 我们的语义 = 拒够了就"别再烦老板"。全故障安全:异常吞掉、退化成"无历史拒绝"。
 
 import { stableStringify } from './canonical'
 
@@ -8,6 +8,7 @@ const MAX_CONVERSATIONS = 500
 
 interface Bucket {
   byAction: Record<string, number>
+  approvedActions: Record<string, true>
   total: number
 }
 const store = new Map<string, Bucket>()
@@ -30,7 +31,7 @@ function bucket(conversationId: string | undefined): Bucket | null {
       const oldest = store.keys().next().value // Map 插入序,淘汰最旧
       if (oldest !== undefined) store.delete(oldest)
     }
-    b = { byAction: {}, total: 0 }
+    b = { byAction: {}, approvedActions: {}, total: 0 }
     store.set(conversationId, b)
   }
   return b
@@ -55,6 +56,37 @@ export function clearDenial(conversationId: string | undefined, key: string): vo
     b.total = 0 // 老板在正常配合、解除全局回退锁,否则长会话零散攒够 20 会永久吞掉审批
   } catch {
     /* 故障安全 */
+  }
+}
+
+export function recordApproval(conversationId: string | undefined, key: string): void {
+  try {
+    const b = bucket(conversationId)
+    if (!b) return
+    b.approvedActions[key] = true
+    delete b.byAction[key]
+  } catch {
+    /* 故障安全:记住审批失败不拖垮执行 */
+  }
+}
+
+export function clearApproval(conversationId: string | undefined, key: string): void {
+  try {
+    const b = conversationId ? store.get(conversationId) : undefined
+    if (!b) return
+    delete b.approvedActions[key]
+  } catch {
+    /* 故障安全 */
+  }
+}
+
+export function shouldAutoApprove(conversationId: string | undefined, key: string): boolean {
+  try {
+    const b = conversationId ? store.get(conversationId) : undefined
+    if (!b) return false
+    return b.approvedActions[key] === true
+  } catch {
+    return false
   }
 }
 

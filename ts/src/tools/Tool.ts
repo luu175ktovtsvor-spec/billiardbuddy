@@ -9,6 +9,14 @@ export interface FileReadSnapshot {
   size: number
 }
 
+export interface ToolProgressEvent {
+  type?: 'tool_progress'
+  tool?: string
+  id?: string
+  stream?: 'stdout' | 'stderr' | string
+  chunk: string
+}
+
 export type JSONSchema = {
   type: 'object'
   properties?: Record<string, unknown>
@@ -34,6 +42,35 @@ export interface ToolContext {
   requestsSinceProgress?: number
   /** 读前置编辑保护:read_file 记录快照,edit_file 改前校验 mtime/size 防覆盖外部改动。 */
   fileReads?: Map<string, FileReadSnapshot>
+  /** 本轮已向模型展示过的目录级项目指令 scope,用于 write_file 新建文件前避免绕过子目录 AGENTS.md。 */
+  projectInstructionScopes?: Set<string>
+  /** 流式工具进度:run_command/慢工具在执行中向 Agent loop 推增量 UI 事件。 */
+  progressEmit?: (event: ToolProgressEvent) => void
+  /** 当前会话的大工具结果落盘目录,供 read_stored_tool_result 安全回读。 */
+  toolResultStoreDir?: string
+  /** ExitPlanMode 批准后登记的待验证计划,VerifyPlanExecution 用它防止“没验就收工”。 */
+  pendingPlanVerification?: {
+    plan: string
+    verificationStarted: boolean
+    verificationCompleted: boolean
+    toolCallsSinceApproval?: number
+    lastStatus?: 'pass' | 'fail' | 'partial' | 'needs_evidence'
+    lastReason?: string
+  }
+  /** EnterWorktree/ExitWorktree 会话态:创建隔离 git worktree 后临时切换当前工具工作区。 */
+  worktreeSession?: {
+    originalRoot: string
+    worktreePath: string
+    worktreeName: string
+    worktreeBranch: string
+    originalHeadCommit: string
+    conversationId?: string
+  }
+  /** executeApproved 临时标记:某个顶层动作已经由用户确认,复合工具可据此执行同批内部步骤但仍保留 fatal/forceConfirm 红线。 */
+  approvedToolExecution?: {
+    name: string
+    key: string
+  }
 }
 
 /** 模型可见的工具描述(function-calling 线上格式)。 */
@@ -63,6 +100,8 @@ export interface Tool<Input = unknown> {
   approvalClassFor?(input: Input, ctx: ToolContext): ApprovalClass | undefined
   /** 旁路免疫:连 full(跳过确认)也强制弹卡。删数据这类真危险动作设它。 */
   forceConfirm?: boolean
+  /** 动态旁路免疫:同一个工具按入参区分预览/真正执行。 */
+  forceConfirmFor?(input: Input, ctx: ToolContext): boolean
   /** 必须用户交互确认:连 bypassPermissions 也不能自动执行(如登录、支付、系统授权)。 */
   requiresUserInteraction?: boolean
   requiresUserInteractionFor?(input: Input, ctx: ToolContext): boolean

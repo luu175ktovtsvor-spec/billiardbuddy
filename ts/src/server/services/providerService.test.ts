@@ -66,6 +66,120 @@ test('ProviderService persists providers, redacts secrets, and resolves active r
   }
 })
 
+test('ProviderService resolves active provider, saved fallbacks, then distinct env fallback', async () => {
+  const root = tempRoot()
+  try {
+    const service = new ProviderService(root)
+    await service.create({
+      id: 'saved',
+      name: 'Saved Provider',
+      apiFormat: 'openai_chat',
+      baseUrl: 'https://saved.example/v1/',
+      apiKey: 'saved-secret',
+      model: 'saved-model',
+    })
+    await service.create({
+      id: 'backup',
+      name: 'Backup Provider',
+      apiFormat: 'openai_chat',
+      baseUrl: 'https://backup.example/v1',
+      apiKey: 'backup-secret',
+      model: 'backup-model',
+    })
+    await service.create({
+      id: 'same_target',
+      name: 'Same Target',
+      apiFormat: 'openai_chat',
+      baseUrl: 'https://saved.example/v1',
+      apiKey: 'same-target-secret',
+      model: 'saved-model',
+    })
+
+    const runtimes = await service.resolveRuntimeConfigs({
+      OPENAI_BASE_URL: 'https://fallback.example/v1',
+      OPENAI_API_KEY: 'fallback-secret',
+      TEXT_MODEL_NAME: 'fallback-model',
+    })
+    expect(runtimes.map(runtime => runtime.source)).toEqual(['saved-provider', 'saved-provider', 'env'])
+    expect(runtimes[0]?.providerId).toBe('saved')
+    expect(runtimes[1]?.providerId).toBe('backup')
+    expect(runtimes[2]?.summary).toMatchObject({ model: 'fallback-model', hasApiKey: true })
+    expect(JSON.stringify(runtimes.map(runtime => runtime.summary))).not.toContain('saved-secret')
+    expect(JSON.stringify(runtimes.map(runtime => runtime.summary))).not.toContain('backup-secret')
+    expect(JSON.stringify(runtimes.map(runtime => runtime.summary))).not.toContain('same-target-secret')
+    expect(JSON.stringify(runtimes.map(runtime => runtime.summary))).not.toContain('fallback-secret')
+
+    const deduped = await service.resolveRuntimeConfigs({
+      OPENAI_BASE_URL: 'https://saved.example/v1/',
+      OPENAI_API_KEY: 'fallback-secret',
+      TEXT_MODEL_NAME: 'saved-model',
+    })
+    expect(deduped.map(runtime => runtime.providerId ?? runtime.source)).toEqual(['saved', 'backup'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('ProviderService can disable and reorder saved fallback providers without leaking secrets', async () => {
+  const root = tempRoot()
+  try {
+    const service = new ProviderService(root)
+    await service.create({
+      id: 'primary',
+      name: 'Primary',
+      apiFormat: 'openai_chat',
+      baseUrl: 'https://primary.example/v1',
+      apiKey: 'primary-secret',
+      model: 'primary-model',
+    })
+    await service.create({
+      id: 'backup',
+      name: 'Backup',
+      apiFormat: 'openai_chat',
+      baseUrl: 'https://backup.example/v1',
+      apiKey: 'backup-secret',
+      model: 'backup-model',
+    })
+    await service.create({
+      id: 'slow',
+      name: 'Slow',
+      apiFormat: 'openai_chat',
+      baseUrl: 'https://slow.example/v1',
+      apiKey: 'slow-secret',
+      model: 'slow-model',
+    })
+
+    const disabledActive = await service.setEnabled('primary', false)
+    expect(disabledActive.enabled).toBe(false)
+    expect((await service.list()).activeId).toBe('backup')
+
+    await service.activate('backup')
+    await service.reorder(['slow', 'backup', 'primary'])
+    await service.setEnabled('slow', false)
+
+    const listed = await service.list()
+    expect(listed.providers.map(provider => [provider.id, provider.enabled])).toEqual([
+      ['slow', false],
+      ['backup', true],
+      ['primary', false],
+    ])
+    expect(JSON.stringify(listed)).not.toContain('backup-secret')
+
+    const runtimes = await service.resolveRuntimeConfigs({
+      OPENAI_BASE_URL: 'https://fallback.example/v1',
+      OPENAI_API_KEY: 'fallback-secret',
+      TEXT_MODEL_NAME: 'fallback-model',
+    })
+    expect(runtimes.map(runtime => runtime.providerId ?? runtime.source)).toEqual(['backup', 'env'])
+
+    const raw = await readFile(join(root, 'providers.json'), 'utf8')
+    expect(raw).toContain('"enabled": false')
+    expect(raw).toContain('primary-secret')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('ProviderService falls back to env when active provider is cleared', async () => {
   const root = tempRoot()
   try {
