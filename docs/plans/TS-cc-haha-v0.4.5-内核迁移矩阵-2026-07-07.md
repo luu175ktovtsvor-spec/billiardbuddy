@@ -41,7 +41,7 @@
 | Skills/commands | `server/api/skills.ts`, `commands.ts`, Skill tools | `ts/src/skills/*`, `ts/src/commands/*` | discover/load/execute/历史恢复;skillify 是产品护城河 | ✅SKILL.md loader + command loader + 工作区 `.claude/.codex` commands + slash 自动展开/list/read/create_skill + `/model` 后端已落 |
 | Subagents/tasks | `tools/AgentTool/**`, `tools/Task*Tool/**`, `tools/TaskOutputTool/**`, `tools/TaskStopTool/**`, `tools/SendMessageTool/**`, `tools/TeamCreateTool/**`, `tools/TeamDeleteTool/**`, `tools/ListPeersTool/**`, `utils/teammateMailbox.ts`, `utils/swarm/teamHelpers.ts`, `tools/EnterPlanModeTool/**`, `tools/ExitPlanModeTool/**`, `tools/VerifyPlanExecutionTool/**`, `tasks/**` | `ts/src/agents/*`, `ts/src/tasks/*`, `ts/src/tools/agentInteractionTools.ts`, `ts/src/tools/verifyPlanExecutionTool.ts` | 子代理、结构化任务列表、后台任务 drawer、任务输出隔离/停止、team/mailbox、计划模式进入/退出/验证门 | 🟡Agent .md loader/工具子集 + 基础 runner + `task_create/list/get/update` + `TaskOutput/TaskStop` + `TeamCreate/TeamDelete/SendMessage/ListPeers` 本地 team/mailbox 主路径 + `SendMessage` running/stopped background agent 路由 + background agent metadata sidecar resume + `EnterPlanMode/ExitPlanMode/VerifyPlanExecution` 计划链路 + 后台 task service/API/tool + 前端后台任务 drawer 已落 |
 | Worktree | `tools/EnterWorktreeTool/**`, `tools/ExitWorktreeTool/**`, `utils/worktree.ts`, `utils/getWorktreePathsPortable.ts` | `ts/src/tools/worktreeTools.ts`, `ToolContext.worktreeSession` | git worktree 创建/进入、退出 keep/remove、删除前变更保护、会话工作区切换/恢复 | 🟡`EnterWorktree/ExitWorktree` 同名工具 + 真实 git worktree add/remove + dirty guard + 同 conversation 后续 turn 自动恢复 active worktree + `tool_search` 已落;hooks/tmux/磁盘 sessionStorage 待深化 |
-| Hooks | `utils/hooks/**`, hook config | `ts/src/hooks/*` | PreTool/PostTool/Stop/UserPromptSubmit/SessionStart | 🟡JSON 裁决 + PreTool/PostTool/SessionStart/UserPromptSubmit/Stop 主链已接;command/http/prompt/agent executor 已按 CC-Haha 行为移植;HTTP hook allowlist/env policy + SSRF DNS guard 已补;Stop hook blocking feedback 续跑已接;goal 命令/持久化待深化 |
+| Hooks | `utils/hooks/**`, hook config, `goals/goalState.ts`, `commands/goal/*`, `query/stopHooks.ts` | `ts/src/hooks/*`, `ts/src/goals/goalState.ts`, `ts/src/harness/loop.ts`, `ts/src/server/index.ts` | PreTool/PostTool/Stop/UserPromptSubmit/SessionStart + `/goal` 长目标 | 🟡JSON 裁决 + PreTool/PostTool/SessionStart/UserPromptSubmit/Stop 主链已接;command/http/prompt/agent executor 已按 CC-Haha 行为移植;HTTP hook allowlist/env policy + SSRF DNS guard 已补;Stop hook blocking feedback 续跑已接;`/goal` set/clear/usage、本地 transcript anchor 恢复、Goal continuing/Goal marked complete 持久化已落 |
 | MCP/plugins | `server/api/mcp.ts`, `plugins.ts`, MCP tools | `ts/src/mcp/*`, `ts/src/plugins/*` | 官方 SDK + secret redaction + Unicode server names | 🟡配置/manifest/命名/审批映射 + SDK tool/resource/prompt/elicitation/task/sampling bridge 已落;MCP elicitation 基础问答桥已落,专用多字段表单 UI 待补 |
 | Desktop sidecar | `desktop/electron/services/sidecarManager.ts`, `serverRuntime.ts` | `ts/desktop/electron/services/*` | 等 `/health`、端口策略、tree kill、日志诊断、ARM64 | 🟡基础 sidecar 已落 |
 | Image module | 无直接 cc-haha 对应 | `ts/src/media/image/*`, 前端 studio | 自研工具,接审批/媒体任务/provider | 🟡TS 文生图/参考图/改图网关直连已落;品牌包/贴图/OCR 待迁 |
@@ -2124,7 +2124,7 @@
 - `ToolContext` 新增当前会话 `model`,主 `runAgentLoop` 创建上下文时注入;主会话、同步子代理和后台子代理复制上下文时都能真实跑 prompt hook,而不是只保留 frontmatter 注册。
 - prompt hook 返回 `ok:true` 映射为 `allow`;`ok:false` 映射为 `deny`;普通非法 JSON/schema 错误降级成非阻塞 `context`;`<cc-haha-goal-hook>` evaluator 的非法输出、超时或模型不可用会阻断并要求继续完成 goal,对齐 CC-Haha `/goal` 防早停策略。
 - 参数替换兼容 CC-Haha `addArgumentsToPrompt`:支持 `$ARGUMENTS`、`$ARGUMENTS[0]`、`$0` 和没有占位符时追加 `ARGUMENTS: ...`;当前未引入 shell-quote 依赖,用轻量 quote-aware 解析覆盖 hook JSON 输入场景。
-- 口径:这一步补齐 prompt hook executor 的当前 TS 可运行等价层。剩余继续复制/移植/改写:CC-Haha `execAgentHook.ts`、更完整的 hook settings policy、goal 状态持久化与 stopHooks 继续工作编排。
+- 口径:这一步补齐 prompt hook executor 的当前 TS 可运行等价层。后续 `/goal` 状态持久化与 stopHooks 继续工作编排已在 3.261 补齐;剩余继续复制/移植/改写:更完整的 hook settings policy。
 - 验证:`cd ts && bun test src/hooks/hookConfig.test.ts src/hooks/hooks.test.ts` = 21 pass;`cd ts && bun run typecheck` clean。
 
 ## 3.258 2026-07-08 CC-Haha agent hook executor 迁移
@@ -2135,7 +2135,7 @@
 - 工具边界按 CC-Haha verifier 思路收窄:仅允许 `read_file/read_many_files/list_dir/glob_files/grep_files/code_outline/git_status/git_history/LSP/list_project_instructions/project_diagnostics/read_stored_tool_result` 这类只读检查/诊断入口;不暴露写文件、子代理、AskUser、Plan、VerifyPlanExecution、媒体/花钱等工具,避免 hook agent 变成新的执行入口。
 - agent hook 复用 `addArgumentsToPrompt` 处理 `$ARGUMENTS`,默认 60s timeout、最多 50 turn;内部 `runAgentLoop` 用 `permissionMode:"plan"` 进一步保证即使误暴露可写工具也会被权限层跳过。
 - 测试覆盖:agent hook 用 `StructuredOutput({ok:true})` 放行;`ok:false` 阻断;可先调用允许的 `read_file` 再结构化输出;缺少当前工具 registry 时返回非阻塞 context 且不打模型。
-- 口径:这一步补齐 CC-Haha `execAgentHook.ts` 的当前 TS 可运行等价层。剩余继续复制/移植/改写:hook settings policy、HTTP SSRF/DNS guard、goal 状态持久化与 stopHooks 继续工作编排、同 agent id 原地 task slot、agent progress summary/prompt-cache。
+- 口径:这一步补齐 CC-Haha `execAgentHook.ts` 的当前 TS 可运行等价层。后续 HTTP SSRF/DNS guard 已在 3.259 补齐,`/goal` 状态持久化与 stopHooks 继续工作编排已在 3.261 补齐;剩余继续复制/移植/改写:hook settings policy、同 agent id 原地 task slot、agent progress summary/prompt-cache。
 - 验证:`cd ts && bun test src/hooks/hookConfig.test.ts src/hooks/hooks.test.ts` = 25 pass;`cd ts && bun run typecheck` clean。
 
 ## 3.259 2026-07-08 CC-Haha HTTP hook policy / SSRF guard 迁移
@@ -2145,7 +2145,7 @@
 - `runHttpHook` 从 `fetch` 改成 `node:http/node:https.request`,把 `ssrfGuardedLookup` 接到请求本身;仍保留 loopback 本地 hook 场景、manual redirect 等价行为、timeout/abort 非阻塞错误口径。
 - `normalizeHookRegistry` 新增 registry 级 `httpPolicy`,并支持 hooks JSON 顶层 CC-Haha 同名字段 `allowedHttpHookUrls`、`httpHookAllowedEnvVars`;环境变量 `HTTP_HOOK_ALLOWED_URLS`、`HTTP_HOOK_ALLOWED_ENV_VARS` 作为无配置服务端兜底入口。
 - 测试覆盖:SSRF 地址表、blocked IP literal lookup、loopback lookup、URL policy 命中/空数组阻断、hooks JSON 顶层 policy 生效、env allowlist 交集和 header injection 清洗、metadata IP HTTP hook 阻断。
-- 口径:这一步补齐 HTTP hook 安全链的当前 TS 可运行等价层。剩余 hooks 方向继续复制/移植/改写:goal 状态持久化与 stopHooks 继续工作编排、sandbox network proxy/系统代理绕过策略如后续引入代理层再接。
+- 口径:这一步补齐 HTTP hook 安全链的当前 TS 可运行等价层。后续 `/goal` 状态持久化与 stopHooks 继续工作编排已在 3.261 补齐;剩余 hooks 方向继续复制/移植/改写:sandbox network proxy/系统代理绕过策略如后续引入代理层再接。
 - 验证:`cd ts && bun test src/hooks/ssrfGuard.test.ts src/hooks/hookConfig.test.ts src/hooks/hooks.test.ts` = 32 pass;`cd ts && bun run typecheck` clean。
 
 ## 3.260 2026-07-08 CC-Haha Stop hook blocking continuation 迁移
@@ -2154,12 +2154,21 @@
 - `ts/src/hooks/hooks.ts` 的 `HookPayload` 新增 `stopHookActive`;`applyStopHooks` 现在把 `deny` 聚合为 `blockingFeedback`,格式对齐 CC-Haha `getStopHookMessage`,不再把 Stop deny 降级成“警告上下文”后直接收尾。
 - `ts/src/harness/loop.ts` 三个收尾出口已接续跑:普通 final、UserPromptSubmit deny 后的收敛 final、max-turn forced final。若 Stop hook 返回 blocking feedback,loop 会把反馈包成 system reminder user message 追加到 transcript,标记 `stopHookActive=true`,并继续模型循环;普通 final 场景额外扩一轮上限,避免刚好踩到 maxTurns 时假收尾。
 - 测试覆盖:Stop hook deny 回灌 feedback 并触发第二次 `model.step`;第二轮模型输入能看到 `Stop hook feedback`;二次 Stop hook payload 带 `stopHookActive:true`;SubagentStop deny 也变成 `SubagentStop hook feedback`。
-- 口径:这一步补齐 Stop hook 阻断续跑的当前 TS 可运行等价层,直接支撑 `/goal` 这类长期目标不会因为 `ok:false` 提前 final。剩余继续复制/移植/改写:CC-Haha `goals/goalState.ts` 的 `/goal` 命令、transcript anchor 恢复、Goal continuing/Goal marked complete 本地命令输出。
+- 口径:这一步补齐 Stop hook 阻断续跑的当前 TS 可运行等价层,直接支撑 `/goal` 这类长期目标不会因为 `ok:false` 提前 final。后续 CC-Haha `goals/goalState.ts` 的 `/goal` 命令、transcript anchor 恢复、Goal continuing/Goal marked complete 本地命令输出已在 3.261 补齐。
 - 验证:`cd ts && bun test src/hooks/hooks.test.ts src/harness/loop.test.ts src/hooks/hookConfig.test.ts` = 81 pass;`cd ts && bun run typecheck` clean。
+
+## 3.261 2026-07-08 CC-Haha `/goal` 命令与状态恢复迁移
+
+- 对照源:`~/Desktop/cc-haha-ref/src/goals/goalState.ts`、`src/commands/goal/goal.tsx`、`src/query/stopHooks.ts`、`src/server/ws/handler.ts`。关键行为:`/goal <condition>` 是本地命令,先写 `Goal set: ...` transcript anchor,再继续让模型工作;`/goal clear` 和 usage error 只输出本地结果,不调用模型;Stop hook `ok:false` 续跑时写 `Goal continuing: ...`,最终 `ok:true` 写 `Goal marked complete.` 并清理当前目标。
+- 新增 `ts/src/goals/goalState.ts`:移植 `parseGoalCommand`、thread-scoped goal map、`<cc-haha-goal-hook>` prompt hook、目标 objective 提取、CC-Haha 两条消息 transcript anchor 恢复,并兼容当前 TS server 把 command-name 与 stdout 放在同一条消息里的紧凑 anchor。
+- `ts/src/server/index.ts` 把 `/goal` 作为内建本地 slash command 处理,不再落到普通 workspace/domain command 扩展:写入 `<command-name>/goal</command-name>` 与 `<local-command-stdout>...</local-command-stdout>`;SSE/WS/session replay 仍复用现有 `command_invocation` + `context_note` + `final/done` 事件契约。
+- `ts/src/harness/loop.ts` 在 Stop hook 收尾分支写回 CC-Haha 风格 goal 状态 anchor:阻断续跑时追加 `Goal continuing: ...` 并保存 transcript;goal evaluator 放行时追加 `Goal marked complete.`、清掉 in-memory goal,避免下一轮继续被同一目标牵住。写入条件用 goal registry 标记约束,避免普通 Stop hook 被误识别成目标完成。
+- 测试覆盖:goal parser/恢复/状态格式;generated hook registry ownership;Stop hook `ok:false -> ok:true` 的 continuation/completion transcript anchor;`POST /agent/run` 的 `/goal set` 继续模型 turn、`/goal clear` 不调模型、usage error 不调模型。
+- 验证:`cd ts && bun test src/goals/goalState.test.ts src/harness/loop.test.ts src/server/index.test.ts --timeout 40000` = 130 pass;`cd ts && bun run typecheck` clean。
 
 ## 4. 下一批代码顺序
 
-1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation 已落;下一步继续复制/移植/改写同 agent id 原地 task slot、content replacement full restore、agent progress summary/prompt-cache、UDS/remote teammate bridge,以及 `/goal` 命令/持久化恢复。
+1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复已落;下一步继续复制/移植/改写同 agent id 原地 task slot、content replacement full restore、agent progress summary/prompt-cache、UDS/remote teammate bridge。
 2. **后台子代理事件流/UI drill-in polish**:同步 `agent_task` 轨迹、后台启动 chip、完成通知与点击跳转、事件过滤/摘要折叠、trace 搜索/失败节点/phase 分组已落;下一步做统一 trace 面板、按 `agent_id` 过滤/跳转、sidechain transcript drill-in。
 3. **provider failover 策略 polish**:active saved -> saved fallbacks -> env fallback、失败原因 `context_note`、sticky fallback、状态线备用出口/冷却 chip、设置抽屉简洁健康状态/折叠明细、旧 BYOK -> ProviderService 兼容桥、provider 健康冷却、跨重启持久化、手动清冷却、保存通道启停/排序、默认/接管中状态区分、prewarm 跟随冷却排序、冷却分类退避、最近排障历史已落;下一步只剩完整高级 provider 管理页与更深的趋势/导出排障。
 4. **领域包/知识库前端 polish**:`billiards` 已从硬编码 supportContext 收到 SessionStart pack,前端选择器已读 `/api/v1/agent/packs`,`list_skills` 已支持 pack 推荐/过滤,pack prompt commands 已合并进命令池;下一步把知识库 Q&A 做成更接近 Codex/Work Buddy 的低噪来源面板和专家挂载入口。

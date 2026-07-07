@@ -32,6 +32,7 @@ import { loadSkillsDir } from '../skills/skillLoader'
 import { loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
 import { loadHookRegistryFile } from '../hooks/hookConfig'
 import { createDomainPackCommandLibrary, createDomainPackHookRegistry, createDomainPackTools, listPublicDomainPacks, mergeHookRegistries, resolveEnabledPacks, suggestedSkillNamesForPacks, type DomainPack } from '../packs/domainPacks'
+import { clearThreadGoalHook, createGoalHookRegistry, ensureThreadGoalHookFromTranscript, getThreadGoal, parseGoalCommand, setThreadGoalHook } from '../goals/goalState'
 import { loadAgentsDir } from '../agents/agentLoader'
 import { createAgentTaskSidechainTools, createAgentTaskTool } from '../agents/agentTool'
 import {
@@ -368,6 +369,47 @@ async function loadCommandsForWorkspace(workspaceRoot: string, builtInRoot: stri
     loadCommandsFromRoots(workspaceCommandRoots(workspaceRoot)),
   ])
   return mergeCommandLibraries(builtInCommands, createDomainPackCommandLibrary(packs), workspaceCommands)
+}
+
+function localCommandMessage(name: string, args: string, output: string): Message {
+  return {
+    role: 'user',
+    content: [textBlock([
+      `<command-name>/${name}</command-name>`,
+      `<command-args>${args}</command-args>`,
+      '<local-command-stdout>',
+      output,
+      '</local-command-stdout>',
+    ].join('\n'))],
+  }
+}
+
+async function handleGoalCommand(conversationId: string, args: string, transcript: { load(): Promise<Message[]>; save(messages: Message[]): Promise<void> }): Promise<{ output: string; shouldQuery: boolean }> {
+  const messages = await transcript.load()
+  let parsed: ReturnType<typeof parseGoalCommand>
+  try {
+    parsed = parseGoalCommand(args)
+  } catch (error) {
+    const output = error instanceof Error ? error.message : String(error)
+    messages.push(localCommandMessage('goal', args, output))
+    await transcript.save(messages)
+    return { output, shouldQuery: false }
+  }
+
+  if (parsed.type === 'clear') {
+    const existing = getThreadGoal(conversationId) ?? ensureThreadGoalHookFromTranscript(conversationId, messages)
+    const cleared = clearThreadGoalHook(conversationId)
+    const output = cleared || existing ? `Goal cleared: ${(cleared ?? existing)!.objective}` : 'No active goal.'
+    messages.push(localCommandMessage('goal', args, output))
+    await transcript.save(messages)
+    return { output, shouldQuery: false }
+  }
+
+  const goal = setThreadGoalHook(conversationId, parsed.objective)
+  const output = `Goal set: ${goal.objective}`
+  messages.push(localCommandMessage('goal', args, output))
+  await transcript.save(messages)
+  return { output, shouldQuery: true }
 }
 
 function defaultOutputStylesRoot(): string {
@@ -1017,7 +1059,10 @@ export function startServer(opts: StartServerOptions = {}) {
     const enabledPacks = resolveEnabledPacks(rawBody)
     const commands = await loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), enabledPacks)
     const parsedCommand = parseCommandInvocation(rawUserMessage)
-    const matchedCommand = parsedCommand ? commands.byName.get(parsedCommand.name) : undefined
+    const goalCommandResult = parsedCommand?.name === 'goal'
+      ? await handleGoalCommand(conversationId, parsedCommand.args, transcript)
+      : undefined
+    const matchedCommand = parsedCommand && !goalCommandResult ? commands.byName.get(parsedCommand.name) : undefined
     const commandInvocation = parsedCommand && matchedCommand
       ? {
           name: matchedCommand.name,
@@ -1027,12 +1072,24 @@ export function startServer(opts: StartServerOptions = {}) {
           contentLength: matchedCommand.contentLength,
           prompt: await matchedCommand.getPrompt(parsedCommand.args, { workspace }),
         }
+      : parsedCommand && goalCommandResult
+        ? {
+            name: 'goal',
+            args: parsedCommand.args,
+            raw: parsedCommand.raw,
+            source: 'commands' as const,
+            contentLength: goalCommandResult.output.length,
+            prompt: '',
+          }
       : undefined
-    const userMessage = commandInvocation?.prompt ?? rawUserMessage
+    const userMessage = goalCommandResult?.shouldQuery
+      ? `Continue working until this goal is complete: ${parsedCommand?.args ?? ''}`
+      : commandInvocation?.prompt ?? rawUserMessage
     const skillRecommendations = suggestedSkillNamesForPacks(enabledPacks)
     const domainPackTools = createDomainPackTools(enabledPacks)
     const configuredHooks = await loadHookRegistryFile(opts.hooksPath ?? defaultHooksPath())
-    const hooks = mergeHookRegistries(createDomainPackHookRegistry(enabledPacks), configuredHooks)
+    const transcriptMessagesForHooks = await transcript.load()
+    const hooks = mergeHookRegistries(createDomainPackHookRegistry(enabledPacks), configuredHooks, createGoalHookRegistry(conversationId, transcriptMessagesForHooks))
     const agents = await loadAgentsDir(opts.agentsRoot ?? defaultAgentsRoot())
     const controller = turns.start(conversationId)
     const mcpConfigPath = typeof rawBody.mcpConfigPath === 'string' && rawBody.mcpConfigPath.trim()
@@ -1126,6 +1183,14 @@ export function startServer(opts: StartServerOptions = {}) {
             source: 'commands',
             contentLength: commandInvocation.contentLength,
           })
+        }
+        if (goalCommandResult) {
+          yield await record({ type: 'context_note', text: goalCommandResult.output })
+          if (!goalCommandResult.shouldQuery) {
+            yield await record({ type: 'final', text: goalCommandResult.output })
+            finalStatus = 'idle'
+            return
+          }
         }
         for (const notice of orderedProviderRuntimes.notices) {
           yield await record({ type: 'context_note', text: notice })
