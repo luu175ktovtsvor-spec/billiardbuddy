@@ -273,6 +273,168 @@ test('normalizeHookRegistry http hook supports CC-Haha hookSpecificOutput and no
   }
 })
 
+test('normalizeHookRegistry http hook enforces URL policy patterns before network I/O', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-config-http-policy-'))
+  try {
+    await withHttpServer((_req, res) => {
+      res.end(JSON.stringify({ action: 'context', additionalContext: 'allowed url' }))
+    }, async url => {
+      const registry = normalizeHookRegistry({
+        hooks: {
+          SessionStart: [
+            {
+              hooks: [
+                { type: 'http', url },
+              ],
+            },
+          ],
+        },
+      }, {
+        httpPolicy: { allowedUrls: [`${url}*`] },
+      })
+      const decisions = await runHookEvent(registry, { event: 'SessionStart', sessionId: 's-http-policy' }, {
+        workspace: new Workspace(root),
+        conversationId: 's-http-policy',
+      })
+      expect(decisions).toEqual([
+        { action: 'context', additionalContext: 'allowed url' },
+      ])
+
+      const blockedRegistry = normalizeHookRegistry({
+        hooks: {
+          SessionStart: [
+            { hooks: [{ type: 'http', url }] },
+          ],
+        },
+      }, {
+        httpPolicy: { allowedUrls: [] },
+      })
+      expect(await runHookEvent(blockedRegistry, { event: 'SessionStart', sessionId: 's-http-policy' }, {
+        workspace: new Workspace(root),
+        conversationId: 's-http-policy',
+      })).toEqual([
+        { action: 'deny', message: `HTTP hook blocked: ${url}/ does not match any pattern in allowedHttpHookUrls` },
+      ])
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('loadHookRegistryFile applies CC-Haha-style top-level HTTP hook policy', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-config-http-file-policy-'))
+  const previousToken = process.env.HOOK_FILE_POLICY_TOKEN
+  process.env.HOOK_FILE_POLICY_TOKEN = 'file-policy-token'
+  try {
+    await withHttpServer((req, res) => {
+      res.end(JSON.stringify({
+        action: 'context',
+        additionalContext: `${req.headers.authorization}`,
+      }))
+    }, async url => {
+      const file = join(root, 'hooks.json')
+      writeFileSync(file, JSON.stringify({
+        allowedHttpHookUrls: [`${url}*`],
+        httpHookAllowedEnvVars: ['HOOK_FILE_POLICY_TOKEN'],
+        hooks: {
+          SessionStart: [
+            {
+              hooks: [
+                {
+                  type: 'http',
+                  url,
+                  headers: { Authorization: 'Bearer $HOOK_FILE_POLICY_TOKEN' },
+                  allowedEnvVars: ['HOOK_FILE_POLICY_TOKEN'],
+                },
+              ],
+            },
+          ],
+        },
+      }))
+      const registry = await loadHookRegistryFile(file)
+      expect(await runHookEvent(registry, { event: 'SessionStart', sessionId: 's-http-file-policy' }, {
+        workspace: new Workspace(root),
+      })).toEqual([
+        { action: 'context', additionalContext: 'Bearer file-policy-token' },
+      ])
+    })
+  } finally {
+    if (previousToken === undefined) delete process.env.HOOK_FILE_POLICY_TOKEN
+    else process.env.HOOK_FILE_POLICY_TOKEN = previousToken
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('normalizeHookRegistry http hook intersects hook and policy env allowlists and strips header injection bytes', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-config-http-env-policy-'))
+  const previousAllowed = process.env.HOOK_ALLOWED_TOKEN
+  const previousDenied = process.env.HOOK_DENIED_TOKEN
+  process.env.HOOK_ALLOWED_TOKEN = 'safe-token\r\nX-Injected: yes'
+  process.env.HOOK_DENIED_TOKEN = 'denied-token'
+  try {
+    await withHttpServer((req, res) => {
+      res.end(JSON.stringify({
+        action: 'context',
+        additionalContext: `${req.headers.authorization}:${req.headers['x-denied']}:${req.headers['x-injected'] ?? ''}`,
+      }))
+    }, async url => {
+      const registry = normalizeHookRegistry({
+        hooks: {
+          SessionStart: [
+            {
+              hooks: [
+                {
+                  type: 'http',
+                  url,
+                  headers: {
+                    Authorization: 'Bearer $HOOK_ALLOWED_TOKEN',
+                    'X-Denied': '$HOOK_DENIED_TOKEN',
+                  },
+                  allowedEnvVars: ['HOOK_ALLOWED_TOKEN', 'HOOK_DENIED_TOKEN'],
+                },
+              ],
+            },
+          ],
+        },
+      }, {
+        httpPolicy: { allowedEnvVars: ['HOOK_ALLOWED_TOKEN'] },
+      })
+      expect(await runHookEvent(registry, { event: 'SessionStart', sessionId: 's-http-env' }, {
+        workspace: new Workspace(root),
+      })).toEqual([
+        { action: 'context', additionalContext: 'Bearer safe-tokenX-Injected: yes::' },
+      ])
+    })
+  } finally {
+    if (previousAllowed === undefined) delete process.env.HOOK_ALLOWED_TOKEN
+    else process.env.HOOK_ALLOWED_TOKEN = previousAllowed
+    if (previousDenied === undefined) delete process.env.HOOK_DENIED_TOKEN
+    else process.env.HOOK_DENIED_TOKEN = previousDenied
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('normalizeHookRegistry http hook blocks private and metadata IP targets through SSRF guard', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-config-http-ssrf-'))
+  try {
+    const registry = normalizeHookRegistry({
+      hooks: {
+        SessionStart: [
+          { hooks: [{ type: 'http', url: 'http://169.254.169.254/latest/meta-data', timeout: 1 }] },
+        ],
+      },
+    })
+    const decisions = await runHookEvent(registry, { event: 'SessionStart', sessionId: 's-http-ssrf' }, {
+      workspace: new Workspace(root),
+    })
+    expect(decisions).toHaveLength(1)
+    expect(decisions[0]?.action).toBe('context')
+    expect(decisions[0]?.action === 'context' ? decisions[0].additionalContext : '').toContain('HTTP hook blocked: 169.254.169.254 resolves to 169.254.169.254')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('normalizeHookRegistry prompt hook queries model with substituted CC-Haha payload and allows ok true', async () => {
   const root = mkdtempSync(join(tmpdir(), 'hook-config-prompt-ok-'))
   try {
