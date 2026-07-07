@@ -27,6 +27,19 @@ mcpServers:
   - inline fixture:
       command: node
       args: [server.js]
+hooks:
+  SubagentStart:
+    - matcher: billiards-ops
+      hooks:
+        - decision:
+            action: context
+            additionalContext: agent starting
+  Stop:
+    - matcher: billiards-ops
+      hooks:
+        - decision:
+            action: context
+            additionalContext: agent stopping
 ---
 你是台球运营代理。
 `)
@@ -50,6 +63,12 @@ mcpServers:
         'local fixture',
         { 'inline fixture': { command: 'node', args: ['server.js'] } },
       ],
+      hooks: {
+        rules: [
+          { event: 'SubagentStart', matcher: 'billiards-ops' },
+          { event: 'SubagentStop', matcher: 'billiards-ops' },
+        ],
+      },
       prompt: '你是台球运营代理。',
     })
   } finally {

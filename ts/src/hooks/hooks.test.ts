@@ -8,9 +8,12 @@ import {
   applyPreToolUseHooks,
   applySessionStartHooks,
   applyStopHooks,
+  applySubagentStartHooks,
   applyUserPromptSubmitHooks,
+  mergeHookRegistries,
   parseHookDecisionJSON,
   runHookEvent,
+  type HookRegistry,
 } from './hooks'
 
 const ctx = () => ({ workspace: new Workspace(mkdtempSync(join(tmpdir(), 'hooks-'))) })
@@ -141,4 +144,33 @@ test('applyStopHooks:final output 可用于生成收尾上下文', async () => {
   } finally {
     rmSync(c.workspace.root, { recursive: true, force: true })
   }
+})
+
+test('SubagentStart/SubagentStop:按 agentType matcher 派发并携带 agent id', async () => {
+  const c = ctx()
+  try {
+    const registry: HookRegistry = {
+      rules: [
+        { event: 'SubagentStart' as const, matcher: 'researcher', handler: payload => ({ action: 'context' as const, additionalContext: `start:${payload.agentId}:${payload.agentType}` }) },
+        { event: 'SubagentStart' as const, matcher: 'writer', handler: () => ({ action: 'context' as const, additionalContext: 'skip' }) },
+        { event: 'SubagentStop' as const, matcher: 'researcher', handler: payload => ({ action: 'context' as const, additionalContext: `stop:${payload.agentId}:${payload.output}` }) },
+        { event: 'SubagentStop' as const, matcher: 'researcher', handler: () => ({ action: 'deny' as const, message: 'stop warn' }) },
+      ],
+    }
+    const started = await applySubagentStartHooks(registry, 'agent-1', 'researcher', { ...c, conversationId: 'agent-1' })
+    expect(started.additionalContext).toEqual(['start:agent-1:researcher'])
+    const stopped = await applyStopHooks(registry, '完成', { ...c, conversationId: 'agent-1' }, { agentId: 'agent-1', agentType: 'researcher' })
+    expect(stopped.additionalContext).toEqual(['stop:agent-1:完成', '[SubagentStop hook 警告] stop warn'])
+  } finally {
+    rmSync(c.workspace.root, { recursive: true, force: true })
+  }
+})
+
+test('mergeHookRegistries:保留顺序合并规则', () => {
+  const merged = mergeHookRegistries(
+    { rules: [{ event: 'SessionStart', handler: () => ({ action: 'context', additionalContext: 'a' }) }] },
+    undefined,
+    { rules: [{ event: 'Stop', handler: () => ({ action: 'context', additionalContext: 'b' }) }] },
+  )
+  expect(merged?.rules.map(rule => rule.event)).toEqual(['SessionStart', 'Stop'])
 })

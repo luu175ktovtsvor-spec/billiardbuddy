@@ -53,6 +53,7 @@ export interface RunAgentLoopOptions {
   contextWindowChars?: number
   transcript?: TranscriptLike
   hooks?: HookRegistry
+  subagent?: { agentId: string; agentType: string }
 }
 
 /**
@@ -110,7 +111,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       }
     }
     yield { type: 'context_note', text }
-    const stopHook = await applyStopHooks(opts.hooks, text, ctx)
+    const stopHook = await applyStopHooks(opts.hooks, text, ctx, opts.subagent)
     for (const extra of stopHook.additionalContext) yield { type: 'context_note', text: extra }
     yield { type: 'final', text }
     return
@@ -182,7 +183,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
         continue
       }
       await saveTranscript()
-      const stopHook = await applyStopHooks(opts.hooks, step.text, ctx)
+      const stopHook = await applyStopHooks(opts.hooks, step.text, ctx, opts.subagent)
       for (const extra of stopHook.additionalContext) yield { type: 'context_note', text: extra }
       yield { type: 'final', text: step.text }
       return
@@ -262,7 +263,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   const text = forced.kind === 'final' ? forced.text : '(已达最大轮次,未能收敛)'
   messages.push({ role: 'assistant', content: [textBlock(text)] })
   await saveTranscript()
-  const stopHook = await applyStopHooks(opts.hooks, text, ctx)
+  const stopHook = await applyStopHooks(opts.hooks, text, ctx, opts.subagent)
   for (const extra of stopHook.additionalContext) yield { type: 'context_note', text: extra }
   yield { type: 'final', text }
 }

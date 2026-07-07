@@ -19,6 +19,8 @@ import {
 import { Sandbox } from '../sandbox/sandbox'
 import { Workspace } from '../workspace/workspace'
 import { createIsolatedAgentWorktree, type AgentWorktreeCleanupResult } from '../tools/worktreeTools'
+import { applySubagentStartHooks, mergeHookRegistries, type HookRegistry } from '../hooks/hooks'
+import { textBlock } from '../types/message'
 import type { AgentDefinition } from './agentLoader'
 import { resolveAgentTools } from './agentLoader'
 import { loadAgentMcpRuntime, type AgentMcpRuntimeOptions } from './agentMcp'
@@ -37,6 +39,7 @@ export interface AgentTaskToolOptions {
   baseSystemPrompt?: string
   maxTurns?: number
   sidechainRoot?: string
+  hooks?: HookRegistry
   mcp?: AgentMcpRuntimeOptions
   startBackgroundAgent?: (input: { agent?: string; task: string; context?: string; title?: string; isolation?: 'worktree' }, ctx: ToolContext) => Promise<{ task: { id: string; title: string; params?: Record<string, unknown> }; agent: AgentDefinition }>
 }
@@ -119,6 +122,11 @@ function agentTaskMessage(agent: AgentDefinition, input: AgentTaskInput): string
   return agent.initialPrompt?.trim()
     ? `${agent.initialPrompt.trim()}\n\n${base}`
     : base
+}
+
+function hookContextMessage(event: string, contexts: string[]): Message | undefined {
+  if (contexts.length === 0) return undefined
+  return { role: 'user', content: [textBlock(`<hook_context event="${event}">\n${contexts.join('\n\n')}\n</hook_context>`)] }
 }
 
 function safeSegment(value: string): string {
@@ -254,9 +262,10 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
       }
 
       const sidechain = createAgentTaskSidechain(opts, agent, ctx)
+      const agentId = sidechain?.id ?? (ctx.conversationId ? `${ctx.conversationId}_${agent.name}` : `agent_${safeSegment(agent.name)}_${randomUUID().replaceAll('-', '_')}`)
       const effectiveIsolation = input.isolation ?? agent.isolation
       const agentWorktree = effectiveIsolation === 'worktree'
-        ? await createIsolatedAgentWorktree(ctx.workspace.root, sidechain?.id ?? `${ctx.conversationId ?? 'adhoc'}-${agent.name}`, ctx.conversationId)
+        ? await createIsolatedAgentWorktree(ctx.workspace.root, agentId, ctx.conversationId)
         : null
       const workspace = agentWorktree ? new Workspace(agentWorktree.session.worktreePath) : ctx.workspace
       const sandbox = sandboxForWorkspace(ctx.sandbox, workspace)
@@ -265,6 +274,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
       let cleanup: AgentWorktreeCleanupResult | null = null
       const baseAgentTools = resolveAgentTools(agent, opts.baseTools).filter(tool => tool.name !== 'agent_task')
       let agentMcp: Awaited<ReturnType<typeof loadAgentMcpRuntime>> | undefined
+      const hooks = mergeHookRegistries(opts.hooks, agent.hooks)
       try {
         agentMcp = await loadAgentMcpRuntime({
           agent,
@@ -278,19 +288,30 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
         emitSubagentProgress(ctx, agent, `子代理 ${agent.name} 开始:${oneLine(input.task, 120)}`)
         if (agentWorktree) emitSubagentProgress(ctx, agent, `子代理 ${agent.name} 使用隔离 worktree:${agentWorktree.session.worktreePath}`)
         for (const warning of agentMcp.warnings) emitSubagentProgress(ctx, agent, warning)
+        const subagentStart = await applySubagentStartHooks(hooks, agentId, agent.name, {
+          ...ctx,
+          workspace,
+          sandbox,
+          conversationId: agentId,
+          toolResultStoreDir: sidechain?.toolResultStoreDir ?? ctx.toolResultStoreDir,
+        })
+        for (const extra of subagentStart.additionalContext) emitSubagentProgress(ctx, agent, `子代理 ${agent.name} hook:${oneLine(extra, 160)}`)
         for await (const ev of runAgentLoop({
           model: opts.model,
           registry,
           workspace,
           systemPrompt: buildAgentSystemPrompt(agent, opts.baseSystemPrompt),
           userMessage: agentTaskMessage(agent, input),
+          initialMessages: [hookContextMessage('SubagentStart', subagentStart.additionalContext)].filter((message): message is Message => !!message),
           maxTurns: agent.maxTurns ?? opts.maxTurns ?? 8,
           signal: ctx.signal,
           sandbox,
           permissionMode: agent.permissionMode ?? ctx.permissionMode,
-          conversationId: sidechain?.id ?? (ctx.conversationId ? `${ctx.conversationId}_${agent.name}` : undefined),
+          conversationId: agentId,
           transcript: sidechain?.transcript,
           toolResultStoreDir: sidechain?.toolResultStoreDir ?? ctx.toolResultStoreDir,
+          hooks,
+          subagent: { agentId, agentType: agent.name },
         })) {
           const line = subagentLine(agent, ev)
           if (line) emitSubagentProgress(ctx, agent, line)

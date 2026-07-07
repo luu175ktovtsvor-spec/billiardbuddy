@@ -294,6 +294,49 @@ test('start_background_agent_task honors agent frontmatter defaults for prompt, 
   }
 })
 
+test('start_background_agent_task runs agent frontmatter SubagentStart and SubagentStop hooks', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-tools-agent-hooks-'))
+  try {
+    const tasks = new TaskService(root)
+    const agent: AgentDefinition = {
+      name: 'researcher',
+      description: '研究代理',
+      prompt: '研究并总结。',
+      filePath: join(root, 'researcher.md'),
+      hooks: {
+        rules: [
+          { event: 'SubagentStart', matcher: 'researcher', handler: payload => ({ action: 'context', additionalContext: `bg-start:${payload.agentId}:${payload.agentType}` }) },
+          { event: 'SubagentStop', matcher: 'researcher', handler: payload => ({ action: 'context', additionalContext: `bg-stop:${payload.agentId}:${payload.output}` }) },
+        ],
+      },
+    }
+    const model = scriptedModel([{ kind: 'final', text: '后台 hook 结论' }])
+    const start = createBackgroundAgentTaskTool({
+      tasks,
+      agents: [agent],
+      model,
+      baseTools: [],
+      baseSystemPrompt: 'base prompt',
+    })
+    const ctx = { workspace: new Workspace(root), conversationId: 'c-agent-hooks', permissionMode: 'full' as const }
+    await start.execute({ task: '检查后台 hook', title: '后台 hook' }, ctx)
+    const done = await waitFor(async () => {
+      const task = (await tasks.list({ conversationId: 'c-agent-hooks' }))[0]
+      return task?.status === 'completed' ? task : null
+    })
+    expect(model.received[0]!.messages[0]!.content[0]).toMatchObject({
+      type: 'text',
+      text: `<hook_context event="SubagentStart">\nbg-start:${done.id}:researcher\n</hook_context>`,
+    })
+    const events = await tasks.loadEvents(done.id)
+    const notes = events.map(record => record.event).filter((event): event is Extract<typeof event, { type: 'context_note' }> => event.type === 'context_note')
+    expect(notes.some(event => event.text === `bg-start:${done.id}:researcher`)).toBe(true)
+    expect(notes.some(event => event.text === `bg-stop:${done.id}:后台 hook 结论`)).toBe(true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 function writeFixtureMcpServer(root: string): string {
   const file = join(root, 'background-agent-fixture-mcp-server.ts')
   writeFileSync(file, `
