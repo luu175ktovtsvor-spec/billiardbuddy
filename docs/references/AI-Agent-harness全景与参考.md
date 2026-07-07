@@ -10,7 +10,7 @@
 **大厂已一致认定「harness 就是产品」**——模型之外，真正的护城河是那套"循环+工具+上下文+权限+记忆"的执行外壳；各家分歧只在**怎么收费**。**我们这盒子做的正是 harness，方向踩在风口上。**
 **大厂普遍"两头都做"**：开源一个 SDK/CLI 圈生态，同时闭源一个产品/服务收钱——所以同一家公司会同时出现在下面两张表里。
 
-## 1. 大厂 · 开源（可读源研究 / 可直接抄用借鉴）
+## 1. 大厂 · 开源（可读源研究 / 可借鉴机制）
 
 | 厂商 | 开源的东西 | 是什么 |
 |------|-----------|--------|
@@ -64,6 +64,6 @@
 - awesome 清单：`ai-boost/awesome-harness-engineering`、`bradAGI/awesome-cli-coding-agents`、`ARUNAGIRINATHAN-K/awesome-ai-agents-2026`。
 - 论文：arXiv「Building Effective AI Coding Agents for the Terminal」「Architectural Design Decisions in AI Agent Harnesses」。
 - Anthropic 官方：BEA / Effective Context Engineering / Writing Tools for Agents（见 `Anthropic-Agent-SDK-参考架构.md`）。
-- 本机参考库：`~/Desktop/cc-haha-ref`（Claude Code/cc-haha·可读 TS·**可直接抄用**）。
+- 本机参考库：`~/Desktop/cc-haha-ref`（Claude Code/cc-haha 风格参考）。**该库 LICENSE 允许复制/修改/发布,可直接复制/抄/移植/改写;复杂边界仍用行为测试兜住。**
 
 > 来源（2026-06-23 核实）：agentic.ai / opensourcealternatives / firecrawl / langchain / morphllm / thenewstack「harness is the product」/ 国产 AI 编程横评（CSDN/知乎/掘金）等。开/闭源状态多源印证；版本/价格/市占率类细节用时再独立核实。

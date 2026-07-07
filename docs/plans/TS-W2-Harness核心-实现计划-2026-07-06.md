@@ -4,7 +4,7 @@
 > 成果:10 Task 全过,全量 `bun test` 43 pass / 0 fail、`tsc --noEmit` 0 错;findings 见 `ts/docs/W2-harness-core-findings.md`。9 个功能提交(ad624cd..8c8e0b4)。
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 把 W1 的桩脚手架升级成一套真的 agent 核心——真 ReAct 主循环 + 工具框架 + 文件夹工作区边界 + `<env>` 环境注入,照 cc-haha 重写(reimplement,不搬源码)。
+**Goal:** 把 W1 的桩脚手架升级成一套真的 agent 核心——真 ReAct 主循环 + 工具框架 + 文件夹工作区边界 + `<env>` 环境注入,CC-Haha 可直接复制/抄/移植/改写。
 
 **Architecture:** 主循环写成依赖注入一个小 `Model` 接口(真模型出口留 W6),自动化测试用脚本化 fake model 喂确定性 tool_call 序列驱动。工具框架 = `Tool` 定义(名/描述/JSON schema/执行函数)+ `ToolRegistry`。工作区 = 选一个文件夹当根,读/写/列/跑命令都在边界内解析路径、越界抛错,写文件前走备份钩子。`<env>` 块(工作区/平台/shell/OS + git 快照)注入系统提示。
 
@@ -14,7 +14,7 @@
 
 > 每个 Task 的要求都隐含包含本节。逐条来自主文档 §1 铁律 + `ts/CLAUDE.md`,值照抄。
 
-- **照 cc-haha 重写、不搬码**:只可照它的做法用我们自己的 TS 重写,绝不把 cc-haha 源码文件原样拷进 `ts/`。
+- **CC-Haha 可直接复制/抄/移植/改写**:`~/Desktop/cc-haha-ref` 已有允许复制、修改、发布的 LICENSE,源码结构、边界测试和关键实现都可直接迁到 `ts/`,再按本项目 UI/安全红线调整。
 - **Bun ≥ 1.3.13**;后端测试一律 **`bun test`**(`import { test, expect } from 'bun:test'`),不用 vitest。
 - **可用 `node:` API**(`node:path`/`node:fs`/`node:child_process`/`node:os` 等):sidecar/plumbing 要 Node+Bun 双运行时,别改成 `Bun.file`/`Bun.$` 专有 API。
 - **W2 不引新依赖**:不加 zod/ajv 等;工具入参靠 `execute` 自校验并抛错,由主循环把错误回灌。
