@@ -1,4 +1,4 @@
-// 逻辑照 cc-haha src/server/proxy/transform/anthropicToOpenaiChat.ts,行为对齐。出方向:内核 Anthropic 块 → OpenAI chat 请求。
+// 出方向:内核 Anthropic 块 → OpenAI chat 请求,保持工具调用/结果在 OpenAI-compatible 网关可理解。
 import type { Message, ContentBlock } from '../types/message'
 import type { ToolSpec } from '../tools/Tool'
 import type { OpenAIChatRequest, OpenAIChatMessage, OpenAIChatContentPart, OpenAIToolCall } from './types'
@@ -28,7 +28,7 @@ export function toOpenAiChatRequest(input: ProxyRequestInput): OpenAIChatRequest
   const result: OpenAIChatRequest = { model: input.model, messages, stream: input.stream === true }
   if (result.stream) result.stream_options = { include_usage: true }
   if (input.reasoningEffort) result.reasoning_effort = input.reasoningEffort
-  // max_tokens 故意不带:CC 会塞很大值,超多数国产上游上限;交由上游默认(照 cc-haha 注释)。
+  // max_tokens 故意不带:大值容易超过多数国产上游上限,交由上游默认。
 
   if (input.tools && input.tools.length > 0) {
     result.tools = input.tools.map((t) => ({
@@ -58,7 +58,7 @@ function convertUserMessage(blocks: ContentBlock[], output: OpenAIChatMessage[],
       if (imageMode === 'text_only') textOnlyParts.push(block.text)
       else contentParts.push({ type: 'text', text: block.text })
     } else if ((block as { type: string }).type === 'image') {
-      // 内核暂不产 image 块;为将来多模态留通路(照 cc-haha)。text_only 模式替占位。
+      // 内核暂不产 image 块;为将来多模态留通路。text_only 模式替占位。
       if (imageMode === 'text_only') {
         textOnlyParts.push(OMITTED_IMAGE_TEXT)
       } else {
@@ -95,7 +95,7 @@ function convertAssistantMessage(blocks: ContentBlock[], output: OpenAIChatMessa
         function: { name: block.name, arguments: typeof block.input === 'string' ? block.input : JSON.stringify(block.input) },
       })
     }
-    // thinking:默认不回灌(display-only,无 signature),照 cc-haha roundTripReasoningContent=false。
+    // thinking:默认不回灌(display-only,无 signature)。
   }
   const m: OpenAIChatMessage = { role: 'assistant', content: textContent || null }
   if (toolCalls.length > 0) m.tool_calls = toolCalls

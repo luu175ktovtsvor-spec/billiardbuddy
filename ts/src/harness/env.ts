@@ -9,7 +9,19 @@ export interface EnvInfoOptions {
   isGit: boolean
 }
 
-/** <env> 环境块(照 cc-haha computeEnvInfo)。刻意不含模型名/知识截止行——白标 + 模型身份是 W6。 */
+export interface WorkspaceGitStatus {
+  isGit: boolean
+  branch: string | null
+  dirty: boolean
+  changed: number
+  staged: number
+  unstaged: number
+  untracked: number
+  ahead: number
+  behind: number
+}
+
+/** <env> 环境块。刻意不含模型名/知识截止行——白标 + 模型身份是 W6。 */
 export function computeEnvInfo(opts: EnvInfoOptions): string {
   const shell = process.env.SHELL ?? (process.platform === 'win32' ? 'cmd.exe' : 'unknown')
   return [
@@ -30,6 +42,67 @@ export async function getIsGit(cwd: string): Promise<boolean> {
     return true
   } catch {
     return false
+  }
+}
+
+export function parseGitStatusPorcelain(output: string): WorkspaceGitStatus {
+  const lines = output.split(/\r?\n/).filter(Boolean)
+  const first = lines[0]?.startsWith('## ') ? lines[0]!.slice(3).trim() : ''
+  const branchPart = (first.match(/^No commits yet on (.+)$/)?.[1] ?? first
+    .replace(/\s+\[.*\]$/, '')
+    .split('...')[0]
+    ?.trim()) || null
+  const ahead = Number(first.match(/ahead\s+(\d+)/)?.[1] ?? 0)
+  const behind = Number(first.match(/behind\s+(\d+)/)?.[1] ?? 0)
+  let staged = 0
+  let unstaged = 0
+  let untracked = 0
+  for (const line of lines.slice(first ? 1 : 0)) {
+    const x = line[0] ?? ' '
+    const y = line[1] ?? ' '
+    if (x === '?' && y === '?') {
+      untracked += 1
+      continue
+    }
+    if (x !== ' ') staged += 1
+    if (y !== ' ') unstaged += 1
+  }
+  const changed = staged + unstaged + untracked
+  return {
+    isGit: true,
+    branch: branchPart,
+    dirty: changed > 0,
+    changed,
+    staged,
+    unstaged,
+    untracked,
+    ahead,
+    behind,
+  }
+}
+
+export async function getWorkspaceGitStatus(cwd: string): Promise<WorkspaceGitStatus> {
+  const empty = {
+    isGit: false,
+    branch: null,
+    dirty: false,
+    changed: 0,
+    staged: 0,
+    unstaged: 0,
+    untracked: 0,
+    ahead: 0,
+    behind: 0,
+  }
+  if (!(await getIsGit(cwd))) return empty
+  try {
+    const result = await execFileP('git', ['--no-optional-locks', 'status', '--porcelain=v1', '--branch'], {
+      cwd,
+      timeout: 2000,
+      maxBuffer: 128 * 1024,
+    })
+    return parseGitStatusPorcelain(result.stdout)
+  } catch {
+    return empty
   }
 }
 

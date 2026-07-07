@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { textBlock, toolResultBlock, toolUseBlock, userText, type Message } from '../types/message'
-import { compactPipeline, estimateMessagesChars, looksLikeContextOverflow, microcompactReadOnlyToolResults, splitForAutocompact } from './compaction'
+import { AUTOCOMPACT_COOLDOWN_MS, COMPACTION_SYSTEM_PROMPT, compactPipeline, estimateMessagesChars, extractCompactionSummary, looksLikeContextOverflow, microcompactReadOnlyToolResults, splitForAutocompact } from './compaction'
 import type { Model } from '../types/model'
 
 function msgWithTool(id: string, name: string, result: string): Message[] {
@@ -85,6 +85,113 @@ describe('compactPipeline', () => {
     if (firstText?.type !== 'text') throw new Error('expected summary text block')
     expect(firstText.text).toContain('旧对话摘要')
     expect(estimateMessagesChars(out.messages)).toBeLessThan(estimateMessagesChars(messages))
+  })
+
+  test('使用九段结构化 prompt,且只保留 summary 正文', async () => {
+    const messages: Message[] = [
+      userText('u0' + 'x'.repeat(60)),
+      userText('u1' + 'x'.repeat(60)),
+      userText('u2' + 'x'.repeat(60)),
+      userText('u3' + 'x'.repeat(60)),
+      userText('u4' + 'x'.repeat(60)),
+      userText('u5' + 'x'.repeat(60)),
+      userText('recent'),
+    ]
+    let system = ''
+    const out = await compactPipeline({
+      messages,
+      model: {
+        async step(input) {
+          system = input.system ?? ''
+          return { kind: 'final', text: '<analysis>不要回灌这段草稿</analysis>\n<summary>1. 用户目标与硬约束:继续 main。\n9. 下一步建议:跑测试。</summary>' }
+        },
+      },
+      contextWindowChars: 120,
+      readOnlyToolNames: new Set(),
+      force: true,
+      keepRecentMessages: 1,
+      minOldMessages: 2,
+    })
+
+    expect(system).toBe(COMPACTION_SYSTEM_PROMPT)
+    const summary = out.messages[0]!.content[0]
+    expect(summary?.type).toBe('text')
+    if (summary?.type !== 'text') throw new Error('expected summary text block')
+    expect(summary.text).toContain('用户目标与硬约束')
+    expect(summary.text).toContain('跑测试')
+    expect(summary.text).not.toContain('不要回灌这段草稿')
+  })
+
+  test('自动压缩有冷却期,避免连续轮次反复摘要', async () => {
+    const messages: Message[] = [
+      userText('u0' + 'x'.repeat(60)),
+      userText('u1' + 'x'.repeat(60)),
+      userText('u2' + 'x'.repeat(60)),
+      userText('u3' + 'x'.repeat(60)),
+      userText('u4' + 'x'.repeat(60)),
+      userText('u5' + 'x'.repeat(60)),
+      userText('recent'),
+    ]
+    let called = 0
+    const out = await compactPipeline({
+      messages,
+      model: {
+        async step() {
+          called++
+          return { kind: 'final', text: 'should not run' }
+        },
+      },
+      contextWindowChars: 120,
+      readOnlyToolNames: new Set(),
+      keepRecentMessages: 1,
+      minOldMessages: 2,
+      lastCompactionAtMs: 10_000,
+      nowMs: 10_000 + AUTOCOMPACT_COOLDOWN_MS - 1,
+    })
+
+    expect(called).toBe(0)
+    expect(out.didCompact).toBe(false)
+    expect(out.messages).toBe(messages)
+  })
+
+  test('自动压缩后没有新增消息时不重复压同一段历史', async () => {
+    const messages: Message[] = [
+      userText('u0' + 'x'.repeat(60)),
+      userText('u1' + 'x'.repeat(60)),
+      userText('u2' + 'x'.repeat(60)),
+      userText('u3' + 'x'.repeat(60)),
+      userText('u4' + 'x'.repeat(60)),
+      userText('u5' + 'x'.repeat(60)),
+      userText('recent'),
+    ]
+    let called = 0
+    const out = await compactPipeline({
+      messages,
+      model: {
+        async step() {
+          called++
+          return { kind: 'final', text: 'should not run' }
+        },
+      },
+      contextWindowChars: 120,
+      readOnlyToolNames: new Set(),
+      keepRecentMessages: 1,
+      minOldMessages: 2,
+      lastCompactedMessageCount: messages.length,
+      nowMs: 99_000,
+    })
+
+    expect(called).toBe(0)
+    expect(out.didCompact).toBe(false)
+    expect(out.messages).toBe(messages)
+  })
+})
+
+describe('extractCompactionSummary', () => {
+  test('优先取 summary 标签内容,没有 summary 时剥离 analysis', () => {
+    expect(extractCompactionSummary('<analysis>scratch</analysis><summary>usable</summary>')).toBe('usable')
+    expect(extractCompactionSummary('<analysis>scratch</analysis>\nplain')).toBe('plain')
+    expect(extractCompactionSummary('<analysis>scratch</analysis>')).toBe('旧对话已压缩,继续当前任务。')
   })
 })
 

@@ -44,6 +44,7 @@ function defaultStore(): JsonObject {
     member_cards: null,
     logo_url: null,
     qrcode_url: null,
+    qrcode_text: null,
     has_private_room: false,
     has_coaching: false,
     has_tournament: false,
@@ -51,6 +52,7 @@ function defaultStore(): JsonObject {
     target_customers: null,
     style: null,
     brand_style: null,
+    brand_color: null,
     advantages: null,
     common_activities: null,
     operation_profile: null,
@@ -235,7 +237,7 @@ export class DesktopDataStore {
     await this.update(state => {
       state.memories = state.memories.map(item => {
         if (item.id !== id) return item
-        out = { ...item, content }
+        out = { ...item, content, updated_at: nowIso() }
         return out
       })
       return state
@@ -248,7 +250,7 @@ export class DesktopDataStore {
     await this.update(state => {
       state.memories = state.memories.map(item => {
         if (item.id !== id) return item
-        out = { ...item, source: 'manual', source_label: '店主定', confidence: 'high' }
+        out = { ...item, source: 'manual', source_label: '店主定', confidence: 'high', updated_at: nowIso() }
         return out
       })
       return state
@@ -311,8 +313,20 @@ export class DesktopDataStore {
   }
 
   async addNotification(input: JsonObject): Promise<JsonObject> {
-    const item = { id: Date.now(), title: input.title ?? '通知', body: input.body ?? '', kind: input.kind ?? 'info', meta: input.meta ?? {} }
+    let item: JsonObject = {}
     await this.update(state => {
+      const maxId = state.notifications.reduce((max, notification) => {
+        return typeof notification.id === 'number' && Number.isFinite(notification.id)
+          ? Math.max(max, notification.id)
+          : max
+      }, 0)
+      item = {
+        id: Math.max(Date.now(), maxId + 1),
+        title: typeof input.title === 'string' && input.title.trim() ? input.title.trim() : '通知',
+        body: typeof input.body === 'string' ? input.body : '',
+        kind: typeof input.kind === 'string' && input.kind.trim() ? input.kind.trim() : 'info',
+        meta: isRecord(input.meta) ? input.meta : {},
+      }
       state.notifications.push(item)
       return state
     })
@@ -389,6 +403,7 @@ function maskSecret(secret: string): string {
 function memoryItem(input: { content: string; type?: string; source?: 'manual' | 'auto' | 'pending'; workingDir?: string | null }): JsonObject {
   const source = input.source ?? 'manual'
   const scope = input.workingDir ? 'working_dir' : 'global'
+  const ts = nowIso()
   return {
     id: crypto.randomUUID(),
     type: input.type || 'semantic',
@@ -399,6 +414,9 @@ function memoryItem(input: { content: string; type?: string; source?: 'manual' |
     source_label: source === 'pending' ? '待确认' : source === 'auto' ? 'AI学到' : '店主定',
     scope,
     scope_label: scope === 'working_dir' ? '当前项目' : '全局门店',
+    working_dir: input.workingDir ?? null,
+    created_at: ts,
+    updated_at: ts,
   }
 }
 

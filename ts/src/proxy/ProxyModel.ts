@@ -3,7 +3,7 @@
  * step 流程:配对清洗 → 出方向翻译 → fetch(stream) → 空闲超时 → 累积 → AssistantStep。
  * 退出决策看"有没有 tool_use"、不看 finish_reason(05 清单⑥)。真实端点/key/网关路由/降级是 W10,这里只留可注入出口。
  */
-import type { Model, ModelStepInput, AssistantStep } from '../types/model'
+import { MODEL_OUTPUT_TRUNCATED_NOTICE, type Model, type ModelStepInput, type AssistantStep } from '../types/model'
 import { toOpenAiChatRequest, type OpenAIChatImageContentMode } from './toOpenAiChatRequest'
 import { accumulateOpenAiStream, type AccumulatedResponse } from './streamAccumulate'
 import { openaiChatResponseToAccumulated } from './openaiChatToAnthropic'
@@ -28,7 +28,7 @@ export interface ProxyModelConfig {
   idleTimeoutMs?: number
   /** 请求头响应前超时。流式 body 的中途卡死另由 idleTimeoutMs 管。 */
   requestTimeoutMs?: number
-  /** cc-haha v0.4.5 对齐:OpenAI-compatible proxy 透传 reasoning_effort。 */
+  /** OpenAI-compatible proxy 透传 reasoning_effort。 */
   reasoningEffort?: ReasoningEffort
   /** 可注入 fetch(测试用 fake;默认 globalThis.fetch)。 */
   fetchImpl?: FetchLike
@@ -64,8 +64,8 @@ export class ProxyModel implements Model {
       throw new Error(`模型请求失败 ${resp.status}:${detail.slice(0, 500)}`)
     }
 
-    const acc = await this.readResponse(resp)
-    return toAssistantStep(acc)
+    const read = await this.readResponse(resp)
+    return toAssistantStep(read.acc, read.notices)
   }
 
   private async fetchWithTimeout(input: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
@@ -91,28 +91,45 @@ export class ProxyModel implements Model {
     }
   }
 
-  private async readResponse(resp: Response): Promise<AccumulatedResponse> {
+  private async readResponse(resp: Response): Promise<{ acc: AccumulatedResponse; notices?: string[] }> {
     const ct = resp.headers.get('content-type') ?? ''
     if (ct.includes('text/event-stream') && resp.body) {
       const guarded = withStreamIdleTimeout(resp.body, this.cfg.idleTimeoutMs ?? DEFAULT_IDLE_MS)
-      return accumulateOpenAiStream(guarded, { idFactory: this.cfg.idFactory })
+      return { acc: await accumulateOpenAiStream(guarded, { idFactory: this.cfg.idFactory }) }
     }
     // 非 SSE(错误体已在上面拦掉;这里是 200 但 JSON 的兼容上游)。belt-and-suspenders:整段不可解析
     // (非 JSON / 结构畸形到翻译层也兜不住)时降级空结果,不让 step() 崩出去——SSE 分支的空闲超时+
     // 逐行跳过、以及非 2xx 的抛错分支不受影响。
     try {
       const json = (await resp.json()) as OpenAIChatResponse
-      return openaiChatResponseToAccumulated(json, { idFactory: this.cfg.idFactory })
+      return {
+        acc: openaiChatResponseToAccumulated(json, { idFactory: this.cfg.idFactory }),
+        notices: ['供应商本轮没有按流式返回,已自动按完整响应接回。'],
+      }
     } catch {
-      return { text: '', thinking: '', toolCalls: [], finishReason: null, usage: { input_tokens: 0, output_tokens: 0 } }
+      return {
+        acc: { text: '', thinking: '', toolCalls: [], finishReason: null },
+        notices: ['供应商本轮返回了非流式但内容不可解析,已安全降级为空响应。'],
+      }
     }
   }
 }
 
 /** 累积结果 → AssistantStep。kind 看 toolCalls 有无(needsFollowUp),不看 finishReason。 */
-function toAssistantStep(acc: AccumulatedResponse): AssistantStep {
-  if (acc.toolCalls.length > 0) {
-    return { kind: 'tool_calls', text: acc.text || undefined, thinking: acc.thinking || undefined, calls: acc.toolCalls }
+function toAssistantStep(acc: AccumulatedResponse, notices?: string[]): AssistantStep {
+  const thinking = acc.thinking ? { thinking: acc.thinking } : {}
+  const usage = acc.usage ? { usage: acc.usage } : {}
+  const allNotices = [...(notices ?? []), ...(isTruncatedFinishReason(acc.finishReason) ? [MODEL_OUTPUT_TRUNCATED_NOTICE] : [])]
+  const noticeField = allNotices.length ? { notices: allNotices } : {}
+  if (isTruncatedFinishReason(acc.finishReason)) {
+    return { kind: 'final', text: acc.text, ...thinking, ...usage, ...noticeField }
   }
-  return { kind: 'final', text: acc.text, thinking: acc.thinking || undefined }
+  if (acc.toolCalls.length > 0) {
+    return { kind: 'tool_calls', ...(acc.text ? { text: acc.text } : {}), ...thinking, calls: acc.toolCalls, ...usage, ...noticeField }
+  }
+  return { kind: 'final', text: acc.text, ...thinking, ...usage, ...noticeField }
+}
+
+function isTruncatedFinishReason(reason: string | null | undefined): boolean {
+  return reason === 'length' || reason === 'max_tokens'
 }

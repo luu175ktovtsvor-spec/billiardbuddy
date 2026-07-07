@@ -86,7 +86,7 @@ function withoutTrailingSlash(baseUrl: string): string {
 }
 
 /**
- * 从运行时 env 生成模型出口配置。优先识别 cc-haha 风格 ANTHROPIC_*；
+ * 从运行时 env 生成模型出口配置。优先识别 Anthropic-compatible 的 ANTHROPIC_*；
  * 没有时兼容当前桌面版 bundled.env 的 DEEPSEEK/OPENAI 网关变量。
  */
 export function providerConfigFromEnv(

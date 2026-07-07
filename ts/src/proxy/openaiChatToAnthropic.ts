@@ -1,4 +1,4 @@
-// 逻辑照 cc-haha src/server/proxy/transform/openaiChatToAnthropic.ts。非流式 chat 响应 → AccumulatedResponse(与流式同构)。
+// 非流式 OpenAI-compatible chat 响应 → AccumulatedResponse(与流式同构)。
 // 这是给不合规上游兜底的冷路径(05 清单②③同款不崩):流式那边畸形分片能靠"按行 try/catch 跳过"续命,
 // 非流式只有一整个响应体、没有"跳过一行"的边界,必须逐字段自扛——message 整体缺失/tool_calls 缺 function/
 // thinking_blocks 塞 null,任一个字段畸形都不该拖累整轮 agent turn 崩溃(见 openaiChatToAnthropic.test.ts)。
@@ -16,7 +16,7 @@ export function openaiChatResponseToAccumulated(
   opts: { idFactory?: (index: number) => string } = {},
 ): AccumulatedResponse {
   const idFactory = opts.idFactory ?? defaultIdFactory
-  const usage = openaiUsageToAnthropic(resp.usage)
+  const usage = resp.usage ? openaiUsageToAnthropic(resp.usage) : undefined
   const choice = resp.choices?.[0]
   if (!choice) return { text: '', thinking: '', toolCalls: [], finishReason: null, usage }
 

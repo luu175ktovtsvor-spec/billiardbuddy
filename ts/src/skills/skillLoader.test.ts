@@ -55,6 +55,41 @@ Use store facts. ${'x'.repeat(20)}
   }
 })
 
+test('createSkillTools:list_skills prioritizes and filters enabled-pack recommendations', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'skills-recommended-'))
+  try {
+    mkdirSync(join(root, 'daily-report'), { recursive: true })
+    writeFileSync(join(root, 'daily-report', 'SKILL.md'), `---
+description: Write daily reports
+whenToUse: 老板要日报时
+---
+Daily report body.
+`)
+    mkdirSync(join(root, 'generic'), { recursive: true })
+    writeFileSync(join(root, 'generic', 'SKILL.md'), `---
+description: Generic helper
+---
+Generic body.
+`)
+    const lib = await loadSkillsDir(root)
+    const [list] = createSkillTools(lib, { recommendedSkillNames: ['daily-report'] })
+    const ctx = { workspace: new Workspace(root) }
+
+    const listed = await list!.execute({}, ctx)
+    expect(listed).toContain('已启用领域包推荐技能优先展示:daily-report')
+    expect(listed.indexOf('daily-report [推荐]:')).toBeLessThan(listed.indexOf('generic:'))
+
+    const recommendedOnly = await list!.execute({ recommended_only: true }, ctx)
+    expect(recommendedOnly).toContain('daily-report [推荐]: Write daily reports')
+    expect(recommendedOnly).not.toContain('generic')
+
+    expect(await list!.execute({ query: 'generic' }, ctx)).toContain('generic: Generic helper')
+    expect(await list!.execute({ query: 'missing', recommended_only: true }, ctx)).toBe('当前没有匹配技能。')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('createSkillTools:create_skill writes SKILL.md and updates current library', async () => {
   const root = mkdtempSync(join(tmpdir(), 'skills-create-'))
   try {

@@ -1,4 +1,4 @@
-// 逻辑照 cc-haha src/server/proxy/transform/usage.ts。OpenAI input 含 cache、Anthropic input 排除 → 扣减保不变式。
+// OpenAI input 含 cache、Anthropic input 排除 → 扣减保不变式。
 import type { OpenAICompatibleUsage, AnthropicUsage } from './types'
 
 export function openaiUsageToAnthropic(usage: OpenAICompatibleUsage | undefined): AnthropicUsage {

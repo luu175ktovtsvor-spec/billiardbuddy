@@ -8,13 +8,18 @@ function truthy(value: unknown): boolean {
   return v === 'true' || v === '1' || v === 'yes' || v === 'y'
 }
 
-export const fileHistoryTool: Tool<{ path?: string; limit?: number; include_diff?: boolean | string }> = {
+function isDryRun(input: unknown): boolean {
+  return !!input && typeof input === 'object' && truthy((input as { dry_run?: unknown }).dry_run)
+}
+
+export const fileHistoryTool: Tool<{ path?: string | string[]; paths?: string[]; limit?: number; include_diff?: boolean | string }> = {
   name: 'file_history',
-  description: 'List recent file snapshots recorded before write_file/edit_file/restore_file changes in this conversation. Input: { path?, limit?, include_diff? }.',
+  description: 'List recent file snapshots recorded before write_file/edit_file/NotebookEdit/restore_file changes in this conversation. Input: { path?, paths?, limit?, include_diff? }. path may be a string or string[].',
   inputSchema: {
     type: 'object',
     properties: {
-      path: { type: 'string' },
+      path: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
+      paths: { type: 'array', items: { type: 'string' } },
       limit: { type: 'number' },
       include_diff: { type: ['boolean', 'string'] },
     },
@@ -22,7 +27,8 @@ export const fileHistoryTool: Tool<{ path?: string; limit?: number; include_diff
   isReadOnly: true,
   async execute(input, ctx) {
     const records = await listFileHistory(ctx, {
-      path: typeof input?.path === 'string' ? input.path : undefined,
+      path: typeof input?.path === 'string' || Array.isArray(input?.path) ? input.path : undefined,
+      paths: Array.isArray(input?.paths) ? input.paths : undefined,
       limit: typeof input?.limit === 'number' ? input.limit : undefined,
     })
     if (records.length === 0) return '没有文件历史快照。'
@@ -64,9 +70,18 @@ export const restoreFileTool: Tool<{ path: string; snapshot_id?: string; dry_run
     required: ['path'],
   },
   isReadOnly: false,
-  requiresApproval: true,
-  approvalClass: 'destructive',
-  forceConfirm: true,
+  isReadOnlyFor(input) {
+    return isDryRun(input)
+  },
+  requiresApprovalFor(input) {
+    return !isDryRun(input)
+  },
+  approvalClassFor(input) {
+    return isDryRun(input) ? undefined : 'destructive'
+  },
+  forceConfirmFor(input) {
+    return !isDryRun(input)
+  },
   async previewFor(input, ctx) {
     if (!input || typeof input.path !== 'string') return null
     return await previewRestore(ctx, input)

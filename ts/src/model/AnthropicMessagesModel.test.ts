@@ -75,5 +75,9 @@ test('AnthropicMessagesModel:SSE tool_use 累积 input_json_delta', async () => 
     ]),
   })
   const step = await model.step({ messages: [userText('读文件')], tools: [] })
-  expect(step).toEqual({ kind: 'tool_calls', calls: [{ id: 'u1', name: 'read_file', input: { path: 'a.txt' } }] })
+  expect(step).toEqual({
+    kind: 'tool_calls',
+    calls: [{ id: 'u1', name: 'read_file', input: { path: 'a.txt' } }],
+    usage: { input_tokens: 3, output_tokens: 4 },
+  })
 })

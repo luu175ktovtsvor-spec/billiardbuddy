@@ -4,10 +4,13 @@ import type { ToolContext } from '../tools/Tool'
 export const STEER_MARK = '[用户补充/纠偏]'
 export const STEER_EXTRA_TURNS = 2
 export const PROGRESS_REMIND_EVERY = 6
+export const VERIFY_PLAN_REMIND_EVERY = 3
 export const PLAN_MODE_REMINDER =
   '你现在处于【计划模式】:只规划、不动手。用只读工具去探索,把完整、分步的计划讲清楚给老板;会实际改动的步骤先别做,等老板切到执行档或确认后再做。'
+export const VERIFY_PLAN_REMINDER =
+  '你已经开始执行批准后的计划。完成实施后必须直接调用 VerifyPlanExecution,并带上命令输出、诊断、文件读取、截图或人工检查等可复核证据;不要只用一句总结代替验证。'
 
-/** cc-haha 式系统提醒包壳:系统提示已告诉模型 <system-reminder> 是系统自动加的、不是老板说的话。 */
+/** 系统提醒包壳:系统提示已告诉模型 <system-reminder> 是系统自动加的、不是老板说的话。 */
 export function wrapReminder(content: string): string {
   return `<system-reminder>\n${content}\n</system-reminder>`
 }
@@ -33,9 +36,9 @@ export function extendTurns(turnsLimit: number, maxTurns: number, batches: numbe
   return Math.min(cap, turnsLimit + STEER_EXTRA_TURNS * batches)
 }
 
-/** 本轮该注入哪些系统提醒(进度提醒 + plan 说明)。纯读——进度计数清零由循环负责(见 Task 4)。 */
-export function collectReminders(ctx: ToolContext): Array<{ kind: 'progress' | 'plan'; text: string }> {
-  const out: Array<{ kind: 'progress' | 'plan'; text: string }> = []
+/** 本轮该注入哪些系统提醒(进度提醒 + plan/验证说明)。纯读——计数清零由循环负责。 */
+export function collectReminders(ctx: ToolContext): Array<{ kind: 'progress' | 'plan' | 'verify_plan'; text: string }> {
+  const out: Array<{ kind: 'progress' | 'plan' | 'verify_plan'; text: string }> = []
   if ((ctx.requestsSinceProgress ?? 0) >= PROGRESS_REMIND_EVERY) {
     const todos = ctx.todos ?? []
     const pct = todos.length ? Math.round((todos.filter(t => t.status === 'done').length / todos.length) * 100) : 0
@@ -46,6 +49,10 @@ export function collectReminders(ctx: ToolContext): Array<{ kind: 'progress' | '
   }
   if (ctx.permissionMode === 'plan') {
     out.push({ kind: 'plan', text: PLAN_MODE_REMINDER })
+  }
+  const pending = ctx.pendingPlanVerification
+  if (pending && !pending.verificationCompleted && (pending.toolCallsSinceApproval ?? 0) >= VERIFY_PLAN_REMIND_EVERY) {
+    out.push({ kind: 'verify_plan', text: VERIFY_PLAN_REMINDER })
   }
   return out
 }

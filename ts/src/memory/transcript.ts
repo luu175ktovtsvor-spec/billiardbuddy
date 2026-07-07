@@ -1,8 +1,9 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import type { Message } from '../types/message'
+import type { ContentReplacementRecord } from '../context/toolResultStorage'
 
 const CID_RE = /^[A-Za-z0-9_-]{1,128}$/
 const DEFAULT_PAGE_LIMIT = 200
@@ -25,6 +26,12 @@ function isMessage(x: unknown): x is Message {
   return (o.role === 'user' || o.role === 'assistant') && Array.isArray(o.content)
 }
 
+function isContentReplacementRecord(x: unknown): x is ContentReplacementRecord {
+  if (!x || typeof x !== 'object') return false
+  const o = x as Record<string, unknown>
+  return o.kind === 'tool-result' && typeof o.toolUseId === 'string' && typeof o.replacement === 'string'
+}
+
 function lineFor(m: Message): string {
   return `${JSON.stringify(m)}\n`
 }
@@ -36,10 +43,12 @@ function clampLimit(value: number | undefined): number {
 
 export class Transcript {
   readonly path: string
+  readonly contentReplacementPath: string
 
   constructor(rootDir: string, conversationId: string) {
     if (!CID_RE.test(conversationId)) throw new Error('非法 conversation id')
     this.path = join(rootDir, 'transcripts', `${conversationId}.jsonl`)
+    this.contentReplacementPath = join(rootDir, 'transcripts', `${conversationId}.content-replacements.jsonl`)
   }
 
   async load(): Promise<Message[]> {
@@ -123,6 +132,32 @@ export class Transcript {
       tail = []
     }
     await this.writeLines([...messages.map(lineFor), ...tail])
+  }
+
+  async loadContentReplacementRecords(): Promise<ContentReplacementRecord[]> {
+    let text = ''
+    try {
+      text = await readFile(this.contentReplacementPath, 'utf8')
+    } catch {
+      return []
+    }
+    const out: ContentReplacementRecord[] = []
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const parsed = JSON.parse(line) as unknown
+        if (isContentReplacementRecord(parsed)) out.push(parsed)
+      } catch {
+        // 坏行跳过,不让 replacement sidecar 损坏拖垮会话恢复。
+      }
+    }
+    return out
+  }
+
+  async appendContentReplacementRecords(records: ContentReplacementRecord[]): Promise<void> {
+    if (records.length === 0) return
+    await mkdir(dirname(this.contentReplacementPath), { recursive: true })
+    await appendFile(this.contentReplacementPath, records.map(record => `${JSON.stringify(record)}\n`).join(''), 'utf8')
   }
 
   private async writeLines(lines: string[]): Promise<void> {

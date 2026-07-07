@@ -1,7 +1,8 @@
 import { createReadStream } from 'node:fs'
-import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
+import { Transcript } from '../memory/transcript'
 import type { AgentEvent } from '../types/events'
 
 const TASK_ID_RE = /^[A-Za-z0-9_-]{1,128}$/
@@ -34,10 +35,45 @@ export interface TaskMeta {
   error?: string
 }
 
+export interface BackgroundAgentMetadata {
+  taskId: string
+  agentId?: string
+  agent: string
+  agentType?: string
+  name?: string
+  description?: string
+  conversationId?: string
+  workspaceRoot?: string
+  worktreePath?: string
+  toolResultStoreDir?: string
+  task?: string
+  context?: string
+  createdAt?: string
+  updatedAt?: string
+}
+
+export interface BackgroundAgentTargetResolution {
+  task: TaskMeta | null
+  ambiguous?: boolean
+  matches?: TaskMeta[]
+  reason?: string
+}
+
 export interface TaskRunnerContext {
   signal: AbortSignal
   emit(event: TaskStreamEvent): Promise<TaskEventRecord>
   progress(progress: number, stage?: string): Promise<void>
+}
+
+export interface TaskServiceOptions {
+  onSettled?: (task: TaskMeta) => Promise<void> | void
+}
+
+export interface TaskListOptions {
+  conversationId?: string
+  status?: TaskStatus
+  limit?: number
+  collapseResumedBackgroundAgents?: boolean
 }
 
 function nowIso(): string {
@@ -70,11 +106,122 @@ function isTaskMeta(value: unknown): value is TaskMeta {
     (value.error === undefined || typeof value.error === 'string')
 }
 
+function stringField(record: Record<string, unknown>, key: string): string {
+  const value = record[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function optionalStringField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = stringField(record, key)
+  return value || undefined
+}
+
+function backgroundAgentMetadataFrom(value: unknown, fallbackTaskId: string): BackgroundAgentMetadata | null {
+  if (!isRecord(value)) return null
+  const taskId = stringField(value, 'taskId') || fallbackTaskId
+  if (taskId !== fallbackTaskId || !TASK_ID_RE.test(taskId)) return null
+  const agent = stringField(value, 'agent') || stringField(value, 'agentType')
+  if (!agent) return null
+  return {
+    taskId,
+    agentId: optionalStringField(value, 'agentId') || optionalStringField(value, 'agent_id'),
+    agent,
+    agentType: optionalStringField(value, 'agentType'),
+    name: optionalStringField(value, 'name'),
+    description: optionalStringField(value, 'description'),
+    conversationId: optionalStringField(value, 'conversationId'),
+    workspaceRoot: optionalStringField(value, 'workspaceRoot'),
+    worktreePath: optionalStringField(value, 'worktreePath'),
+    toolResultStoreDir: optionalStringField(value, 'toolResultStoreDir'),
+    task: optionalStringField(value, 'task'),
+    context: optionalStringField(value, 'context'),
+    createdAt: optionalStringField(value, 'createdAt'),
+    updatedAt: optionalStringField(value, 'updatedAt'),
+  }
+}
+
 function isTaskEventRecord(value: unknown): value is TaskEventRecord {
   if (!isRecord(value)) return false
   if (typeof value.seq !== 'number' || !Number.isFinite(value.seq)) return false
   if (typeof value.ts !== 'string') return false
   return isRecord(value.event) && typeof value.event.type === 'string'
+}
+
+function stringParam(params: Record<string, unknown> | undefined, ...keys: string[]): string {
+  if (!params) return ''
+  for (const key of keys) {
+    const value = params[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return ''
+}
+
+function backgroundAgentCustomName(task: TaskMeta, metadata?: BackgroundAgentMetadata | null): string {
+  return metadata?.name?.trim() || stringParam(task.params, 'name', 'agentName', 'agent_name')
+}
+
+function backgroundAgentStableId(task: TaskMeta, metadata?: BackgroundAgentMetadata | null): string {
+  return metadata?.agentId?.trim() || stringParam(task.params, 'agent_id', 'agentId') || ''
+}
+
+function backgroundAgentType(task: TaskMeta, metadata?: BackgroundAgentMetadata | null): string {
+  return metadata?.agent?.trim() || metadata?.agentType?.trim() || stringParam(task.params, 'agent')
+}
+
+function backgroundAgentResumeSource(task: TaskMeta): string {
+  return stringParam(task.params, 'resumed_from')
+}
+
+function isBackgroundAgentDescendantOf(task: TaskMeta, ancestorId: string, allTasks: Map<string, TaskMeta>): boolean {
+  const seen = new Set<string>()
+  let current = backgroundAgentResumeSource(task)
+  while (current && !seen.has(current)) {
+    if (current === ancestorId) return true
+    seen.add(current)
+    const parent = allTasks.get(current)
+    current = parent ? backgroundAgentResumeSource(parent) : ''
+  }
+  return false
+}
+
+function collapseResumedBackgroundAgentTasks(tasks: TaskMeta[]): TaskMeta[] {
+  const allTasks = new Map(tasks.map(task => [task.id, task]))
+  return tasks.filter(task => {
+    if (task.kind !== 'background_agent') return true
+    for (const candidate of tasks) {
+      if (candidate.id === task.id || candidate.kind !== 'background_agent') continue
+      if (isBackgroundAgentDescendantOf(candidate, task.id, allTasks)) return false
+    }
+    return true
+  })
+}
+
+function taskFromBackgroundAgentMetadata(metadata: BackgroundAgentMetadata): TaskMeta {
+  const updatedAt = metadata.updatedAt || metadata.createdAt || new Date(0).toISOString()
+  const createdAt = metadata.createdAt || updatedAt
+  const displayName = metadata.name || metadata.agent
+  const title = metadata.description || `${displayName}: ${metadata.task?.slice(0, 80) || 'recovered background agent'}`
+  return {
+    id: metadata.taskId,
+    title,
+    createdAt,
+    updatedAt,
+    status: 'completed',
+    kind: 'background_agent',
+    conversationId: metadata.conversationId,
+    workspaceRoot: metadata.workspaceRoot,
+    progress: 100,
+    params: {
+      ...(metadata.agentId ? { agent_id: metadata.agentId } : {}),
+      agent: metadata.agent,
+      ...(metadata.name ? { name: metadata.name } : {}),
+      ...(metadata.task ? { task: metadata.task } : {}),
+      ...(metadata.context ? { context: metadata.context } : {}),
+      ...(metadata.toolResultStoreDir ? { tool_result_store_dir: metadata.toolResultStoreDir } : {}),
+      recovered_from_metadata: true,
+    },
+    lastEventSeq: 0,
+  }
 }
 
 function validateTaskId(id: string): void {
@@ -95,16 +242,18 @@ function clampProgress(value: number | undefined): number | undefined {
 export class TaskService {
   private readonly indexPath: string
   private readonly controllers = new Map<string, AbortController>()
+  private readonly liveSteerInboxes = new Map<string, string[]>()
   private indexQueue: Promise<unknown> = Promise.resolve()
 
-  constructor(private readonly rootDir: string) {
+  constructor(private readonly rootDir: string, private readonly options: TaskServiceOptions = {}) {
     this.indexPath = join(rootDir, 'tasks.json')
   }
 
-  async list(opts: { conversationId?: string; status?: TaskStatus; limit?: number } = {}): Promise<TaskMeta[]> {
+  async list(opts: TaskListOptions = {}): Promise<TaskMeta[]> {
     const limit = clampLimit(opts.limit)
-    const tasks = [...(await this.readIndex()).values()]
+    const scopedTasks = [...(await this.readIndex()).values()]
       .filter(task => !opts.conversationId || task.conversationId === opts.conversationId)
+    const tasks = (opts.collapseResumedBackgroundAgents ? collapseResumedBackgroundAgentTasks(scopedTasks) : scopedTasks)
       .filter(task => !opts.status || task.status === opts.status)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     return tasks.slice(0, limit)
@@ -113,6 +262,70 @@ export class TaskService {
   async get(id: string): Promise<TaskMeta | null> {
     validateTaskId(id)
     return (await this.readIndex()).get(id) ?? null
+  }
+
+  async findBackgroundAgent(target: string, opts: { conversationId?: string; statuses?: TaskStatus[] } = {}): Promise<TaskMeta | null> {
+    return (await this.resolveBackgroundAgentTarget(target, opts)).task
+  }
+
+  async resolveBackgroundAgentTarget(target: string, opts: { conversationId?: string; statuses?: TaskStatus[] } = {}): Promise<BackgroundAgentTargetResolution> {
+    const wanted = target.trim()
+    if (!wanted) return { task: null }
+    const statuses = new Set(opts.statuses ?? ['queued', 'running', 'completed', 'failed', 'cancelled'])
+    const index = await this.readIndex()
+    const indexedBackgroundTasks = [...index.values()]
+      .filter(task => !opts.conversationId || task.conversationId === opts.conversationId)
+      .filter(task => task.kind === 'background_agent')
+    const allEnriched = await Promise.all(indexedBackgroundTasks.map(async task => ({
+      task,
+      metadata: await this.readBackgroundAgentMetadata(task.id),
+    })))
+    for (const metadata of await this.listBackgroundAgentMetadata()) {
+      if (index.has(metadata.taskId)) continue
+      if (opts.conversationId && metadata.conversationId !== opts.conversationId) continue
+      allEnriched.push({ task: taskFromBackgroundAgentMetadata(metadata), metadata })
+    }
+    const allTasks = new Map(allEnriched.map(item => [item.task.id, item.task]))
+    const enriched = allEnriched.filter(item => statuses.has(item.task.status))
+    enriched.sort((a, b) => b.task.updatedAt.localeCompare(a.task.updatedAt))
+    const latestLeafTask = (items: typeof enriched): TaskMeta | null => {
+      if (items.length === 0) return null
+      const leaves = items.filter(item =>
+        !items.some(candidate => candidate.task.id !== item.task.id && isBackgroundAgentDescendantOf(candidate.task, item.task.id, allTasks)),
+      )
+      const candidates = leaves.length > 0 ? leaves : items
+      candidates.sort((a, b) =>
+        b.task.updatedAt.localeCompare(a.task.updatedAt) ||
+        b.task.createdAt.localeCompare(a.task.createdAt) ||
+        b.task.id.localeCompare(a.task.id),
+      )
+      return candidates[0]?.task ?? null
+    }
+    const byLatestDescendant = latestLeafTask(enriched.filter(item => item.task.id !== wanted && isBackgroundAgentDescendantOf(item.task, wanted, allTasks)))
+    if (byLatestDescendant) return { task: byLatestDescendant }
+    const byId = enriched.find(item => item.task.id === wanted)?.task
+    if (byId) return { task: byId }
+    const byStableAgentId = latestLeafTask(enriched.filter(item => backgroundAgentStableId(item.task, item.metadata) === wanted))
+    if (byStableAgentId) return { task: byStableAgentId }
+    const byCustomName = latestLeafTask(enriched.filter(item => backgroundAgentCustomName(item.task, item.metadata) === wanted))
+    if (byCustomName) return { task: byCustomName }
+    const byAgentType = enriched
+      .filter(item => backgroundAgentType(item.task, item.metadata) === wanted)
+      .map(item => item.task)
+    if (byAgentType.length === 1) return { task: byAgentType[0]! }
+    if (byAgentType.length > 1) {
+      return {
+        task: null,
+        ambiguous: true,
+        matches: byAgentType,
+        reason: `Multiple background agents match "${wanted}". Use the task id or the custom name passed to start_background_agent_task({name}).`,
+      }
+    }
+    return { task: null }
+  }
+
+  async findRunningBackgroundAgent(target: string, opts: { conversationId?: string } = {}): Promise<TaskMeta | null> {
+    return this.findBackgroundAgent(target, { ...opts, statuses: ['running'] })
   }
 
   async create(input: { id?: string; title: string; kind?: string; conversationId?: string; workspaceRoot?: string; params?: Record<string, unknown> }): Promise<TaskMeta> {
@@ -165,6 +378,23 @@ export class TaskService {
     void this.run(id, controller, runner)
   }
 
+  attachSteerInbox(id: string, inbox: string[]): () => void {
+    validateTaskId(id)
+    this.liveSteerInboxes.set(id, inbox)
+    return () => {
+      if (this.liveSteerInboxes.get(id) === inbox) this.liveSteerInboxes.delete(id)
+    }
+  }
+
+  async queueSteerMessage(id: string, message: string): Promise<boolean> {
+    validateTaskId(id)
+    const inbox = this.liveSteerInboxes.get(id)
+    if (!inbox) return false
+    inbox.push(message)
+    await this.appendEvent(id, { type: 'context_note', text: `SendMessage queued: ${message.slice(0, 160)}` }).catch(() => undefined)
+    return true
+  }
+
   async cancel(id: string): Promise<boolean> {
     validateTaskId(id)
     const controller = this.controllers.get(id)
@@ -208,7 +438,75 @@ export class TaskService {
     return join(this.rootDir, 'task-events', `${id}.jsonl`)
   }
 
+  transcript(id: string): Transcript {
+    validateTaskId(id)
+    return new Transcript(join(this.rootDir, 'task-transcripts'), id)
+  }
+
+  backgroundAgentMetadataPath(id: string): string {
+    validateTaskId(id)
+    return join(this.rootDir, 'task-transcripts', 'transcripts', `${id}.meta.json`)
+  }
+
+  backgroundAgentToolResultStoreDir(id: string): string {
+    validateTaskId(id)
+    return join(this.rootDir, 'task-tool-results', id)
+  }
+
+  async listBackgroundAgentMetadata(): Promise<BackgroundAgentMetadata[]> {
+    const dir = join(this.rootDir, 'task-transcripts', 'transcripts')
+    let entries: string[] = []
+    try {
+      entries = await readdir(dir)
+    } catch {
+      return []
+    }
+    const metadata: BackgroundAgentMetadata[] = []
+    for (const entry of entries) {
+      if (!entry.endsWith('.meta.json')) continue
+      const id = entry.slice(0, -'.meta.json'.length)
+      if (!TASK_ID_RE.test(id)) continue
+      const record = await this.readBackgroundAgentMetadata(id)
+      if (record) metadata.push(record)
+    }
+    return metadata.sort((a, b) => (b.updatedAt || b.createdAt || '').localeCompare(a.updatedAt || a.createdAt || ''))
+  }
+
+  async writeBackgroundAgentMetadata(id: string, metadata: Omit<BackgroundAgentMetadata, 'taskId' | 'createdAt' | 'updatedAt'> & Partial<Pick<BackgroundAgentMetadata, 'taskId' | 'createdAt' | 'updatedAt'>>): Promise<BackgroundAgentMetadata> {
+    validateTaskId(id)
+    const timestamp = nowIso()
+    const current = await this.readBackgroundAgentMetadata(id)
+    const next: BackgroundAgentMetadata = {
+      ...current,
+      ...metadata,
+      taskId: id,
+      agentId: metadata.agentId?.trim() || current?.agentId,
+      agent: metadata.agent.trim(),
+      agentType: metadata.agentType?.trim() || metadata.agent.trim(),
+      createdAt: metadata.createdAt ?? current?.createdAt ?? timestamp,
+      updatedAt: timestamp,
+    }
+    if (!next.agent) throw new Error('background agent metadata requires agent')
+    const path = this.backgroundAgentMetadataPath(id)
+    await mkdir(dirname(path), { recursive: true })
+    const tmp = `${path}.${process.pid}.${Date.now()}.tmp`
+    await writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
+    await rename(tmp, path)
+    return next
+  }
+
+  async readBackgroundAgentMetadata(id: string): Promise<BackgroundAgentMetadata | null> {
+    validateTaskId(id)
+    try {
+      const parsed = JSON.parse(await readFile(this.backgroundAgentMetadataPath(id), 'utf8')) as unknown
+      return backgroundAgentMetadataFrom(parsed, id)
+    } catch {
+      return null
+    }
+  }
+
   private async run(id: string, controller: AbortController, runner: (ctx: TaskRunnerContext) => Promise<unknown | void>): Promise<void> {
+    let settled: TaskMeta | null = null
     try {
       await this.touch(id, { status: 'running', error: undefined })
       await this.appendEvent(id, { type: 'started', text: '后台任务已启动' })
@@ -221,17 +519,27 @@ export class TaskService {
         },
       })
       if (controller.signal.aborted) {
-        await this.touch(id, { status: 'cancelled' })
+        settled = await this.touch(id, { status: 'cancelled' })
       } else {
-        await this.touch(id, { status: 'completed', progress: 100, result })
+        settled = await this.touch(id, { status: 'completed', progress: 100, result })
       }
     } catch (err) {
       const message = controller.signal.aborted ? '后台任务已取消' : err instanceof Error ? err.message : String(err)
-      await this.touch(id, { status: controller.signal.aborted ? 'cancelled' : 'failed', error: message }).catch(() => undefined)
+      settled = await this.touch(id, { status: controller.signal.aborted ? 'cancelled' : 'failed', error: message }).catch(() => null)
       await this.appendEvent(id, { type: 'final', text: message }).catch(() => undefined)
     } finally {
       this.controllers.delete(id)
+      this.liveSteerInboxes.delete(id)
       await this.appendEvent(id, { type: 'done' }).catch(() => undefined)
+      if (settled) await this.notifySettled(settled)
+    }
+  }
+
+  private async notifySettled(task: TaskMeta): Promise<void> {
+    try {
+      await this.options.onSettled?.(task)
+    } catch {
+      // 通知/旁路钩子失败不能反向污染任务状态。
     }
   }
 

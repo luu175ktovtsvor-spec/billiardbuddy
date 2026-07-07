@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { computeEnvInfo, getIsGit, getGitStatus } from './env'
+import { computeEnvInfo, getIsGit, getGitStatus, parseGitStatusPorcelain } from './env'
 
 let root: string
 beforeEach(() => {
@@ -27,6 +27,27 @@ test('computeEnvInfo never leaks a model name (白标)', () => {
   expect(block.toLowerCase()).not.toContain('claude')
   expect(block.toLowerCase()).not.toContain('gpt')
   expect(block.toLowerCase()).not.toContain('mimo')
+})
+
+test('parseGitStatusPorcelain returns branch and compact change counts', () => {
+  const status = parseGitStatusPorcelain([
+    '## main...origin/main [ahead 2, behind 1]',
+    'M  staged.ts',
+    ' M unstaged.ts',
+    'MM both.ts',
+    '?? new.ts',
+  ].join('\n'))
+  expect(status).toMatchObject({
+    isGit: true,
+    branch: 'main',
+    dirty: true,
+    changed: 5,
+    staged: 2,
+    unstaged: 2,
+    untracked: 1,
+    ahead: 2,
+    behind: 1,
+  })
 })
 
 test('getIsGit/getGitStatus reflect a real git repo', async () => {

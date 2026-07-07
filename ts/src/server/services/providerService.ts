@@ -21,6 +21,7 @@ const CURRENT_SCHEMA_VERSION = 1
 export interface SavedProvider {
   id: string
   name: string
+  enabled: boolean
   apiFormat: ProviderApiFormat
   baseUrl: string
   apiKey?: string
@@ -72,6 +73,7 @@ export interface RuntimeProviderResolution {
 type ProviderInput = {
   id?: unknown
   name?: unknown
+  enabled?: unknown
   apiFormat?: unknown
   baseUrl?: unknown
   apiKey?: unknown
@@ -167,6 +169,7 @@ function providerFromInput(input: ProviderInput, existing?: SavedProvider): Save
   const next: SavedProvider = {
     id,
     name,
+    enabled: typeof input.enabled === 'boolean' ? input.enabled : existing?.enabled ?? true,
     apiFormat,
     baseUrl: withoutTrailingSlash(baseUrl),
     model,
@@ -211,6 +214,10 @@ function isSavedProvider(value: unknown): value is SavedProvider {
   return PROVIDER_ID_RE.test(clean(value.id)!)
 }
 
+function normalizeSavedProvider(provider: SavedProvider): SavedProvider {
+  return { ...provider, enabled: provider.enabled !== false }
+}
+
 function providerToRuntimeConfig(provider: SavedProvider): RuntimeProviderConfig {
   return {
     apiFormat: provider.apiFormat,
@@ -226,6 +233,31 @@ function providerToRuntimeConfig(provider: SavedProvider): RuntimeProviderConfig
     imageContentMode: provider.imageContentMode,
     networkSettings: provider.networkSettings,
   }
+}
+
+function sameRuntimeTarget(a: RuntimeProviderConfig, b: RuntimeProviderConfig): boolean {
+  return a.apiFormat === b.apiFormat &&
+    a.baseUrl === b.baseUrl &&
+    a.model === b.model
+}
+
+function runtimeFromProvider(provider: SavedProvider): RuntimeProviderResolution {
+  const config = providerToRuntimeConfig(provider)
+  return {
+    config,
+    summary: redactedProviderSummary(config),
+    source: 'saved-provider',
+    providerId: provider.id,
+    providerName: provider.name,
+  }
+}
+
+function pushRuntimeOnce(runtimes: RuntimeProviderResolution[], runtime: RuntimeProviderResolution): void {
+  if (!runtimes.some(existing => sameRuntimeTarget(existing.config, runtime.config))) runtimes.push(runtime)
+}
+
+function nextEnabledProviderId(providers: SavedProvider[], excludedId: string): string | null {
+  return providers.find(provider => provider.id !== excludedId && provider.enabled !== false)?.id ?? null
 }
 
 export class ProviderService {
@@ -265,8 +297,42 @@ export class ProviderService {
     if (idx === -1) throw new Error(`provider not found: ${id}`)
     const provider = providerFromInput({ ...input, id }, index.providers[idx])
     index.providers[idx] = provider
+    if (index.activeId === id && provider.enabled === false) index.activeId = nextEnabledProviderId(index.providers, id)
     await this.writeIndex(index)
     return publicProvider(provider)
+  }
+
+  async setEnabled(id: string, enabled: boolean): Promise<PublicProvider> {
+    validateProviderId(id)
+    const index = await this.readIndex()
+    const idx = index.providers.findIndex(p => p.id === id)
+    if (idx === -1) throw new Error(`provider not found: ${id}`)
+    const provider = { ...index.providers[idx]!, enabled, updatedAt: nowIso() }
+    index.providers[idx] = provider
+    if (!enabled && index.activeId === id) index.activeId = nextEnabledProviderId(index.providers, id)
+    await this.writeIndex(index)
+    return publicProvider(provider)
+  }
+
+  async reorder(ids: string[]): Promise<ProviderListResult> {
+    const order = ids.map(id => {
+      const cleanId = clean(id)
+      if (!cleanId) throw new Error('provider order contains empty id')
+      validateProviderId(cleanId)
+      return cleanId
+    })
+    if (new Set(order).size !== order.length) throw new Error('provider order contains duplicate id')
+    const index = await this.readIndex()
+    const byId = new Map(index.providers.map(provider => [provider.id, provider]))
+    for (const id of order) {
+      if (!byId.has(id)) throw new Error(`provider not found: ${id}`)
+    }
+    index.providers = [
+      ...order.map(id => byId.get(id)!),
+      ...index.providers.filter(provider => !order.includes(provider.id)),
+    ].map(provider => ({ ...provider, updatedAt: order.includes(provider.id) ? nowIso() : provider.updatedAt }))
+    await this.writeIndex(index)
+    return this.list()
   }
 
   async delete(id: string): Promise<void> {
@@ -284,6 +350,7 @@ export class ProviderService {
     const index = await this.readIndex()
     const provider = index.providers.find(p => p.id === id)
     if (!provider) throw new Error(`provider not found: ${id}`)
+    if (provider.enabled === false) throw new Error('cannot activate disabled provider')
     index.activeId = id
     await this.writeIndex(index)
     return publicProvider(provider)
@@ -295,25 +362,28 @@ export class ProviderService {
     await this.writeIndex(index)
   }
 
-  async resolveRuntimeConfig(env: Record<string, string | undefined> = process.env): Promise<RuntimeProviderResolution | null> {
+  async resolveRuntimeConfigs(env: Record<string, string | undefined> = process.env): Promise<RuntimeProviderResolution[]> {
     const index = await this.readIndex()
+    const runtimes: RuntimeProviderResolution[] = []
+    const enabledProviders = index.providers.filter(provider => provider.enabled !== false)
     if (index.activeId) {
-      const provider = index.providers.find(p => p.id === index.activeId)
-      if (provider) {
-        const config = providerToRuntimeConfig(provider)
-        return {
-          config,
-          summary: redactedProviderSummary(config),
-          source: 'saved-provider',
-          providerId: provider.id,
-          providerName: provider.name,
-        }
+      const provider = enabledProviders.find(p => p.id === index.activeId)
+      if (provider) pushRuntimeOnce(runtimes, runtimeFromProvider(provider))
+      for (const fallbackProvider of enabledProviders) {
+        if (fallbackProvider.id === index.activeId) continue
+        pushRuntimeOnce(runtimes, runtimeFromProvider(fallbackProvider))
       }
     }
 
     const config = providerConfigFromEnv(env)
-    if (!config) return null
-    return { config, summary: redactedProviderSummary(config), source: 'env' }
+    if (config && !runtimes.some(runtime => sameRuntimeTarget(runtime.config, config))) {
+      runtimes.push({ config, summary: redactedProviderSummary(config), source: 'env' })
+    }
+    return runtimes
+  }
+
+  async resolveRuntimeConfig(env: Record<string, string | undefined> = process.env): Promise<RuntimeProviderResolution | null> {
+    return (await this.resolveRuntimeConfigs(env))[0] ?? null
   }
 
   async testProvider(id: string, opts: { fetchImpl?: FetchLike } = {}): Promise<ProviderTestResult> {
@@ -356,7 +426,7 @@ export class ProviderService {
     try {
       const parsed = JSON.parse(raw) as unknown
       const record = isRecord(parsed) ? parsed : {}
-      const providers = Array.isArray(record.providers) ? record.providers.filter(isSavedProvider) : []
+      const providers = Array.isArray(record.providers) ? record.providers.filter(isSavedProvider).map(normalizeSavedProvider) : []
       const activeId = typeof record.activeId === 'string' && providers.some(p => p.id === record.activeId)
         ? record.activeId
         : null

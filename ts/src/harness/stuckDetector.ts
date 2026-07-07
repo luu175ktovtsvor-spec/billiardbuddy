@@ -1,7 +1,8 @@
 import type { Message, ToolUseBlock } from '../types/message'
 import { stableStringify } from '../permissions/canonical'
 
-export const MAX_SAME_CALL = 5
+export const CORE_SAME_CALL_LIMIT = 4
+export const EXTENSION_SAME_CALL_LIMIT = 40
 export const MAX_TOTAL_TOOL_CALLS_NO_PROGRESS = 40
 
 export type StuckPattern = 'action_observation' | 'action_error' | 'monologue' | 'too_many_tools'
@@ -23,6 +24,47 @@ function toolUses(messages: Message[]): ToolUseBlock[] {
   return messages.flatMap(m => m.content.flatMap(b => (b.type === 'tool_use' ? [b] : [])))
 }
 
+const CORE_STUCK_GUARD_TOOLS = new Set([
+  'read_file',
+  'read_many_files',
+  'write_file',
+  'edit_file',
+  'patch_files',
+  'list_dir',
+  'glob_files',
+  'grep_files',
+  'code_outline',
+  'file_history',
+  'restore_file',
+  'run_command',
+  'project_diagnostics',
+  'git_status',
+  'git_history',
+  'tool_search',
+  'todo_write',
+  'read_stored_tool_result',
+  'search_store_docs',
+  'list_project_instructions',
+])
+
+export function sameCallLimitForTool(toolName: string): number {
+  if (toolName.startsWith('mcp__')) return EXTENSION_SAME_CALL_LIMIT
+  return CORE_STUCK_GUARD_TOOLS.has(toolName) ? CORE_SAME_CALL_LIMIT : EXTENSION_SAME_CALL_LIMIT
+}
+
+function trailingSameCallStreak(calls: ToolUseBlock[]): { toolName: string; count: number } | null {
+  const last = calls.at(-1)
+  if (!last) return null
+  const key = callKey(last.name, last.input)
+  let count = 0
+  for (let i = calls.length - 1; i >= 0; i--) {
+    const call = calls[i]!
+    if (callKey(call.name, call.input) !== key) break
+    count++
+  }
+  return { toolName: last.name, count }
+}
+
 function assistantTextTurns(messages: Message[]): number {
   let n = 0
   for (const m of messages.slice(-8)) {
@@ -42,14 +84,12 @@ export function detectStuck(
     }
   }
 
-  const calls = toolUses(messages).slice(-6)
-  if (calls.length >= 4) {
-    const last4 = calls.slice(-4).map(c => callKey(c.name, c.input))
-    if (last4.every(k => k === last4[0])) {
-      return {
-        pattern: 'action_observation',
-        message: '你正在重复同一个工具调用。不要原地打转;根据已有结果换一个动作,或向老板说明卡点。',
-      }
+  const calls = toolUses(messages)
+  const streak = trailingSameCallStreak(calls)
+  if (streak && streak.count >= sameCallLimitForTool(streak.toolName)) {
+    return {
+      pattern: 'action_observation',
+      message: `你正在重复同一个工具调用(${streak.count} 次)。不要原地打转;根据已有结果换一个动作,或向老板说明卡点。`,
     }
   }
 
@@ -70,6 +110,6 @@ export function detectStuck(
   return null
 }
 
-export function sameCallGuardMessage(toolName: string): string {
-  return `连续重复调用 ${toolName} 已达到上限。请停止重复同一动作,根据已有结果换策略或给出阶段性结论。`
+export function sameCallGuardMessage(toolName: string, limit = sameCallLimitForTool(toolName)): string {
+  return `连续重复调用 ${toolName} 已达到 ${limit} 次上限。请停止重复同一动作,根据已有结果换策略或给出阶段性结论。`
 }

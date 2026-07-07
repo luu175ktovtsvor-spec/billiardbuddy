@@ -1,5 +1,5 @@
 /**
- * 内核消息格式 = Anthropic content-block(照 cc-haha:tool_use/tool_result 块、无 role:'tool'、system 单列)。
+ * 内核消息格式 = Anthropic content-block:tool_use/tool_result 块、无 role:'tool'、system 单列。
  * 出方向由 ts/src/proxy 翻译成 OpenAI chat 喂国产模型;内部只认这套块。
  */
 export interface ToolCall {

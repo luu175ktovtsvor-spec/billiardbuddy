@@ -1,6 +1,14 @@
 import { describe, expect, test } from 'bun:test'
 import { toolResultBlock, toolUseBlock, userText, type Message } from '../types/message'
-import { callKey, detectStuck, MAX_TOTAL_TOOL_CALLS_NO_PROGRESS, sameCallGuardMessage } from './stuckDetector'
+import {
+  callKey,
+  CORE_SAME_CALL_LIMIT,
+  detectStuck,
+  EXTENSION_SAME_CALL_LIMIT,
+  MAX_TOTAL_TOOL_CALLS_NO_PROGRESS,
+  sameCallGuardMessage,
+  sameCallLimitForTool,
+} from './stuckDetector'
 
 function pair(id: string, name: string, input: unknown, result = 'ok'): Message[] {
   return [
@@ -27,6 +35,27 @@ describe('stuckDetector', () => {
     expect(stuck?.message).toContain('重复')
   })
 
+  test('核心工具低阈值,扩展/MCP 工具高阈值', () => {
+    expect(sameCallLimitForTool('read_file')).toBe(CORE_SAME_CALL_LIMIT)
+    expect(sameCallLimitForTool('run_command')).toBe(CORE_SAME_CALL_LIMIT)
+    expect(sameCallLimitForTool('mcp__fixture__import_many')).toBe(EXTENSION_SAME_CALL_LIMIT)
+    expect(sameCallLimitForTool('custom_batch_tool')).toBe(EXTENSION_SAME_CALL_LIMIT)
+  })
+
+  test('扩展工具不会在核心工具阈值处误触发', () => {
+    const early = [
+      userText('start'),
+      ...Array.from({ length: CORE_SAME_CALL_LIMIT }, (_, i) => pair(String(i), 'mcp__fixture__import_many', { batch: 1 })).flat(),
+    ]
+    expect(detectStuck(early)).toBeNull()
+
+    const enough = [
+      userText('start'),
+      ...Array.from({ length: EXTENSION_SAME_CALL_LIMIT }, (_, i) => pair(String(i), 'mcp__fixture__import_many', { batch: 1 })).flat(),
+    ]
+    expect(detectStuck(enough)?.pattern).toBe('action_observation')
+  })
+
   test('总工具调用超过 40 还没进展触发软推', () => {
     const stuck = detectStuck([userText('start')], { totalToolCallsNoProgress: MAX_TOTAL_TOOL_CALLS_NO_PROGRESS })
     expect(stuck?.pattern).toBe('too_many_tools')
@@ -34,5 +63,6 @@ describe('stuckDetector', () => {
 
   test('sameCallGuardMessage 是硬拦回灌文本', () => {
     expect(sameCallGuardMessage('read_file')).toContain('连续重复调用 read_file')
+    expect(sameCallGuardMessage('read_file')).toContain(`${CORE_SAME_CALL_LIMIT} 次上限`)
   })
 })

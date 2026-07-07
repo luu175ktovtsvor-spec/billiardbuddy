@@ -56,6 +56,17 @@ describe('resolvePermission 瀑布', () => {
     expect(d.behavior === 'ask' && d.reason?.type).toBe('forceConfirm')
   })
 
+  test('forceConfirmFor 可按入参动态强制确认', () => {
+    const t = tool({
+      requiresApprovalFor: input => !!(input as { restore?: boolean }).restore,
+      forceConfirmFor: input => !!(input as { restore?: boolean }).restore,
+      approvalClassFor: input => (input as { restore?: boolean }).restore ? 'destructive' : undefined,
+    })
+    expect(resolvePermission(t, { restore: false }, ctx('full')).behavior).toBe('allow')
+    const d = resolvePermission(t, { restore: true }, ctx('full'))
+    expect(d).toMatchObject({ behavior: 'ask', approvalClass: 'destructive', reason: { type: 'forceConfirm' } })
+  })
+
   test('bypassPermissions:跳过普通审批,但不跳过 fatal/forceConfirm/必须用户交互', () => {
     expect(resolvePermission(tool({ requiresApproval: true, approvalClass: 'outreach' }), {}, ctx('bypassPermissions')).behavior).toBe('allow')
 

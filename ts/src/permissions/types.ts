@@ -1,4 +1,4 @@
-// 权限系统纯类型 leaf(不 import 本仓库任何模块,避免环)。照 cc-haha types/permissions.ts 的 shape,
+// 权限系统纯类型 leaf(不 import 本仓库任何模块,避免环)。
 // 裁到我们用得上的:4 档(非 CC 5 档)、allow/ask/deny 三态、我们红线专属的 DecisionReason。
 
 export type PermissionMode = 'ask' | 'auto_files' | 'full' | 'plan' | 'bypassPermissions'
