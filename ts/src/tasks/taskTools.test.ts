@@ -282,8 +282,8 @@ test('background agent isolation=worktree preserves dirty worktree and resume co
 
     await resumeBackgroundAgentTask(opts, first, '继续读取刚才写入的文件', ctx)
     const resumed = await waitFor(async () => {
-      const list = await tasks.list({ conversationId: 'c-worktree', collapseResumedBackgroundAgents: true })
-      return list[0]?.status === 'completed' && list[0].id !== first.id ? list[0] : null
+      const task = await tasks.get(first.id)
+      return task?.status === 'completed' && task.result === '续跑读到文件' ? task : null
     })
     const resumedMetadata = await tasks.readBackgroundAgentMetadata(resumed.id)
     expect(resumedMetadata?.worktreePath).toBe(worktreePath)

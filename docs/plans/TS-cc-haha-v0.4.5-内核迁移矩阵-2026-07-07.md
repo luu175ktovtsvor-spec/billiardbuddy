@@ -2216,9 +2216,18 @@
 - 测试覆盖:PascalCase alias 可创建/列出/更新同一任务列表,lowercase 可读取 alias 写入的状态;`TaskCreate/TaskUpdate` 在 agent loop 中发出两次 `todo_update`;`tool_search` 可召回四个 PascalCase 任务工具;前端 `toolActionText` 渲染两套任务工具名。
 - 验证:`cd ts && bun run typecheck` clean;`cd ts && bun test src/tasks/taskListTools.test.ts src/harness/loop.test.ts src/tools/toolSearchTool.test.ts --timeout 40000` = 61 pass;`cd ts && bun test --timeout 60000` = 661 pass;`cd web && pnpm exec vitest run src/lib/agent-tools.test.ts` = 2 pass;`cd web && pnpm exec tsc --noEmit` clean。
 
+## 3.267 2026-07-08 CC-Haha background agent 原任务槽续跑迁移
+
+- 对照源:`~/Desktop/cc-haha-ref/src/tasks/LocalAgentTask/LocalAgentTask.tsx` 与 `src/utils/task/framework.ts`。关键行为:CC-Haha 的 `resumeAgentBackground` 不是每次生成一个全新的 panel task,而是用同一个 `agentId/taskId` 重新注册任务状态;`registerTask()` 发现同 id 已存在时会保留 panel UI state,把新运行替换进原槽。
+- `startBackgroundAgentRun()` 新增内部 `replaceTaskId` 入口,`SendMessage` 续跑已停止/已完成后台 agent 时复用当前解析到的 task id;`TaskService.start()` 原本已支持同 id 在 settled 后再次启动,因此事件日志继续追加、transcript baseline 继续保护历史、tool-result store 仍沿用稳定 agent 目录。
+- `resumeBackgroundAgentTask()` 不再在 task params 中制造 `resumed_from: previousTask.id` 自环;调用返回体仍保留 `resumed_from` 给 `SendMessage` 用户态协议说明“这是续跑”,但后台任务本体现在就是同一个槽位。旧历史 resume-chain 仍由 `resolveBackgroundAgentTarget()` 兼容解析到最新 leaf,不会破坏既有数据。
+- 运行效果:后台 agent 首次完成后,用户再 `SendMessage` 给同一 agent/name/stable agent id,前端任务列表不再出现一个新后台任务卡;同一个 task id 会回到 running,完成后 result/stage/metadata 更新为最新回合。`TaskOutput/read_background_task` 读取同 id 可看到追加事件和最新 final。
+- 测试覆盖:worktree 隔离续跑仍在原 worktree 读写;普通 stopped agent、旧 task id、stable agent id、metadata sidecar 恢复、orphan metadata 恢复、stored tool result 继承、content replacement 继承全部在同一 task id 上完成;TaskService 旧 resume-chain 解析测试保留,保障历史兼容。
+- 验证:`cd ts && bun run typecheck` clean;`cd ts && bun test src/tasks/taskTools.test.ts src/tasks/teamTools.test.ts src/tasks/taskService.test.ts --timeout 40000` = 38 pass。
+
 ## 4. 下一批代码顺序
 
-1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复、后台 agent 确定性进度阶段、`SendUserMessage/Brief` 输出通道、agent memory / snapshot、后台续跑 content replacement records 继承已落;下一步继续复制/移植/改写同 agent id 原地 task slot、content replacement full restore、forked agent progress summary/prompt-cache、UDS/remote teammate bridge。
+1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复、后台 agent 确定性进度阶段、`SendUserMessage/Brief` 输出通道、agent memory / snapshot、后台续跑 content replacement records 继承、同 agent id 原任务槽续跑已落;下一步继续复制/移植/改写 content replacement full restore、forked agent progress summary/prompt-cache、UDS/remote teammate bridge。
 2. **后台子代理事件流/UI drill-in polish**:同步 `agent_task` 轨迹、后台启动 chip、完成通知与点击跳转、事件过滤/摘要折叠、trace 搜索/失败节点/phase 分组已落;下一步做统一 trace 面板、按 `agent_id` 过滤/跳转、sidechain transcript drill-in。
 3. **provider failover 策略 polish**:active saved -> saved fallbacks -> env fallback、失败原因 `context_note`、sticky fallback、状态线备用出口/冷却 chip、设置抽屉简洁健康状态/折叠明细、旧 BYOK -> ProviderService 兼容桥、provider 健康冷却、跨重启持久化、手动清冷却、保存通道启停/排序、默认/接管中状态区分、prewarm 跟随冷却排序、冷却分类退避、最近排障历史已落;下一步只剩完整高级 provider 管理页与更深的趋势/导出排障。
 4. **领域包/知识库前端 polish**:`billiards` 已从硬编码 supportContext 收到 SessionStart pack,前端选择器已读 `/api/v1/agent/packs`,`list_skills` 已支持 pack 推荐/过滤,pack prompt commands 已合并进命令池;下一步把知识库 Q&A 做成更接近 Codex/Work Buddy 的低噪来源面板和专家挂载入口。

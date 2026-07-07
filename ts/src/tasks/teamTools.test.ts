@@ -287,7 +287,7 @@ test('SendMessage resumes a stopped background agent before mailbox fallback', a
     expect(output.success).toBe(true)
     expect(output.resumed_from).toBe(previous.id)
     expect(output.agent_id).toBe(previous.id)
-    expect(output.task_id).not.toBe(previous.id)
+    expect(output.task_id).toBe(previous.id)
     expect(await teams.readMailbox('researcher', 'default')).toHaveLength(0)
 
     const resumed = await waitFor(async () => {
@@ -298,7 +298,6 @@ test('SendMessage resumes a stopped background agent before mailbox fallback', a
       agent_id: previous.id,
       agent: 'researcher',
       task: '继续检查测试覆盖。',
-      resumed_from: previous.id,
       resume_source: 'SendMessage',
       previous_status: 'completed',
       replayed_messages: 2,
@@ -322,7 +321,8 @@ test('SendMessage resumes a stopped background agent before mailbox fallback', a
     expect(resumedTranscriptText).toContain('历史任务:先检查解析器入口。')
     expect(resumedTranscriptText).toContain('继续检查测试覆盖。')
     const previousEvents = await tasks.loadEvents(previous.id)
-    expect(previousEvents.some(record => 'text' in record.event && record.event.text.includes(output.task_id))).toBe(true)
+    expect(previousEvents.some(record => record.event.type === 'started')).toBe(true)
+    expect(previousEvents.some(record => record.event.type === 'final' && 'text' in record.event && record.event.text === '续跑完成')).toBe(true)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -371,6 +371,7 @@ test('SendMessage to an old background task id resumes from the latest resumed d
     expect(first.success).toBe(true)
     expect(first.resumed_from).toBe(original.id)
     expect(first.agent_id).toBe(original.id)
+    expect(first.task_id).toBe(original.id)
     await waitFor(async () => {
       const task = await tasks.get(first.task_id)
       return task?.status === 'completed' ? task : null
@@ -378,15 +379,15 @@ test('SendMessage to an old background task id resumes from the latest resumed d
 
     const second = JSON.parse(await sendMessage!.execute({ to: original.id, summary: 'resume latest', message: '第二次继续。' }, ctx))
     expect(second.success).toBe(true)
-    expect(second.resumed_from).toBe(first.task_id)
+    expect(second.resumed_from).toBe(original.id)
     expect(second.agent_id).toBe(original.id)
+    expect(second.task_id).toBe(original.id)
     await waitFor(async () => {
       const task = await tasks.get(second.task_id)
-      return task?.status === 'completed' ? task : null
+      return task?.status === 'completed' && task.result === '第二次续跑完成' ? task : null
     })
     const secondTask = await tasks.get(second.task_id)
     expect(secondTask?.params).toMatchObject({
-      resumed_from: first.task_id,
       previous_status: 'completed',
     })
   } finally {
@@ -442,6 +443,7 @@ test('SendMessage can address resumed background agents by stable agent id', asy
     expect(first.success).toBe(true)
     expect(first.resumed_from).toBe(original.id)
     expect(first.agent_id).toBe('stable_agent_identity')
+    expect(first.task_id).toBe(original.id)
     await waitFor(async () => {
       const task = await tasks.get(first.task_id)
       return task?.status === 'completed' ? task : null
@@ -449,15 +451,15 @@ test('SendMessage can address resumed background agents by stable agent id', asy
 
     const second = JSON.parse(await sendMessage!.execute({ to: 'stable_agent_identity', summary: 'resume latest stable', message: '第二次继续。' }, ctx))
     expect(second.success).toBe(true)
-    expect(second.resumed_from).toBe(first.task_id)
+    expect(second.resumed_from).toBe(original.id)
     expect(second.agent_id).toBe('stable_agent_identity')
+    expect(second.task_id).toBe(original.id)
     const secondTask = await waitFor(async () => {
       const task = await tasks.get(second.task_id)
-      return task?.status === 'completed' ? task : null
+      return task?.status === 'completed' && task.result === '第二次续跑完成' ? task : null
     })
     expect(secondTask.params).toMatchObject({
       agent_id: 'stable_agent_identity',
-      resumed_from: first.task_id,
       previous_status: 'completed',
     })
   } finally {
@@ -529,7 +531,6 @@ test('SendMessage resumes stopped background agents in their original workspace 
     expect(seenWorkspace).toBe(new Workspace(oldWorkspace).root)
     expect(resumed.workspaceRoot).toBe(new Workspace(oldWorkspace).root)
     expect(resumed.params).toMatchObject({
-      resumed_from: previous.id,
       resumed_workspace_root: new Workspace(oldWorkspace).root,
     })
   } finally {
@@ -596,7 +597,6 @@ test('SendMessage resumes stopped background agents from metadata sidecar when t
     expect(resumed.params).toMatchObject({
       agent: 'researcher',
       name: 'parser-auditor',
-      resumed_from: previous.id,
       resume_metadata: true,
       resumed_workspace_root: new Workspace(root).root,
     })
@@ -666,7 +666,6 @@ test('SendMessage resumes orphaned stopped background agents from metadata sidec
     expect(resumed.params).toMatchObject({
       agent: 'researcher',
       name: 'orphan-parser',
-      resumed_from: 'orphan_agent_1',
       resume_metadata: true,
       replayed_messages: 2,
     })
@@ -771,7 +770,6 @@ test('SendMessage resumes background agents with inherited stored tool result ac
     })
 
     expect(resumed.params).toMatchObject({
-      resumed_from: previous.id,
       tool_result_store_dir: storeDir,
       replayed_messages: 3,
     })
