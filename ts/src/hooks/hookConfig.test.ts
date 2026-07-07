@@ -1,10 +1,23 @@
 import { expect, test } from 'bun:test'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadHookRegistryFile, normalizeHookRegistry } from './hookConfig'
 import { runHookEvent } from './hooks'
 import { Workspace } from '../workspace/workspace'
+
+async function withHttpServer(handler: (req: IncomingMessage, res: ServerResponse) => void, run: (url: string) => Promise<void>): Promise<void> {
+  const server: Server = createServer(handler)
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('server address unavailable')
+    await run(`http://127.0.0.1:${address.port}`)
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+  }
+}
 
 test('normalizeHookRegistry supports hooks/rules arrays and drops invalid entries', async () => {
   const registry = normalizeHookRegistry({
@@ -122,6 +135,96 @@ test('normalizeHookRegistry command hook sends CC-Haha-style payload on stdin an
     expect(await runHookEvent(registry, { event: 'SubagentStart', agentType: 'researcher', agentId: 'agent-1', sessionId: 'agent-1' }, ctx)).toEqual([
       { action: 'context', additionalContext: 'SubagentStart:researcher:agent-1' },
     ])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('normalizeHookRegistry http hook posts payload, interpolates allowed headers and parses hook JSON', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-config-http-'))
+  const previousToken = process.env.HOOK_TEST_TOKEN
+  process.env.HOOK_TEST_TOKEN = 'secret-token'
+  try {
+    await withHttpServer((req, res) => {
+      let body = ''
+      req.on('data', chunk => { body += String(chunk) })
+      req.on('end', () => {
+        const payload = JSON.parse(body) as { hook_event_name: string; agent_type: string; session_id: string }
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({
+          action: 'context',
+          additionalContext: `${payload.hook_event_name}:${payload.agent_type}:${payload.session_id}:${req.headers.authorization}:${req.headers['x-denied']}`,
+        }))
+      })
+    }, async url => {
+      const registry = normalizeHookRegistry({
+        hooks: {
+          SubagentStart: [
+            {
+              matcher: 'researcher',
+              hooks: [
+                {
+                  type: 'http',
+                  url,
+                  headers: {
+                    Authorization: 'Bearer $HOOK_TEST_TOKEN',
+                    'X-Denied': '$NOT_ALLOWED',
+                  },
+                  allowedEnvVars: ['HOOK_TEST_TOKEN'],
+                },
+              ],
+            },
+          ],
+        },
+      })
+      const ctx = { workspace: new Workspace(root), conversationId: 'session-1' }
+      expect(await runHookEvent(registry, { event: 'SubagentStart', agentType: 'researcher', agentId: 'agent-1', sessionId: 'agent-1' }, ctx)).toEqual([
+        { action: 'context', additionalContext: 'SubagentStart:researcher:agent-1:Bearer secret-token:' },
+      ])
+    })
+  } finally {
+    if (previousToken === undefined) delete process.env.HOOK_TEST_TOKEN
+    else process.env.HOOK_TEST_TOKEN = previousToken
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('normalizeHookRegistry http hook supports CC-Haha hookSpecificOutput and non-2xx warning context', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-config-http-specific-'))
+  try {
+    await withHttpServer((req, res) => {
+      if (req.url === '/fail') {
+        res.statusCode = 500
+        res.end('backend down')
+        return
+      }
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'SubagentStart',
+          additionalContext: 'specific context',
+        },
+      }))
+    }, async url => {
+      const registry = normalizeHookRegistry({
+        hooks: {
+          SubagentStart: [
+            {
+              matcher: 'researcher',
+              hooks: [
+                { type: 'http', url },
+                { type: 'http', url: `${url}/fail` },
+              ],
+            },
+          ],
+        },
+      })
+      const ctx = { workspace: new Workspace(root), conversationId: 'session-2' }
+      expect(await runHookEvent(registry, { event: 'SubagentStart', agentType: 'researcher', agentId: 'agent-2', sessionId: 'agent-2' }, ctx)).toEqual([
+        { action: 'context', additionalContext: 'specific context' },
+        { action: 'context', additionalContext: '[SubagentStart http hook 非阻塞错误] HTTP 500: backend down' },
+      ])
+    })
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

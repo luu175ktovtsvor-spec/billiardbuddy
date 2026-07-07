@@ -20,6 +20,16 @@ interface RawCommandHook {
   decisions?: unknown
 }
 
+interface RawHttpHook {
+  type?: unknown
+  url?: unknown
+  timeout?: unknown
+  headers?: unknown
+  allowedEnvVars?: unknown
+  decision?: unknown
+  decisions?: unknown
+}
+
 export interface NormalizeHookRegistryOptions {
   agentFrontmatter?: boolean
 }
@@ -89,6 +99,12 @@ function commandHookPayload(payload: HookPayload, ctx: ToolContext): Record<stri
 function commandTimeoutMs(value: unknown): number {
   const seconds = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   if (!Number.isFinite(seconds) || seconds <= 0) return 120_000
+  return Math.min(Math.max(Math.round(seconds * 1000), 1000), 600_000)
+}
+
+function hookTimeoutMs(value: unknown, fallbackMs: number): number {
+  const seconds = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  if (!Number.isFinite(seconds) || seconds <= 0) return fallbackMs
   return Math.min(Math.max(Math.round(seconds * 1000), 1000), 600_000)
 }
 
@@ -175,6 +191,70 @@ async function runCommandHook(raw: RawCommandHook, payload: HookPayload, ctx: To
   })
 }
 
+function sanitizeHeaderValue(value: string): string {
+  return value.replace(/[\r\n\x00]/g, '')
+}
+
+function interpolateAllowedEnv(value: string, allowedEnvVars: Set<string>): string {
+  return sanitizeHeaderValue(value.replace(/\$\{([A-Z_][A-Z0-9_]*)\}|\$([A-Z_][A-Z0-9_]*)/g, (_, braced: string | undefined, unbraced: string | undefined) => {
+    const name = braced ?? unbraced ?? ''
+    return allowedEnvVars.has(name) ? process.env[name] ?? '' : ''
+  }))
+}
+
+function normalizeHeaders(value: unknown, allowedEnvVars: Set<string>): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (!isRecord(value)) return headers
+  for (const [name, raw] of Object.entries(value)) {
+    if (typeof raw !== 'string') continue
+    const cleanName = name.trim()
+    if (!cleanName || /[\r\n\x00:]/.test(cleanName)) continue
+    headers[cleanName] = interpolateAllowedEnv(raw, allowedEnvVars)
+  }
+  return headers
+}
+
+async function runHttpHook(raw: RawHttpHook, payload: HookPayload, ctx: ToolContext): Promise<HookDecision | HookDecision[] | null> {
+  if (typeof raw.url !== 'string' || !raw.url.trim()) return null
+  let url: URL
+  try {
+    url = new URL(raw.url.trim())
+  } catch {
+    return { action: 'deny', message: `http hook url invalid: ${String(raw.url)}` }
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { action: 'deny', message: `http hook url protocol not allowed: ${url.protocol}` }
+  }
+  const allowedEnvVars = new Set(Array.isArray(raw.allowedEnvVars) ? raw.allowedEnvVars.filter((item): item is string => typeof item === 'string') : [])
+  const timeoutMs = hookTimeoutMs(raw.timeout, 120_000)
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  const timer = setTimeout(abort, timeoutMs)
+  ctx.signal?.addEventListener('abort', abort, { once: true })
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: normalizeHeaders(raw.headers, allowedEnvVars),
+      body: JSON.stringify(commandHookPayload(payload, ctx)),
+      redirect: 'manual',
+      signal: controller.signal,
+    })
+    const body = await response.text()
+    if (!response.ok) {
+      return { action: 'context', additionalContext: `[${payload.event} http hook 非阻塞错误] HTTP ${response.status}${body.trim() ? `: ${body.trim()}` : ''}` }
+    }
+    return parseCommandHookStdout(body)
+  } catch (error) {
+    if (controller.signal.aborted) {
+      return { action: 'deny', message: `http hook aborted or timed out after ${Math.round(timeoutMs / 1000)}s: ${url.toString()}` }
+    }
+    return { action: 'context', additionalContext: `[${payload.event} http hook 非阻塞错误] ${error instanceof Error ? error.message : String(error)}` }
+  } finally {
+    clearTimeout(timer)
+    ctx.signal?.removeEventListener('abort', abort)
+  }
+}
+
 function normalizeHookCommand(event: HookEvent, matcher: string | undefined, raw: Record<string, unknown>): HookRule | null {
   const staticDecisions = normalizeDecisionList(raw.decisions ?? raw.decision ?? (raw.action ? raw : undefined))
   if (staticDecisions.length > 0) {
@@ -186,7 +266,12 @@ function normalizeHookCommand(event: HookEvent, matcher: string | undefined, raw
     return { event, matcher, handler: (payload, ctx) => runCommandHook(commandHook, payload, ctx) }
   }
 
-  if (raw.type === 'prompt' || raw.type === 'http' || raw.type === 'agent') {
+  if (raw.type === 'http' && typeof raw.url === 'string' && raw.url.trim()) {
+    const httpHook = raw as RawHttpHook
+    return { event, matcher, handler: (payload, ctx) => runHttpHook(httpHook, payload, ctx) }
+  }
+
+  if (raw.type === 'prompt' || raw.type === 'agent') {
     const hookType = raw.type
     return {
       event,
