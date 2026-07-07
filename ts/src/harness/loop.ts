@@ -104,6 +104,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   const contentReplacementState = reconstructContentReplacementState(history, contentReplacementRecords)
   const ctx: ToolContext = {
     workspace: opts.workspace,
+    model,
     signal: opts.signal,
     sandbox: opts.sandbox,
     permissionMode: opts.permissionMode ?? 'ask',
