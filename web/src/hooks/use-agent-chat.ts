@@ -14,6 +14,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type AgentStreamHandlers, type ApprovalReason, type AskQuestionField, type AskQuestionOption } from "@/lib/api";
 import { getErrorMessage, humanizeErrorText } from "@/lib/utils";
 import { useToast } from "@/components/desktop/toast";
+import {
+  approvedToolResultMessage,
+  fileArtifactFromToolResult,
+  pendingFileArtifactFromToolCall,
+  type FileChangeArtifact,
+} from "./approved-tool-result-message";
+import type { AgentRetryStatus } from "./agent-retry-status";
+import { agentUsageFromPayload, type AgentUsageStatus } from "./agent-usage-status";
+
+const MAX_LIVE_TOOL_PROGRESS_CHARS = 64_000;
 
 export type { ApprovalReason };
 
@@ -39,12 +49,15 @@ export interface GeneratedImageArtifact {
   generationId?: string;
 }
 
+export type GeneratedFileArtifact = FileChangeArtifact;
+
 export interface ApprovalState {
   tool: string;
   args: Record<string, unknown>;
   token?: string;
   preview?: string;
   reason?: ApprovalReason; // SH-8：结构化理由 {what/why/impact}，审批卡据此列清"要做什么/为什么要你确认/影响"
+  rememberable?: boolean;
   status: "pending" | "done" | "cancelled";
 }
 
@@ -82,12 +95,13 @@ export interface AgentChatOptions {
   permissionMode: PermissionMode;
   selectedFiles?: string[];
   fullDisk?: boolean;
-  knowledgePacks?: string[]; // @ 挂载的知识库（如 ["billiards"]）：挂上=领域专家，不挂=通用 Agent
+  knowledgePacks?: string[]; // 专家挂载（如 ["billiards"]）：挂上=领域专家，不挂=通用 Agent
   outputStyle?: string; // 输出风格名（explanatory/concise…），空=默认
   goal?: string; // /goal 目标驱动：本次会话目标条件
   deepThinking?: boolean; // F.2 深度思考开关：true=开/false=关/undefined=跟随模型默认
   workingDir?: string | null; // 本会话工作目录(选/新建的文件夹)
   onGeneratedImage?: (item: GeneratedImageArtifact) => void;
+  onFileChange?: (item: GeneratedFileArtifact) => void;
 }
 
 const IMAGE_TOOLS = new Set(["make_poster", "generate_image"]);
@@ -140,6 +154,8 @@ export function useAgentChat(opts: AgentChatOptions) {
   const [liveSteps, setLiveSteps] = useState<ToolStep[]>([]);
   // F4 Focus Chain：当前这轮最新的进度清单展示文本（原地覆盖，不是数组——同一时刻只有一份"最新状态"）。
   const [liveTodo, setLiveTodo] = useState<string | undefined>(undefined);
+  const [retryStatus, setRetryStatus] = useState<AgentRetryStatus | undefined>(undefined);
+  const [usage, setUsage] = useState<AgentUsageStatus | undefined>(undefined);
   const [generating, setGenerating] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [executingIdx, setExecutingIdx] = useState<number | null>(null);
@@ -243,10 +259,13 @@ export function useAgentChat(opts: AgentChatOptions) {
       setReasoningDraft("");
       setLiveSteps([]);
       setLiveTodo(undefined);
+      setRetryStatus(undefined);
+      setUsage(undefined);
     };
 
     const handlers: AgentStreamHandlers = {
       onEvent: (ev) => {
+        setRetryStatus(undefined);
         const off = typeof ev.offset === "number" ? ev.offset : undefined;
         if (off !== undefined) {
           lastOffsetRef.current = Math.max(lastOffsetRef.current, off);
@@ -258,11 +277,16 @@ export function useAgentChat(opts: AgentChatOptions) {
       onToolCall: (tool, args, id) => {
         steps.push({ tool, args, id, done: false });
         setLiveSteps([...steps]);
+        const pendingFile = pendingFileArtifactFromToolCall(tool, args);
+        if (pendingFile) optsRef.current.onFileChange?.(pendingFile);
       },
       onToolProgress: (_tool, id, chunk) => {
         const st = id ? steps.find((s) => s.id === id) : steps[steps.length - 1];
         if (st) {
-          st.progress = (st.progress || "") + chunk;
+          const nextProgress = (st.progress || "") + chunk;
+          st.progress = nextProgress.length > MAX_LIVE_TOOL_PROGRESS_CHARS
+            ? nextProgress.slice(nextProgress.length - MAX_LIVE_TOOL_PROGRESS_CHARS)
+            : nextProgress;
           setLiveSteps([...steps]);
         }
       },
@@ -277,9 +301,11 @@ export function useAgentChat(opts: AgentChatOptions) {
         }
         const image = imageArtifactFromToolResult(_tool, content, imageGenerationIds);
         if (image) optsRef.current.onGeneratedImage?.(image);
+        const changedFile = fileArtifactFromToolResult(_tool, content, st?.args);
+        if (changedFile) optsRef.current.onFileChange?.(changedFile);
       },
-      onApprovalRequest: (tool, args, _id, token, preview, reason) => {
-        approval = { tool, args, token, preview, reason, status: "pending" };
+      onApprovalRequest: (tool, args, _id, token, preview, reason, rememberable) => {
+        approval = { tool, args, token, preview, reason, rememberable, status: "pending" };
       },
       onAskQuestion: (q) => {
         question = { id: q.id, question: q.question, options: q.options, multi: q.multi, allowFreeform: q.allowFreeform, placeholder: q.placeholder, fields: q.fields, url: q.url };
@@ -305,6 +331,10 @@ export function useAgentChat(opts: AgentChatOptions) {
         todoText = content;
         setLiveTodo(content);
       },
+      onUsageUpdate: (payload) => {
+        const next = agentUsageFromPayload(payload);
+        if (next) setUsage(next);
+      },
       onFinal: (content) => {
         finalText = content;
       },
@@ -326,6 +356,7 @@ export function useAgentChat(opts: AgentChatOptions) {
         setReasoningDraft("");
         setLiveSteps([]);
         setLiveTodo(undefined);
+        setRetryStatus(undefined);
       },
       // F1c：连接本身断了（非正常 done、非应用层 error 事件）——只记个信号，外层的重连循环据此
       // 决定要不要再连一次；这里不清消息、不报错、不动 generating，断这一下用户几乎感觉不到。
@@ -365,8 +396,11 @@ export function useAgentChat(opts: AgentChatOptions) {
           reconnectNoticeShown = true;
           toast.info("网络好像抖了一下，我接着…");
         }
-        await sleepAbortable(reconnectDelayMs(attempt), ctrl.signal);
+        const delayMs = reconnectDelayMs(attempt);
+        setRetryStatus({ phase: "waiting", attempt, maxAttempts: RECONNECT_MAX_ATTEMPTS, delayMs });
+        await sleepAbortable(delayMs, ctrl.signal);
         if (ctrl.signal.aborted) return;
+        setRetryStatus({ phase: "retrying", attempt, maxAttempts: RECONNECT_MAX_ATTEMPTS });
         // lastOffsetRef.current 已经在上面 onEvent 里跟着实时更新到断线前最后处理到的 offset，
         // 下一轮直接从这个断点续传（后端 after=N 是"下一条从 N+1 开始"语义，不重复、不遗漏）。
       }
@@ -395,6 +429,8 @@ export function useAgentChat(opts: AgentChatOptions) {
       setReasoningDraft("");
       setLiveSteps([]);
       setLiveTodo(undefined);
+      setRetryStatus(undefined);
+      setUsage(undefined);
       const controller = new AbortController();
       // 页面刷新后本地 draft/steps 已经丢了，必须从头重放后端缓存事件来重建完整回答。
       // offset 只用于当前页面记录进度，不用于刷新恢复，否则可能只收到 done，落成空消息。
@@ -420,6 +456,8 @@ export function useAgentChat(opts: AgentChatOptions) {
     setReasoningDraft("");
     setLiveSteps([]);
     setLiveTodo(undefined);
+    setRetryStatus(undefined);
+    setUsage(undefined);
     setGenerating(true);
     const controller = new AbortController();
     abortRef.current = controller;
@@ -458,6 +496,8 @@ export function useAgentChat(opts: AgentChatOptions) {
         setReasoningDraft("");
         setLiveSteps([]);
         setLiveTodo(undefined);
+        setRetryStatus(undefined);
+        setUsage(undefined);
       }
     } finally {
       if (!controller.signal.aborted) setGenerating(false);
@@ -497,45 +537,50 @@ export function useAgentChat(opts: AgentChatOptions) {
     void sendWithHistory(msg, history, sourceRecId, { selectedFiles: overrides?.selectedFiles, displayText: overrides?.displayText });
   }, [generating, sendWithHistory]);
 
-  const confirmApproval = useCallback(async (idx: number, ap: ApprovalState) => {
+  const confirmApproval = useCallback(async (idx: number, ap: ApprovalState, options?: { remember?: boolean; args?: Record<string, unknown> }) => {
     const o = optsRef.current;
     setExecutingIdx(idx);
+    const executionArgs = options?.args ?? ap.args;
+    const pendingFile = pendingFileArtifactFromToolCall(ap.tool, executionArgs);
+    if (pendingFile) optsRef.current.onFileChange?.(pendingFile);
     try {
       const res = await api.executeAgentTool(
         ap.tool,
-        ap.args,
+        executionArgs,
         o.selectedFiles?.length ? o.selectedFiles : undefined,
         o.fullDisk ? true : undefined,
         ap.token,
         conversationId,
         o.knowledgePacks?.length ? o.knowledgePacks : undefined,
         o.workingDir || undefined,
+        options?.remember === true,
+        ap.args,
       );
       setMessages((prev) =>
         prev.map((m, j) => (j === idx && m.approval ? { ...m, approval: { ...m.approval, status: "done" } } : m)),
       );
+      const changedFile = fileArtifactFromToolResult(ap.tool, res.result, executionArgs);
+      if (changedFile) optsRef.current.onFileChange?.(changedFile);
       setMessages((prev) => {
-        // 跑命令的结果渲染成终端式块（命令+输出+退出码）；生视频结果渲染成 <video> 播放器；其它工具结果走普通文本。
-        const first: ChatMessage =
-          ap.tool === "run_command"
-            ? { role: "assistant", content: res.result, kind: "command" }
-            : ap.tool === "generate_video"
-              ? { role: "assistant", content: res.result, kind: "video" }
-              : { role: "assistant", content: res.result };
+        // 跑命令渲染成终端块；生视频渲染成播放器；文件修改渲染成可点开的工具步骤；其它工具走普通文本。
+        const first = approvedToolResultMessage(ap.tool, executionArgs, res.result);
         const next: ChatMessage[] = [...prev, first];
         if (res.continuation && res.continuation.trim()) {
           next.push({
             role: "assistant",
             content: res.continuation,
             approval: res.approval
-              ? { tool: res.approval.tool, args: res.approval.args, token: res.approval.token, preview: res.approval.preview, reason: res.approval.reason, status: "pending" }
+              ? { tool: res.approval.tool, args: res.approval.args, token: res.approval.token, preview: res.approval.preview, reason: res.approval.reason, rememberable: res.approval.rememberable, status: "pending" }
               : undefined,
           });
         }
         return next;
       });
     } catch (e) {
-      setMessages((prev) => [...prev, { role: "assistant", content: `⚠️ ${getErrorMessage(e)}`, error: true }]);
+      const message = getErrorMessage(e);
+      const failedFile = fileArtifactFromToolResult(ap.tool, `错误:${message}`, executionArgs);
+      if (failedFile) optsRef.current.onFileChange?.(failedFile);
+      setMessages((prev) => [...prev, { role: "assistant", content: `⚠️ ${message}`, error: true }]);
     } finally {
       setExecutingIdx(null);
     }
@@ -558,6 +603,8 @@ export function useAgentChat(opts: AgentChatOptions) {
     setReasoningDraft("");
     setLiveSteps([]);
     setLiveTodo(undefined);
+    setRetryStatus(undefined);
+    setUsage(undefined);
     pendingSteerEchoRef.current = [];
   }, [generating]);
 
@@ -572,6 +619,8 @@ export function useAgentChat(opts: AgentChatOptions) {
     setReasoningDraft("");
     setLiveSteps([]);
     setLiveTodo(undefined);
+    setRetryStatus(undefined);
+    setUsage(undefined);
     // 任务被掐掉后 steering 回声事件永远不会来了，清掉待回声队列防滞留
     pendingSteerEchoRef.current = [];
     pushStopNotice(taskId);
@@ -594,6 +643,8 @@ export function useAgentChat(opts: AgentChatOptions) {
     setReasoningDraft("");
     setLiveSteps([]);
     setLiveTodo(undefined);
+    setRetryStatus(undefined);
+    setUsage(undefined);
     setGenerating(false);
     pendingSteerEchoRef.current = [];
     return true;
@@ -626,7 +677,7 @@ export function useAgentChat(opts: AgentChatOptions) {
   const canSteer = generating && !!activeTaskId;
 
   return {
-    messages, draft, reasoningDraft, liveSteps, liveTodo, generating, conversationId, executingIdx, canSteer,
+    messages, draft, reasoningDraft, liveSteps, liveTodo, retryStatus, usage, generating, conversationId, executingIdx, canSteer,
     send, confirmApproval, cancelApproval, startNewChat, stop, loadConversation,
     pushAssistantMessage, retry,
   };

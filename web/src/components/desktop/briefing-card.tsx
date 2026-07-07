@@ -1,8 +1,8 @@
 "use client";
 
 /**
- * C-Task-5 C1 当日店况简报卡：欢迎屏单行「今日建议」banner 的升级版——
- * AI 先开口，多条洞察，每条带「出处/为什么推它」+ 去做 + 不感兴趣，没内容不硬凑。
+ * C-Task-5 C1 当日店况简报：欢迎屏里的低噪建议行。
+ * AI 可以先开口，但首屏最多露一条可执行建议，避免主对话入口变成卡片看板。
  */
 import { Lightbulb, ArrowRight, X, FileSpreadsheet, Volume2 } from "lucide-react";
 import type { DashboardRecommendation } from "@/types/dashboard";
@@ -57,20 +57,20 @@ export function BriefingCard({
   // 己攥一份 reading 状态（避免和对话流各管一份、组件卸载/切视图时互相打架或漏管）。
   reading?: boolean;
 }) {
-  // 「没东西可说就不硬凑」：滤掉纯兜底 default_generate；洞察为空且没有报表提示才整卡不出
-  const insights = items.filter((r) => r.id !== "default_generate").slice(0, 3);
+  // 「没东西可说就不硬凑」：滤掉纯兜底 default_generate；首屏最多露 1 条，剩下交给对话继续展开。
+  const insights = items.filter((r) => r.id !== "default_generate").slice(0, 1);
   if (insights.length === 0 && !reportHint) return null;
 
   return (
-    <div className="rounded-lg border border-[#10a37f]/25 bg-[#10a37f]/[0.06] p-3">
-      <div className="mb-2 flex items-center gap-1.5">
+    <div className="border-y border-black/[0.06] py-2 dark:border-white/[0.06]">
+      <div className="mb-1.5 flex items-center gap-1.5">
         <Lightbulb className="h-3.5 w-3.5 shrink-0 text-[#10a37f]" />
         <span className="text-[11px] font-medium tracking-wide text-[#10a37f]">
           今日店况{weekday && WEEKDAY_CN[weekday] ? ` · ${WEEKDAY_CN[weekday]}` : ""}
         </span>
       </div>
       {greeting && (
-        <div className="mb-2.5 flex items-start gap-1.5">
+        <div className="mb-2 flex items-start gap-1.5">
           <div className="flex-1 text-[12.5px] leading-relaxed text-[#3a3a3c] dark:text-[#c8cace]">{greeting}</div>
           {onReadAloud && (
             <button
@@ -96,8 +96,8 @@ export function BriefingCard({
         </div>
       )}
       {reportHint && onDiagnoseReport && (
-        <div className="mb-2 flex items-start gap-2 rounded-md border border-[#007AFF]/25 bg-[#007AFF]/[0.07] p-2.5">
-          <FileSpreadsheet className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#007AFF]" />
+        <div className="flex items-start gap-2 border-t border-black/[0.06] py-2 dark:border-white/[0.06]">
+          <FileSpreadsheet className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#10a37f]" />
           <div className="min-w-0 flex-1 text-[12.5px] leading-relaxed text-[#3a3a3c] dark:text-[#c8cace]">
             我看到一份《{reportHint.name}》，要不要我先给你一句话诊断？
           </div>
@@ -105,7 +105,7 @@ export function BriefingCard({
             <button
               type="button"
               onClick={() => onDiagnoseReport(reportHint.path, reportHint.name)}
-              className="flex items-center gap-1 whitespace-nowrap rounded-md bg-[#007AFF] px-2.5 py-1 text-[11.5px] text-white transition hover:bg-[#0066d6] active:scale-[0.98]"
+              className="app-primary-action flex items-center gap-1 whitespace-nowrap rounded-md px-2.5 py-1 text-[11.5px] transition active:scale-[0.98]"
             >
               诊断一下 <ArrowRight className="h-3 w-3" />
             </button>
@@ -123,19 +123,19 @@ export function BriefingCard({
           </div>
         </div>
       )}
-      <div className="flex flex-col gap-2">
+      <div className={reportHint ? "" : "border-t border-black/[0.05] dark:border-white/[0.05]"}>
         {insights.map((r) => {
           const label = SOURCE_LABEL[r.category ?? "focus"] ?? "今日运营";
           return (
             <div
               key={r.id}
-              className="flex items-start gap-2 rounded-md border border-black/[0.05] bg-white/70 p-2.5 dark:border-white/[0.06] dark:bg-white/[0.03]"
+              className="flex items-start gap-2 border-b border-black/[0.05] py-2 last:border-b-0 dark:border-white/[0.05]"
             >
               <div className="min-w-0 flex-1">
-                <div className="mb-1 flex items-center gap-1.5">
+                <div className="mb-0.5 flex items-center gap-1.5">
                   <span
                     title="为什么给你推这条"
-                    className="shrink-0 rounded-full bg-[#10a37f]/10 px-1.5 py-0.5 text-[10px] font-medium text-[#10a37f]"
+                    className="shrink-0 rounded bg-[#10a37f]/10 px-1.5 py-0.5 text-[10px] font-medium text-[#10a37f]"
                   >
                     {label}
                   </span>
@@ -149,7 +149,7 @@ export function BriefingCard({
                 <button
                   type="button"
                   onClick={() => onPick(r.description || r.title, r.id)}
-                  className="flex items-center gap-1 whitespace-nowrap rounded-md bg-[#10a37f] px-2.5 py-1 text-[11.5px] text-white transition hover:bg-[#0e906f] active:scale-[0.98]"
+                  className="app-primary-action flex items-center gap-1 whitespace-nowrap rounded-md px-2.5 py-1 text-[11.5px] transition active:scale-[0.98]"
                 >
                   去做 <ArrowRight className="h-3 w-3" />
                 </button>

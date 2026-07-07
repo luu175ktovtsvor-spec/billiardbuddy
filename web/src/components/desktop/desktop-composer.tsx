@@ -4,14 +4,14 @@
  * Codex 风底部输入区（浅色默认 · 跟随系统深浅色）：附件 + 前导提示符 › + 输入框 + 工具条 + 发送。
  * - 附件：选定本机文件 → selected_files 授权 Agent 读/改（沙箱），像 Claude Code/Codex 那样改本地文件。
  * - A-Task-6「控件按需出现」：工具条常驻只留 附件 / 深度思考开关 / 发送；
- *   最近文件、从下载选素材、运行权限(ask/auto_files/plan/full 单选)、输出风格、行业模式(台球知识库)
+ *   最近文件、从下载选素材、运行权限(ask/auto_files/plan/full 单选)、输出风格、专家挂载
  *   统一收进一个「+」菜单(分区展示)，行为不变、只换入口——照 Warp/Dia 的「按需出现」思路减少默认可见按钮数。
  * - D-Task-9 语音输入：麦克风按钮插在 附件/深度思考 之间，走口播同一套「模型就绪门」
  *   (useWhisperReady)；录音生命周期(getUserMedia → MediaRecorder → 转写 → 回填输入框)全在本组件内部
  *   管理，仿贴图/拖拽的"内部处理+回调"模式，不上抛父层新状态。
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Paperclip, ArrowUp, ShieldCheck, Check, X, FileText, BookOpen, Palette, Brain, FolderDown, FolderOpen, History, Plus, Mic, MicOff, Loader2, type LucideIcon } from "lucide-react";
+import { Paperclip, ArrowUp, ShieldCheck, Check, X, FileText, UserRound, Palette, Brain, FolderDown, FolderOpen, History, Plus, Mic, MicOff, Loader2, type LucideIcon } from "lucide-react";
 import { PERMISSION_MODES, WELCOME } from "@/lib/agent-copy";
 import { api, type CommandMeta, type SkillMeta, type OutputStyleMeta } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
@@ -47,9 +47,10 @@ const ADVANCED_COMMANDS: { name: string; cn: string; description: string; aliase
 
 const LOCAL_COMMAND_NAMES = new Set([...BASIC_COMMANDS, ...ADVANCED_COMMANDS].map((c) => c.name));
 
-// 可 @ 挂载的知识库：挂上 = 该领域专家，不挂 = 通用 Agent。目前一个，后续可扩展为多个领域包。
-const KNOWLEDGE_SOURCES: { id: string; label: string; desc: string }[] = [
-  { id: "billiards", label: "行业模式：台球房", desc: "开启后，AI 按台球行业的专业运营知识来答" },
+export type KnowledgePackOption = { id: string; label: string; desc: string; defaultEnabled?: boolean };
+
+const FALLBACK_KNOWLEDGE_PACKS: KnowledgePackOption[] = [
+  { id: "billiards", label: "台球运营专家", desc: "经营、活动、会员、短视频和海报工作流", defaultEnabled: false },
 ];
 
 const OUTPUT_STYLE_LABELS: Record<string, string> = {
@@ -62,7 +63,7 @@ function baseName(p: string): string {
   return parts[parts.length - 1] || p;
 }
 
-// A-Task-6：「+」菜单里几个子分区(最近素材/运行权限/输出风格/行业模式)共用的小标题，图标+大写字距标签。
+// A-Task-6：「+」菜单里几个子分区(专家/最近素材/运行权限/输出风格)共用的小标题，图标+大写字距标签。
 function MenuSectionHeader({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
   return (
     <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-1.5">
@@ -101,6 +102,7 @@ export function DesktopComposer({
   onPickWorkingDir,
   onResetWorkingDir,
   knowledgePacks = [],
+  knowledgePackOptions = FALLBACK_KNOWLEDGE_PACKS,
   onKnowledgePacksChange,
   outputStyle = "",
   onOutputStyleChange,
@@ -124,13 +126,14 @@ export function DesktopComposer({
   onRemoveFile?: (path: string) => void;
   /** 点开附件：报表(.xlsx/.xlsm) 在右侧用表格视图打开（可点格改）。 */
   onOpenFile?: (path: string) => void;
-  /** A4：当前存放位置（默认是首启自动建的作品文件夹），「+」菜单里显示当前值 + 换一个入口。 */
+  /** A4：当前工作区（默认是首启自动建的作品文件夹），「+」菜单里显示当前值 + 切换入口。 */
   workingDir?: string | null;
-  /** A4：首启自动建的默认作品文件夹；用于「换位置」后提供「恢复默认位置」入口。 */
+  /** A4：首启自动建的默认作品文件夹；用于切换后提供「恢复默认工作区」入口。 */
   workspaceDir?: string | null;
   onPickWorkingDir?: () => void;
   onResetWorkingDir?: () => void;
   knowledgePacks?: string[];
+  knowledgePackOptions?: KnowledgePackOption[];
   onKnowledgePacksChange?: (packs: string[]) => void;
   outputStyle?: string;
   onOutputStyleChange?: (name: string) => void;
@@ -141,10 +144,20 @@ export function DesktopComposer({
   placeholder?: string;
 }) {
   const [composing, setComposing] = useState(false);
-  // A-Task-6：附件/下载选素材/最近文件/运行权限/输出风格/行业模式 统一收进一个「+」菜单，只留一个开关状态。
+  // A-Task-6：附件/下载选素材/最近文件/运行权限/输出风格/专家 统一收进一个「+」菜单，只留一个开关状态。
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const activePacks = knowledgePacks ?? [];
+  const packOptions = knowledgePackOptions.length ? knowledgePackOptions : FALLBACK_KNOWLEDGE_PACKS;
+  const activeExpertNames = packOptions.filter((pack) => activePacks.includes(pack.id)).map((pack) => pack.label);
+  const expertLabel = activeExpertNames.length === 0
+    ? "通用 Agent"
+    : activeExpertNames.length === 1
+      ? activeExpertNames[0]
+      : `${activeExpertNames[0]} +${activeExpertNames.length - 1}`;
+  const expertTitle = activeExpertNames.length
+    ? `当前专家：${activeExpertNames.join("、")}`
+    : "当前专家：通用 Agent";
   const toast = useToast();
 
   // D-Task-9 语音输入：走口播同一套「模型就绪门」——whisper 没下好前麦克风灰掉+大白话提示。
@@ -222,10 +235,14 @@ export function DesktopComposer({
     // A2：不再有"高级模式"门控——已安装的技能本来就是老板自己装的东西，直接常驻拉一次，
     // 面板里没装就是空、不冒 MCP/模型这类技术词。
     api.listSkills().then((r) => { if (!cancelled) setSkills(r.skills || []); }).catch(() => {});
-    api.listCommands().then((r) => { if (!cancelled) setCommands(r.commands || []); }).catch(() => {});
     api.listOutputStyles().then((r) => { if (!cancelled) setStyles(r.output_styles || []); }).catch(() => {});
     return () => { cancelled = true; };
   }, []);
+  useEffect(() => {
+    let cancelled = false;
+    api.listCommands(workingDir, knowledgePacks).then((r) => { if (!cancelled) setCommands(r.commands || []); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [knowledgePacks, workingDir]);
   const styleOptions = [{ name: "", description: "默认（大白话）" }, ...styles.map((s) => ({ name: s.name, description: s.description }))];
 
   const slashQuery = value.startsWith("/") && !value.slice(1).includes(" ") ? value.slice(1).toLowerCase() : null;
@@ -419,7 +436,7 @@ export function DesktopComposer({
             />
           </div>
 
-          {/* 工具条：常驻 附件 / 深度思考 / 发送；其余(最近文件/下载选素材/运行权限/输出风格/行业模式)收进「+」菜单(A-Task-6)。
+          {/* 工具条：常驻 附件 / 专家 / 深度思考 / 发送；其余(最近文件/下载选素材/运行权限/输出风格)收进「+」菜单(A-Task-6)。
               slash 命令面板(输入 `/` 浮出)是输入区固有交互，不算按钮堆，不动。 */}
           <div className="flex items-center gap-0.5 px-2.5 pb-2 pt-1.5">
             <button
@@ -469,6 +486,24 @@ export function DesktopComposer({
               </button>
             )}
 
+            {onKnowledgePacksChange && (
+              <button
+                type="button"
+                onClick={() => setPlusMenuOpen((v) => !v)}
+                title={expertTitle}
+                aria-label={expertTitle}
+                aria-pressed={activePacks.length > 0}
+                className={`inline-flex h-7 max-w-[178px] items-center gap-1.5 rounded-md px-2 text-[12px] transition active:scale-[0.97] ${
+                  activePacks.length > 0
+                    ? "bg-[#10a37f]/10 text-[#10a37f]"
+                    : "text-[#86868b] hover:bg-black/[0.05] hover:text-[#1d1d1f] dark:text-[#6e7077] dark:hover:bg-white/[0.06] dark:hover:text-[#c8cace]"
+                }`}
+              >
+                <UserRound className="h-3.5 w-3.5 shrink-0" />
+                <span className="min-w-0 truncate">专家：{expertLabel}</span>
+              </button>
+            )}
+
             {/* F.2 深度思考 开/关：A5 已解除 advancedMode 门控，常驻可用，不进「+」菜单。 */}
             {onDeepThinkingChange && (
               <button
@@ -487,9 +522,9 @@ export function DesktopComposer({
               </button>
             )}
 
-            {/* 「+」收纳：最近文件 / 从下载选素材 / 运行权限(单选子分区) / 输出风格(单选子分区) / 行业模式(切换项)。
+            {/* 「+」收纳：专家 / 最近文件 / 从下载选素材 / 运行权限(单选子分区) / 输出风格(单选子分区)。
                 每项 onClick/切换行为与原独立菜单完全一致，只是换了入口——单选类点选即应用并收起整个「+」菜单；
-                行业模式切换后不收起(原 kbMenuOpen 行为如此，方便连续看勾选变化)。 */}
+                专家切换后不收起，方便连续看勾选变化。 */}
             <div className="relative">
               <button
                 type="button"
@@ -511,6 +546,49 @@ export function DesktopComposer({
                 <>
                   <button type="button" aria-hidden tabIndex={-1} onClick={() => setPlusMenuOpen(false)} className="fixed inset-0 z-40 cursor-default" />
                   <div role="menu" className="absolute bottom-[calc(100%+8px)] left-0 z-50 max-h-[75vh] w-[320px] overflow-y-auto rounded-lg border border-black/[0.1] bg-white p-1.5 shadow-[0_12px_40px_-10px_rgba(0,0,0,0.25)] dark:border-white/[0.1] dark:bg-[#1c1e24] dark:shadow-[0_12px_40px_-10px_rgba(0,0,0,0.7)]">
+                    {/* 专家：通用 Agent 是默认底座；领域专家作为可挂载上下文进入输入流 */}
+                    {onKnowledgePacksChange && (
+                      <>
+                        <MenuSectionHeader icon={UserRound} label="专家" />
+                        <button
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={activePacks.length === 0}
+                          onClick={() => onKnowledgePacksChange([])}
+                          className="flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left transition hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+                        >
+                          <Check className={`mt-[2px] h-3.5 w-3.5 shrink-0 ${activePacks.length === 0 ? "text-[#10a37f]" : "text-transparent"}`} />
+                          <span className="min-w-0">
+                                <span className="block text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">通用 Agent</span>
+                                <span className="mt-0.5 block text-[11.5px] leading-snug text-[#6e6e73] dark:text-[#8a8c93]">代码、文件、工具和本机任务</span>
+                          </span>
+                        </button>
+                        {packOptions.map((k) => {
+                          const on = activePacks.includes(k.id);
+                          return (
+                            <button
+                              key={k.id}
+                              type="button"
+                              role="menuitemcheckbox"
+                              aria-checked={on}
+                              onClick={() => {
+                                const next = on ? activePacks.filter((x) => x !== k.id) : [...activePacks, k.id];
+                                onKnowledgePacksChange(next);
+                              }}
+                              className="flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left transition hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+                            >
+                              <Check className={`mt-[2px] h-3.5 w-3.5 shrink-0 ${on ? "text-[#10a37f]" : "text-transparent"}`} />
+                              <span className="min-w-0">
+                                <span className="block text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{k.label}</span>
+                                <span className="mt-0.5 block text-[11.5px] leading-snug text-[#6e6e73] dark:text-[#8a8c93]">{k.desc}</span>
+                              </span>
+                            </button>
+                          );
+                        })}
+                        <div className="my-1 h-px bg-black/[0.06] dark:bg-white/[0.06]" />
+                      </>
+                    )}
+
                     {/* 最近素材 */}
                     {recentFiles.length > 0 && onPickRecentFile && (
                       <>
@@ -547,8 +625,8 @@ export function DesktopComposer({
                       </button>
                     )}
 
-                    {/* A4：换个存放位置——默认已经是首启自动建好的作品文件夹，用户不用先选；
-                        想换个地方存产出，这是低调的任务内入口（不再是开场必选项）。 */}
+                    {/* A4：切换工作区——默认已经是首启自动建好的作品文件夹，用户不用先选；
+                        想打开/新建另一个文件夹，这是低调的任务内入口（不再是开场必选项）。 */}
                     {onPickWorkingDir && (
                       <button
                         type="button"
@@ -559,13 +637,13 @@ export function DesktopComposer({
                       >
                         <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
                         <span className="min-w-0">
-                          <span className="block text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">换个存放位置</span>
+                          <span className="block text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">切换工作区</span>
                           {workingDir && <span className="block truncate text-[11px] text-[#86868b] dark:text-[#8a8c93]">当前：{baseName(workingDir)}</span>}
                         </span>
                       </button>
                     )}
 
-                    {/* A4：换过位置后，给一条回到默认作品文件夹的低调入口（去仪式化但不去控制权）。 */}
+                    {/* A4：切换过工作区后，给一条回到默认作品文件夹的低调入口（去仪式化但不去控制权）。 */}
                     {onResetWorkingDir && workingDir && workspaceDir && workingDir !== workspaceDir && (
                       <button
                         type="button"
@@ -574,7 +652,7 @@ export function DesktopComposer({
                         className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
                       >
                         <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
-                        <span className="block text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">恢复默认位置</span>
+                        <span className="block text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">恢复默认工作区</span>
                       </button>
                     )}
 
@@ -635,33 +713,6 @@ export function DesktopComposer({
                       );
                     })}
 
-                    <div className="my-1 h-px bg-black/[0.06] dark:bg-white/[0.06]" />
-
-                    {/* 行业模式(台球知识库)：切换项，可挂多个(目前一个)；勾选后菜单不收起，方便连续看变化 */}
-                    <MenuSectionHeader icon={BookOpen} label="行业模式" />
-                    {KNOWLEDGE_SOURCES.map((k) => {
-                      const on = activePacks.includes(k.id);
-                      return (
-                        <button
-                          key={k.id}
-                          type="button"
-                          role="menuitemcheckbox"
-                          aria-checked={on}
-                          onClick={() => {
-                            const next = on ? activePacks.filter((x) => x !== k.id) : [...activePacks, k.id];
-                            onKnowledgePacksChange?.(next);
-                          }}
-                          className="flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left transition hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
-                        >
-                          <Check className={`mt-[2px] h-3.5 w-3.5 shrink-0 ${on ? "text-[#10a37f]" : "text-transparent"}`} />
-                          <span className="min-w-0">
-                            <span className="block text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{k.label}</span>
-                            <span className="mt-0.5 block text-[11.5px] leading-snug text-[#6e6e73] dark:text-[#8a8c93]">{k.desc}</span>
-                          </span>
-                        </button>
-                      );
-                    })}
-                    <p className="px-2.5 pb-1 pt-1.5 text-[11px] leading-snug text-[#86868b] dark:text-[#6e7077]">不挂时是通用助手；挂上后按该领域专业知识作答。</p>
                   </div>
                 </>
               )}
@@ -675,7 +726,7 @@ export function DesktopComposer({
               onClick={() => !disabled && value.trim() && onSend()}
               disabled={disabled || !value.trim()}
               title="发送"
-              className="flex h-7 w-7 items-center justify-center rounded-md bg-[#10a37f] text-white transition hover:bg-[#0e906f] active:scale-[0.95] disabled:opacity-30 dark:disabled:opacity-25"
+              className="app-primary-action flex h-7 w-7 items-center justify-center rounded-md transition active:scale-[0.95] disabled:opacity-30 dark:disabled:opacity-25"
               aria-label="发送"
             >
               <ArrowUp className="h-4 w-4" />

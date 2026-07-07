@@ -97,7 +97,7 @@ export function getErrorMessage(err: unknown): string {
       // 429 透传后端文案:带具体上限和提额引导("联系您的服务商"),
       // 别替换成"下月再试"——那是把想付费的用户劝走
       case 429: return err.detail || "本月生成次数已达上限。";
-      // G.3：5xx 多是后端 Python 异常,绝不把技术细节(堆栈/异常类名)原样甩给非技术店主 → 统一人话
+      // G.3：5xx 多是后端 Python 异常,不会把技术细节(堆栈/异常类名)原样甩给非技术店主 → 统一人话
       case 500:
       case 502:
       case 503:

@@ -158,7 +158,7 @@ export function HtmlEditView({ initialHtml, title }: { initialHtml: string; titl
           onClick={() => { setAnnotate((v) => !v); setPicked(null); }}
           disabled={!!pending}
           className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12.5px] font-medium transition disabled:opacity-40 ${
-            annotate ? "bg-[#10a37f] text-white" : "border border-black/[0.1] text-[#1d1d1f] hover:bg-black/[0.03] dark:border-white/[0.12] dark:text-[#c8cace] dark:hover:bg-white/[0.05]"
+            annotate ? "app-active-neutral" : "border border-black/[0.1] text-[#1d1d1f] hover:bg-black/[0.03] dark:border-white/[0.12] dark:text-[#c8cace] dark:hover:bg-white/[0.05]"
           }`}
         >
           <MousePointerClick className="h-3.5 w-3.5" /> {annotate ? "圈点中…点页面元素" : "圈点修改"}
@@ -170,7 +170,7 @@ export function HtmlEditView({ initialHtml, title }: { initialHtml: string; titl
             type="button"
             onClick={() => setSaveOpen((v) => !v)}
             disabled={saving}
-            className="inline-flex items-center gap-1.5 rounded-md bg-[#10a37f] px-2.5 py-1 text-[12.5px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.98] disabled:opacity-60"
+            className="app-primary-action inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12.5px] font-medium transition active:scale-[0.98] disabled:opacity-60"
           >
             {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
             {saving ? "保存中…" : "保存到电脑"}
@@ -208,7 +208,7 @@ export function HtmlEditView({ initialHtml, title }: { initialHtml: string; titl
             </div>
             <div className="min-h-0 flex-1 overflow-auto p-4"><DiffBlock before={pending.before} after={pending.after} /></div>
             <div className="flex shrink-0 items-center gap-2 border-t border-black/[0.06] p-3 dark:border-white/[0.06]">
-              <button onClick={accept} className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md bg-[#10a37f] text-[13px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.98]"><Check className="h-3.5 w-3.5" /> 接受改动</button>
+              <button onClick={accept} className="app-primary-action flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md text-[13px] font-medium transition active:scale-[0.98]"><Check className="h-3.5 w-3.5" /> 接受改动</button>
               <button onClick={() => setPending(null)} className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md border border-black/[0.1] bg-white text-[13px] text-[#1d1d1f] transition hover:bg-black/[0.03] active:scale-[0.98] dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#c8cace] dark:hover:bg-white/[0.06]"><X className="h-3.5 w-3.5" /> 放弃</button>
             </div>
           </div>
@@ -243,7 +243,7 @@ export function HtmlEditView({ initialHtml, title }: { initialHtml: string; titl
               placeholder="这块改成…（如：标题换成更醒目的、把这段缩短、按钮文字改成立即报名）"
               className="flex-1 resize-none rounded-md border border-black/[0.08] bg-white px-2.5 py-1.5 text-[12.5px] text-[#1d1d1f] outline-none placeholder:text-[#b0b0b5] focus:border-[#10a37f]/50 dark:border-white/[0.1] dark:bg-[#0e0f11] dark:text-[#e6e7e9] dark:placeholder:text-[#56585f]"
             />
-            <button onClick={submitEdit} disabled={!promptText.trim() || busy} className="h-9 shrink-0 rounded-md bg-[#10a37f] px-3 text-[12.5px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.98] disabled:opacity-40">改写</button>
+            <button onClick={submitEdit} disabled={!promptText.trim() || busy} className="app-primary-action h-9 shrink-0 rounded-md px-3 text-[12.5px] font-medium transition active:scale-[0.98] disabled:opacity-40">改写</button>
           </div>
           {err && <div className="mt-1.5 text-[12px] text-[#ff3b30] dark:text-[#ff8585]">{err}</div>}
         </div>

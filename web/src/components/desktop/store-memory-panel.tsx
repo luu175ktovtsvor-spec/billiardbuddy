@@ -54,7 +54,7 @@ export function StoreMemoryPanel({
       await api.addStoreMemory(c, "semantic", scopedWorkingDir);
       setNewRule("");
       await refresh();
-      setMsg({ kind: "ok", text: scope === "working_dir" ? "已记到当前工作文件夹" : "已记下" });
+      setMsg({ kind: "ok", text: scope === "working_dir" ? "已保存到当前工作文件夹" : "已保存" });
     } catch (e) {
       setMsg({ kind: "err", text: getErrorMessage(e) });
     } finally {
@@ -74,12 +74,12 @@ export function StoreMemoryPanel({
     ].filter(Boolean);
     setBusy("quick-profile"); setMsg(null);
     try {
-      await api.addStoreMemory(`我的球房资料：${parts.join("；")}`, "semantic", scopedWorkingDir);
+      await api.addStoreMemory(`门店资料：${parts.join("；")}`, "semantic", scopedWorkingDir);
       setQuickStore("");
       setQuickStage("");
       setQuickPositioning("");
       await refresh();
-      setMsg({ kind: "ok", text: scope === "working_dir" ? "已保存为当前工作文件夹的球房资料" : "已保存为我确认的球房资料" });
+      setMsg({ kind: "ok", text: scope === "working_dir" ? "已保存为当前工作文件夹资料" : "已保存为已确认资料" });
     } catch (e) {
       setMsg({ kind: "err", text: getErrorMessage(e) });
     } finally {
@@ -121,7 +121,7 @@ export function StoreMemoryPanel({
     try {
       await api.confirmStoreMemory(id);
       await refresh();
-      setMsg({ kind: "ok", text: "已确认，会用于后续回答" });
+      setMsg({ kind: "ok", text: "已确认，后续回答会使用" });
     } catch (e) {
       setMsg({ kind: "err", text: getErrorMessage(e) });
     } finally {
@@ -137,7 +137,7 @@ export function StoreMemoryPanel({
     <aside className="fixed right-0 top-0 z-[62] flex h-full w-[420px] max-w-[92vw] flex-col border-l border-black/[0.08] bg-white shadow-2xl dark:border-white/[0.08] dark:bg-[#16181d]">
       <div className="app-drag app-titlebar-safe-right flex h-[44px] items-center justify-between border-b border-black/[0.08] px-4 dark:border-white/[0.06]">
         <div className="flex items-center gap-2 font-mono text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">
-          <Brain className="h-4 w-4 text-[#10a37f]" /> 我的球房资料
+          <Brain className="h-4 w-4 text-[#10a37f]" /> 门店记忆
         </div>
         <button
           type="button"
@@ -151,11 +151,11 @@ export function StoreMemoryPanel({
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <p className="mb-3 text-[12.5px] leading-relaxed text-[#6e6e73] dark:text-[#9a9ca3]">
-          这里是管家记住的门店事实和你的偏好。“待确认”的内容不会影响回答，确认后才会用于后续文案、海报、报表诊断。
+          用于回答的门店事实和偏好。“待确认”内容不会影响回答，确认后才会用于文案、海报和报表诊断。
         </p>
 
         <div className="mb-3 rounded-lg border border-black/[0.06] bg-black/[0.015] p-2.5 dark:border-white/[0.06] dark:bg-white/[0.02]">
-          <div className="mb-2 text-[12px] font-medium text-[#3a3a3c] dark:text-[#c8cace]">这次新增资料用在哪里</div>
+          <div className="mb-2 text-[12px] font-medium text-[#3a3a3c] dark:text-[#c8cace]">使用范围</div>
           <div className="grid grid-cols-2 gap-1.5 rounded-lg bg-black/[0.035] p-1 dark:bg-white/[0.04]">
             <button
               type="button"
@@ -177,24 +177,24 @@ export function StoreMemoryPanel({
                   ? "bg-white text-[#1d1d1f] shadow-sm dark:bg-[#24262d] dark:text-[#e6e7e9]"
                   : "text-[#6e6e73] hover:bg-white/60 dark:text-[#8a8c93] dark:hover:bg-white/[0.06]"
               }`}
-              title={workingDir ? workingDir : "还没有工作文件夹，暂时只能存全局资料"}
+              title={workingDir ? workingDir : "尚未选择工作文件夹，当前只能保存为全局资料"}
             >
               当前工作文件夹
             </button>
           </div>
           <div className="mt-2 text-[11.5px] leading-relaxed text-[#86868b] dark:text-[#8a8c93]">
             {scope === "working_dir" && workingDir
-              ? `只在「${baseName(workingDir)}」这个工作文件夹里使用，避免污染其它项目。`
+              ? `只在「${baseName(workingDir)}」工作文件夹中使用。`
               : workingDir
-                ? "全局资料会用于所有工作台；项目资料请切到「当前工作文件夹」。"
-                : "现在新增的是全局资料，所有工作台通用。"}
+                ? "全局资料会用于所有工作台；如需限定项目，请选择当前工作文件夹。"
+                : "当前新增资料会用于所有工作台。"}
           </div>
         </div>
 
-        <div className="mb-3 rounded-lg border border-[#007AFF]/15 bg-[#007AFF]/[0.045] p-3 dark:border-[#66aaff]/20 dark:bg-[#66aaff]/[0.08]">
+        <div className="mb-3 rounded-lg border border-black/[0.06] bg-black/[0.015] p-3 dark:border-white/[0.06] dark:bg-white/[0.02]">
           <div className="mb-2 flex items-center gap-1.5 text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">
-            <Sparkles className="h-3.5 w-3.5 text-[#007AFF]" />
-            3 个问题快速补全
+            <Sparkles className="h-3.5 w-3.5 text-[#10a37f]" />
+            快速补充门店资料
           </div>
           <div className="grid gap-2">
             <input
@@ -218,12 +218,12 @@ export function StoreMemoryPanel({
             />
           </div>
           <div className="mt-2 flex items-center justify-between gap-2">
-            <span className="text-[11.5px] leading-relaxed text-[#6e6e73] dark:text-[#9a9ca3]">可以跳过，后面也能慢慢补；保存后会用于后续文案、海报和报表判断。</span>
+            <span className="text-[11.5px] leading-relaxed text-[#6e6e73] dark:text-[#9a9ca3]">可稍后补充；保存后会用于后续文案、海报和报表判断。</span>
             <button
               type="button"
               onClick={() => void addQuickProfile()}
               disabled={busy === "quick-profile" || (!quickStore.trim() && !quickStage.trim() && !quickPositioning.trim())}
-              className="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg bg-[#007AFF] px-3 text-[12px] font-medium text-white transition hover:bg-[#0066d6] disabled:opacity-50"
+              className="app-primary-action inline-flex h-8 shrink-0 items-center gap-1 rounded-lg px-3 text-[12px] font-medium transition disabled:opacity-50"
             >
               {busy === "quick-profile" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
               保存资料
@@ -237,13 +237,13 @@ export function StoreMemoryPanel({
             value={newRule}
             onChange={(e) => setNewRule(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") void addRule(); }}
-            placeholder="比如：我店 26 张台，主做竞技客户"
+            placeholder="比如：本店 26 张台，主做竞技客户"
           />
           <button
             type="button"
             onClick={() => void addRule()}
             disabled={busy === "add" || !newRule.trim()}
-            className="flex h-9 w-10 shrink-0 items-center justify-center rounded-lg bg-[#10a37f] text-white transition hover:bg-[#0d8c6d] disabled:opacity-50"
+            className="app-primary-action flex h-9 w-10 shrink-0 items-center justify-center rounded-lg transition disabled:opacity-50"
             aria-label="添加"
           >
             {busy === "add" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
@@ -254,7 +254,7 @@ export function StoreMemoryPanel({
 
         {sorted.length === 0 ? (
           <div className="rounded-lg border border-dashed border-black/[0.1] px-3 py-6 text-center text-[12.5px] text-[#86868b] dark:border-white/[0.1] dark:text-[#6e7077]">
-            还没有资料。先补 1 条最关键的：店名/城市、门店阶段、主定位，后面再慢慢加。
+            尚未添加资料。先补充店名/城市、门店阶段或主定位。
           </div>
         ) : (
           <div className="space-y-2">
@@ -269,7 +269,7 @@ export function StoreMemoryPanel({
                         ? "bg-[#10a37f]/12 text-[#10a37f]"
                         : "bg-black/[0.05] text-[#86868b] dark:bg-white/[0.06] dark:text-[#8a8c93]"
                     }`}>
-                      {m.source === "pending" ? "待确认" : m.source === "manual" ? "我确认的" : "自动记住"}
+                      {m.source === "pending" ? "待确认" : m.source === "manual" ? "已确认" : "自动记录"}
                     </span>
                     {m.scope_label && (
                       <span className="truncate rounded bg-black/[0.035] px-1.5 py-0.5 text-[10.5px] text-[#86868b] dark:bg-white/[0.05] dark:text-[#8a8c93]">
@@ -296,7 +296,7 @@ export function StoreMemoryPanel({
                       type="button"
                       onClick={() => void confirmMemory(m.id)}
                       disabled={busy === m.id}
-                      className="flex h-7 items-center gap-1 rounded-md bg-[#10a37f] px-2 text-[12px] text-white transition hover:bg-[#0d8c6d] disabled:opacity-50"
+                      className="app-primary-action flex h-7 items-center gap-1 rounded-md px-2 text-[12px] transition disabled:opacity-50"
                     >
                       {busy === m.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
                       确认

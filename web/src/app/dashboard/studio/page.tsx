@@ -3,7 +3,8 @@
 /**
  * 生成工作室(阶段2 MVP·独立窗口 /dashboard/studio):
  * 左·控制台(大白话+参考图+比例+风格→生成) · 中·预览(出图+变体挑选) · 右·操控台(第二层,圈选+说话/换比例/做视频)。
- * 直连 /studio/generate、/studio/edit(绕 LLM),异步出图轮询 media-jobs。白底偏绿 macOS。
+ * 直连 /studio/generate、/studio/edit(绕 LLM),异步出图轮询 media-jobs。视觉跟随桌面 Agent:
+ * 中性主按钮 + 绿色小点缀,避免变成另一套插件 UI。
  * 治"改不动图":基于当前这张就地改(原图当底图),不跳回输入框重掷。
  * E2-1・小白化:模型名(gpt-image-2/Seedream)、变体数量、"优化提示词"按钮已收进背后自动处理——
  * 明面只留 2 个参数(比例+风格),提示词优化默默做,数量固定出 4 张给"一眼挑"(见下方注释与 onGenerate)。
@@ -14,7 +15,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import type { LucideIcon } from "lucide-react";
-import { Image as ImageIcon, ImagePlus, X, Wand2, Copy, Download, ThumbsUp, Loader2, RefreshCw, Check, AlertTriangle, Layers, Film, CreditCard, PartyPopper, UserPlus, Sparkles, Trophy, Camera, Repeat } from "lucide-react";
+import { Image as ImageIcon, ImagePlus, X, Wand2, Copy, Download, ThumbsUp, Loader2, RefreshCw, Check, AlertTriangle, Layers, Film, CreditCard, PartyPopper, UserPlus, Sparkles, Trophy, Camera, Repeat, ChevronRight } from "lucide-react";
 import { api, type MediaJobStatus } from "@/lib/api";
 
 // react-konva 碰 canvas/window,不能 SSR → dynamic ssr:false(M4)
@@ -49,8 +50,8 @@ const STYLES = [
 ];
 
 // E2-2・场景卡"例子先行":首屏空态(还没出图时)展示台球运营场景当例子，点卡=把一段可改草稿
-// 预填进左边的 prompt 输入框(setPrompt + 聚焦)，不发消息、不触发生成——和主聊天窗欢迎屏
-// StarterCard 语义不同(那边点了直接 chat.send 走 ReAct)，这里是"填表单草稿等用户改"。
+// 预填进左边的 prompt 输入框(setPrompt + 聚焦)，不发消息、不触发生成——主聊天窗欢迎屏已收敛为轻量入口,
+// 这里保留的是媒体工作台内部的"填表单草稿等用户改"。
 // 文案铁律:草稿只描述画面/场景，绝不编造具体店名/电话/价格/第三方品牌，留给用户自己填；
 // 招聘助教是正常岗位描述+明写"别写暧昧擦边"，守安全红线，不当擦边引流文案处理。
 type ScenarioCard = { Icon: LucideIcon; title: string; hint: string; prompt: string };
@@ -63,7 +64,7 @@ const SCENARIOS: ScenarioCard[] = [
   { Icon: Camera, title: "球房氛围图", hint: "日常氛围，发圈发视频封面都能用", prompt: "做一张台球房日常营业的氛围图，灯光有质感、有人在打球的画面感，适合当短视频封面或朋友圈配图" },
 ];
 
-// E2-4・text_quality_warning/Message：U5 的"改图轮 OCR 重出后仍未对上→best-effort 返图+软警告"信号，
+// E2-4・text_quality_warning/Message：文字质检提示信号，可能来自硬文案待核对或改图轮文字复核软警告。
 // 这批(job 级，不是精细到某一张)只要触发过就带出来，供中间预览区露一句很轻的大白话提示。
 type Shot = { url: string; generationId?: string; ratio: string; isVideo?: boolean; modelSwitched?: boolean; textQualityWarning?: boolean; textQualityWarningMessage?: string };
 
@@ -119,11 +120,11 @@ export default function StudioPage() {
       const ids = (done.result?.generation_ids as string[] | undefined) || [];
       // U2 降级安全网标记:这张是不是"GPT 失败后自动切到了 Seedream 重试"——反映给用户一句很轻的提示(item 6)。
       const switched = (done.result?.model_switched as boolean[] | undefined) || [];
-      // E2-4・收 U5 遗留:这一批里是否有张图 OCR 重出后仍没对上、best-effort 放行了(job 级信号，不分张)。
+      // E2-4・文字质检:这一批是否有硬文案待核对/文字复核软警告(job 级信号，不分张)。
       const textWarn = !!done.result?.text_quality_warning;
       const textWarnMsg = (done.result?.text_quality_warning_message as string | undefined) || undefined;
       const r = (done.result?.ratio as string | undefined) || keepRatio;
-      if (!urls.length) throw new Error("这次没出来，换个说法再试一次。");
+      if (!urls.length) throw new Error("这次没有生成结果。可以换个说法再试一次。");
       const isVideo = !!done.result?.is_video;
       const shots: Shot[] = urls.map((u, i) => ({
         url: u, generationId: ids[i], ratio: r, isVideo, modelSwitched: !!switched[i],
@@ -142,7 +143,7 @@ export default function StudioPage() {
       window.electron?.notifyStudioArtifact?.({ kind: "poster", generationId: shots[0].generationId, url: shots[0].url });
     } catch (e) {
       if (controller.signal.aborted) return; // 组件已卸载：别再 setState
-      setError(e instanceof Error ? e.message : "生成失败，请稍后再试。");
+      setError(e instanceof Error ? e.message : "生成失败。可以稍后再试。");
     } finally {
       if (!controller.signal.aborted) { setBusy(false); setStage(""); }
     }
@@ -233,11 +234,11 @@ export default function StudioPage() {
     if (!window.electron?.files?.saveTemp) { setError("局部重绘需要桌面版（要把蒙版存成临时文件）。"); return; }
     try {
       const saved = await window.electron.files.saveTemp({ base64: maskBase64, ext: "png" });
-      if (!saved.ok || !saved.path) throw new Error("蒙版没存成功，重试一下。");
+      if (!saved.ok || !saved.path) throw new Error("蒙版保存失败。可以再试一次。");
       setMaskMode(false);
       void runJob(() => api.studioEdit({ prompt: instruction, source_generation_id: gid, mask_path: saved.path as string, ratio: rr }), rr);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "局部重绘失败，稍后再试。");
+      setError(e instanceof Error ? e.message : "局部重绘失败。可以稍后再试。");
     }
   };
   const onChangeRatio = (r: string) => {
@@ -267,7 +268,7 @@ export default function StudioPage() {
       setHistory((h) => [...(prev ? [prev] : []), ...h].slice(0, 12));
       setCurrent({ url: plan.output_url, ratio: current?.ratio || "9:16", isVideo: true });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "拼接没成功，稍后再试。");
+      setError(e instanceof Error ? e.message : "视频拼接失败。可以稍后再试。");
     } finally {
       setBusy(false); setStage("");
     }
@@ -279,7 +280,7 @@ export default function StudioPage() {
       await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
       setCopied(true); setTimeout(() => setCopied(false), 1500);
     } catch {
-      setError("复制没成功（可能系统不支持），可以先用「保存到本机」。");
+      setError("复制失败。当前系统可能不支持，可以先用「保存到本机」。");
     }
   };
   const onSave = async () => {
@@ -288,7 +289,7 @@ export default function StudioPage() {
       const blob = await (await fetch(current.url)).blob();
       await window.electron.files.save({ defaultName: current.isVideo ? "工作室视频.mp4" : "工作室作品.png", base64: await blobToBase64(blob), title: current.isVideo ? "保存视频" : "保存图片" });
     } catch {
-      setError("保存没成功，稍后再试。");
+      setError("保存失败。可以稍后再试。");
     }
   };
   const onRate = () => { if (current?.generationId) void api.rateGeneration(current.generationId, "good"); };
@@ -316,7 +317,7 @@ export default function StudioPage() {
 
   const chip = (active: boolean) =>
     `rounded-md px-2.5 py-1 text-[12px] font-medium transition active:scale-[0.97] ${
-      active ? "bg-[#10a37f] text-white" : "bg-black/[0.04] text-[#3a3a3c] hover:bg-black/[0.07] dark:bg-white/[0.06] dark:text-[#c8cace] dark:hover:bg-white/[0.1]"
+      active ? "app-active-neutral" : "bg-black/[0.04] text-[#3a3a3c] hover:bg-black/[0.07] dark:bg-white/[0.06] dark:text-[#c8cace] dark:hover:bg-white/[0.1]"
     }`;
   return (
     <div className="flex h-screen w-full flex-col bg-white text-[#1d1d1f] antialiased dark:bg-[#0e0f11] dark:text-[#e6e7e9]">
@@ -335,7 +336,7 @@ export default function StudioPage() {
               ref={promptRef}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              placeholder="大白话说想做啥就行，比如：周五台球之夜海报，霓虹灯氛围，醒目标题"
+              placeholder="直接描述想做什么，例如：周五台球之夜海报，霓虹灯氛围，醒目标题"
               rows={4}
               className="w-full resize-none rounded-lg border border-black/[0.08] bg-black/[0.02] px-3 py-2 text-[13px] outline-none transition placeholder:text-[#b0b0b5] focus:border-[#10a37f]/50 dark:border-white/[0.08] dark:bg-white/[0.03] dark:placeholder:text-[#56585f]"
             />
@@ -387,7 +388,7 @@ export default function StudioPage() {
             type="button"
             onClick={onGenerate}
             disabled={busy || !prompt.trim()}
-            className="mt-1 flex h-10 items-center justify-center gap-2 rounded-lg bg-[#10a37f] text-[14px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.99] disabled:opacity-50"
+            className="app-primary-action mt-1 flex h-10 items-center justify-center gap-2 rounded-lg text-[14px] font-medium transition active:scale-[0.99] disabled:opacity-50"
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
             {busy ? "出图中…" : "生成"}
@@ -409,7 +410,7 @@ export default function StudioPage() {
             <div className="flex flex-col items-center gap-3 text-[#86868b] dark:text-[#6e7077]">
               <div className="h-[320px] w-[240px] animate-pulse rounded-xl bg-black/[0.05] dark:bg-white/[0.05]" />
               <div className="flex items-center gap-2 text-[13px]"><Loader2 className="h-4 w-4 animate-spin text-[#10a37f]" />{stage || "正在出图…"}</div>
-              <div className="text-[11.5px]">出图大概要几十秒到几分钟，做好了直接显示在这。</div>
+              <div className="text-[11.5px]">生成可能需要几十秒到几分钟，完成后会显示在这里。</div>
             </div>
           ) : current ? (
             current.isVideo ? (
@@ -460,24 +461,27 @@ export default function StudioPage() {
             <div className="flex w-full max-w-[560px] flex-col items-center gap-5 px-4">
               <div className="flex flex-col items-center gap-2 text-[#b0b0b5] dark:text-[#56585f]">
                 <ImageIcon className="h-10 w-10" />
-                <div className="text-[13px]">左边说一句、点「生成」，图就出在这里</div>
+                <div className="text-[13px]">在左侧描述需求，点「生成」后会显示在这里</div>
               </div>
               <div className="w-full">
                 <div className="mb-2 text-center text-[11.5px] text-[#86868b] dark:text-[#6e7077]">
-                  不知道怎么说？点个例子，会先填进左边输入框，改改再生成
+                  需要参考时，可以点一个例子先填入左侧输入框
                 </div>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                <div className="overflow-hidden rounded-lg border border-black/[0.07] bg-white/80 dark:border-white/[0.07] dark:bg-white/[0.03]">
                   {SCENARIOS.map((s) => (
                     <button
                       key={s.title}
                       type="button"
                       onClick={() => pickScenario(s)}
                       title={s.prompt}
-                      className="group flex flex-col items-start gap-1 rounded-lg border border-black/[0.07] bg-white p-2.5 text-left shadow-sm transition hover:border-[#10a37f]/35 hover:bg-[#10a37f]/[0.04] active:scale-[0.98] dark:border-white/[0.07] dark:bg-[#141519] dark:shadow-none dark:hover:border-[#10a37f]/35 dark:hover:bg-white/[0.04]"
+                      className="group flex w-full min-w-0 items-center gap-2.5 border-t border-black/[0.05] px-3 py-2 text-left transition first:border-t-0 hover:bg-black/[0.025] active:scale-[0.995] dark:border-white/[0.06] dark:hover:bg-white/[0.04]"
                     >
-                      <s.Icon className="h-4 w-4 text-[#10a37f]" />
-                      <div className="text-[12px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{s.title}</div>
-                      <div className="text-[11px] leading-snug text-[#86868b] dark:text-[#6e7077]">{s.hint}</div>
+                      <s.Icon className="h-4 w-4 shrink-0 text-[#10a37f]" />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[12px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{s.title}</div>
+                        <div className="truncate text-[11px] leading-snug text-[#86868b] dark:text-[#6e7077]">{s.hint}</div>
+                      </div>
+                      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[#b0b0b5] transition group-hover:text-[#86868b]" />
                     </button>
                   ))}
                 </div>
@@ -505,7 +509,7 @@ export default function StudioPage() {
                   onClick={() => setMaskMode(true)}
                   disabled={busy || !current.generationId}
                   title="想圈哪块就圈一下、只改那一块；不圈就直接说，整张一起改"
-                  className="flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-[#10a37f] text-[13px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.99] disabled:opacity-50"
+                  className="app-primary-action flex h-9 w-full items-center justify-center gap-2 rounded-lg text-[13px] font-medium transition active:scale-[0.99] disabled:opacity-50"
                 >
                   <Layers className="h-3.5 w-3.5" /> 圈选 + 说话
                 </button>
@@ -537,7 +541,7 @@ export default function StudioPage() {
                   onClick={onMakeVideo}
                   disabled={busy || !current.generationId}
                   title="带这张图跳到视频工作台，在那边配运镜/时长/配音再生成"
-                  className="flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-[#007AFF]/30 bg-[#007AFF]/[0.06] text-[13px] font-medium text-[#007AFF] transition hover:bg-[#007AFF]/[0.12] active:scale-[0.99] disabled:opacity-50"
+                  className="flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-black/[0.1] bg-black/[0.03] text-[13px] font-medium text-[#1d1d1f] transition hover:border-[#10a37f]/35 hover:bg-[#10a37f]/[0.06] hover:text-[#10a37f] active:scale-[0.99] disabled:opacity-50 dark:border-white/[0.1] dark:bg-white/[0.04] dark:text-[#c8cace]"
                 >
                   <Film className="h-3.5 w-3.5" /> 去视频台做成视频
                 </button>
@@ -562,7 +566,7 @@ export default function StudioPage() {
                   onClick={onCompose}
                   disabled={busy}
                   title="把做过的几段视频按顺序拼成一条(在本机用 ffmpeg,不上传)"
-                  className="flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-[#007AFF]/30 bg-[#007AFF]/[0.06] text-[13px] font-medium text-[#007AFF] transition hover:bg-[#007AFF]/[0.12] active:scale-[0.99] disabled:opacity-50"
+                  className="flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-black/[0.1] bg-black/[0.03] text-[13px] font-medium text-[#1d1d1f] transition hover:border-[#10a37f]/35 hover:bg-[#10a37f]/[0.06] hover:text-[#10a37f] active:scale-[0.99] disabled:opacity-50 dark:border-white/[0.1] dark:bg-white/[0.04] dark:text-[#c8cace]"
                 >
                   <Film className="h-3.5 w-3.5" /> 把这 {videoShots.length} 段拼成一条
                 </button>

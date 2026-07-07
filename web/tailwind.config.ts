@@ -29,19 +29,19 @@ const config: Config = {
         ],
       },
       colors: {
-        // 品牌主色:iOS 系统蓝(2026-06-12 用户拍板苹果风,tint 用法:只给可点元素)
+        // 桌面 Agent 走法 B:绿只做点缀/焦点,主按钮走中性近黑。
         brand: {
-          50: "#f0f7ff",
-          100: "#e0efff",
-          200: "#bdddff",
-          300: "#8cc2ff",
-          400: "#4da3ff",
-          500: "#1a8cff",
-          600: "#007aff",
-          700: "#0066d6",
-          800: "#0055b3",
-          900: "#004591",
-          950: "#002b5c",
+          50: "#effaf6",
+          100: "#d7f4ea",
+          200: "#b3ead8",
+          300: "#83dcc2",
+          400: "#4fc9a8",
+          500: "#10a37f",
+          600: "#0e906f",
+          700: "#0b735a",
+          800: "#075b48",
+          900: "#06483a",
+          950: "#032b22",
         },
         // iOS 浅色侧边栏(macOS 系统设置同款灰)
         sidebar: {
@@ -50,7 +50,7 @@ const config: Config = {
           active: "#dcdce1",
         },
         accent: {
-          DEFAULT: "#007aff",
+          DEFAULT: "#10a37f",
           foreground: "#ffffff",
         },
       },

@@ -8,7 +8,7 @@
  * 「预览走客户端、导出走服务端」:改文案在浏览器 DOM 即时看到;点"出片"才服务端逐帧渲染成有包装的成品。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Film, Plus, Loader2, Sparkles, Send, Download, Play, Pause, Clapperboard, AlertTriangle } from "lucide-react";
+import { Film, Plus, Loader2, Sparkles, Send, Download, Play, Pause, Clapperboard, AlertTriangle, MessageSquareText } from "lucide-react";
 
 import { api, type MediaJobStatus, type VideoDocView } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
@@ -16,7 +16,7 @@ import { useDesktop } from "@/hooks/use-desktop";
 import { useWhisperReady } from "@/hooks/use-whisper-ready";
 
 const BTN = "inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-[13px] font-medium transition active:scale-[0.97] disabled:opacity-40 disabled:active:scale-100";
-const BTN_PRIMARY = `${BTN} bg-[#10a37f] text-white hover:bg-[#0e906f]`;
+const BTN_PRIMARY = `${BTN} app-primary-action`;
 const BTN_GHOST = `${BTN} bg-black/[0.05] text-[#1d1d1f] hover:bg-black/[0.08] dark:bg-white/[0.06] dark:text-[#e6e7e9] dark:hover:bg-white/[0.1]`;
 
 const RATIOS = [
@@ -27,11 +27,33 @@ const RATIOS = [
 ] as const;
 
 type Seg = { src: string; in: number; out: number; caption: string };
+type VideoPlanResult = { project?: string; captions?: string[]; brand?: string; warnings?: unknown; footage_warnings?: unknown; footage_health?: unknown };
 
 function fileUrl(p: string): string {
   // 走后端同源 http 流(带 Range),别用 file://——http 页里 Chromium 拒载 file:// 会黑屏(P0-3)
   if (p.startsWith("http") || p.startsWith("/api/")) return p;
   return `/api/v1/video-edit/localfile?path=${encodeURIComponent(p)}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()) : [];
+}
+
+function planWarnings(result: VideoPlanResult): string[] {
+  const direct = [...stringList(result.warnings), ...stringList(result.footage_warnings)];
+  if (direct.length) return Array.from(new Set(direct)).slice(0, 6);
+  if (!isRecord(result.footage_health)) return [];
+  const messages: string[] = [];
+  Object.values(result.footage_health).forEach((item, index) => {
+    if (!isRecord(item)) return;
+    const name = typeof item.name === "string" && item.name.trim() ? item.name.trim() : `素材 ${index + 1}`;
+    for (const reason of stringList(item.reasons)) messages.push(`${name}：${reason}`);
+  });
+  return Array.from(new Set(messages)).slice(0, 6);
 }
 
 export function VideoWorkspacePage({ initialFromGen }: { initialFromGen?: string } = {}) {
@@ -52,6 +74,7 @@ export function VideoWorkspacePage({ initialFromGen }: { initialFromGen?: string
   const [recapText, setRecapText] = useState("");
   const [reply, setReply] = useState<string | null>(null);
   const [finalUrl, setFinalUrl] = useState<string | null>(null);
+  const [footageWarnings, setFootageWarnings] = useState<string[]>([]);
   // G-A・渲染后体检门返回的软提醒(大白话·非空才有):复渲后仍有问题时的一句话caveat,不挡看片、不弹窗。
   const [renderCaveat, setRenderCaveat] = useState<string | null>(null);
 
@@ -97,7 +120,7 @@ export function VideoWorkspacePage({ initialFromGen }: { initialFromGen?: string
       filters: [{ name: "视频", extensions: ["mp4", "mov", "m4v", "avi", "mkv", "webm"] }],
     });
     if (r.canceled || !r.paths?.length) return;
-    setPaths(r.paths); setError(null); setProject(null); setSegs([]); setFinalUrl(null);
+    setPaths(r.paths); setError(null); setProject(null); setSegs([]); setFinalUrl(null); setFootageWarnings([]);
   }, [electron]);
 
   // 当前正在跑的轮询请求：组件卸载时 abort，防卸载后 setState。
@@ -153,7 +176,7 @@ export function VideoWorkspacePage({ initialFromGen }: { initialFromGen?: string
       });
       const done = await api.pollMediaJob(job_id, (j) => setHandoffStage(j.stage || ""), undefined, controller.signal);
       const url = (done.result?.urls as string[] | undefined)?.[0];
-      if (!url) throw new Error("没拿到视频链接，换个说法再试一次。");
+      if (!url) throw new Error("没有拿到视频链接。可以换个说法再试一次。");
       setHandoffVideoUrl(url);
     } catch (e) {
       if (controller.signal.aborted) return; // 组件已卸载：别再 setState
@@ -176,20 +199,23 @@ export function VideoWorkspacePage({ initialFromGen }: { initialFromGen?: string
   const generate = useCallback(async () => {
     if (!paths.length) return;
     setBusy(true); setError(null); setFinalUrl(null); setReply(null);
-    setStage(mode === "speech" ? "在听你视频里讲了啥、挑出讲得好的段落…" : "在看每段视频哪一刻最出彩、把废镜头挑出去…");
+    setFootageWarnings([]);
+    setStage(mode === "speech" ? "正在分析口播内容，并挑出适合成片的片段…" : "正在分析素材高光，并整理镜头方案…");
     try {
       if (mode === "speech") {
         // 口播线:auto_plan(speech) → 出片走 renderVideoProject(保原声+烧字幕)
         const job = await runJob(() => api.videoEditAutoPlan({ video_paths: paths, mode: "speech", ratio, target_duration: targetDur }));
-        const res = (job.result || {}) as { project?: string };
-        if (!res.project) throw new Error("没拿到剪辑项目");
+        const res = (job.result || {}) as VideoPlanResult;
+        if (!res.project) throw new Error("没有拿到剪辑项目。");
+        setFootageWarnings(planWarnings(res));
         setProject(res.project); setBrand("");
         const { doc } = await api.getVideoProject(res.project);
         setSegs(doc.clips.map((c) => ({ src: (c.media ? doc.media[c.media]?.src : "") || "", in: c.src_in ?? 0, out: c.src_out ?? 0, caption: "" })));
       } else {
         const job = await runJob(() => api.videoEditAutoPlanV2({ video_paths: paths, mode: "ambient", ratio, target_duration: targetDur }));
-        const res = (job.result || {}) as { project?: string; captions?: string[]; brand?: string };
-        if (!res.project) throw new Error("没拿到剪辑项目");
+        const res = (job.result || {}) as VideoPlanResult;
+        if (!res.project) throw new Error("没有拿到剪辑项目。");
+        setFootageWarnings(planWarnings(res));
         setProject(res.project); setBrand(res.brand || "");
         const { doc } = await api.getVideoProject(res.project);
         setSegs(buildSegs(doc, res.captions || []));
@@ -224,12 +250,12 @@ export function VideoWorkspacePage({ initialFromGen }: { initialFromGen?: string
   const doExport = useCallback(async () => {
     if (!project) return;
     setBusy(true); setError(null); setFinalUrl(null); setRenderCaveat(null);
-    setStage(mode === "speech" ? "在出片(保原声+烧字幕),好了叫你…" : "在渲染成片(带包装),好了叫你…");
+    setStage(mode === "speech" ? "正在导出成片（保留原声并烧录字幕），完成后会通知你…" : "正在渲染成片（带包装），完成后会通知你…");
     try {
       const job = await runJob(() => (mode === "speech" ? api.renderVideoProject(project, "成片") : api.renderVideoV2(project, "成片")));
       const res = (job.result || {}) as { urls?: string[]; caveat?: string };
       const url = res.urls?.[0];
-      if (!url) throw new Error("没拿到成片链接");
+      if (!url) throw new Error("没有拿到成片链接。");
       setFinalUrl(url);
       setRenderCaveat(res.caveat && res.caveat.trim() ? res.caveat.trim() : null);
     } catch (e) {
@@ -241,14 +267,17 @@ export function VideoWorkspacePage({ initialFromGen }: { initialFromGen?: string
   }, [project, mode, runJob]);
 
   const curCap = segs.length ? segs[Math.min(playIdx, segs.length - 1)].caption : "";
+  const headerHint = mode === "speech"
+    ? "口播模式 · 转录→字幕→保原声→出片"
+    : "氛围模式 · 挑高光→配文案→可对话改→出片";
 
   return (
-    <div className="flex h-screen flex-col bg-[#fbfbfd] text-[#1d1d1f] dark:bg-[#161618] dark:text-[#e6e7e9]">
+    <div className="flex h-screen flex-col bg-white text-[#1d1d1f] dark:bg-[#0e0f11] dark:text-[#e6e7e9]">
       {/* 头 */}
-      <div className="flex items-center gap-2 border-b border-black/[0.06] px-5 py-3 dark:border-white/[0.08]">
+      <div className="app-drag app-titlebar-safe-right flex h-[44px] shrink-0 items-center gap-2 border-b border-black/[0.06] px-20 dark:border-white/[0.06]">
         <Clapperboard size={18} className="text-[#10a37f]" />
         <span className="text-[14px] font-semibold">视频创作工作区</span>
-        <span className="text-[12px] text-[#86868b]">氛围模式 · 挑高光→配文案→可对话改→出片</span>
+        <span className="truncate text-[12px] text-[#86868b]">{headerHint}</span>
       </div>
 
       {error && (
@@ -258,7 +287,7 @@ export function VideoWorkspacePage({ initialFromGen }: { initialFromGen?: string
       <div className="flex flex-1 overflow-hidden">
         {/* 左:预览 + 镜头条 */}
         <div className="flex flex-1 flex-col items-center gap-3 overflow-y-auto p-5">
-          <div className="relative flex items-center justify-center overflow-hidden rounded-xl bg-black" style={{ width: 320, height: ratio === "16:9" ? 180 : ratio === "1:1" ? 320 : 568 }}>
+          <div className="relative flex items-center justify-center overflow-hidden rounded-lg bg-black" style={{ width: 320, height: ratio === "16:9" ? 180 : ratio === "1:1" ? 320 : 568 }}>
             {segs.length ? (
               <>
                 {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
@@ -286,7 +315,7 @@ export function VideoWorkspacePage({ initialFromGen }: { initialFromGen?: string
             <div className="flex w-full max-w-[520px] flex-wrap justify-center gap-1.5">
               {segs.map((s, i) => (
                 <button key={i} onClick={() => { setPlayIdx(i); setPlaying(false); }}
-                  className={`rounded-md px-2 py-1 text-[11px] transition ${i === playIdx ? "bg-[#10a37f] text-white" : "bg-black/[0.05] text-[#3a3a3c] hover:bg-black/[0.1] dark:bg-white/[0.06] dark:text-[#c7c7cc]"}`}>
+                  className={`rounded-md px-2 py-1 text-[11px] transition ${i === playIdx ? "app-active-neutral" : "bg-black/[0.05] text-[#3a3a3c] hover:bg-black/[0.1] dark:bg-white/[0.06] dark:text-[#c7c7cc]"}`}>
                   镜{i + 1} · {s.caption || "…"}
                 </button>
               ))}
@@ -299,14 +328,16 @@ export function VideoWorkspacePage({ initialFromGen }: { initialFromGen?: string
         <div className="flex w-[340px] flex-col gap-4 overflow-y-auto border-l border-black/[0.06] p-5 dark:border-white/[0.08]">
           {/* E1-C2・从生图台带过来的图(openWorkbench handoff):独立小卡片,和下面"选本机视频剪辑"是两条不同的路,互不影响 */}
           {initialFromGen && (
-            <div className="flex flex-col gap-2 rounded-xl border border-[#007AFF]/25 bg-[#007AFF]/[0.05] p-3">
-              <div className="text-[12px] font-semibold text-[#007AFF]">从生图台带来的图</div>
+            <div className="flex flex-col gap-2 rounded-lg border border-black/[0.08] bg-black/[0.025] p-3 dark:border-white/[0.08] dark:bg-white/[0.03]">
+              <div className="flex items-center gap-1.5 text-[12px] font-semibold text-[#6e6e73] dark:text-[#9a9ca3]">
+                <Film size={13} className="text-[#10a37f]" /> 从生图台带来的图
+              </div>
               {!handoff && !handoffError && <div className="flex items-center gap-2 text-[12px] text-[#8e8e93]"><Loader2 size={13} className="animate-spin" /> 正在取图…</div>}
               {handoffError && <div className="text-[12px] text-red-600 dark:text-red-400">{handoffError}</div>}
               {handoff && (
                 <>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={handoff.url} alt="待处理素材" className="w-full rounded-lg border border-black/[0.06] object-cover dark:border-white/[0.08]" style={{ maxHeight: 160 }} />
+                  <img src={handoff.url} alt="待处理素材" className="w-full rounded-md border border-black/[0.06] object-cover dark:border-white/[0.08]" style={{ maxHeight: 160 }} />
                   {handoff.isVideo ? (
                     <div className="text-[11px] text-[#8e8e93]">这个素材本身已经是视频，不用再生成一遍。</div>
                   ) : (
@@ -317,27 +348,27 @@ export function VideoWorkspacePage({ initialFromGen }: { initialFromGen?: string
                         placeholder="运镜描述（可选），比如：镜头缓慢推进、灯光渐暗"
                         rows={2}
                         disabled={handoffBusy}
-                        className="w-full resize-none rounded-lg border border-black/[0.08] bg-white px-2.5 py-1.5 text-[12px] outline-none transition placeholder:text-[#b0b0b5] focus:border-[#007AFF]/50 dark:border-white/[0.08] dark:bg-[#1c1c1e] dark:placeholder:text-[#56585f]"
+                        className="w-full resize-none rounded-md border border-black/[0.08] bg-white px-2.5 py-1.5 text-[12px] outline-none transition placeholder:text-[#b0b0b5] focus:border-[#10a37f]/50 dark:border-white/[0.08] dark:bg-[#1c1c1e] dark:placeholder:text-[#56585f]"
                       />
                       <div className="flex flex-wrap items-center gap-1.5">
                         {[5, 8, 10].map((d) => (
                           <button key={d} type="button" disabled={handoffBusy} onClick={() => setHandoffDuration(d)}
-                            className={`rounded-md px-2 py-1 text-[11px] transition ${handoffDuration === d ? "bg-[#007AFF] text-white" : "bg-black/[0.05] text-[#3a3a3c] hover:bg-black/[0.1] dark:bg-white/[0.06] dark:text-[#c7c7cc]"}`}>
+                            className={`rounded-md px-2 py-1 text-[11px] transition ${handoffDuration === d ? "app-active-neutral" : "bg-black/[0.05] text-[#3a3a3c] hover:bg-black/[0.1] dark:bg-white/[0.06] dark:text-[#c7c7cc]"}`}>
                             {d} 秒
                           </button>
                         ))}
                         <button type="button" disabled={handoffBusy} onClick={() => setHandoffAudio((v) => !v)}
-                          className={`rounded-md px-2 py-1 text-[11px] transition ${handoffAudio ? "bg-[#007AFF] text-white" : "bg-black/[0.05] text-[#3a3a3c] hover:bg-black/[0.1] dark:bg-white/[0.06] dark:text-[#c7c7cc]"}`}>
+                          className={`rounded-md px-2 py-1 text-[11px] transition ${handoffAudio ? "app-active-neutral" : "bg-black/[0.05] text-[#3a3a3c] hover:bg-black/[0.1] dark:bg-white/[0.06] dark:text-[#c7c7cc]"}`}>
                           {handoffAudio ? "带配音" : "无配音"}
                         </button>
                       </div>
                       <button className={`${BTN_PRIMARY} w-full`} disabled={handoffBusy} onClick={runHandoffI2v}>
                         {handoffBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} 用这张图生成视频
                       </button>
-                      {handoffBusy && handoffStage && <div className="text-[11px] text-[#007AFF]">{handoffStage}</div>}
+                      {handoffBusy && handoffStage && <div className="text-[11px] text-[#10a37f]">{handoffStage}</div>}
                       {handoffVideoUrl && (
                         // eslint-disable-next-line jsx-a11y/media-has-caption
-                        <video src={handoffVideoUrl} controls className="w-full rounded-lg bg-black" />
+                        <video src={handoffVideoUrl} controls className="w-full rounded-md bg-black" />
                       )}
                     </>
                   )}
@@ -360,9 +391,9 @@ export function VideoWorkspacePage({ initialFromGen }: { initialFromGen?: string
                 const locked = id === "speech" && !speechReady;   // 口播模型没下好前锁住
                 return (
                   <button key={id} disabled={locked}
-                    onClick={() => { if (locked) return; setMode(id); setProject(null); setSegs([]); setFinalUrl(null); }}
+                    onClick={() => { if (locked) return; setMode(id); setProject(null); setSegs([]); setFinalUrl(null); setFootageWarnings([]); }}
                     title={locked ? "口播功能正在准备中（首次使用需下载语音模型）" : hint}
-                    className={`flex-1 rounded-md px-2 py-1.5 text-[12px] transition ${locked ? "cursor-not-allowed bg-black/[0.03] text-[#c7c7cc] dark:bg-white/[0.03] dark:text-[#5a5c63]" : mode === id ? "bg-[#10a37f] text-white" : "bg-black/[0.05] text-[#3a3a3c] hover:bg-black/[0.1] dark:bg-white/[0.06] dark:text-[#c7c7cc]"}`}>
+                    className={`flex-1 rounded-md px-2 py-1.5 text-[12px] transition ${locked ? "cursor-not-allowed bg-black/[0.03] text-[#c7c7cc] dark:bg-white/[0.03] dark:text-[#5a5c63]" : mode === id ? "app-active-neutral" : "bg-black/[0.05] text-[#3a3a3c] hover:bg-black/[0.1] dark:bg-white/[0.06] dark:text-[#c7c7cc]"}`}>
                     {label}{id === "speech" && !speechReady && (modelStatus.phase === "error" ? " ⚠" : " ⏳")}
                   </button>
                 );
@@ -374,7 +405,7 @@ export function VideoWorkspacePage({ initialFromGen }: { initialFromGen?: string
                 {modelStatus.phase === "downloading"
                   ? `口播功能准备中：正在下载语音模型 ${modelStatus.percent || 0}%（约 1.4G，仅首次，下好自动可用）`
                   : modelStatus.phase === "error"
-                    ? <>口播模型下载失败。<button onClick={() => window.electron?.models?.retry()} className="text-[#007AFF] hover:underline">重试</button></>
+                    ? <>口播模型下载失败。<button onClick={() => window.electron?.models?.retry()} className="text-[#10a37f] hover:underline">重试</button></>
                     : "口播功能准备中…"}
               </div>
             )}
@@ -386,7 +417,7 @@ export function VideoWorkspacePage({ initialFromGen }: { initialFromGen?: string
             <div className="flex flex-wrap gap-1.5">
               {RATIOS.map((r) => (
                 <button key={r.id} onClick={() => setRatio(r.id)}
-                  className={`rounded-md px-2.5 py-1 text-[12px] transition ${ratio === r.id ? "bg-[#10a37f] text-white" : "bg-black/[0.05] text-[#3a3a3c] hover:bg-black/[0.1] dark:bg-white/[0.06] dark:text-[#c7c7cc]"}`}>
+                  className={`rounded-md px-2.5 py-1 text-[12px] transition ${ratio === r.id ? "app-active-neutral" : "bg-black/[0.05] text-[#3a3a3c] hover:bg-black/[0.1] dark:bg-white/[0.06] dark:text-[#c7c7cc]"}`}>
                   {r.label}
                 </button>
               ))}
@@ -400,11 +431,26 @@ export function VideoWorkspacePage({ initialFromGen }: { initialFromGen?: string
             {busy && stage ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />} 生成方案
           </button>
 
+          {footageWarnings.length > 0 && (
+            <div className="flex items-start gap-2 rounded-lg border border-[#b58a00]/25 bg-[#b58a00]/[0.07] px-3 py-2 text-[11px] text-[#7a5a00] dark:border-[#e0b23a]/25 dark:bg-[#e0b23a]/[0.08] dark:text-[#e0b23a]">
+              <AlertTriangle className="mt-[1px] h-3.5 w-3.5 shrink-0" />
+              <div className="min-w-0 space-y-1">
+                <div className="font-medium">素材提醒</div>
+                {footageWarnings.slice(0, 3).map((message) => (
+                  <div key={message} className="break-words">{message}</div>
+                ))}
+                {footageWarnings.length > 3 && <div>另有 {footageWarnings.length - 3} 条提醒。</div>}
+              </div>
+            </div>
+          )}
+
           {/* 对话改任何东西(氛围片可改;口播成品靠原声+字幕,暂不走对话编辑) */}
           {project && mode === "ambient" && (
-            <div className="flex flex-col gap-2 rounded-xl bg-black/[0.03] p-3 dark:bg-white/[0.04]">
-              <div className="text-[12px] font-semibold text-[#6e6e73] dark:text-[#9a9ca3]">💬 说大白话改(文案/镜头/节奏/配乐…)</div>
-              <div className="text-[11px] text-[#8e8e93]">如“文案甜一点”“第2段换掉”“配乐慢些”“整体短点”“调色别这么暖”。改完预览即时刷新。</div>
+            <div className="flex flex-col gap-2 rounded-lg bg-black/[0.03] p-3 dark:bg-white/[0.04]">
+              <div className="flex items-center gap-1.5 text-[12px] font-semibold text-[#6e6e73] dark:text-[#9a9ca3]">
+                <MessageSquareText size={13} className="text-[#10a37f]" /> 用一句话调整（文案 / 镜头 / 节奏 / 配乐）
+              </div>
+              <div className="text-[11px] text-[#8e8e93]">如“文案甜一点”“第2段换掉”“配乐慢些”“整体短点”“调色别这么暖”。调整后预览会即时刷新。</div>
               {reply && <div className="rounded-lg bg-[#10a37f]/10 px-2.5 py-1.5 text-[12px] text-[#0e906f]">{reply}</div>}
               <div className="flex gap-1.5">
                 <input value={recapText} onChange={(e) => setRecapText(e.target.value)}
@@ -419,13 +465,13 @@ export function VideoWorkspacePage({ initialFromGen }: { initialFromGen?: string
           {/* 出片 */}
           {project && (
             <button className={`${BTN_PRIMARY} w-full`} disabled={busy || !segs.length} onClick={doExport}>
-              {busy && stage.includes("渲染") ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />} 出片(带包装)
+              {busy && stage.includes("渲染") ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />} 导出成片
             </button>
           )}
 
           {finalUrl && (
             <div className="flex flex-col gap-2">
-              <div className="text-[12px] font-semibold text-[#10a37f]">成片好了 ✓</div>
+              <div className="text-[12px] font-semibold text-[#10a37f]">成片已完成</div>
               {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
               <video src={finalUrl} controls className="w-full rounded-lg bg-black" />
               {/* G-A・渲染后体检门caveat:软提醒不挡看片(风格同生图台text_quality_warning)。

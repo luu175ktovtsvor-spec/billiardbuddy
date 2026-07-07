@@ -5,9 +5,10 @@
  * 浅色为默认、跟随系统深浅色（dark: 变体）。仅桌面端渲染；整窗自己掌控外观。
  * 顶部留给原生红绿灯（Electron titleBarStyle:'hiddenInset'），可拖拽区用 .app-drag。
  */
-import { Plus, Settings, Cpu, Trash2, PanelsTopLeft, Wand2 } from "lucide-react";
+import { ChevronRight, Cpu, FileText, FolderOpen, PanelsTopLeft, Plus, Settings, Trash2, Wand2 } from "lucide-react";
 
 import { useHorizontalResize } from "./use-resize";
+import type { WorkspaceTreeEntry, WorkspaceTreeSummary } from "@/lib/api";
 
 export type DesktopConversation = {
   id: string;
@@ -24,6 +25,9 @@ export function DesktopSidebar({
   onNewChat,
   onNewWorkspace,
   onOpenStudio,
+  workingDir,
+  workspaceTree,
+  onPickWorkingDir,
   onSelect,
   onDelete,
   onOpenSettings,
@@ -36,6 +40,9 @@ export function DesktopSidebar({
   onNewChat?: () => void;
   onNewWorkspace?: () => void;
   onOpenStudio?: () => void;
+  workingDir?: string | null;
+  workspaceTree?: WorkspaceTreeSummary | null;
+  onPickWorkingDir?: () => void;
   onSelect?: (id: string) => void;
   onDelete?: (id: string) => void;
   onOpenSettings?: () => void;
@@ -88,6 +95,12 @@ export function DesktopSidebar({
           </button>
         )}
       </div>
+
+      <WorkspaceTreePanel
+        workingDir={workingDir}
+        workspaceTree={workspaceTree}
+        onPickWorkingDir={onPickWorkingDir}
+      />
 
       <div className="mt-3 flex-1 overflow-y-auto px-1.5">
         {groups.map((g) => (
@@ -172,6 +185,92 @@ export function DesktopSidebar({
         title="拖拽调整侧栏宽度"
       />
     </aside>
+  );
+}
+
+function baseName(path: string): string {
+  const parts = path.split(/[\\/]/);
+  return parts[parts.length - 1] || path;
+}
+
+function WorkspaceTreePanel({
+  workingDir,
+  workspaceTree,
+  onPickWorkingDir,
+}: {
+  workingDir?: string | null;
+  workspaceTree?: WorkspaceTreeSummary | null;
+  onPickWorkingDir?: () => void;
+}) {
+  const hasWorkspace = !!workingDir;
+  return (
+    <section className="mx-2.5 mt-3 rounded-lg border border-black/[0.06] bg-white/70 p-2 dark:border-white/[0.07] dark:bg-white/[0.03]">
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="font-mono text-[10.5px] uppercase tracking-wide text-[#a1a1a6] dark:text-[#54565d]">工作区</div>
+          <div className="mt-0.5 truncate text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]" title={workingDir || ""}>
+            {hasWorkspace ? baseName(workingDir!) : "未选择文件夹"}
+          </div>
+        </div>
+        {onPickWorkingDir && (
+          <button
+            type="button"
+            onClick={onPickWorkingDir}
+            className="app-no-drag shrink-0 rounded-md px-2 py-1 text-[11.5px] text-[#6e6e73] transition hover:bg-black/[0.04] hover:text-[#10a37f] dark:text-[#9a9ca3] dark:hover:bg-white/[0.06]"
+          >
+            {hasWorkspace ? "切换" : "打开"}
+          </button>
+        )}
+      </div>
+      {hasWorkspace ? (
+        workspaceTree?.error ? (
+          <div className="rounded-md bg-[#ff3b30]/10 px-2 py-1.5 text-[11.5px] leading-snug text-[#d93025]">
+            目录读取失败：{workspaceTree.error}
+          </div>
+        ) : workspaceTree?.entries?.length ? (
+          <div className="max-h-[220px] overflow-y-auto pr-1">
+            {workspaceTree.entries.slice(0, 48).map((entry) => (
+              <WorkspaceTreeRow key={entry.path} entry={entry} />
+            ))}
+            {workspaceTree.truncated && (
+              <div className="px-1.5 py-1 text-[11px] text-[#a1a1a6] dark:text-[#6e7077]">目录较大，已显示前 {workspaceTree.total} 项</div>
+            )}
+          </div>
+        ) : (
+          <div className="rounded-md bg-black/[0.025] px-2 py-1.5 text-[11.5px] text-[#86868b] dark:bg-white/[0.04] dark:text-[#8a8c93]">
+            这个工作区暂时是空的
+          </div>
+        )
+      ) : (
+        <div className="rounded-md bg-black/[0.025] px-2 py-1.5 text-[11.5px] leading-snug text-[#86868b] dark:bg-white/[0.04] dark:text-[#8a8c93]">
+          打开或新建文件夹后，AI 会把它作为当前工作目录。
+        </div>
+      )}
+    </section>
+  );
+}
+
+function WorkspaceTreeRow({ entry, depth = 0 }: { entry: WorkspaceTreeEntry; depth?: number }) {
+  const isDir = entry.type === "directory";
+  return (
+    <div>
+      <div
+        className="flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11.5px] text-[#6e6e73] dark:text-[#9a9ca3]"
+        title={entry.path}
+        style={{ paddingLeft: 6 + depth * 12 }}
+      >
+        {isDir ? <ChevronRight className="h-3 w-3 shrink-0 text-[#a1a1a6]" /> : <span className="w-3 shrink-0" />}
+        {isDir ? <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[#10a37f]" /> : <FileText className="h-3.5 w-3.5 shrink-0 text-[#a1a1a6]" />}
+        <span className="truncate">{entry.name}</span>
+      </div>
+      {isDir && entry.children?.length ? (
+        <div>
+          {entry.children.slice(0, 24).map((child) => (
+            <WorkspaceTreeRow key={child.path} entry={child} depth={depth + 1} />
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

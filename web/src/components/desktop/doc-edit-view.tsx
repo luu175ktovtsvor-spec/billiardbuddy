@@ -150,7 +150,7 @@ export function DocEditView({ path, title }: { path: string; title: string }) {
               <div className="mb-1.5 text-[12px] text-[#86868b] dark:text-[#9a9ca3]">看一下改动，满意就接受</div>
               <DiffBlock before={pending.before} after={pending.after} />
               <div className="mt-2 flex items-center gap-2">
-                <button onClick={acceptPending} className="flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md bg-[#10a37f] text-[12.5px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.98]"><Check className="h-3.5 w-3.5" /> 接受改动</button>
+                <button onClick={acceptPending} className="app-primary-action flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md text-[12.5px] font-medium transition active:scale-[0.98]"><Check className="h-3.5 w-3.5" /> 接受改动</button>
                 <button onClick={() => setPending(null)} className="flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md border border-black/[0.1] bg-white text-[12.5px] text-[#1d1d1f] transition hover:bg-black/[0.03] dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#c8cace]"><X className="h-3.5 w-3.5" /> 放弃</button>
               </div>
             </>
@@ -165,7 +165,7 @@ export function DocEditView({ path, title }: { path: string; title: string }) {
                 className="w-full resize-none rounded-md border border-black/[0.08] bg-white px-2.5 py-1.5 text-[13px] text-[#1d1d1f] outline-none focus:border-[#10a37f]/50 dark:border-white/[0.1] dark:bg-[#0e0f11] dark:text-[#e6e7e9]"
               />
               <div className="mt-1.5 flex items-center gap-1.5">
-                <button onClick={() => applyManual(b)} className="rounded-md bg-[#10a37f] px-2.5 py-1 text-[12px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.98]">保存这段</button>
+                <button onClick={() => applyManual(b)} className="app-primary-action rounded-md px-2.5 py-1 text-[12px] font-medium transition active:scale-[0.98]">保存这段</button>
                 <button onClick={() => setPicked(null)} className="rounded-md px-2 py-1 text-[12px] text-[#86868b] transition hover:text-[#1d1d1f] dark:text-[#9a9ca3] dark:hover:text-[#e6e7e9]">取消</button>
                 <div className="flex-1" />
               </div>
@@ -216,7 +216,7 @@ export function DocEditView({ path, title }: { path: string; title: string }) {
         <button
           onClick={save}
           disabled={saving || dirtyCount === 0}
-          className="inline-flex items-center gap-1.5 rounded-md bg-[#10a37f] px-2.5 py-1 text-[12.5px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.98] disabled:opacity-40"
+          className="app-primary-action inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12.5px] font-medium transition active:scale-[0.98] disabled:opacity-40"
         >
           {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
           {saving ? "写回中…" : "写回原文件"}

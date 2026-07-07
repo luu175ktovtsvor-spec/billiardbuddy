@@ -5,18 +5,37 @@
  * 纯展示组件，状态与逻辑由 useAgentChat 提供。
  */
 import { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, MessageCircleQuestion, FileEdit, Terminal, ChevronRight, Brain, RotateCcw, ClipboardList, Save, MessageSquareText, Megaphone, ClipboardCheck, Paperclip, Download, ThumbsUp, Smartphone, Volume2, Film, ImageIcon, ExternalLink } from "lucide-react";
+import { Loader2, Check, Wrench, AlertTriangle, Send, Maximize2, BookOpen, Flag, Target, ShieldQuestion, MessageCircleQuestion, FileEdit, FileText, Terminal, ChevronRight, Brain, RotateCcw, ClipboardList, Save, MessageSquareText, Megaphone, ClipboardCheck, Paperclip, Download, ThumbsUp, Smartphone, Volume2, Film, ImageIcon, ExternalLink, Search, Users, GitBranch, Stethoscope, History } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
 import { CopyButton } from "@/components/generators/copy-button";
-import { toolMeta, DELIVERABLE_TOOLS, INTERNAL_TOOLS, approvalLabel, approvalConfirmText } from "@/lib/agent-tools";
+import { toolMeta, toolActionText, DELIVERABLE_TOOLS, INTERNAL_TOOLS, approvalLabel, approvalConfirmText, type ToolActionStatus } from "@/lib/agent-tools";
 import type { ChatMessage, ToolStep, ApprovalState, QuestionData } from "@/hooks/use-agent-chat";
+import { fileChangeEntriesFromContent } from "@/hooks/approved-tool-result-message";
+import { retryStatusText, type AgentRetryStatus } from "@/hooks/agent-retry-status";
 import type { PreviewItem } from "./preview-panel";
 import { AgentSpinner } from "./agent-spinner";
 import { OverflowMenu, type OverflowMenuItem } from "./overflow-menu";
+import { SafeMarkdown } from "./safe-markdown";
+import { DiffBlock } from "./diff-block";
+import { approvalPreviewState, type ApprovalPlanPreview, type ProjectDiagnosticsApprovalPlan, type RunCommandApprovalPlan } from "./approval-preview-diff";
+import { buildSubagentTrace, buildSubagentTraceView, parseBackgroundTaskStarted, type SubagentTracePhaseKind } from "./subagent-trace";
+import { questionFieldAnswerDisplay, safeExternalQuestionUrl } from "./question-answer-display";
+import { parseStoreDocSources, type StoreDocSourceHit } from "./store-doc-sources";
+import { extractAssistantOutputTarget } from "./assistant-output-targets";
+import { parseProjectInstructionScope } from "./project-instruction-scope";
+import { parseGitStatusResult } from "./git-status-result";
+import { parseGitHistoryResult } from "./git-history-result";
+import { parseProjectDiagnosticsResult } from "./project-diagnostics-result";
+import { parseStoredToolResult } from "./stored-tool-result";
+import { parseStoredToolResultRead } from "./stored-tool-result-read";
+import { parseFileHistoryResult } from "./file-history-result";
+import { parseRestoreFileResult } from "./restore-file-result";
+import { parseGrepRangesResult } from "./grep-ranges-result";
+import { parseCodeOutlineRangesResult } from "./code-outline-ranges-result";
+import { parseMcpResult, parseMcpTaskResult, type McpTaskTraceItem } from "./mcp-task-result";
+import { parseMcpPromptList, parseMcpPromptRead, parseMcpResourceList, parseMcpResourceRead } from "./mcp-resource-prompt-result";
 
 const PROSE = "prose prose-sm prose-slate dark:prose-invert max-w-none leading-relaxed prose-p:my-1.5";
 
@@ -60,7 +79,24 @@ function extractImageUrl(text: string): string | null {
   return url ? url[1] : null;
 }
 
+function fileChangesFromToolStep(step: ToolStep): { path: string; backupPath?: string }[] {
+  const result = typeof step.result === "string" ? step.result : "";
+  const changes = fileChangeEntriesFromContent(result);
+  if (changes.length > 0) return changes;
+  return typeof step.args?.path === "string" ? [{ path: step.args.path }] : [];
+}
+
+function previewItemForLocalPath(title: string, path: string, text?: string, opts?: { backupPath?: string; mutation?: boolean }): PreviewItem {
+  if (opts?.mutation && !/\.(xlsx|xlsm|pdf|docx|pptx|htm|html)$/i.test(path)) {
+    return { kind: "diff", title, path, backupPath: opts.backupPath };
+  }
+  if (/\.(xlsx|xlsm)$/i.test(path)) return { kind: "sheet", title, path };
+  if (/\.(pdf|docx|pptx|html|htm)$/i.test(path)) return { kind: "doc", title, path };
+  return { kind: "file", title, path, text: text || "" };
+}
+
 const IMAGE_TOOLS = new Set(["make_poster", "generate_image"]);
+const FILE_MUTATION_TOOLS = new Set(["edit_file", "write_file", "multi_edit_file", "patch_file", "patch_files"]);
 
 // E1-C2・模型自己回答文本里直接带的图片 markdown(非经 DeliverableCard 那条路径)按图片 URL 反查
 // 同一条消息里对应的生图工具步骤，拿它落库的真实 Generation.id(m.generationId 是"本轮对话"记录，不是图)。
@@ -253,6 +289,1305 @@ function ResultDisclosure({ text, onOpen }: { text: string; onOpen?: () => void 
   );
 }
 
+function SubagentTraceCard({ step, active }: { step: ToolStep; active: boolean }) {
+  const trace = buildSubagentTrace(step.args, step.progress, step.result);
+  const [open, setOpen] = useState(!step.done);
+  const [traceQuery, setTraceQuery] = useState("");
+  const running = active && !step.done;
+
+  useEffect(() => {
+    if (running) setOpen(true);
+  }, [running]);
+
+  if (!trace) return null;
+
+  const traceView = buildSubagentTraceView(trace.lines, { maxLines: 14, query: traceQuery });
+  const visibleLines = traceView.lineViews;
+  const markers = traceView.markers.slice(-4);
+  const phaseGroups = traceView.phaseGroups.slice(-5);
+  return (
+    <div className="ml-5 overflow-hidden rounded-md border border-black/[0.06] bg-white/70 dark:border-white/[0.06] dark:bg-white/[0.03]">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]"
+      >
+        <Users className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+        <span className="min-w-0 flex-1 truncate">
+          子代理{trace.agent ? ` · ${trace.agent}` : ""}
+          {trace.task ? <span className="text-[#86868b] dark:text-[#6e7077]"> · {trace.task}</span> : null}
+        </span>
+        {running && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-[#b0b0b5] dark:text-[#56585f]" />}
+        <ChevronRight className={`h-3 w-3 shrink-0 text-[#a1a1a6] transition-transform ${open ? "rotate-90" : ""}`} />
+      </button>
+      {open && (
+        <div className="border-t border-black/[0.05] px-2.5 py-2 dark:border-white/[0.06]">
+          {trace.lines.length > 0 && (
+            <div className="space-y-2">
+              {(trace.lines.length > 6 || markers.length > 0 || traceView.hasQuery) && (
+                <div className="space-y-1.5">
+                  {markers.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1">
+                      {markers.map((marker) => (
+                        <button
+                          key={`subagent-marker-${marker.index}`}
+                          type="button"
+                          title={marker.detail}
+                          onClick={() => setTraceQuery(marker.query)}
+                          className="max-w-full truncate rounded-md border border-[#ff9500]/25 bg-[#ff9500]/10 px-1.5 py-0.5 text-[10.5px] text-[#9a5a00] transition hover:brightness-95 dark:text-[#ffd08a]"
+                        >
+                          {marker.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {phaseGroups.length > 1 && (
+                    <div className="flex flex-wrap items-center gap-1">
+                      {phaseGroups.map((group, index) => (
+                        <span
+                          key={`subagent-phase-${index}-${group.phase}-${group.indexStart}-${group.indexEnd}`}
+                          title={group.indexStart >= 0 ? `#${group.indexStart + 1}${group.indexEnd !== group.indexStart ? `-#${group.indexEnd + 1}` : ""}` : undefined}
+                          className={`rounded border px-1.5 py-0.5 text-[10.5px] ${subagentTracePhaseClass(group.phase)}`}
+                        >
+                          {group.phaseLabel}{group.count > 1 ? ` ×${group.count}` : ""}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <label className="flex h-7 items-center gap-1.5 rounded-md border border-black/[0.08] bg-white px-2 text-[11.5px] text-[#6e6e73] focus-within:border-[#10a37f]/45 dark:border-white/[0.08] dark:bg-[#111318] dark:text-[#9a9ca3]">
+                    <Search className="h-3.5 w-3.5 shrink-0 text-[#10a37f]" />
+                    <input
+                      value={traceQuery}
+                      onChange={(e) => setTraceQuery(e.target.value)}
+                      placeholder="搜索子代理过程"
+                      className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-[#a1a1a6] dark:placeholder:text-[#6e7077]"
+                    />
+                    {traceView.hasQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setTraceQuery("")}
+                        className="rounded px-1 text-[10.5px] text-[#86868b] transition hover:bg-black/[0.05] hover:text-[#3a3a3c] dark:text-[#8a8c93] dark:hover:bg-white/[0.06] dark:hover:text-[#c8cace]"
+                      >
+                        清除
+                      </button>
+                    )}
+                  </label>
+                  {traceView.hasQuery && (
+                    <div className="text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">
+                      匹配 {traceView.matchCount}/{traceView.totalLines} 条过程
+                    </div>
+                  )}
+                </div>
+              )}
+              {visibleLines.length === 0 ? (
+                <div className="text-[12px] text-[#86868b] dark:text-[#8a8c93]">没有匹配的子代理过程。</div>
+              ) : visibleLines.map((line, index) => (
+                <div key={`${line.text}-${index}`} className="flex min-w-0 items-start gap-1.5 text-[12px] leading-relaxed text-[#6e6e73] dark:text-[#8a8c93]">
+                  <span className={`mt-0.5 shrink-0 rounded border px-1 py-0 font-mono text-[10px] leading-4 ${subagentTracePhaseClass(line.phase)}`}>{line.phaseLabel}</span>
+                  <span className="min-w-0 break-words">{line.text}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {trace.finalText && (
+            <div className={visibleLines.length > 0 ? "mt-2 border-t border-black/[0.05] pt-2 dark:border-white/[0.06]" : ""}>
+              <div className="mb-1 text-[11px] font-medium text-[#86868b] dark:text-[#6e7077]">结论</div>
+              <div className={PROSE}>
+                <SafeMarkdown>{trace.finalText}</SafeMarkdown>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function subagentTracePhaseClass(phase: SubagentTracePhaseKind): string {
+  if (phase === "warning") return "border-[#ff9500]/25 bg-[#ff9500]/10 text-[#9a5a00] dark:text-[#ffd08a]";
+  if (phase === "final") return "border-[#10a37f]/20 bg-[#10a37f]/10 text-[#0b8064] dark:text-[#70d7bd]";
+  if (phase === "start" || phase === "tool") return "border-black/[0.06] bg-white text-[#6e6e73] dark:border-white/[0.08] dark:bg-[#111318] dark:text-[#9a9ca3]";
+  return "border-black/[0.06] bg-black/[0.035] text-[#86868b] dark:border-white/[0.08] dark:bg-white/[0.045] dark:text-[#8a8c93]";
+}
+
+function BackgroundTaskStartedCard({ step, onOpenBackgroundTask }: { step: ToolStep; onOpenBackgroundTask?: (taskId: string) => void }) {
+  const task = parseBackgroundTaskStarted(step.result);
+  if (!task) return null;
+  return (
+    <div className="ml-5 rounded-md border border-black/[0.06] bg-white/70 px-2.5 py-2 dark:border-white/[0.06] dark:bg-white/[0.03]">
+      <div className="flex min-w-0 items-center gap-2 text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">
+        <Users className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+        <span className="min-w-0 flex-1 truncate">
+          后台子代理已启动
+          {task.agent ? <span className="text-[#86868b] dark:text-[#6e7077]"> · {task.agent}</span> : null}
+          {task.title ? <span className="text-[#86868b] dark:text-[#6e7077]"> · {task.title}</span> : null}
+        </span>
+        {task.status && <span className="shrink-0 rounded bg-[#10a37f]/10 px-1.5 py-0.5 text-[11px] text-[#0b8064] dark:bg-[#2fd39e]/10 dark:text-[#70d7bd]">{task.status}</span>}
+      </div>
+      {task.id && (
+        <div className="mt-1 flex items-center justify-between gap-2">
+          <div className="min-w-0 truncate font-mono text-[11px] text-[#a1a1a6] dark:text-[#6e7077]">
+            {task.id}
+            {task.agentId && task.agentId !== task.id ? <span> · agent {task.agentId}</span> : null}
+          </div>
+          {onOpenBackgroundTask && (
+            <button
+              type="button"
+              onClick={() => onOpenBackgroundTask(task.id!)}
+              className="shrink-0 rounded-md px-2 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10"
+            >
+              查看过程
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function confidenceText(value?: string): string {
+  if (value === "high") return "高";
+  if (value === "medium") return "中";
+  if (value === "low") return "低";
+  return value || "未知";
+}
+
+function StoreDocSourceRow({
+  hit,
+  onPreview,
+}: {
+  hit: StoreDocSourceHit;
+  onPreview?: (item: PreviewItem) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border-t border-black/[0.05] first:border-t-0 dark:border-white/[0.06]">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full min-w-0 items-center gap-2 px-2.5 py-2 text-left text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]"
+      >
+        <span className="shrink-0 rounded bg-[#10a37f]/10 px-1.5 py-0.5 font-mono text-[10.5px] text-[#0b8064] dark:bg-[#2fd39e]/10 dark:text-[#70d7bd]">{hit.sourceId}</span>
+        <span className="min-w-0 flex-1 truncate">
+          {hit.fileName}
+          {hit.chunkLabel ? <span className="text-[#86868b] dark:text-[#6e7077]"> · {hit.chunkLabel}</span> : null}
+        </span>
+        <span className="shrink-0 rounded bg-black/[0.04] px-1.5 py-0.5 text-[11px] text-[#6e6e73] dark:bg-white/[0.05] dark:text-[#8a8c93]">
+          可信度 {confidenceText(hit.confidence)}
+        </span>
+        <ChevronRight className={`h-3 w-3 shrink-0 text-[#a1a1a6] transition-transform ${open ? "rotate-90" : ""}`} />
+      </button>
+      {open && (
+        <div className="px-2.5 pb-2">
+          {hit.why && (
+            <div>
+              <div className="mb-0.5 text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">引用原因</div>
+              <div className="text-[12px] leading-relaxed text-[#6e6e73] dark:text-[#8a8c93]">{hit.why}</div>
+            </div>
+          )}
+          {hit.matchedTerms.length > 0 && (
+            <div className="mt-1.5">
+              <div className="mb-1 text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">匹配词</div>
+              <div className="flex flex-wrap gap-1">
+                {hit.matchedTerms.map((term) => (
+                  <span key={term} className="rounded bg-black/[0.04] px-1.5 py-0.5 text-[11px] text-[#6e6e73] dark:bg-white/[0.05] dark:text-[#8a8c93]">{term}</span>
+                ))}
+              </div>
+            </div>
+          )}
+          {hit.excerpt && (
+            <div className="mt-2">
+              <div className="mb-1 text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">摘录</div>
+              <div className="rounded-md bg-black/[0.025] px-2.5 py-2 text-[12px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.035] dark:text-[#9a9ca3]">
+                {hit.excerpt}
+              </div>
+            </div>
+          )}
+          {hit.path && (
+            <div className="mt-2 flex min-w-0 items-center justify-between gap-2">
+              <span className="min-w-0 truncate font-mono text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">{hit.path}</span>
+              {onPreview && (
+                <button
+                  type="button"
+                  onClick={() => onPreview(previewItemForLocalPath(hit.fileName, hit.path!, hit.excerpt))}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10"
+                >
+                  <Maximize2 className="h-3 w-3" /> 打开
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StoreDocSourcesCard({ text, onPreview }: { text: string; onPreview?: (item: PreviewItem) => void }) {
+  const sources = parseStoreDocSources(text);
+  if (!sources) return null;
+  return (
+    <div className="ml-5 overflow-hidden rounded-md border border-black/[0.06] bg-white/70 dark:border-white/[0.06] dark:bg-white/[0.03]">
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-2 text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">
+        <BookOpen className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+        <span className="min-w-0 flex-1 truncate">引用的店铺文件</span>
+        <span className="shrink-0 font-mono text-[11px] text-[#a1a1a6] dark:text-[#6e7077]">{sources.hits.length} 条</span>
+      </div>
+      <div>
+        {sources.hits.map((hit) => (
+          <StoreDocSourceRow key={`${hit.sourceId}-${hit.path || hit.fileName}-${hit.chunkLabel || ""}`} hit={hit} onPreview={onPreview} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProjectInstructionScopeCard({ text }: { text: string }) {
+  const scope = parseProjectInstructionScope(text);
+  if (!scope) return null;
+  return (
+    <div className="ml-5 overflow-hidden rounded-md border border-black/[0.06] bg-white/70 dark:border-white/[0.06] dark:bg-white/[0.03]">
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-2 text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">
+        <ShieldQuestion className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+        <span className="min-w-0 flex-1 truncate">项目规则范围</span>
+        <span className="shrink-0 font-mono text-[11px] text-[#a1a1a6] dark:text-[#6e7077]">
+          {scope.status === "found" ? scope.files.length : "空"}
+        </span>
+      </div>
+      {scope.status === "empty" ? (
+        <div className="border-t border-black/[0.05] px-2.5 py-2 text-[12px] leading-relaxed text-[#86868b] dark:border-white/[0.06] dark:text-[#8a8c93]">
+          没有命中目录级项目规则{scope.targets ? ` · ${scope.targets}` : ""}{scope.omitted ? ` · 省略 ${scope.omitted} 个目标` : ""}
+        </div>
+      ) : (
+        <div>
+          {scope.files.map((file) => (
+            <div key={file.file} className="border-t border-black/[0.05] px-2.5 py-2 dark:border-white/[0.06]">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-[#3a3a3c] dark:text-[#c8cace]">{file.file}</span>
+                {file.truncated && <span className="shrink-0 rounded bg-[#d4901f]/10 px-1.5 py-0.5 text-[10.5px] text-[#7a4d00] dark:text-[#f3c46b]">已截断</span>}
+              </div>
+              {file.excerpt && <div className="mt-1 line-clamp-2 text-[12px] leading-relaxed text-[#86868b] dark:text-[#8a8c93]">{file.excerpt}</div>}
+            </div>
+          ))}
+          {scope.omitted && (
+            <div className="border-t border-black/[0.05] px-2.5 py-1.5 text-[11px] text-[#a1a1a6] dark:border-white/[0.06] dark:text-[#6e7077]">
+              另有 {scope.omitted} 个目标省略
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const FILE_HISTORY_OPERATION_LABELS: Record<string, string> = {
+  write_file: "写入前",
+  edit_file: "编辑前",
+  multi_edit_file: "批量编辑前",
+  patch_file: "补丁前",
+  patch_files: "多文件补丁前",
+  restore_file: "恢复前",
+};
+
+function FileHistoryCard({ text }: { text: string }) {
+  const history = parseFileHistoryResult(text);
+  const [openId, setOpenId] = useState<string | null>(null);
+  if (!history) return null;
+  return (
+    <div className="ml-5 overflow-hidden rounded-md border border-black/[0.06] bg-white/70 dark:border-white/[0.06] dark:bg-white/[0.03]">
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-2 text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">
+        <History className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+        <span className="min-w-0 flex-1 truncate">文件历史</span>
+        <span className="shrink-0 font-mono text-[11px] text-[#a1a1a6] dark:text-[#6e7077]">
+          {history.status === "empty" ? "空" : history.status === "stored" ? "结果过长" : `${history.snapshots.length} 条`}
+        </span>
+      </div>
+      {history.status === "empty" ? (
+        <div className="border-t border-black/[0.05] px-2.5 py-2 text-[12px] leading-relaxed text-[#86868b] dark:border-white/[0.06] dark:text-[#8a8c93]">
+          当前会话还没有可恢复的文件快照。
+        </div>
+      ) : (
+        <div>
+          {history.stored && (
+            <div className="border-t border-black/[0.05] px-2.5 py-2 dark:border-white/[0.06]">
+              {history.stored.path ? (
+                <div className="truncate font-mono text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">完整结果：{history.stored.path}</div>
+              ) : (
+                <div className="text-[12px] leading-relaxed text-[#d4901f] dark:text-[#f3c46b]">文件历史结果过长，落盘失败。</div>
+              )}
+              {history.snapshots.length === 0 && (
+                <div className="mt-1 text-[12px] leading-relaxed text-[#86868b] dark:text-[#8a8c93]">
+                  头尾预览里没有完整快照行，需要时读取长工具结果窗口。
+                </div>
+              )}
+            </div>
+          )}
+          {history.snapshots.slice(0, 10).map((snapshot) => {
+            const diffOpen = openId === snapshot.id;
+            const diffText = snapshot.diff || snapshot.diffError || "";
+            return (
+              <div key={snapshot.id} className="border-t border-black/[0.05] px-2.5 py-2 dark:border-white/[0.06]">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-[#3a3a3c] dark:text-[#c8cace]">{snapshot.path}</span>
+                  <span className="shrink-0 rounded bg-black/[0.04] px-1.5 py-0.5 font-mono text-[10.5px] text-[#6e6e73] dark:bg-white/[0.05] dark:text-[#8a8c93]">
+                    {snapshot.id.slice(0, 10)}
+                  </span>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#a1a1a6] dark:text-[#6e7077]">
+                  <span>{FILE_HISTORY_OPERATION_LABELS[snapshot.operation] || snapshot.operation}</span>
+                  {snapshot.sequence ? <span>seq {snapshot.sequence}</span> : null}
+                  {typeof snapshot.size === "number" ? <span>{snapshot.size.toLocaleString()} bytes</span> : null}
+                  {snapshot.beforeMissing ? <span>原文件不存在</span> : null}
+                  {snapshot.skippedReason ? <span className="text-[#d4901f] dark:text-[#f3c46b]">{snapshot.skippedReason}</span> : null}
+                </div>
+                {diffText && (
+                  <div className="mt-2">
+                    <button
+                      type="button"
+                      onClick={() => setOpenId(diffOpen ? null : snapshot.id)}
+                      className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10"
+                    >
+                      <ChevronRight className={`h-3 w-3 transition-transform ${diffOpen ? "rotate-90" : ""}`} />
+                      {diffOpen ? "收起差异" : "展开差异"}
+                      {snapshot.diffError ? <span className="text-[#d4901f]">预览失败</span> : null}
+                    </button>
+                    {diffOpen && (
+                      <pre className="mt-1 max-h-[260px] overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.025] px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.035] dark:text-[#9a9ca3]">
+                        {diffText}
+                      </pre>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {history.snapshots.length > 10 && (
+            <div className="border-t border-black/[0.05] px-2.5 py-1.5 text-[11px] text-[#a1a1a6] dark:border-white/[0.06] dark:text-[#6e7077]">
+              另有 {history.snapshots.length - 10} 条快照省略
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RestoreFileCard({ text }: { text: string }) {
+  const restore = parseRestoreFileResult(text);
+  const [open, setOpen] = useState(false);
+  if (!restore) return null;
+  const preview = restore.status === "preview";
+  const stored = restore.status === "stored" || !!restore.stored;
+  return (
+    <div className="ml-5 overflow-hidden rounded-md border border-black/[0.06] bg-white/70 dark:border-white/[0.06] dark:bg-white/[0.03]">
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-2 text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">
+        <RotateCcw className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+        <span className="min-w-0 flex-1 truncate">
+          {stored ? "恢复结果已收起" : preview ? "恢复预览" : "已恢复文件"}
+          {restore.path ? <span className="text-[#86868b] dark:text-[#6e7077]"> · {restore.path}</span> : null}
+        </span>
+        <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] ${(preview || stored) ? "bg-[#d4901f]/10 text-[#8a5a00] dark:text-[#f3c46b]" : "bg-[#10a37f]/10 text-[#0b8064] dark:text-[#70d7bd]"}`}>
+          {stored ? "结果过长" : preview ? "预览" : "完成"}
+        </span>
+      </div>
+      <div className="border-t border-black/[0.05] px-2.5 py-2 dark:border-white/[0.06]">
+        {restore.stored?.resultPath && (
+          <div className="truncate font-mono text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">
+            完整结果：{restore.stored.resultPath}
+          </div>
+        )}
+        {restore.snapshotId && (
+          <div className={`${restore.stored?.resultPath ? "mt-1 " : ""}truncate font-mono text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]`}>
+            snapshot {restore.snapshotId}
+          </div>
+        )}
+        {restore.diff && (
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => setOpen((value) => !value)}
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10"
+            >
+              <ChevronRight className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`} />
+              {open ? "收起差异" : "展开差异"}
+            </button>
+            {open && (
+              <pre className="mt-1 max-h-[320px] overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.025] px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.035] dark:text-[#9a9ca3]">
+                {restore.diff}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function GitStatusCard({ text }: { text: string }) {
+  const status = parseGitStatusResult(text);
+  const [open, setOpen] = useState(false);
+  const [stagedOpen, setStagedOpen] = useState(false);
+  const [untrackedOpen, setUntrackedOpen] = useState(false);
+  if (!status) return null;
+  const statusLines = status.status.split("\n").map((line) => line.trimEnd()).filter(Boolean);
+  const changedLines = statusLines.filter((line) => !line.startsWith("##"));
+  const changedCount = status.summary?.files ?? changedLines.length;
+  const clean = status.isGit && (status.summary?.clean ?? (changedLines.length === 0 || status.status === "(clean)"));
+  const summaryItems = status.summary ? [
+    { label: `${status.summary.files} 文件`, show: true, warning: false },
+    { label: `暂存 ${status.summary.staged}`, show: status.summary.staged > 0, warning: false },
+    { label: `未暂存 ${status.summary.worktree}`, show: status.summary.worktree > 0, warning: false },
+    { label: `未跟踪 ${status.summary.untracked}`, show: status.summary.untracked > 0, warning: false },
+    { label: `冲突 ${status.summary.conflicted}`, show: status.summary.conflicted > 0, warning: true },
+  ].filter((item) => item.show) : [];
+  return (
+    <div className="ml-5 overflow-hidden rounded-md border border-black/[0.06] bg-white/70 dark:border-white/[0.06] dark:bg-white/[0.03]">
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-2 text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">
+        {status.isGit ? (
+          <GitBranch className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+        ) : (
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-[#d4901f]" />
+        )}
+        <span className="min-w-0 flex-1 truncate">
+          {status.isGit ? `Git 改动 · ${status.branch || "未知分支"}` : "不是 Git 仓库"}
+        </span>
+        {status.isGit && (
+          <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] ${clean ? "bg-[#10a37f]/10 text-[#0b8064] dark:text-[#70d7bd]" : "bg-[#d4901f]/10 text-[#8a5a00] dark:text-[#f3c46b]"}`}>
+            {clean ? "clean" : `${changedCount} 改`}
+          </span>
+        )}
+      </div>
+      <div className="border-t border-black/[0.05] px-2.5 py-2 dark:border-white/[0.06]">
+        {summaryItems.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {summaryItems.map((item) => (
+              <span
+                key={item.label}
+                className={`rounded border px-1.5 py-0.5 text-[11px] ${item.warning ? "border-[#d4901f]/20 bg-[#d4901f]/10 text-[#8a5a00] dark:text-[#f3c46b]" : "border-black/[0.06] bg-black/[0.025] text-[#6e6e73] dark:border-white/[0.06] dark:bg-white/[0.035] dark:text-[#9a9ca3]"}`}
+              >
+                {item.label}
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="mb-1 text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">状态</div>
+        <pre className="max-h-[120px] overflow-auto whitespace-pre-wrap font-mono text-[11.5px] leading-relaxed text-[#6e6e73] dark:text-[#9a9ca3]">
+          {status.status}
+        </pre>
+        {status.diffStat && (
+          <>
+            <div className="mb-1 mt-2 text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">Diff 统计</div>
+            <pre className="max-h-[120px] overflow-auto whitespace-pre-wrap font-mono text-[11.5px] leading-relaxed text-[#6e6e73] dark:text-[#9a9ca3]">
+              {status.diffStat}
+            </pre>
+          </>
+        )}
+        {status.stored?.path && (
+          <div className="mt-2 truncate font-mono text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">
+            完整结果：{status.stored.path}
+          </div>
+        )}
+        {status.stagedDiffStat && (
+          <>
+            <div className="mb-1 mt-2 text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">已暂存 Diff 统计</div>
+            <pre className="max-h-[120px] overflow-auto whitespace-pre-wrap font-mono text-[11.5px] leading-relaxed text-[#6e6e73] dark:text-[#9a9ca3]">
+              {status.stagedDiffStat}
+            </pre>
+          </>
+        )}
+        {status.diff && (
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => setOpen((value) => !value)}
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10"
+            >
+              <ChevronRight className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`} />
+              {open ? "收起 diff" : "展开 diff"}
+              {status.diff.truncated && <span className="text-[#d4901f]">已截断</span>}
+            </button>
+            {open && (
+              <pre className="mt-1 max-h-[360px] overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.025] px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.035] dark:text-[#9a9ca3]">
+                {status.diff.text}
+              </pre>
+            )}
+          </div>
+        )}
+        {status.stagedDiff && (
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => setStagedOpen((value) => !value)}
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10"
+            >
+              <ChevronRight className={`h-3 w-3 transition-transform ${stagedOpen ? "rotate-90" : ""}`} />
+              {stagedOpen ? "收起已暂存 diff" : "展开已暂存 diff"}
+              {status.stagedDiff.truncated && <span className="text-[#d4901f]">已截断</span>}
+            </button>
+            {stagedOpen && (
+              <pre className="mt-1 max-h-[360px] overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.025] px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.035] dark:text-[#9a9ca3]">
+                {status.stagedDiff.text}
+              </pre>
+            )}
+          </div>
+        )}
+        {status.untrackedFiles.length > 0 && (
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => setUntrackedOpen((value) => !value)}
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10"
+            >
+              <ChevronRight className={`h-3 w-3 transition-transform ${untrackedOpen ? "rotate-90" : ""}`} />
+              {untrackedOpen ? "收起未跟踪文件" : `未跟踪文件 ${status.untrackedFiles.length} 个`}
+              {status.untrackedTruncated && <span className="text-[#d4901f]">已截断</span>}
+            </button>
+            {untrackedOpen && (
+              <div className="mt-1 overflow-hidden rounded-md bg-black/[0.025] dark:bg-white/[0.035]">
+                {status.untrackedFiles.map((file) => (
+                  <div key={file.path} className="border-t border-black/[0.05] first:border-t-0 dark:border-white/[0.06]">
+                    <div className="flex min-w-0 items-center gap-2 px-2.5 py-1.5">
+                      <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-[#3a3a3c] dark:text-[#c8cace]">{file.path}</span>
+                      {file.binary && <span className="shrink-0 text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">binary</span>}
+                      {file.truncated && <span className="shrink-0 text-[10.5px] text-[#d4901f]">截断</span>}
+                    </div>
+                    {file.error ? (
+                      <div className="px-2.5 pb-2 text-[12px] text-[#d4901f] dark:text-[#f3c46b]">{file.error}</div>
+                    ) : file.content ? (
+                      <pre className="max-h-[220px] overflow-auto whitespace-pre-wrap px-2.5 pb-2 font-mono text-[11.5px] leading-relaxed text-[#3a3a3c] dark:text-[#9a9ca3]">
+                        {file.content}
+                      </pre>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function GitHistoryCard({ text }: { text: string }) {
+  const history = parseGitHistoryResult(text);
+  const [open, setOpen] = useState(false);
+  if (!history) return null;
+  const warning = !history.isGit || history.status === "invalid_rev" || history.status === "error";
+  return (
+    <div className="ml-5 overflow-hidden rounded-md border border-black/[0.06] bg-white/70 dark:border-white/[0.06] dark:bg-white/[0.03]">
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-2 text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">
+        <GitBranch className={`h-3.5 w-3.5 shrink-0 ${warning ? "text-[#d4901f]" : "text-[#86868b] dark:text-[#6e7077]"}`} />
+        <span className="min-w-0 flex-1 truncate">
+          {history.isGit ? `Git 历史 · ${history.rev || "HEAD"}` : "不是 Git 仓库"}
+        </span>
+        {history.isGit && <span className="shrink-0 font-mono text-[11px] text-[#a1a1a6] dark:text-[#6e7077]">{history.commits.length} commit</span>}
+      </div>
+      <div className="border-t border-black/[0.05] dark:border-white/[0.06]">
+        {history.message && (
+          <div className="px-2.5 py-2 text-[12px] leading-relaxed text-[#8a5a00] dark:text-[#f3c46b]">
+            {history.message}
+          </div>
+        )}
+        {history.stored?.path && (
+          <div className="border-t border-black/[0.05] px-2.5 py-2 font-mono text-[10.5px] text-[#a1a1a6] dark:border-white/[0.06] dark:text-[#6e7077]">
+            完整结果：{history.stored.path}
+          </div>
+        )}
+        {history.commits.length > 0 && (
+          <div>
+            {history.commits.slice(0, 8).map((commit) => (
+              <div key={`${commit.sha}-${commit.title}`} className="flex min-w-0 items-start gap-2 border-t border-black/[0.05] px-2.5 py-2 first:border-t-0 dark:border-white/[0.06]">
+                <span className="mt-0.5 shrink-0 rounded bg-black/[0.04] px-1.5 py-0.5 font-mono text-[10.5px] text-[#6e6e73] dark:bg-white/[0.05] dark:text-[#8a8c93]">
+                  {commit.shortSha || commit.sha.slice(0, 7)}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">{commit.title || "(no title)"}</div>
+                  <div className="mt-0.5 truncate text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">
+                    {[commit.author, commit.date].filter(Boolean).join(" · ")}
+                  </div>
+                </div>
+              </div>
+            ))}
+            {history.commits.length > 8 && (
+              <div className="border-t border-black/[0.05] px-2.5 py-1.5 text-[11px] text-[#a1a1a6] dark:border-white/[0.06] dark:text-[#6e7077]">
+                另有 {history.commits.length - 8} 个 commit 省略
+              </div>
+            )}
+          </div>
+        )}
+        {history.patch && (
+          <div className="border-t border-black/[0.05] px-2.5 py-2 dark:border-white/[0.06]">
+            <button
+              type="button"
+              onClick={() => setOpen((value) => !value)}
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10"
+            >
+              <ChevronRight className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`} />
+              {open ? "收起 patch" : "展开 patch"}
+              {history.patch.truncated && <span className="text-[#d4901f]">已截断</span>}
+            </button>
+            {open && (
+              <pre className="mt-1 max-h-[360px] overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.025] px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.035] dark:text-[#9a9ca3]">
+                {history.patch.text}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function diagnosticsLabel(status: string, exitCode?: number): string {
+  if (status === "completed") return exitCode === 0 ? "通过" : `失败${typeof exitCode === "number" ? ` · exit ${exitCode}` : ""}`;
+  if (status === "missing_package_json") return "未找到 package.json";
+  if (status === "invalid_package_json") return "package.json 无效";
+  if (status === "missing_script") return "未找到脚本";
+  if (status === "rejected") return "已拦截";
+  if (status === "invalid_test_path") return "测试路径无效";
+  if (status === "stored") return "结果过长";
+  return status;
+}
+
+function ProjectDiagnosticsCard({ text }: { text: string }) {
+  const diagnostics = parseProjectDiagnosticsResult(text);
+  const [open, setOpen] = useState(false);
+  if (!diagnostics) return null;
+  const ok = diagnostics.status === "completed" && diagnostics.exitCode === 0 && !diagnostics.timedOut;
+  const warning = diagnostics.status !== "completed" || diagnostics.timedOut || diagnostics.truncated || (diagnostics.exitCode !== undefined && diagnostics.exitCode !== 0);
+  const badgeClass = ok
+    ? "bg-[#10a37f]/10 text-[#0b8064] dark:text-[#70d7bd]"
+    : "bg-[#d4901f]/10 text-[#8a5a00] dark:text-[#f3c46b]";
+  const title = diagnostics.check ? `项目诊断 · ${diagnostics.check}` : "项目诊断";
+  const target = diagnostics.packagePath || diagnostics.start || diagnostics.cwd || "";
+  const outputText = diagnostics.output || diagnostics.stored?.previewTail || diagnostics.stored?.previewHead || "";
+  return (
+    <div className="ml-5 overflow-hidden rounded-md border border-black/[0.06] bg-white/70 dark:border-white/[0.06] dark:bg-white/[0.03]">
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-2 text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">
+        <Stethoscope className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+        <span className="min-w-0 flex-1 truncate">
+          {title}
+          {target ? <span className="text-[#86868b] dark:text-[#6e7077]"> · {target}</span> : null}
+        </span>
+        <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] ${badgeClass}`}>
+          {diagnosticsLabel(diagnostics.status, diagnostics.exitCode)}
+        </span>
+      </div>
+      <div className="border-t border-black/[0.05] px-2.5 py-2 dark:border-white/[0.06]">
+        <div className="grid grid-cols-2 gap-2 text-[11.5px] text-[#6e6e73] dark:text-[#8a8c93] sm:grid-cols-4">
+          {diagnostics.script && <div className="min-w-0 truncate"><span className="text-[#a1a1a6] dark:text-[#6e7077]">脚本</span> {diagnostics.script}</div>}
+          {diagnostics.manager && <div className="min-w-0 truncate"><span className="text-[#a1a1a6] dark:text-[#6e7077]">包管理器</span> {diagnostics.manager}</div>}
+          {typeof diagnostics.elapsedMs === "number" && <div><span className="text-[#a1a1a6] dark:text-[#6e7077]">耗时</span> {Math.max(1, Math.round(diagnostics.elapsedMs / 1000))}s</div>}
+          {typeof diagnostics.exitCode === "number" && <div><span className="text-[#a1a1a6] dark:text-[#6e7077]">退出码</span> {diagnostics.exitCode}</div>}
+        </div>
+        {diagnostics.reason && (
+          <div className="mt-2 rounded-md bg-[#d4901f]/[0.07] px-2.5 py-2 text-[12px] leading-relaxed text-[#7a4d00] dark:text-[#f3c46b]">
+            {diagnostics.reason}
+          </div>
+        )}
+        {diagnostics.error && (
+          <div className="mt-2 rounded-md bg-[#d4901f]/[0.07] px-2.5 py-2 text-[12px] leading-relaxed text-[#7a4d00] dark:text-[#f3c46b]">
+            {diagnostics.error}
+          </div>
+        )}
+        {diagnostics.available && diagnostics.available.length > 0 && (
+          <div className="mt-2 text-[12px] leading-relaxed text-[#86868b] dark:text-[#8a8c93]">
+            可用脚本：{diagnostics.available.join(" · ")}
+          </div>
+        )}
+        {diagnostics.testTargets && diagnostics.testTargets.length > 0 && (
+          <div className="mt-2 min-w-0 text-[12px] leading-relaxed text-[#6e6e73] dark:text-[#8a8c93]">
+            <span className="text-[#a1a1a6] dark:text-[#6e7077]">测试范围</span>{" "}
+            {diagnostics.testTargets.join(" · ")}
+          </div>
+        )}
+        {diagnostics.testSuggestions && diagnostics.testSuggestions.length > 0 && (
+          <div className="mt-2 min-w-0 text-[12px] leading-relaxed text-[#6e6e73] dark:text-[#8a8c93]">
+            <span className="text-[#a1a1a6] dark:text-[#6e7077]">附近测试</span>{" "}
+            {diagnostics.testSuggestions.map((item) => item.path).join(" · ")}
+          </div>
+        )}
+        {diagnostics.stored?.path && (
+          <div className="mt-2 truncate font-mono text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">
+            完整结果：{diagnostics.stored.path}
+          </div>
+        )}
+        {diagnostics.command && (
+          <div className="mt-2 rounded-md bg-black/[0.025] px-2.5 py-1.5 font-mono text-[11.5px] text-[#6e6e73] dark:bg-white/[0.035] dark:text-[#9a9ca3]">
+            {diagnostics.command}
+          </div>
+        )}
+        {outputText && (
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => setOpen((value) => !value)}
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10"
+            >
+              <ChevronRight className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`} />
+              {open ? "收起输出" : "展开输出"}
+              {(diagnostics.truncated || diagnostics.stored) && <span className="text-[#d4901f]">已截断</span>}
+            </button>
+            {open && (
+              <pre className="mt-1 max-h-[360px] overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.025] px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.035] dark:text-[#9a9ca3]">
+                {outputText}
+              </pre>
+            )}
+          </div>
+        )}
+        {warning && !outputText && !diagnostics.reason && (
+          <div className="mt-2 text-[12px] leading-relaxed text-[#86868b] dark:text-[#8a8c93]">
+            诊断未通过，未返回可展示输出。
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function rangeLabel(range: { start_line?: number; end_line?: number }): string {
+  if (typeof range.start_line === "number" && typeof range.end_line === "number") return `L${range.start_line}-${range.end_line}`;
+  if (typeof range.start_line === "number") return `L${range.start_line}+`;
+  if (typeof range.end_line === "number") return `L1-${range.end_line}`;
+  return "";
+}
+
+function GrepRangesCard({ text }: { text: string }) {
+  const result = parseGrepRangesResult(text);
+  const [inputOpen, setInputOpen] = useState(false);
+  const [matchesOpen, setMatchesOpen] = useState(false);
+  if (!result) return null;
+  const ranges = result.readManyFilesInput?.ranges ?? [];
+  const visibleRanges = ranges.slice(0, 6);
+  const readInput = result.readManyFilesInput ? JSON.stringify(result.readManyFilesInput, null, 2) : "";
+  const badgeText = [
+    typeof result.matches === "number" ? `${result.matches} 命中` : "",
+    typeof result.ranges === "number" ? `${result.ranges} 范围` : "",
+  ].filter(Boolean).join(" · ") || "已生成范围";
+  return (
+    <div className="ml-5 overflow-hidden rounded-md border border-black/[0.06] bg-white/70 dark:border-white/[0.06] dark:bg-white/[0.03]">
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-2 text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">
+        <Search className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+        <span className="min-w-0 flex-1 truncate">
+          代码搜索范围
+          {typeof result.rangeContext === "number" ? <span className="text-[#86868b] dark:text-[#6e7077]"> · 上下文 {result.rangeContext}</span> : null}
+        </span>
+        <span className="shrink-0 rounded bg-[#10a37f]/10 px-1.5 py-0.5 text-[11px] text-[#0b8064] dark:text-[#70d7bd]">
+          {badgeText}
+        </span>
+      </div>
+      <div className="border-t border-black/[0.05] px-2.5 py-2 dark:border-white/[0.06]">
+        {visibleRanges.length > 0 ? (
+          <div className="overflow-hidden rounded-md bg-black/[0.025] dark:bg-white/[0.035]">
+            {visibleRanges.map((range, index) => (
+              <div key={`${range.path}-${range.start_line ?? ""}-${range.end_line ?? ""}-${index}`} className="flex min-w-0 items-center gap-2 border-t border-black/[0.05] px-2.5 py-1.5 first:border-t-0 dark:border-white/[0.06]">
+                <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-[#3a3a3c] dark:text-[#c8cace]">{range.path}</span>
+                {rangeLabel(range) && <span className="shrink-0 font-mono text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">{rangeLabel(range)}</span>}
+              </div>
+            ))}
+            {ranges.length > visibleRanges.length && (
+              <div className="border-t border-black/[0.05] px-2.5 py-1.5 text-[11px] text-[#a1a1a6] dark:border-white/[0.06] dark:text-[#6e7077]">
+                另有 {ranges.length - visibleRanges.length} 个范围省略
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="text-[12px] leading-relaxed text-[#86868b] dark:text-[#8a8c93]">
+            未返回可直接读取的范围。
+          </div>
+        )}
+        {result.notes.length > 0 && (
+          <div className="mt-2 space-y-1">
+            {result.notes.map((note, index) => (
+              <div key={`${note}-${index}`} className="rounded-md bg-[#d4901f]/[0.07] px-2.5 py-1.5 text-[11.5px] leading-relaxed text-[#8a5a00] dark:text-[#f3c46b]">
+                {note}
+              </div>
+            ))}
+          </div>
+        )}
+        {readInput && (
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => setInputOpen((value) => !value)}
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10"
+            >
+              <ChevronRight className={`h-3 w-3 transition-transform ${inputOpen ? "rotate-90" : ""}`} />
+              {inputOpen ? "收起 read_many_files 输入" : "展开 read_many_files 输入"}
+            </button>
+            {inputOpen && (
+              <pre className="mt-1 max-h-[260px] overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.025] px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.035] dark:text-[#9a9ca3]">
+                {readInput}
+              </pre>
+            )}
+          </div>
+        )}
+        {result.matchedLines.length > 0 && (
+          <div className="mt-1">
+            <button
+              type="button"
+              onClick={() => setMatchesOpen((value) => !value)}
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10"
+            >
+              <ChevronRight className={`h-3 w-3 transition-transform ${matchesOpen ? "rotate-90" : ""}`} />
+              {matchesOpen ? "收起命中行" : "展开命中行"}
+            </button>
+            {matchesOpen && (
+              <pre className="mt-1 max-h-[220px] overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.025] px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.035] dark:text-[#9a9ca3]">
+                {result.matchedLines.join("\n")}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CodeOutlineRangesCard({ text }: { text: string }) {
+  const result = parseCodeOutlineRangesResult(text);
+  const [inputOpen, setInputOpen] = useState(false);
+  const [symbolsOpen, setSymbolsOpen] = useState(false);
+  if (!result) return null;
+  const ranges = result.readManyFilesInput?.ranges ?? [];
+  const visibleRanges = ranges.slice(0, 6);
+  const readInput = result.readManyFilesInput ? JSON.stringify(result.readManyFilesInput, null, 2) : "";
+  const badgeText = [
+    typeof result.files === "number" ? `${result.files} 文件` : "",
+    `${ranges.length} 范围`,
+  ].filter(Boolean).join(" · ");
+  return (
+    <div className="ml-5 overflow-hidden rounded-md border border-black/[0.06] bg-white/70 dark:border-white/[0.06] dark:bg-white/[0.03]">
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-2 text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">
+        <ClipboardList className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+        <span className="min-w-0 flex-1 truncate">
+          代码结构范围
+          {typeof result.rangeContext === "number" ? <span className="text-[#86868b] dark:text-[#6e7077]"> · 上下文 {result.rangeContext}</span> : null}
+        </span>
+        <span className="shrink-0 rounded bg-[#10a37f]/10 px-1.5 py-0.5 text-[11px] text-[#0b8064] dark:text-[#70d7bd]">
+          {badgeText}
+        </span>
+      </div>
+      <div className="border-t border-black/[0.05] px-2.5 py-2 dark:border-white/[0.06]">
+        <div className="overflow-hidden rounded-md bg-black/[0.025] dark:bg-white/[0.035]">
+          {visibleRanges.map((range, index) => (
+            <div key={`${range.path}-${range.start_line ?? ""}-${range.end_line ?? ""}-${index}`} className="flex min-w-0 items-center gap-2 border-t border-black/[0.05] px-2.5 py-1.5 first:border-t-0 dark:border-white/[0.06]">
+              <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-[#3a3a3c] dark:text-[#c8cace]">{range.path}</span>
+              {rangeLabel(range) && <span className="shrink-0 font-mono text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">{rangeLabel(range)}</span>}
+            </div>
+          ))}
+          {ranges.length > visibleRanges.length && (
+            <div className="border-t border-black/[0.05] px-2.5 py-1.5 text-[11px] text-[#a1a1a6] dark:border-white/[0.06] dark:text-[#6e7077]">
+              另有 {ranges.length - visibleRanges.length} 个范围省略
+            </div>
+          )}
+        </div>
+        {typeof result.omitted === "number" && result.omitted > 0 && (
+          <div className="mt-2 rounded-md bg-[#d4901f]/[0.07] px-2.5 py-1.5 text-[11.5px] leading-relaxed text-[#8a5a00] dark:text-[#f3c46b]">
+            另有 {result.omitted} 个文件未展开。
+          </div>
+        )}
+        {readInput && (
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => setInputOpen((value) => !value)}
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10"
+            >
+              <ChevronRight className={`h-3 w-3 transition-transform ${inputOpen ? "rotate-90" : ""}`} />
+              {inputOpen ? "收起 read_many_files 输入" : "展开 read_many_files 输入"}
+            </button>
+            {inputOpen && (
+              <pre className="mt-1 max-h-[260px] overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.025] px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.035] dark:text-[#9a9ca3]">
+                {readInput}
+              </pre>
+            )}
+          </div>
+        )}
+        {result.symbolLines.length > 0 && (
+          <div className="mt-1">
+            <button
+              type="button"
+              onClick={() => setSymbolsOpen((value) => !value)}
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10"
+            >
+              <ChevronRight className={`h-3 w-3 transition-transform ${symbolsOpen ? "rotate-90" : ""}`} />
+              {symbolsOpen ? "收起符号行" : "展开符号行"}
+            </button>
+            {symbolsOpen && (
+              <pre className="mt-1 max-h-[220px] overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.025] px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.035] dark:text-[#9a9ca3]">
+                {result.symbolLines.join("\n")}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function mcpTraceLabel(item: McpTaskTraceItem): string {
+  if (item.kind === "task") {
+    const head = item.event === "created" ? "创建" : "状态";
+    return [head, item.status, item.message].filter(Boolean).join(" · ");
+  }
+  if (item.kind === "progress") {
+    const count = typeof item.progress === "number"
+      ? `${item.progress}${typeof item.total === "number" ? `/${item.total}` : ""}`
+      : "";
+    return [count, item.message].filter(Boolean).join(" · ") || "进度";
+  }
+  return item.raw || "";
+}
+
+function McpTaskResultCard({ text }: { text: string }) {
+  const result = parseMcpTaskResult(text);
+  const [traceOpen, setTraceOpen] = useState(false);
+  const [resultOpen, setResultOpen] = useState(false);
+  if (!result) return null;
+  const lastTask = [...result.trace].reverse().find((item) => item.kind === "task" && item.status);
+  const status = result.isError ? "错误" : lastTask?.status || "完成";
+  const badgeClass = result.isError
+    ? "bg-[#d4901f]/10 text-[#8a5a00] dark:text-[#f3c46b]"
+    : "bg-[#10a37f]/10 text-[#0b8064] dark:text-[#70d7bd]";
+  const resultPreview = result.result.replace(/\s+/g, " ").trim();
+  return (
+    <div className="ml-5 overflow-hidden rounded-md border border-black/[0.06] bg-white/70 dark:border-white/[0.06] dark:bg-white/[0.03]">
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-2 text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">
+        <Wrench className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+        <span className="min-w-0 flex-1 truncate">
+          MCP 任务
+          <span className="text-[#86868b] dark:text-[#6e7077]"> · {result.server}{result.tool ? ` · ${result.tool}` : ""}</span>
+        </span>
+        <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] ${badgeClass}`}>
+          {status}
+        </span>
+      </div>
+      <div className="border-t border-black/[0.05] px-2.5 py-2 dark:border-white/[0.06]">
+        {resultPreview && (
+          <div className="truncate text-[12px] text-[#6e6e73] dark:text-[#8a8c93]">
+            {resultPreview.length > 140 ? `${resultPreview.slice(0, 140)}…` : resultPreview}
+          </div>
+        )}
+        {result.trace.length > 0 && (
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => setTraceOpen((value) => !value)}
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10"
+            >
+              <ChevronRight className={`h-3 w-3 transition-transform ${traceOpen ? "rotate-90" : ""}`} />
+              {traceOpen ? "收起过程" : `展开过程 ${result.trace.length} 条`}
+            </button>
+            {traceOpen && (
+              <div className="mt-1 overflow-hidden rounded-md bg-black/[0.025] dark:bg-white/[0.035]">
+                {result.trace.slice(-10).map((item, index) => (
+                  <div key={`${item.kind}-${index}-${mcpTraceLabel(item)}`} className="flex min-w-0 items-center gap-2 border-t border-black/[0.05] px-2.5 py-1.5 first:border-t-0 dark:border-white/[0.06]">
+                    <span className="shrink-0 rounded border border-black/[0.06] px-1.5 py-0.5 text-[10.5px] text-[#86868b] dark:border-white/[0.08] dark:text-[#8a8c93]">
+                      {item.kind === "task" ? "任务" : item.kind === "progress" ? "进度" : "过程"}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-[11.5px] text-[#3a3a3c] dark:text-[#c8cace]">{mcpTraceLabel(item)}</span>
+                    {item.kind === "task" && item.id && <span className="shrink-0 font-mono text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">{item.id}</span>}
+                  </div>
+                ))}
+                {result.trace.length > 10 && (
+                  <div className="border-t border-black/[0.05] px-2.5 py-1.5 text-[11px] text-[#a1a1a6] dark:border-white/[0.06] dark:text-[#6e7077]">
+                    另有 {result.trace.length - 10} 条过程省略
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+        {result.result && (
+          <div className="mt-1">
+            <button
+              type="button"
+              onClick={() => setResultOpen((value) => !value)}
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10"
+            >
+              <ChevronRight className={`h-3 w-3 transition-transform ${resultOpen ? "rotate-90" : ""}`} />
+              {resultOpen ? "收起结果" : "展开结果"}
+            </button>
+            {resultOpen && (
+              <pre className="mt-1 max-h-[260px] overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.025] px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.035] dark:text-[#9a9ca3]">
+                {result.result}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function McpResultCard({ text }: { text: string }) {
+  const result = parseMcpResult(text);
+  const [open, setOpen] = useState(false);
+  if (!result) return null;
+  const badgeClass = result.isError
+    ? "bg-[#d4901f]/10 text-[#8a5a00] dark:text-[#f3c46b]"
+    : "bg-[#10a37f]/10 text-[#0b8064] dark:text-[#70d7bd]";
+  const preview = result.result.replace(/\s+/g, " ").trim();
+  return (
+    <div className="ml-5 overflow-hidden rounded-md border border-black/[0.06] bg-white/70 dark:border-white/[0.06] dark:bg-white/[0.03]">
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-2 text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">
+        <Wrench className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+        <span className="min-w-0 flex-1 truncate">
+          MCP 结果
+          <span className="text-[#86868b] dark:text-[#6e7077]"> · {result.server}{result.tool ? ` · ${result.tool}` : ""}</span>
+        </span>
+        <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] ${badgeClass}`}>
+          {result.isError ? "错误" : "完成"}
+        </span>
+      </div>
+      <div className="border-t border-black/[0.05] px-2.5 py-2 dark:border-white/[0.06]">
+        {preview && (
+          <div className="truncate text-[12px] text-[#6e6e73] dark:text-[#8a8c93]">
+            {preview.length > 140 ? `${preview.slice(0, 140)}…` : preview}
+          </div>
+        )}
+        {result.result && (
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => setOpen((value) => !value)}
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10"
+            >
+              <ChevronRight className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`} />
+              {open ? "收起结果" : "展开结果"}
+            </button>
+            {open && (
+              <pre className="mt-1 max-h-[260px] overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.025] px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.035] dark:text-[#9a9ca3]">
+                {result.result}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function McpResourceListCard({ text }: { text: string }) {
+  const result = parseMcpResourceList(text);
+  const [open, setOpen] = useState(false);
+  if (!result) return null;
+  const visible = result.entries.slice(0, 6);
+  return (
+    <div className="ml-5 overflow-hidden rounded-md border border-black/[0.06] bg-white/70 dark:border-white/[0.06] dark:bg-white/[0.03]">
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-2 text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">
+        <BookOpen className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+        <span className="min-w-0 flex-1 truncate">MCP 资源 <span className="text-[#86868b] dark:text-[#6e7077]">· {result.server}</span></span>
+        <span className="shrink-0 rounded bg-[#10a37f]/10 px-1.5 py-0.5 text-[11px] text-[#0b8064] dark:text-[#70d7bd]">{result.entries.length} 项</span>
+      </div>
+      <div className="border-t border-black/[0.05] px-2.5 py-2 dark:border-white/[0.06]">
+        <div className="overflow-hidden rounded-md bg-black/[0.025] dark:bg-white/[0.035]">
+          {visible.map((entry, index) => (
+            <div key={`${entry.kind}-${entry.uri || entry.uriTemplate || entry.name}-${index}`} className="flex min-w-0 items-center gap-2 border-t border-black/[0.05] px-2.5 py-1.5 first:border-t-0 dark:border-white/[0.06]">
+              <span className="shrink-0 rounded border border-black/[0.06] px-1.5 py-0.5 text-[10.5px] text-[#86868b] dark:border-white/[0.08] dark:text-[#8a8c93]">{entry.kind === "template" ? "模板" : "资源"}</span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-[#3a3a3c] dark:text-[#c8cace]">{entry.uri || entry.uriTemplate || entry.name}</span>
+              {entry.mimeType && <span className="shrink-0 text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">{entry.mimeType}</span>}
+            </div>
+          ))}
+          {result.entries.length > visible.length && <div className="border-t border-black/[0.05] px-2.5 py-1.5 text-[11px] text-[#a1a1a6] dark:border-white/[0.06] dark:text-[#6e7077]">另有 {result.entries.length - visible.length} 项省略</div>}
+        </div>
+        <button type="button" onClick={() => setOpen((value) => !value)} className="mt-2 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10">
+          <ChevronRight className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`} />{open ? "收起详情" : "展开详情"}
+        </button>
+        {open && <pre className="mt-1 max-h-[260px] overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.025] px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.035] dark:text-[#9a9ca3]">{text}</pre>}
+      </div>
+    </div>
+  );
+}
+
+function McpResourceReadCard({ text }: { text: string }) {
+  const result = parseMcpResourceRead(text);
+  const [open, setOpen] = useState(false);
+  if (!result) return null;
+  const preview = result.content.replace(/\s+/g, " ").trim();
+  return (
+    <div className="ml-5 overflow-hidden rounded-md border border-black/[0.06] bg-white/70 dark:border-white/[0.06] dark:bg-white/[0.03]">
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-2 text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">
+        <BookOpen className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+        <span className="min-w-0 flex-1 truncate">MCP 资源内容 <span className="text-[#86868b] dark:text-[#6e7077]">· {result.server} · {result.uri}</span></span>
+      </div>
+      <div className="border-t border-black/[0.05] px-2.5 py-2 dark:border-white/[0.06]">
+        {preview && <div className="truncate text-[12px] text-[#6e6e73] dark:text-[#8a8c93]">{preview.length > 140 ? `${preview.slice(0, 140)}…` : preview}</div>}
+        {result.content && (
+          <div className="mt-2">
+            <button type="button" onClick={() => setOpen((value) => !value)} className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10">
+              <ChevronRight className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`} />{open ? "收起内容" : "展开内容"}
+            </button>
+            {open && <pre className="mt-1 max-h-[260px] overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.025] px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.035] dark:text-[#9a9ca3]">{result.content}</pre>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function McpPromptListCard({ text }: { text: string }) {
+  const result = parseMcpPromptList(text);
+  if (!result) return null;
+  return (
+    <div className="ml-5 overflow-hidden rounded-md border border-black/[0.06] bg-white/70 dark:border-white/[0.06] dark:bg-white/[0.03]">
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-2 text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">
+        <MessageSquareText className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+        <span className="min-w-0 flex-1 truncate">MCP Prompt <span className="text-[#86868b] dark:text-[#6e7077]">· {result.server}</span></span>
+        <span className="shrink-0 rounded bg-[#10a37f]/10 px-1.5 py-0.5 text-[11px] text-[#0b8064] dark:text-[#70d7bd]">{result.prompts.length} 项</span>
+      </div>
+      <div className="border-t border-black/[0.05] dark:border-white/[0.06]">
+        {result.prompts.slice(0, 8).map((prompt, index) => (
+          <div key={`${prompt.name}-${index}`} className="flex min-w-0 items-start gap-2 border-t border-black/[0.05] px-2.5 py-2 first:border-t-0 dark:border-white/[0.06]">
+            <span className="min-w-0 flex-1 truncate text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">{prompt.name}</span>
+            {prompt.args.length > 0 && <span className="shrink-0 font-mono text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">{prompt.args.join(",")}</span>}
+          </div>
+        ))}
+        {result.prompts.length > 8 && <div className="border-t border-black/[0.05] px-2.5 py-1.5 text-[11px] text-[#a1a1a6] dark:border-white/[0.06] dark:text-[#6e7077]">另有 {result.prompts.length - 8} 项省略</div>}
+      </div>
+    </div>
+  );
+}
+
+function McpPromptReadCard({ text }: { text: string }) {
+  const result = parseMcpPromptRead(text);
+  const [open, setOpen] = useState(false);
+  if (!result) return null;
+  return (
+    <div className="ml-5 overflow-hidden rounded-md border border-black/[0.06] bg-white/70 dark:border-white/[0.06] dark:bg-white/[0.03]">
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-2 text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">
+        <MessageSquareText className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+        <span className="min-w-0 flex-1 truncate">MCP Prompt 内容 <span className="text-[#86868b] dark:text-[#6e7077]">· {result.server} · {result.name}</span></span>
+        <span className="shrink-0 rounded bg-[#10a37f]/10 px-1.5 py-0.5 text-[11px] text-[#0b8064] dark:text-[#70d7bd]">{result.messages.length} 消息</span>
+      </div>
+      <div className="border-t border-black/[0.05] px-2.5 py-2 dark:border-white/[0.06]">
+        {result.description && <div className="text-[12px] text-[#6e6e73] dark:text-[#8a8c93]">{result.description}</div>}
+        <button type="button" onClick={() => setOpen((value) => !value)} className="mt-2 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10">
+          <ChevronRight className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`} />{open ? "收起消息" : "展开消息"}
+        </button>
+        {open && (
+          <div className="mt-1 overflow-hidden rounded-md bg-black/[0.025] dark:bg-white/[0.035]">
+            {result.messages.map((message, index) => (
+              <div key={`${message.role}-${index}`} className="border-t border-black/[0.05] px-2.5 py-2 first:border-t-0 dark:border-white/[0.06]">
+                <div className="mb-1 font-mono text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">{message.role}</div>
+                <pre className="max-h-[220px] overflow-auto whitespace-pre-wrap font-mono text-[11.5px] leading-relaxed text-[#3a3a3c] dark:text-[#9a9ca3]">{message.content}</pre>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatCount(value: number | undefined, suffix: string): string | null {
+  if (typeof value !== "number") return null;
+  return `${value.toLocaleString()} ${suffix}`;
+}
+
+function StoredToolResultCard({ text }: { text: string }) {
+  const stored = parseStoredToolResult(text);
+  const [open, setOpen] = useState(false);
+  if (!stored) return null;
+  const { label } = toolMeta(stored.tool);
+  const preview = [
+    stored.previewHead ? `--- head ---\n${stored.previewHead}` : "",
+    stored.previewTail ? `--- tail ---\n${stored.previewTail}` : "",
+  ].filter(Boolean).join("\n\n");
+  const sizeText = [formatCount(stored.chars, "chars"), formatCount(stored.bytes, "bytes")].filter(Boolean).join(" · ");
+  return (
+    <div className="ml-5 overflow-hidden rounded-md border border-black/[0.06] bg-white/70 dark:border-white/[0.06] dark:bg-white/[0.03]">
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-2 text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">
+        <Save className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+        <span className="min-w-0 flex-1 truncate">
+          工具结果已收起
+          <span className="text-[#86868b] dark:text-[#6e7077]"> · {label}</span>
+        </span>
+        {sizeText && <span className="shrink-0 font-mono text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">{sizeText}</span>}
+      </div>
+      <div className="border-t border-black/[0.05] px-2.5 py-2 dark:border-white/[0.06]">
+        {stored.path ? (
+          <div className="truncate font-mono text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">完整结果：{stored.path}</div>
+        ) : (
+          <div className="text-[12px] leading-relaxed text-[#d4901f] dark:text-[#f3c46b]">
+            结果过长，落盘失败{stored.storageError ? `：${stored.storageError}` : ""}。
+          </div>
+        )}
+        {preview && (
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => setOpen((value) => !value)}
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10"
+            >
+              <ChevronRight className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`} />
+              {open ? "收起预览" : "展开预览"}
+            </button>
+            {open && (
+              <pre className="mt-1 max-h-[320px] overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.025] px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.035] dark:text-[#9a9ca3]">
+                {preview}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StoredToolResultReadCard({ text }: { text: string }) {
+  const result = parseStoredToolResultRead(text);
+  const [open, setOpen] = useState(false);
+  if (!result) return null;
+  const ok = result.status === "completed";
+  const windowText = [
+    typeof result.offset === "number" ? `offset ${result.offset.toLocaleString()}` : "",
+    typeof result.bytes === "number" ? `${result.bytes.toLocaleString()} bytes` : "",
+    typeof result.size === "number" ? `size ${result.size.toLocaleString()}` : "",
+  ].filter(Boolean).join(" · ");
+  return (
+    <div className="ml-5 overflow-hidden rounded-md border border-black/[0.06] bg-white/70 dark:border-white/[0.06] dark:bg-white/[0.03]">
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-2 text-[12.5px] text-[#3a3a3c] dark:text-[#c8cace]">
+        <FileText className={`h-3.5 w-3.5 shrink-0 ${ok ? "text-[#86868b] dark:text-[#6e7077]" : "text-[#d4901f]"}`} />
+        <span className="min-w-0 flex-1 truncate">
+          长工具结果窗口
+          {result.path ? <span className="text-[#86868b] dark:text-[#6e7077]"> · {result.path}</span> : null}
+        </span>
+        <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] ${ok ? "bg-[#10a37f]/10 text-[#0b8064] dark:text-[#70d7bd]" : "bg-[#d4901f]/10 text-[#8a5a00] dark:text-[#f3c46b]"}`}>
+          {ok ? "已读取" : result.status}
+        </span>
+      </div>
+      <div className="border-t border-black/[0.05] px-2.5 py-2 dark:border-white/[0.06]">
+        {windowText && <div className="font-mono text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">{windowText}</div>}
+        {(result.truncatedTop || result.truncatedBottom) && (
+          <div className="mt-1 text-[11.5px] text-[#d4901f] dark:text-[#f3c46b]">
+            {result.truncatedTop ? "顶部已省略" : ""}{result.truncatedTop && result.truncatedBottom ? " · " : ""}{result.truncatedBottom ? "底部已省略" : ""}
+          </div>
+        )}
+        {result.content && (
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => setOpen((value) => !value)}
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[#10a37f] transition hover:bg-[#10a37f]/10"
+            >
+              <ChevronRight className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`} />
+              {open ? "收起内容" : "展开内容"}
+            </button>
+            {open && (
+              <pre className="mt-1 max-h-[360px] overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.025] px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.035] dark:text-[#9a9ca3]">
+                {result.content}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** F.1 思考块：保留透明度，但默认折叠，避免普通用户被 raw reasoning 淹没。 */
 function ThinkingBlock({ text, active, defaultOpen }: { text: string; active?: boolean; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(!!defaultOpen);
@@ -287,12 +1622,280 @@ function TodoCard({ text }: { text: string }) {
   );
 }
 
-function MacStepList({ steps, active, onPreview }: { steps: ToolStep[]; active: boolean; onPreview?: (item: PreviewItem) => void }) {
+function RetryStatusBanner({ status }: { status: AgentRetryStatus }) {
+  return (
+    <div className="inline-flex max-w-full items-center gap-2 rounded-md border border-[#d4901f]/20 bg-[#d4901f]/[0.055] px-2.5 py-1.5 text-[12.5px] leading-relaxed text-[#7a5520] dark:border-[#d4901f]/25 dark:bg-[#d4901f]/10 dark:text-[#d8b06f]">
+      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+      <span className="truncate">{retryStatusText(status)}</span>
+    </div>
+  );
+}
+
+type ToolStepGroup = {
+  tool: string;
+  steps: ToolStep[];
+  firstIndex: number;
+};
+
+function stepStatus(step: ToolStep, active: boolean): ToolActionStatus {
+  if (active && !step.done) return "running";
+  return step.done ? "done" : "pending";
+}
+
+function groupStatus(steps: ToolStep[], active: boolean): ToolActionStatus {
+  if (steps.some((step) => stepStatus(step, active) === "running")) return "running";
+  if (steps.every((step) => step.done)) return "done";
+  return "pending";
+}
+
+function buildToolStepGroups(steps: ToolStep[]): ToolStepGroup[] {
+  const groups: ToolStepGroup[] = [];
+  for (const step of steps) {
+    const last = groups[groups.length - 1];
+    if (last && last.tool === step.tool) {
+      last.steps.push(step);
+    } else {
+      groups.push({ tool: step.tool, steps: [step], firstIndex: groups.reduce((sum, group) => sum + group.steps.length, 0) });
+    }
+  }
+  return groups;
+}
+
+function stringArg(args: Record<string, unknown> | undefined, names: string[]): string {
+  for (const name of names) {
+    const value = args?.[name];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function shortArg(value: string, max = 52): string {
+  if (!value) return "";
+  const oneLine = value.replace(/\s+/g, " ").trim();
+  return oneLine.length > max ? oneLine.slice(0, max) + "…" : oneLine;
+}
+
+function stepHint(step: ToolStep): string {
+  if (step.tool === "run_command" || step.tool === "run_background") return shortArg(stringArg(step.args, ["command"]), 72);
+  if (step.tool.startsWith("mcp__")) return shortArg(stringArg(step.args, ["query", "name", "path", "uri"]), 52);
+  return shortArg(stringArg(step.args, ["path", "file_path", "query", "pattern", "name", "topic", "url"]), 52);
+}
+
+function groupHint(steps: ToolStep[]): string {
+  const hints = steps.map(stepHint).filter(Boolean);
+  if (!hints.length) return "";
+  const unique = Array.from(new Set(hints));
+  const text = unique.slice(0, 3).join(" · ");
+  return unique.length > 3 ? `${text} · +${unique.length - 3}` : text;
+}
+
+function latestRunningStep(steps: ToolStep[]): ToolStep | undefined {
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    if (!steps[index].done) return steps[index];
+  }
+  return undefined;
+}
+
+function ToolStepRow({
+  step,
+  active,
+  onPreview,
+  onOpenBackgroundTask,
+  compact = false,
+}: {
+  step: ToolStep;
+  active: boolean;
+  onPreview?: (item: PreviewItem) => void;
+  onOpenBackgroundTask?: (taskId: string) => void;
+  compact?: boolean;
+}) {
+  const { label, Icon } = toolMeta(step.tool);
+  const status = stepStatus(step, active);
+  const running = status === "running";
+  // P1-8 + B.1：内部/指令类工具（用技能/检索）结果是给 AI 看的原文，对老板零价值还吓人 → 绝不 dump、不进右侧。
+  const isInternal = INTERNAL_TOOLS.has(step.tool);
+  // 非成品、非内部工具（跑命令/抓网页/搜文件/读文件…）才把结果摊开展示；成品走成品卡，内部只留一行标签。
+  // F4 Focus Chain：todo_write 的清单另有常驻卡片展示（见 message.todo / liveTodo，原地更新同一张），
+  // 这里只留"列任务清单"这一行步骤标签，不重复摊开原文——避免同一份清单出现两遍。
+  const showSubagentTrace = step.tool === "agent_task" && (!!step.progress || !!step.result);
+  const showBackgroundTaskStarted = step.tool === "start_background_agent_task" && !!parseBackgroundTaskStarted(step.result);
+  const showResult = step.done && !!step.result && !showSubagentTrace && !showBackgroundTaskStarted && !DELIVERABLE_TOOLS.has(step.tool) && !isInternal && step.tool !== "todo_write";
+  const showStoreDocSources = showResult && step.tool === "search_store_docs" && !!parseStoreDocSources(step.result);
+  const showProjectInstructionScope = showResult && step.tool === "list_project_instructions" && !!parseProjectInstructionScope(step.result);
+  const showGitStatus = showResult && step.tool === "git_status" && !!parseGitStatusResult(step.result);
+  const showGitHistory = showResult && step.tool === "git_history" && !!parseGitHistoryResult(step.result);
+  const showProjectDiagnostics = showResult && step.tool === "project_diagnostics" && !!parseProjectDiagnosticsResult(step.result);
+  const showStoredToolResultRead = showResult && (step.tool === "read_stored_tool_result" || step.tool === "read_agent_task_stored_result") && !!parseStoredToolResultRead(step.result);
+  const showFileHistory = showResult && step.tool === "file_history" && !!parseFileHistoryResult(step.result);
+  const showRestoreFile = showResult && step.tool === "restore_file" && !!parseRestoreFileResult(step.result);
+  const showGrepRanges = showResult && step.tool === "grep_files" && !!parseGrepRangesResult(step.result);
+  const showCodeOutlineRanges = showResult && step.tool === "code_outline" && !!parseCodeOutlineRangesResult(step.result);
+  const showMcpTaskResult = showResult && step.tool.startsWith("mcp__") && !!parseMcpTaskResult(step.result);
+  const showMcpResult = showResult && step.tool.startsWith("mcp__") && !showMcpTaskResult && !!parseMcpResult(step.result);
+  const showMcpResourceList = showResult && step.tool === "list_mcp_resources" && !!parseMcpResourceList(step.result);
+  const showMcpResourceRead = showResult && step.tool === "read_mcp_resource" && !!parseMcpResourceRead(step.result);
+  const showMcpPromptList = showResult && step.tool === "list_mcp_prompts" && !!parseMcpPromptList(step.result);
+  const showMcpPromptRead = showResult && step.tool === "read_mcp_prompt" && !!parseMcpPromptRead(step.result);
+  const showStoredToolResult = showResult && !showGitStatus && !showGitHistory && !showProjectDiagnostics && !showFileHistory && !showRestoreFile && !showGrepRanges && !showCodeOutlineRanges && !showMcpTaskResult && !showMcpResult && !showMcpResourceList && !showMcpResourceRead && !showMcpPromptList && !showMcpPromptRead && !!parseStoredToolResult(step.result);
+  // 命令边跑边显示：未结束 + 已有实时输出 → 渲染滚动中的终端块
+  const showLiveCmd = !step.done && step.tool === "run_command" && !!step.progress;
+  const cmdText = typeof step.args?.command === "string" ? step.args.command : "";
+  // P0-1 任意工具进度:非命令工具(抓网页/子代理/生图/视频…)的实时进度用大白话单行露出,
+  // 不套终端块(那是命令专用)。后端 handler 经 ctx.progress_emit 推大白话短句、这里只取最新一句。
+  const liveNote = (!showSubagentTrace && !step.done && step.tool !== "run_command" && typeof step.progress === "string")
+    ? (step.progress.split("\n").map((x) => x.trim()).filter(Boolean).pop() || "")
+    : "";
+  // 内部工具补一句人话副标题（用了哪个技能/查了什么）——从 args 取，绝不从结果原文截（截出来是乱码/指令稿）。
+  const internalNote = isInternal
+    ? (typeof step.args?.skill === "string" ? step.args.skill
+      : typeof step.args?.name === "string" ? step.args.name
+      : typeof step.args?.topic === "string" ? step.args.topic
+      : typeof step.args?.query === "string" ? step.args.query : "")
+    : "";
+  const note = internalNote || stepHint(step);
+  // B.1：右侧只接"真有本机文件路径"的结果；任意工具文本不再借 file 兜底污染右侧成品台。
+  const fileChanges = fileChangesFromToolStep(step);
+  const fileChange = fileChanges[0];
+  const filePath = fileChange?.path
+    ?? stringArg(step.args, ["file_path", "path"]);
+  const dotClass = running
+    ? "animate-pulse text-[#d4901f]"
+    : step.done ? "text-[#10a37f]" : "text-[#b0b0b5] dark:text-[#56585f]";
+
+  return (
+    <div className={`flex flex-col gap-1 ${compact ? "ml-5 border-l border-black/[0.06] pl-3 dark:border-white/[0.06]" : ""}`}>
+      <div className="flex min-w-0 items-center gap-2 text-[13px] text-[#3a3a3c] dark:text-[#9a9ca3]">
+        <span className={`shrink-0 text-[9px] leading-none ${dotClass}`}>⏺</span>
+        <Icon className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+        <span className="min-w-0 truncate">
+          {toolActionText(step.tool, status)}
+          {note ? <span className="text-[#86868b] dark:text-[#6e7077]"> · {note}</span> : null}
+        </span>
+        {running && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-[#b0b0b5] dark:text-[#56585f]" />}
+      </div>
+      {showLiveCmd && <LiveTerminalBlock command={cmdText} output={step.progress as string} />}
+      {liveNote && <div className="ml-5 text-[12px] leading-relaxed text-[#86868b] dark:text-[#6e7077]">{liveNote}</div>}
+      {showSubagentTrace && <SubagentTraceCard step={step} active={active} />}
+      {showBackgroundTaskStarted && <BackgroundTaskStartedCard step={step} onOpenBackgroundTask={onOpenBackgroundTask} />}
+      {showStoreDocSources && <StoreDocSourcesCard text={step.result as string} onPreview={onPreview} />}
+      {showProjectInstructionScope && <ProjectInstructionScopeCard text={step.result as string} />}
+      {showGitStatus && <GitStatusCard text={step.result as string} />}
+      {showGitHistory && <GitHistoryCard text={step.result as string} />}
+      {showProjectDiagnostics && <ProjectDiagnosticsCard text={step.result as string} />}
+      {showStoredToolResultRead && <StoredToolResultReadCard text={step.result as string} />}
+      {showFileHistory && <FileHistoryCard text={step.result as string} />}
+      {showRestoreFile && <RestoreFileCard text={step.result as string} />}
+      {showGrepRanges && <GrepRangesCard text={step.result as string} />}
+      {showCodeOutlineRanges && <CodeOutlineRangesCard text={step.result as string} />}
+      {showMcpTaskResult && <McpTaskResultCard text={step.result as string} />}
+      {showMcpResult && <McpResultCard text={step.result as string} />}
+      {showMcpResourceList && <McpResourceListCard text={step.result as string} />}
+      {showMcpResourceRead && <McpResourceReadCard text={step.result as string} />}
+      {showMcpPromptList && <McpPromptListCard text={step.result as string} />}
+      {showMcpPromptRead && <McpPromptReadCard text={step.result as string} />}
+      {showStoredToolResult && <StoredToolResultCard text={step.result as string} />}
+      {showResult && !showStoreDocSources && !showProjectInstructionScope && !showGitStatus && !showGitHistory && !showProjectDiagnostics && !showStoredToolResultRead && !showFileHistory && !showRestoreFile && !showGrepRanges && !showCodeOutlineRanges && !showMcpTaskResult && !showMcpResult && !showMcpResourceList && !showMcpResourceRead && !showMcpPromptList && !showMcpPromptRead && !showStoredToolResult &&
+        (step.tool === "run_command" ? (
+          <TerminalBlock text={step.result as string} />
+        ) : (
+          <ResultDisclosure
+            text={step.result as string}
+            onOpen={(onPreview && filePath) ? () => {
+              const p = filePath as string;
+              if (FILE_MUTATION_TOOLS.has(step.tool) && fileChanges.length > 1) {
+                onPreview({ kind: "diff_list", title: label, changes: fileChanges });
+              } else {
+                onPreview(previewItemForLocalPath(label, p, step.result as string, {
+                  backupPath: fileChange?.backupPath,
+                  mutation: FILE_MUTATION_TOOLS.has(step.tool),
+                }));
+              }
+            } : undefined}
+          />
+        ))}
+    </div>
+  );
+}
+
+function ToolStepGroupRow({
+  group,
+  active,
+  onPreview,
+  onOpenBackgroundTask,
+}: {
+  group: ToolStepGroup;
+  active: boolean;
+  onPreview?: (item: PreviewItem) => void;
+  onOpenBackgroundTask?: (taskId: string) => void;
+}) {
+  const [open, setOpen] = useState(groupStatus(group.steps, active) === "running");
+  const { Icon } = toolMeta(group.tool);
+  const status = groupStatus(group.steps, active);
+  const doneCount = group.steps.filter((step) => step.done).length;
+  const hint = groupHint(group.steps);
+  const dotClass = status === "running"
+    ? "animate-pulse text-[#d4901f]"
+    : status === "done" ? "text-[#10a37f]" : "text-[#b0b0b5] dark:text-[#56585f]";
+
+  useEffect(() => {
+    if (status === "running") setOpen(true);
+  }, [status]);
+
+  return (
+    <div className="flex flex-col gap-1">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex min-w-0 items-center gap-2 text-left text-[13px] text-[#3a3a3c] dark:text-[#9a9ca3]"
+      >
+        <span className={`shrink-0 text-[9px] leading-none ${dotClass}`}>⏺</span>
+        <Icon className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
+        <span className="min-w-0 flex-1 truncate">
+          {toolActionText(group.tool, status, group.steps.length)}
+          {hint ? <span className="text-[#86868b] dark:text-[#6e7077]"> · {hint}</span> : null}
+        </span>
+        {status === "running" && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-[#b0b0b5] dark:text-[#56585f]" />}
+        {doneCount < group.steps.length && (
+          <span className="shrink-0 font-mono text-[11px] text-[#a1a1a6] dark:text-[#6e7077]">{doneCount}/{group.steps.length}</span>
+        )}
+        <ChevronRight className={`h-3 w-3 shrink-0 text-[#a1a1a6] transition-transform ${open ? "rotate-90" : ""}`} />
+      </button>
+      {open && (
+        <div className="mt-0.5 flex flex-col gap-1.5">
+          {group.steps.map((step, index) => (
+            <ToolStepRow
+              key={`${step.id || group.firstIndex}-${index}`}
+              step={step}
+              active={active}
+              onPreview={onPreview}
+              onOpenBackgroundTask={onOpenBackgroundTask}
+              compact
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MacStepList({
+  steps,
+  active,
+  onPreview,
+  onOpenBackgroundTask,
+}: {
+  steps: ToolStep[];
+  active: boolean;
+  onPreview?: (item: PreviewItem) => void;
+  onOpenBackgroundTask?: (taskId: string) => void;
+}) {
   const [open, setOpen] = useState(active);
   if (steps.length === 0) return null;
   const doneCount = steps.filter((s) => s.done).length;
   const last = steps[steps.length - 1];
-  const lastLabel = last ? toolMeta(last.tool).label : "";
+  const summaryStep = active ? (latestRunningStep(steps) || last) : last;
+  const summaryAction = summaryStep ? toolActionText(summaryStep.tool, stepStatus(summaryStep, active)) : "";
+  const groups = buildToolStepGroups(steps);
   return (
     <div className="rounded-lg border border-black/[0.06] bg-black/[0.02] px-3 py-2.5 dark:border-white/[0.06] dark:bg-white/[0.02]">
       <button
@@ -304,7 +1907,7 @@ function MacStepList({ steps, active, onPreview }: { steps: ToolStep[]; active: 
           <Wrench className="h-3 w-3 shrink-0" />
           <span>执行过程</span>
           <span className="font-sans text-[11px] normal-case tracking-normal text-[#a1a1a6] dark:text-[#6e7077]">
-            {active ? `正在${lastLabel ? `：${lastLabel}` : ""}` : `${doneCount}/${steps.length} 步完成`}
+            {active ? (summaryAction || "正在执行") : `${doneCount}/${steps.length} 步完成`}
           </span>
         </span>
         <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[#a1a1a6] transition-transform ${open ? "rotate-90" : ""}`} />
@@ -312,11 +1915,11 @@ function MacStepList({ steps, active, onPreview }: { steps: ToolStep[]; active: 
       {!open && (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {steps.slice(0, 4).map((s, i) => {
-            const { label, Icon } = toolMeta(s.tool);
+            const { Icon } = toolMeta(s.tool);
             return (
               <span key={i} className="inline-flex max-w-[180px] items-center gap-1 rounded-md bg-white px-2 py-1 text-[11.5px] text-[#6e6e73] dark:bg-white/[0.04] dark:text-[#8a8c93]">
                 <Icon className="h-3 w-3 shrink-0 text-[#86868b]" />
-                <span className="truncate">{label}</span>
+                <span className="truncate">{toolActionText(s.tool, stepStatus(s, active))}</span>
               </span>
             );
           })}
@@ -324,64 +1927,25 @@ function MacStepList({ steps, active, onPreview }: { steps: ToolStep[]; active: 
         </div>
       )}
       {open && <div className="mt-2 flex flex-col gap-1.5">
-        {steps.map((s, i) => {
-          const { label, Icon } = toolMeta(s.tool);
-          const running = active && !s.done && i === steps.length - 1;
-          // P1-8 + B.1：内部/指令类工具（用技能/检索）结果是给 AI 看的原文，对老板零价值还吓人 → 绝不 dump、不进右侧。
-          const isInternal = INTERNAL_TOOLS.has(s.tool);
-          // 非成品、非内部工具（跑命令/抓网页/搜文件/读文件…）才把结果摊开展示；成品走成品卡，内部只留一行标签。
-          // F4 Focus Chain：todo_write 的清单另有常驻卡片展示（见 message.todo / liveTodo，原地更新同一张），
-          // 这里只留"列任务清单"这一行步骤标签，不重复摊开原文——避免同一份清单出现两遍。
-          const showResult = s.done && !!s.result && !DELIVERABLE_TOOLS.has(s.tool) && !isInternal && s.tool !== "todo_write";
-          // 命令边跑边显示：未结束 + 已有实时输出 → 渲染滚动中的终端块
-          const showLiveCmd = !s.done && s.tool === "run_command" && !!s.progress;
-          const cmdText = typeof s.args?.command === "string" ? s.args.command : "";
-          // P0-1 任意工具进度:非命令工具(抓网页/子代理/生图/视频…)的实时进度用大白话单行露出,
-          // 不套终端块(那是命令专用)。后端 handler 经 ctx.progress_emit 推大白话短句、这里只取最新一句。
-          const liveNote = (!s.done && s.tool !== "run_command" && typeof s.progress === "string")
-            ? (s.progress.split("\n").map((x) => x.trim()).filter(Boolean).pop() || "")
-            : "";
-          // 内部工具补一句人话副标题（用了哪个技能/查了什么）——从 args 取，绝不从结果原文截（截出来是乱码/指令稿）。
-          const internalNote = isInternal
-            ? (typeof s.args?.skill === "string" ? s.args.skill
-              : typeof s.args?.name === "string" ? s.args.name
-              : typeof s.args?.topic === "string" ? s.args.topic
-              : typeof s.args?.query === "string" ? s.args.query : "")
-            : "";
-          // B.1：右侧只接"真有本机文件路径"的结果；任意工具文本不再借 file 兜底污染右侧成品台。
-          const filePath = typeof s.args?.path === "string" ? s.args.path
-            : typeof s.args?.file_path === "string" ? s.args.file_path : undefined;
-          return (
-            <div key={i} className="flex flex-col gap-1">
-              <div className="flex items-center gap-2 text-[13px] text-[#3a3a3c] dark:text-[#9a9ca3]">
-                <span className={`shrink-0 text-[9px] leading-none ${running ? "animate-pulse text-[#d4901f]" : s.done ? "text-[#10a37f]" : "text-[#b0b0b5] dark:text-[#56585f]"}`}>⏺</span>
-                <Icon className="h-3.5 w-3.5 shrink-0 text-[#86868b] dark:text-[#6e7077]" />
-                <span>{label}{internalNote ? <span className="text-[#86868b] dark:text-[#6e7077]"> · {internalNote}</span> : null}</span>
-                {running && <Loader2 className="h-3 w-3 animate-spin text-[#b0b0b5] dark:text-[#56585f]" />}
-              </div>
-              {showLiveCmd && <LiveTerminalBlock command={cmdText} output={s.progress as string} />}
-              {liveNote && <div className="ml-5 text-[12px] leading-relaxed text-[#86868b] dark:text-[#6e7077]">{liveNote}</div>}
-              {showResult &&
-                (s.tool === "run_command" ? (
-                  <TerminalBlock text={s.result as string} />
-                ) : (
-                  <ResultDisclosure
-                    text={s.result as string}
-                    onOpen={(onPreview && filePath) ? () => {
-                      const p = filePath as string;
-                      // B.2：AI 改了本机文本文件(edit_file/write_file)→右侧给"改前/改后"对比让老板确认；
-                      // 报表→表格(可点格改)；PDF/Word/PPT/网页→文档原样预览；其它本机文件→纯文本预览
-                      if ((s.tool === "edit_file" || s.tool === "write_file") && !/\.(xlsx|xlsm|pdf|docx|pptx|htm|html)$/i.test(p)) {
-                        onPreview({ kind: "diff", title: label, path: p });
-                      } else if (/\.(xlsx|xlsm)$/i.test(p)) onPreview({ kind: "sheet", title: label, path: p });
-                      else if (/\.(pdf|docx|pptx|html|htm)$/i.test(p)) onPreview({ kind: "doc", title: label, path: p });
-                      else onPreview({ kind: "file", title: label, path: p, text: s.result as string });
-                    } : undefined}
-                  />
-                ))}
-            </div>
-          );
-        })}
+        {groups.map((group) => (
+          group.steps.length > 1 ? (
+            <ToolStepGroupRow
+              key={`${group.tool}-${group.firstIndex}`}
+              group={group}
+              active={active}
+              onPreview={onPreview}
+              onOpenBackgroundTask={onOpenBackgroundTask}
+            />
+          ) : (
+            <ToolStepRow
+              key={`${group.tool}-${group.firstIndex}`}
+              step={group.steps[0]!}
+              active={active}
+              onPreview={onPreview}
+              onOpenBackgroundTask={onOpenBackgroundTask}
+            />
+          )
+        ))}
       </div>}
     </div>
   );
@@ -451,7 +2015,7 @@ function CorrectionAction({ open, onOpenChange }: { open: boolean; onOpenChange:
             type="button"
             onClick={submit}
             disabled={saving || !text.trim()}
-            className="inline-flex items-center gap-1.5 rounded-md bg-[#10a37f] px-3 py-1 text-[12.5px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.98] disabled:opacity-40"
+            className="app-primary-action inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-[12.5px] font-medium transition active:scale-[0.98] disabled:opacity-40"
           >
             {saving && <Loader2 className="h-3 w-3 animate-spin" />}
             记住
@@ -558,6 +2122,22 @@ function PlaceholderRow({
   );
 }
 
+function AssistantOutputTargetCard({ content, onPreview }: { content: string; onPreview: (item: PreviewItem) => void }) {
+  const target = extractAssistantOutputTarget(content);
+  if (!target) return null;
+  return (
+    <div className="overflow-hidden rounded-lg border border-black/[0.08] bg-white shadow-sm dark:border-white/[0.08] dark:bg-[#16181d] dark:shadow-none">
+      <PlaceholderRow
+        thumbKind="none"
+        FallbackIcon={MessageSquareText}
+        title={target.title}
+        spec={target.spec}
+        onOpen={() => onPreview({ kind: "content", title: target.title, text: content })}
+      />
+    </div>
+  );
+}
+
 function DeliverableCard({
   step,
   onPublish,
@@ -629,7 +2209,7 @@ function DeliverableCard({
         </div>
       ) : (
         <div className={`${PROSE} px-4 py-3`}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{resultText}</ReactMarkdown>
+          <SafeMarkdown>{resultText}</SafeMarkdown>
         </div>
       )}
       {step.knowledgeUsed && step.knowledgeUsed.length > 0 && (
@@ -684,9 +2264,15 @@ function MacApprovalCard({
   ap: ApprovalState;
   idx: number;
   executing: boolean;
-  onConfirm: (idx: number, ap: ApprovalState) => void;
+  onConfirm: (idx: number, ap: ApprovalState, options?: { remember?: boolean; args?: Record<string, unknown> }) => void;
   onCancel: (idx: number, ap?: ApprovalState) => void;
 }) {
+  const originalArgsText = formatApprovalArgs(ap.args);
+  const [argsText, setArgsText] = useState(originalArgsText);
+  useEffect(() => setArgsText(originalArgsText), [originalArgsText]);
+  const parsedArgs = parseApprovalArgs(argsText);
+  const confirmArgs = parsedArgs.ok ? parsedArgs.value : ap.args;
+  const argsChanged = argsText.trim() !== originalArgsText.trim();
   if (ap.status === "cancelled") {
     return <div className="text-[13px] text-[#86868b] dark:text-[#6e7077]">已取消</div>;
   }
@@ -722,11 +2308,25 @@ function MacApprovalCard({
                 <div className="text-[13px] leading-relaxed text-[#3a3a3c] dark:text-[#c8cace]"><span className="font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">影响：</span>{r.impact}</div>
               </div>
             )}
-            {ap.preview && <div className={previewBox}>{ap.preview}</div>}
+            <ApprovalPreview preview={ap.preview} argsChanged={argsChanged} fallbackClassName={previewBox} />
           </div>
         ) : (
-          ap.preview && <div className={previewBox}>{ap.preview}</div>
+          <ApprovalPreview preview={ap.preview} argsChanged={argsChanged} fallbackClassName={previewBox} />
         )}
+        <details className="mt-3 rounded-md border border-black/[0.08] bg-white/60 dark:border-white/[0.08] dark:bg-white/[0.03]">
+          <summary className="cursor-pointer select-none px-3 py-2 text-[12px] text-[#6e6e73] dark:text-[#9a9ca3]">参数</summary>
+          <div className="border-t border-black/[0.06] p-2 dark:border-white/[0.06]">
+            <textarea
+              value={argsText}
+              onChange={(e) => setArgsText(e.target.value)}
+              spellCheck={false}
+              disabled={executing}
+              className="min-h-[92px] w-full resize-y rounded-md border border-black/[0.08] bg-black/[0.02] px-2 py-1.5 font-mono text-[12px] leading-relaxed text-[#1d1d1f] outline-none focus:border-[#10a37f]/40 disabled:opacity-50 dark:border-white/[0.08] dark:bg-black/20 dark:text-[#e6e7e9]"
+            />
+            {!parsedArgs.ok && <div className="mt-1 text-[12px] text-[#c2410c] dark:text-[#f59e0b]">{parsedArgs.error}</div>}
+            {argsChanged && parsedArgs.ok && <div className="mt-1 text-[12px] text-[#0b8064] dark:text-[#70d7bd]">将按调整后的参数执行</div>}
+          </div>
+        </details>
       </div>
       <div className="flex items-center justify-end gap-2 px-4 pb-3">
         <button
@@ -734,31 +2334,240 @@ function MacApprovalCard({
           disabled={executing}
           className="rounded-md border border-black/[0.1] bg-white px-4 py-1.5 text-[13px] text-[#1d1d1f] transition hover:bg-black/[0.03] active:scale-[0.98] disabled:opacity-40 dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#c8cace] dark:hover:bg-white/[0.06]"
         >
-          取消
+          拒绝
         </button>
         <button
-          onClick={() => onConfirm(idx, ap)}
-          disabled={executing}
-          className="flex items-center gap-1.5 rounded-md bg-[#10a37f] px-4 py-1.5 text-[13px] text-white transition hover:bg-[#0e906f] active:scale-[0.98] disabled:opacity-60"
+          onClick={() => onConfirm(idx, ap, { args: confirmArgs })}
+          disabled={executing || !parsedArgs.ok}
+          title={approvalConfirmText(ap.tool)}
+          className="app-primary-action flex items-center gap-1.5 rounded-md px-4 py-1.5 text-[13px] transition active:scale-[0.98] disabled:opacity-60"
         >
           {executing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-          {approvalConfirmText(ap.tool)}
+          允许一次
         </button>
+        {ap.rememberable && (
+          <button
+            onClick={() => onConfirm(idx, ap, { remember: true, args: confirmArgs })}
+            disabled={executing || !parsedArgs.ok}
+            className="rounded-md border border-[#10a37f]/20 bg-[#10a37f]/10 px-4 py-1.5 text-[13px] text-[#0b8064] transition hover:bg-[#10a37f]/15 active:scale-[0.98] disabled:opacity-50 dark:border-[#2fd39e]/25 dark:bg-[#2fd39e]/10 dark:text-[#70d7bd]"
+            title="仅记住本会话里完全相同的动作和参数"
+          >
+            本会话允许
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
-function MacQuestionCard({ q, onAnswer }: { q: QuestionData; onAnswer: (label: string) => void }) {
+function formatApprovalArgs(args: Record<string, unknown>): string {
+  try {
+    return JSON.stringify(args, null, 2);
+  } catch {
+    return "{}";
+  }
+}
+
+function parseApprovalArgs(text: string): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ok: false, error: "参数需要是 JSON 对象" };
+    return { ok: true, value: parsed as Record<string, unknown> };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "JSON 解析失败" };
+  }
+}
+
+function ApprovalPreview({ preview, argsChanged, fallbackClassName }: { preview?: string; argsChanged: boolean; fallbackClassName: string }) {
+  const state = approvalPreviewState(preview, argsChanged);
+  if (state.kind === "none") return null;
+  if (state.kind === "stale") {
+    return (
+      <div className="rounded-md border border-[#d4901f]/25 bg-[#d4901f]/[0.07] px-3 py-2 text-[12.5px] leading-relaxed text-[#7a4d00] dark:border-[#f3c46b]/25 dark:bg-[#f3c46b]/[0.08] dark:text-[#f3c46b]">
+        参数已调整，原预览已失效。确认前请重新核对参数；执行后仍会显示实际结果。
+      </div>
+    );
+  }
+  if (state.kind === "plan") return <ApprovalPlanSummary plan={state.plan} />;
+  if (state.kind === "text") return <div className={fallbackClassName}>{state.preview}</div>;
+  return (
+    <div className="max-h-[340px] overflow-auto rounded-md">
+      <DiffBlock before={state.diff.before} after={state.diff.after} />
+    </div>
+  );
+}
+
+function ApprovalPlanSummary({ plan }: { plan: ApprovalPlanPreview }) {
+  if (plan.type === "run_command") return <RunCommandPlanSummary plan={plan} />;
+  return <ProjectDiagnosticsPlanSummary plan={plan} />;
+}
+
+function RunCommandPlanSummary({ plan }: { plan: RunCommandApprovalPlan }) {
+  return (
+    <div className="rounded-md border border-black/[0.08] bg-white/70 px-3 py-2.5 dark:border-white/[0.08] dark:bg-white/[0.04]">
+      <PlanHeader icon={<Terminal className="h-3.5 w-3.5" />} title="命令执行计划" chip={riskLabel(plan.risk)} chipClassName={riskClassName(plan.risk)} />
+      <div className="mt-2 space-y-1.5">
+        <PlanRow label="命令" value={plan.command} mono />
+        <PlanRow label="目录" value={plan.cwd || "."} mono muted={plan.cwd?.startsWith("无效:")} />
+        <PlanRow label="风险" value={riskLabel(plan.risk)} />
+        <PlanMetaRow items={[
+          plan.timeoutMs ? `超时 ${formatLimit(plan.timeoutMs, "ms")}` : "",
+          plan.maxOutputBytes ? `输出 ${formatLimit(plan.maxOutputBytes, "B")}` : "",
+        ]} />
+      </div>
+    </div>
+  );
+}
+
+function ProjectDiagnosticsPlanSummary({ plan }: { plan: ProjectDiagnosticsApprovalPlan }) {
+  const ready = plan.status === "ready";
+  return (
+    <div className="rounded-md border border-black/[0.08] bg-white/70 px-3 py-2.5 dark:border-white/[0.08] dark:bg-white/[0.04]">
+      <PlanHeader icon={<Stethoscope className="h-3.5 w-3.5" />} title="诊断执行计划" chip={diagnosticsStatusLabel(plan.status)} chipClassName={diagnosticsStatusClassName(plan.status)} />
+      <div className="mt-2 space-y-1.5">
+        <PlanRow label="包" value={plan.packagePath} mono />
+        <PlanRow label="目录" value={plan.cwd || plan.start} mono />
+        <PlanRow label="检查" value={plan.check} />
+        <PlanRow label="脚本" value={plan.script ? `${plan.manager ? `${plan.manager} · ` : ""}${plan.script}` : undefined} />
+        <PlanRow label="命令" value={plan.command} mono />
+        <TestTargetsRow targets={plan.testTargets} />
+        <PlanRow label="原因" value={plan.reason || plan.error} muted={!ready} />
+        <AvailableScriptsRow scripts={plan.available} />
+        <PlanRow label="脚本内容" value={plan.body} mono />
+        <PlanMetaRow items={[
+          plan.timeoutMs ? `超时 ${formatLimit(plan.timeoutMs, "ms")}` : "",
+          plan.maxOutputBytes ? `输出 ${formatLimit(plan.maxOutputBytes, "B")}` : "",
+        ]} />
+      </div>
+    </div>
+  );
+}
+
+function PlanHeader({ icon, title, chip, chipClassName }: { icon: React.ReactNode; title: string; chip: string; chipClassName: string }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <div className="flex min-w-0 items-center gap-1.5 text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">
+        <span className="text-[#6e6e73] dark:text-[#9a9ca3]">{icon}</span>
+        <span className="truncate">{title}</span>
+      </div>
+      <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] ${chipClassName}`}>{chip}</span>
+    </div>
+  );
+}
+
+function PlanRow({ label, value, mono = false, muted = false }: { label: string; value?: string; mono?: boolean; muted?: boolean }) {
+  if (!value) return null;
+  return (
+    <div className="grid grid-cols-[56px_minmax(0,1fr)] gap-2 text-[12.5px] leading-relaxed">
+      <div className="text-[#86868b] dark:text-[#8a8c93]">{label}</div>
+      <div className={`${mono ? "font-mono" : ""} ${muted ? "text-[#b45309] dark:text-[#f3c46b]" : "text-[#3a3a3c] dark:text-[#c8cace]"} whitespace-pre-wrap break-words`}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function PlanMetaRow({ items }: { items: string[] }) {
+  const visible = items.filter(Boolean);
+  if (!visible.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5 pt-0.5">
+      {visible.map((item) => (
+        <span key={item} className="rounded bg-black/[0.04] px-1.5 py-0.5 text-[11px] text-[#6e6e73] dark:bg-white/[0.06] dark:text-[#9a9ca3]">
+          {item}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function TestTargetsRow({ targets }: { targets?: "all" | string[] }) {
+  if (!targets) return null;
+  if (targets === "all") return <PlanRow label="范围" value="全部测试" />;
+  if (!targets.length) return null;
+  return (
+    <div className="grid grid-cols-[56px_minmax(0,1fr)] gap-2 text-[12.5px] leading-relaxed">
+      <div className="text-[#86868b] dark:text-[#8a8c93]">范围</div>
+      <div className="flex min-w-0 flex-wrap gap-1.5">
+        {targets.map((target) => (
+          <span key={target} className="max-w-full rounded bg-[#10a37f]/10 px-1.5 py-0.5 font-mono text-[11px] text-[#0b8064] dark:bg-[#2fd39e]/10 dark:text-[#70d7bd]">
+            {target}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AvailableScriptsRow({ scripts }: { scripts?: string[] }) {
+  if (!scripts?.length) return null;
+  return (
+    <div className="grid grid-cols-[56px_minmax(0,1fr)] gap-2 text-[12.5px] leading-relaxed">
+      <div className="text-[#86868b] dark:text-[#8a8c93]">可用脚本</div>
+      <div className="flex min-w-0 flex-wrap gap-1.5">
+        {scripts.map((script) => (
+          <span key={script} className="rounded bg-black/[0.04] px-1.5 py-0.5 font-mono text-[11px] text-[#3a3a3c] dark:bg-white/[0.06] dark:text-[#c8cace]">
+            {script}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function riskLabel(risk?: string): string {
+  if (risk === "read") return "只读";
+  if (risk === "file") return "文件";
+  if (risk === "outreach") return "外部";
+  if (risk === "destructive") return "高危";
+  return risk || "未知";
+}
+
+function riskClassName(risk?: string): string {
+  if (risk === "read") return "bg-black/[0.04] text-[#6e6e73] dark:bg-white/[0.06] dark:text-[#9a9ca3]";
+  if (risk === "file") return "bg-[#d4901f]/10 text-[#8a5a00] dark:bg-[#f3c46b]/10 dark:text-[#f3c46b]";
+  if (risk === "outreach") return "bg-[#2563eb]/10 text-[#1d4ed8] dark:bg-[#60a5fa]/10 dark:text-[#93c5fd]";
+  if (risk === "destructive") return "bg-[#dc2626]/10 text-[#b91c1c] dark:bg-[#f87171]/10 dark:text-[#fca5a5]";
+  return "bg-black/[0.04] text-[#6e6e73] dark:bg-white/[0.06] dark:text-[#9a9ca3]";
+}
+
+function diagnosticsStatusLabel(status: string): string {
+  if (status === "ready") return "可执行";
+  if (status === "missing_package_json") return "未找到包";
+  if (status === "missing_script") return "缺少脚本";
+  if (status === "invalid_package_json") return "配置异常";
+  if (status === "invalid_test_path") return "路径无效";
+  if (status === "rejected") return "已拦截";
+  return status || "未知";
+}
+
+function diagnosticsStatusClassName(status: string): string {
+  if (status === "ready") return "bg-[#10a37f]/10 text-[#0b8064] dark:bg-[#2fd39e]/10 dark:text-[#70d7bd]";
+  if (status === "rejected" || status === "invalid_test_path") return "bg-[#dc2626]/10 text-[#b91c1c] dark:bg-[#f87171]/10 dark:text-[#fca5a5]";
+  return "bg-[#d4901f]/10 text-[#8a5a00] dark:bg-[#f3c46b]/10 dark:text-[#f3c46b]";
+}
+
+function formatLimit(value: string, unit: "ms" | "B"): string {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return `${value} ${unit}`;
+  if (unit === "ms" && numeric >= 1000 && numeric % 1000 === 0) return `${numeric / 1000}s`;
+  return `${new Intl.NumberFormat("zh-CN").format(numeric)} ${unit}`;
+}
+
+function MacQuestionCard({ q, onAnswer }: { q: QuestionData; onAnswer: (answer: string, displayText?: string) => void }) {
   const [freeform, setFreeform] = useState("");
+  const [selectedOptions, setSelectedOptions] = useState<string[]>([]);
   const [fieldValues, setFieldValues] = useState<Record<string, string | boolean | string[]>>(() => initialQuestionFieldValues(q));
   const [formError, setFormError] = useState("");
   const [submitted, setSubmitted] = useState(false);
-  const submit = (answer: string) => {
+  const submit = (answer: string, displayText?: string) => {
     const text = answer.trim();
     if (!text || submitted) return;
     setSubmitted(true);
-    onAnswer(text);
+    onAnswer(text, displayText?.trim() || undefined);
+  };
+  const toggleOption = (label: string) => {
+    setSelectedOptions((prev) => prev.includes(label) ? prev.filter((item) => item !== label) : [...prev, label]);
   };
   const submitFields = () => {
     if (!q.fields?.length || submitted) return;
@@ -774,9 +2583,10 @@ function MacQuestionCard({ q, onAnswer }: { q: QuestionData; onAnswer: (label: s
       payload[field.name] = field.type === "number" ? Number(raw) : raw;
     }
     setFormError("");
-    submit(JSON.stringify(payload));
+    submit(JSON.stringify(payload), questionFieldAnswerDisplay(q.fields, payload));
   };
   const hasFields = !!q.fields?.length;
+  const safeUrl = safeExternalQuestionUrl(q.url);
   return (
     <div className="overflow-hidden rounded-lg border border-black/[0.08] bg-white shadow-sm dark:border-white/[0.08] dark:bg-[#16181d] dark:shadow-none">
       <div className="flex items-start gap-1.5 border-b border-black/[0.06] px-4 py-2.5 text-[13px] font-medium text-[#1d1d1f] dark:border-white/[0.06] dark:text-[#e6e7e9]">
@@ -785,36 +2595,83 @@ function MacQuestionCard({ q, onAnswer }: { q: QuestionData; onAnswer: (label: s
       </div>
       {q.url && (
         <div className="border-b border-black/[0.06] px-3 py-2.5 dark:border-white/[0.06]">
-          <a
-            href={q.url}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-[#10a37f]/20 bg-[#10a37f]/[0.06] px-2.5 py-1.5 text-[12.5px] font-medium text-[#0b7f63] transition hover:bg-[#10a37f]/10 dark:text-[#70d7bd]"
-          >
-            <ExternalLink className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{q.url}</span>
-          </a>
+          {safeUrl ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex max-w-full min-w-0 items-center gap-1.5 rounded-md border border-black/[0.08] bg-black/[0.025] px-2.5 py-1.5 text-[12.5px] text-[#3a3a3c] dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-[#c8cace]">
+                <ExternalLink className="h-3.5 w-3.5 shrink-0 text-[#10a37f]" />
+                <span className="truncate">{safeUrl}</span>
+              </span>
+              <button
+                type="button"
+                disabled={submitted}
+                onClick={() => window.open(safeUrl, "_blank", "noopener,noreferrer")}
+                className="rounded-md border border-[#10a37f]/20 bg-[#10a37f]/[0.06] px-2.5 py-1.5 text-[12.5px] font-medium text-[#0b7f63] transition hover:bg-[#10a37f]/10 active:scale-[0.98] disabled:opacity-50 dark:text-[#70d7bd]"
+              >
+                打开链接
+              </button>
+              <button
+                type="button"
+                disabled={submitted}
+                onClick={() => submit("取消")}
+                className="rounded-md border border-black/[0.08] bg-white px-2.5 py-1.5 text-[12.5px] text-[#3a3a3c] transition hover:bg-black/[0.03] active:scale-[0.98] disabled:opacity-50 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-[#c8cace]"
+              >
+                取消
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-start gap-1.5 rounded-md border border-[#ff3b30]/20 bg-[#ff3b30]/[0.04] px-2.5 py-2 text-[12px] text-[#c4352b] dark:text-[#ff8585]">
+              <AlertTriangle className="mt-[1px] h-3.5 w-3.5 shrink-0" />
+              <span>这个链接协议不受支持，已拦截。</span>
+            </div>
+          )}
         </div>
       )}
       {q.options.length > 0 && (
-        <div className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2">
-          {q.options.map((o, i) => (
-            <button
-              key={i}
-              type="button"
-              disabled={submitted}
-              onClick={() => submit(o.label)}
-              className="rounded-md border border-black/[0.08] bg-black/[0.01] p-3 text-left transition hover:border-[#10a37f]/40 hover:bg-[#10a37f]/[0.06] active:scale-[0.99] disabled:opacity-50 dark:border-white/[0.08] dark:bg-white/[0.02]"
-            >
-              <div className="text-[13px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{o.label}</div>
-              {o.description && <div className="mt-0.5 text-[12px] text-[#6e6e73] dark:text-[#8a8c93]">{o.description}</div>}
-              {o.preview && (
-                <pre className="mt-2 max-h-40 overflow-auto rounded-md bg-black/[0.04] p-2 text-[11px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.05] dark:text-[#c8cace]">
-                  {o.preview}
-                </pre>
-              )}
-            </button>
-          ))}
+        <div className="p-3">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {q.options.map((o, i) => {
+              const checked = selectedOptions.includes(o.label);
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  disabled={submitted}
+                  aria-pressed={q.multi ? checked : undefined}
+                  onClick={() => q.multi ? toggleOption(o.label) : submit(o.label)}
+                  className={`rounded-md border p-3 text-left transition active:scale-[0.99] disabled:opacity-50 ${checked ? "border-[#10a37f]/45 bg-[#10a37f]/[0.08]" : "border-black/[0.08] bg-black/[0.01] hover:border-[#10a37f]/40 hover:bg-[#10a37f]/[0.06] dark:border-white/[0.08] dark:bg-white/[0.02]"}`}
+                >
+                  <div className="flex items-start gap-2">
+                    {q.multi && (
+                      <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border ${checked ? "border-[#10a37f] bg-[#10a37f] text-white" : "border-black/[0.16] text-transparent dark:border-white/[0.18]"}`}>
+                        <Check className="h-3 w-3" />
+                      </span>
+                    )}
+                    <div className="min-w-0">
+                      <div className="text-[13px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{o.label}</div>
+                      {o.description && <div className="mt-0.5 text-[12px] text-[#6e6e73] dark:text-[#8a8c93]">{o.description}</div>}
+                    </div>
+                  </div>
+                  {o.preview && (
+                    <pre className="mt-2 max-h-40 overflow-auto rounded-md bg-black/[0.04] p-2 text-[11px] leading-relaxed text-[#3a3a3c] dark:bg-white/[0.05] dark:text-[#c8cace]">
+                      {o.preview}
+                    </pre>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          {q.multi && (
+            <div className="mt-3 flex justify-end">
+              <button
+                type="button"
+                disabled={submitted || selectedOptions.length === 0}
+                onClick={() => submit(selectedOptions.join("\n"), selectedOptions.join("、"))}
+                className="app-primary-action inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition active:scale-[0.98] disabled:opacity-45"
+              >
+                <Send className="h-3.5 w-3.5" /> 提交
+              </button>
+            </div>
+          )}
         </div>
       )}
       {hasFields && (
@@ -834,7 +2691,7 @@ function MacQuestionCard({ q, onAnswer }: { q: QuestionData; onAnswer: (label: s
               type="button"
               disabled={submitted}
               onClick={submitFields}
-              className="inline-flex items-center gap-1.5 rounded-md bg-[#10a37f] px-3 py-1.5 text-[13px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.98] disabled:opacity-45"
+              className="app-primary-action inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition active:scale-[0.98] disabled:opacity-45"
             >
               <Send className="h-3.5 w-3.5" /> 提交
             </button>
@@ -856,7 +2713,7 @@ function MacQuestionCard({ q, onAnswer }: { q: QuestionData; onAnswer: (label: s
               type="button"
               disabled={submitted || !freeform.trim()}
               onClick={() => submit(freeform)}
-              className="inline-flex items-center gap-1.5 rounded-md bg-[#10a37f] px-3 py-1.5 text-[13px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.98] disabled:opacity-45"
+              className="app-primary-action inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition active:scale-[0.98] disabled:opacity-45"
             >
               <Send className="h-3.5 w-3.5" /> 发送
             </button>
@@ -1014,12 +2871,14 @@ export function DesktopChatThread({
   reasoningDraft = "",
   liveSteps,
   liveTodo,
+  retryStatus,
   generating,
   executingIdx,
   onConfirm,
   onCancel,
   onPublish,
   onPreview,
+  onOpenBackgroundTask,
   onAnswer,
   onStop,
   onRetry,
@@ -1041,13 +2900,15 @@ export function DesktopChatThread({
   liveSteps: ToolStep[];
   // F4 Focus Chain：本轮最新的任务进度清单展示文本（原地覆盖，不是数组）。
   liveTodo?: string;
+  retryStatus?: AgentRetryStatus;
   generating: boolean;
   executingIdx: number | null;
-  onConfirm: (idx: number, ap: ApprovalState) => void;
+  onConfirm: (idx: number, ap: ApprovalState, options?: { remember?: boolean }) => void;
   onCancel: (idx: number, ap?: ApprovalState) => void;
   onPublish?: (platform: unknown, content: string) => void;
   onPreview?: (item: PreviewItem) => void;
-  onAnswer?: (label: string) => void;
+  onOpenBackgroundTask?: (taskId: string) => void;
+  onAnswer?: (answer: string, displayText?: string) => void;
   onStop?: () => void;
   onRetry?: () => void;
   onRedoAnswer?: (content: string) => void;
@@ -1117,7 +2978,7 @@ export function DesktopChatThread({
         {messages.map((m, idx) =>
           m.role === "user" ? (
             <div key={idx} className="flex justify-end">
-              <div className="max-w-[78%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-[#007AFF] px-3.5 py-2 text-[14px] leading-relaxed text-white shadow-sm">
+              <div className="max-w-[78%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-[#eeeeF0] px-3.5 py-2 text-[14px] leading-relaxed text-[#1d1d1f] shadow-sm dark:bg-[#2a2825] dark:text-[#f2efea]">
                 {m.displayContent ?? m.content}
               </div>
             </div>
@@ -1177,7 +3038,7 @@ export function DesktopChatThread({
               ) : (
                 <>
                   {m.reasoning && <ThinkingBlock text={m.reasoning} />}
-                  {m.steps && <MacStepList steps={m.steps} active={false} onPreview={onPreview} />}
+                  {m.steps && <MacStepList steps={m.steps} active={false} onPreview={onPreview} onOpenBackgroundTask={onOpenBackgroundTask} />}
                   {/* F4 Focus Chain：常驻清单卡，原地反映本轮最新进度（task_progress 参数 / todo_write 归并同一份），
                       不随每次工具调用叠新卡。 */}
                   {m.todo && <TodoCard text={m.todo} />}
@@ -1226,9 +3087,11 @@ export function DesktopChatThread({
                           }}
                         />
                       </div>
+                    ) : onPreview && extractAssistantOutputTarget(m.content) ? (
+                      <AssistantOutputTargetCard content={m.content} onPreview={onPreview} />
                     ) : (
                       <div className={PROSE}>
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                        <SafeMarkdown>{m.content}</SafeMarkdown>
                       </div>
                     ))}
                   {onFollowUp && billiardsMode && !generating && posterPreviewFromText(m.content) && (
@@ -1238,7 +3101,7 @@ export function DesktopChatThread({
                           key={action.label}
                           type="button"
                           onClick={() => onFollowUp(action.prompt, action.label)}
-                          className="inline-flex items-center gap-1 rounded-md border border-[#007AFF]/15 bg-[#007AFF]/[0.05] px-2 py-1 text-[12px] font-medium text-[#007AFF] transition hover:bg-[#007AFF]/10 active:scale-[0.97] dark:border-[#66aaff]/20 dark:bg-[#66aaff]/10 dark:text-[#9bc8ff]"
+                          className="inline-flex items-center gap-1 rounded-md border border-[#10a37f]/15 bg-[#10a37f]/[0.05] px-2 py-1 text-[12px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/10 active:scale-[0.97] dark:border-[#2fd39e]/20 dark:bg-[#2fd39e]/10 dark:text-[#70d7bd]"
                         >
                           <action.Icon className="h-3.5 w-3.5" /> {action.label}
                         </button>
@@ -1260,7 +3123,7 @@ export function DesktopChatThread({
                               key={action.label}
                               type="button"
                               onClick={() => onFollowUp(action.prompt, action.label)}
-                              className="inline-flex items-center gap-1 rounded-md border border-[#007AFF]/15 bg-[#007AFF]/[0.05] px-2 py-1 text-[12px] font-medium text-[#007AFF] transition hover:bg-[#007AFF]/10 active:scale-[0.97] dark:border-[#66aaff]/20 dark:bg-[#66aaff]/10 dark:text-[#9bc8ff]"
+                              className="inline-flex items-center gap-1 rounded-md border border-[#10a37f]/15 bg-[#10a37f]/[0.05] px-2 py-1 text-[12px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/10 active:scale-[0.97] dark:border-[#2fd39e]/20 dark:bg-[#2fd39e]/10 dark:text-[#70d7bd]"
                             >
                               <action.Icon className="h-3.5 w-3.5" /> {action.label}
                             </button>
@@ -1327,13 +3190,14 @@ export function DesktopChatThread({
 
         {generating && (
           <div className="space-y-2.5">
+            {retryStatus && <RetryStatusBanner status={retryStatus} />}
             {reasoningDraft && <ThinkingBlock text={reasoningDraft} active />}
-            {liveSteps.length > 0 && <MacStepList steps={liveSteps} active onPreview={onPreview} />}
+            {liveSteps.length > 0 && <MacStepList steps={liveSteps} active onPreview={onPreview} onOpenBackgroundTask={onOpenBackgroundTask} />}
             {liveTodo && <TodoCard text={liveTodo} />}
             {draft ? (
               <>
                 <div className={PROSE}>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft}</ReactMarkdown>
+                  <SafeMarkdown>{draft}</SafeMarkdown>
                 </div>
                 {onStop && (
                   <button
@@ -1346,7 +3210,7 @@ export function DesktopChatThread({
                 )}
               </>
             ) : (
-              <AgentSpinner onStop={onStop} activeToolName={liveSteps.length ? (() => { const last = liveSteps[liveSteps.length - 1]; return !last.done ? last.tool : undefined; })() : undefined} />
+              <AgentSpinner onStop={onStop} activeToolName={latestRunningStep(liveSteps)?.tool} />
             )}
           </div>
         )}

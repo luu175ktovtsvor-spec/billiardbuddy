@@ -2,23 +2,26 @@
 
 /**
  * Codex 风「设置」抽屉（替代老 web 的门店设置/BYOK 抽屉）：右侧滑出、浅色默认·跟随系统。
- * A2(2026-07-03)：两套"高级模式"整体下线，普通老板看到的只剩四块——门店信息 / AI 记的事(店脑) /
+ * A2(2026-07-03)：两套"高级模式"整体下线，普通老板看到的只剩四块——门店信息 / 门店记忆 /
  * 外观 / 字体大小。自带 key/MCP/插件/技能那整块高级 UI 不再挂载（代码原样留着，见 SHOW_ADVANCED_SETTINGS）；
  * 后端接口（getByokConfig / updateByokConfig / validateByokConfig / MCP / plugins / skills）全保留。
  */
 import { useEffect, useState } from "react";
-import { X, Loader2, Check, Cpu, Image as ImageIcon, Store, ShieldCheck, Puzzle, Plus, Trash2, AlertTriangle, Download, Brain, ChevronRight, DatabaseBackup } from "lucide-react";
+import { X, Loader2, Check, Cpu, Image as ImageIcon, Store, ShieldCheck, Puzzle, Plus, Trash2, AlertTriangle, Download, Brain, ChevronRight, DatabaseBackup, RotateCcw, ArrowUp, ArrowDown, Power } from "lucide-react";
 
-import { api } from "@/lib/api";
+import { api, type ModelProviderItem, type ModelStatusResponse } from "@/lib/api";
 import { getErrorMessage } from "@/lib/utils";
 import { applyTheme, getTheme, type ThemeMode } from "@/lib/theme";
 import { applyFontSize, getFontSize, type FontSizeMode } from "@/lib/font-size";
 import { useDesktop } from "@/hooks/use-desktop";
+import { modelHealthStatusText, sanitizeModelHealthError } from "@/hooks/model-health-status";
 import type { StoreMemoryItem } from "@/types/store";
 
 type McpServer = { name: string; command?: string; status?: string; tools?: number; disabled?: boolean };
 type McpPreset = { id: string; name: string; desc: string; command: string; args: string[] };
 type PluginItem = { name: string; enabled: boolean; description: string; components: Record<string, number> };
+type ModelHealthItem = NonNullable<ModelStatusResponse["health"]>[number];
+type ModelHealthHistoryItem = NonNullable<ModelStatusResponse["healthHistory"]>[number];
 
 const INPUT =
   "w-full rounded-lg border border-black/[0.08] bg-black/[0.02] px-3 py-2 text-[13px] text-[#1d1d1f] outline-none transition placeholder:text-[#b0b0b5] focus:border-[#10a37f]/50 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-[#e6e7e9] dark:placeholder:text-[#56585f]";
@@ -43,12 +46,43 @@ const IMAGE_PRESETS = [
   { name: "通义万相", base: "https://dashscope.aliyuncs.com/api/v1", model: "wan2.6-t2i" },
   { name: "智谱 CogView", base: "https://open.bigmodel.cn/api/paas/v4", model: "cogview-4" },
 ];
-const PRESET_CHIP = "rounded-md border border-black/[0.1] bg-black/[0.02] px-2 py-1 text-[11.5px] text-[#3a3a3c] transition hover:border-[#007AFF]/40 hover:bg-[#007AFF]/10 hover:text-[#007AFF] active:scale-[0.97] dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#c8cace]";
+const PRESET_CHIP = "rounded-md border border-black/[0.1] bg-black/[0.02] px-2 py-1 text-[11.5px] text-[#3a3a3c] transition hover:border-[#10a37f]/40 hover:bg-[#10a37f]/10 hover:text-[#10a37f] active:scale-[0.97] dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#c8cace]";
 
 // A2(2026-07-03)：两套"高级模式"整体下线——小白产品零模型名、零 MCP 字样。BYOK/MCP/插件/技能的
 // 后端接口（/stores/me/byok、/agent/mcp/*、/agent/plugins、/agent/skills）全部保留，只是前端不再挂载
 // 这块 UI；下面这段代码原样留着不删，未来要接回只需把这个常量翻成 true（不用重写）。
 const SHOW_ADVANCED_SETTINGS = false;
+
+function healthItemKey(item: ModelHealthItem, index: number): string {
+  if (item.providerId) return `provider:${item.providerId}`;
+  return `${item.source}:${item.model}:${index}`;
+}
+
+function cooldownLabel(ms: number): string {
+  const seconds = Math.max(0, Math.ceil(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  return `约 ${Math.ceil(seconds / 60)} 分钟`;
+}
+
+function cooldownReasonLabel(item: ModelHealthItem): string {
+  if (item.failureCategory === "configuration") return "配置冷却";
+  if (item.failureCategory === "rate_limit") return "限流冷却";
+  return "冷却";
+}
+
+function healthHistoryText(item: ModelHealthHistoryItem): string {
+  if (item.kind === "success") return "恢复可用";
+  if (item.kind === "clear") return "手动重试";
+  if (item.failureCategory === "configuration") return `配置失败${item.failureCount ? ` ${item.failureCount} 次` : ""}`;
+  if (item.failureCategory === "rate_limit") return `限流${item.failureCount ? ` ${item.failureCount} 次` : ""}`;
+  return `失败${item.failureCount ? ` ${item.failureCount} 次` : ""}`;
+}
+
+function healthHistoryTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+}
 
 export function SettingsDrawer({
   open,
@@ -75,8 +109,9 @@ export function SettingsDrawer({
   // P1-6 门店素材：logo / 收款码（生图叠图、海报留资用）
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [qrcodeUrl, setQrcodeUrl] = useState<string | null>(null);
+  const [qrcodeText, setQrcodeText] = useState("");
   const [uploadingKind, setUploadingKind] = useState<"logo" | "qrcode" | null>(null);
-  // M3 店脑记忆管理面：AI 记的事（看/改/删）+ 手动加"我的店规矩"
+  // M3 门店记忆管理面：门店事实与偏好（看/改/删）+ 手动加"我的店规矩"
   const [memories, setMemories] = useState<StoreMemoryItem[]>([]);
   const [newRule, setNewRule] = useState("");
   const [memBusy, setMemBusy] = useState<string | null>(null);
@@ -109,6 +144,10 @@ export function SettingsDrawer({
   const [pluginRepo, setPluginRepo] = useState("");
   // 生图 model↔供应商校验提示（温和，不拦保存）
   const [imgWarn, setImgWarn] = useState("");
+  const [modelStatus, setModelStatus] = useState<ModelStatusResponse | null>(null);
+  const [healthDetailsOpen, setHealthDetailsOpen] = useState(false);
+  const [clearingHealth, setClearingHealth] = useState<string | null>(null);
+  const [providerBusy, setProviderBusy] = useState<string | null>(null);
 
   // G-c 数据安全兜底：设置抽屉「备份店铺数据」一键导出(主库快照 + uploads 打包 zip)
   const [exporting, setExporting] = useState(false);
@@ -124,10 +163,11 @@ export function SettingsDrawer({
     setLoading(true);
     setMsg(null);
     setShowAdvanced(false);
+    setHealthDetailsOpen(false);
     (async () => {
       // A2：高级区(BYOK/MCP/插件/技能)不再挂载，对应的加载请求也一并停掉，省无谓请求。
-      const [s, b] = await Promise.allSettled([
-        api.getMyStore(), api.getByokConfig(),
+      const [s, b, modelHealth] = await Promise.allSettled([
+        api.getMyStore(), api.getByokConfig(), api.getModelStatus(),
       ]);
       if (cancelled) return;
       if (s.status === "fulfilled" && s.value) {
@@ -135,9 +175,11 @@ export function SettingsDrawer({
         setStoreName(s.value.name || "");
         setLogoUrl(s.value.logo_url || null);
         setQrcodeUrl(s.value.qrcode_url || null);
+        setQrcodeText(s.value.qrcode_text || "");
       } else {
         setStoreId(null);
         setStoreName("");
+        setQrcodeText("");
       }
       if (b.status === "fulfilled" && b.value) {
         setLabels({
@@ -152,6 +194,7 @@ export function SettingsDrawer({
         setImgModel(b.value.image_model || "");
         setImgKeyMask(b.value.image_key_configured ? b.value.image_key_mask || "已配置" : "");
       }
+      setModelStatus(modelHealth.status === "fulfilled" ? modelHealth.value : null);
       void refreshMemories();  // M3：拉店脑记忆
       setApiKey("");
       setImgApiKey("");
@@ -176,6 +219,14 @@ export function SettingsDrawer({
   }, [open, electron]);
 
   if (!open) return null;
+
+  const modelHealthText = modelHealthStatusText(modelStatus);
+  const modelHealthClass = modelHealthText.tone === "warn"
+    ? "border-[#d4901f]/20 bg-[#d4901f]/[0.07] text-[#9a6a10] dark:border-[#d4a843]/20 dark:bg-[#d4a843]/[0.08] dark:text-[#d4a843]"
+    : "border-[#10a37f]/20 bg-[#10a37f]/[0.06] text-[#10a37f]";
+  const providerHealthRows = modelStatus?.health || [];
+  const providerHealthHistory = modelStatus?.healthHistory || [];
+  const providerConfigRows = modelStatus?.providers || [];
 
   // D-Task-4：开机自启开关，失败故障安全(不抛，只提示)
   async function toggleAutoLaunch() {
@@ -236,6 +287,64 @@ export function SettingsDrawer({
     }
   }
 
+  async function clearProviderHealth(item: ModelHealthItem, index: number) {
+    const key = healthItemKey(item, index);
+    setClearingHealth(key);
+    setMsg(null);
+    try {
+      const payload = item.providerId ? { providerId: item.providerId } : { source: item.source };
+      const res = await api.clearModelHealth(payload);
+      setModelStatus(res.status);
+      setMsg({ kind: "ok", text: res.cleared > 0 ? "已允许这个 AI 通道重新尝试" : "这个 AI 通道已经不在冷却中" });
+    } catch (e) {
+      setMsg({ kind: "err", text: getErrorMessage(e) });
+    } finally {
+      setClearingHealth(null);
+    }
+  }
+
+  async function refreshModelStatus() {
+    const status = await api.getModelStatus();
+    setModelStatus(status);
+    return status;
+  }
+
+  async function setSavedProviderEnabled(provider: ModelProviderItem, enabled: boolean) {
+    const key = `${provider.id}:enabled`;
+    setProviderBusy(key);
+    setMsg(null);
+    try {
+      await api.setProviderEnabled(provider.id, enabled);
+      await refreshModelStatus();
+      setMsg({ kind: "ok", text: enabled ? "已启用这个备用通道" : "已停用这个备用通道" });
+    } catch (e) {
+      setMsg({ kind: "err", text: getErrorMessage(e) });
+    } finally {
+      setProviderBusy(null);
+    }
+  }
+
+  async function moveSavedProvider(provider: ModelProviderItem, direction: -1 | 1) {
+    const providers = modelStatus?.providers || [];
+    const index = providers.findIndex((item) => item.id === provider.id);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= providers.length) return;
+    const ids = providers.map((item) => item.id);
+    [ids[index], ids[nextIndex]] = [ids[nextIndex], ids[index]];
+    const key = `${provider.id}:move`;
+    setProviderBusy(key);
+    setMsg(null);
+    try {
+      await api.reorderProviders(ids);
+      await refreshModelStatus();
+      setMsg({ kind: "ok", text: "已调整 AI 通道优先级" });
+    } catch (e) {
+      setMsg({ kind: "err", text: getErrorMessage(e) });
+    } finally {
+      setProviderBusy(null);
+    }
+  }
+
   // M3：拉店脑记忆 + 增删改
   async function refreshMemories() {
     try { setMemories(await api.getStoreMemory()); } catch { /* 拿不到就空 */ }
@@ -244,7 +353,7 @@ export function SettingsDrawer({
     const c = newRule.trim();
     if (!c) return;
     setMemBusy("add"); setMsg(null);
-    try { await api.addStoreMemory(c); setNewRule(""); await refreshMemories(); setMsg({ kind: "ok", text: "已记下你的店规矩" }); }
+    try { await api.addStoreMemory(c); setNewRule(""); await refreshMemories(); setMsg({ kind: "ok", text: "已保存店规矩" }); }
     catch (e) { setMsg({ kind: "err", text: getErrorMessage(e) }); }
     finally { setMemBusy(null); }
   }
@@ -267,7 +376,7 @@ export function SettingsDrawer({
   async function uploadAsset(kind: "logo" | "qrcode", file: File) {
     setUploadingKind(kind); setMsg(null);
     try {
-      const r = kind === "logo" ? await api.uploadLogo(file) : await api.uploadQrcode(file);
+      const r = kind === "logo" ? await api.uploadLogo(file) : await api.uploadQrcode(file, qrcodeText);
       if (kind === "logo") setLogoUrl(r.url); else setQrcodeUrl(r.url);
       setMsg({ kind: "ok", text: kind === "logo" ? "门店 Logo 已上传" : "收款码已上传" });
     } catch (e) {
@@ -280,10 +389,11 @@ export function SettingsDrawer({
   async function saveStore() {
     const name = storeName.trim();
     if (!name) { setMsg({ kind: "err", text: "请先给门店起个名" }); return false; }
+    const qrcode_text = qrcodeText.trim() || null;
     if (storeId) {
-      await api.updateStore({ name });
+      await api.updateStore({ name, qrcode_text });
     } else {
-      const res = await api.createStore({ name });
+      const res = await api.createStore({ name, qrcode_text });
       setStoreId(res.id);
     }
     onStoreNameChange?.(name);
@@ -427,33 +537,34 @@ export function SettingsDrawer({
                   </label>
                 ))}
               </div>
+              <label className={`${LABEL} mt-3`}>二维码内容</label>
+              <input className={INPUT} value={qrcodeText} onChange={(e) => setQrcodeText(e.target.value)} placeholder="https://..." />
               <p className="mt-1.5 text-[11.5px] leading-snug text-[#a1a1a6] dark:text-[#6e7077]">传了 Logo / 收款码，做海报时管家能帮你叠到图上。</p>
             </section>
 
-            {/* M3 店脑记忆：AI 记的事（看/改/删）+ 我定的店规矩 */}
+            {/* M3 门店记忆：门店事实与偏好（看/改/删）+ 手动店规矩 */}
             <section className="mb-6">
               <p className="mb-2 flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-[#a1a1a6] dark:text-[#6e7077]">
-                <Brain className="h-3.5 w-3.5" /> AI 记的事（店脑）
+                <Brain className="h-3.5 w-3.5" /> 门店记忆
               </p>
-              <p className="mb-2 text-[11.5px] leading-snug text-[#86868b] dark:text-[#8a8c93]">这里能看见管家记住的关于你/你店的事，随时改或删。你亲定的「店规矩」管家绝不会覆盖。</p>
+              <p className="mb-2 text-[11.5px] leading-snug text-[#86868b] dark:text-[#8a8c93]">用于回答的门店事实与偏好，可随时修改或删除。手动添加的店规矩不会被自动记录覆盖。</p>
               <div className="mb-2.5 flex gap-1.5">
                 <input className={INPUT} value={newRule} onChange={(e) => setNewRule(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") void addRule(); }}
-                  placeholder="加一条你的店规矩，比如：周二会员日五折" />
+                  placeholder="添加店规矩，比如：周二会员日五折" />
                 <button onClick={() => void addRule()} disabled={memBusy === "add" || !newRule.trim()}
-                  className="shrink-0 rounded-md bg-[#10a37f] px-3 text-[12.5px] text-white transition hover:bg-[#0d8c6d] disabled:opacity-50">
-                  {memBusy === "add" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "加"}
+                  className="app-primary-action shrink-0 rounded-md px-3 text-[12.5px] transition disabled:opacity-50">
+                  {memBusy === "add" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "添加"}
                 </button>
               </div>
-              {/* 待确认(pending)无确认按钮、放这里只会误导(会被错标"AI学到")→ 从可编辑列表过滤掉，
-                  引导去「我的球房资料」确认；这里只管已生效的"我定的/AI学到"。 */}
+              {/* 待确认(pending)无确认按钮,放这里只会误导;这里只显示已生效的手动/自动记录。 */}
               {memories.some((m) => m.source === "pending") && (
                 <div className="mb-2 rounded-md bg-[#d4901f]/10 px-2.5 py-1.5 text-[11px] leading-snug text-[#9a6a10] dark:text-[#d4a843]">
-                  有 {memories.filter((m) => m.source === "pending").length} 条「待确认」资料，去顶部「我的球房资料」里确认后才会用于回答。
+                  有 {memories.filter((m) => m.source === "pending").length} 条「待确认」资料，请到顶部「知识库」里的「门店记忆」确认后使用。
                 </div>
               )}
               {memories.filter((m) => m.source !== "pending").length === 0 ? (
-                <div className="text-[11.5px] text-[#a1a1a6]">还没记下什么。聊着聊着管家会慢慢记住你的偏好；你也可以上面手动加店规矩。</div>
+                <div className="text-[11.5px] text-[#a1a1a6]">尚未添加资料。对话中确认的偏好会显示在这里，也可以手动添加店规矩。</div>
               ) : (
                 <div className="space-y-1.5">
                   {memories.filter((m) => m.source !== "pending").sort((a, b) => (a.source === "manual" ? 0 : 1) - (b.source === "manual" ? 0 : 1)).map((m) => (
@@ -491,6 +602,136 @@ export function SettingsDrawer({
               <p className="mt-1 text-[11.5px] leading-snug text-[#3a3a3c] dark:text-[#c8cace]">
                 对话、看图、做海报、做视频的 AI 都已经内置好了，<b>打开就能用，什么都不用配</b>。
               </p>
+              <div
+                className={`mt-2 inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-[11.5px] ${modelHealthClass}`}
+                title={modelHealthText.detail}
+              >
+                {modelHealthText.tone === "warn" ? <AlertTriangle className="h-3.5 w-3.5 shrink-0" /> : <Check className="h-3.5 w-3.5 shrink-0" />}
+                <span className="truncate">{modelHealthText.label}</span>
+              </div>
+              {(providerHealthRows.length > 0 || providerHealthHistory.length > 0 || providerConfigRows.length > 0) && (
+                <div className="mt-2">
+                  <button
+                    type="button"
+                    onClick={() => setHealthDetailsOpen((v) => !v)}
+                    aria-expanded={healthDetailsOpen}
+                    className="inline-flex items-center gap-1 text-[11.5px] font-medium text-[#6e6e73] transition hover:text-[#10a37f] dark:text-[#9a9ca3] dark:hover:text-[#70d7bd]"
+                  >
+                    <ChevronRight className={`h-3.5 w-3.5 transition-transform ${healthDetailsOpen ? "rotate-90" : ""}`} />
+                    AI 通道详情
+                  </button>
+                  {healthDetailsOpen && (
+                    <div className="mt-2 overflow-hidden border-y border-black/[0.07] dark:border-white/[0.07]">
+                      {providerHealthRows.map((item, index) => {
+                        const cooling = item.state === "cooling";
+                        const key = healthItemKey(item, index);
+                        const busy = clearingHealth === key;
+                        return (
+                          <div key={key} className="flex items-start gap-2 border-b border-black/[0.06] py-2 last:border-b-0 dark:border-white/[0.06]">
+                            <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${cooling ? "bg-[#d4901f]" : "bg-[#10a37f]"}`} />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex min-w-0 items-center gap-1.5">
+                                <span className="truncate text-[12px] font-medium text-[#3a3a3c] dark:text-[#dfe1e5]">{item.label}</span>
+                                <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10.5px] ${cooling ? "bg-[#d4901f]/10 text-[#9a6a10] dark:text-[#d4a843]" : "bg-[#10a37f]/10 text-[#10a37f]"}`}>
+                                  {cooling ? `${cooldownReasonLabel(item)} ${cooldownLabel(item.cooldownMsRemaining)}` : "就绪"}
+                                </span>
+                              </div>
+                              <p className="mt-0.5 truncate text-[11px] text-[#86868b] dark:text-[#8a8c93]">{item.model}</p>
+                              {cooling && item.lastError && (
+                                <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-[#9a6a10] dark:text-[#d4a843]">{sanitizeModelHealthError(item.lastError)}</p>
+                              )}
+                            </div>
+                            {cooling && (
+                              <button
+                                type="button"
+                                onClick={() => void clearProviderHealth(item, index)}
+                                disabled={busy}
+                                title="清除冷却，下一轮重新尝试这个通道"
+                                className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-black/[0.08] bg-white px-2 text-[11px] text-[#3a3a3c] transition hover:border-[#10a37f]/35 hover:text-[#10a37f] disabled:opacity-50 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-[#c8cace]"
+                              >
+                                {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+                                重试
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                      {providerHealthHistory.length > 0 && (
+                        <div className="border-t border-black/[0.07] py-2 dark:border-white/[0.07]">
+                          <div className="mb-1.5 text-[11px] font-medium text-[#86868b] dark:text-[#8a8c93]">最近排障记录</div>
+                          {providerHealthHistory.slice(0, 5).map((item, index) => (
+                            <div key={`${item.key}-${item.ts}-${index}`} className="flex min-w-0 items-start gap-2 py-1">
+                              <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${item.kind === "success" ? "bg-[#10a37f]" : item.kind === "clear" ? "bg-[#86868b]" : "bg-[#d4901f]"}`} />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex min-w-0 items-center gap-1.5">
+                                  <span className="truncate text-[11.5px] font-medium text-[#3a3a3c] dark:text-[#dfe1e5]">{item.label}</span>
+                                  <span className="shrink-0 rounded bg-black/[0.04] px-1.5 py-0.5 text-[10.5px] text-[#6e6e73] dark:bg-white/[0.05] dark:text-[#8a8c93]">{healthHistoryText(item)}</span>
+                                  <span className="shrink-0 text-[10.5px] text-[#a1a1a6] dark:text-[#6e7077]">{healthHistoryTime(item.ts)}</span>
+                                </div>
+                                {item.error && <p className="mt-0.5 line-clamp-1 text-[11px] text-[#9a6a10] dark:text-[#d4a843]">{sanitizeModelHealthError(item.error)}</p>}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {providerConfigRows.length > 0 && (
+                        <div className="border-t border-black/[0.07] py-2 dark:border-white/[0.07]">
+                          <div className="mb-1.5 text-[11px] font-medium text-[#86868b] dark:text-[#8a8c93]">保存通道优先级</div>
+                          {providerConfigRows.map((provider, index) => {
+                            const active = modelStatus?.activeId === provider.id;
+                            const runtimeNow = modelStatus?.runtime?.providerId === provider.id;
+                            const toggleBusy = providerBusy === `${provider.id}:enabled`;
+                            const moveBusy = providerBusy === `${provider.id}:move`;
+                            return (
+                              <div key={provider.id} className="flex items-center gap-2 py-1.5">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex min-w-0 items-center gap-1.5">
+                                    <span className={`truncate text-[12px] font-medium ${provider.enabled ? "text-[#3a3a3c] dark:text-[#dfe1e5]" : "text-[#9a9ca3]"}`}>{provider.name}</span>
+                                    {active && runtimeNow && <span className="shrink-0 rounded bg-[#10a37f]/10 px-1.5 py-0.5 text-[10.5px] text-[#10a37f]">当前</span>}
+                                    {active && !runtimeNow && <span className="shrink-0 rounded bg-black/[0.05] px-1.5 py-0.5 text-[10.5px] text-[#86868b] dark:bg-white/[0.06]">默认</span>}
+                                    {!active && runtimeNow && <span className="shrink-0 rounded bg-[#d4901f]/10 px-1.5 py-0.5 text-[10.5px] text-[#9a6a10] dark:text-[#d4a843]">接管中</span>}
+                                    {!provider.enabled && <span className="shrink-0 rounded bg-black/[0.05] px-1.5 py-0.5 text-[10.5px] text-[#86868b] dark:bg-white/[0.06]">停用</span>}
+                                  </div>
+                                  <p className="mt-0.5 truncate text-[11px] text-[#86868b] dark:text-[#8a8c93]">{provider.model}</p>
+                                </div>
+                                <div className="flex shrink-0 items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => void moveSavedProvider(provider, -1)}
+                                    disabled={index === 0 || !!providerBusy}
+                                    title="优先级上移"
+                                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-black/[0.08] bg-white text-[#6e6e73] transition hover:border-[#10a37f]/35 hover:text-[#10a37f] disabled:opacity-35 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-[#c8cace]"
+                                  >
+                                    {moveBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-3.5 w-3.5" />}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void moveSavedProvider(provider, 1)}
+                                    disabled={index === providerConfigRows.length - 1 || !!providerBusy}
+                                    title="优先级下移"
+                                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-black/[0.08] bg-white text-[#6e6e73] transition hover:border-[#10a37f]/35 hover:text-[#10a37f] disabled:opacity-35 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-[#c8cace]"
+                                  >
+                                    {moveBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowDown className="h-3.5 w-3.5" />}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void setSavedProviderEnabled(provider, !provider.enabled)}
+                                    disabled={!!providerBusy}
+                                    title={provider.enabled ? "停用这个候选通道" : "启用这个候选通道"}
+                                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-black/[0.08] bg-white text-[#6e6e73] transition hover:border-[#10a37f]/35 hover:text-[#10a37f] disabled:opacity-35 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-[#c8cace]"
+                                  >
+                                    {toggleBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Power className="h-3.5 w-3.5" />}
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </section>
 
             {/* P1-10 外观:亮/暗/跟随系统(默认跟随)。普通路径就能切,不用进高级。 */}
@@ -580,7 +821,7 @@ export function SettingsDrawer({
               </section>
             )}
 
-            {/* A2：两套"高级模式"整体下线——设置抽屉只剩门店信息/AI 记的事/外观/字体大小四块，
+            {/* A2：两套"高级模式"整体下线——设置抽屉只剩门店信息/门店记忆/外观/字体大小四块，
                 零模型名、零 MCP 字样。下面这个入口按钮 + 它展开的整块高级内容原样留着不删，只是
                 不再挂载；SHOW_ADVANCED_SETTINGS 翻成 true 即可一日接回。 */}
             {SHOW_ADVANCED_SETTINGS && (
@@ -659,7 +900,7 @@ export function SettingsDrawer({
                 <div className="mb-1.5 flex items-center justify-between">
                   <span className="text-[12.5px] font-medium text-[#3a3a3c] dark:text-[#c8cace]">外接工具（MCP）· {mcp.length}</span>
                   <button type="button" onClick={() => setShowMcpForm((v) => !v)}
-                    className="inline-flex items-center gap-1 rounded-md border border-black/[0.1] bg-black/[0.02] px-2 py-1 text-[11.5px] text-[#3a3a3c] transition hover:border-[#007AFF]/40 hover:text-[#007AFF] dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#c8cace]">
+                    className="inline-flex items-center gap-1 rounded-md border border-black/[0.1] bg-black/[0.02] px-2 py-1 text-[11.5px] text-[#3a3a3c] transition hover:border-[#10a37f]/40 hover:text-[#10a37f] dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#c8cace]">
                     <Plus className="h-3 w-3" /> 自己加
                   </button>
                 </div>
@@ -674,7 +915,7 @@ export function SettingsDrawer({
                         <button key={p.id} type="button" title={p.desc}
                           disabled={added || extBusy === `preset-${p.id}`}
                           onClick={() => addMcpPreset(p)}
-                          className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11.5px] transition disabled:opacity-60 ${added ? "border-[#10a37f]/30 bg-[#10a37f]/10 text-[#10a37f]" : "border-black/[0.1] bg-black/[0.02] text-[#3a3a3c] hover:border-[#007AFF]/40 hover:text-[#007AFF] dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#c8cace]"}`}>
+                          className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11.5px] transition disabled:opacity-60 ${added ? "border-[#10a37f]/30 bg-[#10a37f]/10 text-[#10a37f]" : "border-black/[0.1] bg-black/[0.02] text-[#3a3a3c] hover:border-[#10a37f]/40 hover:text-[#10a37f] dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#c8cace]"}`}>
                           {extBusy === `preset-${p.id}` ? <Loader2 className="h-3 w-3 animate-spin" /> : added ? <Check className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
                           {p.name}
                         </button>
@@ -690,7 +931,7 @@ export function SettingsDrawer({
                     <div><label className={LABEL}>命令</label><input className={INPUT} value={mcpCmd} onChange={(e) => setMcpCmd(e.target.value)} placeholder="npx 或 uvx" /></div>
                     <div><label className={LABEL}>参数（空格分开，没有就留空）</label><input className={INPUT} value={mcpArgs} onChange={(e) => setMcpArgs(e.target.value)} placeholder="-y @modelcontextprotocol/server-xxx" /></div>
                     <button type="button" onClick={addMcpFromForm} disabled={extBusy === "mcp-add"}
-                      className="inline-flex items-center gap-1.5 rounded-md bg-[#10a37f] px-3 py-1.5 text-[12px] font-medium text-white transition hover:bg-[#0e906f] disabled:opacity-50">
+                      className="app-primary-action inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12px] font-medium transition disabled:opacity-50">
                       {extBusy === "mcp-add" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />} 加上
                     </button>
                   </div>
@@ -750,7 +991,7 @@ export function SettingsDrawer({
                   <input className={INPUT} value={pluginRepo} onChange={(e) => setPluginRepo(e.target.value)} placeholder="从 GitHub 装：owner/repo" />
                   <button type="button" disabled={!pluginRepo.trim() || extBusy === "pl-install"}
                     onClick={() => runExt("pl-install", () => api.installPlugin(pluginRepo.trim())).then(() => setPluginRepo(""))}
-                    className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-black/[0.1] bg-black/[0.02] px-3 text-[12px] text-[#3a3a3c] transition hover:border-[#007AFF]/40 hover:text-[#007AFF] disabled:opacity-50 dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#c8cace]">
+                    className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-black/[0.1] bg-black/[0.02] px-3 text-[12px] text-[#3a3a3c] transition hover:border-[#10a37f]/40 hover:text-[#10a37f] disabled:opacity-50 dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#c8cace]">
                     {extBusy === "pl-install" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} 装
                   </button>
                 </div>
@@ -784,7 +1025,7 @@ export function SettingsDrawer({
               </p>
             )}
             <button onClick={saveAll} disabled={saving}
-              className="flex h-9 w-full items-center justify-center gap-1.5 rounded-lg bg-[#10a37f] text-[13px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.99] disabled:opacity-50">
+              className="app-primary-action flex h-9 w-full items-center justify-center gap-1.5 rounded-lg text-[13px] font-medium transition active:scale-[0.99] disabled:opacity-50">
               {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />} 保存
             </button>
             {/* B-Task-2 合规署名：MiSans 官方 EULA 要求嵌入使用需署名。 */}

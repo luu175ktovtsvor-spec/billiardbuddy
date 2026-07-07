@@ -11,13 +11,14 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { CheckCircle2, RefreshCw, XCircle } from "lucide-react";
 
 type ToastKind = "success" | "error" | "info";
-type ToastEntry = { id: number; message: string; kind: ToastKind };
+type ToastAction = { label: string; onClick: () => void };
+type ToastEntry = { id: number; message: string; kind: ToastKind; action?: ToastAction };
 
 export interface ToastApi {
-  success: (message: string) => void;
-  error: (message: string) => void;
+  success: (message: string, action?: ToastAction) => void;
+  error: (message: string, action?: ToastAction) => void;
   // 低调中性提示（灰色，非成功非报错）——F1c 断线重连这类"状态说明但不用大惊小怪"的场景用它。
-  info: (message: string) => void;
+  info: (message: string, action?: ToastAction) => void;
 }
 
 const ToastContext = createContext<ToastApi | null>(null);
@@ -32,32 +33,39 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   // 卸载时清掉挂起的定时器，防止对已卸载组件 setState。
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
 
-  const show = useCallback((message: string, kind: ToastKind) => {
+  const dismiss = useCallback(() => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = null;
+    setToast(null);
+  }, []);
+
+  const show = useCallback((message: string, kind: ToastKind, action?: ToastAction) => {
     idRef.current += 1;
     const id = idRef.current;
     if (timerRef.current) clearTimeout(timerRef.current);
-    setToast({ id, message, kind });
+    setToast({ id, message, kind, action });
     timerRef.current = setTimeout(() => {
       // 只有还是这条 toast 才清（防止晚到的旧定时器把新 toast 提前关掉）。
       setToast((prev) => (prev?.id === id ? null : prev));
+      timerRef.current = null;
     }, AUTO_DISMISS_MS);
   }, []);
 
   const api = useMemo<ToastApi>(() => ({
-    success: (message: string) => show(message, "success"),
-    error: (message: string) => show(message, "error"),
-    info: (message: string) => show(message, "info"),
+    success: (message: string, action?: ToastAction) => show(message, "success", action),
+    error: (message: string, action?: ToastAction) => show(message, "error", action),
+    info: (message: string, action?: ToastAction) => show(message, "info", action),
   }), [show]);
 
   return (
     <ToastContext.Provider value={api}>
       {children}
-      <ToastHost toast={toast} />
+      <ToastHost toast={toast} onDismiss={dismiss} />
     </ToastContext.Provider>
   );
 }
 
-function ToastHost({ toast }: { toast: ToastEntry | null }) {
+function ToastHost({ toast, onDismiss }: { toast: ToastEntry | null; onDismiss: () => void }) {
   if (!toast) return null;
   const colorClass = toast.kind === "success"
     ? "border-[#10a37f]/25 text-[#10a37f]"
@@ -77,7 +85,19 @@ function ToastHost({ toast }: { toast: ToastEntry | null }) {
           : toast.kind === "error"
             ? <XCircle className="mt-px h-4 w-4 shrink-0" />
             : <RefreshCw className="mt-px h-4 w-4 shrink-0" />}
-        <span>{toast.message}</span>
+        <span className="min-w-0 flex-1">{toast.message}</span>
+        {toast.action && (
+          <button
+            type="button"
+            onClick={() => {
+              toast.action?.onClick();
+              onDismiss();
+            }}
+            className="ml-1 shrink-0 rounded-md border border-current/20 px-2 py-0.5 text-[12px] font-medium transition hover:bg-current/10"
+          >
+            {toast.action.label}
+          </button>
+        )}
       </div>
     </div>
   );

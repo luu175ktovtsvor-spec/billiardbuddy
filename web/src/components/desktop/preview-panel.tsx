@@ -10,9 +10,7 @@
  *  ③ 海报(poster)：图片预览 + 保存 + 整张重做（图不支持选区/文字改）。
  * 由 DesktopShell 的 preview 槽渲染；数据由 chat-shell 管，表格/定向改的接口调用在本面板内自洽。
  */
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { X, Download, Wand2, Copy, Check, Loader2, RotateCcw, Table2, FileText, CheckCircle2, RefreshCw, Save, ChevronDown, FolderHeart, Clapperboard } from "lucide-react";
+import { X, Download, Wand2, Copy, Check, Loader2, RotateCcw, Table2, FileText, CheckCircle2, RefreshCw, Save, ChevronDown, FolderHeart, Clapperboard, AlertTriangle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
@@ -24,6 +22,7 @@ import { HtmlEditView } from "./html-edit-view";
 import { DocEditView } from "./doc-edit-view";
 import { useVersionHistory } from "./use-version-history";
 import { VersionBar } from "./version-bar";
+import { SafeMarkdown } from "./safe-markdown";
 
 export type PreviewItem =
   // E1-C2・generationId：做成视频走 openWorkbench({fromGen}) handoff 要用它按 id 取图；只有等这轮
@@ -35,8 +34,14 @@ export type PreviewItem =
   | { kind: "sheet"; title?: string; path: string }
   // 文档原样预览：PDF / Word(.docx) / PPT(.pptx) / 网页(.html)，由后端 /canvas/doc 读成可渲染数据
   | { kind: "doc"; title?: string; path: string }
+  // 文件修改正在执行：模型已发起写入/编辑，完成后会自动切成 diff
+  | { kind: "file_pending"; title?: string; path: string; tool: string }
+  | { kind: "file_pending_list"; title?: string; paths: string[]; tool: string }
+  | { kind: "file_error"; title?: string; path: string; tool: string; message: string }
+  | { kind: "file_error_list"; title?: string; paths: string[]; tool: string; message: string }
   // B.2：AI 改了本机已有文件 → 拉"改前/改后"对比让老板确认（复用 DiffBlock）
-  | { kind: "diff"; title?: string; path: string; backupPath?: string };
+  | { kind: "diff"; title?: string; path: string; backupPath?: string }
+  | { kind: "diff_list"; title?: string; changes: { path: string; backupPath?: string }[] };
 
 /** 0 基列序号 → Excel 列字母（0→A, 25→Z, 26→AA…）。 */
 function colLetter(idx: number): string {
@@ -416,6 +421,141 @@ function DiffPreview({ path, backupPath }: { path: string; backupPath?: string }
   );
 }
 
+function DiffListPreview({ changes }: { changes: { path: string; backupPath?: string }[] }) {
+  const [active, setActive] = useState(0);
+  const signature = changes.map(change => `${change.path}\u0000${change.backupPath || ""}`).join("\u0001");
+  useEffect(() => {
+    setActive(0);
+  }, [signature]);
+  const activeChange = changes[Math.min(active, Math.max(0, changes.length - 1))];
+  if (!activeChange) return <div className="flex-1 p-4 text-[12.5px] text-[#86868b] dark:text-[#6e7077]">没有可展示的文件改动。</div>;
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center gap-2 overflow-x-auto border-b border-black/[0.06] px-3 py-2 dark:border-white/[0.06]">
+        <span className="shrink-0 text-[12px] text-[#86868b] dark:text-[#6e7077]">{changes.length} 个文件</span>
+        {changes.map((change, index) => (
+          <button
+            key={`${change.path}:${index}`}
+            type="button"
+            onClick={() => setActive(index)}
+            className={`min-w-[96px] max-w-[180px] truncate rounded-md border px-2.5 py-1.5 text-left font-mono text-[11.5px] transition ${
+              index === active
+                ? "border-black/[0.14] bg-white text-[#1d1d1f] shadow-sm dark:border-white/[0.12] dark:bg-[#16181d] dark:text-[#e6e7e9]"
+                : "border-transparent text-[#86868b] hover:bg-black/[0.04] hover:text-[#3a3a3c] dark:text-[#8a8c93] dark:hover:bg-white/[0.05] dark:hover:text-[#c8cace]"
+            }`}
+            title={change.path}
+          >
+            {fileName(change.path)}
+          </button>
+        ))}
+      </div>
+      <DiffPreview path={activeChange.path} backupPath={activeChange.backupPath} />
+    </div>
+  );
+}
+
+function PendingFileChangeView({ path, tool }: { path: string; tool: string }) {
+  const action = tool === "write_file"
+    ? "正在写入"
+    : tool === "patch_file"
+      ? "正在应用补丁"
+      : tool === "patch_files"
+        ? "正在应用多文件补丁"
+        : tool === "multi_edit_file"
+          ? "正在批量修改"
+          : "正在修改";
+  return (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 text-center">
+      <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-md border border-black/[0.06] bg-white text-[#10a37f] shadow-sm dark:border-white/[0.08] dark:bg-[#16181d] dark:shadow-none">
+        <Loader2 className="h-4 w-4 animate-spin" />
+      </div>
+      <div className="max-w-full truncate text-[13px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">
+        {action} {fileName(path)}
+      </div>
+      <div className="mt-1 max-w-full truncate font-mono text-[11.5px] text-[#86868b] dark:text-[#6e7077]" title={path}>
+        {path}
+      </div>
+      <div className="mt-3 text-[12px] text-[#a1a1a6] dark:text-[#56585f]">完成后显示改动对比</div>
+    </div>
+  );
+}
+
+function PendingFileChangeListView({ paths, tool }: { paths: string[]; tool: string }) {
+  const action = tool === "patch_files" ? "正在应用多文件补丁" : "正在修改多个文件";
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center gap-2 border-b border-black/[0.06] px-4 py-3 text-[12px] text-[#86868b] dark:border-white/[0.06] dark:text-[#6e7077]">
+        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[#10a37f]" />
+        <span className="min-w-0 flex-1 truncate">{action}</span>
+        <span className="shrink-0 font-mono text-[11px] text-[#a1a1a6] dark:text-[#6e7077]">{paths.length} files</span>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-4">
+        <div className="overflow-hidden rounded-md border border-black/[0.06] bg-white shadow-sm dark:border-white/[0.08] dark:bg-[#16181d] dark:shadow-none">
+          {paths.map((path, index) => (
+            <div key={`${path}:${index}`} className="flex min-w-0 items-center gap-2 border-t border-black/[0.05] px-3 py-2 first:border-t-0 dark:border-white/[0.06]">
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-[#10a37f]/10 font-mono text-[10px] text-[#0b8064] dark:text-[#70d7bd]">
+                {index + 1}
+              </span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-[#3a3a3c] dark:text-[#c8cace]" title={path}>
+                {path}
+              </span>
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 text-center text-[12px] text-[#a1a1a6] dark:text-[#56585f]">完成后显示每个文件的改动对比</div>
+      </div>
+    </div>
+  );
+}
+
+function FileChangeErrorView({ path, message }: { path: string; message: string }) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 text-center">
+      <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-md border border-[#ff3b30]/15 bg-[#ff3b30]/[0.05] text-[#c4352b] dark:border-[#ff8585]/20 dark:bg-[#ff8585]/[0.08] dark:text-[#ff8585]">
+        <AlertTriangle className="h-4 w-4" />
+      </div>
+      <div className="max-w-full truncate text-[13px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">
+        没有写入 {fileName(path)}
+      </div>
+      <div className="mt-1 max-w-full truncate font-mono text-[11.5px] text-[#86868b] dark:text-[#6e7077]" title={path}>
+        {path}
+      </div>
+      <div className="mt-3 max-w-[360px] rounded-md border border-black/[0.06] bg-white px-3 py-2 text-left text-[12px] leading-relaxed text-[#6e6e73] dark:border-white/[0.08] dark:bg-[#16181d] dark:text-[#9a9ca3]">
+        {message}
+      </div>
+    </div>
+  );
+}
+
+function FileChangeErrorListView({ paths, message }: { paths: string[]; message: string }) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center gap-2 border-b border-black/[0.06] px-4 py-3 text-[12px] text-[#86868b] dark:border-white/[0.06] dark:text-[#6e7077]">
+        <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-[#c4352b] dark:text-[#ff8585]" />
+        <span className="min-w-0 flex-1 truncate">这些文件没有写入</span>
+        <span className="shrink-0 font-mono text-[11px] text-[#a1a1a6] dark:text-[#6e7077]">{paths.length} files</span>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-4">
+        <div className="overflow-hidden rounded-md border border-black/[0.06] bg-white shadow-sm dark:border-white/[0.08] dark:bg-[#16181d] dark:shadow-none">
+          {paths.map((path, index) => (
+            <div key={`${path}:${index}`} className="flex min-w-0 items-center gap-2 border-t border-black/[0.05] px-3 py-2 first:border-t-0 dark:border-white/[0.06]">
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-[#ff3b30]/10 font-mono text-[10px] text-[#c4352b] dark:text-[#ff8585]">
+                {index + 1}
+              </span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-[#3a3a3c] dark:text-[#c8cace]" title={path}>
+                {path}
+              </span>
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 rounded-md border border-black/[0.06] bg-white px-3 py-2 text-[12px] leading-relaxed text-[#6e6e73] dark:border-white/[0.08] dark:bg-[#16181d] dark:text-[#9a9ca3]">
+          {message}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function DesktopPreviewPanel({
   item,
   onClose,
@@ -658,7 +798,12 @@ export function DesktopPreviewPanel({
       : item.kind === "video" ? "视频预览"
       : item.kind === "sheet" ? fileName(item.path)
       : item.kind === "doc" ? fileName(item.path)
+      : item.kind === "file_pending" ? `${fileName(item.path)} · 正在修改`
+      : item.kind === "file_pending_list" ? `${item.paths.length} 个文件 · 正在修改`
+      : item.kind === "file_error" ? `${fileName(item.path)} · 未修改`
+      : item.kind === "file_error_list" ? `${item.paths.length} 个文件 · 未修改`
       : item.kind === "diff" ? `${fileName(item.path)} · 改动对比`
+      : item.kind === "diff_list" ? `${item.changes.length} 个文件 · 改动对比`
       : item.kind === "file" ? fileName(item.path)
       : "成品预览");
 
@@ -706,8 +851,18 @@ export function DesktopPreviewPanel({
         ) : item.kind === "doc" ? (
           // Word/PPT → 文字级编辑(写回原文件)；PDF/网页 → DocView(网页可圈可点 / PDF 原样)
           /\.(docx|pptx)$/i.test(item.path) ? <DocEditView path={item.path} title={item.title || fileName(item.path)} /> : <DocView path={item.path} />
+        ) : item.kind === "file_pending" ? (
+          <PendingFileChangeView path={item.path} tool={item.tool} />
+        ) : item.kind === "file_pending_list" ? (
+          <PendingFileChangeListView paths={item.paths} tool={item.tool} />
+        ) : item.kind === "file_error" ? (
+          <FileChangeErrorView path={item.path} message={item.message} />
+        ) : item.kind === "file_error_list" ? (
+          <FileChangeErrorListView paths={item.paths} message={item.message} />
         ) : item.kind === "diff" ? (
           <DiffPreview path={item.path} backupPath={item.backupPath} />
+        ) : item.kind === "diff_list" ? (
+          <DiffListPreview changes={item.changes} />
         ) : item.kind === "file" ? (
           <div className="flex-1 overflow-auto p-4">
             <pre className="whitespace-pre-wrap break-words rounded-lg border border-black/[0.08] bg-white p-3.5 font-mono text-[12px] leading-relaxed text-[#1d1d1f] shadow-sm dark:border-white/[0.08] dark:bg-[#16181d] dark:text-[#c8cace] dark:shadow-none">{workText}</pre>
@@ -726,7 +881,7 @@ export function DesktopPreviewPanel({
         ) : (
           <div className="relative flex-1 overflow-y-auto p-5">
             <div className="prose prose-sm prose-slate dark:prose-invert max-w-none rounded-lg border border-black/[0.08] bg-white p-4 shadow-sm prose-p:my-1.5 dark:border-white/[0.08] dark:bg-[#16181d] dark:shadow-none">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{workText}</ReactMarkdown>
+              <SafeMarkdown>{workText}</SafeMarkdown>
             </div>
             {busy && (
               <div className="absolute inset-0 flex items-center justify-center bg-white/55 backdrop-blur-[1px] dark:bg-black/45">
@@ -747,7 +902,7 @@ export function DesktopPreviewPanel({
             <button
               type="button"
               onClick={() => setRefineOpen(true)}
-              className="flex items-center gap-1.5 rounded-full bg-[#10a37f] px-3 py-1.5 text-[12.5px] font-medium text-white shadow-lg transition hover:bg-[#0e906f] active:scale-[0.97]"
+              className="app-primary-action flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12.5px] font-medium shadow-lg transition active:scale-[0.97]"
             >
               <Wand2 className="h-3.5 w-3.5" /> 基于此调整
             </button>
@@ -790,7 +945,7 @@ export function DesktopPreviewPanel({
                   type="button"
                   onClick={submitRefine}
                   disabled={!refineText.trim()}
-                  className="rounded-md bg-[#10a37f] px-2.5 py-1 text-[12px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.98] disabled:opacity-40"
+                  className="app-primary-action rounded-md px-2.5 py-1 text-[12px] font-medium transition active:scale-[0.98] disabled:opacity-40"
                 >
                   {directEdit ? "改写这段" : "发送给管家"}
                 </button>
@@ -801,7 +956,7 @@ export function DesktopPreviewPanel({
       )}
 
       {/* 工具条（海报/文案/文件 + 定稿闸；报表不需要——点格即改；doc 仅在有定稿闸时显示底栏） */}
-      {item.kind !== "sheet" && item.kind !== "doc" && (
+      {item.kind !== "sheet" && item.kind !== "doc" && item.kind !== "file_pending" && item.kind !== "file_pending_list" && item.kind !== "file_error" && item.kind !== "file_error_list" && item.kind !== "diff" && item.kind !== "diff_list" && (
         <div className="border-t border-black/[0.08] p-3 dark:border-white/[0.06]">
           {item.kind === "poster" && (item.ratio || item.width || item.height) && (
             <div className="mb-2 text-center font-mono text-[11px] text-[#86868b] dark:text-[#6e7077]">
@@ -824,7 +979,7 @@ export function DesktopPreviewPanel({
             <div className="flex items-center gap-2">
               <button
                 onClick={acceptPending}
-                className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md bg-[#10a37f] text-[13px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.98]"
+                className="app-primary-action flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md text-[13px] font-medium transition active:scale-[0.98]"
               >
                 <Check className="h-3.5 w-3.5" /> 接受改动
               </button>
@@ -850,7 +1005,7 @@ export function DesktopPreviewPanel({
               />
               <div className="mt-1.5 flex items-center justify-end gap-1.5">
                 <button type="button" onClick={() => { setWholeOpen(false); setWholeText(""); }} className="rounded-md px-2 py-1 text-[12px] text-[#86868b] transition hover:text-[#1d1d1f] dark:text-[#9a9ca3] dark:hover:text-[#e6e7e9]">取消</button>
-                <button type="button" onClick={submitWhole} disabled={!wholeText.trim() || busy} className="rounded-md bg-[#10a37f] px-2.5 py-1 text-[12px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.98] disabled:opacity-40">改写</button>
+                <button type="button" onClick={submitWhole} disabled={!wholeText.trim() || busy} className="app-primary-action rounded-md px-2.5 py-1 text-[12px] font-medium transition active:scale-[0.98] disabled:opacity-40">改写</button>
               </div>
             </div>
           )}
@@ -862,7 +1017,7 @@ export function DesktopPreviewPanel({
                   type="button"
                   onClick={() => void saveMediaAsFile()}
                   disabled={saving}
-                  className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md bg-[#10a37f] text-[13px] text-white transition hover:bg-[#0e906f] active:scale-[0.98]"
+                  className="app-primary-action flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md text-[13px] transition active:scale-[0.98]"
                 >
                   {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
                   {saving ? "正在保存…" : "保存到本机"}
@@ -872,7 +1027,7 @@ export function DesktopPreviewPanel({
                   type="button"
                   onClick={() => void saveMediaAsFile()}
                   disabled={saving}
-                  className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md bg-[#10a37f] text-[13px] text-white transition hover:bg-[#0e906f] active:scale-[0.98]"
+                  className="app-primary-action flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md text-[13px] transition active:scale-[0.98]"
                 >
                   {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
                   {saving ? "正在保存…" : "保存到本机"}
@@ -880,7 +1035,7 @@ export function DesktopPreviewPanel({
               ) : (
                 <button
                   onClick={copy}
-                  className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md bg-[#10a37f] text-[13px] text-white transition hover:bg-[#0e906f] active:scale-[0.98]"
+                  className="app-primary-action flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md text-[13px] transition active:scale-[0.98]"
                 >
                   {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
                   {copied ? "已复制" : "复制"}
@@ -939,7 +1094,7 @@ export function DesktopPreviewPanel({
                 <button
                   type="button"
                   onClick={() => void showSavedLocation()}
-                  className="shrink-0 rounded-md px-2 py-1 text-[12px] text-[#007AFF] transition hover:bg-[#007AFF]/10"
+                  className="shrink-0 rounded-md px-2 py-1 text-[12px] text-[#10a37f] transition hover:bg-[#10a37f]/10"
                 >
                   打开位置
                 </button>
@@ -952,7 +1107,7 @@ export function DesktopPreviewPanel({
               <button
                 onClick={() => setSaveOpen((v) => !v)}
                 disabled={saving}
-                className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md bg-[#10a37f] text-[13px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.98] disabled:opacity-60"
+                className="app-primary-action flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md text-[13px] font-medium transition active:scale-[0.98] disabled:opacity-60"
               >
                 {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
                 {saving ? "正在保存…" : "保存到电脑"}
@@ -1018,7 +1173,7 @@ export function DesktopPreviewPanel({
             <div className="mt-2 flex items-center gap-2">
               <button
                 onClick={() => onFinalize("accept", isText ? workText : undefined)}
-                className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md bg-[#10a37f] text-[13px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.98]"
+                className="app-primary-action flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md text-[13px] font-medium transition active:scale-[0.98]"
               >
                 <CheckCircle2 className="h-3.5 w-3.5" /> 确认采用
               </button>

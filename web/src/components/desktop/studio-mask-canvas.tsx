@@ -132,7 +132,7 @@ export default function StudioMaskCanvas({ imageUrl, busy, onApply, onCancel }: 
           <X className="h-3.5 w-3.5" /> 取消
         </button>
         <button type="button" disabled={!canApply} onClick={() => onApply(lines.length > 0 ? exportMask() : undefined, instruction.trim())}
-          className="flex items-center gap-1 rounded-lg bg-[#10a37f] px-3 py-1.5 text-[13px] font-medium text-white transition hover:bg-[#0e906f] active:scale-[0.99] disabled:opacity-50">
+          className="app-primary-action flex items-center gap-1 rounded-lg px-3 py-1.5 text-[13px] font-medium transition active:scale-[0.99] disabled:opacity-50">
           {busy ? <Wand2 className="h-3.5 w-3.5 animate-pulse" /> : <Check className="h-3.5 w-3.5" />} {lines.length > 0 ? "改这一块" : "改整张"}
         </button>
       </div>

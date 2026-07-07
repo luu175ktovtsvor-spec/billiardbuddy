@@ -43,6 +43,18 @@ export interface AskQuestionPayload {
   url?: string;
 }
 
+export interface AgentUsagePayload {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  last_input_tokens: number;
+  last_output_tokens: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  context_window?: number;
+  context_percent?: number;
+}
+
 /** Agent 流式对话事件回调（对应后端 /agent/chat 的 SSE 事件：token/tool_call/tool_result/final/done/error）。 */
 export interface AgentStreamHandlers {
   onToken?: (token: string) => void;
@@ -55,7 +67,7 @@ export interface AgentStreamHandlers {
   // 命令边跑边显示：工具执行中实时推来的输出片段（chunk），按 id 累进对应步骤的终端块。
   onToolProgress?: (tool: string, id: string | undefined, chunk: string, stream?: string) => void;
   // SH-8：reason = 结构化审批理由 {what 要做什么 / why 为什么要你确认 / impact 影响}，让审批卡说清楚再让老板点头。
-  onApprovalRequest?: (tool: string, args: Record<string, unknown>, id?: string, token?: string, preview?: string, reason?: ApprovalReason) => void;
+  onApprovalRequest?: (tool: string, args: Record<string, unknown>, id?: string, token?: string, preview?: string, reason?: ApprovalReason, rememberable?: boolean) => void;
   onAskQuestion?: (q: AskQuestionPayload) => void;
   // 方向盘：跑动中捎的话已注入下一轮（content=插话原文）。本窗口发的已乐观上屏、据此去重；刷新重放据此把插话补回对话流。
   onSteering?: (content: string) => void;
@@ -66,6 +78,7 @@ export interface AgentStreamHandlers {
   // 后端已归并成同一个事件），content 是渲染好的展示文本（"任务清单（共 N 步，已完成 M 步）：..."）。
   // 每次都是【最新完整状态】，不是增量——前端应原地覆盖同一张清单卡，不要每次都新开一张。
   onTodoUpdate?: (content: string) => void;
+  onUsageUpdate?: (usage: AgentUsagePayload) => void;
   onFinal?: (content: string) => void;
   onDone?: (info: { turns: number; stopped_reason: string; conversation_id?: string; generation_id?: string; task_id?: string; offset?: number; memory_refs?: string[] }) => void;
   onError?: (error: string) => void;
@@ -108,6 +121,7 @@ export interface MediaJobStatus {
 
 export interface BackgroundTaskItem {
   id: string;
+  agentId?: string;
   title: string;
   createdAt: string;
   updatedAt: string;
@@ -119,6 +133,106 @@ export interface BackgroundTaskItem {
   stage?: string;
   result?: unknown;
   error?: string;
+}
+
+export interface BackgroundTaskDetailResponse {
+  task: BackgroundTaskItem;
+  events?: { seq: number; ts: string; event: Record<string, unknown> }[];
+  agentId?: string;
+  requestedTaskId?: string;
+  resolvedTaskId?: string;
+}
+
+export interface WorkspaceGitStatus {
+  isGit: boolean;
+  branch: string | null;
+  dirty: boolean;
+  changed: number;
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  ahead: number;
+  behind: number;
+}
+
+export interface WorkspaceProjectInstructionSummary {
+  files: Array<{ file: string; truncated: boolean }>;
+  count: number;
+  truncated: boolean;
+}
+
+export interface WorkspaceTreeEntry {
+  name: string;
+  path: string;
+  type: "file" | "directory";
+  children?: WorkspaceTreeEntry[];
+  truncated?: boolean;
+}
+
+export interface WorkspaceTreeSummary {
+  root: string;
+  entries: WorkspaceTreeEntry[];
+  total: number;
+  truncated: boolean;
+  error?: string;
+}
+
+export interface ModelRuntimeSummary {
+  apiFormat: "anthropic" | "openai_chat" | string;
+  baseUrl: string;
+  model: string;
+  hasApiKey: boolean;
+  hasAuthToken: boolean;
+  reasoningEffort?: string;
+  networkProxyMode?: string;
+}
+
+export interface ModelProviderItem {
+  id: string;
+  name: string;
+  enabled: boolean;
+  apiFormat: "anthropic" | "openai_chat" | string;
+  baseUrl: string;
+  model: string;
+  hasApiKey: boolean;
+  hasAuthToken: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ModelStatusResponse {
+  ok: boolean;
+  activeId: string | null;
+  providers?: ModelProviderItem[];
+  fallbackCount: number;
+  coolingCount?: number;
+  health?: Array<{
+    source: "saved-provider" | "env" | string;
+    providerId?: string;
+    providerName?: string;
+    label: string;
+    model: string;
+    state: "ready" | "cooling" | string;
+    failureCount: number;
+    cooldownMsRemaining: number;
+    lastError?: string;
+    failureCategory?: "configuration" | "rate_limit" | "transient" | string;
+  }>;
+  healthHistory?: Array<{
+    kind: "failure" | "success" | "clear" | string;
+    key: string;
+    label: string;
+    ts: string;
+    failureCount?: number;
+    failureCategory?: "configuration" | "rate_limit" | "transient" | string;
+    error?: string;
+  }>;
+  runtime: {
+    source: "saved-provider" | "env" | string;
+    providerId?: string;
+    providerName?: string;
+    summary: ModelRuntimeSummary;
+  } | null;
 }
 
 // AI 剪辑台：inventory 返回的候选片段(前端渲染选段卡片)
@@ -138,7 +252,7 @@ export interface VideoDocView {
   height: number;
   fps: number;
   duration: number;
-  media: Record<string, { src: string; duration: number }>;
+  media: Record<string, { src: string; duration: number; has_audio?: boolean }>;
   clips: { id: string; media: string | null; src_in: number; src_out: number; order: number }[];
   captions: { id: string; text: string | null; start: number | null; end: number | null; style: string | null }[];
   music: string | null;
@@ -154,7 +268,7 @@ export interface AgentChatPayload {
   selected_files?: string[]; // 桌面版：老板选定、授权 Agent 读/改的文件绝对路径
   permission_mode?: "ask" | "auto_files" | "full" | "plan"; // 权限：每次问/自动改文件/全自动/计划
   full_disk_access?: boolean; // 高级·全盘：文件工具不限内容库+选定文件
-  knowledge_packs?: string[]; // @ 挂载的知识库（如 ["billiards"]）；含 billiards → 台球专家模式，否则通用
+  knowledge_packs?: string[]; // 专家挂载（如 ["billiards"]）；含 billiards → 台球运营专家，否则通用 Agent
   output_style?: string; // 输出风格名（explanatory/concise…），空=默认
   goal?: string; // /goal 目标驱动：本次会话目标条件
   deep_thinking?: boolean; // F.2 深度思考：true=开/false=关/省略=跟随模型默认（mimo 默认开）
@@ -211,8 +325,8 @@ export interface ScheduledTaskUpdatePayload {
   enabled?: boolean;
 }
 
-// D-Task-6：店铺资料库(老板自己店里的合同/价目表/排班表/进货单，选个文件夹后台自动语义索引，
-// 对话里 AI 用 search_store_docs 工具检索、带出处回答)。跟"台球行业知识库"(懂行业打法)分开——
+// D-Task-6：店铺资料库(老板自己店里的合同/价目表/排班表/进货单，选个文件夹后台自动本地索引，
+// 对话里 AI 用 search_store_docs 工具检索、带出处回答)。跟"台球运营专家"(懂行业打法)分开——
 // 这个是"懂你家"。字段跟后端 server/api/v1/store_docs.py 的 StoreDocLibraryItem 严格一致。
 export interface StoreDocLibraryItem {
   folder_path: string | null;
@@ -221,6 +335,18 @@ export interface StoreDocLibraryItem {
   indexed_chunk_count: number;
   last_indexed_at: string | null;
   last_error: string | null;
+}
+
+export interface StoreDocHit {
+  source_id: string;
+  file_name: string;
+  path: string;
+  chunk_index: number;
+  score: number;
+  confidence: "high" | "medium" | "low";
+  matched_terms: string[];
+  why: string;
+  excerpt: string;
 }
 
 class ApiClient {
@@ -350,9 +476,10 @@ class ApiClient {
     return this.request<UploadResponse>("POST", "/api/v1/stores/me/logo", formData, true);
   }
 
-  uploadQrcode(file: File) {
+  uploadQrcode(file: File, content?: string | null) {
     const formData = new FormData();
     formData.append("file", file);
+    if (content?.trim()) formData.append("content", content.trim());
     return this.request<UploadResponse>("POST", "/api/v1/stores/me/qrcode", formData, true);
   }
 
@@ -518,14 +645,14 @@ class ApiClient {
   }
 
   getBackgroundTask(id: string, includeEvents = false) {
-    return this.request<{ task: BackgroundTaskItem; events?: { seq: number; ts: string; event: Record<string, unknown> }[] }>(
+    return this.request<BackgroundTaskDetailResponse>(
       "GET",
       `/tasks/${encodeURIComponent(id)}${includeEvents ? "?includeEvents=1" : ""}`,
     );
   }
 
   cancelBackgroundTask(id: string) {
-    return this.request<{ ok: boolean; cancelled: boolean }>("POST", `/tasks/${encodeURIComponent(id)}/cancel`, {});
+    return this.request<{ ok: boolean; cancelled: boolean; taskId?: string; requestedTaskId?: string }>("POST", `/tasks/${encodeURIComponent(id)}/cancel`, {});
   }
 
   /** 方向盘：任务跑动中给它捎话（补充/纠偏）。新话排进任务的插话队列，AI 下一轮注入、当场改道；
@@ -570,11 +697,12 @@ class ApiClient {
               case "tool_call": handlers.onToolCall?.(ev.tool, ev.args || {}, ev.id); break;
               case "tool_result": handlers.onToolResult?.(ev.tool, ev.content || "", ev.id, Array.isArray(ev.knowledge_used) ? ev.knowledge_used : undefined, Array.isArray(ev.image_generation_ids) ? ev.image_generation_ids : undefined); break;
               case "tool_progress": handlers.onToolProgress?.(ev.tool, ev.id, ev.chunk || "", ev.stream); break;
-              case "approval_request": handlers.onApprovalRequest?.(ev.tool, ev.args || {}, ev.id, ev.token, ev.preview, ev.reason); break;
+              case "approval_request": handlers.onApprovalRequest?.(ev.tool, ev.args || {}, ev.id, ev.token, ev.preview, ev.reason, ev.rememberable === true); break;
               case "ask_question": handlers.onAskQuestion?.({ question: ev.question || "", options: ev.options || [], multi: ev.multi, id: ev.id, allowFreeform: ev.allowFreeform, placeholder: ev.placeholder, fields: Array.isArray(ev.fields) ? ev.fields : undefined, url: typeof ev.url === "string" ? ev.url : undefined }); break;
               case "steering": handlers.onSteering?.(ev.content || ""); break;
               case "context_note": handlers.onContextNote?.(ev.content || ""); break;
               case "todo_update": handlers.onTodoUpdate?.(ev.content || ""); break;
+              case "usage_update": handlers.onUsageUpdate?.(ev); break;
               case "final": handlers.onFinal?.(ev.content || ""); break;
               case "done": handlers.onDone?.({ turns: ev.turns, stopped_reason: ev.stopped_reason, conversation_id: ev.conversation_id, generation_id: ev.generation_id, task_id: ev.task_id, offset: ev.offset, memory_refs: Array.isArray(ev.memory_refs) ? ev.memory_refs : undefined }); return;
               case "error": handlers.onError?.(ev.error || "生成出错，请重试"); break;
@@ -608,11 +736,13 @@ class ApiClient {
     conversationId?: string | null,
     knowledgePacks?: string[],
     workingDir?: string,
+    rememberApproval?: boolean,
+    approvalArgs?: Record<string, unknown>,
   ): Promise<{
     tool: string;
     result: string;
     continuation?: string;  // 审批回灌：执行后管家基于结果的自然接话
-    approval?: { tool: string; args: Record<string, unknown>; token?: string; preview?: string; reason?: ApprovalReason } | null;
+    approval?: { tool: string; args: Record<string, unknown>; token?: string; preview?: string; reason?: ApprovalReason; rememberable?: boolean } | null;
   }> {
     return this.request("POST", "/api/v1/agent/execute", {
       tool,
@@ -623,6 +753,8 @@ class ApiClient {
       conversation_id: conversationId,
       knowledge_packs: knowledgePacks,
       working_dir: workingDir,
+      remember_approval: rememberApproval,
+      approval_args: approvalArgs,
     });
   }
 
@@ -674,7 +806,7 @@ class ApiClient {
     return this.request<{ status: string }>("DELETE", `/api/v1/scheduled-tasks/${id}`);
   }
 
-  // ── 店铺资料库：懂你家(合同/价目表/排班表/进货单)，跟台球行业知识库(懂行)分开呈现 ──
+  // ── 店铺资料库：懂你家(合同/价目表/排班表/进货单)，跟台球运营专家(懂行)分开呈现 ──
   async getStoreDocs(): Promise<StoreDocLibraryItem> {
     return this.request<StoreDocLibraryItem>("GET", "/api/v1/store-docs");
   }
@@ -686,6 +818,9 @@ class ApiClient {
   }
   async clearStoreDocs(): Promise<{ status: string }> {
     return this.request<{ status: string }>("DELETE", "/api/v1/store-docs");
+  }
+  async searchStoreDocs(query: string, top = 5, options?: { path?: string; paths?: string[] }): Promise<{ hits: StoreDocHit[] }> {
+    return this.request<{ hits: StoreDocHit[] }>("POST", "/api/v1/store-docs/search", { query, top, ...options });
   }
 
   // ─── Dashboard ───
@@ -741,7 +876,20 @@ class ApiClient {
   // 阶段2 生成工作室：文生图（绕 LLM 直连，异步出图，返回 job_id 后轮询 getMediaJob）
   // image_model=选的生图模型(gpt-image-2 / doubao-seedream-4-5-251128…)；image_prompt=优化后的提示词(有则当真实 prompt)
   // E2-4・reference_generation_ids="要同款"：拿已出的成品 id 当参考图，重新生成一批相似的（不是改这一张）
-  studioGenerate(input: { prompt: string; ratio?: string; style?: string; count?: number; reference_image_paths?: string[]; reference_generation_ids?: string[]; image_model?: string; image_prompt?: string; conversation_id?: string | null }) {
+  studioGenerate(input: {
+    prompt: string;
+    ratio?: string;
+    style?: string;
+    count?: number;
+    reference_image_paths?: string[];
+    reference_generation_ids?: string[];
+    image_model?: string;
+    image_prompt?: string;
+    poster_text?: string | string[] | Record<string, unknown>;
+    print_mode?: boolean;
+    qrcode_text?: string;
+    conversation_id?: string | null;
+  }) {
     return this.request<{ job_id: string }>("POST", "/api/v1/studio/generate", input);
   }
 
@@ -944,9 +1092,15 @@ class ApiClient {
     return this.request<{ skills: SkillMeta[] }>("GET", "/api/v1/agent/skills");
   }
 
-  // 桌面端：列出后端 markdown slash commands（server/commands）
-  listCommands() {
-    return this.request<{ commands: CommandMeta[] }>("GET", "/commands");
+  // 桌面端：列出后端 markdown slash commands（server/commands + 当前项目 .claude/.codex commands）
+  listCommands(workingDir?: string | null, knowledgePacks?: string[]) {
+    const q = new URLSearchParams();
+    if (workingDir) q.set("working_dir", workingDir);
+    for (const pack of knowledgePacks || []) {
+      if (pack.trim()) q.append("knowledge_packs", pack.trim());
+    }
+    const suffix = q.toString() ? `?${q.toString()}` : "";
+    return this.request<{ commands: CommandMeta[] }>("GET", `/api/commands${suffix}`);
   }
 
   // 桌面端：列出可用输出风格
@@ -954,9 +1108,37 @@ class ApiClient {
     return this.request<{ output_styles: OutputStyleMeta[] }>("GET", "/api/v1/agent/output-styles");
   }
 
+  // 桌面端：列出可挂载专家（行业知识/工具上下文）
+  listKnowledgePacks() {
+    return this.request<{ packs: KnowledgePackMeta[] }>("GET", "/api/v1/agent/packs");
+  }
+
   // 桌面端：MCP 服务器状态（连接状态 + 工具数，要真连一下）
   listMcp() {
     return this.request<{ servers: { name: string; command?: string; status: string; tools: number }[] }>("GET", "/api/v1/agent/mcp");
+  }
+
+  workspaceStatus(workingDir?: string | null) {
+    const q = new URLSearchParams();
+    if (workingDir) q.set("working_dir", workingDir);
+    const suffix = q.toString() ? `?${q.toString()}` : "";
+    return this.request<{ git: WorkspaceGitStatus; projectInstructions?: WorkspaceProjectInstructionSummary; tree?: WorkspaceTreeSummary }>("GET", `/api/v1/agent/workspace-status${suffix}`);
+  }
+
+  getModelStatus() {
+    return this.request<ModelStatusResponse>("GET", "/api/model");
+  }
+
+  clearModelHealth(input: { providerId?: string; source?: string; all?: boolean }) {
+    return this.request<{ ok: boolean; cleared: number; status: ModelStatusResponse }>("POST", "/api/model/health/clear", input);
+  }
+
+  setProviderEnabled(providerId: string, enabled: boolean) {
+    return this.request<{ provider: ModelProviderItem }>("PATCH", `/api/providers/${encodeURIComponent(providerId)}/enabled`, { enabled });
+  }
+
+  reorderProviders(ids: string[]) {
+    return this.request<{ providers: ModelProviderItem[]; activeId: string | null }>("POST", "/api/providers/reorder", { ids });
   }
 
   // 桌面端：免 key 的官方 MCP 预设（一键加）
@@ -1039,6 +1221,17 @@ export interface OutputStyleMeta {
   name: string;
   description: string;
   source: string;
+}
+
+export interface KnowledgePackMeta {
+  id: string;
+  name: string;
+  description: string;
+  aliases: string[];
+  default_enabled: boolean;
+  suggested_skills: string[];
+  suggested_commands?: string[];
+  suggested_tools?: string[];
 }
 
 export const api = new ApiClient();
