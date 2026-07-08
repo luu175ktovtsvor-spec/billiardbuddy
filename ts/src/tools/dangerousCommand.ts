@@ -1,5 +1,6 @@
 import { statSync } from 'node:fs'
-import { isAbsolute, join, relative, resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { stripSafeShellWrappers } from '../permissions/permissionRules'
 
 /**
@@ -156,6 +157,8 @@ const GREP_RG_FLAGS_WITH_ARGS = new Set([
 ])
 const SED_FLAGS_WITH_ARGS = new Set(['-e', '--expression', '-f', '--file', '-l', '--line-length'])
 const SED_PATH_FLAGS = new Set(['-f', '--file'])
+const WINDOWS_DRIVE_ROOT_REGEX = /^[A-Za-z]:\/?$/
+const WINDOWS_DRIVE_CHILD_REGEX = /^[A-Za-z]:\/[^/]+$/
 
 const GIT_REF_SELECTION_FLAGS: Record<string, FlagArgKind> = {
   '--all': 'none',
@@ -2870,6 +2873,14 @@ export function shellSensitiveReadNeedsApproval(command: string): boolean {
   })
 }
 
+export function shellDangerousRemovalNeedsApproval(command: string, opts: { cwd?: string } = {}): boolean {
+  const commandForClassification = stripSafeHeredocSubstitutions(command) ?? command
+  return splitSegments(commandForClassification).some(segment => {
+    const rawCommand = normalize(stripRuntimeEnvWrapper(segment))
+    return removalCommandTouchesDangerousPath(rawCommand, opts.cwd)
+  })
+}
+
 function readCommandTouchesSensitivePath(command: string): boolean {
   const tokens = tokenizeShellWords(command)
   const base = tokens[0]?.toLowerCase()
@@ -3012,6 +3023,56 @@ function findCommandTouchesSensitivePath(args: string[]): boolean {
     if (!foundNonGlobalFlag && isSensitivePathToken(arg)) return true
   }
   return false
+}
+
+function removalCommandTouchesDangerousPath(command: string, cwd = process.cwd()): boolean {
+  const tokens = tokenizeShellWords(command)
+  const base = tokens[0]?.toLowerCase()
+  if (base !== 'rm' && base !== 'rmdir') return false
+  return extractRemovalPathArgs(tokens.slice(1)).some(path => isDangerousRemovalPathToken(path, cwd))
+}
+
+function extractRemovalPathArgs(args: string[]): string[] {
+  const paths: string[] = []
+  let afterDoubleDash = false
+  for (const arg of args) {
+    if (!arg) continue
+    if (afterDoubleDash) {
+      paths.push(arg)
+    } else if (arg === '--') {
+      afterDoubleDash = true
+    } else if (!arg.startsWith('-')) {
+      paths.push(arg)
+    }
+  }
+  return paths
+}
+
+function isDangerousRemovalPathToken(raw: string, cwd: string): boolean {
+  const cleaned = raw.replace(/^['"]|['"]$/g, '')
+  if (!cleaned) return false
+  const expanded = expandTildeForRemoval(cleaned).replace(/[\\/]+/g, '/')
+  if (isDangerousRemovalPath(expanded)) return true
+  const absolutePath = isAbsolute(expanded) ? expanded : resolve(cwd, expanded)
+  return isDangerousRemovalPath(absolutePath)
+}
+
+function expandTildeForRemoval(path: string): string {
+  if (path === '~' || path.startsWith('~/') || (process.platform === 'win32' && path.startsWith('~\\'))) {
+    return homedir() + path.slice(1)
+  }
+  return path
+}
+
+function isDangerousRemovalPath(path: string): boolean {
+  const forwardSlashed = path.replace(/[\\/]+/g, '/')
+  if (forwardSlashed === '*' || forwardSlashed.endsWith('/*')) return true
+  const normalizedPath = forwardSlashed === '/' ? forwardSlashed : forwardSlashed.replace(/\/$/, '')
+  if (normalizedPath === '/') return true
+  if (WINDOWS_DRIVE_ROOT_REGEX.test(normalizedPath)) return true
+  if (normalizedPath === homedir().replace(/[\\/]+/g, '/')) return true
+  if (dirname(normalizedPath) === '/') return true
+  return WINDOWS_DRIVE_CHILD_REGEX.test(normalizedPath)
 }
 
 function isSensitivePathToken(raw: string): boolean {
@@ -3439,6 +3500,7 @@ function classifySegment(segment: string): CommandRisk {
   const segmentBaseRisk: CommandRisk = hasWriteRedirection(command) ? 'file' : 'read'
   const withSegmentBaseRisk = (risk: CommandRisk): CommandRisk => maxRisk(segmentBaseRisk, risk)
 
+  if (removalCommandTouchesDangerousPath(rawCommand)) return withSegmentBaseRisk('destructive')
   if (/\bgit\s+clean\s+-/.test(command)) return withSegmentBaseRisk('destructive')
   if (/\brm\s+.*-[a-z]*r/.test(command)) return withSegmentBaseRisk('destructive')
   const processActionRisk = classifyProcessActionCommand(rawCommand)
