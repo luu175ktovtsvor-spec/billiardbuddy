@@ -96,6 +96,37 @@ test('已中止的信号:已下发工具短路成取消态、不执行', async (
   expect(tr && tr.type === 'tool_result' && tr.output).toContain('已取消')
 })
 
+test('并行只读工具批次受并发上限约束(CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY)', async () => {
+  process.env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY = '2'
+  let active = 0
+  let maxActive = 0
+  const reg = new ToolRegistry([{
+    name: 'probe',
+    description: '',
+    inputSchema: { type: 'object' },
+    isReadOnly: true,
+    async execute() {
+      active++
+      maxActive = Math.max(maxActive, active)
+      await new Promise(r => setTimeout(r, 5))
+      active--
+      return 'ok'
+    },
+  }])
+  try {
+    const calls = Array.from({ length: 6 }, (_, i) => ({ id: `p${i}`, name: 'probe', input: { n: i } }))
+    await collect(runAgentLoop({
+      model: scriptedModel([{ kind: 'tool_calls', calls }, { kind: 'final', text: 'x' }]),
+      registry: reg, workspace: new Workspace(root), systemPrompt: 'SYS', userMessage: 'x',
+      permissionMode: 'full',
+    }))
+    expect(maxActive).toBeGreaterThan(0)
+    expect(maxActive).toBeLessThanOrEqual(2)
+  } finally {
+    delete process.env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY
+  }
+})
+
 test('runs file execution scenario through TS agent loop with edits, spreadsheet updates and shell verification', async () => {
   writeFileSync(join(root, '朋友圈草稿.md'), [
     '# 周末充值活动朋友圈',

@@ -405,7 +405,8 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     const flushParallelReadOnly = async (): Promise<AgentEvent[]> => {
       if (!parallelReadOnly.length) return []
       const batch = parallelReadOnly.splice(0)
-      const outcomes = await Promise.all(batch.map(item => executeAllowedToolCall(item.tool, item.call, item.input, ctx, hooksForCurrentSession(), opts.toolResultStoreDir)))
+      const outcomes = await mapWithConcurrency(batch, parallelReadOnlyLimit(), item =>
+        executeAllowedToolCall(item.tool, item.call, item.input, ctx, hooksForCurrentSession(), opts.toolResultStoreDir))
       const events: AgentEvent[] = []
       for (const outcome of outcomes) {
         toolResults.push(outcome.result)
@@ -663,6 +664,29 @@ function toolFeedback(call: ToolCall, output: string, isError = false, modelCont
     result: toolResultBlock(call.id, content, isError),
     events: [{ type: 'tool_result', tool: call.name, output }],
   }
+}
+
+/** 并行只读工具的并发上限:对齐 cc getMaxToolUseConcurrency(默认 10,env 可覆盖),避免模型一次发几十个
+ * 并行只读调用时无限制铺开 fetch/子进程/文件句柄把本机打爆。 */
+function parallelReadOnlyLimit(): number {
+  const raw = Number(process.env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY)
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 10
+}
+
+/** 带并发上限地跑 items(保持结果顺序);数量不超上限时退化为 Promise.all。 */
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  if (items.length <= limit) return Promise.all(items.map(fn))
+  const results = new Array<R>(items.length)
+  let next = 0
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const i = next++
+      if (i >= items.length) return
+      results[i] = await fn(items[i]!)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return results
 }
 
 async function executeAllowedToolCall(
