@@ -11,7 +11,7 @@ work_fn 约定:
 F-10：submit()/`_run()` 可选带 `on_done` 完成回调，job 落库(done/error 皆算"完成")后调用一次：
     async def on_done(job_id: str, status: str, result: dict | None, error: str | None) -> None
 不传就是原样行为(studio.py/video_edit.py 现有调用点都不传，零影响)。这是给"挂在聊天里的慢工具"
-(generate_video/render_video)用的——它们提交完就立即返回，真正做完时得靠这个钩子把结果回灌进
+    render_video 用的——它提交完就立即返回，真正做完时得靠这个钩子把结果回灌进
 对话轨迹 + 弹通知，见 `services/agent/media_job_notify.py`。钩子异常只记日志、绝不影响任务
 本身已经落库的终态(runner 是 fire-and-forget 后台任务，没人等它抛错)。
 """

@@ -56,7 +56,7 @@ function planWarnings(result: VideoPlanResult): string[] {
   return Array.from(new Set(messages)).slice(0, 6);
 }
 
-export function VideoWorkspacePage({ initialFromGen }: { initialFromGen?: string } = {}) {
+export function VideoWorkspacePage() {
   const { electron } = useDesktop();
   const [paths, setPaths] = useState<string[]>([]);
   const [project, setProject] = useState<string | null>(null);
@@ -133,58 +133,6 @@ export function VideoWorkspacePage({ initialFromGen }: { initialFromGen?: string
     pollAbortRef.current = controller;
     return api.pollMediaJob(job_id, (j) => setStage(j.stage || ""), undefined, controller.signal);
   }, []);
-
-  // ── E1-C2・生图台"做成视频"handoff:openWorkbench("video",{fromGen}) 带过来的单图素材,单独一条
-  // 最小图生视频入口——和上面"选本机视频→自动剪辑"是两条完全不同的管线(单图动起来 vs 剪真实素材),
-  // 状态/轮询各自独立、互不干扰。fromGen 只是个 id(真图从不走 IPC),这里按 id 换成真实 URL 再喂给
-  // /studio/i2v——和生成工作室"做成视频"按钮调的是同一个后端接口，只是入口挪到了这。
-  const [handoff, setHandoff] = useState<{ url: string; ratio: string; isVideo: boolean } | null>(null);
-  const [handoffError, setHandoffError] = useState<string | null>(null);
-  const [handoffMotion, setHandoffMotion] = useState("");
-  const [handoffDuration, setHandoffDuration] = useState(5);
-  const [handoffAudio, setHandoffAudio] = useState(false);
-  const [handoffBusy, setHandoffBusy] = useState(false);
-  const [handoffStage, setHandoffStage] = useState("");
-  const [handoffVideoUrl, setHandoffVideoUrl] = useState<string | null>(null);
-  const handoffAbortRef = useRef<AbortController | null>(null);
-  useEffect(() => () => { handoffAbortRef.current?.abort(); }, []);
-
-  useEffect(() => {
-    if (!initialFromGen) return;
-    let cancelled = false;
-    setHandoff(null); setHandoffError(null); setHandoffVideoUrl(null);
-    api.studioGetGeneration(initialFromGen)
-      .then((r) => { if (!cancelled) setHandoff({ url: r.url, ratio: r.ratio, isVideo: r.is_video }); })
-      .catch((e) => { if (!cancelled) setHandoffError(getErrorMessage(e)); });
-    return () => { cancelled = true; };
-  }, [initialFromGen]);
-
-  const runHandoffI2v = useCallback(async () => {
-    if (!handoff || handoff.isVideo || handoffBusy) return;
-    setHandoffBusy(true); setHandoffError(null); setHandoffVideoUrl(null);
-    setHandoffStage("正在让这张图动起来…(要等几分钟)");
-    const controller = new AbortController();
-    handoffAbortRef.current = controller;
-    try {
-      const { job_id } = await api.studioI2v({
-        first_frame: handoff.url,
-        source_generation_id: initialFromGen,
-        prompt: handoffMotion.trim() || undefined,
-        ratio: handoff.ratio,
-        duration: handoffDuration,
-        generate_audio: handoffAudio,
-      });
-      const done = await api.pollMediaJob(job_id, (j) => setHandoffStage(j.stage || ""), undefined, controller.signal);
-      const url = (done.result?.urls as string[] | undefined)?.[0];
-      if (!url) throw new Error("没有拿到视频链接。可以换个说法再试一次。");
-      setHandoffVideoUrl(url);
-    } catch (e) {
-      if (controller.signal.aborted) return; // 组件已卸载：别再 setState
-      setHandoffError(getErrorMessage(e));
-    } finally {
-      if (!controller.signal.aborted) { setHandoffBusy(false); setHandoffStage(""); }
-    }
-  }, [handoff, handoffBusy, handoffMotion, handoffDuration, handoffAudio, initialFromGen]);
 
   // 出方案 + 配文案 → 建预览段(客户端)
   const buildSegs = useCallback((doc: VideoDocView, captions: string[]): Seg[] => {
@@ -326,57 +274,6 @@ export function VideoWorkspacePage({ initialFromGen }: { initialFromGen?: string
 
         {/* 右:控制台 + 对话框 */}
         <div className="flex w-[340px] flex-col gap-4 overflow-y-auto border-l border-black/[0.06] p-5 dark:border-white/[0.08]">
-          {/* E1-C2・从生图台带过来的图(openWorkbench handoff):独立小卡片,和下面"选本机视频剪辑"是两条不同的路,互不影响 */}
-          {initialFromGen && (
-            <div className="flex flex-col gap-2 rounded-lg border border-black/[0.08] bg-black/[0.025] p-3 dark:border-white/[0.08] dark:bg-white/[0.03]">
-              <div className="flex items-center gap-1.5 text-[12px] font-semibold text-[#6e6e73] dark:text-[#9a9ca3]">
-                <Film size={13} className="text-[#10a37f]" /> 从生图台带来的图
-              </div>
-              {!handoff && !handoffError && <div className="flex items-center gap-2 text-[12px] text-[#8e8e93]"><Loader2 size={13} className="animate-spin" /> 正在取图…</div>}
-              {handoffError && <div className="text-[12px] text-red-600 dark:text-red-400">{handoffError}</div>}
-              {handoff && (
-                <>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={handoff.url} alt="待处理素材" className="w-full rounded-md border border-black/[0.06] object-cover dark:border-white/[0.08]" style={{ maxHeight: 160 }} />
-                  {handoff.isVideo ? (
-                    <div className="text-[11px] text-[#8e8e93]">这个素材本身已经是视频，不用再生成一遍。</div>
-                  ) : (
-                    <>
-                      <textarea
-                        value={handoffMotion}
-                        onChange={(e) => setHandoffMotion(e.target.value)}
-                        placeholder="运镜描述（可选），比如：镜头缓慢推进、灯光渐暗"
-                        rows={2}
-                        disabled={handoffBusy}
-                        className="w-full resize-none rounded-md border border-black/[0.08] bg-white px-2.5 py-1.5 text-[12px] outline-none transition placeholder:text-[#b0b0b5] focus:border-[#10a37f]/50 dark:border-white/[0.08] dark:bg-[#1c1c1e] dark:placeholder:text-[#56585f]"
-                      />
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        {[5, 8, 10].map((d) => (
-                          <button key={d} type="button" disabled={handoffBusy} onClick={() => setHandoffDuration(d)}
-                            className={`rounded-md px-2 py-1 text-[11px] transition ${handoffDuration === d ? "app-active-neutral" : "bg-black/[0.05] text-[#3a3a3c] hover:bg-black/[0.1] dark:bg-white/[0.06] dark:text-[#c7c7cc]"}`}>
-                            {d} 秒
-                          </button>
-                        ))}
-                        <button type="button" disabled={handoffBusy} onClick={() => setHandoffAudio((v) => !v)}
-                          className={`rounded-md px-2 py-1 text-[11px] transition ${handoffAudio ? "app-active-neutral" : "bg-black/[0.05] text-[#3a3a3c] hover:bg-black/[0.1] dark:bg-white/[0.06] dark:text-[#c7c7cc]"}`}>
-                          {handoffAudio ? "带配音" : "无配音"}
-                        </button>
-                      </div>
-                      <button className={`${BTN_PRIMARY} w-full`} disabled={handoffBusy} onClick={runHandoffI2v}>
-                        {handoffBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} 用这张图生成视频
-                      </button>
-                      {handoffBusy && handoffStage && <div className="text-[11px] text-[#10a37f]">{handoffStage}</div>}
-                      {handoffVideoUrl && (
-                        // eslint-disable-next-line jsx-a11y/media-has-caption
-                        <video src={handoffVideoUrl} controls className="w-full rounded-md bg-black" />
-                      )}
-                    </>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-
           {/* 选素材 */}
           <div>
             <div className="mb-1.5 text-[12px] font-semibold text-[#6e6e73] dark:text-[#9a9ca3]">① 素材</div>

@@ -29,8 +29,6 @@ from services.dashboard_service import get_today_dashboard
 from services.diagnosis_service import analyze_diagnosis
 from services.games_service import recommend_games as _recommend_games
 from services.outreach_service import generate_outreach
-from services import media_jobs_runner
-from services.agent.media_job_notify import make_video_job_done_hook
 
 logger = logging.getLogger(__name__)
 
@@ -463,8 +461,8 @@ _SUPPORTED_IMAGE_RATIOS = {"1:1", "3:4", "9:16", "16:9"}
 
 
 def _attach_image_generation_ids(ctx, images: list) -> None:
-    """E1-C2・做成视频 handoff：把这批图真实的 Generation.id 挂到 ctx.last_image_generation_ids
-    （loop 取后挂进 tool_result 事件，前端"做成视频"按 id 找图）。和 last_knowledge_used 同一套
+    """把这批图真实的 Generation.id 挂到 ctx.last_image_generation_ids
+    （loop 取后挂进 tool_result 事件，前端可按 id 打开/追踪图片成品）。和 last_knowledge_used 同一套
     写-取-复位生命周期，不需要这里复位（loop 每次工具结果都会读完置 None，防串到下一个工具）。"""
     ids = [str(img.get("generation_id")) for img in images
            if isinstance(img, dict) and img.get("generation_id")]
@@ -503,7 +501,7 @@ def _append_generated_images_for_view(ctx, images: list) -> None:
 
 
 def _gen_lock_key(ctx) -> str:
-    """生图/生视频的并发锁键：有会话→(用户:会话)，让多窗口(多会话)各自并行；无会话→退回按用户(保守)。"""
+    """生图并发锁键：有会话→(用户:会话)，让多窗口(多会话)各自并行；无会话→退回按用户(保守)。"""
     uid = str(getattr(getattr(ctx, "user", None), "id", "") or "")
     if not uid:
         return ""
@@ -689,7 +687,7 @@ async def make_poster(args: dict, ctx) -> str:
             store_photo_path=store_photo_path,
             reference_image_paths=_refs,
             conversation_id=getattr(ctx, "conversation_id", None),
-            # 用户当场选定的文件白名单：沙箱外绝对路径只有在这里面才许读（与 generate_video 的 allow_paths 同款）
+            # 用户当场选定的文件白名单：沙箱外绝对路径只有在这里面才许读。
             allowed_paths=list(getattr(ctx, "allowed_paths", None) or []),
             print_mode=print_mode,
         )
@@ -702,7 +700,7 @@ async def make_poster(args: dict, ctx) -> str:
     if not images:
         return "海报这次没生成出来，稍后再试一下。"
     _append_generated_images_for_view(ctx, images)  # 2-3：挂进回灌队列，让模型下一轮亲眼看看出的图对不对
-    _attach_image_generation_ids(ctx, images)  # E1-C2：做成视频 handoff 要按真实 generation id 找图
+    _attach_image_generation_ids(ctx, images)
 
     logo_applied = result.get("logo_applied", False)
     parts = []
@@ -824,7 +822,7 @@ async def generate_image(args: dict, ctx) -> str:
             store_photo_path=store_photo_path,
             reference_image_paths=_refs,
             conversation_id=getattr(ctx, "conversation_id", None),
-            # 用户当场选定的文件白名单：沙箱外绝对路径只有在这里面才许读（与 generate_video 的 allow_paths 同款）
+            # 用户当场选定的文件白名单：沙箱外绝对路径只有在这里面才许读。
             allowed_paths=list(getattr(ctx, "allowed_paths", None) or []),
             print_mode=print_mode,
         )
@@ -837,7 +835,7 @@ async def generate_image(args: dict, ctx) -> str:
     if not images:
         return "图片这次没生成出来，稍后再试一下。"
     _append_generated_images_for_view(ctx, images)  # 2-3：挂进回灌队列，让模型下一轮亲眼看看出的图对不对
-    _attach_image_generation_ids(ctx, images)  # E1-C2：做成视频 handoff 要按真实 generation id 找图
+    _attach_image_generation_ids(ctx, images)
 
     logo_applied = result.get("logo_applied", False)
     parts = []
@@ -859,153 +857,6 @@ async def generate_image(args: dict, ctx) -> str:
     if logo_path:
         status += "（你的 logo 已交给 AI 融进画面）"
     return f"{status}\n\n" + "\n\n".join(parts)
-
-
-# ---- 生视频工具（文生视频 / 图生视频，火山方舟 Seedance 异步）----
-# 与生图不同：视频慢(1-几分钟)且贵(单条比图贵一个量级) → 走审批闸 requires_approval（花钱前先弹确认让老板点头），
-# 并发/重复护栏同生图：每用户单条在跑锁 + 每轮只出一个。
-_VIDEO_GENERATING: set[str] = set()
-
-
-def _normalize_video_ratio(args: dict) -> str:
-    """视频默认社交媒体竖屏 9:16（抖音/视频号/快手/小红书/朋友圈）；
-    只有用户/模型明确要横版、大屏、电视、电脑、16:9 才给 16:9；明确方形给 1:1。
-    总表口径：视频是发社交媒体账号的营销内容，默认 9:16，不是店内大屏物料。"""
-    a = args or {}
-    raw = str(a.get("ratio") or "").strip()
-    if raw in ("9:16", "16:9", "1:1"):
-        return raw
-    blob = str(a.get("description") or "")
-    if any(k in blob for k in ("横版", "横屏", "横向", "大屏", "电视", "投屏", "电脑", "宽屏", "16:9")):
-        return "16:9"
-    if any(k in blob for k in ("方形", "方图", "1:1")):
-        return "1:1"
-    return "9:16"
-
-
-def _video_approval_reason(args: dict, ctx) -> dict:
-    ratio = _normalize_video_ratio(args)
-    duration = int((args or {}).get("duration") or 5)
-    first_frame = str((args or {}).get("first_frame") or "").strip()
-    mode = "图生视频" if first_frame else "文生视频"
-    return {
-        "what": f"生成一条{duration}秒左右的{ratio}短视频（{mode}），用于抖音/视频号/快手/小红书这类社交媒体营销。",
-        "why": "视频生成比图片慢、成本更高，确认后才会真正提交到视频模型。",
-        "impact": "确认后会在后台生成（通常 1-8 分钟），做好会告诉你，不用干等；生成结果会保存到最近作品里，可回来继续查看。",
-    }
-
-
-@tool(
-    name="generate_video",
-    deliverable=True,
-    requires_approval=True,   # 视频贵+不可逆产出 → 花钱前弹确认（生图便宜不弹、视频弹，符合防盗刷/控成本）
-    approval_class="spend",
-    force_confirm=True,
-    approval_reason=_video_approval_reason,
-    timeout=60.0,             # F-10：handler 只负责【提交后台任务】、近乎瞬间返回；真正生成(1-8分钟，
-                              # provider 内部按 settings.video_timeout=30分钟自行兜底)挪进 media_jobs
-                              # 后台任务跑，不再需要这里给几十分钟的外层超时（旧 1860s 已随之作废）。
-    description=(
-        "生成一段短视频（AI 文生视频 / 图生视频）。当用户要『做个视频 / 生成视频 / 让这张图动起来』时调用。"
-        "你要当『提示词扩写师』：把用户的大白话需求扩写成一段【中文】画面+运镜描述——写清主体动作、"
-        "镜头运动(推/拉/摇/移/环绕)、场景、节奏、氛围，别只丢一句话（那样出片很烂）。"
-        "**图生视频**：把上一步 generate_image/make_poster 产出的图片地址（markdown 里的 /uploads/... 路径或 http 链接），"
-        "或老板当场选定的图片，填进 first_frame，视频就会从这张图开始动起来。"
-        "视频生成较慢（约 1-几分钟）且要花钱，会先弹确认让老板点头；点头后在后台生成，做好会告诉老板，不用干等。"
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "description": {"type": "string", "description": "你扩写好的【中文】画面+运镜描述：主体动作 / 镜头运动(推拉摇移环绕) / 场景 / 节奏 / 氛围，越具体出片越好"},
-            "first_frame": {"type": "string", "description": "首帧图片地址(可选)：上一步生成图片的 /uploads/... 路径或 http 链接；填了就做『图生视频』(从这张图动起来)，不填就纯文生视频"},
-            "ratio": {"type": "string", "description": "画面比例(可选)：9:16(默认·竖屏，发抖音/视频号/快手/小红书/朋友圈) / 16:9(横版·店内大屏/电视/电脑) / 1:1。不填默认 9:16；只有用户明确要横版大屏才用 16:9"},
-            "duration": {"type": "integer", "description": "时长秒数(可选)：默认 5"},
-        },
-        "required": ["description"],
-    },
-)
-async def generate_video(args: dict, ctx) -> str:
-    """文生视频/图生视频：审批通过后由 /agent/execute 执行，但这里只负责【提交后台任务】立即
-    返回任务号——真正的生成挪进 media_jobs 后台跑（F-10：别再让老板对着一次裸 HTTP 硬等最多
-    31 分钟）。做完(成功/失败/超时统统会走到 media_jobs_runner 的 try/except)后由
-    `media_job_notify.make_video_job_done_hook` 把结果回灌进这条会话的对话轨迹 + 弹系统通知。
-
-    每轮只出一个视频 + 每用户单条在跑锁（护成本，与生图同款）；锁在【任务真正完成】时才由
-    on_done 释放——提交成功就放锁的话，第一条还没做完第二条就能抢跑，等于没锁。
-    """
-    from services import video_service  # 延迟导入，避免 import 期重负载/循环依赖
-
-    desc = (args.get("description") or "").strip()
-    if not desc:
-        return "缺少视频描述，没法生成。说清你想要个什么样的视频（画面 + 运镜）。"
-
-    from services.ai.factory import ProviderFactory
-    api_key, _base, _model = ProviderFactory.get_video_config_for_store(ctx.store)
-    if not api_key:
-        return "还没配好视频模型：请在「模型设置」里填写火山方舟（ARK）的 API Key 并开通 Seedance 模型，配好了再来生成视频。"
-
-    # 首帧图：模型显式给的优先；没给则回退老板当场选定的第一张图（"选了张图说让它动起来"）。
-    from services.agent.multimodal import is_image
-    sel_imgs = [p for p in (getattr(ctx, "allowed_paths", None) or []) if is_image(p)]
-    first_frame = (args.get("first_frame") or "").strip() or (sel_imgs[0] if sel_imgs else None)
-
-    if getattr(ctx, "_video_generated_this_run", False):
-        return "本轮已生成过一个视频，一轮只出一个；除非老板明确要多个，别再调用生视频工具。"
-    uid = _gen_lock_key(ctx)  # 锁键=(用户:会话)，多窗口并行不互挡（DUAL-5）
-    if uid and uid in _VIDEO_GENERATING:
-        return "你上一个视频还在生成中，等它出完再来下一个～"
-    if uid:
-        _VIDEO_GENERATING.add(uid)
-
-    store_id = getattr(ctx.store, "id", None)
-    user_id = getattr(ctx.user, "id", None)
-    conv = getattr(ctx, "conversation_id", None)
-    ratio = _normalize_video_ratio(args)
-    duration = int(args.get("duration", 5) or 5)
-    allow_paths = set(getattr(ctx, "allowed_paths", None) or [])
-
-    async def work_fn(progress):
-        from core.tenant import set_tenant
-        from db.session import async_session
-        from models.store import Store
-
-        set_tenant(store_id)
-        try:
-            await progress(5, "在生成视频…(要等几分钟)")
-            async with async_session() as wdb:
-                st = await wdb.get(Store, store_id)
-                res = await video_service.generate_video(
-                    db=wdb, store=st, user_id=user_id,
-                    prompt=desc, ratio=ratio, duration=duration,
-                    first_frame=first_frame, allow_paths=allow_paths, conversation_id=conv,
-                )
-            return {"video_url": res.get("video_url")}
-        finally:
-            set_tenant(None)
-
-    def _release_lock() -> None:
-        if uid:
-            _VIDEO_GENERATING.discard(uid)
-
-    on_done = make_video_job_done_hook(
-        conversation_id=conv, on_release=_release_lock,
-        success_title="视频做好了", fail_title="视频没做成",
-        store_id=store_id, user_id=user_id,
-    )
-    try:
-        job_id = await media_jobs_runner.submit(
-            store_id, "video", work_fn,
-            params={"description": desc[:200], "ratio": ratio, "duration": duration,
-                    "first_frame": bool(first_frame)},
-            conversation_id=conv, on_done=on_done,
-        )
-    except Exception as e:  # noqa: BLE001 — 连提交都没成功，锁不能焊死给下一条挡路
-        _release_lock()
-        return f"视频任务没提交成功：{e}"
-
-    ctx._video_generated_this_run = True
-    # 前端 DELIVERABLE_TOOLS 会把这段文本渲成卡片；真视频链接等 on_done 回灌进对话轨迹后才出现。
-    return f"已经在后台开始做这条视频了（任务号 {job_id}），做好我会告诉你，你先聊别的，不用干等。"
 
 
 # ---- 平台定制内容(抖音/小红书/快手/视频号)：内容生成 + 复制 handoff，不自动发 ----

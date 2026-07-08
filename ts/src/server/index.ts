@@ -306,8 +306,8 @@ async function readTextIfExists(path: string): Promise<string> {
 function imageProviderGuess(baseUrl: string | undefined): { provider: string; known: string[] } {
   const url = (baseUrl || '').toLowerCase()
   if (url.includes('openai')) return { provider: 'openai', known: ['gpt-image-1', 'gpt-image-2'] }
-  if (url.includes('volc') || url.includes('doubao') || url.includes('ark')) return { provider: 'volcengine', known: ['doubao-seedream-4-5', 'doubao-seedream-4-0', 'doubao-seedance'] }
-  if (url.includes('fal')) return { provider: 'fal', known: ['fal-ai/flux', 'fal-ai/imagen4', 'fal-ai/veo3'] }
+  if (url.includes('volc') || url.includes('doubao') || url.includes('ark')) return { provider: 'volcengine', known: ['doubao-seedream-4-5', 'doubao-seedream-4-0'] }
+  if (url.includes('fal')) return { provider: 'fal', known: ['fal-ai/flux', 'fal-ai/imagen4'] }
   if (url.includes('replicate')) return { provider: 'replicate', known: ['black-forest-labs/flux', 'google/imagen'] }
   return { provider: 'unknown', known: [] }
 }
@@ -364,8 +364,8 @@ function validateImageModelPayload(body: Record<string, unknown>) {
   const normalized = model.toLowerCase()
   const ok = guessed.known.some(item => normalized.includes(item.toLowerCase())) ||
     (guessed.provider === 'openai' && normalized.startsWith('gpt-image')) ||
-    (guessed.provider === 'volcengine' && (normalized.includes('seedream') || normalized.includes('seedance') || normalized.includes('doubao'))) ||
-    (guessed.provider === 'fal' && (normalized.includes('flux') || normalized.includes('imagen') || normalized.includes('veo'))) ||
+    (guessed.provider === 'volcengine' && (normalized.includes('seedream') || normalized.includes('doubao'))) ||
+    (guessed.provider === 'fal' && (normalized.includes('flux') || normalized.includes('imagen'))) ||
     (guessed.provider === 'replicate' && normalized.includes('/'))
   return {
     ok,
@@ -2810,13 +2810,6 @@ export function startServer(opts: StartServerOptions = {}) {
       const trusted = typeof rawBody.mask_path === 'string' ? [rawBody.mask_path] : []
       const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
       return Response.json(await media.startStudioEdit(body, {
-        conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
-        workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, process.cwd()),
-      }))
-    }
-    if (action === 'i2v' && req.method === 'POST') {
-      const body = await req.json().catch(() => ({})) as Record<string, unknown>
-      return Response.json(await media.startStudioI2v(body, {
         conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
         workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, process.cwd()),
       }))

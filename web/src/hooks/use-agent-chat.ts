@@ -33,7 +33,7 @@ export interface ToolStep {
   result?: string;
   id?: string; // tool_call_id：按它回填 tool_result 到对应步骤
   knowledgeUsed?: string[]; // B-2「依据可见」：本次注入的知识【大白话name】，成品卡显示"依据：…"
-  imageGenerationIds?: string[]; // E1-C2：这条生图结果对应的真实 Generation.id（做成视频 handoff 用）
+  imageGenerationIds?: string[]; // 这条生图结果对应的真实 Generation.id，用于右侧预览、版本与追溯
   progress?: string; // 命令边跑边显示：工具执行中实时累进的输出（run_command 终端块据此实时渲染）
   done: boolean;
 }
@@ -44,8 +44,7 @@ export interface GeneratedImageArtifact {
   ratio?: string;
   width?: number;
   height?: number;
-  // E1-C2・做成视频 handoff 用的真实 Generation.id（openWorkbench({fromGen})）；工具刚执行完就有，
-  // 不是"本轮对话"那个 agent-chat 记录 id。
+  // 生图结果对应的真实 Generation.id；不是"本轮对话"那个 agent-chat 记录 id。
   generationId?: string;
 }
 
@@ -81,8 +80,8 @@ export interface ChatMessage {
   steps?: ToolStep[];
   approval?: ApprovalState;
   question?: QuestionData; // AskUserQuestion：管家给老板的选项，老板点选后作为下一句消息发回
-  kind?: "command" | "video" | "context_note"; // 审批通过后执行的结果渲染方式：run_command→终端块；generate_video→<video> 播放器；
-  // context_note→F9 低调系统提示（AI 归纳了前文），渲成灰色内联条，不是命令/视频/普通对话
+  kind?: "command" | "context_note"; // 审批通过后执行的结果渲染方式：run_command→终端块；
+  // context_note→F9 低调系统提示（AI 归纳了前文），渲成灰色内联条，不是命令/普通对话
   todo?: string; // F4 Focus Chain：本轮最新的任务进度清单展示文本（task_progress 参数 / todo_write 归并同一份），
   // 每次都是完整最新状态——渲染成一张常驻清单卡，原地覆盖，不随每次工具调用叠新卡。
   error?: boolean;

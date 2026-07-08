@@ -14,12 +14,10 @@ export type MediaJobKind =
   | 'generate'
   | 'edit'
   | 'variations'
-  | 'i2v'
   | 'compose'
   | 'video_inventory'
   | 'video_render'
   | 'video_auto_plan'
-  | 'video'
 
 export interface MediaJobStatus {
   id: string
@@ -64,12 +62,6 @@ interface DirectImageConfig {
   endpointPath: '/images/generations' | '/ark/images/generations'
   provider: 'openai-compatible' | 'seedream-gateway'
   route: ImageModelRoute
-}
-
-interface DirectVideoConfig {
-  baseUrl: string
-  token: string
-  model: string
 }
 
 interface ResolvedImageReference {
@@ -407,17 +399,6 @@ function contentTypeFor(path: string): string {
   return 'application/octet-stream'
 }
 
-function mediaExtFromContentType(contentType: string | null | undefined, fallback: string): string {
-  const c = (contentType ?? '').toLowerCase()
-  if (c.includes('mp4')) return 'mp4'
-  if (c.includes('quicktime') || c.includes('mov')) return 'mov'
-  if (c.includes('webm')) return 'webm'
-  if (c.includes('png')) return 'png'
-  if (c.includes('jpeg') || c.includes('jpg')) return 'jpg'
-  if (c.includes('webp')) return 'webp'
-  return fallback
-}
-
 function imageExtFromContentType(contentType: string | null | undefined): 'png' | 'jpg' | 'webp' {
   const c = (contentType ?? '').toLowerCase()
   if (c.includes('jpeg') || c.includes('jpg')) return 'jpg'
@@ -442,13 +423,6 @@ function joinOpenAiImageEditEndpoint(baseUrl: string): string {
   const base = baseUrl.replace(/\/+$/, '')
   if (/\/(?:v\d+|api\/v\d+)$/i.test(base)) return `${base}/images/edits`
   return `${base}/v1/images/edits`
-}
-
-function joinVideoTaskEndpoint(baseUrl: string, taskId?: string): string {
-  const base = baseUrl.replace(/\/+$/, '')
-  const path = `/contents/generations/tasks${taskId ? `/${encodeURIComponent(taskId)}` : ''}`
-  if (/\/(?:v\d+|api\/v\d+)$/i.test(base)) return `${base}${path}`
-  return `${base}/v1${path}`
 }
 
 function ensureProjectName(value: unknown): string {
@@ -701,19 +675,6 @@ export class MediaJobService {
     })
   }
 
-  startStudioI2v(body: Record<string, unknown>, opts: { conversationId?: string; workspaceRoot?: string } = {}): Promise<MediaJobStartResult> {
-    const normalized = { ...body, conversation_id: stringFrom(body.conversation_id) ?? opts.conversationId }
-    return this.startJob({
-      kind: 'i2v',
-      title: `图生视频:${shortText(body.prompt, '让图片动起来')}`,
-      body: normalized,
-      conversationId: stringFrom(normalized.conversation_id),
-      workspaceRoot: opts.workspaceRoot,
-      proxyPath: '/api/v1/studio/i2v',
-      fallback: ctx => this.directOrUnavailableVideoFallback(ctx, normalized),
-    })
-  }
-
   startVideoJob(kind: MediaJobKind, proxyPath: string, body: Record<string, unknown>, opts: { conversationId?: string; workspaceRoot?: string; project?: string; title?: string } = {}): Promise<MediaJobStartResult> {
     const project = opts.project ?? ensureProjectName(body.project)
     const normalized = { ...body, project, conversation_id: stringFrom(body.conversation_id) ?? opts.conversationId }
@@ -837,7 +798,7 @@ export class MediaJobService {
   }
 
   private seedreamImageConfig(model: string, route: ImageModelRoute): DirectImageConfig | null {
-    const baseUrl = normalizeBackendUrl(this.env.QF_GATEWAY_URL ?? this.env.VIDEO_BASE_URL)
+    const baseUrl = normalizeBackendUrl(this.env.QF_GATEWAY_URL)
     const token = stringFrom(this.env.QF_GATEWAY_TOKEN) ?? stringFrom(this.env.ARK_API_KEY)
     if (!baseUrl || !token) return null
     return { baseUrl, token, model, endpointPath: '/ark/images/generations', provider: 'seedream-gateway', route }
@@ -1490,20 +1451,6 @@ export class MediaJobService {
     return existsSync(abs) ? abs : null
   }
 
-  private directVideoConfig(body: Record<string, unknown>): DirectVideoConfig | null {
-    const model = stringFrom(body.video_model) ?? stringFrom(body.model) ?? stringFrom(this.env.VIDEO_MODEL_NAME)
-    const baseUrl = normalizeBackendUrl(this.env.VIDEO_BASE_URL ?? this.env.QF_GATEWAY_URL)
-    const token = stringFrom(this.env.ARK_API_KEY) ?? stringFrom(this.env.QF_GATEWAY_TOKEN)
-    if (!model || !baseUrl || !token) return null
-    return { baseUrl, token, model }
-  }
-
-  private async directOrUnavailableVideoFallback(ctx: TaskRunnerContext, body: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const config = this.directVideoConfig(body)
-    if (!config) return await this.unavailableFallback(ctx, '视频生成需要媒体后端或视频模型网关。')
-    return await this.directVideoGeneration(ctx, body, config)
-  }
-
   private async localVideoJobFallback(ctx: TaskRunnerContext, kind: MediaJobKind, body: Record<string, unknown>, project: string): Promise<Record<string, unknown>> {
     const store = new VideoEditProjectStore(this.opts.stateRoot)
     if (kind === 'video_inventory' || kind === 'video_auto_plan') {
@@ -1521,145 +1468,6 @@ export class MediaJobService {
       })
     }
     return await this.unavailableFallback(ctx, '视频剪辑需要媒体后端。')
-  }
-
-  private async directVideoGeneration(ctx: TaskRunnerContext, body: Record<string, unknown>, config: DirectVideoConfig): Promise<Record<string, unknown>> {
-    const prompt = String(body.prompt ?? body.description ?? '').trim()
-    if (!prompt) throw new Error('视频生成需要 prompt 或 description')
-    const ratio = stringFrom(body.ratio) ?? '9:16'
-    const duration = Math.max(1, Math.min(30, numberFrom(body.duration, 5)))
-    const content: Record<string, unknown>[] = [{ type: 'text', text: prompt }]
-    const firstFrame = await this.resolveMediaReference(stringFrom(body.first_frame), 'image')
-    if (firstFrame) content.push({ type: 'image_url', image_url: { url: firstFrame }, role: 'first_frame' })
-    for (const ref of this.videoImageRefs(body.image_refs)) {
-      const resolved = await this.resolveMediaReference(ref.url, 'image')
-      if (resolved) content.push({ type: 'image_url', image_url: { url: resolved }, role: ref.role })
-    }
-
-    await ctx.progress(10, '正在提交到视频生成网关。')
-    const submit = await this.fetchImpl(joinVideoTaskEndpoint(config.baseUrl), {
-      method: 'POST',
-      headers: {
-        'authorization': `Bearer ${config.token}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: config.model,
-        content,
-        ratio,
-        duration,
-        watermark: body.watermark === true ? true : false,
-        ...(body.generate_audio === true ? { generate_audio: true } : {}),
-        ...(stringFrom(body.resolution) ? { resolution: stringFrom(body.resolution) } : {}),
-      }),
-    })
-    const started = await this.readJson(submit, '/contents/generations/tasks')
-    const taskId = stringFrom(started.id) ?? stringFrom(asRecord(started.data)?.id)
-    if (!taskId) throw new Error('视频生成网关提交后没有返回任务 id')
-
-    await ctx.progress(18, '视频任务已提交，正在排队生成。')
-    let lastProgress = 18
-    for (let i = 0; i < POLL_LIMIT; i++) {
-      if (ctx.signal.aborted) throw new Error('任务已取消')
-      const polled = await this.readJson(await this.fetchImpl(joinVideoTaskEndpoint(config.baseUrl, taskId), {
-        method: 'GET',
-        headers: { 'authorization': `Bearer ${config.token}` },
-      }), `/contents/generations/tasks/${taskId}`)
-      const status = String(polled.status ?? '').toLowerCase()
-      if (status === 'succeeded' || status === 'done' || status === 'completed') {
-        const remoteUrl = this.videoUrlFromTask(polled)
-        if (!remoteUrl) throw new Error('视频生成成功但响应里没有 video_url')
-        await ctx.progress(92, '视频已生成，正在保存到本机作品库。')
-        const localUrl = await this.persistRemoteVideo(remoteUrl)
-        await ctx.progress(100, '视频已生成并保存。')
-        return {
-          video_url: localUrl ?? remoteUrl,
-          urls: [localUrl ?? remoteUrl],
-          source_url: localUrl ? remoteUrl : undefined,
-          provider: 'seedance-gateway',
-          model: config.model,
-          task_id: taskId,
-          ratio,
-          duration,
-          local_preview: false,
-        }
-      }
-      if (status === 'failed' || status === 'expired' || status === 'cancelled' || status === 'canceled' || status === 'error') {
-        const err = asRecord(polled.error)
-        const message = stringFrom(err?.message) ?? stringFrom(polled.message) ?? status
-        throw new Error(`视频生成失败:${message}`)
-      }
-      const nextProgress = Math.min(90, lastProgress + 4)
-      if (nextProgress !== lastProgress) {
-        lastProgress = nextProgress
-        await ctx.progress(nextProgress, status ? `视频任务${status}。` : '视频任务生成中。')
-      }
-      await delay(this.pollIntervalMs)
-    }
-    throw new Error('视频生成任务超时')
-  }
-
-  private videoImageRefs(value: unknown): Array<{ url: string; role: string }> {
-    if (!Array.isArray(value)) return []
-    const refs: Array<{ url: string; role: string }> = []
-    for (const item of value.slice(0, 9)) {
-      if (typeof item === 'string' && item.trim()) refs.push({ url: item.trim(), role: 'reference' })
-      else if (item && typeof item === 'object') {
-        const record = item as Record<string, unknown>
-        const url = stringFrom(record.url) ?? stringFrom(record.image_url) ?? stringFrom(record.path)
-        if (url) refs.push({ url, role: stringFrom(record.role) ?? 'reference' })
-      }
-    }
-    return refs
-  }
-
-  private async resolveMediaReference(value: string | undefined, expected: 'image' | 'video'): Promise<string | null> {
-    if (!value) return null
-    if (/^(https?:|data:|ms:\/\/|stepfile:\/\/)/i.test(value)) return value
-    if (!value.startsWith('/uploads/')) return null
-    const rel = value.slice('/uploads/'.length)
-    if (!rel || rel.includes('\0')) return null
-    const abs = resolve(this.uploadsRoot, rel)
-    const root = resolve(this.uploadsRoot)
-    if (abs !== root && !abs.startsWith(`${root}/`)) return null
-    if (!existsSync(abs)) return null
-    const contentType = contentTypeFor(abs)
-    if (expected === 'image' && !contentType.startsWith('image/')) return null
-    if (expected === 'video' && !contentType.startsWith('video/')) return null
-    const data = await readFile(abs)
-    return `data:${contentType.split(';')[0]};base64,${data.toString('base64')}`
-  }
-
-  private videoUrlFromTask(task: Record<string, unknown>): string | undefined {
-    const content = task.content
-    if (Array.isArray(content)) {
-      for (const item of content) {
-        const record = asRecord(item)
-        const url = stringFrom(record?.video_url) ?? stringFrom(asRecord(record?.video)?.url)
-        if (url) return url
-      }
-    } else {
-      const record = asRecord(content)
-      const url = stringFrom(record?.video_url) ?? stringFrom(asRecord(record?.video)?.url)
-      if (url) return url
-    }
-    return stringFrom(task.video_url) ?? stringFrom(asRecord(task.result)?.video_url)
-  }
-
-  private async persistRemoteVideo(remoteUrl: string): Promise<string | null> {
-    try {
-      const res = await this.fetchImpl(remoteUrl, { method: 'GET' })
-      if (!res.ok) return null
-      const dir = join(this.uploadsRoot, 'videos')
-      await mkdir(dir, { recursive: true })
-      const contentType = res.headers.get('content-type')
-      const ext = mediaExtFromContentType(contentType, 'mp4')
-      const filename = `video_${Date.now()}_${crypto.randomUUID().slice(0, 8)}.${ext}`
-      await writeFile(join(dir, filename), Buffer.from(await res.arrayBuffer()))
-      return `/uploads/videos/${filename}`
-    } catch {
-      return null
-    }
   }
 
   private async localImageFallback(ctx: TaskRunnerContext, body: Record<string, unknown>, mode: 'generate' | 'edit'): Promise<Record<string, unknown>> {

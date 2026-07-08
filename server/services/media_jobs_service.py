@@ -12,9 +12,8 @@ from core.exceptions import AIServiceError
 from models.media_job import MediaJob
 
 VALID_KINDS = {
-    "generate", "edit", "variations", "i2v", "compose",
+    "generate", "edit", "variations", "compose",
     "video_inventory", "video_render", "video_auto_plan",
-    "video",  # F-10：聊天里 generate_video 工具的文生视频/图生视频后台任务（区别于工作室面板的 i2v）
 }
 _ACTIVE = ("queued", "running")
 

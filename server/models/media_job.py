@@ -9,7 +9,7 @@ from db.types import GUID, JSONType
 
 
 class MediaJob(Base):
-    """生成工作室异步任务(生图/改图/变体/图生视频/多镜合成)。
+    """生成工作室异步任务(生图/改图/变体/真实素材剪辑/多镜合成)。
 
     单用户本地 in-process,不上 Celery/Redis(过度工程+打包负担)——提交即返 id、
     进度写 DB(轮询/SSE 读)、完成推送。这是工作室地基,顺带救活"慢任务只干转无进度"。
@@ -19,7 +19,7 @@ class MediaJob(Base):
     id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
     store_id: Mapped[uuid.UUID] = mapped_column(GUID, ForeignKey("stores.id"), nullable=False, index=True)
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(GUID, nullable=True, index=True)
-    # generate / edit / variations / i2v / compose
+    # generate / edit / variations / compose / video_inventory / video_auto_plan / video_render
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     # queued / running / done / error
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued", index=True)

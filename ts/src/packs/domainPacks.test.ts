@@ -89,5 +89,5 @@ test('domain pack tools are gated by enabled packs and return source-aware guida
   expect(out).toContain('<domain_pack_tool_result pack="billiards" tool="billiards_ops_checklist">')
   expect(out).toContain('黄金档台费 68 元')
   expect(out).toContain('search_store_docs')
-  expect(out).toContain('make_poster/generate_image/generate_video')
+  expect(out).toContain('make_poster/generate_image')
 })

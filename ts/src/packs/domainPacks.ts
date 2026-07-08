@@ -48,9 +48,9 @@ const billiardsOpsChecklistTool: Tool = {
       `场景:${scenario}`,
       facts.length ? `已知事实:${facts.join('；')}` : '已知事实:未提供足够本店事实',
       '先核对:价格/套餐/地址/二维码/排班/合同/活动时间/会员权益等本店事实必须来自用户输入或 search_store_docs 来源,不能编造。',
-      '执行顺序:1. 判断经营目标;2. 补齐缺失事实;3. 给老板可直接执行的动作;4. 需要素材时再进入生图/生视频/剪辑工作台。',
+      '执行顺序:1. 判断经营目标;2. 补齐缺失事实;3. 给老板可直接执行的动作;4. 需要素材时再进入生图或真实素材剪辑工作台。',
       needsMedia
-        ? '媒体注意:生图/生视频/剪辑只是延伸能力;先写清主卖点、画面要素、硬文字与核对项,再调用 make_poster/generate_image/generate_video。'
+        ? '媒体注意:生图和真实素材剪辑只是延伸能力;先写清主卖点、画面要素、硬文字与核对项,再按需调用 make_poster/generate_image 或让用户导入真实视频素材剪辑。'
         : '媒体注意:如果当前任务只是经营判断或代码/文件修改,不要主动跳到生图/视频。',
       '输出约束:短、可执行、带来源提醒;资料库没看到的事实要明说“资料库里没看到”。',
       '</domain_pack_tool_result>',
@@ -89,13 +89,13 @@ export const DOMAIN_PACKS: DomainPack[] = [
       {
         name: 'billiards:content-plan',
         description: '台球门店短视频/海报/活动内容编排',
-        whenToUse: '老板要朋友圈、团购活动、短视频脚本、生图提示词、生视频/剪辑方向时使用。',
-        allowedTools: ['search_store_docs', 'list_skills', 'read_skill', 'make_poster', 'generate_image', 'generate_video', 'todo_write'],
+        whenToUse: '老板要朋友圈、团购活动、短视频脚本、生图提示词或真实素材剪辑方向时使用。',
+        allowedTools: ['search_store_docs', 'list_skills', 'read_skill', 'make_poster', 'generate_image', 'todo_write'],
         prompt: [
           '你正在执行台球运营专家的内容编排命令。',
-          '把生图、生视频、剪辑当作 Agent 外壳里的延伸能力:先确定经营目标和受众,再决定是否调用媒体工具。',
+          '把生图和真实素材剪辑当作 Agent 外壳里的延伸能力:先确定经营目标和受众,再决定是否调用媒体工具或要求用户导入实拍素材。',
           '优先结合本机店铺资料、门店记忆和老板给的素材;涉及价格、套餐、二维码、门店地址、活动时间时必须提醒核对或查询来源。',
-          '输出结构:1. 目标和主卖点;2. 可直接发布的文案/脚本;3. 画面或海报提示词;4. 下一步是否需要调用生图/生视频/剪辑工具。',
+          '输出结构:1. 目标和主卖点;2. 可直接发布的文案/脚本;3. 画面或海报提示词;4. 下一步是否需要调用生图工具或导入真实素材剪辑。',
           '风格保持简洁、像 Work Buddy/Codex 的工具流,不要加入装饰性台球挂件或空泛营销话术。',
         ].join('\n'),
       },

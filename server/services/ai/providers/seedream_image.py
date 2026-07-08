@@ -72,7 +72,7 @@ def resolve_builtin_seedream_credentials() -> tuple[str, str] | None:
 
     - **生产/客户盒子**：走网关(`QF_GATEWAY_URL` + `QF_GATEWAY_TOKEN`)，真 ARK key 全在服务器，
       base_url = f"{QF_GATEWAY_URL}/ark"（网关 `/v1/ark/images/generations` 原生 JSON 透传通道，
-      见 gateway/app.py；`resolve_image_kind` 按路径尾段 `/ark` 识别，仍会路由回本 provider，
+      见 gateway/app.ts；`resolve_image_kind` 按路径尾段 `/ark` 识别，仍会路由回本 provider，
       请求体/格式完全不变，只换了 base_url 和 key）。
     - **dev-only 开发机后门**：`QF_GATEWAY_URL`/`QF_GATEWAY_TOKEN` 没配时，退到 `settings.ark_api_key`
       直连 `_DEFAULT_BASE`（本机联调用真测试 key 图快；生产/客户盒子必须配网关，不能把真 ARK key

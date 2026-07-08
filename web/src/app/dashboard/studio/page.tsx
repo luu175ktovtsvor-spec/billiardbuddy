@@ -2,7 +2,7 @@
 
 /**
  * 生成工作室(阶段2 MVP·独立窗口 /dashboard/studio):
- * 左·控制台(大白话+参考图+比例+风格→生成) · 中·预览(出图+变体挑选) · 右·操控台(第二层,圈选+说话/换比例/做视频)。
+ * 左·控制台(大白话+参考图+比例+风格→生成) · 中·预览(出图+变体挑选) · 右·操控台(第二层,圈选+说话/换比例/要同款)。
  * 直连 /studio/generate、/studio/edit(绕 LLM),异步出图轮询 media-jobs。视觉跟随桌面 Agent:
  * 中性主按钮 + 绿色小点缀,避免变成另一套插件 UI。
  * 治"改不动图":基于当前这张就地改(原图当底图),不跳回输入框重掷。
@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import type { LucideIcon } from "lucide-react";
-import { Image as ImageIcon, ImagePlus, X, Wand2, Copy, Download, ThumbsUp, Loader2, RefreshCw, Check, AlertTriangle, Layers, Film, CreditCard, PartyPopper, UserPlus, Sparkles, Trophy, Camera, Repeat, ChevronRight } from "lucide-react";
+import { Image as ImageIcon, ImagePlus, X, Wand2, Copy, Download, ThumbsUp, Loader2, RefreshCw, Check, AlertTriangle, Layers, CreditCard, PartyPopper, UserPlus, Sparkles, Trophy, Camera, Repeat, ChevronRight, Film } from "lucide-react";
 import { api, type MediaJobStatus } from "@/lib/api";
 
 // react-konva 碰 canvas/window,不能 SSR → dynamic ssr:false(M4)
@@ -246,14 +246,6 @@ export default function StudioPage() {
     if (current?.generationId && !busy) {
       void runJob(() => api.studioEdit({ prompt: "保持画面主体和风格不变，换成这个画幅比例重新构图", source_generation_id: current.generationId as string, ratio: r }), r);
     }
-  };
-  // 做成视频(R4・owner 6-30 拍板):不再就地生视频,改成带图跳进工作台的视频面板——
-  // 同一扇工作台窗口内"生图→视频"切面板 + 带 fromGen(轻标识,真图从不进 IPC),视频面板自己按 id 取图。
-  // 非桌面(web,没有 window.electron)降级成提示,不崩。
-  const onMakeVideo = () => {
-    if (!current || current.isVideo || busy || !current.generationId) return;
-    if (!window.electron?.openWorkbench) { setError("做成视频需要在桌面版里操作。"); return; }
-    void window.electron.openWorkbench("video", { fromGen: current.generationId });
   };
   // 多镜合成:把当前+历史里有来源记录的视频片段拼成一条(真 ffmpeg 在本机 Electron 跑)
   const videoShots = [current, ...history].filter((s): s is Shot => !!s && !!s.isVideo && !!s.generationId);
@@ -532,18 +524,6 @@ export default function StudioPage() {
                   className="flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-black/[0.08] bg-black/[0.02] text-[13px] font-medium text-[#3a3a3c] transition hover:border-[#10a37f]/40 hover:bg-[#10a37f]/[0.04] active:scale-[0.99] disabled:opacity-50 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-[#c8cace]"
                 >
                   <Repeat className="h-3.5 w-3.5" /> 要同款
-                </button>
-              </div>
-              {/* 做成视频(R4)：只跳转不就地出片——带这张图进工作台的视频面板，视频那边配运镜/时长/配音再出片 */}
-              <div>
-                <button
-                  type="button"
-                  onClick={onMakeVideo}
-                  disabled={busy || !current.generationId}
-                  title="带这张图跳到视频工作台，在那边配运镜/时长/配音再生成"
-                  className="flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-black/[0.1] bg-black/[0.03] text-[13px] font-medium text-[#1d1d1f] transition hover:border-[#10a37f]/35 hover:bg-[#10a37f]/[0.06] hover:text-[#10a37f] active:scale-[0.99] disabled:opacity-50 dark:border-white/[0.1] dark:bg-white/[0.04] dark:text-[#c8cace]"
-                >
-                  <Film className="h-3.5 w-3.5" /> 去视频台做成视频
                 </button>
               </div>
               </>)}

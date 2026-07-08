@@ -10,7 +10,7 @@
  *  ③ 海报(poster)：图片预览 + 保存 + 整张重做（图不支持选区/文字改）。
  * 由 DesktopShell 的 preview 槽渲染；数据由 chat-shell 管，表格/定向改的接口调用在本面板内自洽。
  */
-import { X, Download, Wand2, Copy, Check, Loader2, RotateCcw, Table2, FileText, CheckCircle2, RefreshCw, Save, ChevronDown, FolderHeart, Clapperboard, AlertTriangle } from "lucide-react";
+import { X, Download, Wand2, Copy, Check, Loader2, RotateCcw, Table2, FileText, CheckCircle2, RefreshCw, Save, ChevronDown, FolderHeart, AlertTriangle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
@@ -25,8 +25,6 @@ import { VersionBar } from "./version-bar";
 import { SafeMarkdown } from "./safe-markdown";
 
 export type PreviewItem =
-  // E1-C2・generationId：做成视频走 openWorkbench({fromGen}) handoff 要用它按 id 取图；只有等这轮
-  // 对话/成品卡真正落库后才拿得到，图刚流式出来那一刻(仍在生成中)可能还没有——没有就不露"做成视频"按钮。
   | { kind: "poster"; title?: string; imageUrl: string; ratio?: string; width?: number; height?: number; generationId?: string }
   | { kind: "video"; title?: string; videoUrl: string; ratio?: string; duration?: number }
   | { kind: "content"; title?: string; text: string }
@@ -564,7 +562,6 @@ export function DesktopPreviewPanel({
   onRefine,
   onRefineSelection,
   onFinalize,
-  onMakeVideo,
 }: {
   item: PreviewItem;
   onClose: () => void;
@@ -573,7 +570,6 @@ export function DesktopPreviewPanel({
   onRefineSelection?: (selectedText: string, instruction: string) => void;
   /** 定稿闸：老板看完拍板。accept=确认采用这一版(content/file 带最终文字)；redo=重做一版。 */
   onFinalize?: (action: "accept" | "redo", finalText?: string) => void;
-  onMakeVideo?: (item: Extract<PreviewItem, { kind: "poster" }>) => void;
 }) {
   const { electron } = useDesktop();
   const [copied, setCopied] = useState(false);
@@ -965,11 +961,6 @@ export function DesktopPreviewPanel({
               {[item.ratio, item.width && item.height ? `${item.width}x${item.height}` : ""].filter(Boolean).join(" · ")}
             </div>
           )}
-          {item.kind === "poster" && onMakeVideo && item.generationId && (
-            <div className="mb-2 rounded-md bg-[#ff9500]/10 px-2 py-1.5 text-center text-[11.5px] leading-relaxed text-[#9a5b00] dark:text-[#ffcc80]">
-              做成视频会带这张图跳到视频工作台，在那边配置运镜/时长再生成。
-            </div>
-          )}
           {item.kind === "video" && (item.ratio || item.duration) && (
             <div className="mb-2 text-center font-mono text-[11px] text-[#86868b] dark:text-[#6e7077]">
               {[item.ratio, item.duration ? `${item.duration}秒` : ""].filter(Boolean).join(" · ")}
@@ -1060,15 +1051,6 @@ export function DesktopPreviewPanel({
                   <Wand2 className="h-3.5 w-3.5" /> 整张重做
                 </button>
               ) : null}
-              {item.kind === "poster" && onMakeVideo && item.generationId && (
-                <button
-                  onClick={() => onMakeVideo(item)}
-                  className="flex h-9 items-center justify-center gap-1.5 rounded-md border border-black/[0.1] bg-white px-3 text-[13px] text-[#1d1d1f] transition hover:bg-black/[0.03] active:scale-[0.98] dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-[#c8cace] dark:hover:bg-white/[0.06]"
-                  title="带这张图跳到视频工作台，在那边配运镜/时长再生成"
-                >
-                  <Clapperboard className="h-3.5 w-3.5" /> 做成视频
-                </button>
-              )}
               {edited && (
                 <button
                   onClick={reset}

@@ -52,7 +52,7 @@
 12. **免登录单用户真机验证**（最关键的行为变更）：已删整套 SaaS 登录鉴权，改成本地单用户免登录。真机务必验：① 全新安装首启自动 seed 了 owner+店；② 打开 App 直接进 `/dashboard/chat`、不卡登录页；③ `/auth/me` 拿到本地 owner；④ 设置抽屉里建/改店、跑一条生成全链路通；⑤ 老库（已注册过的）升级后 seed 跳过、不重复建
 13. 另补新增验证项：视频渲染 worker 链路（装机包拉起自身二进制离屏渲染）、`/video-edit/localfile` 预览、插话纠偏体验、CI 包知识库能否解密（Fernet key 双源修复后首次出包必验）、Windows 口播字幕中文、文件夹对话框"新建"按钮
 
-**上一轮「真机验收与打包」优化**（2026-06，已合并，历史清单见 `docs/归档/待改清单-真机验收与打包-2026-06-23.md`）：全内置 key 基座、GPT Image-2 美国机中转、代理直连绕开 Clash、知识库读导航、改文件 diff 展示、思考显示+深度思考开关、店脑记忆解绑、记忆管理面板等已落地；视频/Seedance 相关已在后续轮次补齐。
+**上一轮「真机验收与打包」优化**（2026-06，已合并，历史清单见 `docs/归档/待改清单-真机验收与打包-2026-06-23.md`）：全内置 key 基座、GPT Image-2 美国机中转、代理直连绕开 Clash、知识库读导航、改文件 diff 展示、思考显示+深度思考开关、店脑记忆解绑、记忆管理面板等已落地；AI 模型生成视频已按新阶段目标删除,真实素材剪辑保留。
 
 **工作方式**：当前主施工分支是 `ts-harness-rewrite`，它就是 Claude Code imitation branch；先在这个分支把内核质量打到可替换旧产品，再由 owner 决定合并 `main`、替换 Python 线。推不推 GitHub 由 owner 决定（默认只本地）。**TS 重写按"一窗一模块 + Superpowers"走**（见 TS 主文档 §4.5/§0.5-0.7/§9 执行说明）；旧的"模块级 git worktree 修复流程"是 Python 轮次的做法，不作为当前主线。
 
@@ -134,7 +134,7 @@ cd ts && bun test src/scripts/buildCouplingMap.test.ts
 3. **ReAct 循环**（`server/services/agent/loop.py`）：同步 `run_agent_loop` / 流式 `run_agent_loop_stream` 共享状态机，只在"怎么调模型/怎么对外吐"分叉。一轮＝调模型 → 有 `tool_calls` 就逐个经 `_plan_tool_call`(审批闸判定 or 直接执行) → 结果作 `role:tool` 回灌 → 再调模型，直到收敛或 `max_turns` 兜底。工具报错不崩循环、错误文本回灌让模型自救。
 4. **审批闸**：标 `requires_approval=True` 的工具（发布/群发/删数据等对外·不可逆动作）不在循环里直接跑，吐 `approval_request` 弹卡片，人确认后经 `POST /api/v1/agent/execute`（签名绑定 args）才执行。做成品给用户看 / 读写本机文件（带备份）不算对外，直接做。
 5. **工具实现**：`services/agent/` 下 `tools.py`(运营) `local_tools.py`(本机文件·沙箱) `web_tools.py`(查抓) `image_tools.py`(生图) `computer_tools.py` `skills.py` `background_tools.py` `mcp_client.py` 等，由 `registry.py` 分层登记。
-6. **模型出口**：`services/ai/factory.py` 返回内置 key + base_url；生图按 `resolve_image_kind(base_url)` 路由到 `services/ai/providers/`(硅基流动/通义万相/openai_image)。桌面高并发统一走 `gateway/app.py`（国内总闸·三层阀门·藏 key·客户端只带 app 令牌）。
+6. **模型出口**：`services/ai/factory.py` 返回内置 key + base_url；生图按 `resolve_image_kind(base_url)` 路由到 `services/ai/providers/`(硅基流动/通义万相/openai_image)。桌面高并发统一走 `gateway/app.ts`（Bun/TS 国内总闸·三层阀门·藏 key·客户端只带 app 令牌）。
 
 ## 关键约束（铁律 · 违反即破坏产品）
 

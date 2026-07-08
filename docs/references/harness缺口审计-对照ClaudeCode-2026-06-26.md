@@ -37,7 +37,7 @@
 | # | 缺口 | 现状 vs 官方 | 来源 |
 |---|---|---|---|
 | A | **重试退避** | 我们:仅 429+Retry-After 白试一次,5xx/超时/连接**完全不重试**(`deepseek.py:101-142`)。官方:10 次指数退避(1→2→4…)+ **±30% full jitter** + 覆盖 429/5xx/超时/连接 + 429(你的事)vs 529(他的事)分治 + retry+fallback | [官方确认] |
-| B | **长任务真后台化 + 完成主动回灌** | 我们:`generate_video` 在**一次工具调用里同步轮询卡几分钟**(`tools.py:659`),loop 干等;`run_background` 只能跑 shell、无管理、无自动回灌(靠模型自己记得 read_file)。官方:子代理可 Ctrl+B 后台、有 TaskList/Output 轮询 + 完成通知回灌 | [官方确认] |
+| B | **长任务真后台化 + 完成主动回灌** | 我们旧实现里慢媒体任务会在一次工具调用里同步等很久,loop 干等;`run_background` 只能跑 shell、无管理、无自动回灌(靠模型自己记得 read_file)。官方:子代理可 Ctrl+B 后台、有 TaskList/Output 轮询 + 完成通知回灌 | [官方确认] |
 | C | **autocompact 触发用真实 token + 阈值口径 + 摘要提示词** | 我们:纯估算触发(明明 `loop.py:630` 已拿到 `usage.prompt_tokens` 却没喂触发判断);阈值"窗口70%"在1M窗口下700k就压(太早);摘要是一句话提示词。官方:留固定 13k buffer;9 段结构化摘要(含**逐条列用户消息**+下一步带原文引用) | [官方确认 13k] |
 | D | **post-compact 文件重读回灌** | 我们:autocompact 只留摘要+最近N条,**不重读文件**(全 server 无 readFileState 等价物)。CC:`createPostCompactFileAttachments` 压缩后重读最近5个文件作附件塞回 | [cc-haha有/官方compaction同理] |
 

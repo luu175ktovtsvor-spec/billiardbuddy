@@ -147,7 +147,6 @@ class BYOKConfigOut(BaseModel):
     # 内置模型展示名（换内置模型只改后端配置、前端跟着变）
     bundled_model_label: str = "MiMo V2.5"
     bundled_image_label: str = "GPT Image-2"
-    bundled_video_label: str = "Seedance 2.0"
 
 
 def _ensure_store_owner(store: Store, user: User) -> None:
@@ -171,7 +170,6 @@ def _byok_out(store: Store) -> BYOKConfigOut:
         agent_auto_spend_limit=getattr(store, "agent_auto_spend_limit", None),
         bundled_model_label=settings.bundled_model_label,
         bundled_image_label=settings.bundled_image_label,
-        bundled_video_label=settings.bundled_video_label,
     )
 
 

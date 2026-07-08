@@ -85,7 +85,6 @@ const HOT_TOOL_NAMES = new Set([
   'cancel_background_task',
   'make_poster',
   'generate_image',
-  'generate_video',
 ])
 
 const TOOL_SEARCH_ALIASES: Record<string, string[]> = {
@@ -160,7 +159,6 @@ const TOOL_SEARCH_ALIASES: Record<string, string[]> = {
   cancel_background_task: ['取消后台任务', '停止任务', '中断任务'],
   make_poster: ['做海报', '生成海报', '门店海报', 'poster'],
   generate_image: ['生图', '生成图片', '图片生成', '画图', 'image generation'],
-  generate_video: ['生视频', '生成视频', '图生视频', '短视频', 'video generation'],
 }
 
 interface ToolSearchInput {

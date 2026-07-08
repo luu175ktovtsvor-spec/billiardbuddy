@@ -269,7 +269,7 @@ async function waitForWelcome(win, maxMs = 8000) {
     窗口标题已收口: winTitle.includes("本机 AI 助手"),
     窗口标题无旧名: !/球房 AI 运营助手|台球运营管家/.test(winTitle),
     侧栏AI已就绪: await win.locator('aside >> text=AI 已就绪').count().catch(() => 0),
-    侧栏露模型名: await win.locator('aside >> text=/MiMo|GPT Image|Seedance/').count().catch(() => 0),
+    侧栏露模型名: await win.locator('aside >> text=/MiMo|GPT Image/').count().catch(() => 0),
     新会话: await win.locator("text=新会话").count(),
     新工作台入口: await win.locator('[aria-label="新工作台"]').count(),
     输入框: await win.locator('textarea, [contenteditable="true"], [placeholder*="要办的事"]').count(),
@@ -429,7 +429,7 @@ async function waitForWelcome(win, maxMs = 8000) {
       默认技术配置词: await drawer.locator("text=/API Key|Base URL|MCP|GitHub|模型参数|外接工具（MCP）/").count().catch(() => 0),
       // 强化：默认页连 key 字眼、模型品牌名、插件/技能 都不该出现(它们只属高级折叠区)
       默认露key字眼: await drawer.locator("text=/\\bkey\\b/i").count().catch(() => 0),
-      默认露模型品牌名: await drawer.locator("text=/MiMo|GPT Image|Seedance/").count().catch(() => 0),
+      默认露模型品牌名: await drawer.locator("text=/MiMo|GPT Image/").count().catch(() => 0),
       默认露插件技能: await drawer.locator("text=/插件|技能|子代理/").count().catch(() => 0),
     };
     await checkpoint(win, "S1门面", "设置默认页", "普通用户打开设置后，应先看到门店信息、素材、AI 已内置和高级设置折叠入口；默认不直接露 API Key、Base URL、MCP、GitHub、模型参数、key 字眼、模型品牌名、插件/技能。", {
@@ -717,42 +717,13 @@ async function waitForWelcome(win, maxMs = 8000) {
     等待ms: s3.waitedMs,
     友好失败卡: s3.friendlyError,
     出现图片img: await win.locator('.markdown img, img[src*="uploads"], img[src*="posters"], img[src*="generations"]').count().catch(() => -1),
-    右侧预览线索: await win.locator("text=/海报预览|图片预览|比例|尺寸|保存|做成视频/").count().catch(() => -1),
+    右侧预览线索: await win.locator("text=/海报预览|图片预览|比例|尺寸|保存/").count().catch(() => -1),
     仍在转圈: await win.locator("text=中断").count(),
   };
-  await checkpoint(win, "S3海报", "海报是否渲染", "理想：对话内生成 9:16 海报，右侧轻量预览显示图片、比例/尺寸、保存/重做/做成视频等动作。若测试环境缺生图 key，允许显示可读失败卡，不能一直转圈。", {
+  await checkpoint(win, "S3海报", "海报是否渲染", "理想：对话内生成 9:16 海报，右侧轻量预览显示图片、比例/尺寸、保存/重做等动作。若测试环境缺生图 key，允许显示可读失败卡，不能一直转圈。", {
     dom: s3dom,
     main: null,
     machinePass: s3.ended && ((s3dom.出现图片img > 0 && s3dom.右侧预览线索 > 0) || s3dom.友好失败卡 > 0),
-  }, since);
-
-  // S3b 图生视频承接：右侧海报预览里的“做成视频”必须清楚说明高成本确认，并直接发起任务。
-  log("S3b 图生视频承接（右侧预览动作）");
-  const e2ePosterUrl = new URL("/dashboard/chat?e2e_poster=1", APP_URL).toString();
-  await win.goto(e2ePosterUrl, { waitUntil: "domcontentloaded" }).catch(() => {});
-  await win.waitForTimeout(1500);
-  since = logLineCount();
-  const videoBefore = {
-    海报预览: await win.locator("text=E2E 海报预览").count().catch(() => 0),
-    比例尺寸: await win.locator("text=/9:16|360x640/").count().catch(() => 0),
-    视频按钮: await win.locator('button:has-text("做成视频")').count().catch(() => 0),
-    成本提示: await win.locator("text=/确认后才消耗视频额度|通常要等几分钟|先弹确认卡/").count().catch(() => 0),
-  };
-  if (videoBefore.视频按钮 > 0) {
-    await win.locator('button:has-text("做成视频")').first().click();
-  }
-  const videoWait = await waitStreamSettle(win, 30000);
-  const videoAfter = {
-    ...videoBefore,
-    用户视频任务: await win.locator("text=/把这张图做成一条抖音\\/视频号同城营销短视频|首帧图片|先生成视频任务确认卡/").count().catch(() => 0),
-    友好失败卡: await win.locator("text=/AI 服务还没准备好|重试|生成视频|确认生成视频/").count().catch(() => 0),
-    仍在转圈: await win.locator("text=中断").count(),
-    等待ms: videoWait.waitedMs,
-  };
-  await checkpoint(win, "S3b视频", "图生视频承接", "右侧海报预览应提供“做成视频”动作，并在点击前说清确认后才消耗视频额度、通常需等待；点击后直接把当前海报作为首帧发起图生视频任务。缺模型 key 时允许友好失败卡，不能只把输入框预填后停住。", {
-    dom: videoAfter,
-    main: null,
-    machinePass: videoAfter.海报预览 > 0 && videoAfter.视频按钮 > 0 && videoAfter.成本提示 > 0 && videoAfter.用户视频任务 > 0 && videoAfter.仍在转圈 === 0,
   }, since);
 
   fs.writeFileSync(path.join(RESULTS, "manifest.json"), JSON.stringify({ mainInfo, checkpoints: manifest }, null, 2));

@@ -44,7 +44,7 @@ function posterUrl(content: string): string | null {
   return m ? m[1] : null;
 }
 
-// E1-C2・generationId 可选透传：调用方传了就带上，"做成视频"靠它 openWorkbench({fromGen})找图——
+// generationId 可选透传：调用方传了就带上，图片成品卡可按它打开/追踪真实图片——
 // ⚠️ 不是 m.generationId(那是"本轮对话"这条 agent-chat 记录自己的 id，不是图的)，
 // 真图 id 来自 step.imageGenerationIds(工具执行完真实落库的 Generation.id，见 use-agent-chat.ts)。
 function posterPreviewFromText(content: string, title = "图片预览", generationId?: string): PreviewItem | null {
@@ -70,6 +70,14 @@ function extractImageUrl(text: string): string | null {
   const md = text.match(/!\[[^\]]*\]\(([^)\s]+)\)/);
   if (md) return md[1];
   const url = text.match(/(https?:\/\/[^\s)"']+\.(?:png|jpg|jpeg|webp|gif)|\/uploads\/[^\s)"']+\.(?:png|jpg|jpeg|webp|gif)|[^\s)"']+\.(?:png|jpg|jpeg|webp|gif))/i);
+  return url ? url[1] : null;
+}
+
+function extractVideoUrl(text: string): string | null {
+  if (!text) return null;
+  const md = text.match(/!?\[[^\]]*\]\(([^)\s]+\.(?:mp4|mov|webm|m4v))\)/i);
+  if (md) return md[1];
+  const url = text.match(/(https?:\/\/[^\s)"']+\.(?:mp4|mov|webm|m4v)|\/uploads\/[^\s)"']+\.(?:mp4|mov|webm|m4v)|[^\s)"']+\.(?:mp4|mov|webm|m4v))/i);
   return url ? url[1] : null;
 }
 
@@ -104,17 +112,6 @@ function imageGenerationIdForContent(steps: ToolStep[] | undefined, content: str
   }
   return undefined;
 }
-
-// 从生视频工具结果里稳健抓出视频地址——markdown 链接 `[..](url)` ∪ 裸 URL ∪ 本机 /uploads 路径 ∪ 视频扩展名。
-function extractVideoUrl(text: string): string | null {
-  if (!text) return null;
-  const md = text.match(/\[[^\]]*\]\(([^)\s]+\.(?:mp4|mov|webm|m4v)[^)\s]*)\)/i);
-  if (md) return md[1];
-  const url = text.match(/(https?:\/\/[^\s)"']+\.(?:mp4|mov|webm|m4v)|\/uploads\/[^\s)"']+\.(?:mp4|mov|webm|m4v)|[^\s)"']+\.(?:mp4|mov|webm|m4v))/i);
-  return url ? url[1] : null;
-}
-
-const VIDEO_TOOLS = new Set(["generate_video"]);
 
 type FollowUpAction = {
   label: string;
@@ -2142,25 +2139,17 @@ function DeliverableCard({
 }) {
   const { label, Icon } = toolMeta(step.tool);
   const resultText = step.result || "";
-  // G.3：生图工具 → 直接抓出图片地址（不靠结果恰好是 markdown 图片语法）；生视频工具 → 抓出视频地址。
-  // 只用来判断替身卡缩略图该显示哪种——全文大图/完整视频不再整段内嵌，见下方 PlaceholderRow。
+  // G.3：生图工具 → 直接抓出图片地址（不靠结果恰好是 markdown 图片语法）。
+  // 只用来判断替身卡缩略图该显示哪种——全文大图不再整段内嵌，见下方 PlaceholderRow。
   const imgUrl = IMAGE_TOOLS.has(step.tool) ? extractImageUrl(resultText) : null;
-  const vidUrl = VIDEO_TOOLS.has(step.tool) ? extractVideoUrl(resultText) : null;
+  const vidUrl = extractVideoUrl(resultText);
   // C3：「这条不太合适」不再常驻一个文字按钮，收进头部「…」溢出菜单；点了才展开下面的纠偏表单。
   const [correctionOpen, setCorrectionOpen] = useState(false);
 
   // R2：点缩略图/「打开」→ 把对应成品送去右侧画布看全（大图/完整视频/长文）。
   const openDeliverable = () => {
     if (!onPreview) return;
-    if (vidUrl) {
-      onPreview({
-        kind: "video",
-        title: label,
-        videoUrl: vidUrl,
-        ratio: typeof step.args?.ratio === "string" ? step.args.ratio : undefined,
-        duration: parseNum(step.args?.duration),
-      });
-    } else if (imgUrl) {
+    if (imgUrl) {
       const gid = step.imageGenerationIds?.[0];
       onPreview(posterPreviewFromText(resultText, label, gid) || { kind: "poster", title: label, imageUrl: imgUrl, generationId: gid });
     } else {

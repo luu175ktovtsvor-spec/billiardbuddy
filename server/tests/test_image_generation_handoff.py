@@ -1,6 +1,6 @@
-"""E1-C2「做成视频」handoff 回归：make_poster/generate_image 出图后，图片【自己的】真实
+"""图片成品 id 回传回归：make_poster/generate_image 出图后，图片【自己的】真实
 Generation.id（不是这轮对话/会话的 id）要经 ctx 传到 loop、挂到 tool_result（同步 meta / 流式事件）
-的 image_generation_ids，前端据此 openWorkbench({fromGen}) 精确找到那张图。
+的 image_generation_ids，前端据此精确打开/追踪那张图。
 
 照抄 test_knowledge_evidence.py 里 last_knowledge_used 的写-取-复位验证范式（同一套生命周期）：
 - services/agent/tools._attach_image_generation_ids 真实按 img["generation_id"] 取值写 ctx

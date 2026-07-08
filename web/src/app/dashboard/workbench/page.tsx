@@ -13,11 +13,10 @@
  * 绝对定位浮在右上角(两页顶部横条右侧都是空的,不挡标题/图标),不占任何文档流高度,不会挤压子页面。
  *
  * openWorkbench 带参打开两条通路都在这接:
- *  ① 首次开窗:main.js 把 mode/payload 拼进 URL query(?panel=video&fromGen=xxx),这里用
+ *  ① 首次开窗:main.js 把 mode/payload 拼进 URL query(?panel=video&sourceId=xxx),这里用
  *     useSearchParams 读初始面板 + payload(Next App Router 用 useSearchParams 必须包 Suspense)。
  *  ② 已开着的窗口再被 openWorkbench 调用:main.js 转发 "workbench:navigate" 事件,这里订阅切面板/换 payload。
- * payload 除了透传(data 属性可查)外,E1-C2 起也真传进视频面板(`initialFromGen`)——视频面板拿着这个
- * 轻标识 id 自己去后端换真实图片 URL 当 i2v 素材,这里容器本身仍不碰图片内容。
+ * payload 只作为轻量导航上下文保存在 data 属性里;真图/大对象不走这条通路。
  */
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -41,8 +40,7 @@ const TABS: { id: Panel; label: string; Icon: typeof ImageIcon }[] = [
 function WorkbenchContainer() {
   const searchParams = useSearchParams();
   const [panel, setPanel] = useState<Panel>(() => (isPanel(searchParams.get("panel")) ? (searchParams.get("panel") as Panel) : "image"));
-  // URL 上除 panel/workbench 外剩下的参数(如 fromGen)当轻量 payload 先存着——真图/大对象从不走这条通路,
-  // 页面按 id 自己去取。本单只搭通路,不消费(消费是下一单 E1-C2 的事)。
+  // URL 上除 panel/workbench 外剩下的参数当轻量 payload 先存着——真图/大对象从不走这条通路。
   const [payload, setPayload] = useState<WorkbenchPayload>(() => {
     const entries: Record<string, string> = {};
     searchParams.forEach((value, key) => {
@@ -73,7 +71,7 @@ function WorkbenchContainer() {
       data-workbench-payload={payload ? JSON.stringify(payload) : undefined}
     >
       {panel === "image" && <StudioPage />}
-      {panel === "video" && <VideoWorkspacePage initialFromGen={payload?.fromGen} />}
+      {panel === "video" && <VideoWorkspacePage />}
 
       {/* tab 切换条:绝对定位浮在右上角,不占文档流高度(两页自己的顶部横条右侧都是空的,不挡标题)。 */}
       <div className="app-no-drag absolute right-4 top-2 z-10 flex items-center gap-1 rounded-full border border-black/[0.08] bg-white/90 p-1 shadow-sm backdrop-blur dark:border-white/[0.08] dark:bg-[#141519]/90">

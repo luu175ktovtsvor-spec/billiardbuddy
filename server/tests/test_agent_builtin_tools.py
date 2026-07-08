@@ -151,44 +151,6 @@ def test_make_poster_is_deliverable_and_no_approval():
     assert t.deliverable is True         # 成品卡直接展示海报，并进会话 result 落库
 
 
-def test_generate_video_requires_explicit_confirmation_and_explains_cost():
-    t = default_registry.get("generate_video")
-    assert t is not None
-    assert t.requires_approval is True
-    assert t.force_confirm is True        # 视频慢且贵：full/跳过确认也必须先让老板确认
-    assert t.deliverable is True
-
-    reason = t.approval_reason(
-        {"description": "周赛海报动起来", "first_frame": "/uploads/posters/x.png", "ratio": "9:16", "duration": 5},
-        _ctx(),
-    )
-    assert "9:16" in reason["what"]
-    assert "图生视频" in reason["what"]
-    assert "成本" in reason["why"]
-    assert "1-8 分钟" in reason["impact"]
-
-
-def test_generate_video_defaults_to_vertical_9_16():
-    """总表：视频是发社交媒体账号的营销内容，默认竖屏 9:16（不是店内大屏 16:9）。
-    不写比例/写'抖音同城'都应落 9:16；只有明确要横版大屏才 16:9。"""
-    from services.agent.tools import _normalize_video_ratio
-
-    # 不指定比例 → 默认 9:16
-    assert _normalize_video_ratio({"description": "店里今晚人气视频"}) == "9:16"
-    # 抖音同城短视频（无显式比例）→ 9:16
-    assert _normalize_video_ratio({"description": "用助教照片做抖音同城引流视频"}) == "9:16"
-    # 明确要横版/大屏/电视 → 16:9
-    assert _normalize_video_ratio({"description": "做个店内电视大屏横版循环视频"}) == "16:9"
-    # 显式比例优先
-    assert _normalize_video_ratio({"ratio": "16:9", "description": "随便"}) == "16:9"
-    assert _normalize_video_ratio({"ratio": "9:16", "description": "横版大屏"}) == "9:16"
-
-    # 审批卡默认也应显示 9:16（不传 ratio 时）
-    t = default_registry.get("generate_video")
-    reason = t.approval_reason({"description": "做个抖音同城引流视频"}, _ctx())
-    assert "9:16" in reason["what"]
-
-
 def test_make_poster_calls_generate_images_and_returns_image(monkeypatch):
     captured = {}
 

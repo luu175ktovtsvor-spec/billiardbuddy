@@ -1,9 +1,9 @@
 """视觉理解(VLM)轻客户端 —— 让大脑"看懂"视频帧,给氛围 Planner 挑高光用。
 
 **上游可切(落地文档 §6"网关上游可切"设计),env VLM_PROVIDER 选:**
-- `doubao`(默认·主用):火山豆包视觉 `doubao-seed-1-6-250615`。**生产经网关**(gateway/app.py 的
+- `doubao`(默认·主用):火山豆包视觉 `doubao-seed-1-6-250615`。**生产经网关**(gateway/app.ts 的
   `/v1/ark/chat/completions`)反代,真 ARK key 全在服务器,客户端只带可吊销的 app 令牌
-  (`QF_GATEWAY_URL`/`QF_GATEWAY_TOKEN`)。⚠️模型要在方舟控制台开通+受限 key 授权(同 Seedance)。
+  (`QF_GATEWAY_URL`/`QF_GATEWAY_TOKEN`)。⚠️模型要在方舟控制台开通+受限 key 授权。
 - `zhipu`(兜底):智谱 `glm-4.6v-flash`,零成本但**免费档限流狠**(实测密集调 429 锁死),量小不收编,
   继续直连(`ZHIPU_API_KEY`)。
 
@@ -51,7 +51,7 @@ _PROVIDERS = {
 # 网关地址/令牌(生产形态):真 ARK key 在服务器 gw.env,客户端只带这个可吊销的 app 令牌。
 _GATEWAY_URL = os.environ.get("QF_GATEWAY_URL", "").rstrip("/")   # 如 http://<网关IP>/gw/v1
 _GATEWAY_TOKEN = os.environ.get("QF_GATEWAY_TOKEN", "")
-_GATEWAY_PATH = "/ark/chat/completions"   # gateway/app.py 的火山豆包视觉/文本通道
+_GATEWAY_PATH = "/ark/chat/completions"   # gateway/app.ts 的火山豆包视觉/文本通道
 
 
 def _provider() -> dict:

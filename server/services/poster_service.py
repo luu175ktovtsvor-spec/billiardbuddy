@@ -199,7 +199,7 @@ def _load_upload_bytes(path_str: str | None) -> bytes | None:
 # 这几个参数(logo_path/qr_path/store_photo_path/reference_image_paths/mask_path)桌面版下经【Agent 工具
 # 调用】传入——而工具的入参是【模型自己填的】，不能假设它一定落在 uploads 沙箱或老板真选过的文件里。
 # 旧实现在 DESKTOP_LOCAL 下对"沙箱外的绝对路径"来者不拒(Path(path).read_bytes())，等于让模型/prompt注入
-# 拿这几个参数当"读任意本机文件并把内容发给外部生图 API"的后门。对齐 video_service._resolve_first_frame
+# 拿这几个参数当"读任意本机文件并把内容发给外部生图 API"的后门。
 # 的 allow_paths 校验模式：沙箱外的绝对路径必须 ∈ 老板当场经 OS 文件选择器选定的 allowed_paths(含选中
 # 目录内的文件)，否则视为越界——抛人话错误而不是静默略过(静默会把"读到了别的敏感文件"悄悄含糊过去)。
 

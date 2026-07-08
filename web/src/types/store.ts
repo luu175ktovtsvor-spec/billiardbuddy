@@ -194,7 +194,6 @@ export interface ByokConfigOut {
   /** 内置模型展示名（换内置模型时后端改、前端跟着变） */
   bundled_model_label?: string;
   bundled_image_label?: string;
-  bundled_video_label?: string;
 }
 
 /** BYOK 多供应商配置档（CC Switch 式：存好几套、一键切换） */

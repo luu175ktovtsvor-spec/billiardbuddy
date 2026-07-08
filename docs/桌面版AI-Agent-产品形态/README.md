@@ -105,7 +105,7 @@
 ### 7. 并发阀门网关 — `gateway/`
 | 文件 | 干什么 |
 |------|------|
-| `gateway/app.py` | 国内总闸：三层阀门 + 藏真 key + per-user 配额；文字/生图/视频/VLM 全走这里代理出站，客户端只带可吊销 app 令牌 |
+| `gateway/app.ts` | Bun/TS 国内总闸：三层阀门 + 藏真 key + per-user 配额；文字/生图/视频/VLM 全走这里代理出站，客户端只带可吊销 app 令牌 |
 | `gateway/deploy.sh` | 部署脚本（CN 服务器） |
 
 ## 四、一次对话的数据流

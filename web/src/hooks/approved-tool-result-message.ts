@@ -183,7 +183,7 @@ export function fileArtifactFromToolResult(tool: string, content: string, args?:
 export type ApprovedToolResultMessage = {
   role: "assistant";
   content: string;
-  kind?: "command" | "video";
+  kind?: "command";
   steps?: Array<{
     tool: string;
     args?: Record<string, unknown>;
@@ -205,7 +205,6 @@ export function approvedToolResultMessage(tool: string, args: Record<string, unk
     };
   }
   if (tool === "run_command") return { role: "assistant", content: result, kind: "command" };
-  if (tool === "generate_video") return { role: "assistant", content: result, kind: "video" };
   if (isFileMutationTool(tool)) {
     return {
       role: "assistant",

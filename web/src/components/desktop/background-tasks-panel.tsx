@@ -23,7 +23,7 @@ function taskStatusLabel(status: BackgroundTaskItem["status"]): { text: string; 
 function kindLabel(kind?: string): string {
   if (!kind) return "后台任务";
   if (kind === "generate" || kind === "edit" || kind === "variations") return "图片任务";
-  if (kind === "i2v" || kind === "video" || kind === "video_render" || kind === "video_auto_plan" || kind === "video_inventory") return "视频任务";
+  if (kind === "video_render" || kind === "video_auto_plan" || kind === "video_inventory") return "视频任务";
   if (kind.includes("agent")) return "子代理";
   return kind;
 }
