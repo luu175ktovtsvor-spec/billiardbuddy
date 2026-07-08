@@ -29,6 +29,7 @@ export interface TaskMeta {
   workspaceRoot?: string
   progress?: number
   stage?: string
+  summary?: string
   lastEventSeq?: number
   params?: Record<string, unknown>
   result?: unknown
@@ -101,6 +102,7 @@ function isTaskMeta(value: unknown): value is TaskMeta {
     (value.workspaceRoot === undefined || typeof value.workspaceRoot === 'string') &&
     (value.progress === undefined || typeof value.progress === 'number') &&
     (value.stage === undefined || typeof value.stage === 'string') &&
+    (value.summary === undefined || typeof value.summary === 'string') &&
     (value.lastEventSeq === undefined || typeof value.lastEventSeq === 'number') &&
     (value.params === undefined || isRecord(value.params)) &&
     (value.error === undefined || typeof value.error === 'string')
@@ -351,7 +353,7 @@ export class TaskService {
     return meta
   }
 
-  async touch(id: string, patch: Partial<Pick<TaskMeta, 'title' | 'status' | 'kind' | 'conversationId' | 'workspaceRoot' | 'progress' | 'stage' | 'lastEventSeq' | 'params' | 'result' | 'error'>> = {}): Promise<TaskMeta> {
+  async touch(id: string, patch: Partial<Pick<TaskMeta, 'title' | 'status' | 'kind' | 'conversationId' | 'workspaceRoot' | 'progress' | 'stage' | 'summary' | 'lastEventSeq' | 'params' | 'result' | 'error'>> = {}): Promise<TaskMeta> {
     validateTaskId(id)
     let next: TaskMeta | null = null
     await this.mutateIndex(index => {

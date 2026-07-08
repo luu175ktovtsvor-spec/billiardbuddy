@@ -131,6 +131,7 @@ export interface BackgroundTaskItem {
   workspaceRoot?: string;
   progress?: number;
   stage?: string;
+  summary?: string;
   result?: unknown;
   error?: string;
 }

@@ -248,7 +248,7 @@ export function BackgroundTasksPanel({ open, onClose, focusTaskId }: { open: boo
             {tasks.map((task) => {
               const state = taskStatusLabel(task.status);
               const p = progressOf(task);
-              const summary = task.error || resultSummary(task.result);
+              const summary = task.error || (isActive(task.status) ? task.summary : undefined) || resultSummary(task.result);
               const url = firstResultUrl(task.result);
               const isImg = !!url && /\.(svg|png|jpe?g|webp|gif)(?:$|\?)/i.test(url);
               return (

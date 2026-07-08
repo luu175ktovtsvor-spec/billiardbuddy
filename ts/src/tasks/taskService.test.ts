@@ -39,6 +39,24 @@ test('TaskService starts async runner, persists metadata and event log', async (
   }
 })
 
+test('TaskService persists task summary updates', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tasks-summary-'))
+  try {
+    const tasks = new TaskService(root)
+    await tasks.create({ id: 'summary_task_1', title: '后台摘要', kind: 'background_agent' })
+    const updated = await tasks.touch('summary_task_1', { summary: 'Reading taskTools.ts', stage: '调用 read_file' })
+
+    expect(updated.summary).toBe('Reading taskTools.ts')
+    const reloaded = new TaskService(root)
+    expect(await reloaded.get('summary_task_1')).toMatchObject({
+      summary: 'Reading taskTools.ts',
+      stage: '调用 read_file',
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('TaskService can cancel a running task', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tasks-cancel-'))
   try {
