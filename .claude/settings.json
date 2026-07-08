@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/doc_freshness.py\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/doc_freshness.mjs\""
           }
         ]
       }

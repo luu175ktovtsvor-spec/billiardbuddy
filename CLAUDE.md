@@ -172,4 +172,4 @@ python3 scripts/build_coupling_map.py --write
 
 **7. 验收报告不进仓库**：报告写到仓库外 `~/Desktop/球房-验收报告/`，不 commit（仓库内 `球房-验收报告/` 已 gitignore）。
 
-**8. 自动牙齿 + 两个一键 skill**：`.claude/settings.json` 的 SessionStart 钩子每开机自动跑 `scripts/doc_freshness.py`，把"标了可删却还在/久未核对"的文档注入上下文提醒你（清爽时静默）。`/整理归档` 一键把已完成/已否决的文档按 banner 挪进 `docs/归档/`（轻量、几分钟收尾）；拿不准哪些过时、要交叉验代码是否真落地 → 跑 `/文档体检`（深扫，出归档/删除候选）。
+**8. 自动牙齿 + 两个一键 skill**：`.claude/settings.json` 的 SessionStart 钩子每开机自动跑 `scripts/doc_freshness.mjs`，把"标了可删却还在/久未核对"的文档注入上下文提醒你（清爽时静默）。`/整理归档` 一键把已完成/已否决的文档按 banner 挪进 `docs/归档/`（轻量、几分钟收尾）；拿不准哪些过时、要交叉验代码是否真落地 → 跑 `/文档体检`（深扫，出归档/删除候选）。

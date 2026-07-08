@@ -6,7 +6,7 @@ description: 体检并清理本项目 docs/ 下的过时文档。当用户说"�
 # 文档体检:扫过时文档 + 出删除候选
 
 把"开发过程中堆下来的 spec 稿/实现计划/报告/被取代的旧文档"扫一遍,出"该删 / 该标 / 拿不准"清单。
-比 SessionStart 钩子(`scripts/doc_freshness.py` 只看状态 banner)更深——**交叉验代码,确认工作真落地了再判已完成**。
+比 SessionStart 钩子(`scripts/doc_freshness.mjs` 只看状态 banner)更深——**交叉验代码,确认工作真落地了再判已完成**。
 
 ## 何时用
 - 用户说"文档太乱了 / 清一下文档 / 哪些过时了"。
