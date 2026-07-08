@@ -58,6 +58,7 @@ import { bridgeRemoteConfigFromEnv, createBridgeRemoteTransport } from '../tasks
 import { BridgeRemoteSubscriber, type BridgeRemoteWebSocketConstructor } from '../tasks/bridgeRemoteSubscriber'
 import { createBridgeCodeSessionClient } from '../tasks/bridgeCodeSessionClient'
 import { BridgeWorkerClient, type BridgeWorkerSessionState } from '../tasks/bridgeWorkerClient'
+import { BridgeWorkerStream } from '../tasks/bridgeWorkerStream'
 import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
 import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
@@ -884,6 +885,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const providerHealth = new ProviderHealthStore(opts.providerRoot ?? stateRoot)
   const bridgeSubscribers = new Map<string, BridgeRemoteSubscriber>()
   const bridgeWorkers = new Map<string, BridgeWorkerClient>()
+  const bridgeWorkerStreams = new Map<string, BridgeWorkerStream>()
 
   function registerProviderFailure(runtime: RuntimeProviderResolution, err: unknown): void {
     const key = runtimeProviderKey(runtime)
@@ -2900,13 +2902,16 @@ export function startServer(opts: StartServerOptions = {}) {
         try {
           if (req.method === 'GET') {
             const worker = bridgeWorkers.get(codeSessionId)
-            return Response.json({ sessionId: codeSessionId, connected: !!worker, workerEpoch: worker?.getWorkerEpoch() })
+            const stream = bridgeWorkerStreams.get(codeSessionId)
+            return Response.json({ sessionId: codeSessionId, connected: !!worker, workerEpoch: worker?.getWorkerEpoch(), stream: stream ? { state: stream.getState(), lastSequenceNum: stream.getLastSequenceNum() } : null })
           }
           if (req.method === 'POST') {
             const body = await req.json().catch(() => ({})) as Record<string, unknown>
             const credentials = await bridgeRemote.getCredentials(codeSessionId)
             if (!credentials) return jsonError('bridge credentials not found', 404)
             bridgeWorkers.get(codeSessionId)?.close()
+            bridgeWorkerStreams.get(codeSessionId)?.close()
+            bridgeWorkerStreams.delete(codeSessionId)
             const worker = new BridgeWorkerClient({
               sessionId: codeSessionId,
               credentials,
@@ -2929,10 +2934,32 @@ export function startServer(opts: StartServerOptions = {}) {
               return jsonError(initialized.error || `worker init failed ${initialized.status ?? ''}`.trim(), initialized.status ?? 502)
             }
             bridgeWorkers.set(codeSessionId, worker)
+            if (body.stream !== false && body.read_stream !== false) {
+              const stream = new BridgeWorkerStream({
+                sessionId: codeSessionId,
+                apiBaseUrl: credentials.apiBaseUrl,
+                workerJwt: credentials.workerJwt,
+                initialSequenceNum: numberFrom(body.initialSequenceNum ?? body.initial_sequence_num, 0),
+                fetchImpl: opts.fetchImpl,
+              }, { state: bridgeRemote, worker }, {
+                onClose: code => {
+                  bridgeWorkerStreams.delete(codeSessionId)
+                  if (code === 401 || code === 403) {
+                    worker.close()
+                    bridgeWorkers.delete(codeSessionId)
+                    void bridgePeers.updateStatus(codeSessionId, 'error', `worker stream closed ${code}`).catch(() => undefined)
+                  }
+                },
+              })
+              bridgeWorkerStreams.set(codeSessionId, stream)
+              stream.connect()
+            }
             await bridgePeers.register({ sessionId: codeSessionId, status: 'connected', inboundEnabled: true })
-            return Response.json({ ok: true, sessionId: codeSessionId, workerEpoch: worker.getWorkerEpoch(), initStatus: initialized.status })
+            return Response.json({ ok: true, sessionId: codeSessionId, workerEpoch: worker.getWorkerEpoch(), initStatus: initialized.status, stream: body.stream !== false && body.read_stream !== false })
           }
           if (req.method === 'DELETE') {
+            bridgeWorkerStreams.get(codeSessionId)?.close()
+            bridgeWorkerStreams.delete(codeSessionId)
             bridgeWorkers.get(codeSessionId)?.close()
             bridgeWorkers.delete(codeSessionId)
             await bridgePeers.updateStatus(codeSessionId, 'outbound_only').catch(() => undefined)
@@ -3756,6 +3783,8 @@ export function startServer(opts: StartServerOptions = {}) {
   app.stop = (closeActiveConnections?: boolean) => {
     for (const subscriber of bridgeSubscribers.values()) subscriber.close()
     bridgeSubscribers.clear()
+    for (const stream of bridgeWorkerStreams.values()) stream.close()
+    bridgeWorkerStreams.clear()
     for (const worker of bridgeWorkers.values()) worker.close()
     bridgeWorkers.clear()
     return stop(closeActiveConnections)

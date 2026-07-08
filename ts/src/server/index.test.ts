@@ -1137,6 +1137,31 @@ test('bridge worker API starts CCR worker transport and uploads events/state/del
           worker_epoch: 13,
         })
       }
+      if (String(input).includes('/v1/code/sessions/cse_worker_api/worker/events/stream')) {
+        const frame = {
+          event_id: 'evt_stream_1',
+          sequence_num: 1,
+          event_type: 'control_request',
+          source: 'remote',
+          created_at: new Date().toISOString(),
+          payload: {
+            type: 'control_request',
+            request_id: 'req_stream',
+            request: {
+              subtype: 'can_use_tool',
+              tool_name: 'Write',
+              tool_use_id: 'toolu_stream',
+              input: { file_path: 'remote.ts' },
+            },
+          },
+        }
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`id: 1\nevent: client_event\ndata: ${JSON.stringify(frame)}\n\n`))
+            controller.close()
+          },
+        }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+      }
       return Response.json({})
     },
   })
@@ -1184,8 +1209,13 @@ test('bridge worker API starts CCR worker transport and uploads events/state/del
     expect(calls.some(call => call.url === 'https://session-ingress.example/v1/code/sessions/cse_worker_api/worker' && call.method === 'PUT' && call.body.worker_status === 'idle' && call.body.worker_epoch === 13)).toBe(true)
     expect(calls.some(call => call.url.endsWith('/worker/events') && call.body.events[0].payload.type === 'assistant')).toBe(true)
     expect(calls.some(call => call.url.endsWith('/worker') && call.body.worker_status === 'requires_action' && call.body.requires_action_details.request_id === 'req_1')).toBe(true)
-    expect(calls.some(call => call.url.endsWith('/worker/events/delivery') && call.body.updates[0].event_id === 'evt_1')).toBe(true)
+    expect(calls.some(call => call.url.endsWith('/worker/events/delivery') && call.body.updates.some((item: any) => item.event_id === 'evt_1'))).toBe(true)
+    expect(calls.some(call => call.url.endsWith('/worker/events/delivery') && call.body.updates.some((item: any) => item.event_id === 'evt_stream_1' && item.status === 'processed'))).toBe(true)
     expect(calls.some(call => call.url.endsWith('/worker/heartbeat') && call.body.session_id === 'cse_worker_api')).toBe(true)
+    const pending = await (await fetch(`http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/sessions/${encodeURIComponent('cse_worker_api')}/permissions?status=pending`)).json() as any
+    expect(pending.permissions).toEqual([expect.objectContaining({ requestId: 'req_stream', toolName: 'Write' })])
+    const workerStatus = await (await fetch(`${codeBase}/worker`)).json() as any
+    expect(workerStatus.stream).toMatchObject({ lastSequenceNum: 1 })
     const stopped = await (await fetch(`${codeBase}/worker`, { method: 'DELETE' })).json() as any
     expect(stopped).toMatchObject({ ok: true, sessionId: 'cse_worker_api' })
   } finally {
