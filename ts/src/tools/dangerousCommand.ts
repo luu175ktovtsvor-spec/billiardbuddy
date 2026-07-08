@@ -1949,6 +1949,53 @@ function splitSegments(command: string): string[] {
   return segments
 }
 
+function splitSegmentsPreservingWhitespace(command: string): string[] {
+  const segments: string[] = []
+  let current = ''
+  let quote: '"' | "'" | null = null
+  let escaped = false
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]!
+    if (quote) {
+      current += char
+      if (escaped) escaped = false
+      else if (char === '\\' && quote === '"') escaped = true
+      else if (char === quote) quote = null
+      continue
+    }
+    if (escaped) {
+      current += char
+      escaped = false
+      continue
+    }
+    if (char === '\\') {
+      current += char
+      escaped = true
+      continue
+    }
+    if (char === '"' || char === "'") {
+      current += char
+      quote = char
+      continue
+    }
+    if ((char === '&' && command[i + 1] === '&') || (char === '|' && command[i + 1] === '|')) {
+      if (current.trim()) segments.push(current.trim())
+      current = ''
+      i++
+      continue
+    }
+    if (';|\n'.includes(char)) {
+      if (current.trim()) segments.push(current.trim())
+      current = ''
+      continue
+    }
+    current += char
+  }
+  if (current.trim()) segments.push(current.trim())
+  return segments
+}
+
 function splitPotentiallyMalformedSegments(command: string): string[] {
   return normalize(command).split(/\s*(?:&&|\|\||[;|])\s*/).map(x => x.trim()).filter(Boolean)
 }
@@ -3856,6 +3903,14 @@ function maxRisk(a: CommandRisk, b: CommandRisk): CommandRisk {
 export function classifyCommandRisk(command: string): CommandRisk {
   if (isDangerousCommand(command)) return 'destructive'
   const commandForClassification = stripSafeHeredocSubstitutions(command) ?? command
-  const initialRisk: CommandRisk = hasShellExpansionRisk(command) || hasShellParserRisk(command) || shellCdGitNeedsApproval(commandForClassification) || shellGitInternalWriteNeedsApproval(commandForClassification) ? 'outreach' : 'read'
+  const initialRisk: CommandRisk = hasGrepOrRgNewlinePatternRisk(commandForClassification) || hasShellExpansionRisk(command) || hasShellParserRisk(command) || shellCdGitNeedsApproval(commandForClassification) || shellGitInternalWriteNeedsApproval(commandForClassification) ? 'outreach' : 'read'
   return splitSegments(commandForClassification).reduce<CommandRisk>((risk, segment) => maxRisk(risk, classifySegment(segment)), initialRisk)
+}
+
+function hasGrepOrRgNewlinePatternRisk(command: string): boolean {
+  if (!/[\n\r]/.test(command)) return false
+  return splitSegmentsPreservingWhitespace(command).some(segment => {
+    const base = tokenizeShellWords(segment)[0]?.toLowerCase()
+    return base === 'grep' || base === 'rg'
+  })
 }
