@@ -255,6 +255,9 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('fd -x rm {}')).toBe('outreach')
   expect(classifyCommandRisk('fd --exec-batch rm')).toBe('outreach')
   expect(classifyCommandRisk('fd -l package')).toBe('outreach')
+  expect(classifyCommandRisk('pyright --project .')).toBe('read')
+  expect(classifyCommandRisk('pyright --outputjson --warnings')).toBe('read')
+  expect(classifyCommandRisk('pyright --watch')).toBe('outreach')
   expect(classifyCommandRisk('curl https://example.com > out.txt')).toBe('outreach')
   expect(classifyCommandRisk('kill 123 > out.txt')).toBe('destructive')
   expect(classifyCommandRisk('git push --force origin main')).toBe('destructive')
@@ -508,6 +511,11 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   })
   expect(resolvePermission(runCommandTool, { command: 'fd -H -e ts dangerousCommand' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'fd -x rm {}' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'pyright --project .' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'pyright --watch' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })

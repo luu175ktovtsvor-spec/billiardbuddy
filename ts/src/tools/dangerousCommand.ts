@@ -1788,6 +1788,24 @@ function classifyFdCommand(command: string): CommandRisk | null {
   return null
 }
 
+function classifyPyrightCommand(command: string): CommandRisk | null {
+  return classifyNamedReadOnlyCommand(command, 'pyright', {
+    '--outputjson': 'none',
+    '--project': 'string',
+    '-p': 'string',
+    '--pythonversion': 'string',
+    '--pythonplatform': 'string',
+    '--typeshedpath': 'string',
+    '--venvpath': 'string',
+    '--level': 'string',
+    '--stats': 'none',
+    '--verbose': 'none',
+    '--version': 'none',
+    '--dependencies': 'none',
+    '--warnings': 'none',
+  })
+}
+
 function classifyProcessActionCommand(command: string): CommandRisk | null {
   const tokens = tokenizeShellWords(command)
   const base = tokens[0]?.toLowerCase()
@@ -2227,6 +2245,9 @@ function classifySegment(segment: string): CommandRisk {
 
   const fdRisk = classifyFdCommand(rawCommand)
   if (fdRisk) return withSegmentBaseRisk(fdRisk)
+
+  const pyrightRisk = classifyPyrightCommand(rawCommand)
+  if (pyrightRisk) return withSegmentBaseRisk(pyrightRisk)
 
   const readOnlyAllowlistRisk = classifyReadOnlyAllowlistedCommand(rawCommand)
   if (readOnlyAllowlistRisk) return withSegmentBaseRisk(readOnlyAllowlistRisk)
