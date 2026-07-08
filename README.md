@@ -1,6 +1,8 @@
 # 球房运营 AI 助手 · 桌面版
 
-> 📌 状态:✅现行 · 最后核对 2026-07-02
+> 📌 状态:✅现行 · 最后核对 2026-07-09
+>
+> **⚠️ 2026-07-09:老 Python 后端(`server/`)已整体退役删除,当前唯一代码栈是 `ts/`(Bun/TS 内核,cc-haha 标准 coding-agent 循环)。** 老 `web/` 前端 + `desktop/` 打包入口(拉起 Python)仍在,属"批3 成栈切换"单独处理。下方"全本地 FastAPI/代码在哪 server/"等描述待随批3统一重写;当前权威口径见 `docs/plans/强-coding-agent-桌面外壳-阶段目标.md` 与 `docs/plans/TS-cc-haha-v0.4.5-内核迁移矩阵-2026-07-07.md`。
 
 > **想看完整的架构/规范/铁律/现状与待办 → 唯一入口是 [`CLAUDE.md`](./CLAUDE.md)。** 本文件只做"项目地图"，让任何人（或新开一个 AI 会话）打开秒懂"这是什么、代码在哪、怎么跑"。
 
@@ -15,31 +17,29 @@
 ## 怎么跑（开发）
 
 ```bash
-# 后端依赖 + 前端依赖
-cd server && uv sync
-cd ../web && pnpm install
-# 起桌面壳（Electron 会自动拉起本地 FastAPI + 本地 Next.js）
-cd ../desktop && npm install && npm run dev
-
-# 快速测试门（不花钱、不联网 AI）：后端 pytest + 前端 tsc
-bash scripts/test.sh
-
-# 打包出安装包（CI: PyInstaller 后端 + electron-builder nsis/dmg）
-# 见 .github/workflows/desktop-build-win.yml；改前端后必须重打包才能看到真效果
+# TS 内核(当前唯一代码栈)
+cd ts && bun install
+bun test                  # 全量单测
+bun run typecheck         # tsc --noEmit
+bun run build:sidecar     # 出本机 sidecar 二进制
+bun run desktop:dev       # 最小 Electron 壳拉起 sidecar
 ```
 
-完整命令清单（单测/单文件/评测/耦合地图刷新）见 `CLAUDE.md`「开发 / 测试」节。
+完整命令见 `CLAUDE.md`「开发 / 测试」节。老 `server/` pytest、老 `web/` 前端、`desktop/` 拉起 Python 的 dev 流程均已退役。
 
 ## 代码在哪
 
 ```
-server/     后端：Python 3.12 + FastAPI + SQLAlchemy + 本地 SQLite；Agent 大脑在 server/services/agent/
-web/        前端：Next.js 14 + React + TypeScript；桌面 UI 在 web/src/components/desktop/
-desktop/    Electron 壳：main/backend/frontend/preload/updater/video，负责拉起本地后端+前端、打包
-gateway/    模型 key 收拢网关（国内服务器总闸）：客户端只带 app 令牌，真 key 全在服务器 gw.env，三层阀门限流+每用户配额+藏 key
+ts/         唯一代码栈:Bun/TS 内核(cc-haha 标准 coding-agent 循环)——
+            ts/src/harness(循环) · permissions(权限/审批) · tools(文件/命令/搜索) · sandbox/workspace(护栏)
+            · hooks · skills · commands(内置 slash 命令在 ts/commands) · tasks(子代理/后台) · mcp · plugins
+            · context(压缩恢复) · model/proxy(provider/OpenAI 兼容) · media(生图/真实素材剪辑) · server(Bun.serve API)
+gateway/    模型 key 收拢网关(国内服务器总闸):客户端只带 app 令牌,真 key 在服务器,三层阀门限流+藏 key
+web/        (退役中)老 Next.js 前端 —— 目标壳切 ts-desktop 后整体退役
+desktop/    (退役中)老 Electron 壳(拉起 Python)—— 批3 切成拉起 ts/ 后端 + ts-desktop
 ```
 
-其它值得知道的目录：`server/prompts/` 知识库源文件（运行时加密为 `prompts.enc`）；`web/src/app/dashboard/video/` 视频创作工作区页面；`server/services/video_edit/` 视频剪辑/生成引擎。
+> 老 `server/`(Python 后端)+ 台球知识 YAML 已整体删除(git 历史可回查);台球领域包以后在 TS 侧重新策展。
 
 ## 文档去哪找
 

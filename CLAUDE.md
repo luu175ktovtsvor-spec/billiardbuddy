@@ -1,5 +1,7 @@
 # 桌面版 AI Agent（通用本机 AI 执行助手）
 
+> **⚠️ 2026-07-09 重大变更:老 Python 线(`server/`)已整体退役删除。** 当前唯一代码栈是 **`ts/`**(Bun/TS 内核,cc-haha 标准 coding-agent 循环)。老 `web/` 前端 + `desktop/` 打包入口(拉起 Python)仍在,属"批3 成栈切换"单独处理(切成 ts/ 后端 + ts-desktop 前端后一并退役)。**下方描述 Python 架构(`services/agent`、`api/v1`、`compose_agent_system_prompt`、FastAPI/pytest、店脑 Python 实现、代码流向地图 server/api/v1 链路)的章节都是历史,已不反映现状**——当前权威入口是 `docs/plans/强-coding-agent-桌面外壳-阶段目标.md` + `docs/当前目标与文档口径-2026-07-07.md` + `docs/plans/TS-cc-haha-v0.4.5-内核迁移矩阵-2026-07-07.md`(§3.401 有全 16 模块 cc 差异矩阵与本轮进度)。台球领域包知识 YAML 随 server/ 一并删除,以后在 TS 侧重新策展。本文件的 Python 章节待后续统一重写。
+
 > **🧭 新会话先在这定位（权威入口，按此为准）：**
 > - **这是什么**：装在用户电脑上的**通用 AI Agent**——能读写/改本机文件、跑命令、上网查抓、生图、列清单、派子代理，实打实把活干完。对标 Claude Code 的本机执行助手。**台球房运营**是**可 `@挂载` 的领域知识库**（`knowledge_packs=["billiards"]`），不是产品边界。
 > - **接手先读**：本文件就是唯一入口——读完这段导航，直接跳下方「现状与待办」节（上下文 + 已完成 + 待办）。
@@ -98,34 +100,22 @@
 - **不消毒、贴一线**：PPT 在册的真实打法（美女人设 / 异性情绪价值 / 擦边引流 / 交友软件获客 / 红包 / 超休 / 追分氛围 / 助教免费体验）照实落地，不因「听着擦边」误当红线。
 - **架构 = 大厂标准 B**：精炼 PPT 核心 + 让模型自己延伸场景 + 即时检索 RAG（bge-zh + `look_up_knowledge`）。**不替模型穷举预建场景。** 现 **57 knowledge + 72 operation** YAML，覆盖营销/客户运营/人才管理/数据分析。硬数字以本地留存的硬规则对照（16条带行号）为单一可信源。
 
-## 开发 / 测试
+## 开发 / 测试（当前栈 = `ts/`；老 Python/pytest 已退役）
 
 ```bash
-# —— 一条命令跑全套快速门（不花钱、不联网AI）：后端 pytest + 前端 vitest + tsc --noEmit ——
-bash scripts/test.sh
-bash scripts/test.sh --eval        # 额外跑店脑 LLM 验收（真实模型·慢·花钱·需 key），平时别加
+# —— TS 内核快速门（当前唯一代码栈）——
+bash scripts/test.sh               # = cd ts && bun test + bun run typecheck
+cd ts && bun test                  # 全量单测(发现 ts/**/*.test.ts)
+cd ts && bun test src/harness/loop.test.ts   # 跑单文件
+cd ts && bun run typecheck         # tsc --noEmit
+cd ts && bun run build:sidecar     # bun build --compile 出本机 sidecar 二进制
+cd ts && bun run smoke:sandbox     # 离线 smoke(sandbox/sqlite/native/model/agent-tools)
 
-# —— 后端单测（uv sync 建出 .venv 后）——
-cd server && uv sync               # 装依赖（首次/改 pyproject 后）
-uv run pytest tests/ -q                              # 全跑（107 个 test_*.py）
-uv run pytest tests/test_agent_loop.py -q            # 跑单文件
-uv run pytest tests/test_agent_loop.py -k stream -q  # 跑单个用例（-k 匹配名）
-
-# —— 前端：web 没有 vitest 用例（pnpm test 空过），真正的前端门是类型检查 ——
-cd web && pnpm install
-npx tsc --noEmit                   # 前端"测试"实质＝这条；改前端后必过
-pnpm lint                          # next lint（可选）
-
-# —— 桌面开发 / 端到端 / 打包 ——
-cd desktop && npm install && npm run dev   # Electron 起壳 + 自动拉起本地 FastAPI + 本地 Next.js
-node desktop/e2e-pw/run.js                 # Playwright-Electron 端到端回归（脚本可能过时需修）
-# 打包(CI): .github/workflows/desktop-build-win.yml → PyInstaller 后端 + electron-builder nsis/dmg
-# 改前端后想看真效果必须重打包（dev 模式≠装机包行为）
-
-# —— 改了承重接口后必跑（否则 TS coupling map 守栏红）——
-node scripts/build_coupling_map.mjs --write
-cd ts && bun test src/scripts/buildCouplingMap.test.ts
+# —— 桌面(批3 成栈切换前:老 desktop 拉起 Python 已失效;ts-desktop 前端待建)——
+cd ts && bun run desktop:dev       # 最小 Electron 壳拉起 sidecar(需先 build:sidecar)
 ```
+> 老 `server/`(FastAPI/pytest)、老 `web/` 前端 vitest/tsc、`desktop/` 拉起 Python 的 dev 流程、
+> `scripts/build_coupling_map.mjs`(耦合地图,映射 web→Python)均已退役,不再是现役命令。
 
 ## 代码流向地图（一次对话怎么跑完，跨文件读才看得懂）
 
