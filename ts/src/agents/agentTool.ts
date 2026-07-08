@@ -29,9 +29,12 @@ import { cloneContentReplacementState } from '../context/toolResultStorage'
 
 export interface AgentTaskInput {
   agent?: string
+  name?: string
   task: string
   context?: string
   isolation?: 'worktree'
+  run_in_background?: boolean | string
+  runInBackground?: boolean | string
 }
 
 export interface AgentTaskToolOptions {
@@ -43,7 +46,7 @@ export interface AgentTaskToolOptions {
   sidechainRoot?: string
   hooks?: HookRegistry
   mcp?: AgentMcpRuntimeOptions
-  startBackgroundAgent?: (input: { agent?: string; task: string; context?: string; title?: string; isolation?: 'worktree' }, ctx: ToolContext) => Promise<{ task: { id: string; title: string; params?: Record<string, unknown> }; agent: AgentDefinition }>
+  startBackgroundAgent?: (input: { agent?: string; name?: string; task: string; context?: string; title?: string; isolation?: 'worktree' }, ctx: ToolContext) => Promise<{ task: { id: string; title: string; params?: Record<string, unknown> }; agent: AgentDefinition }>
 }
 
 interface AgentTaskSidechain {
@@ -128,6 +131,15 @@ function agentTaskMessage(agent: AgentDefinition, input: AgentTaskInput): string
   return agent.initialPrompt?.trim()
     ? `${agent.initialPrompt.trim()}\n\n${base}`
     : base
+}
+
+function optionalBoolean(value: unknown, fallback = false): boolean {
+  if (value === undefined || value === null || value === '') return fallback
+  if (typeof value === 'boolean') return value
+  const text = String(value).trim().toLowerCase()
+  if (['1', 'true', 'yes', 'y', 'on'].includes(text)) return true
+  if (['0', 'false', 'no', 'n', 'off'].includes(text)) return false
+  return fallback
 }
 
 function hookContextMessage(event: string, contexts: string[]): Message | undefined {
@@ -239,9 +251,11 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
       type: 'object',
       properties: {
         agent: { type: 'string', description: 'Agent name. Required when more than one agent is available.' },
+        name: { type: 'string', description: 'Optional instance name when run_in_background is true. Makes this background agent addressable via SendMessage({to:name}).' },
         task: { type: 'string' },
         context: { type: 'string' },
         isolation: { type: 'string', enum: ['worktree'], description: 'Use "worktree" to run the subagent in an isolated git worktree.' },
+        run_in_background: { type: ['boolean', 'string'], description: 'Set true to launch this Agent task in the background and return a task id immediately.' },
       },
       required: ['task'],
     },
@@ -254,9 +268,14 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
       if (!agent) {
         throw new Error(`agent_task 需要指定 agent;可用 agent:\n${agentList(opts.agents)}`)
       }
-      if (agent.background && opts.startBackgroundAgent) {
+      const wantsBackground = optionalBoolean(input.run_in_background ?? input.runInBackground) || agent.background === true
+      if (wantsBackground) {
+        if (!opts.startBackgroundAgent) {
+          throw new Error('agent_task run_in_background 需要后台任务运行器')
+        }
         const { task } = await opts.startBackgroundAgent({
           agent: agent.name,
+          ...(input.name ? { name: input.name } : {}),
           task: input.task,
           ...(input.context ? { context: input.context } : {}),
           title: `${agent.name}: ${input.task.trim().slice(0, 80)}`,
