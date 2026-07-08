@@ -487,6 +487,81 @@ test('agent_task run_in_background fork_context starts a background fork with pa
   }
 })
 
+test('agent_task background fork injects a worktree notice for isolated fork workers', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-tools-fork-worktree-notice-'))
+  try {
+    initGitRepo(root)
+    const tasks = new TaskService(root)
+    const agent: AgentDefinition = {
+      name: 'researcher',
+      description: '研究代理',
+      prompt: '研究并总结。',
+      filePath: join(root, 'researcher.md'),
+    }
+    const parentModel = scriptedModel([
+      { kind: 'tool_calls', text: 'fork worktree', calls: [{ id: 'fork-wt', name: 'agent_task', input: { task: '检查隔离路径', fork_context: true, run_in_background: true, isolation: 'worktree' } }] },
+      { kind: 'final', text: 'parent done' },
+    ])
+    const childModel = scriptedModel([{ kind: 'final', text: 'Scope: 检查隔离路径' }])
+    const inspectTool: Tool = {
+      name: 'inspect_parent_tool',
+      description: '',
+      inputSchema: { type: 'object' },
+      isReadOnly: true,
+      async execute() {
+        return 'ok'
+      },
+    }
+    const backgroundOptions = {
+      tasks,
+      agents: [agent],
+      model: childModel,
+      baseTools: [inspectTool],
+      baseSystemPrompt: 'BACKGROUND BASE',
+    }
+    const registry = new ToolRegistry([
+      createAgentTaskTool({
+        agents: [agent],
+        model: childModel,
+        baseTools: [inspectTool],
+        startBackgroundAgent: (input, ctx, forkContext) => startBackgroundAgentRun(backgroundOptions, input, ctx, {}, [], [], forkContext ? { forkContext } : {}),
+      }),
+      inspectTool,
+    ])
+
+    await collectEvents(runAgentLoop({
+      model: parentModel,
+      registry,
+      workspace: new Workspace(root),
+      systemPrompt: 'PARENT SYSTEM',
+      userMessage: '父后台 worktree 任务',
+      conversationId: 'fork-wt-parent',
+    }))
+
+    await waitFor(async () => {
+      const task = (await tasks.list({ conversationId: 'fork-wt-parent' }))[0]
+      return task?.status === 'completed' ? task : null
+    })
+    const childFirst = childModel.received[0]!
+    const directiveIndex = childFirst.messages.findIndex(message =>
+      message.content.some(block => block.type === 'text' && block.text.includes('Your directive: 检查隔离路径')),
+    )
+    const noticeIndex = childFirst.messages.findIndex(message =>
+      message.content.some(block => block.type === 'text' && block.text.includes('isolated git worktree')),
+    )
+    expect(directiveIndex).toBeGreaterThanOrEqual(0)
+    expect(noticeIndex).toBeGreaterThan(directiveIndex)
+    const noticeBlock = childFirst.messages[noticeIndex]!.content.find(block => block.type === 'text')
+    const notice = noticeBlock?.type === 'text' ? noticeBlock.text : ''
+    expect(notice).toContain(root)
+    expect(notice).toContain(join(root, '.claude', 'worktrees'))
+    expect(notice).toContain('translate them to your worktree root')
+    expect(notice).toContain('Re-read files before editing')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('start_background_agent_task rejects recursive launch from fork query source', async () => {
   const root = mkdtempSync(join(tmpdir(), 'task-tools-fork-query-source-guard-'))
   try {
