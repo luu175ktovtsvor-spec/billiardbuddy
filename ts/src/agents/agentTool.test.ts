@@ -614,6 +614,9 @@ test('agent_task implicit fork gate hides agent fields and forks when agent is o
       },
     })
     expect(Object.keys(tool.inputSchema.properties ?? {}).sort()).toEqual(['context', 'isolation', 'task'])
+    expect(tool.description).toContain('When to fork')
+    expect(tool.description).toContain('do not read or tail its output')
+    expect(tool.description).toContain('all agent_task launches run in the background')
 
     const parentMessages = [
       { role: 'user' as const, content: [textBlock('父请求')] },
@@ -641,6 +644,51 @@ test('agent_task implicit fork gate hides agent fields and forks when agent is o
       content: 'Fork started - processing in background',
     })
     expect(out).toContain('<background_task_started id="implicit_fork_1" agent="fork" agent_id="implicit_fork_1" status="queued">')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('agent_task fork gate forces explicit specialized agents into the background', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-fork-force-async-'))
+  try {
+    let capturedInput: unknown
+    let capturedFork: unknown = 'not-called'
+    const model = scriptedModel([{ kind: 'final', text: 'should not run synchronously' }])
+    const tool = createAgentTaskTool({
+      agents: [agent()],
+      model,
+      baseTools: [],
+      env: { DESKTOP_AGENT_FORK_SUBAGENT: '1' },
+      startBackgroundAgent: async (input, _ctx, forkContext) => {
+        capturedInput = input
+        capturedFork = forkContext
+        return {
+          task: {
+            id: 'explicit_agent_bg_1',
+            title: `${input.agent}: ${input.task}`,
+            params: { agent_id: 'explicit_agent_bg_1' },
+          },
+          agent: agent({ name: input.agent ?? 'researcher' }),
+        }
+      },
+    })
+
+    const out = await tool.execute({ agent: 'researcher', task: '显式 agent 也后台' }, {
+      workspace: new Workspace(root),
+      permissionMode: 'full',
+      systemPrompt: 'PARENT SYS',
+      messages: [{ role: 'user', content: [textBlock('父请求')] }],
+    })
+
+    expect(capturedInput).toEqual({
+      agent: 'researcher',
+      task: '显式 agent 也后台',
+      title: 'researcher: 显式 agent 也后台',
+    })
+    expect(capturedFork).toBeUndefined()
+    expect(model.received).toHaveLength(0)
+    expect(out).toContain('<background_task_started id="explicit_agent_bg_1" agent="researcher" agent_id="explicit_agent_bg_1" status="queued">')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

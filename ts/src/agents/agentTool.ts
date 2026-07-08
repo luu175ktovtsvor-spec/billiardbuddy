@@ -27,7 +27,7 @@ import { loadAgentMcpRuntime, type AgentMcpRuntime, type AgentMcpRuntimeInput, t
 import { buildAgentMemoryPrompt, workspaceWithAgentMemory } from './agentMemory'
 import { cloneContentReplacementState, type ContentReplacementState } from '../context/toolResultStorage'
 import { createDenialTrackingState } from '../permissions/denialTracking'
-import { buildForkRunContext, FORK_SUBAGENT_TYPE, isForkQuerySource, isForkSubagentEnabled, isInForkChild, type ForkRunContext } from './forkSubagent'
+import { buildForkRunContext, forkAgentToolDescription, FORK_SUBAGENT_TYPE, isForkQuerySource, isForkSubagentEnabled, isInForkChild, type ForkRunContext } from './forkSubagent'
 
 export interface AgentTaskHandoffInput {
   agent: string
@@ -327,7 +327,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
   return {
     name: 'agent_task',
     description: forkGateEnabled
-      ? 'Fork a worker that inherits the parent coding-agent conversation and runs in the background.'
+      ? forkAgentToolDescription()
       : `Run a focused subagent and return only its final result. Available agents:\n${agentList(opts.agents)}`,
     inputSchema: {
       type: 'object',
@@ -357,7 +357,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
         throw new Error(`agent_task 需要指定 agent;可用 agent:\n${agentList(opts.agents)}`)
       }
       const forkRunContext = wantsForkContext ? buildForkRunContext(ctx, buildTaskMessage(input)) : undefined
-      const wantsBackground = wantsForkContext && forkGateEnabled
+      const wantsBackground = forkGateEnabled
         ? true
         : optionalBoolean(input.run_in_background ?? input.runInBackground) || agent.background === true
       if (wantsBackground) {

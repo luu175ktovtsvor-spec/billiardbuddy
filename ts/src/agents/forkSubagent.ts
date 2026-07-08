@@ -30,6 +30,23 @@ export function isForkQuerySource(value: unknown): boolean {
   return value === FORK_QUERY_SOURCE
 }
 
+export function forkAgentToolDescription(): string {
+  return [
+    'Fork a worker that inherits the parent coding-agent conversation and runs in the background.',
+    '',
+    'When to fork:',
+    '- Omit agent to fork yourself when the intermediate tool output is not worth keeping in the parent context.',
+    '- Use forks for open-ended research or implementation work that can proceed independently.',
+    '- Specify an agent only when you need a fresh specialized worker that starts without inherited context.',
+    '',
+    'Fork discipline:',
+    '- Treat the returned background task as running; do not read or tail its output unless the user asks for a progress check.',
+    '- Do not fabricate or predict fork results before the completion notification arrives.',
+    '- Write the fork task as a directive: scope, expected output, what is in or out, and whether it may edit code.',
+    '- When fork mode is enabled, all agent_task launches run in the background.',
+  ].join('\n')
+}
+
 export function buildForkedMessages(directive: string, assistantMessage: Message): Message[] {
   if (assistantMessage.role !== 'assistant') {
     return [{ role: 'user', content: [textBlock(buildChildMessage(directive))] }]
