@@ -1516,6 +1516,15 @@ export function startServer(opts: StartServerOptions = {}) {
           ...(input.name ? { name: input.name } : {}),
           ...(forkContext ? { params: { fork_context: true } } : {}),
         }),
+        handoffForegroundAgent: (registration, input, toolCtx, forkContext) => startBackgroundAgentRun(
+          backgroundAgentOptions!,
+          input,
+          toolCtx,
+          { foreground_handoff: true, agent_id: input.agentId },
+          [],
+          [],
+          { ...(forkContext ? { forkContext } : {}), handoffTaskId: registration.task.id },
+        ),
         unregisterForegroundAgent: taskId => tasks.unregisterForegroundAgent(taskId),
       })]
       : []
@@ -3718,7 +3727,7 @@ export function startServer(opts: StartServerOptions = {}) {
         }
       }
 
-      const legacyTaskMatch = url.pathname.match(/^\/api\/v1\/agent\/tasks\/([A-Za-z0-9_-]{1,128})(?:\/(events|cancel|message))$/)
+      const legacyTaskMatch = url.pathname.match(/^\/api\/v1\/agent\/tasks\/([A-Za-z0-9_-]{1,128})(?:\/(events|cancel|message|background))$/)
       if (legacyTaskMatch) {
         const id = legacyTaskMatch[1]!
         const action = legacyTaskMatch[2]!
@@ -3741,6 +3750,19 @@ export function startServer(opts: StartServerOptions = {}) {
             ...(typeof task?.params?.agent_id === 'string' && task.params.agent_id.trim() ? { agent_id: task.params.agent_id.trim() } : {}),
             status: cancelled || interrupted ? 'cancelled' : task?.status ?? 'unknown',
           })
+        }
+        if (action === 'background' && req.method === 'POST') {
+          try {
+            const task = await tasks.requestForegroundAgentBackground(id)
+            return Response.json({
+              ok: true,
+              task_id: task.id,
+              status: task.status,
+              ...(typeof task.params?.agent_id === 'string' && task.params.agent_id.trim() ? { agent_id: task.params.agent_id.trim() } : {}),
+            })
+          } catch (err) {
+            return Response.json({ ok: false, detail: err instanceof Error ? err.message : String(err) }, { status: 404 })
+          }
         }
         if (action === 'message' && req.method === 'POST') {
           const body = await req.json().catch(() => ({})) as Record<string, unknown>
@@ -3910,7 +3932,7 @@ export function startServer(opts: StartServerOptions = {}) {
         return new Response('Method not allowed', { status: 405 })
       }
 
-      const taskMatch = url.pathname.match(/^\/tasks\/([A-Za-z0-9_-]{1,128})(?:\/(events|cancel))?$/)
+      const taskMatch = url.pathname.match(/^\/tasks\/([A-Za-z0-9_-]{1,128})(?:\/(events|cancel|background))?$/)
       if (taskMatch) {
         const id = taskMatch[1]!
         const action = taskMatch[2]
@@ -3945,6 +3967,14 @@ export function startServer(opts: StartServerOptions = {}) {
             taskId,
             ...(task && task.id !== requestedTaskId ? { requestedTaskId } : {}),
           })
+        }
+        if (action === 'background' && req.method === 'POST') {
+          try {
+            const task = await tasks.requestForegroundAgentBackground(id)
+            return Response.json({ ok: true, task, ...taskAliasPayload(task, id) })
+          } catch (err) {
+            return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 404 })
+          }
         }
         return new Response('Method not allowed', { status: 405 })
       }

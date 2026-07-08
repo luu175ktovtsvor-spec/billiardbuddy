@@ -367,6 +367,7 @@ export interface BackgroundAgentRunResult {
 
 interface BackgroundAgentRunOptions {
   replaceTaskId?: string
+  handoffTaskId?: string
   forkContext?: ForkRunContext
 }
 
@@ -376,7 +377,7 @@ async function createOrReplaceBackgroundAgentTask(
   ctx: ToolContext,
   agent: AgentDefinition,
   params: Record<string, unknown>,
-  replaceTaskId?: string,
+  runOptions: Pick<BackgroundAgentRunOptions, 'replaceTaskId' | 'handoffTaskId'> = {},
 ): Promise<TaskMeta> {
   const payload = {
     title: taskTitle(input, agent),
@@ -389,6 +390,25 @@ async function createOrReplaceBackgroundAgentTask(
     result: undefined,
     error: undefined,
   }
+  if (runOptions.handoffTaskId) {
+    const existing = await opts.tasks.get(runOptions.handoffTaskId)
+    if (!existing) throw new Error(`foreground agent task ${runOptions.handoffTaskId} not found`)
+    if (existing.kind !== 'background_agent' || existing.params?.is_backgrounded !== true) {
+      throw new Error(`foreground agent task ${runOptions.handoffTaskId} is not backgrounded`)
+    }
+    return opts.tasks.touch(existing.id, {
+      ...payload,
+      status: existing.status,
+      progress: existing.progress,
+      params: {
+        ...existing.params,
+        ...params,
+        foreground: false,
+        is_backgrounded: true,
+      },
+    })
+  }
+  const replaceTaskId = runOptions.replaceTaskId
   if (!replaceTaskId) return opts.tasks.create(payload)
   const existing = await opts.tasks.get(replaceTaskId)
   if (existing?.status === 'queued' || existing?.status === 'running') {
@@ -422,7 +442,7 @@ export async function startBackgroundAgentRun(
   let task = await createOrReplaceBackgroundAgentTask(opts, input, ctx, agent, backgroundTaskParams(input, agent, {
     ...extraParams,
     ...(runOptions.forkContext ? { fork_context: true } : {}),
-  }), runOptions.replaceTaskId)
+  }), runOptions)
   const stableAgentId = stringTaskParam(task, 'agent_id') || stringTaskParam(task, 'agentId') || task.id
   if (!stringTaskParam(task, 'agent_id')) {
     task = await opts.tasks.touch(task.id, { params: { ...task.params, agent_id: stableAgentId } })

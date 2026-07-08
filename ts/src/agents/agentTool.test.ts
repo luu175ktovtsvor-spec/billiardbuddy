@@ -33,6 +33,15 @@ async function collect(gen: AsyncGenerator<import('../types/events').AgentEvent>
   return out
 }
 
+async function waitUntil(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  throw new Error('waitUntil timeout')
+}
+
 test('agent_task runs an isolated subagent loop and returns only final text', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-tool-'))
   try {
@@ -164,6 +173,82 @@ test('agent_task unregisters foreground task when synchronous subagent fails', a
 
     expect(cancelled.length).toBe(1)
     expect(unregistered).toEqual(['fg_task_fail'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('agent_task hands off foreground registration when background signal wins the sync loop race', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-foreground-race-'))
+  try {
+    let releaseModel!: () => void
+    const model = scriptedModel([{ kind: 'final', text: 'should not be returned synchronously' }])
+    const originalStep = model.step
+    model.step = async (input) => {
+      await new Promise<void>(resolve => { releaseModel = resolve })
+      return originalStep(input)
+    }
+    let resolveBackground!: () => void
+    const cancelled: string[] = []
+    const unregistered: string[] = []
+    const handoffs: Array<{ taskId: string; input: unknown }> = []
+    const tool = createAgentTaskTool({
+      agents: [agent()],
+      model,
+      baseTools: [],
+      registerForegroundAgent: async (input) => ({
+        task: { id: 'fg_handoff_agent', title: input.title, params: { agent_id: input.agentId } },
+        backgroundSignal: new Promise<void>(resolve => { resolveBackground = resolve }),
+        cancelAutoBackground: () => cancelled.push(input.agentId),
+      }),
+      handoffForegroundAgent: async (registration, input) => {
+        handoffs.push({ taskId: registration.task.id, input })
+        return {
+          task: {
+            id: registration.task.id,
+            title: input.title,
+            params: {
+              agent_id: input.agentId,
+              name: input.name,
+              is_backgrounded: true,
+            },
+          },
+          agent: agent({ name: input.agent }),
+        }
+      },
+      unregisterForegroundAgent: async taskId => {
+        unregistered.push(taskId)
+      },
+    })
+
+    const pending = tool.execute({
+      task: '切到后台继续',
+      name: 'handoff-worker',
+    }, {
+      workspace: new Workspace(root),
+      permissionMode: 'full',
+      conversationId: 'handoff-parent',
+    })
+    await waitUntil(() => typeof releaseModel === 'function')
+    resolveBackground()
+    const out = await pending
+    releaseModel()
+
+    expect(out).toContain('<background_task_started id="fg_handoff_agent" agent="researcher" name="handoff-worker"')
+    expect(out).toContain('agent_id="handoff-parent_researcher"')
+    expect(out).toContain('status="running"')
+    expect(handoffs).toEqual([{
+      taskId: 'fg_handoff_agent',
+      input: {
+        agent: 'researcher',
+        agentId: 'handoff-parent_researcher',
+        task: '切到后台继续',
+        name: 'handoff-worker',
+        title: 'researcher: 切到后台继续',
+      },
+    }])
+    expect(cancelled).toEqual(['handoff-parent_researcher'])
+    expect(unregistered).toEqual([])
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

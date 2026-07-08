@@ -73,6 +73,17 @@ async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 1500): Promis
   throw new Error('waitFor timeout')
 }
 
+function sseResponse(payload: unknown): Response {
+  const enc = new TextEncoder()
+  return new Response(new ReadableStream<Uint8Array>({
+    start(c) {
+      c.enqueue(enc.encode(`data: ${JSON.stringify(payload)}\n\n`))
+      c.enqueue(enc.encode('data: [DONE]\n\n'))
+      c.close()
+    },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+}
+
 class FakeBridgeWebSocket {
   static instances: FakeBridgeWebSocket[] = []
   readonly listeners = new Map<string, Array<(event: any) => void>>()
@@ -4849,6 +4860,92 @@ tools: []
     })
     expect(typeof notifications.meta.taskId).toBe('string')
     expect(sentBodies.some(body => String(body.messages?.[0]?.content ?? '').includes('<background_subagent name="researcher">'))).toBe(true)
+  } finally {
+    agentServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('POST /agent/run can background a foreground agent_task through the task endpoint', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'server-agent-foreground-handoff-'))
+  const agentsRoot = join(root, 'agents')
+  await Bun.write(join(agentsRoot, 'researcher.md'), `---
+name: researcher
+description: 研究代理
+tools: []
+---
+你是研究代理。
+`)
+  let call = 0
+  let releaseSyncAgent!: () => void
+  const sentBodies: any[] = []
+  const agentServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    agentsRoot,
+    env: {
+      OPENAI_BASE_URL: 'https://model.example/v1',
+      OPENAI_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init?.body as string)
+      sentBodies.push(body)
+      const system = String(body.messages?.[0]?.content ?? '')
+      const isBackground = system.includes('<background_subagent name="researcher">')
+      if (isBackground) {
+        return sseResponse({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: '后台接管完成' }, finish_reason: 'stop' }] })
+      }
+      call++
+      if (call === 1) {
+        return sseResponse({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_agent', function: { name: 'agent_task', arguments: JSON.stringify({ agent: 'researcher', task: '长任务转后台' }) } }] }, finish_reason: 'tool_calls' }] })
+      }
+      if (call === 2) {
+        await new Promise<void>(resolve => { releaseSyncAgent = resolve })
+        return sseResponse({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: '同步结果不应返回' }, finish_reason: 'stop' }] })
+      }
+      return sseResponse({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: '外层看到后台启动' }, finish_reason: 'stop' }] })
+    },
+  })
+  try {
+    const runPromise = fetch(`http://127.0.0.1:${agentServer.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({ message: '派子代理执行长任务', conversationId: 'agent-handoff-run', permissionMode: 'full' }),
+    })
+    const foreground = await waitFor(async () => {
+      const listed = await fetch(`http://127.0.0.1:${agentServer.port}/tasks?conversationId=agent-handoff-run`)
+      const body = await listed.json() as { tasks: Array<{ id: string; status: string; kind?: string; params?: Record<string, unknown> }> }
+      return body.tasks.find(task => task.kind === 'background_agent' && task.params?.foreground === true) ?? null
+    })
+    const backgrounded = await fetch(`http://127.0.0.1:${agentServer.port}/tasks/${foreground.id}/background`, { method: 'POST' })
+    expect(backgrounded.status).toBe(200)
+    const backgroundedBody = await backgrounded.json() as { ok: boolean; task: { id: string; status: string; params?: Record<string, unknown> } }
+    expect(backgroundedBody).toMatchObject({
+      ok: true,
+      task: {
+        id: foreground.id,
+        status: 'running',
+        params: { foreground: false, is_backgrounded: true, task: '长任务转后台' },
+      },
+    })
+
+    const res = await runPromise
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).toContain('background_task_started')
+    expect(text).toContain(foreground.id)
+    expect(text).toMatch(/status=\\?"running\\?"/)
+    expect(text).toContain('外层看到后台启动')
+
+    const done = await waitFor(async () => {
+      const detail = await fetch(`http://127.0.0.1:${agentServer.port}/tasks/${foreground.id}`)
+      const body = await detail.json() as { task?: { status: string; result?: unknown; params?: Record<string, unknown> } }
+      return body.task?.status === 'completed' ? body.task : null
+    }, 2500)
+    expect(done.result).toBe('后台接管完成')
+    expect(done.params).toMatchObject({ foreground_handoff: true, is_backgrounded: true, agent: 'researcher' })
+    expect(sentBodies.some(body => String(body.messages?.[0]?.content ?? '').includes('<background_subagent name="researcher">'))).toBe(true)
+    releaseSyncAgent?.()
   } finally {
     agentServer.stop(true)
     rmSync(root, { recursive: true, force: true })
