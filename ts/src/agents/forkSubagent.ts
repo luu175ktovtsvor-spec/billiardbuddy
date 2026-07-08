@@ -81,14 +81,20 @@ export interface ForkRunContext {
 export function buildForkRunContext(ctx: ToolContext, directive: string): ForkRunContext {
   const parentMessages = ctx.messages ?? []
   const assistantMessage = [...parentMessages].reverse().find((message): message is Extract<Message, { role: 'assistant' }> => message.role === 'assistant')
-  const prefix = assistantMessage ? parentMessages.slice(0, parentMessages.lastIndexOf(assistantMessage)) : parentMessages
+  const assistantHasToolUse = assistantMessage?.content.some(block => block.type === 'tool_use') ?? false
+  const prefix = assistantMessage && assistantHasToolUse
+    ? parentMessages.slice(0, parentMessages.lastIndexOf(assistantMessage))
+    : parentMessages
+  const forkedTail = assistantMessage && assistantHasToolUse
+    ? buildForkedMessages(directive, assistantMessage)
+    : [{ role: 'user' as const, content: [textBlock(buildChildMessage(directive))] }]
   return {
     systemPrompt: ctx.renderedSystemPrompt ?? ctx.systemPrompt ?? '',
     tools: ctx.registry?.list() ?? [],
     querySource: FORK_QUERY_SOURCE,
     initialMessages: [
       ...prefix,
-      ...buildForkedMessages(directive, assistantMessage ?? { role: 'assistant', content: [] }),
+      ...forkedTail,
     ],
   }
 }

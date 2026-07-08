@@ -108,6 +108,25 @@ test('buildForkRunContext prefers rendered parent system prompt bytes', () => {
   expect(ctx.systemPrompt).toBe('rendered system with hooks')
 })
 
+test('buildForkRunContext keeps the latest assistant message when no placeholder tool results are needed', () => {
+  const parent: Message[] = [
+    { role: 'user', content: [textBlock('Parent asked for a plan')] },
+    { role: 'assistant', content: [textBlock('Parent plan with details')] },
+  ]
+
+  const ctx = buildForkRunContext({
+    workspace: {} as never,
+    systemPrompt: 'PARENT SYS',
+    messages: parent,
+    registry: { list: () => [] } as never,
+  }, 'Audit the plan')
+
+  expect(ctx.initialMessages[0]).toEqual(parent[0])
+  expect(ctx.initialMessages[1]).toEqual(parent[1])
+  expect(ctx.initialMessages[2]).toMatchObject({ role: 'user' })
+  expect(ctx.initialMessages[2]!.content[0]?.type === 'text' ? ctx.initialMessages[2]!.content[0].text : '').toContain(`${FORK_DIRECTIVE_PREFIX}Audit the plan`)
+})
+
 test('isInForkChild detects the fork boilerplate tag in user messages', () => {
   expect(isInForkChild([{ role: 'user', content: [textBlock(buildChildMessage('Do work'))] }])).toBe(true)
   expect(isInForkChild([{ role: 'assistant', content: [textBlock(buildChildMessage('Do work'))] }])).toBe(false)
