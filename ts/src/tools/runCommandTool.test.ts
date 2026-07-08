@@ -7,7 +7,7 @@ import { Workspace } from '../workspace/workspace'
 import type { ToolContext } from './Tool'
 import { runCommandTool } from './runCommandTool'
 import { StreamingOutputSanitizer, stripAnsiControlSequences } from './outputSanitize'
-import { classifyCommandRisk, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellCdGitNeedsApproval, shellGitInternalWriteNeedsApproval, shellOutputRedirectionNeedsApproval } from './dangerousCommand'
+import { classifyCommandRisk, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellCdGitNeedsApproval, shellGitInternalWriteNeedsApproval, shellOutputRedirectionNeedsApproval } from './dangerousCommand'
 import { resolvePermission } from '../permissions/resolve'
 
 let root: string
@@ -284,6 +284,19 @@ test('compound git-internal writes plus git mirror bare repo safety gate', () =>
   expect(shellGitInternalWriteNeedsApproval('rm -rf hooks && git status')).toBe(false)
 })
 
+test('git in bare-looking cwd mirrors bare repo safety gate', () => {
+  expect(shellBareGitRepoCwdNeedsApproval('git status --short', root)).toBe(false)
+  writeFileSync(join(root, 'HEAD'), 'ref: refs/heads/main\n')
+  expect(shellBareGitRepoCwdNeedsApproval('git status --short', root)).toBe(true)
+  expect(shellBareGitRepoCwdNeedsApproval('ls -la', root)).toBe(false)
+
+  const normalRepo = join(root, 'normal')
+  mkdirSync(join(normalRepo, '.git'), { recursive: true })
+  writeFileSync(join(normalRepo, '.git', 'HEAD'), 'ref: refs/heads/main\n')
+  writeFileSync(join(normalRepo, 'HEAD'), 'ordinary file\n')
+  expect(shellBareGitRepoCwdNeedsApproval('git status --short', normalRepo)).toBe(false)
+})
+
 test('run_command dynamic permission allows reads and classifies approval', () => {
   expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({ behavior: 'allow' })
@@ -302,6 +315,11 @@ test('run_command dynamic permission allows reads and classifies approval', () =
     approvalClass: 'outreach',
   })
   expect(resolvePermission(runCommandTool, { command: 'cd sub && git status --short' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  writeFileSync(join(root, 'HEAD'), 'ref: refs/heads/main\n')
+  expect(resolvePermission(runCommandTool, { command: 'git status --short' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })
