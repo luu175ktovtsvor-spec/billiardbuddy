@@ -379,7 +379,9 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('git tag --list v*')).toBe('read')
   expect(classifyCommandRisk('git tag v1.0.0')).toBe('file')
   expect(classifyCommandRisk('git reflog show --all')).toBe('read')
-  expect(classifyCommandRisk('git reflog expire --all')).toBe('file')
+  expect(classifyCommandRisk('git reflog expire --all')).toBe('outreach')
+  expect(classifyCommandRisk('git reflog delete HEAD@{0}')).toBe('outreach')
+  expect(classifyCommandRisk('git reflog exists HEAD')).toBe('outreach')
   expect(classifyCommandRisk('cd sub && git status --short')).toBe('outreach')
   expect(classifyCommandRisk('FORCE_COLOR=1 cd sub && git status')).toBe('outreach')
   expect(classifyCommandRisk('cd sub && xargs git status')).toBe('outreach')
@@ -787,6 +789,10 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   })
   expect(resolvePermission(runCommandTool, { command: 'git tag v1.0.0' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({
     behavior: 'deny',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'git reflog expire --all' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
   })
   expect(resolvePermission(runCommandTool, { command: 'cd sub && git status --short' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
