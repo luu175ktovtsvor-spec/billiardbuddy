@@ -6,6 +6,7 @@ import type { WrappedCommand } from '../sandbox/sandbox'
 import { classifyCommandRisk, isDangerousCommand, type CommandRisk } from './dangerousCommand'
 import type { ApprovalClass } from '../permissions/types'
 import { StreamingOutputSanitizer } from './outputSanitize'
+import { interpretCommandResult } from './commandSemantics'
 
 const DEFAULT_TIMEOUT_MS = 30_000
 const MAX_TIMEOUT_MS = 600_000
@@ -311,6 +312,7 @@ function formatCommandResult(input: {
   maxOutputBytes: number
   truncatedBytes: number
 }): string {
+  const semantic = interpretCommandResult(input.command, input.exitCode, input.stdout, input.stderr)
   const lines = [
     `命令：${input.command}`,
     `返回码：${input.exitCode}`,
@@ -321,7 +323,8 @@ function formatCommandResult(input: {
     input.truncatedBytes > 0
       ? `输出截断：true（保留最后 ${input.capturedBytes}/${input.maxOutputBytes} bytes, 省略 ${input.truncatedBytes} bytes）`
       : '输出截断：false',
-    ...(input.exitCode !== 0 ? [`[退出码 ${input.exitCode}]`] : []),
+    ...(semantic.message ? [`语义：${semantic.message}`] : []),
+    ...(semantic.isError ? [`[退出码 ${input.exitCode}]`] : []),
     '【标准输出】',
     input.stdout,
   ]

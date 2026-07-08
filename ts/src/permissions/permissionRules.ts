@@ -12,6 +12,7 @@ const ESCAPED_STAR_PLACEHOLDER = '\x00ESCAPED_STAR\x00'
 const ESCAPED_BACKSLASH_PLACEHOLDER = '\x00ESCAPED_BACKSLASH\x00'
 const ESCAPED_STAR_PLACEHOLDER_RE = new RegExp(ESCAPED_STAR_PLACEHOLDER, 'g')
 const ESCAPED_BACKSLASH_PLACEHOLDER_RE = new RegExp(ESCAPED_BACKSLASH_PLACEHOLDER, 'g')
+export const MAX_SUBCOMMANDS_FOR_SECURITY_CHECK = 50
 
 const SAFE_ENV_VARS = new Set([
   'GOEXPERIMENT',
@@ -350,6 +351,7 @@ export function shellCommandAllowedByPermissionRules(command: string, ruleConten
 
   const subcommands = splitShellCommandsForPermission(normalizedCommand)
   if (subcommands.length <= 1) return false
+  if (subcommands.length > MAX_SUBCOMMANDS_FOR_SECURITY_CHECK) return false
   return subcommands.every(subcommand =>
     ruleContents.some(rule => shellSingleCommandMatchesPermissionRule(subcommand, rule)),
   )

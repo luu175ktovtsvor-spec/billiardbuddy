@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import {
+  MAX_SUBCOMMANDS_FOR_SECURITY_CHECK,
   parseToolListFromCLI,
   permissionRuleValueFromString,
   shellCommandAllowedByPermissionRules,
@@ -58,4 +59,6 @@ test('shell permission matching checks compound commands per subcommand', () => 
   expect(shellCommandAllowedByPermissionRules('git status && curl https://example.com', ['git:*'])).toBe(false)
   expect(shellCommandAllowedByPermissionRules('git status && printf ok', ['git:*', 'printf:*'])).toBe(true)
   expect(shellCommandAllowedByPermissionRules('node -e "console.log(1 && 2)"', ['node:*'])).toBe(true)
+  const tooMany = Array.from({ length: MAX_SUBCOMMANDS_FOR_SECURITY_CHECK + 1 }, () => 'printf ok').join(' && ')
+  expect(shellCommandAllowedByPermissionRules(tooMany, ['printf:*'])).toBe(false)
 })

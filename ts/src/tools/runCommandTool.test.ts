@@ -48,6 +48,21 @@ test('run_command reports a non-zero exit', async () => {
   expect(out).toContain('返回码：3')
 })
 
+test('run_command interprets common search and diff exit codes semantically', async () => {
+  writeFileSync(join(root, 'a.txt'), 'same\n')
+  writeFileSync(join(root, 'b.txt'), 'different\n')
+
+  const grep = await runCommandTool.execute({ command: 'printf "abc\\n" | grep zzz' }, ctx)
+  expect(grep).toContain('返回码：1')
+  expect(grep).toContain('语义：No matches found')
+  expect(grep).not.toContain('[退出码 1]')
+
+  const diff = await runCommandTool.execute({ command: 'diff a.txt b.txt' }, ctx)
+  expect(diff).toContain('返回码：1')
+  expect(diff).toContain('语义：Files differ')
+  expect(diff).not.toContain('[退出码 1]')
+})
+
 test('run_command separates stderr in the final terminal result', async () => {
   const out = await runCommandTool.execute({
     command: `node -e "process.stdout.write('stdout-line\\n'); process.stderr.write('stderr-line\\n'); process.exit(2)"`,
