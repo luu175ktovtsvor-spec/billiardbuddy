@@ -165,6 +165,8 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('curl https://example.com')).toBe('outreach')
   expect(classifyCommandRisk('env curl https://example.com')).toBe('outreach')
   expect(classifyCommandRisk('env -i FOO=bar curl https://example.com')).toBe('outreach')
+  expect(classifyCommandRisk('env -S "curl https://example.com"')).toBe('outreach')
+  expect(classifyCommandRisk('env --split-string="curl https://example.com"')).toBe('outreach')
   expect(classifyCommandRisk('npm install left-pad')).toBe('outreach')
   expect(classifyCommandRisk('rm -rf build')).toBe('destructive')
   expect(classifyCommandRisk('env rm -rf build')).toBe('destructive')
@@ -289,6 +291,7 @@ test('shell parser hardening mirrors Bash misparse safety gates', () => {
   expect(hasShellParserRisk('zmodload zsh/system')).toBe(true)
   expect(hasShellParserRisk('command builtin zmodload zsh/system')).toBe(true)
   expect(hasShellParserRisk('env FOO=bar zmodload zsh/system')).toBe(true)
+  expect(hasShellParserRisk('env -S "zmodload zsh/system"')).toBe(true)
   expect(hasShellParserRisk('fc -e vim')).toBe(true)
   expect(hasShellParserRisk("find . $'-exec' echo {} \\;")).toBe(true)
   expect(hasShellParserRisk('find . ""-exec echo {} \\;')).toBe(true)
@@ -427,6 +430,10 @@ test('run_command dynamic permission allows reads and classifies approval', () =
     approvalClass: 'outreach',
   })
   expect(resolvePermission(runCommandTool, { command: 'env curl https://example.com' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'env -S "curl https://example.com"' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })
