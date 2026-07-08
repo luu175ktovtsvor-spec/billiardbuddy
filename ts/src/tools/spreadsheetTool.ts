@@ -50,6 +50,15 @@ export const editExcelTool: Tool<EditExcelInput> = {
     required: ['path'],
   },
   isReadOnly: false,
+  requiresApproval: true,
+  approvalClass: 'file',
+  approvalReasonFor(input) {
+    return {
+      what: `编辑表格:${typeof input?.path === 'string' ? input.path : '(未指定)'}`,
+      why: '该工具会修改 CSV/XLSX 表格内容。',
+      impact: '确认后会写入目标表格;执行前会先尝试记录快照和备份。',
+    }
+  },
   async execute(input, ctx) {
     const changes = normalizeEditExcelInput(input)
     const abs = resolveToolPath(ctx, 'edit_excel', input.path, 'write')

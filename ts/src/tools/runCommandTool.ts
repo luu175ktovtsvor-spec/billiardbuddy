@@ -7,6 +7,7 @@ import { classifyCommandRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApprov
 import type { ApprovalClass } from '../permissions/types'
 import { StreamingOutputSanitizer } from './outputSanitize'
 import { interpretCommandResult } from './commandSemantics'
+import { resolvePathWithAdditionalWorkingDirectories } from '../permissions/filePathRules'
 
 const DEFAULT_TIMEOUT_MS = 30_000
 const MAX_TIMEOUT_MS = 600_000
@@ -110,7 +111,7 @@ function resolveCommandCwdSync(cwd: unknown, ctx: ToolContext): string {
   if (cwd == null || cwd === '') return ctx.workspace.root
   if (typeof cwd !== 'string') return ctx.workspace.root
   try {
-    return ctx.workspace.resolve(cwd, 'read')
+    return resolvePathWithAdditionalWorkingDirectories(ctx, cwd, 'read')
   } catch {
     return ctx.workspace.root
   }
@@ -214,7 +215,7 @@ async function runInWorkspace(input: RunCommandInput, ctx: ToolContext, wrapped:
 async function resolveCommandCwd(cwd: unknown, ctx: ToolContext): Promise<string> {
   if (cwd == null || cwd === '') return ctx.workspace.root
   if (typeof cwd !== 'string') throw new Error('run_command.cwd 必须是字符串')
-  const abs = ctx.workspace.resolve(cwd, 'read')
+  const abs = resolvePathWithAdditionalWorkingDirectories(ctx, cwd, 'read')
   const info = await stat(abs).catch(() => null)
   if (!info?.isDirectory()) throw new Error(`run_command.cwd 不是可用目录:${cwd}`)
   return abs

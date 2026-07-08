@@ -72,6 +72,16 @@ export const notebookEditTool: Tool<NotebookEditInput> = {
     required: ['notebook_path', 'new_source'],
   },
   isReadOnly: false,
+  requiresApproval: true,
+  approvalClass: 'file',
+  approvalReasonFor(input) {
+    const path = typeof input?.notebook_path === 'string' ? input.notebook_path : typeof input?.path === 'string' ? input.path : '(未指定)'
+    return {
+      what: `编辑 Notebook:${path}`,
+      why: '该工具会修改 .ipynb 文件内容。',
+      impact: '确认后会写入目标 notebook;执行前会先尝试记录快照和备份。',
+    }
+  },
   async execute(input, ctx) {
     const args = normalizeInput(input)
     const abs = resolveToolPath(ctx, 'NotebookEdit', args.path, 'write')

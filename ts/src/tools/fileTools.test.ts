@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, realpathSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../workspace/workspace'
@@ -19,6 +19,7 @@ import { editExcelTool } from './spreadsheetTool'
 import { readXlsxSheet, renderMinimalXlsx } from '../server/services/officeDocuments'
 import { resolvePermission } from '../permissions/resolve'
 import { addAllowedToolsToContext } from '../commands/allowedTools'
+import { applyPermissionUpdates } from '../permissions/permissionUpdate'
 
 let root: string
 let ctx: ToolContext
@@ -121,6 +122,91 @@ test('CC-style path-scoped allowedTools grant external file access per tool alia
     expect(await grepFilesTool.execute({ path: externalRoot, pattern: 'patched again' }, ctx)).toContain(`${externalFile}:1:patched again`)
   } finally {
     rmSync(externalRoot, { recursive: true, force: true })
+  }
+})
+
+test('AdditionalWorkingDirectory grants and revokes external directory access', async () => {
+  const externalRoot = realpathSync(mkdtempSync(join(tmpdir(), 'additional-dir-')))
+  try {
+    const externalFile = join(externalRoot, 'outside.txt')
+    writeFileSync(externalFile, 'hello additional')
+
+    await expect(fileReadTool.execute({ path: externalFile }, ctx)).rejects.toThrow(/越界/)
+
+    const granted = applyPermissionUpdates(ctx, [
+      { type: 'addDirectories', destination: 'session', directories: [externalRoot] },
+    ])
+    expect(await fileReadTool.execute({ path: externalFile }, granted)).toBe('hello additional')
+
+    const writeDecisionDefault = resolvePermission(
+      fileWriteTool,
+      { path: join(externalRoot, 'created.txt'), content: 'created' },
+      { ...granted, permissionMode: 'default' },
+    )
+    expect(writeDecisionDefault).toMatchObject({ behavior: 'ask', approvalClass: 'file' })
+
+    const writeDecisionAccept = resolvePermission(
+      fileWriteTool,
+      { path: join(externalRoot, 'created.txt'), content: 'created' },
+      { ...granted, permissionMode: 'acceptEdits' },
+    )
+    expect(writeDecisionAccept).toMatchObject({ behavior: 'allow' })
+
+    await fileWriteTool.execute({ path: join(externalRoot, 'created.txt'), content: 'created' }, granted)
+    expect(readFileSync(join(externalRoot, 'created.txt'), 'utf8')).toBe('created')
+
+    const revoked = applyPermissionUpdates(granted, [
+      { type: 'removeDirectories', destination: 'session', directories: [externalRoot] },
+    ])
+    await expect(fileReadTool.execute({ path: externalFile }, revoked)).rejects.toThrow(/越界/)
+  } finally {
+    rmSync(externalRoot, { recursive: true, force: true })
+  }
+})
+
+test('AdditionalWorkingDirectory checks symlink-resolved paths before allowing access', async () => {
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), 'additional-symlink-')))
+  try {
+    const allowedReal = join(parent, 'allowed-real')
+    const allowedLink = join(parent, 'allowed-link')
+    const escapedReal = join(parent, 'escaped-real')
+    mkdirSync(allowedReal, { recursive: true })
+    mkdirSync(escapedReal, { recursive: true })
+    symlinkSync(allowedReal, allowedLink, 'dir')
+    symlinkSync(escapedReal, join(allowedReal, 'escape'), 'dir')
+    writeFileSync(join(allowedReal, 'ok.txt'), 'ok')
+    writeFileSync(join(escapedReal, 'secret.txt'), 'secret')
+
+    const granted = applyPermissionUpdates(ctx, [
+      { type: 'addDirectories', destination: 'session', directories: [allowedLink] },
+    ])
+
+    expect(await fileReadTool.execute({ path: join(allowedReal, 'ok.txt') }, granted)).toBe('ok')
+    await expect(fileReadTool.execute({ path: join(allowedLink, 'escape', 'secret.txt') }, granted)).rejects.toThrow(/越界/)
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
+})
+
+test('file mutation tools ask in default and allow in acceptEdits', () => {
+  const mutationTools = [
+    { tool: fileWriteTool, input: { path: 'new.txt', content: 'x' } },
+    { tool: fileEditTool, input: { path: 'a.txt', old_string: 'a', new_string: 'b' } },
+    { tool: fileMultiEditTool, input: { path: 'a.txt', edits: [{ old_string: 'a', new_string: 'b' }] } },
+    { tool: filePatchTool, input: { path: 'a.txt', patch: '@@ -1 +1 @@\n-a\n+b' } },
+    { tool: filePatchManyTool, input: { patches: [{ path: 'a.txt', patch: '@@ -1 +1 @@\n-a\n+b' }] } },
+    { tool: notebookEditTool, input: { notebook_path: 'a.ipynb', cell_id: 'cell-a', new_source: 'print(1)' } },
+    { tool: editExcelTool, input: { path: 'a.xlsx', cell: 'A1', value: 'x' } },
+  ] as const
+
+  for (const item of mutationTools) {
+    expect(resolvePermission(item.tool, item.input, { ...ctx, permissionMode: 'default' })).toMatchObject({
+      behavior: 'ask',
+      approvalClass: 'file',
+    })
+    expect(resolvePermission(item.tool, item.input, { ...ctx, permissionMode: 'acceptEdits' })).toMatchObject({
+      behavior: 'allow',
+    })
   }
 })
 
