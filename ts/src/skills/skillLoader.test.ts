@@ -13,6 +13,8 @@ test('loadSkillsDir:只加载 */SKILL.md,frontmatter 变 PromptCommand', async (
 name: poster-maker
 description: Make posters
 allowedTools: [read_file, write_file]
+context: fork
+agent: designer
 ---
 # Poster
 
@@ -25,6 +27,8 @@ Follow these steps.
       name: 'poster-maker',
       description: 'Make posters',
       allowedTools: ['read_file', 'write_file'],
+      context: 'fork',
+      agent: 'designer',
     })
     expect(formatSkillIndex(lib)).toContain('poster-maker: Make posters')
   } finally {

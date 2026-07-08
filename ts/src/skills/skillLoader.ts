@@ -44,6 +44,8 @@ export async function loadSkillFile(filePath: string, source: PromptCommand['sou
   const whenToUse = stringField(doc.frontmatter, 'whenToUse') ?? stringField(doc.frontmatter, 'when_to_use')
   const allowedTools = stringArrayField(doc.frontmatter, 'allowedTools') ?? stringArrayField(doc.frontmatter, 'allowed_tools')
   const model = stringField(doc.frontmatter, 'model')
+  const context = stringField(doc.frontmatter, 'context')
+  const agent = stringField(doc.frontmatter, 'agent')
 
   return {
     type: 'prompt',
@@ -52,6 +54,8 @@ export async function loadSkillFile(filePath: string, source: PromptCommand['sou
     whenToUse,
     allowedTools,
     model,
+    ...(context === 'fork' || context === 'inline' ? { context } : {}),
+    ...(agent ? { agent } : {}),
     source,
     filePath,
     baseDir,

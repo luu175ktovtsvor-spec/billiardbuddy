@@ -7,6 +7,8 @@ export interface PromptCommand {
   whenToUse?: string
   allowedTools?: string[]
   model?: string
+  context?: 'inline' | 'fork'
+  agent?: string
   source: 'skills' | 'commands' | 'plugin' | 'builtin' | 'mcp'
   filePath: string
   baseDir: string

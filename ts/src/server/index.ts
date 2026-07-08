@@ -31,10 +31,11 @@ import { workspaceForActiveWorktree } from '../tools/worktreeTools'
 import { loadSkillsDir } from '../skills/skillLoader'
 import { createBuiltinCommandLibrary, isBuiltinForkCommand } from '../commands/builtinCommands'
 import { bridgeUnsafeCommandMessage, filterBridgeSafeCommands, isBridgeSafeCommand, loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
+import type { PromptCommand } from '../commands/types'
 import { loadHookRegistryFile } from '../hooks/hookConfig'
 import { createDomainPackCommandLibrary, createDomainPackHookRegistry, createDomainPackTools, listPublicDomainPacks, mergeHookRegistries, resolveEnabledPacks, suggestedSkillNamesForPacks, type DomainPack } from '../packs/domainPacks'
 import { clearThreadGoalHook, createGoalHookRegistry, ensureThreadGoalHookFromTranscript, getThreadGoal, parseGoalCommand, setThreadGoalHook } from '../goals/goalState'
-import { loadAgentsDir } from '../agents/agentLoader'
+import { loadAgentsDir, type AgentDefinition } from '../agents/agentLoader'
 import { createAgentTaskSidechainTools, createAgentTaskTool } from '../agents/agentTool'
 import { buildForkRunContext } from '../agents/forkSubagent'
 import {
@@ -1535,6 +1536,67 @@ export function startServer(opts: StartServerOptions = {}) {
       ? [createBackgroundAgentTaskTool(backgroundAgentOptions)]
       : []
     const registry = buildGeneralRegistry({ skills, skillsRoot, skillRecommendations, commands, extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools, ...agentTools, ...agentSidechainTools, ...backgroundTools] })
+    const commandWorkerAgent = (command: PromptCommand): AgentDefinition => {
+      const requested = command.agent?.trim()
+      const found = requested ? agents.find(agent => agent.name === requested) : undefined
+      if (found) return found
+      const suffix = normalizeCommandName(command.name).replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-|-$/g, '') || 'command'
+      return {
+        name: `command-${suffix}`,
+        description: `Forked slash command worker for /${command.name}.`,
+        prompt: [
+          'You are running a slash command in an isolated command worker.',
+          'Execute the command instructions exactly, using tools when needed.',
+          'Return only the useful command result for the parent conversation.',
+        ].join('\n'),
+        filePath: `built-in:command-fork:${command.name}`,
+        permissionMode: permissionModeFrom(rawBody.permissionMode),
+        maxTurns: 80,
+      }
+    }
+    const launchContextForkCommand = async (command: PromptCommand): Promise<string> => {
+      const expandedPrompt = commandInvocation?.prompt.trim() ?? ''
+      if (!expandedPrompt) return `/${command.name} 没有可执行的命令内容。`
+      const parentMessages = await transcript.load()
+      const toolCtx = {
+        workspace,
+        model,
+        registry,
+        signal: controller.signal,
+        permissionMode: permissionModeFrom(rawBody.permissionMode),
+        conversationId,
+        systemPrompt,
+        renderedSystemPrompt: systemPrompt,
+        toolResultStoreDir: join(stateRoot, 'tool-results', conversationId),
+      }
+      const agent = commandWorkerAgent(command)
+      const args = commandInvocation?.args.trim() ?? ''
+      const { task } = await startBackgroundAgentRun(
+        backgroundAgentOptions!,
+        {
+          agent: agent.name,
+          task: expandedPrompt,
+          title: `/${command.name}${args ? ` ${args}` : ''}`.slice(0, 120),
+        },
+        toolCtx,
+        {
+          slash_command: command.name,
+          command_context: 'fork',
+          ...(command.agent ? { command_agent: command.agent } : {}),
+        },
+        [],
+        [],
+        { agentOverride: agent },
+      )
+      const agentId = typeof task.params?.agent_id === 'string' ? ` agent_id="${escapeXml(task.params.agent_id)}"` : ''
+      const output = `<background_task_started id="${escapeXml(task.id)}" agent="${escapeXml(agent.name)}"${agentId} status="${escapeXml(task.status)}">\n${escapeXml(task.title)}\n</background_task_started>`
+      await transcript.save([
+        ...parentMessages,
+        { role: 'user', content: [textBlock(commandInvocation?.raw ?? rawUserMessage)] },
+        { role: 'assistant', content: [textBlock(output)] },
+      ])
+      return output
+    }
     const launchBuiltinForkCommand = async (): Promise<string> => {
       const directive = commandInvocation?.args.trim() ?? ''
       if (!directive) return '用法: /fork <directive>'
@@ -1612,6 +1674,12 @@ export function startServer(opts: StartServerOptions = {}) {
         }
         if (isBuiltinForkCommand(commandInvocation)) {
           const output = await launchBuiltinForkCommand()
+          yield await record({ type: 'final', text: output })
+          finalStatus = 'idle'
+          return
+        }
+        if (commandInvocation && matchedCommand?.context === 'fork') {
+          const output = await launchContextForkCommand(matchedCommand)
           yield await record({ type: 'final', text: output })
           finalStatus = 'idle'
           return
