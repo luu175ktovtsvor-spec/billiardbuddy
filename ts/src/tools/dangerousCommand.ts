@@ -2402,11 +2402,14 @@ function classifyTreeCommand(command: string): CommandRisk | null {
 function classifyNamedReadOnlyCommand(
   command: string,
   name: string,
-  safeFlags: Record<string, FlagArgKind>,
+  configOrSafeFlags: ReadOnlyCommandConfig | Record<string, FlagArgKind>,
 ): CommandRisk | null {
   const tokens = tokenizeShellWords(command)
   if (tokens[0]?.toLowerCase() !== name) return null
-  return validateSafeFlags(tokens.slice(1), { safeFlags }) ? 'read' : 'outreach'
+  const config: ReadOnlyCommandConfig = Object.prototype.hasOwnProperty.call(configOrSafeFlags, 'safeFlags')
+    ? configOrSafeFlags as ReadOnlyCommandConfig
+    : { safeFlags: configOrSafeFlags as Record<string, FlagArgKind> }
+  return validateSafeFlags(tokens.slice(1), config) ? 'read' : 'outreach'
 }
 
 function classifyManCommand(command: string): CommandRisk | null {
@@ -2684,19 +2687,22 @@ function classifyFdCommand(command: string): CommandRisk | null {
 
 function classifyPyrightCommand(command: string): CommandRisk | null {
   return classifyNamedReadOnlyCommand(command, 'pyright', {
-    '--outputjson': 'none',
-    '--project': 'string',
-    '-p': 'string',
-    '--pythonversion': 'string',
-    '--pythonplatform': 'string',
-    '--typeshedpath': 'string',
-    '--venvpath': 'string',
-    '--level': 'string',
-    '--stats': 'none',
-    '--verbose': 'none',
-    '--version': 'none',
-    '--dependencies': 'none',
-    '--warnings': 'none',
+    respectsDoubleDash: false,
+    safeFlags: {
+      '--outputjson': 'none',
+      '--project': 'string',
+      '-p': 'string',
+      '--pythonversion': 'string',
+      '--pythonplatform': 'string',
+      '--typeshedpath': 'string',
+      '--venvpath': 'string',
+      '--level': 'string',
+      '--stats': 'none',
+      '--verbose': 'none',
+      '--version': 'none',
+      '--dependencies': 'none',
+      '--warnings': 'none',
+    },
   })
 }
 
