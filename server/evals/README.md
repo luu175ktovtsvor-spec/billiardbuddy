@@ -30,7 +30,7 @@ cd ../ts && bun run typecheck
 cd ../ts && bun run smoke:agent-tools   # 需要真模型 key,按需手工跑
 ```
 
-因此旧的 `cmd_live_test.py`、`file_exec_live_test.py`、`agent_tools_e2e.py` 已删除；后续同类“命令安全/工具权限/文件执行”回归继续往 TS 测试和 smoke 集中收敛。
+因此旧的 `cmd_live_test.py`、`file_exec_live_test.py`、`agent_tools_e2e.py`、`harness_eval.py` 已删除；后续同类“命令安全/工具权限/文件执行/轨迹对抗”回归继续往 TS 测试和 smoke 集中收敛。
 
 **无数据库依赖**：构造 in-memory `Store` + 模拟记忆，复用项目纯函数复刻"发给 DeepSeek 的真实 prompt"，
 绕过配额/落库/品牌声音（这些不影响"内容质量 vs 北极星"的测量）。复刻 5 种生成路径
