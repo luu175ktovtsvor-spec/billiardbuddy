@@ -58,6 +58,7 @@ Summarize store data.
       description: 'Write a daily report',
       whenToUse: '每日复盘',
       allowedTools: ['read_file', 'read_many_files', 'run_command'],
+      allowedToolRules: ['Read', 'Bash(git:*)'],
       context: 'fork',
       agent: 'reviewer',
       source: 'commands',

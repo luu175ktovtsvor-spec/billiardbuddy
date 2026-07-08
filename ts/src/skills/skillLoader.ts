@@ -55,7 +55,7 @@ export function recordInvokedSkill(skill: PromptCommand, content: string, ctx: T
 }
 
 export function allowSkillTools(skill: PromptCommand, ctx: ToolContext): void {
-  addAllowedToolsToContext(ctx, skill.allowedTools)
+  addAllowedToolsToContext(ctx, skill.allowedToolRules ?? skill.allowedTools)
 }
 
 export async function loadSkillFile(filePath: string, source: PromptCommand['source'] = 'skills'): Promise<PromptCommand> {
@@ -65,7 +65,8 @@ export async function loadSkillFile(filePath: string, source: PromptCommand['sou
   const name = safeName(stringField(doc.frontmatter, 'name') ?? basename(baseDir))
   const description = stringField(doc.frontmatter, 'description') ?? extractDescription(doc.body) ?? name
   const whenToUse = stringField(doc.frontmatter, 'whenToUse') ?? stringField(doc.frontmatter, 'when_to_use')
-  const allowedTools = normalizeAllowedTools(stringArrayField(doc.frontmatter, 'allowedTools') ?? stringArrayField(doc.frontmatter, 'allowed_tools'))
+  const allowedToolRules = stringArrayField(doc.frontmatter, 'allowedTools') ?? stringArrayField(doc.frontmatter, 'allowed_tools')
+  const allowedTools = normalizeAllowedTools(allowedToolRules)
   const model = stringField(doc.frontmatter, 'model')
   const context = stringField(doc.frontmatter, 'context')
   const agent = stringField(doc.frontmatter, 'agent')
@@ -76,6 +77,7 @@ export async function loadSkillFile(filePath: string, source: PromptCommand['sou
     description,
     whenToUse,
     allowedTools,
+    allowedToolRules,
     model,
     ...(context === 'fork' || context === 'inline' ? { context } : {}),
     ...(agent ? { agent } : {}),

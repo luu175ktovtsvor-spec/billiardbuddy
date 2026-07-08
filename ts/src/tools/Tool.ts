@@ -41,6 +41,8 @@ export interface ToolContext {
   permissionMode?: PermissionMode
   /** 当前 slash command / inline skill 通过 allowedTools 授权的会话内工具名。 */
   sessionAllowedTools?: Set<string>
+  /** 当前 slash command / inline skill 通过 allowedTools 授权的参数级工具规则。 */
+  sessionAllowedToolRules?: Array<{ tool: string; commandPattern: string }>
   /** 会话 id,跨请求拒绝计数按它隔离(见 denialTracking)。 */
   conversationId?: string
   /** 当前工具调用前的模型消息快照,供 fork/subagent guard 等运行时逻辑判断父上下文。 */

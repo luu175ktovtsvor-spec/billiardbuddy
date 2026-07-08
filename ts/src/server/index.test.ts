@@ -3784,7 +3784,7 @@ test('POST /agent/run slash command allowedTools grants tool approval in ask mod
   await Bun.write(join(commandsRoot, 'shell-edit.md'), `---
 name: shell-edit
 description: Shell edit
-allowedTools: [Bash]
+allowedTools: ["Bash(printf:*)"]
 ---
 Use the shell for this command.
 `)

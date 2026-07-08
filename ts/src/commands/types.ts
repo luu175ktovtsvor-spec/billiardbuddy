@@ -6,6 +6,7 @@ export interface PromptCommand {
   description: string
   whenToUse?: string
   allowedTools?: string[]
+  allowedToolRules?: string[]
   model?: string
   context?: 'inline' | 'fork'
   agent?: string

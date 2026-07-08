@@ -19,6 +19,13 @@ function aliasKey(value: string): string {
   return match?.[1] ?? value
 }
 
+function scopedSpec(value: string): { key: string; arg: string } | null {
+  const match = value.match(/^([A-Za-z][A-Za-z0-9_-]*)\((.*)\)$/)
+  const key = match?.[1]?.trim()
+  const arg = match?.[2]?.trim()
+  return key && arg ? { key, arg } : null
+}
+
 export function normalizeAllowedTools(values: string[] | undefined): string[] | undefined {
   const out: string[] = []
   const seen = new Set<string>()
@@ -42,8 +49,18 @@ export function allowedToolsForAgent(values: string[] | undefined): string[] | u
 }
 
 export function addAllowedToolsToContext(ctx: ToolContext, values: string[] | undefined): void {
-  const normalized = normalizeAllowedTools(values)
-  if (!normalized) return
-  ctx.sessionAllowedTools ??= new Set<string>()
-  for (const tool of normalized) ctx.sessionAllowedTools.add(tool)
+  for (const raw of values ?? []) {
+    const value = raw.trim()
+    if (!value) continue
+    const scoped = scopedSpec(value)
+    if (scoped?.key === 'Bash') {
+      ctx.sessionAllowedToolRules ??= []
+      ctx.sessionAllowedToolRules.push({ tool: 'run_command', commandPattern: scoped.arg })
+      continue
+    }
+    const normalized = normalizeAllowedTools([value])
+    if (!normalized) continue
+    ctx.sessionAllowedTools ??= new Set<string>()
+    for (const tool of normalized) ctx.sessionAllowedTools.add(tool)
+  }
 }

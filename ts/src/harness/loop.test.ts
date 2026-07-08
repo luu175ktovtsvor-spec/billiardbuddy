@@ -907,7 +907,7 @@ test('inline use_skill allowedTools grants later tool approval in the same sessi
   await Bun.write(join(skillsRoot, 'shell-helper', 'SKILL.md'), `---
 name: shell-helper
 description: Allow shell edits
-allowedTools: [Bash]
+allowedTools: ["Bash(printf:*)"]
 ---
 Use run_command for the requested shell action.
 `)
