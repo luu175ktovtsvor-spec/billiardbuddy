@@ -75,6 +75,7 @@ import { loadOutputStyles, publicOutputStyle, renderOutputStylePrompt } from '..
 import { defaultPluginInstallDir, defaultPluginRoots, installPluginFromGithub, listPlugins, setPluginEnabled } from '../plugins/pluginLoader'
 import { Workspace } from '../workspace/workspace'
 import { Sandbox } from '../sandbox/sandbox'
+import { McpTrustStore, resolveTrustedMcpConfig } from '../mcp/mcpTrust'
 import type { AssistantStep, Model } from '../types/model'
 import { textBlock, type ContentBlock, type Message } from '../types/message'
 import type { AgentEvent, AskQuestionField } from '../types/events'
@@ -486,8 +487,6 @@ function defaultMcpConfigPath(workspaceRoot: string, env: Record<string, string 
     ...(env.DESKTOP_LIBRARY_DIR ? [join(env.DESKTOP_LIBRARY_DIR, '.mcp.json')] : []),
     join(env.HOME || env.USERPROFILE || process.cwd(), '.billiards-desktop', 'library', '.mcp.json'),
     join(process.cwd(), '.mcp.json'),
-    join(process.cwd(), 'server', 'mcp.json'),
-    join(process.cwd(), '..', 'server', 'mcp.json'),
   ]
   return candidates.find(existsSync)
 }
@@ -912,6 +911,15 @@ export function startServer(opts: StartServerOptions = {}) {
   const sandboxEnabled = opts.sandboxEnabled ?? ((opts.env ?? process.env).QF_OS_SANDBOX !== '0')
   const buildSandbox = (ws: Workspace): Sandbox => new Sandbox({ workspace: ws, enabled: sandboxEnabled })
   const stateRoot = opts.transcriptRoot ?? join(process.cwd(), '.agent-state')
+  // 工作区级 .mcp.json 信任闸(防恶意仓库 .mcp.json 自动 spawn 任意命令)。
+  const mcpTrust = new McpTrustStore(join(stateRoot, 'mcp-trust.json'))
+  /** 解析并过信任闸的 mcpConfigPath。显式(请求或 startServer opts 指定)与 app 库/全局配置放行;
+   * 未信任的工作区级 <root>/.mcp.json 拦下不连,返回 warning。 */
+  const resolveMcpConfig = (rawBody: Record<string, unknown>, workspaceRoot: string): { path: string | undefined; warning?: string } => {
+    const explicit = typeof rawBody.mcpConfigPath === 'string' && rawBody.mcpConfigPath.trim().length > 0
+    const configPath = explicit ? String(rawBody.mcpConfigPath).trim() : opts.mcpConfigPath ?? defaultMcpConfigPath(workspaceRoot, opts.env ?? process.env)
+    return resolveTrustedMcpConfig({ configPath, workspaceRoot, explicit: explicit || !!opts.mcpConfigPath, store: mcpTrust })
+  }
   const sessions = new SessionService(stateRoot)
   const providers = new ProviderService(opts.providerRoot ?? stateRoot)
   const desktopData = new DesktopDataStore(stateRoot)
@@ -1458,9 +1466,8 @@ export function startServer(opts: StartServerOptions = {}) {
     const initialSessionHooks = sessionSkillHooks.get(conversationId)
     const agents = await loadAgentsDir(opts.agentsRoot ?? defaultAgentsRoot())
     const controller = turns.start(conversationId)
-    const mcpConfigPath = typeof rawBody.mcpConfigPath === 'string' && rawBody.mcpConfigPath.trim()
-      ? rawBody.mcpConfigPath.trim()
-      : opts.mcpConfigPath ?? defaultMcpConfigPath(workspace.root, opts.env ?? process.env)
+    const gatedMcp = resolveMcpConfig(rawBody, workspace.root)
+    const mcpConfigPath = gatedMcp.path
     const mcpTools = await loadMcpToolsFromFile(mcpConfigPath, {
       cwd: workspace.root,
       signal: controller.signal,
@@ -1474,6 +1481,8 @@ export function startServer(opts: StartServerOptions = {}) {
       }),
       samplingHandler: ({ params, signal }) => runMcpSampling(model, providerRuntime.config.model, params, signal ?? controller.signal),
     })
+    // 工作区级 .mcp.json 未信任被拦时,把警告并进 mcp 警告流(由下方 mcpTools.warnings 循环回灌)。
+    if (gatedMcp.warning) mcpTools.warnings.unshift(gatedMcp.warning)
     const taskTools = [...createTaskTools(tasks), ...createStructuredTaskTools(taskLists)]
     let backgroundAgentOptions: BackgroundAgentTaskOptions | undefined
     const promptWorkerAgent = (prompt: PromptCommand, kind: 'command' | 'skill'): AgentDefinition => {
@@ -2043,9 +2052,7 @@ export function startServer(opts: StartServerOptions = {}) {
     const includeMcp = rawBody.includeMcp === true || rawBody.includeMcp === 'true'
     let mcp: { tools: number; warnings: string[] } | undefined
     if (includeMcp) {
-      const mcpConfigPath = typeof rawBody.mcpConfigPath === 'string' && rawBody.mcpConfigPath.trim()
-        ? rawBody.mcpConfigPath.trim()
-        : opts.mcpConfigPath ?? defaultMcpConfigPath(workspace.root, opts.env ?? process.env)
+      const mcpConfigPath = resolveMcpConfig(rawBody, workspace.root).path
       const loaded = await loadMcpToolsFromFile(mcpConfigPath, {
         cwd: workspace.root,
         timeoutMs: 5000,
@@ -2107,9 +2114,7 @@ export function startServer(opts: StartServerOptions = {}) {
       loadSkillsDir(skillsRoot),
       loadCommandsForWorkspace(workspace.root, commandsRoot, enabledPacks, opts.env ?? process.env),
     ])
-    const mcpConfigPath = typeof rawBody.mcpConfigPath === 'string' && rawBody.mcpConfigPath.trim()
-      ? rawBody.mcpConfigPath.trim()
-      : opts.mcpConfigPath ?? defaultMcpConfigPath(workspace.root, opts.env ?? process.env)
+    const mcpConfigPath = resolveMcpConfig(rawBody, workspace.root).path
     const mcpTools = await loadMcpToolsFromFile(mcpConfigPath, {
       cwd: workspace.root,
       timeoutMs: 10000,
@@ -2761,10 +2766,9 @@ export function startServer(opts: StartServerOptions = {}) {
 
   async function listMcpStatus(rawBody: Record<string, unknown> = {}) {
     const workspaceRoot = stringOr(rawBody.workspaceRoot ?? rawBody.working_dir, process.cwd())
-    const mcpConfigPath = typeof rawBody.mcpConfigPath === 'string' && rawBody.mcpConfigPath.trim()
-      ? rawBody.mcpConfigPath.trim()
-      : opts.mcpConfigPath ?? defaultMcpConfigPath(workspaceRoot, opts.env ?? process.env)
-    if (!mcpConfigPath) return { servers: [] }
+    const gatedMcp = resolveMcpConfig(rawBody, workspaceRoot)
+    const mcpConfigPath = gatedMcp.path
+    if (!mcpConfigPath) return { servers: [], ...(gatedMcp.warning ? { untrusted_workspace_config: true, note: gatedMcp.warning } : {}) }
     const configs = await loadMcpConfigFile(mcpConfigPath).catch(() => [])
     const loaded = await loadMcpToolsFromFile(mcpConfigPath, {
       cwd: workspaceRoot,
@@ -3680,6 +3684,18 @@ export function startServer(opts: StartServerOptions = {}) {
       if (url.pathname === '/api/v1/agent/mcp/presets') {
         if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
         return Response.json({ presets: MCP_PRESETS })
+      }
+
+      if (url.pathname === '/api/v1/agent/mcp/trust') {
+        // 工作区级 .mcp.json 信任闸:GET 查已信任列表;POST {workspaceRoot} 批准;DELETE 撤销。
+        if (req.method === 'GET') return Response.json({ approved_workspace_roots: mcpTrust.list() })
+        const body = await req.json().catch(() => ({})) as Record<string, unknown>
+        const root = stringOr(body.workspaceRoot ?? body.working_dir, '')
+        if (!root) return jsonError('缺少 workspaceRoot', 400)
+        if (req.method === 'DELETE') { mcpTrust.revoke(root); return Response.json({ ok: true, trusted: false, approved_workspace_roots: mcpTrust.list() }) }
+        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+        mcpTrust.trust(root)
+        return Response.json({ ok: true, trusted: true, approved_workspace_roots: mcpTrust.list() })
       }
 
       if (url.pathname === '/api/v1/agent/mcp/add') {
