@@ -1,6 +1,8 @@
 # 桌面版 AI Agent — 文档导航
 
-> 📌 状态:✅现行 · 最后核对 2026-07-07
+> 📌 状态:✅现行 · 最后核对 2026-07-09
+>
+> **⚠️ 2026-07-09 架构变更:老 Python 后端(`server/`)整体退役删除,当前唯一代码栈 = `ts/`(cc-haha 标准 coding-agent 架构)。** 本项目本质是 cc-haha 型 coding agent;架构已对标 cc-haha(循环/权限/工具/hooks/skills/commands/tasks/context/mcp/plugins 同构),行为层逐模块对齐进度见 `plans/TS-cc-haha-v0.4.5-内核迁移矩阵-2026-07-07.md` §3.401。**下列描述 Python 架构的文档均为历史、不反映现状,待统一重写/归档**:`product-brain/*`(Python 店脑)、`桌面版AI-Agent-产品形态/README.md`(壳/脑/知识 Python 数据流)、`知识manifest.md`、`知识库重构-架构与映射.md`、`端到端问题清单-按模块.md`、`模块修复-遗留与注意事项.md`(老 app 模块台账)。当前权威架构口径以 `plans/强-coding-agent-桌面外壳-阶段目标.md` + `当前目标与文档口径-2026-07-07.md` 为准。
 
 > 本仓库 = 桌面版**通用 AI Agent / coding agent 外壳**。`main` = 桌面产品全部代码。当前最高目标见 `当前目标与文档口径-2026-07-07.md`:coding 能力和可靠性优先,CC-Haha 可直接复制/抄/移植/改写并用测试兜边界,UI 走 Work Buddy/Codex 式低噪工具流。
 > 台球房运营 = 可挂载的“台球运营专家”,不是产品边界;首启默认保持通用 coding Agent,用户在输入框选择后才挂载领域包。店铺资料库 = 可检索来源;生图、真实素材剪辑 = 同一 Agent 工作台里的插件式延伸能力,必须跟随主 UI 和审批/任务框架。
