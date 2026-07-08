@@ -4,7 +4,7 @@
 - 对话改文案(recaption):带上「店主指令 + 上一版文案」再调一次,LLM 带上下文重写。
 - 文案与素材解耦:本模块只产出文字,不碰帧;换文案 = 重跑本模块 + 重渲文案层。
 
-模型走豆包(与 VLM/Seedance 同一把 ARK key)。**生产经网关**(gateway/app.py 的 `/v1/ark/chat/completions`)
+模型走豆包(与 VLM 同一把 ARK key)。**生产经网关**(gateway/app.ts 的 `/v1/ark/chat/completions`)
 反代,真 key 全在服务器,客户端只带可吊销的 app 令牌(`QF_GATEWAY_URL`/`QF_GATEWAY_TOKEN`,与 vlm.py 共用同一条
 通道)。`QF_GATEWAY_URL`/`QF_GATEWAY_TOKEN` 没配时,退到 `ARK_API_KEY`/`VIDEO_LLM_API_KEY`/`VLM_API_KEY` 直连
 火山——这是 **dev-only 开发机后门**,生产/客户盒子必须配网关,不能把真 ARK key 打进客户端。
@@ -26,7 +26,7 @@ _MODEL = os.environ.get("VIDEO_LLM_MODEL", "doubao-seed-1-6-250615")
 # 网关地址/令牌(生产形态,与 vlm.py 共用同一条网关通道):真 ARK key 在服务器 gw.env。
 _GATEWAY_URL = os.environ.get("QF_GATEWAY_URL", "").rstrip("/")   # 如 http://<网关IP>/gw/v1
 _GATEWAY_TOKEN = os.environ.get("QF_GATEWAY_TOKEN", "")
-_GATEWAY_PATH = "/ark/chat/completions"   # gateway/app.py 的火山豆包视觉/文本通道
+_GATEWAY_PATH = "/ark/chat/completions"   # gateway/app.ts 的火山豆包视觉/文本通道
 
 # dev-only 直连后门(开发机联调用,生产别配这几个 env)
 _DEV_ENDPOINT = os.environ.get("VIDEO_LLM_ENDPOINT", "https://ark.cn-beijing.volces.com/api/v3/chat/completions")

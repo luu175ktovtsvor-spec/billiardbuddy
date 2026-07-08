@@ -59,10 +59,10 @@ def test_media_job_fail_sets_error():
         from services import media_jobs_service as mj
         async with Session() as db:
             await _seed(db, sid)
-            job = await mj.create_job(db, sid, "i2v")
-            await mj.fail_job(db, job.id, sid, "Ark 超时")
+            job = await mj.create_job(db, sid, "video_render")
+            await mj.fail_job(db, job.id, sid, "渲染失败")
             got = await mj.get_job(db, job.id, sid)
-            assert got.status == "error" and "Ark 超时" in (got.error or "")
+            assert got.status == "error" and "渲染失败" in (got.error or "")
 
     asyncio.run(main())
 

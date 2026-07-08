@@ -34,7 +34,7 @@ export interface ElectronBridge {
   openVideoStudio?(): Promise<{ ok: boolean; id?: number }>;
   /** E1-C1：工作台单例窗口(/dashboard/workbench，生图/视频双面板)带参打开。已开着就聚焦 + 切面板/
    *  换 payload(经 onWorkbenchNavigate 事件)；没开就带 mode/payload 拼进 URL query 新开一扇。
-   *  payload 只能是轻标识(如 { fromGen: generationId }，值必须是字符串)，真图/大对象绝不进这条通路。 */
+   *  payload 只能是轻标识(如 { sourceId: generationId }，值必须是字符串)，真图/大对象绝不进这条通路。 */
   openWorkbench?(mode: "image" | "video", payload?: Record<string, string>): Promise<{ ok: boolean; id?: number }>;
   /** E1-C1：订阅已开着的工作台窗口收到的"再次 openWorkbench(...)"事件——用来切面板/更新 payload。
    *  返回取消订阅函数。 */

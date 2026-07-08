@@ -127,14 +127,10 @@ describe("approvedToolResultMessage", () => {
     });
   });
 
-  test("keeps approved command and video results on their specialized render paths", () => {
+  test("keeps approved command results on their specialized render path", () => {
     expect(approvedToolResultMessage("run_command", { command: "bun test" }, "ok")).toMatchObject({
       kind: "command",
       content: "ok",
-    });
-    expect(approvedToolResultMessage("generate_video", {}, "[video](/uploads/a.mp4)")).toMatchObject({
-      kind: "video",
-      content: "[video](/uploads/a.mp4)",
     });
   });
 

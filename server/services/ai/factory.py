@@ -172,20 +172,6 @@ class ProviderFactory:
         return (settings.openai_api_key, settings.openai_base_url, None)
 
     @classmethod
-    def get_video_config_for_store(cls, store) -> tuple[str, str, str | None]:
-        """按门店取生视频配置 (api_key, base_url, model)。当前只有内置 ARK·Seedance（火山方舟）一家。
-
-        桌面盒子（DESKTOP_LOCAL=1）：用内置 ark_api_key（经 .env.bundled.local 注入）；未配 → 空 key，
-        让 video_service 友好报错（绝不静默落到无关 key，与生图/文本同款守卫）。
-        视频 BYOK（门店自带视频 key）暂不单独支持——后续要时照 get_image_config_for_store 加门店字段即可。"""
-        import os
-        if os.environ.get("DESKTOP_LOCAL") == "1":
-            if settings.ark_api_key:
-                return (settings.ark_api_key, settings.video_base_url, settings.video_model_name or None)
-            return ("", settings.video_base_url, None)
-        return (settings.ark_api_key, settings.video_base_url, settings.video_model_name or None)
-
-    @classmethod
     def build_image_provider(cls, api_key: str, base_url: str | None, model: str | None = None):
         """按 base_url 自动路由到对应生图 Provider（CC Switch 式"口子"，新增厂商不必改调用方）。
         - seedream（火山方舟·即梦 Seedream：原生 /images/generations 传 image，非 OpenAI multipart edits）→ SeedreamImageProvider

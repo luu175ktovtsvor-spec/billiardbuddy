@@ -59,7 +59,6 @@ class Settings(BaseSettings):
     # 前端跟着变、不用动代码——支持以后把 MiMo 换成别的模型还保持界面一致。
     bundled_model_label: str = "MiMo V2.5"     # 对话/看图大脑
     bundled_image_label: str = "GPT Image-2"   # 生图
-    bundled_video_label: str = "Seedance 2.0"  # 视频
 
     # 当前启用的模型 Provider
     text_model_provider: str = "deepseek"
@@ -67,15 +66,8 @@ class Settings(BaseSettings):
     image_model_provider: str = "openai"
     image_model_name: str = ""
 
-    # 视频生成（火山方舟 Seedance，原生异步：建任务→轮询，约 1-8 分钟）。内置 key 经 .env.bundled.local 注入。
-    # ⚠️ 联调期可放本地 .env.bundled.local（不进仓库），但【发版前务必挪到服务端网关/relay】——与 GPT Image-2
-    #    走 zzyppz.cn relay 同理，key 裸打进 asar 会被扒（见 memory: bundled-key-concurrency-and-gateway）。
+    # 火山方舟 key 仍供 Seedream 生图和真实素材剪辑里的豆包/VLM dev-only 直连兜底使用。
     ark_api_key: str = ""                                              # env ARK_API_KEY
-    video_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"   # env VIDEO_BASE_URL
-    video_model_name: str = "doubao-seedance-2-0-260128"              # env VIDEO_MODEL_NAME（已用真 key 跑通；换型号改 env 即可）
-    # 视频异步生成耗时长且波动大（2026-06-25 真机实测：同一条 5 秒视频 3.5~13.5 分钟，受排队/并发影响）。
-    # 轮询超时必须覆盖真实最慢出片，否则"慢但已成功"的视频被判超时=钱花了片没拿到。放 30 分钟留足余量。
-    video_timeout: float = 1800.0                                      # env VIDEO_TIMEOUT
 
     # 编排大脑（Agent 规划/选工具用）——与「内容生成」分离，可独立切换。
     # 留空 = 跟随 text_model_*（零配置即全 DeepSeek，不改现状）。

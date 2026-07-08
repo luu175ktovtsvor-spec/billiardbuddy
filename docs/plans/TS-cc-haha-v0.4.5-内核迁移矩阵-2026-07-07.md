@@ -45,7 +45,7 @@
 | MCP/plugins | `server/api/mcp.ts`, `plugins.ts`, MCP tools | `ts/src/mcp/*`, `ts/src/plugins/*` | 官方 SDK + secret redaction + Unicode server names | 🟡配置/manifest/命名/审批映射 + SDK tool/resource/prompt/elicitation/task/sampling bridge 已落;MCP elicitation 基础问答桥已落,专用多字段表单 UI 待补 |
 | Desktop sidecar | `desktop/electron/services/sidecarManager.ts`, `serverRuntime.ts` | `ts/desktop/electron/services/*` | 等 `/health`、端口策略、tree kill、日志诊断、ARM64 | 🟡基础 sidecar 已落 |
 | Image module | 无直接 cc-haha 对应 | `ts/src/media/image/*`, 前端 studio | 自研工具,接审批/媒体任务/provider | 🟡TS 文生图/参考图/改图网关直连已落;品牌包/贴图/OCR 待迁 |
-| Video module | 无直接 cc-haha 对应 | `ts/src/media/video/*`, workbench | 自研剪辑/生视频,ffmpeg/Seedance/离屏渲染 | 🟡TS Seedance 生视频直连 + 本地 auto_plan/render fallback 已落;VLM/ASR/高级模板待迁 |
+| Video module | 无直接 cc-haha 对应 | `ts/src/media/video/*`, workbench | 真实素材剪辑,ffmpeg/离屏渲染 | 🟡AI 模型生成视频已删除;真实素材 auto_plan/render fallback 保留;VLM/ASR/高级模板待迁 |
 
 ## 3. 已在 2026-07-07 落地
 
@@ -229,8 +229,8 @@
 
 - 新增 `ts/src/media/mediaJobs.ts`:基于 `TaskService` 承载媒体任务 `kind/progress/stage/result`,支持 TS job 包一层旧 Python media job,通过 `MEDIA_BACKEND_URL`/`PYTHON_BACKEND_URL` 提交并轮询 `/api/v1/agent/media-jobs/:id`。
 - 没配媒体后端时,`studio/generate` 与 Agent 生图工具生成本地 SVG 占位预览并明确标记 `local_preview`;视频/剪辑任务返回人话错误,不假装已出片。
-- 新增 `ts/src/media/mediaTools.ts`:注册 `make_poster`、`generate_image`、`generate_video`;图片走后台媒体任务,视频标记 `spend + forceConfirm`,接入同一审批/任务系统。
-- TS server 新增旧前端兼容路由:`/api/v1/studio/generate|edit|i2v|expand`、`/api/v1/video-edit/inventory|auto_plan|auto_plan_v2|projects/:id/render|render_v2`、`/api/v1/agent/media-jobs/:id` 与 `/uploads/*` 本地预览产物。
+- 新增 `ts/src/media/mediaTools.ts`:注册 `make_poster`、`generate_image`;图片走后台媒体任务,接入同一任务系统。
+- TS server 新增旧前端兼容路由:`/api/v1/studio/generate|edit|expand`、`/api/v1/video-edit/inventory|auto_plan|auto_plan_v2|projects/:id/render|render_v2`、`/api/v1/agent/media-jobs/:id` 与 `/uploads/*` 本地预览产物。
 - 验证:`cd ts && bun test src/media/mediaJobs.test.ts src/media/mediaTools.test.ts src/server/index.test.ts`;`bun run typecheck` clean。
 
 ## 3.25 2026-07-07 前端后台任务抽屉追加落地
@@ -366,14 +366,15 @@
 - 口径:这只补齐 TS 文生图真实路径;图生图、logo/二维码像素贴、角色化参考图路由、Seedream 参数校准仍属于 Image module 后续项。
 - 验证:`cd ts && bun test src/media/mediaJobs.test.ts src/media/mediaTools.test.ts src/server/index.test.ts`;`cd ts && bun run typecheck` clean。
 
-## 3.42 2026-07-07 TS Seedance 生视频网关直连追加落地
+## 3.42 2026-07-09 CD/Seedance 2.0 生成视频全链路删除收口
 
-- `MediaJobService` 新增直连 Seedance/方舟视频任务路径:无 Python 媒体后端时,若 `VIDEO_BASE_URL/ARK_API_KEY/VIDEO_MODEL_NAME` 或 `QF_GATEWAY_URL/QF_GATEWAY_TOKEN` 可用,`studio/i2v` 与 Agent 生视频工具会直接提交 `/contents/generations/tasks` 并轮询任务结果。
-- 图生视频首帧支持本机 `/uploads/...` 图片引用:TS sidecar 会校验媒体类型并转成 data URI 提交给网关,避免把本地文件路径泄给远端服务。
-- 网关返回 `video_url` 后会尽力下载到本机 `/uploads/videos/*.mp4`,前端继续通过同源 `/uploads/videos/...` 预览;远端下载失败时才保留原始 URL,并记录 `source_url`。
-- 真实通道已配置但提交/轮询/下载出错会把任务标为 failed,不会退成本地占位视频;未配置真实通道时仍明确返回“需要媒体后端或视频模型网关”。
-- 口径:这只补齐 TS 生视频真实路径;`video_edit/*` 的 ffmpeg 渲染、字幕、转写、VLM 导演、时间线导出和完整剪辑工作台仍属于 Video module 后续项。
-- 验证:`cd ts && bun test src/media/mediaJobs.test.ts src/media/mediaTools.test.ts src/server/index.test.ts`;`cd ts && bun run typecheck` clean。
+- CD/Seedance 2.0 这类 AI 模型生成视频路径已从 TS 媒体任务、Agent 工具、Studio API、Python 服务、网关代理、桌面配置、前端入口和 E2E 断言删除;不保留禁用开关、兼容旧路由或 410 fallback。
+- `MediaJobService` 不再包含 `i2v`/生成视频 kind,不再提交 `/contents/generations/tasks`,也不再读取 `VIDEO_BASE_URL/VIDEO_MODEL_NAME`;Python 侧同步删除 `video_service.py`、`ark_video.py`、`/studio/i2v`、`generate_video` 工具和相关测试。
+- 前端删除图片到模型视频的 handoff、`studioI2v` API、设置抽屉模型标签、背景任务中的生成视频分类;只保留已有视频成品预览和真实素材剪辑工作台。
+- 网关删除视频 submit/poll 透传和视频 quota/concurrency 配置;保留对话、生图、Seedream 生图、Ark chat/VLM、Amap 等仍在使用的通道。
+- 口径:删除的是模型直接生成视频;`video_edit/*` 的真实素材 ffmpeg 渲染、字幕、转写、VLM 导演、时间线导出、`render_video` 和完整剪辑工作台仍属于 Video module 后续项。
+- 残留扫描:`rg -n "studio_i2v|/studio/i2v|StudioI2vIn|studioI2v|generate_video|Seedance|seedance|VIDEO_BASE_URL|VIDEO_MODEL_NAME|BUNDLED_VIDEO_LABEL|图生视频|文生视频|做成视频|fromGen|doubao-seedance|contents/generations/tasks|GW_Q_VIDEO|GW_VIDEO" ...` 只剩阶段目标、迁移矩阵和删除说明文档;运行时代码、配置、网关和 E2E 脚本无旧入口。
+- 验证:`cd ts && bun test src/media/mediaTools.test.ts src/media/mediaJobs.test.ts src/server/index.test.ts src/packs/domainPacks.test.ts` = 124 pass;`cd ts && bun run typecheck` clean;`cd web && pnpm exec tsc --noEmit` clean;`bun test gateway/app.test.ts` = 9 pass;`cd server && uv run pytest tests/test_agent_builtin_tools.py tests/test_media_jobs_service.py tests/test_media_jobs_runner.py tests/test_studio_router.py tests/test_poster_path_guard.py tests/test_image_generation_handoff.py tests/test_agent_loop_model_timeout.py tests/test_media_job_notify.py tests/test_video_v2_units.py tests/test_video_v2_orchestration.py tests/test_video_edit_planners_footage_health.py tests/test_video_edit_tools.py -q` = 171 pass。
 
 ## 3.43 2026-07-07 TS-only 视频工作台本地方案/出片 fallback 追加落地
 
@@ -385,7 +386,7 @@
 
 ## 3.44 2026-07-07 TS 生图参考图/改图网关直连追加落地
 
-- `MediaJobService` 的 TS 图片路径新增可反查的 `generation_ids`:本地占位图与真实网关图都会返回 `generation_ids`,`GET /api/v1/studio/generation/:id` 可解析 `local-*` 和 `direct-*` 到本机 `/uploads/posters/...`,工作室后续“要同款 / 改这张 / 做成视频”不再断链。
+- `MediaJobService` 的 TS 图片路径新增可反查的 `generation_ids`:本地占位图与真实网关图都会返回 `generation_ids`,`GET /api/v1/studio/generation/:id` 可解析 `local-*` 和 `direct-*` 到本机 `/uploads/posters/...`,工作室后续“要同款 / 改这张”不再断链。
 - `studio/generate` 在无 Python 媒体后端时支持参考图:前端本次选中的 `reference_image_paths` 会作为 trusted paths 注入,转成 data URI;`reference_generation_ids` 会从本机作品库解析后并入参考图。Seedream/方舟走 `/ark/images/generations` JSON `image/input_images/sequential_image_generation`。
 - `studio/edit` 在无 Python 媒体后端时支持 OpenAI-compatible `/images/edits` multipart:以 `source_generation_id` 解析底图,可选 trusted `mask_path`,并设置 `input_fidelity=high`;网关结果继续落本机 `/uploads/posters`。
 - 安全口径:Agent 工具自己填的任意绝对路径不会被读取;只有 Studio 前端本次请求显式传入的参考图/蒙版路径会进入 `_trusted_image_paths`,`/uploads/...` 仍按作品库沙箱解析。
@@ -3348,6 +3349,14 @@
 - 行为边界:字面反斜杠 pattern `grep "foo\\nbar" file.txt` 仍保持 `read`;只有真实换行/回车进入审批,不扩大到 safe heredoc 或普通多行文本参数的其它工具。
 - 测试覆盖:`runCommandTool.test.ts` 新增 `grep`/`rg` 真实换行、真实回车和 `-e` pattern 的 classify 回归。
 
+## 3.398 2026-07-09 网关 FastAPI Python 退役
+
+- 删除 `gateway/app.py`:国内总闸不再维护 FastAPI/uvicorn 版本,避免同一网关同时存在 Python 与 TS 两条部署口径。
+- 新增 `gateway/app.ts`:用 Bun/TS 保留路径契约与安全边界,包括 `/healthz`、`/admin/usage`、MiMo `/v1/chat/completions` 流式透传、GPT `/v1/images/generations|edits`、ARK 视觉/文本、Seedream 原生生图、AMAP 通用代理、app token 鉴权、每日配额、令牌桶排队、并发信号量和 SQLite 用量记录。
+- 新增 `gateway/app.test.ts`:测试注入 `MemoryUsageStore` 与假上游 fetch,覆盖缺/错令牌不打上游、对话流式消费后记账、图片每日配额、multipart content-type 保留、ARK chat/Seedream 分配额记账、AMAP key 注入、缺可选 key 返回 503、admin usage。
+- 部署同步:`gateway/deploy.sh` 从 Python venv + `uvicorn app:app` 改为 Bun + systemd 直跑 `/opt/qfgw/app.ts`;`gateway/README.md`、密钥部署清单、活台账和代码注释改为 `gateway/app.ts`。Python 文件数降到 365。
+- 验证:`bun test gateway/app.test.ts` 9 项通过;`cd ts && bun run typecheck` 通过。
+
 ## 4. 下一批代码顺序
 
 1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复、后台 agent 确定性进度阶段、`SendUserMessage/Brief` 输出通道、agent memory / snapshot、后台续跑 content replacement records 继承、同 agent id 原任务槽续跑、`AgentOutputTool/BashOutputTool` 旧名兼容、parent live replacements gap-fill、AgentSummary 周期摘要、ListPeers 队友发现元数据、UDS SendMessage 出站投递、UDS inbox 接收注入、UDS peer discovery/ListPeers socket 展示、Remote Control bridge peer registry/SendMessage 安全骨架、Remote Control event/permission outbox 状态面、Remote Control Sessions API HTTP transport、SessionsWebSocket 订阅接收半边、code session / bridge credential exchange、CCR worker HTTP/heartbeat/state/delivery、SSE worker read stream、worker credential refresh/epoch rebuild 控制面、inbound user message/file attachment resolved prompt 队列、inbound prompt -> agent queue/steering、OAuth/JWT 自动 refresh scheduler、SDK message -> 前端实时事件流投影、bridge-safe slash command 白名单、prompt-cache break telemetry、AgentTool `run_in_background` 显式后台入口、subagent local denial tracking、fork child message builder、fork recursive guard 运行时接入、显式 fork_context AgentTool 运行时、受控 implicit fork gate、fork querySource 身份标记、AgentSummary cache-safe params 生命周期、rendered system prompt byte-exact 继承、foreground handoff registry 地基、AgentTool foreground registration lifecycle、foreground-to-background race 接管入口、foreground handoff continuation snapshot、foreground handoff progress seed、foreground handoff AgentSummary snapshot、foreground handoff token usage tracker、foreground handoff worktree ownership、foreground handoff MCP/session cleanup、fork worker worktree notice、fork force-async gate 与 prompt 指南、`/fork <directive>` 后台 worker 入口、`context:fork` prompt command executor、SkillTool 主动调用 `context:fork`、SkillTool allowedTools 归一化/worker 白名单、invoked skill 压缩恢复、allowedTools 会话级权限上下文、`Bash(...)` 参数级 allowedTools、skill frontmatter hooks 注册/恢复/`once`、permission rule parser 与 Bash/PowerShell wildcard shell allowedTools、context fork worker allowedTools session permissions、Bash allowedTools wrapper/env/compound matching、文件工具 path-scoped allowedTools 边界、Bash 子命令上限/退出码语义、Bash substitution 风险分类、Bash 输出重定向路径护栏、Bash `find` 只读守卫、Bash parser-hardening 风险门、Bash jq/flag/malformed syntax guard、Bash readOnlyValidation 常用命令 allowlist、Bash `cd`+`git` bare repo 安全门、Bash git-internal 写入安全门、Bash bare repo cwd git 安全门、Bash sandbox original cwd git 安全门、Bash incomplete command fragment 安全门、Bash comment quote desync 安全门、Bash input redirection 安全门已落;下一步继续复制/移植/改写完整 Bash tree-sitter 安全分析器、文件权限持久化/deny/ask/UI/sandbox 合并、插件 trust gate 细粒度开关和 command/skill worker drill-in,并做前端远端来源/中间 diff/右侧预览的细颗粒 polish。
@@ -3355,7 +3364,7 @@
 3. **provider failover 策略 polish**:active saved -> saved fallbacks -> env fallback、失败原因 `context_note`、sticky fallback、状态线备用出口/冷却 chip、设置抽屉简洁健康状态/折叠明细、旧 BYOK -> ProviderService 兼容桥、provider 健康冷却、跨重启持久化、手动清冷却、保存通道启停/排序、默认/接管中状态区分、prewarm 跟随冷却排序、冷却分类退避、最近排障历史已落;下一步只剩完整高级 provider 管理页与更深的趋势/导出排障。
 4. **领域包/知识库前端 polish**:`billiards` 已从硬编码 supportContext 收到 SessionStart pack,前端选择器已读 `/api/v1/agent/packs`,`list_skills` 已支持 pack 推荐/过滤,pack prompt commands 已合并进命令池;下一步把知识库 Q&A 做成更接近 Codex/Work Buddy 的低噪来源面板和专家挂载入口。
 5. **目录级项目指令 / 长上下文 polish**:多层合并、读文件动态注入、`write_file` 首次暂停、前端 file pending 失败态、九段结构化压缩、压缩后最近文件上下文恢复、大工具结果落盘、写入/回滚后刷新最近文件快照、压缩恢复时带回子目录项目指令、显式 `list_project_instructions` scope 查询、前端 scope 卡片与状态线规则 chip 已落;下一步可补更细的规则 scope 过滤/跳转。
-6. **媒体真迁移/旧 Python 分批退场**:旧 Python 从现在起按“TS/Node/native 等价链路已接住、调用点已切换、测试/smoke 已覆盖”逐块删除。优先删离线脚本和文档生成器,再删已有 TS 入口覆盖的服务边角,最后才动生图/生视频/语音/OCR/ffmpeg 这些真实运行链路。TS 文生图、参考图、改图、门店品牌包注入、Seedream/GPT 生图/改图自动路由、OpenAI 失败二跳 Seedream、Seedream 短限流重试、`print_mode` 原始二维码 ffmpeg 叠层、QR 源图质检/边缘保真叠层、QR 声明内容重建、PNG/JPEG QR 视觉解码重建、Logo 左上安全区 ffmpeg 叠层、硬文字待核对元数据、Seedance 生视频网关直连、视频工作台本地方案/窄版 ffmpeg 出片、基础响度标准化已落,但 `poster_service` 的中文硬文字 OCR 真识别/自动重出、任意格式/模糊二维码增强识别,以及 `video_edit/*` 的 VLM 挑高光/ASR/音乐自动铺底/健康体检/模板离屏渲染仍需 TS/native sidecar 替代;不能把本地 fallback 当完整智能创作完成。
+6. **媒体真迁移/旧 Python 分批退场**:旧 Python 从现在起按“TS/Node/native 等价链路已接住、调用点已切换、测试/smoke 已覆盖”逐块删除。优先删离线脚本和文档生成器,再删已有 TS 入口覆盖的服务边角,最后才动生图/语音/OCR/ffmpeg 这些真实运行链路。TS 文生图、参考图、改图、门店品牌包注入、Seedream/GPT 生图/改图自动路由、OpenAI 失败二跳 Seedream、Seedream 短限流重试、`print_mode` 原始二维码 ffmpeg 叠层、QR 源图质检/边缘保真叠层、QR 声明内容重建、PNG/JPEG QR 视觉解码重建、Logo 左上安全区 ffmpeg 叠层、硬文字待核对元数据、视频工作台本地方案/窄版 ffmpeg 出片、基础响度标准化已落,但 `poster_service` 的中文硬文字 OCR 真识别/自动重出、任意格式/模糊二维码增强识别,以及 `video_edit/*` 的 VLM 挑高光/ASR/音乐自动铺底/健康体检/模板离屏渲染仍需 TS/native sidecar 替代;不能把本地 fallback 当完整智能创作完成。
 7. **店铺资料库语义升级**:TS 已有本地索引、`search_store_docs`、BM25/短语/文件名混合关键词排名、无依赖语义扩展、RRF 融合、前端来源卡片、店脑记忆相关性注入与老化提醒;若要更接近 Python bge 效果,下一步接本地 embedding 或网关 embedding,继续用 RRF/融合保留关键词精确命中,并保留 source_type 隔离。
 8. **语音/Office 打包验证**:TS 已能处理 `/voice/transcribe` 与 `.docx/.pptx/.xlsx` 基础编辑;sidecar macOS arm64 / Windows x64 交叉构建已过;`smoke:native` 默认会把未安装的 `sharp/@huggingface/transformers/smart-whisper` 标 skipped,严格 native 验收需先安装依赖并设置 `NATIVE_SMOKE_REQUIRE_DEPS=1`;删 Python 前仍要确认 whisper runner/model/ffmpeg/OCR/font/native 资产在 macOS/Windows 安装包里可发现、可执行,并跑真实音频 smoke。
 9. **MCP/AskUser 高级交互 polish**:结构化表单/URL 安全打开/preview、多选视觉、表单回答用户气泡脱 JSON 已落;后续只剩 URL 打开的桌面原生外链桥和更细的控件 polish。

@@ -92,7 +92,6 @@ function defaultByok(): JsonObject {
     agent_auto_spend_limit: 3,
     bundled_model_label: 'MiMo v2.5',
     bundled_image_label: '内置生图',
-    bundled_video_label: '内置视频',
   }
 }
 

@@ -64,23 +64,23 @@ def test_runner_run_failure_marks_error(monkeypatch):
         sid = uuid.uuid4()
         async with Session() as db:
             await _seed(db, sid)
-            job = await mj.create_job(db, sid, "i2v")
+            job = await mj.create_job(db, sid, "video_render")
             jid = str(job.id)
 
         async def work_fn(progress):
-            raise RuntimeError("Ark 崩了")
+            raise RuntimeError("渲染崩了")
 
         await runner._run(jid, sid, work_fn)
 
         async with Session() as db:
             got = await mj.get_job(db, jid, sid)
-            assert got.status == "error" and "Ark 崩了" in (got.error or "")
+            assert got.status == "error" and "渲染崩了" in (got.error or "")
 
     asyncio.run(main())
 
 
 # ────────────────────────────── F-10：on_done 完成回调 ──────────────────────────────
-# generate_video/render_video 提交后立即返回，真正做完(成功/失败)靠这个钩子回灌通知/轨迹；
+# video_render 提交后立即返回，真正做完(成功/失败)靠这个钩子回灌通知/轨迹；
 # 钩子对 studio.py/video_edit.py 现有调用点是可选的(不传=None=零行为变化，上面几个测试已覆盖)。
 
 def test_runner_on_done_called_after_success(monkeypatch):
@@ -93,7 +93,7 @@ def test_runner_on_done_called_after_success(monkeypatch):
         sid = uuid.uuid4()
         async with Session() as db:
             await _seed(db, sid)
-            job = await mj.create_job(db, sid, "video")
+            job = await mj.create_job(db, sid, "video_render")
             jid = str(job.id)
 
         async def work_fn(progress):
@@ -125,11 +125,11 @@ def test_runner_on_done_called_after_failure(monkeypatch):
         sid = uuid.uuid4()
         async with Session() as db:
             await _seed(db, sid)
-            job = await mj.create_job(db, sid, "video")
+            job = await mj.create_job(db, sid, "video_render")
             jid = str(job.id)
 
         async def work_fn(progress):
-            raise RuntimeError("Ark 超时")
+            raise RuntimeError("渲染超时")
 
         seen = {}
 
@@ -143,7 +143,7 @@ def test_runner_on_done_called_after_failure(monkeypatch):
 
         assert seen["status"] == "error"
         assert seen["result"] is None
-        assert "Ark 超时" in seen["error"]
+        assert "渲染超时" in seen["error"]
 
     asyncio.run(main())
 
@@ -159,7 +159,7 @@ def test_runner_on_done_exception_does_not_break_run(monkeypatch):
         sid = uuid.uuid4()
         async with Session() as db:
             await _seed(db, sid)
-            job = await mj.create_job(db, sid, "video")
+            job = await mj.create_job(db, sid, "video_render")
             jid = str(job.id)
 
         async def work_fn(progress):

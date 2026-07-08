@@ -6,6 +6,7 @@ import asyncio
 import uuid
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 import models  # noqa: F401
@@ -18,6 +19,19 @@ from models.user import User
 from services import media_jobs_service as mj
 from services import media_jobs_runner as runner
 import api.v1.studio as studio
+
+
+@pytest.fixture(autouse=True)
+def run_studio_media_jobs_inline(monkeypatch):
+    """Studio route tests assert parameter threading and final job state; runner timing is tested separately."""
+    async def submit_inline(store_id, kind, work_fn, params=None, conversation_id=None, on_done=None):
+        async with runner.async_session() as db:
+            job = await mj.create_job(db, store_id, kind, params=params, conversation_id=conversation_id)
+            job_id = str(job.id)
+        await runner._run(job_id, store_id, work_fn, on_done=on_done)
+        return job_id
+
+    monkeypatch.setattr(studio.media_jobs_runner, "submit", submit_inline)
 
 
 async def _seed(db, sid):
@@ -681,70 +695,6 @@ def test_studio_generate_threads_print_mode(monkeypatch):
     asyncio.run(main())
 
 
-# ── 阶段4 /studio/i2v 图生视频 ──
-
-def test_studio_i2v_requires_first_frame():
-    async def main():
-        body = studio.StudioI2vIn(first_frame="")
-        try:
-            await studio.studio_i2v(body, user=SimpleNamespace(id=uuid.uuid4()),
-                                    store=SimpleNamespace(id=uuid.uuid4()), db=None)
-            assert False, "没首帧图应报错"
-        except AIServiceError:
-            pass
-    asyncio.run(main())
-
-
-def test_studio_i2v_blocks_redline():
-    async def main():
-        body = studio.StudioI2vIn(first_frame="/uploads/posters/x.jpg", prompt="加上性交易上门服务字样")
-        try:
-            await studio.studio_i2v(body, user=SimpleNamespace(id=uuid.uuid4()),
-                                    store=SimpleNamespace(id=uuid.uuid4()), db=None)
-            assert False, "红线内容应被拦"
-        except AIServiceError:
-            pass
-    asyncio.run(main())
-
-
-def test_studio_i2v_submits_video_job(monkeypatch):
-    async def main():
-        eng = create_async_engine("sqlite+aiosqlite:///:memory:")
-        async with eng.begin() as c:
-            await c.run_sync(Base.metadata.create_all)
-        Session = async_sessionmaker(eng, expire_on_commit=False)
-        monkeypatch.setattr(runner, "async_session", Session)
-        monkeypatch.setattr(studio, "async_session", Session)
-        sid = uuid.uuid4()
-        async with Session() as db:
-            uid = await _seed(db, sid)
-
-        async def fake_video(*, db, store, user_id, prompt, ratio="9:16", duration=5,
-                             first_frame=None, generate_audio=False, image_refs=None, **kw):
-            assert first_frame == "/uploads/posters/x.jpg"      # 把这张图动起来
-            assert generate_audio is True                       # 配音透传
-            assert image_refs == ["/uploads/a.jpg"]             # 多图锁人物透传
-            return {"video_url": "/uploads/videos/v.mp4", "generation_id": uuid.uuid4(), "conversation_id": "c1"}
-        monkeypatch.setattr(studio.video_service, "generate_video", fake_video)
-
-        body = studio.StudioI2vIn(first_frame="/uploads/posters/x.jpg", prompt="自然地动起来",
-                                  generate_audio=True, image_refs=["/uploads/a.jpg"])
-        out = await studio.studio_i2v(body, user=SimpleNamespace(id=uid),
-                                      store=SimpleNamespace(id=sid), db=None)
-        jid = out["job_id"]
-        got = None
-        for _ in range(100):
-            await asyncio.sleep(0.01)
-            async with Session() as db:
-                got = await mj.get_job(db, jid, sid)
-            if got and got.status in ("done", "error"):
-                break
-        assert got is not None and got.status == "done", (got.status, got.error)
-        assert got.result["urls"] == ["/uploads/videos/v.mp4"]
-        assert got.result["is_video"] is True
-    asyncio.run(main())
-
-
 # ── 阶段5 /studio/compose 多镜合成(路径解析,真 ffmpeg 在前端 Electron) ──
 
 def test_studio_compose_resolves_ordered_paths(monkeypatch, tmp_path):
@@ -857,7 +807,7 @@ def test_studio_storyboard_fallback_line_split(monkeypatch):
     asyncio.run(main())
 
 
-# ── E1-C2 修复(review Finding 1)：GET /studio/generation/{id} 做成视频 handoff 用的只读端点 ──
+# ── GET /studio/generation/{id} 图片/视频成品只读端点 ──
 #
 # ⚠️ generations 表受 core/tenant.py 的自动租户过滤保护(无租户上下文 fail-safe 清空结果)——真实
 # HTTP 请求里租户上下文由 `get_current_store` 依赖(api/deps.py:50 `set_tenant(store.id)`)在进

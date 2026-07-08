@@ -62,7 +62,7 @@ export interface AgentStreamHandlers {
   onReasoning?: (chunk: string) => void;
   onToolCall?: (tool: string, args: Record<string, unknown>, id?: string) => void;
   // imageGenerationIds：E1-C2・生图工具(make_poster/generate_image)这批图真实的 Generation.id
-  // （做成视频 openWorkbench({fromGen}) handoff 要用；本轮对话自己的 agent-chat generation_id 不是这个）。
+  // （用于打开/追踪这批图片成品；本轮对话自己的 agent-chat generation_id 不是这个）。
   onToolResult?: (tool: string, content: string, id?: string, knowledgeUsed?: string[], imageGenerationIds?: string[]) => void;
   // 命令边跑边显示：工具执行中实时推来的输出片段（chunk），按 id 累进对应步骤的终端块。
   onToolProgress?: (tool: string, id: string | undefined, chunk: string, stream?: string) => void;
@@ -904,12 +904,7 @@ class ApiClient {
     return this.request<{ job_id: string }>("POST", "/api/v1/studio/edit", input);
   }
 
-  // 阶段4 生成工作室：把一张图做成视频（可配音/多图锁人物/首尾帧），异步出片，返回 job_id
-  studioI2v(input: { first_frame: string; prompt?: string; source_generation_id?: string; ratio?: string; duration?: number; generate_audio?: boolean; image_refs?: string[]; conversation_id?: string | null }) {
-    return this.request<{ job_id: string }>("POST", "/api/v1/studio/i2v", input);
-  }
-
-  // E1-C2・openWorkbench handoff：视频面板拿着轻标识 fromGen（generation id）换成真实图片 URL 当 i2v 首帧
+  // 按 id 查一张图片成品的地址，供画布/最近成品等轻量跳转使用。
   studioGetGeneration(id: string) {
     return this.request<{ url: string; ratio: string; is_video: boolean }>(
       "GET", `/api/v1/studio/generation/${encodeURIComponent(id)}`);

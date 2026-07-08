@@ -40,20 +40,3 @@ test('generate_image tool starts a media task in the current conversation', asyn
     rmSync(root, { recursive: true, force: true })
   }
 })
-
-test('generate_video tool requires spend approval before execution', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'media-video-tool-'))
-  try {
-    const media = new MediaJobService({ tasks: new TaskService(root), stateRoot: root })
-    const tool = createMediaTools(media).find(t => t.name === 'generate_video')
-    expect(tool?.requiresApproval).toBe(true)
-    expect(tool?.approvalClass).toBe('spend')
-    expect(tool?.forceConfirm).toBe(true)
-    const reason = tool?.approvalReasonFor?.({ description: '让这张海报动起来', duration: 5 }, {
-      workspace: new Workspace(root),
-    })
-    expect(reason?.what).toContain('5 秒')
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})

@@ -852,13 +852,6 @@ export function DesktopChatShell({
   const onRefine = (kind: PreviewItem["kind"]) => {
     setInput(kind === "poster" ? "把刚才那张海报改成：" : "把刚才这条改成：");
   };
-  // R4(owner 6-30)：不再让 agent 就地生视频(长 prompt 走 chat.send)，改成带图跳进工作台的视频面板——
-  // 和生成工作室"做成视频"走同一条 openWorkbench handoff。非桌面(web，没有 window.electron)降级成提示。
-  const onMakeVideo = (item: Extract<PreviewItem, { kind: "poster" }>) => {
-    if (!item.generationId) { toast.error("这张图还没归档好，稍后再试一下。"); return; }
-    if (!electron?.openWorkbench) { toast.error("做成视频需要在桌面版里操作。"); return; }
-    void electron.openWorkbench("video", { fromGen: item.generationId });
-  };
   // 结果动作：把一段普通回答直接收束成门店员工能照着干的任务清单。
   const onMakeTask = useCallback((content: string) => {
     if (chat.generating) return;
@@ -1091,7 +1084,7 @@ export function DesktopChatShell({
     <>
     <DesktopShell
       sidebar={sidebarEl}
-      preview={preview ? <DesktopPreviewPanel item={preview} onClose={() => setPreview(null)} onRefine={onRefine} onRefineSelection={onRefineSelection} onFinalize={onFinalize} onMakeVideo={onMakeVideo} /> : undefined}
+      preview={preview ? <DesktopPreviewPanel item={preview} onClose={() => setPreview(null)} onRefine={onRefine} onRefineSelection={onRefineSelection} onFinalize={onFinalize} /> : undefined}
     >
       <div className="app-drag app-titlebar-safe-right flex h-[44px] items-center gap-2 border-b border-black/[0.08] px-5 dark:border-white/[0.06]">
         <span className="h-1.5 w-1.5 rounded-full bg-[#10a37f]" />

@@ -2,7 +2,7 @@
 
 背景：这几个参数桌面版下经【Agent 工具】传入，工具入参是【模型自己填的】——旧实现在 DESKTOP_LOCAL 下
 对"uploads 沙箱外的绝对路径"来者不拒（Path(path).read_bytes()），等于给了模型/prompt 注入一个
-"读任意本机文件、把内容发给外部生图 API"的后门。修法对齐 video_service._resolve_first_frame 的
+    "读任意本机文件、把内容发给外部生图 API"的后门。修法使用
 allow_paths 校验模式：沙箱外绝对路径必须 ∈ 老板当场经 OS 文件选择器选定的 allowed_paths，否则越界拒绝。
 
 只单测抽出来的纯函数（_resolve_allowed_paths / _resolve_agent_selected_bytes），不拉全套

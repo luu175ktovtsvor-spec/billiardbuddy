@@ -37,7 +37,7 @@ async def test_stream_loop_friendly_timeout_on_model_stall(_tiny_budget):
     t0 = time.monotonic()
     events = []
     async for ev in run_agent_loop_stream(
-        system_prompt="s", history=[], user_message="把这张图做成视频",
+        system_prompt="s", history=[], user_message="帮我处理这张图",
         registry=reg, provider=_HangingProvider(), model="hang",
     ):
         events.append(ev)
@@ -55,7 +55,7 @@ async def test_sync_loop_friendly_timeout_on_model_stall(_tiny_budget):
     reg = ToolRegistry()
     t0 = time.monotonic()
     res = await run_agent_loop(
-        system_prompt="s", history=[], user_message="把这张图做成视频",
+        system_prompt="s", history=[], user_message="帮我处理这张图",
         registry=reg, provider=_HangingProvider(), model="hang",
     )
     elapsed = time.monotonic() - t0

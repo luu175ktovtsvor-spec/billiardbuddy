@@ -180,7 +180,7 @@ function createWindow(opts = {}) {
   const url = new URL(baseUrl);
   if (opts.route) url.pathname = opts.route;             // 生成工作室等独立路由窗口
   if (opts.workbenchId) url.searchParams.set("workbench", opts.workbenchId);
-  // E1-C1：openWorkbench 带参打开——mode 拼成 ?panel=image|video，payload 是轻标识(如 { fromGen })，
+  // E1-C1：openWorkbench 带参打开——mode 拼成 ?panel=image|video，payload 是轻标识(如 { sourceId })，
   // 逐个键平铺进 query（不 JSON 塞大对象/图 bytes），容器页首次挂载时用 useSearchParams 读初始面板。
   if (opts.workbenchMode) url.searchParams.set("panel", opts.workbenchMode);
   if (opts.workbenchPayload && typeof opts.workbenchPayload === "object") {
@@ -546,7 +546,7 @@ function focusOrOpenByRoute(route, createOpts = {}, onFocusExisting) {
 
 // E1-C1：工作台单例窗口(/dashboard/workbench，图片/视频双面板 + 模板占位)。已开就 focus + 推
 // workbench:navigate 事件切面板/带 payload；没开就带 mode/payload 拼进 URL query 新开一扇。
-// payload 只能是轻标识(如 { fromGen })，真图/大对象一律不进这条通路(容器页按 id 自己去取)。
+// payload 只能是轻标识(如 { sourceId })，真图/大对象一律不进这条通路(容器页按 id 自己去取)。
 function openWorkbench(mode, payload) {
   return focusOrOpenByRoute(
     "/dashboard/workbench",

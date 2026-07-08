@@ -45,7 +45,7 @@ IMAGE_PROVIDER_CATALOG: list[dict] = [
     {
         "name": "火山方舟·即梦 Seedream", "kind": "openai_compatible",
         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-        # ⚠️ model id 必须带日期后缀,无日期(如 doubao-seedream-4-5)=NotFound(同 Seedance 视频坑)。官方文档核实 2026-06-30。
+        # ⚠️ model id 必须带日期后缀,无日期(如 doubao-seedream-4-5)=NotFound。官方文档核实 2026-06-30。
         # ⚠️ 图生图≠OpenAI multipart images.edit:Seedream 走同一个 /images/generations,JSON 里传 image(base64 data-uri 或 url)
         #    + sequential_image_generation,详见 seedream_image.py。文生图才与 OpenAI 兼容、可复用 OpenAIImageProvider。
         "models": [

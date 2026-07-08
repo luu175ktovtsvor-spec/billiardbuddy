@@ -120,7 +120,7 @@ export function SettingsDrawer({
   // 文字模型
   const [baseUrl, setBaseUrl] = useState("");
   // 内置模型展示名（后端配置驱动，换模型时跟着变）
-  const [labels, setLabels] = useState({ text: "MiMo V2.5", image: "GPT Image-2", video: "Seedance 2.0" });
+  const [labels, setLabels] = useState({ text: "MiMo V2.5", image: "GPT Image-2" });
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [keyMask, setKeyMask] = useState("");
@@ -185,7 +185,6 @@ export function SettingsDrawer({
         setLabels({
           text: b.value.bundled_model_label || "MiMo V2.5",
           image: b.value.bundled_image_label || "GPT Image-2",
-          video: b.value.bundled_video_label || "Seedance 2.0",
         });
         setBaseUrl(b.value.base_url || "");
         setModel(b.value.model || "");

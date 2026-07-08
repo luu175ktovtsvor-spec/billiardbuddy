@@ -36,7 +36,7 @@ _HTTP_TIMEOUT = 10.0
 # 生产：网关地址/令牌，真高德 key 全在服务器 gw.env，客户端只带可吊销的 app 令牌。
 _GATEWAY_URL = os.environ.get("QF_GATEWAY_URL", "").rstrip("/")   # 如 http://<网关IP>/gw/v1
 _GATEWAY_TOKEN = os.environ.get("QF_GATEWAY_TOKEN", "")
-_GATEWAY_PATH_PREFIX = "/amap"   # gateway/app.py 的 /v1/amap/{path:path} 通用转发路由
+_GATEWAY_PATH_PREFIX = "/amap"   # gateway/app.ts 的 /v1/amap/{path:path} 通用转发路由
 
 # dev-only 后门：仅本机联调用，直连高德官方端点。生产/客户盒子绝不能这么配。
 _DEV_KEY_ENV = "AMAP_API_KEY"

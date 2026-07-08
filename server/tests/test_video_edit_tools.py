@@ -63,17 +63,20 @@ async def _seed_store(db, sid):
     return u.id
 
 
-async def _poll_job_done(sid, jid, tries=3000):
+async def _poll_job_done(sid, jid, tries=6000):
     # E4④两遍法 loudnorm(先测真实响度再精确校正)比原来的单遍近似多一趟 ffmpeg,真实渲染耗时
-    # 变长——原来 500 次*0.01s=5s 的轮询预算,在整个"video"测试集一起跑、机器负载重时偶发不够,
-    # 放宽到 30s 只是给足真实渲染时间,不改变"失败判定"本身(仍是拿到 done/error 就立刻退出,
-    # 正常情况几秒内就完成,这只是兜底上限,不会拖慢正常测试速度)。
+    # 变长——原来 500 次*0.01s=5s 的轮询预算,在整个"video"测试集一起跑、机器负载重时偶发不够。
+    # 终态落库后 on_done 还会继续回灌 transcript/通知,所以看到 done/error 后再等后台 task 收尾,
+    # 避免测试抢在通知写入前断言。
     got = None
     for _ in range(tries):
         await asyncio.sleep(0.01)
         async with runner.async_session() as db:
             got = await mj.get_job(db, jid, sid)
         if got and got.status in ("done", "error"):
+            pending = [t for t in list(runner._tasks) if not t.done()]
+            if pending:
+                await asyncio.wait(pending, timeout=5)
             break
     return got
 

@@ -82,10 +82,9 @@ async function shot(win, name, expectation, dom, machinePass) {
     变体小图: await win.locator('main img[alt^="第"]').count().catch(() => 0),
     操控台_基于这张改: await win.locator("text=基于这张改").count().catch(() => 0),
     操控台_圈一块局部改: await win.locator('button:has-text("圈一块局部改")').count().catch(() => 0),
-    操控台_做成视频: await win.locator('button:has-text("做成视频")').count().catch(() => 0),
   };
-  await shot(win, "C2_真出图+变体挑选+操控台", "真 key 出 2 版海报:中间显示选中大图 + 下方变体小图条(出了N版·可点挑),右侧操控台出现 基于这张改/圈一块局部改/做成视频。",
-    c2, c2.成图 && c2.变体挑选条 > 0 && c2.操控台_圈一块局部改 > 0 && c2.操控台_做成视频 > 0);
+  await shot(win, "C2_真出图+变体挑选+操控台", "真 key 出 2 版海报:中间显示选中大图 + 下方变体小图条(出了N版·可点挑),右侧操控台出现 基于这张改/圈一块局部改。",
+    c2, c2.成图 && c2.变体挑选条 > 0 && c2.操控台_圈一块局部改 > 0);
 
   // C3: 进局部改图 → konva 蒙版画布加载真图
   if (imaged) {

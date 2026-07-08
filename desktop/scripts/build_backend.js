@@ -58,11 +58,8 @@ const hiddenImports = [
   "pypdf", "docx", "pptx", "lxml", "lxml.etree",
   // ── 本会话新增的 agent 模块里【只懒加载、PyInstaller 静态分析可能漏】的（top-level 导入的已自动收）
   "services.agent.output_styles", "services.agent.hooks_config", "services.agent.im_telegram",
-  // ── 生视频(火山方舟 Seedance)：generate_video 工具里【懒加载】services.video_service → ark_video，
-  //    无任何顶层导入路径，PyInstaller 静态分析必漏 → 不补这里则打包后点"生成视频"运行时 ModuleNotFound。
-  "services.video_service", "services.ai.providers.ark_video",
   // ── 场景方案成品(开业/会员卡/比赛)：make_scene_plan 工具里【懒加载】services.scene_plan.render，
-  //    保守起见连同 manifest 一起显式列(与上面 video_service 同款风险，见 D-Task-7)。
+  //    保守起见连同 manifest 一起显式列(见 D-Task-7)。
   "services.scene_plan.manifest", "services.scene_plan.render",
 ];
 
