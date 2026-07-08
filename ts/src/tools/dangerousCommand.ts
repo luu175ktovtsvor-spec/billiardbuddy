@@ -467,6 +467,28 @@ const GIT_READ_ONLY_COMMANDS: Record<string, GitReadOnlyCommandConfig> = {
       '--all': 'none',
     },
   },
+  'git rev-parse': {
+    safeFlags: {
+      '--verify': 'none',
+      '--short': 'string',
+      '--abbrev-ref': 'none',
+      '--symbolic': 'none',
+      '--symbolic-full-name': 'none',
+      '--show-toplevel': 'none',
+      '--show-cdup': 'none',
+      '--show-prefix': 'none',
+      '--git-dir': 'none',
+      '--git-common-dir': 'none',
+      '--absolute-git-dir': 'none',
+      '--show-superproject-working-tree': 'none',
+      '--is-inside-work-tree': 'none',
+      '--is-inside-git-dir': 'none',
+      '--is-bare-repository': 'none',
+      '--is-shallow-repository': 'none',
+      '--is-shallow-update': 'none',
+      '--path-prefix': 'none',
+    },
+  },
   'git rev-list': {
     safeFlags: {
       ...GIT_REF_SELECTION_FLAGS,
