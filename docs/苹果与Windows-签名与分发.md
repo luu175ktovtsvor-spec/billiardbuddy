@@ -76,7 +76,7 @@
 ## 5. 当前状态 + 待办
 
 - **当前打包配置 `desktop/package.json`:`"identity": null`、`hardenedRuntime:false` = 未签名**。Mac/Win 现在都会弹安全警告。
-- **图标**:已修成 macOS 圆角(见 `desktop/scripts/make_rounded_icon.py`),Mac/Win 都用;但要等**重新打包重装**才看得到圆角(已安装的旧包仍是方的)。
+- **图标**:已修成 macOS 圆角(见 `desktop/scripts/make_rounded_icon.mjs`,执行 `cd desktop && npm run icon:rounded`),Mac/Win 都用;但要等**重新打包重装**才看得到圆角(已安装的旧包仍是方的)。
 - **真要签名时,接进 electron-builder 的位置(我能帮你弄,等你拿到证书):**
   - **Mac**(在 `package.json` 的 `"mac"` 段):`hardenedRuntime:true`、`identity:"Developer ID Application: 你的名字 (TEAMID)"`、`notarize:{ teamId:"你的TEAMID" }`;打包时给环境变量 `CSC_LINK`(证书 .p12 路径)/`CSC_KEY_PASSWORD`、`APPLE_ID`/`APPLE_APP_SPECIFIC_PASSWORD`/`APPLE_TEAM_ID`(公证用)。*(确切字段以打包时 electron-builder 25 官方文档为准。)*
   - **Win**(`"win"` 段):2023 后私钥在硬件令牌/云 HSM,不能简单指 .pfx,得走自定义签名钩子或 Azure Trusted Signing 集成;比 Mac 麻烦,建议直接用 Artifact Signing 的官方 Action。
