@@ -39,7 +39,7 @@ DESKTOP_APP_URL=http://localhost:3000 DESKTOP_DEVTOOLS=1 npm run dev
 
 ```bash
 # ① 后端 → resources/backend/billiards_backend/（PyInstaller onedir，含加密知识库 prompts.enc）
-#    脚本会自动：生成一次性 Fernet key → 加密 prompts/ 成 prompts.enc → 把 key 烘进入口 → 打包 → 复位入口
+#    脚本会自动：生成一次性 Fernet key → 用 Node 加密 prompts/ 成 prompts.enc → 把 key 烘进入口 → 打包 → 复位入口
 cd server && uv add --dev pyinstaller   # 仅首次
 cd desktop && npm run build:backend
 
@@ -58,7 +58,7 @@ Next.js standalone 的 rewrites 把 `/api/v1/*`、`/uploads/*` 反代到后端�
 可用 env 改：`DESKTOP_BACKEND_PORT` / `DESKTOP_FRONTEND_PORT`（改了要同步重打前端，反代目标是烘进 server.js 的）。
 
 **护城河**：安装包里【没有】明文 `prompts/` YAML，只有加密块 `prompts.enc`（运行时用烘进可执行的 key 解密，
-日志会打印「知识库已加载：171 模板（来源：加密块）」）。`server/prompts.enc` 每次构建用新 key 重生，已 gitignore 不入库。
+日志会打印「知识库已加载：N 模板（来源：加密块）」；当前 prompt YAML 为 159 个模板。`server/prompts.enc` 每次构建用新 key 重生，已 gitignore 不入库。
 
 **Windows 包**：macOS 上【产不了】原生 `.exe`（electron-builder 的 nsis 需 Windows 机或 wine）。
 Win 包请在 Windows 机器上执行同样三步（`npm run build:backend` 会用本机 PyInstaller 产 `.exe`，
