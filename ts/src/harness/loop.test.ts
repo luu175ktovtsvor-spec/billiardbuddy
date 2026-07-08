@@ -72,6 +72,30 @@ test('runs a multi-step tool task: think -> tool -> feed back -> think -> final'
   expect(second.messages.every(m => m.role === 'user' || m.role === 'assistant')).toBe(true)
 })
 
+test('已中止的信号:已下发工具短路成取消态、不执行', async () => {
+  const controller = new AbortController()
+  controller.abort()
+  const spy = { ran: false }
+  const reg = new ToolRegistry([{
+    name: 'do_thing',
+    description: '',
+    inputSchema: { type: 'object' },
+    isReadOnly: false,
+    async execute() { spy.ran = true; return 'done' },
+  }])
+  const events = await collect(runAgentLoop({
+    model: scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: 'a', name: 'do_thing', input: {} }] },
+      { kind: 'final', text: 'x' },
+    ]),
+    registry: reg, workspace: new Workspace(root), systemPrompt: 'SYS', userMessage: 'x',
+    permissionMode: 'full', signal: controller.signal,
+  }))
+  expect(spy.ran).toBe(false)
+  const tr = events.find(e => e.type === 'tool_result')
+  expect(tr && tr.type === 'tool_result' && tr.output).toContain('已取消')
+})
+
 test('runs file execution scenario through TS agent loop with edits, spreadsheet updates and shell verification', async () => {
   writeFileSync(join(root, '朋友圈草稿.md'), [
     '# 周末充值活动朋友圈',
