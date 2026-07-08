@@ -70,6 +70,9 @@ type ReadOnlyCommandConfig = {
   safeFlags: Record<string, FlagArgKind>
   respectsDoubleDash?: boolean
 }
+type GitReadOnlyCommandConfig = ReadOnlyCommandConfig & {
+  isDangerous?: (args: string[]) => boolean
+}
 
 const XARGS_SAFE_FLAGS: Record<string, FlagArgKind> = {
   '-I': '{}',
@@ -85,6 +88,281 @@ const XARGS_SAFE_FLAGS: Record<string, FlagArgKind> = {
   '-d': 'char',
 }
 const SAFE_XARGS_TARGET_COMMANDS = new Set(['echo', 'printf', 'wc', 'grep', 'head', 'tail'])
+
+const GIT_REF_SELECTION_FLAGS: Record<string, FlagArgKind> = {
+  '--all': 'none',
+  '--branches': 'none',
+  '--tags': 'none',
+  '--remotes': 'none',
+}
+const GIT_DATE_FILTER_FLAGS: Record<string, FlagArgKind> = {
+  '--since': 'string',
+  '--after': 'string',
+  '--until': 'string',
+  '--before': 'string',
+}
+const GIT_LOG_DISPLAY_FLAGS: Record<string, FlagArgKind> = {
+  '--oneline': 'none',
+  '--graph': 'none',
+  '--decorate': 'none',
+  '--no-decorate': 'none',
+  '--date': 'string',
+  '--relative-date': 'none',
+}
+const GIT_COUNT_FLAGS: Record<string, FlagArgKind> = {
+  '--max-count': 'number',
+  '-n': 'number',
+}
+const GIT_STAT_FLAGS: Record<string, FlagArgKind> = {
+  '--stat': 'none',
+  '--numstat': 'none',
+  '--shortstat': 'none',
+  '--name-only': 'none',
+  '--name-status': 'none',
+}
+const GIT_COLOR_FLAGS: Record<string, FlagArgKind> = {
+  '--color': 'none',
+  '--no-color': 'none',
+}
+const GIT_PATCH_FLAGS: Record<string, FlagArgKind> = {
+  '--patch': 'none',
+  '-p': 'none',
+  '--no-patch': 'none',
+  '--no-ext-diff': 'none',
+  '-s': 'none',
+}
+const GIT_AUTHOR_FILTER_FLAGS: Record<string, FlagArgKind> = {
+  '--author': 'string',
+  '--committer': 'string',
+  '--grep': 'string',
+}
+
+const GIT_READ_ONLY_COMMANDS: Record<string, GitReadOnlyCommandConfig> = {
+  'git shortlog': {
+    safeFlags: {
+      ...GIT_REF_SELECTION_FLAGS,
+      ...GIT_DATE_FILTER_FLAGS,
+      '-s': 'none',
+      '--summary': 'none',
+      '-n': 'none',
+      '--numbered': 'none',
+      '-e': 'none',
+      '--email': 'none',
+      '-c': 'none',
+      '--committer': 'none',
+      '--group': 'string',
+      '--format': 'string',
+      '--no-merges': 'none',
+      '--author': 'string',
+    },
+  },
+  'git reflog': {
+    safeFlags: {
+      ...GIT_LOG_DISPLAY_FLAGS,
+      ...GIT_REF_SELECTION_FLAGS,
+      ...GIT_DATE_FILTER_FLAGS,
+      ...GIT_COUNT_FLAGS,
+      ...GIT_AUTHOR_FILTER_FLAGS,
+    },
+    isDangerous: args => {
+      const dangerous = new Set(['expire', 'delete', 'exists'])
+      for (const token of args) {
+        if (!token || token.startsWith('-')) continue
+        return dangerous.has(token)
+      }
+      return false
+    },
+  },
+  'git stash list': {
+    safeFlags: {
+      ...GIT_LOG_DISPLAY_FLAGS,
+      ...GIT_REF_SELECTION_FLAGS,
+      ...GIT_COUNT_FLAGS,
+    },
+  },
+  'git stash show': {
+    safeFlags: {
+      ...GIT_STAT_FLAGS,
+      ...GIT_COLOR_FLAGS,
+      ...GIT_PATCH_FLAGS,
+      '--word-diff': 'none',
+      '--word-diff-regex': 'string',
+      '--diff-filter': 'string',
+      '--abbrev': 'number',
+    },
+  },
+  'git blame': {
+    safeFlags: {
+      ...GIT_COLOR_FLAGS,
+      '-L': 'string',
+      '--porcelain': 'none',
+      '-p': 'none',
+      '--line-porcelain': 'none',
+      '--incremental': 'none',
+      '--root': 'none',
+      '--show-stats': 'none',
+      '--show-name': 'none',
+      '--show-number': 'none',
+      '-n': 'none',
+      '--show-email': 'none',
+      '-e': 'none',
+      '-f': 'none',
+      '--date': 'string',
+      '-w': 'none',
+      '--ignore-rev': 'string',
+      '--ignore-revs-file': 'string',
+      '-M': 'none',
+      '-C': 'none',
+      '--score-debug': 'none',
+      '--abbrev': 'number',
+      '-s': 'none',
+      '-l': 'none',
+      '-t': 'none',
+    },
+  },
+  'git merge-base': {
+    safeFlags: {
+      '--is-ancestor': 'none',
+      '--fork-point': 'none',
+      '--octopus': 'none',
+      '--independent': 'none',
+      '--all': 'none',
+    },
+  },
+  'git rev-list': {
+    safeFlags: {
+      ...GIT_REF_SELECTION_FLAGS,
+      ...GIT_DATE_FILTER_FLAGS,
+      ...GIT_COUNT_FLAGS,
+      ...GIT_AUTHOR_FILTER_FLAGS,
+      '--count': 'none',
+      '--reverse': 'none',
+      '--first-parent': 'none',
+      '--ancestry-path': 'none',
+      '--merges': 'none',
+      '--no-merges': 'none',
+      '--min-parents': 'number',
+      '--max-parents': 'number',
+      '--no-min-parents': 'none',
+      '--no-max-parents': 'none',
+      '--skip': 'number',
+      '--max-age': 'number',
+      '--min-age': 'number',
+      '--walk-reflogs': 'none',
+      '--oneline': 'none',
+      '--abbrev-commit': 'none',
+      '--pretty': 'string',
+      '--format': 'string',
+      '--abbrev': 'number',
+      '--full-history': 'none',
+      '--dense': 'none',
+      '--sparse': 'none',
+      '--source': 'none',
+      '--graph': 'none',
+    },
+  },
+  'git describe': {
+    safeFlags: {
+      '--tags': 'none',
+      '--match': 'string',
+      '--exclude': 'string',
+      '--long': 'none',
+      '--abbrev': 'number',
+      '--always': 'none',
+      '--contains': 'none',
+      '--first-match': 'none',
+      '--exact-match': 'none',
+      '--candidates': 'number',
+      '--dirty': 'none',
+      '--broken': 'none',
+    },
+  },
+  'git cat-file': {
+    safeFlags: {
+      '-t': 'none',
+      '-s': 'none',
+      '-p': 'none',
+      '-e': 'none',
+      '--batch-check': 'none',
+      '--allow-undetermined-type': 'none',
+    },
+  },
+  'git for-each-ref': {
+    safeFlags: {
+      '--format': 'string',
+      '--sort': 'string',
+      '--count': 'number',
+      '--contains': 'string',
+      '--no-contains': 'string',
+      '--merged': 'string',
+      '--no-merged': 'string',
+      '--points-at': 'string',
+    },
+  },
+  'git worktree list': {
+    safeFlags: {
+      '--porcelain': 'none',
+      '-v': 'none',
+      '--verbose': 'none',
+      '--expire': 'string',
+    },
+  },
+  'git tag': {
+    safeFlags: {
+      '-l': 'none',
+      '--list': 'none',
+      '-n': 'number',
+      '--contains': 'string',
+      '--no-contains': 'string',
+      '--merged': 'string',
+      '--no-merged': 'string',
+      '--sort': 'string',
+      '--format': 'string',
+      '--points-at': 'string',
+      '--column': 'none',
+      '--no-column': 'none',
+      '-i': 'none',
+      '--ignore-case': 'none',
+    },
+    isDangerous: args => gitListCommandCreatesRef(args, {
+      listFlags: new Set(['-l', '--list']),
+      flagsWithArgs: new Set(['--contains', '--no-contains', '--merged', '--no-merged', '--points-at', '--sort', '--format', '-n']),
+    }),
+  },
+  'git branch': {
+    safeFlags: {
+      '-l': 'none',
+      '--list': 'none',
+      '-a': 'none',
+      '--all': 'none',
+      '-r': 'none',
+      '--remotes': 'none',
+      '-v': 'none',
+      '-vv': 'none',
+      '--verbose': 'none',
+      '--color': 'none',
+      '--no-color': 'none',
+      '--column': 'none',
+      '--no-column': 'none',
+      '--abbrev': 'number',
+      '--no-abbrev': 'none',
+      '--contains': 'string',
+      '--no-contains': 'string',
+      '--merged': 'none',
+      '--no-merged': 'none',
+      '--points-at': 'string',
+      '--sort': 'string',
+      '--show-current': 'none',
+      '-i': 'none',
+      '--ignore-case': 'none',
+    },
+    isDangerous: args => gitListCommandCreatesRef(args, {
+      listFlags: new Set(['-l', '--list']),
+      flagsWithArgs: new Set(['--contains', '--no-contains', '--points-at', '--sort']),
+      flagsWithOptionalArgs: new Set(['--merged', '--no-merged']),
+    }),
+  },
+}
 
 const READ_ONLY_COMMANDS: Record<string, ReadOnlyCommandConfig> = {
   file: {
@@ -1863,6 +2141,84 @@ function classifyDockerCommand(command: string): CommandRisk | null {
   return validateSafeFlags(tokens.slice(2), config) ? 'read' : 'outreach'
 }
 
+function classifyGitReadOnlyCommand(command: string): CommandRisk | null {
+  const tokens = tokenizeShellWords(command)
+  if (tokens[0]?.toLowerCase() !== 'git') return null
+
+  const matched = matchGitReadOnlyCommand(tokens)
+  if (!matched) return null
+  const args = tokens.slice(matched.commandTokens)
+
+  for (const token of args) {
+    if (token.includes('$')) return 'outreach'
+    if (token.includes('{') && (token.includes(',') || token.includes('..'))) return 'outreach'
+  }
+
+  if (!validateSafeFlags(args, matched.config)) return 'file'
+  if (matched.config.isDangerous?.(args)) return 'file'
+  return 'read'
+}
+
+function matchGitReadOnlyCommand(tokens: string[]): { config: GitReadOnlyCommandConfig; commandTokens: number } | null {
+  const patterns = Object.keys(GIT_READ_ONLY_COMMANDS).sort((a, b) => b.split(' ').length - a.split(' ').length)
+  for (const pattern of patterns) {
+    const parts = pattern.split(' ')
+    if (parts.every((part, index) => tokens[index]?.toLowerCase() === part)) {
+      return { config: GIT_READ_ONLY_COMMANDS[pattern]!, commandTokens: parts.length }
+    }
+  }
+  return null
+}
+
+function gitListCommandCreatesRef(
+  args: string[],
+  opts: { listFlags: Set<string>; flagsWithArgs: Set<string>; flagsWithOptionalArgs?: Set<string> },
+): boolean {
+  let seenListFlag = false
+  let seenDoubleDash = false
+  let lastFlag = ''
+
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i]!
+    if (!token) continue
+
+    if (!seenDoubleDash && token === '--') {
+      seenDoubleDash = true
+      lastFlag = ''
+      continue
+    }
+
+    if (!seenDoubleDash && token.startsWith('-')) {
+      if (opts.listFlags.has(token) || shortFlagBundleContains(token, 'l')) seenListFlag = true
+
+      const [flag] = splitLongFlag(token)
+      if (token.includes('=')) {
+        lastFlag = flag
+        continue
+      }
+      if (opts.flagsWithArgs.has(token)) {
+        lastFlag = token
+        i++
+        continue
+      }
+      lastFlag = token
+      continue
+    }
+
+    if (!seenListFlag && !opts.flagsWithOptionalArgs?.has(lastFlag)) return true
+  }
+
+  return false
+}
+
+function shortFlagBundleContains(token: string, flag: string): boolean {
+  return token.startsWith('-') &&
+    !token.startsWith('--') &&
+    token.length > 2 &&
+    !token.includes('=') &&
+    token.slice(1).includes(flag)
+}
+
 function dockerRuntimeEnvNeedsApproval(segment: string): boolean {
   const { command, envNames } = parseRuntimeEnvPrefix(segment)
   return command === 'docker' && envNames.some(name => name.toUpperCase().startsWith('DOCKER_'))
@@ -2450,6 +2806,9 @@ function classifySegment(segment: string): CommandRisk {
   const dockerRisk = classifyDockerCommand(rawCommand)
   if (dockerRisk) return withSegmentBaseRisk(dockerRisk)
 
+  const gitReadOnlyRisk = classifyGitReadOnlyCommand(rawCommand)
+  if (gitReadOnlyRisk) return withSegmentBaseRisk(gitReadOnlyRisk)
+
   const xargsRisk = classifyXargsCommand(rawCommand)
   if (xargsRisk) return withSegmentBaseRisk(xargsRisk)
 
@@ -2464,7 +2823,7 @@ function classifySegment(segment: string): CommandRisk {
   if (/^(pwd|ls|cat|head|tail|wc|rg|grep|find|stat|du|df|whoami|uname|which|type|printenv|env|echo)\b/.test(command)) {
     return withSegmentBaseRisk('read')
   }
-  if (/^git\s+(status|diff|log|show|branch|rev-parse|ls-files|grep|remote\s+-v)\b/.test(command)) return withSegmentBaseRisk('read')
+  if (/^git\s+(status|diff|log|show|rev-parse|ls-files|grep|remote\s+-v)\b/.test(command)) return withSegmentBaseRisk('read')
 
   return withSegmentBaseRisk('file')
 }

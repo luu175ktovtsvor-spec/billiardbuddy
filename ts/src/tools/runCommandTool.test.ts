@@ -287,6 +287,20 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('git commit -m "$(whoami)"')).toBe('outreach')
   expect(classifyCommandRisk('git commit -m "`whoami`"')).toBe('outreach')
   expect(classifyCommandRisk('git commit -m "${HOME}"')).toBe('outreach')
+  expect(classifyCommandRisk('git merge-base HEAD main')).toBe('read')
+  expect(classifyCommandRisk('git rev-list --count --all')).toBe('read')
+  expect(classifyCommandRisk('git cat-file -p HEAD')).toBe('read')
+  expect(classifyCommandRisk('git for-each-ref --format %(refname) refs/heads')).toBe('read')
+  expect(classifyCommandRisk('git stash list --oneline')).toBe('read')
+  expect(classifyCommandRisk('git stash show -p stash@{0}')).toBe('read')
+  expect(classifyCommandRisk('git blame -L 1,20 file.ts')).toBe('read')
+  expect(classifyCommandRisk('git branch --list feature/*')).toBe('read')
+  expect(classifyCommandRisk('git branch new-topic')).toBe('file')
+  expect(classifyCommandRisk('git branch --abbrev 7')).toBe('file')
+  expect(classifyCommandRisk('git tag --list v*')).toBe('read')
+  expect(classifyCommandRisk('git tag v1.0.0')).toBe('file')
+  expect(classifyCommandRisk('git reflog show --all')).toBe('read')
+  expect(classifyCommandRisk('git reflog expire --all')).toBe('file')
   expect(classifyCommandRisk('cd sub && git status --short')).toBe('outreach')
   expect(classifyCommandRisk('FORCE_COLOR=1 cd sub && git status')).toBe('outreach')
   expect(classifyCommandRisk('cd sub && xargs git status')).toBe('outreach')
@@ -586,6 +600,15 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   })
   expect(resolvePermission(runCommandTool, { command: 'git commit -m "safe message"' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'allow',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'git branch --list' }, { ...ctx, permissionMode: 'default' })).toMatchObject({
+    behavior: 'allow',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'git branch new-topic' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({
+    behavior: 'deny',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'git tag v1.0.0' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({
+    behavior: 'deny',
   })
   expect(resolvePermission(runCommandTool, { command: 'cd sub && git status --short' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
