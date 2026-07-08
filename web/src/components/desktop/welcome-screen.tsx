@@ -1,11 +1,10 @@
 "use client";
 
 /**
- * 空状态/欢迎（浅色默认 · 跟随系统）：专业 agent 基调 + 今日建议 + 轻量快捷入口。
+ * 空状态/欢迎（浅色默认 · 跟随系统）：专业 agent 基调 + 轻量快捷入口。
  */
-import { Loader2, Sparkles, Database, MousePointerClick, Search, History, Trash2, FileClock } from "lucide-react";
+import { Loader2, Sparkles, Database, MousePointerClick, Search, History } from "lucide-react";
 import { WELCOME } from "@/lib/agent-copy";
-import type { RecentArtifact } from "@/lib/api";
 import type { DashboardRecommendation } from "@/types/dashboard";
 import { BriefingCard } from "./briefing-card";
 
@@ -27,9 +26,6 @@ export function WelcomeScreen({
   dailyDraftsBusy = false,
   continueTitle,
   onContinueLast,
-  recentItems = [],
-  onOpenRecent,
-  onDeleteRecent,
   onOpenStoreMemory,
   onViewScreen,
   onResearch,
@@ -50,9 +46,6 @@ export function WelcomeScreen({
   dailyDraftsBusy?: boolean;
   continueTitle?: string;
   onContinueLast?: () => void;
-  recentItems?: RecentArtifact[];
-  onOpenRecent?: (item: RecentArtifact) => void;
-  onDeleteRecent?: (item: RecentArtifact) => void;
   onOpenStoreMemory?: () => void;
   onViewScreen?: () => void;
   onResearch?: () => void;
@@ -146,54 +139,6 @@ export function WelcomeScreen({
           </div>
         )}
 
-        {recentItems.length > 0 && (
-          <div className="mt-5">
-            <div className="mb-2 flex items-center justify-between">
-              <div className="text-[11px] font-medium tracking-wide text-[#86868b] dark:text-[#6e7077]">最近作品 / 任务</div>
-            </div>
-            <div className="divide-y divide-black/[0.05] border-y border-black/[0.06] dark:divide-white/[0.06] dark:border-white/[0.06]">
-              {recentItems.slice(0, 4).map((item) => {
-                const fileName = item.path?.split(/[\\/]/).pop() || item.title;
-                const isFileChange = item.kind === "file_change";
-                const detail = item.kind === "poster" && item.ratio
-                  ? `${item.ratio}${item.width && item.height ? ` · ${item.width}x${item.height}` : ""}`
-                  : item.kind === "video" && (item.ratio || item.duration)
-                    ? [item.ratio, item.duration ? `${item.duration}秒` : ""].filter(Boolean).join(" · ")
-                    : item.kind === "file_change"
-                      ? `${item.content || "打开改动对比"} · 点击看改前/改后`
-                      : item.created_at ? new Date(item.created_at).toLocaleString() : "打开查看";
-                return (
-                  <div key={item.id} className="flex min-w-0 items-center gap-1.5 py-1">
-                    <button
-                      type="button"
-                      onClick={() => onOpenRecent?.(item)}
-                      className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left transition hover:bg-black/[0.04] active:scale-[0.99] dark:hover:bg-white/[0.06]"
-                      title={isFileChange && item.path ? `打开 ${item.path} 的改动对比，可恢复到备份` : undefined}
-                    >
-                      {isFileChange && <FileClock className="h-3.5 w-3.5 shrink-0 text-[#10a37f]" />}
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[12.5px] font-medium text-[#1d1d1f] dark:text-[#e6e7e9]">{isFileChange ? fileName : item.title}</span>
-                        <span className="block truncate text-[11.5px] text-[#86868b] dark:text-[#6e7077]">{detail}</span>
-                      </span>
-                      <span className="shrink-0 text-[10.5px] text-[#10a37f]">{isFileChange ? "可恢复" : item.subtitle}</span>
-                    </button>
-                    {onDeleteRecent && item.kind !== "file_change" && (
-                      <button
-                        type="button"
-                        aria-label="移入最近删除"
-                        title="移入最近删除"
-                        onClick={() => onDeleteRecent(item)}
-                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[#a1a1a6] transition hover:bg-[#ff3b30]/10 hover:text-[#ff3b30]"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
