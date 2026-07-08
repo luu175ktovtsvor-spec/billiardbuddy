@@ -54,6 +54,36 @@ test('非 2xx → 抛描述性错误', async () => {
   await expect(model.step({ messages: [userText('x')], tools: [] })).rejects.toThrow('400')
 })
 
+test('429 瞬时限流 → 退避重试后成功(不冒泡失败)', async () => {
+  let calls = 0
+  const model = new ProxyModel({
+    baseUrl: 'https://x/v1', apiKey: 'k', model: 'm',
+    retry: { sleep: async () => {} }, // no-op sleep 免真等待
+    fetchImpl: async () => {
+      calls++
+      if (calls === 1) return new Response('rate limited', { status: 429 })
+      return sseResponse([
+        chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { content: '重试后好了' }, finish_reason: 'stop' }] }),
+        '[DONE]',
+      ])
+    },
+  })
+  const step = await model.step({ messages: [userText('x')], tools: [] })
+  expect(step).toEqual({ kind: 'final', text: '重试后好了' })
+  expect(calls).toBe(2)
+})
+
+test('400 请求错误不重试,仍立即抛(区别于瞬时错误)', async () => {
+  let calls = 0
+  const model = new ProxyModel({
+    baseUrl: 'https://x/v1', apiKey: 'k', model: 'm',
+    retry: { sleep: async () => {} },
+    fetchImpl: async () => { calls++; return new Response('bad', { status: 400 }) },
+  })
+  await expect(model.step({ messages: [userText('x')], tools: [] })).rejects.toThrow('400')
+  expect(calls).toBe(1)
+})
+
 test('非 SSE JSON 响应 → 走非流式翻译', async () => {
   const model = new ProxyModel({
     baseUrl: 'https://x/v1', apiKey: 'k', model: 'm',
