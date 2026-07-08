@@ -1378,6 +1378,70 @@ function classifyLsofCommand(command: string): CommandRisk | null {
   return validateSafeFlags(args, { safeFlags }) ? 'read' : 'outreach'
 }
 
+function classifyPgrepCommand(command: string): CommandRisk | null {
+  const tokens = tokenizeShellWords(command)
+  if (tokens[0]?.toLowerCase() !== 'pgrep') return null
+  const safeFlags: Record<string, FlagArgKind> = {
+    '-d': 'string',
+    '--delimiter': 'string',
+    '-l': 'none',
+    '--list-name': 'none',
+    '-a': 'none',
+    '--list-full': 'none',
+    '-v': 'none',
+    '--inverse': 'none',
+    '-w': 'none',
+    '--lightweight': 'none',
+    '-c': 'none',
+    '--count': 'none',
+    '-f': 'none',
+    '--full': 'none',
+    '-g': 'string',
+    '--pgroup': 'string',
+    '-G': 'string',
+    '--group': 'string',
+    '-i': 'none',
+    '--ignore-case': 'none',
+    '-n': 'none',
+    '--newest': 'none',
+    '-o': 'none',
+    '--oldest': 'none',
+    '-O': 'string',
+    '--older': 'string',
+    '-P': 'string',
+    '--parent': 'string',
+    '-s': 'string',
+    '--session': 'string',
+    '-t': 'string',
+    '--terminal': 'string',
+    '-u': 'string',
+    '--euid': 'string',
+    '-U': 'string',
+    '--uid': 'string',
+    '-x': 'none',
+    '--exact': 'none',
+    '-F': 'string',
+    '--pidfile': 'string',
+    '-L': 'none',
+    '--logpidfile': 'none',
+    '-r': 'string',
+    '--runstates': 'string',
+    '--ns': 'string',
+    '--nslist': 'string',
+    '--help': 'none',
+    '-V': 'none',
+    '--version': 'none',
+  }
+  return validateSafeFlags(tokens.slice(1), { safeFlags }) ? 'read' : 'outreach'
+}
+
+function classifyProcessActionCommand(command: string): CommandRisk | null {
+  const tokens = tokenizeShellWords(command)
+  const base = tokens[0]?.toLowerCase()
+  if (!base) return null
+  return base === 'kill' || base === 'pkill' || base === 'killall' ? 'destructive' : null
+}
+
 function classifySedCommand(command: string): CommandRisk | null {
   const tokens = tokenizeShellWords(command)
   if (tokens[0]?.toLowerCase() !== 'sed') return null
@@ -1745,56 +1809,62 @@ function classifySegment(segment: string): CommandRisk {
   if (!command) return 'read'
   if (isDangerousCommand(command)) return 'destructive'
   if (hasRuntimeEnvSplitStringRisk(segment)) return 'outreach'
-  if (hasWriteRedirection(command)) return 'file'
+  const segmentBaseRisk: CommandRisk = hasWriteRedirection(command) ? 'file' : 'read'
+  const withSegmentBaseRisk = (risk: CommandRisk): CommandRisk => maxRisk(segmentBaseRisk, risk)
 
-  if (/\bgit\s+clean\s+-/.test(command)) return 'destructive'
-  if (/\brm\s+.*-[a-z]*r/.test(command)) return 'destructive'
-  if (/^git\s+push\b.*\s--(?:force|force-with-lease|mirror)\b/.test(command)) return 'destructive'
-  if (/^git\s+push\b.*\s-f(?:\s|$)/.test(command)) return 'destructive'
-  if (/^git\s+reset\b.*\s--hard\b/.test(command)) return 'destructive'
-  if (/^git\s+branch\s+-D\b/.test(command)) return 'destructive'
+  if (/\bgit\s+clean\s+-/.test(command)) return withSegmentBaseRisk('destructive')
+  if (/\brm\s+.*-[a-z]*r/.test(command)) return withSegmentBaseRisk('destructive')
+  const processActionRisk = classifyProcessActionCommand(rawCommand)
+  if (processActionRisk) return withSegmentBaseRisk(processActionRisk)
+  if (/^git\s+push\b.*\s--(?:force|force-with-lease|mirror)\b/.test(command)) return withSegmentBaseRisk('destructive')
+  if (/^git\s+push\b.*\s-f(?:\s|$)/.test(command)) return withSegmentBaseRisk('destructive')
+  if (/^git\s+reset\b.*\s--hard\b/.test(command)) return withSegmentBaseRisk('destructive')
+  if (/^git\s+branch\s+-D\b/.test(command)) return withSegmentBaseRisk('destructive')
 
-  if (/^(curl|wget|ssh|scp|sftp|ftp|telnet|nc|netcat|rsync)\b/.test(command)) return 'outreach'
-  if (/^(gh|glab)\s+(api|auth|repo|pr|issue|release)\b/.test(command)) return 'outreach'
-  if (/^(npm|pnpm|yarn|bun)\s+(install|add|upgrade|update|publish)\b/.test(command)) return 'outreach'
-  if (/^(pip|pip3|uv|poetry)\s+(install|add|publish|update)\b/.test(command)) return 'outreach'
-  if (/^(brew|apt|apt-get|dnf|yum|pacman|choco|winget)\s+(install|upgrade|update|remove)\b/.test(command)) return 'outreach'
+  if (/^(curl|wget|ssh|scp|sftp|ftp|telnet|nc|netcat|rsync)\b/.test(command)) return withSegmentBaseRisk('outreach')
+  if (/^(gh|glab)\s+(api|auth|repo|pr|issue|release)\b/.test(command)) return withSegmentBaseRisk('outreach')
+  if (/^(npm|pnpm|yarn|bun)\s+(install|add|upgrade|update|publish)\b/.test(command)) return withSegmentBaseRisk('outreach')
+  if (/^(pip|pip3|uv|poetry)\s+(install|add|publish|update)\b/.test(command)) return withSegmentBaseRisk('outreach')
+  if (/^(brew|apt|apt-get|dnf|yum|pacman|choco|winget)\s+(install|upgrade|update|remove)\b/.test(command)) return withSegmentBaseRisk('outreach')
 
   const findRisk = classifyFindCommand(rawCommand)
-  if (findRisk) return findRisk
+  if (findRisk) return withSegmentBaseRisk(findRisk)
 
   const jqRisk = classifyJqCommand(rawCommand)
-  if (jqRisk) return jqRisk
+  if (jqRisk) return withSegmentBaseRisk(jqRisk)
 
   const dateRisk = classifyDateCommand(rawCommand)
-  if (dateRisk) return dateRisk
+  if (dateRisk) return withSegmentBaseRisk(dateRisk)
 
   const nodeRisk = classifyNodeCommand(rawCommand)
-  if (nodeRisk) return nodeRisk
+  if (nodeRisk) return withSegmentBaseRisk(nodeRisk)
 
   const hostnameRisk = classifyHostnameCommand(rawCommand)
-  if (hostnameRisk) return hostnameRisk
+  if (hostnameRisk) return withSegmentBaseRisk(hostnameRisk)
 
   const infoRisk = classifyInfoCommand(rawCommand)
-  if (infoRisk) return infoRisk
+  if (infoRisk) return withSegmentBaseRisk(infoRisk)
 
   const lsofRisk = classifyLsofCommand(rawCommand)
-  if (lsofRisk) return lsofRisk
+  if (lsofRisk) return withSegmentBaseRisk(lsofRisk)
+
+  const pgrepRisk = classifyPgrepCommand(rawCommand)
+  if (pgrepRisk) return withSegmentBaseRisk(pgrepRisk)
 
   const readOnlyAllowlistRisk = classifyReadOnlyAllowlistedCommand(rawCommand)
-  if (readOnlyAllowlistRisk) return readOnlyAllowlistRisk
+  if (readOnlyAllowlistRisk) return withSegmentBaseRisk(readOnlyAllowlistRisk)
 
-  if (/^(rm|mv|cp|mkdir|rmdir|touch|chmod|chown|ln|tee)\b/.test(command)) return 'file'
-  if (/\b(sed|perl)\s+.*\s-i\b/.test(command) || /\b(sed|perl)\s+-i\b/.test(command)) return 'file'
-  if (/^git\s+(checkout|switch|restore|reset|merge|rebase|commit|tag|branch\s+(-d|-D)|apply|am|stash|pull|push)\b/.test(command)) return 'file'
-  if (/^(npm|pnpm|yarn|bun)\s+(run\s+)?(build|compile|generate|lint\s+--fix|format|test)\b/.test(command)) return 'file'
+  if (/^(rm|mv|cp|mkdir|rmdir|touch|chmod|chown|ln|tee)\b/.test(command)) return withSegmentBaseRisk('file')
+  if (/\b(sed|perl)\s+.*\s-i\b/.test(command) || /\b(sed|perl)\s+-i\b/.test(command)) return withSegmentBaseRisk('file')
+  if (/^git\s+(checkout|switch|restore|reset|merge|rebase|commit|tag|branch\s+(-d|-D)|apply|am|stash|pull|push)\b/.test(command)) return withSegmentBaseRisk('file')
+  if (/^(npm|pnpm|yarn|bun)\s+(run\s+)?(build|compile|generate|lint\s+--fix|format|test)\b/.test(command)) return withSegmentBaseRisk('file')
 
   if (/^(pwd|ls|cat|head|tail|wc|rg|grep|find|stat|du|df|whoami|uname|which|type|printenv|env|echo)\b/.test(command)) {
-    return 'read'
+    return withSegmentBaseRisk('read')
   }
-  if (/^git\s+(status|diff|log|show|branch|rev-parse|ls-files|grep|remote\s+-v)\b/.test(command)) return 'read'
+  if (/^git\s+(status|diff|log|show|branch|rev-parse|ls-files|grep|remote\s+-v)\b/.test(command)) return withSegmentBaseRisk('read')
 
-  return 'file'
+  return withSegmentBaseRisk('file')
 }
 
 function maxRisk(a: CommandRisk, b: CommandRisk): CommandRisk {
