@@ -1656,6 +1656,63 @@ function classifySsCommand(command: string): CommandRisk | null {
   })
 }
 
+function classifyTputCommand(command: string): CommandRisk | null {
+  const tokens = tokenizeShellWords(command)
+  if (tokens[0]?.toLowerCase() !== 'tput') return null
+  const safeFlags: Record<string, FlagArgKind> = {
+    '-T': 'string',
+    '-V': 'none',
+    '-x': 'none',
+  }
+  if (!validateSafeFlags(tokens.slice(1), { safeFlags })) return 'outreach'
+
+  const dangerousCapabilities = new Set([
+    'init',
+    'reset',
+    'rs1',
+    'rs2',
+    'rs3',
+    'is1',
+    'is2',
+    'is3',
+    'iprog',
+    'if',
+    'rf',
+    'clear',
+    'flash',
+    'mc0',
+    'mc4',
+    'mc5',
+    'mc5i',
+    'mc5p',
+    'pfkey',
+    'pfloc',
+    'pfx',
+    'pfxl',
+    'smcup',
+    'rmcup',
+  ])
+  let skipNext = false
+  let afterDoubleDash = false
+  for (const token of tokens.slice(1)) {
+    if (skipNext) {
+      skipNext = false
+      continue
+    }
+    if (!afterDoubleDash && token === '--') {
+      afterDoubleDash = true
+      continue
+    }
+    if (!afterDoubleDash && token.startsWith('-')) {
+      if (token === '-S' || (!token.startsWith('--') && token.length > 2 && token.includes('S'))) return 'outreach'
+      if (token === '-T') skipNext = true
+      continue
+    }
+    if (dangerousCapabilities.has(token)) return 'outreach'
+  }
+  return 'read'
+}
+
 function classifyProcessActionCommand(command: string): CommandRisk | null {
   const tokens = tokenizeShellWords(command)
   const base = tokens[0]?.toLowerCase()
@@ -2089,6 +2146,9 @@ function classifySegment(segment: string): CommandRisk {
 
   const ssRisk = classifySsCommand(rawCommand)
   if (ssRisk) return withSegmentBaseRisk(ssRisk)
+
+  const tputRisk = classifyTputCommand(rawCommand)
+  if (tputRisk) return withSegmentBaseRisk(tputRisk)
 
   const readOnlyAllowlistRisk = classifyReadOnlyAllowlistedCommand(rawCommand)
   if (readOnlyAllowlistRisk) return withSegmentBaseRisk(readOnlyAllowlistRisk)
