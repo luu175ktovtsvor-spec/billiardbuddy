@@ -79,6 +79,71 @@ test('TaskService can cancel a running task', async () => {
   }
 })
 
+test('TaskService registers foreground agents and signals background handoff', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tasks-foreground-handoff-'))
+  try {
+    const tasks = new TaskService(root)
+    const registration = await tasks.registerForegroundAgent({
+      taskId: 'fg_agent_1',
+      agentId: 'stable_fg_1',
+      agent: 'researcher',
+      title: 'researcher: foreground',
+      conversationId: 'c-fg',
+      workspaceRoot: root,
+      task: '检查 parser',
+    })
+    let signalled = false
+    void registration.backgroundSignal.then(() => { signalled = true })
+
+    expect(registration.task).toMatchObject({
+      id: 'fg_agent_1',
+      status: 'queued',
+      kind: 'background_agent',
+      conversationId: 'c-fg',
+      params: {
+        agent: 'researcher',
+        agent_id: 'stable_fg_1',
+        task: '检查 parser',
+        foreground: true,
+      },
+    })
+
+    const backgrounded = await registration.requestBackground()
+    expect(backgrounded.status).toBe('running')
+    expect(backgrounded.params).toMatchObject({ foreground: false, is_backgrounded: true })
+    await waitFor(async () => signalled ? { ok: true } : null)
+    const events = await tasks.loadEvents('fg_agent_1')
+    expect(events.some(record => record.event.type === 'context_note' && 'text' in record.event && record.event.text.includes('切换到后台'))).toBe(true)
+    await expect(tasks.requestForegroundAgentBackground('fg_agent_1')).rejects.toThrow('not registered')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('TaskService unregisters foreground agents that finish without handoff', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tasks-foreground-finish-'))
+  try {
+    const tasks = new TaskService(root)
+    await tasks.registerForegroundAgent({
+      taskId: 'fg_agent_done',
+      agent: 'researcher',
+      title: 'researcher: foreground done',
+      task: '同步完成',
+    })
+
+    await tasks.unregisterForegroundAgent('fg_agent_done')
+    const done = await tasks.get('fg_agent_done')
+    expect(done).toMatchObject({
+      status: 'completed',
+      progress: 100,
+      params: { agent: 'researcher', task: '同步完成', foreground: false },
+    })
+    await expect(tasks.requestForegroundAgentBackground('fg_agent_done')).rejects.toThrow('not registered')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('TaskService notifies settled tasks after the done event is persisted', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tasks-settled-'))
   try {

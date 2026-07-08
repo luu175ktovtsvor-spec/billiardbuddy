@@ -70,6 +70,26 @@ export interface TaskServiceOptions {
   onSettled?: (task: TaskMeta) => Promise<void> | void
 }
 
+export interface ForegroundAgentRegistrationInput {
+  taskId?: string
+  agentId?: string
+  agent: string
+  title: string
+  conversationId?: string
+  workspaceRoot?: string
+  task?: string
+  context?: string
+  name?: string
+  params?: Record<string, unknown>
+}
+
+export interface ForegroundAgentRegistration {
+  task: TaskMeta
+  backgroundSignal: Promise<void>
+  requestBackground(): Promise<TaskMeta>
+  cancelAutoBackground(): void
+}
+
 export interface TaskListOptions {
   conversationId?: string
   status?: TaskStatus
@@ -241,10 +261,16 @@ function clampProgress(value: number | undefined): number | undefined {
   return Math.max(0, Math.min(100, Math.floor(value)))
 }
 
+function maybeUnref(timer: ReturnType<typeof setTimeout>): void {
+  const maybe = timer as { unref?: () => void }
+  if (typeof maybe.unref === 'function') maybe.unref()
+}
+
 export class TaskService {
   private readonly indexPath: string
   private readonly controllers = new Map<string, AbortController>()
   private readonly liveSteerInboxes = new Map<string, string[]>()
+  private readonly foregroundAgents = new Map<string, { resolve: () => void; autoTimer?: ReturnType<typeof setTimeout> }>()
   private indexQueue: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly rootDir: string, private readonly options: TaskServiceOptions = {}) {
@@ -351,6 +377,81 @@ export class TaskService {
       index.set(id, meta)
     })
     return meta
+  }
+
+  async registerForegroundAgent(input: ForegroundAgentRegistrationInput, opts: { autoBackgroundMs?: number } = {}): Promise<ForegroundAgentRegistration> {
+    const params = {
+      ...input.params,
+      agent: input.agent,
+      ...(input.agentId ? { agent_id: input.agentId } : {}),
+      ...(input.name ? { name: input.name } : {}),
+      ...(input.task ? { task: input.task } : {}),
+      ...(input.context ? { context: input.context } : {}),
+      foreground: true,
+    }
+    const task = await this.create({
+      id: input.taskId,
+      title: input.title,
+      kind: 'background_agent',
+      conversationId: input.conversationId,
+      workspaceRoot: input.workspaceRoot,
+      params,
+    })
+    let resolveSignal!: () => void
+    const backgroundSignal = new Promise<void>(resolve => { resolveSignal = resolve })
+    const existing = this.foregroundAgents.get(task.id)
+    if (existing?.autoTimer) clearTimeout(existing.autoTimer)
+    const record = { resolve: resolveSignal, autoTimer: undefined as ReturnType<typeof setTimeout> | undefined }
+    this.foregroundAgents.set(task.id, record)
+    if (opts.autoBackgroundMs && Number.isFinite(opts.autoBackgroundMs) && opts.autoBackgroundMs > 0) {
+      record.autoTimer = setTimeout(() => {
+        void this.requestForegroundAgentBackground(task.id)
+      }, Math.floor(opts.autoBackgroundMs))
+      maybeUnref(record.autoTimer)
+    }
+    return {
+      task,
+      backgroundSignal,
+      requestBackground: () => this.requestForegroundAgentBackground(task.id),
+      cancelAutoBackground: () => {
+        const current = this.foregroundAgents.get(task.id)
+        if (current?.autoTimer) {
+          clearTimeout(current.autoTimer)
+          current.autoTimer = undefined
+        }
+      },
+    }
+  }
+
+  async requestForegroundAgentBackground(id: string): Promise<TaskMeta> {
+    validateTaskId(id)
+    const record = this.foregroundAgents.get(id)
+    if (!record) throw new Error(`foreground agent ${id} is not registered`)
+    if (record.autoTimer) {
+      clearTimeout(record.autoTimer)
+      record.autoTimer = undefined
+    }
+    const task = await this.touch(id, {
+      status: 'running',
+      params: { ...(await this.get(id))?.params, foreground: false, is_backgrounded: true },
+      stage: '已切换到后台运行',
+    })
+    await this.appendEvent(id, { type: 'context_note', text: '前台 agent 已切换到后台运行' }).catch(() => undefined)
+    this.foregroundAgents.delete(id)
+    record.resolve()
+    return task
+  }
+
+  async unregisterForegroundAgent(id: string): Promise<void> {
+    validateTaskId(id)
+    const record = this.foregroundAgents.get(id)
+    if (!record) return
+    if (record.autoTimer) clearTimeout(record.autoTimer)
+    this.foregroundAgents.delete(id)
+    const current = await this.get(id)
+    if (current?.params?.foreground === true && current.status === 'queued') {
+      await this.touch(id, { status: 'completed', progress: 100, params: { ...current.params, foreground: false } }).catch(() => undefined)
+    }
   }
 
   async touch(id: string, patch: Partial<Pick<TaskMeta, 'title' | 'status' | 'kind' | 'conversationId' | 'workspaceRoot' | 'progress' | 'stage' | 'summary' | 'lastEventSeq' | 'params' | 'result' | 'error'>> = {}): Promise<TaskMeta> {
