@@ -22,13 +22,13 @@ import { askUserQuestionCompatTool, askUserQuestionTool, enterPlanCompatTool, en
 import { verifyPlanExecutionCompatTool, verifyPlanExecutionTool } from './verifyPlanExecutionTool'
 import { briefCompatTool, sendUserMessageTool } from './briefTool'
 import type { Sandbox } from '../sandbox/sandbox'
-import { createSkillTools, type SkillLibrary } from '../skills/skillLoader'
+import { createSkillTools, type ExecuteSkillFn, type SkillLibrary } from '../skills/skillLoader'
 import { createCommandTools, type CommandLibrary } from '../commands/commandLoader'
 import type { Tool } from './Tool'
 import { createToolSearchTool, TOOL_SEARCH_NAME } from './toolSearchTool'
 
 /** 通用 Agent 默认工具集(对应 Python registry.py 的 general 层)。领域包只通过可选推荐/额外工具挂载,不改通用底座身份。 */
-export function buildGeneralRegistry(opts: { sandbox?: Sandbox; skills?: SkillLibrary; skillsRoot?: string; skillRecommendations?: string[]; commands?: CommandLibrary; extraTools?: Tool[] } = {}): ToolRegistry {
+export function buildGeneralRegistry(opts: { sandbox?: Sandbox; skills?: SkillLibrary; skillsRoot?: string; skillRecommendations?: string[]; executeSkill?: ExecuteSkillFn; commands?: CommandLibrary; extraTools?: Tool[] } = {}): ToolRegistry {
   const runCmd = opts.sandbox
     ? { ...runCommandTool, description: `${runCommandTool.description}\n${opts.sandbox.describeForPrompt()}` }
     : runCommandTool
@@ -68,7 +68,7 @@ export function buildGeneralRegistry(opts: { sandbox?: Sandbox; skills?: SkillLi
     todoWriteTool,
     fileHistoryTool,
     restoreFileTool,
-    ...(opts.skills ? createSkillTools(opts.skills, { skillRoot: opts.skillsRoot, recommendedSkillNames: opts.skillRecommendations }) : []),
+    ...(opts.skills ? createSkillTools(opts.skills, { skillRoot: opts.skillsRoot, recommendedSkillNames: opts.skillRecommendations, executeSkill: opts.executeSkill }) : []),
     ...(opts.commands ? createCommandTools(opts.commands) : []),
     ...(opts.extraTools ?? []),
   ])

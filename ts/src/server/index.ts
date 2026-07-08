@@ -74,6 +74,7 @@ import { Workspace } from '../workspace/workspace'
 import type { AssistantStep, Model } from '../types/model'
 import { textBlock, type ContentBlock, type Message } from '../types/message'
 import type { AgentEvent, AskQuestionField } from '../types/events'
+import type { ToolContext } from '../tools/Tool'
 import type { FetchLike } from '../proxy/ProxyModel'
 import type { PermissionMode } from '../permissions/types'
 import { basename, dirname, extname, join, relative, resolve } from 'node:path'
@@ -1459,6 +1460,50 @@ export function startServer(opts: StartServerOptions = {}) {
     })
     const taskTools = [...createTaskTools(tasks), ...createStructuredTaskTools(taskLists)]
     let backgroundAgentOptions: BackgroundAgentTaskOptions | undefined
+    const promptWorkerAgent = (prompt: PromptCommand, kind: 'command' | 'skill'): AgentDefinition => {
+      const requested = prompt.agent?.trim()
+      const found = requested ? agents.find(agent => agent.name === requested) : undefined
+      if (found) return found
+      const suffix = normalizeCommandName(prompt.name).replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-|-$/g, '') || kind
+      return {
+        name: `${kind}-${suffix}`,
+        description: `Forked ${kind} worker for ${kind === 'command' ? `/${prompt.name}` : prompt.name}.`,
+        prompt: [
+          `You are running a ${kind} in an isolated worker.`,
+          `Execute the ${kind} instructions exactly, using tools when needed.`,
+          'Return only the useful result for the parent conversation.',
+        ].join('\n'),
+        filePath: `built-in:${kind}-fork:${prompt.name}`,
+        permissionMode: permissionModeFrom(rawBody.permissionMode),
+        maxTurns: 80,
+      }
+    }
+    const executeSkill = async (skill: PromptCommand, args: string, toolCtx: ToolContext): Promise<string> => {
+      if (skill.context !== 'fork') return await skill.getPrompt(args, toolCtx)
+      if (!backgroundAgentOptions) throw new Error('skill context:fork 需要后台任务运行器')
+      const expandedPrompt = (await skill.getPrompt(args, toolCtx)).trim()
+      if (!expandedPrompt) return `技能 ${skill.name} 没有可执行内容。`
+      const agent = promptWorkerAgent(skill, 'skill')
+      const { task } = await startBackgroundAgentRun(
+        backgroundAgentOptions,
+        {
+          agent: agent.name,
+          task: expandedPrompt,
+          title: `skill:${skill.name}${args.trim() ? ` ${args.trim()}` : ''}`.slice(0, 120),
+        },
+        toolCtx,
+        {
+          skill: skill.name,
+          skill_context: 'fork',
+          ...(skill.agent ? { skill_agent: skill.agent } : {}),
+        },
+        [],
+        [],
+        { agentOverride: agent },
+      )
+      const agentId = typeof task.params?.agent_id === 'string' ? ` agent_id="${escapeXml(task.params.agent_id)}"` : ''
+      return `<background_task_started id="${escapeXml(task.id)}" agent="${escapeXml(agent.name)}"${agentId} status="${escapeXml(task.status)}">\n${escapeXml(task.title)}\n</background_task_started>`
+    }
     const teamTools = createTeamTools(teams, {
       tasks,
       udsPeers,
@@ -1471,8 +1516,8 @@ export function startServer(opts: StartServerOptions = {}) {
     })
     const mediaTools = createMediaTools(media)
     const storeDocTools = [createStoreDocsTool(storeDocs)]
-    const backgroundBaseRegistry = buildGeneralRegistry({ skills, skillsRoot, skillRecommendations, commands, extraTools: [...domainPackTools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
-    const baseRegistry = buildGeneralRegistry({ skills, skillsRoot, skillRecommendations, commands, extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
+    const backgroundBaseRegistry = buildGeneralRegistry({ skills, skillsRoot, skillRecommendations, executeSkill, commands, extraTools: [...domainPackTools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
+    const baseRegistry = buildGeneralRegistry({ skills, skillsRoot, skillRecommendations, executeSkill, commands, extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
     backgroundAgentOptions = {
       tasks,
       agents,
@@ -1535,25 +1580,7 @@ export function startServer(opts: StartServerOptions = {}) {
     const backgroundTools = agents.length > 0
       ? [createBackgroundAgentTaskTool(backgroundAgentOptions)]
       : []
-    const registry = buildGeneralRegistry({ skills, skillsRoot, skillRecommendations, commands, extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools, ...agentTools, ...agentSidechainTools, ...backgroundTools] })
-    const commandWorkerAgent = (command: PromptCommand): AgentDefinition => {
-      const requested = command.agent?.trim()
-      const found = requested ? agents.find(agent => agent.name === requested) : undefined
-      if (found) return found
-      const suffix = normalizeCommandName(command.name).replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-|-$/g, '') || 'command'
-      return {
-        name: `command-${suffix}`,
-        description: `Forked slash command worker for /${command.name}.`,
-        prompt: [
-          'You are running a slash command in an isolated command worker.',
-          'Execute the command instructions exactly, using tools when needed.',
-          'Return only the useful command result for the parent conversation.',
-        ].join('\n'),
-        filePath: `built-in:command-fork:${command.name}`,
-        permissionMode: permissionModeFrom(rawBody.permissionMode),
-        maxTurns: 80,
-      }
-    }
+    const registry = buildGeneralRegistry({ skills, skillsRoot, skillRecommendations, executeSkill, commands, extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools, ...agentTools, ...agentSidechainTools, ...backgroundTools] })
     const launchContextForkCommand = async (command: PromptCommand): Promise<string> => {
       const expandedPrompt = commandInvocation?.prompt.trim() ?? ''
       if (!expandedPrompt) return `/${command.name} 没有可执行的命令内容。`
@@ -1569,7 +1596,7 @@ export function startServer(opts: StartServerOptions = {}) {
         renderedSystemPrompt: systemPrompt,
         toolResultStoreDir: join(stateRoot, 'tool-results', conversationId),
       }
-      const agent = commandWorkerAgent(command)
+      const agent = promptWorkerAgent(command, 'command')
       const args = commandInvocation?.args.trim() ?? ''
       const { task } = await startBackgroundAgentRun(
         backgroundAgentOptions!,

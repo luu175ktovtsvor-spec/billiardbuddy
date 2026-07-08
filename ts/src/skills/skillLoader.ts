@@ -22,6 +22,14 @@ interface ListSkillsInput {
   limit?: number
 }
 
+interface UseSkillInput {
+  name?: string
+  skill?: string
+  args?: string
+}
+
+export type ExecuteSkillFn = (skill: PromptCommand, args: string, ctx: ToolContext) => Promise<string>
+
 function safeName(value: string): string {
   return value.trim().replace(/\s+/g, '-').replace(/[^A-Za-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
 }
@@ -125,7 +133,7 @@ export function formatSkillIndex(library: SkillLibrary, opts: SkillIndexOptions 
     .join('\n')
 }
 
-export function createSkillTools(library: SkillLibrary, opts: { skillRoot?: string; recommendedSkillNames?: string[] } = {}): Tool[] {
+export function createSkillTools(library: SkillLibrary, opts: { skillRoot?: string; recommendedSkillNames?: string[]; executeSkill?: ExecuteSkillFn } = {}): Tool[] {
   const listSkills: Tool<ListSkillsInput> = {
     name: 'list_skills',
     description: 'List available skills by name and short description. Enabled domain packs are shown first. Use read_skill to load the full instructions only when a skill is relevant. Input: { query?, recommended_only?, limit? }.',
@@ -168,7 +176,33 @@ export function createSkillTools(library: SkillLibrary, opts: { skillRoot?: stri
     },
   }
 
-  const tools: Tool[] = [listSkills, readSkill]
+  const useSkill: Tool<UseSkillInput> = {
+    name: 'use_skill',
+    description: 'Execute one skill by exact name. Use this after list_skills/read_skill when the skill should actively guide the current work. Input: { skill, args? }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        skill: { type: 'string' },
+        name: { type: 'string', description: 'Alias for skill.' },
+        args: { type: 'string' },
+      },
+      required: ['skill'],
+    },
+    isReadOnly: false,
+    async execute(input, ctx) {
+      const name = typeof input?.name === 'string' && input.name.trim()
+        ? input.name.trim()
+        : typeof input?.skill === 'string' ? input.skill.trim() : ''
+      if (!name) throw new Error('use_skill 需要 string 参数 name')
+      const skill = library.byName.get(name)
+      if (!skill) return `没有找到技能「${name}」。可先调用 list_skills 查看可用技能。`
+      const args = typeof input?.args === 'string' ? input.args : ''
+      if (opts.executeSkill) return await opts.executeSkill(skill, args, ctx)
+      return await skill.getPrompt(args, ctx)
+    },
+  }
+
+  const tools: Tool[] = [listSkills, readSkill, useSkill]
 
   if (opts.skillRoot) {
     const createSkill: Tool<{
