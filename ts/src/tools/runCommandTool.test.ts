@@ -221,6 +221,14 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('lsof -p 123')).toBe('read')
   expect(classifyCommandRisk('lsof -D cache')).toBe('outreach')
   expect(classifyCommandRisk('lsof +m/tmp/mounts')).toBe('outreach')
+  expect(classifyCommandRisk('pgrep -fl node')).toBe('read')
+  expect(classifyCommandRisk('pgrep --full node')).toBe('read')
+  expect(classifyCommandRisk('pgrep --unknown node')).toBe('outreach')
+  expect(classifyCommandRisk('pkill node')).toBe('destructive')
+  expect(classifyCommandRisk('kill 123')).toBe('destructive')
+  expect(classifyCommandRisk('killall node')).toBe('destructive')
+  expect(classifyCommandRisk('curl https://example.com > out.txt')).toBe('outreach')
+  expect(classifyCommandRisk('kill 123 > out.txt')).toBe('destructive')
   expect(classifyCommandRisk('git push --force origin main')).toBe('destructive')
   expect(classifyCommandRisk('git push -f origin main')).toBe('destructive')
   expect(classifyCommandRisk('git reset --hard HEAD~1')).toBe('destructive')
@@ -429,6 +437,19 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   expect(resolvePermission(runCommandTool, { command: 'lsof +m/tmp/mounts' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'pgrep -fl node' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'pkill node' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'destructive',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'curl https://example.com > out.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'kill 123 > out.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'destructive',
   })
   expect(resolvePermission(runCommandTool, { command: '-rf /tmp' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
