@@ -2747,6 +2747,78 @@ test('POST /agent/run lets tools read files explicitly selected outside the work
   }
 })
 
+test('POST /agent/run keeps working_dir as command cwd while desktop full disk can read external absolute paths', async () => {
+  const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-full-disk-transcript-'))
+  const workingRoot = mkdtempSync(join(tmpdir(), 'agent-full-disk-working-'))
+  const externalRoot = mkdtempSync(join(tmpdir(), 'agent-full-disk-external-'))
+  const externalFile = join(externalRoot, 'outside.txt')
+  writeFileSync(externalFile, 'FULL_DISK_EXTERNAL_CONTENT')
+  let calls = 0
+  const fullDiskServer = startServer({
+    port: 0,
+    transcriptRoot,
+    mcpConfigPath: join(transcriptRoot, 'missing.mcp.json'),
+    env: {
+      OPENAI_BASE_URL: 'https://model.example/v1',
+      OPENAI_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async () => {
+      calls++
+      const enc = new TextEncoder()
+      const lines = calls === 1
+        ? [
+            JSON.stringify({
+              id: 'x',
+              model: 'mimo-v2.5',
+              choices: [{
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    { index: 0, id: 'pwd_1', function: { name: 'run_command', arguments: JSON.stringify({ command: 'pwd' }) } },
+                    { index: 1, id: 'read_1', function: { name: 'read_file', arguments: JSON.stringify({ path: externalFile }) } },
+                  ],
+                },
+                finish_reason: 'tool_calls',
+              }],
+            }),
+            '[DONE]',
+          ]
+        : [
+            JSON.stringify({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: '完成' }, finish_reason: 'stop' }] }),
+            '[DONE]',
+          ]
+      return new Response(new ReadableStream<Uint8Array>({
+        start(c) {
+          for (const line of lines) c.enqueue(enc.encode(`data: ${line}\n\n`))
+          c.close()
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  try {
+    const res = await fetch(`http://127.0.0.1:${fullDiskServer.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({
+        message: '确认工作目录并读取外部文件',
+        working_dir: workingRoot,
+        full_disk_access: true,
+        permissionMode: 'bypassPermissions',
+      }),
+    })
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).toContain('event: tool_result')
+    expect(text).toContain(workingRoot)
+    expect(text).toContain('FULL_DISK_EXTERNAL_CONTENT')
+  } finally {
+    fullDiskServer.stop(true)
+    rmSync(transcriptRoot, { recursive: true, force: true })
+    rmSync(workingRoot, { recursive: true, force: true })
+    rmSync(externalRoot, { recursive: true, force: true })
+  }
+})
+
 test('POST /agent/prewarm resolves provider and loads local capabilities without calling the model', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-prewarm-'))
   const skillsRoot = join(root, 'skills')

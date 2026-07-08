@@ -23,12 +23,12 @@ export interface RunCommandInput {
 export const runCommandTool: Tool<RunCommandInput> = {
   name: 'run_command',
   description:
-    `Run a shell command with the workspace as the default working directory. Input: { command, cwd?, timeout_ms?, max_output_bytes? }. cwd must stay inside the workspace. Default timeout ${DEFAULT_TIMEOUT_MS}ms; output keeps the tail so final test/build errors remain visible.`,
+    `Run a shell command with the selected workspace as the default working directory. Input: { command, cwd?, timeout_ms?, max_output_bytes? }. cwd may be workspace-relative or an allowed absolute path; desktop full-disk sessions can run from external directories. Default timeout ${DEFAULT_TIMEOUT_MS}ms; output keeps the tail so final test/build errors remain visible.`,
   inputSchema: {
     type: 'object',
     properties: {
       command: { type: 'string' },
-      cwd: { type: 'string', description: 'Optional workspace-relative working directory for the command. Defaults to workspace root.' },
+      cwd: { type: 'string', description: 'Optional working directory. Relative paths resolve under the selected workspace; allowed absolute paths work in desktop full-disk sessions.' },
       timeout_ms: { type: 'number', description: `Optional timeout in ms, capped at ${MAX_TIMEOUT_MS}.` },
       max_output_bytes: { type: 'number', description: `Optional combined stdout/stderr tail cap, capped at ${MAX_OUTPUT_BYTES}.` },
     },

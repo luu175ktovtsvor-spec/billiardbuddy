@@ -5,6 +5,7 @@ import { parsePeerAddress } from './peerAddress'
 import { sendToUdsSocket } from './udsClient'
 import type { UdsPeerRecord } from './udsPeerRegistry'
 import type { BridgePeerRecord } from './bridgePeerRegistry'
+import { canonicalPermissionMode } from '../permissions/canonical'
 
 type StructuredMessage =
   | { type: 'shutdown_request'; reason?: string }
@@ -564,7 +565,8 @@ async function sendStructuredMessage(teams: TeamService, to: string, message: St
   const requestId = requestIdFrom(message)
   if (!requestId) throw new Error('request_id is required for plan_approval_response')
   const approve = semanticBoolean(message.approve, false)
-  const mode = ctx.permissionMode === 'plan' ? 'default' : ctx.permissionMode
+  const currentMode = canonicalPermissionMode(ctx.permissionMode)
+  const mode = currentMode === 'plan' ? 'default' : currentMode
   const response = {
     type: 'plan_approval_response',
     requestId,

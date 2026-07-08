@@ -10,3 +10,37 @@ export function stableStringify(value: unknown): string {
   }
   return JSON.stringify(sort(value))
 }
+
+export const CANONICAL_PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'bypassPermissions'] as const
+export const LEGACY_PERMISSION_MODE_ALIASES = ['ask', 'auto_files', 'full'] as const
+
+export type CanonicalPermissionMode = typeof CANONICAL_PERMISSION_MODES[number]
+export type LegacyPermissionMode = typeof LEGACY_PERMISSION_MODE_ALIASES[number]
+export type PermissionModeLike = CanonicalPermissionMode | LegacyPermissionMode
+
+const LEGACY_TO_CANONICAL: Record<LegacyPermissionMode, CanonicalPermissionMode> = {
+  ask: 'default',
+  auto_files: 'acceptEdits',
+  full: 'bypassPermissions',
+}
+
+export function parsePermissionMode(value: unknown): PermissionModeLike | undefined {
+  if (typeof value !== 'string') return undefined
+  const mode = value.trim()
+  if ((CANONICAL_PERMISSION_MODES as readonly string[]).includes(mode)) return mode as CanonicalPermissionMode
+  if ((LEGACY_PERMISSION_MODE_ALIASES as readonly string[]).includes(mode)) return mode as LegacyPermissionMode
+  return undefined
+}
+
+export function canonicalPermissionMode(value: unknown): CanonicalPermissionMode {
+  const parsed = parsePermissionMode(value)
+  if (!parsed) return 'default'
+  if ((LEGACY_PERMISSION_MODE_ALIASES as readonly string[]).includes(parsed)) {
+    return LEGACY_TO_CANONICAL[parsed as LegacyPermissionMode]
+  }
+  return parsed as CanonicalPermissionMode
+}
+
+export function isPermissionMode(value: unknown): value is PermissionModeLike {
+  return parsePermissionMode(value) !== undefined
+}

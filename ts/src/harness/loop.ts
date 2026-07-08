@@ -162,13 +162,12 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     renderedSystemPrompt: opts.systemPrompt,
     signal: opts.signal,
     sandbox: opts.sandbox,
-    permissionMode: opts.permissionMode ?? 'ask',
+    permissionMode: opts.permissionMode ?? 'default',
     sessionHooks: opts.initialSessionHooks,
     onSessionHooksChanged: opts.onSessionHooksChanged,
     conversationId: opts.conversationId,
     querySource: opts.querySource,
     localDenialTracking: opts.localDenialTracking,
-    autoSpendCount: 0,
     steerInbox: opts.steerInbox ?? [],
     todos: [],
     requestsSinceProgress: 0,
@@ -762,14 +761,14 @@ async function* gateOneCall(
       yield questionEvent(question)
       const answer = await waitForSteeringAnswer(ctx, question.timeoutMs, answerStartLen)
       if (answer && isPlanApprovalAnswer(answer)) {
-        ctx.permissionMode = 'ask'
+        ctx.permissionMode = 'default'
         ctx.pendingPlanVerification = {
           plan,
           verificationStarted: false,
           verificationCompleted: false,
           toolCallsSinceApproval: 0,
         }
-        yield feedback(`<plan_approved>\n${plan}\n</plan_approved>\n用户已批准计划,当前回合已退出计划模式并切到 ask 权限档。完成实施后必须直接调用 VerifyPlanExecution 并附可复核证据。`, false)
+        yield feedback(`<plan_approved>\n${plan}\n</plan_approved>\n用户已批准计划,当前回合已退出计划模式并切到 default 权限档。完成实施后必须直接调用 VerifyPlanExecution 并附可复核证据。`, false)
       } else if (answer) {
         yield feedback(`<plan_needs_revision>\n${answer}\n</plan_needs_revision>`, false)
       } else {
@@ -830,10 +829,6 @@ async function* gateOneCall(
     return
   }
 
-  // allow:full 档下自动放行的 spend 类累加计数(过 AUTO_SPEND_LIMIT 后 resolvePermission 会改判 ask)。
-  if (tool.approvalClass === 'spend' && ctx.permissionMode === 'full') {
-    ctx.autoSpendCount = (ctx.autoSpendCount ?? 0) + 1
-  }
   const input = decision.updatedInput ?? hookInput
   const outcome = yield* executeAllowedToolCallWithProgress(tool, call, input, ctx, hooks, toolResultStoreDir)
   toolResults.push(outcome.result)

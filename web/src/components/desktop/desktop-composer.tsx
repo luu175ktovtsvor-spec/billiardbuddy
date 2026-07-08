@@ -4,7 +4,7 @@
  * Codex 风底部输入区（浅色默认 · 跟随系统深浅色）：附件 + 前导提示符 › + 输入框 + 工具条 + 发送。
  * - 附件：选定本机文件 → selected_files 授权 Agent 读/改（沙箱），像 Claude Code/Codex 那样改本地文件。
  * - A-Task-6「控件按需出现」：工具条常驻只留 附件 / 深度思考开关 / 发送；
- *   最近文件、从下载选素材、运行权限(ask/auto_files/plan/full 单选)、输出风格、专家挂载
+ *   最近文件、从下载选素材、运行权限(default/acceptEdits/plan/bypassPermissions 单选)、输出风格、专家挂载
  *   统一收进一个「+」菜单(分区展示)，行为不变、只换入口——照 Warp/Dia 的「按需出现」思路减少默认可见按钮数。
  * - D-Task-9 语音输入：麦克风按钮插在 附件/深度思考 之间，走口播同一套「模型就绪门」
  *   (useWhisperReady)；录音生命周期(getUserMedia → MediaRecorder → 转写 → 回填输入框)全在本组件内部
@@ -18,8 +18,7 @@ import { getErrorMessage } from "@/lib/utils";
 import { useWhisperReady } from "@/hooks/use-whisper-ready";
 import { SlashPalette, type PaletteItem } from "./slash-palette";
 import { useToast } from "./toast";
-
-export type PermissionMode = "ask" | "auto_files" | "full" | "plan";
+import type { PermissionMode } from "@/hooks/use-agent-chat";
 
 // 内置 `/` 命令（cc 风，先放能即时接上的；其余随命令系统扩展）。
 // G.3：每条带中文名(cn,做主视觉) + 中文/拼音别名(aliases,让 /导出 /用量 也能搜到)。
@@ -87,7 +86,7 @@ export function DesktopComposer({
   value,
   onChange,
   onSend,
-  permissionMode = "ask",
+  permissionMode = "default",
   onPermissionChange,
   selectedFiles = [],
   onPickFiles,
@@ -660,7 +659,7 @@ export function DesktopComposer({
                       <div className="my-1 h-px bg-black/[0.06] dark:bg-white/[0.06]" />
                     ) : null}
 
-                    {/* 运行权限：单选(ask/auto_files/plan/full)，当前档打勾 */}
+                    {/* 运行权限：单选(default/acceptEdits/plan/bypassPermissions)，当前档打勾 */}
                     <MenuSectionHeader icon={ShieldCheck} label="运行权限" />
                     {PERMISSION_MODES.map((m) => {
                       const active = m.value === permissionMode;
