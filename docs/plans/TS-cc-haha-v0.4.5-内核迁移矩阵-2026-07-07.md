@@ -3441,11 +3441,11 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 
 ### C. 剩余高优先级 backlog(按 coding-agent 内核价值排序)
 
-**P0(安全/稳定,尽快)**
-1. OS 沙箱真正接线进生产入口(`server`/desktop 主进程按开关构造 `new Sandbox({enabled:true})` 注入 `ctx.sandbox`);现状代码存在但 `ctx.sandbox` 恒 undefined、seatbelt/bwrap 从未生效——需 owner 定"默认开/关"。
-2. 工作区**主边界** symlink 解析(`pathBoundary.ts` 复用 `filePathRules.getPathsForPermissionCheck`,堵"工作区内 symlink 指向区外"逃逸)。
-3. MCP:`.mcp.json` 工作区级信任闸(防恶意仓库 `.mcp.json` 自动 spawn 任意命令 RCE);远程 http headers/静态 token 鉴权。
-4. 读命令(cat/ls/grep/find/head/tail/sed/awk/diff/stat)路径工作区边界校验(移植 cc `checkPathConstraints`/`PATH_EXTRACTORS`),越界一律 ask;UNC 路径拦截。
+**P0(安全/稳定)** —— 2026-07-09 更新:1/2/3 已落,4 待专轮
+1. ✅OS 沙箱接线进生产入口默认开(`07f4bd4`):server 构造 `new Sandbox({enabled:true})` 注入 `ctx.sandbox`,优雅降级(缺依赖/异常退明文),QF_OS_SANDBOX=0 可关。smoke 证明写围栏真生效。
+2. ✅工作区主边界 symlink 解析(`783d2e4`):`workspace.resolve` 复用下沉的 `symlinkResolve.pathContainedInRoots`,堵区内 symlink 指向区外逃逸。
+3. ✅`.mcp.json` 工作区级信任闸(`f909d7c`):未信任的 `<root>/.mcp.json` 默认不连(防 RCE),显式/已信任/app 级配置放行,GET/POST/DELETE /agent/mcp/trust 批准。剩:远程 http headers/OAuth 鉴权。
+4. ⛔读命令(cat/ls/grep/find/...)路径工作区边界校验 + UNC 拦截:`dangerousCommand.ts` 已有路径提取但只按敏感文件名判、不按工作区边界判;近 4000 行、需逐段对齐,留专轮(移植 cc `checkPathConstraints`/`PATH_EXTRACTORS`)。
 
 **P1(可靠性/正确性)**
 5. 模型调用重试退避:✅重试基础设施已落地(`ts/src/model/fetchRetry.ts`,opt-in,默认不改 failover 时序);**待续**:是否默认开启(需 owner 定 failover-vs-retry 延迟取舍)、SSE 中途 error 帧识别(现静默吞成截断空响应)、流空闲超时跟随 `aiRequestTimeoutMs`(现 60s 与之脱钩)。
