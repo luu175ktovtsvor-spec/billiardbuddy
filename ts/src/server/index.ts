@@ -1474,6 +1474,7 @@ export function startServer(opts: StartServerOptions = {}) {
         return {
           ...found,
           ...(allowsAllTools ? { tools: undefined } : allowedTools ? { tools: allowedTools } : {}),
+          allowedToolRules: prompt.allowedToolRules ?? prompt.allowedTools,
           ...(mergedHooks ? { hooks: mergedHooks } : {}),
         }
       }
@@ -1490,6 +1491,7 @@ export function startServer(opts: StartServerOptions = {}) {
         permissionMode: permissionModeFrom(rawBody.permissionMode),
         maxTurns: 80,
         ...(allowedTools ? { tools: allowedTools } : {}),
+        allowedToolRules: prompt.allowedToolRules ?? prompt.allowedTools,
         ...(prompt.hooks ? { hooks: prompt.hooks } : {}),
       }
     }

@@ -14,6 +14,7 @@ export interface AgentDefinition {
   description: string
   prompt: string
   tools?: string[]
+  allowedToolRules?: string[]
   disallowedTools?: string[]
   model?: string
   skills?: string[]

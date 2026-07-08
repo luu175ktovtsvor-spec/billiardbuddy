@@ -718,6 +718,7 @@ export async function startBackgroundAgentRun(
         transcript: opts.tasks.transcript(task.id),
         toolResultStoreDir,
         hooks,
+        initialAllowedTools: agent.allowedToolRules,
         subagent: { agentId: stableAgentId, agentType: agent.name },
         querySource: runOptions.forkContext?.querySource,
         contentReplacementState: inheritedContentReplacementState,
