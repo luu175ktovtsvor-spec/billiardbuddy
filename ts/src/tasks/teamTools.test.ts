@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer, type Server } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { scriptedModel } from '../harness/fakeModel'
@@ -49,6 +50,29 @@ function extractPeersJson(output: string): Record<string, unknown> {
     .replaceAll('&gt;', '>')
     .replaceAll('&amp;', '&')
   return JSON.parse(text) as Record<string, unknown>
+}
+
+async function listenForUdsMessage(socketPath: string): Promise<{ server: Server; received: Promise<string> }> {
+  let resolveReceived: (value: string) => void
+  let rejectReceived: (err: Error) => void
+  const received = new Promise<string>((resolve, reject) => {
+    resolveReceived = resolve
+    rejectReceived = reject
+  })
+  const server = createServer(socket => {
+    let data = ''
+    socket.setEncoding('utf8')
+    socket.on('data', chunk => {
+      data += chunk
+    })
+    socket.on('end', () => resolveReceived(data))
+    socket.on('error', err => rejectReceived(err instanceof Error ? err : new Error(String(err))))
+  })
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(socketPath, resolve)
+  })
+  return { server, received }
 }
 
 test('TeamCreate creates a local team and SendMessage writes a teammate inbox', async () => {
@@ -130,7 +154,9 @@ test('ListPeers exposes structured peer metadata and inbox previews', async () =
       send_message: {
         local_targets: ['team-lead', 'worker'],
         broadcast_target: '*',
-        cross_session_targets_enabled: false,
+        cross_session_targets_enabled: true,
+        uds_targets_enabled: true,
+        bridge_targets_enabled: false,
       },
     })
     expect(data.peers).toEqual(expect.arrayContaining([
@@ -168,7 +194,9 @@ test('ListPeers returns a parseable empty peer set without an active team', asyn
       send_message: {
         local_targets: [],
         broadcast_target: '*',
-        cross_session_targets_enabled: false,
+        cross_session_targets_enabled: true,
+        uds_targets_enabled: true,
+        bridge_targets_enabled: false,
       },
     })
   } finally {
@@ -212,6 +240,53 @@ test('SendMessage broadcasts to non-lead team members only', async () => {
     expect(await teams.readMailbox('qa', 'bravo')).toHaveLength(1)
     expect(await teams.readMailbox('team-lead', 'bravo')).toHaveLength(0)
   } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('SendMessage sends plain text to UDS cross-session peers without summary', async () => {
+  const { root, teams, tools, ctx } = fixture()
+  const [, , sendMessage] = tools
+  const socketPath = join(root, 'peer.sock')
+  const { server, received } = await listenForUdsMessage(socketPath)
+  try {
+    const output = JSON.parse(await sendMessage!.execute({ to: `uds:${socketPath}`, message: 'what branch are you on?' }, ctx))
+    expect(output.success).toBe(true)
+    expect(output.routing).toMatchObject({
+      sender: 'team-lead',
+      target: `uds:${socketPath}`,
+      content: 'what branch are you on?',
+    })
+    expect(await received).toBe('what branch are you on?')
+    expect(await teams.readMailbox(`uds:${socketPath}`, 'default')).toHaveLength(0)
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('SendMessage accepts legacy bare UDS socket paths and rejects cross-session structured messages', async () => {
+  const { root, tools, ctx } = fixture()
+  const [, , sendMessage] = tools
+  const socketPath = join(root, 'legacy-peer.sock')
+  const { server, received } = await listenForUdsMessage(socketPath)
+  try {
+    const output = JSON.parse(await sendMessage!.execute({ to: socketPath, summary: 'legacy path', message: 'reply over legacy path' }, ctx))
+    expect(output.success).toBe(true)
+    expect(output.routing.target).toBe(socketPath)
+    expect(output.routing.summary).toBe('legacy path')
+    expect(await received).toBe('reply over legacy path')
+
+    await expect(sendMessage!.execute({
+      to: `uds:${socketPath}`,
+      message: { type: 'shutdown_request', reason: 'done' },
+    }, ctx)).rejects.toThrow('structured messages cannot be sent cross-session')
+    await expect(sendMessage!.execute({
+      to: 'bridge:session_123',
+      message: 'hello remote',
+    }, ctx)).rejects.toThrow('Remote Control is not connected')
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()))
     rmSync(root, { recursive: true, force: true })
   }
 })
