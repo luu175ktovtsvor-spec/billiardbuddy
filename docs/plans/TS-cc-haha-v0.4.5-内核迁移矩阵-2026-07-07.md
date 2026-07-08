@@ -3463,9 +3463,11 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 15. Plugin 运行时接入(启用插件的 skills/.mcp.json/hooks 合并进会话,现为空壳)。
 16. permissionExplainer + destructiveCommandWarning 审批卡增强。
 
-**需 owner 拍板**
-- 前端目标壳:继续 web/+Python 旧栈,还是 ts/+ts-desktop?前端 §9 低噪工具流的一批 HIGH(失败态红色、本会话允许真功能、审批卡编辑参数签名、命令输出默认折叠)当前都指向 web/+Python 旧栈;若目标壳是 TS,应在 ts-desktop 侧新建而非改旧栈。
-- OS 沙箱默认开/关;plan 模式硬拒绝 vs 可人工覆盖;规则是否落盘持久化 + 权限管理 UI。
+**owner 拍板结论(2026-07-09)**
+- ✅**前端目标壳 = `ts/` + ts-desktop**:前端 §9 低噪工具流的 HIGH 项(失败态红色、本会话允许真功能、审批卡编辑参数签名、命令输出默认折叠、拒绝反馈)一律在 **TS/ts-desktop 侧新建并对齐已迁移的 TS 内核**;`web/`+Python 旧栈只做维持、按节奏退役,不在旧栈上补这些 HIGH(否则和 TS 内核漂移)。
+- ✅**OS 沙箱 = 接线 + 默认开**:生产入口(server/desktop 主进程)构造 `new Sandbox({enabled:true})` 注入 `ctx.sandbox` 并**默认启用**;必须同时补依赖探测(`checkDependencies`,Linux 缺 bwrap/socat 时)+ `wrapCommand` try/catch 优雅降级到明文执行(避免默认开在缺依赖环境崩),并给网络白名单最简策略(别让"沙箱=网络全放行")。真机 seatbelt/bwrap 验证列入打包 smoke。
+- ✅**下一步方向 = P0 安全一组**:工作区主边界 symlink 解析 + 读命令路径工作区边界 + `.mcp.json` 信任闸。
+- 仍待拍板:plan 模式硬拒绝 vs 可人工覆盖;规则是否落盘持久化 + 权限管理 UI;模型重试是否默认开(failover-vs-retry 延迟取舍)。
 
 ### D. 本轮验证与未跑
 - 已跑:`bun test`(863 pass/0 fail)、`bun run typecheck`、`smoke:sandbox/sqlite`、`build:sidecar`、`web tsc`。
