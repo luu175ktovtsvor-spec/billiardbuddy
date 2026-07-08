@@ -397,6 +397,46 @@ test('agent_task launches background task when agent definition has background t
   }
 })
 
+test('agent_task supports CC-Haha run_in_background and named SendMessage targets', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-background-param-'))
+  try {
+    let capturedInput: unknown
+    const tool = createAgentTaskTool({
+      agents: [agent()],
+      model: scriptedModel([{ kind: 'final', text: 'unused' }]),
+      baseTools: [],
+      startBackgroundAgent: async (input) => {
+        capturedInput = input
+        return {
+          task: {
+            id: 'bg_agent_param_1',
+            title: `${input.agent}: ${input.task}`,
+            params: { name: input.name, agent_id: 'stable_bg_agent_1' },
+          },
+          agent: agent({ name: input.agent ?? 'researcher' }),
+        }
+      },
+    })
+    const out = await tool.execute({
+      task: '后台研究索引',
+      name: 'indexer',
+      run_in_background: true,
+      isolation: 'worktree',
+    }, { workspace: new Workspace(root) })
+    expect(capturedInput).toEqual({
+      agent: 'researcher',
+      name: 'indexer',
+      task: '后台研究索引',
+      title: 'researcher: 后台研究索引',
+      isolation: 'worktree',
+    })
+    expect(out).toContain('<background_task_started id="bg_agent_param_1" agent="researcher" name="indexer" agent_id="stable_bg_agent_1" status="queued">')
+    expect(out).toContain('researcher: 后台研究索引')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('agent_task requires agent name when multiple agents are available', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-tool-'))
   try {

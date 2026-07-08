@@ -142,6 +142,7 @@ describe('tool_search', () => {
     expect(searchTools(registry, { query: '给代理发消息', limit: 1 })[0]?.tool.name).toBe('SendMessage')
     expect(searchTools(registry, { query: '查看团队成员', limit: 1 })[0]?.tool.name).toBe('ListPeers')
     expect(searchTools(registry, { query: '子代理隔离工作区', limit: 1 })[0]?.tool.name).toBe('agent_task')
+    expect(searchTools(registry, { query: 'run_in_background named subagent', limit: 1 })[0]?.tool.name).toBe('agent_task')
     expect(searchTools(registry, { query: '后台子代理隔离工作区', limit: 1 })[0]?.tool.name).toBe('start_background_agent_task')
     expect(searchTools(registry, { query: '创建 git worktree', limit: 1 })[0]?.tool.name).toBe('EnterWorktree')
     expect(searchTools(registry, { query: '退出 worktree', limit: 1 })[0]?.tool.name).toBe('ExitWorktree')
