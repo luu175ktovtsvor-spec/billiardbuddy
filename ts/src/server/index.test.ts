@@ -1115,6 +1115,85 @@ test('bridge code session API creates sessions and stores worker credentials', a
   }
 })
 
+test('bridge worker API starts CCR worker transport and uploads events/state/delivery', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-bridge-worker-'))
+  const calls: Array<{ url: string; method: string; body: any; headers: Record<string, string> }> = []
+  const bridgeServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    fetchImpl: async (input, init) => {
+      calls.push({
+        url: String(input),
+        method: String(init?.method),
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        headers: Object.fromEntries(new Headers(init?.headers).entries()),
+      })
+      if (String(input).endsWith('/v1/code/sessions/cse_worker_api/bridge')) {
+        return Response.json({
+          worker_jwt: 'worker.jwt',
+          api_base_url: 'https://session-ingress.example',
+          expires_in: 3600,
+          worker_epoch: 13,
+        })
+      }
+      return Response.json({})
+    },
+  })
+  const codeBase = `http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/code-sessions/${encodeURIComponent('cse_worker_api')}`
+  try {
+    await fetch(`${codeBase}/credentials`, {
+      method: 'POST',
+      body: JSON.stringify({
+        bridge_remote: {
+          base_url: 'https://remote.example',
+          token: 'oauth-token',
+        },
+      }),
+    })
+    const started = await (await fetch(`${codeBase}/worker`, {
+      method: 'POST',
+      body: JSON.stringify({ heartbeat_interval_ms: 60000 }),
+    })).json() as any
+    expect(started).toMatchObject({ ok: true, sessionId: 'cse_worker_api', workerEpoch: 13 })
+
+    await fetch(`${codeBase}/worker/event`, {
+      method: 'POST',
+      body: JSON.stringify({ event: { type: 'assistant', session_id: 'cse_worker_api', parent_tool_use_id: null, message: { id: 'msg_1' } } }),
+    })
+    await fetch(`${codeBase}/worker/state`, {
+      method: 'POST',
+      body: JSON.stringify({
+        state: 'requires_action',
+        details: {
+          tool_name: 'Bash',
+          action_description: 'Running npm test',
+          tool_use_id: 'toolu_1',
+          request_id: 'req_1',
+          input: { command: 'npm test' },
+        },
+      }),
+    })
+    await fetch(`${codeBase}/worker/delivery`, {
+      method: 'POST',
+      body: JSON.stringify({ event_id: 'evt_1', status: 'processed' }),
+    })
+    await fetch(`${codeBase}/worker/heartbeat`, { method: 'POST' })
+    await fetch(`${codeBase}/worker/flush`, { method: 'POST' })
+
+    expect(calls.some(call => call.url === 'https://session-ingress.example/v1/code/sessions/cse_worker_api/worker' && call.method === 'PUT' && call.body.worker_status === 'idle' && call.body.worker_epoch === 13)).toBe(true)
+    expect(calls.some(call => call.url.endsWith('/worker/events') && call.body.events[0].payload.type === 'assistant')).toBe(true)
+    expect(calls.some(call => call.url.endsWith('/worker') && call.body.worker_status === 'requires_action' && call.body.requires_action_details.request_id === 'req_1')).toBe(true)
+    expect(calls.some(call => call.url.endsWith('/worker/events/delivery') && call.body.updates[0].event_id === 'evt_1')).toBe(true)
+    expect(calls.some(call => call.url.endsWith('/worker/heartbeat') && call.body.session_id === 'cse_worker_api')).toBe(true)
+    const stopped = await (await fetch(`${codeBase}/worker`, { method: 'DELETE' })).json() as any
+    expect(stopped).toMatchObject({ ok: true, sessionId: 'cse_worker_api' })
+  } finally {
+    bridgeServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('bridge Remote Control event API stores permission requests and response outbox', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-bridge-remote-events-'))
   const bridgeServer = startServer({ port: 0, transcriptRoot: root, mcpConfigPath: join(root, 'missing.mcp.json') })
