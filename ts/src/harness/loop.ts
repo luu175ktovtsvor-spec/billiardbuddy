@@ -66,6 +66,7 @@ import {
   applySessionStartHooks,
   applyStopHooks,
   applyUserPromptSubmitHooks,
+  mergeHookRegistries,
   type HookRegistry,
 } from '../hooks/hooks'
 import type { TeamInboxContextOptions, TeamService } from '../tasks/teamService'
@@ -109,6 +110,8 @@ export interface RunAgentLoopOptions {
   contentReplacementState?: ContentReplacementState
   transcript?: TranscriptLike
   hooks?: HookRegistry
+  initialSessionHooks?: HookRegistry
+  onSessionHooksChanged?: (hooks: HookRegistry | undefined) => void
   subagent?: { agentId: string; agentType: string }
   querySource?: string
   teamInbox?: TeamInboxContextOptions & { service: TeamService }
@@ -160,6 +163,8 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     signal: opts.signal,
     sandbox: opts.sandbox,
     permissionMode: opts.permissionMode ?? 'ask',
+    sessionHooks: opts.initialSessionHooks,
+    onSessionHooksChanged: opts.onSessionHooksChanged,
     conversationId: opts.conversationId,
     querySource: opts.querySource,
     localDenialTracking: opts.localDenialTracking,
@@ -172,11 +177,12 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   }
   addAllowedToolsToContext(ctx, opts.initialAllowedTools)
   const restoredWorktree = activateWorktreeSessionForContext(ctx)
+  const hooksForCurrentSession = (): HookRegistry | undefined => mergeHookRegistries(opts.hooks, ctx.sessionHooks)
   let system = opts.systemPrompt
   if (restoredWorktree) {
     system = `${system}\n\n<system-reminder>\nActive EnterWorktree session restored. Current tool workspace is ${restoredWorktree.worktreePath}; original workspace is ${restoredWorktree.originalRoot}. Use ExitWorktree when the user asks to leave it.\n</system-reminder>`
   }
-  const sessionStart = await applySessionStartHooks(opts.hooks, ctx)
+  const sessionStart = await applySessionStartHooks(hooksForCurrentSession(), ctx)
   for (const extra of sessionStart.additionalContext) {
     yield { type: 'context_note', text: extra }
   }
@@ -188,7 +194,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
 
   const userPrompt = opts.skipUserMessage
     ? { userPrompt: opts.userMessage, additionalContext: [] }
-    : await applyUserPromptSubmitHooks(opts.hooks, opts.userMessage, ctx)
+    : await applyUserPromptSubmitHooks(hooksForCurrentSession(), opts.userMessage, ctx)
   for (const extra of userPrompt.additionalContext) {
     yield { type: 'context_note', text: extra }
   }
@@ -205,8 +211,9 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   let stopHookActive = false
   const applyStopHookContinuation = async (finalText: string): Promise<{ shouldContinue: boolean; events: AgentEvent[] }> => {
     const events: AgentEvent[] = []
-    const stopHook = await applyStopHooks(opts.hooks, finalText, ctx, opts.subagent, { stopHookActive })
-    const hasActiveGoalHook = hookRegistryHasGoalHook(opts.hooks, ctx.conversationId) && !!(ctx.conversationId && getThreadGoal(ctx.conversationId))
+    const hooks = hooksForCurrentSession()
+    const stopHook = await applyStopHooks(hooks, finalText, ctx, opts.subagent, { stopHookActive })
+    const hasActiveGoalHook = hookRegistryHasGoalHook(hooks, ctx.conversationId) && !!(ctx.conversationId && getThreadGoal(ctx.conversationId))
     for (const extra of stopHook.additionalContext) events.push({ type: 'context_note', text: extra })
     if (!stopHook.blockingFeedback?.length) {
       if (ctx.conversationId && hasActiveGoalHook) {
@@ -394,7 +401,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     const flushParallelReadOnly = async (): Promise<AgentEvent[]> => {
       if (!parallelReadOnly.length) return []
       const batch = parallelReadOnly.splice(0)
-      const outcomes = await Promise.all(batch.map(item => executeAllowedToolCall(item.tool, item.call, item.input, ctx, opts.hooks, opts.toolResultStoreDir)))
+      const outcomes = await Promise.all(batch.map(item => executeAllowedToolCall(item.tool, item.call, item.input, ctx, hooksForCurrentSession(), opts.toolResultStoreDir)))
       const events: AgentEvent[] = []
       for (const outcome of outcomes) {
         toolResults.push(outcome.result)
@@ -416,7 +423,8 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       sameKey = k
 
       const sameCallLimit = sameCallLimitForTool(call.name)
-      const parallelCandidate = sameKeyCount < sameCallLimit ? prepareParallelReadOnlyCall(registry, call, ctx, opts.hooks) : null
+      const hooks = hooksForCurrentSession()
+      const parallelCandidate = sameKeyCount < sameCallLimit ? prepareParallelReadOnlyCall(registry, call, ctx, hooks) : null
       if (parallelCandidate) {
         yield { type: 'tool_call', tool: call.name, input: call.input }
         parallelReadOnly.push(parallelCandidate)
@@ -432,7 +440,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
         toolResults.push(toolResultBlock(call.id, output, false))
         yield { type: 'tool_result', tool: call.name, output }
       } else {
-        yield* gateOneCall(registry, call, ctx, toolResults, opts.hooks, opts.toolResultStoreDir)
+        yield* gateOneCall(registry, call, ctx, toolResults, hooksForCurrentSession(), opts.toolResultStoreDir)
       }
       const pendingVerification = ctx.pendingPlanVerification
       if (

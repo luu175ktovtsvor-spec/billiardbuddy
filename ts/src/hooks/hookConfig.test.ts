@@ -156,6 +156,30 @@ test('normalizeHookRegistry supports CC-Haha frontmatter event map and agent Sto
   }
 })
 
+test('normalizeHookRegistry supports once hooks from frontmatter maps', async () => {
+  const registry = normalizeHookRegistry({
+    hooks: {
+      PreToolUse: [
+        {
+          matcher: 'write_file',
+          hooks: [
+            { once: true, decision: { action: 'context', additionalContext: 'first only' } },
+          ],
+        },
+      ],
+    },
+  })
+  const ctx = { workspace: new Workspace(mkdtempSync(join(tmpdir(), 'hook-config-once-'))) }
+  try {
+    expect(await runHookEvent(registry, { event: 'PreToolUse', toolName: 'write_file' }, ctx)).toEqual([
+      { action: 'context', additionalContext: 'first only' },
+    ])
+    expect(await runHookEvent(registry, { event: 'PreToolUse', toolName: 'write_file' }, ctx)).toEqual([])
+  } finally {
+    rmSync(ctx.workspace.root, { recursive: true, force: true })
+  }
+})
+
 test('normalizeHookRegistry command hook sends CC-Haha-style payload on stdin and parses stdout context', async () => {
   const root = mkdtempSync(join(tmpdir(), 'hook-config-command-'))
   try {

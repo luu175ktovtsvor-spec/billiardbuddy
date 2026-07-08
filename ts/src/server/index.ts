@@ -28,7 +28,7 @@ import {
 import { VoiceTranscriptionError, transcribeVoiceFile } from './services/voiceTranscription'
 import { buildGeneralRegistry } from '../tools/generalTools'
 import { workspaceForActiveWorktree } from '../tools/worktreeTools'
-import { allowSkillTools, formatUseSkillResult, loadSkillsDir, recordInvokedSkill } from '../skills/skillLoader'
+import { allowSkillTools, formatUseSkillResult, loadSkillsDir, recordInvokedSkill, registerSkillHooks } from '../skills/skillLoader'
 import { createInvokedSkillsMessage, restoreInvokedSkillsFromMessages } from '../skills/invokedSkills'
 import { createBuiltinCommandLibrary, isBuiltinForkCommand } from '../commands/builtinCommands'
 import { allowedToolsForAgent } from '../commands/allowedTools'
@@ -929,6 +929,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const storeDocs = new StoreDocsService(desktopData, stateRoot)
   const turns = new TurnRegistry()
   const steerInboxes = new Map<string, string[]>()
+  const sessionSkillHooks = new Map<string, NonNullable<ReturnType<typeof mergeHookRegistries>>>()
   const providerHealth = new ProviderHealthStore(opts.providerRoot ?? stateRoot)
   const bridgeSubscribers = new Map<string, BridgeRemoteSubscriber>()
   const bridgeWorkers = new Map<string, BridgeWorkerClient>()
@@ -1442,6 +1443,7 @@ export function startServer(opts: StartServerOptions = {}) {
     const configuredHooks = await loadHookRegistryFile(opts.hooksPath ?? defaultHooksPath())
     const transcriptMessagesForHooks = await transcript.load()
     const hooks = mergeHookRegistries(createDomainPackHookRegistry(enabledPacks), configuredHooks, createGoalHookRegistry(conversationId, transcriptMessagesForHooks))
+    const initialSessionHooks = sessionSkillHooks.get(conversationId)
     const agents = await loadAgentsDir(opts.agentsRoot ?? defaultAgentsRoot())
     const controller = turns.start(conversationId)
     const mcpConfigPath = typeof rawBody.mcpConfigPath === 'string' && rawBody.mcpConfigPath.trim()
@@ -1468,9 +1470,11 @@ export function startServer(opts: StartServerOptions = {}) {
       const allowedTools = allowedToolsForAgent(prompt.allowedTools)
       const allowsAllTools = prompt.allowedTools?.includes('*') === true
       if (found) {
+        const mergedHooks = mergeHookRegistries(found.hooks, prompt.hooks)
         return {
           ...found,
           ...(allowsAllTools ? { tools: undefined } : allowedTools ? { tools: allowedTools } : {}),
+          ...(mergedHooks ? { hooks: mergedHooks } : {}),
         }
       }
       const suffix = normalizeCommandName(prompt.name).replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-|-$/g, '') || kind
@@ -1486,6 +1490,7 @@ export function startServer(opts: StartServerOptions = {}) {
         permissionMode: permissionModeFrom(rawBody.permissionMode),
         maxTurns: 80,
         ...(allowedTools ? { tools: allowedTools } : {}),
+        ...(prompt.hooks ? { hooks: prompt.hooks } : {}),
       }
     }
     const executeSkill = async (skill: PromptCommand, args: string, toolCtx: ToolContext): Promise<string> => {
@@ -1493,6 +1498,7 @@ export function startServer(opts: StartServerOptions = {}) {
       recordInvokedSkill(skill, expandedPrompt, toolCtx)
       if (skill.context !== 'fork') {
         allowSkillTools(skill, toolCtx)
+        registerSkillHooks(skill, toolCtx)
         return formatUseSkillResult(skill, expandedPrompt)
       }
       if (!backgroundAgentOptions) throw new Error('skill context:fork 需要后台任务运行器')
@@ -1760,6 +1766,11 @@ export function startServer(opts: StartServerOptions = {}) {
           contextWindowTokens,
           toolResultStoreDir: join(stateRoot, 'tool-results', conversationId),
           hooks,
+          initialSessionHooks,
+          onSessionHooksChanged: updatedHooks => {
+            if (updatedHooks && updatedHooks.rules.length > 0) sessionSkillHooks.set(conversationId, updatedHooks)
+            else sessionSkillHooks.delete(conversationId)
+          },
           teamInbox: { service: teams },
         })) {
           yield await record(event)

@@ -3,6 +3,8 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { extractDescription, parseMarkdownDocument, stringArrayField, stringField } from '../commands/frontmatter'
 import { addAllowedToolsToContext, normalizeAllowedTools } from '../commands/allowedTools'
 import type { PromptCommand } from '../commands/types'
+import { mergeHookRegistries } from '../hooks/hooks'
+import { normalizeHookRegistry } from '../hooks/hookConfig'
 import type { Tool, ToolContext } from '../tools/Tool'
 import { addInvokedSkill } from './invokedSkills'
 
@@ -58,6 +60,12 @@ export function allowSkillTools(skill: PromptCommand, ctx: ToolContext): void {
   addAllowedToolsToContext(ctx, skill.allowedToolRules ?? skill.allowedTools)
 }
 
+export function registerSkillHooks(skill: PromptCommand, ctx: ToolContext): void {
+  if (!skill.hooks || skill.hooks.rules.length === 0) return
+  ctx.sessionHooks = mergeHookRegistries(ctx.sessionHooks, skill.hooks)
+  ctx.onSessionHooksChanged?.(ctx.sessionHooks)
+}
+
 export async function loadSkillFile(filePath: string, source: PromptCommand['source'] = 'skills'): Promise<PromptCommand> {
   const raw = await readFile(filePath, 'utf8')
   const doc = parseMarkdownDocument(raw)
@@ -70,6 +78,7 @@ export async function loadSkillFile(filePath: string, source: PromptCommand['sou
   const model = stringField(doc.frontmatter, 'model')
   const context = stringField(doc.frontmatter, 'context')
   const agent = stringField(doc.frontmatter, 'agent')
+  const hooks = normalizeHookRegistry(doc.frontmatter.hooks)
 
   return {
     type: 'prompt',
@@ -81,6 +90,7 @@ export async function loadSkillFile(filePath: string, source: PromptCommand['sou
     model,
     ...(context === 'fork' || context === 'inline' ? { context } : {}),
     ...(agent ? { agent } : {}),
+    ...(hooks.rules.length > 0 ? { hooks } : {}),
     source,
     filePath,
     baseDir,
@@ -217,7 +227,10 @@ export function createSkillTools(library: SkillLibrary, opts: { skillRoot?: stri
       if (opts.executeSkill) return await opts.executeSkill(skill, args, ctx)
       const prompt = await skill.getPrompt(args, ctx)
       recordInvokedSkill(skill, prompt, ctx)
-      if (skill.context !== 'fork') allowSkillTools(skill, ctx)
+      if (skill.context !== 'fork') {
+        allowSkillTools(skill, ctx)
+        registerSkillHooks(skill, ctx)
+      }
       return formatUseSkillResult(skill, prompt)
     },
   }

@@ -17,6 +17,13 @@ description: Make posters
 allowedTools: [read_file, write_file]
 context: fork
 agent: designer
+hooks:
+  SubagentStart:
+    - matcher: designer
+      hooks:
+        - decision:
+            action: context
+            additionalContext: skill-start
 ---
 # Poster
 
@@ -33,6 +40,9 @@ Follow these steps.
       context: 'fork',
       agent: 'designer',
     })
+    expect(lib.skills[0]!.hooks?.rules.map(rule => [rule.event, rule.matcher])).toEqual([
+      ['SubagentStart', 'designer'],
+    ])
     expect(formatSkillIndex(lib)).toContain('poster-maker: Make posters')
   } finally {
     rmSync(root, { recursive: true, force: true })

@@ -932,6 +932,48 @@ Use run_command for the requested shell action.
   expect(readFileSync(join(root, 'allowed.txt'), 'utf8')).toBe('ok')
 })
 
+test('inline use_skill registers skill hooks for later calls in the same tool batch', async () => {
+  const skillsRoot = join(root, 'skills')
+  mkdirSync(join(skillsRoot, 'guarded-writer'), { recursive: true })
+  await Bun.write(join(skillsRoot, 'guarded-writer', 'SKILL.md'), `---
+name: guarded-writer
+description: Register a write guard
+hooks:
+  PreToolUse:
+    - matcher: write_file
+      hooks:
+        - decision:
+            action: deny
+            message: skill hook blocked write
+---
+Use this skill before writing guarded files.
+`)
+  const skills = await loadSkillsDir(skillsRoot)
+  const model = scriptedModel([
+    {
+      kind: 'tool_calls',
+      calls: [
+        { id: 'skill-1', name: 'use_skill', input: { skill: 'guarded-writer' } },
+        { id: 'write-1', name: 'write_file', input: { path: 'blocked.txt', content: 'bad' } },
+      ],
+    },
+    { kind: 'final', text: 'done' },
+  ])
+
+  const events = await collect(runAgentLoop({
+    model,
+    registry: buildGeneralRegistry({ skills }),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'use guarded writer',
+    permissionMode: 'full',
+    conversationId: 'skill-hook-loop',
+  }))
+
+  expect(events.some(event => event.type === 'tool_result' && event.output.includes('[hook 拦截] skill hook blocked write'))).toBe(true)
+  expect(existsSync(join(root, 'blocked.txt'))).toBe(false)
+})
+
 test('审批闸:previewFor 抛错 → 退化成无预览、照样弹卡不崩循环(工具执行永不抛也覆盖预览)', async () => {
   process.env.SECRET_KEY = SECRET
   resetDenialStore()

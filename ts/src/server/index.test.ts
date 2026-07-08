@@ -2532,6 +2532,13 @@ name: poster-maker
 description: Make posters
 context: fork
 allowedTools: [read_file]
+hooks:
+  SubagentStart:
+    - matcher: skill-poster-maker
+      hooks:
+        - decision:
+            action: context
+            additionalContext: skill fork start hook
 ---
 Plan the poster production workflow.
 `)
@@ -2605,10 +2612,79 @@ Plan the poster production workflow.
     expect(workerJson).toContain('Plan the poster production workflow')
     expect(workerJson).toContain('用户给这个技能的参数')
     expect(workerJson).toContain('周末活动')
+    expect(workerJson).toContain('skill fork start hook')
     expect(workerJson).not.toContain('父级上下文不应进入 skill worker')
     expect(workerRequest.tools.map((tool: any) => tool.function.name)).toEqual(['read_file'])
   } finally {
     skillServer.stop(true)
+    rmSync(transcriptRoot, { recursive: true, force: true })
+  }
+})
+
+test('POST /agent/run persists inline skill hooks across turns in one conversation', async () => {
+  const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-skill-hooks-persist-'))
+  const skillsRoot = join(transcriptRoot, 'skills')
+  mkdirSync(join(skillsRoot, 'guarded-writer'), { recursive: true })
+  writeFileSync(join(skillsRoot, 'guarded-writer', 'SKILL.md'), `---
+name: guarded-writer
+description: Register persistent write guard
+hooks:
+  PreToolUse:
+    - matcher: write_file
+      hooks:
+        - decision:
+            action: deny
+            message: persisted skill hook blocked write
+---
+Use this skill to guard writes.
+`)
+  const payloads = [
+    { id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_skill', function: { name: 'use_skill', arguments: JSON.stringify({ skill: 'guarded-writer' }) } }] }, finish_reason: 'tool_calls' }] },
+    { id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: 'guard armed' }, finish_reason: 'stop' }] },
+    { id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'write_1', function: { name: 'write_file', arguments: JSON.stringify({ path: 'blocked.txt', content: 'bad' }) } }] }, finish_reason: 'tool_calls' }] },
+    { id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: 'write checked' }, finish_reason: 'stop' }] },
+  ]
+  const server = startServer({
+    port: 0,
+    transcriptRoot,
+    skillsRoot,
+    agentsRoot: join(transcriptRoot, 'agents'),
+    mcpConfigPath: join(transcriptRoot, 'missing.mcp.json'),
+    env: {
+      OPENAI_BASE_URL: 'https://model.example/v1',
+      OPENAI_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async () => sseResponse(payloads.shift()!),
+  })
+  try {
+    const first = await fetch(`http://127.0.0.1:${server.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({
+        message: '启用写入保护技能',
+        conversationId: 'skill-hooks-persist',
+        workspaceRoot: transcriptRoot,
+        permissionMode: 'full',
+      }),
+    })
+    expect(first.status).toBe(200)
+    expect(await first.text()).toContain('guard armed')
+
+    const second = await fetch(`http://127.0.0.1:${server.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({
+        message: '现在写 blocked.txt',
+        conversationId: 'skill-hooks-persist',
+        workspaceRoot: transcriptRoot,
+        permissionMode: 'full',
+      }),
+    })
+    expect(second.status).toBe(200)
+    const text = await second.text()
+    expect(text).toContain('[hook 拦截] persisted skill hook blocked write')
+    expect(existsSync(join(transcriptRoot, 'blocked.txt'))).toBe(false)
+  } finally {
+    server.stop(true)
     rmSync(transcriptRoot, { recursive: true, force: true })
   }
 })

@@ -7,6 +7,7 @@ import type { Message } from '../types/message'
 import type { ToolRegistry } from './registry'
 import type { ContentReplacementState } from '../context/toolResultStorage'
 import type { DenialTrackingState } from '../permissions/denialTracking'
+import type { HookRegistry } from '../hooks/hooks'
 
 export interface FileReadSnapshot {
   path: string
@@ -43,6 +44,10 @@ export interface ToolContext {
   sessionAllowedTools?: Set<string>
   /** 当前 slash command / inline skill 通过 allowedTools 授权的参数级工具规则。 */
   sessionAllowedToolRules?: Array<{ tool: string; commandPattern: string }>
+  /** 当前 slash command / inline skill 注册的会话内 hooks。 */
+  sessionHooks?: HookRegistry
+  /** 会话内 hooks 变化时通知宿主持久化。 */
+  onSessionHooksChanged?: (hooks: HookRegistry | undefined) => void
   /** 会话 id,跨请求拒绝计数按它隔离(见 denialTracking)。 */
   conversationId?: string
   /** 当前工具调用前的模型消息快照,供 fork/subagent guard 等运行时逻辑判断父上下文。 */
