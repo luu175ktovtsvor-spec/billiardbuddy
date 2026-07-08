@@ -23,7 +23,7 @@ import {
 } from '../context/toolResultStorage'
 import { startAgentSummarization, type AgentSummaryController } from './agentSummary'
 import { createDenialTrackingState } from '../permissions/denialTracking'
-import { FORK_SUBAGENT_TYPE, isForkQuerySource, isInForkChild, type ForkRunContext } from '../agents/forkSubagent'
+import { buildWorktreeNotice, FORK_SUBAGENT_TYPE, isForkQuerySource, isInForkChild, type ForkRunContext } from '../agents/forkSubagent'
 
 export interface BackgroundAgentTaskInput {
   agent?: string
@@ -599,6 +599,9 @@ export async function startBackgroundAgentRun(
   const runWorkspaceBase = agentWorktree ? new Workspace(agentWorktree.session.worktreePath) : ctx.workspace
   const runWorkspace = workspaceWithAgentMemory(runWorkspaceBase, agent.name, agent.memory)
   const runSandbox = sandboxForWorkspace(ctx.sandbox, runWorkspace)
+  const forkWorktreeNoticeMessages: Message[] = runOptions.forkContext && agentWorktree && handoffInitialMessages.length === 0
+    ? [{ role: 'user', content: [textBlock(buildWorktreeNotice(ctx.workspace.root, agentWorktree.session.worktreePath))] }]
+    : []
   const resumedWorktreePath = typeof extraParams.resumed_worktree_path === 'string' && extraParams.resumed_worktree_path.trim()
     ? extraParams.resumed_worktree_path.trim()
     : ''
@@ -699,6 +702,7 @@ export async function startBackgroundAgentRun(
         userMessage: agentTaskMessage(agent, input),
         initialMessages: [
           ...forkInitialMessages,
+          ...forkWorktreeNoticeMessages,
           ...effectiveInitialMessages,
           ...[hookContextMessage('SubagentStart', subagentStart.additionalContext)].filter((message): message is Message => !!message),
         ],
