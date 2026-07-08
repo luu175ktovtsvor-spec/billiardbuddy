@@ -70,7 +70,8 @@ export async function loadCommandFile(filePath: string): Promise<PromptCommand> 
   const name = normalizeCommandName(stringField(doc.frontmatter, 'name') ?? stripMd(filePath))
   const description = stringField(doc.frontmatter, 'description') ?? extractDescription(doc.body) ?? name
   const whenToUse = stringField(doc.frontmatter, 'whenToUse') ?? stringField(doc.frontmatter, 'when_to_use')
-  const allowedTools = normalizeAllowedTools(stringArrayField(doc.frontmatter, 'allowedTools') ?? stringArrayField(doc.frontmatter, 'allowed_tools'))
+  const allowedToolRules = stringArrayField(doc.frontmatter, 'allowedTools') ?? stringArrayField(doc.frontmatter, 'allowed_tools')
+  const allowedTools = normalizeAllowedTools(allowedToolRules)
   const model = stringField(doc.frontmatter, 'model')
   const context = stringField(doc.frontmatter, 'context')
   const agent = stringField(doc.frontmatter, 'agent')
@@ -81,6 +82,7 @@ export async function loadCommandFile(filePath: string): Promise<PromptCommand> 
     description,
     whenToUse,
     allowedTools,
+    allowedToolRules,
     model,
     ...(context === 'fork' || context === 'inline' ? { context } : {}),
     ...(agent ? { agent } : {}),
@@ -160,6 +162,7 @@ export function publicCommand(command: PromptCommand) {
     description: command.description,
     whenToUse: command.whenToUse,
     allowedTools: command.allowedTools,
+    allowedToolRules: command.allowedToolRules,
     model: command.model,
     context: command.context,
     agent: command.agent,

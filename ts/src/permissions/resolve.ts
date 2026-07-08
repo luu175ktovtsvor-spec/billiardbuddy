@@ -21,8 +21,33 @@ function ask(tool: Tool, ctx: ToolContext, input: unknown, reason: DecisionReaso
   }
 }
 
-function sessionAllowsTool(tool: Tool, ctx: ToolContext): boolean {
-  return ctx.sessionAllowedTools?.has('*') === true || ctx.sessionAllowedTools?.has(tool.name) === true
+function sessionAllowsTool(tool: Tool, input: unknown, ctx: ToolContext): boolean {
+  if (ctx.sessionAllowedTools?.has('*') === true || ctx.sessionAllowedTools?.has(tool.name) === true) return true
+  for (const rule of ctx.sessionAllowedToolRules ?? []) {
+    if (rule.tool !== tool.name) continue
+    if (tool.name === 'run_command' && commandMatchesPattern(input, rule.commandPattern)) return true
+  }
+  return false
+}
+
+function commandMatchesPattern(input: unknown, pattern: string): boolean {
+  const command = currentCommandInput(input)
+  if (!command) return false
+  const normalizedPattern = pattern.trim()
+  if (!normalizedPattern || normalizedPattern === '*') return true
+  const prefix = normalizedPattern.endsWith(':*')
+    ? normalizedPattern.slice(0, -2).trim()
+    : normalizedPattern.endsWith('*')
+      ? normalizedPattern.slice(0, -1).trim()
+      : normalizedPattern
+  if (!prefix) return true
+  return command === prefix || command.startsWith(`${prefix} `)
+}
+
+function currentCommandInput(input: unknown): string {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return ''
+  const command = (input as Record<string, unknown>).command
+  return typeof command === 'string' ? command.trim() : ''
 }
 
 /**
@@ -59,7 +84,7 @@ function resolvePermissionInner(tool: Tool, input: unknown, ctx: ToolContext): P
   if (tool.requiresUserInteraction || (tool.requiresUserInteractionFor?.(input, ctx) ?? false)) {
     return ask(tool, ctx, input, { type: 'requiresUserInteraction' }, approvalClass)
   }
-  if (sessionAllowsTool(tool, ctx)) {
+  if (sessionAllowsTool(tool, input, ctx)) {
     return { behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: tool.name } }
   }
   if (mode === 'bypassPermissions') {

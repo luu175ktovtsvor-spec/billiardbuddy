@@ -29,6 +29,7 @@ Follow these steps.
       name: 'poster-maker',
       description: 'Make posters',
       allowedTools: ['read_file', 'write_file'],
+      allowedToolRules: ['read_file', 'write_file'],
       context: 'fork',
       agent: 'designer',
     })
@@ -88,7 +89,8 @@ Use store facts.
       skillName: 'report',
       content: expect.stringContaining('Use store facts'),
     })
-    expect(ctx.sessionAllowedTools).toEqual(new Set(['read_file', 'read_many_files', 'run_command']))
+    expect(ctx.sessionAllowedTools).toEqual(new Set(['read_file', 'read_many_files']))
+    expect(ctx.sessionAllowedToolRules).toEqual([{ tool: 'run_command', commandPattern: 'git:*' }])
   } finally {
     clearInvokedSkills('conv-use-skill')
     rmSync(root, { recursive: true, force: true })

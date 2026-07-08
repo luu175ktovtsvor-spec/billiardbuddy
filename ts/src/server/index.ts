@@ -1755,7 +1755,7 @@ export function startServer(opts: StartServerOptions = {}) {
           steerInbox,
           signal: controller.signal,
           permissionMode: permissionModeFrom(rawBody.permissionMode),
-          initialAllowedTools: commandInvocation && matchedCommand && matchedCommand.context !== 'fork' ? matchedCommand.allowedTools : undefined,
+          initialAllowedTools: commandInvocation && matchedCommand && matchedCommand.context !== 'fork' ? matchedCommand.allowedToolRules ?? matchedCommand.allowedTools : undefined,
           contextWindowChars: typeof rawBody.contextWindowChars === 'number' ? rawBody.contextWindowChars : undefined,
           contextWindowTokens,
           toolResultStoreDir: join(stateRoot, 'tool-results', conversationId),

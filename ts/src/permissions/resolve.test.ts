@@ -120,6 +120,11 @@ describe('resolvePermission 瀑布', () => {
     expect(resolvePermission(tool({ name: 'run_command', fatalReasonFor: () => '禁止' }), {}, allowedCtx).behavior).toBe('deny')
     expect(resolvePermission(tool({ name: 'run_command', requiresApproval: true, forceConfirm: true }), {}, allowedCtx).behavior).toBe('ask')
     expect(resolvePermission(tool({ name: 'run_command', requiresApproval: true, requiresUserInteraction: true }), {}, allowedCtx).behavior).toBe('ask')
+
+    const ruleCtx = ctx('ask', { sessionAllowedToolRules: [{ tool: 'run_command', commandPattern: 'git:*' }] })
+    const run = tool({ name: 'run_command', requiresApproval: true, approvalClass: 'file' })
+    expect(resolvePermission(run, { command: 'git status --short' }, ruleCtx)).toMatchObject({ behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: 'run_command' } })
+    expect(resolvePermission(run, { command: 'printf ok > file.txt' }, ruleCtx).behavior).toBe('ask')
   })
 
   test('requiresApprovalFor 动态命中 → ask', () => {
