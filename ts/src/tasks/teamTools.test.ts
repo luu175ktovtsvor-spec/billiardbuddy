@@ -41,6 +41,16 @@ async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 1000): Promis
   throw new Error('waitFor timeout')
 }
 
+function extractPeersJson(output: string): Record<string, unknown> {
+  const match = output.match(/<peers_json>\n([\s\S]*?)\n<\/peers_json>/)
+  if (!match) throw new Error(`missing peers_json block: ${output}`)
+  const text = match[1]!
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&amp;', '&')
+  return JSON.parse(text) as Record<string, unknown>
+}
+
 test('TeamCreate creates a local team and SendMessage writes a teammate inbox', async () => {
   const { root, teams, tools, ctx } = fixture()
   const [teamCreate, , sendMessage, listPeers] = tools
@@ -65,6 +75,102 @@ test('TeamCreate creates a local team and SendMessage writes a teammate inbox', 
     const peers = await listPeers!.execute({}, ctx)
     expect(peers).toContain('<peers team="alpha"')
     expect(peers).toContain('team-lead (team-lead@alpha)')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('ListPeers exposes structured peer metadata and inbox previews', async () => {
+  const { root, teams, tools, ctx } = fixture()
+  const [teamCreate, , , listPeers] = tools
+  try {
+    await teamCreate!.execute({ team_name: 'peers', description: 'metadata team', agent_type: 'lead-engineer' }, ctx)
+    const worktreePath = join(root, 'agent-worktree')
+    await teams.mutateTeam('peers', team => {
+      team.leadSessionId = 'session-lead'
+      team.members.push({
+        agentId: 'worker@peers',
+        name: 'worker',
+        agentType: 'engineer',
+        color: 'cyan',
+        joinedAt: 123_456,
+        tmuxPaneId: '%3',
+        cwd: root,
+        worktreePath,
+        sessionId: 'session-worker',
+        subscriptions: ['reviews', 'tests'],
+        backendType: 'in-process',
+        isActive: true,
+        mode: 'plan',
+      })
+    })
+    await teams.writeToMailbox('worker', {
+      from: 'team-lead',
+      text: 'Check parser & UI <now>.',
+      summary: 'check parser',
+      timestamp: '2026-07-08T00:00:00.000Z',
+    }, 'peers')
+
+    const output = await listPeers!.execute({ includeInbox: true }, ctx)
+    expect(output).toContain('<peers team="peers" count="2" active_team="true"')
+    expect(output).toContain('lead_session_id="session-lead"')
+    expect(output).toContain('<peer name="worker" agent_id="worker@peers" target="worker"')
+    expect(output).toContain('backend_type="in-process"')
+    expect(output).toContain(`worktree_path="${worktreePath}"`)
+    expect(output).toContain('<inbox peer="worker" unread_messages="1">')
+    expect(output).toContain('Check parser &amp; UI &lt;now&gt;.')
+
+    const data = extractPeersJson(output)
+    expect(data).toMatchObject({
+      team_name: 'peers',
+      lead_agent_id: 'team-lead@peers',
+      lead_session_id: 'session-lead',
+      active_team: true,
+      peer_count: 2,
+      send_message: {
+        local_targets: ['team-lead', 'worker'],
+        broadcast_target: '*',
+        cross_session_targets_enabled: false,
+      },
+    })
+    expect(data.peers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'worker',
+        agent_id: 'worker@peers',
+        target: 'worker',
+        agent_type: 'engineer',
+        backend_type: 'in-process',
+        session_id: 'session-worker',
+        tmux_pane_id: '%3',
+        worktree_path: worktreePath,
+        active: true,
+        unread_messages: 1,
+        mode: 'plan',
+        subscriptions: ['reviews', 'tests'],
+      }),
+    ]))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('ListPeers returns a parseable empty peer set without an active team', async () => {
+  const { root, tools, ctx } = fixture()
+  const [, , , listPeers] = tools
+  try {
+    const output = await listPeers!.execute({}, ctx)
+    expect(output).toContain('<peers team="" count="0" active_team="false">')
+    expect(output).toContain('</peers>')
+    expect(extractPeersJson(output)).toMatchObject({
+      active_team: false,
+      peer_count: 0,
+      peers: [],
+      send_message: {
+        local_targets: [],
+        broadcast_target: '*',
+        cross_session_targets_enabled: false,
+      },
+    })
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
