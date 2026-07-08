@@ -82,10 +82,11 @@ export function mcpToolName(serverName: string, toolName: string): string {
   return `mcp__${sanitizeNamePart(serverName)}__${sanitizeNamePart(toolName)}`.slice(0, 64)
 }
 
-export function approvalClassFromAnnotations(annotations: McpToolAnnotations | undefined): ApprovalClass | undefined {
-  if (!annotations) return undefined
-  if (annotations.destructiveHint) return 'destructive'
-  if (annotations.openWorldHint) return 'outreach'
-  if (annotations.readOnlyHint) return undefined
+export function approvalClassFromAnnotations(annotations: McpToolAnnotations | undefined): ApprovalClass {
+  // cc 对齐:MCP server 是外部不可信代码,其 checkPermissions 恒为 passthrough→ask;
+  // annotations 是 server 自报的提示,只能用于展示/并发/只读判断,不能替用户做免审批决策。
+  // 因此所有 MCP 工具默认都要过审批闸(requiresApproval=true);readOnlyHint 不再短路免审批,
+  // 只在 client.makeTool 里单独驱动 isReadOnly(plan 模式/并发)。想免审批只能靠用户显式 allow 规则。
+  if (annotations?.destructiveHint) return 'destructive'
   return 'outreach'
 }

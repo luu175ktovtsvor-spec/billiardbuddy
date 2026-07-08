@@ -27,9 +27,12 @@ test('mcpToolName:归一 OpenAI function-safe 名称,支持 Unicode server 名',
   expect(mcpToolName('my-server', 'read_file')).toBe('mcp__my-server__read_file')
 })
 
-test('approvalClassFromAnnotations:annotations 驱动审批类别', () => {
-  expect(approvalClassFromAnnotations({ readOnlyHint: true })).toBeUndefined()
+test('approvalClassFromAnnotations:MCP 工具一律要审批,annotations 只区分档级(对齐 cc passthrough→ask)', () => {
+  // 对齐 cc:MCP server 是外部不可信代码,readOnlyHint / 无 annotations 都不能免审批,
+  // 只有 destructiveHint 抬到 destructive 档,其余一律 outreach(仍 requiresApproval)。
+  expect(approvalClassFromAnnotations({ readOnlyHint: true })).toBe('outreach')
   expect(approvalClassFromAnnotations({ openWorldHint: true })).toBe('outreach')
   expect(approvalClassFromAnnotations({ destructiveHint: true })).toBe('destructive')
-  expect(approvalClassFromAnnotations(undefined)).toBeUndefined()
+  expect(approvalClassFromAnnotations({ readOnlyHint: true, destructiveHint: true })).toBe('destructive')
+  expect(approvalClassFromAnnotations(undefined)).toBe('outreach')
 })
