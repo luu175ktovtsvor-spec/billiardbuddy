@@ -706,6 +706,9 @@ test('max_turns fallback forces a final and terminates', async () => {
   expect(events.at(-1)?.type).toBe('final')
   // 强制收敛那一步是"无工具"的
   expect(model.received.at(-1)!.tools).toEqual([])
+  // 到点被强制收尾要产出可辨识事件(区别于自然收敛)
+  const reached = events.find(e => e.type === 'max_turns_reached')
+  expect(reached).toMatchObject({ type: 'max_turns_reached', turnCount: 2, maxTurns: 2 })
 })
 
 test('emits usage_update events with current input, cumulative output and context pressure', async () => {
