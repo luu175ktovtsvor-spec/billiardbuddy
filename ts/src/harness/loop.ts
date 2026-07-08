@@ -105,6 +105,7 @@ export interface RunAgentLoopOptions {
   transcript?: TranscriptLike
   hooks?: HookRegistry
   subagent?: { agentId: string; agentType: string }
+  querySource?: string
   teamInbox?: TeamInboxContextOptions & { service: TeamService }
   onSummarySnapshot?: (snapshot: AgentLoopSnapshot) => void
   modelName?: string
@@ -147,6 +148,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     sandbox: opts.sandbox,
     permissionMode: opts.permissionMode ?? 'ask',
     conversationId: opts.conversationId,
+    querySource: opts.querySource,
     localDenialTracking: opts.localDenialTracking,
     autoSpendCount: 0,
     steerInbox: opts.steerInbox ?? [],

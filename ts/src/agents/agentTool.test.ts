@@ -121,6 +121,27 @@ test('agent_task rejects recursive launch inside a fork child conversation', asy
   }
 })
 
+test('agent_task rejects recursive launch when fork query source survives without boilerplate', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-fork-query-source-guard-'))
+  try {
+    const tool = createAgentTaskTool({
+      agents: [agent()],
+      model: scriptedModel([{ kind: 'final', text: 'unused' }]),
+      baseTools: [],
+      sidechainRoot: join(root, 'sidechains'),
+    })
+
+    await expect(tool.execute({ task: '再开一个子代理' }, {
+      workspace: new Workspace(root),
+      permissionMode: 'full',
+      querySource: 'agent:builtin:fork',
+      messages: [{ role: 'user', content: [textBlock('compressed fork history without boilerplate')] }],
+    })).rejects.toThrow('Fork worker 内部不能再次启动 agent_task')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('agent_task fork_context runs a child with parent system, messages and exact tool pool', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-tool-fork-context-'))
   try {

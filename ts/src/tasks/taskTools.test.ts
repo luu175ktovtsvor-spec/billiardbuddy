@@ -197,6 +197,35 @@ test('agent_task run_in_background fork_context starts a background fork with pa
   }
 })
 
+test('start_background_agent_task rejects recursive launch from fork query source', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-tools-fork-query-source-guard-'))
+  try {
+    const tasks = new TaskService(root)
+    const agent: AgentDefinition = {
+      name: 'researcher',
+      description: '研究代理',
+      prompt: '研究并总结。',
+      filePath: join(root, 'researcher.md'),
+    }
+    const start = createBackgroundAgentTaskTool({
+      tasks,
+      agents: [agent],
+      model: scriptedModel([{ kind: 'final', text: 'unused' }]),
+      baseTools: [],
+    })
+
+    await expect(start.execute({ task: '再开后台任务' }, {
+      workspace: new Workspace(root),
+      conversationId: 'fork-child',
+      permissionMode: 'full',
+      querySource: 'agent:builtin:fork',
+      messages: [{ role: 'user', content: [textBlock('compressed fork history without boilerplate')] }],
+    })).rejects.toThrow('Fork worker 内部不能再次启动 start_background_agent_task')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('start_background_agent_task updates task stage from live agent activity', async () => {
   const root = mkdtempSync(join(tmpdir(), 'task-tools-progress-'))
   try {

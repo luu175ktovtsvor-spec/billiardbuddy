@@ -223,6 +223,35 @@ test('passes current message snapshot to tool execution', async () => {
   expect(secondInputText.some(block => block.type === 'tool_result' && block.content === 'snapshot ok')).toBe(true)
 })
 
+test('passes querySource marker to tool execution context', async () => {
+  let seenQuerySource: string | undefined
+  const inspectTool: Tool = {
+    name: 'inspect_query_source',
+    description: '',
+    inputSchema: { type: 'object' },
+    isReadOnly: false,
+    async execute(_input, ctx) {
+      seenQuerySource = ctx.querySource
+      return 'query source ok'
+    },
+  }
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'inspect-query-source', name: 'inspect_query_source', input: {} }] },
+    { kind: 'final', text: 'done' },
+  ])
+
+  await collect(runAgentLoop({
+    model,
+    registry: new ToolRegistry([inspectTool]),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    querySource: 'agent:builtin:fork',
+  }))
+
+  expect(seenQuerySource).toBe('agent:builtin:fork')
+})
+
 test('can continue directly from prepared initial messages without appending userMessage', async () => {
   let seenSystem = ''
   let seenMessages: import('../types/message').Message[] = []

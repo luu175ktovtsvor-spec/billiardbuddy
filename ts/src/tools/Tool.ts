@@ -45,6 +45,8 @@ export interface ToolContext {
   messages?: Message[]
   /** 当前主循环使用的 system prompt 快照,供 fork child 继承父提示词并保持缓存前缀。 */
   systemPrompt?: string
+  /** 当前运行来源标记,用于 fork worker 在压缩后仍能识别自身身份。 */
+  querySource?: string
   /** 子代理/后台 worker 本地拒绝与记住审批状态,避免污染父会话。 */
   localDenialTracking?: DenialTrackingState
   /** full 档下 spend 类动作已自动放行的次数(过 AUTO_SPEND_LIMIT 强制弹卡)。 */

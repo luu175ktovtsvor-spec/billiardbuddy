@@ -21,7 +21,7 @@ import {
 } from '../context/toolResultStorage'
 import { startAgentSummarization, type AgentSummaryController } from './agentSummary'
 import { createDenialTrackingState } from '../permissions/denialTracking'
-import { FORK_SUBAGENT_TYPE, isInForkChild, type ForkRunContext } from '../agents/forkSubagent'
+import { FORK_SUBAGENT_TYPE, isForkQuerySource, isInForkChild, type ForkRunContext } from '../agents/forkSubagent'
 
 export interface BackgroundAgentTaskInput {
   agent?: string
@@ -536,6 +536,7 @@ export async function startBackgroundAgentRun(
         toolResultStoreDir,
         hooks,
         subagent: { agentId: stableAgentId, agentType: agent.name },
+        querySource: runOptions.forkContext?.querySource,
         contentReplacementState: inheritedContentReplacementState,
         onSummarySnapshot: snapshot => summarizer?.updateSnapshot(snapshot),
       })) {
@@ -941,7 +942,7 @@ export function createBackgroundAgentTaskTool(opts: BackgroundAgentTaskOptions):
       }
     },
     async execute(input, ctx: ToolContext) {
-      if (ctx.messages && isInForkChild(ctx.messages)) {
+      if (isForkQuerySource(ctx.querySource) || (ctx.messages && isInForkChild(ctx.messages))) {
         throw new Error('Fork worker 内部不能再次启动 start_background_agent_task。请直接使用当前可用工具完成任务。')
       }
       const { task, agent } = await startBackgroundAgentRun(opts, input, ctx)
