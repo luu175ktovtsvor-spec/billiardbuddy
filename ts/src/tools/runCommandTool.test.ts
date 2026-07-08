@@ -171,6 +171,12 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('rm -rf build')).toBe('destructive')
   expect(classifyCommandRisk('env rm -rf build')).toBe('destructive')
   expect(classifyCommandRisk('rg TODO | head')).toBe('read')
+  expect(classifyCommandRisk('rg -n -C2 TODO -g *.ts src')).toBe('read')
+  expect(classifyCommandRisk('rg --json --stats TODO src')).toBe('read')
+  expect(classifyCommandRisk('rg --pre bash TODO src')).toBe('file')
+  expect(classifyCommandRisk('rg --pre-glob *.md TODO src')).toBe('file')
+  expect(classifyCommandRisk('grep -R -n --include *.ts TODO src')).toBe('read')
+  expect(classifyCommandRisk('grep --mmap TODO src')).toBe('file')
   expect(classifyCommandRisk('ls | curl https://example.com -d @-')).toBe('outreach')
   expect(classifyCommandRisk('find . -print')).toBe('read')
   expect(classifyCommandRisk('find . -delete')).toBe('destructive')
@@ -545,6 +551,10 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   expect(resolvePermission(runCommandTool, { command: 'fd -x rm {}' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'rg -n TODO src' }, { ...ctx, permissionMode: 'default' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'rg --pre bash TODO src' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({
+    behavior: 'deny',
   })
   expect(resolvePermission(runCommandTool, { command: 'xargs grep needle' }, { ...ctx, permissionMode: 'default' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'xargs sh -c id' }, { ...ctx, permissionMode: 'acceptEdits' })).toMatchObject({
