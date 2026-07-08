@@ -4,6 +4,7 @@ import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { existsSync, statSync } from 'node:fs'
 import { type FileOperation, normalizeRequestedPathForValidation, validatePath } from './pathValidation'
 import { WorkspaceBoundaryError } from './pathBoundary'
+import { pathContainedInRoots } from './symlinkResolve'
 
 export type BackupHook = (absPath: string) => Promise<void>
 
@@ -31,7 +32,13 @@ export class Workspace {
 
   resolve(requested: string, operation: FileOperation = 'read'): string {
     try {
-      return validatePath(requested, { root: this.root, operation })
+      const target = validatePath(requested, { root: this.root, operation })
+      // 字符串边界过了,再验 symlink:堵"工作区内 symlink 指向工作区外"的逃逸
+      // (纯 resolve/relative 看不出 <root>/link -> /etc 这类,真实读写会跟随 symlink 逃出工作区)。
+      if (!this.fullDiskAccess && !pathContainedInRoots(target, [this.root]) && !this.isAllowedPath(target)) {
+        throw new WorkspaceBoundaryError(requested, this.root)
+      }
+      return target
     } catch (err) {
       if (!(err instanceof WorkspaceBoundaryError)) throw err
       const target = this.resolveOutsideRoot(requested, operation)
