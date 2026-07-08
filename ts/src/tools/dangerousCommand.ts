@@ -252,6 +252,7 @@ export function hasShellParserRisk(command: string): boolean {
     hasBackslashEscapedOperator(command) ||
     UNICODE_WS_RE.test(command) ||
     hasMidWordHash(quoteViews.unquotedKeepQuoteChars) ||
+    hasCommentQuoteDesyncRisk(command) ||
     hasBraceExpansionRisk(quoteViews.fullyUnquoted, command) ||
     hasZshDangerousCommand(command)
 }
@@ -678,6 +679,48 @@ function hasMidWordHashIn(content: string): boolean {
     if (content[i] !== '#') continue
     if (content.slice(i - 2, i) === '${') continue
     if (/\S/.test(content[i - 1] ?? '')) return true
+  }
+  return false
+}
+
+function hasCommentQuoteDesyncRisk(command: string): boolean {
+  let inSingleQuote = false
+  let inDoubleQuote = false
+  let escaped = false
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (inSingleQuote) {
+      if (char === "'") inSingleQuote = false
+      continue
+    }
+    if (char === '\\') {
+      escaped = true
+      continue
+    }
+    if (inDoubleQuote) {
+      if (char === '"') inDoubleQuote = false
+      continue
+    }
+    if (char === "'") {
+      inSingleQuote = true
+      continue
+    }
+    if (char === '"') {
+      inDoubleQuote = true
+      continue
+    }
+    if (char === '#') {
+      const lineEnd = command.indexOf('\n', i)
+      const commentText = command.slice(i + 1, lineEnd === -1 ? command.length : lineEnd)
+      if (/['"]/.test(commentText)) return true
+      if (lineEnd === -1) break
+      i = lineEnd
+    }
   }
   return false
 }
