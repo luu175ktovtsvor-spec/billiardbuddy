@@ -7,6 +7,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "DESKTOP_APP_URL=http://localhost:3000 electron .",
+    "icon:rounded": "node scripts/make_rounded_icon.mjs",
     "build:backend": "node scripts/build_backend.js",
     "build:frontend": "node scripts/build_frontend.js",
     "build": "electron-builder",
@@ -15,7 +16,8 @@
   },
   "devDependencies": {
     "electron": "^34.5.8",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "pngjs": "^7.0.0"
   },
   "dependencies": {
     "electron-updater": "^6.8.9",
