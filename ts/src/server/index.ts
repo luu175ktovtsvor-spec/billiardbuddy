@@ -74,6 +74,7 @@ import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProject
 import { loadOutputStyles, publicOutputStyle, renderOutputStylePrompt } from '../outputStyles/outputStyleLoader'
 import { defaultPluginInstallDir, defaultPluginRoots, installPluginFromGithub, listPlugins, setPluginEnabled } from '../plugins/pluginLoader'
 import { Workspace } from '../workspace/workspace'
+import { Sandbox } from '../sandbox/sandbox'
 import type { AssistantStep, Model } from '../types/model'
 import { textBlock, type ContentBlock, type Message } from '../types/message'
 import type { AgentEvent, AskQuestionField } from '../types/events'
@@ -106,6 +107,9 @@ export interface StartServerOptions {
   fetchImpl?: FetchLike
   transcriptRoot?: string
   providerRoot?: string
+  /** OS 沙箱(seatbelt/bwrap)写围栏:默认开(owner 2026-07-09),env QF_OS_SANDBOX=0 或此项 false 关。
+   * 缺依赖/环境不支持时 Sandbox.wrapCommand 自动优雅降级为明文执行,绝不阻断命令。 */
+  sandboxEnabled?: boolean
   skillsRoot?: string
   commandsRoot?: string
   hooksPath?: string
@@ -904,6 +908,9 @@ function backgroundTaskNotification(task: TaskMeta): Record<string, unknown> | n
 export function startServer(opts: StartServerOptions = {}) {
   const host = opts.host ?? '127.0.0.1'
   const port = opts.port ?? 8850
+  // OS 沙箱写围栏默认开(owner 2026-07-09);env QF_OS_SANDBOX=0 或 opts.sandboxEnabled=false 关。
+  const sandboxEnabled = opts.sandboxEnabled ?? ((opts.env ?? process.env).QF_OS_SANDBOX !== '0')
+  const buildSandbox = (ws: Workspace): Sandbox => new Sandbox({ workspace: ws, enabled: sandboxEnabled })
   const stateRoot = opts.transcriptRoot ?? join(process.cwd(), '.agent-state')
   const sessions = new SessionService(stateRoot)
   const providers = new ProviderService(opts.providerRoot ?? stateRoot)
@@ -1759,6 +1766,7 @@ export function startServer(opts: StartServerOptions = {}) {
           model,
           registry,
           workspace,
+          sandbox: buildSandbox(workspace),
           systemPrompt,
           userMessage,
           userContent,
@@ -2129,6 +2137,7 @@ export function startServer(opts: StartServerOptions = {}) {
     try {
       const baseCtx: ToolContext = {
         workspace: built.workspace,
+        sandbox: buildSandbox(built.workspace),
         registry: built.registry,
         conversationId: conversationId || undefined,
         permissionMode: permissionModeFrom(body.permission_mode ?? body.permissionMode),
