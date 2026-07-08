@@ -2792,6 +2792,19 @@ function matchGitReadOnlyCommand(tokens: string[]): { config: GitReadOnlyCommand
   return null
 }
 
+function gitGlobalOptionNeedsApproval(command: string): boolean {
+  const tokens = tokenizeShellWords(command)
+  if (tokens[0]?.toLowerCase() !== 'git') return false
+  return tokens.slice(1).some(token =>
+    token === '-c' ||
+    /^-c[^-].*/.test(token) ||
+    token === '--exec-path' ||
+    token.startsWith('--exec-path=') ||
+    token === '--config-env' ||
+    token.startsWith('--config-env='),
+  )
+}
+
 function gitListCommandCreatesRef(
   args: string[],
   opts: { listFlags: Set<string>; flagsWithArgs: Set<string>; flagsWithOptionalArgs?: Set<string> },
@@ -3761,6 +3774,8 @@ function classifySegment(segment: string): CommandRisk {
 
   const dockerRisk = classifyDockerCommand(rawCommand)
   if (dockerRisk) return withSegmentBaseRisk(dockerRisk)
+
+  if (gitGlobalOptionNeedsApproval(rawCommand)) return withSegmentBaseRisk('outreach')
 
   const gitReadOnlyRisk = classifyGitReadOnlyCommand(rawCommand)
   if (gitReadOnlyRisk) return withSegmentBaseRisk(gitReadOnlyRisk)
