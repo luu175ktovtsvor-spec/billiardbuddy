@@ -1299,6 +1299,36 @@ function classifyHostnameCommand(command: string): CommandRisk | null {
   return 'read'
 }
 
+function classifyInfoCommand(command: string): CommandRisk | null {
+  const tokens = tokenizeShellWords(command)
+  if (tokens[0]?.toLowerCase() !== 'info') return null
+
+  const safeFlags: Record<string, FlagArgKind> = {
+    '-f': 'string',
+    '--file': 'string',
+    '-d': 'string',
+    '--directory': 'string',
+    '-n': 'string',
+    '--node': 'string',
+    '-a': 'none',
+    '--all': 'none',
+    '-k': 'string',
+    '--apropos': 'string',
+    '-w': 'none',
+    '--where': 'none',
+    '--location': 'none',
+    '--show-options': 'none',
+    '--vi-keys': 'none',
+    '--subnodes': 'none',
+    '-h': 'none',
+    '--help': 'none',
+    '--usage': 'none',
+    '--version': 'none',
+  }
+
+  return validateSafeFlags(tokens.slice(1), { safeFlags }) ? 'read' : 'outreach'
+}
+
 function classifySedCommand(command: string): CommandRisk | null {
   const tokens = tokenizeShellWords(command)
   if (tokens[0]?.toLowerCase() !== 'sed') return null
@@ -1695,6 +1725,9 @@ function classifySegment(segment: string): CommandRisk {
 
   const hostnameRisk = classifyHostnameCommand(rawCommand)
   if (hostnameRisk) return hostnameRisk
+
+  const infoRisk = classifyInfoCommand(rawCommand)
+  if (infoRisk) return infoRisk
 
   const readOnlyAllowlistRisk = classifyReadOnlyAllowlistedCommand(rawCommand)
   if (readOnlyAllowlistRisk) return readOnlyAllowlistRisk
