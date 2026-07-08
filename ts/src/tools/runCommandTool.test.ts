@@ -7,7 +7,7 @@ import { Workspace } from '../workspace/workspace'
 import type { ToolContext } from './Tool'
 import { runCommandTool } from './runCommandTool'
 import { StreamingOutputSanitizer, stripAnsiControlSequences } from './outputSanitize'
-import { classifyCommandRisk, hasShellExpansionRisk, isDangerousCommand, shellOutputRedirectionNeedsApproval } from './dangerousCommand'
+import { classifyCommandRisk, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellOutputRedirectionNeedsApproval } from './dangerousCommand'
 import { resolvePermission } from '../permissions/resolve'
 
 let root: string
@@ -176,6 +176,12 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('echo $(curl https://example.com)')).toBe('outreach')
   expect(classifyCommandRisk('cat <(curl https://example.com)')).toBe('outreach')
   expect(classifyCommandRisk('echo "${HOME}"')).toBe('outreach')
+  expect(classifyCommandRisk('echo `curl https://example.com`')).toBe('outreach')
+  expect(classifyCommandRisk('echo $IFS')).toBe('outreach')
+  expect(classifyCommandRisk('cat /proc/self/environ')).toBe('outreach')
+  expect(classifyCommandRisk('echo ok\ncurl https://example.com')).toBe('outreach')
+  expect(classifyCommandRisk('echo safe\\; cat ~/.ssh/id_rsa')).toBe('outreach')
+  expect(classifyCommandRisk('zmodload zsh/system')).toBe('outreach')
   expect(classifyCommandRisk("echo '$(curl https://example.com)'")).toBe('read')
   expect(classifyCommandRisk('echo \\$(date)')).toBe('read')
 })
@@ -187,6 +193,29 @@ test('shell expansion risk detection mirrors Bash substitution safety gate', () 
   expect(hasShellExpansionRisk('echo =curl')).toBe(true)
   expect(hasShellExpansionRisk("echo '$(date)'")).toBe(false)
   expect(hasShellExpansionRisk('echo \\$(date)')).toBe(false)
+})
+
+test('shell parser hardening mirrors Bash misparse safety gates', () => {
+  expect(hasShellParserRisk('echo `date`')).toBe(true)
+  expect(hasShellParserRisk('echo \\`date\\`')).toBe(false)
+  expect(hasShellParserRisk('echo $IFS')).toBe(true)
+  expect(hasShellParserRisk('cat /proc/self/environ')).toBe(true)
+  expect(hasShellParserRisk('echo safe\\ word')).toBe(true)
+  expect(hasShellParserRisk('echo "safe\\ word"')).toBe(false)
+  expect(hasShellParserRisk("echo 'safe\\ word'")).toBe(false)
+  expect(hasShellParserRisk('echo ok\ncurl https://example.com')).toBe(true)
+  expect(hasShellParserRisk('echo ok \\\n--flag')).toBe(false)
+  expect(hasShellParserRisk('echo ok\\\ntraceroute example.com')).toBe(true)
+  expect(hasShellParserRisk('printf "line\nnext"')).toBe(false)
+  expect(hasShellParserRisk('printf "line\n# hidden"')).toBe(true)
+  expect(hasShellParserRisk('echo {a,b}')).toBe(true)
+  expect(hasShellParserRisk('echo \\{a,b\\}')).toBe(false)
+  expect(hasShellParserRisk("echo '{a,b}'")).toBe(false)
+  expect(hasShellParserRisk('echo safe\\; cat ~/.ssh/id_rsa')).toBe(true)
+  expect(hasShellParserRisk('echo "safe\\; literal"')).toBe(false)
+  expect(hasShellParserRisk('zmodload zsh/system')).toBe(true)
+  expect(hasShellParserRisk('command builtin zmodload zsh/system')).toBe(true)
+  expect(hasShellParserRisk('fc -e vim')).toBe(true)
 })
 
 test('shell output redirection outside workspace requires explicit approval', () => {
@@ -228,6 +257,18 @@ test('run_command dynamic permission allows reads and classifies approval', () =
     approvalClass: 'outreach',
   })
   expect(resolvePermission(runCommandTool, { command: 'echo $(curl https://example.com)' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'cat /proc/self/environ' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'echo ok\ncurl https://example.com' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'echo `date`' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })
