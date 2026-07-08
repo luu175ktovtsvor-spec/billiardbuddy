@@ -231,6 +231,12 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('tree -H . -L 2')).toBe('read')
   expect(classifyCommandRisk('tree -o out.html .')).toBe('outreach')
   expect(classifyCommandRisk('tree -R -H . -L 2')).toBe('outreach')
+  expect(classifyCommandRisk('man ls')).toBe('read')
+  expect(classifyCommandRisk('man -P sh ls')).toBe('outreach')
+  expect(classifyCommandRisk('help -m cd')).toBe('read')
+  expect(classifyCommandRisk('help -P ls')).toBe('outreach')
+  expect(classifyCommandRisk('netstat -an')).toBe('read')
+  expect(classifyCommandRisk('netstat --tcp')).toBe('outreach')
   expect(classifyCommandRisk('curl https://example.com > out.txt')).toBe('outreach')
   expect(classifyCommandRisk('kill 123 > out.txt')).toBe('destructive')
   expect(classifyCommandRisk('git push --force origin main')).toBe('destructive')
@@ -453,6 +459,17 @@ test('run_command dynamic permission allows reads and classifies approval', () =
     approvalClass: 'outreach',
   })
   expect(resolvePermission(runCommandTool, { command: 'tree -R -H . -L 2' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'man ls' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'man -P sh ls' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'help -m cd' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'netstat -an' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'netstat --tcp' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })

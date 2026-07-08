@@ -1505,6 +1505,58 @@ function classifyTreeCommand(command: string): CommandRisk | null {
   return validateSafeFlags(tokens.slice(1), { safeFlags }) ? 'read' : 'outreach'
 }
 
+function classifyNamedReadOnlyCommand(
+  command: string,
+  name: string,
+  safeFlags: Record<string, FlagArgKind>,
+): CommandRisk | null {
+  const tokens = tokenizeShellWords(command)
+  if (tokens[0]?.toLowerCase() !== name) return null
+  return validateSafeFlags(tokens.slice(1), { safeFlags }) ? 'read' : 'outreach'
+}
+
+function classifyManCommand(command: string): CommandRisk | null {
+  return classifyNamedReadOnlyCommand(command, 'man', {
+    '-a': 'none',
+    '--all': 'none',
+    '-d': 'none',
+    '-f': 'none',
+    '--whatis': 'none',
+    '-h': 'none',
+    '-k': 'none',
+    '--apropos': 'none',
+    '-l': 'string',
+    '-w': 'none',
+    '-S': 'string',
+    '-s': 'string',
+  })
+}
+
+function classifyHelpCommand(command: string): CommandRisk | null {
+  return classifyNamedReadOnlyCommand(command, 'help', {
+    '-d': 'none',
+    '-m': 'none',
+    '-s': 'none',
+  })
+}
+
+function classifyNetstatCommand(command: string): CommandRisk | null {
+  return classifyNamedReadOnlyCommand(command, 'netstat', {
+    '-a': 'none',
+    '-L': 'none',
+    '-l': 'none',
+    '-n': 'none',
+    '-f': 'string',
+    '-g': 'none',
+    '-i': 'none',
+    '-I': 'string',
+    '-s': 'none',
+    '-r': 'none',
+    '-m': 'none',
+    '-v': 'none',
+  })
+}
+
 function classifyProcessActionCommand(command: string): CommandRisk | null {
   const tokens = tokenizeShellWords(command)
   const base = tokens[0]?.toLowerCase()
@@ -1923,6 +1975,15 @@ function classifySegment(segment: string): CommandRisk {
 
   const treeRisk = classifyTreeCommand(rawCommand)
   if (treeRisk) return withSegmentBaseRisk(treeRisk)
+
+  const manRisk = classifyManCommand(rawCommand)
+  if (manRisk) return withSegmentBaseRisk(manRisk)
+
+  const helpRisk = classifyHelpCommand(rawCommand)
+  if (helpRisk) return withSegmentBaseRisk(helpRisk)
+
+  const netstatRisk = classifyNetstatCommand(rawCommand)
+  if (netstatRisk) return withSegmentBaseRisk(netstatRisk)
 
   const readOnlyAllowlistRisk = classifyReadOnlyAllowlistedCommand(rawCommand)
   if (readOnlyAllowlistRisk) return withSegmentBaseRisk(readOnlyAllowlistRisk)
