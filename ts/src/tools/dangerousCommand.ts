@@ -73,6 +73,7 @@ type ReadOnlyCommandConfig = {
 }
 type GitReadOnlyCommandConfig = ReadOnlyCommandConfig & {
   isDangerous?: (args: string[]) => boolean
+  dangerRisk?: CommandRisk
 }
 
 const XARGS_SAFE_FLAGS: Record<string, FlagArgKind> = {
@@ -362,6 +363,7 @@ const GIT_READ_ONLY_COMMANDS: Record<string, GitReadOnlyCommandConfig> = {
       }
       return false
     },
+    dangerRisk: 'outreach',
   },
   'git stash list': {
     safeFlags: {
@@ -2773,7 +2775,7 @@ function classifyGitReadOnlyCommand(command: string): CommandRisk | null {
 
   if (matched.config === GIT_READ_ONLY_COMMANDS['git ls-remote'] && gitLsRemoteHasServerOption(args)) return 'outreach'
   if (!validateSafeFlags(args, matched.config)) return 'file'
-  if (matched.config.isDangerous?.(args)) return 'file'
+  if (matched.config.isDangerous?.(args)) return matched.config.dangerRisk ?? 'file'
   return 'read'
 }
 
