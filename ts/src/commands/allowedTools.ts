@@ -3,7 +3,7 @@ import { parseToolListFromCLI, permissionRuleValueFromString } from '../permissi
 
 const TOOL_ALIASES = new Map<string, string[]>([
   ['Bash', ['run_command']],
-  ['Edit', ['edit_file', 'patch_file', 'patch_files']],
+  ['Edit', ['edit_file', 'edit_excel', 'patch_file', 'patch_files']],
   ['Glob', ['glob_files']],
   ['Grep', ['grep_files']],
   ['LS', ['list_dir']],

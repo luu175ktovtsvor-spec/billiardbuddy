@@ -15,6 +15,8 @@ import { notebookEditTool } from './notebookEditTool'
 import { codeOutlineTool } from './codeOutlineTool'
 import { projectDiagnosticsTool } from './projectDiagnosticsTool'
 import { projectInstructionsTool } from './projectInstructionsTool'
+import { editExcelTool } from './spreadsheetTool'
+import { readXlsxSheet, renderMinimalXlsx } from '../server/services/officeDocuments'
 import { resolvePermission } from '../permissions/resolve'
 import { addAllowedToolsToContext } from '../commands/allowedTools'
 
@@ -443,6 +445,43 @@ test('file_history records write snapshots and restore_file restores the latest 
   expect(restored).toContain('backup_path=')
   expect(readFileSync(join(root, 'note.txt'), 'utf8')).toBe('v1\n')
   expect(ctx.fileReads?.get(join(root, 'note.txt'))?.size).toBe(3)
+})
+
+test('edit_excel updates csv cells and records file history', async () => {
+  ctx.conversationId = 'spreadsheet-csv'
+  writeFileSync(join(root, 'sheet.csv'), '姓名,分数\n小王,8')
+
+  const out = await editExcelTool.execute({ path: 'sheet.csv', cell: 'B2', value: 9 }, ctx)
+
+  expect(out).toContain('<file_change')
+  expect(out).toContain('Sheet1!B2: 8 -> 9')
+  expect(readFileSync(join(root, 'sheet.csv'), 'utf8')).toBe('姓名,分数\n小王,9')
+  expect(ctx.fileReads?.get(join(root, 'sheet.csv'))?.path).toBe('sheet.csv')
+  const history = await fileHistoryTool.execute({ path: 'sheet.csv' }, ctx)
+  expect(history).toContain('op:edit_excel')
+})
+
+test('edit_excel updates xlsx cells and supports changes array', async () => {
+  ctx.conversationId = 'spreadsheet-xlsx'
+  const xlsxPath = join(root, 'score.xlsx')
+  writeFileSync(xlsxPath, Buffer.from(renderMinimalXlsx('姓名,分数\n小王,8')))
+
+  const out = await editExcelTool.execute({
+    path: 'score.xlsx',
+    changes: [
+      { cell: 'B2', value: 9 },
+      { cell: 'C2', value: '已复核' },
+    ],
+  }, ctx)
+
+  expect(out).toContain('Sheet1!B2: 8 -> 9')
+  expect(out).toContain('Sheet1!C2: (空) -> 已复核')
+  const sheet = await readXlsxSheet(xlsxPath)
+  const firstSheet = sheet.sheets[0]
+  expect(firstSheet).toBeDefined()
+  expect(firstSheet!.rows[1]).toEqual(['小王', '9', '已复核'])
+  const history = await fileHistoryTool.execute({ path: 'score.xlsx' }, ctx)
+  expect(history).toContain('op:edit_excel')
 })
 
 test('restore_file can revert a file creation snapshot by deleting the file', async () => {

@@ -22,6 +22,12 @@ describe("approvedToolResultMessage", () => {
       path: "/tmp/demo.ts",
       tool: "restore_file",
     });
+    expect(pendingFileArtifactFromToolCall("edit_excel", { path: "/tmp/report.xlsx", cell: "B2", value: 9 })).toMatchObject({
+      kind: "file_pending",
+      title: "正在修改报表文件",
+      path: "/tmp/report.xlsx",
+      tool: "edit_excel",
+    });
     expect(pendingFileArtifactFromToolCall("restore_file", { path: "/tmp/demo.ts", dry_run: true })).toBeNull();
     expect(pendingFileArtifactFromToolCall("read_file", { path: "/tmp/demo.ts" })).toBeNull();
   });
@@ -53,6 +59,11 @@ describe("approvedToolResultMessage", () => {
       title: "文件恢复对比",
       path: "/tmp/demo.ts",
       backupPath: "/tmp/demo.ts.before-restore",
+    });
+    expect(fileArtifactFromToolResult("edit_excel", '<file_change path="/tmp/report.xlsx" backup_path="/tmp/report.xlsx.bak" />', { path: "/fallback.xlsx" })).toMatchObject({
+      kind: "diff",
+      path: "/tmp/report.xlsx",
+      backupPath: "/tmp/report.xlsx.bak",
     });
     expect(fileArtifactFromToolResult("restore_file", '<restore_preview snapshot_id="s1" path="/tmp/demo.ts">diff</restore_preview>', { path: "/tmp/demo.ts", dry_run: true })).toBeNull();
   });

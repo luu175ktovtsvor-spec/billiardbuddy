@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../workspace/workspace'
 import { filterBridgeSafeCommands, isBridgeSafeCommand, createCommandTools, formatCommandIndex, loadCommandsDir, loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from './commandLoader'
+import { normalizeAllowedTools } from './allowedTools'
 import type { PromptCommand } from './types'
 
 test('parseCommandInvocation accepts cc-style slash command names', () => {
@@ -86,6 +87,10 @@ Use shell helpers.
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('normalizeAllowedTools maps cc edit alias to file and spreadsheet mutation tools', () => {
+  expect(normalizeAllowedTools(['Edit'])).toEqual(['edit_file', 'edit_excel', 'patch_file', 'patch_files'])
 })
 
 test('createCommandTools exposes list/read progressive disclosure', async () => {

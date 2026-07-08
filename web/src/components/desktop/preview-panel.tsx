@@ -457,6 +457,8 @@ function DiffListPreview({ changes }: { changes: { path: string; backupPath?: st
 function PendingFileChangeView({ path, tool }: { path: string; tool: string }) {
   const action = tool === "write_file"
     ? "正在写入"
+    : tool === "edit_excel"
+      ? "正在修改报表"
     : tool === "patch_file"
       ? "正在应用补丁"
       : tool === "patch_files"
@@ -475,7 +477,7 @@ function PendingFileChangeView({ path, tool }: { path: string; tool: string }) {
       <div className="mt-1 max-w-full truncate font-mono text-[11.5px] text-[#86868b] dark:text-[#6e7077]" title={path}>
         {path}
       </div>
-      <div className="mt-3 text-[12px] text-[#a1a1a6] dark:text-[#56585f]">完成后显示改动对比</div>
+      <div className="mt-3 text-[12px] text-[#a1a1a6] dark:text-[#56585f]">{tool === "edit_excel" ? "完成后显示表格预览" : "完成后显示改动对比"}</div>
     </div>
   );
 }
