@@ -3007,7 +3007,7 @@
 - 已有 TS 等价入口:`ts/scripts/smoke/model-live.smoke.ts` + `cd ts && bun run smoke:model`,默认读取桌面/服务端 env 文件,创建 smoke 专用 `echo_text` 工具并强制模型先调用工具再 final,用于验证真实模型连通与 tool call 链路。
 - 删除旧 `server/scripts/smoke_agent.py`,避免文档/人员继续从 Python 旧 Agent loop 做 smoke,把真实模型连通验证收敛到 TS coding-agent 内核。
 - 验证口径:`bun run smoke:model` 需要真实模型 key,本步默认只把脚本纳入 typecheck/静态检查;有 key 的真机验收继续跑 `cd ts && bun run smoke:model`。
-- 口径:这一步删除的是旧手工 smoke 入口,不是删除 Python FastAPI 运行时、server eval 体系、媒体/OCR/视频链或 publisher 自动发布链。
+- 口径:这一步删除的是旧手工 smoke 入口,不是删除 Python FastAPI 运行时、server eval 体系、媒体/OCR/视频链;当时尚未处理的旧 publisher 自动发布链已在 3.366 明确退场。
 
 ## 3.351 2026-07-08 CC-Haha Bash `tree` 写文件安全门迁移
 
@@ -3106,7 +3106,7 @@
 - TS harness 补齐旧脚本最关键的组合轨迹断言:`read_file` 读到带恶意指令的文件后,模型即便继续发起 `run_command rm -rf /`,也会被权限瀑布的 fatal 硬拒拦下并作为 `tool_result` 回灌;原工作区文件保持存在。
 - TS harness 同步覆盖工作区边界:模型尝试 `read_file /etc/hosts` 时不会读取系统文件,而是把越界错误作为 `is_error` tool result 回灌给模型,避免旧 Python eval 中“沙箱外被挡/未读到”的验收点丢失。
 - `server/evals/README.md` 已把 `harness_eval.py` 加入已退役清单,明确 coding-agent 命令安全/工具权限/文件执行/轨迹对抗继续集中到 TS 测试和 TS smoke。
-- Python 文件数降到 392。剩余 `server/evals/agent_full_scenario_test.py`、`architecture_live_test.py` 还牵到旧 FastAPI/真实业务问答链路,暂不删除;必须等 TS API/知识库/业务问答等价 smoke 接住后再退场。
+- Python 文件数降到 392。`server/evals/architecture_live_test.py` 还牵到旧 FastAPI/真实业务问答链路,暂不删除;必须等 TS API/知识库/业务问答等价 smoke 接住后再退场。`server/evals/agent_full_scenario_test.py` 在 3.367 已由 TS agent-tools smoke 接住后删除。
 
 ## 3.364 2026-07-08 CC 权限四档命名兼容落地
 
@@ -3132,6 +3132,14 @@
 - 前端成品卡删除 `SHOW_PUBLISH` dead branch 与 `onPublish` prop;成品只支持打开右侧画布、复制、保存/导出,不提供平台发布按钮。
 - 文档口径同步:当前产品不内置平台发布 RPA;生图、生视频、剪辑产物是给用户检查、保存或导出的本地成品。自动更新配置 `desktop/package.json build.publish` 是安装包更新源,不属于用户内容平台发布,保留。
 - Python tracked 文件数提交后从 392 降到 382。仍不动 FastAPI/媒体/OCR/语音/视频编辑等活链,这些继续按 TS/Node/native 等价链路接住后再分批退场。
+
+## 3.367 2026-07-08 旧 Python BYOK/Agent 场景 smoke 退场
+
+- 删除 `server/evals/_byok_api_test.py` 与 `server/evals/_byok_e2e.py`:这两份是早期临时 BYOK 真连接脚本,已被 TS provider 配置解析、provider 持久化/failover 测试和 `bun run smoke:model` 覆盖。新路径不会依赖 Python FastAPI 临时脚本来证明模型连通。
+- 删除 `server/evals/agent_full_scenario_test.py`:该脚本用旧 Python Agent loop + MiMo 真模型对本地物料目录做读写场景,与当前 TS coding-agent 主路径重复;真实工具链 smoke 已收敛到 `ts/scripts/smoke/agent-tools-live.smoke.ts`,覆盖 `read_file`、`write_file`、`edit_file`、`edit_excel`、`run_command` 真落盘链路。
+- `server/evals/README.md` 同步退场边界:旧 Python eval 只保留尚无 TS 等价的内容质量/北极星/业务场景评测;命令安全、工具权限、文件执行、轨迹对抗、provider/BYOK 连通继续进入 TS 测试和 TS smoke。
+- `ts/src/harness/prompts.ts` 移除旧平台发布授权例子,改成群发/强推这类真实高风险动作,避免用户目标第 12 点“对外发布:不发布”之后仍在 coding-agent 内核提示里暗示平台发布功能。
+- Python tracked 文件数提交后从 382 降到 379。剩余 Python 仍按“TS/Node/native 等价实现 + 调用点切换 + 测试/smoke 通过”逐块退场,不直接删除仍在运行的 FastAPI/媒体/OCR/语音/视频编辑链路。
 
 ## 4. 下一批代码顺序
 
