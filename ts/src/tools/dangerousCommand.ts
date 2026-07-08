@@ -37,9 +37,53 @@ const SHELL_EXPANSION_PATTERNS: RegExp[] = [
   /<#/,
 ]
 
+const CONTROL_CHAR_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/
+const UNICODE_WS_RE = /[\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]/
+const SHELL_OPERATORS = new Set([';', '|', '&', '<', '>'])
+const ZSH_DANGEROUS_COMMANDS = new Set([
+  'zmodload',
+  'emulate',
+  'sysopen',
+  'sysread',
+  'syswrite',
+  'sysseek',
+  'zpty',
+  'ztcp',
+  'zsocket',
+  'mapfile',
+  'zf_rm',
+  'zf_mv',
+  'zf_ln',
+  'zf_chmod',
+  'zf_chown',
+  'zf_mkdir',
+  'zf_rmdir',
+  'zf_chgrp',
+])
+
 export function hasShellExpansionRisk(command: string): boolean {
   const exposed = shellTextOutsideSingleQuotes(command)
   return SHELL_EXPANSION_PATTERNS.some(re => re.test(exposed))
+}
+
+export function hasShellParserRisk(command: string): boolean {
+  const quoteViews = extractShellQuoteViews(command)
+  const exposed = shellTextOutsideSingleQuotes(command)
+  return CONTROL_CHAR_RE.test(command) ||
+    hasShellQuoteSingleQuoteBug(command) ||
+    hasCarriageReturnOutsideDoubleQuotes(command) ||
+    hasSuspiciousNewline(quoteViews.fullyUnquoted) ||
+    hasQuotedNewlineHash(command) ||
+    /\$IFS|\$\{[^}]*IFS/.test(command) ||
+    /\/proc\/.*\/environ/.test(command) ||
+    hasUnescapedChar(exposed, '`') ||
+    hasDangerousVariableUse(quoteViews.fullyUnquoted) ||
+    hasBackslashEscapedWhitespace(command) ||
+    hasBackslashEscapedOperator(command) ||
+    UNICODE_WS_RE.test(command) ||
+    hasMidWordHash(quoteViews.unquotedKeepQuoteChars) ||
+    hasBraceExpansionRisk(quoteViews.fullyUnquoted, command) ||
+    hasZshDangerousCommand(command)
 }
 
 function shellTextOutsideSingleQuotes(command: string): string {
@@ -68,6 +112,293 @@ function shellTextOutsideSingleQuotes(command: string): string {
     out += char
   }
   return out
+}
+
+function extractShellQuoteViews(command: string): { fullyUnquoted: string; unquotedKeepQuoteChars: string } {
+  let fullyUnquoted = ''
+  let unquotedKeepQuoteChars = ''
+  let inSingleQuote = false
+  let inDoubleQuote = false
+  let escaped = false
+
+  for (const char of command) {
+    if (escaped) {
+      escaped = false
+      if (!inSingleQuote && !inDoubleQuote) fullyUnquoted += char
+      if (!inSingleQuote && !inDoubleQuote) unquotedKeepQuoteChars += char
+      continue
+    }
+    if (char === '\\' && !inSingleQuote) {
+      escaped = true
+      if (!inSingleQuote && !inDoubleQuote) fullyUnquoted += char
+      if (!inSingleQuote && !inDoubleQuote) unquotedKeepQuoteChars += char
+      continue
+    }
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote
+      unquotedKeepQuoteChars += char
+      continue
+    }
+    if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote
+      unquotedKeepQuoteChars += char
+      continue
+    }
+    if (!inSingleQuote && !inDoubleQuote) {
+      fullyUnquoted += char
+      unquotedKeepQuoteChars += char
+    }
+  }
+
+  return { fullyUnquoted, unquotedKeepQuoteChars }
+}
+
+function hasUnescapedChar(content: string, char: string): boolean {
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === '\\') {
+      i++
+      continue
+    }
+    if (content[i] === char) return true
+  }
+  return false
+}
+
+function hasShellQuoteSingleQuoteBug(command: string): boolean {
+  let inSingleQuote = false
+  let inDoubleQuote = false
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]
+    if (char === '\\' && !inSingleQuote) {
+      i++
+      continue
+    }
+    if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote
+      continue
+    }
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote
+      if (!inSingleQuote) {
+        let backslashCount = 0
+        let j = i - 1
+        while (j >= 0 && command[j] === '\\') {
+          backslashCount++
+          j--
+        }
+        if (backslashCount > 0 && backslashCount % 2 === 1) return true
+        if (backslashCount > 0 && command.indexOf("'", i + 1) !== -1) return true
+      }
+    }
+  }
+
+  return false
+}
+
+function hasCarriageReturnOutsideDoubleQuotes(command: string): boolean {
+  if (!command.includes('\r')) return false
+  let inSingleQuote = false
+  let inDoubleQuote = false
+  let escaped = false
+
+  for (const char of command) {
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (char === '\\' && !inSingleQuote) {
+      escaped = true
+      continue
+    }
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote
+      continue
+    }
+    if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote
+      continue
+    }
+    if (char === '\r' && !inDoubleQuote) return true
+  }
+
+  return false
+}
+
+function hasSuspiciousNewline(content: string): boolean {
+  for (let i = 0; i < content.length; i++) {
+    const char = content[i]
+    if (char !== '\n' && char !== '\r') continue
+    let j = i + 1
+    while (j < content.length && /[ \t]/.test(content[j] ?? '')) j++
+    if (j >= content.length) continue
+    const backslashContinuation = content[i - 1] === '\\' && /\s/.test(content[i - 2] ?? '')
+    if (!backslashContinuation) return true
+  }
+  return false
+}
+
+function hasQuotedNewlineHash(command: string): boolean {
+  if (!command.includes('\n') || !command.includes('#')) return false
+  let inSingleQuote = false
+  let inDoubleQuote = false
+  let escaped = false
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (char === '\\' && !inSingleQuote) {
+      escaped = true
+      continue
+    }
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote
+      continue
+    }
+    if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote
+      continue
+    }
+    if (char === '\n' && (inSingleQuote || inDoubleQuote)) {
+      const lineStart = i + 1
+      const nextNewline = command.indexOf('\n', lineStart)
+      const lineEnd = nextNewline === -1 ? command.length : nextNewline
+      if (command.slice(lineStart, lineEnd).trim().startsWith('#')) return true
+    }
+  }
+
+  return false
+}
+
+function hasDangerousVariableUse(content: string): boolean {
+  return /[<>|]\s*\$[A-Za-z_]/.test(content) || /\$[A-Za-z_][A-Za-z0-9_]*\s*[|<>]/.test(content)
+}
+
+function hasBackslashEscapedWhitespace(command: string): boolean {
+  let inSingleQuote = false
+  let inDoubleQuote = false
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]
+    if (char === '\\' && !inSingleQuote) {
+      if (!inDoubleQuote && (command[i + 1] === ' ' || command[i + 1] === '\t')) return true
+      i++
+      continue
+    }
+    if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote
+      continue
+    }
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote
+    }
+  }
+
+  return false
+}
+
+function hasBackslashEscapedOperator(command: string): boolean {
+  let inSingleQuote = false
+  let inDoubleQuote = false
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]
+    if (char === '\\' && !inSingleQuote) {
+      if (!inDoubleQuote && SHELL_OPERATORS.has(command[i + 1] ?? '')) return true
+      i++
+      continue
+    }
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote
+      continue
+    }
+    if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote
+    }
+  }
+
+  return false
+}
+
+function hasMidWordHash(content: string): boolean {
+  return hasMidWordHashIn(content) || hasMidWordHashIn(content.replace(/\\+\n/g, match => {
+    const backslashCount = match.length - 1
+    return backslashCount % 2 === 1 ? '\\'.repeat(backslashCount - 1) : match
+  }))
+}
+
+function hasMidWordHashIn(content: string): boolean {
+  for (let i = 1; i < content.length; i++) {
+    if (content[i] !== '#') continue
+    if (content.slice(i - 2, i) === '${') continue
+    if (/\S/.test(content[i - 1] ?? '')) return true
+  }
+  return false
+}
+
+function isEscapedAtPosition(content: string, pos: number): boolean {
+  let backslashCount = 0
+  let i = pos - 1
+  while (i >= 0 && content[i] === '\\') {
+    backslashCount++
+    i--
+  }
+  return backslashCount % 2 === 1
+}
+
+function hasBraceExpansionRisk(content: string, originalCommand: string): boolean {
+  let unescapedOpenBraces = 0
+  let unescapedCloseBraces = 0
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === '{' && !isEscapedAtPosition(content, i)) unescapedOpenBraces++
+    else if (content[i] === '}' && !isEscapedAtPosition(content, i)) unescapedCloseBraces++
+  }
+
+  if (unescapedOpenBraces > 0 && unescapedCloseBraces > unescapedOpenBraces) return true
+  if (unescapedOpenBraces > 0 && /['"][{}]['"]/.test(originalCommand)) return true
+
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] !== '{' || isEscapedAtPosition(content, i)) continue
+    let depth = 1
+    let matchingClose = -1
+    for (let j = i + 1; j < content.length; j++) {
+      const ch = content[j]
+      if (ch === '{' && !isEscapedAtPosition(content, j)) depth++
+      else if (ch === '}' && !isEscapedAtPosition(content, j)) {
+        depth--
+        if (depth === 0) {
+          matchingClose = j
+          break
+        }
+      }
+    }
+    if (matchingClose === -1) continue
+    let innerDepth = 0
+    for (let k = i + 1; k < matchingClose; k++) {
+      const ch = content[k]
+      if (ch === '{' && !isEscapedAtPosition(content, k)) innerDepth++
+      else if (ch === '}' && !isEscapedAtPosition(content, k)) innerDepth--
+      else if (innerDepth === 0 && (ch === ',' || (ch === '.' && content[k + 1] === '.'))) return true
+    }
+  }
+
+  return false
+}
+
+function hasZshDangerousCommand(command: string): boolean {
+  const tokens = tokenizeShellWords(command.toLowerCase())
+  const modifiers = new Set(['command', 'builtin', 'noglob', 'nocorrect'])
+  let baseCmd = ''
+  for (const token of tokens) {
+    if (/^[a-zA-Z_]\w*=/.test(token)) continue
+    if (modifiers.has(token)) continue
+    baseCmd = token
+    break
+  }
+  return ZSH_DANGEROUS_COMMANDS.has(baseCmd) || (baseCmd === 'fc' && tokens.some(token => /^-\S*e/.test(token)))
 }
 
 function normalize(command: string): string {
@@ -251,6 +582,6 @@ function maxRisk(a: CommandRisk, b: CommandRisk): CommandRisk {
 
 export function classifyCommandRisk(command: string): CommandRisk {
   if (isDangerousCommand(command)) return 'destructive'
-  const initialRisk: CommandRisk = hasShellExpansionRisk(command) ? 'outreach' : 'read'
+  const initialRisk: CommandRisk = hasShellExpansionRisk(command) || hasShellParserRisk(command) ? 'outreach' : 'read'
   return splitSegments(command).reduce<CommandRisk>((risk, segment) => maxRisk(risk, classifySegment(segment)), initialRisk)
 }
