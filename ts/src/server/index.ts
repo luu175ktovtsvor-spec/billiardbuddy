@@ -28,7 +28,7 @@ import {
 import { VoiceTranscriptionError, transcribeVoiceFile } from './services/voiceTranscription'
 import { buildGeneralRegistry } from '../tools/generalTools'
 import { workspaceForActiveWorktree } from '../tools/worktreeTools'
-import { formatUseSkillResult, loadSkillsDir, recordInvokedSkill } from '../skills/skillLoader'
+import { allowSkillTools, formatUseSkillResult, loadSkillsDir, recordInvokedSkill } from '../skills/skillLoader'
 import { createInvokedSkillsMessage, restoreInvokedSkillsFromMessages } from '../skills/invokedSkills'
 import { createBuiltinCommandLibrary, isBuiltinForkCommand } from '../commands/builtinCommands'
 import { allowedToolsForAgent } from '../commands/allowedTools'
@@ -1491,7 +1491,10 @@ export function startServer(opts: StartServerOptions = {}) {
     const executeSkill = async (skill: PromptCommand, args: string, toolCtx: ToolContext): Promise<string> => {
       const expandedPrompt = (await skill.getPrompt(args, toolCtx)).trim()
       recordInvokedSkill(skill, expandedPrompt, toolCtx)
-      if (skill.context !== 'fork') return formatUseSkillResult(skill, expandedPrompt)
+      if (skill.context !== 'fork') {
+        allowSkillTools(skill, toolCtx)
+        return formatUseSkillResult(skill, expandedPrompt)
+      }
       if (!backgroundAgentOptions) throw new Error('skill context:fork 需要后台任务运行器')
       if (!expandedPrompt) return `技能 ${skill.name} 没有可执行内容。`
       const agent = promptWorkerAgent(skill, 'skill')
@@ -1752,6 +1755,7 @@ export function startServer(opts: StartServerOptions = {}) {
           steerInbox,
           signal: controller.signal,
           permissionMode: permissionModeFrom(rawBody.permissionMode),
+          initialAllowedTools: commandInvocation && matchedCommand && matchedCommand.context !== 'fork' ? matchedCommand.allowedTools : undefined,
           contextWindowChars: typeof rawBody.contextWindowChars === 'number' ? rawBody.contextWindowChars : undefined,
           contextWindowTokens,
           toolResultStoreDir: join(stateRoot, 'tool-results', conversationId),

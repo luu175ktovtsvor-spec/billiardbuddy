@@ -111,6 +111,17 @@ describe('resolvePermission 瀑布', () => {
     expect(d.behavior === 'allow' && d.reason?.type).toBe('safePrefix')
   })
 
+  test('sessionAllowedTools 放行普通审批,但不越过 plan/fatal/forceConfirm/用户交互', () => {
+    const allowedCtx = ctx('ask', { sessionAllowedTools: new Set(['run_command']) })
+    const allowed = resolvePermission(tool({ name: 'run_command', requiresApproval: true, approvalClass: 'outreach' }), {}, allowedCtx)
+    expect(allowed).toMatchObject({ behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: 'run_command' } })
+
+    expect(resolvePermission(tool({ name: 'run_command', requiresApproval: true }), {}, ctx('plan', { sessionAllowedTools: new Set(['run_command']) })).behavior).toBe('deny')
+    expect(resolvePermission(tool({ name: 'run_command', fatalReasonFor: () => '禁止' }), {}, allowedCtx).behavior).toBe('deny')
+    expect(resolvePermission(tool({ name: 'run_command', requiresApproval: true, forceConfirm: true }), {}, allowedCtx).behavior).toBe('ask')
+    expect(resolvePermission(tool({ name: 'run_command', requiresApproval: true, requiresUserInteraction: true }), {}, allowedCtx).behavior).toBe('ask')
+  })
+
   test('requiresApprovalFor 动态命中 → ask', () => {
     const d = resolvePermission(tool({ requiresApprovalFor: () => true, approvalClass: 'outreach' }), {}, ctx('ask'))
     expect(d.behavior).toBe('ask')

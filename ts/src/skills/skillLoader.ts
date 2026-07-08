@@ -1,7 +1,7 @@
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { extractDescription, parseMarkdownDocument, stringArrayField, stringField } from '../commands/frontmatter'
-import { normalizeAllowedTools } from '../commands/allowedTools'
+import { addAllowedToolsToContext, normalizeAllowedTools } from '../commands/allowedTools'
 import type { PromptCommand } from '../commands/types'
 import type { Tool, ToolContext } from '../tools/Tool'
 import { addInvokedSkill } from './invokedSkills'
@@ -52,6 +52,10 @@ export function formatUseSkillResult(skill: PromptCommand, prompt: string): stri
 
 export function recordInvokedSkill(skill: PromptCommand, content: string, ctx: ToolContext): void {
   addInvokedSkill(skill.name, skill.filePath || `${skill.source}:${skill.name}`, content, ctx.conversationId ?? null)
+}
+
+export function allowSkillTools(skill: PromptCommand, ctx: ToolContext): void {
+  addAllowedToolsToContext(ctx, skill.allowedTools)
 }
 
 export async function loadSkillFile(filePath: string, source: PromptCommand['source'] = 'skills'): Promise<PromptCommand> {
@@ -211,6 +215,7 @@ export function createSkillTools(library: SkillLibrary, opts: { skillRoot?: stri
       if (opts.executeSkill) return await opts.executeSkill(skill, args, ctx)
       const prompt = await skill.getPrompt(args, ctx)
       recordInvokedSkill(skill, prompt, ctx)
+      if (skill.context !== 'fork') allowSkillTools(skill, ctx)
       return formatUseSkillResult(skill, prompt)
     },
   }

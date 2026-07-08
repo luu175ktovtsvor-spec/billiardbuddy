@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../workspace/workspace'
+import type { ToolContext } from '../tools/Tool'
 import { createSkillTools, formatSkillIndex, loadSkillsDir } from './skillLoader'
 import { clearInvokedSkills, getInvokedSkillsForScope } from './invokedSkills'
 
@@ -73,7 +74,8 @@ Use store facts.
 `)
     const lib = await loadSkillsDir(root)
     const use = createSkillTools(lib).find(tool => tool.name === 'use_skill')!
-    const out = await use.execute({ skill: 'report', args: '今天' }, { workspace: new Workspace(root), conversationId: 'conv-use-skill' })
+    const ctx: ToolContext = { workspace: new Workspace(root), conversationId: 'conv-use-skill' }
+    const out = await use.execute({ skill: 'report', args: '今天' }, ctx)
     expect(out).toContain('技能: report')
     expect(out).toContain('Use store facts')
     expect(out).toContain('用户给这个技能的参数')
@@ -86,6 +88,7 @@ Use store facts.
       skillName: 'report',
       content: expect.stringContaining('Use store facts'),
     })
+    expect(ctx.sessionAllowedTools).toEqual(new Set(['read_file', 'read_many_files', 'run_command']))
   } finally {
     clearInvokedSkills('conv-use-skill')
     rmSync(root, { recursive: true, force: true })

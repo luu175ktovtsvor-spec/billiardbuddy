@@ -46,6 +46,7 @@ import {
 } from '../context/promptCacheBreakDetection'
 import { callKey, detectStuck, sameCallGuardMessage, sameCallLimitForTool } from './stuckDetector'
 import { revealToolNamesForSearch, TOOL_SEARCH_NAME, visibleToolSpecs } from '../tools/toolSearchTool'
+import { addAllowedToolsToContext } from '../commands/allowedTools'
 import {
   isAskUserQuestionToolName,
   isEnterPlanApprovalAnswer,
@@ -98,6 +99,7 @@ export interface RunAgentLoopOptions {
   signal?: AbortSignal
   sandbox?: Sandbox
   permissionMode?: PermissionMode
+  initialAllowedTools?: string[]
   conversationId?: string
   localDenialTracking?: DenialTrackingState
   steerInbox?: string[]
@@ -168,6 +170,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     toolResultStoreDir: opts.toolResultStoreDir,
     contentReplacementState,
   }
+  addAllowedToolsToContext(ctx, opts.initialAllowedTools)
   const restoredWorktree = activateWorktreeSessionForContext(ctx)
   let system = opts.systemPrompt
   if (restoredWorktree) {

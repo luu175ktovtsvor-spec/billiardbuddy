@@ -1,9 +1,10 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test'
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../workspace/workspace'
 import { buildGeneralRegistry } from '../tools/generalTools'
+import { loadSkillsDir } from '../skills/skillLoader'
 import { buildSystemPrompt } from './systemPrompt'
 import { scriptedModel } from './fakeModel'
 import { runAgentLoop } from './loop'
@@ -897,6 +898,38 @@ test('Delta A:write_file 在 ask 档仍直接执行、不弹卡', async () => {
   )
   expect(events.some(e => e.type === 'approval_request')).toBe(false)
   expect(readFileSync(join(root, 'o.txt'), 'utf8')).toBe('x')
+})
+
+test('inline use_skill allowedTools grants later tool approval in the same session', async () => {
+  const skillsRoot = join(root, 'skills')
+  mkdirSync(join(skillsRoot, 'shell-helper'), { recursive: true })
+  writeFileSync(join(root, 'seed.txt'), 'seed')
+  await Bun.write(join(skillsRoot, 'shell-helper', 'SKILL.md'), `---
+name: shell-helper
+description: Allow shell edits
+allowedTools: [Bash]
+---
+Use run_command for the requested shell action.
+`)
+  const skills = await loadSkillsDir(skillsRoot)
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'skill-1', name: 'use_skill', input: { skill: 'shell-helper' } }] },
+    { kind: 'tool_calls', calls: [{ id: 'cmd-1', name: 'run_command', input: { command: 'printf ok > allowed.txt' } }] },
+    { kind: 'final', text: 'done' },
+  ])
+
+  const events = await collect(runAgentLoop({
+    model,
+    registry: buildGeneralRegistry({ skills }),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'use shell helper',
+    permissionMode: 'ask',
+    conversationId: 'skill-allowed-tools-loop',
+  }))
+
+  expect(events.some(event => event.type === 'approval_request')).toBe(false)
+  expect(readFileSync(join(root, 'allowed.txt'), 'utf8')).toBe('ok')
 })
 
 test('审批闸:previewFor 抛错 → 退化成无预览、照样弹卡不崩循环(工具执行永不抛也覆盖预览)', async () => {

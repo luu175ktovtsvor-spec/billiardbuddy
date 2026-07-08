@@ -13,6 +13,7 @@ export type DecisionReason =
   | { type: 'forceConfirm' } // 旁路免疫:连 full 也拦
   | { type: 'requiresUserInteraction' } // 必须由用户交互确认,连 bypassPermissions 也拦
   | { type: 'fatal'; text: string } // 硬拒,永不执行
+  | { type: 'sessionAllowedTool'; tool: string } // skill/command frontmatter 授权的会话内工具
   | { type: 'safePrefix' } // 工具自报的安全白名单 → 放行
   | { type: 'planSkip' } // plan 模式跳过会动手的工具
 
