@@ -2,6 +2,7 @@ import type { Tool, ToolContext } from '../tools/Tool'
 import { shellCommandAllowedByPermissionRules, shellCommandMatchesPermissionRule } from './permissionRules'
 import type { ApprovalClass, DecisionReason, PermissionDecision, PermissionRule } from './types'
 import { canonicalPermissionMode } from './canonical'
+import { autoEditSafetyReason } from './autoEditSafety'
 
 export const APPROVAL_PENDING_MSG = (name: string): string =>
   `[待用户确认] 已请求执行「${name}」。请用一两句话把你打算做的事告诉老板、并请他确认,不要假装已经做完或已生成。`
@@ -156,6 +157,10 @@ function resolvePermissionInner(tool: Tool, input: unknown, ctx: ToolContext): P
   if (!needsApproval) return { behavior: 'allow', reason: { type: 'mode', mode } }
 
   if (approvalClass === 'file' && mode === 'acceptEdits') {
+    // cc 对齐:acceptEdits 自动放行文件编辑前过安全闸——.git/.vscode/.idea/.claude 目录、
+    // shell/git/mcp 配置文件、含 Windows 规范化绕过特征的路径不能被自动接受,退回询问。
+    const unsafe = autoEditSafetyReason(tool.name, input, ctx)
+    if (unsafe) return ask(tool, ctx, input, { type: 'safetyCheck', reason: unsafe.message, classifierApprovable: unsafe.classifierApprovable }, approvalClass)
     return { behavior: 'allow', reason: { type: 'mode', mode } }
   }
 
