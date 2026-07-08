@@ -96,6 +96,18 @@ test('buildForkRunContext inherits parent system, tools and prefixes the forked 
   expect(directive?.type === 'text' ? directive.text : '').toContain(`${FORK_DIRECTIVE_PREFIX}Audit runtime`)
 })
 
+test('buildForkRunContext prefers rendered parent system prompt bytes', () => {
+  const ctx = buildForkRunContext({
+    workspace: {} as never,
+    systemPrompt: 'fallback system',
+    renderedSystemPrompt: 'rendered system with hooks',
+    messages: [{ role: 'assistant', content: [toolUseBlock({ id: 'fork_call', name: 'agent_task', input: { task: 'Audit' } })] }],
+    registry: { list: () => [] } as never,
+  }, 'Audit')
+
+  expect(ctx.systemPrompt).toBe('rendered system with hooks')
+})
+
 test('isInForkChild detects the fork boilerplate tag in user messages', () => {
   expect(isInForkChild([{ role: 'user', content: [textBlock(buildChildMessage('Do work'))] }])).toBe(true)
   expect(isInForkChild([{ role: 'assistant', content: [textBlock(buildChildMessage('Do work'))] }])).toBe(false)

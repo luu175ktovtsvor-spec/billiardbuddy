@@ -1638,6 +1638,43 @@ test('hooks:SessionStart additionalContext 注入 system prompt', async () => {
   expect(model.received[0]!.system).toContain('店脑上下文:hook-session')
 })
 
+test('passes rendered system prompt with SessionStart context to tools', async () => {
+  let seenSystem = ''
+  let seenRendered = ''
+  const inspectTool: Tool = {
+    name: 'inspect_rendered_system',
+    description: '',
+    inputSchema: { type: 'object' },
+    isReadOnly: false,
+    async execute(_input, ctx) {
+      seenSystem = ctx.systemPrompt ?? ''
+      seenRendered = ctx.renderedSystemPrompt ?? ''
+      return 'rendered ok'
+    },
+  }
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'inspect-rendered', name: 'inspect_rendered_system', input: {} }] },
+    { kind: 'final', text: 'done' },
+  ])
+
+  await collect(runAgentLoop({
+    model,
+    registry: new ToolRegistry([inspectTool]),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    conversationId: 'hook-rendered-system',
+    hooks: {
+      rules: [
+        { event: 'SessionStart', handler: payload => ({ action: 'context', additionalContext: `rendered:${payload.sessionId}` }) },
+      ],
+    },
+  }))
+
+  expect(seenSystem).toContain('rendered:hook-rendered-system')
+  expect(seenRendered).toBe(seenSystem)
+})
+
 test('hooks:UserPromptSubmit 可改写用户输入并追加上下文', async () => {
   const model = scriptedModel([{ kind: 'final', text: 'done' }])
   await collect(runAgentLoop({
