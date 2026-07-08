@@ -206,6 +206,12 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('node --version')).toBe('read')
   expect(classifyCommandRisk('node -v --run build')).toBe('outreach')
   expect(classifyCommandRisk('node --run=test -v')).toBe('outreach')
+  expect(classifyCommandRisk('hostname')).toBe('read')
+  expect(classifyCommandRisk('hostname -f')).toBe('read')
+  expect(classifyCommandRisk('hostname --all-ip-addresses')).toBe('read')
+  expect(classifyCommandRisk('hostname new-name')).toBe('outreach')
+  expect(classifyCommandRisk('hostname -F hosts.txt')).toBe('outreach')
+  expect(classifyCommandRisk('hostname --file hosts.txt')).toBe('outreach')
   expect(classifyCommandRisk('git push --force origin main')).toBe('destructive')
   expect(classifyCommandRisk('git push -f origin main')).toBe('destructive')
   expect(classifyCommandRisk('git reset --hard HEAD~1')).toBe('destructive')
@@ -397,6 +403,11 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   })
   expect(resolvePermission(runCommandTool, { command: 'node -v' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'node -v --run build' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'hostname -f' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'hostname new-name' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })
