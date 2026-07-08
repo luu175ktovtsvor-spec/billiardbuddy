@@ -44,3 +44,22 @@ export function canonicalPermissionMode(value: unknown): CanonicalPermissionMode
 export function isPermissionMode(value: unknown): value is PermissionModeLike {
   return parsePermissionMode(value) !== undefined
 }
+
+/**
+ * 子代理/后台任务的权限模式继承(对齐 cc AgentTool.tsx / runAgent.ts):
+ * - 父级已放开(bypassPermissions/acceptEdits)时,始终优先,不被子代理 frontmatter 声明的更窄模式降级
+ *   (用户把整个会话设成完全信任,子代理不应重新引入审批打断)。
+ * - 否则用子代理自己声明的 permissionMode。
+ * - 都没有时:后台/异步子代理用 acceptEdits 兜底(它们没法弹 UI 应答审批,继承 default/plan 会让写操作
+ *   卡在无人应答的 ask);前台内联子代理沿用父级模式(审批仍可冒泡回父级 UI)。
+ */
+export function resolveSubagentPermissionMode(
+  parentMode: PermissionModeLike | undefined,
+  agentMode: PermissionModeLike | undefined,
+  opts: { background: boolean },
+): PermissionModeLike | undefined {
+  const parentCanon = canonicalPermissionMode(parentMode)
+  if (parentCanon === 'bypassPermissions' || parentCanon === 'acceptEdits') return parentMode
+  if (agentMode) return agentMode
+  return opts.background ? 'acceptEdits' : parentMode
+}

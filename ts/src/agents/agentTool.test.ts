@@ -834,7 +834,8 @@ test('agent_task honors agent frontmatter defaults for prompt, permissions, maxT
 
     const out = await tool.execute({ task: '检查默认值' }, {
       workspace: new Workspace(root),
-      permissionMode: 'full',
+      // 父级 default:此时子代理 frontmatter 声明的 permissionMode('plan')应被采用。
+      permissionMode: 'default',
       conversationId: 'parent_defaults',
     })
 
@@ -848,6 +849,42 @@ test('agent_task honors agent frontmatter defaults for prompt, permissions, maxT
     expect(model.received[1]!.tools).toEqual([])
     expect(out).toContain('fallback final should not be used when maxTurns=1')
     expect(out).toContain('<agent_worktree status="removed_clean">')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('parent bypassPermissions takes precedence over agent frontmatter permissionMode (cc runAgent inheritance)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-parent-mode-'))
+  try {
+    let seenPermission = ''
+    const inspectTool: import('../tools/Tool').Tool = {
+      name: 'inspect_ctx',
+      description: '',
+      inputSchema: { type: 'object' },
+      isReadOnly: true,
+      async execute(_, ctx) {
+        seenPermission = ctx.permissionMode ?? ''
+        return 'ok'
+      },
+    }
+    const model = scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: 'i1', name: 'inspect_ctx', input: {} }] },
+      { kind: 'final', text: 'done' },
+    ])
+    const tool = createAgentTaskTool({
+      agents: [agent({ tools: ['inspect_ctx'], permissionMode: 'plan' })],
+      model,
+      baseTools: [inspectTool],
+      sidechainRoot: join(root, 'sidechains'),
+    })
+    // 父级已 full(=bypassPermissions):子代理声明的更窄 plan 不应把它降级
+    await tool.execute({ task: '检查父级优先' }, {
+      workspace: new Workspace(root),
+      permissionMode: 'full',
+      conversationId: 'parent_bypass',
+    })
+    expect(seenPermission).toBe('full')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

@@ -27,6 +27,7 @@ import { loadAgentMcpRuntime, type AgentMcpRuntime, type AgentMcpRuntimeInput, t
 import { buildAgentMemoryPrompt, workspaceWithAgentMemory } from './agentMemory'
 import { cloneContentReplacementState, type ContentReplacementState } from '../context/toolResultStorage'
 import { createDenialTrackingState } from '../permissions/denialTracking'
+import { resolveSubagentPermissionMode } from '../permissions/canonical'
 import { buildForkRunContext, forkAgentToolDescription, FORK_SUBAGENT_TYPE, isForkQuerySource, isForkSubagentEnabled, isInForkChild, type ForkRunContext } from './forkSubagent'
 
 export interface AgentTaskHandoffInput {
@@ -451,7 +452,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
           maxTurns: agent.maxTurns ?? opts.maxTurns ?? 8,
           signal: ctx.signal,
           sandbox,
-          permissionMode: agent.permissionMode ?? ctx.permissionMode,
+          permissionMode: resolveSubagentPermissionMode(ctx.permissionMode, agent.permissionMode, { background: false }),
           localDenialTracking: createDenialTrackingState(),
           conversationId: agentId,
           transcript: sidechain?.transcript,
