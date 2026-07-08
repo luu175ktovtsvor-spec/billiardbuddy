@@ -83,6 +83,92 @@ test('agent_task runs an isolated subagent loop and returns only final text', as
   }
 })
 
+test('agent_task registers foreground task lifecycle for synchronous subagents', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-foreground-'))
+  try {
+    const model = scriptedModel([{ kind: 'final', text: '前台子代理完成' }])
+    const calls: Array<{ input: unknown; agentId: string; forkContext: unknown }> = []
+    const cancelled: string[] = []
+    const unregistered: Array<{ taskId: string; ctxConversation?: string }> = []
+    const tool = createAgentTaskTool({
+      agents: [agent()],
+      model,
+      baseTools: [],
+      sidechainRoot: join(root, 'sidechains'),
+      registerForegroundAgent: async (input, _ctx, forkContext) => {
+        calls.push({ input, agentId: input.agentId, forkContext })
+        return {
+          task: { id: 'fg_task_1', title: input.title, params: { agent_id: input.agentId } },
+          backgroundSignal: new Promise<void>(() => {}),
+          cancelAutoBackground: () => cancelled.push(input.agentId),
+        }
+      },
+      unregisterForegroundAgent: async (taskId, ctx) => {
+        unregistered.push({ taskId, ctxConversation: ctx.conversationId })
+      },
+    })
+
+    const out = await tool.execute({
+      task: '整理迁移报告',
+      context: '重点看 AgentTool',
+      name: 'fg-researcher',
+    }, {
+      workspace: new Workspace(root),
+      permissionMode: 'full',
+      conversationId: 'parent_conv',
+    })
+
+    expect(calls.length).toBe(1)
+    expect(calls[0]!.input).toEqual({
+      agent: 'researcher',
+      agentId: calls[0]!.agentId,
+      task: '整理迁移报告',
+      context: '重点看 AgentTool',
+      name: 'fg-researcher',
+      title: 'researcher: 整理迁移报告',
+    })
+    expect(calls[0]!.agentId).toStartWith('agent_parent_conv_researcher_')
+    expect(calls[0]!.forkContext).toBeUndefined()
+    expect(cancelled).toEqual([calls[0]!.agentId])
+    expect(unregistered).toEqual([{ taskId: 'fg_task_1', ctxConversation: 'parent_conv' }])
+    expect(out).toContain('<agent_task agent="researcher" agent_id="agent_parent_conv_researcher_')
+    expect(out).toContain('前台子代理完成')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('agent_task unregisters foreground task when synchronous subagent fails', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-foreground-fail-'))
+  try {
+    const cancelled: string[] = []
+    const unregistered: string[] = []
+    const tool = createAgentTaskTool({
+      agents: [agent()],
+      model: scriptedModel([]),
+      baseTools: [],
+      registerForegroundAgent: async (input) => ({
+        task: { id: 'fg_task_fail', title: input.title, params: { agent_id: input.agentId } },
+        backgroundSignal: new Promise<void>(() => {}),
+        cancelAutoBackground: () => cancelled.push(input.agentId),
+      }),
+      unregisterForegroundAgent: async taskId => {
+        unregistered.push(taskId)
+      },
+    })
+
+    await expect(tool.execute({ task: '会失败的子代理' }, {
+      workspace: new Workspace(root),
+      permissionMode: 'full',
+    })).rejects.toThrow('步骤用尽')
+
+    expect(cancelled.length).toBe(1)
+    expect(unregistered).toEqual(['fg_task_fail'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('agent_task rejects recursive launch inside a fork child conversation', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-tool-fork-guard-'))
   try {
