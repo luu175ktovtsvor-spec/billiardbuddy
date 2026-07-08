@@ -1,5 +1,18 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { actionKey, clearDenial, DENIAL_FALLBACK, recordDenial, resetDenialStore, shouldStopAsking } from './denialTracking'
+import {
+  actionKey,
+  clearLocalDenial,
+  createDenialTrackingState,
+  DENIAL_FALLBACK,
+  recordLocalApproval,
+  recordLocalDenial,
+  clearDenial,
+  recordDenial,
+  resetDenialStore,
+  shouldLocalAutoApprove,
+  shouldLocalStopAsking,
+  shouldStopAsking,
+} from './denialTracking'
 
 afterEach(() => resetDenialStore())
 
@@ -49,5 +62,26 @@ describe('denialTracking', () => {
     expect(shouldStopAsking('c4', k)).toBe(true)
     expect(shouldStopAsking('c5', k)).toBe(false) // 别的会话不受影响
     expect(shouldStopAsking(undefined, k)).toBe(false)
+  })
+
+  test('local state keeps subagent denial and approval memory isolated', () => {
+    const k = actionKey('publish', { id: 1 })
+    const localA = createDenialTrackingState()
+    const localB = createDenialTrackingState()
+    recordDenial('parent', k)
+    recordDenial('parent', k)
+
+    expect(shouldLocalStopAsking(localA, k)).toBe(false)
+    recordLocalDenial(localA, k)
+    recordLocalDenial(localA, k)
+    expect(shouldLocalStopAsking(localA, k)).toBe(true)
+    expect(shouldLocalStopAsking(localB, k)).toBe(false)
+    expect(shouldStopAsking('parent', k)).toBe(true)
+
+    clearLocalDenial(localA, k)
+    expect(shouldLocalStopAsking(localA, k)).toBe(false)
+    recordLocalApproval(localA, k)
+    expect(shouldLocalAutoApprove(localA, k)).toBe(true)
+    expect(shouldLocalAutoApprove(localB, k)).toBe(false)
   })
 })
