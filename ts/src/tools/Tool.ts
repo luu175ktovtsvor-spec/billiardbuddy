@@ -4,6 +4,7 @@ import type { ApprovalClass, ApprovalReason, PermissionMode } from '../permissio
 import type { TodoItem } from '../types/todo'
 import type { Model } from '../types/model'
 import type { ToolRegistry } from './registry'
+import type { ContentReplacementState } from '../context/toolResultStorage'
 
 export interface FileReadSnapshot {
   path: string
@@ -54,6 +55,8 @@ export interface ToolContext {
   progressEmit?: (event: ToolProgressEvent) => void
   /** 当前会话的大工具结果落盘目录,供 read_stored_tool_result 安全回读。 */
   toolResultStoreDir?: string
+  /** 大工具结果替换状态,供主循环/子代理/续跑保持一致的上下文裁剪决策。 */
+  contentReplacementState?: ContentReplacementState
   /** ExitPlanMode 批准后登记的待验证计划,VerifyPlanExecution 用它防止“没验就收工”。 */
   pendingPlanVerification?: {
     plan: string

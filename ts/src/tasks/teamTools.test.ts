@@ -9,6 +9,7 @@ import type { Model } from '../types/model'
 import { resolvePermission } from '../permissions/resolve'
 import type { Tool } from '../tools/Tool'
 import { readStoredToolResultTool } from '../tools/storedToolResultTool'
+import { createContentReplacementState } from '../context/toolResultStorage'
 import { Workspace } from '../workspace/workspace'
 import { TaskService } from './taskService'
 import { TeamService } from './teamService'
@@ -858,6 +859,91 @@ test('SendMessage resume inherits content replacement records before replaying t
     expect(firstStepText).not.toContain('raw-large-result')
     const inheritedRecords = await tasks.transcript(output.task_id).loadContentReplacementRecords()
     expect(inheritedRecords).toEqual([{ kind: 'tool-result', toolUseId: 'big-replay', replacement }])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('SendMessage resume gap-fills parent content replacement state when sidecar records are missing', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'team-tools-resume-parent-replacements-'))
+  try {
+    const teams = new TeamService(root)
+    const tasks = new TaskService(root)
+    const agent: AgentDefinition = {
+      name: 'researcher',
+      description: '研究代理',
+      prompt: '研究并总结。',
+      filePath: join(root, 'researcher.md'),
+    }
+    const previous = await tasks.create({
+      id: 'replacement_gap_agent_1',
+      title: 'researcher: parent replacement output',
+      kind: 'background_agent',
+      conversationId: 'c-resume-parent-replacements',
+      workspaceRoot: root,
+      params: { agent: 'researcher', name: 'replacement-gap-reader', task: '继承父 replacement' },
+    })
+    const rawOutput = `RAW_HEAD\n${'parent-live-large-result'.repeat(18_000)}\nRAW_TAIL`
+    const replacement = [
+      '<stored_tool_result tool="run_command" call_id="parent-big-replay" chars="250000" bytes="250000" path="/tmp/parent-replayed.txt">',
+      '工具结果过长,已写入 path;模型上下文仅保留头尾预览。',
+      '<preview_head chars="14">',
+      'PARENT-HEAD-OK',
+      '</preview_head>',
+      '<preview_tail chars="14">',
+      'PARENT-TAIL-OK',
+      '</preview_tail>',
+      '</stored_tool_result>',
+    ].join('\n')
+    await tasks.touch(previous.id, { status: 'completed', result: '旧任务完成' })
+    await tasks.transcript(previous.id).save([
+      userText('历史任务:父会话已经替换过这个大结果,但旧 sidechain 没有落 records。'),
+      { role: 'assistant', content: [toolUseBlock({ id: 'parent-big-replay', name: 'run_command', input: { command: 'huge-output' } })] },
+      { role: 'user', content: [toolResultBlock('parent-big-replay', rawOutput)] },
+    ])
+
+    const parentReplacementState = createContentReplacementState()
+    parentReplacementState.seenIds.add('parent-big-replay')
+    parentReplacementState.replacements.set('parent-big-replay', replacement)
+
+    let firstStepText = ''
+    const model: Model = {
+      async step(input) {
+        firstStepText = input.messages.flatMap(message => message.content)
+          .map(block => block.type === 'text' ? block.text : block.type === 'tool_result' ? block.content : '')
+          .join('\n')
+        return { kind: 'final', text: 'parent replacement inherited' }
+      },
+    }
+    const [, , sendMessage] = createTeamTools(teams, {
+      tasks,
+      resumeBackgroundAgent: (task, message, ctx) => resumeBackgroundAgentTask({
+        tasks,
+        agents: [agent],
+        model,
+        baseTools: [],
+        baseSystemPrompt: 'base prompt',
+      }, task, message, ctx),
+    })
+
+    const ctx = {
+      workspace: new Workspace(root),
+      conversationId: 'c-resume-parent-replacements',
+      permissionMode: 'ask' as const,
+      contentReplacementState: parentReplacementState,
+    }
+    const output = JSON.parse(await sendMessage!.execute({ to: 'replacement-gap-reader', summary: 'resume parent replacements', message: '继续。' }, ctx))
+    expect(output.success).toBe(true)
+    const resumed = await waitFor(async () => {
+      const task = await tasks.get(output.task_id)
+      return task?.status === 'completed' ? task : null
+    })
+
+    expect(resumed.result).toBe('parent replacement inherited')
+    expect(firstStepText).toContain('<stored_tool_result tool="run_command"')
+    expect(firstStepText).toContain('PARENT-HEAD-OK')
+    expect(firstStepText).not.toContain('parent-live-large-result')
+    expect(await tasks.transcript(output.task_id).loadContentReplacementRecords()).toEqual([])
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

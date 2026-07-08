@@ -14,7 +14,11 @@ import type { BackgroundAgentMetadata, TaskEventRecord, TaskMeta, TaskService, T
 import { createIsolatedAgentWorktree, type AgentWorktreeCleanupResult } from '../tools/worktreeTools'
 import { applySubagentStartHooks, mergeHookRegistries, type HookRegistry } from '../hooks/hooks'
 import { buildAgentMemoryPrompt, workspaceWithAgentMemory } from '../agents/agentMemory'
-import type { ContentReplacementRecord } from '../context/toolResultStorage'
+import {
+  cloneContentReplacementState,
+  reconstructContentReplacementState,
+  type ContentReplacementRecord,
+} from '../context/toolResultStorage'
 
 export interface BackgroundAgentTaskInput {
   agent?: string
@@ -442,6 +446,9 @@ export async function startBackgroundAgentRun(
   if (initialContentReplacementRecords.length > 0) {
     await opts.tasks.transcript(task.id).seedContentReplacementRecords(initialContentReplacementRecords)
   }
+  const inheritedContentReplacementState = initialMessages.length > 0
+    ? reconstructContentReplacementState(initialMessages, initialContentReplacementRecords, ctx.contentReplacementState?.replacements)
+    : ctx.contentReplacementState ? cloneContentReplacementState(ctx.contentReplacementState) : undefined
   opts.tasks.start(task.id, async taskCtx => {
     let finalText = ''
     let cleanup: AgentWorktreeCleanupResult | null = null
@@ -472,6 +479,7 @@ export async function startBackgroundAgentRun(
         signal: taskCtx.signal,
         conversationId: stableAgentId,
         toolResultStoreDir,
+        contentReplacementState: inheritedContentReplacementState,
       })
       for (const extra of subagentStart.additionalContext) {
         await taskCtx.emit({ type: 'context_note', text: extra })
@@ -496,6 +504,7 @@ export async function startBackgroundAgentRun(
         toolResultStoreDir,
         hooks,
         subagent: { agentId: stableAgentId, agentType: agent.name },
+        contentReplacementState: inheritedContentReplacementState,
       })) {
         await taskCtx.emit(event)
         await reportProgress(event)
