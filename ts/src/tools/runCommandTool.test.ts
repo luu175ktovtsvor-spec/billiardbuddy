@@ -8,7 +8,7 @@ import type { ToolContext } from './Tool'
 import type { Sandbox } from '../sandbox/sandbox'
 import { runCommandTool } from './runCommandTool'
 import { StreamingOutputSanitizer, stripAnsiControlSequences } from './outputSanitize'
-import { classifyCommandRisk, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellCdGitNeedsApproval, shellDangerousRemovalNeedsApproval, shellGitInternalWriteNeedsApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval, shellSensitiveReadNeedsApproval } from './dangerousCommand'
+import { classifyCommandRisk, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellCdGitNeedsApproval, shellDangerousRemovalNeedsApproval, shellGitInternalWriteNeedsApproval, shellMvCpFlagsNeedApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval, shellSensitiveReadNeedsApproval } from './dangerousCommand'
 import { resolvePermission } from '../permissions/resolve'
 
 let root: string
@@ -175,6 +175,10 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('rm -f /tmp')).toBe('destructive')
   expect(classifyCommandRisk('rm node_modules/*')).toBe('destructive')
   expect(classifyCommandRisk('rm -f build/cache')).toBe('file')
+  expect(classifyCommandRisk('cp source.txt target.txt')).toBe('file')
+  expect(classifyCommandRisk('mv source.txt target.txt')).toBe('file')
+  expect(classifyCommandRisk('cp --target-directory=/tmp source.txt')).toBe('outreach')
+  expect(classifyCommandRisk('mv -t /tmp source.txt')).toBe('outreach')
   expect(classifyCommandRisk('rg TODO | head')).toBe('read')
   expect(classifyCommandRisk('rg -n -C2 TODO -g *.ts src')).toBe('read')
   expect(classifyCommandRisk('rg --json --stats TODO src')).toBe('read')
@@ -404,6 +408,16 @@ test('dangerous removal path detection mirrors Bash path validation guard', () =
   expect(shellDangerousRemovalNeedsApproval('rm node_modules/*', { cwd })).toBe(true)
   expect(shellDangerousRemovalNeedsApproval('rm -f build/cache', { cwd })).toBe(false)
   expect(shellDangerousRemovalNeedsApproval('rm -- -not-a-flag.txt', { cwd })).toBe(false)
+})
+
+test('mv/cp flags mirror Bash command validator manual approval guard', () => {
+  expect(shellMvCpFlagsNeedApproval('cp source.txt target.txt')).toBe(false)
+  expect(shellMvCpFlagsNeedApproval('mv source.txt target.txt')).toBe(false)
+  expect(shellMvCpFlagsNeedApproval('cp --target-directory=/tmp source.txt')).toBe(true)
+  expect(shellMvCpFlagsNeedApproval('cp -t /tmp source.txt')).toBe(true)
+  expect(shellMvCpFlagsNeedApproval('mv -f source.txt target.txt')).toBe(true)
+  expect(shellMvCpFlagsNeedApproval('env FOO=bar mv -t /tmp source.txt')).toBe(true)
+  expect(shellMvCpFlagsNeedApproval('rm -f source.txt')).toBe(false)
 })
 
 test('shell expansion risk detection mirrors Bash substitution safety gate', () => {
@@ -793,6 +807,17 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   expect(resolvePermission(runCommandTool, { command: 'rm node_modules/*' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'destructive',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'cp source.txt target.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'allow',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'cp --target-directory=/tmp source.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'mv -t /tmp source.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
   })
 })
 

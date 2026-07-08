@@ -2881,6 +2881,14 @@ export function shellDangerousRemovalNeedsApproval(command: string, opts: { cwd?
   })
 }
 
+export function shellMvCpFlagsNeedApproval(command: string): boolean {
+  const commandForClassification = stripSafeHeredocSubstitutions(command) ?? command
+  return splitSegments(commandForClassification).some(segment => {
+    const rawCommand = normalize(stripRuntimeEnvWrapper(segment))
+    return mvCpCommandHasFlag(rawCommand)
+  })
+}
+
 function readCommandTouchesSensitivePath(command: string): boolean {
   const tokens = tokenizeShellWords(command)
   const base = tokens[0]?.toLowerCase()
@@ -3030,6 +3038,13 @@ function removalCommandTouchesDangerousPath(command: string, cwd = process.cwd()
   const base = tokens[0]?.toLowerCase()
   if (base !== 'rm' && base !== 'rmdir') return false
   return extractRemovalPathArgs(tokens.slice(1)).some(path => isDangerousRemovalPathToken(path, cwd))
+}
+
+function mvCpCommandHasFlag(command: string): boolean {
+  const tokens = tokenizeShellWords(command)
+  const base = tokens[0]?.toLowerCase()
+  if (base !== 'mv' && base !== 'cp') return false
+  return tokens.slice(1).some(arg => arg.startsWith('-'))
 }
 
 function extractRemovalPathArgs(args: string[]): string[] {
@@ -3501,6 +3516,7 @@ function classifySegment(segment: string): CommandRisk {
   const withSegmentBaseRisk = (risk: CommandRisk): CommandRisk => maxRisk(segmentBaseRisk, risk)
 
   if (removalCommandTouchesDangerousPath(rawCommand)) return withSegmentBaseRisk('destructive')
+  if (mvCpCommandHasFlag(rawCommand)) return withSegmentBaseRisk('outreach')
   if (/\bgit\s+clean\s+-/.test(command)) return withSegmentBaseRisk('destructive')
   if (/\brm\s+.*-[a-z]*r/.test(command)) return withSegmentBaseRisk('destructive')
   const processActionRisk = classifyProcessActionCommand(rawCommand)

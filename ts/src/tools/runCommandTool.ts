@@ -3,7 +3,7 @@ import { stat } from 'node:fs/promises'
 import { isAbsolute, relative } from 'node:path'
 import type { Tool, ToolContext } from './Tool'
 import type { WrappedCommand } from '../sandbox/sandbox'
-import { classifyCommandRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellDangerousRemovalNeedsApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval, shellSensitiveReadNeedsApproval, type CommandRisk } from './dangerousCommand'
+import { classifyCommandRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellDangerousRemovalNeedsApproval, shellMvCpFlagsNeedApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval, shellSensitiveReadNeedsApproval, type CommandRisk } from './dangerousCommand'
 import type { ApprovalClass } from '../permissions/types'
 import { StreamingOutputSanitizer } from './outputSanitize'
 import { interpretCommandResult } from './commandSemantics'
@@ -97,7 +97,8 @@ function effectiveCommandRisk(input: RunCommandInput | undefined, ctx: ToolConte
   if (
     shellOutputRedirectionNeedsApproval(input.command, { root: ctx.workspace.root, cwd }) ||
     shellBareGitRepoCwdNeedsApproval(input.command, cwd) ||
-    shellSandboxedGitCwdNeedsApproval(input.command, { root: ctx.workspace.root, cwd, sandboxActive })
+    shellSandboxedGitCwdNeedsApproval(input.command, { root: ctx.workspace.root, cwd, sandboxActive }) ||
+    shellMvCpFlagsNeedApproval(input.command)
   ) {
     return 'outreach'
   }
