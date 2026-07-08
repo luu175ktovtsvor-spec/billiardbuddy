@@ -18,6 +18,7 @@ import { createTeamTools } from './teamTools'
 import { resumeBackgroundAgentTask } from './taskTools'
 import { startUdsInbox } from './udsInbox'
 import { UdsPeerRegistry } from './udsPeerRegistry'
+import { BridgePeerRegistry } from './bridgePeerRegistry'
 
 function fixture(): {
   root: string
@@ -198,7 +199,7 @@ test('ListPeers exposes live UDS cross-session peer targets', async () => {
     })
     const registryTools = createTeamTools(new TeamService(root), { udsPeers: registry })
     const output = await registryTools[3]!.execute({}, ctx)
-    expect(output).toContain('<peers team="" count="1" active_team="false" local_peer_count="0" uds_peer_count="1">')
+    expect(output).toContain('<peers team="" count="1" active_team="false" local_peer_count="0" uds_peer_count="1" bridge_peer_count="0">')
     expect(output).toContain(`target="uds:${socketPath}"`)
     expect(output).toContain('backend_type="uds"')
     expect(output).toContain(`socket_path="${socketPath}"`)
@@ -209,6 +210,7 @@ test('ListPeers exposes live UDS cross-session peer targets', async () => {
       peer_count: 1,
       local_peer_count: 0,
       uds_peer_count: 1,
+      bridge_peer_count: 0,
       uds_peers: [expect.objectContaining({
         target: `uds:${socketPath}`,
         socket_path: socketPath,
@@ -219,6 +221,7 @@ test('ListPeers exposes live UDS cross-session peer targets', async () => {
       send_message: {
         local_targets: [],
         uds_targets: [`uds:${socketPath}`],
+        bridge_targets: [],
         all_targets: [`uds:${socketPath}`],
         cross_session_targets_enabled: true,
         uds_targets_enabled: true,
@@ -230,23 +233,70 @@ test('ListPeers exposes live UDS cross-session peer targets', async () => {
   }
 })
 
+test('ListPeers exposes Remote Control bridge peer targets', async () => {
+  const { root, ctx } = fixture()
+  const registry = new BridgePeerRegistry(root)
+  try {
+    await registry.register({
+      sessionId: 'session_remote_1',
+      label: 'Remote laptop',
+      workspaceRoot: '/remote/repo',
+      machineName: 'MacBook',
+      status: 'connected',
+      inboundEnabled: true,
+    })
+    const registryTools = createTeamTools(new TeamService(root), { bridgePeers: registry })
+    const output = await registryTools[3]!.execute({}, ctx)
+    expect(output).toContain('<peers team="" count="1" active_team="false" local_peer_count="0" uds_peer_count="0" bridge_peer_count="1">')
+    expect(output).toContain('backend_type="bridge"')
+    expect(output).toContain('target="bridge:session_remote_1"')
+    expect(output).toContain('status="connected"')
+    expect(output).toContain('inbound_enabled="true"')
+
+    const data = extractPeersJson(output)
+    expect(data).toMatchObject({
+      active_team: false,
+      peer_count: 1,
+      bridge_peer_count: 1,
+      bridge_peers: [expect.objectContaining({
+        session_id: 'session_remote_1',
+        target: 'bridge:session_remote_1',
+        label: 'Remote laptop',
+        machine_name: 'MacBook',
+        status: 'connected',
+        inbound_enabled: true,
+      })],
+      send_message: {
+        bridge_targets: ['bridge:session_remote_1'],
+        all_targets: ['bridge:session_remote_1'],
+        bridge_targets_enabled: true,
+      },
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('ListPeers returns a parseable empty peer set without an active team', async () => {
   const { root, tools, ctx } = fixture()
   const [, , , listPeers] = tools
   try {
     const output = await listPeers!.execute({}, ctx)
-    expect(output).toContain('<peers team="" count="0" active_team="false" local_peer_count="0" uds_peer_count="0">')
+    expect(output).toContain('<peers team="" count="0" active_team="false" local_peer_count="0" uds_peer_count="0" bridge_peer_count="0">')
     expect(output).toContain('</peers>')
     expect(extractPeersJson(output)).toMatchObject({
       active_team: false,
       peer_count: 0,
       local_peer_count: 0,
       uds_peer_count: 0,
+      bridge_peer_count: 0,
       peers: [],
       uds_peers: [],
+      bridge_peers: [],
       send_message: {
         local_targets: [],
         uds_targets: [],
+        bridge_targets: [],
         all_targets: [],
         broadcast_target: '*',
         cross_session_targets_enabled: true,
@@ -336,12 +386,87 @@ test('SendMessage accepts legacy bare UDS socket paths and rejects cross-session
       to: `uds:${socketPath}`,
       message: { type: 'shutdown_request', reason: 'done' },
     }, ctx)).rejects.toThrow('structured messages cannot be sent cross-session')
-    await expect(sendMessage!.execute({
+    const bridgeUnavailable = JSON.parse(await sendMessage!.execute({
       to: 'bridge:session_123',
       message: 'hello remote',
-    }, ctx)).rejects.toThrow('Remote Control is not connected')
+    }, ctx))
+    expect(bridgeUnavailable).toMatchObject({
+      success: false,
+      message: 'Remote Control is not connected - cannot send to bridge:session_123. Reconnect with /remote-control first.',
+    })
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()))
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('SendMessage sends plain text to connected bridge peers through an injected transport', async () => {
+  const { root, ctx } = fixture()
+  const registry = new BridgePeerRegistry(root)
+  const sent: Array<{ sessionId: string; message: string }> = []
+  try {
+    await registry.register({ sessionId: 'session_bridge_ok', status: 'connected', inboundEnabled: true })
+    const tools = createTeamTools(new TeamService(root), {
+      bridgePeers: registry,
+      sendBridgeMessage: async (sessionId, message) => {
+        sent.push({ sessionId, message })
+        return { ok: true }
+      },
+    })
+    const output = JSON.parse(await tools[2]!.execute({ to: 'bridge:session_bridge_ok', message: 'remote check status' }, ctx))
+    expect(output).toMatchObject({
+      success: true,
+      message: '"remote check status" -> bridge:session_bridge_ok',
+      routing: {
+        sender: 'team-lead',
+        target: 'bridge:session_bridge_ok',
+        content: 'remote check status',
+      },
+      peer: {
+        session_id: 'session_bridge_ok',
+        target: 'bridge:session_bridge_ok',
+      },
+    })
+    expect(sent).toEqual([{ sessionId: 'session_bridge_ok', message: 'remote check status' }])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('SendMessage bridge targets require approval and return structured unavailable errors', async () => {
+  const { root, ctx } = fixture()
+  const registry = new BridgePeerRegistry(root)
+  try {
+    await registry.register({ sessionId: 'session_bridge_disabled', status: 'outbound_only', inboundEnabled: false, lastError: 'viewer only' })
+    const tools = createTeamTools(new TeamService(root), { bridgePeers: registry })
+    const sendMessage = tools[2]!
+    const decision = resolvePermission(sendMessage, { to: 'bridge:session_bridge_disabled', message: 'hello' }, { ...ctx, permissionMode: 'full' })
+    expect(decision.behavior).toBe('ask')
+    if (decision.behavior !== 'ask') throw new Error('expected bridge SendMessage to ask for approval')
+    expect(decision.approvalClass).toBe('outreach')
+
+    const output = JSON.parse(await sendMessage.execute({ to: 'bridge:session_bridge_disabled', message: 'hello remote' }, ctx))
+    expect(output).toMatchObject({
+      success: false,
+      message: 'Remote Control peer bridge:session_bridge_disabled is outbound_only (inbound disabled).',
+      peer: {
+        session_id: 'session_bridge_disabled',
+        status: 'outbound_only',
+        inbound_enabled: false,
+      },
+    })
+
+    const missing = JSON.parse(await sendMessage.execute({ to: 'bridge:missing', message: 'hello missing' }, ctx))
+    expect(missing).toMatchObject({
+      success: false,
+      message: 'Remote Control is not connected - cannot send to bridge:missing. Reconnect with /remote-control first.',
+    })
+
+    await expect(sendMessage.execute({
+      to: 'bridge:session_bridge_disabled',
+      message: { type: 'shutdown_request', reason: 'done' },
+    }, ctx)).rejects.toThrow('structured messages cannot be sent cross-session')
+  } finally {
     rmSync(root, { recursive: true, force: true })
   }
 })

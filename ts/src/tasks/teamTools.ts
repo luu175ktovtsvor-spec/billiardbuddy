@@ -4,6 +4,7 @@ import type { BackgroundAgentTargetResolution, TaskMeta, TaskService } from './t
 import { parsePeerAddress } from './peerAddress'
 import { sendToUdsSocket } from './udsClient'
 import type { UdsPeerRecord } from './udsPeerRegistry'
+import type { BridgePeerRecord } from './bridgePeerRegistry'
 
 type StructuredMessage =
   | { type: 'shutdown_request'; reason?: string }
@@ -34,6 +35,11 @@ interface ListPeersInput {
 export interface TeamToolsOptions {
   tasks?: TaskService
   udsPeers?: { list(): Promise<UdsPeerRecord[]> }
+  bridgePeers?: {
+    list(): Promise<BridgePeerRecord[]>
+    get(sessionId: string): Promise<BridgePeerRecord | null>
+  }
+  sendBridgeMessage?: (sessionId: string, message: string, ctx: ToolContext) => Promise<{ ok: boolean; error?: string }>
   resumeBackgroundAgent?: (task: TaskMeta, message: string, ctx: ToolContext) => Promise<{ task: TaskMeta }>
 }
 
@@ -162,6 +168,22 @@ function udsPeerJson(peer: UdsPeerRecord): Record<string, unknown> {
   }
 }
 
+function bridgePeerJson(peer: BridgePeerRecord): Record<string, unknown> {
+  return {
+    id: peer.id,
+    session_id: peer.sessionId,
+    target: peer.target,
+    label: peer.label,
+    workspace_root: peer.workspaceRoot,
+    machine_name: peer.machineName,
+    status: peer.status,
+    inbound_enabled: peer.inboundEnabled,
+    last_error: peer.lastError,
+    registered_at: peer.registeredAt,
+    updated_at: peer.updatedAt,
+  }
+}
+
 function peerXmlLine(peer: Awaited<ReturnType<TeamService['listPeers']>>['peers'][number]): string {
   return [
     '<peer',
@@ -208,6 +230,28 @@ function udsPeerXmlLine(peer: UdsPeerRecord): string {
   ].join('')
 }
 
+function bridgePeerXmlLine(peer: BridgePeerRecord): string {
+  return [
+    '<peer',
+    optionalXmlAttr('name', peer.label || peer.target),
+    optionalXmlAttr('agent_id', peer.id),
+    optionalXmlAttr('target', peer.target),
+    optionalXmlAttr('role', 'remote-control'),
+    optionalXmlAttr('backend_type', 'bridge'),
+    optionalXmlAttr('active', peer.status === 'connected' && peer.inboundEnabled),
+    optionalXmlAttr('is_lead', false),
+    optionalXmlAttr('unread_messages', 0),
+    optionalXmlAttr('session_id', peer.sessionId),
+    optionalXmlAttr('cwd', peer.workspaceRoot),
+    optionalXmlAttr('machine_name', peer.machineName),
+    optionalXmlAttr('status', peer.status),
+    optionalXmlAttr('inbound_enabled', peer.inboundEnabled),
+    optionalXmlAttr('last_error', peer.lastError),
+    optionalXmlAttr('joined_at', peer.registeredAt),
+    ' />',
+  ].join('')
+}
+
 function peerLegacyLine(peer: Awaited<ReturnType<TeamService['listPeers']>>['peers'][number]): string {
   return [
     `- ${peer.name} (${peer.agentId})`,
@@ -229,6 +273,19 @@ function udsPeerLegacyLine(peer: UdsPeerRecord): string {
     peer.conversationId ? `session=${peer.conversationId}` : undefined,
     peer.workspaceRoot ? `cwd=${peer.workspaceRoot}` : undefined,
     `socket=${peer.socketPath}`,
+    `target=${peer.target}`,
+  ].filter(Boolean).join(' ')
+}
+
+function bridgePeerLegacyLine(peer: BridgePeerRecord): string {
+  return [
+    `- ${peer.label || peer.target} (${peer.id})`,
+    `active=${peer.status === 'connected' && peer.inboundEnabled}`,
+    'backend=bridge',
+    `session=${peer.sessionId}`,
+    peer.workspaceRoot ? `cwd=${peer.workspaceRoot}` : undefined,
+    peer.machineName ? `machine=${peer.machineName}` : undefined,
+    `status=${peer.status}`,
     `target=${peer.target}`,
   ].filter(Boolean).join(' ')
 }
@@ -295,6 +352,61 @@ async function sendUdsPlainMessage(to: string, socketPath: string, message: stri
       summary: summary?.trim() || undefined,
       content: message,
     },
+  })
+}
+
+async function sendBridgePlainMessage(options: TeamToolsOptions, to: string, sessionId: string, message: string, summary: string | undefined, ctx: ToolContext): Promise<string> {
+  const peer = await options.bridgePeers?.get(sessionId).catch(() => null) ?? null
+  if (!peer) {
+    return jsonOutput({
+      success: false,
+      message: `Remote Control is not connected - cannot send to ${to}. Reconnect with /remote-control first.`,
+      routing: {
+        sender: TEAM_LEAD_NAME,
+        target: to,
+        summary: summary?.trim() || undefined,
+        content: message,
+      },
+    })
+  }
+  if (peer.status !== 'connected' || !peer.inboundEnabled) {
+    return jsonOutput({
+      success: false,
+      message: `Remote Control peer ${to} is ${peer.status}${peer.inboundEnabled ? '' : ' (inbound disabled)'}.`,
+      routing: {
+        sender: TEAM_LEAD_NAME,
+        target: to,
+        summary: summary?.trim() || undefined,
+        content: message,
+      },
+      peer: bridgePeerJson(peer),
+    })
+  }
+  if (!options.sendBridgeMessage) {
+    return jsonOutput({
+      success: false,
+      message: `Remote Control transport is not connected - cannot deliver to ${to}.`,
+      routing: {
+        sender: TEAM_LEAD_NAME,
+        target: to,
+        summary: summary?.trim() || undefined,
+        content: message,
+      },
+      peer: bridgePeerJson(peer),
+    })
+  }
+  const result = await options.sendBridgeMessage(sessionId, message, ctx)
+  const preview = summary?.trim() || message.slice(0, 50)
+  return jsonOutput({
+    success: result.ok,
+    message: result.ok ? `"${preview}" -> ${to}` : `Failed to send to ${to}: ${result.error ?? 'unknown'}`,
+    routing: {
+      sender: TEAM_LEAD_NAME,
+      target: to,
+      summary: summary?.trim() || undefined,
+      content: message,
+    },
+    peer: bridgePeerJson(peer),
   })
 }
 
@@ -536,14 +648,14 @@ export function createTeamTools(teams: TeamService, options: TeamToolsOptions = 
     description: [
       'Send a message to another local team agent. CC-Haha-compatible SendMessage.',
       'Input: { to, summary?, message }. Use to:"*" for broadcast. Plain string messages require summary.',
-      'Also supports plain text to uds:/path/to.sock local cross-session peers. UDS messages do not require summary.',
+      'Also supports plain text to uds:/path/to.sock local peers and bridge:session_id Remote Control peers. Cross-session messages do not require summary.',
       'Structured messages supported: shutdown_request, shutdown_response, plan_approval_response.',
-      'bridge: Remote Control delivery is not enabled in this runtime yet.',
+      'bridge: targets require explicit user approval and a connected Remote Control transport.',
     ].join(' '),
     inputSchema: {
       type: 'object',
       properties: {
-        to: { type: 'string', description: 'Recipient teammate name, "*" for broadcast, or uds:/path/to.sock for a local cross-session peer.' },
+        to: { type: 'string', description: 'Recipient teammate name, "*" for broadcast, uds:/path/to.sock for a local peer, or bridge:session_id for a Remote Control peer.' },
         summary: { type: 'string', description: '5-10 word preview, required when message is a string.' },
         message: {
           oneOf: [
@@ -565,15 +677,36 @@ export function createTeamTools(teams: TeamService, options: TeamToolsOptions = 
       required: ['to', 'message'],
     },
     isReadOnly: false,
+    requiresApprovalFor(input) {
+      const to = stringValue(recordInput(input).to)
+      return parsePeerAddress(to).scheme === 'bridge'
+    },
+    approvalClassFor(input) {
+      const to = stringValue(recordInput(input).to)
+      return parsePeerAddress(to).scheme === 'bridge' ? 'outreach' : undefined
+    },
+    forceConfirmFor(input) {
+      const to = stringValue(recordInput(input).to)
+      return parsePeerAddress(to).scheme === 'bridge'
+    },
+    approvalReasonFor(input) {
+      const args = recordInput(input)
+      const to = stringValue(args.to)
+      return {
+        what: `向 Remote Control 会话 ${to || '(未指定)'} 发送消息`,
+        why: 'bridge 目标会把内容作为用户提示发送到可能位于其他机器的远端会话。',
+        impact: '对端模型会读取并处理这段文本;确认前不会发送。',
+      }
+    },
     async execute(input, ctx) {
       const normalized = normalizeSendInput(input)
       if (!normalized.to) throw new Error('to must not be empty')
       const address = parsePeerAddress(normalized.to)
       if (address.target.trim().length === 0) throw new Error('address target must not be empty')
-      if (address.scheme === 'bridge') throw new Error('Remote Control is not connected - cannot send to a bridge: target. Reconnect with /remote-control first.')
       if (address.scheme === 'other' && normalized.to.includes('@')) throw new Error('to must be a bare teammate name or "*" - there is only one team per session')
       if (normalized.message === undefined) throw new Error('message is required')
       if (typeof normalized.message === 'string') {
+        if (address.scheme === 'bridge') return sendBridgePlainMessage(options, normalized.to, address.target, normalized.message, normalized.summary, ctx)
         if (address.scheme === 'uds') return sendUdsPlainMessage(normalized.to, address.target, normalized.message, normalized.summary)
         if (normalized.to === '*') return broadcastPlainMessage(teams, normalized)
         const routed = await trySendToRunningBackgroundAgent(options, normalized.to, normalized.message, ctx)
@@ -589,7 +722,7 @@ export function createTeamTools(teams: TeamService, options: TeamToolsOptions = 
 
   const listPeers: Tool<ListPeersInput> = {
     name: 'ListPeers',
-    description: 'List local team members, UDS cross-session peers, SendMessage targets, unread mailbox counts, and peer metadata. Returns <peers> plus a parseable <peers_json> block. Input: { team_name?, include_inbox? }; camel-case aliases are accepted.',
+    description: 'List local team members, UDS peers, Remote Control bridge peers, SendMessage targets, unread mailbox counts, and peer metadata. Returns <peers> plus a parseable <peers_json> block. Input: { team_name?, include_inbox? }; camel-case aliases are accepted.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -607,6 +740,7 @@ export function createTeamTools(teams: TeamService, options: TeamToolsOptions = 
       const teamInfo = await teams.listPeers(requestedTeamName)
       const { teamName, peers } = teamInfo
       const udsPeers = await options.udsPeers?.list().catch(() => []) ?? []
+      const bridgePeers = await options.bridgePeers?.list().catch(() => []) ?? []
       const inboxBlocks: string[] = []
       if (includeInbox && teamName) {
         for (const peer of peers) {
@@ -628,36 +762,42 @@ export function createTeamTools(teams: TeamService, options: TeamToolsOptions = 
         description: teamInfo.description,
         created_at: teamInfo.createdAt,
         active_team: teamInfo.isActiveTeam,
-        peer_count: peers.length + udsPeers.length,
+        peer_count: peers.length + udsPeers.length + bridgePeers.length,
         local_peer_count: peers.length,
         uds_peer_count: udsPeers.length,
+        bridge_peer_count: bridgePeers.length,
         peers: peers.map(peerJson),
         uds_peers: udsPeers.map(udsPeerJson),
+        bridge_peers: bridgePeers.map(bridgePeerJson),
         send_message: {
           local_targets: peers.map(peer => peerTarget(peer.name)),
           uds_targets: udsPeers.map(peer => peer.target),
-          all_targets: [...peers.map(peer => peerTarget(peer.name)), ...udsPeers.map(peer => peer.target)],
+          bridge_targets: bridgePeers.map(peer => peer.target),
+          all_targets: [...peers.map(peer => peerTarget(peer.name)), ...udsPeers.map(peer => peer.target), ...bridgePeers.map(peer => peer.target)],
           broadcast_target: '*',
           cross_session_targets_enabled: true,
           uds_targets_enabled: true,
-          bridge_targets_enabled: false,
+          bridge_targets_enabled: bridgePeers.some(peer => peer.status === 'connected' && peer.inboundEnabled),
         },
       }
       return [
         [
-          `<peers team="${xmlAttr(teamName ?? '')}" count="${peers.length + udsPeers.length}"`,
+          `<peers team="${xmlAttr(teamName ?? '')}" count="${peers.length + udsPeers.length + bridgePeers.length}"`,
           optionalXmlAttr('active_team', teamInfo.isActiveTeam),
           optionalXmlAttr('lead_agent_id', teamInfo.leadAgentId),
           optionalXmlAttr('lead_session_id', teamInfo.leadSessionId),
           optionalXmlAttr('team_file_path', teamInfo.teamFilePath),
           optionalXmlAttr('local_peer_count', peers.length),
           optionalXmlAttr('uds_peer_count', udsPeers.length),
+          optionalXmlAttr('bridge_peer_count', bridgePeers.length),
           '>',
         ].join(''),
         ...peers.map(peerXmlLine),
         ...udsPeers.map(udsPeerXmlLine),
+        ...bridgePeers.map(bridgePeerXmlLine),
         ...peers.map(peerLegacyLine),
         ...udsPeers.map(udsPeerLegacyLine),
+        ...bridgePeers.map(bridgePeerLegacyLine),
         '</peers>',
         peersJsonBlock(data),
         ...inboxBlocks.filter(Boolean),
