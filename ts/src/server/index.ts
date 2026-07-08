@@ -29,12 +29,14 @@ import { VoiceTranscriptionError, transcribeVoiceFile } from './services/voiceTr
 import { buildGeneralRegistry } from '../tools/generalTools'
 import { workspaceForActiveWorktree } from '../tools/worktreeTools'
 import { loadSkillsDir } from '../skills/skillLoader'
+import { createBuiltinCommandLibrary, isBuiltinForkCommand } from '../commands/builtinCommands'
 import { bridgeUnsafeCommandMessage, filterBridgeSafeCommands, isBridgeSafeCommand, loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
 import { loadHookRegistryFile } from '../hooks/hookConfig'
 import { createDomainPackCommandLibrary, createDomainPackHookRegistry, createDomainPackTools, listPublicDomainPacks, mergeHookRegistries, resolveEnabledPacks, suggestedSkillNamesForPacks, type DomainPack } from '../packs/domainPacks'
 import { clearThreadGoalHook, createGoalHookRegistry, ensureThreadGoalHookFromTranscript, getThreadGoal, parseGoalCommand, setThreadGoalHook } from '../goals/goalState'
 import { loadAgentsDir } from '../agents/agentLoader'
 import { createAgentTaskSidechainTools, createAgentTaskTool } from '../agents/agentTool'
+import { buildForkRunContext } from '../agents/forkSubagent'
 import {
   closeMcpConnections,
   defaultElicitationHandler,
@@ -401,12 +403,12 @@ function workspaceCommandRoots(workspaceRoot: string): string[] {
   ].filter(existsSync)
 }
 
-async function loadCommandsForWorkspace(workspaceRoot: string, builtInRoot: string, packs: DomainPack[] = []) {
+async function loadCommandsForWorkspace(workspaceRoot: string, builtInRoot: string, packs: DomainPack[] = [], env: Record<string, string | undefined> = process.env) {
   const [builtInCommands, workspaceCommands] = await Promise.all([
     loadCommandsFromRoots([builtInRoot]),
     loadCommandsFromRoots(workspaceCommandRoots(workspaceRoot)),
   ])
-  return mergeCommandLibraries(builtInCommands, createDomainPackCommandLibrary(packs), workspaceCommands)
+  return mergeCommandLibraries(builtInCommands, createBuiltinCommandLibrary(env), createDomainPackCommandLibrary(packs), workspaceCommands)
 }
 
 function localCommandMessage(name: string, args: string, output: string): Message {
@@ -1383,7 +1385,7 @@ export function startServer(opts: StartServerOptions = {}) {
     const skillsRoot = opts.skillsRoot ?? defaultSkillsRoot()
     const skills = await loadSkillsDir(skillsRoot)
     const enabledPacks = resolveEnabledPacks(rawBody)
-    const commands = await loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), enabledPacks)
+    const commands = await loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), enabledPacks, opts.env ?? process.env)
     const bridgeOrigin = rawBody.bridgeOrigin === true || rawBody.bridge_origin === true
     const skipSlashCommands = rawBody.skipSlashCommands === true || rawBody.skip_slash_commands === true
     const parsedCandidate = rawBody.skipCommandParsing ? null : parseCommandInvocation(rawUserMessage)
@@ -1533,6 +1535,45 @@ export function startServer(opts: StartServerOptions = {}) {
       ? [createBackgroundAgentTaskTool(backgroundAgentOptions)]
       : []
     const registry = buildGeneralRegistry({ skills, skillsRoot, skillRecommendations, commands, extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools, ...agentTools, ...agentSidechainTools, ...backgroundTools] })
+    const launchBuiltinForkCommand = async (): Promise<string> => {
+      const directive = commandInvocation?.args.trim() ?? ''
+      if (!directive) return '用法: /fork <directive>'
+      const parentMessages = await transcript.load()
+      const toolCtx = {
+        workspace,
+        model,
+        registry,
+        signal: controller.signal,
+        permissionMode: permissionModeFrom(rawBody.permissionMode),
+        conversationId,
+        messages: parentMessages,
+        systemPrompt,
+        renderedSystemPrompt: systemPrompt,
+        toolResultStoreDir: join(stateRoot, 'tool-results', conversationId),
+      }
+      const forkContext = buildForkRunContext(toolCtx, directive)
+      const { task, agent } = await startBackgroundAgentRun(
+        backgroundAgentOptions!,
+        {
+          task: directive,
+          title: `fork: ${directive.slice(0, 80)}`,
+        },
+        toolCtx,
+        { slash_command: 'fork' },
+        [],
+        [],
+        { forkContext },
+      )
+      const name = typeof task.params?.name === 'string' ? ` name="${escapeXml(task.params.name)}"` : ''
+      const agentId = typeof task.params?.agent_id === 'string' ? ` agent_id="${escapeXml(task.params.agent_id)}"` : ''
+      const output = `<background_task_started id="${escapeXml(task.id)}" agent="${escapeXml(agent.name)}"${name}${agentId} status="${escapeXml(task.status)}">\n${escapeXml(task.title)}\n</background_task_started>`
+      await transcript.save([
+        ...parentMessages,
+        { role: 'user', content: [textBlock(commandInvocation?.raw ?? rawUserMessage)] },
+        { role: 'assistant', content: [textBlock(output)] },
+      ])
+      return output
+    }
     const stream = (async function* (): AsyncGenerator<SessionEventRecord> {
       let finalStatus: SessionStatus = 'idle'
       const record = async (event: SessionStreamEvent): Promise<SessionEventRecord> => {
@@ -1559,7 +1600,7 @@ export function startServer(opts: StartServerOptions = {}) {
           finalStatus = 'idle'
           return
         }
-        if (commandInvocation && commandInvocation.source === 'commands') {
+        if (commandInvocation && (commandInvocation.source === 'commands' || commandInvocation.source === 'builtin')) {
           yield await record({
             type: 'command_invocation',
             name: commandInvocation.name,
@@ -1568,6 +1609,12 @@ export function startServer(opts: StartServerOptions = {}) {
             source: 'commands',
             contentLength: commandInvocation.contentLength,
           })
+        }
+        if (isBuiltinForkCommand(commandInvocation)) {
+          const output = await launchBuiltinForkCommand()
+          yield await record({ type: 'final', text: output })
+          finalStatus = 'idle'
+          return
         }
         if (goalCommandResult) {
           yield await record({ type: 'context_note', text: goalCommandResult.output })
@@ -1847,7 +1894,7 @@ export function startServer(opts: StartServerOptions = {}) {
     const enabledPacks = resolveEnabledPacks(rawBody)
     const [skills, commands, hooks, agents] = await Promise.all([
       loadSkillsDir(skillsRoot),
-      loadCommandsForWorkspace(workspace.root, commandsRoot, enabledPacks),
+      loadCommandsForWorkspace(workspace.root, commandsRoot, enabledPacks, opts.env ?? process.env),
       loadHookRegistryFile(hooksPath),
       loadAgentsDir(agentsRoot),
     ])
@@ -1917,7 +1964,7 @@ export function startServer(opts: StartServerOptions = {}) {
     const domainPackTools = createDomainPackTools(enabledPacks)
     const [skills, commands] = await Promise.all([
       loadSkillsDir(skillsRoot),
-      loadCommandsForWorkspace(workspace.root, commandsRoot, enabledPacks),
+      loadCommandsForWorkspace(workspace.root, commandsRoot, enabledPacks, opts.env ?? process.env),
     ])
     const mcpConfigPath = typeof rawBody.mcpConfigPath === 'string' && rawBody.mcpConfigPath.trim()
       ? rawBody.mcpConfigPath.trim()
@@ -3886,7 +3933,7 @@ export function startServer(opts: StartServerOptions = {}) {
             }
           : await req.clone().json().catch(() => ({})) as Record<string, unknown>
         const workspace = workspaceFromBody(bodyForWorkspace)
-        const commands = await loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), resolveEnabledPacks(bodyForWorkspace))
+        const commands = await loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), resolveEnabledPacks(bodyForWorkspace), opts.env ?? process.env)
         const publicCommands = bodyForWorkspace.bridgeOrigin === true || bodyForWorkspace.bridge_origin === true || bodyForWorkspace.remoteControl === true || bodyForWorkspace.remote_control === true
           ? filterBridgeSafeCommands(commands.commands)
           : commands.commands

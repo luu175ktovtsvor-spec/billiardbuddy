@@ -3057,6 +3057,40 @@ Use workspace-specific daily ops.
   }
 })
 
+test('commands API exposes built-in fork command when fork gate is enabled', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'server-builtin-fork-command-'))
+  const commandServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    commandsRoot: join(root, 'commands'),
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    env: { DESKTOP_AGENT_FORK_SUBAGENT: '1' },
+  })
+  try {
+    const listed = await fetch(`http://127.0.0.1:${commandServer.port}/commands`)
+    expect(listed.status).toBe(200)
+    const listBody = await listed.json() as any
+    expect(listBody.commands).toContainEqual(expect.objectContaining({
+      name: 'fork',
+      source: 'builtin',
+      allowedTools: ['agent_task'],
+    }))
+
+    const expanded = await fetch(`http://127.0.0.1:${commandServer.port}/api/commands/expand`, {
+      method: 'POST',
+      body: JSON.stringify({ name: '/fork', args: '审计 parser 边界', workspaceRoot: root }),
+    })
+    expect(expanded.status).toBe(200)
+    const expandBody = await expanded.json() as any
+    expect(expandBody.prompt).toContain('Launch a background fork worker')
+    expect(expandBody.prompt).toContain('agent_task')
+    expect(expandBody.prompt).toContain('审计 parser 边界')
+  } finally {
+    commandServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('POST /agent/run falls back from failing active provider to env provider and streams the notice', async () => {
   const root = mkdtempSync(join(tmpdir(), 'provider-fallback-run-'))
   const requestedUrls: string[] = []
@@ -4862,6 +4896,75 @@ tools: []
     expect(sentBodies.some(body => String(body.messages?.[0]?.content ?? '').includes('<background_subagent name="researcher">'))).toBe(true)
   } finally {
     agentServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('POST /agent/run starts built-in /fork as an inherited background worker', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'server-builtin-fork-run-'))
+  const agentsRoot = join(root, 'agents')
+  mkdirSync(agentsRoot, { recursive: true })
+  await new SessionService(root).transcript('fork-command-run').save([
+    { role: 'user', content: [textBlock('父级已经读过 parser.ts')] },
+    { role: 'assistant', content: [textBlock('父级结论: parser 入口在 parseCommandInvocation。')] },
+  ])
+  const sentBodies: any[] = []
+  const forkServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    agentsRoot,
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    env: {
+      OPENAI_BASE_URL: 'https://model.example/v1',
+      OPENAI_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+      DESKTOP_AGENT_FORK_SUBAGENT: '1',
+    },
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init?.body as string)
+      sentBodies.push(body)
+      return sseResponse({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: 'Scope: 审计 parser 边界\nResult: ok' }, finish_reason: 'stop' }] })
+    },
+  })
+  try {
+    const res = await fetch(`http://127.0.0.1:${forkServer.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({
+        message: '/fork 审计 parser 边界',
+        conversationId: 'fork-command-run',
+        workspaceRoot: root,
+        permissionMode: 'full',
+      }),
+    })
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).toContain('event: command_invocation')
+    expect(text).toContain('background_task_started')
+    expect(text).toContain('agent=\\"fork\\"')
+    expect(text).not.toContain('Launch a background fork worker')
+
+    const taskId = text.match(/id=\\?"([^"\\]+)\\?"/)?.[1]
+    expect(taskId).toBeTruthy()
+    if (!taskId) throw new Error('missing fork task id')
+    const done = await waitFor(async () => {
+      const detail = await fetch(`http://127.0.0.1:${forkServer.port}/tasks/${taskId}`)
+      const body = await detail.json() as { task?: { status: string; result?: unknown; params?: Record<string, unknown> } }
+      return body.task?.status === 'completed' ? body.task : null
+    }, 2500)
+    expect(done.params).toMatchObject({ agent: 'fork', fork_context: true, slash_command: 'fork', task: '审计 parser 边界' })
+    expect(done.result).toContain('Scope: 审计 parser 边界')
+    expect(sentBodies).toHaveLength(1)
+    const forkRequest = JSON.stringify(sentBodies[0])
+    expect(forkRequest).toContain('<fork-boilerplate>')
+    expect(forkRequest).toContain('Your directive: 审计 parser 边界')
+    expect(forkRequest).toContain('父级已经读过 parser.ts')
+    expect(forkRequest).toContain('父级结论: parser 入口在 parseCommandInvocation。')
+
+    const transcript = await new SessionService(root).loadTranscript('fork-command-run')
+    expect(JSON.stringify(transcript)).toContain('/fork 审计 parser 边界')
+    expect(JSON.stringify(transcript)).toContain('background_task_started')
+  } finally {
+    forkServer.stop(true)
     rmSync(root, { recursive: true, force: true })
   }
 })
