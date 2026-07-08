@@ -8,7 +8,7 @@ import type { ToolContext } from './Tool'
 import type { Sandbox } from '../sandbox/sandbox'
 import { runCommandTool } from './runCommandTool'
 import { StreamingOutputSanitizer, stripAnsiControlSequences } from './outputSanitize'
-import { classifyCommandRisk, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellCdGitNeedsApproval, shellGitInternalWriteNeedsApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval, shellSensitiveReadNeedsApproval } from './dangerousCommand'
+import { classifyCommandRisk, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellCdGitNeedsApproval, shellDangerousRemovalNeedsApproval, shellGitInternalWriteNeedsApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval, shellSensitiveReadNeedsApproval } from './dangerousCommand'
 import { resolvePermission } from '../permissions/resolve'
 
 let root: string
@@ -170,6 +170,11 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('npm install left-pad')).toBe('outreach')
   expect(classifyCommandRisk('rm -rf build')).toBe('destructive')
   expect(classifyCommandRisk('env rm -rf build')).toBe('destructive')
+  expect(classifyCommandRisk('rm -- /')).toBe('destructive')
+  expect(classifyCommandRisk('rmdir /')).toBe('destructive')
+  expect(classifyCommandRisk('rm -f /tmp')).toBe('destructive')
+  expect(classifyCommandRisk('rm node_modules/*')).toBe('destructive')
+  expect(classifyCommandRisk('rm -f build/cache')).toBe('file')
   expect(classifyCommandRisk('rg TODO | head')).toBe('read')
   expect(classifyCommandRisk('rg -n -C2 TODO -g *.ts src')).toBe('read')
   expect(classifyCommandRisk('rg --json --stats TODO src')).toBe('read')
@@ -385,6 +390,20 @@ test('sensitive read path detection gates credential-like files without blocking
   expect(shellSensitiveReadNeedsApproval('cat package.json')).toBe(false)
   expect(shellSensitiveReadNeedsApproval('rg TODO src')).toBe(false)
   expect(shellSensitiveReadNeedsApproval('cat src/tokenizer.ts')).toBe(false)
+})
+
+test('dangerous removal path detection mirrors Bash path validation guard', () => {
+  const cwd = join(root, 'sub')
+  mkdirSync(cwd, { recursive: true })
+  expect(shellDangerousRemovalNeedsApproval('rm -- /', { cwd })).toBe(true)
+  expect(shellDangerousRemovalNeedsApproval('rmdir /', { cwd })).toBe(true)
+  expect(shellDangerousRemovalNeedsApproval('rm -f /tmp', { cwd })).toBe(true)
+  expect(shellDangerousRemovalNeedsApproval('rm -f ~', { cwd })).toBe(true)
+  expect(shellDangerousRemovalNeedsApproval('rm -rf C:\\', { cwd })).toBe(true)
+  expect(shellDangerousRemovalNeedsApproval('rm C:/Windows', { cwd })).toBe(true)
+  expect(shellDangerousRemovalNeedsApproval('rm node_modules/*', { cwd })).toBe(true)
+  expect(shellDangerousRemovalNeedsApproval('rm -f build/cache', { cwd })).toBe(false)
+  expect(shellDangerousRemovalNeedsApproval('rm -- -not-a-flag.txt', { cwd })).toBe(false)
 })
 
 test('shell expansion risk detection mirrors Bash substitution safety gate', () => {
@@ -764,6 +783,14 @@ test('run_command dynamic permission allows reads and classifies approval', () =
     approvalClass: 'outreach',
   })
   expect(resolvePermission(runCommandTool, { command: 'rm -rf build' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'destructive',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'rm -- /' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'destructive',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'rm node_modules/*' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'destructive',
   })

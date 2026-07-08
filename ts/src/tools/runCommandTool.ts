@@ -3,7 +3,7 @@ import { stat } from 'node:fs/promises'
 import { isAbsolute, relative } from 'node:path'
 import type { Tool, ToolContext } from './Tool'
 import type { WrappedCommand } from '../sandbox/sandbox'
-import { classifyCommandRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval, shellSensitiveReadNeedsApproval, type CommandRisk } from './dangerousCommand'
+import { classifyCommandRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellDangerousRemovalNeedsApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval, shellSensitiveReadNeedsApproval, type CommandRisk } from './dangerousCommand'
 import type { ApprovalClass } from '../permissions/types'
 import { StreamingOutputSanitizer } from './outputSanitize'
 import { interpretCommandResult } from './commandSemantics'
@@ -89,9 +89,10 @@ export const runCommandTool: Tool<RunCommandInput> = {
 
 function effectiveCommandRisk(input: RunCommandInput | undefined, ctx: ToolContext): CommandRisk {
   if (!input || typeof input.command !== 'string') return 'destructive'
+  const cwd = resolveCommandCwdSync(input.cwd, ctx)
+  if (shellDangerousRemovalNeedsApproval(input.command, { cwd })) return 'destructive'
   const risk = classifyCommandRisk(input.command)
   if (risk === 'destructive') return risk
-  const cwd = resolveCommandCwdSync(input.cwd, ctx)
   const sandboxActive = ctx.sandbox?.isOsSandboxActive() === true
   if (
     shellOutputRedirectionNeedsApproval(input.command, { root: ctx.workspace.root, cwd }) ||
