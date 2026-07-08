@@ -14,7 +14,7 @@ import type { AgentDefinition } from './agentLoader'
 import { getAgentMemoryEntrypoint } from './agentMemory'
 import { handleReject, runAgentLoop } from '../harness/loop'
 import { buildChildMessage } from './forkSubagent'
-import { textBlock } from '../types/message'
+import { textBlock, type Message } from '../types/message'
 
 function agent(partial: Partial<AgentDefinition> = {}): AgentDefinition {
   return {
@@ -175,6 +175,87 @@ test('agent_task fork_context runs a child with parent system, messages and exac
     expect(childFirst.messages.some(message =>
       message.content.some(block => block.type === 'text' && block.text.includes('<subagent name=')),
     )).toBe(false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('agent_task keeps existing single-agent default when fork gate is off', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-fork-gate-off-'))
+  try {
+    const model = scriptedModel([{ kind: 'final', text: '普通子代理仍然默认选唯一 agent' }])
+    const tool = createAgentTaskTool({
+      agents: [agent()],
+      model,
+      baseTools: [],
+      sidechainRoot: join(root, 'sidechains'),
+      env: {},
+    })
+
+    const out = await tool.execute({ task: '默认 agent' }, {
+      workspace: new Workspace(root),
+      permissionMode: 'full',
+    })
+
+    expect(out).toContain('<agent_task agent="researcher"')
+    expect(out).toContain('普通子代理仍然默认选唯一 agent')
+    expect(model.received[0]!.system).toContain('<subagent name="researcher">')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('agent_task implicit fork gate hides agent fields and forks when agent is omitted', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-implicit-fork-'))
+  try {
+    let capturedInput: unknown
+    let capturedFork: unknown
+    const tool = createAgentTaskTool({
+      agents: [agent()],
+      model: scriptedModel([{ kind: 'final', text: 'unused' }]),
+      baseTools: [],
+      env: { DESKTOP_AGENT_FORK_SUBAGENT: '1' },
+      startBackgroundAgent: async (input, _ctx, forkContext) => {
+        capturedInput = input
+        capturedFork = forkContext
+        return {
+          task: {
+            id: 'implicit_fork_1',
+            title: `${input.agent}: ${input.task}`,
+            params: { agent_id: 'implicit_fork_1', fork_context: true },
+          },
+          agent: agent({ name: input.agent ?? 'fork' }),
+        }
+      },
+    })
+    expect(Object.keys(tool.inputSchema.properties ?? {}).sort()).toEqual(['context', 'isolation', 'task'])
+
+    const parentMessages = [
+      { role: 'user' as const, content: [textBlock('父请求')] },
+      { role: 'assistant' as const, content: [{ type: 'tool_use' as const, id: 'implicit-call', name: 'agent_task', input: { task: '隐式 fork' } }] },
+    ]
+    const out = await tool.execute({ task: '隐式 fork' }, {
+      workspace: new Workspace(root),
+      permissionMode: 'full',
+      systemPrompt: 'PARENT SYS',
+      messages: parentMessages,
+      registry: new ToolRegistry([tool]),
+    })
+
+    expect(capturedInput).toEqual({
+      agent: 'fork',
+      task: '隐式 fork',
+      title: 'fork: 隐式 fork',
+    })
+    expect((capturedFork as { systemPrompt?: string } | undefined)?.systemPrompt).toBe('PARENT SYS')
+    expect((capturedFork as { initialMessages?: Message[] } | undefined)?.initialMessages?.[0]).toEqual(parentMessages[0])
+    expect((capturedFork as { initialMessages?: Message[] } | undefined)?.initialMessages?.[1]).toEqual(parentMessages[1])
+    expect((capturedFork as { initialMessages?: Message[] } | undefined)?.initialMessages?.[2]?.content[0]).toEqual({
+      type: 'tool_result',
+      tool_use_id: 'implicit-call',
+      content: 'Fork started - processing in background',
+    })
+    expect(out).toContain('<background_task_started id="implicit_fork_1" agent="fork" agent_id="implicit_fork_1" status="queued">')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

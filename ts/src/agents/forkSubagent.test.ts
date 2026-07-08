@@ -7,6 +7,7 @@ import {
   buildWorktreeNotice,
   FORK_BOILERPLATE_TAG,
   FORK_DIRECTIVE_PREFIX,
+  isForkSubagentEnabled,
   isInForkChild,
 } from './forkSubagent'
 
@@ -34,6 +35,13 @@ test('buildForkedMessages keeps the full assistant message and adds placeholder 
   expect(directive).toMatchObject({ type: 'text' })
   expect(directive?.type === 'text' ? directive.text : '').toContain(`<${FORK_BOILERPLATE_TAG}>`)
   expect(directive?.type === 'text' ? directive.text : '').toContain(`${FORK_DIRECTIVE_PREFIX}Inspect parser boundaries`)
+})
+
+test('isForkSubagentEnabled is opt-in through explicit environment gates', () => {
+  expect(isForkSubagentEnabled({})).toBe(false)
+  expect(isForkSubagentEnabled({ DESKTOP_AGENT_FORK_SUBAGENT: '1' })).toBe(true)
+  expect(isForkSubagentEnabled({ CC_HAHA_FORK_SUBAGENT: 'true' })).toBe(true)
+  expect(isForkSubagentEnabled({ DESKTOP_AGENT_FORK_SUBAGENT: 'false' })).toBe(false)
 })
 
 test('buildForkedMessages falls back to a directive-only user message without tool_use blocks', () => {

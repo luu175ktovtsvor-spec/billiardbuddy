@@ -27,7 +27,7 @@ import { loadAgentMcpRuntime, type AgentMcpRuntimeOptions } from './agentMcp'
 import { buildAgentMemoryPrompt, workspaceWithAgentMemory } from './agentMemory'
 import { cloneContentReplacementState } from '../context/toolResultStorage'
 import { createDenialTrackingState } from '../permissions/denialTracking'
-import { buildForkRunContext, FORK_SUBAGENT_TYPE, isInForkChild, type ForkRunContext } from './forkSubagent'
+import { buildForkRunContext, FORK_SUBAGENT_TYPE, isForkSubagentEnabled, isInForkChild, type ForkRunContext } from './forkSubagent'
 
 export interface AgentTaskInput {
   agent?: string
@@ -50,6 +50,7 @@ export interface AgentTaskToolOptions {
   sidechainRoot?: string
   hooks?: HookRegistry
   mcp?: AgentMcpRuntimeOptions
+  env?: Record<string, string | undefined>
   startBackgroundAgent?: (input: { agent?: string; name?: string; task: string; context?: string; title?: string; isolation?: 'worktree' }, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<{ task: { id: string; title: string; params?: Record<string, unknown> }; agent: AgentDefinition }>
 }
 
@@ -248,12 +249,14 @@ function formatWorktreeResult(cleanup: AgentWorktreeCleanupResult | null): strin
 }
 
 export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskInput> {
-  return {
-    name: 'agent_task',
-    description: `Run a focused subagent and return only its final result. Available agents:\n${agentList(opts.agents)}`,
-    inputSchema: {
-      type: 'object',
-      properties: {
+  const forkGateEnabled = isForkSubagentEnabled(opts.env)
+  const inputSchemaProperties = forkGateEnabled
+    ? {
+        task: { type: 'string' },
+        context: { type: 'string' },
+        isolation: { type: 'string', enum: ['worktree'], description: 'Use "worktree" to run the forked worker in an isolated git worktree.' },
+      }
+    : {
         agent: { type: 'string', description: 'Agent name. Required when more than one agent is available.' },
         name: { type: 'string', description: 'Optional instance name when run_in_background is true. Makes this background agent addressable via SendMessage({to:name}).' },
         task: { type: 'string' },
@@ -261,7 +264,15 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
         isolation: { type: 'string', enum: ['worktree'], description: 'Use "worktree" to run the subagent in an isolated git worktree.' },
         run_in_background: { type: ['boolean', 'string'], description: 'Set true to launch this Agent task in the background and return a task id immediately.' },
         fork_context: { type: ['boolean', 'string'], description: 'Set true to run a forked worker that inherits the parent conversation, system prompt, and exact tool pool.' },
-      },
+      }
+  return {
+    name: 'agent_task',
+    description: forkGateEnabled
+      ? 'Fork a worker that inherits the parent coding-agent conversation and runs in the background.'
+      : `Run a focused subagent and return only its final result. Available agents:\n${agentList(opts.agents)}`,
+    inputSchema: {
+      type: 'object',
+      properties: inputSchemaProperties,
       required: ['task'],
     },
     isReadOnly: false,
@@ -272,7 +283,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
       if (ctx.messages && isInForkChild(ctx.messages)) {
         throw new Error('Fork worker 内部不能再次启动 agent_task。请直接使用当前可用工具完成任务。')
       }
-      const wantsForkContext = optionalBoolean(input.fork_context ?? input.forkContext)
+      const wantsForkContext = optionalBoolean(input.fork_context ?? input.forkContext) || (forkGateEnabled && !input.agent)
       const agent = wantsForkContext
         ? {
             name: FORK_SUBAGENT_TYPE,
@@ -287,7 +298,9 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
         throw new Error(`agent_task 需要指定 agent;可用 agent:\n${agentList(opts.agents)}`)
       }
       const forkRunContext = wantsForkContext ? buildForkRunContext(ctx, buildTaskMessage(input)) : undefined
-      const wantsBackground = optionalBoolean(input.run_in_background ?? input.runInBackground) || agent.background === true
+      const wantsBackground = wantsForkContext && forkGateEnabled
+        ? true
+        : optionalBoolean(input.run_in_background ?? input.runInBackground) || agent.background === true
       if (wantsBackground) {
         if (!opts.startBackgroundAgent) {
           throw new Error('agent_task run_in_background 需要后台任务运行器')
