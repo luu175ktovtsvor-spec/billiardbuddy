@@ -258,6 +258,16 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('pyright --project .')).toBe('read')
   expect(classifyCommandRisk('pyright --outputjson --warnings')).toBe('read')
   expect(classifyCommandRisk('pyright --watch')).toBe('outreach')
+  expect(classifyCommandRisk('docker ps')).toBe('read')
+  expect(classifyCommandRisk('docker images')).toBe('read')
+  expect(classifyCommandRisk('docker logs --tail 100 app')).toBe('read')
+  expect(classifyCommandRisk('docker logs -ft --since 1h app')).toBe('read')
+  expect(classifyCommandRisk("docker inspect --format '{{.State.Status}}' app")).toBe('read')
+  expect(classifyCommandRisk('docker inspect --type container app')).toBe('read')
+  expect(classifyCommandRisk('docker exec app sh')).toBe('outreach')
+  expect(classifyCommandRisk('docker logs --output out.txt app')).toBe('outreach')
+  expect(classifyCommandRisk('env DOCKER_HOST=tcp://example.com docker ps')).toBe('outreach')
+  expect(classifyCommandRisk('DOCKER_CONFIG=/tmp/docker docker images')).toBe('outreach')
   expect(classifyCommandRisk('curl https://example.com > out.txt')).toBe('outreach')
   expect(classifyCommandRisk('kill 123 > out.txt')).toBe('destructive')
   expect(classifyCommandRisk('git push --force origin main')).toBe('destructive')
@@ -516,6 +526,20 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   })
   expect(resolvePermission(runCommandTool, { command: 'pyright --project .' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'pyright --watch' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'docker logs --tail 100 app' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'docker inspect --type container app' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'docker exec app sh' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'docker logs --output out.txt app' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'env DOCKER_HOST=tcp://example.com docker ps' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })

@@ -1806,6 +1806,126 @@ function classifyPyrightCommand(command: string): CommandRisk | null {
   })
 }
 
+function classifyDockerCommand(command: string): CommandRisk | null {
+  const tokens = tokenizeShellWords(command)
+  if (tokens[0]?.toLowerCase() !== 'docker') return null
+  const subcommand = tokens[1]?.toLowerCase()
+  if (!subcommand) return 'outreach'
+
+  for (const token of tokens.slice(2)) {
+    if (token.includes('$')) return 'outreach'
+  }
+
+  if (subcommand === 'ps' || subcommand === 'images') return 'read'
+
+  const configs: Record<string, ReadOnlyCommandConfig> = {
+    logs: {
+      safeFlags: {
+        '--follow': 'none',
+        '-f': 'none',
+        '--tail': 'string',
+        '-n': 'string',
+        '--timestamps': 'none',
+        '-t': 'none',
+        '--since': 'string',
+        '--until': 'string',
+        '--details': 'none',
+      },
+    },
+    inspect: {
+      safeFlags: {
+        '--format': 'string',
+        '-f': 'string',
+        '--type': 'string',
+        '--size': 'none',
+        '-s': 'none',
+      },
+    },
+  }
+
+  const config = configs[subcommand]
+  if (!config) return 'outreach'
+  return validateSafeFlags(tokens.slice(2), config) ? 'read' : 'outreach'
+}
+
+function dockerRuntimeEnvNeedsApproval(segment: string): boolean {
+  const { command, envNames } = parseRuntimeEnvPrefix(segment)
+  return command === 'docker' && envNames.some(name => name.toUpperCase().startsWith('DOCKER_'))
+}
+
+function parseRuntimeEnvPrefix(segment: string): { command: string | undefined; envNames: string[] } {
+  const tokens = tokenizeShellWords(segment)
+  const envNames: string[] = []
+  let index = 0
+
+  while (index < tokens.length) {
+    const envName = getEnvAssignmentName(tokens[index]!)
+    if (!envName) break
+    envNames.push(envName)
+    index++
+  }
+
+  if (tokens[index]?.toLowerCase() !== 'env') {
+    return { command: tokens[index]?.toLowerCase(), envNames }
+  }
+
+  index++
+  while (index < tokens.length) {
+    const token = tokens[index]!
+    if (token === '--') {
+      index++
+      continue
+    }
+
+    const envName = getEnvAssignmentName(token)
+    if (envName) {
+      envNames.push(envName)
+      index++
+      continue
+    }
+
+    if (token === '-' || token === '-i' || token === '--ignore-environment' || token === '-0' || token === '--null') {
+      index++
+      continue
+    }
+
+    if (token === '-u' || token === '--unset') {
+      const next = tokens[index + 1]
+      if (next) envNames.push(next)
+      index += 2
+      continue
+    }
+    if (token.startsWith('-u') && token.length > 2) {
+      envNames.push(token.slice(2))
+      index++
+      continue
+    }
+    if (token.startsWith('--unset=')) {
+      envNames.push(token.slice('--unset='.length))
+      index++
+      continue
+    }
+
+    if (token === '-C' || token === '--chdir' || token === '-S' || token === '--split-string') {
+      index += 2
+      continue
+    }
+    if (token.startsWith('--chdir=') || token.startsWith('--split-string=')) {
+      index++
+      continue
+    }
+
+    break
+  }
+
+  return { command: tokens[index]?.toLowerCase(), envNames }
+}
+
+function getEnvAssignmentName(token: string): string | null {
+  const match = token.match(/^([A-Za-z_][A-Za-z0-9_]*)=/)
+  return match?.[1] ?? null
+}
+
 function classifyProcessActionCommand(command: string): CommandRisk | null {
   const tokens = tokenizeShellWords(command)
   const base = tokens[0]?.toLowerCase()
@@ -2175,6 +2295,7 @@ function isInside(parent: string, child: string): boolean {
 }
 
 function classifySegment(segment: string): CommandRisk {
+  const originalSegment = normalize(segment)
   const rawCommand = normalize(stripRuntimeEnvWrapper(segment))
   const command = rawCommand.toLowerCase()
   if (!command) return 'read'
@@ -2187,6 +2308,7 @@ function classifySegment(segment: string): CommandRisk {
   if (/\brm\s+.*-[a-z]*r/.test(command)) return withSegmentBaseRisk('destructive')
   const processActionRisk = classifyProcessActionCommand(rawCommand)
   if (processActionRisk) return withSegmentBaseRisk(processActionRisk)
+  if (dockerRuntimeEnvNeedsApproval(originalSegment)) return withSegmentBaseRisk('outreach')
   if (/^git\s+push\b.*\s--(?:force|force-with-lease|mirror)\b/.test(command)) return withSegmentBaseRisk('destructive')
   if (/^git\s+push\b.*\s-f(?:\s|$)/.test(command)) return withSegmentBaseRisk('destructive')
   if (/^git\s+reset\b.*\s--hard\b/.test(command)) return withSegmentBaseRisk('destructive')
@@ -2248,6 +2370,9 @@ function classifySegment(segment: string): CommandRisk {
 
   const pyrightRisk = classifyPyrightCommand(rawCommand)
   if (pyrightRisk) return withSegmentBaseRisk(pyrightRisk)
+
+  const dockerRisk = classifyDockerCommand(rawCommand)
+  if (dockerRisk) return withSegmentBaseRisk(dockerRisk)
 
   const readOnlyAllowlistRisk = classifyReadOnlyAllowlistedCommand(rawCommand)
   if (readOnlyAllowlistRisk) return withSegmentBaseRisk(readOnlyAllowlistRisk)
