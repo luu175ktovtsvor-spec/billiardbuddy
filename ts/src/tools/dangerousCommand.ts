@@ -1831,6 +1831,70 @@ function stripRuntimeEnvWrapper(command: string): string {
   return tokens.join(' ')
 }
 
+function stripShellClassificationWrappers(command: string): string {
+  let stripped = command.trim()
+  let previous = ''
+
+  while (stripped !== previous) {
+    previous = stripped
+    stripped = stripSafeShellWrappers(stripped)
+    stripped = stripRuntimeEnvWrapperPreservingSyntax(stripped) ?? stripped
+  }
+
+  return stripped
+}
+
+function stripRuntimeEnvWrapperPreservingSyntax(command: string): string | null {
+  let i = 0
+  while (/\s/.test(command[i] ?? '')) i++
+  const first = readShellWord(command, i)
+  if (first.word.toLowerCase() !== 'env') return null
+  i = first.end
+
+  for (;;) {
+    while (/\s/.test(command[i] ?? '')) i++
+    if (i >= command.length) return null
+
+    const tokenStart = i
+    const parsed = readShellWord(command, i)
+    const token = parsed.word
+    if (!token) return null
+
+    if (token === '--') {
+      i = parsed.end
+      continue
+    }
+    if (/^[A-Za-z_][A-Za-z0-9_]*=.*/.test(token)) {
+      i = parsed.end
+      continue
+    }
+    if (token === '-' || token === '-i' || token === '--ignore-environment' || token === '-0' || token === '--null' || token === '-v') {
+      i = parsed.end
+      continue
+    }
+    if (token === '-u' || token === '--unset') {
+      i = parsed.end
+      while (/\s/.test(command[i] ?? '')) i++
+      const value = readShellWord(command, i)
+      if (!value.word) return null
+      i = value.end
+      continue
+    }
+    if (token.startsWith('-u') && token.length > 2) {
+      i = parsed.end
+      continue
+    }
+    if (token.startsWith('--unset=')) {
+      i = parsed.end
+      continue
+    }
+    if (token === '-S' || token === '--split-string' || token === '-C' || token === '--chdir') return null
+    if (token.startsWith('--split-string=') || token.startsWith('--chdir=')) return null
+    if (token.startsWith('-')) return null
+    return command.slice(tokenStart).trim()
+  }
+}
+
 function normalize(command: string): string {
   return command.trim().replace(/\s+/g, ' ')
 }
@@ -2868,7 +2932,7 @@ function classifyReadOnlyAllowlistedCommand(command: string): CommandRisk | null
 export function shellSensitiveReadNeedsApproval(command: string): boolean {
   const commandForClassification = stripSafeHeredocSubstitutions(command) ?? command
   return splitSegments(commandForClassification).some(segment => {
-    const rawCommand = normalize(stripRuntimeEnvWrapper(segment))
+    const rawCommand = normalize(stripShellClassificationWrappers(segment))
     return readCommandTouchesSensitivePath(rawCommand)
   })
 }
@@ -2876,7 +2940,7 @@ export function shellSensitiveReadNeedsApproval(command: string): boolean {
 export function shellDangerousRemovalNeedsApproval(command: string, opts: { cwd?: string } = {}): boolean {
   const commandForClassification = stripSafeHeredocSubstitutions(command) ?? command
   return splitSegments(commandForClassification).some(segment => {
-    const rawCommand = normalize(stripRuntimeEnvWrapper(segment))
+    const rawCommand = normalize(stripShellClassificationWrappers(segment))
     return removalCommandTouchesDangerousPath(rawCommand, opts.cwd)
   })
 }
@@ -2884,7 +2948,7 @@ export function shellDangerousRemovalNeedsApproval(command: string, opts: { cwd?
 export function shellMvCpFlagsNeedApproval(command: string): boolean {
   const commandForClassification = stripSafeHeredocSubstitutions(command) ?? command
   return splitSegments(commandForClassification).some(segment => {
-    const rawCommand = normalize(stripRuntimeEnvWrapper(segment))
+    const rawCommand = normalize(stripShellClassificationWrappers(segment))
     return mvCpCommandHasFlag(rawCommand)
   })
 }
@@ -2892,7 +2956,7 @@ export function shellMvCpFlagsNeedApproval(command: string): boolean {
 export function gitDiffNoIndexSensitivePathNeedsApproval(command: string): boolean {
   const commandForClassification = stripSafeHeredocSubstitutions(command) ?? command
   return splitSegments(commandForClassification).some(segment => {
-    const rawCommand = normalize(stripRuntimeEnvWrapper(segment))
+    const rawCommand = normalize(stripShellClassificationWrappers(segment))
     return gitDiffNoIndexTouchesSensitivePath(rawCommand)
   })
 }
@@ -3486,19 +3550,19 @@ function readShellWord(command: string, start: number): { word: string; end: num
 }
 
 function isCdLikeCommand(segment: string): boolean {
-  const tokens = tokenizeShellWords(stripSafeShellWrappers(segment).toLowerCase())
+  const tokens = tokenizeShellWords(stripShellClassificationWrappers(segment).toLowerCase())
   const first = tokens[0]
   return first === 'cd' || first === 'pushd' || first === 'popd'
 }
 
 function isGitLikeCommand(segment: string): boolean {
-  const tokens = tokenizeShellWords(stripSafeShellWrappers(segment).toLowerCase())
+  const tokens = tokenizeShellWords(stripShellClassificationWrappers(segment).toLowerCase())
   if (tokens[0] === 'git') return true
   return tokens[0] === 'xargs' && tokens.includes('git')
 }
 
 function isWriteLikeCommand(segment: string): boolean {
-  const stripped = stripSafeShellWrappers(stripRuntimeEnvWrapper(segment))
+  const stripped = stripShellClassificationWrappers(segment)
   if (hasWriteRedirection(stripped)) return true
   const tokens = tokenizeShellWords(stripped.toLowerCase())
   const command = tokens[0]
@@ -3509,7 +3573,7 @@ function isWriteLikeCommand(segment: string): boolean {
 }
 
 function segmentWritesGitInternalPath(segment: string): boolean {
-  const stripped = stripSafeShellWrappers(segment)
+  const stripped = stripShellClassificationWrappers(segment)
   for (const target of extractOutputRedirectionTargets(stripped)) {
     if (isGitInternalPath(target)) return true
   }
@@ -3578,7 +3642,7 @@ function isInside(parent: string, child: string): boolean {
 
 function classifySegment(segment: string): CommandRisk {
   const originalSegment = normalize(segment)
-  const rawCommand = normalize(stripRuntimeEnvWrapper(segment))
+  const rawCommand = normalize(stripShellClassificationWrappers(segment))
   const command = rawCommand.toLowerCase()
   if (!command) return 'read'
   if (isDangerousCommand(command)) return 'destructive'
