@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync, readFileSync, realpathSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Workspace } from './workspace'
@@ -18,6 +18,41 @@ test('resolve() delegates to the workspace boundary', () => {
   const ws = new Workspace(root)
   expect(ws.resolve('a.txt')).toBe(resolve(root, 'a.txt'))
   expect(() => ws.resolve('../evil')).toThrow(WorkspaceBoundaryError)
+})
+
+test('resolve() blocks an in-workspace symlink that escapes the workspace', () => {
+  const externalRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ws-ext-')))
+  try {
+    writeFileSync(join(externalRoot, 'secret.txt'), 'top secret')
+    symlinkSync(externalRoot, join(root, 'link')) // <root>/link -> 工作区外目录
+    const ws = new Workspace(root)
+    // 读:跟随 symlink 会逃出工作区,应拒(纯字符串边界看不出,symlink 解析后拦下)
+    expect(() => ws.resolve('link/secret.txt', 'read')).toThrow(WorkspaceBoundaryError)
+    // 写:即使是新建文件,父级 symlink 逃逸也应拒
+    expect(() => ws.resolve('link/new.txt', 'write')).toThrow(WorkspaceBoundaryError)
+  } finally {
+    rmSync(externalRoot, { recursive: true, force: true })
+  }
+})
+
+test('resolve() allows an in-workspace symlink that stays inside the workspace', () => {
+  mkdirSync(join(root, 'real'))
+  writeFileSync(join(root, 'real', 'a.txt'), 'x')
+  symlinkSync(join(root, 'real'), join(root, 'inner')) // <root>/inner -> <root>/real(区内)
+  const ws = new Workspace(root)
+  expect(ws.resolve('inner/a.txt', 'read')).toBe(resolve(root, 'inner', 'a.txt'))
+})
+
+test('fullDiskAccess workspace does not apply the symlink-escape guard', () => {
+  const externalRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ws-fda-')))
+  try {
+    writeFileSync(join(externalRoot, 'x.txt'), 'x')
+    symlinkSync(externalRoot, join(root, 'link'))
+    const ws = new Workspace(root, { fullDiskAccess: true })
+    expect(ws.resolve('link/x.txt', 'read')).toBe(resolve(root, 'link', 'x.txt'))
+  } finally {
+    rmSync(externalRoot, { recursive: true, force: true })
+  }
 })
 
 test('backup() copies an existing file into .backups before overwrite', async () => {
