@@ -845,6 +845,57 @@ test('POST /agent/run starts a UDS inbox and injects cross-session steering', as
   }
 })
 
+test('POST /agent/run exposes default UDS inbox through ListPeers', async () => {
+  const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-run-uds-peers-'))
+  let calls = 0
+  const udsServer = startServer({
+    port: 0,
+    transcriptRoot,
+    env: {
+      DEEPSEEK_BASE_URL: 'https://model.example/v1',
+      DEEPSEEK_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async () => {
+      calls++
+      const payload = calls === 1
+        ? { id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_peers', function: { name: 'ListPeers', arguments: '{}' } }] }, finish_reason: 'tool_calls' }] }
+        : { id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: '已看到跨会话 peer' }, finish_reason: 'stop' }] }
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(payload)}\n\n`))
+          controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
+          controller.close()
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  try {
+    const res = await fetch(`http://127.0.0.1:${udsServer.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({
+        message: '列出可通信 peer',
+        conversationId: 'uds-peer-list-run',
+        permissionMode: 'full',
+      }),
+    })
+    const text = await res.text()
+    expect(text).toContain('event: tool_call')
+    expect(text).toContain('ListPeers')
+    expect(text).toContain('uds_peer_count')
+    expect(text).toContain('uds_targets')
+    expect(text).toContain('billiards-agent-uds')
+    expect(text).toContain('已看到跨会话 peer')
+    expect(calls).toBe(2)
+
+    const registryPath = join(transcriptRoot, 'uds-peers', 'peers.json')
+    expect(existsSync(registryPath)).toBe(false)
+  } finally {
+    udsServer.stop(true)
+    rmSync(transcriptRoot, { recursive: true, force: true })
+  }
+})
+
 test('POST /agent/run injects workspace project instructions into the model system prompt', async () => {
   const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-instructions-transcript-'))
   const workingRoot = mkdtempSync(join(tmpdir(), 'agent-instructions-working-'))
