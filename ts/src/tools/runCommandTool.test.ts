@@ -441,6 +441,7 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: "jq '.name' package.json" }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'echo hi > note.txt' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'echo hi > note.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'find . -print' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: "sed -n '1,20p' ts/src/tools/dangerousCommand.ts" }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
@@ -544,6 +545,10 @@ test('run_command dynamic permission allows reads and classifies approval', () =
     approvalClass: 'outreach',
   })
   expect(resolvePermission(runCommandTool, { command: 'curl https://example.com > out.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'curl https://example.com > out.txt' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })

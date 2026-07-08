@@ -94,7 +94,8 @@ describe('resolvePermission 瀑布', () => {
     expect(resolvePermission(tool({ requiresApproval: true, approvalClass: 'outreach' }), {}, ctx('ask')).behavior).toBe('ask')
   })
 
-  test('auto_files 档:file 类放行、非 file 类仍 ask', () => {
+  test('ask/auto_files 档:file 类本机动作放行、非 file 类仍 ask', () => {
+    expect(resolvePermission(tool({ requiresApproval: true, approvalClass: 'file' }), {}, ctx('ask')).behavior).toBe('allow')
     expect(resolvePermission(tool({ requiresApproval: true, approvalClass: 'file' }), {}, ctx('auto_files')).behavior).toBe('allow')
     expect(resolvePermission(tool({ requiresApproval: true, approvalClass: 'outreach' }), {}, ctx('auto_files')).behavior).toBe('ask')
   })
@@ -124,7 +125,8 @@ describe('resolvePermission 瀑布', () => {
     const ruleCtx = ctx('ask', { sessionAllowedToolRules: [{ tool: 'run_command', ruleContent: 'git:*' }] })
     const run = tool({ name: 'run_command', requiresApproval: true, approvalClass: 'file' })
     expect(resolvePermission(run, { command: 'git status --short' }, ruleCtx)).toMatchObject({ behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: 'run_command' } })
-    expect(resolvePermission(run, { command: 'printf ok > file.txt' }, ruleCtx).behavior).toBe('ask')
+    const outreachRun = tool({ name: 'run_command', requiresApproval: true, approvalClass: 'outreach' })
+    expect(resolvePermission(outreachRun, { command: 'curl https://example.com' }, ruleCtx).behavior).toBe('ask')
   })
 
   test('sessionAllowedToolRules 支持 shell exact/wildcard 规则', () => {
@@ -132,11 +134,12 @@ describe('resolvePermission 瀑布', () => {
     const wildcardCtx = ctx('ask', { sessionAllowedToolRules: [{ tool: 'run_command', ruleContent: 'git status *' }] })
     expect(resolvePermission(run, { command: 'git status --short' }, wildcardCtx)).toMatchObject({ behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: 'run_command' } })
     expect(resolvePermission(run, { command: 'git status' }, wildcardCtx)).toMatchObject({ behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: 'run_command' } })
-    expect(resolvePermission(run, { command: 'git log --oneline' }, wildcardCtx).behavior).toBe('ask')
+    const outreachRun = tool({ name: 'run_command', requiresApproval: true, approvalClass: 'outreach' })
+    expect(resolvePermission(outreachRun, { command: 'git log --oneline' }, wildcardCtx).behavior).toBe('ask')
 
     const exactCtx = ctx('ask', { sessionAllowedToolRules: [{ tool: 'run_command', ruleContent: 'git status' }] })
     expect(resolvePermission(run, { command: 'git status' }, exactCtx)).toMatchObject({ behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: 'run_command' } })
-    expect(resolvePermission(run, { command: 'git status --short' }, exactCtx).behavior).toBe('ask')
+    expect(resolvePermission(outreachRun, { command: 'git status --short' }, exactCtx).behavior).toBe('ask')
   })
 
   test('sessionAllowedToolRules normalize safe bash wrappers and reject partial compound matches', () => {
@@ -144,11 +147,12 @@ describe('resolvePermission 瀑布', () => {
     const npmCtx = ctx('ask', { sessionAllowedToolRules: [{ tool: 'run_command', ruleContent: 'npm run *' }] })
     expect(resolvePermission(run, { command: 'NODE_ENV=test npm run build' }, npmCtx)).toMatchObject({ behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: 'run_command' } })
     expect(resolvePermission(run, { command: 'timeout 10 npm run build' }, npmCtx)).toMatchObject({ behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: 'run_command' } })
-    expect(resolvePermission(run, { command: 'PATH=/tmp npm run build' }, npmCtx).behavior).toBe('ask')
-    expect(resolvePermission(run, { command: 'timeout -k$(id) 10 npm run build' }, npmCtx).behavior).toBe('ask')
+    const outreachRun = tool({ name: 'run_command', requiresApproval: true, approvalClass: 'outreach' })
+    expect(resolvePermission(outreachRun, { command: 'PATH=/tmp npm run build' }, npmCtx).behavior).toBe('ask')
+    expect(resolvePermission(outreachRun, { command: 'timeout -k$(id) 10 npm run build' }, npmCtx).behavior).toBe('ask')
 
     const gitOnlyCtx = ctx('ask', { sessionAllowedToolRules: [{ tool: 'run_command', ruleContent: 'git:*' }] })
-    expect(resolvePermission(run, { command: 'git status && printf ok' }, gitOnlyCtx).behavior).toBe('ask')
+    expect(resolvePermission(outreachRun, { command: 'git status && curl https://example.com' }, gitOnlyCtx).behavior).toBe('ask')
 
     const compoundCtx = ctx('ask', {
       sessionAllowedToolRules: [
@@ -163,7 +167,8 @@ describe('resolvePermission 瀑布', () => {
     const ps = tool({ name: 'PowerShell', requiresApproval: true, approvalClass: 'file' })
     const psCtx = ctx('ask', { sessionAllowedToolRules: [{ tool: 'PowerShell', ruleContent: 'Get-ChildItem *' }] })
     expect(resolvePermission(ps, { command: 'Get-ChildItem src' }, psCtx)).toMatchObject({ behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: 'PowerShell' } })
-    expect(resolvePermission(ps, { command: 'Remove-Item src' }, psCtx).behavior).toBe('ask')
+    const destructivePs = tool({ name: 'PowerShell', requiresApproval: true, approvalClass: 'destructive' })
+    expect(resolvePermission(destructivePs, { command: 'Remove-Item src' }, psCtx).behavior).toBe('ask')
   })
 
   test('requiresApprovalFor 动态命中 → ask', () => {

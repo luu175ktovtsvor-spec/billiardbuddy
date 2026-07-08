@@ -4,7 +4,7 @@
 export type PermissionMode = 'ask' | 'auto_files' | 'full' | 'plan' | 'bypassPermissions'
 export type PermissionBehavior = 'allow' | 'deny' | 'ask'
 
-/** 需审批动作的类别:file=本机文件(auto_files 档自动放行)· spend=花钱(full 档过计数闸)· outreach=对外触达 · destructive=不可逆。 */
+/** 需审批动作的类别:file=本机可逆文件动作(默认放行)· spend=花钱(full 档过计数闸)· outreach=对外触达 · destructive=不可逆。 */
 export type ApprovalClass = 'file' | 'spend' | 'outreach' | 'destructive'
 
 /** 每个决策附一条"为什么"——供日志/事件/调试,不影响行为。 */
