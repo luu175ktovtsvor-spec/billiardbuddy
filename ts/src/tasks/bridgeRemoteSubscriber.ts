@@ -30,6 +30,7 @@ export interface BridgeRemoteSubscriberDeps {
     timeoutMs?: number
     onResolved?: (resolved: BridgeResolvedInboundMessage, payload: Record<string, unknown>) => void | Promise<void>
   }
+  onEvent?: (payload: Record<string, unknown>, event: { seq: number }) => void | Promise<void>
 }
 
 type WebSocketState = 'connecting' | 'connected' | 'closed'
@@ -208,6 +209,7 @@ export class BridgeRemoteSubscriber {
       const parsed = JSON.parse(data) as unknown
       if (!isSessionMessage(parsed)) return
       const ingested = await this.deps.state.ingestEvent(this.sessionId, parsed)
+      await this.deps.onEvent?.(parsed, { seq: ingested.event.seq })
       if (parsed.type === 'user' && this.deps.inbound) {
         const resolved = await resolveInboundUserMessage(parsed, {
           sessionId: this.sessionId,
