@@ -22,10 +22,12 @@ import { createGoalHookRegistry, getThreadGoal, setThreadGoalHook } from '../goa
 import { TaskListService } from '../tasks/taskListService'
 import { createStructuredTaskTools } from '../tasks/taskListTools'
 import { formatCrossSessionMessage } from '../tasks/crossSessionMessages'
+import { resetPromptCacheBreakDetection } from '../context/promptCacheBreakDetection'
 
 let root: string
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'ws-'))
+  resetPromptCacheBreakDetection()
 })
 afterEach(() => {
   rmSync(root, { recursive: true, force: true })
@@ -468,6 +470,32 @@ test('emits usage_update events with cumulative usage and context pressure', asy
     },
   ])
   expect(events.map(e => e.type)).toEqual(['usage_update', 'tool_call', 'tool_result', 'usage_update', 'final'])
+})
+
+test('emits prompt cache break context note when cache reads drop after prompt changes', async () => {
+  await collect(runAgentLoop({
+    model: scriptedModel([{ kind: 'final', text: 'first', usage: { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 24_000 } }]),
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    conversationId: 'cache-break-loop',
+    modelName: 'mimo-v2.5',
+  }))
+
+  const events = await collect(runAgentLoop({
+    model: scriptedModel([{ kind: 'final', text: 'second', usage: { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 6_000, cache_creation_input_tokens: 18_000 } }]),
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS changed',
+    userMessage: 'x',
+    conversationId: 'cache-break-loop',
+    modelName: 'mimo-v2.5',
+  }))
+
+  const note = events.find((e): e is Extract<AgentEvent, { type: 'context_note' }> => e.type === 'context_note' && e.text.includes('[PROMPT CACHE BREAK]'))
+  expect(note?.text).toContain('system prompt changed')
+  expect(note?.text).toContain('cache read: 24000 -> 6000')
 })
 
 test('emits model notices as context_note events', async () => {

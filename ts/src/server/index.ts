@@ -1572,6 +1572,7 @@ export function startServer(opts: StartServerOptions = {}) {
           systemPrompt,
           userMessage,
           userContent,
+          modelName: providerRuntime.config.model,
           transcript,
           conversationId,
           steerInbox,
