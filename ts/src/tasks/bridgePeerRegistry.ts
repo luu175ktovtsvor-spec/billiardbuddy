@@ -163,6 +163,7 @@ export class BridgePeerRegistry {
   }
 
   async list(): Promise<BridgePeerRecord[]> {
+    await this.queue.catch(() => undefined)
     const file = await this.readFile()
     return [...file.peers].sort((a, b) => a.registeredAt.localeCompare(b.registeredAt))
   }

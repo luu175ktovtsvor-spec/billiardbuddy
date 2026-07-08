@@ -1026,6 +1026,95 @@ test('bridge peer API registers, lists, updates and deletes Remote Control peers
   }
 })
 
+test('bridge code session API creates sessions and stores worker credentials', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-bridge-code-session-'))
+  const calls: Array<{ url: string; body: any; headers: Record<string, string> }> = []
+  const bridgeServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    fetchImpl: async (input, init) => {
+      calls.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body)),
+        headers: Object.fromEntries(new Headers(init?.headers).entries()),
+      })
+      if (String(input).endsWith('/v1/code/sessions')) {
+        return Response.json({ session: { id: 'cse_bridge_api' } }, { status: 201 })
+      }
+      if (String(input).endsWith('/v1/code/sessions/cse_bridge_api/bridge')) {
+        return Response.json({
+          worker_jwt: 'worker.jwt',
+          api_base_url: 'https://session-ingress.example/sdk/cse_bridge_api',
+          expires_in: 3600,
+          worker_epoch: '7',
+        })
+      }
+      return new Response('not found', { status: 404 })
+    },
+  })
+  try {
+    const createBody = {
+      title: 'Desktop bridge',
+      tags: ['desktop', 'coding-agent'],
+      bridge_remote: {
+        base_url: 'https://remote.example',
+        token: 'oauth-token',
+      },
+    }
+    const created = await (await fetch(`http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/code-sessions`, {
+      method: 'POST',
+      body: JSON.stringify(createBody),
+    })).json() as any
+    expect(created).toMatchObject({ ok: true, sessionId: 'cse_bridge_api', status: 201 })
+    expect(calls[0]).toMatchObject({
+      url: 'https://remote.example/v1/code/sessions',
+      body: { title: 'Desktop bridge', bridge: {}, tags: ['desktop', 'coding-agent'] },
+      headers: expect.objectContaining({
+        authorization: 'Bearer oauth-token',
+        'anthropic-version': '2023-06-01',
+      }),
+    })
+
+    const fetched = await (await fetch(`http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/code-sessions/${encodeURIComponent('cse_bridge_api')}/credentials`, {
+      method: 'POST',
+      body: JSON.stringify({
+        bridge_remote: {
+          base_url: 'https://remote.example',
+          token: 'oauth-token',
+        },
+        trusted_device_token: 'trusted-device',
+      }),
+    })).json() as any
+    expect(fetched).toMatchObject({
+      ok: true,
+      sessionId: 'cse_bridge_api',
+      credentials: {
+        sessionId: 'cse_bridge_api',
+        workerJwt: 'worker.jwt',
+        apiBaseUrl: 'https://session-ingress.example/sdk/cse_bridge_api',
+        expiresIn: 3600,
+        workerEpoch: 7,
+      },
+    })
+    expect(calls[1]).toMatchObject({
+      url: 'https://remote.example/v1/code/sessions/cse_bridge_api/bridge',
+      body: {},
+      headers: expect.objectContaining({
+        authorization: 'Bearer oauth-token',
+        'x-trusted-device-token': 'trusted-device',
+      }),
+    })
+    const stored = await (await fetch(`http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/code-sessions/${encodeURIComponent('cse_bridge_api')}/credentials`)).json() as any
+    expect(stored.credentials).toMatchObject({ sessionId: 'cse_bridge_api', workerEpoch: 7 })
+    const peers = await (await fetch(`http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/peers`)).json() as any
+    expect(peers.peers).toEqual([expect.objectContaining({ target: 'bridge:cse_bridge_api', status: 'outbound_only' })])
+  } finally {
+    bridgeServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('bridge Remote Control event API stores permission requests and response outbox', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-bridge-remote-events-'))
   const bridgeServer = startServer({ port: 0, transcriptRoot: root, mcpConfigPath: join(root, 'missing.mcp.json') })

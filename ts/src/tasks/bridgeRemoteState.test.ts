@@ -140,6 +140,43 @@ test('BridgeRemoteState cancels pending permission requests', async () => {
   }
 })
 
+test('BridgeRemoteState persists latest bridge worker credentials per session', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-remote-credentials-'))
+  try {
+    const state = new BridgeRemoteState(root)
+    const first = await state.storeCredentials('bridge:cse_remote', {
+      workerJwt: 'worker.jwt.1',
+      apiBaseUrl: 'https://session-ingress.example/sdk/cse_remote',
+      expiresIn: 3600,
+      workerEpoch: 1,
+    })
+    expect(first).toMatchObject({
+      sessionId: 'cse_remote',
+      workerJwt: 'worker.jwt.1',
+      apiBaseUrl: 'https://session-ingress.example/sdk/cse_remote',
+      expiresIn: 3600,
+      workerEpoch: 1,
+    })
+    expect(Date.parse(first.expiresAt)).toBeGreaterThan(Date.parse(first.fetchedAt))
+
+    await state.storeCredentials('cse_remote', {
+      workerJwt: 'worker.jwt.2',
+      apiBaseUrl: 'https://session-ingress.example/sdk/cse_remote',
+      expiresIn: 7200,
+      workerEpoch: 2,
+    })
+    const reloaded = new BridgeRemoteState(root)
+    expect(await reloaded.getCredentials('bridge:cse_remote')).toMatchObject({
+      sessionId: 'cse_remote',
+      workerJwt: 'worker.jwt.2',
+      expiresIn: 7200,
+      workerEpoch: 2,
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('BridgeRemoteState rejects unsafe identifiers and missing payload types', async () => {
   const root = mkdtempSync(join(tmpdir(), 'bridge-remote-invalid-'))
   try {
@@ -147,6 +184,12 @@ test('BridgeRemoteState rejects unsafe identifiers and missing payload types', a
     await expect(state.ingestEvent('session with spaces', { type: 'assistant' })).rejects.toThrow('unsupported')
     await expect(state.ingestEvent('session_ok', {})).rejects.toThrow('type is required')
     await expect(state.respondToPermission('session_ok', '', { behavior: 'deny', message: 'no' })).rejects.toThrow('requestId is required')
+    await expect(state.storeCredentials('session_ok', {
+      workerJwt: '',
+      apiBaseUrl: 'https://session-ingress.example',
+      expiresIn: 60,
+      workerEpoch: 1,
+    })).rejects.toThrow('workerJwt is required')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
