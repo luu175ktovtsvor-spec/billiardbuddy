@@ -2,6 +2,7 @@ import { textBlock, toolResultBlock, type Message, type ToolUseBlock } from '../
 import type { Tool, ToolContext } from '../tools/Tool'
 
 export const FORK_SUBAGENT_TYPE = 'fork'
+export const FORK_QUERY_SOURCE = `agent:builtin:${FORK_SUBAGENT_TYPE}`
 export const FORK_BOILERPLATE_TAG = 'fork-boilerplate'
 export const FORK_DIRECTIVE_PREFIX = 'Your directive: '
 
@@ -23,6 +24,10 @@ export function isInForkChild(messages: Message[]): boolean {
       block.text.includes(`<${FORK_BOILERPLATE_TAG}>`),
     ),
   )
+}
+
+export function isForkQuerySource(value: unknown): boolean {
+  return value === FORK_QUERY_SOURCE
 }
 
 export function buildForkedMessages(directive: string, assistantMessage: Message): Message[] {
@@ -53,6 +58,7 @@ export interface ForkRunContext {
   systemPrompt: string
   initialMessages: Message[]
   tools: Tool[]
+  querySource: string
 }
 
 export function buildForkRunContext(ctx: ToolContext, directive: string): ForkRunContext {
@@ -62,6 +68,7 @@ export function buildForkRunContext(ctx: ToolContext, directive: string): ForkRu
   return {
     systemPrompt: ctx.systemPrompt ?? '',
     tools: ctx.registry?.list() ?? [],
+    querySource: FORK_QUERY_SOURCE,
     initialMessages: [
       ...prefix,
       ...buildForkedMessages(directive, assistantMessage ?? { role: 'assistant', content: [] }),

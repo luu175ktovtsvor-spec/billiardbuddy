@@ -7,7 +7,9 @@ import {
   buildWorktreeNotice,
   FORK_BOILERPLATE_TAG,
   FORK_DIRECTIVE_PREFIX,
+  FORK_QUERY_SOURCE,
   isForkSubagentEnabled,
+  isForkQuerySource,
   isInForkChild,
 } from './forkSubagent'
 
@@ -44,6 +46,12 @@ test('isForkSubagentEnabled is opt-in through explicit environment gates', () =>
   expect(isForkSubagentEnabled({ DESKTOP_AGENT_FORK_SUBAGENT: 'false' })).toBe(false)
 })
 
+test('isForkQuerySource detects the stable fork child runtime marker', () => {
+  expect(isForkQuerySource(FORK_QUERY_SOURCE)).toBe(true)
+  expect(isForkQuerySource('agent:builtin:researcher')).toBe(false)
+  expect(isForkQuerySource(undefined)).toBe(false)
+})
+
 test('buildForkedMessages falls back to a directive-only user message without tool_use blocks', () => {
   const forked = buildForkedMessages('Read docs', { role: 'assistant', content: [textBlock('No tools here')] })
   expect(forked).toHaveLength(1)
@@ -73,6 +81,7 @@ test('buildForkRunContext inherits parent system, tools and prefixes the forked 
   }, 'Audit runtime')
 
   expect(ctx.systemPrompt).toBe('PARENT SYS')
+  expect(ctx.querySource).toBe(FORK_QUERY_SOURCE)
   expect(ctx.tools).toEqual([tool])
   expect(ctx.initialMessages[0]).toEqual(parent[0])
   expect(ctx.initialMessages[1]).toEqual(parent[1])

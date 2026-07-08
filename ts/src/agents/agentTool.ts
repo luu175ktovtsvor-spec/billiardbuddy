@@ -27,7 +27,7 @@ import { loadAgentMcpRuntime, type AgentMcpRuntimeOptions } from './agentMcp'
 import { buildAgentMemoryPrompt, workspaceWithAgentMemory } from './agentMemory'
 import { cloneContentReplacementState } from '../context/toolResultStorage'
 import { createDenialTrackingState } from '../permissions/denialTracking'
-import { buildForkRunContext, FORK_SUBAGENT_TYPE, isForkSubagentEnabled, isInForkChild, type ForkRunContext } from './forkSubagent'
+import { buildForkRunContext, FORK_SUBAGENT_TYPE, isForkQuerySource, isForkSubagentEnabled, isInForkChild, type ForkRunContext } from './forkSubagent'
 
 export interface AgentTaskInput {
   agent?: string
@@ -280,7 +280,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
       if (!input || typeof input.task !== 'string' || !input.task.trim()) {
         throw new Error('agent_task 需要 string 参数 task')
       }
-      if (ctx.messages && isInForkChild(ctx.messages)) {
+      if (isForkQuerySource(ctx.querySource) || (ctx.messages && isInForkChild(ctx.messages))) {
         throw new Error('Fork worker 内部不能再次启动 agent_task。请直接使用当前可用工具完成任务。')
       }
       const wantsForkContext = optionalBoolean(input.fork_context ?? input.forkContext) || (forkGateEnabled && !input.agent)
@@ -381,6 +381,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
           toolResultStoreDir: sidechain?.toolResultStoreDir ?? ctx.toolResultStoreDir,
           hooks,
           subagent: { agentId, agentType: agent.name },
+          querySource: forkRunContext?.querySource,
           contentReplacementState: inheritedContentReplacementState,
         })) {
           const line = subagentLine(agent, ev)
