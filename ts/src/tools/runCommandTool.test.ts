@@ -237,6 +237,10 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('help -P ls')).toBe('outreach')
   expect(classifyCommandRisk('netstat -an')).toBe('read')
   expect(classifyCommandRisk('netstat --tcp')).toBe('outreach')
+  expect(classifyCommandRisk('sha256sum package.tgz')).toBe('read')
+  expect(classifyCommandRisk('sha256sum -c sums.txt')).toBe('read')
+  expect(classifyCommandRisk('sha1sum --check sums.txt')).toBe('read')
+  expect(classifyCommandRisk('md5sum --output sums.txt package.tgz')).toBe('outreach')
   expect(classifyCommandRisk('curl https://example.com > out.txt')).toBe('outreach')
   expect(classifyCommandRisk('kill 123 > out.txt')).toBe('destructive')
   expect(classifyCommandRisk('git push --force origin main')).toBe('destructive')
@@ -470,6 +474,11 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   expect(resolvePermission(runCommandTool, { command: 'help -m cd' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'netstat -an' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'netstat --tcp' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'sha256sum package.tgz' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'sha256sum --output sums.txt package.tgz' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })
