@@ -227,6 +227,10 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('pkill node')).toBe('destructive')
   expect(classifyCommandRisk('kill 123')).toBe('destructive')
   expect(classifyCommandRisk('killall node')).toBe('destructive')
+  expect(classifyCommandRisk('tree . -L 2')).toBe('read')
+  expect(classifyCommandRisk('tree -H . -L 2')).toBe('read')
+  expect(classifyCommandRisk('tree -o out.html .')).toBe('outreach')
+  expect(classifyCommandRisk('tree -R -H . -L 2')).toBe('outreach')
   expect(classifyCommandRisk('curl https://example.com > out.txt')).toBe('outreach')
   expect(classifyCommandRisk('kill 123 > out.txt')).toBe('destructive')
   expect(classifyCommandRisk('git push --force origin main')).toBe('destructive')
@@ -442,6 +446,15 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   expect(resolvePermission(runCommandTool, { command: 'pkill node' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'destructive',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'tree . -L 2' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'tree -o out.html .' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'tree -R -H . -L 2' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
   })
   expect(resolvePermission(runCommandTool, { command: 'curl https://example.com > out.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
