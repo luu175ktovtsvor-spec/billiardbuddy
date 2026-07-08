@@ -671,6 +671,11 @@ async function executeAllowedToolCall(
   hooks?: HookRegistry,
   toolResultStoreDir?: string,
 ): Promise<ToolExecutionOutcome> {
+  // 已中止:已下发但还没跑的工具直接短路成取消态,不再执行(对齐 cc runToolUse 的 signal 前置检查)。
+  // 大多数文件类工具不自读 ctx.signal,批量下发后用户中途取消时,靠这里保证剩余工具不再动手。
+  if (ctx.signal?.aborted) {
+    return toolFeedback(call, `已取消:用户中止了本轮,「${tool.name}」未执行。`, false)
+  }
   try {
     const output = await tool.execute(input, ctx)
     const stored = await maybeStoreToolResult(call.name, call.id, output, {
