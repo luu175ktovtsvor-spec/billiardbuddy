@@ -273,6 +273,11 @@ test('agent_task hands off foreground registration when background signal wins t
       content: [{ type: 'tool_result', tool_use_id: 'step-1', content: 'marked:done-once' }],
     })
     expect((handoffs[0]!.input as { contentReplacementState?: unknown }).contentReplacementState).toBeTruthy()
+    const summarySnapshot = (handoffs[0]!.input as { summarySnapshot?: { system?: string; messages?: Message[]; tools?: Array<{ name: string }> } }).summarySnapshot
+    expect(summarySnapshot).toBeTruthy()
+    expect(summarySnapshot?.messages).toEqual(initialMessages)
+    expect(summarySnapshot?.tools?.map(tool => tool.name)).toEqual(['mark_step'])
+    expect(summarySnapshot?.system).toContain('<subagent name="researcher">')
     expect(markStepCalls).toEqual([{ value: 'done-once' }])
     expect(cancelled).toEqual(['handoff-parent_researcher'])
     expect(unregistered).toEqual([])

@@ -200,6 +200,103 @@ test('startBackgroundAgentRun hands off an already backgrounded foreground agent
   }
 })
 
+test('startBackgroundAgentRun seeds AgentSummary from foreground handoff snapshot before the background loop advances', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-tools-handoff-summary-'))
+  try {
+    const tasks = new TaskService(root)
+    const agent: AgentDefinition = {
+      name: 'researcher',
+      description: '研究代理',
+      prompt: '研究并总结。',
+      filePath: join(root, 'researcher.md'),
+    }
+    const registration = await tasks.registerForegroundAgent({
+      taskId: 'fg_summary_handoff_1',
+      agentId: 'summary_handoff_agent',
+      agent: 'researcher',
+      title: 'researcher: foreground summary',
+      conversationId: 'handoff-summary-conv',
+      workspaceRoot: root,
+      task: '前台摘要继承',
+    })
+    await registration.requestBackground()
+    const handoffMessages: Message[] = [
+      userText('前台摘要继承'),
+      { role: 'assistant', content: [textBlock('checking'), toolUseBlock({ id: 'fg-summary-step', name: 'read_file', input: { path: 'src/app.ts' } })] },
+      { role: 'user', content: [toolResultBlock('fg-summary-step', 'front summary result')] },
+    ]
+    let unblockStart!: () => void
+    const startBlocked = new Promise<void>(resolve => { unblockStart = resolve })
+    const received: Array<{ system?: string; messages: Message[]; tools: Array<{ name: string }> }> = []
+    const model: Model = {
+      async step(input) {
+        received.push({ system: input.system, messages: input.messages, tools: input.tools.map(tool => ({ name: tool.name })) })
+        if (input.messages.at(-1)?.role === 'user' && input.messages.at(-1)?.content.some(block => block.type === 'text' && block.text.includes('Do not use tools'))) {
+          return { kind: 'final', text: 'Reading src/app.ts' }
+        }
+        return { kind: 'final', text: 'background loop advanced' }
+      },
+    }
+
+    const { task } = await startBackgroundAgentRun({
+      tasks,
+      agents: [agent],
+      model,
+      baseTools: [],
+      baseSystemPrompt: 'base prompt',
+      agentSummaryIntervalMs: 1,
+      hooks: {
+        rules: [
+          { event: 'SubagentStart', matcher: 'researcher', handler: async () => {
+            await startBlocked
+            return null
+          } },
+        ],
+      },
+    }, {
+      agent: 'researcher',
+      task: '前台摘要继承',
+      title: 'researcher: foreground summary',
+      initialMessages: handoffMessages,
+      summarySnapshot: {
+        system: 'FOREGROUND SYSTEM',
+        tools: [{ name: 'read_file', description: '', parameters: { type: 'object' } }],
+        messages: handoffMessages,
+      },
+    }, {
+      workspace: new Workspace(root),
+      conversationId: 'handoff-summary-conv',
+      permissionMode: 'full',
+    }, {
+      foreground_handoff: true,
+      agent_id: 'summary_handoff_agent',
+    }, [], [], {
+      handoffTaskId: 'fg_summary_handoff_1',
+    })
+
+    const summarized = await waitFor(async () => {
+      const meta = await tasks.get(task.id)
+      return meta?.summary === 'Reading src/app.ts' ? meta : null
+    })
+    expect(summarized.status).toBe('running')
+    expect(received.length).toBeGreaterThanOrEqual(1)
+    const summaryRequest = received[0]!
+    expect(summaryRequest.system).toBe('FOREGROUND SYSTEM')
+    expect(summaryRequest.tools.map(tool => tool.name)).toEqual(['read_file'])
+    expect(summaryRequest.messages.slice(0, 3)).toEqual(handoffMessages)
+    expect(summaryRequest.messages.at(-1)?.content[0]).toMatchObject({ type: 'text' })
+
+    unblockStart()
+    const done = await waitFor(async () => {
+      const meta = await tasks.get(task.id)
+      return meta?.status === 'completed' ? meta : null
+    })
+    expect(done.summary).toBe('Reading src/app.ts')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('agent_task run_in_background fork_context starts a background fork with parent system, messages and tools', async () => {
   const root = mkdtempSync(join(tmpdir(), 'task-tools-fork-agent-'))
   try {
