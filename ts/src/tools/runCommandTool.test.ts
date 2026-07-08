@@ -202,6 +202,10 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('date -f dates.txt')).toBe('outreach')
   expect(classifyCommandRisk('date --file=dates.txt')).toBe('outreach')
   expect(classifyCommandRisk('date 010112002030')).toBe('outreach')
+  expect(classifyCommandRisk('node -v')).toBe('read')
+  expect(classifyCommandRisk('node --version')).toBe('read')
+  expect(classifyCommandRisk('node -v --run build')).toBe('outreach')
+  expect(classifyCommandRisk('node --run=test -v')).toBe('outreach')
   expect(classifyCommandRisk('git push --force origin main')).toBe('destructive')
   expect(classifyCommandRisk('git push -f origin main')).toBe('destructive')
   expect(classifyCommandRisk('git reset --hard HEAD~1')).toBe('destructive')
@@ -388,6 +392,11 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   })
   expect(resolvePermission(runCommandTool, { command: 'date +%F' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'date -s tomorrow' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'node -v' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'node -v --run build' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })

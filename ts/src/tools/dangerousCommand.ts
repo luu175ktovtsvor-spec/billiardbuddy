@@ -1257,6 +1257,15 @@ function validateDateShortFlag(
   return { ok: true, index }
 }
 
+function classifyNodeCommand(command: string): CommandRisk | null {
+  const tokens = tokenizeShellWords(command)
+  if (tokens[0]?.toLowerCase() !== 'node') return null
+  const args = tokens.slice(1).map(token => token.toLowerCase())
+  if (args.some(token => token === '--run' || token.startsWith('--run='))) return 'outreach'
+  if (args.length === 1 && (args[0] === '-v' || args[0] === '--version')) return 'read'
+  return 'file'
+}
+
 function classifySedCommand(command: string): CommandRisk | null {
   const tokens = tokenizeShellWords(command)
   if (tokens[0]?.toLowerCase() !== 'sed') return null
@@ -1647,6 +1656,9 @@ function classifySegment(segment: string): CommandRisk {
 
   const dateRisk = classifyDateCommand(rawCommand)
   if (dateRisk) return dateRisk
+
+  const nodeRisk = classifyNodeCommand(rawCommand)
+  if (nodeRisk) return nodeRisk
 
   const readOnlyAllowlistRisk = classifyReadOnlyAllowlistedCommand(rawCommand)
   if (readOnlyAllowlistRisk) return readOnlyAllowlistRisk
