@@ -1,4 +1,5 @@
 import { isAbsolute, relative, resolve } from 'node:path'
+import { stripSafeShellWrappers } from '../permissions/permissionRules'
 
 /**
  * 危险命令最小种子(红线 4:删根/提权/格式化直接拒)。W2 只挡灾难级;
@@ -1018,6 +1019,11 @@ export function shellOutputRedirectionNeedsApproval(command: string, opts: { roo
   return targets.some(target => redirectionTargetNeedsApproval(target, opts))
 }
 
+export function shellCdGitNeedsApproval(command: string): boolean {
+  const segments = splitSegments(command)
+  return segments.some(segment => isCdLikeCommand(segment)) && segments.some(segment => isGitLikeCommand(segment))
+}
+
 function extractOutputRedirectionTargets(command: string): string[] {
   const targets: string[] = []
   let quote: '"' | "'" | null = null
@@ -1100,6 +1106,18 @@ function readShellWord(command: string, start: number): { word: string; end: num
   return { word, end: i }
 }
 
+function isCdLikeCommand(segment: string): boolean {
+  const tokens = tokenizeShellWords(stripSafeShellWrappers(segment).toLowerCase())
+  const first = tokens[0]
+  return first === 'cd' || first === 'pushd' || first === 'popd'
+}
+
+function isGitLikeCommand(segment: string): boolean {
+  const tokens = tokenizeShellWords(stripSafeShellWrappers(segment).toLowerCase())
+  if (tokens[0] === 'git') return true
+  return tokens[0] === 'xargs' && tokens.includes('git')
+}
+
 function redirectionTargetNeedsApproval(target: string, opts: { root: string; cwd?: string }): boolean {
   if (!target || target === '/dev/null') return false
   if (/[$%*?\[\]{}=~]/.test(target)) return true
@@ -1161,6 +1179,6 @@ function maxRisk(a: CommandRisk, b: CommandRisk): CommandRisk {
 
 export function classifyCommandRisk(command: string): CommandRisk {
   if (isDangerousCommand(command)) return 'destructive'
-  const initialRisk: CommandRisk = hasShellExpansionRisk(command) || hasShellParserRisk(command) ? 'outreach' : 'read'
+  const initialRisk: CommandRisk = hasShellExpansionRisk(command) || hasShellParserRisk(command) || shellCdGitNeedsApproval(command) ? 'outreach' : 'read'
   return splitSegments(command).reduce<CommandRisk>((risk, segment) => maxRisk(risk, classifySegment(segment)), initialRisk)
 }

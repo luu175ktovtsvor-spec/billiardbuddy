@@ -7,7 +7,7 @@ import { Workspace } from '../workspace/workspace'
 import type { ToolContext } from './Tool'
 import { runCommandTool } from './runCommandTool'
 import { StreamingOutputSanitizer, stripAnsiControlSequences } from './outputSanitize'
-import { classifyCommandRisk, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellOutputRedirectionNeedsApproval } from './dangerousCommand'
+import { classifyCommandRisk, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellCdGitNeedsApproval, shellOutputRedirectionNeedsApproval } from './dangerousCommand'
 import { resolvePermission } from '../permissions/resolve'
 
 let root: string
@@ -189,6 +189,10 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('git push --force origin main')).toBe('destructive')
   expect(classifyCommandRisk('git push -f origin main')).toBe('destructive')
   expect(classifyCommandRisk('git reset --hard HEAD~1')).toBe('destructive')
+  expect(classifyCommandRisk('cd sub && git status --short')).toBe('outreach')
+  expect(classifyCommandRisk('FORCE_COLOR=1 cd sub && git status')).toBe('outreach')
+  expect(classifyCommandRisk('cd sub && xargs git status')).toBe('outreach')
+  expect(classifyCommandRisk('cd sub && echo ok')).toBe('file')
   expect(classifyCommandRisk('echo $(curl https://example.com)')).toBe('outreach')
   expect(classifyCommandRisk('cat <(curl https://example.com)')).toBe('outreach')
   expect(classifyCommandRisk('echo "${HOME}"')).toBe('outreach')
@@ -259,6 +263,15 @@ test('shell output redirection outside workspace requires explicit approval', ()
   expect(shellOutputRedirectionNeedsApproval('cd sub && printf ok > out.txt', { root })).toBe(true)
 })
 
+test('compound cd plus git mirrors bare repo safety gate', () => {
+  expect(shellCdGitNeedsApproval('git status --short')).toBe(false)
+  expect(shellCdGitNeedsApproval('cd sub && git status --short')).toBe(true)
+  expect(shellCdGitNeedsApproval('FORCE_COLOR=1 cd sub && git status')).toBe(true)
+  expect(shellCdGitNeedsApproval('pushd sub && git diff')).toBe(true)
+  expect(shellCdGitNeedsApproval('cd sub && xargs git status')).toBe(true)
+  expect(shellCdGitNeedsApproval("echo 'cd sub && git status'")).toBe(false)
+})
+
 test('run_command dynamic permission allows reads and classifies approval', () => {
   expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({ behavior: 'allow' })
@@ -273,6 +286,10 @@ test('run_command dynamic permission allows reads and classifies approval', () =
     approvalClass: 'destructive',
   })
   expect(resolvePermission(runCommandTool, { command: 'ps auxe' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'cd sub && git status --short' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })
