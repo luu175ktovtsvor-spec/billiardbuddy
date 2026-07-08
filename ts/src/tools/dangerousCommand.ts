@@ -1035,6 +1035,12 @@ export function shellBareGitRepoCwdNeedsApproval(command: string, cwd: string): 
   return splitSegments(command).some(segment => isGitLikeCommand(segment)) && cwdLooksLikeBareGitRepo(cwd)
 }
 
+export function shellSandboxedGitCwdNeedsApproval(command: string, opts: { root: string; cwd: string; sandboxActive: boolean }): boolean {
+  if (!opts.sandboxActive) return false
+  if (resolve(opts.cwd) === resolve(opts.root)) return false
+  return splitSegments(command).some(segment => isGitLikeCommand(segment))
+}
+
 function extractOutputRedirectionTargets(command: string): string[] {
   const targets: string[] = []
   let quote: '"' | "'" | null = null
