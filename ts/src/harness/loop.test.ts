@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../workspace/workspace'
 import { buildGeneralRegistry } from '../tools/generalTools'
+import { readXlsxSheet, renderMinimalXlsx } from '../server/services/officeDocuments'
 import { loadSkillsDir } from '../skills/skillLoader'
 import { buildSystemPrompt } from './systemPrompt'
 import { scriptedModel } from './fakeModel'
@@ -65,6 +66,84 @@ test('runs a multi-step tool task: think -> tool -> feed back -> think -> final'
   expect(hasResult).toBe(true)
   // 且没有任何 role:'tool' 消息(Anthropic 格式)
   expect(second.messages.every(m => m.role === 'user' || m.role === 'assistant')).toBe(true)
+})
+
+test('runs file execution scenario through TS agent loop with edits, spreadsheet updates and shell verification', async () => {
+  writeFileSync(join(root, '朋友圈草稿.md'), [
+    '# 周末充值活动朋友圈',
+    '',
+    '各位球友！这个周末搞大活动：',
+    '劲爆充值！充1万送1万！全城最低价！台费终身免费畅打！名额有限速来！',
+    '',
+    '地址老地方，来玩呀～',
+  ].join('\n'))
+  writeFileSync(join(root, '营业额报表.xlsx'), Buffer.from(renderMinimalXlsx('月份,营业额(万)\n5月,9\n6月,12')))
+
+  const model = scriptedModel([
+    {
+      kind: 'tool_calls',
+      text: '先读取草稿，避免盲改。',
+      calls: [{ id: 'read-copy', name: 'read_file', input: { path: '朋友圈草稿.md' } }],
+    },
+    {
+      kind: 'tool_calls',
+      text: '改掉过度承诺和极限词。',
+      calls: [{
+        id: 'edit-copy',
+        name: 'edit_file',
+        input: {
+          path: '朋友圈草稿.md',
+          old_string: '劲爆充值！充1万送1万！全城最低价！台费终身免费畅打！名额有限速来！',
+          new_string: '周末会员回馈：充1000送100，赠送时段券按门店规则使用，欢迎提前预约。',
+        },
+      }],
+    },
+    {
+      kind: 'tool_calls',
+      text: '再更新报表。',
+      calls: [{ id: 'edit-sheet', name: 'edit_excel', input: { path: '营业额报表.xlsx', cell: 'B3', value: 15 } }],
+    },
+    {
+      kind: 'tool_calls',
+      text: '写一份执行记录。',
+      calls: [{ id: 'write-summary', name: 'write_file', input: { path: '执行结果.md', content: '已调整朋友圈活动文案，并把6月营业额更新为15万。' } }],
+    },
+    {
+      kind: 'tool_calls',
+      text: '用只读命令核对目录里有结果文件。',
+      calls: [{ id: 'ls-root', name: 'run_command', input: { command: 'ls', cwd: '.' } }],
+    },
+    { kind: 'final', text: '完成：文案、表格和执行记录都已处理。' },
+  ])
+
+  const events = await collect(runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: '处理选定的朋友圈草稿和营业额报表，然后列目录核对。',
+    permissionMode: 'full',
+    conversationId: 'file-exec-loop',
+  }))
+
+  expect(events.filter(e => e.type === 'tool_call').map(e => e.type === 'tool_call' ? e.tool : '')).toEqual([
+    'read_file',
+    'edit_file',
+    'edit_excel',
+    'write_file',
+    'run_command',
+  ])
+  expect(events.some(e => e.type === 'approval_request')).toBe(false)
+  const copy = readFileSync(join(root, '朋友圈草稿.md'), 'utf8')
+  expect(copy).toContain('充1000送100')
+  expect(copy).not.toContain('充1万送1万')
+  expect(copy).not.toContain('全城最低价')
+  expect(copy).not.toContain('终身免费')
+  const sheet = await readXlsxSheet(join(root, '营业额报表.xlsx'))
+  expect(sheet.sheets[0]?.rows[2]?.[1]).toBe('15')
+  expect(readFileSync(join(root, '执行结果.md'), 'utf8')).toContain('6月营业额更新为15万')
+  const commandResult = events.find(e => e.type === 'tool_result' && e.tool === 'run_command')
+  expect(commandResult && commandResult.type === 'tool_result' ? commandResult.output : '').toContain('执行结果.md')
 })
 
 test('preserves explicit user content blocks for bridge-style inbound prompts', async () => {
