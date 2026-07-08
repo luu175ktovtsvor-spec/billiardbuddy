@@ -11,22 +11,22 @@ description: 重生/刷新本项目的耦合地图(docs/耦合地图与改动检
 ## 何时用
 - 改了 `web/src/lib/api.ts` 的方法、或 `server/api/v1/` 的路由 → 至少跑机械层刷新接线表。
 - 删/加了功能、子系统大改 → 跑完整流程（机械层 + 判断层）重生全图。
-- `test_coupling_map_fresh.py` 红了 → 说明接线表过期，跑机械层 `--write` 即可修。
+- `buildCouplingMap.test.ts` 红了 → 说明接线表过期，跑机械层 `--write` 即可修。
 
 ## 铁律（必须遵守）
 1. **标「架构决策」的段落（§8 知识库形态、§9 prompt-cache 纪律）原样保留，一字不改**。它们是"别重做"的权威落点，不在重生范围内。
 2. **判断层只读**：派去审查的子代理只读代码，绝不改文件。地图由主循环统一落笔（"映射子系统"和"改它"不混在一个上下文）。
 3. **每条耦合标来源**：`[机械]`=脚本实锤，`[判断]`=代码审查推理。抽不到/拿不准的标 `[需人工确认]`，不静默丢、不假装抽全。
-4. **改完必验**：跑 `cd server && uv run pytest tests/ -q` 全绿（尤其 `test_coupling_map_fresh.py`）。
+4. **改完必验**：跑 `cd ts && bun test src/scripts/buildCouplingMap.test.ts`；若同时动后端 Python 路由/服务，再跑 `cd server && uv run pytest tests/ -q`。
 
 ## 流程
 
 ### 第 1 步 · 机械层（确定性，先跑）
 ```bash
-python3 scripts/build_coupling_map.py          # 预览接线块
-python3 scripts/build_coupling_map.py --write  # 写回地图的 AUTO-GENERATED 区
+node scripts/build_coupling_map.mjs          # 预览接线块
+node scripts/build_coupling_map.mjs --write  # 写回地图的 AUTO-GENERATED 区
 ```
-脚本(`scripts/build_coupling_map.py`)产出：
+脚本(`scripts/build_coupling_map.mjs`)产出：
 - **接线表**：前端 `api.ts` 方法 → HTTP 端点 → 后端路由函数 → service。
 - **死方法**：前端在调、后端无此路由（调用必失败，可清理）。
 - **无前端调用的路由**：agent/SSE/内部直连可能正常，仅供核对。
@@ -49,12 +49,13 @@ python3 scripts/build_coupling_map.py --write  # 写回地图的 AUTO-GENERATED 
 
 ### 第 4 步 · 验证
 ```bash
-python3 scripts/build_coupling_map.py --write   # 确保接线表是最新的
-cd server && uv run pytest tests/ -q            # 全绿，尤其 test_coupling_map_fresh
+node scripts/build_coupling_map.mjs --write       # 确保接线表是最新的
+cd ts && bun test src/scripts/buildCouplingMap.test.ts
+cd server && uv run pytest tests/ -q              # 若同时动后端 Python 路由/服务
 ```
 
 ## 相关文件
-- `scripts/build_coupling_map.py` — 机械层抽取脚本
-- `server/tests/test_coupling_map_fresh.py` — 接线表新鲜度守栏
+- `scripts/build_coupling_map.mjs` — 机械层抽取脚本
+- `ts/src/scripts/buildCouplingMap.test.ts` — 接线表新鲜度守栏
 - `docs/耦合地图与改动检查清单.md` — 产物（人读的活地图）
 - `docs/superpowers/specs/2026-06-23-coupling-map-skill-design.md` — 设计稿
