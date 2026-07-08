@@ -7,7 +7,7 @@ import { Workspace } from '../workspace/workspace'
 import type { ToolContext } from './Tool'
 import { runCommandTool } from './runCommandTool'
 import { StreamingOutputSanitizer, stripAnsiControlSequences } from './outputSanitize'
-import { classifyCommandRisk, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellCdGitNeedsApproval, shellOutputRedirectionNeedsApproval } from './dangerousCommand'
+import { classifyCommandRisk, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellCdGitNeedsApproval, shellGitInternalWriteNeedsApproval, shellOutputRedirectionNeedsApproval } from './dangerousCommand'
 import { resolvePermission } from '../permissions/resolve'
 
 let root: string
@@ -193,6 +193,9 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('FORCE_COLOR=1 cd sub && git status')).toBe('outreach')
   expect(classifyCommandRisk('cd sub && xargs git status')).toBe('outreach')
   expect(classifyCommandRisk('cd sub && echo ok')).toBe('file')
+  expect(classifyCommandRisk('mkdir -p objects refs hooks && touch HEAD && git status')).toBe('outreach')
+  expect(classifyCommandRisk("printf '#!/bin/sh' > hooks/pre-commit && git status")).toBe('outreach')
+  expect(classifyCommandRisk("printf '#!/bin/sh' > hooks/pre-commit")).toBe('file')
   expect(classifyCommandRisk('echo $(curl https://example.com)')).toBe('outreach')
   expect(classifyCommandRisk('cat <(curl https://example.com)')).toBe('outreach')
   expect(classifyCommandRisk('echo "${HOME}"')).toBe('outreach')
@@ -272,6 +275,15 @@ test('compound cd plus git mirrors bare repo safety gate', () => {
   expect(shellCdGitNeedsApproval("echo 'cd sub && git status'")).toBe(false)
 })
 
+test('compound git-internal writes plus git mirror bare repo safety gate', () => {
+  expect(shellGitInternalWriteNeedsApproval('git status --short')).toBe(false)
+  expect(shellGitInternalWriteNeedsApproval('mkdir -p objects refs hooks && touch HEAD && git status')).toBe(true)
+  expect(shellGitInternalWriteNeedsApproval("printf '#!/bin/sh' > hooks/pre-commit && git status")).toBe(true)
+  expect(shellGitInternalWriteNeedsApproval('cp hook.sh hooks/pre-commit && xargs git status')).toBe(true)
+  expect(shellGitInternalWriteNeedsApproval("printf '#!/bin/sh' > hooks/pre-commit")).toBe(false)
+  expect(shellGitInternalWriteNeedsApproval('rm -rf hooks && git status')).toBe(false)
+})
+
 test('run_command dynamic permission allows reads and classifies approval', () => {
   expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({ behavior: 'allow' })
@@ -290,6 +302,10 @@ test('run_command dynamic permission allows reads and classifies approval', () =
     approvalClass: 'outreach',
   })
   expect(resolvePermission(runCommandTool, { command: 'cd sub && git status --short' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: "printf '#!/bin/sh' > hooks/pre-commit && git status" }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })
