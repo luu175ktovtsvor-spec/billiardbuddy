@@ -18,6 +18,7 @@ import {
   applyToolResultBudget,
   maybeStoreToolResult,
   reconstructContentReplacementState,
+  type ContentReplacementState,
   type ContentReplacementRecord,
 } from '../context/toolResultStorage'
 import { callKey, detectStuck, sameCallGuardMessage, sameCallLimitForTool } from './stuckDetector'
@@ -70,6 +71,7 @@ export interface RunAgentLoopOptions {
   contextWindowChars?: number
   contextWindowTokens?: number
   toolResultStoreDir?: string
+  contentReplacementState?: ContentReplacementState
   transcript?: TranscriptLike
   hooks?: HookRegistry
   subagent?: { agentId: string; agentType: string }
@@ -102,7 +104,8 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       contentReplacementRecords = []
     }
   }
-  const contentReplacementState = reconstructContentReplacementState(history, contentReplacementRecords)
+  const contentReplacementState = opts.contentReplacementState ??
+    reconstructContentReplacementState(history, contentReplacementRecords)
   const ctx: ToolContext = {
     workspace: opts.workspace,
     model,
@@ -116,6 +119,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     todos: [],
     requestsSinceProgress: 0,
     toolResultStoreDir: opts.toolResultStoreDir,
+    contentReplacementState,
   }
   const restoredWorktree = activateWorktreeSessionForContext(ctx)
   let system = opts.systemPrompt

@@ -2234,9 +2234,18 @@
 - 测试覆盖:`AgentOutputTool` 与 `BashOutputTool` 读取同一后台任务输出,其中 `AgentOutputTool` 与 `TaskOutput` 字节级一致;`tool_search` 能按中文意图召回旧名;前端 `toolActionText` 渲染旧名。
 - 验证:`cd ts && bun run typecheck` clean;`cd ts && bun test src/tasks/taskTools.test.ts src/tools/toolSearchTool.test.ts --timeout 40000` = 21 pass;`cd web && pnpm exec vitest run src/lib/agent-tools.test.ts` = 2 pass;`cd web && pnpm exec tsc --noEmit` clean。
 
+## 3.269 2026-07-08 CC-Haha content replacement parent gap-fill 迁移
+
+- 对照源:`~/Desktop/cc-haha-ref/src/Tool.ts`、`src/utils/forkedAgent.ts#createSubagentContext`、`src/utils/toolResultStorage.ts#reconstructForSubagentResume` 与 `src/tools/AgentTool/resumeAgent.ts`。关键行为:content replacement state 是 `ToolUseContext` 的线程态;fork/子代理默认 clone 父状态,后台续跑则用 sidechain records 加父线程 live replacements 做 gap-fill。
+- `ToolContext` 新增 `contentReplacementState`;`runAgentLoop()` 创建/重建 replacement state 后挂入上下文,并支持调用方显式传入状态。这样主循环、同步 `agent_task`、后台 agent 与 hooks/工具共享同一轮的上下文裁剪决策,不再只靠 transcript sidecar 间接恢复。
+- 同步 `agent_task` 启动时 clone 父 replacement state,并传入子代理 loop;后台 `startBackgroundAgentRun()` 普通启动同样 clone 父状态,`SendMessage` 续跑则用 `reconstructContentReplacementState(initialMessages, initialRecords, parentState.replacements)` 重建,补齐 CC-Haha 注释里的 fork parent live replacements gap-fill。
+- 运行效果:如果 fork/后台子代理原始 sidechain 没有记录父级 inherited replacement,但父会话当前 state 仍知道某个 `tool_use_id -> <stored_tool_result>` 映射,续跑 replay 历史 transcript 时会继续把原始大 `tool_result` 替换成同一预览,避免把巨量内容重新塞回模型上下文和破坏 prompt-cache prefix。
+- 测试覆盖:新增 `SendMessage resume gap-fills parent content replacement state when sidecar records are missing`,构造旧 transcript 只有原始大结果、无 sidecar record,但父 `contentReplacementState.replacements` 有同 id replacement;续跑首轮断言模型只看到 `<stored_tool_result>` 预览、不看到 raw 大内容,且不会伪造新的 sidecar record。
+- 验证:`cd ts && bun run typecheck` clean;`cd ts && bun test src/context/toolResultStorage.test.ts src/harness/loop.test.ts src/tasks/teamTools.test.ts src/tasks/taskTools.test.ts --timeout 50000` = 94 pass。
+
 ## 4. 下一批代码顺序
 
-1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复、后台 agent 确定性进度阶段、`SendUserMessage/Brief` 输出通道、agent memory / snapshot、后台续跑 content replacement records 继承、同 agent id 原任务槽续跑、`AgentOutputTool/BashOutputTool` 旧名兼容已落;下一步继续复制/移植/改写 content replacement full restore、forked agent progress summary/prompt-cache、UDS/remote teammate bridge。
+1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复、后台 agent 确定性进度阶段、`SendUserMessage/Brief` 输出通道、agent memory / snapshot、后台续跑 content replacement records 继承、同 agent id 原任务槽续跑、`AgentOutputTool/BashOutputTool` 旧名兼容、parent live replacements gap-fill 已落;下一步继续复制/移植/改写 AgentSummary/fork prompt-cache safe params、UDS/remote teammate bridge。
 2. **后台子代理事件流/UI drill-in polish**:同步 `agent_task` 轨迹、后台启动 chip、完成通知与点击跳转、事件过滤/摘要折叠、trace 搜索/失败节点/phase 分组已落;下一步做统一 trace 面板、按 `agent_id` 过滤/跳转、sidechain transcript drill-in。
 3. **provider failover 策略 polish**:active saved -> saved fallbacks -> env fallback、失败原因 `context_note`、sticky fallback、状态线备用出口/冷却 chip、设置抽屉简洁健康状态/折叠明细、旧 BYOK -> ProviderService 兼容桥、provider 健康冷却、跨重启持久化、手动清冷却、保存通道启停/排序、默认/接管中状态区分、prewarm 跟随冷却排序、冷却分类退避、最近排障历史已落;下一步只剩完整高级 provider 管理页与更深的趋势/导出排障。
 4. **领域包/知识库前端 polish**:`billiards` 已从硬编码 supportContext 收到 SessionStart pack,前端选择器已读 `/api/v1/agent/packs`,`list_skills` 已支持 pack 推荐/过滤,pack prompt commands 已合并进命令池;下一步把知识库 Q&A 做成更接近 Codex/Work Buddy 的低噪来源面板和专家挂载入口。

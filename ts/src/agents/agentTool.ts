@@ -25,6 +25,7 @@ import type { AgentDefinition } from './agentLoader'
 import { resolveAgentTools } from './agentLoader'
 import { loadAgentMcpRuntime, type AgentMcpRuntimeOptions } from './agentMcp'
 import { buildAgentMemoryPrompt, workspaceWithAgentMemory } from './agentMemory'
+import { cloneContentReplacementState } from '../context/toolResultStorage'
 
 export interface AgentTaskInput {
   agent?: string
@@ -281,6 +282,9 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
       const baseAgentTools = resolveAgentTools(agent, opts.baseTools).filter(tool => tool.name !== 'agent_task')
       let agentMcp: Awaited<ReturnType<typeof loadAgentMcpRuntime>> | undefined
       const hooks = mergeHookRegistries(opts.hooks, agent.hooks)
+      const inheritedContentReplacementState = ctx.contentReplacementState
+        ? cloneContentReplacementState(ctx.contentReplacementState)
+        : undefined
       try {
         agentMcp = await loadAgentMcpRuntime({
           agent,
@@ -300,6 +304,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
           sandbox,
           conversationId: agentId,
           toolResultStoreDir: sidechain?.toolResultStoreDir ?? ctx.toolResultStoreDir,
+          contentReplacementState: inheritedContentReplacementState,
         })
         for (const extra of subagentStart.additionalContext) emitSubagentProgress(ctx, agent, `子代理 ${agent.name} hook:${oneLine(extra, 160)}`)
         for await (const ev of runAgentLoop({
@@ -318,6 +323,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
           toolResultStoreDir: sidechain?.toolResultStoreDir ?? ctx.toolResultStoreDir,
           hooks,
           subagent: { agentId, agentType: agent.name },
+          contentReplacementState: inheritedContentReplacementState,
         })) {
           const line = subagentLine(agent, ev)
           if (line) emitSubagentProgress(ctx, agent, line)
