@@ -71,6 +71,21 @@ type ReadOnlyCommandConfig = {
   respectsDoubleDash?: boolean
 }
 
+const XARGS_SAFE_FLAGS: Record<string, FlagArgKind> = {
+  '-I': '{}',
+  '-n': 'number',
+  '-P': 'number',
+  '-L': 'number',
+  '-s': 'number',
+  '-E': 'EOF',
+  '-0': 'none',
+  '-t': 'none',
+  '-r': 'none',
+  '-x': 'none',
+  '-d': 'char',
+}
+const SAFE_XARGS_TARGET_COMMANDS = new Set(['echo', 'printf', 'wc', 'grep', 'head', 'tail'])
+
 const READ_ONLY_COMMANDS: Record<string, ReadOnlyCommandConfig> = {
   file: {
     safeFlags: {
@@ -1946,6 +1961,7 @@ function classifyReadOnlyAllowlistedCommand(command: string): CommandRisk | null
   const tokens = tokenizeShellWords(command)
   const base = tokens[0]?.toLowerCase()
   if (!base) return null
+  if (base === 'xargs') return classifyXargsCommand(command)
   if (base === 'sed') return classifySedCommand(command)
   if (base === 'ps' && tokens.slice(1).some(token => !token.startsWith('-') && /^[a-zA-Z]*e[a-zA-Z]*$/.test(token))) {
     return 'outreach'
@@ -1954,6 +1970,66 @@ function classifyReadOnlyAllowlistedCommand(command: string): CommandRisk | null
   const config = READ_ONLY_COMMANDS[base]
   if (!config) return null
   return validateSafeFlags(tokens.slice(1), config) ? 'read' : 'file'
+}
+
+function classifyXargsCommand(command: string): CommandRisk | null {
+  const tokens = tokenizeShellWords(command)
+  if (tokens[0]?.toLowerCase() !== 'xargs') return null
+
+  for (const token of tokens.slice(1)) {
+    if (token.includes('$')) return 'outreach'
+    if (token.includes('{') && (token.includes(',') || token.includes('..'))) return 'outreach'
+  }
+
+  return xargsArgsAreReadOnly(tokens.slice(1)) ? 'read' : 'outreach'
+}
+
+function xargsArgsAreReadOnly(args: string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (!arg) continue
+
+    if (arg === '--') {
+      if (i + 1 >= args.length) return true
+      return SAFE_XARGS_TARGET_COMMANDS.has(args[i + 1]!)
+    }
+
+    if (arg === '-' || !arg.startsWith('-')) {
+      return SAFE_XARGS_TARGET_COMMANDS.has(arg)
+    }
+
+    const parsed = validateXargsShortFlag(args, i)
+    if (!parsed.ok) return false
+    i = parsed.index
+  }
+
+  return true
+}
+
+function validateXargsShortFlag(args: string[], index: number): { ok: boolean; index: number } {
+  const token = args[index]!
+  if (!token.startsWith('-') || token.startsWith('--') || token.length < 2) return { ok: false, index }
+
+  const firstFlag = `-${token[1]}`
+  const firstKind = XARGS_SAFE_FLAGS[firstFlag]
+  if (!firstKind) return { ok: false, index }
+
+  if (firstKind !== 'none') {
+    const attached = token.slice(2)
+    if (attached) return { ok: flagArgMatches(firstKind, attached), index }
+    const nextIndex = index + 1
+    return {
+      ok: nextIndex < args.length && flagArgMatches(firstKind, args[nextIndex]!),
+      index: nextIndex,
+    }
+  }
+
+  for (let pos = 2; pos < token.length; pos++) {
+    const flag = `-${token[pos]}`
+    const kind = XARGS_SAFE_FLAGS[flag]
+    if (!kind || kind !== 'none') return { ok: false, index }
+  }
+  return { ok: true, index }
 }
 
 function validateSafeFlags(args: string[], config: ReadOnlyCommandConfig): boolean {
@@ -2373,6 +2449,9 @@ function classifySegment(segment: string): CommandRisk {
 
   const dockerRisk = classifyDockerCommand(rawCommand)
   if (dockerRisk) return withSegmentBaseRisk(dockerRisk)
+
+  const xargsRisk = classifyXargsCommand(rawCommand)
+  if (xargsRisk) return withSegmentBaseRisk(xargsRisk)
 
   const readOnlyAllowlistRisk = classifyReadOnlyAllowlistedCommand(rawCommand)
   if (readOnlyAllowlistRisk) return withSegmentBaseRisk(readOnlyAllowlistRisk)

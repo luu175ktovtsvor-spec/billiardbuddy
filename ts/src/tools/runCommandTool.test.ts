@@ -255,6 +255,13 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('fd -x rm {}')).toBe('outreach')
   expect(classifyCommandRisk('fd --exec-batch rm')).toBe('outreach')
   expect(classifyCommandRisk('fd -l package')).toBe('outreach')
+  expect(classifyCommandRisk('xargs grep needle')).toBe('read')
+  expect(classifyCommandRisk('xargs -0 -n 5 head')).toBe('read')
+  expect(classifyCommandRisk('xargs -I {} grep needle {}')).toBe('read')
+  expect(classifyCommandRisk('xargs curl https://example.com')).toBe('outreach')
+  expect(classifyCommandRisk('xargs sh -c id')).toBe('outreach')
+  expect(classifyCommandRisk('xargs -E= EOF echo foo')).toBe('outreach')
+  expect(classifyCommandRisk('xargs -rI echo sh -c id')).toBe('outreach')
   expect(classifyCommandRisk('pyright --project .')).toBe('read')
   expect(classifyCommandRisk('pyright --outputjson --warnings')).toBe('read')
   expect(classifyCommandRisk('pyright --watch')).toBe('outreach')
@@ -522,6 +529,11 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   })
   expect(resolvePermission(runCommandTool, { command: 'fd -H -e ts dangerousCommand' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'fd -x rm {}' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'xargs grep needle' }, { ...ctx, permissionMode: 'default' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'xargs sh -c id' }, { ...ctx, permissionMode: 'acceptEdits' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })
