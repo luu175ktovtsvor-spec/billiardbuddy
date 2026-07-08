@@ -31,6 +31,7 @@ server/uploads/
 # 日志
 *.log
 server/logs/
+dataeye/tests/sample.json.gz
 
 # 临时脚本
 scripts/tmp_*

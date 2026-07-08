@@ -113,17 +113,7 @@ systemctl reload nginx
 先在服务器本机造一个测试用的 gzip 样例包(也可以在本地机器造好再 scp 上去):
 
 ```bash
-python3 -c "
-import gzip, json
-body = {
-    'machine_id': 'smoke-test-machine',
-    'batch': [{
-        'kind': 'event', 'ref_id': 'smoke-e1',
-        'payload': {'id': 'smoke-e1', 'event': 'agent_chat', 'props': {}, 'created_at': None}
-    }]
-}
-open('sample.json.gz', 'wb').write(gzip.compress(json.dumps(body).encode()))
-"
+node /opt/dataeye/tests/make_sample.mjs --out=sample.json.gz
 ```
 
 直接打接收端(未经 nginx,验证服务本身活着):
