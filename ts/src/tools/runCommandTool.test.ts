@@ -293,6 +293,23 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('git commit -m "$(whoami)"')).toBe('outreach')
   expect(classifyCommandRisk('git commit -m "`whoami`"')).toBe('outreach')
   expect(classifyCommandRisk('git commit -m "${HOME}"')).toBe('outreach')
+  expect(classifyCommandRisk('git diff --stat --cached')).toBe('read')
+  expect(classifyCommandRisk('git diff -S needle -- package.json')).toBe('read')
+  expect(classifyCommandRisk('git diff --output=/tmp/patch.diff')).toBe('file')
+  expect(classifyCommandRisk('git log --oneline --max-count 5')).toBe('read')
+  expect(classifyCommandRisk('git log --output=/tmp/log.txt')).toBe('file')
+  expect(classifyCommandRisk('git show --format=short HEAD')).toBe('read')
+  expect(classifyCommandRisk('git status --porcelain=v1 --branch')).toBe('read')
+  expect(classifyCommandRisk('git ls-files --others --exclude-standard')).toBe('read')
+  expect(classifyCommandRisk('git config --get --show-origin user.name')).toBe('read')
+  expect(classifyCommandRisk('git remote -v')).toBe('read')
+  expect(classifyCommandRisk('git remote add origin https://example.com/repo.git')).toBe('file')
+  expect(classifyCommandRisk('git remote show origin')).toBe('read')
+  expect(classifyCommandRisk('git remote show https://example.com/repo.git')).toBe('file')
+  expect(classifyCommandRisk('git grep -n TODO -- ts')).toBe('read')
+  expect(classifyCommandRisk('git grep --open-files-in-pager TODO')).toBe('file')
+  expect(classifyCommandRisk('git ls-remote --get-url')).toBe('read')
+  expect(classifyCommandRisk('git ls-remote https://example.com/repo.git')).toBe('file')
   expect(classifyCommandRisk('git merge-base HEAD main')).toBe('read')
   expect(classifyCommandRisk('git rev-list --count --all')).toBe('read')
   expect(classifyCommandRisk('git cat-file -p HEAD')).toBe('read')
@@ -609,6 +626,12 @@ test('run_command dynamic permission allows reads and classifies approval', () =
     approvalClass: 'outreach',
   })
   expect(resolvePermission(runCommandTool, { command: 'git commit -m "safe message"' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'allow',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'git diff --output=/tmp/patch.diff' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({
+    behavior: 'deny',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'git status --porcelain=v1 --branch' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({
     behavior: 'allow',
   })
   expect(resolvePermission(runCommandTool, { command: 'git branch --list' }, { ...ctx, permissionMode: 'default' })).toMatchObject({
