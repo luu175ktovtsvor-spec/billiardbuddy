@@ -395,9 +395,11 @@ function defaultHooksPath(): string | undefined {
 }
 
 function defaultCommandsRoot(): string {
+  // 内置 slash 命令(doctor/help/model/skills/...)已从退役的 server/commands 迁到 ts/commands。
   const candidates = [
-    join(process.cwd(), 'server', 'commands'),
-    join(process.cwd(), '..', 'server', 'commands'),
+    join(process.cwd(), 'commands'),
+    join(process.cwd(), 'ts', 'commands'),
+    join(import.meta.dir, '..', '..', 'commands'),
   ]
   return candidates.find(existsSync) ?? candidates[0]!
 }

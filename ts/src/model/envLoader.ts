@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-export const DEFAULT_MODEL_ENV_FILES = ['../desktop/bundled.env', '../server/.env.bundled.local'] as const
+// 老 server/(Python 线)已整体退役,`../server/.env.bundled.local` 死引用移除;内置 key 走 desktop/bundled.env。
+export const DEFAULT_MODEL_ENV_FILES = ['../desktop/bundled.env'] as const
 
 export function parseDotEnv(text: string): Record<string, string> {
   const env: Record<string, string> = {}
