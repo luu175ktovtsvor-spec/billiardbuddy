@@ -3435,8 +3435,9 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 | `9c40369` | acceptEdits 自动放行前过 cc checkPathSafetyForAutoEdit 敏感路径闸 | autoEditSafety 11 例 |
 | `a564ac1` | 关闭 MCP readOnlyHint 免审批后门(对齐 cc MCPTool 恒 passthrough→ask) | mcp/config 更正断言 |
 | `d5fe598` | 子代理权限继承对齐 cc(父级放权优先/后台兜底 acceptEdits)+ 危险前缀(sudo/bash -c)不生成会话放行规则 | agentTool/taskTools + approvalSuggestions 新测试 |
+| `e14b464` | 模型调用瞬时错误(429/5xx/网络抖动)退避重试基础设施(opt-in,移植 cc withRetry) | fetchRetry 9 例 + ProxyModel 集成 2 例 |
 
-全量:`cd ts && bun test` = 863 pass / 0 fail;`bun run typecheck` 通过;`smoke:sandbox`/`smoke:sqlite` 通过;`build:sidecar` exit 0;`cd web && npx tsc --noEmit` 通过。
+全量:`cd ts && bun test` = 874 pass / 0 fail;`bun run typecheck` 通过;`smoke:sandbox`/`smoke:sqlite` 通过;`build:sidecar` exit 0;`cd web && npx tsc --noEmit` 通过。
 
 ### C. 剩余高优先级 backlog(按 coding-agent 内核价值排序)
 
@@ -3447,7 +3448,7 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 4. 读命令(cat/ls/grep/find/head/tail/sed/awk/diff/stat)路径工作区边界校验(移植 cc `checkPathConstraints`/`PATH_EXTRACTORS`),越界一律 ask;UNC 路径拦截。
 
 **P1(可靠性/正确性)**
-5. 模型调用重试退避(429/5xx/网络抖动指数退避,重试耗尽再 failover)+ SSE 中途 error 帧识别 + 流空闲超时跟随 `aiRequestTimeoutMs`。
+5. 模型调用重试退避:✅重试基础设施已落地(`ts/src/model/fetchRetry.ts`,opt-in,默认不改 failover 时序);**待续**:是否默认开启(需 owner 定 failover-vs-retry 延迟取舍)、SSE 中途 error 帧识别(现静默吞成截断空响应)、流空闲超时跟随 `aiRequestTimeoutMs`(现 60s 与之脱钩)。
 6. 上下文压缩:摘要请求自身超限的收缩重试(防硬崩)+ autocompact 用"字符估算 vs 真实 token usage 取大"。
 7. 工具入参 schema 校验闸(权限判定前统一 `<tool_use_error>InputValidationError`)。
 8. 规则持久化落盘(cc `permissionsLoader`/`persistPermissionUpdate`;让"本会话允许"可选升级为跨重启持久化)。
