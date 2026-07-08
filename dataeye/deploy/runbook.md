@@ -89,6 +89,15 @@ systemctl daemon-reload
 systemctl enable --now dataeye-receiver
 systemctl is-active dataeye-receiver     # 应输出 active
 journalctl -u dataeye-receiver -n 50 --no-pager   # 看启动日志有没有报错
+
+cp /opt/dataeye/deploy/dataeye-board.service /etc/systemd/system/dataeye-board.service
+# 编辑该文件,把 <db密码> <运行用户> 两处占位换成真实值;PGDSN 与 receiver 保持同库。
+vim /etc/systemd/system/dataeye-board.service
+
+systemctl daemon-reload
+systemctl enable --now dataeye-board
+systemctl is-active dataeye-board        # 应输出 active
+journalctl -u dataeye-board -n 50 --no-pager
 ```
 
 ---
@@ -104,7 +113,7 @@ nginx -t                    # 语法检查
 systemctl reload nginx
 ```
 
-看板(`/board`)先留空,等 P1.S2 装 Metabase(或自建只读页)监听 127.0.0.1:3001 再接通;暂时可以先注释掉这个 location block。
+看板(`/board`)现在由 Bun/TS 只读页监听 `127.0.0.1:9200`,nginx `location /board` 直接反代过去并加 Basic Auth。
 
 ---
 
@@ -129,6 +138,16 @@ curl -s -X POST \
   --data-binary @sample.json.gz \
   http://127.0.0.1:9100/ingest
 # {"accepted":1,"duplicated":0}
+```
+
+直接打看板(未经 nginx,验证只读页能连库):
+
+```bash
+curl -s http://127.0.0.1:9200/board/healthz
+# {"ok":true}
+
+curl -s http://127.0.0.1:9200/board/ | head
+# <!doctype html>...
 ```
 
 再打一遍确认幂等(第二次应该 duplicated:1):
@@ -218,7 +237,7 @@ systemctl restart dataeye-receiver
 - `curl` 返回 200 但 `accepted:0 duplicated:0` → 检查 batch 是不是空数组,或 `kind` 拼写是否是 `event|gen|trace|store` 四选一之外的值(未知 kind 只落 raw_inbox,不整理,也算 accepted)。
 - 磁盘涨得快 → 先看 `transcripts/` 目录,轨迹原文默认永久保留,吃紧时再定滚动清理策略(见计划 PART 6)。
 
-## ⚠️ 重部署代码(改了 receiver 后同步到服务器)
+## ⚠️ 重部署代码(改了 receiver/board 后同步到服务器)
 
 服务器 `/opt/dataeye/` 下有几样**只在服务器、开发机没有**的东西:`dataeye.env`(密钥)、`transcripts/`(数据)。
 用 `rsync --delete` 从开发机同步 `dataeye/` 会把它们当"多余文件"删掉(踩过一次)。**重部署务必带排除**:
@@ -227,7 +246,7 @@ systemctl restart dataeye-receiver
 rsync -az --delete \
   --exclude 'dataeye.env' --exclude 'transcripts' \
   dataeye/ root@<app机>:/opt/dataeye/
-systemctl restart dataeye-receiver
+systemctl restart dataeye-receiver dataeye-board
 ```
 
 万一误删了 `dataeye.env`:重跑幂等部署脚本即可重生成密钥(DB/schema 不受影响;但**密钥会换新**,记得同步更新已发出去的客户端令牌)。
@@ -237,7 +256,7 @@ systemctl restart dataeye-receiver
 数据接收端 + 看板已在大陆机全线部署并验证(数据全境内、不出境):
 - **域名/证书**:`data.zzyppz.cn`(阿里云 DNS A 记录 → 39.106.214.21)。Let's Encrypt 证书(acme.sh 签发,`/root/.acme.sh/` 每天 cron 自动续期 + reload nginx,**无需人工**)。
 - **收货门(数据进)**:`https://data.zzyppz.cn/ingest` → nginx → `127.0.0.1:9100`(dataeye-receiver systemd,MemoryMax 256M;接收端源码已迁到 Bun/TS)。已从墙外实测端到端入真 PG。
-- **看板(人看)**:`https://data.zzyppz.cn/board` → nginx(**Basic Auth**,htpasswd `/etc/nginx/.htpasswd-board`,SHA-512,**权限须 644 否则 www-data 读不了→500**)→ `127.0.0.1:9200`(dataeye-board systemd,MemoryMax 200M,只读 FastAPI)。登录凭据在服务器 `/opt/dataeye/board.auth`(chmod600)。
+- **看板(人看)**:`https://data.zzyppz.cn/board` → nginx(**Basic Auth**,htpasswd `/etc/nginx/.htpasswd-board`,SHA-512,**权限须 644 否则 www-data 读不了→500**)→ `127.0.0.1:9200`(dataeye-board systemd,MemoryMax 200M,只读 Bun/TS)。登录凭据在服务器 `/opt/dataeye/board.auth`(chmod600)。
 - **nginx**:`/etc/nginx/sites-available/dataeye-ingest`(443 块含 /ingest + /health + /board;80 块跳 https + acme 挑战)。改前备份 `/root/nginx-backup-*.tgz`。
 - **客户端**:`server/.env.bundled.local` 已填 `DATA_SYNC_ENDPOINT=https://data.zzyppz.cn/ingest` + `DATA_SYNC_TOKEN`(=服务器 `/opt/dataeye/dataeye.env` 的 INGEST_TOKENS)。**剩:重打包 dmg/nsis + 用户更新,数据即开始流。**
 - 三服务与网关共存:qfgw(命根子)/receiver/board 均 active + 开机自启,各自 MemoryMax 封顶,互不挤占(整机 4G,空 ~2.7G)。

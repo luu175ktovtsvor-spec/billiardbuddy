@@ -3298,7 +3298,7 @@
 - 删除 `dataeye/receiver/app.py`、`dataeye/receiver/db.py`、`dataeye/receiver/requirements.txt` 与 `dataeye/tests/test_receiver.py`:接收端从 FastAPI/asyncpg 迁到 Bun/TS,不再需要独立 Python venv。
 - 新增 `dataeye/receiver/app.ts`、`db.ts`、`path.ts` 与 `tests/receiver.test.ts`:保留原 `/health`、`POST /ingest`、Bearer 令牌、gzip 解压、256MB 解压上限、raw_inbox 幂等、`event/gen/store/trace` 整理、trace 正文路径分量清洗与 commonpath 复核。
 - 部署同步:systemd 模板从 `uvicorn app:app` 改成 `bun run receiver/app.ts --host 127.0.0.1 --port 9100`;README/runbook 的本地测试与冒烟命令改成 Bun。
-- 验证:`cd dataeye && bun test tests/receiver.test.ts` 通过 21 项。`dataeye/board/app.py` 仍是独立只读看板,未在本轮混删;等 TS 看板等价接住后再退。
+- 验证:`cd dataeye && bun test tests/receiver.test.ts` 通过 21 项。当时 `dataeye/board/app.py` 仍是独立只读看板,未在本轮混删;已在 3.393 由 TS 看板接住后退役。
 
 ## 3.391 2026-07-09 CC xargs optional lowercase flag regression guard
 
@@ -3313,6 +3313,13 @@
 - TS 风险分类新增 `environmentCommandNeedsApproval()`:裸 `env`、`env -0`、`printenv`、`printenv PATH`、`FOO=bar env`、`FOO=bar printenv` 统一升为 `outreach`,避免在 `auto_files` 下静默泄漏 provider/API token。
 - 行为边界:作为 runtime wrapper 的安全形态仍按真实子命令分类,例如 `env git status --short` 保持 `read`;`env --chdir/-C`、`env -S/--split-string` 这类改变 cwd 或重解析 argv 的形态继续升为 `outreach`。
 - 测试覆盖:`runCommandTool.test.ts` 覆盖环境输出命令的 classify 与 permission 瀑布,并确认 `env git status --short` 在 `ask` 模式仍能直接 allow。
+
+## 3.393 2026-07-09 dataeye 只读看板 Python 退役
+
+- 删除 `dataeye/board/app.py`:它是 dataeye 里最后一个独立 FastAPI 小入口;本轮用 Bun/TS 等价接住后再删,没有直接砍运行链路。
+- 新增 `dataeye/board/app.ts`:保留 `/board`、`/board/generations`、`/board/transcripts`、`/board/cost`、`/board/events`、`/board/healthz` 路径契约,继续只读查 Postgres,保持北京时间切日、30 天趋势、好评/差评 pill、HTML 转义和自动刷新。
+- 新增 `dataeye/tests/board.test.ts` 与 `dataeye/deploy/dataeye-board.service`;nginx 模板从 3001/Metabase 占位改为反代 `127.0.0.1:9200` 的 Bun 看板。README/runbook/遗留文档同步为 receiver + board 双 Bun 服务。
+- 验证:`cd dataeye && bun test tests/receiver.test.ts tests/board.test.ts` 覆盖接收端与看板;看板测试注入假 `BoardDb`,不需要真 PG。
 
 ## 4. 下一批代码顺序
 
