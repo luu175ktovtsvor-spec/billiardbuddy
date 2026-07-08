@@ -8,7 +8,7 @@ import type { ToolContext } from './Tool'
 import type { Sandbox } from '../sandbox/sandbox'
 import { runCommandTool } from './runCommandTool'
 import { StreamingOutputSanitizer, stripAnsiControlSequences } from './outputSanitize'
-import { classifyCommandRisk, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellCdGitNeedsApproval, shellGitInternalWriteNeedsApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval } from './dangerousCommand'
+import { classifyCommandRisk, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellCdGitNeedsApproval, shellGitInternalWriteNeedsApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval, shellSensitiveReadNeedsApproval } from './dangerousCommand'
 import { resolvePermission } from '../permissions/resolve'
 
 let root: string
@@ -345,6 +345,16 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('echo `curl https://example.com`')).toBe('outreach')
   expect(classifyCommandRisk('echo $IFS')).toBe('outreach')
   expect(classifyCommandRisk('cat /proc/self/environ')).toBe('outreach')
+  expect(classifyCommandRisk('cat ~/.ssh/id_rsa')).toBe('outreach')
+  expect(classifyCommandRisk('cat .env')).toBe('outreach')
+  expect(classifyCommandRisk('cat -- .env.local')).toBe('outreach')
+  expect(classifyCommandRisk('head -n 1 .env')).toBe('outreach')
+  expect(classifyCommandRisk('grep TOKEN .env')).toBe('outreach')
+  expect(classifyCommandRisk('rg TOKEN .env')).toBe('outreach')
+  expect(classifyCommandRisk('wc -c ~/.ssh/id_rsa')).toBe('outreach')
+  expect(classifyCommandRisk('find ~/.ssh -type f')).toBe('outreach')
+  expect(classifyCommandRisk('cat package.json')).toBe('read')
+  expect(classifyCommandRisk('rg TODO src')).toBe('read')
   expect(classifyCommandRisk('echo ok\ncurl https://example.com')).toBe('outreach')
   expect(classifyCommandRisk('echo safe\\; cat ~/.ssh/id_rsa')).toBe('outreach')
   expect(classifyCommandRisk('zmodload zsh/system')).toBe('outreach')
@@ -361,6 +371,20 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('echo {"hi":"hi;evil"}')).toBe('outreach')
   expect(classifyCommandRisk("echo '$(curl https://example.com)'")).toBe('read')
   expect(classifyCommandRisk('echo \\$(date)')).toBe('read')
+})
+
+test('sensitive read path detection gates credential-like files without blocking normal code reads', () => {
+  expect(shellSensitiveReadNeedsApproval('cat ~/.ssh/id_rsa')).toBe(true)
+  expect(shellSensitiveReadNeedsApproval('cat .env')).toBe(true)
+  expect(shellSensitiveReadNeedsApproval('grep TOKEN .env')).toBe(true)
+  expect(shellSensitiveReadNeedsApproval('rg TOKEN .env')).toBe(true)
+  expect(shellSensitiveReadNeedsApproval('grep --include .env TOKEN .')).toBe(true)
+  expect(shellSensitiveReadNeedsApproval('grep --exclude .env TOKEN src')).toBe(false)
+  expect(shellSensitiveReadNeedsApproval('wc -c ~/.ssh/id_rsa')).toBe(true)
+  expect(shellSensitiveReadNeedsApproval('find ~/.ssh -type f')).toBe(true)
+  expect(shellSensitiveReadNeedsApproval('cat package.json')).toBe(false)
+  expect(shellSensitiveReadNeedsApproval('rg TODO src')).toBe(false)
+  expect(shellSensitiveReadNeedsApproval('cat src/tokenizer.ts')).toBe(false)
 })
 
 test('shell expansion risk detection mirrors Bash substitution safety gate', () => {
@@ -624,6 +648,15 @@ test('run_command dynamic permission allows reads and classifies approval', () =
     behavior: 'ask',
     approvalClass: 'outreach',
   })
+  expect(resolvePermission(runCommandTool, { command: 'cat ~/.ssh/id_rsa' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+    approvalReason: expect.objectContaining({
+      why: expect.stringContaining('敏感凭据文件'),
+      impact: expect.stringContaining('敏感文件内容'),
+    }),
+  })
+  expect(resolvePermission(runCommandTool, { command: 'cat package.json' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'git commit -m "---"' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',

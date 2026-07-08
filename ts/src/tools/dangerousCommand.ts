@@ -88,6 +88,74 @@ const XARGS_SAFE_FLAGS: Record<string, FlagArgKind> = {
   '-d': 'char',
 }
 const SAFE_XARGS_TARGET_COMMANDS = new Set(['echo', 'printf', 'wc', 'grep', 'head', 'tail'])
+const SENSITIVE_READ_COMMANDS = new Set([
+  'base64',
+  'cat',
+  'column',
+  'cut',
+  'df',
+  'diff',
+  'du',
+  'file',
+  'find',
+  'grep',
+  'head',
+  'hexdump',
+  'ls',
+  'md5sum',
+  'nl',
+  'od',
+  'paste',
+  'rg',
+  'sed',
+  'sha1sum',
+  'sha256sum',
+  'sort',
+  'stat',
+  'strings',
+  'tail',
+  'uniq',
+  'wc',
+])
+const SENSITIVE_PATTERN_FLAGS = new Set([
+  '-f',
+  '--file',
+  '--glob',
+  '-g',
+  '--include',
+  '--include-dir',
+  '--exclude-from',
+])
+const GREP_RG_FLAGS_WITH_ARGS = new Set([
+  '-e',
+  '--regexp',
+  '-f',
+  '--file',
+  '-t',
+  '--type',
+  '-T',
+  '--type-not',
+  '-g',
+  '--glob',
+  '-m',
+  '--max-count',
+  '--max-depth',
+  '-r',
+  '--replace',
+  '-A',
+  '--after-context',
+  '-B',
+  '--before-context',
+  '-C',
+  '--context',
+  '--include',
+  '--include-dir',
+  '--exclude',
+  '--exclude-dir',
+  '--exclude-from',
+])
+const SED_FLAGS_WITH_ARGS = new Set(['-e', '--expression', '-f', '--file', '-l', '--line-length'])
+const SED_PATH_FLAGS = new Set(['-f', '--file'])
 
 const GIT_REF_SELECTION_FLAGS: Record<string, FlagArgKind> = {
   '--all': 'none',
@@ -2794,6 +2862,175 @@ function classifyReadOnlyAllowlistedCommand(command: string): CommandRisk | null
   return validateSafeFlags(tokens.slice(1), config) ? 'read' : 'file'
 }
 
+export function shellSensitiveReadNeedsApproval(command: string): boolean {
+  const commandForClassification = stripSafeHeredocSubstitutions(command) ?? command
+  return splitSegments(commandForClassification).some(segment => {
+    const rawCommand = normalize(stripRuntimeEnvWrapper(segment))
+    return readCommandTouchesSensitivePath(rawCommand)
+  })
+}
+
+function readCommandTouchesSensitivePath(command: string): boolean {
+  const tokens = tokenizeShellWords(command)
+  const base = tokens[0]?.toLowerCase()
+  if (!base || !SENSITIVE_READ_COMMANDS.has(base)) return false
+
+  const args = tokens.slice(1)
+  if (base === 'grep' || base === 'rg') return grepLikeCommandTouchesSensitivePath(args)
+  if (base === 'sed') return sedCommandTouchesSensitivePath(args)
+  if (base === 'find') return findCommandTouchesSensitivePath(args)
+  if (base === 'wc' && args.some(arg => arg === '--files0-from' || arg.startsWith('--files0-from='))) return true
+  return simpleReadArgsTouchSensitivePath(args)
+}
+
+function simpleReadArgsTouchSensitivePath(args: string[]): boolean {
+  let afterDoubleDash = false
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (!arg) continue
+    if (!afterDoubleDash && arg === '--') {
+      afterDoubleDash = true
+      continue
+    }
+    if (!afterDoubleDash && arg.startsWith('-')) {
+      continue
+    }
+    if (isSensitivePathToken(arg)) return true
+  }
+  return false
+}
+
+function grepLikeCommandTouchesSensitivePath(args: string[]): boolean {
+  let patternFound = false
+  let afterDoubleDash = false
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (!arg) continue
+
+    if (!afterDoubleDash && arg === '--') {
+      afterDoubleDash = true
+      continue
+    }
+
+    if (!afterDoubleDash && arg.startsWith('-')) {
+      const [flag, inline] = splitLongFlag(arg)
+      if (flag === '-f' && arg.length > 2) {
+        if (isSensitivePathToken(arg.slice(2))) return true
+        patternFound = true
+        continue
+      }
+      if (SENSITIVE_PATTERN_FLAGS.has(flag) && inline !== undefined && isSensitivePathToken(inline)) return true
+      if (SENSITIVE_PATTERN_FLAGS.has(flag) && inline === undefined && i + 1 < args.length && isSensitivePathToken(args[i + 1]!)) return true
+      if (flag === '-e' || flag === '--regexp' || flag === '-f' || flag === '--file') patternFound = true
+      if (GREP_RG_FLAGS_WITH_ARGS.has(flag) && inline === undefined) i++
+      continue
+    }
+
+    if (!patternFound) {
+      patternFound = true
+      continue
+    }
+    if (isSensitivePathToken(arg)) return true
+  }
+  return false
+}
+
+function sedCommandTouchesSensitivePath(args: string[]): boolean {
+  let scriptFound = false
+  let afterDoubleDash = false
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (!arg) continue
+
+    if (!afterDoubleDash && arg === '--') {
+      afterDoubleDash = true
+      continue
+    }
+
+    if (!afterDoubleDash && arg.startsWith('-')) {
+      const [flag, inline] = splitLongFlag(arg)
+      if (SED_PATH_FLAGS.has(flag) && inline !== undefined && isSensitivePathToken(inline)) return true
+      if (SED_PATH_FLAGS.has(flag) && inline === undefined && i + 1 < args.length && isSensitivePathToken(args[i + 1]!)) return true
+      if (flag === '-e' || flag === '--expression' || flag === '-f' || flag === '--file') scriptFound = true
+      if (SED_FLAGS_WITH_ARGS.has(flag) && inline === undefined) i++
+      continue
+    }
+
+    if (!scriptFound) {
+      scriptFound = true
+      continue
+    }
+    if (isSensitivePathToken(arg)) return true
+  }
+  return false
+}
+
+function findCommandTouchesSensitivePath(args: string[]): boolean {
+  let foundNonGlobalFlag = false
+  let afterDoubleDash = false
+  const pathTakingFlags = new Set([
+    '-newer',
+    '-anewer',
+    '-cnewer',
+    '-mnewer',
+    '-samefile',
+    '-path',
+    '-wholename',
+    '-ilname',
+    '-lname',
+    '-ipath',
+    '-iwholename',
+  ])
+  const newerPattern = /^-newer[acmBt][acmtB]$/
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (!arg) continue
+
+    if (afterDoubleDash) {
+      if (isSensitivePathToken(arg)) return true
+      continue
+    }
+
+    if (arg === '--') {
+      afterDoubleDash = true
+      continue
+    }
+
+    if (arg.startsWith('-')) {
+      if (['-H', '-L', '-P'].includes(arg)) continue
+      foundNonGlobalFlag = true
+      if ((pathTakingFlags.has(arg) || newerPattern.test(arg)) && i + 1 < args.length && isSensitivePathToken(args[i + 1]!)) {
+        return true
+      }
+      if (pathTakingFlags.has(arg) || newerPattern.test(arg)) i++
+      continue
+    }
+
+    if (!foundNonGlobalFlag && isSensitivePathToken(arg)) return true
+  }
+  return false
+}
+
+function isSensitivePathToken(raw: string): boolean {
+  const normalized = raw
+    .replace(/^['"]|['"]$/g, '')
+    .replaceAll('\\', '/')
+    .replace(/\/+$/, '')
+  if (!normalized || normalized === '-' || normalized === '.') return false
+
+  const lower = normalized.toLowerCase()
+  const name = lower.split('/').at(-1) ?? ''
+  if (!name) return false
+  if (lower === '~/.ssh' || lower.startsWith('~/.ssh/') || lower.includes('/.ssh/')) return true
+  if (name === '.env' || name.startsWith('.env.')) return true
+  if (/^(id_rsa|id_dsa|id_ecdsa|id_ed25519)$/.test(name)) return true
+  if (/\.(pem|key|p12|pfx)$/i.test(name)) return true
+  return /(?:^|[-_.])(secret|secrets|credential|credentials|token|password|passwd|api[-_]?key|access[-_]?key|private[-_]?key)(?:[-_.]|$)/i.test(name)
+}
+
 function classifyXargsCommand(command: string): CommandRisk | null {
   const tokens = tokenizeShellWords(command)
   if (tokens[0]?.toLowerCase() !== 'xargs') return null
@@ -3217,6 +3454,7 @@ function classifySegment(segment: string): CommandRisk {
   if (/^(npm|pnpm|yarn|bun)\s+(install|add|upgrade|update|publish)\b/.test(command)) return withSegmentBaseRisk('outreach')
   if (/^(pip|pip3|uv|poetry)\s+(install|add|publish|update)\b/.test(command)) return withSegmentBaseRisk('outreach')
   if (/^(brew|apt|apt-get|dnf|yum|pacman|choco|winget)\s+(install|upgrade|update|remove)\b/.test(command)) return withSegmentBaseRisk('outreach')
+  if (readCommandTouchesSensitivePath(rawCommand)) return withSegmentBaseRisk('outreach')
 
   const findRisk = classifyFindCommand(rawCommand)
   if (findRisk) return withSegmentBaseRisk(findRisk)
