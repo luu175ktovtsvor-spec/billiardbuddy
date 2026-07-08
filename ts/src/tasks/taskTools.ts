@@ -21,6 +21,7 @@ import {
 } from '../context/toolResultStorage'
 import { startAgentSummarization, type AgentSummaryController } from './agentSummary'
 import { createDenialTrackingState } from '../permissions/denialTracking'
+import { FORK_SUBAGENT_TYPE, isInForkChild, type ForkRunContext } from '../agents/forkSubagent'
 
 export interface BackgroundAgentTaskInput {
   agent?: string
@@ -366,6 +367,7 @@ export interface BackgroundAgentRunResult {
 
 interface BackgroundAgentRunOptions {
   replaceTaskId?: string
+  forkContext?: ForkRunContext
 }
 
 async function createOrReplaceBackgroundAgentTask(
@@ -406,9 +408,21 @@ export async function startBackgroundAgentRun(
   runOptions: BackgroundAgentRunOptions = {},
 ): Promise<BackgroundAgentRunResult> {
   if (!input || typeof input.task !== 'string' || !input.task.trim()) throw new Error('start_background_agent_task 需要 string 参数 task')
-  const agent = pickAgent(opts.agents, input.agent)
+  const agent = runOptions.forkContext
+    ? {
+        name: FORK_SUBAGENT_TYPE,
+        description: 'Forked worker inheriting the parent coding-agent context.',
+        prompt: '',
+        filePath: 'built-in:fork',
+        permissionMode: ctx.permissionMode,
+        maxTurns: opts.maxTurns,
+      } satisfies AgentDefinition
+    : pickAgent(opts.agents, input.agent)
   if (!agent) throw new Error(`start_background_agent_task 需要指定 agent;可用 agent:\n${agentList(opts.agents)}`)
-  let task = await createOrReplaceBackgroundAgentTask(opts, input, ctx, agent, backgroundTaskParams(input, agent, extraParams), runOptions.replaceTaskId)
+  let task = await createOrReplaceBackgroundAgentTask(opts, input, ctx, agent, backgroundTaskParams(input, agent, {
+    ...extraParams,
+    ...(runOptions.forkContext ? { fork_context: true } : {}),
+  }), runOptions.replaceTaskId)
   const stableAgentId = stringTaskParam(task, 'agent_id') || stringTaskParam(task, 'agentId') || task.id
   if (!stringTaskParam(task, 'agent_id')) {
     task = await opts.tasks.touch(task.id, { params: { ...task.params, agent_id: stableAgentId } })
@@ -441,8 +455,10 @@ export async function startBackgroundAgentRun(
     ...(metadataWorktreePath ? { worktreePath: metadataWorktreePath } : {}),
     toolResultStoreDir,
   }).catch(() => undefined)
-  const baseAgentTools = resolveAgentTools(agent, opts.baseTools)
-    .filter(tool => tool.name !== 'start_background_agent_task' && tool.name !== 'cancel_background_task')
+  const baseAgentTools = runOptions.forkContext
+    ? (runOptions.forkContext.tools.length > 0 ? runOptions.forkContext.tools : opts.baseTools)
+    : resolveAgentTools(agent, opts.baseTools)
+      .filter(tool => tool.name !== 'start_background_agent_task' && tool.name !== 'cancel_background_task')
   const steerInbox: string[] = []
   const detachSteerInbox = opts.tasks.attachSteerInbox(task.id, steerInbox)
   const hooks = mergeHookRegistries(opts.hooks, agent.hooks)
@@ -501,12 +517,14 @@ export async function startBackgroundAgentRun(
         model: opts.model,
         registry: new ToolRegistry(agentMcp.tools),
         workspace: runWorkspace,
-        systemPrompt: await agentSystemPrompt(agent, runWorkspace.root, opts.baseSystemPrompt),
+        systemPrompt: runOptions.forkContext?.systemPrompt ?? await agentSystemPrompt(agent, runWorkspace.root, opts.baseSystemPrompt),
         userMessage: agentTaskMessage(agent, input),
         initialMessages: [
+          ...(runOptions.forkContext?.initialMessages ?? []),
           ...initialMessages,
           ...[hookContextMessage('SubagentStart', subagentStart.additionalContext)].filter((message): message is Message => !!message),
         ],
+        skipUserMessage: !!runOptions.forkContext,
         maxTurns: agent.maxTurns ?? opts.maxTurns ?? 8,
         signal: taskCtx.signal,
         sandbox: runSandbox,
@@ -923,6 +941,9 @@ export function createBackgroundAgentTaskTool(opts: BackgroundAgentTaskOptions):
       }
     },
     async execute(input, ctx: ToolContext) {
+      if (ctx.messages && isInForkChild(ctx.messages)) {
+        throw new Error('Fork worker 内部不能再次启动 start_background_agent_task。请直接使用当前可用工具完成任务。')
+      }
       const { task, agent } = await startBackgroundAgentRun(opts, input, ctx)
       const name = typeof task.params?.name === 'string' ? ` name="${xmlAttr(task.params.name)}"` : ''
       const agentId = typeof task.params?.agent_id === 'string' ? ` agent_id="${xmlAttr(task.params.agent_id)}"` : ''

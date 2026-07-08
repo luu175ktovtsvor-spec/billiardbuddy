@@ -3,6 +3,7 @@ import { textBlock, toolUseBlock, type Message } from '../types/message'
 import {
   buildChildMessage,
   buildForkedMessages,
+  buildForkRunContext,
   buildWorktreeNotice,
   FORK_BOILERPLATE_TAG,
   FORK_DIRECTIVE_PREFIX,
@@ -41,6 +42,41 @@ test('buildForkedMessages falls back to a directive-only user message without to
   expect(forked[0]).toMatchObject({ role: 'user' })
   expect(forked[0]!.content[0]).toMatchObject({ type: 'text' })
   expect(forked[0]!.content[0]?.type === 'text' ? forked[0]!.content[0].text : '').toContain('Read docs')
+})
+
+test('buildForkRunContext inherits parent system, tools and prefixes the forked assistant exchange', () => {
+  const parent: Message[] = [
+    { role: 'user', content: [textBlock('Parent request')] },
+    {
+      role: 'assistant',
+      content: [
+        textBlock('I will fork this.'),
+        toolUseBlock({ id: 'fork_call', name: 'agent_task', input: { fork_context: true, task: 'Audit runtime' } }),
+      ],
+    },
+  ]
+  const tool = { name: 'read_file', description: '', inputSchema: { type: 'object' as const }, isReadOnly: true, async execute() { return 'ok' } }
+
+  const ctx = buildForkRunContext({
+    workspace: {} as never,
+    systemPrompt: 'PARENT SYS',
+    messages: parent,
+    registry: { list: () => [tool] } as never,
+  }, 'Audit runtime')
+
+  expect(ctx.systemPrompt).toBe('PARENT SYS')
+  expect(ctx.tools).toEqual([tool])
+  expect(ctx.initialMessages[0]).toEqual(parent[0])
+  expect(ctx.initialMessages[1]).toEqual(parent[1])
+  expect(ctx.initialMessages[2]).toMatchObject({
+    role: 'user',
+    content: [
+      { type: 'tool_result', tool_use_id: 'fork_call', content: 'Fork started - processing in background' },
+      { type: 'text' },
+    ],
+  })
+  const directive = ctx.initialMessages[2]!.content[1]
+  expect(directive?.type === 'text' ? directive.text : '').toContain(`${FORK_DIRECTIVE_PREFIX}Audit runtime`)
 })
 
 test('isInForkChild detects the fork boilerplate tag in user messages', () => {

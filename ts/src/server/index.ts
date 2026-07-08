@@ -1504,7 +1504,7 @@ export function startServer(opts: StartServerOptions = {}) {
         sidechainRoot: agentSidechainRoot,
         hooks,
         mcp: backgroundAgentOptions.mcp,
-        startBackgroundAgent: (input, toolCtx) => startBackgroundAgentRun(backgroundAgentOptions!, input, toolCtx),
+        startBackgroundAgent: (input, toolCtx, forkContext) => startBackgroundAgentRun(backgroundAgentOptions!, input, toolCtx, {}, [], [], forkContext ? { forkContext } : {}),
       })]
       : []
     const agentSidechainTools = agents.length > 0 ? createAgentTaskSidechainTools(agentSidechainRoot) : []
