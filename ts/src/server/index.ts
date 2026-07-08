@@ -56,6 +56,7 @@ import { BridgePeerRegistry } from '../tasks/bridgePeerRegistry'
 import { BridgeRemoteState, type BridgeRemotePermissionResponse, type BridgeRemotePermissionStatus, type BridgeRemoteOutboxStatus } from '../tasks/bridgeRemoteState'
 import { bridgeRemoteConfigFromEnv, createBridgeRemoteTransport } from '../tasks/bridgeRemoteTransport'
 import { BridgeRemoteSubscriber, type BridgeRemoteWebSocketConstructor } from '../tasks/bridgeRemoteSubscriber'
+import { createBridgeCodeSessionClient } from '../tasks/bridgeCodeSessionClient'
 import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
 import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
@@ -530,6 +531,16 @@ function bridgeRemoteConfigFromBody(rawBody: Record<string, unknown>, env: Recor
             ? nested.beta_header
             : fromEnv?.betaHeader,
     timeoutMs: Number.isFinite(timeoutMs) ? timeoutMs : undefined,
+  }
+}
+
+function bridgeCodeSessionConfigFromBody(rawBody: Record<string, unknown>, env: Record<string, string | undefined>) {
+  const remote = bridgeRemoteConfigFromBody(rawBody, env)
+  if (!remote) return null
+  return {
+    baseUrl: remote.baseUrl,
+    token: remote.token,
+    timeoutMs: remote.timeoutMs,
   }
 }
 
@@ -2812,6 +2823,61 @@ export function startServer(opts: StartServerOptions = {}) {
           if (req.method === 'DELETE') {
             await bridgePeers.unregister(sessionId)
             return Response.json({ ok: true })
+          }
+          return new Response('Method not allowed', { status: 405 })
+        } catch (err) {
+          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
+        }
+      }
+
+      if (url.pathname === '/api/v1/agent/bridge/code-sessions') {
+        try {
+          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+          const body = await req.json().catch(() => ({})) as Record<string, unknown>
+          const config = bridgeCodeSessionConfigFromBody(body, opts.env ?? process.env)
+          if (!config) return jsonError('bridge code session client is not configured', 400)
+          const title = stringOr(body.title, 'Desktop Coding Agent Session')
+          const tags = stringArray(body.tags)
+          const client = createBridgeCodeSessionClient({ ...config, fetchImpl: opts.fetchImpl })
+          const created = await client.createCodeSession({ title, tags })
+          if (!created.ok) return jsonError(created.error, created.status ?? 502)
+          await bridgePeers.register({
+            sessionId: created.value,
+            label: title,
+            status: 'outbound_only',
+            inboundEnabled: false,
+          })
+          return Response.json({ ok: true, sessionId: created.value, status: created.status })
+        } catch (err) {
+          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
+        }
+      }
+
+      const bridgeCodeCredentialsMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/code-sessions\/([^/]+)\/credentials$/)
+      if (bridgeCodeCredentialsMatch) {
+        const sessionId = decodeURIComponent(bridgeCodeCredentialsMatch[1]!)
+        const codeSessionId = sessionId.startsWith('bridge:') ? sessionId.slice('bridge:'.length) : sessionId
+        try {
+          if (req.method === 'GET') {
+            const credentials = await bridgeRemote.getCredentials(sessionId)
+            if (!credentials) return jsonError('bridge credentials not found', 404)
+            return Response.json({ credentials })
+          }
+          if (req.method === 'POST') {
+            const body = await req.json().catch(() => ({})) as Record<string, unknown>
+            const config = bridgeCodeSessionConfigFromBody(body, opts.env ?? process.env)
+            if (!config) return jsonError('bridge code session client is not configured', 400)
+            const trustedDeviceToken = stringOr(body.trustedDeviceToken ?? body.trusted_device_token, '')
+            const client = createBridgeCodeSessionClient({ ...config, fetchImpl: opts.fetchImpl })
+            const fetched = await client.fetchRemoteCredentials(codeSessionId, trustedDeviceToken || undefined)
+            if (!fetched.ok) return jsonError(fetched.error, fetched.status ?? 502)
+            const credentials = await bridgeRemote.storeCredentials(codeSessionId, fetched.value)
+            await bridgePeers.register({
+              sessionId: codeSessionId,
+              status: 'outbound_only',
+              inboundEnabled: false,
+            })
+            return Response.json({ ok: true, sessionId: codeSessionId, credentials, status: fetched.status })
           }
           return new Response('Method not allowed', { status: 405 })
         } catch (err) {

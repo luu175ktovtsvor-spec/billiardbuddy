@@ -57,12 +57,23 @@ export interface BridgeRemoteOutboxItem {
   sentAt?: string
 }
 
+export interface BridgeRemoteCredentialRecord {
+  sessionId: string
+  workerJwt: string
+  apiBaseUrl: string
+  expiresIn: number
+  workerEpoch: number
+  fetchedAt: string
+  expiresAt: string
+}
+
 interface BridgeRemoteStateFile {
   version: 1
   nextSeq: number
   events: BridgeRemoteEventRecord[]
   permissions: BridgeRemotePermissionRequestRecord[]
   outbox: BridgeRemoteOutboxItem[]
+  credentials: BridgeRemoteCredentialRecord[]
 }
 
 const LOCK_RETRIES = 20
@@ -235,6 +246,25 @@ function normalizeOutbox(raw: unknown): BridgeRemoteOutboxItem | null {
   }
 }
 
+function normalizeCredential(raw: unknown): BridgeRemoteCredentialRecord | null {
+  if (!isRecord(raw)) return null
+  const sessionId = typeof raw.sessionId === 'string' ? raw.sessionId.trim() : ''
+  const workerJwt = typeof raw.workerJwt === 'string' ? raw.workerJwt : ''
+  const apiBaseUrl = typeof raw.apiBaseUrl === 'string' ? raw.apiBaseUrl : ''
+  const expiresIn = typeof raw.expiresIn === 'number' && Number.isFinite(raw.expiresIn) ? raw.expiresIn : 0
+  const workerEpoch = typeof raw.workerEpoch === 'number' && Number.isSafeInteger(raw.workerEpoch) ? raw.workerEpoch : -1
+  if (!sessionId || !workerJwt || !apiBaseUrl || expiresIn <= 0 || workerEpoch < 0) return null
+  return {
+    sessionId,
+    workerJwt,
+    apiBaseUrl,
+    expiresIn,
+    workerEpoch,
+    fetchedAt: typeof raw.fetchedAt === 'string' ? raw.fetchedAt : nowIso(),
+    expiresAt: typeof raw.expiresAt === 'string' ? raw.expiresAt : nowIso(),
+  }
+}
+
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`
@@ -372,6 +402,47 @@ export class BridgeRemoteState {
     })
   }
 
+  async storeCredentials(sessionIdInput: string, credentialsInput: {
+    workerJwt: string
+    apiBaseUrl: string
+    expiresIn: number
+    workerEpoch: number
+  }): Promise<BridgeRemoteCredentialRecord> {
+    return this.withMutation(file => {
+      const sessionId = normalizeSessionId(sessionIdInput)
+      const workerJwt = credentialsInput.workerJwt.trim()
+      const apiBaseUrl = credentialsInput.apiBaseUrl.trim()
+      const expiresIn = credentialsInput.expiresIn
+      const workerEpoch = credentialsInput.workerEpoch
+      if (!workerJwt) throw new Error('workerJwt is required')
+      if (!apiBaseUrl) throw new Error('apiBaseUrl is required')
+      if (!Number.isFinite(expiresIn) || expiresIn <= 0) throw new Error('expiresIn must be positive')
+      if (!Number.isSafeInteger(workerEpoch) || workerEpoch < 0) throw new Error('workerEpoch must be a non-negative safe integer')
+      const fetchedAt = nowIso()
+      const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString()
+      const record: BridgeRemoteCredentialRecord = {
+        sessionId,
+        workerJwt,
+        apiBaseUrl,
+        expiresIn,
+        workerEpoch,
+        fetchedAt,
+        expiresAt,
+      }
+      file.credentials = [
+        ...file.credentials.filter(item => item.sessionId !== sessionId),
+        record,
+      ]
+      return record
+    })
+  }
+
+  async getCredentials(sessionIdInput: string): Promise<BridgeRemoteCredentialRecord | null> {
+    const sessionId = normalizeSessionId(sessionIdInput)
+    const file = await this.readFile()
+    return file.credentials.find(item => item.sessionId === sessionId) ?? null
+  }
+
   private async readFile(): Promise<BridgeRemoteStateFile> {
     try {
       const raw = JSON.parse(await readFile(this.statePath, 'utf8')) as unknown
@@ -385,10 +456,13 @@ export class BridgeRemoteState {
       const outbox = Array.isArray(raw.outbox)
         ? raw.outbox.map(normalizeOutbox).filter((item): item is BridgeRemoteOutboxItem => !!item)
         : []
+      const credentials = Array.isArray(raw.credentials)
+        ? raw.credentials.map(normalizeCredential).filter((item): item is BridgeRemoteCredentialRecord => !!item)
+        : []
       const nextSeq = typeof raw.nextSeq === 'number' && Number.isFinite(raw.nextSeq)
         ? Math.max(raw.nextSeq, maxSeq(events) + 1)
         : maxSeq(events) + 1
-      return { version: 1, nextSeq, events, permissions, outbox }
+      return { version: 1, nextSeq, events, permissions, outbox, credentials }
     } catch {
       return emptyState()
     }
@@ -402,7 +476,7 @@ export class BridgeRemoteState {
       try {
         const file = await this.readFile()
         const result = await fn(file)
-        if (file.events.length === 0 && file.permissions.length === 0 && file.outbox.length === 0) {
+        if (file.events.length === 0 && file.permissions.length === 0 && file.outbox.length === 0 && file.credentials.length === 0) {
           await rm(this.statePath, { force: true }).catch(() => undefined)
         } else {
           await writeJson(this.statePath, file)
@@ -418,7 +492,7 @@ export class BridgeRemoteState {
 }
 
 function emptyState(): BridgeRemoteStateFile {
-  return { version: 1, nextSeq: 1, events: [], permissions: [], outbox: [] }
+  return { version: 1, nextSeq: 1, events: [], permissions: [], outbox: [], credentials: [] }
 }
 
 function maxSeq(events: BridgeRemoteEventRecord[]): number {
