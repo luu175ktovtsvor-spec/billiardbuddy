@@ -206,6 +206,11 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk("printf '#!/bin/sh' > hooks/pre-commit")).toBe('file')
   expect(classifyCommandRisk('echo $(curl https://example.com)')).toBe('outreach')
   expect(classifyCommandRisk('cat <(curl https://example.com)')).toBe('outreach')
+  expect(classifyCommandRisk("echo $(cat <<'EOF'\nhello\nEOF\n)")).toBe('read')
+  expect(classifyCommandRisk("echo prefix$(cat <<'EOF'\nhello\nEOF\n)")).toBe('read')
+  expect(classifyCommandRisk("$(cat <<'EOF'\necho hi\nEOF\n)")).toBe('outreach')
+  expect(classifyCommandRisk("echo $(cat <<EOF\n$(whoami)\nEOF\n)")).toBe('outreach')
+  expect(classifyCommandRisk("echo $(cat <<'EOF'\nhello\nEOF\n); curl https://example.com")).toBe('outreach')
   expect(classifyCommandRisk('echo "${HOME}"')).toBe('outreach')
   expect(classifyCommandRisk('echo `curl https://example.com`')).toBe('outreach')
   expect(classifyCommandRisk('echo $IFS')).toBe('outreach')
@@ -228,6 +233,8 @@ test('shell expansion risk detection mirrors Bash substitution safety gate', () 
   expect(hasShellExpansionRisk('cat <(printf ok)')).toBe(true)
   expect(hasShellExpansionRisk('echo ${HOME}')).toBe(true)
   expect(hasShellExpansionRisk('echo =curl')).toBe(true)
+  expect(hasShellExpansionRisk("echo $(cat <<'EOF'\nhello\nEOF\n)")).toBe(false)
+  expect(hasShellExpansionRisk("echo $(cat <<EOF\n$(whoami)\nEOF\n)")).toBe(true)
   expect(hasShellExpansionRisk("echo '$(date)'")).toBe(false)
   expect(hasShellExpansionRisk('echo \\$(date)')).toBe(false)
 })
@@ -271,6 +278,9 @@ test('shell parser hardening mirrors Bash misparse safety gates', () => {
   expect(hasShellParserRisk('git commit -m "safe message"')).toBe(false)
   expect(hasShellParserRisk("git commit -m '$(literal)'")).toBe(false)
   expect(hasShellParserRisk('echo "---"')).toBe(false)
+  expect(hasShellParserRisk("echo $(cat <<'EOF'\nhello\nEOF\n)")).toBe(false)
+  expect(hasShellParserRisk("$(cat <<'EOF'\necho hi\nEOF\n)")).toBe(true)
+  expect(hasShellParserRisk("echo $(cat <<'EOF'\nhello\nEOF\n); curl https://example.com")).toBe(true)
   expect(hasShellParserRisk('zmodload zsh/system')).toBe(true)
   expect(hasShellParserRisk('command builtin zmodload zsh/system')).toBe(true)
   expect(hasShellParserRisk('fc -e vim')).toBe(true)
@@ -415,6 +425,13 @@ test('run_command dynamic permission allows reads and classifies approval', () =
     approvalClass: 'outreach',
   })
   expect(resolvePermission(runCommandTool, { command: 'cat /proc/self/environ' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: "echo $(cat <<'EOF'\nhello\nEOF\n)" }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'allow',
+  })
+  expect(resolvePermission(runCommandTool, { command: "$(cat <<'EOF'\necho hi\nEOF\n)" }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })

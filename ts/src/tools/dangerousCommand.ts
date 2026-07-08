@@ -38,6 +38,8 @@ const SHELL_EXPANSION_PATTERNS: RegExp[] = [
   /\}\s*always\s*\{/,
   /<#/,
 ]
+const HEREDOC_IN_SUBSTITUTION_RE = /\$\(.*<</s
+type SafeHeredocRange = { start: number; end: number }
 
 const CONTROL_CHAR_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/
 const UNICODE_WS_RE = /[\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]/
@@ -228,35 +230,36 @@ const READ_ONLY_COMMANDS: Record<string, ReadOnlyCommandConfig> = {
 }
 
 export function hasShellExpansionRisk(command: string): boolean {
-  const exposed = shellTextOutsideSingleQuotes(command)
+  const exposed = shellTextOutsideSingleQuotes(stripSafeHeredocSubstitutions(command) ?? command)
   return SHELL_EXPANSION_PATTERNS.some(re => re.test(exposed))
 }
 
 export function hasShellParserRisk(command: string): boolean {
-  const quoteViews = extractShellQuoteViews(command)
-  const exposed = shellTextOutsideSingleQuotes(command)
+  const commandForParser = stripSafeHeredocSubstitutions(command) ?? command
+  const quoteViews = extractShellQuoteViews(commandForParser)
+  const exposed = shellTextOutsideSingleQuotes(commandForParser)
   return CONTROL_CHAR_RE.test(command) ||
-    hasIncompleteShellFragmentRisk(command) ||
-    hasShellQuoteSingleQuoteBug(command) ||
-    hasCarriageReturnOutsideDoubleQuotes(command) ||
+    hasIncompleteShellFragmentRisk(commandForParser) ||
+    hasShellQuoteSingleQuoteBug(commandForParser) ||
+    hasCarriageReturnOutsideDoubleQuotes(commandForParser) ||
     hasSuspiciousNewline(quoteViews.fullyUnquoted) ||
-    hasQuotedNewlineHash(command) ||
-    /\$IFS|\$\{[^}]*IFS/.test(command) ||
-    /\/proc\/.*\/environ/.test(command) ||
+    hasQuotedNewlineHash(commandForParser) ||
+    /\$IFS|\$\{[^}]*IFS/.test(commandForParser) ||
+    /\/proc\/.*\/environ/.test(commandForParser) ||
     hasUnescapedChar(exposed, '`') ||
     hasDangerousVariableUse(quoteViews.fullyUnquoted) ||
-    hasInputRedirectionRisk(command) ||
-    hasGitCommitMessageRisk(command) ||
-    (hasQuotedShellMetacharacterRisk(command) && classifySedCommand(command) !== 'read') ||
-    hasObfuscatedFlagRisk(command) ||
-    (hasMalformedTokenInjectionRisk(command) && classifySedCommand(command) !== 'read') ||
-    hasBackslashEscapedWhitespace(command) ||
-    hasBackslashEscapedOperator(command) ||
-    UNICODE_WS_RE.test(command) ||
+    hasInputRedirectionRisk(commandForParser) ||
+    hasGitCommitMessageRisk(commandForParser) ||
+    (hasQuotedShellMetacharacterRisk(commandForParser) && classifySedCommand(commandForParser) !== 'read') ||
+    hasObfuscatedFlagRisk(commandForParser) ||
+    (hasMalformedTokenInjectionRisk(commandForParser) && classifySedCommand(commandForParser) !== 'read') ||
+    hasBackslashEscapedWhitespace(commandForParser) ||
+    hasBackslashEscapedOperator(commandForParser) ||
+    UNICODE_WS_RE.test(commandForParser) ||
     hasMidWordHash(quoteViews.unquotedKeepQuoteChars) ||
-    hasCommentQuoteDesyncRisk(command) ||
-    hasBraceExpansionRisk(quoteViews.fullyUnquoted, command) ||
-    hasZshDangerousCommand(command)
+    hasCommentQuoteDesyncRisk(commandForParser) ||
+    hasBraceExpansionRisk(quoteViews.fullyUnquoted, commandForParser) ||
+    hasZshDangerousCommand(commandForParser)
 }
 
 function shellTextOutsideSingleQuotes(command: string): string {
@@ -455,6 +458,112 @@ function hasQuotedNewlineHash(command: string): boolean {
 
 function hasDangerousVariableUse(content: string): boolean {
   return /[<>|]\s*\$[A-Za-z_]/.test(content) || /\$[A-Za-z_][A-Za-z0-9_]*\s*[|<>]/.test(content)
+}
+
+function stripSafeHeredocSubstitutions(command: string): string | null {
+  if (!HEREDOC_IN_SUBSTITUTION_RE.test(command)) return null
+  const ranges = findSafeHeredocSubstitutionRanges(command)
+  if (ranges === null || ranges.length === 0) return null
+
+  let result = command
+  for (const range of [...ranges].sort((a, b) => b.start - a.start)) {
+    result = result.slice(0, range.start) + result.slice(range.end)
+  }
+  return result
+}
+
+function findSafeHeredocSubstitutionRanges(command: string): SafeHeredocRange[] | null {
+  const heredocPattern = /\$\(cat[ \t]*<<(-?)[ \t]*(?:'+([A-Za-z_]\w*)'+|\\([A-Za-z_]\w*))/g
+  const ranges: SafeHeredocRange[] = []
+  let match: RegExpExecArray | null
+
+  while ((match = heredocPattern.exec(command)) !== null) {
+    if (match.index > 0 && command[match.index - 1] === '\\') continue
+    const delimiter = match[2] || match[3]
+    if (!delimiter) continue
+    const range = findSafeHeredocSubstitutionRange(command, {
+      start: match.index,
+      operatorEnd: match.index + match[0].length,
+      delimiter,
+      isDash: match[1] === '-',
+    })
+    if (!range) return null
+    ranges.push(range)
+  }
+
+  if (ranges.length === 0) return null
+  for (const outer of ranges) {
+    for (const inner of ranges) {
+      if (inner === outer) continue
+      if (inner.start > outer.start && inner.start < outer.end) return null
+    }
+  }
+
+  const remaining = stripRanges(command, ranges)
+  if (!safeHeredocRemainingIsAllowed(command, remaining, ranges)) return null
+  return ranges
+}
+
+function findSafeHeredocSubstitutionRange(
+  command: string,
+  match: { start: number; operatorEnd: number; delimiter: string; isDash: boolean },
+): SafeHeredocRange | null {
+  const afterOperator = command.slice(match.operatorEnd)
+  const openLineEnd = afterOperator.indexOf('\n')
+  if (openLineEnd === -1) return null
+  if (!/^[ \t]*$/.test(afterOperator.slice(0, openLineEnd))) return null
+
+  const bodyStart = match.operatorEnd + openLineEnd + 1
+  const bodyLines = command.slice(bodyStart).split('\n')
+  let closeParenLineIdx = -1
+  let closeParenColIdx = -1
+
+  for (let i = 0; i < bodyLines.length; i++) {
+    const rawLine = bodyLines[i]!
+    const line = match.isDash ? rawLine.replace(/^\t*/, '') : rawLine
+
+    if (line === match.delimiter) {
+      const nextLine = bodyLines[i + 1]
+      if (nextLine === undefined) return null
+      const parenMatch = nextLine.match(/^([ \t]*)\)/)
+      if (!parenMatch) return null
+      closeParenLineIdx = i + 1
+      closeParenColIdx = parenMatch[1]!.length
+      break
+    }
+
+    if (line.startsWith(match.delimiter)) {
+      const afterDelimiter = line.slice(match.delimiter.length)
+      const parenMatch = afterDelimiter.match(/^([ \t]*)\)/)
+      if (parenMatch) {
+        const tabPrefix = match.isDash ? (rawLine.match(/^\t*/)?.[0] ?? '') : ''
+        closeParenLineIdx = i
+        closeParenColIdx = tabPrefix.length + match.delimiter.length + parenMatch[1]!.length
+        break
+      }
+      if (/^[)}`|&;(<>]/.test(afterDelimiter)) return null
+    }
+  }
+
+  if (closeParenLineIdx === -1) return null
+  let end = bodyStart
+  for (let i = 0; i < closeParenLineIdx; i++) end += bodyLines[i]!.length + 1
+  end += closeParenColIdx + 1
+  return { start: match.start, end }
+}
+
+function stripRanges(command: string, ranges: SafeHeredocRange[]): string {
+  let result = command
+  for (const range of [...ranges].sort((a, b) => b.start - a.start)) {
+    result = result.slice(0, range.start) + result.slice(range.end)
+  }
+  return result
+}
+
+function safeHeredocRemainingIsAllowed(command: string, remaining: string, ranges: SafeHeredocRange[]): boolean {
+  const firstStart = Math.min(...ranges.map(range => range.start))
+  if (command.slice(0, firstStart).trim().length === 0) return false
+  return /^[a-zA-Z0-9 \t"'.\-/_@=,:+~]*$/.test(remaining)
 }
 
 function hasInputRedirectionRisk(command: string): boolean {
@@ -1438,6 +1547,7 @@ function maxRisk(a: CommandRisk, b: CommandRisk): CommandRisk {
 
 export function classifyCommandRisk(command: string): CommandRisk {
   if (isDangerousCommand(command)) return 'destructive'
-  const initialRisk: CommandRisk = hasShellExpansionRisk(command) || hasShellParserRisk(command) || shellCdGitNeedsApproval(command) || shellGitInternalWriteNeedsApproval(command) ? 'outreach' : 'read'
-  return splitSegments(command).reduce<CommandRisk>((risk, segment) => maxRisk(risk, classifySegment(segment)), initialRisk)
+  const commandForClassification = stripSafeHeredocSubstitutions(command) ?? command
+  const initialRisk: CommandRisk = hasShellExpansionRisk(command) || hasShellParserRisk(command) || shellCdGitNeedsApproval(commandForClassification) || shellGitInternalWriteNeedsApproval(commandForClassification) ? 'outreach' : 'read'
+  return splitSegments(commandForClassification).reduce<CommandRisk>((risk, segment) => maxRisk(risk, classifySegment(segment)), initialRisk)
 }
