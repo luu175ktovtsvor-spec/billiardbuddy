@@ -11,10 +11,12 @@ import { fileWriteTool } from './fileWriteTool'
 import { fileHistoryTool, restoreFileTool } from './fileHistoryTool'
 import { listDirTool } from './listDirTool'
 import { globFilesTool, grepFilesTool } from './searchTools'
+import { notebookEditTool } from './notebookEditTool'
 import { codeOutlineTool } from './codeOutlineTool'
 import { projectDiagnosticsTool } from './projectDiagnosticsTool'
 import { projectInstructionsTool } from './projectInstructionsTool'
 import { resolvePermission } from '../permissions/resolve'
+import { addAllowedToolsToContext } from '../commands/allowedTools'
 
 let root: string
 let ctx: ToolContext
@@ -29,6 +31,95 @@ afterEach(() => {
 test('read_file reads a file inside the workspace', async () => {
   writeFileSync(join(root, 'a.txt'), 'hello')
   expect(await fileReadTool.execute({ path: 'a.txt' }, ctx)).toBe('hello')
+})
+
+test('CC-style path-scoped allowedTools grant external file access per tool alias', async () => {
+  const externalRoot = realpathSync(mkdtempSync(join(tmpdir(), 'file-rule-')))
+  try {
+    const externalFile = join(externalRoot, 'outside.txt')
+    writeFileSync(externalFile, 'hello external')
+
+    await expect(fileReadTool.execute({ path: externalFile }, ctx)).rejects.toThrow(/越界/)
+
+    addAllowedToolsToContext(ctx, [`Read(${externalRoot}/**)`])
+    expect(await fileReadTool.execute({ path: externalFile }, ctx)).toBe('hello external')
+    const many = await fileReadManyTool.execute({ paths: [externalFile] }, ctx)
+    expect(many).toContain('hello external')
+    await expect(fileWriteTool.execute({ path: join(externalRoot, 'read-rule-write.txt'), content: 'no' }, ctx)).rejects.toThrow(/越界/)
+
+    addAllowedToolsToContext(ctx, [`Write(${externalRoot}/**)`])
+    await fileWriteTool.execute({ path: join(externalRoot, 'created.txt'), content: 'created' }, ctx)
+    expect(readFileSync(join(externalRoot, 'created.txt'), 'utf8')).toBe('created')
+
+    addAllowedToolsToContext(ctx, [`Edit(${externalRoot}/**)`])
+    await fileEditTool.execute({ path: externalFile, old_string: 'hello', new_string: 'hi' }, ctx)
+    expect(readFileSync(externalFile, 'utf8')).toBe('hi external')
+
+    addAllowedToolsToContext(ctx, [`MultiEdit(${externalRoot}/**)`])
+    await fileMultiEditTool.execute({
+      path: externalFile,
+      edits: [
+        { old_string: 'hi', new_string: 'hello' },
+        { old_string: 'external', new_string: 'outside' },
+      ],
+    }, ctx)
+    expect(readFileSync(externalFile, 'utf8')).toBe('hello outside')
+
+    await filePatchTool.execute({
+      path: externalFile,
+      patch: '@@ -1 +1 @@\n-hello outside\n+patched outside',
+    }, ctx)
+    expect(readFileSync(externalFile, 'utf8')).toBe('patched outside')
+
+    const anotherFile = join(externalRoot, 'another.txt')
+    writeFileSync(anotherFile, 'first\n')
+    await fileReadManyTool.execute({ paths: [externalFile, anotherFile] }, ctx)
+    await filePatchManyTool.execute({
+      patches: [
+        { path: externalFile, patch: '@@ -1 +1 @@\n-patched outside\n+patched again' },
+        { path: anotherFile, patch: '@@ -1 +1 @@\n-first\n+second' },
+      ],
+    }, ctx)
+    expect(readFileSync(externalFile, 'utf8')).toBe('patched again')
+    expect(readFileSync(anotherFile, 'utf8')).toBe('second\n')
+
+    const directPatchCtx: ToolContext = { workspace: ctx.workspace }
+    const directPatchFile = join(externalRoot, 'direct-patch.txt')
+    writeFileSync(directPatchFile, 'direct\n')
+    addAllowedToolsToContext(directPatchCtx, [`Read(${externalRoot}/**)`, `patch_file(${externalRoot}/**)`])
+    await fileReadTool.execute({ path: directPatchFile }, directPatchCtx)
+    await filePatchTool.execute({
+      path: directPatchFile,
+      patch: '@@ -1 +1 @@\n-direct\n+direct patched',
+    }, directPatchCtx)
+    expect(readFileSync(directPatchFile, 'utf8')).toBe('direct patched\n')
+
+    const notebookPath = join(externalRoot, 'analysis.ipynb')
+    writeFileSync(notebookPath, JSON.stringify({
+      cells: [{
+        cell_type: 'code',
+        execution_count: 1,
+        id: 'cell-a',
+        metadata: {},
+        outputs: [],
+        source: ['print("old")'],
+      }],
+      metadata: { language_info: { name: 'python' } },
+      nbformat: 4,
+      nbformat_minor: 5,
+    }, null, 1))
+    addAllowedToolsToContext(ctx, [`NotebookEdit(${externalRoot}/**)`])
+    await fileReadTool.execute({ path: notebookPath }, ctx)
+    await notebookEditTool.execute({ notebook_path: notebookPath, cell_id: 'cell-a', new_source: 'print("new")' }, ctx)
+    expect(JSON.parse(readFileSync(notebookPath, 'utf8')).cells[0].source).toBe('print("new")')
+
+    addAllowedToolsToContext(ctx, [`LS(${externalRoot}/**)`, `Glob(${externalRoot}/**)`, `Grep(${externalRoot}/**)`])
+    expect(await listDirTool.execute({ path: externalRoot }, ctx)).toContain('outside.txt')
+    expect(await globFilesTool.execute({ path: externalRoot, pattern: '*.txt' }, ctx)).toContain(externalFile)
+    expect(await grepFilesTool.execute({ path: externalRoot, pattern: 'patched again' }, ctx)).toContain(`${externalFile}:1:patched again`)
+  } finally {
+    rmSync(externalRoot, { recursive: true, force: true })
+  }
 })
 
 test('read_file ignores PDF-only pages parameter for non-PDF files', async () => {

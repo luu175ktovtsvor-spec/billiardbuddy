@@ -1,6 +1,7 @@
 import { readFile, stat, writeFile } from 'node:fs/promises'
 import type { Tool, ToolContext } from './Tool'
 import { fileHistoryBackupPath, recordFileSnapshot } from './fileHistory'
+import { resolveToolPath } from '../permissions/filePathRules'
 
 export interface FileEditInput {
   path: string
@@ -110,7 +111,7 @@ export const fileEditTool: Tool<FileEditInput> = {
   isReadOnly: false,
   async execute(input, ctx) {
     validateInput(input)
-    const abs = ctx.workspace.resolve(input.path, 'write')
+    const abs = resolveToolPath(ctx, 'edit_file', input.path, 'write')
     await assertFreshRead(abs, ctx)
 
     const content = await readFile(abs, 'utf8')
@@ -168,7 +169,7 @@ export const fileMultiEditTool: Tool<FileMultiEditInput> = {
   isReadOnly: false,
   async execute(input, ctx) {
     validateMultiInput(input)
-    const abs = ctx.workspace.resolve(input.path, 'write')
+    const abs = resolveToolPath(ctx, 'multi_edit_file', input.path, 'write')
     await assertFreshRead(abs, ctx)
 
     const content = await readFile(abs, 'utf8')
@@ -226,8 +227,8 @@ export const filePatchTool: Tool<FilePatchInput> = {
   isReadOnly: false,
   async execute(input, ctx) {
     validatePatchInput(input)
-    const abs = ctx.workspace.resolve(input.path, 'write')
-    await assertFreshRead(abs, ctx)
+    const abs = resolveToolPath(ctx, 'patch_file', input.path, 'write')
+    await assertFreshRead(abs, ctx, 'patch_file')
 
     const content = await readFile(abs, 'utf8')
     const hunks = parseUnifiedPatch(input.patch)
@@ -281,7 +282,7 @@ export const filePatchManyTool: Tool<FilePatchManyInput> = {
     const prepared: PreparedPatch[] = []
     for (let i = 0; i < input.patches.length; i++) {
       const item = input.patches[i]!
-      const abs = ctx.workspace.resolve(item.path, 'write')
+      const abs = resolveToolPath(ctx, 'patch_files', item.path, 'write')
       if (seenAbsPaths.has(abs)) throw new Error(`patch_files 重复路径:${item.path};请把同一文件的 hunks 合并到一个 patch`)
       seenAbsPaths.add(abs)
       await assertFreshRead(abs, ctx, 'patch_files')

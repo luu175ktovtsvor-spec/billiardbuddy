@@ -3,6 +3,7 @@ import { extname } from 'node:path'
 import { readFile, stat, writeFile } from 'node:fs/promises'
 import type { Tool, ToolContext } from './Tool'
 import { fileHistoryBackupPath, recordFileSnapshot } from './fileHistory'
+import { resolveToolPath } from '../permissions/filePathRules'
 
 type NotebookEditMode = 'replace' | 'insert' | 'delete'
 type NotebookCellType = 'code' | 'markdown'
@@ -73,7 +74,7 @@ export const notebookEditTool: Tool<NotebookEditInput> = {
   isReadOnly: false,
   async execute(input, ctx) {
     const args = normalizeInput(input)
-    const abs = ctx.workspace.resolve(args.path, 'write')
+    const abs = resolveToolPath(ctx, 'NotebookEdit', args.path, 'write')
     if (extname(abs) !== '.ipynb') throw new Error('NotebookEdit only edits .ipynb files')
     await assertFreshRead(abs, ctx)
 

@@ -1,6 +1,7 @@
 import { open, readFile, stat } from 'node:fs/promises'
 import type { Tool } from './Tool'
 import { isProjectInstructionPath, loadProjectInstructionsForTarget, loadProjectInstructionsForTargets, projectInstructionScopeKey } from '../harness/projectInstructions'
+import { resolveToolPath } from '../permissions/filePathRules'
 
 const MAX_MANY_FILES = 20
 const DEFAULT_PER_FILE_BYTES = 80_000
@@ -54,7 +55,7 @@ export const fileReadTool: Tool<FileReadInput> = {
   isReadOnly: true,
   async execute(input, ctx) {
     if (!input || typeof input.path !== 'string') throw new Error('read_file 需要 string 参数 path')
-    const abs = ctx.workspace.resolve(input.path, 'read')
+    const abs = resolveToolPath(ctx, 'read_file', input.path, 'read')
     const [content, info] = await Promise.all([readFile(abs, 'utf8'), stat(abs)])
     recordRecentFileRead(ctx, abs, { path: input.path, mtimeMs: info.mtimeMs, size: info.size })
     const body = hasFocusedRead(input) ? formatFocusedRead(input.path, content, info.size, input) : content
@@ -107,7 +108,7 @@ export const fileReadManyTool: Tool<FileReadManyInput> = {
       const remaining = totalLimit - used
       const readLimit = Math.max(0, Math.min(perFileLimit, remaining))
       try {
-        const abs = ctx.workspace.resolve(path, 'read')
+        const abs = resolveToolPath(ctx, 'read_many_files', path, 'read')
         const info = await stat(abs)
         if (!info.isFile()) {
           blocks.push(`<file path="${xmlAttr(path)}" error="not_a_file" />`)

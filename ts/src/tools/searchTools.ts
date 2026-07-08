@@ -1,6 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import { isAbsolute, relative } from 'node:path'
 import type { Tool, ToolContext } from './Tool'
+import { relativeToWorkspace, resolveToolPath } from '../permissions/filePathRules'
 
 const DEFAULT_LIMIT = 100
 const MAX_LIMIT = 500
@@ -39,14 +40,14 @@ export const globFilesTool: Tool<{ pattern: string; path?: string; limit?: numbe
   isReadOnly: true,
   async execute(input, ctx) {
     const pattern = normalizePattern(input?.pattern)
-    const base = ctx.workspace.resolve(input?.path ?? '.', 'read')
+    const base = resolveToolPath(ctx, 'glob_files', input?.path ?? '.', 'read')
     const root = ctx.workspace.root
     const limit = clampLimit(input?.limit)
     const scan = await scanGlob(base, pattern, limit)
     const matches = scan.files
     if (matches.length === 0) return '未找到匹配文件'
     return [
-      ...matches.map(file => relative(root, file) || '.'),
+      ...matches.map(file => relativeToWorkspace(root, file) || '.'),
       ...(scan.truncated ? [`…[已截断:匹配文件超过 ${limit} 个,请缩小 pattern/path 或提高 limit]`] : []),
     ].join('\n')
   },
@@ -121,7 +122,7 @@ export const grepFilesTool: Tool<{
             rangeHits.push(range)
           }
         } else {
-          const lines = filesOnly && result.lines.length > 0 ? [relative(root, result.file) || '.'] : result.lines
+          const lines = filesOnly && result.lines.length > 0 ? [relativeToWorkspace(root, result.file) || '.'] : result.lines
           for (const line of lines) {
             if (out.length >= limit) break
             out.push(line)
@@ -183,7 +184,7 @@ async function resolveGrepScope(
       truncated = true
       break
     }
-    const abs = ctx.workspace.resolve(scope, 'read')
+    const abs = resolveToolPath(ctx, 'grep_files', scope, 'read')
     const info = await stat(abs).catch(() => null)
     if (!info) continue
     if (info.isFile()) {
@@ -248,7 +249,7 @@ async function grepOneFile(
     if (opts.ranges) {
       const matchedLine = i + 1
       ranges.push({
-        path: relative(opts.root, file) || '.',
+        path: relativeToWorkspace(opts.root, file) || '.',
         start_line: Math.max(1, matchedLine - opts.rangeContext),
         end_line: Math.min(lines.length, matchedLine + opts.rangeContext),
         matched_lines: [matchedLine],
@@ -260,7 +261,7 @@ async function grepOneFile(
       const key = j + 1
       if (matched.has(key)) continue
       matched.add(key)
-      out.push(`${relative(opts.root, file)}${prefix}${j + 1}:${capLine(lines[j]!)}`)
+      out.push(`${relativeToWorkspace(opts.root, file)}${prefix}${j + 1}:${capLine(lines[j]!)}`)
       if (out.length >= opts.limit) break
     }
   }
