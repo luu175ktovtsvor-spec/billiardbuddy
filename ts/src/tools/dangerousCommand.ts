@@ -78,6 +78,9 @@ export function hasShellParserRisk(command: string): boolean {
     /\/proc\/.*\/environ/.test(command) ||
     hasUnescapedChar(exposed, '`') ||
     hasDangerousVariableUse(quoteViews.fullyUnquoted) ||
+    hasQuotedShellMetacharacterRisk(command) ||
+    hasObfuscatedFlagRisk(command) ||
+    hasMalformedTokenInjectionRisk(command) ||
     hasBackslashEscapedWhitespace(command) ||
     hasBackslashEscapedOperator(command) ||
     UNICODE_WS_RE.test(command) ||
@@ -277,6 +280,172 @@ function hasDangerousVariableUse(content: string): boolean {
   return /[<>|]\s*\$[A-Za-z_]/.test(content) || /\$[A-Za-z_][A-Za-z0-9_]*\s*[|<>]/.test(content)
 }
 
+function hasQuotedShellMetacharacterRisk(command: string): boolean {
+  return /(?:^|\s)["'][^"']*[;&][^"']*["'](?:\s|$)/.test(command) ||
+    /-(?:name|path|iname)\s+["'][^"']*[;|&][^"']*["']/.test(command) ||
+    /-regex\s+["'][^"']*[;&][^"']*["']/.test(command)
+}
+
+function hasObfuscatedFlagRisk(command: string): boolean {
+  const tokens = tokenizeShellWords(command.toLowerCase())
+  const baseCommand = tokens[0] ?? ''
+  if (baseCommand === 'echo' && !hasUnquotedShellOperator(command)) return false
+
+  if (/\$'[^']*'/.test(command)) return true
+  if (/\$"[^"]*"/.test(command)) return true
+  if (/\$['"]{2}\s*-/.test(command)) return true
+  if (/(?:^|\s)(?:''|"")+\s*-/.test(command)) return true
+  if (/(?:""|'')+['"]-/.test(command)) return true
+  if (/(?:^|\s)['"]{3,}/.test(command)) return true
+
+  let inSingleQuote = false
+  let inDoubleQuote = false
+  let escaped = false
+  for (let i = 0; i < command.length - 1; i++) {
+    const currentChar = command[i]
+    const nextChar = command[i + 1]
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (currentChar === '\\' && !inSingleQuote) {
+      escaped = true
+      continue
+    }
+    if (currentChar === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote
+      continue
+    }
+    if (currentChar === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote
+      continue
+    }
+    if (inSingleQuote || inDoubleQuote || !currentChar || !nextChar) continue
+
+    if (/\s/.test(currentChar) && /['"`]/.test(nextChar) && quotedFlagStartsAt(command, i + 1)) return true
+    if (/\s/.test(currentChar) && nextChar === '-' && flagWordContainsQuote(command, i + 1, baseCommand)) return true
+  }
+
+  return false
+}
+
+function hasUnquotedShellOperator(command: string): boolean {
+  let inSingleQuote = false
+  let inDoubleQuote = false
+  let escaped = false
+  for (const char of command) {
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (char === '\\' && !inSingleQuote) {
+      escaped = true
+      continue
+    }
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote
+      continue
+    }
+    if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote
+      continue
+    }
+    if (!inSingleQuote && !inDoubleQuote && SHELL_OPERATORS.has(char)) return true
+  }
+  return false
+}
+
+function quotedFlagStartsAt(command: string, quoteIndex: number): boolean {
+  const quoteChar = command[quoteIndex]
+  if (!quoteChar || !/['"`]/.test(quoteChar)) return false
+  let j = quoteIndex + 1
+  let insideQuote = ''
+  while (j < command.length && command[j] !== quoteChar) {
+    insideQuote += command[j]!
+    j++
+  }
+  if (j >= command.length || command[j] !== quoteChar) return false
+
+  const charAfterQuote = command[j + 1]
+  if (/^-+[a-zA-Z0-9$`]/.test(insideQuote)) return true
+  if (/^-+$/.test(insideQuote) && charAfterQuote !== undefined && /[a-zA-Z0-9\\${`-]/.test(charAfterQuote)) return true
+  if ((insideQuote === '' || /^-+$/.test(insideQuote)) && charAfterQuote !== undefined && /['"`]/.test(charAfterQuote)) {
+    return adjacentQuotedSegmentsFormFlag(command, j + 1, insideQuote)
+  }
+  return false
+}
+
+function adjacentQuotedSegmentsFormFlag(command: string, start: number, prefix: string): boolean {
+  let pos = start
+  let combined = prefix
+  while (pos < command.length && /['"`]/.test(command[pos] ?? '')) {
+    const quote = command[pos]!
+    let end = pos + 1
+    while (end < command.length && command[end] !== quote) end++
+    const segment = command.slice(pos + 1, end)
+    combined += segment
+    if (/^-+[a-zA-Z0-9$`]/.test(combined)) return true
+    if (/^-+$/.test(combined.slice(0, Math.max(0, combined.length - segment.length))) && /[a-zA-Z0-9$`]/.test(segment)) return true
+    if (end >= command.length) break
+    pos = end + 1
+  }
+  return pos < command.length && /^-/.test(combined) && /[a-zA-Z0-9\\${`-]/.test(command[pos] ?? '')
+}
+
+function flagWordContainsQuote(command: string, dashIndex: number, baseCommand: string): boolean {
+  let j = dashIndex
+  let flagContent = ''
+  while (j < command.length) {
+    const flagChar = command[j]
+    if (!flagChar || /[\s=]/.test(flagChar)) break
+    if (baseCommand === 'cut' && flagContent === '-d' && /['"`]/.test(flagChar)) break
+    flagContent += flagChar
+    j++
+  }
+  return flagContent.includes('"') || flagContent.includes("'")
+}
+
+function hasMalformedTokenInjectionRisk(command: string): boolean {
+  const segments = splitSegments(command)
+  return segments.length > 1 && segments.some(segment => hasUnbalancedTokenSyntax(segment))
+}
+
+function hasUnbalancedTokenSyntax(segment: string): boolean {
+  let inSingleQuote = false
+  let inDoubleQuote = false
+  let escaped = false
+  let curly = 0
+  let paren = 0
+  let bracket = 0
+  for (const char of segment) {
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (char === '\\' && !inSingleQuote) {
+      escaped = true
+      continue
+    }
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote
+      continue
+    }
+    if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote
+      continue
+    }
+    if (inSingleQuote || inDoubleQuote) continue
+    if (char === '{') curly++
+    else if (char === '}') curly--
+    else if (char === '(') paren++
+    else if (char === ')') paren--
+    else if (char === '[') bracket++
+    else if (char === ']') bracket--
+    if (curly < 0 || paren < 0 || bracket < 0) return true
+  }
+  return inSingleQuote || inDoubleQuote || curly !== 0 || paren !== 0 || bracket !== 0
+}
+
 function hasBackslashEscapedWhitespace(command: string): boolean {
   let inSingleQuote = false
   let inDoubleQuote = false
@@ -439,6 +608,26 @@ function classifyFindCommand(command: string): CommandRisk | null {
   return 'read'
 }
 
+function classifyJqCommand(command: string): CommandRisk | null {
+  const tokens = tokenizeShellWords(command)
+  if (tokens[0]?.toLowerCase() !== 'jq') return null
+  if (/\bsystem\s*\(/.test(command)) return 'outreach'
+  if (tokens.some(token => {
+    const longFlag = token.toLowerCase()
+    return token === '-f' ||
+      longFlag === '--from-file' ||
+      longFlag.startsWith('--from-file=') ||
+      longFlag === '--rawfile' ||
+      longFlag.startsWith('--rawfile=') ||
+      longFlag === '--slurpfile' ||
+      longFlag.startsWith('--slurpfile=') ||
+      token === '-L' ||
+      longFlag === '--library-path' ||
+      longFlag.startsWith('--library-path=')
+  })) return 'outreach'
+  return 'read'
+}
+
 export function shellOutputRedirectionNeedsApproval(command: string, opts: { root: string; cwd?: string }): boolean {
   const targets = extractOutputRedirectionTargets(command)
   if (targets.length === 0) return false
@@ -541,7 +730,8 @@ function isInside(parent: string, child: string): boolean {
 }
 
 function classifySegment(segment: string): CommandRisk {
-  const command = normalize(segment).toLowerCase()
+  const rawCommand = normalize(segment)
+  const command = rawCommand.toLowerCase()
   if (!command) return 'read'
   if (isDangerousCommand(command)) return 'destructive'
   if (hasWriteRedirection(command)) return 'file'
@@ -559,8 +749,11 @@ function classifySegment(segment: string): CommandRisk {
   if (/^(pip|pip3|uv|poetry)\s+(install|add|publish|update)\b/.test(command)) return 'outreach'
   if (/^(brew|apt|apt-get|dnf|yum|pacman|choco|winget)\s+(install|upgrade|update|remove)\b/.test(command)) return 'outreach'
 
-  const findRisk = classifyFindCommand(command)
+  const findRisk = classifyFindCommand(rawCommand)
   if (findRisk) return findRisk
+
+  const jqRisk = classifyJqCommand(rawCommand)
+  if (jqRisk) return jqRisk
 
   if (/^(rm|mv|cp|mkdir|rmdir|touch|chmod|chown|ln|tee)\b/.test(command)) return 'file'
   if (/\b(sed|perl)\s+.*\s-i\b/.test(command) || /\b(sed|perl)\s+-i\b/.test(command)) return 'file'

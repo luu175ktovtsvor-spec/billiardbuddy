@@ -160,6 +160,7 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('git status --short')).toBe('read')
   expect(classifyCommandRisk('echo hi > note.txt')).toBe('file')
   expect(classifyCommandRisk('npm run build')).toBe('file')
+  expect(classifyCommandRisk("jq '.name' package.json")).toBe('read')
   expect(classifyCommandRisk('curl https://example.com')).toBe('outreach')
   expect(classifyCommandRisk('npm install left-pad')).toBe('outreach')
   expect(classifyCommandRisk('rm -rf build')).toBe('destructive')
@@ -182,6 +183,12 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('echo ok\ncurl https://example.com')).toBe('outreach')
   expect(classifyCommandRisk('echo safe\\; cat ~/.ssh/id_rsa')).toBe('outreach')
   expect(classifyCommandRisk('zmodload zsh/system')).toBe('outreach')
+  expect(classifyCommandRisk("jq 'system(\"date\")' data.json")).toBe('outreach')
+  expect(classifyCommandRisk('jq -f filter.jq data.json')).toBe('outreach')
+  expect(classifyCommandRisk('jq -L lib \'.\' data.json')).toBe('outreach')
+  expect(classifyCommandRisk("jq --rawfile secret /etc/passwd '.' data.json")).toBe('outreach')
+  expect(classifyCommandRisk("find . $'-exec' echo {} \\;")).toBe('outreach')
+  expect(classifyCommandRisk('echo {"hi":"hi;evil"}')).toBe('outreach')
   expect(classifyCommandRisk("echo '$(curl https://example.com)'")).toBe('read')
   expect(classifyCommandRisk('echo \\$(date)')).toBe('read')
 })
@@ -212,10 +219,17 @@ test('shell parser hardening mirrors Bash misparse safety gates', () => {
   expect(hasShellParserRisk('echo \\{a,b\\}')).toBe(false)
   expect(hasShellParserRisk("echo '{a,b}'")).toBe(false)
   expect(hasShellParserRisk('echo safe\\; cat ~/.ssh/id_rsa')).toBe(true)
-  expect(hasShellParserRisk('echo "safe\\; literal"')).toBe(false)
+  expect(hasShellParserRisk('echo "safe literal"')).toBe(false)
+  expect(hasShellParserRisk('echo "safe\\; literal"')).toBe(true)
   expect(hasShellParserRisk('zmodload zsh/system')).toBe(true)
   expect(hasShellParserRisk('command builtin zmodload zsh/system')).toBe(true)
   expect(hasShellParserRisk('fc -e vim')).toBe(true)
+  expect(hasShellParserRisk("find . $'-exec' echo {} \\;")).toBe(true)
+  expect(hasShellParserRisk('find . ""-exec echo {} \\;')).toBe(true)
+  expect(hasShellParserRisk('find . "-"exec echo {} \\;')).toBe(true)
+  expect(hasShellParserRisk('cut -d"," table.csv')).toBe(false)
+  expect(hasShellParserRisk('echo {"hi":"hi;evil"}')).toBe(true)
+  expect(hasShellParserRisk('echo ok; echo done')).toBe(false)
 })
 
 test('shell output redirection outside workspace requires explicit approval', () => {
@@ -233,6 +247,7 @@ test('shell output redirection outside workspace requires explicit approval', ()
 test('run_command dynamic permission allows reads and classifies approval', () => {
   expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: "jq '.name' package.json" }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'echo hi > note.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'find . -print' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'find . -delete' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
@@ -269,6 +284,18 @@ test('run_command dynamic permission allows reads and classifies approval', () =
     approvalClass: 'outreach',
   })
   expect(resolvePermission(runCommandTool, { command: 'echo `date`' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'jq -f filter.jq data.json' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: "find . $'-exec' echo {} \\;" }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'echo {"hi":"hi;evil"}' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })
