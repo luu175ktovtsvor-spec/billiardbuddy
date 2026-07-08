@@ -12,7 +12,7 @@ import { ToolRegistry } from '../tools/registry'
 import { Sandbox } from '../sandbox/sandbox'
 import { Workspace } from '../workspace/workspace'
 import type { BackgroundAgentMetadata, TaskEventRecord, TaskMeta, TaskService, TaskStatus } from './taskService'
-import { createIsolatedAgentWorktree, type AgentWorktreeCleanupResult } from '../tools/worktreeTools'
+import { agentWorktreeFromSession, createIsolatedAgentWorktree, type AgentWorktreeCleanupResult, type WorktreeSession } from '../tools/worktreeTools'
 import { applySubagentStartHooks, mergeHookRegistries, type HookRegistry } from '../hooks/hooks'
 import { buildAgentMemoryPrompt, workspaceWithAgentMemory } from '../agents/agentMemory'
 import {
@@ -36,6 +36,7 @@ export interface BackgroundAgentTaskInput {
   contentReplacementState?: ContentReplacementState
   summarySnapshot?: AgentLoopSnapshot
   usageSnapshot?: UsageUpdateEvent
+  handoffWorktreeSession?: WorktreeSession
 }
 
 export interface BackgroundAgentTaskOptions {
@@ -590,7 +591,9 @@ export async function startBackgroundAgentRun(
     }) ?? task
   }
   const effectiveIsolation = input.isolation ?? agent.isolation
-  const agentWorktree = effectiveIsolation === 'worktree'
+  const agentWorktree = input.handoffWorktreeSession
+    ? agentWorktreeFromSession(input.handoffWorktreeSession)
+    : effectiveIsolation === 'worktree'
     ? await createIsolatedAgentWorktree(ctx.workspace.root, task.id, ctx.conversationId)
     : null
   const runWorkspaceBase = agentWorktree ? new Workspace(agentWorktree.session.worktreePath) : ctx.workspace
@@ -665,7 +668,7 @@ export async function startBackgroundAgentRun(
       for (const warning of agentMcp.warnings) {
         await taskCtx.emit({ type: 'context_note', text: warning })
       }
-      if (agentWorktree) await taskCtx.emit({ type: 'context_note', text: `Background agent using isolated worktree: ${agentWorktree.session.worktreePath}` })
+      if (agentWorktree) await taskCtx.emit({ type: 'context_note', text: `${input.handoffWorktreeSession ? 'Background agent continued foreground worktree' : 'Background agent using isolated worktree'}: ${agentWorktree.session.worktreePath}` })
       summarizer = startAgentSummarization({
         taskId: task.id,
         model: opts.model,

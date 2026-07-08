@@ -18,6 +18,7 @@ import { getAgentMemoryEntrypoint } from '../agents/agentMemory'
 import { createAgentTaskTool } from '../agents/agentTool'
 import { ToolRegistry } from '../tools/registry'
 import { runAgentLoop } from '../harness/loop'
+import { createIsolatedAgentWorktree } from '../tools/worktreeTools'
 
 async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 1000): Promise<T> {
   const deadline = Date.now() + timeoutMs
@@ -230,6 +231,81 @@ test('startBackgroundAgentRun hands off an already backgrounded foreground agent
     })
     expect(detail).toContain('<total_tokens>182</total_tokens>')
     expect(detail).toContain('<tool_uses>1</tool_uses>')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('startBackgroundAgentRun reuses a foreground handoff worktree instead of creating a second one', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-tools-handoff-worktree-'))
+  try {
+    initGitRepo(root)
+    const tasks = new TaskService(root)
+    const agent: AgentDefinition = {
+      name: 'researcher',
+      description: '研究代理',
+      prompt: '研究并总结。',
+      filePath: join(root, 'researcher.md'),
+      tools: ['write_file'],
+    }
+    const registration = await tasks.registerForegroundAgent({
+      taskId: 'fg_worktree_handoff_1',
+      agentId: 'worktree_handoff_agent',
+      agent: 'researcher',
+      title: 'researcher: foreground worktree',
+      conversationId: 'handoff-worktree-conv',
+      workspaceRoot: root,
+      task: '前台 worktree 切后台',
+    })
+    await registration.requestBackground()
+    const foregroundWorktree = await createIsolatedAgentWorktree(root, 'worktree_handoff_agent', 'handoff-worktree-conv')
+    const handoffMessages: Message[] = [
+      userText('前台 worktree 切后台'),
+      { role: 'assistant', content: [toolUseBlock({ id: 'fg-worktree-step', name: 'write_file', input: { path: 'foreground.txt', content: 'done in foreground' } })] },
+      { role: 'user', content: [toolResultBlock('fg-worktree-step', 'foreground write complete')] },
+    ]
+    const model = scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: 'bg-write', name: 'write_file', input: { path: 'handoff-worker.txt', content: 'continued in same worktree' } }] },
+      { kind: 'final', text: 'handoff worktree done' },
+    ])
+
+    const { task } = await startBackgroundAgentRun({
+      tasks,
+      agents: [agent],
+      model,
+      baseTools: [fileWriteTool],
+      baseSystemPrompt: 'base prompt',
+    }, {
+      agent: 'researcher',
+      task: '前台 worktree 切后台',
+      title: 'researcher: foreground worktree',
+      isolation: 'worktree',
+      initialMessages: handoffMessages,
+      handoffWorktreeSession: foregroundWorktree.session,
+    }, {
+      workspace: new Workspace(root),
+      conversationId: 'handoff-worktree-conv',
+      permissionMode: 'full',
+    }, {
+      foreground_handoff: true,
+      agent_id: 'worktree_handoff_agent',
+    }, [], [], {
+      handoffTaskId: 'fg_worktree_handoff_1',
+    })
+
+    const done = await waitFor(async () => {
+      const meta = await tasks.get(task.id)
+      return meta?.status === 'completed' ? meta : null
+    })
+    expect(done.result).toBe('handoff worktree done')
+    const worktreePath = foregroundWorktree.session.worktreePath
+    expect(existsSync(join(worktreePath, 'handoff-worker.txt'))).toBe(true)
+    expect(readFileSync(join(worktreePath, 'handoff-worker.txt'), 'utf8')).toBe('continued in same worktree')
+    expect(existsSync(join(root, 'handoff-worker.txt'))).toBe(false)
+    const metadata = await tasks.readBackgroundAgentMetadata(task.id)
+    expect(metadata?.worktreePath).toBe(worktreePath)
+    const notes = (await tasks.loadEvents(task.id)).filter(record => record.event.type === 'context_note').map(record => record.event)
+    expect(notes.some(event => event.type === 'context_note' && event.text.includes('continued foreground worktree'))).toBe(true)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

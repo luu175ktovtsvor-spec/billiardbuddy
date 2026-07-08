@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { execFileSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -288,6 +288,73 @@ test('agent_task hands off foreground registration when background signal wins t
     expect(markStepCalls).toEqual([{ value: 'done-once' }])
     expect(cancelled).toEqual(['handoff-parent_researcher'])
     expect(unregistered).toEqual([])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('agent_task includes the foreground worktree session when handing off to background', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-worktree-handoff-'))
+  try {
+    initGitRepo(root)
+    let releaseModel!: () => void
+    const model = scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: 'write-fg', name: 'write_file', input: { path: 'foreground-worker.txt', content: 'before handoff' } }] },
+      { kind: 'final', text: 'should continue in background' },
+    ])
+    const originalStep = model.step
+    model.step = async (input) => {
+      if (model.received.length === 0) return originalStep(input)
+      await new Promise<void>(resolve => { releaseModel = resolve })
+      return originalStep(input)
+    }
+    let resolveBackground!: () => void
+    const handoffs: Array<{ taskId: string; input: unknown }> = []
+    const tool = createAgentTaskTool({
+      agents: [agent({ tools: ['write_file'] })],
+      model,
+      baseTools: [fileWriteTool],
+      registerForegroundAgent: async (input) => ({
+        task: { id: 'fg_worktree_agent', title: input.title, params: { agent_id: input.agentId } },
+        backgroundSignal: new Promise<void>(resolve => { resolveBackground = resolve }),
+        cancelAutoBackground: () => undefined,
+      }),
+      handoffForegroundAgent: async (registration, input) => {
+        handoffs.push({ taskId: registration.task.id, input })
+        return {
+          task: {
+            id: registration.task.id,
+            title: input.title,
+            params: {
+              agent_id: input.agentId,
+              is_backgrounded: true,
+            },
+          },
+          agent: agent({ name: input.agent }),
+        }
+      },
+      unregisterForegroundAgent: async () => undefined,
+    })
+
+    const pending = tool.execute({
+      task: '切后台继续写文件',
+      isolation: 'worktree',
+    }, {
+      workspace: new Workspace(root),
+      permissionMode: 'full',
+      conversationId: 'handoff-worktree-parent',
+    })
+    await waitUntil(() => typeof releaseModel === 'function')
+    resolveBackground()
+    const out = await pending
+    releaseModel()
+
+    expect(out).toContain('<background_task_started id="fg_worktree_agent"')
+    const session = (handoffs[0]!.input as { handoffWorktreeSession?: { worktreePath?: string; originalRoot?: string } }).handoffWorktreeSession
+    expect(session?.originalRoot ? realpathSync(session.originalRoot) : '').toBe(realpathSync(root))
+    expect(session?.worktreePath).toBeTruthy()
+    expect(existsSync(join(session!.worktreePath!, 'foreground-worker.txt'))).toBe(true)
+    expect(existsSync(join(root, 'foreground-worker.txt'))).toBe(false)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
