@@ -3777,6 +3777,53 @@ description: 写日报
   }
 })
 
+test('POST /agent/run slash command allowedTools grants tool approval in ask mode', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'server-command-allowed-tools-'))
+  const commandsRoot = join(root, 'commands')
+  mkdirSync(commandsRoot, { recursive: true })
+  await Bun.write(join(commandsRoot, 'shell-edit.md'), `---
+name: shell-edit
+description: Shell edit
+allowedTools: [Bash]
+---
+Use the shell for this command.
+`)
+  const sentBodies: any[] = []
+  let calls = 0
+  const commandRunServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    commandsRoot,
+    env: {
+      OPENAI_BASE_URL: 'https://model.example/v1',
+      OPENAI_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async (_url, init) => {
+      sentBodies.push(JSON.parse(init?.body as string))
+      const payload = calls++ === 0
+        ? { id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'cmd_write', function: { name: 'run_command', arguments: JSON.stringify({ command: 'printf ok > command-allowed.txt' }) } }] }, finish_reason: 'tool_calls' }] }
+        : { id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: 'done' }, finish_reason: 'stop' }] }
+      return sseResponse(payload)
+    },
+  })
+  try {
+    const res = await fetch(`http://127.0.0.1:${commandRunServer.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({ message: '/shell-edit now', conversationId: 'cmd-allowed-tools', workspaceRoot: root, permissionMode: 'ask' }),
+    })
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).not.toContain('approval_request')
+    expect(readFileSync(join(root, 'command-allowed.txt'), 'utf8')).toBe('ok')
+    expect(JSON.stringify(sentBodies[0].messages)).toContain('命令: /shell-edit')
+    expect(sentBodies.length).toBe(2)
+  } finally {
+    commandRunServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('POST /agent/run executes context fork slash commands in a background command worker', async () => {
   const root = mkdtempSync(join(tmpdir(), 'server-context-fork-command-'))
   const commandsRoot = join(root, 'commands')

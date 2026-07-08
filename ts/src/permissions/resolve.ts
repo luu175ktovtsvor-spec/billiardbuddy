@@ -21,6 +21,10 @@ function ask(tool: Tool, ctx: ToolContext, input: unknown, reason: DecisionReaso
   }
 }
 
+function sessionAllowsTool(tool: Tool, ctx: ToolContext): boolean {
+  return ctx.sessionAllowedTools?.has('*') === true || ctx.sessionAllowedTools?.has(tool.name) === true
+}
+
 /**
  * 权限瀑布(按我们红线口径排序):
  *  1. fatal          → deny(硬拒,永不执行)
@@ -54,6 +58,9 @@ function resolvePermissionInner(tool: Tool, input: unknown, ctx: ToolContext): P
   if (tool.forceConfirm || (tool.forceConfirmFor?.(input, ctx) ?? false)) return ask(tool, ctx, input, { type: 'forceConfirm' }, approvalClass)
   if (tool.requiresUserInteraction || (tool.requiresUserInteractionFor?.(input, ctx) ?? false)) {
     return ask(tool, ctx, input, { type: 'requiresUserInteraction' }, approvalClass)
+  }
+  if (sessionAllowsTool(tool, ctx)) {
+    return { behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: tool.name } }
   }
   if (mode === 'bypassPermissions') {
     return { behavior: 'allow', reason: { type: 'mode', mode } }

@@ -1,3 +1,5 @@
+import type { ToolContext } from '../tools/Tool'
+
 const TOOL_ALIASES = new Map<string, string[]>([
   ['Bash', ['run_command']],
   ['Edit', ['edit_file']],
@@ -37,4 +39,11 @@ export function allowedToolsForAgent(values: string[] | undefined): string[] | u
   const normalized = normalizeAllowedTools(values)
   if (!normalized || normalized.includes('*')) return undefined
   return normalized
+}
+
+export function addAllowedToolsToContext(ctx: ToolContext, values: string[] | undefined): void {
+  const normalized = normalizeAllowedTools(values)
+  if (!normalized) return
+  ctx.sessionAllowedTools ??= new Set<string>()
+  for (const tool of normalized) ctx.sessionAllowedTools.add(tool)
 }
