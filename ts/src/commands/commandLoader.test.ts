@@ -44,6 +44,8 @@ name: daily-report
 description: Write a daily report
 whenToUse: 每日复盘
 allowedTools: [read_file]
+context: fork
+agent: reviewer
 ---
 # Daily
 
@@ -56,6 +58,8 @@ Summarize store data.
       description: 'Write a daily report',
       whenToUse: '每日复盘',
       allowedTools: ['read_file'],
+      context: 'fork',
+      agent: 'reviewer',
       source: 'commands',
     })
     expect(formatCommandIndex(lib)).toContain('/daily-report: Write a daily report')

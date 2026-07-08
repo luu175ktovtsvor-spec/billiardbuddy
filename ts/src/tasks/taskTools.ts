@@ -493,6 +493,7 @@ interface BackgroundAgentRunOptions {
   replaceTaskId?: string
   handoffTaskId?: string
   forkContext?: ForkRunContext
+  agentOverride?: AgentDefinition
 }
 
 interface BackgroundAgentInitialProgress {
@@ -561,7 +562,7 @@ export async function startBackgroundAgentRun(
   runOptions: BackgroundAgentRunOptions = {},
 ): Promise<BackgroundAgentRunResult> {
   if (!input || typeof input.task !== 'string' || !input.task.trim()) throw new Error('start_background_agent_task 需要 string 参数 task')
-  const agent = runOptions.forkContext
+  const agent = runOptions.agentOverride ?? (runOptions.forkContext
     ? {
         name: FORK_SUBAGENT_TYPE,
         description: 'Forked worker inheriting the parent coding-agent context.',
@@ -570,7 +571,7 @@ export async function startBackgroundAgentRun(
         permissionMode: ctx.permissionMode,
         maxTurns: opts.maxTurns,
       } satisfies AgentDefinition
-    : pickAgent(opts.agents, input.agent)
+    : pickAgent(opts.agents, input.agent))
   if (!agent) throw new Error(`start_background_agent_task 需要指定 agent;可用 agent:\n${agentList(opts.agents)}`)
   const handoffInitialMessages = runOptions.handoffTaskId && input.initialMessages?.length ? input.initialMessages : []
   const effectiveInitialMessages = handoffInitialMessages.length > 0 ? handoffInitialMessages : initialMessages

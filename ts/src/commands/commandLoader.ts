@@ -71,6 +71,8 @@ export async function loadCommandFile(filePath: string): Promise<PromptCommand> 
   const whenToUse = stringField(doc.frontmatter, 'whenToUse') ?? stringField(doc.frontmatter, 'when_to_use')
   const allowedTools = stringArrayField(doc.frontmatter, 'allowedTools') ?? stringArrayField(doc.frontmatter, 'allowed_tools')
   const model = stringField(doc.frontmatter, 'model')
+  const context = stringField(doc.frontmatter, 'context')
+  const agent = stringField(doc.frontmatter, 'agent')
 
   return {
     type: 'prompt',
@@ -79,6 +81,8 @@ export async function loadCommandFile(filePath: string): Promise<PromptCommand> 
     whenToUse,
     allowedTools,
     model,
+    ...(context === 'fork' || context === 'inline' ? { context } : {}),
+    ...(agent ? { agent } : {}),
     source: 'commands',
     filePath,
     baseDir,
@@ -156,6 +160,8 @@ export function publicCommand(command: PromptCommand) {
     whenToUse: command.whenToUse,
     allowedTools: command.allowedTools,
     model: command.model,
+    context: command.context,
+    agent: command.agent,
     source: command.source,
     contentLength: command.contentLength,
   }

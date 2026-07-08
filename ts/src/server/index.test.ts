@@ -3687,6 +3687,85 @@ description: 写日报
   }
 })
 
+test('POST /agent/run executes context fork slash commands in a background command worker', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'server-context-fork-command-'))
+  const commandsRoot = join(root, 'commands')
+  await Bun.write(join(commandsRoot, 'deep-audit.md'), `---
+description: Deep audit
+context: fork
+allowedTools: [read_file]
+---
+Run a deep command audit.
+`)
+  await new SessionService(root).transcript('context-fork-command').save([
+    { role: 'user', content: [textBlock('父级上下文不应进入命令 worker')] },
+  ])
+  const sentBodies: any[] = []
+  const commandRunServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    commandsRoot,
+    agentsRoot: join(root, 'agents'),
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    env: {
+      OPENAI_BASE_URL: 'https://model.example/v1',
+      OPENAI_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init?.body as string)
+      sentBodies.push(body)
+      return sseResponse({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: 'Command audit complete' }, finish_reason: 'stop' }] })
+    },
+  })
+  try {
+    const res = await fetch(`http://127.0.0.1:${commandRunServer.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({
+        message: '/deep-audit parser',
+        conversationId: 'context-fork-command',
+        workspaceRoot: root,
+        permissionMode: 'full',
+      }),
+    })
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).toContain('event: command_invocation')
+    expect(text).toContain('background_task_started')
+    expect(text).toContain('agent=\\"command-deep-audit\\"')
+    expect(text).not.toContain('Run a deep command audit')
+
+    const taskId = text.match(/id=\\?"([^"\\]+)\\?"/)?.[1]
+    expect(taskId).toBeTruthy()
+    if (!taskId) throw new Error('missing context fork command task id')
+    const done = await waitFor(async () => {
+      const detail = await fetch(`http://127.0.0.1:${commandRunServer.port}/tasks/${taskId}`)
+      const body = await detail.json() as { task?: { status: string; result?: unknown; params?: Record<string, unknown> } }
+      return body.task?.status === 'completed' ? body.task : null
+    }, 2500)
+    expect(done.params).toMatchObject({
+      agent: 'command-deep-audit',
+      command_context: 'fork',
+      slash_command: 'deep-audit',
+    })
+    expect(done.result).toBe('Command audit complete')
+    expect(sentBodies).toHaveLength(1)
+    const request = JSON.stringify(sentBodies[0])
+    expect(request).toContain('<background_subagent name=\\"command-deep-audit\\">')
+    expect(request).toContain('Run a deep command audit')
+    expect(request).toContain('命令参数')
+    expect(request).toContain('parser')
+    expect(request).not.toContain('父级上下文不应进入命令 worker')
+
+    const transcript = await new SessionService(root).loadTranscript('context-fork-command')
+    expect(JSON.stringify(transcript)).toContain('/deep-audit parser')
+    expect(JSON.stringify(transcript)).toContain('background_task_started')
+  } finally {
+    commandRunServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('POST /agent/run expands enabled domain pack slash commands', async () => {
   const root = mkdtempSync(join(tmpdir(), 'server-domain-pack-command-invoke-'))
   const commandsRoot = join(root, 'commands')
