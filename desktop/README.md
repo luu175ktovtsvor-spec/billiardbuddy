@@ -1,6 +1,6 @@
 # 台球运营管家 · 桌面端（Electron）
 
-> **全本地架构**：一个安装包 = Electron 壳 + 打包的 Next.js 前端 + 打包的 FastAPI 后端(本地 SQLite) + 本地原生层(发布 RPA worker + ffmpeg 剪辑)。全跑在用户电脑上,门店自带 API key 直接调大模型,不依赖云服务器。
+> **全本地架构**：一个安装包 = Electron 壳 + 打包的 Next.js 前端 + 打包的本地后端 + 本地原生层(ffmpeg 剪辑/截图/TTS/文件选择)。全跑在用户电脑上,门店自带 API key 直接调大模型,不依赖云服务器。
 > 计划见 `docs/plans/桌面AI-Agent-架构与开发计划-2026-06-18.md`。分支 `feat/desktop-agent`。
 
 ## 目录
@@ -8,10 +8,8 @@
 desktop/
   src/
     main.js      # Electron 主进程:开窗口、加载前端、注册 IPC、(后续)起本地后端 sidecar
-    preload.js   # contextBridge 白名单 → window.electron.{info,publish,video}
-    publish.js   # 发布层:child_process 驱动 publisher/ 的 Python 发布内核(JSON-line 协议)
+    preload.js   # contextBridge 白名单 → window.electron.{info,video,files,...}
     video.js     # 剪辑层:ffmpeg-static + spawn(裁剪/拼接/竖屏/烧字幕/水印/变速)
-  publisher/     # 发布内核(Python + patchright,借 social-auto-upload):抖音/快手/视频号/小红书
   package.json   # Electron + electron-builder + ffmpeg deps + 打包配置(asarUnpack 二进制/worker)
 ```
 
@@ -31,8 +29,6 @@ cd desktop
 npm install            # 装 electron / electron-builder / ffmpeg-static
 DESKTOP_APP_URL=http://localhost:3000 DESKTOP_DEVTOOLS=1 npm run dev
 ```
-发布内核(patchright)首次需装浏览器:`cd desktop/publisher && pip install -r requirements.txt && patchright install chromium`。
-
 ## 打包（分发）
 
 三步：① 打后端(PyInstaller) ② 出前端(standalone)并组装 ③ electron-builder 出包。
@@ -64,14 +60,10 @@ Next.js standalone 的 rewrites 把 `/api/v1/*`、`/uploads/*` 反代到后端�
 Win 包请在 Windows 机器上执行同样三步（`npm run build:backend` 会用本机 PyInstaller 产 `.exe`，
 `npm run build:win` 出 nsis 安装器）。本仓库 backend.js 已按平台选 `billiards_backend.exe`，无需改代码。
 
-**首次运行装浏览器**：发布 RPA 用的 patchright chromium【未打进包】（体积大）。装好包后首次用发布功能前，
-让用户/脚本跑一次 `cd <安装目录>/resources/publisher && pip install -r requirements.txt && patchright install chromium`。
-（内容生成/Agent/海报不依赖它，缺它不影响主功能。）
-
 签名：mac 需 Apple Developer($99/年)+notarytool；win 需 EV 证书或 Azure Trusted Signing。
 当前 build 配置 `identity:null`（不签名），内测用户首次打开需右键「打开」放行（Gatekeeper）。
 
 ## 边界
-- 发布=单店自有号、半自动、扫码登录、**人点确认才发**(对外/花钱动作走审批闸)。
+- 当前不内置平台发布 RPA;生图/生视频/剪辑产物只生成给用户检查、保存或导出。
 - 不做个人微信自动群发(封号红线);不帮经营/组织级犯罪;POS 只读。
 - web 云端版(main 分支)完全不受影响。

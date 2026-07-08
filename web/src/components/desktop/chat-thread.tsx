@@ -39,12 +39,6 @@ import { parseMcpPromptList, parseMcpPromptRead, parseMcpResourceList, parseMcpR
 
 const PROSE = "prose prose-sm prose-slate dark:prose-invert max-w-none leading-relaxed prose-p:my-1.5";
 
-// G-d(2026-07-04)：一键发布到平台整条线雪藏——默认安装包不带 publisher-bin，
-// 会静默回退 python3(用户机器没装)，点了会失败但用户看不出为什么。入口先全部隐藏，
-// 后端 /agent/publish 相关路由、window.electron.publish 桥接原样保留；
-// 未来发布线补齐(内置 publisher-bin 或换实现)后，把这个常量翻回 true 即可接回，不用重写。
-const SHOW_PUBLISH = false;
-
 function posterUrl(content: string): string | null {
   const m = content.match(/!\[[^\]]*\]\(([^)\s]+)/);
   return m ? m[1] : null;
@@ -2141,11 +2135,9 @@ function AssistantOutputTargetCard({ content, onPreview }: { content: string; on
 
 function DeliverableCard({
   step,
-  onPublish,
   onPreview,
 }: {
   step: ToolStep;
-  onPublish?: (platform: unknown, content: string) => void;
   onPreview?: (item: PreviewItem) => void;
 }) {
   const { label, Icon } = toolMeta(step.tool);
@@ -2219,17 +2211,6 @@ function DeliverableCard({
           <span><span>依据：</span>{step.knowledgeUsed.join(" · ")}</span>
         </div>
       )}
-      {SHOW_PUBLISH && onPublish && step.tool === "make_platform_content" && (
-        <div className="flex items-center gap-2 px-4 pb-2">
-          <button
-            type="button"
-            onClick={() => onPublish(step.args?.platform, resultText)}
-            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-[#10a37f] transition hover:bg-[#10a37f]/10 active:scale-[0.97]"
-          >
-            <Send className="h-3.5 w-3.5" /> 去发布
-          </button>
-        </div>
-      )}
       <CorrectionAction open={correctionOpen} onOpenChange={setCorrectionOpen} />
     </div>
   );
@@ -2237,11 +2218,9 @@ function DeliverableCard({
 
 function MacDeliverables({
   steps,
-  onPublish,
   onPreview,
 }: {
   steps: ToolStep[];
-  onPublish?: (platform: unknown, content: string) => void;
   onPreview?: (item: PreviewItem) => void;
 }) {
   const cards = steps.map((s, idx) => ({ s, idx })).filter(({ s }) => s.result && DELIVERABLE_TOOLS.has(s.tool));
@@ -2249,7 +2228,7 @@ function MacDeliverables({
   return (
     <div className="flex flex-col gap-2">
       {cards.map(({ s, idx }) => (
-        <DeliverableCard key={idx} step={s} onPublish={onPublish} onPreview={onPreview} />
+        <DeliverableCard key={idx} step={s} onPreview={onPreview} />
       ))}
     </div>
   );
@@ -2877,7 +2856,6 @@ export function DesktopChatThread({
   executingIdx,
   onConfirm,
   onCancel,
-  onPublish,
   onPreview,
   onOpenBackgroundTask,
   onAnswer,
@@ -2906,7 +2884,6 @@ export function DesktopChatThread({
   executingIdx: number | null;
   onConfirm: (idx: number, ap: ApprovalState, options?: { remember?: boolean }) => void;
   onCancel: (idx: number, ap?: ApprovalState) => void;
-  onPublish?: (platform: unknown, content: string) => void;
   onPreview?: (item: PreviewItem) => void;
   onOpenBackgroundTask?: (taskId: string) => void;
   onAnswer?: (answer: string, displayText?: string) => void;
@@ -3043,7 +3020,7 @@ export function DesktopChatThread({
                   {/* F4 Focus Chain：常驻清单卡，原地反映本轮最新进度（task_progress 参数 / todo_write 归并同一份），
                       不随每次工具调用叠新卡。 */}
                   {m.todo && <TodoCard text={m.todo} />}
-                  {m.steps && <MacDeliverables steps={m.steps} onPublish={onPublish} onPreview={onPreview} />}
+                  {m.steps && <MacDeliverables steps={m.steps} onPreview={onPreview} />}
                   {m.content &&
                     (m.kind === "command" ? (
                       <TerminalBlock text={m.content} />

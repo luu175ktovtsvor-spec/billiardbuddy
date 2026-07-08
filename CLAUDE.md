@@ -34,10 +34,10 @@
 
 **卡上线的两件事**：① 真机打包验收没跑全（见下方 P0 清单）；② 服务器搬 key（按 `docs/plans/密钥收网关-部署清单-2026-07-02.md` 把真 key 填进网关 `gw.env`、发 app 令牌）。
 
-**待 owner 拍板**（2026-07-02 修复总报告遗留，别重复排查）：删除死代码/死依赖清单、发布线去留、服务器搬 key + 轮换 PG 密码、git 历史重写、付费评测（`bash scripts/test.sh --eval-agent`）要不要跑、真机验证清单排期。
+**待 owner 拍板**（2026-07-02 修复总报告遗留，别重复排查）：删除死代码/死依赖清单、服务器搬 key + 轮换 PG 密码、git 历史重写、付费评测（`bash scripts/test.sh --eval-agent`）要不要跑、真机验证清单排期。
 
 ### P0 · 真机端到端验收（最卡，上线前最后一关）
-代码都只过了编译/单测层，**没在真盒子上用真 key 跑过一次**。要做：打包出安装包（Windows nsis / Mac dmg）→ 装到全新机器 → 开箱即用（内置 key，不用填）→ 走完整链路（写文案/做海报/改本地报表/一键发布）。重点验：
+代码都只过了编译/单测层，**没在真盒子上用真 key 跑过一次**。要做：打包出安装包（Windows nsis / Mac dmg）→ 装到全新机器 → 开箱即用（内置 key，不用填）→ 走完整链路（写文案/做海报/剪视频/改本地报表）。重点验：
 1. 海报/Logo/二维码生成能落盘（`UPLOAD_DIR` 已指到 userData 可写目录，要装到 `/Applications` 真验）
 2. 干净 CI 出包（非 dev build）首启不崩（uploads 子目录不存在时不 mkdir 崩）
 3. 慢机器首启不超时（`backend.js` 超时已放宽到 60s）
@@ -46,8 +46,8 @@
 6. macOS 未签名 Gatekeeper/translocation 行为（可能要 ad-hoc 签名或引导右键打开）
 7. 端口占用（8077 后端 / 3100 前端）兜底
 8. 自动更新真链路（等上传凭据配好、CI 改 `--publish always`）
-9. 一键发布入口可见性（默认包无 publisher-bin 会回退 python3，没装会失败——前端该隐藏入口或提示）
-10. 发布/剪辑后台异步 + 完成通知（真机时实现 + 验证：点了立即返回 taskId + 子进程后台跑 + 完成经独立 channel 主动播报）
+9. 平台发布 RPA 已退场：安装包不应包含 `publisher`/`publisher-bin`，preload 不暴露 `electron.publish`
+10. 剪辑后台异步 + 完成通知（真机时实现 + 验证：点了立即返回 taskId + 子进程后台跑 + 完成经独立 channel 主动播报）
 11. **MCP 客户端打包**：已从手写 stdio 换成官方 `mcp` SDK，`build_backend.js` 已加 `--collect-all mcp/jsonschema`，但 PyInstaller 有没有把依赖全带进包只有真机重打才能确认——装一个 MCP server 走一遍 `/mcp` 发现 + 调用
 12. **免登录单用户真机验证**（最关键的行为变更）：已删整套 SaaS 登录鉴权，改成本地单用户免登录。真机务必验：① 全新安装首启自动 seed 了 owner+店；② 打开 App 直接进 `/dashboard/chat`、不卡登录页；③ `/auth/me` 拿到本地 owner；④ 设置抽屉里建/改店、跑一条生成全链路通；⑤ 老库（已注册过的）升级后 seed 跳过、不重复建
 13. 另补新增验证项：视频渲染 worker 链路（装机包拉起自身二进制离屏渲染）、`/video-edit/localfile` 预览、插话纠偏体验、CI 包知识库能否解密（Fernet key 双源修复后首次出包必验）、Windows 口播字幕中文、文件夹对话框"新建"按钮

@@ -2855,12 +2855,12 @@
 
 ## 3.332 2026-07-08 Python 图标构建脚本退场
 
-- 目标:继续按“有等价实现 + 有验证 + 活文档切换”删除旧 Python,先处理 `desktop/scripts/make_rounded_icon.py` 这种不承载产品运行时的构建辅助脚本,避免为了删 Python 影响 agent/媒体/发布活链。
+- 目标:继续按“有等价实现 + 有验证 + 活文档切换”删除旧 Python,先处理 `desktop/scripts/make_rounded_icon.py` 这种不承载产品运行时的构建辅助脚本,避免为了删 Python 影响 agent/媒体活链。
 - 新增 `desktop/scripts/make_rounded_icon.mjs`:用 Node + `pngjs` 读取 `desktop/build/icon-source.png`,按原 1024 画布、824 图标本体、185 圆角半径生成带透明边距的 macOS 图标 PNG;内置 bilinear resize 与 4x4 supersampling 圆角 alpha,不再依赖 PIL。
 - `desktop/package.json` 新增 `npm run icon:rounded`,并把 `pngjs` 锁进 `desktop/package-lock.json` devDependency;`docs/苹果与Windows-签名与分发.md` 的图标重生成命令已切到 Node。
 - 删除旧 `desktop/scripts/make_rounded_icon.py`,不保留 Python/Node 双轨入口。
 - 验证:`cd desktop && node --check scripts/make_rounded_icon.mjs` clean;`cd desktop && npm run icon:rounded -- --out /tmp/billiards-rounded-icon.png` 成功;`file`/`sips` 确认输出为 1024x1024 RGBA PNG;像素检查确认外角 alpha=0、中心 alpha=255;旧 Python 命令引用扫描无命中。
-- 口径:这一步删除的是桌面图标构建辅助 Python。`server/` 后端、`desktop/publisher` 发布器、`gateway`、`dataeye` 等仍是活链,必须等 TS/Node/native 等价实现和测试齐全后分批删除。
+- 口径:这一步删除的是桌面图标构建辅助 Python。`server/` 后端、媒体/OCR/语音/视频链、`gateway`、`dataeye` 等仍是活链,必须等 TS/Node/native 等价实现和测试齐全后分批删除。
 
 ## 3.333 2026-07-08 CC-Haha Bash sandbox original cwd git 安全门迁移
 
@@ -2897,13 +2897,13 @@
 
 ## 3.337 2026-07-08 Python prompt pack 构建脚本退场
 
-- 目标:继续按“有等价实现 + 调用链切换 + 兼容验证”删除旧 Python,先处理桌面打包期 prompt 加密构建脚本,不碰仍在承载运行时功能的 FastAPI/媒体/发布链。
+- 目标:继续按“有等价实现 + 调用链切换 + 兼容验证”删除旧 Python,先处理桌面打包期 prompt 加密构建脚本,不碰仍在承载运行时功能的 FastAPI/媒体链。
 - 新增 `desktop/scripts/build_prompts_pack.js`:纯 Node 读取 `server/prompts/**/*.yaml`,生成 Fernet v0 token 格式的 `server/prompts.enc`,AES-128-CBC + HMAC-SHA256 key split 与 Python `cryptography.fernet.Fernet` 兼容。
 - `desktop/scripts/build_backend.js` 改为用 Node 生成 Fernet key 并调用 Node prompt pack 构建器,不再为这一小步拉起 `uv run python scripts/build_prompts_pack.py`;`desktop/package.json` 显式声明 `js-yaml` devDependency。
 - 删除旧 `server/scripts/build_prompts_pack.py`;`desktop/README.md` 与 TS 主文档同步当前 159 个 prompt 模板口径,避免继续沿用旧硬编码数字。
 - 兼容细节:Node 打包器加入 PyYAML EOF block-scalar chomp 兼容,覆盖少数 YAML 文件缺文件末尾换行时 Python `safe_load` 对最后一个 `|` block 的裁剪行为,保证加密包对象与旧 Python 解析一致。
 - 验证:`PROMPTS_PACK_KEY=<tmp> node desktop/scripts/build_prompts_pack.js` 成功生成 159 模板;同一 key 下 Python `Fernet.decrypt(server/prompts.enc)` + `json.loads` 后与 `yaml.safe_load(server/prompts/**/*.yaml)` 全量对象比对 `OBJECT_MATCH 159`;`node --check desktop/scripts/build_prompts_pack.js desktop/scripts/build_backend.js` clean。
-- 口径:这一步删除的是桌面打包期 prompt pack 构建 Python。`server/services/ai/prompt_pack.py` 运行时解密、FastAPI 后端、`desktop/publisher`、`video_edit/*`、`gateway`、`dataeye` 等仍是活链,必须等 TS/Node/native 等价实现与测试齐全后分批退场。
+- 口径:这一步删除的是桌面打包期 prompt pack 构建 Python。`server/services/ai/prompt_pack.py` 运行时解密、FastAPI 后端、`video_edit/*`、`gateway`、`dataeye` 等仍是活链,必须等 TS/Node/native 等价实现与测试齐全后分批退场。
 
 ## 3.338 2026-07-08 CC-Haha Bash git commit message 安全门迁移
 
@@ -3123,6 +3123,15 @@
 - `run_command` 工具描述同步:默认 cwd 是选定工作区;`cwd` 可是工作区相对路径或已授权绝对路径,桌面全盘会话允许从外部目录执行。危险命令、网络/安装/发布、不可逆动作仍由 Bash 风险分类和权限闸处理。
 - 回归测试新增 `/agent/run keeps working_dir as command cwd while desktop full disk can read external absolute paths`:同一轮模型先执行 `pwd` 验证 cwd 为 `working_dir`,再 `read_file` 读取工作区外绝对路径,确保 UI 文案、请求参数和后端 Workspace 行为一致。
 - 与 `selected_files` 的关系:显式选中文件仍作为窄授权兼容路径保留;桌面默认全盘是本地壳的常态,`selected_files` 主要服务附件/素材和非全盘请求的精确授权。
+
+## 3.366 2026-07-08 平台发布 RPA 退场
+
+- 根据当前目标第 12 点“对外发布:不发布”,删除旧桌面平台发布链路:`desktop/src/publish.js`、`desktop/publisher/*.py`、`desktop/scripts/build_publisher.js`、`desktop/resources/publisher-bin` 占位全部退场。
+- Electron 主进程移除 `publish:*` IPC handler 和 `publish.dispose()`;preload 不再暴露 `window.electron.publish`;Web 类型声明删除 `PublishContent/PublishPlatform/LoginStatus` 和 publish bridge。
+- 打包配置移除 `publisher`、`publisher-bin` extraResources 与 asarUnpack,避免安装包继续携带 Python RPA worker 或给用户制造“可发布”的暗示。
+- 前端成品卡删除 `SHOW_PUBLISH` dead branch 与 `onPublish` prop;成品只支持打开右侧画布、复制、保存/导出,不提供平台发布按钮。
+- 文档口径同步:当前产品不内置平台发布 RPA;生图、生视频、剪辑产物是给用户检查、保存或导出的本地成品。自动更新配置 `desktop/package.json build.publish` 是安装包更新源,不属于用户内容平台发布,保留。
+- Python tracked 文件数提交后从 392 降到 382。仍不动 FastAPI/媒体/OCR/语音/视频编辑等活链,这些继续按 TS/Node/native 等价链路接住后再分批退场。
 
 ## 4. 下一批代码顺序
 
