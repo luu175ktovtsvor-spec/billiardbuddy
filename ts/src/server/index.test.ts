@@ -3980,6 +3980,68 @@ Run a deep command audit.
   }
 })
 
+test('POST /agent/run applies context fork command allowedTools as worker session permissions', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'server-context-fork-command-allowed-'))
+  const commandsRoot = join(root, 'commands')
+  mkdirSync(commandsRoot, { recursive: true })
+  await Bun.write(join(commandsRoot, 'shell-worker.md'), `---
+description: Shell worker
+context: fork
+allowedTools: ["Bash(printf:*)"]
+---
+Write the requested file from the fork worker.
+`)
+  let workerCalls = 0
+  const commandRunServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    commandsRoot,
+    agentsRoot: join(root, 'agents'),
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    env: {
+      OPENAI_BASE_URL: 'https://model.example/v1',
+      OPENAI_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async () => {
+      const payload = workerCalls++ === 0
+        ? { id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'run_1', function: { name: 'run_command', arguments: JSON.stringify({ command: 'printf ok > worker-allowed.txt' }) } }] }, finish_reason: 'tool_calls' }] }
+        : { id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: 'worker wrote file' }, finish_reason: 'stop' }] }
+      return sseResponse(payload)
+    },
+  })
+  try {
+    const res = await fetch(`http://127.0.0.1:${commandRunServer.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({
+        message: '/shell-worker now',
+        conversationId: 'context-fork-command-allowed',
+        workspaceRoot: root,
+        permissionMode: 'ask',
+      }),
+    })
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    const taskId = text.match(/id=\\?"([^"\\]+)\\?"/)?.[1]
+    expect(taskId).toBeTruthy()
+    if (!taskId) throw new Error('missing context fork command task id')
+    const done = await waitFor(async () => {
+      const detail = await fetch(`http://127.0.0.1:${commandRunServer.port}/tasks/${taskId}`)
+      const body = await detail.json() as { task?: { status: string; result?: unknown } }
+      return body.task?.status === 'completed' ? body.task : null
+    }, 2500)
+    expect(done.result).toBe('worker wrote file')
+    expect(readFileSync(join(root, 'worker-allowed.txt'), 'utf8')).toBe('ok')
+
+    const eventsRes = await fetch(`http://127.0.0.1:${commandRunServer.port}/tasks/${taskId}/events?after=0`)
+    const eventsText = await eventsRes.text()
+    expect(eventsText).not.toContain('approval_request')
+  } finally {
+    commandRunServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('POST /agent/run expands enabled domain pack slash commands', async () => {
   const root = mkdtempSync(join(tmpdir(), 'server-domain-pack-command-invoke-'))
   const commandsRoot = join(root, 'commands')

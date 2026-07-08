@@ -457,6 +457,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
           transcript: sidechain?.transcript,
           toolResultStoreDir: sidechain?.toolResultStoreDir ?? ctx.toolResultStoreDir,
           hooks,
+          initialAllowedTools: agent.allowedToolRules,
           subagent: { agentId, agentType: agent.name },
           querySource: forkRunContext?.querySource,
           contentReplacementState: inheritedContentReplacementState,
