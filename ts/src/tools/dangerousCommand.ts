@@ -82,6 +82,32 @@ function hasWriteRedirection(command: string): boolean {
   return /(^|[^<])>>?[^&]/.test(command) || /\b\d>>?/.test(command)
 }
 
+function tokenizeShellWords(command: string): string[] {
+  const words: string[] = []
+  let i = 0
+  while (i < command.length) {
+    while (/\s/.test(command[i] ?? '')) i++
+    if (i >= command.length) break
+    const parsed = readShellWord(command, i)
+    if (!parsed.word) {
+      i++
+      continue
+    }
+    words.push(parsed.word)
+    i = parsed.end
+  }
+  return words
+}
+
+function classifyFindCommand(command: string): CommandRisk | null {
+  const tokens = tokenizeShellWords(command.toLowerCase())
+  if (tokens[0] !== 'find') return null
+  if (tokens.some(token => token === '-delete')) return 'destructive'
+  if (tokens.some(token => token === '-exec' || token === '-execdir' || token === '-ok' || token === '-okdir')) return 'outreach'
+  if (tokens.some(token => token === '-fprint' || token === '-fprint0' || token === '-fls' || token === '-fprintf')) return 'file'
+  return 'read'
+}
+
 export function shellOutputRedirectionNeedsApproval(command: string, opts: { root: string; cwd?: string }): boolean {
   const targets = extractOutputRedirectionTargets(command)
   if (targets.length === 0) return false
@@ -202,13 +228,15 @@ function classifySegment(segment: string): CommandRisk {
   if (/^(pip|pip3|uv|poetry)\s+(install|add|publish|update)\b/.test(command)) return 'outreach'
   if (/^(brew|apt|apt-get|dnf|yum|pacman|choco|winget)\s+(install|upgrade|update|remove)\b/.test(command)) return 'outreach'
 
+  const findRisk = classifyFindCommand(command)
+  if (findRisk) return findRisk
+
   if (/^(rm|mv|cp|mkdir|rmdir|touch|chmod|chown|ln|tee)\b/.test(command)) return 'file'
   if (/\b(sed|perl)\s+.*\s-i\b/.test(command) || /\b(sed|perl)\s+-i\b/.test(command)) return 'file'
   if (/^git\s+(checkout|switch|restore|reset|merge|rebase|commit|tag|branch\s+(-d|-D)|apply|am|stash|pull|push)\b/.test(command)) return 'file'
   if (/^(npm|pnpm|yarn|bun)\s+(run\s+)?(build|compile|generate|lint\s+--fix|format|test)\b/.test(command)) return 'file'
 
   if (/^(pwd|ls|cat|head|tail|wc|rg|grep|find|stat|du|df|date|whoami|uname|which|type|printenv|env|echo)\b/.test(command)) {
-    if (/^find\b.*\s-(delete|exec|execdir)\b/.test(command)) return 'file'
     return 'read'
   }
   if (/^git\s+(status|diff|log|show|branch|rev-parse|ls-files|grep|remote\s+-v)\b/.test(command)) return 'read'

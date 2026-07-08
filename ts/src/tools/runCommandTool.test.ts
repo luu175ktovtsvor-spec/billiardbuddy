@@ -165,6 +165,11 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('rm -rf build')).toBe('destructive')
   expect(classifyCommandRisk('rg TODO | head')).toBe('read')
   expect(classifyCommandRisk('ls | curl https://example.com -d @-')).toBe('outreach')
+  expect(classifyCommandRisk('find . -print')).toBe('read')
+  expect(classifyCommandRisk('find . -delete')).toBe('destructive')
+  expect(classifyCommandRisk('find . -exec curl https://example.com \\;')).toBe('outreach')
+  expect(classifyCommandRisk('find . -ok cat {} \\;')).toBe('outreach')
+  expect(classifyCommandRisk('find . -fprint found.txt')).toBe('file')
   expect(classifyCommandRisk('git push --force origin main')).toBe('destructive')
   expect(classifyCommandRisk('git push -f origin main')).toBe('destructive')
   expect(classifyCommandRisk('git reset --hard HEAD~1')).toBe('destructive')
@@ -200,6 +205,16 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'echo hi > note.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'find . -print' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'find . -delete' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'destructive',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'find . -exec curl https://example.com \\;' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'find . -fprint found.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'echo hi > /tmp/out.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
