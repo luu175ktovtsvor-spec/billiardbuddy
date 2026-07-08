@@ -184,7 +184,7 @@ test('agent_task hands off foreground registration when background signal wins t
   try {
     let releaseModel!: () => void
     const model = scriptedModel([
-      { kind: 'tool_calls', calls: [{ id: 'step-1', name: 'mark_step', input: { value: 'done-once' } }] },
+      { kind: 'tool_calls', calls: [{ id: 'step-1', name: 'mark_step', input: { value: 'done-once' } }], usage: { input_tokens: 100, output_tokens: 12, cache_read_input_tokens: 25 } },
       { kind: 'final', text: 'should not be returned synchronously' },
     ])
     const originalStep = model.step
@@ -278,6 +278,13 @@ test('agent_task hands off foreground registration when background signal wins t
     expect(summarySnapshot?.messages).toEqual(initialMessages)
     expect(summarySnapshot?.tools?.map(tool => tool.name)).toEqual(['mark_step'])
     expect(summarySnapshot?.system).toContain('<subagent name="researcher">')
+    expect((handoffs[0]!.input as { usageSnapshot?: unknown }).usageSnapshot).toMatchObject({
+      type: 'usage_update',
+      input_tokens: 125,
+      output_tokens: 12,
+      total_tokens: 137,
+      cache_read_input_tokens: 25,
+    })
     expect(markStepCalls).toEqual([{ value: 'done-once' }])
     expect(cancelled).toEqual(['handoff-parent_researcher'])
     expect(unregistered).toEqual([])

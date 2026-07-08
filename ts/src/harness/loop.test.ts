@@ -540,7 +540,7 @@ test('max_turns fallback forces a final and terminates', async () => {
   expect(model.received.at(-1)!.tools).toEqual([])
 })
 
-test('emits usage_update events with cumulative usage and context pressure', async () => {
+test('emits usage_update events with current input, cumulative output and context pressure', async () => {
   const model = scriptedModel([
     {
       kind: 'tool_calls',
@@ -563,29 +563,64 @@ test('emits usage_update events with cumulative usage and context pressure', asy
   expect(usage).toEqual([
     {
       type: 'usage_update',
-      input_tokens: 100,
+      input_tokens: 130,
       output_tokens: 12,
-      total_tokens: 112,
-      last_input_tokens: 100,
+      total_tokens: 142,
+      last_input_tokens: 130,
       last_output_tokens: 12,
       cache_read_input_tokens: 30,
       context_window: 1000,
-      context_percent: 10,
+      context_percent: 13,
     },
     {
       type: 'usage_update',
-      input_tokens: 240,
+      input_tokens: 150,
       output_tokens: 32,
-      total_tokens: 272,
-      last_input_tokens: 140,
+      total_tokens: 182,
+      last_input_tokens: 150,
       last_output_tokens: 20,
-      cache_read_input_tokens: 30,
       cache_creation_input_tokens: 10,
       context_window: 1000,
-      context_percent: 14,
+      context_percent: 15,
     },
   ])
   expect(events.map(e => e.type)).toEqual(['usage_update', 'tool_call', 'tool_result', 'usage_update', 'final'])
+})
+
+test('usage_update can inherit foreground output totals when continuing a backgrounded agent', async () => {
+  const events = await collect(
+    runAgentLoop({
+      model: scriptedModel([
+        {
+          kind: 'final',
+          text: 'continued',
+          usage: { input_tokens: 140, output_tokens: 20, cache_creation_input_tokens: 10 },
+        },
+      ]),
+      registry: buildGeneralRegistry(),
+      workspace: new Workspace(root),
+      systemPrompt: 'SYS',
+      userMessage: 'x',
+      initialUsage: {
+        type: 'usage_update',
+        input_tokens: 130,
+        output_tokens: 12,
+        total_tokens: 142,
+        last_input_tokens: 130,
+        last_output_tokens: 12,
+        cache_read_input_tokens: 30,
+      },
+    }),
+  )
+  const usage = events.find((e): e is Extract<AgentEvent, { type: 'usage_update' }> => e.type === 'usage_update')
+  expect(usage).toMatchObject({
+    input_tokens: 150,
+    output_tokens: 32,
+    total_tokens: 182,
+    last_input_tokens: 150,
+    last_output_tokens: 20,
+    cache_creation_input_tokens: 10,
+  })
 })
 
 test('emits prompt cache break context note when cache reads drop after prompt changes', async () => {

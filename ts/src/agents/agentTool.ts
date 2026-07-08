@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { runAgentLoop, type AgentLoopSnapshot } from '../harness/loop'
 import { Transcript } from '../memory/transcript'
 import type { Message } from '../types/message'
-import type { AgentEvent } from '../types/events'
+import type { AgentEvent, UsageUpdateEvent } from '../types/events'
 import type { Model } from '../types/model'
 import type { Tool, ToolContext } from '../tools/Tool'
 import { ToolRegistry } from '../tools/registry'
@@ -40,6 +40,7 @@ export interface AgentTaskHandoffInput {
   initialMessages?: Message[]
   contentReplacementState?: ContentReplacementState
   summarySnapshot?: AgentLoopSnapshot
+  usageSnapshot?: UsageUpdateEvent
 }
 
 export interface AgentTaskForegroundRegistration {
@@ -407,6 +408,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
         })
         const registry = new ToolRegistry(agentMcp.tools)
         let handoffSnapshot: AgentLoopSnapshot | undefined
+        let handoffUsageSnapshot: UsageUpdateEvent | undefined
         emitSubagentProgress(ctx, agent, `子代理 ${agent.name} 开始:${oneLine(input.task, 120)}`)
         if (agentWorktree) emitSubagentProgress(ctx, agent, `子代理 ${agent.name} 使用隔离 worktree:${agentWorktree.session.worktreePath}`)
         for (const warning of agentMcp.warnings) emitSubagentProgress(ctx, agent, warning)
@@ -467,6 +469,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
               ...(handoffSnapshot?.messages.length ? { initialMessages: handoffSnapshot.messages } : {}),
               ...(handoffSnapshot?.contentReplacementState ? { contentReplacementState: handoffSnapshot.contentReplacementState } : {}),
               ...(handoffSnapshot ? { summarySnapshot: handoffSnapshot } : {}),
+              ...(handoffUsageSnapshot ? { usageSnapshot: handoffUsageSnapshot } : {}),
             }, ctx, forkRunContext)
             const name = typeof task.params?.name === 'string' ? ` name="${xmlAttr(task.params.name)}"` : ''
             const backgroundAgentId = typeof task.params?.agent_id === 'string' ? ` agent_id="${xmlAttr(task.params.agent_id)}"` : ''
@@ -474,6 +477,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
           }
           if (raceResult.result.done) break
           const ev = raceResult.result.value
+          if (ev.type === 'usage_update') handoffUsageSnapshot = ev
           const line = subagentLine(agent, ev)
           if (line) emitSubagentProgress(ctx, agent, line)
           if (ev.type === 'final') finalText = ev.text

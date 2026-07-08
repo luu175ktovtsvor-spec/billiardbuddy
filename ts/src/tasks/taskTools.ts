@@ -6,7 +6,7 @@ import { resolveAgentTools } from '../agents/agentLoader'
 import { loadAgentMcpRuntime, type AgentMcpRuntimeOptions } from '../agents/agentMcp'
 import type { Model } from '../types/model'
 import { textBlock, type Message } from '../types/message'
-import type { AgentEvent } from '../types/events'
+import type { AgentEvent, UsageUpdateEvent } from '../types/events'
 import type { Tool, ToolContext } from '../tools/Tool'
 import { ToolRegistry } from '../tools/registry'
 import { Sandbox } from '../sandbox/sandbox'
@@ -35,6 +35,7 @@ export interface BackgroundAgentTaskInput {
   initialMessages?: Message[]
   contentReplacementState?: ContentReplacementState
   summarySnapshot?: AgentLoopSnapshot
+  usageSnapshot?: UsageUpdateEvent
 }
 
 export interface BackgroundAgentTaskOptions {
@@ -198,6 +199,94 @@ function handoffProgressFromMessages(messages: Message[]): { progress: number; s
     progress: Math.min(55, Math.max(18, 12 + toolUseCount * 4 + completedToolUseCount * 5)),
     stage: lastStage || '已接续前台进度',
     toolUseCount,
+  }
+}
+
+interface BackgroundAgentUsageSummary {
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  last_input_tokens: number
+  last_output_tokens: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+  context_window?: number
+  context_percent?: number
+  tool_uses?: number
+  duration_ms?: number
+}
+
+function usageSummaryFromEvent(event: UsageUpdateEvent, extra: { toolUseCount?: number; durationMs?: number } = {}): BackgroundAgentUsageSummary {
+  return {
+    input_tokens: event.input_tokens,
+    output_tokens: event.output_tokens,
+    total_tokens: event.total_tokens,
+    last_input_tokens: event.last_input_tokens,
+    last_output_tokens: event.last_output_tokens,
+    ...(event.cache_read_input_tokens !== undefined ? { cache_read_input_tokens: event.cache_read_input_tokens } : {}),
+    ...(event.cache_creation_input_tokens !== undefined ? { cache_creation_input_tokens: event.cache_creation_input_tokens } : {}),
+    ...(event.context_window !== undefined ? { context_window: event.context_window } : {}),
+    ...(event.context_percent !== undefined ? { context_percent: event.context_percent } : {}),
+    ...(extra.toolUseCount !== undefined ? { tool_uses: extra.toolUseCount } : {}),
+    ...(extra.durationMs !== undefined ? { duration_ms: extra.durationMs } : {}),
+  }
+}
+
+async function touchBackgroundAgentUsage(
+  tasks: TaskService,
+  taskId: string,
+  event: UsageUpdateEvent,
+  extra: { toolUseCount?: number; durationMs?: number } = {},
+): Promise<TaskMeta | null> {
+  const current = await tasks.get(taskId)
+  if (!current) return null
+  return tasks.touch(taskId, {
+    params: {
+      ...current.params,
+      usage: usageSummaryFromEvent(event, extra),
+    },
+  })
+}
+
+function numericUsageField(record: Record<string, unknown>, key: keyof BackgroundAgentUsageSummary): number | undefined {
+  const value = record[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function taskUsageSummary(task: TaskMeta): BackgroundAgentUsageSummary | null {
+  const raw = task.params?.usage
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const record = raw as Record<string, unknown>
+  const inputTokens = numericUsageField(record, 'input_tokens')
+  const outputTokens = numericUsageField(record, 'output_tokens')
+  const totalTokens = numericUsageField(record, 'total_tokens')
+  const lastInputTokens = numericUsageField(record, 'last_input_tokens')
+  const lastOutputTokens = numericUsageField(record, 'last_output_tokens')
+  if (
+    inputTokens === undefined ||
+    outputTokens === undefined ||
+    totalTokens === undefined ||
+    lastInputTokens === undefined ||
+    lastOutputTokens === undefined
+  ) return null
+  const cacheReadInputTokens = numericUsageField(record, 'cache_read_input_tokens')
+  const cacheCreationInputTokens = numericUsageField(record, 'cache_creation_input_tokens')
+  const contextWindow = numericUsageField(record, 'context_window')
+  const contextPercent = numericUsageField(record, 'context_percent')
+  const toolUses = numericUsageField(record, 'tool_uses')
+  const durationMs = numericUsageField(record, 'duration_ms')
+  return {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    total_tokens: totalTokens,
+    last_input_tokens: lastInputTokens,
+    last_output_tokens: lastOutputTokens,
+    ...(cacheReadInputTokens !== undefined ? { cache_read_input_tokens: cacheReadInputTokens } : {}),
+    ...(cacheCreationInputTokens !== undefined ? { cache_creation_input_tokens: cacheCreationInputTokens } : {}),
+    ...(contextWindow !== undefined ? { context_window: contextWindow } : {}),
+    ...(contextPercent !== undefined ? { context_percent: contextPercent } : {}),
+    ...(toolUses !== undefined ? { tool_uses: toolUses } : {}),
+    ...(durationMs !== undefined ? { duration_ms: durationMs } : {}),
   }
 }
 
@@ -494,6 +583,12 @@ export async function startBackgroundAgentRun(
   if (!stringTaskParam(task, 'agent_id')) {
     task = await opts.tasks.touch(task.id, { params: { ...task.params, agent_id: stableAgentId } })
   }
+  if (input.usageSnapshot) {
+    task = await touchBackgroundAgentUsage(opts.tasks, task.id, input.usageSnapshot, {
+      toolUseCount: handoffInitialProgress?.toolUseCount,
+      durationMs: 0,
+    }) ?? task
+  }
   const effectiveIsolation = input.isolation ?? agent.isolation
   const agentWorktree = effectiveIsolation === 'worktree'
     ? await createIsolatedAgentWorktree(ctx.workspace.root, task.id, ctx.conversationId)
@@ -542,6 +637,16 @@ export async function startBackgroundAgentRun(
     let cleanup: AgentWorktreeCleanupResult | null = null
     let agentMcp: Awaited<ReturnType<typeof loadAgentMcpRuntime>> | undefined
     let summarizer: AgentSummaryController | undefined
+    let latestUsageSnapshot = input.usageSnapshot
+    let usageToolUseCount = handoffInitialProgress?.toolUseCount ?? 0
+    const usageStartedAtMs = Date.now()
+    const persistUsage = async (usage: UsageUpdateEvent) => {
+      latestUsageSnapshot = usage
+      await touchBackgroundAgentUsage(opts.tasks, task.id, usage, {
+        toolUseCount: usageToolUseCount,
+        durationMs: Date.now() - usageStartedAtMs,
+      }).catch(() => undefined)
+    }
     const updateProgress = async (progress: number, stage: string) => {
       await opts.tasks.touch(task.id, { progress, stage }).catch(() => undefined)
     }
@@ -608,12 +713,19 @@ export async function startBackgroundAgentRun(
         subagent: { agentId: stableAgentId, agentType: agent.name },
         querySource: runOptions.forkContext?.querySource,
         contentReplacementState: inheritedContentReplacementState,
+        initialUsage: input.usageSnapshot,
         onSummarySnapshot: snapshot => summarizer?.updateSnapshot(snapshot),
       })) {
         await taskCtx.emit(event)
+        if (event.type === 'usage_update') await persistUsage(event)
+        if (event.type === 'tool_call') {
+          usageToolUseCount++
+          if (latestUsageSnapshot) await persistUsage(latestUsageSnapshot)
+        }
         await reportProgress(event)
         if (event.type === 'final') finalText = event.text
       }
+      if (latestUsageSnapshot) await persistUsage(latestUsageSnapshot).catch(() => undefined)
     } finally {
       summarizer?.stop()
       await agentMcp?.close()
@@ -731,14 +843,32 @@ async function resolveTaskReference(
 function formatTaskEvents(task: NonNullable<Awaited<ReturnType<TaskService['get']>>>, events: Awaited<ReturnType<TaskService['loadEvents']>>, requestedTaskId?: string): string {
   const requested = requestedTaskId && requestedTaskId !== task.id ? ` requested_id="${xmlAttr(requestedTaskId)}"` : ''
   const agentId = typeof task.params?.agent_id === 'string' && task.params.agent_id.trim() ? ` agent_id="${xmlAttr(task.params.agent_id.trim())}"` : ''
+  const usage = taskUsageSummary(task)
   const lines = [
     `<background_task id="${xmlAttr(task.id)}"${requested}${agentId} status="${xmlAttr(task.status)}" title="${xmlAttr(task.title)}">`,
     task.summary ? `<summary>${xmlText(task.summary)}</summary>` : '',
     task.stage ? `<stage>${xmlText(task.stage)}</stage>` : '',
+    usage ? formatUsageXml(usage) : '',
     ...events.map(record => `#${record.seq} ${record.event.type} ${JSON.stringify(record.event)}`),
     '</background_task>',
   ].filter(Boolean)
   return lines.join('\n')
+}
+
+function formatUsageXml(usage: BackgroundAgentUsageSummary): string {
+  return [
+    '<usage>',
+    `<total_tokens>${xmlText(String(usage.total_tokens))}</total_tokens>`,
+    `<input_tokens>${xmlText(String(usage.input_tokens))}</input_tokens>`,
+    `<output_tokens>${xmlText(String(usage.output_tokens))}</output_tokens>`,
+    `<last_input_tokens>${xmlText(String(usage.last_input_tokens))}</last_input_tokens>`,
+    `<last_output_tokens>${xmlText(String(usage.last_output_tokens))}</last_output_tokens>`,
+    ...(usage.cache_read_input_tokens !== undefined ? [`<cache_read_input_tokens>${xmlText(String(usage.cache_read_input_tokens))}</cache_read_input_tokens>`] : []),
+    ...(usage.cache_creation_input_tokens !== undefined ? [`<cache_creation_input_tokens>${xmlText(String(usage.cache_creation_input_tokens))}</cache_creation_input_tokens>`] : []),
+    ...(usage.tool_uses !== undefined ? [`<tool_uses>${xmlText(String(usage.tool_uses))}</tool_uses>`] : []),
+    ...(usage.duration_ms !== undefined ? [`<duration_ms>${xmlText(String(usage.duration_ms))}</duration_ms>`] : []),
+    '</usage>',
+  ].join('')
 }
 
 function clampTimeoutMs(value: unknown): number {
@@ -798,6 +928,8 @@ function formatCcTaskOutput(status: 'success' | 'timeout' | 'not_ready', task: T
   parts.push(`<task_type>${xmlText(task.kind ?? 'background_task')}</task_type>`)
   parts.push(`<status>${xmlText(task.status)}</status>`)
   parts.push(`<description>${xmlText(task.title)}</description>`)
+  const usage = taskUsageSummary(task)
+  if (usage) parts.push(formatUsageXml(usage))
   if (task.error) parts.push(`<error>${xmlText(task.error)}</error>`)
   const output = extractTaskOutput(task, events).trimEnd()
   if (output) parts.push(`<output>\n${xmlText(output)}\n</output>`)

@@ -1,4 +1,4 @@
-import type { AgentEvent } from '../types/events'
+import type { AgentEvent, UsageUpdateEvent } from '../types/events'
 import type { Message, ContentBlock, ToolResultBlock, ToolCall } from '../types/message'
 import { textBlock, toolUseBlock, toolResultBlock, userText } from '../types/message'
 import type { Model, ModelUsage } from '../types/model'
@@ -111,6 +111,7 @@ export interface RunAgentLoopOptions {
   teamInbox?: TeamInboxContextOptions & { service: TeamService }
   onSummarySnapshot?: (snapshot: AgentLoopSnapshot) => void
   modelName?: string
+  initialUsage?: UsageUpdateEvent
 }
 
 const TODO_UPDATE_TOOL_NAMES = new Set(['todo_write', 'task_create', 'task_update', 'TaskCreate', 'TaskUpdate'])
@@ -261,12 +262,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   let toolCallsNoProgress = 0
   let stuckNotified = false
   const revealedToolNames = new Set<string>()
-  const usageTotals: UsageTotals = {
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadInputTokens: 0,
-    cacheCreationInputTokens: 0,
-  }
+  const usageTotals = usageTotalsFromInitial(opts.initialUsage)
   const promptCacheTrackingKey = opts.conversationId
   const modelNameForPromptCache = opts.modelName ?? opts.model.constructor?.name ?? ''
 
@@ -516,32 +512,38 @@ function hookContextBlock(event: string, contexts: string[]): string {
 }
 
 interface UsageTotals {
-  inputTokens: number
-  outputTokens: number
-  cacheReadInputTokens: number
-  cacheCreationInputTokens: number
+  latestInputTokens: number
+  cumulativeOutputTokens: number
+}
+
+function usageTotalsFromInitial(initial: UsageUpdateEvent | undefined): UsageTotals {
+  return {
+    latestInputTokens: initial?.input_tokens ?? 0,
+    cumulativeOutputTokens: initial?.output_tokens ?? 0,
+  }
 }
 
 function usageUpdateEvent(usage: ModelUsage | undefined, totals: UsageTotals, contextWindowTokens?: number): AgentEvent | null {
   if (!usage) return null
-  totals.inputTokens += usage.input_tokens
-  totals.outputTokens += usage.output_tokens
-  totals.cacheReadInputTokens += usage.cache_read_input_tokens ?? 0
-  totals.cacheCreationInputTokens += usage.cache_creation_input_tokens ?? 0
+  const cacheReadInputTokens = usage.cache_read_input_tokens ?? 0
+  const cacheCreationInputTokens = usage.cache_creation_input_tokens ?? 0
+  const currentInputTokens = usage.input_tokens + cacheReadInputTokens + cacheCreationInputTokens
+  totals.latestInputTokens = currentInputTokens
+  totals.cumulativeOutputTokens += usage.output_tokens
 
-  const event: Extract<AgentEvent, { type: 'usage_update' }> = {
+  const event: UsageUpdateEvent = {
     type: 'usage_update',
-    input_tokens: totals.inputTokens,
-    output_tokens: totals.outputTokens,
-    total_tokens: totals.inputTokens + totals.outputTokens,
-    last_input_tokens: usage.input_tokens,
+    input_tokens: totals.latestInputTokens,
+    output_tokens: totals.cumulativeOutputTokens,
+    total_tokens: totals.latestInputTokens + totals.cumulativeOutputTokens,
+    last_input_tokens: currentInputTokens,
     last_output_tokens: usage.output_tokens,
   }
-  if (totals.cacheReadInputTokens > 0) event.cache_read_input_tokens = totals.cacheReadInputTokens
-  if (totals.cacheCreationInputTokens > 0) event.cache_creation_input_tokens = totals.cacheCreationInputTokens
+  if (cacheReadInputTokens > 0) event.cache_read_input_tokens = cacheReadInputTokens
+  if (cacheCreationInputTokens > 0) event.cache_creation_input_tokens = cacheCreationInputTokens
   if (contextWindowTokens && Number.isFinite(contextWindowTokens) && contextWindowTokens > 0) {
     event.context_window = contextWindowTokens
-    event.context_percent = Math.round((usage.input_tokens / contextWindowTokens) * 1000) / 10
+    event.context_percent = Math.round((currentInputTokens / contextWindowTokens) * 1000) / 10
   }
   return event
 }

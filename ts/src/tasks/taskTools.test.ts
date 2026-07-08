@@ -143,7 +143,7 @@ test('startBackgroundAgentRun hands off an already backgrounded foreground agent
       { role: 'assistant', content: [toolUseBlock({ id: 'fg-step-1', name: 'read_file', input: { path: 'done.txt' } })] },
       { role: 'user', content: [toolResultBlock('fg-step-1', 'front-result')] },
     ]
-    const model = scriptedModel([{ kind: 'final', text: 'handoff done' }])
+    const model = scriptedModel([{ kind: 'final', text: 'handoff done', usage: { input_tokens: 140, output_tokens: 20, cache_creation_input_tokens: 10 } }])
 
     const { task } = await startBackgroundAgentRun({
       tasks,
@@ -156,6 +156,15 @@ test('startBackgroundAgentRun hands off an already backgrounded foreground agent
       task: '前台切后台',
       title: 'researcher: foreground',
       initialMessages: handoffMessages,
+      usageSnapshot: {
+        type: 'usage_update',
+        input_tokens: 125,
+        output_tokens: 12,
+        total_tokens: 137,
+        last_input_tokens: 125,
+        last_output_tokens: 12,
+        cache_read_input_tokens: 25,
+      },
     }, {
       workspace: new Workspace(root),
       conversationId: 'handoff-conv',
@@ -183,6 +192,15 @@ test('startBackgroundAgentRun hands off an already backgrounded foreground agent
       return meta?.status === 'completed' ? meta : null
     })
     expect(done.result).toBe('handoff done')
+    expect(done.params?.usage).toMatchObject({
+      input_tokens: 150,
+      output_tokens: 32,
+      total_tokens: 182,
+      last_input_tokens: 150,
+      last_output_tokens: 20,
+      cache_creation_input_tokens: 10,
+      tool_uses: 1,
+    })
     expect(model.received[0]!.messages.slice(0, 3)).toEqual(handoffMessages)
     expect(model.received[0]!.messages.filter(message =>
       message.role === 'user' &&
@@ -195,6 +213,23 @@ test('startBackgroundAgentRun hands off an already backgrounded foreground agent
       task: '前台切后台',
       conversationId: 'handoff-conv',
     })
+    const taskTools = createTaskTools(tasks)
+    const readTask = taskTools[1]!
+    const taskOutput = taskTools[3]!
+    const restored = await readTask.execute({ task_id: 'fg_handoff_1' }, {
+      workspace: new Workspace(root),
+      conversationId: 'handoff-conv',
+      permissionMode: 'full',
+    })
+    expect(restored).toContain('<usage>')
+    expect(restored).toContain('<total_tokens>182</total_tokens>')
+    const detail = await taskOutput!.execute({ task_id: 'fg_handoff_1', block: false }, {
+      workspace: new Workspace(root),
+      conversationId: 'handoff-conv',
+      permissionMode: 'full',
+    })
+    expect(detail).toContain('<total_tokens>182</total_tokens>')
+    expect(detail).toContain('<tool_uses>1</tool_uses>')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
