@@ -190,6 +190,13 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('git push --force origin main')).toBe('destructive')
   expect(classifyCommandRisk('git push -f origin main')).toBe('destructive')
   expect(classifyCommandRisk('git reset --hard HEAD~1')).toBe('destructive')
+  expect(classifyCommandRisk('git commit -m "safe message"')).toBe('file')
+  expect(classifyCommandRisk('git commit -m "---"')).toBe('outreach')
+  expect(classifyCommandRisk("git commit --message='---'")).toBe('outreach')
+  expect(classifyCommandRisk("git commit -m '$(literal)'")).toBe('file')
+  expect(classifyCommandRisk('git commit -m "$(whoami)"')).toBe('outreach')
+  expect(classifyCommandRisk('git commit -m "`whoami`"')).toBe('outreach')
+  expect(classifyCommandRisk('git commit -m "${HOME}"')).toBe('outreach')
   expect(classifyCommandRisk('cd sub && git status --short')).toBe('outreach')
   expect(classifyCommandRisk('FORCE_COLOR=1 cd sub && git status')).toBe('outreach')
   expect(classifyCommandRisk('cd sub && xargs git status')).toBe('outreach')
@@ -259,6 +266,11 @@ test('shell parser hardening mirrors Bash misparse safety gates', () => {
   expect(hasShellParserRisk('cat < secrets.txt')).toBe(true)
   expect(hasShellParserRisk('echo "< literal"')).toBe(false)
   expect(hasShellParserRisk("printf '%s' '< literal'")).toBe(false)
+  expect(hasShellParserRisk('git commit -m "---"')).toBe(true)
+  expect(hasShellParserRisk("git commit --message='---'")).toBe(true)
+  expect(hasShellParserRisk('git commit -m "safe message"')).toBe(false)
+  expect(hasShellParserRisk("git commit -m '$(literal)'")).toBe(false)
+  expect(hasShellParserRisk('echo "---"')).toBe(false)
   expect(hasShellParserRisk('zmodload zsh/system')).toBe(true)
   expect(hasShellParserRisk('command builtin zmodload zsh/system')).toBe(true)
   expect(hasShellParserRisk('fc -e vim')).toBe(true)
@@ -353,6 +365,13 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   expect(resolvePermission(runCommandTool, { command: 'cat < ~/.ssh/id_rsa' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'git commit -m "---"' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'git commit -m "safe message"' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'allow',
   })
   expect(resolvePermission(runCommandTool, { command: 'cd sub && git status --short' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',

@@ -246,6 +246,7 @@ export function hasShellParserRisk(command: string): boolean {
     hasUnescapedChar(exposed, '`') ||
     hasDangerousVariableUse(quoteViews.fullyUnquoted) ||
     hasInputRedirectionRisk(command) ||
+    hasGitCommitMessageRisk(command) ||
     (hasQuotedShellMetacharacterRisk(command) && classifySedCommand(command) !== 'read') ||
     hasObfuscatedFlagRisk(command) ||
     (hasMalformedTokenInjectionRisk(command) && classifySedCommand(command) !== 'read') ||
@@ -485,6 +486,34 @@ function hasInputRedirectionRisk(command: string): boolean {
     return true
   }
   return false
+}
+
+function hasGitCommitMessageRisk(command: string): boolean {
+  return splitSegments(command).some(segment => {
+    const tokens = tokenizeShellWordsWithQuote(stripSafeShellWrappers(segment))
+    if (tokens[0]?.word.toLowerCase() !== 'git') return false
+    if (tokens[1]?.word.toLowerCase() !== 'commit') return false
+
+    for (let i = 2; i < tokens.length; i++) {
+      const token = tokens[i]!
+      if (token.word === '--') break
+      if (token.word === '-m' || token.word === '--message') {
+        if (gitCommitMessageTokenNeedsApproval(tokens[i + 1])) return true
+        i++
+        continue
+      }
+      if (token.word.startsWith('--message=')) {
+        if (gitCommitMessageTokenNeedsApproval({ ...token, word: token.word.slice('--message='.length) })) return true
+      }
+    }
+    return false
+  })
+}
+
+function gitCommitMessageTokenNeedsApproval(token: ShellToken | undefined): boolean {
+  if (!token?.word) return false
+  if (token.word.startsWith('-')) return true
+  return token.quote === '"' && /\$\(|`|\$\{/.test(token.word)
 }
 
 function hasQuotedShellMetacharacterRisk(command: string): boolean {
@@ -894,6 +923,80 @@ function tokenizeShellWords(command: string): string[] {
     i = parsed.end
   }
   return words
+}
+
+type ShellToken = { word: string; quote: '"' | "'" | 'mixed' | null }
+
+function tokenizeShellWordsWithQuote(command: string): ShellToken[] {
+  const tokens: ShellToken[] = []
+  let i = 0
+  while (i < command.length) {
+    while (/\s/.test(command[i] ?? '')) i++
+    if (i >= command.length) break
+
+    const parsed = readShellToken(command, i)
+    if (!parsed.word) {
+      i++
+      continue
+    }
+    tokens.push({ word: parsed.word, quote: parsed.quote })
+    i = parsed.end
+  }
+  return tokens
+}
+
+function readShellToken(command: string, start: number): { word: string; quote: ShellToken['quote']; end: number } {
+  let word = ''
+  let quote: '"' | "'" | null = null
+  let tokenQuote: ShellToken['quote'] = null
+  let escaped = false
+  let i = start
+
+  const noteQuote = (nextQuote: '"' | "'") => {
+    if (tokenQuote === null) tokenQuote = nextQuote
+    else if (tokenQuote !== nextQuote) tokenQuote = 'mixed'
+  }
+  const noteUnquoted = () => {
+    if (tokenQuote !== null) tokenQuote = 'mixed'
+  }
+
+  for (; i < command.length; i++) {
+    const char = command[i]!
+    if (quote) {
+      if (escaped) {
+        word += char
+        escaped = false
+      } else if (char === '\\' && quote === '"') {
+        escaped = true
+      } else if (char === quote) {
+        quote = null
+      } else {
+        word += char
+      }
+      continue
+    }
+    if (escaped) {
+      word += char
+      noteUnquoted()
+      escaped = false
+      continue
+    }
+    if (char === '\\') {
+      escaped = true
+      noteUnquoted()
+      continue
+    }
+    if (char === '"' || char === "'") {
+      quote = char
+      noteQuote(char)
+      continue
+    }
+    if (/\s/.test(char) || /[;&|<>]/.test(char)) break
+    word += char
+    noteUnquoted()
+  }
+
+  return { word, quote: tokenQuote, end: i }
 }
 
 function classifyFindCommand(command: string): CommandRisk | null {
