@@ -1266,6 +1266,39 @@ function classifyNodeCommand(command: string): CommandRisk | null {
   return 'file'
 }
 
+function classifyHostnameCommand(command: string): CommandRisk | null {
+  const tokens = tokenizeShellWords(command)
+  if (tokens[0]?.toLowerCase() !== 'hostname') return null
+  const safeFlags = new Set([
+    '-f',
+    '--fqdn',
+    '--long',
+    '-s',
+    '--short',
+    '-i',
+    '--ip-address',
+    '-I',
+    '--all-ip-addresses',
+    '-a',
+    '--alias',
+    '-d',
+    '--domain',
+    '-A',
+    '--all-fqdns',
+    '-v',
+    '--verbose',
+    '-h',
+    '--help',
+    '-V',
+    '--version',
+  ])
+
+  for (const token of tokens.slice(1)) {
+    if (!safeFlags.has(token)) return 'outreach'
+  }
+  return 'read'
+}
+
 function classifySedCommand(command: string): CommandRisk | null {
   const tokens = tokenizeShellWords(command)
   if (tokens[0]?.toLowerCase() !== 'sed') return null
@@ -1659,6 +1692,9 @@ function classifySegment(segment: string): CommandRisk {
 
   const nodeRisk = classifyNodeCommand(rawCommand)
   if (nodeRisk) return nodeRisk
+
+  const hostnameRisk = classifyHostnameCommand(rawCommand)
+  if (hostnameRisk) return hostnameRisk
 
   const readOnlyAllowlistRisk = classifyReadOnlyAllowlistedCommand(rawCommand)
   if (readOnlyAllowlistRisk) return readOnlyAllowlistRisk
