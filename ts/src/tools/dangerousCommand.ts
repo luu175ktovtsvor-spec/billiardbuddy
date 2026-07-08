@@ -20,6 +20,54 @@ export function isDangerousCommand(command: string): boolean {
   return DANGEROUS_PATTERNS.some(re => re.test(command))
 }
 
+const SHELL_EXPANSION_PATTERNS: RegExp[] = [
+  /<\(/,
+  />\(/,
+  /=\(/,
+  /(?:^|[\s;&|])=[a-zA-Z_]/,
+  /\$\(/,
+  /\$\{/,
+  /\$\[/,
+  /~\[/,
+  /\(e:/,
+  /\(\+/,
+  /\}\s*always\s*\{/,
+  /<#/,
+]
+
+export function hasShellExpansionRisk(command: string): boolean {
+  const exposed = shellTextOutsideSingleQuotes(command)
+  return SHELL_EXPANSION_PATTERNS.some(re => re.test(exposed))
+}
+
+function shellTextOutsideSingleQuotes(command: string): string {
+  let out = ''
+  let quote: '"' | "'" | null = null
+  let escaped = false
+
+  for (const char of command) {
+    if (quote === "'") {
+      if (char === "'") quote = null
+      continue
+    }
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (char === '\\') {
+      escaped = true
+      continue
+    }
+    if (char === '"' || char === "'") {
+      quote = quote === char ? null : quote ?? char
+      if (char === '"') out += char
+      continue
+    }
+    out += char
+  }
+  return out
+}
+
 function normalize(command: string): string {
   return command.trim().replace(/\s+/g, ' ')
 }
@@ -72,5 +120,6 @@ function maxRisk(a: CommandRisk, b: CommandRisk): CommandRisk {
 
 export function classifyCommandRisk(command: string): CommandRisk {
   if (isDangerousCommand(command)) return 'destructive'
-  return splitSegments(command).reduce<CommandRisk>((risk, segment) => maxRisk(risk, classifySegment(segment)), 'read')
+  const initialRisk: CommandRisk = hasShellExpansionRisk(command) ? 'outreach' : 'read'
+  return splitSegments(command).reduce<CommandRisk>((risk, segment) => maxRisk(risk, classifySegment(segment)), initialRisk)
 }

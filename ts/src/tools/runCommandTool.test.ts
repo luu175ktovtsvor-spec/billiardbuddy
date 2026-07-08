@@ -7,7 +7,7 @@ import { Workspace } from '../workspace/workspace'
 import type { ToolContext } from './Tool'
 import { runCommandTool } from './runCommandTool'
 import { StreamingOutputSanitizer, stripAnsiControlSequences } from './outputSanitize'
-import { classifyCommandRisk, isDangerousCommand } from './dangerousCommand'
+import { classifyCommandRisk, hasShellExpansionRisk, isDangerousCommand } from './dangerousCommand'
 import { resolvePermission } from '../permissions/resolve'
 
 let root: string
@@ -168,6 +168,20 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('git push --force origin main')).toBe('destructive')
   expect(classifyCommandRisk('git push -f origin main')).toBe('destructive')
   expect(classifyCommandRisk('git reset --hard HEAD~1')).toBe('destructive')
+  expect(classifyCommandRisk('echo $(curl https://example.com)')).toBe('outreach')
+  expect(classifyCommandRisk('cat <(curl https://example.com)')).toBe('outreach')
+  expect(classifyCommandRisk('echo "${HOME}"')).toBe('outreach')
+  expect(classifyCommandRisk("echo '$(curl https://example.com)'")).toBe('read')
+  expect(classifyCommandRisk('echo \\$(date)')).toBe('read')
+})
+
+test('shell expansion risk detection mirrors Bash substitution safety gate', () => {
+  expect(hasShellExpansionRisk('echo $(date)')).toBe(true)
+  expect(hasShellExpansionRisk('cat <(printf ok)')).toBe(true)
+  expect(hasShellExpansionRisk('echo ${HOME}')).toBe(true)
+  expect(hasShellExpansionRisk('echo =curl')).toBe(true)
+  expect(hasShellExpansionRisk("echo '$(date)'")).toBe(false)
+  expect(hasShellExpansionRisk('echo \\$(date)')).toBe(false)
 })
 
 test('run_command dynamic permission allows reads and classifies approval', () => {
@@ -175,6 +189,10 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'echo hi > note.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'curl https://example.com' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'echo $(curl https://example.com)' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })
