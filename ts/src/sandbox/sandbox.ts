@@ -17,6 +17,8 @@ export class Sandbox {
   private readonly platform: NodeJS.Platform
   private readonly winLauncher = new WindowsJobObjectLauncher()
   private initialized = false
+  /** OS 沙箱初始化/包裹失败(缺依赖如 Linux 无 bwrap、seatbelt 环境异常)后降级明文,避免默认开时阻断命令执行。 */
+  private degraded = false
 
   constructor(opts: { workspace: Workspace; enabled?: boolean; platform?: NodeJS.Platform }) {
     this.workspace = opts.workspace
@@ -25,16 +27,22 @@ export class Sandbox {
   }
 
   isOsSandboxActive(): boolean {
-    return this.enabled && isOsSandboxSupported(this.platform)
+    return this.enabled && !this.degraded && isOsSandboxSupported(this.platform)
   }
 
   async wrapCommand(command: string, opts: { signal?: AbortSignal } = {}): Promise<WrappedCommand | null> {
     if (this.isOsSandboxActive()) {
-      if (!this.initialized) {
-        await ensureInitialized(buildRuntimeConfig({ writablePaths: [this.workspace.root] }))
-        this.initialized = true
+      // 优雅降级:初始化/包裹一旦抛错(缺依赖/环境不支持),记 degraded 并退回明文执行,绝不因沙箱阻断命令。
+      try {
+        if (!this.initialized) {
+          await ensureInitialized(buildRuntimeConfig({ writablePaths: [this.workspace.root] }))
+          this.initialized = true
+        }
+        return await wrapArgv(command, opts.signal)
+      } catch {
+        this.degraded = true
+        return null
       }
-      return await wrapArgv(command, opts.signal)
     }
     if (this.platform === 'win32') {
       return this.winLauncher.wrap(command, opts) // W3:null(回退明文);W3b:Job Object
