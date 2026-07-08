@@ -1,7 +1,6 @@
-export interface PermissionRuleValue {
-  toolName: string
-  ruleContent?: string
-}
+import type { PermissionRuleValue } from './types'
+
+export type { PermissionRuleValue } from './types'
 
 type ShellPermissionRule =
   | { type: 'exact'; command: string }
@@ -94,6 +93,13 @@ export function unescapeRuleContent(content: string): string {
     .replace(/\\\\/g, '\\')
 }
 
+export function escapeRuleContent(content: string): string {
+  return content
+    .replace(/\\/g, '\\\\')
+    .replace(/\(/g, '\\(')
+    .replace(/\)/g, '\\)')
+}
+
 export function permissionRuleValueFromString(ruleString: string): PermissionRuleValue {
   const value = ruleString.trim()
   const openParenIndex = findFirstUnescapedChar(value, '(')
@@ -110,6 +116,11 @@ export function permissionRuleValueFromString(ruleString: string): PermissionRul
   const rawContent = value.slice(openParenIndex + 1, closeParenIndex)
   if (rawContent === '' || rawContent === '*') return { toolName }
   return { toolName, ruleContent: unescapeRuleContent(rawContent) }
+}
+
+export function permissionRuleValueToString(ruleValue: PermissionRuleValue): string {
+  if (!ruleValue.ruleContent) return ruleValue.toolName
+  return `${ruleValue.toolName}(${escapeRuleContent(ruleValue.ruleContent)})`
 }
 
 export function parseToolListFromCLI(values: string[] | undefined): string[] {

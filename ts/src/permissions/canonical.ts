@@ -11,7 +11,7 @@ export function stableStringify(value: unknown): string {
   return JSON.stringify(sort(value))
 }
 
-export const CANONICAL_PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'bypassPermissions'] as const
+export const CANONICAL_PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk'] as const
 export const LEGACY_PERMISSION_MODE_ALIASES = ['ask', 'auto_files', 'full'] as const
 
 export type CanonicalPermissionMode = typeof CANONICAL_PERMISSION_MODES[number]

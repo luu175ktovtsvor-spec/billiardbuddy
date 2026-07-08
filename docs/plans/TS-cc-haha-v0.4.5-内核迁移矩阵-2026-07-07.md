@@ -35,7 +35,7 @@
 | Network settings | `networkSettings.ts`, `utils/proxy.ts` | `ts/src/model/networkSettings.ts` | direct/system/manual;loopback 永远 no_proxy | ✅已落 |
 | Session API | `server/api/sessions.ts`, `services/sessionService.ts` | `ts/src/server/services/sessionService.ts`, `/sessions/*` | JSONL transcript + metadata cache + event replay + history restore | 🟡metadata/transcript/event replay/command invocation 已落 |
 | WebSocket turn runner | `server/ws/handler.ts`, conversation service | `ts/src/server/ws/*` + 当前 SSE `/agent/run` | user_message/prewarm/interrupt/replay 事件模型 | ✅SSE + WS run/replay/interrupt + prewarm + 旧前端 task SSE 兼容层已落 |
-| Permissions | `utils/permissions/**`, command metadata | `ts/src/permissions/**`, `ts/src/tools/dangerousCommand.ts` | bypass/ask/deny/必须交互,命令风险元数据 | 🟡bypass/基础审批已落 |
+| Permissions | `utils/permissions/**`, command metadata | `ts/src/permissions/**`, `ts/src/tools/dangerousCommand.ts` | 五档模式、rule source、allow/deny/ask、bypass/dontAsk、命令风险元数据 | 🟡五档 + 结构化规则/更新 + default file ask 已落;path-scoped rules/UI/持久化仍待补 |
 | Bash/File/LSP/PowerShell/REPL tools | `tools/BashTool/**`, `tools/PowerShellTool/**`, `tools/REPLTool/**`, `utils/powershell/**`, `FileReadTool/**`, `FileWriteTool/**`, `NotebookEditTool/**`, `tools/LSPTool/**` | `ts/src/tools/*` | Bash/PowerShell 解析与审批、REPL primitive 编排、sandbox、Read pages 容错、编辑 diff/回滚、notebook cell 编辑、符号/定义/引用入口 | ✅基础工具 + Bash 风险分类 + PowerShell 专用工具层/静态风险审批 + `REPL` 结构化批量 primitive 编排 + edit_file 读前置/陈旧检测/归一化匹配 + `NotebookEdit` + `LSP` fallback + fileHistory 链式快照/diff/restore 已落;PowerShell AST parser/规则语法、REPL VM/bridge/隐藏 primitive 模式仍待深化 |
 | Context resilience | `services/compact/**`, query compaction | `ts/src/context/*`, `ts/src/memory/*` | 分级压缩、结构化摘要、大结果落盘、熔断 | 🟡W4c 基础 + session archive/summary + 九段结构化压缩 + 最近文件恢复 + 大工具结果落盘已落 |
 | Skills/commands | `server/api/skills.ts`, `commands.ts`, Skill tools | `ts/src/skills/*`, `ts/src/commands/*` | discover/load/execute/历史恢复;skillify 是产品护城河 | ✅SKILL.md loader + command loader + 工作区 `.claude/.codex` commands + slash 自动展开/list/read/create_skill + `/model` 后端已落 |
@@ -3094,13 +3094,15 @@
 - `server/evals/README.md` 已更新退场边界:内容质量/北极星/业务场景 Python eval 暂留,命令安全/工具权限/文件执行类回归继续往 TS 测试和 TS smoke 集中收敛。
 - Python 文件数降到 393。
 
-## 3.362 2026-07-08 CC 权限四档/acceptEdits 语义对齐
+## 3.362 2026-07-08 CC 权限模式/acceptEdits 语义对齐(历史记录,已被 3.399 修正)
 
-- 对照源:`~/Desktop/cc-haha-ref/src/types/permissions.ts` 与 `src/tools/BashTool/modeValidation.ts`。关键行为:CC 外部权限四档为 `default`、`acceptEdits`、`plan`、`bypassPermissions`;其中 `acceptEdits` 会自动接受本机文件编辑类 Bash 动作,审批闸主要卡外部触达、不可逆/危险动作。
-- TS 权限瀑布调整:`approvalClass:"file"` 的本机可逆动作在默认交互档也直接 allow,不再只有 `auto_files`/`full` 放行;`outreach`、`destructive`、`forceConfirm`、必须用户交互仍会 ask/deny。
-- `run_command` 行为同步:如 `echo hi > note.txt` 这类工作区文件写入在默认档直接执行;`curl ... > out.txt` 仍按外部触达审批;`rm -rf build` 仍按不可逆/危险审批或硬拒。
-- 前端权限文案同步到 CC 口径:默认/接受修改都说明“本机读写直接做,对外和不可逆动作先问”,避免 UI 继续暗示每个文件修改都要弹卡。
-- 兼容边界:旧 API/旧 localStorage/旧 agent frontmatter 仍接受 `ask/auto_files/full`,但会归一到 `default/acceptEdits/bypassPermissions`;新前端和新文档只展示 CC 四档名。
+> 2026-07-09 修正:本节“四档”和“default 文件类直接 allow”的判断已被 3.399 覆盖。cc 当前外部模式包含 `dontAsk`;default 未命中 allow 规则时应对 file 类动作 ask,`acceptEdits` 才自动接受编辑。
+
+- 当时对照源:`~/Desktop/cc-haha-ref/src/types/permissions.ts` 与 `src/tools/BashTool/modeValidation.ts`;后续复核确认 cc 当前外部模式应包含 `dontAsk`,详见 3.399。
+- 当时曾把 `approvalClass:"file"` 在 default 也直接 allow;该旧差异已撤销。当前 default 未命中 allow 规则时 ask,`acceptEdits/auto_files` 才放行 file 类动作。
+- 当时 `echo hi > note.txt` 在默认档直接执行;当前行为已改为 default ask、acceptEdits allow;外联/不可逆/强确认继续 ask/deny。
+- 前端权限文案已在 3.399 同步为 default 改动先问、acceptEdits 自动接受编辑。
+- 兼容边界:旧 API/旧 localStorage/旧 agent frontmatter 仍接受 `ask/auto_files/full`,但会归一到 `default/acceptEdits/bypassPermissions`;新前端和新文档展示 CC 五档名。
 
 ## 3.363 2026-07-08 旧 Python harness 轨迹 eval 退场
 
@@ -3110,13 +3112,15 @@
 - `server/evals/README.md` 已把 `harness_eval.py` 加入已退役清单,明确 coding-agent 命令安全/工具权限/文件执行/轨迹对抗继续集中到 TS 测试和 TS smoke。
 - Python 文件数降到 392。`server/evals/architecture_live_test.py` 还牵到旧 FastAPI/真实业务问答链路,暂不删除;必须等 TS API/知识库/业务问答等价 smoke 接住后再退场。`server/evals/agent_full_scenario_test.py` 在 3.367 已由 TS agent-tools smoke 接住后删除。
 
-## 3.364 2026-07-08 CC 权限四档命名兼容落地
+## 3.364 2026-07-08 CC 权限命名兼容落地(历史记录,已被 3.399 修正)
 
-- 新增统一权限归一化层:`parsePermissionMode()` / `canonicalPermissionMode()` 接受 CC 四档 `default/acceptEdits/plan/bypassPermissions`,并兼容旧值 `ask -> default`、`auto_files -> acceptEdits`、`full -> bypassPermissions`。
-- TS server、Agent frontmatter、主循环、计划模式退出、队友计划审批响应都改为以 canonical CC 四档运行。旧请求体、旧会话、旧 frontmatter 继续可读,但内部决策和新输出统一为 CC 名称。
-- 前端输入区权限菜单改为保存/发送 `default/acceptEdits/plan/bypassPermissions`;读取旧 localStorage 时自动迁移旧三档,避免用户升级后偏好丢失。
-- `/permissions` 命令文档同步成 CC 四档口径,强调审批闸只卡对外、不可逆、强确认和必须人工交互动作。
-- 旧 Python 线的 `full` 自动花费次数闸不再保留在 TS 权限内核中:CC 四档下 `bypassPermissions` 跳过普通确认;真实不能自动执行的动作必须显式标 `forceConfirm` 或 `requiresUserInteraction`。
+> 2026-07-09 修正:本节“四档”已被 3.399 覆盖为外部五档;旧值 `ask/auto_files/full` 仍作为兼容别名,但新 UI/API/内核类型包含 `dontAsk`。
+
+- 统一权限归一化层后续已扩为 CC 外部五档:`default/acceptEdits/plan/bypassPermissions/dontAsk`,并兼容旧值 `ask -> default`、`auto_files -> acceptEdits`、`full -> bypassPermissions`。
+- TS server、Agent frontmatter、主循环、计划模式退出、队友计划审批响应都以 canonical CC 模式运行。旧请求体、旧会话、旧 frontmatter 继续可读,但内部决策和新输出统一为 CC 名称。
+- 前端输入区权限菜单保存/发送 `default/acceptEdits/plan/bypassPermissions/dontAsk`;读取旧 localStorage 时自动迁移旧三档,避免用户升级后偏好丢失。
+- `/permissions` 命令文档应同步成 CC 五档口径,强调审批闸由模式、规则、路径和强确认共同决定。
+- 旧 Python 线的 `full` 自动花费次数闸不再保留在 TS 权限内核中:`bypassPermissions` 跳过普通确认;真实不能自动执行的动作必须显式标 `forceConfirm` 或 `requiresUserInteraction`。
 
 ## 3.365 2026-07-08 CC 工作目录/全盘访问运行语义落地
 
@@ -3149,7 +3153,7 @@
 - `WelcomeScreen` 移除 `recentItems/onOpenRecent/onDeleteRecent` props,`DesktopChatShell` 删除对应打开/删除最近作品的欢迎屏分支;成品查看仍由右侧 preview、对话成品卡、最近删除/恢复链路承担,不再污染主对话入口。
 - 空态文案从功能说明改成短句:“说清目标就行;需要你拍板的地方我会停下来问。” 输入框 placeholder 改成 “说任务,或输入 /”,避免在输入区继续解释功能。
 - 专家挂载保持在 composer 常驻 `专家:通用 Agent/台球运营专家` 入口和 `+` 菜单里,符合 Work Buddy 式“选择专家后挂载到输入流”的做法;店铺资料库仍从顶栏/资料库面板进入,与专家包分开呈现。
-- 设计规范同步:欢迎区不能堆卡片墙,也不展示最近作品/任务列表;输入区文档更新为 CC 四档权限与专家挂载口径。竞品筛选文档把后台任务例子从“发布”改成“生视频”,保持“对外发布:不发布”的当前目标。
+- 设计规范同步:欢迎区不能堆卡片墙,也不展示最近作品/任务列表;输入区文档更新为 CC 权限模式与专家挂载口径。竞品筛选文档把后台任务例子从“发布”改成“生视频”,保持“对外发布:不发布”的当前目标。
 
 ## 3.369 2026-07-08 CC Bash `xargs` 只读安全门迁移
 
@@ -3191,7 +3195,7 @@
 
 ## 3.374 2026-07-08 旧 Python Agent eval/probe 退场
 
-- 删除 `server/evals/run_agent_eval.py` 与 `server/evals/agent_cases.yaml`:这套旧 Python eval 评的是 Python agent loop 的工具选择、审批闸和编排质量;当前 coding-agent 主链已迁到 TS `runAgentLoop()`、权限四档、Bash/Git 安全门和 `smoke:agent-tools`,继续保留会把旧 Python agent loop 误认成主路径。
+- 删除 `server/evals/run_agent_eval.py` 与 `server/evals/agent_cases.yaml`:这套旧 Python eval 评的是 Python agent loop 的工具选择、审批闸和编排质量;当前 coding-agent 主链已迁到 TS `runAgentLoop()`、权限五档、Bash/Git 安全门和 `smoke:agent-tools`,继续保留会把旧 Python agent loop 误认成主路径。
 - 删除 `server/evals/_stability_probe.py`:文件头已标注“用完即删”,它只是对北极星场景重复跑 N 次的临时探针;后续稳定性看 `run_northstar_eval.py --categories ... --tag ...` 多次报告对比,不再单独留 Python 脚本。
 - 保留 `run_northstar_eval.py`、`knowledge_routing_harness.py`、`architecture_live_test.py`:它们还覆盖业务内容质量、知识路由和旧 FastAPI 真实业务问答链路,在 TS/native 等价 smoke 接住前不能删除。
 - Python tracked 文件数从 379 降到 377。后续删除顺序仍是:离线脚本/旧 eval -> 已被 TS 入口覆盖的边角服务 -> 媒体/OCR/语音/视频/RAG 活链;每一批都必须先有 TS/Node/native 等价实现、调用点切换和测试/smoke 证据。
@@ -3356,6 +3360,26 @@
 - 新增 `gateway/app.test.ts`:测试注入 `MemoryUsageStore` 与假上游 fetch,覆盖缺/错令牌不打上游、对话流式消费后记账、图片每日配额、multipart content-type 保留、ARK chat/Seedream 分配额记账、AMAP key 注入、缺可选 key 返回 503、admin usage。
 - 部署同步:`gateway/deploy.sh` 从 Python venv + `uvicorn app:app` 改为 Bun + systemd 直跑 `/opt/qfgw/app.ts`;`gateway/README.md`、密钥部署清单、活台账和代码注释改为 `gateway/app.ts`。Python 文件数降到 365。
 - 验证:`bun test gateway/app.test.ts` 9 项通过;`cd ts && bun run typecheck` 通过。
+
+## 3.399 2026-07-09 CC 权限五档 + 结构化规则瀑布迁移
+
+本轮先按 cc 当前源码建立差异矩阵,再迁移确定性内核块。目标不是“审批只卡高风险动作”的口号,而是让 TS 权限上下文能承载 cc 的 mode/rule/update 语义。
+
+| 源能力 | cc 源位置 | 本项目迁移前 | 本轮落点 | 状态 | 测试/验收 | 未完成原因 | 后续路径 |
+|---|---|---|---|---|---|---|---|
+| 外部权限模式 | `~/Desktop/cc-haha-ref/src/types/permissions.ts`, `src/utils/permissions/PermissionMode.ts` | `CanonicalPermissionMode` 只有 `default/acceptEdits/plan/bypassPermissions`;旧 `ask/auto_files/full` 兼容 | `ts/src/permissions/types.ts`, `canonical.ts`, Web `PermissionMode` 增加 `dontAsk`;旧三档继续兼容 | ✅已落 | `types.test.ts`, `resolve.test.ts`;`cd ts && bun run typecheck`;`cd web && pnpm exec tsc --noEmit` | cc 内部 gated `auto/bubble` 未启用 | 后续单独评估 auto classifier/bubble 是否需要产品化 |
+| `dontAsk` 行为 | `src/utils/permissions/permissions.ts` 的 ask -> deny transformation | 未实现;未知值会回落 default | `resolvePermission()` 在 `dontAsk` 下把所有 ask 转 deny;无审批需求的只读/普通工具仍 allow | ✅已落 | `resolve.test.ts` 覆盖需确认动作直接 deny | UI 只展示模式,还没有规则管理说明卡 | 后续审批卡/权限面板补更细文案 |
+| PermissionRule source/behavior | `src/types/permissions.ts`, `src/utils/permissions/permissions.ts` | 只有 `sessionAllowedTools/sessionAllowedToolRules`,缺 `source` 和 allow/deny/ask 三类统一规则 | 新增 `PermissionRuleSource/PermissionRule/PermissionBehavior`;`ToolContext.permissionRules`;deny 优先、ask 普通模式强制提示、allow 放行 | ✅已落 | `resolve.test.ts` 覆盖 deny/ask/allow 优先级与 Bash 别名内容规则 | settings 持久化/UI 列表未接 | 迁移 `permissionsLoader.ts`、规则删除/展示、managed policy |
+| PermissionUpdate | `src/utils/permissions/PermissionUpdate.ts`, `PermissionUpdateSchema.ts` | 无结构化 add/replace/remove/setMode/addDirectories 入口 | 新增 `ts/src/permissions/permissionUpdate.ts`,支持内存态 add/replace/remove rules、setMode、add/remove directories | ✅地基已落 | `permissionUpdate.test.ts` | 只做内存态,未写 settings 文件 | 后续接设置源、审批卡“本会话允许/总是允许/总是询问/拒绝” |
+| 规则字符串往返 | `src/utils/permissions/permissionRuleParser.ts`, `shellRuleMatching.ts` | 有 parse,缺 `permissionRuleValueToString` | 新增 escape/toString round-trip;保留 `Bash(git:*)`、通配、括号转义 | ✅已落 | `permissionRules.test.ts` | legacy tool alias 表仍是小集合 | 后续补 `AgentOutputTool/BashOutputTool` 等全部旧名兼容 |
+| default vs acceptEdits 文件类语义 | `src/utils/permissions/permissions.ts`, `src/tools/BashTool/modeValidation.ts` | 旧 TS 在 default 也直接 allow `approvalClass:"file"` | default 未命中 allow 规则时 ask;`acceptEdits/auto_files` 才放行 file 类;`bypassPermissions` 仍跳过普通 ask | ✅已落 | `resolve.test.ts`, `runCommandTool.test.ts` | 文件工具 path-scoped allow/deny 仍未全量复刻 | 迁移 `pathValidation.ts`、文件工具读前置/目录授权/UI diff 规则源 |
+| Bash rule alias + wrapper 后真实命令 | `src/tools/BashTool/bashPermissions.ts`, `src/utils/permissions/shellRuleMatching.ts` | `sessionAllowedToolRules` 已支持 wrapper/env fixed-point;结构化规则不支持 `Bash` 别名 | `permissionRules` 支持 `Bash(...)` 匹配 `run_command`;继续复用现有 shell matcher | ✅已落 | `resolve.test.ts`, `permissionRules.test.ts` | 尚未全量 tree-sitter AST permission checker | 后续继续迁移完整 Bash parser/security analyzer |
+| `cd` + 只读命令分类 | `src/tools/BashTool/pathValidation.ts` 的 `compoundCommandHasCd && operationType !== read` | default file 放行掩盖了 `cd sub` 被分类成 file 的问题 | `cd/pushd/popd` 自身归 read;`cd + 写动作` 仍由 `shellCdWriteNeedsApproval()` 升级审批 | ✅已落 | `runCommandTool.test.ts` | 仍未接 cc AST 级路径约束 | 后续 tree-sitter 分析器接入后复核 |
+
+- 代码变更:`ts/src/permissions/types.ts`, `canonical.ts`, `permissionRules.ts`, `permissionUpdate.ts`, `resolve.ts`, `ts/src/tools/Tool.ts`, `ts/src/tools/dangerousCommand.ts`, `web/src/hooks/use-agent-chat.ts`, `web/src/lib/agent-copy.ts`, `web/src/lib/api.ts`, `web/src/components/desktop/desktop-composer.tsx`。
+- 行为边界:`default` 档 `echo hi > note.txt` 现在 ask;`acceptEdits/auto_files` 仍 allow;`dontAsk` 对 `curl`/写文件/ask rule 直接 deny;deny rule 即使在 `bypassPermissions` 也 deny;ask rule 在 `bypassPermissions` 下被普通旁路跳过,与 cc 当前源码一致。
+- 验证:`cd ts && bun test src/permissions/types.test.ts src/permissions/permissionRules.test.ts src/permissions/permissionUpdate.test.ts src/permissions/resolve.test.ts src/tools/runCommandTool.test.ts src/tools/powerShellTool.test.ts --timeout 120000` = 76 pass;`cd ts && bun run typecheck` 通过;`cd web && pnpm exec tsc --noEmit` 通过。
+- 未跑:UI E2E/真机手动验收未跑;本轮是权限内核和菜单类型/文案变更,后续前端审批卡/权限面板改动时补浏览器验收。
 
 ## 4. 下一批代码顺序
 

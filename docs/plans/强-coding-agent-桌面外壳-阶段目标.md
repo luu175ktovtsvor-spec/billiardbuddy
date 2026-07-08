@@ -187,9 +187,10 @@
 
 | 项 | cc 行为 | 本项目当前行为 | 是否保留差异 | 理由 | 测试 |
 |---|---|---|---|---|---|
-| 模式数量 | default/acceptEdits/plan/bypassPermissions/dontAsk + gated auto | canonical 主要 4 档 + legacy | 待定 | 需按 cc 规格补齐或说明 | permission mode tests |
+| 模式数量 | default/acceptEdits/plan/bypassPermissions/dontAsk + gated auto | canonical 五档 + legacy 三档兼容;auto/bubble 未启用 | 不保留四档差异 | `dontAsk` 已按 cc 外部模式落地;auto/bubble 等 gated 内部模式后续单独评估 | `types.test.ts`、`resolve.test.ts` |
 | bypassPermissions | 不越过 fatal/必须交互等 | 已部分补齐 | 保留并增强 | 高危动作旁路免疫 | resolve tests |
-| 文件类动作 | 由模式/规则/路径/会话授权共同决定 | 部分文件类默认放行 | 待复核 | 体验目标不能破坏路径安全 | file permission tests |
+| 规则源与行为 | allow/deny/ask 规则带 source,deny 优先,ask 可强制提示,allow 才放行 | 已有 sessionAllowedTools,缺结构化规则源 | 不保留差异 | 新增 `PermissionRule` / `PermissionUpdate` / `permissionRules` 上下文;持久化与 UI 待接 | `permissionRules.test.ts`、`permissionUpdate.test.ts`、`resolve.test.ts` |
+| 文件类动作 | 由模式/规则/路径/会话授权共同决定;default 未授权时问,acceptEdits 可自动接受编辑 | 旧实现曾在 default 放行 file 类 | 不保留旧差异 | default 已收紧为 ask,acceptEdits/auto_files 保持低摩擦 | `resolve.test.ts`、`runCommandTool.test.ts` |
 | 命令审批 | Bash/PowerShell 分类器 + 规则 + sandbox | 已迁移大量 Bash 门,未完整 | 继续迁移 | coding agent 必需 | runCommand tests |
 
 ### 6.4 审批体验目标
