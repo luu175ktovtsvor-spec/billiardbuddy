@@ -174,7 +174,10 @@ test('startBackgroundAgentRun hands off an already backgrounded foreground agent
       foreground: false,
       is_backgrounded: true,
       foreground_handoff: true,
+      handoff_tool_uses: 1,
     })
+    expect(task.progress).toBeGreaterThan(0)
+    expect(task.stage).toContain('已接续前台进度:read_file 完成')
     const done = await waitFor(async () => {
       const meta = await tasks.get('fg_handoff_1')
       return meta?.status === 'completed' ? meta : null
@@ -360,7 +363,10 @@ test('start_background_agent_task updates task stage from live agent activity', 
     })
     expect(done.progress).toBe(100)
     expect(done.stage).toBe('整理最终结果')
-    const events = await tasks.loadEvents(done.id)
+    const events = await waitFor(async () => {
+      const records = await tasks.loadEvents(done.id)
+      return records.some(record => record.event.type === 'done') ? records : null
+    })
     expect(events.map(record => record.event.type)).toEqual(['started', 'tool_call', 'tool_progress', 'tool_result', 'final', 'done'])
     expect(events.some(record => record.event.type === 'context_note' && 'text' in record.event && record.event.text.includes('wait_gate'))).toBe(false)
   } finally {

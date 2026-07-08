@@ -170,8 +170,37 @@ function progressValueForEvent(event: AgentEvent, current: number): number {
   return current
 }
 
-function createBackgroundAgentProgressReporter(update: (progress: number, stage: string) => Promise<void>) {
-  let progress = 5
+function handoffProgressFromMessages(messages: Message[]): { progress: number; stage: string; toolUseCount: number } | null {
+  let toolUseCount = 0
+  let completedToolUseCount = 0
+  let lastStage = ''
+  const toolNames = new Map<string, string>()
+
+  for (const message of messages) {
+    for (const block of message.content) {
+      if (block.type === 'tool_use') {
+        toolUseCount++
+        toolNames.set(block.id, block.name)
+        const hint = inputHint(block.input)
+        lastStage = `已接续前台进度:调用 ${block.name}${hint ? `: ${hint}` : ''}`
+      } else if (block.type === 'tool_result') {
+        completedToolUseCount++
+        const toolName = toolNames.get(block.tool_use_id) ?? 'tool'
+        lastStage = `已接续前台进度:${toolName} 完成`
+      }
+    }
+  }
+
+  if (toolUseCount === 0 && completedToolUseCount === 0) return null
+  return {
+    progress: Math.min(55, Math.max(18, 12 + toolUseCount * 4 + completedToolUseCount * 5)),
+    stage: lastStage || '已接续前台进度',
+    toolUseCount,
+  }
+}
+
+function createBackgroundAgentProgressReporter(update: (progress: number, stage: string) => Promise<void>, initialProgress = 5) {
+  let progress = Math.max(0, Math.min(95, Math.floor(initialProgress)))
   let lastStage = ''
 
   return async (event: AgentEvent): Promise<void> => {
@@ -374,6 +403,12 @@ interface BackgroundAgentRunOptions {
   forkContext?: ForkRunContext
 }
 
+interface BackgroundAgentInitialProgress {
+  progress: number
+  stage: string
+  toolUseCount: number
+}
+
 async function createOrReplaceBackgroundAgentTask(
   opts: BackgroundAgentTaskOptions,
   input: BackgroundAgentTaskInput,
@@ -381,14 +416,15 @@ async function createOrReplaceBackgroundAgentTask(
   agent: AgentDefinition,
   params: Record<string, unknown>,
   runOptions: Pick<BackgroundAgentRunOptions, 'replaceTaskId' | 'handoffTaskId'> = {},
+  initialProgress?: BackgroundAgentInitialProgress | null,
 ): Promise<TaskMeta> {
   const payload = {
     title: taskTitle(input, agent),
     kind: 'background_agent',
     conversationId: ctx.conversationId,
     workspaceRoot: ctx.workspace.root,
-    progress: 0,
-    stage: undefined,
+    progress: initialProgress?.progress ?? 0,
+    stage: initialProgress?.stage,
     params,
     result: undefined,
     error: undefined,
@@ -402,10 +438,12 @@ async function createOrReplaceBackgroundAgentTask(
     return opts.tasks.touch(existing.id, {
       ...payload,
       status: existing.status,
-      progress: existing.progress,
+      progress: Math.max(existing.progress ?? 0, payload.progress ?? 0),
+      stage: payload.stage ?? existing.stage,
       params: {
         ...existing.params,
         ...params,
+        ...(initialProgress ? { handoff_tool_uses: initialProgress.toolUseCount } : {}),
         foreground: false,
         is_backgrounded: true,
       },
@@ -442,10 +480,14 @@ export async function startBackgroundAgentRun(
       } satisfies AgentDefinition
     : pickAgent(opts.agents, input.agent)
   if (!agent) throw new Error(`start_background_agent_task 需要指定 agent;可用 agent:\n${agentList(opts.agents)}`)
+  const handoffInitialMessages = runOptions.handoffTaskId && input.initialMessages?.length ? input.initialMessages : []
+  const effectiveInitialMessages = handoffInitialMessages.length > 0 ? handoffInitialMessages : initialMessages
+  const forkInitialMessages = handoffInitialMessages.length > 0 ? [] : runOptions.forkContext?.initialMessages ?? []
+  const handoffInitialProgress = handoffInitialMessages.length > 0 ? handoffProgressFromMessages(handoffInitialMessages) : null
   let task = await createOrReplaceBackgroundAgentTask(opts, input, ctx, agent, backgroundTaskParams(input, agent, {
     ...extraParams,
     ...(runOptions.forkContext ? { fork_context: true } : {}),
-  }), runOptions)
+  }), runOptions, handoffInitialProgress)
   const stableAgentId = stringTaskParam(task, 'agent_id') || stringTaskParam(task, 'agentId') || task.id
   if (!stringTaskParam(task, 'agent_id')) {
     task = await opts.tasks.touch(task.id, { params: { ...task.params, agent_id: stableAgentId } })
@@ -485,9 +527,6 @@ export async function startBackgroundAgentRun(
   const steerInbox: string[] = []
   const detachSteerInbox = opts.tasks.attachSteerInbox(task.id, steerInbox)
   const hooks = mergeHookRegistries(opts.hooks, agent.hooks)
-  const handoffInitialMessages = runOptions.handoffTaskId && input.initialMessages?.length ? input.initialMessages : []
-  const effectiveInitialMessages = handoffInitialMessages.length > 0 ? handoffInitialMessages : initialMessages
-  const forkInitialMessages = handoffInitialMessages.length > 0 ? [] : runOptions.forkContext?.initialMessages ?? []
   if (initialContentReplacementRecords.length > 0) {
     await opts.tasks.transcript(task.id).seedContentReplacementRecords(initialContentReplacementRecords)
   }
@@ -504,9 +543,9 @@ export async function startBackgroundAgentRun(
     const updateProgress = async (progress: number, stage: string) => {
       await opts.tasks.touch(task.id, { progress, stage }).catch(() => undefined)
     }
-    const reportProgress = createBackgroundAgentProgressReporter(updateProgress)
+    const reportProgress = createBackgroundAgentProgressReporter(updateProgress, handoffInitialProgress?.progress ?? 5)
     try {
-      await updateProgress(5, `启动 ${agent.name} 子代理`)
+      if (!handoffInitialProgress) await updateProgress(5, `启动 ${agent.name} 子代理`)
       agentMcp = await loadAgentMcpRuntime({
         agent,
         baseTools: baseAgentTools,
