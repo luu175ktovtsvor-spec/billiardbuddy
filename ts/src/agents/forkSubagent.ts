@@ -7,6 +7,14 @@ export const FORK_DIRECTIVE_PREFIX = 'Your directive: '
 
 const FORK_PLACEHOLDER_RESULT = 'Fork started - processing in background'
 
+function envTruthy(value: string | undefined): boolean {
+  return value === '1' || value === 'true' || value === 'yes' || value === 'on'
+}
+
+export function isForkSubagentEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return envTruthy(env.DESKTOP_AGENT_FORK_SUBAGENT) || envTruthy(env.CC_HAHA_FORK_SUBAGENT)
+}
+
 export function isInForkChild(messages: Message[]): boolean {
   return messages.some(message =>
     message.role === 'user' &&
