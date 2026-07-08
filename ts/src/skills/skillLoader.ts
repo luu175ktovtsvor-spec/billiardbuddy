@@ -1,6 +1,7 @@
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { extractDescription, parseMarkdownDocument, stringArrayField, stringField } from '../commands/frontmatter'
+import { normalizeAllowedTools } from '../commands/allowedTools'
 import type { PromptCommand } from '../commands/types'
 import type { Tool, ToolContext } from '../tools/Tool'
 
@@ -43,6 +44,11 @@ function yamlArray(values: string[] | undefined): string | undefined {
   return `[${values.map(quoteYaml).join(', ')}]`
 }
 
+export function formatUseSkillResult(skill: PromptCommand, prompt: string): string {
+  if (!skill.allowedTools || skill.allowedTools.length === 0) return prompt
+  return `${prompt}\n\n<skill_allowed_tools skill="${xmlAttr(skill.name)}">\n${skill.allowedTools.map(tool => `- ${tool}`).join('\n')}\n</skill_allowed_tools>`
+}
+
 export async function loadSkillFile(filePath: string, source: PromptCommand['source'] = 'skills'): Promise<PromptCommand> {
   const raw = await readFile(filePath, 'utf8')
   const doc = parseMarkdownDocument(raw)
@@ -50,7 +56,7 @@ export async function loadSkillFile(filePath: string, source: PromptCommand['sou
   const name = safeName(stringField(doc.frontmatter, 'name') ?? basename(baseDir))
   const description = stringField(doc.frontmatter, 'description') ?? extractDescription(doc.body) ?? name
   const whenToUse = stringField(doc.frontmatter, 'whenToUse') ?? stringField(doc.frontmatter, 'when_to_use')
-  const allowedTools = stringArrayField(doc.frontmatter, 'allowedTools') ?? stringArrayField(doc.frontmatter, 'allowed_tools')
+  const allowedTools = normalizeAllowedTools(stringArrayField(doc.frontmatter, 'allowedTools') ?? stringArrayField(doc.frontmatter, 'allowed_tools'))
   const model = stringField(doc.frontmatter, 'model')
   const context = stringField(doc.frontmatter, 'context')
   const agent = stringField(doc.frontmatter, 'agent')
@@ -198,7 +204,7 @@ export function createSkillTools(library: SkillLibrary, opts: { skillRoot?: stri
       if (!skill) return `没有找到技能「${name}」。可先调用 list_skills 查看可用技能。`
       const args = typeof input?.args === 'string' ? input.args : ''
       if (opts.executeSkill) return await opts.executeSkill(skill, args, ctx)
-      return await skill.getPrompt(args, ctx)
+      return formatUseSkillResult(skill, await skill.getPrompt(args, ctx))
     },
   }
 
@@ -300,4 +306,12 @@ function clampLimit(value: number | undefined, fallback: number): number {
   if (value === undefined) return fallback
   if (!Number.isFinite(value) || value <= 0) return fallback
   return Math.max(1, Math.min(200, Math.floor(value)))
+}
+
+function xmlAttr(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
 }

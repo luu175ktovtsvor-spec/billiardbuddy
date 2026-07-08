@@ -65,6 +65,7 @@ test('createSkillTools:use_skill executes inline skills and accepts args', async
     mkdirSync(join(root, 'report'), { recursive: true })
     writeFileSync(join(root, 'report', 'SKILL.md'), `---
 description: Write reports
+allowedTools: [Read, "Bash(git:*)"]
 ---
 Use store facts.
 `)
@@ -75,6 +76,10 @@ Use store facts.
     expect(out).toContain('Use store facts')
     expect(out).toContain('用户给这个技能的参数')
     expect(out).toContain('今天')
+    expect(out).toContain('<skill_allowed_tools skill="report">')
+    expect(out).toContain('- read_file')
+    expect(out).toContain('- read_many_files')
+    expect(out).toContain('- run_command')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

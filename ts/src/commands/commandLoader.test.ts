@@ -43,7 +43,7 @@ test('loadCommandsDir scans markdown slash commands with frontmatter', async () 
 name: daily-report
 description: Write a daily report
 whenToUse: 每日复盘
-allowedTools: [read_file]
+allowedTools: [Read, "Bash(git:*)"]
 context: fork
 agent: reviewer
 ---
@@ -57,7 +57,7 @@ Summarize store data.
       name: 'daily-report',
       description: 'Write a daily report',
       whenToUse: '每日复盘',
-      allowedTools: ['read_file'],
+      allowedTools: ['read_file', 'read_many_files', 'run_command'],
       context: 'fork',
       agent: 'reviewer',
       source: 'commands',
