@@ -367,6 +367,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     messages.push({ role: 'assistant', content: asstContent })
 
     // 逐个过闸,tool_result 块累积;只读安全批次并行跑,稍后装单条 user 消息(tool_result 紧贴 tool_use)
+    ctx.messages = messages.slice()
     const toolResults: ToolResultBlock[] = []
     const parallelReadOnly: PreparedToolCall[] = []
     const flushParallelReadOnly = async (): Promise<AgentEvent[]> => {

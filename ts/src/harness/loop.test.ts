@@ -14,7 +14,7 @@ import { executeApproved, handleReject } from './loop'
 import { createDenialTrackingState, resetDenialStore } from '../permissions/denialTracking'
 import { signApproval } from '../permissions/approval'
 import type { Tool } from '../tools/Tool'
-import { userText } from '../types/message'
+import { textBlock, userText } from '../types/message'
 import { readStoredToolResultTool } from '../tools/storedToolResultTool'
 import { TeamService } from '../tasks/teamService'
 import { Transcript } from '../memory/transcript'
@@ -183,6 +183,44 @@ test('streams tool_progress for a running non-parallel tool with the tool call i
     ['cmd1', 'stdout', 'first line\n'],
     ['cmd1', 'stderr', 'warning line\n'],
   ])
+})
+
+test('passes current message snapshot to tool execution', async () => {
+  let seenMessages: import('../types/message').Message[] | undefined
+  const inspectTool: Tool = {
+    name: 'inspect_messages',
+    description: '',
+    inputSchema: { type: 'object' },
+    isReadOnly: false,
+    async execute(_input, ctx) {
+      seenMessages = ctx.messages?.slice()
+      return 'snapshot ok'
+    },
+  }
+  const model = scriptedModel([
+    { kind: 'tool_calls', text: 'checking context', calls: [{ id: 'inspect-1', name: 'inspect_messages', input: {} }] },
+    { kind: 'final', text: 'done' },
+  ])
+
+  await collect(runAgentLoop({
+    model,
+    registry: new ToolRegistry([inspectTool]),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+  }))
+
+  expect(seenMessages).toBeTruthy()
+  expect(seenMessages![0]).toEqual({ role: 'user', content: [textBlock('x')] })
+  expect(seenMessages!.at(-1)).toEqual({
+    role: 'assistant',
+    content: [
+      textBlock('checking context'),
+      { type: 'tool_use', id: 'inspect-1', name: 'inspect_messages', input: {} },
+    ],
+  })
+  const secondInputText = model.received[1]!.messages.flatMap(message => message.content)
+  expect(secondInputText.some(block => block.type === 'tool_result' && block.content === 'snapshot ok')).toBe(true)
 })
 
 test('stores oversized storable tool results and feeds only a preview back to the model', async () => {
