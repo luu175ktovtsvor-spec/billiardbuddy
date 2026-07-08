@@ -3,6 +3,7 @@ import { formatTeammateMessages, generateRequestId, TEAM_LEAD_NAME, TeamService 
 import type { BackgroundAgentTargetResolution, TaskMeta, TaskService } from './taskService'
 import { parsePeerAddress } from './peerAddress'
 import { sendToUdsSocket } from './udsClient'
+import type { UdsPeerRecord } from './udsPeerRegistry'
 
 type StructuredMessage =
   | { type: 'shutdown_request'; reason?: string }
@@ -32,6 +33,7 @@ interface ListPeersInput {
 
 export interface TeamToolsOptions {
   tasks?: TaskService
+  udsPeers?: { list(): Promise<UdsPeerRecord[]> }
   resumeBackgroundAgent?: (task: TaskMeta, message: string, ctx: ToolContext) => Promise<{ task: TaskMeta }>
 }
 
@@ -145,6 +147,21 @@ function peerJson(peer: Awaited<ReturnType<TeamService['listPeers']>>['peers'][n
   }
 }
 
+function udsPeerJson(peer: UdsPeerRecord): Record<string, unknown> {
+  return {
+    id: peer.id,
+    target: peer.target,
+    socket_path: peer.socketPath,
+    conversation_id: peer.conversationId,
+    workspace_root: peer.workspaceRoot,
+    pid: peer.pid,
+    explicit: peer.explicit,
+    source: peer.source,
+    registered_at: peer.registeredAt,
+    updated_at: peer.updatedAt,
+  }
+}
+
 function peerXmlLine(peer: Awaited<ReturnType<TeamService['listPeers']>>['peers'][number]): string {
   return [
     '<peer',
@@ -169,6 +186,28 @@ function peerXmlLine(peer: Awaited<ReturnType<TeamService['listPeers']>>['peers'
   ].join('')
 }
 
+function udsPeerXmlLine(peer: UdsPeerRecord): string {
+  return [
+    '<peer',
+    optionalXmlAttr('name', peer.target),
+    optionalXmlAttr('agent_id', peer.id),
+    optionalXmlAttr('target', peer.target),
+    optionalXmlAttr('role', 'cross-session'),
+    optionalXmlAttr('backend_type', 'uds'),
+    optionalXmlAttr('active', true),
+    optionalXmlAttr('is_lead', false),
+    optionalXmlAttr('unread_messages', 0),
+    optionalXmlAttr('session_id', peer.conversationId),
+    optionalXmlAttr('cwd', peer.workspaceRoot),
+    optionalXmlAttr('socket_path', peer.socketPath),
+    optionalXmlAttr('pid', peer.pid),
+    optionalXmlAttr('explicit', peer.explicit),
+    optionalXmlAttr('source', peer.source),
+    optionalXmlAttr('joined_at', peer.registeredAt),
+    ' />',
+  ].join('')
+}
+
 function peerLegacyLine(peer: Awaited<ReturnType<TeamService['listPeers']>>['peers'][number]): string {
   return [
     `- ${peer.name} (${peer.agentId})`,
@@ -179,6 +218,18 @@ function peerLegacyLine(peer: Awaited<ReturnType<TeamService['listPeers']>>['pee
     peer.sessionId ? `session=${peer.sessionId}` : undefined,
     peer.worktreePath ? `worktree=${peer.worktreePath}` : undefined,
     `target=${peerTarget(peer.name)}`,
+  ].filter(Boolean).join(' ')
+}
+
+function udsPeerLegacyLine(peer: UdsPeerRecord): string {
+  return [
+    `- ${peer.target} (${peer.id})`,
+    'active=true',
+    'backend=uds',
+    peer.conversationId ? `session=${peer.conversationId}` : undefined,
+    peer.workspaceRoot ? `cwd=${peer.workspaceRoot}` : undefined,
+    `socket=${peer.socketPath}`,
+    `target=${peer.target}`,
   ].filter(Boolean).join(' ')
 }
 
@@ -538,7 +589,7 @@ export function createTeamTools(teams: TeamService, options: TeamToolsOptions = 
 
   const listPeers: Tool<ListPeersInput> = {
     name: 'ListPeers',
-    description: 'List local team members, SendMessage targets, unread mailbox counts, and peer metadata. Returns <peers> plus a parseable <peers_json> block. Input: { team_name?, include_inbox? }; camel-case aliases are accepted.',
+    description: 'List local team members, UDS cross-session peers, SendMessage targets, unread mailbox counts, and peer metadata. Returns <peers> plus a parseable <peers_json> block. Input: { team_name?, include_inbox? }; camel-case aliases are accepted.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -555,6 +606,7 @@ export function createTeamTools(teams: TeamService, options: TeamToolsOptions = 
       const includeInbox = semanticBoolean(args.include_inbox ?? args.includeInbox, false)
       const teamInfo = await teams.listPeers(requestedTeamName)
       const { teamName, peers } = teamInfo
+      const udsPeers = await options.udsPeers?.list().catch(() => []) ?? []
       const inboxBlocks: string[] = []
       if (includeInbox && teamName) {
         for (const peer of peers) {
@@ -576,10 +628,15 @@ export function createTeamTools(teams: TeamService, options: TeamToolsOptions = 
         description: teamInfo.description,
         created_at: teamInfo.createdAt,
         active_team: teamInfo.isActiveTeam,
-        peer_count: peers.length,
+        peer_count: peers.length + udsPeers.length,
+        local_peer_count: peers.length,
+        uds_peer_count: udsPeers.length,
         peers: peers.map(peerJson),
+        uds_peers: udsPeers.map(udsPeerJson),
         send_message: {
           local_targets: peers.map(peer => peerTarget(peer.name)),
+          uds_targets: udsPeers.map(peer => peer.target),
+          all_targets: [...peers.map(peer => peerTarget(peer.name)), ...udsPeers.map(peer => peer.target)],
           broadcast_target: '*',
           cross_session_targets_enabled: true,
           uds_targets_enabled: true,
@@ -588,15 +645,19 @@ export function createTeamTools(teams: TeamService, options: TeamToolsOptions = 
       }
       return [
         [
-          `<peers team="${xmlAttr(teamName ?? '')}" count="${peers.length}"`,
+          `<peers team="${xmlAttr(teamName ?? '')}" count="${peers.length + udsPeers.length}"`,
           optionalXmlAttr('active_team', teamInfo.isActiveTeam),
           optionalXmlAttr('lead_agent_id', teamInfo.leadAgentId),
           optionalXmlAttr('lead_session_id', teamInfo.leadSessionId),
           optionalXmlAttr('team_file_path', teamInfo.teamFilePath),
+          optionalXmlAttr('local_peer_count', peers.length),
+          optionalXmlAttr('uds_peer_count', udsPeers.length),
           '>',
         ].join(''),
         ...peers.map(peerXmlLine),
+        ...udsPeers.map(udsPeerXmlLine),
         ...peers.map(peerLegacyLine),
+        ...udsPeers.map(udsPeerLegacyLine),
         '</peers>',
         peersJsonBlock(data),
         ...inboxBlocks.filter(Boolean),

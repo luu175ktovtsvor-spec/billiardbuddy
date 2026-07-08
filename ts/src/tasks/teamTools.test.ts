@@ -16,6 +16,8 @@ import { TaskService } from './taskService'
 import { TeamService } from './teamService'
 import { createTeamTools } from './teamTools'
 import { resumeBackgroundAgentTask } from './taskTools'
+import { startUdsInbox } from './udsInbox'
+import { UdsPeerRegistry } from './udsPeerRegistry'
 
 function fixture(): {
   root: string
@@ -180,19 +182,72 @@ test('ListPeers exposes structured peer metadata and inbox previews', async () =
   }
 })
 
+test('ListPeers exposes live UDS cross-session peer targets', async () => {
+  const { root, ctx } = fixture()
+  const inbox: string[] = []
+  const registry = new UdsPeerRegistry(root)
+  const socketPath = join(root, 'live-peer.sock')
+  const server = await startUdsInbox({ socketPath, inbox })
+  try {
+    await registry.register({
+      socketPath,
+      conversationId: 'peer-conv',
+      workspaceRoot: root,
+      explicit: true,
+      source: 'test',
+    })
+    const registryTools = createTeamTools(new TeamService(root), { udsPeers: registry })
+    const output = await registryTools[3]!.execute({}, ctx)
+    expect(output).toContain('<peers team="" count="1" active_team="false" local_peer_count="0" uds_peer_count="1">')
+    expect(output).toContain(`target="uds:${socketPath}"`)
+    expect(output).toContain('backend_type="uds"')
+    expect(output).toContain(`socket_path="${socketPath}"`)
+
+    const data = extractPeersJson(output)
+    expect(data).toMatchObject({
+      active_team: false,
+      peer_count: 1,
+      local_peer_count: 0,
+      uds_peer_count: 1,
+      uds_peers: [expect.objectContaining({
+        target: `uds:${socketPath}`,
+        socket_path: socketPath,
+        conversation_id: 'peer-conv',
+        workspace_root: root,
+        explicit: true,
+      })],
+      send_message: {
+        local_targets: [],
+        uds_targets: [`uds:${socketPath}`],
+        all_targets: [`uds:${socketPath}`],
+        cross_session_targets_enabled: true,
+        uds_targets_enabled: true,
+      },
+    })
+  } finally {
+    await server.close().catch(() => undefined)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('ListPeers returns a parseable empty peer set without an active team', async () => {
   const { root, tools, ctx } = fixture()
   const [, , , listPeers] = tools
   try {
     const output = await listPeers!.execute({}, ctx)
-    expect(output).toContain('<peers team="" count="0" active_team="false">')
+    expect(output).toContain('<peers team="" count="0" active_team="false" local_peer_count="0" uds_peer_count="0">')
     expect(output).toContain('</peers>')
     expect(extractPeersJson(output)).toMatchObject({
       active_team: false,
       peer_count: 0,
+      local_peer_count: 0,
+      uds_peer_count: 0,
       peers: [],
+      uds_peers: [],
       send_message: {
         local_targets: [],
+        uds_targets: [],
+        all_targets: [],
         broadcast_target: '*',
         cross_session_targets_enabled: true,
         uds_targets_enabled: true,

@@ -51,6 +51,7 @@ import { createStructuredTaskTools } from '../tasks/taskListTools'
 import { TeamService } from '../tasks/teamService'
 import { createTeamTools } from '../tasks/teamTools'
 import { startUdsInbox, type UdsInboxServer } from '../tasks/udsInbox'
+import { UdsPeerRegistry, type UdsPeerRecord } from '../tasks/udsPeerRegistry'
 import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
 import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
@@ -790,6 +791,7 @@ export function startServer(opts: StartServerOptions = {}) {
   })
   const taskLists = new TaskListService(join(stateRoot, 'task-lists'))
   const teams = new TeamService(stateRoot)
+  const udsPeers = new UdsPeerRegistry(stateRoot)
   const media = new MediaJobService({
     tasks,
     stateRoot,
@@ -1041,12 +1043,20 @@ export function startServer(opts: StartServerOptions = {}) {
     const workspace = workspaceForActiveWorktree(workspaceFromBody(rawBody), conversationId)
     const steerInbox = steerInboxes.get(conversationId) ?? []
     steerInboxes.set(conversationId, steerInbox)
-    const messagingSocketPath = messagingSocketPathFrom(rawBody, opts.env ?? process.env)
+    const explicitMessagingSocketPath = messagingSocketPathFrom(rawBody, opts.env ?? process.env)
+    const messagingSocketPath = explicitMessagingSocketPath || udsPeers.defaultSocketPath(conversationId)
     let udsInbox: UdsInboxServer | undefined
+    let udsPeer: UdsPeerRecord | undefined
     let udsInboxWarning = ''
     if (messagingSocketPath) {
       try {
         udsInbox = await startUdsInbox({ socketPath: messagingSocketPath, inbox: steerInbox })
+        udsPeer = await udsPeers.register({
+          socketPath: udsInbox.socketPath,
+          conversationId,
+          workspaceRoot: workspace.root,
+          explicit: !!explicitMessagingSocketPath,
+        })
       } catch (err) {
         udsInboxWarning = `UDS messaging socket failed to start:${err instanceof Error ? err.message : String(err)}`
       }
@@ -1130,6 +1140,7 @@ export function startServer(opts: StartServerOptions = {}) {
     let backgroundAgentOptions: BackgroundAgentTaskOptions | undefined
     const teamTools = createTeamTools(teams, {
       tasks,
+      udsPeers,
       resumeBackgroundAgent: (task, message, toolCtx) => {
         if (!backgroundAgentOptions) throw new Error('background agent runner is not available')
         return resumeBackgroundAgentTask(backgroundAgentOptions, task, message, toolCtx)
@@ -1244,6 +1255,7 @@ export function startServer(opts: StartServerOptions = {}) {
         yield await record({ type: 'context_note', text: `任务执行失败:${detail}` })
         yield await record({ type: 'final', text: `任务执行失败:${detail}` })
       } finally {
+        if (udsPeer) await udsPeers.unregister(udsPeer.id).catch(() => undefined)
         await udsInbox?.close().catch(() => undefined)
         await closeMcpConnections(mcpTools.connections)
         const done = await record({ type: 'done' })
