@@ -11,6 +11,12 @@ export interface AgentSummarySnapshot {
   tools: ToolSpec[]
 }
 
+export interface AgentCacheSafeParams {
+  system: string
+  tools: ToolSpec[]
+  forkContextMessages: Message[]
+}
+
 export interface AgentSummaryOptions {
   taskId: string
   model: Model
@@ -45,7 +51,8 @@ function buildSummaryPrompt(previousSummary: string | null): string {
 
 export function startAgentSummarization(options: AgentSummaryOptions): AgentSummaryController {
   const intervalMs = Math.max(1, Math.floor(options.intervalMs ?? DEFAULT_AGENT_SUMMARY_INTERVAL_MS))
-  let latestSnapshot: AgentSummarySnapshot | null = null
+  let baseParams: Omit<AgentCacheSafeParams, 'forkContextMessages'> | null = null
+  let latestForkContextMessages: Message[] = []
   let timeoutId: ReturnType<typeof setTimeout> | null = null
   let summaryAbortController: AbortController | null = null
   let stopped = false
@@ -75,15 +82,21 @@ export function startAgentSummarization(options: AgentSummaryOptions): AgentSumm
   async function runSummary(): Promise<void> {
     if (stopped) return
     try {
-      const snapshot = latestSnapshot
-      if (!snapshot || snapshot.messages.length < 3) return
-      const messages = filterSummaryMessages(snapshot.messages)
+      if (!baseParams || latestForkContextMessages.length < 3) return
+      const messages = filterSummaryMessages(latestForkContextMessages)
       if (messages.length < 3) return
+      const cacheSafeParams: AgentCacheSafeParams = {
+        ...baseParams,
+        forkContextMessages: messages,
+      }
       summaryAbortController = new AbortController()
       const step = await options.model.step({
-        system: snapshot.system,
-        messages: [...messages, userText(buildSummaryPrompt(previousSummary))],
-        tools: snapshot.tools,
+        system: cacheSafeParams.system,
+        messages: [
+          ...cacheSafeParams.forkContextMessages,
+          userText(buildSummaryPrompt(previousSummary)),
+        ],
+        tools: cacheSafeParams.tools,
         signal: summaryAbortController.signal,
       })
       if (stopped) return
@@ -103,11 +116,11 @@ export function startAgentSummarization(options: AgentSummaryOptions): AgentSumm
 
   return {
     updateSnapshot(snapshot) {
-      latestSnapshot = {
+      baseParams = {
         system: snapshot.system,
-        messages: snapshot.messages.slice(),
         tools: snapshot.tools.slice(),
       }
+      latestForkContextMessages = snapshot.messages.slice()
     },
     stop() {
       options.signal?.removeEventListener('abort', abortListener)

@@ -351,6 +351,13 @@ test('start_background_agent_task periodically writes cache-safe progress summar
     const summaryStep = received[2]!
     expect(summaryStep.system).toBe(mainSecond.system)
     expect(summaryStep.tools.map(tool => tool.name)).toEqual(mainSecond.tools.map(tool => tool.name))
+    expect(summaryStep.messages.some(message =>
+      message.role === 'assistant' &&
+      message.content.some(block => block.type === 'text' && block.text === 'inspect'),
+    )).toBe(true)
+    expect(summaryStep.messages.some(message =>
+      message.content.some(block => block.type === 'tool_result' && block.tool_use_id === 'inspect1'),
+    )).toBe(true)
     const summaryPrompt = summaryStep.messages.at(-1)?.content[0]
     expect(summaryPrompt).toMatchObject({ type: 'text' })
     expect(summaryPrompt?.type === 'text' ? summaryPrompt.text : '').toContain('Do not use tools')
