@@ -1,6 +1,6 @@
 // preload:用 contextBridge 把【白名单】原生能力暴露成 window.electron.*
 // 渲染层(web 前端)只能调这些函数,拿不到 Node/ipcRenderer 本体。
-// web 前端检测 window.electron 存在 → 启用"发布/剪辑"入口;浏览器版没有它,自动隐藏。
+// web 前端检测 window.electron 存在 → 启用桌面本地能力;浏览器版没有它,自动隐藏。
 
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
@@ -70,20 +70,6 @@ contextBridge.exposeInMainWorld("electron", {
     retry: () => ipcRenderer.invoke("model:retry"),
     // 订阅进度推送(返回取消订阅函数)
     onProgress: (cb) => on("model:progress", cb),
-  },
-
-  // ── 发布(RPA · 半自动 · 扫码登录 · 人点确认才发) ──
-  publish: {
-    // 发布功能是否可用(发布内核存在或本机有 python3)。前端显入口前先问。
-    available: () => ipcRenderer.invoke("publish:available"),
-    platforms: () => ipcRenderer.invoke("publish:platforms"),
-    startLogin: (platform) => ipcRenderer.invoke("publish:login:start", { platform }),
-    checkLogin: (platform) => ipcRenderer.invoke("publish:login:check", { platform }),
-    post: (platform, content) => ipcRenderer.invoke("publish:post", { platform, content }),
-    // 事件:二维码就绪 / 登录状态 / 发布进度
-    onQrcode: (cb) => on("publish:login:qrcode", cb),
-    onLoginStatus: (cb) => on("publish:login:status", cb),
-    onProgress: (cb) => on("publish:progress", cb),
   },
 
   // ── 视频剪辑(ffmpeg) ──

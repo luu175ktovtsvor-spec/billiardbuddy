@@ -33,24 +33,6 @@
     ],
     "extraResources": [
       {
-        "from": "publisher",
-        "to": "publisher",
-        "filter": [
-          "**/*",
-          "!**/__pycache__/**",
-          "!**/*.pyc",
-          "!**/.venv/**",
-          "!**/cookies/**"
-        ]
-      },
-      {
-        "from": "resources/publisher-bin",
-        "to": "publisher-bin",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
         "from": "resources/git-bin",
         "to": "git-bin",
         "filter": [
@@ -78,7 +60,6 @@
     ],
     "asar": true,
     "asarUnpack": [
-      "publisher/**/*",
       "node_modules/ffmpeg-static/**/*",
       "node_modules/ffprobe-static/**/*"
     ],

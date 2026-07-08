@@ -1,5 +1,5 @@
 // 桌面端(Electron)经 preload contextBridge 注入的 window.electron 接口类型。
-// 浏览器(web 版)没有 window.electron——前端据此判断是否桌面端、显不显发布/剪辑入口。
+// 浏览器(web 版)没有 window.electron——前端据此判断是否桌面端、显不显本地能力。
 // 与 desktop/src/preload.js 的 exposeInMainWorld("electron", ...) 保持一致。
 
 export interface DesktopInfo {
@@ -12,22 +12,6 @@ export interface DesktopInfo {
   /** 首启自动建好的作品文件夹(如 ~/Documents/台球助手)，AI 产出默认落这里；建失败为 null。 */
   workspaceDir?: string | null;
   windowCount?: number;
-}
-
-export type LoginStatus = "waiting" | "scanned" | "success" | "expired" | "error";
-
-export interface PublishContent {
-  videoPath: string;
-  title: string;
-  tags: string[];
-  coverPath?: string;
-  scheduleAt?: string; // ISO
-}
-
-export interface PublishPlatform {
-  id: string;
-  name: string;
-  enabled: boolean;
 }
 
 export interface ModelStatus {
@@ -96,17 +80,6 @@ export interface ElectronBridge {
     status(): Promise<ModelStatus>;
     retry(): Promise<{ ok: boolean }>;
     onProgress(cb: (s: ModelStatus) => void): () => void;
-  };
-  publish: {
-    /** 发布功能是否可用(发布内核存在或本机有 python3);不可用时前端隐藏入口/给说人话提示。 */
-    available(): Promise<{ ok: boolean; reason?: "no_worker" | "no_python" }>;
-    platforms(): Promise<PublishPlatform[]>;
-    startLogin(platform: string): Promise<{ ok: boolean }>;
-    checkLogin(platform: string): Promise<{ loggedIn: boolean }>;
-    post(platform: string, content: PublishContent): Promise<{ ok: boolean; url?: string }>;
-    onQrcode(cb: (p: { platform: string; dataUrl: string }) => void): () => void;
-    onLoginStatus(cb: (p: { platform: string; status: LoginStatus; msg?: string }) => void): () => void;
-    onProgress(cb: (p: { platform: string; stage?: string; pct?: number; msg?: string }) => void): () => void;
   };
   video: {
     probe(inputPath: string): Promise<{ durationSec: number; width: number; height: number }>;

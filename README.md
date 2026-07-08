@@ -10,7 +10,7 @@
 
 - **全本地**：Electron 壳 + 本地 FastAPI + 本地 SQLite + 加密知识库（`prompts.enc`），数据不连云。
 - **全内置 key**：文字/生图/视频模型 key 全部内置打包（owner 提供），用户零配置、不填 key，开箱即用；真 key 收在服务器网关，客户端只带可吊销令牌。
-- **真 Agent**：ReAct 循环自主调工具；只有真对外/不可逆动作（发布/群发/删数据）弹审批卡片，人确认才执行。
+- **真 Agent**：ReAct 循环自主调工具；本机文件/命令能直接推进，真对外/不可逆动作（群发、删数据、登录授权等）弹审批卡片，人确认才执行。
 
 ## 怎么跑（开发）
 
@@ -35,7 +35,7 @@ bash scripts/test.sh
 ```
 server/     后端：Python 3.12 + FastAPI + SQLAlchemy + 本地 SQLite；Agent 大脑在 server/services/agent/
 web/        前端：Next.js 14 + React + TypeScript；桌面 UI 在 web/src/components/desktop/
-desktop/    Electron 壳：main/backend/frontend/preload/updater/publish/video，负责拉起本地后端+前端、打包
+desktop/    Electron 壳：main/backend/frontend/preload/updater/video，负责拉起本地后端+前端、打包
 gateway/    模型 key 收拢网关（国内服务器总闸）：客户端只带 app 令牌，真 key 全在服务器 gw.env，三层阀门限流+每用户配额+藏 key
 ```
 
@@ -56,5 +56,5 @@ gateway/    模型 key 收拢网关（国内服务器总闸）：客户端只带
 
 - **全内置 key**：内置 owner 的模型 key、用户不填；各平台后台设消费上限防盗刷。
 - **POS 只读**：不做收银/计费/灯控/会员充值系统，只读老板导出的报表做诊断。
-- **不自动群发/私信**：对外或花钱动作一律走审批闸，人确认后执行。
+- **不自动群发/私信/平台发布**：当前不内置平台发布 RPA；对外或不可逆动作一律走审批闸，人确认后执行。
 - **行业真实但守红线**：台球知识库贴行业真实运营逻辑，但硬线是不营销实际性交易、不帮刑事级犯罪。

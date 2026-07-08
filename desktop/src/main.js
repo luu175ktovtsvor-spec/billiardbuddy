@@ -1,15 +1,14 @@
 // 台球运营助手 · 桌面端 Electron 主进程
 //
 // 职责:① 开窗口加载现有 web 前端(连云后端出内容/跑 Agent);
-//      ② 把"本地原生能力"(发布 RPA / 视频剪辑)经 IPC 暴露给前端;
-//      ③ 浏览器自动化(patchright)跑在【独立子进程】,绝不在渲染进程——见 publish.js。
+//      ② 把"本地原生能力"(视频剪辑/截图/TTS/文件选择)经 IPC 暴露给前端;
+//      ③ 托管本地后端、前端、模型下载与桌面窗口生命周期。
 //
 // 安全默认全保持:contextIsolation 开 / sandbox 开 / nodeIntegration 关。
 // 加载的页面只能通过 preload 的 contextBridge 白名单调用原生能力,拿不到 Node。
 
 const { app, BrowserWindow, ipcMain, shell, dialog, nativeTheme, desktopCapturer, screen, systemPreferences, Notification, globalShortcut } = require("electron");
 const path = require("path");
-const publish = require("./publish");
 const video = require("./video");
 const backend = require("./backend");
 const modelDownloader = require("./model-downloader");
@@ -67,8 +66,8 @@ if (!process.env.QF_RENDER_MANIFEST) {
   app.setPath("userData", path.join(app.getPath("temp"), `qf-render-worker-${process.pid}`));
 }
 
-// 加载哪个前端:dev 跑本地 web(含发布UI,在 feat/desktop-agent 分支),prod 起打包的 Next.js standalone。
-// 云端 main(zzyppz.cn)没有发布UI,故默认不直连云端页面。
+// 加载哪个前端:dev 跑本地 web,prod 起打包的 Next.js standalone。
+// 默认不直连云端页面。
 // DESKTOP_APP_URL 显式设了就优先用它(dev 调试);否则 prod 走本地前端(frontend.js 起 server.js)。
 const FORCED_APP_URL = process.env.DESKTOP_APP_URL || null;
 // 是否由 Electron 托管本地后端(全本地)。设 0 则自己手动起后端(dev 调试用)。
@@ -309,41 +308,13 @@ function openQuickInput() {
 // 外部的能力面，仍是主进程内部自己调用同一个函数。
 global.__qfE2EOpenQuickInput = openQuickInput;
 
-// 进度/状态回推渲染层(扫码就绪、发布进度、剪辑进度)
+// 进度/状态回推渲染层(剪辑进度等)
 // 多窗口并行：优先投给【发起该动作的窗口】(target=event.sender)，不串到当前焦点窗口；没传 target 才退回焦点窗口。
 function emit(channel, payload, target) {
   const wc = (target && !target.isDestroyed()) ? target
     : (mainWindow && !mainWindow.isDestroyed()) ? mainWindow.webContents : null;
   if (wc && !wc.isDestroyed()) wc.send(channel, payload);
 }
-
-// ──────────────────────────────────────────────────────────────
-// IPC:发布(RPA)。所有"对外/花钱"动作都是【备好内容 → 人点确认 → 才发】(审批闸)。
-// 渲染层经 window.electron.publish.* 调用;真正的浏览器自动化在 publish.js 的子进程里。
-// ──────────────────────────────────────────────────────────────
-ipcMain.handle("publish:platforms", () => publish.listPlatforms());
-
-// 发布功能是否可用(发布内核存在或本机有 python3)。前端显发布入口前先问,
-// 不可用就隐藏入口/给说人话提示,别让老板点了才失败。返回 { ok, reason? }。
-ipcMain.handle("publish:available", () => publish.checkAvailable());
-
-// 扫码登录:启动登录流,二维码 data-url 经 publish:login:qrcode 事件推前端展示;
-// 登录完成/失败经 publish:login:status 推。返回一个 sessionId 供前端跟踪。
-ipcMain.handle("publish:login:start", (e, { platform }) =>
-  publish.startLogin(platform, {
-    onQrcode: (dataUrl) => emit("publish:login:qrcode", { platform, dataUrl }, e.sender),
-    onStatus: (status) => emit("publish:login:status", { platform, status }, e.sender),
-  })
-);
-
-ipcMain.handle("publish:login:check", (_e, { platform }) => publish.checkLogin(platform));
-
-// 发布:人确认后调用。content = { videoPath, title, tags, coverPath, scheduleAt? }
-ipcMain.handle("publish:post", (e, { platform, content }) =>
-  publish.post(platform, content, {
-    onProgress: (p) => emit("publish:progress", { platform, ...p }, e.sender),
-  })
-);
 
 // ──────────────────────────────────────────────────────────────
 // IPC:视频剪辑(ffmpeg)。基础能力:裁剪/拼接/竖屏转码/烧字幕/水印/变速。
@@ -860,7 +831,6 @@ ipcMain.handle("model:status", () => _modelStatus);
 ipcMain.handle("model:retry", () => { startModelDownload(); return { ok: true }; });
 
 app.on("window-all-closed", () => {
-  publish.dispose();
   backend.stop();
   frontend.stop();
   if (process.platform !== "darwin") app.quit();

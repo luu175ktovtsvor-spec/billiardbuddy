@@ -405,12 +405,12 @@ async function waitForWelcome(win, maxMs = 8000) {
     跳过确认: await win.locator("text=跳过确认").count().catch(() => 0),
     改文件: await win.locator("text=/改文件：先问|改文件：直接做|改文件：不做/").count().catch(() => 0),
     跑命令: await win.locator("text=/跑命令：先问|跑命令：直接跑|跑命令：不跑/").count().catch(() => 0),
-    对外发布: await win.locator("text=/对外发布：必须确认|对外发布：不发布/").count().catch(() => 0),
+    高风险动作: await win.locator("text=/高风险动作：不做|强确认：仍会拦|对外\\/删除：必须确认/").count().catch(() => 0),
   };
-  await checkpoint(win, "S1门面", "权限后果说明", "权限菜单必须用普通用户能理解的后果说明每个模式：会不会改文件、会不会跑命令、会不会对外发布；对外发布始终不能被普通权限绕过。", {
+  await checkpoint(win, "S1门面", "权限后果说明", "权限菜单必须用普通用户能理解的后果说明每个模式：会不会改文件、会不会跑命令、会不会做高风险动作；平台发布 RPA 当前不内置。", {
     dom: permissionDom,
     main: null,
-    machinePass: permissionDom.菜单标题 > 0 && permissionDom.逐项确认 > 0 && permissionDom.自动接受修改 > 0 && permissionDom.计划模式 > 0 && permissionDom.跳过确认 > 0 && permissionDom.改文件 >= 4 && permissionDom.跑命令 >= 4 && permissionDom.对外发布 >= 4,
+    machinePass: permissionDom.菜单标题 > 0 && permissionDom.逐项确认 > 0 && permissionDom.自动接受修改 > 0 && permissionDom.计划模式 > 0 && permissionDom.跳过确认 > 0 && permissionDom.改文件 >= 4 && permissionDom.跑命令 >= 4 && permissionDom.高风险动作 >= 4,
   }, since);
   await win.keyboard.press("Escape").catch(() => {});
   await win.waitForTimeout(200);
