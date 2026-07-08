@@ -1,4 +1,5 @@
-import { isAbsolute, relative, resolve } from 'node:path'
+import { statSync } from 'node:fs'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import { stripSafeShellWrappers } from '../permissions/permissionRules'
 
 /**
@@ -1030,6 +1031,10 @@ export function shellGitInternalWriteNeedsApproval(command: string): boolean {
   return segments.some(segment => segmentWritesGitInternalPath(segment))
 }
 
+export function shellBareGitRepoCwdNeedsApproval(command: string, cwd: string): boolean {
+  return splitSegments(command).some(segment => isGitLikeCommand(segment)) && cwdLooksLikeBareGitRepo(cwd)
+}
+
 function extractOutputRedirectionTargets(command: string): string[] {
   const targets: string[] = []
   let quote: '"' | "'" | null = null
@@ -1145,6 +1150,39 @@ function isGitInternalPath(target: string): boolean {
     normalized.startsWith('refs/') ||
     normalized === 'hooks' ||
     normalized.startsWith('hooks/')
+}
+
+function cwdLooksLikeBareGitRepo(cwd: string): boolean {
+  try {
+    const dotGit = statSync(join(cwd, '.git'))
+    if (dotGit.isFile()) return false
+    if (dotGit.isDirectory()) {
+      try {
+        if (statSync(join(cwd, '.git', 'HEAD')).isFile()) return false
+      } catch {
+        // fall through to bare repo indicators
+      }
+    }
+  } catch {
+    // no .git reference, check cwd indicators below
+  }
+
+  try {
+    if (statSync(join(cwd, 'HEAD')).isFile()) return true
+  } catch {
+    // no HEAD
+  }
+  try {
+    if (statSync(join(cwd, 'objects')).isDirectory()) return true
+  } catch {
+    // no objects
+  }
+  try {
+    if (statSync(join(cwd, 'refs')).isDirectory()) return true
+  } catch {
+    // no refs
+  }
+  return false
 }
 
 function redirectionTargetNeedsApproval(target: string, opts: { root: string; cwd?: string }): boolean {

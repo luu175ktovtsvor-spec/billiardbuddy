@@ -3,7 +3,7 @@ import { stat } from 'node:fs/promises'
 import { isAbsolute, relative } from 'node:path'
 import type { Tool, ToolContext } from './Tool'
 import type { WrappedCommand } from '../sandbox/sandbox'
-import { classifyCommandRisk, isDangerousCommand, shellOutputRedirectionNeedsApproval, type CommandRisk } from './dangerousCommand'
+import { classifyCommandRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellOutputRedirectionNeedsApproval, type CommandRisk } from './dangerousCommand'
 import type { ApprovalClass } from '../permissions/types'
 import { StreamingOutputSanitizer } from './outputSanitize'
 import { interpretCommandResult } from './commandSemantics'
@@ -89,7 +89,8 @@ function effectiveCommandRisk(input: RunCommandInput | undefined, ctx: ToolConte
   if (!input || typeof input.command !== 'string') return 'destructive'
   const risk = classifyCommandRisk(input.command)
   if (risk === 'destructive') return risk
-  if (shellOutputRedirectionNeedsApproval(input.command, { root: ctx.workspace.root, cwd: resolveCommandCwdSync(input.cwd, ctx) })) {
+  const cwd = resolveCommandCwdSync(input.cwd, ctx)
+  if (shellOutputRedirectionNeedsApproval(input.command, { root: ctx.workspace.root, cwd }) || shellBareGitRepoCwdNeedsApproval(input.command, cwd)) {
     return 'outreach'
   }
   return risk
