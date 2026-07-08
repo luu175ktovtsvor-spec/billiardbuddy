@@ -26,6 +26,7 @@ import { resolveAgentTools } from './agentLoader'
 import { loadAgentMcpRuntime, type AgentMcpRuntimeOptions } from './agentMcp'
 import { buildAgentMemoryPrompt, workspaceWithAgentMemory } from './agentMemory'
 import { cloneContentReplacementState } from '../context/toolResultStorage'
+import { createDenialTrackingState } from '../permissions/denialTracking'
 
 export interface AgentTaskInput {
   agent?: string
@@ -337,6 +338,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
           signal: ctx.signal,
           sandbox,
           permissionMode: agent.permissionMode ?? ctx.permissionMode,
+          localDenialTracking: createDenialTrackingState(),
           conversationId: agentId,
           transcript: sidechain?.transcript,
           toolResultStoreDir: sidechain?.toolResultStoreDir ?? ctx.toolResultStoreDir,

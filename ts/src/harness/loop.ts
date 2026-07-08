@@ -8,7 +8,22 @@ import type { Workspace } from '../workspace/workspace'
 import type { Sandbox } from '../sandbox/sandbox'
 import type { PermissionMode } from '../permissions/types'
 import { APPROVAL_PENDING_MSG, DENIAL_FALLBACK_MSG, resolvePermission } from '../permissions/resolve'
-import { actionKey, clearApproval, clearDenial, recordApproval, recordDenial, shouldAutoApprove, shouldStopAsking } from '../permissions/denialTracking'
+import {
+  actionKey,
+  clearApproval,
+  clearDenial,
+  clearLocalApproval,
+  clearLocalDenial,
+  recordApproval,
+  recordDenial,
+  recordLocalApproval,
+  recordLocalDenial,
+  shouldAutoApprove,
+  shouldLocalAutoApprove,
+  shouldLocalStopAsking,
+  shouldStopAsking,
+  type DenialTrackingState,
+} from '../permissions/denialTracking'
 import { signApproval, verifyApproval } from '../permissions/approval'
 import { collectReminders, drainSteering, extendTurns, steerBlock, wrapReminder } from './reminders'
 import { formatTodoChecklist, parseProgressMarkdown } from '../types/todo'
@@ -80,6 +95,7 @@ export interface RunAgentLoopOptions {
   sandbox?: Sandbox
   permissionMode?: PermissionMode
   conversationId?: string
+  localDenialTracking?: DenialTrackingState
   steerInbox?: string[]
   contextWindowChars?: number
   contextWindowTokens?: number
@@ -129,6 +145,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     sandbox: opts.sandbox,
     permissionMode: opts.permissionMode ?? 'ask',
     conversationId: opts.conversationId,
+    localDenialTracking: opts.localDenialTracking,
     autoSpendCount: 0,
     steerInbox: opts.steerInbox ?? [],
     todos: [],
@@ -516,6 +533,38 @@ function isApprovalRememberable(decision: Extract<ReturnType<typeof resolvePermi
   return decision.approvalClass !== 'spend' && decision.approvalClass !== 'destructive'
 }
 
+function clearDenialForContext(ctx: ToolContext, key: string): void {
+  if (ctx.localDenialTracking) clearLocalDenial(ctx.localDenialTracking, key)
+  else clearDenial(ctx.conversationId, key)
+}
+
+function clearApprovalForContext(ctx: ToolContext, key: string): void {
+  if (ctx.localDenialTracking) clearLocalApproval(ctx.localDenialTracking, key)
+  else clearApproval(ctx.conversationId, key)
+}
+
+function recordApprovalForContext(ctx: ToolContext, key: string): void {
+  if (ctx.localDenialTracking) recordLocalApproval(ctx.localDenialTracking, key)
+  else recordApproval(ctx.conversationId, key)
+}
+
+function recordDenialForContext(ctx: ToolContext, key: string): void {
+  if (ctx.localDenialTracking) recordLocalDenial(ctx.localDenialTracking, key)
+  else recordDenial(ctx.conversationId, key)
+}
+
+function shouldAutoApproveForContext(ctx: ToolContext, key: string): boolean {
+  return ctx.localDenialTracking
+    ? shouldLocalAutoApprove(ctx.localDenialTracking, key)
+    : shouldAutoApprove(ctx.conversationId, key)
+}
+
+function shouldStopAskingForContext(ctx: ToolContext, key: string): boolean {
+  return ctx.localDenialTracking
+    ? shouldLocalStopAsking(ctx.localDenialTracking, key)
+    : shouldStopAsking(ctx.conversationId, key)
+}
+
 /** 剥离工具入参里的 task_progress(Cline Focus-Chain 内联清单,非真工具参数)。原地删并返回其字符串;无则 null。永不抛。 */
 function popTaskProgress(input: unknown): string | null {
   if (input && typeof input === 'object' && 'task_progress' in input) {
@@ -714,14 +763,14 @@ async function* gateOneCall(
   if (decision.behavior === 'ask') {
     const key = actionKey(call.name, hookInput)
     const rememberable = isApprovalRememberable(decision)
-    if (rememberable && shouldAutoApprove(ctx.conversationId, key)) {
+    if (rememberable && shouldAutoApproveForContext(ctx, key)) {
       const input = hookInput
       const outcome = yield* executeAllowedToolCallWithProgress(tool, call, input, ctx, hooks, toolResultStoreDir)
       toolResults.push(outcome.result)
       for (const event of outcome.events) yield event
       return
     }
-    if (shouldStopAsking(ctx.conversationId, key)) {
+    if (shouldStopAskingForContext(ctx, key)) {
       yield feedback(DENIAL_FALLBACK_MSG(call.name), false)
       return
     }
@@ -833,8 +882,8 @@ export async function executeApproved(
   const decision = resolvePermission(t, args, ctx)
   if (decision.behavior === 'deny') return { ok: false, output: decision.message }
   const executionArgs = decision.behavior === 'allow' ? decision.updatedInput ?? args : args
-  clearDenial(ctx.conversationId, actionKey(tool, tokenArgs))
-  clearDenial(ctx.conversationId, actionKey(tool, executionArgs))
+  clearDenialForContext(ctx, actionKey(tool, tokenArgs))
+  clearDenialForContext(ctx, actionKey(tool, executionArgs))
   const previousApprovedToolExecution = ctx.approvedToolExecution
   try {
     ctx.approvedToolExecution = { name: tool, key: actionKey(tool, tokenArgs) }
@@ -845,7 +894,7 @@ export async function executeApproved(
     })
     if (remember) {
       if (decision.behavior === 'ask' && isApprovalRememberable(decision)) {
-        recordApproval(ctx.conversationId, actionKey(tool, executionArgs))
+        recordApprovalForContext(ctx, actionKey(tool, executionArgs))
       }
     }
     return { ok: true, output: stored.content }
@@ -859,8 +908,8 @@ export async function executeApproved(
 /** 老板拒绝某审批(给独立 /agent/reject 用):记一次拒绝,喂给下次的 shouldStopAsking。 */
 export function handleReject(tool: string, args: unknown, ctx: ToolContext): void {
   const key = actionKey(tool, args)
-  clearApproval(ctx.conversationId, key)
-  recordDenial(ctx.conversationId, key)
+  clearApprovalForContext(ctx, key)
+  recordDenialForContext(ctx, key)
 }
 
 async function waitForSteeringAnswer(ctx: ToolContext, timeoutMs: number, startLen: number): Promise<string | null> {

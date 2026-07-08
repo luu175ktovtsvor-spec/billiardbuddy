@@ -11,7 +11,7 @@ import type { AgentEvent } from '../types/events'
 import type { AssistantStep, Model } from '../types/model'
 import { ToolRegistry } from '../tools/registry'
 import { executeApproved, handleReject } from './loop'
-import { resetDenialStore } from '../permissions/denialTracking'
+import { createDenialTrackingState, resetDenialStore } from '../permissions/denialTracking'
 import { signApproval } from '../permissions/approval'
 import type { Tool } from '../tools/Tool'
 import { userText } from '../types/message'
@@ -668,6 +668,70 @@ test('拒绝 2 次后:同一动作不再弹卡,回灌"先不做了"', async () =
   expect(events.some(e => e.type === 'approval_request')).toBe(false) // 不再弹卡
   const tr = events.find(e => e.type === 'tool_result')
   expect(tr && tr.type === 'tool_result' && tr.output).toContain('先不做了')
+})
+
+test('local denial tracking isolates subagent approvals from parent conversation history', async () => {
+  process.env.SECRET_KEY = SECRET
+  resetDenialStore()
+  const reg = new ToolRegistry([outreachTool({ ran: false })])
+  const parentCtx = { workspace: new Workspace(root), conversationId: 'conv-local-parent' }
+  handleReject('send_message', { msg: 'hi' }, parentCtx)
+  handleReject('send_message', { msg: 'hi' }, parentCtx)
+
+  const localState = createDenialTrackingState()
+  const firstEvents = await collect(
+    runAgentLoop({
+      model: scriptedModel([
+        { kind: 'tool_calls', calls: [{ id: 'a', name: 'send_message', input: { msg: 'hi' } }] },
+        { kind: 'final', text: 'asked locally' },
+      ]),
+      registry: reg,
+      workspace: new Workspace(root),
+      systemPrompt: 'SYS',
+      userMessage: 'x',
+      permissionMode: 'ask',
+      conversationId: 'conv-local-parent',
+      localDenialTracking: localState,
+    }),
+  )
+  expect(firstEvents.some(e => e.type === 'approval_request')).toBe(true)
+  handleReject('send_message', { msg: 'hi' }, { workspace: new Workspace(root), conversationId: 'conv-local-parent', localDenialTracking: localState })
+  handleReject('send_message', { msg: 'hi' }, { workspace: new Workspace(root), conversationId: 'conv-local-parent', localDenialTracking: localState })
+
+  const localFallback = await collect(
+    runAgentLoop({
+      model: scriptedModel([
+        { kind: 'tool_calls', calls: [{ id: 'b', name: 'send_message', input: { msg: 'hi' } }] },
+        { kind: 'final', text: 'local fallback' },
+      ]),
+      registry: reg,
+      workspace: new Workspace(root),
+      systemPrompt: 'SYS',
+      userMessage: 'x',
+      permissionMode: 'ask',
+      conversationId: 'conv-local-parent',
+      localDenialTracking: localState,
+    }),
+  )
+  expect(localFallback.some(e => e.type === 'approval_request')).toBe(false)
+  expect(localFallback.find(e => e.type === 'tool_result')).toMatchObject({ type: 'tool_result', output: expect.stringContaining('先不做了') })
+
+  const otherLocalEvents = await collect(
+    runAgentLoop({
+      model: scriptedModel([
+        { kind: 'tool_calls', calls: [{ id: 'c', name: 'send_message', input: { msg: 'hi' } }] },
+        { kind: 'final', text: 'fresh local asked' },
+      ]),
+      registry: reg,
+      workspace: new Workspace(root),
+      systemPrompt: 'SYS',
+      userMessage: 'x',
+      permissionMode: 'ask',
+      conversationId: 'conv-local-parent',
+      localDenialTracking: createDenialTrackingState(),
+    }),
+  )
+  expect(otherLocalEvents.some(e => e.type === 'approval_request')).toBe(true)
 })
 
 test('Delta A:write_file 在 ask 档仍直接执行、不弹卡', async () => {

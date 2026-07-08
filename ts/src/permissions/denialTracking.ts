@@ -11,7 +11,16 @@ interface Bucket {
   approvedActions: Record<string, true>
   total: number
 }
+export interface DenialTrackingState {
+  byAction: Record<string, number>
+  approvedActions: Record<string, true>
+  total: number
+}
 const store = new Map<string, Bucket>()
+
+export function createDenialTrackingState(): DenialTrackingState {
+  return { byAction: {}, approvedActions: {}, total: 0 }
+}
 
 export function actionKey(name: string, args: unknown): string {
   try {
@@ -48,12 +57,30 @@ export function recordDenial(conversationId: string | undefined, key: string): v
   }
 }
 
+export function recordLocalDenial(state: DenialTrackingState, key: string): void {
+  try {
+    state.byAction[key] = (state.byAction[key] ?? 0) + 1
+    state.total += 1
+  } catch {
+    /* 故障安全 */
+  }
+}
+
 export function clearDenial(conversationId: string | undefined, key: string): void {
   try {
     const b = conversationId ? store.get(conversationId) : undefined
     if (!b) return
     delete b.byAction[key]
     b.total = 0 // 老板在正常配合、解除全局回退锁,否则长会话零散攒够 20 会永久吞掉审批
+  } catch {
+    /* 故障安全 */
+  }
+}
+
+export function clearLocalDenial(state: DenialTrackingState, key: string): void {
+  try {
+    delete state.byAction[key]
+    state.total = 0
   } catch {
     /* 故障安全 */
   }
@@ -70,11 +97,28 @@ export function recordApproval(conversationId: string | undefined, key: string):
   }
 }
 
+export function recordLocalApproval(state: DenialTrackingState, key: string): void {
+  try {
+    state.approvedActions[key] = true
+    delete state.byAction[key]
+  } catch {
+    /* 故障安全 */
+  }
+}
+
 export function clearApproval(conversationId: string | undefined, key: string): void {
   try {
     const b = conversationId ? store.get(conversationId) : undefined
     if (!b) return
     delete b.approvedActions[key]
+  } catch {
+    /* 故障安全 */
+  }
+}
+
+export function clearLocalApproval(state: DenialTrackingState, key: string): void {
+  try {
+    delete state.approvedActions[key]
   } catch {
     /* 故障安全 */
   }
@@ -90,11 +134,27 @@ export function shouldAutoApprove(conversationId: string | undefined, key: strin
   }
 }
 
+export function shouldLocalAutoApprove(state: DenialTrackingState, key: string): boolean {
+  try {
+    return state.approvedActions[key] === true
+  } catch {
+    return false
+  }
+}
+
 export function shouldStopAsking(conversationId: string | undefined, key: string): boolean {
   try {
     const b = conversationId ? store.get(conversationId) : undefined
     if (!b) return false
     return b.total >= DENIAL_FALLBACK.global || (b.byAction[key] ?? 0) >= DENIAL_FALLBACK.perAction
+  } catch {
+    return false
+  }
+}
+
+export function shouldLocalStopAsking(state: DenialTrackingState, key: string): boolean {
+  try {
+    return state.total >= DENIAL_FALLBACK.global || (state.byAction[key] ?? 0) >= DENIAL_FALLBACK.perAction
   } catch {
     return false
   }

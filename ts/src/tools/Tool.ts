@@ -5,6 +5,7 @@ import type { TodoItem } from '../types/todo'
 import type { Model } from '../types/model'
 import type { ToolRegistry } from './registry'
 import type { ContentReplacementState } from '../context/toolResultStorage'
+import type { DenialTrackingState } from '../permissions/denialTracking'
 
 export interface FileReadSnapshot {
   path: string
@@ -39,6 +40,8 @@ export interface ToolContext {
   permissionMode?: PermissionMode
   /** 会话 id,跨请求拒绝计数按它隔离(见 denialTracking)。 */
   conversationId?: string
+  /** 子代理/后台 worker 本地拒绝与记住审批状态,避免污染父会话。 */
+  localDenialTracking?: DenialTrackingState
   /** full 档下 spend 类动作已自动放行的次数(过 AUTO_SPEND_LIMIT 强制弹卡)。 */
   autoSpendCount?: number
   /** 当前任务清单(todo_write / task_progress 内联维护,单一真相源)。 */

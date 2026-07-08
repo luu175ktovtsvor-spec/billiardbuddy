@@ -20,6 +20,7 @@ import {
   type ContentReplacementRecord,
 } from '../context/toolResultStorage'
 import { startAgentSummarization, type AgentSummaryController } from './agentSummary'
+import { createDenialTrackingState } from '../permissions/denialTracking'
 
 export interface BackgroundAgentTaskInput {
   agent?: string
@@ -510,6 +511,7 @@ export async function startBackgroundAgentRun(
         signal: taskCtx.signal,
         sandbox: runSandbox,
         permissionMode: agent.permissionMode ?? ctx.permissionMode,
+        localDenialTracking: createDenialTrackingState(),
         conversationId: stableAgentId,
         steerInbox,
         transcript: opts.tasks.transcript(task.id),

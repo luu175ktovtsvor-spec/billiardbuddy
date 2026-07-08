@@ -11,6 +11,7 @@ import { fileWriteTool } from '../tools/fileWriteTool'
 import { createAgentTaskSidechainTools, createAgentTaskTool } from './agentTool'
 import type { AgentDefinition } from './agentLoader'
 import { getAgentMemoryEntrypoint } from './agentMemory'
+import { handleReject } from '../harness/loop'
 
 function agent(partial: Partial<AgentDefinition> = {}): AgentDefinition {
   return {
@@ -227,6 +228,47 @@ test('agent_task honors agent frontmatter defaults for prompt, permissions, maxT
     expect(model.received[1]!.tools).toEqual([])
     expect(out).toContain('fallback final should not be used when maxTurns=1')
     expect(out).toContain('<agent_worktree status="removed_clean">')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('agent_task uses local denial tracking instead of inheriting parent rejections', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-local-denial-'))
+  try {
+    const parentCtx = { workspace: new Workspace(root), conversationId: 'parent_denied' }
+    handleReject('send_message', { msg: 'hi' }, parentCtx)
+    handleReject('send_message', { msg: 'hi' }, parentCtx)
+    const guardedTool: import('../tools/Tool').Tool = {
+      name: 'send_message',
+      description: '',
+      inputSchema: { type: 'object' },
+      isReadOnly: false,
+      requiresApproval: true,
+      approvalClass: 'outreach',
+      async execute() {
+        return 'SENT'
+      },
+    }
+    const tool = createAgentTaskTool({
+      agents: [agent({ tools: ['send_message'] })],
+      model: scriptedModel([
+        { kind: 'tool_calls', calls: [{ id: 's1', name: 'send_message', input: { msg: 'hi' } }] },
+        { kind: 'final', text: '已请求确认' },
+      ]),
+      baseTools: [guardedTool],
+      sidechainRoot: join(root, 'sidechains'),
+    })
+    const progress: string[] = []
+    const out = await tool.execute({ task: '给用户发消息' }, {
+      workspace: new Workspace(root),
+      permissionMode: 'ask',
+      conversationId: 'parent_denied',
+      progressEmit: event => progress.push(event.chunk),
+    })
+    expect(out).toContain('已请求确认')
+    expect(progress.join('')).toContain('子代理 researcher 等待确认 send_message')
+    expect(progress.join('')).not.toContain('先不做了')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
