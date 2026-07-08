@@ -23,7 +23,7 @@ import { applySubagentStartHooks, mergeHookRegistries, type HookRegistry } from 
 import { textBlock } from '../types/message'
 import type { AgentDefinition } from './agentLoader'
 import { resolveAgentTools } from './agentLoader'
-import { loadAgentMcpRuntime, type AgentMcpRuntimeOptions } from './agentMcp'
+import { loadAgentMcpRuntime, type AgentMcpRuntime, type AgentMcpRuntimeInput, type AgentMcpRuntimeOptions } from './agentMcp'
 import { buildAgentMemoryPrompt, workspaceWithAgentMemory } from './agentMemory'
 import { cloneContentReplacementState, type ContentReplacementState } from '../context/toolResultStorage'
 import { createDenialTrackingState } from '../permissions/denialTracking'
@@ -71,6 +71,7 @@ export interface AgentTaskToolOptions {
   sidechainRoot?: string
   hooks?: HookRegistry
   mcp?: AgentMcpRuntimeOptions
+  loadAgentMcpRuntime?: (input: AgentMcpRuntimeInput) => Promise<AgentMcpRuntime>
   env?: Record<string, string | undefined>
   startBackgroundAgent?: (input: { agent?: string; name?: string; task: string; context?: string; title?: string; isolation?: 'worktree' }, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<{ task: { id: string; title: string; params?: Record<string, unknown> }; agent: AgentDefinition }>
   registerForegroundAgent?: (input: { agent: string; agentId: string; task: string; context?: string; title: string; name?: string }, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<AgentTaskForegroundRegistration>
@@ -292,6 +293,20 @@ async function closeAgentIteratorForHandoff(iterator: AsyncIterator<AgentEvent>,
   if (timer) clearTimeout(timer)
 }
 
+async function closeAgentMcpForHandoff(agentMcp: AgentMcpRuntime, timeoutMs = 1000): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const close = agentMcp.close().catch(() => undefined)
+  await Promise.race([
+    close,
+    new Promise<void>(resolve => {
+      timer = setTimeout(resolve, timeoutMs)
+      const maybe = timer as { unref?: () => void }
+      maybe.unref?.()
+    }),
+  ])
+  if (timer) clearTimeout(timer)
+}
+
 export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskInput> {
   const forkGateEnabled = isForkSubagentEnabled(opts.env)
   const inputSchemaProperties = forkGateEnabled
@@ -399,7 +414,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
         const inheritedContentReplacementState = ctx.contentReplacementState
           ? cloneContentReplacementState(ctx.contentReplacementState)
           : undefined
-        agentMcp = await loadAgentMcpRuntime({
+        agentMcp = await (opts.loadAgentMcpRuntime ?? loadAgentMcpRuntime)({
           agent,
           baseTools: baseAgentTools,
           workspaceRoot: workspace.root,
@@ -464,6 +479,11 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
             if (!foregroundRegistration || !opts.handoffForegroundAgent) continue
             wasBackgrounded = true
             await closeAgentIteratorForHandoff(agentIterator)
+            if (agentMcp) {
+              const runtime = agentMcp
+              agentMcp = undefined
+              await closeAgentMcpForHandoff(runtime)
+            }
             const { task } = await opts.handoffForegroundAgent(foregroundRegistration, {
               ...foregroundInput,
               ...optionalIsolation(input, agent),
