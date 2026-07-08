@@ -21,6 +21,12 @@ import {
   type ContentReplacementState,
   type ContentReplacementRecord,
 } from '../context/toolResultStorage'
+import {
+  checkPromptCacheBreak,
+  formatPromptCacheBreak,
+  notifyPromptCacheCompaction,
+  recordPromptCacheState,
+} from '../context/promptCacheBreakDetection'
 import { callKey, detectStuck, sameCallGuardMessage, sameCallLimitForTool } from './stuckDetector'
 import { revealToolNamesForSearch, TOOL_SEARCH_NAME, visibleToolSpecs } from '../tools/toolSearchTool'
 import {
@@ -84,6 +90,7 @@ export interface RunAgentLoopOptions {
   subagent?: { agentId: string; agentType: string }
   teamInbox?: TeamInboxContextOptions & { service: TeamService }
   onSummarySnapshot?: (snapshot: AgentLoopSnapshot) => void
+  modelName?: string
 }
 
 const TODO_UPDATE_TOOL_NAMES = new Set(['todo_write', 'task_create', 'task_update', 'TaskCreate', 'TaskUpdate'])
@@ -226,6 +233,8 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     cacheReadInputTokens: 0,
     cacheCreationInputTokens: 0,
   }
+  const promptCacheTrackingKey = opts.conversationId
+  const modelNameForPromptCache = opts.modelName ?? opts.model.constructor?.name ?? ''
 
   const applyAggregateToolResultBudget = async () => {
     messages = await applyToolResultBudget(messages, contentReplacementState, {
@@ -257,6 +266,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     messages = out.messages
     compactionFailures = out.compactionFailures
     if (!out.didCompact) return undefined
+    notifyPromptCacheCompaction(promptCacheTrackingKey)
     const recentFiles = await buildRecentFileContextMessage(ctx)
     if (recentFiles && messages.length > 0) {
       messages = [messages[0]!, recentFiles, ...messages.slice(1)]
@@ -277,6 +287,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     try {
       const toolsForStep = visibleToolSpecs(registry, revealedToolNames)
       opts.onSummarySnapshot?.({ system, messages: messages.slice(), tools: toolsForStep })
+      recordPromptCacheState({ trackingKey: promptCacheTrackingKey, system, tools: toolsForStep, model: modelNameForPromptCache })
       step = await model.step({ system, messages, tools: toolsForStep, signal: opts.signal })
     } catch (err) {
       if (!looksLikeContextOverflow(err)) throw err
@@ -285,10 +296,13 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       yield { type: 'context_note', text: note }
       const toolsForStep = visibleToolSpecs(registry, revealedToolNames)
       opts.onSummarySnapshot?.({ system, messages: messages.slice(), tools: toolsForStep })
+      recordPromptCacheState({ trackingKey: promptCacheTrackingKey, system, tools: toolsForStep, model: modelNameForPromptCache })
       step = await model.step({ system, messages, tools: toolsForStep, signal: opts.signal })
     }
     const usageEvent = usageUpdateEvent(step.usage, usageTotals, opts.contextWindowTokens)
     if (usageEvent) yield usageEvent
+    const cacheBreak = checkPromptCacheBreak(promptCacheTrackingKey, step.usage, messages)
+    if (cacheBreak) yield { type: 'context_note', text: formatPromptCacheBreak(cacheBreak) }
     for (const notice of step.notices ?? []) {
       if (notice.trim()) yield { type: 'context_note', text: notice.trim() }
     }
@@ -433,18 +447,24 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   }
 
   // max_turns 兜底:强制一次无工具收敛(照 loop.py 的 _FINAL_NUDGE 哲学)。
+  recordPromptCacheState({ trackingKey: promptCacheTrackingKey, system, tools: [], model: modelNameForPromptCache })
   const forced = await model.step({ system, messages, tools: [], signal: opts.signal })
   const usageEvent = usageUpdateEvent(forced.usage, usageTotals, opts.contextWindowTokens)
   if (usageEvent) yield usageEvent
+  const forcedCacheBreak = checkPromptCacheBreak(promptCacheTrackingKey, forced.usage, messages)
+  if (forcedCacheBreak) yield { type: 'context_note', text: formatPromptCacheBreak(forcedCacheBreak) }
   const text = forced.kind === 'final' ? forced.text : '(已达最大轮次,未能收敛)'
   messages.push({ role: 'assistant', content: [textBlock(text)] })
   await saveTranscript()
   const continuation = await applyStopHookContinuation(text)
   for (const event of continuation.events) yield event
   if (continuation.shouldContinue) {
+    recordPromptCacheState({ trackingKey: promptCacheTrackingKey, system, tools: [], model: modelNameForPromptCache })
     const retry = await model.step({ system, messages, tools: [], signal: opts.signal })
     const retryUsage = usageUpdateEvent(retry.usage, usageTotals, opts.contextWindowTokens)
     if (retryUsage) yield retryUsage
+    const retryCacheBreak = checkPromptCacheBreak(promptCacheTrackingKey, retry.usage, messages)
+    if (retryCacheBreak) yield { type: 'context_note', text: formatPromptCacheBreak(retryCacheBreak) }
     const retryText = retry.kind === 'final' ? retry.text : '(Stop hook 要求继续,但模型仍未能收敛)'
     messages.push({ role: 'assistant', content: [textBlock(retryText)] })
     await saveTranscript()
