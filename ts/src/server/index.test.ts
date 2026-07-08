@@ -1772,6 +1772,117 @@ test('bridge inbound resolve can auto-run resolved prompt through the agent task
   }
 })
 
+test('bridge inbound auto-run expands bridge-safe prompt slash commands', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-bridge-inbound-command-'))
+  const commandsRoot = join(root, 'commands')
+  mkdirSync(commandsRoot, { recursive: true })
+  await Bun.write(join(commandsRoot, 'daily.md'), `---
+name: daily-report
+description: 写日报
+---
+按桥接资料生成日报。
+`)
+  let sentBody: any
+  const bridgeServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    commandsRoot,
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    env: {
+      DEEPSEEK_BASE_URL: 'https://model.example/v1',
+      DEEPSEEK_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async (_input, init) => {
+      sentBody = JSON.parse(String(init?.body))
+      const enc = new TextEncoder()
+      return new Response(new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: '桥接日报完成' }, finish_reason: 'stop' }] })}\n\n`))
+          c.enqueue(enc.encode('data: [DONE]\n\n'))
+          c.close()
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  try {
+    const base = `http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/sessions/session_bridge_command`
+    const started = await (await fetch(`${base}/inbound/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({
+        auto_run: true,
+        conversationId: 'bridge-command-conv',
+        working_dir: root,
+        permissionMode: 'full',
+        event: {
+          type: 'user',
+          uuid: 'uuid_bridge_command',
+          message: { content: '/daily-report 今天' },
+        },
+      }),
+    })).json() as any
+    expect(started.dispatch).toMatchObject({ mode: 'task', conversationId: 'bridge-command-conv', status: 'running' })
+    const events = await fetch(`http://127.0.0.1:${bridgeServer.port}/api/v1/agent/tasks/${started.dispatch.task_id}/events?after=-1`)
+    const text = await events.text()
+    expect(text).toContain('已展开命令 /daily-report 今天')
+    expect(text).toContain('桥接日报完成')
+    const requestText = JSON.stringify(sentBody.messages)
+    expect(requestText).toContain('命令: /daily-report')
+    expect(requestText).toContain('按桥接资料生成日报')
+    expect(requestText).toContain('今天')
+  } finally {
+    bridgeServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('bridge inbound auto-run blocks known unsafe local slash commands', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-bridge-inbound-unsafe-command-'))
+  let fetchCalls = 0
+  const bridgeServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    env: {
+      DEEPSEEK_BASE_URL: 'https://model.example/v1',
+      DEEPSEEK_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async () => {
+      fetchCalls += 1
+      throw new Error('model should not be called for unsafe bridge command')
+    },
+  })
+  try {
+    const base = `http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/sessions/session_bridge_unsafe`
+    const started = await (await fetch(`${base}/inbound/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({
+        auto_run: true,
+        conversationId: 'bridge-unsafe-conv',
+        working_dir: root,
+        permissionMode: 'full',
+        event: {
+          type: 'user',
+          uuid: 'uuid_bridge_unsafe',
+          message: { content: '/goal clear' },
+        },
+      }),
+    })).json() as any
+    expect(started.dispatch).toMatchObject({ mode: 'task', conversationId: 'bridge-unsafe-conv', status: 'running' })
+    const events = await fetch(`http://127.0.0.1:${bridgeServer.port}/api/v1/agent/tasks/${started.dispatch.task_id}/events?after=-1`)
+    const text = await events.text()
+    expect(text).toContain("/goal isn't available over Remote Control.")
+    expect(text).toContain('"type":"done"')
+    expect(fetchCalls).toBe(0)
+    const transcript = await new SessionService(root).loadTranscript('bridge-unsafe-conv')
+    expect(JSON.stringify(transcript)).not.toContain('<command-name>/goal</command-name>')
+  } finally {
+    bridgeServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('bridge inbound resolve steers a running conversation instead of starting a duplicate turn', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-bridge-inbound-steer-'))
   let calls = 0
@@ -2809,6 +2920,27 @@ description: 写日报
     expect(expandBody.prompt).toContain('命令: /daily-report')
     expect(expandBody.prompt).toContain('按门店数据生成日报')
     expect(expandBody.prompt).toContain('今天')
+  } finally {
+    commandServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('commands API can list bridge-safe slash commands for Remote Control clients', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'server-bridge-safe-commands-'))
+  const commandsRoot = join(root, 'commands')
+  await Bun.write(join(commandsRoot, 'daily.md'), `---
+name: daily-report
+description: 写日报
+---
+按远端资料生成日报。
+`)
+  const commandServer = startServer({ port: 0, transcriptRoot: root, commandsRoot })
+  try {
+    const listed = await fetch(`http://127.0.0.1:${commandServer.port}/commands?bridge_origin=true`)
+    const listBody = await listed.json() as any
+    expect(listBody.commands).toHaveLength(1)
+    expect(listBody.commands[0]).toMatchObject({ name: 'daily-report', description: '写日报' })
   } finally {
     commandServer.stop(true)
     rmSync(root, { recursive: true, force: true })

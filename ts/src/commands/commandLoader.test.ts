@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../workspace/workspace'
-import { createCommandTools, formatCommandIndex, loadCommandsDir, loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from './commandLoader'
+import { filterBridgeSafeCommands, isBridgeSafeCommand, createCommandTools, formatCommandIndex, loadCommandsDir, loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from './commandLoader'
+import type { PromptCommand } from './types'
 
 test('parseCommandInvocation accepts cc-style slash command names', () => {
   expect(parseCommandInvocation('/plugin:name.run 参数 一二三')).toEqual({
@@ -13,6 +14,25 @@ test('parseCommandInvocation accepts cc-style slash command names', () => {
   })
   expect(normalizeCommandName('/Daily Report')).toBe('daily-report')
   expect(parseCommandInvocation('普通消息 /not-command')).toBeNull()
+})
+
+test('bridge-safe command gate follows prompt/local/local-jsx policy', () => {
+  const prompt = {
+    type: 'prompt',
+    name: 'daily-report',
+    description: 'Daily',
+    source: 'commands',
+    filePath: 'daily.md',
+    baseDir: '/',
+    contentLength: 1,
+    async getPrompt() { return 'daily' },
+  } satisfies PromptCommand
+
+  expect(isBridgeSafeCommand(prompt)).toBe(true)
+  expect(isBridgeSafeCommand({ type: 'local', name: 'files' })).toBe(true)
+  expect(isBridgeSafeCommand({ type: 'local', name: 'goal' })).toBe(false)
+  expect(isBridgeSafeCommand({ type: 'local-jsx', name: 'model' })).toBe(false)
+  expect(filterBridgeSafeCommands([prompt])).toEqual([prompt])
 })
 
 test('loadCommandsDir scans markdown slash commands with frontmatter', async () => {

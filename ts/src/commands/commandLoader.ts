@@ -15,7 +15,21 @@ export interface ParsedCommandInvocation {
   raw: string
 }
 
+export type BridgeCommandDescriptor = PromptCommand | {
+  type: 'local' | 'local-jsx'
+  name: string
+}
+
 const SLASH_COMMAND_RE = /^\/([A-Za-z0-9_:.-]+)(?:\s+([\s\S]*))?$/
+
+export const BRIDGE_SAFE_LOCAL_COMMANDS = new Set([
+  'compact',
+  'clear',
+  'cost',
+  'summary',
+  'release-notes',
+  'files',
+])
 
 export function normalizeCommandName(value: string): string {
   return value.trim().replace(/^\/+/, '').replace(/\s+/g, '-').replace(/[^A-Za-z0-9_:.-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').toLowerCase()
@@ -28,6 +42,20 @@ export function parseCommandInvocation(value: string): ParsedCommandInvocation |
   const name = normalizeCommandName(match[1]!)
   if (!name) return null
   return { name, args: match[2]?.trim() ?? '', raw }
+}
+
+export function isBridgeSafeCommand(command: BridgeCommandDescriptor): boolean {
+  if (command.type === 'local-jsx') return false
+  if (command.type === 'prompt') return true
+  return BRIDGE_SAFE_LOCAL_COMMANDS.has(normalizeCommandName(command.name))
+}
+
+export function filterBridgeSafeCommands(commands: PromptCommand[]): PromptCommand[] {
+  return commands.filter(isBridgeSafeCommand)
+}
+
+export function bridgeUnsafeCommandMessage(name: string): string {
+  return `/${normalizeCommandName(name)} isn't available over Remote Control.`
 }
 
 function stripMd(value: string): string {

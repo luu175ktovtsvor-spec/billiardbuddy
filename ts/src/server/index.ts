@@ -29,7 +29,7 @@ import { VoiceTranscriptionError, transcribeVoiceFile } from './services/voiceTr
 import { buildGeneralRegistry } from '../tools/generalTools'
 import { workspaceForActiveWorktree } from '../tools/worktreeTools'
 import { loadSkillsDir } from '../skills/skillLoader'
-import { loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
+import { bridgeUnsafeCommandMessage, filterBridgeSafeCommands, isBridgeSafeCommand, loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
 import { loadHookRegistryFile } from '../hooks/hookConfig'
 import { createDomainPackCommandLibrary, createDomainPackHookRegistry, createDomainPackTools, listPublicDomainPacks, mergeHookRegistries, resolveEnabledPacks, suggestedSkillNamesForPacks, type DomainPack } from '../packs/domainPacks'
 import { clearThreadGoalHook, createGoalHookRegistry, ensureThreadGoalHookFromTranscript, getThreadGoal, parseGoalCommand, setThreadGoalHook } from '../goals/goalState'
@@ -120,6 +120,8 @@ type TurnStreamInput = Record<string, unknown> & {
   userContent?: ContentBlock[]
   messagePreview?: string
   skipCommandParsing?: boolean
+  skipSlashCommands?: boolean
+  bridgeOrigin?: boolean
 }
 
 const WORKSPACE_TREE_SKIP = new Set([
@@ -1382,7 +1384,26 @@ export function startServer(opts: StartServerOptions = {}) {
     const skills = await loadSkillsDir(skillsRoot)
     const enabledPacks = resolveEnabledPacks(rawBody)
     const commands = await loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), enabledPacks)
-    const parsedCommand = rawBody.skipCommandParsing ? null : parseCommandInvocation(rawUserMessage)
+    const bridgeOrigin = rawBody.bridgeOrigin === true || rawBody.bridge_origin === true
+    const skipSlashCommands = rawBody.skipSlashCommands === true || rawBody.skip_slash_commands === true
+    const parsedCandidate = rawBody.skipCommandParsing ? null : parseCommandInvocation(rawUserMessage)
+    const bridgeKnownLocalCommand = bridgeOrigin && parsedCandidate?.name === 'goal'
+      ? { type: 'local' as const, name: 'goal' }
+      : undefined
+    const bridgeMatchedPromptCommand = bridgeOrigin && parsedCandidate && !bridgeKnownLocalCommand ? commands.byName.get(parsedCandidate.name) : undefined
+    const bridgeSafeParsedCommand = bridgeOrigin && parsedCandidate
+      ? bridgeKnownLocalCommand
+          ? isBridgeSafeCommand(bridgeKnownLocalCommand)
+          : bridgeMatchedPromptCommand
+            ? isBridgeSafeCommand(bridgeMatchedPromptCommand)
+            : false
+      : false
+    const bridgeBlockedCommand = bridgeOrigin && parsedCandidate && (bridgeMatchedPromptCommand || bridgeKnownLocalCommand) && !bridgeSafeParsedCommand
+      ? { name: parsedCandidate.name, args: parsedCandidate.args, raw: parsedCandidate.raw }
+      : undefined
+    const parsedCommand = parsedCandidate && (!skipSlashCommands || bridgeSafeParsedCommand) && !bridgeBlockedCommand
+      ? parsedCandidate
+      : null
     const goalCommandResult = parsedCommand?.name === 'goal'
       ? await handleGoalCommand(conversationId, parsedCommand.args, transcript)
       : undefined
@@ -1502,6 +1523,21 @@ export function startServer(opts: StartServerOptions = {}) {
         }
       }
       try {
+        if (bridgeBlockedCommand) {
+          const msg = bridgeUnsafeCommandMessage(bridgeBlockedCommand.name)
+          yield await record({
+            type: 'command_invocation',
+            name: bridgeBlockedCommand.name,
+            args: bridgeBlockedCommand.args,
+            raw: bridgeBlockedCommand.raw,
+            source: 'commands',
+            contentLength: msg.length,
+          })
+          yield await record({ type: 'context_note', text: msg })
+          yield await record({ type: 'final', text: msg })
+          finalStatus = 'idle'
+          return
+        }
         if (commandInvocation && commandInvocation.source === 'commands') {
           yield await record({
             type: 'command_invocation',
@@ -1715,7 +1751,8 @@ export function startServer(opts: StartServerOptions = {}) {
         message: preview,
         messagePreview: preview,
         userContent: inboundContentBlocks(resolved.content),
-        skipCommandParsing: true,
+        skipSlashCommands: resolved.skipSlashCommands,
+        bridgeOrigin: resolved.bridgeOrigin,
         conversationId,
         workspaceRoot,
         permissionMode: rawBody.permission_mode ?? rawBody.permissionMode,
@@ -3800,18 +3837,26 @@ export function startServer(opts: StartServerOptions = {}) {
           ...url.searchParams.getAll('enabled_packs'),
           ...url.searchParams.getAll('enabledPacks'),
         ].filter(Boolean)
+        const queryBridgeOrigin = url.searchParams.get('bridge_origin') === 'true' ||
+          url.searchParams.get('bridgeOrigin') === 'true' ||
+          url.searchParams.get('remote_control') === 'true' ||
+          url.searchParams.get('remoteControl') === 'true'
         const bodyForWorkspace = req.method === 'GET'
           ? {
               working_dir: url.searchParams.get('working_dir') ?? undefined,
               workspaceRoot: url.searchParams.get('workspaceRoot') ?? undefined,
               knowledge_packs: queryPacks.length > 0 ? queryPacks : undefined,
               billiards_mode: url.searchParams.get('billiards_mode') === 'true' || url.searchParams.get('billiardsMode') === 'true',
+              bridgeOrigin: queryBridgeOrigin || undefined,
             }
           : await req.clone().json().catch(() => ({})) as Record<string, unknown>
         const workspace = workspaceFromBody(bodyForWorkspace)
         const commands = await loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), resolveEnabledPacks(bodyForWorkspace))
+        const publicCommands = bodyForWorkspace.bridgeOrigin === true || bodyForWorkspace.bridge_origin === true || bodyForWorkspace.remoteControl === true || bodyForWorkspace.remote_control === true
+          ? filterBridgeSafeCommands(commands.commands)
+          : commands.commands
         if (!commandRoute[1] && req.method === 'GET') {
-          return Response.json({ commands: commands.commands.map(publicCommand) })
+          return Response.json({ commands: publicCommands.map(publicCommand) })
         }
         if (commandRoute[1] === 'expand' && req.method === 'POST') {
           const body = bodyForWorkspace
