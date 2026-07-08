@@ -2,12 +2,15 @@
 # 一条命令跑全套测试。
 #   bash scripts/test.sh                # 快速门：后端pytest + 前端vitest + tsc（不花钱、不联网AI，dev运行时也安全）
 #   bash scripts/test.sh --eval         # 额外跑店脑 LLM 验收（真实内置模型，慢、花钱、需 key）
-#   bash scripts/test.sh --eval-agent   # 额外跑 Agent harness 评测（真实内置模型，慢、花钱、需 key；
-#                                       #   改 loop.py 这类壳子代码前后各跑一遍，拿两份 JSON 报告对比"变好还是变坏"）
 # 注意：不含 next build（会和 next dev 抢 .next 缓存）；上线构建走 deploy 流程，别在这跑。
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 fail=0
+
+if [ "${1:-}" = "--eval-agent" ]; then
+  echo "旧 Python Agent harness 评测已退场。请改跑: cd \"$ROOT/ts\" && bun run smoke:agent-tools"
+  exit 2
+fi
 
 echo "▶ 后端单测 (pytest · 快 · 无AI)"
 ( cd "$ROOT/server" && .venv/bin/python -m pytest -q ) || fail=1
@@ -24,12 +27,6 @@ if [ "${1:-}" = "--eval" ]; then
   echo ""
   echo "▶ 店脑 LLM 验收 (真实 DeepSeek · 慢 · 花钱)"
   ( cd "$ROOT/server" && .venv/bin/python -m pytest tests/eval_store_brain.py -q ) || fail=1
-fi
-
-if [ "${1:-}" = "--eval-agent" ]; then
-  echo ""
-  echo "▶ Agent harness 评测 (真实内置模型 · 慢 · 花钱 · 默认不跑)"
-  ( cd "$ROOT/server" && .venv/bin/python -m pytest tests/eval_agent_harness.py -q ) || fail=1
 fi
 
 echo ""

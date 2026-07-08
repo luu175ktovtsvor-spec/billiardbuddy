@@ -32,7 +32,7 @@ cd ../ts && bun run smoke:model        # 需要真模型 key,按需手工跑
 cd ../ts && bun run smoke:agent-tools   # 需要真模型 key,按需手工跑
 ```
 
-因此旧的 `cmd_live_test.py`、`file_exec_live_test.py`、`agent_tools_e2e.py`、`harness_eval.py`、`agent_full_scenario_test.py`、`run_agent_eval.py`、`agent_cases.yaml`、`_byok_api_test.py`、`_byok_e2e.py` 已删除；后续同类“命令安全/工具权限/文件执行/轨迹对抗/模型连通/provider 路由”回归继续往 TS 测试和 smoke 集中收敛。
+因此旧的 `cmd_live_test.py`、`file_exec_live_test.py`、`agent_tools_e2e.py`、`harness_eval.py`、`agent_full_scenario_test.py`、`run_agent_eval.py`、`agent_cases.yaml`、`eval_agent_harness.py`、`_byok_api_test.py`、`_byok_e2e.py` 已删除；后续同类“命令安全/工具权限/文件执行/轨迹对抗/模型连通/provider 路由/Agent 循环行为”回归继续往 TS 测试和 smoke 集中收敛。
 
 `_stability_probe.py` 也已删除。它本来就是一次性临时探针，稳定性复跑以后直接用 `run_northstar_eval.py --categories ... --tag ...` 重复运行并对比报告，不再保留额外 Python 脚本。
 
