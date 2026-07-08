@@ -1331,6 +1331,150 @@ test('bridge worker refresh refetches credentials, rebuilds epoch and resumes SS
   }
 })
 
+test('bridge worker schedules proactive refresh from expires_in and rebuilds stream', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-bridge-worker-auto-refresh-'))
+  const calls: Array<{ url: string; method: string; body: any; headers: Record<string, string> }> = []
+  let bridgeCredentialCalls = 0
+  const bridgeServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    fetchImpl: async (input, init) => {
+      calls.push({
+        url: String(input),
+        method: String(init?.method),
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        headers: Object.fromEntries(new Headers(init?.headers).entries()),
+      })
+      if (String(input).endsWith('/v1/code/sessions/cse_worker_auto_refresh/bridge')) {
+        bridgeCredentialCalls++
+        return Response.json({
+          worker_jwt: `worker.jwt.${bridgeCredentialCalls}`,
+          api_base_url: 'https://session-ingress.example',
+          expires_in: bridgeCredentialCalls === 1 ? 1 : 3600,
+          worker_epoch: bridgeCredentialCalls === 1 ? 21 : 22,
+        })
+      }
+      if (String(input).includes('/v1/code/sessions/cse_worker_auto_refresh/worker/events/stream')) {
+        const sequence = String(input).includes('from_sequence_num=1') ? 2 : 1
+        const frame = {
+          event_id: `evt_stream_${sequence}`,
+          sequence_num: sequence,
+          event_type: 'assistant',
+          source: 'remote',
+          created_at: new Date().toISOString(),
+          payload: { type: 'assistant', uuid: `msg_auto_${sequence}`, message: { content: [] } },
+        }
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`id: ${sequence}\nevent: client_event\ndata: ${JSON.stringify(frame)}\n\n`))
+            controller.close()
+          },
+        }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+      }
+      return Response.json({})
+    },
+  })
+  const codeBase = `http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/code-sessions/${encodeURIComponent('cse_worker_auto_refresh')}`
+  try {
+    const body = {
+      bridge_remote: {
+        base_url: 'https://remote.example',
+        token: 'oauth-token',
+      },
+      heartbeat_interval_ms: 60000,
+      bridge_refresh_buffer_ms: 0,
+      bridge_refresh_min_delay_ms: 10,
+      bridge_refresh_retry_delay_ms: 10,
+    }
+    await fetch(`${codeBase}/credentials`, { method: 'POST', body: JSON.stringify(body) })
+    await fetch(`${codeBase}/worker`, { method: 'POST', body: JSON.stringify(body) })
+    const refreshed = await waitFor(async () => {
+      const status = await (await fetch(`${codeBase}/worker`)).json() as any
+      return status.workerEpoch === 22 && status.stream?.lastSequenceNum === 2 ? status : null
+    }, 1500)
+    expect(refreshed.refresh).toMatchObject({ enabled: true, lastCause: 'proactive_refresh', lastError: null })
+    expect(bridgeCredentialCalls).toBeGreaterThanOrEqual(2)
+    expect(calls.some(call => call.url === 'https://session-ingress.example/v1/code/sessions/cse_worker_auto_refresh/worker' && call.body.worker_epoch === 22 && call.headers.authorization === 'Bearer worker.jwt.2')).toBe(true)
+    expect(calls.some(call => /\/worker\/events\/stream\?from_sequence_num=\d+/.test(call.url) && call.headers.authorization === 'Bearer worker.jwt.2')).toBe(true)
+  } finally {
+    bridgeServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('bridge worker stream auth close refreshes credentials instead of dropping worker', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-bridge-worker-auth-refresh-'))
+  const calls: Array<{ url: string; method: string; body: any; headers: Record<string, string> }> = []
+  let bridgeCredentialCalls = 0
+  const bridgeServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    fetchImpl: async (input, init) => {
+      calls.push({
+        url: String(input),
+        method: String(init?.method),
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        headers: Object.fromEntries(new Headers(init?.headers).entries()),
+      })
+      if (String(input).endsWith('/v1/code/sessions/cse_worker_auth_refresh/bridge')) {
+        bridgeCredentialCalls++
+        return Response.json({
+          worker_jwt: `worker.jwt.${bridgeCredentialCalls}`,
+          api_base_url: 'https://session-ingress.example',
+          expires_in: 3600,
+          worker_epoch: bridgeCredentialCalls === 1 ? 31 : 32,
+        })
+      }
+      if (String(input).includes('/v1/code/sessions/cse_worker_auth_refresh/worker/events/stream')) {
+        if (String(input).includes('from_sequence_num=1')) {
+          const frame = {
+            event_id: 'evt_stream_2',
+            sequence_num: 2,
+            event_type: 'assistant',
+            source: 'remote',
+            created_at: new Date().toISOString(),
+            payload: { type: 'assistant', uuid: 'msg_auth_2', message: { content: [] } },
+          }
+          return new Response(new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(`id: 2\nevent: client_event\ndata: ${JSON.stringify(frame)}\n\n`))
+              controller.close()
+            },
+          }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+        }
+        return new Response('expired worker jwt', { status: 401 })
+      }
+      return Response.json({})
+    },
+  })
+  const codeBase = `http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/code-sessions/${encodeURIComponent('cse_worker_auth_refresh')}`
+  try {
+    const body = {
+      bridge_remote: {
+        base_url: 'https://remote.example',
+        token: 'oauth-token',
+      },
+      heartbeat_interval_ms: 60000,
+      initial_sequence_num: 1,
+    }
+    await fetch(`${codeBase}/credentials`, { method: 'POST', body: JSON.stringify(body) })
+    await fetch(`${codeBase}/worker`, { method: 'POST', body: JSON.stringify(body) })
+    const recovered = await waitFor(async () => {
+      const status = await (await fetch(`${codeBase}/worker`)).json() as any
+      return status.workerEpoch === 32 && status.stream?.lastSequenceNum === 2 ? status : null
+    }, 1500)
+    expect(recovered.refresh).toMatchObject({ enabled: true, lastCause: 'auth_401_recovery', lastError: null })
+    expect(bridgeCredentialCalls).toBeGreaterThanOrEqual(2)
+    expect(calls.some(call => call.url === 'https://session-ingress.example/v1/code/sessions/cse_worker_auth_refresh/worker' && call.body.worker_epoch === 32 && call.headers.authorization === 'Bearer worker.jwt.2')).toBe(true)
+    expect(calls.some(call => call.url.includes('/worker/events/stream?from_sequence_num=1') && call.headers.authorization === 'Bearer worker.jwt.2')).toBe(true)
+  } finally {
+    bridgeServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('bridge Remote Control event API stores permission requests and response outbox', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-bridge-remote-events-'))
   const bridgeServer = startServer({ port: 0, transcriptRoot: root, mcpConfigPath: join(root, 'missing.mcp.json') })

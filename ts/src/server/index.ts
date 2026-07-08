@@ -53,12 +53,13 @@ import { createTeamTools } from '../tasks/teamTools'
 import { startUdsInbox, type UdsInboxServer } from '../tasks/udsInbox'
 import { UdsPeerRegistry, type UdsPeerRecord } from '../tasks/udsPeerRegistry'
 import { BridgePeerRegistry } from '../tasks/bridgePeerRegistry'
-import { BridgeRemoteState, type BridgeRemotePermissionResponse, type BridgeRemotePermissionStatus, type BridgeRemoteOutboxStatus } from '../tasks/bridgeRemoteState'
+import { BridgeRemoteState, type BridgeRemoteCredentialRecord, type BridgeRemotePermissionResponse, type BridgeRemotePermissionStatus, type BridgeRemoteOutboxStatus } from '../tasks/bridgeRemoteState'
 import { bridgeRemoteConfigFromEnv, createBridgeRemoteTransport } from '../tasks/bridgeRemoteTransport'
 import { BridgeRemoteSubscriber, type BridgeRemoteWebSocketConstructor } from '../tasks/bridgeRemoteSubscriber'
 import { createBridgeCodeSessionClient } from '../tasks/bridgeCodeSessionClient'
 import { BridgeWorkerClient, type BridgeWorkerSessionState } from '../tasks/bridgeWorkerClient'
 import { BridgeWorkerStream } from '../tasks/bridgeWorkerStream'
+import { BridgeWorkerRefreshScheduler, type BridgeWorkerRefreshCause } from '../tasks/bridgeWorkerRefreshScheduler'
 import { resolveInboundUserMessage, type BridgeInboundContent, type BridgeResolvedInboundMessage } from '../tasks/bridgeInboundMessages'
 import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
 import { createMediaTools } from '../media/mediaTools'
@@ -576,6 +577,19 @@ function bridgeCodeSessionConfigFromBody(rawBody: Record<string, unknown>, env: 
   }
 }
 
+function bridgeRefreshConfigFromBody(rawBody: Record<string, unknown>) {
+  const nested = isRecord(rawBody.bridgeRefresh) ? rawBody.bridgeRefresh : isRecord(rawBody.bridge_refresh) ? rawBody.bridge_refresh : {}
+  const enabledRaw = rawBody.bridgeRefreshEnabled ?? rawBody.bridge_refresh_enabled ?? nested.enabled
+  if (enabledRaw === false || enabledRaw === 'false' || enabledRaw === 0 || enabledRaw === '0') return { enabled: false }
+  return {
+    enabled: true,
+    refreshBufferMs: numberFrom(rawBody.bridgeRefreshBufferMs ?? rawBody.bridge_refresh_buffer_ms ?? nested.refreshBufferMs ?? nested.refresh_buffer_ms, 5 * 60 * 1000),
+    minDelayMs: numberFrom(rawBody.bridgeRefreshMinDelayMs ?? rawBody.bridge_refresh_min_delay_ms ?? nested.minDelayMs ?? nested.min_delay_ms, 30_000),
+    retryDelayMs: numberFrom(rawBody.bridgeRefreshRetryDelayMs ?? rawBody.bridge_refresh_retry_delay_ms ?? nested.retryDelayMs ?? nested.retry_delay_ms, 60_000),
+    maxConsecutiveFailures: numberFrom(rawBody.bridgeRefreshMaxFailures ?? rawBody.bridge_refresh_max_failures ?? nested.maxConsecutiveFailures ?? nested.max_consecutive_failures, 3),
+  }
+}
+
 function fallbackEventRecord(event: SessionStreamEvent): SessionEventRecord {
   return { seq: 0, ts: new Date().toISOString(), event }
 }
@@ -910,15 +924,114 @@ export function startServer(opts: StartServerOptions = {}) {
   const bridgeSubscribers = new Map<string, BridgeRemoteSubscriber>()
   const bridgeWorkers = new Map<string, BridgeWorkerClient>()
   const bridgeWorkerStreams = new Map<string, BridgeWorkerStream>()
+  const bridgeWorkerRefreshSchedulers = new Map<string, BridgeWorkerRefreshScheduler<BridgeWorkerRefreshValue>>()
 
-  async function startBridgeWorker(codeSessionId: string, credentials: Awaited<ReturnType<BridgeRemoteState['getCredentials']>>, body: Record<string, unknown> = {}) {
+  type BridgeWorkerStartResult = {
+    worker: BridgeWorkerClient
+    initialized: Awaited<ReturnType<BridgeWorkerClient['initialize']>>
+    stream: BridgeWorkerStream | null
+    streamEnabled: boolean
+    initialSequence: number
+  }
+  type BridgeWorkerRefreshValue = {
+    credentials: BridgeRemoteCredentialRecord
+    started: BridgeWorkerStartResult
+    status: number
+  }
+
+  function cancelBridgeWorkerRefresh(codeSessionId: string): void {
+    bridgeWorkerRefreshSchedulers.get(codeSessionId)?.cancel()
+    bridgeWorkerRefreshSchedulers.delete(codeSessionId)
+  }
+
+  function closeBridgeWorkerRuntime(codeSessionId: string, opts: { cancelRefresh?: boolean } = {}): void {
+    if (opts.cancelRefresh) cancelBridgeWorkerRefresh(codeSessionId)
+    bridgeWorkerStreams.get(codeSessionId)?.close()
+    bridgeWorkerStreams.delete(codeSessionId)
+    bridgeWorkers.get(codeSessionId)?.close()
+    bridgeWorkers.delete(codeSessionId)
+  }
+
+  function bridgeWorkerRefreshStatus(codeSessionId: string) {
+    return bridgeWorkerRefreshSchedulers.get(codeSessionId)?.getStatus() ?? {
+      enabled: false,
+      sessionId: codeSessionId,
+      inFlight: false,
+      nextRefreshAt: null,
+      nextRefreshInMs: null,
+      consecutiveFailures: 0,
+      lastRefreshAt: null,
+      lastError: null,
+      lastCause: null,
+    }
+  }
+
+  async function fetchAndStoreBridgeWorkerCredentials(codeSessionId: string, body: Record<string, unknown>) {
+    const config = bridgeCodeSessionConfigFromBody(body, opts.env ?? process.env)
+    if (!config) throw new TurnSetupError('bridge code session client is not configured', 400)
+    const trustedDeviceToken = stringOr(body.trustedDeviceToken ?? body.trusted_device_token, '')
+    const client = createBridgeCodeSessionClient({ ...config, fetchImpl: opts.fetchImpl })
+    const fetched = await client.fetchRemoteCredentials(codeSessionId, trustedDeviceToken || undefined)
+    if (!fetched.ok) throw new TurnSetupError(fetched.error, fetched.status ?? 502)
+    const credentials = await bridgeRemote.storeCredentials(codeSessionId, fetched.value)
+    return { credentials, status: fetched.status }
+  }
+
+  async function refreshBridgeWorkerCredentialsAndTransport(codeSessionId: string, body: Record<string, unknown>, _cause: BridgeWorkerRefreshCause, manageRefresh: boolean): Promise<BridgeWorkerRefreshValue> {
+    const fetched = await fetchAndStoreBridgeWorkerCredentials(codeSessionId, body)
+    const started = await startBridgeWorker(codeSessionId, fetched.credentials, body, { manageRefresh })
+    return { ...fetched, started }
+  }
+
+  function scheduleBridgeWorkerRefresh(codeSessionId: string, body: Record<string, unknown>, credentials: BridgeRemoteCredentialRecord): void {
+    const config = bridgeCodeSessionConfigFromBody(body, opts.env ?? process.env)
+    const refreshConfig = bridgeRefreshConfigFromBody(body)
+    cancelBridgeWorkerRefresh(codeSessionId)
+    if (!config || !refreshConfig.enabled) return
+    const scheduler = new BridgeWorkerRefreshScheduler<BridgeWorkerRefreshValue>({
+      sessionId: codeSessionId,
+      refreshBufferMs: refreshConfig.refreshBufferMs,
+      minDelayMs: refreshConfig.minDelayMs,
+      retryDelayMs: refreshConfig.retryDelayMs,
+      maxConsecutiveFailures: refreshConfig.maxConsecutiveFailures,
+      onRefresh: async cause => {
+        const refreshed = await refreshBridgeWorkerCredentialsAndTransport(codeSessionId, body, cause, false)
+        return { value: refreshed, expiresInSeconds: refreshed.credentials.expiresIn }
+      },
+    })
+    bridgeWorkerRefreshSchedulers.set(codeSessionId, scheduler)
+    scheduler.scheduleFromExpiresIn(credentials.expiresIn)
+  }
+
+  async function recoverBridgeWorkerStreamAuth(codeSessionId: string, code: number): Promise<void> {
+    const scheduler = bridgeWorkerRefreshSchedulers.get(codeSessionId)
+    if (!scheduler) {
+      closeBridgeWorkerRuntime(codeSessionId, { cancelRefresh: true })
+      await bridgePeers.updateStatus(codeSessionId, 'error', `worker stream closed ${code}`).catch(() => undefined)
+      return
+    }
+    await bridgePeers.updateStatus(codeSessionId, 'connecting', `worker stream closed ${code}; refreshing`).catch(() => undefined)
+    const result = await scheduler.refreshNow('auth_401_recovery')
+    if (result.ok) return
+    if (result.skipped && (result.reason === 'in_flight' || result.reason === 'stale')) return
+    closeBridgeWorkerRuntime(codeSessionId, { cancelRefresh: result.skipped && result.reason === 'cancelled' })
+    const detail = result.skipped ? result.reason : result.error
+    await bridgePeers.updateStatus(codeSessionId, 'error', `worker stream refresh failed: ${detail}`).catch(() => undefined)
+  }
+
+  async function startBridgeWorker(
+    codeSessionId: string,
+    credentials: BridgeRemoteCredentialRecord | null,
+    body: Record<string, unknown> = {},
+    options: { manageRefresh?: boolean } = {},
+  ): Promise<BridgeWorkerStartResult> {
     if (!credentials) throw new Error('bridge credentials not found')
     const previousSequence = bridgeWorkerStreams.get(codeSessionId)?.getLastSequenceNum() ?? 0
     const initialSequence = numberFrom(body.initialSequenceNum ?? body.initial_sequence_num, previousSequence)
     const inboundConfig = bridgeRemoteConfigFromBody(body, opts.env ?? process.env)
-    bridgeWorkerStreams.get(codeSessionId)?.close()
-    bridgeWorkerStreams.delete(codeSessionId)
-    bridgeWorkers.get(codeSessionId)?.close()
+    const manageRefresh = options.manageRefresh ?? true
+    if (manageRefresh) cancelBridgeWorkerRefresh(codeSessionId)
+    closeBridgeWorkerRuntime(codeSessionId)
     const worker = new BridgeWorkerClient({
       sessionId: codeSessionId,
       credentials,
@@ -930,10 +1043,7 @@ export function startServer(opts: StartServerOptions = {}) {
           : 0,
       fetchImpl: opts.fetchImpl,
       onEpochMismatch: () => {
-        bridgeWorkerStreams.get(codeSessionId)?.close()
-        bridgeWorkerStreams.delete(codeSessionId)
-        bridgeWorkers.get(codeSessionId)?.close()
-        bridgeWorkers.delete(codeSessionId)
+        closeBridgeWorkerRuntime(codeSessionId, { cancelRefresh: true })
         void bridgePeers.updateStatus(codeSessionId, 'error', 'worker epoch mismatch').catch(() => undefined)
       },
     })
@@ -943,6 +1053,7 @@ export function startServer(opts: StartServerOptions = {}) {
       throw new TurnSetupError(initialized.error || `worker init failed ${initialized.status ?? ''}`.trim(), initialized.status ?? 502)
     }
     bridgeWorkers.set(codeSessionId, worker)
+    if (manageRefresh) scheduleBridgeWorkerRefresh(codeSessionId, body, credentials)
     const shouldStream = body.stream !== false && body.read_stream !== false
     if (shouldStream) {
       const stream = new BridgeWorkerStream({
@@ -961,9 +1072,10 @@ export function startServer(opts: StartServerOptions = {}) {
         onClose: code => {
           bridgeWorkerStreams.delete(codeSessionId)
           if (code === 401 || code === 403) {
-            worker.close()
-            bridgeWorkers.delete(codeSessionId)
-            void bridgePeers.updateStatus(codeSessionId, 'error', `worker stream closed ${code}`).catch(() => undefined)
+            void recoverBridgeWorkerStreamAuth(codeSessionId, code).catch(err => {
+              closeBridgeWorkerRuntime(codeSessionId, { cancelRefresh: true })
+              void bridgePeers.updateStatus(codeSessionId, 'error', err instanceof Error ? err.message : String(err)).catch(() => undefined)
+            })
           }
         },
       })
@@ -3044,7 +3156,13 @@ export function startServer(opts: StartServerOptions = {}) {
           if (req.method === 'GET') {
             const worker = bridgeWorkers.get(codeSessionId)
             const stream = bridgeWorkerStreams.get(codeSessionId)
-            return Response.json({ sessionId: codeSessionId, connected: !!worker, workerEpoch: worker?.getWorkerEpoch(), stream: stream ? { state: stream.getState(), lastSequenceNum: stream.getLastSequenceNum() } : null })
+            return Response.json({
+              sessionId: codeSessionId,
+              connected: !!worker,
+              workerEpoch: worker?.getWorkerEpoch(),
+              stream: stream ? { state: stream.getState(), lastSequenceNum: stream.getLastSequenceNum() } : null,
+              refresh: bridgeWorkerRefreshStatus(codeSessionId),
+            })
           }
           if (req.method === 'POST') {
             const body = await req.json().catch(() => ({})) as Record<string, unknown>
@@ -3054,10 +3172,7 @@ export function startServer(opts: StartServerOptions = {}) {
             return Response.json({ ok: true, sessionId: codeSessionId, workerEpoch: started.worker.getWorkerEpoch(), initStatus: started.initialized.status, stream: started.streamEnabled, initialSequenceNum: started.initialSequence })
           }
           if (req.method === 'DELETE') {
-            bridgeWorkerStreams.get(codeSessionId)?.close()
-            bridgeWorkerStreams.delete(codeSessionId)
-            bridgeWorkers.get(codeSessionId)?.close()
-            bridgeWorkers.delete(codeSessionId)
+            closeBridgeWorkerRuntime(codeSessionId, { cancelRefresh: true })
             await bridgePeers.updateStatus(codeSessionId, 'outbound_only').catch(() => undefined)
             return Response.json({ ok: true, sessionId: codeSessionId })
           }
@@ -3076,15 +3191,17 @@ export function startServer(opts: StartServerOptions = {}) {
           if (action === 'refresh') {
             if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
             const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            const config = bridgeCodeSessionConfigFromBody(body, opts.env ?? process.env)
-            if (!config) return jsonError('bridge code session client is not configured', 400)
-            const trustedDeviceToken = stringOr(body.trustedDeviceToken ?? body.trusted_device_token, '')
-            const client = createBridgeCodeSessionClient({ ...config, fetchImpl: opts.fetchImpl })
-            const fetched = await client.fetchRemoteCredentials(codeSessionId, trustedDeviceToken || undefined)
-            if (!fetched.ok) return jsonError(fetched.error, fetched.status ?? 502)
-            const credentials = await bridgeRemote.storeCredentials(codeSessionId, fetched.value)
-            const started = await startBridgeWorker(codeSessionId, credentials, body)
-            return Response.json({ ok: true, sessionId: codeSessionId, workerEpoch: started.worker.getWorkerEpoch(), refreshStatus: fetched.status, initStatus: started.initialized.status, stream: started.streamEnabled, initialSequenceNum: started.initialSequence })
+            const refreshed = await refreshBridgeWorkerCredentialsAndTransport(codeSessionId, body, 'manual_refresh', true)
+            return Response.json({
+              ok: true,
+              sessionId: codeSessionId,
+              workerEpoch: refreshed.started.worker.getWorkerEpoch(),
+              refreshStatus: refreshed.status,
+              initStatus: refreshed.started.initialized.status,
+              stream: refreshed.started.streamEnabled,
+              initialSequenceNum: refreshed.started.initialSequence,
+              refresh: bridgeWorkerRefreshStatus(codeSessionId),
+            })
           }
           const worker = bridgeWorkers.get(codeSessionId)
           if (!worker) return jsonError('bridge worker is not connected', 409)
@@ -3933,6 +4050,8 @@ export function startServer(opts: StartServerOptions = {}) {
   app.stop = (closeActiveConnections?: boolean) => {
     for (const subscriber of bridgeSubscribers.values()) subscriber.close()
     bridgeSubscribers.clear()
+    for (const scheduler of bridgeWorkerRefreshSchedulers.values()) scheduler.cancel()
+    bridgeWorkerRefreshSchedulers.clear()
     for (const stream of bridgeWorkerStreams.values()) stream.close()
     bridgeWorkerStreams.clear()
     for (const worker of bridgeWorkers.values()) worker.close()
