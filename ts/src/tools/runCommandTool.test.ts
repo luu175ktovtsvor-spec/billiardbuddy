@@ -5,9 +5,10 @@ import { join } from 'node:path'
 import { realpathSync } from 'node:fs'
 import { Workspace } from '../workspace/workspace'
 import type { ToolContext } from './Tool'
+import type { Sandbox } from '../sandbox/sandbox'
 import { runCommandTool } from './runCommandTool'
 import { StreamingOutputSanitizer, stripAnsiControlSequences } from './outputSanitize'
-import { classifyCommandRisk, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellCdGitNeedsApproval, shellGitInternalWriteNeedsApproval, shellOutputRedirectionNeedsApproval } from './dangerousCommand'
+import { classifyCommandRisk, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellCdGitNeedsApproval, shellGitInternalWriteNeedsApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval } from './dangerousCommand'
 import { resolvePermission } from '../permissions/resolve'
 
 let root: string
@@ -297,7 +298,19 @@ test('git in bare-looking cwd mirrors bare repo safety gate', () => {
   expect(shellBareGitRepoCwdNeedsApproval('git status --short', normalRepo)).toBe(false)
 })
 
+test('git outside original cwd while sandboxed mirrors cwd safety gate', () => {
+  const subdir = join(root, 'sub')
+  mkdirSync(subdir, { recursive: true })
+  expect(shellSandboxedGitCwdNeedsApproval('git status --short', { root, cwd: root, sandboxActive: true })).toBe(false)
+  expect(shellSandboxedGitCwdNeedsApproval('git status --short', { root, cwd: subdir, sandboxActive: false })).toBe(false)
+  expect(shellSandboxedGitCwdNeedsApproval('git status --short', { root, cwd: subdir, sandboxActive: true })).toBe(true)
+  expect(shellSandboxedGitCwdNeedsApproval('xargs git status', { root, cwd: subdir, sandboxActive: true })).toBe(true)
+  expect(shellSandboxedGitCwdNeedsApproval('ls -la', { root, cwd: subdir, sandboxActive: true })).toBe(false)
+})
+
 test('run_command dynamic permission allows reads and classifies approval', () => {
+  const sandbox = { isOsSandboxActive: () => true } as unknown as Sandbox
+  mkdirSync(join(root, 'sub'), { recursive: true })
   expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: "jq '.name' package.json" }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
@@ -317,6 +330,13 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   expect(resolvePermission(runCommandTool, { command: 'cd sub && git status --short' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'git status --short', cwd: 'sub' }, { ...ctx, sandbox, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'git status --short', cwd: 'sub' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'allow',
   })
   writeFileSync(join(root, 'HEAD'), 'ref: refs/heads/main\n')
   expect(resolvePermission(runCommandTool, { command: 'git status --short' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({

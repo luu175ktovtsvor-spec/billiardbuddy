@@ -3,7 +3,7 @@ import { stat } from 'node:fs/promises'
 import { isAbsolute, relative } from 'node:path'
 import type { Tool, ToolContext } from './Tool'
 import type { WrappedCommand } from '../sandbox/sandbox'
-import { classifyCommandRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellOutputRedirectionNeedsApproval, type CommandRisk } from './dangerousCommand'
+import { classifyCommandRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval, type CommandRisk } from './dangerousCommand'
 import type { ApprovalClass } from '../permissions/types'
 import { StreamingOutputSanitizer } from './outputSanitize'
 import { interpretCommandResult } from './commandSemantics'
@@ -90,7 +90,12 @@ function effectiveCommandRisk(input: RunCommandInput | undefined, ctx: ToolConte
   const risk = classifyCommandRisk(input.command)
   if (risk === 'destructive') return risk
   const cwd = resolveCommandCwdSync(input.cwd, ctx)
-  if (shellOutputRedirectionNeedsApproval(input.command, { root: ctx.workspace.root, cwd }) || shellBareGitRepoCwdNeedsApproval(input.command, cwd)) {
+  const sandboxActive = ctx.sandbox?.isOsSandboxActive() === true
+  if (
+    shellOutputRedirectionNeedsApproval(input.command, { root: ctx.workspace.root, cwd }) ||
+    shellBareGitRepoCwdNeedsApproval(input.command, cwd) ||
+    shellSandboxedGitCwdNeedsApproval(input.command, { root: ctx.workspace.root, cwd, sandboxActive })
+  ) {
     return 'outreach'
   }
   return risk
