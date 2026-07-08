@@ -2755,9 +2755,14 @@ function classifyGitReadOnlyCommand(command: string): CommandRisk | null {
     if (token.includes('{') && (token.includes(',') || token.includes('..'))) return 'outreach'
   }
 
+  if (matched.config === GIT_READ_ONLY_COMMANDS['git ls-remote'] && gitLsRemoteHasServerOption(args)) return 'outreach'
   if (!validateSafeFlags(args, matched.config)) return 'file'
   if (matched.config.isDangerous?.(args)) return 'file'
   return 'read'
+}
+
+function gitLsRemoteHasServerOption(args: string[]): boolean {
+  return args.some(arg => arg === '--server-option' || arg.startsWith('--server-option=') || arg === '-o' || /^-o.+/.test(arg))
 }
 
 function matchGitReadOnlyCommand(tokens: string[]): { config: GitReadOnlyCommandConfig; commandTokens: number } | null {
