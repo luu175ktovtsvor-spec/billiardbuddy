@@ -1165,6 +1165,7 @@ function classifyJqCommand(command: string): CommandRisk | null {
   const tokens = tokenizeShellWords(command)
   if (tokens[0]?.toLowerCase() !== 'jq') return null
   if (/\bsystem\s*\(/.test(command)) return 'outreach'
+  if (/\benv\b|\$ENV\b/.test(command)) return 'outreach'
   if (tokens.some(token => {
     const longFlag = token.toLowerCase()
     return token === '-f' ||
@@ -1174,6 +1175,8 @@ function classifyJqCommand(command: string): CommandRisk | null {
       longFlag.startsWith('--rawfile=') ||
       longFlag === '--slurpfile' ||
       longFlag.startsWith('--slurpfile=') ||
+      longFlag === '--run-tests' ||
+      longFlag.startsWith('--run-tests=') ||
       token === '-L' ||
       longFlag === '--library-path' ||
       longFlag.startsWith('--library-path=')

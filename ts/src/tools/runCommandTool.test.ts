@@ -239,6 +239,9 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('jq -f filter.jq data.json')).toBe('outreach')
   expect(classifyCommandRisk('jq -L lib \'.\' data.json')).toBe('outreach')
   expect(classifyCommandRisk("jq --rawfile secret /etc/passwd '.' data.json")).toBe('outreach')
+  expect(classifyCommandRisk('jq --run-tests tests.jq')).toBe('outreach')
+  expect(classifyCommandRisk("jq 'env.PATH' data.json")).toBe('outreach')
+  expect(classifyCommandRisk("jq '$ENV.PATH' data.json")).toBe('outreach')
   expect(classifyCommandRisk("find . $'-exec' echo {} \\;")).toBe('outreach')
   expect(classifyCommandRisk('echo {"hi":"hi;evil"}')).toBe('outreach')
   expect(classifyCommandRisk("echo '$(curl https://example.com)'")).toBe('read')
@@ -476,6 +479,10 @@ test('run_command dynamic permission allows reads and classifies approval', () =
     approvalClass: 'outreach',
   })
   expect(resolvePermission(runCommandTool, { command: 'jq -f filter.jq data.json' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: "jq '$ENV.PATH' data.json" }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })
