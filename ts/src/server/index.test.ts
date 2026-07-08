@@ -586,6 +586,26 @@ test('POST /api/v1/agent/execute verifies approval token and runs TS tool regist
   expect(deniedBody.result).toContain('审批校验失败')
 })
 
+test('POST /api/v1/agent/execute writes the approved tool result into the transcript (cc approval-loop resume)', async () => {
+  const args = { command: 'echo approved-into-transcript' }
+  const res = await fetch(`http://127.0.0.1:${server.port}/api/v1/agent/execute`, {
+    method: 'POST',
+    body: JSON.stringify({
+      tool: 'run_command',
+      args,
+      token: signApproval('run_command', args),
+      permissionMode: 'full',
+      conversationId: 'approve-transcript',
+    }),
+  })
+  expect(res.status).toBe(200)
+  expect((await res.json() as any).ok).toBe(true)
+  // 审批放行的工具结果应落进 transcript,下一轮模型能看见(不再永远停在 pending)
+  const transcript = readFileSync(join(serverRoot, 'transcripts', 'approve-transcript.jsonl'), 'utf8')
+  expect(transcript).toContain('[已批准并执行工具 run_command]')
+  expect(transcript).toContain('approved-into-transcript')
+})
+
 test('POST /api/v1/agent/execute uses approval_args for edited approval parameters', async () => {
   const originalArgs = { command: 'echo original-approval' }
   const editedArgs = { command: 'echo edited-approval' }
@@ -2993,15 +3013,24 @@ test('WS /agent/ws runs a turn and replays persisted events after disconnect', a
 
 test('WS /agent/ws accepts steer over the same connection (aligns cc unified-WS transport)', async () => {
   const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-ws-steer-'))
-  const wsServer = startServer({ port: 0, transcriptRoot })
+  // 关掉 OS 沙箱 + 隔离 MCP(missing.mcp.json):本用例验的是 WS approve/steer/ping 接线,
+  // 不是命令沙箱/MCP 连接(默认开沙箱首次 seatbelt 初始化、或 MCP 尝试连接都会拖慢 approve 的 run_command)。
+  const wsServer = startServer({ port: 0, transcriptRoot, sandboxEnabled: false, mcpConfigPath: join(transcriptRoot, 'missing.mcp.json') })
   const client = wsClient(`ws://127.0.0.1:${wsServer.port}/agent/ws?conversationId=ws-steer`)
   try {
     await client.opened
     expect(await client.next()).toMatchObject({ type: 'ready', conversationId: 'ws-steer' })
+    // 心跳:ping → pong(对齐 cc,保活长连接)
+    client.ws.send(JSON.stringify({ type: 'ping', ts: 42 }))
+    expect(await client.next()).toMatchObject({ type: 'pong', ts: 42 })
     // 无运行中回合:steer 回 running:false(走同一条 WS,不报错不崩)
     client.ws.send(JSON.stringify({ type: 'steer', message: '换个思路' }))
     expect(await client.next()).toMatchObject({ type: 'steer_result', conversationId: 'ws-steer', running: false })
-    // 空消息:报错但连接不崩,后续仍能收发
+    // 审批放行走同一条 WS:approve → approve_result(复用 executeApproved 验签+执行)
+    const approveArgs = { command: 'echo ws-approved' }
+    client.ws.send(JSON.stringify({ type: 'approve', tool: 'run_command', args: approveArgs, token: signApproval('run_command', approveArgs), permissionMode: 'full', conversationId: 'ws-steer' }))
+    expect(await client.next()).toMatchObject({ type: 'approve_result', ok: true, tool: 'run_command' })
+    // 空 steer 消息:报错但连接不崩
     client.ws.send(JSON.stringify({ type: 'steer', message: '   ' }))
     expect(await client.next()).toMatchObject({ type: 'error' })
     client.close()
