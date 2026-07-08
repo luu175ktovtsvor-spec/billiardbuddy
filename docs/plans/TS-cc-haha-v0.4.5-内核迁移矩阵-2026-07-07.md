@@ -3473,6 +3473,27 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 - 已跑:`bun test`(863 pass/0 fail)、`bun run typecheck`、`smoke:sandbox/sqlite`、`build:sidecar`、`web tsc`。
 - 未跑:Python/server/gateway 测试(本轮不触碰旧栈运行链路);真机打包 E2E、真实模型/生图/剪辑 smoke(需 key/真机);前端浏览器 UI 验证(本轮未改 web 源码,仅 chat-thread 一处 tooltip 文案随 9ff2c67)。
 
+## 3.402 2026-07-09 桌面 App 架构对标(owner:架构层面对齐 cc-haha)
+
+> owner 口径:本项目本质是 cc-haha 型桌面 coding agent,前端 UI 长相可自定,但**架构层面(连接/存储/桌面壳/打包/配置/项目会话)对标 cc-haha**。子代理逐维度对照结论:
+
+**✅ 已对齐**
+- **存储**(`b087332`):文件式 JSONL transcript(`transcripts/<id>.jsonl`)+ JSON 元信息(`sessions.json`/`tasks.json`/`*.meta.json`),**无 SQL 数据库**——与 cc-haha(`<sessionId>.jsonl` + `.meta.json`)同构。老 SQLite 是 Python 台球域数据,已随 server/ 删。
+- **连接架构**(`c98af29`/`931cf61`):WS 双向(`/agent/ws`)+ 事件流 + seq+after 全量重放(比 cc 仅补挂起权限请求**更优**,保留)+ 中断 + **插话/审批走同一条 WS**(steer/approve/reject/ping)+ **审批闭环写回 transcript**(修复"审批后模型看不见工具结果"的协议真断裂)。cc 双跳(浏览器↔server↔spawn CLI 子进程)的 control_request/SDKMessage IPC 精细分型属其架构选择,本项目单跳不照抄字面协议,客户端可见契约已对齐。
+- **Provider 配置 CRUD**:`providerService.ts` 与 cc 字段/CRUD/reorder/delete-guard-active/两段式测试高度对齐(本维度最扎实)。
+- **sidecar 原语**:`ts/desktop/electron/services/sidecarManager.ts` 端口预留/TCP 等待/spawn/kill 逐段抄 cc。
+
+**❌ 未对齐(分两类)**
+
+后端侧(先做):
+1. **项目/会话组织**:cc 多项目 App——按 `sanitizePath(cwd)` 分桶存目录、`listSessionsImpl` 跨项目/worktree 感知、`recent-projects` 聚合选择器、会话 fork;本项目单节点(一份扁平 `sessions.json` + `workspaceRoot` 字段标归属),无"项目"组织层、无最近项目、无会话分支。
+2. **配置基座**:cc 有分层用户设置文件 + `/api/settings` REST + 网络设置持久化 + provider 预设库;本项目只有 provider 一柱,其余设置基座缺。
+
+前端/桌面壳(后端做完再补):
+3. **桌面壳 Electron 层**:ts-desktop 仅 sidecarManager,`main.ts`/`preload`/窗口管理/集中 IPC 白名单 + payload 校验/原生能力(托盘/菜单/窗口状态持久化/外链协议白名单 + 可执行文件拦截/导航守卫)全空——照 cc 服务拆分骨架从零建,同时迁入老壳产品特有能力(文件沙箱选择器/截图问 AI/TTS/全局热键/多工作台/开机自启,cc 无);排除 cc 编码 agent 专属(PTY 终端/WebContentsView 预览/trace 窗/portable 模式)。
+4. **sidecar 生命周期上层**:cc `serverRuntime.ts`(ElectronServerRuntime)+ `main.ts` app 生命周期挂钩,本项目缺(无 electron/main.ts)。
+5. **打包/分发/自动更新**:electron-builder 配置(mac dmg/win nsis 签名)+ 跨平台 CI 出包矩阵 + electron-updater 状态机全空(sidecar 单文件编译脚本已对齐)。
+
 ## 4. 下一批代码顺序
 
 1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复、后台 agent 确定性进度阶段、`SendUserMessage/Brief` 输出通道、agent memory / snapshot、后台续跑 content replacement records 继承、同 agent id 原任务槽续跑、`AgentOutputTool/BashOutputTool` 旧名兼容、parent live replacements gap-fill、AgentSummary 周期摘要、ListPeers 队友发现元数据、UDS SendMessage 出站投递、UDS inbox 接收注入、UDS peer discovery/ListPeers socket 展示、Remote Control bridge peer registry/SendMessage 安全骨架、Remote Control event/permission outbox 状态面、Remote Control Sessions API HTTP transport、SessionsWebSocket 订阅接收半边、code session / bridge credential exchange、CCR worker HTTP/heartbeat/state/delivery、SSE worker read stream、worker credential refresh/epoch rebuild 控制面、inbound user message/file attachment resolved prompt 队列、inbound prompt -> agent queue/steering、OAuth/JWT 自动 refresh scheduler、SDK message -> 前端实时事件流投影、bridge-safe slash command 白名单、prompt-cache break telemetry、AgentTool `run_in_background` 显式后台入口、subagent local denial tracking、fork child message builder、fork recursive guard 运行时接入、显式 fork_context AgentTool 运行时、受控 implicit fork gate、fork querySource 身份标记、AgentSummary cache-safe params 生命周期、rendered system prompt byte-exact 继承、foreground handoff registry 地基、AgentTool foreground registration lifecycle、foreground-to-background race 接管入口、foreground handoff continuation snapshot、foreground handoff progress seed、foreground handoff AgentSummary snapshot、foreground handoff token usage tracker、foreground handoff worktree ownership、foreground handoff MCP/session cleanup、fork worker worktree notice、fork force-async gate 与 prompt 指南、`/fork <directive>` 后台 worker 入口、`context:fork` prompt command executor、SkillTool 主动调用 `context:fork`、SkillTool allowedTools 归一化/worker 白名单、invoked skill 压缩恢复、allowedTools 会话级权限上下文、`Bash(...)` 参数级 allowedTools、skill frontmatter hooks 注册/恢复/`once`、permission rule parser 与 Bash/PowerShell wildcard shell allowedTools、context fork worker allowedTools session permissions、Bash allowedTools wrapper/env/compound matching、文件工具 path-scoped allowedTools 边界、Bash 子命令上限/退出码语义、Bash substitution 风险分类、Bash 输出重定向路径护栏、Bash `find` 只读守卫、Bash parser-hardening 风险门、Bash jq/flag/malformed syntax guard、Bash readOnlyValidation 常用命令 allowlist、Bash `cd`+`git` bare repo 安全门、Bash git-internal 写入安全门、Bash bare repo cwd git 安全门、Bash sandbox original cwd git 安全门、Bash incomplete command fragment 安全门、Bash comment quote desync 安全门、Bash input redirection 安全门已落;下一步继续复制/移植/改写完整 Bash tree-sitter 安全分析器、文件权限持久化/deny/ask/UI/sandbox 合并、插件 trust gate 细粒度开关和 command/skill worker drill-in,并做前端远端来源/中间 diff/右侧预览的细颗粒 polish。
