@@ -236,6 +236,7 @@ export function hasShellParserRisk(command: string): boolean {
   const quoteViews = extractShellQuoteViews(command)
   const exposed = shellTextOutsideSingleQuotes(command)
   return CONTROL_CHAR_RE.test(command) ||
+    hasIncompleteShellFragmentRisk(command) ||
     hasShellQuoteSingleQuoteBug(command) ||
     hasCarriageReturnOutsideDoubleQuotes(command) ||
     hasSuspiciousNewline(quoteViews.fullyUnquoted) ||
@@ -363,6 +364,13 @@ function hasShellQuoteSingleQuoteBug(command: string): boolean {
   }
 
   return false
+}
+
+function hasIncompleteShellFragmentRisk(command: string): boolean {
+  const trimmed = command.trim()
+  if (/^\s*\t/.test(command)) return true
+  if (trimmed.startsWith('-')) return true
+  return /^\s*(?:&&|\|\||;|>>?|<)/.test(command)
 }
 
 function hasCarriageReturnOutsideDoubleQuotes(command: string): boolean {
