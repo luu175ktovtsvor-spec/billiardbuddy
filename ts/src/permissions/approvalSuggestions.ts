@@ -115,6 +115,15 @@ function stringField(input: unknown, key: string): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+// cc bashPermissions.ts BARE_SHELL_PREFIXES:解释器 / exec 包装器 / 提权前缀。
+// 这些命令首 token 若被拿去生成 `xxx:*` 会话放行规则,等价于近乎无限的任意代码执行放行
+// (如 `bash -c:*`、`sudo rm:*`、`env FOO=x:*`),因此这类命令不生成任何"本会话允许"规则。
+const BARE_SHELL_PREFIXES = new Set([
+  'sh', 'bash', 'zsh', 'fish', 'csh', 'tcsh', 'ksh', 'dash', 'cmd', 'powershell', 'pwsh',
+  'env', 'xargs', 'nice', 'stdbuf', 'nohup', 'timeout', 'time',
+  'sudo', 'doas', 'pkexec',
+])
+
 function shellRuleSuggestion(command: string): string {
   const normalized = command.trim()
   if (!normalized) return ''
@@ -125,6 +134,8 @@ function shellRuleSuggestion(command: string): string {
   const tokens = stripped.split(/\s+/).filter(Boolean)
   if (tokens.length === 0) return stripped
   if (!/^[A-Za-z0-9_.:/+-]+$/.test(tokens[0]!)) return stripped
+  // 危险前缀:不生成会话放行规则(返回空 → 调用方 rememberedPermissionUpdatesForApproval 跳过 addRules)。
+  if (BARE_SHELL_PREFIXES.has(tokens[0]!.toLowerCase())) return ''
   const prefix = tokens.slice(0, Math.min(2, tokens.length)).join(' ')
   return prefix ? `${prefix}:*` : stripped
 }

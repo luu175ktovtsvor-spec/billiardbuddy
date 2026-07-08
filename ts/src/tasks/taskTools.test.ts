@@ -906,7 +906,8 @@ test('start_background_agent_task honors agent frontmatter defaults for prompt, 
       baseTools: [inspectTool, fileWriteTool],
       baseSystemPrompt: 'base prompt',
     })
-    const ctx = { workspace: new Workspace(root), conversationId: 'c-agent-defaults', permissionMode: 'full' as const }
+    // 父级 default:后台 agent frontmatter 声明的 permissionMode('plan')应被采用。
+    const ctx = { workspace: new Workspace(root), conversationId: 'c-agent-defaults', permissionMode: 'default' as const }
     await start.execute({ task: '检查后台默认值', title: '后台默认值' }, ctx)
     const done = await waitFor(async () => {
       const task = (await tasks.list({ conversationId: 'c-agent-defaults' }))[0]
@@ -926,6 +927,45 @@ test('start_background_agent_task honors agent frontmatter defaults for prompt, 
       permission_mode: 'plan',
       max_turns: 1,
     })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('background agent without declared mode falls back to acceptEdits (cc:async agents cannot answer prompts)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-tools-bg-fallback-'))
+  try {
+    const tasks = new TaskService(root)
+    let seenPermission = ''
+    const inspectTool: Tool = {
+      name: 'inspect_ctx',
+      description: 'Inspect tool context.',
+      inputSchema: { type: 'object', properties: {} },
+      isReadOnly: true,
+      async execute(_, toolCtx) {
+        seenPermission = toolCtx.permissionMode ?? ''
+        return 'ok'
+      },
+    }
+    const agent: AgentDefinition = {
+      name: 'researcher',
+      description: '研究代理',
+      prompt: '研究并总结。',
+      filePath: join(root, 'researcher.md'),
+      tools: ['inspect_ctx'],
+      maxTurns: 1,
+    }
+    const start = createBackgroundAgentTaskTool({ tasks, agents: [agent], model: scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: 'i', name: 'inspect_ctx', input: {} }] },
+      { kind: 'final', text: 'done' },
+    ]), baseTools: [inspectTool], baseSystemPrompt: 'base' })
+    // 父级 default,agent 未声明 permissionMode → 后台任务应兜底到 acceptEdits,而非继承 default(否则写操作卡在无人应答的 ask)
+    await start.execute({ task: 't', title: 't' }, { workspace: new Workspace(root), conversationId: 'c-bg-fallback', permissionMode: 'default' })
+    await waitFor(async () => {
+      const task = (await tasks.list({ conversationId: 'c-bg-fallback' }))[0]
+      return task?.status === 'completed' ? task : null
+    })
+    expect(seenPermission).toBe('acceptEdits')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

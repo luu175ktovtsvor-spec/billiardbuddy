@@ -23,6 +23,7 @@ import {
 } from '../context/toolResultStorage'
 import { startAgentSummarization, type AgentSummaryController } from './agentSummary'
 import { createDenialTrackingState } from '../permissions/denialTracking'
+import { resolveSubagentPermissionMode } from '../permissions/canonical'
 import { buildWorktreeNotice, FORK_SUBAGENT_TYPE, isForkQuerySource, isInForkChild, type ForkRunContext } from '../agents/forkSubagent'
 
 export interface BackgroundAgentTaskInput {
@@ -714,7 +715,8 @@ export async function startBackgroundAgentRun(
         maxTurns: agent.maxTurns ?? opts.maxTurns ?? 8,
         signal: taskCtx.signal,
         sandbox: runSandbox,
-        permissionMode: agent.permissionMode ?? ctx.permissionMode,
+        // 后台任务无法弹 UI 应答审批:父级放开则继承(不被降级),否则用 agent 声明或 acceptEdits 兜底。
+        permissionMode: resolveSubagentPermissionMode(ctx.permissionMode, agent.permissionMode, { background: true }),
         localDenialTracking: createDenialTrackingState(),
         conversationId: stableAgentId,
         steerInbox,
