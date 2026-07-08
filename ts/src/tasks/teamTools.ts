@@ -25,6 +25,7 @@ interface ListPeersInput {
   team_name?: string
   teamName?: string
   include_inbox?: boolean | string
+  includeInbox?: boolean | string
 }
 
 export interface TeamToolsOptions {
@@ -104,8 +105,83 @@ function jsonOutput(value: unknown): string {
   return JSON.stringify(value, null, 2)
 }
 
+function xmlText(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+}
+
 function xmlAttr(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
+  return xmlText(value).replaceAll('"', '&quot;')
+}
+
+function optionalXmlAttr(name: string, value: string | number | boolean | undefined): string {
+  if (value === undefined || value === '') return ''
+  return ` ${name}="${xmlAttr(String(value))}"`
+}
+
+function peerTarget(name: string): string {
+  return name
+}
+
+function peerJson(peer: Awaited<ReturnType<TeamService['listPeers']>>['peers'][number]): Record<string, unknown> {
+  return {
+    name: peer.name,
+    agent_id: peer.agentId,
+    target: peerTarget(peer.name),
+    is_lead: peer.isLead,
+    active: peer.isActive,
+    unread_messages: peer.unreadMessages,
+    agent_type: peer.agentType,
+    backend_type: peer.backendType,
+    mode: peer.mode,
+    session_id: peer.sessionId,
+    tmux_pane_id: peer.tmuxPaneId,
+    cwd: peer.cwd,
+    worktree_path: peer.worktreePath,
+    color: peer.color,
+    joined_at: peer.joinedAt,
+    subscriptions: peer.subscriptions,
+  }
+}
+
+function peerXmlLine(peer: Awaited<ReturnType<TeamService['listPeers']>>['peers'][number]): string {
+  return [
+    '<peer',
+    optionalXmlAttr('name', peer.name),
+    optionalXmlAttr('agent_id', peer.agentId),
+    optionalXmlAttr('target', peerTarget(peer.name)),
+    optionalXmlAttr('role', peer.isLead ? 'lead' : peer.agentType),
+    optionalXmlAttr('agent_type', peer.agentType),
+    optionalXmlAttr('backend_type', peer.backendType),
+    optionalXmlAttr('active', peer.isActive),
+    optionalXmlAttr('is_lead', peer.isLead),
+    optionalXmlAttr('unread_messages', peer.unreadMessages),
+    optionalXmlAttr('mode', peer.mode),
+    optionalXmlAttr('session_id', peer.sessionId),
+    optionalXmlAttr('tmux_pane_id', peer.tmuxPaneId),
+    optionalXmlAttr('cwd', peer.cwd),
+    optionalXmlAttr('worktree_path', peer.worktreePath),
+    optionalXmlAttr('color', peer.color),
+    optionalXmlAttr('joined_at', peer.joinedAt),
+    peer.subscriptions.length > 0 ? ` subscriptions="${xmlAttr(peer.subscriptions.join(','))}"` : '',
+    ' />',
+  ].join('')
+}
+
+function peerLegacyLine(peer: Awaited<ReturnType<TeamService['listPeers']>>['peers'][number]): string {
+  return [
+    `- ${peer.name} (${peer.agentId})`,
+    `active=${peer.isActive}`,
+    `unread=${peer.unreadMessages}`,
+    peer.agentType ? `role=${peer.agentType}` : undefined,
+    peer.backendType ? `backend=${peer.backendType}` : undefined,
+    peer.sessionId ? `session=${peer.sessionId}` : undefined,
+    peer.worktreePath ? `worktree=${peer.worktreePath}` : undefined,
+    `target=${peerTarget(peer.name)}`,
+  ].filter(Boolean).join(' ')
+}
+
+function peersJsonBlock(value: unknown): string {
+  return `<peers_json>\n${xmlText(jsonOutput(value))}\n</peers_json>`
 }
 
 function backgroundAgentMatchSummary(task: TaskMeta): Record<string, unknown> {
@@ -439,31 +515,65 @@ export function createTeamTools(teams: TeamService, options: TeamToolsOptions = 
 
   const listPeers: Tool<ListPeersInput> = {
     name: 'ListPeers',
-    description: 'List members in the active local team and unread mailbox counts. Input: { team_name? }.',
+    description: 'List local team members, SendMessage targets, unread mailbox counts, and peer metadata. Returns <peers> plus a parseable <peers_json> block. Input: { team_name?, include_inbox? }; camel-case aliases are accepted.',
     inputSchema: {
       type: 'object',
       properties: {
         team_name: { type: 'string', description: 'Optional team name. Defaults to the active team.' },
+        teamName: { type: 'string', description: 'Camel-case alias for team_name.' },
         include_inbox: { type: ['boolean', 'string'], description: 'Include unread message previews.' },
+        includeInbox: { type: ['boolean', 'string'], description: 'Camel-case alias for include_inbox.' },
       },
     },
     isReadOnly: true,
     async execute(input) {
       const args = recordInput(input)
       const requestedTeamName = stringValue(args.team_name) || stringValue(args.teamName) || undefined
-      const includeInbox = semanticBoolean(args.include_inbox, false)
-      const { teamName, peers } = await teams.listPeers(requestedTeamName)
+      const includeInbox = semanticBoolean(args.include_inbox ?? args.includeInbox, false)
+      const teamInfo = await teams.listPeers(requestedTeamName)
+      const { teamName, peers } = teamInfo
       const inboxBlocks: string[] = []
       if (includeInbox && teamName) {
         for (const peer of peers) {
           const unread = await teams.readUnreadMessages(peer.name, teamName)
-          if (unread.length > 0) inboxBlocks.push(formatTeammateMessages(unread))
+          if (unread.length > 0) {
+            inboxBlocks.push([
+              `<inbox peer="${xmlAttr(peer.name)}" unread_messages="${unread.length}">`,
+              formatTeammateMessages(unread),
+              '</inbox>',
+            ].join('\n'))
+          }
         }
       }
+      const data = {
+        team_name: teamName,
+        team_file_path: teamInfo.teamFilePath,
+        lead_agent_id: teamInfo.leadAgentId,
+        lead_session_id: teamInfo.leadSessionId,
+        description: teamInfo.description,
+        created_at: teamInfo.createdAt,
+        active_team: teamInfo.isActiveTeam,
+        peer_count: peers.length,
+        peers: peers.map(peerJson),
+        send_message: {
+          local_targets: peers.map(peer => peerTarget(peer.name)),
+          broadcast_target: '*',
+          cross_session_targets_enabled: false,
+        },
+      }
       return [
-        `<peers team="${xmlAttr(teamName ?? '')}" count="${peers.length}">`,
-        ...peers.map(peer => `- ${peer.name} (${peer.agentId}) active=${peer.isActive} unread=${peer.unreadMessages}${peer.agentType ? ` role=${peer.agentType}` : ''}`),
+        [
+          `<peers team="${xmlAttr(teamName ?? '')}" count="${peers.length}"`,
+          optionalXmlAttr('active_team', teamInfo.isActiveTeam),
+          optionalXmlAttr('lead_agent_id', teamInfo.leadAgentId),
+          optionalXmlAttr('lead_session_id', teamInfo.leadSessionId),
+          optionalXmlAttr('team_file_path', teamInfo.teamFilePath),
+          '>',
+        ].join(''),
+        ...peers.map(peerXmlLine),
+        ...peers.map(peerLegacyLine),
         '</peers>',
+        peersJsonBlock(data),
         ...inboxBlocks.filter(Boolean),
       ].join('\n')
     },

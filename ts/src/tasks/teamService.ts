@@ -73,10 +73,26 @@ export interface PeerInfo {
   color?: string
   cwd: string
   worktreePath?: string
+  sessionId?: string
+  tmuxPaneId?: string
   backendType?: BackendType
   isActive: boolean
+  isLead: boolean
   unreadMessages: number
   subscriptions: string[]
+  joinedAt: number
+  mode?: string
+}
+
+export interface PeerListInfo {
+  teamName?: string
+  teamFilePath?: string
+  leadAgentId?: string
+  leadSessionId?: string
+  description?: string
+  createdAt?: number
+  isActiveTeam: boolean
+  peers: PeerInfo[]
 }
 
 export interface TeamInboxContextOptions {
@@ -424,12 +440,12 @@ export class TeamService {
     }
   }
 
-  async listPeers(teamName?: string): Promise<{ teamName?: string; peers: PeerInfo[] }> {
-    const active = teamName ? null : await this.getActiveTeam()
+  async listPeers(teamName?: string): Promise<PeerListInfo> {
+    const active = await this.getActiveTeam()
     const resolvedTeamName = teamName ?? active?.teamName
-    if (!resolvedTeamName) return { peers: [] }
+    if (!resolvedTeamName) return { isActiveTeam: false, peers: [] }
     const team = await this.readTeam(resolvedTeamName)
-    if (!team) return { teamName: resolvedTeamName, peers: [] }
+    if (!team) return { teamName: resolvedTeamName, isActiveTeam: active?.teamName === resolvedTeamName, peers: [] }
     const peers: PeerInfo[] = []
     for (const member of team.members) {
       peers.push({
@@ -439,13 +455,27 @@ export class TeamService {
         color: member.color,
         cwd: member.cwd,
         worktreePath: member.worktreePath,
+        sessionId: member.sessionId,
+        tmuxPaneId: member.tmuxPaneId || undefined,
         backendType: member.backendType,
         isActive: member.isActive !== false,
+        isLead: member.agentId === team.leadAgentId || member.name === TEAM_LEAD_NAME,
         unreadMessages: (await this.readUnreadMessages(member.name, resolvedTeamName)).length,
         subscriptions: member.subscriptions,
+        joinedAt: member.joinedAt,
+        mode: member.mode,
       })
     }
-    return { teamName: resolvedTeamName, peers }
+    return {
+      teamName: resolvedTeamName,
+      teamFilePath: this.teamFilePath(resolvedTeamName),
+      leadAgentId: team.leadAgentId,
+      leadSessionId: team.leadSessionId,
+      description: team.description,
+      createdAt: team.createdAt,
+      isActiveTeam: active?.teamName === resolvedTeamName,
+      peers,
+    }
   }
 
   async buildInboxContext(options: TeamInboxContextOptions = {}): Promise<string | null> {

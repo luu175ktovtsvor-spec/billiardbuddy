@@ -2253,9 +2253,19 @@
 - 测试覆盖:后台 agent 首轮工具完成、第二轮模型调用挂起时,1ms summary tick 写回 `TaskMeta.summary`;断言 summary 请求 system 与 tools 等于主 agent 第二次请求,末尾 prompt 含 `Do not use tools`;`read_background_task` 输出 `<summary>`;TaskService 跨实例持久化 summary/stage。
 - 验证:`cd ts && bun run typecheck` clean;`cd ts && bun test src/tasks/taskService.test.ts src/tasks/taskTools.test.ts --timeout 50000` = 27 pass。
 
+## 3.271 2026-07-08 CC-Haha ListPeers 队友发现元数据迁移
+
+- 对照源:`~/Desktop/cc-haha-ref/src/tools/SendMessageTool/SendMessageTool.ts`、`prompt.ts`、`src/utils/swarm/teamHelpers.ts`、`src/utils/teammateMailbox.ts` 与 `src/utils/peerAddress.ts`。公开参考树里的 `ListPeersTool` 本身是 feature-gated stub,所以本轮按 `SendMessage` 的真实路由需求反推队友发现输出:模型必须知道可投递目标、team lead、session/worktree/backend、未读 inbox 与当前跨 session 能力边界。
+- `TeamService.listPeers()` 从薄列表升级为 `PeerListInfo`:返回 `teamFilePath/leadAgentId/leadSessionId/description/createdAt/isActiveTeam`,每个 peer 保留 `agentId/name/agentType/color/cwd/worktreePath/sessionId/tmuxPaneId/backendType/isLead/isActive/unreadMessages/subscriptions/joinedAt/mode`。这些字段对应 CC-Haha team file 里的真实成员状态,后续 UDS/bridge 或前端队友/专家面板可以直接复用。
+- `ListPeers` 工具输出保留旧的人类可读 `- name (agentId)` 行,新增 `<peer ... />` 结构化 XML 属性和可解析 `<peers_json>` 块。`<peers_json>` 里包含 `send_message.local_targets`、`broadcast_target:"*"` 与 `cross_session_targets_enabled:false`,明确当前 runtime 只完成本地 team/mailbox 与 background-agent 路由,不会误导模型用尚未接通的 `uds:`/`bridge:`。
+- `include_inbox` 支持原 snake_case 和 `includeInbox` 驼峰别名;开启后按 peer 输出 `<inbox peer="..." unread_messages="...">` 并复用 CC-Haha `<teammate-message>` 包壳,保证未读消息内容与后续自动注入 inbox context 的格式一致。
+- 口径:这一步迁移的是队友发现/路由元数据层,不是完整跨 session peer registry。UDS socket 发现、Remote Control bridge session 枚举、跨机权限确认、`SendMessage` 对 `uds:`/`bridge:` 的真实投递仍需继续复制/移植/改写,但工具输出协议已经给下一步留好字段。
+- 测试覆盖:`ListPeers exposes structured peer metadata and inbox previews` 锁住 lead session、backend、session/worktree、mode、subscriptions、inbox preview 与 `<peers_json>`;`ListPeers returns a parseable empty peer set without an active team` 保证没有 active team 时仍返回可解析空集合,避免模型误判工具失败。
+- 验证:`cd ts && bun run typecheck` clean;`cd ts && bun test src/tasks/teamTools.test.ts --timeout 40000` = 17 pass。
+
 ## 4. 下一批代码顺序
 
-1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复、后台 agent 确定性进度阶段、`SendUserMessage/Brief` 输出通道、agent memory / snapshot、后台续跑 content replacement records 继承、同 agent id 原任务槽续跑、`AgentOutputTool/BashOutputTool` 旧名兼容、parent live replacements gap-fill、AgentSummary 周期摘要已落;下一步继续复制/移植/改写 UDS/remote teammate bridge、真正独立 fork worker 与 prompt-cache break telemetry。
+1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复、后台 agent 确定性进度阶段、`SendUserMessage/Brief` 输出通道、agent memory / snapshot、后台续跑 content replacement records 继承、同 agent id 原任务槽续跑、`AgentOutputTool/BashOutputTool` 旧名兼容、parent live replacements gap-fill、AgentSummary 周期摘要、ListPeers 队友发现元数据已落;下一步继续复制/移植/改写 UDS/remote teammate bridge、真正独立 fork worker 与 prompt-cache break telemetry。
 2. **后台子代理事件流/UI drill-in polish**:同步 `agent_task` 轨迹、后台启动 chip、完成通知与点击跳转、事件过滤/摘要折叠、trace 搜索/失败节点/phase 分组已落;下一步做统一 trace 面板、按 `agent_id` 过滤/跳转、sidechain transcript drill-in。
 3. **provider failover 策略 polish**:active saved -> saved fallbacks -> env fallback、失败原因 `context_note`、sticky fallback、状态线备用出口/冷却 chip、设置抽屉简洁健康状态/折叠明细、旧 BYOK -> ProviderService 兼容桥、provider 健康冷却、跨重启持久化、手动清冷却、保存通道启停/排序、默认/接管中状态区分、prewarm 跟随冷却排序、冷却分类退避、最近排障历史已落;下一步只剩完整高级 provider 管理页与更深的趋势/导出排障。
 4. **领域包/知识库前端 polish**:`billiards` 已从硬编码 supportContext 收到 SessionStart pack,前端选择器已读 `/api/v1/agent/packs`,`list_skills` 已支持 pack 推荐/过滤,pack prompt commands 已合并进命令池;下一步把知识库 Q&A 做成更接近 Codex/Work Buddy 的低噪来源面板和专家挂载入口。
