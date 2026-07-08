@@ -2947,7 +2947,16 @@ function classifyReadOnlyAllowlistedCommand(command: string): CommandRisk | null
 
   const config = READ_ONLY_COMMANDS[base]
   if (!config) return null
-  return validateSafeFlags(tokens.slice(1), config) ? 'read' : 'file'
+  if (validateSafeFlags(tokens.slice(1), config)) return 'read'
+  return readOnlyCommandHasExecutionFlag(base, tokens.slice(1)) ? 'outreach' : 'file'
+}
+
+function readOnlyCommandHasExecutionFlag(base: string, args: string[]): boolean {
+  if (base === 'rg') return args.some(arg => arg === '--pre' || arg.startsWith('--pre='))
+  if (base === 'fd' || base === 'fdfind') {
+    return args.some(arg => arg === '-x' || arg === '--exec' || arg.startsWith('--exec=') || arg === '-X' || arg === '--exec-batch' || arg.startsWith('--exec-batch=') || arg === '-l' || arg === '--list-details')
+  }
+  return false
 }
 
 export function shellSensitiveReadNeedsApproval(command: string): boolean {
@@ -3322,11 +3331,11 @@ function validateSafeFlags(args: string[], config: ReadOnlyCommandConfig): boole
         continue
       }
       if (inlineValue !== undefined) {
-        if (!flagArgMatches(kind, inlineValue)) return false
+        if (!flagArgMatches(kind, inlineValue, { flag, config })) return false
         continue
       }
       i++
-      if (i >= args.length || !flagArgMatches(kind, args[i]!)) return false
+      if (i >= args.length || !flagArgMatches(kind, args[i]!, { flag, config })) return false
       continue
     }
 
@@ -3357,24 +3366,31 @@ function validateShortFlags(
     if (kind === 'none') continue
 
     const attached = token.slice(pos + 1)
-    if (attached) return { ok: flagArgMatches(kind, attached), index }
+    if (attached) return { ok: flagArgMatches(kind, attached, { flag, config }), index }
     const nextIndex = index + 1
     return {
-      ok: nextIndex < args.length && flagArgMatches(kind, args[nextIndex]!),
+      ok: nextIndex < args.length && flagArgMatches(kind, args[nextIndex]!, { flag, config }),
       index: nextIndex,
     }
   }
   return { ok: true, index }
 }
 
-function flagArgMatches(kind: FlagArgKind, value: string): boolean {
+function flagArgMatches(kind: FlagArgKind, value: string, opts?: { flag?: string; config?: ReadOnlyCommandConfig }): boolean {
   if (!value) return false
-  if (kind === 'string') return true
+  if (kind === 'string') {
+    if (value.startsWith('-') && !stringFlagAllowsDashValue(opts?.flag, value, opts?.config)) return false
+    return true
+  }
   if (kind === 'number') return /^\d+$/.test(value)
   if (kind === 'char') return value.length === 1
   if (kind === '{}') return value === '{}'
   if (kind === 'EOF') return value === 'EOF'
   return kind === 'none'
+}
+
+function stringFlagAllowsDashValue(flag: string | undefined, value: string, _config: ReadOnlyCommandConfig | undefined): boolean {
+  return flag === '--sort' && /^-[a-zA-Z][a-zA-Z0-9:_-]*$/.test(value)
 }
 
 function sedCommandIsReadOnly(tokens: string[]): boolean {
