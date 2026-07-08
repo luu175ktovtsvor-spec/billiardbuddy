@@ -945,6 +945,7 @@ function hasBraceExpansionRisk(content: string, originalCommand: string): boolea
 }
 
 function hasZshDangerousCommand(command: string): boolean {
+  if (hasRuntimeEnvSplitStringRisk(command)) return true
   const tokens = tokenizeShellWords(stripRuntimeEnvWrapper(command).toLowerCase())
   const modifiers = new Set(['command', 'builtin', 'noglob', 'nocorrect'])
   let baseCmd = ''
@@ -955,6 +956,12 @@ function hasZshDangerousCommand(command: string): boolean {
     break
   }
   return ZSH_DANGEROUS_COMMANDS.has(baseCmd) || (baseCmd === 'fc' && tokens.some(token => /^-\S*e/.test(token)))
+}
+
+function hasRuntimeEnvSplitStringRisk(command: string): boolean {
+  const tokens = tokenizeShellWords(command)
+  if (tokens[0]?.toLowerCase() !== 'env') return false
+  return tokens.some(token => token === '-S' || token === '--split-string' || token.startsWith('--split-string='))
 }
 
 function stripRuntimeEnvWrapper(command: string): string {
@@ -1540,6 +1547,7 @@ function classifySegment(segment: string): CommandRisk {
   const command = rawCommand.toLowerCase()
   if (!command) return 'read'
   if (isDangerousCommand(command)) return 'destructive'
+  if (hasRuntimeEnvSplitStringRisk(segment)) return 'outreach'
   if (hasWriteRedirection(command)) return 'file'
 
   if (/\bgit\s+clean\s+-/.test(command)) return 'destructive'
