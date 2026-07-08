@@ -8,6 +8,7 @@ import { scriptedModel } from '../harness/fakeModel'
 import { Workspace } from '../workspace/workspace'
 import { fileReadTool } from '../tools/fileReadTool'
 import { fileWriteTool } from '../tools/fileWriteTool'
+import type { Tool } from '../tools/Tool'
 import { ToolRegistry } from '../tools/registry'
 import { createAgentTaskSidechainTools, createAgentTaskTool } from './agentTool'
 import type { AgentDefinition } from './agentLoader'
@@ -100,7 +101,7 @@ test('agent_task registers foreground task lifecycle for synchronous subagents',
     const cancelled: string[] = []
     const unregistered: Array<{ taskId: string; ctxConversation?: string }> = []
     const tool = createAgentTaskTool({
-      agents: [agent()],
+      agents: [agent({ tools: ['mark_step'] })],
       model,
       baseTools: [],
       sidechainRoot: join(root, 'sidechains'),
@@ -182,20 +183,35 @@ test('agent_task hands off foreground registration when background signal wins t
   const root = mkdtempSync(join(tmpdir(), 'agent-tool-foreground-race-'))
   try {
     let releaseModel!: () => void
-    const model = scriptedModel([{ kind: 'final', text: 'should not be returned synchronously' }])
+    const model = scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: 'step-1', name: 'mark_step', input: { value: 'done-once' } }] },
+      { kind: 'final', text: 'should not be returned synchronously' },
+    ])
     const originalStep = model.step
     model.step = async (input) => {
+      if (model.received.length === 0) return originalStep(input)
       await new Promise<void>(resolve => { releaseModel = resolve })
       return originalStep(input)
+    }
+    const markStepCalls: unknown[] = []
+    const markStepTool: Tool<{ value: string }> = {
+      name: 'mark_step',
+      description: '',
+      inputSchema: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] },
+      isReadOnly: true,
+      async execute(input) {
+        markStepCalls.push(input)
+        return `marked:${input.value}`
+      },
     }
     let resolveBackground!: () => void
     const cancelled: string[] = []
     const unregistered: string[] = []
     const handoffs: Array<{ taskId: string; input: unknown }> = []
     const tool = createAgentTaskTool({
-      agents: [agent()],
+      agents: [agent({ tools: ['mark_step'] })],
       model,
-      baseTools: [],
+      baseTools: [markStepTool],
       registerForegroundAgent: async (input) => ({
         task: { id: 'fg_handoff_agent', title: input.title, params: { agent_id: input.agentId } },
         backgroundSignal: new Promise<void>(resolve => { resolveBackground = resolve }),
@@ -237,16 +253,27 @@ test('agent_task hands off foreground registration when background signal wins t
     expect(out).toContain('<background_task_started id="fg_handoff_agent" agent="researcher" name="handoff-worker"')
     expect(out).toContain('agent_id="handoff-parent_researcher"')
     expect(out).toContain('status="running"')
-    expect(handoffs).toEqual([{
-      taskId: 'fg_handoff_agent',
-      input: {
-        agent: 'researcher',
-        agentId: 'handoff-parent_researcher',
-        task: '切到后台继续',
-        name: 'handoff-worker',
-        title: 'researcher: 切到后台继续',
-      },
-    }])
+    expect(handoffs.length).toBe(1)
+    expect(handoffs[0]!.taskId).toBe('fg_handoff_agent')
+    expect(handoffs[0]!.input).toMatchObject({
+      agent: 'researcher',
+      agentId: 'handoff-parent_researcher',
+      task: '切到后台继续',
+      name: 'handoff-worker',
+      title: 'researcher: 切到后台继续',
+    })
+    const initialMessages = (handoffs[0]!.input as { initialMessages?: Message[] }).initialMessages
+    expect(initialMessages?.[0]).toEqual({ role: 'user', content: [textBlock('切到后台继续')] })
+    expect(initialMessages?.[1]).toEqual({
+      role: 'assistant',
+      content: [{ type: 'tool_use', id: 'step-1', name: 'mark_step', input: { value: 'done-once' } }],
+    })
+    expect(initialMessages?.[2]).toEqual({
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 'step-1', content: 'marked:done-once' }],
+    })
+    expect((handoffs[0]!.input as { contentReplacementState?: unknown }).contentReplacementState).toBeTruthy()
+    expect(markStepCalls).toEqual([{ value: 'done-once' }])
     expect(cancelled).toEqual(['handoff-parent_researcher'])
     expect(unregistered).toEqual([])
   } finally {

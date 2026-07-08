@@ -138,6 +138,11 @@ test('startBackgroundAgentRun hands off an already backgrounded foreground agent
       task: '前台切后台',
     })
     await registration.requestBackground()
+    const handoffMessages: Message[] = [
+      userText('前台切后台'),
+      { role: 'assistant', content: [toolUseBlock({ id: 'fg-step-1', name: 'read_file', input: { path: 'done.txt' } })] },
+      { role: 'user', content: [toolResultBlock('fg-step-1', 'front-result')] },
+    ]
     const model = scriptedModel([{ kind: 'final', text: 'handoff done' }])
 
     const { task } = await startBackgroundAgentRun({
@@ -150,6 +155,7 @@ test('startBackgroundAgentRun hands off an already backgrounded foreground agent
       agent: 'researcher',
       task: '前台切后台',
       title: 'researcher: foreground',
+      initialMessages: handoffMessages,
     }, {
       workspace: new Workspace(root),
       conversationId: 'handoff-conv',
@@ -174,7 +180,11 @@ test('startBackgroundAgentRun hands off an already backgrounded foreground agent
       return meta?.status === 'completed' ? meta : null
     })
     expect(done.result).toBe('handoff done')
-    expect(model.received[0]!.messages[0]!.content[0]).toMatchObject({ type: 'text', text: '前台切后台' })
+    expect(model.received[0]!.messages.slice(0, 3)).toEqual(handoffMessages)
+    expect(model.received[0]!.messages.filter(message =>
+      message.role === 'user' &&
+      message.content.some(block => block.type === 'text' && block.text === '前台切后台'),
+    ).length).toBe(1)
     expect(await tasks.readBackgroundAgentMetadata('fg_handoff_1')).toMatchObject({
       taskId: 'fg_handoff_1',
       agentId: 'stable_handoff_agent',

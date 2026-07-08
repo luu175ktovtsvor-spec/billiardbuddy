@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
-import { runAgentLoop } from '../harness/loop'
+import { runAgentLoop, type AgentLoopSnapshot } from '../harness/loop'
 import { Transcript } from '../memory/transcript'
 import type { Message } from '../types/message'
 import type { AgentEvent } from '../types/events'
@@ -25,7 +25,7 @@ import type { AgentDefinition } from './agentLoader'
 import { resolveAgentTools } from './agentLoader'
 import { loadAgentMcpRuntime, type AgentMcpRuntimeOptions } from './agentMcp'
 import { buildAgentMemoryPrompt, workspaceWithAgentMemory } from './agentMemory'
-import { cloneContentReplacementState } from '../context/toolResultStorage'
+import { cloneContentReplacementState, type ContentReplacementState } from '../context/toolResultStorage'
 import { createDenialTrackingState } from '../permissions/denialTracking'
 import { buildForkRunContext, FORK_SUBAGENT_TYPE, isForkQuerySource, isForkSubagentEnabled, isInForkChild, type ForkRunContext } from './forkSubagent'
 
@@ -59,7 +59,7 @@ export interface AgentTaskToolOptions {
   env?: Record<string, string | undefined>
   startBackgroundAgent?: (input: { agent?: string; name?: string; task: string; context?: string; title?: string; isolation?: 'worktree' }, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<{ task: { id: string; title: string; params?: Record<string, unknown> }; agent: AgentDefinition }>
   registerForegroundAgent?: (input: { agent: string; agentId: string; task: string; context?: string; title: string; name?: string }, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<AgentTaskForegroundRegistration>
-  handoffForegroundAgent?: (registration: AgentTaskForegroundRegistration, input: { agent: string; agentId: string; task: string; context?: string; title: string; name?: string; isolation?: 'worktree' }, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<{ task: { id: string; title: string; params?: Record<string, unknown> }; agent: AgentDefinition }>
+  handoffForegroundAgent?: (registration: AgentTaskForegroundRegistration, input: { agent: string; agentId: string; task: string; context?: string; title: string; name?: string; isolation?: 'worktree'; initialMessages?: Message[]; contentReplacementState?: ContentReplacementState }, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<{ task: { id: string; title: string; params?: Record<string, unknown> }; agent: AgentDefinition }>
   unregisterForegroundAgent?: (taskId: string, ctx: ToolContext) => Promise<void> | void
 }
 
@@ -393,6 +393,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
           loadOptions: opts.mcp?.loadOptions,
         })
         const registry = new ToolRegistry(agentMcp.tools)
+        let handoffSnapshot: AgentLoopSnapshot | undefined
         emitSubagentProgress(ctx, agent, `子代理 ${agent.name} 开始:${oneLine(input.task, 120)}`)
         if (agentWorktree) emitSubagentProgress(ctx, agent, `子代理 ${agent.name} 使用隔离 worktree:${agentWorktree.session.worktreePath}`)
         for (const warning of agentMcp.warnings) emitSubagentProgress(ctx, agent, warning)
@@ -428,6 +429,9 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
           subagent: { agentId, agentType: agent.name },
           querySource: forkRunContext?.querySource,
           contentReplacementState: inheritedContentReplacementState,
+          onSummarySnapshot: snapshot => {
+            handoffSnapshot = snapshot
+          },
         })[Symbol.asyncIterator]()
         const backgroundPromise = foregroundRegistration && opts.handoffForegroundAgent
           ? foregroundRegistration.backgroundSignal.then(() => ({ type: 'background' as const }))
@@ -447,6 +451,8 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
             const { task } = await opts.handoffForegroundAgent(foregroundRegistration, {
               ...foregroundInput,
               ...optionalIsolation(input, agent),
+              ...(handoffSnapshot?.messages.length ? { initialMessages: handoffSnapshot.messages } : {}),
+              ...(handoffSnapshot?.contentReplacementState ? { contentReplacementState: handoffSnapshot.contentReplacementState } : {}),
             }, ctx, forkRunContext)
             const name = typeof task.params?.name === 'string' ? ` name="${xmlAttr(task.params.name)}"` : ''
             const backgroundAgentId = typeof task.params?.agent_id === 'string' ? ` agent_id="${xmlAttr(task.params.agent_id)}"` : ''

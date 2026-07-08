@@ -4872,7 +4872,7 @@ test('POST /agent/run can background a foreground agent_task through the task en
   await Bun.write(join(agentsRoot, 'researcher.md'), `---
 name: researcher
 description: 研究代理
-tools: []
+tools: [list_dir]
 ---
 你是研究代理。
 `)
@@ -4901,6 +4901,9 @@ tools: []
         return sseResponse({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_agent', function: { name: 'agent_task', arguments: JSON.stringify({ agent: 'researcher', task: '长任务转后台' }) } }] }, finish_reason: 'tool_calls' }] })
       }
       if (call === 2) {
+        return sseResponse({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'fg-list', function: { name: 'list_dir', arguments: JSON.stringify({ path: '.' }) } }] }, finish_reason: 'tool_calls' }] })
+      }
+      if (call === 3) {
         await new Promise<void>(resolve => { releaseSyncAgent = resolve })
         return sseResponse({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: '同步结果不应返回' }, finish_reason: 'stop' }] })
       }
@@ -4917,6 +4920,7 @@ tools: []
       const body = await listed.json() as { tasks: Array<{ id: string; status: string; kind?: string; params?: Record<string, unknown> }> }
       return body.tasks.find(task => task.kind === 'background_agent' && task.params?.foreground === true) ?? null
     })
+    await waitFor(async () => typeof releaseSyncAgent === 'function' ? { ready: true } : null)
     const backgrounded = await fetch(`http://127.0.0.1:${agentServer.port}/tasks/${foreground.id}/background`, { method: 'POST' })
     expect(backgrounded.status).toBe(200)
     const backgroundedBody = await backgrounded.json() as { ok: boolean; task: { id: string; status: string; params?: Record<string, unknown> } }
@@ -4944,7 +4948,17 @@ tools: []
     }, 2500)
     expect(done.result).toBe('后台接管完成')
     expect(done.params).toMatchObject({ foreground_handoff: true, is_backgrounded: true, agent: 'researcher' })
-    expect(sentBodies.some(body => String(body.messages?.[0]?.content ?? '').includes('<background_subagent name="researcher">'))).toBe(true)
+    const backgroundBody = sentBodies.find(body => String(body.messages?.[0]?.content ?? '').includes('<background_subagent name="researcher">'))
+    expect(backgroundBody).toBeTruthy()
+    expect(backgroundBody.messages.some((message: any) =>
+      message.role === 'assistant' &&
+      message.tool_calls?.some((call: any) => call.id === 'fg-list' && call.function?.name === 'list_dir'),
+    )).toBe(true)
+    expect(backgroundBody.messages.some((message: any) =>
+      message.role === 'tool' &&
+      message.tool_call_id === 'fg-list' &&
+      String(message.content).length > 0,
+    )).toBe(true)
     releaseSyncAgent?.()
   } finally {
     agentServer.stop(true)
