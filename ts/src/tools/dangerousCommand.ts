@@ -2742,6 +2742,16 @@ function classifyDockerCommand(command: string): CommandRisk | null {
   return validateSafeFlags(tokens.slice(2), config) ? 'read' : 'outreach'
 }
 
+function classifyGithubCliCommand(command: string): CommandRisk | null {
+  const tokens = tokenizeShellWords(command)
+  const bin = tokens[0]?.toLowerCase()
+  if (bin !== 'gh' && bin !== 'glab') return null
+  const args = tokens.slice(1)
+  if (args.length === 0) return 'read'
+  if (args.every(arg => arg === '--version' || arg === 'version' || arg === '--help' || arg === 'help' || arg === '-h')) return 'read'
+  return 'outreach'
+}
+
 function classifyGitReadOnlyCommand(command: string): CommandRisk | null {
   const tokens = tokenizeShellWords(command)
   if (tokens[0]?.toLowerCase() !== 'git') return null
@@ -3668,7 +3678,8 @@ function classifySegment(segment: string): CommandRisk {
   if (/^git\s+branch\s+-D\b/.test(command)) return withSegmentBaseRisk('destructive')
 
   if (/^(curl|wget|ssh|scp|sftp|ftp|telnet|nc|netcat|rsync)\b/.test(command)) return withSegmentBaseRisk('outreach')
-  if (/^(gh|glab)\s+(api|auth|repo|pr|issue|release)\b/.test(command)) return withSegmentBaseRisk('outreach')
+  const githubCliRisk = classifyGithubCliCommand(rawCommand)
+  if (githubCliRisk) return withSegmentBaseRisk(githubCliRisk)
   if (/^(npm|pnpm|yarn|bun)\s+(install|add|upgrade|update|publish)\b/.test(command)) return withSegmentBaseRisk('outreach')
   if (/^(pip|pip3|uv|poetry)\s+(install|add|publish|update)\b/.test(command)) return withSegmentBaseRisk('outreach')
   if (/^(brew|apt|apt-get|dnf|yum|pacman|choco|winget)\s+(install|upgrade|update|remove)\b/.test(command)) return withSegmentBaseRisk('outreach')
