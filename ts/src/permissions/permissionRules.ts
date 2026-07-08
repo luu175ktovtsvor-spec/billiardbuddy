@@ -55,7 +55,7 @@ const SAFE_WRAPPER_PATTERNS = [
   /^timeout[ \t]+(?:(?:--(?:foreground|preserve-status|verbose)|--(?:kill-after|signal)=[A-Za-z0-9_.+-]+|--(?:kill-after|signal)[ \t]+[A-Za-z0-9_.+-]+|-v|-[ks][ \t]+[A-Za-z0-9_.+-]+|-[ks][A-Za-z0-9_.+-]+)[ \t]+)*(?:--[ \t]+)?\d+(?:\.\d+)?[smhd]?[ \t]+/,
   /^time[ \t]+(?:--[ \t]+)?/,
   /^nice(?:[ \t]+-n[ \t]+-?\d+|[ \t]+-\d+)?[ \t]+(?:--[ \t]+)?/,
-  /^stdbuf(?:[ \t]+-[ioe][LN0-9]+)+[ \t]+(?:--[ \t]+)?/,
+  /^stdbuf(?:(?:[ \t]+-[ioe][ \t]+[LN0-9]+|[ \t]+-[ioe][LN0-9]+|[ \t]+--(?:input|output|error)=[LN0-9]+))+[ \t]+(?:--[ \t]+)?/,
   /^nohup[ \t]+(?:--[ \t]+)?/,
 ] as const
 

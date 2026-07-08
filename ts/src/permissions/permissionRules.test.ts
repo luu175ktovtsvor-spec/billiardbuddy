@@ -41,11 +41,15 @@ test('shell permission matching normalizes safe env vars and wrappers', () => {
   expect(stripSafeShellWrappers('PATH=/tmp npm run build')).toBe('PATH=/tmp npm run build')
   expect(stripSafeShellWrappers('timeout 10 npm run build')).toBe('npm run build')
   expect(stripSafeShellWrappers('timeout -k$(id) 10 npm run build')).toBe('timeout -k$(id) 10 npm run build')
+  expect(stripSafeShellWrappers('stdbuf -o 0 npm run build')).toBe('npm run build')
+  expect(stripSafeShellWrappers('stdbuf --output=0 npm run build')).toBe('npm run build')
   expect(stripSafeShellWrappers('nohup NODE_ENV=test npm run build')).toBe('NODE_ENV=test npm run build')
 
   expect(shellCommandMatchesPermissionRule('NODE_ENV=test npm run build', 'npm run *')).toBe(true)
   expect(shellCommandMatchesPermissionRule('PATH=/tmp npm run build', 'npm run *')).toBe(false)
   expect(shellCommandMatchesPermissionRule('timeout 10 npm run build', 'npm run *')).toBe(true)
+  expect(shellCommandMatchesPermissionRule('stdbuf -o 0 npm run build', 'npm run *')).toBe(true)
+  expect(shellCommandMatchesPermissionRule('stdbuf --output=0 npm run build', 'npm run *')).toBe(true)
   expect(shellCommandMatchesPermissionRule('timeout -k$(id) 10 npm run build', 'npm run *')).toBe(false)
 })
 
