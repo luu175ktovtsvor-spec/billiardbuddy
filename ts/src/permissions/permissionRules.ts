@@ -13,6 +13,51 @@ const ESCAPED_BACKSLASH_PLACEHOLDER = '\x00ESCAPED_BACKSLASH\x00'
 const ESCAPED_STAR_PLACEHOLDER_RE = new RegExp(ESCAPED_STAR_PLACEHOLDER, 'g')
 const ESCAPED_BACKSLASH_PLACEHOLDER_RE = new RegExp(ESCAPED_BACKSLASH_PLACEHOLDER, 'g')
 
+const SAFE_ENV_VARS = new Set([
+  'GOEXPERIMENT',
+  'GOOS',
+  'GOARCH',
+  'CGO_ENABLED',
+  'GO111MODULE',
+  'RUST_BACKTRACE',
+  'RUST_LOG',
+  'NODE_ENV',
+  'PYTHONUNBUFFERED',
+  'PYTHONDONTWRITEBYTECODE',
+  'PYTEST_DISABLE_PLUGIN_AUTOLOAD',
+  'PYTEST_DEBUG',
+  'ANTHROPIC_API_KEY',
+  'LANG',
+  'LANGUAGE',
+  'LC_ALL',
+  'LC_CTYPE',
+  'LC_TIME',
+  'CHARSET',
+  'TERM',
+  'COLORTERM',
+  'NO_COLOR',
+  'FORCE_COLOR',
+  'TZ',
+  'LS_COLORS',
+  'LSCOLORS',
+  'GREP_COLOR',
+  'GREP_COLORS',
+  'GCC_COLORS',
+  'TIME_STYLE',
+  'BLOCK_SIZE',
+  'BLOCKSIZE',
+])
+
+const SAFE_ENV_PATTERN = /^([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./:-]+)[ \t]+/
+
+const SAFE_WRAPPER_PATTERNS = [
+  /^timeout[ \t]+(?:(?:--(?:foreground|preserve-status|verbose)|--(?:kill-after|signal)=[A-Za-z0-9_.+-]+|--(?:kill-after|signal)[ \t]+[A-Za-z0-9_.+-]+|-v|-[ks][ \t]+[A-Za-z0-9_.+-]+|-[ks][A-Za-z0-9_.+-]+)[ \t]+)*(?:--[ \t]+)?\d+(?:\.\d+)?[smhd]?[ \t]+/,
+  /^time[ \t]+(?:--[ \t]+)?/,
+  /^nice(?:[ \t]+-n[ \t]+-?\d+|[ \t]+-\d+)?[ \t]+(?:--[ \t]+)?/,
+  /^stdbuf(?:[ \t]+-[ioe][LN0-9]+)+[ \t]+(?:--[ \t]+)?/,
+  /^nohup[ \t]+(?:--[ \t]+)?/,
+] as const
+
 function findFirstUnescapedChar(value: string, char: string): number {
   for (let i = 0; i < value.length; i++) {
     if (value[i] !== char) continue
@@ -132,6 +177,126 @@ export function parseShellPermissionRule(permissionRule: string): ShellPermissio
   return { type: 'exact', command: permissionRule }
 }
 
+function stripCommentLines(command: string): string {
+  const lines = command.split('\n')
+  const nonCommentLines = lines.filter(line => {
+    const trimmed = line.trim()
+    return trimmed !== '' && !trimmed.startsWith('#')
+  })
+  return nonCommentLines.length === 0 ? command : nonCommentLines.join('\n')
+}
+
+export function stripSafeShellWrappers(command: string): string {
+  let stripped = command.trim()
+  let previous = ''
+
+  while (stripped !== previous) {
+    previous = stripped
+    stripped = stripCommentLines(stripped)
+    const envMatch = stripped.match(SAFE_ENV_PATTERN)
+    if (envMatch && SAFE_ENV_VARS.has(envMatch[1]!)) stripped = stripped.replace(SAFE_ENV_PATTERN, '')
+  }
+
+  previous = ''
+  while (stripped !== previous) {
+    previous = stripped
+    stripped = stripCommentLines(stripped)
+    for (const pattern of SAFE_WRAPPER_PATTERNS) stripped = stripped.replace(pattern, '')
+  }
+
+  return stripped.trim()
+}
+
+export function splitShellCommandsForPermission(command: string): string[] {
+  const parts: string[] = []
+  let current = ''
+  let quote: '"' | "'" | null = null
+  let escaped = false
+
+  const flush = () => {
+    const value = current.trim()
+    if (value) parts.push(value)
+    current = ''
+  }
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]!
+
+    if (quote === "'") {
+      current += char
+      if (char === "'") quote = null
+      continue
+    }
+
+    if (escaped) {
+      current += char
+      escaped = false
+      continue
+    }
+
+    if (char === '\\') {
+      current += char
+      escaped = true
+      continue
+    }
+
+    if (quote === '"') {
+      current += char
+      if (char === '"') quote = null
+      continue
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char
+      current += char
+      continue
+    }
+
+    if (char === '\n' || char === ';') {
+      flush()
+      continue
+    }
+
+    if (char === '&' && command[i + 1] === '&') {
+      flush()
+      i++
+      continue
+    }
+
+    if (char === '|') {
+      flush()
+      if (command[i + 1] === '|') i++
+      continue
+    }
+
+    current += char
+  }
+
+  flush()
+  return parts
+}
+
+function commandCandidatesForPermissionRule(command: string): string[] {
+  const trimmed = command.trim()
+  if (!trimmed) return []
+  const stripped = stripSafeShellWrappers(trimmed)
+  return stripped && stripped !== trimmed ? [trimmed, stripped] : [trimmed]
+}
+
+function shellSingleCommandMatchesPermissionRule(command: string, ruleContent: string): boolean {
+  const rule = parseShellPermissionRule(ruleContent.trim())
+  for (const candidate of commandCandidatesForPermissionRule(command)) {
+    if (rule.type === 'exact' && candidate === rule.command) return true
+    if (rule.type === 'wildcard' && matchWildcardPattern(rule.pattern, candidate)) return true
+    if (rule.type === 'prefix') {
+      if (candidate === rule.prefix || candidate.startsWith(`${rule.prefix} `)) return true
+      const xargsPrefix = `xargs ${rule.prefix}`
+      if (candidate === xargsPrefix || candidate.startsWith(`${xargsPrefix} `)) return true
+    }
+  }
+  return false
+}
+
 export function matchWildcardPattern(pattern: string, command: string, caseInsensitive = false): boolean {
   const trimmedPattern = pattern.trim()
   let processed = ''
@@ -173,7 +338,19 @@ export function shellCommandMatchesPermissionRule(command: string, ruleContent: 
   const normalizedCommand = command.trim()
   if (!normalizedCommand) return false
   const rule = parseShellPermissionRule(ruleContent.trim())
-  if (rule.type === 'exact') return normalizedCommand === rule.command
-  if (rule.type === 'wildcard') return matchWildcardPattern(rule.pattern, normalizedCommand)
-  return normalizedCommand === rule.prefix || normalizedCommand.startsWith(`${rule.prefix} `)
+  const isCompound = splitShellCommandsForPermission(normalizedCommand).length > 1
+  if (isCompound && rule.type !== 'exact') return false
+  return shellSingleCommandMatchesPermissionRule(normalizedCommand, ruleContent)
+}
+
+export function shellCommandAllowedByPermissionRules(command: string, ruleContents: string[]): boolean {
+  const normalizedCommand = command.trim()
+  if (!normalizedCommand || ruleContents.length === 0) return false
+  if (ruleContents.some(rule => shellCommandMatchesPermissionRule(normalizedCommand, rule))) return true
+
+  const subcommands = splitShellCommandsForPermission(normalizedCommand)
+  if (subcommands.length <= 1) return false
+  return subcommands.every(subcommand =>
+    ruleContents.some(rule => shellSingleCommandMatchesPermissionRule(subcommand, rule)),
+  )
 }

@@ -139,6 +139,26 @@ describe('resolvePermission 瀑布', () => {
     expect(resolvePermission(run, { command: 'git status --short' }, exactCtx).behavior).toBe('ask')
   })
 
+  test('sessionAllowedToolRules normalize safe bash wrappers and reject partial compound matches', () => {
+    const run = tool({ name: 'run_command', requiresApproval: true, approvalClass: 'file' })
+    const npmCtx = ctx('ask', { sessionAllowedToolRules: [{ tool: 'run_command', ruleContent: 'npm run *' }] })
+    expect(resolvePermission(run, { command: 'NODE_ENV=test npm run build' }, npmCtx)).toMatchObject({ behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: 'run_command' } })
+    expect(resolvePermission(run, { command: 'timeout 10 npm run build' }, npmCtx)).toMatchObject({ behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: 'run_command' } })
+    expect(resolvePermission(run, { command: 'PATH=/tmp npm run build' }, npmCtx).behavior).toBe('ask')
+    expect(resolvePermission(run, { command: 'timeout -k$(id) 10 npm run build' }, npmCtx).behavior).toBe('ask')
+
+    const gitOnlyCtx = ctx('ask', { sessionAllowedToolRules: [{ tool: 'run_command', ruleContent: 'git:*' }] })
+    expect(resolvePermission(run, { command: 'git status && printf ok' }, gitOnlyCtx).behavior).toBe('ask')
+
+    const compoundCtx = ctx('ask', {
+      sessionAllowedToolRules: [
+        { tool: 'run_command', ruleContent: 'git:*' },
+        { tool: 'run_command', ruleContent: 'printf:*' },
+      ],
+    })
+    expect(resolvePermission(run, { command: 'git status && printf ok' }, compoundCtx)).toMatchObject({ behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: 'run_command' } })
+  })
+
   test('sessionAllowedToolRules 支持 PowerShell shell 规则', () => {
     const ps = tool({ name: 'PowerShell', requiresApproval: true, approvalClass: 'file' })
     const psCtx = ctx('ask', { sessionAllowedToolRules: [{ tool: 'PowerShell', ruleContent: 'Get-ChildItem *' }] })
