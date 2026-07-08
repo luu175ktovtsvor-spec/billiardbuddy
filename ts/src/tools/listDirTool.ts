@@ -1,6 +1,7 @@
 import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Tool } from './Tool'
+import { resolveToolPath } from '../permissions/filePathRules'
 
 const DEFAULT_LIMIT = 200
 const MAX_LIMIT = 1000
@@ -34,7 +35,7 @@ export const listDirTool: Tool<{ path?: string; limit?: number; recursive?: bool
   },
   isReadOnly: true,
   async execute(input, ctx) {
-    const abs = ctx.workspace.resolve(input?.path ?? '.', 'read')
+    const abs = resolveToolPath(ctx, 'list_dir', input?.path ?? '.', 'read')
     const limit = clampLimit(input?.limit)
     if (semanticBoolean(input?.recursive)) {
       const maxDepth = clampDepth(input?.max_depth)

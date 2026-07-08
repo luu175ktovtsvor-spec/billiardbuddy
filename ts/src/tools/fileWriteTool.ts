@@ -3,6 +3,7 @@ import { dirname } from 'node:path'
 import type { Tool, ToolContext } from './Tool'
 import { fileHistoryBackupPath, recordFileSnapshot } from './fileHistory'
 import { loadProjectInstructionsForTarget, projectInstructionScopeKey } from '../harness/projectInstructions'
+import { resolveToolPath } from '../permissions/filePathRules'
 
 export const fileWriteTool: Tool<{ path: string; content: string }> = {
   name: 'write_file',
@@ -18,7 +19,7 @@ export const fileWriteTool: Tool<{ path: string; content: string }> = {
     if (!input || typeof input.path !== 'string' || typeof input.content !== 'string') {
       throw new Error('write_file 需要 string 参数 path 和 content')
     }
-    const abs = ctx.workspace.resolve(input.path, 'write')
+    const abs = resolveToolPath(ctx, 'write_file', input.path, 'write')
     await assertProjectInstructionsSeen(input.path, abs, ctx)
     await assertFreshOverwrite(input.path, abs, ctx)
     const snapshot = await recordFileSnapshot(ctx, input.path, abs, 'write_file')
