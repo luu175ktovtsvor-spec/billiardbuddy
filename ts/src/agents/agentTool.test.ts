@@ -8,10 +8,13 @@ import { scriptedModel } from '../harness/fakeModel'
 import { Workspace } from '../workspace/workspace'
 import { fileReadTool } from '../tools/fileReadTool'
 import { fileWriteTool } from '../tools/fileWriteTool'
+import { ToolRegistry } from '../tools/registry'
 import { createAgentTaskSidechainTools, createAgentTaskTool } from './agentTool'
 import type { AgentDefinition } from './agentLoader'
 import { getAgentMemoryEntrypoint } from './agentMemory'
-import { handleReject } from '../harness/loop'
+import { handleReject, runAgentLoop } from '../harness/loop'
+import { buildChildMessage } from './forkSubagent'
+import { textBlock } from '../types/message'
 
 function agent(partial: Partial<AgentDefinition> = {}): AgentDefinition {
   return {
@@ -22,6 +25,12 @@ function agent(partial: Partial<AgentDefinition> = {}): AgentDefinition {
     tools: ['read_file'],
     ...partial,
   }
+}
+
+async function collect(gen: AsyncGenerator<import('../types/events').AgentEvent>): Promise<import('../types/events').AgentEvent[]> {
+  const out: import('../types/events').AgentEvent[] = []
+  for await (const ev of gen) out.push(ev)
+  return out
 }
 
 test('agent_task runs an isolated subagent loop and returns only final text', async () => {
@@ -69,6 +78,44 @@ test('agent_task runs an isolated subagent loop and returns only final text', as
     const sidechainOutput = await readSidechain.execute({ agent_id: agentId }, { workspace: new Workspace(root) })
     expect(sidechainOutput).toContain(`<agent_task_sidechain id="${agentId}" status="ok"`)
     expect(sidechainOutput).toContain('<tool_result tool_use_id="1">payload</tool_result>')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('agent_task rejects recursive launch inside a fork child conversation', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-fork-guard-'))
+  try {
+    const model = scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: 'nested-agent', name: 'agent_task', input: { task: '再开一个子代理' } }] },
+      { kind: 'final', text: '已改为直接执行' },
+    ])
+    const registry = new ToolRegistry([
+      createAgentTaskTool({
+        agents: [agent()],
+        model,
+        baseTools: [],
+        sidechainRoot: join(root, 'sidechains'),
+      }),
+    ])
+
+    const events = await collect(runAgentLoop({
+      model,
+      registry,
+      workspace: new Workspace(root),
+      systemPrompt: 'SYS',
+      userMessage: '继续 fork child 任务',
+      initialMessages: [{ role: 'user', content: [textBlock(buildChildMessage('检查 parser'))] }],
+    }))
+
+    const result = events.find(event => event.type === 'tool_result')
+    expect(result && result.type === 'tool_result' ? result.output : '').toContain('Fork worker 内部不能再次启动 agent_task')
+    const feedback = model.received[1]!.messages
+      .flatMap(message => message.content)
+      .find(block => block.type === 'tool_result')
+    expect(feedback && feedback.type === 'tool_result' ? feedback.is_error : false).toBe(true)
+    expect(feedback && feedback.type === 'tool_result' ? feedback.content : '').toContain('Fork worker 内部不能再次启动 agent_task')
+    expect(events.at(-1)).toEqual({ type: 'final', text: '已改为直接执行' })
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
