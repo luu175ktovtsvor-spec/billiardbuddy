@@ -64,13 +64,13 @@ grep listen_addresses /etc/postgresql/*/main/postgresql.conf   # 应为 'localho
 
 ---
 
-## 3. 建接收端 venv + 装依赖
+## 3. 准备 Bun 运行时
 
 ```bash
-mkdir -p /opt/dataeye/.venv
-python3 -m venv /opt/dataeye/.venv
-/opt/dataeye/.venv/bin/pip install --upgrade pip
-/opt/dataeye/.venv/bin/pip install -r /opt/dataeye/receiver/requirements.txt
+bun --version
+# 如果服务器还没装 Bun,先按官方脚本安装到运行用户环境,并确认 systemd 能找到 bun:
+#   curl -fsSL https://bun.sh/install | bash
+#   ln -sf /root/.bun/bin/bun /usr/local/bin/bun
 ```
 
 ---
@@ -213,30 +213,30 @@ systemctl restart dataeye-receiver
 
 ## 常见问题
 
-- `systemctl is-active` 不是 active → `journalctl -u dataeye-receiver -n 100 --no-pager` 看报错,常见是 PGDSN 密码错/asyncpg 没装/端口被占。
+- `systemctl is-active` 不是 active → `journalctl -u dataeye-receiver -n 100 --no-pager` 看报错,常见是 PGDSN 密码错、bun 不在 PATH、端口被占。
 - `curl` 返回 401 → 令牌没在 `INGEST_TOKENS` 清单里,或 systemd env 改了没 `daemon-reload` + `restart`。
 - `curl` 返回 200 但 `accepted:0 duplicated:0` → 检查 batch 是不是空数组,或 `kind` 拼写是否是 `event|gen|trace|store` 四选一之外的值(未知 kind 只落 raw_inbox,不整理,也算 accepted)。
 - 磁盘涨得快 → 先看 `transcripts/` 目录,轨迹原文默认永久保留,吃紧时再定滚动清理策略(见计划 PART 6)。
 
 ## ⚠️ 重部署代码(改了 receiver 后同步到服务器)
 
-服务器 `/opt/dataeye/` 下有几样**只在服务器、开发机没有**的东西:`.venv/`(依赖)、`dataeye.env`(密钥)、`transcripts/`(数据)。
+服务器 `/opt/dataeye/` 下有几样**只在服务器、开发机没有**的东西:`dataeye.env`(密钥)、`transcripts/`(数据)。
 用 `rsync --delete` 从开发机同步 `dataeye/` 会把它们当"多余文件"删掉(踩过一次)。**重部署务必带排除**:
 
 ```bash
 rsync -az --delete \
-  --exclude '.venv' --exclude 'dataeye.env' --exclude 'transcripts' --exclude '__pycache__' \
+  --exclude 'dataeye.env' --exclude 'transcripts' \
   dataeye/ root@<app机>:/opt/dataeye/
 systemctl restart dataeye-receiver
 ```
 
-万一误删了 `.venv`/`dataeye.env`:重跑幂等部署脚本即可重建 venv + 重生成密钥(DB/schema 不受影响;但**密钥会换新**,记得同步更新已发出去的客户端令牌)。
+万一误删了 `dataeye.env`:重跑幂等部署脚本即可重生成密钥(DB/schema 不受影响;但**密钥会换新**,记得同步更新已发出去的客户端令牌)。
 
 ## ✅ 已上线记录(2026-07-03 · 大陆数据机 39.106.214.21 北京)
 
 数据接收端 + 看板已在大陆机全线部署并验证(数据全境内、不出境):
 - **域名/证书**:`data.zzyppz.cn`(阿里云 DNS A 记录 → 39.106.214.21)。Let's Encrypt 证书(acme.sh 签发,`/root/.acme.sh/` 每天 cron 自动续期 + reload nginx,**无需人工**)。
-- **收货门(数据进)**:`https://data.zzyppz.cn/ingest` → nginx → `127.0.0.1:9100`(dataeye-receiver systemd,MemoryMax 256M)。已从墙外实测端到端入真 PG。
+- **收货门(数据进)**:`https://data.zzyppz.cn/ingest` → nginx → `127.0.0.1:9100`(dataeye-receiver systemd,MemoryMax 256M;接收端源码已迁到 Bun/TS)。已从墙外实测端到端入真 PG。
 - **看板(人看)**:`https://data.zzyppz.cn/board` → nginx(**Basic Auth**,htpasswd `/etc/nginx/.htpasswd-board`,SHA-512,**权限须 644 否则 www-data 读不了→500**)→ `127.0.0.1:9200`(dataeye-board systemd,MemoryMax 200M,只读 FastAPI)。登录凭据在服务器 `/opt/dataeye/board.auth`(chmod600)。
 - **nginx**:`/etc/nginx/sites-available/dataeye-ingest`(443 块含 /ingest + /health + /board;80 块跳 https + acme 挑战)。改前备份 `/root/nginx-backup-*.tgz`。
 - **客户端**:`server/.env.bundled.local` 已填 `DATA_SYNC_ENDPOINT=https://data.zzyppz.cn/ingest` + `DATA_SYNC_TOKEN`(=服务器 `/opt/dataeye/dataeye.env` 的 INGEST_TOKENS)。**剩:重打包 dmg/nsis + 用户更新,数据即开始流。**
