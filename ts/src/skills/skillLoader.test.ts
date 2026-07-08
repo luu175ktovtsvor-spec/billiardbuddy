@@ -59,6 +59,27 @@ Use store facts. ${'x'.repeat(20)}
   }
 })
 
+test('createSkillTools:use_skill executes inline skills and accepts args', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'skills-use-'))
+  try {
+    mkdirSync(join(root, 'report'), { recursive: true })
+    writeFileSync(join(root, 'report', 'SKILL.md'), `---
+description: Write reports
+---
+Use store facts.
+`)
+    const lib = await loadSkillsDir(root)
+    const use = createSkillTools(lib).find(tool => tool.name === 'use_skill')!
+    const out = await use.execute({ skill: 'report', args: '今天' }, { workspace: new Workspace(root) })
+    expect(out).toContain('技能: report')
+    expect(out).toContain('Use store facts')
+    expect(out).toContain('用户给这个技能的参数')
+    expect(out).toContain('今天')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('createSkillTools:list_skills prioritizes and filters enabled-pack recommendations', async () => {
   const root = mkdtempSync(join(tmpdir(), 'skills-recommended-'))
   try {

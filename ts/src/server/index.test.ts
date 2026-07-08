@@ -2523,6 +2523,95 @@ Generic instructions.
   }
 })
 
+test('POST /agent/run executes context fork skills through use_skill as background workers', async () => {
+  const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-context-fork-skill-'))
+  const skillsRoot = join(transcriptRoot, 'skills')
+  mkdirSync(join(skillsRoot, 'poster-maker'), { recursive: true })
+  writeFileSync(join(skillsRoot, 'poster-maker', 'SKILL.md'), `---
+name: poster-maker
+description: Make posters
+context: fork
+allowedTools: [read_file]
+---
+Plan the poster production workflow.
+`)
+  await new SessionService(transcriptRoot).transcript('skill-fork-run').save([
+    { role: 'user', content: [textBlock('父级上下文不应进入 skill worker')] },
+  ])
+  const sentBodies: any[] = []
+  let outerCalls = 0
+  const skillServer = startServer({
+    port: 0,
+    transcriptRoot,
+    skillsRoot,
+    agentsRoot: join(transcriptRoot, 'agents'),
+    mcpConfigPath: join(transcriptRoot, 'missing.mcp.json'),
+    env: {
+      OPENAI_BASE_URL: 'https://model.example/v1',
+      OPENAI_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(String(init?.body || '{}'))
+      sentBodies.push(body)
+      const system = String(body.messages?.[0]?.content ?? '')
+      if (system.includes('<background_subagent name="skill-poster-maker">')) {
+        return sseResponse({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: 'Skill worker complete' }, finish_reason: 'stop' }] })
+      }
+      const payload = outerCalls++ === 0
+        ? { id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_skill', function: { name: 'use_skill', arguments: JSON.stringify({ skill: 'poster-maker', args: '周末活动' }) } }] }, finish_reason: 'tool_calls' }] }
+        : { id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: 'skill launched' }, finish_reason: 'stop' }] }
+      return sseResponse(payload)
+    },
+  })
+  try {
+    const res = await fetch(`http://127.0.0.1:${skillServer.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({
+        message: '用海报技能规划活动',
+        conversationId: 'skill-fork-run',
+        workspaceRoot: transcriptRoot,
+        permissionMode: 'full',
+      }),
+    })
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).toContain('use_skill')
+    expect(text).toContain('background_task_started')
+    expect(text).toContain('skill launched')
+
+    const taskId = text.match(/id=\\?"([^"\\]+)\\?"/)?.[1]
+    expect(taskId).toBeTruthy()
+    if (!taskId) throw new Error('missing skill fork task id')
+    const done = await waitFor(async () => {
+      const detail = await fetch(`http://127.0.0.1:${skillServer.port}/tasks/${taskId}`)
+      const body = await detail.json() as { task?: { status: string; result?: unknown; params?: Record<string, unknown> } }
+      return body.task?.status === 'completed' ? body.task : null
+    }, 2500)
+    expect(done.params).toMatchObject({
+      agent: 'skill-poster-maker',
+      skill: 'poster-maker',
+      skill_context: 'fork',
+      task: expect.stringContaining('Plan the poster production workflow'),
+    })
+    expect(done.result).toBe('Skill worker complete')
+
+    const outerRequest = sentBodies[0]
+    expect(outerRequest.tools.some((tool: any) => tool.function.name === 'use_skill')).toBe(true)
+    const workerRequest = sentBodies.find(body => String(body.messages?.[0]?.content ?? '').includes('<background_subagent name="skill-poster-maker">'))
+    expect(workerRequest).toBeTruthy()
+    const workerJson = JSON.stringify(workerRequest)
+    expect(workerJson).toContain('技能: poster-maker')
+    expect(workerJson).toContain('Plan the poster production workflow')
+    expect(workerJson).toContain('用户给这个技能的参数')
+    expect(workerJson).toContain('周末活动')
+    expect(workerJson).not.toContain('父级上下文不应进入 skill worker')
+  } finally {
+    skillServer.stop(true)
+    rmSync(transcriptRoot, { recursive: true, force: true })
+  }
+})
+
 test('POST /agent/run lets tools read files explicitly selected outside the workspace', async () => {
   const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-selected-file-transcript-'))
   const workingRoot = mkdtempSync(join(tmpdir(), 'agent-selected-file-working-'))
