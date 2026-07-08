@@ -52,6 +52,7 @@ import { TeamService } from '../tasks/teamService'
 import { createTeamTools } from '../tasks/teamTools'
 import { startUdsInbox, type UdsInboxServer } from '../tasks/udsInbox'
 import { UdsPeerRegistry, type UdsPeerRecord } from '../tasks/udsPeerRegistry'
+import { BridgePeerRegistry } from '../tasks/bridgePeerRegistry'
 import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
 import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
@@ -456,7 +457,7 @@ function providerStatusFor(error: unknown): number {
   if (message.includes('already exists')) return 409
   if (message.includes('cannot delete active')) return 409
   if (message.includes('cannot activate disabled')) return 409
-  if (message.includes('required') || message.includes('非法')) return 400
+  if (message.includes('required') || message.includes('unsupported') || message.includes('非法')) return 400
   return 500
 }
 
@@ -792,6 +793,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const taskLists = new TaskListService(join(stateRoot, 'task-lists'))
   const teams = new TeamService(stateRoot)
   const udsPeers = new UdsPeerRegistry(stateRoot)
+  const bridgePeers = new BridgePeerRegistry(stateRoot)
   const media = new MediaJobService({
     tasks,
     stateRoot,
@@ -1141,6 +1143,7 @@ export function startServer(opts: StartServerOptions = {}) {
     const teamTools = createTeamTools(teams, {
       tasks,
       udsPeers,
+      bridgePeers,
       resumeBackgroundAgent: (task, message, toolCtx) => {
         if (!backgroundAgentOptions) throw new Error('background agent runner is not available')
         return resumeBackgroundAgentTask(backgroundAgentOptions, task, message, toolCtx)
@@ -1510,7 +1513,7 @@ export function startServer(opts: StartServerOptions = {}) {
       skillsRoot,
       skillRecommendations: suggestedSkillNamesForPacks(enabledPacks),
       commands,
-      extraTools: [...domainPackTools, ...mcpTools.tools, ...createTaskTools(tasks), ...createStructuredTaskTools(taskLists), ...createTeamTools(teams, { tasks }), ...createMediaTools(media), createStoreDocsTool(storeDocs)],
+      extraTools: [...domainPackTools, ...mcpTools.tools, ...createTaskTools(tasks), ...createStructuredTaskTools(taskLists), ...createTeamTools(teams, { tasks, udsPeers, bridgePeers }), ...createMediaTools(media), createStoreDocsTool(storeDocs)],
     })
     return { workspace, registry, connections: mcpTools.connections }
   }
@@ -2699,6 +2702,51 @@ export function startServer(opts: StartServerOptions = {}) {
           summarizeWorkspaceTree(workspaceRoot),
         ])
         return Response.json({ git, projectInstructions, tree })
+      }
+
+      if (url.pathname === '/api/v1/agent/bridge/peers') {
+        try {
+          if (req.method === 'GET') return Response.json({ peers: await bridgePeers.list() })
+          if (req.method === 'POST') {
+            const body = await req.json().catch(() => ({})) as Record<string, unknown>
+            return Response.json({ peer: await bridgePeers.register({
+              sessionId: stringOr(body.sessionId ?? body.session_id, ''),
+              label: typeof body.label === 'string' ? body.label : undefined,
+              workspaceRoot: typeof body.workspaceRoot === 'string' ? body.workspaceRoot : typeof body.workspace_root === 'string' ? body.workspace_root : undefined,
+              machineName: typeof body.machineName === 'string' ? body.machineName : typeof body.machine_name === 'string' ? body.machine_name : undefined,
+              status: body.status === 'connected' || body.status === 'connecting' || body.status === 'disconnected' || body.status === 'outbound_only' || body.status === 'error' ? body.status : undefined,
+              inboundEnabled: typeof body.inboundEnabled === 'boolean' ? body.inboundEnabled : typeof body.inbound_enabled === 'boolean' ? body.inbound_enabled : undefined,
+              lastError: typeof body.lastError === 'string' ? body.lastError : typeof body.last_error === 'string' ? body.last_error : undefined,
+            }) }, { status: 201 })
+          }
+          return new Response('Method not allowed', { status: 405 })
+        } catch (err) {
+          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
+        }
+      }
+
+      const bridgePeerMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/peers\/([^/]+)$/)
+      if (bridgePeerMatch) {
+        const sessionId = decodeURIComponent(bridgePeerMatch[1]!)
+        try {
+          if (req.method === 'PATCH') {
+            const body = await req.json().catch(() => ({})) as Record<string, unknown>
+            const status = body.status === 'connected' || body.status === 'connecting' || body.status === 'disconnected' || body.status === 'outbound_only' || body.status === 'error'
+              ? body.status
+              : undefined
+            if (!status) return jsonError('status required', 400)
+            const peer = await bridgePeers.updateStatus(sessionId, status, typeof body.lastError === 'string' ? body.lastError : typeof body.last_error === 'string' ? body.last_error : undefined)
+            if (!peer) return jsonError('bridge peer not found', 404)
+            return Response.json({ peer })
+          }
+          if (req.method === 'DELETE') {
+            await bridgePeers.unregister(sessionId)
+            return Response.json({ ok: true })
+          }
+          return new Response('Method not allowed', { status: 405 })
+        } catch (err) {
+          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
+        }
       }
 
       if (url.pathname === '/api/v1/agent/mcp/presets') {
