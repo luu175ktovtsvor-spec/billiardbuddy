@@ -15,6 +15,15 @@ export const fileWriteTool: Tool<{ path: string; content: string }> = {
     required: ['path', 'content'],
   },
   isReadOnly: false,
+  requiresApproval: true,
+  approvalClass: 'file',
+  approvalReasonFor(input) {
+    return {
+      what: `写入文件:${typeof input?.path === 'string' ? input.path : '(未指定)'}`,
+      why: '该工具会创建或覆盖本机文件。',
+      impact: '确认后会写入目标文件;若目标已存在,执行前会先尝试记录快照和备份。',
+    }
+  },
   async execute(input, ctx) {
     if (!input || typeof input.path !== 'string' || typeof input.content !== 'string') {
       throw new Error('write_file 需要 string 参数 path 和 content')

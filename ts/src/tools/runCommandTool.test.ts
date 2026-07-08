@@ -10,6 +10,7 @@ import { runCommandTool } from './runCommandTool'
 import { StreamingOutputSanitizer, stripAnsiControlSequences } from './outputSanitize'
 import { classifyCommandRisk, gitDiffNoIndexSensitivePathNeedsApproval, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellCdGitNeedsApproval, shellCdWriteNeedsApproval, shellDangerousRemovalNeedsApproval, shellGitInternalWriteNeedsApproval, shellMvCpFlagsNeedApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval, shellSensitiveReadNeedsApproval } from './dangerousCommand'
 import { resolvePermission } from '../permissions/resolve'
+import { applyPermissionUpdates } from '../permissions/permissionUpdate'
 
 let root: string
 let ctx: ToolContext
@@ -36,6 +37,30 @@ test('run_command can run from a workspace-relative cwd', async () => {
   mkdirSync(join(root, 'packages', 'app'), { recursive: true })
   const out = await runCommandTool.execute({ command: 'pwd', cwd: 'packages/app' }, ctx)
   expect(out).toContain(join(root, 'packages', 'app'))
+})
+
+test('run_command cwd honors AdditionalWorkingDirectory session grants', async () => {
+  const externalRoot = realpathSync(mkdtempSync(join(tmpdir(), 'run-cwd-')))
+  try {
+    const deniedPreview = await runCommandTool.previewFor?.({ command: 'pwd', cwd: externalRoot }, ctx)
+    expect(deniedPreview).toContain('cwd: 无效:')
+
+    const granted = applyPermissionUpdates(ctx, [
+      { type: 'addDirectories', destination: 'session', directories: [externalRoot] },
+    ])
+    const preview = await runCommandTool.previewFor?.({ command: 'pwd', cwd: externalRoot }, granted)
+    expect(preview).toContain(`cwd: ${externalRoot}`)
+    const out = await runCommandTool.execute({ command: 'pwd', cwd: externalRoot }, granted)
+    expect(out).toContain(externalRoot)
+
+    const revoked = applyPermissionUpdates(granted, [
+      { type: 'removeDirectories', destination: 'session', directories: [externalRoot] },
+    ])
+    const revokedPreview = await runCommandTool.previewFor?.({ command: 'pwd', cwd: externalRoot }, revoked)
+    expect(revokedPreview).toContain('cwd: 无效:')
+  } finally {
+    rmSync(externalRoot, { recursive: true, force: true })
+  }
 })
 
 test('run_command rejects a cwd that is not a directory', async () => {

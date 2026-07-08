@@ -94,6 +94,14 @@ const PUNCT_EQUIV: Record<string, string> = {
   '、': ',',
 }
 
+function fileEditApprovalReason(action: string, path: string) {
+  return {
+    what: `${action}:${path || '(未指定)'}`,
+    why: '该工具会修改本机文件内容。',
+    impact: '确认后会写入目标文件;执行前会先尝试记录快照和备份。',
+  }
+}
+
 export const fileEditTool: Tool<FileEditInput> = {
   name: 'edit_file',
   description:
@@ -109,6 +117,11 @@ export const fileEditTool: Tool<FileEditInput> = {
     required: ['path', 'old_string', 'new_string'],
   },
   isReadOnly: false,
+  requiresApproval: true,
+  approvalClass: 'file',
+  approvalReasonFor(input) {
+    return fileEditApprovalReason('编辑文件', input?.path ?? '')
+  },
   async execute(input, ctx) {
     validateInput(input)
     const abs = resolveToolPath(ctx, 'edit_file', input.path, 'write')
@@ -167,6 +180,11 @@ export const fileMultiEditTool: Tool<FileMultiEditInput> = {
     required: ['path', 'edits'],
   },
   isReadOnly: false,
+  requiresApproval: true,
+  approvalClass: 'file',
+  approvalReasonFor(input) {
+    return fileEditApprovalReason('批量编辑文件', input?.path ?? '')
+  },
   async execute(input, ctx) {
     validateMultiInput(input)
     const abs = resolveToolPath(ctx, 'multi_edit_file', input.path, 'write')
@@ -225,6 +243,11 @@ export const filePatchTool: Tool<FilePatchInput> = {
     required: ['path', 'patch'],
   },
   isReadOnly: false,
+  requiresApproval: true,
+  approvalClass: 'file',
+  approvalReasonFor(input) {
+    return fileEditApprovalReason('应用 patch', input?.path ?? '')
+  },
   async execute(input, ctx) {
     validatePatchInput(input)
     const abs = resolveToolPath(ctx, 'patch_file', input.path, 'write')
@@ -276,6 +299,12 @@ export const filePatchManyTool: Tool<FilePatchManyInput> = {
     required: ['patches'],
   },
   isReadOnly: false,
+  requiresApproval: true,
+  approvalClass: 'file',
+  approvalReasonFor(input) {
+    const count = Array.isArray(input?.patches) ? input.patches.length : 0
+    return fileEditApprovalReason('批量应用 patch', count ? `${count} 个文件` : '(未指定)')
+  },
   async execute(input, ctx) {
     validatePatchManyInput(input)
     const seenAbsPaths = new Set<string>()

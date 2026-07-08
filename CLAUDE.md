@@ -18,8 +18,8 @@
 
 **形态 = 全本地 + 全内置(模型 key 打包) + 真 Agent：**
 - **全本地**：Electron 壳 + 本地 FastAPI + 本地 SQLite + 加密知识库（`prompts.enc`）。数据全在用户机器上，不连云。
-- **全内置 key**：盒子**内置 owner 自己的全部模型 key**（文字/生图/视频，均 OpenAI 兼容端点），**用户零配置、不填 key**，开箱即用。⚠️ 内置 key 须在各平台后台设**消费上限**防被扒盗刷；海外模型（GPT Image-2）国内仍需"国外出口"。详见 `docs/归档/待改清单-真机验收与打包-2026-06-23.md` 专题D（历史清单，约八成已落地，已归档仅供回查）。
-- **真 Agent**：ReAct 循环自主调工具；**只有真对外/不可逆动作（发布/群发/私信、删数据）走审批闸**（弹卡片，人点确认才执行）。做出成品给用户看、读写本机文件（写改前自动备份、可回滚）都不算对外，直接做。
+- **全内置 key**：盒子**内置 owner 自己的模型 key**（文字/生图等 OpenAI 兼容端点），**用户零配置、不填 key**，开箱即用。⚠️ 内置 key 须在各平台后台设**消费上限**防被扒盗刷；海外模型（GPT Image-2）国内仍需"国外出口"。CD/Seedance 2.0 这类模型直接生成视频链路已删除,不再保留视频生成模型 key/配置。详见 `docs/归档/待改清单-真机验收与打包-2026-06-23.md` 专题D（历史清单，约八成已落地，已归档仅供回查）。
+- **真 Agent**：ReAct 循环自主调工具；权限/审批按 cc-haha 五档对齐:default 默认询问本机文件写改,acceptEdits 自动接受可逆文件修改,bypassPermissions 仍不能越过 forceConfirm/用户交互/硬拒红线;对外触达、花钱、不可逆动作继续走审批闸。
 
 > 技术栈、目录结构、已落地能力清单：见根 `README.md` + `docs/桌面版AI-Agent-产品形态/README.md`（单一权威，不在此重复以免漂移）。
 > ⚠️ **大陆调不了 OpenAI**，生图主走国内模型（硅基流动 OpenAI 兼容 / 通义万相 native 异步 / 即梦）。`resolve_image_kind(base_url)` 按端点路由到对应适配器。
@@ -30,7 +30,7 @@
 >
 > **📦 Python 产品线已冻结、转历史**（被 TS 替代）：原「商品化收官」等已归档（`docs/归档/商品化收官-总开发文档-2026-07-03.md`），**作废、仅回查**。⚠️ **下方"现状 / 卡上线 / 待 owner 拍板 / P0 真机验收 / 上一轮优化"整段都是 Python 线遗留、随之作废**——其中真机验收 / 内置 key / 首启不崩 / 沙箱 / 知识库解密 / 白标等**要求已并入 TS 主文档 §10（试用就绪）+ W14**，照那份走，别再翻这套。
 
-**现状**：功能面已齐、代码全在本地 `main`——视频创作工作区 V2（生成 → 大白话反馈 → 重调，模板渲染复用自带 Chromium）、生图编辑台（GPT + 火山 Seedream 双模型，改图/局部重绘/换比例/i2v）、真 key 收网关（客户端只带可吊销令牌）、运行中插话纠偏（Claude Code 式 steering）、MiMo 适配五连修（压缩/店脑救活/缓存可观测）、全仓两轮审查（7 模块）+ 三波修复（12 子代理）+ 7 路复扫，全部合入 `main`。后端 `cd server && uv run pytest tests/ -q` 全绿（1377 passed）；前端 `cd web && npx tsc --noEmit` 全过。代码已全部推上 origin（2026-07-03 核实 0 未推；⚠️ 历史中旧密码/资料因此也在 GitHub，密钥轮换+历史重写优先级提高，见商品化收官文档 G1）。详细总账在仓库外 `~/Desktop/球房-验收报告/`（《全仓七路审查-2026-07-02》+《全链路修复与复扫-总报告-2026-07-02》，按文档维护规约不进仓库）。
+**现状**：功能面已齐、代码全在本地 `main`——视频创作工作区 V2（真实素材剪辑 → 大白话反馈 → 重调，模板渲染复用自带 Chromium）、生图编辑台（GPT + 火山 Seedream 双模型，改图/局部重绘/换比例）、真 key 收网关（客户端只带可吊销令牌）、运行中插话纠偏（Claude Code 式 steering）、MiMo 适配五连修（压缩/店脑救活/缓存可观测）、全仓两轮审查（7 模块）+ 三波修复（12 子代理）+ 7 路复扫，全部合入 `main`。后端 `cd server && uv run pytest tests/ -q` 全绿（1377 passed）；前端 `cd web && npx tsc --noEmit` 全过。代码已全部推上 origin（2026-07-03 核实 0 未推；⚠️ 历史中旧密码/资料因此也在 GitHub，密钥轮换+历史重写优先级提高，见商品化收官文档 G1）。详细总账在仓库外 `~/Desktop/球房-验收报告/`（《全仓七路审查-2026-07-02》+《全链路修复与复扫-总报告-2026-07-02》，按文档维护规约不进仓库）。
 
 **卡上线的两件事**：① 真机打包验收没跑全（见下方 P0 清单）；② 服务器搬 key（按 `docs/plans/密钥收网关-部署清单-2026-07-02.md` 把真 key 填进网关 `gw.env`、发 app 令牌）。
 
@@ -61,8 +61,8 @@
 1. **通用 Agent 为默认，领域知识可挂载** — `compose_agent_system_prompt`（`api/v1/agent.py`）三段拼装：`_GENERIC_BASE_PROMPT`（通用助手身份，永远注入）+ `_SAFETY_REDLINE`（安全红线，永远注入、与挂没挂领域无关）+ `_BILLIARDS_PERSONA`（仅 `billiards_mode` 时追加）。工具也分层：`general_registry()` vs `billiards_registry()`，由 `_build_agent_registry(billiards_mode)` 选。
 2. **真 Agent（ReAct + 工具 + 审批闸）** — `services/agent/loop.py` 真循环(think→调工具→结果回灌→再推理)，真 function calling。本机文件/命令/网络/生图/子代理等工具实打实执行。
 3. **全内置模型 key（owner 提供）** — 模型 key 内置打包、用户零配置；`factory` 返回内置 key + 各自 base_url。⚠️ 内置 key 设消费上限防盗刷（原"纯 BYOK·空 key 不回退"逻辑作废，见待改清单专题D）。
-4. **四层防御** — ① 权限模式(逐项确认/自动接受修改/跳过确认)；② 工具 allow-ask-deny + 审批闸；③ 本地文件沙箱(改前备份)；④ 审批签名绑定 args。
-5. **对外/花钱动作走审批闸** — 生图/发布等标 `requires_approval=True`，循环里不直接执行，吐 `approval_request` 弹卡片、人确认后经 `/agent/execute` 才跑。绝不自动群发/私信。
+4. **四层防御** — ① 权限模式(default/acceptEdits/plan/bypassPermissions/dontAsk)；② 工具 allow-ask-deny + 审批闸；③ 本地文件沙箱(改前备份)；④ 审批签名绑定 args。
+5. **文件/对外/花钱动作按类别审批** — 本机文件写改属于 `file` 类,default 询问、acceptEdits 放行;生图等成本动作、发布/群发等对外动作、删数据等不可逆动作按 `spend/outreach/destructive` 类继续审批或强确认。绝不自动群发/私信。
 6. **本地文件操作有护栏** — `local_tools` 沙箱（内容库 + 用户选定文件；`full_disk_access` 时放开）；`..` 穿越/越界抛错；写/改前自动备份。
 7. **Prompt 与业务解耦** — 知识存 `prompts/` YAML（`{变量}` 占位），改 prompt 不改业务代码。`PromptEngine` 是单例 `get_prompt_engine()`。
 8. **动手前先看大厂 harness 怎么做** — 实现 harness/agent 能力前，先看大厂（Anthropic/OpenAI/Google/微软/AWS + 国内字节/阿里/Kimi）的 agent/harness 架构与设计；业界共识「harness 就是产品」，我们做的正是它。全景+研究入口见 `docs/references/AI-Agent-harness全景与参考.md`；再对照 `~/Desktop/cc-haha-ref`（可抄）动手。
