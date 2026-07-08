@@ -1,6 +1,7 @@
 import type { FetchLike } from '../proxy/ProxyModel'
 import type { BridgeRemoteState } from './bridgeRemoteState'
 import type { BridgeWorkerClient } from './bridgeWorkerClient'
+import { resolveInboundUserMessage } from './bridgeInboundMessages'
 
 export type BridgeWorkerStreamState = 'idle' | 'connected' | 'reconnecting' | 'closing' | 'closed'
 
@@ -28,6 +29,13 @@ export interface BridgeWorkerStreamConfig {
 export interface BridgeWorkerStreamDeps {
   state: BridgeRemoteState
   worker?: Pick<BridgeWorkerClient, 'reportDelivery'>
+  inbound?: {
+    stateRoot: string
+    baseUrl?: string
+    token?: string
+    fetchImpl?: FetchLike
+    timeoutMs?: number
+  }
 }
 
 type SseFrame = {
@@ -247,7 +255,22 @@ export class BridgeWorkerStream {
     }
     if (!event || typeof event !== 'object' || !event.payload || typeof event.payload.type !== 'string') return
     this.deps.worker?.reportDelivery(event.event_id, 'received')
-    await this.deps.state.ingestEvent(this.sessionId, event.payload)
+    const ingested = await this.deps.state.ingestEvent(this.sessionId, event.payload)
+    if (event.payload.type === 'user' && this.deps.inbound) {
+      try {
+        const resolved = await resolveInboundUserMessage(event.payload, {
+          sessionId: this.sessionId,
+          stateRoot: this.deps.inbound.stateRoot,
+          baseUrl: this.deps.inbound.baseUrl,
+          token: this.deps.inbound.token,
+          fetchImpl: this.deps.inbound.fetchImpl ?? this.fetchImpl,
+          timeoutMs: this.deps.inbound.timeoutMs,
+        })
+        if (resolved) await this.deps.state.storeInboundMessage(this.sessionId, resolved, { eventSeq: ingested.event.seq })
+      } catch (err) {
+        this.events.onError?.(err instanceof Error ? err : new Error(String(err)))
+      }
+    }
     this.deps.worker?.reportDelivery(event.event_id, 'processed')
     this.events.onEvent?.(event)
   }

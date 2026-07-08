@@ -177,6 +177,49 @@ test('BridgeRemoteState persists latest bridge worker credentials per session', 
   }
 })
 
+test('BridgeRemoteState stores resolved inbound bridge user messages', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-remote-inbound-'))
+  try {
+    const state = new BridgeRemoteState(root)
+    const stored = await state.storeInboundMessage('bridge:session_remote', {
+      uuid: 'uuid_inbound',
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+        { type: 'text', text: '@"/tmp/file.txt" read this' },
+      ],
+      attachments: [{ file_uuid: 'file_1', file_name: 'file.txt' }],
+      resolvedPaths: ['/tmp/file.txt'],
+      prefix: '@"/tmp/file.txt" ',
+      bridgeOrigin: true,
+      skipSlashCommands: true,
+    }, { eventSeq: 3 })
+    expect(stored).toMatchObject({
+      sessionId: 'session_remote',
+      seq: 1,
+      eventSeq: 3,
+      uuid: 'uuid_inbound',
+      bridgeOrigin: true,
+      skipSlashCommands: true,
+    })
+
+    await state.storeInboundMessage('session_remote', {
+      uuid: 'uuid_inbound',
+      content: 'new content',
+      attachments: [],
+      resolvedPaths: [],
+      prefix: '',
+      bridgeOrigin: true,
+      skipSlashCommands: true,
+    })
+    const reloaded = new BridgeRemoteState(root)
+    expect(await reloaded.listInboundMessages('session_remote')).toEqual([
+      expect.objectContaining({ seq: 2, uuid: 'uuid_inbound', content: 'new content' }),
+    ])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('BridgeRemoteState rejects unsafe identifiers and missing payload types', async () => {
   const root = mkdtempSync(join(tmpdir(), 'bridge-remote-invalid-'))
   try {

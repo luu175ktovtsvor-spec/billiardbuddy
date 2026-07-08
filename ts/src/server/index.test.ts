@@ -1138,7 +1138,7 @@ test('bridge worker API starts CCR worker transport and uploads events/state/del
         })
       }
       if (String(input).includes('/v1/code/sessions/cse_worker_api/worker/events/stream')) {
-        const frame = {
+        const permissionFrame = {
           event_id: 'evt_stream_1',
           sequence_num: 1,
           event_type: 'control_request',
@@ -1155,12 +1155,28 @@ test('bridge worker API starts CCR worker transport and uploads events/state/del
             },
           },
         }
+        const userFrame = {
+          event_id: 'evt_stream_2',
+          sequence_num: 2,
+          event_type: 'user',
+          source: 'remote',
+          created_at: new Date().toISOString(),
+          payload: {
+            type: 'user',
+            uuid: 'uuid_worker_user',
+            message: { content: '读取远端附件' },
+            file_attachments: [{ file_uuid: 'worker-attach-1', file_name: '远端 文件.txt' }],
+          },
+        }
         return new Response(new ReadableStream({
           start(controller) {
-            controller.enqueue(new TextEncoder().encode(`id: 1\nevent: client_event\ndata: ${JSON.stringify(frame)}\n\n`))
+            controller.enqueue(new TextEncoder().encode(`id: 1\nevent: client_event\ndata: ${JSON.stringify(permissionFrame)}\n\nid: 2\nevent: client_event\ndata: ${JSON.stringify(userFrame)}\n\n`))
             controller.close()
           },
         }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+      }
+      if (String(input).includes('/api/oauth/files/worker-attach-1/content')) {
+        return new Response('worker attachment')
       }
       return Response.json({})
     },
@@ -1178,7 +1194,13 @@ test('bridge worker API starts CCR worker transport and uploads events/state/del
     })
     const started = await (await fetch(`${codeBase}/worker`, {
       method: 'POST',
-      body: JSON.stringify({ heartbeat_interval_ms: 60000 }),
+      body: JSON.stringify({
+        heartbeat_interval_ms: 60000,
+        bridge_remote: {
+          base_url: 'https://remote.example',
+          token: 'oauth-token',
+        },
+      }),
     })).json() as any
     expect(started).toMatchObject({ ok: true, sessionId: 'cse_worker_api', workerEpoch: 13 })
 
@@ -1211,11 +1233,21 @@ test('bridge worker API starts CCR worker transport and uploads events/state/del
     expect(calls.some(call => call.url.endsWith('/worker') && call.body.worker_status === 'requires_action' && call.body.requires_action_details.request_id === 'req_1')).toBe(true)
     expect(calls.some(call => call.url.endsWith('/worker/events/delivery') && call.body.updates.some((item: any) => item.event_id === 'evt_1'))).toBe(true)
     expect(calls.some(call => call.url.endsWith('/worker/events/delivery') && call.body.updates.some((item: any) => item.event_id === 'evt_stream_1' && item.status === 'processed'))).toBe(true)
+    await waitFor(async () => calls.some(call => call.url.endsWith('/worker/events/delivery') && call.body.updates.some((item: any) => item.event_id === 'evt_stream_2' && item.status === 'processed')) ? true : null)
     expect(calls.some(call => call.url.endsWith('/worker/heartbeat') && call.body.session_id === 'cse_worker_api')).toBe(true)
     const pending = await (await fetch(`http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/sessions/${encodeURIComponent('cse_worker_api')}/permissions?status=pending`)).json() as any
     expect(pending.permissions).toEqual([expect.objectContaining({ requestId: 'req_stream', toolName: 'Write' })])
+    const inbound = await (await fetch(`http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/sessions/${encodeURIComponent('cse_worker_api')}/inbound`)).json() as any
+    expect(inbound.messages).toEqual([
+      expect.objectContaining({
+        uuid: 'uuid_worker_user',
+        content: expect.stringContaining('读取远端附件'),
+      }),
+    ])
+    expect(inbound.messages[0].content).toContain('@')
+    expect(inbound.messages[0].resolvedPaths[0]).toContain(join(root, 'bridge-uploads', 'cse_worker_api'))
     const workerStatus = await (await fetch(`${codeBase}/worker`)).json() as any
-    expect(workerStatus.stream).toMatchObject({ lastSequenceNum: 1 })
+    expect(workerStatus.stream).toMatchObject({ lastSequenceNum: 2 })
     const stopped = await (await fetch(`${codeBase}/worker`, { method: 'DELETE' })).json() as any
     expect(stopped).toMatchObject({ ok: true, sessionId: 'cse_worker_api' })
   } finally {
@@ -1376,6 +1408,64 @@ test('bridge Remote Control event API stores permission requests and response ou
     expect(sent.outbox).toMatchObject({ requestId: 'req_remote_write', status: 'sent' })
     const empty = await (await fetch(`${base}/outbox?status=queued`)).json() as any
     expect(empty.outbox).toEqual([])
+  } finally {
+    bridgeServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('bridge inbound resolve API downloads attachments and stores resolved user prompts', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-bridge-inbound-resolve-'))
+  const calls: Array<{ url: string; headers: Record<string, string> }> = []
+  const bridgeServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    fetchImpl: async (input, init) => {
+      calls.push({ url: String(input), headers: Object.fromEntries(new Headers(init?.headers).entries()) })
+      return new Response('remote attachment')
+    },
+  })
+  const base = `http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/sessions/${encodeURIComponent('session_inbound_resolve')}`
+  try {
+    const resolved = await (await fetch(`${base}/inbound/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({
+        bridge_remote: {
+          base_url: 'https://remote.example',
+          token: 'oauth-token',
+        },
+        event: {
+          type: 'user',
+          uuid: 'uuid_server_inbound',
+          message: { content: [{ type: 'text', text: '帮我读附件' }] },
+          file_attachments: [{ file_uuid: 'attach-123456', file_name: '../报价 单.md' }],
+        },
+      }),
+    })).json() as any
+    expect(calls[0]).toMatchObject({
+      url: 'https://remote.example/api/oauth/files/attach-123456/content',
+      headers: { authorization: 'Bearer oauth-token' },
+    })
+    expect(resolved.resolved).toMatchObject({
+      uuid: 'uuid_server_inbound',
+      bridgeOrigin: true,
+      skipSlashCommands: true,
+      attachments: [{ file_uuid: 'attach-123456', file_name: '../报价 单.md' }],
+    })
+    expect(resolved.message).toMatchObject({
+      sessionId: 'session_inbound_resolve',
+      seq: 1,
+      uuid: 'uuid_server_inbound',
+    })
+    expect(resolved.message.content.at(-1).text).toContain('帮我读附件')
+    expect(resolved.message.content.at(-1).text).toContain('@')
+    expect(existsSync(resolved.resolved.resolvedPaths[0])).toBe(true)
+
+    const listed = await (await fetch(`${base}/inbound`)).json() as any
+    expect(listed.messages).toEqual([
+      expect.objectContaining({ uuid: 'uuid_server_inbound', seq: 1 }),
+    ])
   } finally {
     bridgeServer.stop(true)
     rmSync(root, { recursive: true, force: true })

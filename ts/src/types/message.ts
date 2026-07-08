@@ -10,10 +10,11 @@ export interface ToolCall {
 
 export interface TextBlock { type: 'text'; text: string }
 export interface ThinkingBlock { type: 'thinking'; thinking: string; signature?: string }
+export interface ImageBlock { type: 'image'; source: { type: 'base64'; media_type: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'; data: string } }
 export interface ToolUseBlock { type: 'tool_use'; id: string; name: string; input: unknown }
 export interface ToolResultBlock { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }
 
-export type ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock
+export type ContentBlock = TextBlock | ThinkingBlock | ImageBlock | ToolUseBlock | ToolResultBlock
 
 /** 内部消息:content 恒为块数组(不用 string|Block[] 双态);role 只有 user/assistant,system 单列。 */
 export type Message =

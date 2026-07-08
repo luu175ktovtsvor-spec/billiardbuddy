@@ -59,6 +59,7 @@ import { BridgeRemoteSubscriber, type BridgeRemoteWebSocketConstructor } from '.
 import { createBridgeCodeSessionClient } from '../tasks/bridgeCodeSessionClient'
 import { BridgeWorkerClient, type BridgeWorkerSessionState } from '../tasks/bridgeWorkerClient'
 import { BridgeWorkerStream } from '../tasks/bridgeWorkerStream'
+import { resolveInboundUserMessage } from '../tasks/bridgeInboundMessages'
 import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
 import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
@@ -891,6 +892,7 @@ export function startServer(opts: StartServerOptions = {}) {
     if (!credentials) throw new Error('bridge credentials not found')
     const previousSequence = bridgeWorkerStreams.get(codeSessionId)?.getLastSequenceNum() ?? 0
     const initialSequence = numberFrom(body.initialSequenceNum ?? body.initial_sequence_num, previousSequence)
+    const inboundConfig = bridgeRemoteConfigFromBody(body, opts.env ?? process.env)
     bridgeWorkerStreams.get(codeSessionId)?.close()
     bridgeWorkerStreams.delete(codeSessionId)
     bridgeWorkers.get(codeSessionId)?.close()
@@ -926,7 +928,12 @@ export function startServer(opts: StartServerOptions = {}) {
         workerJwt: credentials.workerJwt,
         initialSequenceNum: initialSequence,
         fetchImpl: opts.fetchImpl,
-      }, { state: bridgeRemote, worker }, {
+      }, { state: bridgeRemote, worker, inbound: {
+        stateRoot,
+        baseUrl: inboundConfig?.baseUrl,
+        token: inboundConfig?.token,
+        fetchImpl: opts.fetchImpl,
+      } }, {
         onClose: code => {
           bridgeWorkerStreams.delete(codeSessionId)
           if (code === 401 || code === 403) {
@@ -3089,6 +3096,40 @@ export function startServer(opts: StartServerOptions = {}) {
         }
       }
 
+      const bridgeInboundMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/inbound(?:\/resolve)?$/)
+      if (bridgeInboundMatch) {
+        const sessionId = decodeURIComponent(bridgeInboundMatch[1]!)
+        try {
+          if (req.method === 'GET') {
+            return Response.json({
+              messages: await bridgeRemote.listInboundMessages(sessionId, {
+                after: numberFrom(url.searchParams.get('after'), 0),
+                limit: numberFrom(url.searchParams.get('limit'), 100),
+              }),
+            })
+          }
+          if (req.method === 'POST') {
+            const body = await req.json().catch(() => ({})) as Record<string, unknown>
+            const event = isRecord(body.event) ? body.event : isRecord(body.message) ? body.message : body
+            const config = bridgeRemoteConfigFromBody(body, opts.env ?? process.env)
+            const resolved = await resolveInboundUserMessage(event, {
+              sessionId,
+              stateRoot,
+              baseUrl: config?.baseUrl,
+              token: config?.token,
+              fetchImpl: opts.fetchImpl,
+            })
+            if (!resolved) return jsonError('inbound user message content not found', 400)
+            const store = body.store !== false
+            const record = store ? await bridgeRemote.storeInboundMessage(sessionId, resolved) : undefined
+            return Response.json({ resolved, ...(record ? { message: record } : {}) }, { status: 201 })
+          }
+          return new Response('Method not allowed', { status: 405 })
+        } catch (err) {
+          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
+        }
+      }
+
       const bridgePermissionsMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/permissions$/)
       if (bridgePermissionsMatch) {
         const sessionId = decodeURIComponent(bridgePermissionsMatch[1]!)
@@ -3190,7 +3231,10 @@ export function startServer(opts: StartServerOptions = {}) {
               token: config.token,
               orgUuid: config.orgUuid,
               WebSocketCtor: opts.bridgeWebSocketCtor,
-            }, { state: bridgeRemote, peers: bridgePeers })
+            }, { state: bridgeRemote, peers: bridgePeers, inbound: {
+              stateRoot,
+              fetchImpl: opts.fetchImpl,
+            } })
             bridgeSubscribers.set(sessionId, subscriber)
             subscriber.connect()
             return Response.json({ ok: true, sessionId, connected: subscriber.isConnected() })
