@@ -1,6 +1,8 @@
 import type { Tool, ToolContext } from '../tools/Tool'
 import { formatTeammateMessages, generateRequestId, TEAM_LEAD_NAME, TeamService } from './teamService'
 import type { BackgroundAgentTargetResolution, TaskMeta, TaskService } from './taskService'
+import { parsePeerAddress } from './peerAddress'
+import { sendToUdsSocket } from './udsClient'
 
 type StructuredMessage =
   | { type: 'shutdown_request'; reason?: string }
@@ -226,6 +228,21 @@ async function sendPlainMessage(teams: TeamService, input: Required<Pick<SendMes
       target: `@${input.to}`,
       summary: input.summary.trim(),
       content: input.message,
+    },
+  })
+}
+
+async function sendUdsPlainMessage(to: string, socketPath: string, message: string, summary?: string): Promise<string> {
+  await sendToUdsSocket(socketPath, message)
+  const preview = summary?.trim() || message.slice(0, 50)
+  return jsonOutput({
+    success: true,
+    message: `"${preview}" -> ${to}`,
+    routing: {
+      sender: TEAM_LEAD_NAME,
+      target: to,
+      summary: summary?.trim() || undefined,
+      content: message,
     },
   })
 }
@@ -468,13 +485,14 @@ export function createTeamTools(teams: TeamService, options: TeamToolsOptions = 
     description: [
       'Send a message to another local team agent. CC-Haha-compatible SendMessage.',
       'Input: { to, summary?, message }. Use to:"*" for broadcast. Plain string messages require summary.',
+      'Also supports plain text to uds:/path/to.sock local cross-session peers. UDS messages do not require summary.',
       'Structured messages supported: shutdown_request, shutdown_response, plan_approval_response.',
-      'UDS/bridge cross-session delivery is not enabled in this runtime yet.',
+      'bridge: Remote Control delivery is not enabled in this runtime yet.',
     ].join(' '),
     inputSchema: {
       type: 'object',
       properties: {
-        to: { type: 'string', description: 'Recipient teammate name, or "*" for broadcast.' },
+        to: { type: 'string', description: 'Recipient teammate name, "*" for broadcast, or uds:/path/to.sock for a local cross-session peer.' },
         summary: { type: 'string', description: '5-10 word preview, required when message is a string.' },
         message: {
           oneOf: [
@@ -499,9 +517,13 @@ export function createTeamTools(teams: TeamService, options: TeamToolsOptions = 
     async execute(input, ctx) {
       const normalized = normalizeSendInput(input)
       if (!normalized.to) throw new Error('to must not be empty')
-      if (normalized.to.includes('@')) throw new Error('to must be a bare teammate name or "*" - there is only one team per session')
+      const address = parsePeerAddress(normalized.to)
+      if (address.target.trim().length === 0) throw new Error('address target must not be empty')
+      if (address.scheme === 'bridge') throw new Error('Remote Control is not connected - cannot send to a bridge: target. Reconnect with /remote-control first.')
+      if (address.scheme === 'other' && normalized.to.includes('@')) throw new Error('to must be a bare teammate name or "*" - there is only one team per session')
       if (normalized.message === undefined) throw new Error('message is required')
       if (typeof normalized.message === 'string') {
+        if (address.scheme === 'uds') return sendUdsPlainMessage(normalized.to, address.target, normalized.message, normalized.summary)
         if (normalized.to === '*') return broadcastPlainMessage(teams, normalized)
         const routed = await trySendToRunningBackgroundAgent(options, normalized.to, normalized.message, ctx)
         if (routed) return routed
@@ -509,6 +531,7 @@ export function createTeamTools(teams: TeamService, options: TeamToolsOptions = 
         if (resumed) return resumed
         return sendPlainMessage(teams, normalized)
       }
+      if (address.scheme !== 'other') throw new Error('structured messages cannot be sent cross-session - only plain text')
       return sendStructuredMessage(teams, normalized.to, normalized.message, ctx)
     },
   }
@@ -558,7 +581,9 @@ export function createTeamTools(teams: TeamService, options: TeamToolsOptions = 
         send_message: {
           local_targets: peers.map(peer => peerTarget(peer.name)),
           broadcast_target: '*',
-          cross_session_targets_enabled: false,
+          cross_session_targets_enabled: true,
+          uds_targets_enabled: true,
+          bridge_targets_enabled: false,
         },
       }
       return [
