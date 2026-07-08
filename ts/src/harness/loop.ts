@@ -498,6 +498,8 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   }
 
   // max_turns 兜底:强制一次无工具收敛(照 loop.py 的 _FINAL_NUDGE 哲学)。
+  // 先 yield 一个可辨识事件,让前端/日志能区分"轮次耗尽被强制收尾"与"自然收敛"(对齐 cc max_turns_reached)。
+  yield { type: 'max_turns_reached', turnCount: turn, maxTurns: turnsLimit }
   recordPromptCacheState({ trackingKey: promptCacheTrackingKey, system, tools: [], model: modelNameForPromptCache })
   const forced = await model.step({ system, messages, tools: [], signal: opts.signal })
   const usageEvent = usageUpdateEvent(forced.usage, usageTotals, opts.contextWindowTokens)

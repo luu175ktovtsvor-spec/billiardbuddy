@@ -1834,6 +1834,7 @@ export function startServer(opts: StartServerOptions = {}) {
     if (event.type === 'steering') return { ...base, type: 'steering', content: event.content }
     if (event.type === 'todo_update') return { ...base, type: 'todo_update', content: event.content }
     if (event.type === 'context_note') return { ...base, type: 'context_note', content: event.text }
+    if (event.type === 'max_turns_reached') return { ...base, type: 'context_note', content: `已达最大轮次(${event.turnCount}/${event.maxTurns}),已强制收尾。` }
     if (event.type === 'final') return { ...base, type: 'final', content: event.text }
     if (event.type === 'done') return { ...base, type: 'done', stopped_reason: 'stop', conversation_id: conversationId, task_id: taskId, offset: record.seq }
     return null
