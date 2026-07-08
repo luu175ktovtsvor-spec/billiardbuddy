@@ -23,6 +23,7 @@ test('general registry contains the core tools', () => {
     'VerifyPlanExecution',
     'ask_user_question',
     'code_outline',
+    'edit_excel',
     'edit_file',
     'enter_plan',
     'exit_plan',

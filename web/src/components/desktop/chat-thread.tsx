@@ -96,7 +96,7 @@ function previewItemForLocalPath(title: string, path: string, text?: string, opt
 }
 
 const IMAGE_TOOLS = new Set(["make_poster", "generate_image"]);
-const FILE_MUTATION_TOOLS = new Set(["edit_file", "write_file", "multi_edit_file", "patch_file", "patch_files"]);
+const FILE_MUTATION_TOOLS = new Set(["edit_file", "edit_excel", "write_file", "multi_edit_file", "patch_file", "patch_files"]);
 
 // E1-C2・模型自己回答文本里直接带的图片 markdown(非经 DeliverableCard 那条路径)按图片 URL 反查
 // 同一条消息里对应的生图工具步骤，拿它落库的真实 Generation.id(m.generationId 是"本轮对话"记录，不是图)。
@@ -583,6 +583,7 @@ function ProjectInstructionScopeCard({ text }: { text: string }) {
 const FILE_HISTORY_OPERATION_LABELS: Record<string, string> = {
   write_file: "写入前",
   edit_file: "编辑前",
+  edit_excel: "改表前",
   multi_edit_file: "批量编辑前",
   patch_file: "补丁前",
   patch_files: "多文件补丁前",

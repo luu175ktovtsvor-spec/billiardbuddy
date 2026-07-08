@@ -15,6 +15,7 @@ import { DesktopDataStore } from './services/desktopDataStore'
 import { StoreDocsService, createStoreDocsTool } from './services/storeDocsService'
 import {
   OfficeDocumentError,
+  editCsvCell,
   editXlsxCell,
   isDocxPath,
   isPptxPath,
@@ -2650,59 +2651,6 @@ export function startServer(opts: StartServerOptions = {}) {
       await writeFile(path, blocks.join('\n\n'), 'utf8')
     }
     return { ok: true, path, saved }
-  }
-
-  async function editCsvCell(path: string, cell: string, value: string) {
-    const pos = parseA1Cell(cell)
-    if (!pos) return { ok: false, sheet: 'Sheet1', cell, old: '', new: value, detail: `坐标无效:${cell}` }
-    const rows = (await readTextIfExists(path)).split(/\r?\n/).map(parseCsvLine)
-    while (rows.length <= pos.row) rows.push([])
-    while (rows[pos.row]!.length <= pos.col) rows[pos.row]!.push('')
-    const old = rows[pos.row]![pos.col] ?? ''
-    rows[pos.row]![pos.col] = value
-    await backupLocalFile(path)
-    await writeFile(path, rows.map(formatCsvLine).join('\n'), 'utf8')
-    return { ok: true, sheet: 'Sheet1', cell: cell.toUpperCase(), old, new: value }
-  }
-
-  function parseA1Cell(cell: string): { row: number; col: number } | null {
-    const match = cell.trim().match(/^([A-Za-z]+)([1-9][0-9]*)$/)
-    if (!match) return null
-    let col = 0
-    for (const ch of match[1]!.toUpperCase()) col = col * 26 + (ch.charCodeAt(0) - 64)
-    return { row: Number(match[2]) - 1, col: col - 1 }
-  }
-
-  function parseCsvLine(line: string): string[] {
-    const out: string[] = []
-    let cur = ''
-    let quoted = false
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i]!
-      if (quoted) {
-        if (ch === '"' && line[i + 1] === '"') {
-          cur += '"'
-          i++
-        } else if (ch === '"') {
-          quoted = false
-        } else {
-          cur += ch
-        }
-      } else if (ch === '"') {
-        quoted = true
-      } else if (ch === ',') {
-        out.push(cur)
-        cur = ''
-      } else {
-        cur += ch
-      }
-    }
-    out.push(cur)
-    return out
-  }
-
-  function formatCsvLine(row: string[]): string {
-    return row.map(value => /[",\n\r]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value).join(',')
   }
 
   function zipStore(files: Array<{ name: string; data: Uint8Array }>): Uint8Array {

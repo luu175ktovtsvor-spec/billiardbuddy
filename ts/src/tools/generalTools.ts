@@ -12,6 +12,7 @@ import { codeOutlineTool } from './codeOutlineTool'
 import { gitStatusTool } from './gitStatusTool'
 import { gitHistoryTool } from './gitHistoryTool'
 import { notebookEditTool } from './notebookEditTool'
+import { editExcelTool } from './spreadsheetTool'
 import { lspTool } from './lspTool'
 import { enterWorktreeTool, exitWorktreeTool } from './worktreeTools'
 import { createReplTool, REPL_TOOL_NAME } from './replTool'
@@ -47,6 +48,7 @@ export function buildGeneralRegistry(opts: { sandbox?: Sandbox; skills?: SkillLi
     gitStatusTool,
     gitHistoryTool,
     notebookEditTool,
+    editExcelTool,
     lspTool,
     enterWorktreeTool,
     exitWorktreeTool,

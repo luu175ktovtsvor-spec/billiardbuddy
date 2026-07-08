@@ -1,4 +1,4 @@
-const FILE_MUTATION_TOOL_NAMES = new Set(["edit_file", "write_file", "multi_edit_file", "patch_file", "patch_files", "restore_file"]);
+const FILE_MUTATION_TOOL_NAMES = new Set(["edit_file", "edit_excel", "write_file", "multi_edit_file", "patch_file", "patch_files", "restore_file"]);
 
 export function isFileMutationTool(tool: string): boolean {
   return FILE_MUTATION_TOOL_NAMES.has(tool);
@@ -19,6 +19,8 @@ function fileMutationTitle(tool: string, phase: "pending" | "done"): string {
     ? "写入"
     : tool === "restore_file"
       ? "恢复"
+    : tool === "edit_excel"
+      ? "修改报表"
     : tool === "patch_file"
       ? "应用补丁"
       : tool === "patch_files"

@@ -16,6 +16,7 @@ const REPL_PRIMITIVE_TOOL_NAMES = new Set([
   'read_many_files',
   'write_file',
   'edit_file',
+  'edit_excel',
   'multi_edit_file',
   'patch_file',
   'patch_files',
@@ -75,7 +76,7 @@ export function createReplTool(registry: ToolRegistry): Tool<ReplInput> {
     description: [
       'Execute a structured batch of primitive coding tools through the same registry, permissions, and workspace context.',
       'Use this for multi-step code exploration or edits that benefit from one compact tool call.',
-      'This is not JavaScript eval: each step is { tool, input, id? } and calls an existing tool such as read_file, grep_files, edit_file, run_command, PowerShell, or agent_task.',
+      'This is not JavaScript eval: each step is { tool, input, id? } and calls an existing tool such as read_file, grep_files, edit_file, edit_excel, run_command, PowerShell, or agent_task.',
       'Fatal red lines, plan mode, read-before-edit guards, and tool-specific security checks still apply.',
       'Input: { steps:[{tool,input,id?}], stop_on_error?, max_steps?, max_output_chars? }.',
     ].join(' '),

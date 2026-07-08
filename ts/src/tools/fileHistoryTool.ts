@@ -14,7 +14,7 @@ function isDryRun(input: unknown): boolean {
 
 export const fileHistoryTool: Tool<{ path?: string | string[]; paths?: string[]; limit?: number; include_diff?: boolean | string }> = {
   name: 'file_history',
-  description: 'List recent file snapshots recorded before write_file/edit_file/NotebookEdit/restore_file changes in this conversation. Input: { path?, paths?, limit?, include_diff? }. path may be a string or string[].',
+  description: 'List recent file snapshots recorded before write_file/edit_file/edit_excel/NotebookEdit/restore_file changes in this conversation. Input: { path?, paths?, limit?, include_diff? }. path may be a string or string[].',
   inputSchema: {
     type: 'object',
     properties: {

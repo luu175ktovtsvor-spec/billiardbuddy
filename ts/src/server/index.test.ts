@@ -4946,12 +4946,10 @@ test('legacy video-edit auto plan and render use TS local ffmpeg fallback withou
     expect(startedPlan.status).toBe(200)
     const planStart = await startedPlan.json() as any
 
-    let planStatus: any = null
-    for (let i = 0; i < 50; i++) {
-      planStatus = await (await fetch(`http://127.0.0.1:${videoServer.port}/api/v1/agent/media-jobs/${planStart.job_id}`)).json()
-      if (planStatus.status === 'done') break
-      await new Promise(resolve => setTimeout(resolve, 10))
-    }
+    const planStatus = await waitFor(async () => {
+      const status = await (await fetch(`http://127.0.0.1:${videoServer.port}/api/v1/agent/media-jobs/${planStart.job_id}`)).json() as any
+      return status.status === 'done' ? status : null
+    }, 5000)
     expect(planStatus).toMatchObject({ kind: 'video_auto_plan', status: 'done', progress: 100 })
     expect(planStatus.result).toMatchObject({ local_preview: true, used_vlm: false, brand: '本地预览' })
     expect(planStatus.result.project).toBe(planStart.project)
@@ -5034,12 +5032,10 @@ test('legacy video-edit local plan reports footage health warnings for speech cl
     expect(startedPlan.status).toBe(200)
     const planStart = await startedPlan.json() as any
 
-    let planStatus: any = null
-    for (let i = 0; i < 50; i++) {
-      planStatus = await (await fetch(`http://127.0.0.1:${videoServer.port}/api/v1/agent/media-jobs/${planStart.job_id}`)).json()
-      if (planStatus.status === 'done') break
-      await new Promise(resolve => setTimeout(resolve, 10))
-    }
+    const planStatus = await waitFor(async () => {
+      const status = await (await fetch(`http://127.0.0.1:${videoServer.port}/api/v1/agent/media-jobs/${planStart.job_id}`)).json() as any
+      return status.status === 'done' ? status : null
+    }, 5000)
     expect(planStatus).toMatchObject({ kind: 'video_auto_plan', status: 'done', progress: 100 })
     expect(planStatus.result.has_speech).toBe(false)
     expect(planStatus.result.footage_health.m1).toMatchObject({

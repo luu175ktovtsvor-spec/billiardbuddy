@@ -5,7 +5,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { structuredPatch } from 'diff'
 import type { ToolContext } from './Tool'
 
-export type FileHistoryOperation = 'write_file' | 'edit_file' | 'multi_edit_file' | 'patch_file' | 'patch_files' | 'NotebookEdit' | 'restore_file'
+export type FileHistoryOperation = 'write_file' | 'edit_file' | 'edit_excel' | 'multi_edit_file' | 'patch_file' | 'patch_files' | 'NotebookEdit' | 'restore_file'
 
 export interface FileHistoryRecord {
   id: string

@@ -81,6 +81,27 @@ export async function editXlsxCell(path: string, cell: string, value: string, sh
   return { ok: true, sheet: worksheet.name, cell: cell.toUpperCase(), old, new: value }
 }
 
+export async function editCsvCell(path: string, cell: string, value: string) {
+  const pos = parseA1Cell(cell)
+  if (!pos) return { ok: false, sheet: 'Sheet1', cell, old: '', new: value, detail: `坐标无效:${cell}` }
+  const rows = (await readTextIfExists(path)).split(/\r?\n/).map(parseCsvLine)
+  while (rows.length <= pos.row) rows.push([])
+  while (rows[pos.row]!.length <= pos.col) rows[pos.row]!.push('')
+  const old = rows[pos.row]![pos.col] ?? ''
+  rows[pos.row]![pos.col] = value
+  await backupLocalFile(path)
+  await writeFile(path, rows.map(formatCsvLine).join('\n'), 'utf8')
+  return { ok: true, sheet: 'Sheet1', cell: cell.toUpperCase(), old, new: value }
+}
+
+async function readTextIfExists(path: string): Promise<string> {
+  try {
+    return await readFile(path, 'utf8')
+  } catch {
+    return ''
+  }
+}
+
 export function renderMinimalXlsx(content: string): Uint8Array {
   const rows = content.split(/\r?\n/).filter(line => line.trim().length > 0)
   const rowXml = (rows.length ? rows : ['']).map((line, rowIndex) => {
@@ -347,6 +368,38 @@ function columnName(index: number): string {
     n = Math.floor((n - 1) / 26)
   }
   return out
+}
+
+function parseCsvLine(line: string): string[] {
+  const out: string[] = []
+  let cur = ''
+  let quoted = false
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]!
+    if (quoted) {
+      if (ch === '"' && line[i + 1] === '"') {
+        cur += '"'
+        i++
+      } else if (ch === '"') {
+        quoted = false
+      } else {
+        cur += ch
+      }
+    } else if (ch === '"') {
+      quoted = true
+    } else if (ch === ',') {
+      out.push(cur)
+      cur = ''
+    } else {
+      cur += ch
+    }
+  }
+  out.push(cur)
+  return out
+}
+
+function formatCsvLine(row: string[]): string {
+  return row.map(value => /[",\n\r]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value).join(',')
 }
 
 function extractXmlText(xml: string, tag: string): string {
