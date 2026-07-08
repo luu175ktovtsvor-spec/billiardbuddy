@@ -34,7 +34,7 @@ dataeye/
     runbook.md                     # 一步步部署清单(从挂盘到冒烟测试全流程)
   tests/
     test_receiver.py     # 本地单元测试(不需要真 PG,monkeypatch 掉 insert_batch)
-    make_sample.py         # 造一个 gzip 测试包,方便本地/真机冒烟
+    make_sample.mjs        # 造一个 gzip 测试包,方便本地/真机冒烟
 ```
 
 ## 本地怎么跑起来测
@@ -70,7 +70,7 @@ uvicorn app:app --host 127.0.0.1 --port 9100 --reload
 另开一个终端,造样例包打过去:
 
 ```bash
-python dataeye/tests/make_sample.py   # 生成 dataeye/tests/sample.json.gz
+node dataeye/tests/make_sample.mjs   # 生成 dataeye/tests/sample.json.gz
 
 curl -s -X POST \
   -H "Authorization: Bearer dev-token" \
