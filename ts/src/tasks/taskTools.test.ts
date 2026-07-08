@@ -13,8 +13,11 @@ import type { Tool } from '../tools/Tool'
 import { fileReadTool } from '../tools/fileReadTool'
 import { fileWriteTool } from '../tools/fileWriteTool'
 import { TaskService } from './taskService'
-import { createBackgroundAgentTaskTool, createTaskTools, resumeBackgroundAgentTask, sanitizeBackgroundAgentResumeMessages } from './taskTools'
+import { createBackgroundAgentTaskTool, createTaskTools, resumeBackgroundAgentTask, sanitizeBackgroundAgentResumeMessages, startBackgroundAgentRun } from './taskTools'
 import { getAgentMemoryEntrypoint } from '../agents/agentMemory'
+import { createAgentTaskTool } from '../agents/agentTool'
+import { ToolRegistry } from '../tools/registry'
+import { runAgentLoop } from '../harness/loop'
 
 async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 1000): Promise<T> {
   const deadline = Date.now() + timeoutMs
@@ -24,6 +27,12 @@ async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 1000): Promis
     await new Promise(resolve => setTimeout(resolve, 10))
   }
   throw new Error('waitFor timeout')
+}
+
+async function collectEvents(gen: AsyncGenerator<import('../types/events').AgentEvent>): Promise<import('../types/events').AgentEvent[]> {
+  const events: import('../types/events').AgentEvent[] = []
+  for await (const event of gen) events.push(event)
+  return events
 }
 
 test('sanitizeBackgroundAgentResumeMessages removes incomplete transcript tails before resume', () => {
@@ -104,6 +113,85 @@ test('start_background_agent_task runs an isolated agent and read_background_tas
     const restored = await readTask!.execute({ task_id: done.id }, ctx)
     expect(restored).toContain('status="completed"')
     expect(restored).toContain('后台结论')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('agent_task run_in_background fork_context starts a background fork with parent system, messages and tools', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-tools-fork-agent-'))
+  try {
+    const tasks = new TaskService(root)
+    const agent: AgentDefinition = {
+      name: 'researcher',
+      description: '研究代理',
+      prompt: '普通 agent prompt 不应该进入 fork child。',
+      filePath: join(root, 'researcher.md'),
+    }
+    const parentModel = scriptedModel([
+      { kind: 'tool_calls', text: 'fork background', calls: [{ id: 'fork-bg', name: 'agent_task', input: { task: '后台审计 fork', fork_context: true, run_in_background: true } }] },
+      { kind: 'final', text: 'parent done' },
+    ])
+    const childModel = scriptedModel([{ kind: 'final', text: 'Scope: 后台审计 fork' }])
+    const inspectTool: Tool = {
+      name: 'inspect_parent_tool',
+      description: '',
+      inputSchema: { type: 'object' },
+      isReadOnly: true,
+      async execute() {
+        return 'ok'
+      },
+    }
+    const backgroundOptions = {
+      tasks,
+      agents: [agent],
+      model: childModel,
+      baseTools: [inspectTool],
+      baseSystemPrompt: 'BACKGROUND BASE',
+    }
+    const registry = new ToolRegistry([
+      createAgentTaskTool({
+        agents: [agent],
+        model: childModel,
+        baseTools: [inspectTool],
+        startBackgroundAgent: (input, ctx, forkContext) => startBackgroundAgentRun(backgroundOptions, input, ctx, {}, [], [], forkContext ? { forkContext } : {}),
+      }),
+      inspectTool,
+    ])
+
+    const parentEvents = await collectEvents(runAgentLoop({
+      model: parentModel,
+      registry,
+      workspace: new Workspace(root),
+      systemPrompt: 'PARENT SYSTEM',
+      userMessage: '父后台任务',
+      conversationId: 'fork-bg-parent',
+    }))
+    expect(parentEvents.some(event =>
+      event.type === 'tool_result' &&
+      event.output.includes('<background_task_started') &&
+      event.output.includes('agent="fork"'),
+    )).toBe(true)
+
+    const done = await waitFor(async () => {
+      const task = (await tasks.list({ conversationId: 'fork-bg-parent' }))[0]
+      return task?.status === 'completed' ? task : null
+    })
+    expect(done.params).toMatchObject({ agent: 'fork', fork_context: true })
+    const childFirst = childModel.received[0]!
+    expect(childFirst.system).toBe('PARENT SYSTEM')
+    expect(childFirst.tools.map(tool => tool.name)).toEqual(['agent_task', 'inspect_parent_tool'])
+    expect(childFirst.messages[0]).toEqual({ role: 'user', content: [textBlock('父后台任务')] })
+    expect(childFirst.messages[1]).toEqual({
+      role: 'assistant',
+      content: [
+        textBlock('fork background'),
+        { type: 'tool_use', id: 'fork-bg', name: 'agent_task', input: { task: '后台审计 fork', fork_context: true, run_in_background: true } },
+      ],
+    })
+    expect(childFirst.messages[2]?.content[0]).toEqual({ type: 'tool_result', tool_use_id: 'fork-bg', content: 'Fork started - processing in background' })
+    const directive = childFirst.messages[2]?.content[1]
+    expect(directive?.type === 'text' ? directive.text : '').toContain('Your directive: 后台审计 fork')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

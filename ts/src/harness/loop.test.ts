@@ -14,7 +14,7 @@ import { executeApproved, handleReject } from './loop'
 import { createDenialTrackingState, resetDenialStore } from '../permissions/denialTracking'
 import { signApproval } from '../permissions/approval'
 import type { Tool } from '../tools/Tool'
-import { textBlock, userText } from '../types/message'
+import { textBlock, toolResultBlock, userText } from '../types/message'
 import { readStoredToolResultTool } from '../tools/storedToolResultTool'
 import { TeamService } from '../tasks/teamService'
 import { Transcript } from '../memory/transcript'
@@ -221,6 +221,55 @@ test('passes current message snapshot to tool execution', async () => {
   })
   const secondInputText = model.received[1]!.messages.flatMap(message => message.content)
   expect(secondInputText.some(block => block.type === 'tool_result' && block.content === 'snapshot ok')).toBe(true)
+})
+
+test('can continue directly from prepared initial messages without appending userMessage', async () => {
+  let seenSystem = ''
+  let seenMessages: import('../types/message').Message[] = []
+  const inspectTool: Tool = {
+    name: 'inspect_prepared_context',
+    description: '',
+    inputSchema: { type: 'object' },
+    isReadOnly: false,
+    async execute(_input, ctx) {
+      seenSystem = ctx.systemPrompt ?? ''
+      seenMessages = ctx.messages?.slice() ?? []
+      return 'prepared ok'
+    },
+  }
+  const initialMessages = [
+    userText('parent request'),
+    { role: 'assistant' as const, content: [{ type: 'tool_use' as const, id: 'parent-tool', name: 'agent_task', input: { task: 'fork' } }] },
+    { role: 'user' as const, content: [toolResultBlock('parent-tool', 'Fork started - processing in background'), textBlock('fork directive')] },
+  ]
+  const captured: import('../types/message').Message[][] = []
+  let step = 0
+  const model: Model = {
+    async step(input) {
+      captured.push(input.messages.map(message => ({ role: message.role, content: message.content.slice() })))
+      step++
+      return step === 1
+        ? { kind: 'tool_calls', calls: [{ id: 'inspect-prepared', name: 'inspect_prepared_context', input: {} }] }
+        : { kind: 'final', text: 'done' }
+    },
+  }
+
+  await collect(runAgentLoop({
+    model,
+    registry: new ToolRegistry([inspectTool]),
+    workspace: new Workspace(root),
+    systemPrompt: 'PARENT SYS',
+    userMessage: 'SHOULD NOT APPEND',
+    initialMessages,
+    skipUserMessage: true,
+  }))
+
+  expect(captured[0]).toEqual(initialMessages)
+  expect(seenSystem).toBe('PARENT SYS')
+  expect(seenMessages.slice(0, 3)).toEqual(initialMessages)
+  expect(seenMessages.some(message =>
+    message.content.some(block => block.type === 'text' && block.text.includes('SHOULD NOT APPEND')),
+  )).toBe(false)
 })
 
 test('stores oversized storable tool results and feeds only a preview back to the model', async () => {

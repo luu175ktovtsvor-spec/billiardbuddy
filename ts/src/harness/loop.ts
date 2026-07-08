@@ -90,6 +90,7 @@ export interface RunAgentLoopOptions {
   userMessage: string
   userContent?: ContentBlock[]
   initialMessages?: Message[]
+  skipUserMessage?: boolean
   maxTurns?: number
   signal?: AbortSignal
   sandbox?: Sandbox
@@ -141,6 +142,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     workspace: opts.workspace,
     model,
     registry,
+    systemPrompt: opts.systemPrompt,
     signal: opts.signal,
     sandbox: opts.sandbox,
     permissionMode: opts.permissionMode ?? 'ask',
@@ -165,8 +167,11 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   if (sessionStart.additionalContext.length > 0) {
     system = `${system}\n\n${hookContextBlock('SessionStart', sessionStart.additionalContext)}`
   }
+  ctx.systemPrompt = system
 
-  const userPrompt = await applyUserPromptSubmitHooks(opts.hooks, opts.userMessage, ctx)
+  const userPrompt = opts.skipUserMessage
+    ? { userPrompt: opts.userMessage, additionalContext: [] }
+    : await applyUserPromptSubmitHooks(opts.hooks, opts.userMessage, ctx)
   for (const extra of userPrompt.additionalContext) {
     yield { type: 'context_note', text: extra }
   }
@@ -223,6 +228,8 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       yield { type: 'final', text }
       return
     }
+  } else if (opts.skipUserMessage) {
+    messages = history.slice()
   } else {
     const userContent: ContentBlock[] = []
     if (userPrompt.additionalContext.length > 0) {

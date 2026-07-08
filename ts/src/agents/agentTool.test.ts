@@ -121,6 +121,65 @@ test('agent_task rejects recursive launch inside a fork child conversation', asy
   }
 })
 
+test('agent_task fork_context runs a child with parent system, messages and exact tool pool', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-fork-context-'))
+  try {
+    const parentModel = scriptedModel([
+      { kind: 'tool_calls', text: 'forking now', calls: [{ id: 'fork-parent', name: 'agent_task', input: { task: '审计 fork runtime', fork_context: true } }] },
+      { kind: 'final', text: 'parent done' },
+    ])
+    const childModel = scriptedModel([{ kind: 'final', text: 'Scope: 审计 fork runtime' }])
+    const inspectTool: import('../tools/Tool').Tool = {
+      name: 'inspect_parent_tool',
+      description: '',
+      inputSchema: { type: 'object' },
+      isReadOnly: true,
+      async execute() {
+        return 'parent tool ok'
+      },
+    }
+    const registry = new ToolRegistry([
+      createAgentTaskTool({
+        agents: [agent()],
+        model: childModel,
+        baseTools: [inspectTool],
+        sidechainRoot: join(root, 'sidechains'),
+      }),
+      inspectTool,
+    ])
+
+    const events = await collect(runAgentLoop({
+      model: parentModel,
+      registry,
+      workspace: new Workspace(root),
+      systemPrompt: 'PARENT SYSTEM',
+      userMessage: '父任务',
+    }))
+
+    expect(events.some(event => event.type === 'final' && event.text === 'parent done')).toBe(true)
+    const childFirst = childModel.received[0]!
+    expect(childFirst.system).toBe('PARENT SYSTEM')
+    expect(childFirst.tools.map(tool => tool.name)).toEqual(['agent_task', 'inspect_parent_tool'])
+    expect(childFirst.messages[0]).toEqual({ role: 'user', content: [textBlock('父任务')] })
+    expect(childFirst.messages[1]).toEqual({
+      role: 'assistant',
+      content: [
+        textBlock('forking now'),
+        { type: 'tool_use', id: 'fork-parent', name: 'agent_task', input: { task: '审计 fork runtime', fork_context: true } },
+      ],
+    })
+    expect(childFirst.messages[2]?.role).toBe('user')
+    expect(childFirst.messages[2]?.content[0]).toEqual({ type: 'tool_result', tool_use_id: 'fork-parent', content: 'Fork started - processing in background' })
+    const directive = childFirst.messages[2]?.content[1]
+    expect(directive?.type === 'text' ? directive.text : '').toContain('Your directive: 审计 fork runtime')
+    expect(childFirst.messages.some(message =>
+      message.content.some(block => block.type === 'text' && block.text.includes('<subagent name=')),
+    )).toBe(false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('agent_task sidechain stores aggregate replacements for large subagent tool batches', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-tool-'))
   try {

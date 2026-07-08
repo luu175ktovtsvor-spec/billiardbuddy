@@ -27,7 +27,7 @@ import { loadAgentMcpRuntime, type AgentMcpRuntimeOptions } from './agentMcp'
 import { buildAgentMemoryPrompt, workspaceWithAgentMemory } from './agentMemory'
 import { cloneContentReplacementState } from '../context/toolResultStorage'
 import { createDenialTrackingState } from '../permissions/denialTracking'
-import { isInForkChild } from './forkSubagent'
+import { buildForkRunContext, FORK_SUBAGENT_TYPE, isInForkChild, type ForkRunContext } from './forkSubagent'
 
 export interface AgentTaskInput {
   agent?: string
@@ -37,6 +37,8 @@ export interface AgentTaskInput {
   isolation?: 'worktree'
   run_in_background?: boolean | string
   runInBackground?: boolean | string
+  fork_context?: boolean | string
+  forkContext?: boolean | string
 }
 
 export interface AgentTaskToolOptions {
@@ -48,7 +50,7 @@ export interface AgentTaskToolOptions {
   sidechainRoot?: string
   hooks?: HookRegistry
   mcp?: AgentMcpRuntimeOptions
-  startBackgroundAgent?: (input: { agent?: string; name?: string; task: string; context?: string; title?: string; isolation?: 'worktree' }, ctx: ToolContext) => Promise<{ task: { id: string; title: string; params?: Record<string, unknown> }; agent: AgentDefinition }>
+  startBackgroundAgent?: (input: { agent?: string; name?: string; task: string; context?: string; title?: string; isolation?: 'worktree' }, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<{ task: { id: string; title: string; params?: Record<string, unknown> }; agent: AgentDefinition }>
 }
 
 interface AgentTaskSidechain {
@@ -258,6 +260,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
         context: { type: 'string' },
         isolation: { type: 'string', enum: ['worktree'], description: 'Use "worktree" to run the subagent in an isolated git worktree.' },
         run_in_background: { type: ['boolean', 'string'], description: 'Set true to launch this Agent task in the background and return a task id immediately.' },
+        fork_context: { type: ['boolean', 'string'], description: 'Set true to run a forked worker that inherits the parent conversation, system prompt, and exact tool pool.' },
       },
       required: ['task'],
     },
@@ -269,10 +272,21 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
       if (ctx.messages && isInForkChild(ctx.messages)) {
         throw new Error('Fork worker 内部不能再次启动 agent_task。请直接使用当前可用工具完成任务。')
       }
-      const agent = pickAgent(opts.agents, input.agent)
+      const wantsForkContext = optionalBoolean(input.fork_context ?? input.forkContext)
+      const agent = wantsForkContext
+        ? {
+            name: FORK_SUBAGENT_TYPE,
+            description: 'Forked worker inheriting the parent coding-agent context.',
+            prompt: '',
+            filePath: 'built-in:fork',
+            permissionMode: ctx.permissionMode,
+            maxTurns: opts.maxTurns,
+          } satisfies AgentDefinition
+        : pickAgent(opts.agents, input.agent)
       if (!agent) {
         throw new Error(`agent_task 需要指定 agent;可用 agent:\n${agentList(opts.agents)}`)
       }
+      const forkRunContext = wantsForkContext ? buildForkRunContext(ctx, buildTaskMessage(input)) : undefined
       const wantsBackground = optionalBoolean(input.run_in_background ?? input.runInBackground) || agent.background === true
       if (wantsBackground) {
         if (!opts.startBackgroundAgent) {
@@ -285,7 +299,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
           ...(input.context ? { context: input.context } : {}),
           title: `${agent.name}: ${input.task.trim().slice(0, 80)}`,
           isolation: input.isolation ?? agent.isolation,
-        }, ctx)
+        }, ctx, forkRunContext)
         const name = typeof task.params?.name === 'string' ? ` name="${xmlAttr(task.params.name)}"` : ''
         const agentId = typeof task.params?.agent_id === 'string' ? ` agent_id="${xmlAttr(task.params.agent_id)}"` : ''
         return `<background_task_started id="${xmlAttr(task.id)}" agent="${xmlAttr(agent.name)}"${name}${agentId} status="queued">\n${xmlText(task.title)}\n</background_task_started>`
@@ -303,7 +317,9 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
       if (sidechain) await writeAgentTaskMetadata(opts, sidechain, agent, input, ctx, agentWorktree?.session.worktreePath)
       let finalText = ''
       let cleanup: AgentWorktreeCleanupResult | null = null
-      const baseAgentTools = resolveAgentTools(agent, opts.baseTools).filter(tool => tool.name !== 'agent_task')
+      const baseAgentTools = wantsForkContext
+        ? forkRunContext?.tools.length ? forkRunContext.tools : opts.baseTools
+        : resolveAgentTools(agent, opts.baseTools).filter(tool => tool.name !== 'agent_task')
       let agentMcp: Awaited<ReturnType<typeof loadAgentMcpRuntime>> | undefined
       const hooks = mergeHookRegistries(opts.hooks, agent.hooks)
       const inheritedContentReplacementState = ctx.contentReplacementState
@@ -335,9 +351,13 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
           model: opts.model,
           registry,
           workspace,
-          systemPrompt: await buildAgentSystemPrompt(agent, workspace.root, opts.baseSystemPrompt),
+          systemPrompt: forkRunContext?.systemPrompt ?? await buildAgentSystemPrompt(agent, workspace.root, opts.baseSystemPrompt),
           userMessage: agentTaskMessage(agent, input),
-          initialMessages: [hookContextMessage('SubagentStart', subagentStart.additionalContext)].filter((message): message is Message => !!message),
+          initialMessages: [
+            ...(forkRunContext?.initialMessages ?? []),
+            ...[hookContextMessage('SubagentStart', subagentStart.additionalContext)].filter((message): message is Message => !!message),
+          ],
+          skipUserMessage: !!forkRunContext,
           maxTurns: agent.maxTurns ?? opts.maxTurns ?? 8,
           signal: ctx.signal,
           sandbox,

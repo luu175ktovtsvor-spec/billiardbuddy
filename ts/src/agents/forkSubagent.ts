@@ -1,4 +1,5 @@
 import { textBlock, toolResultBlock, type Message, type ToolUseBlock } from '../types/message'
+import type { Tool, ToolContext } from '../tools/Tool'
 
 export const FORK_SUBAGENT_TYPE = 'fork'
 export const FORK_BOILERPLATE_TAG = 'fork-boilerplate'
@@ -38,6 +39,26 @@ export function buildForkedMessages(directive: string, assistantMessage: Message
       ],
     },
   ]
+}
+
+export interface ForkRunContext {
+  systemPrompt: string
+  initialMessages: Message[]
+  tools: Tool[]
+}
+
+export function buildForkRunContext(ctx: ToolContext, directive: string): ForkRunContext {
+  const parentMessages = ctx.messages ?? []
+  const assistantMessage = [...parentMessages].reverse().find((message): message is Extract<Message, { role: 'assistant' }> => message.role === 'assistant')
+  const prefix = assistantMessage ? parentMessages.slice(0, parentMessages.lastIndexOf(assistantMessage)) : parentMessages
+  return {
+    systemPrompt: ctx.systemPrompt ?? '',
+    tools: ctx.registry?.list() ?? [],
+    initialMessages: [
+      ...prefix,
+      ...buildForkedMessages(directive, assistantMessage ?? { role: 'assistant', content: [] }),
+    ],
+  }
 }
 
 export function buildChildMessage(directive: string): string {
