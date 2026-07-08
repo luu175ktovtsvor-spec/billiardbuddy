@@ -19,6 +19,7 @@ import {
   reconstructContentReplacementState,
   type ContentReplacementRecord,
 } from '../context/toolResultStorage'
+import { startAgentSummarization, type AgentSummaryController } from './agentSummary'
 
 export interface BackgroundAgentTaskInput {
   agent?: string
@@ -38,6 +39,7 @@ export interface BackgroundAgentTaskOptions {
   maxTurns?: number
   hooks?: HookRegistry
   mcp?: AgentMcpRuntimeOptions
+  agentSummaryIntervalMs?: number
 }
 
 function pickAgent(agents: AgentDefinition[], name: unknown): AgentDefinition | null {
@@ -453,6 +455,7 @@ export async function startBackgroundAgentRun(
     let finalText = ''
     let cleanup: AgentWorktreeCleanupResult | null = null
     let agentMcp: Awaited<ReturnType<typeof loadAgentMcpRuntime>> | undefined
+    let summarizer: AgentSummaryController | undefined
     const updateProgress = async (progress: number, stage: string) => {
       await opts.tasks.touch(task.id, { progress, stage }).catch(() => undefined)
     }
@@ -472,6 +475,15 @@ export async function startBackgroundAgentRun(
         await taskCtx.emit({ type: 'context_note', text: warning })
       }
       if (agentWorktree) await taskCtx.emit({ type: 'context_note', text: `Background agent using isolated worktree: ${agentWorktree.session.worktreePath}` })
+      summarizer = startAgentSummarization({
+        taskId: task.id,
+        model: opts.model,
+        intervalMs: opts.agentSummaryIntervalMs,
+        signal: taskCtx.signal,
+        updateSummary: async summary => {
+          await opts.tasks.touch(task.id, { summary }).catch(() => undefined)
+        },
+      })
       const subagentStart = await applySubagentStartHooks(hooks, stableAgentId, agent.name, {
         ...ctx,
         workspace: runWorkspace,
@@ -505,12 +517,14 @@ export async function startBackgroundAgentRun(
         hooks,
         subagent: { agentId: stableAgentId, agentType: agent.name },
         contentReplacementState: inheritedContentReplacementState,
+        onSummarySnapshot: snapshot => summarizer?.updateSnapshot(snapshot),
       })) {
         await taskCtx.emit(event)
         await reportProgress(event)
         if (event.type === 'final') finalText = event.text
       }
     } finally {
+      summarizer?.stop()
       await agentMcp?.close()
       cleanup = agentWorktree ? await agentWorktree.cleanupIfClean().catch(() => ({
         kept: true,
@@ -599,6 +613,8 @@ function formatTasks(tasks: Awaited<ReturnType<TaskService['list']>>): string {
   return tasks.map(task => {
     const suffix = [
       task.conversationId ? `conversation=${task.conversationId}` : '',
+      task.summary ? `summary=${task.summary}` : '',
+      task.stage ? `stage=${task.stage}` : '',
       task.error ? `error=${task.error}` : '',
     ].filter(Boolean).join(' ')
     return `- ${task.id} [${task.status}] ${task.title}${suffix ? ` ${suffix}` : ''}`
@@ -626,9 +642,11 @@ function formatTaskEvents(task: NonNullable<Awaited<ReturnType<TaskService['get'
   const agentId = typeof task.params?.agent_id === 'string' && task.params.agent_id.trim() ? ` agent_id="${xmlAttr(task.params.agent_id.trim())}"` : ''
   const lines = [
     `<background_task id="${xmlAttr(task.id)}"${requested}${agentId} status="${xmlAttr(task.status)}" title="${xmlAttr(task.title)}">`,
+    task.summary ? `<summary>${xmlText(task.summary)}</summary>` : '',
+    task.stage ? `<stage>${xmlText(task.stage)}</stage>` : '',
     ...events.map(record => `#${record.seq} ${record.event.type} ${JSON.stringify(record.event)}`),
     '</background_task>',
-  ]
+  ].filter(Boolean)
   return lines.join('\n')
 }
 

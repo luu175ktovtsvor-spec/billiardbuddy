@@ -2,7 +2,7 @@ import type { AgentEvent } from '../types/events'
 import type { Message, ContentBlock, ToolResultBlock, ToolCall } from '../types/message'
 import { textBlock, toolUseBlock, toolResultBlock, userText } from '../types/message'
 import type { Model, ModelUsage } from '../types/model'
-import type { ToolContext, ToolProgressEvent } from '../tools/Tool'
+import type { ToolContext, ToolProgressEvent, ToolSpec } from '../tools/Tool'
 import type { ToolRegistry } from '../tools/registry'
 import type { Workspace } from '../workspace/workspace'
 import type { Sandbox } from '../sandbox/sandbox'
@@ -55,6 +55,12 @@ export interface TranscriptLike {
   appendContentReplacementRecords?(records: ContentReplacementRecord[]): Promise<void>
 }
 
+export interface AgentLoopSnapshot {
+  system: string
+  messages: Message[]
+  tools: ToolSpec[]
+}
+
 export interface RunAgentLoopOptions {
   model: Model
   registry: ToolRegistry
@@ -76,6 +82,7 @@ export interface RunAgentLoopOptions {
   hooks?: HookRegistry
   subagent?: { agentId: string; agentType: string }
   teamInbox?: TeamInboxContextOptions & { service: TeamService }
+  onSummarySnapshot?: (snapshot: AgentLoopSnapshot) => void
 }
 
 const TODO_UPDATE_TOOL_NAMES = new Set(['todo_write', 'task_create', 'task_update', 'TaskCreate', 'TaskUpdate'])
@@ -267,13 +274,17 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
 
     let step: Awaited<ReturnType<Model['step']>>
     try {
-      step = await model.step({ system, messages, tools: visibleToolSpecs(registry, revealedToolNames), signal: opts.signal })
+      const toolsForStep = visibleToolSpecs(registry, revealedToolNames)
+      opts.onSummarySnapshot?.({ system, messages: messages.slice(), tools: toolsForStep })
+      step = await model.step({ system, messages, tools: toolsForStep, signal: opts.signal })
     } catch (err) {
       if (!looksLikeContextOverflow(err)) throw err
       const note = await maybeCompact(true)
       if (!note) throw err
       yield { type: 'context_note', text: note }
-      step = await model.step({ system, messages, tools: visibleToolSpecs(registry, revealedToolNames), signal: opts.signal })
+      const toolsForStep = visibleToolSpecs(registry, revealedToolNames)
+      opts.onSummarySnapshot?.({ system, messages: messages.slice(), tools: toolsForStep })
+      step = await model.step({ system, messages, tools: toolsForStep, signal: opts.signal })
     }
     const usageEvent = usageUpdateEvent(step.usage, usageTotals, opts.contextWindowTokens)
     if (usageEvent) yield usageEvent

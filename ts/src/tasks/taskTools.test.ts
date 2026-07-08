@@ -172,6 +172,87 @@ test('start_background_agent_task updates task stage from live agent activity', 
   }
 })
 
+test('start_background_agent_task periodically writes cache-safe progress summaries', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-tools-summary-'))
+  try {
+    const tasks = new TaskService(root)
+    const agent: AgentDefinition = {
+      name: 'researcher',
+      description: '研究代理',
+      prompt: '研究并总结。',
+      filePath: join(root, 'researcher.md'),
+    }
+    const inspectTool: Tool = {
+      name: 'inspect_file',
+      description: 'Inspect one file.',
+      inputSchema: { type: 'object', properties: { path: { type: 'string' } } },
+      isReadOnly: true,
+      async execute() {
+        return 'inspected taskTools.ts'
+      },
+    }
+    let secondStepStarted!: () => void
+    let releaseSecondStep!: () => void
+    const secondStepStartedPromise = new Promise<void>(resolve => { secondStepStarted = resolve })
+    const releaseSecondStepPromise = new Promise<void>(resolve => { releaseSecondStep = resolve })
+    const received: Array<{ system?: string; messages: Message[]; tools: Array<{ name: string }> }> = []
+    let call = 0
+    const model: Model = {
+      async step(input) {
+        received.push({ system: input.system, messages: input.messages, tools: input.tools.map(tool => ({ name: tool.name })) })
+        call++
+        if (call === 1) {
+          return { kind: 'tool_calls', text: 'inspect', calls: [{ id: 'inspect1', name: 'inspect_file', input: { path: 'taskTools.ts' } }] }
+        }
+        if (call === 2) {
+          secondStepStarted()
+          await releaseSecondStepPromise
+          return { kind: 'final', text: '后台摘要完成' }
+        }
+        return { kind: 'final', text: 'Reading taskTools.ts' }
+      },
+    }
+    const start = createBackgroundAgentTaskTool({
+      tasks,
+      agents: [agent],
+      model,
+      baseTools: [inspectTool],
+      baseSystemPrompt: 'base prompt',
+      agentSummaryIntervalMs: 1,
+    })
+    const ctx = { workspace: new Workspace(root), conversationId: 'c-summary', permissionMode: 'full' as const }
+    await start.execute({ task: '检查摘要', title: '后台摘要' }, ctx)
+    await secondStepStartedPromise
+
+    const summarized = await waitFor(async () => {
+      const task = (await tasks.list({ conversationId: 'c-summary', status: 'running' }))[0]
+      return task?.summary === 'Reading taskTools.ts' ? task : null
+    })
+    expect(summarized.summary).toBe('Reading taskTools.ts')
+    expect(received.length).toBeGreaterThanOrEqual(3)
+    const mainSecond = received[1]!
+    const summaryStep = received[2]!
+    expect(summaryStep.system).toBe(mainSecond.system)
+    expect(summaryStep.tools.map(tool => tool.name)).toEqual(mainSecond.tools.map(tool => tool.name))
+    const summaryPrompt = summaryStep.messages.at(-1)?.content[0]
+    expect(summaryPrompt).toMatchObject({ type: 'text' })
+    expect(summaryPrompt?.type === 'text' ? summaryPrompt.text : '').toContain('Do not use tools')
+
+    releaseSecondStep()
+    const done = await waitFor(async () => {
+      const task = await tasks.get(summarized.id)
+      return task?.status === 'completed' ? task : null
+    })
+    expect(done.summary).toBe('Reading taskTools.ts')
+
+    const [, readTask] = createTaskTools(tasks)
+    const detail = await readTask!.execute({ task_id: done.id }, ctx)
+    expect(detail).toContain('<summary>Reading taskTools.ts</summary>')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('start_background_agent_task drains queued SendMessage-style steering into the running agent loop', async () => {
   const root = mkdtempSync(join(tmpdir(), 'task-tools-steer-'))
   try {
