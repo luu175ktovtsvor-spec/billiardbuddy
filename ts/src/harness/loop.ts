@@ -67,6 +67,7 @@ export interface RunAgentLoopOptions {
   workspace: Workspace
   systemPrompt: string
   userMessage: string
+  userContent?: ContentBlock[]
   initialMessages?: Message[]
   maxTurns?: number
   signal?: AbortSignal
@@ -207,7 +208,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       const inboxContext = await opts.teamInbox.service.buildInboxContext(opts.teamInbox)
       if (inboxContext) userContent.push(textBlock(inboxContext))
     }
-    userContent.push(textBlock(userPrompt.userPrompt))
+    userContent.push(...(opts.userContent ?? [textBlock(userPrompt.userPrompt)]))
     messages = [...history, { role: 'user', content: userContent }]
   }
   const readOnlyToolNames = new Set(registry.list().filter(t => t.isReadOnly).map(t => t.name))

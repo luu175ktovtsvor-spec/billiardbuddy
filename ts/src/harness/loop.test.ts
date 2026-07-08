@@ -64,6 +64,28 @@ test('runs a multi-step tool task: think -> tool -> feed back -> think -> final'
   expect(second.messages.every(m => m.role === 'user' || m.role === 'assistant')).toBe(true)
 })
 
+test('preserves explicit user content blocks for bridge-style inbound prompts', async () => {
+  const model = scriptedModel([{ kind: 'final', text: '看到了' }])
+  await collect(runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: '图文 prompt preview',
+    userContent: [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+      { type: 'text', text: '@"/tmp/a.txt" 图文 prompt preview' },
+    ],
+  }))
+  expect(model.received[0]!.messages[0]).toMatchObject({
+    role: 'user',
+    content: [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+      { type: 'text', text: '@"/tmp/a.txt" 图文 prompt preview' },
+    ],
+  })
+})
+
 test('parallelizes safe read-only tool calls while preserving model feedback order', async () => {
   let releaseBoth!: () => void
   const bothStarted = new Promise<void>(resolve => { releaseBoth = resolve })

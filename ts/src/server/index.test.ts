@@ -1472,6 +1472,152 @@ test('bridge inbound resolve API downloads attachments and stores resolved user 
   }
 })
 
+test('bridge inbound resolve can auto-run resolved prompt through the agent task stream', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-bridge-inbound-autorun-'))
+  const sentBodies: any[] = []
+  const bridgeServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    env: {
+      DEEPSEEK_BASE_URL: 'https://model.example/v1',
+      DEEPSEEK_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async (input, init) => {
+      const url = String(input)
+      if (url.includes('/api/oauth/files/auto-attach/content')) return new Response('auto attachment')
+      sentBodies.push(JSON.parse(String(init?.body)))
+      const enc = new TextEncoder()
+      return new Response(new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: '自动处理完成' }, finish_reason: 'stop' }] })}\n\n`))
+          c.enqueue(enc.encode('data: [DONE]\n\n'))
+          c.close()
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  const base = `http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/sessions/${encodeURIComponent('session_inbound_auto')}`
+  try {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]).toString('base64')
+    const started = await (await fetch(`${base}/inbound/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({
+        auto_run: true,
+        conversationId: 'bridge-auto-conv',
+        working_dir: root,
+        permissionMode: 'full',
+        bridge_remote: {
+          base_url: 'https://remote.example',
+          token: 'oauth-token',
+        },
+        event: {
+          type: 'user',
+          uuid: 'uuid_auto_inbound',
+          message: {
+            content: [
+              { type: 'image', source: { type: 'base64', data: png } },
+              { type: 'text', text: '请分析这张图和附件' },
+            ],
+          },
+          file_attachments: [{ file_uuid: 'auto-attach', file_name: 'note.txt' }],
+        },
+      }),
+    })).json() as any
+    expect(started.dispatch).toMatchObject({ mode: 'task', conversationId: 'bridge-auto-conv', status: 'running' })
+    const taskId = started.dispatch.task_id
+    const events = await fetch(`http://127.0.0.1:${bridgeServer.port}/api/v1/agent/tasks/${taskId}/events?after=-1`)
+    const text = await events.text()
+    expect(text).toContain('自动处理完成')
+    expect(text).toContain('"type":"done"')
+    expect(sentBodies).toHaveLength(1)
+    const requestText = JSON.stringify(sentBodies[0].messages)
+    expect(requestText).toContain('data:image/png;base64,')
+    expect(requestText).toContain('请分析这张图和附件')
+    expect(requestText).toContain('note.txt')
+    expect(requestText).toContain('@')
+  } finally {
+    bridgeServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('bridge inbound resolve steers a running conversation instead of starting a duplicate turn', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-bridge-inbound-steer-'))
+  let calls = 0
+  const bridgeServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    env: {
+      DEEPSEEK_BASE_URL: 'https://model.example/v1',
+      DEEPSEEK_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async (_input, _init) => {
+      calls++
+      const enc = new TextEncoder()
+      const payload = calls === 1
+        ? { id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_ask_bridge', function: { name: 'AskUserQuestion', arguments: JSON.stringify({ question: '等远端补充吗', options: [{ label: '继续' }] }) } }] }, finish_reason: 'tool_calls' }] }
+        : { id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: '收到远端补充' }, finish_reason: 'stop' }] }
+      return new Response(new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(enc.encode(`data: ${JSON.stringify(payload)}\n\n`))
+          c.enqueue(enc.encode('data: [DONE]\n\n'))
+          c.close()
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  try {
+    const running = await fetch(`http://127.0.0.1:${bridgeServer.port}/api/v1/agent/tasks`, {
+      method: 'POST',
+      body: JSON.stringify({ message: '先做主任务', conversation_id: 'bridge-steer-conv', working_dir: root, permission_mode: 'full' }),
+    })
+    const runningBody = await running.json() as any
+    const eventStream = await fetch(`http://127.0.0.1:${bridgeServer.port}/api/v1/agent/tasks/${runningBody.task_id}/events?after=-1`)
+    const reader = eventStream.body!.getReader()
+    const decoder = new TextDecoder()
+    let text = ''
+    const readUntil = async (needle: string) => {
+      for (let i = 0; i < 200; i++) {
+        if (text.includes(needle)) return
+        const chunk = await reader.read()
+        if (chunk.done) break
+        text += decoder.decode(chunk.value, { stream: true })
+      }
+      throw new Error(`SSE stream did not contain ${needle}; got ${text}`)
+    }
+    await readUntil('"type":"ask_question"')
+    const inbound = await (await fetch(`http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/sessions/session_inbound_steer/inbound/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({
+        conversationId: 'bridge-steer-conv',
+        event: {
+          type: 'user',
+          uuid: 'uuid_steer_inbound',
+          message: { content: '远端补充:先查 tests' },
+        },
+      }),
+    })).json() as any
+    expect(inbound.dispatch).toMatchObject({ mode: 'steering', conversationId: 'bridge-steer-conv' })
+    const answered = await fetch(`http://127.0.0.1:${bridgeServer.port}/api/v1/agent/tasks/${runningBody.task_id}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ message: '继续' }),
+    })
+    expect(answered.status).toBe(200)
+    await readUntil('"type":"done"')
+    expect(text).toContain('远端补充:先查 tests')
+    expect(text).toContain('收到远端补充')
+    expect(calls).toBe(2)
+    await reader.cancel().catch(() => undefined)
+  } finally {
+    bridgeServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('bridge Remote Control outbox flush posts control responses to session events', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-bridge-outbox-flush-'))
   const calls: Array<{ url: string; body: any; headers: Record<string, string> }> = []

@@ -1,7 +1,7 @@
 import type { FetchLike } from '../proxy/ProxyModel'
 import type { BridgeRemoteState } from './bridgeRemoteState'
 import type { BridgeWorkerClient } from './bridgeWorkerClient'
-import { resolveInboundUserMessage } from './bridgeInboundMessages'
+import { resolveInboundUserMessage, type BridgeResolvedInboundMessage } from './bridgeInboundMessages'
 
 export type BridgeWorkerStreamState = 'idle' | 'connected' | 'reconnecting' | 'closing' | 'closed'
 
@@ -35,6 +35,7 @@ export interface BridgeWorkerStreamDeps {
     token?: string
     fetchImpl?: FetchLike
     timeoutMs?: number
+    onResolved?: (resolved: BridgeResolvedInboundMessage, event: BridgeWorkerStreamEvent) => void | Promise<void>
   }
 }
 
@@ -266,7 +267,10 @@ export class BridgeWorkerStream {
           fetchImpl: this.deps.inbound.fetchImpl ?? this.fetchImpl,
           timeoutMs: this.deps.inbound.timeoutMs,
         })
-        if (resolved) await this.deps.state.storeInboundMessage(this.sessionId, resolved, { eventSeq: ingested.event.seq })
+        if (resolved) {
+          await this.deps.state.storeInboundMessage(this.sessionId, resolved, { eventSeq: ingested.event.seq })
+          await this.deps.inbound.onResolved?.(resolved, event)
+        }
       } catch (err) {
         this.events.onError?.(err instanceof Error ? err : new Error(String(err)))
       }

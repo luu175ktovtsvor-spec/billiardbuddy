@@ -59,7 +59,7 @@ import { BridgeRemoteSubscriber, type BridgeRemoteWebSocketConstructor } from '.
 import { createBridgeCodeSessionClient } from '../tasks/bridgeCodeSessionClient'
 import { BridgeWorkerClient, type BridgeWorkerSessionState } from '../tasks/bridgeWorkerClient'
 import { BridgeWorkerStream } from '../tasks/bridgeWorkerStream'
-import { resolveInboundUserMessage } from '../tasks/bridgeInboundMessages'
+import { resolveInboundUserMessage, type BridgeInboundContent, type BridgeResolvedInboundMessage } from '../tasks/bridgeInboundMessages'
 import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
 import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
@@ -67,7 +67,7 @@ import { loadOutputStyles, publicOutputStyle, renderOutputStylePrompt } from '..
 import { defaultPluginInstallDir, defaultPluginRoots, installPluginFromGithub, listPlugins, setPluginEnabled } from '../plugins/pluginLoader'
 import { Workspace } from '../workspace/workspace'
 import type { AssistantStep, Model } from '../types/model'
-import { textBlock, type Message } from '../types/message'
+import { textBlock, type ContentBlock, type Message } from '../types/message'
 import type { AgentEvent, AskQuestionField } from '../types/events'
 import type { FetchLike } from '../proxy/ProxyModel'
 import type { PermissionMode } from '../permissions/types'
@@ -109,6 +109,15 @@ interface WorkspaceTreeEntry {
   type: 'file' | 'directory'
   children?: WorkspaceTreeEntry[]
   truncated?: boolean
+}
+
+type TurnStreamInput = Record<string, unknown> & {
+  message?: unknown
+  userMessage?: unknown
+  conversationId?: unknown
+  userContent?: ContentBlock[]
+  messagePreview?: string
+  skipCommandParsing?: boolean
 }
 
 const WORKSPACE_TREE_SKIP = new Set([
@@ -253,6 +262,20 @@ function messageText(message: Message): string {
     .filter(Boolean)
     .join('\n')
     .trim()
+}
+
+function inboundContentBlocks(content: BridgeInboundContent): ContentBlock[] {
+  return typeof content === 'string' ? [textBlock(content)] : content
+}
+
+function inboundContentPreview(content: BridgeInboundContent): string {
+  if (typeof content === 'string') return content
+  return content.map(block => {
+    if (block.type === 'text') return block.text
+    if (block.type === 'image') return `[image ${block.source.media_type}]`
+    if (block.type === 'tool_result') return block.content
+    return `[${block.type}]`
+  }).filter(Boolean).join('\n').trim()
 }
 
 function isSensitiveFilePath(path: string): boolean {
@@ -933,6 +956,7 @@ export function startServer(opts: StartServerOptions = {}) {
         baseUrl: inboundConfig?.baseUrl,
         token: inboundConfig?.token,
         fetchImpl: opts.fetchImpl,
+        onResolved: async resolved => { await dispatchBridgeInboundToAgent({ ...body, bridgeSessionId: codeSessionId }, resolved) },
       } }, {
         onClose: code => {
           bridgeWorkerStreams.delete(codeSessionId)
@@ -1171,9 +1195,10 @@ export function startServer(opts: StartServerOptions = {}) {
     return { action: 'accept' as const, content }
   }
 
-  async function createTurnStream(rawBody: Record<string, unknown>): Promise<{ conversationId: string; stream: AsyncGenerator<SessionEventRecord> }> {
-    const rawUserMessage = stringOr(rawBody.message ?? rawBody.userMessage, '')
+  async function createTurnStream(rawBody: TurnStreamInput): Promise<{ conversationId: string; stream: AsyncGenerator<SessionEventRecord> }> {
+    const rawUserMessage = stringOr(rawBody.message ?? rawBody.userMessage, '') || stringOr(rawBody.messagePreview, '')
     if (!rawUserMessage) throw new TurnSetupError('message required', 400)
+    const explicitUserContent = rawBody.userContent?.length ? rawBody.userContent : undefined
 
     const resolvedProviderRuntimes = await providers.resolveRuntimeConfigs(opts.env ?? process.env)
     if (resolvedProviderRuntimes.length === 0) throw new TurnSetupError('model provider not configured', 503)
@@ -1228,7 +1253,7 @@ export function startServer(opts: StartServerOptions = {}) {
     const skills = await loadSkillsDir(skillsRoot)
     const enabledPacks = resolveEnabledPacks(rawBody)
     const commands = await loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), enabledPacks)
-    const parsedCommand = parseCommandInvocation(rawUserMessage)
+    const parsedCommand = rawBody.skipCommandParsing ? null : parseCommandInvocation(rawUserMessage)
     const goalCommandResult = parsedCommand?.name === 'goal'
       ? await handleGoalCommand(conversationId, parsedCommand.args, transcript)
       : undefined
@@ -1255,6 +1280,7 @@ export function startServer(opts: StartServerOptions = {}) {
     const userMessage = goalCommandResult?.shouldQuery
       ? `Continue working until this goal is complete: ${parsedCommand?.args ?? ''}`
       : commandInvocation?.prompt ?? rawUserMessage
+    const userContent = commandInvocation || goalCommandResult?.shouldQuery ? undefined : explicitUserContent
     const skillRecommendations = suggestedSkillNamesForPacks(enabledPacks)
     const domainPackTools = createDomainPackTools(enabledPacks)
     const configuredHooks = await loadHookRegistryFile(opts.hooksPath ?? defaultHooksPath())
@@ -1380,6 +1406,7 @@ export function startServer(opts: StartServerOptions = {}) {
           workspace,
           systemPrompt,
           userMessage,
+          userContent,
           transcript,
           conversationId,
           steerInbox,
@@ -1521,6 +1548,57 @@ export function startServer(opts: StartServerOptions = {}) {
       return finalText
     })
     return { task_id: task.id, status: 'running' }
+  }
+
+  async function dispatchBridgeInboundToAgent(rawBody: Record<string, unknown>, resolved: BridgeResolvedInboundMessage): Promise<Record<string, unknown>> {
+    const conversationId = stringOr(rawBody.conversationId ?? rawBody.conversation_id, '')
+    const preview = inboundContentPreview(resolved.content) || 'Bridge inbound message'
+    if (!conversationId) return { mode: 'stored' }
+
+    if (turns.isRunning(conversationId)) {
+      const inbox = steerInboxes.get(conversationId) ?? []
+      inbox.push(preview)
+      steerInboxes.set(conversationId, inbox)
+      await sessions.appendEvent(conversationId, { type: 'steering', content: preview }).catch(() => undefined)
+      return { mode: 'steering', conversationId, queued: inbox.length }
+    }
+
+    const autoRun = rawBody.autoRun === true || rawBody.auto_run === true
+    if (!autoRun) return { mode: 'stored', conversationId }
+
+    const workspaceRoot = stringOr(rawBody.working_dir ?? rawBody.workspaceRoot, process.cwd())
+    const task = await tasks.create({
+      title: preview.slice(0, 80),
+      conversationId,
+      workspaceRoot,
+      kind: 'bridge_inbound',
+      params: {
+        bridge_session_id: stringOr(rawBody.bridgeSessionId ?? rawBody.bridge_session_id, ''),
+        source: 'bridge_inbound',
+        uuid: resolved.uuid,
+      },
+    })
+    tasks.start(task.id, async taskCtx => {
+      let finalText = ''
+      const { stream } = await createTurnStream({
+        ...rawBody,
+        taskId: task.id,
+        message: preview,
+        messagePreview: preview,
+        userContent: inboundContentBlocks(resolved.content),
+        skipCommandParsing: true,
+        conversationId,
+        workspaceRoot,
+        permissionMode: rawBody.permission_mode ?? rawBody.permissionMode,
+      })
+      for await (const record of stream) {
+        if (taskCtx.signal.aborted) break
+        if (record.event.type === 'final') finalText = record.event.text
+        await taskCtx.emit(record.event)
+      }
+      return finalText
+    })
+    return { mode: 'task', conversationId, task_id: task.id, status: 'running' }
   }
 
   async function archiveSession(id: string, rawBody: Record<string, unknown>) {
@@ -3122,7 +3200,10 @@ export function startServer(opts: StartServerOptions = {}) {
             if (!resolved) return jsonError('inbound user message content not found', 400)
             const store = body.store !== false
             const record = store ? await bridgeRemote.storeInboundMessage(sessionId, resolved) : undefined
-            return Response.json({ resolved, ...(record ? { message: record } : {}) }, { status: 201 })
+            const dispatch = body.autoRun === true || body.auto_run === true || body.conversationId || body.conversation_id
+              ? await dispatchBridgeInboundToAgent({ ...body, bridgeSessionId: sessionId }, resolved)
+              : undefined
+            return Response.json({ resolved, ...(record ? { message: record } : {}), ...(dispatch ? { dispatch } : {}) }, { status: 201 })
           }
           return new Response('Method not allowed', { status: 405 })
         } catch (err) {
@@ -3234,6 +3315,7 @@ export function startServer(opts: StartServerOptions = {}) {
             }, { state: bridgeRemote, peers: bridgePeers, inbound: {
               stateRoot,
               fetchImpl: opts.fetchImpl,
+              onResolved: async resolved => { await dispatchBridgeInboundToAgent({ ...body, bridgeSessionId: sessionId }, resolved) },
             } })
             bridgeSubscribers.set(sessionId, subscriber)
             subscriber.connect()
