@@ -59,6 +59,7 @@ export interface AgentTaskToolOptions {
   env?: Record<string, string | undefined>
   startBackgroundAgent?: (input: { agent?: string; name?: string; task: string; context?: string; title?: string; isolation?: 'worktree' }, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<{ task: { id: string; title: string; params?: Record<string, unknown> }; agent: AgentDefinition }>
   registerForegroundAgent?: (input: { agent: string; agentId: string; task: string; context?: string; title: string; name?: string }, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<AgentTaskForegroundRegistration>
+  handoffForegroundAgent?: (registration: AgentTaskForegroundRegistration, input: { agent: string; agentId: string; task: string; context?: string; title: string; name?: string; isolation?: 'worktree' }, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<{ task: { id: string; title: string; params?: Record<string, unknown> }; agent: AgentDefinition }>
   unregisterForegroundAgent?: (taskId: string, ctx: ToolContext) => Promise<void> | void
 }
 
@@ -234,6 +235,11 @@ function emitSubagentProgress(ctx: ToolContext, agent: AgentDefinition, text: st
   ctx.progressEmit?.({ tool: 'agent_task', stream: 'subagent', chunk: text.endsWith('\n') ? text : `${text}\n` })
 }
 
+function optionalIsolation(input: AgentTaskInput, agent: AgentDefinition): { isolation?: 'worktree' } {
+  const isolation = input.isolation ?? agent.isolation
+  return isolation ? { isolation } : {}
+}
+
 function sandboxForWorkspace(base: Sandbox | undefined, workspace: Workspace): Sandbox | undefined {
   return base?.isOsSandboxActive() ? new Sandbox({ workspace, enabled: true }) : base
 }
@@ -254,6 +260,21 @@ function formatWorktreeResult(cleanup: AgentWorktreeCleanupResult | null): strin
     `commits: ${cleanup.commits}`,
     '</agent_worktree>',
   ].join('\n')
+}
+
+async function closeAgentIteratorForHandoff(iterator: AsyncIterator<AgentEvent>, timeoutMs = 1000): Promise<void> {
+  const close = iterator.return?.(undefined).catch(() => undefined)
+  if (!close) return
+  let timer: ReturnType<typeof setTimeout> | undefined
+  await Promise.race([
+    close,
+    new Promise<void>(resolve => {
+      timer = setTimeout(resolve, timeoutMs)
+      const maybe = timer as { unref?: () => void }
+      maybe.unref?.()
+    }),
+  ])
+  if (timer) clearTimeout(timer)
 }
 
 export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskInput> {
@@ -331,17 +352,21 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
       let finalText = ''
       let cleanup: AgentWorktreeCleanupResult | null = null
       let foregroundRegistration: AgentTaskForegroundRegistration | undefined
+      let wasBackgrounded = false
       let agentWorktree: Awaited<ReturnType<typeof createIsolatedAgentWorktree>> | null = null
       let agentMcp: Awaited<ReturnType<typeof loadAgentMcpRuntime>> | undefined
       try {
+        const foregroundInput = {
+          agent: agent.name,
+          agentId,
+          task: input.task,
+          ...(input.context ? { context: input.context } : {}),
+          ...(input.name ? { name: input.name } : {}),
+          title: `${agent.name}: ${input.task.trim().slice(0, 80)}`,
+        }
         foregroundRegistration = opts.registerForegroundAgent
           ? await opts.registerForegroundAgent({
-            agent: agent.name,
-            agentId,
-            task: input.task,
-            ...(input.context ? { context: input.context } : {}),
-            ...(input.name ? { name: input.name } : {}),
-            title: `${agent.name}: ${input.task.trim().slice(0, 80)}`,
+            ...foregroundInput,
           }, ctx, forkRunContext)
           : undefined
         const effectiveIsolation = input.isolation ?? agent.isolation
@@ -380,7 +405,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
           contentReplacementState: inheritedContentReplacementState,
         })
         for (const extra of subagentStart.additionalContext) emitSubagentProgress(ctx, agent, `子代理 ${agent.name} hook:${oneLine(extra, 160)}`)
-        for await (const ev of runAgentLoop({
+        const agentIterator = runAgentLoop({
           model: opts.model,
           registry,
           workspace,
@@ -403,7 +428,32 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
           subagent: { agentId, agentType: agent.name },
           querySource: forkRunContext?.querySource,
           contentReplacementState: inheritedContentReplacementState,
-        })) {
+        })[Symbol.asyncIterator]()
+        const backgroundPromise = foregroundRegistration && opts.handoffForegroundAgent
+          ? foregroundRegistration.backgroundSignal.then(() => ({ type: 'background' as const }))
+          : undefined
+        while (true) {
+          const nextEvent = agentIterator.next()
+          const raceResult = backgroundPromise
+            ? await Promise.race([
+              nextEvent.then(result => ({ type: 'event' as const, result })),
+              backgroundPromise,
+            ])
+            : { type: 'event' as const, result: await nextEvent }
+          if (raceResult.type === 'background') {
+            if (!foregroundRegistration || !opts.handoffForegroundAgent) continue
+            wasBackgrounded = true
+            await closeAgentIteratorForHandoff(agentIterator)
+            const { task } = await opts.handoffForegroundAgent(foregroundRegistration, {
+              ...foregroundInput,
+              ...optionalIsolation(input, agent),
+            }, ctx, forkRunContext)
+            const name = typeof task.params?.name === 'string' ? ` name="${xmlAttr(task.params.name)}"` : ''
+            const backgroundAgentId = typeof task.params?.agent_id === 'string' ? ` agent_id="${xmlAttr(task.params.agent_id)}"` : ''
+            return `<background_task_started id="${xmlAttr(task.id)}" agent="${xmlAttr(agent.name)}"${name}${backgroundAgentId} status="running">\n${xmlText(task.title)}\n</background_task_started>`
+          }
+          if (raceResult.result.done) break
+          const ev = raceResult.result.value
           const line = subagentLine(agent, ev)
           if (line) emitSubagentProgress(ctx, agent, line)
           if (ev.type === 'final') finalText = ev.text
@@ -411,13 +461,13 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
       } finally {
         try {
           foregroundRegistration?.cancelAutoBackground()
-          if (foregroundRegistration) await opts.unregisterForegroundAgent?.(foregroundRegistration.task.id, ctx)
+          if (foregroundRegistration && !wasBackgrounded) await opts.unregisterForegroundAgent?.(foregroundRegistration.task.id, ctx)
         } catch (error) {
           emitSubagentProgress(ctx, agent, `子代理 ${agent.name} 前台登记清理失败:${oneLine(errorMessage(error))}`)
         }
         await agentMcp?.close()
         const worktree = agentWorktree
-        cleanup = worktree ? await worktree.cleanupIfClean().catch(error => ({
+        cleanup = worktree && !wasBackgrounded ? await worktree.cleanupIfClean().catch(error => ({
           kept: true,
           worktreePath: worktree.session.worktreePath,
           worktreeBranch: worktree.session.worktreeBranch,

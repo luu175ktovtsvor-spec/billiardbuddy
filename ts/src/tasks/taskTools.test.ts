@@ -118,6 +118,75 @@ test('start_background_agent_task runs an isolated agent and read_background_tas
   }
 })
 
+test('startBackgroundAgentRun hands off an already backgrounded foreground agent task id', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-tools-foreground-handoff-'))
+  try {
+    const tasks = new TaskService(root)
+    const agent: AgentDefinition = {
+      name: 'researcher',
+      description: '研究代理',
+      prompt: '研究并总结。',
+      filePath: join(root, 'researcher.md'),
+    }
+    const registration = await tasks.registerForegroundAgent({
+      taskId: 'fg_handoff_1',
+      agentId: 'stable_handoff_agent',
+      agent: 'researcher',
+      title: 'researcher: foreground',
+      conversationId: 'handoff-conv',
+      workspaceRoot: root,
+      task: '前台切后台',
+    })
+    await registration.requestBackground()
+    const model = scriptedModel([{ kind: 'final', text: 'handoff done' }])
+
+    const { task } = await startBackgroundAgentRun({
+      tasks,
+      agents: [agent],
+      model,
+      baseTools: [],
+      baseSystemPrompt: 'base prompt',
+    }, {
+      agent: 'researcher',
+      task: '前台切后台',
+      title: 'researcher: foreground',
+    }, {
+      workspace: new Workspace(root),
+      conversationId: 'handoff-conv',
+      permissionMode: 'full',
+    }, {
+      foreground_handoff: true,
+      agent_id: 'stable_handoff_agent',
+    }, [], [], {
+      handoffTaskId: 'fg_handoff_1',
+    })
+
+    expect(task.id).toBe('fg_handoff_1')
+    expect(task.params).toMatchObject({
+      agent: 'researcher',
+      agent_id: 'stable_handoff_agent',
+      foreground: false,
+      is_backgrounded: true,
+      foreground_handoff: true,
+    })
+    const done = await waitFor(async () => {
+      const meta = await tasks.get('fg_handoff_1')
+      return meta?.status === 'completed' ? meta : null
+    })
+    expect(done.result).toBe('handoff done')
+    expect(model.received[0]!.messages[0]!.content[0]).toMatchObject({ type: 'text', text: '前台切后台' })
+    expect(await tasks.readBackgroundAgentMetadata('fg_handoff_1')).toMatchObject({
+      taskId: 'fg_handoff_1',
+      agentId: 'stable_handoff_agent',
+      agent: 'researcher',
+      task: '前台切后台',
+      conversationId: 'handoff-conv',
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('agent_task run_in_background fork_context starts a background fork with parent system, messages and tools', async () => {
   const root = mkdtempSync(join(tmpdir(), 'task-tools-fork-agent-'))
   try {
