@@ -8,7 +8,7 @@ import type { ToolContext } from './Tool'
 import type { Sandbox } from '../sandbox/sandbox'
 import { runCommandTool } from './runCommandTool'
 import { StreamingOutputSanitizer, stripAnsiControlSequences } from './outputSanitize'
-import { classifyCommandRisk, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellCdGitNeedsApproval, shellCdWriteNeedsApproval, shellDangerousRemovalNeedsApproval, shellGitInternalWriteNeedsApproval, shellMvCpFlagsNeedApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval, shellSensitiveReadNeedsApproval } from './dangerousCommand'
+import { classifyCommandRisk, gitDiffNoIndexSensitivePathNeedsApproval, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellCdGitNeedsApproval, shellCdWriteNeedsApproval, shellDangerousRemovalNeedsApproval, shellGitInternalWriteNeedsApproval, shellMvCpFlagsNeedApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval, shellSensitiveReadNeedsApproval } from './dangerousCommand'
 import { resolvePermission } from '../permissions/resolve'
 
 let root: string
@@ -304,6 +304,9 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('git commit -m "${HOME}"')).toBe('outreach')
   expect(classifyCommandRisk('git diff --stat --cached')).toBe('read')
   expect(classifyCommandRisk('git diff -S needle -- package.json')).toBe('read')
+  expect(classifyCommandRisk('git diff --no-index before.txt after.txt')).toBe('read')
+  expect(classifyCommandRisk('git diff --no-index .env package.json')).toBe('outreach')
+  expect(classifyCommandRisk('git diff --no-index -- ~/.ssh/id_rsa package.json')).toBe('outreach')
   expect(classifyCommandRisk('git diff --output=/tmp/patch.diff')).toBe('file')
   expect(classifyCommandRisk('git log --oneline --max-count 5')).toBe('read')
   expect(classifyCommandRisk('git log --output=/tmp/log.txt')).toBe('file')
@@ -418,6 +421,14 @@ test('mv/cp flags mirror Bash command validator manual approval guard', () => {
   expect(shellMvCpFlagsNeedApproval('mv -f source.txt target.txt')).toBe(true)
   expect(shellMvCpFlagsNeedApproval('env FOO=bar mv -t /tmp source.txt')).toBe(true)
   expect(shellMvCpFlagsNeedApproval('rm -f source.txt')).toBe(false)
+})
+
+test('git diff --no-index sensitive paths mirror Bash path extraction guard', () => {
+  expect(gitDiffNoIndexSensitivePathNeedsApproval('git diff --no-index before.txt after.txt')).toBe(false)
+  expect(gitDiffNoIndexSensitivePathNeedsApproval('git diff --no-index .env package.json')).toBe(true)
+  expect(gitDiffNoIndexSensitivePathNeedsApproval('git diff --no-index -- ~/.ssh/id_rsa package.json')).toBe(true)
+  expect(gitDiffNoIndexSensitivePathNeedsApproval('git diff --no-index -S needle -- .env package.json')).toBe(true)
+  expect(gitDiffNoIndexSensitivePathNeedsApproval('git diff package.json src/index.ts')).toBe(false)
 })
 
 test('shell expansion risk detection mirrors Bash substitution safety gate', () => {
@@ -711,6 +722,10 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   })
   expect(resolvePermission(runCommandTool, { command: 'git diff --output=/tmp/patch.diff' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({
     behavior: 'deny',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'git diff --no-index .env package.json' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
   })
   expect(resolvePermission(runCommandTool, { command: 'git status --porcelain=v1 --branch' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({
     behavior: 'allow',
