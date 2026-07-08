@@ -18,7 +18,7 @@ import {
 } from '../tools/storedToolResultTool'
 import { Sandbox } from '../sandbox/sandbox'
 import { Workspace } from '../workspace/workspace'
-import { createIsolatedAgentWorktree, type AgentWorktreeCleanupResult } from '../tools/worktreeTools'
+import { createIsolatedAgentWorktree, type AgentWorktreeCleanupResult, type WorktreeSession } from '../tools/worktreeTools'
 import { applySubagentStartHooks, mergeHookRegistries, type HookRegistry } from '../hooks/hooks'
 import { textBlock } from '../types/message'
 import type { AgentDefinition } from './agentLoader'
@@ -41,6 +41,7 @@ export interface AgentTaskHandoffInput {
   contentReplacementState?: ContentReplacementState
   summarySnapshot?: AgentLoopSnapshot
   usageSnapshot?: UsageUpdateEvent
+  handoffWorktreeSession?: WorktreeSession
 }
 
 export interface AgentTaskForegroundRegistration {
@@ -470,6 +471,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
               ...(handoffSnapshot?.contentReplacementState ? { contentReplacementState: handoffSnapshot.contentReplacementState } : {}),
               ...(handoffSnapshot ? { summarySnapshot: handoffSnapshot } : {}),
               ...(handoffUsageSnapshot ? { usageSnapshot: handoffUsageSnapshot } : {}),
+              ...(agentWorktree ? { handoffWorktreeSession: agentWorktree.session } : {}),
             }, ctx, forkRunContext)
             const name = typeof task.params?.name === 'string' ? ` name="${xmlAttr(task.params.name)}"` : ''
             const backgroundAgentId = typeof task.params?.agent_id === 'string' ? ` agent_id="${xmlAttr(task.params.agent_id)}"` : ''

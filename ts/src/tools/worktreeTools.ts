@@ -73,6 +73,10 @@ export async function createIsolatedAgentWorktree(workspaceRoot: string, agentId
   const slug = `agent-${safeAgentWorktreeSlug(agentId).slice(0, 32)}`
   validateWorktreeSlug(slug)
   const session = await createWorktreeForSession(repoRoot, slug, conversationId)
+  return agentWorktreeFromSession(session)
+}
+
+export function agentWorktreeFromSession(session: WorktreeSession): AgentWorktree {
   return {
     session,
     async cleanupIfClean() {
