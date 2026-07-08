@@ -31,8 +31,8 @@ export function permissionModeStorageValue(value: PermissionModeInput): Permissi
 /** 空状态 / 欢迎 —— 去客服腔，专业 agent 基调（对标 cc empty state）。 */
 export const WELCOME = {
   title: "今天要处理什么？",
-  subtitle: "可以改代码、查资料、整理文件、分析报表，也可以继续做图和视频。对外触达、不可逆或高风险动作会先确认。",
-  placeholder: "描述任务，或输入 / 调命令，比如：修改这个文件 / 跑测试 / 看这份报表",
+  subtitle: "说清目标就行；需要你拍板的地方我会停下来问。",
+  placeholder: "说任务，或输入 /",
 };
 
 /**

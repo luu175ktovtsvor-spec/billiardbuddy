@@ -314,7 +314,6 @@ export function DesktopChatShell({
   const [storeDocsOpen, setStoreDocsOpen] = useState(false);
   const [deletedOpen, setDeletedOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-  const [deleteRecentTarget, setDeleteRecentTarget] = useState<RecentArtifact | null>(null);
   const [workbenchLoaded, setWorkbenchLoaded] = useState(false);
   const workbenchStateKey = `agent_workbench_state:${workbenchId}`;
   // G-b 首次开箱引导：欢迎 → 引导点一张场景卡，只在"真·首次启动"（下面 workbenchStateKey 的
@@ -645,57 +644,6 @@ export function DesktopChatShell({
       chat.loadConversation(id, msgs);
     } catch { /* 忽略 */ }
   }, [chat, workspaceDir]);
-  const openRecent = useCallback((item: RecentArtifact) => {
-    if (item.kind === "poster" && item.url) {
-      setPreview({
-        kind: "poster",
-        title: item.title,
-        imageUrl: item.url,
-        ratio: item.ratio || undefined,
-        width: item.width || undefined,
-        height: item.height || undefined,
-        generationId: item.id,   // RecentArtifact.id 本就是 Generation 的真实 id
-      });
-      return;
-    }
-    if (item.kind === "video" && item.url) {
-      setPreview({
-        kind: "video",
-        title: item.title,
-        videoUrl: item.url,
-        ratio: item.ratio || undefined,
-        duration: item.duration || undefined,
-      });
-      return;
-    }
-    if (item.kind === "task" && item.conversation_id) {
-      void loadConv(item.conversation_id);
-      return;
-    }
-    if (item.kind === "file_change" && item.path) {
-      setPreview({ kind: "diff", title: item.title, path: item.path, backupPath: item.backup_path || item.id });
-      return;
-    }
-    if (item.content) {
-      setPreview({ kind: "content", title: item.title, text: item.content });
-    }
-  }, [chat, loadConv]);
-  const deleteRecent = useCallback((item: RecentArtifact) => {
-    if (!item.id || item.kind === "file_change") return;
-    setDeleteRecentTarget(item);
-  }, []);
-  const confirmDeleteRecent = useCallback(async () => {
-    const item = deleteRecentTarget;
-    setDeleteRecentTarget(null);
-    if (!item?.id) return;
-    try {
-      await api.deleteRecentArtifact(item.id);
-      await refreshRecentItems();
-      toast.success("已移入最近删除");
-    } catch {
-      toast.error("删除失败，可以稍后再试");
-    }
-  }, [deleteRecentTarget, refreshRecentItems, toast]);
   const continueLast = useCallback(() => {
     const last = conversations[0];
     if (last) { void loadConv(last.id); return; }
@@ -1205,9 +1153,6 @@ export function DesktopChatShell({
             dailyDraftsBusy={dailyDraftsBusy}
             continueTitle={conversations[0]?.title || recentItems.find((item) => item.conversation_id)?.title}
             onContinueLast={(conversations[0] || recentItems.some((item) => item.conversation_id)) ? continueLast : undefined}
-            recentItems={recentItems}
-            onOpenRecent={openRecent}
-            onDeleteRecent={deleteRecent}
             onOpenStoreMemory={() => setStoreDocsOpen(true)}
             onViewScreen={electron ? viewCurrentScreen : undefined}
             onResearch={startResearch}
@@ -1387,15 +1332,6 @@ export function DesktopChatShell({
       destructive
       onConfirm={confirmDelete}
       onCancel={() => setDeleteTarget(null)}
-    />
-    <ConfirmDialog
-      open={!!deleteRecentTarget}
-      title="移入最近删除？"
-      message={`把「${deleteRecentTarget?.title || "这条作品"}」移入最近删除？之后可以从「最近删除」恢复。`}
-      confirmLabel="移入删除"
-      destructive
-      onConfirm={confirmDeleteRecent}
-      onCancel={() => setDeleteRecentTarget(null)}
     />
     </>
   );
