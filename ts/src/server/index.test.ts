@@ -1331,6 +1331,91 @@ test('bridge worker refresh refetches credentials, rebuilds epoch and resumes SS
   }
 })
 
+test('bridge worker stream projects SDK assistant events into conversation event stream', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-bridge-worker-projection-'))
+  const bridgeServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    fetchImpl: async (input, _init) => {
+      if (String(input).endsWith('/v1/code/sessions/cse_worker_projection/bridge')) {
+        return Response.json({
+          worker_jwt: 'worker.jwt.projection',
+          api_base_url: 'https://session-ingress.example',
+          expires_in: 3600,
+          worker_epoch: 41,
+        })
+      }
+      if (String(input).includes('/v1/code/sessions/cse_worker_projection/worker/events/stream')) {
+        const frames = [
+          {
+            event_id: 'evt_projection_1',
+            sequence_num: 1,
+            event_type: 'stream_event',
+            source: 'remote',
+            created_at: new Date().toISOString(),
+            payload: {
+              type: 'stream_event',
+              session_id: 'cse_worker_projection',
+              parent_tool_use_id: null,
+              event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '远端流式片段' } },
+            },
+          },
+          {
+            event_id: 'evt_projection_2',
+            sequence_num: 2,
+            event_type: 'assistant',
+            source: 'remote',
+            created_at: new Date().toISOString(),
+            payload: {
+              type: 'assistant',
+              session_id: 'cse_worker_projection',
+              parent_tool_use_id: null,
+              message: {
+                content: [
+                  { type: 'tool_use', id: 'toolu_remote', name: 'Read', input: { file_path: 'remote.ts' } },
+                  { type: 'text', text: '远端回答完成' },
+                ],
+              },
+            },
+          },
+        ]
+        return new Response(new ReadableStream({
+          start(controller) {
+            for (const frame of frames) {
+              controller.enqueue(new TextEncoder().encode(`id: ${frame.sequence_num}\nevent: client_event\ndata: ${JSON.stringify(frame)}\n\n`))
+            }
+            controller.close()
+          },
+        }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+      }
+      return Response.json({})
+    },
+  })
+  const codeBase = `http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/code-sessions/${encodeURIComponent('cse_worker_projection')}`
+  try {
+    const body = {
+      conversationId: 'bridge-projection-conv',
+      workspaceRoot: root,
+      bridge_remote: { base_url: 'https://remote.example', token: 'oauth-token' },
+      heartbeat_interval_ms: 60000,
+    }
+    await fetch(`${codeBase}/credentials`, { method: 'POST', body: JSON.stringify(body) })
+    await fetch(`${codeBase}/worker`, { method: 'POST', body: JSON.stringify(body) })
+    const events = await waitFor(async () => {
+      const body = await (await fetch(`http://127.0.0.1:${bridgeServer.port}/sessions/${encodeURIComponent('bridge-projection-conv')}/events`)).json() as any
+      return body.events?.length >= 3 ? body.events : null
+    }, 1500)
+    expect(events.map((record: any) => record.event.type)).toEqual(expect.arrayContaining(['thinking', 'tool_call', 'final']))
+    expect(events.some((record: any) => record.event.type === 'thinking' && record.event.text === '远端流式片段')).toBe(true)
+    expect(events.some((record: any) => record.event.type === 'tool_call' && record.event.tool === 'Read')).toBe(true)
+    expect(events.some((record: any) => record.event.type === 'final' && record.event.text === '远端回答完成')).toBe(true)
+  } finally {
+    bridgeServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('bridge worker schedules proactive refresh from expires_in and rebuilds stream', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-bridge-worker-auto-refresh-'))
   const calls: Array<{ url: string; method: string; body: any; headers: Record<string, string> }> = []
@@ -1882,6 +1967,50 @@ test('bridge Remote Control subscribe API stores WebSocket SDK/control messages'
     const stopped = await (await fetch(`${base}/subscribe`, { method: 'DELETE' })).json() as any
     expect(stopped).toMatchObject({ ok: true, sessionId: 'session_subscribe' })
     expect(ws.closed).toBe(true)
+  } finally {
+    bridgeServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('bridge Remote Control subscriber projects SDK assistant messages into conversation events', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-bridge-subscribe-projection-'))
+  FakeBridgeWebSocket.instances = []
+  const bridgeServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    bridgeWebSocketCtor: FakeBridgeWebSocket as any,
+  })
+  const base = `http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/sessions/${encodeURIComponent('session_subscribe_projection')}`
+  try {
+    await fetch(`${base}/subscribe`, {
+      method: 'POST',
+      body: JSON.stringify({
+        conversationId: 'bridge-subscribe-projection-conv',
+        workspaceRoot: root,
+        bridge_remote: {
+          base_url: 'https://remote.example',
+          token: 'token',
+        },
+      }),
+    })
+    const ws = FakeBridgeWebSocket.instances[0]!
+    ws.emit('open')
+    ws.emit('message', { data: JSON.stringify({
+      type: 'assistant',
+      session_id: 'session_subscribe_projection',
+      parent_tool_use_id: null,
+      message: { content: [{ type: 'text', text: '订阅远端回答' }] },
+    }) })
+
+    const events = await waitFor(async () => {
+      const body = await (await fetch(`http://127.0.0.1:${bridgeServer.port}/sessions/${encodeURIComponent('bridge-subscribe-projection-conv')}/events`)).json() as any
+      return body.events?.length ? body.events : null
+    })
+    expect(events).toEqual([
+      expect.objectContaining({ event: { type: 'final', text: '订阅远端回答' } }),
+    ])
   } finally {
     bridgeServer.stop(true)
     rmSync(root, { recursive: true, force: true })

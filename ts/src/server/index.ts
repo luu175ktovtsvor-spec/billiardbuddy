@@ -60,6 +60,7 @@ import { createBridgeCodeSessionClient } from '../tasks/bridgeCodeSessionClient'
 import { BridgeWorkerClient, type BridgeWorkerSessionState } from '../tasks/bridgeWorkerClient'
 import { BridgeWorkerStream } from '../tasks/bridgeWorkerStream'
 import { BridgeWorkerRefreshScheduler, type BridgeWorkerRefreshCause } from '../tasks/bridgeWorkerRefreshScheduler'
+import { projectBridgeSdkEvent } from '../tasks/bridgeSdkEventProjection'
 import { resolveInboundUserMessage, type BridgeInboundContent, type BridgeResolvedInboundMessage } from '../tasks/bridgeInboundMessages'
 import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
 import { createMediaTools } from '../media/mediaTools'
@@ -1019,6 +1020,21 @@ export function startServer(opts: StartServerOptions = {}) {
     await bridgePeers.updateStatus(codeSessionId, 'error', `worker stream refresh failed: ${detail}`).catch(() => undefined)
   }
 
+  async function projectBridgeEventToConversation(rawBody: Record<string, unknown>, payload: Record<string, unknown>): Promise<void> {
+    const conversationId = stringOr(rawBody.conversationId ?? rawBody.conversation_id, '')
+    if (!conversationId || payload.type === 'user') return
+    const events = projectBridgeSdkEvent(payload)
+    if (events.length === 0) return
+    await sessions.touch(conversationId, {
+      title: stringOr(rawBody.title, 'Remote Control Session'),
+      workspaceRoot: stringOr(rawBody.working_dir ?? rawBody.workspaceRoot, process.cwd()),
+      status: turns.isRunning(conversationId) ? 'running' : 'idle',
+    }).catch(() => undefined)
+    for (const event of events) {
+      await sessions.appendEvent(conversationId, event).catch(() => undefined)
+    }
+  }
+
   async function startBridgeWorker(
     codeSessionId: string,
     credentials: BridgeRemoteCredentialRecord | null,
@@ -1069,6 +1085,7 @@ export function startServer(opts: StartServerOptions = {}) {
         fetchImpl: opts.fetchImpl,
         onResolved: async resolved => { await dispatchBridgeInboundToAgent({ ...body, bridgeSessionId: codeSessionId }, resolved) },
       } }, {
+        onEvent: event => { void projectBridgeEventToConversation(body, event.payload) },
         onClose: code => {
           bridgeWorkerStreams.delete(codeSessionId)
           if (code === 401 || code === 403) {
@@ -3433,7 +3450,7 @@ export function startServer(opts: StartServerOptions = {}) {
               stateRoot,
               fetchImpl: opts.fetchImpl,
               onResolved: async resolved => { await dispatchBridgeInboundToAgent({ ...body, bridgeSessionId: sessionId }, resolved) },
-            } })
+            }, onEvent: async payload => { await projectBridgeEventToConversation(body, payload) } })
             bridgeSubscribers.set(sessionId, subscriber)
             subscriber.connect()
             return Response.json({ ok: true, sessionId, connected: subscriber.isConnected() })
