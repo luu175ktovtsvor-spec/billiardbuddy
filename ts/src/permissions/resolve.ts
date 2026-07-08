@@ -1,5 +1,5 @@
 import type { Tool, ToolContext } from '../tools/Tool'
-import { shellCommandMatchesPermissionRule } from './permissionRules'
+import { shellCommandAllowedByPermissionRules, shellCommandMatchesPermissionRule } from './permissionRules'
 import type { ApprovalClass, DecisionReason, PermissionDecision } from './types'
 
 /** full(跳过确认)档下,spend 类动作连续自动放行到这个数,之后强制弹卡兜底(防一次 bug 循环烧钱)。 */
@@ -24,9 +24,11 @@ function ask(tool: Tool, ctx: ToolContext, input: unknown, reason: DecisionReaso
 
 function sessionAllowsTool(tool: Tool, input: unknown, ctx: ToolContext): boolean {
   if (ctx.sessionAllowedTools?.has('*') === true || ctx.sessionAllowedTools?.has(tool.name) === true) return true
-  for (const rule of ctx.sessionAllowedToolRules ?? []) {
+  const commandRules = (ctx.sessionAllowedToolRules ?? []).filter(rule => rule.tool === tool.name)
+  if (tool.name === 'run_command' && shellCommandAllowedByPermissionRules(currentCommandInput(input), commandRules.map(rule => rule.ruleContent))) return true
+  for (const rule of commandRules) {
     if (rule.tool !== tool.name) continue
-    if ((tool.name === 'run_command' || tool.name === 'PowerShell') && commandMatchesPattern(input, rule.ruleContent)) return true
+    if (tool.name === 'PowerShell' && commandMatchesPattern(input, rule.ruleContent)) return true
   }
   return false
 }
