@@ -945,7 +945,7 @@ function hasBraceExpansionRisk(content: string, originalCommand: string): boolea
 }
 
 function hasZshDangerousCommand(command: string): boolean {
-  const tokens = tokenizeShellWords(command.toLowerCase())
+  const tokens = tokenizeShellWords(stripRuntimeEnvWrapper(command).toLowerCase())
   const modifiers = new Set(['command', 'builtin', 'noglob', 'nocorrect'])
   let baseCmd = ''
   for (const token of tokens) {
@@ -955,6 +955,43 @@ function hasZshDangerousCommand(command: string): boolean {
     break
   }
   return ZSH_DANGEROUS_COMMANDS.has(baseCmd) || (baseCmd === 'fc' && tokens.some(token => /^-\S*e/.test(token)))
+}
+
+function stripRuntimeEnvWrapper(command: string): string {
+  let tokens = tokenizeShellWords(command)
+  if (tokens[0]?.toLowerCase() !== 'env') return command
+
+  tokens = tokens.slice(1)
+  while (tokens.length > 0) {
+    const token = tokens[0]!
+    if (token === '--') {
+      tokens = tokens.slice(1)
+      break
+    }
+    if (/^[A-Za-z_][A-Za-z0-9_]*=.*/.test(token)) {
+      tokens = tokens.slice(1)
+      continue
+    }
+    if (token === '-' || token === '-i' || token === '--ignore-environment' || token === '-0' || token === '--null') {
+      tokens = tokens.slice(1)
+      continue
+    }
+    if (token === '-u' || token === '--unset' || token === '-C' || token === '--chdir' || token === '-S' || token === '--split-string') {
+      tokens = tokens.slice(2)
+      continue
+    }
+    if (token.startsWith('-u') && token.length > 2) {
+      tokens = tokens.slice(1)
+      continue
+    }
+    if (token.startsWith('--unset=') || token.startsWith('--chdir=') || token.startsWith('--split-string=')) {
+      tokens = tokens.slice(1)
+      continue
+    }
+    break
+  }
+
+  return tokens.join(' ')
 }
 
 function normalize(command: string): string {
@@ -1499,7 +1536,7 @@ function isInside(parent: string, child: string): boolean {
 }
 
 function classifySegment(segment: string): CommandRisk {
-  const rawCommand = normalize(segment)
+  const rawCommand = normalize(stripRuntimeEnvWrapper(segment))
   const command = rawCommand.toLowerCase()
   if (!command) return 'read'
   if (isDangerousCommand(command)) return 'destructive'
