@@ -3074,8 +3074,15 @@
 - 复用并抽出 `officeDocuments` 的 CSV/XLSX 编辑实现:画布 `/api/v1/canvas/excel-edit` 与 agent 工具共享同一套 cell 写回逻辑,保留 CSV 空文件/新文件从空表开始填格子的兼容行为。
 - 前端同步把 `edit_excel` 纳入文件 mutation 流:工具审批 pending 显示“正在修改报表文件”,右侧预览 pending 文案切到表格预览,完成后复用现有本地文件 artifact/表格预览路径。
 - 权限同步:CC 风格 `Edit` allowedTools alias 现在包含 `edit_excel`,slash command/skill frontmatter 授权编辑文件时也能授权报表修改。
-- 暂不删除 `server/evals/file_exec_live_test.py`:该 live eval 仍覆盖旧 Python 多文件工具链入口。下一步需要用 TS harness/live fixture 覆盖 `read_file/write_file/edit_file/edit_excel/run_command` 的 agent loop 端到端行为后,再删除该 Python eval。
+- `server/evals/file_exec_live_test.py` 在下一步 3.360 中已删除:该 live eval 覆盖的 `read_file -> edit_file`、`edit_excel`、`write_file`、`run_command` 执行链路已由 TS harness 接住。
 - 验证覆盖:TS 文件工具测试覆盖 CSV/XLSX 改格与 file history;registry 测试覆盖默认工具注册;command 测试覆盖 `Edit` alias;web hook 测试覆盖 pending/result artifact。
+
+## 3.360 2026-07-08 旧 Python 文件执行 live eval 退场
+
+- 删除 `server/evals/file_exec_live_test.py`:它依赖旧 Python FastAPI/DB/MiMo/live eval 壳子来验证执行类工具,与当前“coding agent 内核向 TS 收敛”的目标重复,且会让后续人员误以为 Python agent loop 仍是主路径。
+- TS 新增 `runs file execution scenario through TS agent loop...` harness 用例,从 `runAgentLoop()` 走模型 tool call、权限闸、工具执行、结果回灌全链路,覆盖旧脚本的核心执行面:`read_file` 后 `edit_file` 改文案、`edit_excel` 改 XLSX、`write_file` 写执行记录、`run_command` 只读列目录核对。
+- 该测试使用 `permissionMode:"full"` 模拟旧脚本非交互执行模式,但仍保留工具层 fatal/危险命令硬拒和 `edit_file` 读前置保护,不会退化成绕过内核安全。
+- Python 文件数降到 394。仍不动生产 Python FastAPI、媒体/OCR/语音/ffmpeg/发布器链路;这些必须等 TS/native sidecar 等价链路、调用点切换和真实 smoke 通过后再删。
 
 ## 4. 下一批代码顺序
 
