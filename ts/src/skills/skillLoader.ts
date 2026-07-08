@@ -4,6 +4,7 @@ import { extractDescription, parseMarkdownDocument, stringArrayField, stringFiel
 import { normalizeAllowedTools } from '../commands/allowedTools'
 import type { PromptCommand } from '../commands/types'
 import type { Tool, ToolContext } from '../tools/Tool'
+import { addInvokedSkill } from './invokedSkills'
 
 export interface SkillLibrary {
   skills: PromptCommand[]
@@ -47,6 +48,10 @@ function yamlArray(values: string[] | undefined): string | undefined {
 export function formatUseSkillResult(skill: PromptCommand, prompt: string): string {
   if (!skill.allowedTools || skill.allowedTools.length === 0) return prompt
   return `${prompt}\n\n<skill_allowed_tools skill="${xmlAttr(skill.name)}">\n${skill.allowedTools.map(tool => `- ${tool}`).join('\n')}\n</skill_allowed_tools>`
+}
+
+export function recordInvokedSkill(skill: PromptCommand, content: string, ctx: ToolContext): void {
+  addInvokedSkill(skill.name, skill.filePath || `${skill.source}:${skill.name}`, content, ctx.conversationId ?? null)
 }
 
 export async function loadSkillFile(filePath: string, source: PromptCommand['source'] = 'skills'): Promise<PromptCommand> {
@@ -204,7 +209,9 @@ export function createSkillTools(library: SkillLibrary, opts: { skillRoot?: stri
       if (!skill) return `没有找到技能「${name}」。可先调用 list_skills 查看可用技能。`
       const args = typeof input?.args === 'string' ? input.args : ''
       if (opts.executeSkill) return await opts.executeSkill(skill, args, ctx)
-      return formatUseSkillResult(skill, await skill.getPrompt(args, ctx))
+      const prompt = await skill.getPrompt(args, ctx)
+      recordInvokedSkill(skill, prompt, ctx)
+      return formatUseSkillResult(skill, prompt)
     },
   }
 
