@@ -57,6 +57,7 @@ import { BridgeRemoteState, type BridgeRemotePermissionResponse, type BridgeRemo
 import { bridgeRemoteConfigFromEnv, createBridgeRemoteTransport } from '../tasks/bridgeRemoteTransport'
 import { BridgeRemoteSubscriber, type BridgeRemoteWebSocketConstructor } from '../tasks/bridgeRemoteSubscriber'
 import { createBridgeCodeSessionClient } from '../tasks/bridgeCodeSessionClient'
+import { BridgeWorkerClient, type BridgeWorkerSessionState } from '../tasks/bridgeWorkerClient'
 import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
 import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
@@ -494,6 +495,12 @@ function bridgeOutboxStatusFrom(value: unknown): BridgeRemoteOutboxStatus | unde
   return value === 'queued' || value === 'sent' ? value : undefined
 }
 
+function bridgeWorkerSessionStateFrom(value: unknown): BridgeWorkerSessionState | undefined {
+  return value === 'idle' || value === 'running' || value === 'requires_action'
+    ? value
+    : undefined
+}
+
 function bridgePermissionResponseFrom(body: Record<string, unknown>): BridgeRemotePermissionResponse {
   const behavior = body.behavior
   if (behavior === 'allow') {
@@ -876,6 +883,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const steerInboxes = new Map<string, string[]>()
   const providerHealth = new ProviderHealthStore(opts.providerRoot ?? stateRoot)
   const bridgeSubscribers = new Map<string, BridgeRemoteSubscriber>()
+  const bridgeWorkers = new Map<string, BridgeWorkerClient>()
 
   function registerProviderFailure(runtime: RuntimeProviderResolution, err: unknown): void {
     const key = runtimeProviderKey(runtime)
@@ -2885,6 +2893,128 @@ export function startServer(opts: StartServerOptions = {}) {
         }
       }
 
+      const bridgeWorkerMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/code-sessions\/([^/]+)\/worker$/)
+      if (bridgeWorkerMatch) {
+        const sessionId = decodeURIComponent(bridgeWorkerMatch[1]!)
+        const codeSessionId = sessionId.startsWith('bridge:') ? sessionId.slice('bridge:'.length) : sessionId
+        try {
+          if (req.method === 'GET') {
+            const worker = bridgeWorkers.get(codeSessionId)
+            return Response.json({ sessionId: codeSessionId, connected: !!worker, workerEpoch: worker?.getWorkerEpoch() })
+          }
+          if (req.method === 'POST') {
+            const body = await req.json().catch(() => ({})) as Record<string, unknown>
+            const credentials = await bridgeRemote.getCredentials(codeSessionId)
+            if (!credentials) return jsonError('bridge credentials not found', 404)
+            bridgeWorkers.get(codeSessionId)?.close()
+            const worker = new BridgeWorkerClient({
+              sessionId: codeSessionId,
+              credentials,
+              heartbeatIntervalMs: numberFrom(body.heartbeatIntervalMs ?? body.heartbeat_interval_ms, 20_000),
+              heartbeatJitterFraction: typeof body.heartbeatJitterFraction === 'number'
+                ? body.heartbeatJitterFraction
+                : typeof body.heartbeat_jitter_fraction === 'number'
+                  ? body.heartbeat_jitter_fraction
+                  : 0,
+              fetchImpl: opts.fetchImpl,
+              onEpochMismatch: () => {
+                bridgeWorkers.get(codeSessionId)?.close()
+                bridgeWorkers.delete(codeSessionId)
+                void bridgePeers.updateStatus(codeSessionId, 'error', 'worker epoch mismatch').catch(() => undefined)
+              },
+            })
+            const initialized = await worker.initialize()
+            if (!initialized.ok) {
+              worker.close()
+              return jsonError(initialized.error || `worker init failed ${initialized.status ?? ''}`.trim(), initialized.status ?? 502)
+            }
+            bridgeWorkers.set(codeSessionId, worker)
+            await bridgePeers.register({ sessionId: codeSessionId, status: 'connected', inboundEnabled: true })
+            return Response.json({ ok: true, sessionId: codeSessionId, workerEpoch: worker.getWorkerEpoch(), initStatus: initialized.status })
+          }
+          if (req.method === 'DELETE') {
+            bridgeWorkers.get(codeSessionId)?.close()
+            bridgeWorkers.delete(codeSessionId)
+            await bridgePeers.updateStatus(codeSessionId, 'outbound_only').catch(() => undefined)
+            return Response.json({ ok: true, sessionId: codeSessionId })
+          }
+          return new Response('Method not allowed', { status: 405 })
+        } catch (err) {
+          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
+        }
+      }
+
+      const bridgeWorkerActionMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/code-sessions\/([^/]+)\/worker\/(event|internal-event|state|metadata|delivery|heartbeat|flush)$/)
+      if (bridgeWorkerActionMatch) {
+        const sessionId = decodeURIComponent(bridgeWorkerActionMatch[1]!)
+        const codeSessionId = sessionId.startsWith('bridge:') ? sessionId.slice('bridge:'.length) : sessionId
+        const action = bridgeWorkerActionMatch[2]!
+        try {
+          const worker = bridgeWorkers.get(codeSessionId)
+          if (!worker) return jsonError('bridge worker is not connected', 409)
+          if (action === 'heartbeat') {
+            if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+            const result = await worker.sendHeartbeatNow()
+            if (!result.ok) return jsonError(result.error || `heartbeat failed ${result.status ?? ''}`.trim(), result.status ?? 502)
+            return Response.json({ ok: true, status: result.status })
+          }
+          if (action === 'flush') {
+            if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+            await worker.flush()
+            return Response.json({ ok: true })
+          }
+          const body = await req.json().catch(() => ({})) as Record<string, unknown>
+          if (action === 'event') {
+            if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+            const event = isRecord(body.event) ? body.event : body
+            if (typeof event.type !== 'string') return jsonError('event.type required', 400)
+            await worker.writeEvent(event as Record<string, unknown> & { type: string })
+            return Response.json({ ok: true })
+          }
+          if (action === 'internal-event') {
+            if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+            const eventType = stringOr(body.eventType ?? body.event_type ?? body.type, '')
+            const payload = isRecord(body.payload) ? body.payload : {}
+            if (!eventType) return jsonError('eventType required', 400)
+            await worker.writeInternalEvent(eventType, payload, {
+              isCompaction: body.isCompaction === true || body.is_compaction === true,
+              agentId: stringOr(body.agentId ?? body.agent_id, '') || undefined,
+            })
+            return Response.json({ ok: true })
+          }
+          if (action === 'state') {
+            if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+            const state = bridgeWorkerSessionStateFrom(body.state ?? body.worker_status)
+            if (!state) return jsonError('state required', 400)
+            worker.reportState(state, isRecord(body.details) ? {
+              tool_name: stringOr(body.details.tool_name ?? body.details.toolName, ''),
+              action_description: stringOr(body.details.action_description ?? body.details.actionDescription, ''),
+              tool_use_id: stringOr(body.details.tool_use_id ?? body.details.toolUseId, ''),
+              request_id: stringOr(body.details.request_id ?? body.details.requestId, ''),
+              input: isRecord(body.details.input) ? body.details.input : undefined,
+            } : undefined)
+            return Response.json({ ok: true })
+          }
+          if (action === 'metadata') {
+            if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+            const metadata = isRecord(body.metadata) ? body.metadata : body
+            worker.reportMetadata(metadata)
+            return Response.json({ ok: true })
+          }
+          if (action === 'delivery') {
+            if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+            const eventId = stringOr(body.eventId ?? body.event_id, '')
+            const status = body.status === 'received' || body.status === 'processing' || body.status === 'processed' ? body.status : undefined
+            if (!eventId || !status) return jsonError('eventId and status required', 400)
+            worker.reportDelivery(eventId, status)
+            return Response.json({ ok: true })
+          }
+          return new Response('Method not allowed', { status: 405 })
+        } catch (err) {
+          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
+        }
+      }
+
       const bridgeEventsMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/events$/)
       if (bridgeEventsMatch) {
         const sessionId = decodeURIComponent(bridgeEventsMatch[1]!)
@@ -3626,6 +3756,8 @@ export function startServer(opts: StartServerOptions = {}) {
   app.stop = (closeActiveConnections?: boolean) => {
     for (const subscriber of bridgeSubscribers.values()) subscriber.close()
     bridgeSubscribers.clear()
+    for (const worker of bridgeWorkers.values()) worker.close()
+    bridgeWorkers.clear()
     return stop(closeActiveConnections)
   }
   return app
