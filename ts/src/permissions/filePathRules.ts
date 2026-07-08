@@ -4,6 +4,7 @@ import type { ToolContext } from '../tools/Tool'
 import type { FileOperation } from '../workspace/pathValidation'
 import { normalizeRequestedPathForValidation } from '../workspace/pathValidation'
 import { WorkspaceBoundaryError } from '../workspace/pathBoundary'
+import type { PermissionRule } from './types'
 
 const GLOB_CHARS_RE = /[*?\[\]{}]/
 
@@ -40,11 +41,29 @@ export function additionalWorkingDirectoryAllows(ctx: ToolContext, absPath: stri
 }
 
 export function sessionPathRuleAllows(ctx: ToolContext, toolName: string, absPath: string, operation: FileOperation): boolean {
-  const rules = (ctx.sessionAllowedToolRules ?? [])
-    .filter(rule => rule.tool === toolName && rule.ruleContent.trim())
-    .map(rule => rule.ruleContent.trim())
+  const rules = [
+    ...(ctx.sessionAllowedToolRules ?? [])
+      .filter(rule => rule.tool === toolName && rule.ruleContent.trim())
+      .map(rule => rule.ruleContent.trim()),
+    ...(ctx.permissionRules ?? [])
+      .filter(rule => rule.ruleBehavior === 'allow' && pathRuleMatchesTool(rule, toolName) && rule.ruleValue.ruleContent?.trim())
+      .map(rule => rule.ruleValue.ruleContent!.trim()),
+  ]
   if (rules.length === 0) return false
   return rules.some(rule => pathMatchesRule(ctx.workspace.root, absPath, rule, operation))
+}
+
+function pathRuleMatchesTool(rule: PermissionRule, toolName: string): boolean {
+  const aliases = PATH_RULE_TOOL_ALIASES[rule.ruleValue.toolName] ?? [rule.ruleValue.toolName]
+  return rule.ruleValue.toolName === '*' || aliases.includes(toolName)
+}
+
+const PATH_RULE_TOOL_ALIASES: Record<string, string[]> = {
+  Edit: ['edit_file', 'edit_excel', 'patch_file', 'patch_files'],
+  MultiEdit: ['multi_edit_file'],
+  NotebookEdit: ['NotebookEdit'],
+  Read: ['read_file', 'read_many_files'],
+  Write: ['write_file'],
 }
 
 function resolveRequestedPath(root: string, requested: string, operation: FileOperation): string {

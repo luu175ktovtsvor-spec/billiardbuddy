@@ -78,6 +78,8 @@ import type { AssistantStep, Model } from '../types/model'
 import { textBlock, type ContentBlock, type Message } from '../types/message'
 import type { AgentEvent, AskQuestionField } from '../types/events'
 import type { ToolContext } from '../tools/Tool'
+import type { PermissionUpdate } from '../permissions/types'
+import { applyPermissionUpdates } from '../permissions/permissionUpdate'
 import type { FetchLike } from '../proxy/ProxyModel'
 import type { PermissionMode } from '../permissions/types'
 import { canonicalPermissionMode } from '../permissions/canonical'
@@ -930,6 +932,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const turns = new TurnRegistry()
   const steerInboxes = new Map<string, string[]>()
   const sessionSkillHooks = new Map<string, NonNullable<ReturnType<typeof mergeHookRegistries>>>()
+  const sessionPermissionUpdates = new Map<string, PermissionUpdate[]>()
   const providerHealth = new ProviderHealthStore(opts.providerRoot ?? stateRoot)
   const bridgeSubscribers = new Map<string, BridgeRemoteSubscriber>()
   const bridgeWorkers = new Map<string, BridgeWorkerClient>()
@@ -1763,6 +1766,7 @@ export function startServer(opts: StartServerOptions = {}) {
           steerInbox,
           signal: controller.signal,
           permissionMode: permissionModeFrom(rawBody.permissionMode),
+          initialPermissionUpdates: sessionPermissionUpdates.get(conversationId),
           initialAllowedTools: commandInvocation && matchedCommand && matchedCommand.context !== 'fork' ? matchedCommand.allowedToolRules ?? matchedCommand.allowedTools : undefined,
           contextWindowChars: typeof rawBody.contextWindowChars === 'number' ? rawBody.contextWindowChars : undefined,
           contextWindowTokens,
@@ -2120,16 +2124,26 @@ export function startServer(opts: StartServerOptions = {}) {
     const conversationId = stringOr(body.conversation_id ?? body.conversationId, '')
     const built = await buildExecutionRegistry(body)
     try {
-      const result = await executeApproved(built.registry, tool, args, token, {
+      const baseCtx: ToolContext = {
         workspace: built.workspace,
+        registry: built.registry,
         conversationId: conversationId || undefined,
         permissionMode: permissionModeFrom(body.permission_mode ?? body.permissionMode),
         toolResultStoreDir: conversationId ? join(stateRoot, 'tool-results', conversationId) : undefined,
-      }, body.remember_approval === true || body.rememberApproval === true, approvalArgs)
+      }
+      const ctx = conversationId
+        ? applyPermissionUpdates(baseCtx, sessionPermissionUpdates.get(conversationId) ?? [])
+        : baseCtx
+      const result = await executeApproved(built.registry, tool, args, token, ctx, body.remember_approval === true || body.rememberApproval === true, approvalArgs)
+      if (conversationId && result.ok && result.permissionUpdates?.length) {
+        const existing = sessionPermissionUpdates.get(conversationId) ?? []
+        sessionPermissionUpdates.set(conversationId, dedupePermissionUpdates([...existing, ...result.permissionUpdates]))
+      }
       return Response.json({
         tool,
         result: result.output,
         ok: result.ok,
+        ...(result.permissionUpdates?.length ? { permission_updates: result.permissionUpdates } : {}),
         continuation: '',
         approval: null,
       })
@@ -2147,6 +2161,18 @@ export function startServer(opts: StartServerOptions = {}) {
       permissionMode: permissionModeFrom(body.permission_mode ?? body.permissionMode),
     })
     return Response.json({ ok: true })
+  }
+
+  function dedupePermissionUpdates(updates: PermissionUpdate[]): PermissionUpdate[] {
+    const seen = new Set<string>()
+    const out: PermissionUpdate[] = []
+    for (const update of updates) {
+      const key = JSON.stringify(update)
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(update)
+    }
+    return out
   }
 
   async function legacyConversations() {

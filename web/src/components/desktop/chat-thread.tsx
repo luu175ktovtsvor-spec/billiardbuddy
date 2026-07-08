@@ -2319,7 +2319,7 @@ function MacApprovalCard({
             onClick={() => onConfirm(idx, ap, { remember: true, args: confirmArgs })}
             disabled={executing || !parsedArgs.ok}
             className="rounded-md border border-[#10a37f]/20 bg-[#10a37f]/10 px-4 py-1.5 text-[13px] text-[#0b8064] transition hover:bg-[#10a37f]/15 active:scale-[0.98] disabled:opacity-50 dark:border-[#2fd39e]/25 dark:bg-[#2fd39e]/10 dark:text-[#70d7bd]"
-            title="仅记住本会话里完全相同的动作和参数"
+            title="本会话记住对应的文件或命令权限"
           >
             本会话允许
           </button>

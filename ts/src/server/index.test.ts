@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { Buffer } from 'node:buffer'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startServer } from './index'
@@ -618,6 +618,52 @@ test('POST /api/v1/agent/execute uses approval_args for edited approval paramete
   const staleBody = await stale.json() as any
   expect(staleBody.ok).toBe(false)
   expect(staleBody.result).toContain('审批校验失败')
+})
+
+test('POST /api/v1/agent/execute temporarily grants approved external file directories', async () => {
+  const workspaceRoot = realpathSync(mkdtempSync(join(tmpdir(), 'execute-workspace-')))
+  const externalRoot = realpathSync(mkdtempSync(join(tmpdir(), 'execute-external-')))
+  try {
+    const args = { path: join(externalRoot, 'approved.txt'), content: 'approved external' }
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/v1/agent/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        tool: 'write_file',
+        args,
+        token: signApproval('write_file', args),
+        conversationId: 'execute-external-file',
+        workspaceRoot,
+        permissionMode: 'default',
+      }),
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json() as any
+    expect(body.ok).toBe(true)
+    expect(readFileSync(join(externalRoot, 'approved.txt'), 'utf8')).toBe('approved external')
+
+    const rememberArgs = { path: join(externalRoot, 'remembered.txt'), content: 'remembered external' }
+    const remembered = await fetch(`http://127.0.0.1:${server.port}/api/v1/agent/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        tool: 'write_file',
+        args: rememberArgs,
+        token: signApproval('write_file', rememberArgs),
+        conversationId: 'execute-external-file',
+        workspaceRoot,
+        permissionMode: 'default',
+        remember_approval: true,
+      }),
+    })
+    const rememberedBody = await remembered.json() as any
+    expect(rememberedBody.ok).toBe(true)
+    expect(rememberedBody.permission_updates).toEqual([
+      { type: 'setMode', destination: 'session', mode: 'acceptEdits' },
+      { type: 'addDirectories', destination: 'session', directories: [externalRoot] },
+    ])
+  } finally {
+    rmSync(workspaceRoot, { recursive: true, force: true })
+    rmSync(externalRoot, { recursive: true, force: true })
+  }
 })
 
 test('POST /api/v1/agent/execute sends bridge messages through Remote Control transport', async () => {

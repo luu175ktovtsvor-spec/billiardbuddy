@@ -125,6 +125,28 @@ test('CC-style path-scoped allowedTools grant external file access per tool alia
   }
 })
 
+test('structured PermissionRule path scopes grant external file access per CC alias', async () => {
+  const externalRoot = realpathSync(mkdtempSync(join(tmpdir(), 'file-permission-rule-')))
+  try {
+    const externalFile = join(externalRoot, 'outside.txt')
+    writeFileSync(externalFile, 'hello rule')
+
+    await expect(fileReadTool.execute({ path: externalFile }, ctx)).rejects.toThrow(/越界/)
+
+    const granted = applyPermissionUpdates(ctx, [
+      {
+        type: 'addRules',
+        destination: 'session',
+        behavior: 'allow',
+        rules: [{ toolName: 'Read', ruleContent: `${externalRoot}/**` }],
+      },
+    ])
+    expect(await fileReadTool.execute({ path: externalFile }, granted)).toBe('hello rule')
+  } finally {
+    rmSync(externalRoot, { recursive: true, force: true })
+  }
+})
+
 test('AdditionalWorkingDirectory grants and revokes external directory access', async () => {
   const externalRoot = realpathSync(mkdtempSync(join(tmpdir(), 'additional-dir-')))
   try {
