@@ -19,6 +19,17 @@ DeepSeek API 无状态、推理时权重冻结——它不会因为我们用得�
 | `scenes/*.yaml` | 80 个真实台球场景，7 类：诊断/活动/内容/约客/玩法/日报/客户定价 |
 | `run_northstar_eval.py` | runner：构造门店→复刻真实 prompt 拼装→真跑 DeepSeek→LLM-as-judge→三级量化 |
 
+## 退场边界
+
+旧 Python eval 只保留“内容质量/北极星/业务场景”这类暂时还没有 TS 等价的评测。coding agent 的 `run_command` 执行、审批分级、危险命令和 Bash 只读 allowlist 已迁到 TS 内核测试:
+
+```bash
+cd ../ts && bun test src/tools/runCommandTool.test.ts src/permissions/permissionRules.test.ts src/permissions/resolve.test.ts --timeout 60000
+cd ../ts && bun run typecheck
+```
+
+因此旧的 `cmd_live_test.py` 已删除；后续同类“命令安全/工具权限”回归继续往 TS 测试集中收敛。
+
 **无数据库依赖**：构造 in-memory `Store` + 模拟记忆，复用项目纯函数复刻"发给 DeepSeek 的真实 prompt"，
 绕过配额/落库/品牌声音（这些不影响"内容质量 vs 北极星"的测量）。复刻 5 种生成路径
 （workbench_free / workbench_card / diagnosis / activity / outreach）。
