@@ -8,6 +8,9 @@ import type { Workspace } from '../workspace/workspace'
 import type { Sandbox } from '../sandbox/sandbox'
 import type { PermissionMode } from '../permissions/types'
 import { APPROVAL_PENDING_MSG, DENIAL_FALLBACK_MSG, resolvePermission } from '../permissions/resolve'
+import type { PermissionUpdate } from '../permissions/types'
+import { applyPermissionUpdates } from '../permissions/permissionUpdate'
+import { rememberedPermissionUpdatesForApproval, transientPermissionUpdatesForApproval } from '../permissions/approvalSuggestions'
 import {
   actionKey,
   clearApproval,
@@ -100,6 +103,7 @@ export interface RunAgentLoopOptions {
   signal?: AbortSignal
   sandbox?: Sandbox
   permissionMode?: PermissionMode
+  initialPermissionUpdates?: PermissionUpdate[]
   initialAllowedTools?: string[]
   conversationId?: string
   localDenialTracking?: DenialTrackingState
@@ -154,7 +158,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     reconstructContentReplacementState(history, contentReplacementRecords)
   const invokedSkillScopeId = opts.conversationId ?? null
   restoreInvokedSkillsFromMessages(history, invokedSkillScopeId)
-  const ctx: ToolContext = {
+  let ctx: ToolContext = {
     workspace: opts.workspace,
     model,
     registry,
@@ -174,6 +178,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     toolResultStoreDir: opts.toolResultStoreDir,
     contentReplacementState,
   }
+  if (opts.initialPermissionUpdates?.length) ctx = applyPermissionUpdates(ctx, opts.initialPermissionUpdates)
   addAllowedToolsToContext(ctx, opts.initialAllowedTools)
   const restoredWorktree = activateWorktreeSessionForContext(ctx)
   const hooksForCurrentSession = (): HookRegistry | undefined => mergeHookRegistries(opts.hooks, ctx.sessionHooks)
@@ -761,14 +766,17 @@ async function* gateOneCall(
       yield questionEvent(question)
       const answer = await waitForSteeringAnswer(ctx, question.timeoutMs, answerStartLen)
       if (answer && isPlanApprovalAnswer(answer)) {
-        ctx.permissionMode = 'default'
+        // cc 的 ExitPlanMode 批准默认高亮项即 "Yes, auto-accept edits" → acceptEdits;
+        // 本项目单一"批准并执行"选项映射到同一档:批准整份计划后,实施阶段的文件编辑低摩擦放行,
+        // 不再逐个 write/edit 重复弹卡(对外/不可逆/高风险动作仍走审批闸)。
+        ctx.permissionMode = 'acceptEdits'
         ctx.pendingPlanVerification = {
           plan,
           verificationStarted: false,
           verificationCompleted: false,
           toolCallsSinceApproval: 0,
         }
-        yield feedback(`<plan_approved>\n${plan}\n</plan_approved>\n用户已批准计划,当前回合已退出计划模式并切到 default 权限档。完成实施后必须直接调用 VerifyPlanExecution 并附可复核证据。`, false)
+        yield feedback(`<plan_approved>\n${plan}\n</plan_approved>\n用户已批准计划,当前回合已退出计划模式并切到 acceptEdits(自动接受文件编辑)档。完成实施后必须直接调用 VerifyPlanExecution 并附可复核证据。`, false)
       } else if (answer) {
         yield feedback(`<plan_needs_revision>\n${answer}\n</plan_needs_revision>`, false)
       } else {
@@ -906,33 +914,43 @@ export async function executeApproved(
   ctx: ToolContext,
   remember = false,
   tokenArgs: unknown = args,
-): Promise<{ ok: boolean; output: string }> {
+): Promise<{ ok: boolean; output: string; permissionUpdates?: PermissionUpdate[] }> {
   if (!verifyApproval(tool, tokenArgs, token)) return { ok: false, output: '审批校验失败:token 与动作不匹配,拒绝执行。' }
   const t = registry.get(tool)
   if (!t) return { ok: false, output: `未知工具 ${tool}` }
   const decision = resolvePermission(t, args, ctx)
   if (decision.behavior === 'deny') return { ok: false, output: decision.message }
   const executionArgs = decision.behavior === 'allow' ? decision.updatedInput ?? args : args
+  const approvalClass = decision.behavior === 'ask'
+    ? decision.approvalClass
+    : t.approvalClassFor?.(executionArgs, ctx) ?? t.approvalClass
+  const transientUpdates = decision.behavior === 'ask'
+    ? transientPermissionUpdatesForApproval(tool, executionArgs, ctx)
+    : []
+  const rememberedUpdates = remember && decision.behavior === 'ask' && isApprovalRememberable(decision)
+    ? rememberedPermissionUpdatesForApproval(tool, executionArgs, ctx, approvalClass)
+    : []
+  const executionCtx = transientUpdates.length ? applyPermissionUpdates(ctx, transientUpdates) : ctx
   clearDenialForContext(ctx, actionKey(tool, tokenArgs))
   clearDenialForContext(ctx, actionKey(tool, executionArgs))
-  const previousApprovedToolExecution = ctx.approvedToolExecution
+  const previousApprovedToolExecution = executionCtx.approvedToolExecution
   try {
-    ctx.approvedToolExecution = { name: tool, key: actionKey(tool, tokenArgs) }
-    const output = await t.execute(executionArgs, ctx)
+    executionCtx.approvedToolExecution = { name: tool, key: actionKey(tool, tokenArgs) }
+    const output = await t.execute(executionArgs, executionCtx)
     const stored = await maybeStoreToolResult(tool, 'approved', output, {
-      dir: ctx.toolResultStoreDir,
-      conversationId: ctx.conversationId,
+      dir: executionCtx.toolResultStoreDir,
+      conversationId: executionCtx.conversationId,
     })
     if (remember) {
       if (decision.behavior === 'ask' && isApprovalRememberable(decision)) {
         recordApprovalForContext(ctx, actionKey(tool, executionArgs))
       }
     }
-    return { ok: true, output: stored.content }
+    return { ok: true, output: stored.content, ...(rememberedUpdates.length ? { permissionUpdates: rememberedUpdates } : {}) }
   } catch (err) {
     return { ok: false, output: `工具 ${tool} 执行失败:${err instanceof Error ? err.message : String(err)}` }
   } finally {
-    ctx.approvedToolExecution = previousApprovedToolExecution
+    executionCtx.approvedToolExecution = previousApprovedToolExecution
   }
 }
 

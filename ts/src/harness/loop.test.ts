@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync, readFileSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../workspace/workspace'
@@ -16,6 +16,7 @@ import { executeApproved, handleReject } from './loop'
 import { createDenialTrackingState, resetDenialStore } from '../permissions/denialTracking'
 import { signApproval } from '../permissions/approval'
 import type { Tool } from '../tools/Tool'
+import { fileWriteTool } from '../tools/fileWriteTool'
 import { textBlock, toolResultBlock, userText } from '../types/message'
 import { readStoredToolResultTool } from '../tools/storedToolResultTool'
 import { TeamService } from '../tasks/teamService'
@@ -52,6 +53,9 @@ test('runs a multi-step tool task: think -> tool -> feed back -> think -> final'
   const events = await collect(runAgentLoop({
     model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
     systemPrompt: 'SYS', userMessage: '把 src.txt 加工写进 out.txt',
+    // 关注点是多步循环机制(think→tool→回灌→final);acceptEdits 让文件写入低摩擦落盘,
+    // default 档下 write_file 会走审批闸(见 permissions/resolve),那是另一个测试覆盖的行为。
+    permissionMode: 'acceptEdits',
   }))
   expect(events.map(e => e.type)).toEqual([
     'thinking', 'tool_call', 'tool_result', 'thinking', 'tool_call', 'tool_result', 'final',
@@ -914,6 +918,83 @@ test('executeApproved remember=true lets the same action auto-run later in the s
   expect(events.find(e => e.type === 'tool_result')).toMatchObject({ type: 'tool_result', output: 'SENT-2' })
 })
 
+test('executeApproved remember=true returns session PermissionUpdates consumed by later agent turns', async () => {
+  process.env.SECRET_KEY = SECRET
+  resetDenialStore()
+  const registry = buildGeneralRegistry()
+  const args = { command: 'mkdir -p approved-one' }
+  const approved = await executeApproved(
+    registry,
+    'run_command',
+    args,
+    signApproval('run_command', args, SECRET),
+    { workspace: new Workspace(root), conversationId: 'conv-permission-updates', permissionMode: 'default' },
+    true,
+  )
+  expect(approved.ok).toBe(true)
+  expect(approved.permissionUpdates).toEqual([
+    {
+      type: 'addRules',
+      destination: 'session',
+      behavior: 'allow',
+      rules: [{ toolName: 'Bash', ruleContent: 'mkdir -p:*' }],
+    },
+  ])
+
+  const events = await collect(runAgentLoop({
+    model: scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: 'a', name: 'run_command', input: { command: 'mkdir -p approved-two' } }] },
+      { kind: 'final', text: 'done' },
+    ]),
+    registry,
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    permissionMode: 'default',
+    conversationId: 'conv-permission-updates',
+    initialPermissionUpdates: approved.permissionUpdates,
+  }))
+  expect(events.some(e => e.type === 'approval_request')).toBe(false)
+  expect(existsSync(join(root, 'approved-two'))).toBe(true)
+})
+
+test('executeApproved grants external file directory transiently and can remember it as PermissionUpdates', async () => {
+  process.env.SECRET_KEY = SECRET
+  const externalRoot = realpathSync(mkdtempSync(join(tmpdir(), 'approved-external-')))
+  try {
+    const registry = new ToolRegistry([fileWriteTool])
+    const args = { path: join(externalRoot, 'note.txt'), content: 'outside' }
+    const approvedOnce = await executeApproved(
+      registry,
+      'write_file',
+      args,
+      signApproval('write_file', args, SECRET),
+      { workspace: new Workspace(root), conversationId: 'conv-external-once', permissionMode: 'default' },
+      false,
+    )
+    expect(approvedOnce.ok).toBe(true)
+    expect(readFileSync(join(externalRoot, 'note.txt'), 'utf8')).toBe('outside')
+    expect(approvedOnce.permissionUpdates).toBeUndefined()
+
+    const rememberArgs = { path: join(externalRoot, 'remembered.txt'), content: 'remembered' }
+    const approvedRemember = await executeApproved(
+      registry,
+      'write_file',
+      rememberArgs,
+      signApproval('write_file', rememberArgs, SECRET),
+      { workspace: new Workspace(root), conversationId: 'conv-external-remember', permissionMode: 'default' },
+      true,
+    )
+    expect(approvedRemember.ok).toBe(true)
+    expect(approvedRemember.permissionUpdates).toEqual([
+      { type: 'setMode', destination: 'session', mode: 'acceptEdits' },
+      { type: 'addDirectories', destination: 'session', directories: [externalRoot] },
+    ])
+  } finally {
+    rmSync(externalRoot, { recursive: true, force: true })
+  }
+})
+
 test('forceConfirm approval requests are not rememberable', async () => {
   process.env.SECRET_KEY = SECRET
   resetDenialStore()
@@ -1025,17 +1106,26 @@ test('local denial tracking isolates subagent approvals from parent conversation
   expect(otherLocalEvents.some(e => e.type === 'approval_request')).toBe(true)
 })
 
-test('Delta A:write_file 在 ask 档仍直接执行、不弹卡', async () => {
+test('对齐 cc:write_file 在 default/ask 档弹审批卡不直接落盘,acceptEdits 档才自动写', async () => {
   resetDenialStore()
-  const steps: AssistantStep[] = [
+  const steps = (): AssistantStep[] => [
     { kind: 'tool_calls', calls: [{ id: 'a', name: 'write_file', input: { path: 'o.txt', content: 'x' } }] },
     { kind: 'final', text: '写好了' },
   ]
-  const events = await collect(
-    runAgentLoop({ model: scriptedModel(steps), registry: buildGeneralRegistry(), workspace: new Workspace(root),
+  // ask(→default) 档:文件写入属 file 类,需审批 → 弹卡、不直接落盘(cc default 行为)
+  const asked = await collect(
+    runAgentLoop({ model: scriptedModel(steps()), registry: buildGeneralRegistry(), workspace: new Workspace(root),
       systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'ask' }),
   )
-  expect(events.some(e => e.type === 'approval_request')).toBe(false)
+  expect(asked.some(e => e.type === 'approval_request')).toBe(true)
+  expect(existsSync(join(root, 'o.txt'))).toBe(false)
+
+  // acceptEdits 档:文件编辑低摩擦 → 自动写、不弹卡
+  const auto = await collect(
+    runAgentLoop({ model: scriptedModel(steps()), registry: buildGeneralRegistry(), workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'acceptEdits' }),
+  )
+  expect(auto.some(e => e.type === 'approval_request')).toBe(false)
   expect(readFileSync(join(root, 'o.txt'), 'utf8')).toBe('x')
 })
 
@@ -1472,6 +1562,9 @@ test('EnterPlanMode rejection keeps the existing permission mode', async () => {
     workspace: new Workspace(root),
     systemPrompt: 'SYS',
     userMessage: 'x',
+    // 起手 acceptEdits:EnterPlanMode 被拒后不应切进 plan 档,而是保持原档;
+    // 后续 write_file 能自动落盘,正说明权限模式没被改动(plan 档会拦写)。
+    permissionMode: 'acceptEdits',
     steerInbox: inbox,
   })) {
     events.push(event)
