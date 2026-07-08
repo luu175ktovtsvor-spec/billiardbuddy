@@ -280,8 +280,20 @@ export function splitShellCommandsForPermission(command: string): string[] {
 function commandCandidatesForPermissionRule(command: string): string[] {
   const trimmed = command.trim()
   if (!trimmed) return []
-  const stripped = stripSafeShellWrappers(trimmed)
-  return stripped && stripped !== trimmed ? [trimmed, stripped] : [trimmed]
+  const candidates = [trimmed]
+  const seen = new Set(candidates)
+  let index = 0
+
+  while (index < candidates.length) {
+    const candidate = candidates[index++]!
+    const stripped = stripSafeShellWrappers(candidate)
+    if (stripped && !seen.has(stripped)) {
+      seen.add(stripped)
+      candidates.push(stripped)
+    }
+  }
+
+  return candidates
 }
 
 function shellSingleCommandMatchesPermissionRule(command: string, ruleContent: string): boolean {
