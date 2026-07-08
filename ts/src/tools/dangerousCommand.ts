@@ -1024,6 +1024,12 @@ export function shellCdGitNeedsApproval(command: string): boolean {
   return segments.some(segment => isCdLikeCommand(segment)) && segments.some(segment => isGitLikeCommand(segment))
 }
 
+export function shellGitInternalWriteNeedsApproval(command: string): boolean {
+  const segments = splitSegments(command)
+  if (!segments.some(segment => isGitLikeCommand(segment))) return false
+  return segments.some(segment => segmentWritesGitInternalPath(segment))
+}
+
 function extractOutputRedirectionTargets(command: string): string[] {
   const targets: string[] = []
   let quote: '"' | "'" | null = null
@@ -1118,6 +1124,29 @@ function isGitLikeCommand(segment: string): boolean {
   return tokens[0] === 'xargs' && tokens.includes('git')
 }
 
+function segmentWritesGitInternalPath(segment: string): boolean {
+  const stripped = stripSafeShellWrappers(segment)
+  for (const target of extractOutputRedirectionTargets(stripped)) {
+    if (isGitInternalPath(target)) return true
+  }
+
+  const tokens = tokenizeShellWords(stripped)
+  const command = tokens[0]?.toLowerCase()
+  if (!command || !['mkdir', 'touch', 'cp', 'mv'].includes(command)) return false
+  return tokens.slice(1).filter(token => token !== '--' && !token.startsWith('-')).some(isGitInternalPath)
+}
+
+function isGitInternalPath(target: string): boolean {
+  const normalized = target.replace(/^\.?\//, '')
+  return normalized === 'HEAD' ||
+    normalized === 'objects' ||
+    normalized.startsWith('objects/') ||
+    normalized === 'refs' ||
+    normalized.startsWith('refs/') ||
+    normalized === 'hooks' ||
+    normalized.startsWith('hooks/')
+}
+
 function redirectionTargetNeedsApproval(target: string, opts: { root: string; cwd?: string }): boolean {
   if (!target || target === '/dev/null') return false
   if (/[$%*?\[\]{}=~]/.test(target)) return true
@@ -1179,6 +1208,6 @@ function maxRisk(a: CommandRisk, b: CommandRisk): CommandRisk {
 
 export function classifyCommandRisk(command: string): CommandRisk {
   if (isDangerousCommand(command)) return 'destructive'
-  const initialRisk: CommandRisk = hasShellExpansionRisk(command) || hasShellParserRisk(command) || shellCdGitNeedsApproval(command) ? 'outreach' : 'read'
+  const initialRisk: CommandRisk = hasShellExpansionRisk(command) || hasShellParserRisk(command) || shellCdGitNeedsApproval(command) || shellGitInternalWriteNeedsApproval(command) ? 'outreach' : 'read'
   return splitSegments(command).reduce<CommandRisk>((risk, segment) => maxRisk(risk, classifySegment(segment)), initialRisk)
 }
