@@ -2131,8 +2131,9 @@ export function startServer(opts: StartServerOptions = {}) {
     return { workspace, registry, connections: mcpTools.connections }
   }
 
-  async function executeLegacyAgentTool(body: Record<string, unknown>) {
-    if (typeof body.tool !== 'string' || !body.tool.trim()) return jsonDetailError('tool required', 400)
+  /** 审批放行执行的核心:POST /agent/execute 与 WS {type:'approve'} 共用。返回结果 payload 或 null(参数缺失)。 */
+  async function runApprovedTool(body: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+    if (typeof body.tool !== 'string' || !body.tool.trim()) return null
     const tool = body.tool.trim()
     const args = body.args ?? {}
     const approvalArgs = isRecord(body.approval_args) ? body.approval_args : isRecord(body.approvalArgs) ? body.approvalArgs : args
@@ -2156,17 +2157,31 @@ export function startServer(opts: StartServerOptions = {}) {
         const existing = sessionPermissionUpdates.get(conversationId) ?? []
         sessionPermissionUpdates.set(conversationId, dedupePermissionUpdates([...existing, ...result.permissionUpdates]))
       }
-      return Response.json({
+      // cc 对齐:批准后把执行结果落进 transcript,让下一轮模型看得见"审批放行的工具结果",而不是永远停在 pending。
+      // 审批在回合结束后发生(loop 在 approval_request 处已 return),无并发写,load+save 追加安全。
+      if (conversationId && result.ok) {
+        const transcriptStore = sessions.transcript(conversationId)
+        const existing = await transcriptStore.load().catch(() => [] as Message[])
+        const approvedMessage: Message = { role: 'user', content: [textBlock(`[已批准并执行工具 ${tool}]\n${result.output}`)] }
+        await transcriptStore.save([...existing, approvedMessage]).catch(() => undefined)
+      }
+      return {
         tool,
         result: result.output,
         ok: result.ok,
         ...(result.permissionUpdates?.length ? { permission_updates: result.permissionUpdates } : {}),
         continuation: '',
         approval: null,
-      })
+      }
     } finally {
       await closeMcpConnections(built.connections)
     }
+  }
+
+  async function executeLegacyAgentTool(body: Record<string, unknown>) {
+    const payload = await runApprovedTool(body)
+    if (!payload) return jsonDetailError('tool required', 400)
+    return Response.json(payload)
   }
 
   async function rejectLegacyAgentTool(body: Record<string, unknown>) {
@@ -4290,6 +4305,11 @@ export function startServer(opts: StartServerOptions = {}) {
         }
         const body = parsed as Record<string, unknown>
         const type = typeof body.type === 'string' ? body.type : 'run'
+        if (type === 'ping') {
+          // 应用层心跳(对齐 cc ws/handler ping/pong):前端定时发 ping 保活,避免 Bun idle 掐断长连接。
+          wsSend(ws, { type: 'pong', ts: numberFrom(body.ts, 0) || undefined })
+          return
+        }
         if (type === 'run') {
           void handleWsRun(ws, body)
           return
@@ -4331,6 +4351,27 @@ export function startServer(opts: StartServerOptions = {}) {
             if (record) wsSend(ws, { type: 'event', seq: record.seq, ts: record.ts, event: record.event })
             wsSend(ws, { type: 'steer_result', conversationId, queued: inbox.length, running: true })
           })().catch(err => wsError(ws, err instanceof Error ? err.message : String(err)))
+          return
+        }
+        if (type === 'approve') {
+          // 审批放行走同一条 WS(对齐 cc):复用 runApprovedTool(验签→执行→结果写回 transcript),回 approve_result。
+          void (async () => {
+            const payload = await runApprovedTool(body)
+            if (!payload) { wsError(ws, 'tool required'); return }
+            wsSend(ws, { type: 'approve_result', ...payload })
+          })().catch(err => wsError(ws, err instanceof Error ? err.message : String(err)))
+          return
+        }
+        if (type === 'reject') {
+          // 审批拒绝走同一条 WS:复用 handleReject(拒绝追踪:多次拒绝后不再反复弹卡)。
+          const toolName = typeof body.tool === 'string' ? body.tool.trim() : ''
+          if (!toolName) { wsError(ws, 'tool required'); return }
+          handleReject(toolName, body.args ?? {}, {
+            workspace: workspaceFromBody(body),
+            conversationId: stringOr(body.conversation_id ?? body.conversationId, ws.data.conversationId) || undefined,
+            permissionMode: permissionModeFrom(body.permission_mode ?? body.permissionMode),
+          })
+          wsSend(ws, { type: 'reject_result', ok: true })
           return
         }
         wsError(ws, `unknown websocket message type: ${type}`)
