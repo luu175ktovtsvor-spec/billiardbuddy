@@ -22,7 +22,8 @@
     "smoke:native": "bun run scripts/smoke/native-plugins.smoke.ts",
     "smoke:sqlite": "bun run scripts/smoke/sqlite.smoke.ts",
     "smoke:sandbox": "bun run scripts/smoke/sandbox.smoke.ts",
-    "smoke:model": "bun run scripts/smoke/model-live.smoke.ts"
+    "smoke:model": "bun run scripts/smoke/model-live.smoke.ts",
+    "smoke:agent-tools": "bun run scripts/smoke/agent-tools-live.smoke.ts"
   },
   "trustedDependencies": [
     "onnxruntime-node",
