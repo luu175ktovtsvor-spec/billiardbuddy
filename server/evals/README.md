@@ -21,14 +21,16 @@ DeepSeek API 无状态、推理时权重冻结——它不会因为我们用得�
 
 ## 退场边界
 
-旧 Python eval 只保留“内容质量/北极星/业务场景”这类暂时还没有 TS 等价的评测。coding agent 的 `run_command` 执行、审批分级、危险命令和 Bash 只读 allowlist 已迁到 TS 内核测试:
+旧 Python eval 只保留“内容质量/北极星/业务场景”这类暂时还没有 TS 等价的评测。coding agent 的 `run_command` 执行、审批分级、危险命令、Bash 只读 allowlist、文件执行工具链已迁到 TS 内核测试/TS smoke:
 
 ```bash
 cd ../ts && bun test src/tools/runCommandTool.test.ts src/permissions/permissionRules.test.ts src/permissions/resolve.test.ts --timeout 60000
+cd ../ts && bun test src/harness/loop.test.ts src/tools/fileTools.test.ts --timeout 60000
 cd ../ts && bun run typecheck
+cd ../ts && bun run smoke:agent-tools   # 需要真模型 key,按需手工跑
 ```
 
-因此旧的 `cmd_live_test.py` 已删除；后续同类“命令安全/工具权限”回归继续往 TS 测试集中收敛。
+因此旧的 `cmd_live_test.py`、`file_exec_live_test.py`、`agent_tools_e2e.py` 已删除；后续同类“命令安全/工具权限/文件执行”回归继续往 TS 测试和 smoke 集中收敛。
 
 **无数据库依赖**：构造 in-memory `Store` + 模拟记忆，复用项目纯函数复刻"发给 DeepSeek 的真实 prompt"，
 绕过配额/落库/品牌声音（这些不影响"内容质量 vs 北极星"的测量）。复刻 5 种生成路径
