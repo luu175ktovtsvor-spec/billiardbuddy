@@ -28,7 +28,8 @@ import {
 import { VoiceTranscriptionError, transcribeVoiceFile } from './services/voiceTranscription'
 import { buildGeneralRegistry } from '../tools/generalTools'
 import { workspaceForActiveWorktree } from '../tools/worktreeTools'
-import { formatUseSkillResult, loadSkillsDir } from '../skills/skillLoader'
+import { formatUseSkillResult, loadSkillsDir, recordInvokedSkill } from '../skills/skillLoader'
+import { createInvokedSkillsMessage, restoreInvokedSkillsFromMessages } from '../skills/invokedSkills'
 import { createBuiltinCommandLibrary, isBuiltinForkCommand } from '../commands/builtinCommands'
 import { allowedToolsForAgent } from '../commands/allowedTools'
 import { bridgeUnsafeCommandMessage, filterBridgeSafeCommands, isBridgeSafeCommand, loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
@@ -1488,9 +1489,10 @@ export function startServer(opts: StartServerOptions = {}) {
       }
     }
     const executeSkill = async (skill: PromptCommand, args: string, toolCtx: ToolContext): Promise<string> => {
-      if (skill.context !== 'fork') return formatUseSkillResult(skill, await skill.getPrompt(args, toolCtx))
-      if (!backgroundAgentOptions) throw new Error('skill context:fork 需要后台任务运行器')
       const expandedPrompt = (await skill.getPrompt(args, toolCtx)).trim()
+      recordInvokedSkill(skill, expandedPrompt, toolCtx)
+      if (skill.context !== 'fork') return formatUseSkillResult(skill, expandedPrompt)
+      if (!backgroundAgentOptions) throw new Error('skill context:fork 需要后台任务运行器')
       if (!expandedPrompt) return `技能 ${skill.name} 没有可执行内容。`
       const agent = promptWorkerAgent(skill, 'skill')
       const { task } = await startBackgroundAgentRun(
@@ -1951,6 +1953,8 @@ export function startServer(opts: StartServerOptions = {}) {
 
     const transcript = sessions.transcript(id)
     const messages = await transcript.load()
+    restoreInvokedSkillsFromMessages(messages, id)
+    const invokedSkills = createInvokedSkillsMessage(id)
     const keepRecentMessages = Math.max(1, Math.min(100, numberFrom(rawBody.keepRecentMessages ?? rawBody.keep_recent_messages, 12)))
     const minOldMessages = Math.max(1, Math.min(20, numberFrom(rawBody.minOldMessages ?? rawBody.min_old_messages, 1)))
     const model = createModelFromRuntimeProviders(providerRuntimes, opts.fetchImpl, providerHealthCallbacks)
@@ -1958,6 +1962,7 @@ export function startServer(opts: StartServerOptions = {}) {
       messages,
       model,
       force: true,
+      postSummaryMessages: invokedSkills ? [invokedSkills] : [],
       keepRecentMessages,
       minOldMessages,
       readOnlyToolNames: new Set(),

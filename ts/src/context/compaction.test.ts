@@ -70,6 +70,7 @@ describe('compactPipeline', () => {
       messages,
       model,
       system: 'SYS',
+      postSummaryMessages: [userText('保留已调用技能')],
       contextWindowChars: 120,
       readOnlyToolNames: new Set(),
       force: true,
@@ -84,6 +85,7 @@ describe('compactPipeline', () => {
     expect(firstText?.type).toBe('text')
     if (firstText?.type !== 'text') throw new Error('expected summary text block')
     expect(firstText.text).toContain('旧对话摘要')
+    expect(out.messages[1]).toEqual(userText('保留已调用技能'))
     expect(estimateMessagesChars(out.messages)).toBeLessThan(estimateMessagesChars(messages))
   })
 

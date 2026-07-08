@@ -40,6 +40,7 @@ export interface CompactPipelineInput extends SplitOptions, MicrocompactOptions 
   messages: Message[]
   model: Model
   system?: string
+  postSummaryMessages?: Message[]
   contextWindowChars?: number
   readOnlyToolNames: ReadonlySet<string>
   compactionFailures?: number
@@ -173,6 +174,7 @@ export async function compactPipeline(input: CompactPipelineInput): Promise<Comp
     const summary = extractCompactionSummary(rawSummary)
     const compacted: Message[] = [
       { role: 'user', content: [textBlock(`[此前对话摘要]\n${summary}`)] },
+      ...(input.postSummaryMessages ?? []),
       ...split.recent,
     ]
     return {

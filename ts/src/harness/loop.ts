@@ -29,6 +29,7 @@ import { collectReminders, drainSteering, extendTurns, steerBlock, wrapReminder 
 import { formatTodoChecklist, parseProgressMarkdown } from '../types/todo'
 import { compactPipeline, looksLikeContextOverflow } from '../context/compaction'
 import { buildRecentFileContextMessage } from '../context/recentFileContext'
+import { createInvokedSkillsMessage, restoreInvokedSkillsFromMessages } from '../skills/invokedSkills'
 import {
   applyToolResultBudget,
   cloneContentReplacementState,
@@ -146,6 +147,8 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   }
   const contentReplacementState = opts.contentReplacementState ??
     reconstructContentReplacementState(history, contentReplacementRecords)
+  const invokedSkillScopeId = opts.conversationId ?? null
+  restoreInvokedSkillsFromMessages(history, invokedSkillScopeId)
   const ctx: ToolContext = {
     workspace: opts.workspace,
     model,
@@ -282,10 +285,12 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   }
 
   const maybeCompact = async (force = false): Promise<string | undefined> => {
+    const invokedSkills = createInvokedSkillsMessage(invokedSkillScopeId)
     const out = await compactPipeline({
       messages,
       model,
       system,
+      postSummaryMessages: invokedSkills ? [invokedSkills] : [],
       contextWindowChars: opts.contextWindowChars,
       readOnlyToolNames,
       compactionFailures,
