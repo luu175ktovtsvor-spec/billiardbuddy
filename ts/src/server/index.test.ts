@@ -2991,6 +2991,26 @@ test('WS /agent/ws runs a turn and replays persisted events after disconnect', a
   }
 })
 
+test('WS /agent/ws accepts steer over the same connection (aligns cc unified-WS transport)', async () => {
+  const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-ws-steer-'))
+  const wsServer = startServer({ port: 0, transcriptRoot })
+  const client = wsClient(`ws://127.0.0.1:${wsServer.port}/agent/ws?conversationId=ws-steer`)
+  try {
+    await client.opened
+    expect(await client.next()).toMatchObject({ type: 'ready', conversationId: 'ws-steer' })
+    // 无运行中回合:steer 回 running:false(走同一条 WS,不报错不崩)
+    client.ws.send(JSON.stringify({ type: 'steer', message: '换个思路' }))
+    expect(await client.next()).toMatchObject({ type: 'steer_result', conversationId: 'ws-steer', running: false })
+    // 空消息:报错但连接不崩,后续仍能收发
+    client.ws.send(JSON.stringify({ type: 'steer', message: '   ' }))
+    expect(await client.next()).toMatchObject({ type: 'error' })
+    client.close()
+  } finally {
+    wsServer.stop(true)
+    rmSync(transcriptRoot, { recursive: true, force: true })
+  }
+})
+
 test('session interrupt aborts the in-flight model request and marks session interrupted', async () => {
   const root = mkdtempSync(join(tmpdir(), 'session-interrupt-'))
   let capturedSignal: AbortSignal | undefined

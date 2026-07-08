@@ -4314,6 +4314,25 @@ export function startServer(opts: StartServerOptions = {}) {
           })().catch(err => wsError(ws, err instanceof Error ? err.message : String(err)))
           return
         }
+        if (type === 'steer') {
+          // 运行中插话纠偏走同一条 WS(对齐 cc 全走一条连接):推进 steerInbox + 落 steering 事件回灌。
+          const conversationId = stringOr(body.conversationId, ws.data.conversationId)
+          const message = typeof body.message === 'string' ? body.message.trim() : ''
+          if (!message) { wsError(ws, 'steer message required'); return }
+          void (async () => {
+            if (!turns.isRunning(conversationId)) {
+              wsSend(ws, { type: 'steer_result', conversationId, queued: 0, running: false })
+              return
+            }
+            const inbox = steerInboxes.get(conversationId) ?? []
+            inbox.push(message)
+            steerInboxes.set(conversationId, inbox)
+            const record = await sessions.appendEvent(conversationId, { type: 'steering', content: message }).catch(() => null)
+            if (record) wsSend(ws, { type: 'event', seq: record.seq, ts: record.ts, event: record.event })
+            wsSend(ws, { type: 'steer_result', conversationId, queued: inbox.length, running: true })
+          })().catch(err => wsError(ws, err instanceof Error ? err.message : String(err)))
+          return
+        }
         wsError(ws, `unknown websocket message type: ${type}`)
       },
     },
