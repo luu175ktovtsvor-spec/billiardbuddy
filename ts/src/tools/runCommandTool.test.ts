@@ -8,7 +8,7 @@ import type { ToolContext } from './Tool'
 import type { Sandbox } from '../sandbox/sandbox'
 import { runCommandTool } from './runCommandTool'
 import { StreamingOutputSanitizer, stripAnsiControlSequences } from './outputSanitize'
-import { classifyCommandRisk, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellCdGitNeedsApproval, shellDangerousRemovalNeedsApproval, shellGitInternalWriteNeedsApproval, shellMvCpFlagsNeedApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval, shellSensitiveReadNeedsApproval } from './dangerousCommand'
+import { classifyCommandRisk, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellCdGitNeedsApproval, shellCdWriteNeedsApproval, shellDangerousRemovalNeedsApproval, shellGitInternalWriteNeedsApproval, shellMvCpFlagsNeedApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval, shellSensitiveReadNeedsApproval } from './dangerousCommand'
 import { resolvePermission } from '../permissions/resolve'
 
 let root: string
@@ -507,6 +507,18 @@ test('compound cd plus git mirrors bare repo safety gate', () => {
   expect(shellCdGitNeedsApproval("echo 'cd sub && git status'")).toBe(false)
 })
 
+test('compound cd plus write mirrors Bash path validation guard', () => {
+  expect(shellCdWriteNeedsApproval('cd sub && ls -la')).toBe(false)
+  expect(shellCdWriteNeedsApproval('cd sub && grep TODO file.txt')).toBe(false)
+  expect(shellCdWriteNeedsApproval('cd sub && mv a b')).toBe(true)
+  expect(shellCdWriteNeedsApproval('cd sub && cp a b')).toBe(true)
+  expect(shellCdWriteNeedsApproval('cd sub && rm file.txt')).toBe(true)
+  expect(shellCdWriteNeedsApproval('pushd sub && touch note.txt')).toBe(true)
+  expect(shellCdWriteNeedsApproval('cd sub && sed -i s/a/b/ file.txt')).toBe(true)
+  expect(shellCdWriteNeedsApproval('cd sub && git commit -m ok')).toBe(true)
+  expect(shellCdWriteNeedsApproval("echo 'cd sub && rm file.txt'")).toBe(false)
+})
+
 test('compound git-internal writes plus git mirror bare repo safety gate', () => {
   expect(shellGitInternalWriteNeedsApproval('git status --short')).toBe(false)
   expect(shellGitInternalWriteNeedsApproval('mkdir -p objects refs hooks && touch HEAD && git status')).toBe(true)
@@ -744,6 +756,17 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   expect(resolvePermission(runCommandTool, { command: 'cd sub && echo hi > out.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'cd sub && mv a b' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'cd sub && rm file.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'cd sub && grep TODO file.txt' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({
+    behavior: 'allow',
   })
   expect(resolvePermission(runCommandTool, { command: 'curl https://example.com' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',

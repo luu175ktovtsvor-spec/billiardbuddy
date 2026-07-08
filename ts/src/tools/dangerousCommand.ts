@@ -3327,6 +3327,11 @@ export function shellCdGitNeedsApproval(command: string): boolean {
   return segments.some(segment => isCdLikeCommand(segment)) && segments.some(segment => isGitLikeCommand(segment))
 }
 
+export function shellCdWriteNeedsApproval(command: string): boolean {
+  const segments = splitSegments(command)
+  return segments.some(segment => isCdLikeCommand(segment)) && segments.some(segment => isWriteLikeCommand(segment))
+}
+
 export function shellGitInternalWriteNeedsApproval(command: string): boolean {
   const segments = splitSegments(command)
   if (!segments.some(segment => isGitLikeCommand(segment))) return false
@@ -3435,6 +3440,17 @@ function isGitLikeCommand(segment: string): boolean {
   const tokens = tokenizeShellWords(stripSafeShellWrappers(segment).toLowerCase())
   if (tokens[0] === 'git') return true
   return tokens[0] === 'xargs' && tokens.includes('git')
+}
+
+function isWriteLikeCommand(segment: string): boolean {
+  const stripped = stripSafeShellWrappers(stripRuntimeEnvWrapper(segment))
+  if (hasWriteRedirection(stripped)) return true
+  const tokens = tokenizeShellWords(stripped.toLowerCase())
+  const command = tokens[0]
+  if (!command) return false
+  if (['rm', 'mv', 'cp', 'mkdir', 'rmdir', 'touch', 'chmod', 'chown', 'ln', 'tee'].includes(command)) return true
+  if ((command === 'sed' || command === 'perl') && tokens.slice(1).some(token => token === '-i' || token.startsWith('-i') || token === '--in-place' || token.startsWith('--in-place='))) return true
+  return command === 'git' && /^(checkout|switch|restore|reset|merge|rebase|commit|tag|branch|apply|am|stash|pull|push)$/.test(tokens[1] ?? '')
 }
 
 function segmentWritesGitInternalPath(segment: string): boolean {
