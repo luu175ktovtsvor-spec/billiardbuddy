@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { readFile } from 'node:fs/promises'
-import { parseHookDecisionJSON, type HookDecision, type HookEvent, type HookPayload, type HookRegistry, type HookRule } from './hooks'
+import { parseHookDecisionJSON, type HookDecision, type HookEvent, type HookHandler, type HookPayload, type HookRegistry, type HookRule } from './hooks'
 import type { Tool, ToolContext } from '../tools/Tool'
 import { ToolRegistry } from '../tools/registry'
 import { runAgentLoop } from '../harness/loop'
@@ -95,6 +95,21 @@ function normalizeDecisionList(value: unknown): HookDecision[] {
   if (Array.isArray(value)) return value.map(normalizeDecision).filter((d): d is HookDecision => !!d)
   const single = normalizeDecision(value)
   return single ? [single] : []
+}
+
+function booleanValue(value: unknown): boolean {
+  return value === true || value === 'true'
+}
+
+function onceHandler(raw: Record<string, unknown>, handler: HookHandler): HookHandler {
+  if (!booleanValue(raw.once)) return handler
+  let used = false
+  return async (payload, ctx) => {
+    if (used) return null
+    const result = await handler(payload, ctx)
+    if (Array.isArray(result) ? result.length > 0 : !!result) used = true
+    return result
+  }
 }
 
 function targetEvent(event: HookEvent, options?: NormalizeHookRegistryOptions): HookEvent {
@@ -632,27 +647,27 @@ async function runHttpHook(raw: RawHttpHook, payload: HookPayload, ctx: ToolCont
 function normalizeHookCommand(event: HookEvent, matcher: string | undefined, raw: Record<string, unknown>, options?: NormalizeHookRegistryOptions): HookRule | null {
   const staticDecisions = normalizeDecisionList(raw.decisions ?? raw.decision ?? (raw.action ? raw : undefined))
   if (staticDecisions.length > 0) {
-    return { event, matcher, handler: () => staticDecisions }
+    return { event, matcher, handler: onceHandler(raw, () => staticDecisions) }
   }
 
   if (raw.type === 'command' && typeof raw.command === 'string' && raw.command.trim()) {
     const commandHook = raw as RawCommandHook
-    return { event, matcher, handler: (payload, ctx) => runCommandHook(commandHook, payload, ctx) }
+    return { event, matcher, handler: onceHandler(raw, (payload, ctx) => runCommandHook(commandHook, payload, ctx)) }
   }
 
   if (raw.type === 'http' && typeof raw.url === 'string' && raw.url.trim()) {
     const httpHook = raw as RawHttpHook
-    return { event, matcher, handler: (payload, ctx) => runHttpHook(httpHook, payload, ctx, options?.httpPolicy) }
+    return { event, matcher, handler: onceHandler(raw, (payload, ctx) => runHttpHook(httpHook, payload, ctx, options?.httpPolicy)) }
   }
 
   if (raw.type === 'prompt' && typeof raw.prompt === 'string' && raw.prompt.trim()) {
     const promptHook = raw as RawPromptHook
-    return { event, matcher, handler: (payload, ctx) => runPromptHook(promptHook, payload, ctx) }
+    return { event, matcher, handler: onceHandler(raw, (payload, ctx) => runPromptHook(promptHook, payload, ctx)) }
   }
 
   if (raw.type === 'agent' && typeof raw.prompt === 'string' && raw.prompt.trim()) {
     const agentHook = raw as RawAgentHook
-    return { event, matcher, handler: (payload, ctx) => runAgentHook(agentHook, payload, ctx) }
+    return { event, matcher, handler: onceHandler(raw, (payload, ctx) => runAgentHook(agentHook, payload, ctx)) }
   }
 
   return null

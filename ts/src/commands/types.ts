@@ -1,4 +1,5 @@
 import type { ToolContext } from '../tools/Tool'
+import type { HookRegistry } from '../hooks/hooks'
 
 export interface PromptCommand {
   type: 'prompt'
@@ -10,6 +11,7 @@ export interface PromptCommand {
   model?: string
   context?: 'inline' | 'fork'
   agent?: string
+  hooks?: HookRegistry
   source: 'skills' | 'commands' | 'plugin' | 'builtin' | 'mcp'
   filePath: string
   baseDir: string
