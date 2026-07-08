@@ -55,9 +55,10 @@ function currentCommandInput(input: unknown): string {
  *     4b requiresUserInteraction → ask(连 bypassPermissions 也拦)
  *     4c bypassPermissions → allow(但不越过 fatal/forceConfirm/userInteraction)
  *     4d safePrefix   → allow
- *     4e full 档:spend 过闸 → ask,否则 allow
- *     4f auto_files 档:file 类 → allow,否则 ask
- *     4g ask/其它     → ask
+ *     4e file 类本机可逆动作 → allow(对齐 CC acceptEdits:审批只卡对外/不可逆)
+ *     4f full 档:spend 过闸 → ask,否则 allow
+ *     4g auto_files 档:非 file 类仍 ask
+ *     4h ask/其它     → ask
  */
 function resolvePermissionInner(tool: Tool, input: unknown, ctx: ToolContext): PermissionDecision {
   const mode = ctx.permissionMode ?? 'ask'
@@ -87,6 +88,10 @@ function resolvePermissionInner(tool: Tool, input: unknown, ctx: ToolContext): P
   }
   if (tool.safePrefixFor?.(input, ctx)) return { behavior: 'allow', reason: { type: 'safePrefix' } }
 
+  if (approvalClass === 'file') {
+    return { behavior: 'allow', reason: { type: 'mode', mode } }
+  }
+
   if (mode === 'full') {
     if (approvalClass === 'spend' && (ctx.autoSpendCount ?? 0) >= AUTO_SPEND_LIMIT) {
       return ask(tool, ctx, input, { type: 'mode', mode }, approvalClass)
@@ -94,7 +99,6 @@ function resolvePermissionInner(tool: Tool, input: unknown, ctx: ToolContext): P
     return { behavior: 'allow', reason: { type: 'mode', mode } }
   }
   if (mode === 'auto_files') {
-    if (approvalClass === 'file') return { behavior: 'allow', reason: { type: 'mode', mode } }
     return ask(tool, ctx, input, { type: 'mode', mode }, approvalClass)
   }
   // ask(默认)/ plan 档下走到这的只读+需审批工具 → 弹卡

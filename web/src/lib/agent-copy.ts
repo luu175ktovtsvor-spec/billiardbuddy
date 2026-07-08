@@ -11,8 +11,8 @@ import type { PermissionMode } from "@/hooks/use-agent-chat";
  * 后端值是 ask / auto_files / plan / full，只统一显示文案与描述。
  */
 export const PERMISSION_MODES: { value: PermissionMode; label: string; desc: string; effects: string[] }[] = [
-  { value: "ask", label: "逐项确认", desc: "改文件、跑命令前先问你", effects: ["改文件：先问", "跑命令：先问", "对外发布：必须确认"] },
-  { value: "auto_files", label: "自动接受修改", desc: "改文件直接做，跑命令和对外动作仍先问", effects: ["改文件：直接做", "跑命令：先问", "对外发布：必须确认"] },
+  { value: "ask", label: "默认", desc: "本机读写直接做，对外和不可逆动作先问", effects: ["改文件：直接做", "本机命令：直接跑", "对外/删除：必须确认"] },
+  { value: "auto_files", label: "接受修改", desc: "本机读写直接做，对外和不可逆动作先问", effects: ["改文件：直接做", "本机命令：直接跑", "对外/删除：必须确认"] },
   { value: "plan", label: "计划模式", desc: "只看只想、不动手", effects: ["改文件：不做", "跑命令：不跑", "对外发布：不发布"] },
   { value: "full", label: "跳过确认", desc: "普通读写改查直接做，发布、删除、高成本动作仍确认", effects: ["改文件：直接做", "跑命令：直接跑", "对外发布：必须确认"] },
 ];
@@ -20,7 +20,7 @@ export const PERMISSION_MODES: { value: PermissionMode; label: string; desc: str
 /** 空状态 / 欢迎 —— 去客服腔，专业 agent 基调（对标 cc empty state）。 */
 export const WELCOME = {
   title: "今天要处理什么？",
-  subtitle: "可以改代码、查资料、整理文件、分析报表，也可以继续做图和视频。需要动文件或跑命令时会按权限确认。",
+  subtitle: "可以改代码、查资料、整理文件、分析报表，也可以继续做图和视频。对外触达、不可逆或高风险动作会先确认。",
   placeholder: "描述任务，或输入 / 调命令，比如：修改这个文件 / 跑测试 / 看这份报表",
 };
 
@@ -48,4 +48,4 @@ export const HELP_TEXT = `**我能帮你做什么**
 **几个顺手的小命令**（输入 \`/\` 就会浮出来）：
 \`/new\` 开新对话 · \`/clear\` 清空 · \`/settings\` 设置 · \`/export\` 导出对话
 
-底部还能切**运行权限**（要不要每一步都先问你）和**专家**（是否挂载台球运营专家）。`;
+底部还能切**运行权限**（对外/不可逆动作是否需要确认）和**专家**（是否挂载台球运营专家）。`;
