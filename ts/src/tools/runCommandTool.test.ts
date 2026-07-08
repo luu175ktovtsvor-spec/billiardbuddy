@@ -171,6 +171,21 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('find . -exec curl https://example.com \\;')).toBe('outreach')
   expect(classifyCommandRisk('find . -ok cat {} \\;')).toBe('outreach')
   expect(classifyCommandRisk('find . -fprint found.txt')).toBe('file')
+  expect(classifyCommandRisk("sed -n '1,20p' ts/src/tools/dangerousCommand.ts")).toBe('read')
+  expect(classifyCommandRisk("sed -n -e '1p;2p' ts/src/tools/dangerousCommand.ts")).toBe('read')
+  expect(classifyCommandRisk("sed 's/foo/bar/g'")).toBe('read')
+  expect(classifyCommandRisk("sed -n '1,20w out.txt' ts/src/tools/dangerousCommand.ts")).toBe('file')
+  expect(classifyCommandRisk("sed -i 's/foo/bar/g' file.txt")).toBe('file')
+  expect(classifyCommandRisk('sort -nr package.json')).toBe('read')
+  expect(classifyCommandRisk('sort -k1,1 package.json')).toBe('read')
+  expect(classifyCommandRisk('sort -o sorted.txt package.json')).toBe('file')
+  expect(classifyCommandRisk('file --mime-type package.json')).toBe('read')
+  expect(classifyCommandRisk('file --output out.txt package.json')).toBe('file')
+  expect(classifyCommandRisk('base64 --decode encoded.txt')).toBe('read')
+  expect(classifyCommandRisk('base64 -o out.txt encoded.txt')).toBe('file')
+  expect(classifyCommandRisk('ps aux')).toBe('read')
+  expect(classifyCommandRisk('ps -ef')).toBe('read')
+  expect(classifyCommandRisk('ps auxe')).toBe('outreach')
   expect(classifyCommandRisk('git push --force origin main')).toBe('destructive')
   expect(classifyCommandRisk('git push -f origin main')).toBe('destructive')
   expect(classifyCommandRisk('git reset --hard HEAD~1')).toBe('destructive')
@@ -250,9 +265,16 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   expect(resolvePermission(runCommandTool, { command: "jq '.name' package.json" }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'echo hi > note.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'find . -print' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: "sed -n '1,20p' ts/src/tools/dangerousCommand.ts" }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'sort -nr package.json' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'ps aux' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'find . -delete' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'destructive',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'ps auxe' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
   })
   expect(resolvePermission(runCommandTool, { command: 'find . -exec curl https://example.com \\;' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',

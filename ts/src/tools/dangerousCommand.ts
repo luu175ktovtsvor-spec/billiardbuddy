@@ -61,6 +61,170 @@ const ZSH_DANGEROUS_COMMANDS = new Set([
   'zf_chgrp',
 ])
 
+type FlagArgKind = 'none' | 'number' | 'string' | 'char' | '{}' | 'EOF'
+type ReadOnlyCommandConfig = {
+  safeFlags: Record<string, FlagArgKind>
+  respectsDoubleDash?: boolean
+}
+
+const READ_ONLY_COMMANDS: Record<string, ReadOnlyCommandConfig> = {
+  file: {
+    safeFlags: {
+      '--brief': 'none',
+      '-b': 'none',
+      '--mime': 'none',
+      '-i': 'none',
+      '--mime-type': 'none',
+      '--mime-encoding': 'none',
+      '--apple': 'none',
+      '--check-encoding': 'none',
+      '-c': 'none',
+      '--exclude': 'string',
+      '--exclude-quiet': 'string',
+      '--print0': 'none',
+      '-0': 'none',
+      '-f': 'string',
+      '-F': 'string',
+      '--separator': 'string',
+      '--help': 'none',
+      '--version': 'none',
+      '-v': 'none',
+      '--no-dereference': 'none',
+      '-h': 'none',
+      '--dereference': 'none',
+      '-L': 'none',
+      '--magic-file': 'string',
+      '-m': 'string',
+      '--keep-going': 'none',
+      '-k': 'none',
+      '--list': 'none',
+      '-l': 'none',
+      '--no-buffer': 'none',
+      '-n': 'none',
+      '--preserve-date': 'none',
+      '-p': 'none',
+      '--raw': 'none',
+      '-r': 'none',
+      '-s': 'none',
+      '--special-files': 'none',
+      '--uncompress': 'none',
+      '-z': 'none',
+    },
+  },
+  sort: {
+    safeFlags: {
+      '--ignore-leading-blanks': 'none',
+      '-b': 'none',
+      '--dictionary-order': 'none',
+      '-d': 'none',
+      '--ignore-case': 'none',
+      '-f': 'none',
+      '--general-numeric-sort': 'none',
+      '-g': 'none',
+      '--human-numeric-sort': 'none',
+      '-h': 'none',
+      '--ignore-nonprinting': 'none',
+      '-i': 'none',
+      '--month-sort': 'none',
+      '-M': 'none',
+      '--numeric-sort': 'none',
+      '-n': 'none',
+      '--random-sort': 'none',
+      '-R': 'none',
+      '--reverse': 'none',
+      '-r': 'none',
+      '--sort': 'string',
+      '--stable': 'none',
+      '-s': 'none',
+      '--unique': 'none',
+      '-u': 'none',
+      '--version-sort': 'none',
+      '-V': 'none',
+      '--zero-terminated': 'none',
+      '-z': 'none',
+      '--key': 'string',
+      '-k': 'string',
+      '--field-separator': 'string',
+      '-t': 'string',
+      '--check': 'none',
+      '-c': 'none',
+      '--check-char-order': 'none',
+      '-C': 'none',
+      '--merge': 'none',
+      '-m': 'none',
+      '--buffer-size': 'string',
+      '-S': 'string',
+      '--parallel': 'number',
+      '--batch-size': 'number',
+      '--help': 'none',
+      '--version': 'none',
+    },
+  },
+  base64: {
+    respectsDoubleDash: false,
+    safeFlags: {
+      '-d': 'none',
+      '-D': 'none',
+      '--decode': 'none',
+      '-b': 'number',
+      '--break': 'number',
+      '-w': 'number',
+      '--wrap': 'number',
+      '-i': 'string',
+      '--input': 'string',
+      '--ignore-garbage': 'none',
+      '-h': 'none',
+      '--help': 'none',
+      '--version': 'none',
+    },
+  },
+  ps: {
+    safeFlags: {
+      '-e': 'none',
+      '-A': 'none',
+      '-a': 'none',
+      '-d': 'none',
+      '-N': 'none',
+      '--deselect': 'none',
+      '-f': 'none',
+      '-F': 'none',
+      '-l': 'none',
+      '-j': 'none',
+      '-y': 'none',
+      '-w': 'none',
+      '-c': 'none',
+      '-H': 'none',
+      '--forest': 'none',
+      '--headers': 'none',
+      '--no-headers': 'none',
+      '-n': 'string',
+      '--sort': 'string',
+      '-L': 'none',
+      '-T': 'none',
+      '-m': 'none',
+      '-C': 'string',
+      '-G': 'string',
+      '-g': 'string',
+      '-p': 'string',
+      '--pid': 'string',
+      '-q': 'string',
+      '--quick-pid': 'string',
+      '-s': 'string',
+      '--sid': 'string',
+      '-t': 'string',
+      '--tty': 'string',
+      '-U': 'string',
+      '-u': 'string',
+      '--user': 'string',
+      '--width': 'number',
+      '--help': 'none',
+      '--info': 'none',
+      '-V': 'none',
+      '--version': 'none',
+    },
+  },
+}
+
 export function hasShellExpansionRisk(command: string): boolean {
   const exposed = shellTextOutsideSingleQuotes(command)
   return SHELL_EXPANSION_PATTERNS.some(re => re.test(exposed))
@@ -78,9 +242,9 @@ export function hasShellParserRisk(command: string): boolean {
     /\/proc\/.*\/environ/.test(command) ||
     hasUnescapedChar(exposed, '`') ||
     hasDangerousVariableUse(quoteViews.fullyUnquoted) ||
-    hasQuotedShellMetacharacterRisk(command) ||
+    (hasQuotedShellMetacharacterRisk(command) && classifySedCommand(command) !== 'read') ||
     hasObfuscatedFlagRisk(command) ||
-    hasMalformedTokenInjectionRisk(command) ||
+    (hasMalformedTokenInjectionRisk(command) && classifySedCommand(command) !== 'read') ||
     hasBackslashEscapedWhitespace(command) ||
     hasBackslashEscapedOperator(command) ||
     UNICODE_WS_RE.test(command) ||
@@ -406,7 +570,7 @@ function flagWordContainsQuote(command: string, dashIndex: number, baseCommand: 
 }
 
 function hasMalformedTokenInjectionRisk(command: string): boolean {
-  const segments = splitSegments(command)
+  const segments = splitPotentiallyMalformedSegments(command)
   return segments.length > 1 && segments.some(segment => hasUnbalancedTokenSyntax(segment))
 }
 
@@ -575,6 +739,54 @@ function normalize(command: string): string {
 }
 
 function splitSegments(command: string): string[] {
+  const segments: string[] = []
+  let current = ''
+  let quote: '"' | "'" | null = null
+  let escaped = false
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]!
+    if (quote) {
+      current += char
+      if (escaped) escaped = false
+      else if (char === '\\' && quote === '"') escaped = true
+      else if (char === quote) quote = null
+      continue
+    }
+    if (escaped) {
+      current += char
+      escaped = false
+      continue
+    }
+    if (char === '\\') {
+      current += char
+      escaped = true
+      continue
+    }
+    if (char === '"' || char === "'") {
+      current += char
+      quote = char
+      continue
+    }
+    if ((char === '&' && command[i + 1] === '&') || (char === '|' && command[i + 1] === '|')) {
+      if (current.trim()) segments.push(normalize(current))
+      current = ''
+      i++
+      continue
+    }
+    if (char === ';' || char === '|') {
+      if (current.trim()) segments.push(normalize(current))
+      current = ''
+      continue
+    }
+    current += char
+  }
+
+  if (current.trim()) segments.push(normalize(current))
+  return segments
+}
+
+function splitPotentiallyMalformedSegments(command: string): string[] {
   return normalize(command).split(/\s*(?:&&|\|\||[;|])\s*/).map(x => x.trim()).filter(Boolean)
 }
 
@@ -626,6 +838,177 @@ function classifyJqCommand(command: string): CommandRisk | null {
       longFlag.startsWith('--library-path=')
   })) return 'outreach'
   return 'read'
+}
+
+function classifySedCommand(command: string): CommandRisk | null {
+  const tokens = tokenizeShellWords(command)
+  if (tokens[0]?.toLowerCase() !== 'sed') return null
+  if (tokens.some(token => token === '-i' || token.startsWith('-i') || token === '--in-place' || token.startsWith('--in-place='))) {
+    return 'file'
+  }
+  return sedCommandIsReadOnly(tokens) ? 'read' : 'file'
+}
+
+function classifyReadOnlyAllowlistedCommand(command: string): CommandRisk | null {
+  const tokens = tokenizeShellWords(command)
+  const base = tokens[0]?.toLowerCase()
+  if (!base) return null
+  if (base === 'sed') return classifySedCommand(command)
+  if (base === 'ps' && tokens.slice(1).some(token => !token.startsWith('-') && /^[a-zA-Z]*e[a-zA-Z]*$/.test(token))) {
+    return 'outreach'
+  }
+
+  const config = READ_ONLY_COMMANDS[base]
+  if (!config) return null
+  return validateSafeFlags(tokens.slice(1), config) ? 'read' : 'file'
+}
+
+function validateSafeFlags(args: string[], config: ReadOnlyCommandConfig): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (!arg || arg === '-' || !arg.startsWith('-')) continue
+    if (arg === '--' && config.respectsDoubleDash !== false) break
+
+    if (arg.startsWith('--')) {
+      const [flag, inlineValue] = splitLongFlag(arg)
+      const kind = config.safeFlags[flag]
+      if (!kind) return false
+      if (kind === 'none') {
+        if (inlineValue !== undefined) return false
+        continue
+      }
+      if (inlineValue !== undefined) {
+        if (!flagArgMatches(kind, inlineValue)) return false
+        continue
+      }
+      i++
+      if (i >= args.length || !flagArgMatches(kind, args[i]!)) return false
+      continue
+    }
+
+    const parsedShort = validateShortFlags(arg, args, i, config)
+    if (!parsedShort.ok) return false
+    i = parsedShort.index
+  }
+  return true
+}
+
+function splitLongFlag(arg: string): [string, string | undefined] {
+  const eq = arg.indexOf('=')
+  if (eq === -1) return [arg, undefined]
+  return [arg.slice(0, eq), arg.slice(eq + 1)]
+}
+
+function validateShortFlags(
+  token: string,
+  args: string[],
+  index: number,
+  config: ReadOnlyCommandConfig,
+): { ok: boolean; index: number } {
+  if (!token.startsWith('-') || token.startsWith('--') || token.length < 2) return { ok: false, index }
+  for (let pos = 1; pos < token.length; pos++) {
+    const flag = `-${token[pos]}`
+    const kind = config.safeFlags[flag]
+    if (!kind) return { ok: false, index }
+    if (kind === 'none') continue
+
+    const attached = token.slice(pos + 1)
+    if (attached) return { ok: flagArgMatches(kind, attached), index }
+    const nextIndex = index + 1
+    return {
+      ok: nextIndex < args.length && flagArgMatches(kind, args[nextIndex]!),
+      index: nextIndex,
+    }
+  }
+  return { ok: true, index }
+}
+
+function flagArgMatches(kind: FlagArgKind, value: string): boolean {
+  if (!value) return false
+  if (kind === 'string') return true
+  if (kind === 'number') return /^\d+$/.test(value)
+  if (kind === 'char') return value.length === 1
+  if (kind === '{}') return value === '{}'
+  if (kind === 'EOF') return value === 'EOF'
+  return kind === 'none'
+}
+
+function sedCommandIsReadOnly(tokens: string[]): boolean {
+  const expressions: string[] = []
+  const files: string[] = []
+  let hasQuiet = false
+  let sawExpressionFlag = false
+
+  for (let i = 1; i < tokens.length; i++) {
+    const token = tokens[i]!
+    if (token === '--') {
+      files.push(...tokens.slice(i + 1))
+      break
+    }
+    if (token === '-n' || token === '--quiet' || token === '--silent') {
+      hasQuiet = true
+      continue
+    }
+    if (token === '-E' || token === '-r' || token === '--regexp-extended' || token === '--posix' || token === '-z' || token === '--zero-terminated') {
+      continue
+    }
+    if (/^-[Ernz]+$/.test(token)) {
+      if (token.includes('n')) hasQuiet = true
+      continue
+    }
+    if (token === '-e' || token === '--expression') {
+      sawExpressionFlag = true
+      i++
+      if (i >= tokens.length) return false
+      expressions.push(tokens[i]!)
+      continue
+    }
+    if (token.startsWith('-e') && token.length > 2) {
+      sawExpressionFlag = true
+      expressions.push(token.slice(2))
+      continue
+    }
+    if (token.startsWith('--expression=')) {
+      sawExpressionFlag = true
+      expressions.push(token.slice('--expression='.length))
+      continue
+    }
+    if (token.startsWith('-')) return false
+
+    if (!sawExpressionFlag && expressions.length === 0) {
+      expressions.push(token)
+    } else {
+      files.push(token)
+    }
+  }
+
+  if (expressions.length === 0) return false
+  if (hasQuiet && expressions.every(expr => sedExpressionIsPrintOnly(expr))) return true
+  if (files.length === 0 && expressions.length === 1 && sedExpressionIsStdoutSubstitution(expressions[0]!)) return true
+  return false
+}
+
+function sedExpressionIsPrintOnly(expression: string): boolean {
+  return expression.split(';').every(part => /^(?:\d+|\d+,\d+)?p$/.test(part.trim()))
+}
+
+function sedExpressionIsStdoutSubstitution(expression: string): boolean {
+  const expr = expression.trim()
+  if (!expr.startsWith('s/')) return false
+  let slashCount = 0
+  let lastSlash = -1
+  for (let i = 2; i < expr.length; i++) {
+    if (expr[i] === '\\') {
+      i++
+      continue
+    }
+    if (expr[i] === '/') {
+      slashCount++
+      lastSlash = i
+    }
+  }
+  if (slashCount !== 2 || lastSlash < 0) return false
+  return /^[gpimIM]*[1-9]?[gpimIM]*$/.test(expr.slice(lastSlash + 1))
 }
 
 export function shellOutputRedirectionNeedsApproval(command: string, opts: { root: string; cwd?: string }): boolean {
@@ -754,6 +1137,9 @@ function classifySegment(segment: string): CommandRisk {
 
   const jqRisk = classifyJqCommand(rawCommand)
   if (jqRisk) return jqRisk
+
+  const readOnlyAllowlistRisk = classifyReadOnlyAllowlistedCommand(rawCommand)
+  if (readOnlyAllowlistRisk) return readOnlyAllowlistRisk
 
   if (/^(rm|mv|cp|mkdir|rmdir|touch|chmod|chown|ln|tee)\b/.test(command)) return 'file'
   if (/\b(sed|perl)\s+.*\s-i\b/.test(command) || /\b(sed|perl)\s+-i\b/.test(command)) return 'file'
