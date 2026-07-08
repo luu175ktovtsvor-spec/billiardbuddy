@@ -192,6 +192,16 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('ps aux')).toBe('read')
   expect(classifyCommandRisk('ps -ef')).toBe('read')
   expect(classifyCommandRisk('ps auxe')).toBe('outreach')
+  expect(classifyCommandRisk('date')).toBe('read')
+  expect(classifyCommandRisk('date +%F')).toBe('read')
+  expect(classifyCommandRisk('date -u +%FT%TZ')).toBe('read')
+  expect(classifyCommandRisk('date -d tomorrow +%F')).toBe('read')
+  expect(classifyCommandRisk('date --date=tomorrow --rfc-3339=seconds')).toBe('read')
+  expect(classifyCommandRisk('date -s tomorrow')).toBe('outreach')
+  expect(classifyCommandRisk('date --set=tomorrow')).toBe('outreach')
+  expect(classifyCommandRisk('date -f dates.txt')).toBe('outreach')
+  expect(classifyCommandRisk('date --file=dates.txt')).toBe('outreach')
+  expect(classifyCommandRisk('date 010112002030')).toBe('outreach')
   expect(classifyCommandRisk('git push --force origin main')).toBe('destructive')
   expect(classifyCommandRisk('git push -f origin main')).toBe('destructive')
   expect(classifyCommandRisk('git reset --hard HEAD~1')).toBe('destructive')
@@ -370,6 +380,11 @@ test('run_command dynamic permission allows reads and classifies approval', () =
     approvalClass: 'destructive',
   })
   expect(resolvePermission(runCommandTool, { command: 'ps auxe' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'date +%F' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'date -s tomorrow' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })

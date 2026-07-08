@@ -1181,6 +1181,79 @@ function classifyJqCommand(command: string): CommandRisk | null {
   return 'read'
 }
 
+function classifyDateCommand(command: string): CommandRisk | null {
+  const tokens = tokenizeShellWords(command)
+  if (tokens[0]?.toLowerCase() !== 'date') return null
+
+  const safeFlagsWithArgs = new Set(['-d', '--date', '-r', '--reference', '--iso-8601', '--rfc-3339'])
+  const safeFlagsWithoutArgs = new Set([
+    '-u',
+    '--utc',
+    '--universal',
+    '-I',
+    '-R',
+    '--rfc-email',
+    '--debug',
+    '--help',
+    '--version',
+  ])
+
+  for (let i = 1; i < tokens.length; i++) {
+    const token = tokens[i]!
+    if (!token) continue
+    if (token === '--') continue
+
+    if (token.startsWith('--')) {
+      const [flag, inlineValue] = splitLongFlag(token)
+      if (safeFlagsWithoutArgs.has(flag)) {
+        if (inlineValue !== undefined) return 'outreach'
+        continue
+      }
+      if (safeFlagsWithArgs.has(flag)) {
+        if (inlineValue !== undefined) {
+          if (!inlineValue) return 'outreach'
+          continue
+        }
+        i++
+        if (i >= tokens.length || !tokens[i]) return 'outreach'
+        continue
+      }
+      return 'outreach'
+    }
+
+    if (token.startsWith('-') && token !== '-') {
+      const parsed = validateDateShortFlag(token, tokens, i, safeFlagsWithArgs, safeFlagsWithoutArgs)
+      if (!parsed.ok) return 'outreach'
+      i = parsed.index
+      continue
+    }
+
+    if (!token.startsWith('+')) return 'outreach'
+  }
+
+  return 'read'
+}
+
+function validateDateShortFlag(
+  token: string,
+  args: string[],
+  index: number,
+  safeFlagsWithArgs: Set<string>,
+  safeFlagsWithoutArgs: Set<string>,
+): { ok: boolean; index: number } {
+  for (let pos = 1; pos < token.length; pos++) {
+    const flag = `-${token[pos]}`
+    if (safeFlagsWithoutArgs.has(flag)) continue
+    if (!safeFlagsWithArgs.has(flag)) return { ok: false, index }
+
+    const attached = token.slice(pos + 1)
+    if (attached) return { ok: true, index }
+    const nextIndex = index + 1
+    return { ok: nextIndex < args.length && !!args[nextIndex], index: nextIndex }
+  }
+  return { ok: true, index }
+}
+
 function classifySedCommand(command: string): CommandRisk | null {
   const tokens = tokenizeShellWords(command)
   if (tokens[0]?.toLowerCase() !== 'sed') return null
@@ -1569,6 +1642,9 @@ function classifySegment(segment: string): CommandRisk {
   const jqRisk = classifyJqCommand(rawCommand)
   if (jqRisk) return jqRisk
 
+  const dateRisk = classifyDateCommand(rawCommand)
+  if (dateRisk) return dateRisk
+
   const readOnlyAllowlistRisk = classifyReadOnlyAllowlistedCommand(rawCommand)
   if (readOnlyAllowlistRisk) return readOnlyAllowlistRisk
 
@@ -1577,7 +1653,7 @@ function classifySegment(segment: string): CommandRisk {
   if (/^git\s+(checkout|switch|restore|reset|merge|rebase|commit|tag|branch\s+(-d|-D)|apply|am|stash|pull|push)\b/.test(command)) return 'file'
   if (/^(npm|pnpm|yarn|bun)\s+(run\s+)?(build|compile|generate|lint\s+--fix|format|test)\b/.test(command)) return 'file'
 
-  if (/^(pwd|ls|cat|head|tail|wc|rg|grep|find|stat|du|df|date|whoami|uname|which|type|printenv|env|echo)\b/.test(command)) {
+  if (/^(pwd|ls|cat|head|tail|wc|rg|grep|find|stat|du|df|whoami|uname|which|type|printenv|env|echo)\b/.test(command)) {
     return 'read'
   }
   if (/^git\s+(status|diff|log|show|branch|rev-parse|ls-files|grep|remote\s+-v)\b/.test(command)) return 'read'
