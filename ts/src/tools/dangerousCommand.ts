@@ -2889,6 +2889,14 @@ export function shellMvCpFlagsNeedApproval(command: string): boolean {
   })
 }
 
+export function gitDiffNoIndexSensitivePathNeedsApproval(command: string): boolean {
+  const commandForClassification = stripSafeHeredocSubstitutions(command) ?? command
+  return splitSegments(commandForClassification).some(segment => {
+    const rawCommand = normalize(stripRuntimeEnvWrapper(segment))
+    return gitDiffNoIndexTouchesSensitivePath(rawCommand)
+  })
+}
+
 function readCommandTouchesSensitivePath(command: string): boolean {
   const tokens = tokenizeShellWords(command)
   const base = tokens[0]?.toLowerCase()
@@ -2900,6 +2908,53 @@ function readCommandTouchesSensitivePath(command: string): boolean {
   if (base === 'find') return findCommandTouchesSensitivePath(args)
   if (base === 'wc' && args.some(arg => arg === '--files0-from' || arg.startsWith('--files0-from='))) return true
   return simpleReadArgsTouchSensitivePath(args)
+}
+
+function gitDiffNoIndexTouchesSensitivePath(command: string): boolean {
+  const tokens = tokenizeShellWords(command)
+  if (tokens[0]?.toLowerCase() !== 'git' || tokens[1]?.toLowerCase() !== 'diff') return false
+  const args = tokens.slice(2)
+  if (!args.some(arg => arg === '--no-index')) return false
+  return extractGitDiffNoIndexPaths(args).some(isSensitivePathToken)
+}
+
+function extractGitDiffNoIndexPaths(args: string[]): string[] {
+  const paths: string[] = []
+  let afterDoubleDash = false
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (!arg) continue
+    if (afterDoubleDash) {
+      paths.push(arg)
+      continue
+    }
+    if (arg === '--') {
+      afterDoubleDash = true
+      continue
+    }
+    if (arg === '--no-index') continue
+    if (arg.startsWith('-')) {
+      const [flag, inline] = splitLongFlag(arg)
+      if (flagArgConsumesGitDiffValue(flag, inline)) i++
+      continue
+    }
+    paths.push(arg)
+  }
+  return paths.slice(0, 2)
+}
+
+function flagArgConsumesGitDiffValue(flag: string, inline: string | undefined): boolean {
+  if (inline !== undefined) return false
+  return flag === '--word-diff-regex' ||
+    flag === '--ws-error-highlight' ||
+    flag === '--abbrev' ||
+    flag === '--diff-algorithm' ||
+    flag === '--inter-hunk-context' ||
+    flag === '--relative' ||
+    flag === '--diff-filter' ||
+    flag === '-S' ||
+    flag === '-G' ||
+    flag === '-O'
 }
 
 function simpleReadArgsTouchSensitivePath(args: string[]): boolean {
@@ -3548,6 +3603,7 @@ function classifySegment(segment: string): CommandRisk {
   if (/^(npm|pnpm|yarn|bun)\s+(install|add|upgrade|update|publish)\b/.test(command)) return withSegmentBaseRisk('outreach')
   if (/^(pip|pip3|uv|poetry)\s+(install|add|publish|update)\b/.test(command)) return withSegmentBaseRisk('outreach')
   if (/^(brew|apt|apt-get|dnf|yum|pacman|choco|winget)\s+(install|upgrade|update|remove)\b/.test(command)) return withSegmentBaseRisk('outreach')
+  if (gitDiffNoIndexTouchesSensitivePath(rawCommand)) return withSegmentBaseRisk('outreach')
   if (readCommandTouchesSensitivePath(rawCommand)) return withSegmentBaseRisk('outreach')
 
   const findRisk = classifyFindCommand(rawCommand)
