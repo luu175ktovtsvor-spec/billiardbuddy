@@ -1557,6 +1557,33 @@ function classifyNetstatCommand(command: string): CommandRisk | null {
   })
 }
 
+function classifyChecksumCommand(command: string): CommandRisk | null {
+  const safeFlags: Record<string, FlagArgKind> = {
+    '-b': 'none',
+    '--binary': 'none',
+    '-t': 'none',
+    '--text': 'none',
+    '-c': 'none',
+    '--check': 'none',
+    '--ignore-missing': 'none',
+    '--quiet': 'none',
+    '--status': 'none',
+    '--strict': 'none',
+    '-w': 'none',
+    '--warn': 'none',
+    '--tag': 'none',
+    '-z': 'none',
+    '--zero': 'none',
+    '--help': 'none',
+    '--version': 'none',
+  }
+  for (const name of ['sha256sum', 'sha1sum', 'md5sum']) {
+    const risk = classifyNamedReadOnlyCommand(command, name, safeFlags)
+    if (risk) return risk
+  }
+  return null
+}
+
 function classifyProcessActionCommand(command: string): CommandRisk | null {
   const tokens = tokenizeShellWords(command)
   const base = tokens[0]?.toLowerCase()
@@ -1984,6 +2011,9 @@ function classifySegment(segment: string): CommandRisk {
 
   const netstatRisk = classifyNetstatCommand(rawCommand)
   if (netstatRisk) return withSegmentBaseRisk(netstatRisk)
+
+  const checksumRisk = classifyChecksumCommand(rawCommand)
+  if (checksumRisk) return withSegmentBaseRisk(checksumRisk)
 
   const readOnlyAllowlistRisk = classifyReadOnlyAllowlistedCommand(rawCommand)
   if (readOnlyAllowlistRisk) return withSegmentBaseRisk(readOnlyAllowlistRisk)
