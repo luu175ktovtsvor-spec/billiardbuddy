@@ -707,7 +707,10 @@ export async function startBackgroundAgentRun(
           ...effectiveInitialMessages,
           ...[hookContextMessage('SubagentStart', subagentStart.additionalContext)].filter((message): message is Message => !!message),
         ],
-        skipUserMessage: !!runOptions.forkContext || effectiveInitialMessages.length > 0,
+        // 只有 fork / 前台→后台 handoff 的 initialMessages 已含最后的用户回合,才跳过新 userMessage;
+        // SendMessage 恢复(resume)传入的是旧 transcript(结尾是 assistant),必须保留携带
+        // Original task/New message 的 resume 上下文用户消息,否则被恢复的代理看不到新指令。
+        skipUserMessage: !!runOptions.forkContext || handoffInitialMessages.length > 0,
         maxTurns: agent.maxTurns ?? opts.maxTurns ?? 8,
         signal: taskCtx.signal,
         sandbox: runSandbox,
