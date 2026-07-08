@@ -592,6 +592,71 @@ test('POST /api/v1/agent/execute uses approval_args for edited approval paramete
   expect(staleBody.result).toContain('审批校验失败')
 })
 
+test('POST /api/v1/agent/execute sends bridge messages through Remote Control transport', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-bridge-execute-'))
+  const calls: Array<{ url: string; body: any; headers: Record<string, string> }> = []
+  const bridgeServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    fetchImpl: async (input, init) => {
+      calls.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body)),
+        headers: Object.fromEntries(new Headers(init?.headers).entries()),
+      })
+      return new Response('{}', { status: 201 })
+    },
+  })
+  const args = { to: 'bridge:session_bridge_execute', message: 'remote status please' }
+  try {
+    await fetch(`http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/peers`, {
+      method: 'POST',
+      body: JSON.stringify({ session_id: 'session_bridge_execute', status: 'connected', inbound_enabled: true }),
+    })
+    const approved = await fetch(`http://127.0.0.1:${bridgeServer.port}/api/v1/agent/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        tool: 'SendMessage',
+        args,
+        token: signApproval('SendMessage', args),
+        permissionMode: 'full',
+        bridge_remote: {
+          base_url: 'https://remote.example',
+          token: 'remote-token',
+          org_uuid: 'org_remote',
+        },
+      }),
+    })
+    const body = await approved.json() as any
+    expect(body.ok).toBe(true)
+    expect(JSON.parse(body.result)).toMatchObject({
+      success: true,
+      routing: {
+        target: 'bridge:session_bridge_execute',
+        content: 'remote status please',
+      },
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.url).toBe('https://remote.example/v1/sessions/session_bridge_execute/events')
+    expect(calls[0]!.headers).toMatchObject({
+      authorization: 'Bearer remote-token',
+      'x-organization-uuid': 'org_remote',
+    })
+    expect(calls[0]!.body).toMatchObject({
+      events: [{
+        session_id: 'session_bridge_execute',
+        type: 'user',
+        parent_tool_use_id: null,
+        message: { role: 'user', content: 'remote status please' },
+      }],
+    })
+  } finally {
+    bridgeServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('POST /api/v1/agent/execute stores oversized approved command results', async () => {
   const conversationId = 'approved-big-output'
   const args = { command: `node -e "process.stdout.write('HEAD\\n' + 'x'.repeat(25000) + '\\nTAIL')"` }
@@ -1027,6 +1092,76 @@ test('bridge Remote Control event API stores permission requests and response ou
   }
 })
 
+test('bridge Remote Control outbox flush posts control responses to session events', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-bridge-outbox-flush-'))
+  const calls: Array<{ url: string; body: any; headers: Record<string, string> }> = []
+  const bridgeServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    fetchImpl: async (input, init) => {
+      calls.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body)),
+        headers: Object.fromEntries(new Headers(init?.headers).entries()),
+      })
+      return new Response('', { status: 204 })
+    },
+  })
+  const base = `http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/sessions/${encodeURIComponent('session_remote_flush')}`
+  try {
+    await fetch(`${base}/events`, {
+      method: 'POST',
+      body: JSON.stringify({
+        type: 'control_request',
+        request_id: 'req_flush',
+        request: {
+          subtype: 'can_use_tool',
+          tool_name: 'Bash',
+          tool_use_id: 'toolu_flush',
+          input: { command: 'pwd' },
+        },
+      }),
+    })
+    await fetch(`${base}/permissions/${encodeURIComponent('req_flush')}/respond`, {
+      method: 'POST',
+      body: JSON.stringify({ behavior: 'deny', message: 'not now' }),
+    })
+    const flushed = await (await fetch(`${base}/outbox/flush`, {
+      method: 'POST',
+      body: JSON.stringify({
+        bridge_remote: {
+          base_url: 'https://remote.example',
+          token: 'worker-token',
+          beta_header: '',
+        },
+      }),
+    })).json() as any
+    expect(flushed).toMatchObject({ ok: true, flushed: 1, total: 1 })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.url).toBe('https://remote.example/v1/sessions/session_remote_flush/events')
+    expect(calls[0]!.headers).toMatchObject({ authorization: 'Bearer worker-token' })
+    expect(calls[0]!.headers['anthropic-beta']).toBeUndefined()
+    expect(calls[0]!.body).toEqual({
+      events: [{
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: 'req_flush',
+          response: { behavior: 'deny', message: 'not now' },
+        },
+      }],
+    })
+    const queued = await (await fetch(`${base}/outbox?status=queued`)).json() as any
+    expect(queued.outbox).toEqual([])
+    const sent = await (await fetch(`${base}/outbox?status=sent`)).json() as any
+    expect(sent.outbox).toEqual([expect.objectContaining({ requestId: 'req_flush', status: 'sent' })])
+  } finally {
+    bridgeServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('POST /agent/run exposes registered bridge peers through ListPeers', async () => {
   const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-run-bridge-peers-'))
   let calls = 0
@@ -1073,6 +1208,81 @@ test('POST /agent/run exposes registered bridge peers through ListPeers', async 
     expect(text).toContain('bridge:session_bridge_run')
     expect(text).toContain('已看到 bridge peer')
     expect(calls).toBe(2)
+  } finally {
+    bridgeServer.stop(true)
+    rmSync(transcriptRoot, { recursive: true, force: true })
+  }
+})
+
+test('POST /agent/run requests approval before sending bridge messages through Remote Control transport', async () => {
+  const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-run-bridge-send-'))
+  const remoteCalls: Array<{ url: string; body: any }> = []
+  let modelCalls = 0
+  const bridgeServer = startServer({
+    port: 0,
+    transcriptRoot,
+    mcpConfigPath: join(transcriptRoot, 'missing.mcp.json'),
+    env: {
+      DEEPSEEK_BASE_URL: 'https://model.example/v1',
+      DEEPSEEK_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+      BRIDGE_REMOTE_BASE_URL: 'https://remote.example',
+      BRIDGE_REMOTE_TOKEN: 'remote-token',
+    },
+    fetchImpl: async (input, init) => {
+      const url = String(input)
+      if (url.includes('/v1/sessions/')) {
+        remoteCalls.push({ url, body: JSON.parse(String(init?.body)) })
+        return new Response('{}', { status: 201 })
+      }
+      modelCalls++
+      const payload = modelCalls === 1
+        ? {
+            id: 'x',
+            model: 'mimo-v2.5',
+            choices: [{
+              index: 0,
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id: 'call_send_bridge',
+                  function: {
+                    name: 'SendMessage',
+                    arguments: JSON.stringify({ to: 'bridge:session_bridge_send', message: 'please inspect status' }),
+                  },
+                }],
+              },
+              finish_reason: 'tool_calls',
+            }],
+          }
+        : { id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: '已发送远端消息' }, finish_reason: 'stop' }] }
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(payload)}\n\n`))
+          controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
+          controller.close()
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  try {
+    await fetch(`http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/peers`, {
+      method: 'POST',
+      body: JSON.stringify({ session_id: 'session_bridge_send', status: 'connected', inbound_enabled: true }),
+    })
+    const res = await fetch(`http://127.0.0.1:${bridgeServer.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({
+        message: '给远端会话发消息',
+        conversationId: 'bridge-send-run',
+        permissionMode: 'bypassPermissions',
+      }),
+    })
+    const text = await res.text()
+    expect(text).toContain('event: approval_request')
+    expect(text).toContain('向 Remote Control 会话 bridge:session_bridge_send 发送消息')
+    expect(text).toContain('已发送远端消息')
+    expect(remoteCalls).toEqual([])
   } finally {
     bridgeServer.stop(true)
     rmSync(transcriptRoot, { recursive: true, force: true })

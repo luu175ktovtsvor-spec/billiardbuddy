@@ -54,6 +54,7 @@ import { startUdsInbox, type UdsInboxServer } from '../tasks/udsInbox'
 import { UdsPeerRegistry, type UdsPeerRecord } from '../tasks/udsPeerRegistry'
 import { BridgePeerRegistry } from '../tasks/bridgePeerRegistry'
 import { BridgeRemoteState, type BridgeRemotePermissionResponse, type BridgeRemotePermissionStatus, type BridgeRemoteOutboxStatus } from '../tasks/bridgeRemoteState'
+import { bridgeRemoteConfigFromEnv, createBridgeRemoteTransport } from '../tasks/bridgeRemoteTransport'
 import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
 import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
@@ -499,6 +500,35 @@ function bridgePermissionResponseFrom(body: Record<string, unknown>): BridgeRemo
     return { behavior: 'deny', message: stringOr(body.message, 'Permission denied') }
   }
   throw new Error('behavior required')
+}
+
+function bridgeRemoteConfigFromBody(rawBody: Record<string, unknown>, env: Record<string, string | undefined>) {
+  const fromEnv = bridgeRemoteConfigFromEnv(env)
+  const nested = isRecord(rawBody.bridgeRemote) ? rawBody.bridgeRemote : isRecord(rawBody.bridge_remote) ? rawBody.bridge_remote : {}
+  const baseUrl = stringOr(rawBody.bridgeRemoteBaseUrl ?? rawBody.bridge_remote_base_url ?? nested.baseUrl ?? nested.base_url, '') || fromEnv?.baseUrl
+  const token = stringOr(rawBody.bridgeRemoteToken ?? rawBody.bridge_remote_token ?? nested.token, '') || fromEnv?.token
+  if (!baseUrl || !token) return null
+  const timeoutRaw = rawBody.bridgeRemoteTimeoutMs ?? rawBody.bridge_remote_timeout_ms ?? nested.timeoutMs ?? nested.timeout_ms
+  const timeoutMs = typeof timeoutRaw === 'number'
+    ? timeoutRaw
+    : typeof timeoutRaw === 'string'
+      ? Number.parseInt(timeoutRaw, 10)
+      : fromEnv?.timeoutMs
+  return {
+    baseUrl,
+    token,
+    orgUuid: stringOr(rawBody.bridgeRemoteOrgUuid ?? rawBody.bridge_remote_org_uuid ?? nested.orgUuid ?? nested.org_uuid, '') || fromEnv?.orgUuid,
+    betaHeader: typeof rawBody.bridgeRemoteBetaHeader === 'string'
+      ? rawBody.bridgeRemoteBetaHeader
+      : typeof rawBody.bridge_remote_beta_header === 'string'
+        ? rawBody.bridge_remote_beta_header
+        : typeof nested.betaHeader === 'string'
+          ? nested.betaHeader
+          : typeof nested.beta_header === 'string'
+            ? nested.beta_header
+            : fromEnv?.betaHeader,
+    timeoutMs: Number.isFinite(timeoutMs) ? timeoutMs : undefined,
+  }
 }
 
 function fallbackEventRecord(event: SessionStreamEvent): SessionEventRecord {
@@ -1167,6 +1197,7 @@ export function startServer(opts: StartServerOptions = {}) {
       tasks,
       udsPeers,
       bridgePeers,
+      sendBridgeMessage: bridgeSendMessageFor(rawBody),
       resumeBackgroundAgent: (task, message, toolCtx) => {
         if (!backgroundAgentOptions) throw new Error('background agent runner is not available')
         return resumeBackgroundAgentTask(backgroundAgentOptions, task, message, toolCtx)
@@ -1512,6 +1543,19 @@ export function startServer(opts: StartServerOptions = {}) {
     }
   }
 
+  function bridgeSendMessageFor(rawBody: Record<string, unknown>) {
+    const config = bridgeRemoteConfigFromBody(rawBody, opts.env ?? process.env)
+    if (!config) return undefined
+    const transport = createBridgeRemoteTransport({ ...config, fetchImpl: opts.fetchImpl })
+    return async (sessionId: string, message: string) => {
+      const result = await transport.sendUserMessage(sessionId, message)
+      return {
+        ok: result.ok,
+        error: result.error ?? (result.status ? `Remote Control event POST failed ${result.status}` : undefined),
+      }
+    }
+  }
+
   async function buildExecutionRegistry(rawBody: Record<string, unknown>) {
     const workspace = workspaceFromBody(rawBody)
     const skillsRoot = opts.skillsRoot ?? defaultSkillsRoot()
@@ -1536,7 +1580,7 @@ export function startServer(opts: StartServerOptions = {}) {
       skillsRoot,
       skillRecommendations: suggestedSkillNamesForPacks(enabledPacks),
       commands,
-      extraTools: [...domainPackTools, ...mcpTools.tools, ...createTaskTools(tasks), ...createStructuredTaskTools(taskLists), ...createTeamTools(teams, { tasks, udsPeers, bridgePeers }), ...createMediaTools(media), createStoreDocsTool(storeDocs)],
+      extraTools: [...domainPackTools, ...mcpTools.tools, ...createTaskTools(tasks), ...createStructuredTaskTools(taskLists), ...createTeamTools(teams, { tasks, udsPeers, bridgePeers, sendBridgeMessage: bridgeSendMessageFor(rawBody) }), ...createMediaTools(media), createStoreDocsTool(storeDocs)],
     })
     return { workspace, registry, connections: mcpTools.connections }
   }
@@ -2841,6 +2885,32 @@ export function startServer(opts: StartServerOptions = {}) {
           const item = await bridgeRemote.markOutboxSent(sessionId, outboxId)
           if (!item) return jsonError('bridge outbox item not found', 404)
           return Response.json({ outbox: item })
+        } catch (err) {
+          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
+        }
+      }
+
+      const bridgeOutboxFlushMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/outbox\/flush$/)
+      if (bridgeOutboxFlushMatch) {
+        const sessionId = decodeURIComponent(bridgeOutboxFlushMatch[1]!)
+        try {
+          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+          const body = await req.json().catch(() => ({})) as Record<string, unknown>
+          const config = bridgeRemoteConfigFromBody(body, opts.env ?? process.env)
+          if (!config) return jsonError('bridge remote transport is not configured', 400)
+          const transport = createBridgeRemoteTransport({ ...config, fetchImpl: opts.fetchImpl })
+          const queued = await bridgeRemote.listOutbox(sessionId, 'queued')
+          const results: Array<Record<string, unknown>> = []
+          for (const item of queued) {
+            const sent = await transport.sendOutboxItem(item)
+            if (sent.ok) {
+              const marked = await bridgeRemote.markOutboxSent(sessionId, item.id)
+              results.push({ id: item.id, requestId: item.requestId, ok: true, status: sent.status, outbox: marked })
+            } else {
+              results.push({ id: item.id, requestId: item.requestId, ok: false, status: sent.status, error: sent.error })
+            }
+          }
+          return Response.json({ ok: results.every(item => item.ok === true), flushed: results.filter(item => item.ok === true).length, total: results.length, results })
         } catch (err) {
           return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
         }
