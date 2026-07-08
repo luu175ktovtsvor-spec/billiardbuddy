@@ -1435,6 +1435,76 @@ function classifyPgrepCommand(command: string): CommandRisk | null {
   return validateSafeFlags(tokens.slice(1), { safeFlags }) ? 'read' : 'outreach'
 }
 
+function classifyTreeCommand(command: string): CommandRisk | null {
+  const tokens = tokenizeShellWords(command)
+  if (tokens[0]?.toLowerCase() !== 'tree') return null
+  const safeFlags: Record<string, FlagArgKind> = {
+    '-a': 'none',
+    '-d': 'none',
+    '-l': 'none',
+    '-f': 'none',
+    '-x': 'none',
+    '-L': 'number',
+    '-P': 'string',
+    '-I': 'string',
+    '--gitignore': 'none',
+    '--gitfile': 'string',
+    '--ignore-case': 'none',
+    '--matchdirs': 'none',
+    '--metafirst': 'none',
+    '--prune': 'none',
+    '--info': 'none',
+    '--infofile': 'string',
+    '--noreport': 'none',
+    '--charset': 'string',
+    '--filelimit': 'number',
+    '-q': 'none',
+    '-N': 'none',
+    '-Q': 'none',
+    '-p': 'none',
+    '-u': 'none',
+    '-g': 'none',
+    '-s': 'none',
+    '-h': 'none',
+    '--si': 'none',
+    '--du': 'none',
+    '-D': 'none',
+    '--timefmt': 'string',
+    '-F': 'none',
+    '--inodes': 'none',
+    '--device': 'none',
+    '-v': 'none',
+    '-t': 'none',
+    '-c': 'none',
+    '-U': 'none',
+    '-r': 'none',
+    '--dirsfirst': 'none',
+    '--filesfirst': 'none',
+    '--sort': 'string',
+    '-i': 'none',
+    '-A': 'none',
+    '-S': 'none',
+    '-n': 'none',
+    '-C': 'none',
+    '-X': 'none',
+    '-J': 'none',
+    '-H': 'string',
+    '--nolinks': 'none',
+    '--hintro': 'string',
+    '--houtro': 'string',
+    '-T': 'string',
+    '--hyperlink': 'none',
+    '--scheme': 'string',
+    '--authority': 'string',
+    '--fromfile': 'none',
+    '--fromtabfile': 'none',
+    '--fflinks': 'none',
+    '--help': 'none',
+    '--version': 'none',
+  }
+  return validateSafeFlags(tokens.slice(1), { safeFlags }) ? 'read' : 'outreach'
+}
+
 function classifyProcessActionCommand(command: string): CommandRisk | null {
   const tokens = tokenizeShellWords(command)
   const base = tokens[0]?.toLowerCase()
@@ -1850,6 +1920,9 @@ function classifySegment(segment: string): CommandRisk {
 
   const pgrepRisk = classifyPgrepCommand(rawCommand)
   if (pgrepRisk) return withSegmentBaseRisk(pgrepRisk)
+
+  const treeRisk = classifyTreeCommand(rawCommand)
+  if (treeRisk) return withSegmentBaseRisk(treeRisk)
 
   const readOnlyAllowlistRisk = classifyReadOnlyAllowlistedCommand(rawCommand)
   if (readOnlyAllowlistRisk) return withSegmentBaseRisk(readOnlyAllowlistRisk)
