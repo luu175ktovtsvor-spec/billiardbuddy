@@ -2606,6 +2606,7 @@ Plan the poster production workflow.
     expect(workerJson).toContain('用户给这个技能的参数')
     expect(workerJson).toContain('周末活动')
     expect(workerJson).not.toContain('父级上下文不应进入 skill worker')
+    expect(workerRequest.tools.map((tool: any) => tool.function.name)).toEqual(['read_file'])
   } finally {
     skillServer.stop(true)
     rmSync(transcriptRoot, { recursive: true, force: true })
@@ -3843,6 +3844,7 @@ Run a deep command audit.
     expect(request).toContain('<background_subagent name=\\"command-deep-audit\\">')
     expect(request).toContain('Run a deep command audit')
     expect(request).toContain('命令参数')
+    expect(sentBodies[0].tools.map((tool: any) => tool.function.name)).toEqual(['read_file'])
     expect(request).toContain('parser')
     expect(request).not.toContain('父级上下文不应进入命令 worker')
 

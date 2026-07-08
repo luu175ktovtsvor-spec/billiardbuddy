@@ -28,8 +28,9 @@ import {
 import { VoiceTranscriptionError, transcribeVoiceFile } from './services/voiceTranscription'
 import { buildGeneralRegistry } from '../tools/generalTools'
 import { workspaceForActiveWorktree } from '../tools/worktreeTools'
-import { loadSkillsDir } from '../skills/skillLoader'
+import { formatUseSkillResult, loadSkillsDir } from '../skills/skillLoader'
 import { createBuiltinCommandLibrary, isBuiltinForkCommand } from '../commands/builtinCommands'
+import { allowedToolsForAgent } from '../commands/allowedTools'
 import { bridgeUnsafeCommandMessage, filterBridgeSafeCommands, isBridgeSafeCommand, loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
 import type { PromptCommand } from '../commands/types'
 import { loadHookRegistryFile } from '../hooks/hookConfig'
@@ -1463,7 +1464,14 @@ export function startServer(opts: StartServerOptions = {}) {
     const promptWorkerAgent = (prompt: PromptCommand, kind: 'command' | 'skill'): AgentDefinition => {
       const requested = prompt.agent?.trim()
       const found = requested ? agents.find(agent => agent.name === requested) : undefined
-      if (found) return found
+      const allowedTools = allowedToolsForAgent(prompt.allowedTools)
+      const allowsAllTools = prompt.allowedTools?.includes('*') === true
+      if (found) {
+        return {
+          ...found,
+          ...(allowsAllTools ? { tools: undefined } : allowedTools ? { tools: allowedTools } : {}),
+        }
+      }
       const suffix = normalizeCommandName(prompt.name).replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-|-$/g, '') || kind
       return {
         name: `${kind}-${suffix}`,
@@ -1476,10 +1484,11 @@ export function startServer(opts: StartServerOptions = {}) {
         filePath: `built-in:${kind}-fork:${prompt.name}`,
         permissionMode: permissionModeFrom(rawBody.permissionMode),
         maxTurns: 80,
+        ...(allowedTools ? { tools: allowedTools } : {}),
       }
     }
     const executeSkill = async (skill: PromptCommand, args: string, toolCtx: ToolContext): Promise<string> => {
-      if (skill.context !== 'fork') return await skill.getPrompt(args, toolCtx)
+      if (skill.context !== 'fork') return formatUseSkillResult(skill, await skill.getPrompt(args, toolCtx))
       if (!backgroundAgentOptions) throw new Error('skill context:fork 需要后台任务运行器')
       const expandedPrompt = (await skill.getPrompt(args, toolCtx)).trim()
       if (!expandedPrompt) return `技能 ${skill.name} 没有可执行内容。`
