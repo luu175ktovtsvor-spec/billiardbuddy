@@ -1584,6 +1584,78 @@ function classifyChecksumCommand(command: string): CommandRisk | null {
   return null
 }
 
+function classifySsCommand(command: string): CommandRisk | null {
+  return classifyNamedReadOnlyCommand(command, 'ss', {
+    '-h': 'none',
+    '--help': 'none',
+    '-V': 'none',
+    '--version': 'none',
+    '-n': 'none',
+    '--numeric': 'none',
+    '-r': 'none',
+    '--resolve': 'none',
+    '-a': 'none',
+    '--all': 'none',
+    '-l': 'none',
+    '--listening': 'none',
+    '-o': 'none',
+    '--options': 'none',
+    '-e': 'none',
+    '--extended': 'none',
+    '-m': 'none',
+    '--memory': 'none',
+    '-p': 'none',
+    '--processes': 'none',
+    '-i': 'none',
+    '--info': 'none',
+    '-s': 'none',
+    '--summary': 'none',
+    '-4': 'none',
+    '--ipv4': 'none',
+    '-6': 'none',
+    '--ipv6': 'none',
+    '-0': 'none',
+    '--packet': 'none',
+    '-t': 'none',
+    '--tcp': 'none',
+    '-M': 'none',
+    '--mptcp': 'none',
+    '-S': 'none',
+    '--sctp': 'none',
+    '-u': 'none',
+    '--udp': 'none',
+    '-d': 'none',
+    '--dccp': 'none',
+    '-w': 'none',
+    '--raw': 'none',
+    '-x': 'none',
+    '--unix': 'none',
+    '--tipc': 'none',
+    '--vsock': 'none',
+    '-f': 'string',
+    '--family': 'string',
+    '-A': 'string',
+    '--query': 'string',
+    '--socket': 'string',
+    '-Z': 'none',
+    '--context': 'none',
+    '-z': 'none',
+    '--contexts': 'none',
+    '-b': 'none',
+    '--bpf': 'none',
+    '-E': 'none',
+    '--events': 'none',
+    '-H': 'none',
+    '--no-header': 'none',
+    '-O': 'none',
+    '--oneline': 'none',
+    '--tipcinfo': 'none',
+    '--tos': 'none',
+    '--cgroup': 'none',
+    '--inet-sockopt': 'none',
+  })
+}
+
 function classifyProcessActionCommand(command: string): CommandRisk | null {
   const tokens = tokenizeShellWords(command)
   const base = tokens[0]?.toLowerCase()
@@ -2014,6 +2086,9 @@ function classifySegment(segment: string): CommandRisk {
 
   const checksumRisk = classifyChecksumCommand(rawCommand)
   if (checksumRisk) return withSegmentBaseRisk(checksumRisk)
+
+  const ssRisk = classifySsCommand(rawCommand)
+  if (ssRisk) return withSegmentBaseRisk(ssRisk)
 
   const readOnlyAllowlistRisk = classifyReadOnlyAllowlistedCommand(rawCommand)
   if (readOnlyAllowlistRisk) return withSegmentBaseRisk(readOnlyAllowlistRisk)

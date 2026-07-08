@@ -241,6 +241,10 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('sha256sum -c sums.txt')).toBe('read')
   expect(classifyCommandRisk('sha1sum --check sums.txt')).toBe('read')
   expect(classifyCommandRisk('md5sum --output sums.txt package.tgz')).toBe('outreach')
+  expect(classifyCommandRisk('ss -tan')).toBe('read')
+  expect(classifyCommandRisk('ss --tcp --listening')).toBe('read')
+  expect(classifyCommandRisk('ss -K dst :80')).toBe('outreach')
+  expect(classifyCommandRisk('ss --diag dump.bin')).toBe('outreach')
   expect(classifyCommandRisk('curl https://example.com > out.txt')).toBe('outreach')
   expect(classifyCommandRisk('kill 123 > out.txt')).toBe('destructive')
   expect(classifyCommandRisk('git push --force origin main')).toBe('destructive')
@@ -479,6 +483,11 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   })
   expect(resolvePermission(runCommandTool, { command: 'sha256sum package.tgz' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'sha256sum --output sums.txt package.tgz' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'ss -tan' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'ss -K dst :80' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })
