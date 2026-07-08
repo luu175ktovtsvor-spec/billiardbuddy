@@ -100,7 +100,7 @@ Use store facts.
       content: expect.stringContaining('Use store facts'),
     })
     expect(ctx.sessionAllowedTools).toEqual(new Set(['read_file', 'read_many_files']))
-    expect(ctx.sessionAllowedToolRules).toEqual([{ tool: 'run_command', commandPattern: 'git:*' }])
+    expect(ctx.sessionAllowedToolRules).toEqual([{ tool: 'run_command', ruleContent: 'git:*' }])
   } finally {
     clearInvokedSkills('conv-use-skill')
     rmSync(root, { recursive: true, force: true })

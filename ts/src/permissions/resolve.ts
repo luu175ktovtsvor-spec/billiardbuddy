@@ -1,4 +1,5 @@
 import type { Tool, ToolContext } from '../tools/Tool'
+import { shellCommandMatchesPermissionRule } from './permissionRules'
 import type { ApprovalClass, DecisionReason, PermissionDecision } from './types'
 
 /** full(跳过确认)档下,spend 类动作连续自动放行到这个数,之后强制弹卡兜底(防一次 bug 循环烧钱)。 */
@@ -25,7 +26,7 @@ function sessionAllowsTool(tool: Tool, input: unknown, ctx: ToolContext): boolea
   if (ctx.sessionAllowedTools?.has('*') === true || ctx.sessionAllowedTools?.has(tool.name) === true) return true
   for (const rule of ctx.sessionAllowedToolRules ?? []) {
     if (rule.tool !== tool.name) continue
-    if (tool.name === 'run_command' && commandMatchesPattern(input, rule.commandPattern)) return true
+    if ((tool.name === 'run_command' || tool.name === 'PowerShell') && commandMatchesPattern(input, rule.ruleContent)) return true
   }
   return false
 }
@@ -33,15 +34,7 @@ function sessionAllowsTool(tool: Tool, input: unknown, ctx: ToolContext): boolea
 function commandMatchesPattern(input: unknown, pattern: string): boolean {
   const command = currentCommandInput(input)
   if (!command) return false
-  const normalizedPattern = pattern.trim()
-  if (!normalizedPattern || normalizedPattern === '*') return true
-  const prefix = normalizedPattern.endsWith(':*')
-    ? normalizedPattern.slice(0, -2).trim()
-    : normalizedPattern.endsWith('*')
-      ? normalizedPattern.slice(0, -1).trim()
-      : normalizedPattern
-  if (!prefix) return true
-  return command === prefix || command.startsWith(`${prefix} `)
+  return shellCommandMatchesPermissionRule(command, pattern)
 }
 
 function currentCommandInput(input: unknown): string {

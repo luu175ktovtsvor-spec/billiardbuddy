@@ -69,6 +69,25 @@ Summarize store data.
   }
 })
 
+test('loadCommandsDir parses space-separated allowedTools while preserving rule contents', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'commands-allowed-tools-string-'))
+  try {
+    writeFileSync(join(root, 'shell.md'), `---
+description: Shell helpers
+allowedTools: 'Read Bash(git status *) Bash(node -e "a,b")'
+---
+Use shell helpers.
+`)
+    const lib = await loadCommandsDir(root)
+    expect(publicCommand(lib.commands[0]!)).toMatchObject({
+      allowedTools: ['read_file', 'read_many_files', 'run_command'],
+      allowedToolRules: ['Read', 'Bash(git status *)', 'Bash(node -e "a,b")'],
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('createCommandTools exposes list/read progressive disclosure', async () => {
   const root = mkdtempSync(join(tmpdir(), 'commands-tools-'))
   try {

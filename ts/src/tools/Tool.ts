@@ -43,7 +43,7 @@ export interface ToolContext {
   /** 当前 slash command / inline skill 通过 allowedTools 授权的会话内工具名。 */
   sessionAllowedTools?: Set<string>
   /** 当前 slash command / inline skill 通过 allowedTools 授权的参数级工具规则。 */
-  sessionAllowedToolRules?: Array<{ tool: string; commandPattern: string }>
+  sessionAllowedToolRules?: Array<{ tool: string; ruleContent: string }>
   /** 当前 slash command / inline skill 注册的会话内 hooks。 */
   sessionHooks?: HookRegistry
   /** 会话内 hooks 变化时通知宿主持久化。 */

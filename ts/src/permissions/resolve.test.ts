@@ -121,10 +121,29 @@ describe('resolvePermission 瀑布', () => {
     expect(resolvePermission(tool({ name: 'run_command', requiresApproval: true, forceConfirm: true }), {}, allowedCtx).behavior).toBe('ask')
     expect(resolvePermission(tool({ name: 'run_command', requiresApproval: true, requiresUserInteraction: true }), {}, allowedCtx).behavior).toBe('ask')
 
-    const ruleCtx = ctx('ask', { sessionAllowedToolRules: [{ tool: 'run_command', commandPattern: 'git:*' }] })
+    const ruleCtx = ctx('ask', { sessionAllowedToolRules: [{ tool: 'run_command', ruleContent: 'git:*' }] })
     const run = tool({ name: 'run_command', requiresApproval: true, approvalClass: 'file' })
     expect(resolvePermission(run, { command: 'git status --short' }, ruleCtx)).toMatchObject({ behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: 'run_command' } })
     expect(resolvePermission(run, { command: 'printf ok > file.txt' }, ruleCtx).behavior).toBe('ask')
+  })
+
+  test('sessionAllowedToolRules 支持 shell exact/wildcard 规则', () => {
+    const run = tool({ name: 'run_command', requiresApproval: true, approvalClass: 'file' })
+    const wildcardCtx = ctx('ask', { sessionAllowedToolRules: [{ tool: 'run_command', ruleContent: 'git status *' }] })
+    expect(resolvePermission(run, { command: 'git status --short' }, wildcardCtx)).toMatchObject({ behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: 'run_command' } })
+    expect(resolvePermission(run, { command: 'git status' }, wildcardCtx)).toMatchObject({ behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: 'run_command' } })
+    expect(resolvePermission(run, { command: 'git log --oneline' }, wildcardCtx).behavior).toBe('ask')
+
+    const exactCtx = ctx('ask', { sessionAllowedToolRules: [{ tool: 'run_command', ruleContent: 'git status' }] })
+    expect(resolvePermission(run, { command: 'git status' }, exactCtx)).toMatchObject({ behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: 'run_command' } })
+    expect(resolvePermission(run, { command: 'git status --short' }, exactCtx).behavior).toBe('ask')
+  })
+
+  test('sessionAllowedToolRules 支持 PowerShell shell 规则', () => {
+    const ps = tool({ name: 'PowerShell', requiresApproval: true, approvalClass: 'file' })
+    const psCtx = ctx('ask', { sessionAllowedToolRules: [{ tool: 'PowerShell', ruleContent: 'Get-ChildItem *' }] })
+    expect(resolvePermission(ps, { command: 'Get-ChildItem src' }, psCtx)).toMatchObject({ behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: 'PowerShell' } })
+    expect(resolvePermission(ps, { command: 'Remove-Item src' }, psCtx).behavior).toBe('ask')
   })
 
   test('requiresApprovalFor 动态命中 → ask', () => {

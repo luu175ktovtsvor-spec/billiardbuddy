@@ -1,7 +1,7 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { basename, dirname, extname, join } from 'node:path'
-import { extractDescription, parseMarkdownDocument, stringArrayField, stringField } from './frontmatter'
-import { normalizeAllowedTools } from './allowedTools'
+import { extractDescription, parseMarkdownDocument, stringField } from './frontmatter'
+import { allowedToolRulesFromFrontmatter, normalizeAllowedTools } from './allowedTools'
 import type { PromptCommand } from './types'
 import type { Tool, ToolContext } from '../tools/Tool'
 
@@ -70,7 +70,7 @@ export async function loadCommandFile(filePath: string): Promise<PromptCommand> 
   const name = normalizeCommandName(stringField(doc.frontmatter, 'name') ?? stripMd(filePath))
   const description = stringField(doc.frontmatter, 'description') ?? extractDescription(doc.body) ?? name
   const whenToUse = stringField(doc.frontmatter, 'whenToUse') ?? stringField(doc.frontmatter, 'when_to_use')
-  const allowedToolRules = stringArrayField(doc.frontmatter, 'allowedTools') ?? stringArrayField(doc.frontmatter, 'allowed_tools')
+  const allowedToolRules = allowedToolRulesFromFrontmatter(doc.frontmatter.allowedTools ?? doc.frontmatter.allowed_tools)
   const allowedTools = normalizeAllowedTools(allowedToolRules)
   const model = stringField(doc.frontmatter, 'model')
   const context = stringField(doc.frontmatter, 'context')
