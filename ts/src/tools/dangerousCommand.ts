@@ -2859,6 +2859,53 @@ function dockerRuntimeEnvNeedsApproval(segment: string): boolean {
   return command === 'docker' && envNames.some(name => name.toUpperCase().startsWith('DOCKER_'))
 }
 
+function environmentCommandNeedsApproval(command: string): boolean {
+  const tokens = tokenizeShellWords(command)
+  let index = 0
+  while (index < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=.*/.test(tokens[index]!)) index++
+
+  const first = tokens[index]?.toLowerCase()
+  if (first === 'printenv') return true
+  if (first !== 'env') return false
+
+  index++
+  while (index < tokens.length) {
+    const token = tokens[index]!
+    const lower = token.toLowerCase()
+    if (token === '--') {
+      index++
+      break
+    }
+    if (/^[A-Za-z_][A-Za-z0-9_]*=.*/.test(token)) {
+      index++
+      continue
+    }
+    if (token === '-' || token === '-i' || lower === '--ignore-environment' || token === '-0' || lower === '--null' || token === '-v') {
+      index++
+      continue
+    }
+    if (token === '-S' || lower === '--split-string' || lower.startsWith('--split-string=')) return true
+    if (token === '-C' || lower === '--chdir' || lower.startsWith('--chdir=')) return true
+    if (token === '-u' || lower === '--unset') {
+      index += 2
+      continue
+    }
+    if (token.startsWith('-u') && token.length > 2) {
+      index++
+      continue
+    }
+    if (lower.startsWith('--unset=')) {
+      index++
+      continue
+    }
+    if (token.startsWith('-')) return true
+    break
+  }
+
+  const target = tokens[index]?.toLowerCase()
+  return !target || target === 'env' || target === 'printenv'
+}
+
 function parseRuntimeEnvPrefix(segment: string): { command: string | undefined; envNames: string[] } {
   const tokens = tokenizeShellWords(segment)
   const envNames: string[] = []
@@ -3707,6 +3754,7 @@ function classifySegment(segment: string): CommandRisk {
   const processActionRisk = classifyProcessActionCommand(rawCommand)
   if (processActionRisk) return withSegmentBaseRisk(processActionRisk)
   if (dockerRuntimeEnvNeedsApproval(originalSegment)) return withSegmentBaseRisk('outreach')
+  if (environmentCommandNeedsApproval(rawCommand)) return withSegmentBaseRisk('outreach')
   if (/^git\s+push\b.*\s--(?:force|force-with-lease|mirror)\b/.test(command)) return withSegmentBaseRisk('destructive')
   if (/^git\s+push\b.*\s-f(?:\s|$)/.test(command)) return withSegmentBaseRisk('destructive')
   if (/^git\s+reset\b.*\s--hard\b/.test(command)) return withSegmentBaseRisk('destructive')
@@ -3791,7 +3839,7 @@ function classifySegment(segment: string): CommandRisk {
   if (/^git\s+(checkout|switch|restore|reset|merge|rebase|commit|tag|branch\s+(-d|-D)|apply|am|stash|pull|push)\b/.test(command)) return withSegmentBaseRisk('file')
   if (/^(npm|pnpm|yarn|bun)\s+(run\s+)?(build|compile|generate|lint\s+--fix|format|test)\b/.test(command)) return withSegmentBaseRisk('file')
 
-  if (/^(pwd|ls|cat|head|tail|wc|find|stat|du|df|whoami|uname|which|type|printenv|env|echo)\b/.test(command)) {
+  if (/^(pwd|ls|cat|head|tail|wc|find|stat|du|df|whoami|uname|which|type|echo)\b/.test(command)) {
     return withSegmentBaseRisk('read')
   }
 
