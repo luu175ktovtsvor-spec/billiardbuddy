@@ -1713,6 +1713,81 @@ function classifyTputCommand(command: string): CommandRisk | null {
   return 'read'
 }
 
+function classifyFdCommand(command: string): CommandRisk | null {
+  const safeFlags: Record<string, FlagArgKind> = {
+    '-h': 'none',
+    '--help': 'none',
+    '-V': 'none',
+    '--version': 'none',
+    '-H': 'none',
+    '--hidden': 'none',
+    '-I': 'none',
+    '--no-ignore': 'none',
+    '--no-ignore-vcs': 'none',
+    '--no-ignore-parent': 'none',
+    '-s': 'none',
+    '--case-sensitive': 'none',
+    '-i': 'none',
+    '--ignore-case': 'none',
+    '-g': 'none',
+    '--glob': 'none',
+    '--regex': 'none',
+    '-F': 'none',
+    '--fixed-strings': 'none',
+    '-a': 'none',
+    '--absolute-path': 'none',
+    '-L': 'none',
+    '--follow': 'none',
+    '-p': 'none',
+    '--full-path': 'none',
+    '-0': 'none',
+    '--print0': 'none',
+    '-d': 'number',
+    '--max-depth': 'number',
+    '--min-depth': 'number',
+    '--exact-depth': 'number',
+    '-t': 'string',
+    '--type': 'string',
+    '-e': 'string',
+    '--extension': 'string',
+    '-S': 'string',
+    '--size': 'string',
+    '--changed-within': 'string',
+    '--changed-before': 'string',
+    '-o': 'string',
+    '--owner': 'string',
+    '-E': 'string',
+    '--exclude': 'string',
+    '--ignore-file': 'string',
+    '-c': 'string',
+    '--color': 'string',
+    '-j': 'number',
+    '--threads': 'number',
+    '--max-buffer-time': 'string',
+    '--max-results': 'number',
+    '-1': 'none',
+    '-q': 'none',
+    '--quiet': 'none',
+    '--show-errors': 'none',
+    '--strip-cwd-prefix': 'none',
+    '--one-file-system': 'none',
+    '--prune': 'none',
+    '--search-path': 'string',
+    '--base-directory': 'string',
+    '--path-separator': 'string',
+    '--batch-size': 'number',
+    '--no-require-git': 'none',
+    '--hyperlink': 'string',
+    '--and': 'string',
+    '--format': 'string',
+  }
+  for (const name of ['fd', 'fdfind']) {
+    const risk = classifyNamedReadOnlyCommand(command, name, safeFlags)
+    if (risk) return risk
+  }
+  return null
+}
+
 function classifyProcessActionCommand(command: string): CommandRisk | null {
   const tokens = tokenizeShellWords(command)
   const base = tokens[0]?.toLowerCase()
@@ -2149,6 +2224,9 @@ function classifySegment(segment: string): CommandRisk {
 
   const tputRisk = classifyTputCommand(rawCommand)
   if (tputRisk) return withSegmentBaseRisk(tputRisk)
+
+  const fdRisk = classifyFdCommand(rawCommand)
+  if (fdRisk) return withSegmentBaseRisk(fdRisk)
 
   const readOnlyAllowlistRisk = classifyReadOnlyAllowlistedCommand(rawCommand)
   if (readOnlyAllowlistRisk) return withSegmentBaseRisk(readOnlyAllowlistRisk)
