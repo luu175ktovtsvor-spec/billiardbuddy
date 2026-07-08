@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import type { BridgeInboundContent, BridgeResolvedInboundMessage, InboundAttachment } from './bridgeInboundMessages'
 
 export type BridgeRemoteEventKind = 'sdk_message' | 'control_request' | 'control_response' | 'control_cancel_request'
 export type BridgeRemotePermissionStatus = 'pending' | 'allowed' | 'denied' | 'cancelled'
@@ -67,13 +68,30 @@ export interface BridgeRemoteCredentialRecord {
   expiresAt: string
 }
 
+export interface BridgeRemoteInboundMessageRecord {
+  id: string
+  seq: number
+  sessionId: string
+  eventSeq?: number
+  uuid?: string
+  content: BridgeInboundContent
+  attachments: InboundAttachment[]
+  resolvedPaths: string[]
+  prefix: string
+  bridgeOrigin: true
+  skipSlashCommands: true
+  receivedAt: string
+}
+
 interface BridgeRemoteStateFile {
   version: 1
   nextSeq: number
+  nextInboundSeq: number
   events: BridgeRemoteEventRecord[]
   permissions: BridgeRemotePermissionRequestRecord[]
   outbox: BridgeRemoteOutboxItem[]
   credentials: BridgeRemoteCredentialRecord[]
+  inboundMessages: BridgeRemoteInboundMessageRecord[]
 }
 
 const LOCK_RETRIES = 20
@@ -82,6 +100,7 @@ const LOCK_MAX_DELAY_MS = 100
 const STALE_LOCK_MS = 30_000
 const MAX_EVENTS = 500
 const MAX_OUTBOX = 500
+const MAX_INBOUND_MESSAGES = 500
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -265,6 +284,55 @@ function normalizeCredential(raw: unknown): BridgeRemoteCredentialRecord | null 
   }
 }
 
+function isInboundContentBlock(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.type !== 'string') return false
+  if (value.type === 'text') return typeof value.text === 'string'
+  if (value.type === 'thinking') return typeof value.thinking === 'string'
+  if (value.type === 'tool_use') return typeof value.id === 'string' && typeof value.name === 'string'
+  if (value.type === 'tool_result') return typeof value.tool_use_id === 'string' && typeof value.content === 'string'
+  if (value.type !== 'image' || !isRecord(value.source)) return false
+  return value.source.type === 'base64' && typeof value.source.media_type === 'string' && typeof value.source.data === 'string'
+}
+
+function normalizeInboundContent(value: unknown): BridgeInboundContent | null {
+  if (typeof value === 'string') return value
+  if (!Array.isArray(value) || !value.every(isInboundContentBlock)) return null
+  return JSON.parse(JSON.stringify(value)) as BridgeInboundContent
+}
+
+function normalizeInboundAttachment(raw: unknown): InboundAttachment | null {
+  if (!isRecord(raw) || typeof raw.file_uuid !== 'string' || typeof raw.file_name !== 'string') return null
+  return { file_uuid: raw.file_uuid, file_name: raw.file_name }
+}
+
+function normalizeInboundMessage(raw: unknown): BridgeRemoteInboundMessageRecord | null {
+  if (!isRecord(raw)) return null
+  const sessionId = typeof raw.sessionId === 'string' ? raw.sessionId.trim() : ''
+  const seq = typeof raw.seq === 'number' && Number.isFinite(raw.seq) ? raw.seq : 0
+  const content = normalizeInboundContent(raw.content)
+  if (!sessionId || seq <= 0 || content === null) return null
+  const attachments = Array.isArray(raw.attachments)
+    ? raw.attachments.map(normalizeInboundAttachment).filter((item): item is InboundAttachment => !!item)
+    : []
+  const resolvedPaths = Array.isArray(raw.resolvedPaths)
+    ? raw.resolvedPaths.filter((item): item is string => typeof item === 'string')
+    : []
+  return {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : hashId('inbound', `${sessionId}:${seq}`),
+    seq,
+    sessionId,
+    eventSeq: typeof raw.eventSeq === 'number' && Number.isFinite(raw.eventSeq) ? raw.eventSeq : undefined,
+    uuid: typeof raw.uuid === 'string' ? raw.uuid : undefined,
+    content,
+    attachments,
+    resolvedPaths,
+    prefix: typeof raw.prefix === 'string' ? raw.prefix : '',
+    bridgeOrigin: true,
+    skipSlashCommands: true,
+    receivedAt: typeof raw.receivedAt === 'string' ? raw.receivedAt : nowIso(),
+  }
+}
+
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`
@@ -443,6 +511,48 @@ export class BridgeRemoteState {
     return file.credentials.find(item => item.sessionId === sessionId) ?? null
   }
 
+  async storeInboundMessage(sessionIdInput: string, inboundInput: BridgeResolvedInboundMessage, opts: { eventSeq?: number } = {}): Promise<BridgeRemoteInboundMessageRecord> {
+    return this.withMutation(file => {
+      const sessionId = normalizeSessionId(sessionIdInput)
+      const content = normalizeInboundContent(inboundInput.content)
+      if (content === null) throw new Error('inbound message content is invalid')
+      const seq = Math.max(file.nextInboundSeq, maxInboundSeq(file.inboundMessages) + 1)
+      file.nextInboundSeq = seq + 1
+      const now = nowIso()
+      const record: BridgeRemoteInboundMessageRecord = {
+        id: hashId('inbound', `${sessionId}:${seq}:${inboundInput.uuid ?? ''}`),
+        seq,
+        sessionId,
+        eventSeq: opts.eventSeq,
+        uuid: inboundInput.uuid,
+        content,
+        attachments: inboundInput.attachments.map(att => ({ file_uuid: att.file_uuid, file_name: att.file_name })),
+        resolvedPaths: inboundInput.resolvedPaths.slice(),
+        prefix: inboundInput.prefix,
+        bridgeOrigin: true,
+        skipSlashCommands: true,
+        receivedAt: now,
+      }
+      if (record.uuid) {
+        file.inboundMessages = file.inboundMessages.filter(item => !(item.sessionId === sessionId && item.uuid === record.uuid))
+      }
+      file.inboundMessages.push(record)
+      trimInboundMessages(file)
+      return record
+    })
+  }
+
+  async listInboundMessages(sessionIdInput: string, opts: { after?: number; limit?: number } = {}): Promise<BridgeRemoteInboundMessageRecord[]> {
+    const sessionId = normalizeSessionId(sessionIdInput)
+    const file = await this.readFile()
+    const after = opts.after ?? 0
+    const limit = Math.max(1, Math.min(500, opts.limit ?? 100))
+    return file.inboundMessages
+      .filter(message => message.sessionId === sessionId && message.seq > after)
+      .sort((a, b) => a.seq - b.seq)
+      .slice(0, limit)
+  }
+
   private async readFile(): Promise<BridgeRemoteStateFile> {
     try {
       const raw = JSON.parse(await readFile(this.statePath, 'utf8')) as unknown
@@ -459,10 +569,16 @@ export class BridgeRemoteState {
       const credentials = Array.isArray(raw.credentials)
         ? raw.credentials.map(normalizeCredential).filter((item): item is BridgeRemoteCredentialRecord => !!item)
         : []
+      const inboundMessages = Array.isArray(raw.inboundMessages)
+        ? raw.inboundMessages.map(normalizeInboundMessage).filter((item): item is BridgeRemoteInboundMessageRecord => !!item)
+        : []
       const nextSeq = typeof raw.nextSeq === 'number' && Number.isFinite(raw.nextSeq)
         ? Math.max(raw.nextSeq, maxSeq(events) + 1)
         : maxSeq(events) + 1
-      return { version: 1, nextSeq, events, permissions, outbox, credentials }
+      const nextInboundSeq = typeof raw.nextInboundSeq === 'number' && Number.isFinite(raw.nextInboundSeq)
+        ? Math.max(raw.nextInboundSeq, maxInboundSeq(inboundMessages) + 1)
+        : maxInboundSeq(inboundMessages) + 1
+      return { version: 1, nextSeq, nextInboundSeq, events, permissions, outbox, credentials, inboundMessages }
     } catch {
       return emptyState()
     }
@@ -476,7 +592,7 @@ export class BridgeRemoteState {
       try {
         const file = await this.readFile()
         const result = await fn(file)
-        if (file.events.length === 0 && file.permissions.length === 0 && file.outbox.length === 0 && file.credentials.length === 0) {
+        if (file.events.length === 0 && file.permissions.length === 0 && file.outbox.length === 0 && file.credentials.length === 0 && file.inboundMessages.length === 0) {
           await rm(this.statePath, { force: true }).catch(() => undefined)
         } else {
           await writeJson(this.statePath, file)
@@ -492,7 +608,7 @@ export class BridgeRemoteState {
 }
 
 function emptyState(): BridgeRemoteStateFile {
-  return { version: 1, nextSeq: 1, events: [], permissions: [], outbox: [], credentials: [] }
+  return { version: 1, nextSeq: 1, nextInboundSeq: 1, events: [], permissions: [], outbox: [], credentials: [], inboundMessages: [] }
 }
 
 function maxSeq(events: BridgeRemoteEventRecord[]): number {
@@ -509,6 +625,15 @@ function trimOutbox(file: BridgeRemoteStateFile): void {
   const sent = file.outbox.filter(item => item.status === 'sent')
   const queued = file.outbox.filter(item => item.status === 'queued')
   file.outbox = [...sent.slice(Math.max(0, sent.length - Math.floor(MAX_OUTBOX / 2))), ...queued].slice(-MAX_OUTBOX)
+}
+
+function maxInboundSeq(messages: BridgeRemoteInboundMessageRecord[]): number {
+  return messages.reduce((max, message) => Math.max(max, message.seq), 0)
+}
+
+function trimInboundMessages(file: BridgeRemoteStateFile): void {
+  if (file.inboundMessages.length <= MAX_INBOUND_MESSAGES) return
+  file.inboundMessages = file.inboundMessages.slice(file.inboundMessages.length - MAX_INBOUND_MESSAGES)
 }
 
 async function acquireLockDir(lockDir: string): Promise<void> {

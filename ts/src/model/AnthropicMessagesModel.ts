@@ -28,6 +28,7 @@ interface AnthropicAccumulated {
 
 type AnthropicRequestBlock =
   | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }
 
@@ -155,6 +156,7 @@ function toAnthropicMessage(message: Message): { role: Message['role']; content:
 
 function toAnthropicBlock(block: ContentBlock): AnthropicRequestBlock[] {
   if (block.type === 'text') return [{ type: 'text', text: block.text }]
+  if (block.type === 'image') return [{ type: 'image', source: block.source }]
   if (block.type === 'tool_use') return [{ type: 'tool_use', id: block.id, name: block.name, input: block.input }]
   if (block.type === 'tool_result') {
     return [{

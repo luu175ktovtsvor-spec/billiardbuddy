@@ -60,6 +60,7 @@ export interface CompactPipelineOutput {
 function blockChars(block: Message['content'][number]): number {
   if (block.type === 'text') return block.text.length
   if (block.type === 'thinking') return block.thinking.length
+  if (block.type === 'image') return Math.min(block.source.data.length, 4096)
   if (block.type === 'tool_result') return block.content.length
   try {
     return block.name.length + JSON.stringify(block.input).length

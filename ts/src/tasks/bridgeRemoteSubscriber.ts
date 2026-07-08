@@ -1,5 +1,7 @@
 import type { BridgePeerRegistry } from './bridgePeerRegistry'
 import type { BridgeRemoteState } from './bridgeRemoteState'
+import type { FetchLike } from '../proxy/ProxyModel'
+import { resolveInboundUserMessage } from './bridgeInboundMessages'
 
 export interface BridgeRemoteSubscriberConfig {
   baseUrl: string
@@ -22,6 +24,11 @@ export interface BridgeRemoteSubscriberEvents {
 export interface BridgeRemoteSubscriberDeps {
   state: BridgeRemoteState
   peers?: BridgePeerRegistry
+  inbound?: {
+    stateRoot: string
+    fetchImpl?: FetchLike
+    timeoutMs?: number
+  }
 }
 
 type WebSocketState = 'connecting' | 'connected' | 'closed'
@@ -199,7 +206,18 @@ export class BridgeRemoteSubscriber {
     try {
       const parsed = JSON.parse(data) as unknown
       if (!isSessionMessage(parsed)) return
-      await this.deps.state.ingestEvent(this.sessionId, parsed)
+      const ingested = await this.deps.state.ingestEvent(this.sessionId, parsed)
+      if (parsed.type === 'user' && this.deps.inbound) {
+        const resolved = await resolveInboundUserMessage(parsed, {
+          sessionId: this.sessionId,
+          stateRoot: this.deps.inbound.stateRoot,
+          baseUrl: this.config.baseUrl,
+          token: this.config.token,
+          fetchImpl: this.deps.inbound.fetchImpl,
+          timeoutMs: this.deps.inbound.timeoutMs,
+        })
+        if (resolved) await this.deps.state.storeInboundMessage(this.sessionId, resolved, { eventSeq: ingested.event.seq })
+      }
     } catch (err) {
       this.events.onError?.(err instanceof Error ? err : new Error(String(err)))
     }
