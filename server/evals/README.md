@@ -32,7 +32,9 @@ cd ../ts && bun run smoke:model        # 需要真模型 key,按需手工跑
 cd ../ts && bun run smoke:agent-tools   # 需要真模型 key,按需手工跑
 ```
 
-因此旧的 `cmd_live_test.py`、`file_exec_live_test.py`、`agent_tools_e2e.py`、`harness_eval.py`、`agent_full_scenario_test.py`、`_byok_api_test.py`、`_byok_e2e.py` 已删除；后续同类“命令安全/工具权限/文件执行/轨迹对抗/模型连通/provider 路由”回归继续往 TS 测试和 smoke 集中收敛。
+因此旧的 `cmd_live_test.py`、`file_exec_live_test.py`、`agent_tools_e2e.py`、`harness_eval.py`、`agent_full_scenario_test.py`、`run_agent_eval.py`、`agent_cases.yaml`、`_byok_api_test.py`、`_byok_e2e.py` 已删除；后续同类“命令安全/工具权限/文件执行/轨迹对抗/模型连通/provider 路由”回归继续往 TS 测试和 smoke 集中收敛。
+
+`_stability_probe.py` 也已删除。它本来就是一次性临时探针，稳定性复跑以后直接用 `run_northstar_eval.py --categories ... --tag ...` 重复运行并对比报告，不再保留额外 Python 脚本。
 
 **无数据库依赖**：构造 in-memory `Store` + 模拟记忆，复用项目纯函数复刻"发给 DeepSeek 的真实 prompt"，
 绕过配额/落库/品牌声音（这些不影响"内容质量 vs 北极星"的测量）。复刻 5 种生成路径
@@ -60,7 +62,7 @@ uv run python evals/run_northstar_eval.py --no-judge         # 只关键词（�
 - **门槛建议**：全场景 GREEN 率（占有效判定）≥85% 才允许合并 main。
 
 ⚠️ **生成有随机性**（temperature 非 0），单次跑是快照、有抖动。关注**系统性偏离**（多次都中的），别被单次波动带偏。
-要看稳定质量，对可疑场景多跑几次取分布（见 `_stability_probe.py` 思路）。
+要看稳定质量，对可疑场景多跑几次取分布：固定 `--categories`/`--limit`/`--tag`，连续跑多次后比较 `docs/test-runs/` 里的分数分布。
 
 ## 怎么扩展
 
