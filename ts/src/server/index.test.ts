@@ -944,6 +944,89 @@ test('bridge peer API registers, lists, updates and deletes Remote Control peers
   }
 })
 
+test('bridge Remote Control event API stores permission requests and response outbox', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-bridge-remote-events-'))
+  const bridgeServer = startServer({ port: 0, transcriptRoot: root, mcpConfigPath: join(root, 'missing.mcp.json') })
+  const base = `http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/sessions/${encodeURIComponent('session_remote_events')}`
+  try {
+    const ingested = await (await fetch(`${base}/events`, {
+      method: 'POST',
+      body: JSON.stringify({
+        event: {
+          type: 'control_request',
+          request_id: 'req_remote_write',
+          request: {
+            subtype: 'can_use_tool',
+            tool_name: 'Write',
+            tool_use_id: 'toolu_remote_write',
+            input: { file_path: '/remote/repo/app.ts', content: 'hello' },
+            display_name: 'Write',
+            description: 'Remote session wants to write app.ts',
+          },
+        },
+      }),
+    })).json() as any
+    expect(ingested.event).toMatchObject({
+      sessionId: 'session_remote_events',
+      type: 'control_request',
+      kind: 'control_request',
+    })
+    expect(ingested.permission).toMatchObject({
+      requestId: 'req_remote_write',
+      toolName: 'Write',
+      toolUseId: 'toolu_remote_write',
+      status: 'pending',
+      input: { file_path: '/remote/repo/app.ts', content: 'hello' },
+    })
+
+    const permissions = await (await fetch(`${base}/permissions?status=pending`)).json() as any
+    expect(permissions.permissions).toEqual([
+      expect.objectContaining({ requestId: 'req_remote_write', status: 'pending' }),
+    ])
+
+    const responded = await (await fetch(`${base}/permissions/${encodeURIComponent('req_remote_write')}/respond`, {
+      method: 'POST',
+      body: JSON.stringify({
+        behavior: 'allow',
+        updated_input: { file_path: '/remote/repo/app.ts', content: 'hello', reviewed: true },
+      }),
+    })).json() as any
+    expect(responded.permission).toMatchObject({
+      requestId: 'req_remote_write',
+      status: 'allowed',
+      response: {
+        behavior: 'allow',
+        updatedInput: { file_path: '/remote/repo/app.ts', content: 'hello', reviewed: true },
+      },
+    })
+    expect(responded.outbox).toMatchObject({
+      requestId: 'req_remote_write',
+      status: 'queued',
+      payload: {
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: 'req_remote_write',
+          response: {
+            behavior: 'allow',
+            updatedInput: { file_path: '/remote/repo/app.ts', content: 'hello', reviewed: true },
+          },
+        },
+      },
+    })
+
+    const outbox = await (await fetch(`${base}/outbox?status=queued`)).json() as any
+    expect(outbox.outbox).toHaveLength(1)
+    const sent = await (await fetch(`${base}/outbox/${encodeURIComponent(outbox.outbox[0].id)}/sent`, { method: 'POST' })).json() as any
+    expect(sent.outbox).toMatchObject({ requestId: 'req_remote_write', status: 'sent' })
+    const empty = await (await fetch(`${base}/outbox?status=queued`)).json() as any
+    expect(empty.outbox).toEqual([])
+  } finally {
+    bridgeServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('POST /agent/run exposes registered bridge peers through ListPeers', async () => {
   const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-run-bridge-peers-'))
   let calls = 0

@@ -53,6 +53,7 @@ import { createTeamTools } from '../tasks/teamTools'
 import { startUdsInbox, type UdsInboxServer } from '../tasks/udsInbox'
 import { UdsPeerRegistry, type UdsPeerRecord } from '../tasks/udsPeerRegistry'
 import { BridgePeerRegistry } from '../tasks/bridgePeerRegistry'
+import { BridgeRemoteState, type BridgeRemotePermissionResponse, type BridgeRemotePermissionStatus, type BridgeRemoteOutboxStatus } from '../tasks/bridgeRemoteState'
 import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
 import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
@@ -479,6 +480,27 @@ function taskStatusFrom(value: unknown): TaskStatus | undefined {
     : undefined
 }
 
+function bridgePermissionStatusFrom(value: unknown): BridgeRemotePermissionStatus | undefined {
+  return value === 'pending' || value === 'allowed' || value === 'denied' || value === 'cancelled'
+    ? value
+    : undefined
+}
+
+function bridgeOutboxStatusFrom(value: unknown): BridgeRemoteOutboxStatus | undefined {
+  return value === 'queued' || value === 'sent' ? value : undefined
+}
+
+function bridgePermissionResponseFrom(body: Record<string, unknown>): BridgeRemotePermissionResponse {
+  const behavior = body.behavior
+  if (behavior === 'allow') {
+    return { behavior: 'allow', updatedInput: isRecord(body.updatedInput) ? body.updatedInput : isRecord(body.updated_input) ? body.updated_input : {} }
+  }
+  if (behavior === 'deny') {
+    return { behavior: 'deny', message: stringOr(body.message, 'Permission denied') }
+  }
+  throw new Error('behavior required')
+}
+
 function fallbackEventRecord(event: SessionStreamEvent): SessionEventRecord {
   return { seq: 0, ts: new Date().toISOString(), event }
 }
@@ -794,6 +816,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const teams = new TeamService(stateRoot)
   const udsPeers = new UdsPeerRegistry(stateRoot)
   const bridgePeers = new BridgePeerRegistry(stateRoot)
+  const bridgeRemote = new BridgeRemoteState(stateRoot)
   const media = new MediaJobService({
     tasks,
     stateRoot,
@@ -2744,6 +2767,80 @@ export function startServer(opts: StartServerOptions = {}) {
             return Response.json({ ok: true })
           }
           return new Response('Method not allowed', { status: 405 })
+        } catch (err) {
+          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
+        }
+      }
+
+      const bridgeEventsMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/events$/)
+      if (bridgeEventsMatch) {
+        const sessionId = decodeURIComponent(bridgeEventsMatch[1]!)
+        try {
+          if (req.method === 'GET') {
+            return Response.json({
+              events: await bridgeRemote.listEvents(sessionId, {
+                after: numberFrom(url.searchParams.get('after'), 0),
+                limit: numberFrom(url.searchParams.get('limit'), 100),
+              }),
+            })
+          }
+          if (req.method === 'POST') {
+            const body = await req.json().catch(() => ({})) as Record<string, unknown>
+            const event = isRecord(body.event) ? body.event : body
+            return Response.json(await bridgeRemote.ingestEvent(sessionId, event), { status: 201 })
+          }
+          return new Response('Method not allowed', { status: 405 })
+        } catch (err) {
+          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
+        }
+      }
+
+      const bridgePermissionsMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/permissions$/)
+      if (bridgePermissionsMatch) {
+        const sessionId = decodeURIComponent(bridgePermissionsMatch[1]!)
+        try {
+          if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
+          return Response.json({ permissions: await bridgeRemote.listPermissions(sessionId, bridgePermissionStatusFrom(url.searchParams.get('status'))) })
+        } catch (err) {
+          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
+        }
+      }
+
+      const bridgePermissionRespondMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/permissions\/([^/]+)\/respond$/)
+      if (bridgePermissionRespondMatch) {
+        const sessionId = decodeURIComponent(bridgePermissionRespondMatch[1]!)
+        const requestId = decodeURIComponent(bridgePermissionRespondMatch[2]!)
+        try {
+          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+          const body = await req.json().catch(() => ({})) as Record<string, unknown>
+          const result = await bridgeRemote.respondToPermission(sessionId, requestId, bridgePermissionResponseFrom(body))
+          if (!result) return jsonError('bridge permission request not found', 404)
+          return Response.json(result)
+        } catch (err) {
+          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
+        }
+      }
+
+      const bridgeOutboxMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/outbox$/)
+      if (bridgeOutboxMatch) {
+        const sessionId = decodeURIComponent(bridgeOutboxMatch[1]!)
+        try {
+          if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
+          return Response.json({ outbox: await bridgeRemote.listOutbox(sessionId, bridgeOutboxStatusFrom(url.searchParams.get('status'))) })
+        } catch (err) {
+          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
+        }
+      }
+
+      const bridgeOutboxSentMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/outbox\/([^/]+)\/sent$/)
+      if (bridgeOutboxSentMatch) {
+        const sessionId = decodeURIComponent(bridgeOutboxSentMatch[1]!)
+        const outboxId = decodeURIComponent(bridgeOutboxSentMatch[2]!)
+        try {
+          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+          const item = await bridgeRemote.markOutboxSent(sessionId, outboxId)
+          if (!item) return jsonError('bridge outbox item not found', 404)
+          return Response.json({ outbox: item })
         } catch (err) {
           return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
         }
