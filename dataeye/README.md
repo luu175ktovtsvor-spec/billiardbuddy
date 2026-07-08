@@ -1,4 +1,4 @@
-# dataeye — 用户数据接收端(独立小服务)
+# dataeye — 用户数据接收端 + 只读看板(独立小服务)
 
 > 📌 状态:✅现行 · 最后核对 2026-07-09
 
@@ -6,7 +6,7 @@
 
 桌面客户端(装在门店老板电脑上的台球运营助手)会把本机产生的运营数据(操作事件、AI 生成记录、会话轨迹、门店画像)定期打包 gzip、POST 到这里。这个服务收下来、去重、分门别类落进 Postgres,供 owner 后续做成本统计/活跃度/好评率/门店画像看板。
 
-**这是一个独立部署的小服务,不进桌面客户端安装包**——桌面版打包不带顶层 `dataeye/` 目录,这里只在 owner 自己的国内服务器上跑。接收端已从 FastAPI 迁到 Bun/TS,避免继续扩张旧 Python 链路。
+**这是一个独立部署的小服务,不进桌面客户端安装包**——桌面版打包不带顶层 `dataeye/` 目录,这里只在 owner 自己的国内服务器上跑。接收端和只读看板都已从 FastAPI 迁到 Bun/TS,避免继续扩张旧 Python 链路。
 
 数据分三层,互不混:
 1. **`raw_inbox`**(原始层):每条上传原样落地、只增不改,能回溯重解析。
@@ -19,7 +19,9 @@
 
 ```
 dataeye/
-  package.json       # Bun 脚本:receiver/test
+  package.json       # Bun 脚本:receiver/board/test
+  board/
+    app.ts            # Bun HTTP:GET /board/* 只读看板 + /board/healthz
   receiver/
     app.ts            # Bun HTTP:POST /ingest(接收端点)+ GET /health(探活)
     db.ts             # Bun SQL + 落库逻辑(raw_inbox → 六模块整理)
@@ -29,24 +31,26 @@ dataeye/
     marts.sql            # 报表物化视图(cost/activity/feedback/crashes)
   deploy/
     dataeye-receiver.service   # systemd unit
+    dataeye-board.service      # 只读看板 systemd unit
     nginx-dataeye.conf          # nginx 反代(只对外暴露 /ingest 和 /board)
     mount-data-disk.sh           # 挂大数据盘脚本(⚠️破坏性,先读脚本头部警告)
     disk-alarm.cron               # 磁盘用量 >85% 告警
     runbook.md                     # 一步步部署清单(从挂盘到冒烟测试全流程)
   tests/
     receiver.test.ts     # 本地单元测试(不需要真 PG,注入假 insertBatch)
+    board.test.ts        # 看板单元测试(不需要真 PG,注入假 BoardDb)
     make_sample.mjs        # 造一个 gzip 测试包,方便本地/真机冒烟
 ```
 
 ## 本地怎么跑起来测
 
-接收端本身依赖 Bun 内置 SQL 连一个真 Postgres,但**单元测试不需要真库**——测试会注入假 `insertBatch`,只验证 HTTP 层(鉴权 / gzip 解压 / 参数透传)和路径安全对不对。
+接收端和看板本身依赖 Bun 内置 SQL 连一个真 Postgres,但**单元测试不需要真库**——测试会注入假 `insertBatch` / `BoardDb`,只验证 HTTP 层、看板渲染、鉴权 / gzip 解压 / 参数透传和路径安全。
 
 ```bash
 cd dataeye
 
 # 跑单元测试(Bun 1.3+)
-bun test tests/receiver.test.ts
+bun test tests/receiver.test.ts tests/board.test.ts
 
 # 或用 package 脚本
 bun run test
@@ -64,6 +68,15 @@ psql "$PGDSN" -f sql/schema.sql
 
 cd receiver
 bun run app.ts --host 127.0.0.1 --port 9100
+```
+
+看板另开一个进程监听 `127.0.0.1:9200`,走 nginx Basic Auth 暴露 `/board`:
+
+```bash
+cd dataeye
+bun run board/app.ts --host 127.0.0.1 --port 9200
+curl -s http://127.0.0.1:9200/board/healthz
+# {"ok":true}
 ```
 
 另开一个终端,造样例包打过去:

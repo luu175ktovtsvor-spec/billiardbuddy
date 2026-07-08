@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "board": "bun run board/app.ts",
     "receiver": "bun run receiver/app.ts",
-    "test": "bun test tests/receiver.test.ts"
+    "test": "bun test tests/receiver.test.ts tests/board.test.ts"
   }
 }
