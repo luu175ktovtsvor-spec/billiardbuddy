@@ -250,6 +250,11 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('tput clear')).toBe('outreach')
   expect(classifyCommandRisk('tput -S')).toBe('outreach')
   expect(classifyCommandRisk('tput -xS cols')).toBe('outreach')
+  expect(classifyCommandRisk('fd -H -e ts dangerousCommand')).toBe('read')
+  expect(classifyCommandRisk('fdfind --type f package')).toBe('read')
+  expect(classifyCommandRisk('fd -x rm {}')).toBe('outreach')
+  expect(classifyCommandRisk('fd --exec-batch rm')).toBe('outreach')
+  expect(classifyCommandRisk('fd -l package')).toBe('outreach')
   expect(classifyCommandRisk('curl https://example.com > out.txt')).toBe('outreach')
   expect(classifyCommandRisk('kill 123 > out.txt')).toBe('destructive')
   expect(classifyCommandRisk('git push --force origin main')).toBe('destructive')
@@ -498,6 +503,11 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   })
   expect(resolvePermission(runCommandTool, { command: 'tput cols' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'tput clear' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'fd -H -e ts dangerousCommand' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'fd -x rm {}' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })
