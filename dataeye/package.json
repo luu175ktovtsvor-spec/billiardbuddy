@@ -1,0 +1,9 @@
+{
+  "name": "dataeye-services",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "receiver": "bun run receiver/app.ts",
+    "test": "bun test tests/receiver.test.ts"
+  }
+}

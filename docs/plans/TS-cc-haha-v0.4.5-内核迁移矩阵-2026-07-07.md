@@ -3241,7 +3241,7 @@
 
 - 删除旧 gzip 样例 Python 生成器:它不属于运行中的 FastAPI/dataeye 接收端,已经有等价 Node 脚本接住。
 - 新增 `dataeye/tests/make_sample.mjs`:生成同形状 `sample.json.gz`,覆盖 `event/gen/trace/store` 四类样例;README 与部署 runbook 冒烟命令同步改为 `node dataeye/tests/make_sample.mjs`。
-- 验证:Node 生成 gzip 后解压校验 machine_id 与 batch kind;`cd dataeye && uv run --isolated --with fastapi --with 'uvicorn[standard]' --with asyncpg --with pytest --with httpx python -m pytest tests/ -q` 通过 21 项。
+- 验证:Node 生成 gzip 后解压校验 machine_id 与 batch kind;当时保留的接收端 Python 契约测试已在 3.390 迁到 `cd dataeye && bun test tests/receiver.test.ts`。
 - 这一步落实“旧 Python 有等价替代就立刻删”的规则;`server/main.py`、媒体/语音/OCR/RAG/视频链路、业务质量 eval 在 TS/native 等价链路和 smoke 接住前继续保留,避免把活产品砍坏。
 
 ## 3.382 2026-07-09 CC Bash safe wrapper stripping 迁移
@@ -3292,6 +3292,13 @@
 - 对照源:`~/Desktop/cc-haha-ref/src/tools/BashTool/readOnlyValidation.ts` 的 regex 兜底:CC 对 Git 命令里的 `-c`、`--exec-path`、`--config-env` 做额外拦截,因为它们可以注入 `core.fsmonitor`、`diff.external`、`core.gitProxy` 或替换 Git 查找可执行文件的目录。
 - TS 新增 `gitGlobalOptionNeedsApproval()`:任何 `git` 命令出现 `-c`/`-c...`、`--exec-path[=...]`、`--config-env[=...]` 都归 `outreach` 审批。
 - 行为边界:`git status --porcelain=v1 --branch` 保持 `read`;`git -c core.fsmonitor=evil status --short`、`git -ccore.fsmonitor=evil status --short`、`git --exec-path=/tmp status --short`、`git --config-env=core.fsmonitor=EVIL status --short` 都进入 `outreach`,避免被 file 类自动放行。
+
+## 3.390 2026-07-09 dataeye 接收端 Python 退役
+
+- 删除 `dataeye/receiver/app.py`、`dataeye/receiver/db.py`、`dataeye/receiver/requirements.txt` 与 `dataeye/tests/test_receiver.py`:接收端从 FastAPI/asyncpg 迁到 Bun/TS,不再需要独立 Python venv。
+- 新增 `dataeye/receiver/app.ts`、`db.ts`、`path.ts` 与 `tests/receiver.test.ts`:保留原 `/health`、`POST /ingest`、Bearer 令牌、gzip 解压、256MB 解压上限、raw_inbox 幂等、`event/gen/store/trace` 整理、trace 正文路径分量清洗与 commonpath 复核。
+- 部署同步:systemd 模板从 `uvicorn app:app` 改成 `bun run receiver/app.ts --host 127.0.0.1 --port 9100`;README/runbook 的本地测试与冒烟命令改成 Bun。
+- 验证:`cd dataeye && bun test tests/receiver.test.ts` 通过 21 项。`dataeye/board/app.py` 仍是独立只读看板,未在本轮混删;等 TS 看板等价接住后再退。
 
 ## 4. 下一批代码顺序
 
