@@ -31,6 +31,7 @@ import { compactPipeline, looksLikeContextOverflow } from '../context/compaction
 import { buildRecentFileContextMessage } from '../context/recentFileContext'
 import {
   applyToolResultBudget,
+  cloneContentReplacementState,
   maybeStoreToolResult,
   reconstructContentReplacementState,
   type ContentReplacementState,
@@ -80,6 +81,7 @@ export interface AgentLoopSnapshot {
   system: string
   messages: Message[]
   tools: ToolSpec[]
+  contentReplacementState?: ContentReplacementState
 }
 
 export interface RunAgentLoopOptions {
@@ -113,6 +115,10 @@ export interface RunAgentLoopOptions {
 
 const TODO_UPDATE_TOOL_NAMES = new Set(['todo_write', 'task_create', 'task_update', 'TaskCreate', 'TaskUpdate'])
 const AGGREGATE_TOOL_RESULT_BUDGET_SKIP_TOOLS = new Set(['read_file', 'read_many_files'])
+
+function cloneContentReplacementStateForSnapshot(state: ContentReplacementState | undefined): ContentReplacementState | undefined {
+  return state ? cloneContentReplacementState(state) : undefined
+}
 
 /**
  * 真 ReAct 主循环,内核 = Anthropic content-block:
@@ -314,7 +320,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     let step: Awaited<ReturnType<Model['step']>>
     try {
       const toolsForStep = visibleToolSpecs(registry, revealedToolNames)
-      opts.onSummarySnapshot?.({ system, messages: messages.slice(), tools: toolsForStep })
+      opts.onSummarySnapshot?.({ system, messages: messages.slice(), tools: toolsForStep, contentReplacementState: cloneContentReplacementStateForSnapshot(contentReplacementState) })
       recordPromptCacheState({ trackingKey: promptCacheTrackingKey, system, tools: toolsForStep, model: modelNameForPromptCache })
       step = await model.step({ system, messages, tools: toolsForStep, signal: opts.signal })
     } catch (err) {
@@ -323,7 +329,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       if (!note) throw err
       yield { type: 'context_note', text: note }
       const toolsForStep = visibleToolSpecs(registry, revealedToolNames)
-      opts.onSummarySnapshot?.({ system, messages: messages.slice(), tools: toolsForStep })
+      opts.onSummarySnapshot?.({ system, messages: messages.slice(), tools: toolsForStep, contentReplacementState: cloneContentReplacementStateForSnapshot(contentReplacementState) })
       recordPromptCacheState({ trackingKey: promptCacheTrackingKey, system, tools: toolsForStep, model: modelNameForPromptCache })
       step = await model.step({ system, messages, tools: toolsForStep, signal: opts.signal })
     }

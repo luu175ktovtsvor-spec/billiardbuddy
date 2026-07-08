@@ -17,6 +17,7 @@ import { buildAgentMemoryPrompt, workspaceWithAgentMemory } from '../agents/agen
 import {
   cloneContentReplacementState,
   reconstructContentReplacementState,
+  type ContentReplacementState,
   type ContentReplacementRecord,
 } from '../context/toolResultStorage'
 import { startAgentSummarization, type AgentSummaryController } from './agentSummary'
@@ -30,6 +31,8 @@ export interface BackgroundAgentTaskInput {
   context?: string
   title?: string
   isolation?: 'worktree'
+  initialMessages?: Message[]
+  contentReplacementState?: ContentReplacementState
 }
 
 export interface BackgroundAgentTaskOptions {
@@ -482,11 +485,16 @@ export async function startBackgroundAgentRun(
   const steerInbox: string[] = []
   const detachSteerInbox = opts.tasks.attachSteerInbox(task.id, steerInbox)
   const hooks = mergeHookRegistries(opts.hooks, agent.hooks)
+  const handoffInitialMessages = runOptions.handoffTaskId && input.initialMessages?.length ? input.initialMessages : []
+  const effectiveInitialMessages = handoffInitialMessages.length > 0 ? handoffInitialMessages : initialMessages
+  const forkInitialMessages = handoffInitialMessages.length > 0 ? [] : runOptions.forkContext?.initialMessages ?? []
   if (initialContentReplacementRecords.length > 0) {
     await opts.tasks.transcript(task.id).seedContentReplacementRecords(initialContentReplacementRecords)
   }
-  const inheritedContentReplacementState = initialMessages.length > 0
-    ? reconstructContentReplacementState(initialMessages, initialContentReplacementRecords, ctx.contentReplacementState?.replacements)
+  const inheritedContentReplacementState = input.contentReplacementState
+    ? cloneContentReplacementState(input.contentReplacementState)
+    : effectiveInitialMessages.length > 0
+    ? reconstructContentReplacementState(effectiveInitialMessages, initialContentReplacementRecords, ctx.contentReplacementState?.replacements)
     : ctx.contentReplacementState ? cloneContentReplacementState(ctx.contentReplacementState) : undefined
   opts.tasks.start(task.id, async taskCtx => {
     let finalText = ''
@@ -540,11 +548,11 @@ export async function startBackgroundAgentRun(
         systemPrompt: runOptions.forkContext?.systemPrompt ?? await agentSystemPrompt(agent, runWorkspace.root, opts.baseSystemPrompt),
         userMessage: agentTaskMessage(agent, input),
         initialMessages: [
-          ...(runOptions.forkContext?.initialMessages ?? []),
-          ...initialMessages,
+          ...forkInitialMessages,
+          ...effectiveInitialMessages,
           ...[hookContextMessage('SubagentStart', subagentStart.additionalContext)].filter((message): message is Message => !!message),
         ],
-        skipUserMessage: !!runOptions.forkContext,
+        skipUserMessage: !!runOptions.forkContext || effectiveInitialMessages.length > 0,
         maxTurns: agent.maxTurns ?? opts.maxTurns ?? 8,
         signal: taskCtx.signal,
         sandbox: runSandbox,
