@@ -4947,7 +4947,7 @@ tools: [list_dir]
       return body.task?.status === 'completed' ? body.task : null
     }, 2500)
     expect(done.result).toBe('后台接管完成')
-    expect(done.params).toMatchObject({ foreground_handoff: true, is_backgrounded: true, agent: 'researcher' })
+    expect(done.params).toMatchObject({ foreground_handoff: true, is_backgrounded: true, handoff_tool_uses: 1, agent: 'researcher' })
     const backgroundBody = sentBodies.find(body => String(body.messages?.[0]?.content ?? '').includes('<background_subagent name="researcher">'))
     expect(backgroundBody).toBeTruthy()
     expect(backgroundBody.messages.some((message: any) =>
