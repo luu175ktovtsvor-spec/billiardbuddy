@@ -11,6 +11,7 @@ import { normalizeMessagesForAPI, ensureToolResultPairing } from './messagePairi
 import { withStreamIdleTimeout } from './streamIdleTimeout'
 import type { OpenAIChatResponse } from './types'
 import type { ReasoningEffort } from '../model/reasoningEffort'
+import { fetchWithModelRetry, type ModelRetryOptions } from '../model/fetchRetry'
 
 /**
  * 注入用的最小 fetch 形状——故意不用 `typeof fetch`:bun-types 把 fetch 声明成
@@ -34,6 +35,8 @@ export interface ProxyModelConfig {
   fetchImpl?: FetchLike
   /** 缺 tool_call id 时的自造工厂(测试用确定性;默认 streamAccumulate 内置递增)。 */
   idFactory?: (index: number) => string
+  /** 瞬时错误(429/5xx/网络抖动)重试退避;默认启用,可注入 sleep 供测试。 */
+  retry?: Pick<ModelRetryOptions, 'maxRetries' | 'baseDelayMs' | 'maxDelayMs' | 'sleep'>
 }
 
 const DEFAULT_IDLE_MS = 60_000
@@ -53,11 +56,17 @@ export class ProxyModel implements Model {
       reasoningEffort: this.cfg.reasoningEffort,
     })
 
-    const resp = await this.fetchWithTimeout(`${this.cfg.baseUrl}/chat/completions`, {
+    // 单请求(带超时)。仅当显式配置 cfg.retry 时才做瞬时错误退避重试;默认不改 failover 时序——
+    // FallbackModel 已负责跨 provider 快速切换,是否在 provider 内先重试(牺牲切换延迟换单出口韧性)
+    // 属于需要按部署权衡的开关,不默认开(见迁移矩阵 §3.401 P1)。
+    const doRequest = () => this.fetchWithTimeout(`${this.cfg.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${this.cfg.apiKey}` },
       body: JSON.stringify(body),
     }, input.signal)
+    const resp = this.cfg.retry
+      ? await fetchWithModelRetry(doRequest, { signal: input.signal, ...this.cfg.retry })
+      : await doRequest()
 
     if (!resp.ok) {
       const detail = await resp.text().catch(() => '')

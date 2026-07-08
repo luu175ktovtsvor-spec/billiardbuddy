@@ -5,6 +5,7 @@ import { parseOpenAIToolArguments, stringifyOpenAIToolArguments } from '../proxy
 import type { AnthropicUsage } from '../proxy/types'
 import type { FetchLike } from '../proxy/ProxyModel'
 import type { ProviderAuthStrategy } from './providerConfig'
+import { fetchWithModelRetry, type ModelRetryOptions } from './fetchRetry'
 
 export interface AnthropicMessagesModelConfig {
   baseUrl: string
@@ -16,6 +17,8 @@ export interface AnthropicMessagesModelConfig {
   requestTimeoutMs?: number
   stream?: boolean
   fetchImpl?: FetchLike
+  /** 瞬时错误(429/5xx/网络抖动)重试退避;默认启用,可注入 sleep 供测试。 */
+  retry?: Pick<ModelRetryOptions, 'maxRetries' | 'baseDelayMs' | 'maxDelayMs' | 'sleep'>
 }
 
 interface AnthropicAccumulated {
@@ -64,11 +67,15 @@ export class AnthropicMessagesModel implements Model {
       })) } : {}),
     }
 
-    const resp = await this.fetchWithTimeout(this.messagesEndpoint(), {
+    // 仅当显式配置 cfg.retry 时才做瞬时错误退避重试(默认不改 failover 时序,理由同 ProxyModel)。
+    const doRequest = () => this.fetchWithTimeout(this.messagesEndpoint(), {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify(body),
     }, input.signal)
+    const resp = this.cfg.retry
+      ? await fetchWithModelRetry(doRequest, { signal: input.signal, ...this.cfg.retry })
+      : await doRequest()
 
     if (!resp.ok) {
       const detail = await resp.text().catch(() => '')
