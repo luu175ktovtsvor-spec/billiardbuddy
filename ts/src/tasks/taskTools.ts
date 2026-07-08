@@ -1,5 +1,6 @@
 import { stat, utimes } from 'node:fs/promises'
 import { runAgentLoop } from '../harness/loop'
+import type { AgentLoopSnapshot } from '../harness/loop'
 import type { AgentDefinition } from '../agents/agentLoader'
 import { resolveAgentTools } from '../agents/agentLoader'
 import { loadAgentMcpRuntime, type AgentMcpRuntimeOptions } from '../agents/agentMcp'
@@ -33,6 +34,7 @@ export interface BackgroundAgentTaskInput {
   isolation?: 'worktree'
   initialMessages?: Message[]
   contentReplacementState?: ContentReplacementState
+  summarySnapshot?: AgentLoopSnapshot
 }
 
 export interface BackgroundAgentTaskOptions {
@@ -568,6 +570,7 @@ export async function startBackgroundAgentRun(
           await opts.tasks.touch(task.id, { summary }).catch(() => undefined)
         },
       })
+      if (input.summarySnapshot) summarizer.updateSnapshot(input.summarySnapshot)
       const subagentStart = await applySubagentStartHooks(hooks, stableAgentId, agent.name, {
         ...ctx,
         workspace: runWorkspace,

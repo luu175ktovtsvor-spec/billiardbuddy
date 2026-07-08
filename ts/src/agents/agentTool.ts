@@ -29,6 +29,19 @@ import { cloneContentReplacementState, type ContentReplacementState } from '../c
 import { createDenialTrackingState } from '../permissions/denialTracking'
 import { buildForkRunContext, FORK_SUBAGENT_TYPE, isForkQuerySource, isForkSubagentEnabled, isInForkChild, type ForkRunContext } from './forkSubagent'
 
+export interface AgentTaskHandoffInput {
+  agent: string
+  agentId: string
+  task: string
+  context?: string
+  title: string
+  name?: string
+  isolation?: 'worktree'
+  initialMessages?: Message[]
+  contentReplacementState?: ContentReplacementState
+  summarySnapshot?: AgentLoopSnapshot
+}
+
 export interface AgentTaskForegroundRegistration {
   task: { id: string; title: string; params?: Record<string, unknown> }
   backgroundSignal: Promise<void>
@@ -59,7 +72,7 @@ export interface AgentTaskToolOptions {
   env?: Record<string, string | undefined>
   startBackgroundAgent?: (input: { agent?: string; name?: string; task: string; context?: string; title?: string; isolation?: 'worktree' }, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<{ task: { id: string; title: string; params?: Record<string, unknown> }; agent: AgentDefinition }>
   registerForegroundAgent?: (input: { agent: string; agentId: string; task: string; context?: string; title: string; name?: string }, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<AgentTaskForegroundRegistration>
-  handoffForegroundAgent?: (registration: AgentTaskForegroundRegistration, input: { agent: string; agentId: string; task: string; context?: string; title: string; name?: string; isolation?: 'worktree'; initialMessages?: Message[]; contentReplacementState?: ContentReplacementState }, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<{ task: { id: string; title: string; params?: Record<string, unknown> }; agent: AgentDefinition }>
+  handoffForegroundAgent?: (registration: AgentTaskForegroundRegistration, input: AgentTaskHandoffInput, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<{ task: { id: string; title: string; params?: Record<string, unknown> }; agent: AgentDefinition }>
   unregisterForegroundAgent?: (taskId: string, ctx: ToolContext) => Promise<void> | void
 }
 
@@ -453,6 +466,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
               ...optionalIsolation(input, agent),
               ...(handoffSnapshot?.messages.length ? { initialMessages: handoffSnapshot.messages } : {}),
               ...(handoffSnapshot?.contentReplacementState ? { contentReplacementState: handoffSnapshot.contentReplacementState } : {}),
+              ...(handoffSnapshot ? { summarySnapshot: handoffSnapshot } : {}),
             }, ctx, forkRunContext)
             const name = typeof task.params?.name === 'string' ? ` name="${xmlAttr(task.params.name)}"` : ''
             const backgroundAgentId = typeof task.params?.agent_id === 'string' ? ` agent_id="${xmlAttr(task.params.agent_id)}"` : ''
