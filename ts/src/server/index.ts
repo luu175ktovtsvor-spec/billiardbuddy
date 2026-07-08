@@ -50,6 +50,7 @@ import { createBackgroundAgentTaskTool, createTaskTools, resumeBackgroundAgentTa
 import { createStructuredTaskTools } from '../tasks/taskListTools'
 import { TeamService } from '../tasks/teamService'
 import { createTeamTools } from '../tasks/teamTools'
+import { startUdsInbox, type UdsInboxServer } from '../tasks/udsInbox'
 import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
 import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
@@ -501,6 +502,13 @@ function workspaceFromBody(rawBody: Record<string, unknown>): Workspace {
     allowedPaths: stringArray(rawBody.selected_files ?? rawBody.selectedFiles),
     fullDiskAccess: rawBody.full_disk_access === true || rawBody.fullDiskAccess === true,
   })
+}
+
+function messagingSocketPathFrom(rawBody: Record<string, unknown>, env: Record<string, string | undefined>): string {
+  return stringOr(
+    rawBody.messagingSocketPath ?? rawBody.messaging_socket_path ?? rawBody.udsMessagingSocketPath ?? rawBody.uds_messaging_socket_path,
+    '',
+  ) || stringOr(env.CLAUDE_CODE_MESSAGING_SOCKET, '')
 }
 
 function delay(ms: number): Promise<void> {
@@ -1033,6 +1041,16 @@ export function startServer(opts: StartServerOptions = {}) {
     const workspace = workspaceForActiveWorktree(workspaceFromBody(rawBody), conversationId)
     const steerInbox = steerInboxes.get(conversationId) ?? []
     steerInboxes.set(conversationId, steerInbox)
+    const messagingSocketPath = messagingSocketPathFrom(rawBody, opts.env ?? process.env)
+    let udsInbox: UdsInboxServer | undefined
+    let udsInboxWarning = ''
+    if (messagingSocketPath) {
+      try {
+        udsInbox = await startUdsInbox({ socketPath: messagingSocketPath, inbox: steerInbox })
+      } catch (err) {
+        udsInboxWarning = `UDS messaging socket failed to start:${err instanceof Error ? err.message : String(err)}`
+      }
+    }
     const transcript = sessions.transcript(conversationId)
     await sessions.touch(conversationId, {
       title: rawUserMessage.slice(0, 40),
@@ -1198,6 +1216,9 @@ export function startServer(opts: StartServerOptions = {}) {
         for (const warning of mcpTools.warnings) {
           yield await record({ type: 'context_note', text: warning })
         }
+        if (udsInboxWarning) {
+          yield await record({ type: 'context_note', text: udsInboxWarning })
+        }
         for await (const event of runAgentLoop({
           model,
           registry,
@@ -1223,6 +1244,7 @@ export function startServer(opts: StartServerOptions = {}) {
         yield await record({ type: 'context_note', text: `任务执行失败:${detail}` })
         yield await record({ type: 'final', text: `任务执行失败:${detail}` })
       } finally {
+        await udsInbox?.close().catch(() => undefined)
         await closeMcpConnections(mcpTools.connections)
         const done = await record({ type: 'done' })
         const wasCurrent = turns.finish(conversationId, controller)
