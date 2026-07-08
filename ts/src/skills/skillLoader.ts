@@ -1,7 +1,7 @@
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
-import { extractDescription, parseMarkdownDocument, stringArrayField, stringField } from '../commands/frontmatter'
-import { addAllowedToolsToContext, normalizeAllowedTools } from '../commands/allowedTools'
+import { extractDescription, parseMarkdownDocument, stringField } from '../commands/frontmatter'
+import { addAllowedToolsToContext, allowedToolRulesFromFrontmatter, normalizeAllowedTools } from '../commands/allowedTools'
 import type { PromptCommand } from '../commands/types'
 import { mergeHookRegistries } from '../hooks/hooks'
 import { normalizeHookRegistry } from '../hooks/hookConfig'
@@ -73,7 +73,7 @@ export async function loadSkillFile(filePath: string, source: PromptCommand['sou
   const name = safeName(stringField(doc.frontmatter, 'name') ?? basename(baseDir))
   const description = stringField(doc.frontmatter, 'description') ?? extractDescription(doc.body) ?? name
   const whenToUse = stringField(doc.frontmatter, 'whenToUse') ?? stringField(doc.frontmatter, 'when_to_use')
-  const allowedToolRules = stringArrayField(doc.frontmatter, 'allowedTools') ?? stringArrayField(doc.frontmatter, 'allowed_tools')
+  const allowedToolRules = allowedToolRulesFromFrontmatter(doc.frontmatter.allowedTools ?? doc.frontmatter.allowed_tools)
   const allowedTools = normalizeAllowedTools(allowedToolRules)
   const model = stringField(doc.frontmatter, 'model')
   const context = stringField(doc.frontmatter, 'context')

@@ -1,4 +1,5 @@
 import type { ToolContext } from '../tools/Tool'
+import { parseToolListFromCLI, permissionRuleValueFromString } from '../permissions/permissionRules'
 
 const TOOL_ALIASES = new Map<string, string[]>([
   ['Bash', ['run_command']],
@@ -8,22 +9,25 @@ const TOOL_ALIASES = new Map<string, string[]>([
   ['LS', ['list_dir']],
   ['MultiEdit', ['multi_edit_file']],
   ['NotebookEdit', ['NotebookEdit']],
+  ['PowerShell', ['PowerShell']],
   ['Read', ['read_file', 'read_many_files']],
   ['Task', ['agent_task']],
   ['TodoWrite', ['todo_write']],
   ['Write', ['write_file']],
 ])
 
-function aliasKey(value: string): string {
-  const match = value.match(/^([A-Za-z][A-Za-z0-9_-]*)(?:\(.*\))?$/)
-  return match?.[1] ?? value
+export function allowedToolRulesFromFrontmatter(value: unknown): string[] | undefined {
+  const raw = Array.isArray(value)
+    ? value.map(String)
+    : typeof value === 'string' && value.trim()
+      ? [value]
+      : []
+  const parsed = parseToolListFromCLI(raw)
+  return parsed.length > 0 ? parsed : undefined
 }
 
-function scopedSpec(value: string): { key: string; arg: string } | null {
-  const match = value.match(/^([A-Za-z][A-Za-z0-9_-]*)\((.*)\)$/)
-  const key = match?.[1]?.trim()
-  const arg = match?.[2]?.trim()
-  return key && arg ? { key, arg } : null
+function aliasKey(value: string): string {
+  return permissionRuleValueFromString(value).toolName
 }
 
 export function normalizeAllowedTools(values: string[] | undefined): string[] | undefined {
@@ -52,10 +56,11 @@ export function addAllowedToolsToContext(ctx: ToolContext, values: string[] | un
   for (const raw of values ?? []) {
     const value = raw.trim()
     if (!value) continue
-    const scoped = scopedSpec(value)
-    if (scoped?.key === 'Bash') {
+    const rule = permissionRuleValueFromString(value)
+    const mapped = TOOL_ALIASES.get(rule.toolName) ?? [rule.toolName]
+    if (rule.ruleContent) {
       ctx.sessionAllowedToolRules ??= []
-      ctx.sessionAllowedToolRules.push({ tool: 'run_command', commandPattern: scoped.arg })
+      for (const tool of mapped) ctx.sessionAllowedToolRules.push({ tool, ruleContent: rule.ruleContent })
       continue
     }
     const normalized = normalizeAllowedTools([value])
