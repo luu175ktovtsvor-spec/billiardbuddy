@@ -1,7 +1,7 @@
 import type { BridgePeerRegistry } from './bridgePeerRegistry'
 import type { BridgeRemoteState } from './bridgeRemoteState'
 import type { FetchLike } from '../proxy/ProxyModel'
-import { resolveInboundUserMessage } from './bridgeInboundMessages'
+import { resolveInboundUserMessage, type BridgeResolvedInboundMessage } from './bridgeInboundMessages'
 
 export interface BridgeRemoteSubscriberConfig {
   baseUrl: string
@@ -28,6 +28,7 @@ export interface BridgeRemoteSubscriberDeps {
     stateRoot: string
     fetchImpl?: FetchLike
     timeoutMs?: number
+    onResolved?: (resolved: BridgeResolvedInboundMessage, payload: Record<string, unknown>) => void | Promise<void>
   }
 }
 
@@ -216,7 +217,10 @@ export class BridgeRemoteSubscriber {
           fetchImpl: this.deps.inbound.fetchImpl,
           timeoutMs: this.deps.inbound.timeoutMs,
         })
-        if (resolved) await this.deps.state.storeInboundMessage(this.sessionId, resolved, { eventSeq: ingested.event.seq })
+        if (resolved) {
+          await this.deps.state.storeInboundMessage(this.sessionId, resolved, { eventSeq: ingested.event.seq })
+          await this.deps.inbound.onResolved?.(resolved, parsed)
+        }
       }
     } catch (err) {
       this.events.onError?.(err instanceof Error ? err : new Error(String(err)))

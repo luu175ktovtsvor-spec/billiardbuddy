@@ -259,6 +259,11 @@ export class TurnRegistry {
     return this.controllers.get(sessionId) === controller
   }
 
+  isRunning(sessionId: string): boolean {
+    validateSessionId(sessionId)
+    return this.controllers.has(sessionId)
+  }
+
   finish(sessionId: string, controller: AbortController): boolean {
     if (this.controllers.get(sessionId) !== controller) return false
     this.controllers.delete(sessionId)
