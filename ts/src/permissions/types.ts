@@ -86,6 +86,7 @@ export type DecisionReason =
   | { type: 'fatal'; text: string } // 硬拒,永不执行
   | { type: 'sessionAllowedTool'; tool: string } // skill/command frontmatter 授权的会话内工具
   | { type: 'safePrefix' } // 工具自报的安全白名单 → 放行
+  | { type: 'safetyCheck'; reason: string; classifierApprovable: boolean } // acceptEdits 敏感路径拦截:不走自动放行、退回询问
   | { type: 'planSkip' } // plan 模式跳过会动手的工具
 
 /** 审批卡上给老板看的大白话理由(什么/为什么/影响)。 */
