@@ -230,9 +230,15 @@ test('shell parser hardening mirrors Bash misparse safety gates', () => {
   expect(hasShellParserRisk('echo \\`date\\`')).toBe(false)
   expect(hasShellParserRisk('echo $IFS')).toBe(true)
   expect(hasShellParserRisk('cat /proc/self/environ')).toBe(true)
+  expect(hasShellParserRisk('\t--danger-fragment')).toBe(true)
+  expect(hasShellParserRisk('-rf /tmp')).toBe(true)
+  expect(hasShellParserRisk('&& cat package.json')).toBe(true)
+  expect(hasShellParserRisk('; echo hi')).toBe(true)
+  expect(hasShellParserRisk('> out.txt')).toBe(true)
   expect(hasShellParserRisk('echo safe\\ word')).toBe(true)
   expect(hasShellParserRisk('echo "safe\\ word"')).toBe(false)
   expect(hasShellParserRisk("echo 'safe\\ word'")).toBe(false)
+  expect(hasShellParserRisk('printf ok -- -rf')).toBe(false)
   expect(hasShellParserRisk('echo ok\ncurl https://example.com')).toBe(true)
   expect(hasShellParserRisk('echo ok \\\n--flag')).toBe(false)
   expect(hasShellParserRisk('echo ok\\\ntraceroute example.com')).toBe(true)
@@ -324,6 +330,10 @@ test('run_command dynamic permission allows reads and classifies approval', () =
     approvalClass: 'destructive',
   })
   expect(resolvePermission(runCommandTool, { command: 'ps auxe' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: '-rf /tmp' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })
