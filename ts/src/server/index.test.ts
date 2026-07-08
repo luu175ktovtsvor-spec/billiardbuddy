@@ -73,6 +73,23 @@ async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 1500): Promis
   throw new Error('waitFor timeout')
 }
 
+class FakeBridgeWebSocket {
+  static instances: FakeBridgeWebSocket[] = []
+  readonly listeners = new Map<string, Array<(event: any) => void>>()
+  closed = false
+  constructor(readonly url: string, readonly init?: any) {
+    FakeBridgeWebSocket.instances.push(this)
+  }
+  addEventListener(type: string, listener: (event: any) => void): void {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener])
+  }
+  send(): void {}
+  close(): void { this.closed = true }
+  emit(type: string, event: any = {}): void {
+    for (const listener of this.listeners.get(type) ?? []) listener(event)
+  }
+}
+
 test('GET /health returns 200 ok', async () => {
   const res = await fetch(`http://127.0.0.1:${server.port}/health`)
   expect(res.status).toBe(200)
@@ -1156,6 +1173,62 @@ test('bridge Remote Control outbox flush posts control responses to session even
     expect(queued.outbox).toEqual([])
     const sent = await (await fetch(`${base}/outbox?status=sent`)).json() as any
     expect(sent.outbox).toEqual([expect.objectContaining({ requestId: 'req_flush', status: 'sent' })])
+  } finally {
+    bridgeServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('bridge Remote Control subscribe API stores WebSocket SDK/control messages', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-bridge-subscribe-'))
+  FakeBridgeWebSocket.instances = []
+  const bridgeServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    mcpConfigPath: join(root, 'missing.mcp.json'),
+    bridgeWebSocketCtor: FakeBridgeWebSocket as any,
+  })
+  const base = `http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/sessions/${encodeURIComponent('session_subscribe')}`
+  try {
+    const started = await (await fetch(`${base}/subscribe`, {
+      method: 'POST',
+      body: JSON.stringify({
+        bridge_remote: {
+          base_url: 'https://remote.example',
+          token: 'token',
+          org_uuid: 'org_sub',
+        },
+      }),
+    })).json() as any
+    expect(started).toMatchObject({ ok: true, sessionId: 'session_subscribe' })
+    expect(FakeBridgeWebSocket.instances).toHaveLength(1)
+    const ws = FakeBridgeWebSocket.instances[0]!
+    expect(ws.url).toBe('wss://remote.example/v1/sessions/ws/session_subscribe/subscribe?organization_uuid=org_sub')
+    ws.emit('open')
+    ws.emit('message', { data: JSON.stringify({
+      type: 'control_request',
+      request_id: 'req_subscribe',
+      request: {
+        subtype: 'can_use_tool',
+        tool_name: 'Write',
+        tool_use_id: 'toolu_subscribe',
+        input: { file_path: 'remote.ts' },
+      },
+    }) })
+
+    const permissions = await waitFor(async () => {
+      const body = await (await fetch(`${base}/permissions?status=pending`)).json() as any
+      return body.permissions.length === 1 ? body : null
+    })
+    expect(permissions.permissions).toEqual([
+      expect.objectContaining({ requestId: 'req_subscribe', toolName: 'Write', status: 'pending' }),
+    ])
+    const subscribers = await (await fetch(`http://127.0.0.1:${bridgeServer.port}/api/v1/agent/bridge/subscribers`)).json() as any
+    expect(subscribers.subscribers).toEqual([expect.objectContaining({ sessionId: 'session_subscribe', connected: true })])
+
+    const stopped = await (await fetch(`${base}/subscribe`, { method: 'DELETE' })).json() as any
+    expect(stopped).toMatchObject({ ok: true, sessionId: 'session_subscribe' })
+    expect(ws.closed).toBe(true)
   } finally {
     bridgeServer.stop(true)
     rmSync(root, { recursive: true, force: true })

@@ -55,6 +55,7 @@ import { UdsPeerRegistry, type UdsPeerRecord } from '../tasks/udsPeerRegistry'
 import { BridgePeerRegistry } from '../tasks/bridgePeerRegistry'
 import { BridgeRemoteState, type BridgeRemotePermissionResponse, type BridgeRemotePermissionStatus, type BridgeRemoteOutboxStatus } from '../tasks/bridgeRemoteState'
 import { bridgeRemoteConfigFromEnv, createBridgeRemoteTransport } from '../tasks/bridgeRemoteTransport'
+import { BridgeRemoteSubscriber, type BridgeRemoteWebSocketConstructor } from '../tasks/bridgeRemoteSubscriber'
 import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
 import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
@@ -95,6 +96,7 @@ export interface StartServerOptions {
   agentsRoot?: string
   mcpConfigPath?: string
   mediaBackendUrl?: string
+  bridgeWebSocketCtor?: BridgeRemoteWebSocketConstructor
 }
 
 interface WorkspaceTreeEntry {
@@ -862,6 +864,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const turns = new TurnRegistry()
   const steerInboxes = new Map<string, string[]>()
   const providerHealth = new ProviderHealthStore(opts.providerRoot ?? stateRoot)
+  const bridgeSubscribers = new Map<string, BridgeRemoteSubscriber>()
 
   function registerProviderFailure(runtime: RuntimeProviderResolution, err: unknown): void {
     const key = runtimeProviderKey(runtime)
@@ -2449,7 +2452,7 @@ export function startServer(opts: StartServerOptions = {}) {
     return await mediaUnavailable()
   }
 
-  return Bun.serve<AgentWsData>({
+  const app = Bun.serve<AgentWsData>({
     hostname: host,
     port,
     idleTimeout: 30,
@@ -2911,6 +2914,47 @@ export function startServer(opts: StartServerOptions = {}) {
             }
           }
           return Response.json({ ok: results.every(item => item.ok === true), flushed: results.filter(item => item.ok === true).length, total: results.length, results })
+        } catch (err) {
+          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
+        }
+      }
+
+      if (url.pathname === '/api/v1/agent/bridge/subscribers') {
+        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
+        return Response.json({
+          subscribers: [...bridgeSubscribers.entries()].map(([sessionId, subscriber]) => ({
+            sessionId,
+            connected: subscriber.isConnected(),
+          })),
+        })
+      }
+
+      const bridgeSubscribeMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/subscribe$/)
+      if (bridgeSubscribeMatch) {
+        const sessionId = decodeURIComponent(bridgeSubscribeMatch[1]!)
+        try {
+          if (req.method === 'POST') {
+            const body = await req.json().catch(() => ({})) as Record<string, unknown>
+            const config = bridgeRemoteConfigFromBody(body, opts.env ?? process.env)
+            if (!config) return jsonError('bridge remote subscriber is not configured', 400)
+            bridgeSubscribers.get(sessionId)?.close()
+            const subscriber = new BridgeRemoteSubscriber(sessionId, {
+              baseUrl: config.baseUrl,
+              token: config.token,
+              orgUuid: config.orgUuid,
+              WebSocketCtor: opts.bridgeWebSocketCtor,
+            }, { state: bridgeRemote, peers: bridgePeers })
+            bridgeSubscribers.set(sessionId, subscriber)
+            subscriber.connect()
+            return Response.json({ ok: true, sessionId, connected: subscriber.isConnected() })
+          }
+          if (req.method === 'DELETE') {
+            const subscriber = bridgeSubscribers.get(sessionId)
+            subscriber?.close()
+            bridgeSubscribers.delete(sessionId)
+            return Response.json({ ok: true, sessionId })
+          }
+          return new Response('Method not allowed', { status: 405 })
         } catch (err) {
           return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
         }
@@ -3512,4 +3556,11 @@ export function startServer(opts: StartServerOptions = {}) {
       },
     },
   })
+  const stop = app.stop.bind(app)
+  app.stop = (closeActiveConnections?: boolean) => {
+    for (const subscriber of bridgeSubscribers.values()) subscriber.close()
+    bridgeSubscribers.clear()
+    return stop(closeActiveConnections)
+  }
+  return app
 }
