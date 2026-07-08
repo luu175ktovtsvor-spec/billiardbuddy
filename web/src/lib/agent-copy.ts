@@ -1,23 +1,24 @@
 /**
  * 集中文案 + 状态动词库 —— 对标 Claude Code / cc 的呈现，中文落地、单一来源。
- * 覆盖：权限模式四档 / 空状态欢迎 / 输入框 placeholder / spinner 进行时动词库。
+ * 覆盖：权限模式五档 / 空状态欢迎 / 输入框 placeholder / spinner 进行时动词库。
  * 改文案改这里，别散落进组件。配色不在这里（保留现有 #10a37f 等）。
  */
 
 import type { PermissionMode, PermissionModeInput } from "@/hooks/use-agent-chat";
 
 /**
- * 权限模式四档 —— 对齐 Claude Code 的 default / acceptEdits / plan / bypassPermissions。
+ * 权限模式五档 —— 对齐 Claude Code 的 default / acceptEdits / plan / bypassPermissions / dontAsk。
  */
 export const PERMISSION_MODES: { value: PermissionMode; label: string; desc: string; effects: string[] }[] = [
-  { value: "default", label: "默认", desc: "本机读写直接做，对外和不可逆动作先问", effects: ["改文件：直接做", "本机命令：直接跑", "对外/删除：必须确认"] },
+  { value: "default", label: "默认", desc: "普通读查直接做，改动和外部动作先问", effects: ["读文件：直接做", "改文件：先确认", "对外/删除：必须确认"] },
   { value: "acceptEdits", label: "接受修改", desc: "本机读写直接做，对外和不可逆动作先问", effects: ["改文件：直接做", "本机命令：直接跑", "对外/删除：必须确认"] },
   { value: "plan", label: "计划模式", desc: "只看只想、不动手", effects: ["改文件：不做", "跑命令：不跑", "高风险动作：不做"] },
   { value: "bypassPermissions", label: "跳过确认", desc: "普通读写改查直接做，登录、支付、灾难级动作仍拦", effects: ["改文件：直接做", "跑命令：直接跑", "强确认：仍会拦"] },
+  { value: "dontAsk", label: "不询问", desc: "需要确认的动作直接拒绝，不弹确认卡", effects: ["读查：直接做", "需确认：直接拒绝", "适合只读委派"] },
 ];
 
 export function normalizePermissionMode(value: unknown): PermissionMode | null {
-  if (value === "default" || value === "acceptEdits" || value === "plan" || value === "bypassPermissions") return value;
+  if (value === "default" || value === "acceptEdits" || value === "plan" || value === "bypassPermissions" || value === "dontAsk") return value;
   if (value === "ask") return "default";
   if (value === "auto_files") return "acceptEdits";
   if (value === "full") return "bypassPermissions";

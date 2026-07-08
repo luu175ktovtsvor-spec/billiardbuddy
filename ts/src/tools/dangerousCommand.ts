@@ -3888,7 +3888,7 @@ function classifySegment(segment: string): CommandRisk {
   if (/^git\s+(checkout|switch|restore|reset|merge|rebase|commit|tag|branch\s+(-d|-D)|apply|am|stash|pull|push)\b/.test(command)) return withSegmentBaseRisk('file')
   if (/^(npm|pnpm|yarn|bun)\s+(run\s+)?(build|compile|generate|lint\s+--fix|format|test)\b/.test(command)) return withSegmentBaseRisk('file')
 
-  if (/^(pwd|ls|cat|head|tail|wc|find|stat|du|df|whoami|uname|which|type|echo)\b/.test(command)) {
+  if (/^(pwd|cd|pushd|popd|ls|cat|head|tail|wc|find|stat|du|df|whoami|uname|which|type|echo)\b/.test(command)) {
     return withSegmentBaseRisk('read')
   }
 

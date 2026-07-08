@@ -267,7 +267,7 @@ export interface AgentChatPayload {
   model?: string;
   conversation_id?: string | null;
   selected_files?: string[]; // 桌面版：老板选定、授权 Agent 读/改的文件绝对路径
-  permission_mode?: "default" | "acceptEdits" | "plan" | "bypassPermissions" | "ask" | "auto_files" | "full"; // 权限：CC四档；兼容旧 ask/auto_files/full
+  permission_mode?: "default" | "acceptEdits" | "plan" | "bypassPermissions" | "dontAsk" | "ask" | "auto_files" | "full"; // 权限：CC五档；兼容旧 ask/auto_files/full
   full_disk_access?: boolean; // 高级·全盘：文件工具不限内容库+选定文件
   knowledge_packs?: string[]; // 专家挂载（如 ["billiards"]）；含 billiards → 台球运营专家，否则通用 Agent
   output_style?: string; // 输出风格名（explanatory/concise…），空=默认

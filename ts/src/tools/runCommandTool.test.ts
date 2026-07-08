@@ -393,7 +393,7 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('cd sub && git status --short')).toBe('outreach')
   expect(classifyCommandRisk('FORCE_COLOR=1 cd sub && git status')).toBe('outreach')
   expect(classifyCommandRisk('cd sub && xargs git status')).toBe('outreach')
-  expect(classifyCommandRisk('cd sub && echo ok')).toBe('file')
+  expect(classifyCommandRisk('cd sub && echo ok')).toBe('read')
   expect(classifyCommandRisk('mkdir -p objects refs hooks && touch HEAD && git status')).toBe('outreach')
   expect(classifyCommandRisk("printf '#!/bin/sh' > hooks/pre-commit && git status")).toBe('outreach')
   expect(classifyCommandRisk("printf '#!/bin/sh' > hooks/pre-commit")).toBe('file')
@@ -631,7 +631,10 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: "jq '.name' package.json" }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
-  expect(resolvePermission(runCommandTool, { command: 'echo hi > note.txt' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'echo hi > note.txt' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'file',
+  })
   expect(resolvePermission(runCommandTool, { command: 'echo hi > note.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'find . -print' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: "sed -n '1,20p' ts/src/tools/dangerousCommand.ts" }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })

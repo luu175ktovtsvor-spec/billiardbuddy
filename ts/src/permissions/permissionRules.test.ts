@@ -3,6 +3,7 @@ import {
   MAX_SUBCOMMANDS_FOR_SECURITY_CHECK,
   parseToolListFromCLI,
   permissionRuleValueFromString,
+  permissionRuleValueToString,
   shellCommandAllowedByPermissionRules,
   shellCommandMatchesPermissionRule,
   splitShellCommandsForPermission,
@@ -15,6 +16,11 @@ test('permissionRuleValueFromString parses escaped parentheses and wildcard tool
   expect(permissionRuleValueFromString('Bash(node -e "run\\(\\)")')).toEqual({
     toolName: 'Bash',
     ruleContent: 'node -e "run()"',
+  })
+  expect(permissionRuleValueToString({ toolName: 'Bash', ruleContent: 'node -e "run()"' })).toBe('Bash(node -e "run\\(\\)")')
+  expect(permissionRuleValueFromString(permissionRuleValueToString({ toolName: 'Bash', ruleContent: 'echo "a\\\\b"' }))).toEqual({
+    toolName: 'Bash',
+    ruleContent: 'echo "a\\\\b"',
   })
 })
 

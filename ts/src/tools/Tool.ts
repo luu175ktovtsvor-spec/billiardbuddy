@@ -1,6 +1,6 @@
 import type { Workspace } from '../workspace/workspace'
 import type { Sandbox } from '../sandbox/sandbox'
-import type { ApprovalClass, ApprovalReason, PermissionMode } from '../permissions/types'
+import type { AdditionalWorkingDirectory, ApprovalClass, ApprovalReason, PermissionMode, PermissionRule } from '../permissions/types'
 import type { TodoItem } from '../types/todo'
 import type { Model } from '../types/model'
 import type { Message } from '../types/message'
@@ -44,6 +44,10 @@ export interface ToolContext {
   sessionAllowedTools?: Set<string>
   /** 当前 slash command / inline skill 通过 allowedTools 授权的参数级工具规则。 */
   sessionAllowedToolRules?: Array<{ tool: string; ruleContent: string }>
+  /** CC-Haha 风格结构化权限规则,保留 source + allow/deny/ask,供设置/命令/会话共同进入同一瀑布。 */
+  permissionRules?: PermissionRule[]
+  /** 工作区外目录授权地基:本轮先承载 source/path,后续接完整 path validator 与 UI。 */
+  additionalWorkingDirectories?: Map<string, AdditionalWorkingDirectory>
   /** 当前 slash command / inline skill 注册的会话内 hooks。 */
   sessionHooks?: HookRegistry
   /** 会话内 hooks 变化时通知宿主持久化。 */

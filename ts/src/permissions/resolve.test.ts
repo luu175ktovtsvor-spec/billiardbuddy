@@ -5,6 +5,7 @@ import { mkdtempSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { resolvePermission } from './resolve'
+import type { PermissionRule } from './types'
 
 function ws() {
   return new Workspace(realpathSync(mkdtempSync(join(tmpdir(), 'w4a-'))))
@@ -44,13 +45,13 @@ describe('resolvePermission 瀑布', () => {
     expect(d.behavior).toBe('allow')
   })
 
-  test('Delta A:本机可逆动作(无 requiresApproval)在执行档都直接 allow', () => {
-    for (const m of ['default', 'acceptEdits', 'bypassPermissions'] as const) {
+  test('无 requiresApproval 的普通工具在执行档和 dontAsk 直接 allow', () => {
+    for (const m of ['default', 'acceptEdits', 'bypassPermissions', 'dontAsk'] as const) {
       expect(resolvePermission(tool({}), {}, ctx(m)).behavior).toBe('allow')
     }
   })
 
-  test('旧权限值会归一到 CC 四档', () => {
+  test('旧权限值会归一到 CC 五档兼容模式', () => {
     expect(resolvePermission(tool({ requiresApproval: true, approvalClass: 'outreach' }), {}, ctx('ask'))).toMatchObject({
       behavior: 'ask',
       reason: { type: 'mode', mode: 'default' },
@@ -63,6 +64,11 @@ describe('resolvePermission 瀑布', () => {
       behavior: 'allow',
       reason: { type: 'mode', mode: 'bypassPermissions' },
     })
+  })
+
+  test('dontAsk 是正式模式:需要确认的动作直接 deny,不弹卡', () => {
+    const d = resolvePermission(tool({ requiresApproval: true, approvalClass: 'outreach' }), {}, ctx('dontAsk'))
+    expect(d).toMatchObject({ behavior: 'deny', reason: { type: 'mode', mode: 'dontAsk' } })
   })
 
   test('Delta B:forceConfirm 连 bypassPermissions(跳过确认)也弹卡', () => {
@@ -109,10 +115,73 @@ describe('resolvePermission 瀑布', () => {
     expect(resolvePermission(tool({ requiresApproval: true, approvalClass: 'outreach' }), {}, ctx('default')).behavior).toBe('ask')
   })
 
-  test('default/acceptEdits 档:file 类本机动作放行、非 file 类仍 ask', () => {
-    expect(resolvePermission(tool({ requiresApproval: true, approvalClass: 'file' }), {}, ctx('default')).behavior).toBe('allow')
+  test('default 档 file 类本机动作 ask,acceptEdits 才放行,非 file 类仍 ask', () => {
+    expect(resolvePermission(tool({ requiresApproval: true, approvalClass: 'file' }), {}, ctx('default')).behavior).toBe('ask')
     expect(resolvePermission(tool({ requiresApproval: true, approvalClass: 'file' }), {}, ctx('acceptEdits')).behavior).toBe('allow')
     expect(resolvePermission(tool({ requiresApproval: true, approvalClass: 'outreach' }), {}, ctx('acceptEdits')).behavior).toBe('ask')
+  })
+
+  test('结构化 permissionRules: deny 优先,ask 在普通模式弹卡,allow 放行', () => {
+    const deny: PermissionRule = {
+      source: 'userSettings',
+      ruleBehavior: 'deny',
+      ruleValue: { toolName: 'run_command' },
+    }
+    const askRule: PermissionRule = {
+      source: 'projectSettings',
+      ruleBehavior: 'ask',
+      ruleValue: { toolName: 'run_command' },
+    }
+    const allow: PermissionRule = {
+      source: 'localSettings',
+      ruleBehavior: 'allow',
+      ruleValue: { toolName: 'run_command' },
+    }
+    const run = tool({ name: 'run_command', requiresApproval: true, approvalClass: 'outreach' })
+
+    expect(resolvePermission(run, { command: 'curl https://example.com' }, ctx('bypassPermissions', { permissionRules: [deny] }))).toMatchObject({
+      behavior: 'deny',
+      reason: { type: 'rule', rule: deny },
+    })
+    expect(resolvePermission(run, { command: 'curl https://example.com' }, ctx('default', { permissionRules: [askRule, allow] }))).toMatchObject({
+      behavior: 'ask',
+      reason: { type: 'rule', rule: askRule },
+    })
+    expect(resolvePermission(run, { command: 'curl https://example.com' }, ctx('default', { permissionRules: [allow] }))).toMatchObject({
+      behavior: 'allow',
+      reason: { type: 'rule', rule: allow },
+    })
+  })
+
+  test('结构化 permissionRules 支持 Bash 别名和命令内容匹配', () => {
+    const allowGit: PermissionRule = {
+      source: 'command',
+      ruleBehavior: 'allow',
+      ruleValue: { toolName: 'Bash', ruleContent: 'git:*' },
+    }
+    const askNpm: PermissionRule = {
+      source: 'session',
+      ruleBehavior: 'ask',
+      ruleValue: { toolName: 'Bash', ruleContent: 'npm publish:*' },
+    }
+    const run = tool({ name: 'run_command', requiresApproval: true, approvalClass: 'file' })
+
+    expect(resolvePermission(run, { command: 'git status --short' }, ctx('default', { permissionRules: [allowGit] }))).toMatchObject({
+      behavior: 'allow',
+      reason: { type: 'rule', rule: allowGit },
+    })
+    expect(resolvePermission(run, { command: 'npm publish --dry-run' }, ctx('default', { permissionRules: [askNpm, allowGit] }))).toMatchObject({
+      behavior: 'ask',
+      reason: { type: 'rule', rule: askNpm },
+    })
+    expect(resolvePermission(run, { command: 'npm publish --dry-run' }, ctx('dontAsk', { permissionRules: [askNpm] }))).toMatchObject({
+      behavior: 'deny',
+      reason: { type: 'mode', mode: 'dontAsk' },
+    })
+    expect(resolvePermission(run, { command: 'npm publish --dry-run' }, ctx('bypassPermissions', { permissionRules: [askNpm] }))).toMatchObject({
+      behavior: 'allow',
+      reason: { type: 'mode', mode: 'bypassPermissions' },
+    })
   })
 
   test('bypassPermissions 档:spend 类按普通审批跳过,强确认另由 forceConfirm 表达', () => {
