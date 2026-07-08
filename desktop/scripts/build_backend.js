@@ -8,18 +8,19 @@
 // 知识库护城河（关键）：
 //   ① 本脚本先拿一个 Fernet key——CI 上读 env.BUNDLED_PROMPTS_PACK_KEY(与运行时 bundled.env 解密同一把，
 //      见 resolveFernetKey 的注释)，本地开发机没设这个变量就随机生成一次性 key；
-//   ② 用它跑 server/scripts/build_prompts_pack.py，把明文 prompts/*.yaml 加密成 server/prompts.enc；
+//   ② 用 Node 打包器把明文 prompts/*.yaml 加密成 server/prompts.enc；
 //   ③ 把同一个 key 烘进 PyInstaller 入口 desktop_entry.py（os.environ.setdefault）；
 //   ④ PyInstaller 用 --add-data 只带【加密块 prompts.enc】+ report_forms，绝不带明文 prompts/ 目录；
-//   ⑤ 运行时 PromptEngine 用烘进的 key 解密 bundle 根的 prompts.enc，加载 171 模板。
+//   ⑤ 运行时 PromptEngine 用烘进的 key 解密 bundle 根的 prompts.enc，加载当前全部模板。
 //   安装包里只有加密块，同行解开包也抄不走知识库（抬高门槛，非绝对不可破）。
 //
 // ⚠️ PyInstaller hidden-import 地狱：uvicorn/starlette 等动态导入的子模块漏一个，打包后运行时才报
 //    ModuleNotFound(打包期不报)。下面 hiddenImports 已按真实依赖列齐；新增依赖要补这里。
 
-const { spawnSync, execSync } = require("child_process");
+const { spawnSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
+const crypto = require("crypto");
 
 // Windows 上 Python 默认 stdout 是 cp1252,打印脚本里的 ✅/❌/① 等非 ASCII 会 UnicodeEncodeError
 // 直接崩(明明加密/打包本身成功了,只是打成功消息时挂)。强制所有 python 子进程用 UTF-8 输出。
@@ -152,12 +153,7 @@ function dereferenceSymlinksInPlace(dir) {
 }
 
 function genFernetKey() {
-  // 用后端环境的 cryptography 生成一个 Fernet key（与解密同库，避免格式不匹配）
-  const out = execSync(
-    `uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`,
-    { cwd: SERVER, encoding: "utf-8" }
-  );
-  return out.trim();
+  return crypto.randomBytes(32).toString("base64").replace(/\+/g, "-").replace(/\//g, "_");
 }
 
 // Fernet key 合法性校验：32 字节原始数据，urlsafe-base64 编码后固定 44 个字符、末位 1 个 '=' 填充。
@@ -201,8 +197,8 @@ function resolveFernetKey() {
 
 function buildPromptsPack(key) {
   console.log("① 加密知识库 → server/prompts.enc …");
-  const r = spawnSync("uv", ["run", "python", "scripts/build_prompts_pack.py"], {
-    cwd: SERVER,
+  const r = spawnSync(process.execPath, [path.join(__dirname, "build_prompts_pack.js")], {
+    cwd: ROOT,
     stdio: "inherit",
     env: { ...process.env, PROMPTS_PACK_KEY: key },
   });

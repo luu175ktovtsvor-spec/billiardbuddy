@@ -476,7 +476,7 @@
 - **视频**:`video_service` + **`services/video_edit/`(3566:assemble/vlm/director/footage_qc/planners/template_render/render/edit_agent/timeline/transcribe)** + `scene_plan`(310) + `ai/providers/ark_video`。
 - **改文件**:`canvas_service` / `canvas_docedit` / `canvas_io`。
 - **领域服务**:`content_service`(1166) · `dashboard_service`(901) · `store_profile_service`(727) · `memory_service`(661) · `report_reader`(427) · `brand_voice/behavior/diagnosis/games/workbench_fewshot_service` · `rag/` · `scenario_catalog/role_map`。
-- **模型出口**:`ai/factory`(内置key/网关/BYOK 硬规则"绝不静默回退平台key") + providers + `prompt_engine`(171 模板单例) + `prompt_pack`(Fernet 解密)。
+- **模型出口**:`ai/factory`(内置key/网关/BYOK 硬规则"绝不静默回退平台key") + providers + `prompt_engine`(当前 159 模板单例) + `prompt_pack`(Fernet 解密)。
 - **数据层**:`db/init_local`(`create_all` **无 Alembic** + `_reconcile_columns` 老库加列 + `_seed_local_owner` 免登录seed) · `db/types`(GUID/JSON 方言兜底) · `db/session`(SQLite WAL) · **12 表 / 11 model**。
 - **基础设施**:`data_sync/`(collector/uploader/machine_id 上行管子) · `db_backup`(SQLite 在线备份) · `shadow_git`(改文件前快照回滚) · `config`(pydantic-settings) · `core/tenant`(多租户 contextvar，**fail-safe 无租户=空，仅盖 generations/usage_quotas，其它表靠手写 where——移植隐患**) · `api/deps`(免登录返回 seed owner/店)。
 - **API 路由 ~2850 行**(agent.py 2185 归 harness):studio(481)/video_edit(482)/canvas(407)/stores(350)/store_memory(205)/scheduled_tasks(191)/store_docs/checkpoints/dashboard/quota/backup/voice/notifications。
