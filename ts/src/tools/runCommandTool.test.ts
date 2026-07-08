@@ -167,6 +167,14 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('env -i FOO=bar curl https://example.com')).toBe('outreach')
   expect(classifyCommandRisk('env -S "curl https://example.com"')).toBe('outreach')
   expect(classifyCommandRisk('env --split-string="curl https://example.com"')).toBe('outreach')
+  expect(classifyCommandRisk('env')).toBe('outreach')
+  expect(classifyCommandRisk('env -0')).toBe('outreach')
+  expect(classifyCommandRisk('FOO=bar env')).toBe('outreach')
+  expect(classifyCommandRisk('printenv')).toBe('outreach')
+  expect(classifyCommandRisk('printenv PATH')).toBe('outreach')
+  expect(classifyCommandRisk('FOO=bar printenv')).toBe('outreach')
+  expect(classifyCommandRisk('env printenv')).toBe('outreach')
+  expect(classifyCommandRisk('env --chdir=/tmp git status --short')).toBe('outreach')
   expect(classifyCommandRisk('npm install left-pad')).toBe('outreach')
   expect(classifyCommandRisk('rm -rf build')).toBe('destructive')
   expect(classifyCommandRisk('env rm -rf build')).toBe('destructive')
@@ -791,6 +799,9 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   expect(resolvePermission(runCommandTool, { command: 'git status --short', cwd: 'sub' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'allow',
   })
+  expect(resolvePermission(runCommandTool, { command: 'env git status --short' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({
+    behavior: 'allow',
+  })
   writeFileSync(join(root, 'HEAD'), 'ref: refs/heads/main\n')
   expect(resolvePermission(runCommandTool, { command: 'git status --short' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
@@ -833,6 +844,18 @@ test('run_command dynamic permission allows reads and classifies approval', () =
     approvalClass: 'outreach',
   })
   expect(resolvePermission(runCommandTool, { command: 'env -S "curl https://example.com"' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'env' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'FOO=bar env' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'printenv PATH' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })
