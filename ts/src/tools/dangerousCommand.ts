@@ -245,6 +245,7 @@ export function hasShellParserRisk(command: string): boolean {
     /\/proc\/.*\/environ/.test(command) ||
     hasUnescapedChar(exposed, '`') ||
     hasDangerousVariableUse(quoteViews.fullyUnquoted) ||
+    hasInputRedirectionRisk(command) ||
     (hasQuotedShellMetacharacterRisk(command) && classifySedCommand(command) !== 'read') ||
     hasObfuscatedFlagRisk(command) ||
     (hasMalformedTokenInjectionRisk(command) && classifySedCommand(command) !== 'read') ||
@@ -453,6 +454,37 @@ function hasQuotedNewlineHash(command: string): boolean {
 
 function hasDangerousVariableUse(content: string): boolean {
   return /[<>|]\s*\$[A-Za-z_]/.test(content) || /\$[A-Za-z_][A-Za-z0-9_]*\s*[|<>]/.test(content)
+}
+
+function hasInputRedirectionRisk(command: string): boolean {
+  let inSingleQuote = false
+  let inDoubleQuote = false
+  let escaped = false
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (char === '\\' && !inSingleQuote) {
+      escaped = true
+      continue
+    }
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote
+      continue
+    }
+    if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote
+      continue
+    }
+    if (inSingleQuote || inDoubleQuote || char !== '<') continue
+    const next = command[i + 1]
+    if (next === '(') continue
+    return true
+  }
+  return false
 }
 
 function hasQuotedShellMetacharacterRisk(command: string): boolean {

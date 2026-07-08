@@ -255,6 +255,10 @@ test('shell parser hardening mirrors Bash misparse safety gates', () => {
   expect(hasShellParserRisk('echo ok # plain comment')).toBe(false)
   expect(hasShellParserRisk('echo "# not comment"')).toBe(false)
   expect(hasShellParserRisk('printf "%s" "# literal arg"')).toBe(false)
+  expect(hasShellParserRisk('cat < ~/.ssh/id_rsa')).toBe(true)
+  expect(hasShellParserRisk('cat < secrets.txt')).toBe(true)
+  expect(hasShellParserRisk('echo "< literal"')).toBe(false)
+  expect(hasShellParserRisk("printf '%s' '< literal'")).toBe(false)
   expect(hasShellParserRisk('zmodload zsh/system')).toBe(true)
   expect(hasShellParserRisk('command builtin zmodload zsh/system')).toBe(true)
   expect(hasShellParserRisk('fc -e vim')).toBe(true)
@@ -343,6 +347,10 @@ test('run_command dynamic permission allows reads and classifies approval', () =
     approvalClass: 'outreach',
   })
   expect(resolvePermission(runCommandTool, { command: 'echo ok # "comment quote"' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'cat < ~/.ssh/id_rsa' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })
