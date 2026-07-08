@@ -1,3 +1,5 @@
+import { isAbsolute, relative, resolve } from 'node:path'
+
 /**
  * 危险命令最小种子(红线 4:删根/提权/格式化直接拒)。W2 只挡灾难级;
  * 完整分类器(可逆性/爆炸半径/审批档)是 W4。宁可漏杀(交 W4)不可错放这几条。
@@ -78,6 +80,107 @@ function splitSegments(command: string): string[] {
 
 function hasWriteRedirection(command: string): boolean {
   return /(^|[^<])>>?[^&]/.test(command) || /\b\d>>?/.test(command)
+}
+
+export function shellOutputRedirectionNeedsApproval(command: string, opts: { root: string; cwd?: string }): boolean {
+  const targets = extractOutputRedirectionTargets(command)
+  if (targets.length === 0) return false
+  if (splitSegments(command).some(segment => /^cd(?:\s|$)/.test(normalize(segment).toLowerCase()))) return true
+  return targets.some(target => redirectionTargetNeedsApproval(target, opts))
+}
+
+function extractOutputRedirectionTargets(command: string): string[] {
+  const targets: string[] = []
+  let quote: '"' | "'" | null = null
+  let escaped = false
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]!
+    if (quote) {
+      if (escaped) escaped = false
+      else if (char === '\\' && quote === '"') escaped = true
+      else if (char === quote) quote = null
+      continue
+    }
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (char === '\\') {
+      escaped = true
+      continue
+    }
+    if (char === '"' || char === "'") {
+      quote = char
+      continue
+    }
+    if (char !== '>') continue
+    if (command[i + 1] === '(' || command[i + 1] === '&') continue
+
+    let j = i + 1
+    if (command[j] === '>') j++
+    if (command[j] === '|' || command[j] === '!') j++
+    while (command[j] === ' ' || command[j] === '\t') j++
+    const parsed = readShellWord(command, j)
+    if (!parsed.word || parsed.word.startsWith('&')) continue
+    targets.push(parsed.word)
+    i = parsed.end - 1
+  }
+
+  return targets
+}
+
+function readShellWord(command: string, start: number): { word: string; end: number } {
+  let word = ''
+  let quote: '"' | "'" | null = null
+  let escaped = false
+  let i = start
+
+  for (; i < command.length; i++) {
+    const char = command[i]!
+    if (quote) {
+      if (escaped) {
+        word += char
+        escaped = false
+      } else if (char === '\\' && quote === '"') {
+        escaped = true
+      } else if (char === quote) {
+        quote = null
+      } else {
+        word += char
+      }
+      continue
+    }
+    if (escaped) {
+      word += char
+      escaped = false
+      continue
+    }
+    if (char === '\\') {
+      escaped = true
+      continue
+    }
+    if (char === '"' || char === "'") {
+      quote = char
+      continue
+    }
+    if (/\s/.test(char) || /[;&|<>]/.test(char)) break
+    word += char
+  }
+
+  return { word, end: i }
+}
+
+function redirectionTargetNeedsApproval(target: string, opts: { root: string; cwd?: string }): boolean {
+  if (!target || target === '/dev/null') return false
+  if (/[$%*?\[\]{}=~]/.test(target)) return true
+  const abs = isAbsolute(target) ? resolve(target) : resolve(opts.cwd || opts.root, target)
+  return !isInside(resolve(opts.root), abs)
+}
+
+function isInside(parent: string, child: string): boolean {
+  const rel = relative(parent, child)
+  return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel))
 }
 
 function classifySegment(segment: string): CommandRisk {

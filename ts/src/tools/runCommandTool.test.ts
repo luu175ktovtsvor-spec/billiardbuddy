@@ -7,7 +7,7 @@ import { Workspace } from '../workspace/workspace'
 import type { ToolContext } from './Tool'
 import { runCommandTool } from './runCommandTool'
 import { StreamingOutputSanitizer, stripAnsiControlSequences } from './outputSanitize'
-import { classifyCommandRisk, hasShellExpansionRisk, isDangerousCommand } from './dangerousCommand'
+import { classifyCommandRisk, hasShellExpansionRisk, isDangerousCommand, shellOutputRedirectionNeedsApproval } from './dangerousCommand'
 import { resolvePermission } from '../permissions/resolve'
 
 let root: string
@@ -184,10 +184,30 @@ test('shell expansion risk detection mirrors Bash substitution safety gate', () 
   expect(hasShellExpansionRisk('echo \\$(date)')).toBe(false)
 })
 
+test('shell output redirection outside workspace requires explicit approval', () => {
+  mkdirSync(join(root, 'sub'), { recursive: true })
+  expect(shellOutputRedirectionNeedsApproval('printf ok > note.txt', { root })).toBe(false)
+  expect(shellOutputRedirectionNeedsApproval('printf ok 2> logs.txt', { root })).toBe(false)
+  expect(shellOutputRedirectionNeedsApproval('printf ok > /dev/null', { root })).toBe(false)
+  expect(shellOutputRedirectionNeedsApproval('printf ok > /tmp/out.txt', { root })).toBe(true)
+  expect(shellOutputRedirectionNeedsApproval('printf ok > ../out.txt', { root })).toBe(true)
+  expect(shellOutputRedirectionNeedsApproval('printf ok > "$HOME/out.txt"', { root })).toBe(true)
+  expect(shellOutputRedirectionNeedsApproval('printf ok > "space name.txt"', { root })).toBe(false)
+  expect(shellOutputRedirectionNeedsApproval('cd sub && printf ok > out.txt', { root })).toBe(true)
+})
+
 test('run_command dynamic permission allows reads and classifies approval', () => {
   expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'ls -la' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'echo hi > note.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'echo hi > /tmp/out.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'cd sub && echo hi > out.txt' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
   expect(resolvePermission(runCommandTool, { command: 'curl https://example.com' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',

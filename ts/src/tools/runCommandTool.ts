@@ -3,7 +3,7 @@ import { stat } from 'node:fs/promises'
 import { isAbsolute, relative } from 'node:path'
 import type { Tool, ToolContext } from './Tool'
 import type { WrappedCommand } from '../sandbox/sandbox'
-import { classifyCommandRisk, isDangerousCommand, type CommandRisk } from './dangerousCommand'
+import { classifyCommandRisk, isDangerousCommand, shellOutputRedirectionNeedsApproval, type CommandRisk } from './dangerousCommand'
 import type { ApprovalClass } from '../permissions/types'
 import { StreamingOutputSanitizer } from './outputSanitize'
 import { interpretCommandResult } from './commandSemantics'
@@ -35,22 +35,22 @@ export const runCommandTool: Tool<RunCommandInput> = {
     required: ['command'],
   },
   isReadOnly: false,
-  isReadOnlyFor(input) {
-    return typeof input?.command === 'string' && classifyCommandRisk(input.command) === 'read'
+  isReadOnlyFor(input, ctx) {
+    return typeof input?.command === 'string' && effectiveCommandRisk(input, ctx) === 'read'
   },
-  requiresApprovalFor(input) {
-    return typeof input?.command !== 'string' || classifyCommandRisk(input.command) !== 'read'
+  requiresApprovalFor(input, ctx) {
+    return typeof input?.command !== 'string' || effectiveCommandRisk(input, ctx) !== 'read'
   },
-  approvalClassFor(input) {
-    return commandApprovalClass(typeof input?.command === 'string' ? classifyCommandRisk(input.command) : 'destructive')
+  approvalClassFor(input, ctx) {
+    return commandApprovalClass(typeof input?.command === 'string' ? effectiveCommandRisk(input, ctx) : 'destructive')
   },
   fatalReasonFor(input) {
     if (typeof input?.command !== 'string') return 'run_command 缺少 command'
     return isDangerousCommand(input.command) ? `危险命令:${input.command}` : null
   },
-  approvalReasonFor(input) {
+  approvalReasonFor(input, ctx) {
     const command = typeof input?.command === 'string' ? input.command : ''
-    const risk = classifyCommandRisk(command)
+    const risk = effectiveCommandRisk(input, ctx)
     return {
       what: `执行命令:${command}`,
       why: commandRiskReason(risk),
@@ -59,7 +59,7 @@ export const runCommandTool: Tool<RunCommandInput> = {
   },
   async previewFor(input, ctx) {
     if (!input || typeof input.command !== 'string') return 'run_command 缺少 command'
-    const risk = classifyCommandRisk(input.command)
+    const risk = effectiveCommandRisk(input, ctx)
     let cwdLabel = '.'
     try {
       const cwd = await resolveCommandCwd(input.cwd, ctx)
@@ -83,6 +83,26 @@ export const runCommandTool: Tool<RunCommandInput> = {
     const wrapped = ctx.sandbox ? await ctx.sandbox.wrapCommand(input.command, { signal: ctx.signal }) : null
     return await runInWorkspace(input, ctx, wrapped)
   },
+}
+
+function effectiveCommandRisk(input: RunCommandInput | undefined, ctx: ToolContext): CommandRisk {
+  if (!input || typeof input.command !== 'string') return 'destructive'
+  const risk = classifyCommandRisk(input.command)
+  if (risk === 'destructive') return risk
+  if (shellOutputRedirectionNeedsApproval(input.command, { root: ctx.workspace.root, cwd: resolveCommandCwdSync(input.cwd, ctx) })) {
+    return 'outreach'
+  }
+  return risk
+}
+
+function resolveCommandCwdSync(cwd: unknown, ctx: ToolContext): string {
+  if (cwd == null || cwd === '') return ctx.workspace.root
+  if (typeof cwd !== 'string') return ctx.workspace.root
+  try {
+    return ctx.workspace.resolve(cwd, 'read')
+  } catch {
+    return ctx.workspace.root
+  }
 }
 
 function commandApprovalClass(risk: CommandRisk): ApprovalClass | undefined {
