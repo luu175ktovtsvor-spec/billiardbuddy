@@ -293,6 +293,85 @@ test('agent_task hands off foreground registration when background signal wins t
   }
 })
 
+test('agent_task closes foreground MCP runtime before starting a foreground handoff', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-foreground-mcp-handoff-'))
+  try {
+    let releaseModel!: () => void
+    const model = scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: 'step-1', name: 'mark_step', input: { value: 'done-once' } }] },
+      { kind: 'final', text: 'should continue in background' },
+    ])
+    const originalStep = model.step
+    model.step = async (input) => {
+      if (model.received.length === 0) return originalStep(input)
+      await new Promise<void>(resolve => { releaseModel = resolve })
+      return originalStep(input)
+    }
+    const markStepTool: Tool<{ value: string }> = {
+      name: 'mark_step',
+      description: '',
+      inputSchema: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] },
+      isReadOnly: true,
+      async execute(input) {
+        return `marked:${input.value}`
+      },
+    }
+    let resolveBackground!: () => void
+    let closeResolved = false
+    const order: string[] = []
+    const tool = createAgentTaskTool({
+      agents: [agent({ tools: ['mark_step'] })],
+      model,
+      baseTools: [markStepTool],
+      loadAgentMcpRuntime: async input => ({
+        tools: input.baseTools,
+        warnings: [],
+        close: async () => {
+          order.push('mcp-close-start')
+          await new Promise(resolve => setTimeout(resolve, 20))
+          closeResolved = true
+          order.push('mcp-close-end')
+        },
+      }),
+      registerForegroundAgent: async (input) => ({
+        task: { id: 'fg_handoff_mcp_agent', title: input.title, params: { agent_id: input.agentId } },
+        backgroundSignal: new Promise<void>(resolve => { resolveBackground = resolve }),
+        cancelAutoBackground: () => undefined,
+      }),
+      handoffForegroundAgent: async (registration, input) => {
+        order.push(`handoff-close-resolved:${closeResolved}`)
+        return {
+          task: {
+            id: registration.task.id,
+            title: input.title,
+            params: {
+              agent_id: input.agentId,
+              is_backgrounded: true,
+            },
+          },
+          agent: agent({ name: input.agent }),
+        }
+      },
+      unregisterForegroundAgent: async () => undefined,
+    })
+
+    const pending = tool.execute({ task: '关闭前台 MCP 后切后台' }, {
+      workspace: new Workspace(root),
+      permissionMode: 'full',
+      conversationId: 'handoff-mcp-parent',
+    })
+    await waitUntil(() => typeof releaseModel === 'function')
+    resolveBackground()
+    const out = await pending
+    releaseModel()
+
+    expect(out).toContain('<background_task_started id="fg_handoff_mcp_agent"')
+    expect(order).toEqual(['mcp-close-start', 'mcp-close-end', 'handoff-close-resolved:true'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('agent_task includes the foreground worktree session when handing off to background', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-tool-worktree-handoff-'))
   try {
