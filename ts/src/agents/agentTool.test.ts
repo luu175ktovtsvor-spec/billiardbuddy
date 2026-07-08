@@ -175,11 +175,19 @@ test('agent_task fork_context runs a child with parent system, messages and exac
       workspace: new Workspace(root),
       systemPrompt: 'PARENT SYSTEM',
       userMessage: '父任务',
+      conversationId: 'fork-parent-rendered-system',
+      hooks: {
+        rules: [
+          { event: 'SessionStart', handler: payload => ({ action: 'context', additionalContext: `父级动态上下文:${payload.sessionId}` }) },
+        ],
+      },
     }))
 
     expect(events.some(event => event.type === 'final' && event.text === 'parent done')).toBe(true)
     const childFirst = childModel.received[0]!
-    expect(childFirst.system).toBe('PARENT SYSTEM')
+    expect(childFirst.system).toContain('PARENT SYSTEM')
+    expect(childFirst.system).toContain('<hook_context event="SessionStart">')
+    expect(childFirst.system).toContain('父级动态上下文:fork-parent-rendered-system')
     expect(childFirst.tools.map(tool => tool.name)).toEqual(['agent_task', 'inspect_parent_tool'])
     expect(childFirst.messages[0]).toEqual({ role: 'user', content: [textBlock('父任务')] })
     expect(childFirst.messages[1]).toEqual({

@@ -144,6 +144,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     model,
     registry,
     systemPrompt: opts.systemPrompt,
+    renderedSystemPrompt: opts.systemPrompt,
     signal: opts.signal,
     sandbox: opts.sandbox,
     permissionMode: opts.permissionMode ?? 'ask',
@@ -170,6 +171,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     system = `${system}\n\n${hookContextBlock('SessionStart', sessionStart.additionalContext)}`
   }
   ctx.systemPrompt = system
+  ctx.renderedSystemPrompt = system
 
   const userPrompt = opts.skipUserMessage
     ? { userPrompt: opts.userMessage, additionalContext: [] }

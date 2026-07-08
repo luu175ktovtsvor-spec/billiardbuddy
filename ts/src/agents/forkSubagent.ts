@@ -66,7 +66,7 @@ export function buildForkRunContext(ctx: ToolContext, directive: string): ForkRu
   const assistantMessage = [...parentMessages].reverse().find((message): message is Extract<Message, { role: 'assistant' }> => message.role === 'assistant')
   const prefix = assistantMessage ? parentMessages.slice(0, parentMessages.lastIndexOf(assistantMessage)) : parentMessages
   return {
-    systemPrompt: ctx.systemPrompt ?? '',
+    systemPrompt: ctx.renderedSystemPrompt ?? ctx.systemPrompt ?? '',
     tools: ctx.registry?.list() ?? [],
     querySource: FORK_QUERY_SOURCE,
     initialMessages: [
