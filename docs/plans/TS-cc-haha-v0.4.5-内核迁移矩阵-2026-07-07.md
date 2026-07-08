@@ -35,14 +35,14 @@
 | Network settings | `networkSettings.ts`, `utils/proxy.ts` | `ts/src/model/networkSettings.ts` | direct/system/manual;loopback 永远 no_proxy | ✅已落 |
 | Session API | `server/api/sessions.ts`, `services/sessionService.ts` | `ts/src/server/services/sessionService.ts`, `/sessions/*` | JSONL transcript + metadata cache + event replay + history restore | 🟡metadata/transcript/event replay/command invocation 已落 |
 | WebSocket turn runner | `server/ws/handler.ts`, conversation service | `ts/src/server/ws/*` + 当前 SSE `/agent/run` | user_message/prewarm/interrupt/replay 事件模型 | ✅SSE + WS run/replay/interrupt + prewarm + 旧前端 task SSE 兼容层已落 |
-| Permissions | `utils/permissions/**`, command metadata | `ts/src/permissions/**`, `ts/src/tools/dangerousCommand.ts` | 五档模式、rule source、allow/deny/ask、bypass/dontAsk、命令风险元数据 | 🟡五档 + 结构化规则/更新 + default file ask 已落;path-scoped rules/UI/持久化仍待补 |
+| Permissions | `utils/permissions/**`, command metadata | `ts/src/permissions/**`, `ts/src/tools/dangerousCommand.ts` | 五档模式、rule source、allow/deny/ask、bypass/dontAsk、命令风险元数据 | 🟡五档 + 结构化规则/更新 + default file ask + acceptEdits 敏感路径闸 + 会话权限记忆 + 危险前缀黑名单已落(§3.401);规则持久化落盘/UI/读命令路径边界仍待补 |
 | Bash/File/LSP/PowerShell/REPL tools | `tools/BashTool/**`, `tools/PowerShellTool/**`, `tools/REPLTool/**`, `utils/powershell/**`, `FileReadTool/**`, `FileWriteTool/**`, `NotebookEditTool/**`, `tools/LSPTool/**` | `ts/src/tools/*` | Bash/PowerShell 解析与审批、REPL primitive 编排、sandbox、Read pages 容错、编辑 diff/回滚、notebook cell 编辑、符号/定义/引用入口 | ✅基础工具 + Bash 风险分类 + PowerShell 专用工具层/静态风险审批 + `REPL` 结构化批量 primitive 编排 + edit_file 读前置/陈旧检测/归一化匹配 + `NotebookEdit` + `LSP` fallback + fileHistory 链式快照/diff/restore 已落;PowerShell AST parser/规则语法、REPL VM/bridge/隐藏 primitive 模式仍待深化 |
 | Context resilience | `services/compact/**`, query compaction | `ts/src/context/*`, `ts/src/memory/*` | 分级压缩、结构化摘要、大结果落盘、熔断 | 🟡W4c 基础 + session archive/summary + 九段结构化压缩 + 最近文件恢复 + 大工具结果落盘已落 |
 | Skills/commands | `server/api/skills.ts`, `commands.ts`, Skill tools | `ts/src/skills/*`, `ts/src/commands/*` | discover/load/execute/历史恢复;skillify 是产品护城河 | ✅SKILL.md loader + command loader + 工作区 `.claude/.codex` commands + slash 自动展开/list/read/create_skill + `/model` 后端已落 |
-| Subagents/tasks | `tools/AgentTool/**`, `tools/Task*Tool/**`, `tools/TaskOutputTool/**`, `tools/TaskStopTool/**`, `tools/SendMessageTool/**`, `tools/TeamCreateTool/**`, `tools/TeamDeleteTool/**`, `tools/ListPeersTool/**`, `utils/teammateMailbox.ts`, `utils/swarm/teamHelpers.ts`, `tools/EnterPlanModeTool/**`, `tools/ExitPlanModeTool/**`, `tools/VerifyPlanExecutionTool/**`, `tasks/**` | `ts/src/agents/*`, `ts/src/tasks/*`, `ts/src/tools/agentInteractionTools.ts`, `ts/src/tools/verifyPlanExecutionTool.ts` | 子代理、结构化任务列表、后台任务 drawer、任务输出隔离/停止、team/mailbox、计划模式进入/退出/验证门 | 🟡Agent .md loader/工具子集 + 基础 runner + `task_create/list/get/update` + `TaskOutput/TaskStop` + `TeamCreate/TeamDelete/SendMessage/ListPeers` 本地 team/mailbox 主路径 + `SendMessage` running/stopped background agent 路由 + background agent metadata sidecar resume + `EnterPlanMode/ExitPlanMode/VerifyPlanExecution` 计划链路 + 后台 task service/API/tool + 前端后台任务 drawer 已落 |
+| Subagents/tasks | `tools/AgentTool/**`, `tools/Task*Tool/**`, `tools/TaskOutputTool/**`, `tools/TaskStopTool/**`, `tools/SendMessageTool/**`, `tools/TeamCreateTool/**`, `tools/TeamDeleteTool/**`, `tools/ListPeersTool/**`, `utils/teammateMailbox.ts`, `utils/swarm/teamHelpers.ts`, `tools/EnterPlanModeTool/**`, `tools/ExitPlanModeTool/**`, `tools/VerifyPlanExecutionTool/**`, `tasks/**` | `ts/src/agents/*`, `ts/src/tasks/*`, `ts/src/tools/agentInteractionTools.ts`, `ts/src/tools/verifyPlanExecutionTool.ts` | 子代理、结构化任务列表、后台任务 drawer、任务输出隔离/停止、team/mailbox、计划模式进入/退出/验证门 | 🟡Agent .md loader/工具子集 + 基础 runner + `task_create/list/get/update` + `TaskOutput/TaskStop` + `TeamCreate/TeamDelete/SendMessage/ListPeers` 本地 team/mailbox 主路径 + `SendMessage` running/stopped background agent 路由 + background agent metadata sidecar resume + `EnterPlanMode/ExitPlanMode/VerifyPlanExecution` 计划链路 + 后台 task service/API/tool + 前端后台任务 drawer 已落;✅权限继承对齐 cc(父级放权优先/后台兜底 acceptEdits)+ SendMessage resume 上下文修复(§3.401);fork 类型后台代理 resume 仍会抛错待修 |
 | Worktree | `tools/EnterWorktreeTool/**`, `tools/ExitWorktreeTool/**`, `utils/worktree.ts`, `utils/getWorktreePathsPortable.ts` | `ts/src/tools/worktreeTools.ts`, `ToolContext.worktreeSession` | git worktree 创建/进入、退出 keep/remove、删除前变更保护、会话工作区切换/恢复 | 🟡`EnterWorktree/ExitWorktree` 同名工具 + 真实 git worktree add/remove + dirty guard + 同 conversation 后续 turn 自动恢复 active worktree + `tool_search` 已落;hooks/tmux/磁盘 sessionStorage 待深化 |
 | Hooks | `utils/hooks/**`, hook config, `goals/goalState.ts`, `commands/goal/*`, `query/stopHooks.ts` | `ts/src/hooks/*`, `ts/src/goals/goalState.ts`, `ts/src/harness/loop.ts`, `ts/src/server/index.ts` | PreTool/PostTool/Stop/UserPromptSubmit/SessionStart + `/goal` 长目标 | 🟡JSON 裁决 + PreTool/PostTool/SessionStart/UserPromptSubmit/Stop 主链已接;command/http/prompt/agent executor 已按 CC-Haha 行为移植;HTTP hook allowlist/env policy + SSRF DNS guard 已补;Stop hook blocking feedback 续跑已接;`/goal` set/clear/usage、本地 transcript anchor 恢复、Goal continuing/Goal marked complete 持久化已落 |
-| MCP/plugins | `server/api/mcp.ts`, `plugins.ts`, MCP tools | `ts/src/mcp/*`, `ts/src/plugins/*` | 官方 SDK + secret redaction + Unicode server names | 🟡配置/manifest/命名/审批映射 + SDK tool/resource/prompt/elicitation/task/sampling bridge 已落;MCP elicitation 基础问答桥已落,专用多字段表单 UI 待补 |
+| MCP/plugins | `server/api/mcp.ts`, `plugins.ts`, MCP tools | `ts/src/mcp/*`, `ts/src/plugins/*` | 官方 SDK + secret redaction + Unicode server names | 🟡配置/manifest/命名/审批映射 + SDK tool/resource/prompt/elicitation/task/sampling bridge 已落;✅readOnlyHint 免审批后门已关(§3.401,所有 MCP 工具恒 requiresApproval);仍缺 http headers/OAuth 鉴权、.mcp.json 信任闸、plugin 运行时接入(现空壳)、多字段表单 UI |
 | Desktop sidecar | `desktop/electron/services/sidecarManager.ts`, `serverRuntime.ts` | `ts/desktop/electron/services/*` | 等 `/health`、端口策略、tree kill、日志诊断、ARM64 | 🟡基础 sidecar 已落 |
 | Image module | 无直接 cc-haha 对应 | `ts/src/media/image/*`, 前端 studio | 自研工具,接审批/媒体任务/provider | 🟡TS 文生图/参考图/改图网关直连已落;品牌包/贴图/OCR 待迁 |
 | Video module | 无直接 cc-haha 对应 | `ts/src/media/video/*`, workbench | 真实素材剪辑,ffmpeg/离屏渲染 | 🟡AI 模型生成视频已删除;真实素材 auto_plan/render fallback 保留;VLM/ASR/高级模板待迁 |
@@ -3397,6 +3397,78 @@
 - 残留扫描:`rg -n "BUNDLED_VIDEO_LABEL|VIDEO_BASE_URL|VIDEO_MODEL_NAME|Seedance|seedance|generate_video|studioI2v|/studio/i2v|i2v|t2v|图生视频|文生视频|让这张图动起来|用这张图生成视频|doubao-seedance|contents/generations/tasks|GW_Q_VIDEO|GW_VIDEO" desktop gateway server web ts/src CLAUDE.md docs/当前目标与文档口径-2026-07-07.md docs/plans ...` 只剩阶段目标、迁移矩阵、删除说明和历史归档;本地 ignored `desktop/bundled.env` 已移除 Seedance/`VIDEO_*` 配置,仅保留真实素材剪辑 VLM/导演网关。
 - 验证:`cd ts && bun test src/tools/fileTools.test.ts src/tools/runCommandTool.test.ts src/permissions/permissionUpdate.test.ts src/permissions/resolve.test.ts --timeout 120000` = 137 pass;`cd ts && bun run typecheck` 通过。
 - 未跑:`cd web && pnpm exec tsc --noEmit` 未跑,本轮未改 Web 源码;Python/server/gateway 测试未跑,本轮不触碰这些运行链路;真机/UI E2E 未跑,需要等权限审批卡/设置页继续接线后再补。
+
+## 3.401 2026-07-09 全 16 模块 cc 差异复核 + 内核安全对齐(本轮)
+
+> 方法:16 个子代理逐模块以 cc-haha-ref **当前源码**为规格源、本项目 **当前源码**为现状做差异审计,**不采信**旧迁移矩阵/`ts/docs/W4a-*.md` 记录的"已完成/Delta",分类 aligned/gap/deviation/out-of-scope。审计发现均由主窗口按 cc 源码亲验后再动手(纠正过审计的口误,例如 acceptEdits 危险文件清单里 cc 实际**不含** `.env`/`.ssh`,只含 `.git/.vscode/.idea/.claude` 目录与 shell/git/mcp/claude 配置文件)。
+
+### A. 全 16 模块对齐结论
+
+| 模块 | 对齐度 | 最高优先级 gap/deviation(未做的) | 需 owner 决策 |
+|---|---|---|---|
+| 权限模型 PermissionMode/Behavior/Result | 高(核心瀑布对齐+测试) | ✅本轮补:acceptEdits 敏感路径闸 | plan 硬拒绝 vs cc 软拦截可人工覆盖(倾向 keep-delta) |
+| 权限规则 PermissionRule/Update/作用域 | 中 | 规则持久化落盘(userSettings/projectSettings/localSettings 只有类型、重启即丢) | 是否要 settings.json 式持久化 + 权限管理 UI |
+| 命令分类器/审批/denial | 高 | permissionExplainer(审批卡风险解释)、destructiveCommandWarning(12 条提示) | — |
+| Bash/PowerShell 路径与安全校验 | 中(危险模式对齐,读路径边界缺) | 读命令(cat/ls/grep/…)路径工作目录边界校验;PowerShell 未接 OS 沙箱;UNC 拦截 | — |
+| 文件工具 read/write/edit/patch | 中高(写侧对齐/超出,读侧弱) | 图片/PDF/notebook 视觉 content-block 通道(架构级);整文件读无大小上限;UTF-16/BOM;危险设备路径 | — |
+| 工作区/沙箱/路径护栏 | 中(app 层护栏扎实,OS 沙箱未接线) | **OS 沙箱从未在生产入口启用**(ctx.sandbox 恒 undefined);工作区主边界不解析 symlink(内部 symlink 可逃逸) | 沙箱是否默认开 + 网络白名单策略 |
+| 工具执行循环/schema/流式 | 中高 | 工具入参 schema 校验闸(cc zod safeParse);token 级流式+边流边执行;max_turns 可辨识事件;并行只读并发上限 | 流式是否本轮做(前端体验对标核心) |
+| 上下文压缩/恢复/落盘 | 中高 | 摘要请求自身超限的收缩重试(否则溢出会硬崩);autocompact 只信字符估算不看真实 token usage | — |
+| Hooks 事件系统 | 中(骨架+SSRF+续跑对齐) | PreToolUse hook 的 allow/ask 决策 + deny>ask>allow 聚合;matcher 管道/正则语法;多 hook 并发 | — |
+| Skills/Commands | 中 | $ARGUMENTS/$1 占位符替换;正文内嵌 `!`shell``;bundled skills 注册;paths 条件化;command hooks/命名空间 | — |
+| 子代理/任务/后台任务 | 高(持久化+匹配超集) | ✅本轮补:权限继承(父级放权优先/后台兜底 acceptEdits);fork 类型后台代理 resume 抛错 | TaskStop forceConfirm 是否 keep-delta |
+| MCP/Plugins | 中 | ✅本轮补:readOnlyHint 免审批后门;仍缺 http headers/OAuth 鉴权、.mcp.json 信任闸(RCE 面)、plugin 运行时接入(现为空壳) | — |
+| Provider/runtime/proxy | 高(转换/failover 对齐/超出) | 瞬时错误重试退避(429/5xx,现一次失败即切/判败);流空闲超时(默认 60s 与 aiRequestTimeoutMs 脱钩;Anthropic 流无超时) | — |
+| Trace/logging+错误恢复+stuck | 中高(工具/denial/stuck 扎实) | 模型调用重试退避;SSE 中途 error 帧识别(现静默吞成截断空响应);harness debug 日志落盘 | — |
+| Session/transcript/重放 | 中高 | transcript 逐条落盘 vs 整 turn 收尾(中断丢整轮工具历史);主会话 resume 未接清洗/中断检测 | — |
+| 前端低噪工具流 | 中高(骨架对齐) | ⚠️审计对象是**当前 web/+Python 旧栈**:工具失败态无红色区分、"本会话允许"死代码、审批卡编辑参数后签名必失败、命令输出未默认折叠 | **目标壳取舍:web/+Python vs ts/+ts-desktop** |
+
+out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/bubble 权限模式与分类器信任退化、bypassPermissions 远程 GrowthBook 熔断、getNextPermissionMode 键盘循环、IDE push 式诊断、内部 ant 遥测、SSH/swarm/PR 订阅/teleport/remote managed settings、OpenAI Responses API(当前内置/BYOK 均 chat completions)。
+
+### B. 本轮已迁移(按提交)
+
+| 提交 | 能力块 | 测试 |
+|---|---|---|
+| `9ff2c67` | cc 会话权限记忆(PermissionUpdate)+ plan 批准切 acceptEdits + 修 4 个陈旧权限测试 | loop/server/fileTools/permissions 全绿 |
+| `54180dc` | i2v 删除后刷新耦合地图(修 coupling map 基线失败) | buildCouplingMap 4/4 |
+| `ecc8009` | 修 SendMessage 恢复后台代理丢 resume 上下文(5cb5c4c 回归) | teamTools 23/23、taskTools |
+| `9c40369` | acceptEdits 自动放行前过 cc checkPathSafetyForAutoEdit 敏感路径闸 | autoEditSafety 11 例 |
+| `a564ac1` | 关闭 MCP readOnlyHint 免审批后门(对齐 cc MCPTool 恒 passthrough→ask) | mcp/config 更正断言 |
+| `d5fe598` | 子代理权限继承对齐 cc(父级放权优先/后台兜底 acceptEdits)+ 危险前缀(sudo/bash -c)不生成会话放行规则 | agentTool/taskTools + approvalSuggestions 新测试 |
+
+全量:`cd ts && bun test` = 863 pass / 0 fail;`bun run typecheck` 通过;`smoke:sandbox`/`smoke:sqlite` 通过;`build:sidecar` exit 0;`cd web && npx tsc --noEmit` 通过。
+
+### C. 剩余高优先级 backlog(按 coding-agent 内核价值排序)
+
+**P0(安全/稳定,尽快)**
+1. OS 沙箱真正接线进生产入口(`server`/desktop 主进程按开关构造 `new Sandbox({enabled:true})` 注入 `ctx.sandbox`);现状代码存在但 `ctx.sandbox` 恒 undefined、seatbelt/bwrap 从未生效——需 owner 定"默认开/关"。
+2. 工作区**主边界** symlink 解析(`pathBoundary.ts` 复用 `filePathRules.getPathsForPermissionCheck`,堵"工作区内 symlink 指向区外"逃逸)。
+3. MCP:`.mcp.json` 工作区级信任闸(防恶意仓库 `.mcp.json` 自动 spawn 任意命令 RCE);远程 http headers/静态 token 鉴权。
+4. 读命令(cat/ls/grep/find/head/tail/sed/awk/diff/stat)路径工作区边界校验(移植 cc `checkPathConstraints`/`PATH_EXTRACTORS`),越界一律 ask;UNC 路径拦截。
+
+**P1(可靠性/正确性)**
+5. 模型调用重试退避(429/5xx/网络抖动指数退避,重试耗尽再 failover)+ SSE 中途 error 帧识别 + 流空闲超时跟随 `aiRequestTimeoutMs`。
+6. 上下文压缩:摘要请求自身超限的收缩重试(防硬崩)+ autocompact 用"字符估算 vs 真实 token usage 取大"。
+7. 工具入参 schema 校验闸(权限判定前统一 `<tool_use_error>InputValidationError`)。
+8. 规则持久化落盘(cc `permissionsLoader`/`persistPermissionUpdate`;让"本会话允许"可选升级为跨重启持久化)。
+9. fork 类型后台代理 resume 修复(`resumeBackgroundAgentTask` 重建 fork 合成 AgentDefinition)。
+10. transcript 逐轮落盘 + 主会话 resume 接 `sanitizeBackgroundAgentResumeMessages` 清洗与中断检测。
+
+**P2(能力面/体验)**
+11. Hooks:PreToolUse allow/ask 决策 + matcher 管道/正则语法 + 多 hook 并发。
+12. Skills/Commands:$ARGUMENTS 占位符替换、正文内嵌 shell、bundled skills、命令 hooks/命名空间。
+13. 文件读:整文件字节上限 + 危险设备路径 + UTF-16/BOM;图片/PDF 视觉 content-block(架构级,晚做代价高)。
+14. token 级流式 + 边流边执行工具(前端打字机体验,对标 Claude Code 核心)。
+15. Plugin 运行时接入(启用插件的 skills/.mcp.json/hooks 合并进会话,现为空壳)。
+16. permissionExplainer + destructiveCommandWarning 审批卡增强。
+
+**需 owner 拍板**
+- 前端目标壳:继续 web/+Python 旧栈,还是 ts/+ts-desktop?前端 §9 低噪工具流的一批 HIGH(失败态红色、本会话允许真功能、审批卡编辑参数签名、命令输出默认折叠)当前都指向 web/+Python 旧栈;若目标壳是 TS,应在 ts-desktop 侧新建而非改旧栈。
+- OS 沙箱默认开/关;plan 模式硬拒绝 vs 可人工覆盖;规则是否落盘持久化 + 权限管理 UI。
+
+### D. 本轮验证与未跑
+- 已跑:`bun test`(863 pass/0 fail)、`bun run typecheck`、`smoke:sandbox/sqlite`、`build:sidecar`、`web tsc`。
+- 未跑:Python/server/gateway 测试(本轮不触碰旧栈运行链路);真机打包 E2E、真实模型/生图/剪辑 smoke(需 key/真机);前端浏览器 UI 验证(本轮未改 web 源码,仅 chat-thread 一处 tooltip 文案随 9ff2c67)。
 
 ## 4. 下一批代码顺序
 
