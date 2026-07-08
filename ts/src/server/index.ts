@@ -1505,6 +1505,18 @@ export function startServer(opts: StartServerOptions = {}) {
         hooks,
         mcp: backgroundAgentOptions.mcp,
         startBackgroundAgent: (input, toolCtx, forkContext) => startBackgroundAgentRun(backgroundAgentOptions!, input, toolCtx, {}, [], [], forkContext ? { forkContext } : {}),
+        registerForegroundAgent: (input, toolCtx, forkContext) => tasks.registerForegroundAgent({
+          agentId: input.agentId,
+          agent: input.agent,
+          title: input.title,
+          conversationId: toolCtx.conversationId,
+          workspaceRoot: toolCtx.workspace.root,
+          task: input.task,
+          ...(input.context ? { context: input.context } : {}),
+          ...(input.name ? { name: input.name } : {}),
+          ...(forkContext ? { params: { fork_context: true } } : {}),
+        }),
+        unregisterForegroundAgent: taskId => tasks.unregisterForegroundAgent(taskId),
       })]
       : []
     const agentSidechainTools = agents.length > 0 ? createAgentTaskSidechainTools(agentSidechainRoot) : []

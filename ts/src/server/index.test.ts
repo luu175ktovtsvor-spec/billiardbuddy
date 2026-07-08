@@ -4767,6 +4767,19 @@ tools: [list_dir]
     expect(sentBodies[0].tools.some((t: any) => t.function.name === 'list_background_tasks')).toBe(true)
     expect(sentBodies[1].messages[0].content).toContain('<subagent name="researcher">')
     expect(sentBodies[1].tools.map((t: any) => t.function.name)).toEqual(['list_dir'])
+    const listed = await fetch(`http://127.0.0.1:${agentServer.port}/tasks?conversationId=agent-run`)
+    const listedBody = await listed.json() as { tasks: Array<{ status: string; kind?: string; params?: Record<string, unknown> }> }
+    const foregroundTask = listedBody.tasks.find(task => task.kind === 'background_agent' && task.params?.agent === 'researcher')
+    expect(foregroundTask).toBeTruthy()
+    expect(foregroundTask).toMatchObject({
+      status: 'completed',
+      params: {
+        agent: 'researcher',
+        task: '列目录并总结',
+        foreground: false,
+      },
+    })
+    expect(typeof foregroundTask?.params?.agent_id).toBe('string')
   } finally {
     agentServer.stop(true)
     rmSync(root, { recursive: true, force: true })

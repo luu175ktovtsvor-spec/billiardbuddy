@@ -29,6 +29,12 @@ import { cloneContentReplacementState } from '../context/toolResultStorage'
 import { createDenialTrackingState } from '../permissions/denialTracking'
 import { buildForkRunContext, FORK_SUBAGENT_TYPE, isForkQuerySource, isForkSubagentEnabled, isInForkChild, type ForkRunContext } from './forkSubagent'
 
+export interface AgentTaskForegroundRegistration {
+  task: { id: string; title: string; params?: Record<string, unknown> }
+  backgroundSignal: Promise<void>
+  cancelAutoBackground(): void
+}
+
 export interface AgentTaskInput {
   agent?: string
   name?: string
@@ -52,6 +58,8 @@ export interface AgentTaskToolOptions {
   mcp?: AgentMcpRuntimeOptions
   env?: Record<string, string | undefined>
   startBackgroundAgent?: (input: { agent?: string; name?: string; task: string; context?: string; title?: string; isolation?: 'worktree' }, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<{ task: { id: string; title: string; params?: Record<string, unknown> }; agent: AgentDefinition }>
+  registerForegroundAgent?: (input: { agent: string; agentId: string; task: string; context?: string; title: string; name?: string }, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<AgentTaskForegroundRegistration>
+  unregisterForegroundAgent?: (taskId: string, ctx: ToolContext) => Promise<void> | void
 }
 
 interface AgentTaskSidechain {
@@ -320,25 +328,37 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
 
       const sidechain = createAgentTaskSidechain(opts, agent, ctx)
       const agentId = sidechain?.id ?? (ctx.conversationId ? `${ctx.conversationId}_${agent.name}` : `agent_${safeSegment(agent.name)}_${randomUUID().replaceAll('-', '_')}`)
-      const effectiveIsolation = input.isolation ?? agent.isolation
-      const agentWorktree = effectiveIsolation === 'worktree'
-        ? await createIsolatedAgentWorktree(ctx.workspace.root, agentId, ctx.conversationId)
-        : null
-      const workspaceBase = agentWorktree ? new Workspace(agentWorktree.session.worktreePath) : ctx.workspace
-      const workspace = workspaceWithAgentMemory(workspaceBase, agent.name, agent.memory)
-      const sandbox = sandboxForWorkspace(ctx.sandbox, workspace)
-      if (sidechain) await writeAgentTaskMetadata(opts, sidechain, agent, input, ctx, agentWorktree?.session.worktreePath)
       let finalText = ''
       let cleanup: AgentWorktreeCleanupResult | null = null
-      const baseAgentTools = wantsForkContext
-        ? forkRunContext?.tools.length ? forkRunContext.tools : opts.baseTools
-        : resolveAgentTools(agent, opts.baseTools).filter(tool => tool.name !== 'agent_task')
+      let foregroundRegistration: AgentTaskForegroundRegistration | undefined
+      let agentWorktree: Awaited<ReturnType<typeof createIsolatedAgentWorktree>> | null = null
       let agentMcp: Awaited<ReturnType<typeof loadAgentMcpRuntime>> | undefined
-      const hooks = mergeHookRegistries(opts.hooks, agent.hooks)
-      const inheritedContentReplacementState = ctx.contentReplacementState
-        ? cloneContentReplacementState(ctx.contentReplacementState)
-        : undefined
       try {
+        foregroundRegistration = opts.registerForegroundAgent
+          ? await opts.registerForegroundAgent({
+            agent: agent.name,
+            agentId,
+            task: input.task,
+            ...(input.context ? { context: input.context } : {}),
+            ...(input.name ? { name: input.name } : {}),
+            title: `${agent.name}: ${input.task.trim().slice(0, 80)}`,
+          }, ctx, forkRunContext)
+          : undefined
+        const effectiveIsolation = input.isolation ?? agent.isolation
+        agentWorktree = effectiveIsolation === 'worktree'
+          ? await createIsolatedAgentWorktree(ctx.workspace.root, agentId, ctx.conversationId)
+          : null
+        const workspaceBase = agentWorktree ? new Workspace(agentWorktree.session.worktreePath) : ctx.workspace
+        const workspace = workspaceWithAgentMemory(workspaceBase, agent.name, agent.memory)
+        const sandbox = sandboxForWorkspace(ctx.sandbox, workspace)
+        if (sidechain) await writeAgentTaskMetadata(opts, sidechain, agent, input, ctx, agentWorktree?.session.worktreePath)
+        const baseAgentTools = wantsForkContext
+          ? forkRunContext?.tools.length ? forkRunContext.tools : opts.baseTools
+          : resolveAgentTools(agent, opts.baseTools).filter(tool => tool.name !== 'agent_task')
+        const hooks = mergeHookRegistries(opts.hooks, agent.hooks)
+        const inheritedContentReplacementState = ctx.contentReplacementState
+          ? cloneContentReplacementState(ctx.contentReplacementState)
+          : undefined
         agentMcp = await loadAgentMcpRuntime({
           agent,
           baseTools: baseAgentTools,
@@ -389,11 +409,18 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
           if (ev.type === 'final') finalText = ev.text
         }
       } finally {
+        try {
+          foregroundRegistration?.cancelAutoBackground()
+          if (foregroundRegistration) await opts.unregisterForegroundAgent?.(foregroundRegistration.task.id, ctx)
+        } catch (error) {
+          emitSubagentProgress(ctx, agent, `子代理 ${agent.name} 前台登记清理失败:${oneLine(errorMessage(error))}`)
+        }
         await agentMcp?.close()
-        cleanup = agentWorktree ? await agentWorktree.cleanupIfClean().catch(error => ({
+        const worktree = agentWorktree
+        cleanup = worktree ? await worktree.cleanupIfClean().catch(error => ({
           kept: true,
-          worktreePath: agentWorktree.session.worktreePath,
-          worktreeBranch: agentWorktree.session.worktreeBranch,
+          worktreePath: worktree.session.worktreePath,
+          worktreeBranch: worktree.session.worktreeBranch,
           changedFiles: -1,
           commits: -1,
           cleanupError: errorMessage(error),
