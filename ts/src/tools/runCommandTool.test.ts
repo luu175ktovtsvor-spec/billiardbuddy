@@ -217,6 +217,10 @@ test('classifyCommandRisk separates read/file/outreach/destructive commands', ()
   expect(classifyCommandRisk('info -o out.txt bash')).toBe('outreach')
   expect(classifyCommandRisk('info --output=out.txt bash')).toBe('outreach')
   expect(classifyCommandRisk('info --init-file init.info bash')).toBe('outreach')
+  expect(classifyCommandRisk('lsof -nP -i')).toBe('read')
+  expect(classifyCommandRisk('lsof -p 123')).toBe('read')
+  expect(classifyCommandRisk('lsof -D cache')).toBe('outreach')
+  expect(classifyCommandRisk('lsof +m/tmp/mounts')).toBe('outreach')
   expect(classifyCommandRisk('git push --force origin main')).toBe('destructive')
   expect(classifyCommandRisk('git push -f origin main')).toBe('destructive')
   expect(classifyCommandRisk('git reset --hard HEAD~1')).toBe('destructive')
@@ -418,6 +422,11 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   })
   expect(resolvePermission(runCommandTool, { command: 'info --where bash' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'info -o out.txt bash' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+    behavior: 'ask',
+    approvalClass: 'outreach',
+  })
+  expect(resolvePermission(runCommandTool, { command: 'lsof -nP -i' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
+  expect(resolvePermission(runCommandTool, { command: 'lsof +m/tmp/mounts' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'outreach',
   })

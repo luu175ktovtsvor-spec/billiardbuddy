@@ -1329,6 +1329,55 @@ function classifyInfoCommand(command: string): CommandRisk | null {
   return validateSafeFlags(tokens.slice(1), { safeFlags }) ? 'read' : 'outreach'
 }
 
+function classifyLsofCommand(command: string): CommandRisk | null {
+  const tokens = tokenizeShellWords(command)
+  if (tokens[0]?.toLowerCase() !== 'lsof') return null
+  const args = tokens.slice(1)
+  if (args.some(token => token === '+m' || token.startsWith('+m'))) return 'outreach'
+
+  const safeFlags: Record<string, FlagArgKind> = {
+    '-?': 'none',
+    '-h': 'none',
+    '-v': 'none',
+    '-a': 'none',
+    '-b': 'none',
+    '-C': 'none',
+    '-l': 'none',
+    '-n': 'none',
+    '-N': 'none',
+    '-O': 'none',
+    '-P': 'none',
+    '-Q': 'none',
+    '-R': 'none',
+    '-t': 'none',
+    '-U': 'none',
+    '-V': 'none',
+    '-X': 'none',
+    '-H': 'none',
+    '-E': 'none',
+    '-F': 'none',
+    '-g': 'none',
+    '-i': 'none',
+    '-K': 'none',
+    '-L': 'none',
+    '-o': 'none',
+    '-r': 'none',
+    '-s': 'none',
+    '-S': 'none',
+    '-T': 'none',
+    '-x': 'none',
+    '-A': 'string',
+    '-c': 'string',
+    '-d': 'string',
+    '-e': 'string',
+    '-k': 'string',
+    '-p': 'string',
+    '-u': 'string',
+  }
+
+  return validateSafeFlags(args, { safeFlags }) ? 'read' : 'outreach'
+}
+
 function classifySedCommand(command: string): CommandRisk | null {
   const tokens = tokenizeShellWords(command)
   if (tokens[0]?.toLowerCase() !== 'sed') return null
@@ -1728,6 +1777,9 @@ function classifySegment(segment: string): CommandRisk {
 
   const infoRisk = classifyInfoCommand(rawCommand)
   if (infoRisk) return infoRisk
+
+  const lsofRisk = classifyLsofCommand(rawCommand)
+  if (lsofRisk) return lsofRisk
 
   const readOnlyAllowlistRisk = classifyReadOnlyAllowlistedCommand(rawCommand)
   if (readOnlyAllowlistRisk) return readOnlyAllowlistRisk
