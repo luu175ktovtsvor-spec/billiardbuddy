@@ -38,7 +38,7 @@ export interface ToolContext {
   registry?: ToolRegistry
   signal?: AbortSignal
   sandbox?: Sandbox
-  /** 权限档,默认 'ask'。W4a 权限瀑布读它。 */
+  /** 权限档,默认 'default'。W4a 权限瀑布读它。 */
   permissionMode?: PermissionMode
   /** 当前 slash command / inline skill 通过 allowedTools 授权的会话内工具名。 */
   sessionAllowedTools?: Set<string>
@@ -60,8 +60,6 @@ export interface ToolContext {
   querySource?: string
   /** 子代理/后台 worker 本地拒绝与记住审批状态,避免污染父会话。 */
   localDenialTracking?: DenialTrackingState
-  /** full 档下 spend 类动作已自动放行的次数(过 AUTO_SPEND_LIMIT 强制弹卡)。 */
-  autoSpendCount?: number
   /** 当前任务清单(todo_write / task_progress 内联维护,单一真相源)。 */
   todos?: TodoItem[]
   /** 老板插话收件箱(FIFO,路由 push、循环在安全点 drain)。 */
@@ -128,7 +126,7 @@ export interface Tool<Input = unknown> {
   approvalClass?: ApprovalClass
   /** 动态审批类别:按具体入参区分 file/outreach/destructive/spend。 */
   approvalClassFor?(input: Input, ctx: ToolContext): ApprovalClass | undefined
-  /** 旁路免疫:连 full(跳过确认)也强制弹卡。删数据这类真危险动作设它。 */
+  /** 旁路免疫:连 bypassPermissions(跳过确认)也强制弹卡。删数据这类真危险动作设它。 */
   forceConfirm?: boolean
   /** 动态旁路免疫:同一个工具按入参区分预览/真正执行。 */
   forceConfirmFor?(input: Input, ctx: ToolContext): boolean

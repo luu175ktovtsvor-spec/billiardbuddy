@@ -1,9 +1,7 @@
 import type { Tool, ToolContext } from '../tools/Tool'
 import { shellCommandAllowedByPermissionRules, shellCommandMatchesPermissionRule } from './permissionRules'
 import type { ApprovalClass, DecisionReason, PermissionDecision } from './types'
-
-/** full(跳过确认)档下,spend 类动作连续自动放行到这个数,之后强制弹卡兜底(防一次 bug 循环烧钱)。 */
-export const AUTO_SPEND_LIMIT = 3
+import { canonicalPermissionMode } from './canonical'
 
 export const APPROVAL_PENDING_MSG = (name: string): string =>
   `[待用户确认] 已请求执行「${name}」。请用一两句话把你打算做的事告诉老板、并请他确认,不要假装已经做完或已生成。`
@@ -51,17 +49,15 @@ function currentCommandInput(input: unknown): string {
  *  2. plan + 非只读   → deny(planSkip:只规划不动手)
  *  3. 算 needsApproval;不需要 → allow(Delta A:本机可逆动作/文件读写直接放行)
  *  4. autoApprove:
- *     4a forceConfirm → ask(Delta B:在 mode 之前判,连 full 也拦,旁路免疫)
+ *     4a forceConfirm → ask(Delta B:在 mode 之前判,连 bypassPermissions 也拦,旁路免疫)
  *     4b requiresUserInteraction → ask(连 bypassPermissions 也拦)
  *     4c bypassPermissions → allow(但不越过 fatal/forceConfirm/userInteraction)
  *     4d safePrefix   → allow
  *     4e file 类本机可逆动作 → allow(对齐 CC acceptEdits:审批只卡对外/不可逆)
- *     4f full 档:spend 过闸 → ask,否则 allow
- *     4g auto_files 档:非 file 类仍 ask
- *     4h ask/其它     → ask
+ *     4f default/acceptEdits → ask(非 file 类仍问)
  */
 function resolvePermissionInner(tool: Tool, input: unknown, ctx: ToolContext): PermissionDecision {
-  const mode = ctx.permissionMode ?? 'ask'
+  const mode = canonicalPermissionMode(ctx.permissionMode)
 
   const fatal = tool.fatalReasonFor?.(input, ctx)
   if (fatal) return { behavior: 'deny', message: `拒绝执行:${fatal}`, reason: { type: 'fatal', text: fatal } }
@@ -92,16 +88,7 @@ function resolvePermissionInner(tool: Tool, input: unknown, ctx: ToolContext): P
     return { behavior: 'allow', reason: { type: 'mode', mode } }
   }
 
-  if (mode === 'full') {
-    if (approvalClass === 'spend' && (ctx.autoSpendCount ?? 0) >= AUTO_SPEND_LIMIT) {
-      return ask(tool, ctx, input, { type: 'mode', mode }, approvalClass)
-    }
-    return { behavior: 'allow', reason: { type: 'mode', mode } }
-  }
-  if (mode === 'auto_files') {
-    return ask(tool, ctx, input, { type: 'mode', mode }, approvalClass)
-  }
-  // ask(默认)/ plan 档下走到这的只读+需审批工具 → 弹卡
+  // default/acceptEdits 档下走到这的只读+需审批或对外/不可逆工具 → 弹卡
   return ask(tool, ctx, input, { type: 'mode', mode }, approvalClass)
 }
 
@@ -117,7 +104,7 @@ export function resolvePermission(tool: Tool, input: unknown, ctx: ToolContext):
     return {
       behavior: 'ask',
       message: APPROVAL_PENDING_MSG(tool.name),
-      reason: { type: 'mode', mode: ctx.permissionMode ?? 'ask' },
+      reason: { type: 'mode', mode: canonicalPermissionMode(ctx.permissionMode) },
     }
   }
 }

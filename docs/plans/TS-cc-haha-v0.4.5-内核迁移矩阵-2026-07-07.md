@@ -3098,7 +3098,7 @@
 - TS 权限瀑布调整:`approvalClass:"file"` 的本机可逆动作在默认交互档也直接 allow,不再只有 `auto_files`/`full` 放行;`outreach`、`destructive`、`forceConfirm`、必须用户交互仍会 ask/deny。
 - `run_command` 行为同步:如 `echo hi > note.txt` 这类工作区文件写入在默认档直接执行;`curl ... > out.txt` 仍按外部触达审批;`rm -rf build` 仍按不可逆/危险审批或硬拒。
 - 前端权限文案同步到 CC 口径:默认/接受修改都说明“本机读写直接做,对外和不可逆动作先问”,避免 UI 继续暗示每个文件修改都要弹卡。
-- 兼容边界:后端值暂保留 `ask/auto_files/plan/full`,避免破坏现有 API/会话;下一步如要完全改名,再做 `default/acceptEdits/plan/bypassPermissions` 兼容映射与迁移。
+- 兼容边界:旧 API/旧 localStorage/旧 agent frontmatter 仍接受 `ask/auto_files/full`,但会归一到 `default/acceptEdits/bypassPermissions`;新前端和新文档只展示 CC 四档名。
 
 ## 3.363 2026-07-08 旧 Python harness 轨迹 eval 退场
 
@@ -3107,6 +3107,22 @@
 - TS harness 同步覆盖工作区边界:模型尝试 `read_file /etc/hosts` 时不会读取系统文件,而是把越界错误作为 `is_error` tool result 回灌给模型,避免旧 Python eval 中“沙箱外被挡/未读到”的验收点丢失。
 - `server/evals/README.md` 已把 `harness_eval.py` 加入已退役清单,明确 coding-agent 命令安全/工具权限/文件执行/轨迹对抗继续集中到 TS 测试和 TS smoke。
 - Python 文件数降到 392。剩余 `server/evals/agent_full_scenario_test.py`、`architecture_live_test.py` 还牵到旧 FastAPI/真实业务问答链路,暂不删除;必须等 TS API/知识库/业务问答等价 smoke 接住后再退场。
+
+## 3.364 2026-07-08 CC 权限四档命名兼容落地
+
+- 新增统一权限归一化层:`parsePermissionMode()` / `canonicalPermissionMode()` 接受 CC 四档 `default/acceptEdits/plan/bypassPermissions`,并兼容旧值 `ask -> default`、`auto_files -> acceptEdits`、`full -> bypassPermissions`。
+- TS server、Agent frontmatter、主循环、计划模式退出、队友计划审批响应都改为以 canonical CC 四档运行。旧请求体、旧会话、旧 frontmatter 继续可读,但内部决策和新输出统一为 CC 名称。
+- 前端输入区权限菜单改为保存/发送 `default/acceptEdits/plan/bypassPermissions`;读取旧 localStorage 时自动迁移旧三档,避免用户升级后偏好丢失。
+- `/permissions` 命令文档同步成 CC 四档口径,强调审批闸只卡对外、不可逆、强确认和必须人工交互动作。
+- 旧 Python 线的 `full` 自动花费次数闸不再保留在 TS 权限内核中:CC 四档下 `bypassPermissions` 跳过普通确认;真实不能自动执行的动作必须显式标 `forceConfirm` 或 `requiresUserInteraction`。
+
+## 3.365 2026-07-08 CC 工作目录/全盘访问运行语义落地
+
+- 对照源:`~/Desktop/cc-haha-ref/src/types/permissions.ts` 的 `AdditionalWorkingDirectory`、`src/tools/BashTool/pathValidation.ts` 的 allowed directories、`src/constants/prompts.ts` 的 primary/additional working directories 提示。关键行为:选定项目文件夹是默认 cwd,但 Agent 仍可在获授权范围内访问其它本机路径。
+- 桌面前端现在默认随请求传 `full_disk_access:true`:用户选择/新建的 `working_dir` 继续作为目录树根、命令默认 cwd、项目指令和工作记忆 scope;同时绝对路径读取/编辑不再被误限制在当前工作区,满足“让它去桌面或其它地方找东西也能找到”的本地桌面语义。
+- `run_command` 工具描述同步:默认 cwd 是选定工作区;`cwd` 可是工作区相对路径或已授权绝对路径,桌面全盘会话允许从外部目录执行。危险命令、网络/安装/发布、不可逆动作仍由 Bash 风险分类和权限闸处理。
+- 回归测试新增 `/agent/run keeps working_dir as command cwd while desktop full disk can read external absolute paths`:同一轮模型先执行 `pwd` 验证 cwd 为 `working_dir`,再 `read_file` 读取工作区外绝对路径,确保 UI 文案、请求参数和后端 Workspace 行为一致。
+- 与 `selected_files` 的关系:显式选中文件仍作为窄授权兼容路径保留;桌面默认全盘是本地壳的常态,`selected_files` 主要服务附件/素材和非全盘请求的精确授权。
 
 ## 4. 下一批代码顺序
 

@@ -80,6 +80,7 @@ import type { AgentEvent, AskQuestionField } from '../types/events'
 import type { ToolContext } from '../tools/Tool'
 import type { FetchLike } from '../proxy/ProxyModel'
 import type { PermissionMode } from '../permissions/types'
+import { canonicalPermissionMode } from '../permissions/canonical'
 import { basename, dirname, extname, join, relative, resolve } from 'node:path'
 import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
@@ -250,9 +251,7 @@ class TurnSetupError extends Error {
 }
 
 function permissionModeFrom(value: unknown): PermissionMode {
-  return value === 'auto_files' || value === 'full' || value === 'plan' || value === 'bypassPermissions'
-    ? value
-    : 'ask'
+  return canonicalPermissionMode(value)
 }
 
 function stringOr(value: unknown, fallback: string): string {

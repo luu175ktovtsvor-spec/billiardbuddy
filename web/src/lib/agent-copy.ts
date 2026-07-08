@@ -4,18 +4,29 @@
  * 改文案改这里，别散落进组件。配色不在这里（保留现有 #10a37f 等）。
  */
 
-import type { PermissionMode } from "@/hooks/use-agent-chat";
+import type { PermissionMode, PermissionModeInput } from "@/hooks/use-agent-chat";
 
 /**
  * 权限模式四档 —— 对齐 Claude Code 的 default / acceptEdits / plan / bypassPermissions。
- * 后端值是 ask / auto_files / plan / full，只统一显示文案与描述。
  */
 export const PERMISSION_MODES: { value: PermissionMode; label: string; desc: string; effects: string[] }[] = [
-  { value: "ask", label: "默认", desc: "本机读写直接做，对外和不可逆动作先问", effects: ["改文件：直接做", "本机命令：直接跑", "对外/删除：必须确认"] },
-  { value: "auto_files", label: "接受修改", desc: "本机读写直接做，对外和不可逆动作先问", effects: ["改文件：直接做", "本机命令：直接跑", "对外/删除：必须确认"] },
-  { value: "plan", label: "计划模式", desc: "只看只想、不动手", effects: ["改文件：不做", "跑命令：不跑", "对外发布：不发布"] },
-  { value: "full", label: "跳过确认", desc: "普通读写改查直接做，发布、删除、高成本动作仍确认", effects: ["改文件：直接做", "跑命令：直接跑", "对外发布：必须确认"] },
+  { value: "default", label: "默认", desc: "本机读写直接做，对外和不可逆动作先问", effects: ["改文件：直接做", "本机命令：直接跑", "对外/删除：必须确认"] },
+  { value: "acceptEdits", label: "接受修改", desc: "本机读写直接做，对外和不可逆动作先问", effects: ["改文件：直接做", "本机命令：直接跑", "对外/删除：必须确认"] },
+  { value: "plan", label: "计划模式", desc: "只看只想、不动手", effects: ["改文件：不做", "跑命令：不跑", "高风险动作：不做"] },
+  { value: "bypassPermissions", label: "跳过确认", desc: "普通读写改查直接做，登录、支付、灾难级动作仍拦", effects: ["改文件：直接做", "跑命令：直接跑", "强确认：仍会拦"] },
 ];
+
+export function normalizePermissionMode(value: unknown): PermissionMode | null {
+  if (value === "default" || value === "acceptEdits" || value === "plan" || value === "bypassPermissions") return value;
+  if (value === "ask") return "default";
+  if (value === "auto_files") return "acceptEdits";
+  if (value === "full") return "bypassPermissions";
+  return null;
+}
+
+export function permissionModeStorageValue(value: PermissionModeInput): PermissionMode {
+  return normalizePermissionMode(value) || "default";
+}
 
 /** 空状态 / 欢迎 —— 去客服腔，专业 agent 基调（对标 cc empty state）。 */
 export const WELCOME = {

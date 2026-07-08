@@ -9,7 +9,7 @@ import { FileSearch, GitBranch, Target, X } from "lucide-react";
 
 import { api, type KnowledgePackMeta, type ModelStatusResponse, type NotificationItem, type RecentArtifact, type WorkspaceGitStatus, type WorkspaceProjectInstructionSummary, type WorkspaceTreeSummary } from "@/lib/api";
 import type { DashboardRecommendation } from "@/types/dashboard";
-import { HELP_TEXT, PERMISSION_MODES } from "@/lib/agent-copy";
+import { HELP_TEXT, PERMISSION_MODES, normalizePermissionMode, permissionModeStorageValue } from "@/lib/agent-copy";
 import { toolMeta } from "@/lib/agent-tools";
 import { useDesktop } from "@/hooks/use-desktop";
 import { useAgentChat, type PermissionMode, type ChatMessage } from "@/hooks/use-agent-chat";
@@ -216,7 +216,7 @@ export function DesktopChatShell({
   const toast = useToast();
   const [workbenchId] = useState(getWorkbenchId);
   const [input, setInput] = useState("");
-  const [mode, setMode] = useState<PermissionMode>("ask");
+  const [mode, setMode] = useState<PermissionMode>("default");
   // 已选定的本机文件（绝对路径）：授权管家读/改它们，像 Claude Code 一样改本地文件。随每次对话透传后端沙箱。
   // 注：桌面版后端默认放开「完全本地访问」（找/读/改任意文件+跑命令），无需前端再开开关；权限模式即安全闸。
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
@@ -266,6 +266,7 @@ export function DesktopChatShell({
     goal,
     deepThinking,
     workingDir,
+    fullDisk: true,
     onGeneratedImage: (item) => setPreview({ kind: "poster", ...item }),
     onFileChange: (item) => setPreview((current) => nextPreviewItem(current, item)),
   });
@@ -390,9 +391,8 @@ export function DesktopChatShell({
         return;
       }
       const saved = JSON.parse(raw) as PersistedWorkbenchState;
-      if (saved.permissionMode === "ask" || saved.permissionMode === "auto_files" || saved.permissionMode === "full" || saved.permissionMode === "plan") {
-        setMode(saved.permissionMode);
-      }
+      const savedMode = normalizePermissionMode(saved.permissionMode);
+      if (savedMode) setMode(savedMode);
       // 旧存档里的 resourceDirs（已废弃的"资料文件夹"）直接忽略，不再读取。
       if (Array.isArray(saved.selectedFiles)) setSelectedFiles(saved.selectedFiles.filter((p): p is string => typeof p === "string").slice(0, 20));
       if (Array.isArray(saved.knowledgePacks)) setKnowledgePacks(saved.knowledgePacks.filter((p): p is string => typeof p === "string"));
@@ -787,13 +787,13 @@ export function DesktopChatShell({
   useEffect(() => {
     try {
       if (localStorage.getItem(workbenchStateKey)) return;
-      const m = localStorage.getItem("agent_permission_mode");
-      if (m === "ask" || m === "auto_files" || m === "full" || m === "plan") setMode(m);
+      const m = normalizePermissionMode(localStorage.getItem("agent_permission_mode"));
+      if (m) setMode(m);
     } catch { /* 忽略 */ }
   }, [workbenchStateKey]);
   const updateMode = (m: PermissionMode) => {
     setMode(m);
-    try { localStorage.setItem("agent_permission_mode", m); } catch { /* 忽略 */ }
+    try { localStorage.setItem("agent_permission_mode", permissionModeStorageValue(m)); } catch { /* 忽略 */ }
   };
 
   // 专家挂载偏好持久化（记住上次挂了哪些领域专家）

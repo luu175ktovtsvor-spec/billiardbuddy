@@ -89,10 +89,12 @@ export interface ChatMessage {
   generationId?: string; // P1-4 效果反馈：本轮成品对应的 generation id，成品卡 👍 据此写 effect_rating="good"
 }
 
-export type PermissionMode = "ask" | "auto_files" | "full" | "plan";
+export type PermissionMode = "default" | "acceptEdits" | "plan" | "bypassPermissions";
+export type LegacyPermissionMode = "ask" | "auto_files" | "full";
+export type PermissionModeInput = PermissionMode | LegacyPermissionMode;
 
 export interface AgentChatOptions {
-  permissionMode: PermissionMode;
+  permissionMode: PermissionModeInput;
   selectedFiles?: string[];
   fullDisk?: boolean;
   knowledgePacks?: string[]; // 专家挂载（如 ["billiards"]）：挂上=领域专家，不挂=通用 Agent

@@ -3,6 +3,7 @@ import { basename, join } from 'node:path'
 import { extractDescription, parseMarkdownDocument, stringArrayField, stringField } from '../commands/frontmatter'
 import type { Tool } from '../tools/Tool'
 import type { PermissionMode } from '../permissions/types'
+import { canonicalPermissionMode, parsePermissionMode } from '../permissions/canonical'
 import type { HookRegistry } from '../hooks/hooks'
 import { normalizeHookRegistry } from '../hooks/hookConfig'
 import { isAgentMemoryEnabled, parseAgentMemoryScope, type AgentMemoryScope } from './agentMemory'
@@ -65,7 +66,7 @@ function positiveIntField(frontmatter: Record<string, unknown>, key: string): nu
 
 function permissionModeField(frontmatter: Record<string, unknown>): PermissionMode | undefined {
   const value = stringField(frontmatter, 'permissionMode')
-  if (value === 'ask' || value === 'auto_files' || value === 'full' || value === 'plan' || value === 'bypassPermissions') return value
+  if (parsePermissionMode(value)) return canonicalPermissionMode(value)
   return undefined
 }
 
