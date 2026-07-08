@@ -436,6 +436,7 @@ async function executeMcpTool(
 
 function makeTool(serverName: string, sdkTool: SdkMcpTool, client: Client, publicName: string, opts: LoadMcpToolsOptions): Tool {
   const approvalClass = approvalClassFromAnnotations(sdkTool.annotations)
+  // readOnlyHint 只驱动 isReadOnly(plan 模式可探索 + 并发安全),不影响审批:外部 MCP 工具一律要审批。
   const readOnly = !!sdkTool.annotations?.readOnlyHint && !sdkTool.annotations.destructiveHint && !sdkTool.annotations.openWorldHint
   return {
     name: publicName,
@@ -445,7 +446,7 @@ function makeTool(serverName: string, sdkTool: SdkMcpTool, client: Client, publi
     ].join('\n'),
     inputSchema: schemaFor(sdkTool),
     isReadOnly: readOnly,
-    requiresApproval: approvalClass !== undefined,
+    requiresApproval: true,
     approvalClass,
     async execute(input, ctx) {
       return executeMcpTool(serverName, sdkTool, client, input, opts, ctx.signal)
