@@ -21,6 +21,7 @@ import { Transcript } from '../memory/transcript'
 import { createGoalHookRegistry, getThreadGoal, setThreadGoalHook } from '../goals/goalState'
 import { TaskListService } from '../tasks/taskListService'
 import { createStructuredTaskTools } from '../tasks/taskListTools'
+import { formatCrossSessionMessage } from '../tasks/crossSessionMessages'
 
 let root: string
 beforeEach(() => {
@@ -716,6 +717,42 @@ test('steering:每批工具后 drain,插话在下一次 model.step 前进 messag
       m => m.role === 'user' && m.content.some(b => b.type === 'text' && b.text.includes('[用户补充/纠偏] 顺便看看 src')),
     ),
   ).toBe(true)
+})
+
+test('steering:UDS cross-session messages keep their source wrapper', async () => {
+  const inbox: string[] = []
+  const seen: import('../types/message').Message[][] = []
+  let calls = 0
+  const model: Model = {
+    async step(input) {
+      calls++
+      seen.push(input.messages.slice())
+      if (calls === 1) {
+        inbox.push(formatCrossSessionMessage('uds:/tmp/peer.sock', 'check parser state'))
+        return { kind: 'final', text: 'first final' }
+      }
+      return { kind: 'final', text: 'handled cross session' }
+    },
+  }
+
+  const events = await collect(runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    steerInbox: inbox,
+  }))
+
+  expect(events.some(event => event.type === 'steering' && event.content.includes('<cross-session-message from="uds:/tmp/peer.sock">'))).toBe(true)
+  expect(
+    seen[1]!.some(message => message.role === 'user' && message.content.some(block =>
+      block.type === 'text' &&
+      block.text.includes('[用户补充/纠偏] <cross-session-message from="uds:/tmp/peer.sock">') &&
+      block.text.includes('check parser state'),
+    )),
+  ).toBe(true)
+  expect(events.at(-1)).toEqual({ type: 'final', text: 'handled cross session' })
 })
 
 test('team inbox: injects unread teammate messages and leaves structured protocol unread', async () => {

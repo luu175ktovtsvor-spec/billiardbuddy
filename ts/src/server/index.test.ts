@@ -9,6 +9,7 @@ import { SessionService } from './services/sessionService'
 import { TaskService } from '../tasks/taskService'
 import { textBlock, userText } from '../types/message'
 import { signApproval } from '../permissions/approval'
+import { sendToUdsSocket } from '../tasks/udsClient'
 
 let server: ReturnType<typeof startServer>
 let serverRoot: string
@@ -778,6 +779,68 @@ test('POST /agent/run streams through configured real Model adapter and tools', 
     expect(replayText).toContain('event: done')
   } finally {
     realServer.stop(true)
+    rmSync(transcriptRoot, { recursive: true, force: true })
+  }
+})
+
+test('POST /agent/run starts a UDS inbox and injects cross-session steering', async () => {
+  const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-run-uds-inbox-'))
+  let calls = 0
+  let releaseSecondStep: (() => void) | undefined
+  const udsServer = startServer({
+    port: 0,
+    transcriptRoot,
+    env: {
+      DEEPSEEK_BASE_URL: 'https://model.example/v1',
+      DEEPSEEK_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async () => {
+      calls++
+      if (calls === 1) {
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: '初稿' }, finish_reason: 'stop' }] })}\n\n`))
+            controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
+            controller.close()
+          },
+        }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+      }
+      await new Promise<void>(resolve => { releaseSecondStep = resolve })
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: '处理跨会话消息完成' }, finish_reason: 'stop' }] })}\n\n`))
+          controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
+          controller.close()
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  const socketPath = join(transcriptRoot, 'session.sock')
+  try {
+    const runPromise = fetch(`http://127.0.0.1:${udsServer.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({
+        message: '等待跨会话消息',
+        conversationId: 'uds-inbox-run',
+        permissionMode: 'full',
+        messagingSocketPath: socketPath,
+      }),
+    }).then(res => res.text())
+
+    await waitFor(async () => existsSync(socketPath) ? 'ready' : null)
+    await sendToUdsSocket(socketPath, 'please inspect parser state')
+    await waitFor(async () => calls >= 2 ? 'second-step-started' : null)
+    releaseSecondStep?.()
+
+    const text = await runPromise
+    expect(text).toContain('event: steering')
+    expect(text).toContain('<cross-session-message from=\\"uds:')
+    expect(text).toContain('please inspect parser state')
+    expect(text).toContain('处理跨会话消息完成')
+    expect(existsSync(socketPath)).toBe(false)
+  } finally {
+    udsServer.stop(true)
     rmSync(transcriptRoot, { recursive: true, force: true })
   }
 })
