@@ -5524,7 +5524,7 @@ await server.connect(new StdioServerTransport())
   try {
     const res = await fetch(`http://127.0.0.1:${mcpServer.port}/agent/run`, {
       method: 'POST',
-      body: JSON.stringify({ message: 'call mcp', conversationId: 'mcp-run', workspaceRoot: root, permissionMode: 'full' }),
+      body: JSON.stringify({ message: 'call mcp', conversationId: 'mcp-run', workspaceRoot: root, permissionMode: 'full', mcpConfigPath: join(root, '.mcp.json') }),
     })
     expect(res.status).toBe(200)
     const text = await res.text()
@@ -5596,7 +5596,7 @@ await server.connect(new StdioServerTransport())
   try {
     const res = await fetch(`http://127.0.0.1:${mcpServer.port}/agent/run`, {
       method: 'POST',
-      body: JSON.stringify({ message: 'find invoice mcp tool', conversationId: 'mcp-lazy', workspaceRoot: root, permissionMode: 'full' }),
+      body: JSON.stringify({ message: 'find invoice mcp tool', conversationId: 'mcp-lazy', workspaceRoot: root, permissionMode: 'full', mcpConfigPath: join(root, '.mcp.json') }),
     })
     expect(res.status).toBe(200)
     const text = await res.text()
@@ -5675,7 +5675,7 @@ await server.connect(new StdioServerTransport())
   try {
     const started = await fetch(`http://127.0.0.1:${mcpServer.port}/api/v1/agent/tasks`, {
       method: 'POST',
-      body: JSON.stringify({ message: 'call mcp elicit', conversation_id: 'mcp-elicit', working_dir: root, permission_mode: 'full' }),
+      body: JSON.stringify({ message: 'call mcp elicit', conversation_id: 'mcp-elicit', working_dir: root, permission_mode: 'full', mcpConfigPath: join(root, '.mcp.json') }),
     })
     expect(started.status).toBe(200)
     const startedBody = await started.json() as any
