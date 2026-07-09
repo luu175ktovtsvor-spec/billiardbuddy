@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ProviderService } from './providerService'
@@ -61,6 +62,69 @@ test('ProviderService persists providers, redacts secrets, and resolves active r
 
     const raw = await readFile(join(root, 'providers.json'), 'utf8')
     expect(raw).toContain('real-secret')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('ProviderService with a credential key encrypts secrets at rest (ciphertext on disk) and reads them back intact', async () => {
+  const root = tempRoot()
+  const credentialKeyHex = randomBytes(32).toString('hex')
+  try {
+    const service = new ProviderService(root, { credentialKeyHex })
+    await service.create({
+      id: 'byok',
+      name: 'BYOK',
+      apiFormat: 'anthropic',
+      baseUrl: 'https://gateway.example/v1',
+      authToken: 'app-token-should-be-encrypted',
+      apiKey: 'sk-should-be-encrypted',
+      model: 'gw-model',
+    })
+
+    // 落盘必须是密文:明文 secret 不出现,反而带 enc:v1: 前缀
+    const raw = await readFile(join(root, 'providers.json'), 'utf8')
+    expect(raw).not.toContain('sk-should-be-encrypted')
+    expect(raw).not.toContain('app-token-should-be-encrypted')
+    expect(raw).toContain('enc:v1:')
+
+    // 用同一把密钥的新实例读回,内存里必须是解密后的明文(下游 model factory 才能用)
+    const reopened = new ProviderService(root, { credentialKeyHex })
+    const runtime = await reopened.resolveRuntimeConfig({})
+    expect(runtime?.source).toBe('saved-provider')
+    expect(runtime?.config.apiKey).toBe('sk-should-be-encrypted')
+    expect(runtime?.config.authToken).toBe('app-token-should-be-encrypted')
+
+    // public 视图仍不泄露密钥
+    const listed = await reopened.list()
+    expect(JSON.stringify(listed)).not.toContain('sk-should-be-encrypted')
+    expect(JSON.stringify(listed)).not.toContain('app-token-should-be-encrypted')
+    expect(listed.providers[0]).toMatchObject({ id: 'byok', hasApiKey: true, hasAuthToken: true })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('ProviderService without a key stores plaintext (back-compat) and can still be read by an encrypting instance later', async () => {
+  const root = tempRoot()
+  try {
+    // 无密钥:明文落盘(与老行为一致)
+    const plain = new ProviderService(root)
+    await plain.create({
+      id: 'legacy',
+      name: 'Legacy',
+      apiFormat: 'openai_chat',
+      baseUrl: 'https://legacy.example/v1',
+      apiKey: 'legacy-plaintext-secret',
+      model: 'legacy-model',
+    })
+    const raw = await readFile(join(root, 'providers.json'), 'utf8')
+    expect(raw).toContain('legacy-plaintext-secret')
+
+    // 之后即便配了密钥,旧明文条目也能无缝读回(迁移:下次写盘会被加密)
+    const withKey = new ProviderService(root, { credentialKeyHex: randomBytes(32).toString('hex') })
+    const runtime = await withKey.resolveRuntimeConfig({})
+    expect(runtime?.config.apiKey).toBe('legacy-plaintext-secret')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

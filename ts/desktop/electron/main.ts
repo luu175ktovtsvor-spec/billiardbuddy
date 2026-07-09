@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, Tray, nativeImage, screen, shell, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, Tray, nativeImage, screen, shell, type MenuItemConstructorOptions } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { existsSync, readdirSync } from 'node:fs'
@@ -19,6 +19,7 @@ import { installMacOsChromiumKeychainPromptGuard } from './services/keychain'
 import { installMainWindowNavigationGuards } from './services/navigationGuards'
 import { applyWindowsAppUserModelId } from './services/appIdentity'
 import { acquireSingleInstanceLock } from './services/singleInstance'
+import { resolveCredentialKey } from './services/credentialKey'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const PREFERRED_PORTS = [8850, 8851, 8852, 8877]
@@ -47,6 +48,16 @@ function buildSidecarPlan(port: number): SidecarPlan {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     QF_DESKTOP: '1',
+  }
+  // 凭据 at-rest 加密密钥(DEK):主进程用 safeStorage(底层 macOS Keychain / Windows DPAPI)保护一把随机 DEK、
+  // 以密文落盘 userData/credential-key.enc,启动时解出后经环境 QF_CRED_KEY 传给 sidecar;sidecar 用它 AES-256-GCM
+  // 加密 providers.json 里的 apiKey/authToken(密文落盘,不再明文)。safeStorage 不可用时不传 → sidecar 回退明文(不倒退)。
+  try {
+    const credKey = resolveCredentialKey(safeStorage, join(app.getPath('userData'), 'credential-key.enc'))
+    if (credKey) env.QF_CRED_KEY = credKey
+    else console.warn('[main] safeStorage 不可用,凭据将以明文落盘(providers.json)。')
+  } catch (err) {
+    console.error('[main] 凭据加密密钥初始化失败,回退明文存储:', err)
   }
   // 显式给 sidecar 一个稳定可写的 cwd:打包后从 Finder/开始菜单启动,Electron 进程 cwd=`/` 或 `/Applications`,
   // 若不显式传,sidecar 继承这个坏 cwd 会导致相对路径解析/落盘失败。userData 目录永远存在且可写。

@@ -14,6 +14,7 @@ import { normalizeReasoningEffort, type ReasoningEffort } from '../../model/reas
 import type { OpenAIChatImageContentMode } from '../../proxy/toOpenAiChatRequest'
 import type { FetchLike } from '../../proxy/ProxyModel'
 import { userText } from '../../types/message'
+import { makeCredentialCipher, type CredentialCipher } from './credentialCipher'
 
 const PROVIDER_ID_RE = /^[A-Za-z0-9_-]{1,128}$/
 const CURRENT_SCHEMA_VERSION = 1
@@ -260,11 +261,40 @@ function nextEnabledProviderId(providers: SavedProvider[], excludedId: string): 
   return providers.find(provider => provider.id !== excludedId && provider.enabled !== false)?.id ?? null
 }
 
+export interface ProviderServiceOptions {
+  /** 凭据 at-rest 加密密钥(hex,32 字节)。缺省读环境 QF_CRED_KEY(sidecar 由 electron 主进程注入)。
+   *  无密钥 → 明文透传(不倒退旧行为)。 */
+  credentialKeyHex?: string
+}
+
 export class ProviderService {
   private readonly indexPath: string
+  private readonly cipher: CredentialCipher
 
-  constructor(private readonly rootDir: string) {
+  constructor(private readonly rootDir: string, opts: ProviderServiceOptions = {}) {
     this.indexPath = join(rootDir, 'providers.json')
+    this.cipher = makeCredentialCipher(opts.credentialKeyHex ?? process.env.QF_CRED_KEY)
+  }
+
+  /** 落盘前:把敏感字段(apiKey/authToken)加密成密文;返回副本,绝不改内存里的明文 provider。 */
+  private encryptProviderSecrets(provider: SavedProvider): SavedProvider {
+    const next = { ...provider }
+    if (next.apiKey !== undefined) next.apiKey = this.cipher.encrypt(next.apiKey)
+    if (next.authToken !== undefined) next.authToken = this.cipher.encrypt(next.authToken)
+    return next
+  }
+
+  /** 读回时:把密文解回明文(内存里始终持明文,下游 model factory 不变)。
+   *  某条解不开(密钥被换/损坏)时丢弃该 provider 而非整体崩掉,返回 null。 */
+  private decryptProviderSecrets(provider: SavedProvider): SavedProvider | null {
+    try {
+      const next = { ...provider }
+      if (next.apiKey !== undefined) next.apiKey = this.cipher.decrypt(next.apiKey)
+      if (next.authToken !== undefined) next.authToken = this.cipher.decrypt(next.authToken)
+      return next
+    } catch {
+      return null
+    }
   }
 
   async list(): Promise<ProviderListResult> {
@@ -426,7 +456,13 @@ export class ProviderService {
     try {
       const parsed = JSON.parse(raw) as unknown
       const record = isRecord(parsed) ? parsed : {}
-      const providers = Array.isArray(record.providers) ? record.providers.filter(isSavedProvider).map(normalizeSavedProvider) : []
+      const providers = Array.isArray(record.providers)
+        ? record.providers
+            .filter(isSavedProvider)
+            .map(normalizeSavedProvider)
+            .map(provider => this.decryptProviderSecrets(provider))
+            .filter((provider): provider is SavedProvider => provider !== null)
+        : []
       const activeId = typeof record.activeId === 'string' && providers.some(p => p.id === record.activeId)
         ? record.activeId
         : null
@@ -438,8 +474,13 @@ export class ProviderService {
 
   private async writeIndex(index: ProvidersIndex): Promise<void> {
     await mkdir(dirname(this.indexPath), { recursive: true })
+    // 落盘副本:敏感字段加密,其余不变。内存里的 index 仍是明文,不受影响。
+    const serializable: ProvidersIndex = {
+      ...index,
+      providers: index.providers.map(provider => this.encryptProviderSecrets(provider)),
+    }
     const tmp = `${this.indexPath}.${process.pid}.${Date.now()}.tmp`
-    await writeFile(tmp, `${JSON.stringify(index, null, 2)}\n`, 'utf8')
+    await writeFile(tmp, `${JSON.stringify(serializable, null, 2)}\n`, 'utf8')
     await rename(tmp, this.indexPath)
   }
 }
