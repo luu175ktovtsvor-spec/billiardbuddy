@@ -3,6 +3,8 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { delimiter } from 'node:path'
 import { basename, extname, join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
+import { ASSET_IDS, managedAssetPath } from '../../assets/assetManager'
+import { transcribeAssetsPreparingReason } from '../../media/mediaBinaries'
 
 export class VoiceTranscriptionError extends Error {
   constructor(message: string, readonly status = 422) {
@@ -46,7 +48,7 @@ export async function transcribeVoiceFile(file: File, opts: TranscribeOptions): 
       const converted = await tryTranscribePath(wav, workDir, opts).catch(err => err)
       if (!(converted instanceof Error)) return converted
     }
-    if (direct instanceof VoiceTranscriptionError && direct.message.includes('未配置')) throw direct
+    if (direct instanceof VoiceTranscriptionError && (direct.message.includes('未配置') || direct.status === 503)) throw direct
     throw new VoiceTranscriptionError('没听清，请再说一次或改用文字输入', 422)
   } finally {
     await rm(workDir, { recursive: true, force: true }).catch(() => undefined)
@@ -60,6 +62,12 @@ async function tryTranscribePath(input: string, workDir: string, opts: Transcrib
   const output = `${outputBase}.txt`
   const model = resolveWhisperModel(env)
   const custom = env.WHISPER_TRANSCRIBE_COMMAND?.trim()
+  if (!custom) {
+    // 功能门:转写组件还在后台下载时给明确的"准备中"(503 + 大白话),同时已触发按需下载;
+    // 没接资产管理器(单测/纯开发)时此处为 null,走下面原有的"未配置"提示。
+    const preparing = transcribeAssetsPreparingReason(env)
+    if (preparing) throw new VoiceTranscriptionError(`语音输入的${preparing}`, 503)
+  }
   const command = custom
     ? commandFromTemplate(custom, { input, output, outputBase, model, language }, env)
     : whisperCppCommand(input, { input, output, outputBase, model, language }, env)
@@ -83,6 +91,7 @@ function commandFromTemplate(template: string, ctx: CommandContext, env: Record<
 
 function whisperCppCommand(input: string, ctx: CommandContext, env: Record<string, string | undefined>): { bin: string; args: string[] } | null {
   const bin = resolveExecutable(env.WHISPER_CLI || env.WHISPER_CPP_BIN || '', env)
+    ?? managedAssetPath(ASSET_IDS.whisperCli)
     ?? resolveExecutable(join(process.cwd(), 'desktop', 'binaries', platformWhisperName()), env)
     ?? resolveExecutable(join(process.cwd(), '..', 'desktop', 'binaries', platformWhisperName()), env)
     ?? resolveExecutable('whisper-cli', env)
@@ -127,6 +136,7 @@ async function convertToWav(input: string, workDir: string, env: Record<string, 
 
 function resolveFfmpeg(env: Record<string, string | undefined>): string | null {
   return resolveExecutable(env.FFMPEG_BIN || '', env)
+    ?? managedAssetPath(ASSET_IDS.ffmpeg)
     ?? resolveExecutable(join(process.cwd(), 'desktop', 'node_modules', 'ffmpeg-static', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'), env)
     ?? resolveExecutable(join(process.cwd(), '..', 'desktop', 'node_modules', 'ffmpeg-static', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'), env)
     ?? resolveExecutable('ffmpeg', env)
@@ -135,6 +145,8 @@ function resolveFfmpeg(env: Record<string, string | undefined>): string | null {
 function resolveWhisperModel(env: Record<string, string | undefined>): string {
   const direct = env.WHISPER_MODEL_PATH || env.WHISPER_CPP_MODEL
   if (direct && existsSync(direct)) return direct
+  const managed = managedAssetPath(ASSET_IDS.whisperModel)
+  if (managed) return managed
   const dir = env.WHISPER_MODEL_DIR
   if (dir && existsSync(dir)) {
     const candidateNames = ['ggml-medium.bin', 'ggml-large-v3.bin', 'ggml-small.bin', 'model.bin']

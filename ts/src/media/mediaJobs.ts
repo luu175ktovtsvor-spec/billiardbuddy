@@ -10,6 +10,7 @@ import type { FetchLike } from '../proxy/ProxyModel'
 import type { Model } from '../types/model'
 import type { TaskMeta, TaskRunnerContext, TaskService, TaskStatus } from '../tasks/taskService'
 import { VideoEditProjectStore } from './videoEditProjects'
+import { ffmpegBinFrom, gateMediaAssets } from './mediaBinaries'
 import { PUBLIC_IMAGE_FALLBACK_NOTE, publicImageEngineLabel, scrubProviderIdentifiers } from '../model/publicModelNames'
 import {
   detectPortraitIntent,
@@ -1431,7 +1432,7 @@ export class MediaJobService {
   private async tryApplyPrintLogoOverlay(posterPath: string, logoPath: string): Promise<boolean> {
     const ext = extname(posterPath) || '.png'
     const outputPath = `${posterPath}.logo-${crypto.randomUUID().slice(0, 8)}${ext}`
-    const command = this.env.FFMPEG_BIN?.trim() || this.env.FFMPEG_PATH?.trim() || 'ffmpeg'
+    const command = ffmpegBinFrom(this.env)
     const filter = [
       '[1:v][0:v]scale2ref=w=main_w*0.20:h=-1[logo][base]',
       '[logo]format=rgba,pad=ceil(iw*1.18):ceil(ih*1.18):(ow-iw)/2:(oh-ih)/2:white[logop]',
@@ -1475,7 +1476,7 @@ export class MediaJobService {
   private async tryApplyPrintQrOverlay(posterPath: string, qrPath: string): Promise<boolean> {
     const ext = extname(posterPath) || '.png'
     const outputPath = `${posterPath}.qr-${crypto.randomUUID().slice(0, 8)}${ext}`
-    const command = this.env.FFMPEG_BIN?.trim() || this.env.FFMPEG_PATH?.trim() || 'ffmpeg'
+    const command = ffmpegBinFrom(this.env)
     const filter = [
       '[1:v][0:v]scale2ref=w=main_w*0.18:h=main_w*0.18:flags=neighbor[qr][base]',
       '[qr]format=rgba,pad=ceil(iw*1.16):ceil(ih*1.16):(ow-iw)/2:(oh-ih)/2:white[qrp]',
@@ -1742,6 +1743,13 @@ export class MediaJobService {
   }
 
   private async localVideoJobFallback(ctx: TaskRunnerContext, kind: MediaJobKind, body: Record<string, unknown>, project: string): Promise<Record<string, unknown>> {
+    // 功能门(反逻辑保护):本地剪辑/出片依赖 ffmpeg+ffprobe;组件还没下好时任务正常完成、
+    // 返回"正在准备组件 x%"结构化结果(照 portraitGate 模式),并已触发按需下载——绝不静默失败。
+    const assetGate = gateMediaAssets(this.env, ['ffmpeg', 'ffprobe'])
+    if (assetGate) {
+      await ctx.progress(5, String(assetGate.message ?? '所需组件正在后台准备。'))
+      return assetGate
+    }
     const store = new VideoEditProjectStore(this.opts.stateRoot)
     if (kind === 'video_inventory' || kind === 'video_auto_plan') {
       return await store.createLocalPlan(body, {
