@@ -44,7 +44,7 @@ export function applyPreviewSeed(): void {
 
   const blocks: ChatBlock[] = [
     { id: 'p-u1', kind: 'user', text: '帮我看看这个月台球厅的经营数据,做个简单诊断,重点说说周末上座率。' },
-    { id: 'p-a1', kind: 'assistant', text: ASSISTANT_MD, streaming: false, ts: now - 3 * 60_000, cost: 2.89 },
+    { id: 'p-a1', kind: 'assistant', text: ASSISTANT_MD, streaming: false, ts: now - 3 * 60_000, tokens: 1240 },
   ]
 
   useChatStore.setState({
