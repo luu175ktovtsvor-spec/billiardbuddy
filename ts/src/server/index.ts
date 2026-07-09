@@ -84,6 +84,7 @@ import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
 import { loadOutputStyles, publicOutputStyle, renderOutputStylePrompt } from '../outputStyles/outputStyleLoader'
 import { defaultPluginInstallDir, defaultPluginRoots, installPluginFromGithub, listPlugins, resolveEnabledPluginContributions, setPluginEnabled } from '../plugins/pluginLoader'
+import { LIBRARY_DIR_ENV, LIBRARY_DOT_DIR, LIBRARY_SUBDIR } from '../harness/desktopEnvNames'
 import { TurnConsumerTracker } from './turnConsumerTracker'
 import { Workspace } from '../workspace/workspace'
 import { Sandbox } from '../sandbox/sandbox'
@@ -499,14 +500,6 @@ async function handleGoalCommand(conversationId: string, args: string, transcrip
   return { output, shouldQuery: true }
 }
 
-function defaultOutputStylesRoot(): string {
-  const candidates = [
-    join(process.cwd(), 'server', 'output-styles'),
-    join(process.cwd(), '..', 'server', 'output-styles'),
-  ]
-  return candidates.find(existsSync) ?? candidates[0]!
-}
-
 function defaultAgentsRoot(): string {
   const candidates = [
     join(process.cwd(), 'server', 'agents'),
@@ -516,10 +509,11 @@ function defaultAgentsRoot(): string {
 }
 
 function defaultMcpConfigPath(workspaceRoot: string, env: Record<string, string | undefined> = process.env): string | undefined {
+  const libraryDir = env[LIBRARY_DIR_ENV]
   const candidates = [
     join(workspaceRoot, '.mcp.json'),
-    ...(env.DESKTOP_LIBRARY_DIR ? [join(env.DESKTOP_LIBRARY_DIR, '.mcp.json')] : []),
-    join(env.HOME || env.USERPROFILE || process.cwd(), '.billiards-desktop', 'library', '.mcp.json'),
+    ...(libraryDir ? [join(libraryDir, '.mcp.json')] : []),
+    join(env.HOME || env.USERPROFILE || process.cwd(), LIBRARY_DOT_DIR, LIBRARY_SUBDIR, '.mcp.json'),
     join(process.cwd(), '.mcp.json'),
   ]
   return candidates.find(existsSync)
@@ -3141,7 +3135,7 @@ export function startServer(opts: StartServerOptions = {}) {
         }, null, 2), {
           headers: {
             'Content-Type': 'application/json',
-            'Content-Disposition': 'attachment; filename="billiards-ai-backup.json"',
+            'Content-Disposition': 'attachment; filename="billiardbuddy-backup.json"',
           },
         })
       }

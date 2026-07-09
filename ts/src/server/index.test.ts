@@ -795,7 +795,7 @@ test('legacy MCP management endpoints write desktop library config', async () =>
   const cfgServer = startServer({
     port: 0,
     transcriptRoot: root,
-    env: { DESKTOP_LOCAL: '1', DESKTOP_LIBRARY_DIR: root },
+    env: { BILLIARDBUDDY_LOCAL: '1', BILLIARDBUDDY_LIBRARY_DIR: root },
   })
   try {
     const add = await fetch(`http://127.0.0.1:${cfgServer.port}/api/v1/agent/mcp/add`, {
@@ -834,7 +834,7 @@ test('legacy plugin endpoints list and toggle desktop plugins', async () => {
   const pluginServer = startServer({
     port: 0,
     transcriptRoot: root,
-    env: { DESKTOP_LOCAL: '1', DESKTOP_LIBRARY_DIR: root },
+    env: { BILLIARDBUDDY_LOCAL: '1', BILLIARDBUDDY_LIBRARY_DIR: root },
   })
   try {
     const listed = await fetch(`http://127.0.0.1:${pluginServer.port}/api/v1/agent/plugins`)

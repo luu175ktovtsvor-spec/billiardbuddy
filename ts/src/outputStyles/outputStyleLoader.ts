@@ -1,7 +1,8 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
-import { existsSync } from 'node:fs'
 import { extractDescription, parseMarkdownDocument, stringField } from '../commands/frontmatter'
+import { getUserConfigHomeDir } from '../harness/memoryNames'
+import { LIBRARY_DIR_ENV, isLocalMode } from '../harness/desktopEnvNames'
 
 export interface OutputStyle {
   name: string
@@ -56,19 +57,15 @@ async function loadStylesDir(rootDir: string, source: string): Promise<OutputSty
   return out
 }
 
-export function defaultOutputStyleDirs(cwd = process.cwd(), env: Record<string, string | undefined> = process.env): Array<{ source: string; dir: string }> {
+export function defaultOutputStyleDirs(_cwd = process.cwd(), env: Record<string, string | undefined> = process.env): Array<{ source: string; dir: string }> {
   const dirs: Array<{ source: string; dir: string }> = []
-  const bundled = [
-    join(cwd, 'server', 'output-styles'),
-    join(cwd, '..', 'server', 'output-styles'),
-  ].find(existsSync)
-  if (bundled) dirs.push({ source: 'bundled', dir: bundled })
-
-  if (env.DESKTOP_LOCAL !== '1') {
-    dirs.push({ source: 'user', dir: join(env.HOME ?? '', '.claude', 'output-styles') })
+  // 白标:用户全局输出风格走 getUserConfigHomeDir()(~/.billiardbuddy,BILLIARDBUDDY_CONFIG_DIR 可覆盖),绝不读 ~/.claude。
+  if (!isLocalMode(env)) {
+    dirs.push({ source: 'user', dir: join(getUserConfigHomeDir(), 'output-styles') })
   }
-  if (env.DESKTOP_LIBRARY_DIR) {
-    dirs.push({ source: 'project', dir: join(env.DESKTOP_LIBRARY_DIR, 'output-styles') })
+  const libraryDir = env[LIBRARY_DIR_ENV]
+  if (libraryDir) {
+    dirs.push({ source: 'project', dir: join(libraryDir, 'output-styles') })
   }
   return dirs
 }
