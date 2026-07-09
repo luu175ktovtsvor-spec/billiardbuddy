@@ -3453,7 +3453,7 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 5. 模型调用重试退避:✅重试基础设施(`fetchRetry.ts`,opt-in)+ ✅SSE 中途 error 帧识别(`600d34b`:StreamProviderError 抛出不再静默吞成空响应);**待续**:是否默认开启重试(需 owner 定 failover-vs-retry 取舍)、流空闲超时跟随 `aiRequestTimeoutMs`(现 60s 与之脱钩,已有 streamIdleTimeout 基建待接)。
 6. ✅上下文压缩兜底(`7806175`):摘要请求自身超限→shrinkOldMessagesForRetry 腰斩 old 段重试(最多 3 次,对齐 cc MAX_PTL_RETRIES)、空文本降级 throw not-fake、不硬截断(与 cc 一致)。loop.ts:343-345 已处理主请求超限触发,互补不冲突;**待续**:autocompact 用"字符估算 vs 真实 token usage 取大"的 token 触发(改 loop.ts maybeCompact,主进程接)、压缩计数跨 HTTP 请求持久化。
 7. ✅工具入参 schema 校验闸(`42c93eb`):gateOneCall 权限判定前统一 `<tool_use_error>InputValidationError`,并行只读路径入参非法回退串行;保守校验(缺 required + 已声明基本类型),未声明/union 放行。
-8. 规则持久化落盘(cc `permissionsLoader`/`persistPermissionUpdate`;让"本会话允许"可选升级为跨重启持久化)。
+8. ✅规则持久化(`dd57f6e`):permissionsSettings.ts 从工作区 .claude/settings.json(project)+ settings.local.json(local)加载 permissions.{allow,deny,ask} 规则并入 ctx.permissionRules(持久打底+会话覆盖),persistPermissionRule 写回 localSettings;端点 POST /permissions/persist、GET /permissions/rules。
 9. ✅fork 类型后台代理 resume 修复(`142dd27`):resumeBackgroundAgentTask 检测 agentName===fork 时重建合成 fork AgentDefinition 作 agentOverride,绕过 pickAgent 找不到 'fork' 的抛错。
 10. ✅transcript 逐轮落盘(loop.ts:377 循环体内每轮落盘,核实非缺口)+ ✅主会话 resume 清洗(`cd35fc0`:抽 harness/messageSanitize.ts 共享 sanitizeResumeMessages,loop 主会话 resume 加载后清洗残尾,taskTools 委托去重)。
 
@@ -3463,7 +3463,7 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 13. 🚧文件工具健壮性:危险设备路径拦截 + UTF-16/BOM 保留 + 整文件读上限。**子代理实现中(fileRead/Edit/Write tools)**;图片/PDF 视觉 content-block(架构级,晚做代价高)另计。
 14. token 级流式 + 边流边执行工具(前端打字机体验,对标 Claude Code 核心)。**大工程,前端建设期一起做**。
 15. ✅Plugin 运行时接入(`5a6baed`):resolveEnabledPluginContributions 把启用插件的 skills 按名去重并入、.mcp.json 作 app 级可信直接加载并入会话(可挂载能力的机制)。**剩**:插件 commands(loader 签名不同)/hooks(需建 HookRegistry)并入,留后续。
-16. permissionExplainer + destructiveCommandWarning 审批卡增强。
+16. ✅destructiveCommandWarning(`1ab0f38`):正则表移植 cc,破坏性命令(rm -rf/git reset --hard/DROP TABLE 等)给审批卡加人话警告(纯信息不影响放行);approval_request 加 warning 字段 + 前端审批卡橙色⚠渲染。permissionExplainer(cc Haiku 模型解释)留后续(approval reason 已有结构化解释)。
 17. ✅MCP 远程 http/SSE 鉴权(`134e30a`):headers/bearer token 走 requestInit(对齐 cc,鉴权即 headers.Authorization,端到端测试真收到 Bearer)。**待续**:headersHelper 动态取头、完整 OAuth(2465 行,超范围)。
 18. ✅项目/会话组织(`a274fed`,§3.402 A1):sessionService list-by-workspace + recentProjects 聚合 + fork(拷贝 transcript);端点 GET /sessions/projects、GET /sessions?workspaceRoot=、POST /sessions/:id/fork。保留扁平 sessions.json(不做物理分桶,等价更省)。
 19. 配置基座(§3.402 A2):分层用户设置文件 + `/api/settings` REST + 网络设置持久化 + provider 预设库。**待做**。
