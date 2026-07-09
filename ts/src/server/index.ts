@@ -73,6 +73,7 @@ import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
 import { loadOutputStyles, publicOutputStyle, renderOutputStylePrompt } from '../outputStyles/outputStyleLoader'
 import { defaultPluginInstallDir, defaultPluginRoots, installPluginFromGithub, listPlugins, resolveEnabledPluginContributions, setPluginEnabled } from '../plugins/pluginLoader'
+import { TurnConsumerTracker } from './turnConsumerTracker'
 import { Workspace } from '../workspace/workspace'
 import { Sandbox } from '../sandbox/sandbox'
 import { McpTrustStore, resolveTrustedMcpConfig } from '../mcp/mcpTrust'
@@ -111,6 +112,8 @@ export interface StartServerOptions {
   /** OS 沙箱(seatbelt/bwrap)写围栏:默认开(owner 2026-07-09),env QF_OS_SANDBOX=0 或此项 false 关。
    * 缺依赖/环境不支持时 Sandbox.wrapCommand 自动优雅降级为明文执行,绝不阻断命令。 */
   sandboxEnabled?: boolean
+  /** WS 断连宽限期(ms):最后消费者断连后无人重连则中止运行中回合。默认 5 分钟,QF_TURN_ABANDON_GRACE_MS 可覆盖。 */
+  turnAbandonGraceMs?: number
   skillsRoot?: string
   commandsRoot?: string
   hooksPath?: string
@@ -947,6 +950,16 @@ export function startServer(opts: StartServerOptions = {}) {
   const legacyStore = new LegacyAgentStore(stateRoot)
   const storeDocs = new StoreDocsService(desktopData, stateRoot)
   const turns = new TurnRegistry()
+  // WS 断连宽限清理:最后一个消费者断连后,宽限期内无人重连则中止仍在跑的回合(防被遗弃的回合永远跑)。
+  const turnGraceEnv = Number((opts.env ?? process.env).QF_TURN_ABANDON_GRACE_MS ?? '')
+  const turnAbandonGraceMs = opts.turnAbandonGraceMs ?? (Number.isFinite(turnGraceEnv) && turnGraceEnv > 0 ? turnGraceEnv : 5 * 60 * 1000)
+  const turnConsumers = new TurnConsumerTracker({
+    graceMs: turnAbandonGraceMs,
+    isRunning: id => turns.isRunning(id),
+    abort: id => {
+      if (turns.interrupt(id)) void sessions.touch(id, { status: 'interrupted' }).catch(() => undefined)
+    },
+  })
   const steerInboxes = new Map<string, string[]>()
   const sessionSkillHooks = new Map<string, NonNullable<ReturnType<typeof mergeHookRegistries>>>()
   const sessionPermissionUpdates = new Map<string, PermissionUpdate[]>()
@@ -4317,10 +4330,15 @@ export function startServer(opts: StartServerOptions = {}) {
     },
     websocket: {
       open(ws) {
+        turnConsumers.onConnect(ws.data.conversationId)
         wsSend(ws, { type: 'ready', conversationId: ws.data.conversationId })
         if (ws.data.after > 0) {
           void replayWsEvents(ws, ws.data.conversationId, ws.data.after).catch(err => wsError(ws, err instanceof Error ? err.message : String(err)))
         }
+      },
+      close(ws) {
+        // 断连:消费者计数减一,若归零且回合仍在跑,宽限期后无人重连则中止(turnConsumers 内部处理)。
+        turnConsumers.onDisconnect(ws.data.conversationId)
       },
       message(ws, message) {
         let parsed: unknown
