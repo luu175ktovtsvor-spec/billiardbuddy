@@ -4,6 +4,7 @@ import { isAbsolute, relative } from 'node:path'
 import type { Tool, ToolContext } from './Tool'
 import type { WrappedCommand } from '../sandbox/sandbox'
 import { classifyCommandRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellCdWriteNeedsApproval, shellDangerousRemovalNeedsApproval, shellMvCpFlagsNeedApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval, shellSensitiveReadNeedsApproval, type CommandRisk } from './dangerousCommand'
+import { shellExternalReadNeedsApproval } from './readCommandBoundary'
 import type { ApprovalClass } from '../permissions/types'
 import { StreamingOutputSanitizer } from './outputSanitize'
 import { interpretCommandResult } from './commandSemantics'
@@ -53,10 +54,11 @@ export const runCommandTool: Tool<RunCommandInput> = {
     const command = typeof input?.command === 'string' ? input.command : ''
     const risk = effectiveCommandRisk(input, ctx)
     const sensitiveRead = command ? shellSensitiveReadNeedsApproval(command) : false
+    const externalRead = command ? shellExternalReadNeedsApproval(command, resolveCommandCwdSync(input?.cwd, ctx), ctx) : false
     return {
       what: `执行命令:${command}`,
-      why: commandRiskReason(risk, sensitiveRead),
-      impact: commandRiskImpact(risk, sensitiveRead),
+      why: commandRiskReason(risk, sensitiveRead, externalRead),
+      impact: commandRiskImpact(risk, sensitiveRead, externalRead),
     }
   },
   async previewFor(input, ctx) {
@@ -75,6 +77,7 @@ export const runCommandTool: Tool<RunCommandInput> = {
       `cwd: ${cwdLabel}`,
       `risk: ${risk}`,
       `sensitive_file_read: ${shellSensitiveReadNeedsApproval(input.command) ? 'true' : 'false'}`,
+      `external_read: ${shellExternalReadNeedsApproval(input.command, resolveCommandCwdSync(input.cwd, ctx), ctx) ? 'true' : 'false'}`,
       `timeout_ms: ${clampNumber(input.timeout_ms, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)}`,
       `max_output_bytes: ${clampNumber(input.max_output_bytes, DEFAULT_MAX_OUTPUT_BYTES, MAX_OUTPUT_BYTES)}`,
       '</run_command_preview>',
@@ -100,7 +103,8 @@ function effectiveCommandRisk(input: RunCommandInput | undefined, ctx: ToolConte
     shellBareGitRepoCwdNeedsApproval(input.command, cwd) ||
     shellSandboxedGitCwdNeedsApproval(input.command, { root: ctx.workspace.root, cwd, sandboxActive }) ||
     shellCdWriteNeedsApproval(input.command) ||
-    shellMvCpFlagsNeedApproval(input.command)
+    shellMvCpFlagsNeedApproval(input.command) ||
+    shellExternalReadNeedsApproval(input.command, cwd, ctx)
   ) {
     return 'outreach'
   }
@@ -124,16 +128,18 @@ function commandApprovalClass(risk: CommandRisk): ApprovalClass | undefined {
   return 'outreach'
 }
 
-function commandRiskReason(risk: CommandRisk, sensitiveRead = false): string {
+function commandRiskReason(risk: CommandRisk, sensitiveRead = false, externalRead = false): string {
   if (sensitiveRead) return '该命令可能读取私钥、.env、token、password 或 credentials 等敏感凭据文件。'
+  if (externalRead) return '该命令读取的路径超出了当前工作区(及已授权的外部目录)边界。'
   if (risk === 'read') return '这是只读查询命令。'
   if (risk === 'file') return '该命令可能修改工作区文件或生成构建产物。'
   if (risk === 'outreach') return '该命令可能访问网络、安装依赖或触达外部服务。'
   return '该命令可能造成不可逆删除或大范围改动。'
 }
 
-function commandRiskImpact(risk: CommandRisk, sensitiveRead = false): string {
+function commandRiskImpact(risk: CommandRisk, sensitiveRead = false, externalRead = false): string {
   if (sensitiveRead) return '确认后命令可以把敏感文件内容输出到工具结果里；请只在确实需要排障时允许。'
+  if (externalRead) return '确认后命令可以读取工作区之外任意路径的文件内容；请确认目标路径可信。'
   if (risk === 'read') return '只读取本机状态或文件内容。'
   if (risk === 'file') return '可能写入、移动、删除或格式化工作区内文件。'
   if (risk === 'outreach') return '可能产生网络访问、副作用或外部账号操作。'
