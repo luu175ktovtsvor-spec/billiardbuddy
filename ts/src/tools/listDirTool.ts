@@ -1,14 +1,15 @@
 import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { Tool } from './Tool'
+import type { Tool, ToolContext } from './Tool'
 import { resolveToolPath } from '../permissions/filePathRules'
+import { DEFAULT_IGNORED_VCS_SEGMENTS, pathHiddenByReadDeny } from '../permissions/readIgnoreFilter'
 
 const DEFAULT_LIMIT = 200
 const MAX_LIMIT = 1000
 const DEFAULT_MAX_DEPTH = 2
 const MAX_DEPTH = 5
 const SKIP_DIRS = new Set([
-  '.git',
+  ...DEFAULT_IGNORED_VCS_SEGMENTS, // .git/.svn/.hg/.bzr/.jj/.sl —— 对齐 cc GrepTool VCS 排除
   '.next',
   '.turbo',
   '.agent-state',
@@ -39,7 +40,7 @@ export const listDirTool: Tool<{ path?: string; limit?: number; recursive?: bool
     const limit = clampLimit(input?.limit)
     if (semanticBoolean(input?.recursive)) {
       const maxDepth = clampDepth(input?.max_depth)
-      const tree = await listTree(abs, { limit, maxDepth })
+      const tree = await listTree(abs, { limit, maxDepth }, ctx)
       return [
         ...tree.lines,
         ...(tree.omitted > 0 ? [`…[已截断:目录树超过 ${limit} 项,已省略 ${tree.omitted} 项;请传更具体 path、降低 max_depth 或提高 limit]`] : []),
@@ -47,6 +48,9 @@ export const listDirTool: Tool<{ path?: string; limit?: number; recursive?: bool
     }
     const entries = await readdir(abs, { withFileTypes: true })
     const names = entries
+      // 输出层 read-ignore 过滤:被 read-deny 规则命中的项静默剔除(安全,不泄漏路径);
+      // 默认 VCS/重目录也从平铺列举里剔除(对齐 cc「默认排除 .git 等」)。
+      .filter(e => !pathHiddenByReadDeny(ctx, join(abs, e.name)) && !(e.isDirectory() && shouldSkipDir(e.name)))
       .map(e => (e.isDirectory() ? `${e.name}/` : e.name))
       .sort()
     const shown = names.slice(0, limit)
@@ -59,7 +63,7 @@ export const listDirTool: Tool<{ path?: string; limit?: number; recursive?: bool
   },
 }
 
-async function listTree(root: string, opts: { limit: number; maxDepth: number }): Promise<{ lines: string[]; omitted: number }> {
+async function listTree(root: string, opts: { limit: number; maxDepth: number }, ctx: ToolContext): Promise<{ lines: string[]; omitted: number }> {
   const lines: string[] = []
   let omitted = 0
 
@@ -78,6 +82,8 @@ async function listTree(root: string, opts: { limit: number; maxDepth: number })
         continue
       }
       const rel = `${prefix}${item.label}`
+      // 输出层 read-ignore 过滤:被 read-deny 命中的项(含整棵子目录)静默剔除,不进树、不递归、不占 limit。
+      if (pathHiddenByReadDeny(ctx, join(dir, item.entry.name))) continue
       if (item.entry.isDirectory() && shouldSkipDir(rel)) {
         lines.push(`${rel} [skipped]`)
         continue
