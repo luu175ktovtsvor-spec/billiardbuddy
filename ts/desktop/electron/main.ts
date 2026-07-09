@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, Tray, nativeImage, type MenuItemConstructorOptions } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { existsSync, readdirSync } from 'node:fs'
@@ -18,7 +18,10 @@ const PREFERRED_PORTS = [8850, 8851, 8852, 8877]
 
 let sidecar: SidecarChild | null = null
 let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
 let serverPort = 0
+
+const APP_NAME = '球房管家'
 
 /** 解析 bun 绝对路径(spawnSidecar 要 existsSync 通过,不能只给裸命令 'bun')。 */
 function resolveBun(): string {
@@ -96,6 +99,108 @@ function createWindow(): void {
   mainWindow.on('closed', () => { mainWindow = null })
 }
 
+/** 让主窗口回到前台(托盘/菜单"显示"共用);窗口没了就重建。 */
+function showMainWindow(): void {
+  const win = mainWindow ?? BrowserWindow.getAllWindows()[0]
+  if (win) {
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+  } else {
+    createWindow()
+  }
+}
+
+/** 原生应用菜单(§8/§3.402 原生能力):macOS 走标准 app 菜单模板,Windows/Linux 给精简菜单。 */
+function buildAppMenu(): void {
+  const isMac = process.platform === 'darwin'
+  const template: MenuItemConstructorOptions[] = []
+
+  if (isMac) {
+    template.push({
+      label: APP_NAME,
+      submenu: [
+        { role: 'about', label: `关于 ${APP_NAME}` },
+        { type: 'separator' },
+        { role: 'hide', label: `隐藏 ${APP_NAME}` },
+        { role: 'hideOthers', label: '隐藏其他' },
+        { role: 'unhide', label: '全部显示' },
+        { type: 'separator' },
+        { role: 'quit', label: `退出 ${APP_NAME}` },
+      ],
+    })
+  }
+
+  template.push({
+    label: '文件',
+    submenu: [
+      {
+        label: '选择工作区…',
+        accelerator: 'CmdOrCtrl+O',
+        click: () => { void mainWindow?.webContents.send('desktop:menu', 'pick-workspace') },
+      },
+      { type: 'separator' },
+      isMac ? { role: 'close', label: '关闭窗口' } : { role: 'quit', label: '退出' },
+    ],
+  })
+
+  template.push({
+    label: '编辑',
+    submenu: [
+      { role: 'undo', label: '撤销' },
+      { role: 'redo', label: '重做' },
+      { type: 'separator' },
+      { role: 'cut', label: '剪切' },
+      { role: 'copy', label: '复制' },
+      { role: 'paste', label: '粘贴' },
+      { role: 'selectAll', label: '全选' },
+    ],
+  })
+
+  template.push({
+    label: '视图',
+    submenu: [
+      { role: 'reload', label: '重新加载' },
+      { role: 'toggleDevTools', label: '开发者工具' },
+      { type: 'separator' },
+      { role: 'resetZoom', label: '实际大小' },
+      { role: 'zoomIn', label: '放大' },
+      { role: 'zoomOut', label: '缩小' },
+      { type: 'separator' },
+      { role: 'togglefullscreen', label: '全屏' },
+    ],
+  })
+
+  template.push({
+    label: '窗口',
+    submenu: [
+      { role: 'minimize', label: '最小化' },
+      { role: 'zoom', label: '缩放' },
+      ...(isMac ? [{ type: 'separator' as const }, { role: 'front' as const, label: '前置全部窗口' }] : []),
+    ],
+  })
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
+/** 系统托盘(§8 原生能力):非 macOS 常驻托盘,右键菜单显示/退出;macOS 用 Dock,不建托盘。
+ *  没有图标资源时用空 nativeImage 兜底,保证不因缺图崩溃(托盘用系统默认呈现)。 */
+function createTray(): void {
+  if (process.platform === 'darwin') return // macOS 靠 Dock,不额外占用菜单栏
+  try {
+    tray = new Tray(nativeImage.createEmpty())
+    tray.setToolTip(APP_NAME)
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: `显示 ${APP_NAME}`, click: showMainWindow },
+      { type: 'separator' },
+      { label: '退出', click: () => app.quit() },
+    ]))
+    tray.on('click', showMainWindow)
+  } catch (err) {
+    console.error('[main] 托盘创建失败(忽略):', err)
+  }
+}
+
 /** 集中注册 IPC(白名单 + 无 payload 或 payload 校验;§3.402 桌面壳架构:主↔渲染只走白名单通道)。 */
 function registerIpc(): void {
   // 原生文件夹选择器(§7 用户选择工作区):无 payload,返回选中目录或 null。
@@ -110,8 +215,10 @@ function registerIpc(): void {
 async function boot(): Promise<void> {
   try {
     registerIpc()
+    buildAppMenu()
     await startSidecar()
     createWindow()
+    createTray()
   } catch (err) {
     console.error('[main] 启动失败:', err)
     app.quit()
@@ -130,4 +237,5 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   if (sidecar) { killSidecar(sidecar, true); sidecar = null }
+  if (tray) { tray.destroy(); tray = null }
 })

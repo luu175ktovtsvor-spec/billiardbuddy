@@ -320,6 +320,10 @@
   }
   newChatBtn.addEventListener('click', newChat);
   wsPickBtn.addEventListener('click', pickWorkspace);
+  // 原生"文件 → 选择工作区…"菜单动作(§8):走同一条选择器路径。
+  if (host && typeof host.onMenu === 'function') {
+    host.onMenu(function (action) { if (action === 'pick-workspace') pickWorkspace(); });
+  }
 
   function connect() {
     ws = new WebSocket(wsProto + '//' + location.host + '/agent/ws?conversationId=' + encodeURIComponent(conversationId));
