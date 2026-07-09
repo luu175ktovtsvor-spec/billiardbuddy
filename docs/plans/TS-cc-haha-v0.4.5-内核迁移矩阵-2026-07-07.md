@@ -3521,6 +3521,35 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 - **台球运营专家(§10)**:领域包知识 YAML 已随 server/ 删除;定位为可 @挂载领域包(默认不挂 = 通用 coding agent),待在 TS 侧以插件/领域包形式重新策展,走 plugin 运行时挂载。
 - **结论:三大能力均已"后置"——真实素材剪辑后端保留待前端补,生图/台球已从产品主壳删除、定位为待重建的插件式能力,挂载机制(plugin 运行时)已就位。均非产品外壳的半成品入口。**
 
+## 3.404 2026-07-09 前端主工作流收尾 + 打包白屏真 bug 修复 + 媒体能力规格文档(本轮)
+
+**A. 前端主工作流补齐(§9,续 §3.402 item 3 待续项)**
+- **工作区目录树 + 右侧预览 + 文件变更列表**:`/api/v1/agent/fs/list`(dirs-first、隐藏跳过、cap 500)+ `/api/v1/agent/fs/read`(>256KB 截断);前端工作区选择(Electron 原生 `dialog.showOpenDialog` 经 `desktop:pickWorkspace` 白名单 IPC / 浏览器 prompt 兜底)、可展开目录树、`<file_change path>` 解析出"改动 N"按钮、右侧预览面板。
+- **后台任务入口(§9 后台任务入口)**:头部"任务"按钮 → 预览面板拉 `/tasks?conversationId=` 显示本会话后台任务(标题 + 中文状态 排队中/运行中/已完成/失败/已中断)。
+- **失败和恢复状态(§9 失败恢复)**:出错时错误行显示"⚠ 出错了:<原因>。可检查后重试" + "重试"按钮(重发上一条消息),错误后解锁输入框。
+- **完整审批卡(§6.5)**:原因 what/why/impact + 破坏性警告 + 卡内 diff + 允许一次/本会话允许(仅 rememberable)/拒绝。
+
+**B. 原生能力(§8/§3.402 item 3 待续项:托盘/菜单)**
+- **原生应用菜单**(`buildAppMenu`):macOS 标准 app 菜单模板(关于/隐藏/退出)+ 文件(选择工作区 Cmd/Ctrl+O,经 `desktop:menu` 白名单单向通道回渲染)/编辑/视图/窗口;Windows/Linux 精简菜单。
+- **系统托盘**(`createTray`):非 macOS 常驻托盘(显示/退出 + 单击唤起);macOS 靠 Dock 不建;缺图标用空 nativeImage 兜底不崩;before-quit 销毁。
+- **集中 IPC 白名单**:`registerIpc` + preload `contextBridge` 只暴露 `pickWorkspace`/`onMenu`,不给渲染进程裸 ipcRenderer。
+
+**C. 打包白屏真 bug 修复(§3.402 item 3 打包相关)——关键**
+- **现象**:编译后的 sidecar 二进制启动,API 全正常但**首页 GET / 返回 404**——`serveFrontendAsset` 用 `join(import.meta.dir, '../../desktop/renderer')` 解析前端根,而 `bun build --compile` 后 `import.meta.dir` 指向虚拟 `/$bunfs` 路径,读不到真实 renderer;dev(`bun run`)下 import.meta.dir 是真实路径故未暴露。打包态 Electron 用 `http://host:port/` 加载前端、app.js 依赖 `location.host` 连 WS/API,所以 sidecar 必须能 serve 前端,否则**打包后桌面 App 白屏**。
+- **修复**(`src/server/embeddedFrontend.ts` + `serveFrontendAsset`):用 Bun `import ... with { type: 'text' }` 把 `desktop/renderer/index.html` + `app.js` **编进 sidecar 二进制**,作为文件系统查找失败后的兜底(dev/test 仍走文件系统、保留灵活性;编译态走嵌入)。tsc 按扩展名把 `.html/.js` import 推成 HTMLBundle/模块类型、不识别 `type:'text'`,用 `as unknown as string` 校正。
+- **验证**:重编译 sidecar 二进制 → 启动 → `GET /` = **HTTP 200 text/html**、`GET /app.js` = **200 text/javascript**(修复前是 404);Playwright 加载 `http://127.0.0.1:8854/` 标题正确、仅 favicon.ico 一处 404(下条已修)。
+- **favicon polish**:index.html 内联 SVG data-URI favicon(中性底 + 绿点,贴合设计 token,无台球挂件),消除 console 唯一的 favicon 404。
+
+**D. 媒体能力规格文档(§17.8/§17.9,阶段目标要的是"研判"和"流程/标准/边界"文档,非付费实现)**
+- **§17.8 video-use 剪辑编排适配研判** → `plans/video-use-剪辑编排适配研判-2026-07-09.md`:逐条真读 `videoEditProjects.ts`/`mediaJobs.ts`/`server` 视频路由后判定——已吸收(时间线文档为唯一真相源 + 原子操作 + 回滚 `applyOperations`、渲染前校验 `validateDoc`、输出集中项目目录、字幕烧录降级、响度归一 loudnorm、异步 job 化);列入后续(padding/fade 参数化、render 后成品自检——不依赖大模型可排期);暂不吸收(老 AI 导演/VLM/模板特效不恢复)。确认全部 video-use 方法不碰红线(纯真实素材+转写驱动,不生成视频)。
+- **§17.9 生图/人像优化流程质量标准与风险边界** → `plans/生图人像优化-流程质量标准与风险边界-2026-07-09.md`:门店助教照片优化端到端流程 + 三档(自动/半自动/人工)质量判据 + 风险边界硬闸(授权前置/不把换脸当卖点/生图进 spend 闸/真人结果质检)+ 模型路由策略 + 卡 owner 决策项。发现现状已有能跑的 `routeImageModel`(8 规则国内外通道)+ 双 provider + 失败兜底,缺输入质检/授权闸/结果质检/spend 审批。
+
+**E. 诚实缺口(§17.7 真实素材剪辑"保留并增强"的边界修正)**
+- video-use 研判子代理逐行核实发现:剪辑**骨架**(时间线/原子操作/渲染前校验/字幕/响度/异步 job)真实保留且与 video-use 同构,但 **transcript-first 真转写是占位**(`phrases:[]`、`used_vlm:false`),`mediaJobs.ts` 的 `hasBackend` 媒体后端代理路径随 Python server/ 删除后已死、实际总走 TS 本地 ffmpeg 兜底。即"真实转写/智能重写"链路当前是**待重建的死链**。
+- 影响:§17.7 应表述为"剪辑骨架保留+渲染/字幕/响度增强,但真转写地基待在 TS 侧重建(whisper 类需 Node 原生 sidecar,见 ts/CLAUDE.md 铁律 8)"——不是全链路可用。已给老 V2 设计文档补历史 banner(其宣称的 director/VLM/whisper 能力随 server/ 删除、代码库不存在)。
+
+**F. 本轮总验证**:`bun test` = **974 pass / 0 fail**(115 文件);`bun run typecheck` 干净;`bun run build:sidecar` 出本机二进制(ad-hoc 签名);`bun run desktop:build` 编译 main.mjs/preload.cjs;Playwright 加载编译态 sidecar 前端 200、UI 渲染正常、console 零错误(favicon 修后)。
+
 ## 4. 下一批代码顺序
 
 1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复、后台 agent 确定性进度阶段、`SendUserMessage/Brief` 输出通道、agent memory / snapshot、后台续跑 content replacement records 继承、同 agent id 原任务槽续跑、`AgentOutputTool/BashOutputTool` 旧名兼容、parent live replacements gap-fill、AgentSummary 周期摘要、ListPeers 队友发现元数据、UDS SendMessage 出站投递、UDS inbox 接收注入、UDS peer discovery/ListPeers socket 展示、Remote Control bridge peer registry/SendMessage 安全骨架、Remote Control event/permission outbox 状态面、Remote Control Sessions API HTTP transport、SessionsWebSocket 订阅接收半边、code session / bridge credential exchange、CCR worker HTTP/heartbeat/state/delivery、SSE worker read stream、worker credential refresh/epoch rebuild 控制面、inbound user message/file attachment resolved prompt 队列、inbound prompt -> agent queue/steering、OAuth/JWT 自动 refresh scheduler、SDK message -> 前端实时事件流投影、bridge-safe slash command 白名单、prompt-cache break telemetry、AgentTool `run_in_background` 显式后台入口、subagent local denial tracking、fork child message builder、fork recursive guard 运行时接入、显式 fork_context AgentTool 运行时、受控 implicit fork gate、fork querySource 身份标记、AgentSummary cache-safe params 生命周期、rendered system prompt byte-exact 继承、foreground handoff registry 地基、AgentTool foreground registration lifecycle、foreground-to-background race 接管入口、foreground handoff continuation snapshot、foreground handoff progress seed、foreground handoff AgentSummary snapshot、foreground handoff token usage tracker、foreground handoff worktree ownership、foreground handoff MCP/session cleanup、fork worker worktree notice、fork force-async gate 与 prompt 指南、`/fork <directive>` 后台 worker 入口、`context:fork` prompt command executor、SkillTool 主动调用 `context:fork`、SkillTool allowedTools 归一化/worker 白名单、invoked skill 压缩恢复、allowedTools 会话级权限上下文、`Bash(...)` 参数级 allowedTools、skill frontmatter hooks 注册/恢复/`once`、permission rule parser 与 Bash/PowerShell wildcard shell allowedTools、context fork worker allowedTools session permissions、Bash allowedTools wrapper/env/compound matching、文件工具 path-scoped allowedTools 边界、Bash 子命令上限/退出码语义、Bash substitution 风险分类、Bash 输出重定向路径护栏、Bash `find` 只读守卫、Bash parser-hardening 风险门、Bash jq/flag/malformed syntax guard、Bash readOnlyValidation 常用命令 allowlist、Bash `cd`+`git` bare repo 安全门、Bash git-internal 写入安全门、Bash bare repo cwd git 安全门、Bash sandbox original cwd git 安全门、Bash incomplete command fragment 安全门、Bash comment quote desync 安全门、Bash input redirection 安全门已落;下一步继续复制/移植/改写完整 Bash tree-sitter 安全分析器、文件权限持久化/deny/ask/UI/sandbox 合并、插件 trust gate 细粒度开关和 command/skill worker drill-in,并做前端远端来源/中间 diff/右侧预览的细颗粒 polish。
