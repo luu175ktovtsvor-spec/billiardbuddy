@@ -11,9 +11,9 @@ import { interpretCommandResult } from './commandSemantics'
 import { resolvePathWithAdditionalWorkingDirectories } from '../permissions/filePathRules'
 
 const DEFAULT_TIMEOUT_MS = 30_000
-const MAX_TIMEOUT_MS = 600_000
-const DEFAULT_MAX_OUTPUT_BYTES = 64_000
-const MAX_OUTPUT_BYTES = 1_000_000
+export const MAX_TIMEOUT_MS = 600_000
+export const DEFAULT_MAX_OUTPUT_BYTES = 64_000
+export const MAX_OUTPUT_BYTES = 1_000_000
 
 export interface RunCommandInput {
   command: string
@@ -218,13 +218,24 @@ async function runInWorkspace(input: RunCommandInput, ctx: ToolContext, wrapped:
   })
 }
 
-async function resolveCommandCwd(cwd: unknown, ctx: ToolContext): Promise<string> {
+export async function resolveCommandCwd(cwd: unknown, ctx: ToolContext): Promise<string> {
   if (cwd == null || cwd === '') return ctx.workspace.root
   if (typeof cwd !== 'string') throw new Error('run_command.cwd 必须是字符串')
   const abs = resolvePathWithAdditionalWorkingDirectories(ctx, cwd, 'read')
   const info = await stat(abs).catch(() => null)
   if (!info?.isDirectory()) throw new Error(`run_command.cwd 不是可用目录:${cwd}`)
   return abs
+}
+
+/** 后台命令复用:按沙箱包裹/平台 spawn 一个 shell 子进程(与同步 run_command 的 spawn 口径一致)。 */
+export function spawnShellChild(command: string, cwd: string, wrapped: WrappedCommand | null): ReturnType<typeof spawn> {
+  const isWin = process.platform === 'win32'
+  const useProcessGroup = !isWin
+  return wrapped
+    ? spawn(wrapped.argv[0]!, wrapped.argv.slice(1), { cwd, env: childEnv(wrapped.env), detached: useProcessGroup })
+    : isWin
+      ? spawn('cmd', ['/c', command], { cwd, env: childEnv() })
+      : spawn('sh', ['-c', command], { cwd, env: childEnv(), detached: true })
 }
 
 function relativePath(ctx: ToolContext, abs: string): string {
@@ -262,7 +273,7 @@ function flushOutputChunk(
   emitLiveProgress(ctx, stream, sanitized, maxOutputBytes, liveProgress)
 }
 
-function childEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+export function childEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return { ...sanitizedProcessEnv(), ...extra }
 }
 
@@ -280,7 +291,7 @@ function isSecretEnvName(key: string): boolean {
     /^(OPENAI|ANTHROPIC|ARK|QF_GATEWAY|VIDEO|IMAGE)_/i.test(key)
 }
 
-function killChildTree(child: ReturnType<typeof spawn>): void {
+export function killChildTree(child: ReturnType<typeof spawn>): void {
   if (process.platform !== 'win32' && child.pid) {
     try {
       process.kill(-child.pid, 'SIGKILL')
@@ -332,7 +343,7 @@ function emitLiveTruncationNotice(emit: NonNullable<ToolContext['progressEmit']>
   }
 }
 
-function clampNumber(value: unknown, fallback: number, max: number): number {
+export function clampNumber(value: unknown, fallback: number, max: number): number {
   const n = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(n) || n <= 0) return fallback
   return Math.max(1, Math.min(max, Math.floor(n)))
@@ -372,7 +383,7 @@ function formatCommandResult(input: {
   return lines.join('\n').trimEnd()
 }
 
-class StreamTailBuffer {
+export class StreamTailBuffer {
   private readonly chunks: Array<{ stream: 'stdout' | 'stderr'; chunk: Buffer }> = []
   bytes = 0
   truncatedBytes = 0

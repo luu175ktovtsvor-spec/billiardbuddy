@@ -5,6 +5,8 @@ import { fileEditTool, fileMultiEditTool, filePatchManyTool, filePatchTool } fro
 import { listDirTool } from './listDirTool'
 import { runCommandTool } from './runCommandTool'
 import { powerShellTool } from './powerShellTool'
+import { webFetchTool } from './webFetchTool'
+import { webSearchTool } from './webSearchTool'
 import { todoWriteTool } from './todoTool'
 import { fileHistoryTool, restoreFileTool } from './fileHistoryTool'
 import { globFilesTool, grepFilesTool } from './searchTools'
@@ -67,6 +69,8 @@ export function buildGeneralRegistry(opts: { sandbox?: Sandbox; skills?: SkillLi
     verifyPlanExecutionCompatTool,
     powerShellTool,
     runCmd,
+    webFetchTool,
+    webSearchTool,
     todoWriteTool,
     fileHistoryTool,
     restoreFileTool,
