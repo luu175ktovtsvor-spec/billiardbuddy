@@ -3503,6 +3503,24 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 4. **sidecar 生命周期**:✅main.ts app 生命周期挂钩已建(whenReady→reserveServerPort→spawnSidecar→waitForServer→window;before-quit killSidecar;dev bun 直跑/prod 编译二进制)。**待续**:serverRuntime 抽象层(崩溃重启/健康监控)。
 5. **打包/分发/自动更新**:electron-builder 配置(mac dmg/win nsis 签名)+ 跨平台 CI 出包矩阵 + electron-updater 状态机全空(sidecar 单文件编译脚本已对齐)。**待做**。
 
+## 3.403 2026-07-09 阶段目标 §11.3 视频删除验收 + §10/§12/§13 可挂载能力定位(逐项核实)
+
+**A. CD/Seedance 2.0 AI 视频生成删除验收(§11.3)——全栈零残留,已逐项核实**
+- ②agent 工具:`rg generate_video ts/src` = 空 ✅
+- ③API:`rg 'studio/i2v|studioI2v' ts/src` = 空 ✅(无兼容保留路由)
+- ④/⑥后端链路/配置:`rg 'seedance|ark_video|i2v|t2v|文生视频|图生视频' ts/src` = 空 ✅
+- Python 线:`git ls-files server/` = 0(整线已从 git 删除);工作区残留 server/ 仅未跟踪本地产物(.venv/__pycache__/.pytest_cache/.DS_Store)+ 密钥(.env*/prompts.enc),**无任何视频代码**,git-clean。
+- 老栈 web/gateway/desktop:`rg 'studioI2v|Seedance|generate_video|图生视频' web gateway desktop` = 空(唯一匹配是 pnpm-lock base64 hash 含 'i2v' 子串,假阳性)✅
+- ⑨真实素材剪辑保留:`ts/src/media/mediaJobs.ts`(ln_render/ln_inventory/ln_auto_plan)+ videoEditProjects 在,剪辑测试随全量 957 pass ✅
+- **结论:视频生成模型功能全栈彻底删除,无禁用开关/兼容路由/后门;真实素材剪辑工作台后端保留。**
+
+**B. 可挂载能力定位(§10/§12/§13,指令 #4"后置为插件式/挂载式")**
+- **插件运行时机制已就位**(`5a6baed`):启用插件的 skills/.mcp.json 并入会话——这是"可挂载能力"的挂载底座。
+- **真实素材剪辑**:后端保留在 `ts/src/media`(videoEditProjects/mediaJobs:导入/探测/自动方案/渲染/导出/后台化),是"保留并强化"方向(§12),非删除对象;前端剪辑工作台 UI 待前端期补(§12 产品能力清单)。
+- **生图(§13)**:原 Python 实现已随 server/ 删除;定位为插件式延伸(§13"不是产品主壳"),待在 TS 侧以插件形式重建(GPT Image 2/Seedream + 人像优化 + 肖像授权),走已建的 plugin 运行时挂载。
+- **台球运营专家(§10)**:领域包知识 YAML 已随 server/ 删除;定位为可 @挂载领域包(默认不挂 = 通用 coding agent),待在 TS 侧以插件/领域包形式重新策展,走 plugin 运行时挂载。
+- **结论:三大能力均已"后置"——真实素材剪辑后端保留待前端补,生图/台球已从产品主壳删除、定位为待重建的插件式能力,挂载机制(plugin 运行时)已就位。均非产品外壳的半成品入口。**
+
 ## 4. 下一批代码顺序
 
 1. **CC-Haha AgentTool/LocalAgentTask 继续补齐**:稳定 `agent_id`、sidechain transcript、stored-result 回读、worktree isolation、frontmatter 行为字段、agent-specific MCP、frontmatter hooks、SubagentStart/SubagentStop 主链、command/http/prompt/agent hook executor、HTTP hook allowlist/env policy/SSRF、Stop hook blocking continuation、`/goal` 命令/持久化恢复、后台 agent 确定性进度阶段、`SendUserMessage/Brief` 输出通道、agent memory / snapshot、后台续跑 content replacement records 继承、同 agent id 原任务槽续跑、`AgentOutputTool/BashOutputTool` 旧名兼容、parent live replacements gap-fill、AgentSummary 周期摘要、ListPeers 队友发现元数据、UDS SendMessage 出站投递、UDS inbox 接收注入、UDS peer discovery/ListPeers socket 展示、Remote Control bridge peer registry/SendMessage 安全骨架、Remote Control event/permission outbox 状态面、Remote Control Sessions API HTTP transport、SessionsWebSocket 订阅接收半边、code session / bridge credential exchange、CCR worker HTTP/heartbeat/state/delivery、SSE worker read stream、worker credential refresh/epoch rebuild 控制面、inbound user message/file attachment resolved prompt 队列、inbound prompt -> agent queue/steering、OAuth/JWT 自动 refresh scheduler、SDK message -> 前端实时事件流投影、bridge-safe slash command 白名单、prompt-cache break telemetry、AgentTool `run_in_background` 显式后台入口、subagent local denial tracking、fork child message builder、fork recursive guard 运行时接入、显式 fork_context AgentTool 运行时、受控 implicit fork gate、fork querySource 身份标记、AgentSummary cache-safe params 生命周期、rendered system prompt byte-exact 继承、foreground handoff registry 地基、AgentTool foreground registration lifecycle、foreground-to-background race 接管入口、foreground handoff continuation snapshot、foreground handoff progress seed、foreground handoff AgentSummary snapshot、foreground handoff token usage tracker、foreground handoff worktree ownership、foreground handoff MCP/session cleanup、fork worker worktree notice、fork force-async gate 与 prompt 指南、`/fork <directive>` 后台 worker 入口、`context:fork` prompt command executor、SkillTool 主动调用 `context:fork`、SkillTool allowedTools 归一化/worker 白名单、invoked skill 压缩恢复、allowedTools 会话级权限上下文、`Bash(...)` 参数级 allowedTools、skill frontmatter hooks 注册/恢复/`once`、permission rule parser 与 Bash/PowerShell wildcard shell allowedTools、context fork worker allowedTools session permissions、Bash allowedTools wrapper/env/compound matching、文件工具 path-scoped allowedTools 边界、Bash 子命令上限/退出码语义、Bash substitution 风险分类、Bash 输出重定向路径护栏、Bash `find` 只读守卫、Bash parser-hardening 风险门、Bash jq/flag/malformed syntax guard、Bash readOnlyValidation 常用命令 allowlist、Bash `cd`+`git` bare repo 安全门、Bash git-internal 写入安全门、Bash bare repo cwd git 安全门、Bash sandbox original cwd git 安全门、Bash incomplete command fragment 安全门、Bash comment quote desync 安全门、Bash input redirection 安全门已落;下一步继续复制/移植/改写完整 Bash tree-sitter 安全分析器、文件权限持久化/deny/ask/UI/sandbox 合并、插件 trust gate 细粒度开关和 command/skill worker drill-in,并做前端远端来源/中间 diff/右侧预览的细颗粒 polish。
