@@ -14,6 +14,11 @@ import {
 } from './transcribe'
 import { classifyRoute, parseVoicedRatio, classifyContent } from './videoContentRouter'
 import { VideoEditProjectStore, buildBgmMixArgs, normalizeTimelineDoc } from './videoEditProjects'
+import { parseSceneCuts, buildShots } from './brollScenes'
+import { parseSignalstats, summarizeMetrics, scoreShot, isBlackShot, isFrozenShot, selectAndRankShots, type CandidateShot } from './brollSelect'
+import { estimateTempo, snapToBeats, planBeatDurations, beatPeriodFromBeats, onsetEnvelope } from './beatSync'
+import { parseVlmPlan, heuristicPlan, faceGuardActive, buildTagMessages, tagShots, type ShotForTag } from './brollVlmTagger'
+import type { Model } from '../types/model'
 
 const NO_BINARIES = { PATH: '', WHISPER_CLI: '', WHISPER_CPP_BIN: '', FFMPEG_BIN: '/nonexistent/ffmpeg', FFPROBE_BIN: '/nonexistent/ffprobe' }
 
@@ -177,18 +182,24 @@ test('createLocalPlan: 显式 speech 但转写不可用 → 占位「口播片�
   expect(res.captions[0]).toContain('口播片段')
 })
 
-test('planEdit: 统一入口只吐原子操作、走 applyOperations 落时间线', async () => {
+test('planEdit: broll 五步只吐原子操作、走 applyOperations 落时间线(缺 ffmpeg/网关优雅降级)', async () => {
   const { store, stateRoot } = newStore()
   const src = dummyVideo(stateRoot, 'clip.mp4')
+  // NO_BINARIES:ffmpeg 缺 → 切镜头降级整段一镜、打分中性、无关键帧;网关缺 → VLM 降级启发式。
   const res = await store.planEdit({ project: 'p3', video_paths: [src] }, { env: NO_BINARIES }) as Record<string, any>
   expect(res.applied).toBe(true)
   expect(res.errors).toEqual([])
   expect(res.route).toBe('broll')
-  expect(res.broll_stub).toBe(true)
-  // 落盘的时间线可再读回,含 1 个视频片段 + 占位字幕。
+  expect(res.broll).toBe(true)
+  expect(res.used_vlm).toBe(false) // 网关未配置 → 启发式
+  expect(Array.isArray(res.broll_notes)).toBe(true)
+  expect(String(res.report)).toContain('B-Roll')
+  // 落盘的时间线可再读回,含视频片段 + 门店卖点字卡,且区间合法(过了 validateDoc)。
   const project = await store.getProject('p3')
-  expect(project.doc.clips.length).toBe(1)
+  expect(project.doc.clips.length).toBeGreaterThanOrEqual(1)
   expect(project.doc.captions.length).toBeGreaterThan(0)
+  const clip = project.doc.clips[0]!
+  expect(clip.src_out).toBeGreaterThan(clip.src_in)
 })
 
 test('autoCaption: 转写不可用回退占位「镜头 N」,message 说明需打包', async () => {
@@ -258,4 +269,194 @@ test('renderProject: 有 doc.music 时会读 music 并混 BGM(mock ffmpeg 断言
   expect(logText).toContain('amix')
   expect(logText).toContain(bgm) // BGM 作为输入进了 ffmpeg
   expect(existsSync(join(stateRoot, 'uploads', 'videos'))).toBe(true)
+})
+
+// ── B-Roll 步1:镜头切分(scene 分数解析 + 最小镜头长合并)────────────────────
+
+test('parseSceneCuts: 从 showinfo stderr 抽 pts_time 切点(排序、去 0)', () => {
+  const stderr = [
+    '[Parsed_showinfo_1 @ 0x] n:0 pts:150000 pts_time:5 pos:1',
+    '[Parsed_showinfo_1 @ 0x] n:1 pts:75000 pts_time:2.5 pos:2',
+    '[Parsed_showinfo_1 @ 0x] n:2 pts:0 pts_time:0 pos:0', // t=0 丢
+  ].join('\n')
+  expect(parseSceneCuts(stderr)).toEqual([2.5, 5])
+})
+
+test('buildShots: 切点 + 时长 → 连续镜头区间', () => {
+  expect(buildShots([2.5, 5], 8, 0.5)).toEqual([
+    { start: 0, end: 2.5 },
+    { start: 2.5, end: 5 },
+    { start: 5, end: 8 },
+  ])
+})
+
+test('buildShots: 无切点 → 整段一个镜头(降级)', () => {
+  expect(buildShots([], 6, 0.5)).toEqual([{ start: 0, end: 6 }])
+})
+
+test('buildShots: 过短碎片并入相邻镜头(min_scene_len)', () => {
+  // 0.2s 首镜头 < 0.5 → 并入下一镜头。
+  expect(buildShots([0.2, 3], 5, 0.5)).toEqual([
+    { start: 0, end: 3 },
+    { start: 3, end: 5 },
+  ])
+})
+
+// ── B-Roll 步2:启发式打分/选段排序(signalstats 解析 + 黑场/冻结淘汰)──────────
+
+test('parseSignalstats + summarizeMetrics: 抽 YAVG/YDIF 求均值', () => {
+  const stderr = [
+    '[Parsed_metadata_3 @ 0x] lavfi.signalstats.YAVG=100',
+    '[Parsed_metadata_3 @ 0x] lavfi.signalstats.YDIF=4',
+    '[Parsed_metadata_3 @ 0x] lavfi.signalstats.YAVG=140',
+    '[Parsed_metadata_3 @ 0x] lavfi.signalstats.YDIF=6',
+  ].join('\n')
+  const stats = parseSignalstats(stderr)
+  expect(stats.yavg).toEqual([100, 140])
+  const m = summarizeMetrics(stats)
+  expect(m.avgLuma).toBe(120)
+  expect(m.avgMotion).toBe(5)
+})
+
+test('scoreShot: 曝光/运动都在理想区 → 高分;无指标 → 中性 0.6', () => {
+  expect(scoreShot({ avgLuma: 120, avgMotion: 5, frames: 5 })).toBe(1)
+  expect(scoreShot(undefined)).toBe(0.6)
+})
+
+test('isBlackShot / isFrozenShot: 黑场与冻结判定', () => {
+  expect(isBlackShot({ avgLuma: 8, avgMotion: 3, frames: 5 })).toBe(true)
+  expect(isBlackShot({ avgLuma: 120, avgMotion: 3, frames: 5 })).toBe(false)
+  expect(isFrozenShot({ avgLuma: 120, avgMotion: 0.05, frames: 5 })).toBe(true)
+  expect(isFrozenShot({ avgLuma: 120, avgMotion: 3, frames: 5 })).toBe(false)
+})
+
+test('selectAndRankShots: 黑场/冻结淘汰,好镜头按分降序保留,超 maxShots 截掉', () => {
+  const shots: CandidateShot[] = [
+    { id: 'm1#0', mediaId: 'm1', start: 0, end: 2, index: 0, metrics: { avgLuma: 120, avgMotion: 5, frames: 5 } }, // 好,分高
+    { id: 'm1#1', mediaId: 'm1', start: 2, end: 4, index: 1, metrics: { avgLuma: 8, avgMotion: 5, frames: 5 } }, // 黑场淘汰
+    { id: 'm1#2', mediaId: 'm1', start: 4, end: 6, index: 2, metrics: { avgLuma: 120, avgMotion: 0.05, frames: 5 } }, // 冻结淘汰
+    { id: 'm1#3', mediaId: 'm1', start: 6, end: 8, index: 3, metrics: { avgLuma: 30, avgMotion: 5, frames: 5 } }, // 偏暗,分较低但保留
+  ]
+  const ranked = selectAndRankShots(shots, { maxShots: 1 })
+  const kept = ranked.filter(s => s.keep)
+  expect(kept.length).toBe(1)
+  expect(kept[0]!.index).toBe(0) // 最高分
+  const black = ranked.find(s => s.index === 1)!
+  expect(black.keep).toBe(false)
+  expect(black.reason).toContain('黑场')
+})
+
+// ── B-Roll 步3:节拍卡点(手写 Ellis,无 package.json 变更)────────────────────
+
+test('estimateTempo: 周期性 onset 包络 → 正确 BPM(120)', () => {
+  const fps = 100
+  const env = new Array(2000).fill(0).map((_, i) => (i % 50 === 0 ? 1 : 0)) // 每 50 帧一拍 → 120BPM
+  const bpm = estimateTempo(env, fps)
+  expect(Math.abs(bpm - 120)).toBeLessThan(4)
+})
+
+test('onsetEnvelope: 能量上升处才有正向包络值', () => {
+  const sr = 1000
+  const samples = new Float32Array(2048)
+  for (let i = 1024; i < 1536; i++) samples[i] = 0.9 // 后半段来能量
+  const { env, fps } = onsetEnvelope(samples, sr, 512)
+  expect(fps).toBeCloseTo(sr / 512, 5)
+  expect(env.some(v => v > 0)).toBe(true)
+})
+
+test('snapToBeats: 切点吸附到最近鼓点(超窗不动)', () => {
+  expect(snapToBeats([1.02, 2.5], [1.0, 1.5, 2.0], 0.12)).toEqual([1.0, 2.5]) // 2.5 距最近拍 0.5>窗,不动
+})
+
+test('planBeatDurations: 有节拍 → 整数拍时长;无节拍 → 等分', () => {
+  expect(planBeatDurations(3, 1.0, { beatsPerShot: 2 })).toEqual([2, 2, 2])
+  expect(planBeatDurations(4, 0, { targetDuration: 12 })).toEqual([3, 3, 3, 3])
+})
+
+test('beatPeriodFromBeats: 拍点间隔中位数', () => {
+  expect(beatPeriodFromBeats([0, 0.5, 1.0, 1.5])).toBe(0.5)
+})
+
+// ── B-Roll 步4:VLM 打标签/排序 + 降级 ─────────────────────────────────────
+
+const twoShots: ShotForTag[] = [
+  { index: 0, mediaId: 'm1', start: 0, end: 2, durationSec: 2, avgLuma: 150, avgMotion: 2, thumbBase64: 'AAA' },
+  { index: 1, mediaId: 'm1', start: 2, end: 4, durationSec: 2, avgLuma: 90, avgMotion: 8, thumbBase64: 'BBB' },
+]
+
+function fakeModel(text: string): Model {
+  return { step: async () => ({ kind: 'final', text }) }
+}
+
+test('buildTagMessages: 组多模态 prompt(文字 + 每镜头 image block)', () => {
+  const msgs = buildTagMessages(twoShots)
+  expect(msgs.length).toBe(1)
+  const imgs = msgs[0]!.content.filter(b => b.type === 'image')
+  expect(imgs.length).toBe(2)
+})
+
+test('parseVlmPlan: 解析 order/tags/captions/drop,补齐漏排、剔除 drop', () => {
+  const text = '```json\n{"shots":[{"index":2,"tag":"门头招牌","caption":"门头亮眼"}],"order":[2],"drop":[1],"grade":"warm"}\n```'
+  const plan = parseVlmPlan(text, [0, 1, 2])
+  expect(plan).not.toBeNull()
+  expect(plan!.order).toEqual([2, 0]) // 2 来自 order,0 补齐,1 被 drop 剔除
+  expect(plan!.drop).toEqual([1])
+  expect(plan!.tags[2]).toBe('门头招牌')
+  expect(plan!.grade).toBe('warm')
+})
+
+test('parseVlmPlan: 非 JSON → null(上层退启发式)', () => {
+  expect(parseVlmPlan('抱歉我看不懂', [0, 1])).toBeNull()
+})
+
+test('faceGuardActive + heuristicPlan: 含人脸走启发式', () => {
+  expect(faceGuardActive([{ index: 0, mediaId: 'm1', start: 0, end: 1, durationSec: 1, hasFace: true }])).toBe(true)
+  const plan = heuristicPlan(twoShots)
+  expect(plan.usedVlm).toBe(false)
+  expect(plan.order.length).toBe(2)
+  expect(plan.captions[plan.order[0]!]).toBeTruthy()
+})
+
+test('tagShots: 网关模型返回 JSON → usedVlm=true,应用 VLM 排序', async () => {
+  const plan = await tagShots(twoShots, {
+    model: fakeModel('{"shots":[{"index":0,"tag":"门头","caption":"门头亮眼"},{"index":1,"tag":"台面","caption":"台面干净"}],"order":[1,0],"grade":"warm"}'),
+  })
+  expect(plan.usedVlm).toBe(true)
+  expect(plan.order).toEqual([1, 0])
+  expect(plan.captions[1]).toBe('台面干净')
+  expect(plan.grade).toBe('warm')
+})
+
+test('tagShots: 无网关模型 → 降级启发式(usedVlm=false)', async () => {
+  const plan = await tagShots(twoShots, { model: null })
+  expect(plan.usedVlm).toBe(false)
+  expect(plan.reason).toContain('启发式')
+})
+
+test('tagShots: 模型报错 → 降级启发式、不崩', async () => {
+  const throwing: Model = { step: async () => { throw new Error('gateway down') } }
+  const plan = await tagShots(twoShots, { model: throwing })
+  expect(plan.usedVlm).toBe(false)
+  expect(plan.order.length).toBe(2)
+})
+
+test('tagShots: 含人脸即便有模型也走启发式(隐私护栏,不外传人脸)', async () => {
+  let called = false
+  const spy: Model = { step: async () => { called = true; return { kind: 'final', text: '{}' } } }
+  const withFace: ShotForTag[] = [{ index: 0, mediaId: 'm1', start: 0, end: 2, durationSec: 2, hasFace: true, thumbBase64: 'AAA' }]
+  const plan = await tagShots(withFace, { model: spy })
+  expect(called).toBe(false) // 没调网关
+  expect(plan.usedVlm).toBe(false)
+  expect(plan.reason).toContain('人脸')
+})
+
+test('planEdit(mode=ambient): 显式环境模式也走 broll 五步、落合法时间线', async () => {
+  const { store, stateRoot } = newStore()
+  const src = dummyVideo(stateRoot, 'amb.mp4')
+  const res = await store.planEdit({ project: 'pb', video_paths: [src], mode: 'ambient' }, { env: NO_BINARIES }) as Record<string, any>
+  expect(res.route).toBe('broll')
+  expect(res.applied).toBe(true)
+  expect(res.broll).toBe(true)
+  const project = await store.getProject('pb')
+  expect(project.doc.clips.length).toBeGreaterThanOrEqual(1)
 })

@@ -13,6 +13,10 @@ import {
   transcribeVideoWordLevel,
 } from './transcribe'
 import { classifyContent, type EditRoute } from './videoContentRouter'
+import { detectScenes, type Shot } from './brollScenes'
+import { measureShot, selectAndRankShots, type CandidateShot, type ScoredShot } from './brollSelect'
+import { beatsForMusic, planBeatDurations } from './beatSync'
+import { buildVlmModel, extractKeyframeBase64, tagShots, type ShotForTag } from './brollVlmTagger'
 
 export interface MediaRef {
   src: string
@@ -1004,11 +1008,158 @@ export class VideoEditProjectStore {
     return { bySrc, unavailableReason, used }
   }
 
+  /** B-Roll 路 input 里可选的 BGM 路径(本地路径或 /uploads/*);解析不到返回 null。 */
+  private resolveBrollMusic(input: Record<string, unknown>): string | null {
+    const raw = stringOr(input.music_path ?? input.bgm_path ?? input.bgm ?? input.music, '')
+    if (!raw) return null
+    try {
+      const src = this.resolveMediaSource(raw)
+      if (/^https?:/i.test(src)) return src
+      return existsSync(src) ? src : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * B-Roll 视觉五步 → 原子操作数组(门店主路,无口播,靠画面+音乐节奏剪):
+   *   ①切镜头(ffmpeg scene)→ ②挑镜头(signalstats 曝光/运动 + 黑场/冻结淘汰)
+   *   → ③网关 VLM 打标签+排叙事序(离线降级启发式)→ ④BGM 节拍卡点(手写 Ellis,无依赖)
+   *   → ⑤蒙太奇时长节奏 + 门店卖点字卡。
+   * 每步缺 ffmpeg / 缺网关 / 失败都优雅降级,始终吐一份能过 applyOperations 校验的 ops。
+   */
+  private async buildBrollOps(
+    sources: Array<{ raw: string; src: string; probe: VideoProbe; health: FootageHealth }>,
+    input: Record<string, unknown>,
+    targetDuration: number,
+    perClip: number,
+    opts: LocalVideoJobOptions,
+  ): Promise<{
+    ops: Array<Record<string, unknown>>
+    candidates: Array<{ media: string; name: string; duration: number; is_portrait: boolean; has_speech: boolean; scenes: [number, number][]; phrases: Array<{ start: number; end: number; text: string }> }>
+    usedVlm: boolean
+    notes: string[]
+  }> {
+    const notes: string[] = []
+    const candidates: Array<{ media: string; name: string; duration: number; is_portrait: boolean; has_speech: boolean; scenes: [number, number][]; phrases: Array<{ start: number; end: number; text: string }> }> = []
+    const mediaDur: Record<string, number> = {}
+    const srcById: Record<string, string> = {}
+
+    // ① 切镜头(逐源 scene detect;缺 ffmpeg → 整段一个镜头)。
+    await opts.onProgress?.(44, '正在切镜头。')
+    const allShots: CandidateShot[] = []
+    for (let i = 0; i < sources.length; i++) {
+      const item = sources[i]!
+      const mediaId = `m${i + 1}`
+      const dur = roundSeconds(item.probe.ok && item.probe.duration_s > 0 ? item.probe.duration_s : perClip)
+      mediaDur[mediaId] = dur
+      srcById[mediaId] = item.src
+      const shots = await detectScenes(item.src, dur, { env: opts.env, signal: opts.signal })
+      shots.forEach((shot, j) => {
+        allShots.push({ id: `${mediaId}#${j}`, mediaId, start: shot.start, end: Math.min(shot.end, dur), index: allShots.length })
+      })
+      candidates.push({
+        media: mediaId,
+        name: basename(item.src),
+        duration: dur,
+        is_portrait: (item.probe.height ?? 0) > (item.probe.width ?? 0),
+        has_speech: item.health.has_audio,
+        scenes: shots.map(s => [s.start, Math.min(s.end, dur)] as [number, number]),
+        phrases: [],
+      })
+    }
+    if (allShots.length > 1) notes.push(`切出 ${allShots.length} 个镜头`)
+
+    // ② 挑镜头(逐镜头测曝光/运动;缺 ffmpeg → 中性分)。
+    await opts.onProgress?.(56, '正在挑镜头。')
+    for (const shot of allShots) {
+      shot.metrics = await measureShot(srcById[shot.mediaId]!, { start: shot.start, end: shot.end }, { env: opts.env, signal: opts.signal })
+    }
+    const desiredShots = clamp(Math.round(targetDuration / 2.6), 3, 16)
+    const ranked = selectAndRankShots(allShots, { maxShots: desiredShots })
+    let survivors: ScoredShot[] = ranked.filter(s => s.keep)
+    if (!survivors.length && ranked.length) survivors = [ranked[0]!] // 全被淘汰兜底留最优 1 个
+    const dropped = ranked.length - survivors.length
+    if (dropped > 0) notes.push(`淘汰 ${dropped} 个黑场/糊/冻结镜头`)
+
+    // ③ VLM 看懂每镜头(网关多模态;离线降级启发式)。
+    await opts.onProgress?.(70, '正在看懂画面。')
+    const vlmModel = buildVlmModel(opts.env)
+    const shotsForTag: ShotForTag[] = []
+    for (const s of survivors) {
+      const thumb = vlmModel ? await extractKeyframeBase64(srcById[s.mediaId]!, { start: s.start, end: s.end }, { env: opts.env, signal: opts.signal }) : null
+      shotsForTag.push({
+        index: s.index,
+        mediaId: s.mediaId,
+        start: s.start,
+        end: s.end,
+        durationSec: roundSeconds(s.end - s.start),
+        ...(s.metrics ? { avgLuma: s.metrics.avgLuma, avgMotion: s.metrics.avgMotion } : {}),
+        ...(thumb ? { thumbBase64: thumb } : {}),
+      })
+    }
+    const plan = await tagShots(shotsForTag, { env: opts.env, signal: opts.signal, model: vlmModel })
+    notes.push(plan.usedVlm ? '网关 VLM 已打标签排序' : 'VLM 不可用,按启发式排序')
+
+    const byIndex = new Map(survivors.map(s => [s.index, s]))
+    const dropSet = new Set(plan.drop)
+    const orderedShots = plan.order.map(i => byIndex.get(i)).filter((s): s is ScoredShot => !!s && !dropSet.has(s.index))
+    const finalShots = orderedShots.length ? orderedShots : survivors
+
+    // ④ 节拍卡点(有 BGM 才检测;手写 Ellis,无依赖;失败 → 等分节奏)。
+    await opts.onProgress?.(82, '正在对齐鼓点。')
+    const musicPath = this.resolveBrollMusic(input)
+    let period = 0
+    if (musicPath) {
+      const beat = await beatsForMusic(musicPath, { env: opts.env, signal: opts.signal })
+      if (beat) {
+        period = beat.period
+        notes.push(`BGM 约 ${Math.round(beat.tempo)} BPM,切点对齐鼓点`)
+      } else {
+        notes.push('BGM 节拍未检出,按等分节奏')
+      }
+    }
+    const durations = planBeatDurations(finalShots.length, period, { targetDuration, beatsPerShot: 2 })
+
+    // ⑤ 蒙太奇 + 卖点字卡 → 原子操作。
+    await opts.onProgress?.(90, '正在叠文字。')
+    const ops: Array<Record<string, unknown>> = [
+      { op: 'add_track', id: 'v1', kind: 'video', order: 0 },
+      { op: 'add_track', id: 'sub', kind: 'caption', order: 1 },
+    ]
+    for (const [mediaId, src] of Object.entries(srcById)) {
+      ops.push({ op: 'add_media', id: mediaId, src, duration: mediaDur[mediaId] ?? 0, kind: 'video' })
+    }
+    if (musicPath) {
+      ops.push({ op: 'add_media', id: 'bgm', src: musicPath, duration: 0, kind: 'audio' })
+      ops.push({ op: 'set_music', media: 'bgm' })
+    }
+    let cursor = 0
+    let placed = 0
+    for (let p = 0; p < finalShots.length; p++) {
+      const shot = finalShots[p]!
+      const cap = mediaDur[shot.mediaId] ?? shot.end
+      const want = durations[p] ?? perClip
+      const length = roundSeconds(Math.min(want, shot.end - shot.start, cap - shot.start))
+      if (length < 0.05) continue
+      const srcOut = roundSeconds(shot.start + length)
+      ops.push({ op: 'add_clip', id: `c${placed + 1}`, track: 'v1', order: placed, media: shot.mediaId, src_in: roundSeconds(shot.start), src_out: srcOut })
+      const captionText = plan.captions[shot.index]
+      if (captionText && captionText.trim()) {
+        ops.push({ op: 'add_caption', track: 'sub', text: captionText.trim(), start: roundSeconds(cursor), end: roundSeconds(cursor + length) })
+      }
+      cursor += length
+      placed += 1
+    }
+    if (plan.grade && plan.grade !== 'neutral') ops.push({ op: 'set_grade', grade: plan.grade })
+
+    return { ops, candidates, usedVlm: plan.usedVlm, notes }
+  }
+
   /**
    * 统一初剪入口(video-use 转写路 + B-Roll 视觉路共用):
-   *   inventory(探规格)→ 内容分流器判 route → speech 走口播路生成初剪 / broll 先留 stub
+   *   inventory(探规格)→ 内容分流器判 route → speech 走口播路 / broll 走 B-Roll 视觉五步
    *   → 两条路都只吐**原子操作数组** → 统一走 applyOperations(克隆→applyOne→validateDoc→回滚)落时间线。
-   * B-Roll 视觉五步(切镜头/挑镜头/VLM 标签/卡点/叠字)是下一轮,本轮 broll 分支只占位。
    */
   async planEdit(input: Record<string, unknown>, opts: LocalVideoJobOptions = {}): Promise<Record<string, unknown>> {
     const project = cleanProjectName(stringOr(input.project, `plan_${Date.now()}`))
@@ -1064,45 +1215,59 @@ export class VideoEditProjectStore {
     const sized = dimensionsForRatio(input.ratio)
     await this.saveDoc(project, { version: 1, fps: 30, width: sized.width, height: sized.height, media: {}, tracks: {}, clips: {}, grade: null, music: null })
 
-    const ops: Array<Record<string, unknown>> = [
-      { op: 'add_track', id: 'v1', kind: 'video', order: 0 },
-      { op: 'add_track', id: 'sub', kind: 'caption', order: 1 },
-    ]
-    let cursor = 0
-    const candidates: Array<{ media: string; name: string; duration: number; is_portrait: boolean; has_speech: boolean; scenes: [number, number][]; phrases: Array<{ start: number; end: number; text: string }> }> = []
-    for (let i = 0; i < sources.length; i++) {
-      const item = sources[i]!
-      const mediaId = `m${i + 1}`
-      const clipId = `c${i + 1}`
-      const realDuration = item.probe.ok && item.probe.duration_s > 0 ? item.probe.duration_s : perClip
-      const dur = roundSeconds(realDuration)
-      const clipDuration = roundSeconds(clamp(Math.min(perClip, dur || perClip), 0.05, perClip))
-      const phrases = transcripts[item.src]?.phrases ?? []
-      candidates.push({
-        media: mediaId,
-        name: basename(item.src),
-        duration: dur,
-        is_portrait: (item.probe.height ?? 0) > (item.probe.width ?? 0),
-        has_speech: item.health.has_audio,
-        scenes: [[0, clipDuration]],
-        phrases: phrases.map(p => ({ start: p.start, end: p.end, text: p.text })),
-      })
-      ops.push({ op: 'add_media', id: mediaId, src: item.src, duration: dur, kind: 'video' })
-      ops.push({ op: 'add_clip', id: clipId, track: 'v1', order: i, media: mediaId, src_in: 0, src_out: clipDuration })
-      const caps = route === 'speech' ? phrasesToCaptions(phrases, 0, clipDuration, cursor) : []
-      if (caps.length) {
-        for (const cap of caps) ops.push({ op: 'add_caption', track: 'sub', text: cap.text, start: cap.start, end: cap.end })
-      } else {
-        ops.push({
-          op: 'add_caption',
-          track: 'sub',
-          text: mode === 'speech' ? `口播片段 ${i + 1}` : `门店高光 ${i + 1}`,
-          start: Math.round(cursor * 1000) / 1000,
-          end: Math.round((cursor + clipDuration) * 1000) / 1000,
+    let ops: Array<Record<string, unknown>>
+    let candidates: Array<{ media: string; name: string; duration: number; is_portrait: boolean; has_speech: boolean; scenes: [number, number][]; phrases: Array<{ start: number; end: number; text: string }> }>
+    let usedVlm = false
+    let brollNotes: string[] = []
+    if (route === 'broll') {
+      // (2b) B-Roll 视觉五步 → 原子操作(切镜头/挑镜头/VLM 标签/卡点/叠字)。
+      const broll = await this.buildBrollOps(sources, input, targetDuration, perClip, opts)
+      ops = broll.ops
+      candidates = broll.candidates
+      usedVlm = broll.usedVlm
+      brollNotes = broll.notes
+    } else {
+      // (2a) 口播路:逐源按 phrase 出字幕。
+      ops = [
+        { op: 'add_track', id: 'v1', kind: 'video', order: 0 },
+        { op: 'add_track', id: 'sub', kind: 'caption', order: 1 },
+      ]
+      candidates = []
+      let cursor = 0
+      for (let i = 0; i < sources.length; i++) {
+        const item = sources[i]!
+        const mediaId = `m${i + 1}`
+        const clipId = `c${i + 1}`
+        const realDuration = item.probe.ok && item.probe.duration_s > 0 ? item.probe.duration_s : perClip
+        const dur = roundSeconds(realDuration)
+        const clipDuration = roundSeconds(clamp(Math.min(perClip, dur || perClip), 0.05, perClip))
+        const phrases = transcripts[item.src]?.phrases ?? []
+        candidates.push({
+          media: mediaId,
+          name: basename(item.src),
+          duration: dur,
+          is_portrait: (item.probe.height ?? 0) > (item.probe.width ?? 0),
+          has_speech: item.health.has_audio,
+          scenes: [[0, clipDuration]],
+          phrases: phrases.map(p => ({ start: p.start, end: p.end, text: p.text })),
         })
+        ops.push({ op: 'add_media', id: mediaId, src: item.src, duration: dur, kind: 'video' })
+        ops.push({ op: 'add_clip', id: clipId, track: 'v1', order: i, media: mediaId, src_in: 0, src_out: clipDuration })
+        const caps = phrasesToCaptions(phrases, 0, clipDuration, cursor)
+        if (caps.length) {
+          for (const cap of caps) ops.push({ op: 'add_caption', track: 'sub', text: cap.text, start: cap.start, end: cap.end })
+        } else {
+          ops.push({
+            op: 'add_caption',
+            track: 'sub',
+            text: `口播片段 ${i + 1}`,
+            start: Math.round(cursor * 1000) / 1000,
+            end: Math.round((cursor + clipDuration) * 1000) / 1000,
+          })
+        }
+        cursor += clipDuration
+        await opts.onProgress?.(Math.min(85, 45 + Math.floor(((i + 1) / sources.length) * 40)), '正在按口播生成初剪。')
       }
-      cursor += clipDuration
-      await opts.onProgress?.(Math.min(85, 45 + Math.floor(((i + 1) / sources.length) * 40)), route === 'speech' ? '正在按口播生成初剪。' : '正在生成 B-Roll 占位初剪。')
     }
 
     // (3) 两条路的 ops 走完全相同的落盘/校验/回滚。
@@ -1124,15 +1289,23 @@ export class VideoEditProjectStore {
       operations: ops.length,
       doc: result.doc,
       candidates,
-      report: this.planReport(route, transcribed, transcribeUnavailableReason),
+      report: route === 'broll'
+        ? this.brollReport(usedVlm, brollNotes)
+        : this.planReport(route, transcribed, transcribeUnavailableReason),
       brand: '本地预览',
-      used_vlm: false,
+      used_vlm: usedVlm,
       has_speech: route === 'speech' && transcribed,
       transcribed,
       ...(transcribeUnavailableReason ? { transcribe_unavailable_reason: transcribeUnavailableReason } : {}),
-      ...(route === 'broll' ? { broll_stub: true, broll_note: 'B-Roll 视觉五步(切镜头/挑镜头/VLM 标签/卡点/叠字)为下一轮,当前为占位初剪。' } : {}),
+      ...(route === 'broll' ? { broll: true, broll_notes: brollNotes } : {}),
       local_preview: true,
     }
+  }
+
+  /** B-Roll 路成片报告口径:五步走完给大白话小结(用没用 VLM、切了几镜、卡没卡点)。 */
+  private brollReport(usedVlm: boolean, notes: string[]): string {
+    const tail = notes.length ? ` (${notes.join(';')})` : ''
+    return `已按门店环境片走 B-Roll 视觉路:切镜头→挑镜头→${usedVlm ? '网关 VLM 打标签排序' : '启发式排序(网关未接)'}→节拍卡点→叠门店卖点字卡。${tail}`
   }
 
   async renderProject(project: string, input: Record<string, unknown> = {}, opts: LocalVideoJobOptions = {}): Promise<Record<string, unknown>> {
