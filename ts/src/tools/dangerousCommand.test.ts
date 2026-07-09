@@ -143,6 +143,47 @@ test('刁钻:^ 行尾续行把危险词与盘符拆到两行 → 归一后仍拦
   expect(isDangerousCommand('del /s /q ^\nC:\\*')).toBe(true)
 })
 
+// ── 中缀 ^ 转义混淆:cmd 把非行尾的 `^` 当"转义下一字符"吃掉,`de^l`/`for^mat` 实际执行的是 `del`/`format`。
+// 归一(剥中缀 caret)后仍落红线,不再靠 `file` 档自动放行(此前的 P1 洞:caret 混淆的 C 盘全删无门执行)。──
+test('刁钻:中缀 ^ 转义混淆(de^l / for^mat / d^iskpart / 两级转手 / %SystemDrive%)→ 归一后判危险', () => {
+  expect(isDangerousCommand('de^l /s /q C:\\*')).toBe(true)
+  expect(isDangerousCommand('for^mat c:')).toBe(true)
+  expect(isDangerousCommand('d^iskpart')).toBe(true)
+  expect(isDangerousCommand('cmd /c "de^l C:\\*"')).toBe(true) // 引号内 caret 被内层 cmd 再吃一次
+  expect(isDangerousCommand('de^l /s /q %SystemDrive%\\*')).toBe(true)
+  // classifyCommandRisk 同步落 destructive(不是 file 档自动放行)
+  expect(classifyCommandRisk('de^l /s /q C:\\*')).toBe('destructive')
+  expect(classifyCommandRisk('for^mat c:')).toBe('destructive')
+  expect(classifyCommandRisk('cmd /c "de^l C:\\*"')).toBe('destructive')
+  expect(classifyCommandRisk('de^l /s /q %SystemDrive%\\*')).toBe('destructive')
+})
+
+// ── call / for..in..do 前缀夹带:call 与 for 循环体才是真正执行的命令,前缀不能把危险命令挡在语句起始锚外。──
+test('刁钻:call / for..do 前缀夹带危险命令 → 归一后判危险', () => {
+  expect(isDangerousCommand('call format c:')).toBe(true)
+  expect(isDangerousCommand('for %i in (*) do del /s /q C:\\*')).toBe(true)
+  expect(classifyCommandRisk('call format c:')).toBe('destructive')
+  expect(classifyCommandRisk('for %i in (*) do del /s /q C:\\*')).toBe('destructive')
+})
+
+// ── 零误杀:含 `^` 锚点/子串的正常命令,以及 call/for..do 的相近词,归一后不得落红线。──
+test('不误杀:含 ^ 锚点或 call/for..do 子串的正常命令(审查亲测那批)', () => {
+  expect(isDangerousCommand("grep '^foo'")).toBe(false)
+  expect(isDangerousCommand("sed 's/^x//'")).toBe(false)
+  expect(isDangerousCommand("powershell -replace '^a'")).toBe(false)
+  expect(isDangerousCommand("awk '/^x/'")).toBe(false)
+  expect(isDangerousCommand('findstr /r "^foo" file.txt')).toBe(false)
+  expect(isDangerousCommand('echo todo format c: later')).toBe(false) // "todo" 含 do,不得被当 for..do
+  expect(isDangerousCommand('copy a^b.txt dest.txt')).toBe(false)
+  expect(isDangerousCommand('del %APPDATA%\\myapp\\cache.txt')).toBe(false) // env 根后还有子路径 = 删具体文件
+  expect(isDangerousCommand('git format-patch -1 HEAD')).toBe(false)
+  expect(isDangerousCommand('dotnet format')).toBe(false)
+  // classifyCommandRisk 不得因归一误升成 destructive
+  expect(classifyCommandRisk('echo todo format c: later')).not.toBe('destructive')
+  expect(classifyCommandRisk("grep '^foo'")).not.toBe('destructive')
+  expect(classifyCommandRisk('copy a^b.txt dest.txt')).not.toBe('destructive')
+})
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 审批闸档:有破坏面但可控(达不到「直接拒」灾难级)→ classifyCommandRisk = destructive。
 // 交用户逐条确认,而不是硬拒(口径对齐 POSIX:递归删具体目录 = destructive,同 `rm -rf 目录`)。
@@ -182,6 +223,50 @@ test('审批档:红线级命令的 classifyCommandRisk 也落 destructive(会被
   // 审批档动词经 cmd /c / -Command 转手也不降级成 file
   expect(classifyCommandRisk('cmd /c "rd /s /q build"')).toBe('destructive')
   expect(classifyCommandRisk('powershell -Command "reg delete HKCU\\Software\\X /f"')).toBe('destructive')
+})
+
+// ── 审批闸绕过修复:红线路径早已用 normalizeWinRedlineView 归一 caret/call/for..do,但审批闸调用点
+// 此前收的是未归一 rawCommand → 同一招能把 taskkill/rd /s/sc delete/net stop/reg delete/icacls/takeown
+// 这批"有破坏面但非灾难级"的动词混淆过审批闸,静默落 file 档执行。归一后必须同步落 destructive。──
+test('审批档:中缀 ^ 转义混淆审批闸动词 → 归一后 destructive(不再 file 档静默执行)', () => {
+  expect(classifyCommandRisk('ta^skkill /f /im notepad.exe')).toBe('destructive')
+  expect(classifyCommandRisk('r^d /s /q build')).toBe('destructive')
+  expect(classifyCommandRisk('s^c delete MyService')).toBe('destructive')
+  expect(classifyCommandRisk('ne^t stop Spooler')).toBe('destructive')
+  expect(classifyCommandRisk('re^g delete HKCU\\Software\\X /f')).toBe('destructive')
+  expect(classifyCommandRisk('ica^cls C:\\foo /grant User:F /t')).toBe('destructive')
+  expect(classifyCommandRisk('ta^keown /f C:\\foo /r')).toBe('destructive')
+  // 引号内 caret 经 cmd /c 两级转手也归一(内层 cmd 会再吃一次 `^`)
+  expect(classifyCommandRisk('cmd /c "ta^skkill /f /im notepad.exe"')).toBe('destructive')
+})
+
+test('审批档:call / for..in..do 前缀夹带审批闸动词 → 归一后 destructive', () => {
+  expect(classifyCommandRisk('call taskkill /f /im notepad.exe')).toBe('destructive')
+  expect(classifyCommandRisk('call sc delete MyService')).toBe('destructive')
+  expect(classifyCommandRisk('for %i in (x) do taskkill /f /im notepad.exe')).toBe('destructive')
+  expect(classifyCommandRisk('for %i in (x) do rd /s /q build')).toBe('destructive')
+})
+
+test('不误杀:审批闸归一后,相近词/子串/正常命令不被误升成 destructive', () => {
+  // net start 不是审批面(只 net stop 是);todo/recall 含 do/call 子串但非 for..do/call 前缀
+  expect(classifyCommandRisk('net start Spooler')).not.toBe('destructive')
+  expect(classifyCommandRisk('todo list format c: later')).not.toBe('destructive')
+  expect(classifyCommandRisk('recall notes')).not.toBe('destructive')
+  // for 无括号(POSIX 式)不构成 cmd 的 for..in(..)..do,不剥前缀
+  expect(classifyCommandRisk('for x in list')).not.toBe('destructive')
+  // 审查员点名的正常命令(含 ^ 锚点/子命令)全干净——归一只作用于审批闸判定,不改这些的正常分档
+  expect(classifyCommandRisk("grep '^foo' file.txt")).not.toBe('destructive')
+  expect(classifyCommandRisk("sed 's/^x//' file.txt")).not.toBe('destructive')
+  expect(classifyCommandRisk("awk '/^x/' file.txt")).not.toBe('destructive')
+  expect(classifyCommandRisk('findstr /r "^foo" file.txt')).not.toBe('destructive')
+  expect(classifyCommandRisk("powershell -replace '^a'")).not.toBe('destructive')
+  expect(classifyCommandRisk('dotnet format')).not.toBe('destructive')
+  expect(classifyCommandRisk('git format-patch -1 HEAD')).not.toBe('destructive')
+  // 正常(未混淆)审批闸动词行为不变——回归锚
+  expect(classifyCommandRisk('taskkill /f /im notepad.exe')).toBe('destructive')
+  expect(classifyCommandRisk('rd /s /q build')).toBe('destructive')
+  expect(classifyCommandRisk('reg query HKLM\\Software\\Microsoft')).toBe('read')
+  expect(classifyCommandRisk('sc query Spooler')).toBe('read')
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
