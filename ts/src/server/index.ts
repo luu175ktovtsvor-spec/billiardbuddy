@@ -12,6 +12,7 @@ import { ProviderService, type RuntimeProviderResolution } from './services/prov
 import { ProviderHealthStore, type ProviderHealthEntry } from './services/providerHealthStore'
 import { LegacyAgentStore, type LegacyArtifact } from './services/legacyAgentStore'
 import { DesktopDataStore } from './services/desktopDataStore'
+import { EMBEDDED_FRONTEND } from './embeddedFrontend'
 import { UserSettingsStore } from './services/userSettings'
 import { StoreDocsService, createStoreDocsTool } from './services/storeDocsService'
 import {
@@ -970,14 +971,19 @@ export function startServer(opts: StartServerOptions = {}) {
   async function serveFrontendAsset(pathname: string): Promise<Response | null> {
     const rel = pathname === '/' || pathname === '' ? 'index.html' : pathname.replace(/^\/+/, '')
     const resolved = resolve(frontendRoot, rel)
-    // 防路径穿越:必须落在 frontendRoot 内
-    if (resolved !== frontendRoot && !resolved.startsWith(frontendRoot + sep)) return null
-    try {
-      const data = await readFile(resolved)
-      return new Response(data, { headers: { 'Content-Type': FRONTEND_CT[extname(resolved).toLowerCase()] ?? 'application/octet-stream' } })
-    } catch {
-      return null
+    // 防路径穿越:必须落在 frontendRoot 内(越界仍可走嵌入兜底命中已知文件)
+    if (resolved === frontendRoot || resolved.startsWith(frontendRoot + sep)) {
+      try {
+        const data = await readFile(resolved)
+        return new Response(data, { headers: { 'Content-Type': FRONTEND_CT[extname(resolved).toLowerCase()] ?? 'application/octet-stream' } })
+      } catch {
+        // 文件系统没有:编译态 frontendRoot 是虚拟 bunfs 路径,落到下面嵌入兜底。
+      }
     }
+    // 嵌入兜底:打包后 sidecar 二进制读不到真实 renderer 目录,从编进二进制的前端文件服务。
+    const embedded = EMBEDDED_FRONTEND['/' + rel]
+    if (embedded) return new Response(embedded.body, { headers: { 'Content-Type': embedded.contentType } })
+    return null
   }
   const steerInboxes = new Map<string, string[]>()
   const sessionSkillHooks = new Map<string, NonNullable<ReturnType<typeof mergeHookRegistries>>>()
