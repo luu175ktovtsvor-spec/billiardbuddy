@@ -92,6 +92,7 @@ import type { FetchLike } from '../proxy/ProxyModel'
 import type { PermissionMode } from '../permissions/types'
 import { canonicalPermissionMode } from '../permissions/canonical'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
+import { getUserConfigHomeDir } from '../harness/memoryNames'
 import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 
@@ -916,6 +917,23 @@ function backgroundTaskNotification(task: TaskMeta): Record<string, unknown> | n
   }
 }
 
+/**
+ * 状态/会话根目录锚定(P0 · 打包后会话不丢)。
+ * ⚠️ 绝不再默认用 process.cwd():开发时 cwd=项目目录能写,但打包后从 Finder/开始菜单启动 cwd=`/` 或
+ * `/Applications`,写不下 → 会话/配置/transcript/tasks 全丢 = 分发即废。故默认锚到稳定的白标用户配置目录
+ * `~/.billiardbuddy/state`(与 memoryNames.getUserConfigHomeDir() 对齐,env `BILLIARDBUDDY_CONFIG_DIR` 改配置根)。
+ * 覆盖优先级:opts.transcriptRoot(测试/显式注入) > env `BILLIARDBUDDY_STATE_DIR`(白标显式覆盖整个 state 根)
+ * > `~/.billiardbuddy/state`(默认,永远可写、与 cwd 无关)。
+ */
+export function resolveStateRoot(
+  opts: { transcriptRoot?: string; env?: Record<string, string | undefined> } = {},
+): string {
+  if (opts.transcriptRoot && opts.transcriptRoot.length > 0) return opts.transcriptRoot
+  const stateDirOverride = (opts.env ?? process.env).BILLIARDBUDDY_STATE_DIR
+  if (stateDirOverride && stateDirOverride.length > 0) return stateDirOverride
+  return join(getUserConfigHomeDir(), 'state')
+}
+
 /** W2/W6 后端。/health + /agent/hello(demo) + /agent/run(真实模型 Agent SSE)。 */
 export function startServer(opts: StartServerOptions = {}) {
   const host = opts.host ?? '127.0.0.1'
@@ -923,7 +941,7 @@ export function startServer(opts: StartServerOptions = {}) {
   // OS 沙箱写围栏默认开(owner 2026-07-09);env QF_OS_SANDBOX=0 或 opts.sandboxEnabled=false 关。
   const sandboxEnabled = opts.sandboxEnabled ?? ((opts.env ?? process.env).QF_OS_SANDBOX !== '0')
   const buildSandbox = (ws: Workspace): Sandbox => new Sandbox({ workspace: ws, enabled: sandboxEnabled })
-  const stateRoot = opts.transcriptRoot ?? join(process.cwd(), '.agent-state')
+  const stateRoot = resolveStateRoot({ transcriptRoot: opts.transcriptRoot, env: opts.env })
   // 工作区级 .mcp.json 信任闸(防恶意仓库 .mcp.json 自动 spawn 任意命令)。
   const mcpTrust = new McpTrustStore(join(stateRoot, 'mcp-trust.json'))
   for (const root of opts.trustedWorkspaceRoots ?? []) mcpTrust.trust(root)

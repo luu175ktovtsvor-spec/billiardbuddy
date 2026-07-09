@@ -6,7 +6,9 @@ import type { Readable } from 'node:stream'
 export const SERVER_BIND_HOST = '127.0.0.1'
 
 export type SidecarChild = ChildProcessByStdio<null, Readable, Readable>
-export type SidecarPlan = { command: string; args: string[]; env: NodeJS.ProcessEnv }
+/** cwd:显式指定 sidecar 工作目录。打包后从 Finder/开始菜单启动时 Electron 进程 cwd=`/`,
+ *  若不显式传,spawn 出的 sidecar 会继承这个坏 cwd(任何相对路径解析/落盘都可能失败)。 */
+export type SidecarPlan = { command: string; args: string[]; env: NodeJS.ProcessEnv; cwd?: string }
 
 function canBindPort(bindHost: string, port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -65,6 +67,8 @@ export function spawnSidecar(plan: SidecarPlan, deps: SpawnSidecarDeps = {}): Si
     throw new Error(`sidecar binary not found: ${plan.command}. Run "bun run build:sidecar" first.`)
   }
   return (deps.spawnFn ?? spawn)(plan.command, plan.args, {
+    // 显式可写 cwd(打包后 Electron 进程 cwd 可能是 `/`,别让 sidecar 继承坏 cwd)。
+    cwd: plan.cwd,
     env: plan.env,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
