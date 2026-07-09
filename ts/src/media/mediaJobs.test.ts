@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import * as QRCode from 'qrcode'
 import { MediaJobService } from './mediaJobs'
 import { TaskService } from '../tasks/taskService'
+import type { Model } from '../types/model'
 
 async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 1000): Promise<T> {
   const deadline = Date.now() + timeoutMs
@@ -789,6 +790,222 @@ test('MediaJobService routes text-fix image edits to Seedream gateway', async ()
     })
     expect(String(requestBody.image).startsWith('data:image/png;base64,')).toBe(true)
     expect(done.result).toMatchObject({ image_engine: '写实生图', mode: 'edit' })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// --- 人像授权闸 + 输入/结果质检 + 白标 ------------------------------------
+
+/** 脚本化网关 VLM:按 system 提示分派(输入质检/结果质检/OCR),返回一段 JSON 文本。 */
+function fakeVlm(reply: (system: string) => string): Model {
+  return {
+    async step(input) {
+      return { kind: 'final', text: reply(input.system ?? '') }
+    },
+  }
+}
+
+const IMAGE_ENV = { OPENAI_BASE_URL: 'http://image-gateway.example/gw/v1', OPENAI_API_KEY: 'app-token', IMAGE_MODEL_NAME: 'gpt-image-2' }
+const NO_LEAK_RE = /seedream|doubao|豆包|gpt-image|gpt image|openai|anthropic|\bclaude\b|火山|方舟|\bark\b/i
+
+function editEndpointReturnsPng(input: unknown): Response {
+  const url = String(input)
+  if (url.endsWith('/images/edits') || url.endsWith('/images/generations')) {
+    return Response.json({ data: [{ b64_json: Buffer.from('generated-portrait-png').toString('base64') }] })
+  }
+  return Response.json({ detail: 'not found' }, { status: 404 })
+}
+
+function writeRefImage(root: string, name: string, width: number, height: number): void {
+  const dir = join(root, 'uploads', 'local')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, name), pngHeaderWithSize(width, height))
+}
+
+test('portrait optimize without consent is blocked and asks for authorization (white-label)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-portrait-consent-'))
+  writeRefImage(root, 'face.png', 1024, 1024)
+  try {
+    const service = new MediaJobService({ tasks: new TaskService(root), stateRoot: root, pollIntervalMs: 1, qcModel: null, env: IMAGE_ENV })
+    const started = await service.startStudioGenerate({
+      prompt: '帮我把这张助教人像形象照优化得更适合门店宣传',
+      image_provider: 'openai',
+      reference_image_paths: ['/uploads/local/face.png'],
+    })
+    const done = await waitFor(async () => {
+      const status = await service.status(started.job_id)
+      return status?.status === 'done' ? status : null
+    })
+    const r = done.result as any
+    expect(r.blocked).toBe(true)
+    expect(r.portrait_consent_required).toBe(true)
+    expect(r.portrait_gate).toBe('consent_required')
+    expect(String(r.message)).toContain('授权')
+    // 授权闸=完成态(非报错),让 agent 读到后向用户要一次确认。
+    expect(done.status).toBe('done')
+    expect(NO_LEAK_RE.test(JSON.stringify(r))).toBe(false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('portrait face detection (gateway VLM) drives the consent gate even without portrait keyword', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-portrait-face-'))
+  writeRefImage(root, 'photo.png', 1024, 1024)
+  try {
+    const vlm = fakeVlm(system => system.includes('人像照片质检')
+      ? JSON.stringify({ face_count: 1, is_real_person: true, single_subject: true, blurry: false, occluded: false, low_light: false })
+      : '{}')
+    const service = new MediaJobService({ tasks: new TaskService(root), stateRoot: root, pollIntervalMs: 1, qcModel: vlm, env: IMAGE_ENV })
+    const started = await service.startStudioGenerate({
+      prompt: '把这张照片调亮一点点',
+      image_provider: 'openai',
+      reference_image_paths: ['/uploads/local/photo.png'],
+    })
+    const done = await waitFor(async () => {
+      const status = await service.status(started.job_id)
+      return status?.status === 'done' ? status : null
+    })
+    const r = done.result as any
+    expect(r.portrait_consent_required).toBe(true)
+    expect(r.portrait_signals).toContain('input_face_detected')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('input QC blocks a too-low-resolution portrait input', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-portrait-lowres-'))
+  writeRefImage(root, 'small.png', 200, 200)
+  try {
+    const service = new MediaJobService({ tasks: new TaskService(root), stateRoot: root, pollIntervalMs: 1, qcModel: null, env: IMAGE_ENV })
+    const started = await service.startStudioGenerate({
+      prompt: '优化这张人像照片',
+      image_provider: 'openai',
+      portrait_consent: true, // 即便已授权,低质输入仍先被拦
+      reference_image_paths: ['/uploads/local/small.png'],
+    })
+    const done = await waitFor(async () => {
+      const status = await service.status(started.job_id)
+      return status?.status === 'done' ? status : null
+    })
+    const r = done.result as any
+    expect(r.blocked).toBe(true)
+    expect(r.input_quality_blocked).toBe(true)
+    expect(String(r.message)).toContain('分辨率')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('authorized portrait passes result QC and is marked commercial-ready', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-portrait-pass-'))
+  writeRefImage(root, 'face.png', 1024, 1024)
+  try {
+    const vlm = fakeVlm(system => {
+      if (system.includes('人像照片质检')) return JSON.stringify({ face_count: 1, is_real_person: true, single_subject: true, blurry: false, occluded: false, low_light: false })
+      if (system.includes('成图质检')) return JSON.stringify({ images: [{ hands_ok: true, face_ok: true, limbs_ok: true, face_count: 1, over_beautified: false, realistic: true, unwanted_text: false }] })
+      return '{}'
+    })
+    const service = new MediaJobService({ tasks: new TaskService(root), stateRoot: root, pollIntervalMs: 1, qcModel: vlm, env: IMAGE_ENV, fetchImpl: async i => editEndpointReturnsPng(i) })
+    const started = await service.startStudioGenerate({
+      prompt: '帮我把这张助教人像形象照优化得更适合门店宣传',
+      image_provider: 'openai',
+      portrait_consent: true,
+      reference_image_paths: ['/uploads/local/face.png'],
+    })
+    const done = await waitFor(async () => {
+      const status = await service.status(started.job_id)
+      return status?.status === 'done' ? status : null
+    })
+    const r = done.result as any
+    expect(r.blocked).toBeUndefined()
+    expect(r.portrait_consent_confirmed).toBe(true)
+    expect(r.portrait_qc_status).toBe('passed')
+    expect(r.portrait_qc_auto_checked).toBe(true)
+    expect(r.commercial_ready).toBe(true)
+    expect(NO_LEAK_RE.test(JSON.stringify(r))).toBe(false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('result QC flags corrupted portrait (bad hands) as risk, not commercial-ready', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-portrait-risk-'))
+  writeRefImage(root, 'face.png', 1024, 1024)
+  try {
+    const vlm = fakeVlm(system => {
+      if (system.includes('人像照片质检')) return JSON.stringify({ face_count: 1, is_real_person: true, single_subject: true, blurry: false, occluded: false, low_light: false })
+      if (system.includes('成图质检')) return JSON.stringify({ images: [{ hands_ok: false, face_ok: true, limbs_ok: true, face_count: 2, over_beautified: true, realistic: true, unwanted_text: false }] })
+      return '{}'
+    })
+    const service = new MediaJobService({ tasks: new TaskService(root), stateRoot: root, pollIntervalMs: 1, qcModel: vlm, env: IMAGE_ENV, fetchImpl: async i => editEndpointReturnsPng(i) })
+    const started = await service.startStudioGenerate({
+      prompt: '帮我把这张助教人像形象照优化得更适合门店宣传',
+      image_provider: 'openai',
+      portrait_consent: true,
+      reference_image_paths: ['/uploads/local/face.png'],
+    })
+    const done = await waitFor(async () => {
+      const status = await service.status(started.job_id)
+      return status?.status === 'done' ? status : null
+    })
+    const r = done.result as any
+    expect(r.portrait_qc_status).toBe('risk')
+    expect(r.commercial_ready).toBe(false)
+    expect((r.portrait_qc_warnings as string[]).join('')).toContain('手部')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('gateway VLM unavailable degrades result QC to "unchecked" (never fakes a pass)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-portrait-degrade-'))
+  writeRefImage(root, 'face.png', 1024, 1024)
+  try {
+    // qcModel:null => 无网关 VLM;keyword 触发人像意图,已授权放行,结果质检降级。
+    const service = new MediaJobService({ tasks: new TaskService(root), stateRoot: root, pollIntervalMs: 1, qcModel: null, env: IMAGE_ENV, fetchImpl: async i => editEndpointReturnsPng(i) })
+    const started = await service.startStudioGenerate({
+      prompt: '帮我把这张助教人像形象照优化得更适合门店宣传',
+      image_provider: 'openai',
+      portrait_consent: true,
+      reference_image_paths: ['/uploads/local/face.png'],
+    })
+    const done = await waitFor(async () => {
+      const status = await service.status(started.job_id)
+      return status?.status === 'done' ? status : null
+    })
+    const r = done.result as any
+    expect(r.portrait_qc_status).toBe('unchecked')
+    expect(r.portrait_qc_auto_checked).toBe(false)
+    expect(r.commercial_ready).toBe(false)
+    expect(String(r.portrait_qc_message)).toContain('人工把关')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('hard-text OCR proofread flags a missing poster line via gateway VLM', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-ocr-'))
+  try {
+    const vlm = fakeVlm(system => system.includes('海报文字校对')
+      ? JSON.stringify({ texts: ['周末狂欢夜'] }) // 缺"充100送50"
+      : '{}')
+    const service = new MediaJobService({ tasks: new TaskService(root), stateRoot: root, pollIntervalMs: 1, qcModel: vlm, env: IMAGE_ENV, fetchImpl: async i => editEndpointReturnsPng(i) })
+    const started = await service.startStudioGenerate({
+      prompt: '做一张周末活动海报，写上"周末狂欢夜"和"充100送50"',
+      poster_text: { title: '周末狂欢夜', promo: '充100送50' },
+    })
+    const done = await waitFor(async () => {
+      const status = await service.status(started.job_id)
+      return status?.status === 'done' ? status : null
+    })
+    const r = done.result as any
+    expect(r.hard_text_required).toBe(true)
+    expect(r.text_quality_status).toBe('ocr_mismatch')
+    expect(r.text_quality_missing).toContain('充100送50')
+    expect(NO_LEAK_RE.test(JSON.stringify(r))).toBe(false)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

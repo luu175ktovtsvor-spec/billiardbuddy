@@ -5,7 +5,10 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js'
 import { z } from 'zod'
 import { Workspace } from '../workspace/workspace'
-import { closeMcpConnections, connectMcpServers } from './client'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
+import { closeMcpConnections, connectMcpServers, createTransport } from './client'
 
 function writeFixtureServer(root: string): string {
   const file = join(root, 'fixture-mcp-server.ts')
@@ -100,6 +103,16 @@ await server.connect(new StdioServerTransport())
 `)
   return file
 }
+
+test('createTransport:type:sse 走 SSEClientTransport,http 走 Streamable,stdio 走 Stdio(传输路由对齐 cc)', () => {
+  // type:'sse' 之前被误当 streamable http;现在正确路由到旧式 SSE 传输(长连 + POST 回发)。
+  const sse = createTransport({ name: 'x', transport: 'sse', url: 'https://example.test/sse', headers: { Authorization: 'Bearer t' } }, {})
+  expect(sse).toBeInstanceOf(SSEClientTransport)
+  const http = createTransport({ name: 'x', transport: 'http', url: 'https://example.test/mcp' }, {})
+  expect(http).toBeInstanceOf(StreamableHTTPClientTransport)
+  const stdio = createTransport({ name: 'x', transport: 'stdio', command: 'node', args: [] }, {})
+  expect(stdio).toBeInstanceOf(StdioClientTransport)
+})
 
 test('connectMcpServers connects stdio server, exposes tools, and calls through JSON-RPC', async () => {
   const root = mkdtempSync(join(process.cwd(), '.mcp-client-'))

@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadHookRegistryFile, normalizeHookRegistry } from './hookConfig'
+import { loadHookRegistryFile, loadPluginHookRegistry, normalizeHookRegistry } from './hookConfig'
 import { configureHookTrust, resetHookTrust, runHookEvent } from './hooks'
 
 // 前后都复位:防其它测试文件(index.test.ts 的 startServer 会 configureHookTrust)在同进程泄漏进程级 override。
@@ -767,6 +767,72 @@ test('normalizeHookRegistry agent hook returns non-blocking context when registr
     ])
     expect(model.received).toHaveLength(0)
   } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('normalizeHookRegistry:新增生命周期事件(PreCompact/PostCompact/SessionEnd/Notification/PostToolUseFailure)进白名单可派发', async () => {
+  const registry = normalizeHookRegistry({
+    hooks: {
+      PreCompact: [{ hooks: [{ decision: { action: 'context', additionalContext: 'pre' } }] }],
+      PostCompact: [{ hooks: [{ decision: { action: 'context', additionalContext: 'post' } }] }],
+      SessionEnd: [{ hooks: [{ decision: { action: 'context', additionalContext: 'end' } }] }],
+      Notification: [{ hooks: [{ decision: { action: 'context', additionalContext: 'notify' } }] }],
+      PostToolUseFailure: [{ matcher: 'run_command', hooks: [{ decision: { action: 'context', additionalContext: 'fail' } }] }],
+    },
+  })
+  const ctx = { workspace: new Workspace(mkdtempSync(join(tmpdir(), 'hook-config-lifecycle-'))) }
+  expect(await runHookEvent(registry, { event: 'PreCompact', compactTrigger: 'auto' }, ctx)).toEqual([{ action: 'context', additionalContext: 'pre' }])
+  expect(await runHookEvent(registry, { event: 'PostCompact', compactTrigger: 'auto', compactSummary: 's' }, ctx)).toEqual([{ action: 'context', additionalContext: 'post' }])
+  expect(await runHookEvent(registry, { event: 'SessionEnd', sessionEndReason: 'clear' }, ctx)).toEqual([{ action: 'context', additionalContext: 'end' }])
+  expect(await runHookEvent(registry, { event: 'Notification', notificationMessage: 'm' }, ctx)).toEqual([{ action: 'context', additionalContext: 'notify' }])
+  expect(await runHookEvent(registry, { event: 'PostToolUseFailure', toolName: 'run_command', errorMessage: 'x' }, ctx)).toEqual([{ action: 'context', additionalContext: 'fail' }])
+})
+
+test('commandHookPayload:PreCompact/Notification/SessionEnd 载荷字段以 cc snake_case 送到命令 hook stdin', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-config-payload-'))
+  try {
+    const out = join(root, 'payload.json')
+    // hook 命令把 stdin 原样落盘,供断言字段名对齐 cc(trigger/compact_summary/message/notification_type/reason)。
+    const cmd = `${process.execPath} -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>require('fs').writeFileSync(process.argv[1],d))" ${JSON.stringify(out)}`
+    const registry = normalizeHookRegistry({
+      hooks: { PostCompact: [{ hooks: [{ type: 'command', command: cmd }] }] },
+    })
+    const ctx = { workspace: new Workspace(root), conversationId: 'sess-x' }
+    await runHookEvent(registry, { event: 'PostCompact', compactTrigger: 'manual', compactSummary: '摘要文本', sessionId: 'sess-x' }, ctx)
+    const parsed = JSON.parse(readFileSync(out, 'utf8')) as Record<string, unknown>
+    expect(parsed.hook_event_name).toBe('PostCompact')
+    expect(parsed.trigger).toBe('manual')
+    expect(parsed.compact_summary).toBe('摘要文本')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('loadPluginHookRegistry:插件 hooks.json 归一为 source:plugin 的注册表,能真触发', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'plugin-hooks-'))
+  try {
+    // cc 包裹结构:{ description, hooks: { <event>: [{matcher, hooks:[...]}] } }
+    const fileA = join(root, 'a-hooks.json')
+    writeFileSync(fileA, JSON.stringify({
+      description: 'plugin A hooks',
+      hooks: { PreToolUse: [{ matcher: 'write_file', hooks: [{ decision: { action: 'deny', message: 'A blocks write' } }] }] },
+    }))
+    // 裸事件映射也支持
+    const fileB = join(root, 'b-hooks.json')
+    writeFileSync(fileB, JSON.stringify({ SessionStart: [{ hooks: [{ decision: { action: 'context', additionalContext: 'B ctx' } }] }] }))
+
+    const registry = await loadPluginHookRegistry([fileA, fileB, join(root, 'missing.json')])
+    expect(registry).toBeTruthy()
+    expect(registry!.rules.every(rule => rule.source === 'plugin')).toBe(true)
+
+    const ctx = { workspace: new Workspace(root) }
+    // 插件源 hook 即便工作区未受信也照跑(app 级可信,不过 workspace trust 闸)
+    configureHookTrust({ interactive: true, isWorkspaceTrusted: () => false })
+    expect(await runHookEvent(registry, { event: 'PreToolUse', toolName: 'write_file' }, ctx)).toEqual([{ action: 'deny', message: 'A blocks write' }])
+    expect(await runHookEvent(registry, { event: 'SessionStart' }, ctx)).toEqual([{ action: 'context', additionalContext: 'B ctx' }])
+  } finally {
+    resetHookTrust()
     rmSync(root, { recursive: true, force: true })
   }
 })

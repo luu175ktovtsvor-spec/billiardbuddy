@@ -12,6 +12,8 @@ interface ImageToolInput {
   reference_generation_ids?: string[]
   poster_text?: Record<string, unknown>
   print_mode?: boolean
+  portrait?: boolean
+  portrait_consent?: boolean
 }
 
 function imageBody(input: ImageToolInput, ctx: ToolContext): Record<string, unknown> {
@@ -26,6 +28,8 @@ function imageBody(input: ImageToolInput, ctx: ToolContext): Record<string, unkn
     reference_generation_ids: input.reference_generation_ids,
     poster_text: input.poster_text,
     print_mode: input.print_mode === true,
+    portrait: input.portrait === true,
+    portrait_consent: input.portrait_consent === true,
     conversation_id: ctx.conversationId,
   }
 }
@@ -42,7 +46,7 @@ function mediaStarted(id: string, kind: string, title: string): string {
 export function createMediaTools(media: MediaJobService): Tool[] {
   const makePoster: Tool<ImageToolInput> = {
     name: 'make_poster',
-    description: 'Generate a marketing poster/image for the store as a background media job. Expand the user request into a concrete Chinese visual prompt. Input: { description, style?, ratio?, count?, image_prompt?, reference_image_paths?, reference_generation_ids?, poster_text?, print_mode? }.',
+    description: 'Generate a marketing poster/image for the store as a background media job. Expand the user request into a concrete Chinese visual prompt. Input: { description, style?, ratio?, count?, image_prompt?, reference_image_paths?, reference_generation_ids?, poster_text?, print_mode?, portrait?, portrait_consent? }. When optimizing a real person\'s photo (portrait/headshot from an uploaded reference), the job first requires portrait authorization: if the result asks for consent, tell the user and only re-run with portrait_consent:true after they confirm they hold usage rights and the subject agreed. Do not sell face-swap/deepfake as a feature.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -56,6 +60,8 @@ export function createMediaTools(media: MediaJobService): Tool[] {
         reference_generation_ids: { type: 'array', items: { type: 'string' } },
         poster_text: { type: 'object' },
         print_mode: { type: 'boolean' },
+        portrait: { type: 'boolean' },
+        portrait_consent: { type: 'boolean' },
       },
       required: ['description'],
     },
