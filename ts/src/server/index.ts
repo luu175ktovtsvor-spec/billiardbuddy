@@ -32,7 +32,7 @@ import {
 import { VoiceTranscriptionError, transcribeVoiceFile } from './services/voiceTranscription'
 import { buildGeneralRegistry } from '../tools/generalTools'
 import { workspaceForActiveWorktree } from '../tools/worktreeTools'
-import { allowSkillTools, formatUseSkillResult, loadSkillsDir, recordInvokedSkill, registerSkillHooks } from '../skills/skillLoader'
+import { allowSkillTools, bundledSkillsRoot, formatUseSkillResult, loadLayeredSkills, loadSkillsDir, recordInvokedSkill, registerSkillHooks, userSkillsRoot } from '../skills/skillLoader'
 import { createInvokedSkillsMessage, restoreInvokedSkillsFromMessages } from '../skills/invokedSkills'
 import { createBuiltinCommandLibrary, isBuiltinForkCommand } from '../commands/builtinCommands'
 import { allowedToolsForAgent } from '../commands/allowedTools'
@@ -396,12 +396,9 @@ function validateImageModelPayload(body: Record<string, unknown>) {
   }
 }
 
+/** app 内置技能根(=cc bundled skills):`ts/src/skills/bundled`。旧值指向已删的 server/skills → 写盘/加载全废,已修。 */
 function defaultSkillsRoot(): string {
-  const candidates = [
-    join(process.cwd(), 'server', 'skills'),
-    join(process.cwd(), '..', 'server', 'skills'),
-  ]
-  return candidates.find(existsSync) ?? candidates[0]!
+  return bundledSkillsRoot()
 }
 
 function defaultHooksPath(): string | undefined {
@@ -1450,8 +1447,10 @@ export function startServer(opts: StartServerOptions = {}) {
     const contextWindowTokens = requestedContextWindowTokens > 0
       ? requestedContextWindowTokens
       : getConfiguredOrBuiltInModelContextWindow(providerRuntime.config.model, opts.env ?? process.env)
+    // 三层落点(白标目录):bundled(app 内置,managed) + user(~/.billiardbuddy/skills) + workspace(.billiardbuddy/skills,local 信任)。
     const skillsRoot = opts.skillsRoot ?? defaultSkillsRoot()
-    const skills = await loadSkillsDir(skillsRoot)
+    const createSkillsRoot = userSkillsRoot()
+    const skills = await loadLayeredSkills({ bundledRoot: skillsRoot, workspaceRoot: workspace.root })
     const enabledPacks = resolveEnabledPacks(rawBody)
     const commands = await loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), enabledPacks, opts.env ?? process.env)
     // 技能/命令发现清单注入系统提示(对齐 cc SkillTool skill listing):汇总 builtin 命令 + 技能 + 已启用领域包命令,
@@ -1614,8 +1613,8 @@ export function startServer(opts: StartServerOptions = {}) {
     })
     const mediaTools = createMediaTools(media)
     const storeDocTools = [createStoreDocsTool(storeDocs)]
-    const backgroundBaseRegistry = buildGeneralRegistry({ skills, skillsRoot, skillRecommendations, executeSkill, commands, extraTools: [...domainPackTools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
-    const baseRegistry = buildGeneralRegistry({ skills, skillsRoot, skillRecommendations, executeSkill, commands, extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
+    const backgroundBaseRegistry = buildGeneralRegistry({ skills, skillsRoot: createSkillsRoot, skillRecommendations, executeSkill, commands, extraTools: [...domainPackTools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
+    const baseRegistry = buildGeneralRegistry({ skills, skillsRoot: createSkillsRoot, skillRecommendations, executeSkill, commands, extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
     backgroundAgentOptions = {
       tasks,
       agents,
@@ -1678,7 +1677,7 @@ export function startServer(opts: StartServerOptions = {}) {
     const backgroundTools = agents.length > 0
       ? [createBackgroundAgentTaskTool(backgroundAgentOptions)]
       : []
-    const registry = buildGeneralRegistry({ skills, skillsRoot, skillRecommendations, executeSkill, commands, extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools, ...agentTools, ...agentSidechainTools, ...backgroundTools] })
+    const registry = buildGeneralRegistry({ skills, skillsRoot: createSkillsRoot, skillRecommendations, executeSkill, commands, extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools, ...agentTools, ...agentSidechainTools, ...backgroundTools] })
     const launchContextForkCommand = async (command: PromptCommand): Promise<string> => {
       const expandedPrompt = commandInvocation?.prompt.trim() ?? ''
       if (!expandedPrompt) return `/${command.name} 没有可执行的命令内容。`
@@ -2101,7 +2100,7 @@ export function startServer(opts: StartServerOptions = {}) {
     const agentsRoot = opts.agentsRoot ?? defaultAgentsRoot()
     const enabledPacks = resolveEnabledPacks(rawBody)
     const [skills, commands, hooks, agents] = await Promise.all([
-      loadSkillsDir(skillsRoot),
+      loadLayeredSkills({ bundledRoot: skillsRoot, workspaceRoot: workspace.root }),
       loadCommandsForWorkspace(workspace.root, commandsRoot, enabledPacks, opts.env ?? process.env),
       loadHookRegistryFile(hooksPath),
       loadAgentsDir(agentsRoot),
@@ -2171,7 +2170,7 @@ export function startServer(opts: StartServerOptions = {}) {
     // plugin 运行时接入:已启用插件的 skills/.mcp.json 并入本次会话(插件是 app 级可信来源,mcp 直接加载不走工作区信任闸)。
     const pluginContribs = await resolveEnabledPluginContributions(defaultPluginRoots(opts.env ?? process.env)).catch(() => ({ skillsDirs: [], commandsDirs: [], mcpConfigPaths: [] }))
     const [skills, commands, pluginSkillsLibs] = await Promise.all([
-      loadSkillsDir(skillsRoot),
+      loadLayeredSkills({ bundledRoot: skillsRoot, workspaceRoot: workspace.root }),
       loadCommandsForWorkspace(workspace.root, commandsRoot, enabledPacks, opts.env ?? process.env),
       Promise.all(pluginContribs.skillsDirs.map(dir => loadSkillsDir(dir).catch(() => null))),
     ])
@@ -2192,7 +2191,7 @@ export function startServer(opts: StartServerOptions = {}) {
     const allConnections = [...mcpTools.connections, ...pluginMcpResults.flatMap(r => r.connections)]
     const registry = buildGeneralRegistry({
       skills: allSkills,
-      skillsRoot,
+      skillsRoot: userSkillsRoot(),
       skillRecommendations: suggestedSkillNamesForPacks(enabledPacks),
       commands,
       extraTools: [...domainPackTools, ...allMcpTools, ...createTaskTools(tasks), ...createStructuredTaskTools(taskLists), ...createTeamTools(teams, { tasks, udsPeers, bridgePeers, sendBridgeMessage: bridgeSendMessageFor(rawBody) }), ...createMediaTools(media), createStoreDocsTool(storeDocs)],
@@ -3323,7 +3322,7 @@ export function startServer(opts: StartServerOptions = {}) {
 
       if (url.pathname === '/api/v1/agent/skills') {
         if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        const skills = await loadSkillsDir(opts.skillsRoot ?? defaultSkillsRoot())
+        const skills = await loadLayeredSkills({ bundledRoot: opts.skillsRoot ?? defaultSkillsRoot() })
         return Response.json({
           skills: skills.skills.map(skill => ({
             name: skill.name,
@@ -3364,7 +3363,7 @@ export function startServer(opts: StartServerOptions = {}) {
           billiards_mode: url.searchParams.get('billiards_mode') === 'true' || url.searchParams.get('billiardsMode') === 'true',
         })
         const [skills, commands] = await Promise.all([
-          loadSkillsDir(opts.skillsRoot ?? defaultSkillsRoot()),
+          loadLayeredSkills({ bundledRoot: opts.skillsRoot ?? defaultSkillsRoot(), workspaceRoot: workspace.root }),
           loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), enabledPacks, opts.env ?? process.env),
         ])
         return Response.json({ commands: toPublicCommandEntries(collectDiscoveryEntries({ commands, skills })) })
