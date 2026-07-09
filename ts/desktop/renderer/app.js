@@ -9,7 +9,10 @@
   const statusEl = $('status');
   const emptyEl = $('empty');
 
-  const conversationId = 'desk-' + Math.random().toString(36).slice(2, 10);
+  const sesslist = $('sesslist');
+  const newChatBtn = $('newchat');
+  const newId = () => 'desk-' + Math.random().toString(36).slice(2, 10);
+  let conversationId = newId();
   const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   let ws = null;
   let running = false;
@@ -111,6 +114,43 @@
 
   function wsSend(obj) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); }
 
+  // 会话列表(接后端 /sessions)
+  async function refreshSessions() {
+    try {
+      const data = await (await fetch('/sessions')).json();
+      renderSessions(data.sessions || []);
+    } catch { /* 后端未就绪时静默 */ }
+  }
+  function renderSessions(list) {
+    if (!list.length) { sesslist.innerHTML = '<div class="empty-s">还没有会话</div>'; return; }
+    sesslist.innerHTML = '';
+    list.forEach((s) => {
+      const d = el('sess' + (s.id === conversationId ? ' active' : ''));
+      d.innerHTML = '<div class="t">' + esc(s.title || '新会话') + '</div><div class="m">' + esc(new Date(s.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })) + '</div>';
+      d.onclick = () => switchSession(s.id);
+      sesslist.appendChild(d);
+    });
+  }
+  function clearThread() {
+    wrap.innerHTML = '';
+    assistantEl = null;
+    if (emptyEl) { const e = emptyEl.cloneNode(true); e.style.display = ''; wrap.appendChild(e); }
+  }
+  let wantReplay = false; // 切到已有会话时,ready 后请求全量事件重放回填历史
+  function reconnect() { if (ws) { try { ws.onclose = null; ws.close(); } catch {} } connect(); }
+  function newChat() {
+    conversationId = newId(); wantReplay = false;
+    running = false; sendBtn.disabled = false;
+    clearThread(); reconnect(); refreshSessions();
+  }
+  function switchSession(id) {
+    if (id === conversationId || running) return;
+    conversationId = id; wantReplay = true;
+    clearThread(); if (emptyEl) emptyEl.style.display = 'none';
+    reconnect();
+  }
+  newChatBtn.addEventListener('click', newChat);
+
   function connect() {
     ws = new WebSocket(wsProto + '//' + location.host + '/agent/ws?conversationId=' + encodeURIComponent(conversationId));
     ws.onopen = () => setStatus(true, '已连接');
@@ -118,11 +158,15 @@
     ws.onerror = () => setStatus(false, '连接错误');
     ws.onmessage = (e) => {
       let msg; try { msg = JSON.parse(e.data); } catch { return; }
-      if (msg.type === 'ready') { setStatus(true, '已连接'); return; }
+      if (msg.type === 'ready') {
+        setStatus(true, '已连接');
+        if (wantReplay) { wantReplay = false; wsSend({ type: 'replay', conversationId: conversationId, after: 0 }); }
+        return;
+      }
       if (msg.type === 'error') { wrap.appendChild(el('err-line', '错误:' + esc(msg.error))); scrollDown(); return; }
       if (msg.type === 'event' && msg.event) {
         renderEvent(msg.event);
-        if (msg.event.type === 'final' || msg.event.type === 'done') { running = false; sendBtn.disabled = false; }
+        if (msg.event.type === 'final' || msg.event.type === 'done') { running = false; sendBtn.disabled = false; refreshSessions(); }
         return;
       }
       if (msg.type === 'approve_result') {
@@ -152,4 +196,5 @@
   sendBtn.addEventListener('click', send);
 
   connect();
+  refreshSessions();
 })();
