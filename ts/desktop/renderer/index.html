@@ -275,7 +275,7 @@
   .retry-btn:hover { background: var(--wb-brand-tint); }
 
   /* 输入区 */
-  footer { flex: none; border-top: 1px solid var(--hairline); padding: 12px 0 16px; background: var(--bg); }
+  footer { position: relative; flex: none; border-top: 1px solid var(--hairline); padding: 12px 0 16px; background: var(--bg); }
   .composer-wrap { max-width: 720px; margin: 0 auto; padding: 0 24px; }
   .expert-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
   .expert-row label { font-size: 12px; color: var(--text-2); }
@@ -289,6 +289,38 @@
   .composer button:active { transform: scale(0.98); }
   .composer button:disabled { opacity: 0.45; cursor: default; }
   .empty { text-align: center; color: var(--text-2); font-size: 14px; margin-top: 22vh; }
+
+  /* —— 流式尾光标(cc AssistantMessage:isStreaming 时气泡尾闪烁竖条,色=品牌绿) —— */
+  .msg.assistant .av { display: inline; white-space: pre-wrap; }
+  .wb-cursor { display: inline-block; width: 2px; height: 1em; background: var(--accent); vertical-align: text-bottom; margin-left: 1px; border-radius: 1px; animation: wb-cursor-blink 1s step-end infinite; }
+  @keyframes wb-cursor-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+  /* —— 思考折叠块(cc ThinkingBlock:▸思考中+循环动画点 / 已思考;body 可滚,默认折叠低噪) —— */
+  .think { margin: 6px 0; }
+  .think > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); user-select: none; padding: 2px 0; transition: color var(--wb-dur-fast) var(--wb-ease-standard); }
+  .think > summary:hover { color: var(--wb-text-secondary); }
+  .think > summary::-webkit-details-marker { display: none; }
+  .think > summary .caret::before { content: '\25B8'; font-size: 10px; color: var(--text-2); }
+  .think[open] > summary .caret::before { content: '\25BE'; }
+  .think > summary .label { font-weight: 500; font-style: italic; }
+  .think > summary .dots::after { content: ''; animation: wb-think-dots 1.4s steps(1, end) infinite; }
+  .think:not(.active) > summary .dots { display: none; }
+  @keyframes wb-think-dots { 0%, 20% { content: ''; } 40% { content: '\00B7'; } 60% { content: '\00B7\00B7'; } 80%, 100% { content: '\00B7\00B7\00B7'; } }
+  .think-body { max-height: 300px; overflow-y: auto; margin-top: 4px; padding: 8px 10px; border-left: 2px solid var(--hairline); font-size: 12px; color: var(--text-2); white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+
+  /* —— 运行指示 pill(cc StreamingIndicator:闪烁✦ + 动词 + 计时 + token 估算) —— */
+  #run-indicator { display: none; align-items: center; gap: 6px; width: fit-content; margin: 0 auto 8px; padding: 3px 11px; border: 1px solid var(--hairline); border-radius: var(--wb-radius-full); background: var(--wb-bg-elevated); box-shadow: var(--wb-shadow-sm); }
+  #run-indicator.show { display: flex; }
+  #run-indicator .spark { color: var(--accent); font-size: 12px; line-height: 1; animation: wb-spark-blink 1.6s ease-in-out infinite; }
+  #run-indicator .verb { font-size: 12px; font-weight: 500; color: var(--text-2); }
+  #run-indicator .meta { font-size: 11px; color: var(--wb-text-tertiary); }
+  @keyframes wb-spark-blink { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+
+  /* —— 回到最新药丸(cc MessageList jump-to-latest:WorkBuddy 中性白底 + 绿 ↓) —— */
+  .jump-latest { position: absolute; right: 24px; top: -48px; z-index: 20; display: none; align-items: center; gap: 6px; height: 32px; padding: 0 13px; border: 1px solid var(--hairline); border-radius: var(--wb-radius-full); background: var(--wb-bg-elevated); color: var(--text); font-size: 12px; cursor: pointer; box-shadow: var(--wb-shadow-md); -webkit-app-region: no-drag; transition: border-color var(--wb-dur-sm) var(--wb-ease-standard), background var(--wb-dur-sm) var(--wb-ease-standard); }
+  .jump-latest.show { display: inline-flex; }
+  .jump-latest:hover { border-color: var(--accent); background: var(--wb-fill-hover); }
+  .jump-latest .arr { color: var(--accent); font-size: 13px; line-height: 1; }
 </style>
 </head>
 <body>
@@ -312,7 +344,9 @@
     </header>
     <div id="thread"><div class="wrap"><div class="empty" id="empty">有什么要处理的，尽管说。读写文件、跑命令、上网查资料，管家一口气帮你做完。</div></div></div>
     <footer>
+      <button class="jump-latest" id="jump-latest">回到最新 <span class="arr">↓</span></button>
       <div class="composer-wrap">
+        <div id="run-indicator"><span class="spark">✦</span><span class="verb">处理中…</span></div>
         <div class="expert-row">
           <label for="expert">专家</label>
           <select id="expert"><option value="">通用助手</option></select>

@@ -8,6 +8,8 @@
   const sendBtn = $('send');
   const statusEl = $('status');
   const emptyEl = $('empty');
+  const jumpBtn = $('jump-latest');       // 回到最新药丸(智能滚动)
+  const runIndicator = $('run-indicator'); // 运行指示 pill
 
   const sesslist = $('sesslist');
   const newChatBtn = $('newchat');
@@ -127,7 +129,15 @@
   const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   let ws = null;
   let running = false;
-  let assistantEl = null; // 当前 assistant 文本累积节点
+  let assistantEl = null; // 当前 assistant 文本累积节点(.text 容器,内含 .av 值节点)
+  let cursorEl = null;    // 流式尾光标(cc AssistantMessage:isStreaming 竖条)
+  let pendingDelta = '';  // content_delta 攒批(50ms 节流 flush)
+  let flushTimer = null;
+  let thinkEl = null;     // 当前思考折叠块(<details class=think>)
+  let thinkBody = null;
+  let sawStreaming = false; // 本轮是否已收到流式增量(text/thinking 任一)→ 去重步末合并事件
+  let streamChars = 0;    // 本轮累计流式字符(估 token = ÷4)
+  let runTimer = null, runStart = 0, runVerb = ''; // 运行指示 pill 计时态
   let defaultPermissionMode = 'default'; // 从 /api/settings 读的默认权限档
 
   async function loadSettings() {
@@ -141,7 +151,40 @@
     statusEl.className = 'status' + (online ? ' online' : '');
     statusEl.innerHTML = '<span class="dot"></span>' + text;
   }
-  function scrollDown() { thread.scrollTop = thread.scrollHeight; }
+  // —— 智能滚动跟随 + 回到最新(cc MessageList:isNearBottom 48px 才自动跟随;上滚即停、浮出药丸)——
+  const SCROLL_FOLLOW_PX = 48;
+  let shouldAutoScroll = true;   // 用户在底部才自动跟随;上滚即停
+  let progScroll = false;        // 正在程序化置底
+  let ignoreScrollUntil = 0;     // 程序化置底后 ~250ms 忽略窗(防按钮闪)
+  let progScrollTop = null;      // 程序化置底目标 scrollTop(区分用户上滚)
+  function isNearBottom() { return thread.scrollHeight - thread.scrollTop - thread.clientHeight <= SCROLL_FOLLOW_PX; }
+  function setJump(show) { if (jumpBtn) jumpBtn.classList.toggle('show', !!show); }
+  function scrollToBottom() {
+    shouldAutoScroll = true; progScroll = true;
+    ignoreScrollUntil = performance.now() + 250;
+    thread.scrollTop = thread.scrollHeight; progScrollTop = thread.scrollTop;
+    setJump(false);
+    requestAnimationFrame(() => {
+      if (shouldAutoScroll) { thread.scrollTop = thread.scrollHeight; progScrollTop = thread.scrollTop; }
+      progScroll = false;
+    });
+  }
+  function scrollDown() { if (shouldAutoScroll) scrollToBottom(); } // 跟随态才贴底(替代旧的无脑置底)
+  thread.addEventListener('scroll', () => {
+    const matchesProg = progScrollTop !== null && Math.abs(thread.scrollTop - progScrollTop) < 1;
+    if (matchesProg && (progScroll || performance.now() < ignoreScrollUntil)) return; // 忽略自己的程序化置底
+    const atBottom = isNearBottom();
+    shouldAutoScroll = atBottom; setJump(!atBottom);
+  }, { passive: true });
+  if (typeof ResizeObserver !== 'undefined') {
+    let lastH = null;
+    new ResizeObserver((entries) => { // 流式增长:观察 .wrap 高度,跟随态贴底
+      const h = entries[0] && entries[0].contentRect ? entries[0].contentRect.height : null;
+      if (typeof h === 'number' && isFinite(h)) { if (lastH !== null && Math.abs(h - lastH) < 2) return; lastH = h; }
+      if (shouldAutoScroll) scrollToBottom();
+    }).observe(wrap);
+  }
+  if (jumpBtn) jumpBtn.onclick = () => scrollToBottom();
   function el(cls, html) { const d = document.createElement('div'); d.className = cls; if (html != null) d.innerHTML = html; return d; }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
   function clip(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n) + '…' : s; }
@@ -178,27 +221,99 @@
   function addUser(text) {
     hideEmpty();
     const m = el('msg user'); m.appendChild(el('bubble', esc(text)));
-    wrap.appendChild(m); scrollDown();
+    wrap.appendChild(m); scrollToBottom(); // 发新用户消息强制回底(cc:user_text → scrollToBottom)
   }
   function ensureAssistant() {
     if (!assistantEl) {
-      const m = el('msg assistant'); assistantEl = el('text', ''); m.appendChild(assistantEl);
-      wrap.appendChild(m);
+      const m = el('msg assistant'); assistantEl = el('text'); assistantEl._val = el('av'); assistantEl.appendChild(assistantEl._val);
+      m.appendChild(assistantEl); wrap.appendChild(m);
     }
     return assistantEl;
   }
+  // —— 流式尾光标 + 50ms 节流(cc AssistantMessage 尾光标 + chatStore content_delta 节流)——
+  function showCursor(a) { if (!cursorEl) cursorEl = el('wb-cursor'); if (cursorEl.parentNode !== a) a.appendChild(cursorEl); }
+  function removeCursor() { if (cursorEl) { try { cursorEl.remove(); } catch {} cursorEl = null; } }
+  function assistantAppend(text) { const a = ensureAssistant(); a._val.textContent += text; showCursor(a); }
+  function assistantSet(text) { const a = ensureAssistant(); a._val.textContent = text; }
+  function flushDelta() { // 立即把攒批 flush 进气泡
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+    if (pendingDelta) { const t = pendingDelta; pendingDelta = ''; assistantAppend(t); scrollDown(); }
+  }
+  function queueDelta(text) { // content_delta 攒进 pendingDelta,每 50ms flush 一次
+    pendingDelta += text;
+    if (!flushTimer) flushTimer = setTimeout(() => { flushTimer = null; const t = pendingDelta; pendingDelta = ''; if (t) { assistantAppend(t); scrollDown(); } }, 50);
+  }
+  function settleAssistant() { flushDelta(); removeCursor(); assistantEl = null; } // 文本气泡落定成独立块
+  // —— 思考折叠块(cc ThinkingBlock:思考中+动画点 / 已思考;同轮多段累进同一块)——
+  function ensureThink() {
+    if (!thinkEl) {
+      thinkEl = document.createElement('details'); thinkEl.className = 'think active';
+      thinkEl.innerHTML = '<summary><span class="caret"></span><span class="label">思考中</span><span class="dots"></span></summary>';
+      thinkBody = el('think-body'); thinkEl.appendChild(thinkBody);
+      wrap.appendChild(thinkEl);
+    }
+    return thinkEl;
+  }
+  function appendThink(text) {
+    ensureThink(); thinkBody.textContent += text;
+    if (thinkEl.open) thinkBody.scrollTop = thinkBody.scrollHeight; // 展开+活跃时贴底
+    scrollDown();
+  }
+  function finalizeThink() { // 本段思考收尾:切"已思考"、停动画
+    if (thinkEl) {
+      thinkEl.classList.remove('active');
+      const lb = thinkEl.querySelector('.label'); if (lb) lb.textContent = '已思考';
+      thinkEl = null; thinkBody = null;
+    }
+  }
+  // —— 运行指示 pill(cc StreamingIndicator:闪烁✦ + 动词 + 计时 + token 估算)——
+  function fmtElapsed(s) { if (s < 60) return s + 's'; return Math.floor(s / 60) + 'm ' + (s % 60) + 's'; }
+  function fmtTokens(n) { return n < 1000 ? String(n) : (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k'; }
+  function renderRun() {
+    if (!runIndicator) return;
+    const secs = Math.max(0, Math.floor((performance.now() - runStart) / 1000));
+    const tok = Math.round(streamChars / 4);
+    let h = '<span class="spark">✦</span><span class="verb">' + esc(runVerb) + '</span>';
+    if (secs > 0) h += '<span class="meta">' + fmtElapsed(secs) + '</span>';
+    if (tok > 0) h += '<span class="meta">· ↓ ' + fmtTokens(tok) + ' tokens</span>';
+    runIndicator.innerHTML = h;
+  }
+  function showRun(verb) {
+    runVerb = verb; if (!runIndicator) return;
+    runIndicator.classList.add('show');
+    if (!runTimer) { runStart = performance.now(); runTimer = setInterval(renderRun, 1000); }
+    renderRun();
+  }
+  function setRunVerb(verb) { if (runIndicator && runIndicator.classList.contains('show') && runVerb !== verb) { runVerb = verb; renderRun(); } }
+  function hideRun() { if (runTimer) { clearInterval(runTimer); runTimer = null; } if (runIndicator) runIndicator.classList.remove('show'); }
 
   function renderEvent(ev) {
     switch (ev.type) {
       case 'content_delta':
-        // token 级流式:正文增量打字机式追加到当前 assistant 节点(推理增量本切片先不逐字渲，靠完整 thinking 事件)。
-        if (ev.channel === 'text' && ev.text) { ensureAssistant().textContent += ev.text; scrollDown(); }
+        // token 级流式:正文攒批 50ms flush(尾光标);推理增量实时进思考折叠块(思考中)。
+        if (ev.channel === 'text' && ev.text) {
+          finalizeThink();                 // 正文开始 → 本段思考收尾切"已思考"
+          sawStreaming = true;
+          streamChars += ev.text.length; setRunVerb('处理中…');
+          queueDelta(ev.text);
+        } else if (ev.channel === 'thinking' && ev.text) {
+          if (assistantEl) settleAssistant(); // 思考到来先把当前文本气泡落定(一轮多气泡分块)
+          sawStreaming = true;
+          streamChars += ev.text.length; setRunVerb('思考中…');
+          appendThink(ev.text);
+        }
         break;
       case 'thinking':
-        if (ev.text && ev.text.trim()) { wrap.appendChild(el('thinking', esc(ev.text))); scrollDown(); }
+        // 步末合并事件(=本步 thinking[+正文]):流式已逐字渲过则整条吞掉去重;非流式模型才落进折叠块。
+        if (ev.text && ev.text.trim() && !sawStreaming) {
+          if (assistantEl) settleAssistant(); setRunVerb('思考中…'); appendThink(ev.text);
+        }
         break;
       case 'command_invocation':
       case 'tool_call': {
+        settleAssistant();  // 一轮多气泡分块:文本气泡落定成独立块
+        finalizeThink();    // 思考收尾
+        setRunVerb('运行中…');
         const label = ev.tool || ev.command || '工具';
         const a = ev.args && typeof ev.args === 'object' ? ev.args : {};
         const path = a.path || (Array.isArray(a.patches) && a.patches[0] && a.patches[0].path) || '';
@@ -224,19 +339,23 @@
           const ico = target.querySelector('.ico'); if (ico) ico.innerHTML = isErr ? '&#10007;' : '&#10003;';
           const pre = document.createElement('pre'); pre.textContent = ev.output || ''; target.appendChild(pre);
         }
-        assistantEl = null;
+        finalizeThink(); settleAssistant();
         scrollDown();
         break;
       }
       case 'final':
-        ensureAssistant().textContent = ev.text || '';
-        assistantEl = null;
+        finalizeThink();
+        flushDelta();                       // 落定攒批
+        if (ev.text) assistantSet(ev.text); // final 全文为权威,覆盖流式累积
+        removeCursor(); assistantEl = null; // 移除尾光标
+        hideRun();
         scrollDown();
         break;
       case 'steering':
         wrap.appendChild(el('thinking', '↳ 插话:' + esc(ev.content))); scrollDown();
         break;
       case 'context_note':
+        if (/压缩|compact/i.test(String(ev.text || ''))) setRunVerb('正在压缩上下文…');
         wrap.appendChild(el('thinking', esc(ev.text))); scrollDown();
         break;
       case 'max_turns_reached':
@@ -301,7 +420,9 @@
   }
   function clearThread() {
     wrap.innerHTML = '';
-    assistantEl = null;
+    assistantEl = null; thinkEl = null; thinkBody = null; sawStreaming = false;
+    removeCursor(); if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; } pendingDelta = '';
+    hideRun(); shouldAutoScroll = true;
     changedFiles.clear(); changesN.textContent = '0'; changesBtn.classList.remove('has'); previewEl.classList.remove('show');
     if (emptyEl) { const e = emptyEl.cloneNode(true); e.style.display = ''; wrap.appendChild(e); }
   }
@@ -339,6 +460,7 @@
       }
       if (msg.type === 'error') {
         running = false; sendBtn.disabled = false;
+        finalizeThink(); settleAssistant(); hideRun();
         const line = el('err-line', '这次没跑成：' + esc(msg.error) + '。检查一下再点重试，或换个说法重新发。 ');
         if (lastUserMessage) {
           const retry = document.createElement('button'); retry.className = 'retry-btn'; retry.textContent = '重试';
@@ -349,7 +471,7 @@
       }
       if (msg.type === 'event' && msg.event) {
         renderEvent(msg.event);
-        if (msg.event.type === 'final' || msg.event.type === 'done') { running = false; sendBtn.disabled = false; refreshSessions(); }
+        if (msg.event.type === 'final' || msg.event.type === 'done') { running = false; sendBtn.disabled = false; refreshSessions(); finalizeThink(); settleAssistant(); hideRun(); }
         return;
       }
       if (msg.type === 'approve_result') {
@@ -371,6 +493,7 @@
       return;
     }
     running = true; sendBtn.disabled = true;
+    sawStreaming = false; streamChars = 0; showRun('处理中…'); // 起新一轮:重置计时/token,pill 亮"处理中…"
     const run = { type: 'run', message: text, permissionMode: defaultPermissionMode, conversationId: conversationId };
     if (expertSel && expertSel.value) run.enabled_packs = [expertSel.value]; // 挂载专家领域包(影响上下文/工具/系统提示)
     if (workspaceRoot) run.working_dir = workspaceRoot; // 用户选定的工作区(模型在此读写/执行)
