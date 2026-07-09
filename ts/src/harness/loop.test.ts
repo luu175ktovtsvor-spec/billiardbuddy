@@ -8,9 +8,10 @@ import { readXlsxSheet, renderMinimalXlsx } from '../server/services/officeDocum
 import { loadSkillsDir } from '../skills/skillLoader'
 import { buildSystemPrompt } from './systemPrompt'
 import { scriptedModel } from './fakeModel'
-import { runAgentLoop } from './loop'
+import { runAgentLoop, MAX_OUTPUT_TOKENS_RECOVERY_LIMIT, OUTPUT_TOKEN_LIMIT_RECOVERY_PROMPT } from './loop'
 import type { AgentEvent } from '../types/events'
 import type { AssistantStep, Model } from '../types/model'
+import { MODEL_OUTPUT_TRUNCATED_NOTICE } from '../types/model'
 import { ToolRegistry } from '../tools/registry'
 import { executeApproved, handleReject } from './loop'
 import { createDenialTrackingState, resetDenialStore } from '../permissions/denialTracking'
@@ -71,6 +72,65 @@ test('runs a multi-step tool task: think -> tool -> feed back -> think -> final'
   expect(hasResult).toBe(true)
   // 且没有任何 role:'tool' 消息(Anthropic 格式)
   expect(second.messages.every(m => m.role === 'user' || m.role === 'assistant')).toBe(true)
+})
+
+// —— 输出撞长度上限的"从断点续写"恢复(对齐 cc query.ts:1231-1260 · MAX_OUTPUT_TOKENS_RECOVERY_LIMIT=3)——
+
+test('输出被截断的 final → 注入"从断点续写"提示重发,续写成功后收尾', async () => {
+  const model = scriptedModel([
+    { kind: 'final', text: '第一段(被切)', notices: [MODEL_OUTPUT_TRUNCATED_NOTICE] },
+    { kind: 'final', text: '续写补完的第二段' },
+  ])
+  const events = await collect(runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: '写一篇长文',
+  }))
+  // 第二次 model.step 的 messages 里应有:被切的 assistant 正文原样保留 + 续写元提示 user 消息
+  const second = model.received[1]!
+  const hasPartial = second.messages.some(m => m.role === 'assistant' && m.content.some(b => b.type === 'text' && b.text.includes('第一段(被切)')))
+  const hasRecovery = second.messages.some(m => m.role === 'user' && m.content.some(b => b.type === 'text' && b.text.includes(OUTPUT_TOKEN_LIMIT_RECOVERY_PROMPT)))
+  expect(hasPartial).toBe(true)
+  expect(hasRecovery).toBe(true)
+  // 只在最后收尾一次,用续写后的文本;截断那步不当 final 提前收敛
+  const finals = events.filter(e => e.type === 'final')
+  expect(finals).toEqual([{ type: 'final', text: '续写补完的第二段' }])
+})
+
+test('持续被截断 → 续写最多 3 次后接受当前输出为最终(不无限重发、不挂死)', async () => {
+  const truncated = (): AssistantStep => ({ kind: 'final', text: '还没写完', notices: [MODEL_OUTPUT_TRUNCATED_NOTICE] })
+  const model = scriptedModel([truncated(), truncated(), truncated(), truncated()])
+  const events = await collect(runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: '超长任务',
+  }))
+  // 恰好 4 次 step:1 次首发 + 3 次续写(第 4 次仍截断但预算耗尽 → 收尾)
+  expect(model.received.length).toBe(MAX_OUTPUT_TOKENS_RECOVERY_LIMIT + 1)
+  // 最后一次收到的 messages 里应累积了恰好 3 条续写元提示
+  const recoveryInjections = model.received.at(-1)!.messages
+    .filter(m => m.role === 'user' && m.content.some(b => b.type === 'text' && b.text.includes(OUTPUT_TOKEN_LIMIT_RECOVERY_PROMPT)))
+    .length
+  expect(recoveryInjections).toBe(MAX_OUTPUT_TOKENS_RECOVERY_LIMIT)
+  const finals = events.filter(e => e.type === 'final')
+  expect(finals).toEqual([{ type: 'final', text: '还没写完' }])
+})
+
+test('截断提示挂在 tool_calls 上 → 照常执行工具、不被截断吞掉(不当 final 收尾)', async () => {
+  writeFileSync(join(root, 'a.txt'), 'hi')
+  const model = scriptedModel([
+    { kind: 'tool_calls', text: '读文件', calls: [{ id: '1', name: 'read_file', input: { path: 'a.txt' } }], notices: [MODEL_OUTPUT_TRUNCATED_NOTICE] },
+    { kind: 'final', text: '完成' },
+  ])
+  const events = await collect(runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: '读一下 a.txt',
+  }))
+  // 工具真的跑了(有 tool_result),没有因为截断提示提前收尾
+  expect(events.some(e => e.type === 'tool_result')).toBe(true)
+  const second = model.received[1]!
+  const hasToolResult = second.messages.some(m => m.role === 'user' && m.content.some(b => b.type === 'tool_result'))
+  expect(hasToolResult).toBe(true)
+  const finals = events.filter(e => e.type === 'final')
+  expect(finals).toEqual([{ type: 'final', text: '完成' }])
 })
 
 test('入参 schema 闸:缺 required 字段的工具调用被拦成 InputValidationError,不执行也不弹审批', async () => {

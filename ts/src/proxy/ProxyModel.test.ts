@@ -1,6 +1,7 @@
 import { test, expect } from 'bun:test'
 import { ProxyModel } from './ProxyModel'
 import { userText } from '../types/message'
+import { MODEL_OUTPUT_TRUNCATED_NOTICE } from '../types/model'
 
 function sseResponse(lines: string[]): Response {
   const enc = new TextEncoder()
@@ -156,6 +157,86 @@ test('组合顺序:先 normalize 后 pairing(交换会让真实 tool_result 被�
   const toolMsg = sentBody.messages.find((m: any) => m.role === 'tool' && m.tool_call_id === 'c1')
   expect(toolMsg?.content).toBe('real-result')
   expect(toolMsg?.content).not.toBe('[Tool result missing due to internal error]')
+})
+
+// —— 输出撞长度上限的恢复(对齐 cc query.ts:1196-1229 escalate + context.ts:32 ESCALATED_MAX_TOKENS=64k)——
+
+test('输出撞长度上限(无工具调用)→ 升 max_tokens=64000 重试一次,用重试后的完整结果', async () => {
+  const bodies: any[] = []
+  let calls = 0
+  const model = new ProxyModel({
+    baseUrl: 'https://x/v1', apiKey: 'k', model: 'm',
+    fetchImpl: async (_u, init) => {
+      bodies.push(JSON.parse(init!.body as string))
+      calls++
+      if (calls === 1) return sseResponse([
+        chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { content: '前半段(被切)' }, finish_reason: 'length' }] }),
+        '[DONE]',
+      ])
+      return sseResponse([
+        chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { content: '升上限后写完的完整答案' }, finish_reason: 'stop' }] }),
+        '[DONE]',
+      ])
+    },
+  })
+  const step = await model.step({ messages: [userText('写篇长文')], tools: [] })
+  expect(calls).toBe(2)
+  expect(bodies[0].max_tokens).toBeUndefined()   // 首发不带 max_tokens(交上游默认)
+  expect(bodies[1].max_tokens).toBe(64000)       // 升级重试带 64k(对齐 cc ESCALATED_MAX_TOKENS)
+  // 用重试后的完整结果,且不再带截断提示
+  expect(step).toEqual({ kind: 'final', text: '升上限后写完的完整答案' })
+})
+
+test('输出撞长度上限但已带 tool_calls → 不升级重试、不丢工具调用(照常 tool_calls + 截断提示)', async () => {
+  let calls = 0
+  const model = new ProxyModel({
+    baseUrl: 'https://x/v1', apiKey: 'k', model: 'm', idFactory: (i) => `call_${i}_X`,
+    fetchImpl: async () => {
+      calls++
+      return sseResponse([
+        chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { name: 'read_file', arguments: '{"path":"a.txt"}' } }] }, finish_reason: 'length' }] }),
+        '[DONE]',
+      ])
+    },
+  })
+  const step = await model.step({ messages: [userText('读文件')], tools: [] })
+  expect(calls).toBe(1)                            // 不重试:工具调用要交主循环配对执行
+  expect(step.kind).toBe('tool_calls')
+  expect(step.kind === 'tool_calls' && step.calls).toEqual([{ id: 'call_0_X', name: 'read_file', input: { path: 'a.txt' } }])
+  expect(step.notices).toContain(MODEL_OUTPUT_TRUNCATED_NOTICE)  // 仍附截断提示,让上层知情
+})
+
+test('升上限重试后仍被截断 → 返回带截断提示的 final(交主循环续写),恰重试一次不无限重发', async () => {
+  let calls = 0
+  const model = new ProxyModel({
+    baseUrl: 'https://x/v1', apiKey: 'k', model: 'm',
+    fetchImpl: async () => {
+      calls++
+      return sseResponse([
+        chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { content: `块${calls}` }, finish_reason: 'length' }] }),
+        '[DONE]',
+      ])
+    },
+  })
+  const step = await model.step({ messages: [userText('超长任务')], tools: [] })
+  expect(calls).toBe(2)                            // 升级重试恰一次(每步至多一次)
+  expect(step.kind).toBe('final')
+  expect(step.notices).toContain(MODEL_OUTPUT_TRUNCATED_NOTICE)
+})
+
+test('escalatedMaxTokens 可配置(国产上游上限低时下调避免 400)', async () => {
+  const bodies: any[] = []
+  let calls = 0
+  const model = new ProxyModel({
+    baseUrl: 'https://x/v1', apiKey: 'k', model: 'm', escalatedMaxTokens: 8192,
+    fetchImpl: async (_u, init) => {
+      bodies.push(JSON.parse(init!.body as string)); calls++
+      const fr = calls === 1 ? 'length' : 'stop'
+      return sseResponse([chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { content: 'a' }, finish_reason: fr }] }), '[DONE]'])
+    },
+  })
+  await model.step({ messages: [userText('x')], tools: [] })
+  expect(bodies[1].max_tokens).toBe(8192)
 })
 
 test('reasoningEffort 会进 OpenAI-compatible 请求体', async () => {

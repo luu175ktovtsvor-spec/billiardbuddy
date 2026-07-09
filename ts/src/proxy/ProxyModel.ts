@@ -9,7 +9,7 @@ import { accumulateOpenAiStream, type AccumulatedResponse } from './streamAccumu
 import { openaiChatResponseToAccumulated } from './openaiChatToAnthropic'
 import { normalizeMessagesForAPI, ensureToolResultPairing } from './messagePairing'
 import { withStreamIdleTimeout } from './streamIdleTimeout'
-import type { OpenAIChatResponse } from './types'
+import type { OpenAIChatRequest, OpenAIChatResponse } from './types'
 import type { ReasoningEffort } from '../model/reasoningEffort'
 import { fetchWithModelRetry, type ModelRetryOptions } from '../model/fetchRetry'
 
@@ -37,9 +37,21 @@ export interface ProxyModelConfig {
   idFactory?: (index: number) => string
   /** 瞬时错误(429/5xx/网络抖动)重试退避;默认启用,可注入 sleep 供测试。 */
   retry?: Pick<ModelRetryOptions, 'maxRetries' | 'baseDelayMs' | 'maxDelayMs' | 'sleep'>
+  /**
+   * 命中输出长度上限(finish_reason=length/max_tokens)且【无 tool_calls】时,升 max_tokens 重试一次的目标值。
+   * 默认 ESCALATED_MAX_TOKENS(64k,对齐 cc)。国产上游 max_tokens 上限较低会 400 时可下调。
+   */
+  escalatedMaxTokens?: number
 }
 
 const DEFAULT_IDLE_MS = 60_000
+
+/**
+ * 输出撞长度上限时,升级重试的目标 max_tokens(对齐 cc-haha src/utils/context.ts:32 ESCALATED_MAX_TOKENS=64_000)。
+ * 默认请求【不带】max_tokens(交国产上游默认,见 toOpenAiChatRequest 注释);仅当"截断且无工具调用"时,
+ * 把 max_tokens 升到这个值重试一次(对齐 cc query.ts:1196-1229 的 escalate,每步至多一次)。
+ */
+export const ESCALATED_MAX_TOKENS = 64_000
 
 export class ProxyModel implements Model {
   constructor(private readonly cfg: ProxyModelConfig) {}
@@ -56,9 +68,31 @@ export class ProxyModel implements Model {
       reasoningEffort: this.cfg.reasoningEffort,
     })
 
-    // 单请求(带超时)。仅当显式配置 cfg.retry 时才做瞬时错误退避重试;默认不改 failover 时序——
-    // FallbackModel 已负责跨 provider 快速切换,是否在 provider 内先重试(牺牲切换延迟换单出口韧性)
-    // 属于需要按部署权衡的开关,不默认开(见迁移矩阵 §3.401 P1)。
+    let read = await this.runOnce(body, input, input.onDelta)
+
+    // 输出撞长度上限的恢复第一步(对齐 cc query.ts:1196-1229 的 escalate):默认请求不带 max_tokens、交上游默认,
+    // 若结果被截断(finish_reason=length/max_tokens)【且没有 tool_calls】(纯长正文被切),把 max_tokens 升到
+    // escalatedMaxTokens 重试一次。有 tool_calls 时【不】升级重试——那批工具调用要交主循环正常配对执行,
+    // 不能被截断吞掉(见 toAssistantStep 顺序 + loop.ts 的 max_output_tokens 续写)。重试不再重复 onDelta:
+    // 整段会重发,重复吐正文增量会让前端打字机重影。仍截断则由主循环走"从断点续写"多轮恢复。
+    if (isTruncatedFinishReason(read.acc.finishReason) && read.acc.toolCalls.length === 0) {
+      const escalated: OpenAIChatRequest = { ...body, max_tokens: this.cfg.escalatedMaxTokens ?? ESCALATED_MAX_TOKENS }
+      read = await this.runOnce(escalated, input, undefined)
+    }
+
+    return toAssistantStep(read.acc, read.notices)
+  }
+
+  /**
+   * 一次请求(带超时/可选瞬时重试)+ 读流累积。抽出来供输出上限升级重试复用。
+   * 仅当显式配置 cfg.retry 时才做瞬时错误退避重试;默认不改 failover 时序——FallbackModel 已负责跨 provider
+   * 快速切换,是否在 provider 内先重试(牺牲切换延迟换单出口韧性)属需按部署权衡的开关,不默认开(见迁移矩阵 §3.401 P1)。
+   */
+  private async runOnce(
+    body: OpenAIChatRequest,
+    input: ModelStepInput,
+    onDelta: ModelStepInput['onDelta'],
+  ): Promise<{ acc: AccumulatedResponse; notices?: string[] }> {
     const doRequest = () => this.fetchWithTimeout(`${this.cfg.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${this.cfg.apiKey}` },
@@ -73,8 +107,7 @@ export class ProxyModel implements Model {
       throw new Error(`模型请求失败 ${resp.status}:${detail.slice(0, 500)}`)
     }
 
-    const read = await this.readResponse(resp, input.onDelta)
-    return toAssistantStep(read.acc, read.notices)
+    return this.readResponse(resp, onDelta)
   }
 
   private async fetchWithTimeout(input: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
@@ -130,9 +163,9 @@ function toAssistantStep(acc: AccumulatedResponse, notices?: string[]): Assistan
   const usage = acc.usage ? { usage: acc.usage } : {}
   const allNotices = [...(notices ?? []), ...(isTruncatedFinishReason(acc.finishReason) ? [MODEL_OUTPUT_TRUNCATED_NOTICE] : [])]
   const noticeField = allNotices.length ? { notices: allNotices } : {}
-  if (isTruncatedFinishReason(acc.finishReason)) {
-    return { kind: 'final', text: acc.text, ...thinking, ...usage, ...noticeField }
-  }
+  // 截断判定挪到 tool_calls 之后(修长代码生成硬伤):截断时若已经拿到 tool_calls,不能当 final 吞掉——
+  // 要照常返回 tool_calls 让主循环配对执行(截断提示仍随附,让上层知情);纯正文被截断(无工具调用)才走 final,
+  // 后续"从断点续写"由 loop.ts 的 max_output_tokens 恢复接手。
   if (acc.toolCalls.length > 0) {
     return { kind: 'tool_calls', ...(acc.text ? { text: acc.text } : {}), ...thinking, calls: acc.toolCalls, ...usage, ...noticeField }
   }

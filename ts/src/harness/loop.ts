@@ -2,6 +2,7 @@ import type { AgentEvent, UsageUpdateEvent } from '../types/events'
 import type { Message, ContentBlock, ToolResultBlock, ToolCall } from '../types/message'
 import { textBlock, toolUseBlock, toolResultBlock, userText } from '../types/message'
 import type { AssistantStep, Model, ModelStepDelta, ModelStepInput, ModelUsage } from '../types/model'
+import { MODEL_OUTPUT_TRUNCATED_NOTICE } from '../types/model'
 import type { ToolContext, ToolProgressEvent, ToolSpec } from '../tools/Tool'
 import type { ToolRegistry } from '../tools/registry'
 import type { Workspace } from '../workspace/workspace'
@@ -161,6 +162,19 @@ export interface RunAgentLoopOptions {
 const TODO_UPDATE_TOOL_NAMES = new Set(['todo_write', 'task_create', 'task_update', 'TaskCreate', 'TaskUpdate'])
 const AGGREGATE_TOOL_RESULT_BUDGET_SKIP_TOOLS = new Set(['read_file', 'read_many_files'])
 
+/**
+ * 输出撞长度上限、模型层已升过一次 max_tokens 仍被截断后,主循环"从断点续写"的最多重试次数
+ * (对齐 cc-haha src/query.ts:167 MAX_OUTPUT_TOKENS_RECOVERY_LIMIT=3)。耗尽即接受当前(截断)输出为最终,不无限重发。
+ */
+export const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3
+/**
+ * 续写元提示:让模型从断点直接接着写,别道歉别复述(对齐 cc-haha src/query.ts:1232-1236 的措辞)。
+ * cc 原文:"Output token limit hit. Resume directly — no apology, no recap of what you were doing.
+ * Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces."
+ */
+export const OUTPUT_TOKEN_LIMIT_RECOVERY_PROMPT =
+  '输出触达长度上限。直接从断点继续,别道歉、别复述你刚才在做什么;如果是在半句话处被截断,就接着那句往下写。把剩下的内容拆成更小的块逐段输出。'
+
 function cloneContentReplacementStateForSnapshot(state: ContentReplacementState | undefined): ContentReplacementState | undefined {
   return state ? cloneContentReplacementState(state) : undefined
 }
@@ -315,6 +329,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   let sameKeyCount = 0
   let toolCallsNoProgress = 0
   let stuckNotified = false
+  let maxOutputTokensRecoveryCount = 0 // 连续"输出被长度上限截断"的续写计数;有实质进展(tool_calls/自然收敛)即复位
   const revealedToolNames = new Set<string>()
   const usageTotals = usageTotalsFromInitial(opts.initialUsage)
   const promptCacheTrackingKey = opts.conversationId
@@ -401,6 +416,22 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     if (step.kind === 'final') {
       if (step.thinking) yield { type: 'thinking', text: step.thinking }
       messages.push({ role: 'assistant', content: [textBlock(step.text)] })
+
+      // 输出撞长度上限的恢复第二步(对齐 cc query.ts:1231-1260):模型层已升过一次 max_tokens 仍被截断
+      // (step.notices 带 MODEL_OUTPUT_TRUNCATED_NOTICE),这里把已生成的正文留在历史里,再注入"从断点续写"元提示
+      // 重发,最多 MAX_OUTPUT_TOKENS_RECOVERY_LIMIT 次。续写优先于自然收尾/steering:模型不是想结束、是被切断,
+      // 得先接着把内容写完;不能让截断当成 final 收敛(那正是被修的长代码生成硬伤)。
+      if ((step.notices ?? []).includes(MODEL_OUTPUT_TRUNCATED_NOTICE) && maxOutputTokensRecoveryCount < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT) {
+        maxOutputTokensRecoveryCount++
+        messages.push({ role: 'user', content: [textBlock(wrapReminder(OUTPUT_TOKEN_LIMIT_RECOVERY_PROMPT))] })
+        await saveTranscript()
+        turnsLimit = Math.max(turnsLimit, turn + 2) // 续写不该把 max_turns 预算提前耗尽
+        turn++
+        continue
+      }
+      // 到这:要么本轮没截断(自然收敛),要么续写预算已耗尽(接受当前截断输出为最终)。复位计数,给后续独立截断留满预算。
+      maxOutputTokensRecoveryCount = 0
+
       // steering 优先于收尾:模型想结束但收件箱有插话 → 灌进去接着跑
       const drained = drainSteering(ctx)
       if (drained.length) {
@@ -429,6 +460,9 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       yield { type: 'final', text: step.text }
       return
     }
+
+    // 走到 tool_calls 分支 = 有实质进展(哪怕这步也带了截断提示,工具调用照常配对执行、不丢);复位续写计数。
+    maxOutputTokensRecoveryCount = 0
 
     // 展示:reasoning + 正文叙述合成一条 thinking 事件(保证每步≤1条,前端细分事件归 W16)
     const display = [step.thinking, step.text].filter(Boolean).join('\n\n')

@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { AnthropicMessagesModel } from './AnthropicMessagesModel'
 import { userText } from '../types/message'
+import { MODEL_OUTPUT_TRUNCATED_NOTICE } from '../types/model'
 
 function sseResponse(lines: string[]): Response {
   const enc = new TextEncoder()
@@ -80,4 +81,73 @@ test('AnthropicMessagesModel:SSE tool_use 累积 input_json_delta', async () => 
     calls: [{ id: 'u1', name: 'read_file', input: { path: 'a.txt' } }],
     usage: { input_tokens: 3, output_tokens: 4 },
   })
+})
+
+// —— 输出撞长度上限的恢复(对齐 cc query.ts:1196-1229 escalate + context.ts:32 ESCALATED_MAX_TOKENS=64k)——
+
+test('stop_reason=max_tokens(无工具调用)→ 升 max_tokens=64000 重试一次,用重试后的完整结果', async () => {
+  const bodies: any[] = []
+  let calls = 0
+  const model = new AnthropicMessagesModel({
+    baseUrl: 'https://api.test/v1', apiKey: 'k', model: 'm', stream: false,
+    fetchImpl: async (_url, init) => {
+      bodies.push(JSON.parse(init!.body as string)); calls++
+      if (calls === 1) return new Response(JSON.stringify({ content: [{ type: 'text', text: '前半段' }], stop_reason: 'max_tokens' }), { status: 200 })
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: '升上限后写完' }], stop_reason: 'end_turn' }), { status: 200 })
+    },
+  })
+  const step = await model.step({ messages: [userText('写长文')], tools: [] })
+  expect(calls).toBe(2)
+  expect(bodies[0].max_tokens).toBe(4096)   // 首发用默认 4k
+  expect(bodies[1].max_tokens).toBe(64000)  // 升级重试到 64k(对齐 cc ESCALATED_MAX_TOKENS)
+  expect(step).toEqual({ kind: 'final', text: '升上限后写完' })  // 用重试结果,不再带截断提示
+})
+
+test('model_context_window_exceeded 也走同一"从断点续写"恢复路径(对齐 cc claude.ts:2448-2461)', async () => {
+  let calls = 0
+  const model = new AnthropicMessagesModel({
+    baseUrl: 'https://api.test/v1', apiKey: 'k', model: 'm', stream: false,
+    fetchImpl: async () => {
+      calls++
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: `块${calls}` }], stop_reason: 'model_context_window_exceeded' }), { status: 200 })
+    },
+  })
+  const step = await model.step({ messages: [userText('x')], tools: [] })
+  expect(calls).toBe(2)  // 升级重试恰一次
+  expect(step.kind).toBe('final')
+  expect(step.notices).toContain(MODEL_OUTPUT_TRUNCATED_NOTICE)  // 仍截断 → 附提示,交主循环续写
+})
+
+test('stop_reason=max_tokens 但已带 tool_calls → 不升级重试、不丢工具调用(照常 tool_calls + 截断提示)', async () => {
+  let calls = 0
+  const model = new AnthropicMessagesModel({
+    baseUrl: 'https://api.test/v1', apiKey: 'k', model: 'm', stream: false,
+    fetchImpl: async () => {
+      calls++
+      return new Response(JSON.stringify({
+        content: [{ type: 'tool_use', id: 'u1', name: 'read_file', input: { path: 'a.txt' } }],
+        stop_reason: 'max_tokens',
+      }), { status: 200 })
+    },
+  })
+  const step = await model.step({ messages: [userText('读文件')], tools: [] })
+  expect(calls).toBe(1)  // 不重试:工具调用交主循环配对执行
+  expect(step.kind).toBe('tool_calls')
+  expect(step.kind === 'tool_calls' && step.calls).toEqual([{ id: 'u1', name: 'read_file', input: { path: 'a.txt' } }])
+  expect(step.notices).toContain(MODEL_OUTPUT_TRUNCATED_NOTICE)
+})
+
+test('escalatedMaxTokens 可配置', async () => {
+  const bodies: any[] = []
+  let calls = 0
+  const model = new AnthropicMessagesModel({
+    baseUrl: 'https://api.test/v1', apiKey: 'k', model: 'm', stream: false, escalatedMaxTokens: 16000,
+    fetchImpl: async (_url, init) => {
+      bodies.push(JSON.parse(init!.body as string)); calls++
+      const stop = calls === 1 ? 'max_tokens' : 'end_turn'
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: 'a' }], stop_reason: stop }), { status: 200 })
+    },
+  })
+  await model.step({ messages: [userText('x')], tools: [] })
+  expect(bodies[1].max_tokens).toBe(16000)
 })
