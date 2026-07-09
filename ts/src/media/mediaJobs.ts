@@ -363,6 +363,23 @@ function ratioSize(ratio: unknown): { ratio: string; width: number; height: numb
   return { ratio: '3:4', width: 1152, height: 1536 }
 }
 
+// 火山 Seedream 出图尺寸像素下限(≈1920²)。低于此火山报 InvalidParameter: image size must be at least
+// 3686400 pixels。默认 3:4(1152×1536=1,769,472)/1:1/9:16/16:9 全部低于下限,不放大则默认生图必失败。
+const SEEDREAM_MIN_PIXELS = 3_686_400
+
+function ceilTo16(n: number): number {
+  return Math.max(16, Math.ceil(n / 16) * 16)
+}
+
+/** 把尺寸等比放大到 Seedream 像素下限、各边取 16 的倍数(对齐老 Python _normalize_seedream_size)。
+ *  已达标的也 ceilTo16(向上取整不会掉回下限以下)。 */
+function normalizeSeedreamSize(width: number, height: number): { width: number; height: number } {
+  const pixels = width * height
+  if (pixels >= SEEDREAM_MIN_PIXELS) return { width: ceilTo16(width), height: ceilTo16(height) }
+  const scale = Math.sqrt(SEEDREAM_MIN_PIXELS / pixels)
+  return { width: ceilTo16(width * scale), height: ceilTo16(height * scale) }
+}
+
 function imageSizeForProvider(model: string, ratio: unknown): { ratio: string; width: number; height: number; size: string } {
   const base = ratioSize(ratio)
   if (/gpt|openai/i.test(model)) {
@@ -370,7 +387,9 @@ function imageSizeForProvider(model: string, ratio: unknown): { ratio: string; w
     if (base.width > base.height) return { ...base, width: 1536, height: 1024, size: '1536x1024' }
     return { ...base, width: 1024, height: 1536, size: '1024x1536' }
   }
-  return { ...base, size: `${base.width}x${base.height}` }
+  // Seedream(火山方舟):必须放大到像素下限,否则火山 400。
+  const s = normalizeSeedreamSize(base.width, base.height)
+  return { ...base, width: s.width, height: s.height, size: `${s.width}x${s.height}` }
 }
 
 function xmlEscape(value: string): string {
@@ -939,7 +958,10 @@ export class MediaJobService {
       form.set('prompt', prompt)
       form.set('n', String(count))
       form.set('size', stringFrom(body.size) ?? sized.size)
-      form.set('input_fidelity', mode === 'edit' ? 'high' : 'low')
+      // input_fidelity 只对非 gpt-image-2 的 gpt-image 系列生效;gpt-image-2 恒最高保真、传了会 400(对齐老 Python)。
+      if (/^gpt-image/i.test(config.model) && !/^gpt-image-2/i.test(config.model)) {
+        form.set('input_fidelity', mode === 'edit' ? 'high' : 'low')
+      }
       for (const ref of refs) {
         if (!ref.bytes) continue
         const file = new File([ref.bytes], ref.filename ?? `${ref.role || 'image'}.png`, { type: ref.contentType ?? 'image/png' })
