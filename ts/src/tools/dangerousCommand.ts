@@ -19,10 +19,78 @@ const DANGEROUS_PATTERNS: RegExp[] = [
   /\brm\s+(-[a-z]*\s+)*[A-Za-z]:[\\/]?(\s|$)/i, // rm C:\ | rm D:/（盘符根）
 ]
 
+/**
+ * Windows/cmd.exe(及经 cmd 转手的 PowerShell)原生毁灭命令红线 —— 与上面的 POSIX 红线同档「直接拒」。
+ *
+ * 姿态说明(#45,安全 P0):唯一出包平台是 Windows,而 **Windows 上没有 OS 级写围栏**
+ * (sandbox 的 `wrapCommand` 在 Windows 返回 null,run_command 走明文 `cmd /c`,见 runCommandTool.ts)。
+ * 沙箱这层在主发行平台形同虚设,所以本机文件的护栏短期只剩三道、必须叠满:
+ *   ① 这里的红线(灾难级 cmd/pwsh 命令直接拒,`isDangerousCommand` → run_command.execute 抛错 / fatalReason);
+ *   ② 审批闸(`classifyCommandRisk` 把有破坏面的 cmd 动词判成 destructive/outreach,交用户逐条确认);
+ *   ③ 改文件前自动备份可回滚(文件工具层,管不到任意 shell,故 ①② 是主防线)。
+ * 中期真围栏(WindowsJobObjectLauncher / AppContainer)另计,先把红线补成 cmd.exe-aware,否则等于裸奔。
+ *
+ * 解析口径按 cmd 语法:大小写不敏感(`/i`);开关是 `/x` 且顺序任意;路径可带引号;命令名锚在语句起始
+ * (行首含前导空白 `^\s*` / `;&|` / 换行 / 子 shell `(`{` / `cmd /c ["']?` / `-c|-Command ["']?` 之后),
+ * 既避免 `dotnet format`、`git format-patch`、`model` 之类误杀,又堵住两类绕过:
+ *   - 引号转手:`cmd /c "del C:\*"`、`cmd /c "format c:"`(`/c ["']?` 分支);
+ *   - PowerShell -Command 转手:`powershell -Command "Remove-Item -Recurse -Force C:\"`(`-c|-Command ["']?` 分支);
+ *   - 前导空白降级:`  format c:`、`\tformat c:`(`^\s*` 分支)。
+ * 锚点只有 WIN_STMT_START 这**一个**常量,两处 + 姊妹文件 destructiveCommandWarning.ts 全部复用,只在这一处改
+ * (防手抄两份抄漏出洞——上一版正是把引号/前导空白锚抄漏,漏出 `cmd /c "del C:\*"`、`  format c:` 两个绕过)。
+ * 刻意不把裸引号/裸空白塞进分隔符类:那样会把 `echo "run diskpart …"` 这类"引号里只是提到危险词"误杀;转手只认
+ * `/c`、`-c|-Command` 两个真入口(其后允许一个可选起始引号),既堵转手又不误伤 echo。
+ * 灾难级(格盘/分区/擦除/删卷影/删盘符根或用户根/通配全删)→ 直接拒;有破坏面但可控(删具体目录、结进程、
+ * 删注册表键、夺权)→ 交审批闸(见 classifyWindowsShellCommand)。参考 cc-haha PowerShellTool 的
+ * FATAL_PATTERNS(clear-disk/format-volume/remove-item 打盘符根/通配删),本仓库 powerShellTool.ts:202-206
+ * 已移植同款口径,这里把它对齐到 cmd.exe 世界。
+ */
+// 唯一语句起始锚:行首含前导空白 `^\s*` / 分隔符 ; & | 换行 / 子 shell `(`{` / `cmd /c ["']?` / `-c|-Command ["']?`。
+export const WIN_STMT_START = '(?:^\\s*|[|;&\\n({]\\s*|/c\\s+["\']?|-c(?:ommand)?\\s+["\']?)'
+// 系统/用户根目录环境变量(删这些等同删根)。
+const WIN_ENV_ROOT =
+  '%(?:userprofile|systemroot|windir|systemdrive|homedrive|homepath|appdata|localappdata|programfiles(?:\\(x86\\))?|programdata|public|allusersprofile)%'
+const WINDOWS_DANGEROUS_PATTERNS: RegExp[] = [
+  // format <盘符|/fs:...> —— 格式化磁盘卷(cc FATAL: format-volume 的 cmd 对等)。
+  new RegExp(`${WIN_STMT_START}format(?:\\.com)?\\s+[^|;&\\n]*?(?:["']?[a-z]:|/fs:)`, 'i'),
+  // diskpart —— 磁盘分区工具,可清空/重建分区表。
+  new RegExp(`${WIN_STMT_START}diskpart(?:\\.exe)?\\b`, 'i'),
+  // cipher /w —— 安全擦除磁盘空闲空间(不可恢复)。
+  new RegExp(`${WIN_STMT_START}cipher(?:\\.exe)?\\s+[^|;&\\n]*/w`, 'i'),
+  // vssadmin delete —— 删除卷影副本(勒索软件常见毁证/断退路动作)。
+  new RegExp(`${WIN_STMT_START}vssadmin(?:\\.exe)?\\s+[^|;&\\n]*delete`, 'i'),
+  // wmic shadowcopy delete —— 同上的 WMIC 写法。
+  new RegExp(`${WIN_STMT_START}wmic\\b[^|;&\\n]*shadowcopy[^|;&\\n]*delete`, 'i'),
+  // fsutil 的毁灭子命令 —— 清零文件数据 / 删 USN 日志 / 卷层 delete。
+  new RegExp(`${WIN_STMT_START}fsutil(?:\\.exe)?\\s+[^|;&\\n]*(?:setzerodata|deletejournal|(?:volume|objectid)\\s+[^|;&\\n]*delete)`, 'i'),
+  // bcdedit 写/删 —— 篡改启动配置可致系统无法引导(/enum 只读不拦)。
+  new RegExp(`${WIN_STMT_START}bcdedit(?:\\.exe)?\\s+[^|;&\\n]*/(?:delete|deletevalue|set|import)`, 'i'),
+  // reg delete 系统蜂巢(HKLM/HKCR)—— 删系统注册表可砖机。
+  new RegExp(`${WIN_STMT_START}reg(?:\\.exe)?\\s+delete\\s+[^|;&\\n]*(?:hklm|hkcr|hkey_local_machine|hkey_classes_root)\\b`, 'i'),
+  // 裸盘/物理设备原始写入(dd of=/dev/ 的 Windows 对等)。
+  /(?:^|[|;&\n]|\/c\s+)[^|;&\n]*>\s*\\\\[.?]\\(?:physicaldrive\d|[a-z]:)/i,
+  // cmd fork 炸弹:%0|%0 / start %0 自我复制。
+  /%~?[df]?0\s*(?:\||&|\|\|)\s*%~?[df]?0/i,
+  new RegExp(`${WIN_STMT_START}start\\b[^|;&\\n]*%~?[df]?0`, 'i'),
+  // del/erase/rd/rmdir/Remove-Item 打盘符根 | 系统/用户根 env —— 删根(cc FATAL 对等,rm C:\ 的 cmd 版)。
+  new RegExp(`${WIN_STMT_START}(?:del|erase|rd|rmdir|ri|remove-item)\\b[^|;&\\n}]*?(?:\\s|["'])(?:[a-z]:[\\\\/]?|${WIN_ENV_ROOT}[\\\\/]?)(?:\\*|\\*\\.\\*)?(?:["'\\s)]|$)`, 'i'),
+  // del/erase/rd/rmdir 通配全删:del * | del *.* | del /q *（rm * 的 cmd 版）。
+  new RegExp(`${WIN_STMT_START}(?:del|erase|rd|rmdir)\\b(?:[^|;&\\n}]*\\s)?["']?(?:\\*|\\*\\.\\*)(?:["']|\\s|$)`, 'i'),
+  // del/rd/rmdir 递归(/s)打到某个盘符绝对路径 —— Windows 无围栏,递归删绝对路径按灾难级直接拒。
+  new RegExp(`${WIN_STMT_START}(?:del|erase|rd|rmdir)\\b[^|;&\\n}]*/s\\b[^|;&\\n}]*[a-z]:\\\\`, 'i'),
+  new RegExp(`${WIN_STMT_START}(?:del|erase|rd|rmdir)\\b[^|;&\\n}]*[a-z]:\\\\[^|;&\\n}]*/s\\b`, 'i'),
+  // PowerShell 原生毁灭 cmdlet(独一 token 用宽松锚;即使经 `cmd /c powershell -c "..."` 转手/带引号也拦)。
+  new RegExp(`${WIN_STMT_START}(?:format-volume|clear-disk|clear-recyclebin|stop-computer|restart-computer)\\b`, 'i'),
+  // Remove-Item -Recurse -Force 打盘符根/家目录(-Force -Recurse 任意序;cc FATAL 对等)。
+  new RegExp(`${WIN_STMT_START}(?:remove-item|ri|rm|del|rd|rmdir)\\b[^|;&\\n}]*-recurse\\b[^|;&\\n}]*-force\\b[^|;&\\n}]*(?:[a-z]:[\\\\/]|\\$home\\b|\\$env:|~[\\\\/]?(?:\\s|$|["'*]))`, 'i'),
+  new RegExp(`${WIN_STMT_START}(?:remove-item|ri|rm|del|rd|rmdir)\\b[^|;&\\n}]*-force\\b[^|;&\\n}]*-recurse\\b[^|;&\\n}]*(?:[a-z]:[\\\\/]|\\$home\\b|\\$env:|~[\\\\/]?(?:\\s|$|["'*]))`, 'i'),
+]
+
 export type CommandRisk = 'read' | 'file' | 'outreach' | 'destructive'
 
 export function isDangerousCommand(command: string): boolean {
-  return DANGEROUS_PATTERNS.some(re => re.test(command))
+  return DANGEROUS_PATTERNS.some(re => re.test(command)) ||
+    WINDOWS_DANGEROUS_PATTERNS.some(re => re.test(command))
 }
 
 const SHELL_EXPANSION_PATTERNS: RegExp[] = [
@@ -3986,6 +4054,44 @@ function isInside(parent: string, child: string): boolean {
   return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel))
 }
 
+// 审批闸档 cmd 动词模式:复用同一个 WIN_STMT_START 起始锚,所以 `cmd /c "rd /s /q build"`、
+// `powershell -Command "taskkill …"` 这类引号/-c 转手也认(和 POSIX 用 `\brm` 能认 `sh -c "rm -rf"` 对齐),
+// 不会因为套一层 cmd/pwsh 就把 destructive 降级成 file。锚点仍是那一个常量,不另抄。
+const WIN_APPROVAL_RECURSIVE_DELETE = new RegExp(`${WIN_STMT_START}(?:del|erase|rd|rmdir)\\b[^;&|\\n]*\\s/s\\b`, 'i')
+const WIN_APPROVAL_TASKKILL = new RegExp(`${WIN_STMT_START}taskkill(?:\\.exe)?\\b`, 'i')
+const WIN_APPROVAL_REG_WRITE = new RegExp(`${WIN_STMT_START}reg(?:\\.exe)?\\s+(?:delete|add|import|restore|copy|save|load|unload)\\b`, 'i')
+const WIN_READ_REG_QUERY = new RegExp(`${WIN_STMT_START}reg(?:\\.exe)?\\s+(?:query|export)\\b`, 'i')
+const WIN_APPROVAL_SC_WRITE = new RegExp(`${WIN_STMT_START}sc(?:\\.exe)?\\s+(?:delete|stop|create|config|failure)\\b`, 'i')
+const WIN_READ_SC_QUERY = new RegExp(`${WIN_STMT_START}sc(?:\\.exe)?\\s+(?:query|queryex|qc|qdescription|enumdepend)\\b`, 'i')
+const WIN_APPROVAL_NET_STOP = new RegExp(`${WIN_STMT_START}net(?:\\.exe)?\\s+stop\\b`, 'i')
+const WIN_APPROVAL_NET_DELETE = new RegExp(`${WIN_STMT_START}net(?:\\.exe)?\\s+(?:user|localgroup|group)\\b[^;&|\\n]*/(?:delete|del)\\b`, 'i')
+const WIN_APPROVAL_OWNERSHIP = new RegExp(`${WIN_STMT_START}(?:takeown|icacls|cacls)(?:\\.exe)?\\b`, 'i')
+
+/**
+ * cmd.exe/PowerShell 有破坏面、但达不到「直接拒」灾难级的动词 → 审批闸(destructive/outreach)。
+ * 灾难级(格盘/删根/删卷影/擦盘)已在 isDangerousCommand 直接拒;这里兜住其余需用户确认的:
+ * 递归删具体目录、结进程、删/写注册表键、删服务、停服务、夺文件所有权/改 ACL。口径对齐 POSIX:
+ * 递归删=destructive(同 `rm -rf 目录`),只读查询=read。传入 rawCommand(混合大小写),全部 `/i`。
+ */
+function classifyWindowsShellCommand(command: string): CommandRisk | null {
+  // del/erase/rd/rmdir 带 /s(递归)→ destructive(同 rm -rf 具体目录);灾难级(盘符根/递归绝对路径)已被红线拦。
+  if (WIN_APPROVAL_RECURSIVE_DELETE.test(command)) return 'destructive'
+  // taskkill —— 结进程即需审批(/f 强杀更可能让目标应用丢数据;无 /f 也算破坏面)。
+  if (WIN_APPROVAL_TASKKILL.test(command)) return 'destructive'
+  // 注册表:写/删/导入/加载 → destructive;只读查询/导出 → read。
+  if (WIN_APPROVAL_REG_WRITE.test(command)) return 'destructive'
+  if (WIN_READ_REG_QUERY.test(command)) return 'read'
+  // 服务控制:删/停/建/改/失败策略 → destructive;查询 → read。
+  if (WIN_APPROVAL_SC_WRITE.test(command)) return 'destructive'
+  if (WIN_READ_SC_QUERY.test(command)) return 'read'
+  // net stop 停服务;net user/localgroup/group /delete 删账户组。
+  if (WIN_APPROVAL_NET_STOP.test(command)) return 'destructive'
+  if (WIN_APPROVAL_NET_DELETE.test(command)) return 'destructive'
+  // takeown/icacls/cacls —— 夺取所有权、批量改写权限。
+  if (WIN_APPROVAL_OWNERSHIP.test(command)) return 'destructive'
+  return null
+}
+
 function classifySegment(segment: string): CommandRisk {
   const originalSegment = normalize(segment)
   const rawCommand = normalize(stripShellClassificationWrappers(segment))
@@ -4008,6 +4114,9 @@ function classifySegment(segment: string): CommandRisk {
   if (/^git\s+push\b.*\s-f(?:\s|$)/.test(command)) return withSegmentBaseRisk('destructive')
   if (/^git\s+reset\b.*\s--hard\b/.test(command)) return withSegmentBaseRisk('destructive')
   if (/^git\s+branch\s+-D\b/.test(command)) return withSegmentBaseRisk('destructive')
+
+  const windowsRisk = classifyWindowsShellCommand(rawCommand)
+  if (windowsRisk) return withSegmentBaseRisk(windowsRisk)
 
   if (/^(curl|wget|ssh|scp|sftp|ftp|telnet|nc|netcat|rsync)\b/.test(command)) return withSegmentBaseRisk('outreach')
   const githubCliRisk = classifyGithubCliCommand(rawCommand)
@@ -4084,11 +4193,16 @@ function classifySegment(segment: string): CommandRisk {
   if (readOnlyAllowlistRisk) return withSegmentBaseRisk(readOnlyAllowlistRisk)
 
   if (/^(rm|mv|cp|mkdir|rmdir|touch|chmod|chown|ln|tee)\b/.test(command)) return withSegmentBaseRisk('file')
+  if (/^(del|erase|rd|copy|xcopy|robocopy|move|ren|rename|md|mklink|attrib)\b/.test(command)) return withSegmentBaseRisk('file')
   if (/\b(sed|perl)\s+.*\s-i\b/.test(command) || /\b(sed|perl)\s+-i\b/.test(command)) return withSegmentBaseRisk('file')
   if (/^git\s+(checkout|switch|restore|reset|merge|rebase|commit|tag|branch\s+(-d|-D)|apply|am|stash|pull|push)\b/.test(command)) return withSegmentBaseRisk('file')
   if (/^(npm|pnpm|yarn|bun)\s+(run\s+)?(build|compile|generate|lint\s+--fix|format|test)\b/.test(command)) return withSegmentBaseRisk('file')
 
   if (/^(pwd|cd|pushd|popd|ls|cat|head|tail|wc|find|stat|du|df|whoami|uname|which|type|echo)\b/.test(command)) {
+    return withSegmentBaseRisk('read')
+  }
+  // cmd.exe 只读内建/工具:列目录、看文件、查路径、看进程/系统信息(对齐 POSIX 只读放行)。
+  if (/^(dir|chdir|where|ver|vol|tasklist|systeminfo|findstr|hostname|title|whoami)\b/.test(command)) {
     return withSegmentBaseRisk('read')
   }
 
