@@ -1,6 +1,7 @@
 // 会话开合的编排小助手(把 tabStore + chatStore 串起来,避免组件里到处 prop 传递)。
 import { useChatStore } from '../stores/chatStore'
 import { useTabStore } from '../stores/tabStore'
+import { rememberLastConversation } from './sessionRecovery'
 
 function genId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
@@ -12,6 +13,7 @@ export function openNewConversation(): string {
   const id = genId()
   useTabStore.getState().openSession(id, '新对话')
   useChatStore.getState().startConversation(id)
+  rememberLastConversation(id) // 记为"上次活跃",下次启动可恢复
   return id
 }
 
@@ -19,4 +21,5 @@ export function openNewConversation(): string {
 export function openExistingConversation(id: string, title?: string): void {
   useTabStore.getState().openSession(id, title)
   useChatStore.getState().startConversation(id, { replay: true })
+  rememberLastConversation(id) // 记为"上次活跃",下次启动可恢复
 }

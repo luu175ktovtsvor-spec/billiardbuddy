@@ -46,6 +46,8 @@ interface ChatState {
   _turnBaselineTokens: number
   _unsub: (() => void) | null
   _wantReplay: boolean
+  /** 是否已收到过一次 ready:用于区分首连与重连(重连后要补拉遗漏事件)。 */
+  _sawReady: boolean
 
   startConversation: (conversationId: string, opts?: { replay?: boolean }) => void
   sendMessage: (text: string) => void
@@ -260,8 +262,13 @@ export const useChatStore = create<ChatState>((set, get) => {
     switch (msg.type) {
       case 'ready': {
         set({ connected: true })
+        const firstReady = !get()._sawReady
+        set({ _sawReady: true })
         if (get()._wantReplay) {
           set({ _wantReplay: false })
+          send({ type: 'replay', conversationId: get().conversationId ?? msg.conversationId, after: get().lastSeq })
+        } else if (!firstReady) {
+          // 重连(sidecar 重启/网络抖动后再次 ready):补拉断线期间遗漏的事件(after=lastSeq,幂等去重),不丢上下文。
           send({ type: 'replay', conversationId: get().conversationId ?? msg.conversationId, after: get().lastSeq })
         }
         break
@@ -314,6 +321,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     _turnBaselineTokens: 0,
     _unsub: null,
     _wantReplay: false,
+    _sawReady: false,
 
     startConversation: (conversationId, opts) => {
       // 切换会话:断掉旧的处理器,重置渲染态。
@@ -331,6 +339,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         _lastTotalTokens: 0,
         _turnBaselineTokens: 0,
         _wantReplay: Boolean(opts?.replay),
+        _sawReady: false,
       })
       const unsub = wsManager.onMessage(conversationId, handleServerMessage)
       wsManager.connect(conversationId)

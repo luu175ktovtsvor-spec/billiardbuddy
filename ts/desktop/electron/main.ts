@@ -8,10 +8,10 @@ import {
   reserveServerPort,
   spawnSidecar,
   waitForServer,
-  killSidecar,
-  type SidecarChild,
+  SidecarSupervisor,
   type SidecarPlan,
 } from './services/sidecarManager'
+import { installProcessCrashGuards, installAppCrashGuards } from './services/crashGuard'
 // 桌面基建(对齐 cc-haha,能抄就抄):窗口状态持久化 / 防休眠 / 钥匙串弹窗拦截 / 导航守卫 / Windows 通知身份 / 单实例聚焦。
 import { readWindowState, windowOptionsFromState, restoreWindowMaximized, installWindowStatePersistence, MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT } from './services/windows'
 import { startPreventSleep, stopPreventSleep, forceStopPreventSleep, isPreventingSleep } from './services/preventSleep'
@@ -24,10 +24,11 @@ import { resolveCredentialKey } from './services/credentialKey'
 const here = dirname(fileURLToPath(import.meta.url))
 const PREFERRED_PORTS = [8850, 8851, 8852, 8877]
 
-let sidecar: SidecarChild | null = null
+let sidecarSupervisor: SidecarSupervisor | null = null
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let serverPort = 0
+let sidecarDownNotified = false
 
 const APP_NAME = '球房管家'
 
@@ -92,12 +93,49 @@ function sidecarTriple(): string {
 }
 
 async function startSidecar(): Promise<void> {
+  // 端口只抢一次并全程复用:sidecar 崩溃重启时用同一个口拉起,renderer 的 baseUrl 不失效、
+  // 现有 WS 指数退避重连即可自动复连。
   serverPort = await reserveServerPort(SERVER_BIND_HOST, PREFERRED_PORTS)
-  sidecar = spawnSidecar(buildSidecarPlan(serverPort))
-  sidecar.stdout.on('data', d => process.stdout.write(`[sidecar] ${d}`))
-  sidecar.stderr.on('data', d => process.stderr.write(`[sidecar] ${d}`))
-  sidecar.on('exit', code => { if (code) console.error(`[sidecar] exited code=${code}`) })
+  sidecarSupervisor = new SidecarSupervisor(
+    () => spawnSidecar(buildSidecarPlan(serverPort)),
+    {
+      onSpawn: (child) => {
+        child.stdout.on('data', d => process.stdout.write(`[sidecar] ${d}`))
+        child.stderr.on('data', d => process.stderr.write(`[sidecar] ${d}`))
+      },
+      onExit: (code, willRestart) => {
+        if (code) console.error(`[sidecar] exited code=${code}${willRestart ? '(将自动重启)' : ''}`)
+      },
+      onRestartScheduled: (attempt, delayMs) => {
+        console.warn(`[sidecar] 意外退出,${Math.round(delayMs / 1000)}s 后第 ${attempt} 次重启`)
+      },
+      onGaveUp: (restarts) => {
+        console.error(`[sidecar] 短时间内连续崩溃 ${restarts} 次,已停止自动重启`)
+        notifySidecarDown()
+      },
+    },
+  )
+  sidecarSupervisor.start()
   await waitForServer(SERVER_BIND_HOST, serverPort, 30_000)
+}
+
+/** sidecar 反复崩溃、放弃自动重启时提示用户(一次性,避免弹窗风暴)。 */
+function notifySidecarDown(): void {
+  if (sidecarDownNotified) return
+  sidecarDownNotified = true
+  const win = mainWindow ?? BrowserWindow.getAllWindows()[0]
+  const opts = {
+    type: 'error' as const,
+    title: '后端服务已停止',
+    message: '后端服务多次异常退出,已暂停自动重启。',
+    detail: '请重启本应用。如果反复出现,请把这条信息反馈给我们。',
+    buttons: ['重启应用', '暂不'],
+    defaultId: 0,
+    cancelId: 1,
+  }
+  const handleChoice = (index: number) => { if (index === 0) { app.relaunch(); app.exit(0) } }
+  if (win) void dialog.showMessageBox(win, opts).then(r => handleChoice(r.response))
+  else void dialog.showMessageBox(opts).then(r => handleChoice(r.response))
 }
 
 function createWindow(): void {
@@ -141,6 +179,16 @@ function loadRenderer(win: BrowserWindow): void {
     console.error(`[main] QF_UI_REACT=1 但缺 ${entry};回退 vanilla。请先 bun run ui:build。`)
   }
   void win.loadURL(`http://${SERVER_BIND_HOST}:${serverPort}/`)
+}
+
+/** 重载主窗口内容(渲染进程崩溃恢复用):窗口还在就 reload,没了就重建。返回是否发起了恢复。 */
+function reloadMainWindow(): boolean {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.reload()
+    return true
+  }
+  createWindow()
+  return true
 }
 
 /** 让主窗口回到前台(托盘/菜单"显示"共用);窗口没了就重建。 */
@@ -269,6 +317,11 @@ async function boot(): Promise<void> {
   try {
     // Windows 通知身份:必须在建窗口前设好,否则原生 toast 通知不显示应用名/图标。
     applyWindowsAppUserModelId(app)
+    // app 级崩溃兜底:渲染进程崩溃自动重载恢复、子进程挂掉记录。
+    installAppCrashGuards(app, {
+      reloadWindow: reloadMainWindow,
+      onReloadGaveUp: () => notifySidecarDown(),
+    })
     registerIpc()
     buildAppMenu()
     await startSidecar()
@@ -279,6 +332,23 @@ async function boot(): Promise<void> {
     app.quit()
   }
 }
+
+// process 级全局兜底:未捕获异常/未处理 Promise 拒绝只记录、不静默崩;尽早挂,好接住启动早期的错。
+installProcessCrashGuards({
+  onFirstFatal: (kind, error) => {
+    const win = mainWindow ?? BrowserWindow.getAllWindows()[0]
+    const message = error instanceof Error ? error.message : String(error)
+    const opts = {
+      type: 'warning' as const,
+      title: '出了点小状况',
+      message: '程序遇到一个内部错误,但仍在继续运行。',
+      detail: `${kind}: ${message}\n\n如果界面异常,可从「视图 → 重新加载」恢复。`,
+      buttons: ['知道了'],
+    }
+    // app 未 ready 时 dialog 不可用,吞掉即可(已有 console 记录)。
+    try { if (win) void dialog.showMessageBox(win, opts); else void dialog.showMessageBox(opts) } catch { /* app 未 ready */ }
+  },
+})
 
 // macOS 钥匙串弹窗拦截:必须在 app ready 前追加命令行开关才生效。
 installMacOsChromiumKeychainPromptGuard(app)
@@ -298,6 +368,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   forceStopPreventSleep()
-  if (sidecar) { killSidecar(sidecar, true); sidecar = null }
+  // 主动停守护:标记 stopped 后 sidecar 退出不再触发重启,并同步杀干净子进程。
+  if (sidecarSupervisor) { sidecarSupervisor.stop(true); sidecarSupervisor = null }
   if (tray) { tray.destroy(); tray = null }
 })
