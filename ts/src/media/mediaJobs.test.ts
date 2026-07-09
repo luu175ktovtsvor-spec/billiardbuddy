@@ -319,6 +319,56 @@ test('MediaJobService generates real images through configured gateway before lo
   }
 })
 
+test('MediaJobService routes GPT image through async submit/poll tasks when QF_GPT_IMAGE_ASYNC=1', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-async-gpt-'))
+  const calls: Array<{ url: string; method: string; body: any }> = []
+  let polls = 0
+  try {
+    const service = new MediaJobService({
+      tasks: new TaskService(root),
+      stateRoot: root,
+      pollIntervalMs: 1,
+      env: {
+        OPENAI_BASE_URL: 'http://image-gateway.example/gw/v1',
+        OPENAI_API_KEY: 'app-token',
+        IMAGE_MODEL_NAME: 'gpt-image-2',
+        QF_GPT_IMAGE_ASYNC: '1',
+      },
+      fetchImpl: async (input, init) => {
+        const url = String(input)
+        const method = init?.method ?? 'GET'
+        calls.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : null })
+        if (method === 'POST' && url.endsWith('/images/tasks')) {
+          return Response.json({ task_id: 'task-1', status: 'queued' })
+        }
+        if (method === 'GET' && url.endsWith('/images/tasks/task-1')) {
+          polls++
+          if (polls < 2) return Response.json({ status: 'running' })
+          return Response.json({ status: 'succeeded', data: [{ b64_json: Buffer.from('async-png').toString('base64') }] })
+        }
+        return Response.json({ detail: 'not found' }, { status: 404 })
+      },
+    })
+    const started = await service.startStudioGenerate({ prompt: '复杂创意海报 cinematic', ratio: '1:1', count: 1, image_provider: 'openai' })
+    const done = await waitFor(async () => {
+      const status = await service.status(started.job_id)
+      return status?.status === 'done' ? status : null
+    })
+    // 根治:GPT 走异步任务而非一次性同步 /images/generations;每一跳都是短请求。
+    const submit = calls.find(c => c.method === 'POST' && c.url.endsWith('/images/tasks'))
+    expect(submit?.url).toBe('http://image-gateway.example/gw/v1/images/tasks')
+    expect(submit?.body).toMatchObject({ mode: 'generate', model: 'gpt-image-2', prompt: '复杂创意海报 cinematic', n: 1 })
+    expect(calls.some(c => c.method === 'GET' && c.url.endsWith('/images/tasks/task-1'))).toBe(true)
+    expect(polls).toBeGreaterThanOrEqual(2)
+    // 全程没有走同步 /images/generations
+    expect(calls.some(c => c.url.endsWith('/images/generations'))).toBe(false)
+    expect(done.result).toMatchObject({ local_preview: false, provider: 'openai-compatible', model: 'gpt-image-2' })
+    expect(done.result?.urls).toHaveLength(1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('MediaJobService auto-routes default Chinese poster generation to Seedream when gateway is configured', async () => {
   const root = mkdtempSync(join(tmpdir(), 'media-route-seedream-'))
   const calls: Array<{ url: string; body: any }> = []
