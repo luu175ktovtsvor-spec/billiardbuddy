@@ -37,6 +37,33 @@
 
   function hideEmpty() { if (emptyEl) emptyEl.style.display = 'none'; }
 
+  // 文件改动 → 彩色 diff 面板
+  function diffLineEl(cls, text) { const s = document.createElement('span'); s.className = 'ln' + (cls ? ' ' + cls : ''); s.textContent = text; return s; }
+  function renderUnifiedPatch(box, patch) {
+    String(patch).split('\n').forEach((line) => {
+      let cls = '';
+      if (line.startsWith('@@')) cls = 'hunk';
+      else if (line.startsWith('+')) cls = 'add';
+      else if (line.startsWith('-')) cls = 'del';
+      box.appendChild(diffLineEl(cls, line || ' '));
+    });
+  }
+  function diffFromArgs(label, a) {
+    if (!/edit_file|patch_file|patch_files|multi_edit|write_file/.test(String(label))) return null;
+    const box = document.createElement('div'); box.className = 'diff';
+    if (typeof a.patch === 'string') { renderUnifiedPatch(box, a.patch); return box; }
+    if (Array.isArray(a.patches)) {
+      a.patches.forEach((p) => { if (p && typeof p.patch === 'string') { box.appendChild(diffLineEl('hunk', '── ' + (p.path || ''))); renderUnifiedPatch(box, p.patch); } });
+      return box.children.length ? box : null;
+    }
+    if (Array.isArray(a.edits)) {
+      a.edits.forEach((e) => { if (e) { if (e.old_string) box.appendChild(diffLineEl('del', '- ' + e.old_string)); if (e.new_string) box.appendChild(diffLineEl('add', '+ ' + e.new_string)); } });
+      return box.children.length ? box : null;
+    }
+    if (typeof a.content === 'string') { a.content.split('\n').slice(0, 200).forEach((l) => box.appendChild(diffLineEl('add', '+ ' + l))); return box; }
+    return null;
+  }
+
   function addUser(text) {
     hideEmpty();
     const m = el('msg user'); m.appendChild(el('bubble', esc(text)));
@@ -62,9 +89,14 @@
       case 'command_invocation':
       case 'tool_call': {
         const label = ev.tool || ev.command || '工具';
-        const sub = clip(ev.command || (ev.args ? JSON.stringify(ev.args) : ''), 90);
+        const a = ev.args && typeof ev.args === 'object' ? ev.args : {};
+        const path = a.path || (Array.isArray(a.patches) && a.patches[0] && a.patches[0].path) || '';
+        const sub = clip(ev.command || path || (ev.args ? JSON.stringify(ev.args) : ''), 90);
         const d = document.createElement('details'); d.className = 'tool'; d.dataset.tool = label;
         d.innerHTML = '<summary><span class="ico">&#9679;</span><span class="name">' + esc(label) + '</span><span class="sub">' + esc(sub) + '</span></summary>';
+        // 文件改动工具:直接把 patch/新内容渲成彩色 diff 面板(§6.5 铁律:文件写入 diff 展示),改动过程可见、不等最终答复
+        const diff = diffFromArgs(label, a);
+        if (diff) { d.appendChild(diff); d.open = true; }
         wrap.appendChild(d); scrollDown();
         break;
       }

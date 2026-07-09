@@ -65,6 +65,12 @@
   .tool .name { font-weight: 500; }
   .tool .sub { color: var(--text-2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
   .tool pre { margin: 0; padding: 10px 12px; border-top: 1px solid var(--hairline); background: #fafafa; font-size: 12px; font-family: "SF Mono", ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; }
+  /* diff 面板:文件改动彩色渲染(绿加/红删) */
+  .diff { margin: 0; border-top: 1px solid var(--hairline); font-size: 12px; font-family: "SF Mono", ui-monospace, Menlo, monospace; max-height: 360px; overflow: auto; }
+  .diff .ln { display: block; padding: 0 12px; white-space: pre-wrap; word-break: break-word; }
+  .diff .add { background: rgba(16,163,127,0.12); color: #0a7a5c; }
+  .diff .del { background: rgba(255,59,48,0.10); color: #c0392b; }
+  .diff .hunk { background: rgba(0,0,0,0.04); color: var(--text-2); }
 
   /* 审批卡 */
   .approval { border: 1px solid var(--accent); border-radius: 12px; margin: 10px 0; padding: 12px 14px; background: rgba(16,163,127,0.04); }
