@@ -109,6 +109,7 @@
   .approval.done { opacity: 0.6; }
 
   .err-line { color: var(--danger); font-size: 13px; margin: 6px 0; }
+  .retry-btn { font-size: 12px; color: var(--accent); background: none; border: 1px solid var(--accent); border-radius: 6px; padding: 1px 8px; cursor: pointer; margin-left: 4px; }
 
   /* 输入区 */
   footer { flex: none; border-top: 1px solid var(--hairline); padding: 12px 0 16px; background: var(--bg); }
@@ -142,7 +143,8 @@
     <header>
       <span class="title">球房管家</span>
       <span class="status" id="status"><span class="dot"></span>连接中…</span>
-      <button class="changes-btn" id="changes-btn">改动 <span class="n" id="changes-n">0</span></button>
+      <button class="changes-btn has" id="tasks-btn" style="margin-left:auto">任务</button>
+      <button class="changes-btn" id="changes-btn" style="margin-left:6px">改动 <span class="n" id="changes-n">0</span></button>
     </header>
     <div id="thread"><div class="wrap"><div class="empty" id="empty">跟它说点什么，它会读写文件、跑命令、上网查、把活干完。</div></div></div>
     <footer>
