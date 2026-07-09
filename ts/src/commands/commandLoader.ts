@@ -2,6 +2,7 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { basename, dirname, extname, join } from 'node:path'
 import { extractDescription, parseMarkdownDocument, stringField } from './frontmatter'
 import { allowedToolRulesFromFrontmatter, normalizeAllowedTools } from './allowedTools'
+import { parseArgumentNames, substituteArguments } from './argumentSubstitution'
 import type { PromptCommand } from './types'
 import type { Tool, ToolContext } from '../tools/Tool'
 
@@ -75,6 +76,9 @@ export async function loadCommandFile(filePath: string): Promise<PromptCommand> 
   const model = stringField(doc.frontmatter, 'model')
   const context = stringField(doc.frontmatter, 'context')
   const agent = stringField(doc.frontmatter, 'agent')
+  const argumentHint = stringField(doc.frontmatter, 'argument-hint') ?? stringField(doc.frontmatter, 'argumentHint')
+  const argumentNames = parseArgumentNames(doc.frontmatter.arguments as string | string[] | undefined)
+  const body = doc.body.trim()
 
   return {
     type: 'prompt',
@@ -83,6 +87,8 @@ export async function loadCommandFile(filePath: string): Promise<PromptCommand> 
     whenToUse,
     allowedTools,
     allowedToolRules,
+    ...(argumentHint ? { argumentHint } : {}),
+    ...(argumentNames.length > 0 ? { argNames: argumentNames } : {}),
     model,
     ...(context === 'fork' || context === 'inline' ? { context } : {}),
     ...(agent ? { agent } : {}),
@@ -91,8 +97,8 @@ export async function loadCommandFile(filePath: string): Promise<PromptCommand> 
     baseDir,
     contentLength: doc.body.length,
     async getPrompt(args: string, _ctx: ToolContext): Promise<string> {
-      const argText = args.trim() ? `\n\n命令参数:\n${args.trim()}` : ''
-      return `命令: /${name}\n基础目录: ${baseDir}\n\n${doc.body.trim()}${argText}`
+      const substituted = substituteArguments(body, args, true, argumentNames, '命令参数')
+      return `命令: /${name}\n基础目录: ${baseDir}\n\n${substituted}`
     },
   }
 }
@@ -163,6 +169,8 @@ export function publicCommand(command: PromptCommand) {
     whenToUse: command.whenToUse,
     allowedTools: command.allowedTools,
     allowedToolRules: command.allowedToolRules,
+    argumentHint: command.argumentHint,
+    argNames: command.argNames,
     model: command.model,
     context: command.context,
     agent: command.agent,
