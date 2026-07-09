@@ -5207,6 +5207,8 @@ test('POST /agent/run loads JSON hook config into the model request', async () =
     port: 0,
     transcriptRoot: root,
     hooksPath,
+    // hooks.json = 工作区来源(local),受信任门约束;显式受信该工作区,验证受信后 local hook 正常注入。
+    trustedWorkspaceRoots: [root],
     env: {
       OPENAI_BASE_URL: 'https://model.example/v1',
       OPENAI_API_KEY: 'secret',
@@ -5227,7 +5229,7 @@ test('POST /agent/run loads JSON hook config into the model request', async () =
   try {
     const res = await fetch(`http://127.0.0.1:${hookServer.port}/agent/run`, {
       method: 'POST',
-      body: JSON.stringify({ message: '原始需求', conversationId: 'hooked', permissionMode: 'full' }),
+      body: JSON.stringify({ message: '原始需求', conversationId: 'hooked', workspaceRoot: root, permissionMode: 'full' }),
     })
     expect(res.status).toBe(200)
     await res.text()
@@ -5239,6 +5241,60 @@ test('POST /agent/run loads JSON hook config into the model request', async () =
     expect(JSON.stringify(userMessage.content)).not.toContain('原始需求')
   } finally {
     hookServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// P0 回归:证明 hooks 信任门在 server 装配处被激活。工作区来源(local)的 hooks.json,在**未受信**工作区里
+// 不执行(SessionStart context 不注入),**受信**后才注入。对齐 cc 交互会话"信任必需",堵住旧"门从没被激活"缺口。
+test('POST /agent/run:hooks.json(工作区来源)未受信工作区被信任门挡下、受信后放行', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'server-hook-trust-'))
+  const hooksPath = join(root, 'hooks.json')
+  writeFileSync(hooksPath, JSON.stringify({
+    hooks: [{ event: 'SessionStart', decision: { action: 'context', additionalContext: '仅受信工作区才应注入' } }],
+  }))
+  const runOnce = async (trusted: boolean, conversationId: string): Promise<string> => {
+    let sentBody: any
+    const server = startServer({
+      port: 0,
+      transcriptRoot: mkdtempSync(join(tmpdir(), 'server-hook-trust-state-')),
+      hooksPath,
+      ...(trusted ? { trustedWorkspaceRoots: [root] } : {}),
+      env: {
+        OPENAI_BASE_URL: 'https://model.example/v1',
+        OPENAI_API_KEY: 'secret',
+        TEXT_MODEL_NAME: 'mimo-v2.5',
+      },
+      fetchImpl: async (_url, init) => {
+        sentBody = JSON.parse(init?.body as string)
+        const enc = new TextEncoder()
+        return new Response(new ReadableStream<Uint8Array>({
+          start(c) {
+            c.enqueue(enc.encode(`data: ${JSON.stringify({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: 'stop' }] })}\n\n`))
+            c.enqueue(enc.encode('data: [DONE]\n\n'))
+            c.close()
+          },
+        }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+      },
+    })
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/agent/run`, {
+        method: 'POST',
+        body: JSON.stringify({ message: 'hi', conversationId, workspaceRoot: root, permissionMode: 'full' }),
+      })
+      expect(res.status).toBe(200)
+      await res.text()
+      return JSON.stringify(sentBody?.messages ?? [])
+    } finally {
+      server.stop(true)
+    }
+  }
+  try {
+    // 未受信:local SessionStart hook 被门挡,context 不注入
+    expect(await runOnce(false, 'untrusted')).not.toContain('仅受信工作区才应注入')
+    // 受信:local hook 正常执行,context 注入进 system prompt
+    expect(await runOnce(true, 'trusted')).toContain('仅受信工作区才应注入')
+  } finally {
     rmSync(root, { recursive: true, force: true })
   }
 })

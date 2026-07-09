@@ -4,7 +4,7 @@ import { extractDescription, parseMarkdownDocument, stringArrayField, stringFiel
 import type { Tool } from '../tools/Tool'
 import type { PermissionMode } from '../permissions/types'
 import { canonicalPermissionMode, parsePermissionMode } from '../permissions/canonical'
-import type { HookRegistry } from '../hooks/hooks'
+import type { HookRegistry, HookSource } from '../hooks/hooks'
 import { normalizeHookRegistry } from '../hooks/hookConfig'
 import { isAgentMemoryEnabled, parseAgentMemoryScope, type AgentMemoryScope } from './agentMemory'
 
@@ -91,14 +91,25 @@ function mcpServersField(frontmatter: Record<string, unknown>): AgentMcpServerSp
   return specs.length > 0 ? specs : undefined
 }
 
-export async function loadAgentFile(filePath: string): Promise<AgentDefinition> {
+export interface LoadAgentOptions {
+  /**
+   * frontmatter hooks 的信任来源(对齐 cc-haha hook 源分层)。
+   * **工作区提供的 .claude/agents 传 'local'**:其 command/http hook 受信任门约束,未受信工作区里不 spawn。
+   * app 内置 agents 省略 → managed(可信,不受 trust 门约束)。
+   * ⚠️ 当前生产只从 app 目录加载(defaultAgentsRoot → 一律 managed);若日后接入工作区 .claude/agents,
+   * 加载它们时**必须**传 hookSource:'local',否则工作区 agent 的 command hook 会绕过信任门。
+   */
+  hookSource?: HookSource
+}
+
+export async function loadAgentFile(filePath: string, options: LoadAgentOptions = {}): Promise<AgentDefinition> {
   const raw = await readFile(filePath, 'utf8')
   const doc = parseMarkdownDocument(raw)
   const name = safeName(stringField(doc.frontmatter, 'name') ?? basename(filePath, '.md'))
   const description = stringField(doc.frontmatter, 'description') ?? extractDescription(doc.body) ?? name
   const memory = parseAgentMemoryScope(doc.frontmatter.memory)
   const isolation = stringField(doc.frontmatter, 'isolation') === 'worktree' ? 'worktree' : undefined
-  const hooks = normalizeHookRegistry(doc.frontmatter.hooks, { agentFrontmatter: true })
+  const hooks = normalizeHookRegistry(doc.frontmatter.hooks, { agentFrontmatter: true, source: options.hookSource })
   return {
     name,
     description,
@@ -120,7 +131,7 @@ export async function loadAgentFile(filePath: string): Promise<AgentDefinition> 
   }
 }
 
-export async function loadAgentsDir(rootDir: string): Promise<AgentDefinition[]> {
+export async function loadAgentsDir(rootDir: string, options: LoadAgentOptions = {}): Promise<AgentDefinition[]> {
   let entries: string[] = []
   try {
     entries = await readdir(rootDir)
@@ -134,7 +145,7 @@ export async function loadAgentsDir(rootDir: string): Promise<AgentDefinition[]>
     const filePath = join(rootDir, entry)
     try {
       const s = await stat(filePath)
-      if (s.isFile()) agents.push(await loadAgentFile(filePath))
+      if (s.isFile()) agents.push(await loadAgentFile(filePath, options))
     } catch {
       continue
     }

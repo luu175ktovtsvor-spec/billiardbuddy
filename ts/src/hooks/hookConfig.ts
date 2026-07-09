@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { readFile } from 'node:fs/promises'
-import { parseHookDecisionJSON, type HookDecision, type HookEvent, type HookHandler, type HookPayload, type HookRegistry, type HookRule } from './hooks'
+import { parseHookDecisionJSON, type HookDecision, type HookEvent, type HookHandler, type HookPayload, type HookRegistry, type HookRule, type HookSource } from './hooks'
 import type { Tool, ToolContext } from '../tools/Tool'
 import { ToolRegistry } from '../tools/registry'
 import { runAgentLoop } from '../harness/loop'
@@ -68,6 +68,12 @@ interface RawAgentHook {
 
 export interface NormalizeHookRegistryOptions {
   agentFrontmatter?: boolean
+  /**
+   * 规则来源标记(对齐 cc-haha hook 源分层)。传 'local' 时,本次规范化出的每条规则都打上
+   * source:'local',执行时受信任门(allowManagedHooksOnly + workspace trust)约束。省略即 managed(可信)。
+   * loadHookRegistryFile 加载工作区文件时传 'local';内置注册(域包/目标/技能)不传 → managed。
+   */
+  source?: HookSource
   httpPolicy?: {
     allowedUrls?: string[]
     allowedEnvVars?: string[]
@@ -707,7 +713,9 @@ export function normalizeHookRegistry(value: unknown, options?: NormalizeHookReg
     else if (isRecord(value.hooks)) rules.push(...normalizeEventMap(value.hooks, effectiveOptions))
     rules.push(...normalizeEventMap(value, effectiveOptions))
   }
-  return { rules }
+  // 来源标记透传到每条规则,供执行前的信任门(runHookEvent → shouldRunHookRule)按 source 判定。
+  const source = effectiveOptions?.source
+  return { rules: source ? rules.map(rule => ({ ...rule, source })) : rules }
 }
 
 export async function loadHookRegistryFile(path: string | undefined): Promise<HookRegistry | undefined> {
@@ -719,7 +727,8 @@ export async function loadHookRegistryFile(path: string | undefined): Promise<Ho
     return undefined
   }
   try {
-    const registry = normalizeHookRegistry(JSON.parse(raw) as unknown)
+    // 工作区 .claude/settings 风格文件里的 hook 是不可信来源(任意命令),标 'local' 交给信任门约束。
+    const registry = normalizeHookRegistry(JSON.parse(raw) as unknown, { source: 'local' })
     return registry.rules.length > 0 ? registry : undefined
   } catch {
     return undefined

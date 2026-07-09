@@ -70,6 +70,34 @@ Say hello.
   }
 })
 
+test('loadSkillsDir:来源分层——hookSource:local 给 frontmatter hooks 打 local 标(受信任门约束);默认 managed 无标', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'skills-hooksrc-'))
+  try {
+    mkdirSync(join(root, 'guard'), { recursive: true })
+    writeFileSync(join(root, 'guard', 'SKILL.md'), `---
+name: guard
+description: guard skill
+hooks:
+  PreToolUse:
+    - matcher: write_file
+      hooks:
+        - type: command
+          command: echo hi
+---
+Guard writes.
+`)
+    // 工作区提供的 .claude/skills → local(其 command hook 未受信工作区里不 spawn)
+    const local = await loadSkillsDir(root, { hookSource: 'local' })
+    expect(local.skills[0]!.hooks?.rules.length).toBeGreaterThan(0)
+    expect(local.skills[0]!.hooks?.rules.every(rule => rule.source === 'local')).toBe(true)
+    // app 内置 / 插件(默认)→ managed:无 source 标记,不受信任门约束
+    const managed = await loadSkillsDir(root)
+    expect(managed.skills[0]!.hooks?.rules.every(rule => rule.source === undefined)).toBe(true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('loadSkillFile getPrompt substitutes $ARGUMENTS/$1/named placeholders, blank on missing args', async () => {
   const root = mkdtempSync(join(tmpdir(), 'skills-substitute-'))
   try {

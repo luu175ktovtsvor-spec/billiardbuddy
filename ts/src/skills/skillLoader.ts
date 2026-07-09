@@ -4,7 +4,7 @@ import { extractDescription, parseMarkdownDocument, stringField } from '../comma
 import { addAllowedToolsToContext, allowedToolRulesFromFrontmatter, normalizeAllowedTools } from '../commands/allowedTools'
 import { parseArgumentNames, substituteArguments } from '../commands/argumentSubstitution'
 import type { PromptCommand } from '../commands/types'
-import { mergeHookRegistries } from '../hooks/hooks'
+import { mergeHookRegistries, type HookSource } from '../hooks/hooks'
 import { normalizeHookRegistry } from '../hooks/hookConfig'
 import type { Tool, ToolContext } from '../tools/Tool'
 import { addInvokedSkill } from './invokedSkills'
@@ -67,7 +67,14 @@ export function registerSkillHooks(skill: PromptCommand, ctx: ToolContext): void
   ctx.onSessionHooksChanged?.(ctx.sessionHooks)
 }
 
-export async function loadSkillFile(filePath: string, source: PromptCommand['source'] = 'skills'): Promise<PromptCommand> {
+/**
+ * frontmatter hooks 的信任来源(对齐 cc-haha hook 源分层)。
+ * **工作区提供的 .claude/skills 传 'local'**:其 command/http hook 受信任门约束,未受信工作区里不 spawn。
+ * app 内置 / 插件 skills 省略 → managed(可信,不受 trust 门约束)。
+ * ⚠️ 当前生产只从 app 目录 / 已启用插件加载(defaultSkillsRoot、pluginContribs → 一律 managed);若日后接入
+ * 工作区 .claude/skills,加载它们时**必须**传 hookSource:'local',否则工作区 skill 的 command hook 绕过信任门。
+ */
+export async function loadSkillFile(filePath: string, source: PromptCommand['source'] = 'skills', hookSource?: HookSource): Promise<PromptCommand> {
   const raw = await readFile(filePath, 'utf8')
   const doc = parseMarkdownDocument(raw)
   const baseDir = dirname(filePath)
@@ -79,7 +86,7 @@ export async function loadSkillFile(filePath: string, source: PromptCommand['sou
   const model = stringField(doc.frontmatter, 'model')
   const context = stringField(doc.frontmatter, 'context')
   const agent = stringField(doc.frontmatter, 'agent')
-  const hooks = normalizeHookRegistry(doc.frontmatter.hooks)
+  const hooks = normalizeHookRegistry(doc.frontmatter.hooks, hookSource ? { source: hookSource } : undefined)
   const argumentHint = stringField(doc.frontmatter, 'argument-hint') ?? stringField(doc.frontmatter, 'argumentHint')
   const argumentNames = parseArgumentNames(doc.frontmatter.arguments as string | string[] | undefined)
   const body = doc.body.trim()
@@ -108,7 +115,13 @@ export async function loadSkillFile(filePath: string, source: PromptCommand['sou
   }
 }
 
-export async function loadSkillsDir(rootDir: string): Promise<SkillLibrary> {
+export interface LoadSkillsDirOptions {
+  source?: PromptCommand['source']
+  /** frontmatter hooks 的信任来源;工作区 .claude/skills 传 'local'(受信任门约束),app/插件省略 → managed。 */
+  hookSource?: HookSource
+}
+
+export async function loadSkillsDir(rootDir: string, options: LoadSkillsDirOptions = {}): Promise<SkillLibrary> {
   const skills: PromptCommand[] = []
   let entries: string[] = []
   try {
@@ -123,7 +136,7 @@ export async function loadSkillsDir(rootDir: string): Promise<SkillLibrary> {
     try {
       const s = await stat(skillPath)
       if (!s.isFile()) continue
-      skills.push(await loadSkillFile(skillPath, 'skills'))
+      skills.push(await loadSkillFile(skillPath, options.source ?? 'skills', options.hookSource))
     } catch {
       continue
     }

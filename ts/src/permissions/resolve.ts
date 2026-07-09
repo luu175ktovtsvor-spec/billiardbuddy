@@ -3,6 +3,7 @@ import { shellCommandAllowedByPermissionRules, shellCommandMatchesPermissionRule
 import type { ApprovalClass, DecisionReason, PermissionDecision, PermissionRule } from './types'
 import { canonicalPermissionMode } from './canonical'
 import { autoEditSafetyReason } from './autoEditSafety'
+import { fileRuleAppliesToTool, filePathRuleMatchesInput, filePathToolOperation } from './filePathRuleMatch'
 
 export const APPROVAL_PENDING_MSG = (name: string): string =>
   `[待用户确认] 已请求执行「${name}」。请用一两句话把你打算做的事告诉老板、并请他确认,不要假装已经做完或已生成。`
@@ -84,16 +85,33 @@ function ruleMatchesToolName(rule: PermissionRule, tool: Tool): boolean {
   return rule.ruleValue.toolName === '*' || candidates.includes(rule.ruleValue.toolName)
 }
 
-function ruleMatchesInput(rule: PermissionRule, tool: Tool, input: unknown): boolean {
-  if (!ruleMatchesToolName(rule, tool)) return false
+function ruleMatchesInput(ctx: ToolContext, rule: PermissionRule, tool: Tool, input: unknown): boolean {
   const content = rule.ruleValue.ruleContent
-  if (content === undefined) return true
-  if (tool.name === 'run_command' || tool.name === 'PowerShell') return commandMatchesPattern(input, content)
-  return false
+
+  // 命令类工具:ruleContent 作为命令模式匹配。
+  if (tool.name === 'run_command' || tool.name === 'PowerShell') {
+    if (!ruleMatchesToolName(rule, tool)) return false
+    if (content === undefined) return true
+    return commandMatchesPattern(input, content)
+  }
+
+  // 文件类工具(Read/Write/Edit 家族):ruleContent 作为路径 glob 匹配入参文件路径。
+  // 对齐 cc filesystem.matchingRuleForInput —— 否则路径作用域 deny/ask/allow 对文件工具全失效,
+  // .env / **/secrets/** 被静默放读(本次修复的核心缺口)。
+  const op = filePathToolOperation(tool)
+  if (op !== null) {
+    if (!fileRuleAppliesToTool(rule, op)) return false
+    if (content === undefined) return true // 裸 Read/Edit/Write 规则 → 覆盖该家族全部文件
+    return filePathRuleMatchesInput(ctx, rule, tool, input)
+  }
+
+  // 其它工具:只认工具名级(无 ruleContent)规则。
+  if (!ruleMatchesToolName(rule, tool)) return false
+  return content === undefined
 }
 
 function matchingRule(ctx: ToolContext, tool: Tool, input: unknown, behavior: PermissionRule['ruleBehavior']): PermissionRule | null {
-  return (ctx.permissionRules ?? []).find(rule => rule.ruleBehavior === behavior && ruleMatchesInput(rule, tool, input)) ?? null
+  return (ctx.permissionRules ?? []).find(rule => rule.ruleBehavior === behavior && ruleMatchesInput(ctx, rule, tool, input)) ?? null
 }
 
 /**
