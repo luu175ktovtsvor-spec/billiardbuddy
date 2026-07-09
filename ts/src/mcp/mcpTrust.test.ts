@@ -22,7 +22,7 @@ test('工作区级 .mcp.json 未信任被拦;显式/已信任/app 级配置放�
   expect(resolveTrustedMcpConfig({ configPath: wsConfig, workspaceRoot: root, explicit: true, store }).path).toBe(wsConfig)
 
   // app 库/全局配置(非工作区级)→ 放行
-  const appConfig = resolve('/home/u/.billiards-desktop/library/.mcp.json')
+  const appConfig = resolve('/home/u/.billiardbuddy/library/.mcp.json')
   expect(resolveTrustedMcpConfig({ configPath: appConfig, workspaceRoot: root, explicit: false, store }).path).toBe(appConfig)
 
   // 无配置 → path undefined、无 warning

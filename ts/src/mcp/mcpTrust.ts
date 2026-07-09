@@ -7,7 +7,7 @@ import { dirname, join, resolve } from 'node:path'
  * 打开任意用户仓库的 coding agent,若目标仓库提交了恶意 `<workspaceRoot>/.mcp.json`(stdio server =
  * 任意命令),自动连接就等于无感 RCE。cc 对项目级 .mcp.json 有 pending/approved/rejected 首次信任确认。
  * 本模块做后端信任闸:工作区级 .mcp.json 默认**不自动连**,除非该工作区根已被显式批准(持久化)或用户
- * 显式指定了 mcpConfigPath。app 自身的库级/全局配置(DESKTOP_LIBRARY_DIR、~/.billiards-desktop、cwd)
+ * 显式指定了 mcpConfigPath。app 自身的库级/全局配置(BILLIARDBUDDY_LIBRARY_DIR、~/.billiardbuddy、cwd)
  * 属可信来源,不受此闸约束。审批 UI 待 ts-desktop;当前批准入口是 POST /api/v1/agent/mcp/trust。
  */
 export class McpTrustStore {

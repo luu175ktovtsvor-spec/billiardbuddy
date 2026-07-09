@@ -2,6 +2,7 @@ import { mkdir, open, readdir, readFile, rename } from 'node:fs/promises'
 import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 import { getUserConfigHomeDir, MEMORY_DOT_DIR } from '../harness/memoryNames'
+import { LIBRARY_DIR_ENV, desktopLibraryBase, isLocalMode } from '../harness/desktopEnvNames'
 
 export interface PluginListItem {
   name: string
@@ -24,10 +25,6 @@ function stringField(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
-function homeFrom(env: Record<string, string | undefined>): string {
-  return env.HOME || env.USERPROFILE || process.cwd()
-}
-
 async function countDirEntries(dir: string): Promise<number> {
   try {
     const entries = await readdir(dir, { withFileTypes: true })
@@ -48,23 +45,22 @@ async function readManifest(pluginDir: string): Promise<Record<string, unknown>>
 }
 
 export function defaultPluginRoots(env: Record<string, string | undefined> = process.env): string[] {
-  if (env.DESKTOP_LOCAL === '1') {
-    const base = env.DESKTOP_LIBRARY_DIR || join(homeFrom(env), '.billiards-desktop', 'library')
-    return [join(base, 'plugins')]
+  if (isLocalMode(env)) {
+    return [join(desktopLibraryBase(env), 'plugins')]
   }
+  const libraryDir = env[LIBRARY_DIR_ENV]
   return [
     // 白标:用户全局插件根走 memoryNames.getUserConfigHomeDir()(~/.billiardbuddy,env
     // BILLIARDBUDDY_CONFIG_DIR 可覆盖),绝不读 ~/.claude;项目级用 MEMORY_DOT_DIR(.billiardbuddy)。
     join(getUserConfigHomeDir(), 'plugins'),
     join(process.cwd(), MEMORY_DOT_DIR, 'plugins'),
-    ...(env.DESKTOP_LIBRARY_DIR ? [join(env.DESKTOP_LIBRARY_DIR, 'plugins')] : []),
+    ...(libraryDir ? [join(libraryDir, 'plugins')] : []),
   ]
 }
 
 export function defaultPluginInstallDir(env: Record<string, string | undefined> = process.env): string {
-  if (env.DESKTOP_LOCAL === '1') {
-    const base = env.DESKTOP_LIBRARY_DIR || join(homeFrom(env), '.billiards-desktop', 'library')
-    return join(base, 'plugins')
+  if (isLocalMode(env)) {
+    return join(desktopLibraryBase(env), 'plugins')
   }
   return join(getUserConfigHomeDir(), 'plugins')
 }

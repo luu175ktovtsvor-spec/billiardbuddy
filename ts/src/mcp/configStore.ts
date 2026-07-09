@@ -1,5 +1,6 @@
 import { mkdir, open, readFile, rename } from 'node:fs/promises'
 import { join } from 'node:path'
+import { desktopLibraryBase } from '../harness/desktopEnvNames'
 
 export const MCP_PRESETS: Array<{ id: string; name: string; desc: string; command: string; args: string[] }> = []
 
@@ -7,13 +8,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
 }
 
-function homeFrom(env: Record<string, string | undefined>): string {
-  return env.HOME || env.USERPROFILE || process.cwd()
-}
-
 export function defaultWritableMcpConfigPath(env: Record<string, string | undefined> = process.env): string {
-  const base = env.DESKTOP_LIBRARY_DIR || join(homeFrom(env), '.billiards-desktop', 'library')
-  return join(base, '.mcp.json')
+  return join(desktopLibraryBase(env), '.mcp.json')
 }
 
 async function readDoc(path: string): Promise<Record<string, unknown>> {

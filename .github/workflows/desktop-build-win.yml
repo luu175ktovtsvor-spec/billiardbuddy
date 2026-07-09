@@ -41,7 +41,7 @@ jobs:
         shell: pwsh
         run: |
           @"
-          DESKTOP_LOCAL=1
+          BILLIARDBUDDY_LOCAL=1
           DEEPSEEK_API_KEY=${{ secrets.BUNDLED_DEEPSEEK_API_KEY }}
           DEEPSEEK_BASE_URL=${{ secrets.BUNDLED_DEEPSEEK_BASE_URL }}
           OPENAI_API_KEY=${{ secrets.BUNDLED_OPENAI_API_KEY }}
