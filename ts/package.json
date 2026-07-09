@@ -2,12 +2,16 @@
   "name": "billiards-ts-harness",
   "version": "0.0.0",
   "module": "index.ts",
+  "main": "desktop/electron/main.mjs",
+  "author": "球房管家",
+  "description": "球房管家 · 桌面 coding agent",
   "devDependencies": {
     "@types/bun": "latest",
     "@types/electron": "^1.6.12",
     "@types/pngjs": "^6.0.5",
     "@types/qrcode": "^1.5.6",
-    "electron": "^43.1.0"
+    "electron": "^43.1.0",
+    "electron-builder": "^26.15.3"
   },
   "peerDependencies": {
     "typescript": "^5"
@@ -23,6 +27,7 @@
     "build:sidecar": "bun run desktop/scripts/build-sidecar.ts",
     "desktop:build": "bun build desktop/electron/main.ts --target=node --format=esm --external=electron --outfile=desktop/electron/main.mjs && bun build desktop/electron/preload.ts --target=node --format=cjs --external=electron --outfile=desktop/electron/preload.cjs",
     "desktop:dev": "bun run desktop:build && electron desktop/electron/main.mjs",
+    "desktop:dist": "bun run desktop:build && electron-builder --config electron-builder.yml",
     "smoke:native": "bun run scripts/smoke/native-plugins.smoke.ts",
     "smoke:sandbox": "bun run scripts/smoke/sandbox.smoke.ts",
     "smoke:model": "bun run scripts/smoke/model-live.smoke.ts",
