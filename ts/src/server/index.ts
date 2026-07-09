@@ -14,6 +14,7 @@ import {
   scrubProviderIdentifiers,
   toPublicProviderView,
 } from '../model/publicModelNames'
+import { createChatOutputScrubber } from '../harness/outputScrub'
 import { SessionService, TurnRegistry, type SessionEventRecord, type SessionStatus, type SessionStreamEvent } from './services/sessionService'
 import { ProviderService, type RuntimeProviderResolution } from './services/providerService'
 import { ProviderHealthStore, type ProviderHealthEntry } from './services/providerHealthStore'
@@ -1836,7 +1837,11 @@ export function startServer(opts: StartServerOptions = {}) {
         }
         // 加载工作区 .claude/settings.json(+ local)持久化权限规则,置于会话临时规则之前(持久规则打底,会话规则覆盖)。
         const persistedRuleUpdates = permissionUpdatesFromRules(await loadPermissionRules(workspace.root))
-        for await (const event of runAgentLoop({
+        // 白标第二层:用户可见的助手文本(final 全文 + content_delta 流式 + thinking)出口兜底清洗;
+        // content_delta 逐 token 流,真名可能跨两个 delta 被切断(如 "Clau"+"de"),故用有状态的
+        // carry-over 缓冲(见 createChatOutputScrubber),清完把安全前缀放行、流末 flush 尾巴。
+        const outputScrubber = createChatOutputScrubber()
+        for await (const rawEvent of runAgentLoop({
           model,
           registry,
           workspace,
@@ -1863,13 +1868,16 @@ export function startServer(opts: StartServerOptions = {}) {
           },
           teamInbox: { service: teams },
         })) {
+          // 出口兜底清洗:一个原始事件经清洗器可能变成 0..n 个(final 会先补 flush 打字机尾巴)。
           // content_delta 是瞬时 token 流:实时发给客户端(打字机),但不持久化进事件日志(否则日志膨胀、断线重放会重复整段增量)。
-          // 白标:模型层的 context_note(FallbackModel 失败/切换旁白等系统提示)可能带真实模型名/供应商/原始报错,
-          // 在出口统一过 scrubProviderIdentifiers 清底(只清系统旁白,不动 final/tool_result 等用户内容)。
-          const outgoing = event.type === 'context_note'
-            ? { ...event, text: scrubProviderIdentifiers(event.text) }
-            : event
-          yield event.type === 'content_delta' ? fallbackEventRecord(event) : await record(outgoing)
+          // final/thinking/context_note 里若被模型自曝真名/供应商/原始报错,一律替成中性口径后再出。
+          for (const event of outputScrubber.push(rawEvent)) {
+            yield event.type === 'content_delta' ? fallbackEventRecord(event) : await record(event)
+          }
+        }
+        // 流正常结束但没有 final(极少见)时,flush 掉各通道 hold 住的尾巴,别把已收到的正文吞掉。
+        for (const event of outputScrubber.flush()) {
+          yield event.type === 'content_delta' ? fallbackEventRecord(event) : await record(event)
         }
       } catch (err) {
         finalStatus = controller.signal.aborted ? 'interrupted' : 'failed'
