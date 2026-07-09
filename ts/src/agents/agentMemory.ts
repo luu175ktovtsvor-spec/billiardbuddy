@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
+import { getUserConfigHomeDir, MEMORY_DOT_DIR } from '../harness/memoryNames'
 import { Workspace } from '../workspace/workspace'
 
 export type AgentMemoryScope = 'user' | 'project' | 'local'
@@ -28,16 +28,13 @@ function sanitizeAgentNameForPath(agentName: string): string {
   return agentName.trim().replace(/[:/\\]+/g, '-').replace(/^-+|-+$/g, '') || 'agent'
 }
 
-function userMemoryBaseDir(): string {
-  const configured = process.env.CLAUDE_CONFIG_DIR || process.env.CLAUDE_HOME
-  return resolve(configured && configured.trim() ? configured : join(homedir(), '.claude'))
-}
-
 export function getAgentMemoryDir(agentName: string, scope: AgentMemoryScope, workspaceRoot: string): string {
   const dirName = sanitizeAgentNameForPath(agentName)
-  if (scope === 'project') return join(workspaceRoot, '.claude', 'agent-memory', dirName)
-  if (scope === 'local') return join(workspaceRoot, '.claude', 'agent-memory-local', dirName)
-  return join(userMemoryBaseDir(), 'agent-memory', dirName)
+  // 白标:用户全局记忆走 memoryNames.getUserConfigHomeDir()(~/.billiardbuddy,env
+  // BILLIARDBUDDY_CONFIG_DIR 可覆盖),绝不读 ~/.claude;项目级用 MEMORY_DOT_DIR(.billiardbuddy)。
+  if (scope === 'project') return join(workspaceRoot, MEMORY_DOT_DIR, 'agent-memory', dirName)
+  if (scope === 'local') return join(workspaceRoot, MEMORY_DOT_DIR, 'agent-memory-local', dirName)
+  return join(getUserConfigHomeDir(), 'agent-memory', dirName)
 }
 
 export function getAgentMemoryEntrypoint(agentName: string, scope: AgentMemoryScope, workspaceRoot: string): string {
@@ -174,7 +171,7 @@ async function readMemoryEntrypoint(memoryDir: string): Promise<string> {
 }
 
 function snapshotDir(agentName: string, workspaceRoot: string): string {
-  return join(workspaceRoot, '.claude', SNAPSHOT_BASE, sanitizeAgentNameForPath(agentName))
+  return join(workspaceRoot, MEMORY_DOT_DIR, SNAPSHOT_BASE, sanitizeAgentNameForPath(agentName))
 }
 
 function scopeGuidance(scope: AgentMemoryScope): string {
