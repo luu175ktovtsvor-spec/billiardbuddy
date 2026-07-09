@@ -20,7 +20,6 @@
     "dev:server": "bun run desktop/sidecars/backend-sidecar.ts server --host 127.0.0.1 --port 8850",
     "build:sidecar": "bun run desktop/scripts/build-sidecar.ts",
     "smoke:native": "bun run scripts/smoke/native-plugins.smoke.ts",
-    "smoke:sqlite": "bun run scripts/smoke/sqlite.smoke.ts",
     "smoke:sandbox": "bun run scripts/smoke/sandbox.smoke.ts",
     "smoke:model": "bun run scripts/smoke/model-live.smoke.ts",
     "smoke:agent-tools": "bun run scripts/smoke/agent-tools-live.smoke.ts"
