@@ -15,6 +15,25 @@ test('normalizeMcpConfig:支持 .mcp.json 的 mcpServers 与裸 servers', () => 
   expect(normalizeMcpConfig({ mcpServers: { off: { command: 'node', disabled: true } } })[0]?.disabled).toBe(true)
 })
 
+test('normalizeMcpConfig:http server 解析 headers(鉴权对齐 cc,Authorization 走 headers 而非单独字段)', () => {
+  const [server] = normalizeMcpConfig({
+    mcpServers: {
+      remote: {
+        url: 'https://mcp.example/mcp',
+        headers: { Authorization: 'Bearer secret-token', 'X-Api-Key': 'k1', bad: 1 },
+      },
+    },
+  })
+  expect(server).toEqual({
+    name: 'remote',
+    transport: 'http',
+    url: 'https://mcp.example/mcp',
+    env: undefined,
+    disabled: false,
+    headers: { Authorization: 'Bearer secret-token', 'X-Api-Key': 'k1' },
+  })
+})
+
 test('commandForPlatform:Windows 下 npx 走 cmd /c', () => {
   expect(commandForPlatform({ name: 'fs', transport: 'stdio', command: 'npx', args: ['-y', 'pkg'] }, 'win32'))
     .toEqual({ command: 'cmd', args: ['/c', 'npx', '-y', 'pkg'] })

@@ -11,6 +11,10 @@ export interface McpServerConfig {
   url?: string
   env?: Record<string, string>
   disabled?: boolean
+  // 远程 http 传输的自定义请求头(含 Authorization: Bearer xxx)。
+  // 对齐 cc(services/mcp/types.ts McpHTTPServerConfigSchema.headers):cc 没有单独的
+  // "token" 字段,鉴权就是用户在这里自己写 Authorization 头;我们照做,不发明新字段。
+  headers?: Record<string, string>
 }
 
 export interface McpToolAnnotations {
@@ -43,7 +47,14 @@ export function normalizeMcpConfig(value: unknown): McpServerConfig[] {
   for (const [name, raw] of Object.entries(servers)) {
     if (!isRecord(raw)) continue
     if (typeof raw.url === 'string' && raw.url.trim()) {
-      out.push({ name, transport: 'http', url: raw.url.trim(), env: stringRecord(raw.env), disabled: raw.disabled === true })
+      out.push({
+        name,
+        transport: 'http',
+        url: raw.url.trim(),
+        env: stringRecord(raw.env),
+        disabled: raw.disabled === true,
+        headers: stringRecord(raw.headers),
+      })
       continue
     }
     if (typeof raw.command === 'string' && raw.command.trim()) {
