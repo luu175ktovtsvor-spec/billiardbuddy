@@ -30,7 +30,7 @@
   function showChanges() {
     pvTitle.textContent = '改动文件 (' + changedFiles.size + ')';
     const box = document.createElement('div'); box.className = 'changed';
-    if (!changedFiles.size) box.innerHTML = '<div class="cf">本会话还没有文件改动</div>';
+    if (!changedFiles.size) box.innerHTML = '<div class="cf">这次对话还没改过文件，管家改了会自动记在这儿。</div>';
     [...changedFiles].forEach((p) => {
       const it = el('cf', '<span class="ico">◆</span>' + esc(p.split('/').pop()));
       it.title = p; it.onclick = () => showFile(p);
@@ -40,12 +40,12 @@
   }
   async function showFile(path) {
     pvTitle.textContent = path.split('/').pop();
-    pvBody.innerHTML = '<pre>加载中…</pre>';
+    pvBody.innerHTML = '<pre>正在读取文件…</pre>';
     try {
       const data = await (await fetch('/api/v1/agent/fs/read?path=' + encodeURIComponent(path))).json();
-      const pre = document.createElement('pre'); pre.textContent = data.content != null ? data.content : (data.error || '(读取失败)');
+      const pre = document.createElement('pre'); pre.textContent = data.content != null ? data.content : (data.error || '没读到这个文件，确认它还在原位后重试。');
       pvBody.innerHTML = ''; pvBody.appendChild(pre);
-    } catch { pvBody.innerHTML = '<pre>(读取失败)</pre>'; }
+    } catch { pvBody.innerHTML = '<pre>没读到这个文件，确认它还在原位后重试。</pre>'; }
     previewEl.classList.add('show');
   }
   changesBtn.addEventListener('click', showChanges);
@@ -53,21 +53,21 @@
 
   // 后台任务入口(§9)
   const tasksBtn = $('tasks-btn');
-  const TASK_STATUS = { queued: '排队中', running: '运行中', completed: '已完成', failed: '失败', interrupted: '已中断' };
+  const TASK_STATUS = { queued: '排队中，等空闲就开跑', running: '正在跑', completed: '已完成', failed: '没跑成', interrupted: '已中断' };
   async function showTasks() {
     pvTitle.textContent = '后台任务';
-    pvBody.innerHTML = '<div class="changed"><div class="cf">加载中…</div></div>';
+    pvBody.innerHTML = '<div class="changed"><div class="cf">正在读取后台任务…</div></div>';
     try {
       const data = await (await fetch('/tasks?conversationId=' + encodeURIComponent(conversationId) + '&limit=50')).json();
       const list = data.tasks || [];
       const box = document.createElement('div'); box.className = 'changed';
-      if (!list.length) box.innerHTML = '<div class="cf">本会话还没有后台任务</div>';
+      if (!list.length) box.innerHTML = '<div class="cf">还没有后台任务。把耗时的活交给管家，它会在后台慢慢跑，完成了主动告诉你，你先去忙别的就行。</div>';
       list.forEach((t) => {
         const it = el('cf', '<span class="ico">▣</span>' + esc(t.title || t.id) + ' · ' + esc(TASK_STATUS[t.status] || t.status));
         box.appendChild(it);
       });
       pvBody.innerHTML = ''; pvBody.appendChild(box);
-    } catch { pvBody.innerHTML = '<div class="changed"><div class="cf">(加载失败)</div></div>'; }
+    } catch { pvBody.innerHTML = '<div class="changed"><div class="cf">没读到后台任务，检查后重试。</div></div>'; }
     previewEl.classList.add('show');
   }
   tasksBtn.addEventListener('click', showTasks);
@@ -75,7 +75,7 @@
   async function pickWorkspace() {
     let dir = null;
     if (host && typeof host.pickWorkspace === 'function') dir = await host.pickWorkspace(); // Electron 原生文件夹选择器
-    else dir = window.prompt('输入工作区文件夹的绝对路径:', workspaceRoot || ''); // 浏览器兜底
+    else dir = window.prompt('输入工作区文件夹的完整路径：', workspaceRoot || ''); // 浏览器兜底
     if (!dir) return;
     workspaceRoot = dir;
     wsPathEl.textContent = dir; wsPathEl.title = dir;
@@ -240,7 +240,7 @@
         wrap.appendChild(el('thinking', esc(ev.text))); scrollDown();
         break;
       case 'max_turns_reached':
-        wrap.appendChild(el('err-line', '已达最大回合数(' + ev.maxTurns + '),已停止。')); scrollDown();
+        wrap.appendChild(el('err-line', '管家连着跑了 ' + ev.maxTurns + ' 个回合，先停下来喘口气。想接着做的话，回一句让它继续。')); scrollDown();
         break;
       case 'approval_request':
         renderApproval(ev); scrollDown();
@@ -258,7 +258,7 @@
     if (r.what) reasonLines.push(r.what);
     if (r.why) reasonLines.push('原因:' + r.why);
     if (r.impact) reasonLines.push('影响:' + r.impact);
-    const rememberBtn = ev.rememberable ? '<button class="approve-session">本会话允许</button>' : '';
+    const rememberBtn = ev.rememberable ? '<button class="approve-session">本次对话都允许</button>' : '';
     card.innerHTML = '<div class="head">需要你确认:' + esc(ev.tool) + '</div>' +
       (ev.warning ? '<div class="warn">⚠ ' + esc(ev.warning) + '</div>' : '') +
       '<div class="why">' + esc(clip(reasonLines.join('\n') || (ev.preview || JSON.stringify(ev.args || {})), 400)) + '</div>' +
@@ -269,7 +269,7 @@
     const done = (label) => { card.classList.add('done'); card.querySelector('.acts').innerHTML = '<span class="sub">' + label + '</span>'; };
     const approve = (remember) => {
       wsSend({ type: 'approve', tool: ev.tool, args: ev.args, token: ev.token, conversationId: conversationId, permissionMode: 'default', remember_approval: !!remember });
-      done(remember ? '已允许(本会话)' : '已批准并执行');
+      done(remember ? '已允许（本次对话）' : '已批准，正在执行');
     };
     card.querySelector('.approve').onclick = () => approve(false);
     if (ev.rememberable) card.querySelector('.approve-session').onclick = () => approve(true);
@@ -290,11 +290,11 @@
     } catch { /* 后端未就绪时静默 */ }
   }
   function renderSessions(list) {
-    if (!list.length) { sesslist.innerHTML = '<div class="empty-s">还没有会话</div>'; return; }
+    if (!list.length) { sesslist.innerHTML = '<div class="empty-s">还没有对话，点上面「新对话」开个头。</div>'; return; }
     sesslist.innerHTML = '';
     list.forEach((s) => {
       const d = el('sess' + (s.id === conversationId ? ' active' : ''));
-      d.innerHTML = '<div class="t">' + esc(s.title || '新会话') + '</div><div class="m">' + esc(new Date(s.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })) + '</div>';
+      d.innerHTML = '<div class="t">' + esc(s.title || '新对话') + '</div><div class="m">' + esc(new Date(s.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })) + '</div>';
       d.onclick = () => switchSession(s.id);
       sesslist.appendChild(d);
     });
@@ -328,8 +328,8 @@
   function connect() {
     ws = new WebSocket(wsProto + '//' + location.host + '/agent/ws?conversationId=' + encodeURIComponent(conversationId));
     ws.onopen = () => setStatus(true, '已连接');
-    ws.onclose = () => { setStatus(false, '已断开,重连中…'); running = false; sendBtn.disabled = false; setTimeout(connect, 1500); };
-    ws.onerror = () => setStatus(false, '连接错误');
+    ws.onclose = () => { setStatus(false, '连接断开了，正在重新连上…'); running = false; sendBtn.disabled = false; setTimeout(connect, 1500); };
+    ws.onerror = () => setStatus(false, '连接出了点问题，正在重试…');
     ws.onmessage = (e) => {
       let msg; try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === 'ready') {
@@ -339,7 +339,7 @@
       }
       if (msg.type === 'error') {
         running = false; sendBtn.disabled = false;
-        const line = el('err-line', '⚠ 出错了:' + esc(msg.error) + '。可检查后重试。 ');
+        const line = el('err-line', '这次没跑成：' + esc(msg.error) + '。检查一下再点重试，或换个说法重新发。 ');
         if (lastUserMessage) {
           const retry = document.createElement('button'); retry.className = 'retry-btn'; retry.textContent = '重试';
           retry.onclick = () => { const t = lastUserMessage; input.value = t; send(); };
@@ -353,7 +353,7 @@
         return;
       }
       if (msg.type === 'approve_result') {
-        wrap.appendChild(el('thinking', '工具已执行:' + esc(clip(msg.result || '', 200))));
+        wrap.appendChild(el('thinking', '这一步已完成：' + esc(clip(msg.result || '', 200))));
         scrollDown();
       }
     };
