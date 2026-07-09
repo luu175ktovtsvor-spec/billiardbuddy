@@ -275,6 +275,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   let compactionFailures = 0
   let lastCompactionAtMs = 0
   let lastCompactedMessageCount = 0
+  let lastInputTokens: number | undefined // 上一轮响应回报的真实 prompt input tokens(含 cache),供 token 级压缩触发
   let sameKey = ''
   let sameKeyCount = 0
   let toolCallsNoProgress = 0
@@ -307,6 +308,8 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       system,
       postSummaryMessages: invokedSkills ? [invokedSkills] : [],
       contextWindowChars: opts.contextWindowChars,
+      contextWindowTokens: opts.contextWindowTokens,
+      lastInputTokens,
       readOnlyToolNames,
       compactionFailures,
       lastCompactionAtMs,
@@ -349,6 +352,8 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       recordPromptCacheState({ trackingKey: promptCacheTrackingKey, system, tools: toolsForStep, model: modelNameForPromptCache })
       step = await model.step({ system, messages, tools: toolsForStep, signal: opts.signal })
     }
+    // 记下这轮真实 prompt input tokens(含 cache 命中/创建),供下一轮 maybeCompact 做 token 级触发。
+    if (step.usage) lastInputTokens = step.usage.input_tokens + (step.usage.cache_read_input_tokens ?? 0) + (step.usage.cache_creation_input_tokens ?? 0)
     const usageEvent = usageUpdateEvent(step.usage, usageTotals, opts.contextWindowTokens)
     if (usageEvent) yield usageEvent
     const cacheBreak = checkPromptCacheBreak(promptCacheTrackingKey, step.usage, messages)

@@ -47,6 +47,10 @@ export interface CompactPipelineInput extends SplitOptions, MicrocompactOptions 
   system?: string
   postSummaryMessages?: Message[]
   contextWindowChars?: number
+  /** 模型窗口 token 数;配合 lastInputTokens 做 token 级自动压缩触发(cc:真实用量优先于字符估算)。 */
+  contextWindowTokens?: number
+  /** 上一轮模型响应回报的真实 prompt input tokens(含 cache 命中/创建),用于精准触发压缩。 */
+  lastInputTokens?: number
   readOnlyToolNames: ReadonlySet<string>
   compactionFailures?: number
   lastCompactionAtMs?: number
@@ -176,8 +180,12 @@ function shouldAutocompact(input: CompactPipelineInput, failures: number): boole
   const lastAt = input.lastCompactionAtMs ?? 0
   if (lastAt > 0 && cooldownMs > 0 && (input.nowMs ?? Date.now()) - lastAt < cooldownMs) return false
   if (input.lastCompactedMessageCount && input.messages.length <= input.lastCompactedMessageCount) return false
+  if (failures >= MAX_COMPACTION_FAILURES) return false
+  // cc:有上一轮响应回报的真实 input tokens 就按 token 判(真实用量比字符估算准),与字符估算取"谁先超";
+  // 首轮还没真实用量时退回字符估算。
+  if (input.contextWindowTokens && input.lastInputTokens && input.lastInputTokens >= Math.floor(input.contextWindowTokens * AUTOCOMPACT_RATIO)) return true
   const contextWindowChars = input.contextWindowChars
-  if (!contextWindowChars || failures >= MAX_COMPACTION_FAILURES) return false
+  if (!contextWindowChars) return false
   return estimateMessagesChars(input.messages) >= thresholdFor(contextWindowChars)
 }
 

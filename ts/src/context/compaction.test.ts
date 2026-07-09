@@ -89,6 +89,34 @@ describe('compactPipeline', () => {
     expect(estimateMessagesChars(out.messages)).toBeLessThan(estimateMessagesChars(messages))
   })
 
+  test('token 触发:真实 input tokens 达窗口比例即压缩(字符估算低、未 force,对齐 cc 真实用量优先)', async () => {
+    const messages: Message[] = [
+      userText('a'), userText('b'), userText('c'), userText('d'), userText('e'), userText('f'), userText('recent'),
+    ]
+    let called = 0
+    const model: Model = { async step() { called++; return { kind: 'final', text: '摘要' } } }
+    const out = await compactPipeline({
+      messages, model, system: 'SYS',
+      contextWindowTokens: 1000, lastInputTokens: 800, // 800 >= 0.7*1000 → token 路径触发
+      readOnlyToolNames: new Set(), keepRecentMessages: 1, minOldMessages: 2, // 不给 contextWindowChars、不 force
+    })
+    expect(called).toBe(1)
+    expect(out.didCompact).toBe(true)
+  })
+
+  test('token 未达比例 + 字符低 + 未 force → 不压缩', async () => {
+    const messages: Message[] = [userText('a'), userText('b'), userText('c'), userText('recent')]
+    let called = 0
+    const model: Model = { async step() { called++; return { kind: 'final', text: '摘要' } } }
+    const out = await compactPipeline({
+      messages, model, system: 'SYS',
+      contextWindowTokens: 1000, lastInputTokens: 100, // 100 < 700 → 不触发
+      readOnlyToolNames: new Set(), keepRecentMessages: 1, minOldMessages: 2,
+    })
+    expect(called).toBe(0)
+    expect(out.didCompact).toBe(false)
+  })
+
   test('使用九段结构化 prompt,且只保留 summary 正文', async () => {
     const messages: Message[] = [
       userText('u0' + 'x'.repeat(60)),
