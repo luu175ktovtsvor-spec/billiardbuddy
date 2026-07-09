@@ -91,7 +91,7 @@ test('collectDiscoveryEntries 汇总 builtin 命令 + 技能 + 领域包命令,�
 })
 
 function createBuiltinForkOrNoop(): PromptCommand | null {
-  const lib = createBuiltinCommandLibrary({ QF_FORK_SUBAGENT: '1' })
+  const lib = createBuiltinCommandLibrary({ DESKTOP_AGENT_FORK_SUBAGENT: '1' })
   return lib.commands[0] ?? null
 }
 
