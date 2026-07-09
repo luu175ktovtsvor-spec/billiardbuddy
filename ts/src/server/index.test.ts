@@ -3011,6 +3011,22 @@ test('WS /agent/ws runs a turn and replays persisted events after disconnect', a
   }
 })
 
+test('GET /sessions/projects 聚合最近项目 + POST /sessions/:id/fork 拷贝会话', async () => {
+  await fetch(`http://127.0.0.1:${server.port}/sessions`, { method: 'POST', body: JSON.stringify({ id: 'proj-s1', title: 'P1', workspaceRoot: '/ws/proj' }) })
+  await fetch(`http://127.0.0.1:${server.port}/sessions`, { method: 'POST', body: JSON.stringify({ id: 'proj-s2', title: 'P2', workspaceRoot: '/ws/proj' }) })
+  const projects = await (await fetch(`http://127.0.0.1:${server.port}/sessions/projects`)).json() as any
+  expect(projects.projects.find((x: any) => x.workspaceRoot === '/ws/proj')?.sessionCount).toBe(2)
+  // 按项目过滤
+  const filtered = await (await fetch(`http://127.0.0.1:${server.port}/sessions?workspaceRoot=${encodeURIComponent('/ws/proj')}`)).json() as any
+  expect(filtered.sessions.map((s: any) => s.id).sort()).toEqual(['proj-s1', 'proj-s2'])
+  // fork
+  const forked = await (await fetch(`http://127.0.0.1:${server.port}/sessions/proj-s1/fork`, { method: 'POST', body: JSON.stringify({ title: '副本' }) })).json() as any
+  expect(forked.session.id).not.toBe('proj-s1')
+  expect(forked.session.workspaceRoot).toBe('/ws/proj')
+  // fork 不存在 → 404
+  expect((await fetch(`http://127.0.0.1:${server.port}/sessions/nopemissing/fork`, { method: 'POST', body: '{}' })).status).toBe(404)
+})
+
 test('WS /agent/ws accepts steer over the same connection (aligns cc unified-WS transport)', async () => {
   const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-ws-steer-'))
   // 关掉 OS 沙箱 + 隔离 MCP(missing.mcp.json):本用例验的是 WS approve/steer/ping 接线,

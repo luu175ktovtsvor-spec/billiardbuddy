@@ -19,6 +19,42 @@ test('SessionService:create/list/touch/get 持久化 metadata', async () => {
   }
 })
 
+test('SessionService:list 按 workspaceRoot 过滤 + recentProjects 按项目聚合', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'sessions-proj-'))
+  try {
+    const svc = new SessionService(root)
+    await svc.create({ id: 'a1', title: 'A1', workspaceRoot: '/ws/a' })
+    await svc.create({ id: 'a2', title: 'A2', workspaceRoot: '/ws/a' })
+    await svc.create({ id: 'b1', title: 'B1', workspaceRoot: '/ws/b' })
+    expect((await svc.list({ workspaceRoot: '/ws/a' })).map(m => m.id).sort()).toEqual(['a1', 'a2'])
+    expect((await svc.list()).length).toBe(3)
+    const projects = await svc.recentProjects()
+    expect(projects.length).toBe(2)
+    expect(projects.find(p => p.workspaceRoot === '/ws/a')?.sessionCount).toBe(2)
+    expect(projects.find(p => p.workspaceRoot === '/ws/b')?.sessionCount).toBe(1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('SessionService:fork 用新 id 拷贝源会话 transcript,源不受影响,源不存在报错', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'sessions-fork-'))
+  try {
+    const svc = new SessionService(root)
+    await svc.create({ id: 'src', title: '原会话', workspaceRoot: '/ws/x' })
+    await svc.transcript('src').save([userText('历史消息1'), userText('历史消息2')])
+    const forked = await svc.fork('src', { title: '分叉' })
+    expect(forked.id).not.toBe('src')
+    expect(forked.workspaceRoot).toBe('/ws/x')
+    expect(forked.title).toBe('分叉')
+    expect((await svc.transcript(forked.id).load()).length).toBe(2)
+    expect((await svc.transcript('src').load()).length).toBe(2) // 源不受影响
+    await expect(svc.fork('missingsession')).rejects.toThrow()
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('SessionService:坏 index 安全退空,非法 id 拒绝', async () => {
   const root = mkdtempSync(join(tmpdir(), 'sessions-bad-'))
   try {
