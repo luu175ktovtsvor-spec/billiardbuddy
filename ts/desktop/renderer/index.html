@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>球房管家 · Agent</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23202124'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%2300C29A'/%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231A1B1E'/%3E%3Ccircle cx='16' cy='16.5' r='8.2' fill='none' stroke='%23FAFAFA' stroke-width='1.9'/%3E%3Ccircle cx='13' cy='14.5' r='1.2' fill='%23FAFAFA'/%3E%3Ccircle cx='19' cy='14.5' r='1.2' fill='%23FAFAFA'/%3E%3Cpath d='M11.6 18.6c1 1.5 2.6 2.3 4.4 2.3s3.4-.8 4.4-2.3' fill='none' stroke='%23FAFAFA' stroke-width='1.9' stroke-linecap='round'/%3E%3C/svg%3E" />
 <style>
   /* ================= WorkBuddy(腾讯 CodeBuddy)三层 token 系统 =================
      精确值照抄 docs/references/竞品拆解/02-前端设计-配色与质感.md §3.2。
@@ -24,8 +24,10 @@
     /* 文字/中性透明度锚·白 rgba(255,255,255,.x)(深色侧) */
     --wb-white-92:rgba(255,255,255,.92); --wb-white-65:rgba(255,255,255,.65); --wb-white-45:rgba(255,255,255,.45); --wb-white-25:rgba(255,255,255,.25);
     --wb-white-12:rgba(255,255,255,.12); --wb-white-10:rgba(255,255,255,.1); --wb-white-08:rgba(255,255,255,.08); --wb-white-06:rgba(255,255,255,.06);
-    /* 品牌强调色 brand-8(只点缀链接/角标/选中描边/焦点) */
-    --wb-brand-light:#00C29A; --wb-brand-dark:#5FE3C5;
+    /* 强调=中性墨色(去绿:主按钮/选中/焦点走中性黑白;青绿旧品牌色 #00C29A/#5FE3C5 已弃用) */
+    --wb-ink-light:rgba(0,0,0,.9); --wb-ink-dark:rgba(255,255,255,.92);
+    /* 功能状态绿(仅语义:成功✓/diff 新增;非品牌主调,已从青绿改为常规绿) */
+    --wb-ok-light:#1f8a52; --wb-ok-dark:#4fc98a;
     /* 体系外必要色:危险/警告(保留) */
     --wb-red:#ff3b30; --wb-orange:#ff9500;
     /* 圆角量表 xs/sm/md/lg/xl/2xl/full */
@@ -56,14 +58,14 @@
     --wb-fill-active:var(--wb-black-06);
     --wb-border:var(--wb-black-08);
     --wb-border-strong:var(--wb-black-12);
-    --wb-brand:var(--wb-brand-light);
-    --wb-brand-tint:rgba(0,194,154,0.10);    /* 品牌浅染(选中/审批卡底) */
-    --wb-brand-tint-weak:rgba(0,194,154,0.05);
-    --wb-focus-ring:rgba(0,194,154,0.30);
+    --wb-brand:var(--wb-ink-light);          /* 强调=中性墨:链接/角标/选中/焦点走中性,不再用青绿 */
+    --wb-brand-tint:var(--wb-black-06);      /* 中性浅染(选中/审批卡底) */
+    --wb-brand-tint-weak:rgba(0,0,0,0.035);
+    --wb-focus-ring:rgba(0,0,0,0.20);
     --wb-danger:var(--wb-red);
     --wb-warn:#b25000;
     --wb-warn-tint:rgba(255,149,0,0.10);
-    --wb-add-bg:rgba(0,194,154,0.12); --wb-add-fg:#0a7a5c;
+    --wb-add-bg:rgba(31,138,82,0.12); --wb-add-fg:var(--wb-ok-light);
     --wb-del-bg:rgba(255,59,48,0.10); --wb-del-fg:#c0392b;
     --wb-bubble-user:var(--wb-gray-l4);      /* 用户气泡中性浅灰 */
     /* 主按钮:中性黑(非品牌色);hover 96%/active 80% */
@@ -91,13 +93,13 @@
     --wb-fill-active:var(--wb-white-10);
     --wb-border:var(--wb-white-10);
     --wb-border-strong:var(--wb-white-12);
-    --wb-brand:var(--wb-brand-dark);
-    --wb-brand-tint:rgba(95,227,197,0.12);
-    --wb-brand-tint-weak:rgba(95,227,197,0.06);
-    --wb-focus-ring:rgba(95,227,197,0.30);
+    --wb-brand:var(--wb-ink-dark);
+    --wb-brand-tint:var(--wb-white-10);
+    --wb-brand-tint-weak:rgba(255,255,255,0.06);
+    --wb-focus-ring:rgba(255,255,255,0.22);
     --wb-warn:#e0904a;
     --wb-warn-tint:rgba(255,149,0,0.14);
-    --wb-add-bg:rgba(95,227,197,0.14); --wb-add-fg:#5FE3C5;
+    --wb-add-bg:rgba(79,201,138,0.16); --wb-add-fg:var(--wb-ok-dark);
     --wb-del-bg:rgba(255,99,90,0.14); --wb-del-fg:#ff8a80;
     --wb-bubble-user:var(--wb-gray-d4);
     --wb-btn-primary-bg:var(--wb-white-92);
@@ -124,13 +126,13 @@
       --wb-fill-active:var(--wb-white-10);
       --wb-border:var(--wb-white-10);
       --wb-border-strong:var(--wb-white-12);
-      --wb-brand:var(--wb-brand-dark);
-      --wb-brand-tint:rgba(95,227,197,0.12);
-      --wb-brand-tint-weak:rgba(95,227,197,0.06);
-      --wb-focus-ring:rgba(95,227,197,0.30);
+      --wb-brand:var(--wb-ink-dark);
+      --wb-brand-tint:var(--wb-white-10);
+      --wb-brand-tint-weak:rgba(255,255,255,0.06);
+      --wb-focus-ring:rgba(255,255,255,0.22);
       --wb-warn:#e0904a;
       --wb-warn-tint:rgba(255,149,0,0.14);
-      --wb-add-bg:rgba(95,227,197,0.14); --wb-add-fg:#5FE3C5;
+      --wb-add-bg:rgba(79,201,138,0.16); --wb-add-fg:var(--wb-ok-dark);
       --wb-del-bg:rgba(255,99,90,0.14); --wb-del-fg:#ff8a80;
       --wb-bubble-user:var(--wb-gray-d4);
       --wb-btn-primary-bg:var(--wb-white-92);
@@ -146,7 +148,7 @@
 
   /* —— Layer 3 · component alias:沿用旧变量名,repoint 到语义 token(旧 var() 引用零改动) —— */
   :root {
-    --accent:var(--wb-brand);            /* 绿,只点缀 */
+    --accent:var(--wb-brand);            /* 中性墨,只点缀 */
     --primary:var(--wb-btn-primary-bg);  /* 中性主按钮 */
     --primary-fg:var(--wb-btn-primary-fg);
     --user-bubble:var(--wb-bubble-user);

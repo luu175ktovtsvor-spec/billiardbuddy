@@ -14,7 +14,10 @@
   --wb-black-12:rgba(0,0,0,.12); --wb-black-08:rgba(0,0,0,.08); --wb-black-06:rgba(0,0,0,.06); --wb-black-04:rgba(0,0,0,.04);
   --wb-white-92:rgba(255,255,255,.92); --wb-white-65:rgba(255,255,255,.65); --wb-white-45:rgba(255,255,255,.45); --wb-white-25:rgba(255,255,255,.25);
   --wb-white-12:rgba(255,255,255,.12); --wb-white-10:rgba(255,255,255,.1); --wb-white-06:rgba(255,255,255,.06);
-  --wb-brand-light:#00C29A; --wb-brand-dark:#5FE3C5;
+  /* 强调=中性墨色(去绿:WorkBuddy 主按钮/选中/焦点走中性黑白,青绿旧品牌色 #00C29A/#5FE3C5 已弃用) */
+  --wb-ink-light:rgba(0,0,0,.9); --wb-ink-dark:rgba(255,255,255,.92);
+  /* 功能状态绿(仅语义:成功✓/diff 新增;非品牌主调,已从青绿改为常规绿) */
+  --wb-ok-light:#1f8a52; --wb-ok-dark:#4fc98a;
   --wb-red:#ff3b30; --wb-orange:#ff9500;
   --wb-font:-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, "PingFang SC", sans-serif;
   --wb-font-mono:"SF Mono", ui-monospace, Menlo, monospace;
@@ -22,9 +25,9 @@
 
 /* —— Layer 2 · semantic(cc token 名 + WorkBuddy 值 · 浅色默认) —— */
 :root {
-  --color-primary: var(--wb-brand-light);
-  --color-brand: var(--wb-brand-light);
-  --color-brand-tint: rgba(0,194,154,0.10);
+  --color-primary: var(--wb-ink-light);      /* 主按钮=中性近黑(WorkBuddy 主按钮不用彩色品牌色) */
+  --color-brand: var(--wb-ink-light);         /* 强调=中性墨:链接/角标/选中态走中性,不再用青绿 */
+  --color-brand-tint: var(--wb-black-06);     /* 中性浅染(选中态/审批卡底) */
   --color-on-primary: #FFFFFF;
 
   --color-background: var(--wb-gray-l2);
@@ -49,11 +52,11 @@
 
   --color-border: var(--wb-black-08);
   --color-border-strong: var(--wb-black-12);
-  --color-border-focus: rgba(0,194,154,0.45);
-  --color-focus-ring: rgba(0,194,154,0.30);
+  --color-border-focus: rgba(0,0,0,0.38);
+  --color-focus-ring: rgba(0,0,0,0.20);
 
   --color-error: var(--wb-red);
-  --color-success: #0a7a5c;
+  --color-success: var(--wb-ok-light);
   --color-warning: #b25000;
 
   --color-bubble-user: var(--wb-gray-l4);
@@ -68,9 +71,9 @@
 
 /* —— 深色:只重写语义层。显式 data-theme + 跟随系统 —— */
 :root[data-theme="dark"] {
-  --color-primary: var(--wb-brand-dark);
-  --color-brand: var(--wb-brand-dark);
-  --color-brand-tint: rgba(95,227,197,0.12);
+  --color-primary: var(--wb-ink-dark);       /* 主按钮=中性近白 */
+  --color-brand: var(--wb-ink-dark);
+  --color-brand-tint: var(--wb-white-10);
   --color-on-primary: var(--wb-gray-d1);
 
   --color-background: var(--wb-gray-d2);
@@ -95,19 +98,19 @@
 
   --color-border: var(--wb-white-10);
   --color-border-strong: var(--wb-white-12);
-  --color-border-focus: rgba(95,227,197,0.45);
-  --color-focus-ring: rgba(95,227,197,0.30);
+  --color-border-focus: rgba(255,255,255,0.40);
+  --color-focus-ring: rgba(255,255,255,0.22);
 
-  --color-success: var(--wb-brand-dark);
+  --color-success: var(--wb-ok-dark);
   --color-warning: #e0904a;
   --color-bubble-user: var(--wb-gray-d4);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --color-primary: var(--wb-brand-dark);
-    --color-brand: var(--wb-brand-dark);
-    --color-brand-tint: rgba(95,227,197,0.12);
+    --color-primary: var(--wb-ink-dark);
+    --color-brand: var(--wb-ink-dark);
+    --color-brand-tint: var(--wb-white-10);
     --color-on-primary: var(--wb-gray-d1);
     --color-background: var(--wb-gray-d2);
     --color-surface: var(--wb-gray-d3);
@@ -129,9 +132,9 @@
     --color-on-surface-variant: var(--wb-white-65);
     --color-border: var(--wb-white-10);
     --color-border-strong: var(--wb-white-12);
-    --color-border-focus: rgba(95,227,197,0.45);
-    --color-focus-ring: rgba(95,227,197,0.30);
-    --color-success: var(--wb-brand-dark);
+    --color-border-focus: rgba(255,255,255,0.40);
+    --color-focus-ring: rgba(255,255,255,0.22);
+    --color-success: var(--wb-ok-dark);
     --color-warning: #e0904a;
     --color-bubble-user: var(--wb-gray-d4);
   }

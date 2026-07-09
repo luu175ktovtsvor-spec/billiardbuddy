@@ -3,6 +3,7 @@ import { useChatStore } from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useUiStore } from '../../stores/uiStore'
 import { openNewConversation, openExistingConversation } from '../../lib/conversations'
+import { Smiley } from '../shared/Smiley'
 import { t } from '../../i18n'
 
 function fmtTime(ts: number): string {
@@ -27,7 +28,10 @@ export function Sidebar() {
       data-testid="sidebar"
     >
       <div className="flex items-center justify-between px-3 py-3">
-        <span className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>{t('app.name')}</span>
+        <span className="flex items-center gap-1.5 text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+          <Smiley size={18} />
+          {t('app.name')}
+        </span>
         <button
           type="button"
           onClick={toggleTheme}
