@@ -3458,15 +3458,17 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 10. transcript 逐轮落盘 + 主会话 resume 接 `sanitizeBackgroundAgentResumeMessages` 清洗与中断检测。
 
 **P2(能力面/体验)**
-11. Hooks:PreToolUse allow/ask 决策 + matcher 管道/正则语法 + 多 hook 并发。**主进程接**(hooks.ts 现仅 allow/deny + 精确 matcher,ask 决策 + 管道/正则待补,涉及 loop.ts 联动)。
+11. ✅Hooks allow/ask + 正则 matcher(`51f1586`):parseHookDecisionJSON 解析 cc hookSpecificOutput.permissionDecision(allow/deny/ask)+ 旧 decision:block;HookDecision 加 ask;matchesToolMatcher 支持 Edit|Write 管道/mcp__.* 正则/锚定;loop.ts forceAsk 强制审批。**待续**:多 hook 并发(现串行,低优先)、PostToolUse 改输出。
 12. ✅Skills/Commands 参数占位符(`6189cb4`):$ARGUMENTS/$1..N/具名参数替换 + frontmatter argument-hint/arguments 解析(新增 argumentSubstitution.ts,纯 TS 切词不引 shell-quote)。**待续**:内嵌 shell(需 loop.ts 审批链路 + 产品红线)、@file 附件系统、bundled skills、${CLAUDE_SKILL_DIR} 模板变量,均留后续。
 13. 🚧文件工具健壮性:危险设备路径拦截 + UTF-16/BOM 保留 + 整文件读上限。**子代理实现中(fileRead/Edit/Write tools)**;图片/PDF 视觉 content-block(架构级,晚做代价高)另计。
 14. token 级流式 + 边流边执行工具(前端打字机体验,对标 Claude Code 核心)。**大工程,前端建设期一起做**。
 15. Plugin 运行时接入(启用插件的 skills/.mcp.json/hooks 合并进会话,现为空壳)。
 16. permissionExplainer + destructiveCommandWarning 审批卡增强。
 17. ✅MCP 远程 http/SSE 鉴权(`134e30a`):headers/bearer token 走 requestInit(对齐 cc,鉴权即 headers.Authorization,端到端测试真收到 Bearer)。**待续**:headersHelper 动态取头、完整 OAuth(2465 行,超范围)。
-18. 项目/会话组织(§3.402 A1):list-by-workspace + recentProjects 聚合 + 会话 fork(拷贝 transcript,cc 的 forkSession SDK 层未实现属 CLI 级)。**主进程接(sessionService+端点)**。
-19. 配置基座(§3.402 A2):分层用户设置文件 + `/api/settings` REST + 网络设置持久化 + provider 预设库。
+18. ✅项目/会话组织(`a274fed`,§3.402 A1):sessionService list-by-workspace + recentProjects 聚合 + fork(拷贝 transcript);端点 GET /sessions/projects、GET /sessions?workspaceRoot=、POST /sessions/:id/fork。保留扁平 sessions.json(不做物理分桶,等价更省)。
+19. 配置基座(§3.402 A2):分层用户设置文件 + `/api/settings` REST + 网络设置持久化 + provider 预设库。**待做**。
+
+**2026-07-09 本轮已完成(主进程接手 loop/server 项)**:入参 schema 闸(42c93eb)、连接架构统一+审批闭环(c98af29/931cf61)、hooks allow/ask+正则 matcher(51f1586)、token 触发压缩(1abb851)、项目/会话组织(a274fed);子代理并行交付:MCP 鉴权(134e30a)、skills 参数占位符(6189cb4)、压缩兜底(7806175)、文件工具健壮性(9957154)。**剩**:fork-resume(#9)、配置基座(#19)、规则持久化(#8)、审批卡增强(#16)、SSE error 帧/空闲超时(#5)、plugin 运行时(#15)、transcript 逐轮(#10)、WS 断连宽限、读命令边界(P0 大)、token 流式(#14 大,前端期)。
 
 **owner 拍板结论(2026-07-09)**
 - ✅**前端目标壳 = `ts/` + ts-desktop**:前端 §9 低噪工具流的 HIGH 项(失败态红色、本会话允许真功能、审批卡编辑参数签名、命令输出默认折叠、拒绝反馈)一律在 **TS/ts-desktop 侧新建并对齐已迁移的 TS 内核**;`web/`+Python 旧栈只做维持、按节奏退役,不在旧栈上补这些 HIGH(否则和 TS 内核漂移)。
