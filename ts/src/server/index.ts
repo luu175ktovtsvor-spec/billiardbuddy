@@ -86,7 +86,7 @@ import { applyPermissionUpdates } from '../permissions/permissionUpdate'
 import type { FetchLike } from '../proxy/ProxyModel'
 import type { PermissionMode } from '../permissions/types'
 import { canonicalPermissionMode } from '../permissions/canonical'
-import { basename, dirname, extname, join, relative, resolve } from 'node:path'
+import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 
@@ -114,6 +114,8 @@ export interface StartServerOptions {
   sandboxEnabled?: boolean
   /** WS 断连宽限期(ms):最后消费者断连后无人重连则中止运行中回合。默认 5 分钟,QF_TURN_ABANDON_GRACE_MS 可覆盖。 */
   turnAbandonGraceMs?: number
+  /** ts-desktop 前端静态资源根目录;设置后 GET 未命中 API 路由时从此服务(Electron/浏览器加载前端)。默认 ts/desktop/renderer。 */
+  frontendRoot?: string
   skillsRoot?: string
   commandsRoot?: string
   hooksPath?: string
@@ -960,6 +962,20 @@ export function startServer(opts: StartServerOptions = {}) {
       if (turns.interrupt(id)) void sessions.touch(id, { status: 'interrupted' }).catch(() => undefined)
     },
   })
+  const frontendRoot = opts.frontendRoot ?? join(import.meta.dir, '../../desktop/renderer')
+  const FRONTEND_CT: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2' }
+  async function serveFrontendAsset(pathname: string): Promise<Response | null> {
+    const rel = pathname === '/' || pathname === '' ? 'index.html' : pathname.replace(/^\/+/, '')
+    const resolved = resolve(frontendRoot, rel)
+    // 防路径穿越:必须落在 frontendRoot 内
+    if (resolved !== frontendRoot && !resolved.startsWith(frontendRoot + sep)) return null
+    try {
+      const data = await readFile(resolved)
+      return new Response(data, { headers: { 'Content-Type': FRONTEND_CT[extname(resolved).toLowerCase()] ?? 'application/octet-stream' } })
+    } catch {
+      return null
+    }
+  }
   const steerInboxes = new Map<string, string[]>()
   const sessionSkillHooks = new Map<string, NonNullable<ReturnType<typeof mergeHookRegistries>>>()
   const sessionPermissionUpdates = new Map<string, PermissionUpdate[]>()
@@ -4322,6 +4338,12 @@ export function startServer(opts: StartServerOptions = {}) {
         return new Response(bodyStream, {
           headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
         })
+      }
+
+      // ts-desktop 前端静态资源:GET 未命中任何 API 路由 → 从 frontendRoot 服务(Electron/浏览器加载前端)。
+      if (req.method === 'GET') {
+        const asset = await serveFrontendAsset(url.pathname)
+        if (asset) return asset
       }
 
       return new Response('Not found', { status: 404 })
