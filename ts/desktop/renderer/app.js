@@ -11,6 +11,19 @@
 
   const sesslist = $('sesslist');
   const newChatBtn = $('newchat');
+  const expertSel = $('expert');
+
+  async function loadExperts() {
+    try {
+      const data = await (await fetch('/api/v1/agent/packs')).json();
+      (data.packs || []).forEach((p) => {
+        if (!p || !p.id) return;
+        const o = document.createElement('option'); o.value = p.id; o.textContent = p.name || p.id;
+        if (p.description) o.title = p.description;
+        expertSel.appendChild(o);
+      });
+    } catch { /* 无领域包 → 只有通用助手 */ }
+  }
   const newId = () => 'desk-' + Math.random().toString(36).slice(2, 10);
   let conversationId = newId();
   const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -232,7 +245,9 @@
       return;
     }
     running = true; sendBtn.disabled = true;
-    wsSend({ type: 'run', message: text, permissionMode: defaultPermissionMode, conversationId: conversationId });
+    const run = { type: 'run', message: text, permissionMode: defaultPermissionMode, conversationId: conversationId };
+    if (expertSel && expertSel.value) run.enabled_packs = [expertSel.value]; // 挂载专家领域包(影响上下文/工具/系统提示)
+    wsSend(run);
   }
 
   function autoGrow() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 160) + 'px'; }
@@ -243,4 +258,5 @@
   connect();
   refreshSessions();
   loadSettings();
+  loadExperts();
 })();
