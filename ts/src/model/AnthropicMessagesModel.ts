@@ -73,23 +73,25 @@ export class AnthropicMessagesModel implements Model {
       })) } : {}),
     })
 
-    let acc = await this.runOnce(buildBody(baseMaxTokens), input)
+    // 首发带 onDelta:边流边逐 token 吐正文/推理增量(对齐 cc,与 ProxyModel 出口一致,让前端打字机)。
+    let acc = await this.runOnce(buildBody(baseMaxTokens), input, input.onDelta)
 
     // 输出撞长度上限的恢复第一步(对齐 cc query.ts:1196-1229 escalate + utils/context.ts:32 ESCALATED_MAX_TOKENS=64k):
     // stop_reason=max_tokens / model_context_window_exceeded(cc claude.ts:2448-2461 把后者也并进同一"从断点续写"恢复路径)
     // 且【无 tool_calls】(纯长正文被切)时,把 max_tokens 从默认升到 escalatedMaxTokens 重试一次(每步至多一次)。
     // 有 tool_calls 则不重试——那批工具调用要交主循环配对执行(见 toAssistantStep 顺序),不能被截断吞掉;
     // 仍截断则由主循环走多轮"从断点续写"恢复(loop.ts,上限 3 次)。Math.max 防把已设的更高上限降回去。
+    // 重试【不】再传 onDelta:整段会重发,重复吐正文增量会让前端打字机重影(对齐 ProxyModel)。
     if (isTruncatedStopReason(acc.stopReason) && acc.toolCalls.length === 0) {
       const escalated = Math.max(baseMaxTokens, this.cfg.escalatedMaxTokens ?? ESCALATED_MAX_TOKENS)
-      acc = await this.runOnce(buildBody(escalated), input)
+      acc = await this.runOnce(buildBody(escalated), input, undefined)
     }
 
     return toAssistantStep(acc)
   }
 
-  /** 一次请求(带超时/可选瞬时重试)+ 读流累积。抽出来供输出上限升级重试复用。 */
-  private async runOnce(body: unknown, input: ModelStepInput): Promise<AnthropicAccumulated> {
+  /** 一次请求(带超时/可选瞬时重试)+ 读流累积。抽出来供输出上限升级重试复用。onDelta 逐 token 流式回调,升级重试时传 undefined。 */
+  private async runOnce(body: unknown, input: ModelStepInput, onDelta: ModelStepInput['onDelta']): Promise<AnthropicAccumulated> {
     // 仅当显式配置 cfg.retry 时才做瞬时错误退避重试(默认不改 failover 时序,理由同 ProxyModel)。
     const doRequest = () => this.fetchWithTimeout(this.messagesEndpoint(), {
       method: 'POST',
@@ -105,7 +107,7 @@ export class AnthropicMessagesModel implements Model {
       throw new Error(`Anthropic 模型请求失败 ${resp.status}:${detail.slice(0, 500)}`)
     }
 
-    return this.readResponse(resp)
+    return this.readResponse(resp, onDelta)
   }
 
   private messagesEndpoint(): string {
@@ -168,11 +170,12 @@ export class AnthropicMessagesModel implements Model {
     }
   }
 
-  private async readResponse(resp: Response): Promise<AnthropicAccumulated> {
+  private async readResponse(resp: Response, onDelta?: ModelStepInput['onDelta']): Promise<AnthropicAccumulated> {
     const contentType = resp.headers.get('content-type') ?? ''
     if (contentType.includes('text/event-stream') && resp.body) {
-      return accumulateAnthropicStream(resp.body)
+      return accumulateAnthropicStream(resp.body, onDelta)
     }
+    // 非 SSE(完整 JSON 响应):无逐 token 增量可吐(与 ProxyModel 非流式分支一致),整段由 AssistantStep 收尾。
     const json = (await resp.json().catch(() => ({}))) as AnthropicResponseJson
     return anthropicJsonToAccumulated(json)
   }
@@ -237,7 +240,16 @@ interface StreamFrag {
   order: number
 }
 
-async function accumulateAnthropicStream(stream: ReadableStream<Uint8Array>): Promise<AnthropicAccumulated> {
+/**
+ * 读 Anthropic messages SSE 流并累积成 AnthropicAccumulated。
+ * onDelta:逐 token 流式回调——content_block_delta 的 text_delta/thinking_delta 一到就即刻吐增量(前端打字机),
+ * 对齐 cc 与 ProxyModel 出口。工具入参(input_json_delta)不吐——那不是用户可见正文。空增量不吐(空 delta 边界)。
+ * 跨网络 chunk 切断的行由 buffer 兜住(见 processLine 循环),跨 delta 切断的工具 JSON 由 argsBuffer 累积。
+ */
+async function accumulateAnthropicStream(
+  stream: ReadableStream<Uint8Array>,
+  onDelta?: (delta: { channel: 'text' | 'thinking'; text: string }) => void,
+): Promise<AnthropicAccumulated> {
   const decoder = new TextDecoder()
   const reader = stream.getReader()
   let buffer = ''
@@ -265,8 +277,9 @@ async function accumulateAnthropicStream(stream: ReadableStream<Uint8Array>): Pr
       if (!block || typeof block !== 'object') return
       const frag = fragFor(index)
       frag.type = typeof block.type === 'string' ? block.type : frag.type
-      if (typeof block.text === 'string') frag.text += block.text
-      if (typeof block.thinking === 'string') frag.thinking += block.thinking
+      // content_block_start 一般 text/thinking 为空;若上游把首段正文塞在这里,也逐 token 吐出去别漏(非空才吐)。
+      if (typeof block.text === 'string') { frag.text += block.text; if (block.text) onDelta?.({ channel: 'text', text: block.text }) }
+      if (typeof block.thinking === 'string') { frag.thinking += block.thinking; if (block.thinking) onDelta?.({ channel: 'thinking', text: block.thinking }) }
       if (typeof block.id === 'string') frag.id = block.id
       if (typeof block.name === 'string') frag.name = block.name
       if ('input' in block) frag.input = block.input
@@ -277,8 +290,9 @@ async function accumulateAnthropicStream(stream: ReadableStream<Uint8Array>): Pr
       const delta = event.delta as Record<string, unknown> | undefined
       if (!delta || typeof delta !== 'object') return
       const frag = fragFor(index)
-      if (delta.type === 'text_delta' && typeof delta.text === 'string') frag.text += delta.text
-      else if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') frag.thinking += delta.thinking
+      // text_delta/thinking_delta:即刻逐 token 吐增量(空串不吐,空 delta 边界不产事件);工具 input_json_delta 只累积不吐。
+      if (delta.type === 'text_delta' && typeof delta.text === 'string') { frag.text += delta.text; if (delta.text) onDelta?.({ channel: 'text', text: delta.text }) }
+      else if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') { frag.thinking += delta.thinking; if (delta.thinking) onDelta?.({ channel: 'thinking', text: delta.thinking }) }
       else if (delta.type === 'input_json_delta') frag.argsBuffer += stringifyOpenAIToolArguments(delta.partial_json)
       return
     }

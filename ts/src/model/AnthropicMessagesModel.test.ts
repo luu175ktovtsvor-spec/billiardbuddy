@@ -16,6 +16,26 @@ function sseResponse(lines: string[]): Response {
 
 const chunk = (o: unknown) => JSON.stringify(o)
 
+// 把 SSE 行拼成整段字节流,可在指定 byte 偏移把流劈成多个网络 chunk(考验跨 chunk 缓冲/切断在 data 行中间)。
+function sseStream(lines: string[], chunkSplits: number[] = []): ReadableStream<Uint8Array> {
+  const enc = new TextEncoder()
+  const full = lines.map(l => (l === '' ? '\n' : `data: ${l}\n\n`)).join('')
+  const pieces: string[] = []
+  let prev = 0
+  for (const s of chunkSplits) { pieces.push(full.slice(prev, s)); prev = s }
+  pieces.push(full.slice(prev))
+  return new ReadableStream({ start(c) { for (const p of pieces) c.enqueue(enc.encode(p)); c.close() } })
+}
+function sseResp(stream: ReadableStream<Uint8Array>): Response {
+  return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+}
+function streamingModel(lines: string[], chunkSplits: number[] = []): AnthropicMessagesModel {
+  return new AnthropicMessagesModel({
+    baseUrl: 'https://api.test/v1', apiKey: 'k', model: 'm',
+    fetchImpl: async () => sseResp(sseStream(lines, chunkSplits)),
+  })
+}
+
 test('AnthropicMessagesModel:非流式 final,请求使用 messages endpoint 和 x-api-key', async () => {
   let sentUrl = ''
   let sentBody: any
@@ -150,4 +170,152 @@ test('escalatedMaxTokens 可配置', async () => {
   })
   await model.step({ messages: [userText('x')], tools: [] })
   expect(bodies[1].max_tokens).toBe(16000)
+})
+
+// —— 逐 token 流式(打字机)行为对齐:Anthropic 出口 content_block_delta 增量 → onDelta 逐字增量 ——
+
+test('onDelta:逐 token 吐 text/thinking 增量(顺序对齐 cc,累积结果不变)', async () => {
+  const deltas: Array<{ channel: string; text: string }> = []
+  const model = streamingModel([
+    chunk({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+    chunk({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '你' } }),
+    chunk({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '好' } }),
+    chunk({ type: 'content_block_stop', index: 0 }),
+    chunk({ type: 'content_block_start', index: 1, content_block: { type: 'thinking', thinking: '' } }),
+    chunk({ type: 'content_block_delta', index: 1, delta: { type: 'thinking_delta', thinking: '想' } }),
+    chunk({ type: 'content_block_stop', index: 1 }),
+    chunk({ type: 'message_delta', delta: { stop_reason: 'end_turn' } }),
+    '[DONE]',
+  ])
+  const step = await model.step({ messages: [userText('x')], tools: [], onDelta: d => deltas.push(d) })
+  expect(deltas).toEqual([{ channel: 'text', text: '你' }, { channel: 'text', text: '好' }, { channel: 'thinking', text: '想' }])
+  expect(step).toEqual({ kind: 'final', text: '你好', thinking: '想' })
+})
+
+test('空 text_delta 不产 content_delta 事件(空 delta 边界),非空正常吐', async () => {
+  const deltas: Array<{ channel: string; text: string }> = []
+  const model = streamingModel([
+    chunk({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+    chunk({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '' } }),
+    chunk({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'A' } }),
+    chunk({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '' } }),
+    chunk({ type: 'content_block_stop', index: 0 }),
+    chunk({ type: 'message_delta', delta: { stop_reason: 'end_turn' } }),
+    '[DONE]',
+  ])
+  const step = await model.step({ messages: [userText('x')], tools: [], onDelta: d => deltas.push(d) })
+  expect(deltas).toEqual([{ channel: 'text', text: 'A' }])
+  expect(step).toEqual({ kind: 'final', text: 'A' })
+})
+
+test('content_block_start 携带首段正文也逐 token 吐(不漏),空则不吐', async () => {
+  const deltas: Array<{ channel: string; text: string }> = []
+  const model = streamingModel([
+    chunk({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '开头' } }),
+    chunk({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '结尾' } }),
+    chunk({ type: 'content_block_stop', index: 0 }),
+    chunk({ type: 'message_delta', delta: { stop_reason: 'end_turn' } }),
+    '[DONE]',
+  ])
+  const step = await model.step({ messages: [userText('x')], tools: [], onDelta: d => deltas.push(d) })
+  expect(deltas).toEqual([{ channel: 'text', text: '开头' }, { channel: 'text', text: '结尾' }])
+  expect(step).toEqual({ kind: 'final', text: '开头结尾' })
+})
+
+test('工具 input_json_delta 不进打字机(非可见正文),跨 delta 切断的 JSON 照常累积', async () => {
+  const deltas: Array<{ channel: string; text: string }> = []
+  const model = streamingModel([
+    chunk({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'u1', name: 'read_file', input: {} } }),
+    chunk({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"path":"a' } }),
+    chunk({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '.txt"}' } }),
+    chunk({ type: 'content_block_stop', index: 0 }),
+    chunk({ type: 'message_delta', delta: { stop_reason: 'tool_use' } }),
+    '[DONE]',
+  ])
+  const step = await model.step({ messages: [userText('读')], tools: [], onDelta: d => deltas.push(d) })
+  expect(deltas).toEqual([]) // 工具入参不吐字
+  expect(step).toEqual({ kind: 'tool_calls', calls: [{ id: 'u1', name: 'read_file', input: { path: 'a.txt' } }] })
+})
+
+test('跨网络 chunk 切断在 data 行中间的 tool JSON,由 buffer 兜住、还原正确', async () => {
+  const lines = [
+    chunk({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'u1', name: 'grep', input: {} } }),
+    chunk({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"pattern":"foo","path":"src"}' } }),
+    chunk({ type: 'content_block_stop', index: 0 }),
+    chunk({ type: 'message_delta', delta: { stop_reason: 'tool_use' } }),
+    '[DONE]',
+  ]
+  // 在整段中点劈成两个网络 chunk(大概率切在某行 data 中间)
+  const full = lines.map(l => `data: ${l}\n\n`).join('')
+  const model = streamingModel(lines, [Math.floor(full.length / 2)])
+  const step = await model.step({ messages: [userText('搜')], tools: [] })
+  expect(step).toEqual({ kind: 'tool_calls', calls: [{ id: 'u1', name: 'grep', input: { pattern: 'foo', path: 'src' } }] })
+})
+
+test('多工具:两个 tool_use 块按到达顺序返回,各自 input 跨 delta 累积', async () => {
+  const model = streamingModel([
+    chunk({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'u1', name: 'read_file', input: {} } }),
+    chunk({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"path":' } }),
+    chunk({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '"a.txt"}' } }),
+    chunk({ type: 'content_block_stop', index: 0 }),
+    chunk({ type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'u2', name: 'grep', input: {} } }),
+    chunk({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"pattern":"x"}' } }),
+    chunk({ type: 'content_block_stop', index: 1 }),
+    chunk({ type: 'message_delta', delta: { stop_reason: 'tool_use' } }),
+    '[DONE]',
+  ])
+  const step = await model.step({ messages: [userText('x')], tools: [] })
+  expect(step).toEqual({
+    kind: 'tool_calls',
+    calls: [
+      { id: 'u1', name: 'read_file', input: { path: 'a.txt' } },
+      { id: 'u2', name: 'grep', input: { pattern: 'x' } },
+    ],
+  })
+})
+
+test('正文与工具混排:只有正文进打字机,工具照常解析并随 tool_calls 返回', async () => {
+  const deltas: Array<{ channel: string; text: string }> = []
+  const model = streamingModel([
+    chunk({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+    chunk({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '我来读' } }),
+    chunk({ type: 'content_block_stop', index: 0 }),
+    chunk({ type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'u1', name: 'read_file', input: {} } }),
+    chunk({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"path":"a"}' } }),
+    chunk({ type: 'content_block_stop', index: 1 }),
+    chunk({ type: 'message_delta', delta: { stop_reason: 'tool_use' } }),
+    '[DONE]',
+  ])
+  const step = await model.step({ messages: [userText('x')], tools: [], onDelta: d => deltas.push(d) })
+  expect(deltas).toEqual([{ channel: 'text', text: '我来读' }])
+  expect(step).toEqual({ kind: 'tool_calls', text: '我来读', calls: [{ id: 'u1', name: 'read_file', input: { path: 'a' } }] })
+})
+
+test('升级重试不重复 onDelta(截断→escalate 只吐首发增量,防前端打字机重影)', async () => {
+  const deltas: Array<{ channel: string; text: string }> = []
+  let calls = 0
+  const model = new AnthropicMessagesModel({
+    baseUrl: 'https://api.test/v1', apiKey: 'k', model: 'm',
+    fetchImpl: async () => {
+      calls++
+      if (calls === 1) return sseResp(sseStream([
+        chunk({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+        chunk({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '前半' } }),
+        chunk({ type: 'content_block_stop', index: 0 }),
+        chunk({ type: 'message_delta', delta: { stop_reason: 'max_tokens' } }),
+        '[DONE]',
+      ]))
+      return sseResp(sseStream([
+        chunk({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+        chunk({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '写完' } }),
+        chunk({ type: 'content_block_stop', index: 0 }),
+        chunk({ type: 'message_delta', delta: { stop_reason: 'end_turn' } }),
+        '[DONE]',
+      ]))
+    },
+  })
+  const step = await model.step({ messages: [userText('长文')], tools: [], onDelta: d => deltas.push(d) })
+  expect(calls).toBe(2)
+  expect(deltas).toEqual([{ channel: 'text', text: '前半' }]) // 重试整段不再吐增量
+  expect(step).toEqual({ kind: 'final', text: '写完' })
 })
