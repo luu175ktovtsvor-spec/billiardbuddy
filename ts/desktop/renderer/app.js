@@ -17,6 +17,7 @@
   const wsTreeEl = $('ws-tree');
   const host = window.desktopHost;
   let workspaceRoot = ''; // 空=后端默认工作区(sidecar cwd)
+  let lastUserMessage = ''; // 失败时可重试
   const previewEl = $('preview'), pvBody = $('pv-body'), pvTitle = $('pv-title'), pvClose = $('pv-close');
   const changesBtn = $('changes-btn'), changesN = $('changes-n');
   const changedFiles = new Set(); // 本会话改动过的文件(§9 文件变更列表)
@@ -49,6 +50,27 @@
   }
   changesBtn.addEventListener('click', showChanges);
   pvClose.addEventListener('click', () => previewEl.classList.remove('show'));
+
+  // 后台任务入口(§9)
+  const tasksBtn = $('tasks-btn');
+  const TASK_STATUS = { queued: '排队中', running: '运行中', completed: '已完成', failed: '失败', interrupted: '已中断' };
+  async function showTasks() {
+    pvTitle.textContent = '后台任务';
+    pvBody.innerHTML = '<div class="changed"><div class="cf">加载中…</div></div>';
+    try {
+      const data = await (await fetch('/tasks?conversationId=' + encodeURIComponent(conversationId) + '&limit=50')).json();
+      const list = data.tasks || [];
+      const box = document.createElement('div'); box.className = 'changed';
+      if (!list.length) box.innerHTML = '<div class="cf">本会话还没有后台任务</div>';
+      list.forEach((t) => {
+        const it = el('cf', '<span class="ico">▣</span>' + esc(t.title || t.id) + ' · ' + esc(TASK_STATUS[t.status] || t.status));
+        box.appendChild(it);
+      });
+      pvBody.innerHTML = ''; pvBody.appendChild(box);
+    } catch { pvBody.innerHTML = '<div class="changed"><div class="cf">(加载失败)</div></div>'; }
+    previewEl.classList.add('show');
+  }
+  tasksBtn.addEventListener('click', showTasks);
 
   async function pickWorkspace() {
     let dir = null;
@@ -311,7 +333,16 @@
         if (wantReplay) { wantReplay = false; wsSend({ type: 'replay', conversationId: conversationId, after: 0 }); }
         return;
       }
-      if (msg.type === 'error') { wrap.appendChild(el('err-line', '错误:' + esc(msg.error))); scrollDown(); return; }
+      if (msg.type === 'error') {
+        running = false; sendBtn.disabled = false;
+        const line = el('err-line', '⚠ 出错了:' + esc(msg.error) + '。可检查后重试。 ');
+        if (lastUserMessage) {
+          const retry = document.createElement('button'); retry.className = 'retry-btn'; retry.textContent = '重试';
+          retry.onclick = () => { const t = lastUserMessage; input.value = t; send(); };
+          line.appendChild(retry);
+        }
+        wrap.appendChild(line); scrollDown(); return;
+      }
       if (msg.type === 'event' && msg.event) {
         renderEvent(msg.event);
         if (msg.event.type === 'final' || msg.event.type === 'done') { running = false; sendBtn.disabled = false; refreshSessions(); }
@@ -327,6 +358,7 @@
   function send() {
     const text = input.value.trim();
     if (!text || running) return;
+    lastUserMessage = text;
     addUser(text);
     input.value = ''; autoGrow();
     if (ws && ws.readyState === WebSocket.OPEN && running) {
