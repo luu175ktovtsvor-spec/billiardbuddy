@@ -5,6 +5,11 @@ import { contextBridge, ipcRenderer } from 'electron'
 contextBridge.exposeInMainWorld('desktopHost', {
   platform: process.platform,
   isDesktop: true,
+  // 后端地址发现(对齐 cc DesktopHost.runtime.getServerUrl):React 壳(QF_UI_REACT)从 file:// 加载,
+  // 经此 IPC 拿到 sidecar 地址再 fetch/WS。vanilla 默认路径不用它(走 same-origin),暴露无副作用。
+  runtime: {
+    getServerUrl: (): Promise<string> => ipcRenderer.invoke('runtime:getServerUrl'),
+  },
   // 原生文件夹选择器(§7 选择工作区):无 payload,返回目录路径或 null。
   pickWorkspace: (): Promise<string | null> => ipcRenderer.invoke('desktop:pickWorkspace'),
   // 原生菜单动作回渲染进程(§8 菜单):目前只有"选择工作区";白名单单向 main→renderer。

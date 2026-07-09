@@ -1,0 +1,138 @@
+/* ============================================================================
+ * WorkBuddy 主题层(三分法之「配色」):保留 cc 组件用的 --color-* 语义 token 名,
+ * 只把「值」换成 WorkBuddy(腾讯 CodeBuddy)调色板。以后抄 cc 组件直接吃这套皮。
+ * 依据:desktop/renderer/index.html 现有 --wb-* + docs/references/竞品拆解/02。
+ * 结构:palette(--wb-*,主题无关)→ semantic(--color-*,cc 名,主题只重写这层)。
+ * ==========================================================================*/
+
+/* —— Layer 1 · palette:原始尺度(浅深两套一次定义,与主题无关) —— */
+:root {
+  --wb-gray-l1:#FAFAFA; --wb-gray-l2:#F7F7F7; --wb-gray-l3:#F2F2F2; --wb-gray-l4:#EBEBEB; --wb-gray-l5:#E6E6E6;
+  --wb-gray-d1:#0E0F11; --wb-gray-d2:#141518; --wb-gray-d3:#1A1B1E; --wb-gray-d4:#212327; --wb-gray-d5:#2A2C31;
+  --wb-black-96:rgba(0,0,0,.96); --wb-black-90:rgba(0,0,0,.9); --wb-black-80:rgba(0,0,0,.8);
+  --wb-black-70:rgba(0,0,0,.7); --wb-black-50:rgba(0,0,0,.5); --wb-black-30:rgba(0,0,0,.3);
+  --wb-black-12:rgba(0,0,0,.12); --wb-black-08:rgba(0,0,0,.08); --wb-black-06:rgba(0,0,0,.06); --wb-black-04:rgba(0,0,0,.04);
+  --wb-white-92:rgba(255,255,255,.92); --wb-white-65:rgba(255,255,255,.65); --wb-white-45:rgba(255,255,255,.45); --wb-white-25:rgba(255,255,255,.25);
+  --wb-white-12:rgba(255,255,255,.12); --wb-white-10:rgba(255,255,255,.1); --wb-white-06:rgba(255,255,255,.06);
+  --wb-brand-light:#00C29A; --wb-brand-dark:#5FE3C5;
+  --wb-red:#ff3b30; --wb-orange:#ff9500;
+  --wb-font:-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, "PingFang SC", sans-serif;
+  --wb-font-mono:"SF Mono", ui-monospace, Menlo, monospace;
+}
+
+/* —— Layer 2 · semantic(cc token 名 + WorkBuddy 值 · 浅色默认) —— */
+:root {
+  --color-primary: var(--wb-brand-light);
+  --color-brand: var(--wb-brand-light);
+  --color-brand-tint: rgba(0,194,154,0.10);
+  --color-on-primary: #FFFFFF;
+
+  --color-background: var(--wb-gray-l2);
+  --color-surface: #FFFFFF;
+  --color-surface-bright: #FFFFFF;
+  --color-surface-container-lowest: #FFFFFF;
+  --color-surface-container-low: var(--wb-gray-l2);
+  --color-surface-container: var(--wb-gray-l3);
+  --color-surface-container-high: var(--wb-gray-l4);
+  --color-surface-container-highest: var(--wb-gray-l5);
+  --color-surface-sidebar: rgba(247,247,247,0.85);
+  --color-surface-hover: var(--wb-black-04);
+  --color-surface-selected: var(--wb-black-06);
+  --color-surface-glass: rgba(255,255,255,0.7);
+  --color-surface-glass-border: var(--wb-black-08);
+
+  --color-text-primary: var(--wb-black-90);
+  --color-text-secondary: var(--wb-black-70);
+  --color-text-tertiary: var(--wb-black-50);
+  --color-on-surface: var(--wb-black-90);
+  --color-on-surface-variant: var(--wb-black-70);
+
+  --color-border: var(--wb-black-08);
+  --color-border-strong: var(--wb-black-12);
+  --color-border-focus: rgba(0,194,154,0.45);
+  --color-focus-ring: rgba(0,194,154,0.30);
+
+  --color-error: var(--wb-red);
+  --color-success: #0a7a5c;
+  --color-warning: #b25000;
+
+  --color-bubble-user: var(--wb-gray-l4);
+
+  --font-body: var(--wb-font);
+  --font-headline: var(--wb-font);
+  --font-label: var(--wb-font);
+  --font-mono: var(--wb-font-mono);
+
+  --radius-sm: 4px; --radius-md: 6px; --radius-lg: 8px; --radius-xl: 12px; --radius-2xl: 16px; --radius-full: 9999px;
+}
+
+/* —— 深色:只重写语义层。显式 data-theme + 跟随系统 —— */
+:root[data-theme="dark"] {
+  --color-primary: var(--wb-brand-dark);
+  --color-brand: var(--wb-brand-dark);
+  --color-brand-tint: rgba(95,227,197,0.12);
+  --color-on-primary: var(--wb-gray-d1);
+
+  --color-background: var(--wb-gray-d2);
+  --color-surface: var(--wb-gray-d3);
+  --color-surface-bright: var(--wb-gray-d4);
+  --color-surface-container-lowest: var(--wb-gray-d1);
+  --color-surface-container-low: var(--wb-gray-d3);
+  --color-surface-container: var(--wb-gray-d4);
+  --color-surface-container-high: var(--wb-gray-d5);
+  --color-surface-container-highest: var(--wb-gray-d5);
+  --color-surface-sidebar: rgba(20,21,24,0.80);
+  --color-surface-hover: var(--wb-white-06);
+  --color-surface-selected: var(--wb-white-10);
+  --color-surface-glass: rgba(255,255,255,0.06);
+  --color-surface-glass-border: var(--wb-white-10);
+
+  --color-text-primary: var(--wb-white-92);
+  --color-text-secondary: var(--wb-white-65);
+  --color-text-tertiary: var(--wb-white-45);
+  --color-on-surface: var(--wb-white-92);
+  --color-on-surface-variant: var(--wb-white-65);
+
+  --color-border: var(--wb-white-10);
+  --color-border-strong: var(--wb-white-12);
+  --color-border-focus: rgba(95,227,197,0.45);
+  --color-focus-ring: rgba(95,227,197,0.30);
+
+  --color-success: var(--wb-brand-dark);
+  --color-warning: #e0904a;
+  --color-bubble-user: var(--wb-gray-d4);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-primary: var(--wb-brand-dark);
+    --color-brand: var(--wb-brand-dark);
+    --color-brand-tint: rgba(95,227,197,0.12);
+    --color-on-primary: var(--wb-gray-d1);
+    --color-background: var(--wb-gray-d2);
+    --color-surface: var(--wb-gray-d3);
+    --color-surface-bright: var(--wb-gray-d4);
+    --color-surface-container-lowest: var(--wb-gray-d1);
+    --color-surface-container-low: var(--wb-gray-d3);
+    --color-surface-container: var(--wb-gray-d4);
+    --color-surface-container-high: var(--wb-gray-d5);
+    --color-surface-container-highest: var(--wb-gray-d5);
+    --color-surface-sidebar: rgba(20,21,24,0.80);
+    --color-surface-hover: var(--wb-white-06);
+    --color-surface-selected: var(--wb-white-10);
+    --color-surface-glass: rgba(255,255,255,0.06);
+    --color-surface-glass-border: var(--wb-white-10);
+    --color-text-primary: var(--wb-white-92);
+    --color-text-secondary: var(--wb-white-65);
+    --color-text-tertiary: var(--wb-white-45);
+    --color-on-surface: var(--wb-white-92);
+    --color-on-surface-variant: var(--wb-white-65);
+    --color-border: var(--wb-white-10);
+    --color-border-strong: var(--wb-white-12);
+    --color-border-focus: rgba(95,227,197,0.45);
+    --color-focus-ring: rgba(95,227,197,0.30);
+    --color-success: var(--wb-brand-dark);
+    --color-warning: #e0904a;
+    --color-bubble-user: var(--wb-gray-d4);
+  }
+}

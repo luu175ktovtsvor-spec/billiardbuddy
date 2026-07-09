@@ -1,0 +1,24 @@
+// 共享原语(Block G 地基件的最小起步)。Block G 会补齐 Modal/Dropdown/Toast/ConfirmDialog 等全套。
+import type { ButtonHTMLAttributes } from 'react'
+
+type Variant = 'primary' | 'ghost' | 'danger'
+
+interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?: Variant
+}
+
+const base = 'inline-flex items-center justify-center gap-1.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed px-3 py-1.5'
+
+const styles: Record<Variant, string> = {
+  primary: 'text-white',
+  ghost: 'hover:bg-[var(--color-surface-hover)] text-[var(--color-text-secondary)]',
+  danger: 'text-[var(--color-error)] hover:bg-[var(--color-surface-hover)]',
+}
+
+export function Button({ variant = 'ghost', className = '', style, ...rest }: ButtonProps) {
+  const merged =
+    variant === 'primary'
+      ? { background: 'var(--color-primary)', color: 'var(--color-on-primary)', ...style }
+      : style
+  return <button className={`${base} ${styles[variant]} ${className}`} style={merged} {...rest} />
+}
