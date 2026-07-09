@@ -4,6 +4,7 @@ import type { Tool, ToolContext } from './Tool'
 import { fileHistoryBackupPath, recordFileSnapshot } from './fileHistory'
 import { loadProjectInstructionsForTarget, projectInstructionScopeKey } from '../harness/projectInstructions'
 import { resolveToolPath } from '../permissions/filePathRules'
+import { detectFileEncoding } from './fileIoSafety'
 
 export const fileWriteTool: Tool<{ path: string; content: string }> = {
   name: 'write_file',
@@ -30,12 +31,14 @@ export const fileWriteTool: Tool<{ path: string; content: string }> = {
     }
     const abs = resolveToolPath(ctx, 'write_file', input.path, 'write')
     await assertProjectInstructionsSeen(input.path, abs, ctx)
-    await assertFreshOverwrite(input.path, abs, ctx)
+    // 覆盖已存在文件时探测其原编码并保留(对齐 cc FileWriteTool.ts:297——只保留编码,
+    // 不重写行结尾,因为 content 是模型给的完整替换,行结尾由模型决定);新建文件用 utf8。
+    const encoding = await assertFreshOverwrite(input.path, abs, ctx)
     const snapshot = await recordFileSnapshot(ctx, input.path, abs, 'write_file')
     const backupPath = fileHistoryBackupPath(ctx, snapshot)
     await ctx.workspace.backup(abs) // 红线:改文件前自动备份
     await mkdir(dirname(abs), { recursive: true })
-    await writeFile(abs, input.content, 'utf8')
+    await writeFile(abs, input.content, encoding ?? 'utf8')
     const info = await stat(abs)
     recordRecentFileWrite(ctx, abs, { path: input.path, mtimeMs: info.mtimeMs, size: info.size })
     return [
@@ -45,15 +48,16 @@ export const fileWriteTool: Tool<{ path: string; content: string }> = {
   },
 }
 
-async function assertFreshOverwrite(path: string, abs: string, ctx: ToolContext): Promise<void> {
+async function assertFreshOverwrite(path: string, abs: string, ctx: ToolContext): Promise<BufferEncoding | undefined> {
   const info = await stat(abs).catch(() => null)
-  if (!info) return
+  if (!info) return undefined
   if (!info.isFile()) throw new Error(`write_file 拒绝覆盖:${path} 不是普通文件`)
   const snapshot = ctx.fileReads?.get(abs)
   if (!snapshot) throw new Error('write_file 拒绝覆盖:目标文件已存在,请先 read_file 读取该文件')
   if (info.mtimeMs !== snapshot.mtimeMs || info.size !== snapshot.size) {
     throw new Error('write_file 拒绝覆盖:文件在读取后已变化,请重新 read_file 后再写')
   }
+  return await detectFileEncoding(abs)
 }
 
 async function assertProjectInstructionsSeen(path: string, abs: string, ctx: ToolContext): Promise<void> {

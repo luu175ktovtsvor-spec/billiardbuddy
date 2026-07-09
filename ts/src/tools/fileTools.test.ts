@@ -1529,3 +1529,94 @@ test('write_file 拒 $ 展开路径(TOCTOU)', async () => {
     PathValidationError,
   )
 })
+
+// —— 对齐 cc-haha 的文件读写健壮性(见 src/tools/fileIoSafety.ts)——
+
+test('read_file blocks device paths that would hang the process, but not /dev/null', async () => {
+  const granted = applyPermissionUpdates(ctx, [
+    { type: 'addDirectories', destination: 'session', directories: ['/dev'] },
+  ])
+  await expect(fileReadTool.execute({ path: '/dev/zero' }, granted)).rejects.toThrow(/设备文件/)
+  await expect(fileReadTool.execute({ path: '/dev/urandom' }, granted)).rejects.toThrow(/设备文件/)
+  // cc 明确放行 /dev/null——读它安全、有意义,不应被拦
+  expect(await fileReadTool.execute({ path: '/dev/null' }, granted)).toBe('')
+}, 5000)
+
+test('read_many_files reports blocked device paths as a per-file error without hanging the batch', async () => {
+  const granted = applyPermissionUpdates(ctx, [
+    { type: 'addDirectories', destination: 'session', directories: ['/dev'] },
+  ])
+  writeFileSync(join(root, 'ok.txt'), 'fine')
+  const out = await fileReadManyTool.execute({ paths: ['ok.txt', '/dev/zero'] }, granted)
+  expect(out).toContain('fine')
+  expect(out).toContain('error="blocked_device_path"')
+}, 5000)
+
+test('read_file caps whole-file reads above the byte limit and suggests ranged reads', async () => {
+  writeFileSync(join(root, 'huge.txt'), 'x'.repeat(300_000))
+  await expect(fileReadTool.execute({ path: 'huge.txt' }, ctx)).rejects.toThrow(/整读上限/)
+  // 带 start_line/end_line 的定向读不受这个整读上限约束
+  const ranged = await fileReadTool.execute({ path: 'huge.txt', start_line: 1, end_line: 1 }, ctx)
+  expect(ranged).toContain('<file_chunk')
+})
+
+test('read_file strips a leading UTF-8 BOM from the displayed content', async () => {
+  const buffer = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('hello bom', 'utf8')])
+  writeFileSync(join(root, 'bom.txt'), buffer)
+  expect(await fileReadTool.execute({ path: 'bom.txt' }, ctx)).toBe('hello bom')
+})
+
+test('edit_file round-trips a UTF-16LE file with BOM without corrupting it', async () => {
+  const original = 'const greeting = "hello world"\n你好\n'
+  const buffer = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(original, 'utf16le')])
+  writeFileSync(join(root, 'utf16.ts'), buffer)
+
+  const read = await fileReadTool.execute({ path: 'utf16.ts' }, ctx)
+  expect(read.charCodeAt(0)).not.toBe(0xfeff) // 展示内容已剥离 BOM 字符
+  expect(read).toContain('hello world')
+  expect(read).toContain('你好')
+
+  await fileEditTool.execute({ path: 'utf16.ts', old_string: 'hello world', new_string: 'hi there' }, ctx)
+
+  const rawAfter = readFileSync(join(root, 'utf16.ts'))
+  expect(rawAfter[0]).toBe(0xff) // BOM 字节原样保留
+  expect(rawAfter[1]).toBe(0xfe)
+  const decoded = rawAfter.toString('utf16le').slice(1) // 去掉 BOM 字符再比较正文
+  expect(decoded).toContain('hi there')
+  expect(decoded).toContain('你好')
+  expect(decoded).not.toContain('hello world')
+})
+
+test('multi_edit_file and patch_file also preserve UTF-16LE encoding on write-back', async () => {
+  const buffer = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('alpha\nbeta\n', 'utf16le')])
+  writeFileSync(join(root, 'multi.ts'), buffer)
+  await fileReadTool.execute({ path: 'multi.ts' }, ctx)
+  await fileMultiEditTool.execute({
+    path: 'multi.ts',
+    edits: [{ old_string: 'alpha', new_string: 'ALPHA' }],
+  }, ctx)
+  const afterMulti = readFileSync(join(root, 'multi.ts'))
+  expect(afterMulti[0]).toBe(0xff)
+  expect(afterMulti[1]).toBe(0xfe)
+  expect(afterMulti.toString('utf16le').slice(1)).toBe('ALPHA\nbeta\n')
+
+  await fileReadTool.execute({ path: 'multi.ts' }, ctx)
+  await filePatchTool.execute({ path: 'multi.ts', patch: '@@ -2 +2 @@\n-beta\n+BETA' }, ctx)
+  const afterPatch = readFileSync(join(root, 'multi.ts'))
+  expect(afterPatch[0]).toBe(0xff)
+  expect(afterPatch[1]).toBe(0xfe)
+  expect(afterPatch.toString('utf16le').slice(1)).toBe('ALPHA\nBETA\n')
+})
+
+test("write_file preserves an existing file's UTF-16LE encoding on overwrite (cc does not inject a BOM into model content)", async () => {
+  const buffer = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('legacy content\n', 'utf16le')])
+  writeFileSync(join(root, 'legacy.txt'), buffer)
+
+  await fileReadTool.execute({ path: 'legacy.txt' }, ctx)
+  await fileWriteTool.execute({ path: 'legacy.txt', content: 'brand new content\n' }, ctx)
+
+  const rawAfter = readFileSync(join(root, 'legacy.txt'))
+  // 和 cc 一致:Write 是整文件替换,只保留原编码(utf16le),不会替模型往 content 里塞 BOM 字符。
+  expect(rawAfter.toString('utf16le')).toBe('brand new content\n')
+  expect(rawAfter[1]).toBe(0x00) // 第二字节为 0 才说明确实按 utf16le 写(utf8 不会有这个字节模式)
+})

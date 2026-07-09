@@ -2,6 +2,7 @@ import { readFile, stat, writeFile } from 'node:fs/promises'
 import type { Tool, ToolContext } from './Tool'
 import { fileHistoryBackupPath, recordFileSnapshot } from './fileHistory'
 import { resolveToolPath } from '../permissions/filePathRules'
+import { detectEncodingFromBuffer, MAX_EDIT_FILE_SIZE } from './fileIoSafety'
 
 export interface FileEditInput {
   path: string
@@ -72,6 +73,7 @@ interface PreparedPatch {
   content: string
   next: string
   applied: AppliedHunk[]
+  encoding: BufferEncoding
 }
 
 const PUNCT_EQUIV: Record<string, string> = {
@@ -127,7 +129,7 @@ export const fileEditTool: Tool<FileEditInput> = {
     const abs = resolveToolPath(ctx, 'edit_file', input.path, 'write')
     await assertFreshRead(abs, ctx)
 
-    const content = await readFile(abs, 'utf8')
+    const { content, encoding } = await readFileForEdit(abs)
     const replaceAll = semanticBoolean(input.replace_all)
     const matches = findMatches(content, input.old_string)
     if (matches.length === 0) {
@@ -142,7 +144,7 @@ export const fileEditTool: Tool<FileEditInput> = {
     const snapshot = await recordFileSnapshot(ctx, input.path, abs, 'edit_file')
     const backupPath = fileHistoryBackupPath(ctx, snapshot)
     await ctx.workspace.backup(abs)
-    await writeFile(abs, next, 'utf8')
+    await writeFile(abs, next, encoding)
 
     const info = await stat(abs)
     recordRecentFileRead(ctx, abs, { path: input.path, mtimeMs: info.mtimeMs, size: info.size })
@@ -190,7 +192,7 @@ export const fileMultiEditTool: Tool<FileMultiEditInput> = {
     const abs = resolveToolPath(ctx, 'multi_edit_file', input.path, 'write')
     await assertFreshRead(abs, ctx)
 
-    const content = await readFile(abs, 'utf8')
+    const { content, encoding } = await readFileForEdit(abs)
     let next = content
     const applied: AppliedEdit[] = []
     for (let i = 0; i < input.edits.length; i++) {
@@ -215,7 +217,7 @@ export const fileMultiEditTool: Tool<FileMultiEditInput> = {
     const snapshot = await recordFileSnapshot(ctx, input.path, abs, 'multi_edit_file')
     const backupPath = fileHistoryBackupPath(ctx, snapshot)
     await ctx.workspace.backup(abs)
-    await writeFile(abs, next, 'utf8')
+    await writeFile(abs, next, encoding)
 
     const info = await stat(abs)
     recordRecentFileRead(ctx, abs, { path: input.path, mtimeMs: info.mtimeMs, size: info.size })
@@ -253,7 +255,7 @@ export const filePatchTool: Tool<FilePatchInput> = {
     const abs = resolveToolPath(ctx, 'patch_file', input.path, 'write')
     await assertFreshRead(abs, ctx, 'patch_file')
 
-    const content = await readFile(abs, 'utf8')
+    const { content, encoding } = await readFileForEdit(abs)
     const hunks = parseUnifiedPatch(input.patch)
     const { next, applied } = applyUnifiedPatch(content, hunks)
     if (next === content) throw new Error('patch_file patch 未产生任何变化')
@@ -261,7 +263,7 @@ export const filePatchTool: Tool<FilePatchInput> = {
     const snapshot = await recordFileSnapshot(ctx, input.path, abs, 'patch_file')
     const backupPath = fileHistoryBackupPath(ctx, snapshot)
     await ctx.workspace.backup(abs)
-    await writeFile(abs, next, 'utf8')
+    await writeFile(abs, next, encoding)
 
     const info = await stat(abs)
     recordRecentFileRead(ctx, abs, { path: input.path, mtimeMs: info.mtimeMs, size: info.size })
@@ -315,11 +317,11 @@ export const filePatchManyTool: Tool<FilePatchManyInput> = {
       if (seenAbsPaths.has(abs)) throw new Error(`patch_files 重复路径:${item.path};请把同一文件的 hunks 合并到一个 patch`)
       seenAbsPaths.add(abs)
       await assertFreshRead(abs, ctx, 'patch_files')
-      const content = await readFile(abs, 'utf8')
+      const { content, encoding } = await readFileForEdit(abs)
       const hunks = parseUnifiedPatch(item.patch)
       const { next, applied } = applyUnifiedPatch(content, hunks)
       if (next === content) throw new Error(`patch_files 第 ${i + 1} 个文件 patch 未产生任何变化:${item.path}`)
-      prepared.push({ path: item.path, abs, content, next, applied })
+      prepared.push({ path: item.path, abs, content, next, applied, encoding })
     }
 
     const snapshots: Array<{ patch: PreparedPatch; snapshotId: string; backupPath?: string }> = []
@@ -332,11 +334,11 @@ export const filePatchManyTool: Tool<FilePatchManyInput> = {
     const written: PreparedPatch[] = []
     try {
       for (const item of prepared) {
-        await writeFile(item.abs, item.next, 'utf8')
+        await writeFile(item.abs, item.next, item.encoding)
         written.push(item)
       }
     } catch (error) {
-      await Promise.allSettled(written.map(item => writeFile(item.abs, item.content, 'utf8')))
+      await Promise.allSettled(written.map(item => writeFile(item.abs, item.content, item.encoding)))
       throw new Error(`patch_files 写入失败,已尽力回滚已写文件:${error instanceof Error ? error.message : String(error)}`)
     }
 
@@ -429,9 +431,20 @@ async function assertFreshRead(abs: string, ctx: ToolContext, toolName = 'edit_f
   const snapshot = ctx.fileReads?.get(abs)
   if (!snapshot) throw new Error(`${toolName} 拒绝修改:请先 read_file 读取该文件`)
   const info = await stat(abs)
+  // 防止整读巨型文件进内存 OOM,对齐 cc FileEditTool.ts:84-195(MAX_EDIT_FILE_SIZE = 1GiB)。
+  if (info.size > MAX_EDIT_FILE_SIZE) {
+    throw new Error(`${toolName} 拒绝修改:文件过大(${info.size} 字节),超过可编辑上限 ${MAX_EDIT_FILE_SIZE} 字节`)
+  }
   if (info.mtimeMs !== snapshot.mtimeMs || info.size !== snapshot.size) {
     throw new Error(`${toolName} 拒绝修改:文件在读取后已变化,请重新 read_file 后再改`)
   }
+}
+
+/** 读整文件并探测编码(UTF-16LE BOM 或 utf8),供改写工具解码/编码往返对齐 cc(fileRead.ts:20-49)。 */
+async function readFileForEdit(abs: string): Promise<{ content: string; encoding: BufferEncoding }> {
+  const buffer = await readFile(abs)
+  const encoding = detectEncodingFromBuffer(buffer)
+  return { content: buffer.toString(encoding), encoding }
 }
 
 function recordRecentFileRead(ctx: ToolContext, abs: string, snapshot: { path: string; mtimeMs: number; size: number }): void {

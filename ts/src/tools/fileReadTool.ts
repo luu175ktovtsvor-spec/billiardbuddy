@@ -2,6 +2,7 @@ import { open, readFile, stat } from 'node:fs/promises'
 import type { Tool } from './Tool'
 import { isProjectInstructionPath, loadProjectInstructionsForTarget, loadProjectInstructionsForTargets, projectInstructionScopeKey } from '../harness/projectInstructions'
 import { resolveToolPath } from '../permissions/filePathRules'
+import { detectEncodingFromBuffer, FULL_READ_MAX_BYTES, isBlockedDevicePath, stripLeadingBom } from './fileIoSafety'
 
 const MAX_MANY_FILES = 20
 const DEFAULT_PER_FILE_BYTES = 80_000
@@ -56,9 +57,21 @@ export const fileReadTool: Tool<FileReadInput> = {
   async execute(input, ctx) {
     if (!input || typeof input.path !== 'string') throw new Error('read_file 需要 string 参数 path')
     const abs = resolveToolPath(ctx, 'read_file', input.path, 'read')
-    const [content, info] = await Promise.all([readFile(abs, 'utf8'), stat(abs)])
+    if (isBlockedDevicePath(abs)) {
+      throw new Error(`read_file 拒绝读取:${input.path} 是会阻塞或产生无限输出的设备文件。`)
+    }
+    const info = await stat(abs)
+    const focused = hasFocusedRead(input)
+    if (!focused && info.size > FULL_READ_MAX_BYTES) {
+      throw new Error(
+        `read_file 文件过大(${info.size} 字节),超过整读上限 ${FULL_READ_MAX_BYTES} 字节:请改用 start_line/end_line 分段读取,或加 max_bytes 限制单次输出。`,
+      )
+    }
+    const buffer = await readFile(abs)
+    const encoding = detectEncodingFromBuffer(buffer)
+    const content = stripLeadingBom(buffer.toString(encoding))
     recordRecentFileRead(ctx, abs, { path: input.path, mtimeMs: info.mtimeMs, size: info.size })
-    const body = hasFocusedRead(input) ? formatFocusedRead(input.path, content, info.size, input) : content
+    const body = focused ? formatFocusedRead(input.path, content, info.size, input) : content
     return await prependApplicableProjectInstructions(ctx, abs, input.path, body)
   },
 }
@@ -109,6 +122,10 @@ export const fileReadManyTool: Tool<FileReadManyInput> = {
       const readLimit = Math.max(0, Math.min(perFileLimit, remaining))
       try {
         const abs = resolveToolPath(ctx, 'read_many_files', path, 'read')
+        if (isBlockedDevicePath(abs)) {
+          blocks.push(`<file path="${xmlAttr(path)}" error="blocked_device_path" />`)
+          continue
+        }
         const info = await stat(abs)
         if (!info.isFile()) {
           blocks.push(`<file path="${xmlAttr(path)}" error="not_a_file" />`)
