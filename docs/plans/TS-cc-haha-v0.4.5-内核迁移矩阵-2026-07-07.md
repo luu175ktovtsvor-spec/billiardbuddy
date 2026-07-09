@@ -3445,7 +3445,7 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 1. ✅OS 沙箱接线进生产入口默认开(`07f4bd4`):server 构造 `new Sandbox({enabled:true})` 注入 `ctx.sandbox`,优雅降级(缺依赖/异常退明文),QF_OS_SANDBOX=0 可关。smoke 证明写围栏真生效。
 2. ✅工作区主边界 symlink 解析(`783d2e4`):`workspace.resolve` 复用下沉的 `symlinkResolve.pathContainedInRoots`,堵区内 symlink 指向区外逃逸。
 3. ✅`.mcp.json` 工作区级信任闸(`f909d7c`):未信任的 `<root>/.mcp.json` 默认不连(防 RCE),显式/已信任/app 级配置放行,GET/POST/DELETE /agent/mcp/trust 批准。剩:远程 http headers/OAuth 鉴权。
-4. ⛔读命令(cat/ls/grep/find/...)路径工作区边界校验 + UNC 拦截:`dangerousCommand.ts` 已有路径提取但只按敏感文件名判、不按工作区边界判;近 4000 行、需逐段对齐,留专轮(移植 cc `checkPathConstraints`/`PATH_EXTRACTORS`)。
+4. ✅读命令路径工作区边界校验(`9a83ac8`):extractReadCommandPaths(对齐 cc PATH_EXTRACTORS,grep/rg 独立 flag 表修 -r bug、grep -f vs sed -f、git diff --no-index only)+ readCommandBoundary.shellExternalReadNeedsApproval(复用 read_file 边界判定,白拿 UNC/波浪号/`..` 保护);越界读从 'read' 提 'outreach' 需审批,授权目录/全盘访问豁免。**4 个 P0 安全项全部对齐**。
 
 > **2026-07-09 进度**(编排子代理并行写 disjoint 文件 + 主进程接 loop/server 项):连接架构对齐已落(`c98af29`/`931cf61`:WS 统一 steer/approve/reject/ping + 审批闭环写回);入参 schema 闸已落(`42c93eb`,#7);存储架构对齐确认(`b087332`)。#6/#12/#13/MCP 鉴权由子代理并行实现中,#11 及 token 触发由主进程接。
 
