@@ -83,6 +83,7 @@ import type { AgentEvent, AskQuestionField } from '../types/events'
 import type { ToolContext } from '../tools/Tool'
 import type { PermissionUpdate } from '../permissions/types'
 import { applyPermissionUpdates } from '../permissions/permissionUpdate'
+import { loadPermissionRules, permissionUpdatesFromRules, persistPermissionRule } from '../permissions/permissionsSettings'
 import type { FetchLike } from '../proxy/ProxyModel'
 import type { PermissionMode } from '../permissions/types'
 import { canonicalPermissionMode } from '../permissions/canonical'
@@ -1800,6 +1801,8 @@ export function startServer(opts: StartServerOptions = {}) {
         if (udsInboxWarning) {
           yield await record({ type: 'context_note', text: udsInboxWarning })
         }
+        // 加载工作区 .claude/settings.json(+ local)持久化权限规则,置于会话临时规则之前(持久规则打底,会话规则覆盖)。
+        const persistedRuleUpdates = permissionUpdatesFromRules(await loadPermissionRules(workspace.root))
         for await (const event of runAgentLoop({
           model,
           registry,
@@ -1814,7 +1817,7 @@ export function startServer(opts: StartServerOptions = {}) {
           steerInbox,
           signal: controller.signal,
           permissionMode: permissionModeFrom(rawBody.permissionMode),
-          initialPermissionUpdates: sessionPermissionUpdates.get(conversationId),
+          initialPermissionUpdates: [...persistedRuleUpdates, ...(sessionPermissionUpdates.get(conversationId) ?? [])],
           initialAllowedTools: commandInvocation && matchedCommand && matchedCommand.context !== 'fork' ? matchedCommand.allowedToolRules ?? matchedCommand.allowedTools : undefined,
           contextWindowChars: typeof rawBody.contextWindowChars === 'number' ? rawBody.contextWindowChars : undefined,
           contextWindowTokens,
@@ -2189,9 +2192,9 @@ export function startServer(opts: StartServerOptions = {}) {
         permissionMode: permissionModeFrom(body.permission_mode ?? body.permissionMode),
         toolResultStoreDir: conversationId ? join(stateRoot, 'tool-results', conversationId) : undefined,
       }
-      const ctx = conversationId
-        ? applyPermissionUpdates(baseCtx, sessionPermissionUpdates.get(conversationId) ?? [])
-        : baseCtx
+      // 持久化权限规则(工作区 .claude/settings.json)打底 + 会话临时规则覆盖,审批放行执行也认持久规则。
+      const persistedRuleUpdates = permissionUpdatesFromRules(await loadPermissionRules(built.workspace.root))
+      const ctx = applyPermissionUpdates(baseCtx, [...persistedRuleUpdates, ...(conversationId ? sessionPermissionUpdates.get(conversationId) ?? [] : [])])
       const result = await executeApproved(built.registry, tool, args, token, ctx, body.remember_approval === true || body.rememberApproval === true, approvalArgs)
       if (conversationId && result.ok && result.permissionUpdates?.length) {
         const existing = sessionPermissionUpdates.get(conversationId) ?? []
@@ -3774,6 +3777,22 @@ export function startServer(opts: StartServerOptions = {}) {
       if (url.pathname === '/api/v1/agent/plugins') {
         if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
         return Response.json({ plugins: await listPlugins(defaultPluginRoots(opts.env ?? process.env)) })
+      }
+
+      // 规则持久化:把一条权限规则写进工作区 .claude/settings.local.json(跨重启生效),供"始终允许"选择用。
+      if (url.pathname === '/api/v1/agent/permissions/persist' && req.method === 'POST') {
+        const body = await req.json().catch(() => ({})) as Record<string, unknown>
+        const behavior = body.behavior === 'deny' ? 'deny' : body.behavior === 'ask' ? 'ask' : 'allow'
+        const toolName = typeof body.toolName === 'string' ? body.toolName.trim() : ''
+        if (!toolName) return Response.json({ ok: false, error: 'toolName required' }, { status: 400 })
+        const ruleValue = { toolName, ...(typeof body.ruleContent === 'string' && body.ruleContent.trim() ? { ruleContent: body.ruleContent.trim() } : {}) }
+        const workspace = workspaceFromBody(body)
+        await persistPermissionRule(workspace.root, behavior, ruleValue)
+        return Response.json({ ok: true, behavior, rule: ruleValue })
+      }
+      if (url.pathname === '/api/v1/agent/permissions/rules' && req.method === 'GET') {
+        const workspace = workspaceFromBody(Object.fromEntries(url.searchParams))
+        return Response.json({ rules: await loadPermissionRules(workspace.root) })
       }
 
       if (url.pathname === '/api/v1/agent/plugins/toggle') {
