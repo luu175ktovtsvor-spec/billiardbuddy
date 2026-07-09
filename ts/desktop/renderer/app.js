@@ -44,6 +44,10 @@
 
   function renderEvent(ev) {
     switch (ev.type) {
+      case 'content_delta':
+        // token 级流式:正文增量打字机式追加到当前 assistant 节点(推理增量本切片先不逐字渲，靠完整 thinking 事件)。
+        if (ev.channel === 'text' && ev.text) { ensureAssistant().textContent += ev.text; scrollDown(); }
+        break;
       case 'thinking':
         if (ev.text && ev.text.trim()) { wrap.appendChild(el('thinking', esc(ev.text))); scrollDown(); }
         break;

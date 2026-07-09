@@ -1830,7 +1830,8 @@ export function startServer(opts: StartServerOptions = {}) {
           },
           teamInbox: { service: teams },
         })) {
-          yield await record(event)
+          // content_delta 是瞬时 token 流:实时发给客户端(打字机),但不持久化进事件日志(否则日志膨胀、断线重放会重复整段增量)。
+          yield event.type === 'content_delta' ? fallbackEventRecord(event) : await record(event)
         }
       } catch (err) {
         finalStatus = controller.signal.aborted ? 'interrupted' : 'failed'

@@ -921,6 +921,29 @@ test('审批闸:requiresApproval 工具 → 吐 approval_request + 回灌待确�
   expect(tr && tr.type === 'tool_result' && tr.output).toContain('待用户确认')
 })
 
+test('token 流式:model.step 触发 onDelta → 循环吐 content_delta 事件(先增量后 final)', async () => {
+  const streamingModel: Model = {
+    async step(input) {
+      input.onDelta?.({ channel: 'thinking', text: '想一下' })
+      input.onDelta?.({ channel: 'text', text: '你' })
+      input.onDelta?.({ channel: 'text', text: '好' })
+      return { kind: 'final', text: '你好', thinking: '想一下' }
+    },
+  }
+  const events = await collect(runAgentLoop({
+    model: streamingModel, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'hi',
+  }))
+  const deltas = events.filter(e => e.type === 'content_delta')
+  expect(deltas.length).toBe(3)
+  const textDeltas = deltas.filter(d => d.type === 'content_delta' && d.channel === 'text')
+  expect(textDeltas.map(d => d.type === 'content_delta' ? d.text : '').join('')).toBe('你好')
+  // content_delta 都在 final 之前
+  const finalIdx = events.findIndex(e => e.type === 'final')
+  const lastDeltaIdx = events.map(e => e.type).lastIndexOf('content_delta')
+  expect(lastDeltaIdx).toBeLessThan(finalIdx)
+})
+
 test('审批卡:破坏性命令的 approval_request 带 warning(纯信息,不影响放行逻辑)', async () => {
   process.env.SECRET_KEY = SECRET
   resetDenialStore()

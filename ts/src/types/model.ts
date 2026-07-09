@@ -8,6 +8,12 @@ export interface ModelUsage {
   cache_creation_input_tokens?: number
 }
 
+/** token 级流式增量:channel=text(正文)/thinking(推理);text=本次到达的增量片段。 */
+export interface ModelStepDelta {
+  channel: 'text' | 'thinking'
+  text: string
+}
+
 export interface ModelStepInput {
   /** 系统提示单列(Anthropic 语义:不是一条 role:'system' 消息)。proxy 出方向会把它塞成 OpenAI 的 system 消息。 */
   system?: string
@@ -15,6 +21,8 @@ export interface ModelStepInput {
   tools: ToolSpec[]
   /** 外部中断信号;server interrupt 用它取消模型 fetch 与工具执行。 */
   signal?: AbortSignal
+  /** 可选 token 级流式回调:真模型(ProxyModel)边流边吐正文/推理增量;fake/非流式模型不触发,行为不变。 */
+  onDelta?: (delta: ModelStepDelta) => void
 }
 
 export const MODEL_OUTPUT_TRUNCATED_NOTICE = '模型输出被长度上限截断,已要求继续补全。'

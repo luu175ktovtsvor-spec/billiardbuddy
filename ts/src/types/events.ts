@@ -55,6 +55,7 @@ export type AgentEvent =
       warning?: string
       rememberable?: boolean
     }
+  | { type: 'content_delta'; channel: 'text' | 'thinking'; text: string } // token 级流式增量,前端打字机式追加
   | { type: 'steering'; content: string } // 老板插话纠偏,前端渲成用户气泡
   | { type: 'todo_update'; content: string } // 任务清单变化,前端渲成清单
   | { type: 'context_note'; text: string } // 灰色系统旁白(W4c 打转提醒用;W4b 只加类型)

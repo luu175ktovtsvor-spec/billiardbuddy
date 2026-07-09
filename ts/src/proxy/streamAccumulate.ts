@@ -53,7 +53,7 @@ function extractReasoning(delta: Record<string, unknown>): string {
 
 export async function accumulateOpenAiStream(
   stream: ReadableStream<Uint8Array>,
-  opts: { idFactory?: (index: number) => string } = {},
+  opts: { idFactory?: (index: number) => string; onDelta?: (delta: { channel: 'text' | 'thinking'; text: string }) => void } = {},
 ): Promise<AccumulatedResponse> {
   const idFactory = opts.idFactory ?? defaultIdFactory
   const decoder = new TextDecoder()
@@ -73,8 +73,9 @@ export async function accumulateOpenAiStream(
     if (!choice) return
     const delta = (choice.delta ?? {}) as Record<string, unknown>
 
-    if (typeof delta.content === 'string' && delta.content) text += delta.content
-    thinking += extractReasoning(delta)
+    if (typeof delta.content === 'string' && delta.content) { text += delta.content; opts.onDelta?.({ channel: 'text', text: delta.content }) }
+    const reasoningDelta = extractReasoning(delta)
+    if (reasoningDelta) { thinking += reasoningDelta; opts.onDelta?.({ channel: 'thinking', text: reasoningDelta }) }
 
     const toolCalls = delta.tool_calls as OpenAIChatStreamChunk['choices'][number]['delta']['tool_calls']
     if (Array.isArray(toolCalls)) {
