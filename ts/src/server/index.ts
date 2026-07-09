@@ -3800,6 +3800,20 @@ export function startServer(opts: StartServerOptions = {}) {
         }
       }
 
+      // 文件读(§9 右侧预览):读一个文本文件内容,上限 256KB,供预览面板显示改动后的文件。
+      if (url.pathname === '/api/v1/agent/fs/read' && req.method === 'GET') {
+        const filePath = url.searchParams.get('path')
+        if (!filePath) return Response.json({ error: 'path required' }, { status: 400 })
+        try {
+          const resolved = resolve(filePath)
+          const stat = await import('node:fs/promises').then(m => m.stat(resolved))
+          if (stat.size > 256 * 1024) return Response.json({ path: resolved, truncated: true, content: '(文件超过 256KB,预览已截断)' })
+          return Response.json({ path: resolved, content: await readFile(resolved, 'utf8') })
+        } catch (err) {
+          return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 404 })
+        }
+      }
+
       // 配置基座:App 级用户设置(默认权限档/主题),供设置抽屉读写。
       if (url.pathname === '/api/settings') {
         if (req.method === 'GET') return Response.json({ settings: await userSettings.get() })

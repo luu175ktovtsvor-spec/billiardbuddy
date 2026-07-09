@@ -23,6 +23,20 @@
   body { font-family: var(--font); color: var(--text); background: var(--page); font-size: 14px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
   #app { display: flex; height: 100vh; background: var(--bg); }
   #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  /* 右侧预览面板(§9) */
+  #preview { width: 340px; flex: none; border-left: 1px solid var(--hairline); display: none; flex-direction: column; background: #fafafa; }
+  #preview.show { display: flex; }
+  #preview .pv-head { height: 44px; flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 12px 0 14px; border-bottom: 1px solid var(--hairline); font-size: 13px; font-weight: 600; }
+  #preview .pv-head button { border: none; background: none; color: var(--text-2); cursor: pointer; font-size: 16px; }
+  #preview .pv-body { flex: 1; overflow: auto; }
+  #preview .changed { padding: 8px; }
+  #preview .changed .cf { font-size: 12px; padding: 5px 8px; border-radius: 6px; cursor: pointer; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #preview .changed .cf:hover { background: rgba(0,0,0,0.05); }
+  #preview .changed .cf .ico { color: var(--accent); margin-right: 4px; }
+  #preview pre { margin: 0; padding: 10px 12px; font-size: 12px; font-family: "SF Mono", ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+  header .changes-btn { -webkit-app-region: no-drag; margin-left: auto; font-size: 12px; color: var(--text-2); background: rgba(0,0,0,0.05); border: none; border-radius: 7px; padding: 3px 9px; cursor: pointer; display: none; }
+  header .changes-btn.has { display: inline-block; }
+  header .changes-btn .n { color: var(--accent); font-weight: 600; }
 
   /* 侧栏(毛玻璃):新对话 + 会话列表 */
   aside { width: 240px; flex: none; display: flex; flex-direction: column; background: rgba(245,245,247,0.85); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-right: 1px solid var(--hairline); -webkit-app-region: drag; }
@@ -128,6 +142,7 @@
     <header>
       <span class="title">球房管家</span>
       <span class="status" id="status"><span class="dot"></span>连接中…</span>
+      <button class="changes-btn" id="changes-btn">改动 <span class="n" id="changes-n">0</span></button>
     </header>
     <div id="thread"><div class="wrap"><div class="empty" id="empty">跟它说点什么，它会读写文件、跑命令、上网查、把活干完。</div></div></div>
     <footer>
@@ -142,6 +157,10 @@
         </div>
       </div>
     </footer>
+  </div>
+  <div id="preview">
+    <div class="pv-head"><span id="pv-title">改动文件</span><button id="pv-close">×</button></div>
+    <div class="pv-body" id="pv-body"></div>
   </div>
 </div>
 <script src="./app.js"></script>

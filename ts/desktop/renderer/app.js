@@ -17,6 +17,38 @@
   const wsTreeEl = $('ws-tree');
   const host = window.desktopHost;
   let workspaceRoot = ''; // 空=后端默认工作区(sidecar cwd)
+  const previewEl = $('preview'), pvBody = $('pv-body'), pvTitle = $('pv-title'), pvClose = $('pv-close');
+  const changesBtn = $('changes-btn'), changesN = $('changes-n');
+  const changedFiles = new Set(); // 本会话改动过的文件(§9 文件变更列表)
+
+  function noteFileChange(output) {
+    const re = /<file_change path="([^"]+)"/g; let m; let added = false;
+    while ((m = re.exec(String(output || '')))) { const p = m[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'); if (!changedFiles.has(p)) { changedFiles.add(p); added = true; } }
+    if (added) { changesN.textContent = changedFiles.size; changesBtn.classList.add('has'); }
+  }
+  function showChanges() {
+    pvTitle.textContent = '改动文件 (' + changedFiles.size + ')';
+    const box = document.createElement('div'); box.className = 'changed';
+    if (!changedFiles.size) box.innerHTML = '<div class="cf">本会话还没有文件改动</div>';
+    [...changedFiles].forEach((p) => {
+      const it = el('cf', '<span class="ico">◆</span>' + esc(p.split('/').pop()));
+      it.title = p; it.onclick = () => showFile(p);
+      box.appendChild(it);
+    });
+    pvBody.innerHTML = ''; pvBody.appendChild(box); previewEl.classList.add('show');
+  }
+  async function showFile(path) {
+    pvTitle.textContent = path.split('/').pop();
+    pvBody.innerHTML = '<pre>加载中…</pre>';
+    try {
+      const data = await (await fetch('/api/v1/agent/fs/read?path=' + encodeURIComponent(path))).json();
+      const pre = document.createElement('pre'); pre.textContent = data.content != null ? data.content : (data.error || '(读取失败)');
+      pvBody.innerHTML = ''; pvBody.appendChild(pre);
+    } catch { pvBody.innerHTML = '<pre>(读取失败)</pre>'; }
+    previewEl.classList.add('show');
+  }
+  changesBtn.addEventListener('click', showChanges);
+  pvClose.addEventListener('click', () => previewEl.classList.remove('show'));
 
   async function pickWorkspace() {
     let dir = null;
@@ -158,6 +190,7 @@
         break;
       }
       case 'tool_result': {
+        noteFileChange(ev.output); // 文件改动记进变更列表(§9)
         // 找最近一个同工具、尚未标结果的折叠块补结果(低噪:默认折叠)
         const blocks = wrap.querySelectorAll('details.tool');
         let target = null;
@@ -247,6 +280,7 @@
   function clearThread() {
     wrap.innerHTML = '';
     assistantEl = null;
+    changedFiles.clear(); changesN.textContent = '0'; changesBtn.classList.remove('has'); previewEl.classList.remove('show');
     if (emptyEl) { const e = emptyEl.cloneNode(true); e.style.display = ''; wrap.appendChild(e); }
   }
   let wantReplay = false; // 切到已有会话时,ready 后请求全量事件重放回填历史
