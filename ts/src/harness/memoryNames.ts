@@ -37,8 +37,12 @@ export const MEMORY_DOT_DIR = '.billiardbuddy'
 /** 规则子目录名(cc: rules,位于点目录下)。 */
 export const MEMORY_RULES_SUBDIR = 'rules'
 
-/** 记忆层类型(对齐 cc memory/types.ts;我们不做 AutoMem/TeamMem)。 */
-export const MEMORY_TYPE_VALUES = ['User', 'Project', 'Local', 'Managed'] as const
+/**
+ * 记忆层类型(对齐 cc memory/types.ts)。
+ * 前 4 层 = 人写定稿的主指令(CLAUDE.md 家族);第 5 层 AutoMem = 模型自主攒的记忆池
+ * (memdir/MEMORY.md 索引,由「存记忆」工具写、getMemoryFiles 注入)。TeamMem 单用户不做。
+ */
+export const MEMORY_TYPE_VALUES = ['User', 'Project', 'Local', 'Managed', 'AutoMem'] as const
 export type MemoryType = (typeof MEMORY_TYPE_VALUES)[number]
 
 /** 可开关的设置源(对齐 cc SettingSource 的 memory 相关子集)。 */
@@ -71,8 +75,8 @@ export function getManagedDir(): string {
 }
 
 /**
- * 四层主指令文件的绝对路径(对齐 cc config.ts:1788-1808 getMemoryPath)。
- * `cwd` 是项目根(我们用 workspace.root)。
+ * 各层主指令/记忆文件的绝对路径(对齐 cc config.ts:1788-1816 getMemoryPath)。
+ * `cwd` 是项目根(我们用 workspace.root)。AutoMem 指向 memdir 里的 MEMORY.md 索引。
  */
 export function getMemoryPath(type: MemoryType, cwd: string): string {
   switch (type) {
@@ -84,7 +88,50 @@ export function getMemoryPath(type: MemoryType, cwd: string): string {
       return join(cwd, MEMORY_MAIN_FILE)
     case 'Managed':
       return join(getManagedDir(), MEMORY_MAIN_FILE)
+    case 'AutoMem':
+      return getAutoMemEntrypoint(cwd)
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AutoMem(模型自主写的记忆池)路径解析 —— 移植 cc memdir/paths.ts + sessionStoragePortable.sanitizePath。
+// 目录布局:<用户全局配置目录>/projects/<项目根 slug>/memory/,索引文件 MEMORY.md。
+// 白标铁律:走 getUserConfigHomeDir()(~/.billiardbuddy),绝不 ~/.claude。
+// ⚠️ 读(claudemd.getMemoryFiles)与写(save_memory 工具)都按 workspace.root 派生同一目录 → 读写对齐。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** memdir 里的记忆子目录名(cc: 'memory')。 */
+export const AUTOMEM_DIRNAME = 'memory'
+/** memdir 索引文件名(cc: 'MEMORY.md')。 */
+export const AUTOMEM_ENTRYPOINT_NAME = 'MEMORY.md'
+/** 项目分区目录名(cc: 'projects')。 */
+export const AUTOMEM_PROJECTS_DIRNAME = 'projects'
+
+// cc sessionStoragePortable.ts:293 —— slug 截断上限。
+const MAX_SANITIZED_LENGTH = 200
+
+/**
+ * cc sessionStoragePortable.ts:311 sanitizePath —— 把绝对路径压成跨平台安全的目录名:
+ * 非字母数字一律换 `-`;超长则截断 + 追加哈希后缀保唯一(Bun.hash 与 cc 一致)。
+ */
+export function sanitizePath(name: string): string {
+  const sanitized = name.replace(/[^a-zA-Z0-9]/g, '-')
+  if (sanitized.length <= MAX_SANITIZED_LENGTH) return sanitized
+  const hash = typeof Bun !== 'undefined' ? Bun.hash(name).toString(36) : `${name.length}`
+  return `${sanitized.slice(0, MAX_SANITIZED_LENGTH)}-${hash}`
+}
+
+/**
+ * AutoMem 记忆目录:<用户全局配置目录>/projects/<workspaceRoot slug>/memory/。
+ * 对齐 cc getAutoMemPath(按项目根分区),让不同工作区各自一份记忆。
+ */
+export function getAutoMemDir(workspaceRoot: string): string {
+  return join(getUserConfigHomeDir(), AUTOMEM_PROJECTS_DIRNAME, sanitizePath(workspaceRoot), AUTOMEM_DIRNAME)
+}
+
+/** AutoMem 索引文件(memdir 里的 MEMORY.md,对齐 cc getAutoMemEntrypoint)。 */
+export function getAutoMemEntrypoint(workspaceRoot: string): string {
+  return join(getAutoMemDir(workspaceRoot), AUTOMEM_ENTRYPOINT_NAME)
 }
 
 /** User 层 rules 目录(cc: getUserClaudeRulesDir = ~/.claude/rules)→ ~/.billiardbuddy/rules。 */

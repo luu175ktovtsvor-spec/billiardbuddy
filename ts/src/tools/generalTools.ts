@@ -8,6 +8,7 @@ import { powerShellTool } from './powerShellTool'
 import { webFetchTool } from './webFetchTool'
 import { webSearchTool } from './webSearchTool'
 import { todoWriteTool } from './todoTool'
+import { saveMemoryTool } from './saveMemoryTool'
 import { fileHistoryTool, restoreFileTool } from './fileHistoryTool'
 import { globFilesTool, grepFilesTool } from './searchTools'
 import { codeOutlineTool } from './codeOutlineTool'
@@ -72,6 +73,7 @@ export function buildGeneralRegistry(opts: { sandbox?: Sandbox; skills?: SkillLi
     webFetchTool,
     webSearchTool,
     todoWriteTool,
+    saveMemoryTool,
     fileHistoryTool,
     restoreFileTool,
     ...(opts.skills ? createSkillTools(opts.skills, { skillRoot: opts.skillsRoot, recommendedSkillNames: opts.skillRecommendations, executeSkill: opts.executeSkill }) : []),

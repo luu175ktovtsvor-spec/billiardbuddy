@@ -5,7 +5,6 @@ import { collectDiscoveryEntries, toPublicCommandEntries } from '../harness/skil
 import { summarizeWorkspaceProjectInstructions } from '../harness/projectInstructions'
 import { scriptedModel } from '../harness/fakeModel'
 import { compactPipeline } from '../context/compaction'
-import { buildStoreMemoryContext } from '../memory/storeMemoryContext'
 import { createModelFromProviderCandidates } from '../model/modelFactory'
 import { getConfiguredOrBuiltInModelContextWindow } from '../model/modelContextWindows'
 import {
@@ -1516,7 +1515,6 @@ export function startServer(opts: StartServerOptions = {}) {
     const outputStylePrompt = renderOutputStylePrompt(outputStyles, stringOr(rawBody.output_style ?? rawBody.outputStyle, ''))
     const extraContext = [
       supportContext(rawBody),
-      buildStoreMemoryContext(await desktopData.listMemories(), rawUserMessage, { workingDir: workspace.root }),
     ].filter(Boolean).join('\n\n')
     if (outputStylePrompt || extraContext) {
       systemPrompt = [systemPrompt, outputStylePrompt, extraContext].filter(Boolean).join('\n\n')
@@ -3147,7 +3145,8 @@ export function startServer(opts: StartServerOptions = {}) {
           exported_at: new Date().toISOString(),
           store: await desktopData.getStore(),
           byok: await desktopData.getByok(),
-          memories: await desktopData.listMemories(),
+          // 自造店脑记忆已下线(改用 cc AutoMem memdir);保留空数组兼容旧备份格式。
+          memories: [],
           scheduled_tasks: await desktopData.listScheduledTasks(),
           store_docs: await desktopData.getStoreDocs(),
         }, null, 2), {
@@ -3248,44 +3247,6 @@ export function startServer(opts: StartServerOptions = {}) {
       if (url.pathname === '/api/v1/logs/client') {
         if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
         return Response.json({ ok: true })
-      }
-
-      if (url.pathname === '/api/v1/store-memory' || url.pathname === '/api/v1/store-memory/candidates') {
-        if (req.method === 'GET') return Response.json(await desktopData.listMemories())
-        if (req.method === 'POST') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          const content = typeof body.content === 'string' ? body.content : ''
-          if (!content.trim()) return jsonDetailError('content required', 400)
-          return Response.json(await desktopData.addMemory({
-            content,
-            type: typeof body.type === 'string' ? body.type : 'semantic',
-            source: url.pathname.endsWith('/candidates') ? 'pending' : 'manual',
-            workingDir: typeof body.working_dir === 'string' ? body.working_dir : null,
-          }), { status: 201 })
-        }
-        return new Response('Method not allowed', { status: 405 })
-      }
-
-      const memoryMatch = url.pathname.match(/^\/api\/v1\/store-memory\/([^/]+)(?:\/(confirm))?$/)
-      if (memoryMatch) {
-        const id = decodeURIComponent(memoryMatch[1]!)
-        const action = memoryMatch[2]
-        if (!action && req.method === 'PATCH') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          const item = await desktopData.updateMemory(id, typeof body.content === 'string' ? body.content : '')
-          if (!item) return jsonDetailError('memory not found', 404)
-          return Response.json(item)
-        }
-        if (action === 'confirm' && req.method === 'POST') {
-          const item = await desktopData.confirmMemory(id)
-          if (!item) return jsonDetailError('memory not found', 404)
-          return Response.json(item)
-        }
-        if (!action && req.method === 'DELETE') {
-          await desktopData.deleteMemory(id)
-          return Response.json({ ok: true })
-        }
-        return new Response('Method not allowed', { status: 405 })
       }
 
       if (url.pathname === '/api/v1/scheduled-tasks') {
