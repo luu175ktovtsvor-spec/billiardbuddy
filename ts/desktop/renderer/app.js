@@ -153,16 +153,27 @@
 
   function renderApproval(ev) {
     const card = el('approval');
-    const why = ev.reason ? (ev.reason.why || ev.reason.what || '') : '';
+    const r = ev.reason || {};
+    // 原因/影响(§6.5:显示审批原因、影响范围)
+    const reasonLines = [];
+    if (r.what) reasonLines.push(r.what);
+    if (r.why) reasonLines.push('原因:' + r.why);
+    if (r.impact) reasonLines.push('影响:' + r.impact);
+    const rememberBtn = ev.rememberable ? '<button class="approve-session">本会话允许</button>' : '';
     card.innerHTML = '<div class="head">需要你确认:' + esc(ev.tool) + '</div>' +
       (ev.warning ? '<div class="warn">⚠ ' + esc(ev.warning) + '</div>' : '') +
-      '<div class="why">' + esc(clip((why ? why + '\n' : '') + (ev.preview || JSON.stringify(ev.args || {})), 400)) + '</div>' +
-      '<div class="acts"><button class="approve">批准并执行</button><button class="reject">拒绝</button></div>';
+      '<div class="why">' + esc(clip(reasonLines.join('\n') || (ev.preview || JSON.stringify(ev.args || {})), 400)) + '</div>' +
+      '<div class="acts"><button class="approve">允许一次</button>' + rememberBtn + '<button class="reject">拒绝</button></div>';
+    // 审批卡内 diff(§6.5 铁律:文件写入 diff 展示 + 必要 diff)
+    const diff = diffFromArgs(ev.tool, ev.args && typeof ev.args === 'object' ? ev.args : {});
+    if (diff) card.insertBefore(diff, card.querySelector('.acts'));
     const done = (label) => { card.classList.add('done'); card.querySelector('.acts').innerHTML = '<span class="sub">' + label + '</span>'; };
-    card.querySelector('.approve').onclick = () => {
-      wsSend({ type: 'approve', tool: ev.tool, args: ev.args, token: ev.token, conversationId: conversationId, permissionMode: 'default' });
-      done('已批准并执行');
+    const approve = (remember) => {
+      wsSend({ type: 'approve', tool: ev.tool, args: ev.args, token: ev.token, conversationId: conversationId, permissionMode: 'default', remember_approval: !!remember });
+      done(remember ? '已允许(本会话)' : '已批准并执行');
     };
+    card.querySelector('.approve').onclick = () => approve(false);
+    if (ev.rememberable) card.querySelector('.approve-session').onclick = () => approve(true);
     card.querySelector('.reject').onclick = () => {
       wsSend({ type: 'reject', tool: ev.tool, args: ev.args, conversationId: conversationId });
       done('已拒绝');
