@@ -63,6 +63,7 @@ import {
 } from '../tools/agentInteractionTools'
 import { isVerifyPlanExecutionToolName } from '../tools/verifyPlanExecutionTool'
 import { validateToolInput } from '../tools/inputSchemaValidation'
+import { sanitizeResumeMessages } from './messageSanitize'
 import { activateWorktreeSessionForContext } from '../tools/worktreeTools'
 import {
   applyPostToolUseHooks,
@@ -147,7 +148,9 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   if (opts.transcript) {
     try {
       transcriptBaseline = await opts.transcript.captureBaselineLen()
-      const loaded = await opts.transcript.load()
+      // 主会话 resume 清洗 transcript 残尾:上一轮中断/异常留下的未配对 tool_use / 孤儿 thinking / 空白
+      // assistant 若直接喂回模型会破坏配对(Anthropic API 拒未配对 tool_use);无孤儿时为 no-op。
+      const loaded = sanitizeResumeMessages(await opts.transcript.load())
       history = loaded.length > 0 ? loaded : opts.initialMessages ?? []
       contentReplacementRecords = await opts.transcript.loadContentReplacementRecords?.() ?? []
     } catch {
