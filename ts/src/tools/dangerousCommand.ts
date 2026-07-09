@@ -91,16 +91,56 @@ export type CommandRisk = 'read' | 'file' | 'outreach' | 'destructive'
 
 export function isDangerousCommand(command: string): boolean {
   if (DANGEROUS_PATTERNS.some(re => re.test(command))) return true
-  // cmd.exe 的 `^` 行尾续行:`^` 紧跟换行 = 转义换行、把两行拼成一句(cmd 语法)。先归一再跑 Windows 红线,
-  // 挡住「用续行把危险词和盘符拆到两行」的绕过(如 `format ^<换行>c:`)。仅作用于 Windows 红线判定,
-  // POSIX 红线仍看原文(sh 不认 `^` 续行,避免跨平台误判)。
-  const winView = stripCmdCaretContinuations(command)
+  // 先把命令归一成「cmd 实际会执行的样子」再跑 Windows 红线:剥行尾续行 `^\n`、剥中缀转义 `^`,
+  // 并摘掉语句起始的 `call` / `for..in..do` 前缀,让被它们混淆/包住的危险命令重新落到语句起始锚上。
+  // 挡住三类绕过:`format ^<换行>c:`(续行)、`de^l /s /q C:\*`(中缀 caret)、`call format c:` /
+  // `for %i in (*) do del /s /q C:\*`(前缀夹带)。仅作用于 Windows 红线判定,POSIX 红线仍看原文
+  // (sh 不认 `^`/`call`/`for..do` 这套 cmd 语义,避免跨平台误判)。
+  const winView = normalizeWinRedlineView(command)
   return WINDOWS_DANGEROUS_PATTERNS.some(re => re.test(winView))
 }
 
-// 归一 cmd.exe 的 `^` 行尾续行(`^` 紧跟换行 = 转义换行、拼行);其余位置的 `^` 保持不动(不处理中缀转义)。
+// 语句起始的 `call <命令>`:cmd 里 call 只是「调一下」,真正执行的是后面的命令,摘掉它让后命令落到语句起始。
+const WIN_CALL_PREFIX = new RegExp(`(${WIN_STMT_START})call\\s+`, 'gi')
+// 语句起始的 `for [/x] %v in (...) do <命令>`:for 循环体才是真正执行的命令,摘掉前缀让循环体落到语句起始。
+// 精确闭合(必须 `for`+`in (...)`+`do` 且 for 锚在语句起始),刻意不把裸 `do\s+`/`call\s+` 塞进共享
+// WIN_STMT_START——那会误伤含子串的正常词(`todo`/`recall`/`pseudo`),如 `echo todo format c:` 会被误判。
+const WIN_FOR_DO_PREFIX = new RegExp(`(${WIN_STMT_START})for\\b[^|;&\\n]*?\\bin\\s*\\([^)]*\\)\\s*do\\s+`, 'gi')
+
+// 归一成 cmd.exe 实际执行的形态(仅供 Windows 红线判定;不改 POSIX 判定看到的原文)。
+function normalizeWinRedlineView(command: string): string {
+  let view = stripCmdCaretContinuations(command)
+  view = stripCmdInfixCarets(view)
+  // 先摘 for..do(循环体可能再套一层 call),再摘 call。
+  view = view.replace(WIN_FOR_DO_PREFIX, '$1').replace(WIN_CALL_PREFIX, '$1')
+  return view
+}
+
+// 归一 cmd.exe 的 `^` 行尾续行(`^` 紧跟换行 = 转义换行、拼行)。
 function stripCmdCaretContinuations(command: string): string {
   return command.includes('^') ? command.replace(/\^\r?\n/g, '') : command
+}
+
+// 归一 cmd.exe 的中缀 `^` 转义:cmd 把 `^` 当「转义下一字符」吃掉(`de^l`→`del`),`^^`→字面单个 `^`。
+// 为堵 `cmd /c "de^l C:\*"` 这类两级转手(外层引号里的 `^` 会被 /c 拉起的内层 cmd 再吃一次),这里对
+// 引号内外一律按转义处理——剥净后的视图 = 内层 cmd 真正执行的命令;审查实测对含 `^` 锚点的
+// grep/sed/awk/powershell/findstr 等正常命令零误杀(cmd 本身也把中缀 `^` 吃掉,两者恰好一致)。
+// 剥的是「转义语义」而非「删所有 `^`」:遇 `^^` 只吃掉第一个、把第二个当「被转义的字符」原样留下且不再当
+// 转义符,故 `for^^mat`→`for^mat`(cmd 里本就是不存在的命令、本不该判成 format),既不漏也不误杀。
+function stripCmdInfixCarets(command: string): string {
+  if (!command.includes('^')) return command
+  let out = ''
+  for (let i = 0; i < command.length; i++) {
+    if (command[i] === '^') {
+      const next = command[i + 1]
+      if (next === undefined) continue // 行尾孤立 `^`:cmd 当续行/空转义,丢弃
+      out += next // 转义:丢 `^`、原样保留下一字符(含第二个 `^`)
+      i++ // 跳过已被转义的字符,使其不再充当转义符
+      continue
+    }
+    out += command[i]
+  }
+  return out
 }
 
 const SHELL_EXPANSION_PATTERNS: RegExp[] = [
@@ -4125,7 +4165,11 @@ function classifySegment(segment: string): CommandRisk {
   if (/^git\s+reset\b.*\s--hard\b/.test(command)) return withSegmentBaseRisk('destructive')
   if (/^git\s+branch\s+-D\b/.test(command)) return withSegmentBaseRisk('destructive')
 
-  const windowsRisk = classifyWindowsShellCommand(rawCommand)
+  // 审批闸先按「cmd 实际会执行的样子」归一(剥中缀 `^` 转义、剥 `call`/`for..in..do` 前缀),再判危险动词,
+  // 与红线路径(isDangerousCommand)对齐——否则 `ta^skkill`/`r^d /s /q`/`call sc delete`/`for %i in (x) do taskkill`
+  // 这类混淆能绕过审批闸静默落 file 档执行。仅归一 Windows 审批面看到的视图,POSIX 面(上面 removal/mvCp/
+  // processAction)仍看原文,不受影响(sh 不认 `^`/`call`/`for..do` 这套 cmd 语义)。
+  const windowsRisk = classifyWindowsShellCommand(normalizeWinRedlineView(rawCommand))
   if (windowsRisk) return withSegmentBaseRisk(windowsRisk)
 
   if (/^(curl|wget|ssh|scp|sftp|ftp|telnet|nc|netcat|rsync)\b/.test(command)) return withSegmentBaseRisk('outreach')
