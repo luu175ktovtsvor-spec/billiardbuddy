@@ -101,12 +101,14 @@ function destructiveWarningForInput(toolName: string, input: unknown): string | 
 }
 import { activateWorktreeSessionForContext } from '../tools/worktreeTools'
 import {
+  applyNotificationHooks,
   applyPostCompactHooks,
   applyPostToolUseFailureHooks,
   applyPostToolUseHooks,
   applyPreCompactHooks,
   applyPreToolUseHooks,
   applySessionStartHooks,
+  applyStopFailureHooks,
   applyStopHooks,
   applyUserPromptSubmitHooks,
   mergeHookRegistries,
@@ -294,6 +296,24 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     stopHookActive = true
     return { shouldContinue: true, events }
   }
+  // 收尾时最近一条 assistant 正文(供 StopFailure 载荷带上"回合被中断前模型说了什么",对齐参考实现的 last_assistant_message)。
+  const lastAssistantText = (): string | undefined => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m?.role !== 'assistant') continue
+      const text = m.content.map(b => (b.type === 'text' ? b.text : '')).filter(Boolean).join('\n').trim()
+      return text || undefined
+    }
+    return undefined
+  }
+  // StopFailure 落点(对齐参考实现:接口/模型错误让本回合收场时触发 StopFailure 代替正常 Stop,fire-and-forget)。
+  // 只在"非用户中断"的真错误路径触发;用户主动中断(signal.aborted)不算失败、不触发。附加上下文非阻塞回灌。
+  const fireStopFailureNotes = async (err: unknown): Promise<AgentEvent[]> => {
+    if (opts.signal?.aborted) return []
+    const message = err instanceof Error ? err.message : String(err)
+    const res = await applyStopFailureHooks(hooksForCurrentSession(), message, ctx, { finalText: lastAssistantText(), subagent: opts.subagent })
+    return res.additionalContext.map(text => ({ type: 'context_note' as const, text }))
+  }
   if (userPrompt.deniedMessage) {
     const text = `请求被 hook 拦截:${userPrompt.deniedMessage}`
     messages = [...history, { role: 'assistant', content: [textBlock(text)] }]
@@ -416,9 +436,15 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       // 流式:边流边把正文/推理增量 yield 成 content_delta(前端打字机);await 结束拿完整 step。
       step = yield* streamModelStep(model, { system, messages, tools: toolsForStep, signal: opts.signal })
     } catch (err) {
-      if (!looksLikeContextOverflow(err)) throw err
+      if (!looksLikeContextOverflow(err)) {
+        for (const e of await fireStopFailureNotes(err)) yield e
+        throw err
+      }
       const note = await maybeCompact(true)
-      if (!note) throw err
+      if (!note) {
+        for (const e of await fireStopFailureNotes(err)) yield e
+        throw err
+      }
       yield { type: 'context_note', text: note }
       const toolsForStep = visibleToolSpecs(registry, revealedToolNames)
       opts.onSummarySnapshot?.({ system, messages: messages.slice(), tools: toolsForStep, contentReplacementState: cloneContentReplacementStateForSnapshot(contentReplacementState) })
@@ -1001,6 +1027,13 @@ async function* gateOneCall(
       preview = undefined
     }
     const commandWarning = destructiveWarningForInput(call.name, hookInput)
+    // Notification 落点(对齐参考实现:需要用户确认=需要通知用户 → 触发 Notification 钩子,fire-and-forget)。
+    // 权限闸挂起、等待人工确认时通知宿主/外部通道;附加上下文非阻塞回灌,不改变审批流程本身。
+    const notify = await applyNotificationHooks(hooks, {
+      message: `需要你确认工具调用:${call.name}`,
+      notificationType: 'permission',
+    }, ctx)
+    for (const extra of notify.additionalContext) yield { type: 'context_note', text: extra }
     yield {
       type: 'approval_request',
       tool: call.name,

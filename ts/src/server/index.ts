@@ -46,7 +46,7 @@ import { allowedToolsForAgent } from '../commands/allowedTools'
 import { bridgeUnsafeCommandMessage, filterBridgeSafeCommands, isBridgeSafeCommand, loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
 import type { PromptCommand } from '../commands/types'
 import { loadHookRegistryFile } from '../hooks/hookConfig'
-import { configureHookTrust } from '../hooks/hooks'
+import { applySessionEndHooks, configureHookTrust } from '../hooks/hooks'
 import { createDomainPackCommandLibrary, createDomainPackHookRegistry, createDomainPackTools, listPublicDomainPacks, mergeHookRegistries, registerDomainPackCommandAliases, resolveEnabledPacks, suggestedSkillNamesForPacks, type DomainPack } from '../packs/domainPacks'
 import { clearThreadGoalHook, createGoalHookRegistry, ensureThreadGoalHookFromTranscript, getThreadGoal, parseGoalCommand, setThreadGoalHook } from '../goals/goalState'
 import { loadAgentsDir, type AgentDefinition } from '../agents/agentLoader'
@@ -311,7 +311,15 @@ function inboundContentPreview(content: BridgeInboundContent): string {
   return content.map(block => {
     if (block.type === 'text') return block.text
     if (block.type === 'image') return `[image ${block.source.media_type}]`
-    if (block.type === 'tool_result') return block.content
+    if (block.type === 'tool_result') {
+      // 多模态兼容:tool_result.content 现在可能是 string 或 blocks 数组(#46)。
+      // string 直接返回;数组时逐块摘要(text 取正文、image 给中性占位),别把数组/对象原样塞进预览。
+      if (typeof block.content === 'string') return block.content
+      return block.content
+        .map(inner => (inner.type === 'text' ? inner.text : `[image ${inner.source.media_type}]`))
+        .filter(Boolean)
+        .join('\n')
+    }
     return `[${block.type}]`
   }).filter(Boolean).join('\n').trim()
 }
@@ -396,6 +404,25 @@ function defaultHooksPath(): string | undefined {
     join(process.cwd(), '..', 'server', 'hooks.json'),
   ]
   return candidates.find(existsSync)
+}
+
+// SessionEnd 落点(对齐参考实现 executeSessionEndHooks:会话结束时触发,fire-and-forget)。
+// 宿主在"用户删除会话"处调用:载荷带结束原因,失败/超时都不拖垮删除主流程。用最小 ToolContext
+// (无 model——SessionEnd 一般是命令/清理类钩子;若配了 agent/prompt 钩子会因缺 model 优雅降级为非阻塞提示)。
+// 本地(local)来源钩子仍过工作区信任闸;工作区取 process.cwd()(与本服务默认工作目录一致)。
+async function fireSessionEndHooks(conversationId: string, reason: string): Promise<void> {
+  try {
+    const registry = await loadHookRegistryFile(defaultHooksPath())
+    if (!registry || registry.rules.length === 0) return
+    const ctx: ToolContext = {
+      workspace: new Workspace(process.cwd()),
+      conversationId,
+      permissionMode: 'default',
+    }
+    await applySessionEndHooks(registry, reason, ctx)
+  } catch {
+    // 忽略 SessionEnd 钩子异常,与参考实现的 fire-and-forget 语义一致。
+  }
 }
 
 function defaultCommandsRoot(): string {
@@ -668,7 +695,10 @@ function mcpSamplingContentText(content: unknown): string {
   }
   if (block.type === 'tool_result') {
     const id = typeof block.toolUseId === 'string' ? block.toolUseId : ''
-    return `<mcp_sampling_tool_result id="${id}">\n${mcpSamplingContentText(block.content)}\n</mcp_sampling_tool_result>`
+    // 多模态兼容:tool_result.content 可能是 string 或 blocks 数组(#46)。string 直接取用;
+    // 数组/其它形态交给本函数递归摘要(Array.isArray + typeof 分支已覆盖),不会 crash 也不产出 [object Object]。
+    const inner = typeof block.content === 'string' ? block.content : mcpSamplingContentText(block.content)
+    return `<mcp_sampling_tool_result id="${id}">\n${inner}\n</mcp_sampling_tool_result>`
   }
   if (block.type === 'resource' && block.resource && typeof block.resource === 'object') {
     const resource = block.resource as Record<string, unknown>
@@ -3964,6 +3994,8 @@ export function startServer(opts: StartServerOptions = {}) {
         if (req.method === 'GET') return Response.json(await legacyConversationMessages(conversationId))
         if (req.method === 'DELETE') {
           await legacyStore.setConversationDeleted(conversationId, true)
+          // 会话结束落点:用户删除会话 → 触发 SessionEnd 钩子(reason=clear),fire-and-forget 不阻塞响应。
+          await fireSessionEndHooks(conversationId, 'clear')
           return Response.json({ ok: true, conversation_id: conversationId })
         }
         return new Response('Method not allowed', { status: 405 })
