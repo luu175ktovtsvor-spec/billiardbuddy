@@ -42,9 +42,9 @@ import { allowSkillTools, bundledSkillsRoot, formatUseSkillResult, loadLayeredSk
 import { createInvokedSkillsMessage, restoreInvokedSkillsFromMessages } from '../skills/invokedSkills'
 import { createBuiltinCommandLibrary, isBuiltinForkCommand } from '../commands/builtinCommands'
 import { allowedToolsForAgent } from '../commands/allowedTools'
-import { bridgeUnsafeCommandMessage, filterBridgeSafeCommands, isBridgeSafeCommand, loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
+import { bridgeUnsafeCommandMessage, type CommandLibrary, filterBridgeSafeCommands, isBridgeSafeCommand, loadCommandsDir, loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
 import type { PromptCommand } from '../commands/types'
-import { loadHookRegistryFile } from '../hooks/hookConfig'
+import { loadHookRegistryFile, loadPluginHookRegistry } from '../hooks/hookConfig'
 import { applySessionEndHooks, configureHookTrust } from '../hooks/hooks'
 import { createDomainPackCommandLibrary, createDomainPackHookRegistry, createDomainPackTools, listPublicDomainPacks, mergeHookRegistries, registerDomainPackCommandAliases, resolveEnabledPacks, suggestedSkillNamesForPacks, type DomainPack } from '../packs/domainPacks'
 import { clearThreadGoalHook, createGoalHookRegistry, ensureThreadGoalHookFromTranscript, getThreadGoal, parseGoalCommand, setThreadGoalHook } from '../goals/goalState'
@@ -83,7 +83,7 @@ import { AssetManager, ASSET_WS_TOPIC, getActiveAssetManager, setActiveAssetMana
 import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
 import { loadOutputStyles, publicOutputStyle, renderOutputStylePrompt } from '../outputStyles/outputStyleLoader'
-import { defaultPluginInstallDir, defaultPluginRoots, installPluginFromGithub, listPlugins, resolveEnabledPluginContributions, setPluginEnabled } from '../plugins/pluginLoader'
+import { defaultPluginInstallDir, defaultPluginRoots, installPluginFromGithub, listPlugins, resolveEnabledPluginContributions, resolveEnabledPluginHookConfigPaths, setPluginEnabled } from '../plugins/pluginLoader'
 import { LIBRARY_DIR_ENV, LIBRARY_DOT_DIR, LIBRARY_SUBDIR } from '../harness/desktopEnvNames'
 import { TurnConsumerTracker } from './turnConsumerTracker'
 import { Workspace } from '../workspace/workspace'
@@ -501,9 +501,13 @@ async function handleGoalCommand(conversationId: string, args: string, transcrip
 }
 
 function defaultAgentsRoot(): string {
+  // app 内置 agents(=cc 的 getBuiltInAgents:general-purpose / Explore / Plan)。cc 把内置 agent 编进代码;
+  // 我们对齐 bundled skills/commands 的落点约定,放 `ts/src/agents/bundled/<name>.md`,开发/测试用
+  // import.meta.dir 定位、兼容从 repo 根 / ts 目录起进程。旧 `server/agents` 已随 Python 线退役删除,不再引用。
   const candidates = [
-    join(process.cwd(), 'server', 'agents'),
-    join(process.cwd(), '..', 'server', 'agents'),
+    join(import.meta.dir, '..', 'agents', 'bundled'),
+    join(process.cwd(), 'src', 'agents', 'bundled'),
+    join(process.cwd(), 'ts', 'src', 'agents', 'bundled'),
   ]
   return candidates.find(existsSync) ?? candidates[0]!
 }
@@ -1563,8 +1567,12 @@ export function startServer(opts: StartServerOptions = {}) {
     const skillRecommendations = suggestedSkillNamesForPacks(enabledPacks)
     const domainPackTools = createDomainPackTools(enabledPacks)
     const configuredHooks = await loadHookRegistryFile(opts.hooksPath ?? defaultHooksPath())
+    // 已启用插件贡献的 hooks(对齐 cc loadPluginHooks:标准位置 <plugin>/hooks/hooks.json + manifest.hooks 声明的附加文件),
+    // 归一为 source:'plugin' 并入本次会话 hooks(app 级可信、不走工作区信任闸)。坏插件/读失败静默跳过、不拖垮会话。
+    const pluginHookPaths = await resolveEnabledPluginHookConfigPaths(defaultPluginRoots(opts.env ?? process.env)).catch(() => [] as string[])
+    const pluginHooks = pluginHookPaths.length > 0 ? await loadPluginHookRegistry(pluginHookPaths).catch(() => undefined) : undefined
     const transcriptMessagesForHooks = await transcript.load()
-    const hooks = mergeHookRegistries(createDomainPackHookRegistry(enabledPacks), configuredHooks, createGoalHookRegistry(conversationId, transcriptMessagesForHooks))
+    const hooks = mergeHookRegistries(createDomainPackHookRegistry(enabledPacks), configuredHooks, pluginHooks, createGoalHookRegistry(conversationId, transcriptMessagesForHooks))
     const initialSessionHooks = sessionSkillHooks.get(conversationId)
     const agents = await loadAgentsDir(opts.agentsRoot ?? defaultAgentsRoot())
     const controller = turns.start(conversationId)
@@ -2233,10 +2241,11 @@ export function startServer(opts: StartServerOptions = {}) {
     const domainPackTools = createDomainPackTools(enabledPacks)
     // plugin 运行时接入:已启用插件的 skills/.mcp.json 并入本次会话(插件是 app 级可信来源,mcp 直接加载不走工作区信任闸)。
     const pluginContribs = await resolveEnabledPluginContributions(defaultPluginRoots(opts.env ?? process.env)).catch(() => ({ skillsDirs: [], commandsDirs: [], mcpConfigPaths: [] }))
-    const [skills, commands, pluginSkillsLibs] = await Promise.all([
+    const [skills, commands, pluginSkillsLibs, pluginCommandLibs] = await Promise.all([
       loadLayeredSkills({ bundledRoot: skillsRoot, workspaceRoot: workspace.root }),
       loadCommandsForWorkspace(workspace.root, commandsRoot, enabledPacks, opts.env ?? process.env),
       Promise.all(pluginContribs.skillsDirs.map(dir => loadSkillsDir(dir).catch(() => null))),
+      Promise.all(pluginContribs.commandsDirs.map(dir => loadCommandsDir(dir).catch(() => null))),
     ])
     // 合并主 skills + 插件 skills(按名去重,主 skills 优先)
     const mergedSkillByName = new Map(skills.byName)
@@ -2245,6 +2254,11 @@ export function startServer(opts: StartServerOptions = {}) {
       for (const s of lib.skills) if (!mergedSkillByName.has(s.name)) mergedSkillByName.set(s.name, s)
     }
     const allSkills = { skills: [...mergedSkillByName.values()], byName: mergedSkillByName }
+    // 合并主 commands + 插件 commands(对齐 cc getPluginCommands 并入命令来源):主 commands 放最后 → 同名主/工作区/领域包优先,插件只补充新命令。
+    const mergedCommands = mergeCommandLibraries(
+      ...pluginCommandLibs.filter((lib): lib is CommandLibrary => lib !== null),
+      commands,
+    )
     const mcpConfigPath = resolveMcpConfig(rawBody, workspace.root).path
     const mcpLoadOpts = { cwd: workspace.root, timeoutMs: 10000, toolTimeoutMs: 120000, fetchImpl: opts.fetchImpl }
     const [mcpTools, ...pluginMcpResults] = await Promise.all([
@@ -2257,7 +2271,7 @@ export function startServer(opts: StartServerOptions = {}) {
       skills: allSkills,
       skillsRoot: userSkillsRoot(),
       skillRecommendations: suggestedSkillNamesForPacks(enabledPacks),
-      commands,
+      commands: mergedCommands,
       extraTools: [...domainPackTools, ...allMcpTools, ...createTaskTools(tasks), ...createStructuredTaskTools(taskLists), ...createTeamTools(teams, { tasks, udsPeers, bridgePeers, sendBridgeMessage: bridgeSendMessageFor(rawBody) }), ...createMediaTools(media), createStoreDocsTool(storeDocs)],
     })
     return { workspace, registry, connections: allConnections }

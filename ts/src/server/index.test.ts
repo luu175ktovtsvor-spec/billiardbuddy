@@ -854,6 +854,73 @@ test('legacy plugin endpoints list and toggle desktop plugins', async () => {
   }
 })
 
+// 死链回归:已启用插件贡献的 hooks 与 commands 必须真接进会话(不再"函数写好了但从不调用")。
+// hooks 走 /agent/run 主回合(SessionStart context 注入进系统提示);commands 走 /agent/execute 审批执行注册表(read_command 能读到)。
+test('enabled plugin hooks + commands are wired into the live session (dead-link regression)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-plugin-wired-'))
+  const pluginDir = join(root, 'plugins', 'demo')
+  mkdirSync(join(pluginDir, 'hooks'), { recursive: true })
+  mkdirSync(join(pluginDir, 'commands'), { recursive: true })
+  writeFileSync(join(pluginDir, 'plugin.json'), JSON.stringify({ name: 'demo', description: 'Demo plugin', enabled: true }))
+  // cc 包裹结构:{ description, hooks: { <event>: [{hooks:[...]}] } };SessionStart 注入独特标记
+  writeFileSync(join(pluginDir, 'hooks', 'hooks.json'), JSON.stringify({
+    description: 'demo plugin hooks',
+    hooks: { SessionStart: [{ hooks: [{ decision: { action: 'context', additionalContext: 'PLUGIN_HOOK_SESSION_MARKER' } }] }] },
+  }))
+  writeFileSync(join(pluginDir, 'commands', 'plugintest.md'), `---
+description: Demo plugin command
+---
+PLUGIN_COMMAND_BODY_MARKER
+`)
+  const sentBodies: any[] = []
+  const wiredServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    env: {
+      BILLIARDBUDDY_LOCAL: '1',
+      BILLIARDBUDDY_LIBRARY_DIR: root,
+      OPENAI_BASE_URL: 'https://model.example/v1',
+      OPENAI_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async (_url, init) => {
+      sentBodies.push(JSON.parse(String(init?.body || '{}')))
+      return sseResponse({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: 'stop' }] })
+    },
+  })
+  try {
+    // A) 插件 hooks 接进主回合:SessionStart context 注入进发给模型的系统提示。
+    const run = await fetch(`http://127.0.0.1:${wiredServer.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({ message: '你好', workspaceRoot: root, permissionMode: 'full' }),
+    })
+    expect(run.status).toBe(200)
+    await run.text()
+    const systemPrompt = String(sentBodies[0]?.messages?.[0]?.content ?? '')
+    expect(systemPrompt).toContain('PLUGIN_HOOK_SESSION_MARKER')
+
+    // B) 插件 commands 接进会话命令来源:审批执行注册表的 read_command 能读到插件命令正文。
+    const readArgs = { name: 'plugintest' }
+    const exec = await fetch(`http://127.0.0.1:${wiredServer.port}/api/v1/agent/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        tool: 'read_command',
+        args: readArgs,
+        token: signApproval('read_command', readArgs),
+        permissionMode: 'full',
+        workspaceRoot: root,
+      }),
+    })
+    expect(exec.status).toBe(200)
+    const execBody = await exec.json() as any
+    expect(execBody.ok).toBe(true)
+    expect(String(execBody.result)).toContain('PLUGIN_COMMAND_BODY_MARKER')
+  } finally {
+    wiredServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('GET /agent/hello streams the real agent loop as SSE', async () => {
   const res = await fetch(`http://127.0.0.1:${server.port}/agent/hello`)
   expect(res.headers.get('content-type')).toContain('text/event-stream')
