@@ -13,6 +13,7 @@ import type { Tool } from '../tools/Tool'
 import { fileReadTool } from '../tools/fileReadTool'
 import { fileWriteTool } from '../tools/fileWriteTool'
 import { TaskService } from './taskService'
+import type { ToolContext } from '../tools/Tool'
 import { createBackgroundAgentTaskTool, createTaskTools, resumeBackgroundAgentTask, sanitizeBackgroundAgentResumeMessages, startBackgroundAgentRun } from './taskTools'
 import { getAgentMemoryEntrypoint } from '../agents/agentMemory'
 import { createAgentTaskTool } from '../agents/agentTool'
@@ -482,6 +483,15 @@ test('agent_task run_in_background fork_context starts a background fork with pa
     expect(childFirst.messages[2]?.content[0]).toEqual({ type: 'tool_result', tool_use_id: 'fork-bg', content: 'Fork started - processing in background' })
     const directive = childFirst.messages[2]?.content[1]
     expect(directive?.type === 'text' ? directive.text : '').toContain('Your directive: 后台审计 fork')
+
+    // fork 类型后台代理 resume:修复前 pickAgent 找不到具名 'fork' 会抛"需要指定 agent";修复后重建合成 fork 定义能续接。
+    const resumeModel = scriptedModel([{ kind: 'final', text: 'resumed fork done' }])
+    const resumed = await resumeBackgroundAgentTask(
+      { ...backgroundOptions, model: resumeModel },
+      done, '继续 fork 审计',
+      { workspace: new Workspace(root), conversationId: 'fork-bg-parent', permissionMode: 'acceptEdits' } as ToolContext,
+    )
+    expect(resumed.task.params?.agent).toBe('fork')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
