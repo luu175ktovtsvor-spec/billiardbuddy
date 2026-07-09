@@ -216,8 +216,11 @@ function toPosix(p: string): string {
 /**
  * 单条 gitignore 规则匹配单条绝对路径 —— 逐条移植 cc matchingRuleForInput 的循环体
  * (filesystem.ts:990-1035),glob 判定交给 vendored ignore 引擎(与 cc 同款)。
+ *
+ * 导出供「输出层 read-ignore 过滤」(./readIgnoreFilter.ts)复用:输入层拒读判定与输出层
+ * 结果剔除同引擎,保证不变量「路径出现在 list/glob/grep 输出 ⟺ read_file 不会被 read-deny 拒」。
  */
-function fileGlobMatchesPathForRule(
+export function fileGlobMatchesPathForRule(
   workspaceRoot: string,
   absPath: string,
   ruleContent: string,

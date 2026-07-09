@@ -2,6 +2,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { isAbsolute, relative } from 'node:path'
 import type { Tool, ToolContext } from './Tool'
 import { relativeToWorkspace, resolveToolPath } from '../permissions/filePathRules'
+import { DEFAULT_IGNORED_VCS_SEGMENTS, pathHiddenByReadDeny } from '../permissions/readIgnoreFilter'
 
 const DEFAULT_LIMIT = 100
 const MAX_LIMIT = 500
@@ -12,7 +13,7 @@ const GREP_CONCURRENCY = 16
 const DEFAULT_RANGE_CONTEXT = 20
 const MAX_RANGE_CONTEXT = 80
 const SKIP_SEGMENTS = new Set([
-  '.git',
+  ...DEFAULT_IGNORED_VCS_SEGMENTS, // .git/.svn/.hg/.bzr/.jj/.sl —— 对齐 cc GrepTool VCS 排除
   '.next',
   '.turbo',
   '.agent-state',
@@ -43,7 +44,7 @@ export const globFilesTool: Tool<{ pattern: string; path?: string; limit?: numbe
     const base = resolveToolPath(ctx, 'glob_files', input?.path ?? '.', 'read')
     const root = ctx.workspace.root
     const limit = clampLimit(input?.limit)
-    const scan = await scanGlob(base, pattern, limit)
+    const scan = await scanGlob(ctx, base, pattern, limit)
     const matches = scan.files
     if (matches.length === 0) return '未找到匹配文件'
     return [
@@ -150,13 +151,15 @@ export const grepFilesTool: Tool<{
   },
 }
 
-async function scanGlob(base: string, pattern: string, limit: number): Promise<{ files: string[]; truncated: boolean }> {
+async function scanGlob(ctx: ToolContext, base: string, pattern: string, limit: number): Promise<{ files: string[]; truncated: boolean }> {
   const glob = new Bun.Glob(pattern)
   const matches: string[] = []
   let truncated = false
   for await (const entry of glob.scan({ cwd: base, onlyFiles: true, dot: true, absolute: true })) {
     const rel = relative(base, entry)
     if (shouldSkipRelativePath(rel)) continue
+    // 输出层 read-ignore 过滤:被 read-deny 规则命中的文件从结果里剔除(对齐 cc getFileReadIgnorePatterns)。
+    if (pathHiddenByReadDeny(ctx, entry)) continue
     if (matches.length >= limit) {
       truncated = true
       break
@@ -189,7 +192,8 @@ async function resolveGrepScope(
     if (!info) continue
     if (info.isFile()) {
       const rel = relative(ctx.workspace.root, abs)
-      if (!shouldSkipRelativePath(rel) && !seen.has(abs)) {
+      // 显式文件 scope 也走输出层 read-ignore 过滤:被 read-deny 命中的文件不进搜索集(不泄漏内容)。
+      if (!shouldSkipRelativePath(rel) && !pathHiddenByReadDeny(ctx, abs) && !seen.has(abs)) {
         seen.add(abs)
         files.push(abs)
       }
@@ -197,7 +201,7 @@ async function resolveGrepScope(
     }
     if (!info.isDirectory()) continue
     const remaining = Math.max(0, limit - files.length)
-    const scan = await scanGlob(abs, include, remaining)
+    const scan = await scanGlob(ctx, abs, include, remaining)
     if (scan.truncated) truncated = true
     for (const file of scan.files) {
       if (files.length >= limit) {
