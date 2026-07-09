@@ -3447,21 +3447,26 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 3. ✅`.mcp.json` 工作区级信任闸(`f909d7c`):未信任的 `<root>/.mcp.json` 默认不连(防 RCE),显式/已信任/app 级配置放行,GET/POST/DELETE /agent/mcp/trust 批准。剩:远程 http headers/OAuth 鉴权。
 4. ⛔读命令(cat/ls/grep/find/...)路径工作区边界校验 + UNC 拦截:`dangerousCommand.ts` 已有路径提取但只按敏感文件名判、不按工作区边界判;近 4000 行、需逐段对齐,留专轮(移植 cc `checkPathConstraints`/`PATH_EXTRACTORS`)。
 
+> **2026-07-09 进度**(编排子代理并行写 disjoint 文件 + 主进程接 loop/server 项):连接架构对齐已落(`c98af29`/`931cf61`:WS 统一 steer/approve/reject/ping + 审批闭环写回);入参 schema 闸已落(`42c93eb`,#7);存储架构对齐确认(`b087332`)。#6/#12/#13/MCP 鉴权由子代理并行实现中,#11 及 token 触发由主进程接。
+
 **P1(可靠性/正确性)**
 5. 模型调用重试退避:✅重试基础设施已落地(`ts/src/model/fetchRetry.ts`,opt-in,默认不改 failover 时序);**待续**:是否默认开启(需 owner 定 failover-vs-retry 延迟取舍)、SSE 中途 error 帧识别(现静默吞成截断空响应)、流空闲超时跟随 `aiRequestTimeoutMs`(现 60s 与之脱钩)。
-6. 上下文压缩:摘要请求自身超限的收缩重试(防硬崩)+ autocompact 用"字符估算 vs 真实 token usage 取大"。
-7. 工具入参 schema 校验闸(权限判定前统一 `<tool_use_error>InputValidationError`)。
+6. 🚧上下文压缩:摘要请求自身超限的收缩重试(防硬崩)+ autocompact 用"字符估算 vs 真实 token usage 取大"。**子代理实现中(compaction.ts)**;token 触发时机(loop.ts maybeCompact 现为 `contextWindowChars` 字符阈值→改 token)由主进程接。
+7. ✅工具入参 schema 校验闸(`42c93eb`):gateOneCall 权限判定前统一 `<tool_use_error>InputValidationError`,并行只读路径入参非法回退串行;保守校验(缺 required + 已声明基本类型),未声明/union 放行。
 8. 规则持久化落盘(cc `permissionsLoader`/`persistPermissionUpdate`;让"本会话允许"可选升级为跨重启持久化)。
 9. fork 类型后台代理 resume 修复(`resumeBackgroundAgentTask` 重建 fork 合成 AgentDefinition)。
 10. transcript 逐轮落盘 + 主会话 resume 接 `sanitizeBackgroundAgentResumeMessages` 清洗与中断检测。
 
 **P2(能力面/体验)**
-11. Hooks:PreToolUse allow/ask 决策 + matcher 管道/正则语法 + 多 hook 并发。
-12. Skills/Commands:$ARGUMENTS 占位符替换、正文内嵌 shell、bundled skills、命令 hooks/命名空间。
-13. 文件读:整文件字节上限 + 危险设备路径 + UTF-16/BOM;图片/PDF 视觉 content-block(架构级,晚做代价高)。
-14. token 级流式 + 边流边执行工具(前端打字机体验,对标 Claude Code 核心)。
+11. Hooks:PreToolUse allow/ask 决策 + matcher 管道/正则语法 + 多 hook 并发。**主进程接**(hooks.ts 现仅 allow/deny + 精确 matcher,ask 决策 + 管道/正则待补,涉及 loop.ts 联动)。
+12. 🚧Skills/Commands:$ARGUMENTS/$1..N 占位符替换、正文内嵌 shell、bundled skills、命令 hooks/命名空间。**子代理实现中(skills/commands loaders)**。
+13. 🚧文件读:整文件字节上限 + 危险设备路径 + UTF-16/BOM。**子代理实现中(fileRead/Edit/Write tools)**;图片/PDF 视觉 content-block(架构级,晚做代价高)另计。
+14. token 级流式 + 边流边执行工具(前端打字机体验,对标 Claude Code 核心)。**大工程,前端建设期一起做**。
 15. Plugin 运行时接入(启用插件的 skills/.mcp.json/hooks 合并进会话,现为空壳)。
 16. permissionExplainer + destructiveCommandWarning 审批卡增强。
+17. 🚧MCP 远程 http/SSE 鉴权(headers/bearer token,OAuth 评估)。**子代理实现中(mcp/config+client)**。
+18. 项目/会话组织(§3.402 A1):list-by-workspace + recentProjects 聚合 + 会话 fork(拷贝 transcript,cc 的 forkSession SDK 层未实现属 CLI 级)。**主进程接(sessionService+端点)**。
+19. 配置基座(§3.402 A2):分层用户设置文件 + `/api/settings` REST + 网络设置持久化 + provider 预设库。
 
 **owner 拍板结论(2026-07-09)**
 - ✅**前端目标壳 = `ts/` + ts-desktop**:前端 §9 低噪工具流的 HIGH 项(失败态红色、本会话允许真功能、审批卡编辑参数签名、命令输出默认折叠、拒绝反馈)一律在 **TS/ts-desktop 侧新建并对齐已迁移的 TS 内核**;`web/`+Python 旧栈只做维持、按节奏退役,不在旧栈上补这些 HIGH(否则和 TS 内核漂移)。
