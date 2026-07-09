@@ -2,6 +2,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { extractDescription, parseMarkdownDocument, stringField } from '../commands/frontmatter'
 import { addAllowedToolsToContext, allowedToolRulesFromFrontmatter, normalizeAllowedTools } from '../commands/allowedTools'
+import { parseArgumentNames, substituteArguments } from '../commands/argumentSubstitution'
 import type { PromptCommand } from '../commands/types'
 import { mergeHookRegistries } from '../hooks/hooks'
 import { normalizeHookRegistry } from '../hooks/hookConfig'
@@ -79,6 +80,9 @@ export async function loadSkillFile(filePath: string, source: PromptCommand['sou
   const context = stringField(doc.frontmatter, 'context')
   const agent = stringField(doc.frontmatter, 'agent')
   const hooks = normalizeHookRegistry(doc.frontmatter.hooks)
+  const argumentHint = stringField(doc.frontmatter, 'argument-hint') ?? stringField(doc.frontmatter, 'argumentHint')
+  const argumentNames = parseArgumentNames(doc.frontmatter.arguments as string | string[] | undefined)
+  const body = doc.body.trim()
 
   return {
     type: 'prompt',
@@ -87,6 +91,8 @@ export async function loadSkillFile(filePath: string, source: PromptCommand['sou
     whenToUse,
     allowedTools,
     allowedToolRules,
+    ...(argumentHint ? { argumentHint } : {}),
+    ...(argumentNames.length > 0 ? { argNames: argumentNames } : {}),
     model,
     ...(context === 'fork' || context === 'inline' ? { context } : {}),
     ...(agent ? { agent } : {}),
@@ -96,8 +102,8 @@ export async function loadSkillFile(filePath: string, source: PromptCommand['sou
     baseDir,
     contentLength: doc.body.length,
     async getPrompt(args: string, _ctx: ToolContext): Promise<string> {
-      const argText = args.trim() ? `\n\n用户给这个技能的参数:\n${args.trim()}` : ''
-      return `技能: ${name}\n基础目录: ${baseDir}\n\n${doc.body.trim()}${argText}`
+      const substituted = substituteArguments(body, args, true, argumentNames, '用户给这个技能的参数')
+      return `技能: ${name}\n基础目录: ${baseDir}\n\n${substituted}`
     },
   }
 }

@@ -147,6 +147,48 @@ Use workspace fix.
   }
 })
 
+test('loadCommandsDir parses argument-hint/arguments frontmatter onto the command', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'commands-argument-hint-'))
+  try {
+    writeFileSync(join(root, 'greet.md'), `---
+description: Greet someone
+argument-hint: '[name] [greeting]'
+arguments: name greeting
+---
+Say hello.
+`)
+    const lib = await loadCommandsDir(root)
+    expect(publicCommand(lib.commands[0]!)).toMatchObject({
+      argumentHint: '[name] [greeting]',
+      argNames: ['name', 'greeting'],
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('loadCommandFile getPrompt substitutes $ARGUMENTS/$1/named placeholders, blank on missing args', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'commands-substitute-'))
+  try {
+    writeFileSync(join(root, 'greet.md'), `---
+description: Greet someone
+arguments: name greeting
+---
+Hello $name, mode=$greeting all=[$ARGUMENTS] first=$0 second=$1 third=$2
+`)
+    const lib = await loadCommandsDir(root)
+    const ctx = { workspace: new Workspace(root) }
+    const full = await lib.commands[0]!.getPrompt('Alice hi', ctx)
+    expect(full).toContain('Hello Alice, mode=hi all=[Alice hi] first=Alice second=hi third=')
+    // 未传参数时占位符原样(不替换),不追加"命令参数"尾注
+    const bare = await lib.commands[0]!.getPrompt('', ctx)
+    expect(bare).toContain('Hello , mode=')
+    expect(bare).not.toContain('命令参数')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('mergeCommandLibraries lets later libraries override earlier commands', async () => {
   const root = mkdtempSync(join(tmpdir(), 'commands-library-merge-'))
   const builtin = join(root, 'builtin')

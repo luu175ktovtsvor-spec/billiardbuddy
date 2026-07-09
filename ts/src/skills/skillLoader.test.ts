@@ -49,6 +49,49 @@ Follow these steps.
   }
 })
 
+test('loadSkillsDir:解析 argument-hint/arguments frontmatter 并挂到 PromptCommand', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'skills-argument-hint-'))
+  try {
+    mkdirSync(join(root, 'greet'), { recursive: true })
+    writeFileSync(join(root, 'greet', 'SKILL.md'), `---
+description: Greet someone
+argument-hint: '[name] [greeting]'
+arguments: name greeting
+---
+Say hello.
+`)
+    const lib = await loadSkillsDir(root)
+    expect(lib.skills[0]).toMatchObject({
+      argumentHint: '[name] [greeting]',
+      argNames: ['name', 'greeting'],
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('loadSkillFile getPrompt substitutes $ARGUMENTS/$1/named placeholders, blank on missing args', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'skills-substitute-'))
+  try {
+    mkdirSync(join(root, 'greet'), { recursive: true })
+    writeFileSync(join(root, 'greet', 'SKILL.md'), `---
+description: Greet someone
+arguments: name greeting
+---
+Hello $name, mode=$greeting all=[$ARGUMENTS] first=$0 second=$1 third=$2
+`)
+    const lib = await loadSkillsDir(root)
+    const ctx = { workspace: new Workspace(root) }
+    const full = await lib.skills[0]!.getPrompt('Alice hi', ctx)
+    expect(full).toContain('Hello Alice, mode=hi all=[Alice hi] first=Alice second=hi third=')
+    const bare = await lib.skills[0]!.getPrompt('', ctx)
+    expect(bare).toContain('Hello , mode=')
+    expect(bare).not.toContain('用户给这个技能的参数')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('createSkillTools:渐进式披露,先 list 再 read 完整正文', async () => {
   const root = mkdtempSync(join(tmpdir(), 'skills-tools-'))
   try {
