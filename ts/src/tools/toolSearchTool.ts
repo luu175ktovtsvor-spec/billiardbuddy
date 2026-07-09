@@ -88,6 +88,7 @@ const HOT_TOOL_NAMES = new Set([
   'cancel_background_task',
   'make_poster',
   'generate_image',
+  'edit_image',
 ])
 
 const TOOL_SEARCH_ALIASES: Record<string, string[]> = {
@@ -165,6 +166,7 @@ const TOOL_SEARCH_ALIASES: Record<string, string[]> = {
   cancel_background_task: ['取消后台任务', '停止任务', '中断任务'],
   make_poster: ['做海报', '生成海报', '门店海报', 'poster'],
   generate_image: ['生图', '生成图片', '图片生成', '画图', 'image generation'],
+  edit_image: ['改图', '编辑图片', '修图', '局部重绘', '换背景', '改颜色', '去水印', '改图上文字', 'image edit', 'edit image', 'inpaint'],
 }
 
 interface ToolSearchInput {

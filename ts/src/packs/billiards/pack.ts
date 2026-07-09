@@ -94,7 +94,7 @@ export const billiardsPack: DomainPack = {
       name: 'billiards:content-plan',
       description: '台球门店短视频/海报/活动内容编排',
       whenToUse: '老板要朋友圈、团购活动、短视频脚本、生图提示词或真实素材剪辑方向时使用。',
-      allowedTools: ['search_store_docs', 'list_skills', 'read_skill', 'make_poster', 'generate_image', 'todo_write'],
+      allowedTools: ['search_store_docs', 'list_skills', 'read_skill', 'make_poster', 'generate_image', 'edit_image', 'todo_write'],
       prompt: [
         '你正在执行台球运营专家的内容编排命令。',
         '把生图和真实素材剪辑当作 Agent 外壳里的延伸能力:先确定经营目标和受众,再决定是否调用媒体工具或要求用户导入实拍素材。',

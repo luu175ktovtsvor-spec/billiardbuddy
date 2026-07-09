@@ -40,3 +40,55 @@ test('generate_image tool starts a media task in the current conversation', asyn
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('edit_image tool routes to the backend edit channel carrying the source image id', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-tools-'))
+  try {
+    const tasks = new TaskService(root)
+    const media = new MediaJobService({ tasks, stateRoot: root, pollIntervalMs: 1 })
+    const tool = createMediaTools(media).find(t => t.name === 'edit_image')
+    expect(tool).toBeTruthy()
+    const output = await tool!.execute({
+      source_generation_id: 'local-poster-42',
+      description: '把这张海报的背景换成蓝色',
+      ratio: '3:4',
+    }, {
+      workspace: new Workspace(root),
+      conversationId: 'c-edit',
+      permissionMode: 'full',
+    })
+    expect(output).toContain('<media_job_started')
+    expect(output).toContain('kind="edit"')
+    const done = await waitFor(async () => {
+      const list = await tasks.list({ conversationId: 'c-edit' })
+      return list[0]?.status === 'completed' ? list[0] : null
+    })
+    // 走的是后端"改图"通道(edit),不是"生成"通道;原图 id 与 edit 模式标记都带到了 body。
+    expect(done.kind).toBe('edit')
+    expect(done.params?.source_generation_id).toBe('local-poster-42')
+    expect(done.params?._image_mode).toBe('edit')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('edit_image tool rejects a missing original image instead of regenerating from text', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-tools-'))
+  try {
+    const tasks = new TaskService(root)
+    const media = new MediaJobService({ tasks, stateRoot: root, pollIntervalMs: 1 })
+    const tool = createMediaTools(media).find(t => t.name === 'edit_image')
+    expect(tool).toBeTruthy()
+    // 缺原图标识(source_generation_id / source_image_path / 参考图都没有)→ 工具层直接报错。
+    await expect(tool!.execute({ description: '把背景换成蓝色' }, {
+      workspace: new Workspace(root),
+      conversationId: 'c-edit-missing',
+      permissionMode: 'full',
+    })).rejects.toThrow(/改图必须带上原图/)
+    // 反逻辑保护:没有原图时绝不退化成"凭文字重新生成一张",因此不应启动任何媒体任务。
+    const list = await tasks.list({ conversationId: 'c-edit-missing' })
+    expect(list.length).toBe(0)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
