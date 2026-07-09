@@ -413,13 +413,13 @@ test('read_many_files merges overlapping focused ranges for the same file', asyn
 
 test('read_file includes applicable directory project instructions before code content', async () => {
   mkdirSync(join(root, 'packages', 'app'), { recursive: true })
-  writeFileSync(join(root, 'packages', 'AGENTS.md'), 'Use package-local typecheck.')
+  writeFileSync(join(root, 'packages', 'BILLIARDBUDDY.md'), 'Use package-local typecheck.')
   writeFileSync(join(root, 'packages', 'app', 'index.ts'), 'export const value = 1\n')
 
   const out = await fileReadTool.execute({ path: 'packages/app/index.ts' }, ctx)
 
   expect(out).toContain('# 项目指令')
-  expect(out).toContain('<project_instruction file="packages/AGENTS.md" truncated="false">')
+  expect(out).toContain('<project_instruction file="packages/BILLIARDBUDDY.md" truncated="false">')
   expect(out).toContain('Use package-local typecheck.')
   expect(out).toContain('export const value = 1')
 
@@ -434,12 +434,12 @@ test('read_file includes applicable directory project instructions before code c
 
 test('read_many_files includes shared directory project instructions once', async () => {
   mkdirSync(join(root, 'src'), { recursive: true })
-  writeFileSync(join(root, 'src', 'AGENTS.md'), 'Use bun run typecheck for src changes.')
+  writeFileSync(join(root, 'src', 'BILLIARDBUDDY.md'), 'Use bun run typecheck for src changes.')
   writeFileSync(join(root, 'src', 'a.ts'), 'export const a = 1\n')
   writeFileSync(join(root, 'src', 'b.ts'), 'export const b = 2\n')
 
   const out = await fileReadManyTool.execute({ paths: ['src/a.ts', 'src/b.ts'] }, ctx)
-  expect(out).toContain('<project_instruction file="src/AGENTS.md" truncated="false">')
+  expect(out).toContain('<project_instruction file="src/BILLIARDBUDDY.md" truncated="false">')
   expect(out.match(/Use bun run typecheck for src changes/g)?.length).toBe(1)
   expect(out).toContain('<read_many_files count="2"')
 })
@@ -482,7 +482,7 @@ test('write_file refuses stale reads before overwriting', async () => {
 
 test('write_file pauses once when target directory has unseen project instructions', async () => {
   mkdirSync(join(root, 'src'), { recursive: true })
-  writeFileSync(join(root, 'src', 'AGENTS.md'), 'New files must export named symbols.')
+  writeFileSync(join(root, 'src', 'BILLIARDBUDDY.md'), 'New files must export named symbols.')
 
   let message = ''
   try {
@@ -491,7 +491,7 @@ test('write_file pauses once when target directory has unseen project instructio
     message = err instanceof Error ? err.message : String(err)
   }
   expect(message).toContain('write_file 目标目录存在项目指令')
-  expect(message).toContain('<project_instruction file="src/AGENTS.md" truncated="false">')
+  expect(message).toContain('<project_instruction file="src/BILLIARDBUDDY.md" truncated="false">')
   expect(message).toContain('New files must export named symbols.')
   expect(() => readFileSync(join(root, 'src', 'new.ts'), 'utf8')).toThrow()
 
@@ -502,11 +502,11 @@ test('write_file pauses once when target directory has unseen project instructio
 
 test('list_project_instructions previews new-file directory rules and unlocks write_file for that scope', async () => {
   mkdirSync(join(root, 'src'), { recursive: true })
-  writeFileSync(join(root, 'src', 'AGENTS.md'), 'New files must export named symbols.')
+  writeFileSync(join(root, 'src', 'BILLIARDBUDDY.md'), 'New files must export named symbols.')
 
   const instructions = await projectInstructionsTool.execute({ path: 'src/new.ts' }, ctx)
   expect(instructions).toContain('# 项目指令')
-  expect(instructions).toContain('<project_instruction file="src/AGENTS.md" truncated="false">')
+  expect(instructions).toContain('<project_instruction file="src/BILLIARDBUDDY.md" truncated="false">')
   expect(instructions).toContain('New files must export named symbols.')
   expect(ctx.projectInstructionScopes?.has('src')).toBe(true)
 
@@ -516,12 +516,12 @@ test('list_project_instructions previews new-file directory rules and unlocks wr
 })
 
 test('list_project_instructions can include root instructions when requested', async () => {
-  writeFileSync(join(root, 'AGENTS.md'), 'Root rule')
+  writeFileSync(join(root, 'BILLIARDBUDDY.md'), 'Root rule')
   mkdirSync(join(root, 'src'), { recursive: true })
-  writeFileSync(join(root, 'src', 'AGENTS.md'), 'Src rule')
+  writeFileSync(join(root, 'src', 'BILLIARDBUDDY.md'), 'Src rule')
 
   const instructions = await projectInstructionsTool.execute({ path: 'src/new.ts', include_workspace_root: true }, ctx)
-  expect(instructions.indexOf('file="AGENTS.md"')).toBeLessThan(instructions.indexOf('file="src/AGENTS.md"'))
+  expect(instructions.indexOf('file="BILLIARDBUDDY.md"')).toBeLessThan(instructions.indexOf('file="src/BILLIARDBUDDY.md"'))
   expect(instructions).toContain('Root rule')
   expect(instructions).toContain('Src rule')
 })

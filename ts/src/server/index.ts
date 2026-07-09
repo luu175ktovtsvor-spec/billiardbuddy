@@ -1,6 +1,7 @@
 import { executeApproved, handleReject, runAgentLoop } from '../harness/loop'
 import { getWorkspaceGitStatus } from '../harness/env'
 import { buildSystemPrompt } from '../harness/systemPrompt'
+import { collectDiscoveryEntries, toPublicCommandEntries } from '../harness/skillListing'
 import { summarizeWorkspaceProjectInstructions } from '../harness/projectInstructions'
 import { scriptedModel } from '../harness/fakeModel'
 import { compactPipeline } from '../context/compaction'
@@ -39,7 +40,7 @@ import { bridgeUnsafeCommandMessage, filterBridgeSafeCommands, isBridgeSafeComma
 import type { PromptCommand } from '../commands/types'
 import { loadHookRegistryFile } from '../hooks/hookConfig'
 import { configureHookTrust } from '../hooks/hooks'
-import { createDomainPackCommandLibrary, createDomainPackHookRegistry, createDomainPackTools, listPublicDomainPacks, mergeHookRegistries, resolveEnabledPacks, suggestedSkillNamesForPacks, type DomainPack } from '../packs/domainPacks'
+import { createDomainPackCommandLibrary, createDomainPackHookRegistry, createDomainPackTools, listPublicDomainPacks, mergeHookRegistries, registerDomainPackCommandAliases, resolveEnabledPacks, suggestedSkillNamesForPacks, type DomainPack } from '../packs/domainPacks'
 import { clearThreadGoalHook, createGoalHookRegistry, ensureThreadGoalHookFromTranscript, getThreadGoal, parseGoalCommand, setThreadGoalHook } from '../goals/goalState'
 import { loadAgentsDir, type AgentDefinition } from '../agents/agentLoader'
 import { createAgentTaskSidechainTools, createAgentTaskTool } from '../agents/agentTool'
@@ -433,7 +434,10 @@ async function loadCommandsForWorkspace(workspaceRoot: string, builtInRoot: stri
     loadCommandsFromRoots([builtInRoot]),
     loadCommandsFromRoots(workspaceCommandRoots(workspaceRoot)),
   ])
-  return mergeCommandLibraries(builtInCommands, createBuiltinCommandLibrary(env), createDomainPackCommandLibrary(packs), workspaceCommands)
+  const merged = mergeCommandLibraries(builtInCommands, createBuiltinCommandLibrary(env), createDomainPackCommandLibrary(packs), workspaceCommands)
+  // 合并会从 commands 数组重建 byName,丢掉领域包别名键;重新挂上让 /台球、/球房、/billiards 都能解析到入口命令。
+  registerDomainPackCommandAliases(merged, packs)
+  return merged
 }
 
 function localCommandMessage(name: string, args: string, output: string): Message {
@@ -1441,16 +1445,6 @@ export function startServer(opts: StartServerOptions = {}) {
       workspaceRoot: workspace.root,
       status: 'running',
     })
-    let systemPrompt = await buildSystemPrompt(workspace)
-    const outputStyles = await loadOutputStyles()
-    const outputStylePrompt = renderOutputStylePrompt(outputStyles, stringOr(rawBody.output_style ?? rawBody.outputStyle, ''))
-    const extraContext = [
-      supportContext(rawBody),
-      buildStoreMemoryContext(await desktopData.listMemories(), rawUserMessage, { workingDir: workspace.root }),
-    ].filter(Boolean).join('\n\n')
-    if (outputStylePrompt || extraContext) {
-      systemPrompt = [systemPrompt, outputStylePrompt, extraContext].filter(Boolean).join('\n\n')
-    }
     const model = createModelFromRuntimeProviders(providerRuntimes, opts.fetchImpl, providerHealthCallbacks)
     const requestedContextWindowTokens = numberFrom(rawBody.contextWindowTokens ?? rawBody.context_window_tokens, 0)
     const contextWindowTokens = requestedContextWindowTokens > 0
@@ -1460,6 +1454,18 @@ export function startServer(opts: StartServerOptions = {}) {
     const skills = await loadSkillsDir(skillsRoot)
     const enabledPacks = resolveEnabledPacks(rawBody)
     const commands = await loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), enabledPacks, opts.env ?? process.env)
+    // 技能/命令发现清单注入系统提示(对齐 cc SkillTool skill listing):汇总 builtin 命令 + 技能 + 已启用领域包命令,
+    // 按约 1% 上下文预算截断,让模型「看清单 → 自动调」,/台球 等斜杠也映射到对应技能/命令。
+    let systemPrompt = await buildSystemPrompt(workspace, { commands, skills, contextWindowTokens })
+    const outputStyles = await loadOutputStyles()
+    const outputStylePrompt = renderOutputStylePrompt(outputStyles, stringOr(rawBody.output_style ?? rawBody.outputStyle, ''))
+    const extraContext = [
+      supportContext(rawBody),
+      buildStoreMemoryContext(await desktopData.listMemories(), rawUserMessage, { workingDir: workspace.root }),
+    ].filter(Boolean).join('\n\n')
+    if (outputStylePrompt || extraContext) {
+      systemPrompt = [systemPrompt, outputStylePrompt, extraContext].filter(Boolean).join('\n\n')
+    }
     const bridgeOrigin = rawBody.bridgeOrigin === true || rawBody.bridge_origin === true
     const skipSlashCommands = rawBody.skipSlashCommands === true || rawBody.skip_slash_commands === true
     const parsedCandidate = rawBody.skipCommandParsing ? null : parseCommandInvocation(rawUserMessage)
@@ -3338,6 +3344,30 @@ export function startServer(opts: StartServerOptions = {}) {
       if (url.pathname === '/api/v1/agent/packs') {
         if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
         return Response.json({ packs: listPublicDomainPacks() })
+      }
+
+      // 给前端 / 面板列可调用的技能/命令(对齐 cc「斜杠命令=技能」发现清单):
+      // 汇总 builtin 命令 + 已加载技能 + 已启用领域包命令(启用 billiards 时含 /台球、billiards:*)。
+      // GET /api/v1/agent/commands?conversationId=&enabledPacks=台球[,球房]&working_dir=
+      if (url.pathname === '/api/v1/agent/commands') {
+        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
+        const workspaceRoot = url.searchParams.get('working_dir') || url.searchParams.get('workspaceRoot') || process.cwd()
+        const workspace = new Workspace(workspaceRoot)
+        const queryPacks = [
+          ...url.searchParams.getAll('enabledPacks'),
+          ...url.searchParams.getAll('enabled_packs'),
+          ...url.searchParams.getAll('knowledge_packs'),
+          ...url.searchParams.getAll('knowledgePacks'),
+        ].flatMap(value => value.split(/[,，]/)).map(value => value.trim()).filter(Boolean)
+        const enabledPacks = resolveEnabledPacks({
+          enabled_packs: queryPacks.length > 0 ? queryPacks : undefined,
+          billiards_mode: url.searchParams.get('billiards_mode') === 'true' || url.searchParams.get('billiardsMode') === 'true',
+        })
+        const [skills, commands] = await Promise.all([
+          loadSkillsDir(opts.skillsRoot ?? defaultSkillsRoot()),
+          loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), enabledPacks, opts.env ?? process.env),
+        ])
+        return Response.json({ commands: toPublicCommandEntries(collectDiscoveryEntries({ commands, skills })) })
       }
 
       if (url.pathname === '/api/v1/agent/mcp') {

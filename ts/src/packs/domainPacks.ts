@@ -2,12 +2,15 @@ import type { HookRegistry } from '../hooks/hooks'
 import { commandLibraryFromCommands, normalizeCommandName, type CommandLibrary } from '../commands/commandLoader'
 import type { PromptCommand } from '../commands/types'
 import type { Tool, ToolContext } from '../tools/Tool'
+import { renderSessionStartContext, renderOpsBriefing } from './billiards'
 
 export interface DomainPackCommand {
   name: string
   description: string
   whenToUse?: string
   allowedTools?: string[]
+  /** 额外的斜杠别名(如入口命令 /台球 也接受 /billiards、/球房);仅进 byName 解析,不在清单里重复出条。 */
+  aliases?: string[]
   prompt: string
 }
 
@@ -47,6 +50,7 @@ const billiardsOpsChecklistTool: Tool = {
       '<domain_pack_tool_result pack="billiards" tool="billiards_ops_checklist">',
       `场景:${scenario}`,
       facts.length ? `已知事实:${facts.join('；')}` : '已知事实:未提供足够本店事实',
+      renderOpsBriefing(scenario, facts),
       '先核对:价格/套餐/地址/二维码/排班/合同/活动时间/会员权益等本店事实必须来自用户输入或 search_store_docs 来源,不能编造。',
       '执行顺序:1. 判断经营目标;2. 补齐缺失事实;3. 给老板可直接执行的动作;4. 需要素材时再进入生图或真实素材剪辑工作台。',
       needsMedia
@@ -73,6 +77,21 @@ export const DOMAIN_PACKS: DomainPack[] = [
       'what-to-post-today',
     ],
     commands: [
+      {
+        name: '台球',
+        description: '台球运营专家入口:切进台球房经营专家视角作答',
+        whenToUse: '老板想进入台球运营专家,或问球房经营/活动/客户/助教/赛事/团购/短视频/海报等台球运营问题时;也可直接敲 /台球。',
+        aliases: ['billiards', '球房', '台球房', 'pool', 'billiard'],
+        allowedTools: ['search_store_docs', 'billiards_ops_checklist', 'list_commands', 'read_command', 'list_skills', 'read_skill', 'todo_write'],
+        prompt: [
+          '你现在切进「台球运营专家」视角:仍是通用本机助手,但按《台球赋能》PPT 底本策展的真实球房经营语境来答。',
+          '先判断老板到底要什么:日报/经营复盘/今日重点 → 走 /billiards:daily-ops;朋友圈/团购/短视频脚本/海报/生图方向 → 走 /billiards:content-plan;要按场景带出硬数字与禁词提醒 → 调 billiards_ops_checklist。',
+          '涉及本店价格/套餐/地址/二维码/排班/合同/活动时间/会员权益等事实,必须来自老板输入或 search_store_docs 来源;查不到就明说“资料库里没看到”,不编造。',
+          '内行词照用不消毒(美女人设/异性情绪价值/擦边引流/交友软件获客/红包/追分/助教免费体验是 PPT 在册真实打法);平台/渠道/器材通用名照写不脱敏;真底线禁词(性交易/虚假承诺/门店坐庄抽成/假号刷评/未成年)命中即改写。',
+          '第三方真实门店/连锁/人名/城市案例名脱敏成“某店/某城市”,只搬逻辑不搬专名。',
+          '输出短、可执行、带来源提醒;需要专门流程时用 list_commands / list_skills 渐进披露,别一次性铺开。',
+        ].join('\n'),
+      },
       {
         name: 'billiards:daily-ops',
         description: '台球门店每日经营复盘与今日动作清单',
@@ -101,13 +120,7 @@ export const DOMAIN_PACKS: DomainPack[] = [
       },
     ],
     tools: [billiardsOpsChecklistTool],
-    sessionStartContext: [
-      '<domain_context id="billiards" source="enabled_pack">',
-      '当前会话挂载了台球运营专家。你仍然是通用本机 coding agent,但遇到经营、活动、客户、助教、赛事、团购、短视频、海报等需求时,要按台球门店真实经营语境落地。',
-      '优先使用老板本机资料、店脑记忆和可按需展开的 commands/skills/tools;不要一次性把所有行业知识倒进上下文。需要专门流程时,先 list_commands 查看本包命令,或 list_skills({recommended_only:true}) 查看本包推荐技能,也可用 billiards_ops_checklist 做经营/内容核对,再按需 read_command/read_skill 展开。',
-      '生图、生视频、剪辑只是同一工作台里的扩展能力;如果任务本质是改代码/改文件/跑诊断,先按 coding agent 主路径完成。',
-      '</domain_context>',
-    ].join('\n'),
+    sessionStartContext: renderSessionStartContext(),
   },
 ]
 
@@ -206,7 +219,30 @@ export function createDomainPackCommandLibrary(packs: DomainPack[]): CommandLibr
       commands.push(domainPackCommand(pack, { ...command, name }))
     }
   }
-  return commands.length > 0 ? commandLibraryFromCommands(commands) : undefined
+  if (commands.length === 0) return undefined
+  const library = commandLibraryFromCommands(commands)
+  registerDomainPackCommandAliases(library, packs)
+  return library
+}
+
+/**
+ * 把领域包命令的 aliases 注册进 library.byName(不进 commands 数组,清单不重复出条)。
+ * 用于合并后重新挂别名:mergeCommandLibraries 只从 commands 数组重建 byName,会丢掉这些别名键,
+ * 所以每次拿到最终 library 后都要再调一次,保证 /台球、/球房、/billiards 都能解析到入口命令。
+ */
+export function registerDomainPackCommandAliases(library: CommandLibrary, packs: DomainPack[]): void {
+  for (const pack of packs) {
+    for (const command of pack.commands ?? []) {
+      const canonical = normalizeCommandName(command.name)
+      const target = canonical ? library.byName.get(canonical) : undefined
+      if (!target) continue
+      for (const alias of command.aliases ?? []) {
+        const key = normalizeCommandName(alias)
+        if (!key || library.byName.has(key)) continue
+        library.byName.set(key, target)
+      }
+    }
+  }
 }
 
 export function createDomainPackTools(packs: DomainPack[]): Tool[] {

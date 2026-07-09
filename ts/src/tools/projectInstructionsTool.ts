@@ -17,13 +17,13 @@ interface ProjectInstructionsInput {
 export const projectInstructionsTool: Tool<ProjectInstructionsInput> = {
   name: 'list_project_instructions',
   description:
-    'List applicable AGENTS.md/CLAUDE.md project instructions for target paths before editing or creating files. Input: { path? , paths?, include_workspace_root? }. Defaults to directory-level instructions; set include_workspace_root:true to include root rules too.',
+    'List applicable BILLIARDBUDDY.md project instructions for target paths before editing or creating files. Input: { path? , paths?, include_workspace_root? }. Defaults to directory-level instructions; set include_workspace_root:true to include root rules too.',
   inputSchema: {
     type: 'object',
     properties: {
       path: { type: 'string', description: 'One target file path to inspect. The file may be new/not yet created.' },
       paths: { type: 'array', items: { type: 'string' }, description: `Several target file paths to inspect; only the first ${MAX_TARGETS} are used.` },
-      include_workspace_root: { type: 'boolean', description: 'Include root-level AGENTS.md/CLAUDE.md in addition to nearer directory instructions.' },
+      include_workspace_root: { type: 'boolean', description: 'Include root-level BILLIARDBUDDY.md in addition to nearer directory instructions.' },
     },
   },
   isReadOnly: true,

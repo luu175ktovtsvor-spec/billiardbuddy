@@ -158,11 +158,37 @@ test('legacy frontend capability endpoints are served by TS server', async () =>
   expect(Array.isArray(mcp.servers)).toBe(true)
 })
 
+test('GET /api/v1/agent/commands 汇总 builtin+skill+启用领域包命令,billiards 按 /台球 别名启用时进清单', async () => {
+  // 不启用领域包:清单里没有 billiards 入口/子命令
+  const genericRes = await fetch(`http://127.0.0.1:${server.port}/api/v1/agent/commands`)
+  expect(genericRes.status).toBe(200)
+  const generic = await genericRes.json() as { commands: Array<{ name: string; description: string; source: string; argHint?: string; whenToUse?: string }> }
+  expect(Array.isArray(generic.commands)).toBe(true)
+  expect(generic.commands.some(command => command.name === '台球')).toBe(false)
+  expect(generic.commands.some(command => command.source === 'pack')).toBe(false)
+  // source 只在约定枚举内
+  expect(generic.commands.every(command => ['builtin', 'skill', 'pack'].includes(command.source))).toBe(true)
+
+  // 用别名 台球 启用领域包:入口 /台球 + billiards:* 子命令进清单,且标 source=pack
+  const packRes = await fetch(`http://127.0.0.1:${server.port}/api/v1/agent/commands?conversationId=c1&enabledPacks=${encodeURIComponent('台球')}`)
+  expect(packRes.status).toBe(200)
+  const packed = await packRes.json() as { commands: Array<{ name: string; source: string }> }
+  const names = packed.commands.map(command => command.name)
+  expect(names).toEqual(expect.arrayContaining(['台球', 'billiards:daily-ops', 'billiards:content-plan']))
+  const entry = packed.commands.find(command => command.name === '台球')!
+  expect(entry.source).toBe('pack')
+  expect(packed.commands.find(command => command.name === 'billiards:daily-ops')!.source).toBe('pack')
+
+  // POST 不允许
+  const post = await fetch(`http://127.0.0.1:${server.port}/api/v1/agent/commands`, { method: 'POST' })
+  expect(post.status).toBe(405)
+})
+
 test('workspace status endpoint returns compact git status for working_dir', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-workspace-status-'))
   try {
     execFileSync('git', ['init'], { cwd: root })
-    writeFileSync(join(root, 'AGENTS.md'), '遵守项目规则\n')
+    writeFileSync(join(root, 'BILLIARDBUDDY.md'), '遵守项目规则\n')
     writeFileSync(join(root, 'draft.ts'), 'export const draft = 1\n')
     const res = await fetch(`http://127.0.0.1:${server.port}/api/v1/agent/workspace-status?working_dir=${encodeURIComponent(root)}`)
     expect(res.status).toBe(200)
@@ -174,7 +200,7 @@ test('workspace status endpoint returns compact git status for working_dir', asy
       untracked: 2,
     })
     expect(body.projectInstructions).toEqual({
-      files: [{ file: 'AGENTS.md', truncated: false }],
+      files: [{ file: 'BILLIARDBUDDY.md', truncated: false }],
       count: 1,
       truncated: false,
     })
@@ -183,7 +209,7 @@ test('workspace status endpoint returns compact git status for working_dir', asy
       truncated: false,
     })
     expect(body.tree.entries).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'AGENTS.md', path: 'AGENTS.md', type: 'file' }),
+      expect.objectContaining({ name: 'BILLIARDBUDDY.md', path: 'BILLIARDBUDDY.md', type: 'file' }),
       expect.objectContaining({ name: 'draft.ts', path: 'draft.ts', type: 'file' }),
     ]))
   } finally {
@@ -2335,7 +2361,7 @@ test('POST /agent/run requests approval before sending bridge messages through R
 test('POST /agent/run injects workspace project instructions into the model system prompt', async () => {
   const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-instructions-transcript-'))
   const workingRoot = mkdtempSync(join(tmpdir(), 'agent-instructions-working-'))
-  writeFileSync(join(workingRoot, 'AGENTS.md'), 'Always run the nearest typecheck before final.')
+  writeFileSync(join(workingRoot, 'BILLIARDBUDDY.md'), 'Always run the nearest typecheck before final.')
   let systemPrompt = ''
   const instructionServer = startServer({
     port: 0,
@@ -2366,8 +2392,9 @@ test('POST /agent/run injects workspace project instructions into the model syst
     })
     expect(res.status).toBe(200)
     await res.text()
-    expect(systemPrompt).toContain('# 项目指令')
-    expect(systemPrompt).toContain('<project_instruction file="AGENTS.md" truncated="false">')
+    // 新注入格式 = cc getClaudeMds(四层记忆),不再是旧的 <project_instruction> XML。
+    expect(systemPrompt).toContain('These instructions OVERRIDE any default behavior')
+    expect(systemPrompt).toContain('(project instructions, checked into the codebase)')
     expect(systemPrompt).toContain('Always run the nearest typecheck before final.')
   } finally {
     instructionServer.stop(true)
@@ -2471,7 +2498,8 @@ test('POST /agent/run mounts enabled packs through SessionStart context', async 
     expect(text).toContain('event: context_note')
     expect(systemPrompt).toContain('<hook_context event="SessionStart">')
     expect(systemPrompt).toContain('<domain_context id="billiards" source="enabled_pack">')
-    expect(systemPrompt).toContain('list_skills({recommended_only:true})')
+    // 启用 billiards 后系统提示应surface本包的可调命令(稳定断言用命令名,不耦合领域包措辞;task#12 在重策展 sessionStartContext 文案)。
+    expect(systemPrompt).toContain('/billiards:daily-ops')
   } finally {
     packServer.stop(true)
     rmSync(transcriptRoot, { recursive: true, force: true })
