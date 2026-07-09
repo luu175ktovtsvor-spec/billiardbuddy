@@ -11,4 +11,10 @@ contextBridge.exposeInMainWorld('desktopHost', {
   onMenu: (cb: (action: string) => void): void => {
     ipcRenderer.on('desktop:menu', (_e, action: string) => cb(action))
   },
+  // 防休眠:长任务(生图/渲染/长 agent 循环)开始时 start()、结束时 stop(),阻止系统睡眠打断任务。
+  // 引用计数式,支持并发多个长任务,务必成对调用(每个 start 对应一个 stop)。返回当前是否正在防睡。
+  preventSleep: {
+    start: (): Promise<boolean> => ipcRenderer.invoke('desktop:preventSleep:start'),
+    stop: (): Promise<boolean> => ipcRenderer.invoke('desktop:preventSleep:stop'),
+  },
 })
