@@ -1,4 +1,4 @@
-import type { Model } from '../types/model'
+import type { AssistantStep, Model } from '../types/model'
 import { textBlock, type Message, type ToolResultBlock, type ToolUseBlock } from '../types/message'
 
 export const CONTEXT_OVERFLOW_RESERVE_CHARS = 48_000
@@ -7,6 +7,11 @@ export const KEEP_RECENT_MESSAGES = 12
 export const MIN_AUTOCOMPACT_OLD_MESSAGES = 6
 export const MAX_COMPACTION_FAILURES = 3
 export const AUTOCOMPACT_COOLDOWN_MS = 30_000
+/**
+ * 摘要请求本身超限(prompt-too-long)时的收缩重试上限。
+ * 对齐 cc-haha src/services/compact/compact.ts:227 的 MAX_PTL_RETRIES = 3。
+ */
+export const MAX_COMPACT_SUMMARY_RETRIES = 3
 export const COMPACTION_SYSTEM_PROMPT = [
   '你是代码代理的长上下文压缩器。把下面旧对话压缩成高保真、可继续执行的中文摘要,不要调用工具。',
   '目标:压缩后下一个模型必须能继续改代码、跑测试、尊重用户约束,不能丢关键事实。',
@@ -140,6 +145,27 @@ export function splitForAutocompact(messages: Message[], opts: SplitOptions = {}
   return { old: messages.slice(0, cut), recent: messages.slice(cut) }
 }
 
+/**
+ * 摘要请求超限重试专用:砍掉 old 段最旧的一半,并向前挪切点避免让剩余部分以孤儿 tool_result 开头。
+ * 挪到没法再丢(只剩 1 条或挪不出进展)时返回 null,调用方据此放弃重试、直接失败降级。
+ * 对齐 cc-haha compact.ts:243-291 truncateHeadForPTLRetry"丢最旧的一截、重试"的方向;
+ * cc 按 API round 分组丢,本项目没有分组概念,退化为按消息数腰斩。
+ */
+function shrinkOldMessagesForRetry(old: Message[]): Message[] | null {
+  if (old.length <= 1) return null
+  let cut = Math.ceil(old.length / 2)
+  while (cut > 0) {
+    const rest = old.slice(cut)
+    const restToolUses = new Set(rest.flatMap(toolUseIds))
+    const first = rest[0]
+    const orphanAtStart = first ? toolResultIds(first).some(id => !restToolUses.has(id)) : false
+    if (!orphanAtStart) break
+    cut--
+  }
+  if (cut <= 0) return null
+  return old.slice(cut)
+}
+
 function thresholdFor(windowChars: number): number {
   return Math.max(windowChars - CONTEXT_OVERFLOW_RESERVE_CHARS, Math.floor(windowChars * AUTOCOMPACT_RATIO))
 }
@@ -165,13 +191,36 @@ export async function compactPipeline(input: CompactPipelineInput): Promise<Comp
   if (!split) return { messages: input.messages, didCompact: false, compactionFailures: failures }
 
   try {
-    const step = await input.model.step({
-      system: COMPACTION_SYSTEM_PROMPT,
-      messages: split.old,
-      tools: [],
-    })
-    const rawSummary = step.kind === 'final' ? step.text : (step.text ?? '旧对话已压缩,继续当前任务。')
-    const summary = extractCompactionSummary(rawSummary)
+    // 摘要请求本身超限(prompt-too-long)时,逐步丢最旧一截重试,而不是一次失败就放弃整轮压缩。
+    // 对齐 cc-haha compact.ts:481-523 的重试循环(遇 PROMPT_TOO_LONG 就 truncateHeadForPTLRetry 再试,最多 MAX_PTL_RETRIES 次)。
+    let toSummarize = split.old
+    let retryAttempts = 0
+    let step: AssistantStep
+    for (;;) {
+      try {
+        step = await input.model.step({
+          system: COMPACTION_SYSTEM_PROMPT,
+          messages: toSummarize,
+          tools: [],
+        })
+        break
+      } catch (err) {
+        if (!looksLikeContextOverflow(err) || retryAttempts >= MAX_COMPACT_SUMMARY_RETRIES) throw err
+        const shrunk = shrinkOldMessagesForRetry(toSummarize)
+        if (!shrunk) throw err
+        retryAttempts++
+        toSummarize = shrunk
+      }
+    }
+
+    // 模型没吐出任何文本(空响应/被截断成空)不能当压缩成功——那会把旧消息永久丢掉却只留一句占位摘要。
+    // 对齐 cc-haha compact.ts:525-538:getAssistantMessageText 拿不到文本就直接 throw('no_summary'),
+    // 交给外层 catch 走"保留原消息、失败计数+1"的降级路径,别静默吞掉。
+    const summaryText = step.text
+    if (!summaryText || !summaryText.trim()) {
+      throw new Error('摘要模型未返回可用文本,压缩失败')
+    }
+    const summary = extractCompactionSummary(summaryText)
     const compacted: Message[] = [
       { role: 'user', content: [textBlock(`[此前对话摘要]\n${summary}`)] },
       ...(input.postSummaryMessages ?? []),
@@ -180,10 +229,17 @@ export async function compactPipeline(input: CompactPipelineInput): Promise<Comp
     return {
       messages: compacted,
       didCompact: true,
-      note: `已压缩旧上下文: ${split.old.length} 条消息 → 1 条摘要。`,
+      note:
+        retryAttempts > 0
+          ? `已压缩旧上下文: ${split.old.length} 条消息(摘要请求超限收缩重试 ${retryAttempts} 次,实际摘要 ${toSummarize.length} 条)→ 1 条摘要。`
+          : `已压缩旧上下文: ${split.old.length} 条消息 → 1 条摘要。`,
       compactionFailures: 0,
     }
   } catch {
+    // 摘要模型调用失败、重试耗尽或返回空文本:整轮压缩降级为"什么都不做",保留原始 messages 原样返回、
+    // 只把失败计数 +1(由 shouldAutocompact 里的 MAX_COMPACTION_FAILURES 熔断,对齐 cc-haha
+    // autoCompact.ts:70/262-265 的 MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES 熔断器),不在这里硬截断历史。
+    // cc 的失败路径同样是"这轮不压、下轮再试",没有额外的"保留最近 N 条硬截断"兜底——不自造。
     return { messages: input.messages, didCompact: false, compactionFailures: failures + 1 }
   }
 }
