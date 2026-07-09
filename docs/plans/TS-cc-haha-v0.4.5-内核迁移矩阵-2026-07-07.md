@@ -3468,7 +3468,9 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 18. ✅项目/会话组织(`a274fed`,§3.402 A1):sessionService list-by-workspace + recentProjects 聚合 + fork(拷贝 transcript);端点 GET /sessions/projects、GET /sessions?workspaceRoot=、POST /sessions/:id/fork。保留扁平 sessions.json(不做物理分桶,等价更省)。
 19. 配置基座(§3.402 A2):分层用户设置文件 + `/api/settings` REST + 网络设置持久化 + provider 预设库。**待做**。
 
-**2026-07-09 本轮已完成(主进程接手 loop/server 项)**:入参 schema 闸(42c93eb)、连接架构统一+审批闭环(c98af29/931cf61)、hooks allow/ask+正则 matcher(51f1586)、token 触发压缩(1abb851)、项目/会话组织(a274fed);子代理并行交付:MCP 鉴权(134e30a)、skills 参数占位符(6189cb4)、压缩兜底(7806175)、文件工具健壮性(9957154)。**剩**:fork-resume(#9)、配置基座(#19)、规则持久化(#8)、审批卡增强(#16)、SSE error 帧/空闲超时(#5)、plugin 运行时(#15)、transcript 逐轮(#10)、WS 断连宽限、读命令边界(P0 大)、token 流式(#14 大,前端期)。
+**2026-07-09 本轮已完成(~30 提交,纯后端全线)**:P0 安全 4/4(沙箱/symlink/.mcp.json/读命令边界 9a83ac8);连接架构(WS 统一 c98af29/931cf61 + 审批闭环 + ping + 断连宽限 adb7dcd + 全量重放);循环核心(入参闸 42c93eb + token 触发 1abb851 + 压缩兜底 7806175);hooks allow/ask+正则(51f1586);能力(skills 参数 6189cb4 + MCP 鉴权 134e30a + 文件健壮性 9957154 + plugin 运行时 5a6baed);可靠性(fork-resume 142dd27 + SSE error 帧 600d34b + 空闲超时 8c195d2 + resume 清洗 cd35fc0);项目/会话组织(a274fed);存储/桌面架构对标(b087332/f55d7a8)。
+
+**剩余(均与前端配套或大工程,建议与 ts-desktop 前端一起做,避免后端做字段无消费方成半成品)**:配置基座(#19,设置 UI 配套)、规则持久化(#8,"始终允许"选择 UI 配套)、审批卡 permissionExplainer/destructiveCommandWarning(#16,审批卡字段)、token 级流式(#14,前端渲染流)、plugin commands/hooks 并入(follow-up)。**纯后端-前端之前必须做的项已全部完成。**
 
 **owner 拍板结论(2026-07-09)**
 - ✅**前端目标壳 = `ts/` + ts-desktop**:前端 §9 低噪工具流的 HIGH 项(失败态红色、本会话允许真功能、审批卡编辑参数签名、命令输出默认折叠、拒绝反馈)一律在 **TS/ts-desktop 侧新建并对齐已迁移的 TS 内核**;`web/`+Python 旧栈只做维持、按节奏退役,不在旧栈上补这些 HIGH(否则和 TS 内核漂移)。
