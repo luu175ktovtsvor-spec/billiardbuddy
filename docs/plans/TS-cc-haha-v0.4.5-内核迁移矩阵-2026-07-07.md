@@ -3461,7 +3461,7 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 11. ✅Hooks allow/ask + 正则 matcher(`51f1586`):parseHookDecisionJSON 解析 cc hookSpecificOutput.permissionDecision(allow/deny/ask)+ 旧 decision:block;HookDecision 加 ask;matchesToolMatcher 支持 Edit|Write 管道/mcp__.* 正则/锚定;loop.ts forceAsk 强制审批。**待续**:多 hook 并发(现串行,低优先)、PostToolUse 改输出。
 12. ✅Skills/Commands 参数占位符(`6189cb4`):$ARGUMENTS/$1..N/具名参数替换 + frontmatter argument-hint/arguments 解析(新增 argumentSubstitution.ts,纯 TS 切词不引 shell-quote)。**待续**:内嵌 shell(需 loop.ts 审批链路 + 产品红线)、@file 附件系统、bundled skills、${CLAUDE_SKILL_DIR} 模板变量,均留后续。
 13. 🚧文件工具健壮性:危险设备路径拦截 + UTF-16/BOM 保留 + 整文件读上限。**子代理实现中(fileRead/Edit/Write tools)**;图片/PDF 视觉 content-block(架构级,晚做代价高)另计。
-14. token 级流式 + 边流边执行工具(前端打字机体验,对标 Claude Code 核心)。**大工程,前端建设期一起做**。
+14. ✅token 级流式(`c908844`):ModelStepInput.onDelta + accumulate 逐 chunk 触发 + loop streamModelStep 交错 yield content_delta + 前端打字机;向后兼容(fake 不触发行为不变),瞬时增量不持久化。
 15. ✅Plugin 运行时接入(`5a6baed`):resolveEnabledPluginContributions 把启用插件的 skills 按名去重并入、.mcp.json 作 app 级可信直接加载并入会话(可挂载能力的机制)。**剩**:插件 commands(loader 签名不同)/hooks(需建 HookRegistry)并入,留后续。
 16. ✅destructiveCommandWarning(`1ab0f38`):正则表移植 cc,破坏性命令(rm -rf/git reset --hard/DROP TABLE 等)给审批卡加人话警告(纯信息不影响放行);approval_request 加 warning 字段 + 前端审批卡橙色⚠渲染。permissionExplainer(cc Haiku 模型解释)留后续(approval reason 已有结构化解释)。
 17. ✅MCP 远程 http/SSE 鉴权(`134e30a`):headers/bearer token 走 requestInit(对齐 cc,鉴权即 headers.Authorization,端到端测试真收到 Bearer)。**待续**:headersHelper 动态取头、完整 OAuth(2465 行,超范围)。
