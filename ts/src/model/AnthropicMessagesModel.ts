@@ -3,7 +3,7 @@ import type { ContentBlock, Message, ToolCall } from '../types/message'
 import { ensureToolResultPairing, normalizeMessagesForAPI } from '../proxy/messagePairing'
 import { parseOpenAIToolArguments, stringifyOpenAIToolArguments } from '../proxy/toolArguments'
 import type { AnthropicUsage } from '../proxy/types'
-import type { FetchLike } from '../proxy/ProxyModel'
+import { ESCALATED_MAX_TOKENS, type FetchLike } from '../proxy/ProxyModel'
 import type { ProviderAuthStrategy } from './providerConfig'
 import { fetchWithModelRetry, type ModelRetryOptions } from './fetchRetry'
 
@@ -19,6 +19,11 @@ export interface AnthropicMessagesModelConfig {
   fetchImpl?: FetchLike
   /** 瞬时错误(429/5xx/网络抖动)重试退避;默认启用,可注入 sleep 供测试。 */
   retry?: Pick<ModelRetryOptions, 'maxRetries' | 'baseDelayMs' | 'maxDelayMs' | 'sleep'>
+  /**
+   * 命中输出长度上限(stop_reason=max_tokens / model_context_window_exceeded)且【无 tool_calls】时,
+   * 升 max_tokens 重试一次的目标值。默认 ESCALATED_MAX_TOKENS(64k,对齐 cc)。
+   */
+  escalatedMaxTokens?: number
 }
 
 interface AnthropicAccumulated {
@@ -54,9 +59,10 @@ export class AnthropicMessagesModel implements Model {
 
   async step(input: ModelStepInput): Promise<AssistantStep> {
     const messages = ensureToolResultPairing(normalizeMessagesForAPI(input.messages))
-    const body = {
+    const baseMaxTokens = this.cfg.maxTokens ?? DEFAULT_MAX_TOKENS
+    const buildBody = (maxTokens: number) => ({
       model: this.cfg.model,
-      max_tokens: this.cfg.maxTokens ?? DEFAULT_MAX_TOKENS,
+      max_tokens: maxTokens,
       stream: this.cfg.stream !== false,
       ...(input.system ? { system: input.system } : {}),
       messages: messages.map(toAnthropicMessage),
@@ -65,8 +71,25 @@ export class AnthropicMessagesModel implements Model {
         description: t.description,
         input_schema: t.parameters,
       })) } : {}),
+    })
+
+    let acc = await this.runOnce(buildBody(baseMaxTokens), input)
+
+    // 输出撞长度上限的恢复第一步(对齐 cc query.ts:1196-1229 escalate + utils/context.ts:32 ESCALATED_MAX_TOKENS=64k):
+    // stop_reason=max_tokens / model_context_window_exceeded(cc claude.ts:2448-2461 把后者也并进同一"从断点续写"恢复路径)
+    // 且【无 tool_calls】(纯长正文被切)时,把 max_tokens 从默认升到 escalatedMaxTokens 重试一次(每步至多一次)。
+    // 有 tool_calls 则不重试——那批工具调用要交主循环配对执行(见 toAssistantStep 顺序),不能被截断吞掉;
+    // 仍截断则由主循环走多轮"从断点续写"恢复(loop.ts,上限 3 次)。Math.max 防把已设的更高上限降回去。
+    if (isTruncatedStopReason(acc.stopReason) && acc.toolCalls.length === 0) {
+      const escalated = Math.max(baseMaxTokens, this.cfg.escalatedMaxTokens ?? ESCALATED_MAX_TOKENS)
+      acc = await this.runOnce(buildBody(escalated), input)
     }
 
+    return toAssistantStep(acc)
+  }
+
+  /** 一次请求(带超时/可选瞬时重试)+ 读流累积。抽出来供输出上限升级重试复用。 */
+  private async runOnce(body: unknown, input: ModelStepInput): Promise<AnthropicAccumulated> {
     // 仅当显式配置 cfg.retry 时才做瞬时错误退避重试(默认不改 failover 时序,理由同 ProxyModel)。
     const doRequest = () => this.fetchWithTimeout(this.messagesEndpoint(), {
       method: 'POST',
@@ -82,8 +105,7 @@ export class AnthropicMessagesModel implements Model {
       throw new Error(`Anthropic 模型请求失败 ${resp.status}:${detail.slice(0, 500)}`)
     }
 
-    const acc = await this.readResponse(resp)
-    return toAssistantStep(acc)
+    return this.readResponse(resp)
   }
 
   private messagesEndpoint(): string {
@@ -311,15 +333,21 @@ async function accumulateAnthropicStream(stream: ReadableStream<Uint8Array>): Pr
   return { text, thinking, toolCalls, stopReason, usage }
 }
 
+/** 截断判定:stop_reason=max_tokens(输出上限)/ model_context_window_exceeded(上下文窗口耗尽,cc claude.ts:2448-2461
+ *  复用同一"从断点续写"恢复路径)都当截断处理。 */
+function isTruncatedStopReason(reason: string | null | undefined): boolean {
+  return reason === 'max_tokens' || reason === 'model_context_window_exceeded'
+}
+
 function toAssistantStep(acc: AnthropicAccumulated): AssistantStep {
   const thinking = acc.thinking ? { thinking: acc.thinking } : {}
   const usage = acc.usage ? { usage: acc.usage } : {}
-  const notices = acc.stopReason === 'max_tokens' ? { notices: [MODEL_OUTPUT_TRUNCATED_NOTICE] } : {}
-  if (acc.stopReason === 'max_tokens') {
-    return { kind: 'final', text: acc.text, ...thinking, ...usage, ...notices }
-  }
+  const noticeField = isTruncatedStopReason(acc.stopReason) ? { notices: [MODEL_OUTPUT_TRUNCATED_NOTICE] } : {}
+  // 截断判定挪到 tool_calls 之后(修长代码生成硬伤):截断时若已拿到 tool_calls,不能当 final 吞掉——
+  // 照常返回 tool_calls 让主循环配对执行(截断提示随附让上层知情);纯正文被截断(无工具调用)才走 final,
+  // 后续"从断点续写"由 loop.ts 的 max_output_tokens 恢复接手。
   if (acc.toolCalls.length > 0) {
-    return { kind: 'tool_calls', ...(acc.text ? { text: acc.text } : {}), ...thinking, calls: acc.toolCalls, ...usage }
+    return { kind: 'tool_calls', ...(acc.text ? { text: acc.text } : {}), ...thinking, calls: acc.toolCalls, ...usage, ...noticeField }
   }
-  return { kind: 'final', text: acc.text, ...thinking, ...usage }
+  return { kind: 'final', text: acc.text, ...thinking, ...usage, ...noticeField }
 }

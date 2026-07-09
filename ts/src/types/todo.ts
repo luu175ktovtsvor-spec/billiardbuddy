@@ -6,7 +6,28 @@ export interface TodoItem {
 }
 
 const TODO_MARK: Record<TodoStatus, string> = { pending: '☐', in_progress: '◐', done: '☑' }
-const VALID_STATUS: readonly TodoStatus[] = ['pending', 'in_progress', 'done']
+
+/**
+ * 入参别名归一:模型常按 Claude Code / cc-haha 惯用枚举上报
+ * ('pending'|'in_progress'|'completed'),而本内核用 'done'。这里把 cc 风格及
+ * 常见别名映射到内核枚举 —— 关键:'completed' 必须变 'done'(已完成),不能被静默退回 pending。
+ * 非法值返回 undefined,由调用方退回 'pending'。
+ */
+const STATUS_ALIAS: Record<string, TodoStatus> = {
+  pending: 'pending',
+  in_progress: 'in_progress',
+  'in-progress': 'in_progress',
+  inprogress: 'in_progress',
+  done: 'done',
+  completed: 'done',
+  complete: 'done',
+  finished: 'done',
+}
+
+function normalizeStatus(raw: unknown): TodoStatus | undefined {
+  if (typeof raw !== 'string') return undefined
+  return STATUS_ALIAS[raw.trim().toLowerCase()]
+}
 
 /** 渲染成大白话清单(照 Python format_todo_checklist)。 */
 export function formatTodoChecklist(todos: TodoItem[]): string {
@@ -28,7 +49,7 @@ export function normalizeTodos(raw: unknown): TodoItem[] {
       const o = item as Record<string, unknown>
       const task = typeof o.task === 'string' ? o.task : typeof o.content === 'string' ? o.content : ''
       if (!task.trim()) continue
-      const status = VALID_STATUS.includes(o.status as TodoStatus) ? (o.status as TodoStatus) : 'pending'
+      const status = normalizeStatus(o.status) ?? 'pending'
       const activeForm = typeof o.activeForm === 'string'
         ? o.activeForm.trim()
         : typeof o.active_form === 'string'
