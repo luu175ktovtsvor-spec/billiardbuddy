@@ -3455,7 +3455,7 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 7. ✅工具入参 schema 校验闸(`42c93eb`):gateOneCall 权限判定前统一 `<tool_use_error>InputValidationError`,并行只读路径入参非法回退串行;保守校验(缺 required + 已声明基本类型),未声明/union 放行。
 8. 规则持久化落盘(cc `permissionsLoader`/`persistPermissionUpdate`;让"本会话允许"可选升级为跨重启持久化)。
 9. ✅fork 类型后台代理 resume 修复(`142dd27`):resumeBackgroundAgentTask 检测 agentName===fork 时重建合成 fork AgentDefinition 作 agentOverride,绕过 pickAgent 找不到 'fork' 的抛错。
-10. transcript 逐轮落盘 + 主会话 resume 接 `sanitizeBackgroundAgentResumeMessages` 清洗与中断检测。
+10. transcript 逐轮落盘:✅已做(loop.ts:377 saveTranscript 在 while 循环体内每轮 step 后落盘 + 事件逐事件 appendEvent),核实非缺口;**剩**:主会话 resume 接 `sanitizeBackgroundAgentResumeMessages` 清洗与中断检测(现仅后台代理 resume 用,主会话 resume 走 transcript.load 未清洗残尾)。
 
 **P2(能力面/体验)**
 11. ✅Hooks allow/ask + 正则 matcher(`51f1586`):parseHookDecisionJSON 解析 cc hookSpecificOutput.permissionDecision(allow/deny/ask)+ 旧 decision:block;HookDecision 加 ask;matchesToolMatcher 支持 Edit|Write 管道/mcp__.* 正则/锚定;loop.ts forceAsk 强制审批。**待续**:多 hook 并发(现串行,低优先)、PostToolUse 改输出。
