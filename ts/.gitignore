@@ -51,3 +51,6 @@ desktop/dist/
 
 # 运行时会话状态(desktop:dev/测试生成,非源码)
 .agent-state/
+
+# React 前端构建产物(ui:build 生成,不进仓库)
+desktop/renderer-dist/

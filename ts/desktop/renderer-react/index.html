@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      CSP(对齐 cc,收敛到我们的场景):file:// 页面要连本地 sidecar(fetch + ws),
+      故 connect-src 放行 127.0.0.1/localhost 的 http/ws;script/style 保留 unsafe-inline
+      (Vite/启动看门狗需要),img/font 放行 data:。
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: http://127.0.0.1:* http://localhost:*; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; object-src 'none'; base-uri 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>球房管家</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23202124'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%2300C29A'/%3E%3C/svg%3E" />
+    <style>
+      /* 主题水合前防止白/黑闪。 */
+      html { background: #F7F7F7; }
+      html, body, #root { min-height: 100%; margin: 0; height: 100%; }
+    </style>
+    <script>
+      /* 启动看门狗:8s 内 React 没挂载就渲染一个中文报错页(对齐 cc,去 Claude 字样)。 */
+      (function () {
+        var bootDeadlineMs = 8000
+        function summarize(value) {
+          if (!value) return '未知启动错误'
+          if (typeof value === 'string') return value
+          if (value.message) return value.message
+          try { return JSON.stringify(value) } catch (_) { return String(value) }
+        }
+        function renderStartupError(reason) {
+          if (window.__QF_BOOTSTRAPPED__) return
+          var root = document.getElementById('root')
+          if (!root) return
+          var details = [summarize(reason), '', 'URL: ' + window.location.href, '时间: ' + new Date().toISOString()].join('\n')
+          root.innerHTML = ''
+          var shell = document.createElement('main')
+          shell.style.cssText = 'box-sizing:border-box;min-height:100vh;padding:32px;background:#F7F7F7;color:#151515;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;display:flex;align-items:center;justify-content:center'
+          var panel = document.createElement('section')
+          panel.style.cssText = 'width:min(720px,100%);border:1px solid #E6E6E6;border-radius:8px;padding:24px;background:#fff'
+          var title = document.createElement('h1')
+          title.textContent = '启动失败'
+          title.style.cssText = 'margin:0 0 8px;font-size:20px;font-weight:700;color:#111'
+          var body = document.createElement('p')
+          body.textContent = '程序没能正常启动。反馈问题时请把下面这段文字一起发给我们。'
+          body.style.cssText = 'margin:0 0 16px;font-size:14px;line-height:1.6;color:#555'
+          var pre = document.createElement('pre')
+          pre.textContent = details
+          pre.style.cssText = 'box-sizing:border-box;max-height:360px;overflow:auto;white-space:pre-wrap;word-break:break-word;margin:0;padding:14px;border-radius:6px;background:#f6f6f6;color:#222;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace'
+          panel.appendChild(title); panel.appendChild(body); panel.appendChild(pre)
+          shell.appendChild(panel); root.appendChild(shell)
+        }
+        window.__QF_SHOW_STARTUP_ERROR__ = renderStartupError
+        window.addEventListener('error', function (event) {
+          var target = event.target
+          if (target && target !== window) {
+            var tagName = target.tagName
+            if (tagName === 'SCRIPT' || tagName === 'LINK') {
+              renderStartupError('启动资源加载失败: ' + (target.src || target.href || tagName))
+            }
+            return
+          }
+          renderStartupError(event.message || event.error || '启动脚本错误')
+        }, true)
+        window.addEventListener('unhandledrejection', function (event) {
+          renderStartupError(event.reason || '启动阶段未捕获的 Promise 拒绝')
+        })
+        window.setTimeout(function () {
+          renderStartupError('启动超过 ' + bootDeadlineMs + 'ms 仍未完成:通常是页面脚本没能执行,或初始化在 React 挂载前中断。')
+        }, bootDeadlineMs)
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -8,10 +8,13 @@ directories:
   buildResources: desktop/build-resources
 
 # 打进包的文件(前端渲染器 + 编译后的 electron 主/预加载 + package.json)。
+# 过渡期两套前端都打进包:vanilla(renderer,默认路径)+ React(renderer-dist,QF_UI_REACT=1 时 loadFile)。
+# React 达 parity 正式切默认后,再删 vanilla 那行(对齐蓝图:过时即删)。
 files:
   - desktop/electron/main.mjs
   - desktop/electron/preload.cjs
   - desktop/renderer/**/*
+  - desktop/renderer-dist/**/*
   - package.json
   - "!**/*.ts"
   - "!**/*.test.*"

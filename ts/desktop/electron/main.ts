@@ -113,8 +113,23 @@ function createWindow(): void {
   installMainWindowNavigationGuards(mainWindow.webContents, { openExternal: (url) => { void shell.openExternal(url) } })
   // 移动/缩放/关闭时保存窗口状态(去抖写盘)。
   installWindowStatePersistence(app, mainWindow)
-  void mainWindow.loadURL(`http://${SERVER_BIND_HOST}:${serverPort}/`)
+  loadRenderer(mainWindow)
   mainWindow.on('closed', () => { mainWindow = null })
+}
+
+/** 前端加载切换(过渡式,别破坏现有 vanilla):
+ *  - QF_UI_REACT=1 → React 壳:优先 ELECTRON_RENDERER_URL(Vite dev HMR),否则 file:// 加载 renderer-dist;
+ *    React 通过 IPC runtime:getServerUrl 拿 sidecar 地址再 fetch/WS(前端与 sidecar 解耦)。
+ *  - 默认(未设 env) → 现有 vanilla:loadURL(sidecar http),same-origin 相对路径,行为完全不变。 */
+function loadRenderer(win: BrowserWindow): void {
+  if (process.env.QF_UI_REACT === '1') {
+    const devUrl = process.env.ELECTRON_RENDERER_URL // Vite dev server(HMR),仅 loopback
+    if (devUrl) { void win.loadURL(devUrl); return }
+    const entry = join(here, '..', 'renderer-dist', 'index.html')
+    if (existsSync(entry)) { void win.loadFile(entry); return }
+    console.error(`[main] QF_UI_REACT=1 但缺 ${entry};回退 vanilla。请先 bun run ui:build。`)
+  }
+  void win.loadURL(`http://${SERVER_BIND_HOST}:${serverPort}/`)
 }
 
 /** 让主窗口回到前台(托盘/菜单"显示"共用);窗口没了就重建。 */
@@ -221,6 +236,10 @@ function createTray(): void {
 
 /** 集中注册 IPC(白名单 + 无 payload 或 payload 校验;§3.402 桌面壳架构:主↔渲染只走白名单通道)。 */
 function registerIpc(): void {
+  // 后端地址发现(对齐 cc runtime:getServerUrl):main 已 reserveServerPort 抢到 serverPort,
+  // React 壳(QF_UI_REACT,file:// 加载)经此拿 sidecar 地址再 fetch/WS。vanilla 默认路径不用它,注册无副作用。
+  ipcMain.handle('runtime:getServerUrl', () => `http://${SERVER_BIND_HOST}:${serverPort}`)
+
   // 原生文件夹选择器(§7 用户选择工作区):无 payload,返回选中目录或 null。
   ipcMain.handle('desktop:pickWorkspace', async () => {
     const win = mainWindow ?? BrowserWindow.getAllWindows()[0]

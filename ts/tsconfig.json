@@ -26,5 +26,8 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+  // React 渲染器是独立 TS 工程(DOM lib + react-jsx + @/ 别名),由它自己的 tsconfig 单独 typecheck。
+  // 从后端 tsc 排除,避免用后端设置(types:["bun"]、无 DOM lib)去编 .tsx / 构建产物报错。
+  "exclude": ["node_modules", "desktop/renderer-react", "desktop/renderer-dist"]
 }
