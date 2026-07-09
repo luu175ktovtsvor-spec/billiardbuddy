@@ -38,6 +38,7 @@ import { allowedToolsForAgent } from '../commands/allowedTools'
 import { bridgeUnsafeCommandMessage, filterBridgeSafeCommands, isBridgeSafeCommand, loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
 import type { PromptCommand } from '../commands/types'
 import { loadHookRegistryFile } from '../hooks/hookConfig'
+import { configureHookTrust } from '../hooks/hooks'
 import { createDomainPackCommandLibrary, createDomainPackHookRegistry, createDomainPackTools, listPublicDomainPacks, mergeHookRegistries, resolveEnabledPacks, suggestedSkillNamesForPacks, type DomainPack } from '../packs/domainPacks'
 import { clearThreadGoalHook, createGoalHookRegistry, ensureThreadGoalHookFromTranscript, getThreadGoal, parseGoalCommand, setThreadGoalHook } from '../goals/goalState'
 import { loadAgentsDir, type AgentDefinition } from '../agents/agentLoader'
@@ -126,6 +127,9 @@ export interface StartServerOptions {
   mcpConfigPath?: string
   mediaBackendUrl?: string
   bridgeWebSocketCtor?: BridgeRemoteWebSocketConstructor
+  /** 启动即预先受信的工作区根(桌面壳打开已批准的库/工作区时注入,或测试用):等价对每个根调 mcpTrust.trust(root)。
+   * 受信后该工作区来源的 local hook(.claude/hooks.json 等)才被信任门放行执行。 */
+  trustedWorkspaceRoots?: string[]
 }
 
 interface WorkspaceTreeEntry {
@@ -921,6 +925,13 @@ export function startServer(opts: StartServerOptions = {}) {
   const stateRoot = opts.transcriptRoot ?? join(process.cwd(), '.agent-state')
   // 工作区级 .mcp.json 信任闸(防恶意仓库 .mcp.json 自动 spawn 任意命令)。
   const mcpTrust = new McpTrustStore(join(stateRoot, 'mcp-trust.json'))
+  for (const root of opts.trustedWorkspaceRoots ?? []) mcpTrust.trust(root)
+  // SECURITY(P0 · 激活 hooks 信任门):本 server = 交互式桌面产品,默认即"信任必需"。
+  // 把 hooks 执行前的信任门接到 McpTrustStore:交互(interactive:true)下、未受信工作区里、工作区来源(local)的
+  // command/http/prompt/agent hook 一律不 spawn / 不执行(shouldRunHookRule 的 ②③ 闸);app 内置(managed)hook
+  // 不受此门约束——理由见 hooks.ts shouldRunHookRule 注释的"与 cc 有意分叉"说明。受信授予入口:
+  // POST /api/v1/agent/mcp/trust 或 startServer opts.trustedWorkspaceRoots。此调用是进程级、覆盖本 server 所有请求。
+  configureHookTrust({ interactive: true, isWorkspaceTrusted: root => mcpTrust.isTrusted(root) })
   /** 解析并过信任闸的 mcpConfigPath。显式(请求或 startServer opts 指定)与 app 库/全局配置放行;
    * 未信任的工作区级 <root>/.mcp.json 拦下不连,返回 warning。 */
   const resolveMcpConfig = (rawBody: Record<string, unknown>, workspaceRoot: string): { path: string | undefined; warning?: string } => {

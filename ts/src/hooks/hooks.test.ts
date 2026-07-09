@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,14 +10,24 @@ import {
   applyStopHooks,
   applySubagentStartHooks,
   applyUserPromptSubmitHooks,
+  configureHookTrust,
   matchesToolMatcher,
   mergeHookRegistries,
   parseHookDecisionJSON,
+  resetHookTrust,
+  resolveHookTrustPolicy,
   runHookEvent,
+  shouldRunHookRule,
   type HookRegistry,
+  type HookRule,
 } from './hooks'
 
 const ctx = () => ({ workspace: new Workspace(mkdtempSync(join(tmpdir(), 'hooks-'))) })
+
+// 每个用例前后都复位信任门:后复位避免本文件用例互相泄漏;前复位防其它测试文件(如 index.test.ts 的
+// startServer 会 configureHookTrust)在同进程先跑时把进程级 override 泄漏进来、污染读默认策略的用例。
+beforeEach(() => resetHookTrust())
+afterEach(() => resetHookTrust())
 
 test('parseHookDecisionJSON:解析 allow/deny/modify/context,非法返回 null', () => {
   expect(parseHookDecisionJSON('{"action":"allow"}')).toEqual({ action: 'allow', message: undefined })
@@ -214,4 +224,164 @@ test('mergeHookRegistries:保留顺序合并规则', () => {
     { rules: [{ event: 'Stop', handler: () => ({ action: 'context', additionalContext: 'b' }) }] },
   )
   expect(merged?.rules.map(rule => rule.event)).toEqual(['SessionStart', 'Stop'])
+})
+
+// —— 信任门:对齐 cc-haha hooks 执行前的三道闸(disableAllHooks / allowManagedHooksOnly / workspace trust)——
+// 参考 cc-haha:src/utils/hooks.ts 的 shouldDisableAllHooksIncludingManaged / shouldAllowManagedHooksOnly /
+// shouldSkipHookDueToTrust(config.ts checkHasTrustDialogAccepted),以及 src/utils/hooks/hooksConfigSnapshot.ts。
+
+// managed(内置:域包/目标/技能)源无 source 标记;local = 从工作区 .claude/settings 文件加载的任意命令 hook。
+function gateRegistry(track: (who: string) => void): HookRegistry {
+  return {
+    rules: [
+      { event: 'PreToolUse', handler: () => { track('managed'); return { action: 'allow', message: 'managed-ran' } } },
+      { event: 'PreToolUse', source: 'local', handler: () => { track('local'); return { action: 'deny', message: 'local-ran' } } },
+    ],
+  }
+}
+
+const gatePayload = { event: 'PreToolUse' as const, toolName: 'run_command', input: { command: 'ls' } }
+
+test('信任门 shouldRunHookRule:disableAllHooks 挡下所有源(含 managed)', () => {
+  const managed: HookRule = { event: 'PreToolUse', handler: () => null }
+  const local: HookRule = { event: 'PreToolUse', source: 'local', handler: () => null }
+  const policy = { disableAllHooks: true, allowManagedHooksOnly: false, interactive: false, isWorkspaceTrusted: () => true }
+  expect(shouldRunHookRule(managed, '/ws', policy)).toBe(false)
+  expect(shouldRunHookRule(local, '/ws', policy)).toBe(false)
+})
+
+test('信任门 shouldRunHookRule:allowManagedHooksOnly 只挡 local,managed 放行', () => {
+  const managed: HookRule = { event: 'PreToolUse', handler: () => null }
+  const local: HookRule = { event: 'PreToolUse', source: 'local', handler: () => null }
+  const policy = { disableAllHooks: false, allowManagedHooksOnly: true, interactive: false, isWorkspaceTrusted: () => true }
+  expect(shouldRunHookRule(managed, '/ws', policy)).toBe(true)
+  expect(shouldRunHookRule(local, '/ws', policy)).toBe(false)
+})
+
+test('信任门 shouldRunHookRule:交互模式未受信只挡 local,managed 放行;受信则 local 放行', () => {
+  const managed: HookRule = { event: 'PreToolUse', handler: () => null }
+  const local: HookRule = { event: 'PreToolUse', source: 'local', handler: () => null }
+  const untrusted = { disableAllHooks: false, allowManagedHooksOnly: false, interactive: true, isWorkspaceTrusted: () => false }
+  expect(shouldRunHookRule(managed, '/ws', untrusted)).toBe(true)
+  expect(shouldRunHookRule(local, '/ws', untrusted)).toBe(false)
+  const trusted = { ...untrusted, isWorkspaceTrusted: () => true }
+  expect(shouldRunHookRule(local, '/ws', trusted)).toBe(true)
+})
+
+test('信任门 shouldRunHookRule:非交互(SDK)trust 隐式成立,local 放行', () => {
+  const local: HookRule = { event: 'PreToolUse', source: 'local', handler: () => null }
+  const policy = { disableAllHooks: false, allowManagedHooksOnly: false, interactive: false, isWorkspaceTrusted: () => false }
+  // 非交互时不校验 trust(对齐 cc shouldSkipHookDueToTrust 的 non-interactive 分支)
+  expect(shouldRunHookRule(local, '/ws', policy)).toBe(true)
+})
+
+test('runHookEvent:disableAllHooks 时任何 hook 都不执行(含 managed)', async () => {
+  const c = ctx()
+  configureHookTrust({ disableAllHooks: true })
+  const ran: string[] = []
+  const decisions = await runHookEvent(gateRegistry(w => ran.push(w)), gatePayload, c)
+  expect(ran).toEqual([])
+  expect(decisions).toEqual([])
+})
+
+test('runHookEvent:allowManagedHooksOnly 时 local hook 不跑,managed 照跑', async () => {
+  const c = ctx()
+  configureHookTrust({ allowManagedHooksOnly: true })
+  const ran: string[] = []
+  const decisions = await runHookEvent(gateRegistry(w => ran.push(w)), gatePayload, c)
+  expect(ran).toEqual(['managed'])
+  expect(decisions).toEqual([{ action: 'allow', message: 'managed-ran' }])
+})
+
+test('runHookEvent:交互模式 workspace 未受信 → local 不跑,managed 照跑', async () => {
+  const c = ctx()
+  configureHookTrust({ interactive: true, isWorkspaceTrusted: () => false })
+  const ran: string[] = []
+  const decisions = await runHookEvent(gateRegistry(w => ran.push(w)), gatePayload, c)
+  expect(ran).toEqual(['managed'])
+  expect(decisions).toEqual([{ action: 'allow', message: 'managed-ran' }])
+})
+
+test('runHookEvent:交互模式 workspace 受信 → local 与 managed 都跑(正常路径)', async () => {
+  const c = ctx()
+  configureHookTrust({ interactive: true, isWorkspaceTrusted: () => true })
+  const ran: string[] = []
+  const decisions = await runHookEvent(gateRegistry(w => ran.push(w)), gatePayload, c)
+  expect(ran).toEqual(['managed', 'local'])
+  expect(decisions).toEqual([
+    { action: 'allow', message: 'managed-ran' },
+    { action: 'deny', message: 'local-ran' },
+  ])
+})
+
+test('runHookEvent:默认(未配置=交互 true 但 isWorkspaceTrusted 缺省 alwaysTrusted)→ local 与 managed 都跑', async () => {
+  // 无宿主接线时 isWorkspaceTrusted 缺省 alwaysTrusted,故 local hook 仍放行(等价 SDK 隐式信任,不破坏无宿主/测试路径)。
+  const c = ctx()
+  const ran: string[] = []
+  const decisions = await runHookEvent(gateRegistry(w => ran.push(w)), gatePayload, c)
+  expect(ran).toEqual(['managed', 'local'])
+  expect(decisions.length).toBe(2)
+})
+
+test('resolveHookTrustPolicy:安全默认 interactive=true(纵深防御),isWorkspaceTrusted 缺省放行', () => {
+  const policy = resolveHookTrustPolicy()
+  expect(policy.interactive).toBe(true)
+  expect(policy.disableAllHooks).toBe(false)
+  expect(policy.allowManagedHooksOnly).toBe(false)
+  // 缺省 isWorkspaceTrusted = alwaysTrusted:无宿主接线时不误挡任何 local hook
+  expect(policy.isWorkspaceTrusted('/any/workspace')).toBe(true)
+})
+
+test('resolveHookTrustPolicy:env CLAUDE_CODE_HOOKS_TRUST_IMPLICIT → 转非交互(隐式信任),local 不再受 trust 门约束', () => {
+  const prev = process.env.CLAUDE_CODE_HOOKS_TRUST_IMPLICIT
+  try {
+    process.env.CLAUDE_CODE_HOOKS_TRUST_IMPLICIT = '1'
+    expect(resolveHookTrustPolicy().interactive).toBe(false)
+    // 非交互 + 未受信:local 仍放行(对齐 cc getIsNonInteractiveSession 分支)
+    const local: HookRule = { event: 'PreToolUse', source: 'local', handler: () => null }
+    expect(shouldRunHookRule(local, '/ws', { ...resolveHookTrustPolicy(), isWorkspaceTrusted: () => false })).toBe(true)
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CODE_HOOKS_TRUST_IMPLICIT
+    else process.env.CLAUDE_CODE_HOOKS_TRUST_IMPLICIT = prev
+  }
+})
+
+test('applyPreToolUseHooks:交互未受信时 local deny hook 被跳过(不误拦工具)', async () => {
+  const c = ctx()
+  configureHookTrust({ interactive: true, isWorkspaceTrusted: () => false })
+  const result = await applyPreToolUseHooks({
+    rules: [{ event: 'PreToolUse', source: 'local', matcher: 'run_command', handler: () => ({ action: 'deny', message: 'untrusted hook says no' }) }],
+  }, 'run_command', { command: 'ls' }, c)
+  expect(result.deniedMessage).toBeUndefined()
+})
+
+test('resolveHookTrustPolicy:env CLAUDE_CODE_DISABLE_ALL_HOOKS / CLAUDE_CODE_ALLOW_MANAGED_HOOKS_ONLY 生效', () => {
+  const prevDisable = process.env.CLAUDE_CODE_DISABLE_ALL_HOOKS
+  const prevManaged = process.env.CLAUDE_CODE_ALLOW_MANAGED_HOOKS_ONLY
+  try {
+    process.env.CLAUDE_CODE_DISABLE_ALL_HOOKS = '1'
+    process.env.CLAUDE_CODE_ALLOW_MANAGED_HOOKS_ONLY = 'true'
+    const policy = resolveHookTrustPolicy()
+    expect(policy.disableAllHooks).toBe(true)
+    expect(policy.allowManagedHooksOnly).toBe(true)
+  } finally {
+    if (prevDisable === undefined) delete process.env.CLAUDE_CODE_DISABLE_ALL_HOOKS
+    else process.env.CLAUDE_CODE_DISABLE_ALL_HOOKS = prevDisable
+    if (prevManaged === undefined) delete process.env.CLAUDE_CODE_ALLOW_MANAGED_HOOKS_ONLY
+    else process.env.CLAUDE_CODE_ALLOW_MANAGED_HOOKS_ONLY = prevManaged
+  }
+})
+
+test('configureHookTrust:override 优先于 env;resetHookTrust 复位', () => {
+  const prev = process.env.CLAUDE_CODE_DISABLE_ALL_HOOKS
+  try {
+    process.env.CLAUDE_CODE_DISABLE_ALL_HOOKS = '1'
+    configureHookTrust({ disableAllHooks: false })
+    expect(resolveHookTrustPolicy().disableAllHooks).toBe(false)
+    resetHookTrust()
+    expect(resolveHookTrustPolicy().disableAllHooks).toBe(true)
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CODE_DISABLE_ALL_HOOKS
+    else process.env.CLAUDE_CODE_DISABLE_ALL_HOOKS = prev
+  }
 })

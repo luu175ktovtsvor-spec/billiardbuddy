@@ -76,6 +76,33 @@ hooks:
   }
 })
 
+test('loadAgentsDir:来源分层——hookSource:local 给 frontmatter hooks 打 local 标(受信任门约束);默认 managed 无标', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agents-hooksrc-'))
+  try {
+    writeFileSync(join(root, 'ws.md'), `---
+name: ws-agent
+description: 工作区代理
+hooks:
+  PreToolUse:
+    - matcher: write_file
+      hooks:
+        - type: command
+          command: echo hi
+---
+你是工作区代理。
+`)
+    // 工作区提供的 .claude/agents → local(其 command hook 未受信工作区里不 spawn)
+    const localAgents = await loadAgentsDir(root, { hookSource: 'local' })
+    expect(localAgents[0]!.hooks?.rules.length).toBeGreaterThan(0)
+    expect(localAgents[0]!.hooks?.rules.every(rule => rule.source === 'local')).toBe(true)
+    // app 内置(默认)→ managed:无 source 标记,不受信任门约束
+    const managedAgents = await loadAgentsDir(root)
+    expect(managedAgents[0]!.hooks?.rules.every(rule => rule.source === undefined)).toBe(true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('loadAgentsDir:解析 CC-Haha memory scope 并给受限 agent 注入记忆读写工具', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agents-memory-'))
   try {

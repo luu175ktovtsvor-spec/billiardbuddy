@@ -1,10 +1,14 @@
-import { expect, test } from 'bun:test'
+import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadHookRegistryFile, normalizeHookRegistry } from './hookConfig'
-import { runHookEvent } from './hooks'
+import { configureHookTrust, resetHookTrust, runHookEvent } from './hooks'
+
+// 前后都复位:防其它测试文件(index.test.ts 的 startServer 会 configureHookTrust)在同进程泄漏进程级 override。
+beforeEach(() => resetHookTrust())
+afterEach(() => resetHookTrust())
 import { Workspace } from '../workspace/workspace'
 import type { AssistantStep, Model, ModelStepInput } from '../types/model'
 import type { Tool } from '../tools/Tool'
@@ -203,6 +207,54 @@ test('normalizeHookRegistry command hook sends CC-Haha-style payload on stdin an
       { action: 'context', additionalContext: 'SubagentStart:researcher:agent-1' },
     ])
   } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('normalizeHookRegistry:source:local 标记透传到每条规则;loadHookRegistryFile 加载的文件 hook 标 local', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-config-source-'))
+  try {
+    const tagged = normalizeHookRegistry({
+      hooks: { PreToolUse: [{ matcher: 'write_file', hooks: [{ type: 'command', command: 'echo hi' }, { decision: { action: 'deny', message: 'no' } }] }] },
+    }, { source: 'local' })
+    expect(tagged.rules.length).toBeGreaterThan(0)
+    expect(tagged.rules.every(rule => rule.source === 'local')).toBe(true)
+
+    // 未标 source 的内置(managed)注册表不带 local 标记
+    const managed = normalizeHookRegistry({ hooks: { PreToolUse: [{ matcher: 'write_file', hooks: [{ type: 'command', command: 'echo hi' }] }] } })
+    expect(managed.rules.every(rule => rule.source === undefined)).toBe(true)
+
+    // 从文件加载的 hook 视为 local(工作区 .claude/settings 攻击面)
+    const hooksFile = join(root, 'hooks.json')
+    writeFileSync(hooksFile, JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'echo hi' }] }] } }))
+    const loaded = await loadHookRegistryFile(hooksFile)
+    expect(loaded?.rules.every(rule => rule.source === 'local')).toBe(true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('信任门端到端:交互未受信时 local command hook 不 spawn(不落哨兵文件);受信则正常执行', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-config-gate-'))
+  try {
+    const sentinel = join(root, 'sentinel.txt')
+    const registry = normalizeHookRegistry({
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `${process.execPath} -e "require('fs').writeFileSync(process.argv[1],'x')" ${JSON.stringify(sentinel)}` }] }] },
+    }, { source: 'local' })
+    const ctx = { workspace: new Workspace(root), conversationId: 'gate' }
+
+    // 交互 + 未受信:command hook 被信任门拦下,子进程根本不 spawn
+    configureHookTrust({ interactive: true, isWorkspaceTrusted: () => false })
+    const blocked = await runHookEvent(registry, { event: 'SessionStart', sessionId: 'gate' }, ctx)
+    expect(blocked).toEqual([])
+    expect(existsSync(sentinel)).toBe(false)
+
+    // 交互 + 受信:正常执行,哨兵文件落盘
+    configureHookTrust({ interactive: true, isWorkspaceTrusted: () => true })
+    await runHookEvent(registry, { event: 'SessionStart', sessionId: 'gate' }, ctx)
+    expect(existsSync(sentinel)).toBe(true)
+  } finally {
+    resetHookTrust()
     rmSync(root, { recursive: true, force: true })
   }
 })
