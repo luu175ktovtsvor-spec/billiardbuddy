@@ -14,7 +14,7 @@ export type ToolStatus = 'running' | 'ok' | 'error'
 
 export type ChatBlock =
   | { id: string; kind: 'user'; text: string }
-  | { id: string; kind: 'assistant'; text: string; streaming: boolean }
+  | { id: string; kind: 'assistant'; text: string; streaming: boolean; ts?: number; cost?: number }
   | { id: string; kind: 'thinking'; text: string }
   | { id: string; kind: 'tool'; tool: string; input: unknown; output?: string; status: ToolStatus }
   | {
@@ -86,7 +86,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       const nid = newBlockId()
       set((s) => ({
         _currentAssistantId: nid,
-        blocks: [...s.blocks, { id: nid, kind: 'assistant', text, streaming: true }],
+        blocks: [...s.blocks, { id: nid, kind: 'assistant', text, streaming: true, ts: Date.now() }],
       }))
     }
   }
@@ -182,7 +182,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           if (id) {
             set((s) => ({ blocks: s.blocks.map((b) => (b.id === id && b.kind === 'assistant' ? { ...b, text: ev.text, streaming: false } : b)) }))
           } else {
-            set((s) => ({ blocks: [...s.blocks, { id: newBlockId(), kind: 'assistant', text: ev.text, streaming: false }] }))
+            set((s) => ({ blocks: [...s.blocks, { id: newBlockId(), kind: 'assistant', text: ev.text, streaming: false, ts: Date.now() }] }))
           }
         }
         settleAssistant()

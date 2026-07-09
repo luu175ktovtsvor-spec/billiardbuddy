@@ -5,9 +5,10 @@ import { MarkdownRenderer } from '../markdown/MarkdownRenderer'
 import { ToolCallCard } from './ToolCallCard'
 import { ApprovalCard } from './ApprovalCard'
 import { StreamingIndicator } from './StreamingIndicator'
+import { MessageActions } from './MessageActions'
 import { t } from '../../i18n'
 
-function Block({ block }: { block: ChatBlock }) {
+function Block({ block, isLast }: { block: ChatBlock; isLast?: boolean }) {
   switch (block.kind) {
     case 'user':
       return (
@@ -22,9 +23,10 @@ function Block({ block }: { block: ChatBlock }) {
       )
     case 'assistant':
       return (
-        <div className="my-2 text-sm leading-relaxed" data-block="assistant" style={{ color: 'var(--color-text-primary)' }}>
+        <div className="group/msg my-3 text-sm leading-relaxed" data-block="assistant" style={{ color: 'var(--color-text-primary)' }}>
           <MarkdownRenderer content={block.text} />
           {block.streaming && <span className="qf-cursor">▍</span>}
+          {!block.streaming && block.text.trim() && <MessageActions text={block.text} ts={block.ts} cost={block.cost} pinned={isLast} />}
         </div>
       )
     case 'thinking':
@@ -61,9 +63,9 @@ export function MessageList() {
 
   return (
     <div className="flex-1 overflow-y-auto px-4 py-4">
-      <div className="mx-auto max-w-[760px]">
-        {blocks.map((b) => (
-          <Block key={b.id} block={b} />
+      <div className="mx-auto max-w-[832px]">
+        {blocks.map((b, i) => (
+          <Block key={b.id} block={b} isLast={i === blocks.length - 1} />
         ))}
         <StreamingIndicator />
         <div ref={endRef} />
