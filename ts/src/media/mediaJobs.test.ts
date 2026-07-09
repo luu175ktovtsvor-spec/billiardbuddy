@@ -353,7 +353,8 @@ test('MediaJobService auto-routes default Chinese poster generation to Seedream 
     expect(calls[0]?.body).toMatchObject({
       model: 'doubao-seedream-4-5-251128',
       prompt: '会员日海报，适合台球房朋友圈',
-      size: '1152x2048',
+      // 9:16(1152×2048=2,359,296)低于火山 Seedream 像素下限 3,686,400,等比放大到 1440×2560(=3,686,400)、各边 16 倍数。
+      size: '1440x2560',
     })
     expect(done.result).toMatchObject({
       provider: 'seedream-gateway',
@@ -689,7 +690,8 @@ test('MediaJobService edits a generated image through OpenAI-compatible image ed
     expect(form).toBeTruthy()
     expect(form.get('model')).toBe('gpt-image-2')
     expect(form.get('prompt')).toBe('把背景改成深绿色')
-    expect(form.get('input_fidelity')).toBe('high')
+    // gpt-image-2 恒最高保真、API 不接受 input_fidelity(传了 400),故不设。非 gpt-image-2 的 gpt-image 系列才设。
+    expect(form.get('input_fidelity')).toBeNull()
     expect(form.getAll('image')).toHaveLength(1)
     expect(done.result).toMatchObject({ local_preview: false, provider: 'openai-compatible', mode: 'edit' })
     expect(done.result?.urls).toHaveLength(1)
