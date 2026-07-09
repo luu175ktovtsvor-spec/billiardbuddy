@@ -1,6 +1,9 @@
 import { expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js'
+import { z } from 'zod'
 import { Workspace } from '../workspace/workspace'
 import { closeMcpConnections, connectMcpServers } from './client'
 
@@ -160,5 +163,48 @@ test('connectMcpServers connects stdio server, exposes tools, and calls through 
   } finally {
     await closeMcpConnections(loaded.connections)
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('connectMcpServers 把 http server 配置里的 headers(含 Authorization bearer)真的发到远程请求上(鉴权对齐 cc)', async () => {
+  const seenHeaders: Array<{ authorization: string | null; apiKey: string | null }> = []
+
+  const mcpServer = new McpServer({ name: 'auth-fixture', version: '1.0.0' })
+  mcpServer.registerTool('whoami', { description: 'no-op', inputSchema: {} }, async () => ({
+    content: [{ type: 'text', text: 'ok' }],
+  }))
+  // 用有状态模式(sessionIdGenerator)而非 stateless:stateless transport 一次请求即失效,
+  // 而客户端一次 connect 要走多轮请求(initialize/listTools/...),必须能在同一 session 内复用。
+  const serverTransport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => crypto.randomUUID() })
+  await mcpServer.connect(serverTransport)
+
+  const httpServer = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      seenHeaders.push({ authorization: req.headers.get('authorization'), apiKey: req.headers.get('x-api-key') })
+      return serverTransport.handleRequest(req)
+    },
+  })
+
+  try {
+    const loaded = await connectMcpServers([{
+      name: 'remote fixture',
+      transport: 'http',
+      url: `http://127.0.0.1:${httpServer.port}/mcp`,
+      headers: { Authorization: 'Bearer secret-token-123', 'X-Api-Key': 'k1' },
+    }], { timeoutMs: 5000 })
+
+    expect(loaded.warnings).toEqual([])
+    expect(loaded.tools.map(t => t.name)).toContain('mcp__remote_fixture__whoami')
+    expect(seenHeaders.length).toBeGreaterThan(0)
+    for (const seen of seenHeaders) {
+      expect(seen.authorization).toBe('Bearer secret-token-123')
+      expect(seen.apiKey).toBe('k1')
+    }
+
+    await closeMcpConnections(loaded.connections)
+  } finally {
+    httpServer.stop(true)
+    await serverTransport.close()
   }
 })

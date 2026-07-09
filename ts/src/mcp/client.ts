@@ -339,7 +339,13 @@ function createTransport(config: McpServerConfig, opts: LoadMcpToolsOptions): Tr
   }
   if (config.transport === 'http') {
     if (!config.url) throw new Error(`MCP http server ${config.name} missing url`)
-    return new StreamableHTTPClientTransport(new URL(config.url), { fetch: opts.fetchImpl })
+    // 对齐 cc(services/mcp/client.ts:826-836 HTTP 分支):自定义 headers(含 Authorization: Bearer)
+    // 经 requestInit.headers 传给 transport,SDK 在每次请求时把它 spread 在自动头之后,用户头优先。
+    // cc 还接了 authProvider(完整 OAuth,src/services/mcp/auth.ts ~2465 行)——本项目未移植,超出本次范围。
+    return new StreamableHTTPClientTransport(new URL(config.url), {
+      fetch: opts.fetchImpl,
+      ...(config.headers ? { requestInit: { headers: config.headers } } : {}),
+    })
   }
   throw new Error(`unsupported MCP transport for ${config.name}`)
 }
