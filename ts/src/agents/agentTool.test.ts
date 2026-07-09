@@ -1053,7 +1053,7 @@ test('agent_task connects agent frontmatter mcpServers and injects MCP tools', a
 
     expect(model.received[0]!.tools.map(tool => tool.name)).toContain('mcp__agent_fixture__agent_echo')
     expect(model.received[1]!.messages.some(message =>
-      message.content.some(block => block.type === 'tool_result' && block.content.includes('agent-mcp:hello')),
+      message.content.some(block => block.type === 'tool_result' && typeof block.content === 'string' && block.content.includes('agent-mcp:hello')),
     )).toBe(true)
     expect(out).toContain('MCP 子代理完成')
   } finally {

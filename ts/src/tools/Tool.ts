@@ -3,7 +3,7 @@ import type { Sandbox } from '../sandbox/sandbox'
 import type { AdditionalWorkingDirectory, ApprovalClass, ApprovalReason, PermissionMode, PermissionRule } from '../permissions/types'
 import type { TodoItem } from '../types/todo'
 import type { Model } from '../types/model'
-import type { Message } from '../types/message'
+import type { ImageBlock, Message } from '../types/message'
 import type { ToolRegistry } from './registry'
 import type { ContentReplacementState } from '../context/toolResultStorage'
 import type { DenialTrackingState } from '../permissions/denialTracking'
@@ -76,6 +76,13 @@ export interface ToolContext {
   projectInstructionScopes?: Set<string>
   /** 流式工具进度:run_command/慢工具在执行中向 Agent loop 推增量 UI 事件。 */
   progressEmit?: (event: ToolProgressEvent) => void
+  /**
+   * 单次工具执行的图像块收集器(真 vision 回灌):loop 在每次串行执行前置一个空数组、执行后收走,组进该
+   * tool_result 的 content 块数组(text + image)。read_file 读图时把 vision 块推进来。
+   * ⚠️ 只在串行执行路径一一对应(loop 设/取之间无交错);并行只读批次里读图工具被排除(见
+   * prepareParallelReadOnlyCall),因此并行执行永不往此 sink 推、不会串图。非读图工具/文本结果不碰它(向后兼容)。
+   */
+  imageResultSink?: ImageBlock[]
   /** 当前会话的大工具结果落盘目录,供 read_stored_tool_result 安全回读。 */
   toolResultStoreDir?: string
   /** 大工具结果替换状态,供主循环/子代理/续跑保持一致的上下文裁剪决策。 */

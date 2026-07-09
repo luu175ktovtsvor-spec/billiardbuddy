@@ -16,6 +16,45 @@ test('user 里 tool_result 块 → 独立 role:tool 消息', () => {
   expect(r.messages).toEqual([{ role: 'tool', tool_call_id: 'c1', content: 'payload' }])
 })
 
+test('tool_result 块数组(text+image)→ tool 消息(文本)+ user 消息(image_url)', () => {
+  const msgs: Message[] = [{
+    role: 'user',
+    content: [{
+      type: 'tool_result',
+      tool_use_id: 'c1',
+      content: [
+        { type: 'text', text: '<file_image format="png"/>' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+      ],
+    }],
+  }]
+  const r = toOpenAiChatRequest({ model: 'm', messages: msgs })
+  // tool 消息只吃文本(OpenAI tool 角色不支持图像);图像顺延进本轮尾随的 user 消息 image_url。
+  expect(r.messages[0]).toEqual({ role: 'tool', tool_call_id: 'c1', content: '<file_image format="png"/>' })
+  expect(r.messages[1]).toEqual({
+    role: 'user',
+    content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } }],
+  })
+})
+
+test('tool_result 图像块:text_only 模式替占位、不产 image_url', () => {
+  const msgs: Message[] = [{
+    role: 'user',
+    content: [{
+      type: 'tool_result',
+      tool_use_id: 'c1',
+      content: [
+        { type: 'text', text: 'meta' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+      ],
+    }],
+  }]
+  const r = toOpenAiChatRequest({ model: 'm', messages: msgs, imageContentMode: 'text_only' })
+  expect(r.messages[0]).toEqual({ role: 'tool', tool_call_id: 'c1', content: 'meta' })
+  expect(typeof r.messages[1]!.content).toBe('string')
+  expect(r.messages[1]!.content).toContain('[Image omitted')
+})
+
 test('assistant text+tool_use → content + tool_calls(thinking 丢弃不回灌)', () => {
   const msgs: Message[] = [{
     role: 'assistant',

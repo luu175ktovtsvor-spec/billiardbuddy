@@ -12,7 +12,14 @@ export interface TextBlock { type: 'text'; text: string }
 export interface ThinkingBlock { type: 'thinking'; thinking: string; signature?: string }
 export interface ImageBlock { type: 'image'; source: { type: 'base64'; media_type: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'; data: string } }
 export interface ToolUseBlock { type: 'tool_use'; id: string; name: string; input: unknown }
-export interface ToolResultBlock { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }
+/**
+ * tool_result 的 content 承载:兼容旧的纯文本 string,或(多模态)块数组 text/image——对齐 cc 的
+ * ToolResultBlockParam.content(见 FileReadTool.mapToolResultToToolResultBlockParam:图片走
+ * [{type:'image',source}])。string 时行为与旧版完全一致(向后兼容);数组时由 model/proxy 序列化成
+ * Anthropic image content-block / OpenAI image_url。
+ */
+export type ToolResultContentBlock = TextBlock | ImageBlock
+export interface ToolResultBlock { type: 'tool_result'; tool_use_id: string; content: string | ToolResultContentBlock[]; is_error?: boolean }
 
 export type ContentBlock = TextBlock | ThinkingBlock | ImageBlock | ToolUseBlock | ToolResultBlock
 
@@ -26,7 +33,7 @@ export const textBlock = (text: string): TextBlock => ({ type: 'text', text })
 export const toolUseBlock = (call: ToolCall): ToolUseBlock =>
   ({ type: 'tool_use', id: call.id, name: call.name, input: call.input })
 
-export const toolResultBlock = (toolUseId: string, content: string, isError = false): ToolResultBlock =>
+export const toolResultBlock = (toolUseId: string, content: string | ToolResultContentBlock[], isError = false): ToolResultBlock =>
   isError
     ? { type: 'tool_result', tool_use_id: toolUseId, content, is_error: true }
     : { type: 'tool_result', tool_use_id: toolUseId, content }

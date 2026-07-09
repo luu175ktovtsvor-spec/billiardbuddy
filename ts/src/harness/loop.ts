@@ -1,5 +1,5 @@
 import type { AgentEvent, UsageUpdateEvent } from '../types/events'
-import type { Message, ContentBlock, ToolResultBlock, ToolCall } from '../types/message'
+import type { Message, ContentBlock, ImageBlock, ToolResultBlock, ToolCall } from '../types/message'
 import { textBlock, toolUseBlock, toolResultBlock, userText } from '../types/message'
 import type { AssistantStep, Model, ModelStepDelta, ModelStepInput, ModelUsage } from '../types/model'
 import { MODEL_OUTPUT_TRUNCATED_NOTICE } from '../types/model'
@@ -31,7 +31,7 @@ import {
 import { signApproval, verifyApproval } from '../permissions/approval'
 import { collectReminders, drainSteering, extendTurns, steerBlock, wrapReminder } from './reminders'
 import { formatTodoChecklist, parseProgressMarkdown } from '../types/todo'
-import { compactPipeline, looksLikeContextOverflow } from '../context/compaction'
+import { compactPipeline, compactionWillRun, looksLikeContextOverflow } from '../context/compaction'
 import { buildRecentFileContextMessage } from '../context/recentFileContext'
 import { createInvokedSkillsMessage, restoreInvokedSkillsFromMessages } from '../skills/invokedSkills'
 import {
@@ -66,6 +66,8 @@ import { isVerifyPlanExecutionToolName } from '../tools/verifyPlanExecutionTool'
 import { validateToolInput } from '../tools/inputSchemaValidation'
 import { sanitizeResumeMessages } from './messageSanitize'
 import { getDestructiveCommandWarning } from '../tools/destructiveCommandWarning'
+import { isImageExtension } from '../tools/imageRead'
+import { extname } from 'node:path'
 
 /**
  * 流式驱动一次 model.step:onDelta 回调在 await 期间到达的正文/推理增量,经 queue+race 交错 yield 成
@@ -99,7 +101,10 @@ function destructiveWarningForInput(toolName: string, input: unknown): string | 
 }
 import { activateWorktreeSessionForContext } from '../tools/worktreeTools'
 import {
+  applyPostCompactHooks,
+  applyPostToolUseFailureHooks,
   applyPostToolUseHooks,
+  applyPreCompactHooks,
   applyPreToolUseHooks,
   applySessionStartHooks,
   applyStopHooks,
@@ -352,7 +357,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
 
   const maybeCompact = async (force = false): Promise<string | undefined> => {
     const invokedSkills = createInvokedSkillsMessage(invokedSkillScopeId)
-    const out = await compactPipeline({
+    const input = {
       messages,
       model,
       system,
@@ -365,18 +370,35 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       lastCompactionAtMs,
       lastCompactedMessageCount,
       force,
-    })
+    }
+    // PreCompact 钩:只在本轮真会压缩时触发(对齐 cc executePreCompactHooks 在真压缩前 fire);
+    // compactionWillRun 与 compactPipeline 用同一决策,随后的 microcompact 是幂等 no-op。
+    const trigger: 'auto' | 'manual' = force ? 'manual' : 'auto'
+    const notes: string[] = []
+    if (compactionWillRun(input)) {
+      const pre = await applyPreCompactHooks(hooksForCurrentSession(), trigger, ctx)
+      notes.push(...pre.additionalContext)
+    }
+    const out = await compactPipeline(input)
     messages = out.messages
     compactionFailures = out.compactionFailures
-    if (!out.didCompact) return undefined
+    if (!out.didCompact) return notes.length > 0 ? notes.join('\n') : undefined
     notifyPromptCacheCompaction(promptCacheTrackingKey)
+    // PostCompact 钩:压缩完成后触发,载荷带摘要文本(从压缩后首条摘要消息还原,去掉展示前缀)。
+    const summaryMsg = messages[0]
+    const compactSummary = summaryMsg && summaryMsg.content[0]?.type === 'text'
+      ? summaryMsg.content[0].text.replace(/^\[此前对话摘要\]\n?/, '')
+      : (out.note ?? '')
+    const post = await applyPostCompactHooks(hooksForCurrentSession(), trigger, compactSummary, ctx)
+    notes.push(...post.additionalContext)
     const recentFiles = await buildRecentFileContextMessage(ctx)
     if (recentFiles && messages.length > 0) {
       messages = [messages[0]!, recentFiles, ...messages.slice(1)]
     }
     lastCompactionAtMs = Date.now()
     lastCompactedMessageCount = messages.length
-    return recentFiles ? `${out.note}\n已恢复最近文件上下文。` : out.note
+    const base = recentFiles ? `${out.note}\n已恢复最近文件上下文。` : out.note
+    return [base, ...notes].filter(Boolean).join('\n')
   }
 
   let turnsLimit = maxTurns
@@ -706,10 +728,19 @@ interface ToolExecutionOutcome {
   events: AgentEvent[]
 }
 
+/** 该调用是否可能产出 vision 图像块(read_file 读 png/jpeg/gif/webp/bmp)。用于把读图强制排到串行路径。 */
+function producesImageResult(call: ToolCall): boolean {
+  if (call.name !== 'read_file') return false
+  const path = call.input && typeof call.input === 'object' ? (call.input as { path?: unknown }).path : undefined
+  return typeof path === 'string' && isImageExtension(extname(path))
+}
+
 function prepareParallelReadOnlyCall(registry: ToolRegistry, call: ToolCall, ctx: ToolContext, hooks?: HookRegistry): PreparedToolCall | null {
   if (hooks) return null
   if (call.name === TOOL_SEARCH_NAME) return null
   if (isAskUserQuestionToolName(call.name) || isEnterPlanToolName(call.name) || isExitPlanToolName(call.name) || isVerifyPlanExecutionToolName(call.name)) return null
+  // 读图会往共享 ctx.imageResultSink 推 vision 块 → 必须串行执行(sink 一一对应),不进并行批以免串图。
+  if (producesImageResult(call)) return null
   const tool = registry.get(call.name)
   if (!tool) return null
   // 入参非法 → 回退串行,让 gateOneCall 统一吐 InputValidationError(不在并行批里静默跑脏参数)。
@@ -736,8 +767,11 @@ function prepareParallelReadOnlyCall(registry: ToolRegistry, call: ToolCall, ctx
   return { call, tool, input: decision.updatedInput ?? call.input }
 }
 
-function toolFeedback(call: ToolCall, output: string, isError = false, modelContent = output): ToolExecutionOutcome {
-  const content = isError ? `<tool_use_error>\n${modelContent}\n</tool_use_error>` : modelContent
+function toolFeedback(call: ToolCall, output: string, isError = false, modelContent = output, images?: ImageBlock[]): ToolExecutionOutcome {
+  const text = isError ? `<tool_use_error>\n${modelContent}\n</tool_use_error>` : modelContent
+  // 有图像块 → tool_result content 变块数组 [text, image...],让 model/proxy 序列化成真 vision 输入(对齐 cc);
+  // 无图 → 保持纯 string 原路(向后兼容)。UI 事件的 output 恒为文本,前端图片展示是另一件事(#18)。
+  const content: ToolResultBlock['content'] = images && images.length > 0 ? [textBlock(text), ...images] : text
   return {
     result: toolResultBlock(call.id, content, isError),
     events: [{ type: 'tool_result', tool: call.name, output }],
@@ -781,7 +815,19 @@ async function executeAllowedToolCall(
     return toolFeedback(call, `已取消:用户中止了本轮,「${tool.name}」未执行。`, false)
   }
   try {
-    const output = await tool.execute(input, ctx)
+    // 单次执行的图像块 sink:执行前置空、执行后收走,组进本 tool_result 的 content 块数组(真 vision 回灌)。
+    // 串行路径 loop 设/取之间无交错 → 一一对应;并行只读批次已排除读图工具(见 prepareParallelReadOnlyCall),
+    // 故并行执行不会往 sink 推、不串图。用 === 守卫恢复,防并行时误清他人 sink。
+    const imageSink: ImageBlock[] = []
+    const previousSink = ctx.imageResultSink
+    ctx.imageResultSink = imageSink
+    let output: string
+    try {
+      output = await tool.execute(input, ctx)
+    } finally {
+      if (ctx.imageResultSink === imageSink) ctx.imageResultSink = previousSink
+    }
+    const images = imageSink.length > 0 ? imageSink.slice() : undefined
     const stored = await maybeStoreToolResult(call.name, call.id, output, {
       dir: toolResultStoreDir,
       conversationId: ctx.conversationId,
@@ -791,11 +837,22 @@ async function executeAllowedToolCall(
     const modelContent = postHook.additionalContext.length > 0
       ? `${stored.content}\n\n${hookContextBlock('PostToolUse', postHook.additionalContext)}`
       : stored.content
-    const feedback = toolFeedback(call, stored.content, false, modelContent)
+    // 结果被落盘替换成预览时(storable 且超阈值)不再挂原图;read_file 非 storable,恒不替换 → 图正常回灌。
+    const feedback = toolFeedback(call, stored.content, false, modelContent, stored.stored ? undefined : images)
     events.push(...feedback.events)
     return { result: feedback.result, events }
   } catch (err) {
-    return toolFeedback(call, `错误:工具 ${tool.name} 执行失败:${err instanceof Error ? err.message : String(err)}`, true)
+    const message = err instanceof Error ? err.message : String(err)
+    // PostToolUseFailure 钩:工具抛错时触发(对齐 cc);非阻断,只把 hook 追加的上下文并入回灌,
+    // 不改变"错误文本回灌让模型自救"的既有失败路径。
+    const failHook = await applyPostToolUseFailureHooks(hooks, call.name, input, message, ctx, call.id)
+    const base = toolFeedback(call, `错误:工具 ${tool.name} 执行失败:${message}`, true)
+    if (failHook.additionalContext.length === 0) return base
+    const events: AgentEvent[] = [
+      ...base.events,
+      ...failHook.additionalContext.map((text): AgentEvent => ({ type: 'context_note', text })),
+    ]
+    return { result: base.result, events }
   }
 }
 

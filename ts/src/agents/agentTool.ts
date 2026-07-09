@@ -730,7 +730,13 @@ function formatSidechainMessage(seq: number, message: Message): string {
     ...message.content.map(block => {
       if (block.type === 'text') return `<text>${xmlText(block.text)}</text>`
       if (block.type === 'tool_use') return `<tool_use id="${xmlAttr(block.id)}" name="${xmlAttr(block.name)}">${xmlText(JSON.stringify(block.input))}</tool_use>`
-      if (block.type === 'tool_result') return `<tool_result tool_use_id="${xmlAttr(block.tool_use_id)}"${block.is_error ? ' is_error="true"' : ''}>${xmlText(block.content)}</tool_result>`
+      if (block.type === 'tool_result') {
+        // content 兼容纯文本 string 或多模态块数组(text/image);展示层把图像块折成占位标记。
+        const resultText = typeof block.content === 'string'
+          ? block.content
+          : block.content.map(b => b.type === 'text' ? b.text : `[image ${b.source.media_type}]`).join('\n')
+        return `<tool_result tool_use_id="${xmlAttr(block.tool_use_id)}"${block.is_error ? ' is_error="true"' : ''}>${xmlText(resultText)}</tool_result>`
+      }
       if (block.type === 'thinking') return `<thinking>${xmlText(block.thinking)}</thinking>`
       return ''
     }).filter(Boolean),
