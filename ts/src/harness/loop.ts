@@ -1,7 +1,7 @@
 import type { AgentEvent, UsageUpdateEvent } from '../types/events'
 import type { Message, ContentBlock, ToolResultBlock, ToolCall } from '../types/message'
 import { textBlock, toolUseBlock, toolResultBlock, userText } from '../types/message'
-import type { Model, ModelUsage } from '../types/model'
+import type { AssistantStep, Model, ModelStepDelta, ModelStepInput, ModelUsage } from '../types/model'
 import type { ToolContext, ToolProgressEvent, ToolSpec } from '../tools/Tool'
 import type { ToolRegistry } from '../tools/registry'
 import type { Workspace } from '../workspace/workspace'
@@ -65,6 +65,30 @@ import { isVerifyPlanExecutionToolName } from '../tools/verifyPlanExecutionTool'
 import { validateToolInput } from '../tools/inputSchemaValidation'
 import { sanitizeResumeMessages } from './messageSanitize'
 import { getDestructiveCommandWarning } from '../tools/destructiveCommandWarning'
+
+/**
+ * 流式驱动一次 model.step:onDelta 回调在 await 期间到达的正文/推理增量,经 queue+race 交错 yield 成
+ * content_delta 事件(前端打字机);await 结束后返回完整 AssistantStep。非流式模型(fake)不触发 onDelta,
+ * 队列恒空 → 行为与 `await model.step()` 完全一致(向后兼容)。
+ */
+async function* streamModelStep(model: Model, input: ModelStepInput): AsyncGenerator<AgentEvent, AssistantStep> {
+  const queue: AgentEvent[] = []
+  let notify: (() => void) | null = null
+  const wake = (): void => { const n = notify; notify = null; n?.() }
+  const onDelta = (d: ModelStepDelta): void => { queue.push({ type: 'content_delta', channel: d.channel, text: d.text }); wake() }
+  let settled = false
+  let result: AssistantStep | undefined
+  let error: unknown
+  const done = model.step({ ...input, onDelta }).then(v => { result = v }, e => { error = e }).finally(() => { settled = true; wake() })
+  while (true) {
+    while (queue.length > 0) yield queue.shift()!
+    if (settled) break
+    await new Promise<void>(resolve => { notify = resolve })
+  }
+  await done
+  if (error) throw error
+  return result as AssistantStep
+}
 
 /** 命令类工具(run_command/PowerShell)审批时的破坏性警告(纯信息,不影响权限)。 */
 function destructiveWarningForInput(toolName: string, input: unknown): string | null {
@@ -352,7 +376,8 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       const toolsForStep = visibleToolSpecs(registry, revealedToolNames)
       opts.onSummarySnapshot?.({ system, messages: messages.slice(), tools: toolsForStep, contentReplacementState: cloneContentReplacementStateForSnapshot(contentReplacementState) })
       recordPromptCacheState({ trackingKey: promptCacheTrackingKey, system, tools: toolsForStep, model: modelNameForPromptCache })
-      step = await model.step({ system, messages, tools: toolsForStep, signal: opts.signal })
+      // 流式:边流边把正文/推理增量 yield 成 content_delta(前端打字机);await 结束拿完整 step。
+      step = yield* streamModelStep(model, { system, messages, tools: toolsForStep, signal: opts.signal })
     } catch (err) {
       if (!looksLikeContextOverflow(err)) throw err
       const note = await maybeCompact(true)

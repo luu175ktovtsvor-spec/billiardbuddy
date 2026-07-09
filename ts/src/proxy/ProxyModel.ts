@@ -73,7 +73,7 @@ export class ProxyModel implements Model {
       throw new Error(`模型请求失败 ${resp.status}:${detail.slice(0, 500)}`)
     }
 
-    const read = await this.readResponse(resp)
+    const read = await this.readResponse(resp, input.onDelta)
     return toAssistantStep(read.acc, read.notices)
   }
 
@@ -100,11 +100,11 @@ export class ProxyModel implements Model {
     }
   }
 
-  private async readResponse(resp: Response): Promise<{ acc: AccumulatedResponse; notices?: string[] }> {
+  private async readResponse(resp: Response, onDelta?: ModelStepInput['onDelta']): Promise<{ acc: AccumulatedResponse; notices?: string[] }> {
     const ct = resp.headers.get('content-type') ?? ''
     if (ct.includes('text/event-stream') && resp.body) {
       const guarded = withStreamIdleTimeout(resp.body, this.cfg.idleTimeoutMs ?? DEFAULT_IDLE_MS)
-      return { acc: await accumulateOpenAiStream(guarded, { idFactory: this.cfg.idFactory }) }
+      return { acc: await accumulateOpenAiStream(guarded, { idFactory: this.cfg.idFactory, onDelta }) }
     }
     // 非 SSE(错误体已在上面拦掉;这里是 200 但 JSON 的兼容上游)。belt-and-suspenders:整段不可解析
     // (非 JSON / 结构畸形到翻译层也兜不住)时降级空结果,不让 step() 崩出去——SSE 分支的空闲超时+

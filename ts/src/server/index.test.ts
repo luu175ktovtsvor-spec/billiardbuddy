@@ -2993,9 +2993,10 @@ test('WS /agent/ws runs a turn and replays persisted events after disconnect', a
     expect(await client.next()).toMatchObject({ type: 'ready', conversationId: 'ws-run' })
     client.ws.send(JSON.stringify({ type: 'run', message: '列目录', permissionMode: 'full' }))
     const events = await collectWsEvents(client)
-    expect(events.map(e => e.event?.type).filter(Boolean)).toEqual(['tool_call', 'tool_result', 'final', 'done'])
+    // content_delta 是实时 token 流(不持久化),从结构断言里过滤掉
+    expect(events.map(e => e.event?.type).filter((t): t is string => Boolean(t) && t !== 'content_delta')).toEqual(['tool_call', 'tool_result', 'final', 'done'])
     expect(JSON.stringify(events)).toContain('ws 完成')
-    expect(events.every(e => e.type !== 'event' || e.seq > 0)).toBe(true)
+    expect(events.every(e => e.type !== 'event' || e.event?.type === 'content_delta' || e.seq > 0)).toBe(true)
     client.close()
 
     const replay = wsClient(`ws://127.0.0.1:${wsServer.port}/agent/ws?conversationId=ws-run&after=1`)
