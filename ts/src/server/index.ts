@@ -2620,17 +2620,6 @@ export function startServer(opts: StartServerOptions = {}) {
     return body
   }
 
-  function costPayload() {
-    return {
-      month: new Date().toISOString().slice(0, 7),
-      calls: 0,
-      input_tokens: 0,
-      output_tokens: 0,
-      est_cost_yuan: 0,
-      byok_enabled: false,
-    }
-  }
-
   async function handleCanvasRoute(url: URL, req: Request): Promise<Response | null> {
     if (!url.pathname.startsWith('/api/v1/canvas/')) return null
     const action = url.pathname.slice('/api/v1/canvas/'.length)
@@ -3166,11 +3155,6 @@ export function startServer(opts: StartServerOptions = {}) {
       const canvasResponse = await handleCanvasRoute(url, req)
       if (canvasResponse) return canvasResponse
 
-      if (url.pathname === '/api/v1/auth/me') {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        return Response.json({ id: 'local-user', email: 'local@desktop', name: '本地用户' })
-      }
-
       if (url.pathname === '/api/v1/stores' && req.method === 'POST') {
         const body = await req.json().catch(() => ({})) as Record<string, unknown>
         return Response.json(await desktopData.updateStore(body), { status: 201 })
@@ -3302,27 +3286,9 @@ export function startServer(opts: StartServerOptions = {}) {
         return Response.json({ hits: await storeDocs.search(query, top, { paths }) })
       }
 
-      if (url.pathname === '/api/v1/dashboard/today') {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        return Response.json(await desktopData.dashboardToday())
-      }
-
-      if (url.pathname === '/api/v1/dashboard/adopt-rec' || url.pathname === '/api/v1/dashboard/dismiss-rec') {
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        const id = typeof body.rec_id === 'string' ? body.rec_id : ''
-        if (url.pathname.endsWith('/dismiss-rec')) return Response.json(await desktopData.dismissRecommendation(id))
-        return Response.json({ status: 'ok', rec_id: id })
-      }
-
       if (url.pathname === '/api/v1/notifications') {
         if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
         return Response.json(await desktopData.notificationsAfter(numberFrom(url.searchParams.get('after'), 0)))
-      }
-
-      if (url.pathname === '/api/v1/quota/cost') {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        return Response.json(costPayload())
       }
 
       if (url.pathname === '/model/health/clear' || url.pathname === '/api/model/health/clear') {

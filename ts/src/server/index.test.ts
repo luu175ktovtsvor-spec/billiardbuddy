@@ -111,7 +111,7 @@ test('GET /health returns 200 ok', async () => {
 })
 
 test('local dev CORS allows localhost frontend origins', async () => {
-  const preflight = await fetch(`http://127.0.0.1:${server.port}/api/v1/auth/me`, {
+  const preflight = await fetch(`http://127.0.0.1:${server.port}/health`, {
     method: 'OPTIONS',
     headers: {
       origin: 'http://127.0.0.1:3100',
@@ -122,7 +122,7 @@ test('local dev CORS allows localhost frontend origins', async () => {
   expect(preflight.status).toBe(204)
   expect(preflight.headers.get('access-control-allow-origin')).toBe('http://127.0.0.1:3100')
 
-  const res = await fetch(`http://127.0.0.1:${server.port}/api/v1/auth/me`, {
+  const res = await fetch(`http://127.0.0.1:${server.port}/health`, {
     headers: { origin: 'http://127.0.0.1:3100' },
   })
   expect(res.status).toBe(200)
@@ -366,9 +366,6 @@ test('desktop product compatibility endpoints are served by TS without Python', 
   const productServer = startServer({ port: 0, transcriptRoot: root, mcpConfigPath: join(root, 'missing.mcp.json') })
   const base = `http://127.0.0.1:${productServer.port}`
   try {
-    const me = await (await fetch(`${base}/api/v1/auth/me`)).json() as any
-    expect(me.id).toBe('local-user')
-
     const store = await (await fetch(`${base}/api/v1/stores/me`, {
       method: 'PUT',
       body: JSON.stringify({ name: '九号台球', table_count: 12 }),
@@ -409,15 +406,8 @@ test('desktop product compatibility endpoints are served by TS without Python', 
     })).json() as any
     expect(scopedDocHits.hits).toEqual([])
 
-    const dashboard = await (await fetch(`${base}/api/v1/dashboard/today`)).json() as any
-    expect(dashboard.greeting).toContain('九号台球')
-    expect(Array.isArray(dashboard.recommendations)).toBe(true)
-
     const notifications = await (await fetch(`${base}/api/v1/notifications?after=0`)).json() as any
     expect(notifications).toMatchObject({ items: [], cursor: 0 })
-
-    const cost = await (await fetch(`${base}/api/v1/quota/cost`)).json() as any
-    expect(cost).toMatchObject({ est_cost_yuan: 0 })
 
     const backup = await fetch(`${base}/api/v1/backup/export`)
     expect(backup.headers.get('content-type')).toContain('application/json')
