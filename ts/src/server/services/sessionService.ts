@@ -30,6 +30,15 @@ export interface SessionMeta {
   lastEventSeq?: number
 }
 
+/** 项目(工作区)聚合摘要:多项目 App 的"最近项目"选择器用。 */
+export interface ProjectSummary {
+  workspaceRoot: string
+  sessionCount: number
+  lastUpdatedAt: string
+  lastSessionId: string
+  lastTitle: string
+}
+
 function nowIso(): string {
   return new Date().toISOString()
 }
@@ -74,9 +83,42 @@ export class SessionService {
     this.indexPath = join(rootDir, 'sessions.json')
   }
 
-  async list(): Promise<SessionMeta[]> {
+  async list(filter?: { workspaceRoot?: string }): Promise<SessionMeta[]> {
     const index = await this.readIndex()
-    return [...index.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    let metas = [...index.values()]
+    if (filter?.workspaceRoot) metas = metas.filter(m => m.workspaceRoot === filter.workspaceRoot)
+    return metas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  }
+
+  /** 按项目(workspaceRoot)聚合会话 → 最近项目列表(对齐 cc 多项目 App 的项目选择器/recent-projects)。 */
+  async recentProjects(limit = 20): Promise<ProjectSummary[]> {
+    const index = await this.readIndex()
+    const byRoot = new Map<string, ProjectSummary>()
+    for (const m of index.values()) {
+      const existing = byRoot.get(m.workspaceRoot)
+      if (!existing) {
+        byRoot.set(m.workspaceRoot, { workspaceRoot: m.workspaceRoot, sessionCount: 1, lastUpdatedAt: m.updatedAt, lastSessionId: m.id, lastTitle: m.title })
+      } else {
+        existing.sessionCount++
+        if (m.updatedAt > existing.lastUpdatedAt) {
+          existing.lastUpdatedAt = m.updatedAt
+          existing.lastSessionId = m.id
+          existing.lastTitle = m.title
+        }
+      }
+    }
+    return [...byRoot.values()].sort((a, b) => b.lastUpdatedAt.localeCompare(a.lastUpdatedAt)).slice(0, Math.max(1, limit))
+  }
+
+  /** 会话 fork:用新 id 拷贝源会话的 transcript 续接(对齐 cc --fork-session:SDK forkSession 未实现,属会话级拷贝)。 */
+  async fork(sourceId: string, opts: { title?: string } = {}): Promise<SessionMeta> {
+    validateSessionId(sourceId)
+    const source = (await this.readIndex()).get(sourceId)
+    if (!source) throw new Error('源会话不存在')
+    const forked = await this.create({ title: opts.title?.trim() || `${source.title}(副本)`, workspaceRoot: source.workspaceRoot })
+    const srcMessages = await this.transcript(sourceId).load().catch(() => [] as Message[])
+    if (srcMessages.length > 0) await this.transcript(forked.id).save(srcMessages)
+    return forked
   }
 
   async get(id: string): Promise<SessionMeta | null> {

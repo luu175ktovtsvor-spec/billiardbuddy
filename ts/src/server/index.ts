@@ -4085,9 +4085,17 @@ export function startServer(opts: StartServerOptions = {}) {
         return new Response('Method not allowed', { status: 405 })
       }
 
+      // 最近项目(按 workspaceRoot 聚合会话):多项目 App 的项目选择器数据源。
+      if (url.pathname === '/sessions/projects' && req.method === 'GET') {
+        const limit = numberFrom(url.searchParams.get('limit') ?? undefined, 20)
+        return Response.json({ projects: await sessions.recentProjects(limit) })
+      }
+
       if (url.pathname === '/sessions') {
         if (req.method === 'GET') {
-          return Response.json({ sessions: await sessions.list() })
+          // ?workspaceRoot= 按项目过滤会话列表(项目视图)。
+          const workspaceRoot = url.searchParams.get('workspaceRoot') ?? undefined
+          return Response.json({ sessions: await sessions.list(workspaceRoot ? { workspaceRoot } : undefined) })
         }
         if (req.method === 'POST') {
           const body = await req.json().catch(() => ({})) as Record<string, unknown>
@@ -4097,6 +4105,18 @@ export function startServer(opts: StartServerOptions = {}) {
             workspaceRoot: stringOr(body.workspaceRoot, process.cwd()),
           })
           return Response.json({ session: meta })
+        }
+      }
+
+      // 会话 fork:用新 id 拷贝源会话 transcript 续接(对齐 cc --fork-session)。
+      const sessionForkMatch = url.pathname.match(/^\/sessions\/([^/]+)\/fork$/)
+      if (sessionForkMatch && req.method === 'POST') {
+        const body = await req.json().catch(() => ({})) as Record<string, unknown>
+        try {
+          const forked = await sessions.fork(decodeURIComponent(sessionForkMatch[1]!), { title: typeof body.title === 'string' ? body.title : undefined })
+          return Response.json({ session: forked })
+        } catch (err) {
+          return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 404 })
         }
       }
 
