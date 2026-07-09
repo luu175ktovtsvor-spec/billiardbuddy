@@ -1,6 +1,7 @@
 import { mkdir, open, readdir, readFile, rename } from 'node:fs/promises'
 import { join } from 'node:path'
 import { existsSync } from 'node:fs'
+import { getUserConfigHomeDir, MEMORY_DOT_DIR } from '../harness/memoryNames'
 
 export interface PluginListItem {
   name: string
@@ -52,8 +53,10 @@ export function defaultPluginRoots(env: Record<string, string | undefined> = pro
     return [join(base, 'plugins')]
   }
   return [
-    join(homeFrom(env), '.claude', 'plugins'),
-    join(process.cwd(), '.claude', 'plugins'),
+    // 白标:用户全局插件根走 memoryNames.getUserConfigHomeDir()(~/.billiardbuddy,env
+    // BILLIARDBUDDY_CONFIG_DIR 可覆盖),绝不读 ~/.claude;项目级用 MEMORY_DOT_DIR(.billiardbuddy)。
+    join(getUserConfigHomeDir(), 'plugins'),
+    join(process.cwd(), MEMORY_DOT_DIR, 'plugins'),
     ...(env.DESKTOP_LIBRARY_DIR ? [join(env.DESKTOP_LIBRARY_DIR, 'plugins')] : []),
   ]
 }
@@ -63,7 +66,7 @@ export function defaultPluginInstallDir(env: Record<string, string | undefined> 
     const base = env.DESKTOP_LIBRARY_DIR || join(homeFrom(env), '.billiards-desktop', 'library')
     return join(base, 'plugins')
   }
-  return join(homeFrom(env), '.claude', 'plugins')
+  return join(getUserConfigHomeDir(), 'plugins')
 }
 
 export async function listPlugins(roots = defaultPluginRoots()): Promise<PluginListItem[]> {
