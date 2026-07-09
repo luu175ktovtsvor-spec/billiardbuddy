@@ -8,7 +8,8 @@ import type { ToolContext } from './Tool'
 import type { Sandbox } from '../sandbox/sandbox'
 import { runCommandTool } from './runCommandTool'
 import { StreamingOutputSanitizer, stripAnsiControlSequences } from './outputSanitize'
-import { classifyCommandRisk, gitDiffNoIndexSensitivePathNeedsApproval, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellCdGitNeedsApproval, shellCdWriteNeedsApproval, shellDangerousRemovalNeedsApproval, shellGitInternalWriteNeedsApproval, shellMvCpFlagsNeedApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval, shellSensitiveReadNeedsApproval } from './dangerousCommand'
+import { classifyCommandRisk, extractReadCommandPaths, gitDiffNoIndexSensitivePathNeedsApproval, hasShellExpansionRisk, hasShellParserRisk, isDangerousCommand, shellBareGitRepoCwdNeedsApproval, shellCdGitNeedsApproval, shellCdWriteNeedsApproval, shellDangerousRemovalNeedsApproval, shellGitInternalWriteNeedsApproval, shellMvCpFlagsNeedApproval, shellOutputRedirectionNeedsApproval, shellSandboxedGitCwdNeedsApproval, shellSensitiveReadNeedsApproval } from './dangerousCommand'
+import { shellExternalReadNeedsApproval } from './readCommandBoundary'
 import { resolvePermission } from '../permissions/resolve'
 import { applyPermissionUpdates } from '../permissions/permissionUpdate'
 
@@ -1042,5 +1043,140 @@ describe('run_command × Sandbox 接线(Task 6)', () => {
     const ws = new Workspace(realpathSync(mkdtempSync(join(tmpdir(), 'w3-rc-'))))
     const out = await runCommandTool.execute({ command: 'echo PLAIN' }, { workspace: ws })
     expect(out).toContain('PLAIN')
+  })
+})
+
+describe('读命令工作区边界(P0:对齐 cc-haha BashTool/pathValidation.ts 的 PATH_EXTRACTORS + checkPathConstraints)', () => {
+  // 用不带敏感文件名的外部路径(/etc/hostname 而非 /etc/passwd)——本项目 isSensitivePathToken 里
+  // 'passwd' 本身命中敏感名正则,/etc/passwd 早被既有 shellSensitiveReadNeedsApproval 挡住,
+  // 不能证明这是"新增的边界判定"在生效;换一个非敏感名的真实外部路径才是本任务要补的缺口。
+  test('工作区内正常读命令不误伤(cat/ls/find/grep/head/sort/diff/jq/sed 只读变体)', () => {
+    writeFileSync(join(root, 'package.json'), '{}')
+    writeFileSync(join(root, 'README.md'), 'hi\n')
+    writeFileSync(join(root, 'notes.txt'), 'l1\nl2\nl3\n')
+    writeFileSync(join(root, 'data.json'), '{"a":1}')
+    mkdirSync(join(root, 'src'), { recursive: true })
+    writeFileSync(join(root, 'src', 'a.ts'), '// TODO\n')
+
+    expect(shellExternalReadNeedsApproval('cat package.json', root, ctx)).toBe(false)
+    expect(shellExternalReadNeedsApproval('ls .', root, ctx)).toBe(false)
+    expect(shellExternalReadNeedsApproval('ls', root, ctx)).toBe(false)
+    expect(shellExternalReadNeedsApproval('find . -name "*.ts"', root, ctx)).toBe(false)
+    expect(shellExternalReadNeedsApproval('grep TODO src', root, ctx)).toBe(false)
+    expect(shellExternalReadNeedsApproval('head -n 5 README.md', root, ctx)).toBe(false)
+    expect(shellExternalReadNeedsApproval('sort notes.txt', root, ctx)).toBe(false)
+    expect(shellExternalReadNeedsApproval('diff package.json data.json', root, ctx)).toBe(false)
+    expect(shellExternalReadNeedsApproval("jq '.' data.json", root, ctx)).toBe(false)
+    expect(shellExternalReadNeedsApproval("sed -n '1,2p' notes.txt", root, ctx)).toBe(false)
+    // 纯 stdin 管道(无路径参数)不误伤
+    expect(shellExternalReadNeedsApproval('printf "abc\\n" | grep zzz', root, ctx)).toBe(false)
+    expect(shellExternalReadNeedsApproval('cat -', root, ctx)).toBe(false)
+  })
+
+  test('工作区外绝对路径需要审批(cat/head/stat/find -newer/jq)', () => {
+    expect(shellExternalReadNeedsApproval('cat /etc/hostname', root, ctx)).toBe(true)
+    expect(shellExternalReadNeedsApproval('head -n 3 /etc/hostname', root, ctx)).toBe(true)
+    expect(shellExternalReadNeedsApproval('stat /etc/hostname', root, ctx)).toBe(true)
+    expect(shellExternalReadNeedsApproval('find . -newer /etc/hostname', root, ctx)).toBe(true)
+    expect(shellExternalReadNeedsApproval("jq '.' /etc/hosts", root, ctx)).toBe(true)
+  })
+
+  test('任务里点名的 /etc/passwd、../../../etc/passwd 两条例子也被边界判定独立覆盖(不只靠敏感文件名判定)', () => {
+    // /etc/passwd 的 basename 'passwd' 本身命中 isSensitivePathToken,shellSensitiveReadNeedsApproval
+    // 早已挡它——但这条断言证明就算只看新增的越界判定(不看敏感文件名),它照样会被独立挡下,
+    // 不是靠"文件名恰好敏感"侥幸过关。
+    expect(shellExternalReadNeedsApproval('cat /etc/passwd', root, ctx)).toBe(true)
+    expect(shellExternalReadNeedsApproval('cat ../../../etc/passwd', root, ctx)).toBe(true)
+  })
+
+  test('`../../../etc/hostname` 相对穿越逃出工作区需要审批', () => {
+    expect(shellExternalReadNeedsApproval('cat ../../../etc/hostname', root, ctx)).toBe(true)
+    // 相对路径按命令实际执行的 cwd(工作区子目录)展开,而不是死按 workspace.root 展开
+    mkdirSync(join(root, 'packages', 'app'), { recursive: true })
+    expect(shellExternalReadNeedsApproval('cat ../../../../etc/hostname', join(root, 'packages', 'app'), ctx)).toBe(true)
+    expect(shellExternalReadNeedsApproval('cat ../app', join(root, 'packages', 'app'), ctx)).toBe(false)
+  })
+
+  test('`grep -r pattern ~/dir` 命中 -r 时仍能正确提出真实路径(不是把 pattern 误当 -r 的值吃掉)', () => {
+    // 回归防呆:grep 的 -r 是布尔(recursive),rg 的 -r/--replace 才吃参数;两者不能共用一张 flag 表,
+    // 否则 `grep -r secret ~/other-project` 会把 'secret' 当成 -r 的值跳过、'~/other-project' 误判成 pattern,
+    // extractReadCommandPaths 就提不出真实路径、静默漏判。
+    expect(extractReadCommandPaths('grep -r secret ~/other-project')).toEqual(['~/other-project'])
+    expect(shellExternalReadNeedsApproval('grep -r secret ~/other-project', root, ctx)).toBe(true)
+    // 工作区内 -r 递归搜索不误伤
+    mkdirSync(join(root, 'src'), { recursive: true })
+    writeFileSync(join(root, 'src', 'a.ts'), 'ok\n')
+    expect(shellExternalReadNeedsApproval('grep -r TODO src', root, ctx)).toBe(false)
+  })
+
+  test('~root / ~+ / ~- 波浪号变体一律当越界处理(与 cc validatePath 对齐,不是漏判就是拒识别)', () => {
+    expect(shellExternalReadNeedsApproval('cat ~root/.ssh/id_rsa', root, ctx)).toBe(true)
+    expect(shellExternalReadNeedsApproval('cat ~+/foo.txt', root, ctx)).toBe(true)
+  })
+
+  test('UNC 路径(win 专属,对齐 cc containsVulnerableUncPath 的平台门):随 process.platform 走既有 Workspace 边界', () => {
+    // isVulnerableUncPath 只在 win32 生效(与 cc 完全对齐,见 workspace/pathValidation.test.ts);
+    // resolvePathWithAdditionalWorkingDirectories → Workspace.resolve → validatePath 这条既有链路
+    // 不透传 platform 覆盖,永远读 process.platform——非 win 环境下反斜杠不是分隔符,
+    // `\\server\share\x` 被当成字面文件名、落在 cwd 内,和 cc 在非 Windows 平台"UNC 检测恒 false"一致。
+    expect(shellExternalReadNeedsApproval('cat \\\\server\\share\\x', root, ctx)).toBe(process.platform === 'win32')
+  })
+
+  test('grep -f(模式文件)cc 不校验其路径,原样对齐——不是本次新增的能力', () => {
+    mkdirSync(join(root, 'somedir'), { recursive: true })
+    // -f 的值被当"模式文件"吃掉、不进入路径列表,和 cc parsePatternCommand 一致;
+    // 真正的搜索目标 '.' 仍会被正常提取和校验。
+    expect(extractReadCommandPaths('grep -f /etc/hostname .')).toEqual(['.'])
+    expect(shellExternalReadNeedsApproval('grep -f /etc/hostname .', root, ctx)).toBe(false)
+  })
+
+  test('sed -f(脚本文件)命令本身已经总要审批,不依赖本次新增的边界判定', () => {
+    // sedCommandIsReadOnly 对任何 -f 用法都判 false → sed -f 走 'file' 风险(见 classifySedCommand),
+    // extractReadCommandPaths 对这类命令直接不提取路径(是 sed 分支自身的只读网关,不是遗漏)——
+    // sed -f 本就不会落到 'read' 风险、本就总要审批,不需要靠这里的边界判定补漏。
+    expect(extractReadCommandPaths('sed -f /etc/hostname file.txt')).toEqual([])
+    expect(classifyCommandRisk('sed -f /etc/hostname file.txt')).toBe('file')
+  })
+
+  test('git diff --no-index 读取工作区外目标需要审批', () => {
+    writeFileSync(join(root, 'a.txt'), 'x\n')
+    expect(shellExternalReadNeedsApproval('git diff --no-index a.txt /etc/hostname', root, ctx)).toBe(true)
+  })
+
+  test('已授权的 additionalWorkingDirectories 内读取不误伤', async () => {
+    const externalRoot = realpathSync(mkdtempSync(join(tmpdir(), 'run-read-')))
+    try {
+      writeFileSync(join(externalRoot, 'note.txt'), 'hi\n')
+      expect(shellExternalReadNeedsApproval(`cat ${join(externalRoot, 'note.txt')}`, root, ctx)).toBe(true)
+      const granted = applyPermissionUpdates(ctx, [
+        { type: 'addDirectories', destination: 'session', directories: [externalRoot] },
+      ])
+      expect(shellExternalReadNeedsApproval(`cat ${join(externalRoot, 'note.txt')}`, root, granted)).toBe(false)
+    } finally {
+      rmSync(externalRoot, { recursive: true, force: true })
+    }
+  })
+
+  test('full-disk-access 会话(桌面全盘模式)不再需要审批', () => {
+    const fullDiskCtx: ToolContext = { workspace: new Workspace(root, { fullDiskAccess: true }) }
+    expect(shellExternalReadNeedsApproval('cat /etc/hostname', root, fullDiskCtx)).toBe(false)
+  })
+
+  test('接进 run_command 风险判定:越界读命令在 auto_files 档位下要求审批,区内读命令仍直接放行', () => {
+    writeFileSync(join(root, 'package.json'), '{}')
+    expect(resolvePermission(runCommandTool, { command: 'cat /etc/hostname' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+      behavior: 'ask',
+      approvalClass: 'outreach',
+    })
+    expect(resolvePermission(runCommandTool, { command: 'cat package.json' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
+      behavior: 'allow',
+    })
+  })
+
+  test('run_command 预览/审批理由体现越界读取信号', async () => {
+    const preview = await runCommandTool.previewFor?.({ command: 'cat /etc/hostname' }, ctx)
+    expect(preview).toContain('external_read: true')
+    const reason = runCommandTool.approvalReasonFor?.({ command: 'cat /etc/hostname' }, ctx)
+    expect(reason?.why).toContain('超出了当前工作区')
   })
 })

@@ -3291,6 +3291,206 @@ function findCommandTouchesSensitivePath(args: string[]): boolean {
   return false
 }
 
+// ── 读命令路径提取(供工作区边界判定复用,对齐 cc-haha src/tools/BashTool/pathValidation.ts 的 PATH_EXTRACTORS)──
+// 只覆盖当前会落到 'read' 风险(即会被自动放行)的读命令:sed 只在只读变体(sedCommandIsReadOnly)才提取,
+// 写 sed 已经在 classifySedCommand 里落 'file' 风险,不需要再判边界。awk 现状在 classifySegment 里落到
+// 末尾兜底 'file'(从不自动放行),df/du 对齐 cc 本身也不在 PATH_EXTRACTORS 里(cc 把它们归进纯正则
+// READONLY_COMMANDS、不做路径校验)——这两类不重复扩大范围,cc 没做的不自造。
+const SIMPLE_READ_PATH_COMMANDS = new Set([
+  'cat', 'head', 'tail', 'sort', 'uniq', 'wc', 'cut', 'paste', 'column',
+  'file', 'stat', 'diff', 'strings', 'hexdump', 'od', 'base64', 'nl',
+  'sha256sum', 'sha1sum', 'md5sum',
+])
+const JQ_FLAGS_WITH_ARGS = new Set([
+  '-e', '--expression', '-f', '--from-file', '--arg', '--argjson',
+  '--slurpfile', '--rawfile', '--args', '--jsonargs', '-L', '--library-path',
+  '--indent', '--tab',
+])
+
+/**
+ * 提取一条命令里所有"会被读取"的路径参数(跨 ; && || | 等分段),给工作区边界判定用
+ * (shellExternalReadNeedsApproval,见 runCommandTool.ts)。只做提取,不判越界——判越界要连
+ * workspace/additionalWorkingDirectories,那层留给调用方(dangerousCommand.ts 保持纯词法、不依赖 ctx)。
+ */
+export function extractReadCommandPaths(command: string): string[] {
+  const commandForClassification = stripSafeHeredocSubstitutions(command) ?? command
+  const paths: string[] = []
+  for (const segment of splitSegments(commandForClassification)) {
+    const rawCommand = normalize(stripShellClassificationWrappers(segment))
+    paths.push(...extractReadCommandPathsForSegment(rawCommand))
+  }
+  return paths
+}
+
+function extractReadCommandPathsForSegment(command: string): string[] {
+  const tokens = tokenizeShellWords(command)
+  const base = tokens[0]?.toLowerCase()
+  if (!base) return []
+
+  if (base === 'git') {
+    if (tokens[1]?.toLowerCase() !== 'diff') return []
+    const diffArgs = tokens.slice(2)
+    if (!diffArgs.some(arg => arg === '--no-index')) return []
+    return extractGitDiffNoIndexPaths(diffArgs)
+  }
+
+  const args = tokens.slice(1)
+  if (base === 'ls') {
+    const lsPaths = extractSimplePositionalPathArgs(args)
+    return lsPaths.length > 0 ? lsPaths : ['.']
+  }
+  if (SIMPLE_READ_PATH_COMMANDS.has(base)) return extractSimplePositionalPathArgs(args)
+  if (base === 'find') return extractFindReadPathArgs(args)
+  if (base === 'grep') return extractGrepReadPathArgs(args)
+  if (base === 'rg') return extractRgReadPathArgs(args)
+  if (base === 'sed') return sedCommandIsReadOnly(tokens) ? extractSedReadPathArgs(args) : []
+  if (base === 'jq') return extractJqReadPathArgs(args)
+  return []
+}
+
+// cat/head/tail/sort/.../ls:cc filterOutFlags——过滤掉以 `-` 开头的 flag,`--` 之后一律当路径。
+function extractSimplePositionalPathArgs(args: string[]): string[] {
+  const paths: string[] = []
+  let afterDoubleDash = false
+  for (const arg of args) {
+    if (!arg) continue
+    if (!afterDoubleDash && arg === '--') { afterDoubleDash = true; continue }
+    if (!afterDoubleDash && arg.startsWith('-')) continue
+    paths.push(arg)
+  }
+  return paths
+}
+
+// find:与 findCommandTouchesSensitivePath 同结构(收集非 flag 位置参数 + 吃路径值的
+// -newer/-samefile/-path/... flag),对齐 cc find PATH_EXTRACTORS;无路径时默认当前目录。
+function extractFindReadPathArgs(args: string[]): string[] {
+  const paths: string[] = []
+  let foundNonGlobalFlag = false
+  let afterDoubleDash = false
+  const pathTakingFlags = new Set([
+    '-newer', '-anewer', '-cnewer', '-mnewer', '-samefile',
+    '-path', '-wholename', '-ilname', '-lname', '-ipath', '-iwholename',
+  ])
+  const newerPattern = /^-newer[acmBt][acmtB]$/
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (!arg) continue
+    if (afterDoubleDash) { paths.push(arg); continue }
+    if (arg === '--') { afterDoubleDash = true; continue }
+    if (arg.startsWith('-')) {
+      if (['-H', '-L', '-P'].includes(arg)) continue
+      foundNonGlobalFlag = true
+      if ((pathTakingFlags.has(arg) || newerPattern.test(arg)) && i + 1 < args.length) {
+        paths.push(args[i + 1]!)
+        i++
+      }
+      continue
+    }
+    if (!foundNonGlobalFlag) paths.push(arg)
+  }
+  return paths.length > 0 ? paths : ['.']
+}
+
+// grep/rg 各自独立的"吃下一个参数"flag 表,对齐 cc parsePatternCommand 的两份独立表——不能共用本文件
+// 顶部给敏感文件名判定用的 GREP_RG_FLAGS_WITH_ARGS(那份把两家合并了)。合并表会把 grep 的布尔 flag
+// `-r`(recursive,不吃参数)误当成 rg 的 `-r`/`--replace`(吃参数)来吃掉下一个位置参数,
+// 导致 `grep -r secret ~/other-project` 把 `secret` 当成 -r 的值吞掉、`~/other-project` 误判成 pattern、
+// 提不出真实路径——这正是本任务要挡的典型例子,必须精确对齐 cc 两张分开的表。
+const GREP_PATH_FLAGS_WITH_ARGS = new Set([
+  '-e', '--regexp', '-f', '--file', '--exclude', '--include',
+  '--exclude-dir', '--include-dir', '-m', '--max-count',
+  '-A', '--after-context', '-B', '--before-context', '-C', '--context',
+])
+const RG_PATH_FLAGS_WITH_ARGS = new Set([
+  '-e', '--regexp', '-f', '--file', '-t', '--type', '-T', '--type-not',
+  '-g', '--glob', '-m', '--max-count', '--max-depth', '-r', '--replace',
+  '-A', '--after-context', '-B', '--before-context', '-C', '--context',
+])
+
+// grep:对齐 cc parsePatternCommand——命中 pattern 前第一个非 flag 是 pattern,之后才是路径;
+// -f/--file 的值是"模式文件",cc 只吃掉不计入路径(与 sed 的 -f 不同,见 extractSedReadPathArgs)。
+function extractGrepReadPathArgs(args: string[]): string[] {
+  const paths = extractPatternCommandPathArgs(args, GREP_PATH_FLAGS_WITH_ARGS)
+  if (paths.length > 0) return paths
+  return args.some(arg => arg === '-r' || arg === '-R' || arg === '--recursive') ? ['.'] : []
+}
+
+// rg:同 grep,但没有路径时 cc 默认当前目录(parsePatternCommand(args, flags, ['.']))。
+function extractRgReadPathArgs(args: string[]): string[] {
+  const paths = extractPatternCommandPathArgs(args, RG_PATH_FLAGS_WITH_ARGS)
+  return paths.length > 0 ? paths : ['.']
+}
+
+function extractPatternCommandPathArgs(args: string[], flagsWithArgs: Set<string>): string[] {
+  const paths: string[] = []
+  let patternFound = false
+  let afterDoubleDash = false
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (!arg) continue
+    if (!afterDoubleDash && arg === '--') { afterDoubleDash = true; continue }
+    if (!afterDoubleDash && arg.startsWith('-')) {
+      const [flag, inline] = splitLongFlag(arg)
+      if (flag === '-e' || flag === '--regexp' || flag === '-f' || flag === '--file') patternFound = true
+      if (flagsWithArgs.has(flag) && inline === undefined) i++
+      continue
+    }
+    if (!patternFound) { patternFound = true; continue }
+    paths.push(arg)
+  }
+  return paths
+}
+
+// sed(只读变体,调用方已用 sedCommandIsReadOnly 网关):cc sed 提取器——脚本前第一个非 flag 是脚本,
+// 之后是文件;-f/--file 的值是"脚本文件",cc 会把它计入路径(与 grep 的 -f 不同)。
+function extractSedReadPathArgs(args: string[]): string[] {
+  const paths: string[] = []
+  let scriptFound = false
+  let afterDoubleDash = false
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (!arg) continue
+    if (!afterDoubleDash && arg === '--') { afterDoubleDash = true; continue }
+    if (!afterDoubleDash && arg.startsWith('-')) {
+      const [flag, inline] = splitLongFlag(arg)
+      if (SED_PATH_FLAGS.has(flag)) {
+        scriptFound = true
+        if (inline !== undefined) paths.push(inline)
+        else if (i + 1 < args.length) { paths.push(args[i + 1]!); i++ }
+        continue
+      }
+      if (flag === '-e' || flag === '--expression') scriptFound = true
+      if (SED_FLAGS_WITH_ARGS.has(flag) && inline === undefined) i++
+      continue
+    }
+    if (!scriptFound) { scriptFound = true; continue }
+    paths.push(arg)
+  }
+  return paths
+}
+
+// jq:filter 命中前第一个非 flag 是 filter,之后是文件(cc jq 提取器;没有路径时读 stdin,不给默认值)。
+function extractJqReadPathArgs(args: string[]): string[] {
+  const paths: string[] = []
+  let filterFound = false
+  let afterDoubleDash = false
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (!arg) continue
+    if (!afterDoubleDash && arg === '--') { afterDoubleDash = true; continue }
+    if (!afterDoubleDash && arg.startsWith('-')) {
+      const [flag, inline] = splitLongFlag(arg)
+      if (flag === '-e' || flag === '--expression') filterFound = true
+      if (JQ_FLAGS_WITH_ARGS.has(flag) && inline === undefined) i++
+      continue
+    }
+    if (!filterFound) { filterFound = true; continue }
+    paths.push(arg)
+  }
+  return paths
+}
+
 function removalCommandTouchesDangerousPath(command: string, cwd = process.cwd()): boolean {
   const tokens = tokenizeShellWords(command)
   const base = tokens[0]?.toLowerCase()
