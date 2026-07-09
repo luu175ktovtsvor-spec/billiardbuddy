@@ -51,6 +51,8 @@ export type AgentEvent =
       token: string
       preview?: string
       reason?: { what: string; why: string; impact: string }
+      /** 破坏性命令的人话警告(如"注意:可能递归删除文件"),纯信息性,审批卡显示用。 */
+      warning?: string
       rememberable?: boolean
     }
   | { type: 'steering'; content: string } // 老板插话纠偏,前端渲成用户气泡
