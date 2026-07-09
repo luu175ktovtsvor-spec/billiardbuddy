@@ -10,6 +10,7 @@ import {
   applyStopHooks,
   applySubagentStartHooks,
   applyUserPromptSubmitHooks,
+  matchesToolMatcher,
   mergeHookRegistries,
   parseHookDecisionJSON,
   runHookEvent,
@@ -24,6 +25,42 @@ test('parseHookDecisionJSON:解析 allow/deny/modify/context,非法返回 null',
   expect(parseHookDecisionJSON('{"action":"modify","updatedInput":{"x":1}}')).toEqual({ action: 'modify', updatedInput: { x: 1 }, message: undefined })
   expect(parseHookDecisionJSON('{"action":"context","additionalContext":"note"}')).toEqual({ action: 'context', additionalContext: 'note' })
   expect(parseHookDecisionJSON('bad')).toBeNull()
+})
+
+test('parseHookDecisionJSON:解析 cc hookSpecificOutput.permissionDecision(allow/ask/deny)+ decision:block + 扁平 ask', () => {
+  const hso = (d: string, r?: string) => JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: d, ...(r ? { permissionDecisionReason: r } : {}) } })
+  expect(parseHookDecisionJSON(hso('allow', 'ok'))).toEqual({ action: 'allow', message: 'ok' })
+  expect(parseHookDecisionJSON(hso('ask', '需确认'))).toEqual({ action: 'ask', message: '需确认' })
+  expect(parseHookDecisionJSON(hso('deny', '不行'))).toEqual({ action: 'deny', message: '不行' })
+  // cc 旧格式 decision:'block' → deny
+  expect(parseHookDecisionJSON('{"decision":"block","reason":"stop"}')).toEqual({ action: 'deny', message: 'stop' })
+  // 本项目扁平 ask
+  expect(parseHookDecisionJSON('{"action":"ask","message":"m"}')).toEqual({ action: 'ask', message: 'm' })
+})
+
+test('matchesToolMatcher:* / 精确 / 管道交替 / 正则前缀 / 锚定不误配子串', () => {
+  expect(matchesToolMatcher('*', 'anything')).toBe(true)
+  expect(matchesToolMatcher(undefined, 'anything')).toBe(true)
+  expect(matchesToolMatcher('write_file', 'write_file')).toBe(true)
+  expect(matchesToolMatcher('write_file', 'read_file')).toBe(false)
+  // 管道交替(cc Edit|Write)
+  expect(matchesToolMatcher('edit_file|write_file', 'write_file')).toBe(true)
+  expect(matchesToolMatcher('edit_file|write_file', 'read_file')).toBe(false)
+  // 正则前缀(cc mcp__.*)
+  expect(matchesToolMatcher('mcp__.*', 'mcp__server__tool')).toBe(true)
+  expect(matchesToolMatcher('mcp__.*', 'read_file')).toBe(false)
+  // 锚定:Edit 不误配 MultiEdit
+  expect(matchesToolMatcher('edit', 'multi_edit')).toBe(false)
+})
+
+test('applyPreToolUseHooks:hook 返回 ask → askRequested + askMessage(强制审批信号)', async () => {
+  const c = ctx()
+  const result = await applyPreToolUseHooks({
+    rules: [{ event: 'PreToolUse', matcher: 'run_command', handler: () => ({ action: 'ask', message: '这条命令要确认' }) }],
+  }, 'run_command', { command: 'ls' }, c)
+  expect(result.askRequested).toBe(true)
+  expect(result.askMessage).toBe('这条命令要确认')
+  expect(result.deniedMessage).toBeUndefined()
 })
 
 test('runHookEvent:按事件和 matcher 执行,hook 抛错 fail-closed deny', async () => {
