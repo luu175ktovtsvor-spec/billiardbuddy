@@ -51,8 +51,9 @@ export const WIN_STMT_START = '(?:^\\s*|[|;&\\n({]\\s*|/c\\s+["\']?|-c(?:ommand)
 const WIN_ENV_ROOT =
   '%(?:userprofile|systemroot|windir|systemdrive|homedrive|homepath|appdata|localappdata|programfiles(?:\\(x86\\))?|programdata|public|allusersprofile)%'
 const WINDOWS_DANGEROUS_PATTERNS: RegExp[] = [
-  // format <盘符|/fs:...> —— 格式化磁盘卷(cc FATAL: format-volume 的 cmd 对等)。
-  new RegExp(`${WIN_STMT_START}format(?:\\.com)?\\s+[^|;&\\n]*?(?:["']?[a-z]:|/fs:)`, 'i'),
+  // format <盘符|/fs:...> —— 格式化磁盘卷(参考实现 FATAL: format-volume 的 cmd 对等)。
+  // 盘符可是字面 `c:`、`/fs:` 选项、或根环境变量 `%SystemDrive%`/`%SystemRoot%`(展开即 C:,`format %SystemDrive%` 同样毁盘)。
+  new RegExp(`${WIN_STMT_START}format(?:\\.com)?\\s+[^|;&\\n]*?(?:["']?[a-z]:|["']?${WIN_ENV_ROOT}|/fs:)`, 'i'),
   // diskpart —— 磁盘分区工具,可清空/重建分区表。
   new RegExp(`${WIN_STMT_START}diskpart(?:\\.exe)?\\b`, 'i'),
   // cipher /w —— 安全擦除磁盘空闲空间(不可恢复)。
@@ -89,8 +90,17 @@ const WINDOWS_DANGEROUS_PATTERNS: RegExp[] = [
 export type CommandRisk = 'read' | 'file' | 'outreach' | 'destructive'
 
 export function isDangerousCommand(command: string): boolean {
-  return DANGEROUS_PATTERNS.some(re => re.test(command)) ||
-    WINDOWS_DANGEROUS_PATTERNS.some(re => re.test(command))
+  if (DANGEROUS_PATTERNS.some(re => re.test(command))) return true
+  // cmd.exe 的 `^` 行尾续行:`^` 紧跟换行 = 转义换行、把两行拼成一句(cmd 语法)。先归一再跑 Windows 红线,
+  // 挡住「用续行把危险词和盘符拆到两行」的绕过(如 `format ^<换行>c:`)。仅作用于 Windows 红线判定,
+  // POSIX 红线仍看原文(sh 不认 `^` 续行,避免跨平台误判)。
+  const winView = stripCmdCaretContinuations(command)
+  return WINDOWS_DANGEROUS_PATTERNS.some(re => re.test(winView))
+}
+
+// 归一 cmd.exe 的 `^` 行尾续行(`^` 紧跟换行 = 转义换行、拼行);其余位置的 `^` 保持不动(不处理中缀转义)。
+function stripCmdCaretContinuations(command: string): string {
+  return command.includes('^') ? command.replace(/\^\r?\n/g, '') : command
 }
 
 const SHELL_EXPANSION_PATTERNS: RegExp[] = [
