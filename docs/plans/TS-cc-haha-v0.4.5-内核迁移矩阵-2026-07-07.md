@@ -3499,7 +3499,7 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 2. **配置基座**:cc 有分层用户设置文件 + `/api/settings` REST + 网络设置持久化 + provider 预设库;本项目只有 provider 一柱,其余设置基座缺。
 
 前端/桌面壳(2026-07-09 起步,竖切已跑通):
-3. **桌面壳 Electron 层**:✅基础竖切已建并 macOS 真验证(`cf7eb8f`/`94da001`):main.ts(拉起 sidecar + macOS 原生窗口 hiddenInset + loadURL 服务式前端)+ preload.ts(最小 contextBridge)+ 前端聊天 UI(低噪工具流 + WS,按设计规范走法 B,Playwright 验证)+ ts server frontendRoot 静态服务;desktop:dev 脚本一键起。**待续**:集中 IPC 白名单 + payload 校验、原生能力(托盘/菜单/窗口状态持久化/外链协议白名单 + 可执行文件拦截/导航守卫)、迁入老壳产品能力(文件沙箱选择器/截图问 AI/TTS/全局热键,cc 无);排除 cc 编码 agent 专属(PTY/WebContentsView/trace 窗/portable)。侧栏会话列表/diff 面板/真模型跑通链路待补。
+3. **桌面壳 Electron 层 + 前端主工作流(§9/§10)**:✅Electron 壳(`94da001`:main/preload/窗口/loadURL/desktop:dev)+ 前端低噪工具流已 Playwright 逐项真验证:聊天 UI + **token 流式打字机**(`c908844`)+ **侧栏会话列表**(`2837350`)+ **审批卡含破坏性警告**(`1ab0f38`)+ **彩色 diff 面板**(`574dc72`,§6.5 铁律)+ **专家/领域包挂载入口**(`7dc87cc`,§10,真影响上下文/工具/提示)+ 默认权限档设置消费。**待续**:集中 IPC 白名单 + payload 校验、原生能力(托盘/菜单/窗口状态持久化/外链安全护栏/文件沙箱选择器,需 IPC)、工作区目录树/文件变更列表/右侧预览(§9 richer UI);排除 cc 编码 agent 专属(PTY/WebContentsView/trace 窗/portable)。
 4. **sidecar 生命周期**:✅main.ts app 生命周期挂钩已建(whenReady→reserveServerPort→spawnSidecar→waitForServer→window;before-quit killSidecar;dev bun 直跑/prod 编译二进制)。**待续**:serverRuntime 抽象层(崩溃重启/健康监控)。
 5. ✅**打包分发**(`f54c5f2`):electron-builder.yml(appId/productName/files/extraResources sidecar 二进制/mac dmg+win nsis)+ desktop:dist 脚本 + main.ts prod triple 修复;`electron-builder --dir` macOS 真验证产出 球房管家.app(含 electron 43 + 前端 asar + sidecar 二进制)。**待续**:签名+公证(需 owner 苹果/win 证书)、跨平台 CI 出包矩阵、electron-updater 自动更新(需 owner 定发布渠道)。
 
