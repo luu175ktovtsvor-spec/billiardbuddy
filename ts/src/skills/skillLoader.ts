@@ -1,5 +1,7 @@
+import { existsSync } from 'node:fs'
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
+import { getUserConfigHomeDir, MEMORY_DOT_DIR } from '../harness/memoryNames'
 import { extractDescription, parseMarkdownDocument, stringField } from '../commands/frontmatter'
 import { addAllowedToolsToContext, allowedToolRulesFromFrontmatter, normalizeAllowedTools } from '../commands/allowedTools'
 import { parseArgumentNames, substituteArguments } from '../commands/argumentSubstitution'
@@ -147,6 +149,68 @@ export async function loadSkillsDir(rootDir: string, options: LoadSkillsDirOptio
     if (!byName.has(skill.name)) byName.set(skill.name, skill)
   }
   return { skills: [...byName.values()], byName }
+}
+
+/** 技能落点三层的子目录名(用户/工作区目录下都叫 skills)。 */
+const SKILLS_SUBDIR = 'skills'
+
+/**
+ * app 内置技能目录(=cc bundled skills):随包发的 `SKILL.md` 内容目录,managed 可信(不受信任门约束)。
+ * cc 把内置技能编进二进制;我们放 `ts/src/skills/bundled/<name>/SKILL.md`,开发/测试用 `import.meta.dir` 定位,
+ * 兼容从 repo 根 / ts 目录起进程。⚠️ 打包版把这些 md 塞进 DMG/EXE 的接线(extraResources / bun 内嵌)是分发侧待办,
+ * 与 `ts/commands/*.md` 同一未决口径,见交付说明。
+ */
+export function bundledSkillsRoot(): string {
+  const candidates = [
+    join(import.meta.dir, 'bundled'),
+    join(process.cwd(), 'src', 'skills', 'bundled'),
+    join(process.cwd(), 'ts', 'src', 'skills', 'bundled'),
+  ]
+  return candidates.find(existsSync) ?? candidates[0]!
+}
+
+/** 用户自建技能目录:`~/.billiardbuddy/skills`(create_skill 默认落这;白标铁律——绝不 .claude)。managed 可信。 */
+export function userSkillsRoot(): string {
+  return join(getUserConfigHomeDir(), SKILLS_SUBDIR)
+}
+
+/** 工作区技能目录:`<root>/.billiardbuddy/skills`。⚠️加载必须 hookSource:'local'(其 command hook 受信任门约束)。 */
+export function workspaceSkillsRoot(workspaceRoot: string): string {
+  return join(workspaceRoot, MEMORY_DOT_DIR, SKILLS_SUBDIR)
+}
+
+export interface LoadLayeredSkillsOptions {
+  /** app 内置技能根;默认 bundledSkillsRoot()。 */
+  bundledRoot?: string
+  /** 用户自建技能根;默认 userSkillsRoot()。传 null 跳过该层(测试用)。 */
+  userRoot?: string | null
+  /** 工作区根(项目目录);给了才加载 `<root>/.billiardbuddy/skills`(local 信任)。 */
+  workspaceRoot?: string
+}
+
+/**
+ * 三层技能落点合并加载(对齐 cc skill 分层 + 白标目录):
+ *   bundled(app 内置,managed) → user(~/.billiardbuddy/skills,managed) → workspace(.billiardbuddy/skills,local)
+ * 同名技能后加载覆盖先加载(workspace > user > bundled),让用户/工作区能覆写内置技能。
+ * ⚠️ 工作区技能以 hookSource:'local' 加载,否则其 frontmatter command hook 会绕过信任门在未受信工作区里 spawn。
+ */
+export async function loadLayeredSkills(opts: LoadLayeredSkillsOptions = {}): Promise<SkillLibrary> {
+  const bundledRoot = opts.bundledRoot ?? bundledSkillsRoot()
+  const userRoot = opts.userRoot === null ? undefined : (opts.userRoot ?? userSkillsRoot())
+  const libs: SkillLibrary[] = []
+  libs.push(await loadSkillsDir(bundledRoot))
+  if (userRoot) libs.push(await loadSkillsDir(userRoot))
+  if (opts.workspaceRoot) libs.push(await loadSkillsDir(workspaceSkillsRoot(opts.workspaceRoot), { hookSource: 'local' }))
+
+  const byName = new Map<string, PromptCommand>()
+  const order: string[] = []
+  for (const lib of libs) {
+    for (const skill of lib.skills) {
+      if (!byName.has(skill.name)) order.push(skill.name)
+      byName.set(skill.name, skill) // 后加载覆盖同名
+    }
+  }
+  return { skills: order.map(name => byName.get(name)!), byName }
 }
 
 export function formatSkillIndex(library: SkillLibrary, opts: SkillIndexOptions = {}): string {

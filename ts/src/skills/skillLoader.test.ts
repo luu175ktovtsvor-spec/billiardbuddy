@@ -1,10 +1,10 @@
 import { expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../workspace/workspace'
 import type { ToolContext } from '../tools/Tool'
-import { createSkillTools, formatSkillIndex, loadSkillsDir } from './skillLoader'
+import { bundledSkillsRoot, createSkillTools, formatSkillIndex, loadLayeredSkills, loadSkillsDir, userSkillsRoot, workspaceSkillsRoot } from './skillLoader'
 import { clearInvokedSkills, getInvokedSkillsForScope } from './invokedSkills'
 
 test('loadSkillsDir:只加载 */SKILL.md,frontmatter 变 PromptCommand', async () => {
@@ -243,5 +243,101 @@ test('createSkillTools:create_skill writes SKILL.md and updates current library'
     }, ctx)).rejects.toThrow(/已存在/)
   } finally {
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('bundledSkillsRoot:app 内置技能目录能被发现,含搬运过来的 commit/skillify/security-review', async () => {
+  const lib = await loadSkillsDir(bundledSkillsRoot())
+  const names = lib.skills.map(skill => skill.name)
+  expect(names).toContain('commit')
+  expect(names).toContain('skillify')
+  expect(names).toContain('security-review')
+  expect(names).toContain('review')
+  expect(names).toContain('simplify')
+  expect(names).toContain('verify')
+  expect(names).toContain('debug')
+  // frontmatter 正确解析:commit 的 allowedTools 归一化后含 run_command(Bash 别名)
+  expect(lib.byName.get('commit')?.allowedTools).toContain('run_command')
+  // 白标铁律:内置技能正文不得残留 Claude 字样
+  for (const skill of lib.skills) {
+    const body = await skill.getPrompt('', { workspace: new Workspace(process.cwd()) })
+    expect(body.toLowerCase()).not.toContain('claude')
+  }
+})
+
+test('userSkillsRoot / workspaceSkillsRoot:白标目录派生(.billiardbuddy,绝不 .claude)', () => {
+  const prev = process.env.BILLIARDBUDDY_CONFIG_DIR
+  const home = mkdtempSync(join(tmpdir(), 'bb-home-'))
+  process.env.BILLIARDBUDDY_CONFIG_DIR = home
+  try {
+    expect(userSkillsRoot()).toBe(join(home, 'skills'))
+    expect(userSkillsRoot()).not.toContain('.claude')
+    expect(workspaceSkillsRoot('/proj')).toBe(join('/proj', '.billiardbuddy', 'skills'))
+    expect(workspaceSkillsRoot('/proj')).not.toContain('.claude')
+  } finally {
+    if (prev === undefined) delete process.env.BILLIARDBUDDY_CONFIG_DIR
+    else process.env.BILLIARDBUDDY_CONFIG_DIR = prev
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('loadLayeredSkills:三层合并——workspace 带 local 信任标,同名覆盖 workspace>user>bundled', async () => {
+  const bundled = mkdtempSync(join(tmpdir(), 'skills-bundled-'))
+  const user = mkdtempSync(join(tmpdir(), 'skills-user-'))
+  const wsRoot = mkdtempSync(join(tmpdir(), 'skills-ws-'))
+  try {
+    const write = (root: string, name: string, body: string) => {
+      mkdirSync(join(root, name), { recursive: true })
+      writeFileSync(join(root, name, 'SKILL.md'), body)
+    }
+    write(bundled, 'only-bundled', `---\ndescription: bundled only\n---\nB`)
+    write(bundled, 'shared', `---\ndescription: from-bundled\n---\nB`)
+    write(user, 'only-user', `---\ndescription: user only\n---\nU`)
+    write(user, 'shared', `---\ndescription: from-user\n---\nU`)
+    // 工作区技能落在 <wsRoot>/.billiardbuddy/skills 下
+    const wsSkills = workspaceSkillsRoot(wsRoot)
+    write(wsSkills, 'only-ws', `---\ndescription: ws only\nhooks:\n  PreToolUse:\n    - matcher: write_file\n      hooks:\n        - type: command\n          command: echo hi\n---\nW`)
+    write(wsSkills, 'shared', `---\ndescription: from-ws\n---\nW`)
+
+    const lib = await loadLayeredSkills({ bundledRoot: bundled, userRoot: user, workspaceRoot: wsRoot })
+    const names = lib.skills.map(s => s.name).sort()
+    expect(names).toEqual(['only-bundled', 'only-user', 'only-ws', 'shared'])
+    // 同名覆盖:workspace 最后加载,赢
+    expect(lib.byName.get('shared')?.description).toBe('from-ws')
+    // 工作区技能的 frontmatter hooks 必须带 local 信任标(否则绕过信任门)
+    expect(lib.byName.get('only-ws')?.hooks?.rules.every(r => r.source === 'local')).toBe(true)
+    // 内置技能不带 local 标(managed 可信)
+    const onlyBundled = await loadSkillsDir(bundled)
+    expect(onlyBundled.byName.get('only-bundled')?.hooks?.rules ?? []).toHaveLength(0)
+  } finally {
+    rmSync(bundled, { recursive: true, force: true })
+    rmSync(user, { recursive: true, force: true })
+    rmSync(wsRoot, { recursive: true, force: true })
+  }
+})
+
+test('create_skill:默认落用户白标目录 ~/.billiardbuddy/skills(server 用 userSkillsRoot 接线)', async () => {
+  const prev = process.env.BILLIARDBUDDY_CONFIG_DIR
+  const home = mkdtempSync(join(tmpdir(), 'bb-home-create-'))
+  process.env.BILLIARDBUDDY_CONFIG_DIR = home
+  try {
+    const skillRoot = userSkillsRoot()
+    const lib = await loadSkillsDir(skillRoot)
+    const create = createSkillTools(lib, { skillRoot }).find(t => t.name === 'create_skill')!
+    const ctx = { workspace: new Workspace(home) }
+    const out = await create.execute({
+      name: 'Daily Report',
+      description: 'Write daily store reports',
+      instructions: '# Daily Report\n\n1. 汇总流水。',
+    }, ctx)
+    const written = join(home, 'skills', 'daily-report', 'SKILL.md')
+    expect(existsSync(written)).toBe(true)
+    expect(out).toContain(written)
+    // 落在白标目录,绝不 .claude
+    expect(written).not.toContain('.claude')
+  } finally {
+    if (prev === undefined) delete process.env.BILLIARDBUDDY_CONFIG_DIR
+    else process.env.BILLIARDBUDDY_CONFIG_DIR = prev
+    rmSync(home, { recursive: true, force: true })
   }
 })

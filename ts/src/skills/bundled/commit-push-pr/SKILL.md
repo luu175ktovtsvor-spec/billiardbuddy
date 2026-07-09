@@ -1,0 +1,71 @@
+---
+name: commit-push-pr
+description: "把改动整理成提交、推到远端、开一个 PR(一条龙)。"
+whenToUse: "用户说'提交并开 PR / commit push pr / 把这个提了发个 PR'时。"
+allowedTools:
+  - "Bash(git checkout -b:*)"
+  - "Bash(git add:*)"
+  - "Bash(git status:*)"
+  - "Bash(git diff:*)"
+  - "Bash(git branch:*)"
+  - "Bash(git commit:*)"
+  - "Bash(git push:*)"
+  - "Bash(gh pr create:*)"
+  - "Bash(gh pr edit:*)"
+  - "Bash(gh pr view:*)"
+argument-hint: "[可选:额外说明或要求]"
+---
+
+# 提交 + 推送 + 开 PR
+
+用户的额外要求(如有):$ARGUMENTS
+
+## 先摸清现状
+
+真跑这些命令拿全貌:
+- `git status`
+- `git diff HEAD`
+- `git branch --show-current`
+- 默认分支(如 `main`)到 HEAD 的全量 diff:`git diff main...HEAD`(把默认分支换成本仓库真实的默认分支)
+- 是否已有 PR:`gh pr view --json number 2>/dev/null || true`
+
+## Git 安全口径
+
+- 绝不改 git config
+- 绝不跑破坏性 / 不可逆命令(`push --force`、hard reset 等),除非用户明确要求;**绝不 force push 到 main/master**,用户要也先警告
+- 绝不跳过 hooks,除非用户明确要求
+- 别提交疑似含密钥的文件(`.env`、`credentials.json` 等)
+- 不用带 `-i` 的交互式 git 命令
+
+## 你的任务
+
+分析**将进入这个 PR 的全部改动**(不只是最新一条提交,而是上面 `main...HEAD` diff 里的所有提交),然后:
+
+1. 若当前在默认分支上,先建一个新分支(分支名用有意义的前缀,如 `feature-name`)。
+2. 用 heredoc 语法建单条提交(提交说明如实反映改动,默认不加任何署名):
+
+```
+git commit -m "$(cat <<'EOF'
+提交说明写这里。
+EOF
+)"
+```
+
+3. 把分支推到 origin。
+4. 若该分支已有 PR(看上面的 `gh pr view` 输出),用 `gh pr edit` 更新标题和正文以反映当前 diff;否则用 `gh pr create` 建 PR,正文用 heredoc 语法。
+   - PR 标题保持简短(70 字符内),细节放正文。
+
+```
+gh pr create --title "简短有信息量的标题" --body "$(cat <<'EOF'
+## 概述
+<1-3 条要点>
+
+## 测试计划
+[验证这个 PR 的 TODO 清单...]
+EOF
+)"
+```
+
+完成后把 PR 链接返回给用户看。
+
+> ⚠️ 口径提醒:`git push`、`gh pr create/edit` 属于**对外 / 不可逆**动作,执行前先经审批;不擅自 force push、不擅自合并。本地提交属可回滚,直接做即可。
