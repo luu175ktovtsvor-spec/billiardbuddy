@@ -1,6 +1,6 @@
 # TS · cc-haha v0.4.5 内核迁移矩阵
 
-> 📌 状态:✅现行 · 2026-07-07 新增 · 参考源 `~/Desktop/cc-haha-ref` = `NanmiCoder/cc-haha@a94e1a1` (`origin/main`, release notes `v0.4.5`)
+> 📌 状态:✅现行 · 2026-07-07 新增 · 最后核对 2026-07-09(本轮 cc-haha 全方位对齐战役 P0 进度回写见 §3.405)· 参考源 `~/Desktop/cc-haha-ref` = `NanmiCoder/cc-haha@a94e1a1` (`origin/main`, release notes `v0.4.5`)
 
 ## 0. 迁移口径
 
@@ -3549,6 +3549,37 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 - 影响:§17.7 应表述为"剪辑骨架保留+渲染/字幕/响度增强,但真转写地基待在 TS 侧重建(whisper 类需 Node 原生 sidecar,见 ts/CLAUDE.md 铁律 8)"——不是全链路可用。已给老 V2 设计文档补历史 banner(其宣称的 director/VLM/whisper 能力随 server/ 删除、代码库不存在)。
 
 **F. 本轮总验证**:`bun test` = **974 pass / 0 fail**(115 文件);`bun run typecheck` 干净;`bun run build:sidecar` 出本机二进制(ad-hoc 签名);`bun run desktop:build` 编译 main.mjs/preload.cjs;Playwright 加载编译态 sidecar 前端 200、UI 渲染正常、console 零错误(favicon 修后)。
+
+## 3.405 2026-07-09 cc-haha 全方位对齐战役 · P0 波(本轮进行中)
+
+> owner 硬指令:**全方位对标 cc-haha、不做阉割版、能直接抄 cc 代码就抄**(LICENSE 允许)。方式:子代理实现 + 子代理**对抗式审查**,主代理编排 + 决策。本轮承 §3.401 的 16 模块审计,进入分波修复。
+
+### A. 16 模块审计现状复核
+
+- 16 个子代理以 cc-haha-ref 当前源码为规格、本项目当前源码为现状做差异审计,分类 aligned/gap/deviation。**结论:现状是"认真的简化版/阉割版"——15 模块 partial 或 major gap**,不是完成态。逐模块对齐度与最高优先级 gap 见 §3.401 A 表。
+- 战役目标:把这 15 模块从"能跑的简化版"抬到"与 cc 行为对齐、测试锁边界"。
+
+### B. P0 波(5 修复:3 过审已提交 / 2 rework 中)
+
+| # | 修复 | 状态 |
+|---|---|---|
+| 1 | `max_output_tokens` 续写(输出被 token 上限截断时自动续写,对齐 cc) | ✅过审 · 提交 `3bf6ab8` |
+| 2 | resume 修复(会话恢复的残尾清洗/上下文修复) | ✅过审 · 提交 `3bf6ab8` |
+| 3 | todo 枚举(TodoWrite/todo 状态枚举对齐 cc) | ✅过审 · 提交 `3bf6ab8` |
+| 4 | permissions 同族工具绕过(允许某工具后同族工具不应白拿放行) | 🔁被对抗式审查打回 · rework 中 |
+| 5 | hooks 信任门未激活(hook 信任闸没真正生效) | 🔁被对抗式审查打回 · rework 中 |
+
+- 提交 `3bf6ab8`:`kernel: cc-haha P0 alignment (3/5 passed adversarial review) — max_output_tokens continuation, resume repair, todo enum`。
+- rework 项(#4/#5)由并行子代理续做,落点在 `ts/src/permissions/*`(含新增 `filePathRuleMatch.ts` 同族路径匹配)+ `ts/src/hooks/hookConfig.ts`/`hooks.ts`;对抗审查通过前不合入。
+- 全量:`cd ts && bun test` = **1022 pass**。
+
+### C. 后续波次规划(P0 收完依次推进)
+
+- **P1 · 招牌能力**:按消息回溯 + 文件回滚 checkpoint、plan 持久化、swarm(多代理协作)。
+- **P2 · 接入广度**:OpenAI Responses API、MCP OAuth、插件全挂载(commands/hooks 并入)、Windows hooks。
+- **P3 · 纵深防御**:OS 沙箱网络白名单、路径 deny 全覆盖。
+- **P4 · 可观测**:统一 trace 面板、按 agent_id 过滤/跳转、harness debug 日志落盘。
+- 每波"子代理实现 → 子代理对抗审查 → 主代理决策合入";全波次收完再做一次全 16 模块复检。
 
 ## 4. 下一批代码顺序
 
