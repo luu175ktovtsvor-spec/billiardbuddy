@@ -3782,6 +3782,24 @@ export function startServer(opts: StartServerOptions = {}) {
         return Response.json({ plugins: await listPlugins(defaultPluginRoots(opts.env ?? process.env)) })
       }
 
+      // 文件系统浏览(§7 工作区目录树):列一个目录的直接子项(dirs 优先),只读、隐藏文件跳过、上限 500。
+      if (url.pathname === '/api/v1/agent/fs/list' && req.method === 'GET') {
+        const dirPath = url.searchParams.get('path')
+        if (!dirPath) return Response.json({ error: 'path required' }, { status: 400 })
+        try {
+          const resolved = resolve(dirPath)
+          const dirents = await readdir(resolved, { withFileTypes: true })
+          const entries = dirents
+            .filter(d => !d.name.startsWith('.'))
+            .map(d => ({ name: d.name, isDir: d.isDirectory() }))
+            .sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1))
+            .slice(0, 500)
+          return Response.json({ path: resolved, entries })
+        } catch (err) {
+          return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 404 })
+        }
+      }
+
       // 配置基座:App 级用户设置(默认权限档/主题),供设置抽屉读写。
       if (url.pathname === '/api/settings') {
         if (req.method === 'GET') return Response.json({ settings: await userSettings.get() })

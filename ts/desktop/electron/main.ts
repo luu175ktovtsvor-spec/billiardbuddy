@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { existsSync, readdirSync } from 'node:fs'
@@ -96,8 +96,20 @@ function createWindow(): void {
   mainWindow.on('closed', () => { mainWindow = null })
 }
 
+/** 集中注册 IPC(白名单 + 无 payload 或 payload 校验;§3.402 桌面壳架构:主↔渲染只走白名单通道)。 */
+function registerIpc(): void {
+  // 原生文件夹选择器(§7 用户选择工作区):无 payload,返回选中目录或 null。
+  ipcMain.handle('desktop:pickWorkspace', async () => {
+    const win = mainWindow ?? BrowserWindow.getAllWindows()[0]
+    if (!win) return null
+    const result = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], title: '选择工作区文件夹' })
+    return result.canceled || !result.filePaths[0] ? null : result.filePaths[0]
+  })
+}
+
 async function boot(): Promise<void> {
   try {
+    registerIpc()
     await startSidecar()
     createWindow()
   } catch (err) {
