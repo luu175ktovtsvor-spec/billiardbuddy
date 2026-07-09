@@ -72,6 +72,22 @@ test('runs a multi-step tool task: think -> tool -> feed back -> think -> final'
   expect(second.messages.every(m => m.role === 'user' || m.role === 'assistant')).toBe(true)
 })
 
+test('入参 schema 闸:缺 required 字段的工具调用被拦成 InputValidationError,不执行也不弹审批', async () => {
+  const events = await collect(runAgentLoop({
+    model: scriptedModel([
+      { kind: 'tool_calls', text: '写文件', calls: [{ id: '1', name: 'write_file', input: { path: 'gated.txt' } }] }, // 缺 content
+      { kind: 'final', text: '结束' },
+    ]),
+    registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'acceptEdits',
+  }))
+  const tr = events.find(e => e.type === 'tool_result')
+  expect(tr && tr.type === 'tool_result' && tr.output).toContain('InputValidationError')
+  expect(tr && tr.type === 'tool_result' && tr.output).toContain('content')
+  expect(existsSync(join(root, 'gated.txt'))).toBe(false) // 被拦,文件没落
+  expect(events.some(e => e.type === 'approval_request')).toBe(false) // 没走到审批
+})
+
 test('已中止的信号:已下发工具短路成取消态、不执行', async () => {
   const controller = new AbortController()
   controller.abort()

@@ -62,6 +62,7 @@ import {
   questionEvent,
 } from '../tools/agentInteractionTools'
 import { isVerifyPlanExecutionToolName } from '../tools/verifyPlanExecutionTool'
+import { validateToolInput } from '../tools/inputSchemaValidation'
 import { activateWorktreeSessionForContext } from '../tools/worktreeTools'
 import {
   applyPostToolUseHooks,
@@ -636,6 +637,8 @@ function prepareParallelReadOnlyCall(registry: ToolRegistry, call: ToolCall, ctx
   if (isAskUserQuestionToolName(call.name) || isEnterPlanToolName(call.name) || isExitPlanToolName(call.name) || isVerifyPlanExecutionToolName(call.name)) return null
   const tool = registry.get(call.name)
   if (!tool) return null
+  // 入参非法 → 回退串行,让 gateOneCall 统一吐 InputValidationError(不在并行批里静默跑脏参数)。
+  if (validateToolInput(tool.inputSchema, call.input) !== null) return null
   const readOnly = tool.isReadOnly || (tool.isReadOnlyFor?.(call.input, ctx) ?? false)
   if (!readOnly) return null
   if (
@@ -816,6 +819,14 @@ async function* gateOneCall(
     } catch (err) {
       yield feedback(`错误:${err instanceof Error ? err.message : String(err)}`, true)
     }
+    return
+  }
+
+  // 入参 schema 校验闸(对齐 cc:权限/执行前统一挡结构化 InputValidationError)。保守:只判缺 required
+  // 与已声明基本类型不符,交互工具(ask/plan/verify)在上方已各自处理、不到这里。
+  const inputValidationError = validateToolInput(tool.inputSchema, call.input)
+  if (inputValidationError) {
+    yield feedback(`InputValidationError: ${inputValidationError}`, true)
     return
   }
 
