@@ -101,6 +101,33 @@ export async function listPlugins(roots = defaultPluginRoots()): Promise<PluginL
   return out
 }
 
+export interface EnabledPluginContributions {
+  /** 启用插件各自的 skills 目录(存在才收) */
+  skillsDirs: string[]
+  /** 启用插件各自的 commands 目录 */
+  commandsDirs: string[]
+  /** 启用插件各自的 .mcp.json(app 级可信,直接加载不走工作区信任闸) */
+  mcpConfigPaths: string[]
+}
+
+/** 解析已启用插件的 skills/commands/.mcp.json 贡献,供会话构建时并入(plugin 运行时接入)。 */
+export async function resolveEnabledPluginContributions(roots = defaultPluginRoots()): Promise<EnabledPluginContributions> {
+  const plugins = await listPlugins(roots)
+  const skillsDirs: string[] = []
+  const commandsDirs: string[] = []
+  const mcpConfigPaths: string[] = []
+  for (const p of plugins) {
+    if (!p.enabled) continue
+    const skillsDir = join(p.dir, 'skills')
+    if (existsSync(skillsDir)) skillsDirs.push(skillsDir)
+    const commandsDir = join(p.dir, 'commands')
+    if (existsSync(commandsDir)) commandsDirs.push(commandsDir)
+    const mcpPath = join(p.dir, '.mcp.json')
+    if (existsSync(mcpPath)) mcpConfigPaths.push(mcpPath)
+  }
+  return { skillsDirs, commandsDirs, mcpConfigPaths }
+}
+
 async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
   await mkdir(join(filePath, '..'), { recursive: true })
   const tmp = `${filePath}.tmp`

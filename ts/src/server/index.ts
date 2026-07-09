@@ -72,7 +72,7 @@ import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../m
 import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
 import { loadOutputStyles, publicOutputStyle, renderOutputStylePrompt } from '../outputStyles/outputStyleLoader'
-import { defaultPluginInstallDir, defaultPluginRoots, installPluginFromGithub, listPlugins, setPluginEnabled } from '../plugins/pluginLoader'
+import { defaultPluginInstallDir, defaultPluginRoots, installPluginFromGithub, listPlugins, resolveEnabledPluginContributions, setPluginEnabled } from '../plugins/pluginLoader'
 import { Workspace } from '../workspace/workspace'
 import { Sandbox } from '../sandbox/sandbox'
 import { McpTrustStore, resolveTrustedMcpConfig } from '../mcp/mcpTrust'
@@ -2110,25 +2110,36 @@ export function startServer(opts: StartServerOptions = {}) {
     const commandsRoot = opts.commandsRoot ?? defaultCommandsRoot()
     const enabledPacks = resolveEnabledPacks(rawBody)
     const domainPackTools = createDomainPackTools(enabledPacks)
-    const [skills, commands] = await Promise.all([
+    // plugin 运行时接入:已启用插件的 skills/.mcp.json 并入本次会话(插件是 app 级可信来源,mcp 直接加载不走工作区信任闸)。
+    const pluginContribs = await resolveEnabledPluginContributions(defaultPluginRoots(opts.env ?? process.env)).catch(() => ({ skillsDirs: [], commandsDirs: [], mcpConfigPaths: [] }))
+    const [skills, commands, pluginSkillsLibs] = await Promise.all([
       loadSkillsDir(skillsRoot),
       loadCommandsForWorkspace(workspace.root, commandsRoot, enabledPacks, opts.env ?? process.env),
+      Promise.all(pluginContribs.skillsDirs.map(dir => loadSkillsDir(dir).catch(() => null))),
     ])
+    // 合并主 skills + 插件 skills(按名去重,主 skills 优先)
+    const mergedSkillByName = new Map(skills.byName)
+    for (const lib of pluginSkillsLibs) {
+      if (!lib) continue
+      for (const s of lib.skills) if (!mergedSkillByName.has(s.name)) mergedSkillByName.set(s.name, s)
+    }
+    const allSkills = { skills: [...mergedSkillByName.values()], byName: mergedSkillByName }
     const mcpConfigPath = resolveMcpConfig(rawBody, workspace.root).path
-    const mcpTools = await loadMcpToolsFromFile(mcpConfigPath, {
-      cwd: workspace.root,
-      timeoutMs: 10000,
-      toolTimeoutMs: 120000,
-      fetchImpl: opts.fetchImpl,
-    })
+    const mcpLoadOpts = { cwd: workspace.root, timeoutMs: 10000, toolTimeoutMs: 120000, fetchImpl: opts.fetchImpl }
+    const [mcpTools, ...pluginMcpResults] = await Promise.all([
+      loadMcpToolsFromFile(mcpConfigPath, mcpLoadOpts),
+      ...pluginContribs.mcpConfigPaths.map(path => loadMcpToolsFromFile(path, mcpLoadOpts).catch(() => ({ tools: [], connections: [], warnings: [] }))),
+    ])
+    const allMcpTools = [...mcpTools.tools, ...pluginMcpResults.flatMap(r => r.tools)]
+    const allConnections = [...mcpTools.connections, ...pluginMcpResults.flatMap(r => r.connections)]
     const registry = buildGeneralRegistry({
-      skills,
+      skills: allSkills,
       skillsRoot,
       skillRecommendations: suggestedSkillNamesForPacks(enabledPacks),
       commands,
-      extraTools: [...domainPackTools, ...mcpTools.tools, ...createTaskTools(tasks), ...createStructuredTaskTools(taskLists), ...createTeamTools(teams, { tasks, udsPeers, bridgePeers, sendBridgeMessage: bridgeSendMessageFor(rawBody) }), ...createMediaTools(media), createStoreDocsTool(storeDocs)],
+      extraTools: [...domainPackTools, ...allMcpTools, ...createTaskTools(tasks), ...createStructuredTaskTools(taskLists), ...createTeamTools(teams, { tasks, udsPeers, bridgePeers, sendBridgeMessage: bridgeSendMessageFor(rawBody) }), ...createMediaTools(media), createStoreDocsTool(storeDocs)],
     })
-    return { workspace, registry, connections: mcpTools.connections }
+    return { workspace, registry, connections: allConnections }
   }
 
   /** 审批放行执行的核心:POST /agent/execute 与 WS {type:'approve'} 共用。返回结果 payload 或 null(参数缺失)。 */
