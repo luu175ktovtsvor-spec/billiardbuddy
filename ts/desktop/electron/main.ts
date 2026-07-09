@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, Tray, nativeImage, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, Tray, nativeImage, screen, shell, type MenuItemConstructorOptions } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { existsSync, readdirSync } from 'node:fs'
@@ -12,6 +12,13 @@ import {
   type SidecarChild,
   type SidecarPlan,
 } from './services/sidecarManager'
+// 桌面基建(对齐 cc-haha,能抄就抄):窗口状态持久化 / 防休眠 / 钥匙串弹窗拦截 / 导航守卫 / Windows 通知身份 / 单实例聚焦。
+import { readWindowState, windowOptionsFromState, restoreWindowMaximized, installWindowStatePersistence, MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT } from './services/windows'
+import { startPreventSleep, stopPreventSleep, forceStopPreventSleep, isPreventingSleep } from './services/preventSleep'
+import { installMacOsChromiumKeychainPromptGuard } from './services/keychain'
+import { installMainWindowNavigationGuards } from './services/navigationGuards'
+import { applyWindowsAppUserModelId } from './services/appIdentity'
+import { acquireSingleInstanceLock } from './services/singleInstance'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const PREFERRED_PORTS = [8850, 8851, 8852, 8877]
@@ -80,11 +87,13 @@ async function startSidecar(): Promise<void> {
 }
 
 function createWindow(): void {
+  // 窗口状态持久化:读回上次的尺寸/位置(漂到屏外或换屏时已在 readWindowState 内校正/丢弃),没有历史就用默认尺寸。
+  const restoredState = readWindowState(app, screen.getAllDisplays())
+  const bounds = windowOptionsFromState(restoredState)
   mainWindow = new BrowserWindow({
-    width: 1180,
-    height: 760,
-    minWidth: 720,
-    minHeight: 480,
+    ...bounds,
+    minWidth: MIN_WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
     title: '球房管家',
     // macOS 原生质感:隐藏式标题栏 + 原生红绿灯;Windows 用叠加标题栏
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
@@ -95,6 +104,12 @@ function createWindow(): void {
       nodeIntegration: false,
     },
   })
+  // 上次是最大化的就恢复最大化。
+  restoreWindowMaximized(mainWindow, restoredState)
+  // 导航守卫(安全):window.open/外链走系统浏览器,拒绝渲染进程弹出不受控子窗口。
+  installMainWindowNavigationGuards(mainWindow.webContents, { openExternal: (url) => { void shell.openExternal(url) } })
+  // 移动/缩放/关闭时保存窗口状态(去抖写盘)。
+  installWindowStatePersistence(app, mainWindow)
   void mainWindow.loadURL(`http://${SERVER_BIND_HOST}:${serverPort}/`)
   mainWindow.on('closed', () => { mainWindow = null })
 }
@@ -210,10 +225,17 @@ function registerIpc(): void {
     const result = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], title: '选择工作区文件夹' })
     return result.canceled || !result.filePaths[0] ? null : result.filePaths[0]
   })
+
+  // 防休眠:长任务(生图/渲染/长 agent 循环)开始时调 start、结束时调 stop,阻止系统睡眠打断任务。
+  // 引用计数式,可并发多个长任务;渲染层从 desktopHost.preventSleep.start()/stop() 成对调用。
+  ipcMain.handle('desktop:preventSleep:start', () => { startPreventSleep(); return isPreventingSleep() })
+  ipcMain.handle('desktop:preventSleep:stop', () => { stopPreventSleep(); return isPreventingSleep() })
 }
 
 async function boot(): Promise<void> {
   try {
+    // Windows 通知身份:必须在建窗口前设好,否则原生 toast 通知不显示应用名/图标。
+    applyWindowsAppUserModelId(app)
     registerIpc()
     buildAppMenu()
     await startSidecar()
@@ -225,7 +247,13 @@ async function boot(): Promise<void> {
   }
 }
 
-app.whenReady().then(boot).catch(err => { console.error(err); app.quit() })
+// macOS 钥匙串弹窗拦截:必须在 app ready 前追加命令行开关才生效。
+installMacOsChromiumKeychainPromptGuard(app)
+
+// 单实例聚焦:拿不到锁说明已有实例在跑(内部已 app.quit()),这里直接不再进入启动流程。
+if (acquireSingleInstanceLock(app, showMainWindow)) {
+  app.whenReady().then(boot).catch(err => { console.error(err); app.quit() })
+}
 
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -236,6 +264,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  forceStopPreventSleep()
   if (sidecar) { killSidecar(sidecar, true); sidecar = null }
   if (tray) { tray.destroy(); tray = null }
 })
