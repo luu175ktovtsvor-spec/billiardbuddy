@@ -1,6 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { SSEClientTransport, type SSEClientTransportOptions } from '@modelcontextprotocol/sdk/client/sse.js'
 import { InMemoryTaskStore } from '@modelcontextprotocol/sdk/experimental/tasks/stores/in-memory.js'
 import type { Transport, FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js'
 import {
@@ -325,7 +326,7 @@ async function listAllPrompts(client: Client, opts: LoadMcpToolsOptions): Promis
   return prompts
 }
 
-function createTransport(config: McpServerConfig, opts: LoadMcpToolsOptions): Transport {
+export function createTransport(config: McpServerConfig, opts: LoadMcpToolsOptions): Transport {
   if (config.transport === 'stdio') {
     const cmd = commandForPlatform(config)
     if (!cmd.command) throw new Error(`MCP stdio server ${config.name} missing command`)
@@ -336,6 +337,30 @@ function createTransport(config: McpServerConfig, opts: LoadMcpToolsOptions): Tr
       env: { ...getDefaultEnvironment(), ...(config.env ?? {}) },
       stderr: 'pipe',
     })
+  }
+  if (config.transport === 'sse') {
+    if (!config.url) throw new Error(`MCP sse server ${config.name} missing url`)
+    // 对齐 cc(services/mcp/client.ts:616-673 SSE 分支):旧式 SSE 传输 = 长连 GET 收事件 + 独立 POST 回发。
+    // 自定义 headers(含 Authorization: Bearer)要同时挂到:
+    //  ① requestInit.headers —— 回发用的 POST 请求;
+    //  ② eventSourceInit.fetch —— 建立并保持 SSE 长连的初始 GET;必须自带 fetch 显式带上头,因为设了
+    //     eventSourceInit 后 SDK 不会再自动附 Authorization(见 SSEClientTransportOptions.eventSourceInit 注释),
+    //     且 SSE 长连不能套 http 那种 60s 请求超时(会掐断持续事件流)。
+    const transportOptions: SSEClientTransportOptions = {
+      ...(opts.fetchImpl ? { fetch: opts.fetchImpl } : {}),
+      ...(config.headers ? { requestInit: { headers: config.headers } } : {}),
+    }
+    if (config.headers) {
+      const headers = config.headers
+      const baseFetch = opts.fetchImpl ?? ((url: string | URL, init?: RequestInit) => fetch(url, init))
+      transportOptions.eventSourceInit = {
+        fetch: (url, init) => baseFetch(url, {
+          ...init,
+          headers: { ...(init?.headers as Record<string, string> | undefined), ...headers, Accept: 'text/event-stream' },
+        }),
+      }
+    }
+    return new SSEClientTransport(new URL(config.url), transportOptions)
   }
   if (config.transport === 'http') {
     if (!config.url) throw new Error(`MCP http server ${config.name} missing url`)

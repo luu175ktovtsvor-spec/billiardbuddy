@@ -7,9 +7,27 @@ import jsQR from 'jsqr'
 import { PNG } from 'pngjs'
 import * as QRCode from 'qrcode'
 import type { FetchLike } from '../proxy/ProxyModel'
+import type { Model } from '../types/model'
 import type { TaskMeta, TaskRunnerContext, TaskService, TaskStatus } from '../tasks/taskService'
 import { VideoEditProjectStore } from './videoEditProjects'
 import { PUBLIC_IMAGE_FALLBACK_NOTE, publicImageEngineLabel, scrubProviderIdentifiers } from '../model/publicModelNames'
+import {
+  detectPortraitIntent,
+  inputQualityBlockedResult,
+  portraitConsentGranted,
+  portraitConsentRequiredResult,
+  portraitFlagged,
+  type PortraitIntent,
+} from './portraitGate'
+import {
+  buildQcModelFromEnv,
+  inspectInputImage,
+  inspectPortraitResult,
+  normalizeImageMediaType,
+  proofreadHardText,
+  type InputInspection,
+  type QcImage,
+} from './imageQC'
 
 export type MediaJobKind =
   | 'generate'
@@ -43,6 +61,17 @@ export interface MediaJobServiceOptions {
   fetchImpl?: FetchLike
   pollIntervalMs?: number
   prepareImageBody?: (body: Record<string, unknown>, mode: 'generate' | 'edit') => Record<string, unknown> | Promise<Record<string, unknown>>
+  /** 人像质检/OCR 用的网关 VLM(测试注入 fake;传 null 显式禁用;不传则按 env 构造,缺配置=优雅降级)。 */
+  qcModel?: Model | null
+}
+
+/** 人像闸预检结果:blocked=true 则任务直接返回该结果(正常完成、非报错),不进模型。 */
+type PortraitPreflightOutcome = { blocked: true; result: Record<string, unknown> } | { blocked: false }
+
+/** 预检与生成后加工之间共享的人像上下文(同一次 start* 的两个闭包共享)。 */
+interface PortraitShared {
+  intent?: PortraitIntent
+  inputInspection?: InputInspection
 }
 
 interface StartMediaJobInput {
@@ -54,6 +83,10 @@ interface StartMediaJobInput {
   proxyPath?: string
   project?: string
   fallback?: (ctx: TaskRunnerContext, task: TaskMeta) => Promise<Record<string, unknown>>
+  /** 生成前的合规/质检闸;返回 blocked 则短路,不调模型。 */
+  preflight?: (ctx: TaskRunnerContext) => Promise<PortraitPreflightOutcome>
+  /** 生成后加工(结果质检/OCR 等),把质检字段并进结果。 */
+  postprocess?: (ctx: TaskRunnerContext, result: Record<string, unknown>) => Promise<Record<string, unknown>>
 }
 
 interface DirectImageConfig {
@@ -636,6 +669,7 @@ export class MediaJobService {
   private readonly fetchImpl: FetchLike
   private readonly pollIntervalMs: number
   private readonly gptImageAsync: boolean
+  private qcModelCache: Model | null | undefined
 
   constructor(private readonly opts: MediaJobServiceOptions) {
     this.backendUrl = normalizeBackendUrl(opts.backendUrl)
@@ -652,6 +686,13 @@ export class MediaJobService {
     return !!this.backendUrl
   }
 
+  /** 人像质检/OCR 的网关 VLM:显式注入优先(测试),否则按 env 懒构造并缓存;缺配置=null(降级)。 */
+  private qcModel(): Model | null {
+    if (this.opts.qcModel !== undefined) return this.opts.qcModel
+    if (this.qcModelCache === undefined) this.qcModelCache = buildQcModelFromEnv(this.env)
+    return this.qcModelCache
+  }
+
   async status(id: string): Promise<MediaJobStatus | null> {
     const task = await this.opts.tasks.get(id)
     return task ? this.statusFromMeta(task) : null
@@ -666,11 +707,19 @@ export class MediaJobService {
       params: { ...input.body, ...(input.project ? { project: input.project } : {}) },
     })
     this.opts.tasks.start(task.id, async ctx => {
-      if (this.backendUrl && input.proxyPath) {
-        return await this.runProxyJob(ctx, input.proxyPath, input.body)
+      if (input.preflight) {
+        const outcome = await input.preflight(ctx)
+        if (outcome.blocked) return outcome.result
       }
-      if (input.fallback) return await input.fallback(ctx, task)
-      throw new Error('媒体后端未配置:请设置 MEDIA_BACKEND_URL 或 PYTHON_BACKEND_URL 后再生成。')
+      let result: Record<string, unknown>
+      if (this.backendUrl && input.proxyPath) {
+        result = await this.runProxyJob(ctx, input.proxyPath, input.body)
+      } else if (input.fallback) {
+        result = await input.fallback(ctx, task)
+      } else {
+        throw new Error('媒体后端未配置:请设置 MEDIA_BACKEND_URL 或 PYTHON_BACKEND_URL 后再生成。')
+      }
+      return input.postprocess ? await input.postprocess(ctx, result) : result
     })
     return { job_id: task.id, ...(input.project ? { project: input.project } : {}) }
   }
@@ -683,6 +732,7 @@ export class MediaJobService {
       count: clampCount(prepared.count),
       conversation_id: stringFrom(prepared.conversation_id) ?? opts.conversationId,
     }
+    const shared: PortraitShared = {}
     return this.startJob({
       kind: 'generate',
       title: `生图:${shortText(body.prompt ?? body.description, '图片')}`,
@@ -690,6 +740,8 @@ export class MediaJobService {
       conversationId: stringFrom(normalized.conversation_id),
       workspaceRoot: opts.workspaceRoot,
       proxyPath: '/api/v1/studio/generate',
+      preflight: ctx => this.portraitPreflight(ctx, normalized, 'generate', shared),
+      postprocess: (ctx, result) => this.imageResultPostprocess(ctx, result, shared),
       fallback: ctx => this.directOrLocalImageFallback(ctx, normalized, 'generate'),
     })
   }
@@ -702,6 +754,7 @@ export class MediaJobService {
       count: clampCount(prepared.count),
       conversation_id: stringFrom(prepared.conversation_id) ?? opts.conversationId,
     }
+    const shared: PortraitShared = {}
     return this.startJob({
       kind: 'edit',
       title: `改图:${shortText(body.prompt, '图片调整')}`,
@@ -709,6 +762,8 @@ export class MediaJobService {
       conversationId: stringFrom(normalized.conversation_id),
       workspaceRoot: opts.workspaceRoot,
       proxyPath: '/api/v1/studio/edit',
+      preflight: ctx => this.portraitPreflight(ctx, normalized, 'edit', shared),
+      postprocess: (ctx, result) => this.imageResultPostprocess(ctx, result, shared),
       fallback: ctx => this.directOrLocalImageFallback(ctx, normalized, 'edit'),
     })
   }
@@ -1480,6 +1535,141 @@ export class MediaJobService {
       if (existsSync(posterPath)) return { path: posterPath, url: `/uploads/posters/${name}`, localPreview }
     }
     return null
+  }
+
+  /**
+   * 生成前的人像合规/质检闸(对齐方案文档流程 [2]输入质检 → [3]肖像授权):
+   * 只在**存在真人照片输入**且判定为人像优化时触发;先拦低质输入,再卡肖像授权。
+   * 判人脸/质检走网关 VLM,网关缺位则只有尺寸自动档并优雅降级(不假装质检、不误拦)。
+   * 与"生图默认不弹花钱审批"共存:这是**人像合规闸**,不是 spend 审批,不涉及花钱确认。
+   */
+  private async portraitPreflight(
+    ctx: TaskRunnerContext,
+    body: Record<string, unknown>,
+    mode: 'generate' | 'edit',
+    shared: PortraitShared,
+  ): Promise<PortraitPreflightOutcome> {
+    const prompt = String(body.image_prompt ?? body.prompt ?? body.description ?? '')
+    const explicitFlag = portraitFlagged(body)
+    const refs = await this.collectImageReferences(body, mode)
+    const hasInputImage = refs.length > 0
+    // 无真人照片输入(纯文字生成)→ 无"这张人像"可授权,不触发授权闸,直接放行。
+    if (!hasInputImage) {
+      shared.intent = detectPortraitIntent({ prompt, hasInputImage: false, explicitFlag })
+      return { blocked: false }
+    }
+    const inspection = await inspectInputImage(this.qcImagesFromRefs(refs), { model: this.qcModel(), signal: ctx.signal })
+    shared.inputInspection = inspection
+    const intent = detectPortraitIntent({ prompt, hasInputImage: true, inputFaceDetected: inspection.hasFace, explicitFlag })
+    shared.intent = intent
+    if (!intent.isPortrait) return { blocked: false }
+    if (inspection.blockReason) {
+      return { blocked: true, result: inputQualityBlockedResult({ warnings: inspection.warnings, blockReason: inspection.blockReason }) }
+    }
+    if (!portraitConsentGranted(body)) {
+      return { blocked: true, result: portraitConsentRequiredResult(intent) }
+    }
+    return { blocked: false }
+  }
+
+  /** 生成后加工:并入输入质检软提示 + 人像结果质检 + 硬文字 OCR 校对。 */
+  private async imageResultPostprocess(
+    ctx: TaskRunnerContext,
+    result: Record<string, unknown>,
+    shared: PortraitShared,
+  ): Promise<Record<string, unknown>> {
+    if (result.blocked === true) return result
+    const extra: Record<string, unknown> = {}
+
+    const inputWarnings = shared.inputInspection?.warnings ?? []
+    if (inputWarnings.length) {
+      extra.input_qc_status = shared.inputInspection?.autoChecked ? 'warning' : 'partial'
+      extra.input_qc_warnings = inputWarnings
+    }
+
+    const isLocalPreview = result.local_preview === true
+    const wantPortraitQc = shared.intent?.isPortrait === true && !isLocalPreview
+    const model = this.qcModel()
+    const expected = Array.isArray(result.hard_text_expected)
+      ? result.hard_text_expected.filter((x): x is string => typeof x === 'string')
+      : []
+    const wantOcr = result.hard_text_required === true && !isLocalPreview && !!model && expected.length > 0
+
+    let qcImages: QcImage[] = []
+    if (wantPortraitQc || wantOcr) qcImages = await this.qcImagesFromResult(result)
+
+    if (wantPortraitQc) {
+      const inspection = await inspectPortraitResult(qcImages, { model, signal: ctx.signal })
+      extra.portrait_consent_confirmed = true
+      extra.portrait_qc_status = inspection.status
+      extra.portrait_qc_auto_checked = inspection.autoChecked
+      extra.portrait_qc_warnings = inspection.warnings
+      extra.portrait_qc_message = inspection.message
+      // 商用总闸:授权已确认 + 结果质检自动通过才标可商用;未质检/有风险都不标(R13/3.3)。
+      extra.commercial_ready = inspection.status === 'passed'
+    }
+
+    if (wantOcr) {
+      const ocr = await proofreadHardText(qcImages, expected, { model, signal: ctx.signal })
+      // VLM 缺位/读不出会回 pending_ocr:保持 persist 阶段已有的人工核对提示,不覆盖。
+      if (ocr.status !== 'pending_ocr') {
+        extra.text_quality_status = ocr.status
+        extra.text_quality_warning = ocr.status !== 'ocr_matched'
+        extra.text_quality_warning_message = ocr.message
+        if (ocr.missing.length) extra.text_quality_missing = ocr.missing
+      }
+    }
+
+    return Object.keys(extra).length ? { ...result, ...extra } : result
+  }
+
+  /** 参考图/底图字节 → QC 输入(读尺寸,归一 media_type)。仅含本机可读字节的图。 */
+  private qcImagesFromRefs(refs: ResolvedImageReference[]): QcImage[] {
+    const out: QcImage[] = []
+    for (const ref of refs) {
+      if (!ref.bytes) continue
+      const dims = imageDimensions(ref.bytes)
+      out.push({
+        base64: ref.bytes.toString('base64'),
+        mediaType: normalizeImageMediaType(ref.contentType),
+        width: dims?.width,
+        height: dims?.height,
+      })
+    }
+    return out
+  }
+
+  /** 从生成结果里把本机落盘的成图读回字节(供结果质检/OCR);跳过占位 svg 与远程图,最多 4 张。 */
+  private async qcImagesFromResult(result: Record<string, unknown>): Promise<QcImage[]> {
+    const urls: string[] = []
+    for (const img of Array.isArray(result.images) ? result.images : []) {
+      const rec = asRecord(img)
+      const url = rec ? stringFrom(rec.poster_url) : undefined
+      if (url) urls.push(url)
+    }
+    if (urls.length === 0) {
+      for (const u of Array.isArray(result.urls) ? result.urls : []) {
+        if (typeof u === 'string') urls.push(u)
+      }
+    }
+    const out: QcImage[] = []
+    for (const url of urls.slice(0, 4)) {
+      const abs = this.uploadPathForUrl(url)
+      if (!abs || extname(abs).toLowerCase() === '.svg') continue
+      try {
+        const bytes = await readFile(abs)
+        const dims = imageDimensions(bytes)
+        out.push({
+          base64: bytes.toString('base64'),
+          mediaType: normalizeImageMediaType(contentTypeFor(abs)),
+          width: dims?.width,
+          height: dims?.height,
+        })
+      } catch {
+        // 读不到就跳过这张,不影响其余质检。
+      }
+    }
+    return out
   }
 
   private trustedImagePaths(body: Record<string, unknown>): Set<string> {

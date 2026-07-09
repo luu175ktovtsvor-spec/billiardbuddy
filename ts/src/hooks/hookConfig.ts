@@ -2,14 +2,29 @@ import { spawn } from 'node:child_process'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { readFile } from 'node:fs/promises'
-import { parseHookDecisionJSON, type HookDecision, type HookEvent, type HookHandler, type HookPayload, type HookRegistry, type HookRule, type HookSource } from './hooks'
+import { mergeHookRegistries, parseHookDecisionJSON, type HookDecision, type HookEvent, type HookHandler, type HookPayload, type HookRegistry, type HookRule, type HookSource } from './hooks'
 import type { Tool, ToolContext } from '../tools/Tool'
 import { ToolRegistry } from '../tools/registry'
 import { runAgentLoop } from '../harness/loop'
 import { textBlock, type Message } from '../types/message'
 import { assertHttpHookHostAllowed, ssrfGuardedLookup } from './ssrfGuard'
 
-const HOOK_EVENTS = new Set<HookEvent>(['PreToolUse', 'PostToolUse', 'Stop', 'UserPromptSubmit', 'SessionStart', 'SubagentStart', 'SubagentStop'])
+// 配置文件可声明的事件白名单(与 hooks.ts HookEvent 同步收全,对齐 cc HOOK_EVENTS 落地子集)。
+const HOOK_EVENTS = new Set<HookEvent>([
+  'PreToolUse',
+  'PostToolUse',
+  'PostToolUseFailure',
+  'Stop',
+  'StopFailure',
+  'UserPromptSubmit',
+  'SessionStart',
+  'SessionEnd',
+  'SubagentStart',
+  'SubagentStop',
+  'PreCompact',
+  'PostCompact',
+  'Notification',
+])
 const STRUCTURED_OUTPUT_TOOL_NAME = 'StructuredOutput'
 const AGENT_HOOK_MAX_TURNS = 50
 const AGENT_HOOK_ALLOWED_TOOLS = new Set([
@@ -154,6 +169,16 @@ function commandHookPayload(payload: HookPayload, ctx: ToolContext): Record<stri
     ...(payload.userPrompt !== undefined ? { prompt: payload.userPrompt } : {}),
     ...(payload.agentId ? { agent_id: payload.agentId } : {}),
     ...(payload.agentType ? { agent_type: payload.agentType } : {}),
+    ...(payload.toolUseId ? { tool_use_id: payload.toolUseId } : {}),
+    // PreCompact/PostCompact/Notification/SessionEnd/PostToolUseFailure 载荷字段(cc snake_case 命名)
+    ...(payload.compactTrigger ? { trigger: payload.compactTrigger } : {}),
+    ...(payload.compactCustomInstructions !== undefined ? { custom_instructions: payload.compactCustomInstructions } : {}),
+    ...(payload.compactSummary !== undefined ? { compact_summary: payload.compactSummary } : {}),
+    ...(payload.notificationMessage !== undefined ? { message: payload.notificationMessage } : {}),
+    ...(payload.notificationTitle !== undefined ? { title: payload.notificationTitle } : {}),
+    ...(payload.notificationType !== undefined ? { notification_type: payload.notificationType } : {}),
+    ...(payload.sessionEndReason !== undefined ? { reason: payload.sessionEndReason } : {}),
+    ...(payload.errorMessage !== undefined ? { error: payload.errorMessage } : {}),
   }
 }
 
@@ -733,4 +758,34 @@ export async function loadHookRegistryFile(path: string | undefined): Promise<Ho
   } catch {
     return undefined
   }
+}
+
+/**
+ * 把已启用插件的 hooks 配置文件加载成一个合并 HookRegistry(对齐 cc loadPluginHooks:
+ * convertPluginHooksToMatchers → registerHookCallbacks 的落地版)。
+ *
+ * - 每个 path 是某插件的 hooks 配置文件(如 `<plugin>/hooks/hooks.json`,cc 标准位置)。文件既可是
+ *   `{ description, hooks: { PreToolUse: [{matcher, hooks:[...]}] } }` 包裹结构,也可是裸事件映射——
+ *   normalizeHookRegistry 两种都吃(normalizeEventMap 会分别处理 value.hooks 与顶层)。
+ * - 来源标 `'plugin'`:与插件 .mcp.json"app 级可信、不走工作区信任闸"口径一致——受 disableAllHooks /
+ *   allowManagedHooksOnly 约束,但不过 workspace trust 闸(插件不在被打开的工作区里、非 RCE 攻击面)。
+ * - 单个文件读/解析失败静默跳过(不因一个坏插件拖垮整体);全空则返回 undefined。
+ */
+export async function loadPluginHookRegistry(paths: readonly string[]): Promise<HookRegistry | undefined> {
+  const registries: Array<HookRegistry | undefined> = []
+  for (const path of paths) {
+    let raw = ''
+    try {
+      raw = await readFile(path, 'utf8')
+    } catch {
+      continue
+    }
+    try {
+      const registry = normalizeHookRegistry(JSON.parse(raw) as unknown, { source: 'plugin' })
+      if (registry.rules.length > 0) registries.push(registry)
+    } catch {
+      // 坏 JSON / 非法结构:跳过这一个插件的 hooks,不影响其余。
+    }
+  }
+  return mergeHookRegistries(...registries)
 }

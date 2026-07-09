@@ -34,6 +34,27 @@ test('normalizeMcpConfig:http server 解析 headers(鉴权对齐 cc,Authorizatio
   })
 })
 
+test('normalizeMcpConfig:type:sse → transport sse(保留 headers);type:http 与仅 url 历史写法 → http(对齐 cc 按 type 判别)', () => {
+  const servers = normalizeMcpConfig({
+    mcpServers: {
+      remoteSse: { type: 'sse', url: 'https://mcp.example/sse', headers: { Authorization: 'Bearer sse-token' } },
+      remoteHttp: { type: 'http', url: 'https://mcp.example/mcp' },
+      legacy: { url: 'https://mcp.example/legacy' },
+    },
+  })
+  expect(servers.find(s => s.name === 'remoteSse')).toEqual({
+    name: 'remoteSse',
+    transport: 'sse',
+    url: 'https://mcp.example/sse',
+    env: undefined,
+    disabled: false,
+    headers: { Authorization: 'Bearer sse-token' },
+  })
+  expect(servers.find(s => s.name === 'remoteHttp')?.transport).toBe('http')
+  // 无 type 的历史 url-only 写法保持向后兼容走 streamable http
+  expect(servers.find(s => s.name === 'legacy')?.transport).toBe('http')
+})
+
 test('commandForPlatform:Windows 下 npx 走 cmd /c', () => {
   expect(commandForPlatform({ name: 'fs', transport: 'stdio', command: 'npx', args: ['-y', 'pkg'] }, 'win32'))
     .toEqual({ command: 'cmd', args: ['/c', 'npx', '-y', 'pkg'] })

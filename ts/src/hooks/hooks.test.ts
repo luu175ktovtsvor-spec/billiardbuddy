@@ -4,8 +4,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../workspace/workspace'
 import {
+  applyNotificationHooks,
+  applyPostCompactHooks,
+  applyPostToolUseFailureHooks,
   applyPostToolUseHooks,
+  applyPreCompactHooks,
   applyPreToolUseHooks,
+  applySessionEndHooks,
   applySessionStartHooks,
   applyStopHooks,
   applySubagentStartHooks,
@@ -18,6 +23,7 @@ import {
   resolveHookTrustPolicy,
   runHookEvent,
   shouldRunHookRule,
+  type HookPayload,
   type HookRegistry,
   type HookRule,
 } from './hooks'
@@ -330,6 +336,70 @@ test('resolveHookTrustPolicy:安全默认 interactive=true(纵深防御),isWorks
   expect(policy.allowManagedHooksOnly).toBe(false)
   // 缺省 isWorkspaceTrusted = alwaysTrusted:无宿主接线时不误挡任何 local hook
   expect(policy.isWorkspaceTrusted('/any/workspace')).toBe(true)
+})
+
+// —— 插件 hook 源(plugin):app 级可信、不过 workspace trust 闸,但受 disableAll / managedOnly 约束 ——
+test('信任门 shouldRunHookRule:plugin 源交互未受信仍放行(不在被打开工作区、非 RCE 攻击面),与 local 分道', () => {
+  const plugin: HookRule = { event: 'PreToolUse', source: 'plugin', handler: () => null }
+  const local: HookRule = { event: 'PreToolUse', source: 'local', handler: () => null }
+  const untrusted = { disableAllHooks: false, allowManagedHooksOnly: false, interactive: true, isWorkspaceTrusted: () => false }
+  expect(shouldRunHookRule(plugin, '/ws', untrusted)).toBe(true)
+  expect(shouldRunHookRule(local, '/ws', untrusted)).toBe(false)
+})
+
+test('信任门 shouldRunHookRule:plugin 源被 disableAllHooks 与 allowManagedHooksOnly 挡下', () => {
+  const plugin: HookRule = { event: 'PreToolUse', source: 'plugin', handler: () => null }
+  const disableAll = { disableAllHooks: true, allowManagedHooksOnly: false, interactive: false, isWorkspaceTrusted: () => true }
+  const managedOnly = { disableAllHooks: false, allowManagedHooksOnly: true, interactive: false, isWorkspaceTrusted: () => true }
+  expect(shouldRunHookRule(plugin, '/ws', disableAll)).toBe(false)
+  expect(shouldRunHookRule(plugin, '/ws', managedOnly)).toBe(false)
+})
+
+// —— 新增生命周期事件派发器:PreCompact / PostCompact / SessionEnd / Notification / PostToolUseFailure ——
+test('applyPreCompactHooks / applyPostCompactHooks:按 trigger 派发,收集 additionalContext', async () => {
+  const c = ctx()
+  const seen: Array<{ event: string; trigger?: string; summary?: string; custom?: string | null }> = []
+  const registry: HookRegistry = {
+    rules: [
+      { event: 'PreCompact', handler: p => { seen.push({ event: p.event, trigger: p.compactTrigger, custom: p.compactCustomInstructions }); return { action: 'context', additionalContext: 'pre-note' } } },
+      { event: 'PostCompact', handler: p => { seen.push({ event: p.event, trigger: p.compactTrigger, summary: p.compactSummary }); return { action: 'context', additionalContext: 'post-note' } } },
+    ],
+  }
+  const pre = await applyPreCompactHooks(registry, 'manual', c)
+  const post = await applyPostCompactHooks(registry, 'auto', '这是摘要', c)
+  expect(pre.additionalContext).toEqual(['pre-note'])
+  expect(post.additionalContext).toEqual(['post-note'])
+  expect(seen).toEqual([
+    { event: 'PreCompact', trigger: 'manual', custom: null },
+    { event: 'PostCompact', trigger: 'auto', summary: '这是摘要' },
+  ])
+})
+
+test('applySessionEndHooks / applyNotificationHooks:载荷字段透传,派发就绪', async () => {
+  const c = ctx()
+  const seen: HookPayload[] = []
+  const registry: HookRegistry = {
+    rules: [
+      { event: 'SessionEnd', handler: p => { seen.push(p); return { action: 'context', additionalContext: 'ended' } } },
+      { event: 'Notification', handler: p => { seen.push(p); return null } },
+    ],
+  }
+  const end = await applySessionEndHooks(registry, 'clear', c)
+  await applyNotificationHooks(registry, { message: '需要确认权限', notificationType: 'permission' }, c)
+  expect(end.additionalContext).toEqual(['ended'])
+  expect(seen[0]).toMatchObject({ event: 'SessionEnd', sessionEndReason: 'clear' })
+  expect(seen[1]).toMatchObject({ event: 'Notification', notificationMessage: '需要确认权限', notificationType: 'permission' })
+})
+
+test('applyPostToolUseFailureHooks:工具报错时派发,带 tool_name/error/tool_use_id', async () => {
+  const c = ctx()
+  const seen: HookPayload[] = []
+  const registry: HookRegistry = {
+    rules: [{ event: 'PostToolUseFailure', matcher: 'run_command', handler: p => { seen.push(p); return { action: 'context', additionalContext: '失败已记录' } } }],
+  }
+  const res = await applyPostToolUseFailureHooks(registry, 'run_command', { command: 'boom' }, 'exit 1', c, 'call-9')
+  expect(res.additionalContext).toEqual(['失败已记录'])
+  expect(seen[0]).toMatchObject({ event: 'PostToolUseFailure', toolName: 'run_command', errorMessage: 'exit 1', toolUseId: 'call-9' })
 })
 
 test('resolveHookTrustPolicy:env CLAUDE_CODE_HOOKS_TRUST_IMPLICIT → 转非交互(隐式信任),local 不再受 trust 门约束', () => {

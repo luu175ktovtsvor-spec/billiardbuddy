@@ -1,6 +1,26 @@
 import type { ToolContext } from '../tools/Tool'
 
-export type HookEvent = 'PreToolUse' | 'PostToolUse' | 'Stop' | 'UserPromptSubmit' | 'SessionStart' | 'SubagentStart' | 'SubagentStop'
+/**
+ * hook 事件全集(对齐 cc-haha entrypoints/sdk/coreSchemas.ts HOOK_EVENTS 的落地子集)。
+ * 已派发:PreToolUse / PostToolUse / PostToolUseFailure / UserPromptSubmit / SessionStart /
+ *   SubagentStart / SubagentStop / Stop / PreCompact / PostCompact。
+ * 已提供派发器、call site 待宿主接线(server/壳生命周期):SessionEnd / Notification / StopFailure。
+ * 白名单收全后,工作区/插件的 hook 配置文件即可声明这些事件(normalizeHookRegistry 的 HOOK_EVENTS 同步)。
+ */
+export type HookEvent =
+  | 'PreToolUse'
+  | 'PostToolUse'
+  | 'PostToolUseFailure'
+  | 'Stop'
+  | 'StopFailure'
+  | 'UserPromptSubmit'
+  | 'SessionStart'
+  | 'SessionEnd'
+  | 'SubagentStart'
+  | 'SubagentStop'
+  | 'PreCompact'
+  | 'PostCompact'
+  | 'Notification'
 
 export type HookDecision =
   | { action: 'allow'; message?: string }
@@ -19,6 +39,22 @@ export interface HookPayload {
   agentId?: string
   agentType?: string
   stopHookActive?: boolean
+  /** PreCompact/PostCompact:压缩触发方式(auto=自动阈值触发,manual=强制/用户显式)。对齐 cc trigger。 */
+  compactTrigger?: 'auto' | 'manual'
+  /** PreCompact:自定义压缩指令(本项目暂不接入摘要指令注入,恒 null;字段留给命令 hook 载荷对齐 cc custom_instructions)。 */
+  compactCustomInstructions?: string | null
+  /** PostCompact:本轮压缩产出的摘要文本(对齐 cc compact_summary)。 */
+  compactSummary?: string
+  /** Notification:通知正文/标题/类型(对齐 cc message/title/notification_type)。 */
+  notificationMessage?: string
+  notificationTitle?: string
+  notificationType?: string
+  /** SessionEnd:结束原因(对齐 cc reason,如 clear/resume/logout/other)。 */
+  sessionEndReason?: string
+  /** PostToolUseFailure/StopFailure:错误文本(对齐 cc error)。 */
+  errorMessage?: string
+  /** 工具调用 id(PostToolUseFailure 等,对齐 cc tool_use_id)。 */
+  toolUseId?: string
 }
 
 export type HookHandler = (payload: HookPayload, ctx: ToolContext) => HookDecision | HookDecision[] | null | undefined | Promise<HookDecision | HookDecision[] | null | undefined>
@@ -27,10 +63,14 @@ export type HookHandler = (payload: HookPayload, ctx: ToolContext) => HookDecisi
  * hook 规则来源。对齐 cc-haha 的 hook 源分层(managed/user/project/local/plugin/session)裁剪版:
  * - `managed`(默认,`source` 省略):内核/应用自身注册的可信 hook(域包 createDomainPackHookRegistry、
  *   目标 hook、技能/子代理内置注册),不来自被打开的用户仓库,信任门恒放行(除非 disableAllHooks)。
+ * - `plugin`:已启用插件贡献的 hook(loadPluginHookRegistry,来自 ~/.billiardbuddy 或 library 里用户**主动装的**
+ *   插件包,与插件 .mcp.json 同属"app 级可信、不来自被打开的工作区")。信任门:受 disableAllHooks 与
+ *   allowManagedHooksOnly 约束(装的插件也是扩展、不是内核托管),但**不**过 workspace trust 闸(插件不在被打开的
+ *   工作区里、非 RCE 攻击面)——与"插件 .mcp.json 直接加载不走工作区信任闸"的既有产品口径一致。
  * - `local`:从工作区 `.claude/settings` 风格文件(loadHookRegistryFile)加载的**任意命令 hook**——
  *   即本安全缺口所指的攻击面。信任门对它套用 allowManagedHooksOnly + workspace trust 两道闸。
  */
-export type HookSource = 'managed' | 'local'
+export type HookSource = 'managed' | 'plugin' | 'local'
 
 export interface HookRule {
   event: HookEvent
@@ -122,8 +162,13 @@ export function resolveHookTrustPolicy(): HookTrustPolicy {
  */
 export function shouldRunHookRule(rule: HookRule, workspaceRoot: string, policy: HookTrustPolicy = resolveHookTrustPolicy()): boolean {
   if (policy.disableAllHooks) return false
-  if (rule.source !== 'local') return true
+  // managed(省略 source)= app 内置可信内核,只受 ① disableAllHooks 约束。
+  if (rule.source === undefined || rule.source === 'managed') return true
+  // allowManagedHooksOnly:只跑 managed → 挡 plugin 与 local(装的插件/工作区文件都算非托管扩展)。
   if (policy.allowManagedHooksOnly) return false
+  // plugin(用户主动装的插件贡献):非工作区攻击面,不过 workspace trust 闸,过了 ①② 即放行。
+  if (rule.source === 'plugin') return true
+  // local(工作区文件源):交互模式下 workspace 未受信则挡(非交互/SDK 时 trust 隐式成立)。
   if (policy.interactive && !policy.isWorkspaceTrusted(workspaceRoot)) return false
   return true
 }
@@ -355,4 +400,123 @@ export async function applyStopHooks(
     if (decision.action === 'deny') blockingFeedback.push(`${eventName} hook feedback:\n${decision.message}`)
   }
   return blockingFeedback.length > 0 ? { additionalContext, blockingFeedback } : { additionalContext }
+}
+
+/** 通用"上下文型"事件派发:收 context/把 deny 折成警告文,不阻断(与 PostToolUse/SessionStart 同款语义)。 */
+async function collectContextHooks(registry: HookRegistry | undefined, payload: HookPayload, ctx: ToolContext, warnLabel: string): Promise<HookContextResult> {
+  const additionalContext: string[] = []
+  const decisions = await runHookEvent(registry, payload, ctx)
+  for (const decision of decisions) {
+    if (decision.action === 'context') additionalContext.push(decision.additionalContext)
+    if (decision.action === 'deny') additionalContext.push(`[${warnLabel} hook 警告] ${decision.message}`)
+  }
+  return { additionalContext }
+}
+
+/**
+ * PreCompact:压缩流程即将执行时触发(对齐 cc compact.ts:445 executePreCompactHooks,fire 在真压缩前)。
+ * 本项目暂不把 customInstructions 回注摘要请求,故只收 additionalContext 作压缩通知/上下文补充。
+ */
+export async function applyPreCompactHooks(
+  registry: HookRegistry | undefined,
+  trigger: 'auto' | 'manual',
+  ctx: ToolContext,
+  customInstructions: string | null = null,
+): Promise<HookContextResult> {
+  return collectContextHooks(registry, {
+    event: 'PreCompact',
+    compactTrigger: trigger,
+    compactCustomInstructions: customInstructions,
+    sessionId: ctx.conversationId,
+  }, ctx, 'PreCompact')
+}
+
+/** PostCompact:压缩完成后触发(对齐 cc compact.ts:755 executePostCompactHooks),载荷带摘要文本。 */
+export async function applyPostCompactHooks(
+  registry: HookRegistry | undefined,
+  trigger: 'auto' | 'manual',
+  compactSummary: string,
+  ctx: ToolContext,
+): Promise<HookContextResult> {
+  return collectContextHooks(registry, {
+    event: 'PostCompact',
+    compactTrigger: trigger,
+    compactSummary,
+    sessionId: ctx.conversationId,
+  }, ctx, 'PostCompact')
+}
+
+/**
+ * SessionEnd:会话结束/清空/退出时触发(对齐 cc SessionEnd,reason=clear/resume/logout/other…)。
+ * 派发器就绪;call site 在宿主壳/服务器的会话关停处接线(见本任务返回说明)。
+ */
+export async function applySessionEndHooks(
+  registry: HookRegistry | undefined,
+  reason: string,
+  ctx: ToolContext,
+): Promise<HookContextResult> {
+  return collectContextHooks(registry, {
+    event: 'SessionEnd',
+    sessionEndReason: reason,
+    sessionId: ctx.conversationId,
+  }, ctx, 'SessionEnd')
+}
+
+/**
+ * Notification:向用户发通知时触发(对齐 cc Notification,message/title/notification_type)。
+ * 派发器就绪;call site 在宿主发通知处接线(权限待确认/空闲/任务完成等)。
+ */
+export async function applyNotificationHooks(
+  registry: HookRegistry | undefined,
+  notification: { message: string; title?: string; notificationType?: string },
+  ctx: ToolContext,
+): Promise<HookContextResult> {
+  return collectContextHooks(registry, {
+    event: 'Notification',
+    notificationMessage: notification.message,
+    notificationTitle: notification.title,
+    notificationType: notification.notificationType ?? 'generic',
+    sessionId: ctx.conversationId,
+  }, ctx, 'Notification')
+}
+
+/**
+ * PostToolUseFailure:工具执行抛错时触发(对齐 cc PostToolUseFailure,error+tool_name+tool_input)。
+ * 非阻断:只把 hook 追加的上下文回灌,不改变"错误已回灌让模型自救"的既有失败路径。
+ */
+export async function applyPostToolUseFailureHooks(
+  registry: HookRegistry | undefined,
+  toolName: string,
+  input: unknown,
+  errorMessage: string,
+  ctx: ToolContext,
+  toolUseId?: string,
+): Promise<HookContextResult> {
+  return collectContextHooks(registry, {
+    event: 'PostToolUseFailure',
+    toolName,
+    input,
+    errorMessage,
+    toolUseId,
+    sessionId: ctx.conversationId,
+  }, ctx, 'PostToolUseFailure')
+}
+
+/**
+ * StopFailure:Stop 流程/收尾出错时触发(对齐 cc StopFailure)。派发器就绪;call site 由宿主错误收尾处接线。
+ */
+export async function applyStopFailureHooks(
+  registry: HookRegistry | undefined,
+  errorMessage: string,
+  ctx: ToolContext,
+  opts: { finalText?: string; subagent?: { agentId: string; agentType: string } } = {},
+): Promise<HookContextResult> {
+  return collectContextHooks(registry, {
+    event: 'StopFailure',
+    errorMessage,
+    output: opts.finalText,
+    agentId: opts.subagent?.agentId,
+    agentType: opts.subagent?.agentType,
+    sessionId: ctx.conversationId,
+  }, ctx, 'StopFailure')
 }

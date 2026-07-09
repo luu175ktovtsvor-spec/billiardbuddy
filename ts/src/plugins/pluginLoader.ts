@@ -128,6 +128,35 @@ export async function resolveEnabledPluginContributions(roots = defaultPluginRoo
   return { skillsDirs, commandsDirs, mcpConfigPaths }
 }
 
+/**
+ * 解析已启用插件的 hooks 配置文件绝对路径(供会话构建时经 loadPluginHookRegistry 并入 hook 注册表)。
+ *
+ * 对齐 cc(pluginLoader.ts:1620-1662):标准位置 `<plugin>/hooks/hooks.json` 自动加载,外加 manifest.hooks
+ * 显式声明的附加文件(相对插件根)。这里收全存在的候选、去重,交给 loadPluginHookRegistry 归一+合并。
+ * 只收 `enabled !== false` 的插件;同名插件按 roots 顺序首见者胜(与 listPlugins 一致)。
+ */
+export async function resolveEnabledPluginHookConfigPaths(roots = defaultPluginRoots()): Promise<string[]> {
+  const plugins = await listPlugins(roots)
+  const seen = new Set<string>()
+  const out: string[] = []
+  const add = (path: string) => {
+    if (existsSync(path) && !seen.has(path)) {
+      seen.add(path)
+      out.push(path)
+    }
+  }
+  for (const p of plugins) {
+    if (!p.enabled) continue
+    // cc 标准位置:<plugin>/hooks/hooks.json
+    add(join(p.dir, 'hooks', 'hooks.json'))
+    // manifest.hooks 声明的附加文件(相对插件根;默认值 'hooks.json' 也覆盖根级放置的常见布局)
+    const manifest = await readManifest(p.dir)
+    const declared = stringField(manifest.hooks)
+    if (declared) add(join(p.dir, declared))
+  }
+  return out
+}
+
 async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
   await mkdir(join(filePath, '..'), { recursive: true })
   const tmp = `${filePath}.tmp`

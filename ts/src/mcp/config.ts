@@ -1,7 +1,7 @@
 import type { ApprovalClass } from '../permissions/types'
 import { readFile } from 'node:fs/promises'
 
-export type McpTransport = 'stdio' | 'http'
+export type McpTransport = 'stdio' | 'http' | 'sse'
 
 export interface McpServerConfig {
   name: string
@@ -47,9 +47,12 @@ export function normalizeMcpConfig(value: unknown): McpServerConfig[] {
   for (const [name, raw] of Object.entries(servers)) {
     if (!isRecord(raw)) continue
     if (typeof raw.url === 'string' && raw.url.trim()) {
+      // 传输判定对齐 cc(services/mcp/types.ts 的 type 判别):显式 type:'sse' → SSE(旧式长连 + POST 回发);
+      // 其余带 url 的(type:'http' 或仅有 url 的历史写法)→ streamable http。type 缺省保持向后兼容走 http。
+      const transport: McpTransport = raw.type === 'sse' ? 'sse' : 'http'
       out.push({
         name,
-        transport: 'http',
+        transport,
         url: raw.url.trim(),
         env: stringRecord(raw.env),
         disabled: raw.disabled === true,
