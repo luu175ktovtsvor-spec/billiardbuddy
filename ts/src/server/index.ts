@@ -87,7 +87,7 @@ import type { AgentEvent, AskQuestionField } from '../types/events'
 import type { ToolContext } from '../tools/Tool'
 import type { PermissionUpdate } from '../permissions/types'
 import { applyPermissionUpdates } from '../permissions/permissionUpdate'
-import { loadPermissionRules, permissionUpdatesFromRules, persistPermissionRule } from '../permissions/permissionsSettings'
+import { configurePermissionTrust, loadPermissionRules, permissionUpdatesFromRules, persistPermissionRule } from '../permissions/permissionsSettings'
 import type { FetchLike } from '../proxy/ProxyModel'
 import type { PermissionMode } from '../permissions/types'
 import { canonicalPermissionMode } from '../permissions/canonical'
@@ -951,6 +951,8 @@ export function startServer(opts: StartServerOptions = {}) {
   // 不受此门约束——理由见 hooks.ts shouldRunHookRule 注释的"与 cc 有意分叉"说明。受信授予入口:
   // POST /api/v1/agent/mcp/trust 或 startServer opts.trustedWorkspaceRoots。此调用是进程级、覆盖本 server 所有请求。
   configureHookTrust({ interactive: true, isWorkspaceTrusted: root => mcpTrust.isTrusted(root) })
+  // 权限 allow 规则同款信任门:未受信工作区的 .billiardbuddy allow 不生效(防恶意仓库绕审批闸),deny/ask 与用户级不受限。同一 McpTrustStore 信任源。
+  configurePermissionTrust({ interactive: true, isWorkspaceTrusted: root => mcpTrust.isTrusted(root) })
   /** 解析并过信任闸的 mcpConfigPath。显式(请求或 startServer opts 指定)与 app 库/全局配置放行;
    * 未信任的工作区级 <root>/.mcp.json 拦下不连,返回 warning。 */
   const resolveMcpConfig = (rawBody: Record<string, unknown>, workspaceRoot: string): { path: string | undefined; warning?: string } => {
