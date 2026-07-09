@@ -12,6 +12,50 @@
   const sesslist = $('sesslist');
   const newChatBtn = $('newchat');
   const expertSel = $('expert');
+  const wsPathEl = $('ws-path');
+  const wsPickBtn = $('ws-pick');
+  const wsTreeEl = $('ws-tree');
+  const host = window.desktopHost;
+  let workspaceRoot = ''; // 空=后端默认工作区(sidecar cwd)
+
+  async function pickWorkspace() {
+    let dir = null;
+    if (host && typeof host.pickWorkspace === 'function') dir = await host.pickWorkspace(); // Electron 原生文件夹选择器
+    else dir = window.prompt('输入工作区文件夹的绝对路径:', workspaceRoot || ''); // 浏览器兜底
+    if (!dir) return;
+    workspaceRoot = dir;
+    wsPathEl.textContent = dir; wsPathEl.title = dir;
+    loadTree(dir);
+  }
+  async function loadTree(path) {
+    try {
+      const data = await (await fetch('/api/v1/agent/fs/list?path=' + encodeURIComponent(path))).json();
+      renderTree(wsTreeEl, path, data.entries || [], 0);
+    } catch { wsTreeEl.innerHTML = ''; }
+  }
+  function renderTree(container, base, entries, depth) {
+    if (depth === 0) container.innerHTML = '';
+    entries.forEach((e) => {
+      const node = el('node' + (e.isDir ? ' dir' : ''));
+      node.style.paddingLeft = (depth * 12 + 4) + 'px';
+      node.innerHTML = '<span class="ico">' + (e.isDir ? '▸' : '·') + '</span>' + esc(e.name);
+      const full = base.replace(/\/$/, '') + '/' + e.name;
+      if (e.isDir) {
+        let expanded = false;
+        node.onclick = async () => {
+          if (expanded) { let n = node.nextSibling; while (n && Number(n.style.paddingLeft.replace('px','')) > depth * 12 + 4) { const del = n; n = n.nextSibling; del.remove(); } expanded = false; node.querySelector('.ico').textContent = '▸'; return; }
+          try {
+            const data = await (await fetch('/api/v1/agent/fs/list?path=' + encodeURIComponent(full))).json();
+            const frag = document.createElement('div');
+            renderTree(frag, full, data.entries || [], depth + 1);
+            while (frag.firstChild) node.parentNode.insertBefore(frag.firstChild, node.nextSibling);
+            expanded = true; node.querySelector('.ico').textContent = '▾';
+          } catch {}
+        };
+      }
+      container.appendChild(node);
+    });
+  }
 
   async function loadExperts() {
     try {
@@ -219,6 +263,7 @@
     reconnect();
   }
   newChatBtn.addEventListener('click', newChat);
+  wsPickBtn.addEventListener('click', pickWorkspace);
 
   function connect() {
     ws = new WebSocket(wsProto + '//' + location.host + '/agent/ws?conversationId=' + encodeURIComponent(conversationId));
@@ -258,6 +303,7 @@
     running = true; sendBtn.disabled = true;
     const run = { type: 'run', message: text, permissionMode: defaultPermissionMode, conversationId: conversationId };
     if (expertSel && expertSel.value) run.enabled_packs = [expertSel.value]; // 挂载专家领域包(影响上下文/工具/系统提示)
+    if (workspaceRoot) run.working_dir = workspaceRoot; // 用户选定的工作区(模型在此读写/执行)
     wsSend(run);
   }
 
