@@ -189,6 +189,121 @@
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
   function clip(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n) + '…' : s; }
 
+  // ============ 助手回复富文本渲染(机制照抄 cc-haha markdown/CodeViewer,颜色/文案照抄 WorkBuddy)============
+  // cc 用 marked+DOMPurify+shiki;这里不加依赖,用极简白名单渲染器复刻:①先整体转义(XSS 根治)②代码块抽成卡片(内容走 textContent)
+  // ③行内只注入自控白名单标签(strong/em/code/a/del)。流式期间保持纯文本,收尾(settle/final)再规整成 markdown(对齐 cc「未完成 markdown 先按纯文本」)。
+  function escAttr(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+  // URL 白名单:只放行 http(s)/mailto/tel + 相对路径;其它显式协议(javascript:/data:/vbscript: 等)一律拦成 #(防脚本注入)。
+  function sanitizeUrl(u) {
+    const s = String(u == null ? '' : u).trim();
+    if (!s) return '#';
+    if (/^(https?:|mailto:|tel:)/i.test(s)) return s;
+    if (/^[a-z][a-z0-9+.\-]*:/i.test(s)) return '#';   // 有 scheme 但不在白名单 → 拦
+    return s;                                            // 无 scheme 的相对路径 → 放行
+  }
+  // 行内渲染:粗体/斜体/删除线/行内代码/链接。返回 XSS 安全的 HTML 串(所有文本经 esc,只注入自控标签)。
+  function renderInline(text) {
+    const S = '';                                 // 私有区哨兵,占位抽出的 code/link
+    let t = String(text == null ? '' : text).replace(//g, ''); // 先剔除真身里的哨兵,防串扰
+    const codes = [], links = [];
+    t = t.replace(/`([^`\n]+)`/g, (m, c) => { codes.push(c); return S + 'C' + (codes.length - 1) + S; }); // 行内代码优先(内容按字面)
+    t = t.replace(/!?\[([^\]]*)\]\(([^)\s]+)(?:[ \t]+"[^"]*")?\)/g, (m, label, url) => { links.push({ label: label, url: url }); return S + 'L' + (links.length - 1) + S; });
+    t = esc(t);                                          // 关键:此后正文全部已转义,任何 <script> 已成实体
+    t = t.replace(/\*\*([^\n]+?)\*\*/g, '<strong>$1</strong>');
+    t = t.replace(/__([^\n]+?)__/g, '<strong>$1</strong>');
+    t = t.replace(/(^|[^*])\*(?!\s)([^*\n]+?)\*/g, '$1<em>$2</em>');
+    t = t.replace(/(^|[^_\w])_(?!\s)([^_\n]+?)_(?![\w])/g, '$1<em>$2</em>');
+    t = t.replace(/~~([^\n]+?)~~/g, '<del>$1</del>');
+    t = t.replace(/\n/g, '<br>');                        // gfm breaks:软换行成 <br>
+    t = t.replace(new RegExp(S + 'L(\\d+)' + S, 'g'), (m, i) => { const L = links[+i]; const u = sanitizeUrl(L.url); return '<a href="' + escAttr(u) + '" target="_blank" rel="noopener noreferrer">' + esc(L.label || u) + '</a>'; });
+    t = t.replace(new RegExp(S + 'C(\\d+)' + S, 'g'), (m, i) => '<code class="md-ic">' + esc(codes[+i]) + '</code>');
+    return t;
+  }
+  // 代码卡片(照抄 cc CodeViewer:顶部条=语言标签[+文件名]+行数 / 右侧复制按钮;等宽字体 + overflow-x 横向滚动)。代码内容走 textContent,天然免疫 XSS。
+  function makeCodeCard(code, lang, filename) {
+    const card = el('code-card');
+    const head = el('cc-head');
+    const meta = el('cc-meta');
+    const langEl = document.createElement('span'); langEl.className = 'cc-lang'; langEl.textContent = lang || '代码'; meta.appendChild(langEl);
+    if (filename) { const fn = document.createElement('span'); fn.className = 'cc-file'; fn.textContent = filename; meta.appendChild(fn); }
+    const nLines = code.length ? code.split('\n').length : 0;
+    const lc = document.createElement('span'); lc.className = 'cc-lines'; lc.textContent = nLines + ' 行'; meta.appendChild(lc);
+    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'cc-copy'; btn.textContent = '复制';
+    btn.addEventListener('click', () => copyText(code, btn));
+    head.appendChild(meta); head.appendChild(btn);
+    const pre = document.createElement('pre'); pre.className = 'cc-body';
+    const codeEl = document.createElement('code'); codeEl.textContent = code; pre.appendChild(codeEl);
+    card.appendChild(head); card.appendChild(pre);
+    return card;
+  }
+  // 块级解析:围栏代码块→卡片,标题/水平线/引用/有序无序列表/段落。返回 DOM 节点数组。
+  function mdRender(src) {
+    const nodes = [];
+    const lines = String(src == null ? '' : src).replace(/\r\n?/g, '\n').split('\n');
+    const fenceRe = /^(\s*)(`{3,}|~{3,})[ \t]*([^\n]*)$/;
+    const headingRe = /^(#{1,6})\s+(.*)$/;
+    const hrRe = /^\s{0,3}([-*_])[ \t]*(?:\1[ \t]*){2,}$/;
+    const ulRe = /^(\s*)[-*+]\s+(.*)$/;
+    const olRe = /^(\s*)(\d+)[.)]\s+(.*)$/;
+    const quoteRe = /^\s{0,3}>\s?(.*)$/;
+    const isBlockStart = (l) => fenceRe.test(l) || headingRe.test(l) || hrRe.test(l) || ulRe.test(l) || olRe.test(l) || quoteRe.test(l);
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (!line.trim()) { i++; continue; }
+      const fence = fenceRe.exec(line);
+      if (fence) {                                        // 围栏代码块(未闭合到 EOF 也照收,不崩)
+        const info = fence[3].trim(); let lang = '', filename = '';
+        if (info) {
+          const colon = info.match(/^([\w+.\-]+):(\S+)/);
+          if (colon) { lang = colon[1]; filename = colon[2]; }
+          else { const toks = info.split(/\s+/); lang = toks[0] || ''; const tm = info.match(/title\s*=\s*"([^"]+)"|title\s*=\s*(\S+)/i); if (tm) filename = tm[1] || tm[2] || ''; else if (toks[1] && /\./.test(toks[1])) filename = toks[1]; }
+        }
+        const closeRe = new RegExp('^\\s*' + fence[2][0] + '{' + fence[2].length + ',}\\s*$');
+        const buf = []; i++;
+        while (i < lines.length) { if (closeRe.test(lines[i])) { i++; break; } buf.push(lines[i]); i++; }
+        nodes.push(makeCodeCard(buf.join('\n'), lang, filename)); continue;
+      }
+      const h = headingRe.exec(line);
+      if (h) { const lvl = h[1].length; const node = document.createElement('h' + lvl); node.className = 'md-h md-h' + lvl; node.innerHTML = renderInline(h[2].trim()); nodes.push(node); i++; continue; }
+      if (hrRe.test(line)) { const hr = document.createElement('hr'); hr.className = 'md-hr'; nodes.push(hr); i++; continue; }
+      if (quoteRe.test(line)) { const buf = []; while (i < lines.length && quoteRe.test(lines[i])) { buf.push(quoteRe.exec(lines[i])[1]); i++; } const bq = document.createElement('blockquote'); bq.className = 'md-quote'; bq.innerHTML = renderInline(buf.join('\n')); nodes.push(bq); continue; }
+      if (ulRe.test(line)) { const ul = document.createElement('ul'); ul.className = 'md-ul'; while (i < lines.length && ulRe.test(lines[i])) { const li = document.createElement('li'); li.innerHTML = renderInline(ulRe.exec(lines[i])[2]); ul.appendChild(li); i++; } nodes.push(ul); continue; }
+      if (olRe.test(line)) { const ol = document.createElement('ol'); ol.className = 'md-ol'; const first = olRe.exec(line); if (first && first[2] !== '1') ol.setAttribute('start', first[2]); while (i < lines.length && olRe.test(lines[i])) { const li = document.createElement('li'); li.innerHTML = renderInline(olRe.exec(lines[i])[3]); ol.appendChild(li); i++; } nodes.push(ol); continue; }
+      const buf = [];
+      while (i < lines.length) { const l = lines[i]; if (!l.trim() || isBlockStart(l)) break; buf.push(l); i++; }
+      if (buf.length) { const p = document.createElement('p'); p.className = 'md-p'; p.innerHTML = renderInline(buf.join('\n')); nodes.push(p); }
+    }
+    return nodes;
+  }
+  // 把累积的原始 markdown 渲进气泡容器(替换纯文本 .av)。空/无解析结果时回退纯文本,绝不留空。
+  function renderMarkdownInto(container, raw) {
+    if (!container) return;
+    const nodes = mdRender(raw);
+    container.innerHTML = '';
+    container.classList.add('md');
+    if (!nodes.length) { container.textContent = String(raw == null ? '' : raw); return; }
+    nodes.forEach((n) => container.appendChild(n));
+  }
+  // —— 复制 + 轻提示 toast(WorkBuddy 中性,去 Claude 字样)——
+  function fallbackCopy(text) {
+    try { const ta = document.createElement('textarea'); ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.top = '-1000px'; document.body.appendChild(ta); ta.select(); const ok = document.execCommand('copy'); document.body.removeChild(ta); return ok; } catch { return false; }
+  }
+  async function copyText(text, btn) {
+    let ok = false;
+    try { if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(text); ok = true; } else ok = fallbackCopy(text); } catch { ok = fallbackCopy(text); }
+    toast(ok ? '已复制' : '复制失败，请手动选择复制');
+    if (ok && btn) { const o = btn.textContent; btn.textContent = '已复制'; btn.classList.add('done'); setTimeout(() => { btn.textContent = o; btn.classList.remove('done'); }, 1500); }
+  }
+  let toastTimer = null;
+  function toast(msg) {
+    let t = document.getElementById('wb-toast');
+    if (!t) { t = document.createElement('div'); t.id = 'wb-toast'; document.body.appendChild(t); }
+    t.textContent = msg; t.classList.add('show');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 1600);
+  }
+
   function hideEmpty() { if (emptyEl) emptyEl.style.display = 'none'; }
 
   // 文件改动 → 彩色 diff 面板
@@ -225,16 +340,17 @@
   }
   function ensureAssistant() {
     if (!assistantEl) {
-      const m = el('msg assistant'); assistantEl = el('text'); assistantEl._val = el('av'); assistantEl.appendChild(assistantEl._val);
+      const m = el('msg assistant'); assistantEl = el('text'); assistantEl._raw = ''; assistantEl._val = el('av'); assistantEl.appendChild(assistantEl._val);
       m.appendChild(assistantEl); wrap.appendChild(m);
     }
     return assistantEl;
   }
   // —— 流式尾光标 + 50ms 节流(cc AssistantMessage 尾光标 + chatStore content_delta 节流)——
+  // 流式期间 _val 只放纯文本(_raw 累积原始 markdown);收尾时(settle/final)才用 _raw 规整成富文本,稳定不闪(对齐 cc「未完成 markdown 先按纯文本」)。
   function showCursor(a) { if (!cursorEl) cursorEl = el('wb-cursor'); if (cursorEl.parentNode !== a) a.appendChild(cursorEl); }
   function removeCursor() { if (cursorEl) { try { cursorEl.remove(); } catch {} cursorEl = null; } }
-  function assistantAppend(text) { const a = ensureAssistant(); a._val.textContent += text; showCursor(a); }
-  function assistantSet(text) { const a = ensureAssistant(); a._val.textContent = text; }
+  function assistantAppend(text) { const a = ensureAssistant(); a._raw += text; if (a._val) a._val.textContent = a._raw; showCursor(a); }
+  function assistantSet(text) { const a = ensureAssistant(); a._raw = String(text == null ? '' : text); if (a._val) a._val.textContent = a._raw; }
   function flushDelta() { // 立即把攒批 flush 进气泡
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
     if (pendingDelta) { const t = pendingDelta; pendingDelta = ''; assistantAppend(t); scrollDown(); }
@@ -243,7 +359,11 @@
     pendingDelta += text;
     if (!flushTimer) flushTimer = setTimeout(() => { flushTimer = null; const t = pendingDelta; pendingDelta = ''; if (t) { assistantAppend(t); scrollDown(); } }, 50);
   }
-  function settleAssistant() { flushDelta(); removeCursor(); assistantEl = null; } // 文本气泡落定成独立块
+  function settleAssistant() { // 文本气泡落定成独立块:先落攒批、去光标,再把 _raw 规整成 markdown 富文本
+    flushDelta(); removeCursor();
+    if (assistantEl) renderMarkdownInto(assistantEl, assistantEl._raw || '');
+    assistantEl = null;
+  }
   // —— 思考折叠块(cc ThinkingBlock:思考中+动画点 / 已思考;同轮多段累进同一块)——
   function ensureThink() {
     if (!thinkEl) {
@@ -347,7 +467,7 @@
         finalizeThink();
         flushDelta();                       // 落定攒批
         if (ev.text) assistantSet(ev.text); // final 全文为权威,覆盖流式累积
-        removeCursor(); assistantEl = null; // 移除尾光标
+        settleAssistant();                  // 收尾:去尾光标 + 把 _raw 规整成 markdown 富文本(代码卡片/标题/列表…)
         hideRun();
         scrollDown();
         break;
