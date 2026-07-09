@@ -22,6 +22,7 @@ import { readStoredToolResultTool } from '../tools/storedToolResultTool'
 import { TeamService } from '../tasks/teamService'
 import { Transcript } from '../memory/transcript'
 import { createGoalHookRegistry, getThreadGoal, setThreadGoalHook } from '../goals/goalState'
+import type { HookRegistry } from '../hooks/hooks'
 import { TaskListService } from '../tasks/taskListService'
 import { createStructuredTaskTools } from '../tasks/taskListTools'
 import { formatCrossSessionMessage } from '../tasks/crossSessionMessages'
@@ -918,6 +919,27 @@ test('审批闸:requiresApproval 工具 → 吐 approval_request + 回灌待确�
   expect(spy.ran).toBe(false) // 关键:循环里没真发
   const tr = events.find(e => e.type === 'tool_result')
   expect(tr && tr.type === 'tool_result' && tr.output).toContain('待用户确认')
+})
+
+test('hooks:PreToolUse permissionDecision=ask → 只读工具也被强制走审批(即使 acceptEdits 本会自动放行)', async () => {
+  process.env.SECRET_KEY = SECRET
+  resetDenialStore()
+  writeFileSync(join(root, 'r.txt'), 'data')
+  const hooks: HookRegistry = {
+    rules: [{ event: 'PreToolUse', matcher: 'read_file', handler: () => ({ action: 'ask', message: '读文件请确认' }) }],
+  }
+  const events = await collect(runAgentLoop({
+    model: scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: '1', name: 'read_file', input: { path: 'r.txt' } }] },
+      { kind: 'final', text: '完成' },
+    ]),
+    registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'acceptEdits', conversationId: 'hook-ask', hooks,
+  }))
+  // read_file 只读、acceptEdits 本会自动放行;hook 的 ask 强制它走审批
+  const ap = events.find(e => e.type === 'approval_request')
+  expect(ap && ap.type === 'approval_request' && ap.tool).toBe('read_file')
+  expect(ap && ap.type === 'approval_request' && ap.reason?.why).toContain('读文件请确认')
 })
 
 test('executeApproved:token 对 → 真执行;token 错 → 校验失败不执行', async () => {

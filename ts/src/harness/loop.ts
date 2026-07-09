@@ -845,17 +845,20 @@ async function* gateOneCall(
     yield feedback(decision.message, false)
     return
   }
-  if (decision.behavior === 'ask') {
+  // cc PreToolUse hook permissionDecision:'ask' → 即使当前档位/规则本会自动放行,也强制该次走审批闸。
+  const forceAsk = hookResult.askRequested === true && decision.behavior === 'allow'
+  if (decision.behavior === 'ask' || forceAsk) {
     const key = actionKey(call.name, hookInput)
-    const rememberable = isApprovalRememberable(decision)
-    if (rememberable && shouldAutoApproveForContext(ctx, key)) {
+    const rememberable = decision.behavior === 'ask' ? isApprovalRememberable(decision) : false
+    // hook 强制的 ask 不走"本会话已允许/已停止询问"捷径(hook 明确要求当次询问);规则级 ask 保留原捷径。
+    if (!forceAsk && rememberable && shouldAutoApproveForContext(ctx, key)) {
       const input = hookInput
       const outcome = yield* executeAllowedToolCallWithProgress(tool, call, input, ctx, hooks, toolResultStoreDir)
       toolResults.push(outcome.result)
       for (const event of outcome.events) yield event
       return
     }
-    if (shouldStopAskingForContext(ctx, key)) {
+    if (!forceAsk && shouldStopAskingForContext(ctx, key)) {
       yield feedback(DENIAL_FALLBACK_MSG(call.name), false)
       return
     }
@@ -872,7 +875,9 @@ async function* gateOneCall(
       id: call.id,
       token: signApproval(call.name, hookInput),
       preview,
-      reason: decision.approvalReason,
+      reason: decision.behavior === 'ask'
+        ? decision.approvalReason
+        : { what: `PreToolUse hook 要求确认调用 ${call.name}`, why: hookResult.askMessage ?? 'hook 请求人工确认', impact: '' },
       rememberable,
     }
     yield feedback(APPROVAL_PENDING_MSG(call.name), false)
