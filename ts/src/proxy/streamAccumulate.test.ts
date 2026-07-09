@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { accumulateOpenAiStream } from './streamAccumulate'
+import { accumulateOpenAiStream, StreamProviderError } from './streamAccumulate'
 
 // 把若干 SSE 行拼成一个 ReadableStream(可故意把 JSON 劈到跨 chunk,考验缓冲)
 function sse(lines: string[], chunkSplits: number[] = []): ReadableStream<Uint8Array> {
@@ -24,6 +24,23 @@ test('文本分片累积成整段', async () => {
   expect(acc.text).toBe('你好')
   expect(acc.toolCalls).toEqual([])
   expect(acc.finishReason).toBe('stop')
+})
+
+test('provider 中途 error 帧 → 抛 StreamProviderError(不静默吞成截断空响应)', async () => {
+  const p = accumulateOpenAiStream(sse([
+    chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { content: '部分' }, finish_reason: null }] }),
+    chunk({ error: { message: 'rate limit exceeded', type: 'rate_limit' } }),
+    '[DONE]',
+  ]))
+  await expect(p).rejects.toThrow(StreamProviderError)
+  await expect(p).rejects.toThrow('rate limit exceeded')
+})
+
+test('error 帧为字符串 error 也识别', async () => {
+  await expect(accumulateOpenAiStream(sse([
+    chunk({ error: 'upstream unavailable' }),
+    '[DONE]',
+  ]))).rejects.toThrow('upstream unavailable')
 })
 
 test('工具调用分片:id/name/args 跨 chunk 累积', async () => {
