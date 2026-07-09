@@ -3450,11 +3450,11 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 > **2026-07-09 进度**(编排子代理并行写 disjoint 文件 + 主进程接 loop/server 项):连接架构对齐已落(`c98af29`/`931cf61`:WS 统一 steer/approve/reject/ping + 审批闭环写回);入参 schema 闸已落(`42c93eb`,#7);存储架构对齐确认(`b087332`)。#6/#12/#13/MCP 鉴权由子代理并行实现中,#11 及 token 触发由主进程接。
 
 **P1(可靠性/正确性)**
-5. 模型调用重试退避:✅重试基础设施已落地(`ts/src/model/fetchRetry.ts`,opt-in,默认不改 failover 时序);**待续**:是否默认开启(需 owner 定 failover-vs-retry 延迟取舍)、SSE 中途 error 帧识别(现静默吞成截断空响应)、流空闲超时跟随 `aiRequestTimeoutMs`(现 60s 与之脱钩)。
+5. 模型调用重试退避:✅重试基础设施(`fetchRetry.ts`,opt-in)+ ✅SSE 中途 error 帧识别(`600d34b`:StreamProviderError 抛出不再静默吞成空响应);**待续**:是否默认开启重试(需 owner 定 failover-vs-retry 取舍)、流空闲超时跟随 `aiRequestTimeoutMs`(现 60s 与之脱钩,已有 streamIdleTimeout 基建待接)。
 6. ✅上下文压缩兜底(`7806175`):摘要请求自身超限→shrinkOldMessagesForRetry 腰斩 old 段重试(最多 3 次,对齐 cc MAX_PTL_RETRIES)、空文本降级 throw not-fake、不硬截断(与 cc 一致)。loop.ts:343-345 已处理主请求超限触发,互补不冲突;**待续**:autocompact 用"字符估算 vs 真实 token usage 取大"的 token 触发(改 loop.ts maybeCompact,主进程接)、压缩计数跨 HTTP 请求持久化。
 7. ✅工具入参 schema 校验闸(`42c93eb`):gateOneCall 权限判定前统一 `<tool_use_error>InputValidationError`,并行只读路径入参非法回退串行;保守校验(缺 required + 已声明基本类型),未声明/union 放行。
 8. 规则持久化落盘(cc `permissionsLoader`/`persistPermissionUpdate`;让"本会话允许"可选升级为跨重启持久化)。
-9. fork 类型后台代理 resume 修复(`resumeBackgroundAgentTask` 重建 fork 合成 AgentDefinition)。
+9. ✅fork 类型后台代理 resume 修复(`142dd27`):resumeBackgroundAgentTask 检测 agentName===fork 时重建合成 fork AgentDefinition 作 agentOverride,绕过 pickAgent 找不到 'fork' 的抛错。
 10. transcript 逐轮落盘 + 主会话 resume 接 `sanitizeBackgroundAgentResumeMessages` 清洗与中断检测。
 
 **P2(能力面/体验)**
