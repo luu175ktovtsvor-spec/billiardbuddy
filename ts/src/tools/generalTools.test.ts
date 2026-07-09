@@ -21,6 +21,8 @@ test('general registry contains the core tools', () => {
     'REPL',
     'SendUserMessage',
     'VerifyPlanExecution',
+    'WebFetch',
+    'WebSearch',
     'ask_user_question',
     'code_outline',
     'edit_excel',

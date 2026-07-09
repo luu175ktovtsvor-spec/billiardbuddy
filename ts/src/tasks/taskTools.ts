@@ -26,6 +26,7 @@ import { createDenialTrackingState } from '../permissions/denialTracking'
 import { resolveSubagentPermissionMode } from '../permissions/canonical'
 import { buildWorktreeNotice, FORK_SUBAGENT_TYPE, isForkQuerySource, isInForkChild, type ForkRunContext } from '../agents/forkSubagent'
 import { sanitizeResumeMessages } from '../harness/messageSanitize'
+import { createBackgroundCommandTool } from '../tools/backgroundCommandTool'
 
 export interface BackgroundAgentTaskInput {
   agent?: string
@@ -1103,6 +1104,8 @@ export function createTaskTools(tasks: TaskService): Tool[] {
     taskOutputAlias(taskOutput, 'AgentOutputTool'),
     taskOutputAlias(taskOutput, 'BashOutputTool'),
     taskStop,
+    // 后台命令生产者:丢后台跑 shell、返回 task id;输出流入本任务事件供 BashOutputTool 读、TaskStop 停。
+    createBackgroundCommandTool(tasks),
   ]
 }
 
