@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { resolveEnabledPluginContributions } from './pluginLoader'
+import { loadSkillsDir } from '../skills/skillLoader'
 
 function makePlugin(root: string, name: string, opts: { enabled?: boolean; skills?: boolean; commands?: boolean; mcp?: boolean } = {}): string {
   const dir = join(root, name)
@@ -25,6 +26,22 @@ test('resolveEnabledPluginContributions:只收启用插件的 skills/commands/.m
     expect(contribs.skillsDirs).toEqual([join(enabledDir, 'skills')])
     expect(contribs.commandsDirs).toEqual([join(enabledDir, 'commands')])
     expect(contribs.mcpConfigPaths).toEqual([join(enabledDir, '.mcp.json')])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('可挂载能力端到端:启用插件的 skill 经 resolveEnabledPluginContributions + loadSkillsDir 真加载出来', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'plugin-cap-'))
+  try {
+    const dir = join(root, 'cap-plugin')
+    mkdirSync(join(dir, 'skills', 'my-cap'), { recursive: true })
+    writeFileSync(join(dir, 'plugin.json'), JSON.stringify({ name: 'cap-plugin', version: '1.0.0' }))
+    writeFileSync(join(dir, 'skills', 'my-cap', 'SKILL.md'), '---\nname: my_cap\ndescription: 测试可挂载能力\n---\n# 正文')
+    const contribs = await resolveEnabledPluginContributions([root])
+    expect(contribs.skillsDirs).toEqual([join(dir, 'skills')])
+    const lib = await loadSkillsDir(contribs.skillsDirs[0]!)
+    expect(lib.skills.some(s => s.name === 'my_cap')).toBe(true) // 插件 skill 真挂进来了
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
