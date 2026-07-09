@@ -134,6 +134,11 @@ export function providerConfigFromEnv(
   return null
 }
 
+/**
+ * ⚠️ 仅供后端内部（健康探测/路由/自测）：虽名为 redacted，但仍保留真实 `model` + `baseUrl`，
+ * 只脱了 key。**绝不能直接作为前端出口**——面向前端请用 `publicProviderSummary`
+ * （`./publicModelNames`），它删 baseUrl/model/apiFormat、只给能力档代称。
+ */
 export function redactedProviderSummary(config: RuntimeProviderConfig): RuntimeProviderSummary {
   return {
     apiFormat: config.apiFormat,

@@ -306,7 +306,10 @@ test('MediaJobService generates real images through configured gateway before lo
 
     expect(calls[0]?.url).toBe('http://image-gateway.example/gw/v1/images/generations')
     expect(calls[0]?.body).toMatchObject({ model: 'gpt-image-2', prompt: '会员日海报', n: 1, size: '1024x1536' })
-    expect(done.result).toMatchObject({ local_preview: false, provider: 'openai-compatible', model: 'gpt-image-2' })
+    // 白标:出口只给能力档代称,不外露真实 provider/model。
+    expect(done.result).toMatchObject({ local_preview: false, image_engine: '创意生图' })
+    expect(JSON.stringify(done.result)).not.toContain('openai')
+    expect(JSON.stringify(done.result)).not.toContain('gpt-image')
     expect(done.result?.urls).toHaveLength(1)
 
     const url = (done.result?.urls as string[])[0]!
@@ -362,7 +365,7 @@ test('MediaJobService routes GPT image through async submit/poll tasks when QF_G
     expect(polls).toBeGreaterThanOrEqual(2)
     // 全程没有走同步 /images/generations
     expect(calls.some(c => c.url.endsWith('/images/generations'))).toBe(false)
-    expect(done.result).toMatchObject({ local_preview: false, provider: 'openai-compatible', model: 'gpt-image-2' })
+    expect(done.result).toMatchObject({ local_preview: false, image_engine: '创意生图' })
     expect(done.result?.urls).toHaveLength(1)
   } finally {
     rmSync(root, { recursive: true, force: true })
@@ -406,11 +409,9 @@ test('MediaJobService auto-routes default Chinese poster generation to Seedream 
       // 9:16(1152×2048=2,359,296)低于火山 Seedream 像素下限 3,686,400,等比放大到 1440×2560(=3,686,400)、各边 16 倍数。
       size: '1440x2560',
     })
-    expect(done.result).toMatchObject({
-      provider: 'seedream-gateway',
-      model: 'doubao-seedream-4-5-251128',
-      image_model_route: 'default_seedream',
-    })
+    expect(done.result).toMatchObject({ image_engine: '写实生图' })
+    expect(JSON.stringify(done.result)).not.toContain('seedream')
+    expect(JSON.stringify(done.result)).not.toContain('doubao')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -495,7 +496,7 @@ test('MediaJobService retries transient Seedream image gateway throttling', asyn
     })
 
     expect(calls.filter(url => url.endsWith('/ark/images/generations'))).toHaveLength(2)
-    expect(done.result).toMatchObject({ provider: 'seedream-gateway', image_model_route: 'default_seedream' })
+    expect(done.result).toMatchObject({ image_engine: '写实生图' })
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -534,11 +535,7 @@ test('MediaJobService routes western/complex image prompts to OpenAI-compatible 
 
     expect(calls[0]?.url).toBe('http://image-gateway.example/gw/v1/images/generations')
     expect(calls[0]?.body).toMatchObject({ model: 'gpt-image-2', prompt, size: '1024x1024' })
-    expect(done.result).toMatchObject({
-      provider: 'openai-compatible',
-      model: 'gpt-image-2',
-      image_model_route: 'complex_creative_openai',
-    })
+    expect(done.result).toMatchObject({ image_engine: '创意生图' })
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -585,14 +582,13 @@ test('MediaJobService falls back from auto-routed OpenAI image failures to Seedr
       'http://image-gateway.example/gw/v1/images/generations',
       'http://image-gateway.example/gw/v1/ark/images/generations',
     ])
-    expect(done.result).toMatchObject({
-      provider: 'seedream-gateway',
-      model: 'doubao-seedream-4-5-251128',
-      image_model_route: 'openai_failed_seedream_fallback',
-      requested_image_model: 'gpt-image-2',
-    })
-    expect(String(done.result?.image_model_route_warning)).toContain('Bearer [redacted]')
+    // 白标:兜底后只给写实生图代称;warning 去掉真实名、原始报错经脱敏(Bearer/供应商名都清)。
+    expect(done.result).toMatchObject({ image_engine: '写实生图' })
+    expect(String(done.result?.image_engine_warning)).toContain('Bearer [redacted]')
     expect(JSON.stringify(done.result)).not.toContain('sk-openai-secret')
+    expect(JSON.stringify(done.result)).not.toContain('openai')
+    expect(JSON.stringify(done.result)).not.toContain('seedream')
+    expect(JSON.stringify(done.result)).not.toContain('gpt-image')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -648,14 +644,10 @@ test('MediaJobService honors explicit image model except Seedream-only ratios', 
 
     expect(calls[0]?.url).toBe('http://image-gateway.example/gw/v1/images/generations')
     expect(calls[0]?.body).toMatchObject({ model: 'gpt-image-2', size: '1024x1536' })
-    expect(explicitDone.result).toMatchObject({ provider: 'openai-compatible', image_model_route: 'explicit_model' })
+    expect(explicitDone.result).toMatchObject({ image_engine: '创意生图' })
     expect(calls[1]?.url).toBe('http://image-gateway.example/gw/v1/ark/images/generations')
     expect(calls[1]?.body).toMatchObject({ model: 'doubao-seedream-4-5-251128', size: '1216x3040' })
-    expect(forcedDone.result).toMatchObject({
-      provider: 'seedream-gateway',
-      image_model_route: 'seedream_only_ratio',
-      requested_image_model: 'gpt-image-2',
-    })
+    expect(forcedDone.result).toMatchObject({ image_engine: '写实生图' })
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -699,7 +691,7 @@ test('MediaJobService sends local reference images to configured Seedream gatewa
     })
     expect(String(requestBody.image).startsWith('data:image/png;base64,')).toBe(true)
     expect(requestBody.input_images).toHaveLength(1)
-    expect(done.result).toMatchObject({ local_preview: false, provider: 'seedream-gateway', mode: 'generate' })
+    expect(done.result).toMatchObject({ local_preview: false, image_engine: '写实生图', mode: 'generate' })
     expect(done.result?.generation_ids).toHaveLength(1)
   } finally {
     rmSync(root, { recursive: true, force: true })
@@ -743,7 +735,7 @@ test('MediaJobService edits a generated image through OpenAI-compatible image ed
     // gpt-image-2 恒最高保真、API 不接受 input_fidelity(传了 400),故不设。非 gpt-image-2 的 gpt-image 系列才设。
     expect(form.get('input_fidelity')).toBeNull()
     expect(form.getAll('image')).toHaveLength(1)
-    expect(done.result).toMatchObject({ local_preview: false, provider: 'openai-compatible', mode: 'edit' })
+    expect(done.result).toMatchObject({ local_preview: false, image_engine: '创意生图', mode: 'edit' })
     expect(done.result?.urls).toHaveLength(1)
     const served = service.serveUpload((done.result?.urls as string[])[0]!)
     expect(served?.status).toBe(200)
@@ -796,11 +788,7 @@ test('MediaJobService routes text-fix image edits to Seedream gateway', async ()
       sequential_image_generation: 'disabled',
     })
     expect(String(requestBody.image).startsWith('data:image/png;base64,')).toBe(true)
-    expect(done.result).toMatchObject({
-      provider: 'seedream-gateway',
-      image_model_route: 'edit_text_fix_seedream',
-      mode: 'edit',
-    })
+    expect(done.result).toMatchObject({ image_engine: '写实生图', mode: 'edit' })
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

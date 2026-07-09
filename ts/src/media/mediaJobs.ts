@@ -9,6 +9,7 @@ import * as QRCode from 'qrcode'
 import type { FetchLike } from '../proxy/ProxyModel'
 import type { TaskMeta, TaskRunnerContext, TaskService, TaskStatus } from '../tasks/taskService'
 import { VideoEditProjectStore } from './videoEditProjects'
+import { PUBLIC_IMAGE_FALLBACK_NOTE, publicImageEngineLabel, scrubProviderIdentifiers } from '../model/publicModelNames'
 
 export type MediaJobKind =
   | 'generate'
@@ -333,19 +334,26 @@ function inferImageEditType(prompt: string | undefined, editType: unknown): 'tex
   return containsAny(prompt ?? '', EDIT_TEXT_FIX_KEYWORDS) ? 'text_fix' : 'content'
 }
 
-function imageRouteFields(route: ImageModelRoute): Record<string, unknown> {
+function imageRouteFields(config: DirectImageConfig): Record<string, unknown> {
+  // 白标:出口只给"能力档"代称(写实生图/创意生图),不回显真实 provider/model、
+  // 不回显 route.reason 原文(含 seedream/openai)、不回显 requested_image_model(原样带真实名)。
   return {
-    image_model_route: route.reason,
-    ...(route.warning ? { image_model_route_warning: route.warning } : {}),
-    ...(route.requestedModel ? { requested_image_model: route.requestedModel } : {}),
+    image_engine: publicImageEngineLabel({
+      provider: config.provider,
+      model: config.model,
+      reason: config.route.reason,
+    }),
+    ...(config.route.warning ? { image_engine_warning: scrubProviderIdentifiers(config.route.warning) } : {}),
   }
 }
 
 function sanitizeMediaError(err: unknown): string {
-  return (err instanceof Error ? err.message : String(err))
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer [redacted]')
-    .replace(/(api[_-]?key["'\s:=]+)[A-Za-z0-9._~+/=-]+/gi, '$1[redacted]')
-    .slice(0, 500)
+  // 白标:除清 Bearer/api-key 外,再过 scrubProviderIdentifiers 清掉真实模型名/供应商/endpoint。
+  return scrubProviderIdentifiers(
+    (err instanceof Error ? err.message : String(err))
+      .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer [redacted]')
+      .replace(/(api[_-]?key["'\s:=]+)[A-Za-z0-9._~+/=-]+/gi, '$1[redacted]'),
+  ).slice(0, 500)
 }
 
 function clampCount(value: unknown): number {
@@ -818,7 +826,7 @@ export class MediaJobService {
         const openai = this.openAiImageConfig(route.fallbackOpenAiModel, {
           ...route.route,
           reason: `${route.route.reason}_openai_fallback`,
-          warning: 'Seedream 图片通道未配置，本轮已用 OpenAI-compatible 图片通道兜底。',
+          warning: '已自动选用备用生图引擎兜底。',
         })
         if (openai) return openai
       }
@@ -917,7 +925,7 @@ export class MediaJobService {
       } catch (err) {
         const fallback = this.seedreamFallbackAfterOpenAiFailure(config, err)
         if (!fallback) throw err
-        await ctx.progress(18, 'OpenAI 图片通道失败，正在切换 Seedream 重试。')
+        await ctx.progress(18, PUBLIC_IMAGE_FALLBACK_NOTE)
         return await this.directImageGeneration(ctx, body, fallback, mode)
       }
     }
@@ -933,7 +941,7 @@ export class MediaJobService {
       reason: 'openai_failed_seedream_fallback',
       explicit: false,
       requestedModel: config.model,
-      warning: `OpenAI-compatible 图片通道失败，已自动切换 Seedream。原因:${sanitizeMediaError(err)}`,
+      warning: `生图引擎失败，已自动切换备用引擎。原因:${sanitizeMediaError(err)}`,
     })
   }
 
@@ -1190,9 +1198,8 @@ export class MediaJobService {
         width: sized.width,
         height: sized.height,
         ratio: sized.ratio,
-        provider: config.provider,
-        model: config.model,
-        ...imageRouteFields(config.route),
+        // 白标:不外露真实 provider('seedream-gateway'/'openai-compatible')与 model,只给能力档代称。
+        ...imageRouteFields(config),
         local_preview: false,
           ...(opts.printMode ? {
             print_mode: true,
@@ -1214,9 +1221,8 @@ export class MediaJobService {
       count: images.length,
       ratio: sized.ratio,
       local_preview: false,
-      provider: config.provider,
-      model: config.model,
-      ...imageRouteFields(config.route),
+      // 白标:不外露真实 provider/model,只给能力档代称。
+      ...imageRouteFields(config),
       mode,
       ...(opts.printMode ? {
         print_mode: true,

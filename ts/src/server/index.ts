@@ -8,6 +8,12 @@ import { compactPipeline } from '../context/compaction'
 import { buildStoreMemoryContext } from '../memory/storeMemoryContext'
 import { createModelFromProviderCandidates } from '../model/modelFactory'
 import { getConfiguredOrBuiltInModelContextWindow } from '../model/modelContextWindows'
+import {
+  PUBLIC_TEXT_CHANNEL,
+  publicProviderSummary,
+  scrubProviderIdentifiers,
+  toPublicProviderView,
+} from '../model/publicModelNames'
 import { SessionService, TurnRegistry, type SessionEventRecord, type SessionStatus, type SessionStreamEvent } from './services/sessionService'
 import { ProviderService, type RuntimeProviderResolution } from './services/providerService'
 import { ProviderHealthStore, type ProviderHealthEntry } from './services/providerHealthStore'
@@ -324,18 +330,11 @@ async function readTextIfExists(path: string): Promise<string> {
   }
 }
 
-function imageProviderGuess(baseUrl: string | undefined): { provider: string; known: string[] } {
-  const url = (baseUrl || '').toLowerCase()
-  if (url.includes('openai')) return { provider: 'openai', known: ['gpt-image-1', 'gpt-image-2'] }
-  if (url.includes('volc') || url.includes('doubao') || url.includes('ark')) return { provider: 'volcengine', known: ['doubao-seedream-4-5', 'doubao-seedream-4-0'] }
-  if (url.includes('fal')) return { provider: 'fal', known: ['fal-ai/flux', 'fal-ai/imagen4'] }
-  if (url.includes('replicate')) return { provider: 'replicate', known: ['black-forest-labs/flux', 'google/imagen'] }
-  return { provider: 'unknown', known: [] }
-}
-
 function runtimeProviderLabel(runtime: RuntimeProviderResolution): string {
-  if (runtime.source === 'saved-provider') return runtime.providerName || runtime.providerId || runtime.config.model
-  return `环境变量:${runtime.config.model}`
+  // 白标：saved-provider 用用户自设的名字（用户自建 BYOK、自己知道），
+  // env/内置出口一律给中性代称，绝不回显 `环境变量:<真实模型>`。
+  if (runtime.source === 'saved-provider') return runtime.providerName || runtime.providerId || PUBLIC_TEXT_CHANNEL.builtin
+  return PUBLIC_TEXT_CHANNEL.builtin
 }
 
 function runtimeProviderKey(runtime: RuntimeProviderResolution): string {
@@ -345,10 +344,13 @@ function runtimeProviderKey(runtime: RuntimeProviderResolution): string {
 
 function sanitizeProviderError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err)
-  return raw
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer [redacted]')
-    .replace(/(api[_-]?key["'\s:=]+)[A-Za-z0-9._~+/=-]+/gi, '$1[redacted]')
-    .slice(0, 180)
+  // 白标：除清 Bearer/api-key 外，再过 scrubProviderIdentifiers 清掉真实模型名/供应商/endpoint，
+  // 保证这条错误进 health.lastError / 失败旁白后不泄底。
+  return scrubProviderIdentifiers(
+    raw
+      .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer [redacted]')
+      .replace(/(api[_-]?key["'\s:=]+)[A-Za-z0-9._~+/=-]+/gi, '$1[redacted]'),
+  ).slice(0, 180)
 }
 
 function createModelFromRuntimeProviders(
@@ -373,28 +375,13 @@ function createModelFromRuntimeProviders(
 const LEGACY_BYOK_TEXT_PROVIDER_ID = 'byok-text'
 
 function validateImageModelPayload(body: Record<string, unknown>) {
-  const baseUrl = typeof body.base_url === 'string' ? body.base_url : typeof body.baseUrl === 'string' ? body.baseUrl : ''
+  // 白标：BYOK 生图设置校验只回一个通用结论，绝不回显真实 provider 名或 known_models
+  // （原来会吐 openai/volcengine + gpt-image-2/doubao-seedream-* 硬编码真名）。
   const model = typeof body.model === 'string' ? body.model.trim() : ''
-  const guessed = imageProviderGuess(baseUrl)
   if (!model) {
-    return { ok: false, level: 'warning', message: '缺少生图模型名。', provider: guessed.provider, known_models: guessed.known }
+    return { ok: false, level: 'warning', message: '缺少生图模型名。' }
   }
-  if (guessed.provider === 'unknown') {
-    return { ok: true, level: 'info', message: '未知供应商端点，已跳过模型归属校验。', provider: guessed.provider, known_models: guessed.known }
-  }
-  const normalized = model.toLowerCase()
-  const ok = guessed.known.some(item => normalized.includes(item.toLowerCase())) ||
-    (guessed.provider === 'openai' && normalized.startsWith('gpt-image')) ||
-    (guessed.provider === 'volcengine' && (normalized.includes('seedream') || normalized.includes('doubao'))) ||
-    (guessed.provider === 'fal' && (normalized.includes('flux') || normalized.includes('imagen'))) ||
-    (guessed.provider === 'replicate' && normalized.includes('/'))
-  return {
-    ok,
-    level: ok ? 'ok' : 'warning',
-    message: ok ? '模型名和当前供应商看起来匹配。' : '模型名跟所选供应商可能对不上，建议确认后再生成。',
-    provider: guessed.provider,
-    known_models: guessed.known,
-  }
+  return { ok: true, level: 'info', message: '已记录生图模型设置。' }
 }
 
 /** app 内置技能根(=cc bundled skills):`ts/src/skills/bundled`。旧值指向已删的 server/skills → 写盘/加载全废,已修。 */
@@ -1225,10 +1212,10 @@ export function startServer(opts: StartServerOptions = {}) {
       }
     }
     if (healthy.length === 0 || cooling.length === 0) return { runtimes, notices: [] }
-    const firstHealthy = healthy[0]!
-    const notices = cooling
-      .filter(item => item.runtime === runtimes[0])
-      .map(item => `模型出口「${item.health.label}」最近失败:${item.health.lastError}；本轮先尝试「${runtimeProviderLabel(firstHealthy)}」。`)
+    // 白标：只在首选出口进冷却时给一句中性提示，去掉真实模型名（label）与原始报错（lastError）。
+    const notices = cooling.some(item => item.runtime === runtimes[0])
+      ? ['上个 AI 通道最近失败已进入冷却，本轮已自动优先使用可用通道继续。']
+      : []
     return { runtimes: [...healthy, ...cooling.map(item => item.runtime)], notices }
   }
 
@@ -1264,7 +1251,7 @@ export function startServer(opts: StartServerOptions = {}) {
         providerId: runtime.providerId,
         providerName: runtime.providerName,
         label: runtimeProviderLabel(runtime),
-        model: runtime.config.model,
+        // 白标：不外露真实 model（原 runtime.config.model 会泄内置模型名）。
         state: 'ready',
         failureCount: 0,
         cooldownMsRemaining: 0,
@@ -1275,7 +1262,7 @@ export function startServer(opts: StartServerOptions = {}) {
       providerId: runtime.providerId,
       providerName: runtime.providerName,
       label: health.label,
-      model: runtime.config.model,
+      // 白标：不外露真实 model。
       state: 'cooling',
       failureCount: health.failureCount,
       cooldownMsRemaining: Math.max(0, health.cooldownUntil - now),
@@ -1325,7 +1312,8 @@ export function startServer(opts: StartServerOptions = {}) {
     return {
       ok: !!runtime,
       activeId: list.activeId,
-      providers: list.providers,
+      // 白标：providers 列表脱敏——去 baseUrl + 真实 model，只留身份 + 能力档代称。
+      providers: list.providers.map(toPublicProviderView),
       fallbackCount: Math.max(0, runtimes.length - 1),
       coolingCount: health.filter(item => item.state === 'cooling').length,
       health,
@@ -1335,7 +1323,8 @@ export function startServer(opts: StartServerOptions = {}) {
             source: runtime.source,
             providerId: runtime.providerId,
             providerName: runtime.providerName,
-            summary: runtime.summary,
+            // 白标:出口摘要走 publicProviderSummary(删 baseUrl/model/apiFormat,只给能力档)。
+            summary: publicProviderSummary(runtime.config),
           }
         : null,
     }
@@ -1875,11 +1864,19 @@ export function startServer(opts: StartServerOptions = {}) {
           teamInbox: { service: teams },
         })) {
           // content_delta 是瞬时 token 流:实时发给客户端(打字机),但不持久化进事件日志(否则日志膨胀、断线重放会重复整段增量)。
-          yield event.type === 'content_delta' ? fallbackEventRecord(event) : await record(event)
+          // 白标:模型层的 context_note(FallbackModel 失败/切换旁白等系统提示)可能带真实模型名/供应商/原始报错,
+          // 在出口统一过 scrubProviderIdentifiers 清底(只清系统旁白,不动 final/tool_result 等用户内容)。
+          const outgoing = event.type === 'context_note'
+            ? { ...event, text: scrubProviderIdentifiers(event.text) }
+            : event
+          yield event.type === 'content_delta' ? fallbackEventRecord(event) : await record(outgoing)
         }
       } catch (err) {
         finalStatus = controller.signal.aborted ? 'interrupted' : 'failed'
-        const detail = controller.signal.aborted ? '任务已中断' : err instanceof Error ? err.message : String(err)
+        // 白标:总失败详情可能带模型层原始报错(真实模型名/供应商/endpoint),出口前统一脱敏。
+        const detail = controller.signal.aborted
+          ? '任务已中断'
+          : scrubProviderIdentifiers(err instanceof Error ? err.message : String(err))
         yield await record({ type: 'context_note', text: `任务执行失败:${detail}` })
         yield await record({ type: 'final', text: `任务执行失败:${detail}` })
       } finally {
@@ -2154,7 +2151,8 @@ export function startServer(opts: StartServerOptions = {}) {
         source: providerRuntime.source,
         providerId: providerRuntime.providerId,
         providerName: providerRuntime.providerName,
-        summary: providerRuntime.summary,
+        // 白标:出口摘要走 publicProviderSummary(删 baseUrl/model/apiFormat)。
+        summary: publicProviderSummary(providerRuntime.config),
       },
       fallbackCount: Math.max(0, resolvedProviderRuntimes.length - 1),
       ...(orderedProviderRuntimes.notices.length ? { notices: orderedProviderRuntimes.notices } : {}),
@@ -4151,7 +4149,11 @@ export function startServer(opts: StartServerOptions = {}) {
           const [id, action] = providerRoute.segments
 
           if (!id) {
-            if (req.method === 'GET') return Response.json(await providers.list())
+            // 白标:前端拉的 providers 列表脱敏——去 baseUrl + 真实 model,只留身份 + 能力档代称。
+            if (req.method === 'GET') {
+              const listed = await providers.list()
+              return Response.json({ activeId: listed.activeId, providers: listed.providers.map(toPublicProviderView) })
+            }
             if (req.method === 'POST') {
               const body = await req.json().catch(() => ({})) as Record<string, unknown>
               return Response.json({ provider: await providers.create(body) }, { status: 201 })
