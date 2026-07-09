@@ -1,6 +1,7 @@
 import { open, readFile, stat } from 'node:fs/promises'
 import { extname } from 'node:path'
 import type { Tool } from './Tool'
+import type { ImageBlock } from '../types/message'
 import { isProjectInstructionPath, loadProjectInstructionsForTarget, loadProjectInstructionsForTargets, projectInstructionScopeKey } from '../harness/projectInstructions'
 import { resolveToolPath } from '../permissions/filePathRules'
 import { detectEncodingFromBuffer, FULL_READ_MAX_BYTES, isBlockedDevicePath, stripLeadingBom } from './fileIoSafety'
@@ -69,9 +70,12 @@ export const fileReadTool: Tool<FileReadInput> = {
     }
     const info = await stat(abs)
     if (isImageExtension(extname(input.path))) {
-      const body = await formatImageRead(abs, input.path, info.size, ctx.signal)
+      const { text, imageBlock } = await formatImageRead(abs, input.path, info.size, ctx.signal)
       recordRecentFileRead(ctx, abs, { path: input.path, mtimeMs: info.mtimeMs, size: info.size })
-      return await prependApplicableProjectInstructions(ctx, abs, input.path, body)
+      // vision 支持的格式(png/jpeg/gif/webp)把真图像块推进 loop 的 sink,让模型真看到图(loop 组进 tool_result
+      // 的块数组);bmp/超大/无法识别 → imageBlock 为 null,仅回元信息文本(向后兼容)。
+      if (imageBlock) ctx.imageResultSink?.push(imageBlock)
+      return await prependApplicableProjectInstructions(ctx, abs, input.path, text)
     }
     const focused = hasFocusedRead(input)
     if (!focused && info.size > FULL_READ_MAX_BYTES) {
@@ -392,17 +396,25 @@ function xmlAttr(value: string): string {
 }
 
 // 图像分支:解码格式/宽高、按 vision 预算估 token、base64 生成 image content-block(见 imageRead.ts)。
-// 说明:内核工具结果目前只承载文本(ToolResultBlock.content:string;loop 把 execute 的 string 包成
-// 文本 tool_result),尚无「工具产 image 块回灌模型」的通路,故此处输出图像元信息 + 就绪的 base64,
-// 让模型知道这是图、多大、估多少 vision token,避免旧行为把图当 UTF-8 读成乱码。
-async function formatImageRead(abs: string, label: string, size: number, signal?: AbortSignal): Promise<string> {
+// 返回 { text, imageBlock }:text 是给模型看的图像元信息(格式/宽高/估算 token/超预算提示),imageBlock 是
+// vision 支持格式(png/jpeg/gif/webp)的真图像块——由 loop 组进 tool_result content,让模型真看到图。
+// bmp/超大/无法识别 → imageBlock 为 null(仅回文本,避免把图当 UTF-8 读成乱码)。
+// 超 vision 预算:cc 会用原生 sharp 降采样后再送;本仓库无重采样能力,故仍把原图送进去(模型看得到)+ 文本
+// 标注 over_vision_budget 让上层知情,不因估算超预算就把图吞掉(那会使 4K 截图等常见图失去 vision)。
+async function formatImageRead(abs: string, label: string, size: number, signal?: AbortSignal): Promise<{ text: string; imageBlock: ImageBlock | null }> {
   if (size > IMAGE_MAX_BYTES) {
-    return `<file_image path="${xmlAttr(label)}" size="${size}" error="too_large">\n图片过大(${size} 字节,超过 ${IMAGE_MAX_BYTES} 字节整读上限),请先裁剪/压缩后再读。\n</file_image>`
+    return {
+      text: `<file_image path="${xmlAttr(label)}" size="${size}" error="too_large">\n图片过大(${size} 字节,超过 ${IMAGE_MAX_BYTES} 字节整读上限),请先裁剪/压缩后再读。\n</file_image>`,
+      imageBlock: null,
+    }
   }
   const buffer = await readFile(abs, signal ? { signal } : undefined)
   const result = readImageBuffer(buffer)
   if (!result) {
-    return `<file_image path="${xmlAttr(label)}" size="${size}" error="unrecognized">\n无法识别的图片数据(扩展名像图片但魔数不匹配)。\n</file_image>`
+    return {
+      text: `<file_image path="${xmlAttr(label)}" size="${size}" error="unrecognized">\n无法识别的图片数据(扩展名像图片但魔数不匹配)。\n</file_image>`,
+      imageBlock: null,
+    }
   }
   const dims = result.dimensions ? `${result.dimensions.width}x${result.dimensions.height}` : 'unknown'
   const estTokens = result.estimatedVisionTokens
@@ -418,7 +430,10 @@ async function formatImageRead(abs: string, label: string, size: number, signal?
   ].join(' ')
   const notes: string[] = []
   if (!result.visionSupported) notes.push(`格式 ${result.format} 不是 vision 支持的图片类型(仅 png/jpeg/gif/webp),无法作为图像输入。`)
-  if (overBudget) notes.push(`估算 vision token(${estTokens})超过预算 ${IMAGE_VISION_TOKEN_BUDGET};图较大,必要时先缩放再读。`)
+  if (overBudget) notes.push(`估算 vision token(${estTokens})超过预算 ${IMAGE_VISION_TOKEN_BUDGET};图较大(已随结果附上原图,未缩放),必要时先缩放再读。`)
   const body = notes.length ? `\n${notes.join('\n')}\n` : '\n'
-  return `<file_image ${attrs}>${body}</file_image>`
+  return {
+    text: `<file_image ${attrs}>${body}</file_image>`,
+    imageBlock: result.imageBlock,
+  }
 }

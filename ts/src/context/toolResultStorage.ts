@@ -278,6 +278,9 @@ function collectCandidatesFromMessage(message: Message, toolNames: ReadonlyMap<s
   if (message.role !== 'user') return []
   return message.content.flatMap(block => {
     if (block.type !== 'tool_result') return []
+    // 多模态 tool_result(content 是块数组,如 read_file 读图)不参与落盘/预算裁剪:图像块不能当文本切,
+    // 且 read_file 本就不在 storable 名单。只对纯文本结果做候选收集(向后兼容)。
+    if (typeof block.content !== 'string') return []
     if (block.content.trim() === '') return []
     if (isContentAlreadyStored(block.content)) return []
     return [{

@@ -873,7 +873,7 @@ test('background agent isolation=worktree preserves dirty worktree and resume co
     expect(resumed.params?.agent_id).toBe(first.id)
     expect(resumedMetadata?.agentId).toBe(first.id)
     const finalModelCall = model.received.at(-1)
-    expect(finalModelCall?.messages.some(message => message.content.some(block => block.type === 'tool_result' && block.content.includes('from isolated background agent')))).toBe(true)
+    expect(finalModelCall?.messages.some(message => message.content.some(block => block.type === 'tool_result' && typeof block.content === 'string' && block.content.includes('from isolated background agent')))).toBe(true)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -1124,7 +1124,7 @@ test('start_background_agent_task connects agent frontmatter mcpServers and inje
     expect(done.result).toBe('后台 MCP 完成')
     expect(model.received[0]!.tools.map(tool => tool.name)).toContain('mcp__background_agent_fixture__agent_echo')
     expect(model.received[1]!.messages.some(message =>
-      message.content.some(block => block.type === 'tool_result' && block.content.includes('background-agent-mcp:hello')),
+      message.content.some(block => block.type === 'tool_result' && typeof block.content === 'string' && block.content.includes('background-agent-mcp:hello')),
     )).toBe(true)
   } finally {
     rmSync(root, { recursive: true, force: true })

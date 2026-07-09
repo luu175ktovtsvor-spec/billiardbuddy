@@ -71,7 +71,11 @@ function blockChars(block: Message['content'][number]): number {
   if (block.type === 'text') return block.text.length
   if (block.type === 'thinking') return block.thinking.length
   if (block.type === 'image') return Math.min(block.source.data.length, 4096)
-  if (block.type === 'tool_result') return block.content.length
+  if (block.type === 'tool_result') {
+    if (typeof block.content === 'string') return block.content.length
+    // 多模态 tool_result:文本按字符、图像按 base64 长度封顶 4096(与上面 image 块一致),别把 base64 全算进上下文估算。
+    return block.content.reduce((n, b) => n + (b.type === 'text' ? b.text.length : Math.min(b.source.data.length, 4096)), 0)
+  }
   try {
     return block.name.length + JSON.stringify(block.input).length
   } catch {
@@ -112,6 +116,8 @@ export function microcompactReadOnlyToolResults(
   let changed = 0
   for (const r of results) {
     const tool = idToName.get(r.tool_use_id)
+    // 多模态 tool_result(块数组,含图像)不折叠:图像块不能当文本压;只压过长的纯文本只读结果(向后兼容)。
+    if (typeof r.content !== 'string') continue
     if (!tool || !readOnlyToolNames.has(tool) || keep.has(r) || r.content.length <= maxChars) continue
     r.content = `[已压缩只读工具结果:${tool},原 ${r.content.length} 字符]`
     changed++
@@ -187,6 +193,22 @@ function shouldAutocompact(input: CompactPipelineInput, failures: number): boole
   const contextWindowChars = input.contextWindowChars
   if (!contextWindowChars) return false
   return estimateMessagesChars(input.messages) >= thresholdFor(contextWindowChars)
+}
+
+/**
+ * 只读预判:本次 compactPipeline 是否真的会执行压缩(供 harness 在压缩前触发 PreCompact 钩,
+ * 对齐 cc "只在真压缩时发钩"的语义)。逻辑与 compactPipeline 开头的决策(microcompact →
+ * shouldAutocompact → splitForAutocompact)完全一致、不复制阈值常量,避免行为漂移。
+ *
+ * 说明:内部会跑 microcompactReadOnlyToolResults —— 这与 compactPipeline 无条件在开头跑的那次是同一个
+ * 幂等折叠(折过的短结果不会再折),等于把"每次调用 compactPipeline 都会发生"的那次 microcompact 提前一点,
+ * 不改变任何压缩行为;随后 compactPipeline 再跑一次即 no-op。
+ */
+export function compactionWillRun(input: CompactPipelineInput): boolean {
+  const failures = input.compactionFailures ?? 0
+  microcompactReadOnlyToolResults(input.messages, input.readOnlyToolNames, input)
+  if (!shouldAutocompact(input, failures)) return false
+  return splitForAutocompact(input.messages, input) !== null
 }
 
 export async function compactPipeline(input: CompactPipelineInput): Promise<CompactPipelineOutput> {

@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { AnthropicMessagesModel } from './AnthropicMessagesModel'
-import { userText } from '../types/message'
+import { userText, type Message } from '../types/message'
 import { MODEL_OUTPUT_TRUNCATED_NOTICE } from '../types/model'
 
 function sseResponse(lines: string[]): Response {
@@ -318,4 +318,66 @@ test('升级重试不重复 onDelta(截断→escalate 只吐首发增量,防前�
   expect(calls).toBe(2)
   expect(deltas).toEqual([{ channel: 'text', text: '前半' }]) // 重试整段不再吐增量
   expect(step).toEqual({ kind: 'final', text: '写完' })
+})
+
+test('AnthropicMessagesModel:tool_result 块数组(text+image)→ Anthropic image content-block', async () => {
+  let sentBody: any
+  const model = new AnthropicMessagesModel({
+    baseUrl: 'https://api.anthropic.test/v1',
+    apiKey: 'k',
+    model: 'claude-test',
+    stream: false,
+    fetchImpl: async (_url, init) => {
+      sentBody = JSON.parse(init!.body as string)
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: 'ok' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    },
+  })
+  const messages: Message[] = [
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'u1', name: 'read_file', input: { path: 'a.png' } }] },
+    { role: 'user', content: [{
+      type: 'tool_result',
+      tool_use_id: 'u1',
+      content: [
+        { type: 'text', text: '<file_image format="png"/>' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+      ],
+    }] },
+  ]
+  await model.step({ messages, tools: [] })
+  const userMsg = sentBody.messages.find((m: any) => m.role === 'user')
+  expect(userMsg.content[0]).toEqual({
+    type: 'tool_result',
+    tool_use_id: 'u1',
+    content: [
+      { type: 'text', text: '<file_image format="png"/>' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+    ],
+  })
+})
+
+test('AnthropicMessagesModel:tool_result 字符串 content 原样序列化(向后兼容)', async () => {
+  let sentBody: any
+  const model = new AnthropicMessagesModel({
+    baseUrl: 'https://api.anthropic.test/v1',
+    apiKey: 'k',
+    model: 'claude-test',
+    stream: false,
+    fetchImpl: async (_url, init) => {
+      sentBody = JSON.parse(init!.body as string)
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: 'ok' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    },
+  })
+  const messages: Message[] = [
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'u1', name: 'grep_files', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'u1', content: 'plain text result' }] },
+  ]
+  await model.step({ messages, tools: [] })
+  const userMsg = sentBody.messages.find((m: any) => m.role === 'user')
+  expect(userMsg.content[0]).toEqual({ type: 'tool_result', tool_use_id: 'u1', content: 'plain text result' })
 })

@@ -28,6 +28,7 @@ import { TaskListService } from '../tasks/taskListService'
 import { createStructuredTaskTools } from '../tasks/taskListTools'
 import { formatCrossSessionMessage } from '../tasks/crossSessionMessages'
 import { resetPromptCacheBreakDetection } from '../context/promptCacheBreakDetection'
+import { COMPACTION_SYSTEM_PROMPT } from '../context/compaction'
 
 let root: string
 beforeEach(() => {
@@ -662,7 +663,7 @@ test('message-level aggregate tool result budget stores the largest result and p
 
   const feedback = model.received[1]!.messages.flatMap(message => message.content)
     .filter(block => block.type === 'tool_result')
-  expect(feedback.filter(block => block.type === 'tool_result' && block.content.includes('<stored_tool_result')).length).toBe(1)
+  expect(feedback.filter(block => block.type === 'tool_result' && typeof block.content === 'string' && block.content.includes('<stored_tool_result')).length).toBe(1)
   expect(readdirSync(storeDir).length).toBe(1)
   const records = await transcript.loadContentReplacementRecords()
   expect(records.length).toBe(1)
@@ -2407,4 +2408,88 @@ test('hooks:Stop 在 UserPromptSubmit deny 收敛时也执行', async () => {
     { type: 'context_note', text: 'stop:请求被 hook 拦截:blocked' },
     { type: 'final', text: '请求被 hook 拦截:blocked' },
   ])
+})
+
+test('压缩钩:真跑压缩时派发 PreCompact 与 PostCompact(trigger=auto,PostCompact 带摘要文本)', async () => {
+  const preFired: Array<'auto' | 'manual'> = []
+  const postFired: Array<{ trigger: string; summary: string }> = []
+  const hooks: HookRegistry = {
+    rules: [
+      { event: 'PreCompact', handler: p => { preFired.push(p.compactTrigger!); return { action: 'context', additionalContext: 'pre-compact-ran' } } },
+      { event: 'PostCompact', handler: p => { postFired.push({ trigger: p.compactTrigger!, summary: p.compactSummary! }); return null } },
+    ],
+  }
+  // 压缩摘要调用(system===COMPACTION_SYSTEM_PROMPT)与主循环步用同一 model,按 system 区分。
+  const model: Model = {
+    async step(input) {
+      if (input.system === COMPACTION_SYSTEM_PROMPT) return { kind: 'final', text: '<summary>压缩摘要</summary>' }
+      return { kind: 'final', text: '干完了' }
+    },
+  }
+  // 20 条历史(> keepRecent12+minOld6 触发 split)+ 极小 contextWindowChars 让 shouldAutocompact 命中 → 首轮即压缩
+  const initialMessages = Array.from({ length: 20 }, (_, i) => userText(`历史消息 ${i} ` + 'x'.repeat(40)))
+  const events = await collect(runAgentLoop({
+    model, registry: new ToolRegistry([]), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: '继续',
+    initialMessages,
+    contextWindowChars: 100,
+    hooks,
+  }))
+  expect(preFired).toEqual(['auto'])
+  expect(postFired).toEqual([{ trigger: 'auto', summary: '压缩摘要' }])
+  // PreCompact 的 additionalContext 汇入压缩 context_note
+  expect(events.some(e => e.type === 'context_note' && e.text.includes('pre-compact-ran'))).toBe(true)
+  expect(events.at(-1)).toEqual({ type: 'final', text: '干完了' })
+})
+
+test('read_file 读图 → tool_result content 带 image 块回灌模型(真 vision)', async () => {
+  // 最小合法 PNG(签名 + IHDR 宽高)。
+  const png = Buffer.alloc(24)
+  png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0)
+  png.write('IHDR', 12, 'ascii')
+  png.writeUInt32BE(64, 16)
+  png.writeUInt32BE(48, 20)
+  writeFileSync(join(root, 'shot.png'), png)
+
+  const steps: AssistantStep[] = [
+    { kind: 'tool_calls', text: '读图', calls: [{ id: 'r1', name: 'read_file', input: { path: 'shot.png' } }] },
+    { kind: 'final', text: '我看到了这张图' },
+  ]
+  const model = scriptedModel(steps)
+  await collect(runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: '看看 shot.png',
+  }))
+
+  // 模型第二步(final)前收到的历史里,read_file 的 tool_result content 应是块数组、含真 image 块。
+  const toolResults = model.received.at(-1)!.messages
+    .flatMap(m => m.content)
+    .filter(b => b.type === 'tool_result')
+  const imageResult = toolResults.find(b => Array.isArray(b.content))
+  expect(imageResult).toBeDefined()
+  const blocks = imageResult!.content as Array<{ type: string; text?: string; source?: { media_type: string; data: string } }>
+  expect(blocks.some(x => x.type === 'text')).toBe(true) // 元信息文本块仍在
+  const img = blocks.find(x => x.type === 'image')
+  expect(img).toBeDefined()
+  expect(img!.source!.media_type).toBe('image/png')
+  expect(img!.source!.data.length).toBeGreaterThan(0)
+})
+
+test('read_file 读文本 → tool_result content 仍是 string(向后兼容)', async () => {
+  writeFileSync(join(root, 'note.txt'), 'plain text payload')
+  const steps: AssistantStep[] = [
+    { kind: 'tool_calls', text: '读文本', calls: [{ id: 't1', name: 'read_file', input: { path: 'note.txt' } }] },
+    { kind: 'final', text: '读完了' },
+  ]
+  const model = scriptedModel(steps)
+  await collect(runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: '看看 note.txt',
+  }))
+  const toolResults = model.received.at(-1)!.messages
+    .flatMap(m => m.content)
+    .filter(b => b.type === 'tool_result')
+  expect(toolResults).toHaveLength(1)
+  expect(typeof toolResults[0]!.content).toBe('string')
+  expect(toolResults[0]!.content).toContain('plain text payload')
 })

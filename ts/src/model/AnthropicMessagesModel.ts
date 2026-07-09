@@ -1,5 +1,5 @@
 import { MODEL_OUTPUT_TRUNCATED_NOTICE, type Model, type ModelStepInput, type AssistantStep } from '../types/model'
-import type { ContentBlock, Message, ToolCall } from '../types/message'
+import type { ContentBlock, ImageBlock, Message, ToolCall } from '../types/message'
 import { ensureToolResultPairing, normalizeMessagesForAPI } from '../proxy/messagePairing'
 import { parseOpenAIToolArguments, stringifyOpenAIToolArguments } from '../proxy/toolArguments'
 import type { AnthropicUsage } from '../proxy/types'
@@ -34,11 +34,13 @@ interface AnthropicAccumulated {
   usage?: AnthropicUsage
 }
 
+type AnthropicImageBlock = { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+type AnthropicToolResultContentBlock = { type: 'text'; text: string } | AnthropicImageBlock
 type AnthropicRequestBlock =
   | { type: 'text'; text: string }
-  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+  | AnthropicImageBlock
   | { type: 'tool_use'; id: string; name: string; input: unknown }
-  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }
+  | { type: 'tool_result'; tool_use_id: string; content: string | AnthropicToolResultContentBlock[]; is_error?: boolean }
 
 type AnthropicResponseContentBlock =
   | { type: 'text'; text?: string }
@@ -194,11 +196,18 @@ function toAnthropicBlock(block: ContentBlock): AnthropicRequestBlock[] {
     return [{
       type: 'tool_result',
       tool_use_id: block.tool_use_id,
-      content: block.content,
+      // string → 原样;块数组(多模态)→ 逐块映射成 Anthropic text/image content-block(真 vision 回灌)。
+      content: typeof block.content === 'string' ? block.content : block.content.map(toAnthropicToolResultContentBlock),
       ...(block.is_error ? { is_error: true } : {}),
     }]
   }
   return []
+}
+
+function toAnthropicToolResultContentBlock(block: { type: 'text'; text: string } | ImageBlock): AnthropicToolResultContentBlock {
+  return block.type === 'image'
+    ? { type: 'image', source: block.source }
+    : { type: 'text', text: block.text }
 }
 
 function anthropicJsonToAccumulated(json: AnthropicResponseJson): AnthropicAccumulated {

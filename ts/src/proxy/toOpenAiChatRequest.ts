@@ -1,5 +1,5 @@
 // 出方向:内核 Anthropic 块 → OpenAI chat 请求,保持工具调用/结果在 OpenAI-compatible 网关可理解。
-import type { Message, ContentBlock } from '../types/message'
+import type { ImageBlock, Message, ContentBlock, ToolResultBlock } from '../types/message'
 import type { ToolSpec } from '../tools/Tool'
 import type { OpenAIChatRequest, OpenAIChatMessage, OpenAIChatContentPart, OpenAIToolCall } from './types'
 import type { ReasoningEffort } from '../model/reasoningEffort'
@@ -58,7 +58,7 @@ function convertUserMessage(blocks: ContentBlock[], output: OpenAIChatMessage[],
       if (imageMode === 'text_only') textOnlyParts.push(block.text)
       else contentParts.push({ type: 'text', text: block.text })
     } else if ((block as { type: string }).type === 'image') {
-      // 内核暂不产 image 块;为将来多模态留通路。text_only 模式替占位。
+      // user 消息顶层 image 块(如用户贴图);tool_result 里的图像另在下方 tool_result 分支处理。text_only 模式替占位。
       if (imageMode === 'text_only') {
         textOnlyParts.push(OMITTED_IMAGE_TEXT)
       } else {
@@ -67,7 +67,14 @@ function convertUserMessage(blocks: ContentBlock[], output: OpenAIChatMessage[],
       }
     } else if (block.type === 'tool_result') {
       // tool_result → 独立 tool 消息(OpenAI 无 is_error 字段;报错信号靠 content 里的 <tool_use_error> 文本)。
-      output.push({ role: 'tool', tool_call_id: block.tool_use_id, content: block.content })
+      // 多模态:OpenAI 兼容端点的 tool 角色只吃文本,图像只能进 user 消息的 image_url——把结果文本留给 tool 消息,
+      // 图像块顺延进本轮尾随的 user 消息(image_url;text_only 模式替占位)。这是跨供应商都能吃的 vision 通路。
+      const { text, images } = splitToolResultContent(block.content)
+      output.push({ role: 'tool', tool_call_id: block.tool_use_id, content: text })
+      for (const image of images) {
+        if (imageMode === 'text_only') textOnlyParts.push(OMITTED_IMAGE_TEXT)
+        else contentParts.push({ type: 'image_url', image_url: { url: `data:${image.source.media_type};base64,${image.source.data}` } })
+      }
     }
     // thinking 块在 user 侧不该出现,忽略。
   }
@@ -81,6 +88,22 @@ function convertUserMessage(blocks: ContentBlock[], output: OpenAIChatMessage[],
       content: contentParts.length === 1 && contentParts[0]!.type === 'text' ? contentParts[0]!.text : contentParts,
     })
   }
+}
+
+/**
+ * 拆 tool_result content:string → 原样文本、无图;块数组 → 文本块拼成 tool 消息文本 + 收集 image 块。
+ * 数组无文本时给个占位文本(OpenAI tool 消息 content 不能是空/图像),图像另走 user 消息的 image_url。
+ */
+function splitToolResultContent(content: ToolResultBlock['content']): { text: string; images: ImageBlock[] } {
+  if (typeof content === 'string') return { text: content, images: [] }
+  const texts: string[] = []
+  const images: ImageBlock[] = []
+  for (const block of content) {
+    if (block.type === 'text') texts.push(block.text)
+    else if (block.type === 'image') images.push(block)
+  }
+  const text = texts.join('\n') || (images.length > 0 ? '[image content returned; see attached image]' : '')
+  return { text, images }
 }
 
 function convertAssistantMessage(blocks: ContentBlock[], output: OpenAIChatMessage[]): void {
