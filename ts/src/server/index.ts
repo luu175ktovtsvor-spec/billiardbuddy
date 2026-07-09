@@ -12,6 +12,7 @@ import { ProviderService, type RuntimeProviderResolution } from './services/prov
 import { ProviderHealthStore, type ProviderHealthEntry } from './services/providerHealthStore'
 import { LegacyAgentStore, type LegacyArtifact } from './services/legacyAgentStore'
 import { DesktopDataStore } from './services/desktopDataStore'
+import { UserSettingsStore } from './services/userSettings'
 import { StoreDocsService, createStoreDocsTool } from './services/storeDocsService'
 import {
   OfficeDocumentError,
@@ -929,6 +930,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const sessions = new SessionService(stateRoot)
   const providers = new ProviderService(opts.providerRoot ?? stateRoot)
   const desktopData = new DesktopDataStore(stateRoot)
+  const userSettings = new UserSettingsStore(stateRoot)
   const tasks = new TaskService(stateRoot, {
     onSettled: async task => {
       const notification = backgroundTaskNotification(task)
@@ -3778,6 +3780,16 @@ export function startServer(opts: StartServerOptions = {}) {
       if (url.pathname === '/api/v1/agent/plugins') {
         if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
         return Response.json({ plugins: await listPlugins(defaultPluginRoots(opts.env ?? process.env)) })
+      }
+
+      // 配置基座:App 级用户设置(默认权限档/主题),供设置抽屉读写。
+      if (url.pathname === '/api/settings') {
+        if (req.method === 'GET') return Response.json({ settings: await userSettings.get() })
+        if (req.method === 'POST') {
+          const body = await req.json().catch(() => ({})) as Record<string, unknown>
+          return Response.json({ settings: await userSettings.update(body) })
+        }
+        return new Response('Method not allowed', { status: 405 })
       }
 
       // 规则持久化:把一条权限规则写进工作区 .claude/settings.local.json(跨重启生效),供"始终允许"选择用。
