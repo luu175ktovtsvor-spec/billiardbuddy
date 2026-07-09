@@ -3498,10 +3498,10 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 1. **项目/会话组织**:cc 多项目 App——按 `sanitizePath(cwd)` 分桶存目录、`listSessionsImpl` 跨项目/worktree 感知、`recent-projects` 聚合选择器、会话 fork;本项目单节点(一份扁平 `sessions.json` + `workspaceRoot` 字段标归属),无"项目"组织层、无最近项目、无会话分支。
 2. **配置基座**:cc 有分层用户设置文件 + `/api/settings` REST + 网络设置持久化 + provider 预设库;本项目只有 provider 一柱,其余设置基座缺。
 
-前端/桌面壳(后端做完再补):
-3. **桌面壳 Electron 层**:ts-desktop 仅 sidecarManager,`main.ts`/`preload`/窗口管理/集中 IPC 白名单 + payload 校验/原生能力(托盘/菜单/窗口状态持久化/外链协议白名单 + 可执行文件拦截/导航守卫)全空——照 cc 服务拆分骨架从零建,同时迁入老壳产品特有能力(文件沙箱选择器/截图问 AI/TTS/全局热键/多工作台/开机自启,cc 无);排除 cc 编码 agent 专属(PTY 终端/WebContentsView 预览/trace 窗/portable 模式)。
-4. **sidecar 生命周期上层**:cc `serverRuntime.ts`(ElectronServerRuntime)+ `main.ts` app 生命周期挂钩,本项目缺(无 electron/main.ts)。
-5. **打包/分发/自动更新**:electron-builder 配置(mac dmg/win nsis 签名)+ 跨平台 CI 出包矩阵 + electron-updater 状态机全空(sidecar 单文件编译脚本已对齐)。
+前端/桌面壳(2026-07-09 起步,竖切已跑通):
+3. **桌面壳 Electron 层**:✅基础竖切已建并 macOS 真验证(`cf7eb8f`/`94da001`):main.ts(拉起 sidecar + macOS 原生窗口 hiddenInset + loadURL 服务式前端)+ preload.ts(最小 contextBridge)+ 前端聊天 UI(低噪工具流 + WS,按设计规范走法 B,Playwright 验证)+ ts server frontendRoot 静态服务;desktop:dev 脚本一键起。**待续**:集中 IPC 白名单 + payload 校验、原生能力(托盘/菜单/窗口状态持久化/外链协议白名单 + 可执行文件拦截/导航守卫)、迁入老壳产品能力(文件沙箱选择器/截图问 AI/TTS/全局热键,cc 无);排除 cc 编码 agent 专属(PTY/WebContentsView/trace 窗/portable)。侧栏会话列表/diff 面板/真模型跑通链路待补。
+4. **sidecar 生命周期**:✅main.ts app 生命周期挂钩已建(whenReady→reserveServerPort→spawnSidecar→waitForServer→window;before-quit killSidecar;dev bun 直跑/prod 编译二进制)。**待续**:serverRuntime 抽象层(崩溃重启/健康监控)。
+5. **打包/分发/自动更新**:electron-builder 配置(mac dmg/win nsis 签名)+ 跨平台 CI 出包矩阵 + electron-updater 状态机全空(sidecar 单文件编译脚本已对齐)。**待做**。
 
 ## 4. 下一批代码顺序
 
