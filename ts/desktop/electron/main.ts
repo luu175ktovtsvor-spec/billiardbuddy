@@ -1,7 +1,7 @@
 import { app, BrowserWindow } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import { platform } from 'node:os'
 import {
   SERVER_BIND_HOST,
@@ -43,11 +43,28 @@ function buildSidecarPlan(port: number): SidecarPlan {
     // dev:用 bun 直跑 sidecar 入口(bun 绝对路径)
     return { command: resolveBun(), args: ['run', join(here, '../sidecars/backend-sidecar.ts'), ...args], env }
   }
-  // prod:随包编译二进制(build-sidecar 产物,放在 resources/binaries)
-  const triple = `${platform() === 'win32' ? 'windows' : platform() === 'darwin' ? 'darwin' : 'linux'}`
-  const binName = `backend-sidecar-${triple}${platform() === 'win32' ? '.exe' : ''}`
-  const binary = join(process.resourcesPath, 'binaries', binName)
-  return { command: existsSync(binary) ? binary : binName, args, env }
+  // prod:随包编译二进制(build-sidecar 产物,放在 resources/binaries,命名用完整 target triple)。
+  const binariesDir = join(process.resourcesPath, 'binaries')
+  const exact = join(binariesDir, `backend-sidecar-${sidecarTriple()}${platform() === 'win32' ? '.exe' : ''}`)
+  if (existsSync(exact)) return { command: exact, args, env }
+  // 兜底:扫 binaries 目录里匹配当前平台的 backend-sidecar-*(triple 未精确命中时)。
+  const platformMark = platform() === 'win32' ? 'windows' : platform() === 'darwin' ? 'apple-darwin' : 'linux'
+  try {
+    const match = readdirSync(binariesDir).find(f => f.startsWith('backend-sidecar-') && f.includes(platformMark))
+    if (match) return { command: join(binariesDir, match), args, env }
+  } catch { /* 目录不存在 */ }
+  return { command: exact, args, env } // 找不到:返回预期路径,spawnSidecar 会给出清晰"binary not found"错误
+}
+
+/** 与 desktop/scripts/build-sidecar.ts 同款 target triple(命名一致才能在包里找到二进制)。 */
+function sidecarTriple(): string {
+  const p = process.platform, a = process.arch
+  if (p === 'darwin' && a === 'arm64') return 'aarch64-apple-darwin'
+  if (p === 'darwin' && a === 'x64') return 'x86_64-apple-darwin'
+  if (p === 'win32' && a === 'x64') return 'x86_64-pc-windows-msvc'
+  if (p === 'win32' && a === 'arm64') return 'aarch64-pc-windows-msvc'
+  if (p === 'linux' && a === 'x64') return 'x86_64-unknown-linux-gnu'
+  return `${a}-${p}`
 }
 
 async function startSidecar(): Promise<void> {

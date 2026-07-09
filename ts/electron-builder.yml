@@ -1,0 +1,42 @@
+# ts-desktop 打包配置(electron-builder)。出安装包:bun run desktop:dist(先 desktop:build 出 main.mjs/preload.cjs,
+# 再 build:sidecar 出后端二进制放 desktop/binaries,electron-builder 打成 dmg/nsis)。
+appId: com.qiufang.assistant
+productName: 球房管家
+copyright: © 2026
+directories:
+  output: desktop/dist
+  buildResources: desktop/build-resources
+
+# 打进包的文件(前端渲染器 + 编译后的 electron 主/预加载 + package.json)。
+files:
+  - desktop/electron/main.mjs
+  - desktop/electron/preload.cjs
+  - desktop/renderer/**/*
+  - package.json
+  - "!**/*.ts"
+  - "!**/*.test.*"
+
+# 后端 sidecar 二进制随包(build:sidecar 产物)→ resources/binaries;prod 主进程从 process.resourcesPath/binaries 找。
+extraResources:
+  - from: desktop/binaries
+    to: binaries
+    filter:
+      - "**/*"
+
+mac:
+  target:
+    - dmg
+  category: public.app-category.productivity
+  # 未签名(开发/自用);正式对外分发需 owner 苹果开发者账号做签名 + 公证(codesign + notarize)。
+  identity: null
+
+win:
+  target:
+    - nsis
+  # win 签名同理需 owner 证书;未配则出未签名安装包。
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+
+# 自动更新:发布渠道(generic/github)+ latest.yml 需 owner 定发布服务器后开启(publish 段)。
