@@ -3466,7 +3466,7 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 16. ✅destructiveCommandWarning(`1ab0f38`):正则表移植 cc,破坏性命令(rm -rf/git reset --hard/DROP TABLE 等)给审批卡加人话警告(纯信息不影响放行);approval_request 加 warning 字段 + 前端审批卡橙色⚠渲染。permissionExplainer(cc Haiku 模型解释)留后续(approval reason 已有结构化解释)。
 17. ✅MCP 远程 http/SSE 鉴权(`134e30a`):headers/bearer token 走 requestInit(对齐 cc,鉴权即 headers.Authorization,端到端测试真收到 Bearer)。**待续**:headersHelper 动态取头、完整 OAuth(2465 行,超范围)。
 18. ✅项目/会话组织(`a274fed`,§3.402 A1):sessionService list-by-workspace + recentProjects 聚合 + fork(拷贝 transcript);端点 GET /sessions/projects、GET /sessions?workspaceRoot=、POST /sessions/:id/fork。保留扁平 sessions.json(不做物理分桶,等价更省)。
-19. 配置基座(§3.402 A2):分层用户设置文件 + `/api/settings` REST + 网络设置持久化 + provider 预设库。**待做**。
+19. ✅配置基座(`a83448f`,§3.402 A2):UserSettingsStore(user-settings.json,默认权限档/主题,合并更新+校验)+ GET/POST /api/settings;前端读默认权限档消费。网络设置(networkSettings)/provider 配置(providerService)已各自有,预设库留后续。
 
 **2026-07-09 本轮已完成(~30 提交,纯后端全线)**:P0 安全 4/4(沙箱/symlink/.mcp.json/读命令边界 9a83ac8);连接架构(WS 统一 c98af29/931cf61 + 审批闭环 + ping + 断连宽限 adb7dcd + 全量重放);循环核心(入参闸 42c93eb + token 触发 1abb851 + 压缩兜底 7806175);hooks allow/ask+正则(51f1586);能力(skills 参数 6189cb4 + MCP 鉴权 134e30a + 文件健壮性 9957154 + plugin 运行时 5a6baed);可靠性(fork-resume 142dd27 + SSE error 帧 600d34b + 空闲超时 8c195d2 + resume 清洗 cd35fc0);项目/会话组织(a274fed);存储/桌面架构对标(b087332/f55d7a8)。
 
