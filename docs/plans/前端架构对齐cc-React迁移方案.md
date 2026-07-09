@@ -216,11 +216,15 @@ LICENSE 允许 copy/modify。组件逻辑、hooks、store 结构照搬,唯一改
 
 ### 6.2 配色 = WorkBuddy token 主题层(改值不改名)
 - cc 组件全用 `var(--color-*)` 语义 token(`--color-surface`/`--color-text-primary`/`--color-primary`/`--color-border`…),定义在 `theme/globals.css` 的 `@theme{}` + `:root`/`[data-theme="dark"]`。cc 的品牌主色是 `#8F482F`(赤陶色)。
-- **落法**:抄 cc 的 `globals.css`,**保留全部 token 名**,只把 `@theme{}` 和 `:root` 里的**值**换成 WorkBuddy 调色板。我们现有 `index.html` 的 `--wb-*`(brand `#00C29A` / gray 阶 / 黑白透明阶 / 圆角 / 动效)已是成熟一套,直接映射到 cc 的 `--color-*` 语义名:
-  - `--color-primary/--color-brand` ← `--wb-brand-light`(`#00C29A`)
-  - `--color-surface/-container*` ← `--wb-gray-l*` / `--wb-bg-*`
-  - `--color-text-primary/secondary/tertiary` ← `--wb-text-*`
-  - `--color-border` ← `--wb-border`,`--color-success/error/warning` ← `--wb-*`
+- **⚠️ 去绿(owner 2026-07-10 定,已落地 `theme/workbuddy-tokens.css`)**:品牌绿 `#00C29A`/`#5FE3C5` **不再当主调/强调/主按钮**——主调/强调改走 WorkBuddy 真实中性墨色;**品牌绿仅保留在笑脸吉祥物一处**(`--color-smiley-*`,取真机 logo 绿渐变 `#0EC7A8→#00C885`),整体去绿、笑脸例外。
+- **落法**:抄 cc 的 `globals.css`,**保留全部 token 名**,只把 `:root` 里的**值**换成 WorkBuddy 中性调色板(不再往 `@theme{}` 塞随主题变的值,避免主题无关值盖过语义层)。映射到 cc 的 `--color-*` 语义名:
+  - `--color-primary/--color-brand` ← `--wb-ink-*`(中性墨:浅色 `rgba(0,0,0,.9)`、深色 `rgba(255,255,255,.92)`;主按钮/发送/链接/选中态一律中性、**不出绿**)
+  - `--color-brand-tint` ← `--wb-black-06` / `--wb-white-10`(中性浅染:选中态/审批卡底)
+  - `--color-surface/-container*` ← `--wb-gray-l*`(浅) / `--wb-gray-d*`(深)
+  - `--color-text-primary/secondary/tertiary` ← `--wb-black-*` / `--wb-white-*`(按透明度分级)
+  - `--color-border` ← `--wb-black-08` / `--wb-white-10`
+  - 功能状态色:`--color-error/warning` ← `--wb-red` / 橙;`--color-success` ← `--wb-ok-*`(功能性成功绿,WorkBuddy 真机 green-8——属状态语义、非主调/强调,故保留)
+  - 笑脸专用:`--color-smiley-a/b` ← `--wb-smiley-*`(唯一保留的品牌绿,与主调 token 解耦、独立取值)
 - 建议新增 `src/theme/workbuddy-tokens.css`,在 `globals.css` 之后 `@import`,集中覆盖,便于「抄 cc 新组件后一次性套皮」。深色走 `:root[data-theme="dark"]`,和我们现在的分层一致。
 - 依据:`docs/references/竞品拆解/02-前端设计-配色与质感.md` + 现有 `index.html` `:root --wb-*` + `docs/design/桌面Agent-macOS设计规范.md`。
 
