@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { textBlock, toolResultBlock, toolUseBlock, userText, type Message } from '../types/message'
-import { AUTOCOMPACT_COOLDOWN_MS, COMPACTION_SYSTEM_PROMPT, compactPipeline, estimateMessagesChars, extractCompactionSummary, looksLikeContextOverflow, microcompactReadOnlyToolResults, splitForAutocompact } from './compaction'
+import { AUTOCOMPACT_COOLDOWN_MS, COMPACTION_SYSTEM_PROMPT, MAX_COMPACT_SUMMARY_RETRIES, compactPipeline, estimateMessagesChars, extractCompactionSummary, looksLikeContextOverflow, microcompactReadOnlyToolResults, splitForAutocompact } from './compaction'
 import type { Model } from '../types/model'
 
 function msgWithTool(id: string, name: string, result: string): Message[] {
@@ -186,6 +186,137 @@ describe('compactPipeline', () => {
     expect(called).toBe(0)
     expect(out.didCompact).toBe(false)
     expect(out.messages).toBe(messages)
+  })
+
+  test('摘要请求超限(prompt-too-long)时收缩最旧一截重试,最终仍压缩成功', async () => {
+    const messages: Message[] = [
+      userText('u0' + 'x'.repeat(60)),
+      userText('u1' + 'x'.repeat(60)),
+      userText('u2' + 'x'.repeat(60)),
+      userText('u3' + 'x'.repeat(60)),
+      userText('u4' + 'x'.repeat(60)),
+      userText('u5' + 'x'.repeat(60)),
+      userText('recent'),
+    ]
+    const callSizes: number[] = []
+    const model: Model = {
+      async step(input) {
+        callSizes.push(input.messages.length)
+        if (callSizes.length === 1) {
+          throw Object.assign(new Error('prompt is too long'), { code: 'context_length_exceeded' })
+        }
+        return { kind: 'final', text: '收缩后的摘要' }
+      },
+    }
+    const out = await compactPipeline({
+      messages,
+      model,
+      contextWindowChars: 120,
+      readOnlyToolNames: new Set(),
+      force: true,
+      keepRecentMessages: 1,
+      minOldMessages: 2,
+    })
+    expect(callSizes.length).toBe(2)
+    expect(callSizes[1]).toBeLessThan(callSizes[0]!)
+    expect(out.didCompact).toBe(true)
+    expect(out.note).toContain('收缩重试')
+    expect(out.compactionFailures).toBe(0)
+  })
+
+  test('摘要请求持续超限、收缩到无法再丢时放弃并降级(保留原消息、失败计数+1)', async () => {
+    const messages: Message[] = [
+      userText('u0' + 'x'.repeat(60)),
+      userText('u1' + 'x'.repeat(60)),
+      userText('u2' + 'x'.repeat(60)),
+      userText('u3' + 'x'.repeat(60)),
+      userText('u4' + 'x'.repeat(60)),
+      userText('u5' + 'x'.repeat(60)),
+      userText('recent'),
+    ]
+    let calls = 0
+    const model: Model = {
+      async step() {
+        calls++
+        throw Object.assign(new Error('maximum context length exceeded'), { code: 'context_length_exceeded' })
+      },
+    }
+    const out = await compactPipeline({
+      messages,
+      model,
+      contextWindowChars: 120,
+      readOnlyToolNames: new Set(),
+      force: true,
+      keepRecentMessages: 1,
+      minOldMessages: 2,
+    })
+    // old 段 5 条:5→2→1 条,收缩两次后 shrinkOldMessagesForRetry(1 条) 返回 null,放弃重试。
+    expect(calls).toBeGreaterThan(1)
+    expect(calls).toBeLessThanOrEqual(MAX_COMPACT_SUMMARY_RETRIES + 1)
+    expect(out.didCompact).toBe(false)
+    expect(out.messages).toBe(messages)
+    expect(out.compactionFailures).toBe(1)
+  })
+
+  test('非上下文超限的报错不触发收缩重试,直接降级', async () => {
+    const messages: Message[] = [
+      userText('u0' + 'x'.repeat(60)),
+      userText('u1' + 'x'.repeat(60)),
+      userText('u2' + 'x'.repeat(60)),
+      userText('u3' + 'x'.repeat(60)),
+      userText('u4' + 'x'.repeat(60)),
+      userText('u5' + 'x'.repeat(60)),
+      userText('recent'),
+    ]
+    let calls = 0
+    const model: Model = {
+      async step() {
+        calls++
+        throw new Error('network down')
+      },
+    }
+    const out = await compactPipeline({
+      messages,
+      model,
+      contextWindowChars: 120,
+      readOnlyToolNames: new Set(),
+      force: true,
+      keepRecentMessages: 1,
+      minOldMessages: 2,
+    })
+    expect(calls).toBe(1)
+    expect(out.didCompact).toBe(false)
+    expect(out.messages).toBe(messages)
+    expect(out.compactionFailures).toBe(1)
+  })
+
+  test('摘要模型返回空文本时不静默生成占位摘要,而是降级保留原消息', async () => {
+    const messages: Message[] = [
+      userText('u0' + 'x'.repeat(60)),
+      userText('u1' + 'x'.repeat(60)),
+      userText('u2' + 'x'.repeat(60)),
+      userText('u3' + 'x'.repeat(60)),
+      userText('u4' + 'x'.repeat(60)),
+      userText('u5' + 'x'.repeat(60)),
+      userText('recent'),
+    ]
+    const model: Model = {
+      async step() {
+        return { kind: 'final', text: '' }
+      },
+    }
+    const out = await compactPipeline({
+      messages,
+      model,
+      contextWindowChars: 120,
+      readOnlyToolNames: new Set(),
+      force: true,
+      keepRecentMessages: 1,
+      minOldMessages: 2,
+    })
+    expect(out.didCompact).toBe(false)
+    expect(out.messages).toBe(messages)
+    expect(out.compactionFailures).toBe(1)
   })
 })
 
