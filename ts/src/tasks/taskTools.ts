@@ -25,6 +25,7 @@ import { startAgentSummarization, type AgentSummaryController } from './agentSum
 import { createDenialTrackingState } from '../permissions/denialTracking'
 import { resolveSubagentPermissionMode } from '../permissions/canonical'
 import { buildWorktreeNotice, FORK_SUBAGENT_TYPE, isForkQuerySource, isInForkChild, type ForkRunContext } from '../agents/forkSubagent'
+import { sanitizeResumeMessages } from '../harness/messageSanitize'
 
 export interface BackgroundAgentTaskInput {
   agent?: string
@@ -358,47 +359,9 @@ function resumeContext(task: TaskMeta, prompt: string, metadata?: BackgroundAgen
   ].filter(Boolean).join('\n\n')
 }
 
-function filterUnresolvedToolUseMessages(messages: Message[]): Message[] {
-  const toolUseIds = new Set<string>()
-  const toolResultIds = new Set<string>()
-  for (const message of messages) {
-    for (const block of message.content) {
-      if (block.type === 'tool_use') toolUseIds.add(block.id)
-      if (block.type === 'tool_result') toolResultIds.add(block.tool_use_id)
-    }
-  }
-  const unresolved = new Set([...toolUseIds].filter(id => !toolResultIds.has(id)))
-  if (unresolved.size === 0) return messages
-  return messages.filter(message => {
-    if (message.role !== 'assistant') return true
-    const toolUseBlockIds = message.content
-      .filter(block => block.type === 'tool_use')
-      .map(block => block.id)
-    if (toolUseBlockIds.length === 0) return true
-    return !toolUseBlockIds.every(id => unresolved.has(id))
-  })
-}
-
-function filterWhitespaceOnlyAssistantMessages(messages: Message[]): Message[] {
-  return messages.filter(message => {
-    if (message.role !== 'assistant' || message.content.length === 0) return true
-    return !message.content.every(block => block.type === 'text' && !block.text.trim())
-  })
-}
-
-function filterOrphanedThinkingOnlyMessages(messages: Message[]): Message[] {
-  return messages.filter(message => {
-    if (message.role !== 'assistant' || message.content.length === 0) return true
-    return !message.content.every(block => block.type === 'thinking')
-  })
-}
-
+/** 后台代理 resume 清洗 = 通用 resume 清洗(共享 harness/messageSanitize,与主会话 resume 一致)。 */
 export function sanitizeBackgroundAgentResumeMessages(messages: Message[]): Message[] {
-  return filterWhitespaceOnlyAssistantMessages(
-    filterOrphanedThinkingOnlyMessages(
-      filterUnresolvedToolUseMessages(messages),
-    ),
-  )
+  return sanitizeResumeMessages(messages)
 }
 
 async function directoryExists(path: string): Promise<boolean> {
