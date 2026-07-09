@@ -3011,6 +3011,16 @@ test('WS /agent/ws runs a turn and replays persisted events after disconnect', a
   }
 })
 
+test('GET / 服务 ts-desktop 前端 index.html + app.js content-type + 未知路径 404', async () => {
+  const html = await (await fetch(`http://127.0.0.1:${server.port}/`)).text()
+  expect(html).toContain('球房管家')
+  expect(html).toContain('id="thread"')
+  const js = await fetch(`http://127.0.0.1:${server.port}/app.js`)
+  expect(js.status).toBe(200)
+  expect(js.headers.get('content-type')).toContain('javascript')
+  expect((await fetch(`http://127.0.0.1:${server.port}/nonexistent-asset.xyz`)).status).toBe(404)
+})
+
 test('GET /sessions/projects 聚合最近项目 + POST /sessions/:id/fork 拷贝会话', async () => {
   await fetch(`http://127.0.0.1:${server.port}/sessions`, { method: 'POST', body: JSON.stringify({ id: 'proj-s1', title: 'P1', workspaceRoot: '/ws/proj' }) })
   await fetch(`http://127.0.0.1:${server.port}/sessions`, { method: 'POST', body: JSON.stringify({ id: 'proj-s2', title: 'P2', workspaceRoot: '/ws/proj' }) })
