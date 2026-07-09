@@ -921,6 +921,22 @@ test('审批闸:requiresApproval 工具 → 吐 approval_request + 回灌待确�
   expect(tr && tr.type === 'tool_result' && tr.output).toContain('待用户确认')
 })
 
+test('审批卡:破坏性命令的 approval_request 带 warning(纯信息,不影响放行逻辑)', async () => {
+  process.env.SECRET_KEY = SECRET
+  resetDenialStore()
+  const events = await collect(runAgentLoop({
+    model: scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: '1', name: 'run_command', input: { command: 'git reset --hard HEAD~1' } }] },
+      { kind: 'final', text: '确认下?' },
+    ]),
+    registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'default', conversationId: 'warn1',
+  }))
+  const ap = events.find(e => e.type === 'approval_request')
+  expect(ap && ap.type === 'approval_request' && ap.tool).toBe('run_command')
+  expect(ap && ap.type === 'approval_request' && ap.warning).toContain('未提交')
+})
+
 test('hooks:PreToolUse permissionDecision=ask → 只读工具也被强制走审批(即使 acceptEdits 本会自动放行)', async () => {
   process.env.SECRET_KEY = SECRET
   resetDenialStore()

@@ -98,6 +98,7 @@
     const card = el('approval');
     const why = ev.reason ? (ev.reason.why || ev.reason.what || '') : '';
     card.innerHTML = '<div class="head">需要你确认:' + esc(ev.tool) + '</div>' +
+      (ev.warning ? '<div class="warn">⚠ ' + esc(ev.warning) + '</div>' : '') +
       '<div class="why">' + esc(clip((why ? why + '\n' : '') + (ev.preview || JSON.stringify(ev.args || {})), 400)) + '</div>' +
       '<div class="acts"><button class="approve">批准并执行</button><button class="reject">拒绝</button></div>';
     const done = (label) => { card.classList.add('done'); card.querySelector('.acts').innerHTML = '<span class="sub">' + label + '</span>'; };

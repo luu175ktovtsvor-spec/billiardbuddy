@@ -64,6 +64,14 @@ import {
 import { isVerifyPlanExecutionToolName } from '../tools/verifyPlanExecutionTool'
 import { validateToolInput } from '../tools/inputSchemaValidation'
 import { sanitizeResumeMessages } from './messageSanitize'
+import { getDestructiveCommandWarning } from '../tools/destructiveCommandWarning'
+
+/** 命令类工具(run_command/PowerShell)审批时的破坏性警告(纯信息,不影响权限)。 */
+function destructiveWarningForInput(toolName: string, input: unknown): string | null {
+  if (toolName !== 'run_command' && toolName !== 'PowerShell') return null
+  const command = input && typeof input === 'object' ? (input as { command?: unknown }).command : undefined
+  return typeof command === 'string' && command.trim() ? getDestructiveCommandWarning(command) : null
+}
 import { activateWorktreeSessionForContext } from '../tools/worktreeTools'
 import {
   applyPostToolUseHooks,
@@ -876,6 +884,7 @@ async function* gateOneCall(
     } catch {
       preview = undefined
     }
+    const commandWarning = destructiveWarningForInput(call.name, hookInput)
     yield {
       type: 'approval_request',
       tool: call.name,
@@ -886,6 +895,7 @@ async function* gateOneCall(
       reason: decision.behavior === 'ask'
         ? decision.approvalReason
         : { what: `PreToolUse hook 要求确认调用 ${call.name}`, why: hookResult.askMessage ?? 'hook 请求人工确认', impact: '' },
+      ...(commandWarning ? { warning: commandWarning } : {}),
       rememberable,
     }
     yield feedback(APPROVAL_PENDING_MSG(call.name), false)
