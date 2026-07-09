@@ -971,8 +971,8 @@ test('agent_task runs agent frontmatter SubagentStart and Stop as SubagentStop h
 
 test('agent_task loads persistent agent memory and allows writing to the memory dir', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-tool-memory-'))
-  const oldClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR
-  process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+  const oldConfigDir = process.env.BILLIARDBUDDY_CONFIG_DIR
+  process.env.BILLIARDBUDDY_CONFIG_DIR = join(root, 'config')
   try {
     const memoryPath = getAgentMemoryEntrypoint('researcher', 'user', root)
     mkdirSync(dirname(memoryPath), { recursive: true })
@@ -1001,8 +1001,8 @@ test('agent_task loads persistent agent memory and allows writing to the memory 
     expect(readFileSync(topicPath, 'utf8')).toContain('remember test command: bun test')
     expect(out).toContain('记忆已更新')
   } finally {
-    if (oldClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-    else process.env.CLAUDE_CONFIG_DIR = oldClaudeConfigDir
+    if (oldConfigDir === undefined) delete process.env.BILLIARDBUDDY_CONFIG_DIR
+    else process.env.BILLIARDBUDDY_CONFIG_DIR = oldConfigDir
     rmSync(root, { recursive: true, force: true })
   }
 })
