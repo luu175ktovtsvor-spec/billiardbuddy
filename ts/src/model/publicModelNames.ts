@@ -81,6 +81,18 @@ const PROVIDER_TOKEN_RE =
 const SHORT_TOKEN_RE = /\b(?:volc|ark)\b/gi
 
 /**
+ * 用指定中性词清洗真实模型名/供应商/endpoint。单一事实源:token 表只有上面三条正则,
+ * 不同出口(系统旁白 vs 聊天正文)只换替换词,绝不各自维护一份黑名单。
+ */
+export function scrubProviderIdentifiersWith(text: string, replacement: string): string {
+  if (!text) return text
+  return String(text)
+    .replace(ENDPOINT_HOST_RE, replacement)
+    .replace(PROVIDER_TOKEN_RE, replacement)
+    .replace(SHORT_TOKEN_RE, replacement)
+}
+
+/**
  * 清洗任意文本里的真实模型名/供应商/endpoint，替换成中性词。
  * 用于所有"原始报错/系统旁白/失败提示"出口：模型出口失败提示、生图兜底文案、
  * sanitizeProviderError/sanitizeMediaError 等，保证经它们的原始错都不泄底。
@@ -89,11 +101,7 @@ const SHORT_TOKEN_RE = /\b(?:volc|ark)\b/gi
  * （用户完全可能在正当地写 openai/claude 集成代码，不能连那些一起改）。
  */
 export function scrubProviderIdentifiers(text: string): string {
-  if (!text) return text
-  return String(text)
-    .replace(ENDPOINT_HOST_RE, NEUTRAL_TOKEN)
-    .replace(PROVIDER_TOKEN_RE, NEUTRAL_TOKEN)
-    .replace(SHORT_TOKEN_RE, NEUTRAL_TOKEN)
+  return scrubProviderIdentifiersWith(text, NEUTRAL_TOKEN)
 }
 
 // --- 面向前端的出口摘要 -----------------------------------------------------

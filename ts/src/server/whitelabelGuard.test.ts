@@ -138,6 +138,91 @@ test('白标守卫:模型出口失败切换 → SSE/context_note/notices 不泄�
   }
 })
 
+test('白标守卫(第二层核心):模型自曝真名 + 跨 delta 切断 → content_delta 序列 + final 全脱敏', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wl-guard-selfreveal-'))
+  const enc = new TextEncoder()
+  // 上游按 token 流吐"越狱自曝":真名被切断在多个 delta 边界——
+  // "Claude" = "Clau"+"de"、"Anthropic" = "Anthro"+"pic"、"OpenAI" = "Open"+"AI"。
+  const LEAKY_DELTAS = ['我其实是 Clau', 'de 模型,由 Anthro', 'pic 训练;也可以说是 Open', 'AI 的 GPT-image-2。']
+  const server = startServer({
+    port: 0,
+    transcriptRoot: join(root, 'sessions'),
+    providerRoot: join(root, 'providers'),
+    env: {},
+    fetchImpl: async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(c) {
+            for (const piece of LEAKY_DELTAS) {
+              c.enqueue(
+                enc.encode(
+                  `data: ${JSON.stringify({ id: 'x', model: 'm', choices: [{ index: 0, delta: { content: piece } }] })}\n\n`,
+                ),
+              )
+            }
+            c.enqueue(
+              enc.encode(
+                `data: ${JSON.stringify({ id: 'x', model: 'm', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`,
+              ),
+            )
+            c.enqueue(enc.encode('data: [DONE]\n\n'))
+            c.close()
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      ),
+  })
+  try {
+    await fetch(`http://127.0.0.1:${server.port}/providers`, {
+      method: 'POST',
+      body: JSON.stringify({
+        id: 'only',
+        name: 'Only Provider',
+        apiFormat: 'openai_chat',
+        baseUrl: 'https://only.example/v1',
+        apiKey: 'only-secret',
+        model: 'claude-sonnet-4-5',
+      }),
+    })
+
+    const run = await fetch(`http://127.0.0.1:${server.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({ message: '你是什么模型?', conversationId: 'wl-guard-selfreveal', permissionMode: 'full' }),
+    })
+    expect(run.status).toBe(200)
+    const runText = await run.text()
+
+    // 解析 SSE:逐个 content_delta 的 text、拼起来的流、以及 final 文本,全都断言不泄露。
+    const deltas: string[] = []
+    let finalText = ''
+    for (const block of runText.split('\n\n')) {
+      const dataLine = block.split('\n').find(l => l.startsWith('data: '))
+      if (!dataLine) continue
+      let ev: any
+      try {
+        ev = JSON.parse(dataLine.slice('data: '.length))
+      } catch {
+        continue
+      }
+      if (ev?.type === 'content_delta' && ev.channel === 'text') deltas.push(ev.text)
+      if (ev?.type === 'final') finalText = ev.text
+    }
+    // 确实走了流式(至少有增量在发)。
+    expect(deltas.length).toBeGreaterThan(0)
+    // 逐个 delta 不泄露(跨 delta 切断也被 carry-over 缝合后清掉)。
+    for (const d of deltas) assertNoLeak(d, 'content_delta 单帧')
+    assertNoLeak(deltas.join(''), 'content_delta 拼接流')
+    assertNoLeak(finalText, 'final 权威全文')
+    // 整段 SSE 兜底再扫一遍。
+    assertNoLeak(runText, 'SSE 全量(自曝)')
+    // final 确实产出了内容(没被吞空),且换成了中性口径。
+    expect(finalText.length).toBeGreaterThan(0)
+  } finally {
+    server.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('白标守卫:所有出口都失败(总失败详情)不泄露真实名', async () => {
   const root = mkdtempSync(join(tmpdir(), 'wl-guard-total-fail-'))
   const server = startServer({
