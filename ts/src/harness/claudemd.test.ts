@@ -11,7 +11,7 @@ import {
   stripHtmlComments,
   type MemoryType,
 } from './claudemd'
-import { MEMORY_DOT_DIR } from './memoryNames'
+import { getAutoMemDir, getAutoMemEntrypoint, MEMORY_DOT_DIR } from './memoryNames'
 import { buildSystemPrompt } from './systemPrompt'
 
 // 四层加载靠 env 覆盖把 User / Managed 目录指到临时目录,保证测试确定、不读真实 ~/.billiardbuddy。
@@ -23,6 +23,7 @@ const ENV_KEYS = [
   'BILLIARDBUDDY_DISABLE_PROJECT_MEMORY',
   'BILLIARDBUDDY_DISABLE_LOCAL_MEMORY',
   'BILLIARDBUDDY_DISABLE_MANAGED_MEMORY',
+  'BILLIARDBUDDY_DISABLE_AUTO_MEMORY',
 ] as const
 
 let root: string
@@ -317,4 +318,44 @@ test('运行时不加载 CLAUDE.md / AGENTS.md(只认 BILLIARDBUDDY.md)', async 
   expect(contents).toContain('BILLIARDBUDDY-LOADS')
   expect(contents).not.toContain('CLAUDE-SHOULD-NOT-LOAD')
   expect(contents).not.toContain('AGENTS-SHOULD-NOT-LOAD')
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 10. AutoMem:模型自主写的记忆池(memdir/MEMORY.md)读回注入(与 save_memory 工具读写对齐)
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('AutoMem 索引(memdir/MEMORY.md)作为最后一层注入,描述为 auto-memory', async () => {
+  const memDir = getAutoMemDir(root)
+  mkdirSync(memDir, { recursive: true })
+  writeFileSync(getAutoMemEntrypoint(root), '# MEMORY\n\n- [黄金档台费](golden.md) — 黄金档台费 68 元一小时\n')
+
+  const files = await getMemoryFiles(new Workspace(root))
+  expect(typesOf(files)).toContain('AutoMem')
+  // AutoMem 永远在最后(优先级最高一侧,cc 头部注释顺序)。
+  expect(files[files.length - 1]!.type).toBe('AutoMem')
+
+  const injected = getClaudeMds(files)
+  expect(injected).toContain("auto-memory, persists across conversations")
+  expect(injected).toContain('黄金档台费 68 元一小时')
+})
+
+test('memdir 记忆目录在 getUserConfigHomeDir() 下的 projects/<slug>/memory(白标 .billiardbuddy,不落 .claude)', () => {
+  const dir = getAutoMemDir(root)
+  expect(dir).toContain(userDir) // = BILLIARDBUDDY_CONFIG_DIR
+  expect(dir.endsWith(join('memory'))).toBe(true)
+  expect(dir).not.toContain('.claude')
+})
+
+test('BILLIARDBUDDY_DISABLE_AUTO_MEMORY=1 时不注入 AutoMem,但主指令四层照常', async () => {
+  writeFileSync(join(root, 'BILLIARDBUDDY.md'), 'PROJECT-STILL-LOADS')
+  const memDir = getAutoMemDir(root)
+  mkdirSync(memDir, { recursive: true })
+  writeFileSync(getAutoMemEntrypoint(root), '# MEMORY\n\n- [x](x.md) — AUTOMEM-CONTENT\n')
+
+  process.env.BILLIARDBUDDY_DISABLE_AUTO_MEMORY = '1'
+  const files = await getMemoryFiles(new Workspace(root))
+  expect(typesOf(files)).not.toContain('AutoMem')
+  const injected = getClaudeMds(files)
+  expect(injected).toContain('PROJECT-STILL-LOADS')
+  expect(injected).not.toContain('AUTOMEM-CONTENT')
 })

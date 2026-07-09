@@ -11,10 +11,12 @@
  *     就是项目根,不越界 walk 到沙箱之外——更安全,也让加载确定可测)。因此 cc 那段
  *     nested-worktree 去重(依赖 findGitRoot/findCanonicalGitRoot)天然用不上、不移植:
  *     bounded walk 不会经过父级主仓根,realpath 级 processedPaths 去重仍覆盖 symlink/同一物理文件。
- *  E. 去掉 cc 的 AutoMem/TeamMem/analytics/hooks/全局 memoize(与本波无关);各层开关走
- *     MemoryLoadOptions + 环境变量(对齐 cc isSettingSourceEnabled/claudeMdExcludes 的「各层可关」)。
+ *  E. 保留 cc 的 AutoMem 索引读回(memdir/MEMORY.md,cc claudemd:979-992):模型自主写的记忆池经此层注入,
+ *     读写按 workspace.root 派生同一目录(见 memoryNames.getAutoMemDir),写侧是 save_memory 工具。
+ *     不移植 TeamMem/analytics/hooks/全局 memoize(与本波无关);各层开关走 MemoryLoadOptions + 环境变量
+ *     (对齐 cc isSettingSourceEnabled/claudeMdExcludes 的「各层可关」),AutoMem 走 BILLIARDBUDDY_DISABLE_AUTO_MEMORY。
  *
- * 四层加载顺序(反优先级,越靠后越高,cc 头部注释 1-16):Managed → User → Project(根到 CWD 逐级)→ Local。
+ * 加载顺序(反优先级,越靠后越高,cc 头部注释 1-16):Managed → User → Project(根到 CWD 逐级)→ Local → AutoMem。
  */
 
 import { lstatSync, realpathSync } from 'node:fs'
@@ -24,6 +26,7 @@ import { basename, dirname, extname, isAbsolute, join, normalize, parse, relativ
 import picomatch from 'picomatch'
 import type { Workspace } from '../workspace/workspace'
 import {
+  getAutoMemEntrypoint,
   getDotDirMainPath,
   getManagedRulesDir,
   getMemoryPath,
@@ -466,6 +469,7 @@ interface ResolvedSettings {
   project: boolean
   local: boolean
   managed: boolean
+  autoMem: boolean
   excludes: string[]
   disableAll: boolean
 }
@@ -480,6 +484,8 @@ function resolveSettings(opts?: MemoryLoadOptions): ResolvedSettings {
     project: opts?.sources?.projectSettings ?? !isEnvTruthy(process.env.BILLIARDBUDDY_DISABLE_PROJECT_MEMORY),
     local: opts?.sources?.localSettings ?? !isEnvTruthy(process.env.BILLIARDBUDDY_DISABLE_LOCAL_MEMORY),
     managed: opts?.sources?.managedSettings ?? !isEnvTruthy(process.env.BILLIARDBUDDY_DISABLE_MANAGED_MEMORY),
+    // AutoMem(模型自主写的记忆池)默认开;env 关(对齐 cc CLAUDE_CODE_DISABLE_AUTO_MEMORY)。
+    autoMem: !isEnvTruthy(process.env.BILLIARDBUDDY_DISABLE_AUTO_MEMORY),
     excludes: opts?.excludes ?? [],
     disableAll: isEnvTruthy(process.env.BILLIARDBUDDY_DISABLE_MEMORY),
   }
@@ -737,7 +743,41 @@ export async function getMemoryFiles(workspace: Workspace, opts?: MemoryLoadOpti
     }
   }
 
+  // cc:979-992 —— AutoMem 索引(memdir 的 MEMORY.md):模型自主写的记忆池,读回注入(读写对齐 save_memory 工具)。
+  // 只读索引一行式清单(不扫 @import),超长按 cc 上限截断加警告。文件不存在/空 → 天然跳过。
+  if (settings.autoMem) {
+    const { info: autoMemEntry } = await safelyReadMemoryFileAsync(getAutoMemEntrypoint(root), 'AutoMem')
+    if (autoMemEntry && autoMemEntry.content.trim()) {
+      const normalized = normalizePathForComparison(autoMemEntry.path)
+      if (!ctx.processedPaths.has(normalized)) {
+        ctx.processedPaths.add(normalized)
+        autoMemEntry.content = truncateAutoMemEntrypoint(autoMemEntry.content)
+        result.push(autoMemEntry)
+      }
+    }
+  }
+
   return result
+}
+
+// cc memdir/memdir.ts:57-103 truncateEntrypointContent 的轻量版:MEMORY.md 是一行一条的索引,
+// 常驻上下文,超 200 行 / 25KB 就截断并追加警告(避免索引膨胀吃满上下文)。
+const MAX_AUTOMEM_ENTRYPOINT_LINES = 200
+const MAX_AUTOMEM_ENTRYPOINT_BYTES = 25_000
+
+function truncateAutoMemEntrypoint(raw: string): string {
+  const trimmed = raw.trim()
+  const lines = trimmed.split('\n')
+  const lineTruncated = lines.length > MAX_AUTOMEM_ENTRYPOINT_LINES
+  const byteTruncated = Buffer.byteLength(trimmed, 'utf8') > MAX_AUTOMEM_ENTRYPOINT_BYTES
+  if (!lineTruncated && !byteTruncated) return trimmed
+  let truncated = lineTruncated ? lines.slice(0, MAX_AUTOMEM_ENTRYPOINT_LINES).join('\n') : trimmed
+  if (Buffer.byteLength(truncated, 'utf8') > MAX_AUTOMEM_ENTRYPOINT_BYTES) {
+    truncated = Buffer.from(truncated, 'utf8').subarray(0, MAX_AUTOMEM_ENTRYPOINT_BYTES).toString('utf8')
+    const lastNewline = truncated.lastIndexOf('\n')
+    if (lastNewline > 0) truncated = truncated.slice(0, lastNewline)
+  }
+  return `${truncated.trimEnd()}\n\n> 提醒:MEMORY.md 索引已超上限被截断,只加载了前一部分。保持每条索引一行、把细节放进各自的记忆文件。`
 }
 
 /**
@@ -778,7 +818,9 @@ export function getClaudeMds(memoryFiles: MemoryFileInfo[], filter?: (type: Memo
           ? ' (project instructions, checked into the codebase)'
           : file.type === 'Local'
             ? " (user's private project instructions, not checked in)"
-            : " (user's private global instructions for all projects)"
+            : file.type === 'AutoMem'
+              ? " (user's auto-memory, persists across conversations)"
+              : " (user's private global instructions for all projects)"
       const content = file.content.trim()
       memories.push(`Contents of ${file.path}${description}:\n\n${content}`)
     }

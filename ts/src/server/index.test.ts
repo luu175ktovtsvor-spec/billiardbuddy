@@ -8,6 +8,7 @@ import { startServer } from './index'
 import { SessionService } from './services/sessionService'
 import { TaskService } from '../tasks/taskService'
 import { textBlock, userText } from '../types/message'
+import { getAutoMemDir } from '../harness/memoryNames'
 import { signApproval } from '../permissions/approval'
 import { sendToUdsSocket } from '../tasks/udsClient'
 
@@ -380,14 +381,6 @@ test('desktop product compatibility endpoints are served by TS without Python', 
     })).json() as any
     expect(byok).toMatchObject({ enabled: true, base_url: 'https://model.example/v1', model: 'mimo-v2.5', key_configured: true })
     expect(byok.key_mask).not.toContain('sk-test-123456')
-
-    const memory = await (await fetch(`${base}/api/v1/store-memory`, {
-      method: 'POST',
-      body: JSON.stringify({ content: '周五晚上客流最高', type: 'semantic' }),
-    })).json() as any
-    expect(memory).toMatchObject({ content: '周五晚上客流最高', source: 'manual' })
-    const memories = await (await fetch(`${base}/api/v1/store-memory`)).json() as any
-    expect(memories).toEqual([expect.objectContaining({ id: memory.id })])
 
     const scheduled = await (await fetch(`${base}/api/v1/scheduled-tasks`, {
       method: 'POST',
@@ -2403,10 +2396,17 @@ test('POST /agent/run injects workspace project instructions into the model syst
   }
 })
 
-test('POST /agent/run injects relevant store memories into the model system prompt', async () => {
+test('POST /agent/run injects AutoMem memdir MEMORY.md into the model system prompt', async () => {
   const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-memory-transcript-'))
   const workingRoot = mkdtempSync(join(tmpdir(), 'agent-memory-working-'))
-  const otherRoot = mkdtempSync(join(tmpdir(), 'agent-memory-other-'))
+  const configDir = mkdtempSync(join(tmpdir(), 'agent-memory-config-'))
+  // 先把 memdir 根指到临时 configDir,再按 workspace.root(= working_dir)派生记忆目录并写索引,
+  // 验证 /agent/run 会读回注入。顺序很重要:getAutoMemDir 依赖 BILLIARDBUDDY_CONFIG_DIR。
+  const savedConfigDir = process.env.BILLIARDBUDDY_CONFIG_DIR
+  process.env.BILLIARDBUDDY_CONFIG_DIR = configDir
+  const memoryDir = getAutoMemDir(workingRoot)
+  mkdirSync(memoryDir, { recursive: true })
+  writeFileSync(join(memoryDir, 'MEMORY.md'), '# MEMORY\n\n- [黄金档台费](golden_pricing.md) — 黄金档台费 68 元一小时,会员充值满 1000 送 120。\n')
   let systemPrompt = ''
   const memoryServer = startServer({
     port: 0,
@@ -2432,34 +2432,21 @@ test('POST /agent/run injects relevant store memories into the model system prom
   })
   try {
     const base = `http://127.0.0.1:${memoryServer.port}`
-    await fetch(`${base}/api/v1/store-memory`, {
-      method: 'POST',
-      body: JSON.stringify({ content: '黄金档台费 68 元一小时,会员充值满 1000 送 120。', type: 'pricing', working_dir: workingRoot }),
-    })
-    await fetch(`${base}/api/v1/store-memory/candidates`, {
-      method: 'POST',
-      body: JSON.stringify({ content: '黄金档台费 pending secret', type: 'pricing' }),
-    })
-    await fetch(`${base}/api/v1/store-memory`, {
-      method: 'POST',
-      body: JSON.stringify({ content: '黄金档台费 other workspace 99', type: 'pricing', working_dir: otherRoot }),
-    })
-
     const res = await fetch(`${base}/agent/run`, {
       method: 'POST',
       body: JSON.stringify({ message: '黄金档台费多少', working_dir: workingRoot, permissionMode: 'full' }),
     })
     expect(res.status).toBe(200)
     await res.text()
-    expect(systemPrompt).toContain('<store_memory_context')
+    expect(systemPrompt).toContain("auto-memory, persists across conversations")
     expect(systemPrompt).toContain('黄金档台费 68 元')
-    expect(systemPrompt).not.toContain('pending secret')
-    expect(systemPrompt).not.toContain('other workspace 99')
   } finally {
     memoryServer.stop(true)
+    if (savedConfigDir === undefined) delete process.env.BILLIARDBUDDY_CONFIG_DIR
+    else process.env.BILLIARDBUDDY_CONFIG_DIR = savedConfigDir
     rmSync(transcriptRoot, { recursive: true, force: true })
     rmSync(workingRoot, { recursive: true, force: true })
-    rmSync(otherRoot, { recursive: true, force: true })
+    rmSync(configDir, { recursive: true, force: true })
   }
 })
 

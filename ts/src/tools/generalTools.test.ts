@@ -45,6 +45,7 @@ test('general registry contains the core tools', () => {
     'read_stored_tool_result',
     'restore_file',
     'run_command',
+    'save_memory',
     'todo_write',
     'tool_search',
     'verify_plan_execution',

@@ -8,7 +8,6 @@ interface StoreState {
   byok: JsonObject
   byokProfiles: JsonObject[]
   activeByokProfile: string | null
-  memories: JsonObject[]
   scheduledTasks: JsonObject[]
   storeDocs: JsonObject
   notifications: JsonObject[]
@@ -112,7 +111,6 @@ function emptyState(): StoreState {
     byok: defaultByok(),
     byokProfiles: [],
     activeByokProfile: null,
-    memories: [],
     scheduledTasks: [],
     storeDocs: defaultStoreDocs(),
     notifications: [],
@@ -216,52 +214,6 @@ export class DesktopDataStore {
       return state
     })
     return this.listByokProfiles()
-  }
-
-  async listMemories(): Promise<JsonObject[]> {
-    return (await this.read()).memories
-  }
-
-  async addMemory(input: { content: string; type?: string; source?: 'manual' | 'auto' | 'pending'; workingDir?: string | null }): Promise<JsonObject> {
-    const memory = memoryItem(input)
-    await this.update(state => {
-      state.memories.push(memory)
-      return state
-    })
-    return memory
-  }
-
-  async updateMemory(id: string, content: string): Promise<JsonObject | null> {
-    let out: JsonObject | null = null
-    await this.update(state => {
-      state.memories = state.memories.map(item => {
-        if (item.id !== id) return item
-        out = { ...item, content, updated_at: nowIso() }
-        return out
-      })
-      return state
-    })
-    return out
-  }
-
-  async confirmMemory(id: string): Promise<JsonObject | null> {
-    let out: JsonObject | null = null
-    await this.update(state => {
-      state.memories = state.memories.map(item => {
-        if (item.id !== id) return item
-        out = { ...item, source: 'manual', source_label: '店主定', confidence: 'high', updated_at: nowIso() }
-        return out
-      })
-      return state
-    })
-    return out
-  }
-
-  async deleteMemory(id: string): Promise<void> {
-    await this.update(state => {
-      state.memories = state.memories.filter(item => item.id !== id)
-      return state
-    })
   }
 
   async listScheduledTasks(): Promise<JsonObject[]> {
@@ -370,7 +322,6 @@ export class DesktopDataStore {
         byok: isRecord(parsed.byok) ? { ...defaults.byok, ...parsed.byok } : defaults.byok,
         byokProfiles: Array.isArray(parsed.byokProfiles) ? parsed.byokProfiles.filter(isRecord) : [],
         activeByokProfile: typeof parsed.activeByokProfile === 'string' ? parsed.activeByokProfile : null,
-        memories: Array.isArray(parsed.memories) ? parsed.memories.filter(isRecord) : [],
         scheduledTasks: Array.isArray(parsed.scheduledTasks) ? parsed.scheduledTasks.filter(isRecord) : [],
         storeDocs: isRecord(parsed.storeDocs) ? { ...defaults.storeDocs, ...parsed.storeDocs } : defaults.storeDocs,
         notifications: Array.isArray(parsed.notifications) ? parsed.notifications.filter(isRecord) : [],
@@ -397,26 +348,6 @@ export class DesktopDataStore {
 function maskSecret(secret: string): string {
   if (secret.length <= 8) return '****'
   return `${secret.slice(0, 4)}...${secret.slice(-4)}`
-}
-
-function memoryItem(input: { content: string; type?: string; source?: 'manual' | 'auto' | 'pending'; workingDir?: string | null }): JsonObject {
-  const source = input.source ?? 'manual'
-  const scope = input.workingDir ? 'working_dir' : 'global'
-  const ts = nowIso()
-  return {
-    id: crypto.randomUUID(),
-    type: input.type || 'semantic',
-    type_label: input.type || '资料',
-    content: input.content,
-    confidence: source === 'pending' ? 'low' : 'high',
-    source,
-    source_label: source === 'pending' ? '待确认' : source === 'auto' ? 'AI学到' : '店主定',
-    scope,
-    scope_label: scope === 'working_dir' ? '当前项目' : '全局门店',
-    working_dir: input.workingDir ?? null,
-    created_at: ts,
-    updated_at: ts,
-  }
 }
 
 function normalizeScheduledTask(input: JsonObject): JsonObject {
