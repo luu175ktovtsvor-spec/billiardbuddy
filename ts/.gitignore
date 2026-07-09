@@ -41,3 +41,7 @@ desktop/binaries/
 
 # 后台 agent MCP 测试临时目录(可再生)
 .task-tools-agent-mcp-*/
+
+# electron 壳构建产物(desktop:build 生成)
+desktop/electron/main.mjs
+desktop/electron/preload.cjs
