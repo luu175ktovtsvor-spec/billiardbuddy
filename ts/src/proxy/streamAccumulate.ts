@@ -17,6 +17,24 @@ export interface AccumulatedResponse {
   usage?: AnthropicUsage
 }
 
+/** provider 在 SSE 流中途吐出的 error 帧。抛这个而不是静默吞成空响应,让模型层能识别并降级/重试。 */
+export class StreamProviderError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'StreamProviderError'
+  }
+}
+
+function streamErrorMessage(err: unknown): string {
+  if (typeof err === 'string') return err
+  if (err && typeof err === 'object') {
+    const m = (err as { message?: unknown }).message
+    if (typeof m === 'string' && m) return m
+    return JSON.stringify(err)
+  }
+  return 'provider 流中途返回错误'
+}
+
 type ToolFrag = { id: string; name: string; argsBuffer: string; order: number }
 
 let ID_SEQ = 0
@@ -78,10 +96,21 @@ export async function accumulateOpenAiStream(
     if (!trimmed.startsWith('data:')) return
     const payload = trimmed.slice(trimmed.indexOf(':') + 1).trim()
     if (payload === '[DONE]') return
+    let parsed: unknown
     try {
-      handleChunk(JSON.parse(payload) as OpenAIChatStreamChunk)
+      parsed = JSON.parse(payload)
     } catch {
-      return // 坏行 / 坏形状(valid JSON 但结构不对)一律跳过、不崩:单块畸形不该丢掉整段累积
+      return // 坏行 / 坏形状(非 JSON)一律跳过、不崩:单块畸形不该丢掉整段累积
+    }
+    // provider 中途吐 error 帧({"error":{...}}):不能静默吞成截断空响应,抛出让模型层当错误处理(触发降级/重试),
+    // 而不是让循环拿到一段空 final。
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && (parsed as { error?: unknown }).error) {
+      throw new StreamProviderError(streamErrorMessage((parsed as { error?: unknown }).error))
+    }
+    try {
+      handleChunk(parsed as OpenAIChatStreamChunk)
+    } catch {
+      return // 坏形状(合法 JSON 但结构不对,如 null / 字段含 null)跳过、不崩:单块畸形不该丢掉整段累积
     }
   }
 
