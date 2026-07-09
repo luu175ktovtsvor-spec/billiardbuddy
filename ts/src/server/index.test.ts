@@ -2961,7 +2961,10 @@ Research.
     expect(res.status).toBe(200)
     const body = await res.json() as any
     expect(body.ok).toBe(true)
-    expect(body.provider.summary).toMatchObject({ model: 'mimo-v2.5', hasApiKey: true })
+    // 白标:出口摘要只给能力档代称,不外露真实 model。
+    expect(body.provider.summary).toMatchObject({ hasApiKey: true })
+    expect(body.provider.summary.model).toBeUndefined()
+    expect(JSON.stringify(body)).not.toContain('mimo')
     expect(JSON.stringify(body)).not.toContain('secret')
     expect(body.skills.count).toBe(1)
     expect(body.commands.count).toBe(1)
@@ -3205,8 +3208,11 @@ test('provider API persists active provider and /agent/run uses it before env fa
     expect(modelStatus.status).toBe(200)
     const modelBody = await modelStatus.json() as any
     expect(modelBody.runtime).toMatchObject({ source: 'saved-provider', providerId: 'saved' })
-    expect(modelBody.runtime.summary.model).toBe('saved-model')
+    // 白标:出口摘要不外露真实 model,只给能力档代称。
+    expect(modelBody.runtime.summary.model).toBeUndefined()
+    expect(modelBody.runtime.summary).toHaveProperty('channel')
     expect(JSON.stringify(modelBody)).not.toContain('saved-secret')
+    expect(JSON.stringify(modelBody)).not.toContain('saved-model')
 
     const switchedToEnv = await fetch(`http://127.0.0.1:${providerServer.port}/api/model`, {
       method: 'POST',
@@ -3215,7 +3221,9 @@ test('provider API persists active provider and /agent/run uses it before env fa
     const envBody = await switchedToEnv.json() as any
     expect(envBody.activeId).toBe(null)
     expect(envBody.runtime).toMatchObject({ source: 'env' })
-    expect(envBody.runtime.summary.model).toBe('fallback-model')
+    // 白标:env/内置出口的真实 model(fallback-model)绝不外露。
+    expect(envBody.runtime.summary.model).toBeUndefined()
+    expect(JSON.stringify(envBody)).not.toContain('fallback-model')
 
     const switchedBack = await fetch(`http://127.0.0.1:${providerServer.port}/model`, {
       method: 'POST',
@@ -3543,7 +3551,10 @@ test('POST /agent/run falls back from failing active provider to env provider an
     expect(text).toContain('event: context_note')
     expect(text).toContain('模型出口「Saved Provider」请求失败')
     expect(text).toContain('Bearer [redacted]')
-    expect(text).toContain('已切换到备用模型出口「环境变量:fallback-model」继续')
+    // 白标:env/内置出口在失败旁白里也走中性代称,不再回显「环境变量:<真实模型>」。
+    expect(text).toContain('已切换到备用模型出口「默认通道」继续')
+    expect(text).not.toContain('环境变量:fallback-model')
+    expect(text).not.toContain('fallback-model')
     expect(text).toContain('event: final')
     expect(text).toContain('fallback ok')
     expect(text).not.toContain('saved-secret')
@@ -3723,8 +3734,9 @@ test('POST /agent/run cools down a recently failed primary provider for the next
     })
     expect(second.status).toBe(200)
     const secondText = await second.text()
-    expect(secondText).toContain('模型出口「Primary Provider」最近失败')
-    expect(secondText).toContain('本轮先尝试「Backup Provider」')
+    // 白标:冷却提示去掉真实模型名(label)与原始报错(lastError),只给一句中性提示。
+    expect(secondText).toContain('上个 AI 通道最近失败已进入冷却，本轮已自动优先使用可用通道继续。')
+    expect(secondText).not.toContain('Primary Provider」最近失败')
     expect(secondText).toContain('backup ok')
     expect(secondText).not.toContain('sk-primary')
     expect(requestedUrls).toEqual([
@@ -3895,8 +3907,9 @@ test('provider health cooldown survives server restart without mutating provider
     expect(prewarm.status).toBe(200)
     const prewarmBody = await prewarm.json() as any
     expect(prewarmBody.provider).toMatchObject({ providerId: 'backup', providerName: 'Backup Provider' })
-    expect(prewarmBody.notices?.[0]).toContain('模型出口「Primary Provider」最近失败')
-    expect(prewarmBody.notices?.[0]).toContain('本轮先尝试「Backup Provider」')
+    // 白标:冷却提示中性化,不带真实模型名/原始报错。
+    expect(prewarmBody.notices?.[0]).toContain('上个 AI 通道最近失败已进入冷却')
+    expect(prewarmBody.notices?.[0]).not.toContain('Backup Provider')
     expect(JSON.stringify(prewarmBody)).not.toContain('primary-secret')
     expect(JSON.stringify(prewarmBody)).not.toContain('sk-primary')
     expect(requestedUrls).toEqual([
@@ -3910,8 +3923,9 @@ test('provider health cooldown survives server restart without mutating provider
     })
     expect(second.status).toBe(200)
     const text = await second.text()
-    expect(text).toContain('模型出口「Primary Provider」最近失败')
-    expect(text).toContain('本轮先尝试「Backup Provider」')
+    // 白标:冷却提示中性化,不带真实模型名/原始报错。
+    expect(text).toContain('上个 AI 通道最近失败已进入冷却')
+    expect(text).not.toContain('Primary Provider」最近失败')
     expect(requestedUrls).toEqual([
       'https://primary.example/v1/chat/completions',
       'https://backup.example/v1/chat/completions',
@@ -3966,7 +3980,9 @@ test('legacy BYOK text config syncs into the active runtime provider', async () 
       providerId: 'byok-text',
       providerName: '自带文字模型',
     })
-    expect(modelStatus.runtime.summary.model).toBe('byok-model')
+    // 白标:出口摘要不外露真实 model,只给能力档代称。
+    expect(modelStatus.runtime.summary.model).toBeUndefined()
+    expect(JSON.stringify(modelStatus)).not.toContain('byok-model')
 
     const run = await fetch(`http://127.0.0.1:${byokServer.port}/agent/run`, {
       method: 'POST',
@@ -4700,7 +4716,9 @@ test('legacy studio generate uses TS image gateway when image env is configured'
     expect(calls).toEqual(['http://image-gateway.example/gw/v1/images/generations'])
     expect(status).toMatchObject({ kind: 'generate', status: 'done', progress: 100 })
     expect(status.result.local_preview).toBe(false)
-    expect(status.result.provider).toBe('openai-compatible')
+    // 白标:生图结果只给能力档代称,不外露真实 provider/model。
+    expect(status.result.image_engine).toBe('创意生图')
+    expect(JSON.stringify(status.result)).not.toContain('openai')
 
     const asset = await fetch(`http://127.0.0.1:${mediaServer.port}${status.result.urls[0]}`)
     expect(asset.status).toBe(200)
@@ -4747,7 +4765,7 @@ test('legacy studio generate passes trusted local references to TS Seedream gate
       await new Promise(resolve => setTimeout(resolve, 10))
     }
     expect(String(requestBody.image).startsWith('data:image/png;base64,')).toBe(true)
-    expect(status.result).toMatchObject({ provider: 'seedream-gateway', local_preview: false })
+    expect(status.result).toMatchObject({ image_engine: '写实生图', local_preview: false })
     expect(status.result.generation_ids).toHaveLength(1)
   } finally {
     mediaServer.stop(true)
@@ -4813,7 +4831,7 @@ test('legacy studio generate attaches uploaded store brand assets to TS Seedream
     expect(requestBody.input_images.every((item: string) => item.startsWith('data:image/png;base64,'))).toBe(true)
     const decoded = requestBody.input_images.map((item: string) => Buffer.from(item.split(',')[1]!, 'base64').toString('utf8'))
     expect(decoded).toEqual(['logo-bytes', 'qr-bytes'])
-    expect(status.result).toMatchObject({ provider: 'seedream-gateway', local_preview: false })
+    expect(status.result).toMatchObject({ image_engine: '写实生图', local_preview: false })
   } finally {
     mediaServer.stop(true)
     rmSync(root, { recursive: true, force: true })
@@ -4985,7 +5003,7 @@ test('legacy studio edit uses TS image edits gateway with generated source image
     }
     expect(form.get('prompt')).toBe('把背景改成深绿色')
     expect(form.getAll('image')).toHaveLength(1)
-    expect(status.result).toMatchObject({ provider: 'openai-compatible', mode: 'edit', local_preview: false })
+    expect(status.result).toMatchObject({ image_engine: '创意生图', mode: 'edit', local_preview: false })
     expect(status.result.urls[0]).toMatch(/^\/uploads\/posters\/image_.*\.png$/)
   } finally {
     mediaServer.stop(true)
