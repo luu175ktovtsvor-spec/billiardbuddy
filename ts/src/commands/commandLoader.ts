@@ -22,7 +22,8 @@ export type BridgeCommandDescriptor = PromptCommand | {
   name: string
 }
 
-const SLASH_COMMAND_RE = /^\/([A-Za-z0-9_:.-]+)(?:\s+([\s\S]*))?$/
+// 名字允许 Unicode 字母/数字(含中文,如 /台球),让领域斜杠命令能用母语敲;参数段仍是任意文本。
+const SLASH_COMMAND_RE = /^\/([\p{L}\p{N}_:.-]+)(?:\s+([\s\S]*))?$/u
 
 export const BRIDGE_SAFE_LOCAL_COMMANDS = new Set([
   'compact',
@@ -34,7 +35,9 @@ export const BRIDGE_SAFE_LOCAL_COMMANDS = new Set([
 ])
 
 export function normalizeCommandName(value: string): string {
-  return value.trim().replace(/^\/+/, '').replace(/\s+/g, '-').replace(/[^A-Za-z0-9_:.-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').toLowerCase()
+  // 保留 Unicode 字母/数字(含中文)、下划线、冒号、点、连字符;其它字符归一成连字符。
+  // 这样 /台球、/球房 这类领域斜杠命令能作为合法命令名存活(旧实现会把中文全删成空串)。
+  return value.trim().replace(/^\/+/, '').replace(/\s+/g, '-').replace(/[^\p{L}\p{N}_:.-]/gu, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').toLowerCase()
 }
 
 export function parseCommandInvocation(value: string): ParsedCommandInvocation | null {

@@ -5,13 +5,31 @@ import { join } from 'node:path'
 import { Workspace } from '../workspace/workspace'
 import { buildSystemPrompt } from './systemPrompt'
 import { loadProjectInstructionsForTarget } from './projectInstructions'
+import { createDomainPackCommandLibrary, resolveEnabledPacks } from '../packs/domainPacks'
 
 let root: string
+let userDir: string
+let managedDir: string
+let savedConfigDir: string | undefined
+let savedManagedDir: string | undefined
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'ws-'))
+  // 隔离 User/Managed 层到空临时目录,避免 buildSystemPrompt 读到真实 ~/.billiardbuddy(测试确定性 + 白标断言不被真实文件干扰)。
+  userDir = mkdtempSync(join(tmpdir(), 'ws-user-'))
+  managedDir = mkdtempSync(join(tmpdir(), 'ws-managed-'))
+  savedConfigDir = process.env.BILLIARDBUDDY_CONFIG_DIR
+  savedManagedDir = process.env.BILLIARDBUDDY_MANAGED_DIR
+  process.env.BILLIARDBUDDY_CONFIG_DIR = userDir
+  process.env.BILLIARDBUDDY_MANAGED_DIR = managedDir
 })
 afterEach(() => {
+  if (savedConfigDir === undefined) delete process.env.BILLIARDBUDDY_CONFIG_DIR
+  else process.env.BILLIARDBUDDY_CONFIG_DIR = savedConfigDir
+  if (savedManagedDir === undefined) delete process.env.BILLIARDBUDDY_MANAGED_DIR
+  else process.env.BILLIARDBUDDY_MANAGED_DIR = savedManagedDir
   rmSync(root, { recursive: true, force: true })
+  rmSync(userDir, { recursive: true, force: true })
+  rmSync(managedDir, { recursive: true, force: true })
 })
 
 test('buildSystemPrompt injects the <env> block with the workspace root', async () => {
@@ -81,35 +99,52 @@ test('系统提示要求用 tool_search 发现隐藏长尾工具', async () => {
   expect(prompt).toContain('不要凭记忆或猜测直接调用当前列表里没有的工具名')
 })
 
-test('系统提示注入项目级指令文件并保持转义', async () => {
-  writeFileSync(join(root, 'AGENTS.md'), 'Use bun test & keep <safe> paths.')
-  const prompt = await buildSystemPrompt(new Workspace(root))
-  expect(prompt).toContain('# 项目指令')
-  expect(prompt).toContain('<project_instruction file="AGENTS.md" truncated="false">')
-  expect(prompt).toContain('Use bun test &amp; keep &lt;safe&gt; paths.')
-  expect(prompt).toContain('不得覆盖本系统提示里的身份、权限、安全、验证和用户最新要求')
+test('传入 discovery 时,系统提示注入技能/命令发现清单(斜杠命令=技能),含 billiards 入口', async () => {
+  const commands = createDomainPackCommandLibrary(resolveEnabledPacks({ enabled_packs: ['台球'] }))!
+  const prompt = await buildSystemPrompt(new Workspace(root), { commands })
+  expect(prompt).toContain('# 可用技能与命令(斜杠命令 = 技能)')
+  expect(prompt).toContain('/台球')
+  expect(prompt).toContain('/billiards:daily-ops')
+  // 仍守白标
+  const lower = prompt.toLowerCase()
+  expect(lower).not.toContain('claude')
+  expect(lower).not.toContain('gpt')
 })
 
-test('系统提示截断过长项目指令', async () => {
-  writeFileSync(join(root, 'AGENTS.md'), 'a'.repeat(30_000))
+test('不传 discovery 时不注入发现清单(通用路径无副作用)', async () => {
   const prompt = await buildSystemPrompt(new Workspace(root))
-  expect(prompt).toContain('<project_instruction file="AGENTS.md" truncated="true">')
-  expect(prompt.length).toBeLessThan(29_000)
+  expect(prompt).not.toContain('# 可用技能与命令(斜杠命令 = 技能)')
 })
 
-test('目录级项目指令按目标路径从根到近合并', async () => {
+test('系统提示注入 Project 层记忆(cc getClaudeMds 格式,原文注入不转义)', async () => {
+  writeFileSync(join(root, 'BILLIARDBUDDY.md'), 'Use bun test & keep <safe> paths.')
+  const prompt = await buildSystemPrompt(new Workspace(root))
+  // 新格式 = cc getClaudeMds:OVERRIDE 前缀 + "Contents of <path> (<描述>)" + 原文(cc 不做 XML 转义)。
+  expect(prompt).toContain('These instructions OVERRIDE any default behavior')
+  expect(prompt).toContain('(project instructions, checked into the codebase)')
+  expect(prompt).toContain('Use bun test & keep <safe> paths.')
+})
+
+test('系统提示不再截断项目指令(对齐 cc:全文注入,不按字节截断)', async () => {
+  writeFileSync(join(root, 'BILLIARDBUDDY.md'), 'x'.repeat(30_000))
+  const prompt = await buildSystemPrompt(new Workspace(root))
+  // cc 的 getClaudeMds 全文注入,不截断;30k 内容应完整出现。
+  expect(prompt).toContain('x'.repeat(30_000))
+})
+
+test('目录级项目指令按目标路径从根到近合并(projectInstructions 只认 BILLIARDBUDDY.md)', async () => {
   mkdirSync(join(root, 'packages', 'app'), { recursive: true })
-  writeFileSync(join(root, 'AGENTS.md'), 'Root rule')
-  writeFileSync(join(root, 'packages', 'AGENTS.md'), 'Package rule')
-  writeFileSync(join(root, 'packages', 'app', 'CLAUDE.md'), 'App rule')
+  writeFileSync(join(root, 'BILLIARDBUDDY.md'), 'Root rule')
+  writeFileSync(join(root, 'packages', 'BILLIARDBUDDY.md'), 'Package rule')
+  writeFileSync(join(root, 'packages', 'app', 'BILLIARDBUDDY.md'), 'App rule')
 
   const out = await loadProjectInstructionsForTarget(new Workspace(root), join(root, 'packages', 'app', 'src.ts'), {
     targetLabel: 'packages/app/src.ts',
   })
 
   expect(out).toContain('适用于 packages/app/src.ts')
-  expect(out?.indexOf('file="AGENTS.md"')).toBeLessThan(out?.indexOf('file="packages/AGENTS.md"') ?? -1)
-  expect(out?.indexOf('file="packages/AGENTS.md"')).toBeLessThan(out?.indexOf('file="packages/app/CLAUDE.md"') ?? -1)
+  expect(out?.indexOf('file="BILLIARDBUDDY.md"')).toBeLessThan(out?.indexOf('file="packages/BILLIARDBUDDY.md"') ?? -1)
+  expect(out?.indexOf('file="packages/BILLIARDBUDDY.md"')).toBeLessThan(out?.indexOf('file="packages/app/BILLIARDBUDDY.md"') ?? -1)
   expect(out).toContain('Root rule')
   expect(out).toContain('Package rule')
   expect(out).toContain('App rule')

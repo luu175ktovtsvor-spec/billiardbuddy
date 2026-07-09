@@ -48,3 +48,6 @@ desktop/electron/preload.cjs
 
 # electron-builder 打包产物
 desktop/dist/
+
+# 运行时会话状态(desktop:dev/测试生成,非源码)
+.agent-state/

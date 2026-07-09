@@ -17,6 +17,18 @@ test('parseCommandInvocation accepts cc-style slash command names', () => {
   expect(parseCommandInvocation('普通消息 /not-command')).toBeNull()
 })
 
+test('parseCommandInvocation/normalizeCommandName 支持中文斜杠命令(如 /台球)', () => {
+  // 领域斜杠命令能用母语敲:名字段接受中文字母,不再被 ASCII 白名单整段吞掉。
+  expect(parseCommandInvocation('/台球 帮我看看今天')).toEqual({
+    name: '台球',
+    args: '帮我看看今天',
+    raw: '/台球 帮我看看今天',
+  })
+  expect(parseCommandInvocation('/台球')).toEqual({ name: '台球', args: '', raw: '/台球' })
+  expect(normalizeCommandName('台球')).toBe('台球')
+  expect(normalizeCommandName('/球房')).toBe('球房')
+})
+
 test('bridge-safe command gate follows prompt/local/local-jsx policy', () => {
   const prompt = {
     type: 'prompt',

@@ -500,10 +500,146 @@
     wsSend(run);
   }
 
+  // ============ 斜杠命令面板(cc ChatInput slashMenu:输入 / 弹命令,过滤/↑↓/Enter/Tab/Esc;cc「斜杠命令=技能」)============
+  // 契约(后端并行子代理在建):GET /api/v1/agent/commands?conversationId=&enabledPacks= → {commands:[{name,description,source,argHint?}]}
+  const cmdPanel = $('cmd-panel');
+  let slashOpen = false, slashFilter = '', slashPos = -1, slashIndex = 0;
+  let slashCommands = null, slashCmdKey = '', slashFiltered = [], slashRows = [], slashLoading = false;
+  // 后端接口未就绪时的桩数据(先按契约自测面板交互;上线后被真实返回覆盖)
+  const SLASH_STUB = [
+    { name: 'help', description: '看看球房管家能帮你做什么', source: 'builtin' },
+    { name: 'clear', description: '清空当前对话，从头开始', source: 'builtin' },
+    { name: 'compact', description: '压缩上下文，给长对话瘦身', source: 'builtin' },
+    { name: 'skills', description: '浏览当前可用的技能', source: 'skill' },
+    { name: '台球', description: '唤起台球运营专家帮你诊断', source: 'billiards', argHint: '<你的问题>' },
+    { name: 'billiards:daily-ops', description: '台球房今日运营诊断', source: 'billiards' },
+  ];
+  function slashKey() { return (expertSel && expertSel.value ? expertSel.value : '') + '|' + conversationId; }
+  async function loadSlashCommands() {
+    const key = slashKey();
+    if (slashCommands && slashCmdKey === key) return;          // 命中缓存(会话/专家没变就不重复拉)
+    slashLoading = true; if (slashOpen) renderSlash();
+    const packs = expertSel && expertSel.value ? expertSel.value : '';
+    const url = '/api/v1/agent/commands?conversationId=' + encodeURIComponent(conversationId) + '&enabledPacks=' + encodeURIComponent(packs);
+    let cmds = null;
+    try { const data = await (await fetch(url)).json(); if (data && Array.isArray(data.commands)) cmds = data.commands; } catch { /* 接口未就绪 */ }
+    slashCommands = cmds || SLASH_STUB;                        // 契约没就绪/拉失败 → 桩数据,面板仍可交互
+    slashCmdKey = key; slashLoading = false;
+    if (slashOpen) { slashFiltered = filterSlash(slashFilter); if (slashIndex >= slashFiltered.length) slashIndex = 0; renderSlash(); }
+  }
+  // 触发检测:光标前最近的 / 若在词首(行首或空白后)且其后无空白 → 命令 token(端口 cc findSlashTrigger)
+  function findSlashTrigger(value, cursor) {
+    const before = value.slice(0, cursor);
+    const pos = before.lastIndexOf('/');
+    if (pos < 0) return null;
+    if (pos > 0 && !/\s/.test(before[pos - 1])) return null;   // 只认词首 /(行首或空白后)
+    const filter = before.slice(pos + 1);
+    if (filter.includes('\n') || /\s/.test(filter)) return null;
+    return { pos, filter };
+  }
+  // 排序打分(端口 cc getSlashCommandMatchRank):名字精确>前缀>分段前缀>包含>描述>参数提示
+  function slashRank(cmd, f) {
+    const name = String(cmd.name || '').toLowerCase();
+    const parts = name.split(/[:/._-]+/).filter(Boolean);
+    if (name === f) return 0;
+    if (name.startsWith(f)) return 1;
+    if (parts.some((p) => p.startsWith(f))) return 2;
+    if (name.includes(f)) return 3;
+    if (String(cmd.description || '').toLowerCase().includes(f)) return 4;
+    if (String(cmd.argHint || '').toLowerCase().includes(f)) return 5;
+    return Infinity;
+  }
+  function filterSlash(f) {
+    const list = slashCommands || [];
+    const norm = String(f).toLowerCase();
+    if (!norm.trim()) return list.slice();
+    return list.map((cmd, i) => ({ cmd, i, r: slashRank(cmd, norm) }))
+      .filter((x) => isFinite(x.r)).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.cmd);
+  }
+  // 来源角标 → 中文标签 + 配色档(内置=中性灰 / 技能=品牌浅染 / 台球=品牌绿+描边)
+  function srcMeta(source) {
+    const s = String(source || '').toLowerCase();
+    if (s === 'skill' || s === 'skills' || s === '技能') return { label: '技能', cls: 'src-skill' };
+    if (s.indexOf('billiard') >= 0 || s === '台球' || s === 'pack') return { label: '台球', cls: 'src-billiards' };
+    if (!s || s === 'builtin' || s === 'built-in' || s === 'internal' || s === '内置') return { label: '内置', cls: 'src-builtin' };
+    return { label: clip(source, 6), cls: 'src-skill' };       // 其它领域包 → 原文当角标
+  }
+  function detectSlash() {
+    const trig = findSlashTrigger(input.value, input.selectionStart);
+    if (!trig) { closeSlash(); return; }
+    const changed = trig.filter !== slashFilter || !slashOpen;
+    slashPos = trig.pos; slashFilter = trig.filter; slashOpen = true;
+    loadSlashCommands();                                       // 懒加载 + 缓存
+    slashFiltered = filterSlash(slashFilter);
+    if (changed || slashIndex >= slashFiltered.length) slashIndex = 0;
+    renderSlash();
+  }
+  function closeSlash() { if (!slashOpen && cmdPanel.hidden) return; slashOpen = false; slashRows = []; cmdPanel.hidden = true; cmdPanel.innerHTML = ''; }
+  function updateActive() {
+    slashRows.forEach((r, i) => r.classList.toggle('active', i === slashIndex));
+    const a = slashRows[slashIndex]; if (a && a.scrollIntoView) a.scrollIntoView({ block: 'nearest' });
+  }
+  function renderSlash() {
+    if (!slashOpen) { cmdPanel.hidden = true; return; }
+    cmdPanel.hidden = false; cmdPanel.innerHTML = ''; slashRows = [];
+    const list = el('cmd-list');
+    if (slashLoading && !slashCommands) list.appendChild(el('cmd-empty', '正在加载命令…'));
+    else if (!slashFiltered.length) list.appendChild(el('cmd-empty', '没有匹配的命令，换个词，或直接说你想做什么。'));
+    else slashFiltered.forEach((cmd, i) => {
+      const meta = srcMeta(cmd.source);
+      const row = el('cmd-item' + (i === slashIndex ? ' active' : ''));
+      let h = '<span class="cmd-name">/' + esc(cmd.name) + '</span>';
+      if (cmd.argHint) h += '<span class="cmd-arg">' + esc(cmd.argHint) + '</span>';
+      h += '<span class="cmd-desc">' + esc(cmd.description || '') + '</span>';
+      h += '<span class="cmd-src ' + meta.cls + '">' + esc(meta.label) + '</span>';
+      row.innerHTML = h;
+      row.addEventListener('mouseenter', () => { slashIndex = i; updateActive(); });
+      row.addEventListener('mousedown', (e) => e.preventDefault()); // 点击别把输入框失焦(避免选中前面板先收)
+      row.addEventListener('click', () => chooseSlash(cmd));
+      list.appendChild(row); slashRows.push(row);
+    });
+    cmdPanel.appendChild(list);
+    if (slashFiltered.length) cmdPanel.appendChild(el('cmd-hint', '<kbd>↑↓</kbd> 选择　<kbd>Enter</kbd> 选中　<kbd>Tab</kbd> 补全　<kbd>Esc</kbd> 关闭　·　输入 / 唤起命令'));
+  }
+  // 把 /filter 替换成 /name +空格(端口 cc replaceSlashToken),光标落到命令名后
+  function completeSlash(name) {
+    const cursor = slashPos + 1 + slashFilter.length;
+    const before = input.value.slice(0, slashPos), after = input.value.slice(cursor);
+    const token = '/' + name + ' ';
+    input.value = before + token + after;
+    const np = before.length + token.length;
+    try { input.setSelectionRange(np, np); } catch { /* 失焦时忽略 */ }
+    autoGrow(); closeSlash();
+  }
+  function chooseSlash(cmd) {
+    if (!cmd) return;
+    completeSlash(cmd.name);
+    if (cmd.argHint) input.focus();  // 需要参数 → 只补全,等用户补参数再发
+    else send();                     // 无参命令 → 补全并直接发送(台球命令 → 走正常 wsSend run)
+  }
+  function tabComplete() { const cmd = slashFiltered[slashIndex]; if (cmd) { completeSlash(cmd.name); input.focus(); } }
+
   function autoGrow() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 160) + 'px'; }
-  input.addEventListener('input', autoGrow);
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+  input.addEventListener('input', () => { autoGrow(); detectSlash(); });
+  input.addEventListener('click', detectSlash);                // 点回已存在的 / token 也重开面板
+  input.addEventListener('keyup', (e) => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') detectSlash(); });
+  input.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;            // 中文输入法组字中不劫持按键
+    if (slashOpen && slashFiltered.length) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); slashIndex = (slashIndex + 1) % slashFiltered.length; updateActive(); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); slashIndex = (slashIndex - 1 + slashFiltered.length) % slashFiltered.length; updateActive(); return; }
+      if (e.key === 'Enter') { e.preventDefault(); chooseSlash(slashFiltered[slashIndex]); return; }
+      if (e.key === 'Tab') { e.preventDefault(); tabComplete(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); closeSlash(); return; }
+    } else if (slashOpen && e.key === 'Escape') { e.preventDefault(); closeSlash(); return; }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  });
   sendBtn.addEventListener('click', send);
+  document.addEventListener('click', (e) => {                  // 点面板外收起
+    if (!slashOpen) return;
+    if (cmdPanel.contains(e.target) || e.target === input) return;
+    closeSlash();
+  });
 
   connect();
   refreshSessions();

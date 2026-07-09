@@ -52,8 +52,8 @@ describe('buildRecentFileContextMessage', () => {
 
   test('恢复最近文件时带回适用的目录级项目指令', async () => {
     mkdirSync(join(root, 'packages', 'app'), { recursive: true })
-    writeFileSync(join(root, 'AGENTS.md'), 'Root instruction')
-    writeFileSync(join(root, 'packages', 'AGENTS.md'), 'Package instruction')
+    writeFileSync(join(root, 'BILLIARDBUDDY.md'), 'Root instruction')
+    writeFileSync(join(root, 'packages', 'BILLIARDBUDDY.md'), 'Package instruction')
     const abs = join(root, 'packages', 'app', 'src.ts')
     writeFileSync(abs, 'export const value = 1\n', 'utf8')
     const info = statSync(abs)
@@ -63,7 +63,7 @@ describe('buildRecentFileContextMessage', () => {
     ]))
     const text = textOf(message)
 
-    expect(text).toContain('<project_instruction file="packages/AGENTS.md" truncated="false">')
+    expect(text).toContain('<project_instruction file="packages/BILLIARDBUDDY.md" truncated="false">')
     expect(text).toContain('Package instruction')
     expect(text).not.toContain('Root instruction')
     expect(text.indexOf('# 项目指令')).toBeLessThan(text.indexOf('<recent_file_context'))

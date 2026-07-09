@@ -2,8 +2,11 @@ import { existsSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Workspace } from '../workspace/workspace'
+import { MEMORY_MAIN_FILE } from './memoryNames'
 
-export const PROJECT_INSTRUCTION_FILES = ['AGENTS.md', 'CLAUDE.md'] as const
+// 白标铁律:运行时读用户文件夹只认 BILLIARDBUDDY.md(名字集中在 memoryNames.ts),
+// 不再兼容 AGENTS.md/CLAUDE.md(暴露底层来源 + 跟用户装的 Claude Code 打架)。
+export const PROJECT_INSTRUCTION_FILES = [MEMORY_MAIN_FILE] as const
 export const MAX_PROJECT_INSTRUCTION_FILE_BYTES = 24_000
 export const MAX_PROJECT_INSTRUCTION_TOTAL_BYTES = 36_000
 const MAX_PROJECT_INSTRUCTION_BLOCKS = 16

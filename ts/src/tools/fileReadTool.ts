@@ -41,7 +41,7 @@ export const fileReadTool: Tool<FileReadInput> = {
   description:
     `Read a UTF-8 text file inside the workspace. Input: { path, start_line?, end_line?, max_bytes? }. ` +
     `Without range options it returns the full raw file. Use start_line/end_line for focused code context; omitted end_line returns up to ${DEFAULT_RANGE_LINES} lines. The optional pages parameter is ignored for non-PDF files. ` +
-    'When a directory-level AGENTS.md/CLAUDE.md applies to the target file, the result includes the applicable instruction block before the file content.',
+    'When a directory-level BILLIARDBUDDY.md applies to the target file, the result includes the applicable instruction block before the file content.',
   inputSchema: {
     type: 'object',
     properties: {
