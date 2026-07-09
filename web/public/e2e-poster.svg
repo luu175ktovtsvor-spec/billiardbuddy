@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="360" height="640" viewBox="0 0 360 640" role="img" aria-label="E2E poster preview">
-  <rect width="360" height="640" fill="#083f2d"/>
-  <circle cx="180" cy="150" r="62" fill="#10a37f"/>
-  <rect x="54" y="274" width="252" height="118" rx="18" fill="#f7f1dd"/>
-  <text x="180" y="326" text-anchor="middle" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#083f2d">周赛海报</text>
-  <text x="180" y="366" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" fill="#14543e">E2E poster preview</text>
-</svg>
