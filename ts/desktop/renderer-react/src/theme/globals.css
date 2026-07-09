@@ -6,8 +6,9 @@
 @theme {
   --font-sans: var(--wb-font);
   --font-mono: var(--wb-font-mono);
-  --color-brand: var(--wb-brand-light);
 }
+/* 说明:--color-brand 不再登记进 @theme(避免主题无关值覆盖按主题切换的语义层);
+ * 强调=中性墨色,--color-brand 由 workbuddy-tokens.css 的 :root 按浅/深两套定义。 */
 
 /* —— 基础版式 —— */
 html, body, #root {
