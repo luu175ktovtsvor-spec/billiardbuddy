@@ -22,5 +22,8 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["src"]
+  "include": ["src"],
+  // 测试文件用 bun:test(Bun 运行时全局),由 `bun test` 转译执行;渲染器 app 的 DOM/vite typecheck
+  // 不认 bun:test,故从 ui:typecheck 排除,避免误报 Cannot find module 'bun:test'。
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
 }
