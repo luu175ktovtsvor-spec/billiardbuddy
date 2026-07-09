@@ -48,22 +48,25 @@ function buildSidecarPlan(port: number): SidecarPlan {
     ...process.env,
     QF_DESKTOP: '1',
   }
+  // 显式给 sidecar 一个稳定可写的 cwd:打包后从 Finder/开始菜单启动,Electron 进程 cwd=`/` 或 `/Applications`,
+  // 若不显式传,sidecar 继承这个坏 cwd 会导致相对路径解析/落盘失败。userData 目录永远存在且可写。
+  const cwd = app.getPath('userData')
   const args = ['server', '--host', SERVER_BIND_HOST, '--port', String(port)]
   if (!app.isPackaged) {
     // dev:用 bun 直跑 sidecar 入口(bun 绝对路径)
-    return { command: resolveBun(), args: ['run', join(here, '../sidecars/backend-sidecar.ts'), ...args], env }
+    return { command: resolveBun(), args: ['run', join(here, '../sidecars/backend-sidecar.ts'), ...args], env, cwd }
   }
   // prod:随包编译二进制(build-sidecar 产物,放在 resources/binaries,命名用完整 target triple)。
   const binariesDir = join(process.resourcesPath, 'binaries')
   const exact = join(binariesDir, `backend-sidecar-${sidecarTriple()}${platform() === 'win32' ? '.exe' : ''}`)
-  if (existsSync(exact)) return { command: exact, args, env }
+  if (existsSync(exact)) return { command: exact, args, env, cwd }
   // 兜底:扫 binaries 目录里匹配当前平台的 backend-sidecar-*(triple 未精确命中时)。
   const platformMark = platform() === 'win32' ? 'windows' : platform() === 'darwin' ? 'apple-darwin' : 'linux'
   try {
     const match = readdirSync(binariesDir).find(f => f.startsWith('backend-sidecar-') && f.includes(platformMark))
-    if (match) return { command: join(binariesDir, match), args, env }
+    if (match) return { command: join(binariesDir, match), args, env, cwd }
   } catch { /* 目录不存在 */ }
-  return { command: exact, args, env } // 找不到:返回预期路径,spawnSidecar 会给出清晰"binary not found"错误
+  return { command: exact, args, env, cwd } // 找不到:返回预期路径,spawnSidecar 会给出清晰"binary not found"错误
 }
 
 /** 与 desktop/scripts/build-sidecar.ts 同款 target triple(命名一致才能在包里找到二进制)。 */
