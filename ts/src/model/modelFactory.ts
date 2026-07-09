@@ -5,15 +5,27 @@ import { createNetworkAwareFetch, type NetworkSettings } from './networkSettings
 import type { RuntimeProviderConfig } from './providerConfig'
 import { FallbackModel, type FallbackModelCandidate } from './FallbackModel'
 
+/** 流空闲超时/请求超时跟随用户网络设置的 aiRequestTimeoutMs(config 显式值优先,否则各自默认由模型层兜底)。 */
+export function resolveModelTimeouts(
+  config: Pick<RuntimeProviderConfig, 'idleTimeoutMs' | 'requestTimeoutMs' | 'networkSettings'>,
+  networkSettings?: NetworkSettings,
+): { idleTimeoutMs: number | undefined; requestTimeoutMs: number | undefined } {
+  const netTimeoutMs = (networkSettings ?? config.networkSettings)?.aiRequestTimeoutMs
+  return {
+    idleTimeoutMs: config.idleTimeoutMs ?? netTimeoutMs,
+    requestTimeoutMs: config.requestTimeoutMs ?? netTimeoutMs,
+  }
+}
+
 export function createModelFromProviderConfig(
   config: RuntimeProviderConfig,
   opts: { fetchImpl?: FetchLike; networkSettings?: NetworkSettings } = {},
 ): Model {
+  const effectiveNetwork = opts.networkSettings ?? config.networkSettings
   const fetchImpl = opts.fetchImpl ?? (
-    config.networkSettings || opts.networkSettings
-      ? createNetworkAwareFetch(opts.networkSettings ?? config.networkSettings!)
-      : undefined
+    effectiveNetwork ? createNetworkAwareFetch(effectiveNetwork) : undefined
   )
+  const { idleTimeoutMs, requestTimeoutMs } = resolveModelTimeouts(config, opts.networkSettings)
 
   if (config.apiFormat === 'anthropic') {
     return new AnthropicMessagesModel({
@@ -23,7 +35,7 @@ export function createModelFromProviderConfig(
       authToken: config.authToken,
       authStrategy: config.authStrategy,
       maxTokens: config.maxTokens,
-      requestTimeoutMs: config.requestTimeoutMs,
+      requestTimeoutMs,
       fetchImpl,
     })
   }
@@ -34,8 +46,8 @@ export function createModelFromProviderConfig(
     apiKey: config.apiKey,
     model: config.model,
     imageContentMode: config.imageContentMode,
-    idleTimeoutMs: config.idleTimeoutMs,
-    requestTimeoutMs: config.requestTimeoutMs,
+    idleTimeoutMs,
+    requestTimeoutMs,
     reasoningEffort: config.reasoningEffort,
     fetchImpl,
   })
