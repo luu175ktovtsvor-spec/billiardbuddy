@@ -17,6 +17,14 @@
   let ws = null;
   let running = false;
   let assistantEl = null; // 当前 assistant 文本累积节点
+  let defaultPermissionMode = 'default'; // 从 /api/settings 读的默认权限档
+
+  async function loadSettings() {
+    try {
+      const data = await (await fetch('/api/settings')).json();
+      if (data.settings && data.settings.defaultPermissionMode) defaultPermissionMode = data.settings.defaultPermissionMode;
+    } catch { /* 设置未就绪 → 用默认档 */ }
+  }
 
   function setStatus(online, text) {
     statusEl.className = 'status' + (online ? ' online' : '');
@@ -192,7 +200,7 @@
       return;
     }
     running = true; sendBtn.disabled = true;
-    wsSend({ type: 'run', message: text, permissionMode: 'default', conversationId: conversationId });
+    wsSend({ type: 'run', message: text, permissionMode: defaultPermissionMode, conversationId: conversationId });
   }
 
   function autoGrow() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 160) + 'px'; }
@@ -202,4 +210,5 @@
 
   connect();
   refreshSessions();
+  loadSettings();
 })();

@@ -3012,6 +3012,17 @@ test('WS /agent/ws runs a turn and replays persisted events after disconnect', a
   }
 })
 
+test('GET/POST /api/settings 读写 App 用户设置(默认权限档/主题)', async () => {
+  const got = await (await fetch(`http://127.0.0.1:${server.port}/api/settings`)).json() as any
+  expect(got.settings.defaultPermissionMode).toBe('default')
+  const updated = await (await fetch(`http://127.0.0.1:${server.port}/api/settings`, { method: 'POST', body: JSON.stringify({ defaultPermissionMode: 'acceptEdits', theme: 'dark' }) })).json() as any
+  expect(updated.settings.defaultPermissionMode).toBe('acceptEdits')
+  expect(updated.settings.theme).toBe('dark')
+  // 持久化:再 GET 读到更新后的
+  const reread = await (await fetch(`http://127.0.0.1:${server.port}/api/settings`)).json() as any
+  expect(reread.settings.defaultPermissionMode).toBe('acceptEdits')
+})
+
 test('GET / 服务 ts-desktop 前端 index.html + app.js content-type + 未知路径 404', async () => {
   const html = await (await fetch(`http://127.0.0.1:${server.port}/`)).text()
   expect(html).toContain('球房管家')
