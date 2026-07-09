@@ -1,0 +1,8 @@
+{
+  "name": "example-capability",
+  "version": "1.0.0",
+  "description": "可挂载能力插件模板:演示生图/真实素材剪辑/台球运营专家等如何做成插件挂进会话。启用后其 skills/.mcp.json 并入 agent。",
+  "enabled": false,
+  "skills": "skills",
+  "mcp": ".mcp.json"
+}
