@@ -3451,7 +3451,7 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 
 **P1(可靠性/正确性)**
 5. 模型调用重试退避:✅重试基础设施已落地(`ts/src/model/fetchRetry.ts`,opt-in,默认不改 failover 时序);**待续**:是否默认开启(需 owner 定 failover-vs-retry 延迟取舍)、SSE 中途 error 帧识别(现静默吞成截断空响应)、流空闲超时跟随 `aiRequestTimeoutMs`(现 60s 与之脱钩)。
-6. 🚧上下文压缩:摘要请求自身超限的收缩重试(防硬崩)+ autocompact 用"字符估算 vs 真实 token usage 取大"。**子代理实现中(compaction.ts)**;token 触发时机(loop.ts maybeCompact 现为 `contextWindowChars` 字符阈值→改 token)由主进程接。
+6. ✅上下文压缩兜底(`7806175`):摘要请求自身超限→shrinkOldMessagesForRetry 腰斩 old 段重试(最多 3 次,对齐 cc MAX_PTL_RETRIES)、空文本降级 throw not-fake、不硬截断(与 cc 一致)。loop.ts:343-345 已处理主请求超限触发,互补不冲突;**待续**:autocompact 用"字符估算 vs 真实 token usage 取大"的 token 触发(改 loop.ts maybeCompact,主进程接)、压缩计数跨 HTTP 请求持久化。
 7. ✅工具入参 schema 校验闸(`42c93eb`):gateOneCall 权限判定前统一 `<tool_use_error>InputValidationError`,并行只读路径入参非法回退串行;保守校验(缺 required + 已声明基本类型),未声明/union 放行。
 8. 规则持久化落盘(cc `permissionsLoader`/`persistPermissionUpdate`;让"本会话允许"可选升级为跨重启持久化)。
 9. fork 类型后台代理 resume 修复(`resumeBackgroundAgentTask` 重建 fork 合成 AgentDefinition)。
@@ -3459,12 +3459,12 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 
 **P2(能力面/体验)**
 11. Hooks:PreToolUse allow/ask 决策 + matcher 管道/正则语法 + 多 hook 并发。**主进程接**(hooks.ts 现仅 allow/deny + 精确 matcher,ask 决策 + 管道/正则待补,涉及 loop.ts 联动)。
-12. 🚧Skills/Commands:$ARGUMENTS/$1..N 占位符替换、正文内嵌 shell、bundled skills、命令 hooks/命名空间。**子代理实现中(skills/commands loaders)**。
-13. 🚧文件读:整文件字节上限 + 危险设备路径 + UTF-16/BOM。**子代理实现中(fileRead/Edit/Write tools)**;图片/PDF 视觉 content-block(架构级,晚做代价高)另计。
+12. ✅Skills/Commands 参数占位符(`6189cb4`):$ARGUMENTS/$1..N/具名参数替换 + frontmatter argument-hint/arguments 解析(新增 argumentSubstitution.ts,纯 TS 切词不引 shell-quote)。**待续**:内嵌 shell(需 loop.ts 审批链路 + 产品红线)、@file 附件系统、bundled skills、${CLAUDE_SKILL_DIR} 模板变量,均留后续。
+13. 🚧文件工具健壮性:危险设备路径拦截 + UTF-16/BOM 保留 + 整文件读上限。**子代理实现中(fileRead/Edit/Write tools)**;图片/PDF 视觉 content-block(架构级,晚做代价高)另计。
 14. token 级流式 + 边流边执行工具(前端打字机体验,对标 Claude Code 核心)。**大工程,前端建设期一起做**。
 15. Plugin 运行时接入(启用插件的 skills/.mcp.json/hooks 合并进会话,现为空壳)。
 16. permissionExplainer + destructiveCommandWarning 审批卡增强。
-17. 🚧MCP 远程 http/SSE 鉴权(headers/bearer token,OAuth 评估)。**子代理实现中(mcp/config+client)**。
+17. ✅MCP 远程 http/SSE 鉴权(`134e30a`):headers/bearer token 走 requestInit(对齐 cc,鉴权即 headers.Authorization,端到端测试真收到 Bearer)。**待续**:headersHelper 动态取头、完整 OAuth(2465 行,超范围)。
 18. 项目/会话组织(§3.402 A1):list-by-workspace + recentProjects 聚合 + 会话 fork(拷贝 transcript,cc 的 forkSession SDK 层未实现属 CLI 级)。**主进程接(sessionService+端点)**。
 19. 配置基座(§3.402 A2):分层用户设置文件 + `/api/settings` REST + 网络设置持久化 + provider 预设库。
 
