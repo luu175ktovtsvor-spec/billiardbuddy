@@ -793,6 +793,18 @@ export async function resumeBackgroundAgentTask(
   const instanceName = resumableInstanceName(previousTask, metadata)
   const stableAgentId = resumableStableAgentId(previousTask, metadata)
   const toolResultStoreDir = resumableToolResultStoreDir(previousTask, opts.tasks, metadata)
+  // fork 类型后台代理不是 agents 列表里的具名 agent(spawn 时按 forkContext 合成),resume 时 pickAgent 找不到 'fork'
+  // 会抛错。这里按原 spawn 路径重建合成 fork AgentDefinition 作 agentOverride,让 resume 走得通。
+  const forkAgentOverride: AgentDefinition | undefined = agentName === FORK_SUBAGENT_TYPE
+    ? {
+        name: FORK_SUBAGENT_TYPE,
+        description: 'Forked worker inheriting the parent coding-agent context.',
+        prompt: '',
+        filePath: 'built-in:fork',
+        permissionMode: resumedContext.ctx.permissionMode,
+        maxTurns: opts.maxTurns,
+      }
+    : undefined
   const { task, agent } = await startBackgroundAgentRun(opts, {
     agent: agentName,
     ...(instanceName ? { name: instanceName } : {}),
@@ -807,7 +819,7 @@ export async function resumeBackgroundAgentTask(
     replayed_messages: previousMessages.length,
     tool_result_store_dir: toolResultStoreDir,
     ...resumedContext.params,
-  }, previousMessages, previousReplacementRecords, { replaceTaskId: previousTask.id })
+  }, previousMessages, previousReplacementRecords, { replaceTaskId: previousTask.id, ...(forkAgentOverride ? { agentOverride: forkAgentOverride } : {}) })
   await opts.tasks.appendEvent(previousTask.id, {
     type: 'context_note',
     text: `SendMessage resumed this background agent as task ${task.id}.`,
