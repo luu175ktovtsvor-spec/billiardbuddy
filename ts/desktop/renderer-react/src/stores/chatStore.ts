@@ -14,7 +14,7 @@ export type ToolStatus = 'running' | 'ok' | 'error'
 
 export type ChatBlock =
   | { id: string; kind: 'user'; text: string }
-  | { id: string; kind: 'assistant'; text: string; streaming: boolean; ts?: number; cost?: number }
+  | { id: string; kind: 'assistant'; text: string; streaming: boolean; ts?: number; tokens?: number }
   | { id: string; kind: 'thinking'; text: string }
   | { id: string; kind: 'tool'; tool: string; input: unknown; output?: string; status: ToolStatus }
   | {
@@ -42,6 +42,8 @@ interface ChatState {
   _currentAssistantId: string | null
   _currentThinkingId: string | null
   _sawStreaming: boolean
+  _lastTotalTokens: number
+  _turnBaselineTokens: number
   _unsub: (() => void) | null
   _wantReplay: boolean
 
@@ -74,6 +76,23 @@ export const useChatStore = create<ChatState>((set, get) => {
 
   function finalizeThinking() {
     if (get()._currentThinkingId) set({ _currentThinkingId: null })
+  }
+
+  /** 回合结束时把这轮真实 token 消耗(累计 total 的回合差)落到最后一条 assistant 气泡。 */
+  function attachTurnTokens() {
+    const turn = get()._lastTotalTokens - get()._turnBaselineTokens
+    if (turn <= 0) return
+    set((s) => {
+      const blocks = [...s.blocks]
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const b = blocks[i]
+        if (b && b.kind === 'assistant') {
+          blocks[i] = { ...b, tokens: turn }
+          break
+        }
+      }
+      return { blocks }
+    })
   }
 
   function appendAssistant(text: string) {
@@ -221,13 +240,18 @@ export const useChatStore = create<ChatState>((set, get) => {
       case 'max_turns_reached':
         pushNote('连着跑了好几个回合,先停下来喘口气。想接着做的话,回一句让它继续。', 'maxturns')
         break
+      case 'usage_update':
+        // 累计 total_tokens;回合结束(done)时用「结束 total − 回合开始 baseline」算这轮真实消耗。
+        set({ _lastTotalTokens: ev.total_tokens })
+        break
       case 'done':
         set({ status: 'idle' })
         finalizeThinking()
         settleAssistant()
+        attachTurnTokens()
         break
       default:
-        // usage_update / tool_progress / todo_update / ask_question 等本切片先不渲染(Block A/B 接)。
+        // tool_progress / todo_update / ask_question 等本切片先不渲染(Block A/B 接)。
         break
     }
   }
@@ -286,6 +310,8 @@ export const useChatStore = create<ChatState>((set, get) => {
     _currentAssistantId: null,
     _currentThinkingId: null,
     _sawStreaming: false,
+    _lastTotalTokens: 0,
+    _turnBaselineTokens: 0,
     _unsub: null,
     _wantReplay: false,
 
@@ -302,6 +328,8 @@ export const useChatStore = create<ChatState>((set, get) => {
         _currentAssistantId: null,
         _currentThinkingId: null,
         _sawStreaming: false,
+        _lastTotalTokens: 0,
+        _turnBaselineTokens: 0,
         _wantReplay: Boolean(opts?.replay),
       })
       const unsub = wsManager.onMessage(conversationId, handleServerMessage)
@@ -324,6 +352,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         status: 'running',
         runVerb: 'working',
         _sawStreaming: false,
+        _turnBaselineTokens: get()._lastTotalTokens,
       }))
       const settings = useSettingsStore.getState()
       const run: Extract<ClientMessage, { type: 'run' }> = {

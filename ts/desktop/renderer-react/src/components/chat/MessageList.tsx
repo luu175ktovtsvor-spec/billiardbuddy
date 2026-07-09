@@ -26,7 +26,7 @@ function Block({ block, isLast }: { block: ChatBlock; isLast?: boolean }) {
         <div className="group/msg my-3 text-sm leading-relaxed" data-block="assistant" style={{ color: 'var(--color-text-primary)' }}>
           <MarkdownRenderer content={block.text} />
           {block.streaming && <span className="qf-cursor">▍</span>}
-          {!block.streaming && block.text.trim() && <MessageActions text={block.text} ts={block.ts} cost={block.cost} pinned={isLast} />}
+          {!block.streaming && block.text.trim() && <MessageActions text={block.text} ts={block.ts} tokens={block.tokens} pinned={isLast} />}
         </div>
       )
     case 'thinking':

@@ -31,7 +31,7 @@ function ActBtn({ label, active, onClick, children }: { label: string; active?: 
   )
 }
 
-export function MessageActions({ text, ts, cost, pinned }: { text: string; ts?: number; cost?: number; pinned?: boolean }) {
+export function MessageActions({ text, ts, tokens, pinned }: { text: string; ts?: number; tokens?: number; pinned?: boolean }) {
   const [copied, setCopied] = useState(false)
   const [vote, setVote] = useState<null | 'up' | 'down'>(null)
 
@@ -75,9 +75,9 @@ export function MessageActions({ text, ts, cost, pinned }: { text: string; ts?: 
       <ActBtn label={t('actions.more')}>
         <IconMoreHorizontal size={14} />
       </ActBtn>
-      {(typeof cost === 'number' || typeof ts === 'number') && (
+      {(typeof tokens === 'number' || typeof ts === 'number') && (
         <span className="ml-2 flex items-center gap-2 text-xs tabular-nums" style={{ color: 'var(--color-text-tertiary)' }}>
-          {typeof cost === 'number' && <span>{t('chat.consumed')} ◇ {cost.toFixed(2)}</span>}
+          {typeof tokens === 'number' && <span>{t('chat.consumed')} {tokens.toLocaleString()} tokens</span>}
           {typeof ts === 'number' && <span>{fmtStamp(ts)}</span>}
         </span>
       )}
