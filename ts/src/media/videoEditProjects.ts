@@ -13,6 +13,7 @@ import {
   transcribeVideoWordLevel,
 } from './transcribe'
 import { classifyContent, type EditRoute } from './videoContentRouter'
+import { ffmpegBinFrom, ffprobeBinFrom, subtitleFontConfig } from './mediaBinaries'
 import { detectScenes, type Shot } from './brollScenes'
 import { measureShot, selectAndRankShots, type CandidateShot, type ScoredShot } from './brollSelect'
 import { beatsForMusic, planBeatDurations } from './beatSync'
@@ -419,11 +420,11 @@ function dimensionsForRatio(ratio: unknown): { width: number; height: number; ra
 }
 
 function ffmpegBin(env: Record<string, string | undefined> | undefined): string {
-  return env?.FFMPEG_BIN?.trim() || env?.FFMPEG_PATH?.trim() || 'ffmpeg'
+  return ffmpegBinFrom(env)
 }
 
 function ffprobeBin(env: Record<string, string | undefined> | undefined): string {
-  return env?.FFPROBE_BIN?.trim() || env?.FFPROBE_PATH?.trim() || 'ffprobe'
+  return ffprobeBinFrom(env)
 }
 
 function ffconcatPath(path: string): string {
@@ -1400,11 +1401,17 @@ export class VideoEditProjectStore {
         captionUrl = `/uploads/videos/${basename(srtPath)}`
         const captionedPath = wantsMusic ? join(tempDir, 'captioned.mp4') : outputPath
         await opts.onProgress?.(88, '正在烧录字幕。')
+        // 中文字幕字体:资产管理器下发的字体就绪时显式指给 ffmpeg(fontsdir + 字体族),
+        // 避免用户机(尤其 Windows)缺中文字体烧出方块;没就绪就走系统字体(原行为)。
+        const fontConfig = subtitleFontConfig(opts.env)
+        const subtitleFilter = fontConfig
+          ? `subtitles=${escapeSubtitleFilterPath(tempSrt)}:fontsdir=${escapeSubtitleFilterPath(fontConfig.fontsDir)}:force_style='FontName=${fontConfig.family}'`
+          : `subtitles=${escapeSubtitleFilterPath(tempSrt)}`
         try {
           await runProcess(command, [
             '-hide_banner', '-loglevel', 'error', '-y',
             '-i', assembledPath,
-            '-vf', `subtitles=${escapeSubtitleFilterPath(tempSrt)}`,
+            '-vf', subtitleFilter,
             '-c:v', 'libx264',
             '-preset', 'veryfast',
             '-pix_fmt', 'yuv420p',

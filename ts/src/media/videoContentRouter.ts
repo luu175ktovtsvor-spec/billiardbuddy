@@ -13,6 +13,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { resolveTranscribeAvailability, transcribeWavText } from './transcribe'
+import { ffmpegBinFrom } from './mediaBinaries'
 
 export type EditRoute = 'speech' | 'broll'
 export type RouteLevel = 'L0' | 'L1' | 'L2'
@@ -114,7 +115,7 @@ export interface ClassifyOptions {
 }
 
 function ffmpegBin(env: Record<string, string | undefined>): string {
-  return env.FFMPEG_BIN?.trim() || env.FFMPEG_PATH?.trim() || 'ffmpeg'
+  return ffmpegBinFrom(env)
 }
 
 function runFfmpeg(bin: string, args: string[], opts: { cwd?: string; signal?: AbortSignal; timeoutMs: number }): Promise<{ stdout: string; stderr: string; code: number | null }> {

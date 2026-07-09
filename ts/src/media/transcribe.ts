@@ -14,7 +14,13 @@ import { existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, delimiter, extname, join, resolve } from 'node:path'
+import { basename, extname, join } from 'node:path'
+import {
+  ffmpegBinFrom,
+  resolveWhisperCliPath,
+  resolveWhisperModelPath,
+  transcribeAssetsPreparingReason,
+} from './mediaBinaries'
 
 export interface TranscriptWord {
   start: number
@@ -63,78 +69,14 @@ function toEnv(env: Record<string, string | undefined> | undefined): Record<stri
   return env ?? process.env
 }
 
-function platformWhisperName(): string {
-  return process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli'
-}
-
-function resolveExecutable(command: string, env: Record<string, string | undefined>): string | null {
-  if (!command.trim()) return null
-  const direct = command.includes('/') || command.includes('\\') ? resolve(command) : ''
-  if (direct && existsSync(direct)) return direct
-  const path = env.PATH || process.env.PATH || ''
-  const exts = process.platform === 'win32' ? ['', '.exe', '.cmd', '.bat'] : ['']
-  for (const dir of path.split(delimiter).filter(Boolean)) {
-    for (const ext of exts) {
-      const candidate = join(dir, `${command}${ext}`)
-      if (existsSync(candidate)) return candidate
-    }
-  }
-  return null
-}
-
-/** 候选 binaries 目录:cwd/desktop/binaries、../desktop/binaries、prod resourcesPath/binaries、显式 env。 */
-function binaryDirs(env: Record<string, string | undefined>): string[] {
-  const dirs: string[] = []
-  if (env.QF_BINARIES_DIR?.trim()) dirs.push(resolve(env.QF_BINARIES_DIR.trim()))
-  const resourcesPath = env.RESOURCES_PATH || (process as unknown as { resourcesPath?: string }).resourcesPath
-  if (resourcesPath) dirs.push(join(resourcesPath, 'binaries'))
-  dirs.push(join(process.cwd(), 'desktop', 'binaries'))
-  dirs.push(join(process.cwd(), '..', 'desktop', 'binaries'))
-  return dirs
-}
-
+/** 二进制/权重解析统一走 mediaBinaries(env 显式 → 资产管理器 → 内置 → PATH)。 */
 export function resolveWhisperCli(env: Record<string, string | undefined>): string | null {
-  const explicit = resolveExecutable(env.WHISPER_CLI || env.WHISPER_CPP_BIN || '', env)
-  if (explicit) return explicit
-  for (const dir of binaryDirs(env)) {
-    const candidate = resolveExecutable(join(dir, platformWhisperName()), env)
-    if (candidate) return candidate
-  }
-  return resolveExecutable('whisper-cli', env) ?? resolveExecutable('main', env)
+  return resolveWhisperCliPath(env)
 }
 
-/**
- * 解析要用的权重。默认优先 large-v3-turbo(§二·补 复评定),再退 large-v3 / medium / small。
- * 沿用 voiceTranscription 的 WHISPER_MODEL_PATH / WHISPER_CPP_MODEL / WHISPER_MODEL_DIR。
- */
+/** 权重默认优先 large-v3-turbo(§二·补 复评定),再退 large-v3 / medium / small。 */
 export function resolveWhisperModel(env: Record<string, string | undefined>): string {
-  const direct = env.WHISPER_MODEL_PATH || env.WHISPER_CPP_MODEL
-  if (direct && existsSync(direct)) return direct
-  const candidateNames = [
-    'ggml-large-v3-turbo.bin',
-    'ggml-large-v3-turbo-q8_0.bin',
-    'ggml-large-v3-turbo-q5_0.bin',
-    'ggml-large-v3.bin',
-    'ggml-large-v3-q5_0.bin',
-    'ggml-medium.bin',
-    'ggml-medium-q5_0.bin',
-    'ggml-small.bin',
-    'model.bin',
-  ]
-  const dirs: string[] = []
-  if (env.WHISPER_MODEL_DIR?.trim()) dirs.push(env.WHISPER_MODEL_DIR.trim())
-  for (const base of binaryDirs(env)) {
-    dirs.push(join(base, 'models'))
-    dirs.push(base)
-  }
-  for (const dir of dirs) {
-    if (!existsSync(dir)) continue
-    for (const name of candidateNames) {
-      const candidate = join(dir, name)
-      if (existsSync(candidate)) return candidate
-    }
-  }
-  return ''
+  return resolveWhisperModelPath(env)
 }
 
 export interface TranscribeAvailability {
@@ -144,21 +86,26 @@ export interface TranscribeAvailability {
   model: string | null
 }
 
-/** 探测口播转写是否可用;不可用时 reason 给出清晰的"需打包什么"提示。 */
+/**
+ * 探测口播转写是否可用。不可用时:接了资产管理器 → 触发按需下载并给"正在后台准备(x%)"
+ * (功能门,绝不静默失败);没接(单测/纯开发)→ 给清晰的"需打包什么"提示。
+ */
 export function resolveTranscribeAvailability(env?: Record<string, string | undefined>): TranscribeAvailability {
   const e = toEnv(env)
   const whisperBin = resolveWhisperCli(e)
   const model = resolveWhisperModel(e)
+  if (whisperBin && model) return { available: true, reason: '', whisperBin, model }
+  const preparing = transcribeAssetsPreparingReason(e)
+  if (preparing) return { available: false, reason: preparing, whisperBin, model: model || null }
   if (!whisperBin && !model) {
     return { available: false, reason: '需打包转写二进制 whisper-cli 与权重 ggml-large-v3-turbo', whisperBin, model: model || null }
   }
   if (!whisperBin) return { available: false, reason: '需打包转写二进制 whisper-cli(desktop/binaries)', whisperBin, model: model || null }
-  if (!model) return { available: false, reason: '需打包转写权重 ggml-large-v3-turbo(desktop/binaries/models)', whisperBin, model: null }
-  return { available: true, reason: '', whisperBin, model }
+  return { available: false, reason: '需打包转写权重 ggml-large-v3-turbo(desktop/binaries/models)', whisperBin, model: null }
 }
 
 function ffmpegBin(env: Record<string, string | undefined>): string {
-  return env.FFMPEG_BIN?.trim() || env.FFMPEG_PATH?.trim() || 'ffmpeg'
+  return ffmpegBinFrom(env)
 }
 
 interface ProcResult {

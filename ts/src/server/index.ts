@@ -80,6 +80,7 @@ import { BridgeWorkerRefreshScheduler, type BridgeWorkerRefreshCause } from '../
 import { projectBridgeSdkEvent } from '../tasks/bridgeSdkEventProjection'
 import { resolveInboundUserMessage, type BridgeInboundContent, type BridgeResolvedInboundMessage } from '../tasks/bridgeInboundMessages'
 import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
+import { AssetManager, ASSET_WS_TOPIC, getActiveAssetManager, setActiveAssetManager } from '../assets/assetManager'
 import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
 import { loadOutputStyles, publicOutputStyle, renderOutputStylePrompt } from '../outputStyles/outputStyleLoader'
@@ -135,6 +136,11 @@ export interface StartServerOptions {
   agentsRoot?: string
   mcpConfigPath?: string
   mediaBackendUrl?: string
+  /** 资产管理器注入(测试用);缺省按 stateRoot/env/fetchImpl 自建。 */
+  assetManager?: AssetManager
+  /** 是否启动后台资产下载调度。默认:测试环境(NODE_ENV=test)不启,其余启;
+   * env QF_ASSETS_AUTOSTART=0 可显式关(开发机不想联网下资产时)。 */
+  assetAutoStart?: boolean
   bridgeWebSocketCtor?: BridgeRemoteWebSocketConstructor
   /** 启动即预先受信的工作区根(桌面壳打开已批准的库/工作区时注入,或测试用):等价对每个根调 mcpTrust.trust(root)。
    * 受信后该工作区来源的 local hook(.claude/hooks.json 等)才被信任门放行执行。 */
@@ -1002,6 +1008,16 @@ export function startServer(opts: StartServerOptions = {}) {
     pollIntervalMs: 100,
     prepareImageBody: (body, mode) => prepareStudioImageBody(body, mode),
   })
+  // 资产管理器(瘦安装包):大块头资产(ffmpeg/转写权重/中文字体)首启后从静态源后台
+  // 静默下载;媒体调用点经进程级注册表拿 ready 路径。测试环境默认不启动(不碰网络)。
+  const assets = opts.assetManager ?? new AssetManager({
+    stateRoot,
+    env: opts.env ?? process.env,
+    fetchImpl: opts.fetchImpl,
+  })
+  setActiveAssetManager(assets)
+  const assetAutoStart = opts.assetAutoStart ?? (process.env.NODE_ENV !== 'test' && (opts.env ?? process.env).QF_ASSETS_AUTOSTART !== '0')
+  if (assetAutoStart) assets.start()
   const videoEdits = new VideoEditProjectStore(stateRoot)
   const legacyStore = new LegacyAgentStore(stateRoot)
   const storeDocs = new StoreDocsService(desktopData, stateRoot)
@@ -3210,6 +3226,12 @@ export function startServer(opts: StartServerOptions = {}) {
         return new Response('Method not allowed', { status: 405 })
       }
 
+      if (url.pathname === '/api/v1/assets/status') {
+        // 资产管理器全量状态(前端"正在准备组件 x%"UI 的拉取口;增量走 WS asset_progress)。
+        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
+        return Response.json(assets.status())
+      }
+
       if (url.pathname === '/api/v1/voice/transcribe') {
         if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
         const form = await req.formData().catch(() => null)
@@ -4525,6 +4547,8 @@ export function startServer(opts: StartServerOptions = {}) {
     websocket: {
       open(ws) {
         turnConsumers.onConnect(ws.data.conversationId)
+        // 所有连接都订阅资产进度广播(前端据此画"正在准备组件 x%")。
+        ws.subscribe(ASSET_WS_TOPIC)
         wsSend(ws, { type: 'ready', conversationId: ws.data.conversationId })
         if (ws.data.after > 0) {
           void replayWsEvents(ws, ws.data.conversationId, ws.data.after).catch(err => wsError(ws, err instanceof Error ? err.message : String(err)))
@@ -4621,8 +4645,19 @@ export function startServer(opts: StartServerOptions = {}) {
       },
     },
   })
+  // 资产下载进度 → WS 广播(事件结构见 assets/types AssetProgressEvent)。
+  const unsubscribeAssetEvents = assets.onEvent(event => {
+    try {
+      app.publish(ASSET_WS_TOPIC, JSON.stringify(event))
+    } catch {
+      // server 已停/无订阅者:忽略,状态照常落 state.json。
+    }
+  })
   const stop = app.stop.bind(app)
   app.stop = (closeActiveConnections?: boolean) => {
+    unsubscribeAssetEvents()
+    assets.stop()
+    if (getActiveAssetManager() === assets) setActiveAssetManager(null)
     for (const subscriber of bridgeSubscribers.values()) subscriber.close()
     bridgeSubscribers.clear()
     for (const scheduler of bridgeWorkerRefreshSchedulers.values()) scheduler.cancel()
