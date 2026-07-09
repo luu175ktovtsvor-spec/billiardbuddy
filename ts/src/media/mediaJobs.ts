@@ -444,6 +444,13 @@ function joinOpenAiImageEditEndpoint(baseUrl: string): string {
   return `${base}/v1/images/edits`
 }
 
+/** 通用图片子路径拼接(异步任务端点 /images/tasks 用):补齐 /v1 前缀。 */
+function joinImagePath(baseUrl: string, subPath: string): string {
+  const base = baseUrl.replace(/\/+$/, '')
+  if (/\/(?:v\d+|api\/v\d+)$/i.test(base)) return `${base}${subPath}`
+  return `${base}/v1${subPath}`
+}
+
 function ensureProjectName(value: unknown): string {
   const raw = typeof value === 'string' ? basename(value).replace(/[^A-Za-z0-9_-]/g, '') : ''
   return raw || crypto.randomUUID().replaceAll('-', '').slice(0, 10)
@@ -620,6 +627,7 @@ export class MediaJobService {
   private readonly uploadsRoot: string
   private readonly fetchImpl: FetchLike
   private readonly pollIntervalMs: number
+  private readonly gptImageAsync: boolean
 
   constructor(private readonly opts: MediaJobServiceOptions) {
     this.backendUrl = normalizeBackendUrl(opts.backendUrl)
@@ -627,6 +635,9 @@ export class MediaJobService {
     this.uploadsRoot = join(opts.stateRoot, 'uploads')
     this.fetchImpl = opts.fetchImpl ?? globalThis.fetch
     this.pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_MS
+    // GPT 生图异步 submit/poll(根治大陆↔美国跨境长连接 60s 被掐):开关开且部署好美国 relay 任务服务后生效。
+    // 关时走同步路径(含尺寸/input_fidelity 修复),适合快请求或未部署 relay 的场景。默认关。
+    this.gptImageAsync = /^(1|true|yes|on)$/i.test(stringFrom(this.env.QF_GPT_IMAGE_ASYNC) ?? '')
   }
 
   get hasBackend(): boolean {
@@ -952,7 +963,10 @@ export class MediaJobService {
     if (mode === 'edit' && refs.length === 0) throw new Error('改图需要可读取的 source_generation_id 底图')
     await ctx.progress(12, refs.length ? '正在提交到图片编辑网关。' : '正在提交到图片生成网关。')
     let parsed: Record<string, unknown>
-    if (config.provider === 'openai-compatible' && refs.length) {
+    if (config.provider === 'openai-compatible' && this.gptImageAsync) {
+      // 根治:GPT 生图走美国 relay 异步任务(submit/poll),慢调用在美国本地跑,避免大陆↔美国跨境长连接 60s 被掐。
+      parsed = await this.submitOpenAiImageTask(ctx, prompt, sized, count, body, config, refs, refs.length ? 'edit' : 'generate')
+    } else if (config.provider === 'openai-compatible' && refs.length) {
       const form = new FormData()
       form.set('model', config.model)
       form.set('prompt', prompt)
@@ -1038,6 +1052,64 @@ export class MediaJobService {
     }
     const response = await this.fetchImpl(endpoint, init)
     return await this.readJson(response, config.endpointPath)
+  }
+
+  /** GPT 生图异步任务:提交(短)→轮询(短),慢调用在美国 relay 本地跑,彻底绕开大陆↔美国跨境长连接 60s 被掐。
+   *  契约:POST {base}/v1/images/tasks {mode,model,prompt,n,size,response_format?,images?,mask?,input_fidelity?} → {task_id};
+   *        GET  {base}/v1/images/tasks/{id} → {status:queued|running|succeeded|failed, data?:[{b64_json|url}], error?}。
+   *  返回 OpenAI 形状 {data:[...]} 以复用 persistImageGenerationResult。 */
+  private async submitOpenAiImageTask(
+    ctx: TaskRunnerContext,
+    prompt: string,
+    sized: { size: string },
+    count: number,
+    body: Record<string, unknown>,
+    config: DirectImageConfig,
+    refs: ResolvedImageReference[],
+    mode: 'generate' | 'edit',
+  ): Promise<Record<string, unknown>> {
+    const taskBody: Record<string, unknown> = {
+      mode,
+      model: config.model,
+      prompt,
+      n: count,
+      size: stringFrom(body.size) ?? sized.size,
+    }
+    const responseFormat = stringFrom(body.response_format)
+    if (responseFormat) taskBody.response_format = responseFormat
+    // input_fidelity 只对非 gpt-image-2 的 gpt-image 系列设(gpt-image-2 恒最高保真、传了 400)。
+    if (/^gpt-image/i.test(config.model) && !/^gpt-image-2/i.test(config.model)) {
+      taskBody.input_fidelity = mode === 'edit' ? 'high' : 'low'
+    }
+    if (mode === 'edit') {
+      const images = refs.map(ref => ref.url).filter(Boolean).slice(0, 16)
+      if (images.length === 0) throw new Error('改图需要本机可读取的底图或参考图')
+      taskBody.images = images
+      const mask = await this.resolveImageReference(stringFrom(body.mask_path), 'mask', this.trustedImagePaths(body))
+      if (mask?.url) taskBody.mask = mask.url
+    }
+    const submitted = await this.readJson(await this.fetchImpl(joinImagePath(config.baseUrl, '/images/tasks'), {
+      method: 'POST',
+      headers: { 'authorization': `Bearer ${config.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(taskBody),
+    }), '/images/tasks')
+    const taskId = stringFrom(submitted.task_id)
+    if (!taskId) throw new Error('图片任务提交未返回 task_id')
+    await ctx.progress(15, '图片任务已提交，正在美国节点生成。')
+    const pollEndpoint = joinImagePath(config.baseUrl, `/images/tasks/${encodeURIComponent(taskId)}`)
+    for (let i = 0; i < POLL_LIMIT; i++) {
+      if (ctx.signal.aborted) throw new Error('任务已取消')
+      await delay(this.pollIntervalMs)
+      const status = await this.readJson(await this.fetchImpl(pollEndpoint, {
+        method: 'GET',
+        headers: { 'authorization': `Bearer ${config.token}` },
+      }), '/images/tasks/{id}')
+      const state = stringFrom(status.status)
+      if (state === 'succeeded') return { data: Array.isArray(status.data) ? status.data : [] }
+      if (state === 'failed') throw new Error(sanitizeMediaError(status.error ?? '图片任务失败'))
+      await ctx.progress(Math.min(85, 20 + i), '图片仍在生成中…')
+    }
+    throw new Error('图片任务超时')
   }
 
   private async submitSeedreamImageJsonWithRetry(endpoint: string, init: RequestInit, label: string): Promise<Record<string, unknown>> {

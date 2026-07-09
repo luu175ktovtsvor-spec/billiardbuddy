@@ -184,3 +184,29 @@ test('admin usage requires admin token and returns recent rows', async () => {
   expect(body.today_by_model).toMatchObject([{ model: 'img', total: 1, ok: 1 }])
   expect(body.recent[0]).toMatchObject({ user: 'owner-a', model: 'img', ok: 1 })
 })
+
+test('image task submit/poll proxies to relay tasks base with relay token when configured', async () => {
+  const { fetch, calls } = makeGateway({ GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks', GW_Q_IMG: '5' })
+  const submit = await fetch(new Request('http://local/v1/images/tasks', authed({
+    method: 'POST',
+    body: JSON.stringify({ mode: 'generate', model: 'gpt-image-2', prompt: 'x' }),
+    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+  })))
+  expect(submit.status).toBe(200)
+  const poll = await fetch(new Request('http://local/v1/images/tasks/task-1', authed({ method: 'GET' })))
+  expect(poll.status).toBe(200)
+  expect(calls.map(c => c.url)).toEqual([
+    'https://relay.example/relay/imgtasks/images/tasks',
+    'https://relay.example/relay/imgtasks/images/tasks/task-1',
+  ])
+  expect((calls[0].init?.headers as Record<string, string>).Authorization).toBe('Bearer relay-secret')
+})
+
+test('image task endpoints return 503 when GW_RELAY_TASKS_BASE unset', async () => {
+  const { fetch, calls } = makeGateway()
+  const submit = await fetch(new Request('http://local/v1/images/tasks', authed({ method: 'POST', body: '{}' })))
+  expect(submit.status).toBe(503)
+  const poll = await fetch(new Request('http://local/v1/images/tasks/x', authed({ method: 'GET' })))
+  expect(poll.status).toBe(503)
+  expect(calls.length).toBe(0)
+})

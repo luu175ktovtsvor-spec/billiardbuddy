@@ -10,6 +10,7 @@ type GatewayConfig = {
   mimoBase: string
   relayBase: string
   relayToken: string
+  relayTasksBase: string
   adminToken: string
   db: string
   arkKey: string
@@ -252,6 +253,8 @@ function loadConfig(env: Env): GatewayConfig {
     mimoBase: (env.GW_MIMO_BASE ?? 'https://api.xiaomimimo.com/v1').replace(/\/+$/, ''),
     relayBase: required(env, 'GW_RELAY_BASE').replace(/\/+$/, ''),
     relayToken: required(env, 'GW_RELAY_TOKEN'),
+    // 美国 relay 上的 GPT 生图异步任务服务(relay/app.ts)地址;缺则异步任务端点返回 503,客户端退同步路径。
+    relayTasksBase: (env.GW_RELAY_TASKS_BASE ?? '').replace(/\/+$/, ''),
     adminToken: env.GW_ADMIN_TOKEN ?? 'change-me',
     db: env.GW_DB ?? '/opt/qfgw/usage.db',
     arkKey: env.GW_ARK_KEY ?? '',
@@ -465,6 +468,40 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             throw new HttpError(502, `图生图上游出错:${String(err).slice(0, 120)}`)
           }
         })
+      }
+
+      // GPT 生图异步任务:提交(短请求,转发到美国 relay 任务服务;慢调用在美国本地跑,绕开跨境长连接 60s 被掐)。
+      if (request.method === 'POST' && url.pathname === '/v1/images/tasks') {
+        const user = auth(config, request)
+        if (!config.relayTasksBase) throw new HttpError(503, 'GPT 生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
+        await quotaCheck(store, user, 'img', config.qImg)
+        await imgBucket.acquire(config.queueMaxWait) // 提交计入生图 IPM 限速;短请求不占 imgSem 在途并发
+        const started = performance.now()
+        try {
+          const upstream = await fetchImpl(`${config.relayTasksBase}/images/tasks`, {
+            method: 'POST',
+            body: await request.arrayBuffer(),
+            headers: { Authorization: `Bearer ${config.relayToken}`, 'Content-Type': 'application/json' },
+          })
+          await logUsage(store, { user, model: 'img', ok: upstream.status < 400, status: upstream.status, ms: elapsedMs(started) })
+          return await proxyJsonOrRaw(upstream)
+        } catch (err) {
+          await logUsage(store, { user, model: 'img', ok: false, status: 599, ms: elapsedMs(started), note: String(err).slice(0, 120) })
+          throw new HttpError(502, `生图任务提交出错:${String(err).slice(0, 120)}`)
+        }
+      }
+
+      // GPT 生图异步任务:轮询状态(短请求,不计配额)。
+      if (request.method === 'GET' && url.pathname.startsWith('/v1/images/tasks/')) {
+        auth(config, request)
+        if (!config.relayTasksBase) throw new HttpError(503, 'GPT 生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
+        const taskId = url.pathname.slice('/v1/images/tasks/'.length)
+        if (!taskId || taskId.includes('/')) throw new HttpError(400, '无效 task id')
+        const upstream = await fetchImpl(`${config.relayTasksBase}/images/tasks/${encodeURIComponent(taskId)}`, {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${config.relayToken}` },
+        })
+        return await proxyJsonOrRaw(upstream)
       }
 
       if (request.method === 'POST' && url.pathname === '/v1/ark/chat/completions') {
