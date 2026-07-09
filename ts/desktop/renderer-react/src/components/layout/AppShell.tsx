@@ -2,20 +2,28 @@
 // bootstrap 顺序:initializeDesktopServerUrl()(IPC 拿 sidecar 地址 + /health)→ 刷会话列表 → 开一个新会话。
 import { useEffect, useState } from 'react'
 import { Sidebar } from './Sidebar'
-import { TabBar } from './TabBar'
+import { TopBar } from './TopBar'
 import { ContentRouter } from './ContentRouter'
 import { initializeDesktopServerUrl } from '../../lib/desktopRuntime'
 import { useSessionStore } from '../../stores/sessionStore'
 import { openNewConversation } from '../../lib/conversations'
+import { isPreviewMode, applyPreviewSeed } from '../../lib/previewSeed'
 import { t } from '../../i18n'
 
 type Phase = 'connecting' | 'ready' | 'error'
 
 export function AppShell() {
-  const [phase, setPhase] = useState<Phase>('connecting')
+  const [phase, setPhase] = useState<Phase>(isPreviewMode() ? 'ready' : 'connecting')
+
   const [errorMsg, setErrorMsg] = useState('')
 
   useEffect(() => {
+    // 预览模式:跳过后端连接,注入示例数据后直接进 ready(仅 ?preview=1)。
+    if (isPreviewMode()) {
+      applyPreviewSeed()
+      setPhase('ready')
+      return
+    }
     let cancelled = false
     void (async () => {
       try {
@@ -63,8 +71,8 @@ export function AppShell() {
   return (
     <div className="flex h-full" data-testid="app-shell">
       <Sidebar />
-      <main className="flex min-w-0 flex-1 flex-col" style={{ background: 'var(--color-background)' }}>
-        <TabBar />
+      <main className="flex min-w-0 flex-1 flex-col" style={{ background: 'var(--color-app-main)' }}>
+        <TopBar />
         <ContentRouter />
       </main>
     </div>

@@ -35,6 +35,11 @@ body {
 @keyframes qf-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 .qf-spark { display: inline-block; animation: qf-pulse 1.4s ease-in-out infinite; }
 @keyframes qf-pulse { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+.qf-spin { animation: qf-spin 0.7s linear infinite; }
+@keyframes qf-spin { to { transform: rotate(360deg); } }
+/* 消息操作条:默认隐藏,悬停消息组时淡入(对齐 cc MessageActionBar 的 group-hover)。 */
+.qf-msg-actions { opacity: 0; transition: opacity .15s ease; }
+.group\/msg:hover .qf-msg-actions, .qf-msg-actions:focus-within { opacity: 1; }
 
 /* —— Markdown 富文本(地基最小版式;Block A 换 cc 完整版 + typography 插件) —— */
 .qf-markdown { line-height: 1.65; word-break: break-word; }

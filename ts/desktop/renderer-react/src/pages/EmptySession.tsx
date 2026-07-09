@@ -1,18 +1,16 @@
-// 空态 hero(对齐 cc EmptySession)。白标文案走 i18n zh-CN。品牌笑脸标记。
+// 空态 hero(对标真机 WorkBuddy colleague-chat-empty:居中头像 + 标题[h1/500] + 描述[text-weak/body])。
+// 头像 = 我们的绿色笑脸吉祥物(glow 变体);白标文案走 i18n。
 import { t } from '../i18n'
 import { Smiley } from '../components/shared/Smiley'
 
 export function EmptyHero() {
   return (
     <div className="flex h-full flex-col items-center justify-center px-6 text-center" data-testid="empty-hero">
-      <div
-        className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl"
-        style={{ background: 'var(--color-brand-tint)', color: 'var(--color-text-primary)' }}
-      >
-        <Smiley size={30} />
+      <div className="mb-5">
+        <Smiley size={56} variant="glow" />
       </div>
-      <h1 className="mb-2 text-xl font-semibold" style={{ color: 'var(--color-text-primary)' }}>{t('chat.emptyHero')}</h1>
-      <p className="max-w-[420px] text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t('chat.emptyHint')}</p>
+      <h1 className="mb-2 text-2xl font-medium" style={{ color: 'var(--color-text-primary)' }}>{t('chat.emptyHero')}</h1>
+      <p className="max-w-[440px] text-sm leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>{t('chat.emptyHint')}</p>
     </div>
   )
 }
