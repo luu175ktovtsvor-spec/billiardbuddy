@@ -11,7 +11,6 @@ interface StoreState {
   scheduledTasks: JsonObject[]
   storeDocs: JsonObject
   notifications: JsonObject[]
-  dismissedRecommendations: string[]
 }
 
 function nowIso(): string {
@@ -114,7 +113,6 @@ function emptyState(): StoreState {
     scheduledTasks: [],
     storeDocs: defaultStoreDocs(),
     notifications: [],
-    dismissedRecommendations: [],
   }
 }
 
@@ -289,29 +287,6 @@ export class DesktopDataStore {
     return { items, cursor: items.at(-1)?.id ?? after }
   }
 
-  async dashboardToday(): Promise<JsonObject> {
-    const state = await this.read()
-    const date = new Date()
-    const iso = date.toISOString().slice(0, 10)
-    return {
-      date: iso,
-      weekday: ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][date.getDay()],
-      greeting: `${state.store.name ?? '店里'}今天可以先处理获客、会员和内容发布。`,
-      store_completeness: state.store.completeness ?? 10,
-      summary: { total_generations: 0, today_generations: 0, favorite_count: 0, good_count: 0, latest_generation_at: null },
-      recommendations: defaultRecommendations(state.dismissedRecommendations),
-      tips: ['先让 AI 看一份价目表或活动方案，能更快生成贴近门店的内容。'],
-    }
-  }
-
-  async dismissRecommendation(id: string): Promise<JsonObject> {
-    await this.update(state => {
-      if (!state.dismissedRecommendations.includes(id)) state.dismissedRecommendations.push(id)
-      return state
-    })
-    return { status: 'ok', rec_id: id }
-  }
-
   async read(): Promise<StoreState> {
     try {
       const parsed = JSON.parse(await readFile(this.path, 'utf8')) as unknown
@@ -325,7 +300,6 @@ export class DesktopDataStore {
         scheduledTasks: Array.isArray(parsed.scheduledTasks) ? parsed.scheduledTasks.filter(isRecord) : [],
         storeDocs: isRecord(parsed.storeDocs) ? { ...defaults.storeDocs, ...parsed.storeDocs } : defaults.storeDocs,
         notifications: Array.isArray(parsed.notifications) ? parsed.notifications.filter(isRecord) : [],
-        dismissedRecommendations: Array.isArray(parsed.dismissedRecommendations) ? parsed.dismissedRecommendations.filter((item): item is string => typeof item === 'string') : [],
       }
     } catch {
       return emptyState()
@@ -364,12 +338,4 @@ function normalizeScheduledTask(input: JsonObject): JsonObject {
     last_result_summary: null,
     enabled: input.enabled !== false,
   }
-}
-
-function defaultRecommendations(dismissed: string[]): JsonObject[] {
-  const items = [
-    { id: 'daily-content', title: '准备今日朋友圈', description: '生成一条适合今晚黄金档发布的台球房文案。', action_url: '/dashboard/chat', priority: 'high', category: 'focus' },
-    { id: 'store-profile', title: '完善门店资料', description: '补充价目表、会员规则和营业时间后，AI 会更贴近你的店。', action_url: '/dashboard/chat', priority: 'medium', category: 'setup' },
-  ]
-  return items.filter(item => !dismissed.includes(item.id))
 }
