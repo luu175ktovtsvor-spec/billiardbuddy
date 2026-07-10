@@ -40,6 +40,15 @@ export function additionalWorkingDirectoryAllows(ctx: ToolContext, absPath: stri
   )
 }
 
+/**
+ * app 层已授权的工作区外目录(ctx.additionalWorkingDirectories,/add-dir 等价物)的裸路径列表,
+ * 供 run_command/run_command_background 把它们并进 OS 沙箱 allowWrite(否则 shell 命令写这些目录
+ * 仍会被默认开的 OS 沙箱拦下,即使 file 工具在 app 层已经放行——对齐 cc sandbox-adapter.ts 的处理)。
+ */
+export function additionalWorkingDirectoryPaths(ctx: ToolContext): string[] {
+  return [...(ctx.additionalWorkingDirectories?.values() ?? [])].map(directory => directory.path)
+}
+
 export function sessionPathRuleAllows(ctx: ToolContext, toolName: string, absPath: string, operation: FileOperation): boolean {
   const rules = [
     ...(ctx.sessionAllowedToolRules ?? [])

@@ -16,6 +16,10 @@ import { getAgentMemoryEntrypoint } from './agentMemory'
 import { handleReject, runAgentLoop } from '../harness/loop'
 import { buildChildMessage } from './forkSubagent'
 import { textBlock, type Message } from '../types/message'
+import { TEAM_LEAD_NAME, TeamService } from '../tasks/teamService'
+import { createTeamTools } from '../tasks/teamTools'
+import { TaskService } from '../tasks/taskService'
+import { startBackgroundAgentRun, type BackgroundAgentTaskOptions } from '../tasks/taskTools'
 
 function agent(partial: Partial<AgentDefinition> = {}): AgentDefinition {
   return {
@@ -264,7 +268,8 @@ test('agent_task hands off foreground registration when background signal wins t
     })
     const initialMessages = (handoffs[0]!.input as { initialMessages?: Message[] }).initialMessages
     expect(initialMessages?.[0]).toEqual({ role: 'user', content: [textBlock('切到后台继续')] })
-    expect(initialMessages?.[1]).toEqual({
+    // toMatchObject:发起工具调用的 assistant 消息额外带 provenance uuid(file-history messageId),只校验 role/content。
+    expect(initialMessages?.[1]).toMatchObject({
       role: 'assistant',
       content: [{ type: 'tool_use', id: 'step-1', name: 'mark_step', input: { value: 'done-once' } }],
     })
@@ -1134,6 +1139,162 @@ test('agent_task supports CC-Haha run_in_background and named SendMessage target
     })
     expect(out).toContain('<background_task_started id="bg_agent_param_1" agent="researcher" name="indexer" agent_id="stable_bg_agent_1" status="queued">')
     expect(out).toContain('researcher: 后台研究索引')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// Real-path helper matching how server/index.ts actually wires createAgentTaskTool's
+// startBackgroundAgent option: an in-memory TaskService driving the real startBackgroundAgentRun,
+// not a hand-rolled mock that hardcodes agent_id. A hardcoded agent_id across repeated calls is
+// exactly the "假绿" bug the review caught (R2-uds-sidecar.md C1) — production agent_id is always
+// a fresh task.id per call, so a mock that pins it to a constant can't exercise the real dedup path.
+function realTeamAgentHarness(root: string, teams: TeamService, agentDef: AgentDefinition) {
+  const tasks = new TaskService(root)
+  const backgroundOpts: BackgroundAgentTaskOptions = {
+    tasks,
+    agents: [agentDef],
+    model: scriptedModel([
+      { kind: 'final', text: 'run 1' },
+      { kind: 'final', text: 'run 2' },
+      { kind: 'final', text: 'run 3' },
+      { kind: 'final', text: 'run 4' },
+    ]),
+    baseTools: [],
+    baseSystemPrompt: 'base',
+  }
+  const tool = createAgentTaskTool({
+    agents: [agentDef],
+    model: scriptedModel([{ kind: 'final', text: 'foreground unused' }, { kind: 'final', text: 'foreground unused 2' }]),
+    baseTools: [],
+    teams,
+    sidechainRoot: join(root, 'sidechains'),
+    startBackgroundAgent: (input, toolCtx, forkContext) =>
+      startBackgroundAgentRun(backgroundOpts, input, toolCtx, {}, [], [], forkContext ? { forkContext } : {}),
+  })
+  return { tasks, tool }
+}
+
+test('agent_task real path: same name+team spawned twice is renamed (researcher, researcher-2) per cc generateUniqueTeammateName, not duplicated or silently dropped', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-team-'))
+  try {
+    const teams = new TeamService(root)
+    await teams.createTeam({ teamName: 'squad', cwd: root, conversationId: 'lead-conv' })
+    const { tool } = realTeamAgentHarness(root, teams, agent())
+    const ctx = { workspace: new Workspace(root), conversationId: 'lead-conv' }
+
+    // No run_in_background flag at all — team_name + name alone must be enough to
+    // both background the spawn and register it as a teammate (cc AgentTool.tsx:
+    // "Spawn is triggered when team_name is set ... and name is provided").
+    const out1 = await tool.execute({ task: '帮我盯着这块代码', name: 'researcher', team_name: 'squad' }, ctx)
+    expect(out1).toContain('name="researcher"')
+
+    // Re-run with the exact same name + team, exactly like the production scenario the review
+    // caught: the real background task's own agent_id is always a fresh task.id per call, never a
+    // stable dedup key on its own. cc resolves the name collision by renaming to `${name}-2`
+    // (spawnMultiAgent.ts:generateUniqueTeammateName) rather than silently no-op-ing the roster
+    // push, so the roster must end up with two distinct, addressable teammates.
+    const out2 = await tool.execute({ task: '第二次同名同 team', name: 'researcher', team_name: 'squad' }, ctx)
+    expect(out2).toContain('name="researcher-2"')
+
+    const team = await teams.readTeam('squad')
+    expect(team?.members.map(m => m.name)).toEqual([TEAM_LEAD_NAME, 'researcher', 'researcher-2'])
+    expect(team?.members.filter(m => m.name === 'researcher' || m.name === 'researcher-2').map(m => m.agentId)).toEqual([
+      'researcher@squad',
+      'researcher-2@squad',
+    ])
+    for (const member of team!.members) {
+      if (member.name === TEAM_LEAD_NAME) continue
+      expect(member).toMatchObject({ agentType: 'researcher', backendType: 'in-process', isActive: true })
+    }
+
+    const listPeers = createTeamTools(teams).find(t => t.name === 'ListPeers')!
+    const peersOutput = await listPeers.execute({}, { workspace: new Workspace(root) })
+    expect(peersOutput).toContain('name="researcher"')
+    expect(peersOutput).toContain('name="researcher-2"')
+    expect(peersOutput).toContain('"local_peer_count": 3')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('agent_task real path: an unrelated conversation without team_name never joins another conversation\'s active team and stays synchronous', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-team-cross-session-'))
+  try {
+    // Exactly how server/index.ts wires it: one TeamService instance for the whole backend-sidecar
+    // process, shared across every conversationId that hits this server (R2-uds-sidecar.md C2).
+    const teams = new TeamService(root)
+    const researcherAgent = agent()
+
+    // Conversation A: deliberately creates and joins a team.
+    await teams.createTeam({ teamName: 'session-a-team', cwd: root, conversationId: 'conversation-A' })
+    const { tool: toolForA } = realTeamAgentHarness(root, teams, researcherAgent)
+    const outA = await toolForA.execute(
+      { task: 'A 在盯这块代码', name: 'a-helper', team_name: 'session-a-team' },
+      { workspace: new Workspace(root), conversationId: 'conversation-A' },
+    )
+    expect(outA).toContain('<background_task_started')
+
+    // Conversation B: a totally different, unrelated conversation on the SAME server process. It
+    // never called TeamCreate and never passed team_name — an ordinary name-only agent_task call.
+    const { tool: toolForB } = realTeamAgentHarness(root, teams, researcherAgent)
+    const outB = await toolForB.execute(
+      { task: 'B 只是要个普通后台助手,不涉及任何 team', name: 'b-helper' },
+      { workspace: new Workspace(root), conversationId: 'conversation-B' },
+    )
+
+    // Conversation B's call must NOT be silently pulled into conversation A's team: it should run
+    // its ordinary synchronous foreground path (an <agent_task> sidechain result), not a forced
+    // <background_task_started>.
+    expect(outB).toContain('<agent_task')
+    expect(outB).not.toContain('<background_task_started')
+
+    const team = await teams.readTeam('session-a-team')
+    expect(team?.members.map(m => m.name)).toEqual([TEAM_LEAD_NAME, 'a-helper'])
+    expect(team?.members.some(m => m.name === 'b-helper')).toBe(false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('agent_task inherits the active team from context when team_name is omitted but name is set', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-team-inherit-'))
+  try {
+    const teams = new TeamService(root)
+    await teams.createTeam({ teamName: 'inherited-team', cwd: root })
+    const tool = createAgentTaskTool({
+      agents: [agent()],
+      model: scriptedModel([{ kind: 'final', text: 'unused' }]),
+      baseTools: [],
+      teams,
+      startBackgroundAgent: async input => ({
+        task: { id: 'bg_teammate_2', title: `${input.agent}: ${input.task}`, params: { name: input.name, agent_id: 'helper@inherited-team' } },
+        agent: agent({ name: input.agent ?? 'researcher' }),
+      }),
+    })
+    await tool.execute({ task: '帮忙', name: 'helper' }, { workspace: new Workspace(root) })
+    const team = await teams.readTeam('inherited-team')
+    expect(team?.members.some(m => m.name === 'helper')).toBe(true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('agent_task with a teams service but no active team and no team_name runs synchronously as before (no forced backgrounding)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-tool-team-none-'))
+  try {
+    const teams = new TeamService(root)
+    const model = scriptedModel([{ kind: 'final', text: '同步完成' }])
+    const tool = createAgentTaskTool({
+      agents: [agent()],
+      model,
+      baseTools: [],
+      teams,
+      sidechainRoot: join(root, 'sidechains'),
+    })
+    const out = await tool.execute({ task: '普通任务', name: 'solo' }, { workspace: new Workspace(root) })
+    expect(out).toContain('同步完成')
+    expect(await teams.getActiveTeam()).toBeNull()
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

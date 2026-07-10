@@ -1168,6 +1168,42 @@ describe('run_command × Sandbox 接线(Task 6)', () => {
     const out = await runCommandTool.execute({ command: 'echo PLAIN' }, { workspace: ws })
     expect(out).toContain('PLAIN')
   })
+
+  test('run_command 把 ctx.additionalWorkingDirectories 转成 extraWritablePaths 传给 sandbox.wrapCommand(P1 §7 修复:'
+    + '否则 app 层已授权的工作区外目录,shell 命令写入时仍会被 OS 沙箱拦)', async () => {
+    const ws = new Workspace(realpathSync(mkdtempSync(join(tmpdir(), 'w3-rc-extra-'))))
+    const extDir = realpathSync(mkdtempSync(join(tmpdir(), 'w3-rc-extdir-'))) // 已授权的工作区外目录
+    let capturedExtra: string[] | undefined
+    const fakeSandbox = {
+      async wrapCommand(_command: string, opts: { extraWritablePaths?: string[] }) {
+        capturedExtra = opts.extraWritablePaths
+        return null
+      },
+    }
+    await runCommandTool.execute({ command: 'echo hi' }, {
+      workspace: ws,
+      sandbox: fakeSandbox as unknown as import('../sandbox/sandbox').Sandbox,
+      additionalWorkingDirectories: new Map([[extDir, { path: extDir, source: 'session' }]]),
+    })
+    expect(capturedExtra).toEqual([extDir])
+    rmSync(extDir, { recursive: true, force: true })
+  })
+
+  test('run_command 无 additionalWorkingDirectories 时传空数组给 sandbox.wrapCommand(不回归)', async () => {
+    const ws = new Workspace(realpathSync(mkdtempSync(join(tmpdir(), 'w3-rc-noextra-'))))
+    let capturedExtra: string[] | undefined
+    const fakeSandbox = {
+      async wrapCommand(_command: string, opts: { extraWritablePaths?: string[] }) {
+        capturedExtra = opts.extraWritablePaths
+        return null
+      },
+    }
+    await runCommandTool.execute({ command: 'echo hi' }, {
+      workspace: ws,
+      sandbox: fakeSandbox as unknown as import('../sandbox/sandbox').Sandbox,
+    })
+    expect(capturedExtra).toEqual([])
+  })
 })
 
 describe('读命令工作区边界(P0:对齐 cc-haha BashTool/pathValidation.ts 的 PATH_EXTRACTORS + checkPathConstraints)', () => {

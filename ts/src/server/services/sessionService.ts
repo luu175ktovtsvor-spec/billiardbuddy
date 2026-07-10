@@ -1,10 +1,11 @@
 import { createReadStream } from 'node:fs'
-import { appendFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { Transcript } from '../../memory/transcript'
 import type { TranscriptPage } from '../../memory/transcript'
 import { getDefaultWorkspaceDir } from '../../harness/desktopEnvNames'
+import { sanitizePath } from '../../harness/memoryNames'
 import type { Message } from '../../types/message'
 import type { AgentEvent } from '../../types/events'
 
@@ -77,7 +78,52 @@ function clampLimit(value: number | undefined): number {
   return Math.min(Math.floor(value), MAX_EVENT_LIMIT)
 }
 
+/** 从一份 transcript 事件日志里刨出 SessionMeta(缓存重建用):cwd/timestamp 走 provenance 戳,标题取首条 user 文本。 */
+function metaFromTranscript(id: string, text: string): SessionMeta | null {
+  let cwd = ''
+  let createdAt = ''
+  let updatedAt = ''
+  let title = ''
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue
+    let entry: Record<string, unknown>
+    try {
+      const parsed = JSON.parse(line) as unknown
+      if (!isRecord(parsed)) continue
+      entry = parsed
+    } catch {
+      continue
+    }
+    if (!cwd && typeof entry.cwd === 'string') cwd = entry.cwd
+    if (typeof entry.timestamp === 'string') {
+      if (!createdAt) createdAt = entry.timestamp
+      updatedAt = entry.timestamp
+    }
+    if (!title && entry.role === 'user' && Array.isArray(entry.content)) {
+      const firstText = entry.content.find((b): b is { type: 'text'; text: string } =>
+        isRecord(b) && b.type === 'text' && typeof b.text === 'string')
+      if (firstText) title = firstText.text.trim().slice(0, 40)
+    }
+  }
+  if (!createdAt && !updatedAt && !title && !cwd) return null
+  const ts = createdAt || updatedAt || nowIso()
+  return {
+    id,
+    title: title || '恢复的会话',
+    workspaceRoot: cwd,
+    createdAt: ts,
+    updatedAt: updatedAt || ts,
+    status: 'idle',
+    lastEventSeq: 0,
+  }
+}
+
 export class SessionService {
+  /**
+   * sessions.json = **可从事件日志扫描重建的缓存**,不是唯一真相源(对齐 cc:元数据主真相内嵌各 transcript 的
+   * provenance 戳 —— sessionId/cwd/timestamp)。丢失/损坏时 list() 会从 `projects/<slug>/*.jsonl` 重建
+   * (见 rebuildIndexFromDisk)。这里只当"最近会话"选择器的快取。
+   */
   private readonly indexPath: string
 
   constructor(private readonly rootDir: string) {
@@ -85,7 +131,15 @@ export class SessionService {
   }
 
   async list(filter?: { workspaceRoot?: string }): Promise<SessionMeta[]> {
-    const index = await this.readIndex()
+    let index = await this.readIndex()
+    // 缓存空(丢失/损坏/首次)但盘上有事件日志 → 从内嵌 provenance 重建缓存并回写。
+    if (index.size === 0) {
+      const rebuilt = await this.rebuildIndexFromDisk()
+      if (rebuilt.size > 0) {
+        index = rebuilt
+        await this.writeIndex(index).catch(() => undefined)
+      }
+    }
     let metas = [...index.values()]
     if (filter?.workspaceRoot) metas = metas.filter(m => m.workspaceRoot === filter.workspaceRoot)
     return metas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
@@ -117,8 +171,9 @@ export class SessionService {
     const source = (await this.readIndex()).get(sourceId)
     if (!source) throw new Error('源会话不存在')
     const forked = await this.create({ title: opts.title?.trim() || `${source.title}(副本)`, workspaceRoot: source.workspaceRoot })
-    const srcMessages = await this.transcript(sourceId).load().catch(() => [] as Message[])
-    if (srcMessages.length > 0) await this.transcript(forked.id).save(srcMessages)
+    // fork 拷贝**完整历史**(含压缩边界前原文),而非 load() 的裁窗视图——否则被压缩过的会话 fork 后会丢掉压缩前历史。
+    const srcMessages = await this.transcript(sourceId, source.workspaceRoot).loadFullHistory().catch(() => [] as Message[])
+    if (srcMessages.length > 0) await this.transcript(forked.id, forked.workspaceRoot).save(srcMessages)
     return forked
   }
 
@@ -170,26 +225,37 @@ export class SessionService {
   async remove(id: string): Promise<boolean> {
     validateSessionId(id)
     const index = await this.readIndex()
+    const meta = index.get(id)
     const existed = index.delete(id)
     await this.writeIndex(index)
+    const tr = this.transcript(id, meta?.workspaceRoot ?? getDefaultWorkspaceDir())
     await Promise.all([
-      rm(this.transcript(id).path, { force: true }),
+      rm(tr.path, { force: true }),
+      rm(tr.contentReplacementPath, { force: true }),
       rm(this.eventPath(id), { force: true }),
     ])
     return existed
   }
 
-  transcript(id: string): Transcript {
+  /**
+   * 会话事件日志(对齐 cc `projects/<slug>/<sessionId>.jsonl` 白标布局:`<stateRoot>/projects/<workspaceRoot slug>/`,
+   * slug 复用 memoryNames.sanitizePath —— 与已对齐的 AutoMem 同一套分区)。workspaceRoot 必传:内嵌进 provenance 戳(cwd),
+   * 让缓存丢失后能从日志重建索引;也保证读写锚同一目录、绝不因缺省而错位。
+   */
+  transcript(id: string, workspaceRoot: string): Transcript {
     validateSessionId(id)
-    return new Transcript(this.rootDir, id)
+    const projectDir = join(this.rootDir, 'projects', sanitizePath(workspaceRoot))
+    return new Transcript(projectDir, id, { subdir: '', provenance: { sessionId: id, cwd: workspaceRoot } })
   }
 
   async loadTranscript(id: string): Promise<Message[]> {
-    return await this.transcript(id).load()
+    const meta = await this.get(id)
+    return await this.transcript(id, meta?.workspaceRoot ?? getDefaultWorkspaceDir()).load()
   }
 
   async loadTranscriptPage(id: string, opts: { after?: number; limit?: number } = {}): Promise<TranscriptPage> {
-    return await this.transcript(id).loadPage(opts)
+    const meta = await this.get(id)
+    return await this.transcript(id, meta?.workspaceRoot ?? getDefaultWorkspaceDir()).loadPage(opts)
   }
 
   async appendEvent(id: string, event: SessionStreamEvent): Promise<SessionEventRecord> {
@@ -259,6 +325,42 @@ export class SessionService {
   eventPath(id: string): string {
     validateSessionId(id)
     return join(this.rootDir, 'events', `${id}.jsonl`)
+  }
+
+  /**
+   * 从 `projects/<slug>/*.jsonl` 事件日志重建会话索引缓存(元数据真相内嵌各 transcript 的 provenance 戳:
+   * sessionId/cwd/timestamp + 首条 user 文本当标题)。sessions.json 丢失/损坏时 list() 据此自愈,证明中央索引
+   * 只是缓存、不是唯一真相源。尽力而为:坏目录/坏行跳过。
+   */
+  async rebuildIndexFromDisk(): Promise<Map<string, SessionMeta>> {
+    const projectsRoot = join(this.rootDir, 'projects')
+    const rebuilt = new Map<string, SessionMeta>()
+    let slugs: string[] = []
+    try {
+      slugs = (await readdir(projectsRoot, { withFileTypes: true })).filter(d => d.isDirectory()).map(d => d.name)
+    } catch {
+      return rebuilt
+    }
+    for (const slug of slugs) {
+      const dir = join(projectsRoot, slug)
+      let files: string[] = []
+      try {
+        files = (await readdir(dir)).filter(f => f.endsWith('.jsonl') && !f.endsWith('.content-replacements.jsonl'))
+      } catch {
+        continue
+      }
+      for (const file of files) {
+        const id = file.slice(0, -'.jsonl'.length)
+        if (!SESSION_ID_RE.test(id)) continue
+        try {
+          const meta = metaFromTranscript(id, await readFile(join(dir, file), 'utf8'))
+          if (meta) rebuilt.set(id, meta)
+        } catch {
+          // 坏文件跳过。
+        }
+      }
+    }
+    return rebuilt
   }
 
   private async readIndex(): Promise<Map<string, SessionMeta>> {

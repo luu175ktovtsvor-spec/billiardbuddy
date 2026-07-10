@@ -7,6 +7,7 @@ import type { Tool, ToolContext } from './Tool'
 import type { TaskService } from '../tasks/taskService'
 import { classifyCommandRisk, isDangerousCommand, type CommandRisk } from './dangerousCommand'
 import type { ApprovalClass } from '../permissions/types'
+import { additionalWorkingDirectoryPaths } from '../permissions/filePathRules'
 import {
   clampNumber,
   DEFAULT_MAX_OUTPUT_BYTES,
@@ -91,7 +92,9 @@ export function createBackgroundCommandTool(tasks: TaskService): Tool<Background
       const command = input.command
       const cwd = await resolveCommandCwd(input.cwd, ctx)
       const timeoutMs = clampNumber(input.timeout_ms, DEFAULT_BG_TIMEOUT_MS, MAX_TIMEOUT_MS)
-      const wrapped = ctx.sandbox ? await ctx.sandbox.wrapCommand(command, { signal: ctx.signal }) : null
+      const wrapped = ctx.sandbox
+        ? await ctx.sandbox.wrapCommand(command, { signal: ctx.signal, extraWritablePaths: additionalWorkingDirectoryPaths(ctx) })
+        : null
       const title = (input.description?.trim() || command).slice(0, 120)
 
       const task = await tasks.create({

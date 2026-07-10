@@ -7,28 +7,28 @@ import { createComputerExecutor } from './executor'
 import { getComputerUseEnabled, getComputerUseSubGates } from './gates'
 import { normalizeOsPermissions } from './permissions'
 import { callPythonHelper } from './pythonBridge'
+import { getLogger } from '../../utils/logger'
+
+// 集中式日志(P0,审计 16-trace-errors.md #1.1):落 <stateRoot>/logs/debug.log,
+// 默认只记 warn/error,env QF_DEBUG_LOG(或兼容 BILLIARDBUDDY_DEBUG/DEBUG)开 verbose。
+const log = getLogger('computer-use')
 
 class DebugLogger implements Logger {
-  private emit(level: string, message: string): void {
-    if (process.env.BILLIARDBUDDY_DEBUG || process.env.DEBUG) {
-      // eslint-disable-next-line no-console
-      console.error(`[computer-use:${level}] ${message}`)
-    }
-  }
+  // vendor Logger 接口要 silly 这一级,我们没有更细的分级,并入 debug。
   silly(message: string): void {
-    this.emit('silly', message)
+    log.debug(message)
   }
   debug(message: string): void {
-    this.emit('debug', message)
+    log.debug(message)
   }
   info(message: string): void {
-    this.emit('info', message)
+    log.info(message)
   }
   warn(message: string): void {
-    this.emit('warn', message)
+    log.warn(message)
   }
   error(message: string): void {
-    this.emit('error', message)
+    log.error(message)
   }
 }
 

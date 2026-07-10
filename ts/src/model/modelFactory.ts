@@ -35,6 +35,7 @@ export function createModelFromProviderConfig(
       authToken: config.authToken,
       authStrategy: config.authStrategy,
       maxTokens: config.maxTokens,
+      idleTimeoutMs,
       requestTimeoutMs,
       reasoningEffort: config.reasoningEffort,
       fetchImpl,

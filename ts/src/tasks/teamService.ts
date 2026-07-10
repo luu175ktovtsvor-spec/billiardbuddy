@@ -134,6 +134,27 @@ export function formatAgentId(agentName: string, teamName: string): string {
   return `${sanitizeAgentName(agentName)}@${teamName}`
 }
 
+/**
+ * CC parity (spawnMultiAgent.ts:generateUniqueTeammateName): resolve a name collision against an
+ * existing team roster by renaming (name-2, name-3, ...) instead of silently duplicating the
+ * roster entry. cc calls this before spawning the teammate process, so the final unique name also
+ * becomes the actual spawned identity (agentId = formatAgentId(uniqueName, teamName)); this port
+ * must be called the same way — before the background agent_task run starts — so the task's own
+ * `name` param, the roster entry, and the deterministic agentId all agree on one final name. Like
+ * cc, the read here happens outside any write lock: two truly concurrent spawns of the identical
+ * base name can still race to the same candidate name (an accepted, pre-existing cc race, not
+ * something this port needs to fix beyond cc's own guarantee).
+ */
+export async function generateUniqueTeammateName(teams: TeamService, teamName: string, baseName: string): Promise<string> {
+  const team = await teams.readTeam(teamName)
+  if (!team) return baseName
+  const existingNames = new Set(team.members.map(member => member.name.toLowerCase()))
+  if (!existingNames.has(baseName.toLowerCase())) return baseName
+  let suffix = 2
+  while (existingNames.has(`${baseName}-${suffix}`.toLowerCase())) suffix++
+  return `${baseName}-${suffix}`
+}
+
 export function generateRequestId(prefix: string, target: string): string {
   return `${sanitizeName(prefix)}-${sanitizeName(target)}-${randomUUID().slice(0, 8)}`
 }
@@ -286,6 +307,23 @@ export class TeamService {
     } catch {
       return null
     }
+  }
+
+  /**
+   * Like getActiveTeam(), but only returns the active team if it was created within the same
+   * conversation. In cc, `appState.teamContext` lives in that CLI process's in-memory AppState —
+   * every process is one conversation, so "inherit the active team when team_name is omitted" is
+   * implicitly scoped per-session for free. Here TeamService is a single instance shared by every
+   * conversation the backend-sidecar server handles, backed by one active-team.json file — without
+   * this check, any unrelated conversation's name-only `agent_task` call would silently inherit
+   * whatever team another, unrelated conversation happens to have active (R2-uds-sidecar.md C2).
+   * Callers that intentionally want cross-session team access should pass an explicit team_name
+   * instead of relying on implicit inheritance.
+   */
+  async getActiveTeamForConversation(conversationId: string | undefined): Promise<ActiveTeam | null> {
+    const active = await this.getActiveTeam()
+    if (!active) return null
+    return active.conversationId === conversationId ? active : null
   }
 
   async clearActiveTeam(): Promise<void> {

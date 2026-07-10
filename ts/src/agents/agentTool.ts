@@ -29,6 +29,7 @@ import { cloneContentReplacementState, type ContentReplacementState } from '../c
 import { createDenialTrackingState } from '../permissions/denialTracking'
 import { resolveSubagentPermissionMode } from '../permissions/canonical'
 import { buildForkRunContext, forkAgentToolDescription, FORK_AGENT_MAX_TURNS, FORK_SUBAGENT_TYPE, isForkQuerySource, isForkSubagentEnabled, isInForkChild, type ForkRunContext } from './forkSubagent'
+import { formatAgentId, generateUniqueTeammateName, type TeamService } from '../tasks/teamService'
 
 export interface AgentTaskHandoffInput {
   agent: string
@@ -61,6 +62,8 @@ export interface AgentTaskInput {
   runInBackground?: boolean | string
   fork_context?: boolean | string
   forkContext?: boolean | string
+  team_name?: string
+  teamName?: string
 }
 
 export interface AgentTaskToolOptions {
@@ -74,6 +77,10 @@ export interface AgentTaskToolOptions {
   mcp?: AgentMcpRuntimeOptions
   loadAgentMcpRuntime?: (input: AgentMcpRuntimeInput) => Promise<AgentMcpRuntime>
   env?: Record<string, string | undefined>
+  /** CC-Haha team wiring (TeamCreate/SendMessage/ListPeers): when set, an agent_task call with both
+   * `name` and `team_name` (or an active team in context) registers the spawned background agent into
+   * team.members so ListPeers/broadcast can see it. Omit to keep agent_task team-agnostic. */
+  teams?: TeamService
   startBackgroundAgent?: (input: { agent?: string; name?: string; task: string; context?: string; title?: string; isolation?: 'worktree' }, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<{ task: { id: string; title: string; params?: Record<string, unknown> }; agent: AgentDefinition }>
   registerForegroundAgent?: (input: { agent: string; agentId: string; task: string; context?: string; title: string; name?: string }, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<AgentTaskForegroundRegistration>
   handoffForegroundAgent?: (registration: AgentTaskForegroundRegistration, input: AgentTaskHandoffInput, ctx: ToolContext, forkContext?: ForkRunContext) => Promise<{ task: { id: string; title: string; params?: Record<string, unknown> }; agent: AgentDefinition }>
@@ -279,6 +286,37 @@ function formatWorktreeResult(cleanup: AgentWorktreeCleanupResult | null): strin
   ].join('\n')
 }
 
+/**
+ * CC-Haha team wiring: `TeamCreateTool`/`SendMessageTool`/`ListPeersTool` all read `team.members`, but
+ * nothing pushed spawned agents into it (cc `spawnMultiAgent.ts` mutateTeamFileAsync had no counterpart
+ * here) — teams only ever contained the lead. Mirrors cc's in-process teammate registration
+ * (`spawnMultiAgent.ts:handleSpawnInProcess`, `backendType: 'in-process'`). `member.agentId` must
+ * already be the deterministic `formatAgentId(finalName, teamName)` for a name that was resolved
+ * through `generateUniqueTeammateName` first (see call site below) — the production background-task
+ * `agent_id` param is always a fresh `task.id` per call and is not a safe dedup key on its own
+ * (R2-uds-sidecar.md C1). The agentId equality check below is then just defense-in-depth against a
+ * true duplicate registration of the same already-unique name.
+ */
+async function registerTeamMember(teams: TeamService, teamName: string, member: { agentId: string; name: string; agentType: string; task: string; cwd: string }): Promise<void> {
+  await teams.mutateTeam(teamName, team => {
+    if (team.members.some(existing => existing.agentId === member.agentId)) return team
+    team.members.push({
+      agentId: member.agentId,
+      name: member.name,
+      agentType: member.agentType,
+      prompt: member.task,
+      joinedAt: Date.now(),
+      tmuxPaneId: 'in-process',
+      cwd: member.cwd,
+      subscriptions: [],
+      backendType: 'in-process',
+      isActive: true,
+      sessionId: member.agentId,
+    })
+    return team
+  })
+}
+
 async function closeAgentIteratorForHandoff(iterator: AsyncIterator<AgentEvent>, timeoutMs = 1000): Promise<void> {
   const close = iterator.return?.(undefined).catch(() => undefined)
   if (!close) return
@@ -318,12 +356,14 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
       }
     : {
         agent: { type: 'string', description: 'Agent name. Required when more than one agent is available.' },
-        name: { type: 'string', description: 'Optional instance name when run_in_background is true. Makes this background agent addressable via SendMessage({to:name}).' },
+        name: { type: 'string', description: 'Optional instance name when run_in_background is true. Makes this background agent addressable via SendMessage({to:name}). Combined with team_name (or an active team), registers it as a team member visible to ListPeers and broadcast.' },
         task: { type: 'string' },
         context: { type: 'string' },
         isolation: { type: 'string', enum: ['worktree'], description: 'Use "worktree" to run the subagent in an isolated git worktree.' },
         run_in_background: { type: ['boolean', 'string'], description: 'Set true to launch this Agent task in the background and return a task id immediately.' },
         fork_context: { type: ['boolean', 'string'], description: 'Set true to run a forked worker that inherits the parent conversation, system prompt, and exact tool pool.' },
+        team_name: { type: 'string', description: 'Team name to join as an addressable teammate. Uses the active team from TeamCreate if omitted. Requires `name` to also be set.' },
+        teamName: { type: 'string', description: 'Camel-case alias for team_name.' },
       }
   return {
     name: 'agent_task',
@@ -358,23 +398,60 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
         throw new Error(`agent_task 需要指定 agent;可用 agent:\n${agentList(opts.agents)}`)
       }
       const forkRunContext = wantsForkContext ? buildForkRunContext(ctx, buildTaskMessage(input)) : undefined
+      // CC-Haha team wiring (AgentTool.tsx: "Spawn is triggered when team_name is set ... and name is
+      // provided"): team_name falls back to the active team so a lead doesn't have to repeat it on every
+      // spawn. Teammates always run async in cc (tmux pane / in-process loop) — our equivalent is a
+      // named background agent_task, so wanting team registration also forces wantsBackground below.
+      // Active-team inheritance is scoped to the calling conversationId: cc's teamContext lives in
+      // that CLI process's in-memory AppState (implicitly per-session), but TeamService here is one
+      // instance shared by every conversation the server handles, backed by a single active-team.json
+      // — without this scoping, any unrelated conversation's name-only agent_task call would silently
+      // join whatever team another conversation happens to have active (R2-uds-sidecar.md C2).
+      const explicitTeamName = stringInput(input.team_name) || stringInput(input.teamName)
+      let teamName = explicitTeamName || undefined
+      if (!teamName && !wantsForkContext && opts.teams) {
+        teamName = (await opts.teams.getActiveTeamForConversation(ctx.conversationId))?.teamName
+      }
+      const teammateName = wantsForkContext ? undefined : input.name?.trim()
+      const wantsTeamRegistration = !!teamName && !!teammateName && !!opts.teams
+      // CC parity (spawnMultiAgent.ts:generateUniqueTeammateName): resolve a same-team name
+      // collision by renaming (name-2, name-3, ...) *before* spawning, so the spawned task's own
+      // `name` param, the roster entry, and the deterministic agentId all agree on one final name.
+      // This replaces trusting the background task's `agent_id` param as a dedup key, which in
+      // production is always a fresh task.id per call and never repeats twice (R2-uds-sidecar.md C1).
+      let uniqueTeammateName: string | undefined
+      if (wantsTeamRegistration && opts.teams && teamName && teammateName) {
+        uniqueTeammateName = await generateUniqueTeammateName(opts.teams, teamName, teammateName)
+      }
       const wantsBackground = forkGateEnabled
         ? true
-        : optionalBoolean(input.run_in_background ?? input.runInBackground) || agent.background === true
+        : optionalBoolean(input.run_in_background ?? input.runInBackground) || agent.background === true || wantsTeamRegistration
       if (wantsBackground) {
         if (!opts.startBackgroundAgent) {
           throw new Error('agent_task run_in_background 需要后台任务运行器')
         }
         const { task } = await opts.startBackgroundAgent({
           agent: agent.name,
-          ...(input.name ? { name: input.name } : {}),
+          ...(uniqueTeammateName ? { name: uniqueTeammateName } : (input.name ? { name: input.name } : {})),
           task: input.task,
           ...(input.context ? { context: input.context } : {}),
           title: `${agent.name}: ${input.task.trim().slice(0, 80)}`,
           isolation: input.isolation ?? agent.isolation,
         }, ctx, forkRunContext)
-        const name = typeof task.params?.name === 'string' ? ` name="${xmlAttr(task.params.name)}"` : ''
-        const agentId = typeof task.params?.agent_id === 'string' ? ` agent_id="${xmlAttr(task.params.agent_id)}"` : ''
+        const paramName = typeof task.params?.name === 'string' ? task.params.name : undefined
+        const paramAgentId = typeof task.params?.agent_id === 'string' ? task.params.agent_id : undefined
+        if (wantsTeamRegistration && opts.teams && teamName) {
+          const finalName = paramName ?? uniqueTeammateName ?? teammateName ?? agent.name
+          await registerTeamMember(opts.teams, teamName, {
+            agentId: formatAgentId(finalName, teamName),
+            name: finalName,
+            agentType: agent.name,
+            task: input.task,
+            cwd: ctx.workspace.root,
+          })
+        }
+        const name = paramName ? ` name="${xmlAttr(paramName)}"` : ''
+        const agentId = paramAgentId ? ` agent_id="${xmlAttr(paramAgentId)}"` : ''
         return `<background_task_started id="${xmlAttr(task.id)}" agent="${xmlAttr(agent.name)}"${name}${agentId} status="queued">\n${xmlText(task.title)}\n</background_task_started>`
       }
 
@@ -458,6 +535,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
           conversationId: agentId,
           transcript: sidechain?.transcript,
           toolResultStoreDir: sidechain?.toolResultStoreDir ?? ctx.toolResultStoreDir,
+          stateRoot: ctx.stateRoot,
           hooks,
           initialAllowedTools: agent.allowedToolRules,
           subagent: { agentId, agentType: agent.name },

@@ -54,6 +54,16 @@ export interface ToolContext {
   onSessionHooksChanged?: (hooks: HookRegistry | undefined) => void
   /** 会话 id,跨请求拒绝计数按它隔离(见 denialTracking)。 */
   conversationId?: string
+  /**
+   * 状态根目录(stateRoot):file-history 快照挪出用户工作区、别污染用户 git 仓库。
+   * 缺省时 file-history 回退到工作区 `.agent-file-history`(向后兼容,独立跑工具用)。
+   */
+  stateRoot?: string
+  /**
+   * 当前正在处理的消息 uuid(= transcript 事件日志里这条 assistant 消息的 uuid)。file-history 快照按它绑定,
+   * 支持 message 级 rewind(对齐 cc 以 messageId 为键的 fileHistory)。主循环发起工具调用前置好;缺省则退回按会话兜底。
+   */
+  messageId?: string
   /** 当前工具调用前的模型消息快照,供 fork/subagent guard 等运行时逻辑判断父上下文。 */
   messages?: Message[]
   /** 当前主循环使用的 system prompt 快照,供 fork child 继承父提示词并保持缓存前缀。 */

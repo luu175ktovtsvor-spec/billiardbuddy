@@ -11,6 +11,7 @@ import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getUserConfigHomeDir } from '../../harness/memoryNames'
+import { getLogger } from '../../utils/logger'
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url))
 // ts/src/tools/computerUse/pythonBridge.ts → 上溯三层到 ts/ 根。
@@ -35,11 +36,12 @@ function runtimeSourceDir(): string {
 
 let bootstrapPromise: Promise<void> | undefined
 
+// 集中式日志(P0,审计 16-trace-errors.md #1.1):落 <stateRoot>/logs/debug.log,
+// 默认只记 warn/error,env QF_DEBUG_LOG(或兼容 BILLIARDBUDDY_DEBUG/DEBUG)开 verbose。
+const log = getLogger('computer-use')
+
 function debugLog(message: string): void {
-  if (process.env.BILLIARDBUDDY_DEBUG || process.env.DEBUG) {
-    // eslint-disable-next-line no-console
-    console.error(`[computer-use] ${message}`)
-  }
+  log.debug(message)
 }
 
 interface ExecResult {

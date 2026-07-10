@@ -19,8 +19,12 @@ import {
   type Tool as SdkMcpTool,
 } from '@modelcontextprotocol/sdk/types.js'
 import { existsSync } from 'node:fs'
-import type { Tool, JSONSchema } from '../tools/Tool'
+import type { Tool, JSONSchema, ToolContext } from '../tools/Tool'
+import type { ImageBlock } from '../types/message'
+import { detectImageFormat, isVisionSupported, toImageBlock } from '../tools/imageRead'
 import { approvalClassFromAnnotations, commandForPlatform, loadMcpConfigFile, mcpToolName, type McpServerConfig } from './config'
+import { partiallySanitizeUnicode, recursivelySanitizeUnicode } from './sanitization'
+import { persistMcpBinary } from './binaryStorage'
 
 type SdkMcpResource = Awaited<ReturnType<Client['listResources']>>['resources'][number]
 type SdkMcpResourceTemplate = Awaited<ReturnType<Client['listResourceTemplates']>>['resourceTemplates'][number]
@@ -91,14 +95,66 @@ function attr(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
 }
 
-function formatContentBlock(block: CallToolResult['content'][number]): string {
+/**
+ * image/audio/resource-blob 内容块的落盘/视觉回灌路由上下文:label 用于落盘文件名前缀,
+ * imageResultSink/toolResultStoreDir 直接来自当前工具执行的 ToolContext(见 executeMcpTool/
+ * read_mcp_resource/read_mcp_prompt 的调用点)。
+ */
+interface McpBinaryRoute {
+  imageResultSink?: ImageBlock[]
+  toolResultStoreDir?: string
+  label: string
+}
+
+async function persistAndDescribe(bytes: Buffer, mimeType: string | undefined, route: McpBinaryRoute, kind: string): Promise<string> {
+  const persisted = await persistMcpBinary(bytes, mimeType, { toolResultStoreDir: route.toolResultStoreDir, label: route.label })
+  if ('error' in persisted) {
+    return `[${kind} mimeType=${mimeType ?? 'unknown'} bytes=${bytes.length} 落盘失败:${persisted.error}]`
+  }
+  return `[${kind} mimeType=${mimeType ?? 'unknown'} bytes=${bytes.length} 已落盘:${persisted.filepath}]`
+}
+
+// image 内容块:可视觉格式(png/jpeg/gif/webp)真解码后推进 ctx.imageResultSink(loop 组进 tool_result 的
+// image 块,模型真看到图,对齐 cc transformMCPResult 的视觉回灌语义);无法识别为可视觉格式(如 svg/bmp)
+// 或没有 sink(脱离 loop 单测)时落盘+文字引用,不把二进制整段塞进模型上下文。
+// ⚠️遗留:cc 对超 vision 预算的图会用原生 sharp 缩放/降采样后再送;本仓库无原生图像库(同 read_file 的
+// 已知取舍,见 tools/imageRead.ts 顶部说明),这里同样只把原图整个送入,不做降采样。
+async function formatImageContentBlock(block: Extract<CallToolResult['content'][number], { type: 'image' }>, route: McpBinaryRoute): Promise<string> {
+  const bytes = Buffer.from(block.data, 'base64')
+  const detected = detectImageFormat(bytes)
+  if (detected && isVisionSupported(detected) && route.imageResultSink) {
+    route.imageResultSink.push(toImageBlock(bytes, detected))
+    return `[image mimeType=${block.mimeType} bytes=${bytes.length} 已作为视觉内容发送给模型]`
+  }
+  return persistAndDescribe(bytes, block.mimeType, route, 'image')
+}
+
+// audio 内容块:本仓库无音频解码/播放通道,统一落盘 + 文字引用(对齐 cc transformMCPResult 对非图二进制
+// 的处理),不把 base64 塞进上下文。
+async function formatAudioContentBlock(block: Extract<CallToolResult['content'][number], { type: 'audio' }>, route: McpBinaryRoute): Promise<string> {
+  const bytes = Buffer.from(block.data, 'base64')
+  return persistAndDescribe(bytes, block.mimeType, route, 'audio')
+}
+
+async function formatContentBlock(block: CallToolResult['content'][number], route: McpBinaryRoute): Promise<string> {
   if (block.type === 'text') return block.text
-  if (block.type === 'image') return `[image mimeType=${block.mimeType} bytes=${block.data.length}]`
-  if (block.type === 'audio') return `[audio mimeType=${block.mimeType} bytes=${block.data.length}]`
+  if (block.type === 'image') return formatImageContentBlock(block, route)
+  if (block.type === 'audio') return formatAudioContentBlock(block, route)
   if (block.type === 'resource') {
     const resource = block.resource
     if ('text' in resource) return `<resource uri="${attr(resource.uri)}"${resource.mimeType ? ` mimeType="${attr(resource.mimeType)}"` : ''}>\n${resource.text}\n</resource>`
-    return `<resource uri="${attr(resource.uri)}"${resource.mimeType ? ` mimeType="${attr(resource.mimeType)}"` : ''} blobBytes="${resource.blob.length}" />`
+    const bytes = Buffer.from(resource.blob, 'base64')
+    const mimeAttr = resource.mimeType ? ` mimeType="${attr(resource.mimeType)}"` : ''
+    // 工具结果里 resource 包装的图片与顶层 image 块同权:可视觉格式且有 sink 就走视觉回灌
+    // (对齐 cc client.ts:2515-2551 对 embedded-image-resource 的处理);否则落盘+引用。
+    const detected = detectImageFormat(bytes)
+    if (detected && isVisionSupported(detected) && route.imageResultSink) {
+      route.imageResultSink.push(toImageBlock(bytes, detected))
+      return `<resource uri="${attr(resource.uri)}"${mimeAttr} bytes="${bytes.length}" sentAsVision="true" />`
+    }
+    const persisted = await persistMcpBinary(bytes, resource.mimeType, { toolResultStoreDir: route.toolResultStoreDir, label: route.label })
+    if ('error' in persisted) return `<resource uri="${attr(resource.uri)}"${mimeAttr} blobBytes="${bytes.length}" error="${attr(persisted.error)}" />`
+    return `<resource uri="${attr(resource.uri)}"${mimeAttr} blobSavedTo="${attr(persisted.filepath)}" bytes="${bytes.length}" />`
   }
   if (block.type === 'resource_link') {
     return `<resource_link uri="${attr(block.uri)}" name="${attr(block.name)}"${block.mimeType ? ` mimeType="${attr(block.mimeType)}"` : ''} />`
@@ -108,40 +164,54 @@ function formatContentBlock(block: CallToolResult['content'][number]): string {
 
 type CallToolLikeResult = CallToolResult | Awaited<ReturnType<Client['callTool']>>
 
-function formatResourceContent(content: SdkMcpResourceContent): string {
+// resource 直读(read_mcp_resource 工具,对齐 cc ReadMcpResourceTool):blob 一律解码落盘 + 回保存路径,
+// 不管 mime 是不是图片——这是"按 URI 显式拉取一份资源"的场景,不是 tool 调用结果里的视觉回灌,故不接
+// imageResultSink(route 不带它)。
+async function formatResourceContent(content: SdkMcpResourceContent, route: McpBinaryRoute): Promise<string> {
   if ('text' in content) {
     return `<resource uri="${attr(content.uri)}"${content.mimeType ? ` mimeType="${attr(content.mimeType)}"` : ''}>\n${content.text}\n</resource>`
   }
-  return `<resource uri="${attr(content.uri)}"${content.mimeType ? ` mimeType="${attr(content.mimeType)}"` : ''} blobBytes="${content.blob.length}" />`
+  const bytes = Buffer.from(content.blob, 'base64')
+  const persisted = await persistMcpBinary(bytes, content.mimeType, { toolResultStoreDir: route.toolResultStoreDir, label: route.label })
+  const mimeAttr = content.mimeType ? ` mimeType="${attr(content.mimeType)}"` : ''
+  if ('error' in persisted) return `<resource uri="${attr(content.uri)}"${mimeAttr} blobBytes="${bytes.length}" error="${attr(persisted.error)}" />`
+  return `<resource uri="${attr(content.uri)}"${mimeAttr} blobSavedTo="${attr(persisted.filepath)}" bytes="${bytes.length}" />`
 }
 
-function formatPromptContent(content: SdkMcpPromptMessage['content']): string {
+// prompt 消息里的 image/audio 占位符维持原样(超出本轮范围:审计 #17 只要求"工具调用结果"里的 image/audio
+// 接线,prompt 内容块是 getPrompt 的另一条读路径,留作已知遗留)。resource 分支复用 formatContentBlock,
+// 因此 prompt 里内嵌的 resource blob 同样会落盘(免费获得,同一份实现)。
+async function formatPromptContent(content: SdkMcpPromptMessage['content'], route: McpBinaryRoute): Promise<string> {
   if (content.type === 'text') return content.text
   if (content.type === 'image') return `[image mimeType=${content.mimeType} bytes=${content.data.length}]`
   if (content.type === 'audio') return `[audio mimeType=${content.mimeType} bytes=${content.data.length}]`
-  if (content.type === 'resource') return formatContentBlock(content)
+  if (content.type === 'resource') return formatContentBlock(content, route)
   if ('uri' in content && 'name' in content) {
     return `<resource_link uri="${attr(content.uri)}" name="${attr(content.name)}"${content.mimeType ? ` mimeType="${attr(content.mimeType)}"` : ''} />`
   }
   return formatUnknown(content)
 }
 
-function formatMcpResult(serverName: string, toolName: string, result: CallToolLikeResult, trace: string[] = []): string {
+// 净化点①(结果文本):工具调用结果的最终拼装文本在送给模型前统一做隐形 Unicode 净化(对齐审计要求的
+// "结果文本进入模型前"路径;cc 本身只净化 tool/prompt 的名字与描述,这里额外覆盖结果文本是本仓库的加固,
+// 防恶意 server 把攻击载荷藏进 content 而不是 tool 描述里)。
+async function formatMcpResult(serverName: string, toolName: string, result: CallToolLikeResult, trace: string[] = [], route?: McpBinaryRoute): Promise<string> {
   const prefix = trace.length > 0
     ? `<mcp_task_trace server="${attr(serverName)}" tool="${attr(toolName)}">\n${trace.join('\n')}\n</mcp_task_trace>\n`
     : ''
   if ('toolResult' in result) {
-    return `${prefix}<mcp_result server="${attr(serverName)}" tool="${attr(toolName)}">\n${formatUnknown(result.toolResult)}\n</mcp_result>`
+    return partiallySanitizeUnicode(`${prefix}<mcp_result server="${attr(serverName)}" tool="${attr(toolName)}">\n${formatUnknown(result.toolResult)}\n</mcp_result>`)
   }
-  const parts = result.content.map(formatContentBlock)
+  const contentRoute = route ?? { label: `${serverName}-${toolName}` }
+  const parts = await Promise.all(result.content.map(block => formatContentBlock(block, contentRoute)))
   if (result.structuredContent) {
     parts.push(`<structured_content>\n${formatUnknown(result.structuredContent)}\n</structured_content>`)
   }
-  return prefix + [
+  return partiallySanitizeUnicode(prefix + [
     `<mcp_result server="${attr(serverName)}" tool="${attr(toolName)}"${result.isError ? ' isError="true"' : ''}>`,
     ...parts,
     '</mcp_result>',
-  ].join('\n')
+  ].join('\n'))
 }
 
 function schemaFor(tool: SdkMcpTool): JSONSchema {
@@ -414,23 +484,41 @@ function taskUnsupportedError(err: unknown): boolean {
   return message.includes('does not support task creation') || message.includes('task augmentation')
 }
 
+// 工具执行超时默认值:对齐 cc(client.ts:211,224-229)——真值近乎无限(~27.8h),真正的中断靠 AbortSignal
+// (用户取消 / 循环 abort),不是靠超时掐断。2 分钟硬顶会误杀长任务型 MCP 工具(慢速爬虫、长跑批处理、
+// 等人工审批的工具等),这类工具该交给用户主动取消,而不是被框架自作主张判定"卡死"。
+// 可用 QF_MCP_TOOL_TIMEOUT(毫秒)覆盖,便于按需收紧或测试注入短超时。显式传入的 opts.toolTimeoutMs
+// 优先级更高(向后兼容既有调用方)。
+export const DEFAULT_MCP_TOOL_TIMEOUT_MS = 100_000_000
+
+export function mcpToolTimeoutMs(): number {
+  const raw = Number.parseInt(process.env.QF_MCP_TOOL_TIMEOUT ?? '', 10)
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MCP_TOOL_TIMEOUT_MS
+}
+
 async function executeMcpTool(
   serverName: string,
   sdkTool: SdkMcpTool,
   client: Client,
   input: unknown,
   opts: LoadMcpToolsOptions,
+  ctx: Pick<ToolContext, 'imageResultSink' | 'toolResultStoreDir'>,
   signal?: AbortSignal,
 ): Promise<string> {
   const params = { name: sdkTool.name, arguments: callArgs(input) }
   const trace: string[] = []
   const requestOptions = {
     signal: signal ?? opts.signal,
-    timeout: opts.toolTimeoutMs ?? 120000,
+    timeout: opts.toolTimeoutMs ?? mcpToolTimeoutMs(),
     resetTimeoutOnProgress: true,
     onprogress(progress: { progress: number; total?: number; message?: string }) {
       trace.push(progressTraceLine(progress))
     },
+  }
+  const route: McpBinaryRoute = {
+    imageResultSink: ctx.imageResultSink,
+    toolResultStoreDir: ctx.toolResultStoreDir,
+    label: `${serverName}-${sdkTool.name}`,
   }
 
   const taskSupport = sdkTool.execution?.taskSupport
@@ -454,11 +542,11 @@ async function executeMcpTool(
         }
       }
       if (!finalResult) throw new Error(`MCP task tool ${sdkTool.name} finished without a result`)
-      return formatMcpResult(serverName, sdkTool.name, finalResult, trace)
+      return await formatMcpResult(serverName, sdkTool.name, finalResult, trace, route)
     } catch (err) {
       if (taskSupport === 'optional' && taskUnsupportedError(err)) {
         const result = await client.callTool(params, undefined, requestOptions)
-        return formatMcpResult(serverName, sdkTool.name, result, trace)
+        return await formatMcpResult(serverName, sdkTool.name, result, trace, route)
       }
       throw err
     }
@@ -468,7 +556,7 @@ async function executeMcpTool(
     throw new Error(`MCP tool ${sdkTool.name} requires task-based execution, but server did not advertise tools/call task support`)
   }
   const result = await client.callTool(params, undefined, requestOptions)
-  return formatMcpResult(serverName, sdkTool.name, result, trace)
+  return await formatMcpResult(serverName, sdkTool.name, result, trace, route)
 }
 
 function makeTool(serverName: string, sdkTool: SdkMcpTool, client: Client, publicName: string, opts: LoadMcpToolsOptions): Tool {
@@ -486,7 +574,7 @@ function makeTool(serverName: string, sdkTool: SdkMcpTool, client: Client, publi
     requiresApproval: true,
     approvalClass,
     async execute(input, ctx) {
-      return executeMcpTool(serverName, sdkTool, client, input, opts, ctx.signal)
+      return executeMcpTool(serverName, sdkTool, client, input, opts, ctx, ctx.signal)
     },
   }
 }
@@ -567,7 +655,7 @@ function makeMcpCapabilityTools(connections: McpConnection[], opts: LoadMcpTools
       inputSchema: { type: 'object', properties: {} },
       isReadOnly: true,
       async execute() {
-        return formatResourceList(connections)
+        return partiallySanitizeUnicode(formatResourceList(connections))
       },
     })
     tools.push({
@@ -596,11 +684,13 @@ function makeMcpCapabilityTools(connections: McpConnection[], opts: LoadMcpTools
         for (const connection of candidates) {
           try {
             const result = await connection.client.readResource({ uri }, { signal: ctx.signal ?? opts.signal, timeout: opts.timeoutMs ?? 60000 })
-            return [
+            const route: McpBinaryRoute = { toolResultStoreDir: ctx.toolResultStoreDir, label: `resource-${connection.serverName}` }
+            const contents = await Promise.all(result.contents.map(content => formatResourceContent(content, route)))
+            return partiallySanitizeUnicode([
               `<mcp_resource_result server="${attr(connection.serverName)}" uri="${attr(uri)}">`,
-              ...result.contents.map(formatResourceContent),
+              ...contents,
               '</mcp_resource_result>',
-            ].join('\n')
+            ].join('\n'))
           } catch (err) {
             errors.push(`${connection.serverName}: ${err instanceof Error ? err.message : String(err)}`)
           }
@@ -617,7 +707,7 @@ function makeMcpCapabilityTools(connections: McpConnection[], opts: LoadMcpTools
       inputSchema: { type: 'object', properties: {} },
       isReadOnly: true,
       async execute() {
-        return formatPromptList(connections)
+        return partiallySanitizeUnicode(formatPromptList(connections))
       },
     })
     tools.push({
@@ -651,10 +741,11 @@ function makeMcpCapabilityTools(connections: McpConnection[], opts: LoadMcpTools
           { name, arguments: promptArguments(args.arguments) },
           { signal: ctx.signal ?? opts.signal, timeout: opts.timeoutMs ?? 60000 },
         )
-        const body = result.messages.map(message => {
-          return `<message role="${message.role}">\n${formatPromptContent(message.content)}\n</message>`
-        }).join('\n')
-        return `<mcp_prompt server="${attr(connection.serverName)}" name="${attr(name)}"${result.description ? ` description="${attr(result.description)}"` : ''}>\n${body}\n</mcp_prompt>`
+        const route: McpBinaryRoute = { toolResultStoreDir: ctx.toolResultStoreDir, label: `prompt-${connection.serverName}-${name}` }
+        const body = (await Promise.all(result.messages.map(async message => {
+          return `<message role="${message.role}">\n${await formatPromptContent(message.content, route)}\n</message>`
+        }))).join('\n')
+        return partiallySanitizeUnicode(`<mcp_prompt server="${attr(connection.serverName)}" name="${attr(name)}"${result.description ? ` description="${attr(result.description)}"` : ''}>\n${body}\n</mcp_prompt>`)
       },
     })
   }
@@ -667,12 +758,21 @@ export async function connectMcpServer(config: McpServerConfig, opts: LoadMcpToo
   const transport = createTransport(config, opts)
   try {
     await client.connect(transport, { signal: opts.signal, timeout: opts.timeoutMs ?? 10000 })
-    const [sdkTools, resources, resourceTemplates, prompts] = await Promise.all([
+    const [rawTools, rawResources, rawResourceTemplates, rawPrompts] = await Promise.all([
       listAllTools(client, opts),
       listAllResources(client, opts),
       listAllResourceTemplates(client, opts),
       listAllPrompts(client, opts),
     ])
+    // 净化点②(工具名/描述等元信息):MCP server 是不可信输入源,在这里(拿到数据的第一时间、任何下游
+    // 消费之前)统一做隐形 Unicode 净化,对齐 cc 对 tools/prompts 的做法(client.ts:1752,2044),并把
+    // 同一处理扩到 resources/resourceTemplates(cc 未做,本仓库额外加固)。净化后的对象后续被原样转发/
+    // 回传给 server(如 tool.name 用于 callTool、prompt.name 用于 getPrompt)——这与 cc 完全一致的取舍:
+    // 净化只影响"极端场景下不可见字符恰好是合法标识符一部分"这种理论上几乎不会发生的情况。
+    const sdkTools = recursivelySanitizeUnicode(rawTools)
+    const resources = recursivelySanitizeUnicode(rawResources)
+    const resourceTemplates = recursivelySanitizeUnicode(rawResourceTemplates)
+    const prompts = recursivelySanitizeUnicode(rawPrompts)
     const tools = sdkTools.map(tool => makeTool(config.name, tool, client, uniqueName(mcpToolName(config.name, tool.name), usedNames), opts))
     return {
       serverName: config.name,

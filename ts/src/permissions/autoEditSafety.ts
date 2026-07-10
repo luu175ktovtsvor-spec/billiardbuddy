@@ -2,22 +2,29 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { realpathSync } from 'node:fs'
 import type { ToolContext } from '../tools/Tool'
 import { normalizeRequestedPathForValidation } from '../workspace/pathValidation'
+import { MEMORY_DOT_DIR } from '../harness/memoryNames'
 
 /**
  * acceptEdits 档自动放行文件编辑前的安全闸(移植 cc-haha
  * `src/utils/permissions/filesystem.ts` 的 checkPathSafetyForAutoEdit)。
  *
  * cc 的语义:default 档所有文件写改都要问;acceptEdits 才对"工作区内文件类动作"自动放行。
- * 但即使 acceptEdits,也不能自动去写 .git/.vscode/.idea/.claude 目录里的文件、
- * shell/git/mcp/claude 配置文件,或带 Windows 路径规范化绕过特征的路径——这些一律退回询问,
+ * 但即使 acceptEdits,也不能自动去写 .git/.vscode/.idea/.billiardbuddy 目录里的文件、
+ * shell/git/mcp/本产品配置文件,或带 Windows 路径规范化绕过特征的路径——这些一律退回询问,
  * 防止通过自动接受编辑去做 git 数据外泄/代码执行/配置篡改。bypassPermissions(yolo)不受此闸约束,
  * 与 cc 一致。
  *
- * ⚠️ 危险清单严格按 cc 当前源码移植,不擅自增删(cc 的清单里没有 .env/.ssh——那属于命令层
- * 敏感路径处理,不在自动编辑闸内;若产品要另加是单独的差异决策)。
+ * ⚠️ 危险清单语义对齐 cc 当前源码逐项移植,不擅自增删覆盖面(cc 的清单里没有 .env/.ssh——那属于命令层
+ * 敏感路径处理,不在自动编辑闸内;若产品要另加是单独的差异决策);**但名字一律换成我们的白标等价物**
+ * (cc `.claude` 项目点目录 → 我们真实的项目点目录 MEMORY_DOT_DIR = `.billiardbuddy`(settings.json/
+ * hooks/skills 配置都落在这目录下,见 permissionsSettings.ts);cc `~/.claude.json` 全局账号态文件 →
+ * 我们的等价命名 `.billiardbuddy.json`)。绝不能把 `.claude` 字面值原样抄进来:①会让用户可见的确认
+ * 文案露出底层来源(白标泄漏);②更严重的是会把清单锚定在 cc 的目录名上,导致我们自己真实的
+ * `.billiardbuddy` 配置目录反而不在这道 acceptEdits 敏感路径闸的保护范围内(功能性倒挂,不只是命名)。
+ * `.git`/`.vscode`/`.idea`/shell rc 文件/`.mcp.json` 是通用生态约定(非 Claude 专属),原样保留。
  */
 
-// 对齐 cc DANGEROUS_FILES
+// 对齐 cc DANGEROUS_FILES,`.claude.json`(cc 全局账号态文件)换成我们的白标等价命名。
 export const DANGEROUS_AUTO_EDIT_FILES = [
   '.gitconfig',
   '.gitmodules',
@@ -28,11 +35,11 @@ export const DANGEROUS_AUTO_EDIT_FILES = [
   '.profile',
   '.ripgreprc',
   '.mcp.json',
-  '.claude.json',
+  `${MEMORY_DOT_DIR}.json`,
 ] as const
 
-// 对齐 cc DANGEROUS_DIRECTORIES
-export const DANGEROUS_AUTO_EDIT_DIRECTORIES = ['.git', '.vscode', '.idea', '.claude'] as const
+// 对齐 cc DANGEROUS_DIRECTORIES,`.claude` 换成我们真实的项目点目录 MEMORY_DOT_DIR(.billiardbuddy)。
+export const DANGEROUS_AUTO_EDIT_DIRECTORIES = ['.git', '.vscode', '.idea', MEMORY_DOT_DIR] as const
 
 export interface AutoEditSafetyUnsafe {
   safe: false
@@ -58,9 +65,13 @@ function isDangerousFilePathToAutoEdit(absPath: string, allowUncPath: boolean): 
     const segment = lower(segments[i] ?? '')
     for (const dir of DANGEROUS_AUTO_EDIT_DIRECTORIES) {
       if (segment !== lower(dir)) continue
-      // cc 例外:.claude/worktrees/ 是 Claude 存放 git worktree 的结构性路径,不当危险目录;
-      // worktree 内嵌套的其它 .claude 仍拦。
-      if (dir === '.claude' && lower(segments[i + 1] ?? '') === 'worktrees') break
+      // cc 例外:`.billiardbuddy/worktrees/` 是存放 git worktree 的结构性路径,不当危险目录;
+      // worktree 内嵌套的其它 `.billiardbuddy` 仍拦。
+      // ⚠️ 已知遗留(域外,未在本次修复范围内):`../tools/worktreeTools.ts` 的 EnterWorktree 目前
+      // 仍把 worktree 落在字面 `.claude/worktrees` 下(未跟着白标改名),所以这条例外分支暂时打不到；
+      // 但 `.claude` 目录名已整体从 DANGEROUS_AUTO_EDIT_DIRECTORIES 移除,不会被当成危险目录拦,
+      // 不影响现有行为——等 worktreeTools.ts 改用 MEMORY_DOT_DIR 落盘后这条例外才会真正生效。
+      if (dir === MEMORY_DOT_DIR && lower(segments[i + 1] ?? '') === 'worktrees') break
       return true
     }
   }
@@ -127,7 +138,7 @@ export function checkPathSafetyForAutoEdit(absPath: string, allowUncPath = false
     if (isDangerousFilePathToAutoEdit(candidate, allowUncPath)) {
       return {
         safe: false,
-        message: `请求自动编辑 ${absPath},该路径是敏感文件/目录(.git/.vscode/.idea/.claude 或 shell/git/mcp 配置),需人工确认。`,
+        message: `请求自动编辑 ${absPath},该路径是敏感文件/目录(.git/.vscode/.idea/${MEMORY_DOT_DIR} 或 shell/git/mcp 配置),需人工确认。`,
         classifierApprovable: true,
       }
     }

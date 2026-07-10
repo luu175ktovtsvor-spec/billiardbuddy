@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test'
 import { AnthropicMessagesModel } from './AnthropicMessagesModel'
 import { documentBlock, userText, type Message } from '../types/message'
 import { MODEL_OUTPUT_TRUNCATED_NOTICE } from '../types/model'
+import { StreamProviderError } from '../proxy/streamAccumulate'
 
 function sseResponse(lines: string[]): Response {
   const enc = new TextEncoder()
@@ -465,6 +466,81 @@ test('AnthropicMessagesModel:tool_result 块数组(text+image)→ Anthropic imag
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
     ],
   })
+})
+
+// —— 流韧性两洞(对齐 ProxyModel 600d34b/8c195d2):SSE 中途 error 帧识别 + 流空闲超时 ——
+
+test('SSE 中途 error 帧(event 形状 type=error)→ 抛 StreamProviderError,不产出空 assistant', async () => {
+  const model = streamingModel([
+    chunk({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+    chunk({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '部分' } }),
+    chunk({ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }),
+  ])
+  let resolved: unknown
+  let rejected: unknown
+  try {
+    resolved = await model.step({ messages: [userText('x')], tools: [] })
+  } catch (err) {
+    rejected = err
+  }
+  expect(resolved).toBeUndefined() // 没有静默吞成 final,压根没产出 assistant
+  expect(rejected).toBeInstanceOf(StreamProviderError)
+  expect((rejected as Error).message).toContain('Overloaded')
+})
+
+test('SSE 中途 error 帧(裸 {"error":...} 形状,无 type 字段)也识别', async () => {
+  const model = streamingModel([
+    chunk({ error: 'upstream unavailable' }),
+  ])
+  await expect(model.step({ messages: [userText('x')], tools: [] })).rejects.toThrow('upstream unavailable')
+})
+
+test('error 帧无 message 字段 → 兜底整包 JSON 化,不吞成空错误', async () => {
+  const model = streamingModel([
+    chunk({ type: 'error', error: { type: 'api_error' } }),
+  ])
+  await expect(model.step({ messages: [userText('x')], tools: [] })).rejects.toThrow(StreamProviderError)
+})
+
+test('正常帧携带 "error": null 占位字段(部分厂商 JSON 惯例)→ 不误判为错误帧,照常累积', async () => {
+  const model = streamingModel([
+    chunk({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' }, error: null }),
+    chunk({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '好流' }, error: null }),
+    chunk({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, error: null }),
+  ])
+  const step = await model.step({ messages: [userText('x')], tools: [] })
+  expect(step.kind).toBe('final')
+  expect(step.text).toBe('好流')
+})
+
+test('正常流(配置了 idleTimeoutMs)不受影响,照常累积完成', async () => {
+  const model = new AnthropicMessagesModel({
+    baseUrl: 'https://api.test/v1', apiKey: 'k', model: 'm', idleTimeoutMs: 5000,
+    fetchImpl: async () => sseResponse([
+      chunk({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+      chunk({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '你好' } }),
+      chunk({ type: 'content_block_stop', index: 0 }),
+      chunk({ type: 'message_delta', delta: { stop_reason: 'end_turn' } }),
+      '[DONE]',
+    ]),
+  })
+  const step = await model.step({ messages: [userText('x')], tools: [] })
+  expect(step).toEqual({ kind: 'final', text: '你好' })
+})
+
+test('流空闲超时:body 收到 headers 后中途卡死(无新 chunk、不关闭)→ 按 idleTimeoutMs 超时中止并抛可识别错误', async () => {
+  const enc = new TextEncoder()
+  const stalledBody = new ReadableStream<Uint8Array>({
+    start(c) {
+      // 只发一个不完整/中间态的事件,之后永不再 enqueue、永不 close,模拟连接卡死。
+      c.enqueue(enc.encode(`data: ${chunk({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })}\n\n`))
+    },
+  })
+  const model = new AnthropicMessagesModel({
+    baseUrl: 'https://api.test/v1', apiKey: 'k', model: 'm', idleTimeoutMs: 30,
+    fetchImpl: async () => new Response(stalledBody, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  })
+  await expect(model.step({ messages: [userText('x')], tools: [] })).rejects.toThrow('idle timeout')
 })
 
 test('AnthropicMessagesModel:tool_result 字符串 content 原样序列化(向后兼容)', async () => {

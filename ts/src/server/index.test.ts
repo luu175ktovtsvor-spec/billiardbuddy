@@ -7,10 +7,13 @@ import { join } from 'node:path'
 import { startServer } from './index'
 import { SessionService } from './services/sessionService'
 import { TaskService } from '../tasks/taskService'
-import { textBlock, userText } from '../types/message'
+import { textBlock, userText, type Message } from '../types/message'
 import { getAutoMemDir } from '../harness/memoryNames'
 import { signApproval } from '../permissions/approval'
 import { sendToUdsSocket } from '../tasks/udsClient'
+import { recordFileSnapshot } from '../tools/fileHistory'
+import { Workspace } from '../workspace/workspace'
+import type { ToolContext } from '../tools/Tool'
 
 let server: ReturnType<typeof startServer>
 let serverRoot: string
@@ -222,7 +225,7 @@ test('legacy conversation endpoints project TS sessions and support deleted-item
   const root = mkdtempSync(join(tmpdir(), 'agent-legacy-conv-'))
   const svc = new SessionService(root)
   await svc.touch('conv_legacy', { title: '旧前端会话', workspaceRoot: root, status: 'idle' })
-  await svc.transcript('conv_legacy').save([
+  await svc.transcript('conv_legacy', root).save([
     userText('帮我写一条活动文案'),
     { role: 'assistant', content: [textBlock('今晚九点前到店开台有惊喜。')] },
   ])
@@ -609,8 +612,8 @@ test('POST /api/v1/agent/execute writes the approved tool result into the transc
   })
   expect(res.status).toBe(200)
   expect((await res.json() as any).ok).toBe(true)
-  // 审批放行的工具结果应落进 transcript,下一轮模型能看见(不再永远停在 pending)
-  const transcript = readFileSync(join(serverRoot, 'transcripts', 'approve-transcript.jsonl'), 'utf8')
+  // 审批放行的工具结果应落进 transcript(append-only 事件日志,projects/<slug> 布局),下一轮模型能看见(不再永远停在 pending)
+  const transcript = JSON.stringify(await new SessionService(serverRoot).loadTranscript('approve-transcript'))
   expect(transcript).toContain('[已批准并执行工具 run_command]')
   expect(transcript).toContain('approved-into-transcript')
 })
@@ -1058,6 +1061,10 @@ test('POST /agent/run starts a UDS inbox and injects cross-session steering', as
   const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-run-uds-inbox-'))
   let calls = 0
   let releaseSecondStep: (() => void) | undefined
+  // 防竞态闸:第一步模型响应压到 UDS 插话真正落地之后再放行——否则瞬时 mock 响应会赶在
+  // 插话进 steerInbox 前跑完 drainSteering 单次检查,高负载下必挂(2026-07-10 根因确认)。
+  let releaseFirstStep!: () => void
+  const firstStepGate = new Promise<void>(resolve => { releaseFirstStep = resolve })
   const udsServer = startServer({
     port: 0,
     transcriptRoot,
@@ -1069,6 +1076,7 @@ test('POST /agent/run starts a UDS inbox and injects cross-session steering', as
     fetchImpl: async () => {
       calls++
       if (calls === 1) {
+        await firstStepGate
         return new Response(new ReadableStream<Uint8Array>({
           start(controller) {
             controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: '初稿' }, finish_reason: 'stop' }] })}\n\n`))
@@ -1101,6 +1109,10 @@ test('POST /agent/run starts a UDS inbox and injects cross-session steering', as
 
     await waitFor(async () => existsSync(socketPath) ? 'ready' : null)
     await sendToUdsSocket(socketPath, 'please inspect parser state')
+    // 客户端 send 已完成(字节已到服务端),留一拍让服务端 data handler 把消息推进 steerInbox,
+    // 再放行第一步模型响应——保证 drainSteering 检查时插话确定在场。
+    await new Promise(resolve => setTimeout(resolve, 25))
+    releaseFirstStep()
     await waitFor(async () => calls >= 2 ? 'second-step-started' : null)
     releaseSecondStep?.()
 
@@ -2716,7 +2728,7 @@ hooks:
 ---
 Plan the poster production workflow.
 `)
-  await new SessionService(transcriptRoot).transcript('skill-fork-run').save([
+  await new SessionService(transcriptRoot).transcript('skill-fork-run', transcriptRoot).save([
     { role: 'user', content: [textBlock('父级上下文不应进入 skill worker')] },
   ])
   const sentBodies: any[] = []
@@ -4239,7 +4251,7 @@ allowedTools: [read_file]
 ---
 Run a deep command audit.
 `)
-  await new SessionService(root).transcript('context-fork-command').save([
+  await new SessionService(root).transcript('context-fork-command', root).save([
     { role: 'user', content: [textBlock('父级上下文不应进入命令 worker')] },
   ])
   const sentBodies: any[] = []
@@ -5575,7 +5587,7 @@ test('POST /agent/run starts built-in /fork as an inherited background worker', 
   const root = mkdtempSync(join(tmpdir(), 'server-builtin-fork-run-'))
   const agentsRoot = join(root, 'agents')
   mkdirSync(agentsRoot, { recursive: true })
-  await new SessionService(root).transcript('fork-command-run').save([
+  await new SessionService(root).transcript('fork-command-run', root).save([
     { role: 'user', content: [textBlock('父级已经读过 parser.ts')] },
     { role: 'assistant', content: [textBlock('父级结论: parser 入口在 parseCommandInvocation。')] },
   ])
@@ -6145,7 +6157,7 @@ test('POST /sessions/:id/archive summarizes old transcript and archives original
   const root = mkdtempSync(join(tmpdir(), 'session-archive-'))
   const svc = new SessionService(root)
   await svc.create({ id: 'arch1', title: '归档会话', workspaceRoot: root })
-  await svc.transcript('arch1').save([
+  await svc.transcript('arch1', root).save([
     userText('旧消息 1'),
     userText('旧消息 2'),
     userText('旧消息 3'),
@@ -6186,6 +6198,75 @@ test('POST /sessions/:id/archive summarizes old transcript and archives original
     expect(JSON.stringify(messages[1])).toContain('最近消息')
   } finally {
     archiveServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('GET /sessions/:id/turn-checkpoints + POST /sessions/:id/rewind(dryRun/execute),兼容 /api 前缀', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'session-rewind-route-'))
+  const svc = new SessionService(root)
+  await svc.create({ id: 'rw-route', title: '回退路由测试', workspaceRoot: root })
+  const transcript = svc.transcript('rw-route', root)
+
+  const u1: Message = { role: 'user', content: [textBlock('u1')] }
+  const a1: Message = { role: 'assistant', content: [textBlock('a1')], uuid: 'route-msg-a1' }
+  const u2: Message = { role: 'user', content: [textBlock('u2')] }
+  const a2: Message = { role: 'assistant', content: [textBlock('a2')], uuid: 'route-msg-a2' }
+  await transcript.append([u1, a1, u2, a2])
+
+  const ctx1: ToolContext = { workspace: new Workspace(root), conversationId: 'rw-route', stateRoot: root, messageId: 'route-msg-a1' }
+  await recordFileSnapshot(ctx1, 'note.txt', join(root, 'note.txt'), 'write_file') // existed:false
+  writeFileSync(join(root, 'note.txt'), 'v1\n')
+  const ctx2: ToolContext = { ...ctx1, messageId: 'route-msg-a2' }
+  await recordFileSnapshot(ctx2, 'note.txt', join(root, 'note.txt'), 'write_file') // existed:true, backup v1
+  writeFileSync(join(root, 'note.txt'), 'v2\n')
+
+  const history = await transcript.loadFullHistoryStamped()
+  const u2Uuid = history.find(r => (r.message.content[0] as { text?: string })?.text === 'u2')!.uuid
+
+  const rewindRouteServer = startServer({ port: 0, transcriptRoot: root })
+  try {
+    const base = `http://127.0.0.1:${rewindRouteServer.port}`
+
+    // 会话不存在 → 404(裸前缀 + /api 前缀都要生效)
+    expect((await fetch(`${base}/sessions/nope/turn-checkpoints`)).status).toBe(404)
+    expect((await fetch(`${base}/api/sessions/nope/turn-checkpoints`)).status).toBe(404)
+    const notFoundRewind = await fetch(`${base}/api/sessions/nope/rewind`, { method: 'POST', body: JSON.stringify({ userMessageIndex: 0 }) })
+    expect(notFoundRewind.status).toBe(404)
+
+    // GET turn-checkpoints:按轮次聚合,裸前缀
+    const checkpoints = await (await fetch(`${base}/sessions/rw-route/turn-checkpoints`)).json() as any
+    expect(checkpoints.checkpoints.length).toBe(2)
+    expect(checkpoints.checkpoints[0].code.filesChanged).toEqual([join(root, 'note.txt')])
+
+    // GET turn-checkpoints:/api 前缀同样生效
+    const checkpointsApi = await (await fetch(`${base}/api/sessions/rw-route/turn-checkpoints`)).json() as any
+    expect(checkpointsApi.checkpoints.length).toBe(2)
+
+    // 缺 selector → 400
+    const missingSelector = await fetch(`${base}/sessions/rw-route/rewind`, { method: 'POST', body: JSON.stringify({ dryRun: true }) })
+    expect(missingSelector.status).toBe(400)
+
+    // dryRun 预览:不动文件
+    const preview = await (await fetch(`${base}/api/sessions/rw-route/rewind`, {
+      method: 'POST',
+      body: JSON.stringify({ targetUserMessageId: u2Uuid, dryRun: true }),
+    })).json() as any
+    expect(preview.code.available).toBe(true)
+    expect(preview.code.filesChanged).toEqual([join(root, 'note.txt')])
+    expect(readFileSync(join(root, 'note.txt'), 'utf8')).toBe('v2\n')
+
+    // 真执行:文件真被恢复,transcript 活跃链掰短
+    const executed = await (await fetch(`${base}/sessions/rw-route/rewind`, {
+      method: 'POST',
+      body: JSON.stringify({ targetUserMessageId: u2Uuid }),
+    })).json() as any
+    expect(executed.conversation.removedMessageIds.length).toBe(2)
+    expect(readFileSync(join(root, 'note.txt'), 'utf8')).toBe('v1\n')
+    const remaining = await svc.transcript('rw-route', root).load()
+    expect(remaining.length).toBe(2)
+  } finally {
+    rewindRouteServer.stop(true)
     rmSync(root, { recursive: true, force: true })
   }
 })

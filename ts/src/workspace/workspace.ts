@@ -20,7 +20,8 @@ export class Workspace {
   private readonly backupHook: BackupHook
   private readonly allowedPathInputs: string[]
   private readonly allowedPaths: Array<{ path: string; isDirectory: boolean }>
-  private readonly fullDiskAccess: boolean
+  /** 公开只读:OS 沙箱层(Sandbox.isOsSandboxActive)要联动这个标记,见 sandbox/sandbox.ts。 */
+  readonly fullDiskAccess: boolean
 
   constructor(root: string, opts: WorkspaceOptions = {}) {
     this.root = resolve(root)
