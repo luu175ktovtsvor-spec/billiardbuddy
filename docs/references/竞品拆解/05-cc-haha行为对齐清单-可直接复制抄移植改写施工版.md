@@ -9,7 +9,7 @@
 
 1. **cc-haha 最值钱的两样内核**:① 扩展/创造架构（技能=能力、台球=一个"包"，加能力=丢文件）；② 让循环在国产模型上不崩的"底盘"（proxy 层：消息配对清洗/错误回灌/流式对接/压缩熔断）。功能多是表象，这两样是内核。
 2. **cc-haha 不是终端-only**:它有一整套 Electron 桌面 GUI（同栈）。UI 外壳不用抄（我们更贴小白 + 有 artifacts 持久化/评分它没有），但**内容管道**（从正文认产物→卡片→预览、选区→对话）它领先、要抄。
-3. **我们已走一半**:`server/services/agent/skills.py` 已是忠实的 cc-haha 式技能系统，`server/skills/` 已有 24 个台球 SKILL.md。机制在 MiMo/豆包上已跑通。缺的是把 `billiards_mode` 硬编码收成"包"。
+3. **我们已走一半**:TS 侧技能系统(`ts/src/skills/`)已是忠实的 cc-haha 式技能系统,已有多个 bundled 命令技能。机制在 MiMo/豆包上已跑通。台球领域知识已收成可挂载的 `billiards` 包(`ts/src/packs/billiards/`)。
 
 ---
 

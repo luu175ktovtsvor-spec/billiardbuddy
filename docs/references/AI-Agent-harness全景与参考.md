@@ -1,6 +1,6 @@
 # AI Agent / Harness 全景与参考（动手前先看这里）
 
-> 📌 状态:✅现行 · 最后核对 2026-06-26
+> 📌 状态:✅现行 · 最后核对 2026-07-10
 
 > 用途：实现 harness/agent 能力（循环/工具/上下文/权限/压缩/多 Agent/MCP…）前，先看**大厂**怎么做，借鉴再动手。
 > 校准：2026-06-23 WebSearch 多源核实。⚠️ 本沙箱数据偶有合成/过时（star/版本/价格/市占率尤甚），下方只写**多源印证的产品归属与开/闭源状态**；细节用时再核。**非穷举，查到新的自行延伸。**
@@ -49,16 +49,7 @@
 - **执行模式谱系**：Agent Loop / 事件驱动 / 状态机 / 图流 / 混合。
 - **安全两路线**：容器隔离（policy engine，如 OpenHands）vs 宿主进程直跑（确认+命令过滤+沙箱，**我们走这条**）。
 
-### 对照我们这盒子（已对齐）
-| 通识组件 | 我们的实现 |
-|---------|-----------|
-| ReAct 主循环 | `services/agent/loop.py`（同步+流式双入口） |
-| Prompt 组装引擎 | `agent.py` `compose_agent_system_prompt`（三段） |
-| 工具注册表 | `services/agent/registry.py`（能力位 + general/billiards） |
-| 多层安全（宿主进程路线） | 四层防御 + 命令黑名单 + 改前备份 |
-| 上下文工程/压缩 | microcompact + autocompact + anti-spin + prompt-cache 纪律 |
-| 工具协议 | **MCP 客户端用官方 `mcp` SDK** |
-→ 核心组件齐、与大厂同路数；缺口在生态/扩展层（见 `docs/plans/通用Agent改造-0到6路线图.md`）。
+> 我们这盒子对照通识组件的当前实现清单(ReAct 主循环/Prompt 组装/工具注册表/安全/压缩等具体文件路径),已由 `docs/当前架构与状态-总览.md` §0~§1 更细致地覆盖(六层模块表+文件清单),这里不再重复对照,避免两份口径不同步。
 
 ## 5. 深挖入口
 - awesome 清单：`ai-boost/awesome-harness-engineering`、`bradAGI/awesome-cli-coding-agents`、`ARUNAGIRINATHAN-K/awesome-ai-agents-2026`。

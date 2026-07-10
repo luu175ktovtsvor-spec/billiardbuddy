@@ -66,7 +66,6 @@
 |------|------|
 | `references/AI-Agent-harness全景与参考.md` | **动手前先看**:主流 agent/harness 类型/代表/架构 + 研究入口 |
 | `references/Anthropic-Agent-SDK-参考架构.md` | 官方 Agent SDK 参考架构 |
-| `references/harness缺口审计-对照ClaudeCode-2026-06-26.md` | harness 对照 Claude Code 缺口审计:分级真缺口 + 已对齐清单 |
 | `references/竞品拆解/` | **竞品源码级拆解知识库**:01 架构机制 / 02 前端设计配色(WorkBuddy token 表)/ 03 文案交互 / 04 借鉴批判筛选 / 05 cc-haha 行为对齐清单 / README。**颜色文案抄 WorkBuddy、交互抄 cc-haha 都从这查** |
 | `references/P3对外平台-官方文档与资质清单.md` | 对外发布平台资质与官方文档 |
 
