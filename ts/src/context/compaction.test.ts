@@ -464,3 +464,48 @@ describe('looksLikeContextOverflow', () => {
     expect(looksLikeContextOverflow(new Error('network down'))).toBe(false)
   })
 })
+
+test('P7 触发算法不打架:有真实 token 用量时完全走 token 公式,字符粗估不得抢跑(对齐 cc 纯 token 判)', async () => {
+  const fatMessages: Message[] = [
+    ...Array.from({ length: 15 }, (_, i) => userText(`m${i}` + 'x'.repeat(50))),
+    userText('recent'),
+  ]
+  const model: Model = {
+    async step() {
+      return { kind: 'final', text: '旧对话摘要' }
+    },
+  }
+  // 真实 token 在手(远低于阈值 200k−20k−13k=167k)+ 字符估算已超小窗口 → 绝不触发(token 公式独裁)
+  const noCompact = await compactPipeline({
+    messages: fatMessages,
+    model,
+    lastInputTokens: 10_000,
+    contextWindowTokens: 200_000,
+    contextWindowChars: 300, // 字符路径若参与,这个小窗口早就该触发
+    readOnlyToolNames: new Set(),
+    keepRecentMessages: 1,
+    minOldMessages: 2,
+  })
+  expect(noCompact.didCompact).toBe(false)
+  // 同样字符条件、但没有真实 token → 字符兜底路径接管,触发
+  const charCompact = await compactPipeline({
+    messages: fatMessages,
+    model,
+    contextWindowChars: 300,
+    readOnlyToolNames: new Set(),
+    keepRecentMessages: 1,
+    minOldMessages: 2,
+  })
+  expect(charCompact.didCompact).toBe(true)
+  // 真实 token 超阈值 → token 公式触发(数值锁定:200k 窗口阈值 = 200k−20k−13k = 167k)
+  const tokenCompact = await compactPipeline({
+    messages: fatMessages,
+    model,
+    lastInputTokens: 167_001,
+    contextWindowTokens: 200_000,
+    readOnlyToolNames: new Set(),
+    keepRecentMessages: 1,
+    minOldMessages: 2,
+  })
+  expect(tokenCompact.didCompact).toBe(true)
+})
