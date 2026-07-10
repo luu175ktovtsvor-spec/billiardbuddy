@@ -1,6 +1,6 @@
 # 记忆机制对齐 cc-haha + 门店信息自动沉淀 · 方案
 
-> 📌 状态:🚧进行中 · 任务〈记忆机制对齐 cc + 门店信息〉· 建于 2026-07-10 · 源自三路调研 workflow(cc记忆机制/WorkBuddy产品化/我们现状差距)
+> 📌 状态:🚧进行中 · 任务〈记忆机制对齐 cc + 门店信息〉· 建于 2026-07-10 · 源自三路调研 workflow(cc记忆机制/WorkBuddy产品化/我们现状差距) · 2026-07-10 按 owner"纯 cc"口径修订:回合内写记忆 = 主模型直接用 Write/Edit 往 memdir 写 .md,注入走 cc memdir 常驻注入,砍掉自造 storeMemoryContext 评分召回 + desktopDataStore memories、不自造 SaveStoreMemory 工具
 
 ## 0. 一句话
 当初把 AutoMem 砍早了。cc 那套"模型自己在对话里记事实"的自动记忆是完整现成的,正好就是"门店信息自动沉淀"要的地基。我们现在是**能读、能存、但模型不能自己写**,缺的就是这一环。**决定:掰回 cc 的 AutoMem,只落"门店专用轻量版",不追 autoDream/TeamMem。**owner 2026-07-10 拍板"纯 cc"**:砍掉自造店脑记忆(storeMemoryContext + desktopDataStore memories),纯照抄 cc memdir/AutoMem,不复用不归并(替换非叠加,被替换的旧代码该删的删)。**
@@ -25,7 +25,7 @@
 | 店脑记忆**模型自主写** source:'auto' | ✅(cc有生产者) | ❌ **字段留位、零处写入** |
 | 门店画像注入聊天 | — | ❌ **getStore() 没进 chat 系统提示,只喂生图+仪表盘=断线** |
 
-**关键**:是"从没建 AutoMem"(非砍残留桩),没有死代码要清,是**加地基**。店脑记忆的注入/存储是好底子,唯独缺"模型自主写"的生产者。
+**关键**:AutoMem 侧是"从没建"(非砍残留桩)、要**加地基**;店脑那套注入/存储虽真能跑,但按 §3"替换非叠加"**不复用、该删的删**,不留作叠加底子。缺的"模型自主写"直接用 cc 既有 Write/Edit 往 memdir 补,不在旧店脑上加生产者。
 
 ## 3. 冲突分析(owner 2026-07-10 提出)
 cc AutoMem 与我们店脑记忆若**并存 = 两套自动记忆打架**(同一门店事实记两处/注入两次/更新不同步)。**必须二选一**。决定:**以 cc AutoMem 为唯一真源;**砍掉**自造店脑记忆(storeMemoryContext + desktopDataStore memories),纯照抄 cc memdir,不复用不归并;被替换旧代码该删的删(先查牵连)**。符合"全方位对标 cc、发现分叉掰回 cc、替换非叠加"。
@@ -37,7 +37,7 @@ cc AutoMem 与我们店脑记忆若**并存 = 两套自动记忆打架**(同一�
 - **结论**:AutoMem 当地基 + 一张"看得懂、说人话就能改"的记忆卡 + 门店备注框,**不做 101 字段大表**。门店画像退化成"这套记忆的结构化视图"。
 
 ## 5. 落地阶段
-- **阶段1(先做,解决核心痛点)**:①门店画像/门店记忆**常驻注入 chat system prompt**(补断线,解决"填了没人读");②给模型**一等公民"存记忆"工具**(SaveStoreMemory → desktopDataStore.addMemory source='auto'),让模型对话里自主记门店事实;③`memoryNames.ts` 加回 AutoMem 类型(TeamMem 不做)。
+- **阶段1(先做,解决核心痛点)**:①门店画像/门店事实走 **cc memdir 常驻注入 chat system prompt**(照 cc:MEMORY.md 索引常驻 + 主题 top-5、每轮必读非检索;补断线,解决"填了没人读"),**不走自造 storeMemoryContext 评分召回**;②回合内写记忆 = **主模型直接用 cc 既有 Write/Edit 往 memdir 写带 frontmatter 的 `.md`**(type=`project`),让模型对话里自主记门店事实——**不自造 SaveStoreMemory 工具、不写 desktopDataStore.addMemory**;③`memoryNames.ts` 加回 AutoMem 类型(TeamMem 不做)。
 - **阶段2**:extractMemories 回合后台抽取(照 cc stopHooks→extractMemories,门店专用 prompt、maxTurns 限死、权限只写记忆、预注入已有清单去重、与主模型互斥+节流)。
 - **阶段3(前端)**:记忆面板(抄 WorkBuddy"管理记忆"卡:折叠摘要 + 自然语言改 + 开关);门店画像退化成结构化视图。
 - **不做**:autoDream 做梦(复杂,第一版靠 extract 去重+memoryAge 提醒够用)、TeamMem(单用户)、依赖 tengu 旗标(改我们自己的 settings 开关)。
@@ -45,11 +45,11 @@ cc AutoMem 与我们店脑记忆若**并存 = 两套自动记忆打架**(同一�
 ## 6. 安全红线协调
 - 只记**对话里用户明确说过/纠正过**的门店事实,extract prompt 明写"拿不准不记、禁凭空补全字段"(≠"别编造外部信息",门店事实是用户亲口说的)。
 - 陈旧即验证(memoryAge N天提醒);参谋卡引用门店事实标来源、不确定就问。
-- 低置信度走 `pending` 不直接注入、由用户确认(已有机制,保留)。
+- 低置信度/拿不准的**不直接写进 memdir、先由用户确认**(安全门,换成纯 cc 存储后同样守住,不依赖旧 desktopDataStore 的 pending 桩)。
 
 ## 7. 涉及现有文件
 - `ts/src/harness/memoryNames.ts:41` 加回 AutoMem 类型。
-- `ts/src/memory/storeMemoryContext.ts` 复用注入;补门店画像常驻注入。
-- `ts/src/harness/systemPrompt.ts` / `projectInstructions.ts` 接门店画像常驻注入。
-- `ts/src/server/services/desktopDataStore.ts` 复用 addMemory,接 source='auto' 生产者。
-- 新增"存记忆工具"(tools/)+ 阶段2 extractMemories(照 cc)。
+- `ts/src/memory/storeMemoryContext.ts` 自造评分召回(打分/时效/scope)按"替换非叠加"该删的删,**不再复用这套检索层**;注入改走下面的 cc memdir 常驻注入。
+- `ts/src/harness/systemPrompt.ts` / `projectInstructions.ts` 接 **cc memdir 常驻注入**(MEMORY.md 索引常驻 + 主题 top-5,门店画像/门店事实每轮必读)。
+- `ts/src/server/services/desktopDataStore.ts` memories 那套按"替换非叠加"该删的删,**不复用 addMemory、不接 source='auto' 生产者**;回合内写记忆改由主模型用 cc 既有 Write/Edit 往 memdir 写 `.md`。
+- **不新增"存记忆工具"**(cc 里没有;回合内写复用既有 Write/Edit)+ 阶段2 extractMemories(照 cc stopHooks 移植)。
