@@ -109,7 +109,3 @@ export function detectStuck(
   }
   return null
 }
-
-export function sameCallGuardMessage(toolName: string, limit = sameCallLimitForTool(toolName)): string {
-  return `连续重复调用 ${toolName} 已达到 ${limit} 次上限。请停止重复同一动作,根据已有结果换策略或给出阶段性结论。`
-}

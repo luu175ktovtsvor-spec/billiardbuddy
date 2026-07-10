@@ -29,6 +29,7 @@ import { createStructuredTaskTools } from '../tasks/taskListTools'
 import { formatCrossSessionMessage } from '../tasks/crossSessionMessages'
 import { resetPromptCacheBreakDetection } from '../context/promptCacheBreakDetection'
 import { COMPACTION_SYSTEM_PROMPT } from '../context/compaction'
+import { CORE_SAME_CALL_LIMIT } from './stuckDetector'
 
 let root: string
 beforeEach(() => {
@@ -2222,8 +2223,8 @@ test('W4c compaction:压缩后把最近读过的文件上下文恢复给模型',
   expect(restored.text).toContain('export const marker = "keep-me";')
 })
 
-test('W4c hard guard:核心工具同参连续第 4 次被拒执行并回灌', async () => {
-  const calls = Array.from({ length: 4 }, (_, i): AssistantStep => ({
+test('W4c 软护栏:核心工具同参连续达阈值仍执行 + 回真实结果 + 软提醒(不再硬拒执行/伪造 tool_result)', async () => {
+  const calls = Array.from({ length: CORE_SAME_CALL_LIMIT }, (_, i): AssistantStep => ({
     kind: 'tool_calls',
     calls: [{ id: String(i + 1), name: 'list_dir', input: {} }],
   }))
@@ -2234,8 +2235,15 @@ test('W4c hard guard:核心工具同参连续第 4 次被拒执行并回灌', as
       systemPrompt: 'SYS', userMessage: 'x', maxTurns: 6,
     }),
   )
-  const repeated = events.filter(e => e.type === 'tool_result').at(-1)
-  expect(repeated && repeated.type === 'tool_result' && repeated.output).toContain('连续重复调用 list_dir')
+  // 每次 list_dir 都真执行、回真实结果;阈值处不再伪造"连续重复调用...已达到...上限"文案、不再拒执行。
+  const toolResults = events.filter(e => e.type === 'tool_result') as Extract<AgentEvent, { type: 'tool_result' }>[]
+  expect(toolResults).toHaveLength(CORE_SAME_CALL_LIMIT)
+  for (const ev of toolResults) {
+    expect(ev.output).not.toContain('连续重复调用')
+    expect(ev.output).not.toContain('已达到')
+  }
+  // 达阈值时改为一条 detectStuck 的 <system-reminder> 软提醒(对齐 cc「循环只执行、软劝不改回灌契约」)。
+  expect(events.some(e => e.type === 'context_note' && e.text.includes('重复'))).toBe(true)
   expect(events.at(-1)).toEqual({ type: 'final', text: '停下来了' })
 })
 
@@ -2637,4 +2645,89 @@ test('read_file 读文本 → tool_result content 仍是 string(向后兼容)', 
   expect(toolResults).toHaveLength(1)
   expect(typeof toolResults[0]!.content).toBe('string')
   expect(toolResults[0]!.content).toContain('plain text payload')
+})
+
+// —— 内核对齐:sameCallGuard 从"硬拒执行 + 伪造 tool_result"降级为软提醒(对齐 cc「循环只执行、模型全权驱动」)——
+
+test('sameCallGuard 降级为软提醒:同工具达阈值仍执行 + 回真实结果 + 有软提醒(不伪造文案、不拒执行)', async () => {
+  writeFileSync(join(root, 'dup.txt'), 'DUP-PAYLOAD')
+  // 一批里对同一 (name+input) 连发 CORE_SAME_CALL_LIMIT 次 read_file,恰好命中同调用阈值。
+  const calls = Array.from({ length: CORE_SAME_CALL_LIMIT }, (_, i) => ({
+    id: `r${i}`, name: 'read_file', input: { path: 'dup.txt' },
+  }))
+  const model = scriptedModel([
+    { kind: 'tool_calls', text: '重复读同一个文件', calls },
+    { kind: 'final', text: '读完' },
+  ])
+  const events = await collect(runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: '一直读 dup.txt',
+  }))
+
+  // 1) 仍正常执行 + 回灌真实结果:阈值处不再伪造 tool_result,每次都是真读到的文件内容,且无"已达到...上限"伪造文案。
+  const toolResultEvents = events.filter(e => e.type === 'tool_result') as Extract<AgentEvent, { type: 'tool_result' }>[]
+  expect(toolResultEvents).toHaveLength(CORE_SAME_CALL_LIMIT)
+  for (const ev of toolResultEvents) {
+    expect(ev.output).toContain('DUP-PAYLOAD')
+    expect(ev.output).not.toContain('已达到')
+    expect(ev.output).not.toContain('连续重复调用')
+  }
+  // 回灌进历史的 tool_result(scriptedModel 里 messages 是同一份增长引用,故扫全量消息)也都是真实内容、无一被伪造替换。
+  const allBlocks = model.received.at(-1)!.messages.flatMap(m => m.content)
+  const feedbackResults = allBlocks.filter(b => b.type === 'tool_result')
+  expect(feedbackResults).toHaveLength(CORE_SAME_CALL_LIMIT)
+  for (const r of feedbackResults) {
+    const content = typeof r.content === 'string' ? r.content : JSON.stringify(r.content)
+    expect(content).toContain('DUP-PAYLOAD')
+    expect(content).not.toContain('已达到')
+  }
+
+  // 2) 达阈值时仍给软提醒(走 detectStuck 的 <system-reminder> 机制,而非伪造 tool_result / 拒执行)。
+  const softReminder = events.find(e => e.type === 'context_note' && e.text.includes('重复'))
+  expect(softReminder).toBeTruthy()
+  const reminderBlock = allBlocks.find(b => b.type === 'text' && b.text.includes('重复') && b.text.includes('system-reminder'))
+  expect(reminderBlock).toBeTruthy()
+
+  // 循环照常收尾。
+  expect(events.some(e => e.type === 'final')).toBe(true)
+})
+
+// —— 内核对齐:工具执行段异常兜底(对齐 cc yieldMissingToolResultBlocks),未产出 result 的 tool_use 补 is_error 保配对 ——
+
+test('工具执行段抛错(既有内层 try 之外)→ 未产出 result 的 call 补 is_error tool_result、配对完整、循环不崩', async () => {
+  // isReadOnlyFor 在并行只读判定处抛错——这是"既有内层 try/catch 之外"的执行段异常,未加兜底会留下未配对 tool_use、
+  // 让 runAgentLoop 直接抛(collect 会 reject)、当轮崩溃。加了 try/catch 后应被捕获并补齐配对。
+  const boomTool: Tool = {
+    name: 'boom_tool',
+    description: '插桩:isReadOnlyFor 抛错,模拟工具执行段(既有内层 try 之外)异常',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    isReadOnly: false,
+    isReadOnlyFor() { throw new Error('plumbing boom') },
+    async execute() { return '不应被执行' },
+  }
+  const registry = buildGeneralRegistry()
+  registry.register(boomTool)
+  const model = scriptedModel([
+    { kind: 'tool_calls', text: '调用会抛错的工具', calls: [{ id: 'b1', name: 'boom_tool', input: {} }] },
+    { kind: 'final', text: '收尾' },
+  ])
+  // 循环不崩:若未兜底,collect 会因未配对 tool_use 抛错、此处直接 reject → 测试失败。
+  const events = await collect(runAgentLoop({
+    model, registry, workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: '触发工具插桩异常',
+  }))
+
+  // 未产出 result 的 tool_use 被补上 is_error tool_result;tool_use/tool_result 严格配对、无泄漏(扫全量消息)。
+  const allBlocks = model.received.at(-1)!.messages.flatMap(m => m.content)
+  const paired = allBlocks.filter(b => b.type === 'tool_result')
+  expect(paired).toHaveLength(1)
+  expect(paired[0]!.tool_use_id).toBe('b1')
+  expect(paired[0]!.is_error).toBe(true)
+  const content = typeof paired[0]!.content === 'string' ? paired[0]!.content : ''
+  expect(content).toContain('plumbing boom')
+  const assistantToolUses = allBlocks.filter(b => b.type === 'tool_use')
+  expect(assistantToolUses).toHaveLength(1)
+
+  // 循环照常走到 final(不崩)。
+  expect(events.some(e => e.type === 'final')).toBe(true)
 })

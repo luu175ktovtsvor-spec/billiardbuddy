@@ -6,7 +6,6 @@ import {
   detectStuck,
   EXTENSION_SAME_CALL_LIMIT,
   MAX_TOTAL_TOOL_CALLS_NO_PROGRESS,
-  sameCallGuardMessage,
   sameCallLimitForTool,
 } from './stuckDetector'
 
@@ -59,10 +58,5 @@ describe('stuckDetector', () => {
   test('总工具调用超过 40 还没进展触发软推', () => {
     const stuck = detectStuck([userText('start')], { totalToolCallsNoProgress: MAX_TOTAL_TOOL_CALLS_NO_PROGRESS })
     expect(stuck?.pattern).toBe('too_many_tools')
-  })
-
-  test('sameCallGuardMessage 是硬拦回灌文本', () => {
-    expect(sameCallGuardMessage('read_file')).toContain('连续重复调用 read_file')
-    expect(sameCallGuardMessage('read_file')).toContain(`${CORE_SAME_CALL_LIMIT} 次上限`)
   })
 })
