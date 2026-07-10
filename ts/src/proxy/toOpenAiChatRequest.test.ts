@@ -55,6 +55,32 @@ test('tool_result 图像块:text_only 模式替占位、不产 image_url', () =>
   expect(r.messages[1]!.content).toContain('[Image omitted')
 })
 
+test('顶层 PDF document 块 → tool 消息 + user 消息(OpenAI file 部件,data:application/pdf base64)', () => {
+  const msgs: Message[] = [{
+    role: 'user',
+    content: [
+      { type: 'tool_result', tool_use_id: 'c1', content: '<file_pdf bytes="10"/>' },
+      { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0x' } },
+    ],
+  }]
+  const r = toOpenAiChatRequest({ model: 'm', messages: msgs })
+  expect(r.messages[0]).toEqual({ role: 'tool', tool_call_id: 'c1', content: '<file_pdf bytes="10"/>' })
+  expect(r.messages[1]).toEqual({
+    role: 'user',
+    content: [{ type: 'file', file: { filename: 'document.pdf', file_data: 'data:application/pdf;base64,JVBERi0x' } }],
+  })
+})
+
+test('顶层 PDF document 块:text_only 模式替占位、不产 file 部件', () => {
+  const msgs: Message[] = [{
+    role: 'user',
+    content: [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0x' } }],
+  }]
+  const r = toOpenAiChatRequest({ model: 'm', messages: msgs, imageContentMode: 'text_only' })
+  expect(typeof r.messages[0]!.content).toBe('string')
+  expect(r.messages[0]!.content).toContain('[PDF omitted')
+})
+
 test('assistant text+tool_use → content + tool_calls(thinking 丢弃不回灌)', () => {
   const msgs: Message[] = [{
     role: 'assistant',

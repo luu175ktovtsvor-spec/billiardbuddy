@@ -3,7 +3,7 @@ import type { Sandbox } from '../sandbox/sandbox'
 import type { AdditionalWorkingDirectory, ApprovalClass, ApprovalReason, PermissionMode, PermissionRule } from '../permissions/types'
 import type { TodoItem } from '../types/todo'
 import type { Model } from '../types/model'
-import type { ImageBlock, Message } from '../types/message'
+import type { DocumentBlock, ImageBlock, Message } from '../types/message'
 import type { ToolRegistry } from './registry'
 import type { ContentReplacementState } from '../context/toolResultStorage'
 import type { DenialTrackingState } from '../permissions/denialTracking'
@@ -83,6 +83,15 @@ export interface ToolContext {
    * prepareParallelReadOnlyCall),因此并行执行永不往此 sink 推、不会串图。非读图工具/文本结果不碰它(向后兼容)。
    */
   imageResultSink?: ImageBlock[]
+  /**
+   * 本轮(一批 tool_call)的 PDF 文档块收集器(PDF 视觉通道):read_file 读到 PDF 时把 document 块推进来,
+   * loop 在组装本批 tool_result 的尾随 user 消息时把这些块作为顶层 ContentBlock 追加(对齐 cc 把 PDF 作为
+   * 补充 document 消息喂给模型;因 document 不能进 tool_result content,只能走顶层块)。
+   * ⚠️ 与 imageResultSink 不同:document 走"共享的本轮累加器",不需按单次执行一一对应(所有 PDF 读的块都汇入
+   * 同一条尾随消息,顺序无所谓),故 PDF 读可留在并行只读批。loop 每批开始置空、组装尾随消息时清走。
+   * 未设该 sink(脱离 loop 单测)时,read_file 仍回元信息文本(向后兼容,只是不回灌文档块)。
+   */
+  documentResultSink?: DocumentBlock[]
   /** 当前会话的大工具结果落盘目录,供 read_stored_tool_result 安全回读。 */
   toolResultStoreDir?: string
   /** 大工具结果替换状态,供主循环/子代理/续跑保持一致的上下文裁剪决策。 */

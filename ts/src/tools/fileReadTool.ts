@@ -4,8 +4,9 @@ import type { Tool } from './Tool'
 import type { ImageBlock } from '../types/message'
 import { isProjectInstructionPath, loadProjectInstructionsForTarget, loadProjectInstructionsForTargets, projectInstructionScopeKey } from '../harness/projectInstructions'
 import { resolveToolPath } from '../permissions/filePathRules'
-import { detectEncodingFromBuffer, FULL_READ_MAX_BYTES, isBlockedDevicePath, stripLeadingBom } from './fileIoSafety'
+import { detectEncodingFromBuffer, FULL_READ_MAX_BYTES, hasBinaryExtension, isBlockedDevicePath, looksBinaryBuffer, stripLeadingBom } from './fileIoSafety'
 import { isImageExtension, readImageBuffer } from './imageRead'
+import { detectPdf, isPdfExtension, PDF_MAX_BYTES, readPdfBuffer } from './pdfRead'
 
 // 图像整读上限:防超大图 OOM。cc 用原生 sharp 对超预算图缩放,本仓库无重采样能力,只据宽高判定并提示。
 const IMAGE_MAX_BYTES = 20 * 1024 * 1024
@@ -47,8 +48,9 @@ interface FileReadManyInput {
 export const fileReadTool: Tool<FileReadInput> = {
   name: 'read_file',
   description:
-    `Read a UTF-8 text file inside the workspace. Input: { path, start_line?, end_line?, max_bytes? }. ` +
-    `Without range options it returns the full raw file. Use start_line/end_line for focused code context; omitted end_line returns up to ${DEFAULT_RANGE_LINES} lines. The optional pages parameter is ignored for non-PDF files. ` +
+    `Read a file inside the workspace. Input: { path, start_line?, end_line?, max_bytes? }. ` +
+    `Text files return raw UTF-8 content. Images (png/jpg/gif/webp) and PDFs are read natively: the model sees the image/PDF visually, not as garbled text — so this is the right tool for reading a contract PDF or a screenshot. Other binary files (archives, executables, Office docs, databases) return a clear error instead of mojibake. ` +
+    `Without range options a text file returns fully. Use start_line/end_line for focused code context; omitted end_line returns up to ${DEFAULT_RANGE_LINES} lines. The pages parameter is currently ignored (PDFs are sent whole as a visual document). ` +
     'When a directory-level BILLIARDBUDDY.md applies to the target file, the result includes the applicable instruction block before the file content.',
   inputSchema: {
     type: 'object',
@@ -77,6 +79,17 @@ export const fileReadTool: Tool<FileReadInput> = {
       if (imageBlock) ctx.imageResultSink?.push(imageBlock)
       return await prependApplicableProjectInstructions(ctx, abs, input.path, text)
     }
+    const ext = extname(input.path)
+    // PDF → 文档视觉通道(对齐 cc):把 PDF 作为 document content-block 喂给模型"看",而不是当 UTF-8 读成乱码。
+    if (isPdfExtension(ext)) {
+      const text = await formatPdfRead(ctx, abs, input.path, info.size, ctx.signal)
+      recordRecentFileRead(ctx, abs, { path: input.path, mtimeMs: info.mtimeMs, size: info.size })
+      return await prependApplicableProjectInstructions(ctx, abs, input.path, text)
+    }
+    // 已知二进制扩展名(非 PDF/图片)→ 友好报错,绝不当文本硬读吐乱码(对齐 cc hasBinaryExtension 拦截)。
+    if (hasBinaryExtension(input.path)) {
+      throw new Error(binaryReadError(input.path, ext))
+    }
     const focused = hasFocusedRead(input)
     if (!focused && info.size > FULL_READ_MAX_BYTES) {
       throw new Error(
@@ -84,6 +97,15 @@ export const fileReadTool: Tool<FileReadInput> = {
       )
     }
     const buffer = await readFile(abs)
+    // 内容嗅探:扩展名伪装/无扩展名的文件——其实是 PDF 的走文档通道,其它二进制给友好报错(不吐乱码)。
+    if (detectPdf(buffer)) {
+      const text = formatPdfReadFromBuffer(ctx, buffer, input.path, info.size)
+      recordRecentFileRead(ctx, abs, { path: input.path, mtimeMs: info.mtimeMs, size: info.size })
+      return await prependApplicableProjectInstructions(ctx, abs, input.path, text)
+    }
+    if (looksBinaryBuffer(buffer)) {
+      throw new Error(binaryReadError(input.path, ext))
+    }
     const encoding = detectEncodingFromBuffer(buffer)
     const content = stripLeadingBom(buffer.toString(encoding))
     recordRecentFileRead(ctx, abs, { path: input.path, mtimeMs: info.mtimeMs, size: info.size })
@@ -145,6 +167,11 @@ export const fileReadManyTool: Tool<FileReadManyInput> = {
         const info = await stat(abs)
         if (!info.isFile()) {
           blocks.push(`<file path="${xmlAttr(path)}" error="not_a_file" />`)
+          continue
+        }
+        // read_many 是批量文本读:二进制(含 PDF/图片)当文本读会吐乱码。PDF/图片请单独用 read_file 走视觉/文档通道。
+        if (hasBinaryExtension(path)) {
+          blocks.push(`<file path="${xmlAttr(path)}" error="${isPdfExtension(extname(path)) ? 'pdf_use_read_file' : 'binary_file'}" />`)
           continue
         }
         let text: string
@@ -401,6 +428,46 @@ function xmlAttr(value: string): string {
 // bmp/超大/无法识别 → imageBlock 为 null(仅回文本,避免把图当 UTF-8 读成乱码)。
 // 超 vision 预算:cc 会用原生 sharp 降采样后再送;本仓库无重采样能力,故仍把原图送进去(模型看得到)+ 文本
 // 标注 over_vision_budget 让上层知情,不因估算超预算就把图吞掉(那会使 4K 截图等常见图失去 vision)。
+// 二进制读错文案:统一给"别当文本读会乱码 + 该怎么办"的可执行提示,替代原来直接吐乱码的行为。
+function binaryReadError(path: string, ext: string): string {
+  const what = ext ? `看起来是 ${ext} 二进制文件` : '内容看起来是二进制'
+  return (
+    `read_file 无法把二进制文件当文本读:${path}(${what})。这类文件按 UTF-8 读会变成乱码。` +
+    `若是 PDF 请确认扩展名为 .pdf(会自动走文档视觉通道让模型查看);图片用 .png/.jpg/.gif/.webp(走视觉通道);` +
+    `其它二进制(压缩包/可执行/数据库/Office 文档等)请改用对应的专门工具处理。`
+  )
+}
+
+// PDF 分支(按扩展名):按 PDF_MAX_BYTES 限流,超限给友好报错文本(不 throw、不吐乱码);否则读整份转文档块。
+// 与 formatImageRead 对称:返回给模型的是元信息文本(向后兼容),真 document 块走 ctx.documentResultSink 由 loop
+// 组进随 tool_result 尾随的 user 消息(顶层块)。cc 用 poppler 还能把每页转图像块降级;本仓库无依赖,只走文档块。
+async function formatPdfRead(ctx: Parameters<typeof fileReadTool.execute>[1], abs: string, label: string, size: number, signal?: AbortSignal): Promise<string> {
+  if (size > PDF_MAX_BYTES) return pdfTooLargeText(label, size)
+  const buffer = await readFile(abs, signal ? { signal } : undefined)
+  return formatPdfReadFromBuffer(ctx, buffer, label, size)
+}
+
+// PDF 分支(按已读缓冲):供"扩展名伪装的 PDF"复用同一套文档块生成 + 元信息文本。
+function formatPdfReadFromBuffer(ctx: Parameters<typeof fileReadTool.execute>[1], buffer: Buffer, label: string, size: number): string {
+  if (buffer.length > PDF_MAX_BYTES) return pdfTooLargeText(label, buffer.length)
+  const result = readPdfBuffer(buffer)
+  // 有文档通道 → 推真 document 块给模型看;无(脱离 loop 单测/旧 reader)→ 只回元信息文本(向后兼容)。
+  ctx.documentResultSink?.push(result.documentBlock)
+  const pagesAttr = result.pageCountEstimate !== null ? ` pages~="${result.pageCountEstimate}"` : ''
+  const note = ctx.documentResultSink
+    ? 'PDF 已作为文档(document 视觉块)随本次结果发送给模型查看,请据其内容作答;这不是文本抽取,无法按行号定位。'
+    : 'PDF 已识别但当前无文档通道回灌(仅返回元信息)。'
+  return `<file_pdf path="${xmlAttr(label)}" bytes="${result.byteSize}" size="${size}"${pagesAttr}>\n${note}\n</file_pdf>`
+}
+
+function pdfTooLargeText(label: string, size: number): string {
+  return (
+    `<file_pdf path="${xmlAttr(label)}" size="${size}" error="too_large">\n` +
+    `PDF 过大(${size} 字节,超过 ${PDF_MAX_BYTES} 字节文档上限),无法整份作为视觉文档发送。` +
+    `请先拆分/压缩该 PDF,或改用能抽取文本的专门工具处理后再读。\n</file_pdf>`
+  )
+}
+
 async function formatImageRead(abs: string, label: string, size: number, signal?: AbortSignal): Promise<{ text: string; imageBlock: ImageBlock | null }> {
   if (size > IMAGE_MAX_BYTES) {
     return {

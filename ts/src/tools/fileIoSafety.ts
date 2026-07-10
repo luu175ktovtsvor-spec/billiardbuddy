@@ -80,5 +80,64 @@ export function stripLeadingBom(text: string): string {
 /** 对齐 cc src/utils/file.ts:48 MAX_OUTPUT_SIZE —— 整文件读(不带 start_line/end_line)的字节上限。 */
 export const FULL_READ_MAX_BYTES = 256 * 1024
 
+/**
+ * 二进制扩展名黑名单 —— 移植自 cc src/constants/files.ts BINARY_EXTENSIONS。
+ * read_file 对这些扩展名的文件不当文本硬读(会吐乱码),直接给友好报错;PDF 与图片虽也在广义二进制里,
+ * 但由 read_file 分别走文档/视觉通道原生渲染,故在调用点单独排除(见 fileReadTool)。
+ */
+export const BINARY_EXTENSIONS = new Set<string>([
+  // 图片(图片有独立视觉分支,这里仅用于"看起来是二进制"的通用判定)
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.tiff', '.tif',
+  // 视频
+  '.mp4', '.mov', '.avi', '.mkv', '.webm', '.wmv', '.flv', '.m4v', '.mpeg', '.mpg',
+  // 音频
+  '.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.wma', '.aiff', '.opus',
+  // 压缩包
+  '.zip', '.tar', '.gz', '.bz2', '.7z', '.rar', '.xz', '.z', '.tgz', '.iso',
+  // 可执行/二进制
+  '.exe', '.dll', '.so', '.dylib', '.bin', '.o', '.a', '.obj', '.lib', '.app', '.msi', '.deb', '.rpm',
+  // 文档(PDF 在此;read_file 在调用点单独排除走文档通道)
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.odt', '.ods', '.odp',
+  // 字体
+  '.ttf', '.otf', '.woff', '.woff2', '.eot',
+  // 字节码/VM 产物
+  '.pyc', '.pyo', '.class', '.jar', '.war', '.ear', '.node', '.wasm', '.rlib',
+  // 数据库
+  '.sqlite', '.sqlite3', '.db', '.mdb', '.idx',
+  // 设计/3D
+  '.psd', '.ai', '.eps', '.sketch', '.fig', '.xd', '.blend', '.3ds', '.max',
+  // Flash
+  '.swf', '.fla',
+  // 锁/性能数据
+  '.lockb', '.dat', '.data',
+])
+
+/** 路径扩展名是否命中二进制黑名单(对齐 cc hasBinaryExtension;不做 I/O)。 */
+export function hasBinaryExtension(filePath: string): boolean {
+  const dot = filePath.lastIndexOf('.')
+  if (dot < 0) return false
+  return BINARY_EXTENSIONS.has(filePath.slice(dot).toLowerCase())
+}
+
+/**
+ * 内容启发式:窥探 buffer 头部判断是不是二进制(用于扩展名伪装/无扩展名的文件,防当 UTF-8 读成乱码)。
+ * 规则:出现 NUL(0x00)即判二进制(文本文件几乎不含 NUL);或"控制字符"(除常见 \t\n\r\f\b 与 ESC)
+ * 占比过高也判二进制。UTF-16/BOM 交由 detectEncodingFromBuffer 走文本路,这里对 utf16le BOM 放行不误判。
+ */
+export function looksBinaryBuffer(buffer: Buffer): boolean {
+  const len = Math.min(buffer.length, 4096)
+  if (len === 0) return false
+  // UTF-16LE BOM → 文本路已能正确解码,别误判为二进制。
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) return false
+  let suspicious = 0
+  for (let i = 0; i < len; i++) {
+    const c = buffer[i]!
+    if (c === 0x00) return true
+    // 允许:tab(9) LF(10) FF(12) CR(13) BS(8) ESC(27),其余 0x00-0x08/0x0e-0x1f 为可疑控制字符。
+    if ((c < 0x08) || (c > 0x0d && c < 0x1b) || c === 0x1c || c === 0x1d || c === 0x1e || c === 0x1f) suspicious++
+  }
+  return suspicious / len > 0.3
+}
+
 /** 对齐 cc FileEditTool.ts:84 MAX_EDIT_FILE_SIZE —— 防止编辑巨型文件时整读进内存 OOM。 */
 export const MAX_EDIT_FILE_SIZE = 1024 * 1024 * 1024
