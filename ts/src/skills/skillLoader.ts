@@ -69,6 +69,63 @@ export function registerSkillHooks(skill: PromptCommand, ctx: ToolContext): void
   ctx.onSessionHooksChanged?.(ctx.sessionHooks)
 }
 
+// —— use_skill 授权闸(对齐 cc SkillTool.checkPermissions,掰回“调技能绕过 Bash 审批”的提权洞)——
+// 现状漏洞:use_skill 没有审批闸,execute() 会把技能 frontmatter 的 allowedTools 直接灌进会话 allow
+// (allowSkillTools)、把 hooks 注册进会话(registerSkillHooks)。于是模型只要调一个带
+// `allowedTools:[Bash(git push:*)]` 的技能,就等于在本会话内自助放开 git push,绕过 run_command 审批。
+// 掰回:给 use_skill 补 requiresApprovalFor——仅含安全声明属性的技能自动放行;凡携带
+// allowedTools/allowedToolRules/hooks(授权类字段)的技能默认走审批闸(ask),批准后才在
+// execute() 里灌工具/挂 hook。allowlist 口径照 cc:任何不在安全名单里的属性只要有实义值即视为需审批,
+// 未来新增字段默认从严。
+const SAFE_SKILL_PROPERTIES = new Set<string>([
+  'type', 'name', 'description', 'whenToUse',
+  'argumentHint', 'argNames', 'model', 'context', 'agent',
+  'source', 'filePath', 'baseDir', 'contentLength', 'getPrompt',
+])
+
+/** 技能是否只含安全属性(无 allowedTools/allowedToolRules/hooks 等授权类字段)。移植自 cc skillHasOnlySafeProperties。 */
+export function skillHasOnlySafeProperties(skill: PromptCommand): boolean {
+  for (const key of Object.keys(skill)) {
+    if (SAFE_SKILL_PROPERTIES.has(key)) continue
+    const value = (skill as unknown as Record<string, unknown>)[key]
+    if (value === undefined || value === null) continue
+    if (Array.isArray(value) && value.length === 0) continue
+    if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value as object).length === 0) continue
+    return false
+  }
+  return true
+}
+
+/** 携带 allowedTools/hooks 的技能需审批(纯安全技能免审批)。取反自 skillHasOnlySafeProperties。 */
+export function skillRequiresApproval(skill: PromptCommand): boolean {
+  return !skillHasOnlySafeProperties(skill)
+}
+
+/** use_skill 的名字解析:优先 name 别名,回退 skill;都空返回空串。 */
+function resolveUseSkillName(input: UseSkillInput | undefined): string {
+  const alias = typeof input?.name === 'string' ? input.name.trim() : ''
+  if (alias) return alias
+  return typeof input?.skill === 'string' ? input.skill.trim() : ''
+}
+
+/**
+ * ctx.permissionRules 里是否存在放行该技能的 use_skill allow 规则(按名精确或 `prefix:*` 前缀)。
+ * 对齐 cc SkillTool.checkPermissions 的 allowRules 匹配,让“记住允许某技能”后二次调用免审批。
+ * 裸 use_skill allow(无 ruleContent)= 放开全部技能,由权限瀑布(resolve.ts allowRule)统一处理,
+ * 这里只认按名/前缀规则。
+ */
+function useSkillAllowRuleMatches(ctx: ToolContext, name: string): boolean {
+  for (const rule of ctx.permissionRules ?? []) {
+    if (rule.ruleBehavior !== 'allow' || rule.ruleValue.toolName !== 'use_skill') continue
+    const content = rule.ruleValue.ruleContent
+    if (content === undefined) continue
+    const normalized = content.startsWith('/') ? content.slice(1) : content
+    if (normalized === name) return true
+    if (normalized.endsWith(':*') && name.startsWith(normalized.slice(0, -2))) return true
+  }
+  return false
+}
+
 /**
  * frontmatter hooks 的信任来源(对齐 cc-haha hook 源分层)。
  * **工作区提供的 .claude/skills 传 'local'**:其 command/http hook 受信任门约束,未受信工作区里不 spawn。
@@ -299,10 +356,33 @@ export function createSkillTools(library: SkillLibrary, opts: { skillRoot?: stri
       required: ['skill'],
     },
     isReadOnly: false,
+    // 授权闸:携带 allowedTools/hooks 的技能默认 ask,批准后 execute() 才灌工具/挂 hook。
+    // 缺名/未知技能 → false(execute 会抛清晰错误或回“没找到”,不授予任何权限)。
+    requiresApprovalFor(input, ctx) {
+      const name = resolveUseSkillName(input)
+      if (!name) return false
+      const skill = library.byName.get(name)
+      if (!skill) return false
+      if (skillHasOnlySafeProperties(skill)) return false // 纯安全属性技能自动放行
+      if (useSkillAllowRuleMatches(ctx, name)) return false // 已记住允许该技能 → 免审批
+      return true // 携带 allowedTools/hooks → 走审批闸
+    },
+    approvalReasonFor(input) {
+      const name = resolveUseSkillName(input)
+      const skill = name ? library.byName.get(name) : undefined
+      const grants: string[] = []
+      if (skill?.allowedTools && skill.allowedTools.length > 0) grants.push(`授予工具 ${skill.allowedTools.join(', ')}`)
+      if (skill?.hooks && skill.hooks.rules.length > 0) grants.push(`注册 ${skill.hooks.rules.length} 条会话 hook`)
+      return {
+        what: `运行技能「${name || '?'}」`,
+        why: grants.length > 0 ? `该技能会${grants.join(';')},等于在本会话内放开这些能力` : '模型请求运行该技能',
+        impact: grants.length > 0
+          ? '批准后这些工具/hook 在本会话内自动放行,请确认技能来源可信(否则可能被用来绕过逐次审批,如 git push)'
+          : '',
+      }
+    },
     async execute(input, ctx) {
-      const name = typeof input?.name === 'string' && input.name.trim()
-        ? input.name.trim()
-        : typeof input?.skill === 'string' ? input.skill.trim() : ''
+      const name = resolveUseSkillName(input)
       if (!name) throw new Error('use_skill 需要 string 参数 name')
       const skill = library.byName.get(name)
       if (!skill) return `没有找到技能「${name}」。可先调用 list_skills 查看可用技能。`

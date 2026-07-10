@@ -4,8 +4,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../workspace/workspace'
 import type { ToolContext } from '../tools/Tool'
-import { bundledSkillsRoot, createSkillTools, formatSkillIndex, loadLayeredSkills, loadSkillsDir, userSkillsRoot, workspaceSkillsRoot } from './skillLoader'
+import { bundledSkillsRoot, createSkillTools, formatSkillIndex, loadLayeredSkills, loadSkillsDir, skillHasOnlySafeProperties, skillRequiresApproval, userSkillsRoot, workspaceSkillsRoot } from './skillLoader'
 import { clearInvokedSkills, getInvokedSkillsForScope } from './invokedSkills'
+import { resolvePermission } from '../permissions/resolve'
+import { actionKey, recordApproval, shouldAutoApprove } from '../permissions/denialTracking'
+import type { PermissionRule } from '../permissions/types'
 
 test('loadSkillsDir:只加载 */SKILL.md,frontmatter 变 PromptCommand', async () => {
   const root = mkdtempSync(join(tmpdir(), 'skills-'))
@@ -313,6 +316,127 @@ test('loadLayeredSkills:三层合并——workspace 带 local 信任标,同名�
     rmSync(bundled, { recursive: true, force: true })
     rmSync(user, { recursive: true, force: true })
     rmSync(wsRoot, { recursive: true, force: true })
+  }
+})
+
+// —— use_skill 授权闸行为对齐(掰回“调技能绕过 Bash 审批”提权洞,口径照 cc SkillTool.checkPermissions)——
+
+function makeSkillLib(root: string, name: string, frontmatter: string, body = 'do stuff') {
+  mkdirSync(join(root, name), { recursive: true })
+  writeFileSync(join(root, name, 'SKILL.md'), `---\n${frontmatter}\n---\n${body}\n`)
+}
+
+async function useSkillTool(root: string) {
+  const lib = await loadSkillsDir(root)
+  const use = createSkillTools(lib).find(tool => tool.name === 'use_skill')!
+  return use
+}
+
+test('use_skill 授权闸:带 allowedTools(git push)的技能触发 ask、不自动灌 allow', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'skills-gate-danger-'))
+  try {
+    makeSkillLib(root, 'deploy', 'name: deploy\ndescription: Deploy\nallowedTools: ["Bash(git push:*)"]')
+    const use = await useSkillTool(root)
+    const ctx: ToolContext = { workspace: new Workspace(root), conversationId: 'gate-danger' }
+
+    // skillHasOnlySafeProperties/skillRequiresApproval 判定与 cc 一致:携带 allowedTools = 需审批
+    const lib = await loadSkillsDir(root)
+    expect(skillHasOnlySafeProperties(lib.byName.get('deploy')!)).toBe(false)
+    expect(skillRequiresApproval(lib.byName.get('deploy')!)).toBe(true)
+
+    const decision = resolvePermission(use, { skill: 'deploy' }, ctx)
+    expect(decision.behavior).toBe('ask')
+    // 关键红线:仅决定审批,execute 尚未执行 → 绝不把工具灌进会话(否则 git push 被旁路放行)
+    expect(ctx.sessionAllowedTools).toBeUndefined()
+    expect(ctx.sessionAllowedToolRules).toBeUndefined()
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('use_skill 授权闸:携带 hooks 的技能同样触发 ask', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'skills-gate-hooks-'))
+  try {
+    makeSkillLib(root, 'guard', 'name: guard\ndescription: Guard\nhooks:\n  PreToolUse:\n    - matcher: write_file\n      hooks:\n        - type: command\n          command: echo hi')
+    const use = await useSkillTool(root)
+    const ctx: ToolContext = { workspace: new Workspace(root), conversationId: 'gate-hooks' }
+    const lib = await loadSkillsDir(root)
+    expect(skillRequiresApproval(lib.byName.get('guard')!)).toBe(true)
+    expect(resolvePermission(use, { skill: 'guard' }, ctx).behavior).toBe('ask')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('use_skill 授权闸:纯安全属性技能自动放行', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'skills-gate-safe-'))
+  try {
+    makeSkillLib(root, 'greet', 'name: greet\ndescription: Greet\nwhenToUse: 打招呼时\nmodel: fast')
+    const use = await useSkillTool(root)
+    const ctx: ToolContext = { workspace: new Workspace(root), conversationId: 'gate-safe' }
+    const lib = await loadSkillsDir(root)
+    expect(skillHasOnlySafeProperties(lib.byName.get('greet')!)).toBe(true)
+    expect(skillRequiresApproval(lib.byName.get('greet')!)).toBe(false)
+    expect(resolvePermission(use, { skill: 'greet' }, ctx).behavior).toBe('allow')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('use_skill 授权闸:记忆 allow 规则后二次放行(按名 + prefix,对齐 cc allowRules)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'skills-gate-remember-'))
+  try {
+    makeSkillLib(root, 'deploy', 'name: deploy\ndescription: Deploy\nallowedTools: ["Bash(git push:*)"]')
+    const use = await useSkillTool(root)
+    const base: ToolContext = { workspace: new Workspace(root), conversationId: 'gate-remember' }
+
+    // 首次:无规则 → ask
+    expect(resolvePermission(use, { skill: 'deploy' }, base).behavior).toBe('ask')
+
+    // 记住“允许 deploy 技能”后(按名 allow 规则)→ 二次放行
+    const named: ToolContext = {
+      ...base,
+      permissionRules: [{ source: 'session', ruleBehavior: 'allow', ruleValue: { toolName: 'use_skill', ruleContent: 'deploy' } }] as PermissionRule[],
+    }
+    expect(resolvePermission(use, { skill: 'deploy' }, named).behavior).toBe('allow')
+
+    // 前缀规则 dep:* 亦放行
+    const prefixed: ToolContext = {
+      ...base,
+      permissionRules: [{ source: 'session', ruleBehavior: 'allow', ruleValue: { toolName: 'use_skill', ruleContent: 'dep:*' } }] as PermissionRule[],
+    }
+    expect(resolvePermission(use, { skill: 'deploy' }, prefixed).behavior).toBe('allow')
+
+    // 不相干的按名规则不放行(仍 ask),防止规则误匹配放宽
+    const unrelated: ToolContext = {
+      ...base,
+      permissionRules: [{ source: 'session', ruleBehavior: 'allow', ruleValue: { toolName: 'use_skill', ruleContent: 'other' } }] as PermissionRule[],
+    }
+    expect(resolvePermission(use, { skill: 'deploy' }, unrelated).behavior).toBe('ask')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('use_skill 授权闸:harness 原生审批记忆(recordApproval)后二次免卡', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'skills-gate-native-'))
+  try {
+    makeSkillLib(root, 'deploy', 'name: deploy\ndescription: Deploy\nallowedTools: ["Bash(git push:*)"]')
+    const use = await useSkillTool(root)
+    const conversationId = 'gate-native-mem'
+    const ctx: ToolContext = { workspace: new Workspace(root), conversationId }
+    const input = { skill: 'deploy' }
+
+    // 首次仍 ask,且原生记忆里没有该 key
+    expect(resolvePermission(use, input, ctx).behavior).toBe('ask')
+    const key = actionKey('use_skill', input)
+    expect(shouldAutoApprove(conversationId, key)).toBe(false)
+
+    // 老板“批准并记住”后,loop 会 recordApproval → 相同 (工具,入参) 二次自动放行,不再弹卡
+    recordApproval(conversationId, key)
+    expect(shouldAutoApprove(conversationId, key)).toBe(true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
 })
 
