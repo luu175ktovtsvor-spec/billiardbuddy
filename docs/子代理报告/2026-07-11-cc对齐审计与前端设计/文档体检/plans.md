@@ -1,0 +1,34 @@
+# docs/plans/ 文档体检报告(2026-07-10)
+
+> 范围:`docs/plans/` 下全部 **18 份**(目录实际只有 18 份,任务描述的"20 份"与实况不符,已如实按 18 份体检)。
+> 方法:读根 `CLAUDE.md`「权威入口」+ 文档维护规约、`docs/README.md` 索引;逐份读顶部 banner;对声称"已落地/已实现/checklist"的内容,`grep ts/src` 找对应代码 + `git log --oneline` 核实提交号,只有代码/测试/提交三者对上号才判"已完成成历史",否则宁可 UNCERTAIN/KEEP,不臆断。
+
+## 结论表
+
+| 文件 | 分类 | 理由 + 证据 | 肥瘦 / 精简方案 |
+|---|---|---|---|
+| **GPT生图异步化-根治方案-2026-07-09.md** | KEEP·现行(权威) | 功能真落地但默认关(owner 特意设计的开关,非"没做完"):`ts/src/media/mediaJobs.ts:683` `this.gptImageAsync = ...QF_GPT_IMAGE_ASYNC`,`submitOpenAiImageTask` 提交/轮询逻辑存在,测试 `mediaJobs.test.ts:326-339` 覆盖开关行为;`docs/当前架构与状态-总览.md:197/280/287` 与根 `CLAUDE.md:40` 都点名此文档为权威。**SessionStart 钩子把它标"可删候选"是误判**——功能已落地但开关默认关不等于文档过时,这份文档正是解释"怎么开启/为何设计成默认关"的唯一权威。 | 76 行,精悍,不需要精简。 |
+| **TS-cc-haha-v0.4.5-内核迁移矩阵-2026-07-07.md** | KEEP·现行(根 CLAUDE.md 明确点名的施工进度矩阵) | 3583 行。§0-2(1-49行)= 迁移口径+模块矩阵,当前仍是权威;§3.401/3.402/3.403/3.404/3.405(3389-3572行)= 16模块复核+本轮P0进度,CLAUDE.md/docs/README.md 明确引用为"本轮进度";§4(3572-3583)= 下一批代码顺序,前瞻计划。**但 §3.1~§3.400(59-3388行,约330条,~3330行,占比93%)全是"2026-07-07/08/09 追加落地"逐条历史流水账**,每条记录一次性已完成的功能上线,内容与 git commit message 高度重复(逐条可在 `git log --oneline` 里找到对应提交)。 | **该精简(top1)**:目标结构 = 保留 §0/§1/§2(~49行)+ §3.401-3.405(~183行)+ §4(~11行)≈**243行"现状真相"**;§3.1-3.400 的 330 条历史流水压成一张"日期/模块/一句话结果"的紧凑表格(或直接砍掉、注明"逐条对应 git log 5304c63..HEAD,按 commit message 检索"),预计整份从 **3583 行降到 500-700 行**(降幅 80-85%)。**必须保留**:§0(迁移口径)、§2(16模块矩阵,现状真相源)、§3.401/§3.405(本轮进度)、§4(前瞻计划)。 |
+| **Windows平台对等-审计与补齐清单.md** | KEEP·活跃施工(#35) | 4类问题里 1 类已修、3 类仍开着,读代码实证:①"危险命令是POSIX/sh写法"——**已修**,同日提交 `5d8c110`/`e0dbc7b`/`a672112`("security P0·Win cmd.exe 红线/审批闸",#45),`ts/src/tools/dangerousCommand.ts` 现有完整 cmd.exe/PowerShell 解析口径;②"关窗即退出+托盘被销毁"——**仍开着**,`ts/desktop/electron/main.ts:365-374` 证实:非 mac 平台 `window-all-closed` 直接 `app.quit()`,`before-quit` 里 `tray.destroy()`,托盘存在但没有"关窗最小化到托盘"逻辑,后台任务确实随手一关就死;③系统通知/揭示文件/打开路径——grep `ts/desktop` 未见 `shell.openPath`/`shell.showItemInFolder`/`new Notification` 实现,**仍未接线**;④OS 写围栏 Windows 不生效——`ts/src/sandbox/windowsLauncher.ts` 仅为 W3b 占位(`ffa0066`,2026-07-06,早于本审计),未做真沙箱。整体判定=真实审计仍大部分开着,不是历史。 | 211 行,审计类文档天然逐条详述;可把已修的①从完整篇幅压成一行"已修 via #45,见 dangerousCommand.ts",腾出篇幅给仍开着的②③④,轻度瘦身(降幅约15%),非首要。 |
+| **cc-haha斜杠命令全搬-施工总图.md** | KEEP·活跃施工(task#24) | 根 CLAUDE.md「在建/待办」明确列"命令搬运波0-5(task#24)"仍在列;文档是波次施工蓝图,尚未见对应"命令全搬完成"的合并提交覆盖全部波次。 | 57 行,精悍,不需要精简。 |
+| **cc-haha右侧预览面板-对标与落地方案.md** | KEEP·活跃施工(task#17) | 根 CLAUDE.md「在建/待办」列"右侧交互预览直接对标cc、不留分叉(task#17)"仍在列,未见完成标记。 | 213 行,按范围(面板骨架/内容类型/管道/原生WebContentsView/迭代闭环)属于合理篇幅,不是首要精简对象。 |
+| **video-use-剪辑编排适配研判-2026-07-09.md** | KEEP·现行 | 逐条判定文档,`docs/README.md` 点名收录;文中多数"已吸收"项属实(时间线真相源/原子操作/输出目录/字幕烧录/响度归一均可在 `ts/src/media/videoEditProjects.ts` 验证)。**但其中"transcript-first/takes_packed.md ⏳待实现"两行(34-35行)已被下方 video-use转写引擎-补活方案.md 的实现(见下条)补齐,现已过时**,padding/fades/render后self-eval/word-boundary裁切/strategy confirmation UX/project.md 记忆增强等条目仍确认开着(grep 未见对应实现)。 | 119 行,精悍;建议后续把 34-35 两行从"⏳待实现"更新为"✅已吸收(见转写补活方案落地)",增量小改,非结构性精简。 |
+| **video-use转写引擎-补活方案.md** | **DELETE·已完成成历史** | 文档自身 §六 给出 A-D 共12步实现清单(task#41),**全部对应到已落地代码**:提交 `6ff386f`("video engine core...口播whisper path...#41/#43 foundation")+ `afa83f7`("资产管理器—大资产后台静默下载ffmpeg/whisper/字体 #58");`ts/src/media/transcribe.ts`(392行)含 `resolveWhisperCli`/`groupIntoPhrases`/`renderTakesPacked`/`transcribeVideoWordLevel` 与方案描述逐字对应,且已 import 并在 `ts/src/media/videoEditProjects.ts` 5 处(678/729/945/999/1280行)真实调用,`phrases`/`takes_packed.md`占位已回填。方案自身把 P1(LLM Reasons/切点手艺/DTW)明确列为"转写就绪后再排"的后续工作,不属本文档任务范围,且已被 video-use-剪辑编排适配研判 doc 的开放条目覆盖,不会因删除此文而丢线索。 | 384 行历史方案,可整份删除(git 历史可回查)。 |
+| **强-coding-agent-桌面外壳-阶段目标.md** | KEEP·现行(根 CLAUDE.md 权威入口"当前目标总纲") | 明确被根 CLAUDE.md 和 docs/README.md 点名收录;18 个分节(权限/工作目录/内核迁移/前端主工作流/专家知识库/视频删除/生图人像/文档规则/测试验证/提交要求/完成标准…)是结构化要求清单,非日志式堆积。 | 593 行属结构化 spec、非过程日志,按范围合理,不列入精简优先。 |
+| **通用Agent改造-0到6路线图.md** | KEEP·现行(长期路线图) | `docs/README.md` 收录;文档自身已声明"已剥离已删Python老栈的实现细节与历史进度日志",owner 已做过一轮瘦身,当前只留阶段0-9能力覆盖全景供路线参考,不再是当前施工权威(自称)。 | 107 行,已经过瘦身,无需再动。 |
+| **内核A线对齐-差异总清单-波次-2026-07-10.md** | KEEP·活跃施工(任务明确点名) | 与"后端对齐第三批"同为当前对齐战役的施工依据(任务说明已直接点名),16模块并行对照cc源码产出、6波次拆解,是本轮"头号方向"的核心作战地图。 | 355 行,16模块×差异条目属合理篇幅,暂不列精简优先。 |
+| **后端对齐-第三批-枝叶+架构剩余-P1-P7.md** | KEEP·活跃施工(任务明确点名) | git status 里的未跟踪新文件,banner"🚧待派(第二批地基完成后派)"——尚未执行的真实待办,任务说明已直接点名为当前施工依据。 | 65 行,精悍。 |
+| **球房管家-导航视图模块拆解与产品规划.md** | KEEP·活跃施工 | React 前端确认在建(`ts/desktop/renderer-react/` 已有 AppShell/Sidebar/TabBar/ContentRouter 等组件,提交 `06ef2b4` 仍在刷新前端相关文档);本文档是"8大板块该填什么内容"的产品规划蓝图,是构建视图的依据,未见对应"全部板块建完"的证据。 | 342 行,8板块×三段式详解,按蓝图范围合理,非精简优先。 |
+| **模型名白标-泄露审计与代称方案.md** | **DELETE·已完成成历史** | 文档 banner 自称"本轮只做审计+方案,不改任何代码"(task#38),但 §7 checklist 8 项已**全部**在代码中验证落地:`ts/src/model/publicModelNames.ts` 就是文档要建的映射器(能力档代称+`scrubProviderIdentifiers`+`publicProviderSummary`,与文档 §4/§6 一字不差),提交 `1897454`("[white-label] scrub real model/provider names ... → capability-tier aliases (#38)")+ `a40b70e`("[white-label] layer-2 output scrub ... (#44)")双双落地;守卫测试 `ts/src/server/whitelabelGuard.test.ts`、`ts/src/model/publicModelNames.test.ts`、`ts/src/harness/outputScrub.test.ts` 均存在。checklist 剩 2 项未做(dataeye 重接/分发前scrub)已用 task#16/#22 单独编号,在根 CLAUDE.md「在建/待办」里独立追踪,不依赖本文档存活。 | 174 行历史方案,可删。 |
+| **门店信息处理-A自动记忆-B设置填写-方案.md** | KEEP·活跃施工(owner暂缓,非否决) | banner 明写"调研方案(实现暂缓)···owner已表态门店信息实现暂放一边"——是主动暂停的活跃 backlog,非否决/非完成。内容(PPT提炼的11项MVP字段清单、设置UI设计§2.2)是独有内容,未在别处重复,且比"记忆机制对齐"文档的阶段3更完整(见下条关联)。 | 128 行,合理密度,暂不精简。 |
+| **生图人像优化-流程质量标准与风险边界-2026-07-09.md** | KEEP·现行 | `docs/README.md` 收录,明确回应`强-coding-agent-桌面外壳-阶段目标.md`§13/§17.9,是设计规格非实现记录,未见有替代文档。 | 219 行,合理密度。 |
+| **前端架构对齐cc-React迁移方案.md** | KEEP·活跃施工 | 已验证 React 迁移进行中(`ts/desktop/renderer-react/` 大量组件文件存在),且该文档本身在被追踪修订(提交 `06ef2b4`"...refresh React migration §6.2"证明文档随实现同步更新,不是废弃稿)。 | 296 行,迁移蓝图,合理密度。 |
+| **记忆机制对齐cc-门店信息方案.md** | **UNCERTAIN**(阶段1 已完成历史、阶段2 仍是无处覆盖的活项) | 阶段1(memdir常驻注入+模型自主写+AutoMem类型)已**验证完成**:提交 `a00d84e`("记忆掰回 cc AutoMem···(#19/#59)")与文档"阶段1"逐条对应,`ts/src/tools/saveMemoryTool.ts`/`ts/src/harness/claudemd.ts`/`ts/src/harness/memoryNames.ts` 均已改动落地。阶段3(前端记忆面板)被"门店信息处理-A自动记忆-B设置填写-方案.md"§2.2 更完整地覆盖,近似取代。**但阶段2(`extractMemories` 回合后台抽取)confirmed 未实现**——全仓 grep `ts/src` 无 `extractMemories`/`autoDream` 任何代码,且此项未在任何其他 plans 文档中被追踪,属于"大backlog里还没做且没被别处覆盖的活项",按规矩必须 UNCERTAIN 而非直接判 DELETE。 | 55 行;若确认可删,应只保留阶段2(extractMemories)诉求单独存档(~20-25行),阶段1描述可整段删(已是历史),阶段3描述可删并改指向"门店信息处理"文档。 |
+| **生图与剪视频工作台-设计方案.md** | KEEP·活跃施工(task#39/#40) | 明写"面向后续实现子代理,照着施工···写这份时未改任何代码",是未执行的设计稿;根 CLAUDE.md 待办里"生图人像优化"(task#11)与本设计方案关联但未见落地覆盖此设计稿的具体UI/工作台产物。 | 247 行,合理密度。 |
+
+## 总计与快速核对
+- 目录实况 = **18 份**(非任务描述的 20 份,已如实体检全部 18 份)。
+- KEEP·现行/活跃施工:14 份。
+- DELETE·已完成成历史(有代码+提交号实证):2 份(`模型名白标-泄露审计与代称方案.md`、`video-use转写引擎-补活方案.md`)。
+- UNCERTAIN:1 份(`记忆机制对齐cc-门店信息方案.md`,阶段2 未覆盖)。
+- KEEP 但需精简 top3:①`TS-cc-haha-v0.4.5-内核迁移矩阵-2026-07-07.md`(3583→目标500-700行,压缩§3.1-3.400历史流水账)②`记忆机制对齐cc-门店信息方案.md` 与 `门店信息处理-A自动记忆-B设置填写-方案.md` 存在内容重叠(阶段1/阶段3 vs §2.2),建议合并/交叉引用而非各自为政 ③`Windows平台对等-审计与补齐清单.md` 中已修复的第①项可压成一行引用,给未修复项腾篇幅。
