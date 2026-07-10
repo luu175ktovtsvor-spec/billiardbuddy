@@ -1,5 +1,5 @@
 import { MODEL_OUTPUT_TRUNCATED_NOTICE, type Model, type ModelStepInput, type AssistantStep } from '../types/model'
-import type { ContentBlock, ImageBlock, Message, ToolCall } from '../types/message'
+import type { ContentBlock, DocumentBlock, ImageBlock, Message, ToolCall } from '../types/message'
 import { ensureToolResultPairing, normalizeMessagesForAPI } from '../proxy/messagePairing'
 import { parseOpenAIToolArguments, stringifyOpenAIToolArguments } from '../proxy/toolArguments'
 import type { AnthropicUsage } from '../proxy/types'
@@ -19,7 +19,7 @@ export interface AnthropicMessagesModelConfig {
   stream?: boolean
   /**
    * "深度思考/增强"档:选了就把 thinking 参数拼进请求(对齐 cc-haha)。undefined = 不带 thinking(标准档)。
-   * 由 buildAnthropicThinking 按模型决定走 `{type:'adaptive'}`(现代 Claude)还是 `{type:'enabled',budget_tokens}`(旧族/minimax)。
+   * 由 buildAnthropicThinking 按模型决定走 `{type:'adaptive'}`(现代 Claude / MiniMax)还是 `{type:'enabled',budget_tokens}`(旧 Claude 族/兜底);可用 ANTHROPIC_THINKING_MODE env 覆盖。
    */
   reasoningEffort?: ReasoningEffort
   fetchImpl?: FetchLike
@@ -41,10 +41,12 @@ interface AnthropicAccumulated {
 }
 
 type AnthropicImageBlock = { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+type AnthropicDocumentBlock = { type: 'document'; source: { type: 'base64'; media_type: 'application/pdf'; data: string } }
 type AnthropicToolResultContentBlock = { type: 'text'; text: string } | AnthropicImageBlock
 type AnthropicRequestBlock =
   | { type: 'text'; text: string }
   | AnthropicImageBlock
+  | AnthropicDocumentBlock
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; tool_use_id: string; content: string | AnthropicToolResultContentBlock[]; is_error?: boolean }
 
@@ -203,6 +205,7 @@ function toAnthropicMessage(message: Message): { role: Message['role']; content:
 function toAnthropicBlock(block: ContentBlock): AnthropicRequestBlock[] {
   if (block.type === 'text') return [{ type: 'text', text: block.text }]
   if (block.type === 'image') return [{ type: 'image', source: block.source }]
+  if (block.type === 'document') return [toAnthropicDocumentBlock(block)]
   if (block.type === 'tool_use') return [{ type: 'tool_use', id: block.id, name: block.name, input: block.input }]
   if (block.type === 'tool_result') {
     return [{
@@ -214,6 +217,28 @@ function toAnthropicBlock(block: ContentBlock): AnthropicRequestBlock[] {
     }]
   }
   return []
+}
+
+/**
+ * PDF document 块。查证(2026-07 官方文档):MiniMax(api.minimaxi.com/anthropic:只 text/image/video/tool_use/tool_result/thinking)
+ * 与 Xiaomi MiMo(api.xiaomimimo.com/anthropic)的 Anthropic 兼容端点都【不支持】document/PDF 块——直接发真 document
+ * 块会被上游丢弃或 400。**默认因此不发真块**,改回灌一条文本面包屑,纠正 fileReadTool 里 `<file_pdf>` "已作为视觉块发送"
+ * 的误导说明(反逻辑修:此前 `return []` 静默丢块,模型被告知能看 PDF、实际啥也没收到,只能凭空编)。
+ * 真正跑在支持 document 的 Anthropic 端点(真 Claude / 能力齐全的代理)时,置 `ANTHROPIC_SEND_PDF_DOCUMENT=1` 发真块。
+ */
+function toAnthropicDocumentBlock(block: DocumentBlock): AnthropicRequestBlock {
+  if (isEnvTruthy(process.env.ANTHROPIC_SEND_PDF_DOCUMENT)) {
+    return { type: 'document', source: block.source }
+  }
+  return {
+    type: 'text',
+    text: '[系统提示] 已附加一个 PDF 文档,但当前模型端点不支持 PDF 视觉通道,无法直接查看其图像内容;请依据上文 <file_pdf> 元信息作答,或改用可抽取 PDF 文本的工具处理后再读。',
+  }
+}
+
+/** env 真值判定(1/true/yes/on,大小写无关)。 */
+function isEnvTruthy(value: string | undefined): boolean {
+  return ['1', 'true', 'yes', 'on'].includes(value?.trim().toLowerCase() ?? '')
 }
 
 function toAnthropicToolResultContentBlock(block: { type: 'text'; text: string } | ImageBlock): AnthropicToolResultContentBlock {

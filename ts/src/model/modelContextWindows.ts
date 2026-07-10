@@ -2,15 +2,14 @@ export const MODEL_CONTEXT_WINDOWS_ENV_KEY = 'CLAUDE_CODE_MODEL_CONTEXT_WINDOWS'
 export const MODEL_CONTEXT_WINDOW_MIN = 16_000
 export const MODEL_CONTEXT_WINDOW_MAX = 10_000_000
 
+// owner 肯定不接 Claude → 不登记纯展示性的 claude-* 窗口(只留实际可能接的国产/开源模型)。
+// 注:reasoningEffort.ts 的 claude-* adaptive/budget 兜底分支保留——那是"万一走 Claude 兼容端点"的功能兜底,与此处展示登记无关。
 const DIRECT_CONTEXT_WINDOWS: Record<string, number> = {
   'mimo-v2.5': 1_000_000,
   'deepseek-chat': 1_000_000,
   'deepseek-reasoner': 1_000_000,
   'deepseek-v4-pro': 1_000_000,
   'deepseek-v4-flash': 1_000_000,
-  'claude-opus-4-7': 1_000_000,
-  'claude-sonnet-4-6': 200_000,
-  'claude-haiku-4-5': 200_000,
   'glm-5.2': 1_000_000,
   'glm-5.1': 200_000,
   'glm-5': 200_000,
@@ -22,8 +21,6 @@ const DIRECT_CONTEXT_WINDOWS: Record<string, number> = {
 }
 
 const PATTERN_CONTEXT_WINDOWS: Array<[RegExp, number]> = [
-  [/^anthropic\/claude-opus-4\.7\b/i, 1_000_000],
-  [/^anthropic\/claude-sonnet-4\.6\b/i, 200_000],
   [/^openai\/gpt-4\.1\b/i, 1_047_576],
   [/^openai\/gpt-5(?:[.-]\d+)?\b/i, 400_000],
   [/^google\/gemini-(?:2\.0|2\.5|3)/i, 1_048_576],
