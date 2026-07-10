@@ -1,4 +1,5 @@
 import { executeApproved, handleReject, runAgentLoop } from '../harness/loop'
+import { resolveBundledDir } from '../harness/bundledRoot'
 import { getWorkspaceGitStatus } from '../harness/env'
 import { buildSystemPrompt } from '../harness/systemPrompt'
 import { collectDiscoveryEntries, toPublicCommandEntries } from '../harness/skillListing'
@@ -391,13 +392,13 @@ async function fireSessionEndHooks(conversationId: string, reason: string): Prom
 }
 
 function defaultCommandsRoot(): string {
-  // 内置 slash 命令(doctor/help/model/skills/...)已从退役的 server/commands 迁到 ts/commands。
-  const candidates = [
+  // 内置 slash 命令(doctor/help/model/...)在 ts/commands。⚠️打包态走 resolveBundledDir(execPath 相对,
+  // 否则编译二进制 cwd=userData / import.meta.dir=/$bunfs 都找不到,打包后内置命令静默消失)。
+  return resolveBundledDir('commands', [
     join(process.cwd(), 'commands'),
     join(process.cwd(), 'ts', 'commands'),
     join(import.meta.dir, '..', '..', 'commands'),
-  ]
-  return candidates.find(existsSync) ?? candidates[0]!
+  ])
 }
 
 function workspaceCommandRoots(workspaceRoot: string): string[] {
@@ -463,14 +464,13 @@ async function handleGoalCommand(conversationId: string, args: string, transcrip
 
 function defaultAgentsRoot(): string {
   // app 内置 agents(=cc 的 getBuiltInAgents:general-purpose / Explore / Plan)。cc 把内置 agent 编进代码;
-  // 我们对齐 bundled skills/commands 的落点约定,放 `ts/src/agents/bundled/<name>.md`,开发/测试用
-  // import.meta.dir 定位、兼容从 repo 根 / ts 目录起进程。旧 `server/agents` 已随 Python 线退役删除,不再引用。
-  const candidates = [
+  // 我们放 `ts/src/agents/bundled/<name>.md`。⚠️打包态定位走 resolveBundledDir(execPath 相对,见其文档:
+  // 编译二进制 import.meta.dir=/$bunfs、cwd=userData 都失效,不修则打包后子代理静默蒸发)。
+  return resolveBundledDir('agents', [
     join(import.meta.dir, '..', 'agents', 'bundled'),
     join(process.cwd(), 'src', 'agents', 'bundled'),
     join(process.cwd(), 'ts', 'src', 'agents', 'bundled'),
-  ]
-  return candidates.find(existsSync) ?? candidates[0]!
+  ])
 }
 
 function defaultMcpConfigPath(workspaceRoot: string, env: Record<string, string | undefined> = process.env): string | undefined {

@@ -20,11 +20,27 @@ files:
   - "!**/*.test.*"
 
 # 后端 sidecar 二进制随包(build:sidecar 产物)→ resources/binaries;prod 主进程从 process.resourcesPath/binaries 找。
+# ⚠️ bundled 三层能力随包(2026-07-11 修复打包蒸发):编译二进制 import.meta.dir=/$bunfs、cwd=userData
+# 都找不到运行时 readdir 读的 .md,故把 agents/skills/commands 发到 Resources/bundled/<name>,
+# sidecar 经 resolveBundledDir 按 execPath 相对(<execDir>/../bundled/<name>)定位。缺这段=打包后
+# 子代理/技能/斜杠命令静默消失(已实证:repo 外跑编译二进制→命令/技能数=0)。
 extraResources:
   - from: desktop/binaries
     to: binaries
     filter:
       - "**/*"
+  - from: src/agents/bundled
+    to: bundled/agents
+    filter:
+      - "**/*.md"
+  - from: src/skills/bundled
+    to: bundled/skills
+    filter:
+      - "**/*"
+  - from: commands
+    to: bundled/commands
+    filter:
+      - "**/*.md"
 
 mac:
   target:
