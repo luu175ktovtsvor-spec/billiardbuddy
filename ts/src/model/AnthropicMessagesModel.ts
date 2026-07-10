@@ -2,6 +2,8 @@ import { MODEL_OUTPUT_TRUNCATED_NOTICE, type Model, type ModelStepInput, type As
 import type { ContentBlock, DocumentBlock, ImageBlock, Message, ToolCall } from '../types/message'
 import { ensureToolResultPairing, normalizeMessagesForAPI } from '../proxy/messagePairing'
 import { parseOpenAIToolArguments, stringifyOpenAIToolArguments } from '../proxy/toolArguments'
+import { StreamProviderError } from '../proxy/streamAccumulate'
+import { withStreamIdleTimeout } from '../proxy/streamIdleTimeout'
 import type { AnthropicUsage } from '../proxy/types'
 import { ESCALATED_MAX_TOKENS, type FetchLike } from '../proxy/ProxyModel'
 import type { ProviderAuthStrategy } from './providerConfig'
@@ -16,6 +18,8 @@ export interface AnthropicMessagesModelConfig {
   authStrategy?: ProviderAuthStrategy
   maxTokens?: number
   requestTimeoutMs?: number
+  /** 流空闲超时(默认 60s)。对齐 ProxyModel 的同名字段:请求头响应后,SSE body 中途卡死(无新 chunk)由此兜底中止。 */
+  idleTimeoutMs?: number
   stream?: boolean
   /**
    * "深度思考/增强"档。⚠️注意:thinking 现已与 reasoningEffort **解耦**(对齐 cc,默认开)——本字段不再决定
@@ -64,6 +68,8 @@ interface AnthropicResponseJson {
 
 const DEFAULT_MAX_TOKENS = 4096
 const ANTHROPIC_VERSION = '2023-06-01'
+/** 流空闲超时默认值(对齐 ProxyModel 的 DEFAULT_IDLE_MS)。 */
+const DEFAULT_IDLE_MS = 60_000
 
 export class AnthropicMessagesModel implements Model {
   constructor(private readonly cfg: AnthropicMessagesModelConfig) {}
@@ -192,7 +198,9 @@ export class AnthropicMessagesModel implements Model {
   private async readResponse(resp: Response, onDelta?: ModelStepInput['onDelta']): Promise<AnthropicAccumulated> {
     const contentType = resp.headers.get('content-type') ?? ''
     if (contentType.includes('text/event-stream') && resp.body) {
-      return accumulateAnthropicStream(resp.body, onDelta)
+      // 空闲超时兜底(对齐 ProxyModel):headers 收到后 body 中途卡死(无新 chunk)不再永久挂起,超时中止并抛可识别错误。
+      const guarded = withStreamIdleTimeout(resp.body, this.cfg.idleTimeoutMs ?? DEFAULT_IDLE_MS)
+      return accumulateAnthropicStream(guarded, onDelta)
     }
     // 非 SSE(完整 JSON 响应):无逐 token 增量可吐(与 ProxyModel 非流式分支一致),整段由 AssistantStep 收尾。
     const json = (await resp.json().catch(() => ({}))) as AnthropicResponseJson
@@ -278,6 +286,17 @@ function normalizeUsage(usage: Partial<AnthropicUsage> | undefined): AnthropicUs
   }
 }
 
+/** SSE error 帧的 error 字段(或整包兜底)→ 可读文案(镜像 streamAccumulate.ts 的 streamErrorMessage,同族语义)。 */
+function anthropicStreamErrorMessage(err: unknown): string {
+  if (typeof err === 'string') return err
+  if (err && typeof err === 'object') {
+    const m = (err as { message?: unknown }).message
+    if (typeof m === 'string' && m) return m
+    return JSON.stringify(err)
+  }
+  return 'provider 流中途返回错误'
+}
+
 interface StreamFrag {
   type: string
   text: string
@@ -358,10 +377,27 @@ async function accumulateAnthropicStream(
     if (!trimmed || trimmed.startsWith(':') || !trimmed.startsWith('data:')) return
     const raw = trimmed.slice(trimmed.indexOf(':') + 1).trim()
     if (!raw || raw === '[DONE]') return
+    let payload: unknown
     try {
-      handleEvent(JSON.parse(raw) as unknown)
+      payload = JSON.parse(raw)
     } catch {
-      return
+      return // 坏行(非 JSON)跳过,不崩
+    }
+    // provider 中途吐 error 帧(Anthropic 协议 `event: error` 对应 data 形状 `{"type":"error","error":{...}}`,
+    // 部分兼容端点只给裸 `{"error":{...}}`,两种都识别):不能静默吞成截断空响应,抛出让模型层当错误处理
+    // (触发降级/重试),对齐 ProxyModel/streamAccumulate.ts 的 StreamProviderError 语义。
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      const rec = payload as Record<string, unknown>
+      // 真值判断对齐 streamAccumulate.ts:部分厂商正常帧带 `"error": null` 占位字段,
+      // `!== undefined` 会把好流误杀成 provider 错误。
+      if (rec.type === 'error' || !!rec.error) {
+        throw new StreamProviderError(anthropicStreamErrorMessage(rec.error ?? rec))
+      }
+    }
+    try {
+      handleEvent(payload)
+    } catch {
+      return // 坏形状(合法 JSON 但结构不对)跳过,不崩
     }
   }
 

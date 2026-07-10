@@ -42,13 +42,13 @@ test('SessionService:fork 用新 id 拷贝源会话 transcript,源不受影响,�
   try {
     const svc = new SessionService(root)
     await svc.create({ id: 'src', title: '原会话', workspaceRoot: '/ws/x' })
-    await svc.transcript('src').save([userText('历史消息1'), userText('历史消息2')])
+    await svc.transcript('src', '/ws/x').save([userText('历史消息1'), userText('历史消息2')])
     const forked = await svc.fork('src', { title: '分叉' })
     expect(forked.id).not.toBe('src')
     expect(forked.workspaceRoot).toBe('/ws/x')
     expect(forked.title).toBe('分叉')
-    expect((await svc.transcript(forked.id).load()).length).toBe(2)
-    expect((await svc.transcript('src').load()).length).toBe(2) // 源不受影响
+    expect((await svc.transcript(forked.id, forked.workspaceRoot).load()).length).toBe(2)
+    expect((await svc.transcript('src', '/ws/x').load()).length).toBe(2) // 源不受影响
     await expect(svc.fork('missingsession')).rejects.toThrow()
   } finally {
     rmSync(root, { recursive: true, force: true })
@@ -67,12 +67,37 @@ test('SessionService:坏 index 安全退空,非法 id 拒绝', async () => {
   }
 })
 
-test('SessionService:Transcript 走同一 root', async () => {
+test('SessionService:Transcript 落 projects/<slug> 布局,读写锚同一目录', async () => {
   const root = mkdtempSync(join(tmpdir(), 'sessions-transcript-'))
   try {
     const svc = new SessionService(root)
-    await svc.transcript('s1').save([userText('hi')])
+    await svc.create({ id: 's1', title: 'T', workspaceRoot: '/ws/y' })
+    await svc.transcript('s1', '/ws/y').save([userText('hi')])
     expect(await svc.loadTranscript('s1')).toEqual([userText('hi')])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('SessionService:sessions.json 是缓存 —— 删掉后 list() 从事件日志内嵌 provenance 重建', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'sessions-rebuild-'))
+  try {
+    const svc = new SessionService(root)
+    await svc.create({ id: 'r1', title: '第一条', workspaceRoot: '/ws/z' })
+    // transcript 里首条 user 文本当标题、cwd 当 workspaceRoot(内嵌 provenance)
+    await svc.transcript('r1', '/ws/z').append([userText('这是首条用户消息用作标题'), { role: 'assistant', content: [userText('x').content[0]!] }])
+    // 抹掉中央索引缓存
+    rmSync(join(root, 'sessions.json'), { force: true })
+
+    const rebuilt = await svc.rebuildIndexFromDisk()
+    expect(rebuilt.get('r1')?.workspaceRoot).toBe('/ws/z')
+    expect(rebuilt.get('r1')?.title).toBe('这是首条用户消息用作标题')
+
+    // list() 应自愈:缓存空 → 从盘重建并回写
+    const fresh = new SessionService(root)
+    const listed = await fresh.list()
+    expect(listed.map(m => m.id)).toContain('r1')
+    expect(listed.find(m => m.id === 'r1')?.workspaceRoot).toBe('/ws/z')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

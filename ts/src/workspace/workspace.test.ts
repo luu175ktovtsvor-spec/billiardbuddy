@@ -112,6 +112,11 @@ test('withAllowedPaths preserves existing external grants and adds new ones', ()
   rmSync(externalRoot, { recursive: true, force: true })
 })
 
+test('fullDiskAccess 标记公开只读可读(Sandbox.isOsSandboxActive 要联动它,见 sandbox/sandbox.ts)', () => {
+  expect(new Workspace(root).fullDiskAccess).toBe(false)
+  expect(new Workspace(root, { fullDiskAccess: true }).fullDiskAccess).toBe(true)
+})
+
 test('resolve fullDiskAccess allows external paths but keeps TOCTOU write guards', () => {
   const externalRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ws-full-')))
   const ws = new Workspace(root, { fullDiskAccess: true })

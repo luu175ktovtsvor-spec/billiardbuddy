@@ -15,6 +15,7 @@ import {
 } from '../model/publicModelNames'
 import { createChatOutputScrubber } from '../harness/outputScrub'
 import { SessionService, TurnRegistry, type SessionEventRecord, type SessionStatus, type SessionStreamEvent } from './services/sessionService'
+import { SessionRewindService, type RewindTargetSelector } from './services/sessionRewindService'
 import { ProviderService, type RuntimeProviderResolution } from './services/providerService'
 import { ProviderHealthStore, type ProviderHealthEntry } from './services/providerHealthStore'
 import { LegacyAgentStore, type LegacyArtifact } from './services/legacyAgentStore'
@@ -36,6 +37,7 @@ import {
   renderMinimalXlsx,
   saveOfficeDocumentBlocks,
 } from '../utils/officeDocuments'
+import { getLogger } from '../utils/logger'
 import { VoiceTranscriptionError, transcribeVoiceFile } from './services/voiceTranscription'
 import { buildGeneralRegistry } from '../tools/generalTools'
 import { workspaceForActiveWorktree } from '../tools/worktreeTools'
@@ -45,7 +47,7 @@ import { createBuiltinCommandLibrary, isBuiltinForkCommand } from '../commands/b
 import { allowedToolsForAgent } from '../commands/allowedTools'
 import { bridgeUnsafeCommandMessage, type CommandLibrary, filterBridgeSafeCommands, isBridgeSafeCommand, loadCommandsDir, loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
 import type { PromptCommand } from '../commands/types'
-import { loadHookRegistryFile, loadPluginHookRegistry } from '../hooks/hookConfig'
+import { loadPluginHookRegistry, loadWorkspaceHookRegistry } from '../hooks/hookConfig'
 import { applySessionEndHooks, configureHookTrust } from '../hooks/hooks'
 import { createDomainPackCommandLibrary, createDomainPackHookRegistry, createDomainPackTools, listPublicDomainPacks, mergeHookRegistries, registerDomainPackCommandAliases, resolveEnabledPacks, suggestedSkillNamesForPacks, type DomainPack } from '../packs/domainPacks'
 import { clearThreadGoalHook, createGoalHookRegistry, ensureThreadGoalHookFromTranscript, getThreadGoal, parseGoalCommand, setThreadGoalHook } from '../goals/goalState'
@@ -409,21 +411,17 @@ function defaultSkillsRoot(): string {
   return bundledSkillsRoot()
 }
 
-function defaultHooksPath(): string | undefined {
-  const candidates = [
-    join(process.cwd(), 'server', 'hooks.json'),
-    join(process.cwd(), '..', 'server', 'hooks.json'),
-  ]
-  return candidates.find(existsSync)
-}
-
 // SessionEnd 落点(对齐参考实现 executeSessionEndHooks:会话结束时触发,fire-and-forget)。
 // 宿主在"用户删除会话"处调用:载荷带结束原因,失败/超时都不拖垮删除主流程。用最小 ToolContext
 // (无 model——SessionEnd 一般是命令/清理类钩子;若配了 agent/prompt 钩子会因缺 model 优雅降级为非阻塞提示)。
-// 本地(local)来源钩子仍过工作区信任闸;工作区取显式全局默认工作区(getDefaultWorkspaceDir,不选文件夹时的落点)。
+// hooks 配置走三级加载(loadWorkspaceHookRegistry:~/.billiardbuddy/settings.json + 工作区
+// .billiardbuddy/settings.json + settings.local.json,取代已删除的死路径 server/hooks.json——
+// 该目录随老 Python server/ 一并删除,旧 defaultHooksPath() 恒 undefined,SessionEnd 从未真正加载到过
+// local hook)。project/local 两级来源钩子仍过工作区信任闸;工作区取显式全局默认工作区
+// (getDefaultWorkspaceDir,不选文件夹时的落点)。
 async function fireSessionEndHooks(conversationId: string, reason: string): Promise<void> {
   try {
-    const registry = await loadHookRegistryFile(defaultHooksPath())
+    const registry = await loadWorkspaceHookRegistry(getDefaultWorkspaceDir())
     if (!registry || registry.rules.length === 0) return
     const ctx: ToolContext = {
       workspace: new Workspace(getDefaultWorkspaceDir()),
@@ -477,7 +475,7 @@ function localCommandMessage(name: string, args: string, output: string): Messag
   }
 }
 
-async function handleGoalCommand(conversationId: string, args: string, transcript: { load(): Promise<Message[]>; save(messages: Message[]): Promise<void> }): Promise<{ output: string; shouldQuery: boolean }> {
+async function handleGoalCommand(conversationId: string, args: string, transcript: { load(): Promise<Message[]>; append(messages: Message[]): Promise<void> }): Promise<{ output: string; shouldQuery: boolean }> {
   const messages = await transcript.load()
   let parsed: ReturnType<typeof parseGoalCommand>
   try {
@@ -485,7 +483,7 @@ async function handleGoalCommand(conversationId: string, args: string, transcrip
   } catch (error) {
     const output = error instanceof Error ? error.message : String(error)
     messages.push(localCommandMessage('goal', args, output))
-    await transcript.save(messages)
+    await transcript.append(messages)
     return { output, shouldQuery: false }
   }
 
@@ -494,14 +492,14 @@ async function handleGoalCommand(conversationId: string, args: string, transcrip
     const cleared = clearThreadGoalHook(conversationId)
     const output = cleared || existing ? `Goal cleared: ${(cleared ?? existing)!.objective}` : 'No active goal.'
     messages.push(localCommandMessage('goal', args, output))
-    await transcript.save(messages)
+    await transcript.append(messages)
     return { output, shouldQuery: false }
   }
 
   const goal = setThreadGoalHook(conversationId, parsed.objective)
   const output = `Goal set: ${goal.objective}`
   messages.push(localCommandMessage('goal', args, output))
-  await transcript.save(messages)
+  await transcript.append(messages)
   return { output, shouldQuery: true }
 }
 
@@ -981,7 +979,10 @@ export function startServer(opts: StartServerOptions = {}) {
   try {
     runMigrations(stateRoot)
   } catch (err) {
-    console.warn('[migrations] 启动迁移异常(不影响服务启动):', err instanceof Error ? err.message : String(err))
+    getLogger('migrations', { logDir: join(stateRoot, 'logs') }).warn(
+      '启动迁移异常(不影响服务启动)',
+      { error: err instanceof Error ? err.message : String(err) },
+    )
   }
   // 工作区级 .mcp.json 信任闸(防恶意仓库 .mcp.json 自动 spawn 任意命令)。
   const mcpTrust = new McpTrustStore(join(stateRoot, 'mcp-trust.json'))
@@ -1069,6 +1070,8 @@ export function startServer(opts: StartServerOptions = {}) {
     },
   })
   const turns = new TurnRegistry()
+  // rewind/checkpoint 上层服务(对标 cc-haha sessionRewindService,存储走 Transcript.rewindTo 的 append-only 分支模型)。
+  const sessionRewind = new SessionRewindService(sessions, turns, stateRoot)
   // WS 断连宽限清理:最后一个消费者断连后,宽限期内无人重连则中止仍在跑的回合(防被遗弃的回合永远跑)。
   const turnGraceEnv = Number((opts.env ?? process.env).QF_TURN_ABANDON_GRACE_MS ?? '')
   const turnAbandonGraceMs = opts.turnAbandonGraceMs ?? (Number.isFinite(turnGraceEnv) && turnGraceEnv > 0 ? turnGraceEnv : 5 * 60 * 1000)
@@ -1542,7 +1545,7 @@ export function startServer(opts: StartServerOptions = {}) {
         udsInboxWarning = `UDS messaging socket failed to start:${err instanceof Error ? err.message : String(err)}`
       }
     }
-    const transcript = sessions.transcript(conversationId)
+    const transcript = sessions.transcript(conversationId, workspace.root)
     await sessions.touch(conversationId, {
       title: rawUserMessage.slice(0, 40),
       workspaceRoot: workspace.root,
@@ -1619,7 +1622,10 @@ export function startServer(opts: StartServerOptions = {}) {
     const userContent = commandInvocation || goalCommandResult?.shouldQuery ? undefined : explicitUserContent
     const skillRecommendations = suggestedSkillNamesForPacks(enabledPacks)
     const domainPackTools = createDomainPackTools(enabledPacks)
-    const configuredHooks = await loadHookRegistryFile(opts.hooksPath ?? defaultHooksPath())
+    // hooks 配置三级加载(user ~/.billiardbuddy/settings.json + 工作区 .billiardbuddy/settings.json +
+    // settings.local.json,对齐同仓库 permissions/permissionsSettings.ts 的三级路径;取代已删除的死路径
+    // defaultHooksPath()/server/hooks.json)。opts.hooksPath 仍作显式覆盖路径叠加进来(source:'local')。
+    const configuredHooks = await loadWorkspaceHookRegistry(workspace.root, opts.hooksPath)
     // 已启用插件贡献的 hooks(对齐 cc loadPluginHooks:标准位置 <plugin>/hooks/hooks.json + manifest.hooks 声明的附加文件),
     // 归一为 source:'plugin' 并入本次会话 hooks(app 级可信、不走工作区信任闸)。坏插件/读失败静默跳过、不拖垮会话。
     const pluginHookPaths = await resolveEnabledPluginHookConfigPaths(defaultPluginRoots(opts.env ?? process.env)).catch(() => [] as string[])
@@ -1635,7 +1641,8 @@ export function startServer(opts: StartServerOptions = {}) {
       cwd: workspace.root,
       signal: controller.signal,
       timeoutMs: 10000,
-      toolTimeoutMs: 120000,
+      // toolTimeoutMs 不硬编码:走 mcp/client.ts 的 mcpToolTimeoutMs() 默认值(近乎无限,可用
+      // QF_MCP_TOOL_TIMEOUT 覆盖),否则这里的常量会把 P0 修复在生产路径悄悄顶掉。
       fetchImpl: opts.fetchImpl,
       elicitationHandler: input => handleMcpElicitation(input, {
         conversationId,
@@ -1737,7 +1744,7 @@ export function startServer(opts: StartServerOptions = {}) {
           cwd: workspaceRoot,
           signal,
           timeoutMs: 10000,
-          toolTimeoutMs: 120000,
+          // toolTimeoutMs 不硬编码,同上:走 mcp/client.ts 的近乎无限默认值 + QF_MCP_TOOL_TIMEOUT 覆盖。
           fetchImpl: opts.fetchImpl,
           elicitationHandler: input => handleMcpElicitation(input, {
             conversationId,
@@ -1758,6 +1765,7 @@ export function startServer(opts: StartServerOptions = {}) {
         sidechainRoot: agentSidechainRoot,
         hooks,
         mcp: backgroundAgentOptions.mcp,
+        teams,
         startBackgroundAgent: (input, toolCtx, forkContext) => startBackgroundAgentRun(backgroundAgentOptions!, input, toolCtx, {}, [], [], forkContext ? { forkContext } : {}),
         registerForegroundAgent: (input, toolCtx, forkContext) => tasks.registerForegroundAgent({
           agentId: input.agentId,
@@ -1823,7 +1831,7 @@ export function startServer(opts: StartServerOptions = {}) {
       )
       const agentId = typeof task.params?.agent_id === 'string' ? ` agent_id="${escapeXml(task.params.agent_id)}"` : ''
       const output = `<background_task_started id="${escapeXml(task.id)}" agent="${escapeXml(agent.name)}"${agentId} status="${escapeXml(task.status)}">\n${escapeXml(task.title)}\n</background_task_started>`
-      await transcript.save([
+      await transcript.append([
         ...parentMessages,
         { role: 'user', content: [textBlock(commandInvocation?.raw ?? rawUserMessage)] },
         { role: 'assistant', content: [textBlock(output)] },
@@ -1862,7 +1870,7 @@ export function startServer(opts: StartServerOptions = {}) {
       const name = typeof task.params?.name === 'string' ? ` name="${escapeXml(task.params.name)}"` : ''
       const agentId = typeof task.params?.agent_id === 'string' ? ` agent_id="${escapeXml(task.params.agent_id)}"` : ''
       const output = `<background_task_started id="${escapeXml(task.id)}" agent="${escapeXml(agent.name)}"${name}${agentId} status="${escapeXml(task.status)}">\n${escapeXml(task.title)}\n</background_task_started>`
-      await transcript.save([
+      await transcript.append([
         ...parentMessages,
         { role: 'user', content: [textBlock(commandInvocation?.raw ?? rawUserMessage)] },
         { role: 'assistant', content: [textBlock(output)] },
@@ -1963,6 +1971,7 @@ export function startServer(opts: StartServerOptions = {}) {
           contextWindowChars: typeof rawBody.contextWindowChars === 'number' ? rawBody.contextWindowChars : undefined,
           contextWindowTokens,
           toolResultStoreDir: join(stateRoot, 'tool-results', conversationId),
+          stateRoot,
           hooks,
           initialSessionHooks,
           onSessionHooksChanged: updatedHooks => {
@@ -2188,7 +2197,7 @@ export function startServer(opts: StartServerOptions = {}) {
     const providerRuntimes = orderRuntimeProvidersForAttempt(resolvedProviderRuntimes).runtimes
     const providerRuntime = providerRuntimes[0]!
 
-    const transcript = sessions.transcript(id)
+    const transcript = sessions.transcript(id, session.workspaceRoot)
     const messages = await transcript.load()
     restoreInvokedSkillsFromMessages(messages, id)
     const invokedSkills = createInvokedSkillsMessage(id)
@@ -2235,13 +2244,13 @@ export function startServer(opts: StartServerOptions = {}) {
     const workspace = workspaceFromBody(rawBody)
     const skillsRoot = opts.skillsRoot ?? defaultSkillsRoot()
     const commandsRoot = opts.commandsRoot ?? defaultCommandsRoot()
-    const hooksPath = opts.hooksPath ?? defaultHooksPath()
     const agentsRoot = opts.agentsRoot ?? defaultAgentsRoot()
     const enabledPacks = resolveEnabledPacks(rawBody)
     const [skills, commands, hooks, agents] = await Promise.all([
       loadLayeredSkills({ bundledRoot: skillsRoot, workspaceRoot: workspace.root }),
       loadCommandsForWorkspace(workspace.root, commandsRoot, enabledPacks, opts.env ?? process.env),
-      loadHookRegistryFile(hooksPath),
+      // hooks 三级加载(见上方 §1621 同款注释);opts.hooksPath 仍作显式覆盖路径叠加。
+      loadWorkspaceHookRegistry(workspace.root, opts.hooksPath),
       loadAgentsDir(agentsRoot),
     ])
 
@@ -2252,7 +2261,6 @@ export function startServer(opts: StartServerOptions = {}) {
       const loaded = await loadMcpToolsFromFile(mcpConfigPath, {
         cwd: workspace.root,
         timeoutMs: 5000,
-        toolTimeoutMs: 120000,
         fetchImpl: opts.fetchImpl,
       })
       mcp = { tools: loaded.tools.length, warnings: loaded.warnings }
@@ -2282,7 +2290,7 @@ export function startServer(opts: StartServerOptions = {}) {
       skills: { root: skillsRoot, count: skills.skills.length },
       commands: { root: commandsRoot, count: commands.commands.length },
       domainTools: { count: createDomainPackTools(enabledPacks).length },
-      hooks: { path: hooksPath, count: hooks?.rules.length ?? 0 },
+      hooks: { path: opts.hooksPath, count: hooks?.rules.length ?? 0 },
       agents: { root: agentsRoot, count: agents.length },
       ...(mcp ? { mcp } : {}),
     }
@@ -2328,7 +2336,8 @@ export function startServer(opts: StartServerOptions = {}) {
       commands,
     )
     const mcpConfigPath = resolveMcpConfig(rawBody, workspace.root).path
-    const mcpLoadOpts = { cwd: workspace.root, timeoutMs: 10000, toolTimeoutMs: 120000, fetchImpl: opts.fetchImpl }
+    // toolTimeoutMs 不硬编码:走 mcp/client.ts 的近乎无限默认值 + QF_MCP_TOOL_TIMEOUT 覆盖。
+    const mcpLoadOpts = { cwd: workspace.root, timeoutMs: 10000, fetchImpl: opts.fetchImpl }
     const [mcpTools, ...pluginMcpResults] = await Promise.all([
       loadMcpToolsFromFile(mcpConfigPath, mcpLoadOpts),
       ...pluginContribs.mcpConfigPaths.map(path => loadMcpToolsFromFile(path, mcpLoadOpts).catch(() => ({ tools: [], connections: [], warnings: [] }))),
@@ -2362,6 +2371,7 @@ export function startServer(opts: StartServerOptions = {}) {
         conversationId: conversationId || undefined,
         permissionMode: permissionModeFrom(body.permission_mode ?? body.permissionMode),
         toolResultStoreDir: conversationId ? join(stateRoot, 'tool-results', conversationId) : undefined,
+        stateRoot,
       }
       // 持久化权限规则(工作区 .claude/settings.json)打底 + 会话临时规则覆盖,审批放行执行也认持久规则。
       const persistedRuleUpdates = permissionUpdatesFromRules(await loadPermissionRules(built.workspace.root))
@@ -2374,10 +2384,10 @@ export function startServer(opts: StartServerOptions = {}) {
       // cc 对齐:批准后把执行结果落进 transcript,让下一轮模型看得见"审批放行的工具结果",而不是永远停在 pending。
       // 审批在回合结束后发生(loop 在 approval_request 处已 return),无并发写,load+save 追加安全。
       if (conversationId && result.ok) {
-        const transcriptStore = sessions.transcript(conversationId)
+        const transcriptStore = sessions.transcript(conversationId, built.workspace.root)
         const existing = await transcriptStore.load().catch(() => [] as Message[])
         const approvedMessage: Message = { role: 'user', content: [textBlock(`[已批准并执行工具 ${tool}]\n${result.output}`)] }
-        await transcriptStore.save([...existing, approvedMessage]).catch(() => undefined)
+        await transcriptStore.append([...existing, approvedMessage]).catch(() => undefined)
       }
       return {
         tool,
@@ -2991,7 +3001,6 @@ export function startServer(opts: StartServerOptions = {}) {
     const loaded = await loadMcpToolsFromFile(mcpConfigPath, {
       cwd: workspaceRoot,
       timeoutMs: 5000,
-      toolTimeoutMs: 120000,
       fetchImpl: opts.fetchImpl,
     })
     try {
@@ -4552,6 +4561,43 @@ export function startServer(opts: StartServerOptions = {}) {
             return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status })
           }
         }
+      }
+
+      // rewind/checkpoint 上层服务:同时接受裸 /sessions 与 /api/sessions 前缀(验收文档写的是 /api 形状)。
+      const rewindMatch = url.pathname.match(/^(?:\/api)?\/sessions\/([A-Za-z0-9_-]{1,128})\/(turn-checkpoints|rewind)$/)
+      if (rewindMatch) {
+        const id = rewindMatch[1]!
+        const action = rewindMatch[2]
+        const session = await sessions.get(id)
+        if (!session) return Response.json({ ok: false, error: 'session not found' }, { status: 404 })
+        if (action === 'turn-checkpoints') {
+          if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
+          try {
+            return Response.json({ checkpoints: await sessionRewind.listTurnCheckpoints(id) })
+          } catch (err) {
+            return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 })
+          }
+        }
+        if (action === 'rewind' && req.method === 'POST') {
+          const body = await req.json().catch(() => ({})) as Record<string, unknown>
+          const selector: RewindTargetSelector = {
+            targetUserMessageId: typeof body.targetUserMessageId === 'string' ? body.targetUserMessageId : undefined,
+            userMessageIndex: typeof body.userMessageIndex === 'number' ? body.userMessageIndex : undefined,
+            expectedContent: typeof body.expectedContent === 'string' ? body.expectedContent : undefined,
+          }
+          if (!selector.targetUserMessageId && !Number.isInteger(selector.userMessageIndex)) {
+            return Response.json({ ok: false, error: 'targetUserMessageId or userMessageIndex is required' }, { status: 400 })
+          }
+          try {
+            const result = body.dryRun === true
+              ? await sessionRewind.previewRewind(id, selector)
+              : await sessionRewind.executeRewind(id, selector)
+            return Response.json(result)
+          } catch (err) {
+            return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 400 })
+          }
+        }
+        return new Response('Method not allowed', { status: 405 })
       }
 
       if (url.pathname === '/agent/hello') {

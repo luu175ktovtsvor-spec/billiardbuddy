@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadHookRegistryFile, loadPluginHookRegistry, normalizeHookRegistry } from './hookConfig'
+import { MEMORY_DOT_DIR } from '../harness/memoryNames'
+import { loadHookRegistryFile, loadPluginHookRegistry, loadWorkspaceHookRegistry, normalizeHookRegistry } from './hookConfig'
 import { configureHookTrust, resetHookTrust, runHookEvent } from './hooks'
 
 // 前后都复位:防其它测试文件(index.test.ts 的 startServer 会 configureHookTrust)在同进程泄漏进程级 override。
@@ -120,6 +121,126 @@ test('loadHookRegistryFile loads static JSON decisions', async () => {
     ])
   } finally {
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// —— P0 回归:hook 配置三级加载(user/project/local),取代已删除的死路径 defaultHooksPath()/server/hooks.json ——
+// 对齐同仓库 permissions/permissionsSettings.ts loadPermissionRules 的三级路径解析;隔离
+// BILLIARDBUDDY_CONFIG_DIR 让 loadUserHookRegistry 不读开发机真实 ~/.billiardbuddy。
+test('loadWorkspaceHookRegistry:user(~/.billiardbuddy/settings.json)+ project(.billiardbuddy/settings.json)+ local(settings.local.json)三级全部加载并合并生效', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-settings-'))
+  const userHome = mkdtempSync(join(tmpdir(), 'bb-hook-userhome-'))
+  const savedConfigDir = process.env.BILLIARDBUDDY_CONFIG_DIR
+  process.env.BILLIARDBUDDY_CONFIG_DIR = userHome
+  try {
+    writeFileSync(join(userHome, 'settings.json'), JSON.stringify({
+      hooks: { SessionStart: [{ decision: { action: 'context', additionalContext: 'user-hook' } }] },
+    }))
+    mkdirSync(join(root, MEMORY_DOT_DIR), { recursive: true })
+    writeFileSync(join(root, MEMORY_DOT_DIR, 'settings.json'), JSON.stringify({
+      hooks: { SessionStart: [{ decision: { action: 'context', additionalContext: 'project-hook' } }] },
+    }))
+    writeFileSync(join(root, MEMORY_DOT_DIR, 'settings.local.json'), JSON.stringify({
+      hooks: { SessionStart: [{ decision: { action: 'context', additionalContext: 'local-hook' } }] },
+    }))
+    // .claude 里放东西不该被读到(白标掰回分叉,与 permissionsSettings 同一口径)
+    mkdirSync(join(root, '.claude'), { recursive: true })
+    writeFileSync(join(root, '.claude', 'settings.json'), JSON.stringify({
+      hooks: { SessionStart: [{ decision: { action: 'context', additionalContext: 'should-not-load' } }] },
+    }))
+
+    const registry = await loadWorkspaceHookRegistry(root)
+    expect(registry?.rules).toHaveLength(3)
+    expect(registry?.rules.map(rule => rule.source).sort()).toEqual(['local', 'local', 'user'])
+
+    const wsCtx = { workspace: new Workspace(root) }
+    const decisions = await runHookEvent(registry, { event: 'SessionStart' }, wsCtx)
+    const notes = decisions.filter((d): d is { action: 'context'; additionalContext: string } => d.action === 'context').map(d => d.additionalContext).sort()
+    expect(notes).toEqual(['local-hook', 'project-hook', 'user-hook'])
+    expect(notes).not.toContain('should-not-load')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(userHome, { recursive: true, force: true })
+    if (savedConfigDir === undefined) delete process.env.BILLIARDBUDDY_CONFIG_DIR
+    else process.env.BILLIARDBUDDY_CONFIG_DIR = savedConfigDir
+  }
+})
+
+test('loadWorkspaceHookRegistry + 信任门:未受信工作区挡下 project/local(source:local),user 不受影响', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-settings-trust-'))
+  const userHome = mkdtempSync(join(tmpdir(), 'bb-hook-userhome-trust-'))
+  const savedConfigDir = process.env.BILLIARDBUDDY_CONFIG_DIR
+  process.env.BILLIARDBUDDY_CONFIG_DIR = userHome
+  try {
+    writeFileSync(join(userHome, 'settings.json'), JSON.stringify({
+      hooks: { SessionStart: [{ decision: { action: 'context', additionalContext: 'user-hook' } }] },
+    }))
+    mkdirSync(join(root, MEMORY_DOT_DIR), { recursive: true })
+    writeFileSync(join(root, MEMORY_DOT_DIR, 'settings.json'), JSON.stringify({
+      hooks: { SessionStart: [{ decision: { action: 'context', additionalContext: 'project-hook' } }] },
+    }))
+    writeFileSync(join(root, MEMORY_DOT_DIR, 'settings.local.json'), JSON.stringify({
+      hooks: { SessionStart: [{ decision: { action: 'context', additionalContext: 'local-hook' } }] },
+    }))
+
+    configureHookTrust({ interactive: true, isWorkspaceTrusted: () => false })
+    const registry = await loadWorkspaceHookRegistry(root)
+    const wsCtx = { workspace: new Workspace(root) }
+    const decisions = await runHookEvent(registry, { event: 'SessionStart' }, wsCtx)
+    const notes = decisions.filter((d): d is { action: 'context'; additionalContext: string } => d.action === 'context').map(d => d.additionalContext)
+    // 未受信:只有 user 生效,project/local(source:'local')被信任门挡下
+    expect(notes).toEqual(['user-hook'])
+
+    // 受信后 project/local 恢复生效
+    configureHookTrust({ interactive: true, isWorkspaceTrusted: () => true })
+    const trustedDecisions = await runHookEvent(registry, { event: 'SessionStart' }, wsCtx)
+    const trustedNotes = trustedDecisions.filter((d): d is { action: 'context'; additionalContext: string } => d.action === 'context').map(d => d.additionalContext).sort()
+    expect(trustedNotes).toEqual(['local-hook', 'project-hook', 'user-hook'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(userHome, { recursive: true, force: true })
+    if (savedConfigDir === undefined) delete process.env.BILLIARDBUDDY_CONFIG_DIR
+    else process.env.BILLIARDBUDDY_CONFIG_DIR = savedConfigDir
+  }
+})
+
+test('loadWorkspaceHookRegistry:extraPath 显式覆盖路径叠加(source:local),与三级设置文件一起合并', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-settings-extra-'))
+  const userHome = mkdtempSync(join(tmpdir(), 'bb-hook-userhome-extra-'))
+  const savedConfigDir = process.env.BILLIARDBUDDY_CONFIG_DIR
+  process.env.BILLIARDBUDDY_CONFIG_DIR = userHome
+  try {
+    const extraPath = join(root, 'explicit-hooks.json')
+    writeFileSync(extraPath, JSON.stringify({
+      hooks: [{ event: 'SessionStart', decision: { action: 'context', additionalContext: 'explicit-hook' } }],
+    }))
+    const registry = await loadWorkspaceHookRegistry(root, extraPath)
+    expect(registry?.rules).toHaveLength(1)
+    expect(registry?.rules[0]?.source).toBe('local')
+    const wsCtx = { workspace: new Workspace(root) }
+    expect(await runHookEvent(registry, { event: 'SessionStart' }, wsCtx)).toEqual([
+      { action: 'context', additionalContext: 'explicit-hook' },
+    ])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(userHome, { recursive: true, force: true })
+    if (savedConfigDir === undefined) delete process.env.BILLIARDBUDDY_CONFIG_DIR
+    else process.env.BILLIARDBUDDY_CONFIG_DIR = savedConfigDir
+  }
+})
+
+test('loadWorkspaceHookRegistry:三级文件全缺失安全退 undefined', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-settings-empty-'))
+  const userHome = mkdtempSync(join(tmpdir(), 'bb-hook-userhome-empty-'))
+  const savedConfigDir = process.env.BILLIARDBUDDY_CONFIG_DIR
+  process.env.BILLIARDBUDDY_CONFIG_DIR = userHome
+  try {
+    expect(await loadWorkspaceHookRegistry(root)).toBeUndefined()
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(userHome, { recursive: true, force: true })
+    if (savedConfigDir === undefined) delete process.env.BILLIARDBUDDY_CONFIG_DIR
+    else process.env.BILLIARDBUDDY_CONFIG_DIR = savedConfigDir
   }
 })
 

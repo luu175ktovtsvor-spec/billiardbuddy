@@ -152,7 +152,8 @@ export async function loadAgentMcpRuntime(input: AgentMcpRuntimeInput): Promise<
     cwd: input.workspaceRoot,
     signal: input.signal,
     timeoutMs: 10000,
-    toolTimeoutMs: 120000,
+    // toolTimeoutMs 不在这里硬编码:留空走 mcp/client.ts 的 mcpToolTimeoutMs() 默认值(对齐 cc 近乎无限,
+    // 可用 QF_MCP_TOOL_TIMEOUT 覆盖),别在调用方悄悄把 P0 修复顶掉。
     ...loadOptions,
   })
   const tools = mergeTools(input.baseTools, loaded.tools)

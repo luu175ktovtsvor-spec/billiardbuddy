@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { AgentEvent, UsageUpdateEvent } from '../types/events'
 import type { Message, ContentBlock, ImageBlock, ToolResultBlock, ToolCall } from '../types/message'
 import { textBlock, toolUseBlock, toolResultBlock, userText } from '../types/message'
@@ -114,6 +115,7 @@ import {
   applyStopFailureHooks,
   applyStopHooks,
   applyUserPromptSubmitHooks,
+  hookAllowBypassesAsk,
   mergeHookRegistries,
   type HookRegistry,
 } from '../hooks/hooks'
@@ -122,8 +124,19 @@ import { clearThreadGoalHook, formatGoalContinuationStatusOutput, getThreadGoal,
 
 export interface TranscriptLike {
   load(): Promise<Message[]>
-  captureBaselineLen(): Promise<number>
-  savePreservingExternalTail(messages: Message[], baselineLen: number): Promise<void>
+  /** append-only 增量写:只把较盘上活跃链新增/分叉的那段追加成新行,绝不整表覆写(对齐 cc 事件日志)。 */
+  append(messages: Message[]): Promise<void>
+  /**
+   * 压缩边界落盘(对齐 cc autoCompact/insertMessageChain 的 compact-boundary 语义,见 memory/transcript.ts
+   * Transcript.recordCompaction):压缩前完整历史先补齐到盘(仍在活跃链、可 message 级 rewind),再追加一条
+   * compact-boundary + 压缩后消息(摘要 + 保留近段)。maybeCompact 的压缩成功分支必须调用它而非通用 append(),
+   * 否则压缩前历史会从活跃链上永久不可达(loadFullHistory/rewind/fork 全受害——此前的断链正是漏了这一步)。
+   */
+  recordCompaction(
+    preCompactMessages: Message[],
+    postCompactMessages: Message[],
+    meta: { trigger: 'auto' | 'manual'; preTokens?: number; messagesSummarized?: number },
+  ): Promise<void>
   loadContentReplacementRecords?(): Promise<ContentReplacementRecord[]>
   appendContentReplacementRecords?(records: ContentReplacementRecord[]): Promise<void>
 }
@@ -146,6 +159,8 @@ export interface RunAgentLoopOptions {
   skipUserMessage?: boolean
   maxTurns?: number
   signal?: AbortSignal
+  /** 状态根目录:透传给 ToolContext.stateRoot,让 file-history 快照落在 stateRoot 而非用户工作区(见 Tool.ts)。 */
+  stateRoot?: string
   /**
    * 硬停之外的第二条中断通道(submit-interrupt):调用方(server)在"运行中提交插话"时调用它,让循环把当前在飞的
    * 可中断工具当场 abort('interrupt')切断、再拿排队消息续跑。循环自带闸:只有正跑着 interruptBehavior==='cancel'
@@ -236,12 +251,10 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     if (interruptibleInFlight > 0 && !liveController.signal.aborted) liveController.abort('interrupt')
   }
   opts.registerInterrupt?.(requestInterrupt)
-  let transcriptBaseline = 0
   let history: Message[] = opts.initialMessages ?? []
   let contentReplacementRecords: ContentReplacementRecord[] = []
   if (opts.transcript) {
     try {
-      transcriptBaseline = await opts.transcript.captureBaselineLen()
       // 主会话 resume 清洗 transcript 残尾:上一轮中断/异常留下的未配对 tool_use / 孤儿 thinking / 空白
       // assistant 若直接喂回模型会破坏配对(Anthropic API 拒未配对 tool_use);无孤儿时为 no-op。
       const loaded = sanitizeResumeMessages(await opts.transcript.load())
@@ -275,6 +288,10 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     requestsSinceProgress: 0,
     toolResultStoreDir: opts.toolResultStoreDir,
     contentReplacementState,
+    // F1 关联修复:opts.stateRoot 此前只声明、从未真正接进 ctx——file-history 快照因此在生产环境恒回退到
+    // `<workspaceRoot>/.agent-file-history/`(污染用户工作区),与 SessionRewindService 读取的
+    // `<stateRoot>/file-history/` 对不上,即便 ctx.messageId 接对了,checkpoint 也永远读不到真实记录。
+    stateRoot: opts.stateRoot,
   }
   if (opts.initialPermissionUpdates?.length) ctx = applyPermissionUpdates(ctx, opts.initialPermissionUpdates)
   addAllowedToolsToContext(ctx, opts.initialAllowedTools)
@@ -307,7 +324,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   const saveTranscript = async () => {
     if (!opts.transcript) return
     try {
-      await opts.transcript.savePreservingExternalTail(messages, transcriptBaseline)
+      await opts.transcript.append(messages)
     } catch {
       // transcript 是跨轮记忆底座,但写失败不能拖垮当前任务。
     }
@@ -363,7 +380,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     messages = [...history, { role: 'assistant', content: [textBlock(text)] }]
     if (opts.transcript) {
       try {
-        await opts.transcript.savePreservingExternalTail(messages, transcriptBaseline)
+        await opts.transcript.append(messages)
       } catch {
         // hook 拦截后的落盘失败不能拖垮响应。
       }
@@ -423,6 +440,10 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
 
   const maybeCompact = async (force = false): Promise<string | undefined> => {
     const invokedSkills = createInvokedSkillsMessage(invokedSkillScopeId)
+    // 压缩前完整(未裁剪)messages 的引用:compactPipeline 成功时会把 `messages` 变量重指到压缩后的短数组,
+    // 这里留一份指向原数组对象的引用,供下面成功路径调 transcript.recordCompaction() 时把压缩前全量历史一并落盘
+    // (microcompactReadOnlyToolResults 原地折叠只读工具结果不改变数组本身,引用依旧有效)。
+    const preCompactMessages = messages
     const input = {
       messages,
       model,
@@ -446,6 +467,20 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       notes.push(...pre.additionalContext)
     }
     const out = await compactPipeline(input)
+    if (out.didCompact && opts.transcript) {
+      try {
+        // 压缩边界落盘(F2 修复):必须走 recordCompaction 而非通用 append()——否则压缩前历史从没真正落盘/
+        // 从活跃链分叉出去,后续 loadFullHistory()/rewind/fork 都够不到它(见 TranscriptLike.recordCompaction 注释)。
+        await opts.transcript.recordCompaction(preCompactMessages, out.messages, {
+          trigger,
+          preTokens: lastInputTokens,
+          messagesSummarized: preCompactMessages.length - out.messages.length,
+        })
+      } catch {
+        // 压缩边界落盘失败不能拖垮当前任务;messages 仍切到压缩后视图继续跑,下次自然 append() 兜底
+        // (退化为旧行为——压缩前历史这一次暂不可达,但不阻塞当前回合,后续压缩成功时会补上)。
+      }
+    }
     messages = out.messages
     compactionFailures = out.compactionFailures
     if (!out.didCompact) return notes.length > 0 ? notes.join('\n') : undefined
@@ -615,7 +650,15 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     const asstContent: ContentBlock[] = []
     if (step.text) asstContent.push(textBlock(step.text))
     for (const c of step.calls) asstContent.push(toolUseBlock(c))
-    messages.push({ role: 'assistant', content: asstContent })
+    // F1 修复:预生成这条发起工具调用的 assistant 消息的 uuid,挂在消息对象上(MessageProvenance.uuid)。
+    // Transcript.stamp() 落盘时会复用已挂的 uuid(见 memory/transcript.ts stamp()),而不是重新 randomUUID(),
+    // 这样「file-history 快照绑定的 messageId」==「这条消息落盘后的真实 uuid」——message 级 checkpoint/rewind
+    // 得以成立的关键连线(此前 ctx.messageId 全仓从未被赋值,fileHistory 记录的 messageId 恒 undefined)。
+    const assistantMessageId = randomUUID()
+    messages.push({ role: 'assistant', content: asstContent, uuid: assistantMessageId })
+    // 本批工具调用发起前置好:tool.execute() 内部经 ctx 记录的 file-history 快照按它绑定(见
+    // tools/fileHistory.ts recordFileSnapshot)。下一轮若还有 tool_calls,循环会在这里重新赋值,天然按轮隔离。
+    ctx.messageId = assistantMessageId
 
     // 逐个过闸,tool_result 块累积;只读安全批次并行跑,稍后装单条 user 消息(tool_result 紧贴 tool_use)
     ctx.messages = messages.slice()
@@ -1130,6 +1173,14 @@ async function* gateOneCall(
   const decision = resolvePermission(tool, hookInput, ctx)
   if (decision.behavior === 'deny') {
     yield feedback(decision.message, false)
+    return
+  }
+  // cc PreToolUse hook permissionDecision:'allow' → 只跳过"默认档位该问"这一层(decision.reason.type==='mode'),
+  // 不越过显式 ask 规则/forceConfirm/安全检查;deny>ask>allow 聚合由 hookAllowBypassesAsk 内部兜底。
+  if (decision.behavior === 'ask' && hookAllowBypassesAsk(hookResult, decision)) {
+    const outcome = yield* executeAllowedToolCallWithProgress(tool, call, hookInput, ctx, hooks, toolResultStoreDir)
+    toolResults.push(outcome.result)
+    for (const event of outcome.events) yield event
     return
   }
   // cc PreToolUse hook permissionDecision:'ask' → 即使当前档位/规则本会自动放行,也强制该次走审批闸。

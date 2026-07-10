@@ -687,6 +687,7 @@ export async function startBackgroundAgentRun(
         steerInbox,
         transcript: opts.tasks.transcript(task.id),
         toolResultStoreDir,
+        stateRoot: ctx.stateRoot,
         hooks,
         initialAllowedTools: agent.allowedToolRules,
         subagent: { agentId: stableAgentId, agentType: agent.name },

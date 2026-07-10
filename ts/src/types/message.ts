@@ -32,10 +32,33 @@ export interface ToolResultBlock { type: 'tool_result'; tool_use_id: string; con
 
 export type ContentBlock = TextBlock | ThinkingBlock | ImageBlock | DocumentBlock | ToolUseBlock | ToolResultBlock
 
+/**
+ * 事件日志戳记(对齐 cc TranscriptMessage:uuid/parentUuid + sessionId/cwd/gitBranch provenance)。
+ * 内核内存里的消息可以带这些字段,但**喂给模型前 proxy/model 只读 role/content**(见
+ * model/AnthropicMessagesModel.toAnthropicMessage、proxy/toOpenAiChatRequest.convertMessage 与
+ * proxy/messagePairing.normalizeMessagesForAPI —— 都显式重建 {role,content}),故戳记永不外泄给上游模型。
+ * 落盘时由 memory/Transcript 打戳(append-only 事件日志按 parentUuid 链重建),load() 回内存前一律剥回
+ * 干净的 {role,content}(向后兼容既有消费者/UI/压缩链路),链稳定性靠 Transcript 内部按内容比对复用盘上 uuid。
+ */
+export interface MessageProvenance {
+  /** 本条消息在事件日志里的稳定标识(cc:uuid)。 */
+  uuid?: string
+  /** 父消息 uuid;null = 链的根(新会话首条 / 压缩边界)。 */
+  parentUuid?: string | null
+  /** 归属会话 id(= conversationId)。 */
+  sessionId?: string
+  /** 产出这条消息时的工作区根(cc:cwd)。 */
+  cwd?: string
+  /** 产出这条消息时的 git 分支(尽力而为,读 .git/HEAD)。 */
+  gitBranch?: string
+  /** 写入时间戳(ISO)。 */
+  timestamp?: string
+}
+
 /** 内部消息:content 恒为块数组(不用 string|Block[] 双态);role 只有 user/assistant,system 单列。 */
 export type Message =
-  | { role: 'user'; content: ContentBlock[] }
-  | { role: 'assistant'; content: ContentBlock[] }
+  | ({ role: 'user'; content: ContentBlock[] } & MessageProvenance)
+  | ({ role: 'assistant'; content: ContentBlock[] } & MessageProvenance)
 
 export const textBlock = (text: string): TextBlock => ({ type: 'text', text })
 

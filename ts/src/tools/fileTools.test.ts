@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, realpathSync, symlinkSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, realpathSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../workspace/workspace'
@@ -9,6 +9,7 @@ import { fileReadManyTool, fileReadTool } from './fileReadTool'
 import { fileEditTool, fileMultiEditTool, filePatchManyTool, filePatchTool } from './fileEditTool'
 import { fileWriteTool } from './fileWriteTool'
 import { fileHistoryTool, restoreFileTool } from './fileHistoryTool'
+import { fileHistoryForMessage, listFileHistory } from './fileHistory'
 import { listDirTool } from './listDirTool'
 import { globFilesTool, grepFilesTool } from './searchTools'
 import { notebookEditTool } from './notebookEditTool'
@@ -553,6 +554,39 @@ test('file_history records write snapshots and restore_file restores the latest 
   expect(restored).toContain('backup_path=')
   expect(readFileSync(join(root, 'note.txt'), 'utf8')).toBe('v1\n')
   expect(ctx.fileReads?.get(join(root, 'note.txt'))?.size).toBe(3)
+})
+
+test('file_history 快照按 ctx.messageId 绑定、存进 stateRoot 不污染工作区,可按 messageId 定位', async () => {
+  const stateRoot = mkdtempSync(join(tmpdir(), 'state-'))
+  try {
+    ctx.conversationId = 'fh-msgid'
+    ctx.stateRoot = stateRoot
+    // 第一条消息 msg-A 改了 a.txt
+    ctx.messageId = 'msg-A'
+    await fileWriteTool.execute({ path: 'a.txt', content: 'A1\n' }, ctx)
+    // 第二条消息 msg-B 改了 a.txt 和 b.txt
+    ctx.messageId = 'msg-B'
+    await fileWriteTool.execute({ path: 'a.txt', content: 'A2\n' }, ctx)
+    await fileWriteTool.execute({ path: 'b.txt', content: 'B1\n' }, ctx)
+
+    // 快照落进 stateRoot/file-history,而不是用户工作区(别污染 git 仓库)
+    expect(existsSync(join(stateRoot, 'file-history'))).toBe(true)
+    expect(existsSync(join(root, '.agent-file-history'))).toBe(false)
+
+    // 按 messageId 定位(message 级 rewind 的地基):msg-B 有 a.txt+b.txt 两条,msg-A 只有 a.txt
+    const forB = await fileHistoryForMessage(ctx, 'msg-B')
+    expect(forB.map(r => r.path).sort()).toEqual(['a.txt', 'b.txt'])
+    expect(forB.every(r => r.messageId === 'msg-B')).toBe(true)
+    const forA = await fileHistoryForMessage(ctx, 'msg-A')
+    expect(forA.map(r => r.path)).toEqual(['a.txt'])
+    expect(forA[0]!.messageId).toBe('msg-A')
+    // listFileHistory 的 messageId 过滤同样生效
+    expect((await listFileHistory(ctx, { messageId: 'msg-B' })).length).toBe(2)
+    // 空 messageId → 空
+    expect(await fileHistoryForMessage(ctx, '')).toEqual([])
+  } finally {
+    rmSync(stateRoot, { recursive: true, force: true })
+  }
 })
 
 test('edit_excel updates csv cells and records file history', async () => {

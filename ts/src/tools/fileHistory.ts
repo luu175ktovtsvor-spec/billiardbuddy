@@ -10,6 +10,11 @@ export type FileHistoryOperation = 'write_file' | 'edit_file' | 'edit_excel' | '
 export interface FileHistoryRecord {
   id: string
   ts: string
+  /**
+   * 绑定的消息 uuid(对齐 cc fileHistory 以 messageId 为键 → 支持 message 级 rewind):这份快照是「处理哪条 assistant
+   * 消息时」拍下的。由 ctx.messageId 提供(= transcript 里那条消息的 uuid);脱离主循环单跑工具时可能缺省。
+   */
+  messageId?: string
   conversationId: string
   path: string
   operation: FileHistoryOperation
@@ -23,7 +28,10 @@ export interface FileHistoryRecord {
 }
 
 const MAX_SNAPSHOT_BYTES = 5 * 1024 * 1024
+/** 工作区兜底目录名(未提供 stateRoot 时用,向后兼容独立跑工具)。 */
 const HISTORY_DIR = '.agent-file-history'
+/** stateRoot 下的 file-history 目录名(挪出用户工作区、别污染用户 git 仓库)。 */
+const STATE_HISTORY_DIR = 'file-history'
 
 function hash(value: string): string {
   return createHash('sha256').update(value).digest('hex')
@@ -39,8 +47,16 @@ function safeConversationId(value: string | undefined): string {
   return `${clean}-${shortHash(raw)}`
 }
 
+/**
+ * file-history 存储根:优先挪进 stateRoot(`<stateRoot>/file-history/<会话>`,别污染用户 git 仓库);
+ * 未提供 stateRoot 时回退工作区 `.agent-file-history/<会话>`(向后兼容,独立跑工具)。仍按会话分区
+ * (对齐 cc 的 per-session fileHistory state),快照按 messageId 绑定见 FileHistoryRecord.messageId。
+ */
 function historyRoot(ctx: ToolContext): string {
-  return join(ctx.workspace.root, HISTORY_DIR, safeConversationId(ctx.conversationId))
+  const base = ctx.stateRoot
+    ? join(ctx.stateRoot, STATE_HISTORY_DIR)
+    : join(ctx.workspace.root, HISTORY_DIR)
+  return join(base, safeConversationId(ctx.conversationId))
 }
 
 function indexPath(ctx: ToolContext): string {
@@ -74,6 +90,8 @@ export async function recordFileSnapshot(ctx: ToolContext, inputPath: string, ab
   const base: FileHistoryRecord = {
     id,
     ts: new Date().toISOString(),
+    // messageId = 当前处理的 assistant 消息 uuid(见 ctx.messageId),快照按它绑定支持 message 级 rewind。
+    ...(ctx.messageId ? { messageId: ctx.messageId } : {}),
     conversationId,
     path,
     operation,
@@ -135,12 +153,22 @@ export async function loadFileHistory(ctx: ToolContext): Promise<FileHistoryReco
   }
 }
 
-export async function listFileHistory(ctx: ToolContext, opts: { path?: string | string[]; paths?: string[]; limit?: number } = {}): Promise<FileHistoryRecord[]> {
+export async function listFileHistory(ctx: ToolContext, opts: { path?: string | string[]; paths?: string[]; limit?: number; messageId?: string } = {}): Promise<FileHistoryRecord[]> {
   const records = await loadFileHistory(ctx)
   const normalizedPaths = normalizePathFilters(ctx, opts)
-  const filtered = normalizedPaths ? records.filter(record => normalizedPaths.has(record.path)) : records
+  let filtered = normalizedPaths ? records.filter(record => normalizedPaths.has(record.path)) : records
+  if (opts.messageId) filtered = filtered.filter(record => record.messageId === opts.messageId)
   const limit = Math.max(1, Math.min(200, opts.limit ?? 20))
   return filtered.slice(-limit).reverse()
+}
+
+/**
+ * 按 messageId 定位快照(对齐 cc 以 messageId 为键的 fileHistory,支持 message 级 rewind):返回处理某条消息时
+ * 拍下的全部文件快照(文件顺序)。空 messageId → 空。上层可据此把这批文件回滚到该消息前的状态。
+ */
+export async function fileHistoryForMessage(ctx: ToolContext, messageId: string): Promise<FileHistoryRecord[]> {
+  if (!messageId) return []
+  return (await loadFileHistory(ctx)).filter(record => record.messageId === messageId)
 }
 
 function normalizePathFilters(ctx: ToolContext, opts: { path?: string | string[]; paths?: string[] }): Set<string> | undefined {

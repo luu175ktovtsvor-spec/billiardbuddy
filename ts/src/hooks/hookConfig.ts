@@ -2,10 +2,12 @@ import { spawn } from 'node:child_process'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { mergeHookRegistries, parseHookDecisionJSON, type HookDecision, type HookEvent, type HookHandler, type HookPayload, type HookRegistry, type HookRule, type HookSource } from './hooks'
 import type { Tool, ToolContext } from '../tools/Tool'
 import { ToolRegistry } from '../tools/registry'
 import { runAgentLoop } from '../harness/loop'
+import { MEMORY_DOT_DIR, getUserConfigHomeDir } from '../harness/memoryNames'
 import { textBlock, type Message } from '../types/message'
 import { assertHttpHookHostAllowed, ssrfGuardedLookup } from './ssrfGuard'
 
@@ -743,8 +745,8 @@ export function normalizeHookRegistry(value: unknown, options?: NormalizeHookReg
   return { rules: source ? rules.map(rule => ({ ...rule, source })) : rules }
 }
 
-export async function loadHookRegistryFile(path: string | undefined): Promise<HookRegistry | undefined> {
-  if (!path) return undefined
+/** 读单个 hook 配置文件、按给定 source 标记规范化;文件不存在/坏 JSON 静默返回 undefined(不拖垮调用方)。 */
+async function loadHookRegistryFromPath(path: string, source: HookSource): Promise<HookRegistry | undefined> {
   let raw = ''
   try {
     raw = await readFile(path, 'utf8')
@@ -752,12 +754,64 @@ export async function loadHookRegistryFile(path: string | undefined): Promise<Ho
     return undefined
   }
   try {
-    // 工作区 .claude/settings 风格文件里的 hook 是不可信来源(任意命令),标 'local' 交给信任门约束。
-    const registry = normalizeHookRegistry(JSON.parse(raw) as unknown, { source: 'local' })
+    const registry = normalizeHookRegistry(JSON.parse(raw) as unknown, { source })
     return registry.rules.length > 0 ? registry : undefined
   } catch {
     return undefined
   }
+}
+
+/**
+ * 加载单个显式路径的 hook 配置文件,标 `source:'local'`(工作区来源、任意命令,受信任门约束)。
+ * 供调用方显式传一个覆盖路径时用(如 server 启动 opts.hooksPath);常规加载走三级
+ * `loadWorkspaceHookRegistry`(见下方),不再靠这个函数单独顶替 user/project/local 三级分层。
+ */
+export async function loadHookRegistryFile(path: string | undefined): Promise<HookRegistry | undefined> {
+  if (!path) return undefined
+  // 工作区 .billiardbuddy/settings 风格文件里的 hook 是不可信来源(任意命令),标 'local' 交给信任门约束。
+  return loadHookRegistryFromPath(path, 'local')
+}
+
+/**
+ * 用户级 hooks:`~/.billiardbuddy/settings.json` 的 `hooks` 字段(白标目录 getUserConfigHomeDir 派生,
+ * 对齐同仓库 `permissions/permissionsSettings.ts` loadUserPermissionRules 的用户级源)。
+ * 标 `source:'user'`——是用户自己机器上的配置、非工作区攻击面,不过 workspace trust 闸(见 hooks.ts
+ * HookSource 文档),但仍受 disableAllHooks/allowManagedHooksOnly 约束。
+ */
+export async function loadUserHookRegistry(): Promise<HookRegistry | undefined> {
+  return loadHookRegistryFromPath(join(getUserConfigHomeDir(), 'settings.json'), 'user')
+}
+
+/**
+ * 工作区级 hook 配置文件相对路径(白标:.billiardbuddy/,与 permissions/permissionsSettings.ts
+ * WORKSPACE_SETTINGS_FILES 同构):project = <root>/.billiardbuddy/settings.json,
+ * local = <root>/.billiardbuddy/settings.local.json。二者信任语义相同(都是工作区来源、都受
+ * workspace trust 闸约束),统一标 `source:'local'`,不再细分(不像 permissions 那样需要区分写入落点——
+ * hooks 没有"运行时持久化一条规则"的写回场景)。
+ */
+const WORKSPACE_HOOK_SETTINGS_RELATIVE_PATHS: readonly string[] = [
+  join(MEMORY_DOT_DIR, 'settings.json'),
+  join(MEMORY_DOT_DIR, 'settings.local.json'),
+]
+
+/**
+ * 三级 hook 配置合并加载(取代已删除的死路径 `defaultHooksPath()` 找老 Python `server/hooks.json`):
+ *   用户级(~/.billiardbuddy/settings.json,source:'user',不过 workspace trust 闸)
+ * + 工作区 project(<root>/.billiardbuddy/settings.json,source:'local')
+ * + 工作区 local(<root>/.billiardbuddy/settings.local.json,source:'local')
+ * + 可选显式覆盖路径(`extraPath`,兼容调用方/测试直传单文件的用法,同标 source:'local')。
+ *
+ * 合并语义对齐 cc `getAllHooks`(`src/utils/hooks/hooksSettings.ts:92-161`):**各源全部合并参与匹配**,
+ * 不是"高优先级覆盖低优先级"——hooks 本身没有互斥覆盖概念,谁真正生效由信任门(`shouldRunHookRule`)
+ * + deny>ask>allow 决策聚合决定,不是配置加载阶段的取舍。
+ */
+export async function loadWorkspaceHookRegistry(workspaceRoot: string, extraPath?: string): Promise<HookRegistry | undefined> {
+  const registries = await Promise.all([
+    loadUserHookRegistry(),
+    ...WORKSPACE_HOOK_SETTINGS_RELATIVE_PATHS.map(rel => loadHookRegistryFromPath(join(workspaceRoot, rel), 'local')),
+    extraPath ? loadHookRegistryFile(extraPath) : Promise.resolve(undefined),
+  ])
+  return mergeHookRegistries(...registries)
 }
 
 /**

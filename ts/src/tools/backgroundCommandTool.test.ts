@@ -93,6 +93,30 @@ test('background command rejects dangerous commands before spawning', async () =
   await expect(bg.execute({ command: 'rm -rf /' }, ctx)).rejects.toThrow(/危险命令/)
 })
 
+test('run_command_background 把 ctx.additionalWorkingDirectories 转成 extraWritablePaths 传给 sandbox.wrapCommand(P1 §7 修复)', async () => {
+  const bg = byName('run_command_background')
+  const extDir = realpathSync(mkdtempSync(join(tmpdir(), 'bg-extdir-')))
+  let capturedExtra: string[] | undefined
+  const fakeSandbox = {
+    async wrapCommand(_command: string, opts: { extraWritablePaths?: string[] }) {
+      capturedExtra = opts.extraWritablePaths
+      return null
+    },
+  }
+  const started = await bg.execute({ command: 'echo hi' }, {
+    ...ctx,
+    sandbox: fakeSandbox as unknown as import('../sandbox/sandbox').Sandbox,
+    additionalWorkingDirectories: new Map([[extDir, { path: extDir, source: 'session' }]]),
+  })
+  const taskId = taskIdFrom(started)
+  await poll(async () => {
+    const t = await tasks.get(taskId)
+    return t && t.status !== 'queued' && t.status !== 'running' ? t : null
+  })
+  expect(capturedExtra).toEqual([extDir])
+  rmSync(extDir, { recursive: true, force: true })
+})
+
 test('looksLikePrompt only flags interactive-looking tails', () => {
   expect(looksLikePrompt('Proceed? (y/n)')).toBe(true)
   expect(looksLikePrompt('Overwrite?')).toBe(true)

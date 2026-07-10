@@ -1,4 +1,5 @@
 import type { ToolContext } from '../tools/Tool'
+import type { PermissionDecision } from '../permissions/types'
 
 /**
  * hook 事件全集(对齐 cc-haha entrypoints/sdk/coreSchemas.ts HOOK_EVENTS 的落地子集)。
@@ -63,14 +64,19 @@ export type HookHandler = (payload: HookPayload, ctx: ToolContext) => HookDecisi
  * hook 规则来源。对齐 cc-haha 的 hook 源分层(managed/user/project/local/plugin/session)裁剪版:
  * - `managed`(默认,`source` 省略):内核/应用自身注册的可信 hook(域包 createDomainPackHookRegistry、
  *   目标 hook、技能/子代理内置注册),不来自被打开的用户仓库,信任门恒放行(除非 disableAllHooks)。
+ * - `user`:用户级全局 hook 配置(`~/.billiardbuddy/settings.json` 的 `hooks` 字段,对齐同仓库
+ *   `permissions/permissionsSettings.ts` 的 userSettings 源)。这是用户自己机器上的配置、不来自被打开的
+ *   工作区,非 RCE 攻击面——与 `plugin` 同一档:受 disableAllHooks 与 allowManagedHooksOnly 约束(机构策略
+ *   要求"仅托管"时,用户自定义的全局 hook 也该被锁掉),但**不**过 workspace trust 闸。
  * - `plugin`:已启用插件贡献的 hook(loadPluginHookRegistry,来自 ~/.billiardbuddy 或 library 里用户**主动装的**
  *   插件包,与插件 .mcp.json 同属"app 级可信、不来自被打开的工作区")。信任门:受 disableAllHooks 与
  *   allowManagedHooksOnly 约束(装的插件也是扩展、不是内核托管),但**不**过 workspace trust 闸(插件不在被打开的
  *   工作区里、非 RCE 攻击面)——与"插件 .mcp.json 直接加载不走工作区信任闸"的既有产品口径一致。
- * - `local`:从工作区 `.claude/settings` 风格文件(loadHookRegistryFile)加载的**任意命令 hook**——
- *   即本安全缺口所指的攻击面。信任门对它套用 allowManagedHooksOnly + workspace trust 两道闸。
+ * - `local`:从工作区 `.billiardbuddy/settings*.json` 风格文件(loadHookRegistryFile/loadWorkspaceHookRegistry)
+ *   加载的**任意命令 hook**——即本安全缺口所指的攻击面(涵盖 projectSettings 与 localSettings 两级,二者
+ *   信任语义相同,不再细分)。信任门对它套用 allowManagedHooksOnly + workspace trust 两道闸。
  */
-export type HookSource = 'managed' | 'plugin' | 'local'
+export type HookSource = 'managed' | 'user' | 'plugin' | 'local'
 
 export interface HookRule {
   event: HookEvent
@@ -164,10 +170,11 @@ export function shouldRunHookRule(rule: HookRule, workspaceRoot: string, policy:
   if (policy.disableAllHooks) return false
   // managed(省略 source)= app 内置可信内核,只受 ① disableAllHooks 约束。
   if (rule.source === undefined || rule.source === 'managed') return true
-  // allowManagedHooksOnly:只跑 managed → 挡 plugin 与 local(装的插件/工作区文件都算非托管扩展)。
+  // allowManagedHooksOnly:只跑 managed → 挡 user/plugin/local(用户全局配置/装的插件/工作区文件都算非托管扩展)。
   if (policy.allowManagedHooksOnly) return false
-  // plugin(用户主动装的插件贡献):非工作区攻击面,不过 workspace trust 闸,过了 ①② 即放行。
-  if (rule.source === 'plugin') return true
+  // user(用户级全局 settings.json)/plugin(用户主动装的插件贡献):都非工作区攻击面,
+  // 不过 workspace trust 闸,过了 ①② 即放行。
+  if (rule.source === 'user' || rule.source === 'plugin') return true
   // local(工作区文件源):交互模式下 workspace 未受信则挡(非交互/SDK 时 trust 隐式成立)。
   if (policy.interactive && !policy.isWorkspaceTrusted(workspaceRoot)) return false
   return true
@@ -257,6 +264,14 @@ export interface PreToolUseResult {
   /** cc PreToolUse permissionDecision:'ask' → 强制该次调用走审批闸(无视当前 permissionMode 的自动放行)。 */
   askMessage?: string
   askRequested?: boolean
+  /**
+   * cc PreToolUse permissionDecision:'allow' → hook 明确要求跳过审批弹窗直接放行(对齐 cc
+   * resolveHookPermissionDecision,src/services/tools/toolHooks.ts:333-435)。是否真的生效由调用方
+   * 用 `hookAllowBypassesAsk` 结合 `resolvePermission()` 的结果判定——deny 总覆盖(已在本函数内提前
+   * return)、ask 优先于 allow(`askRequested` 同时为真时不生效)、且不越过显式 ask 规则/工具自身强制
+   * 交互闸(见 hookAllowBypassesAsk 的取舍说明)。
+   */
+  allowRequested?: boolean
   additionalContext: string[]
 }
 
@@ -280,14 +295,52 @@ export async function applyPreToolUseHooks(
   const additionalContext: string[] = []
   let askRequested = false
   let askMessage: string | undefined
+  let allowRequested = false
   const decisions = await runHookEvent(registry, { event: 'PreToolUse', toolName, input }, ctx)
   for (const decision of decisions) {
     if (decision.action === 'deny') return { input: nextInput, deniedMessage: decision.message, additionalContext }
     if (decision.action === 'ask') { askRequested = true; askMessage = decision.message ?? askMessage }
+    // deny>ask>allow 聚合优先级(对齐 cc):allow 独立记录,谁赢由消费方(hookAllowBypassesAsk)判——
+    // 本函数内已保证 deny 短路,ask 与 allow 同时出现时消费方按 askRequested 优先丢弃 allow 的效力。
+    if (decision.action === 'allow') allowRequested = true
     if (decision.action === 'modify') nextInput = decision.updatedInput
     if (decision.action === 'context') additionalContext.push(decision.additionalContext)
   }
-  return { input: nextInput, additionalContext, ...(askRequested ? { askRequested, askMessage } : {}) }
+  return {
+    input: nextInput,
+    additionalContext,
+    ...(askRequested ? { askRequested, askMessage } : {}),
+    ...(allowRequested ? { allowRequested } : {}),
+  }
+}
+
+/**
+ * 消费 PreToolUse hook 的显式 allow 决策(对齐 cc resolveHookPermissionDecision,
+ * `src/services/tools/toolHooks.ts:333-435`):hook allow 只跳过"当前权限档位默认该弹窗确认"这一层,
+ * **不**越过:
+ *  - deny(调用方在 `applyPreToolUseHooks` 已提前 return,这里不会走到);
+ *  - 显式 ask 规则(`decision.reason.type === 'rule'`,cc `checkRuleBasedPermissions` 的 ask 分支);
+ *  - 工具自身强制交互闸(`forceConfirm`/`requiresUserInteraction`,产品红线:连 bypassPermissions
+ *    也拦,hook 更不该能绕过——对应 cc `requiresInteraction` 守卫,始终优先于 hook 结果);
+ *  - acceptEdits 安全检查(`safetyCheck`,.git/mcp 配置等敏感路径退回询问的加固闸)。
+ * 只有 `decision.reason.type === 'mode'`(纯粹因为默认权限档位要问、没有任何规则/安全闸参与,对应 cc
+ * `checkRuleBasedPermissions` 返回 null 的情形)才被 hook allow 豁免。
+ *
+ * 用法(供 harness/loop.ts 在 `resolvePermission()` 之后接线,本次改动未接线到 loop——见调用方接线说明):
+ *   const hookResult = await applyPreToolUseHooks(hooks, call.name, call.input, ctx)
+ *   const decision = resolvePermission(tool, hookResult.input, ctx)
+ *   if (decision.behavior === 'ask' && hookAllowBypassesAsk(hookResult, decision)) {
+ *     // 跳过审批弹窗,直接按 allow 执行
+ *   }
+ */
+export function hookAllowBypassesAsk(
+  hookResult: Pick<PreToolUseResult, 'askRequested' | 'allowRequested'>,
+  decision: Pick<PermissionDecision, 'behavior' | 'reason'>,
+): boolean {
+  if (!hookResult.allowRequested) return false
+  if (hookResult.askRequested) return false // deny>ask>allow:ask 赢
+  if (decision.behavior !== 'ask') return false
+  return decision.reason?.type === 'mode'
 }
 
 export async function applySessionStartHooks(

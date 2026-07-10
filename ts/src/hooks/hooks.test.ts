@@ -16,6 +16,7 @@ import {
   applySubagentStartHooks,
   applyUserPromptSubmitHooks,
   configureHookTrust,
+  hookAllowBypassesAsk,
   matchesToolMatcher,
   mergeHookRegistries,
   parseHookDecisionJSON,
@@ -77,6 +78,72 @@ test('applyPreToolUseHooks:hook 返回 ask → askRequested + askMessage(强制�
   expect(result.askRequested).toBe(true)
   expect(result.askMessage).toBe('这条命令要确认')
   expect(result.deniedMessage).toBeUndefined()
+})
+
+// —— P0 回归:PreToolUse hook 的 allow 决策不再被静默丢弃(对齐 cc resolveHookPermissionDecision) ——
+test('applyPreToolUseHooks:单 hook 返回 allow → allowRequested 为真(此前被静默丢弃)', async () => {
+  const c = ctx()
+  const result = await applyPreToolUseHooks({
+    rules: [{ event: 'PreToolUse', matcher: 'run_command', handler: () => ({ action: 'allow', message: '自动放行' }) }],
+  }, 'run_command', { command: 'ls' }, c)
+  expect(result.allowRequested).toBe(true)
+  expect(result.askRequested).toBeUndefined()
+  expect(result.deniedMessage).toBeUndefined()
+})
+
+test('applyPreToolUseHooks:一个 hook allow + 一个 hook deny → deny 胜(deny>ask>allow 聚合优先级)', async () => {
+  const c = ctx()
+  const allowThenDeny = await applyPreToolUseHooks({
+    rules: [
+      { event: 'PreToolUse', matcher: '*', handler: () => ({ action: 'allow' }) },
+      { event: 'PreToolUse', matcher: '*', handler: () => ({ action: 'deny', message: '拒绝' }) },
+    ],
+  }, 'run_command', { command: 'ls' }, c)
+  expect(allowThenDeny.deniedMessage).toBe('拒绝')
+
+  // 顺序反过来(deny 先出现)结果一致,证明不依赖 hook 注册顺序
+  const denyThenAllow = await applyPreToolUseHooks({
+    rules: [
+      { event: 'PreToolUse', matcher: '*', handler: () => ({ action: 'deny', message: '拒绝' }) },
+      { event: 'PreToolUse', matcher: '*', handler: () => ({ action: 'allow' }) },
+    ],
+  }, 'run_command', { command: 'ls' }, c)
+  expect(denyThenAllow.deniedMessage).toBe('拒绝')
+})
+
+test('applyPreToolUseHooks:一个 hook allow + 一个 hook ask → ask 胜(allow 不生效)', async () => {
+  const c = ctx()
+  const result = await applyPreToolUseHooks({
+    rules: [
+      { event: 'PreToolUse', matcher: '*', handler: () => ({ action: 'allow' }) },
+      { event: 'PreToolUse', matcher: '*', handler: () => ({ action: 'ask', message: '要确认' }) },
+    ],
+  }, 'run_command', { command: 'ls' }, c)
+  expect(result.askRequested).toBe(true)
+  expect(result.allowRequested).toBe(true) // allow 决策仍被记录,但下游消费按 ask 优先
+  expect(result.deniedMessage).toBeUndefined()
+})
+
+test('hookAllowBypassesAsk:hook allow 只跳过"默认模式该问"的弹窗,不越过显式规则/强制交互闸/deny>ask 优先级', () => {
+  // 无 hook allow → 不豁免
+  expect(hookAllowBypassesAsk({}, { behavior: 'ask', reason: { type: 'mode', mode: 'default' } })).toBe(false)
+  // decision 本就不是 ask(如 deny/allow)→ 不适用
+  expect(hookAllowBypassesAsk({ allowRequested: true }, { behavior: 'deny' })).toBe(false)
+  expect(hookAllowBypassesAsk({ allowRequested: true }, { behavior: 'allow' })).toBe(false)
+  // 唯一豁免场景:hook allow 且 resolvePermission 只是因为默认权限档位才要问(reason.type==='mode')
+  expect(hookAllowBypassesAsk({ allowRequested: true }, { behavior: 'ask', reason: { type: 'mode', mode: 'default' } })).toBe(true)
+  // 显式 ask 规则:不豁免(hook allow 不能盖过用户/工作区配置的显式 ask 规则)
+  expect(hookAllowBypassesAsk({ allowRequested: true }, {
+    behavior: 'ask',
+    reason: { type: 'rule', rule: { source: 'userSettings', ruleBehavior: 'ask', ruleValue: { toolName: 'run_command' } } },
+  })).toBe(false)
+  // 工具自身强制交互闸(forceConfirm/requiresUserInteraction):不豁免,产品红线连 bypassPermissions 都拦
+  expect(hookAllowBypassesAsk({ allowRequested: true }, { behavior: 'ask', reason: { type: 'forceConfirm' } })).toBe(false)
+  expect(hookAllowBypassesAsk({ allowRequested: true }, { behavior: 'ask', reason: { type: 'requiresUserInteraction' } })).toBe(false)
+  // acceptEdits 安全检查(safetyCheck):不豁免
+  expect(hookAllowBypassesAsk({ allowRequested: true }, { behavior: 'ask', reason: { type: 'safetyCheck', reason: '敏感路径', classifierApprovable: false } })).toBe(false)
+  // deny>ask>allow:同时有 hook ask 时,即便也有 hook allow,也不豁免(ask 赢)
+  expect(hookAllowBypassesAsk({ allowRequested: true, askRequested: true }, { behavior: 'ask', reason: { type: 'mode', mode: 'default' } })).toBe(false)
 })
 
 test('runHookEvent:按事件和 matcher 执行,hook 抛错 fail-closed deny', async () => {
@@ -353,6 +420,24 @@ test('信任门 shouldRunHookRule:plugin 源被 disableAllHooks 与 allowManaged
   const managedOnly = { disableAllHooks: false, allowManagedHooksOnly: true, interactive: false, isWorkspaceTrusted: () => true }
   expect(shouldRunHookRule(plugin, '/ws', disableAll)).toBe(false)
   expect(shouldRunHookRule(plugin, '/ws', managedOnly)).toBe(false)
+})
+
+// —— 用户级全局 hook 源(user,~/.billiardbuddy/settings.json):非工作区攻击面,与 plugin 同档,
+// 不过 workspace trust 闸,但受 disableAll / managedOnly 约束(对齐 loadUserHookRegistry 的 source 标记)——
+test('信任门 shouldRunHookRule:user 源交互未受信仍放行(不来自被打开的工作区),与 local 分道', () => {
+  const user: HookRule = { event: 'PreToolUse', source: 'user', handler: () => null }
+  const local: HookRule = { event: 'PreToolUse', source: 'local', handler: () => null }
+  const untrusted = { disableAllHooks: false, allowManagedHooksOnly: false, interactive: true, isWorkspaceTrusted: () => false }
+  expect(shouldRunHookRule(user, '/ws', untrusted)).toBe(true)
+  expect(shouldRunHookRule(local, '/ws', untrusted)).toBe(false)
+})
+
+test('信任门 shouldRunHookRule:user 源被 disableAllHooks 与 allowManagedHooksOnly 挡下', () => {
+  const user: HookRule = { event: 'PreToolUse', source: 'user', handler: () => null }
+  const disableAll = { disableAllHooks: true, allowManagedHooksOnly: false, interactive: false, isWorkspaceTrusted: () => true }
+  const managedOnly = { disableAllHooks: false, allowManagedHooksOnly: true, interactive: false, isWorkspaceTrusted: () => true }
+  expect(shouldRunHookRule(user, '/ws', disableAll)).toBe(false)
+  expect(shouldRunHookRule(user, '/ws', managedOnly)).toBe(false)
 })
 
 // —— 新增生命周期事件派发器:PreCompact / PostCompact / SessionEnd / Notification / PostToolUseFailure ——

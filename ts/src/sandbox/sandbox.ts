@@ -1,5 +1,5 @@
 import type { Workspace } from '../workspace/workspace'
-import { buildRuntimeConfig, ensureInitialized, isOsSandboxSupported, wrapArgv } from './osSandbox'
+import { buildRuntimeConfig, ensureInitialized, isOsSandboxSupported, realpathIfExists, sandboxDenyWritePaths, wrapArgv } from './osSandbox'
 import { WindowsJobObjectLauncher } from './windowsLauncher'
 
 export interface WrappedCommand {
@@ -27,18 +27,43 @@ export class Sandbox {
   }
 
   isOsSandboxActive(): boolean {
-    return this.enabled && !this.degraded && isOsSandboxSupported(this.platform)
+    // fullDiskAccess 会话(app 层 Workspace.resolve 已放行工作区外任意路径读写)与"默认开的 OS 沙箱只认
+    // workspace.root"冲突:会把这个已文档化的能力(run_command.description "desktop full-disk sessions
+    // can run from external directories")在内核层静默拦死(EPERM)。cc 没有"全盘会话"这个概念,其最接近
+    // 的等价状态就是 sandbox.enabled=false(默认关=不设写围栏);故这里让 fullDiskAccess 会话视为沙箱不
+    // 激活,而非试图放宽 allowWrite("/" 这类写法 Linux 不认 glob、跨平台语义不稳,风险高于收益)。
+    return this.enabled && !this.degraded && !this.workspace.fullDiskAccess && isOsSandboxSupported(this.platform)
   }
 
-  async wrapCommand(command: string, opts: { signal?: AbortSignal } = {}): Promise<WrappedCommand | null> {
+  async wrapCommand(
+    command: string,
+    opts: { signal?: AbortSignal; extraWritablePaths?: string[] } = {},
+  ): Promise<WrappedCommand | null> {
     if (this.isOsSandboxActive()) {
       // 优雅降级:初始化/包裹一旦抛错(缺依赖/环境不支持),记 degraded 并退回明文执行,绝不因沙箱阻断命令。
       try {
+        // 工作区根落在 symlink 路径下时(macOS /tmp、/var、os.tmpdir() 均如此)统一 realpath 一次;
+        // allow(writablePaths)与 deny(sandboxDenyWritePaths)两边永远拼同一份已解析前缀(R4
+        // CONFIRMED #2 修复,详见 osSandbox.realpathIfExists 注释)。
+        const root = realpathIfExists(this.workspace.root)
         if (!this.initialized) {
-          await ensureInitialized(buildRuntimeConfig({ writablePaths: [this.workspace.root] }))
+          await ensureInitialized(buildRuntimeConfig({
+            writablePaths: [root],
+            denyWritePaths: sandboxDenyWritePaths(root),
+          }))
           this.initialized = true
         }
-        return await wrapArgv(command, opts.signal)
+        // 每次调用都无条件带上该工作区完整的 filesystem 覆盖(allowWrite/denyWrite 全量),不再只在
+        // extraWritablePaths 变化时才传——SandboxManager 是进程级单例,并发的另一个工作区的 Sandbox
+        // 实例随时可能通过 ensureInitialized→updateConfig() 把全局 config 整体覆写成它自己的
+        // workspace(R4 CONFIRMED #1);customConfig.filesystem 各字段都显式填满时,wrapWithSandbox
+        // 完全不读全局残留状态,本次调用因此不受任何并发工作区影响(见 osSandbox.wrapArgv 注释)。
+        const extra = opts.extraWritablePaths ?? []
+        const perCallFilesystem = buildRuntimeConfig({
+          writablePaths: [root, ...extra],
+          denyWritePaths: sandboxDenyWritePaths(root),
+        }).filesystem
+        return await wrapArgv(command, opts.signal, { filesystem: perCallFilesystem })
       } catch {
         this.degraded = true
         return null

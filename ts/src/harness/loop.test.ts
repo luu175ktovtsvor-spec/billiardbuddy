@@ -23,6 +23,7 @@ import { textBlock, toolResultBlock, userText } from '../types/message'
 import { readStoredToolResultTool } from '../tools/storedToolResultTool'
 import { TeamService } from '../tasks/teamService'
 import { Transcript } from '../memory/transcript'
+import { loadFileHistory } from '../tools/fileHistory'
 import { createGoalHookRegistry, getThreadGoal, setThreadGoalHook } from '../goals/goalState'
 import type { HookRegistry } from '../hooks/hooks'
 import { TaskListService } from '../tasks/taskListService'
@@ -492,7 +493,9 @@ test('passes current message snapshot to tool execution', async () => {
 
   expect(seenMessages).toBeTruthy()
   expect(seenMessages![0]).toEqual({ role: 'user', content: [textBlock('x')] })
-  expect(seenMessages!.at(-1)).toEqual({
+  // toMatchObject:发起工具调用的 assistant 消息现在额外带一个 provenance uuid(作 file-history 的 messageId),
+  // 只校验 role/content,忽略 uuid 戳。
+  expect(seenMessages!.at(-1)).toMatchObject({
     role: 'assistant',
     content: [
       textBlock('checking context'),
@@ -1187,6 +1190,25 @@ test('hooks:PreToolUse permissionDecision=ask → 只读工具也被强制走审
   const ap = events.find(e => e.type === 'approval_request')
   expect(ap && ap.type === 'approval_request' && ap.tool).toBe('read_file')
   expect(ap && ap.type === 'approval_request' && ap.reason?.why).toContain('读文件请确认')
+})
+
+test('hooks:PreToolUse permissionDecision=allow → 默认档 mode 级 ask 被跳过,工具免审批直接执行(不越过 forceConfirm/规则 ask)', async () => {
+  process.env.SECRET_KEY = SECRET
+  resetDenialStore()
+  const hooks: HookRegistry = {
+    rules: [{ event: 'PreToolUse', matcher: 'write_file', handler: () => ({ action: 'allow' }) }],
+  }
+  const events = await collect(runAgentLoop({
+    model: scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: '1', name: 'write_file', input: { path: 'hook-allow.txt', content: 'ok' } }] },
+      { kind: 'final', text: '完成' },
+    ]),
+    registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'default', conversationId: 'hook-allow', hooks,
+  }))
+  // default 档写文件本走 ask(reason.type='mode');hook allow 只跳这一层 → 不弹卡、真写盘
+  expect(events.some(e => e.type === 'approval_request')).toBe(false)
+  expect(readFileSync(join(root, 'hook-allow.txt'), 'utf8')).toBe('ok')
 })
 
 test('executeApproved:token 对 → 真执行;token 错 → 校验失败不执行', async () => {
@@ -2132,7 +2154,8 @@ test('thinking 只展示、不进 assistant 历史(白标:reasoning 不回灌模
   expect(events.some(e => e.type === 'thinking' && e.text === '内心戏A\n\n正文')).toBe(true)
   // 第 2 次 step 看到的历史里,step1 的 assistant 消息只有 text+tool_use,没有 thinking 类型块/字样
   const assistantMsgs = received[1]!.messages.filter(m => m.role === 'assistant')
-  expect(assistantMsgs).toEqual([{
+  // toMatchObject:发起工具调用的 assistant 消息额外带 provenance uuid(file-history messageId),只校验 role/content。
+  expect(assistantMsgs).toMatchObject([{
     role: 'assistant',
     content: [
       { type: 'text', text: '正文' },
@@ -2294,8 +2317,10 @@ test('W4c transcript:收尾时保存完整 Anthropic 消息轨迹', async () => 
   const saved: import('../types/message').Message[][] = []
   const transcript = {
     async load() { return [userText('old')] },
-    async captureBaselineLen() { return 1 },
-    async savePreservingExternalTail(messages: import('../types/message').Message[]) { saved.push(messages) },
+    async append(messages: import('../types/message').Message[]) { saved.push(messages) },
+    // 本用例不触发压缩(无 contextWindowChars/token 阈值),recordCompaction 不会被调用;
+    // 仍需实现它以满足 TranscriptLike 接口(F2 修复后为必需方法)。
+    async recordCompaction(pre: import('../types/message').Message[], post: import('../types/message').Message[]) { saved.push([...pre, ...post]) },
   }
   const events = await collect(
     runAgentLoop({
@@ -2308,6 +2333,78 @@ test('W4c transcript:收尾时保存完整 Anthropic 消息轨迹', async () => 
   expect(saved).toHaveLength(1)
   expect(saved[0]!.some(m => m.role === 'user' && m.content.some(b => b.type === 'text' && b.text === 'old'))).toBe(true)
   expect(saved[0]!.some(m => m.role === 'assistant' && m.content.some(b => b.type === 'text' && b.text === 'done'))).toBe(true)
+})
+
+test('F1 回归(真集成,非手工硬编码 messageId):真实 loop 把 ctx.messageId 接上 assistant 消息的真实 uuid,fileHistory 记录不再恒为 undefined', async () => {
+  const transcript = new Transcript(join(root, 'ts-state'), 'msgid_conv')
+  const model = scriptedModel([
+    { kind: 'tool_calls', text: '写文件', calls: [{ id: 'call-1', name: 'write_file', input: { path: 'note.txt', content: 'hello\n' } }] },
+    { kind: 'final', text: 'done' },
+  ])
+  await collect(runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: '写 note.txt',
+    permissionMode: 'acceptEdits', // 低摩擦落盘,关注点是 messageId 连线,不是审批闸
+    conversationId: 'msgid_conv',
+    stateRoot: join(root, 'fh-state'),
+    transcript,
+  }))
+  expect(readFileSync(join(root, 'note.txt'), 'utf8')).toBe('hello\n')
+
+  // transcript 里真实落盘的、发起这次 write_file 调用的 assistant 消息 uuid。
+  const history = await transcript.loadFullHistoryStamped()
+  const assistantWithToolUse = history.find(r => r.message.role === 'assistant' && r.message.content.some(b => b.type === 'tool_use'))
+  expect(assistantWithToolUse).toBeDefined()
+
+  // fileHistory 记录的 messageId 必须真的等于上面那条消息的 uuid——此前 ctx.messageId 全仓从未被赋值,
+  // 这里恒为 undefined,listTurnCheckpoints/previewRewind/executeRewind 的四处消费点因此恒空转。
+  const records = await loadFileHistory({ workspace: new Workspace(root), conversationId: 'msgid_conv', stateRoot: join(root, 'fh-state') })
+  expect(records.length).toBe(1)
+  expect(records[0]!.messageId).toBeDefined()
+  expect(records[0]!.messageId).toBe(assistantWithToolUse!.uuid)
+})
+
+test('F2 回归:压缩(真实 Transcript.recordCompaction)后,loadFullHistory 仍能读到压缩前完整历史', async () => {
+  const transcript = new Transcript(join(root, 'ts-state'), 'compact_conv')
+  const initialMessages = Array.from({ length: 20 }, (_, i) => userText(`old-${i}-${'x'.repeat(40)}`))
+  let n = 0
+  const model: Model = {
+    async step(input) {
+      n++
+      if (n === 1) {
+        expect(input.tools).toEqual([]) // n===1 是 compactPipeline 内部的摘要子调用
+        return { kind: 'final', text: '压缩摘要' }
+      }
+      return { kind: 'final', text: 'done' }
+    },
+  }
+  const events = await collect(
+    runAgentLoop({
+      model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'new', initialMessages, contextWindowChars: 120,
+      conversationId: 'compact_conv', transcript,
+    }),
+  )
+  expect(events.some(e => e.type === 'context_note' && e.text.includes('已压缩旧上下文'))).toBe(true)
+  expect(events.at(-1)).toEqual({ type: 'final', text: 'done' })
+
+  // F2 回归断言:old-0..old-8 是被摘要吃掉、不进入压缩后窗口的那一段(split cut=9,keepRecent=12)——
+  // 此前 loop 只走通用 append(),这些消息在压缩这一刻从未落盘、也从活跃链上永久不可达;
+  // 修复后必须能从 loadFullHistory() 读到(recordCompaction 步骤 1 把压缩前全量历史先补齐落盘)。
+  const full = await transcript.loadFullHistory()
+  const fullTexts = full.filter(m => m.role === 'user').flatMap(m => m.content).filter(b => b.type === 'text').map(b => b.text)
+  expect(fullTexts.some(t => t.startsWith('old-0-'))).toBe(true)
+  expect(fullTexts.some(t => t.startsWith('old-8-'))).toBe(true)
+
+  // load()(发模型的活跃上下文)仍只回压缩后窗口(裁窗不受影响,二者不冲突):真正被摘要吃掉的 old-0
+  // 不该出现在活跃视图里(它只活在 loadFullHistory() 的压缩前历史段);old-9..old-19 属于"保留近段",
+  // 按设计仍会原样出现在活跃视图里,不是回归点。
+  const active = await transcript.load()
+  const activeTexts = active.filter(m => m.role === 'user').flatMap(m => m.content).filter(b => b.type === 'text').map(b => b.text)
+  expect(activeTexts.some(t => t.startsWith('old-0-'))).toBe(false)
 })
 
 test('hooks:PreToolUse 可改写工具参数后再执行', async () => {

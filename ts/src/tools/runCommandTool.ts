@@ -8,7 +8,7 @@ import { shellExternalReadNeedsApproval } from './readCommandBoundary'
 import type { ApprovalClass } from '../permissions/types'
 import { StreamingOutputSanitizer } from './outputSanitize'
 import { interpretCommandResult } from './commandSemantics'
-import { resolvePathWithAdditionalWorkingDirectories } from '../permissions/filePathRules'
+import { additionalWorkingDirectoryPaths, resolvePathWithAdditionalWorkingDirectories } from '../permissions/filePathRules'
 
 const DEFAULT_TIMEOUT_MS = 30_000
 export const MAX_TIMEOUT_MS = 600_000
@@ -86,7 +86,9 @@ export const runCommandTool: Tool<RunCommandInput> = {
   async execute(input, ctx) {
     if (!input || typeof input.command !== 'string') throw new Error('run_command 需要 string 参数 command')
     if (isDangerousCommand(input.command)) throw new Error(`拒绝执行危险命令：${input.command}`)
-    const wrapped = ctx.sandbox ? await ctx.sandbox.wrapCommand(input.command, { signal: ctx.signal }) : null
+    const wrapped = ctx.sandbox
+      ? await ctx.sandbox.wrapCommand(input.command, { signal: ctx.signal, extraWritablePaths: additionalWorkingDirectoryPaths(ctx) })
+      : null
     return await runInWorkspace(input, ctx, wrapped)
   },
 }
