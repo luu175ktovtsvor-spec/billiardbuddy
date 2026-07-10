@@ -30,6 +30,11 @@ export interface SessionMeta {
   updatedAt: string
   status?: SessionStatus
   lastEventSeq?: number
+  /**
+   * 会话已进入的领域包 id(如 ['billiards'])。owner 设计:用户敲 /台球 等入口斜杠命令进入台球运营管家后,
+   * 主循环把它持久化到这里,后续回合即便前端不回传 enabled_packs 也保持在该模式(自动注入 pack 知识/工具)。
+   */
+  enabledPacks?: string[]
 }
 
 /** 项目(工作区)聚合摘要:多项目 App 的"最近项目"选择器用。 */
@@ -58,7 +63,8 @@ function isSessionMeta(value: unknown): value is SessionMeta {
     typeof value.updatedAt === 'string' &&
     SESSION_ID_RE.test(value.id) &&
     (value.status === undefined || value.status === 'idle' || value.status === 'running' || value.status === 'interrupted' || value.status === 'failed') &&
-    (value.lastEventSeq === undefined || typeof value.lastEventSeq === 'number')
+    (value.lastEventSeq === undefined || typeof value.lastEventSeq === 'number') &&
+    (value.enabledPacks === undefined || (Array.isArray(value.enabledPacks) && value.enabledPacks.every(p => typeof p === 'string')))
 }
 
 function validateSessionId(id: string): void {
@@ -201,7 +207,7 @@ export class SessionService {
     return meta
   }
 
-  async touch(id: string, patch: Partial<Pick<SessionMeta, 'title' | 'workspaceRoot' | 'status' | 'lastEventSeq'>> = {}): Promise<SessionMeta> {
+  async touch(id: string, patch: Partial<Pick<SessionMeta, 'title' | 'workspaceRoot' | 'status' | 'lastEventSeq' | 'enabledPacks'>> = {}): Promise<SessionMeta> {
     validateSessionId(id)
     const index = await this.readIndex()
     const current = index.get(id)
