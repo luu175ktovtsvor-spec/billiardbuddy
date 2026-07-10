@@ -894,6 +894,14 @@ export class MediaJobService {
   }
 
   private seedreamImageConfig(model: string, route: ImageModelRoute): DirectImageConfig | null {
+    // 直连火山方舟(测试/自建:设 ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3 + ARK_API_KEY)。
+    // 端点走 Volcano 原生 /images/generations(joinImageEndpoint 识别 /api/vN 结尾直接拼),不走网关 /ark/ 前缀;
+    // 未设则回落网关路径(生产走网关藏 key)。payload/短限流重试逻辑不变(仍按 provider seedream-gateway)。
+    const directBase = normalizeBackendUrl(stringFrom(this.env.ARK_BASE_URL) ?? stringFrom(this.env.SEEDREAM_BASE_URL))
+    const directToken = stringFrom(this.env.ARK_API_KEY)
+    if (directBase && directToken) {
+      return { baseUrl: directBase, token: directToken, model, endpointPath: '/images/generations', provider: 'seedream-gateway', route }
+    }
     const baseUrl = normalizeBackendUrl(this.env.QF_GATEWAY_URL)
     const token = stringFrom(this.env.QF_GATEWAY_TOKEN) ?? stringFrom(this.env.ARK_API_KEY)
     if (!baseUrl || !token) return null
