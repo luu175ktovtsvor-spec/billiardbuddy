@@ -3,7 +3,7 @@ import { stat } from 'node:fs/promises'
 import type { Tool, ToolContext } from './Tool'
 import { fileHistoryBackupPath, recordFileSnapshot } from './fileHistory'
 import { resolveToolPath } from '../permissions/filePathRules'
-import { editCsvCell, editXlsxCell, isXlsxPath } from '../server/services/officeDocuments'
+import { editCsvCell, editXlsxCell, isXlsxPath } from '../utils/officeDocuments'
 
 export interface EditExcelInput {
   path: string

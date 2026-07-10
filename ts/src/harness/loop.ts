@@ -30,6 +30,8 @@ import {
 } from '../permissions/denialTracking'
 import { signApproval, verifyApproval } from '../permissions/approval'
 import { collectReminders, drainSteering, steerBlock, wrapReminder } from './reminders'
+import { computeRelevantMemoryInjection, SELECT_MEMORIES_SYSTEM_PROMPT, type MemorySelector } from '../memory/relevantMemories'
+import { getAutoMemDir } from './memoryNames'
 import { formatTodoChecklist, parseProgressMarkdown } from '../types/todo'
 import { compactPipeline, compactionWillRun, looksLikeContextOverflow } from '../context/compaction'
 import { buildRecentFileContextMessage } from '../context/recentFileContext'
@@ -63,6 +65,7 @@ import {
   questionEvent,
 } from '../tools/agentInteractionTools'
 import { isVerifyPlanExecutionToolName } from '../tools/verifyPlanExecutionTool'
+import { getPlan, getPlanFilePath } from './plans'
 import { validateToolInput } from '../tools/inputSchemaValidation'
 import { sanitizeResumeMessages } from './messageSanitize'
 import { getDestructiveCommandWarning } from '../tools/destructiveCommandWarning'
@@ -197,6 +200,12 @@ function cloneContentReplacementStateForSnapshot(state: ContentReplacementState 
   return state ? cloneContentReplacementState(state) : undefined
 }
 
+/** auto-memory 是否启用(与 systemPrompt/claudemd 的开关口径一致):禁用时不做记忆召回。 */
+function autoMemoryEnabledForLoop(): boolean {
+  const truthy = (v: string | undefined): boolean => v === '1' || v === 'true' || v === 'yes'
+  return !truthy(process.env.BILLIARDBUDDY_DISABLE_AUTO_MEMORY) && !truthy(process.env.BILLIARDBUDDY_DISABLE_MEMORY)
+}
+
 /**
  * 真 ReAct 主循环,内核 = Anthropic content-block:
  * think → 有 tool_use 就过权限闸执行(无 hook/无审批的只读工具可并行) → 一批 tool_result 装单条 user 消息回灌 → 再 think,直到收敛或 max_turns。
@@ -292,6 +301,9 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     yield { type: 'context_note', text: extra }
   }
   let messages: Message[] = []
+  // 正常用户回合的原始问题文本(用于记忆召回);只在真·用户消息路径置值,
+  // skipUserMessage / 被 hook 拦截 / stop-hook 续跑等路径保持 null → 不做召回。
+  let userTurnQuery: string | null = null
   const saveTranscript = async () => {
     if (!opts.transcript) return
     try {
@@ -376,6 +388,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     }
     userContent.push(...(opts.userContent ?? [textBlock(userPrompt.userPrompt)]))
     messages = [...history, { role: 'user', content: userContent }]
+    userTurnQuery = userPrompt.userPrompt
   }
   const readOnlyToolNames = new Set(registry.list().filter(t => t.isReadOnly).map(t => t.name))
   let compactionFailures = 0
@@ -452,6 +465,38 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     lastCompactedMessageCount = messages.length
     const base = recentFiles ? `${out.note}\n已恢复最近文件上下文。` : out.note
     return [base, ...notes].filter(Boolean).join('\n')
+  }
+
+  // —— 记忆召回(findRelevantMemories,对齐 cc utils/attachments.ts:2192 + query.ts prefetch)——
+  // 主 agent 正常用户回合开始时:拿这句话去 memdir 扫记忆头 → 便宜档小模型(复用主模型档)选 top-5 →
+  // 把选中主题文件正文当作一条 <system-reminder> 追加进本回合用户消息,让「写进去的记忆能被读回并用上」。
+  // 去重(历史里已注入过的路径,压缩后自愈)+ 会话字节上限;memdir 空 / 无命中 / 出错都静默跳过、不阻塞回合。
+  if (userTurnQuery && !opts.subagent && autoMemoryEnabledForLoop()) {
+    try {
+      const memorySelect: MemorySelector = async ({ query, manifest, signal }) => {
+        const out = await model.step({
+          system: SELECT_MEMORIES_SYSTEM_PROMPT,
+          messages: [userText(`用户的问题:${query}\n\n可选记忆:\n${manifest}`)],
+          tools: [],
+          signal,
+        })
+        return out.kind === 'final' ? out.text : (out.text ?? '')
+      }
+      const injection = await computeRelevantMemoryInjection({
+        query: userTurnQuery,
+        memoryDir: getAutoMemDir(opts.workspace.root),
+        select: memorySelect,
+        messages,
+        signal: liveController.signal,
+      })
+      const last = messages[messages.length - 1]
+      if (injection && last && last.role === 'user') {
+        last.content = [...last.content, textBlock(wrapReminder(injection.reminder))]
+        yield { type: 'context_note', text: `已根据你的问题从记忆库召回 ${injection.surfaced.length} 条相关记忆。` }
+      }
+    } catch {
+      // 召回是增强、不是主路:小模型报错 / 读盘失败等任何异常都静默跳过,不影响本回合。
+    }
   }
 
   // turn = 已完成的"用工具的回合"数(= cc turnCount 语义);只有工具批结束那一处 turn++ 并做 maxTurns 检查。
@@ -1001,17 +1046,20 @@ async function* gateOneCall(
       const answer = await waitForSteeringAnswer(ctx, question.timeoutMs, answerStartLen)
       if (answer && isEnterPlanApprovalAnswer(answer)) {
         ctx.permissionMode = 'plan'
+        const planFilePath = getPlanFilePath(ctx.workspace.root, ctx.conversationId)
         yield feedback([
           '<plan_mode_entered />',
           'Entered plan mode. You should now focus on exploring the codebase and designing an implementation approach.',
+          `Your plan file is: ${planFilePath}`,
+          'This plan file is the ONLY file you are allowed to edit in plan mode — build your plan incrementally by writing to it with write_file, then refining with edit_file. Everything else must stay read-only.',
           'In plan mode, you should:',
-          '1. Thoroughly explore the codebase to understand existing patterns.',
+          '1. Thoroughly explore the codebase to understand existing patterns (read-only tools only).',
           '2. Identify similar features and architectural approaches.',
           '3. Consider multiple approaches and their trade-offs.',
           '4. Use ask_user_question if you need to clarify the approach.',
-          '5. Design a concrete implementation strategy.',
-          '6. When ready, use ExitPlanMode to present your plan for approval.',
-          'Remember: DO NOT write or edit any files yet. This is a read-only exploration and planning phase.',
+          '5. Write the concrete, step-by-step plan into the plan file above.',
+          '6. When the plan file is ready, call ExitPlanMode to present it for approval (ExitPlanMode reads the plan from that file — do NOT pass the plan as an argument).',
+          'Remember: DO NOT write or edit any files other than the plan file yet. This is a read-only exploration and planning phase.',
         ].join('\n'), false)
       } else if (answer) {
         yield feedback(`<plan_mode_rejected>\n${answer}\n</plan_mode_rejected>`, false)
@@ -1026,7 +1074,14 @@ async function* gateOneCall(
 
   if (isExitPlanToolName(call.name)) {
     try {
-      const { plan, question } = normalizeExitPlanQuestion(call.input, call.id)
+      // cc ExitPlanModeV2 对齐:计划正文从**磁盘计划文件**读,而不是工具入参。模型还没写计划文件 → 先引导它写。
+      const planFilePath = getPlanFilePath(ctx.workspace.root, ctx.conversationId)
+      const plan = (getPlan(ctx.workspace.root, ctx.conversationId) ?? '').trim()
+      if (!plan) {
+        yield feedback(`计划文件 ${planFilePath} 还是空的。请先用 write_file 把完整、分步的计划写进这个文件(它是计划模式下你唯一能编辑的文件),再调用 ExitPlanMode 请求批准。`, true)
+        return
+      }
+      const question = normalizeExitPlanQuestion(plan, call.id, call.input)
       const answerStartLen = ctx.steerInbox?.length ?? 0
       yield questionEvent(question)
       const answer = await waitForSteeringAnswer(ctx, question.timeoutMs, answerStartLen)
@@ -1041,7 +1096,7 @@ async function* gateOneCall(
           verificationCompleted: false,
           toolCallsSinceApproval: 0,
         }
-        yield feedback(`<plan_approved>\n${plan}\n</plan_approved>\n用户已批准计划,当前回合已退出计划模式并切到 acceptEdits(自动接受文件编辑)档。完成实施后必须直接调用 VerifyPlanExecution 并附可复核证据。`, false)
+        yield feedback(`<plan_approved>\n${plan}\n</plan_approved>\n计划已保存到:${planFilePath}(实施时可随时用 read_file 复看)。用户已批准计划,当前回合已退出计划模式并切到 acceptEdits(自动接受文件编辑)档。完成实施后必须直接调用 VerifyPlanExecution 并附可复核证据。`, false)
       } else if (answer) {
         yield feedback(`<plan_needs_revision>\n${answer}\n</plan_needs_revision>`, false)
       } else {

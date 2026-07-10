@@ -5,6 +5,7 @@ import { mkdtempSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { resolvePermission } from './resolve'
+import { clearAllPlanSlugs, getPlanFilePath } from '../harness/plans'
 import type { PermissionRule } from './types'
 
 function ws() {
@@ -43,6 +44,29 @@ describe('resolvePermission 瀑布', () => {
   test('plan 模式 + 只读工具 → allow(可探索)', () => {
     const d = resolvePermission(tool({ isReadOnly: true }), {}, ctx('plan'))
     expect(d.behavior).toBe('allow')
+  })
+
+  test('plan 模式 + write_file 写本会话计划文件 → allow(计划文件豁免);写别的文件仍 deny', () => {
+    clearAllPlanSlugs()
+    const workspace = ws()
+    const conversationId = 'resolve-plan-file'
+    const planPath = getPlanFilePath(workspace.root, conversationId)
+    const base: Partial<ToolContext> = { workspace, permissionMode: 'plan', conversationId }
+    // 写计划文件 → 放行(计划模式下唯一可编辑文件)
+    const allow = resolvePermission(
+      tool({ name: 'write_file', requiresApproval: true, approvalClass: 'file' }),
+      { path: planPath, content: '计划' },
+      base as ToolContext,
+    )
+    expect(allow.behavior).toBe('allow')
+    // 写别的文件 → 仍被 plan 档拦
+    const deny = resolvePermission(
+      tool({ name: 'write_file', requiresApproval: true, approvalClass: 'file' }),
+      { path: 'other.txt', content: 'nope' },
+      base as ToolContext,
+    )
+    expect(deny.behavior).toBe('deny')
+    expect(deny.behavior === 'deny' && deny.reason.type).toBe('planSkip')
   })
 
   test('无 requiresApproval 的普通工具在执行档和 dontAsk 直接 allow', () => {

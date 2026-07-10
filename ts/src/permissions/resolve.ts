@@ -4,6 +4,21 @@ import type { ApprovalClass, DecisionReason, PermissionDecision, PermissionRule 
 import { canonicalPermissionMode } from './canonical'
 import { autoEditSafetyReason } from './autoEditSafety'
 import { fileRuleAppliesToTool, filePathRuleMatchesInput, filePathToolOperation } from './filePathRuleMatch'
+import { isSessionPlanFile } from '../harness/plans'
+
+// 计划模式下唯一允许写的文件类工具(对齐 cc checkEditableInternalPath:计划文件靠 FileWrite/FileEdit 写)。
+const PLAN_WRITABLE_TOOL_NAMES = new Set(['write_file', 'edit_file', 'multi_edit_file'])
+
+/**
+ * 是否「把方案写进本会话计划文件」——计划模式唯一放行的写动作。仅认写/改文件类工具、且入参 path 命中
+ * 本会话计划文件路径(见 harness/plans.isSessionPlanFile)。
+ */
+function isPlanFileWrite(tool: Tool, input: unknown, ctx: ToolContext): boolean {
+  if (!PLAN_WRITABLE_TOOL_NAMES.has(tool.name)) return false
+  const p = (input as { path?: unknown } | null)?.path
+  if (typeof p !== 'string') return false
+  return isSessionPlanFile(ctx.workspace.root, p, ctx.conversationId)
+}
 
 export const APPROVAL_PENDING_MSG = (name: string): string =>
   `[待用户确认] 已请求执行「${name}」。请用一两句话把你打算做的事告诉老板、并请他确认,不要假装已经做完或已生成。`
@@ -153,6 +168,11 @@ function resolvePermissionInner(tool: Tool, input: unknown, ctx: ToolContext): P
 
   const readOnly = tool.isReadOnly || (tool.isReadOnlyFor?.(input, ctx) ?? false)
   if (mode === 'plan' && !readOnly) {
+    // 计划模式唯一放行的写:把方案写进本会话计划文件(对齐 cc checkEditableInternalPath 的 plan 文件豁免)。
+    // 不豁免 → 计划模式提示「用 write_file 写计划文件」会变成点了没反应的死路(违反反逻辑铁律)。
+    if (isPlanFileWrite(tool, input, ctx)) {
+      return { behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: tool.name } }
+    }
     return { behavior: 'deny', message: PLAN_SKIP_MSG(tool.name), reason: { type: 'planSkip' } }
   }
 

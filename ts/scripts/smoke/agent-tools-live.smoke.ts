@@ -5,7 +5,7 @@ import { runAgentLoop } from '../../src/harness/loop'
 import { DEFAULT_MODEL_ENV_FILES, loadEnvFiles } from '../../src/model/envLoader'
 import { createModelFromProviderConfig } from '../../src/model/modelFactory'
 import { providerConfigFromEnv, redactedProviderSummary } from '../../src/model/providerConfig'
-import { readXlsxSheet, renderMinimalXlsx } from '../../src/server/services/officeDocuments'
+import { readXlsxSheet, renderMinimalXlsx } from '../../src/utils/officeDocuments'
 import { buildGeneralRegistry } from '../../src/tools/generalTools'
 import { Workspace } from '../../src/workspace/workspace'
 

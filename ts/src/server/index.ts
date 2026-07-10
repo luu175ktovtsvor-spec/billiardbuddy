@@ -35,7 +35,7 @@ import {
   renderMinimalPptx,
   renderMinimalXlsx,
   saveOfficeDocumentBlocks,
-} from './services/officeDocuments'
+} from '../utils/officeDocuments'
 import { VoiceTranscriptionError, transcribeVoiceFile } from './services/voiceTranscription'
 import { buildGeneralRegistry } from '../tools/generalTools'
 import { workspaceForActiveWorktree } from '../tools/worktreeTools'
@@ -91,6 +91,7 @@ import { TurnConsumerTracker } from './turnConsumerTracker'
 import { Workspace } from '../workspace/workspace'
 import { Sandbox } from '../sandbox/sandbox'
 import { McpTrustStore, resolveTrustedMcpConfig } from '../mcp/mcpTrust'
+import { runMigrations } from '../migrations'
 import type { AssistantStep, Model } from '../types/model'
 import { textBlock, type ContentBlock, type Message } from '../types/message'
 import type { AgentEvent, AskQuestionField } from '../types/events'
@@ -102,8 +103,8 @@ import type { FetchLike } from '../proxy/ProxyModel'
 import type { PermissionMode } from '../permissions/types'
 import { canonicalPermissionMode } from '../permissions/canonical'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
-import { getUserConfigHomeDir } from '../harness/memoryNames'
-import { existsSync } from 'node:fs'
+import { getAutoMemDir, getUserConfigHomeDir } from '../harness/memoryNames'
+import { existsSync, mkdirSync } from 'node:fs'
 import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 
 function sseLine(ev: AgentEvent | { type: 'done' }): string {
@@ -663,8 +664,14 @@ function supportContext(rawBody: Record<string, unknown>): string {
 }
 
 function workspaceFromBody(rawBody: Record<string, unknown>): Workspace {
-  return new Workspace(stringOr(rawBody.working_dir ?? rawBody.workspaceRoot, getDefaultWorkspaceDir()), {
-    allowedPaths: stringArray(rawBody.selected_files ?? rawBody.selectedFiles),
+  const root = stringOr(rawBody.working_dir ?? rawBody.workspaceRoot, getDefaultWorkspaceDir())
+  // 主 agent 读放行 carve-out(对齐 cc filesystem.ts isAutoMemFile 放行):AutoMem 记忆目录在
+  // 工作区之外(~/.billiardbuddy/projects/<slug>/memory),把它加进 allowedPaths,模型才能 grep/read_file
+  // 读回自己写的记忆(与写侧 save_memory、常驻索引读侧派生同一目录)。先 mkdir 保证它作为「目录」被放行。
+  const memoryDir = getAutoMemDir(new Workspace(root).root)
+  try { mkdirSync(memoryDir, { recursive: true }) } catch { /* 记忆目录创建尽力而为,失败不阻塞会话 */ }
+  return new Workspace(root, {
+    allowedPaths: [...stringArray(rawBody.selected_files ?? rawBody.selectedFiles), memoryDir],
     fullDiskAccess: rawBody.full_disk_access === true || rawBody.fullDiskAccess === true,
   })
 }
@@ -967,6 +974,15 @@ export function startServer(opts: StartServerOptions = {}) {
   const sandboxEnabled = opts.sandboxEnabled ?? ((opts.env ?? process.env).QF_OS_SANDBOX !== '0')
   const buildSandbox = (ws: Workspace): Sandbox => new Sandbox({ workspace: ws, enabled: sandboxEnabled })
   const stateRoot = resolveStateRoot({ transcriptRoot: opts.transcriptRoot, env: opts.env })
+  // 版本化 schema 迁移(#36 地基,对齐 cc main.tsx runMigrations):在任何 store 读 stateRoot 里的
+  // settings/数据前,同步、按序、幂等地把待迁移的 schema 变更跑一遍,已应用版本记进 <stateRoot>/migrations.json。
+  // 现注册表为空(cc 的具体迁移器都是给它上游模型改名、对我们不适用),故当前是空跑;地基就位,以后加一条即生效。
+  // runMigrations 对运行期失败不抛(失败只记录、下次幂等重跑),再包一层 try/catch 兜住极端情况,绝不拖垮启动。
+  try {
+    runMigrations(stateRoot)
+  } catch (err) {
+    console.warn('[migrations] 启动迁移异常(不影响服务启动):', err instanceof Error ? err.message : String(err))
+  }
   // 工作区级 .mcp.json 信任闸(防恶意仓库 .mcp.json 自动 spawn 任意命令)。
   const mcpTrust = new McpTrustStore(join(stateRoot, 'mcp-trust.json'))
   for (const root of opts.trustedWorkspaceRoots ?? []) mcpTrust.trust(root)
