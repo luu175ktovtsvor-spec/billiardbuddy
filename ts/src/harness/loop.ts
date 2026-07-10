@@ -106,6 +106,8 @@ function destructiveWarningForInput(toolName: string, input: unknown): string | 
 import { activateWorktreeSessionForContext } from '../tools/worktreeTools'
 import {
   applyNotificationHooks,
+  applyPermissionDeniedHooks,
+  applyPermissionRequestHooks,
   applyPostCompactHooks,
   applyPostToolUseFailureHooks,
   applyPostToolUseHooks,
@@ -1008,11 +1010,16 @@ async function executeAllowedToolCall(
     const imageSink: ImageBlock[] = []
     const previousSink = ctx.imageResultSink
     ctx.imageResultSink = imageSink
+    // 执行期把完整 hook 注册表挂进 ctx(同 imageResultSink 模式),供工具在 execute 内触发
+    // TaskCreated/WorktreeCreate/ConfigChange 等生命周期 hook(对齐 cc 在工具/服务内 fire)。
+    const previousActiveHooks = ctx.activeHooks
+    ctx.activeHooks = hooks
     let output: string
     try {
       output = await tool.execute(input, ctx)
     } finally {
       if (ctx.imageResultSink === imageSink) ctx.imageResultSink = previousSink
+      if (ctx.activeHooks === hooks) ctx.activeHooks = previousActiveHooks
     }
     const images = imageSink.length > 0 ? imageSink.slice() : undefined
     const stored = await maybeStoreToolResult(call.name, call.id, output, {
@@ -1160,11 +1167,20 @@ async function* gateOneCall(
     return
   }
 
+  // PermissionDenied hook(对齐 cc executePermissionDeniedHooks,utils/hooks.ts:3549-3581):权限被拒后
+  // 通知 hook(审计/自动化用),context 回灌不改变拒绝结果;cc 的 retry 输出本循环暂不实施重试(登记)。
+  // 用户在审批卡上点拒绝走 server 的 reject 通道(handleReject,无 hooks 上下文),该 call site 待接。
+  const fireDenied = async function* (reason: string): AsyncGenerator<AgentEvent> {
+    const denied = await applyPermissionDeniedHooks(hooks, call.name, call.input, reason, ctx, call.id)
+    for (const extra of denied.additionalContext) yield { type: 'context_note', text: extra }
+  }
+
   const hookResult = await applyPreToolUseHooks(hooks, call.name, call.input, ctx)
   for (const extra of hookResult.additionalContext) {
     yield { type: 'context_note', text: extra }
   }
   if (hookResult.deniedMessage) {
+    yield* fireDenied(hookResult.deniedMessage)
     yield feedback(`[hook 拦截] ${hookResult.deniedMessage}`, false)
     return
   }
@@ -1172,6 +1188,7 @@ async function* gateOneCall(
 
   const decision = resolvePermission(tool, hookInput, ctx)
   if (decision.behavior === 'deny') {
+    yield* fireDenied(decision.message)
     yield feedback(decision.message, false)
     return
   }
@@ -1197,7 +1214,27 @@ async function* gateOneCall(
       return
     }
     if (!forceAsk && shouldStopAskingForContext(ctx, key)) {
+      yield* fireDenied(DENIAL_FALLBACK_MSG(call.name))
       yield feedback(DENIAL_FALLBACK_MSG(call.name), false)
+      return
+    }
+    // PermissionRequest hook(对齐 cc executePermissionRequestHooks,utils/hooks.ts:4176-4211):审批卡
+    // 即将弹给用户时,给 hook 程序化裁决的机会——allow=等同用户点了批准(可带改参)当场执行,
+    // deny=等同用户点了拒绝;无裁决则照常弹卡。这是"hook 代答审批对话框",与 PreToolUse 的
+    // permissionDecision(只豁免 mode 级 ask)不同:代答对规则级/forceConfirm 级 ask 同样生效(cc 语义)。
+    const permReq = await applyPermissionRequestHooks(hooks, call.name, hookInput, ctx, { toolUseId: call.id })
+    for (const extra of permReq.additionalContext) yield { type: 'context_note', text: extra }
+    if (permReq.behavior === 'allow') {
+      const approvedInput = permReq.updatedInput ?? hookInput
+      const outcome = yield* executeAllowedToolCallWithProgress(tool, call, approvedInput, ctx, hooks, toolResultStoreDir)
+      toolResults.push(outcome.result)
+      for (const event of outcome.events) yield event
+      return
+    }
+    if (permReq.behavior === 'deny') {
+      const reason = permReq.message ?? DENIAL_FALLBACK_MSG(call.name)
+      yield* fireDenied(reason)
+      yield feedback(reason, false)
       return
     }
     let preview: string | undefined

@@ -2871,3 +2871,73 @@ test('工具执行段抛错(既有内层 try 之外)→ 未产出 result 的 cal
   // 循环照常走到 final(不崩)。
   expect(events.some(e => e.type === 'final')).toBe(true)
 })
+
+test('hooks:PermissionRequest allow → 审批卡不弹、等同用户批准当场执行(可带改参)', async () => {
+  process.env.SECRET_KEY = SECRET
+  resetDenialStore()
+  const spy = { ran: false }
+  const reg = new ToolRegistry([outreachTool(spy)])
+  const hooks: HookRegistry = {
+    rules: [{ event: 'PermissionRequest', matcher: 'send_message', handler: () => ({ action: 'allow' }) }],
+  }
+  const events = await collect(runAgentLoop({
+    model: scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: '1', name: 'send_message', input: { msg: 'hi' } }] },
+      { kind: 'final', text: '发完了' },
+    ]),
+    registry: reg, workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'ask', conversationId: 'permreq-allow', hooks,
+  }))
+  // 对外工具本会弹审批卡;PermissionRequest hook 代答 allow → 不弹卡、真执行
+  expect(events.some(e => e.type === 'approval_request')).toBe(false)
+  expect(spy.ran).toBe(true)
+})
+
+test('hooks:PermissionRequest deny → 审批卡不弹、等同用户拒绝,PermissionDenied hook 收到通知', async () => {
+  process.env.SECRET_KEY = SECRET
+  resetDenialStore()
+  const spy = { ran: false }
+  const deniedSeen: string[] = []
+  const reg = new ToolRegistry([outreachTool(spy)])
+  const hooks: HookRegistry = {
+    rules: [
+      { event: 'PermissionRequest', handler: () => ({ action: 'deny', message: '营业时间外不发消息' }) },
+      { event: 'PermissionDenied', handler: payload => { deniedSeen.push(payload.permissionReason ?? ''); return null } },
+    ],
+  }
+  const events = await collect(runAgentLoop({
+    model: scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: '1', name: 'send_message', input: { msg: 'hi' } }] },
+      { kind: 'final', text: '好的不发了' },
+    ]),
+    registry: reg, workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'ask', conversationId: 'permreq-deny', hooks,
+  }))
+  expect(events.some(e => e.type === 'approval_request')).toBe(false)
+  expect(spy.ran).toBe(false)
+  const tr = events.find(e => e.type === 'tool_result')
+  expect(tr && tr.type === 'tool_result' && tr.output).toContain('营业时间外不发消息')
+  expect(deniedSeen).toEqual(['营业时间外不发消息'])
+})
+
+test('hooks:PermissionDenied 在规则 deny 分支也触发(带拒绝原因)', async () => {
+  process.env.SECRET_KEY = SECRET
+  resetDenialStore()
+  const deniedSeen: string[] = []
+  const hooks: HookRegistry = {
+    rules: [{ event: 'PermissionDenied', matcher: 'run_command', handler: payload => { deniedSeen.push(payload.permissionReason ?? ''); return null } }],
+  }
+  const events = await collect(runAgentLoop({
+    model: scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: '1', name: 'run_command', input: { command: 'echo hi' } }] },
+      { kind: 'final', text: '好' },
+    ]),
+    registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'default', conversationId: 'permdenied-rule', hooks,
+    initialPermissionUpdates: [{ type: 'addRules', destination: 'session', rules: [{ toolName: 'run_command' }], behavior: 'deny' }],
+  }))
+  // 会话级 deny 规则拒绝 run_command → PermissionDenied hook 应收到通知(原因=拒绝文案)
+  expect(deniedSeen.length).toBe(1)
+  expect(deniedSeen[0]).toBeTruthy()
+  expect(events.some(e => e.type === 'approval_request')).toBe(false)
+})

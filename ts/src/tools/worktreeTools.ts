@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative } from 'node:path'
 import { promisify } from 'node:util'
+import { applyWorktreeCreateHooks, applyWorktreeRemoveHooks, hasHookForEvent } from '../hooks/hooks'
 import type { ApprovalClass } from '../permissions/types'
 import { Workspace } from '../workspace/workspace'
 import type { Tool, ToolContext } from './Tool'
@@ -149,7 +150,21 @@ export const enterWorktreeTool: Tool<EnterWorktreeInput> = {
     const repoRoot = await findGitTopLevel(ctx.workspace.root)
     const name = typeof input?.name === 'string' && input.name.trim() ? input.name.trim() : generatedWorktreeName()
     validateWorktreeSlug(name)
-    const session = await createWorktreeForSession(repoRoot, name, ctx.conversationId)
+    // WorktreeCreate hook(对齐 cc executeWorktreeCreateHook):配置了它就是"提供者"——由 hook 创建
+    // worktree 并产出路径(stdout=路径),取代默认 git worktree add;产不出路径按 cc 语义直接失败。
+    let session: WorktreeSession
+    if (hasHookForEvent(ctx.activeHooks, 'WorktreeCreate')) {
+      const hookResult = await applyWorktreeCreateHooks(ctx.activeHooks, name, ctx)
+      if (hookResult.deniedMessage || !hookResult.worktreePath) {
+        throw new Error(hookResult.deniedMessage ?? 'WorktreeCreate hook failed: no successful output')
+      }
+      const worktreePath = hookResult.worktreePath
+      const originalHeadCommit = (await git(worktreePath, ['rev-parse', 'HEAD'])).trim()
+      const worktreeBranch = (await git(worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim()
+      session = { originalRoot: repoRoot, worktreePath, worktreeName: name, worktreeBranch, originalHeadCommit, conversationId: ctx.conversationId }
+    } else {
+      session = await createWorktreeForSession(repoRoot, name, ctx.conversationId)
+    }
     rememberWorktreeSession(ctx, session)
     ctx.workspace = new Workspace(session.worktreePath)
     return [
@@ -250,7 +265,13 @@ export const exitWorktreeTool: Tool<ExitWorktreeInput> = {
       ].join('\n')
     }
 
-    await removeWorktree(session)
+    // WorktreeRemove hook(对齐 cc executeWorktreeRemoveHook 的调用方语义:配置了就由 hook 接管删除,
+    // 取代默认 git worktree remove;hook 失败只记日志不阻断——cc 同款)。
+    if (hasHookForEvent(ctx.activeHooks, 'WorktreeRemove')) {
+      await applyWorktreeRemoveHooks(ctx.activeHooks, session.worktreePath, ctx)
+    } else {
+      await removeWorktree(session)
+    }
     forgetWorktreeSession(ctx)
     ctx.workspace = new Workspace(session.originalRoot)
     return [

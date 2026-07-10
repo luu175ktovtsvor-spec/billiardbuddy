@@ -1,4 +1,5 @@
 import { formatTodoChecklist, type TodoItem } from '../types/todo'
+import { applyTaskLifecycleHooks } from '../hooks/hooks'
 import type { Tool, ToolContext } from '../tools/Tool'
 import { TaskListService } from './taskListService'
 import type { StructuredTask, StructuredTaskStatus, TaskListScope } from './taskListService'
@@ -116,6 +117,14 @@ export function createStructuredTaskTools(taskLists: TaskListService): Tool[] {
     async execute(input, ctx) {
       const subject = typeof input?.subject === 'string' ? input.subject : ''
       const description = typeof input?.description === 'string' ? input.description : ''
+      // TaskCreated hook(对齐 cc executeTaskCreatedHooks:创建前触发,deny=阻止创建并把原因回灌)。
+      // 先探 hook 再落盘:cc 语义是"阻止创建",不是创建后再删。task_id 此时未分配,传占位(cc 也在创建流程内生成)。
+      const created = await applyTaskLifecycleHooks(ctx.activeHooks, 'TaskCreated', {
+        taskId: 'pending',
+        taskSubject: subject,
+        taskDescription: description,
+      }, ctx)
+      if (created.deniedMessage) return `Task creation blocked by TaskCreated hook: ${created.deniedMessage}`
       const task = await taskLists.create(scopeFrom(ctx), {
         subject,
         description,
@@ -179,6 +188,19 @@ export function createStructuredTaskTools(taskLists: TaskListService): Tool[] {
     isReadOnly: false,
     async execute(input, ctx) {
       const id = taskIdFrom(input)
+      // TaskCompleted hook(对齐 cc executeTaskCompletedHooks:标记完成前触发,deny=阻止完成——
+      // 典型用途:hook 校验"完成条件"不满足时打回)。只拦 status→completed 的更新。
+      if (statusFrom(input?.status) === 'completed') {
+        const existing = await taskLists.get(scopeFrom(ctx), id)
+        if (existing) {
+          const completed = await applyTaskLifecycleHooks(ctx.activeHooks, 'TaskCompleted', {
+            taskId: String(existing.id),
+            taskSubject: existing.subject,
+            taskDescription: existing.description,
+          }, ctx)
+          if (completed.deniedMessage) return `Task #${id} completion blocked by TaskCompleted hook: ${completed.deniedMessage}`
+        }
+      }
       const result = await taskLists.update(scopeFrom(ctx), id, {
         subject: typeof input?.subject === 'string' ? input.subject : undefined,
         description: typeof input?.description === 'string' ? input.description : undefined,

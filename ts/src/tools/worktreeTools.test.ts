@@ -144,6 +144,33 @@ describe('CC-Haha EnterWorktree / ExitWorktree port', () => {
     })
   })
 
+  test('WorktreeCreate hook = 提供者:hook 产出路径取代默认创建;WorktreeRemove hook 接管删除(对齐 cc)', async () => {
+    // 先用默认路径真建一个 worktree 当 hook 的"产物"
+    const preparedOut = await enterWorktreeTool.execute({ name: 'hook-made' }, ctx)
+    expect(preparedOut).toContain('<enter_worktree>')
+    const preparedPath = ctx.workspace.root
+    await exitWorktreeTool.execute({ action: 'keep' }, ctx)
+    // 配 WorktreeCreate hook 返回该路径 → EnterWorktree 走 hook 提供者路径,不再自建
+    const removeSeen: string[] = []
+    ctx.activeHooks = { rules: [
+      { event: 'WorktreeCreate', handler: () => ({ action: 'context', additionalContext: `${preparedPath}\n` }) },
+      { event: 'WorktreeRemove', handler: payload => { removeSeen.push(payload.worktreePath ?? ''); return null } },
+    ] }
+    const out = await enterWorktreeTool.execute({ name: 'whatever-name' }, ctx)
+    expect(out).toContain(preparedPath)
+    expect(ctx.workspace.root).toBe(preparedPath)
+    // remove:配置了 WorktreeRemove hook → hook 接管,目录仍在(hook 自己决定怎么删)
+    const exit = await exitWorktreeTool.execute({ action: 'remove', discard_changes: true }, ctx)
+    expect(exit).toContain('action="remove"')
+    expect(removeSeen).toEqual([preparedPath])
+    expect(existsSync(preparedPath)).toBe(true)
+  })
+
+  test('WorktreeCreate hook 配置了但没产出路径 → 按 cc 语义直接失败', async () => {
+    ctx.activeHooks = { rules: [{ event: 'WorktreeCreate', handler: () => null }] }
+    await expect(enterWorktreeTool.execute({ name: 'no-output' }, ctx)).rejects.toThrow(/WorktreeCreate hook failed/)
+  })
+
   test('ExitWorktree is a no-op without an active EnterWorktree session', async () => {
     const out = await exitWorktreeTool.execute({ action: 'keep' }, { workspace: new Workspace(root), conversationId: 'none' })
     expect(out).toContain('No-op')

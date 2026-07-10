@@ -94,3 +94,29 @@ test('structured task tools support dependencies and deleted status', async () =
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('TaskCreated/TaskCompleted hook:deny 阻止任务创建/完成(对齐 cc executeTask*Hooks 阻断语义)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-list-hooks-'))
+  try {
+    const [create, list, , update] = createStructuredTaskTools(new TaskListService(root))
+    const ctx = makeCtx(root)
+    // deny 创建:任务不落盘
+    ctx.activeHooks = { rules: [{ event: 'TaskCreated', handler: () => ({ action: 'deny', message: '主题太模糊' }) }] }
+    const blocked = await create!.execute({ subject: 'x', description: 'y' }, ctx)
+    expect(blocked).toContain('blocked by TaskCreated hook: 主题太模糊')
+    expect(await list!.execute({}, ctx)).toBe('No tasks found')
+    // 放开创建,再 deny 完成:状态不动
+    ctx.activeHooks = undefined
+    await create!.execute({ subject: '真任务', description: 'd' }, ctx)
+    ctx.activeHooks = { rules: [{ event: 'TaskCompleted', handler: () => ({ action: 'deny', message: '验收没过' }) }] }
+    const completeBlocked = await update!.execute({ taskId: '1', status: 'completed' }, ctx)
+    expect(completeBlocked).toContain('blocked by TaskCompleted hook: 验收没过')
+    const after = await list!.execute({}, ctx)
+    expect(after).toContain('[pending] 真任务')
+    // 非 completed 更新不过 TaskCompleted 钩
+    const ok = await update!.execute({ taskId: '1', status: 'in_progress' }, ctx)
+    expect(ok).toContain('Updated task #1')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

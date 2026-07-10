@@ -2,11 +2,18 @@ import type { ToolContext } from '../tools/Tool'
 import type { PermissionDecision } from '../permissions/types'
 
 /**
- * hook 事件全集(对齐 cc-haha entrypoints/sdk/coreSchemas.ts HOOK_EVENTS 的落地子集)。
- * 已派发:PreToolUse / PostToolUse / PostToolUseFailure / UserPromptSubmit / SessionStart /
- *   SubagentStart / SubagentStop / Stop / PreCompact / PostCompact。
- * 已提供派发器、call site 待宿主接线(server/壳生命周期):SessionEnd / Notification / StopFailure。
- * 白名单收全后,工作区/插件的 hook 配置文件即可声明这些事件(normalizeHookRegistry 的 HOOK_EVENTS 同步)。
+ * hook 事件全集 = cc-haha 全部 27 个(对齐 entrypoints/sdk/coreTypes.ts:25-53 HOOK_EVENTS,一个不少)。
+ * 配置文件声明任何一个都不会被静默吞(normalizeHookRegistry 的 HOOK_EVENTS 同步收全)。
+ * 派发点分三档(与 cc 的 fire 位置一一对应,见各 apply* 派发器注释):
+ * - 已接线:PreToolUse / PostToolUse / PostToolUseFailure / UserPromptSubmit / SessionStart / SessionEnd /
+ *   SubagentStart / SubagentStop / Stop / StopFailure / PreCompact / PostCompact / Notification /
+ *   PermissionRequest / PermissionDenied(loop 权限闸) / TaskCreated / TaskCompleted(结构化任务工具) /
+ *   WorktreeCreate / WorktreeRemove(worktree 工具) / Elicitation / ElicitationResult(MCP 桥) /
+ *   ConfigChange(create_skill 写盘,source:'skills';settings 写回点待接)。
+ * - 派发器就绪、call site 待宿主运行时出现对应场景时接:Setup(cc=init/maintenance 流程)、
+ *   TeammateIdle(cc=队友即将闲置)、CwdChanged(cc=会话中切换 cwd)、
+ *   InstructionsLoaded(需 buildSystemPrompt 把已加载记忆文件清单暴露出来,cc=getMemoryFiles 内 fire)。
+ * - FileChanged:需文件监听基建(cc watchPaths 管线),派发器就绪、watcher 未建(登记在案,不装死)。
  */
 export type HookEvent =
   | 'PreToolUse'
@@ -22,6 +29,20 @@ export type HookEvent =
   | 'PreCompact'
   | 'PostCompact'
   | 'Notification'
+  | 'PermissionRequest'
+  | 'PermissionDenied'
+  | 'Setup'
+  | 'TeammateIdle'
+  | 'TaskCreated'
+  | 'TaskCompleted'
+  | 'Elicitation'
+  | 'ElicitationResult'
+  | 'ConfigChange'
+  | 'WorktreeCreate'
+  | 'WorktreeRemove'
+  | 'InstructionsLoaded'
+  | 'CwdChanged'
+  | 'FileChanged'
 
 export type HookDecision =
   | { action: 'allow'; message?: string }
@@ -29,6 +50,8 @@ export type HookDecision =
   | { action: 'deny'; message: string }
   | { action: 'modify'; updatedInput: unknown; message?: string }
   | { action: 'context'; additionalContext: string }
+  /** Elicitation/ElicitationResult 专用:hook 代答 MCP elicitation(对齐 cc hookSpecificOutput action/content)。 */
+  | { action: 'elicitation'; elicitationAction: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }
 
 export interface HookPayload {
   event: HookEvent
@@ -56,6 +79,46 @@ export interface HookPayload {
   errorMessage?: string
   /** 工具调用 id(PostToolUseFailure 等,对齐 cc tool_use_id)。 */
   toolUseId?: string
+  /** PermissionDenied:拒绝原因(对齐 cc reason)。 */
+  permissionReason?: string
+  /** PermissionRequest:审批建议("始终允许"候选,对齐 cc permission_suggestions)。 */
+  permissionSuggestions?: unknown[]
+  /** Setup:触发方式(对齐 cc trigger,init=初始化/maintenance=维护)。 */
+  setupTrigger?: 'init' | 'maintenance'
+  /** TeammateIdle/TaskCreated/TaskCompleted:队友名/团队名(对齐 cc teammate_name/team_name)。 */
+  teammateName?: string
+  teamName?: string
+  /** TaskCreated/TaskCompleted:任务三元组(对齐 cc task_id/task_subject/task_description)。 */
+  taskId?: string
+  taskSubject?: string
+  taskDescription?: string
+  /** Elicitation/ElicitationResult:MCP elicitation 载荷(对齐 cc mcp_server_name/message/mode/url/elicitation_id/requested_schema/action/content)。 */
+  mcpServerName?: string
+  elicitationMessage?: string
+  elicitationMode?: 'form' | 'url'
+  elicitationUrl?: string
+  elicitationId?: string
+  elicitationRequestedSchema?: Record<string, unknown>
+  elicitationAction?: 'accept' | 'decline' | 'cancel'
+  elicitationContent?: Record<string, unknown>
+  /** ConfigChange:变更源(对齐 cc source:user_settings/project_settings/local_settings/skills)。 */
+  configSource?: string
+  /** ConfigChange/InstructionsLoaded/FileChanged:涉及的文件路径(对齐 cc file_path)。 */
+  filePath?: string
+  /** InstructionsLoaded:记忆层/加载原因/条件 glob/触发与父文件(对齐 cc memory_type/load_reason/globs/trigger_file_path/parent_file_path)。 */
+  memoryType?: string
+  loadReason?: string
+  instructionGlobs?: string[]
+  triggerFilePath?: string
+  parentFilePath?: string
+  /** WorktreeCreate/WorktreeRemove:worktree 名/路径(对齐 cc name/worktree_path)。 */
+  worktreeName?: string
+  worktreePath?: string
+  /** CwdChanged:旧/新工作目录(对齐 cc old_cwd/new_cwd)。 */
+  oldCwd?: string
+  newCwd?: string
+  /** FileChanged:文件事件类型(对齐 cc event)。 */
+  fileEvent?: 'change' | 'add' | 'unlink'
 }
 
 export type HookHandler = (payload: HookPayload, ctx: ToolContext) => HookDecision | HookDecision[] | null | undefined | Promise<HookDecision | HookDecision[] | null | undefined>
@@ -196,6 +259,30 @@ export function parseHookDecisionJSON(text: string): HookDecision | null {
       if (hso.permissionDecision === 'ask') return { action: 'ask', message: reason }
       if (hso.permissionDecision === 'deny') return { action: 'deny', message: reason ?? 'hook 拒绝' }
     }
+    // cc PermissionRequest 格式:hookSpecificOutput.decision = {behavior:'allow',updatedInput?} | {behavior:'deny',message?}
+    // (types/hooks.ts:120-134)。allow+updatedInput 折成 [modify,allow] 语义由消费方聚合,这里单值返回:
+    // 有 updatedInput 时返回 modify(消费方 applyPermissionRequestHooks 把 modify 视作 allow+改参)。
+    if (isRecord(hso) && hso.hookEventName === 'PermissionRequest' && isRecord(hso.decision)) {
+      const d = hso.decision
+      if (d.behavior === 'deny') return { action: 'deny', message: typeof d.message === 'string' ? d.message : 'PermissionRequest hook 拒绝' }
+      if (d.behavior === 'allow') {
+        if ('updatedInput' in d && d.updatedInput !== undefined) return { action: 'modify', updatedInput: d.updatedInput }
+        return { action: 'allow' }
+      }
+    }
+    // cc PermissionDenied 格式:hookSpecificOutput.retry:boolean(types/hooks.ts:112-115)→ retry 折成 allow
+    // (消费方 applyPermissionDeniedHooks 把 allow 读作 retryRequested)。
+    if (isRecord(hso) && hso.hookEventName === 'PermissionDenied' && hso.retry === true) {
+      return { action: 'allow' }
+    }
+    // cc Elicitation/ElicitationResult 格式:hookSpecificOutput.action(accept/decline/cancel)+ content
+    // (types/hooks.ts:135-144)→ 专用 elicitation 决策,消费方转成 MCP elicitation 代答。
+    if (isRecord(hso) && (hso.hookEventName === 'Elicitation' || hso.hookEventName === 'ElicitationResult')) {
+      const action = hso.action
+      if (action === 'accept' || action === 'decline' || action === 'cancel') {
+        return { action: 'elicitation', elicitationAction: action, content: isRecord(hso.content) ? hso.content : undefined }
+      }
+    }
     // cc 旧格式:decision:'block' + reason(PostToolUse/Stop/UserPromptSubmit;PreToolUse 已弃用但仍兼容)→ deny。
     if (raw.decision === 'block') return { action: 'deny', message: typeof raw.reason === 'string' ? raw.reason : 'hook 阻断' }
     // 本项目扁平格式(向后兼容)
@@ -226,10 +313,34 @@ export function matchesToolMatcher(matcher: string | undefined, target: string |
   }
 }
 
+/**
+ * 每事件的 matcher 匹配键(对齐 cc executeHooks 各 fire 点的 matchQuery):
+ * 工具类事件按 toolName、子代理类按 agentType、Notification 按 notification_type、Setup 按 trigger、
+ * ConfigChange 按 source、StopFailure 按 error、InstructionsLoaded 按 load_reason、
+ * Elicitation/ElicitationResult 按 mcp_server_name、PreCompact/PostCompact 按 trigger、SessionEnd 按 reason。
+ * 无匹配键的事件(TeammateIdle/TaskCreated/TaskCompleted/两个 Worktree 事件/Cwd/FileChanged 等)cc 也
+ * 不传 matchQuery → 回落 toolName/agentType(通常 undefined,即只有无 matcher 的规则命中)。
+ */
+function matchTarget(payload: HookPayload): string | undefined {
+  switch (payload.event) {
+    case 'Notification': return payload.notificationType ?? payload.toolName
+    case 'Setup': return payload.setupTrigger
+    case 'ConfigChange': return payload.configSource
+    case 'StopFailure': return payload.errorMessage
+    case 'InstructionsLoaded': return payload.loadReason
+    case 'Elicitation':
+    case 'ElicitationResult': return payload.mcpServerName
+    case 'PreCompact':
+    case 'PostCompact': return payload.compactTrigger
+    case 'SessionEnd': return payload.sessionEndReason
+    default: return payload.toolName ?? payload.agentType
+  }
+}
+
 function matches(rule: HookRule, payload: HookPayload): boolean {
   if (rule.event !== payload.event) return false
   if (!rule.matcher || rule.matcher === '*') return true
-  return matchesToolMatcher(rule.matcher, payload.toolName ?? payload.agentType)
+  return matchesToolMatcher(rule.matcher, matchTarget(payload))
 }
 
 export function mergeHookRegistries(...registries: Array<HookRegistry | undefined>): HookRegistry | undefined {
@@ -572,4 +683,379 @@ export async function applyStopFailureHooks(
     agentType: opts.subagent?.agentType,
     sessionId: ctx.conversationId,
   }, ctx, 'StopFailure')
+}
+
+/** registry 里是否声明了某事件的规则(供"有 hook 才走 hook 路"的消费方判断,如 WorktreeCreate provider)。 */
+export function hasHookForEvent(registry: HookRegistry | undefined, event: HookEvent): boolean {
+  return !!registry?.rules.some(rule => rule.event === event)
+}
+
+export interface PermissionRequestHookResult {
+  /** hook 程序化裁决:allow=跳过审批卡直接放行,deny=直接拒绝;undefined=无裁决,照常弹审批卡。 */
+  behavior?: 'allow' | 'deny'
+  message?: string
+  /** allow 附带的改参(cc decision.updatedInput)。 */
+  updatedInput?: unknown
+  additionalContext: string[]
+}
+
+/**
+ * PermissionRequest:审批卡即将弹给用户时触发(对齐 cc executePermissionRequestHooks,
+ * utils/hooks.ts:4176-4211,matchQuery=toolName)。hook 可程序化 allow/deny 免弹窗。
+ * 聚合:deny 短路优先 > allow;modify 视作 allow+改参(cc decision.behavior:'allow'+updatedInput)。
+ * call site:harness/loop.ts gateOneCall 的 ask 分支,yield approval_request 之前。
+ */
+export async function applyPermissionRequestHooks(
+  registry: HookRegistry | undefined,
+  toolName: string,
+  input: unknown,
+  ctx: ToolContext,
+  opts: { toolUseId?: string; permissionSuggestions?: unknown[] } = {},
+): Promise<PermissionRequestHookResult> {
+  const additionalContext: string[] = []
+  let behavior: 'allow' | 'deny' | undefined
+  let message: string | undefined
+  let updatedInput: unknown
+  const decisions = await runHookEvent(registry, {
+    event: 'PermissionRequest',
+    toolName,
+    input,
+    toolUseId: opts.toolUseId,
+    permissionSuggestions: opts.permissionSuggestions,
+    sessionId: ctx.conversationId,
+  }, ctx)
+  for (const decision of decisions) {
+    if (decision.action === 'deny') return { behavior: 'deny', message: decision.message, additionalContext }
+    if (decision.action === 'allow') { behavior = 'allow'; message = decision.message ?? message }
+    if (decision.action === 'modify') { behavior = 'allow'; updatedInput = decision.updatedInput }
+    if (decision.action === 'context') additionalContext.push(decision.additionalContext)
+  }
+  return { behavior, message, updatedInput, additionalContext }
+}
+
+export interface PermissionDeniedHookResult extends HookContextResult {
+  /** cc hookSpecificOutput.retry:hook 要求重试该工具调用(parseHookDecisionJSON 把 retry:true 折成 allow)。 */
+  retryRequested?: boolean
+}
+
+/**
+ * PermissionDenied:权限被拒后触发(对齐 cc executePermissionDeniedHooks,utils/hooks.ts:3549-3581,
+ * matchQuery=toolName,载荷带拒绝 reason)。call site:harness/loop.ts 的 deny 回灌分支。
+ */
+export async function applyPermissionDeniedHooks(
+  registry: HookRegistry | undefined,
+  toolName: string,
+  input: unknown,
+  reason: string,
+  ctx: ToolContext,
+  toolUseId?: string,
+): Promise<PermissionDeniedHookResult> {
+  const additionalContext: string[] = []
+  let retryRequested = false
+  const decisions = await runHookEvent(registry, {
+    event: 'PermissionDenied',
+    toolName,
+    input,
+    permissionReason: reason,
+    toolUseId,
+    sessionId: ctx.conversationId,
+  }, ctx)
+  for (const decision of decisions) {
+    if (decision.action === 'context') additionalContext.push(decision.additionalContext)
+    if (decision.action === 'allow') retryRequested = true
+    if (decision.action === 'deny') additionalContext.push(`[PermissionDenied hook 警告] ${decision.message}`)
+  }
+  return retryRequested ? { additionalContext, retryRequested } : { additionalContext }
+}
+
+/**
+ * Setup:初始化/维护流程触发(对齐 cc executeSetupHooks,matchQuery=trigger)。
+ * 派发器就绪;call site 待宿主初始化/维护流程出现时接(本产品暂无 cc `--setup` 对应流程)。
+ */
+export async function applySetupHooks(
+  registry: HookRegistry | undefined,
+  trigger: 'init' | 'maintenance',
+  ctx: ToolContext,
+): Promise<HookContextResult> {
+  return collectContextHooks(registry, {
+    event: 'Setup',
+    setupTrigger: trigger,
+    sessionId: ctx.conversationId,
+  }, ctx, 'Setup')
+}
+
+/**
+ * TeammateIdle:队友代理即将闲置时触发(对齐 cc executeTeammateIdleHooks,utils/hooks.ts:3728-3748)。
+ * deny = 阻断闲置(队友应继续干活),走 blockingFeedback 语义。
+ * 派发器就绪;call site 待 team 运行时出现"即将闲置"节点时接。
+ */
+export async function applyTeammateIdleHooks(
+  registry: HookRegistry | undefined,
+  teammateName: string,
+  teamName: string,
+  ctx: ToolContext,
+): Promise<HookContextResult> {
+  const additionalContext: string[] = []
+  const blockingFeedback: string[] = []
+  const decisions = await runHookEvent(registry, {
+    event: 'TeammateIdle',
+    teammateName,
+    teamName,
+    sessionId: ctx.conversationId,
+  }, ctx)
+  for (const decision of decisions) {
+    if (decision.action === 'context') additionalContext.push(decision.additionalContext)
+    if (decision.action === 'deny') blockingFeedback.push(`TeammateIdle hook feedback:\n${decision.message}`)
+  }
+  return blockingFeedback.length > 0 ? { additionalContext, blockingFeedback } : { additionalContext }
+}
+
+export interface TaskLifecycleHookInfo {
+  taskId: string
+  taskSubject: string
+  taskDescription?: string
+  teammateName?: string
+  teamName?: string
+}
+
+/**
+ * TaskCreated/TaskCompleted:任务创建/完成时触发(对齐 cc executeTaskCreatedHooks/executeTaskCompletedHooks,
+ * utils/hooks.ts:3764-3836)。deny = 阻止创建/完成(deniedMessage 回给调用方展示/回灌)。
+ * call site:tasks/taskListService 的 create 与 completed 状态切换。
+ */
+export async function applyTaskLifecycleHooks(
+  registry: HookRegistry | undefined,
+  event: 'TaskCreated' | 'TaskCompleted',
+  info: TaskLifecycleHookInfo,
+  ctx: ToolContext,
+): Promise<HookContextResult> {
+  const additionalContext: string[] = []
+  const decisions = await runHookEvent(registry, {
+    event,
+    taskId: info.taskId,
+    taskSubject: info.taskSubject,
+    taskDescription: info.taskDescription,
+    teammateName: info.teammateName,
+    teamName: info.teamName,
+    sessionId: ctx.conversationId,
+  }, ctx)
+  for (const decision of decisions) {
+    if (decision.action === 'context') additionalContext.push(decision.additionalContext)
+    if (decision.action === 'deny') return { additionalContext, deniedMessage: decision.message }
+  }
+  return { additionalContext }
+}
+
+export interface ElicitationHookInfo {
+  serverName: string
+  message: string
+  mode?: 'form' | 'url'
+  url?: string
+  elicitationId?: string
+  requestedSchema?: Record<string, unknown>
+}
+
+export interface ElicitationHookResult extends HookContextResult {
+  /** hook 代答(accept/decline/cancel + content),有值即不再问用户(对齐 cc elicitationResponse)。 */
+  response?: { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }
+}
+
+/**
+ * Elicitation:MCP 服务器发起 elicitation、即将问用户之前触发(对齐 cc executeElicitationHooks,
+ * utils/hooks.ts:4489-4542,matchQuery=serverName)。hook 可代答(elicitation 决策)或阻断(deny)。
+ * call site:mcp elicitation 桥(问用户之前)。
+ */
+export async function applyElicitationHooks(
+  registry: HookRegistry | undefined,
+  info: ElicitationHookInfo,
+  ctx: ToolContext,
+): Promise<ElicitationHookResult> {
+  const additionalContext: string[] = []
+  let response: ElicitationHookResult['response']
+  let deniedMessage: string | undefined
+  const decisions = await runHookEvent(registry, {
+    event: 'Elicitation',
+    mcpServerName: info.serverName,
+    elicitationMessage: info.message,
+    elicitationMode: info.mode,
+    elicitationUrl: info.url,
+    elicitationId: info.elicitationId,
+    elicitationRequestedSchema: info.requestedSchema,
+    sessionId: ctx.conversationId,
+  }, ctx)
+  for (const decision of decisions) {
+    if (decision.action === 'context') additionalContext.push(decision.additionalContext)
+    if (decision.action === 'deny') deniedMessage = decision.message
+    if (decision.action === 'elicitation') {
+      response = { action: decision.elicitationAction, content: decision.content }
+      // 对齐 cc parseElicitationHookOutput:decline 代答同时视作阻断(带原因)。
+      if (decision.elicitationAction === 'decline') deniedMessage = deniedMessage ?? 'Elicitation denied by hook'
+    }
+  }
+  return { response, deniedMessage, additionalContext }
+}
+
+/**
+ * ElicitationResult:用户(或 hook)对 elicitation 作答之后触发(对齐 cc executeElicitationResultHooks,
+ * utils/hooks.ts:4544-4594)。deny/decline = 阻断该结果继续送回服务器。
+ * call site:mcp elicitation 桥(拿到回答之后、回给服务器之前)。
+ */
+export async function applyElicitationResultHooks(
+  registry: HookRegistry | undefined,
+  info: { serverName: string; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown>; mode?: 'form' | 'url'; elicitationId?: string },
+  ctx: ToolContext,
+): Promise<ElicitationHookResult> {
+  const additionalContext: string[] = []
+  let response: ElicitationHookResult['response']
+  let deniedMessage: string | undefined
+  const decisions = await runHookEvent(registry, {
+    event: 'ElicitationResult',
+    mcpServerName: info.serverName,
+    elicitationAction: info.action,
+    elicitationContent: info.content,
+    elicitationMode: info.mode,
+    elicitationId: info.elicitationId,
+    sessionId: ctx.conversationId,
+  }, ctx)
+  for (const decision of decisions) {
+    if (decision.action === 'context') additionalContext.push(decision.additionalContext)
+    if (decision.action === 'deny') deniedMessage = decision.message
+    if (decision.action === 'elicitation') {
+      response = { action: decision.elicitationAction, content: decision.content }
+      if (decision.elicitationAction === 'decline') deniedMessage = deniedMessage ?? 'Elicitation result blocked by hook'
+    }
+  }
+  return { response, deniedMessage, additionalContext }
+}
+
+/**
+ * ConfigChange:配置文件在会话期间变更时触发(对齐 cc executeConfigChangeHooks,utils/hooks.ts:4233-4258,
+ * matchQuery=source;审计用途)。call site:create_skill 写盘(source:'skills')、权限规则持久化写回
+ * (source:'local_settings')等配置写入点。
+ */
+export async function applyConfigChangeHooks(
+  registry: HookRegistry | undefined,
+  source: 'user_settings' | 'project_settings' | 'local_settings' | 'skills',
+  filePath: string | undefined,
+  ctx: ToolContext,
+): Promise<HookContextResult> {
+  return collectContextHooks(registry, {
+    event: 'ConfigChange',
+    configSource: source,
+    filePath,
+    sessionId: ctx.conversationId,
+  }, ctx, 'ConfigChange')
+}
+
+/**
+ * InstructionsLoaded:项目指令/记忆文件被载入上下文时触发(对齐 cc executeInstructionsLoadedHooks,
+ * utils/hooks.ts:4354-4388,matchQuery=load_reason;纯观测,不支持阻断)。
+ * call site:harness/claudemd.ts 记忆注入加载处(fire-and-forget)。
+ */
+export async function applyInstructionsLoadedHooks(
+  registry: HookRegistry | undefined,
+  info: { filePath: string; memoryType: string; loadReason: string; globs?: string[]; triggerFilePath?: string; parentFilePath?: string },
+  ctx: ToolContext,
+): Promise<HookContextResult> {
+  return collectContextHooks(registry, {
+    event: 'InstructionsLoaded',
+    filePath: info.filePath,
+    memoryType: info.memoryType,
+    loadReason: info.loadReason,
+    instructionGlobs: info.globs,
+    triggerFilePath: info.triggerFilePath,
+    parentFilePath: info.parentFilePath,
+    sessionId: ctx.conversationId,
+  }, ctx, 'InstructionsLoaded')
+}
+
+export interface WorktreeCreateHookResult extends HookContextResult {
+  /** hook 产出的 worktree 路径(cc:hook stdout 即路径;我们取第一条非空 context 决策文本)。 */
+  worktreePath?: string
+}
+
+/**
+ * WorktreeCreate:创建 worktree 时触发(对齐 cc executeWorktreeCreateHook,utils/hooks.ts:4947-4977)。
+ * 这是"提供者"hook:配置了它就由 hook 决定 worktree 路径(stdout=路径),取代默认 git worktree 创建。
+ * 消费方先用 hasHookForEvent 判有没有配置;配置了但没产出路径 → deniedMessage 报失败(对齐 cc throw)。
+ * call site:tools/worktreeTools.ts EnterWorktree / agents createIsolatedAgentWorktree。
+ */
+export async function applyWorktreeCreateHooks(
+  registry: HookRegistry | undefined,
+  name: string,
+  ctx: ToolContext,
+): Promise<WorktreeCreateHookResult> {
+  const additionalContext: string[] = []
+  let worktreePath: string | undefined
+  let deniedMessage: string | undefined
+  const decisions = await runHookEvent(registry, {
+    event: 'WorktreeCreate',
+    worktreeName: name,
+    sessionId: ctx.conversationId,
+  }, ctx)
+  for (const decision of decisions) {
+    if (decision.action === 'context' && !worktreePath) {
+      const text = decision.additionalContext.trim()
+      if (text) worktreePath = text.split('\n')[0]?.trim()
+    }
+    if (decision.action === 'deny') deniedMessage = decision.message
+  }
+  if (!worktreePath && hasHookForEvent(registry, 'WorktreeCreate')) {
+    deniedMessage = deniedMessage ?? 'WorktreeCreate hook failed: no successful output'
+  }
+  return { worktreePath, deniedMessage, additionalContext }
+}
+
+/**
+ * WorktreeRemove:移除 worktree 时触发(对齐 cc executeWorktreeRemoveHook,utils/hooks.ts:4986-5022;
+ * 失败只记日志不阻断)。call site:tools/worktreeTools.ts ExitWorktree / worktree 清理。
+ */
+export async function applyWorktreeRemoveHooks(
+  registry: HookRegistry | undefined,
+  worktreePath: string,
+  ctx: ToolContext,
+): Promise<HookContextResult> {
+  return collectContextHooks(registry, {
+    event: 'WorktreeRemove',
+    worktreePath,
+    sessionId: ctx.conversationId,
+  }, ctx, 'WorktreeRemove')
+}
+
+/**
+ * CwdChanged:会话工作目录切换时触发(对齐 cc executeCwdChangedHooks,utils/hooks.ts:4279-4295)。
+ * cc 的 watchPaths 返回值管线(喂 FileChanged watcher)未建,先收 context;派发器就绪,
+ * call site 待宿主"会话中切换工作区"流程接。
+ */
+export async function applyCwdChangedHooks(
+  registry: HookRegistry | undefined,
+  oldCwd: string,
+  newCwd: string,
+  ctx: ToolContext,
+): Promise<HookContextResult> {
+  return collectContextHooks(registry, {
+    event: 'CwdChanged',
+    oldCwd,
+    newCwd,
+    sessionId: ctx.conversationId,
+  }, ctx, 'CwdChanged')
+}
+
+/**
+ * FileChanged:被监听文件变更时触发(对齐 cc executeFileChangedHooks,utils/hooks.ts:4297-4313)。
+ * ⚠️ 需要文件监听基建(cc:SessionStart/CwdChanged hook 返回 watchPaths → sessionEnvironment watcher),
+ * 本项目 watcher 未建——派发器就绪、call site 登记待建,事件可声明不再被吞。
+ */
+export async function applyFileChangedHooks(
+  registry: HookRegistry | undefined,
+  filePath: string,
+  event: 'change' | 'add' | 'unlink',
+  ctx: ToolContext,
+): Promise<HookContextResult> {
+  return collectContextHooks(registry, {
+    event: 'FileChanged',
+    filePath,
+    fileEvent: event,
+    sessionId: ctx.conversationId,
+  }, ctx, 'FileChanged')
 }

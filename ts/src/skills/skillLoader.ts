@@ -6,7 +6,7 @@ import { extractDescription, parseMarkdownDocument, stringField } from '../comma
 import { addAllowedToolsToContext, allowedToolRulesFromFrontmatter, normalizeAllowedTools } from '../commands/allowedTools'
 import { parseArgumentNames, substituteArguments } from '../commands/argumentSubstitution'
 import type { PromptCommand } from '../commands/types'
-import { mergeHookRegistries, type HookSource } from '../hooks/hooks'
+import { applyConfigChangeHooks, mergeHookRegistries, type HookSource } from '../hooks/hooks'
 import { normalizeHookRegistry } from '../hooks/hookConfig'
 import type { Tool, ToolContext } from '../tools/Tool'
 import { addInvokedSkill } from './invokedSkills'
@@ -426,7 +426,7 @@ export function createSkillTools(library: SkillLibrary, opts: { skillRoot?: stri
       isReadOnly: false,
       requiresApproval: true,
       approvalClass: 'file',
-      async execute(input) {
+      async execute(input, ctx) {
         if (!input || typeof input.name !== 'string' || !input.name.trim()) throw new Error('create_skill 需要 string 参数 name')
         if (typeof input.description !== 'string' || !input.description.trim()) throw new Error('create_skill 需要 string 参数 description')
         if (typeof input.instructions !== 'string' || !input.instructions.trim()) throw new Error('create_skill 需要 string 参数 instructions')
@@ -464,6 +464,8 @@ export function createSkillTools(library: SkillLibrary, opts: { skillRoot?: stri
         const idx = library.skills.findIndex(skill => skill.name === loaded.name)
         if (idx >= 0) library.skills[idx] = loaded
         else library.skills.push(loaded)
+        // ConfigChange hook(对齐 cc executeConfigChangeHooks source:'skills':技能文件在会话中变更,审计用途,不阻断)。
+        await applyConfigChangeHooks(ctx.activeHooks, 'skills', skillPath, ctx).catch(() => undefined)
         return `已创建技能 ${loaded.name}: ${skillPath}`
       },
     }
