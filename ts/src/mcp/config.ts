@@ -93,7 +93,9 @@ function sanitizeNamePart(value: string): string {
 }
 
 export function mcpToolName(serverName: string, toolName: string): string {
-  return `mcp__${sanitizeNamePart(serverName)}__${sanitizeNamePart(toolName)}`.slice(0, 64)
+  // 对齐 cc(normalization.ts:17-23 + client.ts:2051):只做字符归一,**不截断长度**。
+  // 之前 slice(0,64) 会把长 server+tool 名剪短,不同工具剪成同名 → 权限规则匹配错工具/调用歧义。
+  return `mcp__${sanitizeNamePart(serverName)}__${sanitizeNamePart(toolName)}`
 }
 
 export function approvalClassFromAnnotations(annotations: McpToolAnnotations | undefined): ApprovalClass {
