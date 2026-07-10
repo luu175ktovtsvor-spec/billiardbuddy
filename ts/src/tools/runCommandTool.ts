@@ -10,10 +10,32 @@ import { StreamingOutputSanitizer } from './outputSanitize'
 import { interpretCommandResult } from './commandSemantics'
 import { additionalWorkingDirectoryPaths, resolvePathWithAdditionalWorkingDirectories } from '../permissions/filePathRules'
 
-const DEFAULT_TIMEOUT_MS = 30_000
+// 超时/输出上限对齐 cc(utils/timeouts.ts + utils/shell/outputLimits.ts),env 覆盖名也对齐:
+// 默认超时 120s(BASH_DEFAULT_TIMEOUT_MS)/上限 600s(BASH_MAX_TIMEOUT_MS,不低于默认);
+// 输出默认 30k(BASH_MAX_OUTPUT_LENGTH)/硬上限 150k。截断方向保留"留尾"(cc 是留头+截断行数提示)
+// = 登记的有意分叉:构建/测试的失败原因几乎都在尾部,且结果格式(中文元信息块)是前端消费的既有契约。
+function envPositiveInt(name: string): number | null {
+  const parsed = Number.parseInt(process.env[name] ?? '', 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+const DEFAULT_TIMEOUT_MS = 120_000
 export const MAX_TIMEOUT_MS = 600_000
-export const DEFAULT_MAX_OUTPUT_BYTES = 64_000
-export const MAX_OUTPUT_BYTES = 1_000_000
+export function defaultCommandTimeoutMs(): number {
+  return envPositiveInt('BASH_DEFAULT_TIMEOUT_MS') ?? DEFAULT_TIMEOUT_MS
+}
+export function maxCommandTimeoutMs(): number {
+  const env = envPositiveInt('BASH_MAX_TIMEOUT_MS')
+  // cc:上限永远不低于默认(getMaxBashTimeoutMs 的 Math.max 语义)
+  return Math.max(env ?? MAX_TIMEOUT_MS, defaultCommandTimeoutMs())
+}
+const DEFAULT_OUTPUT_BYTES = 30_000
+export const MAX_OUTPUT_BYTES = 150_000
+export function defaultMaxOutputBytes(): number {
+  const env = envPositiveInt('BASH_MAX_OUTPUT_LENGTH')
+  return Math.min(env ?? DEFAULT_OUTPUT_BYTES, MAX_OUTPUT_BYTES)
+}
+/** @deprecated 向后兼容旧调用方;新代码用 defaultMaxOutputBytes()。 */
+export const DEFAULT_MAX_OUTPUT_BYTES = DEFAULT_OUTPUT_BYTES
 
 export interface RunCommandInput {
   command: string
@@ -78,8 +100,8 @@ export const runCommandTool: Tool<RunCommandInput> = {
       `risk: ${risk}`,
       `sensitive_file_read: ${shellSensitiveReadNeedsApproval(input.command) ? 'true' : 'false'}`,
       `external_read: ${shellExternalReadNeedsApproval(input.command, resolveCommandCwdSync(input.cwd, ctx), ctx) ? 'true' : 'false'}`,
-      `timeout_ms: ${clampNumber(input.timeout_ms, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)}`,
-      `max_output_bytes: ${clampNumber(input.max_output_bytes, DEFAULT_MAX_OUTPUT_BYTES, MAX_OUTPUT_BYTES)}`,
+      `timeout_ms: ${clampNumber(input.timeout_ms, defaultCommandTimeoutMs(), maxCommandTimeoutMs())}`,
+      `max_output_bytes: ${clampNumber(input.max_output_bytes, defaultMaxOutputBytes(), MAX_OUTPUT_BYTES)}`,
       '</run_command_preview>',
     ].join('\n')
   },
@@ -151,8 +173,8 @@ function commandRiskImpact(risk: CommandRisk, sensitiveRead = false, externalRea
 async function runInWorkspace(input: RunCommandInput, ctx: ToolContext, wrapped: WrappedCommand | null): Promise<string> {
   const command = input.command
   const cwd = await resolveCommandCwd(input.cwd, ctx)
-  const timeoutMs = clampNumber(input.timeout_ms, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)
-  const maxOutputBytes = clampNumber(input.max_output_bytes, DEFAULT_MAX_OUTPUT_BYTES, MAX_OUTPUT_BYTES)
+  const timeoutMs = clampNumber(input.timeout_ms, defaultCommandTimeoutMs(), maxCommandTimeoutMs())
+  const maxOutputBytes = clampNumber(input.max_output_bytes, defaultMaxOutputBytes(), MAX_OUTPUT_BYTES)
   const isWin = process.platform === 'win32'
   const useProcessGroup = !isWin
   // 包裹后:直接 spawn 沙箱给的 argv/env（免二次 shell）；未包裹:原明文 sh -c / cmd /c。

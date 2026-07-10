@@ -235,14 +235,15 @@ function shouldAutocompact(input: CompactPipelineInput, failures: number): boole
   if (lastAt > 0 && cooldownMs > 0 && (input.nowMs ?? Date.now()) - lastAt < cooldownMs) return false
   if (input.lastCompactedMessageCount && input.messages.length <= input.lastCompactedMessageCount) return false
   if (failures >= MAX_COMPACTION_FAILURES) return false
-  // cc:有上一轮响应回报的真实 input tokens 就按 token 判(真实用量比字符估算准),与字符估算取"谁先超";
-  // 首轮还没真实用量时退回字符估算。阈值 = 有效窗口 − 13k(cc getAutoCompactThreshold),而非旧的固定 0.7 比例。
+  // cc:有上一轮响应回报的真实 input tokens 就**完全按 token 公式判**(cc autoCompact 是纯 token 判,
+  // 没有字符估算路径)——真实用量在手时字符粗估不得抢跑提前触发,否则大窗口下粗估偏差会造成早压 20 万+ token。
+  // 字符估算只兜"首轮还没有真实用量"的空档。阈值 = 有效窗口 − 13k(cc getAutoCompactThreshold)。
   // 窗口来源:CLAUDE_CODE_AUTO_COMPACT_WINDOW 覆盖 > input.contextWindowTokens;两者都缺时不走 token 路径(避免负阈值误触发)。
   const envAutoCompactWindow = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
   const parsedEnvWindow = envAutoCompactWindow ? parseInt(envAutoCompactWindow, 10) : NaN
   const hasWindow = (!isNaN(parsedEnvWindow) && parsedEnvWindow > 0) || (!!input.contextWindowTokens && input.contextWindowTokens > 0)
   if (input.lastInputTokens && input.lastInputTokens > 0 && hasWindow) {
-    if (input.lastInputTokens >= getAutoCompactTokenThreshold(input.contextWindowTokens ?? 0, input.maxOutputTokens)) return true
+    return input.lastInputTokens >= getAutoCompactTokenThreshold(input.contextWindowTokens ?? 0, input.maxOutputTokens)
   }
   const contextWindowChars = input.contextWindowChars
   if (!contextWindowChars) return false

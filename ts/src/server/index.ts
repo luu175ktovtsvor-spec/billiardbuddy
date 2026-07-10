@@ -38,6 +38,7 @@ import {
   saveOfficeDocumentBlocks,
 } from '../utils/officeDocuments'
 import { getLogger } from '../utils/logger'
+import { jsonDetailError, jsonError, localCorsPreflight, TurnSetupError, withLocalCors } from './middleware/http'
 import { VoiceTranscriptionError, transcribeVoiceFile } from './services/voiceTranscription'
 import { buildGeneralRegistry } from '../tools/generalTools'
 import { workspaceForActiveWorktree } from '../tools/worktreeTools'
@@ -240,56 +241,9 @@ async function summarizeWorkspaceTree(root: string, opts: { maxDepth?: number; m
   }
 }
 
-function localCorsOrigin(req: Request): string | undefined {
-  const origin = req.headers.get('origin')
-  if (!origin) return undefined
-  try {
-    const url = new URL(origin)
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined
-    if (url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '[::1]' || url.hostname === '::1') {
-      return origin
-    }
-  } catch {
-    return undefined
-  }
-  return undefined
-}
-
-function withLocalCors(res: Response, req: Request): Response {
-  const origin = localCorsOrigin(req)
-  if (!origin) return res
-  const headers = new Headers(res.headers)
-  headers.set('Access-Control-Allow-Origin', origin)
-  headers.set('Access-Control-Allow-Credentials', 'true')
-  headers.append('Vary', 'Origin')
-  return new Response(res.body, { status: res.status, statusText: res.statusText, headers })
-}
-
-function localCorsPreflight(req: Request): Response | undefined {
-  const origin = localCorsOrigin(req)
-  if (!origin || req.method !== 'OPTIONS') return undefined
-  return new Response(null, {
-    status: 204,
-    headers: {
-      'Access-Control-Allow-Origin': origin,
-      'Access-Control-Allow-Credentials': 'true',
-      'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
-      'Access-Control-Allow-Headers': req.headers.get('access-control-request-headers') || 'content-type,authorization',
-      'Access-Control-Max-Age': '600',
-      'Vary': 'Origin',
-    },
-  })
-}
-
 interface AgentWsData {
   conversationId: string
   after: number
-}
-
-class TurnSetupError extends Error {
-  constructor(message: string, readonly status: number) {
-    super(message)
-  }
 }
 
 function permissionModeFrom(value: unknown): PermissionMode {
@@ -527,14 +481,6 @@ function defaultMcpConfigPath(workspaceRoot: string, env: Record<string, string 
     join(process.cwd(), '.mcp.json'),
   ]
   return candidates.find(existsSync)
-}
-
-function jsonError(message: string, status = 400): Response {
-  return Response.json({ ok: false, error: message }, { status })
-}
-
-function jsonDetailError(message: string, status = 400): Response {
-  return Response.json({ ok: false, detail: message, error: message }, { status })
 }
 
 function providerStatusFor(error: unknown): number {
@@ -3535,7 +3481,7 @@ export function startServer(opts: StartServerOptions = {}) {
           summarizeWorkspaceProjectInstructions(workspace),
           summarizeWorkspaceTree(workspaceRoot),
         ])
-        return Response.json({ git, projectInstructions, tree })
+        return Response.json({ root: workspaceRoot, git, projectInstructions, tree })
       }
 
       if (url.pathname === '/api/v1/agent/bridge/peers') {

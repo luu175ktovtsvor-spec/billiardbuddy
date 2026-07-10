@@ -1340,3 +1340,30 @@ describe('读命令工作区边界(P0:对齐 cc-haha BashTool/pathValidation.ts 
     expect(reason?.why).toContain('超出了当前工作区')
   })
 })
+
+test('超时/输出旋钮对齐 cc:默认 120s/30k,env BASH_DEFAULT_TIMEOUT_MS/BASH_MAX_TIMEOUT_MS/BASH_MAX_OUTPUT_LENGTH 覆盖', async () => {
+  const { defaultCommandTimeoutMs, maxCommandTimeoutMs, defaultMaxOutputBytes, MAX_OUTPUT_BYTES } = await import('./runCommandTool')
+  const saved = { d: process.env.BASH_DEFAULT_TIMEOUT_MS, m: process.env.BASH_MAX_TIMEOUT_MS, o: process.env.BASH_MAX_OUTPUT_LENGTH }
+  try {
+    delete process.env.BASH_DEFAULT_TIMEOUT_MS
+    delete process.env.BASH_MAX_TIMEOUT_MS
+    delete process.env.BASH_MAX_OUTPUT_LENGTH
+    expect(defaultCommandTimeoutMs()).toBe(120_000) // cc DEFAULT_TIMEOUT_MS
+    expect(maxCommandTimeoutMs()).toBe(600_000) // cc MAX_TIMEOUT_MS
+    expect(defaultMaxOutputBytes()).toBe(30_000) // cc BASH_MAX_OUTPUT_DEFAULT
+    expect(MAX_OUTPUT_BYTES).toBe(150_000) // cc BASH_MAX_OUTPUT_UPPER_LIMIT
+    process.env.BASH_DEFAULT_TIMEOUT_MS = '5000'
+    expect(defaultCommandTimeoutMs()).toBe(5000)
+    // cc 语义:上限永远不低于默认
+    process.env.BASH_DEFAULT_TIMEOUT_MS = '700000'
+    expect(maxCommandTimeoutMs()).toBe(700_000)
+    process.env.BASH_MAX_OUTPUT_LENGTH = '999999'
+    expect(defaultMaxOutputBytes()).toBe(150_000) // 超硬上限被夹
+    process.env.BASH_MAX_OUTPUT_LENGTH = '10000'
+    expect(defaultMaxOutputBytes()).toBe(10_000)
+  } finally {
+    if (saved.d === undefined) delete process.env.BASH_DEFAULT_TIMEOUT_MS; else process.env.BASH_DEFAULT_TIMEOUT_MS = saved.d
+    if (saved.m === undefined) delete process.env.BASH_MAX_TIMEOUT_MS; else process.env.BASH_MAX_TIMEOUT_MS = saved.m
+    if (saved.o === undefined) delete process.env.BASH_MAX_OUTPUT_LENGTH; else process.env.BASH_MAX_OUTPUT_LENGTH = saved.o
+  }
+})

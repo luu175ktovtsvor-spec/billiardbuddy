@@ -1181,7 +1181,9 @@ async function* gateOneCall(
   }
   if (hookResult.deniedMessage) {
     yield* fireDenied(hookResult.deniedMessage)
-    yield feedback(`[hook 拦截] ${hookResult.deniedMessage}`, false)
+    // 拒绝标 is_error:true(对齐 cc toolExecution.ts:1030-1037):模型收到明确失败信号才会换招;
+    // ask=提案挂起态仍保留 false(有意区分:等待用户不是失败)。
+    yield feedback(`[hook 拦截] ${hookResult.deniedMessage}`, true)
     return
   }
   const hookInput = hookResult.input
@@ -1189,7 +1191,7 @@ async function* gateOneCall(
   const decision = resolvePermission(tool, hookInput, ctx)
   if (decision.behavior === 'deny') {
     yield* fireDenied(decision.message)
-    yield feedback(decision.message, false)
+    yield feedback(decision.message, true)
     return
   }
   // cc PreToolUse hook permissionDecision:'allow' → 只跳过"默认档位该问"这一层(decision.reason.type==='mode'),
@@ -1215,7 +1217,7 @@ async function* gateOneCall(
     }
     if (!forceAsk && shouldStopAskingForContext(ctx, key)) {
       yield* fireDenied(DENIAL_FALLBACK_MSG(call.name))
-      yield feedback(DENIAL_FALLBACK_MSG(call.name), false)
+      yield feedback(DENIAL_FALLBACK_MSG(call.name), true)
       return
     }
     // PermissionRequest hook(对齐 cc executePermissionRequestHooks,utils/hooks.ts:4176-4211):审批卡
@@ -1234,7 +1236,7 @@ async function* gateOneCall(
     if (permReq.behavior === 'deny') {
       const reason = permReq.message ?? DENIAL_FALLBACK_MSG(call.name)
       yield* fireDenied(reason)
-      yield feedback(reason, false)
+      yield feedback(reason, true)
       return
     }
     let preview: string | undefined
