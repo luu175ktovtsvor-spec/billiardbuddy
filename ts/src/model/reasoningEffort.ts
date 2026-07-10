@@ -38,15 +38,22 @@ export function thinkingModeEnvOverride(
   return undefined
 }
 
-/** OpenAI-compat 端点的 reasoning effort 档 → 走 budget_tokens 模型时的 thinking 预算目标值(实际再按 max_tokens 夹紧)。 */
-const EFFORT_THINKING_BUDGET: Record<ReasoningEffort, number> = {
-  low: 2_048,
-  medium: 8_192,
-  high: 16_384,
-}
-
 /** Anthropic API 对 thinking.budget_tokens 的硬下限(< 1024 直接 400)。 */
 const MIN_THINKING_BUDGET = 1_024
+
+/** env 真值判定(1/true/yes/on,大小写无关)。 */
+function isEnvTruthy(value: string | undefined): boolean {
+  return ['1', 'true', 'yes', 'on'].includes(value?.trim().toLowerCase() ?? '')
+}
+
+/**
+ * 等价 cc 的 `CLAUDE_CODE_DISABLE_THINKING`:置真值(1/true/yes/on)时彻底不发 thinking。
+ * 我们额外把 `ANTHROPIC_THINKING_MODE=off`(别名 disabled/none)也当同义关闭——两者任一命中即关。
+ * 对齐 cc claude.ts:1653-1655 的 `hasThinking = … && !isEnvTruthy(CLAUDE_CODE_DISABLE_THINKING)`。
+ */
+function isThinkingDisabledByEnv(env: Record<string, string | undefined>): boolean {
+  return isEnvTruthy(env.CLAUDE_CODE_DISABLE_THINKING) || thinkingModeEnvOverride(env) === 'off'
+}
 
 /**
  * 该模型的 thinking 走 adaptive 还是 budget_tokens——对齐 cc-haha `modelSupportsAdaptiveThinking` + 各厂商官方文档。
@@ -76,28 +83,33 @@ export function anthropicModelUsesAdaptiveThinking(model: string): boolean {
 }
 
 /**
- * 把"深度思考/增强"档(reasoningEffort)映射成 Anthropic thinking 参数(对齐 cc-haha services/api/claude.ts 的
- * adaptive 优先、budget_tokens 兜底选择)。
- * - 没选(reasoningEffort 未设)→ undefined,请求不带 thinking(与旧行为一致,不强制思考)。
- * - adaptive 模型 → `{type:'adaptive'}`(不带预算)。
- * - budget_tokens 模型 → budget 取 effort 目标值,并夹紧到 `< max_tokens` 且给答复留出至少一半空间;
- *   夹紧后 < 1024(max_tokens 太小放不下 thinking)则返回 undefined,跳过 thinking 以免 400 或答复被思考挤爆。
+ * 生成 Anthropic Messages API 的 thinking 参数——对齐 cc-haha services/api/claude.ts:1653-1736 的
+ * 「**thinking 默认开、与 reasoningEffort 解耦**」:
+ *  - **默认就发 thinking**(不再由是否选了深度思考档决定;cc 里 `thinkingConfig` 默认 enabled、effort 是独立的
+ *    output_config 参数,不决定是否/如何思考)。adaptive 模型 → `{type:'adaptive'}`(不带预算);
+ *    budget 模型 → `{type:'enabled', budget_tokens: 模型默认预算}`。
+ *  - **仅等价 `CLAUDE_CODE_DISABLE_THINKING`(或 `ANTHROPIC_THINKING_MODE=off`)时才不发**(返回 undefined)。
+ *  - adaptive vs budget 的选择:`ANTHROPIC_THINKING_MODE`(adaptive|budget)env 覆盖优先,未设按 per-model 判定。
+ *  - 模型默认预算:对齐 cc `getMaxThinkingTokensForModel` + `Math.min(maxTokens-1, …)`——我们无 per-model thinking
+ *    预算登记,默认取尽可能大 = `maxTokens-1`(cc 的夹紧下限)。maxTokens 太小(预算 < 1024)会 400 → 跳过 thinking。
+ *
+ * 注:reasoningEffort 不再进入本函数——它是"深度思考档",在 OpenAI 兼容端点(ProxyModel)按 reasoning_effort 透传,
+ * 在 Anthropic 端点映射成 output_config.effort 是后续项(见任务 #68),与"是否/如何 thinking"是两回事。
  */
 export function buildAnthropicThinking(
-  reasoningEffort: ReasoningEffort | undefined,
   model: string,
   maxTokens: number,
   env: Record<string, string | undefined> = process.env,
 ): AnthropicThinkingParam | undefined {
-  if (!reasoningEffort) return undefined
-  // env 覆盖优先(off = 彻底不带 thinking);未覆盖时按 per-model 判定。
+  // 仅在等价 CLAUDE_CODE_DISABLE_THINKING / ANTHROPIC_THINKING_MODE=off 时不发 thinking;其余一律默认开。
+  if (isThinkingDisabledByEnv(env)) return undefined
+  // env 覆盖优先(off 已在上面拦掉,此处只余 adaptive | budget | undefined);未覆盖时按 per-model 判定。
   const override = thinkingModeEnvOverride(env)
-  if (override === 'off') return undefined
   const useAdaptive = override ? override === 'adaptive' : anthropicModelUsesAdaptiveThinking(model)
   if (useAdaptive) return { type: 'adaptive' }
-  // budget_tokens 路径:给答复保留至少一半 max_tokens,再按 effort 目标值夹紧(对齐 cc 的 Math.min 夹紧,但预留答复空间)。
-  const answerReserve = Math.max(MIN_THINKING_BUDGET, Math.floor(maxTokens / 2))
-  const budget = Math.min(EFFORT_THINKING_BUDGET[reasoningEffort], maxTokens - answerReserve)
+  // budget_tokens 模型:发模型默认预算(= maxTokens-1,对齐 cc 的 Math.min(maxTokens-1, 模型上限-1) 夹紧)。
+  // maxTokens 太小(预算 < 1024)放不下 thinking → 跳过以免 400。
+  const budget = maxTokens - 1
   if (budget < MIN_THINKING_BUDGET) return undefined
   return { type: 'enabled', budget_tokens: budget }
 }
