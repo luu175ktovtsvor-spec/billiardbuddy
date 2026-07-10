@@ -5,6 +5,7 @@ import { getUserConfigHomeDir, MEMORY_DOT_DIR } from '../harness/memoryNames'
 import { extractDescription, parseMarkdownDocument, stringField } from '../commands/frontmatter'
 import { addAllowedToolsToContext, allowedToolRulesFromFrontmatter, normalizeAllowedTools } from '../commands/allowedTools'
 import { parseArgumentNames, substituteArguments } from '../commands/argumentSubstitution'
+import { executeShellCommandsInPrompt, substitutePromptTemplateVars } from '../commands/promptShellExecution'
 import type { PromptCommand } from '../commands/types'
 import { applyConfigChangeHooks, mergeHookRegistries, type HookSource } from '../hooks/hooks'
 import { normalizeHookRegistry } from '../hooks/hookConfig'
@@ -167,9 +168,18 @@ export async function loadSkillFile(filePath: string, source: PromptCommand['sou
     filePath,
     baseDir,
     contentLength: doc.body.length,
-    async getPrompt(args: string, _ctx: ToolContext): Promise<string> {
+    async getPrompt(args: string, ctx: ToolContext): Promise<string> {
       const substituted = substituteArguments(body, args, true, argumentNames, '用户给这个技能的参数')
-      return `技能: ${name}\n基础目录: ${baseDir}\n\n${substituted}`
+      // 动态注入(对齐 cc loadSkillsDir.ts:344-398):模板变量替换 + 内嵌 shell 执行。
+      // MCP 来源技能是远程不可信内容,绝不执行其正文内嵌 shell(cc 同款安全门)。
+      let finalContent = substitutePromptTemplateVars(
+        `技能: ${name}\n基础目录: ${baseDir}\n\n${substituted}`,
+        { skillDir: baseDir, sessionId: ctx?.conversationId },
+      )
+      if (source !== 'mcp') {
+        finalContent = await executeShellCommandsInPrompt(finalContent, ctx, `/${name}`, { allowedTools })
+      }
+      return finalContent
     },
   }
 }
