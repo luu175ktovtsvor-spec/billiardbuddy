@@ -54,3 +54,8 @@ desktop/dist/
 
 # React 前端构建产物(ui:build 生成,不进仓库)
 desktop/renderer-dist/
+
+# 内置 key 文件(真 provider key,绝不进 git)
+bundled.env
+**/bundled.env
+desktop/bundled.env
