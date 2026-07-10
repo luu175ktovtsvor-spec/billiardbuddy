@@ -18,8 +18,9 @@ export interface AnthropicMessagesModelConfig {
   requestTimeoutMs?: number
   stream?: boolean
   /**
-   * "深度思考/增强"档:选了就把 thinking 参数拼进请求(对齐 cc-haha)。undefined = 不带 thinking(标准档)。
-   * 由 buildAnthropicThinking 按模型决定走 `{type:'adaptive'}`(现代 Claude / MiniMax)还是 `{type:'enabled',budget_tokens}`(旧 Claude 族/兜底);可用 ANTHROPIC_THINKING_MODE env 覆盖。
+   * "深度思考/增强"档。⚠️注意:thinking 现已与 reasoningEffort **解耦**(对齐 cc,默认开)——本字段不再决定
+   * 是否/如何思考(那由 buildAnthropicThinking 按模型 + env 判定),仅作为透传给上游 output_config.effort 的占位
+   * (Anthropic 端点映射见任务 #68);OpenAI 兼容端点走 ProxyModel 的 reasoning_effort。保留字段供 modelFactory 透传。
    */
   reasoningEffort?: ReasoningEffort
   fetchImpl?: FetchLike
@@ -71,9 +72,11 @@ export class AnthropicMessagesModel implements Model {
     const messages = ensureToolResultPairing(normalizeMessagesForAPI(input.messages))
     const baseMaxTokens = this.cfg.maxTokens ?? DEFAULT_MAX_TOKENS
     const buildBody = (maxTokens: number) => {
-      // "深度思考/增强"档 → 拼 thinking(反逻辑修:此前整个丢了,选了深度思考模型根本没思考)。
-      // budget_tokens 会随 maxTokens 夹紧,所以在这里(拿到本次 maxTokens 后)算,升级重试的更大 maxTokens 也能给更大预算。
-      const thinking = buildAnthropicThinking(this.cfg.reasoningEffort, this.cfg.model, maxTokens)
+      // thinking 默认开、与 reasoningEffort 解耦(掰回 cc claude.ts:1653-1736 的分叉):默认就发 thinking
+      // (adaptive 模型→{type:'adaptive'};budget 模型→模型默认预算),仅等价 CLAUDE_CODE_DISABLE_THINKING /
+      // ANTHROPIC_THINKING_MODE=off 时才不发。budget_tokens 随 maxTokens 夹紧,故在这里(拿到本次 maxTokens 后)算,
+      // 升级重试的更大 maxTokens 也能给更大预算。
+      const thinking = buildAnthropicThinking(this.cfg.model, maxTokens)
       return {
         model: this.cfg.model,
         max_tokens: maxTokens,

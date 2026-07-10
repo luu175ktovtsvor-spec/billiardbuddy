@@ -64,51 +64,70 @@ test('AnthropicMessagesModel:非流式 final,请求使用 messages endpoint 和 
   expect(sentBody.messages[0]).toEqual({ role: 'user', content: [{ type: 'text', text: '问' }] })
 })
 
-test('AnthropicMessagesModel:深度思考档 → 现代 Claude 请求带 thinking:{type:adaptive}', async () => {
-  let sentBody: any
-  const model = new AnthropicMessagesModel({
-    baseUrl: 'https://api.test/v1', apiKey: 'k', model: 'claude-opus-4-7', stream: false,
-    reasoningEffort: 'high',
-    fetchImpl: async (_url, init) => {
-      sentBody = JSON.parse(init!.body as string)
+// —— thinking 默认开、与 reasoningEffort 解耦(掰回 cc claude.ts:1653-1736 的分叉)——
+
+function anthropicModel(cfg: Record<string, unknown>, captureBody: (b: any) => void): AnthropicMessagesModel {
+  return new AnthropicMessagesModel({
+    baseUrl: 'https://api.test/v1', apiKey: 'k', stream: false,
+    fetchImpl: async (_url: unknown, init?: { body?: unknown }) => {
+      captureBody(JSON.parse(init!.body as string))
       return new Response(JSON.stringify({ content: [{ type: 'text', text: 'ok' }] }), {
         status: 200, headers: { 'content-type': 'application/json' },
       })
     },
-  })
+    ...cfg,
+  } as any)
+}
+
+test('AnthropicMessagesModel:默认(未设 reasoningEffort)→ 现代 Claude 也带 thinking:{type:adaptive}', async () => {
+  let sentBody: any
+  const model = anthropicModel({ model: 'claude-opus-4-7' }, b => (sentBody = b))
   await model.step({ messages: [userText('问')], tools: [] })
+  // 默认开:不选深度思考也发 thinking(掰回分叉——过去未设 reasoningEffort 就不带 thinking)
   expect(sentBody.thinking).toEqual({ type: 'adaptive' })
 })
 
-test('AnthropicMessagesModel:深度思考档 → budget 模型请求带 thinking:{type:enabled,budget_tokens}', async () => {
+test('AnthropicMessagesModel:默认 → budget 模型带 thinking:{type:enabled,budget_tokens=maxTokens-1}', async () => {
   let sentBody: any
-  const model = new AnthropicMessagesModel({
-    baseUrl: 'https://api.test/v1', apiKey: 'k', model: 'claude-haiku-4-5', stream: false,
-    reasoningEffort: 'high', maxTokens: 32_000,
-    fetchImpl: async (_url, init) => {
-      sentBody = JSON.parse(init!.body as string)
-      return new Response(JSON.stringify({ content: [{ type: 'text', text: 'ok' }] }), {
-        status: 200, headers: { 'content-type': 'application/json' },
-      })
-    },
-  })
+  const model = anthropicModel({ model: 'claude-haiku-4-5', maxTokens: 32_000 }, b => (sentBody = b))
   await model.step({ messages: [userText('问')], tools: [] })
-  expect(sentBody.thinking).toEqual({ type: 'enabled', budget_tokens: 16_000 })
+  // budget 模型 → 模型默认预算 = maxTokens-1(与 effort 解耦,不再按 effort 档取值)
+  expect(sentBody.thinking).toEqual({ type: 'enabled', budget_tokens: 31_999 })
 })
 
-test('AnthropicMessagesModel:标准档(未设 reasoningEffort)→ 请求不带 thinking', async () => {
+test('AnthropicMessagesModel:reasoningEffort 不再影响 thinking(解耦)——设了 high 仍走模型默认预算', async () => {
   let sentBody: any
-  const model = new AnthropicMessagesModel({
-    baseUrl: 'https://api.test/v1', apiKey: 'k', model: 'claude-opus-4-7', stream: false,
-    fetchImpl: async (_url, init) => {
-      sentBody = JSON.parse(init!.body as string)
-      return new Response(JSON.stringify({ content: [{ type: 'text', text: 'ok' }] }), {
-        status: 200, headers: { 'content-type': 'application/json' },
-      })
-    },
-  })
+  const model = anthropicModel({ model: 'claude-haiku-4-5', maxTokens: 32_000, reasoningEffort: 'high' }, b => (sentBody = b))
   await model.step({ messages: [userText('问')], tools: [] })
-  expect(sentBody.thinking).toBeUndefined()
+  expect(sentBody.thinking).toEqual({ type: 'enabled', budget_tokens: 31_999 })
+})
+
+test('AnthropicMessagesModel:CLAUDE_CODE_DISABLE_THINKING=1 → 请求不带 thinking(等价 cc 关闭闸)', async () => {
+  const prev = process.env.CLAUDE_CODE_DISABLE_THINKING
+  process.env.CLAUDE_CODE_DISABLE_THINKING = '1'
+  try {
+    let sentBody: any
+    const model = anthropicModel({ model: 'claude-opus-4-7' }, b => (sentBody = b))
+    await model.step({ messages: [userText('问')], tools: [] })
+    expect(sentBody.thinking).toBeUndefined()
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CODE_DISABLE_THINKING
+    else process.env.CLAUDE_CODE_DISABLE_THINKING = prev
+  }
+})
+
+test('AnthropicMessagesModel:ANTHROPIC_THINKING_MODE=off → 请求不带 thinking', async () => {
+  const prev = process.env.ANTHROPIC_THINKING_MODE
+  process.env.ANTHROPIC_THINKING_MODE = 'off'
+  try {
+    let sentBody: any
+    const model = anthropicModel({ model: 'claude-haiku-4-5', maxTokens: 32_000 }, b => (sentBody = b))
+    await model.step({ messages: [userText('问')], tools: [] })
+    expect(sentBody.thinking).toBeUndefined()
+  } finally {
+    if (prev === undefined) delete process.env.ANTHROPIC_THINKING_MODE
+    else process.env.ANTHROPIC_THINKING_MODE = prev
+  }
 })
 
 test('AnthropicMessagesModel:PDF document 块 → 默认回灌文本面包屑(MiMo/MiniMax anthropic 端点不支持 document)', async () => {
