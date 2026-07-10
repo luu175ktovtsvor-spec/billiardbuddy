@@ -1,6 +1,5 @@
 import type { AssistantStep, Model } from '../types/model'
 import { textBlock, type Message, type ToolResultBlock, type ToolUseBlock } from '../types/message'
-import { resolveModelCompactionThreshold } from '../model/modelCompactionTriggers'
 
 export const CONTEXT_OVERFLOW_RESERVE_CHARS = 48_000
 /** 首轮还没真实 token 用量时的字符估算兜底比例(cc 没有字符路径,这是我们的降级估算)。 */
@@ -63,11 +62,6 @@ export interface CompactPipelineInput extends SplitOptions, MicrocompactOptions 
   maxOutputTokens?: number
   /** 上一轮模型响应回报的真实 prompt input tokens(含 cache 命中/创建),用于精准触发压缩。 */
   lastInputTokens?: number
-  /**
-   * 当前模型的内部标识名(白标前,如 'mimo-v2.5';来自 providerRuntime.config.model)。
-   * 用于查 per-model 压缩触发点登记表(modelCompactionTriggers);拿不到就退回 cc 默认公式。
-   */
-  modelName?: string
   readOnlyToolNames: ReadonlySet<string>
   compactionFailures?: number
   lastCompactionAtMs?: number
@@ -216,27 +210,22 @@ export function getEffectiveContextWindowTokens(contextWindowTokens: number, max
 }
 
 /**
- * 自动压缩触发阈值(token)。优先级:
- *   1. env 覆盖最高:CLAUDE_CODE_AUTO_COMPACT_WINDOW 换整窗口(在 getEffectiveContextWindowTokens 里);
- *      CLAUDE_AUTOCOMPACT_PCT_OVERRIDE(0<pct≤100)取 min(floor(有效窗口*pct/100), 基线阈值)—— 只更早不更晚。
- *   2. per-model 登记(modelCompactionTriggers):该 modelName 有登记 → 基线阈值 = 比例×有效窗口 或 绝对值
- *      (超大窗口如 MiMo 1M 用它把触发点拉到 ~700k,cc 固定 13k buffer 对 1M 不成比例)。
- *   3. cc 默认公式:无登记 → 基线阈值 = 有效窗口 − 13k(对齐 cc getAutoCompactThreshold autoCompact.ts:72-91)。
+ * 自动压缩触发阈值(token)= 有效窗口 − 13k。对齐 cc getAutoCompactThreshold(autoCompact.ts:72-91)。
+ * CLAUDE_AUTOCOMPACT_PCT_OVERRIDE(0<pct≤100)存在时,阈值取 min(floor(有效窗口*pct/100), 默认阈值)
+ * —— 只会让压缩更早、绝不更晚。
  */
-export function getAutoCompactTokenThreshold(contextWindowTokens: number, maxOutputTokens?: number, modelName?: string): number {
+export function getAutoCompactTokenThreshold(contextWindowTokens: number, maxOutputTokens?: number): number {
   const effectiveContextWindow = getEffectiveContextWindowTokens(contextWindowTokens, maxOutputTokens)
-  // per-model 登记优先于 cc 固定 buffer 公式;无登记(undefined)→ 回退 cc 默认「有效窗口 − 13k」。
-  const perModelThreshold = resolveModelCompactionThreshold(modelName, effectiveContextWindow)
-  const baseThreshold = perModelThreshold ?? effectiveContextWindow - AUTOCOMPACT_BUFFER_TOKENS
+  const autocompactThreshold = effectiveContextWindow - AUTOCOMPACT_BUFFER_TOKENS
   const envPercent = process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
   if (envPercent) {
     const parsed = parseFloat(envPercent)
     if (!isNaN(parsed) && parsed > 0 && parsed <= 100) {
       const percentageThreshold = Math.floor(effectiveContextWindow * (parsed / 100))
-      return Math.min(percentageThreshold, baseThreshold)
+      return Math.min(percentageThreshold, autocompactThreshold)
     }
   }
-  return baseThreshold
+  return autocompactThreshold
 }
 
 function shouldAutocompact(input: CompactPipelineInput, failures: number): boolean {
@@ -253,7 +242,7 @@ function shouldAutocompact(input: CompactPipelineInput, failures: number): boole
   const parsedEnvWindow = envAutoCompactWindow ? parseInt(envAutoCompactWindow, 10) : NaN
   const hasWindow = (!isNaN(parsedEnvWindow) && parsedEnvWindow > 0) || (!!input.contextWindowTokens && input.contextWindowTokens > 0)
   if (input.lastInputTokens && input.lastInputTokens > 0 && hasWindow) {
-    if (input.lastInputTokens >= getAutoCompactTokenThreshold(input.contextWindowTokens ?? 0, input.maxOutputTokens, input.modelName)) return true
+    if (input.lastInputTokens >= getAutoCompactTokenThreshold(input.contextWindowTokens ?? 0, input.maxOutputTokens)) return true
   }
   const contextWindowChars = input.contextWindowChars
   if (!contextWindowChars) return false

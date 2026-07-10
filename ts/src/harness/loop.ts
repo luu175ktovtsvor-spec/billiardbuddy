@@ -417,7 +417,6 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       postSummaryMessages: invokedSkills ? [invokedSkills] : [],
       contextWindowChars: opts.contextWindowChars,
       contextWindowTokens: opts.contextWindowTokens,
-      modelName: opts.modelName,
       lastInputTokens,
       readOnlyToolNames,
       compactionFailures,
