@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { AnthropicMessagesModel } from './AnthropicMessagesModel'
-import { userText, type Message } from '../types/message'
+import { documentBlock, userText, type Message } from '../types/message'
 import { MODEL_OUTPUT_TRUNCATED_NOTICE } from '../types/model'
 
 function sseResponse(lines: string[]): Response {
@@ -109,6 +109,49 @@ test('AnthropicMessagesModel:标准档(未设 reasoningEffort)→ 请求不带 t
   })
   await model.step({ messages: [userText('问')], tools: [] })
   expect(sentBody.thinking).toBeUndefined()
+})
+
+test('AnthropicMessagesModel:PDF document 块 → 默认回灌文本面包屑(MiMo/MiniMax anthropic 端点不支持 document)', async () => {
+  let sentBody: any
+  const model = new AnthropicMessagesModel({
+    baseUrl: 'https://api.test/v1', apiKey: 'k', model: 'minimax-m3', stream: false,
+    fetchImpl: async (_url, init) => {
+      sentBody = JSON.parse(init!.body as string)
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: 'ok' }] }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      })
+    },
+  })
+  await model.step({ messages: [{ role: 'user', content: [documentBlock('UERGREFUQQ==')] }], tools: [] })
+  const blocks = sentBody.messages[0].content
+  // 不再静默丢块(此前 return [] → 空 content → 补空 text);现回灌一条纠正性文本面包屑,不发上游不认的 document 块。
+  expect(blocks.some((b: any) => b.type === 'document')).toBe(false)
+  expect(blocks[0].type).toBe('text')
+  expect(blocks[0].text).toContain('PDF')
+})
+
+test('AnthropicMessagesModel:ANTHROPIC_SEND_PDF_DOCUMENT=1 → 发真 document 块(供支持的 Anthropic 端点)', async () => {
+  const prev = process.env.ANTHROPIC_SEND_PDF_DOCUMENT
+  process.env.ANTHROPIC_SEND_PDF_DOCUMENT = '1'
+  try {
+    let sentBody: any
+    const model = new AnthropicMessagesModel({
+      baseUrl: 'https://api.test/v1', apiKey: 'k', model: 'claude-opus-4-7', stream: false,
+      fetchImpl: async (_url, init) => {
+        sentBody = JSON.parse(init!.body as string)
+        return new Response(JSON.stringify({ content: [{ type: 'text', text: 'ok' }] }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+    await model.step({ messages: [{ role: 'user', content: [documentBlock('UERGREFUQQ==')] }], tools: [] })
+    expect(sentBody.messages[0].content).toEqual([
+      { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'UERGREFUQQ==' } },
+    ])
+  } finally {
+    if (prev === undefined) delete process.env.ANTHROPIC_SEND_PDF_DOCUMENT
+    else process.env.ANTHROPIC_SEND_PDF_DOCUMENT = prev
+  }
 })
 
 test('AnthropicMessagesModel:auth_token 策略使用 Authorization', async () => {
