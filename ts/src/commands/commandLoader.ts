@@ -3,6 +3,7 @@ import { basename, dirname, extname, join } from 'node:path'
 import { extractDescription, parseMarkdownDocument, stringField } from './frontmatter'
 import { allowedToolRulesFromFrontmatter, normalizeAllowedTools } from './allowedTools'
 import { parseArgumentNames, substituteArguments } from './argumentSubstitution'
+import { executeShellCommandsInPrompt, substitutePromptTemplateVars } from './promptShellExecution'
 import type { PromptCommand } from './types'
 import type { Tool, ToolContext } from '../tools/Tool'
 
@@ -99,9 +100,16 @@ export async function loadCommandFile(filePath: string): Promise<PromptCommand> 
     filePath,
     baseDir,
     contentLength: doc.body.length,
-    async getPrompt(args: string, _ctx: ToolContext): Promise<string> {
+    async getPrompt(args: string, ctx: ToolContext): Promise<string> {
       const substituted = substituteArguments(body, args, true, argumentNames, '命令参数')
-      return `命令: /${name}\n基础目录: ${baseDir}\n\n${substituted}`
+      // 动态注入(对齐 cc processSlashCommand 的命令体展开):模板变量替换 + 内嵌 shell 执行。
+      // 命令都从本机文件加载(source:'commands'),没有 MCP 远程来源,无需 mcp 安全门;若日后接
+      // MCP prompts 进这条管线,必须按 source==='mcp' 跳过内嵌 shell(对齐 cc)。
+      const finalContent = substitutePromptTemplateVars(
+        `命令: /${name}\n基础目录: ${baseDir}\n\n${substituted}`,
+        { skillDir: baseDir, sessionId: ctx?.conversationId },
+      )
+      return await executeShellCommandsInPrompt(finalContent, ctx, `/${name}`, { allowedTools })
     },
   }
 }
