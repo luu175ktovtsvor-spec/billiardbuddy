@@ -124,3 +124,28 @@ test('domain pack tools are gated by enabled packs and return source-aware guida
   expect(out).toContain('search_store_docs')
   expect(out).toContain('make_poster/generate_image')
 })
+
+test('packIdForCommandName:斜杠入口命令名映射到领域包(owner 设计:/台球→billiards)', async () => {
+  const { packIdForCommandName } = await import('./domainPacks')
+  // 入口命令 + 别名(pack.aliases 含台球/球房/台球房/pool/billiard)
+  expect(packIdForCommandName('台球')).toBe('billiards')
+  expect(packIdForCommandName('球房')).toBe('billiards')
+  expect(packIdForCommandName('billiards')).toBe('billiards')
+  expect(packIdForCommandName('pool')).toBe('billiards')
+  // 命名空间子命令前缀命中
+  expect(packIdForCommandName('billiards:daily-ops')).toBe('billiards')
+  // 无关命令不误映射
+  expect(packIdForCommandName('commit')).toBeUndefined()
+  expect(packIdForCommandName('')).toBeUndefined()
+})
+
+test('mergeEnabledPacks:并入额外 pack id 去重,未知 id 跳过', async () => {
+  const { mergeEnabledPacks, resolveEnabledPacks } = await import('./domainPacks')
+  const base = resolveEnabledPacks({})  // 空
+  expect(base).toHaveLength(0)
+  const merged = mergeEnabledPacks(base, ['billiards', 'billiards', 'nonexistent-pack'])
+  expect(merged.map(p => p.id)).toEqual(['billiards'])  // 去重 + 跳过未知
+  // 已在 base 里的不重复加
+  const merged2 = mergeEnabledPacks(merged, ['billiards'])
+  expect(merged2.map(p => p.id)).toEqual(['billiards'])
+})

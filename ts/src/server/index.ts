@@ -52,7 +52,7 @@ import { bridgeUnsafeCommandMessage, type CommandLibrary, filterBridgeSafeComman
 import type { PromptCommand } from '../commands/types'
 import { loadPluginHookRegistry, loadWorkspaceHookRegistry } from '../hooks/hookConfig'
 import { applyElicitationHooks, applyElicitationResultHooks, applySessionEndHooks, configureHookTrust, type HookRegistry as ElicitationHookRegistry } from '../hooks/hooks'
-import { createDomainPackCommandLibrary, createDomainPackHookRegistry, createDomainPackTools, listPublicDomainPacks, mergeHookRegistries, registerDomainPackCommandAliases, resolveEnabledPacks, suggestedSkillNamesForPacks, type DomainPack } from '../packs/domainPacks'
+import { createDomainPackCommandLibrary, createDomainPackHookRegistry, createDomainPackTools, listPublicDomainPacks, mergeEnabledPacks, mergeHookRegistries, packIdForCommandName, registerDomainPackCommandAliases, resolveEnabledPacks, suggestedSkillNamesForPacks, type DomainPack } from '../packs/domainPacks'
 import { clearThreadGoalHook, createGoalHookRegistry, ensureThreadGoalHookFromTranscript, getThreadGoal, parseGoalCommand, setThreadGoalHook } from '../goals/goalState'
 import { loadAgentsDir, type AgentDefinition } from '../agents/agentLoader'
 import { createAgentTaskSidechainTools, createAgentTaskTool } from '../agents/agentTool'
@@ -1533,7 +1533,7 @@ export function startServer(opts: StartServerOptions = {}) {
       }
     }
     const transcript = sessions.transcript(conversationId, workspace.root)
-    await sessions.touch(conversationId, {
+    const touchedMeta = await sessions.touch(conversationId, {
       title: rawUserMessage.slice(0, 40),
       workspaceRoot: workspace.root,
       status: 'running',
@@ -1547,7 +1547,25 @@ export function startServer(opts: StartServerOptions = {}) {
     const skillsRoot = opts.skillsRoot ?? defaultSkillsRoot()
     const createSkillsRoot = userSkillsRoot()
     const skills = await loadLayeredSkills({ bundledRoot: skillsRoot, workspaceRoot: workspace.root })
-    const enabledPacks = resolveEnabledPacks(rawBody)
+    // 领域包启用来源三合一(owner 设计:斜杠命令 /台球 → 主循环注入 pack → 自动找内容 + 跨回合保持):
+    //   ① 请求体 enabled_packs(前端专家选择器);② 本回合斜杠入口命令(/台球、/球房、/billiards…→ packIdForCommandName);
+    //   ③ 会话已持久化的 enabledPacks(上一回合敲过入口命令,即便这回合前端没回传也保持在模式里)。
+    // 必须在 loadCommandsForWorkspace 之前合并——领域包命令(/台球、/billiards:daily-ops)只在 pack 已启用时才加载;
+    // 这样斜杠命令本回合就能被识别为命令(注入 prompt)+ 拿到 pack 的 sessionStartContext 知识 + billiards_ops_checklist 工具。
+    const entryCommandForPack = rawBody.skipCommandParsing ? null : parseCommandInvocation(rawUserMessage)
+    const slashEnabledPackId = entryCommandForPack ? packIdForCommandName(entryCommandForPack.name) : undefined
+    const persistedPackIds = Array.isArray(touchedMeta.enabledPacks) ? touchedMeta.enabledPacks : []
+    const enabledPacks = mergeEnabledPacks(resolveEnabledPacks(rawBody), [
+      ...persistedPackIds,
+      ...(slashEnabledPackId ? [slashEnabledPackId] : []),
+    ])
+    // 斜杠命令新启用了 pack → 持久化到会话,后续回合自动保持(仅有新增时写回,避免每回合无谓写盘)。
+    if (slashEnabledPackId) {
+      const enabledPackIds = enabledPacks.map(pack => pack.id)
+      if (enabledPackIds.some(id => !persistedPackIds.includes(id))) {
+        await sessions.touch(conversationId, { enabledPacks: enabledPackIds }).catch(() => undefined)
+      }
+    }
     const commands = await loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), enabledPacks, opts.env ?? process.env)
     // 技能/命令发现清单注入系统提示(对齐 cc SkillTool skill listing):汇总 builtin 命令 + 技能 + 已启用领域包命令,
     // 按约 1% 上下文预算截断,让模型「看清单 → 自动调」,/台球 等斜杠也映射到对应技能/命令。

@@ -74,6 +74,42 @@ export function resolveEnabledPacks(input: Record<string, unknown>): DomainPack[
   return packs
 }
 
+/**
+ * 斜杠命令名 → 领域包 id(owner 设计:敲 /台球 等入口斜杠命令即进入该领域包"管家"模式)。
+ * 命中规则:①命令名直接是某 pack 的 id 或别名(registry.resolve 认别名,如 /台球、/球房、/billiards、/pool);
+ * ②命名空间子命令 `<packid>:xxx`(如 /billiards:daily-ops)的前缀命中某 pack。都不中返回 undefined。
+ * 注意:registry.resolve 只认**已启用**的注册项,而领域包默认全部注册(defaultEnabled 只控是否默认挂,
+ * 不控注册),故这里能在 pack 尚未被本会话启用时就把命令名映射到它——正是"斜杠命令启用 pack"所需。
+ */
+export function packIdForCommandName(name: string): string | undefined {
+  if (!name) return undefined
+  const registry = getDefaultPackRegistry()
+  const direct = registry.resolve(name)
+  if (direct) return direct.id
+  const colon = name.indexOf(':')
+  if (colon > 0) {
+    const prefix = registry.resolve(name.slice(0, colon))
+    if (prefix) return prefix.id
+  }
+  return undefined
+}
+
+/** 把额外 pack id 并入已解析的 pack 列表(去重、经注册表解析、未知/未注册 id 跳过)。供斜杠命令启用 + 会话持久化合并。 */
+export function mergeEnabledPacks(base: DomainPack[], extraIds: readonly string[]): DomainPack[] {
+  if (extraIds.length === 0) return base
+  const registry = getDefaultPackRegistry()
+  const seen = new Set(base.map(p => p.id))
+  const out = [...base]
+  for (const id of extraIds) {
+    const pack = registry.resolve(id)
+    if (pack && !seen.has(pack.id)) {
+      seen.add(pack.id)
+      out.push(pack)
+    }
+  }
+  return out
+}
+
 export function createDomainPackHookRegistry(packs: DomainPack[]): HookRegistry | undefined {
   if (packs.length === 0) return undefined
   return {
