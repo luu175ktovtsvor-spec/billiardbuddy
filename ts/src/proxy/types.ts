@@ -5,6 +5,9 @@
 export type OpenAIChatContentPart =
   | { type: 'text'; text: string }
   | { type: 'image_url'; image_url: { url: string; detail?: string } }
+  // PDF 文档输入:OpenAI 兼容端点用 { type:'file', file:{ filename, file_data:'data:application/pdf;base64,...' } }
+  // 承载 PDF(见 https://developers.openai.com/api/docs/guides/file-inputs)。内核 document 块由 proxy 翻成它。
+  | { type: 'file'; file: { filename: string; file_data: string } }
 
 export interface OpenAIToolCall {
   id: string

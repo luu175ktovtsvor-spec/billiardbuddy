@@ -525,6 +525,9 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     // 逐个过闸,tool_result 块累积;只读安全批次并行跑,稍后装单条 user 消息(tool_result 紧贴 tool_use)
     ctx.messages = messages.slice()
     const toolResults: ToolResultBlock[] = []
+    // PDF 视觉通道:本批 read_file 读到 PDF 时把 document 块推进 ctx.documentResultSink(见 fileReadTool),
+    // 稍后随尾随 user 消息一并追加。每批开始置空,避免跨轮泄漏。
+    ctx.documentResultSink = []
     const parallelReadOnly: PreparedToolCall[] = []
     const flushParallelReadOnly = async (): Promise<AgentEvent[]> => {
       if (!parallelReadOnly.length) return []
@@ -595,8 +598,15 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     }
     for (const event of await flushParallelReadOnly()) yield event
 
-    // 单条 user 消息:一批 tool_result 块 + steering + reminder(都作 text 块尾随)
+    // 单条 user 消息:一批 tool_result 块 + PDF 文档块 + steering + reminder(都作块尾随)
     const followup: ContentBlock[] = [...toolResults]
+    // PDF 文档块(视觉通道)紧贴 tool_result 追加:document 块不能进 tool_result content(会破坏 model 侧
+    // text|image 签名),只能作顶层块随本条 user 消息喂给模型(对齐 cc 的补充 document 消息)。drain 后清空。
+    const pdfDocs = ctx.documentResultSink ?? []
+    if (pdfDocs.length) {
+      followup.push(...pdfDocs)
+      ctx.documentResultSink = []
+    }
     const drained = drainSteering(ctx)
     if (drained.length) {
       for (const m of drained) {

@@ -17,6 +17,7 @@ export interface ProxyRequestInput {
 }
 
 const OMITTED_IMAGE_TEXT = '[Image omitted: this OpenAI-compatible chat endpoint only supports text content.]'
+const OMITTED_DOCUMENT_TEXT = '[PDF omitted: this OpenAI-compatible chat endpoint only supports text content.]'
 
 export function toOpenAiChatRequest(input: ProxyRequestInput): OpenAIChatRequest {
   const messages: OpenAIChatMessage[] = []
@@ -64,6 +65,15 @@ function convertUserMessage(blocks: ContentBlock[], output: OpenAIChatMessage[],
       } else {
         const src = (block as unknown as { source: { media_type: string; data: string } }).source
         contentParts.push({ type: 'image_url', image_url: { url: `data:${src.media_type};base64,${src.data}` } })
+      }
+    } else if ((block as { type: string }).type === 'document') {
+      // 顶层 PDF 文档块(read_file 走文档视觉通道时随 tool_result 尾随进本条 user 消息)→ OpenAI 兼容 file 部件。
+      // text_only 模式(端点不吃多模态)替占位文本,不丢消息序列。
+      if (imageMode === 'text_only') {
+        textOnlyParts.push(OMITTED_DOCUMENT_TEXT)
+      } else {
+        const src = (block as unknown as { source: { media_type: string; data: string } }).source
+        contentParts.push({ type: 'file', file: { filename: 'document.pdf', file_data: `data:${src.media_type};base64,${src.data}` } })
       }
     } else if (block.type === 'tool_result') {
       // tool_result → 独立 tool 消息(OpenAI 无 is_error 字段;报错信号靠 content 里的 <tool_use_error> 文本)。

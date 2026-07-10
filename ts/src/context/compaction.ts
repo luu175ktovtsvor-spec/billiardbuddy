@@ -71,6 +71,9 @@ function blockChars(block: Message['content'][number]): number {
   if (block.type === 'text') return block.text.length
   if (block.type === 'thinking') return block.thinking.length
   if (block.type === 'image') return Math.min(block.source.data.length, 4096)
+  // PDF 文档块:按 base64 长度封顶 4096(与 image 一致),别把整份 PDF base64 计进上下文估算;
+  // 也避免落到下方 tool_use 分支的 block.name 访问(document 无 name 会抛错)。
+  if (block.type === 'document') return Math.min(block.source.data.length, 4096)
   if (block.type === 'tool_result') {
     if (typeof block.content === 'string') return block.content.length
     // 多模态 tool_result:文本按字符、图像按 base64 长度封顶 4096(与上面 image 块一致),别把 base64 全算进上下文估算。
