@@ -52,11 +52,11 @@
 
 | 差异点 | Mac(你测时) | Windows(老板用时) | 代码依据 |
 |---|---|---|---|
-| **窗口边框** | 无边框 + 原生红绿灯内嵌、顶部 52px 给它留位,干净 | 走**系统默认标题栏**(右上角 最小化/最大化/关闭),但前端那 **52px"红绿灯位"照样留着、却是空的** → "系统标题栏 + 一条空条",卖相糙 | `desktop/src/main.js:44`(`titleBarStyle:hiddenInset` 仅 mac);`macos-shell.tsx:51`(52px 条无系统区分) |
+| **窗口边框** | 无边框 + 原生红绿灯内嵌、顶部 52px 给它留位,干净 | 走**系统默认标题栏**(右上角 最小化/最大化/关闭),但前端那 **52px"红绿灯位"照样留着、却是空的** → "系统标题栏 + 一条空条",卖相糙 | `ts/desktop/electron/main.ts:151`(`titleBarStyle:hiddenInset` 仅 mac);`ts/desktop/renderer-react/src/components/layout/AppShell.tsx`(红绿灯位无系统区分) |
 | **字体** | 苹果 SF 字体(设计就照它来的),最精致 | 没 SF,退回 微软雅黑 / Segoe UI,观感差一点 | 设计语言用 SF;Win 无此字体自动回退 |
 | **首次打开提示** | Gatekeeper「无法验证开发者」→ 系统设置点「仍要打开」 | SmartScreen「Windows 已保护你的电脑」→「更多信息 → 仍要运行」 | 见第 1、2 节 |
-| **毛玻璃 vibrancy** | 暂关(用 CSS 近似),两边一致 | 同左 | `main.js:43` 注释 |
-| **安装包** | .dmg(拖进应用程序) | .exe(nsis 安装向导) | `package.json` build.mac/win |
+| **毛玻璃 vibrancy** | 暂关(用 CSS 近似),两边一致 | 同左 | `ts/desktop/electron/main.ts` |
+| **安装包** | .dmg(拖进应用程序) | .exe(nsis 安装向导) | `ts/electron-builder.yml` build.mac/win |
 
 **所以:想知道老板真实看到啥,最好在一台 Windows 上实测一次** —— 光在 Mac 上看不到上面这些 Windows 侧的糙边。
 

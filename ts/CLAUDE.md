@@ -1,6 +1,6 @@
 # billiards-ts-harness · 工程规则（ts/ 目录 · TS/Bun 内核）
 
-> **权威入口**:上级 `docs/当前目标与文档口径-2026-07-07.md` + `docs/plans/TS-cc-haha-v0.4.5-内核迁移矩阵-2026-07-07.md` + `docs/plans/TS-harness-重构-主开发文档-2026-07-05.md`。当前直接在 `main` 上施工;旧 `ts-harness-rewrite` 等分支名只代表历史阶段。本目录目标是把 coding-agent 内核能力做强;CC-Haha 已有许可,可直接复制/抄/移植/改写其可靠机制,并用本仓库测试兜住边界。
+> **权威入口**:上级 `docs/当前目标与文档口径-2026-07-07.md` + `docs/plans/TS-cc-haha-v0.4.5-内核迁移矩阵-2026-07-07.md` + `docs/plans/内核A线对齐-差异总清单-波次-2026-07-10.md`。当前直接在 `main` 上施工;旧 `ts-harness-rewrite` 等分支名只代表历史阶段。本目录目标是把 coding-agent 内核能力做强;CC-Haha 已有许可,可直接复制/抄/移植/改写其可靠机制,并用本仓库测试兜住边界。
 
 ## 铁律(违反即破坏产品)
 1. **迁移口径:CC-Haha 可直接复制/抄/移植/改写,效果对齐是唯一硬标准(owner 2026-07-07 更新)**:cc-haha 的**内核行为、架构边界、边界测试全量覆盖**；`~/Desktop/cc-haha-ref/LICENSE` 已允许 use/copy/modify/distribute/publish copies,所以可直接复制/抄/移植/改写实现。别为「看起来原创」而牺牲边界质量；复杂逻辑必须先写行为对齐测试，再实现到同输入→同决策。⚠️**行为对齐(唯一验收硬闸 · 全 harness 窗通用)**:路径校验/沙箱/危险命令/proxy 转换等确定性逻辑，验收拿刁钻边界(`../escape`、`\\server\share`、`~root/.ssh`、`rm -rf *` 等)断言判得跟 cc-haha 一模一样,别只测自己想到的用例。

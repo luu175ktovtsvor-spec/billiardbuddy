@@ -1,6 +1,6 @@
 # Anthropic Agent SDK 参考架构说明
 
-> 📌 状态:✅现行 · 最后核对 2026-06-26
+> 📌 状态:✅现行 · 最后核对 2026-07-10
 > 基于官方文档（2026-06-16），适用于垂直行业领域 AI Agent 设计
 
 ---
@@ -67,30 +67,7 @@ Agent 循环是一个标准的 eval-act 模式，由 SDK 自动管理：
 | **StreamEvent** | 流式启用时 | 原始 API delta，仅当 `includePartialMessages: true` |
 | **ResultMessage** | 循环结束 | `subtype: "success" / "error_max_turns" / ...`, `result` 字段 |
 
-**消息流转示例**（Python 伪代码）：
-
-```python
-async for message in query(prompt="Fix bug in auth.py"):
-    # Turn 1
-    # -> SystemMessage (subtype="init")
-    # -> AssistantMessage (calls Bash to find test)
-    # -> UserMessage (test output)
-    
-    # Turn 2
-    # -> AssistantMessage (calls Read on auth.py)
-    # -> UserMessage (file content)
-    
-    # Turn 3
-    # -> AssistantMessage (calls Edit, then Bash to re-run test)
-    # -> UserMessage (test result: success)
-    
-    # Final
-    # -> AssistantMessage (text-only, no tool calls)
-    # -> ResultMessage (subtype="success", result="Fixed...")
-    
-    if isinstance(message, ResultMessage):
-        print(message.result)  # 只在这里获取最终答案
-```
+**消息流转**：每轮是 `AssistantMessage(工具调用) → UserMessage(工具结果)` 交替,直到 Claude 回复不含 `tool_use`(纯文本 `end_turn`)才发 `ResultMessage` 收尾;调用方用 `for await` 逐条消费,只在 `ResultMessage` 里拿最终答案(`message.result`),中间的 Assistant/User 消息都是过程态。
 
 ### 1.3 上下文管理
 
@@ -121,79 +98,24 @@ async for message in query(prompt="Fix bug in auth.py"):
 
 **官方文档**: https://code.claude.com/docs/en/skills 和 https://code.claude.com/docs/en/agent-sdk/skills
 
-**完整结构**：
+**Frontmatter 字段**（正文是普通 Markdown:标题+职责说明+能力列表+使用准则+示例,无强制结构）：
 
-```markdown
+```yaml
 ---
-name: "skill-name"                          # 必需，唯一标识
-description: "一句话说明用途"                  # 必需，Claude 用来判断何时调用
-category: "optional"                        # 可选
-version: "1.0.0"                            # 可选
-allowed-tools:                              # ⚠️ CLI 仅支持，SDK 不支持
-  - Read
-  - Write
-tags: ["tag1", "tag2"]                     # 可选
+name: "skill-name"            # 必需,唯一标识,用于 /name 调用;目录名或 YAML key
+description: "一句话说明用途"    # 必需且最关键:Claude 据此判断何时自动调用,应含行为关键词+适用场景
+category: "optional"          # 可选,分类标签,不影响功能
+version: "1.0.0"               # 可选
+allowed-tools: [Read, Write]   # ⚠️ CLI 仅支持,SDK 中无效(SDK 改用 allowedTools 选项)
+tags: ["tag1", "tag2"]         # 可选
 ---
-
-# Skill 标题
-
-You are a specialized AI assistant for [domain].
-
-## Capabilities
-
-- Capability 1
-- Capability 2
-
-## Guidelines
-
-1. Always ...
-2. Never ...
-
-## Example
-
-When user says "...", you should...
 ```
 
-**关键字段详解**：
-
-| 字段 | 必需 | 说明 |
-|------|------|------|
-| `name` | ✅ | 唯一标识，用于 `/name` 调用；目录名或 YAML 中的 key |
-| `description` | ✅ | **最关键**：Claude 据此判断何时自动调用；应包含行为关键词和适用场景 |
-| `category` | ❌ | 分类标签（不影响功能） |
-| `allowed-tools` | ⚠️ | CLI 中有效；**SDK 中无效**，改用 `allowedTools` 选项 |
-
-**描述范例**（好 vs 坏）：
-
-```markdown
-❌ 差：
-description: "A skill for processing documents"
-
-✅ 好：
-description: "Extract text, tables, and metadata from PDF documents. Use when user asks to read, parse, or analyze PDFs."
-```
+**description 好坏对比**：❌ 差(太笼统)`"A skill for processing documents"`；✅ 好(含关键词+场景)`"Extract text, tables, and metadata from PDF documents. Use when user asks to read, parse, or analyze PDFs."`
 
 ### 2.2 SKILL.md 目录结构与多文件支持
 
-```
-.claude/skills/
-├── pdf-processor/
-│   ├── SKILL.md                    # 必需
-│   ├── helper.py                   # 可选：支持脚本
-│   ├── prompts/
-│   │   └── extract_template.md    # 可选：Prompt 模板
-│   └── README.md                   # 可选：文档
-└── another-skill/
-    └── SKILL.md
-```
-
-**Skill 可以包含**：
-- SKILL.md（主文件，必需）
-- 辅助脚本（Python、Shell、JS 等）
-- 子目录和资源（图片、数据文件）
-- 内嵌 Prompt 模板
-
-CLI 和 SDK 都支持多文件 Skill；引用资源时用相对路径（相对于 SKILL.md）。
+`.claude/skills/<skill-name>/` 下 `SKILL.md` 是唯一必需文件,同目录可放辅助脚本(Python/Shell/JS)、子目录资源(图片/数据文件)、内嵌 Prompt 模板(如 `prompts/xxx.md`)、`README.md`。CLI 和 SDK 都支持多文件 Skill;引用资源用相对路径(相对于 SKILL.md)。
 
 ### 2.3 Progressive Disclosure（渐进式披露）
 
@@ -220,36 +142,9 @@ CLI 和 SDK 都支持多文件 Skill；引用资源时用相对路径（相对�
 
 ### 2.4 Skill 如何被发现和调用
 
-**自动发现与调用流程**：
-
-```python
-# SDK 代码示例
-options = ClaudeAgentOptions(
-    setting_sources=["user", "project"],  # ← 启用 skill 发现
-    skills="all"                          # ← 选项：哪些 skill 可用
-)
-
-async for message in query(
-    prompt="Process this PDF to extract tables",
-    options=options
-):
-    # Claude 自动识别 "PDF" 关键词
-    # 查找 description 匹配的 skill（如 pdf-processor）
-    # 按需加载并执行
-    pass
-```
-
-**显式调用**：
-
-```
-用户："/pdf-processor Extract tables from invoice.pdf"
-```
-
-**Skill 工具本身**：
-
-- Skill 通过 `Skill` 工具被调用（不是 Bash）
-- 包含在 `allowedTools` 中时自动批准
-- SDK 的 `skills` 选项控制可见性
+- **自动发现**：`ClaudeAgentOptions(setting_sources=["user","project"], skills="all")` 启用扫描后,Claude 按用户 prompt 关键词匹配 skill 的 `description`,命中即按需加载执行(如用户提到 "PDF" 命中 `pdf-processor`)。
+- **显式调用**：用户直接打 `/<skill-name> ...`(如 `/pdf-processor Extract tables from invoice.pdf`)。
+- **调用机制**：Skill 通过专门的 `Skill` 工具被调用(不是 Bash);包含在 `allowedTools` 中时自动批准;SDK 的 `skills` 选项控制哪些 skill 对本次会话可见。
 
 ### 2.5 Skill、Tool、Subagent 的区别与适用场景
 
@@ -304,34 +199,7 @@ analysis_done               ×（不继承）
   └─ 仅最终消息 → 主 Agent 作为工具结果
 ```
 
-**派发代码示例**：
-
-```python
-import asyncio
-from claude_agent_sdk import query, ClaudeAgentOptions, AgentDefinition
-
-async def main():
-    async for message in query(
-        prompt="Use the code-reviewer agent to check auth.py",
-        options=ClaudeAgentOptions(
-            allowed_tools=["Read", "Grep", "Glob", "Agent"],
-            agents={
-                "code-reviewer": AgentDefinition(
-                    description="Expert code review specialist for quality and security",
-                    prompt="You are a code reviewer. Check for bugs, security issues, performance problems.",
-                    tools=["Read", "Grep", "Glob"],  # ← 限制工具集
-                    model="opus",                    # ← 可override 模型
-                    max_turns=10,                   # ← 限制循环轮数
-                    effort="high",                  # ← 推理深度
-                ),
-            },
-        ),
-    ):
-        if hasattr(message, "result"):
-            print(message.result)
-
-asyncio.run(main())
-```
+**派发方式**：主 Agent 的 `ClaudeAgentOptions.agents` 里注册一个 `{name: AgentDefinition}` 字典(如 `code-reviewer`),`allowed_tools` 需含 `Agent` 才能派发;调用方仍是标准 `query(prompt=..., options=...)`,只是 `AgentDefinition` 可以单独限定工具集(`tools=["Read","Grep","Glob"]`)、覆盖模型(`model="opus"`)、限制轮数(`max_turns=10`)、调推理深度(`effort="high"`)。派发结果同样只在 `ResultMessage.result` 里拿。
 
 ### 3.2 AgentDefinition 配置字段
 
@@ -370,22 +238,7 @@ AgentDefinition(
 
 ### 3.3 Agent SDK 构建自定义 Agent 的要点
 
-**两种编程模式**：
-
-1. **使用 `query()` 函数**（推荐，简洁）：
-   ```python
-   async for message in query(
-       prompt="...",
-       options=ClaudeAgentOptions(...)
-   ):
-       pass
-   ```
-
-2. **使用 `ClaudeSDKClient` 类**（Python，多轮状态管理）：
-   ```python
-   client = ClaudeSDKClient(options=...)
-   response = await client.request(prompt="...")
-   ```
+**两种编程模式**：① `query(prompt=..., options=ClaudeAgentOptions(...))` 配合 `async for` —— 推荐,简洁,单轮无状态调用;② `ClaudeSDKClient(options=...)` + `await client.request(prompt=...)` —— Python 专用,适合多轮状态管理场景。
 
 **核心概念**：
 
@@ -402,90 +255,26 @@ AgentDefinition(
 
 **官方文档**: https://code.claude.com/docs/en/agent-sdk/custom-tools
 
-**自定义工具创建流程**：
-
-```python
-from claude_agent_sdk import tool, create_sdk_mcp_server
-from typing import Any
-
-# 定义工具：名称、描述、入参schema、处理函数
-@tool(
-    name="get_temperature",
-    description="Get the current temperature at a location",
-    input_schema={"latitude": float, "longitude": float},  # 简单 dict schema
-)
-async def get_temperature(args: dict[str, Any]) -> dict[str, Any]:
-    # args 已被验证，对应 schema 定义
-    lat, lon = args["latitude"], args["longitude"]
-    
-    # ... 调用外部 API ...
-    
-    return {
-        "content": [
-            {"type": "text", "text": f"Temperature: {temp}°F"}
-        ]
-    }
-
-# 包装成 MCP 服务器
-weather_server = create_sdk_mcp_server(
-    name="weather",
-    version="1.0.0",
-    tools=[get_temperature],  # 可多个
-)
-```
-
-**复杂 Schema 示例**（用 JSON Schema dict）：
-
-```python
-@tool(
-    name="convert_units",
-    description="Convert between units",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "unit_type": {
-                "type": "string",
-                "enum": ["length", "temperature", "weight"],  # 枚举
-            },
-            "value": {"type": "number"},
-        },
-        "required": ["unit_type", "value"],  # 必需字段
-    },
-)
-async def convert_units(args: dict) -> dict:
-    # ...
-    pass
-```
+**自定义工具创建流程**：`@tool(name, description, input_schema)` 装饰一个 `async def handler(args: dict) -> dict`,再用 `create_sdk_mcp_server(name, version, tools=[...])` 把多个工具打包成一个 MCP server 供 agent 挂载。`input_schema` 支持两种写法:①简单 dict(`{"latitude": float, "longitude": float}`,SDK 自动转 JSON Schema);②完整 JSON Schema dict(`{"type":"object","properties":{...},"required":[...]}`,可表达 `enum`/嵌套等复杂约束)。handler 收到的 `args` 已按 schema 验证过,返回值是下文 4.2 的 tool_result 结构(`content`/`is_error`/`structuredContent`)。
 
 ### 4.2 Tool Use / Tool Result 消息块结构
 
-**AssistantMessage 中的 Tool Use 块**：
+**AssistantMessage 中的 Tool Use 块**（`content[]` 里可以有多个 `tool_use`,并行下发）：
 
 ```python
-# Claude 决定调用工具后
 AssistantMessage(
     content=[
         {
             "type": "tool_use",
             "id": "tool_use_abc123",        # 唯一 ID（用于结果匹配）
             "name": "get_temperature",      # 工具名
-            "input": {                      # 工具输入
-                "latitude": 37.7749,
-                "longitude": -122.4194,
-            },
-        },
-        # 可有多个工具调用
-        {
-            "type": "tool_use",
-            "id": "tool_use_def456",
-            "name": "get_precipitation_chance",
-            "input": {...},
+            "input": {"latitude": 37.7749, "longitude": -122.4194},
         },
     ]
 )
 ```
 
-**UserMessage 中的 Tool Result 块**（SDK 自动生成）：
+**UserMessage 中的 Tool Result 块**（SDK 自动生成,靠 `tool_use_id` 与上面的 `id` 一一配对,顺序与数量必须严格匹配）：
 
 ```python
 UserMessage(
@@ -493,18 +282,8 @@ UserMessage(
         {
             "type": "tool_result",
             "tool_use_id": "tool_use_abc123",  # ← 匹配 AssistantMessage 的 id
-            "content": [
-                {"type": "text", "text": "Temperature: 62°F"}
-            ],
-            # 可选标记工具调用失败
-            "is_error": False,
-        },
-        {
-            "type": "tool_result",
-            "tool_use_id": "tool_use_def456",
-            "content": [
-                {"type": "text", "text": "Precipitation: 30%"}
-            ],
+            "content": [{"type": "text", "text": "Temperature: 62°F"}],
+            "is_error": False,               # 可选：标记工具调用失败
         },
     ]
 )
@@ -513,60 +292,25 @@ UserMessage(
 ### 4.3 并行工具调用与顺序执行
 
 **并行规则**：
-
 - **读操作**（Read, Grep, Glob, WebSearch）：可并行
 - **写操作**（Edit, Write, Bash）：顺序执行（防止冲突）
-- **自定义工具**：默认顺序；若标记 `readOnlyHint: true` 则可并行
-
-**代码示例**：
-
-```python
-from claude_agent_sdk import tool, ToolAnnotations
-
-@tool(
-    name="query_database",
-    description="...",
-    input_schema={...},
-    annotations=ToolAnnotations(readOnlyHint=True),  # ← 允许并行
-)
-async def query_db(args):
-    # 只读，可与其他只读工具并行
-    pass
-```
+- **自定义工具**：默认顺序；若在 `@tool(...)` 上标 `annotations=ToolAnnotations(readOnlyHint=True)` 则可与其他只读工具并行
 
 ### 4.4 错误处理：异常 vs 返回 is_error
 
-**规则**：
+**规则**：❌ 不要在工具 handler 里抛异常(会中断循环);✅ 应该返回 `is_error: True` 让 Claude 自己看到失败、决定重试或换方案。
 
-```python
-# ❌ 不要：抛异常（中断循环）
-if not response.ok:
-    raise ValueError("API failed")
-
-# ✅ 应该：返回 is_error 让 Claude 处理
-return {
-    "content": [
-        {"type": "text", "text": "API failed: 404"}
-    ],
-    "is_error": True,  # ← Claude 看到失败，可重试或换方案
-}
-```
-
-**工具结果返回结构**（完整）：
+**工具结果返回结构**（完整字段）：
 
 ```python
 return {
-    "content": [                      # 必需：内容数组
+    "content": [                      # 必需：内容数组,支持 text/image/audio/resource/resource_link
         {"type": "text", "text": "..."},
         {"type": "image", "data": "base64...", "mimeType": "image/png"},
-        # 支持：text, image, audio, resource, resource_link
     ],
-    
-    "is_error": False,               # 可选：标记失败
-    
-    "structuredContent": {           # 可选：机器可读的结构化数据
+    "is_error": False,                # 可选：标记失败,True 时 Claude 能重试/换方案
+    "structuredContent": {            # 可选：机器可读的结构化数据(如 {"temperature": 62.0})
         "temperature": 62.0,
-        "unit": "fahrenheit",
     },
 }
 ```
@@ -587,50 +331,16 @@ return {
 <project>/CLAUDE.md                 # 项目根（旧格式，兼容）
 ```
 
-**加载条件**：
-
-```python
-options = ClaudeAgentOptions(
-    setting_sources=["user", "project"],  # ← 必须显式启用
-)
-
-# 默认 query() 启用两个源；显式设置时需包含
-```
+**加载条件**：`ClaudeAgentOptions(setting_sources=["user","project"])` 必须显式启用这两个源(`query()` 默认已启用两者;显式传 `setting_sources` 时需自己包含,否则不加载)。
 
 **CLAUDE.md 的特点**：
-
 - ✅ **持久化**：跨会话保存；通过 git 共享
 - ✅ **自动注入**：每次请求都重新加载并注入对话
 - ✅ **不入系统提示词**：作为上下文（第一条消息），不消耗系统提示词 token
 - ✅ **自动缓存**：Prompt cache 机制（首次完整价格，后续 0.1x）
 - ❌ **不是 Memory API**：无智能提取、无遗忘管理
 
-**内容指导**：
-
-```markdown
-# 项目名与使命
-简洁说明项目目的、技术栈、关键约束
-
-## 编码标准
-- 语言特定规范（Python/TypeScript）
-- 命名约定
-- 目录结构约定
-
-## 关键概念与域名语言
-定义项目特有的概念、术语、角色，避免歧义
-
-## 上下文压缩指引
-当上下文过长时，告诉 Claude 什么必须保留：
-- 当前任务目标
-- 已读/已改的文件路径
-- 测试结果
-- 关键决策理由
-
-## 禁止与合规
-- 不该做的事
-- 安全边界
-- 数据隐私规则
-```
+**内容指导**（官方建议的分节结构）：项目名与使命(目的/技术栈/关键约束) → 编码标准(语言规范/命名/目录约定) → 关键概念与域名语言(项目特有术语避免歧义) → 上下文压缩指引(压缩时必须保留:当前任务目标/已读改文件路径/测试结果/关键决策理由) → 禁止与合规(不该做的事/安全边界/数据隐私规则)。
 
 ### 5.2 Prompt Caching 成本节省机制
 
@@ -664,58 +374,9 @@ options = ClaudeAgentOptions(
 - Opus 4.8 / Sonnet 4.6：1024 token
 - Haiku 4.5：4096 token
 
-**何时启用缓存**：
+**启用方式**：直接调 Messages API 时,在 `system`/消息块上加 `cache_control: {"type": "ephemeral"}` 标记缓存点(默认 5 分钟 TTL,也可选 1 小时);可以只标记"保持不变的大块"(如系统提示词),让"会变的部分"(如最新一条消息)留在缓存外。也支持"预热"——发一个 `max_tokens=0` 的空跑请求提前把缓存写热,用户真正提问时直接命中。
 
-```python
-# 方法 1：自动缓存（推荐多轮对话）
-response = client.messages.create(
-    model="claude-opus-4-8",
-    cache_control={"type": "ephemeral"},  # 5分钟缓存
-    system="System prompt...",
-    messages=[...],
-)
-
-# 方法 2：显式指定缓存点（精细控制）
-response = client.messages.create(
-    system=[
-        {
-            "type": "text",
-            "text": "Large system prompt that stays same...",
-            "cache_control": {"type": "ephemeral"},
-        }
-    ],
-    messages=[...],  # 后续消息不缓存（变化的部分）
-)
-
-# 方法 3：预热缓存（用户到达前）
-client.messages.create(
-    model="claude-opus-4-8",
-    max_tokens=0,  # 无输出，仅缓存
-    system=[{"type": "text", "text": "...", "cache_control": {...}}],
-    messages=[{"role": "user", "content": "warmup"}],
-)
-```
-
-**SDK 中的自动缓存**：
-
-```python
-# Agent SDK 在以下场景自动缓存：
-# 1. System prompt（claude_code preset 或 custom）
-# 2. CLAUDE.md（projectsetting source）
-# 3. Tool definitions（内置 + MCP）
-# 4. Skill 元数据和完整内容
-
-# → 用户仅需设置，无需显式 cache_control
-async for message in query(
-    prompt="...",
-    options=ClaudeAgentOptions(
-        system_prompt={"type": "preset", "preset": "claude_code"},
-        setting_sources=["project"],
-        # SDK 自动处理缓存
-    ),
-):
-    pass
-```
+**Agent SDK 里是全自动的**：System prompt、CLAUDE.md、Tool definitions(内置+MCP)、Skill 元数据和完整内容这四类都会被 SDK 自动打上缓存点,用户只需正常设置 `ClaudeAgentOptions`,不需要手写 `cache_control`。
 
 ### 5.3 Memory API 与上下文管理
 
@@ -738,17 +399,7 @@ Memory API 是 Managed Agents（云托管）的功能。本地 Agent SDK 使用�
 2. **会话持久化**（session_id resume）
 3. **手工状态管理**（数据库 / 文件）
 
-**如果需要长期学习**（如你的"店脑"），方案：
-
-```python
-# 每次生成后，从 Claude 的回复提取重要信息
-async for message in query(prompt="..."):
-    if isinstance(message, ResultMessage):
-        # 人工解析 message.result
-        # 存入 CLAUDE.md 或 数据库
-        # 下次 query 时注入
-        store_learning(message.result)
-```
+**如果需要长期学习**（如"店脑"这类跨会话记忆）：本地 SDK 没有现成机制,只能自己在 `ResultMessage` 回来后手工解析 `message.result`、决定存什么、下次 `query()` 时再手工注入——这正是本项目 cc AutoMem 自建记忆池要解决的问题,SDK 本身不提供。
 
 ---
 

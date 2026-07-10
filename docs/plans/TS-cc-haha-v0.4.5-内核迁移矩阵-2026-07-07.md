@@ -855,7 +855,7 @@
 
 - `ts/scripts/smoke/native-plugins.smoke.ts` 不再在默认日常验证里因“刻意未安装的重依赖”直接红掉;`sharp`、`@huggingface/transformers`、`smart-whisper` 缺失时标 `skipped:true` 并退出 0。
 - 严格验收仍保留硬失败:`NATIVE_SMOKE_REQUIRE_DEPS=1 bun run smoke:native` 会把缺包或运行失败视为 exit 1,用于真正挂载 OCR/embedding/whisper 或打包前 native 资产验收。
-- `ts/docs/W1-native-plugin-findings.md` 同步记录双模式口径:W1 spike 结论仍是 Bun 1.3.14 能跑这些依赖,但主 deps 当前不保留重包,日常 smoke 只说明 skipped,不能等同于 native 功能已完整可用。
+- W1 spike(2026-07-06)结论仍是 Bun 1.3.14 能跑这些依赖,但主 deps 当前不保留重包,日常 smoke 只说明 skipped,不能等同于 native 功能已完整可用(W1 spike 记录已随历史文档清理删除,结论已消化进本条)。
 - 验证:`cd ts && bun run smoke:native` = 0/3 OK,3 skipped,exit 0;`cd ts && bun run typecheck` clean。
 
 ## 3.101 2026-07-07 压缩后最近文件上下文恢复追加落地
