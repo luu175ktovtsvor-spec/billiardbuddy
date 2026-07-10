@@ -771,6 +771,12 @@ function producesImageResult(call: ToolCall): boolean {
   return typeof path === 'string' && isImageExtension(extname(path))
 }
 
+// MCP 工具统一 `mcp__server__tool` 前缀(见 mcp/config.mcpToolName)。cc 对 MCP 用 z.object({}).passthrough(),
+// 故入参校验对 MCP 走非严格(不拒未知键),对内建工具走 strictObject 强校验。
+function isMcpToolName(name: string): boolean {
+  return name.startsWith('mcp__')
+}
+
 function prepareParallelReadOnlyCall(registry: ToolRegistry, call: ToolCall, ctx: ToolContext, hooks?: HookRegistry): PreparedToolCall | null {
   if (hooks) return null
   if (call.name === TOOL_SEARCH_NAME) return null
@@ -780,7 +786,7 @@ function prepareParallelReadOnlyCall(registry: ToolRegistry, call: ToolCall, ctx
   const tool = registry.get(call.name)
   if (!tool) return null
   // 入参非法 → 回退串行,让 gateOneCall 统一吐 InputValidationError(不在并行批里静默跑脏参数)。
-  if (validateToolInput(tool.inputSchema, call.input) !== null) return null
+  if (validateToolInput(tool.inputSchema, call.input, { strict: !isMcpToolName(call.name) }) !== null) return null
   const readOnly = tool.isReadOnly || (tool.isReadOnlyFor?.(call.input, ctx) ?? false)
   if (!readOnly) return null
   if (
@@ -990,9 +996,10 @@ async function* gateOneCall(
     return
   }
 
-  // 入参 schema 校验闸(对齐 cc:权限/执行前统一挡结构化 InputValidationError)。保守:只判缺 required
-  // 与已声明基本类型不符,交互工具(ask/plan/verify)在上方已各自处理、不到这里。
-  const inputValidationError = validateToolInput(tool.inputSchema, call.input)
+  // 入参 schema 校验闸(对齐 cc `toolExecution.ts:615` 的 inputSchema.safeParse:权限/执行前统一挡结构化
+  // InputValidationError)。内建工具走 strictObject 强校验(未知键/enum/嵌套 required/数组元素/number 范围),
+  // MCP 工具(mcp__ 前缀)走 passthrough 不拒未知键;交互工具(ask/plan/verify)在上方已各自处理、不到这里。
+  const inputValidationError = validateToolInput(tool.inputSchema, call.input, { strict: !isMcpToolName(call.name) })
   if (inputValidationError) {
     yield feedback(`InputValidationError: ${inputValidationError}`, true)
     return
