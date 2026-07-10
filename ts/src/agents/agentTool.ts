@@ -28,7 +28,7 @@ import { buildAgentMemoryPrompt, workspaceWithAgentMemory } from './agentMemory'
 import { cloneContentReplacementState, type ContentReplacementState } from '../context/toolResultStorage'
 import { createDenialTrackingState } from '../permissions/denialTracking'
 import { resolveSubagentPermissionMode } from '../permissions/canonical'
-import { buildForkRunContext, forkAgentToolDescription, FORK_SUBAGENT_TYPE, isForkQuerySource, isForkSubagentEnabled, isInForkChild, type ForkRunContext } from './forkSubagent'
+import { buildForkRunContext, forkAgentToolDescription, FORK_AGENT_MAX_TURNS, FORK_SUBAGENT_TYPE, isForkQuerySource, isForkSubagentEnabled, isInForkChild, type ForkRunContext } from './forkSubagent'
 
 export interface AgentTaskHandoffInput {
   agent: string
@@ -351,7 +351,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
             prompt: '',
             filePath: 'built-in:fork',
             permissionMode: ctx.permissionMode,
-            maxTurns: opts.maxTurns,
+            maxTurns: opts.maxTurns ?? FORK_AGENT_MAX_TURNS,
           } satisfies AgentDefinition
         : pickAgent(opts.agents, input.agent)
       if (!agent) {
@@ -381,6 +381,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
       const sidechain = createAgentTaskSidechain(opts, agent, ctx)
       const agentId = sidechain?.id ?? (ctx.conversationId ? `${ctx.conversationId}_${agent.name}` : `agent_${safeSegment(agent.name)}_${randomUUID().replaceAll('-', '_')}`)
       let finalText = ''
+      let sawMaxTurns = false
       let cleanup: AgentWorktreeCleanupResult | null = null
       let foregroundRegistration: AgentTaskForegroundRegistration | undefined
       let wasBackgrounded = false
@@ -449,7 +450,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
             ...[hookContextMessage('SubagentStart', subagentStart.additionalContext)].filter((message): message is Message => !!message),
           ],
           skipUserMessage: !!forkRunContext,
-          maxTurns: agent.maxTurns ?? opts.maxTurns ?? 8,
+          maxTurns: agent.maxTurns ?? opts.maxTurns,
           signal: ctx.signal,
           sandbox,
           permissionMode: resolveSubagentPermissionMode(ctx.permissionMode, agent.permissionMode, { background: false }),
@@ -502,6 +503,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
           if (raceResult.result.done) break
           const ev = raceResult.result.value
           if (ev.type === 'usage_update') handoffUsageSnapshot = ev
+          if (ev.type === 'max_turns_reached') sawMaxTurns = true
           const line = subagentLine(agent, ev)
           if (line) emitSubagentProgress(ctx, agent, line)
           if (ev.type === 'final') finalText = ev.text
@@ -524,6 +526,9 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
           cleanupError: errorMessage(error),
         } as AgentWorktreeCleanupResult)) : null
       }
+      // 子代理层兜底给最终答复(对齐 cc runAgent.ts:756-800:loop 命中 max_turns 只 yield 事件后 return、不再强制
+      // 收尾,子代理拿不到 final;这里合成最终答复,与 server A 线一致,避免子代理空手而归)。
+      if (!finalText && sawMaxTurns) finalText = '已达最大轮次,未能收敛。'
       const idAttr = sidechain ? ` agent_id="${xmlAttr(sidechain.id)}"` : ''
       const worktreeResult = formatWorktreeResult(cleanup)
       return `<agent_task agent="${xmlAttr(agent.name)}"${idAttr}>\n${finalText}${worktreeResult ? `\n${worktreeResult}` : ''}\n</agent_task>`

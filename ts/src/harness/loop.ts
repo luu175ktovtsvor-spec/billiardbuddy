@@ -29,7 +29,7 @@ import {
   type DenialTrackingState,
 } from '../permissions/denialTracking'
 import { signApproval, verifyApproval } from '../permissions/approval'
-import { collectReminders, drainSteering, extendTurns, steerBlock, wrapReminder } from './reminders'
+import { collectReminders, drainSteering, steerBlock, wrapReminder } from './reminders'
 import { formatTodoChecklist, parseProgressMarkdown } from '../types/todo'
 import { compactPipeline, compactionWillRun, looksLikeContextOverflow } from '../context/compaction'
 import { buildRecentFileContextMessage } from '../context/recentFileContext'
@@ -143,6 +143,12 @@ export interface RunAgentLoopOptions {
   skipUserMessage?: boolean
   maxTurns?: number
   signal?: AbortSignal
+  /**
+   * 硬停之外的第二条中断通道(submit-interrupt):调用方(server)在"运行中提交插话"时调用它,让循环把当前在飞的
+   * 可中断工具当场 abort('interrupt')切断、再拿排队消息续跑。循环自带闸:只有正跑着 interruptBehavior==='cancel'
+   * 的工具时才真 abort,否则 no-op(等价 soft steer 入队)。硬停仍走 signal(reason 非 'interrupt')。
+   */
+  registerInterrupt?: (interrupt: () => void) => void
   sandbox?: Sandbox
   permissionMode?: PermissionMode
   initialPermissionUpdates?: PermissionUpdate[]
@@ -181,6 +187,11 @@ export const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3
  */
 export const OUTPUT_TOKEN_LIMIT_RECOVERY_PROMPT =
   '输出触达长度上限。直接从断点继续,别道歉、别复述你刚才在做什么;如果是在半句话处被截断,就接着那句往下写。把剩下的内容拆成更小的块逐段输出。'
+/**
+ * 纯硬停(用户点中断/急停)时循环 yield 的中断消息(对齐 cc createUserInterruptionMessage)。submit-interrupt
+ * 不 yield 它(排队的插话会紧跟着提供上下文)。循环只 yield 这条 + return,最终答复由调用方兜底合成。
+ */
+export const TURN_INTERRUPTED_MSG = '本回合已被用户中断。'
 
 function cloneContentReplacementStateForSnapshot(state: ContentReplacementState | undefined): ContentReplacementState | undefined {
   return state ? cloneContentReplacementState(state) : undefined
@@ -194,7 +205,28 @@ function cloneContentReplacementStateForSnapshot(state: ContentReplacementState 
  */
 export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<AgentEvent> {
   const { model, registry } = opts
-  const maxTurns = opts.maxTurns ?? 12
+  // maxTurns 对齐 cc(query.ts:194/1713):undefined = 不设限(由调用方显式传);命中只 yield max_turns_reached 后
+  // return、绝不再调模型,"总给最终答复"的兜底移到循环外调用方(server/B 线)。
+  const maxTurns = opts.maxTurns
+  // —— 中断/steering 统一到 abort 之上(对齐 cc query.ts:1023-1058/1493-1524)——
+  // liveController = 本"段"实际喂给 model.step / 工具的信号源;外部硬停信号(opts.signal)桥接进来。
+  // submit-interrupt 只 abort liveController('interrupt' reason)、不动 opts.signal,切断后换新 controller 续跑,
+  // 从而与"纯硬停(opts.signal abort、reason 非 interrupt)"区分开、且硬停通道用后仍可用。
+  const newLiveController = (): AbortController => {
+    const c = new AbortController()
+    if (opts.signal?.aborted) c.abort(opts.signal.reason)
+    return c
+  }
+  let liveController = newLiveController()
+  // 当前正在飞的可中断工具数(interruptBehavior==='cancel');requestInterrupt 据此自闸:>0 才真切断。
+  let interruptibleInFlight = 0
+  opts.signal?.addEventListener('abort', () => {
+    if (!liveController.signal.aborted) liveController.abort(opts.signal!.reason)
+  }, { once: true })
+  const requestInterrupt = (): void => {
+    if (interruptibleInFlight > 0 && !liveController.signal.aborted) liveController.abort('interrupt')
+  }
+  opts.registerInterrupt?.(requestInterrupt)
   let transcriptBaseline = 0
   let history: Message[] = opts.initialMessages ?? []
   let contentReplacementRecords: ContentReplacementRecord[] = []
@@ -221,7 +253,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     registry,
     systemPrompt: opts.systemPrompt,
     renderedSystemPrompt: opts.systemPrompt,
-    signal: opts.signal,
+    signal: liveController.signal,
     sandbox: opts.sandbox,
     permissionMode: opts.permissionMode ?? 'default',
     sessionHooks: opts.initialSessionHooks,
@@ -355,6 +387,9 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   let toolCallsNoProgress = 0
   let stuckNotified = false
   let maxOutputTokensRecoveryCount = 0 // 连续"输出被长度上限截断"的续写计数;有实质进展(tool_calls/自然收敛)即复位
+  // 计划验证提醒的"每段最多一次"闸:maxTurns=undefined(server 主路)时,final 分支不再靠 turn++/maxTurns 兜底,
+  // 若模型收到提醒仍固执地不调 VerifyPlanExecution 直接 final,得避免无限重发同一条提醒。有真进展(跑了工具)即复位。
+  let verifyPlanReminded = false
   const revealedToolNames = new Set<string>()
   const usageTotals = usageTotalsFromInitial(opts.initialUsage)
   const promptCacheTrackingKey = opts.conversationId
@@ -421,10 +456,11 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     return [base, ...notes].filter(Boolean).join('\n')
   }
 
-  let turnsLimit = maxTurns
+  // turn = 已完成的"用工具的回合"数(= cc turnCount 语义);只有工具批结束那一处 turn++ 并做 maxTurns 检查。
+  // 恢复/续写/steering/stop-hook 续跑都不占回合预算(对齐 cc:那些路径 turnCount 不变)。
   let turn = 0
   await applyAggregateToolResultBudget()
-  while (turn < turnsLimit) {
+  while (true) {
     const compactNote = await maybeCompact(false)
     if (compactNote) yield { type: 'context_note', text: compactNote }
 
@@ -434,8 +470,16 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       opts.onSummarySnapshot?.({ system, messages: messages.slice(), tools: toolsForStep, contentReplacementState: cloneContentReplacementStateForSnapshot(contentReplacementState) })
       recordPromptCacheState({ trackingKey: promptCacheTrackingKey, system, tools: toolsForStep, model: modelNameForPromptCache })
       // 流式:边流边把正文/推理增量 yield 成 content_delta(前端打字机);await 结束拿完整 step。
-      step = yield* streamModelStep(model, { system, messages, tools: toolsForStep, signal: opts.signal })
+      step = yield* streamModelStep(model, { system, messages, tools: toolsForStep, signal: liveController.signal })
     } catch (err) {
+      // 中断/硬停发生在 model.step 期间(真模型会抛 AbortError):优先按中断收场,别当模型错误/上下文溢出。
+      // 硬停(reason 非 'interrupt')yield 中断消息;submit-interrupt 走不到这里(切断只在工具在飞时、且已换新
+      // controller 续跑),防御性地也在此收场不抛。最终答复由调用方兜底。
+      if (liveController.signal.aborted) {
+        await saveTranscript()
+        if (liveController.signal.reason !== 'interrupt') yield { type: 'context_note', text: TURN_INTERRUPTED_MSG }
+        return
+      }
       if (!looksLikeContextOverflow(err)) {
         for (const e of await fireStopFailureNotes(err)) yield e
         throw err
@@ -449,7 +493,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       const toolsForStep = visibleToolSpecs(registry, revealedToolNames)
       opts.onSummarySnapshot?.({ system, messages: messages.slice(), tools: toolsForStep, contentReplacementState: cloneContentReplacementStateForSnapshot(contentReplacementState) })
       recordPromptCacheState({ trackingKey: promptCacheTrackingKey, system, tools: toolsForStep, model: modelNameForPromptCache })
-      step = await model.step({ system, messages, tools: toolsForStep, signal: opts.signal })
+      step = await model.step({ system, messages, tools: toolsForStep, signal: liveController.signal })
     }
     // 记下这轮真实 prompt input tokens(含 cache 命中/创建),供下一轮 maybeCompact 做 token 级触发。
     if (step.usage) lastInputTokens = step.usage.input_tokens + (step.usage.cache_read_input_tokens ?? 0) + (step.usage.cache_creation_input_tokens ?? 0)
@@ -462,55 +506,63 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     }
 
     if (step.kind === 'final') {
+      // 硬停发生在"模型已给 final"处:补齐历史后 yield 中断消息收场,不把这条 final 当最终答复。
+      // submit-interrupt(reason==='interrupt')则换新 controller 后走下面的 steering 续跑,把排队插话灌进去。
+      if (liveController.signal.aborted) {
+        if (liveController.signal.reason === 'interrupt') {
+          liveController = newLiveController()
+          ctx.signal = liveController.signal
+        } else {
+          await saveTranscript()
+          yield { type: 'context_note', text: TURN_INTERRUPTED_MSG }
+          return
+        }
+      }
       if (step.thinking) yield { type: 'thinking', text: step.thinking }
       messages.push({ role: 'assistant', content: [textBlock(step.text)] })
 
       // 输出撞长度上限的恢复第二步(对齐 cc query.ts:1231-1260):模型层已升过一次 max_tokens 仍被截断
       // (step.notices 带 MODEL_OUTPUT_TRUNCATED_NOTICE),这里把已生成的正文留在历史里,再注入"从断点续写"元提示
       // 重发,最多 MAX_OUTPUT_TOKENS_RECOVERY_LIMIT 次。续写优先于自然收尾/steering:模型不是想结束、是被切断,
-      // 得先接着把内容写完;不能让截断当成 final 收敛(那正是被修的长代码生成硬伤)。
+      // 得先接着把内容写完;不能让截断当成 final 收敛(那正是被修的长代码生成硬伤)。续写是恢复、不占回合预算。
       if ((step.notices ?? []).includes(MODEL_OUTPUT_TRUNCATED_NOTICE) && maxOutputTokensRecoveryCount < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT) {
         maxOutputTokensRecoveryCount++
         messages.push({ role: 'user', content: [textBlock(wrapReminder(OUTPUT_TOKEN_LIMIT_RECOVERY_PROMPT))] })
         await saveTranscript()
-        turnsLimit = Math.max(turnsLimit, turn + 2) // 续写不该把 max_turns 预算提前耗尽
-        turn++
         continue
       }
       // 到这:要么本轮没截断(自然收敛),要么续写预算已耗尽(接受当前截断输出为最终)。复位计数,给后续独立截断留满预算。
       maxOutputTokensRecoveryCount = 0
 
-      // steering 优先于收尾:模型想结束但收件箱有插话 → 灌进去接着跑
+      // steering 优先于收尾:模型想结束但收件箱有插话 → 灌进去接着跑(续跑不占回合预算,对齐 cc 每次插话起新 query)。
       const drained = drainSteering(ctx)
       if (drained.length) {
         messages.push({ role: 'user', content: drained.map(steerBlock) })
         for (const m of drained) yield { type: 'steering', content: m }
-        turnsLimit = extendTurns(turnsLimit, maxTurns, drained.length)
-        turn++
         continue
       }
       await saveTranscript()
       const pendingVerification = ctx.pendingPlanVerification
-      if (pendingVerification && !pendingVerification.verificationCompleted && (pendingVerification.toolCallsSinceApproval ?? 0) > 0) {
+      if (pendingVerification && !pendingVerification.verificationCompleted && (pendingVerification.toolCallsSinceApproval ?? 0) > 0 && !verifyPlanReminded) {
+        verifyPlanReminded = true
         const reminder = '计划已经开始执行,但还没有通过 VerifyPlanExecution 做收工验证。请先调用 VerifyPlanExecution,带上可复核证据,再给最终总结。'
         messages.push({ role: 'user', content: [textBlock(wrapReminder(reminder))] })
         yield { type: 'context_note', text: reminder }
-        turn++
         continue
       }
       const continuation = await applyStopHookContinuation(step.text)
       for (const event of continuation.events) yield event
       if (continuation.shouldContinue) {
-        turnsLimit = Math.max(turnsLimit, turn + 2)
-        turn++
         continue
       }
       yield { type: 'final', text: step.text }
       return
     }
 
-    // 走到 tool_calls 分支 = 有实质进展(哪怕这步也带了截断提示,工具调用照常配对执行、不丢);复位续写计数。
+    // 走到 tool_calls 分支 = 有实质进展(哪怕这步也带了截断提示,工具调用照常配对执行、不丢);复位续写计数 +
+    // 计划验证提醒闸(跑了工具算真进展,下一段 final 若仍缺验证可再提醒一次)。
     maxOutputTokensRecoveryCount = 0
+    verifyPlanReminded = false
 
     // 展示:reasoning + 正文叙述合成一条 thinking 事件(保证每步≤1条,前端细分事件归 W16)
     const display = [step.thinking, step.text].filter(Boolean).join('\n\n')
@@ -572,7 +624,14 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
         toolResults.push(toolResultBlock(call.id, output, false))
         yield { type: 'tool_result', tool: call.name, output }
       } else {
-        yield* gateOneCall(registry, call, ctx, toolResults, hooksForCurrentSession(), opts.toolResultStoreDir)
+        // 可中断工具在飞时计数 +1,让 requestInterrupt 自闸判定"该不该当场切断"(普通工具不计数 = 插话入队/soft steer)。
+        const interruptible = registry.get(call.name)?.interruptBehavior === 'cancel'
+        if (interruptible) interruptibleInFlight++
+        try {
+          yield* gateOneCall(registry, call, ctx, toolResults, hooksForCurrentSession(), opts.toolResultStoreDir)
+        } finally {
+          if (interruptible) interruptibleInFlight--
+        }
       }
       const pendingVerification = ctx.pendingPlanVerification
       if (
@@ -607,13 +666,13 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       followup.push(...pdfDocs)
       ctx.documentResultSink = []
     }
+    // steering 排队消息随本批 tool_result 一起回灌(submit-interrupt 切断在飞工具后,这里把排队插话作本回合续跑注入)。
     const drained = drainSteering(ctx)
     if (drained.length) {
       for (const m of drained) {
         followup.push(steerBlock(m))
         yield { type: 'steering', content: m }
       }
-      turnsLimit = extendTurns(turnsLimit, maxTurns, drained.length)
     }
     for (const r of collectReminders(ctx)) {
       followup.push(textBlock(wrapReminder(r.text)))
@@ -629,39 +688,28 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     }
     messages.push({ role: 'user', content: followup })
     await applyAggregateToolResultBudget()
-    turn++
-  }
 
-  // max_turns 兜底:强制一次无工具收敛(照 loop.py 的 _FINAL_NUDGE 哲学)。
-  // 先 yield 一个可辨识事件,让前端/日志能区分"轮次耗尽被强制收尾"与"自然收敛"(对齐 cc max_turns_reached)。
-  yield { type: 'max_turns_reached', turnCount: turn, maxTurns: turnsLimit }
-  recordPromptCacheState({ trackingKey: promptCacheTrackingKey, system, tools: [], model: modelNameForPromptCache })
-  const forced = await model.step({ system, messages, tools: [], signal: opts.signal })
-  const usageEvent = usageUpdateEvent(forced.usage, usageTotals, opts.contextWindowTokens)
-  if (usageEvent) yield usageEvent
-  const forcedCacheBreak = checkPromptCacheBreak(promptCacheTrackingKey, forced.usage, messages)
-  if (forcedCacheBreak) yield { type: 'context_note', text: formatPromptCacheBreak(forcedCacheBreak) }
-  const text = forced.kind === 'final' ? forced.text : '(已达最大轮次,未能收敛)'
-  messages.push({ role: 'assistant', content: [textBlock(text)] })
-  await saveTranscript()
-  const continuation = await applyStopHookContinuation(text)
-  for (const event of continuation.events) yield event
-  if (continuation.shouldContinue) {
-    recordPromptCacheState({ trackingKey: promptCacheTrackingKey, system, tools: [], model: modelNameForPromptCache })
-    const retry = await model.step({ system, messages, tools: [], signal: opts.signal })
-    const retryUsage = usageUpdateEvent(retry.usage, usageTotals, opts.contextWindowTokens)
-    if (retryUsage) yield retryUsage
-    const retryCacheBreak = checkPromptCacheBreak(promptCacheTrackingKey, retry.usage, messages)
-    if (retryCacheBreak) yield { type: 'context_note', text: formatPromptCacheBreak(retryCacheBreak) }
-    const retryText = retry.kind === 'final' ? retry.text : '(Stop hook 要求继续,但模型仍未能收敛)'
-    messages.push({ role: 'assistant', content: [textBlock(retryText)] })
-    await saveTranscript()
-    const retryContinuation = await applyStopHookContinuation(retryText)
-    for (const event of retryContinuation.events) yield event
-    yield { type: 'final', text: retryText }
-    return
+    // —— 中断/硬停:tool_result 已随 followup 配对进历史(在飞工具被 abort 后经短路补齐 tool_result 保配对)——
+    // submit-interrupt(reason==='interrupt'):换新 controller 续跑,排队插话已在上面注入;纯硬停:yield 中断消息收场,
+    // 绝不再调模型,最终答复由调用方兜底合成。
+    if (liveController.signal.aborted) {
+      if (liveController.signal.reason === 'interrupt') {
+        liveController = newLiveController()
+        ctx.signal = liveController.signal
+      } else {
+        yield { type: 'context_note', text: TURN_INTERRUPTED_MSG }
+        return
+      }
+    }
+
+    turn++
+    // max_turns 命中:只 yield max_turns_reached 后 return、绝不再调模型(对齐 cc query.ts:1713-1719)。
+    // 兜底"总给最终答复"移到循环外调用方(server/B 线),不在这里强制多打一次无工具 model.step。
+    if (maxTurns !== undefined && turn >= maxTurns) {
+      yield { type: 'max_turns_reached', turnCount: turn, maxTurns }
+      return
+    }
   }
-  yield { type: 'final', text }
 }
 
 function hookContextBlock(event: string, contexts: string[]): string {

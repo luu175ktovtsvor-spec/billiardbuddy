@@ -846,8 +846,11 @@ test('agent_task honors agent frontmatter defaults for prompt, permissions, maxT
     expect(model.received[0]!.tools.map(t => t.name)).toEqual(['inspect_ctx'])
     expect(seenPermission).toBe('plan')
     expect(seenWorkspace).toContain(join(root, '.claude', 'worktrees'))
-    expect(model.received[1]!.tools).toEqual([])
-    expect(out).toContain('fallback final should not be used when maxTurns=1')
+    // maxTurns=1:第 1 个工具步后即命中上限,loop 只 yield max_turns_reached 后 return(不再强制多打一步无工具收尾)。
+    // 只有 1 次 model.step,脚本里的 final 从不被消费;子代理拿不到 final,由调用方(agentTool)兜底合成最终答复。
+    expect(model.received.length).toBe(1)
+    expect(out).not.toContain('fallback final should not be used when maxTurns=1')
+    expect(out).toContain('已达最大轮次,未能收敛')
     expect(out).toContain('<agent_worktree status="removed_clean">')
   } finally {
     rmSync(root, { recursive: true, force: true })

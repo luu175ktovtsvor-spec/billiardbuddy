@@ -3,6 +3,9 @@ import type { Tool, ToolContext } from '../tools/Tool'
 
 export const FORK_SUBAGENT_TYPE = 'fork'
 export const FORK_QUERY_SOURCE = `agent:builtin:${FORK_SUBAGENT_TYPE}`
+// fork 子代理默认轮次上限,对齐 cc FORK_AGENT.maxTurns(cc-haha forkSubagent.ts:65 = 200)。
+// fork 继承父会话上下文、要接着干多步活,不能被子代理默认轮次截断。
+export const FORK_AGENT_MAX_TURNS = 200
 export const FORK_BOILERPLATE_TAG = 'fork-boilerplate'
 export const FORK_DIRECTIVE_PREFIX = 'Your directive: '
 

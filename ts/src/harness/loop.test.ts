@@ -8,7 +8,7 @@ import { readXlsxSheet, renderMinimalXlsx } from '../server/services/officeDocum
 import { loadSkillsDir } from '../skills/skillLoader'
 import { buildSystemPrompt } from './systemPrompt'
 import { scriptedModel } from './fakeModel'
-import { runAgentLoop, MAX_OUTPUT_TOKENS_RECOVERY_LIMIT, OUTPUT_TOKEN_LIMIT_RECOVERY_PROMPT } from './loop'
+import { runAgentLoop, MAX_OUTPUT_TOKENS_RECOVERY_LIMIT, OUTPUT_TOKEN_LIMIT_RECOVERY_PROMPT, TURN_INTERRUPTED_MSG } from './loop'
 import type { AgentEvent } from '../types/events'
 import type { AssistantStep, Model } from '../types/model'
 import { MODEL_OUTPUT_TRUNCATED_NOTICE } from '../types/model'
@@ -802,22 +802,163 @@ test('the <env> block reaches the model via the system field', async () => {
   expect(model.received[0]!.system).toContain(`Working directory: ${ws.root}`)
 })
 
-test('max_turns fallback forces a final and terminates', async () => {
-  // 模型每轮都要求工具、永不收敛;maxTurns=2 后强制一次无工具收敛
+test('max_turns 命中:只 yield max_turns_reached 后 return、绝不再调模型(对齐 cc query.ts:1713-1719,不强制多打无工具收尾)', async () => {
+  // 模型每轮都要工具、永不收敛;命中 maxTurns=2 后绝不该再调模型 → 第 3 步(final)永远不会被取用。
   const forever: AssistantStep = { kind: 'tool_calls', calls: [{ id: 'x', name: 'list_dir', input: {} }] }
-  const model = scriptedModel([forever, forever, { kind: 'final', text: '被迫收尾' }])
+  const model = scriptedModel([forever, forever, { kind: 'final', text: '不该被调用(命中 maxTurns 后不该再调模型)' }])
   const events = await collect(
     runAgentLoop({
       model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
       systemPrompt: 'SYS', userMessage: 'x', maxTurns: 2,
     }),
   )
-  expect(events.at(-1)?.type).toBe('final')
-  // 强制收敛那一步是"无工具"的
-  expect(model.received.at(-1)!.tools).toEqual([])
-  // 到点被强制收尾要产出可辨识事件(区别于自然收敛)
-  const reached = events.find(e => e.type === 'max_turns_reached')
-  expect(reached).toMatchObject({ type: 'max_turns_reached', turnCount: 2, maxTurns: 2 })
+  // 恰好 2 次 model.step(2 个工具回合),没有第 3 次"强制无工具收尾"
+  expect(model.received.length).toBe(2)
+  // 循环的终止事件是 max_turns_reached,不是 final(最终答复由调用方/server 兜底合成)
+  expect(events.at(-1)).toMatchObject({ type: 'max_turns_reached', turnCount: 2, maxTurns: 2 })
+  expect(events.some(e => e.type === 'final')).toBe(false)
+})
+
+test('maxTurns undefined = 不设限(对齐 cc query.ts:1713 `if (maxTurns && ...)`):自然跑到第 14 步收尾,不被旧默认 12 截断', async () => {
+  // 13 个工具回合(变化入参避同调守卫)+ 第 14 步自然收尾;旧的 `?? 12` 会在第 12 轮强制收尾、拿不到这句。
+  const tick: Tool = { name: 'tick', description: '', inputSchema: { type: 'object', properties: { n: { type: ['number', 'string'] } } }, isReadOnly: true, async execute() { return 'ok' } }
+  const steps: AssistantStep[] = [
+    ...Array.from({ length: 13 }, (_, i): AssistantStep => ({ kind: 'tool_calls', calls: [{ id: `t${i}`, name: 'tick', input: { n: i } }] })),
+    { kind: 'final', text: '不设限时自然跑满多轮后收尾' },
+  ]
+  const model = scriptedModel(steps)
+  const events = await collect(runAgentLoop({
+    model, registry: new ToolRegistry([tick]), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x', // 不传 maxTurns → undefined → 不设限
+  }))
+  expect(model.received.length).toBe(14)
+  expect(events.at(-1)).toEqual({ type: 'final', text: '不设限时自然跑满多轮后收尾' })
+  expect(events.some(e => e.type === 'max_turns_reached')).toBe(false)
+})
+
+// —— steering 统一到 abort 之上:submit-interrupt(切断在飞可中断工具 + 排队消息续跑) vs 纯硬停 ——
+
+/** 在飞时可被 submit-interrupt 切断的工具:执行中触发一次 requestInterrupt,返回时报告自己是否已被 abort。 */
+function interruptibleProbe(onExecute: (ctx: import('../tools/Tool').ToolContext) => void): Tool {
+  return {
+    name: 'long_op',
+    description: '长等待类工具,可被运行中插话切断',
+    inputSchema: { type: 'object' },
+    isReadOnly: false, // 非只读 → 走串行路径(可中断计数只在串行路径维护),不被并行只读批吞掉
+    interruptBehavior: 'cancel',
+    async execute(_input, ctx) {
+      onExecute(ctx)
+      // requestInterrupt / 外部硬停都是同步 abort;此处直接观测信号(不需真等待),报告是否被切断。
+      return ctx.signal?.aborted ? 'cut' : 'ran-to-completion'
+    },
+  }
+}
+
+test('steering:运行中提交 + 在飞工具可中断 → abort("interrupt")当场切断、补齐 tool_result 配对、排队消息续跑(不 yield 中断提示)', async () => {
+  const inbox: string[] = []
+  let requestInterrupt: (() => void) | undefined
+  const tool = interruptibleProbe(() => {
+    inbox.push('改成蓝色') // 老板运行中插话(入队)
+    requestInterrupt!()     // server 判定在飞工具可中断 → 触发 submit-interrupt
+  })
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'op1', name: 'long_op', input: {} }] },
+    { kind: 'final', text: '改成蓝色了(续跑后收尾)' },
+  ])
+  const events = await collect(runAgentLoop({
+    model, registry: new ToolRegistry([tool]), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: '做个东西', permissionMode: 'full',
+    steerInbox: inbox,
+    registerInterrupt: fn => { requestInterrupt = fn },
+  }))
+  // 在飞工具被切断(它观测到 ctx.signal 已 abort,回报 'cut'),tool_result 仍配对进历史
+  const tr = events.find(e => e.type === 'tool_result')
+  expect(tr && tr.type === 'tool_result' && tr.output).toBe('cut')
+  // 排队的插话被作本回合续跑注入 + 吐 steering 事件
+  expect(events.some(e => e.type === 'steering' && e.content === '改成蓝色')).toBe(true)
+  // submit-interrupt 不 yield 中断提示(排队消息已提供上下文)
+  expect(events.some(e => e.type === 'context_note' && e.text === TURN_INTERRUPTED_MSG)).toBe(false)
+  // 续跑到第二步自然收尾;模型被调用两次(切断后换新 controller 续跑,不是抛错终止)
+  expect(events.at(-1)).toEqual({ type: 'final', text: '改成蓝色了(续跑后收尾)' })
+  expect(model.received.length).toBe(2)
+  // 第二次 model.step 看到排队插话进了 messages
+  const sawSteer = model.received[1]!.messages.some(m => m.role === 'user' && m.content.some(b => b.type === 'text' && b.text.includes('[用户补充/纠偏] 改成蓝色')))
+  expect(sawSteer).toBe(true)
+})
+
+test('纯硬停(abort 不带 interrupt reason)→ 补齐 tool_result 后 yield 中断消息并收场,绝不再调模型', async () => {
+  const controller = new AbortController()
+  const tool = interruptibleProbe(() => { controller.abort() }) // 用户点中断/急停(plain abort,reason 非 'interrupt')
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'op1', name: 'long_op', input: {} }] },
+    { kind: 'final', text: '不该被调用(硬停后不该再调模型)' },
+  ])
+  const events = await collect(runAgentLoop({
+    model, registry: new ToolRegistry([tool]), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'full',
+    signal: controller.signal,
+  }))
+  // 在飞工具被硬停切断,tool_result 仍配对
+  const tr = events.find(e => e.type === 'tool_result')
+  expect(tr && tr.type === 'tool_result' && tr.output).toBe('cut')
+  // 硬停 yield 中断消息(区别于 submit-interrupt)
+  expect(events.some(e => e.type === 'context_note' && e.text === TURN_INTERRUPTED_MSG)).toBe(true)
+  // 绝不再调模型:只调了一次,没有 final(最终答复由调用方兜底)
+  expect(model.received.length).toBe(1)
+  expect(events.some(e => e.type === 'final')).toBe(false)
+})
+
+test('两改动互不破坏:submit-interrupt 续跑后 maxTurns 仍如常封顶', async () => {
+  const inbox: string[] = []
+  let requestInterrupt: (() => void) | undefined
+  let calls = 0
+  const tool = interruptibleProbe(() => {
+    // 只在第一次执行时插话+中断;之后正常跑,好让 maxTurns 独立地把回合封顶
+    if (calls === 0) { inbox.push('顺便改蓝'); requestInterrupt!() }
+    calls++
+  })
+  const forever: AssistantStep = { kind: 'tool_calls', calls: [{ id: 'op', name: 'long_op', input: {} }] }
+  const model = scriptedModel([forever, forever, { kind: 'final', text: '不该到这(maxTurns 应先封顶)' }])
+  const events = await collect(runAgentLoop({
+    model, registry: new ToolRegistry([tool]), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'full',
+    steerInbox: inbox, registerInterrupt: fn => { requestInterrupt = fn },
+    maxTurns: 2,
+  }))
+  // interrupt 被正常处理:排队插话注入
+  expect(events.some(e => e.type === 'steering' && e.content === '顺便改蓝')).toBe(true)
+  // 但 maxTurns=2 仍如常封顶:2 个工具回合后 max_turns_reached,只调 2 次模型
+  expect(model.received.length).toBe(2)
+  expect(events.at(-1)).toMatchObject({ type: 'max_turns_reached', turnCount: 2, maxTurns: 2 })
+  // interrupt 路径不留中断提示
+  expect(events.some(e => e.type === 'context_note' && e.text === TURN_INTERRUPTED_MSG)).toBe(false)
+})
+
+test('maxTurns=undefined 下计划验证提醒最多一次:模型固执连发 final 不验证 → 提醒一次后收敛,不无限重发/不挂死', async () => {
+  // 批准计划后跑了工具,但模型固执地连发两次 final、都不调 VerifyPlanExecution。
+  // 去掉 turn++/maxTurns 兜底后,若无"每段最多一次"闸,undefined maxTurns 会让提醒无限重发。
+  const inbox: string[] = []
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'plan1', name: 'ExitPlanMode', input: { plan: '1. 写 p.txt\n2. 校验', timeout_ms: 1000 } }] },
+    { kind: 'tool_calls', calls: [{ id: 'w1', name: 'write_file', input: { path: 'p.txt', content: 'x' } }] },
+    { kind: 'final', text: '想直接收尾(第一次)' },
+    { kind: 'final', text: '还是想收尾(固执不验证)' },
+  ])
+  const events: AgentEvent[] = []
+  for await (const event of runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'plan', steerInbox: inbox,
+    // 不传 maxTurns → undefined → 不设限;靠"每段最多一次"闸避免无限重发
+  })) {
+    events.push(event)
+    if (event.type === 'ask_question') inbox.push('批准并执行')
+  }
+  // 验证提醒只出现一次(不随每次 final 无限重发)
+  const reminders = events.filter(e => e.type === 'context_note' && e.text.includes('还没有通过 VerifyPlanExecution'))
+  expect(reminders.length).toBe(1)
+  // 提醒一次后收敛到第二次 final,没有挂死/耗尽步骤(恰好 4 次 model.step)
+  expect(events.at(-1)).toEqual({ type: 'final', text: '还是想收尾(固执不验证)' })
+  expect(model.received.length).toBe(4)
 })
 
 test('emits usage_update events with current input, cumulative output and context pressure', async () => {

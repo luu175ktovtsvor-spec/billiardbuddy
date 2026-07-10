@@ -163,5 +163,11 @@ export interface Tool<Input = unknown> {
   previewFor?(input: Input, ctx: ToolContext): Promise<string | null>
   /** 审批卡理由(什么/为什么/影响)。 */
   approvalReasonFor?(input: Input, ctx: ToolContext): ApprovalReason
+  /**
+   * 可中断行为(对齐 cc interruptBehavior):'cancel' = 用户运行中插话时,若本工具正在飞,当场 abort 切断本回合
+   * (submit-interrupt);缺省(未设)= 不可中断,插话入队、循环在安全点 drain(soft steer)。目前多为长等待类工具
+   * (如 sleep/长轮询)才设它。
+   */
+  interruptBehavior?: 'cancel'
   execute(input: Input, ctx: ToolContext): Promise<string>
 }

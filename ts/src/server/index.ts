@@ -1083,6 +1083,9 @@ export function startServer(opts: StartServerOptions = {}) {
     return null
   }
   const steerInboxes = new Map<string, string[]>()
+  // 运行中"提交插话"时触发 submit-interrupt(对齐 cc handlePromptSubmit:hasInterruptibleToolInProgress → abort('interrupt'))。
+  // 循环内 registerInterrupt 注册进来,自带闸(仅在可中断工具在飞时才真切断);普通工具在飞/无工具时为 no-op = 入队。
+  const interruptRequesters = new Map<string, () => void>()
   const sessionSkillHooks = new Map<string, NonNullable<ReturnType<typeof mergeHookRegistries>>>()
   const sessionPermissionUpdates = new Map<string, PermissionUpdate[]>()
   const providerHealth = new ProviderHealthStore(opts.providerRoot ?? stateRoot)
@@ -1921,6 +1924,9 @@ export function startServer(opts: StartServerOptions = {}) {
         // content_delta 逐 token 流,真名可能跨两个 delta 被切断(如 "Clau"+"de"),故用有状态的
         // carry-over 缓冲(见 createChatOutputScrubber),清完把安全前缀放行、流末 flush 尾巴。
         const outputScrubber = createChatOutputScrubber()
+        // max_turns/硬停时 loop 只 yield 事件、不产 final(对齐 cc 由调用方合成最终答复);循环外据此兜底给一条 final。
+        let sawFinal = false
+        let sawMaxTurns = false
         for await (const rawEvent of runAgentLoop({
           model,
           registry,
@@ -1933,6 +1939,7 @@ export function startServer(opts: StartServerOptions = {}) {
           transcript,
           conversationId,
           steerInbox,
+          registerInterrupt: fn => { interruptRequesters.set(conversationId, fn) },
           signal: controller.signal,
           permissionMode: permissionModeFrom(rawBody.permissionMode),
           initialPermissionUpdates: [...persistedRuleUpdates, ...(sessionPermissionUpdates.get(conversationId) ?? [])],
@@ -1948,6 +1955,8 @@ export function startServer(opts: StartServerOptions = {}) {
           },
           teamInbox: { service: teams },
         })) {
+          if (rawEvent.type === 'final') sawFinal = true
+          else if (rawEvent.type === 'max_turns_reached') sawMaxTurns = true
           // 出口兜底清洗:一个原始事件经清洗器可能变成 0..n 个(final 会先补 flush 打字机尾巴)。
           // content_delta 是瞬时 token 流:实时发给客户端(打字机),但不持久化进事件日志(否则日志膨胀、断线重放会重复整段增量)。
           // final/thinking/context_note 里若被模型自曝真名/供应商/原始报错,一律替成中性口径后再出。
@@ -1957,7 +1966,15 @@ export function startServer(opts: StartServerOptions = {}) {
         }
         // 流正常结束但没有 final(极少见)时,flush 掉各通道 hold 住的尾巴,别把已收到的正文吞掉。
         for (const event of outputScrubber.flush()) {
+          if (event.type === 'final') sawFinal = true
           yield event.type === 'content_delta' ? fallbackEventRecord(event) : await record(event)
+        }
+        // 循环外兜底"总给最终答复"(对齐 cc:max_turns 命中/纯硬停时 loop 只 yield 事件不产 final,由调用方合成)。
+        if (!sawFinal) {
+          const aborted = controller.signal.aborted
+          if (aborted) finalStatus = 'interrupted'
+          const fallbackText = aborted ? '任务已中断' : sawMaxTurns ? '已达最大轮次,未能收敛。' : '任务已结束。'
+          yield await record({ type: 'final', text: fallbackText })
         }
       } catch (err) {
         finalStatus = controller.signal.aborted ? 'interrupted' : 'failed'
@@ -1973,6 +1990,7 @@ export function startServer(opts: StartServerOptions = {}) {
         await closeMcpConnections(mcpTools.connections)
         const done = await record({ type: 'done' })
         const wasCurrent = turns.finish(conversationId, controller)
+        interruptRequesters.delete(conversationId)
         if (wasCurrent) {
           steerInboxes.delete(conversationId)
           await sessions.touch(conversationId, { status: finalStatus })
@@ -2015,7 +2033,7 @@ export function startServer(opts: StartServerOptions = {}) {
     if (event.type === 'steering') return { ...base, type: 'steering', content: event.content }
     if (event.type === 'todo_update') return { ...base, type: 'todo_update', content: event.content }
     if (event.type === 'context_note') return { ...base, type: 'context_note', content: event.text }
-    if (event.type === 'max_turns_reached') return { ...base, type: 'context_note', content: `已达最大轮次(${event.turnCount}/${event.maxTurns}),已强制收尾。` }
+    if (event.type === 'max_turns_reached') return { ...base, type: 'context_note', content: `已达最大轮次(${event.turnCount}/${event.maxTurns}),已停止继续调用模型。` }
     if (event.type === 'final') return { ...base, type: 'final', content: event.text }
     if (event.type === 'done') return { ...base, type: 'done', stopped_reason: 'stop', conversation_id: conversationId, task_id: taskId, offset: record.seq }
     return null
@@ -4661,6 +4679,9 @@ export function startServer(opts: StartServerOptions = {}) {
             const inbox = steerInboxes.get(conversationId) ?? []
             inbox.push(message)
             steerInboxes.set(conversationId, inbox)
+            // submit-interrupt(对齐 cc handlePromptSubmit:hasInterruptibleToolInProgress → abort('interrupt')):
+            // 总是通知循环有插话;循环自带闸,仅当可中断工具在飞时才当场切断,否则等价入队(safe-point drain)。
+            interruptRequesters.get(conversationId)?.()
             const record = await sessions.appendEvent(conversationId, { type: 'steering', content: message }).catch(() => null)
             if (record) wsSend(ws, { type: 'event', seq: record.seq, ts: record.ts, event: record.event })
             wsSend(ws, { type: 'steer_result', conversationId, queued: inbox.length, running: true })

@@ -24,7 +24,7 @@ import {
 import { startAgentSummarization, type AgentSummaryController } from './agentSummary'
 import { createDenialTrackingState } from '../permissions/denialTracking'
 import { resolveSubagentPermissionMode } from '../permissions/canonical'
-import { buildWorktreeNotice, FORK_SUBAGENT_TYPE, isForkQuerySource, isInForkChild, type ForkRunContext } from '../agents/forkSubagent'
+import { buildWorktreeNotice, FORK_AGENT_MAX_TURNS, FORK_SUBAGENT_TYPE, isForkQuerySource, isInForkChild, type ForkRunContext } from '../agents/forkSubagent'
 import { sanitizeResumeMessages } from '../harness/messageSanitize'
 import { createBackgroundCommandTool } from '../tools/backgroundCommandTool'
 
@@ -534,7 +534,7 @@ export async function startBackgroundAgentRun(
         prompt: '',
         filePath: 'built-in:fork',
         permissionMode: ctx.permissionMode,
-        maxTurns: opts.maxTurns,
+        maxTurns: opts.maxTurns ?? FORK_AGENT_MAX_TURNS,
       } satisfies AgentDefinition
     : pickAgent(opts.agents, input.agent))
   if (!agent) throw new Error(`start_background_agent_task 需要指定 agent;可用 agent:\n${agentList(opts.agents)}`)
@@ -606,6 +606,7 @@ export async function startBackgroundAgentRun(
     : ctx.contentReplacementState ? cloneContentReplacementState(ctx.contentReplacementState) : undefined
   opts.tasks.start(task.id, async taskCtx => {
     let finalText = ''
+    let sawMaxTurns = false
     let cleanup: AgentWorktreeCleanupResult | null = null
     let agentMcp: Awaited<ReturnType<typeof loadAgentMcpRuntime>> | undefined
     let summarizer: AgentSummaryController | undefined
@@ -676,7 +677,7 @@ export async function startBackgroundAgentRun(
         // SendMessage 恢复(resume)传入的是旧 transcript(结尾是 assistant),必须保留携带
         // Original task/New message 的 resume 上下文用户消息,否则被恢复的代理看不到新指令。
         skipUserMessage: !!runOptions.forkContext || handoffInitialMessages.length > 0,
-        maxTurns: agent.maxTurns ?? opts.maxTurns ?? 8,
+        maxTurns: agent.maxTurns ?? opts.maxTurns,
         signal: taskCtx.signal,
         sandbox: runSandbox,
         // 后台任务无法弹 UI 应答审批:父级放开则继承(不被降级),否则用 agent 声明或 acceptEdits 兜底。
@@ -696,6 +697,7 @@ export async function startBackgroundAgentRun(
       })) {
         await taskCtx.emit(event)
         if (event.type === 'usage_update') await persistUsage(event)
+        if (event.type === 'max_turns_reached') sawMaxTurns = true
         if (event.type === 'tool_call') {
           usageToolUseCount++
           if (latestUsageSnapshot) await persistUsage(latestUsageSnapshot)
@@ -733,6 +735,9 @@ export async function startBackgroundAgentRun(
       }
       detachSteerInbox()
     }
+    // 子代理层兜底给最终答复(对齐 cc runAgent.ts:756-800:loop 命中 max_turns 只 yield 事件后 return、不再强制
+    // 收尾,后台子代理拿不到 final;这里合成最终答复,与 server A 线一致,避免后台任务空手而归)。
+    if (!finalText && sawMaxTurns) finalText = '已达最大轮次,未能收敛。'
     return finalText
   })
   return { task, agent }
@@ -766,7 +771,7 @@ export async function resumeBackgroundAgentTask(
         prompt: '',
         filePath: 'built-in:fork',
         permissionMode: resumedContext.ctx.permissionMode,
-        maxTurns: opts.maxTurns,
+        maxTurns: opts.maxTurns ?? FORK_AGENT_MAX_TURNS,
       }
     : undefined
   const { task, agent } = await startBackgroundAgentRun(opts, {
