@@ -678,9 +678,11 @@ export class MediaJobService {
     this.uploadsRoot = join(opts.stateRoot, 'uploads')
     this.fetchImpl = opts.fetchImpl ?? globalThis.fetch
     this.pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_MS
-    // GPT 生图异步 submit/poll(根治大陆↔美国跨境长连接 60s 被掐):开关开且部署好美国 relay 任务服务后生效。
-    // 关时走同步路径(含尺寸/input_fidelity 修复),适合快请求或未部署 relay 的场景。默认关。
-    this.gptImageAsync = /^(1|true|yes|on)$/i.test(stringFrom(this.env.QF_GPT_IMAGE_ASYNC) ?? '')
+    // GPT 生图异步 submit/poll(根治大陆↔美国跨境长连接 60s 被掐:图生成了扣了费却传不回来)。
+    // **默认开**(2026-07-11:网关+美国 relay 两台已部署验证全链路,不开等于把根治方案晾着继续白扣钱);
+    // 显式 QF_GPT_IMAGE_ASYNC=0/false 可退回同步路径(快请求调试/未部署 relay 的自建环境用)。
+    const asyncRaw = stringFrom(this.env.QF_GPT_IMAGE_ASYNC) ?? ''
+    this.gptImageAsync = asyncRaw === '' ? true : /^(1|true|yes|on)$/i.test(asyncRaw)
   }
 
   get hasBackend(): boolean {

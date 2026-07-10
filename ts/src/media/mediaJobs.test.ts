@@ -70,6 +70,7 @@ test('MediaJobService inspects print QR source quality and preserves QR edges du
       stateRoot: root,
       pollIntervalMs: 1,
       env: {
+        QF_GPT_IMAGE_ASYNC: '0', // 本用例锁同步路径行为(默认已翻异步,见 gptImageAsync)
         OPENAI_BASE_URL: 'http://image-gateway.example/gw/v1',
         OPENAI_API_KEY: 'app-token',
         IMAGE_MODEL_NAME: 'gpt-image-2',
@@ -128,6 +129,7 @@ test('MediaJobService regenerates print QR from saved content before overlay', a
       stateRoot: root,
       pollIntervalMs: 1,
       env: {
+        QF_GPT_IMAGE_ASYNC: '0', // 本用例锁同步路径行为(默认已翻异步,见 gptImageAsync)
         OPENAI_BASE_URL: 'http://image-gateway.example/gw/v1',
         OPENAI_API_KEY: 'app-token',
         IMAGE_MODEL_NAME: 'gpt-image-2',
@@ -194,6 +196,7 @@ test('MediaJobService decodes uploaded print QR image and regenerates it before 
       stateRoot: root,
       pollIntervalMs: 1,
       env: {
+        QF_GPT_IMAGE_ASYNC: '0', // 本用例锁同步路径行为(默认已翻异步,见 gptImageAsync)
         OPENAI_BASE_URL: 'http://image-gateway.example/gw/v1',
         OPENAI_API_KEY: 'app-token',
         IMAGE_MODEL_NAME: 'gpt-image-2',
@@ -284,6 +287,7 @@ test('MediaJobService generates real images through configured gateway before lo
       stateRoot: root,
       pollIntervalMs: 1,
       env: {
+        QF_GPT_IMAGE_ASYNC: '0', // 本用例锁同步路径行为(默认已翻异步,见 gptImageAsync)
         OPENAI_BASE_URL: 'http://image-gateway.example/gw/v1',
         OPENAI_API_KEY: 'app-token',
         IMAGE_MODEL_NAME: 'gpt-image-2',
@@ -382,6 +386,7 @@ test('MediaJobService auto-routes default Chinese poster generation to Seedream 
       stateRoot: root,
       pollIntervalMs: 1,
       env: {
+        QF_GPT_IMAGE_ASYNC: '0', // 本用例锁同步路径行为(默认已翻异步,见 gptImageAsync)
         OPENAI_BASE_URL: 'http://image-gateway.example/gw/v1',
         OPENAI_API_KEY: 'app-token',
         IMAGE_MODEL_NAME: 'gpt-image-2',
@@ -426,6 +431,7 @@ test('MediaJobService marks hard text poster jobs for explicit text QA', async (
       stateRoot: root,
       pollIntervalMs: 1,
       env: {
+        QF_GPT_IMAGE_ASYNC: '0', // 本用例锁同步路径行为(默认已翻异步,见 gptImageAsync)
         QF_GATEWAY_URL: 'http://image-gateway.example/gw/v1',
         QF_GATEWAY_TOKEN: 'app-token',
         IMAGE_MODEL_NAME: 'doubao-seedream-4-5-251128',
@@ -474,6 +480,7 @@ test('MediaJobService retries transient Seedream image gateway throttling', asyn
       stateRoot: root,
       pollIntervalMs: 1,
       env: {
+        QF_GPT_IMAGE_ASYNC: '0', // 本用例锁同步路径行为(默认已翻异步,见 gptImageAsync)
         QF_GATEWAY_URL: 'http://image-gateway.example/gw/v1',
         QF_GATEWAY_TOKEN: 'app-token',
         IMAGE_MODEL_NAME: 'gpt-image-2',
@@ -512,6 +519,7 @@ test('MediaJobService routes western/complex image prompts to OpenAI-compatible 
       stateRoot: root,
       pollIntervalMs: 1,
       env: {
+        QF_GPT_IMAGE_ASYNC: '0', // 本用例锁同步路径行为(默认已翻异步,见 gptImageAsync)
         OPENAI_BASE_URL: 'http://image-gateway.example/gw/v1',
         OPENAI_API_KEY: 'app-token',
         IMAGE_MODEL_NAME: 'gpt-image-2',
@@ -551,6 +559,7 @@ test('MediaJobService falls back from auto-routed OpenAI image failures to Seedr
       stateRoot: root,
       pollIntervalMs: 1,
       env: {
+        QF_GPT_IMAGE_ASYNC: '0', // 本用例锁同步路径行为(默认已翻异步,见 gptImageAsync)
         OPENAI_BASE_URL: 'http://image-gateway.example/gw/v1',
         OPENAI_API_KEY: 'sk-openai-secret',
         IMAGE_MODEL_NAME: 'gpt-image-2',
@@ -604,6 +613,7 @@ test('MediaJobService honors explicit image model except Seedream-only ratios', 
       stateRoot: root,
       pollIntervalMs: 1,
       env: {
+        QF_GPT_IMAGE_ASYNC: '0', // 本用例锁同步路径行为(默认已翻异步,见 gptImageAsync)
         OPENAI_BASE_URL: 'http://image-gateway.example/gw/v1',
         OPENAI_API_KEY: 'app-token',
         IMAGE_MODEL_NAME: 'gpt-image-2',
@@ -666,6 +676,7 @@ test('MediaJobService sends local reference images to configured Seedream gatewa
       stateRoot: root,
       pollIntervalMs: 1,
       env: {
+        QF_GPT_IMAGE_ASYNC: '0', // 本用例锁同步路径行为(默认已翻异步,见 gptImageAsync)
         QF_GATEWAY_URL: 'http://image-gateway.example/gw/v1',
         QF_GATEWAY_TOKEN: 'app-token',
         IMAGE_MODEL_NAME: 'doubao-seedream-4-5-251128',
@@ -711,6 +722,7 @@ test('MediaJobService edits a generated image through OpenAI-compatible image ed
       stateRoot: root,
       pollIntervalMs: 1,
       env: {
+        QF_GPT_IMAGE_ASYNC: '0', // 本用例锁同步路径行为(默认已翻异步,见 gptImageAsync)
         OPENAI_BASE_URL: 'http://image-gateway.example/gw/v1',
         OPENAI_API_KEY: 'app-token',
         IMAGE_MODEL_NAME: 'gpt-image-2',
@@ -758,6 +770,7 @@ test('MediaJobService routes text-fix image edits to Seedream gateway', async ()
       stateRoot: root,
       pollIntervalMs: 1,
       env: {
+        QF_GPT_IMAGE_ASYNC: '0', // 本用例锁同步路径行为(默认已翻异步,见 gptImageAsync)
         OPENAI_BASE_URL: 'http://image-gateway.example/gw/v1',
         OPENAI_API_KEY: 'app-token',
         IMAGE_MODEL_NAME: 'gpt-image-2',
@@ -806,7 +819,7 @@ function fakeVlm(reply: (system: string) => string): Model {
   }
 }
 
-const IMAGE_ENV = { OPENAI_BASE_URL: 'http://image-gateway.example/gw/v1', OPENAI_API_KEY: 'app-token', IMAGE_MODEL_NAME: 'gpt-image-2' }
+const IMAGE_ENV = { OPENAI_BASE_URL: 'http://image-gateway.example/gw/v1', OPENAI_API_KEY: 'app-token', IMAGE_MODEL_NAME: 'gpt-image-2', QF_GPT_IMAGE_ASYNC: '0' } // QC 用例锁同步路径行为(默认已翻异步)
 const NO_LEAK_RE = /seedream|doubao|豆包|gpt-image|gpt image|openai|anthropic|\bclaude\b|火山|方舟|\bark\b/i
 
 function editEndpointReturnsPng(input: unknown): Response {
@@ -1006,6 +1019,20 @@ test('hard-text OCR proofread flags a missing poster line via gateway VLM', asyn
     expect(r.text_quality_status).toBe('ocr_mismatch')
     expect(r.text_quality_missing).toContain('充100送50')
     expect(NO_LEAK_RE.test(JSON.stringify(r))).toBe(false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('GPT 异步开关默认开(根治跨境掐断已部署);QF_GPT_IMAGE_ASYNC=0 显式退同步', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-async-default-'))
+  try {
+    const asyncDefault = new MediaJobService({ tasks: new TaskService(root), stateRoot: root, env: {} })
+    expect((asyncDefault as unknown as { gptImageAsync: boolean }).gptImageAsync).toBe(true)
+    const syncOptOut = new MediaJobService({ tasks: new TaskService(root), stateRoot: root, env: { QF_GPT_IMAGE_ASYNC: '0' } })
+    expect((syncOptOut as unknown as { gptImageAsync: boolean }).gptImageAsync).toBe(false)
+    const explicitOn = new MediaJobService({ tasks: new TaskService(root), stateRoot: root, env: { QF_GPT_IMAGE_ASYNC: '1' } })
+    expect((explicitOn as unknown as { gptImageAsync: boolean }).gptImageAsync).toBe(true)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
