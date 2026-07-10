@@ -1325,7 +1325,8 @@ test('对齐 cc:write_file 在 default/ask 档弹审批卡不直接落盘,accept
   expect(readFileSync(join(root, 'o.txt'), 'utf8')).toBe('x')
 })
 
-test('inline use_skill allowedTools grants later tool approval in the same session', async () => {
+test('掰回提权洞:带 allowedTools 的技能经 use_skill 调用时先弹审批,不静默灌工具旁路 Bash 审批', async () => {
+  resetDenialStore()
   const skillsRoot = join(root, 'skills')
   mkdirSync(join(skillsRoot, 'shell-helper'), { recursive: true })
   writeFileSync(join(root, 'seed.txt'), 'seed')
@@ -1353,8 +1354,11 @@ Use run_command for the requested shell action.
     conversationId: 'skill-allowed-tools-loop',
   }))
 
-  expect(events.some(event => event.type === 'approval_request')).toBe(false)
-  expect(readFileSync(join(root, 'allowed.txt'), 'utf8')).toBe('ok')
+  // use_skill 携带 allowedTools → 走审批闸(不是自动放行)
+  const skillApproval = events.find(event => event.type === 'approval_request' && event.tool === 'use_skill')
+  expect(skillApproval).toBeDefined()
+  // 未批准 → execute 不跑 → allowedTools 从未灌进会话 → 后续 printf 未被旁路放行,文件没被写
+  expect(existsSync(join(root, 'allowed.txt'))).toBe(false)
 })
 
 test('inline use_skill registers skill hooks for later calls in the same tool batch', async () => {
