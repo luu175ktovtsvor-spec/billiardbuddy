@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { computeNextRunAt } from './scheduledTaskSchedule'
 
 type JsonObject = Record<string, unknown>
 
@@ -232,7 +233,13 @@ export class DesktopDataStore {
     await this.update(state => {
       state.scheduledTasks = state.scheduledTasks.map(item => {
         if (item.id !== id) return item
-        out = { ...item, ...patch }
+        const merged = { ...item, ...patch }
+        // 用户改了排程(或重新启用)时重算 next_run_at;但调度器显式写回的 next_run_at 优先(尊重"跑完重排/关闭")。
+        const scheduleTouched = 'schedule_kind' in patch || 'schedule_spec' in patch || patch.enabled === true
+        if (scheduleTouched && !('next_run_at' in patch)) {
+          merged.next_run_at = merged.enabled === false ? null : computeNextRunAt(merged)
+        }
+        out = merged
         return out
       })
       return state
@@ -325,17 +332,23 @@ function maskSecret(secret: string): string {
 }
 
 function normalizeScheduledTask(input: JsonObject): JsonObject {
-  return {
+  const enabled = input.enabled !== false
+  const task: JsonObject = {
     id: crypto.randomUUID(),
     name: cleanString(input.name) ?? '定时任务',
     instruction: cleanString(input.instruction) ?? '',
     billiards_mode: input.billiards_mode !== false,
+    working_dir: cleanString(input.working_dir ?? input.workspaceRoot ?? input.folder_path),
     schedule_kind: cleanString(input.schedule_kind) ?? 'daily',
     schedule_spec: isRecord(input.schedule_spec) ? input.schedule_spec : { hour: 9, minute: 0 },
     next_run_at: null,
     last_run_at: null,
     last_run_status: null,
     last_result_summary: null,
-    enabled: input.enabled !== false,
+    last_run_conversation_id: null,
+    enabled,
   }
+  // 建任务即算下次触发(排程引擎),让"点了有反应":面板能立刻看到 next_run_at、调度器到点会真触发。
+  task.next_run_at = enabled ? computeNextRunAt(task) : null
+  return task
 }

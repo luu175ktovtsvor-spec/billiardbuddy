@@ -19,6 +19,7 @@ import { ProviderService, type RuntimeProviderResolution } from './services/prov
 import { ProviderHealthStore, type ProviderHealthEntry } from './services/providerHealthStore'
 import { LegacyAgentStore, type LegacyArtifact } from './services/legacyAgentStore'
 import { DesktopDataStore } from './services/desktopDataStore'
+import { ScheduledTaskRunner } from './services/scheduledTaskRunner'
 import { EMBEDDED_FRONTEND } from './embeddedFrontend'
 import { UserSettingsStore } from './services/userSettings'
 import { StoreDocsService, createStoreDocsTool } from './services/storeDocsService'
@@ -142,6 +143,8 @@ export interface StartServerOptions {
   /** 是否启动后台资产下载调度。默认:测试环境(NODE_ENV=test)不启,其余启;
    * env QF_ASSETS_AUTOSTART=0 可显式关(开发机不想联网下资产时)。 */
   assetAutoStart?: boolean
+  /** 是否启动定时任务调度引擎(到点起真 agent 会话)。默认:测试环境不启,其余启;env QF_SCHEDULER=0 显式关。 */
+  scheduledTasksAutoStart?: boolean
   bridgeWebSocketCtor?: BridgeRemoteWebSocketConstructor
   /** 启动即预先受信的工作区根(桌面壳打开已批准的库/工作区时注入,或测试用):等价对每个根调 mcpTrust.trust(root)。
    * 受信后该工作区来源的 local hook(.claude/hooks.json 等)才被信任门放行执行。 */
@@ -1019,6 +1022,36 @@ export function startServer(opts: StartServerOptions = {}) {
   const videoEdits = new VideoEditProjectStore(stateRoot)
   const legacyStore = new LegacyAgentStore(stateRoot)
   const storeDocs = new StoreDocsService(desktopData, stateRoot)
+  // 定时任务调度引擎(触发器)。到点 → 起一个真 agent 会话让模型在 cc 循环里用工具把任务干完(#66 衔接铁律,
+  // 不是执行写死的 SOP 脚本)。fireTask 直接调进程内的 createTurnStream(= runAgentLoop),带任务配置的工作目录 +
+  // 领域包(billiards_mode);无人值守故走 bypassPermissions(仍不越 forceConfirm/硬拒红线)。产出/状态写回运行历史。
+  const scheduledTasks = new ScheduledTaskRunner({
+    store: desktopData,
+    stateRoot,
+    fireTask: async (task, ctx) => {
+      const instruction = typeof task.instruction === 'string' ? task.instruction.trim() : ''
+      if (!instruction) return { status: 'failed', error: '定时任务没有指令内容,已跳过。' }
+      const conversationId = crypto.randomUUID()
+      const workingDir = stringOr(task.working_dir, getDefaultWorkspaceDir())
+      let finalText = ''
+      try {
+        const { stream } = await createTurnStream({
+          message: instruction,
+          conversationId,
+          working_dir: workingDir,
+          billiards_mode: task.billiards_mode === true,
+          permissionMode: 'bypassPermissions',
+        })
+        for await (const record of stream) {
+          if (ctx.signal?.aborted) break
+          if (record.event.type === 'final') finalText = record.event.text
+        }
+        return { status: 'completed', summary: finalText, conversationId }
+      } catch (err) {
+        return { status: 'failed', error: err instanceof Error ? err.message : String(err), conversationId }
+      }
+    },
+  })
   const turns = new TurnRegistry()
   // WS 断连宽限清理:最后一个消费者断连后,宽限期内无人重连则中止仍在跑的回合(防被遗弃的回合永远跑)。
   const turnGraceEnv = Number((opts.env ?? process.env).QF_TURN_ABANDON_GRACE_MS ?? '')
@@ -3251,6 +3284,24 @@ export function startServer(opts: StartServerOptions = {}) {
         return new Response('Method not allowed', { status: 405 })
       }
 
+      // 运行历史:GET /api/v1/scheduled-tasks/:id/runs
+      const scheduledRunsMatch = url.pathname.match(/^\/api\/v1\/scheduled-tasks\/([^/]+)\/runs$/)
+      if (scheduledRunsMatch) {
+        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
+        const id = decodeURIComponent(scheduledRunsMatch[1]!)
+        return Response.json({ runs: await scheduledTasks.getTaskRuns(id) })
+      }
+
+      // 立即运行:POST /api/v1/scheduled-tasks/:id/run(面板 Run Now,无视排程直接起一个真会话)
+      const scheduledRunMatch = url.pathname.match(/^\/api\/v1\/scheduled-tasks\/([^/]+)\/run$/)
+      if (scheduledRunMatch) {
+        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+        const id = decodeURIComponent(scheduledRunMatch[1]!)
+        const run = await scheduledTasks.runTaskNow(id)
+        if (!run) return jsonDetailError('scheduled task not found', 404)
+        return Response.json(run, { status: 202 })
+      }
+
       const scheduledMatch = url.pathname.match(/^\/api\/v1\/scheduled-tasks\/([^/]+)$/)
       if (scheduledMatch) {
         const id = decodeURIComponent(scheduledMatch[1]!)
@@ -4649,9 +4700,13 @@ export function startServer(opts: StartServerOptions = {}) {
       // server 已停/无订阅者:忽略,状态照常落 state.json。
     }
   })
+  // 定时任务调度:测试环境默认不启(避免无关测试里后台起真 agent 会话);QF_SCHEDULER=0 显式关。
+  const scheduledTasksAutoStart = opts.scheduledTasksAutoStart ?? (process.env.NODE_ENV !== 'test' && (opts.env ?? process.env).QF_SCHEDULER !== '0')
+  if (scheduledTasksAutoStart) scheduledTasks.start()
   const stop = app.stop.bind(app)
   app.stop = (closeActiveConnections?: boolean) => {
     unsubscribeAssetEvents()
+    scheduledTasks.stop()
     assets.stop()
     if (getActiveAssetManager() === assets) setActiveAssetManager(null)
     for (const subscriber of bridgeSubscribers.values()) subscriber.close()
