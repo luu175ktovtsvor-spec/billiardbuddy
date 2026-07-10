@@ -6,6 +6,7 @@ import type { AnthropicUsage } from '../proxy/types'
 import { ESCALATED_MAX_TOKENS, type FetchLike } from '../proxy/ProxyModel'
 import type { ProviderAuthStrategy } from './providerConfig'
 import { fetchWithModelRetry, type ModelRetryOptions } from './fetchRetry'
+import { buildAnthropicThinking, type ReasoningEffort } from './reasoningEffort'
 
 export interface AnthropicMessagesModelConfig {
   baseUrl: string
@@ -16,6 +17,11 @@ export interface AnthropicMessagesModelConfig {
   maxTokens?: number
   requestTimeoutMs?: number
   stream?: boolean
+  /**
+   * "深度思考/增强"档:选了就把 thinking 参数拼进请求(对齐 cc-haha)。undefined = 不带 thinking(标准档)。
+   * 由 buildAnthropicThinking 按模型决定走 `{type:'adaptive'}`(现代 Claude)还是 `{type:'enabled',budget_tokens}`(旧族/minimax)。
+   */
+  reasoningEffort?: ReasoningEffort
   fetchImpl?: FetchLike
   /** 瞬时错误(429/5xx/网络抖动)重试退避;默认启用,可注入 sleep 供测试。 */
   retry?: Pick<ModelRetryOptions, 'maxRetries' | 'baseDelayMs' | 'maxDelayMs' | 'sleep'>
@@ -62,18 +68,24 @@ export class AnthropicMessagesModel implements Model {
   async step(input: ModelStepInput): Promise<AssistantStep> {
     const messages = ensureToolResultPairing(normalizeMessagesForAPI(input.messages))
     const baseMaxTokens = this.cfg.maxTokens ?? DEFAULT_MAX_TOKENS
-    const buildBody = (maxTokens: number) => ({
-      model: this.cfg.model,
-      max_tokens: maxTokens,
-      stream: this.cfg.stream !== false,
-      ...(input.system ? { system: input.system } : {}),
-      messages: messages.map(toAnthropicMessage),
-      ...(input.tools.length > 0 ? { tools: input.tools.map(t => ({
-        name: t.name,
-        description: t.description,
-        input_schema: t.parameters,
-      })) } : {}),
-    })
+    const buildBody = (maxTokens: number) => {
+      // "深度思考/增强"档 → 拼 thinking(反逻辑修:此前整个丢了,选了深度思考模型根本没思考)。
+      // budget_tokens 会随 maxTokens 夹紧,所以在这里(拿到本次 maxTokens 后)算,升级重试的更大 maxTokens 也能给更大预算。
+      const thinking = buildAnthropicThinking(this.cfg.reasoningEffort, this.cfg.model, maxTokens)
+      return {
+        model: this.cfg.model,
+        max_tokens: maxTokens,
+        stream: this.cfg.stream !== false,
+        ...(thinking ? { thinking } : {}),
+        ...(input.system ? { system: input.system } : {}),
+        messages: messages.map(toAnthropicMessage),
+        ...(input.tools.length > 0 ? { tools: input.tools.map(t => ({
+          name: t.name,
+          description: t.description,
+          input_schema: t.parameters,
+        })) } : {}),
+      }
+    }
 
     // 首发带 onDelta:边流边逐 token 吐正文/推理增量(对齐 cc,与 ProxyModel 出口一致,让前端打字机)。
     let acc = await this.runOnce(buildBody(baseMaxTokens), input, input.onDelta)

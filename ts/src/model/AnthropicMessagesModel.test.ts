@@ -64,6 +64,53 @@ test('AnthropicMessagesModel:非流式 final,请求使用 messages endpoint 和 
   expect(sentBody.messages[0]).toEqual({ role: 'user', content: [{ type: 'text', text: '问' }] })
 })
 
+test('AnthropicMessagesModel:深度思考档 → 现代 Claude 请求带 thinking:{type:adaptive}', async () => {
+  let sentBody: any
+  const model = new AnthropicMessagesModel({
+    baseUrl: 'https://api.test/v1', apiKey: 'k', model: 'claude-opus-4-7', stream: false,
+    reasoningEffort: 'high',
+    fetchImpl: async (_url, init) => {
+      sentBody = JSON.parse(init!.body as string)
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: 'ok' }] }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      })
+    },
+  })
+  await model.step({ messages: [userText('问')], tools: [] })
+  expect(sentBody.thinking).toEqual({ type: 'adaptive' })
+})
+
+test('AnthropicMessagesModel:深度思考档 → budget 模型请求带 thinking:{type:enabled,budget_tokens}', async () => {
+  let sentBody: any
+  const model = new AnthropicMessagesModel({
+    baseUrl: 'https://api.test/v1', apiKey: 'k', model: 'claude-haiku-4-5', stream: false,
+    reasoningEffort: 'high', maxTokens: 32_000,
+    fetchImpl: async (_url, init) => {
+      sentBody = JSON.parse(init!.body as string)
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: 'ok' }] }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      })
+    },
+  })
+  await model.step({ messages: [userText('问')], tools: [] })
+  expect(sentBody.thinking).toEqual({ type: 'enabled', budget_tokens: 16_000 })
+})
+
+test('AnthropicMessagesModel:标准档(未设 reasoningEffort)→ 请求不带 thinking', async () => {
+  let sentBody: any
+  const model = new AnthropicMessagesModel({
+    baseUrl: 'https://api.test/v1', apiKey: 'k', model: 'claude-opus-4-7', stream: false,
+    fetchImpl: async (_url, init) => {
+      sentBody = JSON.parse(init!.body as string)
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: 'ok' }] }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      })
+    },
+  })
+  await model.step({ messages: [userText('问')], tools: [] })
+  expect(sentBody.thinking).toBeUndefined()
+})
+
 test('AnthropicMessagesModel:auth_token 策略使用 Authorization', async () => {
   let sentHeaders: any
   const model = new AnthropicMessagesModel({
