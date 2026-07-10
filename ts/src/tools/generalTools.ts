@@ -30,9 +30,15 @@ import { createSkillTools, type ExecuteSkillFn, type SkillLibrary } from '../ski
 import { createCommandTools, type CommandLibrary } from '../commands/commandLoader'
 import type { Tool } from './Tool'
 import { createToolSearchTool, TOOL_SEARCH_NAME } from './toolSearchTool'
+import { createComputerUseTools, type ComputerUseToolsOptions } from './computerUse'
 
 /** 通用 Agent 默认工具集(对应 Python registry.py 的 general 层)。领域包只通过可选推荐/额外工具挂载,不改通用底座身份。 */
-export function buildGeneralRegistry(opts: { sandbox?: Sandbox; skills?: SkillLibrary; skillsRoot?: string; skillRecommendations?: string[]; executeSkill?: ExecuteSkillFn; commands?: CommandLibrary; extraTools?: Tool[] } = {}): ToolRegistry {
+export function buildGeneralRegistry(opts: { sandbox?: Sandbox; skills?: SkillLibrary; skillsRoot?: string; skillRecommendations?: string[]; executeSkill?: ExecuteSkillFn; commands?: CommandLibrary; extraTools?: Tool[]; computerUse?: boolean | ComputerUseToolsOptions } = {}): ToolRegistry {
+  // 本机控制(截图/点击/键鼠)默认关闭 —— 需 owner 显式开启(computerUse: true)+ 平台为 mac/win。
+  // 关闭时不构造任何工具、不起 Python;开启时惰性 bootstrap(首个 execute 才建 venv)。
+  const computerUseTools = opts.computerUse
+    ? createComputerUseTools(typeof opts.computerUse === 'object' ? opts.computerUse : {})
+    : []
   const runCmd = opts.sandbox
     ? { ...runCommandTool, description: `${runCommandTool.description}\n${opts.sandbox.describeForPrompt()}` }
     : runCommandTool
@@ -78,6 +84,7 @@ export function buildGeneralRegistry(opts: { sandbox?: Sandbox; skills?: SkillLi
     restoreFileTool,
     ...(opts.skills ? createSkillTools(opts.skills, { skillRoot: opts.skillsRoot, recommendedSkillNames: opts.skillRecommendations, executeSkill: opts.executeSkill }) : []),
     ...(opts.commands ? createCommandTools(opts.commands) : []),
+    ...computerUseTools,
     ...(opts.extraTools ?? []),
   ])
   if (!registry.get(REPL_TOOL_NAME)) registry.register(createReplTool(registry))
