@@ -1026,10 +1026,10 @@ test('start_background_agent_task runs agent frontmatter SubagentStart and Subag
 
 test('start_background_agent_task initializes user memory from snapshot and injects it into system prompt', async () => {
   const root = mkdtempSync(join(tmpdir(), 'task-tools-agent-memory-'))
-    const oldClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR
-  process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const oldConfigDir = process.env.BILLIARDBUDDY_CONFIG_DIR
+  process.env.BILLIARDBUDDY_CONFIG_DIR = join(root, 'config')
   try {
-    const snapshotDir = join(root, '.claude', 'agent-memory-snapshots', 'researcher')
+    const snapshotDir = join(root, '.billiardbuddy', 'agent-memory-snapshots', 'researcher')
     mkdirSync(snapshotDir, { recursive: true })
     writeFileSync(join(snapshotDir, 'snapshot.json'), JSON.stringify({ updatedAt: '2026-07-08T00:00:00.000Z' }), { flag: 'w' })
     writeFileSync(join(snapshotDir, 'MEMORY.md'), 'snapshot says: always inspect failing tests first\n')
@@ -1058,13 +1058,13 @@ test('start_background_agent_task initializes user memory from snapshot and inje
 
     const memoryPath = getAgentMemoryEntrypoint('researcher', 'user', root)
     expect(readFileSync(memoryPath, 'utf8')).toContain('always inspect failing tests first')
-    expect(readFileSync(join(process.env.CLAUDE_CONFIG_DIR, 'agent-memory', 'researcher', '.snapshot-synced.json'), 'utf8')).toContain('2026-07-08T00:00:00.000Z')
+    expect(readFileSync(join(process.env.BILLIARDBUDDY_CONFIG_DIR, 'agent-memory', 'researcher', '.snapshot-synced.json'), 'utf8')).toContain('2026-07-08T00:00:00.000Z')
     expect(model.received[0]!.system).toContain('# Persistent Agent Memory')
     expect(model.received[0]!.system).toContain('snapshot says: always inspect failing tests first')
     expect(done.result).toBe('后台记忆完成')
   } finally {
-    if (oldClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-    else process.env.CLAUDE_CONFIG_DIR = oldClaudeConfigDir
+    if (oldConfigDir === undefined) delete process.env.BILLIARDBUDDY_CONFIG_DIR
+    else process.env.BILLIARDBUDDY_CONFIG_DIR = oldConfigDir
     rmSync(root, { recursive: true, force: true })
   }
 })
