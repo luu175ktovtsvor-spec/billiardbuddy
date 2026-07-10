@@ -52,6 +52,13 @@ export interface ToolContext {
   sessionHooks?: HookRegistry
   /** 会话内 hooks 变化时通知宿主持久化。 */
   onSessionHooksChanged?: (hooks: HookRegistry | undefined) => void
+  /**
+   * 当前调用可见的完整 hook 注册表(配置文件级 opts.hooks + 会话级 sessionHooks 的合并快照;
+   * executeAllowedToolCall 执行期注入、执行完恢复,模式同 imageResultSink)。供工具在 execute 内
+   * 触发生命周期 hook(TaskCreated/TaskCompleted/WorktreeCreate/WorktreeRemove/ConfigChange 等,
+   * 对齐 cc 在对应工具/服务内 fire 这些事件)。
+   */
+  activeHooks?: HookRegistry
   /** 会话 id,跨请求拒绝计数按它隔离(见 denialTracking)。 */
   conversationId?: string
   /**

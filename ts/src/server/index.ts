@@ -48,7 +48,7 @@ import { allowedToolsForAgent } from '../commands/allowedTools'
 import { bridgeUnsafeCommandMessage, type CommandLibrary, filterBridgeSafeCommands, isBridgeSafeCommand, loadCommandsDir, loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
 import type { PromptCommand } from '../commands/types'
 import { loadPluginHookRegistry, loadWorkspaceHookRegistry } from '../hooks/hookConfig'
-import { applySessionEndHooks, configureHookTrust } from '../hooks/hooks'
+import { applyElicitationHooks, applyElicitationResultHooks, applySessionEndHooks, configureHookTrust, type HookRegistry as ElicitationHookRegistry } from '../hooks/hooks'
 import { createDomainPackCommandLibrary, createDomainPackHookRegistry, createDomainPackTools, listPublicDomainPacks, mergeHookRegistries, registerDomainPackCommandAliases, resolveEnabledPacks, suggestedSkillNamesForPacks, type DomainPack } from '../packs/domainPacks'
 import { clearThreadGoalHook, createGoalHookRegistry, ensureThreadGoalHookFromTranscript, getThreadGoal, parseGoalCommand, setThreadGoalHook } from '../goals/goalState'
 import { loadAgentsDir, type AgentDefinition } from '../agents/agentLoader'
@@ -58,6 +58,7 @@ import {
   closeMcpConnections,
   defaultElicitationHandler,
   loadMcpToolsFromFile,
+  type McpElicitationHandler,
   type McpElicitationHandlerInput,
   type McpSamplingHandlerInput,
 } from '../mcp/client'
@@ -1455,8 +1456,44 @@ export function startServer(opts: StartServerOptions = {}) {
 
   async function handleMcpElicitation(
     input: McpElicitationHandlerInput,
-    elicitOpts: { conversationId: string; taskId?: string; signal?: AbortSignal },
+    elicitOpts: { conversationId: string; taskId?: string; signal?: AbortSignal; hooks?: ElicitationHookRegistry; workspaceRoot?: string },
   ) {
+    // Elicitation/ElicitationResult hooks(对齐 cc executeElicitationHooks/executeElicitationResultHooks,
+    // utils/hooks.ts:4489-4594):问用户之前给 hook 代答(accept/decline/cancel+content)或阻断的机会;
+    // 拿到回答之后再过一遍结果钩(可改写/阻断回给服务器的结果)。无 hooks 时零行为变化。
+    type ElicitationOutcome = { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }
+    const hookCtx = elicitOpts.hooks && elicitOpts.workspaceRoot
+      ? { workspace: new Workspace(elicitOpts.workspaceRoot), conversationId: elicitOpts.conversationId, signal: elicitOpts.signal } as Parameters<typeof applyElicitationHooks>[2]
+      : null
+    // params 是按 mode 判别的联合类型(url 变体才有 url、form 变体才有 requestedSchema),宽松收窄读字段。
+    const rawParams = input.params as { message?: unknown; mode?: unknown; url?: unknown; requestedSchema?: unknown }
+    const elicitationMode = rawParams.mode === 'url' ? 'url' as const : 'form' as const
+    const finishElicitation = async (result: ElicitationOutcome): Promise<ElicitationOutcome> => {
+      if (!hookCtx) return result
+      const post = await applyElicitationResultHooks(elicitOpts.hooks, {
+        serverName: input.serverName,
+        action: result.action,
+        content: result.content,
+        mode: elicitationMode,
+      }, hookCtx)
+      if (post.response) return post.response
+      if (post.deniedMessage) return { action: 'decline' as const }
+      return result
+    }
+    if (hookCtx) {
+      const pre = await applyElicitationHooks(elicitOpts.hooks, {
+        serverName: input.serverName,
+        message: typeof rawParams.message === 'string' ? rawParams.message : '',
+        mode: elicitationMode,
+        url: typeof rawParams.url === 'string' ? rawParams.url : undefined,
+        requestedSchema: rawParams.requestedSchema as Record<string, unknown> | undefined,
+      }, hookCtx)
+      if (pre.response) return await finishElicitation(pre.response) as Awaited<ReturnType<McpElicitationHandler>>
+      if (pre.deniedMessage) return await finishElicitation({ action: 'decline' as const }) as Awaited<ReturnType<McpElicitationHandler>>
+    }
+    return await finishElicitation(await resolveElicitationViaUi()) as Awaited<ReturnType<McpElicitationHandler>>
+
+    async function resolveElicitationViaUi(): Promise<{ action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }> {
     const fallback = await defaultElicitationHandler(input)
     if (fallback.action === 'accept') return fallback
     if (!elicitOpts.taskId) return fallback
@@ -1510,6 +1547,7 @@ export function startServer(opts: StartServerOptions = {}) {
       return { action: 'decline' as const }
     }
     return { action: 'accept' as const, content }
+    }
   }
 
   async function createTurnStream(rawBody: TurnStreamInput): Promise<{ conversationId: string; stream: AsyncGenerator<SessionEventRecord> }> {
@@ -1648,6 +1686,8 @@ export function startServer(opts: StartServerOptions = {}) {
         conversationId,
         taskId: typeof rawBody.taskId === 'string' ? rawBody.taskId : undefined,
         signal: controller.signal,
+        hooks,
+        workspaceRoot: workspace.root,
       }),
       samplingHandler: ({ params, signal }) => runMcpSampling(model, providerRuntime.config.model, params, signal ?? controller.signal),
     })
@@ -1750,6 +1790,8 @@ export function startServer(opts: StartServerOptions = {}) {
             conversationId,
             taskId,
             signal,
+            hooks,
+            workspaceRoot,
           }),
           samplingHandler: ({ params, signal: samplingSignal }) => runMcpSampling(model, providerRuntime.config.model, params, samplingSignal ?? signal ?? controller.signal),
         }),

@@ -957,3 +957,22 @@ test('loadPluginHookRegistry:插件 hooks.json 归一为 source:plugin 的注册
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('27 事件全集全部可声明(对齐 cc coreTypes.ts:25-53),一个不被静默吞', () => {
+  const ALL_27 = [
+    'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Notification', 'UserPromptSubmit',
+    'SessionStart', 'SessionEnd', 'Stop', 'StopFailure', 'SubagentStart', 'SubagentStop',
+    'PreCompact', 'PostCompact', 'PermissionRequest', 'PermissionDenied', 'Setup',
+    'TeammateIdle', 'TaskCreated', 'TaskCompleted', 'Elicitation', 'ElicitationResult',
+    'ConfigChange', 'WorktreeCreate', 'WorktreeRemove', 'InstructionsLoaded', 'CwdChanged', 'FileChanged',
+  ]
+  // 事件映射形式(cc settings.json hooks 结构):每个事件一条 command hook
+  const eventMap = Object.fromEntries(ALL_27.map(event => [event, [{ hooks: [{ type: 'command', command: 'echo hi' }] }]]))
+  const registry = normalizeHookRegistry({ hooks: eventMap })
+  const declared = new Set(registry.rules.map(rule => rule.event))
+  for (const event of ALL_27) expect(declared.has(event as never)).toBe(true)
+  expect(registry.rules.length).toBe(27)
+  // 未知事件仍被拒(防拼错静默生效)
+  const bogus = normalizeHookRegistry({ hooks: { NotARealEvent: [{ hooks: [{ type: 'command', command: 'echo' }] }] } })
+  expect(bogus.rules.length).toBe(0)
+})

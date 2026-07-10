@@ -540,3 +540,127 @@ test('configureHookTrust:override 优先于 env;resetHookTrust 复位', () => {
     else process.env.CLAUDE_CODE_DISABLE_ALL_HOOKS = prev
   }
 })
+
+// ─── 27 事件全集:新 14 事件的解析/派发/匹配键(对齐 cc coreTypes.ts:25-53 + utils/hooks.ts 各 fire 点)───
+
+test('parseHookDecisionJSON:cc PermissionRequest decision(allow/deny/updatedInput)', () => {
+  const pr = (decision: unknown) => JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision } })
+  expect(parseHookDecisionJSON(pr({ behavior: 'deny', message: '不给' }))).toEqual({ action: 'deny', message: '不给' })
+  expect(parseHookDecisionJSON(pr({ behavior: 'deny' }))).toEqual({ action: 'deny', message: 'PermissionRequest hook 拒绝' })
+  expect(parseHookDecisionJSON(pr({ behavior: 'allow' }))).toEqual({ action: 'allow' })
+  expect(parseHookDecisionJSON(pr({ behavior: 'allow', updatedInput: { cmd: 'ls' } }))).toEqual({ action: 'modify', updatedInput: { cmd: 'ls' } })
+})
+
+test('parseHookDecisionJSON:cc PermissionDenied retry:true → allow(retryRequested 语义)', () => {
+  expect(parseHookDecisionJSON(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionDenied', retry: true } })))
+    .toEqual({ action: 'allow' })
+  // retry:false / 缺 retry → 不产生决策(退 context 兜底在 parseCommandHookStdout 层,这里 null)
+  expect(parseHookDecisionJSON(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionDenied', retry: false } })))
+    .toBeNull()
+})
+
+test('parseHookDecisionJSON:cc Elicitation/ElicitationResult action+content → elicitation 决策', () => {
+  expect(parseHookDecisionJSON(JSON.stringify({ hookSpecificOutput: { hookEventName: 'Elicitation', action: 'accept', content: { name: 'x' } } })))
+    .toEqual({ action: 'elicitation', elicitationAction: 'accept', content: { name: 'x' } })
+  expect(parseHookDecisionJSON(JSON.stringify({ hookSpecificOutput: { hookEventName: 'ElicitationResult', action: 'decline' } })))
+    .toEqual({ action: 'elicitation', elicitationAction: 'decline', content: undefined })
+  // 非法 action → null
+  expect(parseHookDecisionJSON(JSON.stringify({ hookSpecificOutput: { hookEventName: 'Elicitation', action: 'nope' } })))
+    .toBeNull()
+})
+
+test('applyPermissionRequestHooks:deny 短路 > allow;modify=allow+改参;matcher 按工具名', async () => {
+  const { applyPermissionRequestHooks } = await import('./hooks')
+  const c = ctx() as never
+  // deny 短路
+  const denyReg: HookRegistry = { rules: [{ event: 'PermissionRequest', handler: () => ({ action: 'deny', message: '免弹拒绝' }) }] }
+  const denied = await applyPermissionRequestHooks(denyReg, 'run_command', { command: 'rm x' }, c)
+  expect(denied.behavior).toBe('deny')
+  expect(denied.message).toBe('免弹拒绝')
+  // allow
+  const allowReg: HookRegistry = { rules: [{ event: 'PermissionRequest', matcher: 'run_command', handler: () => ({ action: 'allow' }) }] }
+  const allowed = await applyPermissionRequestHooks(allowReg, 'run_command', {}, c)
+  expect(allowed.behavior).toBe('allow')
+  // modify → allow + updatedInput
+  const modReg: HookRegistry = { rules: [{ event: 'PermissionRequest', handler: () => ({ action: 'modify', updatedInput: { command: 'ls' } }) }] }
+  const modified = await applyPermissionRequestHooks(modReg, 'run_command', { command: 'rm x' }, c)
+  expect(modified.behavior).toBe('allow')
+  expect(modified.updatedInput).toEqual({ command: 'ls' })
+  // matcher 不中 → 无裁决
+  const missReg: HookRegistry = { rules: [{ event: 'PermissionRequest', matcher: 'write_file', handler: () => ({ action: 'allow' }) }] }
+  const missed = await applyPermissionRequestHooks(missReg, 'run_command', {}, c)
+  expect(missed.behavior).toBeUndefined()
+})
+
+test('applyPermissionDeniedHooks:allow → retryRequested;context 收集', async () => {
+  const { applyPermissionDeniedHooks } = await import('./hooks')
+  const c = ctx() as never
+  const reg: HookRegistry = { rules: [
+    { event: 'PermissionDenied', handler: () => ({ action: 'allow' }) },
+    { event: 'PermissionDenied', handler: () => ({ action: 'context', additionalContext: '记一笔' }) },
+  ] }
+  const out = await applyPermissionDeniedHooks(reg, 'run_command', {}, '规则拒绝', c)
+  expect(out.retryRequested).toBe(true)
+  expect(out.additionalContext).toEqual(['记一笔'])
+})
+
+test('applyTaskLifecycleHooks:deny 阻止任务创建/完成(deniedMessage)', async () => {
+  const { applyTaskLifecycleHooks } = await import('./hooks')
+  const c = ctx() as never
+  const reg: HookRegistry = { rules: [{ event: 'TaskCreated', handler: () => ({ action: 'deny', message: '任务名不合规' }) }] }
+  const blocked = await applyTaskLifecycleHooks(reg, 'TaskCreated', { taskId: 't1', taskSubject: 'x' }, c)
+  expect(blocked.deniedMessage).toBe('任务名不合规')
+  const pass = await applyTaskLifecycleHooks(reg, 'TaskCompleted', { taskId: 't1', taskSubject: 'x' }, c)
+  expect(pass.deniedMessage).toBeUndefined()
+})
+
+test('applyElicitationHooks:elicitation 代答 accept 带 content;decline 同时置 deniedMessage', async () => {
+  const { applyElicitationHooks } = await import('./hooks')
+  const c = ctx() as never
+  const acceptReg: HookRegistry = { rules: [{ event: 'Elicitation', matcher: 'srv', handler: () => ({ action: 'elicitation', elicitationAction: 'accept', content: { ok: 1 } }) }] }
+  const accepted = await applyElicitationHooks(acceptReg, { serverName: 'srv', message: '要个名字' }, c)
+  expect(accepted.response).toEqual({ action: 'accept', content: { ok: 1 } })
+  expect(accepted.deniedMessage).toBeUndefined()
+  const declineReg: HookRegistry = { rules: [{ event: 'Elicitation', handler: () => ({ action: 'elicitation', elicitationAction: 'decline' }) }] }
+  const declined = await applyElicitationHooks(declineReg, { serverName: 'srv', message: 'q' }, c)
+  expect(declined.response?.action).toBe('decline')
+  expect(declined.deniedMessage).toBe('Elicitation denied by hook')
+  // matcher 按 serverName:不中则无代答
+  const missed = await applyElicitationHooks(acceptReg, { serverName: 'other', message: 'q' }, c)
+  expect(missed.response).toBeUndefined()
+})
+
+test('applyWorktreeCreateHooks:provider 语义 — context 文本=路径;配置了但无产出=失败;没配置=双空', async () => {
+  const { applyWorktreeCreateHooks } = await import('./hooks')
+  const c = ctx() as never
+  const provider: HookRegistry = { rules: [{ event: 'WorktreeCreate', handler: () => ({ action: 'context', additionalContext: '/tmp/wt-abc\n' }) }] }
+  const ok = await applyWorktreeCreateHooks(provider, 'feature-x', c)
+  expect(ok.worktreePath).toBe('/tmp/wt-abc')
+  expect(ok.deniedMessage).toBeUndefined()
+  const silent: HookRegistry = { rules: [{ event: 'WorktreeCreate', handler: () => null }] }
+  const failed = await applyWorktreeCreateHooks(silent, 'feature-x', c)
+  expect(failed.worktreePath).toBeUndefined()
+  expect(failed.deniedMessage).toContain('WorktreeCreate hook failed')
+  const none = await applyWorktreeCreateHooks({ rules: [] }, 'feature-x', c)
+  expect(none.worktreePath).toBeUndefined()
+  expect(none.deniedMessage).toBeUndefined()
+})
+
+test('非工具事件 matcher 键对齐 cc matchQuery:Notification 按类型/ConfigChange 按源/Setup 按 trigger', async () => {
+  const { applyConfigChangeHooks, applySetupHooks } = await import('./hooks')
+  const c = ctx() as never
+  // Notification 按 notification_type 匹配(cc matchQuery=notificationType)
+  const noteReg: HookRegistry = { rules: [{ event: 'Notification', matcher: 'permission_needed', handler: () => ({ action: 'context', additionalContext: '中' }) }] }
+  const hit = await applyNotificationHooks(noteReg, { message: 'm', notificationType: 'permission_needed' }, c)
+  expect(hit.additionalContext).toEqual(['中'])
+  const miss = await applyNotificationHooks(noteReg, { message: 'm', notificationType: 'idle' }, c)
+  expect(miss.additionalContext).toEqual([])
+  // ConfigChange 按 source 匹配(cc matchQuery=source)
+  const cfgReg: HookRegistry = { rules: [{ event: 'ConfigChange', matcher: 'skills', handler: () => ({ action: 'context', additionalContext: '技能变了' }) }] }
+  expect((await applyConfigChangeHooks(cfgReg, 'skills', '/p/skill.md', c)).additionalContext).toEqual(['技能变了'])
+  expect((await applyConfigChangeHooks(cfgReg, 'local_settings', undefined, c)).additionalContext).toEqual([])
+  // Setup 按 trigger 匹配(cc matchQuery=trigger)
+  const setupReg: HookRegistry = { rules: [{ event: 'Setup', matcher: 'init', handler: () => ({ action: 'context', additionalContext: '首启' }) }] }
+  expect((await applySetupHooks(setupReg, 'init', c)).additionalContext).toEqual(['首启'])
+  expect((await applySetupHooks(setupReg, 'maintenance', c)).additionalContext).toEqual([])
+})

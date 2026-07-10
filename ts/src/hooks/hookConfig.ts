@@ -11,7 +11,8 @@ import { MEMORY_DOT_DIR, getUserConfigHomeDir } from '../harness/memoryNames'
 import { textBlock, type Message } from '../types/message'
 import { assertHttpHookHostAllowed, ssrfGuardedLookup } from './ssrfGuard'
 
-// 配置文件可声明的事件白名单(与 hooks.ts HookEvent 同步收全,对齐 cc HOOK_EVENTS 落地子集)。
+// 配置文件可声明的事件白名单 = cc 全部 27 个(与 hooks.ts HookEvent 同步,对齐 cc coreTypes.ts:25-53
+// HOOK_EVENTS)。声明任何一个都不会被静默吞;派发点状态见 hooks.ts HookEvent 文档。
 const HOOK_EVENTS = new Set<HookEvent>([
   'PreToolUse',
   'PostToolUse',
@@ -26,6 +27,20 @@ const HOOK_EVENTS = new Set<HookEvent>([
   'PreCompact',
   'PostCompact',
   'Notification',
+  'PermissionRequest',
+  'PermissionDenied',
+  'Setup',
+  'TeammateIdle',
+  'TaskCreated',
+  'TaskCompleted',
+  'Elicitation',
+  'ElicitationResult',
+  'ConfigChange',
+  'WorktreeCreate',
+  'WorktreeRemove',
+  'InstructionsLoaded',
+  'CwdChanged',
+  'FileChanged',
 ])
 const STRUCTURED_OUTPUT_TOOL_NAME = 'StructuredOutput'
 const AGENT_HOOK_MAX_TURNS = 50
@@ -111,6 +126,9 @@ function normalizeDecision(value: unknown): HookDecision | null {
   if (value.action === 'modify' && 'updatedInput' in value) {
     return { action: 'modify', updatedInput: value.updatedInput, message: typeof value.message === 'string' ? value.message : undefined }
   }
+  if (value.action === 'elicitation' && (value.elicitationAction === 'accept' || value.elicitationAction === 'decline' || value.elicitationAction === 'cancel')) {
+    return { action: 'elicitation', elicitationAction: value.elicitationAction, content: isRecord(value.content) ? value.content : undefined }
+  }
   return null
 }
 
@@ -181,6 +199,38 @@ function commandHookPayload(payload: HookPayload, ctx: ToolContext): Record<stri
     ...(payload.notificationType !== undefined ? { notification_type: payload.notificationType } : {}),
     ...(payload.sessionEndReason !== undefined ? { reason: payload.sessionEndReason } : {}),
     ...(payload.errorMessage !== undefined ? { error: payload.errorMessage } : {}),
+    // PermissionRequest/PermissionDenied 载荷(cc permission_suggestions/reason)
+    ...(payload.permissionSuggestions !== undefined ? { permission_suggestions: payload.permissionSuggestions } : {}),
+    ...(payload.permissionReason !== undefined ? { reason: payload.permissionReason } : {}),
+    // Setup/TeammateIdle/TaskCreated/TaskCompleted 载荷(cc trigger/teammate_name/team_name/task_*)
+    ...(payload.setupTrigger !== undefined ? { trigger: payload.setupTrigger } : {}),
+    ...(payload.teammateName !== undefined ? { teammate_name: payload.teammateName } : {}),
+    ...(payload.teamName !== undefined ? { team_name: payload.teamName } : {}),
+    ...(payload.taskId !== undefined ? { task_id: payload.taskId } : {}),
+    ...(payload.taskSubject !== undefined ? { task_subject: payload.taskSubject } : {}),
+    ...(payload.taskDescription !== undefined ? { task_description: payload.taskDescription } : {}),
+    // Elicitation/ElicitationResult 载荷(cc mcp_server_name/message/mode/url/elicitation_id/requested_schema/action/content)
+    ...(payload.mcpServerName !== undefined ? { mcp_server_name: payload.mcpServerName } : {}),
+    ...(payload.elicitationMessage !== undefined ? { message: payload.elicitationMessage } : {}),
+    ...(payload.elicitationMode !== undefined ? { mode: payload.elicitationMode } : {}),
+    ...(payload.elicitationUrl !== undefined ? { url: payload.elicitationUrl } : {}),
+    ...(payload.elicitationId !== undefined ? { elicitation_id: payload.elicitationId } : {}),
+    ...(payload.elicitationRequestedSchema !== undefined ? { requested_schema: payload.elicitationRequestedSchema } : {}),
+    ...(payload.elicitationAction !== undefined ? { action: payload.elicitationAction } : {}),
+    ...(payload.elicitationContent !== undefined ? { content: payload.elicitationContent } : {}),
+    // ConfigChange/InstructionsLoaded/FileChanged/Worktree/Cwd 载荷(cc source/file_path/memory_type/load_reason/...)
+    ...(payload.configSource !== undefined ? { source: payload.configSource } : {}),
+    ...(payload.filePath !== undefined ? { file_path: payload.filePath } : {}),
+    ...(payload.memoryType !== undefined ? { memory_type: payload.memoryType } : {}),
+    ...(payload.loadReason !== undefined ? { load_reason: payload.loadReason } : {}),
+    ...(payload.instructionGlobs !== undefined ? { globs: payload.instructionGlobs } : {}),
+    ...(payload.triggerFilePath !== undefined ? { trigger_file_path: payload.triggerFilePath } : {}),
+    ...(payload.parentFilePath !== undefined ? { parent_file_path: payload.parentFilePath } : {}),
+    ...(payload.worktreeName !== undefined ? { name: payload.worktreeName } : {}),
+    ...(payload.worktreePath !== undefined ? { worktree_path: payload.worktreePath } : {}),
+    ...(payload.oldCwd !== undefined ? { old_cwd: payload.oldCwd } : {}),
+    ...(payload.newCwd !== undefined ? { new_cwd: payload.newCwd } : {}),
+    ...(payload.fileEvent !== undefined ? { event: payload.fileEvent } : {}),
   }
 }
 
