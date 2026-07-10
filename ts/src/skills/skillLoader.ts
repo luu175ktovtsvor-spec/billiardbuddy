@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { getUserConfigHomeDir, MEMORY_DOT_DIR } from '../harness/memoryNames'
+import { resolveBundledDir } from '../harness/bundledRoot'
 import { extractDescription, parseMarkdownDocument, stringField } from '../commands/frontmatter'
 import { addAllowedToolsToContext, allowedToolRulesFromFrontmatter, normalizeAllowedTools } from '../commands/allowedTools'
 import { parseArgumentNames, substituteArguments } from '../commands/argumentSubstitution'
@@ -223,17 +224,16 @@ const SKILLS_SUBDIR = 'skills'
 
 /**
  * app 内置技能目录(=cc bundled skills):随包发的 `SKILL.md` 内容目录,managed 可信(不受信任门约束)。
- * cc 把内置技能编进二进制;我们放 `ts/src/skills/bundled/<name>/SKILL.md`,开发/测试用 `import.meta.dir` 定位,
- * 兼容从 repo 根 / ts 目录起进程。⚠️ 打包版把这些 md 塞进 DMG/EXE 的接线(extraResources / bun 内嵌)是分发侧待办,
- * 与 `ts/commands/*.md` 同一未决口径,见交付说明。
+ * 放 `ts/src/skills/bundled/<name>/SKILL.md`。✅ 打包态定位已修(resolveBundledDir:execPath 相对 +
+ * electron-builder 把本目录发到 Resources/bundled/skills;否则编译二进制 import.meta.dir=/$bunfs、
+ * cwd=userData 都找不到,打包后 bundled 技能静默消失——2026-07-11 审计实证并修复)。
  */
 export function bundledSkillsRoot(): string {
-  const candidates = [
+  return resolveBundledDir('skills', [
     join(import.meta.dir, 'bundled'),
     join(process.cwd(), 'src', 'skills', 'bundled'),
     join(process.cwd(), 'ts', 'src', 'skills', 'bundled'),
-  ]
-  return candidates.find(existsSync) ?? candidates[0]!
+  ])
 }
 
 /** 用户自建技能目录:`~/.billiardbuddy/skills`(create_skill 默认落这;白标铁律——绝不 .claude)。managed 可信。 */
