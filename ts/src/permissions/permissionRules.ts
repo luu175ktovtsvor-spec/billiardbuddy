@@ -219,6 +219,51 @@ export function stripSafeShellWrappers(command: string): string {
   return stripped.trim()
 }
 
+// SECURITY: broad env-var pattern for DENY/ASK matching only. Unlike SAFE_ENV_PATTERN
+// (safe-list gated), this strips ANY leading `VAR=value` prefix so a denied command
+// stays denied even behind arbitrary env vars (`FOO=bar rm x`, `PATH=/tmp npm ...`).
+// Excludes shell-injection chars ($, backtick, ; | & ( ) < >, quotes, backslash) from
+// unquoted values, allows single-/double-quoted values. Ported from cc-haha
+// stripAllLeadingEnvVars (bashPermissions.ts). NEVER use this on allow rules — that would
+// let `DOCKER_HOST=evil docker ps` auto-match Bash(docker ps:*) (HackerOne #3543050).
+const BROAD_ENV_VAR_PATTERN =
+  /^([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?)\+?=(?:'[^'\n\r]*'|"(?:\\.|[^"$`\\\n\r])*"|\\.|[^ \t\n\r$`;|&()<>\\'"])*[ \t]+/
+
+export function stripAllLeadingEnvVars(command: string): string {
+  let stripped = command
+  let previous = ''
+  while (stripped !== previous) {
+    previous = stripped
+    stripped = stripCommentLines(stripped)
+    const m = stripped.match(BROAD_ENV_VAR_PATTERN)
+    if (!m) continue
+    stripped = stripped.slice(m[0].length)
+  }
+  return stripped.trim()
+}
+
+// SECURITY: exec-wrappers that run their argument as a fresh command, so a deny rule on
+// the wrapped command (Bash(rm:*)) must see through them (`sudo rm x`, `env FOO=1 rm x`,
+// `xargs rm`). Mirrors cc-haha's checkSemantics wrapper-strip (env) + BARE_SHELL_PREFIXES
+// (sudo/doas/pkexec/xargs). Used ONLY for deny/ask candidate generation — over-stripping
+// here only ever makes a deny rule MORE aggressive (fail-closed), never auto-approves.
+const EXEC_WRAPPER_COMMANDS = new Set(['sudo', 'doas', 'pkexec', 'env', 'xargs'])
+
+function stripLeadingExecWrapper(command: string): string {
+  const trimmed = command.trim()
+  const headMatch = trimmed.match(/^(\S+)\s+([\s\S]+)$/)
+  if (!headMatch || !EXEC_WRAPPER_COMMANDS.has(headMatch[1]!)) return trimmed
+  // Drop the wrapper word, then any leading option flags. `env`'s VAR=val assignments are
+  // peeled by stripAllLeadingEnvVars in the fixed-point loop below.
+  let rest = headMatch[2]!.trim()
+  let flagMatch = rest.match(/^-\S+\s+([\s\S]+)$/)
+  while (flagMatch) {
+    rest = flagMatch[1]!.trim()
+    flagMatch = rest.match(/^-\S+\s+([\s\S]+)$/)
+  }
+  return rest
+}
+
 export function splitShellCommandsForPermission(command: string): string[] {
   const parts: string[] = []
   let current = ''
@@ -307,18 +352,69 @@ function commandCandidatesForPermissionRule(command: string): string[] {
   return candidates
 }
 
+function candidateMatchesShellRule(rule: ShellPermissionRule, candidate: string): boolean {
+  if (rule.type === 'exact') return candidate === rule.command
+  if (rule.type === 'wildcard') return matchWildcardPattern(rule.pattern, candidate)
+  // prefix: word-boundary match, plus bare `xargs <prefix>` (mirrors allow-side matching)
+  if (candidate === rule.prefix || candidate.startsWith(`${rule.prefix} `)) return true
+  const xargsPrefix = `xargs ${rule.prefix}`
+  return candidate === xargsPrefix || candidate.startsWith(`${xargsPrefix} `)
+}
+
 function shellSingleCommandMatchesPermissionRule(command: string, ruleContent: string): boolean {
   const rule = parseShellPermissionRule(ruleContent.trim())
-  for (const candidate of commandCandidatesForPermissionRule(command)) {
-    if (rule.type === 'exact' && candidate === rule.command) return true
-    if (rule.type === 'wildcard' && matchWildcardPattern(rule.pattern, candidate)) return true
-    if (rule.type === 'prefix') {
-      if (candidate === rule.prefix || candidate.startsWith(`${rule.prefix} `)) return true
-      const xargsPrefix = `xargs ${rule.prefix}`
-      if (candidate === xargsPrefix || candidate.startsWith(`${xargsPrefix} `)) return true
+  return commandCandidatesForPermissionRule(command).some(candidate => candidateMatchesShellRule(rule, candidate))
+}
+
+// DENY/ASK candidate generation: fixed-point over safe-wrapper strip + broad env-var strip
+// + exec-wrapper strip, so a denied command surfaces regardless of how it's wrapped
+// (`nohup FOO=bar sudo timeout 5 rm x` → `rm x`). Intentionally more aggressive than the
+// allow-side commandCandidatesForPermissionRule (safe wrappers only).
+function denyAskCommandCandidates(command: string): string[] {
+  const trimmed = command.trim()
+  if (!trimmed) return []
+  const candidates = [trimmed]
+  const seen = new Set(candidates)
+  let index = 0
+  while (index < candidates.length && candidates.length <= 64) {
+    const candidate = candidates[index++]!
+    for (const stripped of [
+      stripSafeShellWrappers(candidate),
+      stripAllLeadingEnvVars(candidate),
+      stripLeadingExecWrapper(candidate),
+    ]) {
+      if (stripped && stripped !== candidate && !seen.has(stripped)) {
+        seen.add(stripped)
+        candidates.push(stripped)
+      }
     }
   }
-  return false
+  return candidates
+}
+
+function shellSingleCommandMatchesDenyOrAskRule(command: string, ruleContent: string): boolean {
+  const rule = parseShellPermissionRule(ruleContent.trim())
+  return denyAskCommandCandidates(command).some(candidate => candidateMatchesShellRule(rule, candidate))
+}
+
+/**
+ * SECURITY: deny/ask matcher for run_command. Unlike shellCommandMatchesPermissionRule
+ * (allow semantics — refuses to match compound commands), this splits the command into
+ * subcommands and matches each one, so a denied command hidden in a compound/pipe/wrapper
+ * (`true && rm x`, `echo hi | xargs rm`) still trips the rule. Any subcommand matching the
+ * deny/ask rule → the whole command matches. Fail-closed direction throughout.
+ */
+export function shellCommandMatchesDenyOrAskRule(command: string, ruleContent: string): boolean {
+  const normalizedCommand = command.trim()
+  if (!normalizedCommand) return false
+  // Full command first: catches exact rules on the whole (possibly compound) string and
+  // simple single-command prefix/wildcard rules.
+  if (shellSingleCommandMatchesDenyOrAskRule(normalizedCommand, ruleContent)) return true
+  const subcommands = splitShellCommandsForPermission(normalizedCommand)
+  if (subcommands.length <= 1) return false
+  // No MAX_SUBCOMMANDS cap here (unlike the allow path): matching is cheap string ops, so
+  // checking every subcommand is safe and skipping any would open a bypass window.
+  return subcommands.some(subcommand => shellSingleCommandMatchesDenyOrAskRule(subcommand, ruleContent))
 }
 
 export function matchWildcardPattern(pattern: string, command: string, caseInsensitive = false): boolean {

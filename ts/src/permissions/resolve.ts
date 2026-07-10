@@ -1,5 +1,5 @@
 import type { Tool, ToolContext } from '../tools/Tool'
-import { shellCommandAllowedByPermissionRules, shellCommandMatchesPermissionRule } from './permissionRules'
+import { shellCommandAllowedByPermissionRules, shellCommandMatchesDenyOrAskRule, shellCommandMatchesPermissionRule } from './permissionRules'
 import type { ApprovalClass, DecisionReason, PermissionDecision, PermissionRule } from './types'
 import { canonicalPermissionMode } from './canonical'
 import { autoEditSafetyReason } from './autoEditSafety'
@@ -92,6 +92,13 @@ function ruleMatchesInput(ctx: ToolContext, rule: PermissionRule, tool: Tool, in
   if (tool.name === 'run_command' || tool.name === 'PowerShell') {
     if (!ruleMatchesToolName(rule, tool)) return false
     if (content === undefined) return true
+    // SECURITY(对齐 cc): deny/ask 规则必须拆子命令逐条匹配,否则复合命令能绕过红线——
+    // deny(rm:*) 要能拦住 `true && rm x`、`env FOO=1 rm x`、`sudo rm x`、`echo hi | xargs rm`。
+    // allow 规则保持更严的整条语义(不给复合命令放行),仍走 shellCommandMatchesPermissionRule。
+    if (rule.ruleBehavior === 'deny' || rule.ruleBehavior === 'ask') {
+      const command = currentCommandInput(input)
+      return command ? shellCommandMatchesDenyOrAskRule(command, content) : false
+    }
     return commandMatchesPattern(input, content)
   }
 

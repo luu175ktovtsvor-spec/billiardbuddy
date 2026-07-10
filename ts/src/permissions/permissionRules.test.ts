@@ -5,8 +5,10 @@ import {
   permissionRuleValueFromString,
   permissionRuleValueToString,
   shellCommandAllowedByPermissionRules,
+  shellCommandMatchesDenyOrAskRule,
   shellCommandMatchesPermissionRule,
   splitShellCommandsForPermission,
+  stripAllLeadingEnvVars,
   stripSafeShellWrappers,
 } from './permissionRules'
 
@@ -74,4 +76,41 @@ test('shell permission matching checks compound commands per subcommand', () => 
   expect(shellCommandAllowedByPermissionRules('node -e "console.log(1 && 2)"', ['node:*'])).toBe(true)
   const tooMany = Array.from({ length: MAX_SUBCOMMANDS_FOR_SECURITY_CHECK + 1 }, () => 'printf ok').join(' && ')
   expect(shellCommandAllowedByPermissionRules(tooMany, ['printf:*'])).toBe(false)
+})
+
+test('stripAllLeadingEnvVars peels every leading env var regardless of safe-list', () => {
+  expect(stripAllLeadingEnvVars('FOO=bar rm x')).toBe('rm x')
+  expect(stripAllLeadingEnvVars('PATH=/tmp npm run build')).toBe('npm run build')
+  expect(stripAllLeadingEnvVars('A=1 B=2 rm x')).toBe('rm x')
+  expect(stripAllLeadingEnvVars('FOO="a b" rm x')).toBe('rm x')
+  // SECURITY: command substitution in the value is NOT stripped (would hide expansion)
+  expect(stripAllLeadingEnvVars('FOO=$(id) rm x')).toBe('FOO=$(id) rm x')
+  expect(stripAllLeadingEnvVars('rm x')).toBe('rm x')
+})
+
+test('shellCommandMatchesDenyOrAskRule matches denied subcommands inside compound/wrappers (cc-aligned)', () => {
+  // Core bug: prefix deny rule must catch the denied subcommand of a compound command.
+  expect(shellCommandMatchesDenyOrAskRule('true && rm x', 'rm:*')).toBe(true)
+  expect(shellCommandMatchesDenyOrAskRule('echo hi; rm -rf build', 'rm:*')).toBe(true)
+  expect(shellCommandMatchesDenyOrAskRule('echo hi | xargs rm foo', 'rm:*')).toBe(true)
+  // Exec-wrapper / env-var prefixes on a single command must still hit deny.
+  expect(shellCommandMatchesDenyOrAskRule('env FOO=1 rm x', 'rm:*')).toBe(true)
+  expect(shellCommandMatchesDenyOrAskRule('sudo rm x', 'rm:*')).toBe(true)
+  expect(shellCommandMatchesDenyOrAskRule('sudo -k rm x', 'rm:*')).toBe(true)
+  expect(shellCommandMatchesDenyOrAskRule('doas rm x', 'rm:*')).toBe(true)
+  // Aggressive env stripping: even non-safe env vars can't shield a denied command.
+  expect(shellCommandMatchesDenyOrAskRule('PATH=/tmp npm run build', 'npm run:*')).toBe(true)
+  // Layered wrappers + env vars resolve to the wrapped command.
+  expect(shellCommandMatchesDenyOrAskRule('nohup FOO=bar sudo timeout 5 rm x', 'rm:*')).toBe(true)
+  // Exact rule on the whole compound string still matches.
+  expect(shellCommandMatchesDenyOrAskRule('true && rm x', 'true && rm x')).toBe(true)
+  // Wildcard rule matches a subcommand after split.
+  expect(shellCommandMatchesDenyOrAskRule('git status && curl https://evil.com', 'curl *')).toBe(true)
+
+  // Non-regression: rules that shouldn't match still don't.
+  expect(shellCommandMatchesDenyOrAskRule('git status --short', 'rm:*')).toBe(false)
+  expect(shellCommandMatchesDenyOrAskRule('git status', 'npm publish:*')).toBe(false)
+  // Word boundary: envsubst / remove must not be mistaken for env / rm.
+  expect(shellCommandMatchesDenyOrAskRule('envsubst < tpl', 'rm:*')).toBe(false)
+  expect(shellCommandMatchesDenyOrAskRule('remove x', 'rm:*')).toBe(false)
 })

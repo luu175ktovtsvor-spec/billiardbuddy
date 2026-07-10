@@ -153,6 +153,50 @@ describe('resolvePermission 瀑布', () => {
     })
   })
 
+  test('SECURITY: deny/ask 规则拆子命令,复合命令/包裹前缀无法绕过红线', () => {
+    const denyRm: PermissionRule = {
+      source: 'userSettings',
+      ruleBehavior: 'deny',
+      ruleValue: { toolName: 'Bash', ruleContent: 'rm:*' },
+    }
+    const askRm: PermissionRule = {
+      source: 'userSettings',
+      ruleBehavior: 'ask',
+      ruleValue: { toolName: 'Bash', ruleContent: 'rm:*' },
+    }
+    const allowGit: PermissionRule = {
+      source: 'localSettings',
+      ruleBehavior: 'allow',
+      ruleValue: { toolName: 'Bash', ruleContent: 'git:*' },
+    }
+    const run = tool({ name: 'run_command', requiresApproval: true, approvalClass: 'outreach' })
+
+    // deny 命中复合命令里的子命令 / 包裹前缀 —— 即便 bypassPermissions 也拦(deny 在瀑布最前)。
+    for (const command of ['true && rm x', 'env FOO=1 rm x', 'sudo rm x', 'echo hi | xargs rm foo']) {
+      expect(resolvePermission(run, { command }, ctx('bypassPermissions', { permissionRules: [denyRm] }))).toMatchObject({
+        behavior: 'deny',
+        reason: { type: 'rule', rule: denyRm },
+      })
+    }
+
+    // ask 同样拆子命令:默认档下命中子命令 → 弹卡。
+    expect(resolvePermission(run, { command: 'echo hi && rm x' }, ctx('default', { permissionRules: [askRm] }))).toMatchObject({
+      behavior: 'ask',
+      reason: { type: 'rule', rule: askRm },
+    })
+
+    // 单命令不回归:未命中 deny 的命令不被误拦(走后续瀑布 → ask)。
+    expect(resolvePermission(run, { command: 'git status --short' }, ctx('default', { permissionRules: [denyRm] })).behavior).toBe('ask')
+
+    // allow 规则仍保持更严语义:单条 allow 不给复合命令放行(否则 `git status && rm x` 会被 git:* 放行)。
+    expect(resolvePermission(run, { command: 'git status && rm x' }, ctx('default', { permissionRules: [allowGit] })).behavior).toBe('ask')
+    // 但纯单命令 allow 照常放行。
+    expect(resolvePermission(run, { command: 'git status --short' }, ctx('default', { permissionRules: [allowGit] }))).toMatchObject({
+      behavior: 'allow',
+      reason: { type: 'rule', rule: allowGit },
+    })
+  })
+
   test('结构化 permissionRules 支持 Bash 别名和命令内容匹配', () => {
     const allowGit: PermissionRule = {
       source: 'command',
