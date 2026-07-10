@@ -179,6 +179,59 @@ test('connectMcpServers connects stdio server, exposes tools, and calls through 
   }
 })
 
+test('initialize 声明的 capabilities.elicitation 必须是精确空对象 {}(兼容修复:发 form/url 嵌套形状会打回零字段 Elicitation 的 Java/Spring MCP 服务器)', async () => {
+  let capturedCapabilities: Record<string, unknown> | undefined
+
+  const mcpServer = new McpServer({ name: 'cap-fixture', version: '1.0.0' })
+  mcpServer.registerTool('noop', { description: 'no-op', inputSchema: {} }, async () => ({
+    content: [{ type: 'text', text: 'ok' }],
+  }))
+  const serverTransport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => crypto.randomUUID() })
+  await mcpServer.connect(serverTransport)
+
+  const httpServer = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      // 截获 initialize 请求体,读取客户端真正发到线上的 capabilities(clone 不消耗原始 body)。
+      if (req.method === 'POST' && capturedCapabilities === undefined) {
+        try {
+          const body = (await req.clone().json()) as unknown
+          const msgs = Array.isArray(body) ? body : [body]
+          for (const m of msgs) {
+            if (m && typeof m === 'object' && (m as { method?: unknown }).method === 'initialize') {
+              capturedCapabilities = (m as { params?: { capabilities?: Record<string, unknown> } }).params?.capabilities
+            }
+          }
+        } catch {
+          // 非 JSON(如 SSE GET)忽略
+        }
+      }
+      return serverTransport.handleRequest(req)
+    },
+  })
+
+  try {
+    const loaded = await connectMcpServers([{
+      name: 'cap fixture',
+      transport: 'http',
+      url: `http://127.0.0.1:${httpServer.port}/mcp`,
+    }], { timeoutMs: 5000 })
+
+    expect(loaded.warnings).toEqual([])
+    expect(capturedCapabilities).toBeDefined()
+    // 关键兼容断言:elicitation 精确为空对象,绝不带 form/url 嵌套键。
+    expect(capturedCapabilities!.elicitation).toEqual({})
+    expect(Object.keys(capturedCapabilities!.elicitation as object)).toEqual([])
+    // 回归护栏:tasks 能力仍照常声明(top-level 未知字段被老服务器忽略,不打回,故不降)。
+    expect(capturedCapabilities!.tasks).toBeDefined()
+
+    await closeMcpConnections(loaded.connections)
+  } finally {
+    httpServer.stop(true)
+    await serverTransport.close()
+  }
+})
+
 test('connectMcpServers 把 http server 配置里的 headers(含 Authorization bearer)真的发到远程请求上(鉴权对齐 cc)', async () => {
   const seenHeaders: Array<{ authorization: string | null; apiKey: string | null }> = []
 

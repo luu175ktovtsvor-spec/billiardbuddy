@@ -221,7 +221,13 @@ async function maybeTaskResult(taskRequested: boolean, extra: RequestHandlerExtr
 
 function clientCapabilities(opts: LoadMcpToolsOptions): ClientCapabilities {
   const capabilities: ClientCapabilities = {
-    elicitation: { form: { applyDefaults: true }, url: {} },
+    // 空对象即声明 elicitation 能力,足以让服务器发起表单/URL 征询,本地处理器仍
+    // 会补默认值。绝不发送 { form:{}, url:{} } 嵌套形状——老式 Java/Spring MCP
+    // 服务器的 Elicitation 类零字段且拒绝未知嵌套属性,带上 form/url 会打回它们。
+    elicitation: {},
+    // tasks 是 top-level 能力字段:老服务器的 ClientCapabilities 以
+    // @JsonIgnoreProperties(ignoreUnknown=true) 忽略未知顶层字段,不会因此打回,
+    // 故按完整形状声明(降为 {} 反而会关掉任务增强请求),不随 elicitation 一起降。
     tasks: {
       list: {},
       cancel: {},
