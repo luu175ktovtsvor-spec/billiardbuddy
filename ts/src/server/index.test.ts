@@ -1018,6 +1018,42 @@ test('POST /agent/run streams through configured real Model adapter and tools', 
   }
 })
 
+// 错误路径兜底(B 线调用方):runAgentLoop 错误出口 throw 后,server 必须在 catch 里合成一条最终答复,
+// 否则错误路径会"点了没最终回复"。这里让上游模型返回非可重试的 400 → ProxyModel 立刻抛错 → 循环 throw。
+test('POST /agent/run 错误路径仍合成最终答复(server catch 兜底,不留悬空无 final)', async () => {
+  const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-run-error-'))
+  let calls = 0
+  const errServer = startServer({
+    port: 0,
+    transcriptRoot,
+    env: {
+      DEEPSEEK_BASE_URL: 'https://model.example/v1',
+      DEEPSEEK_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async () => { calls++; return new Response('bad request', { status: 400 }) },
+  })
+  try {
+    const res = await fetch(`http://127.0.0.1:${errServer.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({ message: '触发模型错误', conversationId: 'cerr', permissionMode: 'full' }),
+    })
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    // 错误路径也必须给出最终答复(合成的失败 final),而不是流悬空、无 final。
+    expect(text).toContain('event: final')
+    expect(text).toContain('任务执行失败')
+    expect(calls).toBeGreaterThan(0)
+    // 会话状态落为 failed(对齐 finally 里的 finalStatus)。
+    const sessionRes = await fetch(`http://127.0.0.1:${errServer.port}/sessions/cerr`)
+    const body = await sessionRes.json() as any
+    expect(body.session.status).toBe('failed')
+  } finally {
+    errServer.stop(true)
+    rmSync(transcriptRoot, { recursive: true, force: true })
+  }
+})
+
 test('POST /agent/run starts a UDS inbox and injects cross-session steering', async () => {
   const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-run-uds-inbox-'))
   let calls = 0

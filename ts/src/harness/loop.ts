@@ -48,7 +48,7 @@ import {
   notifyPromptCacheCompaction,
   recordPromptCacheState,
 } from '../context/promptCacheBreakDetection'
-import { callKey, detectStuck, sameCallGuardMessage, sameCallLimitForTool } from './stuckDetector'
+import { detectStuck } from './stuckDetector'
 import { revealToolNamesForSearch, TOOL_SEARCH_NAME, visibleToolSpecs } from '../tools/toolSearchTool'
 import { addAllowedToolsToContext } from '../commands/allowedTools'
 import {
@@ -382,8 +382,6 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   let lastCompactionAtMs = 0
   let lastCompactedMessageCount = 0
   let lastInputTokens: number | undefined // 上一轮响应回报的真实 prompt input tokens(含 cache),供 token 级压缩触发
-  let sameKey = ''
-  let sameKeyCount = 0
   let toolCallsNoProgress = 0
   let stuckNotified = false
   let maxOutputTokensRecoveryCount = 0 // 连续"输出被长度上限截断"的续写计数;有实质进展(tool_calls/自然收敛)即复位
@@ -419,6 +417,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       postSummaryMessages: invokedSkills ? [invokedSkills] : [],
       contextWindowChars: opts.contextWindowChars,
       contextWindowTokens: opts.contextWindowTokens,
+      modelName: opts.modelName,
       lastInputTokens,
       readOnlyToolNames,
       compactionFailures,
@@ -593,6 +592,11 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       }
       return events
     }
+    // 工具执行段兜底:整段 for 循环 + 收尾 flush 包一层 try/catch。任何在既有内层 try 之外抛出的异常
+    // (hook 聚合器 / 工具插桩方法 isReadOnlyFor·requiresApprovalFor 等在权限/并行判定处抛错)都不会留下
+    // 未配对 tool_use;catch 里为尚未产出 result 的 call 补 is_error tool_result,保配对、循环不崩(对齐 cc
+    // yieldMissingToolResultBlocks:即便执行段异常也要让每个 tool_use 都有配对的 tool_result)。
+    try {
     for (const call of step.calls) {
       const progress = popTaskProgress(call.input)
       if (progress !== null) {
@@ -602,13 +606,11 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
         stuckNotified = false
         yield { type: 'todo_update', content: formatTodoChecklist(ctx.todos) }
       }
-      const k = callKey(call.name, call.input)
-      sameKeyCount = k === sameKey ? sameKeyCount + 1 : 1
-      sameKey = k
-
-      const sameCallLimit = sameCallLimitForTool(call.name)
+      // 软护栏降级(对齐 cc「循环只执行、软劝在 system prompt / system-reminder」):同一工具重复调用不再硬拒执行、
+      // 不再伪造 tool_result 回灌——模型点名的工具照常执行、回灌真实结果。原地打转的软提醒统一由下方 detectStuck 在本批
+      // tool_result 回灌里追加一条 <system-reminder>(trailingSameCallStreak 命中同阈值),单一软提醒机制、不改回灌契约。
       const hooks = hooksForCurrentSession()
-      const parallelCandidate = sameKeyCount < sameCallLimit ? prepareParallelReadOnlyCall(registry, call, ctx, hooks) : null
+      const parallelCandidate = prepareParallelReadOnlyCall(registry, call, ctx, hooks)
       if (parallelCandidate) {
         yield { type: 'tool_call', tool: call.name, input: call.input }
         parallelReadOnly.push(parallelCandidate)
@@ -619,19 +621,13 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
 
       for (const event of await flushParallelReadOnly()) yield event
       yield { type: 'tool_call', tool: call.name, input: call.input }
-      if (sameKeyCount >= sameCallLimit) {
-        const output = sameCallGuardMessage(call.name, sameCallLimit)
-        toolResults.push(toolResultBlock(call.id, output, false))
-        yield { type: 'tool_result', tool: call.name, output }
-      } else {
-        // 可中断工具在飞时计数 +1,让 requestInterrupt 自闸判定"该不该当场切断"(普通工具不计数 = 插话入队/soft steer)。
-        const interruptible = registry.get(call.name)?.interruptBehavior === 'cancel'
-        if (interruptible) interruptibleInFlight++
-        try {
-          yield* gateOneCall(registry, call, ctx, toolResults, hooksForCurrentSession(), opts.toolResultStoreDir)
-        } finally {
-          if (interruptible) interruptibleInFlight--
-        }
+      // 可中断工具在飞时计数 +1,让 requestInterrupt 自闸判定"该不该当场切断"(普通工具不计数 = 插话入队/soft steer)。
+      const interruptible = registry.get(call.name)?.interruptBehavior === 'cancel'
+      if (interruptible) interruptibleInFlight++
+      try {
+        yield* gateOneCall(registry, call, ctx, toolResults, hooksForCurrentSession(), opts.toolResultStoreDir)
+      } finally {
+        if (interruptible) interruptibleInFlight--
       }
       const pendingVerification = ctx.pendingPlanVerification
       if (
@@ -656,6 +652,20 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       }
     }
     for (const event of await flushParallelReadOnly()) yield event
+    } catch (toolLoopErr) {
+      // 工具执行段异常兜底(对齐 cc yieldMissingToolResultBlocks):先尽力收回已排队的并行只读结果,再为 step.calls 中
+      // 仍未配对的 tool_use 各补一条 is_error tool_result——保证 tool_use/tool_result 严格配对、不把未配对 tool_use
+      // 泄漏到下一轮(否则下一轮 Anthropic API 400、当轮崩溃),模型据错误文本自救、循环不崩。
+      try { for (const event of await flushParallelReadOnly()) yield event } catch { /* 尽力而为,仍要补齐配对 */ }
+      const detail = toolLoopErr instanceof Error ? toolLoopErr.message : String(toolLoopErr)
+      const paired = new Set(toolResults.map(r => r.tool_use_id))
+      for (const call of step.calls) {
+        if (paired.has(call.id)) continue
+        const text = `工具 ${call.name} 执行中断:${detail}`
+        toolResults.push(toolResultBlock(call.id, `<tool_use_error>\n${text}\n</tool_use_error>`, true))
+        yield { type: 'tool_result', tool: call.name, output: text }
+      }
+    }
 
     // 单条 user 消息:一批 tool_result 块 + PDF 文档块 + steering + reminder(都作块尾随)
     const followup: ContentBlock[] = [...toolResults]
