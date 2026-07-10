@@ -8,7 +8,7 @@ import { Workspace } from '../workspace/workspace'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
-import { closeMcpConnections, connectMcpServers, createTransport, DEFAULT_MCP_TOOL_TIMEOUT_MS, mcpToolTimeoutMs } from './client'
+import { closeMcpConnections, connectMcpServers, createTransport, DEFAULT_MCP_TOOL_TIMEOUT_MS, isMcpSessionExpiredError, isTerminalConnectionError, mcpToolTimeoutMs } from './client'
 
 function writeFixtureServer(root: string): string {
   const file = join(root, 'fixture-mcp-server.ts')
@@ -509,3 +509,82 @@ test('P1 resources 二进制 blob:read_mcp_resource 落盘 + 回保存路径(对
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+// ─── P1 断线重连(对齐 cc client.ts:1210-1396 onerror/onclose 包装 + 惰性重连)───
+
+test('会话过期/终端错误判定逐字对齐 cc(isMcpSessionExpiredError / isTerminalConnectionError)', () => {
+  // 会话过期 = HTTP 404 + JSON-RPC -32001 双信号,缺一不可(防普通 404 误判)
+  const expired = Object.assign(new Error('HTTP 404: {"error":{"code":-32001,"message":"Session not found"}}'), { code: 404 })
+  expect(isMcpSessionExpiredError(expired)).toBe(true)
+  const plain404 = Object.assign(new Error('HTTP 404: not found'), { code: 404 })
+  expect(isMcpSessionExpiredError(plain404)).toBe(false)
+  const codeOnly = new Error('{"code":-32001}')
+  expect(isMcpSessionExpiredError(codeOnly)).toBe(false)
+  // 终端错误清单对齐 cc:网络级死亡 + SDK SSE 重连中间态包装
+  for (const msg of ['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'EHOSTUNREACH', 'ECONNREFUSED', 'Body Timeout Error', 'terminated', 'SSE stream disconnected', 'Failed to reconnect SSE stream']) {
+    expect(isTerminalConnectionError(`fetch failed: ${msg} blah`)).toBe(true)
+  }
+  expect(isTerminalConnectionError('validation error: bad input')).toBe(false)
+})
+
+test('P1 断线重连:会话失效(404+-32001)后调用不挂死,经监督器自动重连新会话恢复(对齐 cc session-expired 分支)', async () => {
+  const makePingServer = () => {
+    const mcpServer = new McpServer({ name: 'reconnect-fixture', version: '1.0.0' })
+    mcpServer.registerTool('ping', { description: 'ping', inputSchema: {} }, async () => ({
+      content: [{ type: 'text', text: 'pong' }],
+    }))
+    return mcpServer
+  }
+  // 真实多会话服务端:每个 initialize 建独立 transport;未知会话按 MCP 规范回 404 + JSON-RPC -32001
+  // (服务端重启后旧会话失效时的标准响应,cc isMcpSessionExpiredError 认的就是这两个信号)。
+  const sessions = new Map<string, WebStandardStreamableHTTPServerTransport>()
+  const httpServer = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const sessionId = req.headers.get('mcp-session-id')
+      if (sessionId) {
+        const transport = sessions.get(sessionId)
+        if (transport) return transport.handleRequest(req)
+        return new Response(
+          JSON.stringify({ jsonrpc: '2.0', error: { code: -32001, message: 'Session not found' }, id: null }),
+          { status: 404, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      const transport = new WebStandardStreamableHTTPServerTransport({
+        sessionIdGenerator: () => crypto.randomUUID(),
+        onsessioninitialized: id => { sessions.set(id, transport) },
+      })
+      await makePingServer().connect(transport)
+      return transport.handleRequest(req)
+    },
+  })
+  const url = `http://127.0.0.1:${httpServer.port}/mcp`
+  try {
+    const loaded = await connectMcpServers([{ name: 'reconnect fixture', transport: 'http', url }], { timeoutMs: 5000 })
+    expect(loaded.warnings).toEqual([])
+    const tool = loaded.tools.find(t => t.name === 'mcp__reconnect_fixture__ping')!
+    const ctx = { workspace: new Workspace(process.cwd()) }
+    expect(await tool.execute({}, ctx)).toContain('pong')
+    expect(sessions.size).toBe(1)
+
+    // 服务端"重启":所有旧会话作废 → 老 session id 的请求收到 404+-32001
+    sessions.clear()
+
+    // 失效会话上的调用允许失败(被拒绝、不挂死);监督器识别会话过期→关传输→下次调用重连新会话,有限次内必须恢复
+    let recovered = ''
+    const failures: string[] = []
+    for (let attempt = 0; attempt < 4 && !recovered; attempt++) {
+      try {
+        const out = await tool.execute({}, ctx)
+        if (out.includes('pong')) recovered = out
+      } catch (err) {
+        failures.push(err instanceof Error ? err.message : String(err))
+      }
+    }
+    expect(recovered).toContain('pong')
+    expect(sessions.size).toBe(1) // 重连拿到了全新会话
+    await closeMcpConnections(loaded.connections)
+  } finally {
+    httpServer.stop(true)
+  }
+}, 20000)

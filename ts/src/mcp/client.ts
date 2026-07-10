@@ -34,9 +34,12 @@ type SdkMcpResourceContent = Awaited<ReturnType<Client['readResource']>>['conten
 
 export interface McpConnection {
   serverName: string
+  /** 初始连接的 client(向后兼容保留)。掉线重连后会换新 client——运行时取活连接一律走 getClient()。 */
   client: Client
   transport: Transport
   taskStore: InMemoryTaskStore
+  /** 取当前活连接;掉线/会话过期后自动重连(新 session id),对齐 cc onclose 清缓存→下次调用重连。 */
+  getClient(): Promise<Client>
   tools: Tool[]
   resources: SdkMcpResource[]
   resourceTemplates: SdkMcpResourceTemplate[]
@@ -223,9 +226,9 @@ function uniqueName(base: string, used: Set<string>): string {
     used.add(base)
     return base
   }
+  // 撞名时保留完整 base 只追加后缀(对齐 cc 不截断口径;此前按 64 上限截 base 会让长名工具互相踩)。
   for (let i = 2; i < 1000; i++) {
-    const suffix = `_${i}`
-    const candidate = `${base.slice(0, Math.max(1, 64 - suffix.length))}${suffix}`
+    const candidate = `${base}_${i}`
     if (!used.has(candidate)) {
       used.add(candidate)
       return candidate
@@ -559,7 +562,7 @@ async function executeMcpTool(
   return await formatMcpResult(serverName, sdkTool.name, result, trace, route)
 }
 
-function makeTool(serverName: string, sdkTool: SdkMcpTool, client: Client, publicName: string, opts: LoadMcpToolsOptions): Tool {
+function makeTool(serverName: string, sdkTool: SdkMcpTool, clientSource: Pick<McpConnectionSupervisor, 'getClient'>, publicName: string, opts: LoadMcpToolsOptions): Tool {
   const approvalClass = approvalClassFromAnnotations(sdkTool.annotations)
   // readOnlyHint 只驱动 isReadOnly(plan 模式可探索 + 并发安全),不影响审批:外部 MCP 工具一律要审批。
   const readOnly = !!sdkTool.annotations?.readOnlyHint && !sdkTool.annotations.destructiveHint && !sdkTool.annotations.openWorldHint
@@ -574,6 +577,9 @@ function makeTool(serverName: string, sdkTool: SdkMcpTool, client: Client, publi
     requiresApproval: true,
     approvalClass,
     async execute(input, ctx) {
+      // 经监督器取活连接:掉线后这里自动重连(新 session),不再对着死 client 挂死(对齐 cc 重连语义:
+      // 在飞调用被 reject 失败回灌模型,下一次调用重连——不自动重试失败的那次)。
+      const client = await clientSource.getClient()
       return executeMcpTool(serverName, sdkTool, client, input, opts, ctx, ctx.signal)
     },
   }
@@ -683,7 +689,7 @@ function makeMcpCapabilityTools(connections: McpConnection[], opts: LoadMcpTools
         const errors: string[] = []
         for (const connection of candidates) {
           try {
-            const result = await connection.client.readResource({ uri }, { signal: ctx.signal ?? opts.signal, timeout: opts.timeoutMs ?? 60000 })
+            const result = await (await connection.getClient()).readResource({ uri }, { signal: ctx.signal ?? opts.signal, timeout: opts.timeoutMs ?? 60000 })
             const route: McpBinaryRoute = { toolResultStoreDir: ctx.toolResultStoreDir, label: `resource-${connection.serverName}` }
             const contents = await Promise.all(result.contents.map(content => formatResourceContent(content, route)))
             return partiallySanitizeUnicode([
@@ -737,7 +743,7 @@ function makeMcpCapabilityTools(connections: McpConnection[], opts: LoadMcpTools
           return `多个 MCP server 暴露了 prompt:${name};请带 serverName。可先调用 list_mcp_prompts 查看。`
         }
         const connection = candidates[0]!
-        const result = await connection.client.getPrompt(
+        const result = await (await connection.getClient()).getPrompt(
           { name, arguments: promptArguments(args.arguments) },
           { signal: ctx.signal ?? opts.signal, timeout: opts.timeoutMs ?? 60000 },
         )
@@ -753,11 +759,144 @@ function makeMcpCapabilityTools(connections: McpConnection[], opts: LoadMcpTools
   return tools
 }
 
+/**
+ * 会话过期判定(逐字对齐 cc client.ts:193-206 isMcpSessionExpiredError):HTTP 404 + JSON-RPC -32001。
+ * 两个信号都查,避免把普通 404(URL 错/服务器没了)误判成会话过期。
+ */
+export function isMcpSessionExpiredError(error: Error): boolean {
+  const httpStatus = 'code' in error ? (error as Error & { code?: number }).code : undefined
+  if (httpStatus !== 404) return false
+  return error.message.includes('"code":-32001') || error.message.includes('"code": -32001')
+}
+
+/** 终端连接错误判定(对齐 cc client.ts:1243-1257):这些错误意味着连接实质已死,不是瞬时抖动。 */
+export function isTerminalConnectionError(msg: string): boolean {
+  return (
+    msg.includes('ECONNRESET') ||
+    msg.includes('ETIMEDOUT') ||
+    msg.includes('EPIPE') ||
+    msg.includes('EHOSTUNREACH') ||
+    msg.includes('ECONNREFUSED') ||
+    msg.includes('Body Timeout Error') ||
+    msg.includes('terminated') ||
+    // SDK SSE 重连中间态错误可能把真实网络错误包一层,上面的子串匹配不到
+    msg.includes('SSE stream disconnected') ||
+    msg.includes('Failed to reconnect SSE stream')
+  )
+}
+
+/** 连接监督器:掉线检测 + 挂起调用拒绝 + 惰性重连(对齐 cc client.ts:1210-1396 的 onerror/onclose 包装)。 */
+interface McpConnectionSupervisor {
+  getClient(): Promise<Client>
+  current(): { client: Client; transport: Transport; taskStore: InMemoryTaskStore } | null
+  close(): Promise<void>
+}
+
+const MAX_ERRORS_BEFORE_RECONNECT = 3
+
+function createMcpConnectionSupervisor(config: McpServerConfig, opts: LoadMcpToolsOptions): McpConnectionSupervisor {
+  let current: { client: Client; transport: Transport; taskStore: InMemoryTaskStore } | null = null
+  let connecting: Promise<Client> | null = null
+  let closedForGood = false
+
+  const attachDropHandlers = (client: Client, taskStore: InMemoryTaskStore) => {
+    const transportType = config.transport ?? 'stdio'
+    let consecutiveConnectionErrors = 0
+    // 防重入(对齐 cc hasTriggeredClose):close() 会中止在飞流,可能在关闭链完成前再触发 onerror。
+    let hasTriggeredClose = false
+    // client.close() → transport.close() → SDK _onclose():把所有挂起请求 reject(-32000 Connection
+    // closed,挂死的 callTool 才会失败),再走下面的 onclose 清连接缓存。直接调 onclose 只清缓存、
+    // 挂起调用会一直吊着——必须走 close()(对齐 cc closeTransportAndRejectPending 注释)。
+    const closeTransportAndRejectPending = () => {
+      if (hasTriggeredClose) return
+      hasTriggeredClose = true
+      void client.close().catch(() => undefined)
+    }
+    const originalOnError = client.onerror
+    client.onerror = (error: Error) => {
+      // HTTP 会话过期(404+-32001)→ 关传输拒绝挂起调用,下次调用带新 session id 重连(对齐 cc 1307-1323)。
+      if (transportType === 'http' && isMcpSessionExpiredError(error)) {
+        closeTransportAndRejectPending()
+        originalOnError?.(error)
+        return
+      }
+      // 远程传输(sse/http):SDK 自带 SSE 重连耗尽是"传输放弃"的确定信号;终端错误连着来 3 次也判死。
+      if (transportType === 'sse' || transportType === 'http') {
+        if (error.message.includes('Maximum reconnection attempts')) {
+          closeTransportAndRejectPending()
+          originalOnError?.(error)
+          return
+        }
+        if (isTerminalConnectionError(error.message)) {
+          consecutiveConnectionErrors++
+          if (consecutiveConnectionErrors >= MAX_ERRORS_BEFORE_RECONNECT) {
+            consecutiveConnectionErrors = 0
+            closeTransportAndRejectPending()
+          }
+        } else {
+          consecutiveConnectionErrors = 0
+        }
+      }
+      originalOnError?.(error)
+    }
+    const originalOnClose = client.onclose
+    client.onclose = () => {
+      // 清连接缓存(对齐 cc onclose 清 memo cache):下次 getClient() 走重连。stdio 子进程崩溃也走这里。
+      if (current?.client === client) {
+        current = null
+        taskStore.cleanup()
+      }
+      originalOnClose?.()
+    }
+  }
+
+  const connect = async (): Promise<Client> => {
+    const { client, taskStore } = createClient(config.name, opts)
+    const transport = createTransport(config, opts)
+    try {
+      await client.connect(transport, { signal: opts.signal, timeout: opts.timeoutMs ?? 10000 })
+    } catch (err) {
+      await client.close().catch(() => undefined)
+      taskStore.cleanup()
+      throw err
+    }
+    current = { client, transport, taskStore }
+    attachDropHandlers(client, taskStore)
+    return client
+  }
+
+  return {
+    async getClient(): Promise<Client> {
+      if (closedForGood) throw new Error(`MCP server ${config.name}: connection closed`)
+      if (current) return current.client
+      // 单飞重连:并发工具调用共享同一次重连,不制造连接风暴。
+      connecting ??= connect().finally(() => { connecting = null })
+      return await connecting
+    },
+    current(): { client: Client; transport: Transport; taskStore: InMemoryTaskStore } | null {
+      return current
+    },
+    async close(): Promise<void> {
+      closedForGood = true
+      const held = current
+      current = null
+      if (held) {
+        try {
+          await held.client.close()
+        } finally {
+          held.taskStore.cleanup()
+        }
+      }
+    },
+  }
+}
+
 export async function connectMcpServer(config: McpServerConfig, opts: LoadMcpToolsOptions = {}, usedNames = new Set<string>()): Promise<McpConnection> {
-  const { client, taskStore } = createClient(config.name, opts)
-  const transport = createTransport(config, opts)
+  const supervisor = createMcpConnectionSupervisor(config, opts)
+  const client = await supervisor.getClient()
+  const initial = supervisor.current()!
+  const { transport, taskStore } = initial
   try {
-    await client.connect(transport, { signal: opts.signal, timeout: opts.timeoutMs ?? 10000 })
     const [rawTools, rawResources, rawResourceTemplates, rawPrompts] = await Promise.all([
       listAllTools(client, opts),
       listAllResources(client, opts),
@@ -773,27 +912,22 @@ export async function connectMcpServer(config: McpServerConfig, opts: LoadMcpToo
     const resources = recursivelySanitizeUnicode(rawResources)
     const resourceTemplates = recursivelySanitizeUnicode(rawResourceTemplates)
     const prompts = recursivelySanitizeUnicode(rawPrompts)
-    const tools = sdkTools.map(tool => makeTool(config.name, tool, client, uniqueName(mcpToolName(config.name, tool.name), usedNames), opts))
+    // 工具绑定监督器而非固定 client:掉线后挂起调用被拒绝(-32000),下一次调用经 getClient() 自动重连。
+    const tools = sdkTools.map(tool => makeTool(config.name, tool, supervisor, uniqueName(mcpToolName(config.name, tool.name), usedNames), opts))
     return {
       serverName: config.name,
       client,
       transport,
       taskStore,
+      getClient: () => supervisor.getClient(),
       tools,
       resources,
       resourceTemplates,
       prompts,
-      close: async () => {
-        try {
-          await client.close()
-        } finally {
-          taskStore.cleanup()
-        }
-      },
+      close: () => supervisor.close(),
     }
   } catch (err) {
-    await client.close().catch(() => undefined)
-    taskStore.cleanup()
+    await supervisor.close().catch(() => undefined)
     throw err
   }
 }
