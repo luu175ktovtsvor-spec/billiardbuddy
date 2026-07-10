@@ -1,0 +1,3 @@
+[test]
+# 测试前置:隔离默认工作区到临时目录(见 test-setup.ts),避免污染真实 ~/Documents/球房管家/。
+preload = "./test-setup.ts"
