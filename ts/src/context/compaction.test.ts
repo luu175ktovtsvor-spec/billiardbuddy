@@ -141,6 +141,48 @@ describe('compactPipeline', () => {
     }
   })
 
+  test('per-model 触发:MiMo-v2.5 + 1M 窗口,input 达 700k(而非 967k)即压缩', async () => {
+    const messages: Message[] = [
+      userText('a'), userText('b'), userText('c'), userText('d'), userText('e'), userText('f'), userText('recent'),
+    ]
+    let called = 0
+    const model: Model = { async step() { called++; return { kind: 'final', text: '摘要' } } }
+    // 若走 cc 公式阈值是 967k,700k 不会触发;登记 0.7 后阈值 700k → 恰达 → 触发。
+    const out = await compactPipeline({
+      messages, model, system: 'SYS', modelName: 'mimo-v2.5',
+      contextWindowTokens: 1_000_000, lastInputTokens: 700_000,
+      readOnlyToolNames: new Set(), keepRecentMessages: 1, minOldMessages: 2,
+    })
+    expect(called).toBe(1)
+    expect(out.didCompact).toBe(true)
+  })
+
+  test('per-model 触发:MiMo-v2.5 差 1(699,999 < 700k)+ 字符低 + 未 force → 不压缩', async () => {
+    const messages: Message[] = [userText('a'), userText('b'), userText('c'), userText('recent')]
+    let called = 0
+    const model: Model = { async step() { called++; return { kind: 'final', text: '摘要' } } }
+    const out = await compactPipeline({
+      messages, model, system: 'SYS', modelName: 'mimo-v2.5',
+      contextWindowTokens: 1_000_000, lastInputTokens: 699_999,
+      readOnlyToolNames: new Set(), keepRecentMessages: 1, minOldMessages: 2,
+    })
+    expect(called).toBe(0)
+    expect(out.didCompact).toBe(false)
+  })
+
+  test('未登记模型 + 1M 窗口:input 700k < cc 阈值 967k → 不压缩(登记只影响登记过的模型)', async () => {
+    const messages: Message[] = [userText('a'), userText('b'), userText('c'), userText('recent')]
+    let called = 0
+    const model: Model = { async step() { called++; return { kind: 'final', text: '摘要' } } }
+    const out = await compactPipeline({
+      messages, model, system: 'SYS', modelName: 'deepseek-chat',
+      contextWindowTokens: 1_000_000, lastInputTokens: 700_000,
+      readOnlyToolNames: new Set(), keepRecentMessages: 1, minOldMessages: 2,
+    })
+    expect(called).toBe(0)
+    expect(out.didCompact).toBe(false)
+  })
+
   test('使用九段结构化 prompt,且只保留 summary 正文', async () => {
     const messages: Message[] = [
       userText('u0' + 'x'.repeat(60)),
@@ -445,6 +487,41 @@ describe('getAutoCompactTokenThreshold(cc 数值锁定 + env 覆盖)', () => {
         expect(getAutoCompactTokenThreshold(200_000)).toBe(167_000)
       })
     }
+  })
+
+  // ---- per-model 压缩触发点登记(modelCompactionTriggers)----
+  test('MiMo-v2.5 + 1M 窗口 → per-model 700_000 登记生效 → 阈值精确 700k(不是 cc 的 967k)', () => {
+    withEnv({ [ENV_WINDOW]: undefined, [ENV_PCT]: undefined }, () => {
+      // 有效窗口 = 1M − 20k = 980k;登记 700_000(绝对,未超 980k 不封顶)→ 精确 700k。
+      const threshold = getAutoCompactTokenThreshold(1_000_000, undefined, 'mimo-v2.5')
+      expect(threshold).toBe(700_000)
+      expect(threshold).not.toBe(967_000) // 不再是 cc 固定 13k buffer 的 ~967k
+      expect(threshold).toBeLessThan(967_000) // 仍比 cc 公式早触发
+    })
+  })
+
+  test('未登记模型(200k)传 modelName → 仍走 cc 公式 167k,不回归', () => {
+    withEnv({ [ENV_WINDOW]: undefined, [ENV_PCT]: undefined }, () => {
+      expect(getAutoCompactTokenThreshold(200_000, undefined, 'glm-5.1')).toBe(167_000)
+      // 不传 modelName 也一样(向后兼容,老调用点行为不变)。
+      expect(getAutoCompactTokenThreshold(200_000)).toBe(167_000)
+    })
+  })
+
+  test('env CLAUDE_AUTOCOMPACT_PCT_OVERRIDE 优先于 per-model 登记(只更早):MiMo+50 → min(490k, 700k)=490k', () => {
+    withEnv({ [ENV_WINDOW]: undefined, [ENV_PCT]: '50' }, () => {
+      // 有效窗口 980k;pct 50% = 490k;per-model 基线 700k;min → 490k(env 只让更早)。
+      expect(getAutoCompactTokenThreshold(1_000_000, undefined, 'mimo-v2.5')).toBe(490_000)
+    })
+  })
+
+  test('env CLAUDE_CODE_AUTO_COMPACT_WINDOW 覆盖窗口后 per-model 绝对阈值封顶新有效窗口:MiMo 覆盖 100k → 700_000 超有效 80k → 封顶 80k', () => {
+    withEnv({ [ENV_WINDOW]: '100000', [ENV_PCT]: undefined }, () => {
+      // env 换窗口为 100k → 有效 = 100k − 20k = 80k;登记 700_000(绝对)远超有效 80k → 封顶到 80k(绝对阈值不反超窗口)。
+      // 注:生产 MiMo 固定 1M、不会 env 覆盖到小窗口,此为极端场景锁定绝对值封顶行为。
+      expect(getEffectiveContextWindowTokens(1_000_000)).toBe(80_000)
+      expect(getAutoCompactTokenThreshold(1_000_000, undefined, 'mimo-v2.5')).toBe(80_000)
+    })
   })
 })
 
