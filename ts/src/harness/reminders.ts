@@ -1,5 +1,6 @@
 import { textBlock, type TextBlock } from '../types/message'
 import type { ToolContext } from '../tools/Tool'
+import { getPlanFilePath } from './plans'
 
 export const STEER_MARK = '[用户补充/纠偏]'
 export const STEER_EXTRA_TURNS = 2
@@ -7,6 +8,20 @@ export const PROGRESS_REMIND_EVERY = 6
 export const VERIFY_PLAN_REMIND_EVERY = 3
 export const PLAN_MODE_REMINDER =
   '你现在处于【计划模式】:只规划、不动手。用只读工具去探索,把完整、分步的计划讲清楚给老板;会实际改动的步骤先别做,等老板切到执行档或确认后再做。'
+
+/**
+ * 计划模式系统提醒(对齐 cc getPlanModeV2Instructions:每轮以 system-reminder 注入)。带上**计划文件路径 +
+ * 工作流**——"唯一可编辑=计划文件、其余只读探索、以 ExitPlanMode 收尾"。planFilePath 为空(脱离工作区的
+ * 单测场景)时退回基础提醒。
+ */
+export function planModeReminder(planFilePath?: string): string {
+  if (!planFilePath) return PLAN_MODE_REMINDER
+  return [
+    PLAN_MODE_REMINDER,
+    `计划文件:${planFilePath} —— 这是计划模式下你唯一可以编辑的文件。用 write_file 新建、edit_file 增量修改,把完整、分步的方案写进去;其它一切只做只读探索。`,
+    '计划写好后,调用 ExitPlanMode 收尾请求批准(ExitPlanMode 不吃计划正文参数,它会直接从这个文件里读)。',
+  ].join('\n')
+}
 export const VERIFY_PLAN_REMINDER =
   '你已经开始执行批准后的计划。完成实施后必须直接调用 VerifyPlanExecution,并带上命令输出、诊断、文件读取、截图或人工检查等可复核证据;不要只用一句总结代替验证。'
 
@@ -48,7 +63,9 @@ export function collectReminders(ctx: ToolContext): Array<{ kind: 'progress' | '
     })
   }
   if (ctx.permissionMode === 'plan') {
-    out.push({ kind: 'plan', text: PLAN_MODE_REMINDER })
+    const root = ctx.workspace?.root
+    const planFilePath = root ? getPlanFilePath(root, ctx.conversationId) : undefined
+    out.push({ kind: 'plan', text: planModeReminder(planFilePath) })
   }
   const pending = ctx.pendingPlanVerification
   if (pending && !pending.verificationCompleted && (pending.toolCallsSinceApproval ?? 0) >= VERIFY_PLAN_REMIND_EVERY) {

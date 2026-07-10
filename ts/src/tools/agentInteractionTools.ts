@@ -89,16 +89,14 @@ export const enterPlanCompatTool: Tool = {
 export const exitPlanTool = makeSpec(
   'exit_plan',
   [
-    'Present a complete plan for approval when running in plan mode.',
+    'Use this when you are in plan mode and have finished writing your plan to the plan file, ready for user approval.',
+    'This tool does NOT take the plan content as a parameter — it reads the plan from the plan file you wrote (path is in the plan-mode system reminder).',
     'Do not use this for ordinary clarification; use ask_user_question for that.',
     'After approval, the current turn may continue in ask mode so reversible implementation steps can proceed through normal gates.',
   ].join(' '),
   {
-    plan: { type: 'string', description: 'The concrete implementation plan, including files/modules to change and verification steps.' },
-    title: { type: 'string', description: 'Optional short title for the plan.' },
     timeout_ms: { type: 'number', description: `Wait timeout in ms, capped at ${MAX_QUESTION_TIMEOUT_MS}.` },
   },
-  ['plan'],
 )
 
 export const exitPlanCompatTool: Tool = {
@@ -156,25 +154,22 @@ export function normalizeEnterPlanQuestion(input: unknown, callId: string): { re
   }
 }
 
-export function normalizeExitPlanQuestion(input: unknown, callId: string): { plan: string; question: InteractionQuestion } {
+/**
+ * 组装 exit_plan 的批准问卡。plan 正文由调用方(loop)从**磁盘计划文件**读出后传入
+ * (对齐 cc ExitPlanModeV2:工具不再吃 plan 参数、从盘读)。timeout 仍从工具入参取。
+ */
+export function normalizeExitPlanQuestion(plan: string, callId: string, input?: unknown): InteractionQuestion {
   const obj = asRecord(input)
-  const plan = stringValue(obj.plan) || stringValue(obj.content) || stringValue(obj.body)
-  if (!plan) throw new Error('exit_plan 需要 plan')
-  const title = stringValue(obj.title)
-  const heading = title ? `计划「${title}」已经准备好。` : '计划已经准备好。'
   return {
-    plan,
-    question: {
-      id: `exit_plan_${safeId(callId)}`,
-      question: `${heading}\n\n${plan}`,
-      options: [
-        { label: '批准并执行', description: '退出计划模式,继续按这个方案推进。' },
-        { label: '修改计划', description: '告诉我哪里需要调整。' },
-      ],
-      allowFreeform: true,
-      placeholder: '也可以直接写修改意见',
-      timeoutMs: timeoutMs(obj.timeout_ms ?? obj.timeoutMs),
-    },
+    id: `exit_plan_${safeId(callId)}`,
+    question: `计划已经准备好。\n\n${plan}`,
+    options: [
+      { label: '批准并执行', description: '退出计划模式,继续按这个方案推进。' },
+      { label: '修改计划', description: '告诉我哪里需要调整。' },
+    ],
+    allowFreeform: true,
+    placeholder: '也可以直接写修改意见',
+    timeoutMs: timeoutMs(obj.timeout_ms ?? obj.timeoutMs),
   }
 }
 

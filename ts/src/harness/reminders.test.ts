@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { ToolContext } from '../tools/Tool'
+import { getPlanFilePath } from './plans'
 import {
   collectReminders,
   drainSteering,
@@ -62,8 +66,27 @@ describe('collectReminders', () => {
   test('未到阈值 + 非 plan 档 → 空', () => {
     expect(collectReminders(baseCtx({ requestsSinceProgress: 1 }))).toEqual([])
   })
-  test('plan 档 → plan 提醒', () => {
+  test('plan 档(无工作区 root)→ 退回基础 plan 提醒', () => {
     const rs = collectReminders(baseCtx({ permissionMode: 'plan' }))
     expect(rs).toEqual([{ kind: 'plan', text: PLAN_MODE_REMINDER }])
+  })
+  test('plan 档(有工作区 root)→ plan 提醒带计划文件路径 + 工作流(唯一可编辑=计划文件、ExitPlanMode 收尾)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'plan-remind-'))
+    try {
+      const convId = 'reminder-plan'
+      const planFilePath = getPlanFilePath(root, convId)
+      const rs = collectReminders(baseCtx({
+        permissionMode: 'plan',
+        workspace: { root } as ToolContext['workspace'],
+        conversationId: convId,
+      }))
+      const plan = rs.find(r => r.kind === 'plan')
+      expect(plan?.text).toContain('计划模式')
+      expect(plan?.text).toContain(planFilePath) // 系统提醒里含具体计划文件路径
+      expect(plan?.text).toContain('ExitPlanMode') // 工作流:以 ExitPlanMode 收尾
+      expect(plan?.text).toContain('write_file') // 唯一可编辑=计划文件、用 write_file/edit_file 写
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

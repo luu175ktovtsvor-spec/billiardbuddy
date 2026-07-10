@@ -4,11 +4,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../workspace/workspace'
 import { buildGeneralRegistry } from '../tools/generalTools'
-import { readXlsxSheet, renderMinimalXlsx } from '../server/services/officeDocuments'
+import { readXlsxSheet, renderMinimalXlsx } from '../utils/officeDocuments'
 import { loadSkillsDir } from '../skills/skillLoader'
 import { buildSystemPrompt } from './systemPrompt'
 import { scriptedModel } from './fakeModel'
 import { runAgentLoop, MAX_OUTPUT_TOKENS_RECOVERY_LIMIT, OUTPUT_TOKEN_LIMIT_RECOVERY_PROMPT, TURN_INTERRUPTED_MSG } from './loop'
+import { getPlanFilePath, getPlan, clearAllPlanSlugs } from './plans'
 import type { AgentEvent } from '../types/events'
 import type { AssistantStep, Model } from '../types/model'
 import { MODEL_OUTPUT_TRUNCATED_NOTICE } from '../types/model'
@@ -35,6 +36,7 @@ let root: string
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'ws-'))
   resetPromptCacheBreakDetection()
+  clearAllPlanSlugs() // 计划文件 slug 是模块级缓存,清一下保证每个用例拿到与自己 root 绑定的新 slug
 })
 afterEach(() => {
   rmSync(root, { recursive: true, force: true })
@@ -939,8 +941,11 @@ test('maxTurns=undefined 下计划验证提醒最多一次:模型固执连发 fi
   // 批准计划后跑了工具,但模型固执地连发两次 final、都不调 VerifyPlanExecution。
   // 去掉 turn++/maxTurns 兜底后,若无"每段最多一次"闸,undefined maxTurns 会让提醒无限重发。
   const inbox: string[] = []
+  // 新契约:计划先落盘,ExitPlanMode 从盘读、不吃 plan 参数。
+  const convId = 'plan-verify-once'
+  writeFileSync(getPlanFilePath(root, convId), '1. 写 p.txt\n2. 校验')
   const model = scriptedModel([
-    { kind: 'tool_calls', calls: [{ id: 'plan1', name: 'ExitPlanMode', input: { plan: '1. 写 p.txt\n2. 校验', timeout_ms: 1000 } }] },
+    { kind: 'tool_calls', calls: [{ id: 'plan1', name: 'ExitPlanMode', input: { timeout_ms: 1000 } }] },
     { kind: 'tool_calls', calls: [{ id: 'w1', name: 'write_file', input: { path: 'p.txt', content: 'x' } }] },
     { kind: 'final', text: '想直接收尾(第一次)' },
     { kind: 'final', text: '还是想收尾(固执不验证)' },
@@ -948,7 +953,7 @@ test('maxTurns=undefined 下计划验证提醒最多一次:模型固执连发 fi
   const events: AgentEvent[] = []
   for await (const event of runAgentLoop({
     model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
-    systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'plan', steerInbox: inbox,
+    systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'plan', steerInbox: inbox, conversationId: convId,
     // 不传 maxTurns → undefined → 不设限;靠"每段最多一次"闸避免无限重发
   })) {
     events.push(event)
@@ -1918,16 +1923,17 @@ test('EnterPlanMode rejection keeps the existing permission mode', async () => {
   expect(readFileSync(join(root, 'direct.txt'), 'utf8')).toBe('ok')
 })
 
-test('ExitPlanMode approval exits plan mode for the current turn', async () => {
+test('ExitPlanMode approval exits plan mode for the current turn（模型在 plan 档写计划文件→ExitPlanMode 从盘读）', async () => {
   const inbox: string[] = []
+  // 计划模式下模型用 write_file 把计划写进白标计划文件(权限豁免放行),ExitPlanMode 不带 plan、从盘读。
+  const convId = 'exit-approval'
+  const planPath = getPlanFilePath(root, convId)
+  const planText = '1. 写入 approved.txt\n2. 校验文件内容'
   const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'planwrite', name: 'write_file', input: { path: planPath, content: planText } }] },
     {
       kind: 'tool_calls',
-      calls: [{
-        id: 'plan1',
-        name: 'ExitPlanMode',
-        input: { plan: '1. 写入 approved.txt\n2. 校验文件内容', timeout_ms: 1000 },
-      }],
+      calls: [{ id: 'plan1', name: 'ExitPlanMode', input: { timeout_ms: 1000 } }],
     },
     { kind: 'tool_calls', calls: [{ id: 'write1', name: 'write_file', input: { path: 'approved.txt', content: 'ok' } }] },
     {
@@ -1952,14 +1958,21 @@ test('ExitPlanMode approval exits plan mode for the current turn', async () => {
     userMessage: 'x',
     permissionMode: 'plan',
     steerInbox: inbox,
+    conversationId: convId,
   })) {
     events.push(event)
     if (event.type === 'ask_question') inbox.push('批准并执行')
   }
 
+  // 1) 计划模式下计划文件的 write_file 被放行、真落盘(其余写仍被 plan 档拦)
+  const planWrite = events.find(e => e.type === 'tool_result' && e.tool === 'write_file')
+  expect(planWrite && planWrite.type === 'tool_result' && planWrite.output).not.toContain('[计划模式]')
+  expect(getPlan(root, convId)).toBe(planText)
+  // 2) ExitPlanMode 的批准问卡里带的是从盘读回的计划正文
   expect(events.some(e => e.type === 'ask_question' && e.question.includes('approved.txt'))).toBe(true)
   const planResult = events.find(e => e.type === 'tool_result' && e.tool === 'ExitPlanMode')
   expect(planResult && planResult.type === 'tool_result' && planResult.output).toContain('<plan_approved>')
+  expect(planResult && planResult.type === 'tool_result' && planResult.output).toContain(planPath)
   const verifyResult = events.find(e => e.type === 'tool_result' && e.tool === 'VerifyPlanExecution')
   expect(verifyResult && verifyResult.type === 'tool_result' && verifyResult.output).toContain('status="pass"')
   expect(readFileSync(join(root, 'approved.txt'), 'utf8')).toBe('ok')
@@ -1967,13 +1980,15 @@ test('ExitPlanMode approval exits plan mode for the current turn', async () => {
 
 test('approved plan cannot finish after implementation until VerifyPlanExecution runs', async () => {
   const inbox: string[] = []
+  const convId = 'plan-needs-verify'
+  writeFileSync(getPlanFilePath(root, convId), '1. 写入 needs-verify.txt\n2. 校验文件内容')
   const model = scriptedModel([
     {
       kind: 'tool_calls',
       calls: [{
         id: 'plan1',
         name: 'ExitPlanMode',
-        input: { plan: '1. 写入 needs-verify.txt\n2. 校验文件内容', timeout_ms: 1000 },
+        input: { timeout_ms: 1000 },
       }],
     },
     { kind: 'tool_calls', calls: [{ id: 'write1', name: 'write_file', input: { path: 'needs-verify.txt', content: 'ok' } }] },
@@ -2000,6 +2015,7 @@ test('approved plan cannot finish after implementation until VerifyPlanExecution
     userMessage: 'x',
     permissionMode: 'plan',
     steerInbox: inbox,
+    conversationId: convId,
     maxTurns: 8,
   })) {
     events.push(event)
@@ -2012,13 +2028,15 @@ test('approved plan cannot finish after implementation until VerifyPlanExecution
 
 test('ExitPlanMode revision keeps plan mode and blocks write tools', async () => {
   const inbox: string[] = []
+  const convId = 'plan-revision'
+  writeFileSync(getPlanFilePath(root, convId), '1. 写入 blocked.txt\n2. 校验文件内容')
   const model = scriptedModel([
     {
       kind: 'tool_calls',
       calls: [{
         id: 'plan1',
         name: 'ExitPlanMode',
-        input: { plan: '1. 写入 blocked.txt\n2. 校验文件内容', timeout_ms: 1000 },
+        input: { timeout_ms: 1000 },
       }],
     },
     { kind: 'tool_calls', calls: [{ id: 'write1', name: 'write_file', input: { path: 'blocked.txt', content: 'nope' } }] },
@@ -2033,6 +2051,7 @@ test('ExitPlanMode revision keeps plan mode and blocks write tools', async () =>
     userMessage: 'x',
     permissionMode: 'plan',
     steerInbox: inbox,
+    conversationId: convId,
   })) {
     events.push(event)
     if (event.type === 'ask_question') inbox.push('修改计划:先说明风险,不要动文件')
@@ -2040,9 +2059,33 @@ test('ExitPlanMode revision keeps plan mode and blocks write tools', async () =>
 
   const planResult = events.find(e => e.type === 'tool_result' && e.tool === 'ExitPlanMode')
   expect(planResult && planResult.type === 'tool_result' && planResult.output).toContain('<plan_needs_revision>')
-  const writeResult = events.find(e => e.type === 'tool_result' && e.tool === 'write_file')
+  // 修改计划后仍是 plan 档:写非计划文件(blocked.txt)被拦
+  const writeResult = events.find(e => e.type === 'tool_result' && e.tool === 'write_file' && e.output.includes('[计划模式]'))
   expect(writeResult && writeResult.type === 'tool_result' && writeResult.output).toContain('[计划模式]')
   expect(existsSync(join(root, 'blocked.txt'))).toBe(false)
+})
+
+test('ExitPlanMode 计划文件还没写 → 引导先写计划文件、不弹批准(反逻辑:不点了没反应)', async () => {
+  const inbox: string[] = []
+  const convId = 'plan-not-written'
+  const planPath = getPlanFilePath(root, convId)
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'plan1', name: 'ExitPlanMode', input: { timeout_ms: 1000 } }] },
+    { kind: 'final', text: '好的,我先把计划写进文件' },
+  ])
+  const events: AgentEvent[] = []
+  for await (const event of runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'plan', steerInbox: inbox, conversationId: convId,
+  })) {
+    events.push(event)
+    if (event.type === 'ask_question') inbox.push('批准并执行')
+  }
+  // 没写计划文件 → 不弹批准问卡,回一条引导(带计划文件路径),让模型先写
+  expect(events.some(e => e.type === 'ask_question')).toBe(false)
+  const exitResult = events.find(e => e.type === 'tool_result' && e.tool === 'ExitPlanMode')
+  expect(exitResult && exitResult.type === 'tool_result' && exitResult.output).toContain(planPath)
+  expect(getPlan(root, convId)).toBeNull()
 })
 
 test('连调 PROGRESS_REMIND_EVERY 次工具没更新进度 → 注入进度提醒', async () => {

@@ -3,6 +3,13 @@ import { loadMemoryInjection } from './claudemd'
 import { computeEnvInfo, getGitStatus, getIsGit } from './env'
 import { ACTIONS_SECTION, buildAntiReveal, CODING_WORKFLOW_SECTION, DENIAL_RULE, TOOL_DISCOVERY_SECTION, VERIFICATION_SECTION } from './prompts'
 import { buildSkillCommandListingSection, type DiscoverySources } from './skillListing'
+import { buildMemorySystemPrompt } from '../memory/memoryPrompt'
+
+/** auto-memory 是否启用(对齐 cc loadMemoryPrompt:禁用时不注入记忆系统提示)。与 claudemd 的开关口径一致。 */
+function autoMemoryEnabled(): boolean {
+  const truthy = (v: string | undefined): boolean => v === '1' || v === 'true' || v === 'yes'
+  return !truthy(process.env.BILLIARDBUDDY_DISABLE_AUTO_MEMORY) && !truthy(process.env.BILLIARDBUDDY_DISABLE_MEMORY)
+}
 
 const BASE_IDENTITY = '你是一个装在用户电脑上的本机 AI 助手,能读写文件、跑命令,实打实把活干完。'
 
@@ -23,6 +30,9 @@ export async function buildSystemPrompt(workspace: Workspace, discovery?: Discov
   // 技能/命令发现清单(对齐 cc SkillTool skill listing):汇总 builtin 命令 + 技能 + 已启用领域包命令,
   // 按约 1% 上下文预算截断后注入,让模型「看清单 → 自动调」,并把 /台球 这类斜杠映射到对应技能/命令。
   const skillListing = discovery ? buildSkillCommandListingSection(discovery) : ''
+  // 记忆系统提示(四类分类法/不该存/怎么存/何时访问/据记忆给建议前先核实/搜索过往上下文,对齐 cc buildMemoryLines);
+  // 让模型会主动读回自己写的记忆、并在回合末评估是否有耐久事实要 save_memory。auto-memory 禁用时不注入(对齐 cc)。
+  const memoryPrompt = autoMemoryEnabled() ? buildMemorySystemPrompt(workspace.root) : ''
   return [
     buildAntiReveal(),
     BASE_IDENTITY,
@@ -32,6 +42,7 @@ export async function buildSystemPrompt(workspace: Workspace, discovery?: Discov
     TOOL_DISCOVERY_SECTION,
     DENIAL_RULE,
     ...(skillListing ? [skillListing] : []),
+    ...(memoryPrompt ? [memoryPrompt] : []),
     ...(memoryInjection ? [memoryInjection] : []),
     env,
     ...(gitStatus ? [gitStatus] : []),

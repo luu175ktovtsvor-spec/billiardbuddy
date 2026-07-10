@@ -3,7 +3,7 @@ import { readdir, readFile, rm, stat, writeFile, mkdir } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve } from 'node:path'
 
 import type { Tool } from '../../tools/Tool'
-import { readOfficeDocumentBlocks, readXlsxSheet } from './officeDocuments'
+import { readOfficeDocumentBlocks, readXlsxSheet } from '../../utils/officeDocuments'
 import type { DesktopDataStore } from './desktopDataStore'
 
 type JsonObject = Record<string, unknown>
