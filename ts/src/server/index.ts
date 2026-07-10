@@ -21,6 +21,7 @@ import { ProviderHealthStore, type ProviderHealthEntry } from './services/provid
 import { LegacyAgentStore, type LegacyArtifact } from './services/legacyAgentStore'
 import { DesktopDataStore } from './services/desktopDataStore'
 import { ScheduledTaskRunner } from './services/scheduledTaskRunner'
+import { createTelemetryService } from './services/telemetry'
 import { EMBEDDED_FRONTEND } from './embeddedFrontend'
 import { UserSettingsStore } from './services/userSettings'
 import { StoreDocsService, createStoreDocsTool } from './services/storeDocsService'
@@ -3958,6 +3959,35 @@ export function startServer(opts: StartServerOptions = {}) {
         }
       }
 
+      // 文件 diff(右面板改动文件红绿 diff):HEAD 版 vs 工作区版,返回 old/new 供前端 DiffViewer。
+      if (url.pathname === '/api/v1/agent/fs/diff' && req.method === 'GET') {
+        const filePath = url.searchParams.get('path')
+        if (!filePath) return Response.json({ error: 'path required' }, { status: 400 })
+        try {
+          const resolved = resolve(filePath)
+          const newString = await readFile(resolved, 'utf8').catch(() => '')
+          const { execFile } = await import('node:child_process')
+          const { promisify } = await import('node:util')
+          const execFileP = promisify(execFile)
+          let repoRoot = ''
+          try {
+            const { stdout } = await execFileP('git', ['rev-parse', '--show-toplevel'], { cwd: dirname(resolved), timeout: 2000 })
+            repoRoot = stdout.trim()
+          } catch { /* 非 git 仓库 */ }
+          let oldString = ''
+          if (repoRoot) {
+            const rel = relative(repoRoot, resolved)
+            try {
+              const { stdout } = await execFileP('git', ['--no-optional-locks', 'show', `HEAD:${rel}`], { cwd: repoRoot, timeout: 3000, maxBuffer: 1024 * 1024 })
+              oldString = stdout
+            } catch { oldString = '' } // 未跟踪/新文件 → 视为全新增
+          }
+          return Response.json({ path: resolved, oldString, newString, changed: oldString !== newString })
+        } catch (err) {
+          return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 404 })
+        }
+      }
+
       // 配置基座:App 级用户设置(默认权限档/主题),供设置抽屉读写。
       if (url.pathname === '/api/settings') {
         if (req.method === 'GET') return Response.json({ settings: await userSettings.get() })
@@ -4776,6 +4806,12 @@ export function startServer(opts: StartServerOptions = {}) {
   // 定时任务调度:测试环境默认不启(避免无关测试里后台起真 agent 会话);QF_SCHEDULER=0 显式关。
   const scheduledTasksAutoStart = opts.scheduledTasksAutoStart ?? (process.env.NODE_ENV !== 'test' && (opts.env ?? process.env).QF_SCHEDULER !== '0')
   if (scheduledTasksAutoStart) scheduledTasks.start()
+  // 诊断遥测(task#16):开机上传心跳+上次崩溃日志到自有 dataeye(静默、脱敏、幂等;env 缺配置=禁用)。
+  // fire-and-forget:任何失败都不影响启动;测试环境同 scheduler 口径不自动跑(测试显式调用)。
+  if (process.env.NODE_ENV !== 'test') {
+    const telemetry = createTelemetryService({ stateRoot, env: opts.env ?? process.env })
+    if (telemetry.enabled) void telemetry.uploadOnBoot((opts.env ?? process.env).QF_APP_VERSION ?? '0.0.0-dev')
+  }
   const stop = app.stop.bind(app)
   app.stop = (closeActiveConnections?: boolean) => {
     unsubscribeAssetEvents()
