@@ -54,7 +54,7 @@ function testTool(name: string, execute: Tool['execute'], isReadOnly = true): To
   return {
     name,
     description: `${name} test tool`,
-    inputSchema: { type: 'object', properties: {} },
+    inputSchema: { type: 'object' },
     isReadOnly,
     execute,
   }
