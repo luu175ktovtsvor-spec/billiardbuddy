@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { textBlock, toolResultBlock, toolUseBlock, userText, type Message } from '../types/message'
-import { AUTOCOMPACT_COOLDOWN_MS, COMPACTION_SYSTEM_PROMPT, MAX_COMPACT_SUMMARY_RETRIES, compactPipeline, estimateMessagesChars, extractCompactionSummary, looksLikeContextOverflow, microcompactReadOnlyToolResults, splitForAutocompact } from './compaction'
+import { AUTOCOMPACT_COOLDOWN_MS, COMPACTION_SYSTEM_PROMPT, MAX_COMPACT_SUMMARY_RETRIES, compactPipeline, estimateMessagesChars, extractCompactionSummary, getAutoCompactTokenThreshold, getEffectiveContextWindowTokens, looksLikeContextOverflow, microcompactReadOnlyToolResults, splitForAutocompact } from './compaction'
 import type { Model } from '../types/model'
 
 function msgWithTool(id: string, name: string, result: string): Message[] {
@@ -89,7 +89,7 @@ describe('compactPipeline', () => {
     expect(estimateMessagesChars(out.messages)).toBeLessThan(estimateMessagesChars(messages))
   })
 
-  test('token 触发:真实 input tokens 达窗口比例即压缩(字符估算低、未 force,对齐 cc 真实用量优先)', async () => {
+  test('token 触发:真实 input tokens 达 cc 阈值(200k 窗口 → 167k)即压缩(字符估算低、未 force)', async () => {
     const messages: Message[] = [
       userText('a'), userText('b'), userText('c'), userText('d'), userText('e'), userText('f'), userText('recent'),
     ]
@@ -97,24 +97,48 @@ describe('compactPipeline', () => {
     const model: Model = { async step() { called++; return { kind: 'final', text: '摘要' } } }
     const out = await compactPipeline({
       messages, model, system: 'SYS',
-      contextWindowTokens: 1000, lastInputTokens: 800, // 800 >= 0.7*1000 → token 路径触发
+      // cc 公式:有效窗口 = 200k − min(maxOutput未知→20k, 20k) = 180k;阈值 = 180k − 13k = 167k。167k 恰达阈值 → 触发。
+      contextWindowTokens: 200_000, lastInputTokens: 167_000,
       readOnlyToolNames: new Set(), keepRecentMessages: 1, minOldMessages: 2, // 不给 contextWindowChars、不 force
     })
     expect(called).toBe(1)
     expect(out.didCompact).toBe(true)
   })
 
-  test('token 未达比例 + 字符低 + 未 force → 不压缩', async () => {
+  test('token 差 1(166,999 < 167k 阈值)+ 字符低 + 未 force → 不压缩(别过早触发)', async () => {
     const messages: Message[] = [userText('a'), userText('b'), userText('c'), userText('recent')]
     let called = 0
     const model: Model = { async step() { called++; return { kind: 'final', text: '摘要' } } }
     const out = await compactPipeline({
       messages, model, system: 'SYS',
-      contextWindowTokens: 1000, lastInputTokens: 100, // 100 < 700 → 不触发
+      contextWindowTokens: 200_000, lastInputTokens: 166_999, // 差 1 未达 cc 阈值 → 不触发
       readOnlyToolNames: new Set(), keepRecentMessages: 1, minOldMessages: 2,
     })
     expect(called).toBe(0)
     expect(out.didCompact).toBe(false)
+  })
+
+  test('env CLAUDE_CODE_AUTO_COMPACT_WINDOW 覆盖生效:覆盖到小窗口后低 token 也触发压缩', async () => {
+    const saved = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
+    process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '50000' // 覆盖后有效 = 50k − 20k = 30k;阈值 = 30k − 13k = 17k
+    try {
+      const messages: Message[] = [
+        userText('a'), userText('b'), userText('c'), userText('d'), userText('e'), userText('f'), userText('recent'),
+      ]
+      let called = 0
+      const model: Model = { async step() { called++; return { kind: 'final', text: '摘要' } } }
+      const out = await compactPipeline({
+        messages, model, system: 'SYS',
+        // 传入 200k(默认阈值 167k 不会触发),但 env 覆盖窗口为 50k → 阈值 17k → 17k 恰达 → 触发。
+        contextWindowTokens: 200_000, lastInputTokens: 17_000,
+        readOnlyToolNames: new Set(), keepRecentMessages: 1, minOldMessages: 2,
+      })
+      expect(called).toBe(1)
+      expect(out.didCompact).toBe(true)
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
+      else process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = saved
+    }
   })
 
   test('使用九段结构化 prompt,且只保留 summary 正文', async () => {
@@ -345,6 +369,82 @@ describe('compactPipeline', () => {
     expect(out.didCompact).toBe(false)
     expect(out.messages).toBe(messages)
     expect(out.compactionFailures).toBe(1)
+  })
+})
+
+describe('getAutoCompactTokenThreshold(cc 数值锁定 + env 覆盖)', () => {
+  const ENV_WINDOW = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW'
+  const ENV_PCT = 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'
+  function withEnv(vars: Record<string, string | undefined>, fn: () => void) {
+    const saved: Record<string, string | undefined> = {}
+    for (const k of Object.keys(vars)) {
+      saved[k] = process.env[k]
+      if (vars[k] === undefined) delete process.env[k]
+      else process.env[k] = vars[k]!
+    }
+    try {
+      fn()
+    } finally {
+      for (const k of Object.keys(saved)) {
+        if (saved[k] === undefined) delete process.env[k]
+        else process.env[k] = saved[k]!
+      }
+    }
+  }
+
+  test('200k 窗口(输出未知→预留 20k)→ 有效 180k → 阈值 167k', () => {
+    withEnv({ [ENV_WINDOW]: undefined, [ENV_PCT]: undefined }, () => {
+      expect(getEffectiveContextWindowTokens(200_000)).toBe(180_000)
+      expect(getAutoCompactTokenThreshold(200_000)).toBe(167_000)
+    })
+  })
+
+  test('小 maxOutput(8k)→ 预留 min(8k,20k)=8k → 有效 192k → 阈值 179k', () => {
+    withEnv({ [ENV_WINDOW]: undefined, [ENV_PCT]: undefined }, () => {
+      expect(getEffectiveContextWindowTokens(200_000, 8_000)).toBe(192_000)
+      expect(getAutoCompactTokenThreshold(200_000, 8_000)).toBe(179_000)
+    })
+  })
+
+  test('1M 窗口 → 阈值 967k(旧固定 0.7 会在 700k 早触发 267k,已掰回 cc)', () => {
+    withEnv({ [ENV_WINDOW]: undefined, [ENV_PCT]: undefined }, () => {
+      expect(getAutoCompactTokenThreshold(1_000_000)).toBe(967_000)
+    })
+  })
+
+  test('CLAUDE_CODE_AUTO_COMPACT_WINDOW 覆盖窗口(50k)→ 阈值 17k,无视传入 200k', () => {
+    withEnv({ [ENV_WINDOW]: '50000', [ENV_PCT]: undefined }, () => {
+      expect(getEffectiveContextWindowTokens(200_000)).toBe(30_000)
+      expect(getAutoCompactTokenThreshold(200_000)).toBe(17_000)
+    })
+  })
+
+  test('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 → min(floor(180k*0.5)=90k, 167k)=90k(只更早)', () => {
+    withEnv({ [ENV_WINDOW]: undefined, [ENV_PCT]: '50' }, () => {
+      expect(getAutoCompactTokenThreshold(200_000)).toBe(90_000)
+    })
+  })
+
+  test('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=100 被默认阈值封顶(min → 167k,不会更晚)', () => {
+    withEnv({ [ENV_WINDOW]: undefined, [ENV_PCT]: '100' }, () => {
+      expect(getAutoCompactTokenThreshold(200_000)).toBe(167_000)
+    })
+  })
+
+  test('非法 PCT_OVERRIDE(0/负/超100/NaN)忽略,回退默认阈值 167k', () => {
+    for (const bad of ['0', '-5', '150', 'abc']) {
+      withEnv({ [ENV_WINDOW]: undefined, [ENV_PCT]: bad }, () => {
+        expect(getAutoCompactTokenThreshold(200_000)).toBe(167_000)
+      })
+    }
+  })
+
+  test('非法 AUTO_COMPACT_WINDOW(0/负/NaN)忽略,回退传入窗口', () => {
+    for (const bad of ['0', '-1', 'xyz']) {
+      withEnv({ [ENV_WINDOW]: bad, [ENV_PCT]: undefined }, () => {
+        expect(getAutoCompactTokenThreshold(200_000)).toBe(167_000)
+      })
+    }
   })
 })
 

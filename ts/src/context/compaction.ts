@@ -2,7 +2,16 @@ import type { AssistantStep, Model } from '../types/model'
 import { textBlock, type Message, type ToolResultBlock, type ToolUseBlock } from '../types/message'
 
 export const CONTEXT_OVERFLOW_RESERVE_CHARS = 48_000
+/** 首轮还没真实 token 用量时的字符估算兜底比例(cc 没有字符路径,这是我们的降级估算)。 */
 export const AUTOCOMPACT_RATIO = 0.7
+/**
+ * token 级自动压缩触发阈值 = cc 公式(对齐 cc-haha src/services/compact/autoCompact.ts:30/62/72-91):
+ * 有效窗口 = min(窗口, CLAUDE_CODE_AUTO_COMPACT_WINDOW) − min(模型最大输出, 20k);
+ * 触发阈值 = 有效窗口 − 13k;按上一轮响应回报的真实 input token 判(比字符估算准)。
+ * 例:200k 窗口(输出≥20k)→ 有效 180k → 阈值 167k。旧实现固定 0.7 比例已替换。
+ */
+export const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
+export const AUTOCOMPACT_BUFFER_TOKENS = 13_000
 export const KEEP_RECENT_MESSAGES = 12
 export const MIN_AUTOCOMPACT_OLD_MESSAGES = 6
 export const MAX_COMPACTION_FAILURES = 3
@@ -49,6 +58,8 @@ export interface CompactPipelineInput extends SplitOptions, MicrocompactOptions 
   contextWindowChars?: number
   /** 模型窗口 token 数;配合 lastInputTokens 做 token 级自动压缩触发(cc:真实用量优先于字符估算)。 */
   contextWindowTokens?: number
+  /** 模型最大输出 token 数(可选);摘要预留 = min(它, 20k),未提供时按 20k 预留。对齐 cc getMaxOutputTokensForModel。 */
+  maxOutputTokens?: number
   /** 上一轮模型响应回报的真实 prompt input tokens(含 cache 命中/创建),用于精准触发压缩。 */
   lastInputTokens?: number
   readOnlyToolNames: ReadonlySet<string>
@@ -183,6 +194,40 @@ function thresholdFor(windowChars: number): number {
   return Math.max(windowChars - CONTEXT_OVERFLOW_RESERVE_CHARS, Math.floor(windowChars * AUTOCOMPACT_RATIO))
 }
 
+/**
+ * 有效上下文窗口(token)= 窗口 − min(模型最大输出, 20k)。对齐 cc getEffectiveContextWindowSize
+ * (autoCompact.ts:33-49)。CLAUDE_CODE_AUTO_COMPACT_WINDOW 为正整数时整体替换窗口(测试/覆盖用)。
+ */
+export function getEffectiveContextWindowTokens(contextWindowTokens: number, maxOutputTokens?: number): number {
+  const reservedTokensForSummary = Math.min(maxOutputTokens ?? MAX_OUTPUT_TOKENS_FOR_SUMMARY, MAX_OUTPUT_TOKENS_FOR_SUMMARY)
+  let contextWindow = contextWindowTokens
+  const override = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
+  if (override) {
+    const parsed = parseInt(override, 10)
+    if (!isNaN(parsed) && parsed > 0) contextWindow = parsed
+  }
+  return contextWindow - reservedTokensForSummary
+}
+
+/**
+ * 自动压缩触发阈值(token)= 有效窗口 − 13k。对齐 cc getAutoCompactThreshold(autoCompact.ts:72-91)。
+ * CLAUDE_AUTOCOMPACT_PCT_OVERRIDE(0<pct≤100)存在时,阈值取 min(floor(有效窗口*pct/100), 默认阈值)
+ * —— 只会让压缩更早、绝不更晚。
+ */
+export function getAutoCompactTokenThreshold(contextWindowTokens: number, maxOutputTokens?: number): number {
+  const effectiveContextWindow = getEffectiveContextWindowTokens(contextWindowTokens, maxOutputTokens)
+  const autocompactThreshold = effectiveContextWindow - AUTOCOMPACT_BUFFER_TOKENS
+  const envPercent = process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
+  if (envPercent) {
+    const parsed = parseFloat(envPercent)
+    if (!isNaN(parsed) && parsed > 0 && parsed <= 100) {
+      const percentageThreshold = Math.floor(effectiveContextWindow * (parsed / 100))
+      return Math.min(percentageThreshold, autocompactThreshold)
+    }
+  }
+  return autocompactThreshold
+}
+
 function shouldAutocompact(input: CompactPipelineInput, failures: number): boolean {
   if (input.force) return true
   const cooldownMs = input.cooldownMs ?? AUTOCOMPACT_COOLDOWN_MS
@@ -191,8 +236,14 @@ function shouldAutocompact(input: CompactPipelineInput, failures: number): boole
   if (input.lastCompactedMessageCount && input.messages.length <= input.lastCompactedMessageCount) return false
   if (failures >= MAX_COMPACTION_FAILURES) return false
   // cc:有上一轮响应回报的真实 input tokens 就按 token 判(真实用量比字符估算准),与字符估算取"谁先超";
-  // 首轮还没真实用量时退回字符估算。
-  if (input.contextWindowTokens && input.lastInputTokens && input.lastInputTokens >= Math.floor(input.contextWindowTokens * AUTOCOMPACT_RATIO)) return true
+  // 首轮还没真实用量时退回字符估算。阈值 = 有效窗口 − 13k(cc getAutoCompactThreshold),而非旧的固定 0.7 比例。
+  // 窗口来源:CLAUDE_CODE_AUTO_COMPACT_WINDOW 覆盖 > input.contextWindowTokens;两者都缺时不走 token 路径(避免负阈值误触发)。
+  const envAutoCompactWindow = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
+  const parsedEnvWindow = envAutoCompactWindow ? parseInt(envAutoCompactWindow, 10) : NaN
+  const hasWindow = (!isNaN(parsedEnvWindow) && parsedEnvWindow > 0) || (!!input.contextWindowTokens && input.contextWindowTokens > 0)
+  if (input.lastInputTokens && input.lastInputTokens > 0 && hasWindow) {
+    if (input.lastInputTokens >= getAutoCompactTokenThreshold(input.contextWindowTokens ?? 0, input.maxOutputTokens)) return true
+  }
   const contextWindowChars = input.contextWindowChars
   if (!contextWindowChars) return false
   return estimateMessagesChars(input.messages) >= thresholdFor(contextWindowChars)
