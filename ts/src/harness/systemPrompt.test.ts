@@ -149,3 +149,20 @@ test('目录级项目指令按目标路径从根到近合并(projectInstructions
   expect(out).toContain('Package rule')
   expect(out).toContain('App rule')
 })
+
+test('安全红线无条件注入:不挂任何领域包也在系统提示里(铁律#1)', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { Workspace } = await import('../workspace/workspace')
+  const { buildSystemPrompt } = await import('./systemPrompt')
+  const root = mkdtempSync(join(tmpdir(), 'sysprompt-redline-'))
+  try {
+    const prompt = await buildSystemPrompt(new Workspace(root))
+    expect(prompt).toContain('# 安全红线')
+    expect(prompt).toContain('未成年')
+    expect(prompt).toContain('专业律师')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

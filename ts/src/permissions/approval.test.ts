@@ -43,3 +43,22 @@ describe('approval HMAC', () => {
     expect(verifyApproval('publish', {}, '中'.repeat(64), SECRET)).toBe(false)
   })
 })
+
+test('未设 SECRET_KEY 也有真密钥:签名非空可往返、伪造/跨参数 token 拒绝(不再空串裸奔)', () => {
+  const saved = process.env.SECRET_KEY
+  try {
+    delete process.env.SECRET_KEY
+    const token = signApproval('run_command', { command: 'ls' })
+    expect(token.length).toBe(64) // hmac-sha256 hex
+    expect(verifyApproval('run_command', { command: 'ls' }, token)).toBe(true)
+    // 换参数/伪 token 必拒
+    expect(verifyApproval('run_command', { command: 'rm -rf x' }, token)).toBe(false)
+    expect(verifyApproval('run_command', { command: 'ls' }, 'f'.repeat(64))).toBe(false)
+    // 关键:随机密钥 ≠ 空串密钥——拿"空串密钥算出的签名"来冒充必须失败(老洞的攻击面)
+    const forgedWithEmptySecret = signApproval('run_command', { command: 'ls' }, '')
+    expect(verifyApproval('run_command', { command: 'ls' }, forgedWithEmptySecret)).toBe(false)
+  } finally {
+    if (saved === undefined) delete process.env.SECRET_KEY
+    else process.env.SECRET_KEY = saved
+  }
+})

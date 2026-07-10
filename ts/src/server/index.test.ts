@@ -4785,6 +4785,7 @@ test('legacy studio generate uses TS image gateway when image env is configured'
       OPENAI_BASE_URL: 'http://image-gateway.example/gw/v1',
       OPENAI_API_KEY: 'app-token',
       IMAGE_MODEL_NAME: 'gpt-image-2',
+      QF_GPT_IMAGE_ASYNC: '0', // 本用例锁同步网关路径(默认已翻异步)
     },
     fetchImpl: async (url) => {
       calls.push(String(url))
@@ -5068,6 +5069,7 @@ test('legacy studio edit uses TS image edits gateway with generated source image
       OPENAI_BASE_URL: 'http://image-gateway.example/gw/v1',
       OPENAI_API_KEY: 'app-token',
       IMAGE_MODEL_NAME: 'gpt-image-2',
+      QF_GPT_IMAGE_ASYNC: '0', // 本用例锁同步网关路径(默认已翻异步)
     },
     fetchImpl: async (url, init) => {
       if (String(url).endsWith('/images/edits')) {
