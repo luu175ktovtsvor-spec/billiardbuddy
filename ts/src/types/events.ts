@@ -59,4 +59,4 @@ export type AgentEvent =
   | { type: 'steering'; content: string } // 老板插话纠偏,前端渲成用户气泡
   | { type: 'todo_update'; content: string } // 任务清单变化,前端渲成清单
   | { type: 'context_note'; text: string } // 灰色系统旁白(W4c 打转提醒用;W4b 只加类型)
-  | { type: 'max_turns_reached'; turnCount: number; maxTurns: number } // 到最大轮次被强制收尾(区别于自然收敛),供前端/日志辨识与遥测
+  | { type: 'max_turns_reached'; turnCount: number; maxTurns: number } // 命中最大轮次(loop 只 yield 本事件后 return,不再调模型;最终答复由调用方兜底合成),区别于自然收敛,供前端/日志辨识与遥测

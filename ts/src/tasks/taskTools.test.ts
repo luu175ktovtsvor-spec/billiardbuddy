@@ -930,8 +930,10 @@ test('start_background_agent_task honors agent frontmatter defaults for prompt, 
     })
     expect(model.received[0]!.tools.map(tool => tool.name)).toEqual(['inspect_ctx'])
     expect(seenPermission).toBe('plan')
-    expect(model.received[1]!.tools).toEqual([])
-    expect(done.result).toBe('max turns fallback should win')
+    // maxTurns=1:第 1 个工具步后即命中上限,loop 只 yield max_turns_reached 后 return(不再强制多打一步无工具收尾)。
+    // 只有 1 次 model.step,脚本里的 final 从不被消费;后台子代理拿不到 final,由调用方(taskTools)兜底合成最终答复。
+    expect(model.received.length).toBe(1)
+    expect(done.result).toBe('已达最大轮次,未能收敛。')
     expect(done.params).toMatchObject({
       agent: 'researcher',
       permission_mode: 'plan',
