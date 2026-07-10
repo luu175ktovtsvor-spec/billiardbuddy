@@ -1,6 +1,6 @@
 # TS · cc-haha v0.4.5 内核迁移矩阵
 
-> 📌 状态:✅现行 · 2026-07-07 新增 · 最后核对 2026-07-09(本轮 cc-haha 全方位对齐战役 P0 进度回写见 §3.405)· 参考源 `~/Desktop/cc-haha-ref` = `NanmiCoder/cc-haha@a94e1a1` (`origin/main`, release notes `v0.4.5`)
+> 📌 状态:✅现行 · 2026-07-07 新增 · 最后核对 2026-07-10(本轮 cc-haha 全方位对齐战役 P0 进度回写见 §3.405;**2026-07-10 owner 拍板纯 cc**:门店记忆改走 cc AutoMem project 型记忆常驻注入,自造 `storeMemoryContext`/`desktopDataStore` memories 检索层作废,见 §3.106)· 参考源 `~/Desktop/cc-haha-ref` = `NanmiCoder/cc-haha@a94e1a1` (`origin/main`, release notes `v0.4.5`)
 
 ## 0. 迁移口径
 
@@ -307,7 +307,7 @@
 
 - 本地分支已收敛:删除 `ts-harness-rewrite` 分支指针;后续不再把 `cc-haha-direct-port` 当必需施工分支,当前按 owner 最新要求直接在 `main` 承接 TS/coding-agent 内核迁移;其它 image/video/batch 分支经审计均已在 `main`。
 - 新增 `ts/src/tools/searchTools.ts`:`glob_files` 和 `grep_files` 进入默认工具池,补齐 coding-agent 找文件/搜代码的基础能力;默认跳过 `node_modules/.git/.next/dist/build/.agent-state` 等重目录,并跳过 `.env`/key/token/secret 类敏感文件。
-- 新增 `ts/src/server/services/desktopDataStore.ts`:用本地 JSON 原子持久化承接店铺资料、BYOK 展示配置/配置档、店脑记忆、定时任务、店铺资料库状态、通知、dashboard 推荐等 Python 壳层数据。
+- 新增 `ts/src/server/services/desktopDataStore.ts`:用本地 JSON 原子持久化承接店铺资料、BYOK 展示配置/配置档、定时任务、店铺资料库状态、通知、dashboard 推荐等 Python 壳层数据。(⚠️ 门店记忆已改走 cc AutoMem project 型记忆常驻注入,2026-07-10 owner 拍板纯 cc;`desktopDataStore` 不再承接店脑记忆,storeMemoryContext/desktopDataStore memories 检索层作废,见 §3.106。)
 - TS server 新增 Python 删除前的产品壳兜底端点:`/api/v1/auth/me`、`/api/v1/stores*`、`/api/v1/voice/transcribe`、`/api/v1/canvas/*`、`/api/v1/logs/client`、`/api/v1/store-memory*`、`/api/v1/scheduled-tasks*`、`/api/v1/store-docs*`、`/api/v1/dashboard/*`、`/api/v1/notifications`、`/api/v1/quota/cost`、`/api/v1/backup/export`。
 - 壳层兜底目标是“不 404、不拖垮桌面主流程”:基础读写/JSON 状态已可用;Office 直接写回、语音转写、真实媒体渲染仍需后续真替代或保留 native sidecar,不能假装已完成。
 - 验证:`cd ts && bun test` = 324 pass;`cd ts && bun run typecheck` clean;`cd web && pnpm build` 通过(仅既有 lint warnings)。
@@ -902,21 +902,9 @@
 - 口径:这补齐“权限应答改参再放行”的交互能力,CC-Haha 相关机制可直接复制/抄/移植/改写;它不是免审任意执行,仍要求原审批卡 token + 修改后参数过权限/危险校验。
 - 验证:`cd ts && bun test src/harness/loop.test.ts` = 42 pass;`cd ts && bun run typecheck` clean;`cd web && pnpm exec tsc --noEmit` clean。
 
-## 3.106 2026-07-07 店脑记忆相关性注入 + 老化提醒追加落地
+## 3.106 2026-07-07 店脑记忆相关性注入 + 老化提醒 + 路由级注入回归(❌已作废,2026-07-10 纯 cc 收敛)
 
-- 新增 `storeMemoryContext`:每轮 `/agent/run` 会读取本地门店记忆,按用户问题做轻量关键词/短语相关性选择,最多注入 5 条 `<store_memory_context>` 到 system prompt;不再只是面板里可见、模型实际用不到。
-- 记忆选择必须有 query 关键词/短语命中,人工/新鲜度只做加分,避免把无关记忆塞进上下文;`pending` 候选不注入,工作区 scoped 记忆只在当前 `workingDir` 匹配时注入。
-- `DesktopDataStore` 新增记忆 `created_at/updated_at/working_dir`;新增、编辑、确认都会更新时间,旧数据缺时间时以 `age_days="unknown"` 处理。
-- 超过 30 天的记忆带 `age_warning`,提示价格、排班、活动、库存、合同等易变事实需要先核对现状;“记忆老化警告”相关机制可直接复制/抄/移植/改写。
-- 口径:这不是向量库替代品,而是无依赖的本地店脑选择器;知识库文件仍走 `search_store_docs` 来源卡片,门店长期偏好/规则走 memory context。
-- 验证:`cd ts && bun test src/memory/storeMemoryContext.test.ts src/server/services/storeDocsService.test.ts` = 7 pass;`cd ts && bun run typecheck` clean。
-
-## 3.107 2026-07-07 店脑记忆路由级注入回归追加落地
-
-- `src/server/index.test.ts` 新增 `/agent/run` 路由级测试:先通过 `/api/v1/store-memory` 写入当前工作区记忆、pending 候选和其它工作区记忆,再拦截 OpenAI-compatible 请求体里的 `system` 消息。
-- 测试明确断言 `<store_memory_context>` 真实进入模型 system prompt,且 pending 候选和其它 `working_dir` 的同关键词记忆不会串入当前轮。
-- 价值:补上 3.106 纯函数之外的集成闸,防止后续 provider、system prompt、桌面数据层重构时出现“面板看得到,模型实际用不到”的隐性退化。
-- 验证:`cd ts && bun test src/server/index.test.ts -t "store memories"` = 1 pass。
+- 门店记忆已改走 cc AutoMem project 型记忆常驻注入(2026-07-10 owner 拍板纯 cc,每轮必读、非检索),自造 `storeMemoryContext`/`desktopDataStore` memories 检索层(原 3.106 相关性注入 + 老化提醒、3.107 路由级注入回归)整体作废,不再另立第二套门店记忆真相源。
 
 ## 3.108 2026-07-07 Plan 模式未批准不执行边界追加落地
 
@@ -1218,7 +1206,7 @@
 - `StoreMemoryPanel` 与设置抽屉里的记忆入口同步从“我的球房资料/AI 记的事/已记下/我确认的”等口吻收成“门店记忆/已保存/已确认/自动记录”,使用范围、空状态、待确认引导和保存提示都改为中性说明。
 - `ScheduledTasksPanel` 清掉高曝光系统文案里的“帮你干一件事/要它干啥”,改为“自动执行一项任务/执行内容”,保持和 Codex/Work Buddy 的工具壳口吻一致。
 - 新增 `system-copy-guard.test.ts`:源码级锁住知识库/门店记忆/定时任务/来源卡的关键文案和禁用旧词,避免后续 UI 改动把旧口吻带回来。
-- 口径:行业知识、店铺文件、门店记忆继续分层呈现;这次只改 UI 文案和来源展示层级,不改变检索算法、来源解析、RRF/关键词融合或回答注入逻辑。
+- 口径:行业知识、店铺文件、门店记忆继续分层呈现;这次只改 UI 文案和来源展示层级,不改变检索算法、来源解析、RRF/关键词融合或回答注入逻辑。（⚠️2026-07-10 更新:其中"门店记忆"的检索/RRF/回答注入已随 §3.106 作废——门店记忆改走 cc AutoMem 常驻注入、非检索;本历史条目按当日事实保留,门店记忆部分以 §3.106/§3.34 新口径为准,§3.40/§3.60/§3.97 等同类分层描述同此。行业知识/店铺文件 RAG 不变。）
 
 ## 3.148 2026-07-07 grep_files 行号窗口输出追加落地
 
@@ -3589,7 +3577,7 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 4. **领域包/知识库前端 polish**:`billiards` 已从硬编码 supportContext 收到 SessionStart pack,前端选择器已读 `/api/v1/agent/packs`,`list_skills` 已支持 pack 推荐/过滤,pack prompt commands 已合并进命令池;下一步把知识库 Q&A 做成更接近 Codex/Work Buddy 的低噪来源面板和专家挂载入口。
 5. **目录级项目指令 / 长上下文 polish**:多层合并、读文件动态注入、`write_file` 首次暂停、前端 file pending 失败态、九段结构化压缩、压缩后最近文件上下文恢复、大工具结果落盘、写入/回滚后刷新最近文件快照、压缩恢复时带回子目录项目指令、显式 `list_project_instructions` scope 查询、前端 scope 卡片与状态线规则 chip 已落;下一步可补更细的规则 scope 过滤/跳转。
 6. **媒体真迁移/旧 Python 分批退场**:旧 Python 从现在起按“TS/Node/native 等价链路已接住、调用点已切换、测试/smoke 已覆盖”逐块删除。优先删离线脚本和文档生成器,再删已有 TS 入口覆盖的服务边角,最后才动生图/语音/OCR/ffmpeg 这些真实运行链路。TS 文生图、参考图、改图、门店品牌包注入、Seedream/GPT 生图/改图自动路由、OpenAI 失败二跳 Seedream、Seedream 短限流重试、`print_mode` 原始二维码 ffmpeg 叠层、QR 源图质检/边缘保真叠层、QR 声明内容重建、PNG/JPEG QR 视觉解码重建、Logo 左上安全区 ffmpeg 叠层、硬文字待核对元数据、视频工作台本地方案/窄版 ffmpeg 出片、基础响度标准化已落,但 `poster_service` 的中文硬文字 OCR 真识别/自动重出、任意格式/模糊二维码增强识别,以及 `video_edit/*` 的 VLM 挑高光/ASR/音乐自动铺底/健康体检/模板离屏渲染仍需 TS/native sidecar 替代;不能把本地 fallback 当完整智能创作完成。
-7. **店铺资料库语义升级**:TS 已有本地索引、`search_store_docs`、BM25/短语/文件名混合关键词排名、无依赖语义扩展、RRF 融合、前端来源卡片、店脑记忆相关性注入与老化提醒;若要更接近 Python bge 效果,下一步接本地 embedding 或网关 embedding,继续用 RRF/融合保留关键词精确命中,并保留 source_type 隔离。
+7. **店铺资料库语义升级**:TS 已有本地索引、`search_store_docs`、BM25/短语/文件名混合关键词排名、无依赖语义扩展、RRF 融合、前端来源卡片;若要更接近 Python bge 效果,下一步接本地 embedding 或网关 embedding,继续用 RRF/融合保留关键词精确命中,并保留 source_type 隔离。(⚠️ 原列的“店脑记忆相关性注入与老化提醒”及其接 embedding/RRF 升级计划已作废——门店记忆改走 cc AutoMem project 型记忆常驻注入,2026-07-10 owner 拍板纯 cc,见 §3.106;此项只保留老板自己资料侧的店铺文件 RAG 升级,不含门店记忆检索。)
 8. **语音/Office 打包验证**:TS 已能处理 `/voice/transcribe` 与 `.docx/.pptx/.xlsx` 基础编辑;sidecar macOS arm64 / Windows x64 交叉构建已过;`smoke:native` 默认会把未安装的 `sharp/@huggingface/transformers/smart-whisper` 标 skipped,严格 native 验收需先安装依赖并设置 `NATIVE_SMOKE_REQUIRE_DEPS=1`;删 Python 前仍要确认 whisper runner/model/ffmpeg/OCR/font/native 资产在 macOS/Windows 安装包里可发现、可执行,并跑真实音频 smoke。
 9. **MCP/AskUser 高级交互 polish**:结构化表单/URL 安全打开/preview、多选视觉、表单回答用户气泡脱 JSON 已落;后续只剩 URL 打开的桌面原生外链桥和更细的控件 polish。
 10. **Windows/打包 smoke**:sidecar Windows x64 交叉构建已过;仍需 Windows runner/真机验证 Electron 安装包、离屏渲染、ffmpeg/whisper/OCR/font 资产和 ARM64 包完整链路。
