@@ -1,7 +1,9 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { basename, dirname, extname, join } from 'node:path'
 import { extractDescription, parseMarkdownDocument, stringField } from './frontmatter'
-import { allowedToolRulesFromFrontmatter, normalizeAllowedTools } from './allowedTools'
+import { addAllowedToolsToContext, allowedToolRulesFromFrontmatter, normalizeAllowedTools } from './allowedTools'
+import { mergeHookRegistries, type HookSource } from '../hooks/hooks'
+import { normalizeHookRegistry } from '../hooks/hookConfig'
 import { parseArgumentNames, substituteArguments } from './argumentSubstitution'
 import { executeShellCommandsInPrompt, substitutePromptTemplateVars } from './promptShellExecution'
 import type { PromptCommand } from './types'
@@ -68,7 +70,12 @@ function stripMd(value: string): string {
   return extname(value).toLowerCase() === '.md' ? basename(value, extname(value)) : basename(value)
 }
 
-export async function loadCommandFile(filePath: string): Promise<PromptCommand> {
+/**
+ * hookSource:命令 frontmatter hooks 的信任来源(镜像 skillLoader.loadSkillFile)。
+ * **工作区来源的命令目录必须传 'local'**(受 allowManagedHooksOnly + workspace trust 信任门约束,
+ * 防恶意仓库经命令 frontmatter hooks RCE);app 内置/领域包命令省略 → managed(可信)。
+ */
+export async function loadCommandFile(filePath: string, hookSource?: HookSource): Promise<PromptCommand> {
   const raw = await readFile(filePath, 'utf8')
   const doc = parseMarkdownDocument(raw)
   const baseDir = dirname(filePath)
@@ -80,6 +87,8 @@ export async function loadCommandFile(filePath: string): Promise<PromptCommand> 
   const model = stringField(doc.frontmatter, 'model')
   const context = stringField(doc.frontmatter, 'context')
   const agent = stringField(doc.frontmatter, 'agent')
+  // frontmatter hooks(对齐 cc 命令/技能统一契约:命令与技能同构,hooks 字段不再被静默丢弃)。
+  const hooks = normalizeHookRegistry(doc.frontmatter.hooks, hookSource ? { source: hookSource } : undefined)
   const argumentHint = stringField(doc.frontmatter, 'argument-hint') ?? stringField(doc.frontmatter, 'argumentHint')
   const argumentNames = parseArgumentNames(doc.frontmatter.arguments as string | string[] | undefined)
   const body = doc.body.trim()
@@ -96,6 +105,7 @@ export async function loadCommandFile(filePath: string): Promise<PromptCommand> 
     model,
     ...(context === 'fork' || context === 'inline' ? { context } : {}),
     ...(agent ? { agent } : {}),
+    ...(hooks.rules.length > 0 ? { hooks } : {}),
     source: 'commands',
     filePath,
     baseDir,
@@ -132,13 +142,13 @@ async function walkMarkdown(rootDir: string, depth = 0): Promise<string[]> {
   return out
 }
 
-export async function loadCommandsDir(rootDir: string): Promise<CommandLibrary> {
+export async function loadCommandsDir(rootDir: string, hookSource?: HookSource): Promise<CommandLibrary> {
   const commands: PromptCommand[] = []
   for (const filePath of await walkMarkdown(rootDir)) {
     try {
       const s = await stat(filePath)
       if (!s.isFile()) continue
-      commands.push(await loadCommandFile(filePath))
+      commands.push(await loadCommandFile(filePath, hookSource))
     } catch {
       continue
     }
@@ -150,10 +160,10 @@ export async function loadCommandsDir(rootDir: string): Promise<CommandLibrary> 
   return { commands: [...byName.values()], byName }
 }
 
-export async function loadCommandsFromRoots(rootDirs: string[]): Promise<CommandLibrary> {
+export async function loadCommandsFromRoots(rootDirs: string[], hookSource?: HookSource): Promise<CommandLibrary> {
   const byName = new Map<string, PromptCommand>()
   for (const rootDir of rootDirs) {
-    const library = await loadCommandsDir(rootDir)
+    const library = await loadCommandsDir(rootDir, hookSource)
     for (const command of library.commands) byName.set(command.name, command)
   }
   return { commands: [...byName.values()], byName }
@@ -200,10 +210,38 @@ export function formatCommandIndex(library: CommandLibrary): string {
     .join('\n')
 }
 
-export function createCommandTools(library: CommandLibrary): Tool[] {
+export interface CreateCommandToolsOptions {
+  /** 统一执行契约(对齐 cc 单一 Skill 工具语义):与 use_skill 共用的执行器(PromptCommand 同构),
+   *  承载 allowedTools 灌注/hooks 注册/context:fork 后台派发。省略时 use_command 走内置内联语义。 */
+  executeCommand?: (command: PromptCommand, args: string, ctx: ToolContext) => Promise<string>
+}
+
+/** 命令是否只有安全属性(镜像 skillLoader.skillHasOnlySafeProperties):不带 allowedTools/hooks/fork 的命令自动放行。 */
+function commandHasOnlySafeProperties(command: PromptCommand): boolean {
+  if (command.allowedTools && command.allowedTools.length > 0) return false
+  if (command.allowedToolRules && command.allowedToolRules.length > 0) return false
+  if (command.hooks && command.hooks.rules.length > 0) return false
+  if (command.context === 'fork') return false
+  return true
+}
+
+/** ctx.permissionRules 里是否有放行该命令的 use_command allow 规则(镜像 use_skill 的记忆规则匹配)。 */
+function useCommandAllowRuleMatches(ctx: ToolContext, name: string): boolean {
+  for (const rule of ctx.permissionRules ?? []) {
+    if (rule.ruleBehavior !== 'allow' || rule.ruleValue.toolName !== 'use_command') continue
+    const content = rule.ruleValue.ruleContent
+    if (content === undefined) continue
+    const normalized = content.startsWith('/') ? content.slice(1) : content
+    if (normalized === name) return true
+    if (normalized.endsWith(':*') && name.startsWith(normalized.slice(0, -2))) return true
+  }
+  return false
+}
+
+export function createCommandTools(library: CommandLibrary, opts: CreateCommandToolsOptions = {}): Tool[] {
   const listCommands: Tool<Record<string, never>> = {
     name: 'list_commands',
-    description: 'List available slash commands by name and short description. Use read_command only when a command is relevant.',
+    description: 'List available slash commands by name and short description. Use use_command to run one, or read_command to only inspect its instructions.',
     inputSchema: { type: 'object', properties: {} },
     isReadOnly: true,
     async execute() {
@@ -213,7 +251,7 @@ export function createCommandTools(library: CommandLibrary): Tool[] {
 
   const readCommand: Tool<{ name: string; args?: string }> = {
     name: 'read_command',
-    description: 'Load the full instructions for one slash command by exact name. Input: { name, args? }.',
+    description: 'Inspect the full instructions of one slash command by exact name WITHOUT executing it (no tool grants, no hooks). Use use_command to actually run it. Input: { name, args? }.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -232,5 +270,78 @@ export function createCommandTools(library: CommandLibrary): Tool[] {
     },
   }
 
-  return [listCommands, readCommand]
+  // 统一执行契约(对齐 cc:单一 Skill 工具同时承担命令与技能的执行语义;消除
+  // "用户敲 /命令落权限、模型经 read_command 调不落权限"的行为不对称):
+  // use_command 与 use_skill 同一套审批闸(带 allowedTools/hooks/fork 的命令默认 ask、
+  // 可 allow 规则记忆)+ 同一个执行器(server 传入的 executeSkill,PromptCommand 同构)。
+  const useCommand: Tool<{ name?: string; command?: string; args?: string }> = {
+    name: 'use_command',
+    description: 'Execute one slash command by exact name, with the same semantics as the user typing /name (tool grants, hooks, fork). Input: { name, args? }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        command: { type: 'string', description: 'Alias for name.' },
+        args: { type: 'string' },
+      },
+      required: ['name'],
+    },
+    isReadOnly: false,
+    requiresApprovalFor(input, ctx) {
+      const raw = typeof input?.name === 'string' && input.name.trim() ? input.name : typeof input?.command === 'string' ? input.command : ''
+      const name = raw ? normalizeCommandName(raw) : ''
+      if (!name) return false
+      const command = library.byName.get(name)
+      if (!command) return false
+      if (commandHasOnlySafeProperties(command)) return false
+      if (useCommandAllowRuleMatches(ctx, name)) return false
+      return true
+    },
+    approvalReasonFor(input) {
+      const raw = typeof input?.name === 'string' && input.name.trim() ? input.name : typeof input?.command === 'string' ? input.command : ''
+      const name = raw ? normalizeCommandName(raw) : '?'
+      const command = library.byName.get(name)
+      const grants: string[] = []
+      if (command?.allowedTools && command.allowedTools.length > 0) grants.push(`授予工具 ${command.allowedTools.join(', ')}`)
+      if (command?.hooks && command.hooks.rules.length > 0) grants.push(`注册 ${command.hooks.rules.length} 条会话 hook`)
+      if (command?.context === 'fork') grants.push('派发后台工作代理')
+      return {
+        what: `运行命令「/${name}」`,
+        why: grants.length > 0 ? `该命令会${grants.join(';')},等于在本会话内放开这些能力` : '模型请求运行该命令',
+        impact: grants.length > 0
+          ? '批准后这些工具/hook 在本会话内自动放行,请确认命令来源可信(否则可能被用来绕过逐次审批)'
+          : '',
+      }
+    },
+    async execute(input, ctx) {
+      const raw = typeof input?.name === 'string' && input.name.trim() ? input.name : typeof input?.command === 'string' ? input.command : ''
+      if (!raw) throw new Error('use_command 需要 string 参数 name')
+      const name = normalizeCommandName(raw)
+      const command = library.byName.get(name)
+      if (!command) return `没有找到命令「/${name}」。可先调用 list_commands 查看可用命令。`
+      const args = typeof input?.args === 'string' ? input.args : ''
+      if (opts.executeCommand) return await opts.executeCommand(command, args, ctx)
+      // 无执行器兜底(独立跑工具/测试):内联展开 + 权限/hook 灌注,与 use_skill 的内置路径同构。
+      const prompt = await command.getPrompt(args, ctx)
+      if (command.context !== 'fork') {
+        allowCommandTools(command, ctx)
+        registerCommandHooks(command, ctx)
+      }
+      return [`<command_invoked name="/${command.name}">`, prompt, '</command_invoked>'].join('\n')
+    },
+  }
+
+  return [listCommands, readCommand, useCommand]
+}
+
+/** 把命令 frontmatter 的 allowedTools 灌进会话权限上下文(与 skillLoader.allowSkillTools 同构)。 */
+function allowCommandTools(command: PromptCommand, ctx: ToolContext): void {
+  addAllowedToolsToContext(ctx, command.allowedToolRules ?? command.allowedTools)
+}
+
+/** 把命令 frontmatter hooks 合进会话 hooks(与 skillLoader.registerSkillHooks 同构)。 */
+function registerCommandHooks(command: PromptCommand, ctx: ToolContext): void {
+  if (!command.hooks || command.hooks.rules.length === 0) return
+  ctx.sessionHooks = mergeHookRegistries(ctx.sessionHooks, command.hooks)
+  ctx.onSessionHooksChanged?.(ctx.sessionHooks)
 }
