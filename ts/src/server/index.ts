@@ -455,7 +455,9 @@ function workspaceCommandRoots(workspaceRoot: string): string[] {
 async function loadCommandsForWorkspace(workspaceRoot: string, builtInRoot: string, packs: DomainPack[] = [], env: Record<string, string | undefined> = process.env) {
   const [builtInCommands, workspaceCommands] = await Promise.all([
     loadCommandsFromRoots([builtInRoot]),
-    loadCommandsFromRoots(workspaceCommandRoots(workspaceRoot)),
+    // 工作区来源命令的 frontmatter hooks 标 'local'(受信任门约束,防恶意仓库经命令 hooks RCE);
+    // app 内置命令省略 → managed(可信)。与 skills 加载的信任分层同构。
+    loadCommandsFromRoots(workspaceCommandRoots(workspaceRoot), 'local'),
   ])
   const merged = mergeCommandLibraries(builtInCommands, createBuiltinCommandLibrary(env), createDomainPackCommandLibrary(packs), workspaceCommands)
   // 合并会从 commands 数组重建 byName,丢掉领域包别名键;重新挂上让 /台球、/球房、/billiards 都能解析到入口命令。

@@ -226,3 +226,76 @@ Use pack daily.
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+// ─── 统一执行契约(对齐 cc 单一 Skill 工具语义):use_command 与 use_skill 同管线 ───
+
+test('use_command:安全命令免审批、内置兜底内联展开;带 allowedTools 的命令默认走审批', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'use-command-'))
+  try {
+    writeFileSync(join(root, 'safe.md'), '---\ndescription: 安全命令\n---\n照做即可')
+    writeFileSync(join(root, 'granting.md'), '---\ndescription: 放权命令\nallowedTools: ["run_command(git status:*)"]\n---\n跑 git status')
+    const library = await loadCommandsDir(root)
+    const tools = createCommandTools(library)
+    const useCommand = tools.find(tool => tool.name === 'use_command')!
+    const ctx = { workspace: new Workspace(root), conversationId: 'c1' } as import('../tools/Tool').ToolContext
+    // 安全命令:免审批 + 内联展开
+    expect(useCommand.requiresApprovalFor?.({ name: 'safe' }, ctx)).toBe(false)
+    const out = await useCommand.execute({ name: 'safe' }, ctx)
+    expect(out).toContain('<command_invoked name="/safe">')
+    expect(out).toContain('照做即可')
+    // 放权命令:默认审批(与 use_skill 同口径);执行后 allowedTools 灌进会话
+    expect(useCommand.requiresApprovalFor?.({ name: 'granting' }, ctx)).toBe(true)
+    await useCommand.execute({ name: 'granting' }, ctx)
+    expect(ctx.sessionAllowedToolRules?.some(rule => rule.tool === 'run_command' && rule.ruleContent === 'git status:*')).toBe(true)
+    // 记住允许后免审批(镜像 use_skill 的 allow 规则记忆)
+    const rememberedCtx = {
+      workspace: new Workspace(root),
+      permissionRules: [{ source: 'session', ruleBehavior: 'allow', ruleValue: { toolName: 'use_command', ruleContent: 'granting' } }],
+    } as unknown as import('../tools/Tool').ToolContext
+    expect(useCommand.requiresApprovalFor?.({ name: 'granting' }, rememberedCtx)).toBe(false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('use_command:传入 executeCommand 执行器时全权委托(与 use_skill 共用一条执行管线)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'use-command-exec-'))
+  try {
+    writeFileSync(join(root, 'work.md'), '---\ndescription: 干活\n---\n正文')
+    const library = await loadCommandsDir(root)
+    const seen: string[] = []
+    const tools = createCommandTools(library, {
+      executeCommand: async (command, args) => { seen.push(`${command.name}|${args}`); return 'delegated' },
+    })
+    const useCommand = tools.find(tool => tool.name === 'use_command')!
+    const ctx = { workspace: new Workspace(root) } as import('../tools/Tool').ToolContext
+    expect(await useCommand.execute({ name: 'work', args: 'a b' }, ctx)).toBe('delegated')
+    expect(seen).toEqual(['work|a b'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('命令 frontmatter hooks 不再被静默丢弃;工作区来源标 local 受信任门约束', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'command-hooks-'))
+  try {
+    writeFileSync(join(root, 'hooked.md'), [
+      '---',
+      'description: 带钩子的命令',
+      'hooks:',
+      '  PostToolUse:',
+      '    - hooks:',
+      '        - type: command',
+      '          command: echo done',
+      '---',
+      '正文',
+    ].join('\n'))
+    const managed = await loadCommandsDir(root)
+    expect(managed.byName.get('hooked')?.hooks?.rules).toHaveLength(1)
+    expect(managed.byName.get('hooked')?.hooks?.rules[0]?.source).toBeUndefined() // managed(可信)
+    const local = await loadCommandsDir(root, 'local')
+    expect(local.byName.get('hooked')?.hooks?.rules[0]?.source).toBe('local') // 工作区来源受信任门约束
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

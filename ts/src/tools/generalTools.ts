@@ -83,7 +83,10 @@ export function buildGeneralRegistry(opts: { sandbox?: Sandbox; skills?: SkillLi
     fileHistoryTool,
     restoreFileTool,
     ...(opts.skills ? createSkillTools(opts.skills, { skillRoot: opts.skillsRoot, recommendedSkillNames: opts.skillRecommendations, executeSkill: opts.executeSkill }) : []),
-    ...(opts.commands ? createCommandTools(opts.commands) : []),
+    // 统一执行契约(对齐 cc 单一 Skill 工具语义):命令与技能同管线——use_command 复用同一个
+    // executeSkill 执行器(PromptCommand 同构),让"模型调命令"与"用户敲 /命令"落同样的
+    // allowedTools/hooks/fork 语义,消除 read_command 只读展开的二等公民不对称。
+    ...(opts.commands ? createCommandTools(opts.commands, { executeCommand: opts.executeSkill }) : []),
     ...computerUseTools,
     ...(opts.extraTools ?? []),
   ])
