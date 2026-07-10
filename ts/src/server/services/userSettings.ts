@@ -15,6 +15,10 @@ export interface UserSettings {
   defaultPermissionMode: (typeof PERMISSION_MODES)[number]
   /** 界面主题 */
   theme: (typeof THEMES)[number]
+  /** 上次选中的工作区绝对路径(§P1 持久化:关窗不忘,下次启动前端据此恢复上次工作目录)。未选过则缺省。 */
+  lastWorkspaceRoot?: string
+  /** 默认工作空间存储路径(WorkBuddy 式:新建工作空间就建在这个目录下)。缺省时用 getDefaultWorkspaceDir()。 */
+  workspaceBaseDir?: string
 }
 
 export const DEFAULT_USER_SETTINGS: UserSettings = {
@@ -26,7 +30,15 @@ function coerce(raw: unknown): UserSettings {
   const obj = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
   const mode = PERMISSION_MODES.includes(obj.defaultPermissionMode as never) ? (obj.defaultPermissionMode as UserSettings['defaultPermissionMode']) : DEFAULT_USER_SETTINGS.defaultPermissionMode
   const theme = THEMES.includes(obj.theme as never) ? (obj.theme as UserSettings['theme']) : DEFAULT_USER_SETTINGS.theme
-  return { defaultPermissionMode: mode, theme }
+  const out: UserSettings = { defaultPermissionMode: mode, theme }
+  // 可选路径字段:只在是非空字符串时保留,缺省/非法则不带该键(保持默认对象干净)。
+  if (typeof obj.lastWorkspaceRoot === 'string' && obj.lastWorkspaceRoot.trim().length > 0) {
+    out.lastWorkspaceRoot = obj.lastWorkspaceRoot
+  }
+  if (typeof obj.workspaceBaseDir === 'string' && obj.workspaceBaseDir.trim().length > 0) {
+    out.workspaceBaseDir = obj.workspaceBaseDir
+  }
+  return out
 }
 
 export class UserSettingsStore {
@@ -49,6 +61,8 @@ export class UserSettingsStore {
     const valid: Partial<UserSettings> = {}
     if (PERMISSION_MODES.includes(patch.defaultPermissionMode as never)) valid.defaultPermissionMode = patch.defaultPermissionMode
     if (THEMES.includes(patch.theme as never)) valid.theme = patch.theme
+    if (typeof patch.lastWorkspaceRoot === 'string' && patch.lastWorkspaceRoot.trim().length > 0) valid.lastWorkspaceRoot = patch.lastWorkspaceRoot
+    if (typeof patch.workspaceBaseDir === 'string' && patch.workspaceBaseDir.trim().length > 0) valid.workspaceBaseDir = patch.workspaceBaseDir
     const merged: UserSettings = { ...current, ...valid }
     await mkdir(dirname(this.path), { recursive: true })
     const tmp = `${this.path}.tmp`

@@ -231,11 +231,14 @@ export async function resolveCommandCwd(cwd: unknown, ctx: ToolContext): Promise
 export function spawnShellChild(command: string, cwd: string, wrapped: WrappedCommand | null): ReturnType<typeof spawn> {
   const isWin = process.platform === 'win32'
   const useProcessGroup = !isWin
+  // PWD 显式钉到真实 cwd(对齐 cc CALLER_DIR/PWD 补丁的 PWD 半边):我们是内联架构(无 per-session CLI/preload chdir),
+  // 但 spawn 的子 shell 会继承 sidecar 进程的 PWD——打包后从 Finder 启动那是 `/`,导致命令里的 `$PWD` 报错目录
+  // (getcwd 系统调用是对的,但 `$PWD` 是继承的环境变量、不会自动纠)。把 PWD 覆盖成 cwd 让二者一致。
   return wrapped
-    ? spawn(wrapped.argv[0]!, wrapped.argv.slice(1), { cwd, env: childEnv(wrapped.env), detached: useProcessGroup })
+    ? spawn(wrapped.argv[0]!, wrapped.argv.slice(1), { cwd, env: childEnv({ ...wrapped.env, PWD: cwd }), detached: useProcessGroup })
     : isWin
-      ? spawn('cmd', ['/c', command], { cwd, env: childEnv() })
-      : spawn('sh', ['-c', command], { cwd, env: childEnv(), detached: true })
+      ? spawn('cmd', ['/c', command], { cwd, env: childEnv({ PWD: cwd }) })
+      : spawn('sh', ['-c', command], { cwd, env: childEnv({ PWD: cwd }), detached: true })
 }
 
 function relativePath(ctx: ToolContext, abs: string): string {

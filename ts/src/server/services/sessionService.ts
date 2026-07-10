@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { Transcript } from '../../memory/transcript'
 import type { TranscriptPage } from '../../memory/transcript'
+import { getDefaultWorkspaceDir } from '../../harness/desktopEnvNames'
 import type { Message } from '../../types/message'
 import type { AgentEvent } from '../../types/events'
 
@@ -155,7 +156,7 @@ export class SessionService {
       : {
           id,
           title: patch.title?.trim() || '新会话',
-          workspaceRoot: patch.workspaceRoot ?? process.cwd(),
+          workspaceRoot: patch.workspaceRoot ?? getDefaultWorkspaceDir(),
           createdAt: timestamp,
           updatedAt: timestamp,
           status: patch.status ?? 'idle',

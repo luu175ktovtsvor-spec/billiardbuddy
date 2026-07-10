@@ -2,6 +2,7 @@
  *  positional-mode 形状,但只解析 server + --host/--port。真多模式合并在 W13。 */
 import { startServer } from '../../src/server/index'
 import { applyEnvFiles } from '../../src/model/envLoader'
+import { ensureDefaultWorkspace } from '../../src/harness/desktopEnvNames'
 
 function parseArgs(argv: string[]): { host: string; port: number } {
   let host = '127.0.0.1'
@@ -20,5 +21,7 @@ if (mode !== 'server') {
 }
 const { host, port } = parseArgs(rest)
 applyEnvFiles()
+// 首启确保显式全局默认工作区存在(~/Documents/球房管家/):不选文件夹时模型的落点,mkdir -p 尽力而为不阻塞启动。
+await ensureDefaultWorkspace()
 const server = startServer({ host, port })
 console.log(`[backend-sidecar] listening on http://${host}:${server.port}`)

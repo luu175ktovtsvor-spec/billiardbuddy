@@ -84,7 +84,8 @@ import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
 import { loadOutputStyles, publicOutputStyle, renderOutputStylePrompt } from '../outputStyles/outputStyleLoader'
 import { defaultPluginInstallDir, defaultPluginRoots, installPluginFromGithub, listPlugins, resolveEnabledPluginContributions, resolveEnabledPluginHookConfigPaths, setPluginEnabled } from '../plugins/pluginLoader'
-import { LIBRARY_DIR_ENV, LIBRARY_DOT_DIR, LIBRARY_SUBDIR } from '../harness/desktopEnvNames'
+import { LIBRARY_DIR_ENV, LIBRARY_DOT_DIR, LIBRARY_SUBDIR, getDefaultWorkspaceDir } from '../harness/desktopEnvNames'
+import { WorkspaceNameError, createNamedWorkspace } from '../workspace/workspaceProvision'
 import { TurnConsumerTracker } from './turnConsumerTracker'
 import { Workspace } from '../workspace/workspace'
 import { Sandbox } from '../sandbox/sandbox'
@@ -102,7 +103,7 @@ import { canonicalPermissionMode } from '../permissions/canonical'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { getUserConfigHomeDir } from '../harness/memoryNames'
 import { existsSync } from 'node:fs'
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 
 function sseLine(ev: AgentEvent | { type: 'done' }): string {
   return `event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`
@@ -415,13 +416,13 @@ function defaultHooksPath(): string | undefined {
 // SessionEnd 落点(对齐参考实现 executeSessionEndHooks:会话结束时触发,fire-and-forget)。
 // 宿主在"用户删除会话"处调用:载荷带结束原因,失败/超时都不拖垮删除主流程。用最小 ToolContext
 // (无 model——SessionEnd 一般是命令/清理类钩子;若配了 agent/prompt 钩子会因缺 model 优雅降级为非阻塞提示)。
-// 本地(local)来源钩子仍过工作区信任闸;工作区取 process.cwd()(与本服务默认工作目录一致)。
+// 本地(local)来源钩子仍过工作区信任闸;工作区取显式全局默认工作区(getDefaultWorkspaceDir,不选文件夹时的落点)。
 async function fireSessionEndHooks(conversationId: string, reason: string): Promise<void> {
   try {
     const registry = await loadHookRegistryFile(defaultHooksPath())
     if (!registry || registry.rules.length === 0) return
     const ctx: ToolContext = {
-      workspace: new Workspace(process.cwd()),
+      workspace: new Workspace(getDefaultWorkspaceDir()),
       conversationId,
       permissionMode: 'default',
     }
@@ -659,7 +660,7 @@ function supportContext(rawBody: Record<string, unknown>): string {
 }
 
 function workspaceFromBody(rawBody: Record<string, unknown>): Workspace {
-  return new Workspace(stringOr(rawBody.working_dir ?? rawBody.workspaceRoot, process.cwd()), {
+  return new Workspace(stringOr(rawBody.working_dir ?? rawBody.workspaceRoot, getDefaultWorkspaceDir()), {
     allowedPaths: stringArray(rawBody.selected_files ?? rawBody.selectedFiles),
     fullDiskAccess: rawBody.full_disk_access === true || rawBody.fullDiskAccess === true,
   })
@@ -1157,7 +1158,7 @@ export function startServer(opts: StartServerOptions = {}) {
     if (events.length === 0) return
     await sessions.touch(conversationId, {
       title: stringOr(rawBody.title, 'Remote Control Session'),
-      workspaceRoot: stringOr(rawBody.working_dir ?? rawBody.workspaceRoot, process.cwd()),
+      workspaceRoot: stringOr(rawBody.working_dir ?? rawBody.workspaceRoot, getDefaultWorkspaceDir()),
       status: turns.isRunning(conversationId) ? 'running' : 'idle',
     }).catch(() => undefined)
     for (const event of events) {
@@ -2032,7 +2033,7 @@ export function startServer(opts: StartServerOptions = {}) {
   async function startLegacyAgentTask(rawBody: Record<string, unknown>): Promise<{ task_id: string; status: string }> {
     const message = stringOr(rawBody.message, '')
     if (!message) throw new TurnSetupError('message required', 400)
-    const workspaceRoot = stringOr(rawBody.working_dir ?? rawBody.workspaceRoot, process.cwd())
+    const workspaceRoot = stringOr(rawBody.working_dir ?? rawBody.workspaceRoot, getDefaultWorkspaceDir())
     const conversationId = stringOr(rawBody.conversation_id ?? rawBody.conversationId, crypto.randomUUID())
     const task = await tasks.create({
       title: message.slice(0, 80),
@@ -2075,7 +2076,7 @@ export function startServer(opts: StartServerOptions = {}) {
     const autoRun = rawBody.autoRun === true || rawBody.auto_run === true
     if (!autoRun) return { mode: 'stored', conversationId }
 
-    const workspaceRoot = stringOr(rawBody.working_dir ?? rawBody.workspaceRoot, process.cwd())
+    const workspaceRoot = stringOr(rawBody.working_dir ?? rawBody.workspaceRoot, getDefaultWorkspaceDir())
     const task = await tasks.create({
       title: preview.slice(0, 80),
       conversationId,
@@ -2915,7 +2916,7 @@ export function startServer(opts: StartServerOptions = {}) {
   }
 
   async function listMcpStatus(rawBody: Record<string, unknown> = {}) {
-    const workspaceRoot = stringOr(rawBody.workspaceRoot ?? rawBody.working_dir, process.cwd())
+    const workspaceRoot = stringOr(rawBody.workspaceRoot ?? rawBody.working_dir, getDefaultWorkspaceDir())
     const gatedMcp = resolveMcpConfig(rawBody, workspaceRoot)
     const mcpConfigPath = gatedMcp.path
     if (!mcpConfigPath) return { servers: [], ...(gatedMcp.warning ? { untrusted_workspace_config: true, note: gatedMcp.warning } : {}) }
@@ -2994,7 +2995,7 @@ export function startServer(opts: StartServerOptions = {}) {
       const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
       return Response.json(await media.startStudioGenerate(body, {
         conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
-        workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, process.cwd()),
+        workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir()),
       }))
     }
     if (action === 'edit' && req.method === 'POST') {
@@ -3003,7 +3004,7 @@ export function startServer(opts: StartServerOptions = {}) {
       const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
       return Response.json(await media.startStudioEdit(body, {
         conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
-        workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, process.cwd()),
+        workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir()),
       }))
     }
     if (action === 'expand' && req.method === 'POST') {
@@ -3027,7 +3028,7 @@ export function startServer(opts: StartServerOptions = {}) {
     if (!url.pathname.startsWith('/api/v1/video-edit/')) return null
     const body = req.method === 'GET' ? {} : await req.json().catch(() => ({})) as Record<string, unknown>
     const conversationId = typeof body.conversation_id === 'string' ? body.conversation_id : undefined
-    const workspaceRoot = stringOr(body.workspaceRoot ?? body.working_dir, process.cwd())
+    const workspaceRoot = stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir())
 
     if (url.pathname === '/api/v1/video-edit/localfile' && req.method === 'GET') {
       return await videoEdits.localFileResponse(url.searchParams.get('path'), req.headers.get('range'))
@@ -3363,7 +3364,7 @@ export function startServer(opts: StartServerOptions = {}) {
       // GET /api/v1/agent/commands?conversationId=&enabledPacks=台球[,球房]&working_dir=
       if (url.pathname === '/api/v1/agent/commands') {
         if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        const workspaceRoot = url.searchParams.get('working_dir') || url.searchParams.get('workspaceRoot') || process.cwd()
+        const workspaceRoot = url.searchParams.get('working_dir') || url.searchParams.get('workspaceRoot') || getDefaultWorkspaceDir()
         const workspace = new Workspace(workspaceRoot)
         const queryPacks = [
           ...url.searchParams.getAll('enabledPacks'),
@@ -3389,7 +3390,7 @@ export function startServer(opts: StartServerOptions = {}) {
 
       if (url.pathname === '/api/v1/agent/workspace-status') {
         if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        const workspaceRoot = url.searchParams.get('working_dir') || url.searchParams.get('workspaceRoot') || process.cwd()
+        const workspaceRoot = url.searchParams.get('working_dir') || url.searchParams.get('workspaceRoot') || getDefaultWorkspaceDir()
         const workspace = new Workspace(workspaceRoot)
         const [git, projectInstructions, tree] = await Promise.all([
           getWorkspaceGitStatus(workspaceRoot),
@@ -3883,6 +3884,66 @@ export function startServer(opts: StartServerOptions = {}) {
         return new Response('Method not allowed', { status: 405 })
       }
 
+      // 工作区路径(§P1 持久化 + 新建/现有两条路 + 可配置默认存储路径)。四个动作共用 buildState():
+      //   { default(全局默认工作区), base(默认工作空间存储路径,新建落这里), persisted(上次选中), current(启动应恢复到的), exists }。
+      // - GET  /api/v1/workspace            → 读状态(前端启动据此回填上次工作目录 →「关窗即忘」修好)。
+      // - POST /api/v1/workspace { path }    → 「使用现有文件夹」:把选中的绝对路径存盘(lastWorkspaceRoot),非目录报 400。
+      // - POST /api/v1/workspace/create { name } → 「新建工作空间」:在 base 下建同名文件夹 + 初始化项目记忆(BILLIARDBUDDY.md/.billiardbuddy)+ 设为当前,返回绝对路径。
+      // - POST /api/v1/workspace/base { path } → 改「默认工作空间存储路径」(workspaceBaseDir)。
+      if (url.pathname === '/api/v1/workspace' || url.pathname === '/api/v1/workspace/create' || url.pathname === '/api/v1/workspace/base') {
+        const isDir = async (p: string): Promise<boolean> => { try { return (await stat(p)).isDirectory() } catch { return false } }
+        const effectiveBase = async (): Promise<string> => (await userSettings.get()).workspaceBaseDir || getDefaultWorkspaceDir()
+        const buildState = async (): Promise<Record<string, unknown>> => {
+          const settings = await userSettings.get()
+          const defaultDir = getDefaultWorkspaceDir()
+          const base = settings.workspaceBaseDir || defaultDir
+          const persisted = settings.lastWorkspaceRoot ?? null
+          const current = persisted && await isDir(persisted) ? persisted : defaultDir
+          return { default: defaultDir, base, persisted, current, exists: await isDir(current) }
+        }
+
+        // 「新建工作空间」:名字 → base 下建同名文件夹 + 初始化 + 设为当前。
+        if (url.pathname === '/api/v1/workspace/create') {
+          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+          const body = await req.json().catch(() => ({})) as Record<string, unknown>
+          try {
+            const created = await createNamedWorkspace(await effectiveBase(), typeof body.name === 'string' ? body.name : '')
+            await userSettings.update({ lastWorkspaceRoot: created.path })
+            return Response.json({ ...created, ...(await buildState()) })
+          } catch (err) {
+            if (err instanceof WorkspaceNameError) return jsonError(err.message, 400)
+            return jsonError(err instanceof Error ? err.message : String(err), 500)
+          }
+        }
+
+        // 改「默认工作空间存储路径」:mkdir -p 兜底,非目录报 400。
+        if (url.pathname === '/api/v1/workspace/base') {
+          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+          const body = await req.json().catch(() => ({})) as Record<string, unknown>
+          const raw = typeof body.path === 'string' ? body.path.trim() : ''
+          if (!raw) return jsonError('path required', 400)
+          const abs = resolve(raw)
+          try { await mkdir(abs, { recursive: true }) } catch { /* 已存在或建不出;下面 isDir 兜底判定 */ }
+          if (!await isDir(abs)) return jsonError(`不是可用目录:${raw}`, 400)
+          await userSettings.update({ workspaceBaseDir: abs })
+          return Response.json(await buildState())
+        }
+
+        // /api/v1/workspace 本体:GET 读状态 / POST 设「使用现有文件夹」的选中路径。
+        if (req.method === 'GET') return Response.json(await buildState())
+        if (req.method === 'POST') {
+          const body = await req.json().catch(() => ({})) as Record<string, unknown>
+          const raw = typeof body.path === 'string' ? body.path.trim() : ''
+          if (!raw) return jsonError('path required', 400)
+          const abs = resolve(raw)
+          try { await mkdir(abs, { recursive: true }) } catch { /* 已存在或建不出;下面 isDir 兜底判定 */ }
+          if (!await isDir(abs)) return jsonError(`不是可用目录:${raw}`, 400)
+          await userSettings.update({ lastWorkspaceRoot: abs })
+          return Response.json(await buildState())
+        }
+        return new Response('Method not allowed', { status: 405 })
+      }
+
       // 规则持久化:把一条权限规则写进工作区 .claude/settings.local.json(跨重启生效),供"始终允许"选择用。
       if (url.pathname === '/api/v1/agent/permissions/persist' && req.method === 'POST') {
         const body = await req.json().catch(() => ({})) as Record<string, unknown>
@@ -4271,7 +4332,7 @@ export function startServer(opts: StartServerOptions = {}) {
           const meta = await sessions.create({
             id: typeof body.id === 'string' ? body.id : undefined,
             title: typeof body.title === 'string' ? body.title : undefined,
-            workspaceRoot: stringOr(body.workspaceRoot, process.cwd()),
+            workspaceRoot: stringOr(body.workspaceRoot, getDefaultWorkspaceDir()),
           })
           return Response.json({ session: meta })
         }
@@ -4410,7 +4471,7 @@ export function startServer(opts: StartServerOptions = {}) {
 
       if (url.pathname === '/agent/hello') {
         server.timeout(req, 0) // 关掉 Bun 空闲掐断,否则安静的 SSE 流会被杀
-        const workspace = new Workspace(process.cwd())
+        const workspace = new Workspace(getDefaultWorkspaceDir())
         const systemPrompt = await buildSystemPrompt(workspace)
         // demo model:请求列一次工作区,拿到结果后收敛。真模型出口留 W6。
         const demoSteps: AssistantStep[] = [
