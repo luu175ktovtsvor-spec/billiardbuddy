@@ -68,6 +68,7 @@
 | `references/Anthropic-Agent-SDK-参考架构.md` | 官方 Agent SDK 参考架构 |
 | `references/Codex逆向档案/` | **前端首要参照**:Codex(ChatGPT.app 内置)前端逆向(01 设计系统 ~ 05 落地)+ 后端代码视图 + 浏览器批注/「基于此调整」逆向。前端颜色/字体/文案/流式/布局/交互**完全照抄 Codex**,都从这查 |
 | `references/竞品拆解/` | **竞品源码级拆解知识库**:01 架构机制 / 02 前端设计配色 / 03 文案交互 / 04 借鉴批判筛选 / 05 cc-haha 行为对齐清单 / README。**交互/内核对标 cc-haha 从这查**(前端设计以 Codex 逆向档案为准;WorkBuddy 已弃) |
+| `references/系统提示词逆向-Codex与WorkBuddy.md` | **两款 coding agent 的后台系统提示词逆向**:Codex 基础提示词全文(开源 `gpt_5_codex_prompt.md` 逐字)+ WorkBuddy(CodeBuddy Code)嵌入的子代理/记忆/任务提示词逐字 + 主提示词分发方式结论 |
 | `references/P3对外平台-官方文档与资质清单.md` | 对外发布平台资质与官方文档 |
 
 ---
