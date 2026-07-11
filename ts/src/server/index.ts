@@ -3111,6 +3111,16 @@ export function startServer(opts: StartServerOptions = {}) {
         workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir()),
       }))
     }
+    if (action === 'upscale' && req.method === 'POST') {
+      // 超分放大(本机 Real-ESRGAN,纯本地不代理):生图看板"放大"按钮 + agent upscale_image 工具共用。
+      const rawBody = await req.json().catch(() => ({})) as Record<string, unknown>
+      const trusted = typeof rawBody.source_image_path === 'string' ? [rawBody.source_image_path] : []
+      const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
+      return Response.json(await media.startUpscale(body, {
+        conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
+        workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir()),
+      }))
+    }
     if (action === 'expand' && req.method === 'POST') {
       const body = await req.json().catch(() => ({})) as Record<string, unknown>
       if (media.hasBackend) return Response.json(await media.proxyJson('/api/v1/studio/expand', body))

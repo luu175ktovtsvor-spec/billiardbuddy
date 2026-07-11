@@ -54,6 +54,17 @@ export const studioApi = {
     }),
   /** 查媒体 job 进度/结果。 */
   job: (id: string) => api.get<MediaJob>(`/api/v1/agent/media-jobs/${encodeURIComponent(id)}`),
+  /** 超分放大(本机 Real-ESRGAN,印刷不糊)。异步 job,轮询拿放大后的 poster_url。 */
+  upscale: (input: { source_generation_id?: string; source_image_path?: string; scale?: number }) =>
+    api.post<{ job_id: string }>('/api/v1/studio/upscale', input),
+}
+
+/** 超分/改图结果里挑成图 url(后端字段 poster_url / url)。 */
+export function pickImageUrl(result: Record<string, unknown> | undefined): string | undefined {
+  const r = result ?? {}
+  const poster = typeof r.poster_url === 'string' ? r.poster_url : undefined
+  const url = typeof r.url === 'string' ? r.url : undefined
+  return poster ?? url
 }
 
 /** 轮询 job 到 done/error;每次 progress 回调给 UI 显示"正在生成 x%"。 */

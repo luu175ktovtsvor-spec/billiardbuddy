@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import { PageHeader } from '../components/shared/PageKit'
 import { IconSparkles } from '../components/shared/icons'
 import { toast } from '../stores/toastStore'
-import { studioApi, pollJob, assetUrl, type StudioImage } from '../api/studio'
+import { studioApi, pollJob, assetUrl, pickImageUrl, type StudioImage } from '../api/studio'
 
 const RATIOS: { id: string; label: string }[] = [
   { id: '3:4', label: '竖版 3:4' },
@@ -24,11 +24,32 @@ export function CreationPage() {
   const [stage, setStage] = useState('')
   const [images, setImages] = useState<StudioImage[]>([])
   const [enlarged, setEnlarged] = useState<StudioImage | null>(null)
+  const [upscalingId, setUpscalingId] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
   useEffect(() => () => abortRef.current?.abort(), [])
 
   const canRun = prompt.trim().length > 0 && !busy
+
+  // 放大(超分):本机 Real-ESRGAN,把选中图放大到印刷级高清,结果插到网格最前(非破坏,原图还在)。
+  const upscale = async (img: StudioImage) => {
+    if (busy || upscalingId) return
+    setUpscalingId(img.generation_id)
+    try {
+      const { job_id } = await studioApi.upscale({ source_generation_id: img.generation_id, scale: 4 })
+      const job = await pollJob(job_id, {})
+      const result = job.result ?? {}
+      if (job.status !== 'done') { toast(result.message || '放大失败'); return }
+      if (result.blocked) { toast(result.message || '放大组件正在后台准备,稍后再试。'); return }
+      const url = pickImageUrl(result)
+      if (!url) { toast('放大完成但没拿到成图'); return }
+      const gid = typeof result.generation_id === 'string' ? result.generation_id : `up-${img.generation_id}`
+      setImages((imgs) => [{ ...img, generation_id: gid, poster_url: url }, ...imgs])
+      toast('已放大到高清(可点开看大图)')
+    } catch (e) {
+      toast(e instanceof Error ? e.message : '放大失败')
+    } finally { setUpscalingId(null) }
+  }
 
   const run = async () => {
     if (!canRun) return
@@ -117,10 +138,14 @@ export function CreationPage() {
             </h2>
             <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
               {images.map((img) => (
-                <button key={img.generation_id} type="button" onClick={() => setEnlarged(img)}
-                  className="group overflow-hidden rounded-xl transition-transform hover:scale-[1.01]" style={{ border: '1px solid var(--color-border)' }}>
-                  <img src={assetUrl(img.poster_url)} alt="" className="block h-auto w-full" loading="lazy" />
-                </button>
+                <div key={img.generation_id} className="group relative overflow-hidden rounded-xl" style={{ border: '1px solid var(--color-border)' }}>
+                  <img src={assetUrl(img.poster_url)} alt="" className="block h-auto w-full cursor-zoom-in transition-transform group-hover:scale-[1.01]" loading="lazy" onClick={() => setEnlarged(img)} />
+                  <button type="button" onClick={() => void upscale(img)} disabled={busy || upscalingId !== null}
+                    className="absolute bottom-2 right-2 rounded-md px-2 py-1 text-[11px] font-medium opacity-0 transition-opacity group-hover:opacity-100 disabled:opacity-60"
+                    style={{ background: 'rgba(0,0,0,0.62)', color: '#fff' }}>
+                    {upscalingId === img.generation_id ? '放大中…' : '放大 4×'}
+                  </button>
+                </div>
               ))}
             </div>
           </>
