@@ -18,7 +18,7 @@ const COUNTS = [1, 2, 3, 4]
 export function CreationPage() {
   const [prompt, setPrompt] = useState('')
   const [ratio, setRatio] = useState('3:4')
-  const [count, setCount] = useState(2)
+  const [count, setCount] = useState(3) // 调研定论:默认一次出 3 张挑一张(多候选+人挑保底)
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState(0)
   const [stage, setStage] = useState('')
@@ -158,9 +158,16 @@ export function CreationPage() {
         {/* 结果网格 */}
         {images.length > 0 && (
           <>
-            <h2 className="mb-2.5 mt-8 text-[12px] font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>
-              出图 · 点开看大图
-            </h2>
+            <div className="mb-2.5 mt-8 flex items-center justify-between">
+              <h2 className="text-[12px] font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>
+                出图 · 点开看大图
+              </h2>
+              <button type="button" onClick={() => void run()} disabled={busy}
+                className="rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors disabled:opacity-50"
+                style={{ background: 'var(--color-surface-container-low)', color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}>
+                {busy ? '生成中…' : '换一批'}
+              </button>
+            </div>
             <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
               {images.map((img) => (
                 <div key={img.generation_id} className="group relative overflow-hidden rounded-xl" style={{ border: '1px solid var(--color-border)' }}>
