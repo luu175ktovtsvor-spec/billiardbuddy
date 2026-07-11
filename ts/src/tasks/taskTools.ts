@@ -1132,15 +1132,8 @@ export function createBackgroundAgentTaskTool(opts: BackgroundAgentTaskOptions):
       required: ['task'],
     },
     isReadOnly: false,
-    requiresApproval: true,
-    approvalClass: 'spend',
-    approvalReasonFor(input) {
-      return {
-        what: '启动后台子代理任务',
-        why: typeof input.task === 'string' ? input.task.slice(0, 120) : '模型请求启动后台任务',
-        impact: '会继续调用模型直到后台任务完成或被取消。',
-      }
-    },
+    // 对齐 cc AgentTool.checkPermissions:非 auto 档一律 allow 自动放行子代理(auto 分支是 Anthropic 内部
+    // DCE 死代码)。内置 key 无按次计费,启动子代理不是"花钱/对外"动作,不弹审批(去掉旧 spend 门控)。
     async execute(input, ctx: ToolContext) {
       if (isForkQuerySource(ctx.querySource) || (ctx.messages && isInForkChild(ctx.messages))) {
         throw new Error('Fork worker 内部不能再次启动 start_background_agent_task。请直接使用当前可用工具完成任务。')

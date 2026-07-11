@@ -44,8 +44,7 @@ const REPL_PRIMITIVE_TOOL_NAMES = new Set([
 const APPROVAL_RANK: Record<ApprovalClass, number> = {
   file: 1,
   outreach: 2,
-  spend: 3,
-  destructive: 4,
+  destructive: 3,
 }
 
 interface ReplInput {
@@ -344,7 +343,6 @@ function stableJson(value: unknown): string {
 function approvalClassLabel(klass: ApprovalClass): string {
   if (klass === 'file') return '文件修改'
   if (klass === 'outreach') return '外部触达'
-  if (klass === 'spend') return '花费资源'
   return '高风险/不可逆'
 }
 

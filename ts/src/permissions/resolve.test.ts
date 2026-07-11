@@ -252,10 +252,10 @@ describe('resolvePermission 瀑布', () => {
     })
   })
 
-  test('bypassPermissions 档:spend 类按普通审批跳过,强确认另由 forceConfirm 表达', () => {
-    const t = tool({ requiresApproval: true, approvalClass: 'spend' })
+  test('bypassPermissions 档:outreach 类按普通审批跳过,强确认另由 forceConfirm 表达', () => {
+    const t = tool({ requiresApproval: true, approvalClass: 'outreach' })
     expect(resolvePermission(t, {}, ctx('bypassPermissions')).behavior).toBe('allow')
-    expect(resolvePermission(tool({ requiresApproval: true, approvalClass: 'spend', forceConfirm: true }), {}, ctx('bypassPermissions')).behavior).toBe('ask')
+    expect(resolvePermission(tool({ requiresApproval: true, approvalClass: 'outreach', forceConfirm: true }), {}, ctx('bypassPermissions')).behavior).toBe('ask')
   })
 
   test('safePrefixFor 命中 → allow(即便 requiresApproval)', () => {
