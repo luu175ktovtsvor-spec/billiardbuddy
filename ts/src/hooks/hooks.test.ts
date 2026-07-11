@@ -111,6 +111,18 @@ test('applyPreToolUseHooks:一个 hook allow + 一个 hook deny → deny 胜(den
   expect(denyThenAllow.deniedMessage).toBe('拒绝')
 })
 
+test('applyPreToolUseHooks:deny 不吞后续 hook 的 additionalContext(对齐 cc 全聚合再返回,2026-07-12 审计发现)', async () => {
+  const c = ctx()
+  const result = await applyPreToolUseHooks({
+    rules: [
+      { event: 'PreToolUse', matcher: '*', handler: () => ({ action: 'deny', message: '拒绝' }) },
+      { event: 'PreToolUse', matcher: '*', handler: () => ({ action: 'context', additionalContext: '后置说明' }) },
+    ],
+  }, 'run_command', { command: 'ls' }, c)
+  expect(result.deniedMessage).toBe('拒绝')
+  expect(result.additionalContext).toEqual(['后置说明'])
+})
+
 test('applyPreToolUseHooks:一个 hook allow + 一个 hook ask → ask 胜(allow 不生效)', async () => {
   const c = ctx()
   const result = await applyPreToolUseHooks({
@@ -166,7 +178,7 @@ test('runHookEvent:按事件和 matcher 执行,hook 抛错 fail-closed deny', as
   }
 })
 
-test('applyPreToolUseHooks:modify 之后可追加 context;deny 立即停止', async () => {
+test('applyPreToolUseHooks:modify 之后可追加 context;deny 胜出但仍跑完全部 hook(对齐 cc 全聚合)', async () => {
   const c = ctx()
   try {
     const modified = await applyPreToolUseHooks({
@@ -177,13 +189,15 @@ test('applyPreToolUseHooks:modify 之后可追加 context;deny 立即停止', as
     }, 'read_file', { path: 'a.txt' }, c)
     expect(modified).toEqual({ input: { path: 'b.txt' }, additionalContext: ['已改参'] })
 
+    // deny 最高优先(结果里带 deniedMessage),但**不短路**:deny 之后的 modify 仍改了 input——
+    // 对齐 cc 先跑完全部 hook 再聚合(2026-07-12 审计修:此前 deny 会吞掉后续 hook 的贡献)。
     const denied = await applyPreToolUseHooks({
       rules: [
         { event: 'PreToolUse', matcher: '*', handler: () => ({ action: 'deny', message: 'nope' }) },
-        { event: 'PreToolUse', matcher: '*', handler: () => ({ action: 'modify', updatedInput: {} }) },
+        { event: 'PreToolUse', matcher: '*', handler: () => ({ action: 'modify', updatedInput: { path: 'c.txt' } }) },
       ],
     }, 'read_file', { path: 'a.txt' }, c)
-    expect(denied).toEqual({ input: { path: 'a.txt' }, deniedMessage: 'nope', additionalContext: [] })
+    expect(denied).toEqual({ input: { path: 'c.txt' }, deniedMessage: 'nope', additionalContext: [] })
   } finally {
     rmSync(c.workspace.root, { recursive: true, force: true })
   }

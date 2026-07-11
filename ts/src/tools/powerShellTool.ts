@@ -233,11 +233,20 @@ export const powerShellTool: Tool<PowerShellToolInput> = {
   },
   forceConfirmFor(input) {
     if (typeof input?.command !== 'string') return true
+    // 灾难级命令(clear-disk/format-volume/remove-item 打盘符根)交 dangerous 档处理——对齐 cc:完全访问档放行,
+    // 不在此 forceConfirm(否则 bypass 免疫会拦住,与「灾难命令完全访问档放行」的口径冲突)。
+    if (fatalPowerShellReason(input.command)) return false
     const risk = classifyPowerShellRisk(input.command)
     return risk === 'destructive' || powerShellSecurityWarnings(input.command).length > 0
   },
   fatalReasonFor(input) {
     if (typeof input?.command !== 'string') return 'PowerShell command is missing'
+    return null
+  },
+  // 危险 PowerShell 命令(clear-disk/format-volume/remove-item 打盘符根等)走 dangerous 档
+  //(对齐 cc:default 弹卡问、完全访问档放行),不再无条件硬拒。
+  dangerousReasonFor(input) {
+    if (typeof input?.command !== 'string') return null
     return fatalPowerShellReason(input.command)
   },
   approvalReasonFor(input) {
@@ -273,8 +282,7 @@ export const powerShellTool: Tool<PowerShellToolInput> = {
   },
   async execute(input, ctx) {
     if (!input || typeof input.command !== 'string') throw new Error('PowerShell 需要 string 参数 command')
-    const fatal = fatalPowerShellReason(input.command)
-    if (fatal) throw new Error(`拒绝执行危险 PowerShell 命令:${fatal}`)
+    // 危险 PowerShell 命令不再执行层硬拒(对齐 cc):放行与否已由权限闸按档位决定,走到 execute 说明已过闸。
     const blockedSleep = detectBlockedPowerShellSleep(input.command)
     if (blockedSleep) throw new Error(`Blocked PowerShell sleep: ${blockedSleep}. Use a background task or a short polling command instead.`)
     return await runPowerShellInWorkspace(input, ctx)

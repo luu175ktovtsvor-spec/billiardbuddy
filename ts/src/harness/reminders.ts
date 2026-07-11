@@ -6,6 +6,8 @@ export const STEER_MARK = '[用户补充/纠偏]'
 export const STEER_EXTRA_TURNS = 2
 export const PROGRESS_REMIND_EVERY = 6
 export const VERIFY_PLAN_REMIND_EVERY = 3
+/** plan 模式提醒节流:每 N 个工具批次注入一次(对齐 cc TURNS_BETWEEN_ATTACHMENTS=5),不再每批必发。 */
+export const PLAN_REMIND_EVERY = 5
 export const PLAN_MODE_REMINDER =
   '你现在处于【计划模式】:只规划、不动手。用只读工具去探索,把完整、分步的计划讲清楚给老板;会实际改动的步骤先别做,等老板切到执行档或确认后再做。'
 
@@ -62,13 +64,18 @@ export function collectReminders(ctx: ToolContext): Array<{ kind: 'progress' | '
       text: `你已经连着调了 ${PROGRESS_REMIND_EVERY} 次工具没更新任务清单。若在做多步任务,记得用 todo_write 更新进度(当前约 ${pct}%),别让老板和你自己跟丢了。`,
     })
   }
-  if (ctx.permissionMode === 'plan') {
+  // plan 提醒节流(对齐 cc,不再每批必发):首批(count=0)必发,之后每 PLAN_REMIND_EVERY 批一次。
+  // count 由循环每批递增(planModeTurnCount),取模 0 = 该发。
+  if (ctx.permissionMode === 'plan' && (ctx.planModeTurnCount ?? 0) % PLAN_REMIND_EVERY === 0) {
     const root = ctx.workspace?.root
     const planFilePath = root ? getPlanFilePath(root, ctx.conversationId) : undefined
     out.push({ kind: 'plan', text: planModeReminder(planFilePath) })
   }
+  // verify_plan 提醒节流(对齐 cc TURNS_BETWEEN_REMINDERS 取模,不再跨阈值后每批无限重复):
+  // toolCallsSinceApproval 到 N、2N、3N… 各发一次,而非 ≥N 就每批发(乙审计发现的无限重复 bug)。
   const pending = ctx.pendingPlanVerification
-  if (pending && !pending.verificationCompleted && (pending.toolCallsSinceApproval ?? 0) >= VERIFY_PLAN_REMIND_EVERY) {
+  const sinceApproval = pending?.toolCallsSinceApproval ?? 0
+  if (pending && !pending.verificationCompleted && sinceApproval > 0 && sinceApproval % VERIFY_PLAN_REMIND_EVERY === 0) {
     out.push({ kind: 'verify_plan', text: VERIFY_PLAN_REMINDER })
   }
   return out

@@ -408,15 +408,20 @@ export async function applyPreToolUseHooks(
   let askMessage: string | undefined
   let allowRequested = false
   const decisions = await runHookEvent(registry, { event: 'PreToolUse', toolName, input }, ctx)
+  // 对齐 cc(utils/hooks.ts 聚合区):全部决策跑完再统一返回——deny 仍最高优先,但**不在循环里短路**,
+  // 否则排在 deny 之后的 hook 贡献的 additionalContext 会被丢(2026-07-12 审计发现的真分叉,首个 deny 的 message 生效)。
+  let denied = false
+  let deniedMessage: string | undefined
   for (const decision of decisions) {
-    if (decision.action === 'deny') return { input: nextInput, deniedMessage: decision.message, additionalContext }
+    if (decision.action === 'deny') { if (!denied) { denied = true; deniedMessage = decision.message } }
     if (decision.action === 'ask') { askRequested = true; askMessage = decision.message ?? askMessage }
     // deny>ask>allow 聚合优先级(对齐 cc):allow 独立记录,谁赢由消费方(hookAllowBypassesAsk)判——
-    // 本函数内已保证 deny 短路,ask 与 allow 同时出现时消费方按 askRequested 优先丢弃 allow 的效力。
+    // ask 与 allow 同时出现时消费方按 askRequested 优先丢弃 allow 的效力。
     if (decision.action === 'allow') allowRequested = true
     if (decision.action === 'modify') nextInput = decision.updatedInput
     if (decision.action === 'context') additionalContext.push(decision.additionalContext)
   }
+  if (denied) return { input: nextInput, deniedMessage, additionalContext }
   return {
     input: nextInput,
     additionalContext,

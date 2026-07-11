@@ -89,4 +89,25 @@ describe('collectReminders', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  test('plan 提醒节流(对齐 cc):首批(count=0)发,非整数倍批次不发,每 5 批一次', () => {
+    const at = (planModeTurnCount: number) =>
+      collectReminders(baseCtx({ permissionMode: 'plan', planModeTurnCount })).some(r => r.kind === 'plan')
+    expect(at(0)).toBe(true)   // 首批必发
+    expect(at(1)).toBe(false)  // 非整数倍 → 不发(不再每批必发)
+    expect(at(3)).toBe(false)
+    expect(at(5)).toBe(true)   // 每 5 批一次
+    expect(at(10)).toBe(true)
+  })
+
+  test('verify_plan 提醒节流(对齐 cc):到 N/2N/3N 各发一次,不再跨阈值后每批无限重复', () => {
+    const at = (toolCallsSinceApproval: number) =>
+      collectReminders(baseCtx({ pendingPlanVerification: { verificationCompleted: false, toolCallsSinceApproval } as ToolContext['pendingPlanVerification'] }))
+        .some(r => r.kind === 'verify_plan')
+    expect(at(1)).toBe(false)  // 未到阈值
+    expect(at(3)).toBe(true)   // 到 N → 发
+    expect(at(4)).toBe(false)  // N+1 → 不再每批发(旧 bug:≥N 每批无限重复)
+    expect(at(5)).toBe(false)
+    expect(at(6)).toBe(true)   // 2N → 再发
+  })
 })

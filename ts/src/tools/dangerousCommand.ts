@@ -20,15 +20,17 @@ const DANGEROUS_PATTERNS: RegExp[] = [
 ]
 
 /**
- * Windows/cmd.exe(及经 cmd 转手的 PowerShell)原生毁灭命令红线 —— 与上面的 POSIX 红线同档「直接拒」。
+ * Windows/cmd.exe(及经 cmd 转手的 PowerShell)原生毁灭命令红线 —— 与上面的 POSIX 红线同档判为「危险」。
  *
- * 姿态说明(#45,安全 P0):唯一出包平台是 Windows,而 **Windows 上没有 OS 级写围栏**
+ * ⚠️ 档位口径(2026-07-12 纯对标 cc,owner 拍板):`isDangerousCommand` 命中的命令**不再无条件硬拒**,
+ * 改走 dangerous 档 —— default/acceptEdits 弹卡问、**完全访问档放行**(对齐 cc:bypassPermissions 忽略 ask),
+ * 且 allow 规则不能让它免审批。接线见 runCommandTool/powerShellTool 的 `dangerousReasonFor` + resolve.ts 瀑布。
+ * 本文件只负责「哪些算危险」的识别(cmd.exe-aware 解析,不被引号/前导空白/续行转手绕过);放不放行由权限闸按档位定。
+ *
+ * 姿态说明(#45):唯一出包平台是 Windows,而 **Windows 上没有 OS 级写围栏**
  * (sandbox 的 `wrapCommand` 在 Windows 返回 null,run_command 走明文 `cmd /c`,见 runCommandTool.ts)。
- * 沙箱这层在主发行平台形同虚设,所以本机文件的护栏短期只剩三道、必须叠满:
- *   ① 这里的红线(灾难级 cmd/pwsh 命令直接拒,`isDangerousCommand` → run_command.execute 抛错 / fatalReason);
- *   ② 审批闸(`classifyCommandRisk` 把有破坏面的 cmd 动词判成 destructive/outreach,交用户逐条确认);
- *   ③ 改文件前自动备份可回滚(文件工具层,管不到任意 shell,故 ①② 是主防线)。
- * 中期真围栏(WindowsJobObjectLauncher / AppContainer)另计,先把红线补成 cmd.exe-aware,否则等于裸奔。
+ * 故本机文件护栏靠:① 危险识别(这里)→ 交权限闸按档位问/放;② 审批闸(`classifyCommandRisk` 把有破坏面的
+ * cmd 动词判成 destructive/outreach 逐条确认);③ 改文件前自动备份可回滚(文件工具层)。
  *
  * 解析口径按 cmd 语法:大小写不敏感(`/i`);开关是 `/x` 且顺序任意;路径可带引号;命令名锚在语句起始
  * (行首含前导空白 `^\s*` / `;&|` / 换行 / 子 shell `(`{` / `cmd /c ["']?` / `-c|-Command ["']?` 之后),
@@ -40,8 +42,8 @@ const DANGEROUS_PATTERNS: RegExp[] = [
  * (防手抄两份抄漏出洞——上一版正是把引号/前导空白锚抄漏,漏出 `cmd /c "del C:\*"`、`  format c:` 两个绕过)。
  * 刻意不把裸引号/裸空白塞进分隔符类:那样会把 `echo "run diskpart …"` 这类"引号里只是提到危险词"误杀;转手只认
  * `/c`、`-c|-Command` 两个真入口(其后允许一个可选起始引号),既堵转手又不误伤 echo。
- * 灾难级(格盘/分区/擦除/删卷影/删盘符根或用户根/通配全删)→ 直接拒;有破坏面但可控(删具体目录、结进程、
- * 删注册表键、夺权)→ 交审批闸(见 classifyWindowsShellCommand)。参考 cc-haha PowerShellTool 的
+ * 灾难级(格盘/分区/擦除/删卷影/删盘符根或用户根/通配全删)→ 危险档(default 问、完全访问档放行);有破坏面
+ * 但可控(删具体目录、结进程、删注册表键、夺权)→ 交审批闸(见 classifyWindowsShellCommand)。参考 cc-haha PowerShellTool 的
  * FATAL_PATTERNS(clear-disk/format-volume/remove-item 打盘符根/通配删),本仓库 powerShellTool.ts:202-206
  * 已移植同款口径,这里把它对齐到 cmd.exe 世界。
  */
@@ -91,6 +93,9 @@ export type CommandRisk = 'read' | 'file' | 'outreach' | 'destructive'
 
 export function isDangerousCommand(command: string): boolean {
   if (DANGEROUS_PATTERNS.some(re => re.test(command))) return true
+  // rm/rmdir 走 token 提取器统一识别危险目标(比正则全:catch `rm -rf ~root/.ssh` 删别人家目录、
+  // `rm -rf ${HOME}`/`$HOME` 环境变量展开、`rm -- -/...` flag 注入——正则 DANGEROUS_PATTERNS 都漏,2026-07-12 补)。
+  if (shellDangerousRemovalNeedsApproval(command)) return true
   // 先把命令归一成「cmd 实际会执行的样子」再跑 Windows 红线:剥行尾续行 `^\n`、剥中缀转义 `^`,
   // 并摘掉语句起始的 `call` / `for..in..do` 前缀,让被它们混淆/包住的危险命令重新落到语句起始锚上。
   // 挡住三类绕过:`format ^<换行>c:`(续行)、`de^l /s /q C:\*`(中缀 caret)、`call format c:` /
@@ -3642,6 +3647,10 @@ function extractRemovalPathArgs(args: string[]): string[] {
 function isDangerousRemovalPathToken(raw: string, cwd: string): boolean {
   const cleaned = raw.replace(/^['"]|['"]$/g, '')
   if (!cleaned) return false
+  // 无法静态解析的路径按危险处理(对齐 cc + 我方 workspace/pathValidation「~user/$ % 需人工确认」):
+  //  · ~user/~+/~- 波浪号变体(rm -rf ~root/.ssh 删别人家目录);· $ / ${ / % 环境变量展开(rm -rf ${HOME}/rm -rf $HOME)。
+  // 不放行由权限闸按档位定(default 问、完全访问档放行);这里只负责"标成危险",不静态猜它指向哪、免得漏。
+  if (/^~[^/\\]/.test(cleaned) || /[$%]/.test(cleaned)) return true
   const expanded = expandTildeForRemoval(cleaned).replace(/[\\/]+/g, '/')
   if (isDangerousRemovalPath(expanded)) return true
   const absolutePath = isAbsolute(expanded) ? expanded : resolve(cwd, expanded)
@@ -3929,6 +3938,12 @@ export function shellSandboxedGitCwdNeedsApproval(command: string, opts: { root:
   if (!opts.sandboxActive) return false
   if (resolve(opts.cwd) === resolve(opts.root)) return false
   return splitSegments(command).some(segment => isGitLikeCommand(segment))
+}
+
+/** 命令的写目标路径(`>` / `>>` / `2>` 等重定向目标)——供权限闸把文件路径规则(deny Edit(.env))
+ *  复用到 run_command 写(echo x > .env),对齐 cc「Apply Edit tool rules to any tool editing files」。 */
+export function extractRedirectionWriteTargets(command: string): string[] {
+  return extractOutputRedirectionTargets(command)
 }
 
 function extractOutputRedirectionTargets(command: string): string[] {

@@ -87,6 +87,8 @@ export interface ToolContext {
   steerInbox?: string[]
   /** 距上次更新进度已连着调了几次工具(到 PROGRESS_REMIND_EVERY 提醒一次)。 */
   requestsSinceProgress?: number
+  /** plan 模式下已过的工具批次数(每 PLAN_REMIND_EVERY 批注入一次 plan 提醒,节流,对齐 cc)。 */
+  planModeTurnCount?: number
   /** 读前置编辑保护:read_file 记录快照,edit_file 改前校验 mtime/size 防覆盖外部改动。 */
   fileReads?: Map<string, FileReadSnapshot>
   /** 本轮已向模型展示过的目录级项目指令 scope,用于 write_file 新建文件前避免绕过子目录 AGENTS.md。 */
@@ -172,8 +174,11 @@ export interface Tool<Input = unknown> {
   requiresUserInteractionFor?(input: Input, ctx: ToolContext): boolean
   /** 动态:按具体入参决定要不要审批(如"写到工作区外才要")。 */
   requiresApprovalFor?(input: Input, ctx: ToolContext): boolean
-  /** 硬拒理由:非空 = 直接拒、永不执行(删根/提权等)。 */
+  /** 硬拒理由:非空 = 直接拒、永不执行(SSRF/file:// 等安全漏洞防护)。 */
   fatalReasonFor?(input: Input, ctx: ToolContext): string | null
+  /** 危险命令理由:非空 = 危险(rm -rf 根/format/mkfs 等)。对齐 cc:default/acceptEdits 档弹卡问、
+   *  完全访问档放行、且 allow 规则不能让它免审批(比普通 needsApproval 强、比 fatal 弱)。 */
+  dangerousReasonFor?(input: Input, ctx: ToolContext): string | null
   /** 安全白名单:命中则即便 requiresApproval 也放行(如只读子命令 `git status`)。 */
   safePrefixFor?(input: Input, ctx: ToolContext): boolean
   /** 审批卡预览(人话 diff),异步(可能要读文件算 diff)。 */

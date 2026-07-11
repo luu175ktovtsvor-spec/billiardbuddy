@@ -52,7 +52,7 @@ import { bridgeUnsafeCommandMessage, type CommandLibrary, filterBridgeSafeComman
 import type { PromptCommand } from '../commands/types'
 import { loadPluginHookRegistry, loadWorkspaceHookRegistry } from '../hooks/hookConfig'
 import { applyElicitationHooks, applyElicitationResultHooks, applySessionEndHooks, configureHookTrust, type HookRegistry as ElicitationHookRegistry } from '../hooks/hooks'
-import { createDomainPackCommandLibrary, createDomainPackHookRegistry, createDomainPackTools, listPublicDomainPacks, mergeEnabledPacks, mergeHookRegistries, packIdForCommandName, registerDomainPackCommandAliases, resolveEnabledPacks, suggestedSkillNamesForPacks, type DomainPack } from '../packs/domainPacks'
+import { createDomainPackCommandLibrary, createDomainPackTools, listPublicDomainPacks, mergeEnabledPacks, mergeHookRegistries, packIdForCommandName, registerDomainPackCommandAliases, resolveEnabledPacks, suggestedSkillNamesForPacks, type DomainPack } from '../packs/domainPacks'
 import { clearThreadGoalHook, createGoalHookRegistry, ensureThreadGoalHookFromTranscript, getThreadGoal, parseGoalCommand, setThreadGoalHook } from '../goals/goalState'
 import { loadAgentsDir, type AgentDefinition } from '../agents/agentLoader'
 import { createAgentTaskSidechainTools, createAgentTaskTool } from '../agents/agentTool'
@@ -109,7 +109,7 @@ import type { FetchLike } from '../proxy/ProxyModel'
 import type { PermissionMode } from '../permissions/types'
 import { canonicalPermissionMode } from '../permissions/canonical'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
-import { getAutoMemDir, getUserConfigHomeDir } from '../harness/memoryNames'
+import { getAutoMemDir, getUserConfigHomeDir, MEMORY_DOT_DIR } from '../harness/memoryNames'
 import { existsSync, mkdirSync } from 'node:fs'
 import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 
@@ -416,9 +416,10 @@ function defaultCommandsRoot(): string {
 }
 
 function workspaceCommandRoots(workspaceRoot: string): string[] {
+  // 白标铁律(绝不用 .claude,与记忆/指令/存储同走 .billiardbuddy 命名空间):工作区自定义命令读
+  // `<ws>/.billiardbuddy/commands`。丁审计发现此前只读 .claude/.codex、与白标命名不一致,已收口。
   return [
-    join(workspaceRoot, '.claude', 'commands'),
-    join(workspaceRoot, '.codex', 'commands'),
+    join(workspaceRoot, MEMORY_DOT_DIR, 'commands'),
   ].filter(existsSync)
 }
 
@@ -1586,8 +1587,13 @@ export function startServer(opts: StartServerOptions = {}) {
     let systemPrompt = await buildSystemPrompt(workspace, { commands, skills, contextWindowTokens })
     const outputStyles = await loadOutputStyles()
     const outputStylePrompt = renderOutputStylePrompt(outputStyles, stringOr(rawBody.output_style ?? rawBody.outputStyle, ''))
+    // 领域包上下文(billiards 等)每回合直接进系统提示——它是"我是谁"的域身份、每回合都得在,
+    // 不再骑 SessionStart hook(那会让 SessionStart 每回合重触发,丁审计发现)。SessionStart hook 由此
+    // 回归 cc 语义:只首回合触发一次(见 loop.ts)。
+    const domainPackContext = enabledPacks.map(pack => pack.sessionStartContext).filter(Boolean).join('\n\n')
     const extraContext = [
       supportContext(rawBody),
+      domainPackContext,
     ].filter(Boolean).join('\n\n')
     if (outputStylePrompt || extraContext) {
       systemPrompt = [systemPrompt, outputStylePrompt, extraContext].filter(Boolean).join('\n\n')
@@ -1650,7 +1656,9 @@ export function startServer(opts: StartServerOptions = {}) {
     const pluginHookPaths = await resolveEnabledPluginHookConfigPaths(defaultPluginRoots(opts.env ?? process.env)).catch(() => [] as string[])
     const pluginHooks = pluginHookPaths.length > 0 ? await loadPluginHookRegistry(pluginHookPaths).catch(() => undefined) : undefined
     const transcriptMessagesForHooks = await transcript.load()
-    const hooks = mergeHookRegistries(createDomainPackHookRegistry(enabledPacks), configuredHooks, pluginHooks, createGoalHookRegistry(conversationId, transcriptMessagesForHooks))
+    // 领域包上下文已改走 systemPrompt(extraContext)每回合注入,不再进 SessionStart hook 注册表——
+    // 否则 SessionStart 每回合重触发(丁审计)。此处 hooks 只含用户配置/插件/目标 hook,SessionStart 由 loop 门控成首回合一次。
+    const hooks = mergeHookRegistries(configuredHooks, pluginHooks, createGoalHookRegistry(conversationId, transcriptMessagesForHooks))
     const initialSessionHooks = sessionSkillHooks.get(conversationId)
     const agents = await loadAgentsDir(opts.agentsRoot ?? defaultAgentsRoot())
     const controller = turns.start(conversationId)
@@ -2389,11 +2397,20 @@ export function startServer(opts: StartServerOptions = {}) {
     const approvalArgs = isRecord(body.approval_args) ? body.approval_args : isRecord(body.approvalArgs) ? body.approvalArgs : args
     const token = typeof body.token === 'string' ? body.token : undefined
     const conversationId = stringOr(body.conversation_id ?? body.conversationId, '')
-    // 审批续跑必须回到原会话的工作目录:请求没带 working_dir 时从 session meta 补齐。不补的话
-    // workspaceFromBody 兜底默认目录 → 相对路径的文件写错文件夹、transcript 追加还劈到别的项目分区(2026-07-12 真机逮到)。
-    if (conversationId && !stringOr(body.working_dir ?? body.workspaceRoot, '')) {
-      const meta = await sessions.get(conversationId).catch(() => undefined)
-      if (meta?.workspaceRoot) body = { ...body, working_dir: meta.workspaceRoot }
+    // 审批续跑必须回到原会话的上下文:请求没带 working_dir / enabled_packs 时从 session meta 补齐(自愈)。
+    // 不补 working_dir → workspaceFromBody 兜底默认目录,文件写错文件夹、transcript 劈错分区(2026-07-12 真机逮到)。
+    // 不补 enabled_packs → buildExecutionRegistry 只读 rawBody,审批放行的执行拿不到会话已挂的领域包工具/命令
+    //(与主回合 §1565 三源合并口径不一致;当前领域包工具都未 requiresApproval 故暂不可触发,但结构上是同类分叉,一并收口)。
+    if (conversationId) {
+      const missingWd = !stringOr(body.working_dir ?? body.workspaceRoot, '')
+      const missingPacks = resolveEnabledPacks(body).length === 0
+      if (missingWd || missingPacks) {
+        const meta = await sessions.get(conversationId).catch(() => undefined)
+        if (meta) {
+          if (missingWd && meta.workspaceRoot) body = { ...body, working_dir: meta.workspaceRoot }
+          if (missingPacks && Array.isArray(meta.enabledPacks) && meta.enabledPacks.length) body = { ...body, enabled_packs: meta.enabledPacks }
+        }
+      }
     }
     const built = await buildExecutionRegistry(body)
     try {

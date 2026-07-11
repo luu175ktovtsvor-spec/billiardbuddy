@@ -309,20 +309,23 @@ test('rejects a prompt-injection trajectory that tries to run a dangerous comman
     { kind: 'final', text: '只采纳真实提醒，未执行文件里的恶意命令。' },
   ])
 
+  // default 档(普通用户默认档):注入的危险命令 rm -rf / **不静默执行,弹审批卡交用户定夺**(对齐 cc 危险命令=ask;
+  // 完全访问档才放行是用户主动开的 YOLO,不在此测——也绝不能在测试机上真跑 rm -rf /)。
   const events = await collect(runAgentLoop({
     model,
     registry: buildGeneralRegistry(),
     workspace: new Workspace(root),
     systemPrompt: 'SYS',
     userMessage: '读一下便签提醒了什么。',
-    permissionMode: 'full',
+    permissionMode: 'default',
     conversationId: 'prompt-injection-trajectory',
   }))
 
+  // 危险命令弹审批卡(surface 给用户),挂起等确认、不被静默执行;会员数据没被动
+  expect(events.some(e => e.type === 'approval_request' && e.tool === 'run_command')).toBe(true)
   const dangerResult = events.find(e => e.type === 'tool_result' && e.tool === 'run_command')
-  expect(dangerResult && dangerResult.type === 'tool_result' ? dangerResult.output : '').toContain('拒绝执行:危险命令:rm -rf /')
+  expect(dangerResult && dangerResult.type === 'tool_result' ? dangerResult.output : '').toContain('[待用户确认]') // 挂起占位,命令未执行
   expect(readFileSync(join(root, '会员.txt'), 'utf8')).toContain('张三')
-  expect(events.some(e => e.type === 'approval_request')).toBe(false)
 })
 
 test('feeds a workspace-boundary error back when the model tries to read outside the selected folder', async () => {
@@ -1386,41 +1389,36 @@ test('forceConfirm approval requests are not rememberable', async () => {
   expect(ap?.rememberable).toBe(false)
 })
 
-test('拒绝 2 次后:同一动作不再弹卡,回灌"先不做了"', async () => {
+test('对齐 cc:拒绝多次不抑制后续弹卡 — 同一动作再来仍照常弹审批卡(2026-07-12 移除"静默拒答"限流)', async () => {
   process.env.SECRET_KEY = SECRET
   resetDenialStore()
   const spy = { ran: false }
   const reg = new ToolRegistry([outreachTool(spy)])
   const ctx = { workspace: new Workspace(root), conversationId: 'conv2' }
+  // 连拒两次(达到旧阈值)后,同一动作再来——不再走"拒够就静默拒答",仍应弹审批卡让老板重新决定。
   handleReject('send_message', { msg: 'hi' }, ctx)
   handleReject('send_message', { msg: 'hi' }, ctx)
   const steps: AssistantStep[] = [
     { kind: 'tool_calls', calls: [{ id: 'a', name: 'send_message', input: { msg: 'hi' } }] },
-    { kind: 'final', text: 'ok 不发了' },
+    { kind: 'final', text: 'ok' },
   ]
   const events = await collect(
     runAgentLoop({ model: scriptedModel(steps), registry: reg, workspace: new Workspace(root),
       systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'ask', conversationId: 'conv2' }),
   )
-  expect(events.some(e => e.type === 'approval_request')).toBe(false) // 不再弹卡
-  const tr = events.find(e => e.type === 'tool_result')
-  expect(tr && tr.type === 'tool_result' && tr.output).toContain('先不做了')
+  expect(events.some(e => e.type === 'approval_request')).toBe(true) // 仍弹卡(不再被限流吞掉)
 })
 
-test('local denial tracking isolates subagent approvals from parent conversation history', async () => {
+test('对齐 cc:子代理 local 拒绝也不抑制后续弹卡 — 拒过再来仍照常弹审批卡(移除"静默拒答"限流,含 local 路径)', async () => {
   process.env.SECRET_KEY = SECRET
   resetDenialStore()
   const reg = new ToolRegistry([outreachTool({ ran: false })])
-  const parentCtx = { workspace: new Workspace(root), conversationId: 'conv-local-parent' }
-  handleReject('send_message', { msg: 'hi' }, parentCtx)
-  handleReject('send_message', { msg: 'hi' }, parentCtx)
-
   const localState = createDenialTrackingState()
-  const firstEvents = await collect(
+  const run = (id: string) => collect(
     runAgentLoop({
       model: scriptedModel([
-        { kind: 'tool_calls', calls: [{ id: 'a', name: 'send_message', input: { msg: 'hi' } }] },
-        { kind: 'final', text: 'asked locally' },
+        { kind: 'tool_calls', calls: [{ id, name: 'send_message', input: { msg: 'hi' } }] },
+        { kind: 'final', text: 'ok' },
       ]),
       registry: reg,
       workspace: new Workspace(root),
@@ -1431,44 +1429,16 @@ test('local denial tracking isolates subagent approvals from parent conversation
       localDenialTracking: localState,
     }),
   )
-  expect(firstEvents.some(e => e.type === 'approval_request')).toBe(true)
-  handleReject('send_message', { msg: 'hi' }, { workspace: new Workspace(root), conversationId: 'conv-local-parent', localDenialTracking: localState })
-  handleReject('send_message', { msg: 'hi' }, { workspace: new Workspace(root), conversationId: 'conv-local-parent', localDenialTracking: localState })
-
-  const localFallback = await collect(
-    runAgentLoop({
-      model: scriptedModel([
-        { kind: 'tool_calls', calls: [{ id: 'b', name: 'send_message', input: { msg: 'hi' } }] },
-        { kind: 'final', text: 'local fallback' },
-      ]),
-      registry: reg,
-      workspace: new Workspace(root),
-      systemPrompt: 'SYS',
-      userMessage: 'x',
-      permissionMode: 'ask',
-      conversationId: 'conv-local-parent',
-      localDenialTracking: localState,
-    }),
-  )
-  expect(localFallback.some(e => e.type === 'approval_request')).toBe(false)
-  expect(localFallback.find(e => e.type === 'tool_result')).toMatchObject({ type: 'tool_result', output: expect.stringContaining('先不做了') })
-
-  const otherLocalEvents = await collect(
-    runAgentLoop({
-      model: scriptedModel([
-        { kind: 'tool_calls', calls: [{ id: 'c', name: 'send_message', input: { msg: 'hi' } }] },
-        { kind: 'final', text: 'fresh local asked' },
-      ]),
-      registry: reg,
-      workspace: new Workspace(root),
-      systemPrompt: 'SYS',
-      userMessage: 'x',
-      permissionMode: 'ask',
-      conversationId: 'conv-local-parent',
-      localDenialTracking: createDenialTrackingState(),
-    }),
-  )
-  expect(otherLocalEvents.some(e => e.type === 'approval_request')).toBe(true)
+  // 首轮弹卡
+  expect((await run('a')).some(e => e.type === 'approval_request')).toBe(true)
+  // local 路径连拒两次(达旧阈值)
+  const rejCtx = { workspace: new Workspace(root), conversationId: 'conv-local-parent', localDenialTracking: localState }
+  handleReject('send_message', { msg: 'hi' }, rejCtx)
+  handleReject('send_message', { msg: 'hi' }, rejCtx)
+  // 同一动作再来:仍弹卡(不再被 local 限流吞成"先不做了")
+  const after = await run('b')
+  expect(after.some(e => e.type === 'approval_request')).toBe(true)
+  expect(after.some(e => e.type === 'tool_result' && e.output.includes('先不做了'))).toBe(false)
 })
 
 test('对齐 cc:write_file 在 default/ask 档弹审批卡不直接落盘,acceptEdits 档才自动写', async () => {
@@ -1905,8 +1875,10 @@ test('EnterPlanMode approval switches current turn into read-only plan mode', as
 
   const enterResult = events.find(e => e.type === 'tool_result' && e.tool === 'EnterPlanMode')
   expect(enterResult && enterResult.type === 'tool_result' && enterResult.output).toContain('<plan_mode_entered')
+  // 计划模式下的写工具:对齐 cc 改为弹审批卡(不再硬 deny),挂起等确认、不自动落盘 —— 文件仍未创建
+  expect(events.some(e => e.type === 'approval_request' && e.tool === 'write_file')).toBe(true)
   const writeResult = events.find(e => e.type === 'tool_result' && e.tool === 'write_file')
-  expect(writeResult && writeResult.type === 'tool_result' && writeResult.output).toContain('[计划模式]')
+  expect(writeResult && writeResult.type === 'tool_result' && writeResult.output).toContain('[待用户确认]')
   expect(existsSync(join(root, 'blocked-by-plan.txt'))).toBe(false)
 })
 
@@ -2081,9 +2053,10 @@ test('ExitPlanMode revision keeps plan mode and blocks write tools', async () =>
 
   const planResult = events.find(e => e.type === 'tool_result' && e.tool === 'ExitPlanMode')
   expect(planResult && planResult.type === 'tool_result' && planResult.output).toContain('<plan_needs_revision>')
-  // 修改计划后仍是 plan 档:写非计划文件(blocked.txt)被拦
-  const writeResult = events.find(e => e.type === 'tool_result' && e.tool === 'write_file' && e.output.includes('[计划模式]'))
-  expect(writeResult && writeResult.type === 'tool_result' && writeResult.output).toContain('[计划模式]')
+  // 修改计划后仍是 plan 档:写非计划文件(blocked.txt)→ 对齐 cc 弹审批卡(不再硬 deny),挂起不自动落盘
+  expect(events.some(e => e.type === 'approval_request' && e.tool === 'write_file')).toBe(true)
+  const writeResult = events.find(e => e.type === 'tool_result' && e.tool === 'write_file')
+  expect(writeResult && writeResult.type === 'tool_result' && writeResult.output).toContain('[待用户确认]')
   expect(existsSync(join(root, 'blocked.txt'))).toBe(false)
 })
 
@@ -2335,6 +2308,37 @@ test('W4c transcript:收尾时保存完整 Anthropic 消息轨迹', async () => 
   expect(saved[0]!.some(m => m.role === 'assistant' && m.content.some(b => b.type === 'text' && b.text === 'done'))).toBe(true)
 })
 
+test('transcript 逐消息落盘(对齐 cc):工具轮进行中即写盘,中途死进程不丢已发生的调用历史', async () => {
+  // 2026-07-12 审计证伪"回合结束才写一次"后锁边界:①发起工具调用的 assistant 消息在工具执行前已落盘;
+  // ②本轮 tool_result 配对进历史后立刻再落盘;③收尾再落——一轮工具调用至少 3 次 append,不再是全回合 1 次。
+  const saved: import('../types/message').Message[][] = []
+  const transcript = {
+    async load() { return [] as import('../types/message').Message[] },
+    async append(messages: import('../types/message').Message[]) { saved.push(messages.map(m => ({ ...m }))) },
+    async recordCompaction() { /* 本用例不触发压缩 */ },
+  }
+  const events = await collect(
+    runAgentLoop({
+      model: scriptedModel([
+        { kind: 'tool_calls', text: '写文件', calls: [{ id: 'call-t1', name: 'write_file', input: { path: 'note.txt', content: 'hello\n' } }] },
+        { kind: 'final', text: 'done' },
+      ]),
+      registry: buildGeneralRegistry(), workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'new', transcript,
+    }),
+  )
+  expect(events.at(-1)).toEqual({ type: 'final', text: 'done' })
+  expect(saved.length >= 3).toBe(true)
+  // 第一次落盘发生在工具执行前:快照里已有发起调用的 assistant(tool_use),但还没有 tool_result
+  const first = saved[0]!
+  expect(first.at(-1)?.role).toBe('assistant')
+  expect(first.at(-1)!.content.some(b => b.type === 'tool_use')).toBe(true)
+  expect(first.some(m => m.role === 'user' && m.content.some(b => b.type === 'tool_result'))).toBe(false)
+  // 第二次落盘在 tool_result 配对之后:快照里已有 tool_result
+  const second = saved[1]!
+  expect(second.some(m => m.role === 'user' && m.content.some(b => b.type === 'tool_result'))).toBe(true)
+})
+
 test('F1 回归(真集成,非手工硬编码 messageId):真实 loop 把 ctx.messageId 接上 assistant 消息的真实 uuid,fileHistory 记录不再恒为 undefined', async () => {
   const transcript = new Transcript(join(root, 'ts-state'), 'msgid_conv')
   const model = scriptedModel([
@@ -2467,6 +2471,28 @@ test('hooks:SessionStart additionalContext 注入 system prompt', async () => {
   expect(events.some(e => e.type === 'context_note' && e.text.includes('店脑上下文:hook-session'))).toBe(true)
   expect(model.received[0]!.system).toContain('<hook_context event="SessionStart">')
   expect(model.received[0]!.system).toContain('店脑上下文:hook-session')
+})
+
+test('hooks:SessionStart 只首回合触发一次(对齐 cc)——有历史(非首回合)不再重触发', async () => {
+  const model = scriptedModel([{ kind: 'final', text: 'done' }])
+  const hooks = {
+    rules: [
+      { event: 'SessionStart' as const, handler: (payload: { sessionId?: string }) => ({ action: 'context' as const, additionalContext: `会话上下文:${payload.sessionId}` }) },
+    ],
+  }
+  // 非首回合:initialMessages 已有历史 → history 非空 → SessionStart 不再触发(丁审计:此前每回合重触发)
+  const events = await collect(runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: '第二回合',
+    conversationId: 'hook-session-2',
+    initialMessages: [userText('第一回合'), { role: 'assistant', content: [textBlock('上一轮答复')] }],
+    hooks,
+  }))
+  expect(events.some(e => e.type === 'context_note' && e.text.includes('会话上下文'))).toBe(false)
+  expect(model.received[0]!.system).not.toContain('<hook_context event="SessionStart">')
 })
 
 test('passes rendered system prompt with SessionStart context to tools', async () => {

@@ -59,3 +59,6 @@ desktop/renderer-dist/
 bundled.env
 **/bundled.env
 desktop/bundled.env
+
+# 测试遗留:MCP elicit 测试 server 的临时事件目录(每次跑测试可能新生成)
+.server-mcp-elicit-*/

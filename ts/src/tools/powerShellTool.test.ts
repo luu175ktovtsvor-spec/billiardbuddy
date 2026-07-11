@@ -88,11 +88,14 @@ describe('PowerShell tool permissions and execution shelling', () => {
     })
   })
 
-  test('fatal PowerShell commands are denied before approval modes', () => {
-    expect(resolvePermission(powerShellTool, { command: 'Remove-Item -Recurse -Force C:\\' }, { ...ctx, permissionMode: 'bypassPermissions' })).toMatchObject({
-      behavior: 'deny',
-      reason: { type: 'fatal' },
+  test('危险 PowerShell 命令走 dangerous 档(对齐 cc):default 弹卡问、完全访问档放行', () => {
+    // default 档 → 弹卡问(不再硬拒)
+    expect(resolvePermission(powerShellTool, { command: 'Remove-Item -Recurse -Force C:\\' }, { ...ctx, permissionMode: 'default' })).toMatchObject({
+      behavior: 'ask',
+      reason: { type: 'dangerous' },
     })
+    // 完全访问(bypassPermissions)档 → 放行(对齐 cc:bypass 忽略 ask)
+    expect(resolvePermission(powerShellTool, { command: 'Remove-Item -Recurse -Force C:\\' }, { ...ctx, permissionMode: 'bypassPermissions' }).behavior).toBe('allow')
   })
 
   test('preview exposes cwd, risk, warnings, and caps', async () => {

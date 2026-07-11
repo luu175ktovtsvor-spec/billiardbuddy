@@ -1,25 +1,25 @@
-// 跨请求(chat/reject/execute 各自独立 HTTP)拒绝计数,按 conversationId 存进程内。
-// 我们的语义 = 拒够了就"别再烦老板"。全故障安全:异常吞掉、退化成"无历史拒绝"。
+// 跨请求(chat/reject/execute 各自独立 HTTP)的「本次对话都允许」记忆,按 conversationId 存进程内。
+// 语义 = 老板点过「本次对话都允许」的动作,后续同参数自动放行(对齐 cc 会话级 allow)。
+// 全故障安全:异常吞掉、退化成"无历史"。
+//
+// ⚠️ 2026-07-12 按 owner 拍板对齐 cc:**移除了"拒够 N 次就静默拒答"的拒绝计数机制**(cc 的用户五档
+// 根本没有这套,只在 ant-only auto 模式才有)。项目里"不放行/静默拒答"这类限制没必要——审批就是审批,
+// 老板拒了就拒了这一次,不攒计数、不自动替他永久拒答。只保留"本次对话都允许"的正向记忆。
 
 import { stableStringify } from './canonical'
 
-export const DENIAL_FALLBACK = { perAction: 2, global: 20 } as const
 const MAX_CONVERSATIONS = 500
 
 interface Bucket {
-  byAction: Record<string, number>
   approvedActions: Record<string, true>
-  total: number
 }
 export interface DenialTrackingState {
-  byAction: Record<string, number>
   approvedActions: Record<string, true>
-  total: number
 }
 const store = new Map<string, Bucket>()
 
 export function createDenialTrackingState(): DenialTrackingState {
-  return { byAction: {}, approvedActions: {}, total: 0 }
+  return { approvedActions: {} }
 }
 
 export function actionKey(name: string, args: unknown): string {
@@ -27,7 +27,7 @@ export function actionKey(name: string, args: unknown): string {
     return `${name}:${stableStringify(args ?? {})}`
   } catch {
     // 故障安全:循环引用(sort 递归爆栈)/ BigInt 属性(JSON.stringify TypeError)等无法序列化 →
-    // 返稳定回退,别抛进 Task 5 审批闸。刻意用 <unserializable> 而非 {},免得撞正当空参拒绝。
+    // 返稳定回退,别抛进审批闸。刻意用 <unserializable> 而非 {},免得撞正当空参。
     return `${name}:<unserializable>`
   }
 }
@@ -40,50 +40,10 @@ function bucket(conversationId: string | undefined): Bucket | null {
       const oldest = store.keys().next().value // Map 插入序,淘汰最旧
       if (oldest !== undefined) store.delete(oldest)
     }
-    b = { byAction: {}, approvedActions: {}, total: 0 }
+    b = { approvedActions: {} }
     store.set(conversationId, b)
   }
   return b
-}
-
-export function recordDenial(conversationId: string | undefined, key: string): void {
-  try {
-    const b = bucket(conversationId)
-    if (!b) return
-    b.byAction[key] = (b.byAction[key] ?? 0) + 1
-    b.total += 1
-  } catch {
-    /* 故障安全:计数失败不拖垮审批 */
-  }
-}
-
-export function recordLocalDenial(state: DenialTrackingState, key: string): void {
-  try {
-    state.byAction[key] = (state.byAction[key] ?? 0) + 1
-    state.total += 1
-  } catch {
-    /* 故障安全 */
-  }
-}
-
-export function clearDenial(conversationId: string | undefined, key: string): void {
-  try {
-    const b = conversationId ? store.get(conversationId) : undefined
-    if (!b) return
-    delete b.byAction[key]
-    b.total = 0 // 老板在正常配合、解除全局回退锁,否则长会话零散攒够 20 会永久吞掉审批
-  } catch {
-    /* 故障安全 */
-  }
-}
-
-export function clearLocalDenial(state: DenialTrackingState, key: string): void {
-  try {
-    delete state.byAction[key]
-    state.total = 0
-  } catch {
-    /* 故障安全 */
-  }
 }
 
 export function recordApproval(conversationId: string | undefined, key: string): void {
@@ -91,7 +51,6 @@ export function recordApproval(conversationId: string | undefined, key: string):
     const b = bucket(conversationId)
     if (!b) return
     b.approvedActions[key] = true
-    delete b.byAction[key]
   } catch {
     /* 故障安全:记住审批失败不拖垮执行 */
   }
@@ -100,7 +59,6 @@ export function recordApproval(conversationId: string | undefined, key: string):
 export function recordLocalApproval(state: DenialTrackingState, key: string): void {
   try {
     state.approvedActions[key] = true
-    delete state.byAction[key]
   } catch {
     /* 故障安全 */
   }
@@ -142,25 +100,7 @@ export function shouldLocalAutoApprove(state: DenialTrackingState, key: string):
   }
 }
 
-export function shouldStopAsking(conversationId: string | undefined, key: string): boolean {
-  try {
-    const b = conversationId ? store.get(conversationId) : undefined
-    if (!b) return false
-    return b.total >= DENIAL_FALLBACK.global || (b.byAction[key] ?? 0) >= DENIAL_FALLBACK.perAction
-  } catch {
-    return false
-  }
-}
-
-export function shouldLocalStopAsking(state: DenialTrackingState, key: string): boolean {
-  try {
-    return state.total >= DENIAL_FALLBACK.global || (state.byAction[key] ?? 0) >= DENIAL_FALLBACK.perAction
-  } catch {
-    return false
-  }
-}
-
-/** 仅测试用:清空进程内计数,保证用例互不串。 */
+/** 仅测试用:清空进程内记忆,保证用例互不串。 */
 export function resetDenialStore(): void {
   store.clear()
 }

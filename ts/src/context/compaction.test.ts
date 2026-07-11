@@ -45,6 +45,18 @@ describe('splitForAutocompact', () => {
     expect(split!.recent.flatMap(m => m.content).some(b => b.type === 'tool_use' && b.id === 'b')).toBe(true)
     expect(split!.recent.flatMap(m => m.content).some(b => b.type === 'tool_result' && b.tool_use_id === 'b')).toBe(true)
   })
+
+  test('默认(KEEP_RECENT_MESSAGES=0)全量摘要不留逐字近段(对齐 cc auto-compact,近况靠压缩后重贴文件重建)', () => {
+    const messages: Message[] = [
+      userText('m1'), userText('m2'), userText('m3'), userText('m4'), userText('m5'),
+      userText('m6'), userText('m7'), userText('m8'),
+    ]
+    // 不传 keepRecentMessages → 用默认常量 0
+    const split = splitForAutocompact(messages, { minOldMessages: 2 })
+    expect(split).not.toBeNull()
+    expect(split!.recent).toEqual([])            // 零逐字近段
+    expect(split!.old.length).toBe(messages.length) // 全量进摘要
+  })
 })
 
 describe('compactPipeline', () => {

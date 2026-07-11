@@ -30,6 +30,8 @@ export type ClientMessage =
       remember_approval?: boolean
       /** 本会话的工作目录:审批放行的执行必须跑在原会话目录(漏带时后端从 session meta 自愈)。 */
       working_dir?: string
+      /** 本会话已挂的领域包:审批放行的执行要带,否则拿不到包工具/命令(漏带时后端从 session meta 自愈)。 */
+      enabled_packs?: string[]
     }
   | { type: 'reject'; tool: string; args: unknown; conversationId: string }
 

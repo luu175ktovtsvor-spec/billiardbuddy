@@ -91,6 +91,7 @@ export type DecisionReason =
   | { type: 'safePrefix' } // 工具自报的安全白名单 → 放行
   | { type: 'safetyCheck'; reason: string; classifierApprovable: boolean } // acceptEdits 敏感路径拦截:不走自动放行、退回询问
   | { type: 'planSkip' } // plan 模式跳过会动手的工具
+  | { type: 'dangerous'; text: string } // 危险命令(rm -rf 根/format/mkfs 等):default 弹卡问、完全访问档放行(对齐 cc,allow 规则不放行)
 
 /** 审批卡上给老板看的大白话理由(什么/为什么/影响)。 */
 export interface ApprovalReason {

@@ -76,6 +76,11 @@ export function createBackgroundCommandTool(tasks: TaskService): Tool<Background
     },
     fatalReasonFor(input) {
       if (typeof input?.command !== 'string' || !input.command.trim()) return 'run_command_background 缺少 command'
+      return null
+    },
+    // 危险命令走 dangerous 档(对齐 cc:default 弹卡问、完全访问档放行),不再无条件硬拒。
+    dangerousReasonFor(input) {
+      if (typeof input?.command !== 'string') return null
       return isDangerousCommand(input.command) ? `危险命令:${input.command}` : null
     },
     approvalReasonFor(input) {
@@ -88,7 +93,7 @@ export function createBackgroundCommandTool(tasks: TaskService): Tool<Background
     },
     async execute(input, ctx) {
       if (!input || typeof input.command !== 'string' || !input.command.trim()) throw new Error('run_command_background 需要 string 参数 command')
-      if (isDangerousCommand(input.command)) throw new Error(`拒绝执行危险命令：${input.command}`)
+      // 危险命令不再执行层硬拒(对齐 cc):放行与否已由权限闸按档位决定,走到 execute 说明已过闸。
       const command = input.command
       const cwd = await resolveCommandCwd(input.cwd, ctx)
       const timeoutMs = clampNumber(input.timeout_ms, DEFAULT_BG_TIMEOUT_MS, MAX_TIMEOUT_MS)

@@ -1541,7 +1541,8 @@ test('project_diagnostics rejects scripts with obvious write/fix side effects', 
 
 test('project_diagnostics treats explicit tests as file-class actions', () => {
   expect(resolvePermission(projectDiagnosticsTool, { check: 'typecheck' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({ behavior: 'allow' })
-  expect(resolvePermission(projectDiagnosticsTool, { check: 'test' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({ behavior: 'deny' })
+  // 跑测试属非只读(会跑用户代码)→ plan 档弹卡问(对齐 cc 不硬 deny)
+  expect(resolvePermission(projectDiagnosticsTool, { check: 'test' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({ behavior: 'ask' })
   expect(resolvePermission(projectDiagnosticsTool, { check: 'test' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({ behavior: 'allow' })
 })
 

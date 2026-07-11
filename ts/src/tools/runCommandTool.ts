@@ -70,6 +70,11 @@ export const runCommandTool: Tool<RunCommandInput> = {
   },
   fatalReasonFor(input) {
     if (typeof input?.command !== 'string') return 'run_command 缺少 command'
+    return null
+  },
+  // 危险命令走 dangerous 档(对齐 cc:default 弹卡问、完全访问档放行),不再无条件硬拒。
+  dangerousReasonFor(input) {
+    if (typeof input?.command !== 'string') return null
     return isDangerousCommand(input.command) ? `危险命令:${input.command}` : null
   },
   approvalReasonFor(input, ctx) {
@@ -107,7 +112,8 @@ export const runCommandTool: Tool<RunCommandInput> = {
   },
   async execute(input, ctx) {
     if (!input || typeof input.command !== 'string') throw new Error('run_command 需要 string 参数 command')
-    if (isDangerousCommand(input.command)) throw new Error(`拒绝执行危险命令：${input.command}`)
+    // 危险命令不再执行层硬拒(对齐 cc):放行与否已由权限闸按档位决定(default 弹卡问、完全访问档放行)——
+    // 走到 execute 说明已过闸(用户批准或 bypass),此处再 throw 会让批准后的命令假死。
     const wrapped = ctx.sandbox
       ? await ctx.sandbox.wrapCommand(input.command, { signal: ctx.signal, extraWritablePaths: additionalWorkingDirectoryPaths(ctx) })
       : null
