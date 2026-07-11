@@ -197,6 +197,13 @@ const WORKSPACE_TREE_SKIP = new Set([
   'output',
 ])
 
+// 原始文件字节预览的 content-type(右面板 <img> 渲染图片、pdf 等):按扩展名给,查不到走 octet-stream。
+const RAW_MIME_BY_EXT: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+  '.webp': 'image/webp', '.svg': 'image/svg+xml', '.bmp': 'image/bmp', '.ico': 'image/x-icon',
+  '.avif': 'image/avif', '.pdf': 'application/pdf',
+}
+
 async function summarizeWorkspaceTree(root: string, opts: { maxDepth?: number; maxEntries?: number } = {}) {
   const maxDepth = opts.maxDepth ?? 2
   const maxEntries = opts.maxEntries ?? 400
@@ -4022,6 +4029,25 @@ export function startServer(opts: StartServerOptions = {}) {
           return Response.json({ path: resolved, content: await readFile(resolved, 'utf8') })
         } catch (err) {
           return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 404 })
+        }
+      }
+
+      // 原始文件字节(右面板 <img> 渲染图片等二进制预览):按扩展名给 content-type;越界(../)拒绝。
+      // 图片/pdf 是二进制,不能走 fs/read 的 utf8 文本(读出来是乱码)——所以单开一条按字节返回的路。
+      if (url.pathname === '/api/v1/agent/fs/raw' && req.method === 'GET') {
+        const filePath = url.searchParams.get('path')
+        if (!filePath) return new Response('path required', { status: 400 })
+        try {
+          const wd = url.searchParams.get('working_dir') || getDefaultWorkspaceDir()
+          const resolved = resolve(wd, filePath)
+          if (relative(wd, resolved).startsWith('..')) return new Response('forbidden', { status: 403 }) // 挡 ../ 穿越
+          const info = await import('node:fs/promises').then(m => m.stat(resolved))
+          if (info.size > 20 * 1024 * 1024) return new Response('file too large', { status: 413 }) // 预览上限 20MB
+          const data = await readFile(resolved)
+          const type = RAW_MIME_BY_EXT[extname(resolved).toLowerCase()] ?? 'application/octet-stream'
+          return new Response(data, { headers: { 'Content-Type': type, 'Cache-Control': 'no-cache' } })
+        } catch (err) {
+          return new Response(err instanceof Error ? err.message : String(err), { status: 404 })
         }
       }
 

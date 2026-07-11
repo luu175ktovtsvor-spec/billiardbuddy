@@ -3,7 +3,7 @@
 //   第 4 栏 工作树   = FileTree(工作目录浏览器)。
 // 由 filePreviewStore.panelOpen 控制显隐;TopBar 的面板按钮 togglePanel;点工具行/树里文件 → openFile。
 import { useEffect, useState, type ReactNode } from 'react'
-import { useFilePreviewStore, type GitSummary, type OpenFile } from '../../stores/filePreviewStore'
+import { useFilePreviewStore, rawFileUrl, type GitSummary, type OpenFile } from '../../stores/filePreviewStore'
 import { useResizableWidth } from '../../lib/useResizableWidth'
 import { ResizeHandle } from '../shared/ResizeHandle'
 import { FileTree, fileColor } from './FileTree'
@@ -31,6 +31,25 @@ function FileContent({ file }: { file: OpenFile }) {
           <span className="min-w-0 flex-1 whitespace-pre-wrap break-all pr-3" style={{ color: 'var(--color-text-primary)' }}>{line.length ? line : ' '}</span>
         </div>
       ))}
+    </div>
+  )
+}
+
+function ImagePreview({ file }: { file: OpenFile }) {
+  const [errored, setErrored] = useState(false)
+  // 图片实时渲染(对齐 Codex 右面板可开图):<img> 直接加载 fs/raw 原始字节,居中等比缩放、铺满整栏。
+  return (
+    <div className="flex min-h-full items-center justify-center p-4" style={{ background: 'var(--color-app-main)' }}>
+      {errored ? (
+        <div className="text-[12px]" style={{ color: 'var(--color-error)' }}>图片加载失败:{baseName(file.path)}</div>
+      ) : (
+        <img
+          src={rawFileUrl(file.path)}
+          alt={baseName(file.path)}
+          onError={() => setErrored(true)}
+          style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 6 }}
+        />
+      )}
     </div>
   )
 }
@@ -152,10 +171,10 @@ export function FilePreviewPanel() {
           </div>
         )}
 
-        {/* 文件内容(工作目录原本的样子,铺满整栏到底)/ 无文件时环境卡。
+        {/* 图片实时渲染 / 文件内容(工作目录原本的样子,铺满整栏)/ 无文件时环境卡。
             普通打开不做 diff 对比——红绿修改/删除是后续「审查」tab 的事(对齐 Codex)。 */}
         <div className="min-h-0 flex-1 overflow-auto">
-          {active ? <FileContent file={active} /> : <EnvCard git={git} />}
+          {active ? (active.isImage ? <ImagePreview file={active} /> : <FileContent file={active} />) : <EnvCard git={git} />}
         </div>
       </div>
 
