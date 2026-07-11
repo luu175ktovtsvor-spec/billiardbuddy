@@ -5,7 +5,7 @@ import { useTabStore } from '../../stores/tabStore'
 import { useFilePreviewStore } from '../../stores/filePreviewStore'
 import { useUiStore } from '../../stores/uiStore'
 import { DRAG, NODRAG } from '../../lib/dragRegion'
-import { IconSearch, IconShareUp, IconClock, IconPanelRight, IconPanelLeft, IconTerminal } from '../shared/icons'
+import { IconSearch, IconShareUp, IconClock, IconPanelRight, IconPanelLeft } from '../shared/icons'
 import { ShareModal } from '../chat/ShareModal'
 import { t } from '../../i18n'
 
@@ -31,8 +31,6 @@ export function TopBar() {
   const togglePanel = useFilePreviewStore((s) => s.togglePanel)
   const collapsed = useUiStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
-  const terminalOpen = useUiStore((s) => s.terminalOpen)
-  const toggleTerminal = useUiStore((s) => s.toggleTerminal)
   const setPaletteOpen = useUiStore((s) => s.setPaletteOpen)
   const nav = useUiStore((s) => s.nav)
   const [shareOpen, setShareOpen] = useState(false)
@@ -48,13 +46,13 @@ export function TopBar() {
           {collapsed && <IconBtn label="展开侧栏" onClick={toggleSidebar}><IconPanelLeft size={18} /></IconBtn>}
           <span className="truncate text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{title}</span>
         </div>
-        {/* 对话专属操作(搜索/分享/历史/终端/面板)只在对话视图显示;已安排/插件页不挂。 */}
+        {/* 对话专属操作(搜索/分享/历史/面板)只在对话视图显示;已安排/插件页不挂。
+            终端按钮已随假终端下架(asar 核实 Codex 终端=真交互 xterm+pty,不是 AI 命令回放板;等真终端落地再回来)。 */}
         {isChat && (
           <div className="flex items-center gap-0.5" style={NODRAG}>
             <IconBtn label={t('topbar.search')} onClick={() => setPaletteOpen(true)}><IconSearch size={18} /></IconBtn>
             <IconBtn label={t('topbar.share')} onClick={() => setShareOpen(true)}><IconShareUp size={18} /></IconBtn>
             <IconBtn label={t('topbar.history')} onClick={() => setPaletteOpen(true)}><IconClock size={18} /></IconBtn>
-            <IconBtn label="终端(⌃`)" active={terminalOpen} onClick={toggleTerminal}><IconTerminal size={18} /></IconBtn>
             <IconBtn label={t('topbar.panel')} active={panelOpen} onClick={togglePanel}><IconPanelRight size={18} /></IconBtn>
           </div>
         )}
