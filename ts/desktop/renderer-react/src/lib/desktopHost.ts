@@ -10,6 +10,7 @@ export interface DesktopHost {
     getServerUrl: () => Promise<string>
   }
   pickWorkspace?: () => Promise<string | null>
+  pickVideoFiles?: () => Promise<string[] | null>
   onMenu?: (cb: (action: string) => void) => void
   preventSleep?: {
     start: () => Promise<boolean>
@@ -23,6 +24,7 @@ interface InjectedDesktopHost {
   platform?: string
   runtime?: { getServerUrl?: () => Promise<string> }
   pickWorkspace?: () => Promise<string | null>
+  pickVideoFiles?: () => Promise<string[] | null>
   onMenu?: (cb: (action: string) => void) => void
   preventSleep?: { start: () => Promise<boolean>; stop: () => Promise<boolean> }
 }
@@ -67,6 +69,7 @@ export function getDesktopHost(): DesktopHost {
       platform: injected.platform ?? 'unknown',
       runtime: { getServerUrl },
       pickWorkspace: injected.pickWorkspace?.bind(injected),
+      pickVideoFiles: injected.pickVideoFiles?.bind(injected),
       onMenu: injected.onMenu?.bind(injected),
       preventSleep: injected.preventSleep,
     }

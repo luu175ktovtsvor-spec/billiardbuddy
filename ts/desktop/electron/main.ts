@@ -307,6 +307,18 @@ function registerIpc(): void {
     return result.canceled || !result.filePaths[0] ? null : result.filePaths[0]
   })
 
+  // 原生视频文件多选(剪视频看板导入素材):返回选中视频的绝对路径数组或 null。
+  ipcMain.handle('desktop:pickVideoFiles', async () => {
+    const win = mainWindow ?? BrowserWindow.getAllWindows()[0]
+    if (!win) return null
+    const result = await dialog.showOpenDialog(win, {
+      properties: ['openFile', 'multiSelections'],
+      title: '选择要剪的视频素材',
+      filters: [{ name: '视频', extensions: ['mp4', 'mov', 'm4v', 'avi', 'mkv', 'webm', 'flv', 'wmv', '3gp'] }],
+    })
+    return result.canceled || result.filePaths.length === 0 ? null : result.filePaths
+  })
+
   // 防休眠:长任务(生图/渲染/长 agent 循环)开始时调 start、结束时调 stop,阻止系统睡眠打断任务。
   // 引用计数式,可并发多个长任务;渲染层从 desktopHost.preventSleep.start()/stop() 成对调用。
   ipcMain.handle('desktop:preventSleep:start', () => { startPreventSleep(); return isPreventingSleep() })

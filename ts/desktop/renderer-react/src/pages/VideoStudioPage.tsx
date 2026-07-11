@@ -5,6 +5,7 @@ import { useRef, useState } from 'react'
 import { PageHeader } from '../components/shared/PageKit'
 import { IconSparkles } from '../components/shared/icons'
 import { toast } from '../stores/toastStore'
+import { getDesktopHost } from '../lib/desktopHost'
 import { pollJob, assetUrl } from '../api/studio'
 import { videoApi, pickVideoUrl, type VideoPlanResult } from '../api/video'
 
@@ -35,6 +36,19 @@ export function VideoStudioPage() {
 
   const paths = pathsText.split('\n').map((s) => s.trim()).filter(Boolean)
   const canPlan = paths.length > 0 && !busy
+
+  // 原生选视频(桌面壳):选完把绝对路径并进文本框(去重);浏览器/无壳时提示粘贴路径。
+  const pickFiles = async () => {
+    const host = getDesktopHost()
+    if (!host.pickVideoFiles) { toast('桌面版可直接选文件;当前请把视频路径粘贴进来'); return }
+    const picked = await host.pickVideoFiles()
+    if (!picked || !picked.length) return
+    setPathsText((prev) => {
+      const existing = prev.split('\n').map((s) => s.trim()).filter(Boolean)
+      const merged = [...existing, ...picked.filter((p) => !existing.includes(p))]
+      return merged.join('\n')
+    })
+  }
 
   const doPlan = async () => {
     if (!canPlan) return
@@ -85,7 +99,10 @@ export function VideoStudioPage() {
 
         {/* 导入 + 参数 */}
         <div className="rounded-xl p-4" style={{ border: '1px solid var(--color-border)', background: 'var(--color-surface-container-low)' }}>
-          <label className="mb-1.5 block text-[12.5px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>视频素材(每行一个本机绝对路径)</label>
+          <div className="mb-1.5 flex items-center justify-between">
+            <label className="text-[12.5px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>视频素材(每行一个本机绝对路径)</label>
+            <button type="button" onClick={() => void pickFiles()} className="text-[12px] font-medium hover:underline" style={{ color: 'var(--color-brand)' }}>+ 选视频文件</button>
+          </div>
           <textarea
             value={pathsText}
             onChange={(e) => setPathsText(e.target.value)}
