@@ -35,6 +35,9 @@ export const IconPanelRight = (p: IconProps) => (
 export const IconSearch = (p: IconProps) => (
   <Svg {...p}><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></Svg>
 )
+export const IconMessage = (p: IconProps) => (
+  <Svg {...p}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></Svg>
+)
 export const IconFilter = (p: IconProps) => (
   <Svg {...p}>
     <line x1="21" x2="14" y1="4" y2="4" /><line x1="10" x2="3" y1="4" y2="4" />
@@ -121,4 +124,70 @@ export const IconSpinner = ({ size = 16, className, ...rest }: IconProps) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true" className={`qf-spin ${className ?? ''}`} {...rest}>
     <path d="M12 3a9 9 0 1 0 9 9" />
   </svg>
+)
+
+// —— 工具卡专用(ToolCallCard/ToolCallGroup):对齐 cc ToolCallBlock 的 material-symbols 图标位,
+// 换成我们手绘线性 SVG(不引 material-symbols 字体)。
+export const IconTerminal = (p: IconProps) => (
+  <Svg {...p}><rect width="20" height="16" x="2" y="4" rx="2" /><path d="m6 9 3 3-3 3" /><path d="M12 15h6" /></Svg>
+)
+export const IconFileText = (p: IconProps) => (
+  <Svg {...p}><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5z" /><path d="M14 2v6h6" /><path d="M9 13h6" /><path d="M9 17h6" /></Svg>
+)
+export const IconFilePlus = (p: IconProps) => (
+  <Svg {...p}><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5z" /><path d="M14 2v6h6" /><path d="M12 12v6" /><path d="M9 15h6" /></Svg>
+)
+export const IconFilePen = (p: IconProps) => (
+  <Svg {...p}><path d="M12.5 22H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8.5L20 7.5V12" /><path d="M14 2v6h6" /><path d="M21.2 15.2a1.6 1.6 0 0 1 2.3 2.3L18 23l-3 .8.8-3z" /></Svg>
+)
+export const IconGlobe2 = (p: IconProps) => (
+  <Svg {...p}><circle cx="12" cy="12" r="9" /><path d="M3 12h18" /><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18" /></Svg>
+)
+export const IconRobot = (p: IconProps) => (
+  <Svg {...p}><rect width="16" height="12" x="4" y="9" rx="2.5" /><path d="M12 9V5" /><circle cx="12" cy="4" r="1" /><path d="M9 14v1" /><path d="M15 14v1" /><path d="M2 13v3" /><path d="M22 13v3" /></Svg>
+)
+export const IconWrench = (p: IconProps) => (
+  <Svg {...p}><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.8 2.8-2-2z" /></Svg>
+)
+export const IconStopCircle = (p: IconProps) => (
+  <Svg {...p}><circle cx="12" cy="12" r="9" /><rect width="6" height="6" x="9" y="9" rx="1" /></Svg>
+)
+export const IconAlertCircle = (p: IconProps) => (
+  <Svg {...p}><circle cx="12" cy="12" r="9" /><path d="M12 8v5" /><path d="M12 16h.01" /></Svg>
+)
+export const IconCheckCircle = (p: IconProps) => (
+  <Svg {...p}><circle cx="12" cy="12" r="9" /><path d="m8.5 12.5 2.4 2.4L15.5 10" /></Svg>
+)
+export const IconChecklist = (p: IconProps) => (
+  <Svg {...p}><path d="m3 6 1.5 1.5L7 5" /><path d="M11 6h10" /><path d="m3 12 1.5 1.5L7 11" /><path d="M11 12h10" /><path d="m3 18 1.5 1.5L7 17" /><path d="M11 18h10" /></Svg>
+)
+export const IconRefresh = (p: IconProps) => (
+  <Svg {...p}><path d="M3 12a9 9 0 0 1 15.3-6.4L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-15.3 6.4L3 16" /><path d="M3 21v-5h5" /></Svg>
+)
+export const IconX = (p: IconProps) => (
+  <Svg {...p}><path d="M18 6 6 18" /><path d="m6 6 12 12" /></Svg>
+)
+export const IconEdit = (p: IconProps) => (
+  <Svg {...p}><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" /></Svg>
+)
+export const IconFolder = (p: IconProps) => (
+  <Svg {...p}><path d="M4 5h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z" /></Svg>
+)
+export const IconSettings = (p: IconProps) => (
+  <Svg {...p}><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></Svg>
+)
+export const IconPuzzle = (p: IconProps) => (
+  <Svg {...p}><path d="M9 3a2 2 0 0 1 4 0v1h3a1 1 0 0 1 1 1v3h1a2 2 0 0 1 0 4h-1v3a1 1 0 0 1-1 1h-3v1a2 2 0 0 1-4 0v-1H5a1 1 0 0 1-1-1v-3H3a2 2 0 0 1 0-4h1V5a1 1 0 0 1 1-1h4z" /></Svg>
+)
+export const IconPin = (p: IconProps) => (
+  <Svg {...p}><path d="M12 15v6" /><path d="M8.5 4h7l-1 6 2 3H7.5l2-3z" /></Svg>
+)
+export const IconArchive = (p: IconProps) => (
+  <Svg {...p}><rect x="3" y="4" width="18" height="4" rx="1" /><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8" /><path d="M10 12h4" /></Svg>
+)
+export const IconTrash = (p: IconProps) => (
+  <Svg {...p}><path d="M4 7h16" /><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" /><path d="M6 7v13a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7" /><path d="M10 11v6" /><path d="M14 11v6" /></Svg>
+)
+export const IconTarget = (p: IconProps) => (
+  <Svg {...p}><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="5" /><circle cx="12" cy="12" r="1.4" fill="currentColor" /></Svg>
 )

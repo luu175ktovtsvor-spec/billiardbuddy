@@ -1,19 +1,9 @@
-// 消息操作条(对标真机 WorkBuddy:助手消息下方一排单色线性图标 复制/赞/踩/朗读/分享/更多,
-// 后接 muted「共消耗 ◇ {cost}」+ 时间戳「7月5日 15:15」)。悬停消息组时淡入(qf-msg-actions)。
+// 助手消息操作条(照 Codex:悬停消息组时淡入一排单色线性图标 复制/赞/踩/朗读/分享/更多)。
+// owner 2026-07-11:去掉旧 WorkBuddy 残留——**不显示每条 token 消耗、不显示每条时间戳、不画底部虚线**
+// (Codex 这几样都没有,且前端不甩 token 角标)。只保留纯图标行。
 import { useState, type ReactNode } from 'react'
 import { IconCopy, IconThumbsUp, IconThumbsDown, IconVolume, IconShareUp, IconMoreHorizontal } from '../shared/icons'
 import { t } from '../../i18n'
-
-function fmtStamp(ts: number): string {
-  try {
-    const d = new Date(ts)
-    const hh = String(d.getHours()).padStart(2, '0')
-    const mm = String(d.getMinutes()).padStart(2, '0')
-    return `${d.getMonth() + 1}月${d.getDate()}日 ${hh}:${mm}`
-  } catch {
-    return ''
-  }
-}
 
 function ActBtn({ label, active, onClick, children }: { label: string; active?: boolean; onClick?: () => void; children: ReactNode }) {
   return (
@@ -31,7 +21,7 @@ function ActBtn({ label, active, onClick, children }: { label: string; active?: 
   )
 }
 
-export function MessageActions({ text, ts, tokens, pinned }: { text: string; ts?: number; tokens?: number; pinned?: boolean }) {
+export function MessageActions({ text, pinned }: { text: string; pinned?: boolean }) {
   const [copied, setCopied] = useState(false)
   const [vote, setVote] = useState<null | 'up' | 'down'>(null)
 
@@ -56,31 +46,27 @@ export function MessageActions({ text, ts, tokens, pinned }: { text: string; ts?
   }
 
   return (
-    <div className={`${pinned ? '' : 'qf-msg-actions'} mt-1 flex items-center gap-0.5`} data-testid="message-actions">
-      <ActBtn label={copied ? t('actions.copied') : t('actions.copy')} onClick={copy}>
-        <IconCopy size={14} />
-      </ActBtn>
-      <ActBtn label={t('actions.like')} active={vote === 'up'} onClick={() => setVote((v) => (v === 'up' ? null : 'up'))}>
-        <IconThumbsUp size={14} />
-      </ActBtn>
-      <ActBtn label={t('actions.dislike')} active={vote === 'down'} onClick={() => setVote((v) => (v === 'down' ? null : 'down'))}>
-        <IconThumbsDown size={14} />
-      </ActBtn>
-      <ActBtn label={t('actions.speak')} onClick={speak}>
-        <IconVolume size={14} />
-      </ActBtn>
-      <ActBtn label={t('actions.share')}>
-        <IconShareUp size={14} />
-      </ActBtn>
-      <ActBtn label={t('actions.more')}>
-        <IconMoreHorizontal size={14} />
-      </ActBtn>
-      {(typeof tokens === 'number' || typeof ts === 'number') && (
-        <span className="ml-2 flex items-center gap-2 text-xs tabular-nums" style={{ color: 'var(--color-text-tertiary)' }}>
-          {typeof tokens === 'number' && <span>{t('chat.consumed')} {tokens.toLocaleString()} tokens</span>}
-          {typeof ts === 'number' && <span>{fmtStamp(ts)}</span>}
-        </span>
-      )}
+    <div className={pinned ? '' : 'qf-msg-actions'}>
+      <div className="mt-1 flex items-center gap-0.5" data-testid="message-actions">
+        <ActBtn label={copied ? t('actions.copied') : t('actions.copy')} onClick={copy}>
+          <IconCopy size={14} />
+        </ActBtn>
+        <ActBtn label={t('actions.like')} active={vote === 'up'} onClick={() => setVote((v) => (v === 'up' ? null : 'up'))}>
+          <IconThumbsUp size={14} />
+        </ActBtn>
+        <ActBtn label={t('actions.dislike')} active={vote === 'down'} onClick={() => setVote((v) => (v === 'down' ? null : 'down'))}>
+          <IconThumbsDown size={14} />
+        </ActBtn>
+        <ActBtn label={t('actions.speak')} onClick={speak}>
+          <IconVolume size={14} />
+        </ActBtn>
+        <ActBtn label={t('actions.share')}>
+          <IconShareUp size={14} />
+        </ActBtn>
+        <ActBtn label={t('actions.more')}>
+          <IconMoreHorizontal size={14} />
+        </ActBtn>
+      </div>
     </div>
   )
 }

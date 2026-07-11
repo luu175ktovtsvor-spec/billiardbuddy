@@ -53,6 +53,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "diff": "^9.0.0",
     "dompurify": "^3.3.3",
+    "highlight.js": "^11.11.1",
     "jpeg-js": "^0.4.4",
     "jsqr": "^1.4.0",
     "marked": "^15.0.7",

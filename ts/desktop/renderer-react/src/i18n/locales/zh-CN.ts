@@ -1,5 +1,5 @@
-// zh-CN 文案包(三分法之「文字」):对标真机 WorkBuddy 中文写法 + 白标(去 Claude/Anthropic/WorkBuddy 字样)。
-// 标 ✓真机 的串来自解包 WorkBuddy.app i18n-7y71UgRW.js 逆向确认;其余按 owner 真机截图规范。
+// zh-CN 文案包(三分法之「文字」):对标 Codex 中文写法 + 白标(去 Claude/Anthropic/模型名字样)。
+// 现以 Codex 真机 + owner 截图为文案权威;个别串早期从别处逆向起底,以 Codex 为准校准。
 // 占位命名法:模型相关只用能力档代称(自动),绝不硬编码真实模型名。
 export const zhCN = {
   app: {
@@ -8,16 +8,23 @@ export const zhCN = {
     tagline: '你的本机 AI 助手',
   },
   sidebar: {
-    newTask: '新建任务',
-    assistant: '助理',
-    projects: '项目',
-    experts: '专家·技能·连接器',   // ✓真机 nav 写法
-    automation: '自动化',
-    more: '更多',
-    moreHint: '资料库·灵感',        // ✓真机 更多 右侧 muted
+    // 主导航按「两条线」重排(owner 2026-07-11):不照抄 WorkBuddy 的多助理协作 IA,每一项都接我们后端真实系统。
+    // ── A 线(喂给模型循环的东西)──
+    newTask: '新建任务',           // 开新会话 → chatStore
+    scheduled: '已安排',            // Codex:定时/计划任务入口(占位)
+    plugins: '插件',                // Codex:插件/扩展入口(占位)
+    domainExpert: '领域专家',       // 挂/切领域包 packs(通用 / 台球运营专家)→ /api/v1/agent/packs
+    domainExpertHint: '通用 / 台球',
+    skillsConnectors: '技能 · 连接器', // 斜杠技能 + MCP 连接器 → /api/v1/agent/skills + /api/v1/agent/mcp
+    // ── B 线(确定性产品工作台)──
+    workbench: '创作工作台',        // 生图 + 视频剪辑 → /api/v1/studio + /api/v1/video-edit
+    automation: '自动化',           // 定时任务 → /api/v1/scheduled-tasks
     sectionTasks: '任务',
-    sectionSpaces: '空间',
-    spaceGuide: '项目新手指引',
+    sectionProjects: '项目',        // Codex 左栏「项目」分组
+    sectionConversations: '对话',
+    archived: '已归档',
+    sectionWorkspace: '工作区',
+    workspaceDefault: '默认工作区',
     newChat: '新对话',
     sessions: '对话',
     empty: '还没有对话,点上面「新建任务」开个头。',
@@ -33,13 +40,77 @@ export const zhCN = {
     history: '历史记录',
     panel: '预览面板',
   },
+  // 分享弹窗
+  share: {
+    title: '分享对话',
+    hint: '生成一个只读链接',
+    copy: '复制链接',
+    note: '拿到链接的人能看到这段对话的只读副本;你之后的新消息不会同步过去。',
+  },
+  // 已安排(定时任务列表 · 照 Codex/ChatGPT「Scheduled tasks」)
+  scheduled: {
+    title: '已安排',
+    subtitle: '让管家按时自动跑一件事——每天盯一次数据、每周出一版文案,到点自动开一轮对话。',
+    newTask: '新建定时任务',
+    emptyTitle: '还没有定时任务',
+    emptyHint: '点右上角「新建定时任务」,让管家按你定的时间自动开工。',
+    comingSoon: '定时任务即将上线',
+    nextRun: '下次',
+    enabled: '已启用',
+    paused: '已暂停',
+    everyDay: '每天',
+    everyWeek: '每周',
+    run: '立即运行',
+    edit: '编辑',
+    remove: '删除',
+    pausedToggle: '暂停',
+    enableToggle: '启用',
+    // 新建/编辑弹窗
+    formNew: '新建定时任务',
+    formEdit: '编辑定时任务',
+    formContent: '让管家做什么',
+    formContentPlaceholder: '例如:汇总昨天的营业数据,发我一份',
+    formFreq: '频率',
+    formTime: '时间',
+    freqDay: '每天',
+    freqWeek: '每周',
+    freqMonth: '每月',
+    save: '保存',
+    cancel: '取消',
+  },
+  // 插件(能力/连接器 · 照 Codex/ChatGPT「Plugins / Connectors」)
+  plugins: {
+    title: '插件',
+    subtitle: '给管家接上更多能力和外部服务。开箱内置这些,也能接你自己的 MCP 服务器。',
+    add: '添加 MCP 服务器',
+    comingSoon: 'MCP 服务器接入即将上线',
+    builtinSection: '内置能力',
+    connectorSection: '连接器',
+    on: '已启用',
+    off: '未启用',
+    connect: '连接',
+    manage: '管理',
+    domainOn: '已挂载',
+    domainOff: '挂载',
+    // 添加 MCP 弹窗
+    mcpTitle: '添加 MCP 服务器',
+    mcpName: '名称',
+    mcpNamePlaceholder: '例如:我的 GitHub',
+    mcpTarget: '启动命令或地址',
+    mcpTargetPlaceholder: '例如:npx -y @modelcontextprotocol/server-github',
+    save: '保存',
+    cancel: '取消',
+    remove: '移除',
+  },
   chat: {
     // ✓真机占位写法(owner 截图):今天帮你做些什么？ + @ 引用 + / 技能
-    placeholder: '今天帮你做些什么？ @ 引用对话文件，/ 调用技能与指令',
+    placeholder: '要求后续变更',        // Codex 跟进态占位
+    placeholderNew: '随心输入',          // Codex 新任务态占位
     send: '发送',
     stop: '停止',
     thinking: '思考中…',
     working: '处理中…',
+    processed: '已处理',           // Codex 助手回复上方「已处理 Ns」
     running: '运行中…',
     connected: '已连接',
     connecting: '正在连接…',
@@ -53,9 +124,40 @@ export const zhCN = {
     toolDone: '已完成',
     toolFailed: '出错了',
     footer: '内容由 AI 生成，请核实重要信息',  // ✓真机页脚,一字不差
-    consumed: '共消耗',
+    generating: '生成回复中',
+    stepPrefix: '第',
+    stepSuffix: '步',
     attach: '添加附件',
     mic: '语音输入',
+    retryTitle: '重试中',
+    retryWaiting: '等待重试…',
+    fallbackTitle: '换个方式再等等',
+    fallbackDetail: '这次没法边想边说,等完整结果',
+  },
+  thinking: {
+    // 照 Codex Reasoning:进行中「深度思考」+ 呼吸点,完成「已思考」(过去式),旁边跟一行内容摘要预览
+    active: '深度思考',
+    done: '已思考',
+  },
+  tools: {
+    preparing: '准备中…',
+    running: '正在执行',
+    generating: '正在写内容',
+    editing: '正在改文件',
+    interrupted: '已中断',
+    error: '出错了',
+    toolInput: '调用参数',
+    toolOutput: '执行结果',
+    errorOutput: '错误信息',
+  },
+  toolGroup: {
+    expand: '展开',
+    collapse: '收起',
+    done: '已完成',
+  },
+  tasks: {
+    title: '任务清单',
+    dismissCompleted: '收起清单',
   },
   actions: {
     copy: '复制',
@@ -74,7 +176,7 @@ export const zhCN = {
     default: '默认权限',
     acceptEdits: '自动接受编辑',
     plan: '规划模式',
-    bypass: '完全访问权限',
+    bypass: '完全访问',
     defaultDesc: '每一步对外/改动都先问你',
     acceptEditsDesc: '自动接受文件改动,其余仍会问',
     planDesc: '只做规划、先不动手',

@@ -10,13 +10,21 @@ import type { ClientMessage, ServerMessage } from '../types/chat'
 import type { AgentEvent, ApprovalReason } from '../types/events'
 
 export type RunVerb = 'working' | 'thinking' | 'running'
-export type ToolStatus = 'running' | 'ok' | 'error'
+// 四态互斥(对齐 cc ToolCallBlock):running(进行中)/ ok(成功)/ error(失败)/ interrupted(中断)。
+export type ToolStatus = 'running' | 'ok' | 'error' | 'interrupted'
+
+export interface TodoItem {
+  task: string
+  status: 'pending' | 'in_progress' | 'done'
+}
 
 export type ChatBlock =
   | { id: string; kind: 'user'; text: string }
-  | { id: string; kind: 'assistant'; text: string; streaming: boolean; ts?: number; tokens?: number }
-  | { id: string; kind: 'thinking'; text: string }
-  | { id: string; kind: 'tool'; tool: string; input: unknown; output?: string; status: ToolStatus }
+  // durationSec:视觉皮改造新增(对齐 Codex 助手回合头「已完成 Xs」),只在 'done' 时快照一次,不参与任何状态机判断。
+  | { id: string; kind: 'assistant'; text: string; streaming: boolean; ts?: number; tokens?: number; durationSec?: number }
+  | { id: string; kind: 'thinking'; text: string; active: boolean }
+  // startedAt/endedAt:视觉皮改造新增(工具编组折叠头「已完成 Xs」耗时展示),纯展示用元数据。
+  | { id: string; kind: 'tool'; tool: string; input: unknown; output?: string; status: ToolStatus; liveChars?: number; startedAt?: number; endedAt?: number }
   | {
       id: string
       kind: 'approval'
@@ -29,7 +37,7 @@ export type ChatBlock =
       rememberable?: boolean
       resolved: null | 'approved' | 'approved-session' | 'rejected'
     }
-  | { id: string; kind: 'note'; text: string; variant: 'note' | 'steering' | 'error' | 'maxturns' }
+  | { id: string; kind: 'note'; text: string; variant: 'note' | 'steering' | 'error' | 'maxturns' | 'api_retry' | 'streaming_fallback' }
 
 interface ChatState {
   conversationId: string | null
@@ -38,6 +46,12 @@ interface ChatState {
   connected: boolean
   runVerb: RunVerb
   lastSeq: number
+  // 忙碌胶囊(对齐 cc StreamingIndicator):本回合秒表 + 估算已流出字数(字数/4≈token,和 cc 一致)。
+  elapsedSeconds: number
+  streamingChars: number
+  // todo 会话栏(对齐 cc SessionTaskBar):单一真相源从 todo_update 事件解析而来。
+  todos: TodoItem[]
+  todoBarExpanded: boolean
   // 内部流式指针
   _currentAssistantId: string | null
   _currentThinkingId: string | null
@@ -55,6 +69,8 @@ interface ChatState {
   reject: (blockId: string) => void
   interrupt: () => void
   disconnect: () => void
+  toggleTodoBar: () => void
+  dismissTodos: () => void
 }
 
 let seqCounter = 0
@@ -65,9 +81,116 @@ function newBlockId(): string {
 
 const ERROR_RE = /error|错误|失败|<tool_use_error>/i
 
+// —— 流式节流(file:line 对齐 cc-haha-ref desktop/src/stores/chatStore.ts:1743-1765 的
+// content_delta 50ms 攒批量刷:攒够 50ms 里到的所有 delta 一次性提交,不逐字触发重渲染)。
+let pendingAssistantDelta = ''
+let assistantFlushTimer: ReturnType<typeof setTimeout> | null = null
+let pendingThinkingDelta = ''
+let thinkingFlushTimer: ReturnType<typeof setTimeout> | null = null
+
+// todo_update 载荷是后端 formatTodoChecklist()(ts/src/types/todo.ts)吐出的大白话清单文本,
+// 前端从 ☐/◐/☑ 行标记反解析回结构化项,渲成 SessionTaskBar(对齐 cc SessionTaskBar 的结构化 task 列表)。
+const TODO_MARK_STATUS: Record<string, TodoItem['status']> = { '☐': 'pending', '◐': 'in_progress', '☑': 'done' }
+function parseTodoChecklist(content: string): TodoItem[] {
+  const items: TodoItem[] = []
+  for (const line of content.split('\n')) {
+    const m = /^\s*([☐◐☑])\s*(.+)$/.exec(line)
+    if (!m) continue
+    const status = TODO_MARK_STATUS[m[1]!]
+    const task = m[2]!.trim()
+    if (status && task) items.push({ task, status })
+  }
+  return items
+}
+
+type NoteVariant = Extract<ChatBlock, { kind: 'note' }>['variant']
+
 export const useChatStore = create<ChatState>((set, get) => {
+  let elapsedTimer: ReturnType<typeof setInterval> | null = null
+  function stopElapsedTimer() {
+    if (elapsedTimer) {
+      clearInterval(elapsedTimer)
+      elapsedTimer = null
+    }
+  }
+  /** 回合开始:秒表清零起跑 + 流出字数清零(对齐 cc ensureElapsedTimer)。 */
+  function startElapsedTimer() {
+    stopElapsedTimer()
+    const startedAt = Date.now()
+    set({ elapsedSeconds: 0, streamingChars: 0 })
+    elapsedTimer = setInterval(() => {
+      set({ elapsedSeconds: Math.floor((Date.now() - startedAt) / 1000) })
+    }, 1000)
+  }
+
+  function commitAssistantText(text: string) {
+    const id = get()._currentAssistantId
+    if (id) {
+      set((s) => ({
+        streamingChars: s.streamingChars + text.length,
+        blocks: s.blocks.map((b) => (b.id === id && b.kind === 'assistant' ? { ...b, text: b.text + text } : b)),
+      }))
+    } else {
+      const nid = newBlockId()
+      set((s) => ({
+        _currentAssistantId: nid,
+        streamingChars: s.streamingChars + text.length,
+        blocks: [...s.blocks, { id: nid, kind: 'assistant', text, streaming: true, ts: Date.now() }],
+      }))
+    }
+  }
+
+  function flushAssistantDelta() {
+    if (assistantFlushTimer) {
+      clearTimeout(assistantFlushTimer)
+      assistantFlushTimer = null
+    }
+    if (!pendingAssistantDelta) return
+    const text = pendingAssistantDelta
+    pendingAssistantDelta = ''
+    commitAssistantText(text)
+  }
+
+  /** final 事件的全文是权威覆盖,丢弃(不提交)尚未落地的 delta 残片,防止追加重复。 */
+  function discardAssistantBuffer() {
+    if (assistantFlushTimer) {
+      clearTimeout(assistantFlushTimer)
+      assistantFlushTimer = null
+    }
+    pendingAssistantDelta = ''
+  }
+
+  function commitThinkingText(text: string) {
+    const id = get()._currentThinkingId
+    if (id) {
+      set((s) => ({
+        streamingChars: s.streamingChars + text.length,
+        blocks: s.blocks.map((b) => (b.id === id && b.kind === 'thinking' ? { ...b, text: b.text + text } : b)),
+      }))
+    } else {
+      const nid = newBlockId()
+      set((s) => ({
+        _currentThinkingId: nid,
+        streamingChars: s.streamingChars + text.length,
+        blocks: [...s.blocks, { id: nid, kind: 'thinking', text, active: true }],
+      }))
+    }
+  }
+
+  function flushThinkingDelta() {
+    if (thinkingFlushTimer) {
+      clearTimeout(thinkingFlushTimer)
+      thinkingFlushTimer = null
+    }
+    if (!pendingThinkingDelta) return
+    const text = pendingThinkingDelta
+    pendingThinkingDelta = ''
+    commitThinkingText(text)
+  }
+
   /** 把当前正在流式的 assistant 气泡落定(一轮多气泡分块:工具/思考到来时收尾)。 */
   function settleAssistant() {
+    flushAssistantDelta()
     const id = get()._currentAssistantId
     if (!id) return
     set((s) => ({
@@ -77,7 +200,13 @@ export const useChatStore = create<ChatState>((set, get) => {
   }
 
   function finalizeThinking() {
-    if (get()._currentThinkingId) set({ _currentThinkingId: null })
+    flushThinkingDelta()
+    const id = get()._currentThinkingId
+    if (!id) return
+    set((s) => ({
+      _currentThinkingId: null,
+      blocks: s.blocks.map((b) => (b.id === id && b.kind === 'thinking' ? { ...b, active: false } : b)),
+    }))
   }
 
   /** 回合结束时把这轮真实 token 消耗(累计 total 的回合差)落到最后一条 assistant 气泡。 */
@@ -97,37 +226,49 @@ export const useChatStore = create<ChatState>((set, get) => {
     })
   }
 
+  /** 视觉皮改造新增(对齐助手回合头「已完成 Xs」):回合结束时把秒表定格值快照到最后一条 assistant 气泡,
+   *  纯展示用,不影响 elapsedSeconds 本身的运行时语义(它下一轮还会被 startElapsedTimer 清零复用)。 */
+  function attachTurnDuration() {
+    const seconds = get().elapsedSeconds
+    if (seconds <= 0) return
+    set((s) => {
+      const blocks = [...s.blocks]
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const b = blocks[i]
+        if (b && b.kind === 'assistant') {
+          blocks[i] = { ...b, durationSec: seconds }
+          break
+        }
+      }
+      return { blocks }
+    })
+  }
+
   function appendAssistant(text: string) {
-    const id = get()._currentAssistantId
-    if (id) {
-      set((s) => ({
-        blocks: s.blocks.map((b) => (b.id === id && b.kind === 'assistant' ? { ...b, text: b.text + text } : b)),
-      }))
-    } else {
-      const nid = newBlockId()
-      set((s) => ({
-        _currentAssistantId: nid,
-        blocks: [...s.blocks, { id: nid, kind: 'assistant', text, streaming: true, ts: Date.now() }],
-      }))
+    pendingAssistantDelta += text
+    if (!assistantFlushTimer) {
+      assistantFlushTimer = setTimeout(() => {
+        assistantFlushTimer = null
+        const buffered = pendingAssistantDelta
+        pendingAssistantDelta = ''
+        if (buffered) commitAssistantText(buffered)
+      }, 50)
     }
   }
 
   function appendThinking(text: string) {
-    const id = get()._currentThinkingId
-    if (id) {
-      set((s) => ({
-        blocks: s.blocks.map((b) => (b.id === id && b.kind === 'thinking' ? { ...b, text: b.text + text } : b)),
-      }))
-    } else {
-      const nid = newBlockId()
-      set((s) => ({
-        _currentThinkingId: nid,
-        blocks: [...s.blocks, { id: nid, kind: 'thinking', text }],
-      }))
+    pendingThinkingDelta += text
+    if (!thinkingFlushTimer) {
+      thinkingFlushTimer = setTimeout(() => {
+        thinkingFlushTimer = null
+        const buffered = pendingThinkingDelta
+        pendingThinkingDelta = ''
+        if (buffered) commitThinkingText(buffered)
+      }, 50)
     }
   }
 
-  function pushNote(text: string, variant: 'note' | 'steering' | 'error' | 'maxturns') {
+  function pushNote(text: string, variant: NoteVariant) {
     set((s) => ({ blocks: [...s.blocks, { id: newBlockId(), kind: 'note', text, variant }] }))
   }
 
@@ -162,7 +303,16 @@ export const useChatStore = create<ChatState>((set, get) => {
         set((s) => ({
           blocks: [
             ...s.blocks,
-            { id: newBlockId(), kind: 'tool', tool: `/${ev.name}`, input: ev.args, status: 'ok' as ToolStatus, output: undefined },
+            {
+              id: newBlockId(),
+              kind: 'tool',
+              tool: `/${ev.name}`,
+              input: ev.args,
+              status: 'ok' as ToolStatus,
+              output: undefined,
+              startedAt: Date.now(),
+              endedAt: Date.now(),
+            },
           ],
         }))
         break
@@ -173,7 +323,10 @@ export const useChatStore = create<ChatState>((set, get) => {
         set({ runVerb: 'running' })
         set((s) => ({
           // ⚠️ tool_call 载荷是 { tool, input }(不是 args)——对齐后端 harness/loop.ts。
-          blocks: [...s.blocks, { id: newBlockId(), kind: 'tool', tool: ev.tool, input: ev.input, status: 'running' as ToolStatus }],
+          blocks: [
+            ...s.blocks,
+            { id: newBlockId(), kind: 'tool', tool: ev.tool, input: ev.input, status: 'running' as ToolStatus, startedAt: Date.now() },
+          ],
         }))
         break
       }
@@ -185,7 +338,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           for (let i = blocks.length - 1; i >= 0; i--) {
             const b = blocks[i]
             if (b && b.kind === 'tool' && b.status === 'running') {
-              blocks[i] = { ...b, output: ev.output, status: isErr ? 'error' : 'ok' }
+              blocks[i] = { ...b, output: ev.output, status: isErr ? 'error' : 'ok', endedAt: Date.now() }
               break
             }
           }
@@ -195,7 +348,34 @@ export const useChatStore = create<ChatState>((set, get) => {
         settleAssistant()
         break
       }
+      case 'tool_progress': {
+        // 实时字数(对齐 cc liveStatsSummary):累加进最近一个同名 running 工具块,不新起块。
+        const chunkLen = typeof ev.chunk === 'string' ? ev.chunk.length : 0
+        if (chunkLen > 0) {
+          set((s) => {
+            const blocks = [...s.blocks]
+            for (let i = blocks.length - 1; i >= 0; i--) {
+              const b = blocks[i]
+              if (b && b.kind === 'tool' && b.status === 'running' && b.tool === ev.tool) {
+                blocks[i] = { ...b, liveChars: (b.liveChars ?? 0) + chunkLen }
+                break
+              }
+            }
+            return { blocks }
+          })
+        }
+        break
+      }
+      case 'todo_update': {
+        set({ todos: parseTodoChecklist(ev.content) })
+        break
+      }
+      case 'ask_question': {
+        // 占位类型:归下一批审批/计划 UI,本轮先不渲染、也不吞掉后续事件。
+        break
+      }
       case 'final': {
+        discardAssistantBuffer()
         finalizeThinking()
         // final 全文为权威:覆盖当前流式气泡;没有就新建一条。
         const id = get()._currentAssistantId
@@ -235,10 +415,23 @@ export const useChatStore = create<ChatState>((set, get) => {
       case 'steering':
         pushNote(`↳ 插话:${ev.content}`, 'steering')
         break
-      case 'context_note':
-        if (/压缩|compact/i.test(ev.text || '')) set({ runVerb: 'working' })
-        pushNote(ev.text, 'note')
+      case 'context_note': {
+        const text = ev.text || ''
+        // api_retry/streaming_fallback 两种严重度分开(对齐 cc StreamingIndicator 的琥珀/中性两条横幅):
+        // 后端目前只把这两类塞进通用 context_note 文本(远程子代理桥接场景,见 tasks/bridgeSdkEventProjection.ts),
+        // 前端按文本模式识别、渲成对应色阶的横幅,而不是普通灰字旁白。
+        if (/^Remote API retry/i.test(text)) {
+          pushNote(text, 'api_retry')
+          break
+        }
+        if (/^Remote streaming fallback/i.test(text)) {
+          pushNote(text, 'streaming_fallback')
+          break
+        }
+        if (/压缩|compact/i.test(text)) set({ runVerb: 'working' })
+        pushNote(text, 'note')
         break
+      }
       case 'max_turns_reached':
         pushNote('连着跑了好几个回合,先停下来喘口气。想接着做的话,回一句让它继续。', 'maxturns')
         break
@@ -251,9 +444,8 @@ export const useChatStore = create<ChatState>((set, get) => {
         finalizeThinking()
         settleAssistant()
         attachTurnTokens()
-        break
-      default:
-        // tool_progress / todo_update / ask_question 等本切片先不渲染(Block A/B 接)。
+        attachTurnDuration()
+        stopElapsedTimer()
         break
     }
   }
@@ -277,6 +469,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         set({ status: 'idle' })
         finalizeThinking()
         settleAssistant()
+        stopElapsedTimer()
         pushNote(`这次没跑成:${msg.error}`, 'error')
         break
       }
@@ -293,10 +486,24 @@ export const useChatStore = create<ChatState>((set, get) => {
         if (result) pushNote(`这一步已完成:${result.slice(0, 200)}`, 'note')
         break
       }
+      case 'interrupt_result': {
+        if (msg.interrupted) {
+          // 中断态(第 4 态):正在跑的工具卡原地翻成"已中断",流式气泡按已有内容落定(不丢部分产出)。
+          finalizeThinking()
+          settleAssistant()
+          stopElapsedTimer()
+          set((s) => ({
+            status: 'idle',
+            blocks: s.blocks.map((b) =>
+              b.kind === 'tool' && b.status === 'running' ? { ...b, status: 'interrupted' as ToolStatus, endedAt: Date.now() } : b,
+            ),
+          }))
+        }
+        break
+      }
       case 'pong':
       case 'reject_result':
       case 'steer_result':
-      case 'interrupt_result':
         break
     }
   }
@@ -314,6 +521,10 @@ export const useChatStore = create<ChatState>((set, get) => {
     connected: false,
     runVerb: 'working',
     lastSeq: 0,
+    elapsedSeconds: 0,
+    streamingChars: 0,
+    todos: [],
+    todoBarExpanded: false,
     _currentAssistantId: null,
     _currentThinkingId: null,
     _sawStreaming: false,
@@ -326,6 +537,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     startConversation: (conversationId, opts) => {
       // 切换会话:断掉旧的处理器,重置渲染态。
       get()._unsub?.()
+      stopElapsedTimer()
       set({
         conversationId,
         blocks: [],
@@ -333,6 +545,10 @@ export const useChatStore = create<ChatState>((set, get) => {
         connected: false,
         runVerb: 'working',
         lastSeq: 0,
+        elapsedSeconds: 0,
+        streamingChars: 0,
+        todos: [],
+        todoBarExpanded: false,
         _currentAssistantId: null,
         _currentThinkingId: null,
         _sawStreaming: false,
@@ -356,13 +572,19 @@ export const useChatStore = create<ChatState>((set, get) => {
         send({ type: 'steer', message: trimmed, conversationId: id })
         return
       }
+      // 上一轮的清单全done了、用户又开新一轮:收起旧清单(对齐 cc completedAndDismissed 的
+      // "用户已接着聊"语义,我们简化成新回合直接清空,别让上一轮的已完成清单赖着不走)。
+      const staleTodos = get().todos
+      const clearTodos = staleTodos.length > 0 && staleTodos.every((td) => td.status === 'done')
       set((s) => ({
         blocks: [...s.blocks, { id: newBlockId(), kind: 'user', text: trimmed }],
         status: 'running',
         runVerb: 'working',
         _sawStreaming: false,
         _turnBaselineTokens: get()._lastTotalTokens,
+        ...(clearTodos ? { todos: [] } : {}),
       }))
+      startElapsedTimer()
       const settings = useSettingsStore.getState()
       const run: Extract<ClientMessage, { type: 'run' }> = {
         type: 'run',
@@ -410,8 +632,12 @@ export const useChatStore = create<ChatState>((set, get) => {
       if (id) send({ type: 'interrupt', conversationId: id })
     },
 
+    toggleTodoBar: () => set((s) => ({ todoBarExpanded: !s.todoBarExpanded })),
+    dismissTodos: () => set({ todos: [], todoBarExpanded: false }),
+
     disconnect: () => {
       get()._unsub?.()
+      stopElapsedTimer()
       const id = get().conversationId
       if (id) wsManager.disconnect(id)
       set({ _unsub: null, connected: false })

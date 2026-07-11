@@ -150,7 +150,7 @@
 ## 6. 签名 / 自动更新
 
 ### 6a. Windows 签名(nsis)—— 🟡 判定:已知取舍(暂不阻断)
-**现状:** `electron-builder.yml:36-43`:`win.target: nsis`、**无证书(未签名)**、`nsis.oneClick:false` + `allowToChangeInstallationDirectory:true`。这与 `docs/苹果与Windows-签名与分发.md` 的策略一致:**Windows 先裸发**,SmartScreen 只是"警告、能绕"(更多信息→仍要运行),量起来后再上微软 Artifact Signing($10/月)。**这是 owner 已拍板的取舍,不算缺口**,但下载页要教用户"仍要运行"。
+**现状:** `electron-builder.yml:36-43`:`win.target: nsis`、**无证书(未签名)**、`nsis.oneClick:false` + `allowToChangeInstallationDirectory:true`。这与 `docs/苹果与Windows-签名与分发.md` 的策略一致:**Windows 先裸发**,SmartScreen 只是"警告、能绕"(更多信息→仍要运行),量起来后再上微软 Artifact Signing($10/月)。**这是 已拍板的取舍,不算缺口**,但下载页要教用户"仍要运行"。
 
 ### 6b. 自动更新(electron-updater)—— 🟡 判定:需补(关联 #13)
 **现状:** **`electron-updater` 不是依赖**(package.json 无)、**无 `autoUpdater` 代码**、`electron-builder.yml` **无 `publish` 段**(:45 只有一行注释"需 owner 定发布服务器后开启")。**Windows 用户现在没有任何更新通道**——修了 bug 也只能靠用户重新下载安装。

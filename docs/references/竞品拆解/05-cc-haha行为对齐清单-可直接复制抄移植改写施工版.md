@@ -3,7 +3,7 @@
 > 📌 状态:✅现行 · 2026-07-06 立 · 2026-07-10 校正口径 · **TS 内核行为对齐的逐条施工依据**（现行架构/进度以 `docs/当前架构与状态-总览.md` + `docs/plans/TS-cc-haha-v0.4.5-内核迁移矩阵-2026-07-07.md` 为准；旧配套主文档《TS-harness-重构-主开发文档》已删)
 > 来源:5 路子代理源码级盘点 cc-haha（`~/Desktop/cc-haha-ref`）。判据 = 桌面 GUI 产品 / 不懂技术的台球老板 / 驱动 OpenAI 兼容国产模型（MiMo/豆包）/ 不是 Claude。
 > 标注:借鉴价值 [必做 / 值得 / 改造后用 / 跳过 / 我们已领先] · 耦合 [纯逻辑 / 绑Claude / 绑终端TUI] · 路径根 = `~/Desktop/cc-haha-ref/`
-> ⚠️ 迁移口径(owner 2026-07-07 更新):**CC-Haha 可直接复制/抄/移植/改写,效果对齐是唯一硬标准**。`~/Desktop/cc-haha-ref/LICENSE` 允许 use/copy/modify/distribute/publish copies;复杂边界先写行为对齐测试,实现可直接移植/改写到本项目模块里。**行为对齐(同输入同输出/同决策跑绿)= 证明效果一样的硬闸。**
+> ⚠️ 迁移口径():**CC-Haha 可直接复制/抄/移植/改写,效果对齐是唯一硬标准**。`~/Desktop/cc-haha-ref/LICENSE` 允许 use/copy/modify/distribute/publish copies;复杂边界先写行为对齐测试,实现可直接移植/改写到本项目模块里。**行为对齐(同输入同输出/同决策跑绿)= 证明效果一样的硬闸。**
 
 ## 三个战略结论（先读）
 
@@ -124,7 +124,7 @@
 
 ---
 
-## 两个要 owner 拍板的决策点
+## 两个要 的决策点
 1. ✅ **已定（owner 2026-07-06 · 质量优先）：店脑记忆用 LLM 选择器**（cc-haha memdir，"理解意图 > 相似度"、Anthropic 亲选、便宜模型+按需+prefetch 控成本）；**台球运营专家 = 可挂载技能/领域包 + 包内向量定位**（不是纯向量捞碎片）。bge 保留（专家包内定位 + 未来记忆粗筛）。详见主文档 §6.1。
 2. **`billiards_mode` → 收成"包"**:泛化成 `enabled_packs`，`compose_agent_system_prompt` 三段拼装改成"遍历 packs 追加人设 + SessionStart hook 注入"，`_build_agent_registry` 改成"遍历 packs 合并工具"。收益:加行业=复制文件夹、能卖领域包、配 skillify 让用户自己加。
 

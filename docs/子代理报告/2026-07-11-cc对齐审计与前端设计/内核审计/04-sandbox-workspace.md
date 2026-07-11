@@ -9,7 +9,7 @@
 | # | 行为点 | cc + file:line | 我们 + file:line(或"缺") | 分类 | P | S/M/L |
 |---|---|---|---|---|---|---|
 | 1 | OS 沙箱生产接线(server 入口真的构造 Sandbox 注入 ctx) | `src/cli/print.ts:619-627`、`src/screens/REPL.tsx:2334-2338` | `ts/src/server/index.ts:974-976`(`buildSandbox`)+ 用于 `runAgentLoop`(:1953)与 `runApprovedTool`(:2364) | aligned(且已确认落地) | — | — |
-| 2 | 沙箱默认开关 | cc **默认 off**:`isSandboxingEnabled()`→`getSandboxEnabledSetting() = settings?.sandbox?.enabled ?? false`(`src/utils/sandbox/sandbox-adapter.ts:459-467`),需用户在 settings.json 显式 `sandbox.enabled:true` | 我们**默认 on**:`sandboxEnabled = opts.sandboxEnabled ?? (env.QF_OS_SANDBOX !== '0')`(`ts/src/server/index.ts:975`,注释标注"owner 2026-07-09") | intentional-delta(owner 已拍板加固,非漏抄) | 记录 | — |
+| 2 | 沙箱默认开关 | cc **默认 off**:`isSandboxingEnabled()`→`getSandboxEnabledSetting() = settings?.sandbox?.enabled ?? false`(`src/utils/sandbox/sandbox-adapter.ts:459-467`),需用户在 settings.json 显式 `sandbox.enabled:true` | 我们**默认 on**:`sandboxEnabled = opts.sandboxEnabled ?? (env.QF_OS_SANDBOX !== '0')`(`ts/src/server/index.ts:975`,注释标注"owner 2026-07-09") | intentional-delta(已拍板加固,非漏抄) | 记录 | — |
 | 3 | 降级路径 try/catch 覆盖 | `wrapWithSandbox` 内部捕获,`initialize()` 失败也吞掉(`sandbox-adapter.ts:782-788`) | `Sandbox.wrapCommand()` 把 `ensureInitialized`+`wrapArgv` 一并包在 try/catch,失败置 `degraded=true` 返回 null,绝不阻断命令(`ts/src/sandbox/sandbox.ts:34-45`) | aligned | — | — |
 | 4 | 工作区主边界 symlink 解析(区内 symlink 指向区外) | `getPathsForPermissionCheck`(`src/utils/fsOperations.ts:288-382`,收集 original+symlink链+realpath 全部落点)+ `isPathAllowed`(`src/utils/permissions/pathValidation.ts:141-267`) | `Workspace.resolve()` 先字符串边界(`pathBoundary.ts`)、再 `pathContainedInRoots(target,[root])`(`ts/src/workspace/symlinkResolve.ts:99-103`,同款"原路径+symlink链+realpath"算法);测试:`workspace.test.ts:23-45`(区内 symlink 指区外→拒,区内→放行) | aligned | — | — |
 | 5 | 网络围栏语义(库本体) | 库文档:allow-only、**默认全部拒绝**;未匹配 allow/deny 的 host **落到 `SandboxAskCallback`,无回调则拒**(`node_modules/@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-schemas.d.ts:60-80`)。cc 的回调 = 真实审批请求:REPL 走 UI 弹窗、print/SDK 走 `can_use_tool` 协议问宿主"Allow network connection to X?"(`src/cli/structuredIO.ts:735-757`) | `askCallback` 硬编码 `async()=>true`(`ts/src/sandbox/osSandbox.ts:43`),`allowedDomains:[]/deniedDomains:[]`(`ts/src/sandbox/osSandbox.ts:25`)——两者叠加 = **任意域名一律放行**,不是"没做网络围栏"而是**主动短路库自带的默认拒绝**,且没有任何审批介入 | deviation(比"未实现"更进一步的主动放行;已知晓但语义比自认的"网络放行"更彻底——完全无 ask 环节) | P2 | S(把 askCallback 从"恒 true"改成"恒 false"/或对齐真实 ask 即可,W4 范围) |
@@ -44,7 +44,7 @@
 - aligned:5(#1 生产接线、#3 降级 try/catch、#4 symlink 解析、#6 Windows 现状对等、#6 刁钻边界 5/6 项)
 - gap:5(#6a Windows 策略闸缺失、#7 additional-dirs 未联动 OS 沙箱、#8 OS 层 denyWrite 未接、#9 无逃生舱、#10 fullDiskAccess 冲突)
 - deviation:1(#5 网络围栏——主动短路库默认拒绝)
-- intentional-delta:1(#2 沙箱默认开关,owner 已拍板加固)
+- intentional-delta:1(#2 沙箱默认开关,已拍板加固)
 - 范围外/不算:0(本次未触及 CLI/TUI/vim/IDE/SSH/遥测)
 
 ## P0/P1 Top5(按严重度)

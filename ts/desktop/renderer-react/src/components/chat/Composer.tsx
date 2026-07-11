@@ -1,14 +1,22 @@
-// 输入框(核心 · 对标真机 WorkBuddy 布局 + 交互接 chatStore 对标 cc)。
-// 结构:大圆角矩形(16px)+ 细边框 + 柔和阴影 + surface 底;上=自增高 textarea,下=工具条。
-// 工具条 左:+ 附件(圆) · 权限档选择(盾+默认权限+⌄);右:忙时转圈 · 自动(白标模型代称+⌄) · 麦克 · 发送(实心深圆+上箭头)。
-// 交互:回车发送/Shift+回车换行(对齐 cc);/ 调起技能面板、@ 调起引用入口(先接住,细节后续)。
-import { useRef, useState, useEffect, type KeyboardEvent, type ReactNode, type CSSProperties } from 'react'
+// 输入框(核心 · 照 Codex:大圆角 + 底部工具条)。owner 2026-07-11:
+//  - 不显示模型名(白标),砍掉模型选择器;
+//  - 权限胶囊照 Codex:完全访问态橙色警告 + 点开权限菜单;
+//  - 斜杠命令:输入 / → 拉真实命令(/api/v1/agent/commands)浮层,上下键选、回车填入;
+//  - 占位照 Codex:新任务态「随心输入」/ 跟进态「要求后续变更」。
+import { useRef, useState, useEffect, useMemo, type KeyboardEvent, type ReactNode, type CSSProperties } from 'react'
 import { useChatStore } from '../../stores/chatStore'
 import { useSettingsStore } from '../../stores/settingsStore'
+import { useFilePreviewStore, type TreeEntry } from '../../stores/filePreviewStore'
+import { useComposerStore } from '../../stores/composerStore'
+import { useUiStore } from '../../stores/uiStore'
+import { api } from '../../api/client'
 import type { PermissionMode } from '../../types/chat'
 import {
-  IconPlus, IconShield, IconChevronDown, IconSparkles, IconMic, IconArrowUp, IconSpinner, IconSlash, IconAt,
+  IconPlus, IconShield, IconAlertCircle, IconChevronDown, IconMic, IconArrowUp, IconSpinner, IconSlash, IconAt,
+  IconFolder, IconTarget, IconChecklist, IconPuzzle,
 } from '../shared/icons'
+import { MenuList } from '../shared/Menu'
+import { toast } from '../../stores/toastStore'
 import { t } from '../../i18n'
 
 const PERM_ORDER: PermissionMode[] = ['default', 'acceptEdits', 'plan', 'bypassPermissions']
@@ -27,6 +35,9 @@ const PERM_DESC: Record<PermissionMode, string> = {
   dontAsk: t('permission.bypassDesc'),
 }
 
+interface SlashCommand { name: string; desc: string }
+interface CommandsResp { commands?: Array<{ name?: string; description?: string; desc?: string }> }
+
 /** 轻量下拉:相对容器 + 绝对菜单 + 透明遮罩兜底关闭。 */
 function Popover({ open, onClose, children, align = 'left' }: { open: boolean; onClose: () => void; children: ReactNode; align?: 'left' | 'right' }) {
   if (!open) return null
@@ -35,12 +46,7 @@ function Popover({ open, onClose, children, align = 'left' }: { open: boolean; o
       <div className="fixed inset-0 z-40" onClick={onClose} />
       <div
         className="absolute bottom-full z-50 mb-2 min-w-[220px] overflow-hidden rounded-xl py-1"
-        style={{
-          [align]: 0,
-          background: 'var(--color-surface)',
-          border: '1px solid var(--color-border)',
-          boxShadow: 'var(--shadow-popover)',
-        } as CSSProperties}
+        style={{ [align]: 0, background: 'var(--color-surface)', border: '1px solid var(--color-border)', boxShadow: 'var(--shadow-popover)' } as CSSProperties}
       >
         {children}
       </div>
@@ -48,13 +54,17 @@ function Popover({ open, onClose, children, align = 'left' }: { open: boolean; o
   )
 }
 
-function ToolbarChip({ onClick, children }: { onClick?: () => void; children: ReactNode }) {
+function ToolbarChip({ onClick, tone = 'default', children }: { onClick?: () => void; tone?: 'default' | 'warning'; children: ReactNode }) {
+  const warning = tone === 'warning'
   return (
     <button
       type="button"
       onClick={onClick}
       className="flex h-8 items-center gap-1.5 rounded-full px-2.5 text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
-      style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}
+      style={{
+        color: warning ? 'var(--color-warning)' : 'var(--color-text-secondary)',
+        border: `1px solid ${warning ? 'color-mix(in oklab, var(--color-warning) 40%, transparent)' : 'var(--color-border)'}`,
+      }}
     >
       {children}
     </button>
@@ -66,108 +76,178 @@ function PermissionMenu() {
   const setMode = useSettingsStore((s) => s.setPermissionMode)
   const [open, setOpen] = useState(false)
   const current = PERM_ORDER.includes(mode) ? mode : 'default'
+  const full = current === 'bypassPermissions'
   return (
     <div className="relative">
-      <ToolbarChip onClick={() => setOpen((v) => !v)}>
-        <IconShield size={15} />
+      <ToolbarChip onClick={() => setOpen((v) => !v)} tone={full ? 'warning' : 'default'}>
+        {full ? <IconAlertCircle size={15} /> : <IconShield size={15} />}
         <span>{PERM_LABEL[current]}</span>
         <IconChevronDown size={13} style={{ color: 'var(--color-text-tertiary)' }} />
       </ToolbarChip>
       <Popover open={open} onClose={() => setOpen(false)}>
-        {PERM_ORDER.map((m) => (
-          <button
-            key={m}
-            type="button"
-            onClick={() => { setMode(m); setOpen(false) }}
-            className="flex w-full items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
-          >
-            <span className="mt-0.5" style={{ color: m === current ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)' }}>
-              <IconShield size={15} />
-            </span>
-            <span className="min-w-0">
-              <span className="block text-[13px]" style={{ color: 'var(--color-text-primary)', fontWeight: m === current ? 600 : 400 }}>{PERM_LABEL[m]}</span>
-              <span className="block text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{PERM_DESC[m]}</span>
-            </span>
-          </button>
-        ))}
+        {PERM_ORDER.map((m) => {
+          const on = m === current
+          const warn = m === 'bypassPermissions'
+          return (
+            <button
+              key={m}
+              type="button"
+              onClick={() => { setMode(m); setOpen(false) }}
+              className="flex w-full items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
+            >
+              <span className="mt-0.5" style={{ color: warn ? 'var(--color-warning)' : on ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)' }}>
+                {warn ? <IconAlertCircle size={15} /> : <IconShield size={15} />}
+              </span>
+              <span className="min-w-0">
+                <span className="block text-[13px]" style={{ color: 'var(--color-text-primary)', fontWeight: on ? 600 : 400 }}>{PERM_LABEL[m]}</span>
+                <span className="block text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{PERM_DESC[m]}</span>
+              </span>
+            </button>
+          )
+        })}
       </Popover>
     </div>
   )
 }
 
-function ModelMenu() {
+/** + 添加菜单(照 Codex:文件和文件夹 / 目标 / 计划模式 / 插件)。动作后端就绪前占位。 */
+function AddMenu() {
   const [open, setOpen] = useState(false)
   return (
     <div className="relative">
-      <ToolbarChip onClick={() => setOpen((v) => !v)}>
-        <IconSparkles size={15} />
-        <span>{t('model.auto')}</span>
-        <IconChevronDown size={13} style={{ color: 'var(--color-text-tertiary)' }} />
-      </ToolbarChip>
-      <Popover open={open} onClose={() => setOpen(false)} align="right">
-        <button
-          type="button"
-          onClick={() => setOpen(false)}
-          className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
-        >
-          <IconSparkles size={15} style={{ color: 'var(--color-text-primary)' }} />
-          <span className="flex-1 text-[13px]" style={{ color: 'var(--color-text-primary)', fontWeight: 600 }}>{t('model.auto')}</span>
-          <span style={{ color: 'var(--color-text-primary)' }}>✓</span>
-        </button>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title={t('chat.attach')}
+        aria-label={t('chat.attach')}
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-[var(--color-surface-hover)]"
+        style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}
+      >
+        <IconPlus size={17} />
+      </button>
+      <Popover open={open} onClose={() => setOpen(false)}>
+        <MenuList
+          onClose={() => setOpen(false)}
+          items={[
+            { label: '文件和文件夹', icon: <IconFolder size={15} />, onClick: () => toast('文件选择即将上线') },
+            { label: '目标', icon: <IconTarget size={15} />, onClick: () => toast('目标设置即将上线') },
+            { label: '计划模式', icon: <IconChecklist size={15} />, onClick: () => { useSettingsStore.getState().setPermissionMode('plan'); toast('已切换到计划模式') } },
+            { label: '插件', icon: <IconPuzzle size={15} />, separatorBefore: true, onClick: () => useUiStore.getState().setNav('plugins') },
+          ]}
+        />
       </Popover>
     </div>
   )
 }
 
-/** / 技能面板 与 @ 引用入口(先接住:调起即显,选项细节后续)。 */
-function TokenPanel({ token, onPick }: { token: '/' | '@'; onPick: (text: string) => void }) {
-  const slashItems = [
-    { name: '/台球', desc: '挂载台球运营专家领域包' },
-    { name: '/帮助', desc: '看看能做什么' },
-    { name: '/清空', desc: '清空当前对话' },
-  ]
+/** 斜杠命令 / @ 引用浮层(/ 命令上下键选;@ 列工作区文件点击插入)。 */
+function TokenPanel({ token, commands, files, activeIdx, onPick }: { token: '/' | '@'; commands: SlashCommand[]; files: SlashCommand[]; activeIdx: number; onPick: (text: string) => void }) {
   return (
     <div
-      className="absolute bottom-full left-0 z-50 mb-2 w-[320px] overflow-hidden rounded-xl py-1"
+      className="absolute bottom-full left-0 z-50 mb-2 max-h-[280px] w-[360px] overflow-auto rounded-xl py-1"
       style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', boxShadow: 'var(--shadow-popover)' }}
     >
       {token === '/' ? (
-        slashItems.map((it) => (
+        commands.length === 0 ? (
+          <div className="px-3 py-2 text-[13px]" style={{ color: 'var(--color-text-tertiary)' }}>没有匹配的命令</div>
+        ) : (
+          commands.map((it, i) => (
+            <button
+              key={it.name}
+              type="button"
+              onMouseDown={(e) => { e.preventDefault(); onPick(it.name + ' ') }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors"
+              style={{ background: i === activeIdx ? 'var(--color-surface-selected)' : 'transparent' }}
+            >
+              <IconSlash size={14} style={{ color: 'var(--color-text-tertiary)' }} />
+              <span className="shrink-0 text-[13px]" style={{ color: 'var(--color-text-primary)' }}>{it.name}</span>
+              <span className="truncate text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{it.desc}</span>
+            </button>
+          ))
+        )
+      ) : files.length === 0 ? (
+        <div className="flex items-center gap-2 px-3 py-2">
+          <IconAt size={14} style={{ color: 'var(--color-text-tertiary)' }} />
+          <span className="text-[13px]" style={{ color: 'var(--color-text-secondary)' }}>没有匹配的文件</span>
+        </div>
+      ) : (
+        files.map((it) => (
           <button
             key={it.name}
             type="button"
             onMouseDown={(e) => { e.preventDefault(); onPick(it.name + ' ') }}
             className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
           >
-            <IconSlash size={14} style={{ color: 'var(--color-text-tertiary)' }} />
-            <span className="text-[13px]" style={{ color: 'var(--color-text-primary)' }}>{it.name}</span>
-            <span className="truncate text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{it.desc}</span>
+            <IconAt size={14} style={{ color: 'var(--color-text-tertiary)' }} />
+            <span className="shrink-0 text-[13px]" style={{ color: 'var(--color-text-primary)' }}>{it.desc}</span>
+            <span className="truncate text-xs" style={{ color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>{it.name.slice(1)}</span>
           </button>
         ))
-      ) : (
-        <div className="flex items-center gap-2 px-3 py-2">
-          <IconAt size={14} style={{ color: 'var(--color-text-tertiary)' }} />
-          <span className="text-[13px]" style={{ color: 'var(--color-text-secondary)' }}>引用对话 / 文件(即将支持)</span>
-        </div>
       )}
     </div>
   )
 }
 
+const FALLBACK_COMMANDS: SlashCommand[] = [
+  { name: '/台球', desc: '挂载台球运营专家领域包' },
+  { name: '/帮助', desc: '看看能做什么' },
+  { name: '/清空', desc: '清空当前对话' },
+]
+
 export function Composer() {
   const [value, setValue] = useState('')
   const status = useChatStore((s) => s.status)
+  const hasBlocks = useChatStore((s) => s.blocks.length > 0)
   const sendMessage = useChatStore((s) => s.sendMessage)
   const interrupt = useChatStore((s) => s.interrupt)
   const taRef = useRef<HTMLTextAreaElement>(null)
   const running = status === 'running'
 
-  // / 或 @ 起头 → 调起对应面板(先接住入口)。
-  const trimmedStart = value.trimStart()
-  const tokenPanel: '/' | '@' | null =
-    trimmedStart === value && value.length > 0 && (value[0] === '/' || value[0] === '@') && !value.includes(' ')
-      ? (value[0] as '/' | '@')
-      : null
+  const tree = useFilePreviewStore((s) => s.tree)
+  const loadWorkspace = useFilePreviewStore((s) => s.loadWorkspace)
+  const draft = useComposerStore((s) => s.draft)
+  const clearDraft = useComposerStore((s) => s.clearDraft)
+
+  const [allCommands, setAllCommands] = useState<SlashCommand[]>(FALLBACK_COMMANDS)
+  const [slashIdx, setSlashIdx] = useState(0)
+
+  // 拉真实斜杠命令(一次)。失败/空则保留内置兜底。
+  useEffect(() => {
+    void api
+      .get<CommandsResp>('/api/v1/agent/commands')
+      .then((res) => {
+        const raw = res?.commands ?? []
+        const cmds = raw
+          .map((c) => ({ name: (c.name ?? '').startsWith('/') ? c.name! : `/${c.name ?? ''}`, desc: c.description ?? c.desc ?? '' }))
+          .filter((c) => c.name.length > 1)
+        if (cmds.length) setAllCommands(cmds)
+      })
+      .catch(() => { /* 保留兜底 */ })
+  }, [])
+
+  // token 检测:/ 或 @ 起头且未含空格。
+  const token: '/' | '@' | null = value.length > 0 && (value[0] === '/' || value[0] === '@') && !value.includes(' ') ? (value[0] as '/' | '@') : null
+  const slashQuery = token === '/' ? value.slice(1).toLowerCase() : ''
+  const filteredCommands = token === '/' ? allCommands.filter((c) => c.name.toLowerCase().includes(slashQuery)).slice(0, 8) : []
+  const slashActive = token === '/' && filteredCommands.length > 0
+
+  // @ 引用:列工作树文件(点击插入 @路径);/ 的键盘逻辑不受影响
+  const atQuery = token === '@' ? value.slice(1).toLowerCase() : ''
+  const atFiles = useMemo(() => {
+    if (token !== '@' || !tree) return [] as SlashCommand[]
+    const out: SlashCommand[] = []
+    const walk = (nodes: TreeEntry[]) => {
+      for (const n of nodes) {
+        if (n.type === 'file' && `@${n.path}`.toLowerCase().includes(atQuery)) out.push({ name: `@${n.path}`, desc: n.name })
+        if (n.children) walk(n.children)
+      }
+    }
+    walk(tree)
+    return out.slice(0, 8)
+  }, [token, tree, atQuery])
+  useEffect(() => { if (token === '@' && tree === null) loadWorkspace() }, [token, tree, loadWorkspace])
+
+  useEffect(() => { setSlashIdx(0) }, [value])
 
   function autoGrow() {
     const ta = taRef.current
@@ -176,6 +256,16 @@ export function Composer() {
     ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`
   }
   useEffect(autoGrow, [value])
+
+  // 用户消息「编辑」→ 回填输入框重编。
+  useEffect(() => {
+    if (draft !== null) { setValue(draft); clearDraft(); taRef.current?.focus() }
+  }, [draft, clearDraft])
+
+  function pickSlash(cmd: SlashCommand) {
+    setValue(cmd.name + ' ')
+    taRef.current?.focus()
+  }
 
   function submit() {
     const text = value.trim()
@@ -186,6 +276,11 @@ export function Composer() {
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (slashActive) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setSlashIdx((i) => (i + 1) % filteredCommands.length); return }
+      if (e.key === 'ArrowUp') { e.preventDefault(); setSlashIdx((i) => (i - 1 + filteredCommands.length) % filteredCommands.length); return }
+      if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); pickSlash(filteredCommands[slashIdx]!); return }
+    }
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       submit()
@@ -193,13 +288,14 @@ export function Composer() {
   }
 
   const canSend = value.trim().length > 0
+  const placeholder = hasBlocks ? t('chat.placeholder') : t('chat.placeholderNew')
 
   return (
     <div className="px-4 pb-2 pt-1">
-      <div className="relative mx-auto w-full" style={{ maxWidth: 832 }}>
-        {tokenPanel && <TokenPanel token={tokenPanel} onPick={(txt) => { setValue(txt); taRef.current?.focus() }} />}
+      <div className="relative mx-auto w-full" style={{ maxWidth: 768 }}>
+        {token && <TokenPanel token={token} commands={filteredCommands} files={atFiles} activeIdx={slashIdx} onPick={(txt) => { setValue(txt); taRef.current?.focus() }} />}
         <div
-          className="flex flex-col rounded-2xl"
+          className="flex flex-col rounded-[22px]"
           style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border-strong)', boxShadow: 'var(--shadow-input)' }}
         >
           <textarea
@@ -208,32 +304,24 @@ export function Composer() {
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={onKeyDown}
             rows={1}
-            placeholder={t('chat.placeholder')}
+            placeholder={placeholder}
             className="resize-none bg-transparent px-4 pt-3.5 text-sm leading-relaxed outline-none"
             style={{ color: 'var(--color-text-primary)', maxHeight: 200 }}
             data-testid="chat-input"
           />
           {/* 底部工具条 */}
           <div className="flex items-center gap-2 px-2.5 pb-2.5 pt-1.5">
-            {/* 左:附件 + 权限 */}
-            <button
-              type="button"
-              title={t('chat.attach')}
-              aria-label={t('chat.attach')}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-[var(--color-surface-hover)]"
-              style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}
-            >
-              <IconPlus size={17} />
-            </button>
+            {/* 左:添加菜单 + 权限 */}
+            <AddMenu />
             <PermissionMenu />
             <div className="flex-1" />
-            {/* 右:忙时转圈 · 自动 · 麦克 · 发送 */}
+            {/* 右:忙时转圈 · 麦克 · 发送(不显示模型名) */}
             {running && <IconSpinner size={16} style={{ color: 'var(--color-text-tertiary)' }} />}
-            <ModelMenu />
             <button
               type="button"
               title={t('chat.mic')}
               aria-label={t('chat.mic')}
+              onClick={() => toast('语音输入即将上线')}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-[var(--color-surface-hover)]"
               style={{ color: 'var(--color-text-secondary)' }}
             >

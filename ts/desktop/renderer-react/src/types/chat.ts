@@ -50,4 +50,7 @@ export interface SessionSummary {
   updatedAt: number
   createdAt?: number
   workspaceRoot?: string
+  /** 前端本地态(置顶/归档);后端持久化就绪前只在本地生效。 */
+  pinned?: boolean
+  archived?: boolean
 }
