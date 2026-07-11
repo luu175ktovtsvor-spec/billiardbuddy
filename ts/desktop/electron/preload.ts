@@ -16,6 +16,10 @@ contextBridge.exposeInMainWorld('desktopHost', {
   pickVideoFiles: (): Promise<string[] | null> => ipcRenderer.invoke('desktop:pickVideoFiles'),
   // 原生「文件和文件夹」多选(对话框附件):返回选中路径数组或 null。
   pickPaths: (): Promise<string[] | null> => ipcRenderer.invoke('desktop:pickPaths'),
+  // 「打开/在 Finder 中显示」(右面板文件,对齐 Codex):openPath 用系统默认程序打开(返回非空字符串=
+  // 错误信息、''=成功);revealPath 在 Finder/文件管理器中定位文件。
+  openPath: (path: string): Promise<string> => ipcRenderer.invoke('desktop:openPath', path),
+  revealPath: (path: string): Promise<boolean> => ipcRenderer.invoke('desktop:revealPath', path),
   // 原生菜单动作回渲染进程(§8 菜单):目前只有"选择工作区";白名单单向 main→renderer。
   onMenu: (cb: (action: string) => void): void => {
     ipcRenderer.on('desktop:menu', (_e, action: string) => cb(action))

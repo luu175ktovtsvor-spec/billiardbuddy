@@ -31,9 +31,11 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-corner { background: transparent; }
 
-/* 键盘焦点环(照 Codex:蓝 focus,只在键盘 focus-visible 时出,鼠标点击不出) */
+/* 键盘焦点环(照 Codex:蓝 focus,只在键盘 focus-visible 时出,鼠标点击不出)。
+   ⚠️ 文本框(input/textarea)不上圈:规范规定文本框只要聚焦就命中 :focus-visible(鼠标点进去也出蓝圈),
+   输入框常年带圈很怪(owner 2026-07-12 点名清理);光标本身就是聚焦指示,Codex 输入框也无圈。 */
 :focus { outline: none; }
-button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, [role="button"]:focus-visible, [tabindex]:focus-visible {
+button:focus-visible, a:focus-visible, [role="button"]:focus-visible, [tabindex]:focus-visible {
   outline: 2px solid var(--color-focus-ring);
   outline-offset: 1px;
   border-radius: 6px;
@@ -100,6 +102,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .qf-markdown a { color: var(--color-brand); text-decoration: none; }
 .qf-markdown a:hover { text-decoration: underline; }
 .qf-markdown code { font-family: var(--font-mono); font-size: .9em; background: var(--color-surface-container); padding: .1em .35em; border-radius: 4px; }
+/* —— 正文文件名 chip(对齐 Codex markdown.fileReference:普通=灰底 chip、表格类=蓝链接+类型色点;蓝 = 自家品牌浅蓝,不抄 Codex 原色)。 —— */
+.qf-file-chip { display: inline-flex; align-items: center; gap: .35em; max-width: 100%; font-family: var(--font-mono); font-size: .9em; background: var(--color-surface-container); padding: .1em .45em; border-radius: 5px; color: var(--color-text-primary); cursor: pointer; vertical-align: baseline; white-space: normal; word-break: break-all; text-align: left; }
+.qf-file-chip:hover { background: var(--color-surface-hover); }
+.qf-file-chip--sheet { background: transparent; padding: .1em .2em; color: var(--color-link); }
+.qf-file-chip--sheet:hover { background: transparent; text-decoration: underline; color: var(--color-link-hover); }
+.qf-file-chip-dot { width: 7px; height: 7px; border-radius: 2px; flex-shrink: 0; }
 .qf-markdown pre { position: relative; background: var(--color-surface-container-lowest); border: 1px solid var(--color-border); border-radius: 8px; padding: 12px; overflow-x: auto; margin: .6em 0; }
 /* 代码块「复制」按钮(hover 显现,照 Codex)。 */
 .qf-code-copy { position: absolute; top: 6px; right: 6px; font-size: 11px; line-height: 1; padding: 3px 7px; border-radius: 6px; color: var(--color-text-tertiary); background: var(--color-surface); border: 1px solid var(--color-border); opacity: 0; transition: opacity .15s ease; cursor: pointer; }

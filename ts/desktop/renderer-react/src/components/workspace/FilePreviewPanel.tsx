@@ -2,13 +2,15 @@
 //   第 3 栏 文件展示 = tab 条(每个打开的文件一个 tab,可关) + 面包屑 + 文件内容(带行号);无文件时显示「环境信息」卡。
 //   第 4 栏 工作树   = FileTree(工作目录浏览器)。
 // 由 filePreviewStore.panelOpen 控制显隐;TopBar 的面板按钮 togglePanel;点工具行/树里文件 → openFile。
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useFilePreviewStore, rawFileUrl, type GitSummary, type OpenFile } from '../../stores/filePreviewStore'
+import { toast } from '../../stores/toastStore'
 import { useResizableWidth } from '../../lib/useResizableWidth'
+import { getDesktopHost } from '../../lib/desktopHost'
 import { ResizeHandle } from '../shared/ResizeHandle'
 import { FileTree, fileColor } from './FileTree'
 import { ContextMenu } from '../shared/Menu'
-import { IconX } from '../shared/icons'
+import { IconChevronDown, IconFileText, IconX } from '../shared/icons'
 
 function baseName(p: string): string {
   return p.split('/').pop() || p
@@ -63,6 +65,71 @@ function EnvRow({ label, value }: { label: string; value: ReactNode }) {
   )
 }
 
+function LauncherRow({ icon, label, onClick }: { icon: ReactNode; label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
+      style={{ color: 'var(--color-text-primary)' }}
+    >
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center" style={{ color: 'var(--color-text-tertiary)' }}>{icon}</span>
+      {label}
+    </button>
+  )
+}
+
+const NOTABLE_FILES = ['README.md', 'CLAUDE.md', 'AGENTS.md', 'package.json']
+
+/** 空态 = Codex「新建标签页」轻量版:文件 入口 + 「推荐」文件(终端入口等真 xterm+pty 终端落地再加;侧边任务/浏览器暂略);环境卡保留下方。 */
+function EmptyState({ git }: { git: GitSummary | null }) {
+  const tree = useFilePreviewStore((s) => s.tree)
+  const root = useFilePreviewStore((s) => s.root)
+  const openFile = useFilePreviewStore((s) => s.openFile)
+  const host = getDesktopHost()
+  // 推荐文件:根目录的 README/CLAUDE.md 等打头,不够拿其余根文件补,最多 4 个(对齐 Codex「推荐」分区)。
+  const suggested = useMemo(() => {
+    const files = (tree ?? []).filter((e) => e.type === 'file')
+    const notable = files.filter((f) => NOTABLE_FILES.includes(f.name))
+    return [...notable, ...files.filter((f) => !NOTABLE_FILES.includes(f.name))].slice(0, 4)
+  }, [tree])
+
+  return (
+    <div className="flex flex-col p-2" data-testid="panel-empty-state">
+      <div className="px-2.5 pb-1 pt-2 text-[11px] font-medium" style={{ color: 'var(--color-text-tertiary)' }}>新建标签页</div>
+      {host.pickPaths && (
+        <LauncherRow
+          icon={<IconFileText size={15} />}
+          label="文件"
+          onClick={() => { void host.pickPaths?.().then((paths) => paths?.forEach((p) => openFile(p))) }}
+        />
+      )}
+      {suggested.length > 0 && (
+        <>
+          <div className="px-2.5 pb-1 pt-3 text-[11px] font-medium" style={{ color: 'var(--color-text-tertiary)' }}>推荐</div>
+          {suggested.map((f) => {
+            const abs = root ? `${root}/${f.path}` : f.path
+            return (
+              <button
+                key={f.path}
+                type="button"
+                onClick={() => openFile(abs)}
+                className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] transition-colors hover:bg-[var(--color-surface-hover)]"
+                style={{ color: 'var(--color-text-secondary)' }}
+              >
+                <span className="shrink-0" style={{ width: 7, height: 7, borderRadius: 2, background: fileColor(f.name) }} />
+                <span className="truncate">{f.name}</span>
+              </button>
+            )
+          })}
+        </>
+      )}
+      <div className="mx-1 mt-3" style={{ borderTop: '1px solid var(--color-border)' }} />
+      <EnvCard git={git} />
+    </div>
+  )
+}
+
 function EnvCard({ git }: { git: GitSummary | null }) {
   return (
     <div className="p-4">
@@ -105,7 +172,9 @@ export function FilePreviewPanel() {
   const closeAll = useFilePreviewStore((s) => s.closeAll)
   const setPanelOpen = useFilePreviewStore((s) => s.setPanelOpen)
   const [tabCtx, setTabCtx] = useState<{ x: number; y: number; path: string } | null>(null)
+  const [openMenu, setOpenMenu] = useState<{ x: number; y: number } | null>(null)
   const { width, onHandleDown, onHandleMove, endDrag } = useResizableWidth({ initial: 640, min: 440, max: 960, edge: 'left' })
+  const host = getDesktopHost()
 
   // Esc 关闭面板(在输入框里按 Esc 不关,避免误触筛选/输入)。
   useEffect(() => {
@@ -164,17 +233,34 @@ export function FilePreviewPanel() {
           </button>
         </div>
 
-        {/* 面包屑 */}
+        {/* 面包屑 + 「打开」菜单(对齐 Codex:用默认程序打开 / 在 Finder 中显示;shell 能力只在桌面壳有,浏览器端不显示按钮) */}
         {active && (
-          <div className="truncate px-3 py-1.5 text-[11px]" style={{ borderBottom: '1px solid var(--color-border)', color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-            {relTo(root, active.path).split('/').join('  ›  ')}
+          <div className="flex items-center gap-2 px-3 py-1 text-[11px]" style={{ borderBottom: '1px solid var(--color-border)', color: 'var(--color-text-tertiary)' }}>
+            <span className="min-w-0 flex-1 truncate" style={{ fontFamily: 'var(--font-mono)' }}>
+              {relTo(root, active.path).split('/').join('  ›  ')}
+            </span>
+            {host.openPath && (
+              <button
+                type="button"
+                data-testid="file-open-menu"
+                onClick={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect()
+                  setOpenMenu({ x: r.right - 220, y: r.bottom + 4 })
+                }}
+                className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors hover:bg-[var(--color-surface-hover)]"
+                style={{ color: 'var(--color-text-secondary)' }}
+              >
+                打开
+                <IconChevronDown size={11} />
+              </button>
+            )}
           </div>
         )}
 
-        {/* 图片实时渲染 / 文件内容(工作目录原本的样子,铺满整栏)/ 无文件时环境卡。
+        {/* 图片实时渲染 / 文件内容(工作目录原本的样子,铺满整栏)/ 无文件时「新建标签页」启动器+环境卡。
             普通打开不做 diff 对比——红绿修改/删除是后续「审查」tab 的事(对齐 Codex)。 */}
         <div className="min-h-0 flex-1 overflow-auto">
-          {active ? (active.isImage ? <ImagePreview file={active} /> : <FileContent file={active} />) : <EnvCard git={git} />}
+          {active ? (active.isImage ? <ImagePreview file={active} /> : <FileContent file={active} />) : <EmptyState git={git} />}
         </div>
       </div>
 
@@ -192,6 +278,27 @@ export function FilePreviewPanel() {
             { label: '关闭', onClick: () => closeTab(tabCtx.path) },
             { label: '关闭其他', onClick: () => closeOthers(tabCtx.path) },
             { label: '全部关闭', onClick: () => closeAll(), separatorBefore: true },
+          ]}
+        />
+      )}
+
+      {/* 「打开」下拉(锚在按钮下方;ContextMenu 自带遮罩关闭 + 视口钳制)。app 枚举(打开方式列具体应用)后续再做。 */}
+      {openMenu && active && (
+        <ContextMenu
+          x={openMenu.x}
+          y={openMenu.y}
+          onClose={() => setOpenMenu(null)}
+          items={[
+            {
+              label: '用默认程序打开',
+              onClick: () => {
+                void host.openPath?.(active.path).then((err) => { if (err) toast(`打不开:${err}`) })
+              },
+            },
+            {
+              label: host.platform === 'darwin' ? '在 Finder 中显示' : '在文件夹中显示',
+              onClick: () => { void host.revealPath?.(active.path) },
+            },
           ]}
         />
       )}

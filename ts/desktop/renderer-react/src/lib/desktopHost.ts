@@ -12,6 +12,10 @@ export interface DesktopHost {
   pickWorkspace?: () => Promise<string | null>
   pickVideoFiles?: () => Promise<string[] | null>
   pickPaths?: () => Promise<string[] | null>
+  /** 用系统默认程序打开文件(shell.openPath 契约:返回非空字符串=错误信息、''=成功)。 */
+  openPath?: (path: string) => Promise<string>
+  /** 在 Finder/文件管理器中定位文件。 */
+  revealPath?: (path: string) => Promise<boolean>
   onMenu?: (cb: (action: string) => void) => void
   preventSleep?: {
     start: () => Promise<boolean>
@@ -27,6 +31,8 @@ interface InjectedDesktopHost {
   pickWorkspace?: () => Promise<string | null>
   pickVideoFiles?: () => Promise<string[] | null>
   pickPaths?: () => Promise<string[] | null>
+  openPath?: (path: string) => Promise<string>
+  revealPath?: (path: string) => Promise<boolean>
   onMenu?: (cb: (action: string) => void) => void
   preventSleep?: { start: () => Promise<boolean>; stop: () => Promise<boolean> }
 }
@@ -73,6 +79,8 @@ export function getDesktopHost(): DesktopHost {
       pickWorkspace: injected.pickWorkspace?.bind(injected),
       pickVideoFiles: injected.pickVideoFiles?.bind(injected),
       pickPaths: injected.pickPaths?.bind(injected),
+      openPath: injected.openPath?.bind(injected),
+      revealPath: injected.revealPath?.bind(injected),
       onMenu: injected.onMenu?.bind(injected),
       preventSleep: injected.preventSleep,
     }

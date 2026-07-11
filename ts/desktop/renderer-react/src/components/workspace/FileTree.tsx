@@ -10,6 +10,7 @@ const EXT_COLOR: Record<string, string> = {
   json: '#c98a2b', md: '#4a90d9', mdx: '#4a90d9', css: '#8a63d2', scss: '#c6538c', html: '#e34c26',
   py: '#3572a5', go: '#00add8', rs: '#c98a5a', sh: '#8bc34a', zsh: '#8bc34a',
   yml: '#cb171e', yaml: '#cb171e', toml: '#9c4221', lock: '#8a8a8a', txt: '#8a8a8a',
+  csv: '#1d6f42', xlsx: '#1d6f42', xls: '#1d6f42',
   png: '#a074c4', jpg: '#a074c4', jpeg: '#a074c4', webp: '#a074c4', gif: '#a074c4', svg: '#ffb13b',
 }
 function extOf(name: string): string {
