@@ -564,6 +564,8 @@ export const useChatStore = create<ChatState>((set, get) => {
       get()._unsub?.()
       stopElapsedTimer()
       pendingUserEcho = 0
+      // 按会话激活工作目录:workspaceRoot 变成该会话记住的文件夹(多窗口各选各的、切回不串台)。
+      useSettingsStore.getState().activateConversation(conversationId)
       set({
         conversationId,
         blocks: [],
