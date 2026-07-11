@@ -618,6 +618,31 @@ test('POST /api/v1/agent/execute writes the approved tool result into the transc
   expect(transcript).toContain('approved-into-transcript')
 })
 
+test('POST /api/v1/agent/execute 无 working_dir 时从 session meta 自愈,写文件落进会话目录而非默认目录(2026-07-12 审计+真机逮到的孪生洞)', async () => {
+  // 建一个绑到特定工作目录的会话(不传 working_dir 模拟前端漏带)
+  const sessionDir = mkdtempSync(join(tmpdir(), 'approve-heal-ws-'))
+  const svc = new SessionService(serverRoot)
+  await svc.create({ id: 'approve-heal', title: 'heal', workspaceRoot: sessionDir })
+  const args = { path: 'approve-heal.txt', content: 'landed-in-session-dir\n' }
+  const res = await fetch(`http://127.0.0.1:${server.port}/api/v1/agent/execute`, {
+    method: 'POST',
+    body: JSON.stringify({
+      tool: 'write_file',
+      args,
+      token: signApproval('write_file', args),
+      permissionMode: 'full',
+      conversationId: 'approve-heal',
+      // 故意不带 working_dir:后端应从 session meta 补回 sessionDir
+    }),
+  })
+  expect(res.status).toBe(200)
+  expect((await res.json() as any).ok).toBe(true)
+  // 文件必须落在会话目录,不能落进默认目录(自愈生效的铁证)
+  expect(existsSync(join(sessionDir, 'approve-heal.txt'))).toBe(true)
+  expect(readFileSync(join(sessionDir, 'approve-heal.txt'), 'utf8')).toContain('landed-in-session-dir')
+  rmSync(sessionDir, { recursive: true, force: true })
+})
+
 test('POST /api/v1/agent/execute uses approval_args for edited approval parameters', async () => {
   const originalArgs = { command: 'echo original-approval' }
   const editedArgs = { command: 'echo edited-approval' }
@@ -2555,7 +2580,7 @@ test('POST /agent/run injects AutoMem memdir MEMORY.md into the model system pro
   }
 })
 
-test('POST /agent/run mounts enabled packs through SessionStart context', async () => {
+test('POST /agent/run 域包上下文每回合直接进系统提示(不再骑 SessionStart hook,对齐 cc:SessionStart 只首回合)', async () => {
   const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-pack-transcript-'))
   let systemPrompt = ''
   const packServer = startServer({
@@ -2586,10 +2611,10 @@ test('POST /agent/run mounts enabled packs through SessionStart context', async 
       body: JSON.stringify({ message: '写一份活动方案', knowledge_packs: ['billiards'], permissionMode: 'full' }),
     })
     expect(res.status).toBe(200)
-    const text = await res.text()
-    expect(text).toContain('event: context_note')
-    expect(systemPrompt).toContain('<hook_context event="SessionStart">')
+    await res.text()
+    // 域包上下文每回合直接进系统提示(extraContext),不再走 SessionStart hook_context 块(那会让 SessionStart 每回合重触发)
     expect(systemPrompt).toContain('<domain_context id="billiards" source="enabled_pack">')
+    expect(systemPrompt).not.toContain('<hook_context event="SessionStart">') // 域包不再骑 hook
     // 启用 billiards 后系统提示应surface本包的可调命令(稳定断言用命令名,不耦合领域包措辞;task#12 在重策展 sessionStartContext 文案)。
     expect(systemPrompt).toContain('/billiards:daily-ops')
   } finally {
@@ -3461,23 +3486,22 @@ test('commands API lists workspace slash commands when working_dir is provided',
   const root = mkdtempSync(join(tmpdir(), 'server-workspace-commands-'))
   const commandsRoot = join(root, 'commands')
   const workspaceRoot = join(root, 'workspace')
-  const claudeCommands = join(workspaceRoot, '.claude', 'commands')
-  const codexCommands = join(workspaceRoot, '.codex', 'commands')
+  // 白标:工作区自定义命令读 .billiardbuddy/commands(不再 .claude/.codex,2026-07-12 收口)
+  const wsCommands = join(workspaceRoot, '.billiardbuddy', 'commands')
   try {
     mkdirSync(commandsRoot, { recursive: true })
-    mkdirSync(claudeCommands, { recursive: true })
-    mkdirSync(codexCommands, { recursive: true })
+    mkdirSync(wsCommands, { recursive: true })
     writeFileSync(join(commandsRoot, 'review.md'), `---
 description: Builtin review
 ---
 Use builtin review.
 `)
-    writeFileSync(join(claudeCommands, 'review.md'), `---
+    writeFileSync(join(wsCommands, 'review.md'), `---
 description: Workspace review
 ---
 Use workspace review.
 `)
-    writeFileSync(join(codexCommands, 'fix.md'), `---
+    writeFileSync(join(wsCommands, 'fix.md'), `---
 description: Workspace fix
 ---
 Use workspace fix.
@@ -3508,7 +3532,7 @@ test('commands API merges enabled domain pack commands and lets workspace overri
   const root = mkdtempSync(join(tmpdir(), 'server-domain-pack-commands-'))
   const commandsRoot = join(root, 'commands')
   const workspaceRoot = join(root, 'workspace')
-  const workspaceCommands = join(workspaceRoot, '.codex', 'commands')
+  const workspaceCommands = join(workspaceRoot, '.billiardbuddy', 'commands')
   try {
     mkdirSync(commandsRoot, { recursive: true })
     mkdirSync(workspaceCommands, { recursive: true })
@@ -4449,7 +4473,7 @@ test('POST /agent/run expands workspace slash commands from working_dir', async 
   const root = mkdtempSync(join(tmpdir(), 'server-workspace-command-invoke-'))
   const commandsRoot = join(root, 'commands')
   const workspaceRoot = join(root, 'workspace')
-  const workspaceCommands = join(workspaceRoot, '.claude', 'commands')
+  const workspaceCommands = join(workspaceRoot, '.billiardbuddy', 'commands')
   mkdirSync(commandsRoot, { recursive: true })
   mkdirSync(workspaceCommands, { recursive: true })
   writeFileSync(join(workspaceCommands, 'site-audit.md'), `---

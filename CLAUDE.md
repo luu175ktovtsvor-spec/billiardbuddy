@@ -59,7 +59,7 @@
 4. **文件式存储,无 SQL** — JSONL transcript + JSON 元信息(对齐 cc-haha)。
 5. **全内置 key(走网关藏 key、白标)** — 客户端只带可吊销 app 令牌,真 key 只在服务器网关;不向客户端暴露底层模型/供应商。
 6. **权限五档 + 审批流程对标 cc-haha** — default/acceptEdits/plan/bypassPermissions/dontAsk;审批的判定/行为**直接照 cc 工程设计走**(default 档改文件/跑命令弹卡询问、acceptEdits 自动接受编辑、plan 只读、bypassPermissions 放行但不越过 forceConfirm/用户交互/硬拒红线)。**不自造"只卡三类/花钱"口径**:内置 key 无按次计费,不做 spend 门控。我们自己加的产品项(白标不暴露模型、生图/剪视频作为产品功能直接出、领域包挂载)保留、单独标注。
-7. **本地文件有护栏** — 沙箱 + 改文件前自动备份可回滚;`..` 越界抛错;危险命令(删根/提权/格式化)直接拒。
+7. **本地文件有护栏** — 沙箱 + 改文件前自动备份可回滚;`..` 越界抛错;危险命令(删根/提权/格式化)按 cc 档位判(default/acceptEdits 弹卡问、完全访问档放行)——**不再无条件硬拒**(2026-07-12 纯对标 cc:owner 知情选择完全访问档也放行,cc 的 bypassPermissions 忽略 ask)。
 8. **动手前先看大厂 harness 怎么做** — 以 `~/Desktop/cc-haha-ref` 为可执行规格,能抄就抄;参考全景见 `docs/references/AI-Agent-harness全景与参考.md` + `docs/references/竞品拆解/`。
 
 ## 开发规范
@@ -77,6 +77,8 @@
 - native 能力(whisper 转写等)走 Node 原生 sidecar,边界见 `ts/CLAUDE.md`。
 
 ### 前后端衔接(铁律 · 改链路必两头走通,不需要 owner 提醒)
+
+> 工程细分(每个按键走哪条管道/契约放哪/上下文带什么/血案案例)→ `docs/references/前后端接轨-五类连接模式与判据.md`;动手 checklist → `/前后端接轨` skill。
 
 改动数据链路上任何一环(React renderer ↔ Electron 主进程 IPC ↔ sidecar HTTP/SSE API ↔ `ts/src` 内核),当场把两头接好:
 
@@ -114,7 +116,7 @@ cd ts && bun run desktop:dist # electron-builder 出安装包(mac dmg / win nsis
 2. **不做阉割版**:全方位对标 cc-haha、能直接抄 cc 代码就抄;唯一验收硬闸是行为对齐 + 测试锁边界。视频剪辑是自家产品不对标 cc;**前端(颜色/字体/文案/流式/布局/交互)完全照抄 Codex**(强调色浅蓝 `#0a84ff`),逆向档案见 `docs/references/Codex逆向档案/`。
 3. **瘦安装包 + 后台静默下载(取代旧"全内置")**:内置 owner 的 key(走网关藏 key、白标)不变;但**安装包只装核心**(app+内核 sidecar+bundled 技能 md),大块头资产(ffmpeg/whisper 模型权重/中文字体/OCR 资产)**首启后从 owner 服务器后台静默下载**(SHA-256 清单校验+断点续传+失败重试)。反逻辑保护:依赖未就绪的功能必须显示"正在准备组件 x%"并在就绪后自动继续,绝不点了没反应。
 4. **审批流程对标 cc-haha 工程设计**:权限判定/行为照 cc 走(default 弹卡、acceptEdits 接受编辑、plan 只读),**不自造"只卡三类/花钱"口径**——内置 key 无按次计费,不做 spend 门控、不谈消费上限。产品项保留:生图/剪视频作为产品功能直接出图(是我们自己加的功能、非"去钱味"),不自动群发/私信(真·对外触达仍照 cc 审)。
-5. **本地文件有护栏**:沙箱 + 改文件前自动备份可回滚;危险命令直接拒;`..` 越界抛错。
+5. **本地文件有护栏**:沙箱 + 改文件前自动备份可回滚;危险命令按 cc 档位判(default 弹卡问、完全访问档放行,不再无条件硬拒——2026-07-12 纯对标 cc);`..` 越界抛错。
 6. **内核只认 content-block + 用库**:OpenAI 端点走 proxy 翻译;成熟第三方库/SDK 直接引用(如 MCP 用官方 `mcp` SDK),别为"少依赖"硬造轮子。
 7. **台球知识 PPT-only、禁编造**:只留 PPT 原件全文有据的;PPT 真实出现的平台/渠道/器材名进白名单不脱敏。
 8. **改前看牵连、改后查回头 + 完成前真测真读**:动手前搜清这块被谁用、连着啥;改完跑全量回归(不只改的那块),关键连接点没测试盖到就补一个;声称改好前真跑(`bun test`/`typecheck`/Playwright),别只报断言,出错当场认、绝不编造。

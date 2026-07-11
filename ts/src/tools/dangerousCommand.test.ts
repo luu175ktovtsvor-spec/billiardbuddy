@@ -184,6 +184,22 @@ test('不误杀:含 ^ 锚点或 call/for..do 子串的正常命令(审查亲测�
   expect(classifyCommandRisk('copy a^b.txt dest.txt')).not.toBe('destructive')
 })
 
+// ── 补丁(2026-07-12,审计丙#1):无法静态解析的删除目标 = 危险,不被正则漏掉 ──
+test('危险:rm 打 ~user 变体 / $ ${ 环境变量展开 / -- flag 注入(正则 DANGEROUS_PATTERNS 都漏,token 提取器兜住)', () => {
+  // ~root/~+/~- 波浪号变体:删别人家目录/特殊目录,无法静态解析 → 危险
+  expect(isDangerousCommand('rm -rf ~root/.ssh')).toBe(true)
+  expect(isDangerousCommand('rm -rf ~+/x')).toBe(true)
+  // $ / ${ 环境变量展开:rm -rf ${HOME} / $HOME 指向哪静态不可知 → 危险
+  expect(isDangerousCommand('rm -rf ${HOME}')).toBe(true)
+  expect(isDangerousCommand('rm -rf $HOME')).toBe(true)
+  expect(isDangerousCommand('rm -rf "$HOME"')).toBe(true)
+  // -- flag 注入:rm -- -/... 之后一律当路径,不被 flag 过滤丢掉
+  expect(isDangerousCommand('rm -rf -- /')).toBe(true)
+  // 不误杀:删具体相对目录/工作区内文件仍非危险
+  expect(isDangerousCommand('rm -rf build/cache')).toBe(false)
+  expect(isDangerousCommand('rm -f note.txt')).toBe(false)
+})
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 审批闸档:有破坏面但可控(达不到「直接拒」灾难级)→ classifyCommandRisk = destructive。
 // 交用户逐条确认,而不是硬拒(口径对齐 POSIX:递归删具体目录 = destructive,同 `rm -rf 目录`)。

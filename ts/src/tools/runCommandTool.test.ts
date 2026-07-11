@@ -869,8 +869,9 @@ test('run_command dynamic permission allows reads and classifies approval', () =
     approvalClass: 'outreach',
   })
   expect(resolvePermission(runCommandTool, { command: 'rg -n TODO src' }, { ...ctx, permissionMode: 'default' })).toMatchObject({ behavior: 'allow' })
+  // rg --pre bash 会起 bash(非只读)→ plan 档弹卡问(对齐 cc 不硬 deny)
   expect(resolvePermission(runCommandTool, { command: 'rg --pre bash TODO src' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({
-    behavior: 'deny',
+    behavior: 'ask',
   })
   expect(resolvePermission(runCommandTool, { command: 'xargs grep needle' }, { ...ctx, permissionMode: 'default' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(runCommandTool, { command: 'xargs sh -c id' }, { ...ctx, permissionMode: 'acceptEdits' })).toMatchObject({
@@ -936,8 +937,9 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   expect(resolvePermission(runCommandTool, { command: 'git commit -m "safe message"' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'allow',
   })
+  // git diff --output= 写文件(非只读)→ plan 档弹卡问(对齐 cc 不硬 deny)
   expect(resolvePermission(runCommandTool, { command: 'git diff --output=/tmp/patch.diff' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({
-    behavior: 'deny',
+    behavior: 'ask',
   })
   expect(resolvePermission(runCommandTool, { command: 'git diff --no-index .env package.json' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
@@ -949,11 +951,12 @@ test('run_command dynamic permission allows reads and classifies approval', () =
   expect(resolvePermission(runCommandTool, { command: 'git branch --list' }, { ...ctx, permissionMode: 'default' })).toMatchObject({
     behavior: 'allow',
   })
+  // 非只读 git 写命令在 plan 档 → 弹卡问(对齐 cc 不硬 deny)
   expect(resolvePermission(runCommandTool, { command: 'git branch new-topic' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({
-    behavior: 'deny',
+    behavior: 'ask',
   })
   expect(resolvePermission(runCommandTool, { command: 'git tag v1.0.0' }, { ...ctx, permissionMode: 'plan' })).toMatchObject({
-    behavior: 'deny',
+    behavior: 'ask',
   })
   expect(resolvePermission(runCommandTool, { command: 'git reflog expire --all' }, { ...ctx, permissionMode: 'auto_files' })).toMatchObject({
     behavior: 'ask',
@@ -1112,8 +1115,16 @@ test('run_command approval preview shows command scope before execution', async 
   expect(preview).toContain('max_output_bytes: 2000')
 })
 
-test('run_command refuses a dangerous command', async () => {
-  await expect(runCommandTool.execute({ command: 'rm -rf /' }, ctx)).rejects.toThrow(/危险命令/)
+test('危险命令走权限闸(对齐 cc):dangerousReasonFor 标记 + default 弹卡问 / 完全访问档放行 —— execute 层不再硬拒', () => {
+  // dangerousReasonFor 识别危险命令(不再走 fatalReasonFor 硬拒)
+  expect(runCommandTool.dangerousReasonFor?.({ command: 'rm -rf /' }, ctx)).toContain('危险命令')
+  expect(runCommandTool.fatalReasonFor?.({ command: 'rm -rf /' }, ctx)).toBeNull()
+  // default 档 → 弹卡问(不放行也不硬拒)
+  expect(resolvePermission(runCommandTool, { command: 'rm -rf /' }, { ...ctx, permissionMode: 'default' })).toMatchObject({
+    behavior: 'ask', reason: { type: 'dangerous' },
+  })
+  // 完全访问(bypassPermissions)档 → 放行(对齐 cc:bypass 忽略 ask)。此处只验闸决策,不真执行 rm -rf /。
+  expect(resolvePermission(runCommandTool, { command: 'rm -rf /' }, { ...ctx, permissionMode: 'bypassPermissions' }).behavior).toBe('allow')
 })
 
 describe('dangerousCommand W3 补强', () => {
@@ -1142,9 +1153,11 @@ describe('dangerousCommand W3 补强', () => {
     expect(isDangerousCommand('rm -rf C:\\Users\\foo\\Desktop\\myproject')).toBe(false)
     // 普通单反斜杠 Windows 路径不是 UNC(UNC 特征是双反斜杠开头的网络共享路径)
     expect(isDangerousCommand('copy C:\\temp\\file.txt D:\\backup\\')).toBe(false)
-    // 通配裁剪只在「* 或 /* 紧跟标志位」时命中,精确扩展名/子目录通配这类常见清理命令不误杀
+    // 精确扩展名通配(*.log)= 删指定后缀,非危险
     expect(isDangerousCommand('rm -rf *.log')).toBe(false)
-    expect(isDangerousCommand('rm -rf node_modules/*')).toBe(false)
+    // 整目录内容通配(dir/*)= 危险(对齐 cc isDangerousRemovalPath「Any path ending with '/*'」;
+    // 2026-07-12 rm 走 token 提取器统一识别后命中,default 弹卡问、完全访问档放行)
+    expect(isDangerousCommand('rm -rf node_modules/*')).toBe(true)
   })
 })
 

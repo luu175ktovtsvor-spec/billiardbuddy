@@ -12,7 +12,14 @@ export const AUTOCOMPACT_RATIO = 0.7
  */
 export const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
 export const AUTOCOMPACT_BUFFER_TOKENS = 13_000
-export const KEEP_RECENT_MESSAGES = 12
+/**
+ * 自动压缩保留的逐字近段消息数 = 0(2026-07-12 owner 拍板纯对标 cc)。
+ * cc 的 auto-compact 全量摘要、不留任何逐字近况,靠「压缩后重贴 agent 读过的文件当前内容」重建近况
+ *(我方对应机制 = loop.ts buildRecentFileContextMessage,压缩成功后把最近文件重新贴回,见 §compactPipeline 调用点)。
+ * ⚠️ 已知取舍(owner 知情):编码任务近况=文件,重贴即恢复;但无文件的领域对话(台球运营来回讨论)最近几轮原文
+ * 会被摘要吞掉、国产模型对纯摘要的稳定性未真机验证——若真机发现领域对话退化,这里调回小正数(如 4)即可。
+ */
+export const KEEP_RECENT_MESSAGES = 0
 export const MIN_AUTOCOMPACT_OLD_MESSAGES = 6
 export const MAX_COMPACTION_FAILURES = 3
 export const AUTOCOMPACT_COOLDOWN_MS = 30_000

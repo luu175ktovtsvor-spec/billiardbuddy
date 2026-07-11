@@ -16,17 +16,11 @@ import { rememberedPermissionUpdatesForApproval, transientPermissionUpdatesForAp
 import {
   actionKey,
   clearApproval,
-  clearDenial,
   clearLocalApproval,
-  clearLocalDenial,
   recordApproval,
-  recordDenial,
   recordLocalApproval,
-  recordLocalDenial,
   shouldAutoApprove,
   shouldLocalAutoApprove,
-  shouldLocalStopAsking,
-  shouldStopAsking,
   type DenialTrackingState,
 } from '../permissions/denialTracking'
 import { signApproval, verifyApproval } from '../permissions/approval'
@@ -289,6 +283,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     steerInbox: opts.steerInbox ?? [],
     todos: [],
     requestsSinceProgress: 0,
+    planModeTurnCount: 0,
     toolResultStoreDir: opts.toolResultStoreDir,
     contentReplacementState,
     // F1 关联修复:opts.stateRoot 此前只声明、从未真正接进 ctx——file-history 快照因此在生产环境恒回退到
@@ -304,12 +299,17 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   if (restoredWorktree) {
     system = `${system}\n\n<system-reminder>\nActive EnterWorktree session restored. Current tool workspace is ${restoredWorktree.worktreePath}; original workspace is ${restoredWorktree.originalRoot}. Use ExitWorktree when the user asks to leave it.\n</system-reminder>`
   }
-  const sessionStart = await applySessionStartHooks(hooksForCurrentSession(), ctx)
-  for (const extra of sessionStart.additionalContext) {
-    yield { type: 'context_note', text: extra }
-  }
-  if (sessionStart.additionalContext.length > 0) {
-    system = `${system}\n\n${hookContextBlock('SessionStart', sessionStart.additionalContext)}`
+  // SessionStart hook 只在会话首回合触发一次(对齐 cc:startup/resume/clear 边界,不是每个用户回合)。
+  // 判据:history 为空 = 本会话第一回合(后续回合从 transcript load 到历史)。丁审计:此前每回合重触发,
+  // 域包上下文重复注入——域包上下文已改走 systemPrompt(server extraContext)每回合注入,这里只管真·SessionStart hook。
+  if (history.length === 0) {
+    const sessionStart = await applySessionStartHooks(hooksForCurrentSession(), ctx)
+    for (const extra of sessionStart.additionalContext) {
+      yield { type: 'context_note', text: extra }
+    }
+    if (sessionStart.additionalContext.length > 0) {
+      system = `${system}\n\n${hookContextBlock('SessionStart', sessionStart.additionalContext)}`
+    }
   }
   ctx.systemPrompt = system
   ctx.renderedSystemPrompt = system
@@ -676,6 +676,11 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     // 本批工具调用发起前置好:tool.execute() 内部经 ctx 记录的 file-history 快照按它绑定(见
     // tools/fileHistory.ts recordFileSnapshot)。下一轮若还有 tool_calls,循环会在这里重新赋值,天然按轮隔离。
     ctx.messageId = assistantMessageId
+    // 逐消息落盘(对齐 cc QueryEngine 每条消息 recordTranscript):工具还没跑就先把发起调用的 assistant
+    // 消息写盘——中途进程被杀,不会出现"文件已被工具改了、transcript 却没有任何记录"的恢复断链。
+    // append 按公共前缀增量追加(见 memory/transcript.ts),逐轮调用幂等。2026-07-12 审计证伪
+    // "回合结束才写一次"后补(此前 crash 丢整回合工具历史)。
+    await saveTranscript()
 
     // 逐个过闸,tool_result 块累积;只读安全批次并行跑,稍后装单条 user 消息(tool_result 紧贴 tool_use)
     ctx.messages = messages.slice()
@@ -792,6 +797,8 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       followup.push(textBlock(wrapReminder(r.text)))
       if (r.kind === 'progress') ctx.requestsSinceProgress = 0
     }
+    // plan 提醒节流计数:每批 +1,collectReminders 按 % PLAN_REMIND_EVERY 决定该不该发(对齐 cc,不再每批必发)。
+    if (ctx.permissionMode === 'plan') ctx.planModeTurnCount = (ctx.planModeTurnCount ?? 0) + 1
     if (!stuckNotified) {
       const finding = detectStuck(messages, { totalToolCallsNoProgress: toolCallsNoProgress })
       if (finding) {
@@ -802,6 +809,8 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     }
     messages.push({ role: 'user', content: followup })
     await applyAggregateToolResultBudget()
+    // 本轮 tool_result 已配对进历史,立即落盘(与上面 assistant 消息落盘同一口径:逐消息,不等回合收尾)。
+    await saveTranscript()
 
     // —— 中断/硬停:tool_result 已随 followup 配对进历史(在飞工具被 abort 后经短路补齐 tool_result 保配对)——
     // submit-interrupt(reason==='interrupt'):换新 controller 续跑,排队插话已在上面注入;纯硬停:yield 中断消息收场,
@@ -872,11 +881,6 @@ function isApprovalRememberable(decision: Extract<ReturnType<typeof resolvePermi
   return decision.approvalClass !== 'destructive'
 }
 
-function clearDenialForContext(ctx: ToolContext, key: string): void {
-  if (ctx.localDenialTracking) clearLocalDenial(ctx.localDenialTracking, key)
-  else clearDenial(ctx.conversationId, key)
-}
-
 function clearApprovalForContext(ctx: ToolContext, key: string): void {
   if (ctx.localDenialTracking) clearLocalApproval(ctx.localDenialTracking, key)
   else clearApproval(ctx.conversationId, key)
@@ -887,21 +891,10 @@ function recordApprovalForContext(ctx: ToolContext, key: string): void {
   else recordApproval(ctx.conversationId, key)
 }
 
-function recordDenialForContext(ctx: ToolContext, key: string): void {
-  if (ctx.localDenialTracking) recordLocalDenial(ctx.localDenialTracking, key)
-  else recordDenial(ctx.conversationId, key)
-}
-
 function shouldAutoApproveForContext(ctx: ToolContext, key: string): boolean {
   return ctx.localDenialTracking
     ? shouldLocalAutoApprove(ctx.localDenialTracking, key)
     : shouldAutoApprove(ctx.conversationId, key)
-}
-
-function shouldStopAskingForContext(ctx: ToolContext, key: string): boolean {
-  return ctx.localDenialTracking
-    ? shouldLocalStopAsking(ctx.localDenialTracking, key)
-    : shouldStopAsking(ctx.conversationId, key)
 }
 
 /** 剥离工具入参里的 task_progress(Cline Focus-Chain 内联清单,非真工具参数)。原地删并返回其字符串;无则 null。永不抛。 */
@@ -1230,11 +1223,8 @@ async function* gateOneCall(
       for (const event of outcome.events) yield event
       return
     }
-    if (!forceAsk && shouldStopAskingForContext(ctx, key)) {
-      yield* fireDenied(DENIAL_FALLBACK_MSG(call.name))
-      yield feedback(DENIAL_FALLBACK_MSG(call.name), true)
-      return
-    }
+    // (2026-07-12 对齐 cc 移除)此处曾有"拒够 N 次就静默拒答"短路:cc 用户五档无此机制,审批就是审批,
+    // 老板拒了只拒这一次、不攒计数替他永久拒答。现只保留上面"本次对话都允许"的正向捷径。
     // PermissionRequest hook(对齐 cc executePermissionRequestHooks,utils/hooks.ts:4176-4211):审批卡
     // 即将弹给用户时,给 hook 程序化裁决的机会——allow=等同用户点了批准(可带改参)当场执行,
     // deny=等同用户点了拒绝;无裁决则照常弹卡。这是"hook 代答审批对话框",与 PreToolUse 的
@@ -1379,8 +1369,6 @@ export async function executeApproved(
     ? rememberedPermissionUpdatesForApproval(tool, executionArgs, ctx, approvalClass)
     : []
   const executionCtx = transientUpdates.length ? applyPermissionUpdates(ctx, transientUpdates) : ctx
-  clearDenialForContext(ctx, actionKey(tool, tokenArgs))
-  clearDenialForContext(ctx, actionKey(tool, executionArgs))
   const previousApprovedToolExecution = executionCtx.approvedToolExecution
   try {
     executionCtx.approvedToolExecution = { name: tool, key: actionKey(tool, tokenArgs) }
@@ -1402,11 +1390,10 @@ export async function executeApproved(
   }
 }
 
-/** 老板拒绝某审批(给独立 /agent/reject 用):记一次拒绝,喂给下次的 shouldStopAsking。 */
+/** 老板拒绝某审批(给独立 /agent/reject 用):清掉该动作可能残留的"本次对话都允许",让下次照常再问。
+ *  (2026-07-12 对齐 cc:不再记拒绝计数——拒绝就拒这一次,不攒次数替老板永久拒答。) */
 export function handleReject(tool: string, args: unknown, ctx: ToolContext): void {
-  const key = actionKey(tool, args)
-  clearApprovalForContext(ctx, key)
-  recordDenialForContext(ctx, key)
+  clearApprovalForContext(ctx, actionKey(tool, args))
 }
 
 async function waitForSteeringAnswer(ctx: ToolContext, timeoutMs: number, startLen: number): Promise<string | null> {

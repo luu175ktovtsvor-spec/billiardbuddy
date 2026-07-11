@@ -60,16 +60,26 @@ describe('REPL tool', () => {
     expect(readFileSync(join(root, 'made.txt'), 'utf8')).toBe('hi')
   })
 
-  test('still rejects fatal inner commands even when REPL is approved', async () => {
+  test('内层危险命令走 dangerous 档(对齐 cc):default 弹卡问、完全访问档放行 —— 不在此真跑 rm -rf /', () => {
     const { ctx, registry } = fixture()
-    const args = { steps: [{ id: 'fatal', tool: 'run_command', input: { command: 'rm -rf /' } }] }
-    const result = await executeApproved(registry, 'REPL', args, signApproval('REPL', args), ctx)
-
-    expect(result.ok).toBe(false)
-    expect(result.output).toContain('拒绝执行')
+    const repl = registry.get('REPL')!
+    const args = { steps: [{ id: 'danger', tool: 'run_command', input: { command: 'rm -rf /' } }] }
+    // REPL 把内层危险命令冒泡成 dangerousReason
+    expect(repl.dangerousReasonFor?.(args, ctx)).toContain('危险命令')
+    // default 档 → 弹卡问(不静默执行)
+    expect(resolvePermission(repl, args, { ...ctx, permissionMode: 'default' })).toMatchObject({ behavior: 'ask', reason: { type: 'dangerous' } })
+    // 完全访问档 → 放行(对齐 cc;仅验闸决策,不执行)
+    expect(resolvePermission(repl, args, { ...ctx, permissionMode: 'bypassPermissions' }).behavior).toBe('allow')
   })
 
-  test('plan mode blocks mutating REPL batches before execution', () => {
+  test('仍硬拒真·fatal 内层(递归 REPL / 非 primitive 工具),与危险命令区分', () => {
+    const { ctx, registry } = fixture()
+    const repl = registry.get('REPL')!
+    const recursive = { steps: [{ id: 'rec', tool: 'REPL', input: { steps: [] } }] }
+    expect(resolvePermission(repl, recursive, ctx)).toMatchObject({ behavior: 'deny', reason: { type: 'fatal' } })
+  })
+
+  test('plan mode:mutating REPL 批走弹卡问(对齐 cc 不硬 deny)', () => {
     const { ctx, registry } = fixture()
     ctx.permissionMode = 'plan'
     const repl = registry.get('REPL')!
@@ -77,8 +87,8 @@ describe('REPL tool', () => {
       steps: [{ id: 'write', tool: 'write_file', input: { path: 'made.txt', content: 'hi' } }],
     }, ctx)
 
-    expect(decision.behavior).toBe('deny')
-    if (decision.behavior !== 'deny') throw new Error('expected plan mode denial')
-    expect(decision.reason.type).toBe('planSkip')
+    expect(decision.behavior).toBe('ask')
+    if (decision.behavior !== 'ask') throw new Error('expected plan mode ask')
+    expect(decision.reason?.type).toBe('planSkip')
   })
 })

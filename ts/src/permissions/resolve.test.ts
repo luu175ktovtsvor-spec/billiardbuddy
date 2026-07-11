@@ -35,10 +35,10 @@ describe('resolvePermission 瀑布', () => {
     expect(d.behavior === 'deny' && d.reason.type).toBe('fatal')
   })
 
-  test('plan 模式 + 非只读 → deny(planSkip)', () => {
+  test('plan 模式 + 非只读 → ask(planSkip;对齐 cc 不硬 deny,靠弹卡兜住换的国产模型)', () => {
     const d = resolvePermission(tool({ isReadOnly: false }), {}, ctx('plan'))
-    expect(d.behavior).toBe('deny')
-    expect(d.behavior === 'deny' && d.reason.type).toBe('planSkip')
+    expect(d.behavior).toBe('ask')
+    expect(d.behavior === 'ask' && d.reason?.type).toBe('planSkip')
   })
 
   test('plan 模式 + 只读工具 → allow(可探索)', () => {
@@ -46,7 +46,7 @@ describe('resolvePermission 瀑布', () => {
     expect(d.behavior).toBe('allow')
   })
 
-  test('plan 模式 + write_file 写本会话计划文件 → allow(计划文件豁免);写别的文件仍 deny', () => {
+  test('plan 模式 + write_file 写本会话计划文件 → allow(计划文件豁免);写别的文件 → ask(planSkip,对齐 cc 不硬 deny)', () => {
     clearAllPlanSlugs()
     const workspace = ws()
     const conversationId = 'resolve-plan-file'
@@ -59,14 +59,27 @@ describe('resolvePermission 瀑布', () => {
       base as ToolContext,
     )
     expect(allow.behavior).toBe('allow')
-    // 写别的文件 → 仍被 plan 档拦
-    const deny = resolvePermission(
+    // 写别的文件 → plan 档弹卡问(不再硬 deny)
+    const asked = resolvePermission(
       tool({ name: 'write_file', requiresApproval: true, approvalClass: 'file' }),
       { path: 'other.txt', content: 'nope' },
       base as ToolContext,
     )
-    expect(deny.behavior).toBe('deny')
-    expect(deny.behavior === 'deny' && deny.reason.type).toBe('planSkip')
+    expect(asked.behavior).toBe('ask')
+    expect(asked.behavior === 'ask' && asked.reason?.type).toBe('planSkip')
+  })
+
+  test('危险命令:default 弹卡问、完全访问档放行(对齐 cc;allow 规则也不放行)', () => {
+    const danger = tool({ name: 'run_command', dangerousReasonFor: () => '危险命令:rm -rf /', requiresApproval: true, approvalClass: 'destructive' })
+    // default 档 → ask
+    const asked = resolvePermission(danger, { command: 'rm -rf /' }, ctx('default'))
+    expect(asked.behavior).toBe('ask')
+    expect(asked.behavior === 'ask' && asked.reason?.type).toBe('dangerous')
+    // 完全访问(bypassPermissions)档 → 放行(对齐 cc:bypass 忽略 ask)
+    expect(resolvePermission(danger, { command: 'rm -rf /' }, ctx('bypassPermissions')).behavior).toBe('allow')
+    // 配了 allow 规则也不放行(危险 ask 优先于 allow 规则,对齐 cc「cannot be auto-allowed by rules」)
+    const withAllow: Partial<ToolContext> = { permissionMode: 'default', permissionRules: [{ ruleBehavior: 'allow', ruleValue: { toolName: 'run_command' } } as never] }
+    expect(resolvePermission(danger, { command: 'rm -rf /' }, withAllow as ToolContext).behavior).toBe('ask')
   })
 
   test('无 requiresApproval 的普通工具在执行档和 dontAsk 直接 allow', () => {
@@ -221,6 +234,24 @@ describe('resolvePermission 瀑布', () => {
     })
   })
 
+  test('SECURITY: 文件路径规则复用到 run_command 写/读目标(审计甲#1 同族工具绕过 → 已堵)', () => {
+    const denyEnvWrite: PermissionRule = { source: 'projectSettings', ruleBehavior: 'deny', ruleValue: { toolName: 'Edit', ruleContent: '.env' } }
+    const denyEnvRead: PermissionRule = { source: 'projectSettings', ruleBehavior: 'deny', ruleValue: { toolName: 'Read', ruleContent: '.env' } }
+    const run = tool({ name: 'run_command', requiresApproval: true, approvalClass: 'file' })
+
+    // deny Edit(.env):`echo x > .env` 重定向写命中 → 拦(即便 bypassPermissions,deny 在瀑布最前)
+    expect(resolvePermission(run, { command: 'echo hacked > .env' }, ctx('bypassPermissions', { permissionRules: [denyEnvWrite] }))).toMatchObject({
+      behavior: 'deny', reason: { type: 'rule', rule: denyEnvWrite },
+    })
+    expect(resolvePermission(run, { command: 'echo hacked >> .env' }, ctx('default', { permissionRules: [denyEnvWrite] })).behavior).toBe('deny')
+    // deny Read(.env):`cat .env` 读命中 → 拦
+    expect(resolvePermission(run, { command: 'cat .env' }, ctx('default', { permissionRules: [denyEnvRead] })).behavior).toBe('deny')
+    // 不误伤:写/读别的文件不被 .env 规则命中
+    expect(resolvePermission(run, { command: 'echo ok > note.txt' }, ctx('bypassPermissions', { permissionRules: [denyEnvWrite] })).behavior).toBe('allow')
+    // Read 规则不拦纯写命令(读规则只管读目标)
+    expect(resolvePermission(run, { command: 'echo x > other.txt' }, ctx('bypassPermissions', { permissionRules: [denyEnvRead] })).behavior).toBe('allow')
+  })
+
   test('结构化 permissionRules 支持 Bash 别名和命令内容匹配', () => {
     const allowGit: PermissionRule = {
       source: 'command',
@@ -269,7 +300,8 @@ describe('resolvePermission 瀑布', () => {
     const allowed = resolvePermission(tool({ name: 'run_command', requiresApproval: true, approvalClass: 'outreach' }), {}, allowedCtx)
     expect(allowed).toMatchObject({ behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: 'run_command' } })
 
-    expect(resolvePermission(tool({ name: 'run_command', requiresApproval: true }), {}, ctx('plan', { sessionAllowedTools: new Set(['run_command']) })).behavior).toBe('deny')
+    // plan 档非只读:sessionAllowedTools 不越过 plan → ask(对齐 cc,plan 不硬 deny;sessionAllow 也不放行)
+    expect(resolvePermission(tool({ name: 'run_command', requiresApproval: true }), {}, ctx('plan', { sessionAllowedTools: new Set(['run_command']) })).behavior).toBe('ask')
     expect(resolvePermission(tool({ name: 'run_command', fatalReasonFor: () => '禁止' }), {}, allowedCtx).behavior).toBe('deny')
     expect(resolvePermission(tool({ name: 'run_command', requiresApproval: true, forceConfirm: true }), {}, allowedCtx).behavior).toBe('ask')
     expect(resolvePermission(tool({ name: 'run_command', requiresApproval: true, requiresUserInteraction: true }), {}, allowedCtx).behavior).toBe('ask')

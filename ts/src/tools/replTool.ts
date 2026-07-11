@@ -147,6 +147,17 @@ export function createReplTool(registry: ToolRegistry): Tool<ReplInput> {
       }
       return null
     },
+    // 内层含危险命令(rm -rf 根等)→ 整个 REPL 批走 dangerous 档(default 弹卡问、完全访问档放行,对齐 cc)。
+    dangerousReasonFor(input, ctx) {
+      const steps = normalizeSteps(input, ctx)
+      for (const step of steps) {
+        const tool = registry.get(step.tool)
+        if (!tool) continue
+        const reason = tool.dangerousReasonFor?.(step.input, ctx)
+        if (reason) return `REPL step ${step.index} ${reason}`
+      }
+      return null
+    },
     async previewFor(input, ctx) {
       const steps = normalizeSteps(input, ctx)
       if (!steps.length) return 'REPL 没有可执行 steps'

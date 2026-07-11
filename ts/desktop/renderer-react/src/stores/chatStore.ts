@@ -640,18 +640,22 @@ export const useChatStore = create<ChatState>((set, get) => {
       const id = get().conversationId
       const block = get().blocks.find((b) => b.id === blockId)
       if (!id || !block || block.kind !== 'approval') return
-      // working_dir 必带(与 sendMessage 同源):审批放行的执行要跑在本会话的工作目录,漏带时后端
-      // 兜底默认目录 → 文件写错文件夹(2026-07-12 真机逮到的真 bug;后端也已加 session meta 自愈)。
-      const approveRoot = useSettingsStore.getState().workspaceRoot
+      // 审批放行的执行要跑在本会话的完整上下文(与 sendMessage 同源,别丢档位/目录/领域包):
+      //  · working_dir:漏带后端兜底默认目录 → 文件写错文件夹(2026-07-12 真机逮到);
+      //  · permissionMode:此前硬编码 'default' → 用户在 完全访问/接受修改 档批准的续跑被降级成 default,
+      //    还会污染子代理档位继承(审计发现,与 working_dir 同类"审批丢上下文"洞);
+      //  · enabled_packs:领域包工具的审批续跑要带,否则拿不到会话已挂的包(后端也已 session meta 自愈兜底)。
+      const settings = useSettingsStore.getState()
       send({
         type: 'approve',
         tool: block.tool,
         args: block.args,
         token: block.token,
         conversationId: id,
-        permissionMode: 'default',
+        permissionMode: settings.defaultPermissionMode,
         remember_approval: remember,
-        ...(approveRoot ? { working_dir: approveRoot } : {}),
+        ...(settings.workspaceRoot ? { working_dir: settings.workspaceRoot } : {}),
+        ...(settings.enabledPacks.length > 0 ? { enabled_packs: settings.enabledPacks } : {}),
       })
       set((s) => ({
         blocks: s.blocks.map((b) =>

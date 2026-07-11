@@ -88,9 +88,10 @@ test('TaskStop kills a long-running background command', async () => {
   expect(cancelled.status).toBe('cancelled')
 })
 
-test('background command rejects dangerous commands before spawning', async () => {
+test('危险命令走权限闸(对齐 cc):dangerousReasonFor 标记、fatalReasonFor 不再硬拒(放行与否交闸按档位定)', () => {
   const bg = byName('run_command_background')
-  await expect(bg.execute({ command: 'rm -rf /' }, ctx)).rejects.toThrow(/危险命令/)
+  expect(bg.dangerousReasonFor?.({ command: 'rm -rf /' }, ctx)).toContain('危险命令')
+  expect(bg.fatalReasonFor?.({ command: 'rm -rf /' }, ctx)).toBeNull()
 })
 
 test('run_command_background 把 ctx.additionalWorkingDirectories 转成 extraWritablePaths 传给 sandbox.wrapCommand(P1 §7 修复)', async () => {

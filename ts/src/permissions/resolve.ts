@@ -3,8 +3,10 @@ import { shellCommandAllowedByPermissionRules, shellCommandMatchesDenyOrAskRule,
 import type { ApprovalClass, DecisionReason, PermissionDecision, PermissionRule } from './types'
 import { canonicalPermissionMode } from './canonical'
 import { autoEditSafetyReason } from './autoEditSafety'
-import { fileRuleAppliesToTool, filePathRuleMatchesInput, filePathToolOperation } from './filePathRuleMatch'
+import { fileGlobMatchesPathForRule, fileRuleAppliesToTool, filePathRuleMatchesInput, filePathToolOperation } from './filePathRuleMatch'
+import { extractRedirectionWriteTargets, extractReadCommandPaths } from '../tools/dangerousCommand'
 import { isSessionPlanFile } from '../harness/plans'
+import { isAbsolute, resolve as resolvePath } from 'node:path'
 
 // 计划模式下唯一允许写的文件类工具(对齐 cc checkEditableInternalPath:计划文件靠 FileWrite/FileEdit 写)。
 const PLAN_WRITABLE_TOOL_NAMES = new Set(['write_file', 'edit_file', 'multi_edit_file'])
@@ -80,6 +82,20 @@ function currentCommandInput(input: unknown): string {
   return typeof command === 'string' ? command.trim() : ''
 }
 
+/** 命令的写/读目标里,是否有路径命中该文件路径规则的 glob。相对路径按命令 cwd(input.cwd 优先,否则工作区根)解析。 */
+function commandTargetsMatchFileRule(ctx: ToolContext, rule: PermissionRule, content: string, targets: string[], input: unknown): boolean {
+  if (targets.length === 0) return false
+  const wsRoot = ctx.workspace?.root ?? process.cwd()
+  const rawCwd = input && typeof input === 'object' && !Array.isArray(input) ? (input as Record<string, unknown>).cwd : undefined
+  const cwd = typeof rawCwd === 'string' && rawCwd.trim() ? rawCwd : wsRoot
+  return targets.some(t => {
+    const cleaned = t.replace(/^['"]|['"]$/g, '')
+    if (!cleaned) return false
+    const abs = isAbsolute(cleaned) ? cleaned : resolvePath(cwd, cleaned)
+    return fileGlobMatchesPathForRule(wsRoot, abs, content, rule.source)
+  })
+}
+
 const TOOL_RULE_ALIASES: Record<string, string[]> = {
   run_command: ['run_command', 'Bash'],
   read_file: ['read_file', 'Read'],
@@ -105,6 +121,16 @@ function ruleMatchesInput(ctx: ToolContext, rule: PermissionRule, tool: Tool, in
 
   // 命令类工具:ruleContent 作为命令模式匹配。
   if (tool.name === 'run_command' || tool.name === 'PowerShell') {
+    // 文件路径规则(Edit/Write/Read)也作用于命令的写/读目标(对齐 cc getPatternsByRoot
+    // 「Apply Edit tool rules to any tool editing files」):deny Edit(.env) 要拦 `echo x > .env`,
+    // 否则文件规则被 run_command 绕过(审计甲#1 同族工具绕过)。只对 deny/ask 生效(allow 保持命令语义更严)。
+    if (content !== undefined && !ruleMatchesToolName(rule, tool) && (rule.ruleBehavior === 'deny' || rule.ruleBehavior === 'ask')) {
+      const command = currentCommandInput(input)
+      if (!command) return false
+      if (fileRuleAppliesToTool(rule, 'write') && commandTargetsMatchFileRule(ctx, rule, content, extractRedirectionWriteTargets(command), input)) return true
+      if (fileRuleAppliesToTool(rule, 'read') && commandTargetsMatchFileRule(ctx, rule, content, extractReadCommandPaths(command), input)) return true
+      return false
+    }
     if (!ruleMatchesToolName(rule, tool)) return false
     if (content === undefined) return true
     // SECURITY(对齐 cc): deny/ask 规则必须拆子命令逐条匹配,否则复合命令能绕过红线——
@@ -137,18 +163,19 @@ function matchingRule(ctx: ToolContext, tool: Tool, input: unknown, behavior: Pe
 }
 
 /**
- * 权限瀑布(按我们红线口径排序):
- *  1. fatal          → deny(硬拒,永不执行)
- *  2. plan + 非只读   → deny(planSkip:只规划不动手)
+ * 权限瀑布(对齐 cc-haha 档位语义):
+ *  1. fatal          → deny(硬拒,永不执行;仅 SSRF/file:// 等安全漏洞防护,危险命令已不在此列)
+ *  2. plan + 非只读   → ask(planSkip:对齐 cc 不硬 deny;计划文件写豁免 allow)
  *  3. deny/ask/allow 规则按 cc-haha source/behavior 进入同一瀑布
  *  4. 算 needsApproval;不需要 → allow
  *  5. autoApprove:
- *     5a forceConfirm → ask(Delta B:在 mode 之前判,连 bypassPermissions 也拦,旁路免疫)
+ *     5a forceConfirm → ask(在 mode 之前判,连 bypassPermissions 也拦,旁路免疫)
  *     5b requiresUserInteraction → ask(连 bypassPermissions 也拦)
  *     5c bypassPermissions → allow(但不越过 fatal/forceConfirm/userInteraction)
- *     5d safePrefix   → allow
- *     5e acceptEdits 下 file 类本机动作 → allow
- *     5f default/acceptEdits → ask(非 file 类仍问)
+ *     5d dangerous    → ask(危险命令:bypass 上面已放行;其余档 ask,且优先于 allow 规则/safePrefix,对齐 cc)
+ *     5e safePrefix   → allow
+ *     5f acceptEdits 下 file 类本机动作 → allow
+ *     5g default/acceptEdits → ask(非 file 类仍问)
  *  6. dontAsk 把所有 ask 结果转换为 deny,不弹确认卡
  */
 function resolvePermissionInner(tool: Tool, input: unknown, ctx: ToolContext): PermissionDecision {
@@ -173,7 +200,9 @@ function resolvePermissionInner(tool: Tool, input: unknown, ctx: ToolContext): P
     if (isPlanFileWrite(tool, input, ctx)) {
       return { behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: tool.name } }
     }
-    return { behavior: 'deny', message: PLAN_SKIP_MSG(tool.name), reason: { type: 'planSkip' } }
+    // 对齐 cc:plan 模式不硬 deny 非只读工具——cc 靠系统提示词约束模型只调只读工具(permission pipeline 无 plan-deny 分支)。
+    // 我方对接的国产模型自律性不及 Claude,故非只读工具退成 ask(弹卡问,不放任也不硬拒),模型万一不自律仍由用户闸住。
+    return ask(tool, ctx, input, { type: 'planSkip' }, tool.approvalClassFor?.(input, ctx) ?? tool.approvalClass)
   }
 
   const approvalClass = tool.approvalClassFor?.(input, ctx) ?? tool.approvalClass
@@ -194,6 +223,11 @@ function resolvePermissionInner(tool: Tool, input: unknown, ctx: ToolContext): P
   if (mode === 'bypassPermissions') {
     return { behavior: 'allow', reason: { type: 'mode', mode } }
   }
+  // 危险命令(rm -rf 根/format c:/mkfs 等):完全访问档已在上面放行(对齐 cc:bypass 忽略 ask);其余档一律 ask,
+  // 且排在 allow 规则/safePrefix 之前——即用户配了 allow run_command(*) 也不能让危险命令免审批(对齐 cc
+  // checkDangerousRemovalPaths「cannot be auto-allowed by permission rules」)。deny 规则仍在上面优先拦。
+  const dangerous = tool.dangerousReasonFor?.(input, ctx)
+  if (dangerous) return ask(tool, ctx, input, { type: 'dangerous', text: dangerous }, approvalClass)
   if (tool.safePrefixFor?.(input, ctx)) return { behavior: 'allow', reason: { type: 'safePrefix' } }
 
   const allowRule = matchingRule(ctx, tool, input, 'allow')
