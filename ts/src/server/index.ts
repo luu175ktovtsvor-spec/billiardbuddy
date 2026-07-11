@@ -4507,6 +4507,22 @@ export function startServer(opts: StartServerOptions = {}) {
         }
       }
 
+      // 会话管理:PATCH /sessions/:id {title?,pinned?,archived?} 重命名/置顶/归档;DELETE 删除。
+      // 侧栏会话右键菜单接这里(原来只改前端本地、刷新即丢)。
+      const sessionIdMatch = url.pathname.match(/^\/sessions\/([^/]+)$/)
+      if (sessionIdMatch && (req.method === 'PATCH' || req.method === 'DELETE')) {
+        const id = decodeURIComponent(sessionIdMatch[1]!)
+        const existing = await sessions.get(id).catch(() => null)
+        if (!existing) return jsonDetailError('session not found', 404)
+        if (req.method === 'DELETE') { const ok = await sessions.remove(id); return Response.json({ ok }) }
+        const body = await req.json().catch(() => ({})) as Record<string, unknown>
+        const patch: { title?: string; pinned?: boolean; archived?: boolean } = {}
+        if (typeof body.title === 'string' && body.title.trim()) patch.title = body.title.trim()
+        if (typeof body.pinned === 'boolean') patch.pinned = body.pinned
+        if (typeof body.archived === 'boolean') patch.archived = body.archived
+        return Response.json({ session: await sessions.touch(id, patch) })
+      }
+
       // 会话 fork:用新 id 拷贝源会话 transcript 续接(对齐 cc --fork-session)。
       const sessionForkMatch = url.pathname.match(/^\/sessions\/([^/]+)\/fork$/)
       if (sessionForkMatch && req.method === 'POST') {

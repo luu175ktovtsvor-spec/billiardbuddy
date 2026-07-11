@@ -35,6 +35,10 @@ export interface SessionMeta {
    * 主循环把它持久化到这里,后续回合即便前端不回传 enabled_packs 也保持在该模式(自动注入 pack 知识/工具)。
    */
   enabledPacks?: string[]
+  /** 置顶(侧栏排序靠前)。 */
+  pinned?: boolean
+  /** 归档(侧栏折叠到"已归档"区)。 */
+  archived?: boolean
 }
 
 /** 项目(工作区)聚合摘要:多项目 App 的"最近项目"选择器用。 */
@@ -207,7 +211,7 @@ export class SessionService {
     return meta
   }
 
-  async touch(id: string, patch: Partial<Pick<SessionMeta, 'title' | 'workspaceRoot' | 'status' | 'lastEventSeq' | 'enabledPacks'>> = {}): Promise<SessionMeta> {
+  async touch(id: string, patch: Partial<Pick<SessionMeta, 'title' | 'workspaceRoot' | 'status' | 'lastEventSeq' | 'enabledPacks' | 'pinned' | 'archived'>> = {}): Promise<SessionMeta> {
     validateSessionId(id)
     const index = await this.readIndex()
     const current = index.get(id)
