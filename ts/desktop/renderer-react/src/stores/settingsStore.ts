@@ -12,6 +12,7 @@ import type { PermissionMode } from '../types/chat'
 
 const MAP_KEY = 'qf-workspace-by-conv'
 const LEGACY_KEY = 'qf-workspace-root' // 旧的单一全局值(已废弃);仅在此清理,不再用它当任何会话的默认
+const PACKS_MAP_KEY = 'qf-packs-by-conv' // 领域包(台球运营专家等)也按会话隔离,与工作目录同构
 
 function readStoredMap(): Record<string, string> {
   if (typeof window === 'undefined') return {}
@@ -38,10 +39,35 @@ function persistMap(map: Record<string, string>): void {
   }
 }
 
+function readStoredPacksMap(): Record<string, string[]> {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = window.localStorage.getItem(PACKS_MAP_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw) as unknown
+      if (parsed && typeof parsed === 'object') return parsed as Record<string, string[]>
+    }
+  } catch {
+    /* 坏 JSON → 空表 */
+  }
+  return {}
+}
+
+function persistPacksMap(map: Record<string, string[]>): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(PACKS_MAP_KEY, JSON.stringify(map))
+  } catch {
+    /* 配额满/隐私模式 → 忽略 */
+  }
+}
+
 interface SettingsState {
   defaultPermissionMode: PermissionMode
-  /** 当前挂载的领域包(如 'billiards');空 = 通用 Agent。 */
+  /** 当前激活会话挂载的领域包(= enabledPacksByConv[activeConvId] ?? []);空 = 通用 Agent。sendMessage 读它。 */
   enabledPacks: string[]
+  /** 按 conversationId 记的领域包映射(持久化)。挂件按会话隔离:某窗口开台球、别的窗口不受影响。 */
+  enabledPacksByConv: Record<string, string[]>
   /** 按 conversationId 记的工作目录映射(持久化)。 */
   workspaceByConv: Record<string, string>
   /** 当前激活的会话 id(由 chatStore.startConversation 切换)。 */
@@ -49,33 +75,51 @@ interface SettingsState {
   /** 当前激活会话的工作目录(= workspaceByConv[activeConvId] ?? null);sendMessage 的 working_dir + 右侧面板都读它。 */
   workspaceRoot: string | null
   setPermissionMode: (mode: PermissionMode) => void
+  /** 设当前**激活会话**的领域包(不是全局);落 per-conv 映射。斜杠 /台球 开、/台球关闭 关、设置开关都走它。 */
   setEnabledPacks: (packs: string[]) => void
-  /** 切到某会话:workspaceRoot 变成它记住的目录(没有则回退旧全局默认一次,仍不串台)。 */
+  /** 切到某会话:workspaceRoot + enabledPacks 都变成它自己记住的(没有则空,不串台)。 */
   activateConversation: (conversationId: string | null) => void
   /** 选文件夹:把目录绑到**当前激活会话**(不是全局);null = 解绑回后端默认。 */
   setWorkspaceRoot: (root: string | null) => void
   /** 采纳后端会话记录的工作目录(打开老会话时,若本地还没记 → 用后端 meta.workspaceRoot 兜底)。 */
   adoptConversationWorkspace: (conversationId: string, root: string | null | undefined) => void
+  /** 采纳后端会话记录的领域包(打开老会话时,若本地还没记 → 用后端 meta.enabledPacks 兜底)。 */
+  adoptConversationPacks: (conversationId: string, packs: string[] | null | undefined) => void
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   defaultPermissionMode: 'default',
   enabledPacks: [],
+  enabledPacksByConv: readStoredPacksMap(),
   workspaceByConv: readStoredMap(),
   activeConvId: null,
   workspaceRoot: null,
   setPermissionMode: (mode) => set({ defaultPermissionMode: mode }),
-  setEnabledPacks: (packs) => set({ enabledPacks: packs }),
+
+  setEnabledPacks: (packs) => {
+    const convId = get().activeConvId
+    // 没有激活会话(理论上不该发生)→ 只更当前值,不落映射。
+    if (!convId) {
+      set({ enabledPacks: packs })
+      return
+    }
+    const map = { ...get().enabledPacksByConv }
+    if (packs.length > 0) map[convId] = packs
+    else delete map[convId]
+    persistPacksMap(map)
+    set({ enabledPacksByConv: map, enabledPacks: packs })
+  },
 
   activateConversation: (conversationId) => {
     if (!conversationId) {
-      set({ activeConvId: null, workspaceRoot: null })
+      set({ activeConvId: null, workspaceRoot: null, enabledPacks: [] })
       return
     }
-    // 该会话已有自己的目录记录 → 用它;否则 null(= 后端默认 ~/Documents/球房管家/)。
-    // 刻意不继承任何"全局/最近"值:未绑定会话继承可变全局会导致改一个会话连带改别的会话默认(漂移串台)。
+    // 该会话已有自己的目录/挂件记录 → 用它;否则空(工作目录=后端默认,挂件=通用助手不挂)。
+    // 刻意不继承任何"全局/最近"值:未绑定会话继承可变全局会导致改一个会话连带改别的会话(漂移串台)。
     const bound = get().workspaceByConv[conversationId] ?? null
-    set({ activeConvId: conversationId, workspaceRoot: bound })
+    const packs = get().enabledPacksByConv[conversationId] ?? []
+    set({ activeConvId: conversationId, workspaceRoot: bound, enabledPacks: packs })
   },
 
   setWorkspaceRoot: (root) => {
@@ -102,6 +146,18 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       workspaceByConv: map,
       // 若采纳的正是当前激活会话 → 同步生效值。
       workspaceRoot: s.activeConvId === conversationId ? root : s.workspaceRoot,
+    }))
+  },
+
+  adoptConversationPacks: (conversationId, packs) => {
+    if (!packs || packs.length === 0) return
+    // 本地已有该会话的挂件记录(哪怕是空——用户可能刚手动关了)→ 前端为准,不覆盖。
+    if (conversationId in get().enabledPacksByConv) return
+    const map = { ...get().enabledPacksByConv, [conversationId]: packs }
+    persistPacksMap(map)
+    set((s) => ({
+      enabledPacksByConv: map,
+      enabledPacks: s.activeConvId === conversationId ? packs : s.enabledPacks,
     }))
   },
 }))

@@ -1570,16 +1570,25 @@ export function startServer(opts: StartServerOptions = {}) {
     const entryCommandForPack = rawBody.skipCommandParsing ? null : parseCommandInvocation(rawUserMessage)
     const slashEnabledPackId = entryCommandForPack ? packIdForCommandName(entryCommandForPack.name) : undefined
     const persistedPackIds = Array.isArray(touchedMeta.enabledPacks) ? touchedMeta.enabledPacks : []
-    const enabledPacks = mergeEnabledPacks(resolveEnabledPacks(rawBody), [
-      ...persistedPackIds,
-      ...(slashEnabledPackId ? [slashEnabledPackId] : []),
-    ])
-    // 斜杠命令新启用了 pack → 持久化到会话,后续回合自动保持(仅有新增时写回,避免每回合无谓写盘)。
-    if (slashEnabledPackId) {
-      const enabledPackIds = enabledPacks.map(pack => pack.id)
-      if (enabledPackIds.some(id => !persistedPackIds.includes(id))) {
-        await sessions.touch(conversationId, { enabledPacks: enabledPackIds }).catch(() => undefined)
-      }
+    // 挂件按会话:前端 run 消息**总带** enabled_packs 字段(前端 per-conv 真相源,含空=显式关某窗口的台球)。
+    //   · 带字段 → 前端为准(不再反向叠加 persisted),支持"关";本回合斜杠 /台球 仍并进来(双保险)。
+    //   · 缺字段(定时/后台等非前端路径)→ 沿用持久化 persisted + 斜杠,不掉包也不误清。
+    const requestHasPacksField = rawBody.enabled_packs !== undefined || rawBody.enabledPacks !== undefined ||
+      rawBody.knowledge_packs !== undefined || rawBody.knowledgePacks !== undefined
+    const slashIds = slashEnabledPackId ? [slashEnabledPackId] : []
+    const enabledPacks = requestHasPacksField
+      ? mergeEnabledPacks(resolveEnabledPacks(rawBody), slashIds)
+      : mergeEnabledPacks(resolveEnabledPacks(rawBody), [...persistedPackIds, ...slashIds])
+    // 持久化本会话挂件集合(跨重启前端 adopt 兜底恢复):
+    //   · 前端带字段 → 以当前集合为准写回(与 persisted 不同才写,支持"关"=写空);
+    //   · 缺字段但斜杠新启用 → 补写(老行为)。缺字段且无斜杠 → 完全不动持久化(防误清)。
+    const enabledPackIds = enabledPacks.map(pack => pack.id)
+    const samePersisted = enabledPackIds.length === persistedPackIds.length && enabledPackIds.every(id => persistedPackIds.includes(id))
+    const shouldPersist = requestHasPacksField
+      ? !samePersisted
+      : Boolean(slashEnabledPackId) && enabledPackIds.some(id => !persistedPackIds.includes(id))
+    if (shouldPersist) {
+      await sessions.touch(conversationId, { enabledPacks: enabledPackIds }).catch(() => undefined)
     }
     const commands = await loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), enabledPacks, opts.env ?? process.env)
     // 技能/命令发现清单注入系统提示(对齐 cc SkillTool skill listing):汇总 builtin 命令 + 技能 + 已启用领域包命令,

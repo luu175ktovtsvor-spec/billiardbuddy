@@ -100,14 +100,14 @@ export function SettingsModal() {
             <Segmented<PermissionMode> full value={permValue} onChange={setPerm} options={PERM_MODES} />
           </Section>
 
-          <Section title="台球运营专家" desc="挂载后按台球运营知识回答;默认是通用本机助手。">
+          <Section title="台球运营专家" desc="只作用于当前对话窗口:挂载后这个窗口按台球运营知识回答,别的窗口不受影响;也可在输入框敲 /台球 开、/台球关闭 关。">
             <button
               type="button"
               onClick={() => setPacks(billiards ? [] : ['billiards'])}
               className="rounded-full px-3.5 py-1 text-[12.5px] transition-colors"
               style={billiards ? { background: 'var(--color-primary)', color: 'var(--color-on-primary)' } : { border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)' }}
             >
-              {billiards ? '已挂载' : '未挂载'}
+              {billiards ? '本窗口已挂载' : '本窗口未挂载'}
             </button>
           </Section>
 
