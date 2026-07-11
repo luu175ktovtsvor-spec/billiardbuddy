@@ -81,6 +81,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 @keyframes qf-pulse-dot { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.82); } }
 
 /* —— 工具行「文件名」链接(Codex 浅蓝强调色,仅用于文件名/目标)。 —— */
+/* 工具行文件名:走我们自家品牌浅蓝(强调色 #0a84ff 系,--color-link),hover 才加下划线。
+   ⚠️ 不照抄 Codex 的近黑——颜色是我们软件专有配色(铁律:强调色浅蓝、不用 Codex 原色);对齐 Codex 只对结构/布局/交互。 */
 .qf-tool-link { color: var(--color-link); }
 .qf-tool-link:hover { text-decoration: underline; color: var(--color-link-hover); }
 
