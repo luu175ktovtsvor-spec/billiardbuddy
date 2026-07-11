@@ -14,7 +14,9 @@ const DEFAULT_EVENT_LIMIT = 200
 const MAX_EVENT_LIMIT = 1000
 
 export type SessionStatus = 'idle' | 'running' | 'interrupted' | 'failed'
-export type SessionStreamEvent = AgentEvent | { type: 'done' }
+// user_prompt:用户这句话本身(回合流第一条)。事件日志是回放的唯一真相源,少了它,
+// 切会话/重启/rewind 后重放只有 agent 侧事件、用户气泡整段消失。
+export type SessionStreamEvent = AgentEvent | { type: 'done' } | { type: 'user_prompt'; text: string }
 
 export interface SessionEventRecord {
   seq: number
