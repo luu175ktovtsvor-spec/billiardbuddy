@@ -6,6 +6,7 @@
 import { create } from 'zustand'
 import { wsManager } from '../api/websocket'
 import { useSettingsStore } from './settingsStore'
+import { useSessionStore } from './sessionStore'
 import type { ClientMessage, ServerMessage } from '../types/chat'
 import type { AgentEvent, ApprovalReason } from '../types/events'
 
@@ -470,6 +471,9 @@ export const useChatStore = create<ChatState>((set, get) => {
         attachTurnTokens()
         attachTurnDuration()
         stopElapsedTimer()
+        // 回合结束刷会话列表:新会话首条消息跑完,侧栏对应项目组立刻出现该对话(不然要等点击才刷,
+        // 组头一直空着显示"还没有对话";项目聚合由 Sidebar 的 useEffect 跟着 sessions 变化联动刷)。
+        void useSessionStore.getState().refresh()
         break
     }
   }
@@ -636,6 +640,9 @@ export const useChatStore = create<ChatState>((set, get) => {
       const id = get().conversationId
       const block = get().blocks.find((b) => b.id === blockId)
       if (!id || !block || block.kind !== 'approval') return
+      // working_dir 必带(与 sendMessage 同源):审批放行的执行要跑在本会话的工作目录,漏带时后端
+      // 兜底默认目录 → 文件写错文件夹(2026-07-12 真机逮到的真 bug;后端也已加 session meta 自愈)。
+      const approveRoot = useSettingsStore.getState().workspaceRoot
       send({
         type: 'approve',
         tool: block.tool,
@@ -644,6 +651,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         conversationId: id,
         permissionMode: 'default',
         remember_approval: remember,
+        ...(approveRoot ? { working_dir: approveRoot } : {}),
       })
       set((s) => ({
         blocks: s.blocks.map((b) =>
