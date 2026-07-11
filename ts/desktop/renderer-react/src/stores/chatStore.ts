@@ -87,6 +87,9 @@ let pendingAssistantDelta = ''
 let assistantFlushTimer: ReturnType<typeof setTimeout> | null = null
 let pendingThinkingDelta = ''
 let thinkingFlushTimer: ReturnType<typeof setTimeout> | null = null
+// 本地乐观 user 气泡的回声计数:sendMessage 先本地插一条 user 块,server 又会把同一句作
+// user_prompt 事件发回(事件日志=回放唯一真相源)。计数>0 时吞掉一次回声防双气泡;回放时计数=0 → 正常重建。
+let pendingUserEcho = 0
 
 // todo_update 载荷是后端 formatTodoChecklist()(ts/src/types/todo.ts)吐出的大白话清单文本,
 // 前端从 ☐/◐/☑ 行标记反解析回结构化项,渲成 SessionTaskBar(对齐 cc SessionTaskBar 的结构化 task 列表)。
@@ -273,8 +276,14 @@ export const useChatStore = create<ChatState>((set, get) => {
   }
 
   /** AgentEvent reducer(对齐 app.js renderEvent 一一对应)。 */
-  function reduceEvent(ev: AgentEvent | { type: 'done' }) {
+  function reduceEvent(ev: AgentEvent | { type: 'done' } | { type: 'user_prompt'; text: string }) {
     switch (ev.type) {
+      case 'user_prompt': {
+        // 用户这句话(回合流第一条)。本地已乐观插过 → 吞一次回声;回放路径(计数=0)→ 重建用户气泡。
+        if (pendingUserEcho > 0) { pendingUserEcho--; break }
+        if (ev.text && ev.text.trim()) set((s) => ({ blocks: [...s.blocks, { id: newBlockId(), kind: 'user', text: ev.text }] }))
+        break
+      }
       case 'content_delta': {
         if (ev.channel === 'text' && ev.text) {
           finalizeThinking()
@@ -383,7 +392,14 @@ export const useChatStore = create<ChatState>((set, get) => {
           if (id) {
             set((s) => ({ blocks: s.blocks.map((b) => (b.id === id && b.kind === 'assistant' ? { ...b, text: ev.text, streaming: false } : b)) }))
           } else {
-            set((s) => ({ blocks: [...s.blocks, { id: newBlockId(), kind: 'assistant', text: ev.text, streaming: false, ts: Date.now() }] }))
+            // 尾随思考会提前 settle 掉流式气泡(有的模型在正文后还继续思考):final 全文与已渲染的
+            // 最后一条 assistant 一致时只收尾不追加,防同一回复渲染两遍。
+            const last = [...get().blocks].reverse().find((b) => b.kind === 'assistant')
+            if (last && last.kind === 'assistant' && last.text === ev.text) {
+              set((s) => ({ blocks: s.blocks.map((b) => (b.id === last.id && b.kind === 'assistant' ? { ...b, streaming: false } : b)) }))
+            } else {
+              set((s) => ({ blocks: [...s.blocks, { id: newBlockId(), kind: 'assistant', text: ev.text, streaming: false, ts: Date.now() }] }))
+            }
           }
         }
         settleAssistant()
@@ -470,6 +486,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         finalizeThinking()
         settleAssistant()
         stopElapsedTimer()
+        pendingUserEcho = 0 // 回合没起来,别让回声计数吞掉下一次回放的用户气泡
         pushNote(`这次没跑成:${msg.error}`, 'error')
         break
       }
@@ -538,6 +555,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       // 切换会话:断掉旧的处理器,重置渲染态。
       get()._unsub?.()
       stopElapsedTimer()
+      pendingUserEcho = 0
       set({
         conversationId,
         blocks: [],
@@ -560,6 +578,12 @@ export const useChatStore = create<ChatState>((set, get) => {
       const unsub = wsManager.onMessage(conversationId, handleServerMessage)
       wsManager.connect(conversationId)
       set({ _unsub: unsub })
+      // 连接已存在(切走再切回同一会话):connect() 是 no-op、'ready' 不会再来,_wantReplay 永远没人消费,
+      // 而上面已把 blocks 清空 → 会话看着像被抹掉。此时直接在现有连接上补发 replay,把历史拉回来。
+      if (opts?.replay && wsManager.isConnected(conversationId)) {
+        set({ _wantReplay: false })
+        wsManager.send(conversationId, { type: 'replay', conversationId, after: 0 })
+      }
     },
 
     sendMessage: (text) => {
@@ -576,6 +600,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       // "用户已接着聊"语义,我们简化成新回合直接清空,别让上一轮的已完成清单赖着不走)。
       const staleTodos = get().todos
       const clearTodos = staleTodos.length > 0 && staleTodos.every((td) => td.status === 'done')
+      pendingUserEcho++ // server 会把这句作 user_prompt 事件回发,吞一次防双气泡
       set((s) => ({
         blocks: [...s.blocks, { id: newBlockId(), kind: 'user', text: trimmed }],
         status: 'running',

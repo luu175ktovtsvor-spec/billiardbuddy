@@ -113,7 +113,7 @@ import { getAutoMemDir, getUserConfigHomeDir } from '../harness/memoryNames'
 import { existsSync, mkdirSync } from 'node:fs'
 import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 
-function sseLine(ev: AgentEvent | { type: 'done' }): string {
+function sseLine(ev: SessionStreamEvent): string {
   return `event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`
 }
 
@@ -1897,6 +1897,8 @@ export function startServer(opts: StartServerOptions = {}) {
         }
       }
       try {
+        // 用户这句话先进事件日志(回放的唯一真相源):否则切会话/重启后重放只剩 agent 事件,用户气泡消失。
+        yield await record({ type: 'user_prompt', text: commandInvocation?.raw ?? rawUserMessage })
         if (bridgeBlockedCommand) {
           const msg = bridgeUnsafeCommandMessage(bridgeBlockedCommand.name)
           yield await record({
@@ -2138,6 +2140,7 @@ export function startServer(opts: StartServerOptions = {}) {
       for await (const record of stream) {
         if (taskCtx.signal.aborted) break
         if (record.event.type === 'final') finalText = record.event.text
+        if (record.event.type === 'user_prompt') continue // 任务通道不透传用户气泡事件(任务参数本就带 prompt)
         await taskCtx.emit(record.event)
       }
       return finalText
@@ -2190,6 +2193,7 @@ export function startServer(opts: StartServerOptions = {}) {
       for await (const record of stream) {
         if (taskCtx.signal.aborted) break
         if (record.event.type === 'final') finalText = record.event.text
+        if (record.event.type === 'user_prompt') continue // 任务通道不透传用户气泡事件(任务参数本就带 prompt)
         await taskCtx.emit(record.event)
       }
       return finalText

@@ -1003,10 +1003,10 @@ test('POST /agent/run streams through configured real Model adapter and tools', 
 
     const eventsRes = await fetch(`http://127.0.0.1:${realServer.port}/sessions/c1/events`)
     const eventsBody = await eventsRes.json() as any
-    expect(eventsBody.events.map((e: any) => e.event.type)).toEqual(['tool_call', 'tool_result', 'final', 'done'])
-    expect(eventsBody.nextSeq).toBe(4)
+    expect(eventsBody.events.map((e: any) => e.event.type)).toEqual(['user_prompt', 'tool_call', 'tool_result', 'final', 'done'])
+    expect(eventsBody.nextSeq).toBe(5)
 
-    const afterRes = await fetch(`http://127.0.0.1:${realServer.port}/sessions/c1/events?after=2`)
+    const afterRes = await fetch(`http://127.0.0.1:${realServer.port}/sessions/c1/events?after=3`)
     const afterBody = await afterRes.json() as any
     expect(afterBody.events.map((e: any) => e.event.type)).toEqual(['final', 'done'])
 
@@ -3117,12 +3117,12 @@ test('WS /agent/ws runs a turn and replays persisted events after disconnect', a
     client.ws.send(JSON.stringify({ type: 'run', message: '列目录', permissionMode: 'full' }))
     const events = await collectWsEvents(client)
     // content_delta 是实时 token 流(不持久化),从结构断言里过滤掉
-    expect(events.map(e => e.event?.type).filter((t): t is string => Boolean(t) && t !== 'content_delta')).toEqual(['tool_call', 'tool_result', 'final', 'done'])
+    expect(events.map(e => e.event?.type).filter((t): t is string => Boolean(t) && t !== 'content_delta')).toEqual(['user_prompt', 'tool_call', 'tool_result', 'final', 'done'])
     expect(JSON.stringify(events)).toContain('ws 完成')
     expect(events.every(e => e.type !== 'event' || e.event?.type === 'content_delta' || e.seq > 0)).toBe(true)
     client.close()
 
-    const replay = wsClient(`ws://127.0.0.1:${wsServer.port}/agent/ws?conversationId=ws-run&after=1`)
+    const replay = wsClient(`ws://127.0.0.1:${wsServer.port}/agent/ws?conversationId=ws-run&after=2`)
     await replay.opened
     expect(await replay.next()).toMatchObject({ type: 'ready', conversationId: 'ws-run' })
     const replayed = [await replay.next(), await replay.next(), await replay.next()]
@@ -4182,7 +4182,8 @@ description: 写日报
 
     const replay = await fetch(`http://127.0.0.1:${commandRunServer.port}/sessions/cmd-invoke/events`)
     const replayBody = await replay.json() as any
-    expect(replayBody.events[0].event).toMatchObject({
+    expect(replayBody.events[0].event.type).toBe('user_prompt')
+    expect(replayBody.events[1].event).toMatchObject({
       type: 'command_invocation',
       name: 'daily-report',
       args: '今天',
@@ -4431,7 +4432,8 @@ test('POST /agent/run expands enabled domain pack slash commands', async () => {
 
     const replay = await fetch(`http://127.0.0.1:${commandRunServer.port}/sessions/domain-pack-cmd-invoke/events`)
     const replayBody = await replay.json() as any
-    expect(replayBody.events[0].event).toMatchObject({
+    expect(replayBody.events[0].event.type).toBe('user_prompt')
+    expect(replayBody.events[1].event).toMatchObject({
       type: 'command_invocation',
       name: 'billiards:content-plan',
       args: '周末活动',
@@ -4539,6 +4541,7 @@ test('POST /agent/run handles builtin /goal set as local command before continui
     const replay = await fetch(`http://127.0.0.1:${goalServer.port}/sessions/goal-set/events`)
     const replayBody = await replay.json() as any
     expect(replayBody.events.map((record: any) => record.event.type)).toEqual([
+      'user_prompt',
       'command_invocation',
       'context_note',
       'final',
