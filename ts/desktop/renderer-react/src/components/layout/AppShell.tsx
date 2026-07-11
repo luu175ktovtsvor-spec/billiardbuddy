@@ -8,7 +8,6 @@ import { FilePreviewPanel } from '../workspace/FilePreviewPanel'
 import { SettingsModal } from '../settings/SettingsModal'
 import { Toaster } from '../shared/Toaster'
 import { CommandPalette } from '../shared/CommandPalette'
-import { TerminalPanel } from '../workspace/TerminalPanel'
 import { initializeDesktopServerUrl } from '../../lib/desktopRuntime'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useUiStore } from '../../stores/uiStore'
@@ -75,7 +74,6 @@ export function AppShell() {
       if (e.key === 'b' || e.key === 'B') { e.preventDefault(); useUiStore.getState().toggleSidebar() }
       else if (e.key === 'k' || e.key === 'K') { e.preventDefault(); useUiStore.getState().setPaletteOpen(true) }
       else if (e.key === '\\') { e.preventDefault(); useFilePreviewStore.getState().togglePanel() }
-      else if (e.key === '`') { e.preventDefault(); useUiStore.getState().toggleTerminal() }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -143,8 +141,8 @@ export function AppShell() {
           {/* 右侧工作区面板(文件展示 + 工作树)——仅对话视图,由 filePreviewStore.panelOpen 控制。 */}
           {isChat && <FilePreviewPanel />}
         </div>
-        {/* 底部终端抽屉(照 Codex:终端在底部、全宽)——仅对话视图,由 uiStore.terminalOpen 控制。 */}
-        {isChat && <TerminalPanel />}
+        {/* 终端 UI 已下架(asar 核实 Codex 终端 = 右面板 tab + xterm.js/node-pty 真交互终端,管手动命令与后台进程;
+            AI 一次性命令的过程只在对话流内联显示,不灌终端)。真交互终端落地前不挂任何终端 UI,免得点开是个假的。 */}
       </div>
       {/* 设置弹窗(左栏「设置」按钮触发) */}
       <SettingsModal />
