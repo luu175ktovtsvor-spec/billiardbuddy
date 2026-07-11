@@ -13,6 +13,7 @@ import { initializeDesktopServerUrl } from '../../lib/desktopRuntime'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useUiStore } from '../../stores/uiStore'
 import { useFilePreviewStore } from '../../stores/filePreviewStore'
+import { useChatStore } from '../../stores/chatStore'
 import { openNewConversation, openExistingConversation } from '../../lib/conversations'
 import { pickSessionToRestore, readLastConversation } from '../../lib/sessionRecovery'
 import { isPreviewMode, applyPreviewSeed } from '../../lib/previewSeed'
@@ -21,6 +22,12 @@ import { pickWorkspaceFolder } from '../../lib/workspace'
 import { t } from '../../i18n'
 
 type Phase = 'connecting' | 'ready' | 'error'
+
+// 可能改动工作目录文件的工具:完成后触发右侧工作区自动刷新(编辑类 + 跑命令,shell 命令也可能写文件)。
+const MUTATING_TOOLS = new Set([
+  'edit_file', 'multi_edit_file', 'write_file', 'patch_file', 'patch_files', 'edit_excel',
+  'run_command', 'run_command_background',
+])
 
 export function AppShell() {
   const [phase, setPhase] = useState<Phase>(isPreviewMode() ? 'ready' : 'connecting')
@@ -79,6 +86,24 @@ export function AppShell() {
     getDesktopHost().onMenu?.((action) => {
       if (action === 'pick-workspace') void pickWorkspaceFolder()
     })
+  }, [])
+
+  // 工具改文件后自动刷新右侧工作区(文件树 + git 计数),对齐 Codex「改动实时反映到右栏」:
+  // 此前 loadWorkspace 只手动触发,agent 改完文件右侧不动。订阅 chatStore 里"已完成的改文件类工具"计数,
+  // 增长即防抖重载(仅面板开着时,省流量);会话切换 blocks 清空 → 计数回落自动复位,不误触。
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let last = 0
+    const unsub = useChatStore.subscribe((state) => {
+      let n = 0
+      for (const b of state.blocks) if (b.kind === 'tool' && b.status === 'ok' && MUTATING_TOOLS.has(b.tool)) n++
+      if (n > last && useFilePreviewStore.getState().panelOpen) {
+        clearTimeout(timer)
+        timer = setTimeout(() => useFilePreviewStore.getState().loadWorkspace(), 400)
+      }
+      last = n
+    })
+    return () => { unsub(); clearTimeout(timer) }
   }, [])
 
   if (phase === 'connecting') {

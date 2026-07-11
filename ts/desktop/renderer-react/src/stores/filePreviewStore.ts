@@ -43,7 +43,9 @@ export interface GitSummary {
 interface WorkspaceStatusResp {
   root?: string
   git?: GitSummary
-  tree?: TreeEntry[]
+  // ⚠️ 后端 workspace-status 的 tree 是**对象** { root, entries, total, truncated },真正的文件数组在 entries 里
+  //(不是裸数组);此前 store 把整个对象当数组存、FileTree 直接 .map() 会崩、文件树从没真正渲染出文件。
+  tree?: { root?: string; entries?: TreeEntry[]; total?: number; truncated?: boolean }
 }
 interface FsReadResp {
   path?: string
@@ -91,7 +93,8 @@ export const useFilePreviewStore = create<FilePreviewState>((set, get) => ({
     set({ treeLoading: true, treeError: null })
     void api
       .get<WorkspaceStatusResp>(`/api/v1/agent/workspace-status${wdParam('?')}`)
-      .then((res) => set({ treeLoading: false, tree: res.tree ?? [], git: res.git ?? null, root: res.root ?? null }))
+      // 取 tree.entries(真正的文件数组);root 优先 tree.root 再退顶层 root。
+      .then((res) => set({ treeLoading: false, tree: res.tree?.entries ?? [], git: res.git ?? null, root: res.tree?.root ?? res.root ?? null }))
       .catch((err) => set({ treeLoading: false, treeError: err instanceof Error ? err.message : String(err) }))
   },
 
