@@ -62,6 +62,16 @@ test('系统提示含"谨慎执行动作" + 拒绝处理', async () => {
   expect(prompt).toContain('别用完全一样的参数再试') // denial rule
 })
 
+test('系统提示含"做任务"诚实纪律:工具没真跑成不许谎报已完成', async () => {
+  const prompt = await buildSystemPrompt(new Workspace(root))
+  expect(prompt).toContain('# 做任务')
+  expect(prompt).toContain('如实报告结果,绝不谎报')
+  expect(prompt).toContain('等审批')
+  expect(prompt).toContain('永远不要把没做完或做坏的事说成做完了')
+  expect(prompt).toContain('别过度工程')
+  expect(prompt).toContain('OWASP')
+})
+
 test('系统提示要求代码改动后做就近验证', async () => {
   const prompt = await buildSystemPrompt(new Workspace(root))
   expect(prompt).toContain('改动后的验证')
