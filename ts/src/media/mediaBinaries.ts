@@ -146,9 +146,21 @@ export function subtitleFontConfig(env?: Env): { fontsDir: string; family: strin
   return null
 }
 
+/** 超分二进制绝对路径:env 显式 → 资产管理器 → 内置目录 → PATH。缺则 null(上层功能门提示"正在准备组件x%")。 */
+export function resolveRealesrganPath(env?: Env): string | null {
+  const e = toEnv(env)
+  const explicit = resolveExecutable(e.REALESRGAN_BIN || '', e)
+  if (explicit) return explicit
+  const managed = managedAssetPath(ASSET_IDS.realesrgan)
+  if (managed) return managed
+  const bundled = bundledBinary('realesrgan-ncnn-vulkan', e)
+  if (bundled) return bundled
+  return resolveExecutable('realesrgan-ncnn-vulkan', e) ?? resolveExecutable('realesrgan', e)
+}
+
 // ── 功能门 ────────────────────────────────────────────────────────────────────
 
-export type MediaBinaryNeed = 'ffmpeg' | 'ffprobe' | 'whisper'
+export type MediaBinaryNeed = 'ffmpeg' | 'ffprobe' | 'whisper' | 'realesrgan'
 
 /** 一个 need 缺哪些资产 id(env 显式覆盖视为用户自管、不判缺,保持门与实际 spawn 一致)。 */
 function missingAssetIdsFor(need: MediaBinaryNeed, env: Env): string[] {
@@ -161,6 +173,10 @@ function missingAssetIdsFor(need: MediaBinaryNeed, env: Env): string[] {
     if (explicitOf(env, ['FFPROBE_BIN', 'FFPROBE_PATH'])) return []
     const found = managedAssetPath(ASSET_IDS.ffprobe) ?? bundledBinary('ffprobe', env) ?? resolveExecutable('ffprobe', env)
     return found ? [] : [ASSET_IDS.ffprobe]
+  }
+  if (need === 'realesrgan') {
+    if (explicitOf(env, ['REALESRGAN_BIN'])) return []
+    return resolveRealesrganPath(env) ? [] : [ASSET_IDS.realesrgan]
   }
   // whisper = 转写二进制 + 权重都要;用户显式自管(自定义命令/直指路径)则不判缺。
   const missing: string[] = []

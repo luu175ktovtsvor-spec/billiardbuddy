@@ -11,6 +11,7 @@ import type { Model } from '../types/model'
 import type { TaskMeta, TaskRunnerContext, TaskService, TaskStatus } from '../tasks/taskService'
 import { VideoEditProjectStore } from './videoEditProjects'
 import { ffmpegBinFrom, gateMediaAssets } from './mediaBinaries'
+import { upscaleImage } from './imageUpscale'
 import { PUBLIC_IMAGE_FALLBACK_NOTE, publicImageEngineLabel, scrubProviderIdentifiers } from '../model/publicModelNames'
 import {
   detectPortraitIntent,
@@ -33,8 +34,9 @@ import {
 export type MediaJobKind =
   | 'generate'
   | 'edit'
-  | 'variations'
-  | 'compose'
+  | 'upscale'
+  // 注:'variations'/'compose' 曾声明但从未接产出/派发(死类型),已删。
+  // "出几张挑一张"由 generate 的 count 参数覆盖;变体/合成如需再作为工作台能力另接。
   | 'video_inventory'
   | 'video_render'
   | 'video_auto_plan'
@@ -768,6 +770,19 @@ export class MediaJobService {
       preflight: ctx => this.portraitPreflight(ctx, normalized, 'edit', shared),
       postprocess: (ctx, result) => this.imageResultPostprocess(ctx, result, shared),
       fallback: ctx => this.directOrLocalImageFallback(ctx, normalized, 'edit'),
+    })
+  }
+
+  /** 超分放大(本机 Real-ESRGAN,无后端代理、纯本地):把生成图/本机图放大到高清(印刷不糊)。 */
+  async startUpscale(body: Record<string, unknown>, opts: { conversationId?: string; workspaceRoot?: string } = {}): Promise<MediaJobStartResult> {
+    const normalized = { ...body, conversation_id: stringFrom(body.conversation_id) ?? opts.conversationId }
+    return this.startJob({
+      kind: 'upscale',
+      title: '超分放大',
+      body: normalized,
+      conversationId: stringFrom(normalized.conversation_id),
+      workspaceRoot: opts.workspaceRoot,
+      fallback: ctx => this.localUpscaleFallback(ctx, normalized),
     })
   }
 
@@ -1761,7 +1776,17 @@ export class MediaJobService {
       return assetGate
     }
     const store = new VideoEditProjectStore(this.opts.stateRoot)
-    if (kind === 'video_inventory' || kind === 'video_auto_plan') {
+    if (kind === 'video_auto_plan') {
+      // 出方案走真五步(口播路本地转写 / B-Roll 视觉五步:切镜头→挑镜头→VLM→卡点→叠字),
+      // 不再走 createLocalPlan 的 B-Roll 占位初剪。planEdit 已收敛素材健康报告,口径不丢。
+      return await store.planEdit(body, {
+        env: this.env,
+        signal: ctx.signal,
+        onProgress: (progress, stage) => ctx.progress(progress, stage),
+      })
+    }
+    if (kind === 'video_inventory') {
+      // 素材理解=探规格 + 健康报告(轻量),仍走 createLocalPlan(不跑五步/转写的重活)。
       return await store.createLocalPlan(body, {
         env: this.env,
         signal: ctx.signal,
@@ -1776,6 +1801,34 @@ export class MediaJobService {
       })
     }
     return await this.unavailableFallback(ctx, '视频剪辑需要媒体后端。')
+  }
+
+  /** 超分放大本地执行(反逻辑保护:二进制没下好 → 返回"正在准备组件 x%",绝不静默失败)。 */
+  private async localUpscaleFallback(ctx: TaskRunnerContext, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const gate = gateMediaAssets(this.env, ['realesrgan'])
+    if (gate) {
+      await ctx.progress(5, String(gate.message ?? '超分组件正在后台准备。'))
+      return gate
+    }
+    const scaleRaw = Number(body.scale)
+    const scale = scaleRaw === 2 || scaleRaw === 3 ? scaleRaw : 4
+    // 源图磁盘路径:优先 source_generation_id(取 poster 落盘图),否则 source_image_path(受信任路径 / /uploads)。
+    let srcPath: string | null = null
+    const genId = stringFrom(body.source_generation_id)
+    if (genId) {
+      const up = this.posterUploadForGenerationId(genId)
+      if (up?.url && up.url.startsWith('/uploads/')) srcPath = resolve(this.uploadsRoot, up.url.slice('/uploads/'.length))
+    }
+    if (!srcPath) srcPath = this.resolveLocalImagePath(stringFrom(body.source_image_path) ?? '', this.trustedImagePaths(body))
+    if (!srcPath || !existsSync(srcPath)) throw new Error('超分需要可读取的原图:请传 source_generation_id(之前生成图的 id)或 source_image_path(本机图片路径)。')
+    await mkdir(join(this.uploadsRoot, 'posters'), { recursive: true })
+    const outName = `upscaled_${scale}x_${Date.now()}_${crypto.randomUUID().slice(0, 8)}.png`
+    const outPath = join(this.uploadsRoot, 'posters', outName)
+    await ctx.progress(20, '正在超分放大(印刷级高清)…')
+    await upscaleImage(srcPath, { env: this.env, signal: ctx.signal, scale, outputPath: outPath })
+    await ctx.progress(100, '放大完成。')
+    const url = `/uploads/posters/${outName}`
+    return { url, poster_url: url, generation_id: `upscale-${outName}`, upscaled: true, scale, local_preview: false }
   }
 
   private async localImageFallback(ctx: TaskRunnerContext, body: Record<string, unknown>, mode: 'generate' | 'edit'): Promise<Record<string, unknown>> {

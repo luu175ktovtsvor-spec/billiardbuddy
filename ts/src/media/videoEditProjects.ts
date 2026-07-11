@@ -1199,8 +1199,18 @@ export class VideoEditProjectStore {
     const mode = route === 'speech' ? 'speech' : 'ambient'
     const sources = probed.map(p => ({ ...p, health: footageHealth(p.probe, mode) }))
 
+    // 素材健康报告(从 createLocalPlan 收敛过来:口播路 / B-Roll 路都给店主同一套"素材提醒")。
+    // 键 m{i+1} 按源片顺序,与口播路 add_media 的 mediaId 一致;B-Roll 路按顺序对得上源片。
+    const footageHealthById: Record<string, FootageHealth & { src: string; name: string }> = {}
+    const warnings: string[] = []
+    sources.forEach((item, i) => {
+      const name = basename(item.src)
+      footageHealthById[`m${i + 1}`] = { ...item.health, src: item.src, name }
+      for (const reason of item.health.reasons) warnings.push(`素材 ${i + 1}「${name}」：${reason}`)
+    })
+
     const editDir = this.editDirPath(project)
-    // (2a) speech → 口播路转写;(2b) broll → 本轮 stub。
+    // (2a) speech → 口播路本地转写;(2b) broll → B-Roll 视觉五步(见下 buildBrollOps)。
     let transcripts: Record<string, VideoTranscript> = {}
     let transcribeUnavailableReason: string | null = null
     let transcribed = false
@@ -1280,6 +1290,8 @@ export class VideoEditProjectStore {
       await writeFile(join(editDir, 'takes_packed.md'), renderTakesPacked(transcriptList), 'utf8').catch(() => undefined)
     }
 
+    const healthValues = Object.values(footageHealthById)
+    const warningTail = warnings.length ? ` 素材提醒:${warnings.slice(0, 3).join('；')}${warnings.length > 3 ? `；另有 ${warnings.length - 3} 条` : ''}` : ''
     await opts.onProgress?.(100, '初剪已生成。')
     return {
       project,
@@ -1290,10 +1302,19 @@ export class VideoEditProjectStore {
       operations: ops.length,
       doc: result.doc,
       candidates,
-      report: route === 'broll'
+      report: (route === 'broll'
         ? this.brollReport(usedVlm, brollNotes)
-        : this.planReport(route, transcribed, transcribeUnavailableReason),
+        : this.planReport(route, transcribed, transcribeUnavailableReason)) + warningTail,
       brand: '本地预览',
+      footage_health: footageHealthById,
+      footage_warnings: warnings,
+      warnings,
+      health_summary: {
+        total: healthValues.length,
+        bad: healthValues.filter(item => item.is_bad).length,
+        warning_count: warnings.length,
+        has_audio: healthValues.some(item => item.has_audio),
+      },
       used_vlm: usedVlm,
       has_speech: route === 'speech' && transcribed,
       transcribed,
@@ -1345,7 +1366,7 @@ export class VideoEditProjectStore {
 
       const segments: string[] = []
       for (let i = 0; i < renderItems.length; i++) {
-        const { clip, src } = renderItems[i]!
+        const { clip, src, hasAudio } = renderItems[i]!
         const segmentPath = join(tempDir, `segment_${i + 1}.mp4`)
         const length = Math.max(0.1, clip.src_out - clip.src_in)
         await opts.onProgress?.(12 + Math.floor((i / renderItems.length) * 60), `正在剪第 ${i + 1}/${renderItems.length} 段。`)
@@ -1361,7 +1382,14 @@ export class VideoEditProjectStore {
           '-preset', 'veryfast',
           '-pix_fmt', 'yuv420p',
         ]
-        if (audioLoudnessNormalized) segmentArgs.push('-af', LOUDNESS_FILTER)
+        // 音频滤镜:响度标准化(如启用)+ 30ms afade 去爆音——每段头尾各淡入/淡出 30ms,
+        // 消掉每刀切口的音频爆音(video-use 硬规则3)。只对有音轨的段加,免得 -af 撞空音频流。
+        if (hasAudio) {
+          const fadeOutStart = Math.max(0, length - 0.03).toFixed(3)
+          const audioChain = [`afade=t=in:st=0:d=0.03`, `afade=t=out:st=${fadeOutStart}:d=0.03`]
+          if (audioLoudnessNormalized) audioChain.unshift(LOUDNESS_FILTER)
+          segmentArgs.push('-af', audioChain.join(','))
+        }
         segmentArgs.push(
           '-c:a', 'aac',
           '-ar', '48000',

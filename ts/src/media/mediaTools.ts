@@ -40,6 +40,49 @@ interface EditImageToolInput {
   portrait_consent?: boolean
 }
 
+interface PlanVideoToolInput {
+  /** 要剪的本机视频素材绝对路径(必填,可多段)。 */
+  video_paths: string[]
+  /** 自然语言意图(如"剪成 30 秒抖音、去开头空镜、配点节奏感");供你自己判参,引擎按结构化参数干活。 */
+  goal?: string
+  /** 目标时长(秒)。 */
+  target_duration_s?: number
+  /** 画面比例:9:16 竖 / 1:1 方 / 16:9 横;不传按素材。 */
+  aspect?: string
+  /** 剪法:'speech' 口播(转写驱动)/ 'ambient' 环境氛围(视觉五步);不传自动判。 */
+  mode?: 'speech' | 'ambient'
+  /** 项目名(续剪/再调时带上同一个)。 */
+  project?: string
+}
+
+interface RenderVideoToolInput {
+  /** plan_video 返回的项目名(必填)。 */
+  project: string
+  /** true=快速低清预览;不传出正式成片。 */
+  preview?: boolean
+}
+
+interface UpscaleImageToolInput {
+  /** 原图标识(必带其一):之前生图工具产出的图片 id(优先)。 */
+  source_generation_id?: string
+  /** 原图标识(必带其一):本机图片绝对路径。 */
+  source_image_path?: string
+  /** 放大倍数 2/3/4,默认 4。 */
+  scale?: number
+}
+
+function planVideoBody(input: PlanVideoToolInput, ctx: ToolContext): Record<string, unknown> {
+  return {
+    video_paths: input.video_paths,
+    target_duration: typeof input.target_duration_s === 'number' ? input.target_duration_s : undefined,
+    ratio: input.aspect,
+    mode: input.mode,
+    goal: input.goal,
+    project: input.project,
+    conversation_id: ctx.conversationId,
+  }
+}
+
 function nonEmptyStrings(...values: Array<string | string[] | undefined>): string[] {
   const out: string[] = []
   for (const value of values) {
@@ -200,5 +243,90 @@ export function createMediaTools(media: MediaJobService): Tool[] {
     },
   }
 
-  return [makePoster, generateImage, editImage]
+  const planVideo: Tool<PlanVideoToolInput> = {
+    name: 'plan_video',
+    description: '把用户导入的视频素材剪成一版草稿方案(不是出片,是出剪辑计划)。自动判口播片还是门店环境片,或用 mode 指定:口播路本地转写(whisper)按话切+真台词字幕;环境/氛围路走视觉五步(切镜头→挑镜头→看懂画面→音乐卡点→叠门店卖点字卡)。入参:video_paths(本机视频绝对路径数组,必填)、goal(自然语言意图,如"剪成30秒抖音、去开头空镜、配节奏感")、target_duration_s(目标秒数)、aspect(9:16竖/1:1方/16:9横)、mode("speech"口播/"ambient"氛围,不传自动判)、project(续剪带同一个)。这是异步后台任务:返回后用 list_background_tasks/read_background_task 轮询拿到方案,然后**用大白话向用户复述"我打算这么剪"(切了几段/口播还是氛围/配没配乐/字幕),等用户确认满意,再调 render_video 出片**。绝不跳过确认直接出片。缺 ffmpeg/whisper 组件时任务会返回"正在准备组件 x%",如实告诉用户等一下。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        video_paths: { type: 'array', items: { type: 'string' } },
+        goal: { type: 'string' },
+        target_duration_s: { type: 'number' },
+        aspect: { type: 'string' },
+        mode: { type: 'string', enum: ['speech', 'ambient'] },
+        project: { type: 'string' },
+      },
+      required: ['video_paths'],
+    },
+    isReadOnly: false,
+    async execute(input, ctx) {
+      const paths = nonEmptyStrings(input?.video_paths)
+      if (!paths.length) throw new Error('plan_video 需要 video_paths(要剪的本机视频绝对路径,至少一段)。')
+      const started = await media.startVideoJob('video_auto_plan', '/api/v1/video-edit/auto_plan', planVideoBody(input, ctx), {
+        conversationId: ctx.conversationId,
+        workspaceRoot: ctx.workspace.root,
+        project: input.project,
+        title: '视频剪辑方案',
+      })
+      return mediaStarted(started.job_id, 'video_auto_plan', `已开始出剪辑方案:${(input.goal ?? paths[0] ?? '').slice(0, 80)}`)
+    },
+  }
+
+  const renderVideo: Tool<RenderVideoToolInput> = {
+    name: 'render_video',
+    description: '把 plan_video 出的剪辑方案渲染成成片 MP4。入参:project(plan_video 返回结果里的项目名,必填)、preview(true=快速低清预览,先给用户看效果;不传出正式成片)。异步后台任务:返回后轮询拿成片文件路径再告诉用户。出片=生成本地文件,不弹审批、直接做。**必须在用户看过 plan_video 的方案、确认满意后才调本工具**;用户要改就回去调 plan_video 重出方案,别在没确认时就渲染。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string' },
+        preview: { type: 'boolean' },
+      },
+      required: ['project'],
+    },
+    isReadOnly: false,
+    async execute(input, ctx) {
+      const project = typeof input?.project === 'string' ? input.project.trim() : ''
+      if (!project) throw new Error('render_video 需要 project(plan_video 返回的项目名)。')
+      const started = await media.startVideoJob('video_render', `/api/v1/video-edit/projects/${encodeURIComponent(project)}/render`, {
+        project,
+        preview: input.preview === true,
+        conversation_id: ctx.conversationId,
+      }, {
+        conversationId: ctx.conversationId,
+        workspaceRoot: ctx.workspace.root,
+        project,
+        title: input.preview === true ? '视频预览出片' : '视频出片',
+      })
+      return mediaStarted(started.job_id, 'video_render', `已开始出片:${project}`)
+    },
+  }
+
+  const upscaleImageTool: Tool<UpscaleImageToolInput> = {
+    name: 'upscale_image',
+    description: '把一张已生成或本机的图片超分放大到高清(2/3/4 倍),给要拿去印刷(易拉宝/喷绘/大幅海报)或嫌不够清晰的图去糊、提清晰度。入参:source_generation_id(之前生图工具产出的图片 id,优先)或 source_image_path(本机图片绝对路径);scale 放大倍数(2/3/4,默认 4)。何时用:用户说"这张放大点/印出来会糊/要高清大图/清晰度不够/拿去打印"。本机免费处理、不额外花钱、不弹审批。铁律:必须带原图,缺原图报错,绝不凭空生成新图。组件没下好会返回"正在准备组件 x%",如实告诉用户稍等。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source_generation_id: { type: 'string' },
+        source_image_path: { type: 'string' },
+        scale: { type: 'number' },
+      },
+    },
+    isReadOnly: false,
+    async execute(input, ctx) {
+      const genId = input?.source_generation_id?.trim()
+      const path = input?.source_image_path?.trim()
+      if (!genId && !path) throw new Error('upscale_image 需要原图:请传 source_generation_id(之前生成图的 id)或 source_image_path(本机图片绝对路径)。')
+      const started = await media.startUpscale({
+        source_generation_id: genId || undefined,
+        source_image_path: path || undefined,
+        scale: input.scale,
+        _trusted_image_paths: path ? [path] : undefined,
+        conversation_id: ctx.conversationId,
+      }, { conversationId: ctx.conversationId, workspaceRoot: ctx.workspace.root })
+      return mediaStarted(started.job_id, 'upscale', `已开始放大图片${input.scale ? `(${input.scale} 倍)` : ''}`)
+    },
+  }
+
+  return [makePoster, generateImage, editImage, upscaleImageTool, planVideo, renderVideo]
 }
