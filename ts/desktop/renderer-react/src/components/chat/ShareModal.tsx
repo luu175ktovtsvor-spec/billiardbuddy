@@ -1,18 +1,32 @@
-// 分享弹窗(照 Codex/ChatGPT「分享对话」:生成只读链接 + 复制)。前端壳:链接为占位,
-// 后端就绪后换成真实分享 API 返回的 URL。复制走浏览器剪贴板(纯前端可用)。
-import { useState } from 'react'
+// 分享弹窗:把整段对话复制成文字,店主可直接粘贴到微信/备忘录。
+// 全本地单用户软件没有可分享的在线链接;此前的「只读链接」是凭空占位域名,店主真会复制发人 → 恶性误导,已废弃。
+import { useMemo, useState } from 'react'
 import { Modal } from '../shared/Modal'
 import { IconCopy, IconShareUp } from '../shared/icons'
+import { useChatStore } from '../../stores/chatStore'
 import { t } from '../../i18n'
+
+/** 把当前会话的可读内容(我/管家的对话正文)拼成纯文本;思考过程/工具过程/系统提示不进分享稿。 */
+function composeConversationText(title: string | undefined): string {
+  const blocks = useChatStore.getState().blocks
+  const lines: string[] = []
+  if (title) lines.push(`【${title}】`, '')
+  for (const b of blocks) {
+    if (b.kind === 'user' && b.text.trim()) lines.push(`我:${b.text.trim()}`, '')
+    else if (b.kind === 'assistant' && !b.streaming && b.text.trim()) lines.push(`管家:${b.text.trim()}`, '')
+  }
+  return lines.join('\n').trim()
+}
 
 export function ShareModal({ open, onClose, title }: { open: boolean; onClose: () => void; title?: string }) {
   const [copied, setCopied] = useState(false)
-  // 占位链接(后端就绪前用固定域 + 短 id 展示形态)。
-  const link = `https://球房管家.app/s/${(title || 'chat').slice(0, 8)}-preview`
+  const text = useMemo(() => (open ? composeConversationText(title) : ''), [open, title])
+  const empty = !text
 
   const copy = () => {
+    if (empty) return
     try {
-      void navigator.clipboard?.writeText(link)
+      void navigator.clipboard?.writeText(text)
       setCopied(true)
       setTimeout(() => setCopied(false), 1400)
     } catch {
@@ -33,13 +47,18 @@ export function ShareModal({ open, onClose, title }: { open: boolean; onClose: (
           </div>
         </div>
 
-        <div className="flex items-center gap-2 rounded-lg px-3 py-2" style={{ border: '1px solid var(--color-border)', background: 'var(--color-surface-container-low)' }}>
-          <span className="min-w-0 flex-1 truncate text-[12.5px]" style={{ color: 'var(--color-text-secondary)', fontFamily: 'var(--font-mono)' }}>{link}</span>
+        {/* 分享稿预览(让店主知道复制的是什么) */}
+        <div className="max-h-[180px] overflow-y-auto whitespace-pre-wrap rounded-lg px-3 py-2 text-[12.5px] leading-relaxed" style={{ border: '1px solid var(--color-border)', background: 'var(--color-surface-container-low)', color: 'var(--color-text-secondary)' }}>
+          {empty ? '这段对话还没有可分享的内容。' : text}
+        </div>
+
+        <div className="mt-3 flex justify-end">
           <button
             type="button"
             onClick={copy}
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12.5px] font-medium text-white transition-opacity hover:opacity-90"
-            style={{ background: 'var(--color-brand)' }}
+            disabled={empty}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-[12.5px] font-medium text-white transition-opacity hover:opacity-90"
+            style={{ background: 'var(--color-brand)', opacity: empty ? 0.5 : 1 }}
           >
             <IconCopy size={13} /> {copied ? t('actions.copied') : t('share.copy')}
           </button>

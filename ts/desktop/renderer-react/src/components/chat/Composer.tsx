@@ -119,7 +119,7 @@ function PermissionMenu() {
 }
 
 /** + 添加菜单(照 Codex:文件和文件夹 / 目标 / 计划模式 / 插件)。 */
-function AddMenu({ onInsertPaths }: { onInsertPaths: (paths: string[]) => void }) {
+function AddMenu({ onInsertPaths, onStartGoal }: { onInsertPaths: (paths: string[]) => void; onStartGoal: () => void }) {
   const [open, setOpen] = useState(false)
   // 「文件和文件夹」:原生多选 → 把绝对路径插进输入框(本机 agent 用 read_file/ls 去读)。非桌面壳时提示。
   const pickFilesAndFolders = async () => {
@@ -147,7 +147,7 @@ function AddMenu({ onInsertPaths }: { onInsertPaths: (paths: string[]) => void }
           onClose={() => setOpen(false)}
           items={[
             { label: '文件和文件夹', icon: <IconFolder size={15} />, onClick: () => void pickFilesAndFolders() },
-            { label: '目标', icon: <IconTarget size={15} />, onClick: () => toast('目标设置即将上线') },
+            { label: '目标', icon: <IconTarget size={15} />, onClick: onStartGoal },
             { label: '计划模式', icon: <IconChecklist size={15} />, onClick: () => { useSettingsStore.getState().setPermissionMode('plan'); toast('已切换到计划模式') } },
             { label: '插件', icon: <IconPuzzle size={15} />, separatorBefore: true, onClick: () => useUiStore.getState().setNav('plugins') },
           ]}
@@ -329,7 +329,10 @@ export function Composer() {
           {/* 底部工具条 */}
           <div className="flex items-center gap-2 px-2.5 pb-2.5 pt-1.5">
             {/* 左:添加菜单 + 权限 */}
-            <AddMenu onInsertPaths={(paths) => { setValue((v) => appendPathsToInput(v, paths)); taRef.current?.focus() }} />
+            <AddMenu
+              onInsertPaths={(paths) => { setValue((v) => appendPathsToInput(v, paths)); taRef.current?.focus() }}
+              onStartGoal={() => { setValue((v) => (v.startsWith('/goal') ? v : `/goal ${v}`)); taRef.current?.focus() }}
+            />
             <PermissionMenu />
             <div className="flex-1" />
             {/* 右:忙时转圈 · 麦克 · 发送(不显示模型名) */}
