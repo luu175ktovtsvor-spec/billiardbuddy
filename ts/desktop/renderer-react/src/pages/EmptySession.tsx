@@ -1,4 +1,4 @@
-// 空态 hero(对标真机 WorkBuddy colleague-chat-empty:居中头像 + 标题[h1/500] + 描述[text-weak/body])。
+// 空态 hero(对标 Codex 空态:居中头像 + 标题[h1/500] + 描述[text-weak/body])。
 // 头像 = 我们的绿色笑脸吉祥物(glow 变体);白标文案走 i18n。
 import { t } from '../i18n'
 import { Smiley } from '../components/shared/Smiley'

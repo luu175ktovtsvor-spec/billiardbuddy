@@ -77,4 +77,4 @@ cc-haha 的核心循环**只会说 Anthropic 协议**:CLI 内核直接用官方 
 - **P0-1**:`AnthropicMessagesModel` 无流空闲超时 —— 卡死连接永久挂起会话(`ts/src/model/AnthropicMessagesModel.ts:192-200,298-397`,`modelFactory.ts:30-42` 未传参)
 - **P0-2**:`AnthropicMessagesModel` 无 SSE error 帧识别 —— 中途报错被静默吞成空回复,FallbackModel 侦测不到失败(`AnthropicMessagesModel.ts:319-354`)
 - **P0-3**:上述两点零测试覆盖(`AnthropicMessagesModel.test.ts`)
-- **P1-1**:瞬时错误重试 opt-in 从未启用,单出口韧性为零,需 owner 拍板默认策略(`ProxyModel.ts:101-103`、`AnthropicMessagesModel.ts:120-122`,调用方均未设 `.retry`)
+- **P1-1**:瞬时错误重试 opt-in 从未启用,单出口韧性为零,需 默认策略(`ProxyModel.ts:101-103`、`AnthropicMessagesModel.ts:120-122`,调用方均未设 `.retry`)

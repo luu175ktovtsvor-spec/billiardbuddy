@@ -3,7 +3,7 @@
 > 📌 状态:🚧进行中 · 任务〈记忆机制对齐 cc + 门店信息〉· 建于 2026-07-10 · 源自三路调研 workflow(cc记忆机制/WorkBuddy产品化/我们现状差距) · 2026-07-10 按 owner"纯 cc"口径修订:回合内写记忆 = 主模型直接用 Write/Edit 往 memdir 写 .md,注入走 cc memdir 常驻注入,砍掉自造 storeMemoryContext 评分召回 + desktopDataStore memories、不自造 SaveStoreMemory 工具
 
 ## 0. 一句话
-当初把 AutoMem 砍早了。cc 那套"模型自己在对话里记事实"的自动记忆是完整现成的,正好就是"门店信息自动沉淀"要的地基。我们现在是**能读、能存、但模型不能自己写**,缺的就是这一环。**决定:掰回 cc 的 AutoMem,只落"门店专用轻量版",不追 autoDream/TeamMem。**owner 2026-07-10 拍板"纯 cc"**:砍掉自造店脑记忆(storeMemoryContext + desktopDataStore memories),纯照抄 cc memdir/AutoMem,不复用不归并(替换非叠加,被替换的旧代码该删的删)。**
+当初把 AutoMem 砍早了。cc 那套"模型自己在对话里记事实"的自动记忆是完整现成的,正好就是"门店信息自动沉淀"要的地基。我们现在是**能读、能存、但模型不能自己写**,缺的就是这一环。**决定:掰回 cc 的 AutoMem,只落"门店专用轻量版",不追 autoDream/TeamMem。**"纯 cc"**:砍掉自造店脑记忆(storeMemoryContext + desktopDataStore memories),纯照抄 cc memdir/AutoMem,不复用不归并(替换非叠加,被替换的旧代码该删的删)。**
 
 ## 1. cc 记忆机制(权威源头,全方位抄的对象)
 - **两层**:①主指令层 `CLAUDE.md` 家族(人写定稿,每轮整段拼进 system prompt,必读)→ 我们已白标成 `BILLIARDBUDDY.md`,读已落地;②**AutoMem(memdir)**=模型攒的结构化事实草稿池,存 `~/.claude/projects/<git根>/memory/`,索引常驻 + 主题按相关性 top-5 召回。

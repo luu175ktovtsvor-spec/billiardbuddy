@@ -1,0 +1,1834 @@
+--alpha-05:#7f7f7f14
+--alpha-10:#7f7f7f29
+--animate-ping:ping 1s cubic-bezier(0, 0, .2, 1) infinite
+--animate-pulse:pulse 2s cubic-bezier(.4, 0, .6, 1) infinite
+--animate-spin:spin 1s linear infinite
+--aspect-video:16 / 9
+--blue-100:#99ceff
+--blue-300:#339cff
+--blue-400:#0285ff
+--blue-50:#e5f3ff
+--blue-900:#00284d
+--blur-2xl:40px
+--blur-3xl:64px
+--blur-lg:16px
+--blur-md:12px
+--blur-sm:8px
+--blur-xl:24px
+--blur-xs:4px
+--bottom-fade:0
+--bottom-fade:var(--edge-fade-distance,1rem)
+--codex-chat-code-font-size:var(--vscode-chat-editor-font-size)
+--codex-chat-code-font-size:var(--vscode-chat-editor-font-size,var(--vscode-editor-font-size,12px))
+--codex-chat-font-size:16px
+--codex-chat-font-size:17px
+--codex-chat-font-size:var(--vscode-chat-font-size)
+--codex-chat-font-size:var(--vscode-chat-font-size,var(--vscode-font-size,13px))
+--codex-corner-radius-scale:1.25
+--codex-corner-shape:superellipse(1.5)
+--codex-diffs-header-padding-x:var(--thread-resource-card-row-padding-x)
+--codex-diffs-header-padding-y:var(--turn-diff-row-padding-y)
+--codex-diffs-surface-override:color-mix(in oklab,var(--color-token-dropdown-background) 50%,transparent)
+--codex-diffs-surface-override:color-mix(in oklab,var(--color-token-input-background) 50%,transparent)
+--codex-diffs-surface-override:var(--color-token-diff-surface)
+--codex-diffs-surface-override:var(--color-token-dropdown-background)
+--codex-diffs-surface-override:var(--color-token-input-background)
+--codex-diffs-surface:var(--color-token-main-surface-primary)
+--codex-window-zoom:1
+--color-accent-blue:var(--blue-300)
+--color-accent-green:var(--green-300)
+--color-accent-green:var(--green-500)
+--color-accent-orange:var(--orange-400)
+--color-accent-orange:var(--orange-500)
+--color-accent-purple:var(--purple-300)
+--color-accent-purple:var(--purple-400)
+--color-accent-red:var(--red-300)
+--color-accent-red:var(--red-500)
+--color-accent-yellow:var(--yellow-300)
+--color-accent-yellow:var(--yellow-400)
+--color-amber-400:oklch(82.8% .189 84.429)
+--color-background-accent-active:var(--blue-50)
+--color-background-accent-active:var(--blue-900)
+--color-background-accent-hover:var(--blue-50)
+--color-background-accent-hover:var(--blue-900)
+--color-background-accent:var(--blue-50)
+--color-background-accent:var(--blue-900)
+--color-background-button-primary-active:#0d0d0d1a
+--color-background-button-primary-active:color-mix(in oklab, var(--color-text-foreground) 16%, transparent)
+--color-background-button-primary-active:color-mix(in oklab, var(--gray-1000) 10%, transparent)
+--color-background-button-primary-active:var(--color-text-foreground)
+--color-background-button-primary-hover:#0d0d0d0f
+--color-background-button-primary-hover:color-mix(in oklab, var(--color-text-foreground) 8%, transparent)
+--color-background-button-primary-hover:color-mix(in oklab, var(--gray-1000) 6%, transparent)
+--color-background-button-primary-hover:var(--color-text-foreground)
+--color-background-button-primary-inactive:#0d0d0d08
+--color-background-button-primary-inactive:color-mix(in oklab, var(--color-text-foreground) 24%, transparent)
+--color-background-button-primary-inactive:color-mix(in oklab, var(--gray-1000) 3%, transparent)
+--color-background-button-primary-inactive:var(--color-text-foreground)
+--color-background-button-primary:var(--color-text-foreground)
+--color-background-button-primary:var(--gray-1000)
+--color-background-button-secondary-active:#ffffff1f
+--color-background-button-secondary-active:color-mix(in oklab, var(--color-text-foreground) 4%, transparent)
+--color-background-button-secondary-active:color-mix(in oklab, var(--gray-0) 12%, transparent)
+--color-background-button-secondary-active:var(--color-text-foreground)
+--color-background-button-secondary-hover:#ffffff14
+--color-background-button-secondary-hover:color-mix(in oklab, var(--color-text-foreground) 5%, transparent)
+--color-background-button-secondary-hover:color-mix(in oklab, var(--gray-0) 8%, transparent)
+--color-background-button-secondary-hover:var(--color-text-foreground)
+--color-background-button-secondary-inactive:#ffffff0a
+--color-background-button-secondary-inactive:color-mix(in oklab, var(--color-text-foreground) 2%, transparent)
+--color-background-button-secondary-inactive:color-mix(in oklab, var(--gray-0) 4%, transparent)
+--color-background-button-secondary-inactive:var(--color-text-foreground)
+--color-background-button-secondary:#ffffff0d
+--color-background-button-secondary:color-mix(in oklab, var(--color-text-foreground) 5%, transparent)
+--color-background-button-secondary:color-mix(in oklab, var(--gray-0) 5%, transparent)
+--color-background-button-secondary:var(--color-text-foreground)
+--color-background-button-tertiary-active:#ffffff1a
+--color-background-button-tertiary-active:color-mix(in oklab, var(--color-text-foreground) 20%, transparent)
+--color-background-button-tertiary-active:color-mix(in oklab, var(--gray-0) 10%, transparent)
+--color-background-button-tertiary-active:var(--color-text-foreground)
+--color-background-button-tertiary-hover:#ffffff12
+--color-background-button-tertiary-hover:color-mix(in oklab, var(--color-text-foreground) 10%, transparent)
+--color-background-button-tertiary-hover:color-mix(in oklab, var(--gray-0) 7.0%, transparent)
+--color-background-button-tertiary-hover:var(--color-text-foreground)
+--color-background-button-tertiary:#ffffff08
+--color-background-button-tertiary:color-mix(in oklab, var(--color-text-foreground) 0%, transparent)
+--color-background-button-tertiary:color-mix(in oklab, var(--gray-0) 3%, transparent)
+--color-background-button-tertiary:var(--color-text-foreground)
+--color-background-danger-active:#e02e2ae6
+--color-background-danger-active:#fa423e5c
+--color-background-danger-active:color-mix(in oklab, var(--red-400) 36%, transparent)
+--color-background-danger-active:color-mix(in oklab, var(--red-500) 90%, transparent)
+--color-background-editor-opaque:#ededed66
+--color-background-editor-opaque:color-mix(in oklab, var(--gray-100) 40%, transparent)
+--color-background-editor-opaque:var(--gray-800)
+--color-background-elevated-primary-opaque:var(--gray-0)
+--color-background-elevated-primary-opaque:var(--gray-750)
+--color-background-elevated-primary:#212121f5
+--color-background-elevated-primary:#ffffffb3
+--color-background-elevated-primary:color-mix(in oklab, var(--gray-0) 70%, transparent)
+--color-background-elevated-primary:color-mix(in oklab, var(--gray-800) 96%, transparent)
+--color-background-elevated-primary:var(--color-background-elevated-primary-opaque)
+--color-background-elevated-secondary-opaque:#ededed66
+--color-background-elevated-secondary-opaque:color-mix(in oklab, var(--gray-100) 40%, transparent)
+--color-background-elevated-secondary-opaque:var(--gray-800)
+--color-background-elevated-secondary:#ffffff08
+--color-background-elevated-secondary:color-mix(in oklab, var(--color-text-foreground) 2%, transparent)
+--color-background-elevated-secondary:color-mix(in oklab, var(--gray-0) 3%, transparent)
+--color-background-elevated-secondary:var(--color-text-foreground)
+--color-background-status-error:var(--red-50)
+--color-background-status-error:var(--red-900)
+--color-background-status-success:#00a24012
+--color-background-status-success:#04b84c29
+--color-background-status-success:color-mix(in oklab, var(--green-400) 16%, transparent)
+--color-background-status-success:color-mix(in oklab, var(--green-500) 7.0%, transparent)
+--color-background-status-warning:var(--orange-50)
+--color-background-status-warning:var(--orange-900)
+--color-background-surface-under:black
+--color-background-surface-under:var(--gray-50)
+--color-background-surface-under:var(--vscode-sideBar-background)
+--color-background-surface:var(--gray-0)
+--color-background-surface:var(--gray-900)
+--color-background-surface:var(--vscode-editor-background)
+--color-black:#000
+--color-blue-100:oklch(93.2% .032 255.585)
+--color-blue-400:oklch(70.7% .165 254.624)
+--color-blue-500:oklch(62.3% .214 259.815)
+--color-blue-700:oklch(48.8% .243 264.376)
+--color-border-error:#e02e2a26
+--color-border-error:#fa423e66
+--color-border-error:color-mix(in oklab, var(--red-400) 40%, transparent)
+--color-border-error:color-mix(in oklab, var(--red-500) 15%, transparent)
+--color-border-focus:#339cffb3
+--color-border-focus:color-mix(in oklab, var(--blue-300) 70%, transparent)
+--color-border-focus:var(--blue-300)
+--color-border-heavy:#ffffff29
+--color-border-heavy:color-mix(in oklab, var(--color-text-foreground) 12%, transparent)
+--color-border-heavy:color-mix(in oklab, var(--white) 16%, transparent)
+--color-border-heavy:var(--color-text-foreground)
+--color-border-light:#ffffff0a
+--color-border-light:color-mix(in oklab, var(--color-text-foreground) 5%, transparent)
+--color-border-light:color-mix(in oklab, var(--white) 4%, transparent)
+--color-border-light:var(--color-text-foreground)
+--color-border-warning:#e2550726
+--color-border-warning:#ff854966
+--color-border-warning:color-mix(in oklab, var(--orange-300) 40%, transparent)
+--color-border-warning:color-mix(in oklab, var(--orange-500) 15%, transparent)
+--color-border:#ffffff14
+--color-border:color-mix(in oklab, var(--color-text-foreground) 8%, transparent)
+--color-border:color-mix(in oklab, var(--white) 8%, transparent)
+--color-border:var(--color-text-foreground)
+--color-border:var(--color-token-border-light)
+--color-decoration-added:var(--green-300)
+--color-decoration-added:var(--green-500)
+--color-decoration-deleted:var(--red-400)
+--color-decoration-deleted:var(--red-600)
+--color-decoration-modified:var(--orange-300)
+--color-decoration-modified:var(--orange-700)
+--color-decoration-unchanged:var(--gray-300)
+--color-decoration-unchanged:var(--gray-600)
+--color-editor-added:#00a24026
+--color-editor-added:#40c9773b
+--color-editor-added:color-mix(in oklab, var(--green-300) 23%, transparent)
+--color-editor-added:color-mix(in oklab, var(--green-500) 15%, transparent)
+--color-editor-deleted:#ba262326
+--color-editor-deleted:#fa423e3b
+--color-editor-deleted:color-mix(in oklab, var(--red-400) 23%, transparent)
+--color-editor-deleted:color-mix(in oklab, var(--red-600) 15%, transparent)
+--color-gray-200:oklch(92.8% .006 264.531)
+--color-gray-400:oklch(70.7% .022 261.325)
+--color-green-400:oklch(79.2% .209 151.711)
+--color-green-500:oklch(72.3% .219 149.579)
+--color-green-600:oklch(62.7% .194 149.214)
+--color-icon-accent:var(--blue-300)
+--color-icon-error:var(--red-300)
+--color-icon-error:var(--red-500)
+--color-icon-primary:#ffffffe6
+--color-icon-primary:color-mix(in oklab, var(--white) 90%, transparent)
+--color-icon-primary:var(--color-text-foreground)
+--color-icon-secondary:#ffffffb3
+--color-icon-secondary:color-mix(in oklab, var(--color-text-foreground) 70%, transparent)
+--color-icon-secondary:color-mix(in oklab, var(--white) 70%, transparent)
+--color-icon-secondary:var(--color-text-foreground)
+--color-icon-success:var(--green-300)
+--color-icon-success:var(--green-500)
+--color-icon-tertiary:#ffffff80
+--color-icon-tertiary:color-mix(in oklab, var(--color-text-foreground) 50%, transparent)
+--color-icon-tertiary:color-mix(in oklab, var(--white) 50%, transparent)
+--color-icon-tertiary:var(--color-text-foreground)
+--color-icon-warning:var(--orange-300)
+--color-icon-warning:var(--orange-500)
+--color-orange-100:oklch(95.4% .038 75.164)
+--color-orange-300:oklch(83.7% .128 66.29)
+--color-orange-800:oklch(47% .157 37.304)
+--color-red-500:oklch(63.7% .237 25.331)
+--color-ring:var(--color-token-focus-border)
+--color-simple-scrim:#0000001a
+--color-simple-scrim:#ffffff1a
+--color-slate-100:oklch(96.8% .007 247.896)
+--color-slate-600:oklch(44.6% .043 257.281)
+--color-slate-700:oklch(37.2% .044 257.287)
+--color-slate-950:oklch(12.9% .042 264.695)
+--color-surface-elevated:var(--color-token-main-surface-primary)
+--color-surface-tertiary:var(--color-token-bg-secondary)
+--color-surface:var(--color-token-main-surface-primary)
+--color-text-accent:var(--blue-100)
+--color-text-accent:var(--blue-300)
+--color-text-button-primary:var(--gray-0)
+--color-text-button-primary:var(--gray-1000)
+--color-text-button-secondary:var(--color-text-foreground)
+--color-text-button-secondary:var(--gray-300)
+--color-text-button-tertiary:var(--gray-500)
+--color-text-error:var(--red-300)
+--color-text-error:var(--red-500)
+--color-text-foreground-secondary:#ffffffb3
+--color-text-foreground-secondary:color-mix(in oklab, var(--color-text-foreground) 70%, transparent)
+--color-text-foreground-secondary:color-mix(in oklab, var(--gray-0) 70%, transparent)
+--color-text-foreground-secondary:var(--color-text-foreground)
+--color-text-foreground-tertiary:#ffffff80
+--color-text-foreground-tertiary:color-mix(in oklab, var(--color-text-foreground) 50%, transparent)
+--color-text-foreground-tertiary:color-mix(in oklab, var(--gray-0) 50%, transparent)
+--color-text-foreground-tertiary:var(--color-text-foreground)
+--color-text-foreground:#1a1c1f
+--color-text-foreground:var(--gray-0)
+--color-text-on-accent:var(--gray-1000)
+--color-text-prose:var(--color-token-text-primary)
+--color-text-secondary:var(--color-token-text-secondary)
+--color-text-success:var(--green-300)
+--color-text-success:var(--green-500)
+--color-text-warning:var(--orange-300)
+--color-text-warning:var(--orange-500)
+--color-text:var(--color-token-text-primary)
+--color-token-activity-bar-badge-background:var(--vscode-activityBarBadge-background)
+--color-token-activity-bar-badge-foreground:var(--vscode-activityBarBadge-foreground)
+--color-token-badge-background:var(--vscode-badge-background)
+--color-token-badge-foreground:var(--vscode-badge-foreground)
+--color-token-bg-appshot:color-mix(in srgb, var(--color-token-bg-primary) 75%, transparent)
+--color-token-bg-appshot:var(--color-token-bg-primary)
+--color-token-bg-fog:color-mix(in oklab, var(--color-token-foreground) 2.5%, transparent)
+--color-token-bg-fog:var(--color-background-elevated-secondary)
+--color-token-bg-fog:var(--color-token-foreground)
+--color-token-bg-primary:var(--color-token-side-bar-background)
+--color-token-bg-secondary:color-mix(in srgb, var(--color-token-bg-primary) 92%, transparent)
+--color-token-bg-secondary:var(--color-token-bg-primary)
+--color-token-bg-tertiary:color-mix(in srgb, var(--color-token-bg-primary) 85%, transparent)
+--color-token-bg-tertiary:var(--color-token-bg-primary)
+--color-token-border-default:var(--color-border,color-mix(in oklab, var(--vscode-foreground) 8%, transparent))
+--color-token-border-default:var(--color-border,var(--vscode-foreground))
+--color-token-border-heavy:var(--color-border-heavy,color-mix(in oklab, var(--vscode-foreground) 12%, transparent))
+--color-token-border-heavy:var(--color-border-heavy,var(--vscode-foreground))
+--color-token-border-light:var(--color-border-light,color-mix(in oklab, var(--vscode-foreground) 5%, transparent))
+--color-token-border-light:var(--color-border-light,var(--vscode-foreground))
+--color-token-border:var(--color-border,color-mix(in oklab, var(--vscode-foreground) 8%, transparent))
+--color-token-border:var(--color-border,var(--vscode-foreground))
+--color-token-button-background:var(--vscode-button-background)
+--color-token-button-border:var(--vscode-button-border)
+--color-token-button-foreground:var(--vscode-button-foreground)
+--color-token-button-secondary-hover-background:var(--vscode-button-secondaryHoverBackground)
+--color-token-charts-blue:var(--vscode-charts-blue)
+--color-token-charts-green:var(--vscode-charts-green)
+--color-token-charts-orange:var(--vscode-charts-orange)
+--color-token-charts-purple:var(--vscode-charts-purple)
+--color-token-charts-red:var(--vscode-charts-red)
+--color-token-charts-yellow:var(--vscode-charts-yellow)
+--color-token-checkbox-background:var(--vscode-checkbox-background)
+--color-token-checkbox-border:var(--vscode-checkbox-border)
+--color-token-checkbox-foreground:var(--vscode-checkbox-foreground)
+--color-token-conversation-body:color-mix(in oklab, var(--color-token-foreground) 60%, transparent)
+--color-token-conversation-body:var(--color-token-foreground)
+--color-token-conversation-header:color-mix(in oklab, var(--color-token-foreground) 30%, transparent)
+--color-token-conversation-header:var(--color-token-foreground)
+--color-token-conversation-summary-leading:color-mix(in oklab, var(--color-token-description-foreground) 90%, transparent)
+--color-token-conversation-summary-leading:var(--color-token-description-foreground)
+--color-token-conversation-summary-trailing:color-mix(in oklab, var(--color-token-foreground) 40%, transparent)
+--color-token-conversation-summary-trailing:var(--color-token-foreground)
+--color-token-description-foreground:color-mix(in srgb,var(--color-token-foreground) 70%,transparent)
+--color-token-description-foreground:var(--color-token-foreground)
+--color-token-description-foreground:var(--vscode-descriptionForeground)
+--color-token-diff-editor-inserted-line-background:var(--vscode-diffEditor-insertedLineBackground)
+--color-token-diff-editor-removed-line-background:var(--vscode-diffEditor-removedLineBackground)
+--color-token-diff-editor-removed-text-background:var(--vscode-diffEditor-removedTextBackground)
+--color-token-diff-surface:color-mix(in srgb, var(--color-token-main-surface-primary) 94%, var(--color-token-foreground))
+--color-token-diff-surface:var(--color-token-main-surface-primary)
+--color-token-disabled-foreground:var(--vscode-disabledForeground)
+--color-token-dropdown-background:var(--vscode-dropdown-background)
+--color-token-dropdown-foreground:var(--vscode-dropdown-foreground)
+--color-token-editor-background:var(--vscode-editor-background)
+--color-token-editor-error-foreground:var(--vscode-editorError-foreground)
+--color-token-editor-find-match-background:var(--vscode-editor-findMatchBackground)
+--color-token-editor-find-match-highlight-background:var(--vscode-editor-findMatchHighlightBackground)
+--color-token-editor-foreground:var(--vscode-editor-foreground)
+--color-token-editor-group-drop-background:var(--vscode-editorGroup-dropBackground)
+--color-token-editor-group-drop-into-prompt-background:var(--vscode-editorGroup-dropIntoPromptBackground)
+--color-token-editor-group-drop-into-prompt-foreground:var(--vscode-editorGroup-dropIntoPromptForeground)
+--color-token-editor-selection-background:var(--vscode-editor-selectionBackground)
+--color-token-editor-warning-foreground:var(--vscode-editorWarning-foreground)
+--color-token-editor-widget-background:var(--vscode-editorWidget-background)
+--color-token-error-foreground:var(--vscode-errorForeground)
+--color-token-focus-border:var(--vscode-focusBorder)
+--color-token-foreground:color-mix(in oklab, var(--vscode-foreground) 85%, transparent)
+--color-token-foreground:var(--vscode-foreground)
+--color-token-git-decoration-added-resource-foreground:var(--vscode-gitDecoration-addedResourceForeground)
+--color-token-git-decoration-deleted-resource-foreground:var(--vscode-gitDecoration-deletedResourceForeground)
+--color-token-git-decoration-ignored-resource-foreground:var(--vscode-gitDecoration-ignoredResourceForeground)
+--color-token-git-decoration-modified-resource-foreground:var(--vscode-gitDecoration-modifiedResourceForeground)
+--color-token-git-decoration-renamed-resource-foreground:var(--vscode-gitDecoration-renamedResourceForeground)
+--color-token-git-decoration-untracked-resource-foreground:var(--vscode-gitDecoration-untrackedResourceForeground)
+--color-token-icon-foreground:var(--vscode-icon-foreground)
+--color-token-input-background:var(--vscode-input-background)
+--color-token-input-border:var(--vscode-input-border,transparent)
+--color-token-input-foreground:var(--vscode-input-foreground)
+--color-token-input-placeholder-foreground:var(--vscode-input-placeholderForeground)
+--color-token-input-validation-error-background:var(--vscode-inputValidation-errorBackground)
+--color-token-input-validation-error-border:var(--vscode-inputValidation-errorBorder)
+--color-token-input-validation-info-background:var(--vscode-inputValidation-infoBackground)
+--color-token-input-validation-warning-background:var(--vscode-inputValidation-warningBackground)
+--color-token-input-validation-warning-border:var(--vscode-inputValidation-warningBorder)
+--color-token-link:var(--color-token-text-link-foreground)
+--color-token-list-active-selection-background:var(--vscode-list-activeSelectionBackground)
+--color-token-list-active-selection-foreground:var(--vscode-list-activeSelectionForeground)
+--color-token-list-active-selection-icon-foreground:var(--vscode-list-activeSelectionIconForeground)
+--color-token-list-focus-outline:var(--vscode-list-focusOutline)
+--color-token-list-hover-background:var(--vscode-list-hoverBackground)
+--color-token-main-surface-primary:var(--color-background-surface)
+--color-token-menu-background:var(--vscode-menu-background)
+--color-token-menu-border:var(--vscode-menu-border)
+--color-token-menubar-selection-background:var(--vscode-menubar-selectionBackground)
+--color-token-menubar-selection-foreground:var(--vscode-menubar-selectionForeground)
+--color-token-non-assistant-body-descendant:color-mix(in oklab, var(--color-token-foreground) 50%, transparent)
+--color-token-non-assistant-body-descendant:var(--color-token-foreground)
+--color-token-on-accent:var(--color-text-on-accent,var(--vscode-button-foreground))
+--color-token-primary:var(--color-token-text-link-foreground)
+--color-token-progress-bar-background:var(--vscode-progressBar-background)
+--color-token-radio-active-foreground:var(--vscode-radio-activeForeground)
+--color-token-radio-inactive-border:var(--vscode-radio-inactiveBorder)
+--color-token-scrollbar-slider-active-background:var(--vscode-scrollbarSlider-activeBackground)
+--color-token-scrollbar-slider-background:var(--vscode-scrollbarSlider-background)
+--color-token-scrollbar-slider-hover-background:var(--vscode-scrollbarSlider-hoverBackground)
+--color-token-side-bar-background:var(--vscode-sideBar-background)
+--color-token-terminal-ansi-black:var(--vscode-terminal-ansiBlack)
+--color-token-terminal-ansi-blue:var(--vscode-terminal-ansiBlue)
+--color-token-terminal-ansi-bright-black:var(--vscode-terminal-ansiBrightBlack)
+--color-token-terminal-ansi-bright-blue:var(--vscode-terminal-ansiBrightBlue)
+--color-token-terminal-ansi-bright-cyan:var(--vscode-terminal-ansiBrightCyan)
+--color-token-terminal-ansi-bright-green:var(--vscode-terminal-ansiBrightGreen)
+--color-token-terminal-ansi-bright-magenta:var(--vscode-terminal-ansiBrightMagenta)
+--color-token-terminal-ansi-bright-red:var(--vscode-terminal-ansiBrightRed)
+--color-token-terminal-ansi-bright-white:var(--vscode-terminal-ansiBrightWhite)
+--color-token-terminal-ansi-bright-yellow:var(--vscode-terminal-ansiBrightYellow)
+--color-token-terminal-ansi-cyan:var(--vscode-terminal-ansiCyan)
+--color-token-terminal-ansi-green:var(--vscode-terminal-ansiGreen)
+--color-token-terminal-ansi-magenta:var(--vscode-terminal-ansiMagenta)
+--color-token-terminal-ansi-red:var(--vscode-terminal-ansiRed)
+--color-token-terminal-ansi-white:var(--vscode-terminal-ansiWhite)
+--color-token-terminal-ansi-yellow:var(--vscode-terminal-ansiYellow)
+--color-token-terminal-background:var(--color-token-main-surface-primary)
+--color-token-terminal-border:var(--vscode-terminal-border)
+--color-token-terminal-foreground:var(--vscode-terminal-foreground)
+--color-token-text-code-block-background:var(--vscode-textCodeBlock-background)
+--color-token-text-link-active-foreground:var(--vscode-textLink-activeForeground)
+--color-token-text-link-foreground:var(--vscode-textLink-foreground)
+--color-token-text-preformat-background:var(--vscode-textPreformat-background)
+--color-token-text-preformat-foreground:var(--vscode-textPreformat-foreground)
+--color-token-text-primary:var(--color-token-foreground)
+--color-token-text-secondary:color-mix(in srgb, var(--color-token-foreground) 65%, transparent)
+--color-token-text-secondary:var(--color-token-foreground)
+--color-token-text-tertiary:var(--color-token-description-foreground)
+--color-token-toolbar-hover-background:var(--vscode-toolbar-hoverBackground)
+--color-white:#fff
+--composer-adjacent-max-width:100%
+--composer-adjacent-max-width:calc(var(--thread-content-max-width) + var(--composer-inline-overhang) + var(--composer-inline-overhang) - var(--home-composer-inline-inset) - var(--home-composer-inline-inset))
+--composer-inline-overhang:calc(var(--spacing) * 6)
+--composer-suggestion-inline-inset:calc(var(--padding-toolbar) + var(--home-composer-inline-inset))
+--container-2xl:42rem
+--container-3xl:48rem
+--container-3xs:16rem
+--container-4xl:56rem
+--container-5xl:64rem
+--container-lg:32rem
+--container-md:28rem
+--container-sm:24rem
+--container-xl:36rem
+--container-xs:20rem
+--conversation-grouped-item-gap:4px
+--conversation-item-gap:16px
+--corner-radius-scale:1
+--corner-radius-scale:var(--codex-corner-radius-scale)
+--cubic-enter:cubic-bezier(.19, 1, .22, 1)
+--cursor-interaction:default
+--cursor-interaction:pointer
+--default-font-family:var(--font-sans)
+--default-mono-font-family:var(--font-mono)
+--default-transition-duration:.15s
+--default-transition-timing-function:cubic-bezier(.4, 0, .2, 1)
+--detail-page-inline-inset:var(--padding-row-x)
+--detail-page-section-gap:calc(var(--spacing) * 6)
+--detail-row-font-size:var(--codex-chat-font-size)
+--diffs-addition-color-override:var(--color-token-git-decoration-added-resource-foreground)
+--diffs-dark:currentColor
+--diffs-deletion-color-override:var(--color-token-git-decoration-deleted-resource-foreground)
+--diffs-editor-selection-bg:var(--color-token-editor-selection-background)
+--diffs-font-family:var(--font-mono)
+--diffs-font-size:calc(var(--codex-chat-code-font-size) - 1px)
+--diffs-font-size:var(--vscode-editor-font-size,12px)
+--diffs-gap-block:0
+--diffs-light:currentColor
+--diffs-line-height:calc(var(--diffs-font-size,12px) * 1.8)
+--diffs-min-number-column-width:1ch
+--diffs-min-number-column-width:4ch
+--ease-basic:ease
+--ease-enter-snappy:cubic-bezier(.23, 1, .32, 1)
+--ease-enter:var(--cubic-enter)
+--ease-in-out:cubic-bezier(.4, 0, .2, 1)
+--ease-in:cubic-bezier(.4, 0, 1, 1)
+--ease-out:cubic-bezier(0, 0, .2, 1)
+--edge-fade-distance:.75rem
+--edge-fade-distance:1.5rem
+--edge-fade-distance:1rem
+--edge-fade-distance:2.5rem
+--edge-fade-distance:2rem
+--elevation-prominent:var(--elevation-sidebar)
+--elevation-prominent:var(--elevation-stroke), 0 3px 7.5px #0000000a, 0 0 20px #0000000d
+--elevation-sidebar:var(--elevation-stroke), 0 3px 7.5px #00000008, 0 0 16px #00000005
+--elevation-stroke:0 0 0 .5px var(--color-token-border-heavy)
+--font-heading-xs-line-height:1.25rem
+--font-heading-xs-size:.875rem
+--font-mono-default:ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace
+--font-mono:var(--vscode-editor-font-family,var(--font-mono-default))
+--font-openai-sans:"OpenAI Sans", var(--font-sans-default)
+--font-sans-default:-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif
+--font-sans:var(--vscode-font-family,var(--font-sans-default))
+--font-serif:ui-serif, Georgia, Cambria, "Times New Roman", Times, serif
+--font-text-lg-line-height:1.75rem
+--font-text-lg-size:1.125rem
+--font-text-md-line-height:1.5rem
+--font-text-md-size:1rem
+--font-text-sm-line-height:1.125rem
+--font-text-sm-size:.875rem
+--font-text-xs-line-height:1rem
+--font-text-xs-size:.75rem
+--font-weight-bold:700
+--font-weight-light:300
+--font-weight-medium:500
+--font-weight-normal:400
+--font-weight-semibold:600
+--gray-0:#fff
+--gray-1000:#0d0d0d
+--gray-100:#ededed
+--gray-300:#afafaf
+--gray-500:#5d5d5d
+--gray-50:#f9f9f9
+--gray-550:#4f4f4f
+--gray-600:#414141
+--gray-700:#303030
+--gray-750:#282828
+--gray-75:#f3f3f3
+--gray-800:#212121
+--gray-900:#181818
+--green-300:#40c977
+--green-400:#04b84c
+--green-500:#00a240
+--green-50:#d9f4e4
+--green-700:#00692a
+--green-800:#004f1f
+--h-token-button-composer-gap:var(--spacing-token-button-composer-gap)
+--height-token-empty-state-page:26.25rem
+--height-token-mode-switch:32px
+--height-token-nav-row:30px
+--height-token-nav-row:calc(var(--text-base) * 1.5 + var(--padding-row-y) * 2)
+--height-token-nav-row:var(--height-token-nav-row)
+--height-token-row:30px
+--height-token-row:var(--height-token-nav-row)
+--height-token-settings-row:4rem
+--height-toolbar-pane:40px
+--height-toolbar-sm:36px
+--height-toolbar:46px
+--home-composer-inline-inset:calc(var(--spacing) * 3.25)
+--inline-mention-base-color:color-mix(in srgb,var(--color-token-text-link-foreground) 80%,var(--color-token-foreground) 20%)
+--inline-mention-base-color:var(--color-token-text-link-foreground)
+--inline-mention-color:var(--inline-mention-resolved-base-color,var(--inline-mention-base-color))
+--inline-mention-resolved-base-color:var(--inline-mention-dark-base-color,var(--inline-mention-base-color))
+--inset-toolbar-sm:var(--height-toolbar-sm)
+--inset-toolbar:var(--height-toolbar)
+--leading-normal:1.5
+--leading-relaxed:1.625
+--leading-snug:1.375
+--leading-tight:1.25
+--left-fade:0
+--left-fade:var(--edge-fade-distance,1rem)
+--lightningcss-dark:
+--lightningcss-dark:initial
+--lightningcss-light:
+--lightningcss-light:initial
+--markdown-link-cursor:var(--cursor-interaction)
+--markdown-wide-block-max-height:80vh
+--markdown-wide-block-max-width:100%
+--markdown-wide-block-max-width:56rem
+--markdown-wide-block-max-width:64rem
+--max-app-overlay-z-index:2147480000
+--mcp-app-loading-base:var(--color-token-main-surface-primary)
+--mcp-app-loading-peak:color-mix(in srgb, var(--color-token-description-foreground) 14%, var(--color-token-main-surface-primary))
+--mcp-app-loading-peak:color-mix(in srgb, var(--color-token-description-foreground) 7%, var(--color-token-main-surface-primary))
+--mcp-app-loading-peak:var(--color-token-description-foreground)
+--openai-blossom-shimmer-base:var(--lightningcss-light,color-mix(in srgb, var(--color-token-foreground) 24%, transparent))var(--lightningcss-dark,color-mix(in srgb, var(--color-token-foreground) 68%, transparent))
+--openai-blossom-shimmer-base:var(--lightningcss-light,var(--color-token-foreground))var(--lightningcss-dark,var(--color-token-foreground))
+--openai-blossom-shimmer-highlight:var(--lightningcss-light,var(--color-token-main-surface-primary))var(--lightningcss-dark,var(--color-token-foreground))
+--openai-blossom-shimmer-peak:color-mix(in srgb, var(--openai-blossom-shimmer-highlight) 48%, transparent)
+--openai-blossom-shimmer-peak:var(--openai-blossom-shimmer-highlight)
+--openai-blossom-shimmer-soft:color-mix(in srgb, var(--openai-blossom-shimmer-highlight) 4%, transparent)
+--openai-blossom-shimmer-soft:var(--openai-blossom-shimmer-highlight)
+--openai-blossom-shimmer-tail:color-mix(in srgb, var(--openai-blossom-shimmer-highlight) 8%, transparent)
+--openai-blossom-shimmer-tail:var(--openai-blossom-shimmer-highlight)
+--orange-300:#ff8549
+--orange-400:#fb6a22
+--orange-500:#e25507
+--orange-50:#ffe7d9
+--orange-700:#923b0f
+--orange-900:#4a2206
+--padding-panel-base:calc(var(--spacing) * 3)
+--padding-panel-base:calc(var(--spacing) * 5)
+--padding-panel:calc(var(--padding-panel-base) / 2)
+--padding-panel:var(--padding-panel)
+--padding-panel:var(--padding-panel-base)
+--padding-row-cell-x:8px
+--padding-row-x:8px
+--padding-row-x:calc(var(--spacing) * 2)
+--padding-row-y:calc(var(--spacing) * 1)
+--padding-row-y:calc(var(--spacing) * 1.25)
+--padding-row-y:var(--padding-row-y)
+--padding-toolbar:calc(var(--spacing) * 2)
+--padding-toolbar:calc(var(--spacing) * 4)
+--padding-toolbar:var(--padding-toolbar)
+--pink-400:#ff66ad
+--pr-status-dot-color:var(--color-token-charts-green)
+--pr-status-dot-color:var(--color-token-charts-red)
+--pr-status-dot-color:var(--color-token-charts-yellow)
+--pricing-plan-highlight:#635ef4
+--profile-usage-level-0:var(--color-token-border-light)
+--profile-usage-level-1:color-mix(in srgb,var(--color-token-primary) 22%,transparent)
+--profile-usage-level-1:var(--color-token-primary)
+--profile-usage-level-2:color-mix(in srgb,var(--color-token-primary) 42%,transparent)
+--profile-usage-level-2:var(--color-token-primary)
+--profile-usage-level-3:color-mix(in srgb,var(--color-token-primary) 68%,transparent)
+--profile-usage-level-3:var(--color-token-primary)
+--profile-usage-level-4:var(--color-token-primary)
+--purple-300:#ad7bf9
+--purple-400:#924ff7
+--radius-2xl-base:1rem
+--radius-2xl:calc(var(--radius-2xl-base) * var(--corner-radius-scale))
+--radius-2xs-base:.125rem
+--radius-2xs:calc(var(--radius-2xs-base) * var(--corner-radius-scale))
+--radius-3xl-base:1.25rem
+--radius-3xl:calc(var(--radius-3xl-base) * var(--corner-radius-scale))
+--radius-4xl-base:1.5rem
+--radius-4xl:calc(var(--radius-4xl-base) * var(--corner-radius-scale))
+--radius-full:9999px
+--radius-lg-base:.625rem
+--radius-lg:calc(var(--radius-lg-base) * var(--corner-radius-scale))
+--radius-md-base:.5rem
+--radius-md:.5rem
+--radius-md:calc(var(--radius-md-base) * var(--corner-radius-scale))
+--radius-sm-base:.375rem
+--radius-sm:.375rem
+--radius-sm:calc(var(--radius-sm-base) * var(--corner-radius-scale))
+--radius-token-composer-single-line:calc(var(--spacing) * 5.5)
+--radius-token-row:10px
+--radius-token-row:9999px
+--radius-token-row:var(--radius-lg)
+--radius-xl-base:.75rem
+--radius-xl:calc(var(--radius-xl-base) * var(--corner-radius-scale))
+--radius-xs-base:.25rem
+--radius-xs:calc(var(--radius-xs-base) * var(--corner-radius-scale))
+--red-300:#ff6764
+--red-400:#fa423e
+--red-500:#e02e2a
+--red-50:#ffd9d9
+--red-600:#ba2623
+--red-900:#4d100e
+--right-fade:0
+--right-fade:var(--edge-fade-distance,1rem)
+--right-panel-composer-overlay-reserve:118px
+--rolling-number-y-offset:0px
+--safe-area-left:0px
+--safe-area-right:0px
+--sectioned-page-leading-inset:.5rem
+--sectioned-page-leading-inset:var(--detail-page-inline-inset,0px)
+--shadow-2xl:0px 16px 32px -8px #00000030
+--shadow-hairline:0 0 0 1px var(--color-token-border-light)
+--shadow-hairline:0px 0px 0px .5px #0000001a
+--shadow-lg:0px 4px 8px -2px #0000001a
+--shadow-md-stronger:0px 2px 4px -1px #00000021
+--shadow-md:0px 2px 4px -1px #00000014
+--shadow-sm:0px 1px 2px -1px #00000014
+--shadow-xl:0px 8px 16px -4px #0000001f
+--shadow:none
+--shadow:var(--shadow-lg)
+--shimmer-contrast:#0000006b
+--shimmer-contrast:#0009
+--shimmer-contrast:#ffffff85
+--shimmer-contrast:#ffffffbf
+--shimmer-contrast:color-mix(in srgb,var(--color-token-foreground) 78%,transparent)
+--shimmer-contrast:var(--color-token-foreground)
+--shimmer-text-secondary:color-mix(in srgb, var(--text-primary) 45%, transparent)
+--shimmer-text-secondary:color-mix(in srgb,var(--color-token-foreground) 58%,transparent)
+--shimmer-text-secondary:var(--color-token-foreground)
+--shimmer-text-secondary:var(--text-primary)
+--shimmer-text-secondary:var(--text-secondary)
+--sidebar-footer-height:72px
+--spacing-token-button-composer-gap:var(--spacing)
+--spacing-token-button-composer-sm:calc(var(--spacing) * 5)
+--spacing-token-button-composer-sm:calc(var(--spacing) * 7)
+--spacing-token-button-composer:calc(var(--spacing) * 7)
+--spacing-token-safe-header-left:0px
+--spacing-token-safe-header-right:0px
+--spacing-token-sidebar:clamp(240px, 275px, min(520px, calc(100vw - 320px)))
+--spacing:.25rem
+--task-row-trailing-inset:calc(var(--spacing) * 1.5)
+--text-2xl--line-height:calc(2 / 1.5)
+--text-2xl:36px
+--text-3xl--line-height:calc(2.25 / 1.875)
+--text-3xl:48px
+--text-4xl--line-height:calc(2.5 / 2.25)
+--text-4xl:72px
+--text-base--line-height:calc(1.5 / 1)
+--text-base:14px
+--text-heading-lg:24px
+--text-heading-md:16px
+--text-heading-md:18px
+--text-heading-md:20px
+--text-heading-sm:18px
+--text-lg--line-height:calc(1.75 / 1.125)
+--text-lg:16px
+--text-link-decoration:none
+--text-primary:var(--color-token-description-foreground)
+--text-quaternary:color-mix(in srgb, var(--text-primary) 18%, transparent)
+--text-quaternary:var(--text-primary)
+--text-secondary:color-mix(in srgb, var(--text-primary) 55%, transparent)
+--text-secondary:var(--text-primary)
+--text-sm--line-height:calc(1.25 / .875)
+--text-sm:12px
+--text-sm:13px
+--text-tertiary:color-mix(in srgb, var(--text-primary) 35%, transparent)
+--text-tertiary:var(--text-primary)
+--text-tracking:0em
+--text-xl--line-height:calc(1.75 / 1.25)
+--text-xl:28px
+--text-xs--line-height:calc(1 / .75)
+--text-xs:11px
+--text-xs:12px
+--thread-content-max-width:100%
+--thread-content-max-width:480px
+--thread-content-max-width:48rem
+--thread-content-max-width:500px
+--thread-content-max-width:none
+--thread-content-top-inset:calc(var(--spacing) * 8)
+--thread-floating-content-bottom-inset:16px
+--thread-floating-content-top-inset:16px
+--thread-resource-card-row-padding-x:.75rem
+--top-fade:0
+--top-fade:var(--edge-fade-distance,1rem)
+--tracking-normal:0em
+--tracking-tight:-.025em
+--tracking-wide:.025em
+--transition-duration-basic:.15s
+--transition-duration-relaxed:.3s
+--turn-diff-row-padding-y:.25rem
+--tw-backdrop-blur:
+--tw-backdrop-blur: !important
+--tw-backdrop-blur:blur(12px)
+--tw-backdrop-blur:blur(18px)
+--tw-backdrop-blur:blur(8px)
+--tw-backdrop-blur:blur(var(--blur-lg))
+--tw-backdrop-blur:blur(var(--blur-md))
+--tw-backdrop-blur:blur(var(--blur-sm))
+--tw-backdrop-blur:blur(var(--blur-xl))
+--tw-backdrop-blur:blur(var(--blur-xs))
+--tw-backdrop-blur:initial
+--tw-backdrop-brightness:initial
+--tw-backdrop-contrast:initial
+--tw-backdrop-grayscale:initial
+--tw-backdrop-hue-rotate:initial
+--tw-backdrop-invert:initial
+--tw-backdrop-opacity:initial
+--tw-backdrop-saturate:initial
+--tw-backdrop-sepia:initial
+--tw-blur:blur(1px)
+--tw-blur:blur(7px)
+--tw-blur:blur(8px)
+--tw-blur:blur(var(--blur-2xl))
+--tw-blur:blur(var(--blur-3xl))
+--tw-blur:blur(var(--blur-sm))
+--tw-blur:initial
+--tw-border-style:dashed
+--tw-border-style:none
+--tw-border-style:none!important
+--tw-border-style:solid
+--tw-brightness:brightness(95%)
+--tw-brightness:initial
+--tw-contain-layout:initial
+--tw-contain-layout:layout
+--tw-contain-paint:initial
+--tw-contain-paint:paint
+--tw-contain-size:initial
+--tw-contain-size:inline-size
+--tw-contain-style:initial
+--tw-contain-style:style
+--tw-content:""
+--tw-content:"—"
+--tw-content:none
+--tw-contrast:initial
+--tw-divide-y-reverse:0
+--tw-drop-shadow-alpha:100%
+--tw-drop-shadow-color:initial
+--tw-drop-shadow-size:drop-shadow(0 2px 5px var(--tw-drop-shadow-color,#2c5ec93b))
+--tw-drop-shadow-size:drop-shadow(0 6px 16px var(--tw-drop-shadow-color,#2c5ec947))
+--tw-drop-shadow-size:initial
+--tw-drop-shadow:initial
+--tw-drop-shadow:var(--tw-drop-shadow-size)
+--tw-duration:.12s
+--tw-duration:.14s
+--tw-duration:.15s
+--tw-duration:.16s
+--tw-duration:.18s
+--tw-duration:.22s
+--tw-duration:.2s
+--tw-duration:.3s
+--tw-duration:0s
+--tw-duration:30ms
+--tw-duration:75ms
+--tw-duration:80ms
+--tw-duration:initial
+--tw-duration:var(--transition-duration-basic)
+--tw-duration:var(--transition-duration-relaxed)
+--tw-ease:cubic-bezier(.2,0,0,1)
+--tw-ease:cubic-bezier(.25,.46,.45,.94)
+--tw-ease:initial
+--tw-ease:var(--ease-basic)
+--tw-ease:var(--ease-enter)
+--tw-ease:var(--ease-enter-snappy)
+--tw-ease:var(--ease-in)
+--tw-ease:var(--ease-in-out)
+--tw-ease:var(--ease-out)
+--tw-font-weight:400
+--tw-font-weight:500
+--tw-font-weight:initial
+--tw-font-weight:var(--font-weight-bold)
+--tw-font-weight:var(--font-weight-light)
+--tw-font-weight:var(--font-weight-medium)
+--tw-font-weight:var(--font-weight-normal)
+--tw-font-weight:var(--font-weight-semibold)
+--tw-gradient-from-position:0%
+--tw-gradient-from:#0000
+--tw-gradient-from:#ffffff29
+--tw-gradient-from:#ffffff61
+--tw-gradient-from:color-mix(in oklab, var(--color-white) 16%, transparent)
+--tw-gradient-from:color-mix(in oklab, var(--color-white) 38%, transparent)
+--tw-gradient-from:transparent
+--tw-gradient-from:var(--color-token-bg-primary)
+--tw-gradient-from:var(--color-token-input-background)
+--tw-gradient-from:var(--color-token-main-surface-primary)
+--tw-gradient-position:initial
+--tw-gradient-position:to bottom
+--tw-gradient-position:to bottom in oklab
+--tw-gradient-position:to bottom right in oklab
+--tw-gradient-position:to left
+--tw-gradient-position:to left in oklab
+--tw-gradient-position:to right
+--tw-gradient-position:to right in oklab
+--tw-gradient-position:to top in oklab
+--tw-gradient-stops:initial
+--tw-gradient-stops:var(--tw-gradient-via-stops)
+--tw-gradient-stops:var(--tw-gradient-via-stops,var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position))
+--tw-gradient-to-position:100%
+--tw-gradient-to-position:85%
+--tw-gradient-to:#0000
+--tw-gradient-to:color-mix(in oklab, var(--color-token-dropdown-background) 90%, transparent)
+--tw-gradient-to:transparent
+--tw-gradient-to:var(--app-shell-tab-background)
+--tw-gradient-to:var(--color-token-dropdown-background)
+--tw-gradient-to:var(--color-token-input-background)
+--tw-gradient-to:var(--color-token-main-surface-primary)
+--tw-gradient-to:var(--color-token-menu-background)
+--tw-gradient-via-position:50%
+--tw-gradient-via-stops:initial
+--tw-gradient-via-stops:var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-via) var(--tw-gradient-via-position), var(--tw-gradient-to) var(--tw-gradient-to-position)
+--tw-gradient-via:#0000
+--tw-gradient-via:#ffffff0a
+--tw-gradient-via:#ffffff1a
+--tw-gradient-via:color-mix(in oklab, var(--color-token-foreground) 25%, transparent)
+--tw-gradient-via:color-mix(in oklab, var(--color-white) 10%, transparent)
+--tw-gradient-via:color-mix(in oklab, var(--color-white) 4%, transparent)
+--tw-gradient-via:var(--color-token-bg-primary)
+--tw-gradient-via:var(--color-token-dropdown-background)
+--tw-gradient-via:var(--color-token-foreground)
+--tw-gradient-via:var(--color-token-main-surface-primary)
+--tw-gradient-via:var(--color-token-menu-background)
+--tw-grayscale:initial
+--tw-hue-rotate:initial
+--tw-inset-ring-color:initial
+--tw-inset-ring-shadow:0 0 #0000
+--tw-inset-shadow-alpha:100%
+--tw-inset-shadow-color:initial
+--tw-inset-shadow:0 0 #0000
+--tw-invert:initial
+--tw-leading:1
+--tw-leading:1!important
+--tw-leading:1.2
+--tw-leading:1.4
+--tw-leading:1.5
+--tw-leading:13px
+--tw-leading:14px
+--tw-leading:17px
+--tw-leading:18px
+--tw-leading:18px!important
+--tw-leading:21px
+--tw-leading:22px
+--tw-leading:25px
+--tw-leading:30px
+--tw-leading:34px
+--tw-leading:calc(var(--codex-chat-font-size) + 8px)
+--tw-leading:calc(var(--oai-wb-spacing) * 8)
+--tw-leading:calc(var(--oai-wb-spacing) * 9)
+--tw-leading:calc(var(--spacing) * 3)
+--tw-leading:calc(var(--spacing) * 3.5)
+--tw-leading:calc(var(--spacing) * 4)
+--tw-leading:calc(var(--spacing) * 4)!important
+--tw-leading:calc(var(--spacing) * 5)
+--tw-leading:calc(var(--spacing) * 5)!important
+--tw-leading:calc(var(--spacing) * 6)
+--tw-leading:calc(var(--spacing) * 6)!important
+--tw-leading:calc(var(--spacing) * 7)
+--tw-leading:calc(var(--spacing) * 8)
+--tw-leading:calc(var(--spacing) * 9)
+--tw-leading:inherit
+--tw-leading:initial
+--tw-leading:var(--leading-normal)
+--tw-leading:var(--leading-relaxed)
+--tw-leading:var(--leading-snug)
+--tw-leading:var(--leading-tight)
+--tw-numeric-figure:initial
+--tw-numeric-fraction:initial
+--tw-numeric-spacing:initial
+--tw-numeric-spacing:tabular-nums
+--tw-opacity:initial
+--tw-ordinal:initial
+--tw-ordinal:ordinal
+--tw-outline-style:none
+--tw-outline-style:none!important
+--tw-outline-style:solid
+--tw-ring-color:#0000000d
+--tw-ring-color:#0000001a
+--tw-ring-color:#00000026
+--tw-ring-color:#0091ff
+--tw-ring-color:color-mix(in oklab, var(--color-black) 10%, transparent)
+--tw-ring-color:color-mix(in oklab, var(--color-black) 15%, transparent)
+--tw-ring-color:color-mix(in oklab, var(--color-black) 5%, transparent)
+--tw-ring-color:color-mix(in oklab, var(--color-token-border) 60%, transparent)
+--tw-ring-color:color-mix(in oklab, var(--color-token-border-default) 50%, transparent)
+--tw-ring-color:color-mix(in oklab, var(--color-token-charts-blue) 40%, transparent)
+--tw-ring-color:color-mix(in oklab, var(--color-token-charts-blue) 60%, transparent)
+--tw-ring-color:color-mix(in oklab, var(--color-token-checkbox-background) 50%, transparent)
+--tw-ring-color:color-mix(in oklab, var(--color-token-error-foreground) 20%, transparent)
+--tw-ring-color:color-mix(in srgb, var(--color-token-border) 60%, transparent)
+--tw-ring-color:color-mix(in srgb, var(--color-token-border-default) 50%, transparent)
+--tw-ring-color:color-mix(in srgb,var(--color-token-primary) 55%,transparent)
+--tw-ring-color:initial
+--tw-ring-color:transparent
+--tw-ring-color:var(--color-orange-300)
+--tw-ring-color:var(--color-token-border)
+--tw-ring-color:var(--color-token-border-default)
+--tw-ring-color:var(--color-token-border-heavy)
+--tw-ring-color:var(--color-token-border-light)
+--tw-ring-color:var(--color-token-charts-blue)
+--tw-ring-color:var(--color-token-checkbox-background)
+--tw-ring-color:var(--color-token-error-foreground)
+--tw-ring-color:var(--color-token-focus-border)
+--tw-ring-color:var(--color-token-foreground)
+--tw-ring-color:var(--color-token-main-surface-primary)
+--tw-ring-color:var(--color-token-primary)
+--tw-ring-color:var(--color-token-text-link-foreground)
+--tw-ring-color:var(--color-token-text-primary)
+--tw-ring-inset:initial
+--tw-ring-inset:inset
+--tw-ring-offset-color:#fff
+--tw-ring-offset-shadow:0 0 #0000
+--tw-ring-offset-shadow:var(--tw-ring-inset,) 0 0 0 var(--tw-ring-offset-width) var(--tw-ring-offset-color)
+--tw-ring-offset-width:0px
+--tw-ring-offset-width:1px
+--tw-ring-shadow:0 0 #0000
+--tw-ring-shadow:var(--tw-ring-inset,) 0 0 0 calc(.5px + var(--tw-ring-offset-width)) var(--tw-ring-color,currentcolor)
+--tw-ring-shadow:var(--tw-ring-inset,) 0 0 0 calc(0px + var(--tw-ring-offset-width)) var(--tw-ring-color,currentcolor)
+--tw-ring-shadow:var(--tw-ring-inset,) 0 0 0 calc(0px + var(--tw-ring-offset-width)) var(--tw-ring-color,currentcolor)!important
+--tw-ring-shadow:var(--tw-ring-inset,) 0 0 0 calc(1px + var(--tw-ring-offset-width)) var(--tw-ring-color,currentcolor)
+--tw-ring-shadow:var(--tw-ring-inset,) 0 0 0 calc(2px + var(--tw-ring-offset-width)) var(--tw-ring-color,currentcolor)
+--tw-ring-shadow:var(--tw-ring-inset,) 0 0 0 calc(4px + var(--tw-ring-offset-width)) var(--tw-ring-color,currentcolor)
+--tw-rotate-x:initial
+--tw-rotate-y:initial
+--tw-rotate-z:initial
+--tw-saturate:initial
+--tw-scale-x:1
+--tw-scale-x:100%
+--tw-scale-x:110%
+--tw-scale-x:50%
+--tw-scale-x:75%
+--tw-scale-x:90%
+--tw-scale-x:95%
+--tw-scale-x:calc(100% * -1)
+--tw-scale-y:1
+--tw-scale-y:100%
+--tw-scale-y:110%
+--tw-scale-y:50%
+--tw-scale-y:75%
+--tw-scale-y:90%
+--tw-scale-y:95%
+--tw-scale-z:1
+--tw-scale-z:100%
+--tw-scale-z:110%
+--tw-scale-z:50%
+--tw-scale-z:75%
+--tw-scale-z:90%
+--tw-scale-z:95%
+--tw-scroll-snap-strictness:mandatory
+--tw-scroll-snap-strictness:proximity
+--tw-sepia:initial
+--tw-shadow-alpha:100%
+--tw-shadow-color:#0003
+--tw-shadow-color:color-mix(in oklab, color-mix(in oklab, var(--color-black) 20%, transparent) var(--tw-shadow-alpha), transparent)
+--tw-shadow-color:initial
+--tw-shadow:-16px 0 32px var(--tw-shadow-color,#00000047)
+--tw-shadow:-8px 0 16px -8px var(--tw-shadow-color,#0000002e)
+--tw-shadow:.5px 0 0 0 var(--tw-shadow-color,var(--color-token-border-default)), 0 20px 25px -5px var(--tw-shadow-color,#0000001a), 0 8px 10px -6px var(--tw-shadow-color,#0000001a)
+--tw-shadow:0 0 #0000
+--tw-shadow:0 0 #0000!important
+--tw-shadow:0 0 0 1px var(--tw-shadow-color,#0000001a), 0 4px 11px var(--tw-shadow-color,#0000001a)
+--tw-shadow:0 0 0 1px var(--tw-shadow-color,#3b82f6a6), 0 0 26px var(--tw-shadow-color,#3b82f661)
+--tw-shadow:0 0 0 1px var(--tw-shadow-color,#8db5ff2e), 0 0 14px var(--tw-shadow-color,#8db5ff61)
+--tw-shadow:0 0 0 2px var(--tw-shadow-color,color-mix(in srgb,var(--color-token-error-foreground) 18%,transparent))
+--tw-shadow:0 0 0 2px var(--tw-shadow-color,var(--color-token-error-foreground))
+--tw-shadow:0 0 5px var(--tw-shadow-color,#574c976b)
+--tw-shadow:0 0 5px var(--tw-shadow-color,#9ebdffe6)
+--tw-shadow:0 0 6px var(--tw-shadow-color,#7668c580)
+--tw-shadow:0 0 9px var(--tw-shadow-color,#5b8debb8)
+--tw-shadow:0 0 9px var(--tw-shadow-color,#7da8ffeb)
+--tw-shadow:0 10px 28px var(--tw-shadow-color,#0000000f)
+--tw-shadow:0 10px 30px var(--tw-shadow-color,#1e58be2e)
+--tw-shadow:0 12px 28px var(--tw-shadow-color,#0000001f)
+--tw-shadow:0 12px 36px var(--tw-shadow-color,#0000001f)
+--tw-shadow:0 18px 50px var(--tw-shadow-color,#0000001f)
+--tw-shadow:0 1px 0 var(--tw-shadow-color,#00000014)
+--tw-shadow:0 1px 2px 0 var(--tw-shadow-color,#0000000d)
+--tw-shadow:0 1px 2px var(--tw-shadow-color,#0000005c)
+--tw-shadow:0 1px 2px var(--tw-shadow-color,#4f483f3d)
+--tw-shadow:0 1px 3px 0 var(--tw-shadow-color,#0000001a), 0 1px 2px -1px var(--tw-shadow-color,#0000001a)
+--tw-shadow:0 2px 6px -1px var(--tw-shadow-color,#00000008)
+--tw-shadow:0 2px 6px var(--tw-shadow-color,#0003)
+--tw-shadow:0 4px 16px 0 var(--tw-shadow-color,#0000000d)
+--tw-shadow:0 4px 16px var(--tw-shadow-color,#0000000d)
+--tw-shadow:0 5px 15px var(--tw-shadow-color,#00000024)
+--tw-shadow:0 6px 14px var(--tw-shadow-color,#00000008), inset 0 -1px 4px var(--tw-shadow-color,#00000008)
+--tw-shadow:0 8px 10px -6px var(--tw-shadow-color,#0000001a), 0 20px 25px -5px var(--tw-shadow-color,#0000001a)!important
+--tw-shadow:0 8px 12px 0 var(--tw-shadow-color,#00000029), 0 0 1px 0 var(--tw-shadow-color,#0009)
+--tw-shadow:0 8px 16px 0 var(--tw-shadow-color,#0006), inset 0 0 1px 0 var(--tw-shadow-color,#ffffff40), 0 0 1px 0 var(--tw-shadow-color,#0009)
+--tw-shadow:0 8px 18px -6px var(--tw-shadow-color,#0000008c)
+--tw-shadow:0 8px 20px var(--tw-shadow-color,#3b65a029)
+--tw-shadow:0px 0px 0px .5px var(--tw-shadow-color,var(--color-token-border)), var(--shadow-xl)
+--tw-shadow:0px 16px 32px -8px var(--tw-shadow-color,#00000030)
+--tw-shadow:0px 1px 2px -1px var(--tw-shadow-color,#00000014)
+--tw-shadow:0px 1px 2px -1px var(--tw-shadow-color,#00000021)
+--tw-shadow:0px 20px 12.5px var(--tw-shadow-color,#0000001a)
+--tw-shadow:0px 2px 4px -1px var(--tw-shadow-color,#00000014)
+--tw-shadow:0px 2px 4px -1px var(--tw-shadow-color,#0000001a)
+--tw-shadow:0px 4px 8px -2px var(--tw-shadow-color,#0000001a)
+--tw-shadow:0px 5px 10px -7px var(--tw-shadow-color,#00000038)
+--tw-shadow:0px 7px 14px -9px var(--tw-shadow-color,#00000042)
+--tw-shadow:0px 8px 10px -6px var(--tw-shadow-color,#0000001a), 0px 20px 25px -5px var(--tw-shadow-color,#0000001a)
+--tw-shadow:0px 8px 16px -4px var(--tw-shadow-color,#0000001f)
+--tw-shadow:0px 8px 16px -4px var(--tw-shadow-color,#0000001f)!important
+--tw-shadow:inset 0 -1px 2px var(--tw-shadow-color,#5c544829), 0 1px 2px var(--tw-shadow-color,#5950432e)
+--tw-shadow:inset 0 -1px 2px var(--tw-shadow-color,#ffffff14), 0 1px 2px var(--tw-shadow-color,#00000057)
+--tw-shadow:inset 0 -1px 2px var(--tw-shadow-color,#ffffff1f), 0 1px 2px var(--tw-shadow-color,#2c282347)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,#8db5ff1f), 0 0 14px var(--tw-shadow-color,#5b8deb2e)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,#e4e4e466), inset 0 1px 2px var(--tw-shadow-color,#ffffff80), 0 1px 2px var(--tw-shadow-color,#4f483f29)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,#e4e4e4ad), 0 1px 2px var(--tw-shadow-color,#4f483f2e)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,#ffffff0f), 0 1px 2px var(--tw-shadow-color,#00000052)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,#ffffff14), 0 14px 34px var(--tw-shadow-color,#0000005c)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,#ffffff14), 0 1px 0 var(--tw-shadow-color,#00000047)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,#ffffff14), 0 1px 2px var(--tw-shadow-color,#00000052)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,#ffffff14), 0 1px 2px var(--tw-shadow-color,#00000057)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,#ffffff17), inset 0 1px 2px var(--tw-shadow-color,#ffffff14), 0 1px 2px var(--tw-shadow-color,#0000004d)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,#ffffff1f), 0 0 12px var(--tw-shadow-color,#8db5ff3d)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,#ffffff24), 0 0 12px var(--tw-shadow-color,#8db5ff3d)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,#ffffff24), 0 0 14px var(--tw-shadow-color,#8db5ff47)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,#ffffff47)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,#ffffff85), 0 1px 2px var(--tw-shadow-color,#5950432e)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,#ffffffb8), 0 14px 32px var(--tw-shadow-color,#191c262e)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,#ffffffb8), 0 1px 0 var(--tw-shadow-color,#ffffffa6)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,#ffffffd1), 0 0 12px var(--tw-shadow-color,#8db5ff33)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,#ffffffeb), 0 0 12px var(--tw-shadow-color,#8db5ff2e)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,#ffffffeb), 0 0 12px var(--tw-shadow-color,#8db5ff42)
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,color-mix(in srgb,var(--color-token-error-foreground) 30%,transparent))
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,var(--color-token-border-default))
+--tw-shadow:inset 0 0 0 1px var(--tw-shadow-color,var(--color-token-error-foreground))
+--tw-shadow:inset 0 1px 0 var(--tw-shadow-color,#ffffff08)
+--tw-shadow:inset 0 1px 0 var(--tw-shadow-color,#ffffff1f)
+--tw-shadow:inset 0 2px 4px 0 var(--tw-shadow-color,#0000000d)
+--tw-skew-x:initial
+--tw-skew-y:initial
+--tw-slashed-zero:initial
+--tw-space-x-reverse:0
+--tw-space-y-reverse:0
+--tw-tracking:-.022em
+--tw-tracking:-.025em
+--tw-tracking:-.08px
+--tw-tracking:-.13px
+--tw-tracking:-.14px
+--tw-tracking:-.15px
+--tw-tracking:-.18px
+--tw-tracking:-.24px
+--tw-tracking:-.32px
+--tw-tracking:-.3px
+--tw-tracking:-.4px
+--tw-tracking:.06px
+--tw-tracking:.072px
+--tw-tracking:.12em
+--tw-tracking:.18em
+--tw-tracking:.2em
+--tw-tracking:.38px
+--tw-tracking:0
+--tw-tracking:initial
+--tw-tracking:var(--tracking-normal)
+--tw-tracking:var(--tracking-tight)
+--tw-tracking:var(--tracking-wide)
+--tw-translate-x:-1px
+--tw-translate-x:.25px
+--tw-translate-x:0
+--tw-translate-x:14px
+--tw-translate-x:1px
+--tw-translate-x:2px
+--tw-translate-x:calc(1 / 2 * 100%)
+--tw-translate-x:calc(100% + 12px)
+--tw-translate-x:calc(calc(1 / 2 * 100%) * -1)
+--tw-translate-x:calc(calc(100% + 12px) * -1)
+--tw-translate-x:calc(var(--spacing) * -.5)
+--tw-translate-x:calc(var(--spacing) * -1)
+--tw-translate-x:calc(var(--spacing) * -1.5)
+--tw-translate-x:calc(var(--spacing) * -2)
+--tw-translate-x:calc(var(--spacing) * .5)
+--tw-translate-x:calc(var(--spacing) * 0)
+--tw-translate-x:calc(var(--spacing) * 0)!important
+--tw-translate-x:calc(var(--spacing) * 1)
+--tw-translate-x:calc(var(--spacing) * 2)
+--tw-translate-y:-100%
+--tw-translate-y:-1px
+--tw-translate-y:-2px
+--tw-translate-y:0
+--tw-translate-y:1px
+--tw-translate-y:calc(.5px * -1)
+--tw-translate-y:calc(31px * -1)
+--tw-translate-y:calc(6px * -1)
+--tw-translate-y:calc(calc(1 / 2 * 100%) * -1)
+--tw-translate-y:calc(var(--spacing) * -.5)
+--tw-translate-y:calc(var(--spacing) * -1)
+--tw-translate-y:calc(var(--spacing) * -2)
+--tw-translate-y:calc(var(--spacing) * -5)
+--tw-translate-y:calc(var(--spacing) * .5)
+--tw-translate-y:calc(var(--spacing) * 0)
+--tw-translate-y:calc(var(--spacing) * 0)!important
+--tw-translate-y:calc(var(--spacing) * 1)
+--tw-translate-y:calc(var(--spacing) * 2)
+--tw-translate-y:calc(var(--spacing) * 5)
+--tw-translate-z:0
+--vscode-actionBar-toggledBackground:var(--color-background-elevated-secondary)
+--vscode-activityBar-activeBorder:var(--color-border-heavy)
+--vscode-activityBar-background:var(--color-background-surface)
+--vscode-activityBar-border:var(--color-border)
+--vscode-activityBar-dropBorder:var(--color-border)
+--vscode-activityBar-foreground:var(--color-text-foreground)
+--vscode-activityBar-inactiveForeground:var(--color-text-foreground-tertiary)
+--vscode-activityBarBadge-background:var(--color-background-accent-active)
+--vscode-activityBarBadge-foreground:var(--color-text-foreground)
+--vscode-activityBarTop-activeBorder:var(--color-border-heavy)
+--vscode-activityBarTop-dropBorder:var(--color-border)
+--vscode-activityBarTop-foreground:var(--color-text-foreground)
+--vscode-activityBarTop-inactiveForeground:var(--color-text-foreground-tertiary)
+--vscode-activityErrorBadge-background:var(--color-background-danger-active)
+--vscode-activityErrorBadge-foreground:var(--color-text-error)
+--vscode-activityWarningBadge-background:var(--color-background-status-warning)
+--vscode-activityWarningBadge-foreground:var(--color-text-warning)
+--vscode-badge-background:var(--color-background-button-secondary)
+--vscode-badge-foreground:var(--color-text-foreground-secondary)
+--vscode-banner-background:var(--color-background-elevated-secondary)
+--vscode-banner-foreground:var(--color-text-foreground)
+--vscode-banner-iconForeground:var(--color-icon-primary)
+--vscode-breadcrumb-activeSelectionForeground:var(--color-text-foreground)
+--vscode-breadcrumb-background:var(--color-background-elevated-secondary)
+--vscode-breadcrumb-focusForeground:var(--color-text-foreground-tertiary)
+--vscode-breadcrumb-foreground:var(--color-text-foreground-tertiary)
+--vscode-breadcrumbPicker-background:var(--color-background-elevated-primary)
+--vscode-button-background:var(--color-background-button-primary)
+--vscode-button-border:var(--color-border)
+--vscode-button-foreground:var(--color-text-button-primary)
+--vscode-button-hoverBackground:var(--color-background-button-primary-hover)
+--vscode-button-secondaryBackground:var(--color-background-button-secondary)
+--vscode-button-secondaryForeground:var(--color-text-button-secondary)
+--vscode-button-secondaryHoverBackground:var(--color-background-button-secondary-hover)
+--vscode-button-separator:var(--color-border-light)
+--vscode-chart-axis:var(--color-text-foreground-tertiary)
+--vscode-chart-guide:var(--color-text-foreground-tertiary)
+--vscode-chart-line:var(--color-text-foreground)
+--vscode-charts-blue:var(--color-accent-blue)
+--vscode-charts-foreground:var(--color-text-foreground)
+--vscode-charts-green:var(--color-accent-green)
+--vscode-charts-lines:var(--color-text-foreground)
+--vscode-charts-orange:var(--color-accent-orange)
+--vscode-charts-purple:var(--color-accent-purple)
+--vscode-charts-red:var(--color-accent-red)
+--vscode-charts-yellow:var(--color-accent-yellow)
+--vscode-chat-avatarBackground:var(--color-background-elevated-secondary)
+--vscode-chat-avatarForeground:var(--color-text-foreground)
+--vscode-chat-editedFileForeground:var(--color-text-foreground)
+--vscode-chat-editor-font-size:var(--vscode-editor-font-size)
+--vscode-chat-font-size:var(--vscode-font-size)
+--vscode-chat-requestBackground:var(--color-background-elevated-primary)
+--vscode-chat-requestBorder:var(--color-border)
+--vscode-chat-slashCommandBackground:var(--color-background-elevated-secondary)
+--vscode-chat-slashCommandForeground:var(--color-text-foreground)
+--vscode-checkbox-background:var(--color-background-elevated-primary)
+--vscode-checkbox-border:var(--color-border)
+--vscode-checkbox-foreground:var(--color-text-foreground)
+--vscode-checkbox-selectBackground:var(--color-background-elevated-primary)
+--vscode-checkbox-selectBorder:var(--color-border)
+--vscode-commandCenter-activeBackground:var(--color-background-accent-hover)
+--vscode-commandCenter-activeBorder:var(--color-border-heavy)
+--vscode-commandCenter-activeForeground:var(--color-text-foreground)
+--vscode-commandCenter-background:var(--color-background-elevated-primary)
+--vscode-commandCenter-border:var(--color-border)
+--vscode-commandCenter-debuggingBackground:var(--color-background-accent-active)
+--vscode-commandCenter-foreground:var(--color-text-foreground)
+--vscode-commandCenter-inactiveBorder:var(--color-border-heavy)
+--vscode-commandCenter-inactiveForeground:var(--color-text-foreground-tertiary)
+--vscode-commentsView-resolvedIcon:var(--color-icon-success)
+--vscode-commentsView-unresolvedIcon:var(--color-icon-success)
+--vscode-debugConsole-errorForeground:var(--color-text-error)
+--vscode-debugConsole-infoForeground:var(--color-text-accent)
+--vscode-debugConsole-sourceForeground:var(--color-text-foreground)
+--vscode-debugConsole-warningForeground:var(--color-text-warning)
+--vscode-debugConsoleInputIcon-foreground:var(--color-icon-primary)
+--vscode-debugExceptionWidget-background:var(--color-background-status-error)
+--vscode-debugExceptionWidget-border:var(--color-border-error)
+--vscode-debugIcon-breakpointCurrentStackframeForeground:var(--color-icon-error)
+--vscode-debugIcon-breakpointDisabledForeground:var(--color-icon-error)
+--vscode-debugIcon-breakpointForeground:var(--color-icon-error)
+--vscode-debugIcon-breakpointStackframeForeground:var(--color-icon-error)
+--vscode-debugIcon-breakpointUnverifiedForeground:var(--color-icon-error)
+--vscode-debugIcon-continueForeground:var(--color-icon-primary)
+--vscode-debugIcon-disconnectForeground:var(--color-icon-primary)
+--vscode-debugIcon-pauseForeground:var(--color-icon-primary)
+--vscode-debugIcon-restartForeground:var(--color-icon-primary)
+--vscode-debugIcon-startForeground:var(--color-icon-primary)
+--vscode-debugIcon-stepBackForeground:var(--color-icon-primary)
+--vscode-debugIcon-stepIntoForeground:var(--color-icon-primary)
+--vscode-debugIcon-stepOutForeground:var(--color-icon-primary)
+--vscode-debugIcon-stepOverForeground:var(--color-icon-primary)
+--vscode-debugIcon-stopForeground:var(--color-icon-primary)
+--vscode-debugTokenExpression-boolean:var(--color-accent-blue)
+--vscode-debugTokenExpression-error:var(--color-text-error)
+--vscode-debugTokenExpression-name:var(--color-accent-purple)
+--vscode-debugTokenExpression-number:var(--color-accent-green)
+--vscode-debugTokenExpression-string:var(--color-accent-red)
+--vscode-debugTokenExpression-type:var(--color-accent-blue)
+--vscode-debugTokenExpression-value:var(--color-text-foreground-tertiary)
+--vscode-debugToolBar-background:var(--color-background-elevated-primary)
+--vscode-debugView-exceptionLabelBackground:var(--color-background-status-error)
+--vscode-debugView-exceptionLabelForeground:var(--color-text-error)
+--vscode-debugView-stateLabelBackground:var(--color-background-elevated-secondary)
+--vscode-debugView-stateLabelForeground:var(--color-text-foreground)
+--vscode-debugView-valueChangedHighlight:var(--color-text-accent)
+--vscode-descriptionForeground:var(--color-text-foreground-tertiary)
+--vscode-diffEditor-diagonalFill:var(--color-background-button-tertiary-active)
+--vscode-diffEditor-insertedLineBackground:var(--color-editor-added)
+--vscode-diffEditor-insertedTextBackground:var(--color-editor-added)
+--vscode-diffEditor-removedLineBackground:var(--color-editor-deleted)
+--vscode-diffEditor-removedTextBackground:var(--color-editor-deleted)
+--vscode-diffEditor-unchangedCodeBackground:transparent
+--vscode-diffEditor-unchangedRegionBackground:transparent
+--vscode-diffEditor-unchangedRegionForeground:transparent
+--vscode-diffEditor-unchangedRegionShadow:var(--color-border-light)
+--vscode-disabledForeground:var(--color-text-foreground-tertiary)
+--vscode-dropdown-background:#fff
+--vscode-dropdown-background:var(--color-background-control-opaque)
+--vscode-dropdown-border:var(--color-border)
+--vscode-dropdown-foreground:var(--color-text-foreground)
+--vscode-dropdown-listBackground:var(--color-background-control)
+--vscode-editor-background:var(--color-background-editor-opaque)
+--vscode-editor-compositionBorder:var(--color-border)
+--vscode-editor-findMatchBackground:var(--color-background-accent-hover)
+--vscode-editor-findMatchHighlightBackground:var(--color-background-accent-active)
+--vscode-editor-findRangeHighlightBackground:var(--color-background-accent-active)
+--vscode-editor-focusedStackFrameHighlightBackground:var(--color-background-accent-active)
+--vscode-editor-foldBackground:var(--color-background-elevated-secondary)
+--vscode-editor-foldPlaceholderForeground:var(--color-text-foreground-tertiary)
+--vscode-editor-font-family:inherit
+--vscode-editor-font-family:ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace
+--vscode-editor-font-size:var(--text-sm)
+--vscode-editor-font-weight:normal
+--vscode-editor-foreground:var(--color-text-foreground)
+--vscode-editor-hoverHighlightBackground:var(--color-background-accent-hover)
+--vscode-editor-inactiveSelectionBackground:var(--color-background-accent-hover)
+--vscode-editor-inlineValuesBackground:var(--color-background-elevated-secondary)
+--vscode-editor-inlineValuesForeground:var(--color-text-foreground)
+--vscode-editor-lineHighlightBorder:var(--color-border-light)
+--vscode-editor-linkedEditingBackground:var(--color-background-accent-active)
+--vscode-editor-rangeHighlightBackground:var(--color-background-accent-active)
+--vscode-editor-selectionBackground:var(--color-background-accent-active)
+--vscode-editor-selectionHighlightBackground:var(--color-background-accent-active)
+--vscode-editor-snippetFinalTabstopHighlightBorder:var(--color-border-light)
+--vscode-editor-snippetTabstopHighlightBackground:var(--color-background-accent-active)
+--vscode-editor-stackFrameHighlightBackground:var(--color-background-accent-active)
+--vscode-editor-symbolHighlightBackground:var(--color-background-accent-active)
+--vscode-editor-wordHighlightBackground:var(--color-background-accent-active)
+--vscode-editor-wordHighlightStrongBackground:var(--color-background-accent-active)
+--vscode-editor-wordHighlightTextBackground:var(--color-background-accent-active)
+--vscode-editorActionList-background:var(--color-background-elevated-secondary)
+--vscode-editorActionList-focusBackground:var(--color-background-elevated-primary)
+--vscode-editorActionList-focusForeground:var(--color-text-foreground)
+--vscode-editorActionList-foreground:var(--color-text-foreground)
+--vscode-editorActiveLineNumber-foreground:var(--color-text-foreground)
+--vscode-editorBracketHighlight-foreground1:var(--color-text-foreground)
+--vscode-editorBracketHighlight-foreground2:var(--color-text-foreground)
+--vscode-editorBracketHighlight-foreground3:var(--color-text-foreground)
+--vscode-editorBracketHighlight-foreground4:var(--color-text-foreground)
+--vscode-editorBracketHighlight-foreground5:var(--color-text-foreground)
+--vscode-editorBracketHighlight-foreground6:var(--color-text-foreground)
+--vscode-editorBracketMatch-background:var(--color-background-accent-hover)
+--vscode-editorBracketMatch-border:var(--color-border)
+--vscode-editorBracketPairGuide-activeBackground1:var(--color-background-accent)
+--vscode-editorBracketPairGuide-activeBackground2:var(--color-background-accent)
+--vscode-editorBracketPairGuide-activeBackground3:var(--color-background-accent)
+--vscode-editorBracketPairGuide-activeBackground4:var(--color-background-accent)
+--vscode-editorBracketPairGuide-activeBackground5:var(--color-background-accent)
+--vscode-editorBracketPairGuide-activeBackground6:var(--color-background-accent)
+--vscode-editorBracketPairGuide-background1:var(--color-background-accent)
+--vscode-editorBracketPairGuide-background2:var(--color-background-accent)
+--vscode-editorBracketPairGuide-background3:var(--color-background-accent)
+--vscode-editorBracketPairGuide-background4:var(--color-background-accent)
+--vscode-editorBracketPairGuide-background5:var(--color-background-accent)
+--vscode-editorBracketPairGuide-background6:var(--color-background-accent)
+--vscode-editorCodeLens-foreground:var(--color-text-foreground-tertiary)
+--vscode-editorCommentsWidget-rangeActiveBackground:var(--color-background-accent-active)
+--vscode-editorCommentsWidget-rangeBackground:var(--color-background-elevated-primary)
+--vscode-editorCommentsWidget-replyInputBackground:var(--color-background-elevated-primary)
+--vscode-editorCommentsWidget-resolvedBorder:var(--color-border)
+--vscode-editorCommentsWidget-unresolvedBorder:var(--color-border)
+--vscode-editorCursor-foreground:var(--color-text-foreground)
+--vscode-editorError-foreground:var(--color-text-error)
+--vscode-editorGhostText-foreground:var(--color-text-foreground-tertiary)
+--vscode-editorGroup-border:var(--color-border)
+--vscode-editorGroup-dropBackground:var(--color-background-accent-active)
+--vscode-editorGroup-dropIntoPromptBackground:var(--color-background-accent-active)
+--vscode-editorGroup-dropIntoPromptForeground:var(--color-text-foreground)
+--vscode-editorGroupHeader-noTabsBackground:var(--color-background-elevated-primary)
+--vscode-editorGroupHeader-tabsBackground:var(--color-background-elevated-primary)
+--vscode-editorGroupHeader-tabsBorder:var(--color-border)
+--vscode-editorGutter-addedBackground:var(--color-background-status-success)
+--vscode-editorGutter-background:var(--color-background-surface)
+--vscode-editorGutter-commentGlyphForeground:var(--color-text-foreground)
+--vscode-editorGutter-commentRangeForeground:var(--color-text-foreground)
+--vscode-editorGutter-commentUnresolvedGlyphForeground:var(--color-text-success)
+--vscode-editorGutter-deletedBackground:var(--color-background-status-error)
+--vscode-editorGutter-foldingControlForeground:var(--color-text-foreground)
+--vscode-editorGutter-modifiedBackground:var(--color-background-status-warning)
+--vscode-editorHint-foreground:var(--color-text-accent)
+--vscode-editorHoverWidget-background:var(--color-background-elevated-primary)
+--vscode-editorHoverWidget-border:var(--color-border)
+--vscode-editorHoverWidget-foreground:var(--color-text-foreground)
+--vscode-editorHoverWidget-highlightForeground:var(--color-text-foreground)
+--vscode-editorHoverWidget-statusBarBackground:var(--color-background-elevated-secondary)
+--vscode-editorIndentGuide-activeBackground1:var(--color-background-accent)
+--vscode-editorIndentGuide-activeBackground2:var(--color-background-accent)
+--vscode-editorIndentGuide-activeBackground3:var(--color-background-accent)
+--vscode-editorIndentGuide-activeBackground4:var(--color-background-accent)
+--vscode-editorIndentGuide-activeBackground5:var(--color-background-accent)
+--vscode-editorIndentGuide-activeBackground6:var(--color-background-accent)
+--vscode-editorIndentGuide-activeBackground:var(--color-background-accent)
+--vscode-editorIndentGuide-background1:var(--color-background-accent)
+--vscode-editorIndentGuide-background2:var(--color-background-accent)
+--vscode-editorIndentGuide-background3:var(--color-background-accent)
+--vscode-editorIndentGuide-background4:var(--color-background-accent)
+--vscode-editorIndentGuide-background5:var(--color-background-accent)
+--vscode-editorIndentGuide-background6:var(--color-background-accent)
+--vscode-editorIndentGuide-background:var(--color-background-accent)
+--vscode-editorInfo-foreground:var(--color-text-accent)
+--vscode-editorInlayHint-background:var(--color-background-accent)
+--vscode-editorInlayHint-foreground:var(--color-text-accent)
+--vscode-editorInlayHint-parameterBackground:var(--color-background-accent)
+--vscode-editorInlayHint-parameterForeground:var(--color-text-accent)
+--vscode-editorInlayHint-typeBackground:var(--color-background-accent)
+--vscode-editorInlayHint-typeForeground:var(--color-text-accent)
+--vscode-editorLightBulb-foreground:var(--color-text-accent)
+--vscode-editorLightBulbAi-foreground:var(--color-text-accent)
+--vscode-editorLightBulbAutoFix-foreground:var(--color-text-accent)
+--vscode-editorLineNumber-activeForeground:var(--color-text-foreground)
+--vscode-editorLineNumber-foreground:var(--color-text-foreground)
+--vscode-editorLink-activeForeground:var(--color-text-accent)
+--vscode-editorMarkerNavigation-background:var(--color-background-accent-active)
+--vscode-editorMarkerNavigationError-background:var(--color-background-status-error)
+--vscode-editorMarkerNavigationError-headerBackground:var(--color-background-status-error)
+--vscode-editorMarkerNavigationInfo-background:var(--color-background-accent)
+--vscode-editorMarkerNavigationInfo-headerBackground:var(--color-background-accent)
+--vscode-editorMarkerNavigationWarning-background:var(--color-background-status-warning)
+--vscode-editorMarkerNavigationWarning-headerBackground:var(--color-background-status-warning)
+--vscode-editorOverviewRuler-addedForeground:var(--color-text-success)
+--vscode-editorOverviewRuler-border:var(--color-border)
+--vscode-editorOverviewRuler-bracketMatchForeground:var(--color-text-foreground)
+--vscode-editorOverviewRuler-commentForeground:var(--color-text-foreground)
+--vscode-editorOverviewRuler-commentUnresolvedForeground:var(--color-text-success)
+--vscode-editorOverviewRuler-commonContentForeground:var(--color-text-foreground)
+--vscode-editorOverviewRuler-currentContentForeground:var(--color-text-foreground)
+--vscode-editorOverviewRuler-deletedForeground:var(--color-text-foreground)
+--vscode-editorOverviewRuler-errorForeground:var(--color-text-error)
+--vscode-editorOverviewRuler-findMatchForeground:var(--color-text-foreground)
+--vscode-editorOverviewRuler-incomingContentForeground:var(--color-text-foreground)
+--vscode-editorOverviewRuler-infoForeground:var(--color-text-accent)
+--vscode-editorOverviewRuler-inlineChatInserted:var(--color-editor-added)
+--vscode-editorOverviewRuler-inlineChatRemoved:var(--color-editor-deleted)
+--vscode-editorOverviewRuler-modifiedForeground:var(--color-text-foreground)
+--vscode-editorOverviewRuler-rangeHighlightForeground:var(--color-text-foreground)
+--vscode-editorOverviewRuler-selectionHighlightForeground:var(--color-text-foreground)
+--vscode-editorOverviewRuler-warningForeground:var(--color-text-warning)
+--vscode-editorOverviewRuler-wordHighlightForeground:var(--color-text-foreground)
+--vscode-editorOverviewRuler-wordHighlightStrongForeground:var(--color-text-foreground)
+--vscode-editorOverviewRuler-wordHighlightTextForeground:var(--color-text-foreground)
+--vscode-editorPane-background:var(--color-background-surface)
+--vscode-editorRuler-foreground:var(--color-text-foreground)
+--vscode-editorStickyScroll-background:var(--color-background-elevated-secondary)
+--vscode-editorStickyScroll-shadow:var(--color-border-light)
+--vscode-editorStickyScrollHover-background:var(--color-background-elevated-primary)
+--vscode-editorSuggestWidget-background:var(--color-background-elevated-primary)
+--vscode-editorSuggestWidget-border:var(--color-border)
+--vscode-editorSuggestWidget-focusHighlightForeground:var(--color-text-foreground)
+--vscode-editorSuggestWidget-foreground:var(--color-text-foreground)
+--vscode-editorSuggestWidget-highlightForeground:var(--color-text-foreground)
+--vscode-editorSuggestWidget-selectedBackground:var(--color-background-accent-active)
+--vscode-editorSuggestWidget-selectedForeground:var(--color-text-foreground)
+--vscode-editorSuggestWidget-selectedIconForeground:var(--color-icon-primary)
+--vscode-editorSuggestWidgetStatus-foreground:var(--color-text-foreground)
+--vscode-editorUnicodeHighlight-border:var(--color-border-light)
+--vscode-editorUnnecessaryCode-opacity:var(--color-text-foreground)
+--vscode-editorWarning-foreground:var(--color-text-warning)
+--vscode-editorWhitespace-foreground:var(--color-text-foreground)
+--vscode-editorWidget-background:var(--color-background-elevated-primary)
+--vscode-editorWidget-border:var(--color-border)
+--vscode-editorWidget-foreground:var(--color-text-foreground)
+--vscode-errorForeground:var(--color-text-error)
+--vscode-extensionBadge-remoteBackground:var(--color-background-elevated-secondary)
+--vscode-extensionBadge-remoteForeground:var(--color-text-foreground)
+--vscode-extensionButton-background:var(--color-background-accent-active)
+--vscode-extensionButton-foreground:var(--color-text-foreground)
+--vscode-extensionButton-hoverBackground:var(--color-background-accent-hover)
+--vscode-extensionButton-prominentBackground:var(--color-background-accent-active)
+--vscode-extensionButton-prominentForeground:var(--color-text-foreground)
+--vscode-extensionButton-prominentHoverBackground:var(--color-background-accent-hover)
+--vscode-extensionButton-separator:var(--color-border-light)
+--vscode-extensionIcon-preReleaseForeground:var(--color-icon-primary)
+--vscode-extensionIcon-sponsorForeground:var(--color-icon-primary)
+--vscode-extensionIcon-starForeground:var(--color-icon-primary)
+--vscode-extensionIcon-verifiedForeground:var(--color-icon-primary)
+--vscode-focusBorder:var(--color-border-focus)
+--vscode-font-family:inherit
+--vscode-font-size:var(--text-base)
+--vscode-font-weight:430
+--vscode-font-weight:445
+--vscode-foreground:var(--color-text-foreground)
+--vscode-gitDecoration-addedResourceForeground:var(--color-decoration-added)
+--vscode-gitDecoration-conflictingResourceForeground:var(--color-decoration-unchanged)
+--vscode-gitDecoration-deletedResourceForeground:var(--color-decoration-deleted)
+--vscode-gitDecoration-ignoredResourceForeground:var(--color-decoration-modified)
+--vscode-gitDecoration-modifiedResourceForeground:var(--color-decoration-modified)
+--vscode-gitDecoration-renamedResourceForeground:var(--color-decoration-modified)
+--vscode-gitDecoration-stageDeletedResourceForeground:var(--color-decoration-modified)
+--vscode-gitDecoration-stageModifiedResourceForeground:var(--color-decoration-modified)
+--vscode-gitDecoration-submoduleResourceForeground:var(--color-decoration-modified)
+--vscode-gitDecoration-untrackedResourceForeground:var(--color-decoration-added)
+--vscode-icon-foreground:var(--color-icon-primary)
+--vscode-inlineChat-background:var(--color-background-elevated-primary)
+--vscode-inlineChat-border:var(--color-border)
+--vscode-inlineChat-foreground:var(--color-text-foreground)
+--vscode-inlineChat-shadow:var(--color-border-light)
+--vscode-inlineChatDiff-inserted:var(--color-text-success)
+--vscode-inlineChatDiff-removed:var(--color-text-error)
+--vscode-inlineChatInput-background:var(--color-background-elevated-primary)
+--vscode-inlineChatInput-border:var(--color-border)
+--vscode-inlineChatInput-focusBorder:var(--color-border-focus)
+--vscode-inlineChatInput-placeholderForeground:var(--color-text-foreground-tertiary)
+--vscode-inlineEdit-border:var(--color-border)
+--vscode-inlineEdit-modifiedBackground:var(--color-background-elevated-secondary)
+--vscode-inlineEdit-modifiedChangedLineBackground:var(--color-background-elevated-secondary)
+--vscode-inlineEdit-modifiedChangedTextBackground:var(--color-background-elevated-secondary)
+--vscode-inlineEdit-originalBackground:var(--color-background-elevated-secondary)
+--vscode-inlineEdit-originalChangedLineBackground:var(--color-background-elevated-secondary)
+--vscode-inlineEdit-originalChangedTextBackground:var(--color-background-elevated-secondary)
+--vscode-input-background:var(--color-background-control)
+--vscode-input-border:var(--color-border-heavy)
+--vscode-input-foreground:var(--color-text-foreground)
+--vscode-input-placeholderForeground:var(--color-text-foreground-tertiary)
+--vscode-inputOption-activeBackground:var(--color-background-accent-hover)
+--vscode-inputOption-activeBorder:var(--color-border-heavy)
+--vscode-inputOption-activeForeground:var(--color-text-foreground)
+--vscode-inputOption-hoverBackground:var(--color-background-control)
+--vscode-inputValidation-errorBackground:var(--color-background-status-error)
+--vscode-inputValidation-errorBorder:var(--color-border-error)
+--vscode-inputValidation-infoBackground:var(--color-background-accent)
+--vscode-inputValidation-infoBorder:var(--color-border-focus)
+--vscode-inputValidation-warningBackground:var(--color-background-status-warning)
+--vscode-inputValidation-warningBorder:var(--color-border-warning)
+--vscode-interactive-activeCodeBorder:var(--color-border-heavy)
+--vscode-interactive-inactiveCodeBorder:var(--color-border-heavy)
+--vscode-keybindingLabel-background:var(--color-background-button-secondary)
+--vscode-keybindingLabel-border:var(--color-border)
+--vscode-keybindingLabel-bottomBorder:var(--color-border)
+--vscode-keybindingLabel-foreground:var(--color-text-foreground-tertiary)
+--vscode-keybindingTable-headerBackground:var(--color-background-elevated-secondary)
+--vscode-keybindingTable-rowsBackground:var(--color-background-elevated-secondary)
+--vscode-list-activeSelectionBackground:var(--color-background-button-secondary)
+--vscode-list-activeSelectionForeground:var(--color-text-foreground)
+--vscode-list-activeSelectionIconForeground:var(--color-icon-primary)
+--vscode-list-deemphasizedForeground:var(--color-text-foreground)
+--vscode-list-dropBackground:var(--color-background-button-secondary-active)
+--vscode-list-dropBetweenBackground:var(--color-background-elevated-secondary)
+--vscode-list-errorForeground:var(--color-text-error)
+--vscode-list-filterMatchBackground:var(--color-background-accent-hover)
+--vscode-list-focusAndSelectionOutline:var(--color-border-focus)
+--vscode-list-focusHighlightForeground:var(--color-text-foreground)
+--vscode-list-focusOutline:var(--color-border-focus)
+--vscode-list-highlightForeground:var(--color-text-foreground)
+--vscode-list-hoverBackground:var(--color-background-button-secondary-hover)
+--vscode-list-inactiveSelectionBackground:var(--color-background-elevated-secondary)
+--vscode-list-invalidItemForeground:var(--color-text-error)
+--vscode-list-warningForeground:var(--color-text-warning)
+--vscode-listFilterWidget-background:var(--color-background-control)
+--vscode-listFilterWidget-noMatchesOutline:var(--color-border)
+--vscode-listFilterWidget-outline:var(--color-border)
+--vscode-listFilterWidget-shadow:var(--color-border-light)
+--vscode-menu-background:var(--color-background-elevated-primary)
+--vscode-menu-border:var(--color-border)
+--vscode-menu-foreground:var(--color-text-foreground)
+--vscode-menu-selectionBackground:var(--color-background-accent-active)
+--vscode-menu-selectionForeground:var(--color-text-button-primary)
+--vscode-menu-separatorBackground:var(--color-border)
+--vscode-menubar-selectionBackground:var(--color-token-bg-fog)
+--vscode-menubar-selectionForeground:var(--color-text-foreground)
+--vscode-merge-commonContentBackground:var(--color-background-elevated-secondary)
+--vscode-merge-commonHeaderBackground:var(--color-background-elevated-primary)
+--vscode-merge-currentContentBackground:var(--color-background-status-success)
+--vscode-merge-currentHeaderBackground:var(--color-background-status-success)
+--vscode-merge-incomingContentBackground:var(--color-background-accent)
+--vscode-merge-incomingHeaderBackground:var(--color-background-accent-active)
+--vscode-minimap-errorHighlight:var(--color-text-accent)
+--vscode-minimap-findMatchHighlight:var(--color-text-accent)
+--vscode-minimap-foregroundOpacity:var(--color-text-foreground)
+--vscode-minimap-infoHighlight:var(--color-text-accent)
+--vscode-minimap-selectionHighlight:var(--color-text-accent)
+--vscode-minimap-selectionOccurrenceHighlight:var(--color-text-accent)
+--vscode-minimap-warningHighlight:var(--color-text-accent)
+--vscode-minimapGutter-addedBackground:var(--color-background-status-success)
+--vscode-minimapGutter-deletedBackground:var(--color-background-status-error)
+--vscode-minimapGutter-modifiedBackground:var(--color-background-status-warning)
+--vscode-minimapSlider-activeBackground:var(--color-background-accent-active)
+--vscode-minimapSlider-background:var(--color-background-elevated-secondary)
+--vscode-minimapSlider-hoverBackground:var(--color-background-elevated-primary)
+--vscode-multiDiffEditor-background:var(--color-background-surface)
+--vscode-multiDiffEditor-border:var(--color-border)
+--vscode-multiDiffEditor-headerBackground:var(--color-background-elevated-primary)
+--vscode-notebook-cellBorderColor:var(--color-border)
+--vscode-notebook-cellEditorBackground:var(--color-background-elevated-primary)
+--vscode-notebook-cellInsertionIndicator:var(--color-accent-blue)
+--vscode-notebook-cellStatusBarItemHoverBackground:var(--color-background-elevated-primary)
+--vscode-notebook-cellToolbarSeparator:var(--color-border-light)
+--vscode-notebook-editorBackground:var(--color-background-surface)
+--vscode-notebook-focusedCellBorder:var(--color-border-focus)
+--vscode-notebook-focusedEditorBorder:var(--color-border-focus)
+--vscode-notebook-inactiveFocusedCellBorder:var(--color-border-focus)
+--vscode-notebook-selectedCellBackground:var(--color-background-accent-active)
+--vscode-notebook-selectedCellBorder:var(--color-border)
+--vscode-notebook-symbolHighlightBackground:var(--color-background-accent-active)
+--vscode-notebookEditorOverviewRuler-runningCellForeground:var(--color-text-foreground)
+--vscode-notebookScrollbarSlider-activeBackground:var(--color-background-accent-active)
+--vscode-notebookScrollbarSlider-background:var(--color-background-elevated-secondary)
+--vscode-notebookScrollbarSlider-hoverBackground:var(--color-background-elevated-primary)
+--vscode-notebookStatusErrorIcon-foreground:var(--color-icon-error)
+--vscode-notebookStatusRunningIcon-foreground:var(--color-icon-primary)
+--vscode-notebookStatusSuccessIcon-foreground:var(--color-icon-success)
+--vscode-notificationCenter-border:var(--color-border)
+--vscode-notificationCenterHeader-background:var(--color-background-elevated-secondary)
+--vscode-notificationCenterHeader-foreground:var(--color-text-foreground)
+--vscode-notificationLink-foreground:var(--color-text-accent)
+--vscode-notificationToast-border:var(--color-border)
+--vscode-notifications-background:var(--color-background-elevated-primary)
+--vscode-notifications-border:var(--color-border)
+--vscode-notifications-foreground:var(--color-text-foreground)
+--vscode-notificationsErrorIcon-foreground:var(--color-icon-error)
+--vscode-notificationsInfoIcon-foreground:var(--color-icon-accent)
+--vscode-notificationsWarningIcon-foreground:var(--color-icon-warning)
+--vscode-panel-background:var(--color-background-elevated-primary)
+--vscode-panel-border:var(--color-border)
+--vscode-panel-dropBorder:var(--color-border)
+--vscode-panelInput-border:var(--color-border)
+--vscode-panelSection-border:var(--color-border)
+--vscode-panelSection-dropBackground:var(--color-background-accent-active)
+--vscode-panelSectionHeader-background:var(--color-background-elevated-primary)
+--vscode-panelStickyScroll-background:var(--color-background-elevated-primary)
+--vscode-panelStickyScroll-shadow:var(--color-border-light)
+--vscode-panelTitle-activeBorder:var(--color-border-heavy)
+--vscode-panelTitle-activeForeground:var(--color-text-foreground)
+--vscode-panelTitle-inactiveForeground:var(--color-text-foreground-tertiary)
+--vscode-peekView-border:var(--color-border)
+--vscode-peekViewEditor-background:var(--color-background-elevated-primary)
+--vscode-peekViewEditor-matchHighlightBackground:var(--color-background-accent-active)
+--vscode-peekViewEditorGutter-background:var(--color-background-elevated-primary)
+--vscode-peekViewEditorStickyScroll-background:var(--color-background-elevated-primary)
+--vscode-peekViewResult-background:var(--color-background-elevated-primary)
+--vscode-peekViewResult-fileForeground:var(--color-text-foreground)
+--vscode-peekViewResult-lineForeground:var(--color-text-foreground)
+--vscode-peekViewResult-matchHighlightBackground:var(--color-background-accent-active)
+--vscode-peekViewResult-selectionBackground:var(--color-background-accent-active)
+--vscode-peekViewResult-selectionForeground:var(--color-text-foreground)
+--vscode-peekViewTitle-background:var(--color-background-elevated-primary)
+--vscode-peekViewTitleDescription-foreground:var(--color-text-foreground-tertiary)
+--vscode-peekViewTitleLabel-foreground:var(--color-text-foreground)
+--vscode-pickerGroup-border:var(--color-border)
+--vscode-pickerGroup-foreground:var(--color-text-foreground)
+--vscode-ports-iconRunningProcessForeground:var(--color-icon-primary)
+--vscode-problemsErrorIcon-foreground:var(--color-icon-error)
+--vscode-problemsInfoIcon-foreground:var(--color-icon-accent)
+--vscode-problemsWarningIcon-foreground:var(--color-icon-warning)
+--vscode-profileBadge-background:var(--color-background-elevated-secondary)
+--vscode-profileBadge-foreground:var(--color-text-foreground)
+--vscode-profiles-sashBorder:var(--color-border)
+--vscode-progressBar-background:var(--color-background-accent-active)
+--vscode-quickInput-background:var(--color-background-elevated-primary)
+--vscode-quickInput-foreground:var(--color-text-foreground)
+--vscode-quickInputList-focusBackground:var(--color-background-elevated-primary)
+--vscode-quickInputList-focusForeground:var(--color-text-foreground)
+--vscode-quickInputList-focusIconForeground:var(--color-icon-primary)
+--vscode-quickInputTitle-background:var(--color-background-elevated-primary)
+--vscode-radio-activeBackground:var(--color-background-accent-active)
+--vscode-radio-activeBorder:var(--color-border-heavy)
+--vscode-radio-activeForeground:var(--color-text-foreground)
+--vscode-radio-inactiveBorder:var(--color-border-heavy)
+--vscode-radio-inactiveHoverBackground:var(--color-background-elevated-secondary)
+--vscode-sash-hoverBorder:var(--color-border)
+--vscode-scmGraph-foreground1:var(--color-text-foreground)
+--vscode-scmGraph-foreground2:var(--color-text-foreground)
+--vscode-scmGraph-foreground3:var(--color-text-foreground)
+--vscode-scmGraph-foreground4:var(--color-text-foreground)
+--vscode-scmGraph-foreground5:var(--color-text-foreground)
+--vscode-scmGraph-historyItemBaseRefColor:var(--color-text-foreground)
+--vscode-scmGraph-historyItemHoverAdditionsForeground:var(--color-text-foreground)
+--vscode-scmGraph-historyItemHoverDefaultLabelBackground:var(--color-background-accent)
+--vscode-scmGraph-historyItemHoverDefaultLabelForeground:var(--color-text-accent)
+--vscode-scmGraph-historyItemHoverDeletionsForeground:var(--color-text-foreground)
+--vscode-scmGraph-historyItemHoverLabelForeground:var(--color-text-foreground)
+--vscode-scmGraph-historyItemRefColor:var(--color-text-foreground)
+--vscode-scmGraph-historyItemRemoteRefColor:var(--color-text-foreground)
+--vscode-scrollbar-shadow:var(--color-border-light)
+--vscode-scrollbarSlider-activeBackground:var(--color-border-heavy)
+--vscode-scrollbarSlider-background:var(--color-border)
+--vscode-scrollbarSlider-hoverBackground:var(--color-border-heavy)
+--vscode-search-resultsInfoForeground:var(--color-text-accent)
+--vscode-searchEditor-findMatchBackground:var(--color-background-elevated-primary)
+--vscode-searchEditor-textInputBorder:var(--color-border)
+--vscode-settings-checkboxBackground:var(--color-background-elevated-primary)
+--vscode-settings-checkboxBorder:var(--color-border)
+--vscode-settings-checkboxForeground:var(--color-text-foreground)
+--vscode-settings-dropdownBackground:var(--color-background-elevated-primary-opaque)
+--vscode-settings-dropdownBorder:var(--color-border)
+--vscode-settings-dropdownForeground:var(--color-text-foreground)
+--vscode-settings-dropdownListBorder:var(--color-border)
+--vscode-settings-focusedRowBackground:var(--color-background-elevated-primary)
+--vscode-settings-focusedRowBorder:var(--color-border-focus)
+--vscode-settings-headerBorder:var(--color-border)
+--vscode-settings-headerForeground:var(--color-text-foreground)
+--vscode-settings-modifiedItemIndicator:var(--color-accent-orange)
+--vscode-settings-numberInputBackground:var(--color-background-elevated-primary)
+--vscode-settings-numberInputBorder:var(--color-border)
+--vscode-settings-numberInputForeground:var(--color-text-foreground)
+--vscode-settings-rowHoverBackground:var(--color-background-elevated-secondary)
+--vscode-settings-sashBorder:var(--color-border)
+--vscode-settings-settingsHeaderHoverForeground:var(--color-text-foreground)
+--vscode-settings-textInputBackground:var(--color-background-elevated-primary)
+--vscode-settings-textInputBorder:var(--color-border)
+--vscode-settings-textInputForeground:var(--color-text-foreground)
+--vscode-sideBar-background:var(--color-background-surface-under)
+--vscode-sideBar-border:var(--color-border)
+--vscode-sideBar-dropBackground:var(--color-background-accent-active)
+--vscode-sideBar-foreground:var(--color-text-foreground)
+--vscode-sideBarActivityBarTop-border:var(--color-border)
+--vscode-sideBarSectionHeader-background:var(--color-background-elevated-primary)
+--vscode-sideBarSectionHeader-border:var(--color-border)
+--vscode-sideBarSectionHeader-foreground:var(--color-text-foreground)
+--vscode-sideBarStickyScroll-background:var(--color-background-elevated-secondary)
+--vscode-sideBarStickyScroll-shadow:var(--color-border-light)
+--vscode-sideBarTitle-background:var(--color-background-surface-under)
+--vscode-sideBarTitle-foreground:var(--color-text-foreground)
+--vscode-sideBySideEditor-horizontalBorder:var(--color-border)
+--vscode-sideBySideEditor-verticalBorder:var(--color-border)
+--vscode-simpleFindWidget-sashBorder:var(--color-border)
+--vscode-statusBar-background:var(--color-background-surface)
+--vscode-statusBar-border:var(--color-border)
+--vscode-statusBar-debuggingBackground:var(--color-background-accent-active)
+--vscode-statusBar-debuggingBorder:var(--color-border)
+--vscode-statusBar-debuggingForeground:var(--color-text-foreground)
+--vscode-statusBar-focusBorder:var(--color-border-focus)
+--vscode-statusBar-foreground:var(--color-text-foreground)
+--vscode-statusBar-noFolderBackground:var(--color-background-surface)
+--vscode-statusBar-noFolderBorder:var(--color-border)
+--vscode-statusBar-noFolderForeground:var(--color-text-foreground)
+--vscode-statusBarItem-activeBackground:var(--color-background-button-secondary-active)
+--vscode-statusBarItem-compactHoverBackground:var(--color-background-elevated-primary)
+--vscode-statusBarItem-errorBackground:var(--color-background-status-error)
+--vscode-statusBarItem-errorForeground:var(--color-text-error)
+--vscode-statusBarItem-errorHoverBackground:var(--color-background-status-error)
+--vscode-statusBarItem-errorHoverForeground:var(--color-text-error)
+--vscode-statusBarItem-focusBorder:var(--color-border-focus)
+--vscode-statusBarItem-hoverBackground:var(--color-background-elevated-primary)
+--vscode-statusBarItem-hoverForeground:var(--color-text-foreground)
+--vscode-statusBarItem-offlineBackground:var(--color-background-elevated-secondary)
+--vscode-statusBarItem-offlineForeground:var(--color-text-foreground)
+--vscode-statusBarItem-offlineHoverBackground:var(--color-background-elevated-primary)
+--vscode-statusBarItem-offlineHoverForeground:var(--color-text-foreground)
+--vscode-statusBarItem-prominentBackground:var(--color-background-elevated-secondary)
+--vscode-statusBarItem-prominentForeground:var(--color-text-foreground)
+--vscode-statusBarItem-prominentHoverBackground:var(--color-background-button-secondary-hover)
+--vscode-statusBarItem-prominentHoverForeground:var(--color-text-foreground)
+--vscode-statusBarItem-remoteBackground:var(--color-background-elevated-secondary)
+--vscode-statusBarItem-remoteForeground:var(--color-text-foreground)
+--vscode-statusBarItem-remoteHoverBackground:var(--color-background-elevated-primary)
+--vscode-statusBarItem-remoteHoverForeground:var(--color-text-foreground)
+--vscode-statusBarItem-warningBackground:var(--color-background-status-warning)
+--vscode-statusBarItem-warningForeground:var(--color-text-warning)
+--vscode-statusBarItem-warningHoverBackground:var(--color-background-status-warning)
+--vscode-statusBarItem-warningHoverForeground:var(--color-text-warning)
+--vscode-symbolIcon-arrayForeground:var(--color-accent-green)
+--vscode-symbolIcon-booleanForeground:var(--color-accent-green)
+--vscode-symbolIcon-classForeground:var(--color-accent-orange)
+--vscode-symbolIcon-colorForeground:var(--color-icon-primary)
+--vscode-symbolIcon-constantForeground:var(--color-icon-primary)
+--vscode-symbolIcon-constructorForeground:var(--color-accent-purple)
+--vscode-symbolIcon-enumeratorForeground:var(--color-accent-orange)
+--vscode-symbolIcon-enumeratorMemberForeground:var(--color-accent-orange)
+--vscode-symbolIcon-eventForeground:var(--color-accent-orange)
+--vscode-symbolIcon-fieldForeground:var(--color-accent-blue)
+--vscode-symbolIcon-fileForeground:var(--color-icon-primary)
+--vscode-symbolIcon-folderForeground:var(--color-icon-primary)
+--vscode-symbolIcon-functionForeground:var(--color-accent-purple)
+--vscode-symbolIcon-interfaceForeground:var(--color-accent-orange)
+--vscode-symbolIcon-keyForeground:var(--color-accent-blue)
+--vscode-symbolIcon-keywordForeground:var(--color-accent-blue)
+--vscode-symbolIcon-methodForeground:var(--color-accent-purple)
+--vscode-symbolIcon-moduleForeground:var(--color-accent-orange)
+--vscode-symbolIcon-namespaceForeground:var(--color-accent-orange)
+--vscode-symbolIcon-nullForeground:var(--color-icon-primary)
+--vscode-symbolIcon-numberForeground:var(--color-accent-green)
+--vscode-symbolIcon-objectForeground:var(--color-accent-orange)
+--vscode-symbolIcon-operatorForeground:var(--color-icon-primary)
+--vscode-symbolIcon-packageForeground:var(--color-accent-orange)
+--vscode-symbolIcon-propertyForeground:var(--color-accent-blue)
+--vscode-symbolIcon-referenceForeground:var(--color-accent-blue)
+--vscode-symbolIcon-snippetForeground:var(--color-icon-primary)
+--vscode-symbolIcon-stringForeground:var(--color-accent-green)
+--vscode-symbolIcon-structForeground:var(--color-accent-orange)
+--vscode-symbolIcon-textForeground:var(--color-icon-primary)
+--vscode-symbolIcon-typeParameterForeground:var(--color-icon-primary)
+--vscode-symbolIcon-unitForeground:var(--color-icon-primary)
+--vscode-symbolIcon-variableForeground:var(--color-accent-blue)
+--vscode-tab-activeBackground:var(--color-background-elevated-primary)
+--vscode-tab-activeBorder:var(--color-border-heavy)
+--vscode-tab-activeBorderTop:var(--color-border-heavy)
+--vscode-tab-activeForeground:var(--color-text-foreground)
+--vscode-tab-activeModifiedBorder:var(--color-border-heavy)
+--vscode-tab-border:var(--color-border)
+--vscode-tab-dragAndDropBorder:var(--color-border)
+--vscode-tab-hoverBackground:var(--color-background-elevated-primary)
+--vscode-tab-inactiveBackground:var(--color-background-elevated-secondary)
+--vscode-tab-inactiveForeground:var(--color-text-foreground-tertiary)
+--vscode-tab-inactiveModifiedBorder:var(--color-border-heavy)
+--vscode-tab-lastPinnedBorder:var(--color-border)
+--vscode-tab-selectedBackground:var(--color-background-accent-active)
+--vscode-tab-selectedBorderTop:var(--color-border)
+--vscode-tab-selectedForeground:var(--color-text-foreground)
+--vscode-tab-unfocusedActiveBackground:var(--color-background-elevated-primary)
+--vscode-tab-unfocusedActiveBorder:var(--color-border-focus)
+--vscode-tab-unfocusedActiveBorderTop:var(--color-border-focus)
+--vscode-tab-unfocusedActiveForeground:var(--color-text-foreground)
+--vscode-tab-unfocusedActiveModifiedBorder:var(--color-border-focus)
+--vscode-tab-unfocusedHoverBackground:var(--color-background-elevated-primary)
+--vscode-tab-unfocusedInactiveBackground:var(--color-background-elevated-secondary)
+--vscode-tab-unfocusedInactiveForeground:var(--color-text-foreground-tertiary)
+--vscode-tab-unfocusedInactiveModifiedBorder:var(--color-border-focus)
+--vscode-terminal-ansiBlack:#000
+--vscode-terminal-ansiBlack:#fff
+--vscode-terminal-ansiBlack:var(--color-text-foreground-tertiary)
+--vscode-terminal-ansiBlue:#001bcb
+--vscode-terminal-ansiBlue:#3d8dff
+--vscode-terminal-ansiBlue:var(--color-accent-blue)
+--vscode-terminal-ansiBrightBlack:#000
+--vscode-terminal-ansiBrightBlack:var(--color-text-foreground-secondary)
+--vscode-terminal-ansiBrightBlue:#006aff
+--vscode-terminal-ansiBrightBlue:var(--color-accent-blue)
+--vscode-terminal-ansiBrightCyan:#20b8ff
+--vscode-terminal-ansiBrightCyan:var(--color-accent-blue)
+--vscode-terminal-ansiBrightGreen:#59d24e
+--vscode-terminal-ansiBrightGreen:var(--color-accent-green)
+--vscode-terminal-ansiBrightMagenta:#9840ff
+--vscode-terminal-ansiBrightMagenta:var(--color-accent-purple)
+--vscode-terminal-ansiBrightRed:#f44a4c
+--vscode-terminal-ansiBrightRed:var(--color-accent-red)
+--vscode-terminal-ansiBrightWhite:#828282
+--vscode-terminal-ansiBrightWhite:var(--color-text-foreground)
+--vscode-terminal-ansiBrightYellow:#f87915
+--vscode-terminal-ansiBrightYellow:var(--color-accent-yellow)
+--vscode-terminal-ansiCyan:#0071ea
+--vscode-terminal-ansiCyan:#6dcbf4
+--vscode-terminal-ansiCyan:var(--color-accent-blue)
+--vscode-terminal-ansiGreen:#008809
+--vscode-terminal-ansiGreen:#85df7b
+--vscode-terminal-ansiGreen:var(--color-accent-green)
+--vscode-terminal-ansiMagenta:#751ed9
+--vscode-terminal-ansiMagenta:#b06dff
+--vscode-terminal-ansiMagenta:var(--color-accent-purple)
+--vscode-terminal-ansiRed:#d53538
+--vscode-terminal-ansiRed:#f67576
+--vscode-terminal-ansiRed:var(--color-accent-red)
+--vscode-terminal-ansiWhite:#666
+--vscode-terminal-ansiWhite:#999
+--vscode-terminal-ansiWhite:var(--color-text-foreground)
+--vscode-terminal-ansiYellow:#bd5800
+--vscode-terminal-ansiYellow:#fa994c
+--vscode-terminal-ansiYellow:var(--color-accent-yellow)
+--vscode-terminal-background:var(--color-background-surface)
+--vscode-terminal-border:var(--color-border)
+--vscode-terminal-dropBackground:var(--color-background-accent-active)
+--vscode-terminal-findMatchBackground:var(--color-background-accent-hover)
+--vscode-terminal-findMatchHighlightBackground:var(--color-background-accent-active)
+--vscode-terminal-foreground:var(--color-text-foreground)
+--vscode-terminal-hoverHighlightBackground:var(--color-background-accent-hover)
+--vscode-terminal-inactiveSelectionBackground:var(--color-simple-scrim)
+--vscode-terminal-initialHintForeground:var(--color-text-accent)
+--vscode-terminal-selectionBackground:var(--color-simple-scrim)
+--vscode-terminalCommandDecoration-defaultBackground:var(--color-decoration-unchanged)
+--vscode-terminalCommandDecoration-errorBackground:var(--color-decoration-unchanged)
+--vscode-terminalCommandDecoration-successBackground:var(--color-decoration-unchanged)
+--vscode-terminalCommandGuide-foreground:var(--color-text-accent)
+--vscode-terminalCursor-foreground:var(--color-text-foreground)
+--vscode-terminalOverviewRuler-border:var(--color-border)
+--vscode-terminalOverviewRuler-cursorForeground:var(--color-text-foreground)
+--vscode-terminalOverviewRuler-findMatchForeground:var(--color-text-foreground)
+--vscode-terminalStickyScrollHover-background:var(--color-background-elevated-primary)
+--vscode-testing-coverCountBadgeBackground:var(--color-background-status-success)
+--vscode-testing-coverCountBadgeForeground:var(--color-text-success)
+--vscode-testing-coveredBackground:var(--color-background-status-success)
+--vscode-testing-coveredBorder:var(--color-border)
+--vscode-testing-coveredGutterBackground:var(--color-background-status-success)
+--vscode-testing-iconErrored:var(--color-icon-error)
+--vscode-testing-iconFailed:var(--color-icon-error)
+--vscode-testing-iconPassed:var(--color-icon-success)
+--vscode-testing-iconQueued:var(--color-icon-accent)
+--vscode-testing-iconSkipped:var(--color-icon-tertiary)
+--vscode-testing-iconUnset:var(--color-icon-tertiary)
+--vscode-testing-messagePeekBorder:var(--color-border)
+--vscode-testing-messagePeekHeaderBackground:var(--color-background-elevated-primary)
+--vscode-testing-peekBorder:var(--color-border)
+--vscode-testing-peekHeaderBackground:var(--color-background-elevated-primary)
+--vscode-testing-runAction:var(--color-icon-success)
+--vscode-testing-uncoveredBackground:var(--color-background-status-success)
+--vscode-testing-uncoveredBorder:var(--color-border)
+--vscode-testing-uncoveredBranchBackground:var(--color-background-status-success)
+--vscode-testing-uncoveredGutterBackground:var(--color-background-status-success)
+--vscode-textBlockQuote-background:var(--color-background-elevated-secondary)
+--vscode-textBlockQuote-border:var(--color-border)
+--vscode-textCodeBlock-background:var(--color-background-button-secondary)
+--vscode-textLink-activeForeground:var(--color-text-accent)
+--vscode-textLink-foreground:var(--color-text-accent)
+--vscode-textPreformat-background:var(--color-background-elevated-secondary)
+--vscode-textPreformat-foreground:var(--color-text-foreground)
+--vscode-textSeparator-foreground:var(--color-text-foreground)
+--vscode-titleBar-activeBackground:var(--color-background-surface)
+--vscode-titleBar-activeForeground:var(--color-text-foreground)
+--vscode-titleBar-border:var(--color-border)
+--vscode-titleBar-inactiveBackground:var(--color-background-elevated-secondary)
+--vscode-titleBar-inactiveForeground:var(--color-text-foreground-tertiary)
+--vscode-toolbar-activeBackground:var(--color-background-button-secondary-active)
+--vscode-toolbar-hoverBackground:var(--color-background-button-secondary-hover)
+--vscode-tree-inactiveIndentGuidesStroke:var(--color-border-light)
+--vscode-tree-indentGuidesStroke:var(--color-border-light)
+--vscode-tree-tableColumnsBorder:var(--color-border)
+--vscode-tree-tableOddRowsBackground:var(--color-background-elevated-secondary)
+--vscode-walkThrough-embeddedEditorBackground:var(--color-background-elevated-primary)
+--vscode-widget-border:var(--color-border)
+--vscode-widget-shadow:var(--color-border-light)
+--wb-accent:var(--color-token-text-accent,var(--color-token-text-primary))
+--wb-border-hover:var(--color-token-border-default)
+--wb-border:var(--color-token-border)
+--wb-divider:var(--color-token-border-light)
+--wb-focus:var(--color-token-focus-border)
+--wb-font-mono:var(--font-mono)
+--wb-font-sans:var(--font-sans)
+--wb-font-size:var(--codex-chat-font-size,.875rem)
+--wb-interactive-background:var(--color-token-list-hover-background)
+--wb-on-accent:var(--color-token-button-foreground,#fff)
+--wb-radius-sm:var(--radius-sm)
+--wb-radius:var(--radius-lg)
+--wb-selection:var(--color-token-selection-background,#93c5fd)
+--wb-shadow-lg:var(--shadow-lg)
+--wb-shadow:var(--shadow-md-stronger)
+--wb-surface-primary:color-mix(in oklab,var(--color-token-dropdown-background) 50%,transparent)
+--wb-surface-primary:transparent
+--wb-surface-primary:var(--color-token-dropdown-background)
+--wb-surface-secondary:var(--color-token-list-hover-background)
+--wb-text-primary:var(--color-token-text-primary)
+--wb-text-secondary:var(--color-token-description-foreground)
+--wb-text-tertiary:var(--color-token-text-tertiary)
+--white:#fff
+--yellow-300:#ffd240
+--yellow-400:#ffc300
