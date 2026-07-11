@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('desktopHost', {
   },
   // 原生文件夹选择器(§7 选择工作区):无 payload,返回目录路径或 null。
   pickWorkspace: (): Promise<string | null> => ipcRenderer.invoke('desktop:pickWorkspace'),
+  // 原生视频文件多选(剪视频看板导入):返回视频绝对路径数组或 null。
+  pickVideoFiles: (): Promise<string[] | null> => ipcRenderer.invoke('desktop:pickVideoFiles'),
   // 原生菜单动作回渲染进程(§8 菜单):目前只有"选择工作区";白名单单向 main→renderer。
   onMenu: (cb: (action: string) => void): void => {
     ipcRenderer.on('desktop:menu', (_e, action: string) => cb(action))
