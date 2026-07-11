@@ -1,6 +1,9 @@
 // 会话开合的编排小助手(把 tabStore + chatStore 串起来,避免组件里到处 prop 传递)。
 import { useChatStore } from '../stores/chatStore'
 import { useTabStore } from '../stores/tabStore'
+import { useSessionStore } from '../stores/sessionStore'
+import { useSettingsStore } from '../stores/settingsStore'
+import { useFilePreviewStore } from '../stores/filePreviewStore'
 import { rememberLastConversation } from './sessionRecovery'
 
 function genId(): string {
@@ -8,11 +11,22 @@ function genId(): string {
   return `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
+/**
+ * 切会话后同步右侧工作区视图:不同会话工作目录不同,旧的文件树/打开的文件 tab 都是上个目录的,要清掉重取,
+ * 否则会显示别的会话的文件夹(与按会话隔离的工作目录冲突)。tabs 里是绝对路径、跨目录无意义,一并清。
+ */
+function syncWorkspaceView(): void {
+  const fp = useFilePreviewStore.getState()
+  useFilePreviewStore.setState({ tree: null, git: null, root: null, tabs: [], activePath: null })
+  if (fp.panelOpen) fp.loadWorkspace() // 面板开着才立刻重载(读的是刚切好的 activeConv 工作目录)
+}
+
 /** 开一个全新会话(新 conversationId + 新 tab + 起 WS)。 */
 export function openNewConversation(): string {
   const id = genId()
   useTabStore.getState().openSession(id, '新对话')
-  useChatStore.getState().startConversation(id)
+  useChatStore.getState().startConversation(id) // 内部会 activateConversation(id)
+  syncWorkspaceView()
   rememberLastConversation(id) // 记为"上次活跃",下次启动可恢复
   return id
 }
@@ -20,6 +34,10 @@ export function openNewConversation(): string {
 /** 打开已有会话:开/聚焦 tab + 起 WS 并请求历史事件重放。 */
 export function openExistingConversation(id: string, title?: string): void {
   useTabStore.getState().openSession(id, title)
-  useChatStore.getState().startConversation(id, { replay: true })
+  useChatStore.getState().startConversation(id, { replay: true }) // 内部会 activateConversation(id)
+  // 采纳后端记录的工作目录:本地还没记该会话的文件夹时,用后端 meta.workspaceRoot 兜底(跨重启记得每个会话的目录)。
+  const backendRoot = useSessionStore.getState().sessions.find((s) => s.id === id)?.workspaceRoot
+  if (backendRoot) useSettingsStore.getState().adoptConversationWorkspace(id, backendRoot)
+  syncWorkspaceView() // adopt 之后再同步,右侧树读到的就是该会话自己的目录
   rememberLastConversation(id) // 记为"上次活跃",下次启动可恢复
 }
