@@ -5,7 +5,7 @@
 //   - GET /api/v1/agent/fs/list?path=    → 懒加载更深目录
 // 契约:工具行文件名点击 → openFile(绝对路径) → 加/激活一个 tab + 打开面板(ToolCallCard 已用,别改名)。
 import { create } from 'zustand'
-import { api } from '../api/client'
+import { api, getBaseUrl } from '../api/client'
 import { useSettingsStore } from './settingsStore'
 
 /** 工作目录查询参(店主选的 workspaceRoot);让 fs 接口相对该目录解析,而不是 sidecar 的 cwd。 */
@@ -14,11 +14,23 @@ function wdParam(sep: '?' | '&'): string {
   return wd ? `${sep}working_dir=${encodeURIComponent(wd)}` : ''
 }
 
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'])
+/** 按扩展名判断是不是图片(图片走 <img> 渲染,不当文本读)。 */
+export function isImagePath(path: string): boolean {
+  const i = path.lastIndexOf('.')
+  return i >= 0 && IMAGE_EXTS.has(path.slice(i + 1).toLowerCase())
+}
+/** 原始文件的绝对 URL(供右面板 <img> 直接加载):sidecar base + fs/raw + 工作目录。 */
+export function rawFileUrl(path: string): string {
+  return `${getBaseUrl()}/api/v1/agent/fs/raw?path=${encodeURIComponent(path)}${wdParam('&')}`
+}
+
 export interface OpenFile {
   path: string // 绝对路径
   content: string
   loading: boolean
   error: string | null
+  isImage?: boolean // 图片:走 <img src=fs/raw> 渲染,不读文本
 }
 export interface TreeEntry {
   name: string
@@ -106,7 +118,9 @@ export const useFilePreviewStore = create<FilePreviewState>((set, get) => ({
     set({ panelOpen: true, activePath: path })
     if (get().tree === null) get().loadWorkspace()
     if (get().tabs.some((tb) => tb.path === path)) return // 已打开,只激活
-    set((s) => ({ tabs: [...s.tabs, { path, content: '', loading: true, error: null }] }))
+    const image = isImagePath(path)
+    set((s) => ({ tabs: [...s.tabs, { path, content: '', loading: !image, error: null, isImage: image }] }))
+    if (image) return // 图片不读文本,交给 FilePreviewPanel 的 <img> 渲染
     void api
       .get<FsReadResp>(`/api/v1/agent/fs/read?path=${encodeURIComponent(path)}${wdParam('&')}`)
       .then((res) =>
