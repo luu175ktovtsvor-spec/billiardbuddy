@@ -15,6 +15,7 @@ import { ApprovalCard } from './ApprovalCard'
 import { AssistantMessageHeader } from './AssistantMessageHeader'
 import { SessionTaskBar } from './SessionTaskBar'
 import { StreamingIndicator } from './StreamingIndicator'
+import { StepCapsule } from './StepCapsule'
 import { MessageActions } from './MessageActions'
 import { IconRefresh, IconChevronDown, IconEdit } from '../shared/icons'
 import { useComposerStore } from '../../stores/composerStore'
@@ -240,6 +241,7 @@ export function MessageList() {
             ),
           )}
           <StreamingIndicator />
+          <StepCapsule />
           <div ref={endRef} />
         </div>
       </div>
