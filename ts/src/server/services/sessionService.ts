@@ -50,6 +50,8 @@ export interface ProjectSummary {
   lastUpdatedAt: string
   lastSessionId: string
   lastTitle: string
+  /** 默认工作目录(没选目录的会话都落这):前端把它归「对话」组、不当项目显示(对齐 Codex 无项目任务)。 */
+  isDefault: boolean
 }
 
 function nowIso(): string {
@@ -160,11 +162,12 @@ export class SessionService {
   /** 按项目(workspaceRoot)聚合会话 → 最近项目列表(对齐 cc 多项目 App 的项目选择器/recent-projects)。 */
   async recentProjects(limit = 20): Promise<ProjectSummary[]> {
     const index = await this.readIndex()
+    const defaultRoot = getDefaultWorkspaceDir()
     const byRoot = new Map<string, ProjectSummary>()
     for (const m of index.values()) {
       const existing = byRoot.get(m.workspaceRoot)
       if (!existing) {
-        byRoot.set(m.workspaceRoot, { workspaceRoot: m.workspaceRoot, sessionCount: 1, lastUpdatedAt: m.updatedAt, lastSessionId: m.id, lastTitle: m.title })
+        byRoot.set(m.workspaceRoot, { workspaceRoot: m.workspaceRoot, sessionCount: 1, lastUpdatedAt: m.updatedAt, lastSessionId: m.id, lastTitle: m.title, isDefault: m.workspaceRoot === defaultRoot })
       } else {
         existing.sessionCount++
         if (m.updatedAt > existing.lastUpdatedAt) {

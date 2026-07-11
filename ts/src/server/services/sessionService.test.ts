@@ -32,6 +32,8 @@ test('SessionService:list 按 workspaceRoot 过滤 + recentProjects 按项目聚
     expect(projects.length).toBe(2)
     expect(projects.find(p => p.workspaceRoot === '/ws/a')?.sessionCount).toBe(2)
     expect(projects.find(p => p.workspaceRoot === '/ws/b')?.sessionCount).toBe(1)
+    // 非默认目录的项目 isDefault=false(默认目录会话归「对话」组,不当项目显示)
+    expect(projects.every(p => p.isDefault === false)).toBe(true)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

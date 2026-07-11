@@ -31,6 +31,15 @@ export function openNewConversation(): string {
   return id
 }
 
+/** 在指定项目(工作目录)里开新会话(对齐 Codex 侧栏项目组的 newThreadInGroup):
+ *  新会话 + 绑定该目录(此刻 activeConvId=新会话,setWorkspaceRoot 落 per-conv 映射) + 右侧视图按新目录再同步。 */
+export function openNewConversationInProject(root: string): string {
+  const id = openNewConversation()
+  useSettingsStore.getState().setWorkspaceRoot(root)
+  syncWorkspaceView()
+  return id
+}
+
 /** 打开已有会话:开/聚焦 tab + 起 WS 并请求历史事件重放。 */
 export function openExistingConversation(id: string, title?: string): void {
   useTabStore.getState().openSession(id, title)

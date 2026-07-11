@@ -28,6 +28,8 @@ export type ClientMessage =
       conversationId: string
       permissionMode?: PermissionMode
       remember_approval?: boolean
+      /** 本会话的工作目录:审批放行的执行必须跑在原会话目录(漏带时后端从 session meta 自愈)。 */
+      working_dir?: string
     }
   | { type: 'reject'; tool: string; args: unknown; conversationId: string }
 
@@ -42,7 +44,8 @@ export type ServerMessage =
   | { type: 'steer_result'; conversationId: string; queued: number; running: boolean }
   | { type: 'interrupt_result'; conversationId: string; interrupted: boolean }
 
-/** 会话列表项(GET /sessions → { sessions: SessionSummary[] })。 */
+/** 会话列表项(GET /sessions → { sessions: SessionSummary[] })。
+ *  ⚠️ 后端 meta 的时间是 ISO 字符串,sessionStore.refresh 在入口统一转成 epoch ms(不然相对时间算出 NaN)。 */
 export interface SessionSummary {
   id: string
   title?: string
@@ -53,4 +56,16 @@ export interface SessionSummary {
   /** 前端本地态(置顶/归档);后端持久化就绪前只在本地生效。 */
   pinned?: boolean
   archived?: boolean
+}
+
+/** 项目 = 工作目录(GET /sessions/projects → { projects: ProjectSummary[] },后端按会话的 workspaceRoot 聚合)。
+ *  对齐 cc(项目=cwd slug,transcript 按 projects/<slug>/ 分区)与 Codex(项目=文件夹,对话归属项目)。 */
+export interface ProjectSummary {
+  workspaceRoot: string
+  sessionCount: number
+  lastUpdatedAt: string
+  lastSessionId: string
+  lastTitle: string
+  /** 默认工作目录:它的会话归「对话」组,不当项目显示(对齐 Codex 无项目任务)。 */
+  isDefault: boolean
 }

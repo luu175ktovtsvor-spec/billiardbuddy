@@ -1,14 +1,19 @@
 // 左栏 —— 照 Codex(ChatGPT Codex)左栏信息架构(owner 2026-07-11:左栏直接改成 Codex 的)。
 // 结构:红绿灯位+工具图标 → 品牌行 → 主导航(新建任务/已安排/插件) → 项目分组 → 对话分组 → 底部设置。
-// 交互:新建任务/会话项接 chatStore 会话开合;会话右键 → 上下文菜单(置顶/重命名/归档/删除,动作后端就绪前占位)。
-import { useState, type ReactNode } from 'react'
+// 项目/对话/工作目录模型(2026-07-12,对齐 Codex flatProjectSidebar.byProject + cc「目录即项目」):
+//   项目 = 工作目录本身(后端 /sessions/projects 按会话 workspaceRoot 聚合,无独立项目表);
+//   「项目」区 = 非默认目录的项目组,组头可折叠、组内是该项目的会话、组头 hover「+」在此项目新建对话;
+//   「对话」区 = 默认目录/未归组的会话(对齐 Codex 无项目任务);选目录 = 添加/激活项目。
+// 交互:新建任务/会话项接 chatStore 会话开合;会话右键 → 上下文菜单(置顶/重命名/归档/删除)。
+import { useEffect, useState, type ReactNode } from 'react'
 import { useChatStore } from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
+import { useProjectStore } from '../../stores/projectStore'
 import { useUiStore } from '../../stores/uiStore'
-import { useFilePreviewStore } from '../../stores/filePreviewStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { pickWorkspaceFolder } from '../../lib/workspace'
-import { openNewConversation, openExistingConversation } from '../../lib/conversations'
+import { getDesktopHost } from '../../lib/desktopHost'
+import { openNewConversation, openNewConversationInProject, openExistingConversation } from '../../lib/conversations'
 import { DRAG, NODRAG } from '../../lib/dragRegion'
 import { useResizableWidth } from '../../lib/useResizableWidth'
 import { ResizeHandle } from '../shared/ResizeHandle'
@@ -17,7 +22,7 @@ import { Smiley } from '../shared/Smiley'
 import {
   IconPanelLeft, IconSearch, IconEdit, IconClock, IconPuzzle,
   IconFolder, IconSettings, IconChevronDown, IconSun, IconMoon,
-  IconPin, IconArchive, IconTrash, IconSparkles, IconZap,
+  IconPin, IconArchive, IconTrash, IconSparkles, IconZap, IconPlus,
 } from '../shared/icons'
 import { t } from '../../i18n'
 
@@ -99,21 +104,37 @@ export function Sidebar() {
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
   const nav = useUiStore((s) => s.nav)
   const setNav = useUiStore((s) => s.setNav)
-  const openWorkspace = useFilePreviewStore((s) => s.setPanelOpen)
   const workspaceRoot = useSettingsStore((s) => s.workspaceRoot)
-  const workspaceName = workspaceRoot ? (workspaceRoot.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || workspaceRoot) : t('sidebar.workspaceDefault')
+  const projects = useProjectStore((s) => s.projects)
+  const refreshProjects = useProjectStore((s) => s.refresh)
   const [projectsOpen, setProjectsOpen] = useState(true)
   const [convOpen, setConvOpen] = useState(true)
   const [archivedOpen, setArchivedOpen] = useState(false)
+  const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({})
   const [ctx, setCtx] = useState<{ x: number; y: number; id: string; title: string } | null>(null)
+  const [projCtx, setProjCtx] = useState<{ x: number; y: number; root: string } | null>(null)
   const [searching, setSearching] = useState(false)
   const [query, setQuery] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
+  // 会话列表变了(新会话落盘/删除/换目录)→ 项目聚合跟着刷(项目=会话 workspaceRoot 的派生,无独立真相源)。
+  useEffect(() => { void refreshProjects() }, [refreshProjects, sessions])
   const matched = query.trim() ? sessions.filter((s) => (s.title || '').toLowerCase().includes(query.toLowerCase())) : sessions
   // 未归档:置顶优先;已归档单列一区。
   const liveSessions = matched.filter((s) => !s.archived).sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned))
   const archivedSessions = matched.filter((s) => s.archived)
+  // —— 项目分组(对齐 Codex byProject):非默认目录的项目 + 「对话」组 = 默认目录/未归组会话。 ——
+  const defaultRoot = projects.find((p) => p.isDefault)?.workspaceRoot ?? null
+  let projectRows = projects.filter((p) => !p.isDefault)
+  // 刚选的目录还没有落盘会话(后端首条消息才建 meta)→ 补一行"待落盘"项目,选完目录立刻可见不空窗。
+  if (workspaceRoot && workspaceRoot !== defaultRoot && !projectRows.some((p) => p.workspaceRoot === workspaceRoot)) {
+    projectRows = [{ workspaceRoot, sessionCount: 0, lastUpdatedAt: '', lastSessionId: '', lastTitle: '', isDefault: false }, ...projectRows]
+  }
+  const projectRoots = new Set(projectRows.map((p) => p.workspaceRoot))
+  const ungrouped = liveSessions.filter((s) => !s.workspaceRoot || !projectRoots.has(s.workspaceRoot))
+  const sessionsOf = (root: string) => liveSessions.filter((s) => s.workspaceRoot === root)
+  // 没手动开合过的项目:当前激活的默认展开,其余折叠。
+  const isProjOpen = (root: string) => expandedProjects[root] ?? (root === workspaceRoot)
 
   const commitRename = () => {
     if (editingId) {
@@ -215,34 +236,70 @@ export function Sidebar() {
         <NavItem icon={<IconPuzzle size={17} />} label={t('sidebar.plugins')} active={nav === 'plugins'} onClick={() => setNav('plugins')} />
       </nav>
 
-      {/* 项目 + 对话 */}
+      {/* 项目 + 对话(项目 = 工作目录,组内是该项目的会话;对话 = 默认目录/未归组会话) */}
       <div className="min-h-0 flex-1 overflow-y-auto px-2">
-        <SectionHeader label={t('sidebar.sectionProjects')} open={projectsOpen} onToggle={() => setProjectsOpen((v) => !v)} />
+        <SectionHeader label={t('sidebar.sectionProjects')} count={projectRows.length || undefined} open={projectsOpen} onToggle={() => setProjectsOpen((v) => !v)} />
         {projectsOpen && (
-          <div className="flex w-full items-center rounded-lg pr-1 transition-colors hover:bg-[var(--color-surface-hover)]">
-            <button
-              type="button"
-              onClick={() => { setNav('chat'); openWorkspace(true) }}
-              className="flex min-w-0 flex-1 items-center gap-2.5 px-2.5 py-1.5 text-left"
-              style={{ color: 'var(--color-text-primary)' }}
-              title={workspaceRoot ?? '未选,用默认工作目录'}
-            >
-              <span className="shrink-0" style={{ color: 'var(--color-text-secondary)' }}><IconFolder size={16} /></span>
-              <span className="flex-1 truncate text-[13px]">{workspaceName}</span>
-            </button>
+          <div className="mb-1">
+            {projectRows.map((p) => {
+              const rootPath = p.workspaceRoot
+              const name = rootPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || rootPath
+              const activeProj = rootPath === workspaceRoot
+              const open = isProjOpen(rootPath)
+              const group = sessionsOf(rootPath)
+              return (
+                <div key={rootPath} className="mb-0.5">
+                  <div
+                    className="group/proj flex w-full items-center rounded-lg pr-1 transition-colors hover:bg-[var(--color-surface-hover)]"
+                    style={{ background: activeProj ? 'var(--color-surface-selected)' : undefined }}
+                    onContextMenu={(e) => { e.preventDefault(); setProjCtx({ x: e.clientX, y: e.clientY, root: rootPath }) }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setExpandedProjects((m) => ({ ...m, [rootPath]: !open }))}
+                      className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left"
+                      title={rootPath}
+                    >
+                      <span className="shrink-0 transition-transform" style={{ color: 'var(--color-text-tertiary)', transform: open ? 'none' : 'rotate(-90deg)' }}><IconChevronDown size={12} /></span>
+                      <span className="shrink-0" style={{ color: 'var(--color-text-secondary)' }}><IconFolder size={15} /></span>
+                      <span className="min-w-0 flex-1 truncate text-[13px]" style={{ color: 'var(--color-text-primary)' }}>{name}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setNav('chat'); openNewConversationInProject(rootPath) }}
+                      title="在此项目新建对话"
+                      aria-label={`在 ${name} 新建对话`}
+                      className="shrink-0 rounded p-1 opacity-0 transition-opacity hover:bg-[var(--color-surface-hover)] group-hover/proj:opacity-70"
+                      style={{ color: 'var(--color-text-secondary)' }}
+                    >
+                      <IconPlus size={14} />
+                    </button>
+                  </div>
+                  {open && (
+                    group.length > 0 ? (
+                      <div className="ml-[13px] border-l pl-1.5" style={{ borderColor: 'var(--color-border)' }}>{group.map(renderRow)}</div>
+                    ) : (
+                      <div className="ml-6 px-2.5 py-1 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>还没有对话,点 + 开一个</div>
+                    )
+                  )}
+                </div>
+              )
+            })}
+            {/* 添加项目 = 选一个文件夹(空会话就地绑 / 有历史开新会话,对齐 cc 改目录=新会话) */}
             <button
               type="button"
               onClick={() => void pickWorkspaceFolder()}
-              className="shrink-0 rounded px-1.5 py-1 text-[11px] font-medium opacity-70 transition-opacity hover:opacity-100"
-              style={{ color: 'var(--color-brand)' }}
-              title="选择/切换工作目录(程序在这个文件夹里读写)"
+              className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left opacity-70 transition-opacity hover:bg-[var(--color-surface-hover)] hover:opacity-100"
+              style={{ color: 'var(--color-text-secondary)' }}
+              title="选择一个文件夹作为项目,程序在这个文件夹里读写"
             >
-              选目录
+              <span className="flex h-[15px] w-3 shrink-0 items-center justify-center"><IconPlus size={13} /></span>
+              <span className="text-[12.5px]">添加项目</span>
             </button>
           </div>
         )}
 
-        <SectionHeader label={t('sidebar.sectionConversations')} count={liveSessions.length || undefined} open={convOpen} onToggle={() => setConvOpen((v) => !v)} />
+        <SectionHeader label={t('sidebar.sectionConversations')} count={ungrouped.length || undefined} open={convOpen} onToggle={() => setConvOpen((v) => !v)} />
         {convOpen && (
           <div className="mb-2">
             {sessions.length === 0 ? (
@@ -255,10 +312,10 @@ export function Sidebar() {
                 <span className="truncate text-[13px]" style={{ color: 'var(--color-text-primary)' }}>{t('sidebar.newChat')}</span>
                 <span className="shrink-0 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>刚刚</span>
               </button>
-            ) : liveSessions.length === 0 ? (
-              <div className="px-2.5 py-1.5 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>没有匹配的对话</div>
+            ) : ungrouped.length === 0 ? (
+              query.trim() ? <div className="px-2.5 py-1.5 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>没有匹配的对话</div> : null
             ) : (
-              liveSessions.map(renderRow)
+              ungrouped.map(renderRow)
             )}
           </div>
         )}
@@ -287,6 +344,29 @@ export function Sidebar() {
           {effective === 'dark' ? <IconSun size={17} /> : <IconMoon size={17} />}
         </ToolBtn>
       </div>
+
+      {/* 项目右键菜单(对齐 Codex 项目行右键:新建对话 / 在 Finder 中显示根目录) */}
+      {projCtx && (
+        <ContextMenu
+          x={projCtx.x}
+          y={projCtx.y}
+          onClose={() => setProjCtx(null)}
+          items={[
+            {
+              label: '新建对话',
+              icon: <IconPlus size={15} />,
+              onClick: () => { setNav('chat'); openNewConversationInProject(projCtx.root) },
+            },
+            ...(getDesktopHost().revealPath
+              ? [{
+                  label: getDesktopHost().platform === 'darwin' ? '在 Finder 中显示' : '在文件夹中显示',
+                  icon: <IconFolder size={15} />,
+                  onClick: () => { void getDesktopHost().revealPath?.(projCtx.root) },
+                }]
+              : []),
+          ]}
+        />
+      )}
 
       {/* 会话右键上下文菜单(照 Codex 任务卡右键;前端本地生效,后端持久化后端接) */}
       {ctx && (
