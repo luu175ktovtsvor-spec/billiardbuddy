@@ -16,6 +16,8 @@ import { useFilePreviewStore } from '../../stores/filePreviewStore'
 import { openNewConversation, openExistingConversation } from '../../lib/conversations'
 import { pickSessionToRestore, readLastConversation } from '../../lib/sessionRecovery'
 import { isPreviewMode, applyPreviewSeed } from '../../lib/previewSeed'
+import { getDesktopHost } from '../../lib/desktopHost'
+import { pickWorkspaceFolder } from '../../lib/workspace'
 import { t } from '../../i18n'
 
 type Phase = 'connecting' | 'ready' | 'error'
@@ -70,6 +72,13 @@ export function AppShell() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // 原生菜单动作:「文件 → 选择工作区…」发 'pick-workspace' → 弹文件夹选择器(不接就是死菜单)。
+  useEffect(() => {
+    getDesktopHost().onMenu?.((action) => {
+      if (action === 'pick-workspace') void pickWorkspaceFolder()
+    })
   }, [])
 
   if (phase === 'connecting') {
