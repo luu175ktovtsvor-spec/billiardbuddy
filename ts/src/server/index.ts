@@ -2389,6 +2389,12 @@ export function startServer(opts: StartServerOptions = {}) {
     const approvalArgs = isRecord(body.approval_args) ? body.approval_args : isRecord(body.approvalArgs) ? body.approvalArgs : args
     const token = typeof body.token === 'string' ? body.token : undefined
     const conversationId = stringOr(body.conversation_id ?? body.conversationId, '')
+    // 审批续跑必须回到原会话的工作目录:请求没带 working_dir 时从 session meta 补齐。不补的话
+    // workspaceFromBody 兜底默认目录 → 相对路径的文件写错文件夹、transcript 追加还劈到别的项目分区(2026-07-12 真机逮到)。
+    if (conversationId && !stringOr(body.working_dir ?? body.workspaceRoot, '')) {
+      const meta = await sessions.get(conversationId).catch(() => undefined)
+      if (meta?.workspaceRoot) body = { ...body, working_dir: meta.workspaceRoot }
+    }
     const built = await buildExecutionRegistry(body)
     try {
       const baseCtx: ToolContext = {
