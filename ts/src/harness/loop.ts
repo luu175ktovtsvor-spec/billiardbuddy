@@ -32,6 +32,7 @@ import {
 import { signApproval, verifyApproval } from '../permissions/approval'
 import { collectReminders, drainSteering, steerBlock, wrapReminder } from './reminders'
 import { computeRelevantMemoryInjection, SELECT_MEMORIES_SYSTEM_PROMPT, type MemorySelector } from '../memory/relevantMemories'
+import { maybeExtractMemories, drainPendingExtraction } from '../memory/extractMemories'
 import { getAutoMemDir } from './memoryNames'
 import { formatTodoChecklist, parseProgressMarkdown } from '../types/todo'
 import { compactPipeline, compactionWillRun, looksLikeContextOverflow } from '../context/compaction'
@@ -508,6 +509,8 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   // 主 agent 正常用户回合开始时:拿这句话去 memdir 扫记忆头 → 便宜档小模型(复用主模型档)选 top-5 →
   // 把选中主题文件正文当作一条 <system-reminder> 追加进本回合用户消息,让「写进去的记忆能被读回并用上」。
   // 去重(历史里已注入过的路径,压缩后自愈)+ 会话字节上限;memdir 空 / 无命中 / 出错都静默跳过、不阻塞回合。
+  // 上一轮的后台记忆抽取(若有)先跑完:保证本轮召回能读到刚抽取的记忆,也避免抽取叠加。
+  if (!opts.subagent) await drainPendingExtraction(ctx.conversationId)
   if (userTurnQuery && !opts.subagent && autoMemoryEnabledForLoop()) {
     try {
       const memorySelect: MemorySelector = async ({ query, manifest, signal }) => {
@@ -634,6 +637,19 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       for (const event of continuation.events) yield event
       if (continuation.shouldContinue) {
         continue
+      }
+      // 回合真停:若这轮主 agent 没自己写记忆,fire-and-forget 后台兜底抽取(节流/互斥在内,下轮召回前 drain)。
+      // 子代理(含抽取 fork 自身)不触发,避免递归。
+      if (!opts.subagent) {
+        maybeExtractMemories({
+          conversationId: ctx.conversationId,
+          model,
+          registry,
+          workspace: opts.workspace,
+          systemPrompt: system,
+          messages,
+          signal: opts.signal,
+        })
       }
       yield { type: 'final', text: step.text }
       return

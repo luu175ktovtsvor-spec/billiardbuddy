@@ -11,3 +11,10 @@ if (!process.env.BILLIARDBUDDY_WORKSPACE_DIR) {
   mkdirSync(dir, { recursive: true })
   process.env.BILLIARDBUDDY_WORKSPACE_DIR = dir
 }
+
+// 回合末后台记忆抽取(extractMemories)默认全局关掉:它是 fire-and-forget、会额外 fork 调 model.step,
+// 会打乱按精确步数断言的 loop/server 测试并跨测试泄漏。生产在 sidecar 里默认开(见 backend-sidecar.ts);
+// 专门测抽取的 src/memory/extractMemories.test.ts 会在 beforeEach 自行重开。
+if (!process.env.BILLIARDBUDDY_DISABLE_MEMORY_EXTRACT) {
+  process.env.BILLIARDBUDDY_DISABLE_MEMORY_EXTRACT = '1'
+}
