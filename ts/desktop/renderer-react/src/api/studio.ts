@@ -57,6 +57,16 @@ export const studioApi = {
   /** 超分放大(本机 Real-ESRGAN,印刷不糊)。异步 job,轮询拿放大后的 poster_url。 */
   upscale: (input: { source_generation_id?: string; source_image_path?: string; scale?: number }) =>
     api.post<{ job_id: string }>('/api/v1/studio/upscale', input),
+  /** 改图(基于某张图 + 指令做整图调整;局部重绘另传 mask)。异步 job。 */
+  edit: (input: { source_generation_id?: string; source_image_path?: string; description: string; ratio?: string; mask_path?: string }) =>
+    api.post<{ job_id: string }>('/api/v1/studio/edit', {
+      source_generation_id: input.source_generation_id,
+      source_image_path: input.source_image_path,
+      prompt: input.description,
+      image_prompt: input.description,
+      ratio: input.ratio,
+      mask_path: input.mask_path,
+    }),
 }
 
 /** 超分/改图结果里挑成图 url(后端字段 poster_url / url)。 */
