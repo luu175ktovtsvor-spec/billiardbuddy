@@ -333,6 +333,19 @@ function registerIpc(): void {
     return result.canceled || result.filePaths.length === 0 ? null : result.filePaths
   })
 
+  // 「打开/在 Finder 中显示」(右面板文件操作,对齐 Codex):openPath 用系统默认程序打开
+  //(shell.openPath 契约:返回非空字符串 = 错误信息、'' = 成功);revealPath 在 Finder/文件管理器里定位文件。
+  const isSanePath = (p: unknown): p is string => typeof p === 'string' && p.trim().length > 0 && p.length < 4096
+  ipcMain.handle('desktop:openPath', async (_e, p: unknown) => {
+    if (!isSanePath(p)) return '无效路径'
+    try { return await shell.openPath(p) } catch (err) { return err instanceof Error ? err.message : String(err) }
+  })
+  ipcMain.handle('desktop:revealPath', (_e, p: unknown) => {
+    if (!isSanePath(p)) return false
+    shell.showItemInFolder(p)
+    return true
+  })
+
   // 防休眠:长任务(生图/渲染/长 agent 循环)开始时调 start、结束时调 stop,阻止系统睡眠打断任务。
   // 引用计数式,可并发多个长任务;渲染层从 desktopHost.preventSleep.start()/stop() 成对调用。
   ipcMain.handle('desktop:preventSleep:start', () => { startPreventSleep(); return isPreventingSleep() })
