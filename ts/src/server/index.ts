@@ -2587,6 +2587,25 @@ export function startServer(opts: StartServerOptions = {}) {
     return Response.json({ url: rel })
   }
 
+  /**
+   * 通用图片上传(区域截图/聊天附图):存 /uploads/local,返回 url。不改门店 store(与 logo/qrcode 区分)。
+   * 用途:①"基于此调整"——右侧预览框选区域截图 → 上传拿 url → 当一轮多模态 turn(图+指令)喂模型
+   * (走内核现成多模态,cc-haha 路,不改内核);②聊天里贴图。只收图片类型。
+   */
+  async function saveImageAttachment(req: Request) {
+    const form = await req.formData().catch(() => null)
+    const file = form?.get('file')
+    if (!(file instanceof File)) return jsonDetailError('file required', 400)
+    const type = file.type || ''
+    if (type && !type.startsWith('image/')) return jsonDetailError('只接受图片文件', 400)
+    const ext = extname(file.name || '') || (type.includes('png') ? '.png' : type.includes('webp') ? '.webp' : '.jpg')
+    const rel = `/uploads/local/attach-${Date.now()}-${crypto.randomUUID().slice(0, 8)}${ext}`
+    const abs = join(stateRoot, 'uploads', 'local', basename(rel))
+    await mkdir(dirname(abs), { recursive: true })
+    await writeFile(abs, Buffer.from(await file.arrayBuffer()))
+    return Response.json({ url: rel })
+  }
+
   async function serveLocalUpload(pathname: string): Promise<Response | null> {
     if (!pathname.startsWith('/uploads/local/')) return null
     const abs = join(stateRoot, 'uploads', 'local', basename(pathname))
@@ -3266,6 +3285,12 @@ export function startServer(opts: StartServerOptions = {}) {
       if (url.pathname === '/api/v1/stores/me/logo' || url.pathname === '/api/v1/stores/me/qrcode') {
         if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
         return await saveUpload(req, url.pathname.endsWith('/logo') ? 'logo' : 'qrcode')
+      }
+
+      if (url.pathname === '/api/v1/uploads/image') {
+        // 通用图片上传(区域截图/聊天附图)→ 返回 /uploads/local url。供"基于此调整"+ 贴图。
+        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
+        return await saveImageAttachment(req)
       }
 
       if (url.pathname === '/api/v1/stores/me/byok') {
