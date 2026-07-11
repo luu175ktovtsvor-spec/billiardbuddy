@@ -110,7 +110,7 @@ function main() {
   if (removable.length === 0 && stale.length === 0) return
   console.log('📚 文档维护提醒(本项目规约见 CLAUDE.md「文档维护规约」):')
   if (removable.length > 0) {
-    console.log(`🧹 这 ${removable.length} 份标了【可删/历史/已否决】却还留在现行区——建议挪进 docs/归档/(git mv,只搬不删、历史可查;也可用 /整理归档 一键处理):`)
+    console.log(`🧹 这 ${removable.length} 份标了【可删/历史/已否决】却还留在现行区——按规约直接删(git rm,git 历史可回查;可用 /整理归档 一键处理):`)
     for (const item of removable) console.log(`   · ${item}`)
   }
   if (stale.length > 0) {
