@@ -10,6 +10,7 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { useFilePreviewStore } from '../stores/filePreviewStore'
 import { useChatStore } from '../stores/chatStore'
 import { useUiStore } from '../stores/uiStore'
+import { useProjectStore } from '../stores/projectStore'
 import { toast } from '../stores/toastStore'
 import { openNewConversation } from './conversations'
 
@@ -38,4 +39,5 @@ export async function pickWorkspaceFolder(): Promise<void> {
   useFilePreviewStore.setState({ tree: null, tabs: [], activePath: null }) // 换目录后强制重载树(带新 working_dir)
   useFilePreviewStore.getState().setPanelOpen(true)
   useFilePreviewStore.getState().loadWorkspace()
+  void useProjectStore.getState().refresh() // 选目录=添加/激活项目,侧栏项目区跟着刷
 }

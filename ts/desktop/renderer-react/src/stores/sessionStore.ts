@@ -15,14 +15,18 @@ interface SessionState {
 
 const sid = (id: string) => `/sessions/${encodeURIComponent(id)}`
 
+/** 后端 meta 的时间是 ISO 字符串;入口统一转 epoch ms,不然 fmtRelative 拿字符串做减法算出 NaN、相对时间整列不显示。 */
+const toMs = (v: unknown): number => (typeof v === 'number' ? v : typeof v === 'string' ? Date.parse(v) || 0 : 0)
+
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [],
   loading: false,
   refresh: async () => {
     set({ loading: true })
     try {
-      const data = await api.get<{ sessions: SessionSummary[] }>('/sessions')
-      set({ sessions: data.sessions ?? [], loading: false })
+      const data = await api.get<{ sessions: (Omit<SessionSummary, 'updatedAt' | 'createdAt'> & { updatedAt?: unknown; createdAt?: unknown })[] }>('/sessions')
+      const sessions: SessionSummary[] = (data.sessions ?? []).map((s) => ({ ...s, updatedAt: toMs(s.updatedAt), createdAt: s.createdAt === undefined ? undefined : toMs(s.createdAt) }))
+      set({ sessions, loading: false })
     } catch {
       set({ loading: false })
     }
