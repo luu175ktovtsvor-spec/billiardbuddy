@@ -65,6 +65,7 @@
 | 路径 | 说明 |
 |------|------|
 | `references/AI-Agent-harness全景与参考.md` | **动手前先看**:主流 agent/harness 类型/代表/架构 + 研究入口 |
+| `references/前后端接轨-五类连接模式与判据.md` | **加前端功能/改链路先看**:前端(照 Codex 的皮)每个按键走哪条管道接后端(照 cc 的骨)——五类连接模式(A线WS/B线REST+job/原生IPC/只读数据面/纯前端)+ 接轨五问 + 真实血案案例库;配套操作 checklist = `.claude/skills/前后端接轨/` |
 | `references/Anthropic-Agent-SDK-参考架构.md` | 官方 Agent SDK 参考架构 |
 | `references/Codex逆向档案/` | **前端首要参照**:Codex(ChatGPT.app 内置)前端逆向(01 设计系统 ~ 05 落地)+ 后端代码视图 + 浏览器批注/「基于此调整」逆向。前端颜色/字体/文案/流式/布局/交互**完全照抄 Codex**,都从这查 |
 | `references/竞品拆解/` | **竞品源码级拆解知识库**:01 架构机制 / 02 前端设计配色 / 03 文案交互 / 04 借鉴批判筛选 / 05 cc-haha 行为对齐清单 / README。**交互/内核对标 cc-haha 从这查**(前端设计以 Codex 逆向档案为准;WorkBuddy 已弃) |
