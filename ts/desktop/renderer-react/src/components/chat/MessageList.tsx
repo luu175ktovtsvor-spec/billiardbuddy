@@ -31,18 +31,25 @@ type RenderItem =
 // 编辑类工具:连续的这些块折成 Codex「已编辑 N 个文件」汇总卡,和普通工具行分开。
 const EDIT_TOOLS = new Set(['edit_file', 'multi_edit_file', 'write_file', 'patch_file', 'patch_files', 'edit_excel'])
 
+// 内部机制工具:加载技能/搜工具/读暂存结果等 setup 动作,不作为用户级工具行显示——
+// 对齐 Codex(内部装载从不摊给用户,只展示对用户有意义的外部动作:读/写/跑/搜/改)。
+// owner 截图指出「已加载工具/读取 Spreadsheets 技能」这类内部行外露=噪音。
+const HIDDEN_TOOLS = new Set(['use_skill', 'tool_search', 'read_stored_tool_result'])
+
 /** 连续 tool 块折成一组(对齐 cc);编辑类与非编辑类不混组(编辑走「已编辑 N 个文件」汇总卡)。 */
 function groupBlocks(blocks: ChatBlock[]): RenderItem[] {
+  // 先滤掉内部机制工具行(藏内部 setup 噪音),再分组。
+  const visible = blocks.filter((b) => !(b.kind === 'tool' && HIDDEN_TOOLS.has(b.tool)))
   const items: RenderItem[] = []
   let i = 0
-  while (i < blocks.length) {
-    const b = blocks[i]!
+  while (i < visible.length) {
+    const b = visible[i]!
     if (b.kind === 'tool') {
       const isEdit = EDIT_TOOLS.has(b.tool)
       const group: ToolBlockT[] = [b]
       let j = i + 1
-      while (j < blocks.length) {
-        const next = blocks[j]
+      while (j < visible.length) {
+        const next = visible[j]
         if (!next || next.kind !== 'tool' || EDIT_TOOLS.has(next.tool) !== isEdit) break
         group.push(next)
         j += 1
