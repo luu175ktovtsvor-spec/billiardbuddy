@@ -206,7 +206,8 @@ function TokenPanel({ token, commands, files, activeIdx, onPick }: { token: '/' 
 }
 
 const FALLBACK_COMMANDS: SlashCommand[] = [
-  { name: '/台球', desc: '挂载台球运营专家领域包' },
+  { name: '/台球', desc: '在这个窗口挂载台球运营专家(只影响当前窗口)' },
+  { name: '/台球关闭', desc: '在这个窗口关闭台球运营专家' },
   { name: '/帮助', desc: '看看能做什么' },
   { name: '/清空', desc: '清空当前对话' },
 ]

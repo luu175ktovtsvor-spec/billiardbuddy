@@ -86,6 +86,21 @@ function newBlockId(): string {
 
 const ERROR_RE = /error|错误|失败|<tool_use_error>/i
 
+// 挂件斜杠开关(按会话):把"开/关台球运营专家"的斜杠命令映射成当前会话 enabledPacks 的增删。
+// 关的前缀含"开"的词根,故先判关。别名与后端 packIdForCommandName 的入口对齐(billiards)。
+// ⚠️ 不用 \b 收尾——JS 的 \b 在中文字符后不成立(/台球关闭\b/ 不匹配),中文命令用 (?=$|\s) 或字符类收尾。
+const PACK_DISABLE_RE = /^\/\s*(台球关闭|关台球|取消台球|关闭台球|billiards[-_ ]?off)(?=$|\s)/i
+const PACK_ENABLE_RE = /^\/\s*(台球|球房|billiards|pool)(?=$|\s)/i
+function applyPackSlashToggle(message: string): void {
+  const s = useSettingsStore.getState()
+  const packs = s.enabledPacks
+  if (PACK_DISABLE_RE.test(message)) {
+    if (packs.includes('billiards')) s.setEnabledPacks(packs.filter((p) => p !== 'billiards'))
+  } else if (PACK_ENABLE_RE.test(message)) {
+    if (!packs.includes('billiards')) s.setEnabledPacks([...packs, 'billiards'])
+  }
+}
+
 // —— 流式节流(file:line 对齐 cc-haha-ref desktop/src/stores/chatStore.ts:1743-1765 的
 // content_delta 50ms 攒批量刷:攒够 50ms 里到的所有 delta 一次性提交,不逐字触发重渲染)。
 let pendingAssistantDelta = ''
@@ -624,6 +639,9 @@ export const useChatStore = create<ChatState>((set, get) => {
         ...(clearTodos ? { todos: [] } : {}),
       }))
       startElapsedTimer()
+      // 挂件斜杠开关(按会话,当场更新 per-conv,后续消息带上):/台球(球房/billiards/pool)开、/台球关闭(关台球/取消台球)关。
+      // 先判"关"(否则 /台球关闭 会被"开"的前缀先命中)。开关只动当前会话的 enabledPacks,不影响别的窗口。
+      applyPackSlashToggle(trimmed)
       const settings = useSettingsStore.getState()
       const run: Extract<ClientMessage, { type: 'run' }> = {
         type: 'run',
@@ -631,7 +649,8 @@ export const useChatStore = create<ChatState>((set, get) => {
         conversationId: id,
         permissionMode: settings.defaultPermissionMode,
       }
-      if (settings.enabledPacks.length > 0) run.enabled_packs = settings.enabledPacks
+      // 挂件总带字段(含空数组=显式"这个窗口没开台球/关了"):后端据此以前端 per-conv 为准、支持按会话关挂件。
+      run.enabled_packs = settings.enabledPacks
       if (settings.workspaceRoot) run.working_dir = settings.workspaceRoot
       send(run)
     },

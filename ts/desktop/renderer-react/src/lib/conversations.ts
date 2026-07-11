@@ -44,9 +44,11 @@ export function openNewConversationInProject(root: string): string {
 export function openExistingConversation(id: string, title?: string): void {
   useTabStore.getState().openSession(id, title)
   useChatStore.getState().startConversation(id, { replay: true }) // 内部会 activateConversation(id)
-  // 采纳后端记录的工作目录:本地还没记该会话的文件夹时,用后端 meta.workspaceRoot 兜底(跨重启记得每个会话的目录)。
-  const backendRoot = useSessionStore.getState().sessions.find((s) => s.id === id)?.workspaceRoot
-  if (backendRoot) useSettingsStore.getState().adoptConversationWorkspace(id, backendRoot)
+  // 采纳后端记录的工作目录 + 挂件:本地还没记该会话时,用后端 meta 兜底(跨重启记得每个窗口的目录和开没开台球)。
+  // ⚠️ 必须在这里 adopt——否则前端 per-conv 挂件为空,下一条消息会带空集合、误清后端持久化的挂件(见 settingsStore setEnabledPacks 的持久化)。
+  const meta = useSessionStore.getState().sessions.find((s) => s.id === id)
+  if (meta?.workspaceRoot) useSettingsStore.getState().adoptConversationWorkspace(id, meta.workspaceRoot)
+  useSettingsStore.getState().adoptConversationPacks(id, meta?.enabledPacks)
   syncWorkspaceView() // adopt 之后再同步,右侧树读到的就是该会话自己的目录
   rememberLastConversation(id) // 记为"上次活跃",下次启动可恢复
 }
