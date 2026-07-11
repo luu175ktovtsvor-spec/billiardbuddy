@@ -3,7 +3,7 @@
 // 只换视觉,四态(running/ok/error/interrupted)、展开收起、diff 预览等交互逻辑原样保留,
 // 对齐 cc-haha-ref desktop/src/components/chat/ToolCallBlock.tsx:53-192 + :735-834 的状态判定
 // (getPendingSummary/getToolSummary/getToolResultSummary/changedLineSummary,中文化在 toolMeta.ts)。
-import { useEffect, useState, type MouseEvent } from 'react'
+import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import type { ChatBlock } from '../../stores/chatStore'
 import { useFilePreviewStore } from '../../stores/filePreviewStore'
 import { DiffViewer } from './DiffViewer'
@@ -69,6 +69,13 @@ export function ToolCallCard({ block }: { block: ToolBlock }) {
   useEffect(() => {
     if (block.status === 'error') setExpanded(true)
   }, [block.status])
+
+  // 运行中实时输出框自动滚到底(逐块淌进来时始终看最新)。
+  const liveRef = useRef<HTMLPreElement>(null)
+  useEffect(() => {
+    const el = liveRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [block.liveOutput])
 
   const detail = detailText(block)
   const verb =
@@ -147,6 +154,20 @@ export function ToolCallCard({ block }: { block: ToolBlock }) {
           />
         )}
       </div>
+
+      {/* 运行中实时输出:命令跑的时候就在对话流里逐块滚动(不必开终端面板),完成后收起、点行可展开看全文。 */}
+      {block.status === 'running' && block.liveOutput && (
+        <div className="ml-6 mt-0.5 mb-1">
+          <pre
+            ref={liveRef}
+            className="max-h-[140px] overflow-auto whitespace-pre-wrap break-words rounded-lg px-3 py-2 text-[12px]"
+            style={{ fontFamily: 'var(--font-mono)', background: 'var(--color-surface-container-low)', color: 'var(--color-text-secondary)' }}
+          >
+            {block.liveOutput}
+            <span className="qf-cursor">▍</span>
+          </pre>
+        </div>
+      )}
 
       {/* 只有展开的内容(diff/命令输出/错误)才套柔和底色圆角盒;折叠行本身绝不套盒。 */}
       {expandable && expanded && (
