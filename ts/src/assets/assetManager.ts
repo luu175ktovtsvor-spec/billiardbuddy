@@ -41,6 +41,9 @@ export const ASSET_IDS = {
   zhFont: 'zh-font',
   whisperCli: 'whisper-cli',
   whisperModel: 'whisper-model',
+  // 生图增强:超分放大二进制(Real-ESRGAN ncnn-vulkan,含 x4plus 模型;免费商用,不引 Python)。
+  // 解包出目录:realesrgan-ncnn-vulkan 二进制 + models/*.param/.bin。owner 服务器托管后后台下载。
+  realesrgan: 'realesrgan',
 } as const
 
 const ASSET_ID_RE = /^[a-z0-9][a-z0-9._-]*$/i

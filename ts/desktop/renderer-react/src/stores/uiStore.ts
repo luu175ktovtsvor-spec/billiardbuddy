@@ -30,8 +30,8 @@ export function initializeTheme() {
   applyTheme(readStoredTheme())
 }
 
-/** 主区当前视图(照 Codex 左栏:对话 / 已安排 / 插件 各占主区)。默认对话。 */
-export type MainNav = 'chat' | 'scheduled' | 'plugins'
+/** 主区当前视图(照 Codex 左栏:对话 / 生图 / 剪视频 / 已安排 / 插件 各占主区)。默认对话。 */
+export type MainNav = 'chat' | 'creation' | 'video' | 'scheduled' | 'plugins'
 
 interface UiState {
   theme: ThemeMode

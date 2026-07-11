@@ -92,3 +92,111 @@ test('edit_image tool rejects a missing original image instead of regenerating f
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('plan_video tool 起 video_auto_plan 任务(对话里剪视频的楼梯)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-tools-'))
+  try {
+    const tasks = new TaskService(root)
+    const media = new MediaJobService({ tasks, stateRoot: root, pollIntervalMs: 1 })
+    const tool = createMediaTools(media).find(t => t.name === 'plan_video')
+    expect(tool).toBeTruthy()
+    const output = await tool!.execute({ video_paths: ['/abs/clip.mp4'], mode: 'ambient', target_duration_s: 12 }, {
+      workspace: new Workspace(root),
+      conversationId: 'c-plan',
+      permissionMode: 'full',
+    })
+    // 走 video_auto_plan(→ planEdit 真五步),不是占位;返回后台任务标记让模型轮询复述方案。
+    expect(output).toContain('<media_job_started')
+    expect(output).toContain('kind="video_auto_plan"')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('plan_video 缺 video_paths 直接报错、不起任务', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-tools-'))
+  try {
+    const tasks = new TaskService(root)
+    const media = new MediaJobService({ tasks, stateRoot: root, pollIntervalMs: 1 })
+    const tool = createMediaTools(media).find(t => t.name === 'plan_video')!
+    await expect(tool.execute({ video_paths: [] }, {
+      workspace: new Workspace(root),
+      conversationId: 'c-plan-empty',
+      permissionMode: 'full',
+    })).rejects.toThrow(/video_paths/)
+    expect((await tasks.list({ conversationId: 'c-plan-empty' })).length).toBe(0)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('render_video tool 起 video_render 任务(方案确认后出片)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-tools-'))
+  try {
+    const tasks = new TaskService(root)
+    const media = new MediaJobService({ tasks, stateRoot: root, pollIntervalMs: 1 })
+    const tool = createMediaTools(media).find(t => t.name === 'render_video')
+    expect(tool).toBeTruthy()
+    const output = await tool!.execute({ project: 'local_plan_1' }, {
+      workspace: new Workspace(root),
+      conversationId: 'c-render',
+      permissionMode: 'full',
+    })
+    expect(output).toContain('<media_job_started')
+    expect(output).toContain('kind="video_render"')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('render_video 缺 project 直接报错', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-tools-'))
+  try {
+    const tasks = new TaskService(root)
+    const media = new MediaJobService({ tasks, stateRoot: root, pollIntervalMs: 1 })
+    const tool = createMediaTools(media).find(t => t.name === 'render_video')!
+    await expect(tool.execute({ project: '' }, {
+      workspace: new Workspace(root),
+      conversationId: 'c-render-empty',
+      permissionMode: 'full',
+    })).rejects.toThrow(/project/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('upscale_image tool 起 upscale 任务(超分放大·印刷不糊)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-tools-'))
+  try {
+    const tasks = new TaskService(root)
+    const media = new MediaJobService({ tasks, stateRoot: root, pollIntervalMs: 1 })
+    const tool = createMediaTools(media).find(t => t.name === 'upscale_image')
+    expect(tool).toBeTruthy()
+    const output = await tool!.execute({ source_generation_id: 'local-poster-7', scale: 4 }, {
+      workspace: new Workspace(root),
+      conversationId: 'c-up',
+      permissionMode: 'full',
+    })
+    expect(output).toContain('<media_job_started')
+    expect(output).toContain('kind="upscale"')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('upscale_image 缺原图直接报错、不起任务', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-tools-'))
+  try {
+    const tasks = new TaskService(root)
+    const media = new MediaJobService({ tasks, stateRoot: root, pollIntervalMs: 1 })
+    const tool = createMediaTools(media).find(t => t.name === 'upscale_image')!
+    await expect(tool.execute({}, {
+      workspace: new Workspace(root),
+      conversationId: 'c-up-empty',
+      permissionMode: 'full',
+    })).rejects.toThrow(/原图/)
+    expect((await tasks.list({ conversationId: 'c-up-empty' })).length).toBe(0)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

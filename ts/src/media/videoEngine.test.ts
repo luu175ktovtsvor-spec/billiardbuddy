@@ -194,6 +194,10 @@ test('planEdit: broll 五步只吐原子操作、走 applyOperations 落时间�
   expect(res.used_vlm).toBe(false) // 网关未配置 → 启发式
   expect(Array.isArray(res.broll_notes)).toBe(true)
   expect(String(res.report)).toContain('B-Roll')
+  // 收敛自 createLocalPlan 的素材健康报告:两条 plan 路都给店主同一套字段(接线不丢口径)。
+  expect(res.footage_health?.m1).toBeDefined()
+  expect(res.health_summary?.total).toBe(1)
+  expect(Array.isArray(res.warnings)).toBe(true)
   // 落盘的时间线可再读回,含视频片段 + 门店卖点字卡,且区间合法(过了 validateDoc)。
   const project = await store.getProject('p3')
   expect(project.doc.clips.length).toBeGreaterThanOrEqual(1)
