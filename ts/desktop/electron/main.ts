@@ -319,6 +319,17 @@ function registerIpc(): void {
     return result.canceled || result.filePaths.length === 0 ? null : result.filePaths
   })
 
+  // 通用「文件和文件夹」多选(对话框附件:把选中路径插进输入框,让本机 agent 去读)。文件夹与文件都可选(macOS 原生支持同时)。
+  ipcMain.handle('desktop:pickPaths', async () => {
+    const win = mainWindow ?? BrowserWindow.getAllWindows()[0]
+    if (!win) return null
+    const result = await dialog.showOpenDialog(win, {
+      properties: ['openFile', 'openDirectory', 'multiSelections'],
+      title: '选择文件或文件夹',
+    })
+    return result.canceled || result.filePaths.length === 0 ? null : result.filePaths
+  })
+
   // 防休眠:长任务(生图/渲染/长 agent 循环)开始时调 start、结束时调 stop,阻止系统睡眠打断任务。
   // 引用计数式,可并发多个长任务;渲染层从 desktopHost.preventSleep.start()/stop() 成对调用。
   ipcMain.handle('desktop:preventSleep:start', () => { startPreventSleep(); return isPreventingSleep() })
