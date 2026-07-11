@@ -6,6 +6,13 @@
 // 契约:工具行文件名点击 → openFile(绝对路径) → 加/激活一个 tab + 打开面板(ToolCallCard 已用,别改名)。
 import { create } from 'zustand'
 import { api } from '../api/client'
+import { useSettingsStore } from './settingsStore'
+
+/** 工作目录查询参(店主选的 workspaceRoot);让 fs 接口相对该目录解析,而不是 sidecar 的 cwd。 */
+function wdParam(sep: '?' | '&'): string {
+  const wd = useSettingsStore.getState().workspaceRoot
+  return wd ? `${sep}working_dir=${encodeURIComponent(wd)}` : ''
+}
 
 export interface OpenFile {
   path: string // 绝对路径
@@ -83,7 +90,7 @@ export const useFilePreviewStore = create<FilePreviewState>((set, get) => ({
     if (get().treeLoading) return
     set({ treeLoading: true, treeError: null })
     void api
-      .get<WorkspaceStatusResp>('/api/v1/agent/workspace-status')
+      .get<WorkspaceStatusResp>(`/api/v1/agent/workspace-status${wdParam('?')}`)
       .then((res) => set({ treeLoading: false, tree: res.tree ?? [], git: res.git ?? null, root: res.root ?? null }))
       .catch((err) => set({ treeLoading: false, treeError: err instanceof Error ? err.message : String(err) }))
   },
@@ -104,7 +111,7 @@ export const useFilePreviewStore = create<FilePreviewState>((set, get) => ({
     if (get().tabs.some((tb) => tb.path === path)) return // 已打开,只激活
     set((s) => ({ tabs: [...s.tabs, { path, content: '', loading: true, error: null }] }))
     void api
-      .get<FsReadResp>(`/api/v1/agent/fs/read?path=${encodeURIComponent(path)}`)
+      .get<FsReadResp>(`/api/v1/agent/fs/read?path=${encodeURIComponent(path)}${wdParam('&')}`)
       .then((res) =>
         set((s) => ({
           tabs: s.tabs.map((tb) => (tb.path === path ? { ...tb, loading: false, content: res.content ?? '', error: res.error ?? null } : tb)),
@@ -117,7 +124,7 @@ export const useFilePreviewStore = create<FilePreviewState>((set, get) => ({
       )
     // 额外拉改动 diff(git HEAD vs 工作区);有改动才挂,失败静默
     void api
-      .get<FsDiffResp>(`/api/v1/agent/fs/diff?path=${encodeURIComponent(path)}`)
+      .get<FsDiffResp>(`/api/v1/agent/fs/diff?path=${encodeURIComponent(path)}${wdParam('&')}`)
       .then((res) => {
         if (res.changed) {
           set((s) => ({

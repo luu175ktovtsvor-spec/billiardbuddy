@@ -1,7 +1,15 @@
-// 设置 store(最小集)。Block F 会接管全量设置(模型/MCP/记忆/技能/定时任务等,含白标改语义)。
-// ⚠️ 白标接入点:defaultPermissionMode 默认 'default';模型/供应商相关设置由另一子代理定代称映射,这里先不写死真实模型名。
+// 设置 store。工作目录(workspaceRoot)是店主选的"程序在哪读写/执行"的文件夹,
+// localStorage 持久化(重启还在);null = 后端默认 cwd。聊天 run.working_dir + 右侧工作区面板都用它。
 import { create } from 'zustand'
 import type { PermissionMode } from '../types/chat'
+
+const WS_KEY = 'qf-workspace-root'
+
+function readStoredWorkspace(): string | null {
+  if (typeof window === 'undefined') return null
+  const v = window.localStorage.getItem(WS_KEY)
+  return v && v.trim() ? v : null
+}
 
 interface SettingsState {
   defaultPermissionMode: PermissionMode
@@ -17,8 +25,14 @@ interface SettingsState {
 export const useSettingsStore = create<SettingsState>((set) => ({
   defaultPermissionMode: 'default',
   enabledPacks: [],
-  workspaceRoot: null,
+  workspaceRoot: readStoredWorkspace(),
   setPermissionMode: (mode) => set({ defaultPermissionMode: mode }),
   setEnabledPacks: (packs) => set({ enabledPacks: packs }),
-  setWorkspaceRoot: (root) => set({ workspaceRoot: root }),
+  setWorkspaceRoot: (root) => {
+    if (typeof window !== 'undefined') {
+      if (root && root.trim()) window.localStorage.setItem(WS_KEY, root)
+      else window.localStorage.removeItem(WS_KEY)
+    }
+    set({ workspaceRoot: root })
+  },
 }))

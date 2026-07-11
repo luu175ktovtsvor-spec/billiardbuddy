@@ -6,6 +6,9 @@ import { useChatStore } from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useUiStore } from '../../stores/uiStore'
 import { useFilePreviewStore } from '../../stores/filePreviewStore'
+import { useSettingsStore } from '../../stores/settingsStore'
+import { getDesktopHost } from '../../lib/desktopHost'
+import { toast } from '../../stores/toastStore'
 import { openNewConversation, openExistingConversation } from '../../lib/conversations'
 import { DRAG, NODRAG } from '../../lib/dragRegion'
 import { useResizableWidth } from '../../lib/useResizableWidth'
@@ -98,6 +101,21 @@ export function Sidebar() {
   const nav = useUiStore((s) => s.nav)
   const setNav = useUiStore((s) => s.setNav)
   const openWorkspace = useFilePreviewStore((s) => s.setPanelOpen)
+  const loadWorkspace = useFilePreviewStore((s) => s.loadWorkspace)
+  const workspaceRoot = useSettingsStore((s) => s.workspaceRoot)
+  const setWorkspaceRoot = useSettingsStore((s) => s.setWorkspaceRoot)
+  // 选工作目录(店主用原生文件夹选择器指定"程序在哪读写"):选完 → 存 + 重载右侧工作区面板。
+  const pickFolder = async () => {
+    const host = getDesktopHost()
+    if (!host.pickWorkspace) { toast('桌面版里点这里可以选工作目录;当前用默认'); openWorkspace(true); return }
+    const dir = await host.pickWorkspace()
+    if (!dir) return
+    setWorkspaceRoot(dir)
+    useFilePreviewStore.setState({ tree: null }) // 换目录后强制重载树(带新 working_dir)
+    setNav('chat'); openWorkspace(true); loadWorkspace()
+    toast(`工作目录已设为:${dir.split(/[\\/]/).pop() || dir}`)
+  }
+  const workspaceName = workspaceRoot ? (workspaceRoot.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || workspaceRoot) : t('sidebar.workspaceDefault')
   const [projectsOpen, setProjectsOpen] = useState(true)
   const [convOpen, setConvOpen] = useState(true)
   const [archivedOpen, setArchivedOpen] = useState(false)
@@ -215,15 +233,27 @@ export function Sidebar() {
       <div className="min-h-0 flex-1 overflow-y-auto px-2">
         <SectionHeader label={t('sidebar.sectionProjects')} open={projectsOpen} onToggle={() => setProjectsOpen((v) => !v)} />
         {projectsOpen && (
-          <button
-            type="button"
-            onClick={() => { setNav('chat'); openWorkspace(true) }}
-            className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
-            style={{ color: 'var(--color-text-primary)' }}
-          >
-            <span className="shrink-0" style={{ color: 'var(--color-text-secondary)' }}><IconFolder size={16} /></span>
-            <span className="flex-1 truncate text-[13px]">{t('sidebar.workspaceDefault')}</span>
-          </button>
+          <div className="flex w-full items-center rounded-lg pr-1 transition-colors hover:bg-[var(--color-surface-hover)]">
+            <button
+              type="button"
+              onClick={() => { setNav('chat'); openWorkspace(true) }}
+              className="flex min-w-0 flex-1 items-center gap-2.5 px-2.5 py-1.5 text-left"
+              style={{ color: 'var(--color-text-primary)' }}
+              title={workspaceRoot ?? '未选,用默认工作目录'}
+            >
+              <span className="shrink-0" style={{ color: 'var(--color-text-secondary)' }}><IconFolder size={16} /></span>
+              <span className="flex-1 truncate text-[13px]">{workspaceName}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void pickFolder()}
+              className="shrink-0 rounded px-1.5 py-1 text-[11px] font-medium opacity-70 transition-opacity hover:opacity-100"
+              style={{ color: 'var(--color-brand)' }}
+              title="选择/切换工作目录(程序在这个文件夹里读写)"
+            >
+              选目录
+            </button>
+          </div>
         )}
 
         <SectionHeader label={t('sidebar.sectionConversations')} count={liveSessions.length || undefined} open={convOpen} onToggle={() => setConvOpen((v) => !v)} />
