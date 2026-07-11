@@ -869,7 +869,7 @@ function usageUpdateEvent(usage: ModelUsage | undefined, totals: UsageTotals, co
 
 function isApprovalRememberable(decision: Extract<ReturnType<typeof resolvePermission>, { behavior: 'ask' }>): boolean {
   if (decision.reason?.type === 'forceConfirm' || decision.reason?.type === 'requiresUserInteraction') return false
-  return decision.approvalClass !== 'spend' && decision.approvalClass !== 'destructive'
+  return decision.approvalClass !== 'destructive'
 }
 
 function clearDenialForContext(ctx: ToolContext, key: string): void {

@@ -148,7 +148,7 @@ export interface ToolSpec {
 /**
  * Tool——W2 的 name/description/schema/execute + isReadOnly,W4a 追加权限元数据(全可选)。
  * 缺省口径 = 本机可逆动作、直接放行(Delta A):不设任何权限字段的工具永远 allow。
- * 只有对外/花钱/不可逆工具才设 requiresApproval / forceConfirm / approvalClass。
+ * 只有对外触达/不可逆工具才设 requiresApproval / forceConfirm / approvalClass(无花钱维度:内置 key、不按次计费)。
  */
 export interface Tool<Input = unknown> {
   name: string

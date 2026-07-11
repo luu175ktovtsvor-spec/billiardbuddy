@@ -74,8 +74,11 @@ export interface AdditionalWorkingDirectory {
   source: PermissionRuleSource
 }
 
-/** 需审批动作的类别:file=本机可逆文件动作(acceptEdits 放行,default 询问)· spend=成本/外部资源 · outreach=对外触达 · destructive=不可逆。 */
-export type ApprovalClass = 'file' | 'spend' | 'outreach' | 'destructive'
+/**
+ * 需审批动作的类别:file=本机可逆文件动作(acceptEdits 放行,default 询问)· outreach=触达网络/外部服务 · destructive=不可逆。
+ * ⚠️ 无 spend/花钱维度:用的是内置 key、对用户不存在按次计费,不按"花钱"门控任何工具(对齐 cc 工程设计,cc 也无此维度)。
+ */
+export type ApprovalClass = 'file' | 'outreach' | 'destructive'
 
 /** 每个决策附一条"为什么"——供日志/事件/调试,不影响行为。 */
 export type DecisionReason =
