@@ -3985,7 +3985,9 @@ export function startServer(opts: StartServerOptions = {}) {
         const dirPath = url.searchParams.get('path')
         if (!dirPath) return Response.json({ error: 'path required' }, { status: 400 })
         try {
-          const resolved = resolve(dirPath)
+          // 工作区树给的是相对 root 的路径;按 working_dir(店主选的工作目录)解析,绝对路径原样。
+          // resolve(base, p):p 绝对则返回 p,相对则相对 base——正好两种都对。修相对路径错解析到 sidecar cwd 的 bug。
+          const resolved = resolve(url.searchParams.get('working_dir') || getDefaultWorkspaceDir(), dirPath)
           const dirents = await readdir(resolved, { withFileTypes: true })
           const entries = dirents
             .filter(d => !d.name.startsWith('.'))
@@ -4003,7 +4005,7 @@ export function startServer(opts: StartServerOptions = {}) {
         const filePath = url.searchParams.get('path')
         if (!filePath) return Response.json({ error: 'path required' }, { status: 400 })
         try {
-          const resolved = resolve(filePath)
+          const resolved = resolve(url.searchParams.get('working_dir') || getDefaultWorkspaceDir(), filePath)
           const stat = await import('node:fs/promises').then(m => m.stat(resolved))
           if (stat.size > 256 * 1024) return Response.json({ path: resolved, truncated: true, content: '(文件超过 256KB,预览已截断)' })
           return Response.json({ path: resolved, content: await readFile(resolved, 'utf8') })
@@ -4017,7 +4019,7 @@ export function startServer(opts: StartServerOptions = {}) {
         const filePath = url.searchParams.get('path')
         if (!filePath) return Response.json({ error: 'path required' }, { status: 400 })
         try {
-          const resolved = resolve(filePath)
+          const resolved = resolve(url.searchParams.get('working_dir') || getDefaultWorkspaceDir(), filePath)
           const newString = await readFile(resolved, 'utf8').catch(() => '')
           const { execFile } = await import('node:child_process')
           const { promisify } = await import('node:util')
