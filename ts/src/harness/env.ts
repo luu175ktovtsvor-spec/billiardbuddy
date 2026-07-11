@@ -32,8 +32,18 @@ export function computeEnvInfo(opts: EnvInfoOptions): string {
     `Platform: ${process.platform}`,
     `Shell: ${shell}`,
     `OS Version: ${osType()} ${release()}`,
+    // 当天日期(对齐 cc context.ts:186 Today's date):缺了它,模型对"最近/上周/到期"这类时间判断会错。
+    // 用本地日期(店主所在时区),白标下不带知识截止,只给日期。
+    `Today's date is ${todayLocalDate()}`,
     '</env>',
   ].join('\n')
+}
+
+/** 本地时区当天日期(YYYY-MM-DD),供 <env> 注入。 */
+function todayLocalDate(): string {
+  const d = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
 
 export async function getIsGit(cwd: string): Promise<boolean> {

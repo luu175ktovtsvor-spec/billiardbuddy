@@ -1,7 +1,7 @@
 import type { Workspace } from '../workspace/workspace'
 import { loadMemoryInjection } from './claudemd'
 import { computeEnvInfo, getGitStatus, getIsGit } from './env'
-import { ACTIONS_SECTION, buildAntiReveal, CODING_WORKFLOW_SECTION, DENIAL_RULE, DOING_TASKS_SECTION, SAFETY_RED_LINES, TOOL_DISCOVERY_SECTION, VERIFICATION_SECTION } from './prompts'
+import { ACTIONS_SECTION, buildAntiReveal, CODING_WORKFLOW_SECTION, DENIAL_RULE, DOING_TASKS_SECTION, SAFETY_RED_LINES, SYSTEM_SECTION, TOOL_DISCOVERY_SECTION, VERIFICATION_SECTION } from './prompts'
 import { buildSkillCommandListingSection, type DiscoverySources } from './skillListing'
 import { buildMemorySystemPrompt } from '../memory/memoryPrompt'
 
@@ -38,6 +38,7 @@ export async function buildSystemPrompt(workspace: Workspace, discovery?: Discov
     BASE_IDENTITY,
     // 安全红线无条件注入(CLAUDE.md 铁律 #1:与挂没挂领域包无关、用户偏好松不开;台球包 SAFETY_FLOORS 是领域细化版,并存不冲突)
     SAFETY_RED_LINES,
+    SYSTEM_SECTION,
     ACTIONS_SECTION,
     DOING_TASKS_SECTION,
     CODING_WORKFLOW_SECTION,
