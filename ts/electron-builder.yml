@@ -48,6 +48,13 @@ mac:
   category: public.app-category.productivity
   # 未签名(开发/自用);正式对外分发需 owner 苹果开发者账号做签名 + 公证(codesign + notarize)。
   identity: null
+  # 内置 env(网关 URL + 可吊销 app 令牌,非底层真 key)随包发到 Resources/bundled.env:
+  # sidecar 二进制在 Resources/binaries/,envLoader 按 <execDir>/../bundled.env 定位(cwd=userData 指不到包内)。
+  # 缺这段 = 打包版模型不配置,「全内置 key 零配置」直接断。只挂 mac 段:bundled.env 不进 git,
+  # Windows CI 机上没有这份文件,挂全局会把 CI 打包炸掉(win 侧随分发白标 scrub task#22 注入)。
+  extraResources:
+    - from: desktop/bundled.env
+      to: bundled.env
 
 win:
   target:
