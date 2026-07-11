@@ -199,27 +199,28 @@ const WORKSPACE_TREE_SKIP = new Set([
 
 async function summarizeWorkspaceTree(root: string, opts: { maxDepth?: number; maxEntries?: number } = {}) {
   const maxDepth = opts.maxDepth ?? 2
-  const maxEntries = opts.maxEntries ?? 120
+  const maxEntries = opts.maxEntries ?? 400
   let total = 0
   let truncated = false
 
+  // ⚠️ 顶层(depth 0)永不因预算腰斩:此前是纯深度优先 + 总预算(120),排在前面的目录(如 .claude/.github)
+  // 一递归就把预算吃光,轮不到 ts/ docs/ 这些真正重要的顶层目录 → 文件树只显示头几个点目录=废。
+  // 现在保证同级(尤其顶层)条目全部露出,预算只管"深层要不要展开";深层没展开的目录留 children 为 undefined,
+  // 前端点开时按 fs/list 懒加载(契约已验证),既不丢顶层、又不无限膨胀。
   async function walk(dir: string, depth: number): Promise<WorkspaceTreeEntry[]> {
-    if (total >= maxEntries) {
-      truncated = true
-      return []
-    }
     let entries = await readdir(dir, { withFileTypes: true })
     entries = entries
       .filter(entry => entry.name !== '.DS_Store')
+      .filter(entry => !(entry.isDirectory() && WORKSPACE_TREE_SKIP.has(entry.name)))
       .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name, 'zh-Hans-CN'))
 
     const out: WorkspaceTreeEntry[] = []
     for (const entry of entries) {
-      if (total >= maxEntries) {
+      // 只有深层(depth>0)才受预算约束;顶层一律全列(顶层条目数=目录实际数,通常可控)。
+      if (depth > 0 && total >= maxEntries) {
         truncated = true
         break
       }
-      if (entry.isDirectory() && WORKSPACE_TREE_SKIP.has(entry.name)) continue
       const abs = resolve(dir, entry.name)
       const item: WorkspaceTreeEntry = {
         name: entry.name,
@@ -228,8 +229,14 @@ async function summarizeWorkspaceTree(root: string, opts: { maxDepth?: number; m
       }
       total += 1
       if (entry.isDirectory() && depth < maxDepth) {
-        item.children = await walk(abs, depth + 1)
-        if (truncated) item.truncated = true
+        if (total >= maxEntries) {
+          // 预算已尽:不预展开,标记 truncated,children 留空 → 前端点开时懒加载,不丢这个目录本身。
+          truncated = true
+          item.truncated = true
+        } else {
+          item.children = await walk(abs, depth + 1)
+          if (item.children.some(c => c.truncated)) item.truncated = true
+        }
       }
       out.push(item)
     }
