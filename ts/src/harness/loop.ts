@@ -648,7 +648,6 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
           workspace: opts.workspace,
           systemPrompt: system,
           messages,
-          signal: opts.signal,
         })
       }
       yield { type: 'final', text: step.text }

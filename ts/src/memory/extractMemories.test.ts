@@ -100,6 +100,33 @@ test('主 agent 这轮已调 save_memory → 节流跳过、不 fork(不多打�
   expect(headers.length).toBe(1) // 主 agent 自己写的那条,抽取没重复写。
 })
 
+test('父回合 controller 被 abort(下一轮 interrupt)后,后台抽取不连坐、照样存下记忆', async () => {
+  const workspace = new Workspace(root)
+  const model = scriptedModel([
+    { kind: 'final', text: '知道了。' },
+    { kind: 'tool_calls', text: '补记', calls: [{ id: 's1', name: 'save_memory', input: { name: 'peak_day', description: '旺季', type: 'project', content: '周五周六是旺季 SURVIVE99。' } }] },
+    { kind: 'final', text: '记好了。' },
+  ])
+  const controller = new AbortController()
+
+  await collect(runAgentLoop({
+    model,
+    registry: buildGeneralRegistry(),
+    workspace,
+    systemPrompt: 'SYS',
+    userMessage: '周五周六是我们旺季 SURVIVE99。',
+    conversationId: 'conv-ext-4',
+    signal: controller.signal,
+  }))
+  // 模拟 server TurnRegistry.start():用户发下一句话时 abort 上一轮 controller。
+  controller.abort()
+  await drainPendingExtraction('conv-ext-4')
+
+  const headers = await scanMemoryFiles(getAutoMemDir(workspace.root))
+  expect(headers.length).toBe(1)
+  expect(headers[0]!.filename).toContain('peak_day')
+})
+
 test('BILLIARDBUDDY_DISABLE_MEMORY_EXTRACT=1 → 不跑抽取兜底(召回仍可另开)', async () => {
   process.env.BILLIARDBUDDY_DISABLE_MEMORY_EXTRACT = '1'
   const workspace = new Workspace(root)

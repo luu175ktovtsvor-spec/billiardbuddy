@@ -32,6 +32,15 @@ import { runAgentLoop } from '../harness/loop'
 const EXTRACT_RECENT_MESSAGES = 24
 /** 抽取子代理轮次上限(save_memory 一步到位;留出「读现有记忆 → 存」两三轮 + 缓冲)。 */
 const EXTRACT_MAX_TURNS = 4
+/**
+ * 抽取 fork 的独立超时(自带信号,**不搭父回合的 signal**):server 的 TurnRegistry.start()
+ * 会 abort 上一轮 controller,若 fork 搭父信号,用户一发下一句话抽取就被当场杀死——最常见的
+ * 连续对话场景下兜底形同虚设。对齐 cc 的 detached 语义(void executeExtractMemories + drain),
+ * fork 独立跑、下轮召回前 drain;超时兜住 runaway。
+ */
+const EXTRACT_TIMEOUT_MS = 180_000
+/** states 表容量上限(桌面长跑进程防无界增长;超出淘汰最老会话的水位,代价只是那会话多跑一次兜底)。 */
+const MAX_TRACKED_CONVERSATIONS = 128
 /** 抽取子代理可用的只读文件工具白名单(+ save_memory);不给 web/bash/computer,防它「跑去调查」+ 控成本。 */
 const EXTRACT_READONLY_TOOLS = new Set(['read_file', 'read_many_files', 'grep', 'glob', 'ls', 'list_directory'])
 
@@ -48,7 +57,14 @@ const stateKey = (conversationId: string | undefined): string => conversationId 
 function getState(conversationId: string | undefined): ExtractState {
   const key = stateKey(conversationId)
   let s = states.get(key)
-  if (!s) { s = { pending: null, lastCount: 0 }; states.set(key, s) }
+  if (!s) {
+    if (states.size >= MAX_TRACKED_CONVERSATIONS) {
+      const oldest = states.keys().next().value
+      if (oldest !== undefined) states.delete(oldest)
+    }
+    s = { pending: null, lastCount: 0 }
+    states.set(key, s)
+  }
   return s
 }
 
@@ -117,6 +133,8 @@ function buildExtractDirective(recentCount: number): string {
  * turn 末触发(fire-and-forget):主 agent 给出最终答复、循环真停时调。
  * 节流(这轮已写记忆 / 无新消息)→ 跳过;否则 fork 受限子代理后台抽取,pending 存模块级供 drain。
  * 全程 best-effort:任何异常都吞掉,绝不抛回主循环。
+ * 注意不收父回合 signal:fork 自带独立超时(见 EXTRACT_TIMEOUT_MS),否则下一轮 TurnRegistry
+ * abort 上一轮 controller 时抽取被连坐杀死。
  */
 export function maybeExtractMemories(input: {
   conversationId: string | undefined
@@ -125,11 +143,12 @@ export function maybeExtractMemories(input: {
   workspace: Workspace
   systemPrompt: string
   messages: Message[]
-  signal?: AbortSignal
 }): void {
   if (!isMemoryExtractionEnabled()) return
   const state = getState(input.conversationId)
   if (state.pending) return // 互斥:上一轮抽取还在飞,让它跑完(下轮 drain);别叠加。
+  // 压缩会把消息数组换成短摘要(length 骤缩):水位归零,别让 length<=lastCount 恒真、抽取长期哑火。
+  if (input.messages.length < state.lastCount) state.lastCount = 0
   const sinceIndex = state.lastCount
   if (input.messages.length <= sinceIndex) return // 无新消息。
   if (hasSaveMemorySince(input.messages, sinceIndex)) {
@@ -139,9 +158,10 @@ export function maybeExtractMemories(input: {
   }
   const recent = safeRecentSlice(input.messages, EXTRACT_RECENT_MESSAGES)
   if (recent.length === 0) return
-  state.lastCount = input.messages.length
+  const prevCount = state.lastCount
+  state.lastCount = input.messages.length // 先推水位防重复调度;失败再回滚,下轮重试一次。
   state.pending = runExtraction({ ...input, recent })
-    .catch(() => { /* 兜底抽取失败不影响任何主流程 */ })
+    .catch(() => { state.lastCount = Math.min(state.lastCount, prevCount) })
     .finally(() => { state.pending = null })
 }
 
@@ -151,7 +171,6 @@ async function runExtraction(input: {
   workspace: Workspace
   systemPrompt: string
   recent: Message[]
-  signal?: AbortSignal
 }): Promise<void> {
   const registry = buildExtractionRegistry(input.registry)
   const gen = runAgentLoop({
@@ -162,7 +181,7 @@ async function runExtraction(input: {
     initialMessages: input.recent,
     userMessage: buildExtractDirective(input.recent.length),
     maxTurns: EXTRACT_MAX_TURNS,
-    signal: input.signal,
+    signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS), // 独立超时,不搭父信号(防下一轮 interrupt 连坐)。
     subagent: EXTRACT_SUBAGENT, // 标 subagent → fork 内不再递归召回/抽取。
     querySource: EXTRACT_QUERY_SOURCE,
   })
