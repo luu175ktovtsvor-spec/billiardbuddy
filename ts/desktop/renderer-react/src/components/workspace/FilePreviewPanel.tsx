@@ -7,7 +7,6 @@ import { useFilePreviewStore, type GitSummary, type OpenFile } from '../../store
 import { useResizableWidth } from '../../lib/useResizableWidth'
 import { ResizeHandle } from '../shared/ResizeHandle'
 import { FileTree, fileColor } from './FileTree'
-import { DiffViewer } from '../chat/DiffViewer'
 import { ContextMenu } from '../shared/Menu'
 import { IconX } from '../shared/icons'
 
@@ -20,11 +19,12 @@ function relTo(root: string | null, p: string): string {
 }
 
 function FileContent({ file }: { file: OpenFile }) {
-  if (file.loading) return <div className="p-3 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>正在加载…</div>
-  if (file.error) return <div className="p-3 text-[12px]" style={{ color: 'var(--color-error)' }}>{file.error}</div>
+  if (file.loading) return <div className="min-h-full p-3 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>正在加载…</div>
+  if (file.error) return <div className="min-h-full p-3 text-[12px]" style={{ color: 'var(--color-error)' }}>{file.error}</div>
   const lines = file.content.length ? file.content.replace(/\r\n?/g, '\n').split('\n') : []
+  // min-h-full:短文件也把整栏背景撑满到底,不留"顶部一块、下面空白"的断层(对齐 Codex 编辑区铺满)。
   return (
-    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.6 }}>
+    <div className="min-h-full py-1" style={{ fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.6, background: 'var(--color-app-main)' }}>
       {lines.map((line, i) => (
         <div key={i} className="flex">
           <span className="shrink-0 select-none text-right" style={{ width: 44, padding: '0 8px', color: 'var(--color-text-tertiary)', opacity: 0.55 }}>{i + 1}</span>
@@ -152,19 +152,10 @@ export function FilePreviewPanel() {
           </div>
         )}
 
-        {/* 内容 / 改动 diff / 环境卡 */}
+        {/* 文件内容(工作目录原本的样子,铺满整栏到底)/ 无文件时环境卡。
+            普通打开不做 diff 对比——红绿修改/删除是后续「审查」tab 的事(对齐 Codex)。 */}
         <div className="min-h-0 flex-1 overflow-auto">
-          {active ? (
-            active.diff?.changed ? (
-              <div className="p-3">
-                <DiffViewer filePath={relTo(root, active.path)} oldString={active.diff.oldString} newString={active.diff.newString} />
-              </div>
-            ) : (
-              <FileContent file={active} />
-            )
-          ) : (
-            <EnvCard git={git} />
-          )}
+          {active ? <FileContent file={active} /> : <EnvCard git={git} />}
         </div>
       </div>
 

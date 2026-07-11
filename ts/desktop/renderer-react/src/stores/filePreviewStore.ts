@@ -19,7 +19,6 @@ export interface OpenFile {
   content: string
   loading: boolean
   error: string | null
-  diff?: { oldString: string; newString: string; changed: boolean } | null
 }
 export interface TreeEntry {
   name: string
@@ -52,11 +51,6 @@ interface FsReadResp {
   content?: string
   truncated?: boolean
   error?: string
-}
-interface FsDiffResp {
-  oldString?: string
-  newString?: string
-  changed?: boolean
 }
 
 interface FilePreviewState {
@@ -125,17 +119,8 @@ export const useFilePreviewStore = create<FilePreviewState>((set, get) => ({
           tabs: s.tabs.map((tb) => (tb.path === path ? { ...tb, loading: false, error: err instanceof Error ? err.message : String(err) } : tb)),
         })),
       )
-    // 额外拉改动 diff(git HEAD vs 工作区);有改动才挂,失败静默
-    void api
-      .get<FsDiffResp>(`/api/v1/agent/fs/diff?path=${encodeURIComponent(path)}${wdParam('&')}`)
-      .then((res) => {
-        if (res.changed) {
-          set((s) => ({
-            tabs: s.tabs.map((tb) => (tb.path === path ? { ...tb, diff: { oldString: res.oldString ?? '', newString: res.newString ?? '', changed: true } } : tb)),
-          }))
-        }
-      })
-      .catch(() => { /* 静默 */ })
+    // ⚠️ 普通打开文件 = 显示工作目录原本的内容,**不做 diff 对比**(对齐 Codex:红绿修改/删除只在「审查」
+    // 语境显示,普通点开就是原文)。改动 diff 后续做成独立「审查」tab,不塞进普通文件打开。
   },
 
   closeTab: (path) =>

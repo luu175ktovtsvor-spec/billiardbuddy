@@ -4046,9 +4046,12 @@ export function startServer(opts: StartServerOptions = {}) {
             try {
               const { stdout } = await execFileP('git', ['--no-optional-locks', 'show', `HEAD:${rel}`], { cwd: repoRoot, timeout: 3000, maxBuffer: 1024 * 1024 })
               oldString = stdout
-            } catch { oldString = '' } // 未跟踪/新文件 → 视为全新增
+            } catch { oldString = '' } // git 仓库内未跟踪/新文件 → 视为全新增(符合 git/Codex 语义)
           }
-          return Response.json({ path: resolved, oldString, newString, changed: oldString !== newString })
+          // ⚠️ 非 git 仓库(repoRoot 空)没有 diff 基准 → changed:false,前端显示纯文件内容;
+          // 否则每个文件都被误判成"全绿全新增"假 diff(oldString 空 !== 全文)。git 仓库内才按 HEAD 比。
+          const changed = repoRoot ? oldString !== newString : false
+          return Response.json({ path: resolved, oldString, newString, changed })
         } catch (err) {
           return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 404 })
         }
