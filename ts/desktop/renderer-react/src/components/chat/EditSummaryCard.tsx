@@ -1,14 +1,41 @@
 // 「已编辑 N 个文件」汇总卡(照 Codex 对话里的编辑汇总模块):
 //   头:图标 + 「已编辑 N 个文件」+ 总 +A -D + 撤销/审核 + 折叠;
 //   体:每文件一行 = 类型色点 + 文件名 + 该文件 +A -D,点行 → 右面板审阅(openFile)。
-// 增删行数用 diff(jsdiff)从 old/new(或 write 的 content)算,纯前端。撤销需后端,先 toast 占位。
+// 增删行数用 diff(jsdiff)从 old/new(或 write 的 content)算,纯前端。
+// 撤销 = 后端 rewind(会话+文件原子回退到本轮之前);只在最新一组编辑卡显示(canUndo)。
 import { useState } from 'react'
 import { diffLines } from 'diff'
-import type { ChatBlock } from '../../stores/chatStore'
+import { useChatStore, type ChatBlock } from '../../stores/chatStore'
 import { useFilePreviewStore } from '../../stores/filePreviewStore'
 import { fileColor } from '../workspace/FileTree'
 import { IconChevronDown, IconFilePen } from '../shared/icons'
 import { toast } from '../../stores/toastStore'
+import { api } from '../../api/client'
+
+/** 后端 /sessions/:id/turn-checkpoints 单项(节选前端要的字段)。 */
+interface TurnCheckpoint {
+  target: { targetUserMessageId: string }
+  conversation: { messagesRemoved: number }
+  code: { filesChanged: string[] }
+}
+
+/** 撤销最新一轮编辑:取最新 checkpoint → 原生确认 → rewind(文件恢复+对话回退)→ 整段重载。 */
+async function undoLatestEdits(): Promise<void> {
+  const chat = useChatStore.getState()
+  const id = chat.conversationId
+  if (!id) { toast('当前没有会话'); return }
+  const { checkpoints } = await api.get<{ checkpoints: TurnCheckpoint[] }>(`/sessions/${encodeURIComponent(id)}/turn-checkpoints`)
+  const last = checkpoints?.[checkpoints.length - 1]
+  if (!last) { toast('没有可撤销的文件改动'); return }
+  const fileCount = last.code?.filesChanged?.length ?? 0
+  const removed = last.conversation?.messagesRemoved ?? 0
+  const ok = window.confirm(`撤销会把 ${fileCount} 个文件恢复到这轮修改之前,并回退这轮对话(移除 ${removed} 条消息)。确定撤销吗?`)
+  if (!ok) return
+  await api.post(`/sessions/${encodeURIComponent(id)}/rewind`, { targetUserMessageId: last.target.targetUserMessageId })
+  toast(fileCount > 0 ? `已撤销,恢复了 ${fileCount} 个文件` : '已撤销这轮改动')
+  useFilePreviewStore.setState({ tree: null }) // 文件树按需重载(下次打开面板时拉新)
+  chat.startConversation(id, { replay: true }) // 对话整段重载(回退后的消息已被移除)
+}
 
 type ToolBlock = Extract<ChatBlock, { kind: 'tool' }>
 
@@ -43,13 +70,21 @@ function baseName(p: string): string {
   return p.split('/').pop() || p
 }
 
-export function EditSummaryCard({ blocks }: { blocks: ToolBlock[] }) {
+export function EditSummaryCard({ blocks, canUndo }: { blocks: ToolBlock[]; canUndo?: boolean }) {
   const [open, setOpen] = useState(true)
+  const [undoBusy, setUndoBusy] = useState(false)
   const openFile = useFilePreviewStore((s) => s.openFile)
   const files = blocks.map((b) => ({ path: fileOf(b), ...statsOf(b) })).filter((f) => f.path)
   if (files.length === 0) return null
   const totalAdds = files.reduce((a, f) => a + f.adds, 0)
   const totalDels = files.reduce((a, f) => a + f.dels, 0)
+  const undo = async () => {
+    if (undoBusy) return
+    setUndoBusy(true)
+    try { await undoLatestEdits() }
+    catch (e) { toast(e instanceof Error ? e.message : '撤销失败') }
+    finally { setUndoBusy(false) }
+  }
 
   return (
     <div className="my-1.5 overflow-hidden rounded-xl" style={{ border: '1px solid var(--color-border)', background: 'var(--color-surface)' }} data-block="edit-summary">
@@ -60,9 +95,11 @@ export function EditSummaryCard({ blocks }: { blocks: ToolBlock[] }) {
           <span className="text-[12px] tabular-nums" style={{ color: 'var(--color-success)' }}>+{totalAdds}</span>
           <span className="text-[12px] tabular-nums" style={{ color: 'var(--color-error)' }}>−{totalDels}</span>
         </button>
-        <button type="button" onClick={() => toast('撤销即将上线')} className="shrink-0 rounded-md px-2 py-1 text-[12px] transition-colors hover:bg-[var(--color-surface-hover)]" style={{ color: 'var(--color-text-secondary)' }}>
-          撤销
-        </button>
+        {canUndo && (
+          <button type="button" disabled={undoBusy} onClick={() => void undo()} className="shrink-0 rounded-md px-2 py-1 text-[12px] transition-colors hover:bg-[var(--color-surface-hover)]" style={{ color: 'var(--color-text-secondary)', opacity: undoBusy ? 0.5 : 1 }}>
+            {undoBusy ? '撤销中…' : '撤销'}
+          </button>
+        )}
         <button type="button" onClick={() => files[0] && openFile(files[0].path)} className="shrink-0 rounded-md px-2 py-1 text-[12px] transition-colors hover:bg-[var(--color-surface-hover)]" style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}>
           审核
         </button>

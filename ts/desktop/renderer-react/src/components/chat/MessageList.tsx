@@ -165,15 +165,16 @@ function Block({ block, isLast }: { block: ChatBlock; isLast?: boolean }) {
   }
 }
 
-function renderItem(item: RenderItem, isLast: boolean) {
-  if (item.kind === 'edit-group') return <EditSummaryCard key={item.key} blocks={item.blocks} />
+function renderItem(item: RenderItem, isLast: boolean, lastEditKey?: string) {
+  // 撤销只放最新一组编辑卡:后端 rewind 按「最新 checkpoint」回退,旧卡接上会指错轮,不如不显示。
+  if (item.kind === 'edit-group') return <EditSummaryCard key={item.key} blocks={item.blocks} canUndo={item.key === lastEditKey} />
   if (item.kind === 'tool-group') return <ToolCallGroup key={item.key} blocks={item.blocks} />
   return <Block key={item.key} block={item.block} isLast={isLast} />
 }
 
 /** 一个"回合"=两条 user 消息之间的所有内容。有思考/工具/回复才套 AssistantMessageHeader;
  *  只有零散 note/approval(没有真正回复)时原样平铺,不套头(避免空回合也顶个头像)。 */
-function TurnBody({ items, lastKey }: { items: RenderItem[]; lastKey: string | undefined }) {
+function TurnBody({ items, lastKey, lastEditKey }: { items: RenderItem[]; lastKey: string | undefined; lastEditKey: string | undefined }) {
   const [collapsed, setCollapsed] = useState(false)
 
   let assistantBlock: AssistantBlockT | undefined
@@ -185,7 +186,7 @@ function TurnBody({ items, lastKey }: { items: RenderItem[]; lastKey: string | u
   }
 
   if (!assistantBlock && !hasProcess) {
-    return <>{items.map((item) => renderItem(item, item.key === lastKey))}</>
+    return <>{items.map((item) => renderItem(item, item.key === lastKey, lastEditKey))}</>
   }
 
   return (
@@ -197,7 +198,7 @@ function TurnBody({ items, lastKey }: { items: RenderItem[]; lastKey: string | u
         onToggle={() => setCollapsed((v) => !v)}
       />
       {!collapsed &&
-        items.map((item) => renderItem(item, item.key === lastKey))}
+        items.map((item) => renderItem(item, item.key === lastKey, lastEditKey))}
     </div>
   )
 }
@@ -208,6 +209,11 @@ export function MessageList() {
   const items = useMemo(() => groupBlocks(blocks), [blocks])
   const turns = useMemo(() => splitTurns(items), [items])
   const lastKey = items[items.length - 1]?.key
+  // 最新一组编辑卡的 key(只有它显示「撤销」,对应后端最新 checkpoint)。
+  const lastEditKey = useMemo(() => {
+    for (let i = items.length - 1; i >= 0; i--) if (items[i]!.kind === 'edit-group') return items[i]!.key
+    return undefined
+  }, [items])
   const containerRef = useRef<HTMLDivElement>(null)
   const [atBottom, setAtBottom] = useState(true)
 
@@ -228,9 +234,9 @@ export function MessageList() {
           <SessionTaskBar />
           {turns.map((entry) =>
             entry.type === 'user' ? (
-              renderItem(entry.item, entry.item.key === lastKey)
+              renderItem(entry.item, entry.item.key === lastKey, lastEditKey)
             ) : (
-              <TurnBody key={entry.key} items={entry.items} lastKey={lastKey} />
+              <TurnBody key={entry.key} items={entry.items} lastKey={lastKey} lastEditKey={lastEditKey} />
             ),
           )}
           <StreamingIndicator />
