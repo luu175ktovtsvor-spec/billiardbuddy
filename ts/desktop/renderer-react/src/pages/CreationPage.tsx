@@ -25,6 +25,8 @@ export function CreationPage() {
   const [images, setImages] = useState<StudioImage[]>([])
   const [enlarged, setEnlarged] = useState<StudioImage | null>(null)
   const [upscalingId, setUpscalingId] = useState<string | null>(null)
+  const [editText, setEditText] = useState('')
+  const [editingImg, setEditingImg] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
   useEffect(() => () => abortRef.current?.abort(), [])
@@ -49,6 +51,29 @@ export function CreationPage() {
     } catch (e) {
       toast(e instanceof Error ? e.message : '放大失败')
     } finally { setUpscalingId(null) }
+  }
+
+  // 改这张(整图按指令调整;局部重绘的"框选改"要 canvas 蒙版 UI,后续接)。改好的新图非破坏插到最前。
+  const editImg = async (img: StudioImage) => {
+    const desc = editText.trim()
+    if (!desc || editingImg) return
+    setEditingImg(true)
+    try {
+      const { job_id } = await studioApi.edit({ source_generation_id: img.generation_id, description: desc })
+      const job = await pollJob(job_id, {})
+      const result = job.result ?? {}
+      if (job.status !== 'done') { toast(result.message || '改图失败'); return }
+      if (result.blocked) { toast(result.message || '组件正在准备,稍后再试。'); return }
+      const newImg = result.images?.[0]
+      const url = newImg?.poster_url ?? pickImageUrl(result)
+      if (!url) { toast('改图完成但没拿到成图'); return }
+      const added: StudioImage = { generation_id: newImg?.generation_id ?? `edit-${img.generation_id}`, poster_url: url }
+      setImages((imgs) => [added, ...imgs])
+      setEnlarged(added); setEditText('')
+      toast('已按你的要求改好(新图在最前)')
+    } catch (e) {
+      toast(e instanceof Error ? e.message : '改图失败')
+    } finally { setEditingImg(false) }
   }
 
   const run = async () => {
@@ -160,10 +185,24 @@ export function CreationPage() {
         )}
       </div>
 
-      {/* 放大 lightbox */}
+      {/* 放大看 + 「改这张」编辑栏 lightbox */}
       {enlarged && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-8" style={{ background: 'rgba(0,0,0,0.7)' }} onClick={() => setEnlarged(null)}>
-          <img src={assetUrl(enlarged.poster_url)} alt="" className="max-h-full max-w-full rounded-lg" style={{ objectFit: 'contain' }} onClick={(e) => e.stopPropagation()} />
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 p-8" style={{ background: 'rgba(0,0,0,0.8)' }} onClick={() => { setEnlarged(null); setEditText('') }}>
+          <img src={assetUrl(enlarged.poster_url)} alt="" className="max-h-[74vh] max-w-full rounded-lg" style={{ objectFit: 'contain' }} onClick={(e) => e.stopPropagation()} />
+          <div className="flex w-full max-w-[560px] items-center gap-2" onClick={(e) => e.stopPropagation()}>
+            <input
+              value={editText}
+              onChange={(e) => setEditText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void editImg(enlarged) }}
+              placeholder="想怎么改?如「背景换成球房实景」「标题改成开业大促」「去掉左下角文字」"
+              className="flex-1 rounded-lg px-3 py-2 text-[13px] outline-none"
+              style={{ background: 'rgba(255,255,255,0.12)', color: '#fff', border: '1px solid rgba(255,255,255,0.22)' }}
+            />
+            <button type="button" onClick={() => void editImg(enlarged)} disabled={editingImg || !editText.trim()}
+              className="rounded-lg px-4 py-2 text-[13px] font-medium disabled:opacity-50" style={{ background: 'var(--color-brand)', color: '#fff' }}>
+              {editingImg ? '改中…' : '改这张'}
+            </button>
+          </div>
         </div>
       )}
     </div>
