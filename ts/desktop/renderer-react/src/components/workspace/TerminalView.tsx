@@ -1,7 +1,8 @@
 // 终端内容(底部终端抽屉的体)。owner 2026-07-11:
 //   - 浅色(照 Codex:终端跟随 app 主题,浅色即白/近白,不是深色终端);
 //   - 文字轻高亮:命令名加粗、参数(-x/--x)淡色;输出里分支行/未跟踪/报错分色。
-// 数据源现取本会话已执行的 run_command 工具块;后端加"实时 stdout chunk"事件后,output 变流式即成实时终端。
+// 数据源 = 本会话的 run_command 工具块;运行中读 block.liveOutput(后端 tool_progress 逐块推的真实
+// stdout/stderr 文本、经 chatStore 累加),命令跑的时候就逐块滚动 = 真·实时终端;跑完切权威 output。
 import { useEffect, useRef } from 'react'
 import { useChatStore, type ChatBlock } from '../../stores/chatStore'
 
@@ -84,17 +85,23 @@ export function TerminalView() {
         </div>
       ) : (
         <>
-          {cmds.map((b) => (
-            <div key={b.id} className="mb-2.5">
-              <div className="flex items-start gap-2">
-                <span className="shrink-0 select-none" style={{ color: 'var(--color-success)' }}>$</span>
-                <CommandLine cmd={cmdOf(b)} />
+          {cmds.map((b) => {
+            // 完成后用权威全文 output;运行中用实时累加的 liveOutput → 命令跑的时候就逐块滚动。
+            const shown = b.output || b.liveOutput || ''
+            return (
+              <div key={b.id} className="mb-2.5">
+                <div className="flex items-start gap-2">
+                  <span className="shrink-0 select-none" style={{ color: 'var(--color-success)' }}>$</span>
+                  <CommandLine cmd={cmdOf(b)} />
+                </div>
+                {shown && <Output output={shown} error={b.status === 'error'} />}
+                {b.status === 'running' && (
+                  <span className="qf-cursor" style={{ color: 'var(--color-text-tertiary)' }}>{shown ? '▍' : '运行中… ▍'}</span>
+                )}
+                {b.status === 'error' && !shown && <span style={{ color: 'var(--color-error)' }}>(命令出错)</span>}
               </div>
-              {b.output && <Output output={b.output} error={b.status === 'error'} />}
-              {b.status === 'running' && <span style={{ color: 'var(--color-text-tertiary)' }}>运行中…</span>}
-              {b.status === 'error' && !b.output && <span style={{ color: 'var(--color-error)' }}>(命令出错)</span>}
-            </div>
-          ))}
+            )
+          })}
           <div ref={endRef} />
         </>
       )}

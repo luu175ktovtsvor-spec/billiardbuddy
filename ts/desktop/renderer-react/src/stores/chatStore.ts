@@ -9,6 +9,10 @@ import { useSettingsStore } from './settingsStore'
 import type { ClientMessage, ServerMessage } from '../types/chat'
 import type { AgentEvent, ApprovalReason } from '../types/events'
 
+// 命令实时输出尾部上限(字符):tool_progress 逐块文本累加进 block.liveOutput 供终端/展开行实时滚动,
+// 超过就只保留尾部(实时看的是最新输出;完整全文另由命令结束的 tool_result 落 block.output)。
+const LIVE_OUTPUT_CAP = 48_000
+
 export type RunVerb = 'working' | 'thinking' | 'running'
 // 四态互斥(对齐 cc ToolCallBlock):running(进行中)/ ok(成功)/ error(失败)/ interrupted(中断)。
 export type ToolStatus = 'running' | 'ok' | 'error' | 'interrupted'
@@ -24,7 +28,7 @@ export type ChatBlock =
   | { id: string; kind: 'assistant'; text: string; streaming: boolean; ts?: number; tokens?: number; durationSec?: number }
   | { id: string; kind: 'thinking'; text: string; active: boolean }
   // startedAt/endedAt:视觉皮改造新增(工具编组折叠头「已完成 Xs」耗时展示),纯展示用元数据。
-  | { id: string; kind: 'tool'; tool: string; input: unknown; output?: string; status: ToolStatus; liveChars?: number; startedAt?: number; endedAt?: number }
+  | { id: string; kind: 'tool'; tool: string; input: unknown; output?: string; status: ToolStatus; liveChars?: number; liveOutput?: string; startedAt?: number; endedAt?: number }
   | {
       id: string
       kind: 'approval'
@@ -358,15 +362,19 @@ export const useChatStore = create<ChatState>((set, get) => {
         break
       }
       case 'tool_progress': {
-        // 实时字数(对齐 cc liveStatsSummary):累加进最近一个同名 running 工具块,不新起块。
-        const chunkLen = typeof ev.chunk === 'string' ? ev.chunk.length : 0
-        if (chunkLen > 0) {
+        // 实时输出:把真实 stdout/stderr 文本累加进最近一个同名 running 工具块,供终端面板 + 对话展开行
+        // 逐块实时滚动(此前只累加 chunk.length 当「N 字」、把文本丢了 = 看不到命令实际在跑什么)。
+        // 同时保留 liveChars 计数(折叠行「N 字」摘要);文本按尾部截断防长命令无限增长。
+        const chunk = typeof ev.chunk === 'string' ? ev.chunk : ''
+        if (chunk) {
           set((s) => {
             const blocks = [...s.blocks]
             for (let i = blocks.length - 1; i >= 0; i--) {
               const b = blocks[i]
               if (b && b.kind === 'tool' && b.status === 'running' && b.tool === ev.tool) {
-                blocks[i] = { ...b, liveChars: (b.liveChars ?? 0) + chunkLen }
+                const merged = (b.liveOutput ?? '') + chunk
+                const liveOutput = merged.length > LIVE_OUTPUT_CAP ? merged.slice(merged.length - LIVE_OUTPUT_CAP) : merged
+                blocks[i] = { ...b, liveChars: (b.liveChars ?? 0) + chunk.length, liveOutput }
                 break
               }
             }
