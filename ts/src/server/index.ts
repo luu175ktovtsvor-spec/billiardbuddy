@@ -44,7 +44,7 @@ import { jsonDetailError, jsonError, localCorsPreflight, TurnSetupError, withLoc
 import { VoiceTranscriptionError, transcribeVoiceFile } from './services/voiceTranscription'
 import { buildGeneralRegistry } from '../tools/generalTools'
 import { workspaceForActiveWorktree } from '../tools/worktreeTools'
-import { activateConditionalSkillsForPaths, allowSkillTools, bundledSkillsRoot, FILE_TOUCH_TOOL_NAMES, formatUseSkillResult, loadLayeredSkills, loadSkillsDir, recordInvokedSkill, registerSkillHooks, toolInputFilePath, userSkillsRoot } from '../skills/skillLoader'
+import { activateConditionalSkillsForPaths, allowSkillTools, bundledSkillsRoot, FILE_TOUCH_TOOL_NAMES, formatUseSkillResult, loadLayeredSkills, loadSkillsDir, recordInvokedSkill, registerSkillHooks, toolInputFilePaths, userSkillsRoot } from '../skills/skillLoader'
 import { createInvokedSkillsMessage, restoreInvokedSkillsFromMessages } from '../skills/invokedSkills'
 import { createBuiltinCommandLibrary, isBuiltinForkCommand } from '../commands/builtinCommands'
 import { allowedToolsForAgent } from '../commands/allowedTools'
@@ -101,6 +101,7 @@ import { runMigrations } from '../migrations'
 import type { AssistantStep, Model } from '../types/model'
 import { textBlock, type ContentBlock, type Message } from '../types/message'
 import type { AgentEvent, AskQuestionField } from '../types/events'
+import { parseClientMessage, type ServerMessage as AgentServerMessage } from '../../shared/contracts/agent-websocket'
 import type { ToolContext } from '../tools/Tool'
 import type { PermissionUpdate } from '../permissions/types'
 import { applyPermissionUpdates } from '../permissions/permissionUpdate'
@@ -875,7 +876,7 @@ async function waitForInboxAnswer(inbox: string[], startLen: number, signal?: Ab
   return null
 }
 
-function wsSend(ws: { send(data: string): unknown }, data: unknown): void {
+function wsSend(ws: { send(data: string): unknown }, data: AgentServerMessage): void {
   try {
     ws.send(JSON.stringify(data))
   } catch {
@@ -926,8 +927,7 @@ export function collectTouchedFilePaths(messages: Message[]): string[] {
   for (const m of messages) {
     for (const b of m.content) {
       if (b.type !== 'tool_use' || !FILE_TOUCH_TOOL_NAMES.has(b.name)) continue
-      const p = toolInputFilePath(b.input)
-      if (p) paths.push(p)
+      paths.push(...toolInputFilePaths(b.input))
     }
   }
   return [...new Set(paths)]
@@ -2125,6 +2125,7 @@ export function startServer(opts: StartServerOptions = {}) {
           transcript,
           conversationId,
           activateConditionalSkills: activateConditionalSkillsFn,
+          initialActivatedSkillNames: activatedConditionalSkills?.map(s => s.name),
           steerInbox,
           registerInterrupt: fn => { interruptRequesters.set(conversationId, fn) },
           signal: controller.signal,
@@ -4974,19 +4975,15 @@ export function startServer(opts: StartServerOptions = {}) {
         turnConsumers.onDisconnect(ws.data.conversationId)
       },
       message(ws, message) {
-        let parsed: unknown
+        let body: Record<string, unknown>
         try {
-          parsed = JSON.parse(typeof message === 'string' ? message : message.toString('utf8'))
+          const parsed = JSON.parse(typeof message === 'string' ? message : message.toString('utf8'))
+          body = { ...parseClientMessage(parsed) }
         } catch {
-          wsError(ws, 'invalid websocket JSON message')
+          wsError(ws, 'invalid websocket message')
           return
         }
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-          wsError(ws, 'websocket message must be an object')
-          return
-        }
-        const body = parsed as Record<string, unknown>
-        const type = typeof body.type === 'string' ? body.type : 'run'
+        const type = body.type
         if (type === 'ping') {
           // 应用层心跳(对齐 cc ws/handler ping/pong):前端定时发 ping 保活,避免 Bun idle 掐断长连接。
           wsSend(ws, { type: 'pong', ts: numberFrom(body.ts, 0) || undefined })

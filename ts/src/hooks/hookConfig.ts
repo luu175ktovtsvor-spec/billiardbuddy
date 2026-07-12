@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { mergeHookRegistries, parseHookDecisionJSON, type HookDecision, type HookEvent, type HookHandler, type HookPayload, type HookRegistry, type HookRule, type HookSource } from './hooks'
+import { pushAsyncHookWake } from './asyncHookRegistry'
 import type { Tool, ToolContext } from '../tools/Tool'
 import { ToolRegistry } from '../tools/registry'
 import { runAgentLoop } from '../harness/loop'
@@ -93,10 +94,6 @@ interface RawHttpHook {
   allowedEnvVars?: unknown
   decision?: unknown
   decisions?: unknown
-  /** 官方 async:true——后台发 webhook、不阻塞事件派发,响应丢弃(除非 asyncRewake)。 */
-  async?: unknown
-  /** 官方 asyncRewake:true(隐含 async)——非 2xx/失败时把状态推 steerInbox 唤醒模型。 */
-  asyncRewake?: unknown
 }
 
 interface RawPromptHook {
@@ -588,9 +585,10 @@ async function runCommandHook(raw: RawCommandHook, payload: HookPayload, ctx: To
   const shell = resolveHookShell(typeof raw.shell === 'string' ? raw.shell : undefined)
   const env = hookSpawnEnv(ctx, pluginRoot)
 
-  // 官方 async/asyncRewake:后台跑、立即放行事件派发(返回无决策);不挂本轮 abort(独立于回合生命周期),
-  // 仍受 timeout 兜底强杀。asyncRewake 且 exit 2 时,把 stderr/stdout 推进本会话 steering 收件箱作系统提醒
-  // 唤醒模型(cc AsyncHookRegistry 的桌面精简版:同会话 steerInbox 即既有的回合内/跨回合回灌通道)。
+  // 官方 async/asyncRewake(对齐 cc BashCommandHookSchema):后台跑、立即放行事件派发(返回无决策);
+  // 不挂本轮 abort(独立于回合生命周期),仍受 timeout 兜底强杀。asyncRewake 且 exit 2 时,把 stderr/stdout 推进
+  // 【进程级】async hook 唤醒队列(按 conversationId),由 loop 每回合起点 drain 注入——不能用回合级 steerInbox
+  // (那会在回合结束时被销毁、后台完成时消息丢失,审查逮到的真丢消息 bug)。对齐 cc 进程级 pendingHooks + 轮询 drain。
   const wantsRewake = raw.asyncRewake === true
   if (raw.async === true || wantsRewake) {
     const child = spawn(command, { cwd: ctx.workspace.root, env, shell, stdio: ['pipe', 'pipe', 'pipe'] })
@@ -599,12 +597,12 @@ async function runCommandHook(raw: RawCommandHook, payload: HookPayload, ctx: To
     child.stdout.on('data', chunk => { stdout += String(chunk) })
     child.stderr.on('data', chunk => { stderr += String(chunk) })
     const timer = setTimeout(() => child.kill(), timeoutMs)
-    const inbox = ctx.steerInbox
+    const conversationId = ctx.conversationId
     child.on('error', () => clearTimeout(timer))
     child.on('close', code => {
       clearTimeout(timer)
       if (wantsRewake && code === 2) {
-        inbox?.push(`[后台 hook ${payload.event} 唤醒(exit 2)] ${(stderr || stdout).trim() || command}`)
+        pushAsyncHookWake(conversationId, `[后台 hook ${payload.event} 唤醒(exit 2)] ${(stderr || stdout).trim() || command}`)
       }
     })
     child.stdin?.end(jsonInput)
@@ -785,29 +783,6 @@ async function runHttpHook(raw: RawHttpHook, payload: HookPayload, ctx: ToolCont
   }
   const allowedEnvVars = httpHookAllowedEnvVars(raw, policy)
   const timeoutMs = hookTimeoutMs(raw.timeout, 120_000)
-
-  // 官方 async/asyncRewake(与 command hook 同款):后台发 webhook、立即放行事件派发(返回无决策),
-  // 独立于本轮 abort(仅 timeout 兜底);asyncRewake 且非 2xx/失败时推 steerInbox 唤醒模型。安全校验(协议/allowlist)
-  // 已在上方对同步/异步一视同仁地做过,故异步分支放这里、不绕过任何闸。
-  const wantsRewake = raw.asyncRewake === true
-  if (raw.async === true || wantsRewake) {
-    const bgController = new AbortController()
-    const bgTimer = setTimeout(() => bgController.abort(), timeoutMs)
-    const inbox = ctx.steerInbox
-    postHttpHook(url, JSON.stringify(commandHookPayload(payload, ctx)), normalizeHeaders(raw.headers, allowedEnvVars), bgController.signal)
-      .then(res => {
-        clearTimeout(bgTimer)
-        if (wantsRewake && (res.status < 200 || res.status >= 300)) {
-          inbox?.push(`[后台 http hook ${payload.event} 唤醒] HTTP ${res.status}${res.body.trim() ? `: ${res.body.trim()}` : ''}`)
-        }
-      })
-      .catch(err => {
-        clearTimeout(bgTimer)
-        if (wantsRewake) inbox?.push(`[后台 http hook ${payload.event} 唤醒] ${err instanceof Error ? err.message : String(err)}`)
-      })
-    return null
-  }
-
   const controller = new AbortController()
   const abort = () => controller.abort()
   const timer = setTimeout(abort, timeoutMs)
@@ -855,8 +830,9 @@ function normalizeHookCommand(event: HookEvent, matcher: string | undefined, raw
     return withIf({ event, matcher, handler: onceHandler(raw, (payload, ctx) => runHttpHook(httpHook, payload, ctx, options?.httpPolicy)) })
   }
 
-  // prompt/agent 型 hook 有意保持同步(不做 async):它们是"用小模型/子代理评估并返回 decision"的求值型 hook——
-  // 后台化后 decision 无处消费、asyncRewake 也无失败信号可推,与 command/http 的 fire-and-forget 语义不同(登记有意分叉)。
+  // async/asyncRewake 是 command 型 hook 专属(对齐 cc:只有 BashCommandHookSchema 有这两个字段;
+  // HttpHookSchema/PromptHookSchema/AgentHookSchema 都没有)。http 是 fire-and-forget webhook 但 cc 也同步 await;
+  // prompt/agent 是求值型 hook 要 decision——三者一律同步,不自造 async。
   if (raw.type === 'prompt' && typeof raw.prompt === 'string' && raw.prompt.trim()) {
     const promptHook = raw as RawPromptHook
     return withIf({ event, matcher, handler: onceHandler(raw, (payload, ctx) => runPromptHook(promptHook, payload, ctx)) })
