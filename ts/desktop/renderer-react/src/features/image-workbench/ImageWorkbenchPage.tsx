@@ -10,16 +10,22 @@ import {
   pickImageUrl,
   pollJob,
   studioApi,
-  uploadLocalImage,
   workbenchApi,
+  type ImageAssetReference,
   type ImageIntent,
   type ImageQuality,
+  type ImageReferenceRole,
   type ImageWorkbenchAsset,
+  type ImageWorkbenchImageLayer,
   type ImageWorkbenchProject,
   type ImageWorkbenchReview,
   type ImageWorkbenchTextLayer,
   type ImageWorkbenchVersion,
   type StudioImage,
+  type ImageCreativeBrief,
+  type GenerateInput,
+  downloadAsset,
+  fetchAssetFile,
 } from '../../api/studio'
 
 const RATIOS: { id: string; label: string }[] = [
@@ -33,11 +39,13 @@ const RATIOS: { id: string; label: string }[] = [
 const COUNTS = [1, 2, 3, 4]
 
 const SCENES: Array<{ id: string; label: string; prompt: string; intent: ImageIntent }> = [
-  { id: 'event-poster', label: '活动海报', intent: 'poster_text', prompt: '台球室活动海报，标题「周末双人畅打」，副标题「19:00 前到店享会员价」，干净桌台、球房灯光、二维码留白，中文文字清晰' },
-  { id: 'moments', label: '朋友圈配图', intent: 'poster_text', prompt: '台球房朋友圈配图，突出朋友聚会、轻松氛围、门店地址和预约电话留白，画面适合社媒转发，中文文字清晰' },
-  { id: 'rollup', label: '易拉宝', intent: 'poster_text', prompt: '台球房门口易拉宝竖版设计，标题「新客体验套餐」，包含价格、营业时间、扫码预约留白，版式醒目，中文硬文字清楚' },
-  { id: 'assistant', label: '助教形象', intent: 'portrait', prompt: '台球助教形象宣传图，专业自信、球杆和球桌环境、留出课程价格与预约电话位置，写实高质感' },
-  { id: 'price-list', label: '价目表', intent: 'poster_text', prompt: '台球房价目表海报，分区展示散台、包间、会员卡、助教课程，层级清楚，深色底配高可读中文文字' },
+  { id: 'opening_anniversary', label: '活动海报', intent: 'poster_text', prompt: '台球室开业周年活动海报，标题「周末双人畅打」，副标题「19:00 前到店享会员价」，干净桌台、球房灯光、二维码留白' },
+  { id: 'membership_recharge', label: '会员充值', intent: 'poster_text', prompt: '台球房会员充值活动，突出储值优惠、到账权益和预约咨询区域，现代干净的真实球房氛围' },
+  { id: 'weekend_bundle', label: '周末畅打', intent: 'poster_text', prompt: '台球房周末畅打团购套餐，朋友聚会、清晰桌台和轻松灯光，为价格与二维码预留安静区域' },
+  { id: 'tournament_signup', label: '赛事报名', intent: 'poster_text', prompt: '台球赛事报名宣传海报，比赛氛围、球杆与球桌细节，为日期、规则和扫码报名留白' },
+  { id: 'coach_booking', label: '助教课程', intent: 'poster_text', prompt: '台球助教课程预约海报，专业指导场景，为课程价格、时间和预约电话预留区域' },
+  { id: 'holiday_moments', label: '节日活动', intent: 'poster_text', prompt: '台球房节日朋友圈活动配图，真实门店氛围、自然顾客互动，为标题和二维码预留区域' },
+  { id: 'assistant_portrait', label: '助教形象', intent: 'portrait', prompt: '台球助教形象宣传图，专业自信、球杆和球桌环境、留出课程价格与预约电话位置，写实高质感' },
 ]
 
 type MaskMode = 'select' | 'rect' | 'brush'
@@ -48,6 +56,9 @@ type WorkbenchAction = 'generate' | 'edit' | 'inpaint' | 'upscale'
 
 type WorkbenchObject = FabricObject & {
   workbenchLayerId?: string
+  imageLayerId?: string
+  imageLayerType?: ImageWorkbenchImageLayer['type']
+  workbenchLayerUrl?: string
   maskRole?: boolean
   backgroundRole?: boolean
 }
@@ -67,15 +78,29 @@ export function CreationPage() {
   const [quality, setQuality] = useState<ImageQuality>('standard')
   const [ratio, setRatio] = useState('3:4')
   const [count, setCount] = useState(3)
-  const [referenceUrls, setReferenceUrls] = useState<string[]>([])
+  const [quickForm, setQuickForm] = useState(false)
+  const [posterTitle, setPosterTitle] = useState('')
+  const [posterOffer, setPosterOffer] = useState('')
+  const [posterPrice, setPosterPrice] = useState('')
+  const [posterDate, setPosterDate] = useState('')
+  const [posterPhone, setPosterPhone] = useState('')
+  const [portraitAuthorized, setPortraitAuthorized] = useState(false)
+  const [logoAsset, setLogoAsset] = useState<ImageWorkbenchAsset | null>(null)
+  const [qrAsset, setQrAsset] = useState<ImageWorkbenchAsset | null>(null)
+  const [saveState, setSaveState] = useState<'saved' | 'saving' | 'failed'>('saved')
+  const [referenceAssets, setReferenceAssets] = useState<ImageWorkbenchAsset[]>([])
+  const [referenceRoles, setReferenceRoles] = useState<Record<string, ImageReferenceRole>>({})
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState(0)
   const [stage, setStage] = useState('')
   const [activeJobId, setActiveJobId] = useState<string | null>(null)
   const [lastError, setLastError] = useState('')
   const [lastFailedAction, setLastFailedAction] = useState<WorkbenchAction | null>(null)
+  const [compactPane, setCompactPane] = useState<'create' | 'canvas' | 'adjust'>('create')
   const [images, setImages] = useState<StudioImage[]>([])
+  const [creativeBrief, setCreativeBrief] = useState<ImageCreativeBrief | null>(null)
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null)
+  const [recommendedImageId, setRecommendedImageId] = useState<string | null>(null)
   const [compareIds, setCompareIds] = useState<string[]>([])
   const [project, setProject] = useState<ImageWorkbenchProject | null>(null)
   const [projects, setProjects] = useState<ImageWorkbenchProject[]>([])
@@ -93,7 +118,7 @@ export function CreationPage() {
   const [activeTextId, setActiveTextId] = useState<string | null>(null)
   const [historyTick, setHistoryTick] = useState(0)
   const [lastExport, setLastExport] = useState<ImageWorkbenchAsset | null>(null)
-  const canvasEl = useRef<HTMLCanvasElement | null>(null)
+  const [canvasElement, setCanvasElement] = useState<HTMLCanvasElement | null>(null)
   const fabricRef = useRef<Canvas | null>(null)
   const projectRef = useRef<ImageWorkbenchProject | null>(null)
   const maskModeRef = useRef(maskMode)
@@ -104,6 +129,7 @@ export function CreationPage() {
   const textUndoRef = useRef<string[]>([])
   const textRedoRef = useRef<string[]>([])
   const historyLockRef = useRef(false)
+  const autosaveSnapshotRef = useRef('')
 
   const currentVersion = useMemo(() => {
     if (!project) return null
@@ -120,6 +146,17 @@ export function CreationPage() {
   )
   const review = currentVersion?.review
   const reviewLines = useMemo(() => imageReviewLines(review), [review])
+  const referenceUrls = useMemo(() => referenceAssets.map(asset => asset.url), [referenceAssets])
+  const referenceDescriptors = useMemo<ImageAssetReference[]>(() => referenceAssets.map((asset, index) => ({
+    asset_id: asset.asset_id,
+    role: referenceRoles[asset.asset_id] ?? defaultReferenceRole(intent, index),
+    url: asset.url,
+    label: intent === 'portrait' ? (index === 0 ? '本人主参考' : '补充角度') : '参考素材',
+  })), [intent, referenceAssets, referenceRoles])
+  const projectReferenceDescriptors = useMemo<ImageAssetReference[]>(() => {
+    if (referenceDescriptors.length) return referenceDescriptors
+    return (project?.reference_assets ?? []).filter((asset): asset is ImageAssetReference => Boolean(asset.url))
+  }, [project?.reference_assets, referenceDescriptors])
 
   function resetTextHistory(canvas: Canvas) {
     textUndoRef.current = [textLayerSnapshot(canvas)]
@@ -155,9 +192,15 @@ export function CreationPage() {
   }
 
   useEffect(() => { projectRef.current = project }, [project])
+  useEffect(() => {
+    if (project) setIntent(project.intent)
+  }, [project?.project_id])
   useEffect(() => { maskModeRef.current = maskMode }, [maskMode])
   useEffect(() => { brushSizeRef.current = brushSize }, [brushSize])
   useEffect(() => { maskItemsRef.current = maskItems }, [maskItems])
+  useEffect(() => {
+    setCreativeBrief(null)
+  }, [prompt, posterTitle, posterOffer, posterPrice, posterDate, posterPhone, intent, ratio, quality, sceneId, referenceDescriptors.map(asset => `${asset.asset_id}:${asset.role}`).join('|'), portraitAuthorized])
 
   useEffect(() => {
     let cancelled = false
@@ -175,8 +218,8 @@ export function CreationPage() {
   }, [])
 
   useEffect(() => {
-    if (!canvasEl.current) return
-    const canvas = new Canvas(canvasEl.current, {
+    if (!canvasElement) return
+    const canvas = new Canvas(canvasElement, {
       preserveObjectStacking: true,
       selection: true,
       backgroundColor: themedColor('--color-surface-container', '#f3f3f3'),
@@ -201,7 +244,8 @@ export function CreationPage() {
 
     const sync = () => {
       const layers = extractTextLayers(canvas)
-      setProject((prev) => prev ? { ...prev, canvas: { ...prev.canvas, text_layers: layers, updated_at: new Date().toISOString() } } : prev)
+      const imageLayers = extractImageLayers(canvas)
+      setProject((prev) => prev ? { ...prev, canvas: { ...prev.canvas, text_layers: layers, image_layers: imageLayers, updated_at: new Date().toISOString() } } : prev)
       pushTextHistory(canvas)
       updateActiveText()
     }
@@ -304,7 +348,7 @@ export function CreationPage() {
       void canvas.dispose()
       fabricRef.current = null
     }
-  }, [])
+  }, [canvasElement])
 
   useEffect(() => {
     const canvas = fabricRef.current
@@ -320,7 +364,7 @@ export function CreationPage() {
       setLastExport(null)
     })().catch((err) => toast(err instanceof Error ? err.message : '画布加载失败'))
     return () => { cancelled = true }
-  }, [currentVersion?.id, project?.project_id])
+  }, [canvasElement, currentVersion?.id, project?.project_id])
 
   useEffect(() => {
     const canvas = fabricRef.current
@@ -338,7 +382,7 @@ export function CreationPage() {
     })
   }, [maskMode])
 
-  const canRun = prompt.trim().length > 0 && !busy
+  const canRun = (prompt.trim().length > 0 || posterTitle.trim().length > 0) && !busy
 
   const beginAction = (stageText: string) => {
     const ctrl = new AbortController()
@@ -349,6 +393,7 @@ export function CreationPage() {
     setStage(stageText)
     setLastError('')
     setLastFailedAction(null)
+    setCompactPane('canvas')
     return ctrl
   }
 
@@ -385,41 +430,153 @@ export function CreationPage() {
     setPrompt(scene.prompt)
   }
 
+  const requestText = () => {
+    const fields = [
+      posterTitle && `标题：${posterTitle}`,
+      posterOffer && `优惠：${posterOffer}`,
+      posterPrice && `价格：${posterPrice}`,
+      posterDate && `日期：${posterDate}`,
+      posterPhone && `电话：${posterPhone}`,
+    ].filter(Boolean)
+    return [prompt.trim(), ...fields].filter(Boolean).join('，')
+  }
+
+  const uploadBrandAsset = async (file: File | undefined, kind: 'logo' | 'qrcode') => {
+    if (!file) return
+    try {
+      const asset = await uploadWorkbenchImage(file)
+      if (kind === 'logo') setLogoAsset(asset)
+      else setQrAsset(asset)
+      toast(kind === 'logo' ? 'Logo 已加入品牌包' : '二维码已加入品牌包')
+    } catch (err) {
+      toast(err instanceof Error ? err.message : '品牌素材上传失败')
+    }
+  }
+
   const uploadReferences = async (files: FileList | null) => {
     if (!files?.length) return
-    const next: string[] = []
-    for (const file of Array.from(files).slice(0, 8)) {
-      const uploaded = await uploadLocalImage(file)
-      next.push(uploaded.url)
+    const limit = intent === 'portrait' ? 3 : 8
+    const available = Math.max(0, limit - referenceAssets.length)
+    if (available === 0) {
+      toast(intent === 'portrait' ? '人像最多使用 3 张参考图' : '最多使用 8 张参考图')
+      return
     }
-    setReferenceUrls((prev) => [...prev, ...next].slice(0, 8))
+    const next = await Promise.all(Array.from(files).slice(0, available).map(file => uploadWorkbenchImage(file)))
+    setReferenceAssets(prev => [...prev, ...next])
+    setReferenceRoles(prev => ({
+      ...prev,
+      ...Object.fromEntries(next.map((asset, index) => [asset.asset_id, defaultReferenceRole(intent, referenceAssets.length + index)])),
+    }))
     toast(`已添加 ${next.length} 张参考图`)
   }
 
+  const setReferenceRole = (assetId: string, role: Extract<ImageReferenceRole, 'identity_primary' | 'identity_supporting'>) => {
+    setReferenceRoles(previous => {
+      const next = { ...previous, [assetId]: role }
+      if (role === 'identity_primary') {
+        for (const asset of referenceAssets) {
+          if (asset.asset_id !== assetId && next[asset.asset_id] === 'identity_primary') next[asset.asset_id] = 'identity_supporting'
+        }
+      }
+      return next
+    })
+  }
+
+  const prepareBrief = async () => {
+    const request = requestText()
+    if (!request || busy) return
+    setBusy(true)
+    setStage('正在理解需求…')
+    try {
+      const result = await studioApi.compileBrief({
+        prompt: request,
+        scene: intent === 'portrait' ? 'portrait' : 'poster',
+        intent,
+        ratio,
+        quality,
+        scene_template_id: sceneId,
+        poster_text: { title: posterTitle, offer: posterOffer, price: posterPrice, date: posterDate, phone: posterPhone },
+        reference_assets: referenceDescriptors,
+        portrait_authorization_confirmed: portraitAuthorized,
+      })
+      setCreativeBrief(result.brief)
+    } catch (err) {
+      toast(err instanceof Error ? err.message : '需求理解失败')
+    } finally {
+      setBusy(false)
+      setStage('')
+    }
+  }
+
   const run = async () => {
-    if (!canRun) return
+    const request = requestText()
+    if (!request || busy) return
+    if (!creativeBrief) {
+      await prepareBrief()
+      return
+    }
     const ctrl = beginAction('正在提交…')
     setImages([])
     try {
-      const { job_id } = await studioApi.generate({
-        prompt: prompt.trim(),
+      const generateInput: GenerateInput = {
+        prompt: request,
+        user_request: request,
         scene_template_id: sceneId,
         ratio,
         count,
         intent,
         quality,
         reference_image_paths: referenceUrls,
-      })
+        reference_assets: referenceDescriptors,
+        poster_text: {
+          title: posterTitle,
+          offer: posterOffer,
+          price: posterPrice,
+          date: posterDate,
+          phone: posterPhone,
+        },
+        portrait_consent: portraitAuthorized,
+        portrait_authorization_confirmed: portraitAuthorized,
+        input_fidelity: intent === 'portrait' ? 'high' : undefined,
+        creative_brief: creativeBrief,
+      }
+      const { job_id } = await studioApi.generate(generateInput)
       setActiveJobId(job_id)
       const job = await pollJob(job_id, { signal: ctrl.signal, onProgress: (p: number, s?: string) => { setProgress(p); if (s) setStage(s) }, intervalMs: 600 })
       const result = job.result ?? {}
-      if (job.status !== 'done') { toast(result.message || job.error || '生成失败'); return }
-      if (result.blocked) { toast(result.message || '所需组件正在后台准备,稍后再试。'); return }
-      const imgs = result.images ?? []
-      if (!imgs.length) { toast('没有生成图片,换个描述再试试'); return }
+      if (job.status !== 'done') throw new Error(result.message || job.error || '生成失败')
+      if (result.blocked) throw new Error(result.message || '所需组件正在后台准备,稍后再试。')
+      let imgs = (result.images ?? []).filter((img) => img.local_preview !== true)
+      if ((result.images ?? []).some((img) => img.local_preview === true) && imgs.length === 0) {
+        throw new Error('当前只有本地预览占位图，未配置真实生图服务，不能作为正式候选或交付。')
+      }
+      if (!imgs.length) throw new Error('没有生成图片,换个描述再试试')
+      const hardGatePassed = imgs.filter(img => imagePassesCandidateGate(img, intent)).length
+      const needsPosterSupplement = intent === 'poster_text' && imgs.length === 3 && hardGatePassed < 2
+      const needsPortraitSupplement = intent === 'portrait' && imgs.length === 3 && imgs.every(img => portraitCandidateHasHardRisk(img))
+      if (needsPosterSupplement || needsPortraitSupplement) {
+        setStage('候选风险较多，正在补生成一批…')
+        try {
+          const retry = await studioApi.generate(generateInput)
+          setActiveJobId(retry.job_id)
+          const retryJob = await pollJob(retry.job_id, { signal: ctrl.signal, onProgress: (p: number, s?: string) => { setProgress(p); if (s) setStage(s) }, intervalMs: 600 })
+          const retryImages = retryJob.status === 'done' && !retryJob.result?.blocked
+            ? (retryJob.result?.images ?? []).filter(img => img.local_preview !== true)
+            : []
+          imgs = chooseThreeCandidates([...imgs, ...retryImages], intent)
+        } catch {
+          // Keep the first batch visible with its recorded risks. One retry is
+          // the cost ceiling; failures must not erase usable candidate history.
+        }
+      }
       setImages(imgs)
-      setSelectedImageId(imgs[0]?.generation_id ?? null)
+      setCreativeBrief(result.creative_brief ?? null)
+      const recommended = imgs.find(img => imagePassesCandidateGate(img, intent))?.generation_id ??
+        (typeof result.recommended_generation_id === 'string' ? result.recommended_generation_id : null)
+      setRecommendedImageId(recommended)
+      setSelectedImageId(recommended ?? imgs[0]?.generation_id ?? null)
       setCompareIds(imgs.slice(0, 2).map((img) => img.generation_id))
+      setCompactPane('canvas')
     } catch (e) {
       if (!ctrl.signal.aborted) {
         const message = e instanceof Error ? e.message : '生成失败'
@@ -432,24 +589,55 @@ export function CreationPage() {
     }
   }
 
+  const createProjectFromImage = async (img: StudioImage): Promise<ImageWorkbenchProject> => {
+    if (img.local_preview === true) {
+      throw new Error('本地预览占位图不能进入正式项目')
+    }
+    const width = img.width ?? dimensionFromRatio(img.ratio ?? ratio).width
+    const height = img.height ?? dimensionFromRatio(img.ratio ?? ratio).height
+    return await workbenchApi.createProject({
+      title: creativeBrief?.poster?.title || prompt.trim().slice(0, 80) || '生图工作台项目',
+      source_generation_id: img.generation_id,
+      image_url: img.poster_url,
+      width,
+      height,
+      ratio: img.ratio ?? ratio,
+      prompt: creativeBrief?.user_request ?? prompt.trim(),
+      user_request: creativeBrief?.user_request ?? prompt.trim(),
+      creative_brief: creativeBrief ?? undefined,
+      brief_understanding: creativeBrief?.understanding,
+      compiler_version: creativeBrief?.compiler_version,
+      intent,
+      quality,
+      quantity: count,
+      reference_asset_ids: referenceDescriptors.map(asset => asset.asset_id),
+      reference_assets: referenceDescriptors,
+      text_layers: intent === 'poster_text' ? posterTextLayers(width, height, {
+        title: creativeBrief?.poster?.title ?? posterTitle,
+        offer: creativeBrief?.poster?.offer ?? posterOffer,
+        price: creativeBrief?.poster?.price ?? posterPrice,
+        date: [creativeBrief?.poster?.date, creativeBrief?.poster?.time].filter(Boolean).join(' '),
+        phone: creativeBrief?.poster?.phone ?? posterPhone,
+      }) : [],
+      image_layers: [
+        ...(logoAsset ? [{ id: `layer_${logoAsset.asset_id}`, type: 'logo' as const, asset_id: logoAsset.asset_id, url: logoAsset.url, x: width * 0.04, y: height * 0.04, width: width * 0.18, height: width * 0.18, locked: false }] : []),
+        ...(qrAsset ? [{ id: `layer_${qrAsset.asset_id}`, type: 'qrcode' as const, asset_id: qrAsset.asset_id, url: qrAsset.url, x: width * 0.78, y: height * 0.82, width: width * 0.16, height: width * 0.16, locked: false }] : []),
+      ],
+      review: reviewFromRecord(img),
+    })
+  }
+
   const openProjectFromImage = async (img: StudioImage) => {
     try {
-      const width = img.width ?? dimensionFromRatio(img.ratio ?? ratio).width
-      const height = img.height ?? dimensionFromRatio(img.ratio ?? ratio).height
-      const next = await workbenchApi.createProject({
-        title: prompt.trim().slice(0, 80) || '生图工作台项目',
-        source_generation_id: img.generation_id,
-        image_url: img.poster_url,
-        width,
-        height,
-        ratio: img.ratio ?? ratio,
-        prompt: prompt.trim(),
-        intent,
-        quality,
-        quantity: count,
-        review: reviewFromRecord(img),
-      })
-      setProject(next)
+      if (project?.source_generation_id === img.generation_id) {
+        await refreshProject(project)
+        setCompactPane('canvas')
+        toast('当前候选已经在工作台中')
+        return
+      }
+      const next = await createProjectFromImage(img)
+      await refreshProject(next)
+      setCompactPane('canvas')
       setProjects((items) => [next, ...items.filter((item) => item.project_id !== next.project_id)])
       toast('已送入工作台')
     } catch (err) {
@@ -457,9 +645,57 @@ export function CreationPage() {
     }
   }
 
+  const quickDownloadCandidate = async (img: StudioImage) => {
+    setBusy(true)
+    setStage('正在合成确定性文字并导出…')
+    try {
+      await waitForFonts()
+      const next = await createProjectFromImage(img)
+      const version = next.versions.find(item => item.id === next.current_version_id)
+      if (!version) throw new Error('候选项目没有可导出的版本')
+
+      // Use the mounted canvas, the same rendering surface used by normal export.
+      // Fabric's detached-canvas image loading is not reliable in Electron.
+      await refreshProject(next)
+      const canvas = await waitForFabricCanvas()
+      await hydrateCanvas(canvas, next, version)
+      const result = await workbenchApi.exportPng(next.project_id, {
+        version_id: version.id,
+        data_url: exportCanvasPng(canvas),
+        width: next.canvas.width,
+        height: next.canvas.height,
+        text_layers: extractTextLayers(canvas),
+        image_layers: extractImageLayers(canvas),
+      })
+      setLastExport(result.asset)
+      await refreshProject(result.project)
+      setCompactPane('canvas')
+      await downloadAsset(result.asset.url, `${next.title}-${new Date().toISOString().slice(0, 10)}`)
+      toast('已生成并下载 PNG 成品')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '成品导出失败'
+      setLastError(message)
+      toast(message)
+    } finally {
+      setBusy(false)
+      setStage('')
+    }
+  }
+
   const refreshProject = async (next: ImageWorkbenchProject) => {
     setProject(next)
     setProjects((items) => [next, ...items.filter((item) => item.project_id !== next.project_id)])
+    autosaveSnapshotRef.current = JSON.stringify({ revision: next.autosave_revision, canvas: next.canvas })
+    setSaveState(next.save_status)
+  }
+
+  const waitForFabricCanvas = async (): Promise<Canvas> => {
+    const deadline = Date.now() + 2_000
+    while (Date.now() < deadline) {
+      if (fabricRef.current) return fabricRef.current
+      await new Promise<void>(resolve => window.setTimeout(resolve, 16))
+    }
+    throw new Error('编辑画布尚未准备好')
   }
 
   const reloadProjects = async () => {
@@ -467,6 +703,33 @@ export function CreationPage() {
     setProjects(loaded)
     if (loaded[0]) setProject((prev) => prev ? (loaded.find((item) => item.project_id === prev.project_id) ?? loaded[0]!) : loaded[0]!)
   }
+
+  useEffect(() => {
+    if (!project) return
+    const snapshot = JSON.stringify({ revision: project.autosave_revision, canvas: project.canvas })
+    if (!autosaveSnapshotRef.current) {
+      autosaveSnapshotRef.current = snapshot
+      return
+    }
+    if (snapshot === autosaveSnapshotRef.current) return
+    setSaveState('saving')
+    const timer = window.setTimeout(() => {
+      void workbenchApi.saveCanvas(project.project_id, {
+        current_version_id: project.current_version_id,
+        width: project.canvas.width,
+        height: project.canvas.height,
+        text_layers: project.canvas.text_layers,
+        image_layers: project.canvas.image_layers,
+        revision: project.autosave_revision,
+      }).then(next => {
+        autosaveSnapshotRef.current = JSON.stringify({ revision: next.autosave_revision, canvas: next.canvas })
+        setProject(next)
+        setProjects(items => [next, ...items.filter(item => item.project_id !== next.project_id)])
+        setSaveState('saved')
+      }).catch(() => setSaveState('failed'))
+    }, 800)
+    return () => window.clearTimeout(timer)
+  }, [project?.project_id, project?.canvas.updated_at])
 
   const saveCanvas = async () => {
     const canvas = fabricRef.current
@@ -476,6 +739,8 @@ export function CreationPage() {
       width: project.canvas.width,
       height: project.canvas.height,
       text_layers: extractTextLayers(canvas),
+      image_layers: extractImageLayers(canvas),
+      revision: project.autosave_revision,
     })
     await refreshProject(next)
     toast('项目已保存')
@@ -555,7 +820,15 @@ export function CreationPage() {
     if (!project || !currentVersion || !editText.trim()) return
     const ctrl = beginAction('正在改图…')
     try {
-      const { job_id } = await studioApi.edit(sourceForEdit(currentVersion, editText.trim(), 'edit_content', quality))
+      const { job_id } = await studioApi.edit({
+        ...sourceForEdit(currentVersion, editText.trim(), 'edit_content', quality),
+        user_request: editText.trim(),
+        reference_image_paths: intent === 'portrait' ? projectReferenceDescriptors.map(asset => asset.url).filter((url): url is string => Boolean(url)) : undefined,
+        reference_assets: intent === 'portrait' ? projectReferenceDescriptors : undefined,
+        portrait_consent: portraitAuthorized,
+        portrait_authorization_confirmed: portraitAuthorized,
+        input_fidelity: intent === 'portrait' ? 'high' : undefined,
+      })
       setActiveJobId(job_id)
       const job = await pollJob(job_id, { signal: ctrl.signal, intervalMs: 600, onProgress: (p: number, s?: string) => { setProgress(p); if (s) setStage(s) } })
       const next = await addImageVersionFromJob(project, currentVersion, job, 'edit', editText.trim())
@@ -584,6 +857,12 @@ export function CreationPage() {
       const { job_id } = await studioApi.edit({
         ...sourceForEdit(currentVersion, maskText.trim(), 'inpaint', quality),
         mask_path: asset.url,
+        user_request: maskText.trim(),
+        reference_image_paths: intent === 'portrait' ? projectReferenceDescriptors.map(asset => asset.url).filter((url): url is string => Boolean(url)) : undefined,
+        reference_assets: intent === 'portrait' ? projectReferenceDescriptors : undefined,
+        portrait_consent: portraitAuthorized,
+        portrait_authorization_confirmed: portraitAuthorized,
+        input_fidelity: intent === 'portrait' ? 'high' : undefined,
       })
       setActiveJobId(job_id)
       const job = await pollJob(job_id, { signal: ctrl.signal, intervalMs: 600, onProgress: (p: number, s?: string) => { setProgress(p); if (s) setStage(s) } })
@@ -631,7 +910,9 @@ export function CreationPage() {
     if (!project || !currentVersion || !canvas) return
     setBusy(true); setStage('正在导出 PNG…')
     try {
+      await waitForFonts()
       const layers = extractTextLayers(canvas)
+      const imageLayers = extractImageLayers(canvas)
       const dataUrl = exportCanvasPng(canvas)
       const result = await workbenchApi.exportPng(project.project_id, {
         version_id: currentVersion.id,
@@ -639,9 +920,11 @@ export function CreationPage() {
         width: project.canvas.width,
         height: project.canvas.height,
         text_layers: layers,
+        image_layers: imageLayers,
       })
       setLastExport(result.asset)
       await refreshProject(result.project)
+      await downloadAsset(result.asset.url, `${project.title}-${new Date().toISOString().slice(0, 10)}`)
       toast(`已按 ${result.asset.width}x${result.asset.height} 导出 PNG`)
     } catch (err) {
       toast(err instanceof Error ? err.message : '导出失败')
@@ -657,6 +940,34 @@ export function CreationPage() {
       toast(`已保存到素材库:${item.title}`)
     } catch (err) {
       toast(err instanceof Error ? err.message : '保存素材库失败')
+    }
+  }
+
+  const confirmPortrait = async () => {
+    if (!project || intent !== 'portrait' || !currentVersion) return
+    try {
+      const next = await workbenchApi.confirmPortrait(project.project_id, currentVersion.id)
+      await refreshProject(next)
+      toast('已确认像本人，可以继续导出；这不是法律授权或自动商用保证。')
+    } catch (err) {
+      toast(err instanceof Error ? err.message : '确认失败')
+    }
+  }
+
+  const usePortraitAsPoster = async () => {
+    if (!project || project.intent !== 'portrait' || !currentVersion) return
+    try {
+      const file = await fetchAssetFile(currentVersion.image_url, 'portrait-reference.png')
+      const asset = await uploadWorkbenchImage(file)
+      setReferenceAssets([asset])
+      setReferenceRoles({ [asset.asset_id]: 'identity_primary' })
+      setIntent('poster_text')
+      setSceneId('coach_booking')
+      setPrompt('使用已确认的人像作为人物素材，制作助教课程预约海报，为标题、价格、日期和二维码预留清晰区域')
+      setCreativeBrief(null)
+      toast('已带入人像素材，继续确认海报需求')
+    } catch (err) {
+      toast(err instanceof Error ? err.message : '带入人像素材失败')
     }
   }
 
@@ -678,29 +989,66 @@ export function CreationPage() {
 
   const canUndoText = historyTick >= 0 && textUndoRef.current.length > 1
   const canRedoText = historyTick >= 0 && textRedoRef.current.length > 0
+  const hasCandidates = images.length > 0
+  const hasProject = Boolean(project)
+  const hasWorkbenchStage = hasCandidates || hasProject
+  const hasTaskFeedback = busy || Boolean(lastError)
+  const hasMainPanel = hasWorkbenchStage || hasTaskFeedback
+  const workspaceLayoutClass = hasProject
+    ? 'grid min-h-0 grid-cols-1 gap-x-7 gap-y-6 min-[840px]:grid-cols-[minmax(236px,280px)_minmax(0,1fr)] min-[1180px]:grid-cols-[250px_minmax(0,1fr)_280px]'
+    : hasMainPanel
+      ? 'grid min-h-0 grid-cols-1 gap-x-7 gap-y-6 min-[840px]:grid-cols-[minmax(236px,280px)_minmax(0,1fr)]'
+      : 'mx-auto max-w-[760px]'
 
   return (
     <div className="h-full overflow-y-auto" style={{ background: 'var(--color-app-main)' }} data-testid="creation-page">
-      <div className="grid min-h-full grid-cols-[280px_minmax(420px,1fr)_300px] gap-4 px-5 py-5">
-        <aside className="space-y-3">
-          <PageHeader
-            title="生图工作台"
-            subtitle="结构化起步、候选挑图、就地编辑。"
-            action={(
-              <button
-                type="button"
-                onClick={() => setNav('chat')}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12px] font-medium transition-colors hover:bg-[var(--color-surface-hover)]"
-                style={{ border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)' }}
-                data-testid="workbench-back-chat"
-              >
-                <IconMessage size={14} /> 返回对话
-              </button>
-            )}
-          />
-          <section className="rounded-lg p-3" style={panelStyle}>
+      <div className="mx-auto min-h-full w-full max-w-[1560px] px-5 py-5 min-[840px]:px-8 min-[840px]:py-7">
+        <PageHeader
+          title="生图工作台"
+          action={(
+            <button
+              type="button"
+              onClick={() => setNav('chat')}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12px] font-medium transition-colors hover:bg-[var(--color-surface-hover)]"
+              style={{ border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)' }}
+              data-testid="workbench-back-chat"
+            >
+              <IconMessage size={14} /> 返回对话
+            </button>
+          )}
+        />
+
+        <div className="mb-5 grid grid-cols-3 gap-1 rounded-lg p-1 min-[840px]:hidden" style={{ background: 'var(--color-surface-container)' }} role="tablist" aria-label="工作台视图">
+          {([
+            ['create', '创作'],
+            ['canvas', '挑选'],
+            ['adjust', '调整'],
+          ] as const).map(([pane, label]) => (
+            (() => {
+              const available = pane === 'create' || (pane === 'canvas' ? hasMainPanel : hasProject)
+              return (
+            <button
+              key={pane}
+              type="button"
+              role="tab"
+              aria-selected={compactPane === pane}
+              disabled={!available}
+              onClick={() => setCompactPane(pane)}
+              className="rounded-md px-2 py-1.5 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-45"
+              style={segStyle(compactPane === pane && available)}
+            >
+              {label}
+            </button>
+              )
+            })()
+          ))}
+        </div>
+
+        <div className={workspaceLayoutClass}>
+        <aside className={`${compactPane === 'create' ? 'block' : 'hidden min-[840px]:block'} min-w-0 space-y-5`}>
+          <section className="border-b pb-5" style={{ borderColor: 'var(--color-border)' }}>
             <div className="mb-2 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>门店场景</div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className={`grid grid-cols-2 gap-2 ${hasWorkbenchStage ? '' : 'min-[640px]:grid-cols-4'}`}>
               {SCENES.map((scene) => (
                 <button key={scene.id} type="button" onClick={() => selectScene(scene.id)}
                   className="rounded-md px-2 py-1.5 text-[12px] font-medium" style={segStyle(sceneId === scene.id)}>
@@ -708,27 +1056,72 @@ export function CreationPage() {
                 </button>
               ))}
             </div>
-	            <textarea
+            <textarea
 	              value={prompt}
 	              onChange={(e) => setPrompt(e.target.value)}
 	              rows={6}
 	              className="mt-3 w-full resize-none rounded-md px-3 py-2 text-[13px] outline-none"
 	              placeholder="写下活动、硬文字、画面主体和门店氛围"
 	              style={inputStyle}
-	              data-testid="image-prompt-input"
-	            />
+              data-testid="image-prompt-input"
+            />
+            <button type="button" onClick={() => setQuickForm(value => !value)} className="mt-2 rounded-md px-2 py-1.5 text-[12px]" style={buttonSubtleStyle} data-testid="toggle-quick-form">
+              {quickForm ? '收起快速填写' : '快速填写活动信息'}
+            </button>
+            {quickForm && (
+              <div className="mt-2 grid grid-cols-2 gap-2" data-testid="poster-quick-form">
+                <input value={posterTitle} onChange={e => setPosterTitle(e.target.value)} className="rounded-md px-2 py-1.5 text-[12px] outline-none" style={inputStyle} placeholder="主标题" />
+                <input value={posterOffer} onChange={e => setPosterOffer(e.target.value)} className="rounded-md px-2 py-1.5 text-[12px] outline-none" style={inputStyle} placeholder="优惠内容" />
+                <input value={posterPrice} onChange={e => setPosterPrice(e.target.value)} className="rounded-md px-2 py-1.5 text-[12px] outline-none" style={inputStyle} placeholder="价格" />
+                <input value={posterDate} onChange={e => setPosterDate(e.target.value)} className="rounded-md px-2 py-1.5 text-[12px] outline-none" style={inputStyle} placeholder="日期/时间" />
+                <input value={posterPhone} onChange={e => setPosterPhone(e.target.value)} className="col-span-2 rounded-md px-2 py-1.5 text-[12px] outline-none" style={inputStyle} placeholder="预约电话" />
+              </div>
+            )}
             <label className="mt-3 block">
               <span className="mb-1 block text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>参考图</span>
               <input type="file" accept="image/*" multiple className="block w-full text-[12px]" onChange={(e) => void uploadReferences(e.target.files).catch((err) => toast(err instanceof Error ? err.message : '上传失败'))} />
             </label>
-            {referenceUrls.length > 0 && (
+            {referenceAssets.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1.5">
-                {referenceUrls.map((url) => <img key={url} src={assetUrl(url)} alt="" className="h-10 w-10 rounded object-cover" />)}
+                {referenceAssets.map((asset, index) => (
+                  <div key={asset.asset_id} className="space-y-1">
+                    <img src={assetUrl(asset.url)} alt="" className="h-10 w-10 rounded object-cover" />
+                    {intent === 'portrait' && (
+                      <select
+                        aria-label={`参考图 ${index + 1} 角色`}
+                        value={referenceRoles[asset.asset_id] ?? defaultReferenceRole(intent, index)}
+                        onChange={event => setReferenceRole(asset.asset_id, event.target.value as Extract<ImageReferenceRole, 'identity_primary' | 'identity_supporting'>)}
+                        className="w-16 rounded border px-1 py-0.5 text-[10px]"
+                        style={inputStyle}
+                      >
+                        <option value="identity_primary">主参考</option>
+                        <option value="identity_supporting">补充</option>
+                      </select>
+                    )}
+                  </div>
+                ))}
               </div>
+            )}
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <label className="rounded-md px-2 py-1.5 text-[12px]" style={buttonSubtleStyle}>
+                <span>Logo</span>
+                <input type="file" accept="image/png,image/jpeg,image/webp" className="mt-1 block w-full text-[10px]" onChange={e => void uploadBrandAsset(e.target.files?.[0], 'logo')} />
+              </label>
+              <label className="rounded-md px-2 py-1.5 text-[12px]" style={buttonSubtleStyle}>
+                <span>二维码</span>
+                <input type="file" accept="image/png,image/jpeg,image/webp" className="mt-1 block w-full text-[10px]" onChange={e => void uploadBrandAsset(e.target.files?.[0], 'qrcode')} />
+              </label>
+            </div>
+            {intent === 'portrait' && (
+              <label className="mt-3 flex items-start gap-2 rounded-md p-2 text-[12px]" style={{ background: 'var(--color-surface-container)' }} data-testid="portrait-authorization">
+                <input type="checkbox" checked={portraitAuthorized} onChange={e => setPortraitAuthorized(e.target.checked)} className="mt-0.5" />
+                <span style={{ color: 'var(--color-text-secondary)' }}>我拥有这些照片的使用授权，且被拍者同意用于门店宣传</span>
+              </label>
             )}
           </section>
 
-          <section className="rounded-lg p-3" style={panelStyle}>
+          <section className="border-b pb-5" style={{ borderColor: 'var(--color-border)' }}>
+            <div className="mb-2 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>成品设置</div>
             <div className="grid grid-cols-2 gap-2">
               {RATIOS.map((item) => (
                 <button key={item.id} type="button" onClick={() => setRatio(item.id)}
@@ -757,11 +1150,16 @@ export function CreationPage() {
             <button type="button" onClick={() => void run()} disabled={!canRun}
               className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md px-4 py-2 text-[13px] font-medium disabled:opacity-50"
               style={{ background: 'var(--color-brand)', color: 'var(--color-on-primary)' }} data-testid="image-generate-button">
-              <IconSparkles size={15} /> {busy ? '处理中…' : `生成 ${count} 张候选`}
+              <IconSparkles size={15} /> {busy ? '处理中…' : creativeBrief ? `确认并生成 ${count} 张候选` : '理解需求'}
             </button>
+            {creativeBrief && (
+              <div className="mt-2 rounded-md px-2 py-1.5 text-[12px]" style={{ background: 'var(--color-surface-container)', color: 'var(--color-text-secondary)' }} data-testid="brief-understanding">
+                {creativeBrief.understanding ?? creativeBrief.user_request}
+              </div>
+            )}
           </section>
 
-          <section className="rounded-lg p-3" style={panelStyle}>
+          {projects.length > 0 && <section className="pb-1">
             <div className="mb-2 flex items-center justify-between">
               <span className="text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>项目</span>
               <button type="button" onClick={() => void reloadProjects().catch((err) => toast(err instanceof Error ? err.message : '刷新失败'))}
@@ -779,10 +1177,10 @@ export function CreationPage() {
                 </button>
               ))}
             </div>
-          </section>
+          </section>}
         </aside>
 
-        <main className="min-w-0 space-y-4">
+        {hasMainPanel && <main className={`${compactPane === 'canvas' ? 'block' : 'hidden min-[840px]:block'} min-w-0 space-y-5`}>
           {busy && (
             <div className="rounded-lg p-3" style={panelStyle} data-testid="workbench-progress">
               <div className="mb-1 flex items-center justify-between text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>
@@ -794,15 +1192,15 @@ export function CreationPage() {
               <button type="button" onClick={() => void cancelActiveJob()} className="mt-2 rounded-md px-2 py-1 text-[12px]" style={buttonSubtleStyle} data-testid="cancel-image-job">取消</button>
             </div>
           )}
-          {!busy && lastError && lastFailedAction && (
+          {!busy && lastError && (
             <div className="flex items-center justify-between gap-3 rounded-lg p-3 text-[12px]" style={panelStyle} data-testid="workbench-retry">
               <span className="min-w-0 truncate" style={{ color: 'var(--color-text-secondary)' }}>{lastError}</span>
-              <button type="button" onClick={retryLast} className="shrink-0 rounded-md px-2 py-1 font-medium" style={buttonSubtleStyle}>重试</button>
+              {lastFailedAction && <button type="button" onClick={retryLast} className="shrink-0 rounded-md px-2 py-1 font-medium" style={buttonSubtleStyle}>重试</button>}
             </div>
           )}
 
           {images.length > 0 && (
-            <section className="rounded-lg p-3" style={panelStyle}>
+            <section className="border-b pb-5" style={{ borderColor: 'var(--color-border)' }}>
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-[12px] font-semibold uppercase" style={{ color: 'var(--color-text-tertiary)' }}>候选图</h2>
                 <button type="button" onClick={() => void run()} disabled={busy}
@@ -811,16 +1209,20 @@ export function CreationPage() {
                   <IconRefresh size={13} /> 换一批
                 </button>
               </div>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 gap-3 min-[560px]:grid-cols-3">
                 {images.map((img) => (
                   <div key={img.generation_id} className="overflow-hidden rounded-md" style={{ border: '1px solid var(--color-border)' }} data-testid="candidate-card">
                     <button type="button" className="block w-full" onClick={() => setSelectedImageId(img.generation_id)} data-testid="candidate-select">
-                      <img src={assetUrl(img.poster_url)} alt="" className="aspect-[3/4] w-full object-cover" />
+                      <div className="relative">
+                        <img src={assetUrl(img.poster_url)} alt="" className="aspect-[3/4] w-full object-cover" />
+                        {intent === 'poster_text' && <CandidatePosterOverlay brief={creativeBrief} logoUrl={logoAsset?.url} qrUrl={qrAsset?.url} />}
+                      </div>
                     </button>
                     <div className="flex items-center justify-between gap-1 px-2 py-1.5">
-                      <button type="button" className="text-[11px]" style={{ color: 'var(--color-brand)' }} onClick={() => void openProjectFromImage(img)}>编辑</button>
+                      <button type="button" className="text-[11px]" style={{ color: 'var(--color-brand)' }} onClick={() => void openProjectFromImage(img)}>{img.generation_id === recommendedImageId ? '建议候选 · 编辑' : '编辑'}</button>
                       <button type="button" className="text-[11px]" style={{ color: compareIds.includes(img.generation_id) ? 'var(--color-brand)' : 'var(--color-text-tertiary)' }} onClick={() => toggleCompare(img.generation_id)}>A/B</button>
                     </div>
+                    {!imagePassesCandidateGate(img, intent) && <div className="px-2 pb-1.5 text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>存在检查风险，请人工比较</div>}
                   </div>
                   ))}
                 </div>
@@ -833,7 +1235,20 @@ export function CreationPage() {
                       <div className="mt-1 text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>{selectedImage.width ?? '未知'}x{selectedImage.height ?? '未知'}</div>
                     </div>
                     <button type="button" onClick={() => void openProjectFromImage(selectedImage)} className="rounded-md px-2 py-2 text-[12px] font-medium" style={buttonPrimaryStyle} data-testid="open-selected-candidate">送入工作台</button>
+                    {intent === 'poster_text' && <button type="button" onClick={() => void quickDownloadCandidate(selectedImage)} className="rounded-md px-2 py-1.5 text-[11px]" style={buttonSubtleStyle} data-testid="quick-download-candidate">下载成品</button>}
                   </div>
+                </div>
+              )}
+              {intent === 'portrait' && selectedImage && (referenceDescriptors[0] ?? projectReferenceDescriptors[0])?.url && (
+                <div className="mt-3 grid grid-cols-2 gap-3" data-testid="portrait-reference-compare">
+                  <figure className="overflow-hidden rounded-md" style={{ border: '1px solid var(--color-border)' }}>
+                    <figcaption className="px-2 py-1 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>本人主参考</figcaption>
+                    <img src={assetUrl((referenceDescriptors[0] ?? projectReferenceDescriptors[0])!.url!)} alt="本人主参考" className="max-h-[320px] w-full object-contain" />
+                  </figure>
+                  <figure className="overflow-hidden rounded-md" style={{ border: '1px solid var(--color-border)' }}>
+                    <figcaption className="px-2 py-1 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>候选结果</figcaption>
+                    <img src={assetUrl(selectedImage.poster_url)} alt="候选结果" className="max-h-[320px] w-full object-contain" />
+                  </figure>
                 </div>
               )}
               {compareImages.length === 2 && (
@@ -849,13 +1264,13 @@ export function CreationPage() {
             </section>
           )}
 
-          <section className="rounded-lg p-3" style={panelStyle}>
+          {project && <section className="rounded-lg p-4" style={panelStyle}>
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <h2 className="truncate text-[14px] font-semibold" style={{ color: 'var(--color-text-primary)' }} data-testid="workbench-title">
                   {project ? project.title : '选择一张候选图开始编辑'}
                 </h2>
-                {project && <p className="text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>{project.canvas.width}x{project.canvas.height} · {project.versions.length} 个版本</p>}
+                {project && <p className="text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>{project.canvas.width}x{project.canvas.height} · {project.versions.length} 个版本 · {saveState === 'saving' ? '保存中' : saveState === 'failed' ? '保存失败' : '已保存'}</p>}
               </div>
               <div className="flex shrink-0 gap-2">
                 <button type="button" onClick={() => void saveCanvas()} disabled={!project} className="rounded-md px-2 py-1 text-[12px] disabled:opacity-50" style={buttonSubtleStyle}>保存</button>
@@ -863,10 +1278,10 @@ export function CreationPage() {
               </div>
             </div>
             <div className="max-h-[70vh] overflow-auto rounded-md p-3" style={{ background: 'var(--color-surface-container)' }}>
-              <canvas ref={canvasEl} data-testid="workbench-canvas" />
+              <canvas ref={setCanvasElement} data-testid="workbench-canvas" />
             </div>
-          </section>
-          <section className="rounded-lg p-3" style={panelStyle} data-testid="image-quality-status">
+          </section>}
+          {project && <section className="border-t pt-4" style={{ borderColor: 'var(--color-border)' }} data-testid="image-quality-status">
             <div className="mb-2 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>投放检查</div>
             {reviewLines.length > 0 ? (
               <div className="space-y-1">
@@ -877,17 +1292,28 @@ export function CreationPage() {
             ) : (
               <div className="rounded-md px-2 py-1.5 text-[12px]" style={{ background: 'var(--color-surface-container)', color: 'var(--color-text-tertiary)' }}>未自动质检</div>
             )}
-          </section>
-        </main>
+            {intent === 'portrait' && project && currentVersion?.review?.portrait_quality_state !== 'user_confirmed' && (
+              <button type="button" onClick={() => void confirmPortrait()} disabled={!currentVersion || currentVersion.review?.portrait_quality_state === 'blocked'} className="mt-2 w-full rounded-md px-3 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonPrimaryStyle} data-testid="confirm-portrait-button">
+                像本人，可以使用
+              </button>
+            )}
+            {intent === 'portrait' && currentVersion?.review?.portrait_quality_state === 'user_confirmed' && (
+              <>
+                <div className="mt-2 rounded-md px-2 py-1.5 text-[12px]" style={{ background: 'var(--color-surface-container)', color: 'var(--color-text-secondary)' }} data-testid="portrait-user-confirmed">已由用户确认像本人</div>
+                <button type="button" onClick={() => void usePortraitAsPoster()} className="mt-2 w-full rounded-md px-3 py-2 text-[12px] font-medium" style={buttonSubtleStyle} data-testid="portrait-to-poster-button">用这张人像做海报</button>
+              </>
+            )}
+          </section>}
+        </main>}
 
-        <aside className="space-y-3">
-          <section className="rounded-lg p-3" style={panelStyle}>
+        {project && <aside className={`${compactPane === 'adjust' ? 'block' : 'hidden min-[840px]:block'} min-w-0 space-y-5 border-t pt-5 min-[840px]:col-span-2 min-[1180px]:col-span-1 min-[1180px]:border-l min-[1180px]:border-t-0 min-[1180px]:pl-6 min-[1180px]:pt-0`} style={{ borderColor: 'var(--color-border)' }}>
+          <section className="border-b pb-5" style={{ borderColor: 'var(--color-border)' }}>
             <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}><IconEdit size={14} />整图指令修改</div>
             <textarea value={editText} onChange={(e) => setEditText(e.target.value)} rows={3} className="w-full resize-none rounded-md px-3 py-2 text-[12.5px] outline-none" style={inputStyle} placeholder="例如:背景换成球房实景，整体更高级" data-testid="whole-edit-input" />
             <button type="button" onClick={() => void wholeEdit()} disabled={!project || !editText.trim() || busy} className="mt-2 w-full rounded-md px-3 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonPrimaryStyle} data-testid="whole-edit-button">生成修改版本</button>
           </section>
 
-          <section className="rounded-lg p-3" style={panelStyle}>
+          <section className="border-b pb-5" style={{ borderColor: 'var(--color-border)' }}>
             <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}><IconTarget size={14} />局部重绘</div>
             <div className="grid grid-cols-3 gap-1.5">
               {(['select', 'rect', 'brush'] as MaskMode[]).map((mode) => (
@@ -907,7 +1333,7 @@ export function CreationPage() {
             </div>
           </section>
 
-          <section className="rounded-lg p-3" style={panelStyle}>
+          <section className="border-b pb-5" style={{ borderColor: 'var(--color-border)' }}>
             <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}><IconPlus size={14} />中文文字层</div>
             <div className="mb-2 grid grid-cols-4 gap-1.5">
               <button type="button" onClick={addText} disabled={!project} className="rounded-md px-2 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonSubtleStyle} data-testid="add-text-button">添加</button>
@@ -934,7 +1360,7 @@ export function CreationPage() {
             </div>
           </section>
 
-          <section className="rounded-lg p-3" style={panelStyle}>
+          <section className="pb-1">
             <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}><IconZap size={14} />版本与素材</div>
             <div className="max-h-[180px] space-y-1 overflow-auto">
               {project?.versions.slice().reverse().map((version) => (
@@ -950,8 +1376,9 @@ export function CreationPage() {
               <button type="button" onClick={() => void saveToLibrary()} disabled={!project} className="inline-flex items-center justify-center gap-1 rounded-md px-2 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonSubtleStyle} data-testid="save-library-button"><IconShareUp size={13} />素材库</button>
             </div>
           </section>
-        </aside>
+        </aside>}
       </div>
+    </div>
     </div>
   )
 }
@@ -978,6 +1405,81 @@ const buttonSubtleStyle = {
   border: '1px solid var(--color-border)',
 } as const
 
+function defaultReferenceRole(intent: ImageIntent, index: number): ImageReferenceRole {
+  if (intent === 'portrait') return index === 0 ? 'identity_primary' : 'identity_supporting'
+  return 'environment_reference'
+}
+
+async function waitForFonts(timeoutMs = 2_000): Promise<void> {
+  const ready = document.fonts?.ready
+  if (!ready) return
+  await Promise.race([ready, new Promise<void>(resolve => window.setTimeout(resolve, timeoutMs))])
+}
+
+function candidateField(image: StudioImage, key: string): unknown {
+  return (image as Record<string, unknown>)[key]
+}
+
+function imagePassesCandidateGate(image: StudioImage, intent: ImageIntent): boolean {
+  if (intent === 'portrait') {
+    return image.portrait_quality_state === 'recommended' && image.portrait_consistency_status !== 'drifted'
+  }
+  return candidateField(image, 'poster_hard_gate_passed') === true
+}
+
+function portraitCandidateHasHardRisk(image: StudioImage): boolean {
+  const state = image.portrait_quality_state
+  return state === 'blocked' || state === 'risk' || image.portrait_consistency_status === 'drifted'
+}
+
+function chooseThreeCandidates(images: StudioImage[], intent: ImageIntent): StudioImage[] {
+  return images
+    .slice()
+    .sort((left, right) => Number(imagePassesCandidateGate(right, intent)) - Number(imagePassesCandidateGate(left, intent)))
+    .slice(0, 3)
+}
+
+function CandidatePosterOverlay(props: { brief: ImageCreativeBrief | null; logoUrl?: string; qrUrl?: string }) {
+  const poster = props.brief?.poster
+  const lines = [poster?.title, poster?.offer, poster?.price, [poster?.date, poster?.time].filter(Boolean).join(' '), poster?.phone].filter((line): line is string => Boolean(line?.trim()))
+  if (!lines.length && !props.logoUrl && !props.qrUrl) return null
+  return (
+    <div className="pointer-events-none absolute inset-0 flex flex-col justify-between p-2 text-center" aria-hidden="true">
+      <div className="flex justify-between gap-2">
+        {props.logoUrl ? <img src={assetUrl(props.logoUrl)} alt="" className="h-7 w-7 object-contain" /> : <span />}
+        {props.qrUrl ? <img src={assetUrl(props.qrUrl)} alt="" className="h-8 w-8 bg-white p-0.5 object-contain" /> : null}
+      </div>
+      <div className="space-y-0.5 rounded bg-black/55 px-1 py-1 text-white">
+        {lines.slice(0, 5).map((line, index) => <div key={`${index}-${line}`} className={index === 0 ? 'text-[12px] font-semibold' : 'text-[9px]'}>{line}</div>)}
+      </div>
+    </div>
+  )
+}
+
+async function uploadWorkbenchImage(file: File): Promise<ImageWorkbenchAsset> {
+  if (!/^image\/(png|jpeg|webp)$/i.test(file.type)) throw new Error('请上传 PNG、JPEG 或 WebP 图片')
+  if (file.size > 32 * 1024 * 1024) throw new Error('图片不能超过 32MB')
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error('图片读取失败'))
+    reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('图片读取失败'))
+    reader.readAsDataURL(file)
+  })
+  const dimensions = await new Promise<{ width: number; height: number }>((resolve, reject) => {
+    const image = new Image()
+    image.onerror = () => reject(new Error('图片无法解码'))
+    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight })
+    image.src = dataUrl
+  })
+  return await workbenchApi.uploadAsset({
+    kind: 'reference',
+    data_url: dataUrl,
+    filename: file.name,
+    width: dimensions.width,
+    height: dimensions.height,
+  })
+}
+
 function segStyle(active: boolean) {
   return {
     background: active ? 'var(--color-brand)' : 'var(--color-surface-container)',
@@ -992,6 +1494,34 @@ function dimensionFromRatio(value: string): { width: number; height: number } {
   const long = 1365
   if (a >= b) return { width: long, height: Math.max(512, Math.round(long * b / a)) }
   return { width: Math.max(512, Math.round(long * a / b)), height: long }
+}
+
+function posterTextLayers(width: number, height: number, fields: { title: string; offer: string; price: string; date: string; phone: string }): ImageWorkbenchTextLayer[] {
+  const entries = [
+    { key: 'title', text: fields.title, y: 0.14, size: Math.max(42, Math.round(width / 13)) },
+    { key: 'offer', text: fields.offer, y: 0.28, size: Math.max(28, Math.round(width / 24)) },
+    { key: 'price', text: fields.price, y: 0.68, size: Math.max(44, Math.round(width / 12)) },
+    { key: 'date', text: fields.date, y: 0.78, size: Math.max(24, Math.round(width / 30)) },
+    { key: 'phone', text: fields.phone, y: 0.86, size: Math.max(22, Math.round(width / 34)) },
+  ]
+  return entries.filter(item => item.text.trim()).map((item, index) => ({
+    id: `poster_${item.key}_${index}`,
+    type: 'text' as const,
+    text: item.text.trim(),
+    x: width * 0.1,
+    y: height * item.y,
+    width: width * 0.72,
+    scale_x: 1,
+    scale_y: 1,
+    angle: 0,
+    fill: '#ffffff',
+    font_family: 'PingFang SC',
+    font_size: item.size,
+    text_align: 'center' as const,
+    stroke: '#111111',
+    stroke_width: 1,
+    opacity: 1,
+  }))
 }
 
 async function hydrateCanvas(canvas: Canvas, project: ImageWorkbenchProject, version: ImageWorkbenchVersion): Promise<void> {
@@ -1011,6 +1541,27 @@ async function hydrateCanvas(canvas: Canvas, project: ImageWorkbenchProject, ver
   })
   ;(img as WorkbenchObject).backgroundRole = true
   canvas.add(img)
+  for (const layer of project.canvas.image_layers ?? []) {
+    if (!layer.url) continue
+    const layerImage = await FabricImage.fromURL(assetUrl(layer.url), { crossOrigin: 'anonymous' })
+    const sourceWidth = Number(layerImage.width || layer.width)
+    const sourceHeight = Number(layerImage.height || layer.height)
+    layerImage.set({
+      left: layer.x,
+      top: layer.y,
+      scaleX: layer.width / sourceWidth * layer.scale_x,
+      scaleY: layer.height / sourceHeight * layer.scale_y,
+      angle: layer.angle,
+      selectable: !layer.locked,
+      evented: !layer.locked,
+      objectCaching: false,
+    })
+    const custom = layerImage as WorkbenchObject
+    custom.imageLayerId = layer.id
+    custom.imageLayerType = layer.type
+    custom.workbenchLayerUrl = layer.url
+    canvas.add(layerImage)
+  }
   for (const layer of project.canvas.text_layers) canvas.add(textLayerToFabric(layer))
   canvas.requestRenderAll()
 }
@@ -1028,7 +1579,9 @@ function textLayerToFabric(layer: ImageWorkbenchTextLayer): Textbox {
     fontFamily: layer.font_family,
     fontSize: layer.font_size,
     fontWeight: layer.font_weight,
-    fontStyle: fabricFontStyle(layer.font_style),
+    // Fabric's text metrics call toLowerCase() on fontStyle during export.
+    // Old projects legitimately omit the optional persisted value.
+    fontStyle: fabricFontStyle(layer.font_style) ?? 'normal',
     textAlign: layer.text_align,
     stroke: layer.stroke,
     strokeWidth: layer.stroke_width,
@@ -1062,6 +1615,26 @@ function extractTextLayers(canvas: Canvas): ImageWorkbenchTextLayer[] {
       stroke: typeof obj.stroke === 'string' ? obj.stroke : undefined,
       stroke_width: Number(obj.strokeWidth ?? 0),
       opacity: Number(obj.opacity ?? 1),
+    }))
+}
+
+function extractImageLayers(canvas: Canvas): ImageWorkbenchImageLayer[] {
+  return canvas.getObjects()
+    .filter((obj): obj is FabricImage & WorkbenchObject => Boolean((obj as WorkbenchObject).imageLayerId && obj instanceof FabricImage))
+    .map((obj) => ({
+      id: obj.imageLayerId!,
+      type: obj.imageLayerType ?? 'reference_image',
+      asset_id: obj.imageLayerId!.replace(/^layer_/, ''),
+      url: obj.workbenchLayerUrl,
+      x: Number(obj.left ?? 0),
+      y: Number(obj.top ?? 0),
+      width: Number(obj.width ?? 0) * Number(obj.scaleX ?? 1),
+      height: Number(obj.height ?? 0) * Number(obj.scaleY ?? 1),
+      scale_x: 1,
+      scale_y: 1,
+      angle: Number(obj.angle ?? 0),
+      locked: obj.selectable !== true,
+      visible: obj.visible !== false,
     }))
 }
 
@@ -1122,8 +1695,10 @@ function exportCanvasPng(canvas: Canvas): string {
 
 function sourceForEdit(version: ImageWorkbenchVersion, description: string, intent: 'edit_content' | 'inpaint', quality: ImageQuality) {
   return {
-    source_generation_id: version.generation_id,
-    source_image_path: version.generation_id ? undefined : version.image_url,
+    // A persisted workbench version always has a local upload URL. Prefer it
+    // over the ephemeral generation index so reopened/exported projects edit
+    // the exact version the user selected.
+    source_image_path: version.image_url,
     description,
     ratio: version.ratio,
     intent,
@@ -1133,8 +1708,7 @@ function sourceForEdit(version: ImageWorkbenchVersion, description: string, inte
 
 function sourceForUpscale(version: ImageWorkbenchVersion): { source_generation_id?: string; source_image_path?: string; scale: 4 } {
   return {
-    source_generation_id: version.generation_id,
-    source_image_path: version.generation_id ? undefined : version.image_url,
+    source_image_path: version.image_url,
     scale: 4,
   }
 }
@@ -1205,7 +1779,7 @@ function parseTextLayerSnapshot(snapshot: string): ImageWorkbenchTextLayer[] {
 }
 
 function reviewFromRecord(record: Record<string, unknown>): ImageWorkbenchReview {
-  const review: ImageWorkbenchReview = {}
+  const review: ImageWorkbenchReview = { portrait_user_confirmed: false }
   const textStatus = stringField(record, 'text_quality_status')
   if (textStatus) review.text_quality_status = textStatus
   const textWarning = boolField(record, 'text_quality_warning')
@@ -1214,10 +1788,22 @@ function reviewFromRecord(record: Record<string, unknown>): ImageWorkbenchReview
   if (textMessage) review.text_quality_warning_message = textMessage
   const textMissing = stringArrayField(record, 'text_quality_missing')
   if (textMissing) review.text_quality_missing = textMissing
+  const posterState = stringField(record, 'poster_quality_state')
+  if (posterState === 'blocked' || posterState === 'risk' || posterState === 'recommended' || posterState === 'user_confirmed' || posterState === 'unchecked') review.poster_quality_state = posterState
+  const posterGate = boolField(record, 'poster_hard_gate_passed')
+  if (posterGate !== undefined) review.poster_hard_gate_passed = posterGate
+  const posterWarnings = stringArrayField(record, 'poster_hard_gate_warnings')
+  if (posterWarnings) review.poster_hard_gate_warnings = posterWarnings
   const portraitStatus = stringField(record, 'portrait_qc_status')
   if (portraitStatus) review.portrait_qc_status = portraitStatus
   const portraitChecked = boolField(record, 'portrait_qc_auto_checked')
   if (portraitChecked !== undefined) review.portrait_qc_auto_checked = portraitChecked
+  const portraitQualityState = stringField(record, 'portrait_quality_state')
+  if (portraitQualityState === 'blocked' || portraitQualityState === 'risk' || portraitQualityState === 'recommended' || portraitQualityState === 'user_confirmed' || portraitQualityState === 'unchecked') review.portrait_quality_state = portraitQualityState
+  const consistency = stringField(record, 'portrait_consistency_status')
+  if (consistency === 'preserved' || consistency === 'uncertain' || consistency === 'drifted' || consistency === 'not_checked') review.portrait_consistency_status = consistency
+  const portraitConfirmed = boolField(record, 'portrait_user_confirmed')
+  if (portraitConfirmed !== undefined) review.portrait_user_confirmed = portraitConfirmed
   const portraitMessage = stringField(record, 'portrait_qc_message')
   if (portraitMessage) review.portrait_qc_message = portraitMessage
   const portraitWarnings = stringArrayField(record, 'portrait_qc_warnings')
@@ -1226,6 +1812,28 @@ function reviewFromRecord(record: Record<string, unknown>): ImageWorkbenchReview
   if (inputStatus) review.input_qc_status = inputStatus
   const inputWarnings = stringArrayField(record, 'input_qc_warnings')
   if (inputWarnings) review.input_qc_warnings = inputWarnings
+  const fidelity = record.input_fidelity
+  if (fidelity && typeof fidelity === 'object' && !Array.isArray(fidelity)) {
+    const value = fidelity as Record<string, unknown>
+    const requested = stringField(value, 'input_fidelity_requested')
+    const status = stringField(value, 'input_fidelity_status')
+    if (requested === 'high' || requested === 'standard' || status === 'accepted' || status === 'unsupported' || status === 'unknown' || status === 'not_requested') {
+      review.input_fidelity = {
+        ...(requested === 'high' || requested === 'standard' ? { input_fidelity_requested: requested } : {}),
+        input_fidelity_status: status === 'accepted' || status === 'unsupported' || status === 'unknown' || status === 'not_requested' ? status : 'unknown',
+      }
+    }
+  }
+  const fidelityRisk = stringField(record, 'input_fidelity_risk')
+  if (fidelityRisk) review.input_fidelity_risk = fidelityRisk
+  const fidelityRequested = stringField(record, 'input_fidelity_requested')
+  const fidelityStatus = stringField(record, 'input_fidelity_status')
+  if (fidelityRequested === 'high' || fidelityRequested === 'standard' || fidelityStatus === 'accepted' || fidelityStatus === 'unsupported' || fidelityStatus === 'unknown' || fidelityStatus === 'not_requested') {
+    review.input_fidelity = {
+      ...(fidelityRequested === 'high' || fidelityRequested === 'standard' ? { input_fidelity_requested: fidelityRequested } : {}),
+      input_fidelity_status: fidelityStatus === 'accepted' || fidelityStatus === 'unsupported' || fidelityStatus === 'unknown' || fidelityStatus === 'not_requested' ? fidelityStatus : 'unknown',
+    }
+  }
   const commercialReady = boolField(record, 'commercial_ready')
   if (commercialReady !== undefined) review.commercial_ready = commercialReady
   const risks = [
@@ -1243,12 +1851,24 @@ function imageReviewLines(review: ImageWorkbenchReview | undefined): string[] {
     const suffix = review.text_quality_warning_message ? `: ${review.text_quality_warning_message}` : ''
     lines.push(`OCR/文字: ${review.text_quality_status}${suffix}`)
   }
+  if (review.poster_quality_state) lines.push(`海报硬闸: ${review.poster_quality_state === 'recommended' ? '客观检查未发现明显阻断' : review.poster_quality_state === 'risk' ? '有风险，需人工复核' : '未检查'}`)
+  for (const warning of review.poster_hard_gate_warnings ?? []) lines.push(`海报风险: ${warning}`)
   if (review.portrait_qc_status) {
     const suffix = review.portrait_qc_message ? `: ${review.portrait_qc_message}` : ''
     lines.push(`人像质检: ${review.portrait_qc_status}${suffix}`)
   }
+  if (review.portrait_quality_state) {
+    const labels = { blocked: '已拦截', risk: '有风险', recommended: '建议候选，等待本人确认', user_confirmed: '用户已确认像本人', unchecked: '未检查' } as const
+    lines.push(`人像状态: ${labels[review.portrait_quality_state]}`)
+  }
+  if (review.portrait_consistency_status && review.portrait_consistency_status !== 'not_checked') {
+    lines.push(`参考一致性: ${review.portrait_consistency_status === 'preserved' ? '未发现明显漂移' : review.portrait_consistency_status === 'drifted' ? '疑似人物漂移' : '需要并排确认'}`)
+  }
   if (review.input_qc_status) lines.push(`参考图检查: ${review.input_qc_status}`)
-  if (review.commercial_ready !== undefined) lines.push(`商用投放: ${review.commercial_ready ? '可进入人工终审' : '需人工复核'}`)
+  if (review.input_fidelity?.input_fidelity_status === 'unsupported') lines.push('高保真图片参数: 当前端点已降级，请人工确认人物一致性')
+  else if (review.input_fidelity?.input_fidelity_status === 'unknown') lines.push('高保真图片参数: 当前端点未能确认，请人工确认人物一致性')
+  if (review.input_fidelity_risk) lines.push(`高保真风险: ${review.input_fidelity_risk}`)
+  if (review.commercial_ready !== undefined) lines.push(`投放状态: ${review.commercial_ready ? '需人工终审' : '不会自动宣称可商用'}`)
   for (const warning of review.text_quality_missing ?? []) lines.push(`缺失文字: ${warning}`)
   for (const warning of review.portrait_qc_warnings ?? []) lines.push(`人像风险: ${warning}`)
   for (const warning of review.input_qc_warnings ?? []) lines.push(`参考图风险: ${warning}`)

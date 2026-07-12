@@ -2,8 +2,11 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { _electron, type ElectronApplication, type Page } from 'playwright'
 import { test as base, expect } from '@playwright/test'
+import { PNG } from 'pngjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const tsRoot = path.resolve(here, '../..')
@@ -37,8 +40,74 @@ export const test = base.extend<DesktopFixtures>({
     let appProcess: ReturnType<ElectronApplication['process']> | null = null
     let window: Page | null = null
     let tracing = false
+    let imageServer: Server | null = null
+    let squareRetryRequestCount = 0
 
     try {
+      const candidatePng = (width: number, height: number, red: number, green: number, blue: number) => {
+        const png = new PNG({ width, height })
+        for (let i = 0; i < png.data.length; i += 4) {
+          png.data[i] = red
+          png.data[i + 1] = green
+          png.data[i + 2] = blue
+          png.data[i + 3] = 255
+        }
+        return PNG.sync.write(png).toString('base64')
+      }
+      const colors = [[24, 74, 58], [120, 46, 38], [42, 58, 104]] as const
+      imageServer = createServer(async (req, res) => {
+        const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+        const chunks: Buffer[] = []
+        for await (const chunk of req) chunks.push(Buffer.from(chunk))
+        const raw = Buffer.concat(chunks).toString('utf8')
+        let count = 1
+        let width = 64
+        let height = 64
+        let imageSize = ''
+        if (req.headers['content-type']?.includes('application/json')) {
+          try {
+            const parsed = JSON.parse(raw)
+            count = Math.max(1, Math.min(4, Number(parsed.n ?? 1)))
+            const match = typeof parsed.size === 'string' ? parsed.size.match(/^(\d+)x(\d+)$/) : null
+            if (match) {
+              imageSize = parsed.size
+              width = Number(match[1])
+              height = Number(match[2])
+            }
+          } catch { count = 1 }
+        } else if (req.headers['content-type']?.includes('multipart/form-data')) {
+          const countMatch = raw.match(/name="n"\r?\n\r?\n(\d+)/)
+          const sizeMatch = raw.match(/name="size"\r?\n\r?\n(\d+)x(\d+)/)
+          if (countMatch) count = Math.max(1, Math.min(4, Number(countMatch[1])))
+          if (sizeMatch) {
+            imageSize = `${sizeMatch[1]}x${sizeMatch[2]}`
+            width = Number(sizeMatch[1])
+            height = Number(sizeMatch[2])
+          }
+        }
+        if (imageSize === '1216x3040') {
+          await new Promise(resolve => setTimeout(resolve, 10_000))
+        }
+        if (imageSize === '1920x1920') {
+          squareRetryRequestCount += 1
+          if (squareRetryRequestCount <= 3) {
+            res.writeHead(502, { 'content-type': 'application/json' })
+            res.end(JSON.stringify({ error: 'e2e transient image failure' }))
+            return
+          }
+        }
+        const body = JSON.stringify({ data: colors.slice(0, count).map(([red, green, blue], index) => ({ b64_json: candidatePng(width, height, red, green, blue), id: `e2e-image-${Date.now()}-${index}` })) })
+        if (url.pathname.endsWith('/images/generations') || url.pathname.endsWith('/images/edits')) {
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(body)
+          return
+        }
+        res.writeHead(404, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: 'not found' }))
+      })
+      await new Promise<void>((resolve, reject) => imageServer!.listen(0, '127.0.0.1', resolve).once('error', reject))
+      const imageBase = `http://127.0.0.1:${(imageServer.address() as AddressInfo).port}/v1`
+
       const closeCurrent = async () => {
         if (window && tracing) {
           await window.context().tracing.stop().catch(() => {})
@@ -73,10 +142,11 @@ export const test = base.extend<DesktopFixtures>({
             MEDIA_BACKEND_URL: '',
             PYTHON_BACKEND_URL: '',
             QF_MEDIA_BACKEND_URL: '',
-            QF_GATEWAY_URL: '',
-            QF_GATEWAY_TOKEN: '',
-            OPENAI_BASE_URL: '',
-            OPENAI_API_KEY: '',
+            QF_GATEWAY_URL: imageBase,
+            QF_GATEWAY_TOKEN: 'desktop-e2e-token',
+            OPENAI_BASE_URL: imageBase,
+            OPENAI_API_KEY: 'desktop-e2e-token',
+            QF_GPT_IMAGE_ASYNC: '0',
             ARK_BASE_URL: '',
             ARK_API_KEY: '',
             SEEDREAM_BASE_URL: '',
@@ -156,6 +226,7 @@ export const test = base.extend<DesktopFixtures>({
         ])
         if (finalProcess?.exitCode === null) finalProcess.kill('SIGKILL')
       }
+      if (imageServer) await new Promise<void>(resolve => imageServer!.close(() => resolve()))
       rmSync(isolatedRoot, { recursive: true, force: true })
     }
   },

@@ -7,6 +7,7 @@ import {
   imageWorkbenchLibraryResponseSchema,
   imageWorkbenchProjectListResponseSchema,
   imageWorkbenchProjectResponseSchema,
+  imageWorkbenchPortraitConfirmRequestSchema,
   imageWorkbenchRollbackRequestSchema,
   imageWorkbenchSaveToLibraryRequestSchema,
   imageWorkbenchUpdateCanvasRequestSchema,
@@ -43,7 +44,7 @@ export function createImageWorkbenchRouteHandler(imageWorkbench: ImageWorkbenchS
         return imageWorkbenchError(err)
       }
     }
-    const projectMatch = action.match(/^workbench\/projects\/([A-Za-z0-9_-]{1,128})(?:\/(canvas|versions|rollback|export|library))?$/)
+    const projectMatch = action.match(/^workbench\/projects\/([A-Za-z0-9_-]{1,128})(?:\/(canvas|versions|rollback|export|library|portrait-confirm))?$/)
     if (!projectMatch) return null
     const projectId = decodeURIComponent(projectMatch[1]!)
     const sub = projectMatch[2]
@@ -77,6 +78,11 @@ export function createImageWorkbenchRouteHandler(imageWorkbench: ImageWorkbenchS
         const body = imageWorkbenchSaveToLibraryRequestSchema.parse(await req.json().catch(() => ({})))
         const item = await imageWorkbench.saveToLibrary(projectId, body)
         return Response.json(imageWorkbenchLibraryResponseSchema.parse({ item }))
+      }
+      if (sub === 'portrait-confirm' && req.method === 'POST') {
+        const body = imageWorkbenchPortraitConfirmRequestSchema.parse(await req.json().catch(() => ({})))
+        const project = await imageWorkbench.confirmPortrait(projectId, body)
+        return Response.json(imageWorkbenchProjectResponseSchema.parse({ project }))
       }
       return new Response('Method not allowed', { status: 405 })
     } catch (err) {

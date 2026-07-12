@@ -71,6 +71,30 @@ test('submit edit sends multipart to /images/edits with attached image', async (
   expect((form as unknown as FormData).getAll('image')).toHaveLength(1)
 })
 
+test('submit records input_fidelity downgrade when the formal endpoint rejects the manual field', async () => {
+  let payload = ''
+  const fetch = createRelayFetch({
+    env: env(),
+    fetchImpl: async (_input, init) => {
+      payload = String(init?.body ?? '')
+      return Response.json({ data: [{ b64_json: B64 }] })
+    },
+  })
+  const submit = await fetch(new Request('http://relay/images/tasks', {
+    method: 'POST',
+    headers: { authorization: 'Bearer relay-secret', 'content-type': 'application/json' },
+    body: JSON.stringify({ mode: 'generate', model: 'gpt-image-2', prompt: 'portrait', input_fidelity: 'high' }),
+  }))
+  const { task_id } = await submit.json()
+  const done = await pollUntilDone(fetch, task_id)
+  expect(payload).not.toContain('"input_fidelity":"high"')
+  expect(done).toMatchObject({
+    input_fidelity_requested: 'high',
+    input_fidelity_status: 'unsupported',
+  })
+  expect(done.input_fidelity_risk).toContain('不接受')
+})
+
 test('OpenAI failure is captured as failed task, not thrown', async () => {
   const fetch = createRelayFetch({
     env: env(),

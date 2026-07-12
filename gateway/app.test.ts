@@ -189,7 +189,7 @@ test('image task submit/poll proxies to relay tasks base with relay token when c
   const { fetch, calls } = makeGateway({ GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks', GW_Q_IMG: '5' })
   const submit = await fetch(new Request('http://local/v1/images/tasks', authed({
     method: 'POST',
-    body: JSON.stringify({ mode: 'generate', model: 'gpt-image-2', prompt: 'x' }),
+    body: JSON.stringify({ mode: 'generate', model: 'gpt-image-2', prompt: 'x', input_fidelity: 'high' }),
     headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
   })))
   expect(submit.status).toBe(200)
@@ -200,6 +200,7 @@ test('image task submit/poll proxies to relay tasks base with relay token when c
     'https://relay.example/relay/imgtasks/images/tasks/task-1',
   ])
   expect((calls[0].init?.headers as Record<string, string>).Authorization).toBe('Bearer relay-secret')
+  expect(JSON.parse(calls[0].body ?? '{}')).toMatchObject({ input_fidelity: 'high' })
 })
 
 test('image task endpoints return 503 when GW_RELAY_TASKS_BASE unset', async () => {
