@@ -65,8 +65,9 @@ jobs:
       - name: Electron + React + sidecar E2E
         working-directory: ts
         run: xvfb-run --auto-servernum bun run e2e:desktop
-      - name: 上传 E2E 报告和失败证据
-        if: always()
+      - name: 上传 E2E 失败证据
+        if: failure()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: desktop-e2e-${{ github.sha }}
