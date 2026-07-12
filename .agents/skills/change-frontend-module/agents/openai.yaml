@@ -1,4 +1,4 @@
 interface:
   display_name: "前端模块开发"
-  short_description: "按功能边界修改 React 页面、组件、状态和 API 适配层"
+  short_description: "按功能边界修改页面、组件、状态、API适配和完整交互状态"
   default_prompt: "使用 $change-frontend-module 完成这次前端功能修改并控制影响面。"

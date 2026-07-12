@@ -64,6 +64,14 @@
 
 ## 开发规范
 
+### 模块化开发总路由（所有代码改动必走）
+
+任何实现、修复、重构或接口调整开始前，先执行 `.claude/skills/模块化开发总路由/SKILL.md`：判定改动类别和唯一主责模块，列清生产者→传输→消费者调用链、契约位置、预计修改范围、明确不改范围与验证清单，再动代码。按总路由选择一个主单项 Skill；涉及契约或远程服务时叠加对应 Skill。完成后执行 `.claude/skills/模块化验证收尾/SKILL.md`。
+
+Codex 使用同一套规范的权威实现 `.agents/skills/project-change-router/`；`.claude/skills/` 是中文入口，禁止复制出第二套流程造成漂移。
+
+Skill 维护采用“架构变化即时更新、普通实现不更新”：新增/删除/改名/拆分/合并模块，或连接方式、部署边界、验证命令变化时，同一次任务执行 `.claude/skills/维护工程Skill/SKILL.md`；新开的 AI 任务读取最新版。
+
 ### 前端(桌面 UI · `ts/desktop/renderer-react/` · React + Tailwind v4)
 - **全面照抄 Codex(ChatGPT.app 内置)**(推翻旧「走法B + 颜色/文案抄 WorkBuddy」):颜色/字体/文案/流式/布局/组件全对标 Codex。逆向真值 = 解包本地 `/Applications/ChatGPT.app` 的 `app.asar` 读真实 CSS/token,档案见 `docs/references/Codex逆向档案/`(01 设计系统 ~ 05 我们前端怎么做 + 真实截图 + 真实CSS摘录)。
 - **强调色改浅蓝**(不用绿、也不用 WorkBuddy 色):主按钮/发送/选中/焦点/链接走蓝 `#0a84ff`(暗 `#409cff`),文字/表面走中性近黑灰(前景色 `color-mix` 分级)。token 全在 `theme/workbuddy-tokens.css`(现 = Codex 主题层)。**前端不显示模型名**(白标)。左栏照 Codex(新建任务/已安排/插件/项目);助手回复无头像无名、上方「已处理 Ns」。

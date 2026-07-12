@@ -1,85 +1,25 @@
 ---
 name: change-backend-module
-description: [TODO: Complete and informative explanation of what the skill does and when to use it. Include WHEN to use this skill - specific scenarios, file types, or tasks that trigger it.]
+description: Implement Bun and TypeScript backend changes inside the owning module while keeping transport, application orchestration, domain logic, storage, and external adapters separated. Use for routes, services, agent runtime, tools, permissions, tasks, media, providers, workspace, and persistence changes that preserve or intentionally manage contracts.
 ---
 
-# Change Backend Module
+# 后端模块开发
 
-## Overview
+保持依赖方向：`route/transport -> application service -> domain -> adapter/store`。领域代码不得反向依赖 HTTP、Electron 或 React。
 
-[TODO: 1-2 sentences explaining what this skill enables]
+## 执行流程
 
-## Structuring This Skill
+1. 判断属于 A 线 Agent 内核还是 B 线确定性产品功能。
+2. 找到现有主责模块、服务接口和测试；优先扩展现有抽象。
+3. route 只做解析、鉴权/权限、调用服务和响应映射；业务分支放入服务或领域模块。
+4. adapter 封装文件、进程、网络、provider 和第三方 SDK；通过依赖注入保持可测。
+5. 若外部字段、事件或错误变化，使用共享契约 Skill；否则用测试证明契约未变。
+6. 为领域规则写单元测试，为路由写薄契约测试，为关键跨层路径写集成测试。
 
-[TODO: Choose the structure that best fits this skill's purpose. Common patterns:
+## 项目约束
 
-**1. Workflow-Based** (best for sequential processes)
-- Works well when there are clear step-by-step procedures
-- Example: DOCX skill with "Workflow Decision Tree" -> "Reading" -> "Creating" -> "Editing"
-- Structure: ## Overview -> ## Workflow Decision Tree -> ## Step 1 -> ## Step 2...
-
-**2. Task-Based** (best for tool collections)
-- Works well when the skill offers different operations/capabilities
-- Example: PDF skill with "Quick Start" -> "Merge PDFs" -> "Split PDFs" -> "Extract Text"
-- Structure: ## Overview -> ## Quick Start -> ## Task Category 1 -> ## Task Category 2...
-
-**3. Reference/Guidelines** (best for standards or specifications)
-- Works well for brand guidelines, coding standards, or requirements
-- Example: Brand styling with "Brand Guidelines" -> "Colors" -> "Typography" -> "Features"
-- Structure: ## Overview -> ## Guidelines -> ## Specifications -> ## Usage...
-
-**4. Capabilities-Based** (best for integrated systems)
-- Works well when the skill provides multiple interrelated features
-- Example: Product Management with "Core Capabilities" -> numbered capability list
-- Structure: ## Overview -> ## Core Capabilities -> ### 1. Feature -> ### 2. Feature...
-
-Patterns can be mixed and matched as needed. Most skills combine patterns (e.g., start with task-based, add workflow for complex operations).
-
-Delete this entire "Structuring This Skill" section when done - it's just guidance.]
-
-## [TODO: Replace with the first main section based on chosen structure]
-
-[TODO: Add content here. See examples in existing skills:
-- Code samples for technical skills
-- Decision trees for complex workflows
-- Concrete examples with realistic user requests
-- References to scripts/templates/references as needed]
-
-## Resources (optional)
-
-Create only the resource directories this skill actually needs. Delete this section if no resources are required.
-
-### scripts/
-Executable code (Python/Bash/etc.) that can be run directly to perform specific operations.
-
-**Examples from other skills:**
-- PDF skill: `fill_fillable_fields.py`, `extract_form_field_info.py` - utilities for PDF manipulation
-- DOCX skill: `document.py`, `utilities.py` - Python modules for document processing
-
-**Appropriate for:** Python scripts, shell scripts, or any executable code that performs automation, data processing, or specific operations.
-
-**Note:** Scripts may be executed without loading into context, but can still be read by Codex for patching or environment adjustments.
-
-### references/
-Documentation and reference material intended to be loaded into context to inform Codex's process and thinking.
-
-**Examples from other skills:**
-- Product management: `communication.md`, `context_building.md` - detailed workflow guides
-- BigQuery: API reference documentation and query examples
-- Finance: Schema documentation, company policies
-
-**Appropriate for:** In-depth documentation, API references, database schemas, comprehensive guides, or any detailed information that Codex should reference while working.
-
-### assets/
-Files not intended to be loaded into context, but rather used within the output Codex produces.
-
-**Examples from other skills:**
-- Brand styling: PowerPoint template files (.pptx), logo files
-- Frontend builder: HTML/React boilerplate project directories
-- Typography: Font files (.ttf, .woff2)
-
-**Appropriate for:** Templates, boilerplate code, document templates, images, icons, fonts, or any files meant to be copied or used in the final output.
-
----
-
-**Not every skill requires all three types of resources.**
+- 不继续向 `ts/src/server/index.ts` 增加可独立成域的大段逻辑；新增能力优先建 `server/modules/<domain>` 路由/应用层。
+- Agent 内核以 cc-haha 行为测试为准；产品功能不织进模型循环。
+- 本地状态使用 JSONL/JSON 和原子写入，不引入 SQL。
+- SSE 使用 async generator 并关闭 Bun 请求超时；原生 `.node` 能力遵守 sidecar 边界。
+- 权限、沙箱、路径、凭据和输出白标属于安全边界，修改时补刁钻失败用例。

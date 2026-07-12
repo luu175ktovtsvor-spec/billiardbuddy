@@ -285,8 +285,8 @@ function QueuedMessages() {
  * 斜杠命令 / @ 引用浮层(对标 Codex 逆向规格):与输入框同宽、rounded-2xl + p-1 内衬 + 半透明毛玻璃、
  * 上下渐隐遮罩、行 rounded-lg(非选中整行 75% 透明度、选中中性灰底)、技能组 sticky 标题 + 右侧作用域灰字。
  */
-function TokenPanel({ token, commands, files, activeIdx, query, onPick }: {
-  token: '/' | '@'; commands: SlashCommand[]; files: SlashCommand[]; activeIdx: number; query: string; onPick: (text: string) => void
+function TokenPanel({ token, commands, files, skills = [], activeIdx, query, onPick }: {
+  token: '/' | '@'; commands: SlashCommand[]; files: SlashCommand[]; skills?: SlashCommand[]; activeIdx: number; query: string; onPick: (text: string) => void
 }) {
   const listRef = useRef<HTMLDivElement>(null)
   // 键盘上下移动时选中行滚进可视区(对标 Codex scrollIntoView nearest)
@@ -373,25 +373,57 @@ function TokenPanel({ token, commands, files, activeIdx, query, onPick }: {
               </div>
             ))
           )
-        ) : files.length === 0 ? (
+        ) : skills.length === 0 && files.length === 0 ? (
           <div className="flex items-center gap-2 px-2 py-1.5">
             <IconAt size={14} className="shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
-            <span className="text-[13px]" style={{ color: 'var(--color-text-secondary)' }}>没有匹配的文件</span>
+            <span className="text-[13px]" style={{ color: 'var(--color-text-secondary)' }}>没有匹配的技能或文件</span>
           </div>
         ) : (
-          files.map((it) => (
-            <button
-              key={it.name}
-              type="button"
-              onMouseDown={(e) => { e.preventDefault(); onPick(it.name + ' ') }}
-              className={`${rowClass} hover:bg-[var(--color-surface-hover)] hover:opacity-100`}
-              style={rowStyle(false)}
-            >
-              <IconAt size={14} className="shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
-              <span className="shrink-0">{it.desc}</span>
-              <span className="min-w-0 flex-1 truncate text-xs" style={{ color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>{it.name.slice(1)}</span>
-            </button>
-          ))
+          <>
+            {/* 技能段(对齐 Codex atMentionList 混排:技能在前,选中插入 /技能名) */}
+            {skills.length > 0 && (
+              <div
+                className="sticky top-0 z-10 px-2 py-1 text-xs"
+                style={{ color: 'var(--color-text-tertiary)', background: 'color-mix(in srgb, var(--color-surface) 95%, transparent)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }}
+              >
+                技能
+              </div>
+            )}
+            {skills.map((it) => (
+              <button
+                key={it.name}
+                type="button"
+                onMouseDown={(e) => { e.preventDefault(); onPick(it.name + ' ') }}
+                className={`${rowClass} hover:bg-[var(--color-surface-hover)] hover:opacity-100`}
+                style={rowStyle(false)}
+              >
+                <IconPuzzle size={14} className="shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
+                <span className={it.desc ? 'max-w-[60%] flex-none truncate' : 'min-w-0 flex-1 truncate'}>{it.name}</span>
+                {it.desc && <span className="min-w-0 flex-1 truncate" style={{ color: 'var(--color-text-tertiary)' }}>{it.desc}</span>}
+              </button>
+            ))}
+            {files.length > 0 && (
+              <div
+                className="sticky top-0 z-10 px-2 py-1 text-xs"
+                style={{ color: 'var(--color-text-tertiary)', background: 'color-mix(in srgb, var(--color-surface) 95%, transparent)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }}
+              >
+                文件
+              </div>
+            )}
+            {files.map((it) => (
+              <button
+                key={it.name}
+                type="button"
+                onMouseDown={(e) => { e.preventDefault(); onPick(it.name + ' ') }}
+                className={`${rowClass} hover:bg-[var(--color-surface-hover)] hover:opacity-100`}
+                style={rowStyle(false)}
+              >
+                <IconAt size={14} className="shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
+                <span className="shrink-0">{it.desc}</span>
+                <span className="min-w-0 flex-1 truncate text-xs" style={{ color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>{it.name.slice(1)}</span>
+              </button>
+            ))}
+          </>
         )}
       </div>
     </div>
@@ -504,8 +536,15 @@ export function Composer() {
   }, [token, allCommands, slashQuery])
   const slashActive = token === '/' && !slashDismissed && filteredCommands.length > 0
 
-  // @ 引用:列工作树文件(点击插入 @路径);/ 的键盘逻辑不受影响
+  // @ 引用:技能 + 工作树文件混排(对齐 Codex atMentionList 的「技能」段;选技能插入 /技能名——
+  // 后端「斜杠命令=技能」语义现成,模型见 /名字 即知道要调它);/ 的键盘逻辑不受影响。
   const atQuery = token === '@' ? value.slice(1).toLowerCase() : ''
+  const atSkills = useMemo(() => {
+    if (token !== '@') return [] as SlashCommand[]
+    return allCommands
+      .filter((c) => c.source === 'skill' && c.name.slice(1).toLowerCase().includes(atQuery))
+      .slice(0, 5)
+  }, [token, allCommands, atQuery])
   const atFiles = useMemo(() => {
     if (token !== '@' || !tree) return [] as SlashCommand[]
     const out: SlashCommand[] = []
@@ -583,7 +622,7 @@ export function Composer() {
     <div className="px-4 pb-2 pt-1">
       <div className="relative mx-auto w-full" style={{ maxWidth: 768 }}>
         {token && !(token === '/' && slashDismissed) && (
-          <TokenPanel token={token} commands={filteredCommands} files={atFiles} activeIdx={slashIdx} query={slashQuery} onPick={(txt) => { setValue(txt); taRef.current?.focus() }} />
+          <TokenPanel token={token} commands={filteredCommands} files={atFiles} skills={atSkills} activeIdx={slashIdx} query={slashQuery} onPick={(txt) => { setValue(txt); taRef.current?.focus() }} />
         )}
         <QueuedMessages />
         {/* 粘贴的文本附件卡(对齐 Codex:标题 + 字数 + 在文本框中显示 / 移除) */}

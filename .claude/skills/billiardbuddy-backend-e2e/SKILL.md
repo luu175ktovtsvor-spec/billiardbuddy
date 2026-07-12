@@ -1,22 +1,23 @@
 ---
 name: billiardbuddy-backend-e2e
-description: 给「球房管家」后端(ts/ 架构:Bun/TS sidecar + ReAct 主循环 + 文件式存储)做**端到端后端测试**——不碰前端 UI,程序化起真 sidecar,喂真实用户输入,观察大模型在 ReAct 循环里怎么走(调哪些工具/什么路径/transcript 留什么/最终结果),断言到"工具调用链 + 落盘副作用 + 权限档 + 领域包 + 白标"。两种模型模式:脚本模型(fetchImpl 注入固定 SSE,确定性、可 CI,主力)/ 真模型(真调 mimo 走大陆网关,看真实决策走位,冒烟)。当要测后端全链路、验证某个用户输入大模型会怎么处理、复现/定位后端行为、或在 UI e2e 之前先把后端跑通时使用。配套驱动:run.ts。
+description: 对球房管家 Bun/TS sidecar 做后端端到端测试，验证 ReAct 工具链、事件流、落盘、权限、领域包和白标。需要先跑通后端全链路、复现跨层后端行为或为 UI E2E 提供后端证据时使用；默认脚本模型，真模型仅作手动冒烟。配套驱动 run.ts。
 ---
 
 # 球房管家 · 后端端到端测试(不碰前端 · 观察大模型在 ReAct 循环里怎么走)
 
 > ⚠️ 开发期测试 skill(测我们自己的后端),不进产品分发;内容写真实端口/路径没问题。
 > 与 `billiardbuddy-desktop-e2e`(UI e2e,带 Electron+React,慢)分工不同:本 skill **只打后端 sidecar API**,无前端、无浏览器,快得多。
+> 先读取 `.claude/skills/模块化开发总路由/SKILL.md`，只运行改动说明中受影响的检查点；新增契约时同时覆盖生产者和消费者。
 
 ## 三层测试金字塔里的位置(先想清楚再动手)
 
 | 层 | 测什么 | 工具 | 速度/数量 |
 |---|---|---|---|
-| 底层 · 单测 | 函数/模块(权限判定、路径校验、压缩、命令分类…) | `bun test`(已有 1706 个) | 快、多、进 CI |
+| 底层 · 单测 | 函数/模块(权限判定、路径校验、压缩、命令分类…) | `bun test` | 快、多、进 CI |
 | **中层 · 后端 e2e(本 skill)** | **起真 sidecar,喂用户输入,看大模型 ReAct 走位 + 工具链 + 落盘 + 权限 + 领域包 + 白标** | `run.ts`(程序化 startServer + fetchImpl / 真模型) | 中、少而关键 |
 | 顶层 · UI e2e | Electron+React 真机点,前端渲染 + 主进程 | `billiardbuddy-desktop-e2e` | 慢、极少、只覆关键路径 |
 
-**owner 口径:先把中层(后端 e2e)做全、做稳,再上顶层(UI e2e)——UI e2e 每轮太慢,不该当主力。**
+先把中层后端 E2E 做稳，再用少量顶层 UI E2E 覆盖关键用户路径；UI E2E 每轮较慢，不当普通回归主力。
 
 ## 为什么"看大模型怎么走"而不只是断言返回值
 
@@ -104,4 +105,4 @@ QF_E2E_LIVE=1 bun run ../.claude/skills/billiardbuddy-backend-e2e/run.ts   # 真
 - SSE 格式:`event: <type>\ndata: <json>\n\n`(type=thinking/tool_call/tool_result/approval_request/context_note/final/done…)。
 - transcript:`<transcriptRoot>/projects/<workspaceRoot slug>/<conversationId>.jsonl`;读用 `SessionService(transcriptRoot).loadTranscript(id)`。
 - 假模型 SSE:OpenAI chat.completions 流式——`data: {choices:[{delta:{tool_calls:[{index,id,function:{name,arguments}}]},finish_reason:'tool_calls'}]}` 然后 `data: {choices:[{delta:{content:'…'},finish_reason:'stop'}]}` 然后 `data: [DONE]`。
-- 运行时 = **Bun**(startServer 用 Bun.serve/bun:sqlite),驱动必须 `bun run`,不能 node。
+- 运行时 = **Bun**（`startServer` 使用 `Bun.serve`），驱动必须 `bun run`，不能用 Node 代跑。
