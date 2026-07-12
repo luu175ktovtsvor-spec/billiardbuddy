@@ -189,6 +189,8 @@ export interface LoadSkillsDirOptions {
   source?: PromptCommand['source']
   /** frontmatter hooks 的信任来源;工作区 .claude/skills 传 'local'(受信任门约束),app/插件省略 → managed。 */
   hookSource?: HookSource
+  /** 技能落点层标记(bundled/user/workspace),透传到 PromptCommand.skillLayer 供前端显示作用域。 */
+  layer?: PromptCommand['skillLayer']
 }
 
 export async function loadSkillsDir(rootDir: string, options: LoadSkillsDirOptions = {}): Promise<SkillLibrary> {
@@ -206,7 +208,9 @@ export async function loadSkillsDir(rootDir: string, options: LoadSkillsDirOptio
     try {
       const s = await stat(skillPath)
       if (!s.isFile()) continue
-      skills.push(await loadSkillFile(skillPath, options.source ?? 'skills', options.hookSource))
+      const skill = await loadSkillFile(skillPath, options.source ?? 'skills', options.hookSource)
+      if (options.layer) skill.skillLayer = options.layer
+      skills.push(skill)
     } catch {
       continue
     }
@@ -265,9 +269,9 @@ export async function loadLayeredSkills(opts: LoadLayeredSkillsOptions = {}): Pr
   const bundledRoot = opts.bundledRoot ?? bundledSkillsRoot()
   const userRoot = opts.userRoot === null ? undefined : (opts.userRoot ?? userSkillsRoot())
   const libs: SkillLibrary[] = []
-  libs.push(await loadSkillsDir(bundledRoot))
-  if (userRoot) libs.push(await loadSkillsDir(userRoot))
-  if (opts.workspaceRoot) libs.push(await loadSkillsDir(workspaceSkillsRoot(opts.workspaceRoot), { hookSource: 'local' }))
+  libs.push(await loadSkillsDir(bundledRoot, { layer: 'bundled' }))
+  if (userRoot) libs.push(await loadSkillsDir(userRoot, { layer: 'user' }))
+  if (opts.workspaceRoot) libs.push(await loadSkillsDir(workspaceSkillsRoot(opts.workspaceRoot), { hookSource: 'local', layer: 'workspace' }))
 
   const byName = new Map<string, PromptCommand>()
   const order: string[] = []

@@ -17,10 +17,12 @@ const RENDERER = join(TS, 'desktop/renderer-dist/index.html') // ui:build 产物
 const OUT = join(TS, 'test-results')
 const SCENARIO = 'smoke'
 
-// --- playwright(用本地已装的) ---
+// --- playwright(用 ts/ 里装的;ESM import 从本文件位置解析找不到 ts/node_modules,须 createRequire 锚定 ts/) ---
 let _electron
-try { ({ _electron } = await import('playwright')) }
-catch { console.error('× 缺 playwright。装: cd ts && bun add -d playwright'); process.exit(2) }
+try {
+  const { createRequire } = await import('node:module')
+  ;({ _electron } = createRequire(join(TS, 'package.json'))('playwright'))
+} catch { console.error('× 缺 playwright。装: cd ts && bun add -d playwright'); process.exit(2) }
 
 // --- 前置:必须先 build 当前分支(别测装机版旧编译) ---
 for (const [p, hint] of [[MAIN, 'bun run desktop:build'], [RENDERER, 'bun run ui:build']]) {
@@ -49,7 +51,91 @@ const CHECKPOINTS = [
       return { frontendPass, backendOk, note }
     },
   },
-  // TODO 补: 发消息→流式回显 / 斜杠面板列命令(含 /台球) / 工具卡展开看 diff / 生图工作台出图 ...
+  {
+    name: 'slash-popup',
+    expectation: '输入 / 弹出命令浮层:真实命令(≥5 条,非 4 条 fallback)、「技能」分组标题、作用域灰字(系统/个人);后端 commands API 带 source+layer',
+    async run(ctx) {
+      let frontendPass = false, note = ''
+      try {
+        const input = ctx.window.locator('[data-testid="chat-input"]')
+        await input.click()
+        await input.fill('/')
+        const panel = ctx.window.locator('[data-testid="token-panel"]')
+        await panel.waitFor({ state: 'visible', timeout: 5000 })
+        await ctx.window.waitForTimeout(400) // 等真实命令列表替换 fallback
+        const items = await ctx.window.locator('[data-testid="slash-item"]').count()
+        const panelText = await panel.innerText()
+        const hasSkillGroup = panelText.includes('技能')
+        const hasScope = panelText.includes('系统') || panelText.includes('个人') || panelText.includes('项目')
+        frontendPass = items >= 5 && hasSkillGroup && hasScope
+        note = `行数=${items}, 技能组=${hasSkillGroup}, 作用域标注=${hasScope}`
+      } catch (e) { note = `前端异常: ${e.message}` }
+      await ctx.shot('slash-popup')
+      const resp = await ctx.backend.api('/api/v1/agent/commands')
+      const cmds = resp?.commands ?? []
+      const backendOk = cmds.length > 0 && cmds.some((c) => c.source === 'skill' && c.layer)
+      return { frontendPass, backendOk, note: note + ` | 后端命令数=${cmds.length}, 含 skill+layer=${backendOk}` }
+    },
+  },
+  {
+    name: 'slash-filter-highlight',
+    expectation: '输入 /mc 过滤:首行 /mcp(前缀分最高),/compact 靠子序列命中;匹配字符深色、未匹配变灰(截图视觉判)。注:默认通用会话不挂台球包,pack 命令不在列表是设计行为,过滤词用 builtin 必有的',
+    async run(ctx) {
+      let frontendPass = false, note = ''
+      try {
+        const input = ctx.window.locator('[data-testid="chat-input"]')
+        await input.fill('/mc')
+        await ctx.window.waitForTimeout(200)
+        const first = ctx.window.locator('[data-testid="slash-item"]').first()
+        const firstText = await first.innerText()
+        frontendPass = firstText.includes('mcp')
+        note = `首行=${firstText.slice(0, 40).replaceAll('\n', ' ')}`
+      } catch (e) { note = `前端异常: ${e.message}` }
+      await ctx.shot('slash-filter-highlight')
+      return { frontendPass, backendOk: await ctx.backend.healthy(), note }
+    },
+  },
+  {
+    name: 'slash-esc-reopen',
+    expectation: 'Esc 收起浮层且保留文本;继续输入自动重弹',
+    async run(ctx) {
+      let frontendPass = false, note = ''
+      try {
+        const input = ctx.window.locator('[data-testid="chat-input"]')
+        const panel = ctx.window.locator('[data-testid="token-panel"]')
+        await input.press('Escape')
+        await panel.waitFor({ state: 'hidden', timeout: 3000 })
+        const textKept = (await input.inputValue()) === '/mc'
+        await input.press('Backspace') // 值变化 → dismissed 复位重弹
+        await panel.waitFor({ state: 'visible', timeout: 3000 })
+        frontendPass = textKept
+        note = `Esc 后文本保留=${textKept}, 再输入重弹=true`
+      } catch (e) { note = `前端异常: ${e.message}` }
+      await ctx.shot('slash-esc-reopen')
+      return { frontendPass, backendOk: await ctx.backend.healthy(), note }
+    },
+  },
+  {
+    name: 'slash-pick-enter',
+    expectation: '回车选中当前高亮命令:命令名 + 空格填入输入框,浮层关闭',
+    async run(ctx) {
+      let frontendPass = false, note = ''
+      try {
+        const input = ctx.window.locator('[data-testid="chat-input"]')
+        await input.fill('/mcp')
+        await ctx.window.waitForTimeout(200)
+        await input.press('Enter')
+        const val = await input.inputValue()
+        const panelGone = await ctx.window.locator('[data-testid="token-panel"]').isHidden().catch(() => true)
+        frontendPass = val === '/mcp ' && panelGone
+        note = `回车后输入框="${val}", 浮层关=${panelGone}`
+        await input.fill('') // 清场
+      } catch (e) { note = `前端异常: ${e.message}` }
+      await ctx.shot('slash-pick-enter')
+      return { frontendPass, backendOk: await ctx.backend.healthy(), note }
+    },
+  },
+  // TODO 补: 发消息→流式回显 / 工具卡展开看 diff / 生图工作台出图 ...
 ]
 
 // ================= driver 主体(框架,一般不用改) =================
@@ -60,14 +146,10 @@ function attribute(fe, be) {
   return 'transport-or-false-success'                    // 前端"成功"但后端报错,重点查
 }
 
-async function getSidecarBase(app) {
-  // main.ts 起 sidecar 用 reserveServerPort 动态端口;React 壳经 IPC 拿地址(见 main.ts:~299)。
-  // TODO(接后端证据): 确认 main.ts 暴露 sidecar url 的确切方式,三选一:
-  //  (a) 起前设 env 固定端口,直连 http://127.0.0.1:<port>;
-  //  (b) app.evaluate 读主进程存的 url(下面先试 globalThis.__QF_SIDECAR_URL__);
-  //  (c) 在 renderer evaluate preload 暴露的 getServerUrl()。
+async function getSidecarBase(app, window) {
+  // main.ts reserveServerPort 动态端口;preload 白名单暴露 desktopHost.getServerUrl()(IPC runtime:getServerUrl)。
   try {
-    const base = await app.evaluate(() => globalThis.__QF_SIDECAR_URL__ ?? null)
+    const base = await window.evaluate(() => globalThis.desktopHost?.runtime?.getServerUrl?.() ?? null)
     if (base) return base
   } catch {}
   return process.env.QF_SERVER_PORT ? `http://127.0.0.1:${process.env.QF_SERVER_PORT}` : null
@@ -76,12 +158,13 @@ async function getSidecarBase(app) {
 async function main() {
   const app = await _electron.launch({ args: [MAIN], env: { ...process.env, QF_UI_REACT: '1' } })
   const window = await app.firstWindow()
-  const sidecarBase = await getSidecarBase(app)
+  await window.waitForLoadState('domcontentloaded').catch(() => {})
+  const sidecarBase = await getSidecarBase(app, window)
   const backend = {
     base: sidecarBase,
     async healthy() {
       if (!sidecarBase) return false            // 拿不到基址=后端证据未接(见 getSidecarBase TODO)
-      try { return (await fetch(`${sidecarBase}/healthz`)).ok } catch { return false }
+      try { return (await fetch(`${sidecarBase}/health`)).ok } catch { return false }
     },
     async api(path) {
       if (!sidecarBase) return null

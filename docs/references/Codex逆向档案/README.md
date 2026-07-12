@@ -42,6 +42,7 @@ node -e 'require("asar").extractFile(process.env.ASAR,"webview/assets/app-C_Uac7
 | `03-对话流与组件.md` | 助手消息/用户气泡/工具行/思考块/步骤胶囊/处理时长/消息动作条/输入区(含强度滑杆、权限胶囊) |
 | `04-右侧审阅面板.md` | 多标签 tab 条、面包屑、分支/改动统计、diff 视图、文件树徽标、环境信息卡、更多菜单 |
 | `05-我们前端怎么做.md` | **落地指南**:每块 Codex 元素映射到我们真实的 React 组件(`ts/desktop/renderer-react/`),标出 main 上还差什么、择优融合 WorkBuddy 的哪几点 |
+| `06-斜杠命令浮层.md` | **斜杠命令 autocomplete 完整规格**(反混淆 JS 组件读出,非仅 CSS):命令注册数据模型、分组/打分/排序管道、行 DOM 与选中态(非选中 75% 透明)、匹配字符高亮、scope 标签(个人/系统)、fade mask;附我们 TokenPanel 落地差异 |
 | `Codex后端代码视图.md` | **后端逆向**:Codex 引擎 = 内嵌开源 `openai/codex`(Rust `codex-rs` 99 crate);SQ/EQ 协议、core 循环、tools、exec/execpolicy/sandboxing 三平台沙箱、MCP/连接器/技能、rollout 存储、cloud-tasks 定时、桌面 Electron 经 UDS 托管 app-server。来源 = 本地 asar + GitHub `openai/codex` |
 | `Codex浏览器批注-基于此调整.md` | **右侧实时浏览器 + 可视化批注/设计修改**:悬停结构化框选 DOM、点框截图 + 输入指令、回传载荷 `AppScreenshot{url,fileId,userPrompt}`;附右侧预览板全能力(diff/审阅/Guardian/交互终端/计划/实时监听/线程分叉回滚/语音)。来源 = `comment-preload.js` + app-server-protocol schema |
 | `截图/` | 9 张真机截图(webp/png) |

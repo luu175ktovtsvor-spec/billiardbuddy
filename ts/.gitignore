@@ -62,3 +62,6 @@ desktop/bundled.env
 
 # 测试遗留:MCP elicit 测试 server 的临时事件目录(每次跑测试可能新生成)
 .server-mcp-elicit-*/
+
+# 桌面 E2E 产物(billiardbuddy-desktop-e2e 每次跑删了重建:截图/manifest/sidecar 日志,可再生)
+test-results/

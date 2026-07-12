@@ -30,6 +30,8 @@ export interface DiscoveryEntry {
   whenToUse?: string
   argHint?: string
   source: DiscoverySource
+  /** 技能落点层(bundled/user/workspace),前端斜杠浮层显示「系统/个人/项目」作用域用。 */
+  layer?: PromptCommand['skillLayer']
   /** cc bundled 语义:清单里永不被截断的条目。技能 + 领域包命令置 true,保证 billiards 在极端预算下仍在。 */
   alwaysInclude: boolean
 }
@@ -44,6 +46,7 @@ export interface PublicCommandEntry {
   name: string
   description: string
   source: DiscoverySource
+  layer?: PromptCommand['skillLayer']
   whenToUse?: string
   argHint?: string
 }
@@ -82,6 +85,7 @@ export function collectDiscoveryEntries(opts: { commands?: CommandLibrary; skill
       whenToUse: cmd.whenToUse,
       argHint: cmd.argumentHint,
       source,
+      layer: cmd.skillLayer,
       alwaysInclude: source === 'skill' || source === 'pack',
     })
   }
@@ -154,6 +158,7 @@ export function toPublicCommandEntries(entries: DiscoveryEntry[]): PublicCommand
     name: entry.name,
     description: entry.description,
     source: entry.source,
+    ...(entry.layer ? { layer: entry.layer } : {}),
     ...(entry.whenToUse ? { whenToUse: entry.whenToUse } : {}),
     ...(entry.argHint ? { argHint: entry.argHint } : {}),
   }))
