@@ -43,8 +43,15 @@ const PERM_DESC: Record<PermissionMode, string> = {
   dontAsk: t('permission.bypassDesc'),
 }
 
-interface SlashCommand { name: string; desc: string }
-interface CommandsResp { commands?: Array<{ name?: string; description?: string; desc?: string }> }
+interface SlashCommand {
+  name: string
+  desc: string
+  /** 后端 DiscoverySource:pack=领域包命令 / skill=技能 / builtin=内置命令;决定图标、分组与作用域标注。 */
+  source?: 'builtin' | 'skill' | 'pack'
+  /** 技能落点层(bundled/user/workspace)→ 右侧「系统/个人/项目」灰字。 */
+  layer?: 'bundled' | 'user' | 'workspace'
+}
+interface CommandsResp { commands?: Array<{ name?: string; description?: string; desc?: string; source?: SlashCommand['source']; layer?: SlashCommand['layer'] }> }
 
 /** 轻量下拉:相对容器 + 绝对菜单 + 透明遮罩兜底关闭。 */
 function Popover({ open, onClose, children, align = 'left' }: { open: boolean; onClose: () => void; children: ReactNode; align?: 'left' | 'right' }) {
@@ -157,60 +164,194 @@ function AddMenu({ onInsertPaths, onStartGoal }: { onInsertPaths: (paths: string
   )
 }
 
-/** 斜杠命令 / @ 引用浮层(/ 命令上下键选;@ 列工作区文件点击插入)。 */
-function TokenPanel({ token, commands, files, activeIdx, onPick }: { token: '/' | '@'; commands: SlashCommand[]; files: SlashCommand[]; activeIdx: number; onPick: (text: string) => void }) {
+// —— 斜杠浮层的 Codex 对标辅助(分组/作用域/图标/匹配高亮;逆向规格见 docs/references/Codex逆向档案)——
+
+/** 技能进「技能」组(对标 Codex slashCommands.skillsGroup),命令(pack/builtin)无组排最前。 */
+function slashGroup(cmd: SlashCommand): string | null {
+  return cmd.source === 'skill' ? '技能' : null
+}
+
+const LAYER_LABEL: Record<NonNullable<SlashCommand['layer']>, string> = { bundled: '系统', user: '个人', workspace: '项目' }
+
+/** 右侧灰字作用域(对标 Codex skills.scope.personal/builtIn):技能按落点层标「系统/个人/项目」,领域包命令标「专家」。 */
+function slashBadge(cmd: SlashCommand): string | null {
+  if (cmd.source === 'pack') return '专家'
+  if (cmd.source === 'skill') return cmd.layer ? LAYER_LABEL[cmd.layer] : null
+  return null
+}
+
+function SlashIcon({ source }: { source?: SlashCommand['source'] }) {
+  const Icon = source === 'pack' ? IconTarget : source === 'skill' ? IconPuzzle : IconSlash
+  return <Icon size={14} className="shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
+}
+
+/** 命令名匹配高亮(对标 Codex:整段命中亮那一段,否则按子序列逐字亮;有命中时未命中字符变灰)。 */
+function HighlightedName({ name, query }: { name: string; query: string }) {
+  const chars = [...name]
+  const q = query.toLowerCase()
+  let matches: boolean[] | null = null
+  if (q) {
+    const idx = name.toLowerCase().indexOf(q)
+    if (idx >= 0) matches = chars.map((_, i) => i >= idx && i < idx + q.length)
+    else {
+      let j = 0
+      matches = chars.map((c) => (j < q.length && c.toLowerCase() === q[j] ? (j++, true) : false))
+    }
+    if (!matches.some(Boolean)) matches = null
+  }
+  return (
+    <>
+      {chars.map((c, i) => (
+        <span key={i} style={matches && !matches[i] ? { color: 'var(--color-text-tertiary)' } : undefined}>{c}</span>
+      ))}
+    </>
+  )
+}
+
+/**
+ * 斜杠命令 / @ 引用浮层(对标 Codex 逆向规格):与输入框同宽、rounded-2xl + p-1 内衬 + 半透明毛玻璃、
+ * 上下渐隐遮罩、行 rounded-lg(非选中整行 75% 透明度、选中中性灰底)、技能组 sticky 标题 + 右侧作用域灰字。
+ */
+function TokenPanel({ token, commands, files, activeIdx, query, onPick }: {
+  token: '/' | '@'; commands: SlashCommand[]; files: SlashCommand[]; activeIdx: number; query: string; onPick: (text: string) => void
+}) {
+  const listRef = useRef<HTMLDivElement>(null)
+  // 键盘上下移动时选中行滚进可视区(对标 Codex scrollIntoView nearest)
+  useEffect(() => {
+    listRef.current?.querySelector('[data-active]')?.scrollIntoView({ block: 'nearest' })
+  }, [activeIdx])
+
+  // 相邻同组聚段(对标 Codex:无组主命令在前、技能聚「技能」组;组标题只在多段时显示)
+  const sections: Array<{ label: string | null; items: Array<{ cmd: SlashCommand; idx: number }> }> = []
+  commands.forEach((cmd, idx) => {
+    const label = slashGroup(cmd)
+    const last = sections[sections.length - 1]
+    if (last && last.label === label) last.items.push({ cmd, idx })
+    else sections.push({ label, items: [{ cmd, idx }] })
+  })
+  const showHeadings = sections.length > 1
+
+  const fadeMask = 'linear-gradient(to bottom, transparent 0, black 8px, black calc(100% - 8px), transparent 100%)'
+  const rowClass = 'flex w-full items-center gap-2 overflow-hidden rounded-lg px-2 py-1.5 text-left text-[13px] transition-colors'
+  const rowStyle = (active: boolean): CSSProperties => ({
+    background: active ? 'var(--color-surface-hover)' : 'transparent',
+    opacity: active ? 1 : 0.75,
+    color: 'var(--color-text-primary)',
+  })
+
   return (
     <div
-      className="absolute bottom-full left-0 z-50 mb-2 max-h-[280px] w-[360px] overflow-auto rounded-xl py-1"
-      style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', boxShadow: 'var(--shadow-popover)' }}
+      data-testid="token-panel"
+      className="absolute inset-x-0 bottom-full z-50 mb-1.5 overflow-hidden rounded-2xl p-1"
+      style={{
+        background: 'color-mix(in srgb, var(--color-surface) 92%, transparent)',
+        backdropFilter: 'blur(8px)',
+        WebkitBackdropFilter: 'blur(8px)',
+        border: '1px solid var(--color-border)',
+        boxShadow: 'var(--shadow-popover)',
+      }}
     >
-      {token === '/' ? (
-        commands.length === 0 ? (
-          <div className="px-3 py-2 text-[13px]" style={{ color: 'var(--color-text-tertiary)' }}>没有匹配的命令</div>
+      <div
+        ref={listRef}
+        className="flex max-h-[320px] w-full flex-col overflow-y-auto"
+        style={{ maskImage: fadeMask, WebkitMaskImage: fadeMask }}
+      >
+        {token === '/' ? (
+          commands.length === 0 ? (
+            <div className="px-2 py-1.5 text-[13px]" style={{ color: 'var(--color-text-tertiary)' }}>没有匹配的命令</div>
+          ) : (
+            sections.map((sec, si) => (
+              <div key={si}>
+                {sec.label != null && showHeadings && (
+                  <div
+                    className="sticky top-0 z-10 px-2 py-1 text-xs"
+                    style={{
+                      color: 'var(--color-text-tertiary)',
+                      background: 'color-mix(in srgb, var(--color-surface) 95%, transparent)',
+                      backdropFilter: 'blur(8px)',
+                      WebkitBackdropFilter: 'blur(8px)',
+                    }}
+                  >
+                    {sec.label}
+                  </div>
+                )}
+                {sec.items.map(({ cmd, idx }) => {
+                  const badge = slashBadge(cmd)
+                  const active = idx === activeIdx
+                  return (
+                    <button
+                      key={cmd.name}
+                      type="button"
+                      data-testid="slash-item"
+                      data-active={active || undefined}
+                      onMouseDown={(e) => { e.preventDefault(); onPick(cmd.name + ' ') }}
+                      className={rowClass}
+                      style={rowStyle(active)}
+                    >
+                      <SlashIcon source={cmd.source} />
+                      <span className={cmd.desc ? 'max-w-[60%] flex-none truncate' : 'min-w-0 flex-1 truncate'}>
+                        <HighlightedName name={cmd.name} query={query} />
+                      </span>
+                      {cmd.desc && <span className="min-w-0 flex-1 truncate" style={{ color: 'var(--color-text-tertiary)' }}>{cmd.desc}</span>}
+                      {badge && <span className="ml-auto shrink-0 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{badge}</span>}
+                    </button>
+                  )
+                })}
+              </div>
+            ))
+          )
+        ) : files.length === 0 ? (
+          <div className="flex items-center gap-2 px-2 py-1.5">
+            <IconAt size={14} className="shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
+            <span className="text-[13px]" style={{ color: 'var(--color-text-secondary)' }}>没有匹配的文件</span>
+          </div>
         ) : (
-          commands.map((it, i) => (
+          files.map((it) => (
             <button
               key={it.name}
               type="button"
               onMouseDown={(e) => { e.preventDefault(); onPick(it.name + ' ') }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors"
-              style={{ background: i === activeIdx ? 'var(--color-surface-selected)' : 'transparent' }}
+              className={`${rowClass} hover:bg-[var(--color-surface-hover)] hover:opacity-100`}
+              style={rowStyle(false)}
             >
-              <IconSlash size={14} style={{ color: 'var(--color-text-tertiary)' }} />
-              <span className="shrink-0 text-[13px]" style={{ color: 'var(--color-text-primary)' }}>{it.name}</span>
-              <span className="truncate text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{it.desc}</span>
+              <IconAt size={14} className="shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
+              <span className="shrink-0">{it.desc}</span>
+              <span className="min-w-0 flex-1 truncate text-xs" style={{ color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>{it.name.slice(1)}</span>
             </button>
           ))
-        )
-      ) : files.length === 0 ? (
-        <div className="flex items-center gap-2 px-3 py-2">
-          <IconAt size={14} style={{ color: 'var(--color-text-tertiary)' }} />
-          <span className="text-[13px]" style={{ color: 'var(--color-text-secondary)' }}>没有匹配的文件</span>
-        </div>
-      ) : (
-        files.map((it) => (
-          <button
-            key={it.name}
-            type="button"
-            onMouseDown={(e) => { e.preventDefault(); onPick(it.name + ' ') }}
-            className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
-          >
-            <IconAt size={14} style={{ color: 'var(--color-text-tertiary)' }} />
-            <span className="shrink-0 text-[13px]" style={{ color: 'var(--color-text-primary)' }}>{it.desc}</span>
-            <span className="truncate text-xs" style={{ color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>{it.name.slice(1)}</span>
-          </button>
-        ))
-      )}
+        )}
+      </div>
     </div>
   )
 }
 
 const FALLBACK_COMMANDS: SlashCommand[] = [
-  { name: '/台球', desc: '在这个窗口挂载台球运营专家(只影响当前窗口)' },
-  { name: '/台球关闭', desc: '在这个窗口关闭台球运营专家' },
-  { name: '/帮助', desc: '看看能做什么' },
-  { name: '/清空', desc: '清空当前对话' },
+  { name: '/台球', desc: '在这个窗口挂载台球运营专家(只影响当前窗口)', source: 'pack' },
+  { name: '/台球关闭', desc: '在这个窗口关闭台球运营专家', source: 'pack' },
+  { name: '/帮助', desc: '看看能做什么', source: 'builtin' },
+  { name: '/清空', desc: '清空当前对话', source: 'builtin' },
 ]
+
+/** 注册序(对标 Codex sortBy(group, title) + 产品语义):无组命令在前(领域包 > 内置),「技能」组殿后,组内按名。 */
+const SOURCE_ORDER: Record<NonNullable<SlashCommand['source']>, number> = { pack: 0, builtin: 1, skill: 2 }
+function sortSlashCommands(cmds: SlashCommand[]): SlashCommand[] {
+  return [...cmds].sort((a, b) =>
+    (slashGroup(a) ?? '').localeCompare(slashGroup(b) ?? '')
+    || (SOURCE_ORDER[a.source ?? 'builtin'] - SOURCE_ORDER[b.source ?? 'builtin'])
+    || a.name.localeCompare(b.name))
+}
+
+/** 命令打分(对标 Codex 模糊匹配:前缀 3 > 包含 2 > 子序列 1 > 不匹配 0),忽略大小写、名字去斜杠参与。 */
+function scoreSlashCommand(cmd: SlashCommand, query: string): number {
+  const name = cmd.name.slice(1).toLowerCase()
+  const q = query.toLowerCase()
+  if (!q) return 1
+  if (name.startsWith(q)) return 3
+  if (name.includes(q)) return 2
+  let j = 0
+  for (const ch of name) { if (j < q.length && ch === q[j]) j++ }
+  return j >= q.length ? 1 : 0
+}
 
 export function Composer() {
   const [value, setValue] = useState('')
@@ -228,26 +369,60 @@ export function Composer() {
 
   const [allCommands, setAllCommands] = useState<SlashCommand[]>(FALLBACK_COMMANDS)
   const [slashIdx, setSlashIdx] = useState(0)
+  // Esc 关闭浮层(保留已输入文本);输入变化时自动复位再弹(对标 Codex)。
+  const [slashDismissed, setSlashDismissed] = useState(false)
+  const workspaceRoot = useSettingsStore((s) => s.workspaceRoot)
+  const enabledPacks = useSettingsStore((s) => s.enabledPacks)
+  const enabledPacksKey = enabledPacks.join(',')
 
-  // 拉真实斜杠命令(一次)。失败/空则保留内置兜底。
+  // 拉真实斜杠命令(带会话上下文:工作目录 + 已挂领域包,变化即重拉——漏带会看不到包命令/工作区技能)。失败/空则保留内置兜底。
   useEffect(() => {
+    let stale = false
+    const params = new URLSearchParams()
+    if (workspaceRoot) params.set('working_dir', workspaceRoot)
+    if (enabledPacksKey) params.set('enabled_packs', enabledPacksKey)
+    const qs = params.toString()
     void api
-      .get<CommandsResp>('/api/v1/agent/commands')
+      .get<CommandsResp>(`/api/v1/agent/commands${qs ? `?${qs}` : ''}`)
       .then((res) => {
+        if (stale) return
         const raw = res?.commands ?? []
         const cmds = raw
-          .map((c) => ({ name: (c.name ?? '').startsWith('/') ? c.name! : `/${c.name ?? ''}`, desc: c.description ?? c.desc ?? '' }))
+          .map((c) => ({
+            name: (c.name ?? '').startsWith('/') ? c.name! : `/${c.name ?? ''}`,
+            desc: c.description ?? c.desc ?? '',
+            source: c.source,
+            layer: c.layer,
+          }))
           .filter((c) => c.name.length > 1)
-        if (cmds.length) setAllCommands(cmds)
+        if (cmds.length) setAllCommands(sortSlashCommands(cmds))
       })
       .catch(() => { /* 保留兜底 */ })
-  }, [])
+    return () => { stale = true }
+  }, [workspaceRoot, enabledPacksKey])
 
-  // token 检测:/ 或 @ 起头且未含空格。
-  const token: '/' | '@' | null = value.length > 0 && (value[0] === '/' || value[0] === '@') && !value.includes(' ') ? (value[0] as '/' | '@') : null
-  const slashQuery = token === '/' ? value.slice(1).toLowerCase() : ''
-  const filteredCommands = token === '/' ? allCommands.filter((c) => c.name.toLowerCase().includes(slashQuery)).slice(0, 8) : []
-  const slashActive = token === '/' && filteredCommands.length > 0
+  // token 检测:/ 起头且后续无空白无第二个斜杠(路径如 /usr/bin 不误触发,对标 Codex);@ 起头且未含空格。
+  const token: '/' | '@' | null =
+    value.startsWith('/') && !/[\s/]/.test(value.slice(1)) ? '/'
+    : value.startsWith('@') && !value.includes(' ') ? '@'
+    : null
+  const slashQuery = token === '/' ? value.slice(1) : ''
+  // 过滤 + 排序(对标 Codex:打分剔除 0 分,按 [组序 → 分数 → 名字] 排,组不打散;不截断条数,靠浮层滚动)
+  const filteredCommands = useMemo(() => {
+    if (token !== '/') return []
+    if (!slashQuery) return allCommands
+    const groupRank = new Map<string, number>()
+    allCommands.forEach((c) => { const g = slashGroup(c) ?? ''; if (!groupRank.has(g)) groupRank.set(g, groupRank.size) })
+    return allCommands
+      .map((c) => ({ c, score: scoreSlashCommand(c, slashQuery) }))
+      .filter((x) => x.score > 0)
+      .sort((a, b) =>
+        (groupRank.get(slashGroup(a.c) ?? '') ?? 0) - (groupRank.get(slashGroup(b.c) ?? '') ?? 0)
+        || b.score - a.score
+        || a.c.name.localeCompare(b.c.name))
+      .map((x) => x.c)
+  }, [token, allCommands, slashQuery])
+  const slashActive = token === '/' && !slashDismissed && filteredCommands.length > 0
 
   // @ 引用:列工作树文件(点击插入 @路径);/ 的键盘逻辑不受影响
   const atQuery = token === '@' ? value.slice(1).toLowerCase() : ''
@@ -265,7 +440,7 @@ export function Composer() {
   }, [token, tree, atQuery])
   useEffect(() => { if (token === '@' && tree === null) loadWorkspace() }, [token, tree, loadWorkspace])
 
-  useEffect(() => { setSlashIdx(0) }, [value])
+  useEffect(() => { setSlashIdx(0); setSlashDismissed(false) }, [value])
 
   function autoGrow() {
     const ta = taRef.current
@@ -294,6 +469,8 @@ export function Composer() {
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    // Esc 只收浮层、不动已输入文本(对标 Codex);空结果的「没有匹配的命令」浮层也能收。
+    if (token === '/' && !slashDismissed && e.key === 'Escape') { e.preventDefault(); setSlashDismissed(true); return }
     if (slashActive) {
       if (e.key === 'ArrowDown') { e.preventDefault(); setSlashIdx((i) => (i + 1) % filteredCommands.length); return }
       if (e.key === 'ArrowUp') { e.preventDefault(); setSlashIdx((i) => (i - 1 + filteredCommands.length) % filteredCommands.length); return }
@@ -311,7 +488,9 @@ export function Composer() {
   return (
     <div className="px-4 pb-2 pt-1">
       <div className="relative mx-auto w-full" style={{ maxWidth: 768 }}>
-        {token && <TokenPanel token={token} commands={filteredCommands} files={atFiles} activeIdx={slashIdx} onPick={(txt) => { setValue(txt); taRef.current?.focus() }} />}
+        {token && !(token === '/' && slashDismissed) && (
+          <TokenPanel token={token} commands={filteredCommands} files={atFiles} activeIdx={slashIdx} query={slashQuery} onPick={(txt) => { setValue(txt); taRef.current?.focus() }} />
+        )}
         <div
           className="flex flex-col rounded-[22px]"
           style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border-strong)', boxShadow: 'var(--shadow-input)' }}

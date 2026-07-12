@@ -16,6 +16,7 @@
     "@vitejs/plugin-react": "^6",
     "electron": "^43.1.0",
     "electron-builder": "^26.15.3",
+    "playwright": "^1.61.1",
     "tailwindcss": "^4",
     "vite": "^8"
   },

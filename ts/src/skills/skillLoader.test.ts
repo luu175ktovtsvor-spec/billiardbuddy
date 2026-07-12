@@ -307,6 +307,11 @@ test('loadLayeredSkills:三层合并——workspace 带 local 信任标,同名�
     expect(names).toEqual(['only-bundled', 'only-user', 'only-ws', 'shared'])
     // 同名覆盖:workspace 最后加载,赢
     expect(lib.byName.get('shared')?.description).toBe('from-ws')
+    // 三层各自打 skillLayer 标(前端斜杠浮层「系统/个人/项目」作用域);同名覆盖后层标随覆盖者走
+    expect(lib.byName.get('only-bundled')?.skillLayer).toBe('bundled')
+    expect(lib.byName.get('only-user')?.skillLayer).toBe('user')
+    expect(lib.byName.get('only-ws')?.skillLayer).toBe('workspace')
+    expect(lib.byName.get('shared')?.skillLayer).toBe('workspace')
     // 工作区技能的 frontmatter hooks 必须带 local 信任标(否则绕过信任门)
     expect(lib.byName.get('only-ws')?.hooks?.rules.every(r => r.source === 'local')).toBe(true)
     // 内置技能不带 local 标(managed 可信)
