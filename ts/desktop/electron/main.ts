@@ -69,7 +69,7 @@ function buildSidecarPlan(port: number): SidecarPlan {
     // dev:用 bun 直跑 sidecar 入口(bun 绝对路径)。内置 env 显式指到仓库 desktop/bundled.env:
     // sidecar 的 cwd=userData,靠 cwd 相对路径永远指不到仓库文件(envLoader 的候选链会先认这个显式路径)。
     const devBundledEnv = join(here, '../bundled.env')
-    if (existsSync(devBundledEnv)) env.QF_BUNDLED_ENV = devBundledEnv
+    if (!env.QF_BUNDLED_ENV && existsSync(devBundledEnv)) env.QF_BUNDLED_ENV = devBundledEnv
     return { command: resolveBun(), args: ['run', join(here, '../sidecars/backend-sidecar.ts'), ...args], env, cwd }
   }
   // prod:随包编译二进制(build-sidecar 产物,放在 resources/binaries,命名用完整 target triple)。
