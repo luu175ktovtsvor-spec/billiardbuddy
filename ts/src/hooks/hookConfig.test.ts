@@ -1047,7 +1047,7 @@ test('命令 hook 注入 CLAUDE_PROJECT_DIR;插件 hook 的 ${CLAUDE_PLUGIN_ROOT
   }
 })
 
-test('async/asyncRewake:后台跑不阻塞派发(立即无决策);exit 2 时唤醒进【进程级】队列(跨回合不丢,非回合级 steerInbox)', async () => {
+test('async/asyncRewake:后台跑不阻塞派发;exit 2 时唤醒进【进程级 flat 队列】(不分会话,跨回合不丢,对齐 cc commandQueue)', async () => {
   const { drainAsyncHookWakes, clearAsyncHookWakes } = await import('./asyncHookRegistry')
   const root = mkdtempSync(join(tmpdir(), 'hook-async-'))
   clearAsyncHookWakes()
@@ -1064,13 +1064,13 @@ test('async/asyncRewake:后台跑不阻塞派发(立即无决策);exit 2 时唤�
     let drained: string[] = []
     for (let i = 0; i < 50 && drained.length === 0; i++) {
       await new Promise(r => setTimeout(r, 100))
-      drained = drainAsyncHookWakes('conv-async-1')
+      drained = drainAsyncHookWakes()
     }
     expect(drained.length).toBe(1)
     expect(drained[0]).toContain('磁盘快满了')
     expect(drained[0]).toContain('后台 hook Stop 唤醒')
     // drain 后清空
-    expect(drainAsyncHookWakes('conv-async-1')).toEqual([])
+    expect(drainAsyncHookWakes()).toEqual([])
 
     // async(非 rewake):exit 2 也不入队
     clearAsyncHookWakes()
@@ -1080,7 +1080,7 @@ test('async/asyncRewake:后台跑不阻塞派发(立即无决策);exit 2 时唤�
     const d2 = await runHookEvent(silent, { event: 'Stop', sessionId: 'conv-async-2' }, { workspace: new Workspace(root), conversationId: 'conv-async-2' } as never)
     expect(d2).toEqual([])
     await new Promise(r => setTimeout(r, 400))
-    expect(drainAsyncHookWakes('conv-async-2')).toEqual([])
+    expect(drainAsyncHookWakes()).toEqual([])
   } finally {
     clearAsyncHookWakes()
     rmSync(root, { recursive: true, force: true })

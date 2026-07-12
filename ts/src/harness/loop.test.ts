@@ -3133,7 +3133,7 @@ test('后台 async hook 唤醒:回合起点 drain 进程级队列注入 system-r
   const { pushAsyncHookWake, clearAsyncHookWakes } = await import('../hooks/asyncHookRegistry')
   clearAsyncHookWakes()
   // 模拟上一回合的后台 hook 完成后入队(回合已结束)
-  pushAsyncHookWake('conv-wake-1', '[后台 hook Stop 唤醒(exit 2)] lint 失败')
+  pushAsyncHookWake('[后台 hook Stop 唤醒(exit 2)] lint 失败')
   try {
     const model = scriptedModel([{ kind: 'final', text: 'done' }])
     const events = await collect(runAgentLoop({
@@ -3148,27 +3148,41 @@ test('后台 async hook 唤醒:回合起点 drain 进程级队列注入 system-r
   }
 })
 
-test('条件技能实时激活:read_many_files 批量读命中(审查逮到旧实现漏 paths 数组)+ 预置去重不重复提醒起点已列技能', async () => {
+test('条件技能实时激活:read_many_files 批量读命中(审查逮到旧实现漏 paths 数组提取)', async () => {
   writeFileSync(join(root, 'a.sql'), '1'); writeFileSync(join(root, 'b.sql'), '2')
   const model = scriptedModel([
     { kind: 'tool_calls', calls: [{ id: 'm1', name: 'read_many_files', input: { paths: ['a.sql', 'b.sql'] } }] },
     { kind: 'final', text: 'done' },
   ])
   const sqlSkill = { name: 'sqlhelper', description: 'SQL', paths: ['*.sql'] } as unknown as import('../commands/types').PromptCommand
-  const alreadyListed = { name: 'preexisting', description: 'X', paths: ['*.md'] } as unknown as import('../commands/types').PromptCommand
   const events = await collect(runAgentLoop({
     model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
     systemPrompt: 'SYS', userMessage: 'x',
-    activateConditionalSkills: (paths) => {
-      const out = []
-      if (paths.some(p => p.endsWith('.sql'))) out.push(sqlSkill)
-      if (paths.some(p => p.endsWith('.md'))) out.push(alreadyListed)
-      return out
-    },
-    initialActivatedSkillNames: ['preexisting'], // 起点已在 systemPrompt 清单里
+    activateConditionalSkills: (paths) => paths.some(p => p.endsWith('.sql')) ? [sqlSkill] : [],
   }))
-  // read_many_files 的 paths 数组被正确提取 → sqlhelper 激活
+  // read_many_files 的 paths 数组被正确提取 → sqlhelper 激活(旧 toolInputFilePath 对数组返回 undefined、激活不了)
   expect(events.some(e => e.type === 'context_note' && e.text.includes('sqlhelper'))).toBe(true)
-  // preexisting 起点已列 → 预置去重,即使碰到 .md 也不重复提醒(本例没碰 .md,双保险验证不误报)
-  expect(events.some(e => e.type === 'context_note' && e.text.includes('preexisting'))).toBe(false)
+})
+
+test('条件技能预置去重:起点已列的技能即使本轮再被激活候选命中,也不重复提醒(真验证——审查逮到旧测试断言恒真)', async () => {
+  writeFileSync(join(root, 'notes.md'), 'x')
+  // 关键:激活闭包对本批碰到的 .md 文件【真的会返回 preexisting】——否则去重逻辑没被触达、断言空过。
+  const preexisting = { name: 'preexisting', description: 'X', paths: ['*.md'] } as unknown as import('../commands/types').PromptCommand
+  const activator = (paths: string[]) => paths.some(p => p.endsWith('.md')) ? [preexisting] : []
+  const script = () => scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'r1', name: 'read_file', input: { path: 'notes.md' } }] },
+    { kind: 'final', text: 'done' },
+  ])
+  // A) 预置 initialActivatedSkillNames=['preexisting'](= 起点已在 systemPrompt 清单):本轮碰 .md 命中候选,但去重 → 不提醒
+  const withSeed = await collect(runAgentLoop({
+    model: script(), registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x', activateConditionalSkills: activator, initialActivatedSkillNames: ['preexisting'],
+  }))
+  expect(withSeed.some(e => e.type === 'context_note' && e.text.includes('preexisting'))).toBe(false)
+  // B) 不预置:同样碰 .md 命中候选 → 提醒(证明上面的"不提醒"是预置去重生效,不是激活本身没触发)
+  const withoutSeed = await collect(runAgentLoop({
+    model: script(), registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x', activateConditionalSkills: activator,
+  }))
+  expect(withoutSeed.some(e => e.type === 'context_note' && e.text.includes('preexisting'))).toBe(true)
 })

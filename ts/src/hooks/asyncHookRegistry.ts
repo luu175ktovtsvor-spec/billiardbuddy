@@ -1,33 +1,30 @@
-// 后台 async hook 的跨回合唤醒暂存(对齐 cc AsyncHookRegistry 的意图,桌面精简版)。
+// 后台 async hook(asyncRewake)的跨回合唤醒暂存(对齐 cc messageQueueManager 的 flat commandQueue)。
 //
-// 为什么不能用 ctx.steerInbox:steerInbox 是【回合级】数组(server 每回合 `steerInboxes.get(id) ?? []` 新建、
-// 回合末 `steerInboxes.delete(id)` 销毁)。async hook 后台跑,完成时回合往往已结束,push 进 steerInbox 的消息
-// 会随那个已被丢弃的数组一起永久丢失(审查逮到的真丢消息 bug)。cc 用【进程级】pendingHooks Map + 每轮轮询 drain
-// 从根子上避免。本模块是同款:按 conversationId 存进程级队列,由 loop 每回合起点 drain 注入,跨回合不丢。
+// ⚠️ 机制对齐订正(批5二次审查):cc 的 asyncRewake **绕过** AsyncHookRegistry/pendingHooks(那套只服务纯
+// async:true 的 async_hook_response attachment),走的是 `enqueuePendingNotification()` → messageQueueManager
+// 的【进程唯一、不分会话】flat 队列,始终流向主线程下一轮消费(cc utils/hooks.ts:208-249 + messageQueueManager.ts:142-149)。
 //
-// 生命周期:push 无界增长风险由"回合起点必 drain"兜底(每个活跃会话每回合清空一次);会话永不再开则残留,
-// 属可接受的小泄漏(桌面单用户、会话数有限),不引入定时清理避免复杂度。
+// 为什么必须 flat、不能按 conversationId 分区:async hook 常在【子代理】工具调用期间触发(子代理有独立
+// conversationId=agentId、一次性、结束后没人再当主会话 drain),若按 conversationId 存 agentId,子代理触发的
+// 唤醒会永久沉底(审查逮到的真丢消息)。flat 队列让任何来源的唤醒都进同一队列、由下一个主循环 drain,不丢。
+//
+// 生命周期:队列由"主循环每回合起点必 drain"兜底清空;桌面单用户主活跃会话通常唯一,不会无界增长。
+// 多会话并行时唤醒可能被另一活跃会话 drain(串会话)——与 cc 进程唯一队列同款取舍,消息带事件名不致误解,可接受。
 
-const pendingWakes = new Map<string, string[]>()
+const pendingWakes: string[] = []
 
-/** 后台 async hook(asyncRewake)完成后,把唤醒消息按会话入队,等该会话下一回合 drain。conversationId 为空则丢弃(无处投递)。 */
-export function pushAsyncHookWake(conversationId: string | undefined, message: string): void {
-  if (!conversationId) return
-  const arr = pendingWakes.get(conversationId)
-  if (arr) arr.push(message)
-  else pendingWakes.set(conversationId, [message])
+/** 后台 async hook(asyncRewake)完成后把唤醒消息入进程级 flat 队列,等下一个主循环 drain。不分会话(对齐 cc)。 */
+export function pushAsyncHookWake(message: string): void {
+  pendingWakes.push(message)
 }
 
-/** 取走并清空某会话积压的 async hook 唤醒消息(FIFO)。loop 每回合起点调用,把它们作 system-reminder 注入。 */
-export function drainAsyncHookWakes(conversationId: string | undefined): string[] {
-  if (!conversationId) return []
-  const arr = pendingWakes.get(conversationId)
-  if (!arr || arr.length === 0) return []
-  pendingWakes.delete(conversationId)
-  return arr
+/** 取走并清空全部积压的 async hook 唤醒消息(FIFO)。主循环每回合起点调用,作 system-reminder 注入。 */
+export function drainAsyncHookWakes(): string[] {
+  if (pendingWakes.length === 0) return []
+  return pendingWakes.splice(0)
 }
 
 /** 测试用:清空全部积压。 */
 export function clearAsyncHookWakes(): void {
-  pendingWakes.clear()
+  pendingWakes.length = 0
 }

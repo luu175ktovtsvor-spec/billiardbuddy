@@ -583,11 +583,14 @@ test('toolInputFilePaths:覆盖各文件工具真实入参形状(单数path/read
   expect(toolInputFilePaths({ ranges: [{ path: 'c.sql', start: 1 }] })).toEqual(['c.sql'])
   // patch_files:patches[].path
   expect(toolInputFilePaths({ patches: [{ path: 'd.sql', patch: 'x' }, { path: 'e.sql', patch: 'y' }] })).toEqual(['d.sql', 'e.sql'])
+  // NotebookEdit:notebook_path 主字段(审查逮到旧实现只认单数 path、提不出 notebook_path)
+  expect(toolInputFilePaths({ notebook_path: 'nb.ipynb' })).toEqual(['nb.ipynb'])
   // 空/非对象
   expect(toolInputFilePaths({})).toEqual([])
   expect(toolInputFilePaths(null)).toEqual([])
-  // 编辑工具族全在触发集合(审查逮到 multi_edit_file/patch_file/patch_files 曾漏掉)
-  for (const name of ['read_file', 'read_many_files', 'write_file', 'edit_file', 'multi_edit_file', 'patch_file', 'patch_files']) {
+  // 全部会读/改文件的工具都在触发集合(审查逮到 multi_edit_file/patch_file/patch_files/edit_excel/NotebookEdit 曾漏掉;
+  // 权威对照源 = tools/fileHistory.ts FileHistoryOperation 全写工具 + read_file/read_many_files)
+  for (const name of ['read_file', 'read_many_files', 'write_file', 'edit_file', 'edit_excel', 'multi_edit_file', 'patch_file', 'patch_files', 'NotebookEdit']) {
     expect(FILE_TOUCH_TOOL_NAMES.has(name)).toBe(true)
   }
 })
