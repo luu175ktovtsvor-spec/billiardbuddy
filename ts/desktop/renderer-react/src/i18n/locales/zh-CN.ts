@@ -21,7 +21,8 @@ export const zhCN = {
     automation: '自动化',           // 定时任务 → /api/v1/scheduled-tasks
     sectionTasks: '任务',
     sectionProjects: '项目',        // Codex 左栏「项目」分组
-    sectionConversations: '对话',
+    sectionConversations: '任务',   // 对齐 Codex 中文:thread=「任务」,与顶部「新建任务」统一
+
     archived: '已归档',
     sectionWorkspace: '工作区',
     workspaceDefault: '默认工作区',

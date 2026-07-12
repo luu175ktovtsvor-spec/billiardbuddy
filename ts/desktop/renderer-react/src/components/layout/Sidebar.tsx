@@ -1,10 +1,12 @@
 // 左栏 —— 照 Codex(ChatGPT Codex)左栏信息架构(owner 2026-07-11:左栏直接改成 Codex 的)。
-// 结构:红绿灯位+工具图标 → 品牌行 → 主导航(新建任务/已安排/插件) → 项目分组 → 对话分组 → 底部设置。
-// 项目/对话/工作目录模型(2026-07-12,对齐 Codex flatProjectSidebar.byProject + cc「目录即项目」):
+// 结构:红绿灯位+工具图标 → 品牌行 → 主导航(新建任务/已安排/插件) → 项目分组 → 任务分组 → 底部设置。
+// 项目/任务/工作目录模型(2026-07-12,对齐 Codex 侧栏逆向规格,asar 组件 Th/Hh 反混淆读出):
 //   项目 = 工作目录本身(后端 /sessions/projects 按会话 workspaceRoot 聚合,无独立项目表);
-//   「项目」区 = 非默认目录的项目组,组头可折叠、组内是该项目的会话、组头 hover「+」在此项目新建对话;
-//   「对话」区 = 默认目录/未归组的会话(对齐 Codex 无项目任务);选目录 = 添加/激活项目。
-// 交互:新建任务/会话项接 chatStore 会话开合;会话右键 → 上下文菜单(置顶/重命名/归档/删除)。
+//   项目行点击 = 展开/折叠(无箭头,文件夹开/合图标表态,状态 localStorage 记住);区头 hover「+」= 添加项目(选文件夹);
+//   行 hover「+」在此项目新建任务;右键菜单含「从边栏移除」(只藏项目、磁盘不动,对齐 Codex removeProject 语义);
+//   超过 5 个项目折叠成「显示更多」(对齐 Codex maxGroups=5);
+//   「任务」区 = 默认目录/未归组的会话(Codex 中文把 thread 叫「任务」);侧栏不显时间戳(hideThreadTimestamps),
+//   正在跑的会话右侧浮 spinner(floatStatusIconsRight)。
 import { useEffect, useState, type ReactNode } from 'react'
 import { useChatStore } from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
@@ -19,28 +21,22 @@ import { useResizableWidth } from '../../lib/useResizableWidth'
 import { ResizeHandle } from '../shared/ResizeHandle'
 import { ContextMenu } from '../shared/Menu'
 import { Smiley } from '../shared/Smiley'
+import { toast } from '../../stores/toastStore'
 import {
   IconPanelLeft, IconSearch, IconEdit, IconClock, IconPuzzle,
-  IconFolder, IconSettings, IconChevronDown, IconSun, IconMoon,
-  IconPin, IconArchive, IconTrash, IconSparkles, IconZap, IconPlus,
+  IconFolder, IconFolderOpen, IconSettings, IconChevronDown, IconSun, IconMoon,
+  IconPin, IconArchive, IconTrash, IconSparkles, IconZap, IconPlus, IconSpinner, IconX,
 } from '../shared/icons'
 import { t } from '../../i18n'
 
-function fmtRelative(ts: number): string {
-  const diff = Date.now() - ts
-  if (!ts || Number.isNaN(diff)) return ''
-  const m = Math.floor(diff / 60000)
-  if (m < 1) return '刚刚'
-  if (m < 60) return `${m}分钟前`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}小时前`
-  const d = Math.floor(h / 24)
-  if (d < 30) return `${d}天前`
-  try {
-    return new Date(ts).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
-  } catch {
-    return ''
-  }
+// —— 侧栏本地偏好(纯 UI 态,localStorage;换机丢了不心疼)——
+const EXPANDED_KEY = 'qf.sidebar.expandedProjects'
+const HIDDEN_KEY = 'qf.sidebar.hiddenProjectRoots'
+function readJson<T>(key: string, fallback: T): T {
+  try { return JSON.parse(localStorage.getItem(key) ?? '') as T } catch { return fallback }
+}
+function writeJson(key: string, v: unknown) {
+  try { localStorage.setItem(key, JSON.stringify(v)) } catch { /* 满/禁用就算了 */ }
 }
 
 function ToolBtn({ label, onClick, children }: { label: string; onClick?: () => void; children: ReactNode }) {
@@ -73,20 +69,24 @@ function NavItem({ icon, label, active, onClick }: { icon: ReactNode; label: str
   )
 }
 
-function SectionHeader({ label, count, open, onToggle }: { label: string; count?: number; open: boolean; onToggle: () => void }) {
+function SectionHeader({ label, count, open, onToggle, action }: { label: string; count?: number; open: boolean; onToggle: () => void; action?: ReactNode }) {
   return (
-    <button
-      type="button"
-      onClick={onToggle}
-      className="mt-2 flex w-full items-center gap-1 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide transition-colors hover:text-[var(--color-text-secondary)]"
-      style={{ color: 'var(--color-text-tertiary)' }}
-    >
-      <span className="transition-transform" style={{ transform: open ? 'none' : 'rotate(-90deg)' }}>
-        <IconChevronDown size={12} />
-      </span>
-      <span>{label}</span>
-      {count !== undefined && <span style={{ opacity: 0.7 }}>{count}</span>}
-    </button>
+    <div className="group/sect mt-2 flex w-full items-center gap-1 pr-1">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex min-w-0 flex-1 items-center gap-1 px-2.5 py-1 text-left text-[11px] font-medium uppercase tracking-wide transition-colors hover:text-[var(--color-text-secondary)]"
+        style={{ color: 'var(--color-text-tertiary)' }}
+      >
+        <span className="transition-transform" style={{ transform: open ? 'none' : 'rotate(-90deg)' }}>
+          <IconChevronDown size={12} />
+        </span>
+        <span>{label}</span>
+        {count !== undefined && <span style={{ opacity: 0.7 }}>{count}</span>}
+      </button>
+      {/* 区头动作(对齐 Codex:hover 才显,如「项目」区的 + 添加项目) */}
+      {action && <span className="shrink-0 opacity-0 transition-opacity group-hover/sect:opacity-100">{action}</span>}
+    </div>
   )
 }
 
@@ -98,6 +98,7 @@ export function Sidebar() {
   const togglePin = useSessionStore((s) => s.togglePin)
   const toggleArchive = useSessionStore((s) => s.toggleArchive)
   const activeId = useChatStore((s) => s.conversationId)
+  const chatRunning = useChatStore((s) => s.status === 'running')
   const toggleTheme = useUiStore((s) => s.toggleTheme)
   const effective = useUiStore((s) => s.effectiveTheme)
   const openSettings = useUiStore((s) => s.setSettingsOpen)
@@ -110,7 +111,17 @@ export function Sidebar() {
   const [projectsOpen, setProjectsOpen] = useState(true)
   const [convOpen, setConvOpen] = useState(true)
   const [archivedOpen, setArchivedOpen] = useState(false)
-  const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({})
+  // 展开状态持久化(对齐 Codex:每项目开合记住,重启不丢)。
+  const [expandedProjects, setExpandedProjectsRaw] = useState<Record<string, boolean>>(() => readJson(EXPANDED_KEY, {}))
+  const setExpandedProjects = (updater: (m: Record<string, boolean>) => Record<string, boolean>) => {
+    setExpandedProjectsRaw((m) => { const next = updater(m); writeJson(EXPANDED_KEY, next); return next })
+  }
+  // 「从边栏移除」的项目(对齐 Codex removeProject:只从边栏藏起,磁盘文件不动;再选该目录自动回来)。
+  const [hiddenRoots, setHiddenRoots] = useState<string[]>(() => readJson(HIDDEN_KEY, []))
+  const hideRoot = (root: string) => setHiddenRoots((prev) => { const next = [...new Set([...prev, root])]; writeJson(HIDDEN_KEY, next); return next })
+  const unhideRoot = (root: string) => setHiddenRoots((prev) => { const next = prev.filter((r) => r !== root); writeJson(HIDDEN_KEY, next); return next })
+  // 超过 5 个项目折叠(对齐 Codex maxGroups=5 + 显示更多/收起)。
+  const [showAllProjects, setShowAllProjects] = useState(false)
   const [ctx, setCtx] = useState<{ x: number; y: number; id: string; title: string } | null>(null)
   const [projCtx, setProjCtx] = useState<{ x: number; y: number; root: string } | null>(null)
   const [searching, setSearching] = useState(false)
@@ -123,18 +134,27 @@ export function Sidebar() {
   // 未归档:置顶优先;已归档单列一区。
   const liveSessions = matched.filter((s) => !s.archived).sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned))
   const archivedSessions = matched.filter((s) => s.archived)
-  // —— 项目分组(对齐 Codex byProject):非默认目录的项目 + 「对话」组 = 默认目录/未归组会话。 ——
+  // —— 项目分组(对齐 Codex byProject):非默认目录的项目 + 「任务」组 = 默认目录/未归组会话。 ——
   const defaultRoot = projects.find((p) => p.isDefault)?.workspaceRoot ?? null
   let projectRows = projects.filter((p) => !p.isDefault)
   // 刚选的目录还没有落盘会话(后端首条消息才建 meta)→ 补一行"待落盘"项目,选完目录立刻可见不空窗。
   if (workspaceRoot && workspaceRoot !== defaultRoot && !projectRows.some((p) => p.workspaceRoot === workspaceRoot)) {
     projectRows = [{ workspaceRoot, sessionCount: 0, lastUpdatedAt: '', lastSessionId: '', lastTitle: '', isDefault: false }, ...projectRows]
   }
+  // 「从边栏移除」的项目藏掉(当前激活目录除外——正在用就自动回来),其会话落「任务」区。
+  projectRows = projectRows.filter((p) => p.workspaceRoot === workspaceRoot || !hiddenRoots.includes(p.workspaceRoot))
+  // maxGroups=5(对齐 Codex):超出折叠,「显示更多」展开(激活项目始终可见)。
+  const overflow = projectRows.length > 5
+  const visibleProjectRows = overflow && !showAllProjects
+    ? projectRows.filter((p, i) => i < 5 || p.workspaceRoot === workspaceRoot)
+    : projectRows
   const projectRoots = new Set(projectRows.map((p) => p.workspaceRoot))
   const ungrouped = liveSessions.filter((s) => !s.workspaceRoot || !projectRoots.has(s.workspaceRoot))
   const sessionsOf = (root: string) => liveSessions.filter((s) => s.workspaceRoot === root)
   // 没手动开合过的项目:当前激活的默认展开,其余折叠。
   const isProjOpen = (root: string) => expandedProjects[root] ?? (root === workspaceRoot)
+  // 选目录 = 添加/激活项目,顺带解除「已移除」标记(对齐 Codex:移除只藏边栏,再次选择自动回来)。
+  useEffect(() => { if (workspaceRoot) unhideRoot(workspaceRoot) }, [workspaceRoot]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const commitRename = () => {
     if (editingId) {
@@ -169,6 +189,8 @@ export function Sidebar() {
         </div>
       )
     }
+    // 对齐 Codex 侧栏行:不显时间戳(hideThreadTimestamps),正在跑的会话右侧浮 spinner(floatStatusIconsRight)。
+    const runningHere = active && chatRunning
     return (
       <button
         key={s.id}
@@ -187,7 +209,7 @@ export function Sidebar() {
       >
         {s.pinned && <IconPin size={11} style={{ color: 'var(--color-text-tertiary)', transform: 'rotate(45deg)' }} />}
         <span className="min-w-0 flex-1 truncate text-[13px]" style={{ color: active ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}>{s.title || t('sidebar.newChat')}</span>
-        <span className="shrink-0 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>{fmtRelative(s.updatedAt)}</span>
+        {runningHere && <IconSpinner size={12} className="shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />}
       </button>
     )
   }
@@ -236,12 +258,28 @@ export function Sidebar() {
         <NavItem icon={<IconPuzzle size={17} />} label={t('sidebar.plugins')} active={nav === 'plugins'} onClick={() => setNav('plugins')} />
       </nav>
 
-      {/* 项目 + 对话(项目 = 工作目录,组内是该项目的会话;对话 = 默认目录/未归组会话) */}
+      {/* 项目 + 任务(项目 = 工作目录,组内是该项目的会话;任务 = 默认目录/未归组会话,Codex 中文把 thread 叫「任务」) */}
       <div className="min-h-0 flex-1 overflow-y-auto px-2">
-        <SectionHeader label={t('sidebar.sectionProjects')} count={projectRows.length || undefined} open={projectsOpen} onToggle={() => setProjectsOpen((v) => !v)} />
+        <SectionHeader
+          label={t('sidebar.sectionProjects')}
+          open={projectsOpen}
+          onToggle={() => setProjectsOpen((v) => !v)}
+          action={
+            <button
+              type="button"
+              onClick={() => void pickWorkspaceFolder()}
+              title="添加新项目:选择一个文件夹,程序在这个文件夹里读写"
+              aria-label="添加新项目"
+              className="flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-[var(--color-surface-hover)]"
+              style={{ color: 'var(--color-text-tertiary)' }}
+            >
+              <IconPlus size={14} />
+            </button>
+          }
+        />
         {projectsOpen && (
           <div className="mb-1">
-            {projectRows.map((p) => {
+            {visibleProjectRows.map((p) => {
               const rootPath = p.workspaceRoot
               const name = rootPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || rootPath
               const activeProj = rootPath === workspaceRoot
@@ -249,6 +287,7 @@ export function Sidebar() {
               const group = sessionsOf(rootPath)
               return (
                 <div key={rootPath} className="mb-0.5">
+                  {/* 项目行(对齐 Codex):整行点击 = 展开/折叠,无箭头,文件夹开/合图标表达状态 */}
                   <div
                     className="group/proj flex w-full items-center rounded-lg pr-1 transition-colors hover:bg-[var(--color-surface-hover)]"
                     style={{ background: activeProj ? 'var(--color-surface-selected)' : undefined }}
@@ -259,16 +298,18 @@ export function Sidebar() {
                       onClick={() => setExpandedProjects((m) => ({ ...m, [rootPath]: !open }))}
                       className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left"
                       title={rootPath}
+                      aria-expanded={open}
                     >
-                      <span className="shrink-0 transition-transform" style={{ color: 'var(--color-text-tertiary)', transform: open ? 'none' : 'rotate(-90deg)' }}><IconChevronDown size={12} /></span>
-                      <span className="shrink-0" style={{ color: 'var(--color-text-secondary)' }}><IconFolder size={15} /></span>
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center" style={{ color: 'var(--color-text-secondary)' }}>
+                        {open ? <IconFolderOpen size={15} /> : <IconFolder size={15} />}
+                      </span>
                       <span className="min-w-0 flex-1 truncate text-[13px]" style={{ color: 'var(--color-text-primary)' }}>{name}</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => { setNav('chat'); openNewConversationInProject(rootPath) }}
-                      title="在此项目新建对话"
-                      aria-label={`在 ${name} 新建对话`}
+                      title={`在 ${name} 中新建任务`}
+                      aria-label={`在 ${name} 中新建任务`}
                       className="shrink-0 rounded p-1 opacity-0 transition-opacity hover:bg-[var(--color-surface-hover)] group-hover/proj:opacity-70"
                       style={{ color: 'var(--color-text-secondary)' }}
                     >
@@ -277,43 +318,42 @@ export function Sidebar() {
                   </div>
                   {open && (
                     group.length > 0 ? (
-                      <div className="ml-[13px] border-l pl-1.5" style={{ borderColor: 'var(--color-border)' }}>{group.map(renderRow)}</div>
+                      <div className="ml-6">{group.map(renderRow)}</div>
                     ) : (
-                      <div className="ml-6 px-2.5 py-1 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>还没有对话,点 + 开一个</div>
+                      <div className="ml-6 px-2.5 py-1 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>还没有任务,点 + 开一个</div>
                     )
                   )}
                 </div>
               )
             })}
-            {/* 添加项目 = 选一个文件夹(空会话就地绑 / 有历史开新会话,对齐 cc 改目录=新会话) */}
-            <button
-              type="button"
-              onClick={() => void pickWorkspaceFolder()}
-              className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left opacity-70 transition-opacity hover:bg-[var(--color-surface-hover)] hover:opacity-100"
-              style={{ color: 'var(--color-text-secondary)' }}
-              title="选择一个文件夹作为项目,程序在这个文件夹里读写"
-            >
-              <span className="flex h-[15px] w-3 shrink-0 items-center justify-center"><IconPlus size={13} /></span>
-              <span className="text-[12.5px]">添加项目</span>
-            </button>
+            {/* 超过 5 个项目折叠(对齐 Codex maxGroups):显示更多 / 收起 */}
+            {overflow && (
+              <button
+                type="button"
+                onClick={() => setShowAllProjects((v) => !v)}
+                className="flex w-full items-center rounded-lg px-2 py-1 text-left text-[12.5px] opacity-75 transition-opacity hover:opacity-100"
+                style={{ color: 'var(--color-text-tertiary)' }}
+              >
+                {showAllProjects ? '收起' : `显示更多(${projectRows.length - visibleProjectRows.length})`}
+              </button>
+            )}
           </div>
         )}
 
-        <SectionHeader label={t('sidebar.sectionConversations')} count={ungrouped.length || undefined} open={convOpen} onToggle={() => setConvOpen((v) => !v)} />
+        <SectionHeader label={t('sidebar.sectionConversations')} open={convOpen} onToggle={() => setConvOpen((v) => !v)} />
         {convOpen && (
           <div className="mb-2">
             {sessions.length === 0 ? (
               <button
                 type="button"
                 onClick={() => { setNav('chat'); openNewConversation() }}
-                className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left"
+                className="flex w-full items-center rounded-lg px-2.5 py-1.5 text-left"
                 style={{ background: 'var(--color-surface-selected)' }}
               >
                 <span className="truncate text-[13px]" style={{ color: 'var(--color-text-primary)' }}>{t('sidebar.newChat')}</span>
-                <span className="shrink-0 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>刚刚</span>
               </button>
             ) : ungrouped.length === 0 ? (
-              query.trim() ? <div className="px-2.5 py-1.5 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>没有匹配的对话</div> : null
+              query.trim() ? <div className="px-2.5 py-1.5 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>没有匹配的任务</div> : null
             ) : (
               ungrouped.map(renderRow)
             )}
@@ -353,7 +393,7 @@ export function Sidebar() {
           onClose={() => setProjCtx(null)}
           items={[
             {
-              label: '新建对话',
+              label: '新建任务',
               icon: <IconPlus size={15} />,
               onClick: () => { setNav('chat'); openNewConversationInProject(projCtx.root) },
             },
@@ -364,6 +404,15 @@ export function Sidebar() {
                   onClick: () => { void getDesktopHost().revealPath?.(projCtx.root) },
                 }]
               : []),
+            {
+              label: '从边栏移除',
+              icon: <IconX size={15} />,
+              onClick: () => {
+                // 对齐 Codex removeProject:只从边栏移除,磁盘文件与会话记录都不动;再次选择该文件夹自动回来。
+                hideRoot(projCtx.root)
+                toast('已从边栏移除,磁盘上的文件不受影响')
+              },
+            },
           ]}
         />
       )}

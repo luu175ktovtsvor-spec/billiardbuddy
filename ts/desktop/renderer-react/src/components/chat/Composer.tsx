@@ -13,7 +13,7 @@ import { api } from '../../api/client'
 import type { PermissionMode } from '../../types/chat'
 import {
   IconPlus, IconShield, IconAlertCircle, IconChevronDown, IconMic, IconArrowUp, IconSpinner, IconSlash, IconAt,
-  IconFolder, IconTarget, IconChecklist, IconPuzzle,
+  IconFolder, IconTarget, IconChecklist, IconPuzzle, IconClock, IconEdit, IconX,
 } from '../shared/icons'
 import { MenuList } from '../shared/Menu'
 import { toast } from '../../stores/toastStore'
@@ -205,6 +205,76 @@ function HighlightedName({ name, query }: { name: string; query: string }) {
         <span key={i} style={matches && !matches[i] ? { color: 'var(--color-text-tertiary)' } : undefined}>{c}</span>
       ))}
     </>
+  )
+}
+
+/**
+ * 排队消息条(对标 Codex queuedMessage):运行中发的消息排在输入框上方,回合结束自动逐条发出。
+ * 每行 = 截断文本 + hover 动作(引导=立即插话不中断 / 编辑=拿回输入框 / 删除);中断/出错 → 暂停条 + 「继续」。
+ */
+function QueuedMessages() {
+  const queued = useChatStore((s) => s.queuedMessages)
+  const paused = useChatStore((s) => s.queuePaused)
+  const dequeue = useChatStore((s) => s.dequeueMessage)
+  const steerNow = useChatStore((s) => s.steerQueuedMessage)
+  const resume = useChatStore((s) => s.resumeQueue)
+  const setDraft = useComposerStore((s) => s.setDraft)
+  if (queued.length === 0) return null
+  return (
+    <div className="mb-1.5 px-1" data-testid="queued-messages">
+      {paused && (
+        <div className="flex items-center justify-between gap-2 px-2 py-1 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+          <span>由于你中断了当前响应,队列已暂停</span>
+          <button
+            type="button"
+            onClick={resume}
+            className="shrink-0 rounded-md px-2 py-0.5 transition-colors hover:bg-[var(--color-surface-hover)]"
+            style={{ color: 'var(--color-text-secondary)' }}
+          >
+            继续
+          </button>
+        </div>
+      )}
+      {queued.map((m) => (
+        <div
+          key={m.id}
+          className="group flex min-w-0 items-center gap-1.5 rounded-lg px-2 py-1 transition-colors hover:bg-[var(--color-surface-hover)]"
+          data-testid="queued-item"
+        >
+          <IconClock size={12} className="shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
+          <span className="min-w-0 flex-1 truncate text-[13px]" style={{ color: 'var(--color-text-secondary)' }}>{m.text}</span>
+          <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
+            <button
+              type="button"
+              title="引导:提交,但不中断模型运行"
+              onClick={() => steerNow(m.id)}
+              className="flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-[var(--color-surface-hover)]"
+              style={{ color: 'var(--color-text-secondary)' }}
+            >
+              <IconArrowUp size={13} />
+            </button>
+            <button
+              type="button"
+              title="编辑消息"
+              onClick={() => { dequeue(m.id); setDraft(m.text) }}
+              className="flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-[var(--color-surface-hover)]"
+              style={{ color: 'var(--color-text-secondary)' }}
+            >
+              <IconEdit size={13} />
+            </button>
+            <button
+              type="button"
+              title="删除排队的消息"
+              onClick={() => dequeue(m.id)}
+              className="flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-[var(--color-surface-hover)]"
+              style={{ color: 'var(--color-text-secondary)' }}
+            >
+              <IconX size={13} />
+            </button>
+          </span>
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -462,7 +532,8 @@ export function Composer() {
 
   function submit() {
     const text = value.trim()
-    if (!text || running) return
+    if (!text) return
+    // 运行中也放行:sendMessage 内部会把消息排队(对标 Codex queuedMessage),不再吞掉回车。
     sendMessage(text)
     setValue('')
     if (taRef.current) taRef.current.style.height = 'auto'
@@ -491,6 +562,7 @@ export function Composer() {
         {token && !(token === '/' && slashDismissed) && (
           <TokenPanel token={token} commands={filteredCommands} files={atFiles} activeIdx={slashIdx} query={slashQuery} onPick={(txt) => { setValue(txt); taRef.current?.focus() }} />
         )}
+        <QueuedMessages />
         <div
           className="flex flex-col rounded-[22px]"
           style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border-strong)', boxShadow: 'var(--shadow-input)' }}
