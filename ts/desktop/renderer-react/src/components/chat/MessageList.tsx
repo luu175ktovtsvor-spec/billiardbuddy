@@ -95,6 +95,30 @@ function UserMessageRail({ containerRef }: { containerRef: React.RefObject<HTMLD
   const blocks = useChatStore((s) => s.blocks)
   const users = useMemo(() => blocks.filter((b): b is Extract<ChatBlock, { kind: 'user' }> => b.kind === 'user'), [blocks])
   const [hover, setHover] = useState<number | null>(null)
+  const [current, setCurrent] = useState(0)
+
+  // 当前可视的用户消息(对齐 Codex aria-current):IntersectionObserver 取视口内最靠上的一条。
+  useEffect(() => {
+    const root = containerRef.current
+    if (!root || users.length < 2) return
+    const nodes = [...root.querySelectorAll('[data-block="user"]')]
+    const visible = new Set<number>()
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const en of entries) {
+          const idx = nodes.indexOf(en.target as Element)
+          if (idx === -1) continue
+          if (en.isIntersecting) visible.add(idx)
+          else visible.delete(idx)
+        }
+        if (visible.size > 0) setCurrent(Math.min(...visible))
+      },
+      { root, threshold: 0.1 },
+    )
+    nodes.forEach((n) => io.observe(n))
+    return () => io.disconnect()
+  }, [containerRef, users.length])
+
   if (users.length < 2) return null
 
   const jump = (i: number) => {
@@ -102,7 +126,7 @@ function UserMessageRail({ containerRef }: { containerRef: React.RefObject<HTMLD
     nodes?.[i]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
   const scaleFor = (i: number) => {
-    if (hover == null) return 0.35
+    if (hover == null) return i === current ? 0.6 : 0.35
     const d = Math.abs(i - hover)
     return d === 0 ? 1 : d === 1 ? 0.7 : d === 2 ? 0.45 : d === 3 ? 0.28 : 0.2
   }
@@ -120,6 +144,7 @@ function UserMessageRail({ containerRef }: { containerRef: React.RefObject<HTMLD
           type="button"
           title={u.text.slice(0, 48)}
           aria-label={`跳转到用户消息 ${i + 1}`}
+          aria-current={i === current || undefined}
           onMouseEnter={() => setHover(i)}
           onClick={() => jump(i)}
           className="flex h-[14px] w-[30px] items-center justify-end pr-1"
@@ -127,10 +152,10 @@ function UserMessageRail({ containerRef }: { containerRef: React.RefObject<HTMLD
           <span
             className="block h-[2px] w-[24px] rounded-full"
             style={{
-              background: 'var(--color-text-tertiary)',
+              background: i === current ? 'var(--color-text-secondary)' : 'var(--color-text-tertiary)',
               transform: `scaleX(${scaleFor(i)})`,
               transformOrigin: 'right',
-              transition: 'transform .16s ease',
+              transition: 'transform .16s ease, background .16s ease',
             }}
           />
         </button>
@@ -369,7 +394,7 @@ export function MessageList() {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [blocks])
 
-  // ⌘F 打开线程内查找(对齐 Codex threadFindBar;只在消息流挂载时生效)。
+  // ⌘F / ⌘K 面板「在任务中查找」打开线程内查找(对齐 Codex threadFindBar;只在消息流挂载时生效)。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F')) {
@@ -377,8 +402,10 @@ export function MessageList() {
         setFindOpen(true)
       }
     }
+    const onOpenFind = () => setFindOpen(true)
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('qf-open-find', onOpenFind)
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('qf-open-find', onOpenFind) }
   }, [])
 
   return (
