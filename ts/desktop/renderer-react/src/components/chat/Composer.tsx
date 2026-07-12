@@ -13,7 +13,7 @@ import { api } from '../../api/client'
 import type { PermissionMode } from '../../types/chat'
 import {
   IconPlus, IconShield, IconAlertCircle, IconChevronDown, IconMic, IconArrowUp, IconSpinner, IconSlash, IconAt,
-  IconFolder, IconTarget, IconChecklist, IconPuzzle, IconClock, IconEdit, IconX,
+  IconFolder, IconTarget, IconChecklist, IconPuzzle, IconClock, IconEdit, IconX, IconFileText,
 } from '../shared/icons'
 import { MenuList } from '../shared/Menu'
 import { toast } from '../../stores/toastStore'
@@ -426,8 +426,15 @@ function scoreSlashCommand(cmd: SlashCommand, query: string): number {
   return j >= q.length ? 1 : 0
 }
 
+// 粘贴长文变附件卡的阈值(对齐 Codex pastedTextAttachment 行为;阈值为我们自定的产品参数):
+// 超过它的粘贴不灌进输入框,变成输入框上方的「粘贴的文本」卡,发送时再拼进消息。
+const PASTE_ATTACH_THRESHOLD = 2000
+
+interface PastedAttachment { id: string; text: string }
+
 export function Composer() {
   const [value, setValue] = useState('')
+  const [pasted, setPasted] = useState<PastedAttachment[]>([])
   const status = useChatStore((s) => s.status)
   const hasBlocks = useChatStore((s) => s.blocks.length > 0)
   const sendMessage = useChatStore((s) => s.sendMessage)
@@ -533,12 +540,25 @@ export function Composer() {
     taRef.current?.focus()
   }
 
+  /** 粘贴拦截(对齐 Codex pastedTextAttachment):大段文本不灌输入框,变附件卡,发送时拼进消息。 */
+  function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const text = e.clipboardData?.getData('text/plain') ?? ''
+    if (text.length <= PASTE_ATTACH_THRESHOLD) return
+    e.preventDefault()
+    setPasted((prev) => [...prev, { id: `paste-${Date.now()}-${prev.length}`, text }])
+  }
+
   function submit() {
     const text = value.trim()
-    if (!text) return
+    if (!text && pasted.length === 0) return
+    // 附件文本拼在正文后(围栏标记,模型读得懂、正文不被冲散);全空正文时给一句默认引导。
+    const attachTail = pasted.map((p, i) => `\n\n[粘贴的文本${pasted.length > 1 ? ` ${i + 1}` : ''}]\n"""\n${p.text}\n"""`).join('')
+    const finalText = (text || (pasted.length ? '请看下面粘贴的内容:' : '')) + attachTail
+    if (!finalText.trim()) return
     // 运行中也放行:sendMessage 内部会把消息排队(对标 Codex queuedMessage),不再吞掉回车。
-    sendMessage(text)
+    sendMessage(finalText)
     setValue('')
+    setPasted([])
     if (taRef.current) taRef.current.style.height = 'auto'
   }
 
@@ -556,7 +576,7 @@ export function Composer() {
     }
   }
 
-  const canSend = value.trim().length > 0
+  const canSend = value.trim().length > 0 || pasted.length > 0
   const placeholder = hasBlocks ? t('chat.placeholder') : t('chat.placeholderNew')
 
   return (
@@ -566,6 +586,40 @@ export function Composer() {
           <TokenPanel token={token} commands={filteredCommands} files={atFiles} activeIdx={slashIdx} query={slashQuery} onPick={(txt) => { setValue(txt); taRef.current?.focus() }} />
         )}
         <QueuedMessages />
+        {/* 粘贴的文本附件卡(对齐 Codex:标题 + 字数 + 在文本框中显示 / 移除) */}
+        {pasted.length > 0 && (
+          <div className="mb-1.5 flex flex-wrap gap-1.5 px-1" data-testid="pasted-attachments">
+            {pasted.map((p) => (
+              <div
+                key={p.id}
+                className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px]"
+                style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)' }}
+              >
+                <IconFileText size={13} style={{ color: 'var(--color-text-tertiary)' }} />
+                <span>粘贴的文本</span>
+                <span style={{ color: 'var(--color-text-tertiary)' }}>{p.text.length} 字</span>
+                <button
+                  type="button"
+                  title="在文本框中显示"
+                  onClick={() => { setPasted((prev) => prev.filter((x) => x.id !== p.id)); setValue((v) => (v ? `${v}\n${p.text}` : p.text)); taRef.current?.focus() }}
+                  className="rounded p-0.5 transition-colors hover:bg-[var(--color-surface-hover)]"
+                  style={{ color: 'var(--color-text-tertiary)' }}
+                >
+                  <IconEdit size={12} />
+                </button>
+                <button
+                  type="button"
+                  title="移除粘贴的文本附件"
+                  onClick={() => setPasted((prev) => prev.filter((x) => x.id !== p.id))}
+                  className="rounded p-0.5 transition-colors hover:bg-[var(--color-surface-hover)]"
+                  style={{ color: 'var(--color-text-tertiary)' }}
+                >
+                  <IconX size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div
           className="flex flex-col rounded-[22px]"
           style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border-strong)', boxShadow: 'var(--shadow-input)' }}
@@ -575,6 +629,7 @@ export function Composer() {
             value={value}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
             rows={1}
             placeholder={placeholder}
             className="resize-none bg-transparent px-4 pt-3.5 text-sm leading-relaxed outline-none"
