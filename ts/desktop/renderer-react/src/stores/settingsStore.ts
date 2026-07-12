@@ -62,8 +62,22 @@ function persistPacksMap(map: Record<string, string[]>): void {
   }
 }
 
+// —— 设置页偏好(localStorage;对齐 Codex settings.agent.permissionsMode「在选择器中显示 XX」语义 + power.preventSleepWhileRunning)——
+const HIDDEN_MODES_KEY = 'qf.settings.hiddenPermissionModes'
+const PREVENT_SLEEP_KEY = 'qf.settings.preventSleepWhileRunning'
+function readHiddenModes(): PermissionMode[] {
+  try { return JSON.parse(window.localStorage.getItem(HIDDEN_MODES_KEY) ?? '[]') as PermissionMode[] } catch { return [] }
+}
+function readPreventSleep(): boolean {
+  try { return window.localStorage.getItem(PREVENT_SLEEP_KEY) === '1' } catch { return false }
+}
+
 interface SettingsState {
   defaultPermissionMode: PermissionMode
+  /** 权限选择器里隐藏的档位(对齐 Codex「在编排器中显示 XX 权限」toggle 的关闭态;default/plan 永不可隐藏)。 */
+  hiddenPermissionModes: PermissionMode[]
+  /** 运行任务时防止系统休眠(对齐 Codex preventSleepWhileRunning;App 层按 chat running 状态调 desktopHost.preventSleep)。 */
+  preventSleepWhileRunning: boolean
   /** 当前激活会话挂载的领域包(= enabledPacksByConv[activeConvId] ?? []);空 = 通用 Agent。sendMessage 读它。 */
   enabledPacks: string[]
   /** 按 conversationId 记的领域包映射(持久化)。挂件按会话隔离:某窗口开台球、别的窗口不受影响。 */
@@ -75,6 +89,9 @@ interface SettingsState {
   /** 当前激活会话的工作目录(= workspaceByConv[activeConvId] ?? null);sendMessage 的 working_dir + 右侧面板都读它。 */
   workspaceRoot: string | null
   setPermissionMode: (mode: PermissionMode) => void
+  /** 切换某档在权限选择器里的显隐(default/plan 不接受隐藏)。 */
+  togglePermissionModeHidden: (mode: PermissionMode) => void
+  setPreventSleepWhileRunning: (on: boolean) => void
   /** 设当前**激活会话**的领域包(不是全局);落 per-conv 映射。斜杠 /台球 开、/台球关闭 关、设置开关都走它。 */
   setEnabledPacks: (packs: string[]) => void
   /** 切到某会话:workspaceRoot + enabledPacks 都变成它自己记住的(没有则空,不串台)。 */
@@ -89,12 +106,29 @@ interface SettingsState {
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   defaultPermissionMode: 'default',
+  hiddenPermissionModes: readHiddenModes(),
+  preventSleepWhileRunning: readPreventSleep(),
   enabledPacks: [],
   enabledPacksByConv: readStoredPacksMap(),
   workspaceByConv: readStoredMap(),
   activeConvId: null,
   workspaceRoot: null,
   setPermissionMode: (mode) => set({ defaultPermissionMode: mode }),
+
+  togglePermissionModeHidden: (mode) => {
+    if (mode === 'default' || mode === 'plan') return // 对齐 Codex「默认权限始终显示」;计划档同样常驻
+    const cur = get().hiddenPermissionModes
+    const next = cur.includes(mode) ? cur.filter((m) => m !== mode) : [...cur, mode]
+    try { window.localStorage.setItem(HIDDEN_MODES_KEY, JSON.stringify(next)) } catch { /* 忽略 */ }
+    // 当前档正要被隐藏 → 回落默认档,别让选择器显示一个菜单里不存在的档。
+    if (next.includes(get().defaultPermissionMode)) set({ defaultPermissionMode: 'default' })
+    set({ hiddenPermissionModes: next })
+  },
+
+  setPreventSleepWhileRunning: (on) => {
+    try { window.localStorage.setItem(PREVENT_SLEEP_KEY, on ? '1' : '0') } catch { /* 忽略 */ }
+    set({ preventSleepWhileRunning: on })
+  },
 
   setEnabledPacks: (packs) => {
     const convId = get().activeConvId

@@ -89,9 +89,12 @@ function ToolbarChip({ onClick, tone = 'default', children }: { onClick?: () => 
 function PermissionMenu() {
   const mode = useSettingsStore((s) => s.defaultPermissionMode)
   const setMode = useSettingsStore((s) => s.setPermissionMode)
+  const hiddenModes = useSettingsStore((s) => s.hiddenPermissionModes)
   const [open, setOpen] = useState(false)
   const current = PERM_ORDER.includes(mode) ? mode : 'default'
   const full = current === 'bypassPermissions'
+  // 设置页「在权限菜单中显示 XX」关掉的档位不进菜单(对齐 Codex permissionsMode toggle 语义;default/plan 常驻)。
+  const visibleModes = PERM_ORDER.filter((m) => !hiddenModes.includes(m))
   return (
     <div className="relative">
       <ToolbarChip onClick={() => setOpen((v) => !v)} tone={full ? 'warning' : 'default'}>
@@ -100,7 +103,7 @@ function PermissionMenu() {
         <IconChevronDown size={13} style={{ color: 'var(--color-text-tertiary)' }} />
       </ToolbarChip>
       <Popover open={open} onClose={() => setOpen(false)}>
-        {PERM_ORDER.map((m) => {
+        {visibleModes.map((m) => {
           const on = m === current
           const warn = m === 'bypassPermissions'
           return (

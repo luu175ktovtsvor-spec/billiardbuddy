@@ -101,7 +101,7 @@ export function Sidebar() {
   const chatRunning = useChatStore((s) => s.status === 'running')
   const toggleTheme = useUiStore((s) => s.toggleTheme)
   const effective = useUiStore((s) => s.effectiveTheme)
-  const openSettings = useUiStore((s) => s.setSettingsOpen)
+  const openSettings = () => useUiStore.getState().setNav('settings')
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
   const nav = useUiStore((s) => s.nav)
   const setNav = useUiStore((s) => s.setNav)
@@ -373,7 +373,7 @@ export function Sidebar() {
       <div className="flex items-center gap-1 px-2 py-2" style={{ borderTop: '1px solid var(--color-border)' }}>
         <button
           type="button"
-          onClick={() => openSettings(true)}
+          onClick={openSettings}
           className="flex h-9 flex-1 items-center gap-2.5 rounded-lg px-2.5 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
           style={{ color: 'var(--color-text-primary)' }}
         >
