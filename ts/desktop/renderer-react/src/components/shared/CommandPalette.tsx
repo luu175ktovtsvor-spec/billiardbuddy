@@ -1,10 +1,19 @@
-// 命令面板(⌘K · 照 Codex 顶部弹出的搜索/快捷操作面板)。搜对话 + 跳快捷操作,键盘上下选、回车执行。
-// 入口:⌘K / 顶栏搜索 / 顶栏历史 / 侧栏搜索图标,统一开这个。纯前端。
+// 命令面板(⌘K · 照 Codex 顶部弹出的搜索/快捷操作面板)。搜对话 + 全局命令(对齐 Codex codex.command
+// 注册面里我们有真实动作支撑的子集:主题/边栏/右面板/归档/复制 Markdown/查找/规划模式/上下任务),
+// 键盘上下选、回车执行。入口:⌘K / 顶栏搜索 / 顶栏历史 / 侧栏搜索图标,统一开这个。纯前端。
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useUiStore } from '../../stores/uiStore'
 import { useSessionStore } from '../../stores/sessionStore'
+import { useSettingsStore } from '../../stores/settingsStore'
+import { useChatStore } from '../../stores/chatStore'
+import { useFilePreviewStore } from '../../stores/filePreviewStore'
 import { openNewConversation, openExistingConversation } from '../../lib/conversations'
-import { IconSearch, IconEdit, IconClock, IconPuzzle, IconSettings, IconMessage } from './icons'
+import { composeConversationText } from '../chat/ShareModal'
+import { toast } from '../../stores/toastStore'
+import {
+  IconSearch, IconEdit, IconClock, IconPuzzle, IconSettings, IconMessage,
+  IconSun, IconMoon, IconPanelLeft, IconPanelRight, IconArchive, IconCopy, IconChecklist, IconSparkles, IconZap,
+} from './icons'
 
 interface CmdItem {
   id: string
@@ -41,11 +50,62 @@ export function CommandPalette() {
     () => [
       { id: 'new', label: '新建任务', icon: <IconEdit size={16} />, run: () => { setNav('chat'); openNewConversation() } },
       { id: 'scheduled', label: '已安排', icon: <IconClock size={16} />, run: () => setNav('scheduled') },
+      { id: 'creation', label: '生图工作台', icon: <IconSparkles size={16} />, run: () => setNav('creation') },
+      { id: 'video', label: '剪视频工作台', icon: <IconZap size={16} />, run: () => setNav('video') },
       { id: 'plugins', label: '插件', icon: <IconPuzzle size={16} />, run: () => setNav('plugins') },
       { id: 'settings', label: '设置', icon: <IconSettings size={16} />, run: () => setNav('settings') },
+      // —— 全局命令(对齐 Codex codex.command 子集;只放有真实动作的) ——
+      {
+        id: 'theme-toggle', label: '切换深浅主题', icon: useUiStore.getState().effectiveTheme === 'dark' ? <IconSun size={16} /> : <IconMoon size={16} />,
+        run: () => useUiStore.getState().toggleTheme(),
+      },
+      { id: 'toggle-sidebar', label: '切换边栏', sub: '⌘B', icon: <IconPanelLeft size={16} />, run: () => useUiStore.getState().toggleSidebar() },
+      { id: 'toggle-panel', label: '切换右侧工作区面板', sub: '⌘\\', icon: <IconPanelRight size={16} />, run: () => useFilePreviewStore.getState().togglePanel() },
+      { id: 'find', label: '在任务中查找', sub: '⌘F', icon: <IconSearch size={16} />, run: () => { setNav('chat'); window.dispatchEvent(new CustomEvent('qf-open-find')) } },
+      {
+        id: 'plan-mode', label: '切换规划模式', icon: <IconChecklist size={16} />,
+        run: () => {
+          const st = useSettingsStore.getState()
+          const on = st.defaultPermissionMode === 'plan'
+          st.setPermissionMode(on ? 'default' : 'plan')
+          toast(on ? '已回到默认权限' : '已切换到计划模式(只读)')
+        },
+      },
+      {
+        id: 'copy-md', label: '复制整段对话', icon: <IconCopy size={16} />,
+        run: () => { try { void navigator.clipboard?.writeText(composeConversationText(undefined)); toast('整段对话已复制') } catch { toast('复制失败') } },
+      },
+      {
+        id: 'archive', label: '归档当前任务', icon: <IconArchive size={16} />,
+        run: () => {
+          const id = useChatStore.getState().conversationId
+          if (!id) return
+          useSessionStore.getState().toggleArchive(id)
+          toast('已归档,可在设置「已归档任务」找回')
+          openNewConversation()
+        },
+      },
+      {
+        id: 'prev-thread', label: '上一个任务', icon: <IconMessage size={16} />,
+        run: () => stepThread(-1),
+      },
+      {
+        id: 'next-thread', label: '下一个任务', icon: <IconMessage size={16} />,
+        run: () => stepThread(1),
+      },
     ],
     [setNav],
   )
+
+  /** 相邻任务切换(对齐 Codex previous/nextThread):按会话列表顺序移动。 */
+  function stepThread(d: number) {
+    const list = useSessionStore.getState().sessions.filter((s) => !s.archived)
+    if (list.length === 0) return
+    const cur = useChatStore.getState().conversationId
+    const idx = list.findIndex((s) => s.id === cur)
+    const next = list[(idx === -1 ? 0 : idx + d + list.length) % list.length]
+    if (next && next.id !== cur) { setNav('chat'); openExistingConversation(next.id, next.title) }
+  }
 
   const q = query.trim().toLowerCase()
   const shownActions = useMemo(() => (q ? actions.filter((a) => a.label.toLowerCase().includes(q)) : actions), [actions, q])
