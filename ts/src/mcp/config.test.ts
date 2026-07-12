@@ -63,8 +63,20 @@ test('commandForPlatform:Windows 下 npx 走 cmd /c', () => {
 })
 
 test('mcpToolName:归一 OpenAI function-safe 名称,支持 Unicode server 名', () => {
-  expect(mcpToolName('高德 地图', 'search.poi')).toBe('mcp__server__search_poi')
+  // 中文 server 名 → srv-<稳定哈希>:确定性、且不同中文 server 不再撞名(旧实现全部回落 "server" 互撞)。
+  const gaode = mcpToolName('高德 地图', 'search.poi')
+  expect(gaode).toMatch(/^mcp__srv-[a-z0-9]+__search_poi$/)
+  expect(mcpToolName('高德 地图', 'search.poi')).toBe(gaode) // 稳定
+  expect(mcpToolName('百度 网盘', 'search.poi')).not.toBe(gaode) // 不撞
   expect(mcpToolName('my-server', 'read_file')).toBe('mcp__my-server__read_file')
+})
+
+test('mcpToolName:cc 对齐——不折叠连续下划线/不去首尾/不 NFKD(get__weather 保形)', () => {
+  // cc normalization.ts:只替非法字符。折叠会把 get__weather 变 get_weather → 权限规则与模型寻址错位。
+  expect(mcpToolName('fs', 'get__weather')).toBe('mcp__fs__get__weather')
+  expect(mcpToolName('my__srv', 'run')).toBe('mcp__my__srv__run')
+  expect(mcpToolName('fs', '_private_')).toBe('mcp__fs___private_')
+  expect(mcpToolName('café', 'read')).toBe('mcp__caf___read') // é→_,不做 NFKD 变 e
 })
 
 test('approvalClassFromAnnotations:MCP 工具一律要审批,annotations 只区分档级(对齐 cc passthrough→ask)', () => {

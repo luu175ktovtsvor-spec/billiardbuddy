@@ -23,6 +23,14 @@ export interface ModelStepInput {
   signal?: AbortSignal
   /** 可选 token 级流式回调:真模型(ProxyModel)边流边吐正文/推理增量;fake/非流式模型不触发,行为不变。 */
   onDelta?: (delta: ModelStepDelta) => void
+  /**
+   * 工具选择约束(Anthropic 线格式)。Anthropic 端点原样透传;proxy 出方向翻译成 OpenAI tool_choice
+   * (对齐 cc anthropicToOpenaiChat.ts:248-260 convertToolChoice:auto→auto / any→required / none→none /
+   * tool→{type:'function',function:{name}})。主循环当前不传;补齐机制供需要强制/禁用工具的流程表达。
+   */
+  tool_choice?: { type: 'auto' | 'any' | 'none' } | { type: 'tool'; name: string }
+  /** 停止序列(Anthropic stop_sequences);proxy 出方向映射为 OpenAI stop(对齐 cc 同文件 :80-82)。 */
+  stop_sequences?: string[]
 }
 
 export const MODEL_OUTPUT_TRUNCATED_NOTICE = '模型输出被长度上限截断,已要求继续补全。'

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { textBlock, toolResultBlock, toolUseBlock, userText, type Message } from '../types/message'
-import { AUTOCOMPACT_COOLDOWN_MS, COMPACTION_SYSTEM_PROMPT, MAX_COMPACT_SUMMARY_RETRIES, compactPipeline, estimateMessagesChars, extractCompactionSummary, getAutoCompactTokenThreshold, getEffectiveContextWindowTokens, looksLikeContextOverflow, microcompactReadOnlyToolResults, splitForAutocompact } from './compaction'
+import { COMPACTION_SYSTEM_PROMPT, MAX_COMPACT_SUMMARY_RETRIES, compactPipeline, estimateMessagesChars, extractCompactionSummary, getAutoCompactTokenThreshold, getEffectiveContextWindowTokens, looksLikeContextOverflow, microcompactReadOnlyToolResults, splitForAutocompact } from './compaction'
 import type { Model } from '../types/model'
 
 function msgWithTool(id: string, name: string, result: string): Message[] {
@@ -188,68 +188,56 @@ describe('compactPipeline', () => {
     expect(summary.text).not.toContain('不要回灌这段草稿')
   })
 
-  test('自动压缩有冷却期,避免连续轮次反复摘要', async () => {
-    const messages: Message[] = [
-      userText('u0' + 'x'.repeat(60)),
-      userText('u1' + 'x'.repeat(60)),
-      userText('u2' + 'x'.repeat(60)),
-      userText('u3' + 'x'.repeat(60)),
-      userText('u4' + 'x'.repeat(60)),
-      userText('u5' + 'x'.repeat(60)),
-      userText('recent'),
-    ]
+  test('cc 对齐:无冷却/消息数压制——刚压过、上下文仍超阈值 → 下一轮立刻再压(允许连续压缩)', async () => {
+    const bigText = (tag: string): Message => userText(tag + 'x'.repeat(60))
     let called = 0
-    const out = await compactPipeline({
-      messages,
-      model: {
-        async step() {
-          called++
-          return { kind: 'final', text: 'should not run' }
-        },
+    const model: Model = {
+      async step() {
+        called++
+        // 摘要故意返回超长文本:压缩后的 messages 仍超字符阈值,模拟"一次压缩没降到阈值下"。
+        return { kind: 'final', text: '摘'.repeat(200) }
       },
+    }
+    const first = await compactPipeline({
+      messages: [bigText('u0'), bigText('u1'), bigText('u2'), bigText('u3'), userText('recent')],
+      model,
       contextWindowChars: 120,
       readOnlyToolNames: new Set(),
       keepRecentMessages: 1,
       minOldMessages: 2,
-      lastCompactionAtMs: 10_000,
-      nowMs: 10_000 + AUTOCOMPACT_COOLDOWN_MS - 1,
     })
-
-    expect(called).toBe(0)
-    expect(out.didCompact).toBe(false)
-    expect(out.messages).toBe(messages)
+    expect(first.didCompact).toBe(true)
+    // 紧接着(cc 无 30s 冷却)、消息数还比压缩后更少(cc 无"没新增不压"门):仍超阈值就继续压。
+    const second = await compactPipeline({
+      messages: [...first.messages, userText('recent2')],
+      model,
+      contextWindowChars: 120,
+      readOnlyToolNames: new Set(),
+      keepRecentMessages: 1,
+    })
+    expect(called).toBe(2)
+    expect(second.didCompact).toBe(true)
   })
 
-  test('自动压缩后没有新增消息时不重复压同一段历史', async () => {
-    const messages: Message[] = [
-      userText('u0' + 'x'.repeat(60)),
-      userText('u1' + 'x'.repeat(60)),
-      userText('u2' + 'x'.repeat(60)),
-      userText('u3' + 'x'.repeat(60)),
-      userText('u4' + 'x'.repeat(60)),
-      userText('u5' + 'x'.repeat(60)),
-      userText('recent'),
-    ]
+  test('cc 对齐:少量巨型消息(2 条)也允许压缩——旧值 minOld=6 会拒压放任 413', async () => {
+    const messages: Message[] = [userText('giant' + 'x'.repeat(500)), userText('tail')]
     let called = 0
+    const model: Model = {
+      async step() {
+        called++
+        return { kind: 'final', text: '摘要' }
+      },
+    }
     const out = await compactPipeline({
       messages,
-      model: {
-        async step() {
-          called++
-          return { kind: 'final', text: 'should not run' }
-        },
-      },
+      model,
       contextWindowChars: 120,
       readOnlyToolNames: new Set(),
-      keepRecentMessages: 1,
-      minOldMessages: 2,
-      lastCompactedMessageCount: messages.length,
-      nowMs: 99_000,
+      // 不传 keepRecentMessages/minOldMessages:走默认(KEEP_RECENT=0 全量摘要,MIN_OLD=1)。
     })
-
-    expect(called).toBe(0)
-    expect(out.didCompact).toBe(false)
-    expect(out.messages).toBe(messages)
+    expect(called).toBe(1)
+    expect(out.didCompact).toBe(true)
+    expect(out.messages.length).toBe(1)
   })
 
   test('摘要请求超限(prompt-too-long)时收缩最旧一截重试,最终仍压缩成功', async () => {

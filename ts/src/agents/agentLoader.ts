@@ -153,9 +153,28 @@ export async function loadAgentsDir(rootDir: string, options: LoadAgentOptions =
   return agents
 }
 
+/**
+ * 子代理统一工具黑名单(对齐 cc constants/tools.ts:36 ALL_AGENT_DISALLOWED_TOOLS):
+ * 子代理没有"直接问用户 / 切主会话计划档 / 消费·停掉兄弟后台任务 / 再嵌套子代理"的资格——这些属于主循环。
+ * cc 名单 = TaskOutput / TaskStop / EnterPlanMode / ExitPlanModeV2 / AskUserQuestion / Agent(禁嵌套);
+ * 本表含等价 snake/compat 别名与后台变体。收敛在解析处统一剔除,不再靠各 agent md 自带 disallowedTools 兜。
+ */
+export const ALL_AGENT_DISALLOWED_TOOLS: ReadonlySet<string> = new Set([
+  'agent_task',
+  'start_background_agent_task',
+  'ask_user_question', 'AskUserQuestion',
+  'enter_plan', 'EnterPlanMode',
+  'exit_plan', 'ExitPlanMode',
+  'TaskOutput', 'read_background_task',
+  'TaskStop', 'cancel_background_task',
+])
+
 export function resolveAgentTools(agent: AgentDefinition, allTools: Tool[]): Tool[] {
   const allowed = !agent.tools || agent.tools.length === 0 ? null : new Set(agent.tools)
   const disallowed = new Set(agent.disallowedTools ?? [])
   const memoryTools = isAgentMemoryEnabled(agent.memory) ? new Set(['read_file', 'write_file', 'edit_file']) : null
-  return allTools.filter(tool => (!allowed || allowed.has(tool.name) || memoryTools?.has(tool.name)) && !disallowed.has(tool.name))
+  return allTools.filter(tool =>
+    (!allowed || allowed.has(tool.name) || memoryTools?.has(tool.name))
+    && !disallowed.has(tool.name)
+    && !ALL_AGENT_DISALLOWED_TOOLS.has(tool.name))
 }

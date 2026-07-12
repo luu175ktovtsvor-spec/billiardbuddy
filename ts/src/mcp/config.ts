@@ -87,15 +87,35 @@ export function commandForPlatform(config: McpServerConfig, platform: NodeJS.Pla
   return { command: config.command, args: config.args ?? [] }
 }
 
-function sanitizeNamePart(value: string): string {
-  const sanitized = value.normalize('NFKD').replace(/[^A-Za-z0-9_-]/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '')
-  return sanitized || 'server'
+/** 稳定短哈希(djb2→36进制6位):server 名全是非 ASCII(如中文)被替换殆尽时保留跨 server 区分度。 */
+function hashSlug(value: string): string {
+  let h = 5381
+  for (let i = 0; i < value.length; i++) h = ((h << 5) + h + value.charCodeAt(i)) >>> 0
+  return h.toString(36).slice(0, 6)
+}
+
+/**
+ * server 段归一。基线 = cc normalizeNameForMCP(normalization.ts:18-24):只把非法字符替换成 `_`,
+ * **不 NFKD、不折叠连续下划线、不去首尾**(旧实现三者全做,把 `my__srv` 折成 `my_srv`,破坏与
+ * 权限规则/模型寻址的名字对齐;cc 仅对 "claude.ai " 前缀托管 server 才折叠,本项目无该来源)。
+ * 产品分叉(登记):中文 server 名是本产品一等输入,全部字符被替换殆尽(无字母数字残留)时,
+ * 旧实现统一回落 `server` 造成**所有中文 server 撞名**;改为 `srv-<稳定短哈希>` 保留区分度。
+ */
+function sanitizeServerPart(value: string): string {
+  const replaced = value.replace(/[^A-Za-z0-9_-]/g, '_')
+  if (/[A-Za-z0-9]/.test(replaced)) return replaced
+  return `srv-${hashSlug(value)}`
+}
+
+/** tool 段归一 = cc 原样:只替非法字符。`get__weather` 保形不折叠(折叠会破坏 `__` 分隔符对齐)。 */
+function sanitizeToolPart(value: string): string {
+  return value.replace(/[^A-Za-z0-9_-]/g, '_') || 'tool'
 }
 
 export function mcpToolName(serverName: string, toolName: string): string {
   // 对齐 cc(normalization.ts:17-23 + client.ts:2051):只做字符归一,**不截断长度**。
   // 之前 slice(0,64) 会把长 server+tool 名剪短,不同工具剪成同名 → 权限规则匹配错工具/调用歧义。
-  return `mcp__${sanitizeNamePart(serverName)}__${sanitizeNamePart(toolName)}`
+  return `mcp__${sanitizeServerPart(serverName)}__${sanitizeToolPart(toolName)}`
 }
 
 export function approvalClassFromAnnotations(annotations: McpToolAnnotations | undefined): ApprovalClass {

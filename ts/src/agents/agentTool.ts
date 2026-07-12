@@ -22,7 +22,7 @@ import { createIsolatedAgentWorktree, type AgentWorktreeCleanupResult, type Work
 import { applySubagentStartHooks, mergeHookRegistries, type HookRegistry } from '../hooks/hooks'
 import { textBlock } from '../types/message'
 import type { AgentDefinition } from './agentLoader'
-import { resolveAgentTools } from './agentLoader'
+import { ALL_AGENT_DISALLOWED_TOOLS, resolveAgentTools } from './agentLoader'
 import { loadAgentMcpRuntime, type AgentMcpRuntime, type AgentMcpRuntimeInput, type AgentMcpRuntimeOptions } from './agentMcp'
 import { buildAgentMemoryPrompt, workspaceWithAgentMemory } from './agentMemory'
 import { cloneContentReplacementState, type ContentReplacementState } from '../context/toolResultStorage'
@@ -486,9 +486,10 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
         const workspace = workspaceWithAgentMemory(workspaceBase, agent.name, agent.memory)
         const sandbox = sandboxForWorkspace(ctx.sandbox, workspace)
         if (sidechain) await writeAgentTaskMetadata(opts, sidechain, agent, input, ctx, agentWorktree?.session.worktreePath)
+        // 统一黑名单在 resolveAgentTools 内剔除;fork 分支直用父工具集,需同样过一遍(cc 对所有 agent 类型统一剔)。
         const baseAgentTools = wantsForkContext
-          ? forkRunContext?.tools.length ? forkRunContext.tools : opts.baseTools
-          : resolveAgentTools(agent, opts.baseTools).filter(tool => tool.name !== 'agent_task')
+          ? (forkRunContext?.tools.length ? forkRunContext.tools : opts.baseTools).filter(tool => !ALL_AGENT_DISALLOWED_TOOLS.has(tool.name))
+          : resolveAgentTools(agent, opts.baseTools)
         const hooks = mergeHookRegistries(opts.hooks, agent.hooks)
         const inheritedContentReplacementState = ctx.contentReplacementState
           ? cloneContentReplacementState(ctx.contentReplacementState)

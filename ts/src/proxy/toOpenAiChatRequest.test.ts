@@ -126,3 +126,22 @@ test('reasoningEffort → reasoning_effort 透传', () => {
   })
   expect(r.reasoning_effort).toBe('high')
 })
+
+test('tool_choice 翻译(对齐 cc convertToolChoice):auto→auto / any→required / none→none / tool→function;无 tools 不带', () => {
+  const tools = [{ name: 'run', description: '', parameters: { type: 'object' as const } }]
+  const base = { model: 'm', messages: [], tools }
+  expect(toOpenAiChatRequest({ ...base, toolChoice: { type: 'auto' } }).tool_choice).toBe('auto')
+  expect(toOpenAiChatRequest({ ...base, toolChoice: { type: 'any' } }).tool_choice).toBe('required')
+  expect(toOpenAiChatRequest({ ...base, toolChoice: { type: 'none' } }).tool_choice).toBe('none')
+  expect(toOpenAiChatRequest({ ...base, toolChoice: { type: 'tool', name: 'run' } }).tool_choice)
+    .toEqual({ type: 'function', function: { name: 'run' } })
+  // 不传 → 不带字段;无 tools 时即使传了也不带(部分兼容端点会 400)。
+  expect('tool_choice' in toOpenAiChatRequest(base)).toBe(false)
+  expect('tool_choice' in toOpenAiChatRequest({ model: 'm', messages: [], toolChoice: { type: 'auto' } })).toBe(false)
+})
+
+test('stop_sequences → stop 映射;空/缺省不带字段', () => {
+  expect(toOpenAiChatRequest({ model: 'm', messages: [], stopSequences: ['END', '###'] }).stop).toEqual(['END', '###'])
+  expect('stop' in toOpenAiChatRequest({ model: 'm', messages: [] })).toBe(false)
+  expect('stop' in toOpenAiChatRequest({ model: 'm', messages: [], stopSequences: [] })).toBe(false)
+})
