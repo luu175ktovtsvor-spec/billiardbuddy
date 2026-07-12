@@ -474,8 +474,9 @@ export const useChatStore = create<ChatState>((set, get) => {
         break
       case 'context_note': {
         const text = ev.text || ''
-        // 内核诊断黑话不上用户界面(白标/大白话原则):cache break 这类只进 transcript/控制台,不渲染旁白。
-        if (text.startsWith('[PROMPT CACHE BREAK]')) {
+        // 内核诊断/给模型的 steering 提醒不上用户界面(白标/大白话原则):只进 transcript/控制台,不渲染旁白。
+        // 「最近连续工具报错…」是 reminders 喂给模型的纠偏指令(模型自己会向用户解释),直接展示=机制黑话。
+        if (text.startsWith('[PROMPT CACHE BREAK]') || text.startsWith('最近连续工具报错')) {
           console.debug('[context_note]', text)
           break
         }

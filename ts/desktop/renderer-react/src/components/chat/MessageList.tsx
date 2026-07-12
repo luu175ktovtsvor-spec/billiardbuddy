@@ -22,9 +22,11 @@ import { useComposerStore } from '../../stores/composerStore'
 import { t } from '../../i18n'
 
 type ToolBlockT = Extract<ChatBlock, { kind: 'tool' }>
+type ThinkingBlockT = Extract<ChatBlock, { kind: 'thinking' }>
+type ActivityBlockT = ToolBlockT | ThinkingBlockT
 type AssistantBlockT = Extract<ChatBlock, { kind: 'assistant' }>
 type RenderItem =
-  | { key: string; kind: 'tool-group'; blocks: ToolBlockT[] }
+  | { key: string; kind: 'tool-group'; blocks: ActivityBlockT[] }
   | { key: string; kind: 'edit-group'; blocks: ToolBlockT[] }
   | { key: string; kind: 'block'; block: ChatBlock }
 
@@ -36,25 +38,38 @@ const EDIT_TOOLS = new Set(['edit_file', 'multi_edit_file', 'write_file', 'patch
 // owner 截图指出「已加载工具/读取 Spreadsheets 技能」这类内部行外露=噪音。
 const HIDDEN_TOOLS = new Set(['use_skill', 'tool_search', 'read_stored_tool_result'])
 
-/** 连续 tool 块折成一组(对齐 cc);编辑类与非编辑类不混组(编辑走「已编辑 N 个文件」汇总卡)。 */
+/** 连续「工具 + 思考」聚成一个活动组(对齐 Codex agent-activity:思考进组、不占独立行;完成态组头
+ *  =分类计数段)。编辑类不混组(走「已编辑 N 个文件」汇总卡,带撤销)。 */
 function groupBlocks(blocks: ChatBlock[]): RenderItem[] {
   // 先滤掉内部机制工具行(藏内部 setup 噪音),再分组。
   const visible = blocks.filter((b) => !(b.kind === 'tool' && HIDDEN_TOOLS.has(b.tool)))
   const items: RenderItem[] = []
   let i = 0
+  const isActivity = (b: ChatBlock): b is ActivityBlockT =>
+    b.kind === 'thinking' || (b.kind === 'tool' && !EDIT_TOOLS.has(b.tool))
   while (i < visible.length) {
     const b = visible[i]!
-    if (b.kind === 'tool') {
-      const isEdit = EDIT_TOOLS.has(b.tool)
+    if (b.kind === 'tool' && EDIT_TOOLS.has(b.tool)) {
       const group: ToolBlockT[] = [b]
       let j = i + 1
       while (j < visible.length) {
         const next = visible[j]
-        if (!next || next.kind !== 'tool' || EDIT_TOOLS.has(next.tool) !== isEdit) break
+        if (!next || next.kind !== 'tool' || !EDIT_TOOLS.has(next.tool)) break
         group.push(next)
         j += 1
       }
-      items.push({ key: b.id, kind: isEdit ? 'edit-group' : 'tool-group', blocks: group })
+      items.push({ key: b.id, kind: 'edit-group', blocks: group })
+      i = j
+    } else if (isActivity(b)) {
+      const group: ActivityBlockT[] = [b]
+      let j = i + 1
+      while (j < visible.length) {
+        const next = visible[j]
+        if (!next || !isActivity(next)) break
+        group.push(next)
+        j += 1
+      }
+      items.push({ key: b.id, kind: 'tool-group', blocks: group })
       i = j
     } else {
       items.push({ key: b.id, kind: 'block', block: b })
