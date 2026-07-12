@@ -139,6 +139,23 @@ export function pastVerb(tool: string): string {
   return PAST_VERB[tool] ?? toolDisplayName(tool)
 }
 
+/** 工具行三态动词(对齐 Codex 源码 toolActivity.active:running=「正在 X」/ran=「已 X」/stopped=「已停止」)。
+ *  中文规则:过去式「已X」→ 进行时「正在X」;不规则写法进特例表。 */
+const RUNNING_VERB_SPECIAL: Record<string, string> = {
+  run_command_background: '正在后台运行',
+  agent_task: '正在执行',
+  start_background_agent_task: '正在执行',
+  glob_files: '正在查找文件',
+}
+export function statusVerb(tool: string, status: 'running' | 'ok' | 'error' | 'interrupted'): string {
+  if (status === 'interrupted') return '已停止'
+  const past = pastVerb(tool)
+  if (status === 'running') {
+    return RUNNING_VERB_SPECIAL[tool] ?? (past.startsWith('已') ? `正在${past.slice(1)}` : past)
+  }
+  return past
+}
+
 /** 折叠头「文件名/目标」是否该渲染成蓝色链接(对齐 Codex:只有真实文件路径才是蓝链接,
  *  命令/查询/URL 等目标一律留灰,不滥用蓝色)。逻辑和 toolSummary 取值优先级保持一致。 */
 export function toolTargetIsFile(input: unknown): boolean {
