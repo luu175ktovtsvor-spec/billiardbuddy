@@ -179,7 +179,7 @@ export function CreationPage() {
     const canvas = new Canvas(canvasEl.current, {
       preserveObjectStacking: true,
       selection: true,
-      backgroundColor: '#f4f5f0',
+      backgroundColor: themedColor('--color-surface-container', '#f3f3f3'),
     })
     fabricRef.current = canvas
 
@@ -212,21 +212,23 @@ export function CreationPage() {
       const pointer = canvas.getScenePoint(opt.e as never)
       canvas.selection = false
       if (mode === 'rect') {
+        const brand = themedColor('--color-brand', '#0a84ff')
         const rect = new Rect(maskObjectOptions({
           left: pointer.x,
           top: pointer.y,
           width: 1,
           height: 1,
-          fill: 'rgba(37, 99, 235, 0.16)',
-          stroke: 'rgba(37, 99, 235, 0.88)',
+          fill: withAlpha(brand, 0.16),
+          stroke: withAlpha(brand, 0.88),
           strokeWidth: 3,
         }))
         canvas.add(rect)
         drawingRef.current = { mode, start: pointer, points: [pointer], object: rect as WorkbenchObject }
       } else {
+        const brand = themedColor('--color-brand', '#0a84ff')
         const path = new Path(pathFromPoints([pointer]), maskObjectOptions({
           fill: '',
-          stroke: 'rgba(37, 99, 235, 0.72)',
+          stroke: withAlpha(brand, 0.72),
           strokeWidth: brushSizeRef.current,
           strokeLineCap: 'round' as CanvasLineCap,
           strokeLineJoin: 'round' as CanvasLineJoin,
@@ -252,9 +254,12 @@ export function CreationPage() {
       } else {
         drawing.points.push(pointer)
         canvas.remove(drawing.object)
+        const stroke = typeof drawing.object.stroke === 'string'
+          ? drawing.object.stroke
+          : withAlpha(themedColor('--color-brand', '#0a84ff'), 0.72)
         const path = new Path(pathFromPoints(drawing.points), maskObjectOptions({
           fill: '',
-          stroke: 'rgba(37, 99, 235, 0.72)',
+          stroke,
           strokeWidth: brushSizeRef.current,
           strokeLineCap: 'round' as CanvasLineCap,
           strokeLineJoin: 'round' as CanvasLineJoin,
@@ -751,7 +756,7 @@ export function CreationPage() {
             </div>
             <button type="button" onClick={() => void run()} disabled={!canRun}
               className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md px-4 py-2 text-[13px] font-medium disabled:opacity-50"
-              style={{ background: 'var(--color-brand)', color: '#fff' }} data-testid="image-generate-button">
+              style={{ background: 'var(--color-brand)', color: 'var(--color-on-primary)' }} data-testid="image-generate-button">
               <IconSparkles size={15} /> {busy ? '处理中…' : `生成 ${count} 张候选`}
             </button>
           </section>
@@ -964,7 +969,7 @@ const inputStyle = {
 
 const buttonPrimaryStyle = {
   background: 'var(--color-brand)',
-  color: '#fff',
+  color: 'var(--color-on-primary)',
 } as const
 
 const buttonSubtleStyle = {
@@ -976,7 +981,7 @@ const buttonSubtleStyle = {
 function segStyle(active: boolean) {
   return {
     background: active ? 'var(--color-brand)' : 'var(--color-surface-container)',
-    color: active ? '#fff' : 'var(--color-text-secondary)',
+    color: active ? 'var(--color-on-primary)' : 'var(--color-text-secondary)',
     border: `1px solid ${active ? 'var(--color-brand)' : 'var(--color-border)'}`,
   } as const
 }
@@ -1166,6 +1171,23 @@ async function addImageVersionFromJob(
 
 function normalizeColorInput(value: string): string {
   return /^#[0-9a-f]{6}$/i.test(value) ? value : '#ffffff'
+}
+
+function themedColor(token: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback
+  const probe = document.createElement('span')
+  probe.style.color = `var(${token})`
+  document.body.appendChild(probe)
+  const color = getComputedStyle(probe).color
+  probe.remove()
+  return color || fallback
+}
+
+function withAlpha(color: string, alpha: number): string {
+  const parts = color.match(/\d+(?:\.\d+)?/g)?.map(Number) ?? []
+  const [r, g, b] = parts
+  if (r === undefined || g === undefined || b === undefined) return color
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
 function textLayerSnapshot(canvas: Canvas): string {
