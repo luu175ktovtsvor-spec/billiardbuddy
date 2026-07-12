@@ -1,19 +1,33 @@
-// 对齐 cc-haha-ref desktop/src/components/chat/ToolCallGroup.tsx:39-64(TOOL_VERBS/generateSummary,
-// 中文化搬进 toolMeta.groupSummary)+ :418-474(ToolCallGroupMulti 折叠头 + 运行中自动展开)。
-// owner 铁律加了一条 cc 没有的行为:跑完自动收起(cc 只在运行中强制展开,收起要靠手动)——
-// 有错误时反例外保持展开,方便用户第一眼看见哪一步出错了。
-// 视觉皮改造(owner 2026-07-11):折叠头从"带边框的盒子头"换成无框透气行,右侧加 Codex
-// 的"已完成 Xs"耗时文案(取 blocks 的 startedAt/endedAt 快照,纯展示,不影响四态判定)。
+// 活动组(对齐 Codex 源码 agent-activity 结构,asar 反混淆:hDe/fDe/nwe/vDe):
+// 一个回合内连续的「工具 + 思考」聚成一个可展开组——
+//   完成态组头 = 分类计数段 Intl.ListFormat 连接(「已读取文件运行了 6 条命令」)+ chevron 紧跟文字;
+//   进行中组头 = 最新活动实时行(「正在运行 <命令>」)或「正在想…」shimmer(思考是组头占位态,不是独立行);
+//   展开体 = 按时序的子行明细(工具行 + 思考行)。
+// 保留 cc/owner 既有行为:运行中强制展开、跑完自动收起、出错保持展开。
 import { useEffect, useRef, useState } from 'react'
 import type { ChatBlock } from '../../stores/chatStore'
 import { ToolCallCard } from './ToolCallCard'
-import { groupSummary, formatDuration, toolIcon } from './toolMeta'
+import { ThinkingBlock } from './ThinkingBlock'
+import { summarizeActivity, toolIcon, statusVerb, toolSummary } from './toolMeta'
 import { IconAlertCircle, IconChevronDown, IconSpinner } from '../shared/icons'
 import { t } from '../../i18n'
 
 type ToolBlock = Extract<ChatBlock, { kind: 'tool' }>
+type ThinkingBlockT = Extract<ChatBlock, { kind: 'thinking' }>
+export type ActivityBlock = ToolBlock | ThinkingBlockT
 
-/** 组头图标 = 首个工具的类型图标(灰),对齐 Codex 聚合头。 */
+/** 单个工具且无思考:直接渲染卡片、不套组(对齐 cc toolCalls.length===1 跳过 wrapper;也符合 Codex 单活动单行观感)。 */
+export function ToolCallGroup({ blocks }: { blocks: ActivityBlock[] }) {
+  const tools = blocks.filter((b): b is ToolBlock => b.kind === 'tool')
+  if (blocks.length === 0) return null
+  if (tools.length === 0) {
+    // 纯思考(无工具):保持思考行直渲染(它本身就是折叠预览行)。
+    return <>{blocks.map((b) => b.kind === 'thinking' ? <ThinkingBlock key={b.id} content={b.text} isActive={b.active} /> : null)}</>
+  }
+  if (blocks.length === 1 && tools.length === 1) return <ToolCallCard block={tools[0]!} />
+  return <ActivityGroupMulti blocks={blocks} tools={tools} />
+}
+
 function GroupIcon({ tool }: { tool: string }) {
   const Icon = toolIcon(tool)
   return (
@@ -23,25 +37,11 @@ function GroupIcon({ tool }: { tool: string }) {
   )
 }
 
-/** 单个工具调用直接渲染卡片、不套分组外壳(对齐 cc:toolCalls.length === 1 时跳过 group wrapper)。 */
-export function ToolCallGroup({ blocks }: { blocks: ToolBlock[] }) {
-  if (blocks.length === 0) return null
-  if (blocks.length === 1) return <ToolCallCard block={blocks[0]!} />
-  return <ToolCallGroupMulti blocks={blocks} />
-}
-
-function groupDuration(blocks: ToolBlock[]): string {
-  const starts = blocks.map((b) => b.startedAt).filter((n): n is number => typeof n === 'number')
-  if (starts.length === 0) return ''
-  const ends = blocks.map((b) => b.endedAt).filter((n): n is number => typeof n === 'number')
-  if (ends.length === 0) return ''
-  const seconds = Math.max(0, Math.round((Math.max(...ends) - Math.min(...starts)) / 1000))
-  return seconds > 0 ? formatDuration(seconds) : ''
-}
-
-function ToolCallGroupMulti({ blocks }: { blocks: ToolBlock[] }) {
-  const isRunning = blocks.some((b) => b.status === 'running')
-  const hasError = blocks.some((b) => b.status === 'error')
+function ActivityGroupMulti({ blocks, tools }: { blocks: ActivityBlock[]; tools: ToolBlock[] }) {
+  const runningTool = tools.find((b) => b.status === 'running')
+  const thinkingActive = blocks.some((b) => b.kind === 'thinking' && b.active)
+  const isRunning = !!runningTool || thinkingActive
+  const hasError = tools.some((b) => b.status === 'error')
   const [expanded, setExpanded] = useState(isRunning || hasError)
   const prevRunningRef = useRef(isRunning)
 
@@ -54,42 +54,49 @@ function ToolCallGroupMulti({ blocks }: { blocks: ToolBlock[] }) {
     prevRunningRef.current = isRunning
   }, [isRunning, hasError])
 
-  const summary = groupSummary(blocks.map((b) => b.tool))
-  const duration = !isRunning ? groupDuration(blocks) : ''
+  // 组头文案:进行中 = 最新活动实时行(对齐 Codex fDe active 态);完成 = 分类计数段(hDe summaryParts)。
+  const headerText = runningTool
+    ? `${statusVerb(runningTool.tool, 'running')} ${toolSummary(runningTool.tool, runningTool.input)}`.trim()
+    : thinkingActive
+      ? '正在想…'
+      : summarizeActivity(tools.map((b) => b.tool))
 
   return (
     <div className="my-0.5" data-block="tool-group">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
         className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
       >
         {isRunning ? (
-          <IconSpinner size={13} style={{ color: 'var(--color-text-tertiary)' }} />
+          <IconSpinner size={13} className="shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
         ) : hasError ? (
-          <IconAlertCircle size={13} style={{ color: 'var(--color-error)' }} />
+          <IconAlertCircle size={13} className="shrink-0" style={{ color: 'var(--color-error)' }} />
         ) : (
-          // 完成态组头 = 首个工具的类型图标(对齐 Codex 源码聚合头 icon: i.icon 语义),不画绿勾。
-          <GroupIcon tool={blocks[0]!.tool} />
+          // 完成态组头 = 首个工具的类型图标(对齐 Codex 聚合头 icon 语义),不画绿勾。
+          <GroupIcon tool={tools[0]!.tool} />
         )}
-        <span className="min-w-0 flex-1 truncate text-[12.5px]" style={{ color: 'var(--color-text-secondary)' }}>
-          {summary}
+        {/* chevron 紧跟文字(对齐 Codex 真机:不推到行尾),文字截断保护 */}
+        <span className="min-w-0 truncate text-[12.5px]" style={{ color: 'var(--color-text-secondary)', fontStyle: thinkingActive && !runningTool ? 'italic' : undefined }}>
+          {headerText}
         </span>
-        {!isRunning && (
-          <span className="shrink-0 text-[11.5px]" style={{ color: hasError ? 'var(--color-error)' : 'var(--color-text-tertiary)' }}>
-            {hasError ? t('tools.error') : `${t('toolGroup.done')}${duration ? ` ${duration}` : ''}`}
-          </span>
+        {hasError && !isRunning && (
+          <span className="shrink-0 text-[11.5px]" style={{ color: 'var(--color-error)' }}>{t('tools.error')}</span>
         )}
         <IconChevronDown
           size={13}
+          className="shrink-0"
           style={{ color: 'var(--color-text-tertiary)', transform: expanded ? 'rotate(180deg)' : undefined, transition: 'transform .15s ease' }}
         />
       </button>
       {expanded && (
         <div className="mt-0.5 flex flex-col pl-1">
-          {blocks.map((b) => (
-            <ToolCallCard key={b.id} block={b} />
-          ))}
+          {blocks.map((b) =>
+            b.kind === 'tool'
+              ? <ToolCallCard key={b.id} block={b} />
+              : <ThinkingBlock key={b.id} content={b.text} isActive={b.active} />,
+          )}
         </div>
       )}
     </div>

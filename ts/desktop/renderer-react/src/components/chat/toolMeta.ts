@@ -260,3 +260,59 @@ export function groupSummary(tools: string[]): string {
   }
   return parts.join('·')
 }
+
+// —— 活动组头摘要(对齐 Codex 源码 completedHeader.summaryParts + nwe 段生成 + Intl.ListFormat unit 连接:
+// 「已读取文件运行了 6 条命令」)。分类照 Codex 活动计数器:探索(读)/搜索/列出/命令/网页/子代理/清单。 ——
+type ActivityCategory = 'read' | 'search' | 'list' | 'command' | 'web' | 'fetch' | 'agent' | 'todo' | 'other'
+
+function activityCategory(tool: string): ActivityCategory {
+  if (tool === 'read_file' || tool === 'read_many_files') return 'read'
+  if (tool === 'grep_files' || tool === 'glob_files') return 'search'
+  if (tool === 'list_dir') return 'list'
+  if (tool === 'run_command' || tool === 'run_command_background' || tool === 'git_status' || tool === 'git_history') return 'command'
+  if (tool === 'WebSearch') return 'web'
+  if (tool === 'WebFetch') return 'fetch'
+  if (tool === 'agent_task' || tool === 'start_background_agent_task') return 'agent'
+  if (tool === 'todo_write') return 'todo'
+  return 'other'
+}
+
+/** 段文案:首段(isLeading)用「已 X」完整式,后续段用顺承式(对齐 Codex leading/following 变体语感)。 */
+function activityPart(cat: ActivityCategory, count: number, isLeading: boolean): string | null {
+  switch (cat) {
+    case 'read': return isLeading ? '已读取文件' : '读取了文件'
+    case 'search': return isLeading ? '已搜索代码' : '搜索了代码'
+    case 'list': return isLeading ? '已列出文件' : '列出了文件'
+    case 'command': return isLeading ? `已运行 ${count} 条命令` : `运行了 ${count} 条命令`
+    case 'web': return isLeading ? '已搜索网页' : '搜索了网页'
+    case 'fetch': return isLeading ? '已抓取网页' : '抓取了网页'
+    case 'agent': return isLeading ? '已派出子代理' : '派出了子代理'
+    case 'todo': return null // 清单有专门的会话栏呈现,组头不占一段
+    case 'other': return null
+  }
+}
+
+/**
+ * 完成态活动组头(对齐 Codex hDe):按类别聚段 → Intl.ListFormat('zh',{type:'unit'}) 连接
+ * (中文 unit 型无分隔符直接连,正是真机「已读取文件运行了多个命令」的观感);全部无段时兜底「已处理」。
+ */
+export function summarizeActivity(tools: string[]): string {
+  const counts = new Map<ActivityCategory, number>()
+  const order: ActivityCategory[] = []
+  for (const name of tools) {
+    const cat = activityCategory(name)
+    if (!counts.has(cat)) order.push(cat)
+    counts.set(cat, (counts.get(cat) ?? 0) + 1)
+  }
+  const parts: string[] = []
+  for (const cat of order) {
+    const text = activityPart(cat, counts.get(cat) ?? 0, parts.length === 0)
+    if (text) parts.push(text)
+  }
+  if (parts.length === 0) return '已处理'
+  try {
+    return new Intl.ListFormat('zh-CN', { type: 'unit', style: 'narrow' }).format(parts)
+  } catch {
+    return parts.join('、')
+  }
+}
