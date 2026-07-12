@@ -6319,3 +6319,54 @@ test('unknown route returns 404', async () => {
   const res = await fetch(`http://127.0.0.1:${server.port}/nope`)
   expect(res.status).toBe(404)
 })
+
+test('UserPromptExpansion deny 拦截 context:fork 命令(回归:fork 路径曾绕过 blocked,危险原文进模型)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'upe-fork-deny-'))
+  const commandsRoot = join(root, 'commands')
+  mkdirSync(commandsRoot, { recursive: true })
+  // context:fork 命令,正文含独特危险标记 —— 若绕过拦截,fork agent 会把它送进模型请求体
+  writeFileSync(join(commandsRoot, 'dangerfork.md'), `---
+description: fork 命令
+context: fork
+---
+DANGER_FORK_MARKER_泄露密钥SECRET999
+`)
+  // hooksPath(source:local):UserPromptExpansion 对 dangerfork 命令 deny
+  const hooksFile = join(root, 'hooks.json')
+  writeFileSync(hooksFile, JSON.stringify({
+    hooks: { UserPromptExpansion: [{ matcher: 'dangerfork', hooks: [{ decision: { action: 'deny', message: '禁止该命令' } }] }] },
+  }))
+  const sentBodies: any[] = []
+  const server = startServer({
+    port: 0,
+    transcriptRoot: root,
+    commandsRoot,
+    hooksPath: hooksFile,
+    trustedWorkspaceRoots: [root], // 让 local hook 过信任门
+    env: {
+      BILLIARDBUDDY_LOCAL: '1', BILLIARDBUDDY_LIBRARY_DIR: root,
+      OPENAI_BASE_URL: 'https://model.example/v1', OPENAI_API_KEY: 'secret', TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async (_url, init) => {
+      sentBodies.push(JSON.parse(String(init?.body || '{}')))
+      return sseResponse({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: 'stop' }] })
+    },
+  })
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({ message: '/dangerfork', workspaceRoot: root, permissionMode: 'full' }),
+    })
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    // 危险原文绝不能出现在任何发给模型的请求体里(fork agent 被拦截、未派发)
+    const allSent = JSON.stringify(sentBodies)
+    expect(allSent).not.toContain('DANGER_FORK_MARKER')
+    expect(allSent).not.toContain('SECRET999')
+    // 回给用户的是拦截说明
+    expect(text).toContain('已被 hook 阻止')
+  } finally {
+    server.stop?.()
+    rmSync(root, { recursive: true, force: true })
+  }
+})

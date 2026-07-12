@@ -1650,11 +1650,15 @@ export function startServer(opts: StartServerOptions = {}) {
     // 按约 1% 上下文预算截断,让模型「看清单 → 自动调」,/台球 等斜杠也映射到对应技能/命令。
     const outputStyleLibrary = await loadOutputStyles()
     const outputStyleConfig = resolveOutputStyleConfig(outputStyleLibrary, stringOr(rawBody.output_style ?? rawBody.outputStyle, ''))
-    // 条件技能激活(对齐 cc "碰到命中 paths 的文件才现身"):仅当存在条件技能时才扫会话历史触碰过的文件路径,
-    // 命中的条件技能并回本回合发现清单(默认它们被 loadLayeredSkills 排除)。无条件技能时零开销、不 load。
+    // 会话历史(本回合只 load 一次,给条件技能激活 + 下方 goal hook 共用,避免重复 I/O)。
+    const priorMessages = await transcript.load().catch(() => [] as Message[])
+    // 条件技能激活(对齐 cc "碰到命中 paths 的文件才现身"):扫会话历史触碰过的文件路径,命中的条件技能并回
+    // 本回合发现清单(默认它们被 loadLayeredSkills 排除)。仅当存在条件技能时才算,无则跳过。
+    // ⚠️ 已知粒度差距(登记):激活按【回合起点】算一次——同一 runAgentLoop 内新碰到的文件要下一回合才现身
+    // (systemPrompt 回合内不重建,harness/loop.ts:304)。cc 是文件工具内联改 dynamicSkills、同轮实时;
+    // 我们的实时激活需 loop 内文件工具后重算清单/回传,属更大的 loop 热路径改造,单开。
     let activatedConditionalSkills: PromptCommand[] | undefined
     if ([...skills.byName.values()].some(s => s.paths && s.paths.length > 0)) {
-      const priorMessages = await transcript.load().catch(() => [] as Message[])
       const touched = collectTouchedFilePaths(priorMessages)
       const activatedNames = activateConditionalSkillsForPaths(skills, workspace.root, touched)
       activatedConditionalSkills = [...activatedNames].map(n => skills.byName.get(n)).filter((s): s is PromptCommand => !!s)
@@ -1730,15 +1734,17 @@ export function startServer(opts: StartServerOptions = {}) {
     // 归一为 source:'plugin' 并入本次会话 hooks(app 级可信、不走工作区信任闸)。坏插件/读失败静默跳过、不拖垮会话。
     const pluginHookPaths = await resolveEnabledPluginHookConfigPaths(defaultPluginRoots(opts.env ?? process.env)).catch(() => [] as string[])
     const pluginHooks = pluginHookPaths.length > 0 ? await loadPluginHookRegistry(pluginHookPaths).catch(() => undefined) : undefined
-    const transcriptMessagesForHooks = await transcript.load()
     // 领域包上下文已改走 systemPrompt(extraContext)每回合注入,不再进 SessionStart hook 注册表——
     // 否则 SessionStart 每回合重触发(丁审计)。此处 hooks 只含用户配置/插件/目标 hook,SessionStart 由 loop 门控成首回合一次。
-    const hooks = mergeHookRegistries(configuredHooks, pluginHooks, createGoalHookRegistry(conversationId, transcriptMessagesForHooks))
+    // priorMessages 复用上方那次 load(同回合 transcript 不变),不再重复 I/O。
+    const hooks = mergeHookRegistries(configuredHooks, pluginHooks, createGoalHookRegistry(conversationId, priorMessages))
     const initialSessionHooks = sessionSkillHooks.get(conversationId)
     const agents = await loadAgentsDir(opts.agentsRoot ?? defaultAgentsRoot())
     const controller = turns.start(conversationId)
     // UserPromptExpansion(官方事件):用户敲的斜杠命令已展开成 prompt → 派发(matcher=命令名);
     // context 决策注入系统提示。命令解析早于 hooks 构建,故派发放这里(hooks 已就绪),对齐 cc 的展开时机。
+    // commandExpansionBlocked 提到外层:inline 路径替换 userMessage、fork 路径(下方调度)据它短路,两条路径都拦截。
+    let commandExpansionBlocked: string | undefined
     if (commandInvocation && commandInvocation.name !== 'goal') {
       const expansion = await applyUserPromptExpansionHooks(hooks, commandInvocation.name, commandInvocation.prompt, {
         workspace, conversationId, signal: controller.signal,
@@ -1748,6 +1754,7 @@ export function startServer(opts: StartServerOptions = {}) {
       }
       // deny/halt:拦住命令展开——用拦截说明替换命令体,不让危险原文进模型(对齐 cc UserPromptExpansion 拦截语义)。
       if (expansion.blocked) {
+        commandExpansionBlocked = expansion.blocked
         userMessage = `命令 /${commandInvocation.name} 的展开已被 hook 阻止:${expansion.blocked}(命令内容未执行、未注入模型)`
       }
     }
@@ -2054,6 +2061,13 @@ export function startServer(opts: StartServerOptions = {}) {
             source: 'commands',
             contentLength: commandInvocation.contentLength,
           })
+        }
+        // UserPromptExpansion deny/halt:fork 命令路径同样拦截——不派后台 fork agent(它会直接拿 commandInvocation.prompt
+        // 原始展开体,绕过 inline 路径的 userMessage 替换)。命中即回说明、不执行(对齐 inline 路径的拦截语义)。
+        if (commandExpansionBlocked && (isBuiltinForkCommand(commandInvocation) || (commandInvocation && matchedCommand?.context === 'fork'))) {
+          yield await record({ type: 'final', text: `命令 /${commandInvocation?.name} 的展开已被 hook 阻止:${commandExpansionBlocked}(命令内容未执行、未派发后台工作代理)` })
+          finalStatus = 'idle'
+          return
         }
         if (isBuiltinForkCommand(commandInvocation)) {
           const output = await launchBuiltinForkCommand()
