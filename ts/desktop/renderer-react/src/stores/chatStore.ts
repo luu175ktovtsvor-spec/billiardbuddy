@@ -57,6 +57,10 @@ interface ChatState {
   // todo 会话栏(对齐 cc SessionTaskBar):单一真相源从 todo_update 事件解析而来。
   todos: TodoItem[]
   todoBarExpanded: boolean
+  // 消息排队(对标 Codex queuedMessage):运行中发消息 → 入队,回合结束自动逐条发;
+  // 排队卡上「引导」= 立即 steer 注入当前轮(不中断);中断/出错 → 队列暂停等用户「继续」。
+  queuedMessages: Array<{ id: string; text: string }>
+  queuePaused: boolean
   // 内部流式指针
   _currentAssistantId: string | null
   _currentThinkingId: string | null
@@ -76,6 +80,12 @@ interface ChatState {
   disconnect: () => void
   toggleTodoBar: () => void
   dismissTodos: () => void
+  /** 删除一条排队消息。 */
+  dequeueMessage: (id: string) => void
+  /** 「引导」:把排队消息立即 steer 注入当前轮(不中断模型运行)。 */
+  steerQueuedMessage: (id: string) => void
+  /** 中断/出错暂停后恢复队列(空闲则立刻发队头)。 */
+  resumeQueue: () => void
 }
 
 let seqCounter = 0
@@ -457,6 +467,11 @@ export const useChatStore = create<ChatState>((set, get) => {
         break
       case 'context_note': {
         const text = ev.text || ''
+        // 内核诊断黑话不上用户界面(白标/大白话原则):cache break 这类只进 transcript/控制台,不渲染旁白。
+        if (text.startsWith('[PROMPT CACHE BREAK]')) {
+          console.debug('[context_note]', text)
+          break
+        }
         // api_retry/streaming_fallback 两种严重度分开(对齐 cc StreamingIndicator 的琥珀/中性两条横幅):
         // 后端目前只把这两类塞进通用 context_note 文本(远程子代理桥接场景,见 tasks/bridgeSdkEventProjection.ts),
         // 前端按文本模式识别、渲成对应色阶的横幅,而不是普通灰字旁白。
@@ -489,6 +504,8 @@ export const useChatStore = create<ChatState>((set, get) => {
         // 回合结束刷会话列表:新会话首条消息跑完,侧栏对应项目组立刻出现该对话(不然要等点击才刷,
         // 组头一直空着显示"还没有对话";项目聚合由 Sidebar 的 useEffect 跟着 sessions 变化联动刷)。
         void useSessionStore.getState().refresh()
+        // 回合落定 → 放行排队消息(队头自动作为下一轮发出)。
+        flushQueue()
         break
     }
   }
@@ -515,6 +532,8 @@ export const useChatStore = create<ChatState>((set, get) => {
         stopElapsedTimer()
         pendingUserEcho = 0 // 回合没起来,别让回声计数吞掉下一次回放的用户气泡
         pushNote(`这次没跑成:${msg.error}`, 'error')
+        // 出错别连环撞:有排队消息就挂起,等用户看完错误点「继续」。
+        pauseQueueIfAny()
         break
       }
       case 'event': {
@@ -522,6 +541,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         reduceEvent(msg.event)
         if (msg.event.type === 'final' || msg.event.type === 'done') {
           set({ status: 'idle', runVerb: 'working' })
+          flushQueue()
         }
         break
       }
@@ -542,6 +562,8 @@ export const useChatStore = create<ChatState>((set, get) => {
               b.kind === 'tool' && b.status === 'running' ? { ...b, status: 'interrupted' as ToolStatus, endedAt: Date.now() } : b,
             ),
           }))
+          // 对标 Codex:「由于你中断了当前响应,队列已暂停」——排队消息不自动跟发,等用户「继续」。
+          pauseQueueIfAny()
         }
         break
       }
@@ -558,6 +580,21 @@ export const useChatStore = create<ChatState>((set, get) => {
     wsManager.send(id, message)
   }
 
+  /** 回合落定后放行排队消息:队头出队作为新一轮 run 发出(暂停/仍在跑/空队列都不动)。 */
+  function flushQueue() {
+    const s = get()
+    if (s.queuePaused || s.status === 'running') return
+    const head = s.queuedMessages[0]
+    if (!head) return
+    set((st) => ({ queuedMessages: st.queuedMessages.slice(1) }))
+    get().sendMessage(head.text)
+  }
+
+  /** 中断/出错时挂起队列(有排队消息才置暂停,空队列不打扰)。 */
+  function pauseQueueIfAny() {
+    if (get().queuedMessages.length > 0) set({ queuePaused: true })
+  }
+
   return {
     conversationId: null,
     blocks: [],
@@ -569,6 +606,8 @@ export const useChatStore = create<ChatState>((set, get) => {
     streamingChars: 0,
     todos: [],
     todoBarExpanded: false,
+    queuedMessages: [],
+    queuePaused: false,
     _currentAssistantId: null,
     _currentThinkingId: null,
     _sawStreaming: false,
@@ -596,6 +635,8 @@ export const useChatStore = create<ChatState>((set, get) => {
         streamingChars: 0,
         todos: [],
         todoBarExpanded: false,
+        queuedMessages: [],
+        queuePaused: false,
         _currentAssistantId: null,
         _currentThinkingId: null,
         _sawStreaming: false,
@@ -619,10 +660,9 @@ export const useChatStore = create<ChatState>((set, get) => {
       const trimmed = text.trim()
       const id = get().conversationId
       if (!trimmed || !id) return
-      // 运行中 → 插话纠偏(steer);否则起新一轮(run)。
+      // 运行中 → 排队(对标 Codex queuedMessage:回合结束自动发;排队卡「引导」才立即 steer 注入);否则起新一轮(run)。
       if (get().status === 'running') {
-        set((s) => ({ blocks: [...s.blocks, { id: newBlockId(), kind: 'user', text: trimmed }] }))
-        send({ type: 'steer', message: trimmed, conversationId: id })
+        set((s) => ({ queuedMessages: [...s.queuedMessages, { id: newBlockId(), text: trimmed }] }))
         return
       }
       // 上一轮的清单全done了、用户又开新一轮:收起旧清单(对齐 cc completedAndDismissed 的
@@ -700,6 +740,35 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     toggleTodoBar: () => set((s) => ({ todoBarExpanded: !s.todoBarExpanded })),
     dismissTodos: () => set({ todos: [], todoBarExpanded: false }),
+
+    dequeueMessage: (qid) => {
+      set((s) => {
+        const queuedMessages = s.queuedMessages.filter((m) => m.id !== qid)
+        // 删光了就顺手解除暂停,别让空队列还挂着暂停条。
+        return { queuedMessages, ...(queuedMessages.length === 0 ? { queuePaused: false } : {}) }
+      })
+    },
+
+    steerQueuedMessage: (qid) => {
+      const id = get().conversationId
+      const msg = get().queuedMessages.find((m) => m.id === qid)
+      if (!id || !msg) return
+      set((s) => ({
+        queuedMessages: s.queuedMessages.filter((m) => m.id !== qid),
+        blocks: [...s.blocks, { id: newBlockId(), kind: 'user', text: msg.text }],
+      }))
+      if (get().status === 'running') {
+        send({ type: 'steer', message: msg.text, conversationId: id })
+      } else {
+        // 回合已经结束(点击瞬间落定):按普通消息发,别丢。
+        get().sendMessage(msg.text)
+      }
+    },
+
+    resumeQueue: () => {
+      set({ queuePaused: false })
+      flushQueue()
+    },
 
     disconnect: () => {
       get()._unsub?.()
