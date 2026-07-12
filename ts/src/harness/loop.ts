@@ -32,7 +32,8 @@ import { formatTodoChecklist, parseProgressMarkdown } from '../types/todo'
 import { compactPipeline, compactionWillRun, isAtBlockingLimit, looksLikeContextOverflow } from '../context/compaction'
 import { buildRecentFileContextMessage } from '../context/recentFileContext'
 import { createInvokedSkillsMessage, restoreInvokedSkillsFromMessages } from '../skills/invokedSkills'
-import { FILE_TOUCH_TOOL_NAMES, toolInputFilePath } from '../skills/skillLoader'
+import { FILE_TOUCH_TOOL_NAMES, toolInputFilePaths } from '../skills/skillLoader'
+import { drainAsyncHookWakes } from '../hooks/asyncHookRegistry'
 import type { PromptCommand } from '../commands/types'
 import {
   applyToolResultBudget,
@@ -167,6 +168,8 @@ export interface RunAgentLoopOptions {
    * server 提供闭包(内含 skills library + workspaceRoot)。命中的技能当轮经 system-reminder 现身,而非等下一回合。
    */
   activateConditionalSkills?: (touchedPaths: string[]) => PromptCommand[]
+  /** 回合起点 systemPrompt 已列出的条件技能名(server 扫历史激活的):预置进去重集,避免 loop 对它们重复提醒"现在可用"。 */
+  initialActivatedSkillNames?: string[]
   signal?: AbortSignal
   /** 状态根目录:透传给 ToolContext.stateRoot,让 file-history 快照落在 stateRoot 而非用户工作区(见 Tool.ts)。 */
   stateRoot?: string
@@ -431,13 +434,26 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     messages = [...history, { role: 'user', content: userContent }]
     userTurnQuery = userPrompt.userPrompt
   }
+  // 后台 async hook(asyncRewake)的跨回合唤醒:回合起点 drain 本会话积压的唤醒消息作 system-reminder 注入
+  // (对齐 cc 每轮轮询 drain pendingHooks)。用进程级队列而非回合级 steerInbox——后者会随回合销毁把后台完成的消息丢掉。
+  if (!opts.subagent) {
+    const asyncWakes = drainAsyncHookWakes(ctx.conversationId)
+    if (asyncWakes.length > 0) {
+      const wakeBlocks = asyncWakes.map(w => textBlock(wrapReminder(w)))
+      const last = messages[messages.length - 1]
+      if (last && last.role === 'user') last.content.push(...wakeBlocks)
+      else messages.push({ role: 'user', content: wakeBlocks })
+      for (const w of asyncWakes) yield { type: 'context_note', text: w }
+    }
+  }
   const readOnlyToolNames = new Set(registry.list().filter(t => t.isReadOnly).map(t => t.name))
   let compactionFailures = 0
   let lastInputTokens: number | undefined // 上一轮响应回报的真实 prompt input tokens(含 cache),供 token 级压缩触发
   let toolCallsNoProgress = 0
   let stuckNotified = false
   // 本回合已实时激活的条件技能名(去重,同一技能不重复注入 system-reminder)。
-  const activatedConditionalNames = new Set<string>()
+  // 预置 systemPrompt 起点已列出的条件技能(server 扫历史激活的)——它们已在模型可见清单里,loop 不再重复"现在可用"提醒。
+  const activatedConditionalNames = new Set<string>(opts.initialActivatedSkillNames ?? [])
   let maxOutputTokensRecoveryCount = 0 // 连续"输出被长度上限截断"的续写计数;有实质进展(tool_calls/自然收敛)即复位
   // 计划验证提醒的"每段最多一次"闸:maxTurns=undefined(server 主路)时,final 分支不再靠 turn++/maxTurns 兜底,
   // 若模型收到提醒仍固执地不调 VerifyPlanExecution 直接 final,得避免无限重发同一条提醒。有真进展(跑了工具)即复位。
@@ -837,8 +853,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       const batchPaths: string[] = []
       for (const c of step.calls) {
         if (!FILE_TOUCH_TOOL_NAMES.has(c.name)) continue
-        const p = toolInputFilePath(c.input)
-        if (p) batchPaths.push(p)
+        batchPaths.push(...toolInputFilePaths(c.input))
       }
       if (batchPaths.length > 0) {
         for (const skill of opts.activateConditionalSkills(batchPaths)) {

@@ -570,3 +570,24 @@ test('问题4 补防线:技能别名与某真实主名冲突时,byName 指向真
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('toolInputFilePaths:覆盖各文件工具真实入参形状(单数path/read_many的paths数组+ranges/patch_files的patches)', async () => {
+  const { toolInputFilePaths, FILE_TOUCH_TOOL_NAMES } = await import('./skillLoader')
+  // 顶层单数 path(read_file/edit_file/multi_edit_file/patch_file/write_file)
+  expect(toolInputFilePaths({ path: 'a.sql' })).toEqual(['a.sql'])
+  expect(toolInputFilePaths({ file_path: 'b.sql' })).toEqual(['b.sql'])
+  // read_many_files:paths 数组(审查逮到:旧实现对它返回 undefined)
+  expect(toolInputFilePaths({ paths: ['a.sql', 'b.sql'] })).toEqual(['a.sql', 'b.sql'])
+  expect(toolInputFilePaths({ paths: 'single.sql' })).toEqual(['single.sql'])
+  // read_many_files:ranges[].path
+  expect(toolInputFilePaths({ ranges: [{ path: 'c.sql', start: 1 }] })).toEqual(['c.sql'])
+  // patch_files:patches[].path
+  expect(toolInputFilePaths({ patches: [{ path: 'd.sql', patch: 'x' }, { path: 'e.sql', patch: 'y' }] })).toEqual(['d.sql', 'e.sql'])
+  // 空/非对象
+  expect(toolInputFilePaths({})).toEqual([])
+  expect(toolInputFilePaths(null)).toEqual([])
+  // 编辑工具族全在触发集合(审查逮到 multi_edit_file/patch_file/patch_files 曾漏掉)
+  for (const name of ['read_file', 'read_many_files', 'write_file', 'edit_file', 'multi_edit_file', 'patch_file', 'patch_files']) {
+    expect(FILE_TOUCH_TOOL_NAMES.has(name)).toBe(true)
+  }
+})

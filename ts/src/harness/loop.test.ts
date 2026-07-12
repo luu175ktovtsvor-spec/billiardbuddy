@@ -3128,3 +3128,47 @@ test('条件技能实时激活:不碰匹配文件则不激活(碰 .ts 不触发 
   }))
   expect(events.some(e => e.type === 'context_note' && e.text.includes('sqlhelper'))).toBe(false)
 })
+
+test('后台 async hook 唤醒:回合起点 drain 进程级队列注入 system-reminder(跨回合不丢)', async () => {
+  const { pushAsyncHookWake, clearAsyncHookWakes } = await import('../hooks/asyncHookRegistry')
+  clearAsyncHookWakes()
+  // 模拟上一回合的后台 hook 完成后入队(回合已结束)
+  pushAsyncHookWake('conv-wake-1', '[后台 hook Stop 唤醒(exit 2)] lint 失败')
+  try {
+    const model = scriptedModel([{ kind: 'final', text: 'done' }])
+    const events = await collect(runAgentLoop({
+      model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'x', conversationId: 'conv-wake-1',
+    }))
+    // 唤醒消息作 context_note 透出 + 进了发给模型的 messages(证明没丢)
+    expect(events.some(e => e.type === 'context_note' && e.text.includes('lint 失败'))).toBe(true)
+    expect(JSON.stringify(model.received[0]?.messages ?? [])).toContain('lint 失败')
+  } finally {
+    clearAsyncHookWakes()
+  }
+})
+
+test('条件技能实时激活:read_many_files 批量读命中(审查逮到旧实现漏 paths 数组)+ 预置去重不重复提醒起点已列技能', async () => {
+  writeFileSync(join(root, 'a.sql'), '1'); writeFileSync(join(root, 'b.sql'), '2')
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'm1', name: 'read_many_files', input: { paths: ['a.sql', 'b.sql'] } }] },
+    { kind: 'final', text: 'done' },
+  ])
+  const sqlSkill = { name: 'sqlhelper', description: 'SQL', paths: ['*.sql'] } as unknown as import('../commands/types').PromptCommand
+  const alreadyListed = { name: 'preexisting', description: 'X', paths: ['*.md'] } as unknown as import('../commands/types').PromptCommand
+  const events = await collect(runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x',
+    activateConditionalSkills: (paths) => {
+      const out = []
+      if (paths.some(p => p.endsWith('.sql'))) out.push(sqlSkill)
+      if (paths.some(p => p.endsWith('.md'))) out.push(alreadyListed)
+      return out
+    },
+    initialActivatedSkillNames: ['preexisting'], // 起点已在 systemPrompt 清单里
+  }))
+  // read_many_files 的 paths 数组被正确提取 → sqlhelper 激活
+  expect(events.some(e => e.type === 'context_note' && e.text.includes('sqlhelper'))).toBe(true)
+  // preexisting 起点已列 → 预置去重,即使碰到 .md 也不重复提醒(本例没碰 .md,双保险验证不误报)
+  expect(events.some(e => e.type === 'context_note' && e.text.includes('preexisting'))).toBe(false)
+})

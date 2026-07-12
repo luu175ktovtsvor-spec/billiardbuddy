@@ -157,13 +157,36 @@ export function parseSkillPaths(raw: unknown): string[] | undefined {
   return patterns
 }
 
-/** 文件类工具名(条件技能激活的触发面:碰这些工具的 path 入参 = "碰到文件")。内部名 + cc 规范名两套都收。 */
-export const FILE_TOUCH_TOOL_NAMES: ReadonlySet<string> = new Set(['read_file', 'write_file', 'edit_file', 'read_many_files', 'Read', 'Write', 'Edit'])
+/**
+ * 文件类工具名(条件技能激活的触发面:碰这些工具的 path 入参 = "碰到文件")。内部名 + cc 规范名两套都收。
+ * ⚠️ 这份白名单必须与文件工具注册表(tools/fileReadTool + fileEditTool)手动保持同步——cc 是在每个文件工具
+ * execute() 内部直接激活(天然覆盖任何文件工具),我们是 loop 层按名扫,故新增文件工具时要补进这里。
+ */
+export const FILE_TOUCH_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'read_file', 'read_many_files', 'write_file', 'edit_file', 'multi_edit_file', 'patch_file', 'patch_files',
+  'Read', 'Write', 'Edit', 'MultiEdit',
+])
 
-/** 从文件类工具入参提 path(path 优先, 回退 file_path);非对象/无字段 → undefined。server(扫历史)与 loop(扫本批)共用。 */
-export function toolInputFilePath(input: unknown): string | undefined {
+/**
+ * 从文件类工具入参提【全部】文件路径(条件技能激活的输入)。覆盖各工具真实入参形状:
+ *  - 顶层 path / file_path(read_file / write_file / edit_file / multi_edit_file / patch_file)
+ *  - paths: string|string[](read_many_files)
+ *  - ranges[].path(read_many_files 带范围)
+ *  - patches[].path(patch_files)
+ * 非对象/无路径 → 空数组。server(扫历史 Message)与 loop(扫本批 ToolCall)共用。
+ */
+export function toolInputFilePaths(input: unknown): string[] {
   const rec = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {}
-  return typeof rec.path === 'string' ? rec.path : typeof rec.file_path === 'string' ? rec.file_path : undefined
+  const out: string[] = []
+  const pushStr = (v: unknown): void => { if (typeof v === 'string' && v.trim()) out.push(v) }
+  pushStr(rec.path)
+  pushStr(rec.file_path)
+  if (typeof rec.paths === 'string') pushStr(rec.paths)
+  else if (Array.isArray(rec.paths)) for (const p of rec.paths) pushStr(p)
+  const ranges = Array.isArray(rec.ranges) ? rec.ranges : rec.ranges ? [rec.ranges] : []
+  for (const r of ranges) if (r && typeof r === 'object') pushStr((r as Record<string, unknown>).path)
+  if (Array.isArray(rec.patches)) for (const p of rec.patches) if (p && typeof p === 'object') pushStr((p as Record<string, unknown>).path)
+  return [...new Set(out)]
 }
 
 /**
