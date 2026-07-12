@@ -976,3 +976,42 @@ test('27 事件全集全部可声明(对齐 cc coreTypes.ts:25-53),一个不被�
   const bogus = normalizeHookRegistry({ hooks: { NotARealEvent: [{ hooks: [{ type: 'command', command: 'echo' }] }] } })
   expect(bogus.rules.length).toBe(0)
 })
+
+test('官方新增 3 事件(PostToolBatch/UserPromptExpansion/MessageDisplay)可声明,不被静默吞', () => {
+  const registry = normalizeHookRegistry({
+    hooks: {
+      PostToolBatch: [{ hooks: [{ type: 'command', command: 'echo hi' }] }],
+      UserPromptExpansion: [{ hooks: [{ type: 'command', command: 'echo hi' }] }],
+      MessageDisplay: [{ hooks: [{ type: 'command', command: 'echo hi' }] }],
+    },
+  })
+  expect(new Set(registry.rules.map(r => r.event))).toEqual(new Set(['PostToolBatch', 'UserPromptExpansion', 'MessageDisplay']))
+})
+
+test('command hook 官方通用输出字段:continue:false→halt / systemMessage 伴随 decision / suppressOutput 吞上下文兜底', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-universal-'))
+  try {
+    const ctx = { workspace: new Workspace(root), conversationId: 's1' }
+    const nodeEcho = (json: string): string => `${process.execPath} -e "console.log(JSON.stringify(${json}))"`
+    const run = async (json: string) => {
+      const registry = normalizeHookRegistry({
+        hooks: { Stop: [{ hooks: [{ type: 'command', command: nodeEcho(json) }] }] },
+      })
+      return runHookEvent(registry, { event: 'Stop', sessionId: 's1' }, ctx as never)
+    }
+    // continue:false + stopReason → halt
+    expect(await run(`{continue:false,stopReason:'预算用尽'}`)).toEqual([{ action: 'halt', reason: '预算用尽' }])
+    // systemMessage 与 decision:block 并存 → [context ⚠️, deny]
+    expect(await run(`{systemMessage:'注意风险',decision:'block',reason:'r1'}`)).toEqual([
+      { action: 'context', additionalContext: '⚠️ 注意风险' },
+      { action: 'deny', message: 'r1' },
+    ])
+    // suppressOutput:true 且无任何决策 → 什么都不产出(stdout 不再当上下文进 transcript)
+    expect(await run(`{suppressOutput:true,debug:'内部日志'}`)).toEqual([])
+    // 普通 JSON 数据(无任何契约字段)→ 维持旧行为:原文当上下文
+    const plain = await run(`{foo:1}`)
+    expect(plain).toEqual([{ action: 'context', additionalContext: '{"foo":1}' }])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

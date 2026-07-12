@@ -11,8 +11,9 @@ import { MEMORY_DOT_DIR, getUserConfigHomeDir } from '../harness/memoryNames'
 import { textBlock, type Message } from '../types/message'
 import { assertHttpHookHostAllowed, ssrfGuardedLookup } from './ssrfGuard'
 
-// 配置文件可声明的事件白名单 = cc 全部 27 个(与 hooks.ts HookEvent 同步,对齐 cc coreTypes.ts:25-53
-// HOOK_EVENTS)。声明任何一个都不会被静默吞;派发点状态见 hooks.ts HookEvent 文档。
+// 配置文件可声明的事件白名单 = cc 全部 27 个 + 官方已发布而 cc-haha 快照未收录的 3 个
+// (PostToolBatch/UserPromptExpansion/MessageDisplay;对齐 cc coreTypes.ts:25-53 + 官方 hooks 文档,
+// 与 hooks.ts HookEvent 同步)。声明任何一个都不会被静默吞;派发点状态见 hooks.ts HookEvent 文档。
 const HOOK_EVENTS = new Set<HookEvent>([
   'PreToolUse',
   'PostToolUse',
@@ -41,6 +42,9 @@ const HOOK_EVENTS = new Set<HookEvent>([
   'InstructionsLoaded',
   'CwdChanged',
   'FileChanged',
+  'PostToolBatch',
+  'UserPromptExpansion',
+  'MessageDisplay',
 ])
 const STRUCTURED_OUTPUT_TOOL_NAME = 'StructuredOutput'
 const AGENT_HOOK_MAX_TURNS = 50
@@ -265,16 +269,25 @@ function hookSpecificDecisions(raw: Record<string, unknown>): HookDecision[] {
 function parseCommandHookStdout(stdout: string): HookDecision | HookDecision[] | null {
   const text = stdout.trim()
   if (!text) return null
-  const direct = parseHookDecisionJSON(text)
-  if (direct) return direct
+  let raw: unknown
   try {
-    const raw = JSON.parse(text) as unknown
-    if (!isRecord(raw)) return { action: 'context', additionalContext: text }
-    const decisions = hookSpecificDecisions(raw)
-    return decisions.length > 0 ? decisions : { action: 'context', additionalContext: text }
+    raw = JSON.parse(text)
   } catch {
     return { action: 'context', additionalContext: text }
   }
+  if (!isRecord(raw)) return { action: 'context', additionalContext: text }
+  const out: HookDecision[] = []
+  // 官方通用输出字段(全事件契约):systemMessage = 展示给用户的警告,可与 decision 族同时携带。
+  if (typeof raw.systemMessage === 'string' && raw.systemMessage.trim()) {
+    out.push({ action: 'context', additionalContext: `⚠️ ${raw.systemMessage.trim()}` })
+  }
+  // parseHookDecisionJSON 处理 continue:false(最高优先 → halt)与 hookSpecificOutput 族。
+  const direct = parseHookDecisionJSON(text)
+  if (direct) out.push(direct)
+  else out.push(...hookSpecificDecisions(raw))
+  if (out.length > 0) return out
+  // 官方 suppressOutput:true——纯 JSON 且无任何决策时,吞掉"stdout 当上下文"的兜底,不进 transcript。
+  return raw.suppressOutput === true ? null : { action: 'context', additionalContext: text }
 }
 
 function parseHookArguments(args: string): string[] {

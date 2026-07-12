@@ -104,6 +104,7 @@ import {
   applyPermissionDeniedHooks,
   applyPermissionRequestHooks,
   applyPostCompactHooks,
+  applyPostToolBatchHooks,
   applyPostToolUseFailureHooks,
   applyPostToolUseHooks,
   applyPreCompactHooks,
@@ -315,10 +316,15 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   ctx.renderedSystemPrompt = system
 
   const userPrompt = opts.skipUserMessage
-    ? { userPrompt: opts.userMessage, additionalContext: [] }
+    ? { userPrompt: opts.userMessage, additionalContext: [] as string[] }
     : await applyUserPromptSubmitHooks(hooksForCurrentSession(), opts.userMessage, ctx)
   for (const extra of userPrompt.additionalContext) {
     yield { type: 'context_note', text: extra }
+  }
+  // 官方 continue:false:提交即停机——不建消息、不打模型(hook 判定该 prompt 不应被处理,stopReason 展示给用户)。
+  if ('haltReason' in userPrompt && userPrompt.haltReason !== undefined) {
+    yield { type: 'context_note', text: `[hook 停止] ${userPrompt.haltReason}` }
+    return
   }
   let messages: Message[] = []
   // 正常用户回合的原始问题文本(用于记忆召回);只在真·用户消息路径置值,
@@ -340,6 +346,9 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     const stopHook = await applyStopHooks(hooks, finalText, ctx, opts.subagent, { stopHookActive })
     const hasActiveGoalHook = hookRegistryHasGoalHook(hooks, ctx.conversationId) && !!(ctx.conversationId && getThreadGoal(ctx.conversationId))
     for (const extra of stopHook.additionalContext) events.push({ type: 'context_note', text: extra })
+    // 官方 continue:false 压过 decision:block:applyStopHooks 在 halt 时已不产出 blockingFeedback
+    // (即不强迫续跑),这里只补一条用户可见说明,随后自然走"停止"分支。
+    if (stopHook.haltReason !== undefined) events.push({ type: 'context_note', text: `[hook 停止] ${stopHook.haltReason}` })
     if (!stopHook.blockingFeedback?.length) {
       if (ctx.conversationId && hasActiveGoalHook) {
         messages.push(goalLocalStatusMessage(goalCompletionStatusOutput()))
@@ -412,8 +421,6 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   }
   const readOnlyToolNames = new Set(registry.list().filter(t => t.isReadOnly).map(t => t.name))
   let compactionFailures = 0
-  let lastCompactionAtMs = 0
-  let lastCompactedMessageCount = 0
   let lastInputTokens: number | undefined // 上一轮响应回报的真实 prompt input tokens(含 cache),供 token 级压缩触发
   let toolCallsNoProgress = 0
   let stuckNotified = false
@@ -457,8 +464,6 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       lastInputTokens,
       readOnlyToolNames,
       compactionFailures,
-      lastCompactionAtMs,
-      lastCompactedMessageCount,
       force,
     }
     // PreCompact 钩:只在本轮真会压缩时触发(对齐 cc executePreCompactHooks 在真压缩前 fire);
@@ -495,12 +500,19 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       : (out.note ?? '')
     const post = await applyPostCompactHooks(hooksForCurrentSession(), trigger, compactSummary, ctx)
     notes.push(...post.additionalContext)
+    // SessionStart(source:'compact') 重放(对齐 cc compact.ts:549-626 + 官方 matcher 契约):压缩后给
+    // SessionStart 钩一次重注入机会。常驻上下文(领域包/门店画像)已走 systemPrompt 每回合注入不依赖这里;
+    // 这条服务用户/插件自定义的 compact 场景 hook,注入进 system 保证压缩后不丢。
+    const compactStart = await applySessionStartHooks(hooksForCurrentSession(), ctx, 'compact')
+    if (compactStart.additionalContext.length > 0) {
+      system = `${system}\n\n${hookContextBlock('SessionStart', compactStart.additionalContext)}`
+      ctx.renderedSystemPrompt = system
+      notes.push(...compactStart.additionalContext)
+    }
     const recentFiles = await buildRecentFileContextMessage(ctx)
     if (recentFiles && messages.length > 0) {
       messages = [messages[0]!, recentFiles, ...messages.slice(1)]
     }
-    lastCompactionAtMs = Date.now()
-    lastCompactedMessageCount = messages.length
     const base = recentFiles ? `${out.note}\n已恢复最近文件上下文。` : out.note
     return [base, ...notes].filter(Boolean).join('\n')
   }
@@ -812,6 +824,18 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     // 本轮 tool_result 已配对进历史,立即落盘(与上面 assistant 消息落盘同一口径:逐消息,不等回合收尾)。
     await saveTranscript()
 
+    // PostToolBatch(官方事件,cc-haha 快照无):本批工具全部落定、tool_result 已配对落盘后触发;
+    // decision:block / continue:false = 停止 agentic loop(官方语义)。批内 Pre/PostToolUse hook 的
+    // continue:false 暂存在 ctx.hookHaltReason,此处一并消费——配对与落盘都已完成,停轮不留半截历史。
+    const batchHook = await applyPostToolBatchHooks(hooksForCurrentSession(), step.calls.map(c => c.name), ctx)
+    for (const extra of batchHook.additionalContext) yield { type: 'context_note', text: extra }
+    const hookHalt = batchHook.haltReason ?? ctx.hookHaltReason
+    ctx.hookHaltReason = undefined
+    if (hookHalt !== undefined) {
+      yield { type: 'context_note', text: `[hook 停止] ${hookHalt}` }
+      return
+    }
+
     // —— 中断/硬停:tool_result 已随 followup 配对进历史(在飞工具被 abort 后经短路补齐 tool_result 保配对)——
     // submit-interrupt(reason==='interrupt'):换新 controller 续跑,排队插话已在上面注入;纯硬停:yield 中断消息收场,
     // 绝不再调模型,最终答复由调用方兜底合成。
@@ -1035,6 +1059,7 @@ async function executeAllowedToolCall(
       conversationId: ctx.conversationId,
     })
     const postHook = await applyPostToolUseHooks(hooks, call.name, input, output, ctx)
+    if (postHook.haltReason !== undefined && ctx.hookHaltReason === undefined) ctx.hookHaltReason = postHook.haltReason
     const events: AgentEvent[] = postHook.additionalContext.map((text): AgentEvent => ({ type: 'context_note', text }))
     const modelContent = postHook.additionalContext.length > 0
       ? `${stored.content}\n\n${hookContextBlock('PostToolUse', postHook.additionalContext)}`
@@ -1048,6 +1073,7 @@ async function executeAllowedToolCall(
     // PostToolUseFailure 钩:工具抛错时触发(对齐 cc);非阻断,只把 hook 追加的上下文并入回灌,
     // 不改变"错误文本回灌让模型自救"的既有失败路径。
     const failHook = await applyPostToolUseFailureHooks(hooks, call.name, input, message, ctx, call.id)
+    if (failHook.haltReason !== undefined && ctx.hookHaltReason === undefined) ctx.hookHaltReason = failHook.haltReason
     const base = toolFeedback(call, `错误:工具 ${tool.name} 执行失败:${message}`, true)
     if (failHook.additionalContext.length === 0) return base
     const events: AgentEvent[] = [
@@ -1097,6 +1123,11 @@ async function* gateOneCall(
   }
 
   if (isEnterPlanToolName(call.name)) {
+    // 守卫(对齐 cc EnterPlanMode validateInput):已在计划模式再调 = 模型迷路,直接报错不弹卡。
+    if (ctx.permissionMode === 'plan') {
+      yield feedback('已在计划模式中,无需重复进入。继续只读探索,把方案写进计划文件,完成后用 ExitPlanMode 提交批准。', true)
+      return
+    }
     try {
       const { question } = normalizeEnterPlanQuestion(call.input, call.id)
       const answerStartLen = ctx.steerInbox?.length ?? 0
@@ -1131,6 +1162,12 @@ async function* gateOneCall(
   }
 
   if (isExitPlanToolName(call.name)) {
+    // 守卫(对齐 cc ExitPlanModeV2 validateInput:mode!=='plan' 拒绝):不在计划模式时调 ExitPlanMode
+    // 直接报错——不弹审批卡、不切档。否则模型乱调一次就能把自己切进 acceptEdits(旧洞)。
+    if (ctx.permissionMode !== 'plan') {
+      yield feedback('ExitPlanMode 只能在计划模式内调用(当前不在计划模式)。若要开始规划,先调用 EnterPlanMode。', true)
+      return
+    }
     try {
       // cc ExitPlanModeV2 对齐:计划正文从**磁盘计划文件**读,而不是工具入参。模型还没写计划文件 → 先引导它写。
       const planFilePath = getPlanFilePath(ctx.workspace.root, ctx.conversationId)
@@ -1186,6 +1223,13 @@ async function* gateOneCall(
   const hookResult = await applyPreToolUseHooks(hooks, call.name, call.input, ctx)
   for (const extra of hookResult.additionalContext) {
     yield { type: 'context_note', text: extra }
+  }
+  // 官方 continue:false(全事件契约,优先级最高):整轮停机请求——本次调用不执行,理由作 tool_result 回灌
+  // 保配对,批尾由主循环统一收场(见 runAgentLoop 批尾的 hookHaltReason 消费)。
+  if (hookResult.haltReason !== undefined) {
+    if (ctx.hookHaltReason === undefined) ctx.hookHaltReason = hookResult.haltReason
+    yield feedback(`[hook 停止] ${hookResult.haltReason}`, true)
+    return
   }
   if (hookResult.deniedMessage) {
     yield* fireDenied(hookResult.deniedMessage)

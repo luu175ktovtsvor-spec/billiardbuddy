@@ -678,3 +678,59 @@ test('非工具事件 matcher 键对齐 cc matchQuery:Notification 按类型/Con
   expect((await applySetupHooks(setupReg, 'init', c)).additionalContext).toEqual(['首启'])
   expect((await applySetupHooks(setupReg, 'maintenance', c)).additionalContext).toEqual([])
 })
+
+test('parseHookDecisionJSON:官方 continue:false 最高优先——压过 hookSpecificOutput 决策', async () => {
+  const { parseHookDecisionJSON } = await import('./hooks')
+  expect(parseHookDecisionJSON(JSON.stringify({ continue: false, stopReason: '预算用尽' })))
+    .toEqual({ action: 'halt', reason: '预算用尽' })
+  // 同时带 permissionDecision:allow 也让位于 continue:false(官方:stop entirely 优先)
+  expect(parseHookDecisionJSON(JSON.stringify({
+    continue: false,
+    hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
+  }))).toEqual({ action: 'halt', reason: undefined })
+  // 无 stopReason → reason undefined(消费方给默认文案)
+  expect(parseHookDecisionJSON('{"continue":false}')).toEqual({ action: 'halt', reason: undefined })
+  // continue:true 不产生决策
+  expect(parseHookDecisionJSON('{"continue":true}')).toBeNull()
+})
+
+test('applyStopHooks:halt 压过 decision:block——不强迫续跑,haltReason 透出、blockingFeedback 不产出', async () => {
+  const c = ctx()
+  const result = await applyStopHooks({
+    rules: [
+      { event: 'Stop', handler: () => [{ action: 'deny', message: '还想拦着继续' }, { action: 'halt', reason: '用户 hook 要求停机' }] },
+    ],
+  }, 'final text', c as never)
+  expect(result.haltReason).toBe('用户 hook 要求停机')
+  expect(result.blockingFeedback).toBeUndefined()
+})
+
+test('applyPostToolBatchHooks:官方 PostToolBatch——context 收集;decision:block 折成 haltReason(停循环)', async () => {
+  const { applyPostToolBatchHooks } = await import('./hooks')
+  const c = ctx()
+  const result = await applyPostToolBatchHooks({
+    rules: [
+      { event: 'PostToolBatch', handler: payload => [
+        { action: 'context', additionalContext: `batch:${(payload.batchToolNames ?? []).join(',')}` },
+        { action: 'deny', message: '批后检查不过' },
+      ] },
+    ],
+  }, ['write_file', 'run_command'], c as never)
+  expect(result.additionalContext).toEqual(['batch:write_file,run_command'])
+  expect(result.haltReason).toBe('批后检查不过')
+})
+
+test('SessionStart matcher 按 source 匹配(官方 startup/resume/clear/compact):compact 钩只在压缩重放时命中', async () => {
+  const { applySessionStartHooks } = await import('./hooks')
+  const c = ctx()
+  const registry = {
+    rules: [
+      { event: 'SessionStart' as const, matcher: 'compact', handler: () => ({ action: 'context' as const, additionalContext: '压缩后重注入' }) },
+      { event: 'SessionStart' as const, handler: () => ({ action: 'context' as const, additionalContext: '任何来源都注入' }) },
+    ],
+  }
+  const startup = await applySessionStartHooks(registry, c as never) // 默认 startup
+  expect(startup.additionalContext).toEqual(['任何来源都注入'])
+  const compact = await applySessionStartHooks(registry, c as never, 'compact')
+  expect(compact.additionalContext).toEqual(['压缩后重注入', '任何来源都注入'])
+})

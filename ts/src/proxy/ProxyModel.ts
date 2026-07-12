@@ -66,6 +66,8 @@ export class ProxyModel implements Model {
       stream: true,
       imageContentMode: this.cfg.imageContentMode,
       reasoningEffort: this.cfg.reasoningEffort,
+      toolChoice: input.tool_choice,
+      stopSequences: input.stop_sequences,
     })
 
     let read = await this.runOnce(body, input, input.onDelta)

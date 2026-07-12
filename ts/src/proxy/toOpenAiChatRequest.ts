@@ -14,6 +14,10 @@ export interface ProxyRequestInput {
   stream?: boolean
   imageContentMode?: OpenAIChatImageContentMode
   reasoningEffort?: ReasoningEffort
+  /** Anthropic tool_choice 形状;翻译规则见 convertToolChoice(对齐 cc anthropicToOpenaiChat.ts:248-260)。 */
+  toolChoice?: { type: 'auto' | 'any' | 'none' } | { type: 'tool'; name: string }
+  /** Anthropic stop_sequences → OpenAI stop(对齐 cc 同文件 :80-82)。 */
+  stopSequences?: string[]
 }
 
 const OMITTED_IMAGE_TEXT = '[Image omitted: this OpenAI-compatible chat endpoint only supports text content.]'
@@ -36,8 +40,26 @@ export function toOpenAiChatRequest(input: ProxyRequestInput): OpenAIChatRequest
       type: 'function' as const,
       function: { name: t.name, description: t.description, parameters: t.parameters as Record<string, unknown> },
     }))
+    // tool_choice 只在带 tools 时有意义(部分 OpenAI 兼容端点对无 tools 请求带 tool_choice 会 400)。
+    if (input.toolChoice !== undefined) result.tool_choice = convertToolChoice(input.toolChoice)
   }
+  if (input.stopSequences && input.stopSequences.length > 0) result.stop = input.stopSequences
   return result
+}
+
+/** Anthropic tool_choice → OpenAI(照抄 cc anthropicToOpenaiChat.ts:248-260 convertToolChoice)。 */
+export function convertToolChoice(choice: unknown): unknown {
+  if (typeof choice === 'string') return choice
+  if (typeof choice === 'object' && choice !== null) {
+    const c = choice as Record<string, unknown>
+    if (c.type === 'auto') return 'auto'
+    if (c.type === 'any') return 'required'
+    if (c.type === 'none') return 'none'
+    if (c.type === 'tool' && typeof c.name === 'string') {
+      return { type: 'function', function: { name: c.name } }
+    }
+  }
+  return 'auto'
 }
 
 function convertMessage(msg: Message, output: OpenAIChatMessage[], imageMode: OpenAIChatImageContentMode): void {

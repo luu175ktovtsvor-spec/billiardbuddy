@@ -111,6 +111,11 @@ export interface ToolContext {
    * 未设该 sink(脱离 loop 单测)时,read_file 仍回元信息文本(向后兼容,只是不回灌文档块)。
    */
   documentResultSink?: DocumentBlock[]
+  /**
+   * 官方 hooks 通用字段 continue:false 的批内暂存:PreToolUse/PostToolUse(Failure) 聚合出 haltReason 时
+   * 由执行层写入(首个生效),主循环在批尾统一消费并优雅停轮,消费后清空。
+   */
+  hookHaltReason?: string
   /** 当前会话的大工具结果落盘目录,供 read_stored_tool_result 安全回读。 */
   toolResultStoreDir?: string
   /** 大工具结果替换状态,供主循环/子代理/续跑保持一致的上下文裁剪决策。 */

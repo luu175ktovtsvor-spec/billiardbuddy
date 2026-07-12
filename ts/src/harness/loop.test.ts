@@ -2967,3 +2967,65 @@ test('hooks:PermissionDenied 在规则 deny 分支也触发(带拒绝原因)', a
   expect(deniedSeen[0]).toBeTruthy()
   expect(events.some(e => e.type === 'approval_request')).toBe(false)
 })
+
+test('守卫:非计划模式调 ExitPlanMode 直接报错——不弹卡、不切档(对齐 cc validateInput)', async () => {
+  const convId = 'plan-guard-exit-outside'
+  // 盘上留一份旧计划文件:守卫必须在读盘之前拦下,证明不是"空计划"分支在兜。
+  writeFileSync(getPlanFilePath(root, convId), '陈年旧计划')
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'x1', name: 'ExitPlanMode', input: { timeout_ms: 1000 } }] },
+    { kind: 'final', text: 'done' },
+  ])
+  const events = await collect(runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x', conversationId: convId, // 默认档,非 plan
+  }))
+  const result = events.find(e => e.type === 'tool_result' && e.tool === 'ExitPlanMode')
+  expect(result && result.type === 'tool_result' && result.output).toContain('只能在计划模式内调用')
+  // 没弹批准问卡、没切进 acceptEdits(后续没有 plan_approved)
+  expect(events.some(e => e.type === 'ask_question')).toBe(false)
+  expect(events.some(e => e.type === 'tool_result' && e.output.includes('<plan_approved>'))).toBe(false)
+})
+
+test('守卫:已在计划模式再调 EnterPlanMode 直接报错——不重复弹卡(对齐 cc validateInput)', async () => {
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'e1', name: 'EnterPlanMode', input: { timeout_ms: 1000 } }] },
+    { kind: 'final', text: 'done' },
+  ])
+  const events = await collect(runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x', permissionMode: 'plan', conversationId: 'plan-guard-reenter',
+  }))
+  const result = events.find(e => e.type === 'tool_result' && e.tool === 'EnterPlanMode')
+  expect(result && result.type === 'tool_result' && result.output).toContain('已在计划模式')
+  expect(events.some(e => e.type === 'ask_question')).toBe(false)
+})
+
+test('hooks 官方 continue:false:PreToolUse 停机——工具不执行、tool_result 保配对、整轮优雅收场不再打模型', async () => {
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'h1', name: 'list_dir', input: {} }] },
+    { kind: 'final', text: 'should never run' },
+  ])
+  const events = await collect(runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x',
+    hooks: { rules: [{ event: 'PreToolUse', handler: () => ({ action: 'halt', reason: '管理员停机' }) }] },
+  }))
+  expect(model.received.length).toBe(1) // 第二次 model.step 不发生(停机在批尾生效)
+  const result = events.find(e => e.type === 'tool_result' && e.tool === 'list_dir')
+  expect(result && result.type === 'tool_result' && result.output).toContain('管理员停机')
+  expect(events.some(e => e.type === 'context_note' && e.text.includes('[hook 停止] 管理员停机'))).toBe(true)
+  expect(events.some(e => e.type === 'final')).toBe(false)
+})
+
+test('hooks 官方 continue:false:UserPromptSubmit 停机——不建消息、一次模型都不打', async () => {
+  const model = scriptedModel([{ kind: 'final', text: 'should never run' }])
+  const events = await collect(runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x',
+    hooks: { rules: [{ event: 'UserPromptSubmit', handler: () => ({ action: 'halt', reason: '维护窗口,暂停接单' }) }] },
+  }))
+  expect(model.received.length).toBe(0)
+  expect(events.some(e => e.type === 'context_note' && e.text.includes('[hook 停止] 维护窗口,暂停接单'))).toBe(true)
+  expect(events.some(e => e.type === 'final')).toBe(false)
+})

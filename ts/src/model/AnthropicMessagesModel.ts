@@ -66,7 +66,8 @@ interface AnthropicResponseJson {
   usage?: Partial<AnthropicUsage>
 }
 
-const DEFAULT_MAX_TOKENS = 4096
+/** 未配置 maxTokens 时的兜底(对齐 cc utils/context.ts:31 CAPPED_DEFAULT_MAX_TOKENS=8000;旧值 4096 会让长输出更早撞上限多一次续写往返)。 */
+const DEFAULT_MAX_TOKENS = 8_000
 const ANTHROPIC_VERSION = '2023-06-01'
 /** 流空闲超时默认值(对齐 ProxyModel 的 DEFAULT_IDLE_MS)。 */
 const DEFAULT_IDLE_MS = 60_000
@@ -95,6 +96,9 @@ export class AnthropicMessagesModel implements Model {
           description: t.description,
           input_schema: t.parameters,
         })) } : {}),
+        // Anthropic 线格式原样透传(proxy 出口对应做 OpenAI 翻译,见 toOpenAiChatRequest)。
+        ...(input.tool_choice && input.tools.length > 0 ? { tool_choice: input.tool_choice } : {}),
+        ...(input.stop_sequences && input.stop_sequences.length > 0 ? { stop_sequences: input.stop_sequences } : {}),
       }
     }
 

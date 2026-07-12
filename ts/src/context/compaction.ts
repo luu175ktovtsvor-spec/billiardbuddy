@@ -20,9 +20,13 @@ export const AUTOCOMPACT_BUFFER_TOKENS = 13_000
  * 会被摘要吞掉、国产模型对纯摘要的稳定性未真机验证——若真机发现领域对话退化,这里调回小正数(如 4)即可。
  */
 export const KEEP_RECENT_MESSAGES = 0
-export const MIN_AUTOCOMPACT_OLD_MESSAGES = 6
+/**
+ * 可摘段最少消息数 = 1(即至少 2 条消息才压:1 条旧 + 切点)。cc 无"最少 N 条"门——巨型 tool_result
+ * 三五条消息就能顶满窗口,旧值 6 会在这种场景拒绝压缩、放任后续请求 413。唯一保留的守卫是
+ * "有东西可摘"(≥2 条,防止对着仅剩的一条摘要自吞)。
+ */
+export const MIN_AUTOCOMPACT_OLD_MESSAGES = 1
 export const MAX_COMPACTION_FAILURES = 3
-export const AUTOCOMPACT_COOLDOWN_MS = 30_000
 /**
  * 摘要请求本身超限(prompt-too-long)时的收缩重试上限。
  * 对齐 cc-haha src/services/compact/compact.ts:227 的 MAX_PTL_RETRIES = 3。
@@ -71,10 +75,6 @@ export interface CompactPipelineInput extends SplitOptions, MicrocompactOptions 
   lastInputTokens?: number
   readOnlyToolNames: ReadonlySet<string>
   compactionFailures?: number
-  lastCompactionAtMs?: number
-  lastCompactedMessageCount?: number
-  nowMs?: number
-  cooldownMs?: number
   force?: boolean
 }
 
@@ -237,10 +237,9 @@ export function getAutoCompactTokenThreshold(contextWindowTokens: number, maxOut
 
 function shouldAutocompact(input: CompactPipelineInput, failures: number): boolean {
   if (input.force) return true
-  const cooldownMs = input.cooldownMs ?? AUTOCOMPACT_COOLDOWN_MS
-  const lastAt = input.lastCompactionAtMs ?? 0
-  if (lastAt > 0 && cooldownMs > 0 && (input.nowMs ?? Date.now()) - lastAt < cooldownMs) return false
-  if (input.lastCompactedMessageCount && input.messages.length <= input.lastCompactedMessageCount) return false
+  // cc 对齐:无冷却期、无"消息数没涨不再压"门——cc autoCompact 每轮纯按 token 复判、允许连续压缩
+  // (一次压缩没降到阈值下时,下一轮继续压,而不是压制后带超限上下文打模型吃 413)。
+  // 唯一熔断 = 连续压缩失败计数(对齐 cc MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES)。
   if (failures >= MAX_COMPACTION_FAILURES) return false
   // cc:有上一轮响应回报的真实 input tokens 就**完全按 token 公式判**(cc autoCompact 是纯 token 判,
   // 没有字符估算路径)——真实用量在手时字符粗估不得抢跑提前触发,否则大窗口下粗估偏差会造成早压 20 万+ token。
@@ -250,7 +249,10 @@ function shouldAutocompact(input: CompactPipelineInput, failures: number): boole
   const parsedEnvWindow = envAutoCompactWindow ? parseInt(envAutoCompactWindow, 10) : NaN
   const hasWindow = (!isNaN(parsedEnvWindow) && parsedEnvWindow > 0) || (!!input.contextWindowTokens && input.contextWindowTokens > 0)
   if (input.lastInputTokens && input.lastInputTokens > 0 && hasWindow) {
-    return input.lastInputTokens >= getAutoCompactTokenThreshold(input.contextWindowTokens ?? 0, input.maxOutputTokens)
+    const threshold = getAutoCompactTokenThreshold(input.contextWindowTokens ?? 0, input.maxOutputTokens)
+    // 域有效性守卫(非行为分叉):声明窗口过小(≤ 摘要预留+13k buffer)时阈值非正,"任何用量都≥负阈值"
+    // 会退化成每轮必压。cc 的真实模型窗口恒 ≥200k 踩不到此域;阈值非正时 token 公式失去意义,落回字符估算兜底。
+    if (threshold > 0) return input.lastInputTokens >= threshold
   }
   const contextWindowChars = input.contextWindowChars
   if (!contextWindowChars) return false

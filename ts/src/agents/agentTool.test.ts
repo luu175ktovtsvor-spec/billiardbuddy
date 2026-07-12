@@ -503,7 +503,7 @@ test('agent_task rejects recursive launch when fork query source survives withou
   }
 })
 
-test('agent_task fork_context runs a child with parent system, messages and exact tool pool', async () => {
+test('agent_task fork_context runs a child with parent system, messages and blacklist-filtered tool pool', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-tool-fork-context-'))
   try {
     const parentModel = scriptedModel([
@@ -549,7 +549,9 @@ test('agent_task fork_context runs a child with parent system, messages and exac
     expect(childFirst.system).toContain('PARENT SYSTEM')
     expect(childFirst.system).toContain('<hook_context event="SessionStart">')
     expect(childFirst.system).toContain('父级动态上下文:fork-parent-rendered-system')
-    expect(childFirst.tools.map(tool => tool.name)).toEqual(['agent_task', 'inspect_parent_tool'])
+    // fork child 同样吃子代理统一黑名单(对齐 cc ALL_AGENT_DISALLOWED_TOOLS):继承父工具池但剔除
+    // agent_task(禁嵌套)/问用户/计划档/兄弟任务流工具;旧"完整继承含 agent_task"设计已掰回 cc。
+    expect(childFirst.tools.map(tool => tool.name)).toEqual(['inspect_parent_tool'])
     expect(childFirst.messages[0]).toEqual({ role: 'user', content: [textBlock('父任务')] })
     expect(childFirst.messages[1]).toEqual({
       role: 'assistant',

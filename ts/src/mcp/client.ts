@@ -1,4 +1,5 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { expandMcpServerConfig } from './envExpansion'
 import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { SSEClientTransport, type SSEClientTransportOptions } from '@modelcontextprotocol/sdk/client/sse.js'
@@ -405,7 +406,10 @@ async function listAllPrompts(client: Client, opts: LoadMcpToolsOptions): Promis
   return prompts
 }
 
-export function createTransport(config: McpServerConfig, opts: LoadMcpToolsOptions): Transport {
+export function createTransport(rawConfig: McpServerConfig, opts: LoadMcpToolsOptions): Transport {
+  // ${VAR}/${VAR:-default} 展开(对齐 cc envExpansion + 官方 .mcp.json 契约):在"真的要连"的时刻做,
+  // 缺变量抛错指名道姓,别把 "${MY_TOKEN}" 当字面量发出去让鉴权静默失效。
+  const config = expandMcpServerConfig(rawConfig)
   if (config.transport === 'stdio') {
     const cmd = commandForPlatform(config)
     if (!cmd.command) throw new Error(`MCP stdio server ${config.name} missing command`)

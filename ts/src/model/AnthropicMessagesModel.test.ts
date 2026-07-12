@@ -228,7 +228,7 @@ test('stop_reason=max_tokens(无工具调用)→ 升 max_tokens=64000 重试一�
   })
   const step = await model.step({ messages: [userText('写长文')], tools: [] })
   expect(calls).toBe(2)
-  expect(bodies[0].max_tokens).toBe(4096)   // 首发用默认 4k
+  expect(bodies[0].max_tokens).toBe(8000)   // 首发用默认 8k(对齐 cc CAPPED_DEFAULT_MAX_TOKENS)
   expect(bodies[1].max_tokens).toBe(64000)  // 升级重试到 64k(对齐 cc ESCALATED_MAX_TOKENS)
   expect(step).toEqual({ kind: 'final', text: '升上限后写完' })  // 用重试结果,不再带截断提示
 })

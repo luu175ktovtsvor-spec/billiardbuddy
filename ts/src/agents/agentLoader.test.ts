@@ -149,3 +149,26 @@ test('resolveAgentTools:按 tools 子集过滤,* 表示全量', () => {
   expect(resolveAgentTools({ name: 'a', description: '', prompt: '', filePath: '', tools: ['read_file', 'write_file'], disallowedTools: ['write_file'] }, tools).map(t => t.name))
     .toEqual(['read_file'])
 })
+
+test('resolveAgentTools:子代理统一黑名单(对齐 cc ALL_AGENT_DISALLOWED_TOOLS)——问用户/计划档/嵌套/兄弟任务流一律剔除,连显式 tools 白名单也压不过', () => {
+  const tools = [
+    { name: 'read_file' },
+    { name: 'agent_task' },
+    { name: 'AskUserQuestion' },
+    { name: 'ask_user_question' },
+    { name: 'EnterPlanMode' },
+    { name: 'exit_plan' },
+    { name: 'TaskOutput' },
+    { name: 'TaskStop' },
+    { name: 'read_background_task' },
+    { name: 'cancel_background_task' },
+    { name: 'start_background_agent_task' },
+    { name: 'list_background_tasks' },
+  ] as Tool[]
+  // 默认全量:黑名单项全被剔;list_background_tasks(只读列表,cc 未禁)保留。
+  expect(resolveAgentTools({ name: 'a', description: '', prompt: '', filePath: '' }, tools).map(t => t.name))
+    .toEqual(['read_file', 'list_background_tasks'])
+  // agent md 显式把黑名单工具写进 tools 白名单也不放行(cc:黑名单优先于一切声明)。
+  expect(resolveAgentTools({ name: 'a', description: '', prompt: '', filePath: '', tools: ['read_file', 'AskUserQuestion', 'agent_task'] }, tools).map(t => t.name))
+    .toEqual(['read_file'])
+})

@@ -43,6 +43,10 @@ export type HookEvent =
   | 'InstructionsLoaded'
   | 'CwdChanged'
   | 'FileChanged'
+  // —— 以下 3 个是官方 Claude Code 已发布、cc-haha v0.4.5 快照尚未收录的事件(按官方 hooks 契约补齐)——
+  | 'PostToolBatch' // 已接线:一批并行工具全部落定后(loop 批尾),decision:block=停循环
+  | 'UserPromptExpansion' // 派发器就绪,call site 待接:用户敲的命令展开成 prompt 时(server 斜杠展开点)
+  | 'MessageDisplay' // 派发器就绪,call site 待接:助手正文展示时(桌面壳渲染层,后端不派)
 
 export type HookDecision =
   | { action: 'allow'; message?: string }
@@ -52,6 +56,8 @@ export type HookDecision =
   | { action: 'context'; additionalContext: string }
   /** Elicitation/ElicitationResult 专用:hook 代答 MCP elicitation(对齐 cc hookSpecificOutput action/content)。 */
   | { action: 'elicitation'; elicitationAction: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }
+  /** 官方通用输出字段 `continue:false`(+`stopReason`):任何事件的 hook 都可要求整轮停机——优先级最高,压过 decision 族。 */
+  | { action: 'halt'; reason?: string }
 
 export interface HookPayload {
   event: HookEvent
@@ -75,6 +81,10 @@ export interface HookPayload {
   notificationType?: string
   /** SessionEnd:结束原因(对齐 cc reason,如 clear/resume/logout/other)。 */
   sessionEndReason?: string
+  /** SessionStart:来源 matcher 键(官方契约 startup/resume/clear/compact;压缩成功后以 'compact' 重放)。 */
+  sessionSource?: 'startup' | 'resume' | 'clear' | 'compact'
+  /** PostToolBatch:本批工具名清单(官方事件,批内并行工具全部落定后触发;无 matcher,恒发)。 */
+  batchToolNames?: string[]
   /** PostToolUseFailure/StopFailure:错误文本(对齐 cc error)。 */
   errorMessage?: string
   /** 工具调用 id(PostToolUseFailure 等,对齐 cc tool_use_id)。 */
@@ -251,6 +261,10 @@ export function parseHookDecisionJSON(text: string): HookDecision | null {
   try {
     const raw = JSON.parse(text) as unknown
     if (!isRecord(raw)) return null
+    // 官方通用字段(全事件契约,优先级最高):continue:false → 整轮停机,压过任何 decision 族输出。
+    if (raw.continue === false) {
+      return { action: 'halt', reason: typeof raw.stopReason === 'string' && raw.stopReason.trim() ? raw.stopReason.trim() : undefined }
+    }
     // cc 官方格式:PreToolUse hook 用 hookSpecificOutput.permissionDecision(allow/deny/ask)+ ...Reason。
     const hso = raw.hookSpecificOutput
     if (isRecord(hso) && typeof hso.permissionDecision === 'string') {
@@ -323,6 +337,7 @@ export function matchesToolMatcher(matcher: string | undefined, target: string |
  */
 function matchTarget(payload: HookPayload): string | undefined {
   switch (payload.event) {
+    case 'SessionStart': return payload.sessionSource
     case 'Notification': return payload.notificationType ?? payload.toolName
     case 'Setup': return payload.setupTrigger
     case 'ConfigChange': return payload.configSource
@@ -372,6 +387,8 @@ export async function runHookEvent(registry: HookRegistry | undefined, payload: 
 export interface PreToolUseResult {
   input: unknown
   deniedMessage?: string
+  /** 官方 continue:false:该 hook 要求整轮停机(不只拦本次调用)。 */
+  haltReason?: string
   /** cc PreToolUse permissionDecision:'ask' → 强制该次调用走审批闸(无视当前 permissionMode 的自动放行)。 */
   askMessage?: string
   askRequested?: boolean
@@ -390,6 +407,14 @@ export interface HookContextResult {
   deniedMessage?: string
   additionalContext: string[]
   blockingFeedback?: string[]
+  /** 官方 continue:false 停机请求(首个 halt 决策的 stopReason);消费方(loop)据此优雅收场整轮。 */
+  haltReason?: string
+}
+
+/** 首个 halt 决策的 reason(无 halt → undefined)。所有 apply* 聚合器共用。 */
+function takeHalt(decisions: HookDecision[]): string | undefined {
+  for (const d of decisions) if (d.action === 'halt') return d.reason ?? 'hook 要求停止(continue:false)'
+  return undefined
 }
 
 export interface UserPromptSubmitResult extends HookContextResult {
@@ -421,12 +446,14 @@ export async function applyPreToolUseHooks(
     if (decision.action === 'modify') nextInput = decision.updatedInput
     if (decision.action === 'context') additionalContext.push(decision.additionalContext)
   }
-  if (denied) return { input: nextInput, deniedMessage, additionalContext }
+  const haltReason = takeHalt(decisions)
+  if (denied) return { input: nextInput, deniedMessage, additionalContext, ...(haltReason !== undefined ? { haltReason } : {}) }
   return {
     input: nextInput,
     additionalContext,
     ...(askRequested ? { askRequested, askMessage } : {}),
     ...(allowRequested ? { allowRequested } : {}),
+    ...(haltReason !== undefined ? { haltReason } : {}),
   }
 }
 
@@ -462,17 +489,20 @@ export function hookAllowBypassesAsk(
 export async function applySessionStartHooks(
   registry: HookRegistry | undefined,
   ctx: ToolContext,
+  source: 'startup' | 'resume' | 'clear' | 'compact' = 'startup',
 ): Promise<HookContextResult> {
   const additionalContext: string[] = []
   const decisions = await runHookEvent(registry, {
     event: 'SessionStart',
     sessionId: ctx.conversationId,
+    sessionSource: source,
   }, ctx)
   for (const decision of decisions) {
     if (decision.action === 'context') additionalContext.push(decision.additionalContext)
     if (decision.action === 'deny') additionalContext.push(`[SessionStart hook 警告] ${decision.message}`)
   }
-  return { additionalContext }
+  const haltReason = takeHalt(decisions)
+  return { additionalContext, ...(haltReason !== undefined ? { haltReason } : {}) }
 }
 
 export async function applySubagentStartHooks(
@@ -521,7 +551,8 @@ export async function applyUserPromptSubmitHooks(
       }
     }
   }
-  return { userPrompt: nextPrompt, additionalContext }
+  const haltReason = takeHalt(decisions)
+  return { userPrompt: nextPrompt, additionalContext, ...(haltReason !== undefined ? { haltReason } : {}) }
 }
 
 export async function applyPostToolUseHooks(
@@ -543,7 +574,8 @@ export async function applyPostToolUseHooks(
     if (decision.action === 'context') additionalContext.push(decision.additionalContext)
     if (decision.action === 'deny') additionalContext.push(`[PostToolUse hook 警告] ${decision.message}`)
   }
-  return { additionalContext }
+  const haltReason = takeHalt(decisions)
+  return { additionalContext, ...(haltReason !== undefined ? { haltReason } : {}) }
 }
 
 export async function applyStopHooks(
@@ -568,7 +600,34 @@ export async function applyStopHooks(
     if (decision.action === 'context') additionalContext.push(decision.additionalContext)
     if (decision.action === 'deny') blockingFeedback.push(`${eventName} hook feedback:\n${decision.message}`)
   }
+  // 官方优先级:continue:false 压过 decision:block——halt 时不再阻止停止/强迫续跑,直接停。
+  const haltReason = takeHalt(decisions)
+  if (haltReason !== undefined) return { additionalContext, haltReason }
   return blockingFeedback.length > 0 ? { additionalContext, blockingFeedback } : { additionalContext }
+}
+
+/**
+ * PostToolBatch(官方事件,cc-haha v0.4.5 快照无、按官方契约补):一批并行工具全部落定后触发。
+ * 无 matcher(恒发);decision:block/exit-2 = 停止 agentic loop(官方语义)→ 折成 haltReason。
+ */
+export async function applyPostToolBatchHooks(
+  registry: HookRegistry | undefined,
+  batchToolNames: string[],
+  ctx: ToolContext,
+): Promise<HookContextResult> {
+  const additionalContext: string[] = []
+  const decisions = await runHookEvent(registry, {
+    event: 'PostToolBatch',
+    batchToolNames,
+    sessionId: ctx.conversationId,
+  }, ctx)
+  let blockReason: string | undefined
+  for (const decision of decisions) {
+    if (decision.action === 'context') additionalContext.push(decision.additionalContext)
+    if (decision.action === 'deny' && blockReason === undefined) blockReason = decision.message
+  }
+  const haltReason = takeHalt(decisions) ?? blockReason
+  return { additionalContext, ...(haltReason !== undefined ? { haltReason } : {}) }
 }
 
 /** 通用"上下文型"事件派发:收 context/把 deny 折成警告文,不阻断(与 PostToolUse/SessionStart 同款语义)。 */
