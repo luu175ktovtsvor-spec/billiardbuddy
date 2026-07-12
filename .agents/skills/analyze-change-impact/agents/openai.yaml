@@ -1,0 +1,4 @@
+interface:
+  display_name: "改动影响分析"
+  short_description: "追踪调用链、契约、状态、测试和部署影响，限定修改范围"
+  default_prompt: "使用 $analyze-change-impact 查清这项改动会牵连哪些模块和文件。"

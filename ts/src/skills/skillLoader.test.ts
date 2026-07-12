@@ -532,3 +532,21 @@ test('问题4:技能别名进 byName(主名优先不覆盖)+ realpath 去重(sym
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('问题4 补防线:技能别名与某真实主名冲突时,byName 指向真实主名技能(别名不覆盖主名)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'skill-alias-conflict-'))
+  try {
+    const bundled = join(root, 'bundled')
+    mkdirSync(join(bundled, 'deploy'), { recursive: true })
+    mkdirSync(join(bundled, 'ship'), { recursive: true })
+    // ship 技能声明别名 'deploy' —— 但 deploy 是另一个技能的真实主名,别名不能覆盖它
+    writeFileSync(join(bundled, 'deploy', 'SKILL.md'), '---\nname: deploy\ndescription: 真实部署技能\n---\n主名 deploy')
+    writeFileSync(join(bundled, 'ship', 'SKILL.md'), '---\nname: ship\ndescription: 发货\naliases: [deploy]\n---\n别名想抢 deploy')
+    const lib = await loadLayeredSkills({ bundledRoot: bundled, userRoot: null })
+    // 冲突消解:deploy 键必须指向真实的 deploy 技能,不是 ship
+    expect(lib.byName.get('deploy')?.name).toBe('deploy')
+    expect(lib.byName.get('deploy')?.description).toBe('真实部署技能')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

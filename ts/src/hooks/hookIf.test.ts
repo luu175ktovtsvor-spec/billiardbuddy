@@ -28,7 +28,7 @@ test('hookIfConditionMatches:文件类按路径 glob(Edit↔edit_file/write_file
   expect(hookIfConditionMatches('Bash(git *)', 'run_command', {}, WS)).toBe(false)
 })
 
-test('runHookEvent:带 if 的 PreToolUse hook 按工具输入过滤(命中才跑;非工具事件 if 忽略)', async () => {
+test('runHookEvent:带 if 的 PreToolUse hook 按工具输入过滤(命中才跑,不命中不跑)', async () => {
   const root = mkdtempSync(join(tmpdir(), 'hookif-'))
   try {
     const ctx = { workspace: new Workspace(root), conversationId: 's1' }
