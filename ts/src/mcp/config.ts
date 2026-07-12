@@ -15,6 +15,8 @@ export interface McpServerConfig {
   // 对齐 cc(services/mcp/types.ts McpHTTPServerConfigSchema.headers):cc 没有单独的
   // "token" 字段,鉴权就是用户在这里自己写 Authorization 头;我们照做,不发明新字段。
   headers?: Record<string, string>
+  /** 远程 server 的 OAuth(对齐 cc auth.ts 行为,SDK authProvider 路线):true/对象即启用;流程与令牌存储见 mcp/oauth.ts。 */
+  oauth?: { scopes?: string[]; clientName?: string }
 }
 
 export interface McpToolAnnotations {
@@ -50,6 +52,12 @@ export function normalizeMcpConfig(value: unknown): McpServerConfig[] {
       // 传输判定对齐 cc(services/mcp/types.ts 的 type 判别):显式 type:'sse' → SSE(旧式长连 + POST 回发);
       // 其余带 url 的(type:'http' 或仅有 url 的历史写法)→ streamable http。type 缺省保持向后兼容走 http。
       const transport: McpTransport = raw.type === 'sse' ? 'sse' : 'http'
+      // oauth 字段:true → 默认配置;对象 → { scopes?: string[]; clientName?: string }。仅远程传输有意义。
+      const oauth = raw.oauth === true
+        ? {}
+        : isRecord(raw.oauth)
+          ? { scopes: stringArray(raw.oauth.scopes), clientName: typeof raw.oauth.clientName === 'string' ? raw.oauth.clientName : undefined }
+          : undefined
       out.push({
         name,
         transport,
@@ -57,6 +65,7 @@ export function normalizeMcpConfig(value: unknown): McpServerConfig[] {
         env: stringRecord(raw.env),
         disabled: raw.disabled === true,
         headers: stringRecord(raw.headers),
+        ...(oauth ? { oauth } : {}),
       })
       continue
     }

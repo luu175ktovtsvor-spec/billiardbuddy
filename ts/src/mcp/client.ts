@@ -1,5 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
 import { expandMcpServerConfig } from './envExpansion'
+import { McpOAuthProvider } from './oauth'
 import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { SSEClientTransport, type SSEClientTransportOptions } from '@modelcontextprotocol/sdk/client/sse.js'
@@ -78,6 +80,8 @@ export interface LoadMcpToolsOptions {
   fetchImpl?: FetchLike
   elicitationHandler?: McpElicitationHandler
   samplingHandler?: McpSamplingHandler
+  /** OAuth 宿主参数(config.oauth 启用的 server 用):凭据目录/浏览器拉起注入/回调超时;interactive:false = 无人值守禁交互授权。 */
+  oauth?: { storageDir?: string; openAuthUrl?: (url: string) => void | Promise<void>; callbackTimeoutMs?: number; interactive?: boolean }
 }
 
 export interface LoadedMcpTools {
@@ -442,7 +446,7 @@ export function wrapFetchWithTimeoutAndAccept(base?: FetchLike, timeoutMs = 60_0
   }
 }
 
-export function createTransport(rawConfig: McpServerConfig, opts: LoadMcpToolsOptions): Transport {
+export function createTransport(rawConfig: McpServerConfig, opts: LoadMcpToolsOptions, authProvider?: McpOAuthProvider): Transport {
   // ${VAR}/${VAR:-default} 展开(对齐 cc envExpansion + 官方 .mcp.json 契约):在"真的要连"的时刻做,
   // 缺变量抛错指名道姓,别把 "${MY_TOKEN}" 当字面量发出去让鉴权静默失效。
   const config = expandMcpServerConfig(rawConfig)
@@ -468,6 +472,7 @@ export function createTransport(rawConfig: McpServerConfig, opts: LoadMcpToolsOp
     const transportOptions: SSEClientTransportOptions = {
       // SSE 的回发 POST 走这里:套 60s 超时 + Accept 保底(长连 GET 在 eventSourceInit,不套超时)。
       fetch: wrapFetchWithTimeoutAndAccept(opts.fetchImpl),
+      ...(authProvider ? { authProvider } : {}),
       ...(config.headers ? { requestInit: { headers: config.headers } } : {}),
     }
     if (config.headers) {
@@ -490,6 +495,7 @@ export function createTransport(rawConfig: McpServerConfig, opts: LoadMcpToolsOp
     return new StreamableHTTPClientTransport(new URL(config.url), {
       // 每请求 60s 超时 + Accept 保底(对齐 cc):初始化/调用 POST 不再可能无限挂死。
       fetch: wrapFetchWithTimeoutAndAccept(opts.fetchImpl),
+      ...(authProvider ? { authProvider } : {}),
       ...(config.headers ? { requestInit: { headers: config.headers } } : {}),
     })
   }
@@ -893,9 +899,24 @@ function createMcpConnectionSupervisor(config: McpServerConfig, opts: LoadMcpToo
     }
   }
 
-  const connect = async (): Promise<Client> => {
+  // OAuth provider(config.oauth 启用的远程 server):一个 server 一个实例,跨重连持有令牌/注册信息。
+  const authProvider = config.oauth && config.transport !== 'stdio'
+    ? new McpOAuthProvider({
+        serverName: config.name,
+        scopes: config.oauth.scopes,
+        clientName: config.oauth.clientName,
+        storageDir: opts.oauth?.storageDir,
+        openAuthUrl: opts.oauth?.openAuthUrl,
+        callbackTimeoutMs: opts.oauth?.callbackTimeoutMs,
+      })
+    : undefined
+
+  const isUnauthorized = (err: unknown): boolean =>
+    err instanceof UnauthorizedError || (err instanceof Error && /unauthorized/i.test(err.name + ' ' + err.message))
+
+  const tryConnect = async (): Promise<Client> => {
     const { client, taskStore } = createClient(config.name, opts)
-    const transport = createTransport(config, opts)
+    const transport = createTransport(config, opts, authProvider)
     try {
       await client.connect(transport, { signal: opts.signal, timeout: opts.timeoutMs ?? 10000 })
     } catch (err) {
@@ -906,6 +927,57 @@ function createMcpConnectionSupervisor(config: McpServerConfig, opts: LoadMcpToo
     current = { client, transport, taskStore }
     attachDropHandlers(client, taskStore)
     return client
+  }
+
+  const connect = async (): Promise<Client> => {
+    // 无 OAuth / 已有令牌:直连(令牌由 SDK transport 自动附带,过期自动刷新)。
+    if (!authProvider) return tryConnect()
+    // 授权环(对齐 cc performMCPOAuthFlow 的行为语义,机制走 SDK auth()):
+    // ① 无令牌先备好本地回调端口(redirect_uris 须在动态注册前就绪);② 连接触发 SDK 授权流
+    //    (发现→注册→PKCE→redirectToAuthorization 拉浏览器)后抛 Unauthorized;③ 等回调 code →
+    //    finishAuth 换令牌落盘;④ 重连。令牌失效(refresh 也救不回)= step-up:作废旧令牌重走一轮。
+    const needInteractiveUpfront = !authProvider.hasTokens()
+    if (needInteractiveUpfront && opts.oauth?.interactive === false) {
+      throw new Error(`MCP server ${config.name}: 需要 OAuth 授权,但当前为无人值守上下文(interactive:false),请先在前台会话完成授权`)
+    }
+    if (needInteractiveUpfront) await authProvider.prepareInteractive()
+    try {
+      return await tryConnect()
+    } catch (err) {
+      if (!isUnauthorized(err)) {
+        authProvider.closeCallback()
+        throw err
+      }
+      if (opts.oauth?.interactive === false) {
+        authProvider.closeCallback()
+        throw new Error(`MCP server ${config.name}: 令牌无效且无人值守上下文无法交互授权(${err instanceof Error ? err.message : String(err)})`)
+      }
+      try {
+        if (!needInteractiveUpfront) {
+          // step-up:带着旧令牌被打回——作废令牌、起回调、再触发一次授权流(这次会拉浏览器)。
+          authProvider.invalidateCredentials('tokens')
+          await authProvider.prepareInteractive()
+          try {
+            return await tryConnect()
+          } catch (err2) {
+            if (!isUnauthorized(err2)) throw err2
+          }
+        }
+        const code = await authProvider.waitForAuthorizationCode()
+        const finisher = createTransport(config, opts, authProvider) as Transport & { finishAuth(code: string): Promise<void> }
+        try {
+          await finisher.finishAuth(code)
+        } finally {
+          void finisher.close?.().catch(() => undefined)
+        }
+        return await tryConnect()
+      } finally {
+        authProvider.closeCallback()
+      }
+    } finally {
+      // 直连成功(令牌本就有效)时,若曾预开回调端口,及时释放。
+      if (needInteractiveUpfront) authProvider.closeCallback()
+    }
   }
 
   return {

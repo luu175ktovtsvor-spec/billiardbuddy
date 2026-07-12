@@ -937,6 +937,10 @@ export function startServer(opts: StartServerOptions = {}) {
   const sandboxEnabled = opts.sandboxEnabled ?? ((opts.env ?? process.env).QF_OS_SANDBOX !== '0')
   const buildSandbox = (ws: Workspace): Sandbox => new Sandbox({ workspace: ws, enabled: sandboxEnabled })
   const stateRoot = resolveStateRoot({ transcriptRoot: opts.transcriptRoot, env: opts.env })
+  // MCP OAuth 令牌落盘目录(锚 stateRoot,跨会话/重启复用):所有 MCP 加载点共享;
+  // 仅主对话(用户在场的 SSE 流)允许 interactive 授权,探测/列表/legacy 执行 interactive:false——
+  // 复用已落盘令牌即可,绝不让"点开设置页/查列表"触发浏览器授权弹窗。
+  const mcpOAuthDir = join(stateRoot, 'mcp-oauth')
   // 版本化 schema 迁移(#36 地基,对齐 cc main.tsx runMigrations):在任何 store 读 stateRoot 里的
   // settings/数据前,同步、按序、幂等地把待迁移的 schema 变更跑一遍,已应用版本记进 <stateRoot>/migrations.json。
   // 现注册表为空(cc 的具体迁移器都是给它上游模型改名、对我们不适用),故当前是空跑;地基就位,以后加一条即生效。
@@ -1724,6 +1728,8 @@ export function startServer(opts: StartServerOptions = {}) {
         workspaceRoot: workspace.root,
       }),
       samplingHandler: ({ params, signal }) => runMcpSampling(model, providerRuntime.config.model, params, signal ?? controller.signal),
+      // 主对话=用户在场:OAuth server 首次连接允许拉浏览器交互授权;令牌落 mcpOAuthDir 供各路径复用。
+      oauth: { storageDir: mcpOAuthDir, interactive: true },
     })
     // 工作区级 .mcp.json 未信任被拦时,把警告并进 mcp 警告流(由下方 mcpTools.warnings 循环回灌)。
     if (gatedMcp.warning) mcpTools.warnings.unshift(gatedMcp.warning)
@@ -2350,6 +2356,7 @@ export function startServer(opts: StartServerOptions = {}) {
         cwd: workspace.root,
         timeoutMs: 5000,
         fetchImpl: opts.fetchImpl,
+        oauth: { storageDir: mcpOAuthDir, interactive: false }, // 探测只数工具数,不触发授权弹窗
       })
       mcp = { tools: loaded.tools.length, warnings: loaded.warnings }
       await closeMcpConnections(loaded.connections)
@@ -2425,7 +2432,7 @@ export function startServer(opts: StartServerOptions = {}) {
     )
     const mcpConfigPath = resolveMcpConfig(rawBody, workspace.root).path
     // toolTimeoutMs 不硬编码:走 mcp/client.ts 的近乎无限默认值 + QF_MCP_TOOL_TIMEOUT 覆盖。
-    const mcpLoadOpts = { cwd: workspace.root, timeoutMs: 10000, fetchImpl: opts.fetchImpl }
+    const mcpLoadOpts = { cwd: workspace.root, timeoutMs: 10000, fetchImpl: opts.fetchImpl, oauth: { storageDir: mcpOAuthDir, interactive: false } }
     const [mcpTools, ...pluginMcpResults] = await Promise.all([
       loadMcpToolsFromFile(mcpConfigPath, mcpLoadOpts),
       ...pluginContribs.mcpConfigPaths.map(path => loadMcpToolsFromFile(path, mcpLoadOpts).catch(() => ({ tools: [], connections: [], warnings: [] }))),
@@ -3124,6 +3131,7 @@ export function startServer(opts: StartServerOptions = {}) {
       cwd: workspaceRoot,
       timeoutMs: 5000,
       fetchImpl: opts.fetchImpl,
+      oauth: { storageDir: mcpOAuthDir, interactive: false }, // server 列表查询,不触发授权弹窗
     })
     try {
       const connected = new Map(loaded.connections.map(connection => [connection.serverName, connection]))
