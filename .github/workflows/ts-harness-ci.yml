@@ -1,27 +1,75 @@
-name: TS Harness CI
+name: TS 工程质量门
 
-# 只管新 TS 工程(ts/);Python 那条 desktop-build-win.yml 不动。
 on:
   push:
-    branches: [ts-harness-rewrite]
-    paths: ['ts/**', '.github/workflows/ts-harness-ci.yml']
+    branches: [main]
+    paths:
+      - 'ts/**'
+      - 'gateway/**'
+      - 'relay/**'
+      - 'dataeye/**'
+      - 'scripts/**'
+      - '.agents/**'
+      - '.claude/skills/**'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - '.github/workflows/**'
   pull_request:
-    paths: ['ts/**', '.github/workflows/ts-harness-ci.yml']
+    paths:
+      - 'ts/**'
+      - 'gateway/**'
+      - 'relay/**'
+      - 'dataeye/**'
+      - 'scripts/**'
+      - '.agents/**'
+      - '.claude/skills/**'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - '.github/workflows/**'
+  workflow_dispatch: {}
+
+concurrency:
+  group: ts-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
-  test:
+  quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: '1.3.14' # ≥1.3.13(避 1.3.12 macOS 编译坏签名回归)
-      - name: install
+          bun-version: '1.3.14'
+      - name: 安装锁定依赖
         working-directory: ts
-        run: bun install
-      - name: typecheck
+        run: bun install --frozen-lockfile
+      - name: 执行统一质量门
+        run: bash scripts/quality_gate.sh
+
+  desktop-e2e:
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+      - name: 安装锁定依赖
         working-directory: ts
-        run: bun run typecheck
-      - name: test (unit + sidecar 集成;不含需下大模型的 native spike)
+        run: bun install --frozen-lockfile
+      - name: Electron + React + sidecar E2E
         working-directory: ts
-        run: bun test
+        run: xvfb-run --auto-servernum bun run e2e:desktop
+      - name: 上传 E2E 报告和失败证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-e2e-${{ github.sha }}
+          path: ts/test-results/desktop-e2e/
+          if-no-files-found: warn
+          retention-days: 7

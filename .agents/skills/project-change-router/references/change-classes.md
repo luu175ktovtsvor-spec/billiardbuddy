@@ -10,6 +10,8 @@
 | `CROSS_SERVICE` | 跨桌面、gateway、relay、dataeye 的远程协议 | `change-cross-service-api` |
 | `REFACTOR` | 只改变结构、依赖或文件归属，行为必须不变 | `refactor-module-boundaries` |
 | `DIAGNOSIS` | 只定位问题或影响面，不授权修复 | `analyze-change-impact` |
+| `SECURITY` | 跨越文件、命令、权限、密钥、IPC、网络或扩展信任边界 | `audit-security-boundaries` |
+| `RELEASE` | 版本、安装包、签名、更新、发布或回滚 | `release-desktop-safely` |
 
 ## 组合规则
 

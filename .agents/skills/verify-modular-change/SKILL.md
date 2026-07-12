@@ -18,17 +18,17 @@ description: Verify a completed modular change against its declared ownership, c
 7. 运行面：真启动、真调用接口或真点用户路径，记录实际观察结果。
 8. 文档：只有架构、部署、现行状态确实变化时才更新对应唯一真相源；删除被取代的旧口径。
 9. Skill：若新增/删除/改名模块，或连接、部署、验证流程变化，同次执行 `maintain-project-skills`；普通内部实现不更新。
+10. 机械质量门：运行 `bash scripts/quality_gate.sh`；任何失败都不能用文字说明代替修复。仅开发中快速反馈可用 `--quick`，提交/发布前跑完整模式。
 
 ## 项目命令
 
-按影响范围选择，涉及 `ts/` 的普通代码改动默认至少运行：
+开发中按影响范围选择；声明完成、提交或发布前统一运行：
 
 ```bash
-cd ts && bun test
-cd ts && bun run typecheck
+bash scripts/quality_gate.sh
 ```
 
-涉及 UI 时增加构建和真实页面/Electron 验证；涉及 gateway/relay/dataeye 时分别运行对应目录的 Bun 测试。
+涉及后端 Agent 链路时增加 `verify-backend-e2e`；涉及 UI 时增加 `verify-desktop-e2e` 的真实页面/Electron 验证；涉及发布时执行 `release-desktop-safely`。
 
 ## 最终报告
 

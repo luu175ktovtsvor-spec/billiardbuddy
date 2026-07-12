@@ -1,62 +1,19 @@
-export type AskQuestionOption = { label: string; description?: string; preview?: string }
-export type AskQuestionField = {
-  name: string
-  label: string
-  type?: 'text' | 'textarea' | 'number' | 'boolean' | 'select' | 'multiselect'
-  required?: boolean
-  description?: string
-  defaultValue?: string | number | boolean | string[]
-  options?: string[]
-  placeholder?: string
-}
-
-export interface UsageUpdateEvent {
-  type: 'usage_update'
-  input_tokens: number
-  output_tokens: number
-  total_tokens: number
-  last_input_tokens: number
-  last_output_tokens: number
-  cache_read_input_tokens?: number
-  cache_creation_input_tokens?: number
-  context_window?: number
-  context_percent?: number
-}
-
-/** 任务式 SSE 事件集。W4a 加 approval_request;W4b 加 steering/todo_update/context_note。 */
-export type AgentEvent =
-  | { type: 'thinking'; text: string }
-  | { type: 'command_invocation'; name: string; args: string; raw: string; source: 'commands'; contentLength: number }
-  | { type: 'tool_call'; tool: string; input: unknown }
-  | { type: 'tool_progress'; tool: string; id?: string; chunk: string; stream?: string }
-  | { type: 'tool_result'; tool: string; output: string }
-  | UsageUpdateEvent
-  | {
-      type: 'ask_question'
-      id: string
-      question: string
-      options: AskQuestionOption[]
-      multi?: boolean
-      allowFreeform?: boolean
-      placeholder?: string
-      fields?: AskQuestionField[]
-      url?: string
-    }
-  | { type: 'final'; text: string }
-  | {
-      type: 'approval_request'
-      tool: string
-      args: unknown
-      id: string
-      token: string
-      preview?: string
-      reason?: { what: string; why: string; impact: string }
-      /** 破坏性命令的人话警告(如"注意:可能递归删除文件"),纯信息性,审批卡显示用。 */
-      warning?: string
-      rememberable?: boolean
-    }
-  | { type: 'content_delta'; channel: 'text' | 'thinking'; text: string } // token 级流式增量,前端打字机式追加
-  | { type: 'steering'; content: string } // 老板插话纠偏,前端渲成用户气泡
-  | { type: 'todo_update'; content: string } // 任务清单变化,前端渲成清单
-  | { type: 'context_note'; text: string } // 灰色系统旁白(W4c 打转提醒用;W4b 只加类型)
-  | { type: 'max_turns_reached'; turnCount: number; maxTurns: number } // 命中最大轮次(loop 只 yield 本事件后 return,不再调模型;最终答复由调用方兜底合成),区别于自然收敛,供前端/日志辨识与遥测
+// Agent 事件契约的兼容入口。权威 Schema 和类型位于 ts/shared/contracts。
+export {
+  agentEventSchema,
+  approvalReasonSchema,
+  askQuestionFieldSchema,
+  askQuestionOptionSchema,
+  persistedSessionEventSchema,
+  sessionStreamEventSchema,
+  usageUpdateEventSchema,
+} from '../../shared/contracts/agent-events'
+export type {
+  AgentEvent,
+  ApprovalReason,
+  AskQuestionField,
+  AskQuestionOption,
+  PersistedSessionEvent,
+  SessionStreamEvent,
+  UsageUpdateEvent,
+} from '../../shared/contracts/agent-events'

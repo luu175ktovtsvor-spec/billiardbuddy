@@ -26,7 +26,8 @@ description: Keep this repository's engineering Skill suite synchronized with cu
 4. 若新增一种稳定且反复使用的工作流，再创建独立 Skill，并同时提供中文 Claude 入口和中文 Codex UI 元数据。
 5. 更新根 `AGENTS.md`、`CLAUDE.md` 仅限持久规则确实变化；避免重复同一正文。
 6. 运行所有 `.agents/skills/*` 的 `quick_validate.py`，再验证 `.claude/skills` 能被项目加载器发现。
-7. 报告更新原因、受影响 Skill 和未改变的模块。
+7. 运行 `bun scripts/quality/validate-skills.ts`，确认每个权威 Skill 都有中文 UI 元数据和 Claude 中文入口。
+8. 报告更新原因、受影响 Skill 和未改变的模块。
 
 ## 实时性的准确含义
 

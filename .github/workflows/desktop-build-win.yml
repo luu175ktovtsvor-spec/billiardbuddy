@@ -1,201 +1,63 @@
-# 云端出 Windows 安装包（GitHub Actions · windows runner）
-#
-# 为什么要它:PyInstaller 不能交叉编译——Windows 的后端 .exe 必须在 Windows 上打。
-# 开发者在 Mac 写代码,推到 GitHub,这台云端 Windows 机自动把"前端+后端+Electron 壳"
-# 打成一个 .exe 安装包,从 Actions 的 artifact 下载即可。不需要任何人有实体 Windows。
-#
-# 触发:① 手动(Actions 页点 Run);② 推 tag v*(如 v0.1.1)→ 顺带可发布给自动更新。
-#
-# 产物:desktop/dist/台球运营管家-Setup-x.y.z.exe + latest.yml(自动更新用)。
-# 当前 --publish never:只构建+上传 artifact,不自动传到更新私服(等服务器上传凭据配好再开)。
-
-name: 桌面版-Windows出包
+name: 桌面版-Windows现役TS出包
 
 on:
-  workflow_dispatch: {}        # 手动触发
+  workflow_dispatch: {}
   push:
     tags:
-      - "v*"                   # 打版本 tag 时自动出包
+      - 'v*'
+
+permissions:
+  contents: read
 
 jobs:
-  build-win:
+  verify-and-build:
     runs-on: windows-latest
     timeout-minutes: 60
-
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
 
-      # ── 注入内置 key(bundled.env 已 gitignore,CI 必须从 Secrets 写入) ──
-      # 需要在 GitHub 仓库 Settings → Secrets → Actions 配好以下 secrets:
-      #   BUNDLED_DEEPSEEK_API_KEY, BUNDLED_DEEPSEEK_BASE_URL,
-      #   BUNDLED_OPENAI_API_KEY,   BUNDLED_OPENAI_BASE_URL,
-      #   BUNDLED_ARK_API_KEY,
-      #   BUNDLED_VIDEO_BASE_URL,   BUNDLED_VIDEO_MODEL_NAME,
-      #   BUNDLED_TEXT_MODEL_NAME,   BUNDLED_IMAGE_MODEL_NAME,
-      #   BUNDLED_PROMPTS_PACK_KEY,
-      #   BUNDLED_MODEL_LABEL,      BUNDLED_IMAGE_LABEL,
-      #   BUNDLED_VIDEO_LABEL
-      - name: 注入内置模型配置(bundled.env)
-        working-directory: desktop
+      - name: 安装锁定依赖
+        working-directory: ts
+        run: bun install --frozen-lockfile
+
+      - name: 发布前质量门
+        shell: bash
+        run: bash scripts/quality_gate.sh --quick
+
+      - name: 构建 React renderer
+        working-directory: ts
+        run: bun run ui:build
+
+      - name: 构建 Electron main 和 preload
+        working-directory: ts
+        run: bun run desktop:build
+
+      - name: 构建 Windows Bun sidecar
+        working-directory: ts
+        run: bun run build:sidecar
+
+      - name: 生成 Windows 安装包
+        working-directory: ts
+        run: bunx electron-builder --config electron-builder.yml --win --publish never
+
+      - name: 校验安装包产物
         shell: pwsh
         run: |
-          @"
-          BILLIARDBUDDY_LOCAL=1
-          DEEPSEEK_API_KEY=${{ secrets.BUNDLED_DEEPSEEK_API_KEY }}
-          DEEPSEEK_BASE_URL=${{ secrets.BUNDLED_DEEPSEEK_BASE_URL }}
-          OPENAI_API_KEY=${{ secrets.BUNDLED_OPENAI_API_KEY }}
-          OPENAI_BASE_URL=${{ secrets.BUNDLED_OPENAI_BASE_URL }}
-          ARK_API_KEY=${{ secrets.BUNDLED_ARK_API_KEY }}
-          VIDEO_BASE_URL=${{ secrets.BUNDLED_VIDEO_BASE_URL }}
-          VIDEO_MODEL_NAME=${{ secrets.BUNDLED_VIDEO_MODEL_NAME }}
-          TEXT_MODEL_NAME=${{ secrets.BUNDLED_TEXT_MODEL_NAME }}
-          IMAGE_MODEL_NAME=${{ secrets.BUNDLED_IMAGE_MODEL_NAME }}
-          PROMPTS_PACK_KEY=${{ secrets.BUNDLED_PROMPTS_PACK_KEY }}
-          BUNDLED_MODEL_LABEL=${{ secrets.BUNDLED_MODEL_LABEL }}
-          BUNDLED_IMAGE_LABEL=${{ secrets.BUNDLED_IMAGE_LABEL }}
-          BUNDLED_VIDEO_LABEL=${{ secrets.BUNDLED_VIDEO_LABEL }}
-          QF_MODEL_BASE_URL=${{ secrets.BUNDLED_MODEL_BASE_URL }}
-          QF_GATEWAY_URL=${{ secrets.BUNDLED_VIDEO_BASE_URL }}
-          QF_GATEWAY_TOKEN=${{ secrets.BUNDLED_ARK_API_KEY }}
-          DATA_SYNC_ENDPOINT=${{ secrets.BUNDLED_DATA_SYNC_ENDPOINT }}
-          DATA_SYNC_TOKEN=${{ secrets.BUNDLED_DATA_SYNC_TOKEN }}
-          DATA_SYNC_ENABLED=1
-          "@ | Set-Content -Path bundled.env -Encoding utf8
+          $installers = Get-ChildItem ts/desktop/dist/*.exe -ErrorAction SilentlyContinue
+          if ($installers.Count -eq 0) { throw '未生成 Windows 安装包' }
+          $installers | ForEach-Object { Write-Host "$($_.Name) $($_.Length) bytes" }
 
-      - name: 校验 bundled.env 已生成
-        working-directory: desktop
-        shell: pwsh
-        run: |
-          if (!(Test-Path bundled.env)) { Write-Error "bundled.env 未生成!"; exit 1 }
-          $lines = (Get-Content bundled.env | Where-Object { $_ -match '=' }).Count
-          Write-Host "bundled.env 已生成, $lines 行配置"
-
-      # ── 工具链:Node + pnpm + Python + uv ──
-      - name: 装 pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          # 对齐本地 pnpm 版本:web/pnpm-workspace.yaml 用的是 pnpm 10+ 语法
-          # (allowBuilds/onlyBuiltDependencies 从 .npmrc 挪进 workspace 文件)+ lockfile 由 pnpm 11 生成。
-          # 旧 version:9 见到该 workspace 文件会报 "packages field missing or empty"(pnpm9 要求必须有 packages:)。
-          version: 11.0.9
-
-      - name: 装 Node 22
-        uses: actions/setup-node@v4
-        with:
-          # pnpm 11 要求 Node ≥ 22.13(setup-node 用 pnpm 找缓存路径时会校验),Node 20 会被拒。
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-
-      - name: 装 Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: 装 uv
-        uses: astral-sh/setup-uv@v5
-
-      # ── ① 前端:出 Next.js standalone 产物 ──
-      # 不设 NEXT_PUBLIC_API_URL → 前端走相对路径 → standalone server.js 反代到本地后端(8077),零跨域。
-      - name: 前端依赖
-        working-directory: web
-        run: pnpm install --frozen-lockfile
-
-      # 不在这里单独 pnpm build——build_frontend.js 内部已带正确 API_PROXY_URL 建一次;
-      # 若这里先建出 .next/standalone,脚本内第二次 build 的文件追踪会去 scandir 旧 standalone
-      # → Windows EPERM(node_modules/react 权限)。单次构建即可,也更快。
-      - name: 组装前端到 desktop/resources(内部含 standalone 构建)
-        working-directory: desktop
-        run: node scripts/build_frontend.js
-
-      # ── ② 后端:PyInstaller 打成 Windows .exe(含加密知识库 prompts.enc) ──
-      - name: 后端依赖(uv sync,含 pyinstaller)
-        working-directory: server
-        run: uv sync
-
-      - name: 后端打包(PyInstaller → resources/backend)
-        working-directory: desktop
-        env:
-          # 必须与上面写进 bundled.env 的 PROMPTS_PACK_KEY 同源:build_backend.js 用它加密 prompts.enc,
-          # 运行时 bundled.env 的值会压过烘进包里的随机 key(desktop_entry.py setdefault),两把 key 不一致=知识库解不开。
-          BUNDLED_PROMPTS_PACK_KEY: ${{ secrets.BUNDLED_PROMPTS_PACK_KEY }}
-        run: node scripts/build_backend.js
-
-      # ── ③ 发布 worker(patchright RPA):打成独立 exe,用户免装 Python ──
-      # 默认 gate 住(仓库变量 BUILD_PUBLISHER!=1 时跳过):PyInstaller 打 patchright driver 难调,
-      # 待真 Windows 摸通后把仓库变量 BUILD_PUBLISHER 设 1 再开。
-      # 始终建好空目录 resources/publisher-bin,让 electron-builder 的 extraResources 不因缺源报错;
-      # 跳过时安装包不含打包 worker,publish.js 自动回退;AI/文件/报表等核心功能不受影响、照常出包。
-      - name: 发布 worker 打包(默认 gate 关)
-        working-directory: desktop
-        env:
-          BUILD_PUBLISHER: ${{ vars.BUILD_PUBLISHER }}
-        run: |
-          New-Item -ItemType Directory -Force -Path resources/publisher-bin | Out-Null
-          if ($env:BUILD_PUBLISHER -eq "1") { node scripts/build_publisher.js }
-          else { Write-Host "BUILD_PUBLISHER!=1,跳过发布 worker 打包(安装包不含发布内核,核心功能不受影响)" }
-        shell: pwsh
-
-      # ── ③b 影子 git 检查点(F-12)用的可移植 git 二进制:同 publisher-bin 的 gate 模式 ──
-      # 目前只建空目录让 electron-builder 不因缺源报错;真的下载/打包 Windows MinGit 便携版进
-      # resources/git-bin/ 是 G2(真机打包验收)的活——服务端 shadow_git.py 在没有这个二进制时
-      # 会自动退去找系统 git,再没有就静默降级到单文件备份,不影响出包/不影响核心功能。
-      - name: 影子 git 二进制占位目录
-        working-directory: desktop
-        run: New-Item -ItemType Directory -Force -Path resources/git-bin | Out-Null
-        shell: pwsh
-
-      # ── ④ Electron 壳:打成 nsis 安装包 ──
-      - name: desktop 依赖
-        working-directory: desktop
-        run: npm ci
-
-      - name: 出 Windows 安装包(electron-builder)
-        working-directory: desktop
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --win --publish never
-
-      # ── ⑤ 上传产物 ──
       - name: 上传安装包 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: 台球运营管家-Windows安装包
+          name: 球房管家-Windows安装包-${{ github.ref_name }}
           path: |
-            desktop/dist/*.exe
-            desktop/dist/latest.yml
+            ts/desktop/dist/*.exe
+            ts/desktop/dist/*.yml
           if-no-files-found: error
-          # 这个 artifact 只是 build-win → publish 同次流水线里传给 scp 步骤的中转品,
-          # publish 当场 download 完 scp 到更新私服就没用了。30 天太长会堆满账号 Actions 存储
-          # (0.5GB 免费额度·一次 ~416MB·一天调几次就爆)。缩到 3 天:够手动下载排查、又不堆积。
-          retention-days: 3
+          retention-days: 7
 
-  # ── ⑥ 发布到更新私服(仅打 tag v* 时)──
-  # 构建产物在 GitHub 的 Linux 机上直接 scp 到更新服务器 zzyppz.cn/desktop/,
-  # 不经开发机中转(避免大文件跨太平洋来回)。用受限 deploy 账号(非 root、只写更新目录)。
-  publish:
-    needs: build-win
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    steps:
-      - name: 下载构建产物
-        uses: actions/download-artifact@v4
-        with:
-          name: 台球运营管家-Windows安装包
-          path: dist
-
-      - name: scp 发布到更新私服
-        env:
-          DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-        run: |
-          mkdir -p ~/.ssh
-          echo "$DEPLOY_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          SSHOPT="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $HOME/.ssh/id_ed25519"
-          echo "产物:"; ls -la dist/
-          scp $SSHOPT dist/*.exe dist/latest.yml "deploy@${DEPLOY_HOST}:/var/www/desktop-updates/"
-          # 只保留最新一个 exe,老版本删掉省磁盘(latest.yml 已指向新版)
-          ssh $SSHOPT "deploy@${DEPLOY_HOST}" 'cd /var/www/desktop-updates && ls -t *.exe 2>/dev/null | tail -n +2 | xargs -r rm -f; echo "更新私服现状:"; ls -la'
-          echo "✅ 已发布到更新私服,用户下次启动即自动更新"
+# 当前只构建和上传 CI artifact。自动更新渠道、签名、版本策略和回滚验证完成前，不自动发布给用户。

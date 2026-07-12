@@ -1,22 +1,13 @@
-#!/usr/bin/env bun
 /**
- * 球房管家 · 后端端到端测试驱动(不碰前端)
- * 框架已通:程序化起真 sidecar(startServer)→ 喂真实用户输入(POST /agent/run,收 SSE)→ 观察大模型 ReAct 走位
- * (事件流 + transcript 工具链 + 落盘副作用)→ 断言 + 归因。往下方 CHECKPOINTS 补真实用例。
- * 用法(cwd=ts/):  bun run ../.claude/skills/billiardbuddy-backend-e2e/run.ts
- *                QF_E2E_LIVE=1 bun run ...   # 真模型冒烟(需真 env/key)
- * ⚠️ 必须 bun run(startServer 用 Bun runtime),不能 node。
+ * 后端 E2E:在 Bun 测试进程里启动真实 startServer，用确定性脚本模型验证
+ * ReAct、权限、工具、事件、transcript 和文件副作用。真模型不进入回归套件。
  */
-import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { describe, test } from 'bun:test'
+import { mkdtempSync, rmSync, existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { startServer } from '../../../ts/src/server/index'
-import { SessionService } from '../../../ts/src/server/services/sessionService'
-
-const HERE = dirname(fileURLToPath(import.meta.url))
-const OUT = join(HERE, '../../../ts/test-results/backend-e2e')
-const LIVE = process.env.QF_E2E_LIVE === '1'
+import { join } from 'node:path'
+import { startServer } from '../../src/server/index'
+import { SessionService } from '../../src/server/services/sessionService'
 
 // —— 脚本模型:按后端**主循环**第 N 次调模型返回第 N 个预定 SSE(tool_calls / final);捕获发给模型的 system 供断言。——
 // ⚠️ 关键坑:后端在主 ReAct 循环之外还会调模型做**记忆召回/抽取**(loop.ts 的 computeRelevantMemoryInjection 等),
@@ -34,11 +25,12 @@ function makeScriptedFetch(initialSteps: ModelStep[]) {
   const captured = { systems: [] as string[], outUrls: [] as string[] }
   let steps = initialSteps
   let i = 0
-  const fn = async (url: string, init?: { body?: string }) => {
-    captured.outUrls.push(String(url))
+  const fn = async (input: string | URL | Request, init?: RequestInit) => {
+    captured.outUrls.push(String(input))
     let sys = ''
     try {
-      const b = JSON.parse(init?.body ?? '{}') as { messages?: Array<{ role: string; content: string }> }
+      const body = typeof init?.body === 'string' ? init.body : '{}'
+      const b = JSON.parse(body) as { messages?: Array<{ role: string; content: string }> }
       sys = b.messages?.find((m) => m.role === 'system')?.content ?? ''
     } catch { /* 非 JSON body 忽略 */ }
     if (sys) captured.systems.push(sys)
@@ -148,16 +140,14 @@ const CHECKPOINTS: Checkpoint[] = [
   },
   {
     // 前端等价 e2e(不起壳子):把"多窗口/选目录/挂件/权限档/大白话输入/点审批卡"全等价成后端请求参数+approve消息。
-    // 用桌面真实"测试台球运营管家"文件夹当项目目录(= 模拟前端的项目文件夹)。缺文件夹则跳过并说明。
+    // 使用隔离临时目录模拟两个项目窗口，默认运行不读写 owner 的真实桌面。
     name: 'frontend-like-multi-session',
     expectation: '两窗口各选不同真实文件夹/各自权限/挂不挂台球 → 文件各落各夹不串台、default档弹审批bypass档不弹、挂台球窗口注入域上下文',
     async run(ctx) {
-      const HOME = process.env.HOME ?? ''
-      const folder1 = join(HOME, 'Desktop', '测试台球运营管家')
-      const folder2 = join(HOME, 'Desktop', '测试管家台球运营管家2')
-      if (!existsSync(folder1) || !existsSync(folder2)) {
-        return { ok: false, note: `跳过:桌面缺真实测试文件夹(${folder1} / ${folder2})——建好那几个"测试台球运营管家"文件夹再跑` }
-      }
+      const folder1 = join(ctx.workspace, 'project-a')
+      const folder2 = join(ctx.workspace, 'project-b')
+      mkdirSync(folder1, { recursive: true })
+      mkdirSync(folder2, { recursive: true })
       const report1 = join(folder1, 'be2e-经营报表.md')
       try {
         // —— 窗口A:选文件夹1 + 挂台球 + default档 → 说"建个报表"(模型调 write_file) → default 应弹审批 → 点"允许" → 落盘文件夹1 ——
@@ -193,53 +183,42 @@ const CHECKPOINTS: Checkpoint[] = [
       }
     },
   },
-  // TODO 补: live 冒烟(真模型真调工具 + 真实出网URL) / 第三权限档 acceptEdits / 会话内多轮工具链
+  // 后续稳定场景:acceptEdits 权限档、会话内多轮工具链。真模型另走手动 smoke。
 ]
 
-// ================= driver 主体(框架,一般不用改) =================
-function attribute(ok: boolean) { return ok ? 'ok' : 'backend-fail' }
-
-async function main() {
-  rmSync(OUT, { recursive: true, force: true }); mkdirSync(OUT, { recursive: true })
-  if (LIVE) console.log('⚠️ LIVE 模式:真调 mimo(需真 env/key),慢且非确定;脚本 model 被忽略。\n')
-
-  const results: Array<{ name: string; expectation: string; ok: boolean; note: string; attribution: string }> = []
-  for (const cp of CHECKPOINTS) {
+async function runCheckpoint(cp: Checkpoint): Promise<void> {
     const transcriptRoot = mkdtempSync(join(tmpdir(), 'be2e-tr-'))
     const workspace = mkdtempSync(join(tmpdir(), 'be2e-ws-'))
-    // scripted 总创建(供 UserSession.setScript 用);仅非 LIVE 时作为 fetchImpl 注入。LIVE 交默认出网(需真 env)。
     const scripted = makeScriptedFetch(cp.model ?? [{ text: 'ok' }])
-    // ⚠️ 必须给 env 配模型出口,否则后端不知道调哪个模型、根本不会调 fetchImpl。mcpConfigPath 指到不存在文件避免读真实 MCP。
-    // provider env 用 DEEPSEEK_*(对齐 index.test.ts 已验证的 tool_calls 路径;OPENAI provider 对同样 tool_calls SSE 会走续写解析不出工具——踩过坑)。
     const server = startServer({
       port: 0,
       transcriptRoot,
       mcpConfigPath: join(transcriptRoot, 'missing.mcp.json'),
-      ...(LIVE ? {} : { fetchImpl: scripted, env: { DEEPSEEK_BASE_URL: 'https://model.example/v1', DEEPSEEK_API_KEY: 'e2e-fake', TEXT_MODEL_NAME: 'mimo-v2.5' } }),
+      fetchImpl: scripted,
+      env: { DEEPSEEK_BASE_URL: 'https://model.example/v1', DEEPSEEK_API_KEY: 'e2e-fake', TEXT_MODEL_NAME: 'mimo-v2.5' },
     })
-    const base = `http://127.0.0.1:${server.port}`
-    const svc = new SessionService(transcriptRoot)
-    const ctx: Ctx = {
-      base, transcriptRoot, workspace,
-      captured: scripted.captured,
-      runTurn: (body) => runTurn(base, body),
-      transcript: (id) => svc.loadTranscript(id).catch(() => []),
-      session: (convId) => new UserSession(base, convId, scripted),
+    try {
+      const base = `http://127.0.0.1:${server.port}`
+      const svc = new SessionService(transcriptRoot)
+      const ctx: Ctx = {
+        base, transcriptRoot, workspace,
+        captured: scripted.captured,
+        runTurn: (body) => runTurn(base, body),
+        transcript: (id) => svc.loadTranscript(id).catch(() => []),
+        session: (convId) => new UserSession(base, convId, scripted),
+      }
+      const result = await cp.run(ctx)
+      console.log(`[backend-e2e] ${cp.name}: ${result.note}`)
+      if (!result.ok) throw new Error(`${cp.expectation}\n${result.note}`)
+    } finally {
+      server.stop(true)
+      rmSync(transcriptRoot, { recursive: true, force: true })
+      rmSync(workspace, { recursive: true, force: true })
     }
-    let r: { ok: boolean; note: string }
-    try { r = await cp.run(ctx) } catch (e) { r = { ok: false, note: `检查点抛错: ${e instanceof Error ? e.message : String(e)}` } }
-    results.push({ name: cp.name, expectation: cp.expectation, ok: r.ok, note: r.note, attribution: attribute(r.ok) })
-    server.stop(true)
-    rmSync(transcriptRoot, { recursive: true, force: true })
-    rmSync(workspace, { recursive: true, force: true })
   }
 
-  writeFileSync(join(OUT, 'manifest.json'), JSON.stringify({ mode: LIVE ? 'live' : 'scripted', checkpoints: results }, null, 2))
-  console.log(`\n=== 后端 e2e 跑完 → ${OUT} ===`)
-  for (const r of results) console.log(`  [${r.attribution}] ${r.name}: ${r.note}`)
-  const failed = results.filter((r) => !r.ok).length
-  console.log(`\n${results.length - failed}/${results.length} 通过。${failed ? '红的看 note 定位(后端这层走位/工具/结果哪步错)。' : ''}`)
-  process.exit(failed ? 1 : 0)
-}
-
-main().catch((e) => { console.error(e); process.exit(1) })
+describe('Bun sidecar 后端 E2E', () => {
+  for (const checkpoint of CHECKPOINTS) {
+    test(checkpoint.name, async () => runCheckpoint(checkpoint))
+  }
+})

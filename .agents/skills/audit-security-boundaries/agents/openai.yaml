@@ -1,0 +1,4 @@
+interface:
+  display_name: "安全边界审计"
+  short_description: "审查本地文件、命令、密钥、IPC、远程服务和日志边界"
+  default_prompt: "使用 $audit-security-boundaries 审查这次改动涉及的安全边界。"
