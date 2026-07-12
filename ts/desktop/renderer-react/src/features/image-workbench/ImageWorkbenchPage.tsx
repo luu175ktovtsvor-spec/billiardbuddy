@@ -38,14 +38,14 @@ const RATIOS: { id: string; label: string }[] = [
 
 const COUNTS = [1, 2, 3, 4]
 
-const SCENES: Array<{ id: string; label: string; prompt: string; intent: ImageIntent }> = [
-  { id: 'opening_anniversary', label: '活动海报', intent: 'poster_text', prompt: '台球室开业周年活动海报，标题「周末双人畅打」，副标题「19:00 前到店享会员价」，干净桌台、球房灯光、二维码留白' },
-  { id: 'membership_recharge', label: '会员充值', intent: 'poster_text', prompt: '台球房会员充值活动，突出储值优惠、到账权益和预约咨询区域，现代干净的真实球房氛围' },
-  { id: 'weekend_bundle', label: '周末畅打', intent: 'poster_text', prompt: '台球房周末畅打团购套餐，朋友聚会、清晰桌台和轻松灯光，为价格与二维码预留安静区域' },
-  { id: 'tournament_signup', label: '赛事报名', intent: 'poster_text', prompt: '台球赛事报名宣传海报，比赛氛围、球杆与球桌细节，为日期、规则和扫码报名留白' },
-  { id: 'coach_booking', label: '助教课程', intent: 'poster_text', prompt: '台球助教课程预约海报，专业指导场景，为课程价格、时间和预约电话预留区域' },
-  { id: 'holiday_moments', label: '节日活动', intent: 'poster_text', prompt: '台球房节日朋友圈活动配图，真实门店氛围、自然顾客互动，为标题和二维码预留区域' },
-  { id: 'assistant_portrait', label: '助教形象', intent: 'portrait', prompt: '台球助教形象宣传图，专业自信、球杆和球桌环境、留出课程价格与预约电话位置，写实高质感' },
+const POSTER_TYPES: Array<{ id: string; label: string; prompt: string }> = [
+  { id: 'custom_poster', label: '自由描述', prompt: '' },
+  { id: 'opening_anniversary', label: '新店开业', prompt: '做一张新店开业海报' },
+  { id: 'weekend_bundle', label: '引流体验/团购', prompt: '做一张新客引流体验海报' },
+  { id: 'membership_recharge', label: '一卡通/器材券', prompt: '做一张一卡通和器材券活动海报' },
+  { id: 'tournament_signup', label: '抢一/会员赛', prompt: '做一张抢一大战或会员赛活动海报' },
+  { id: 'coach_booking', label: '助教到店/预约', prompt: '做一张助教到店预约海报' },
+  { id: 'holiday_moments', label: '门店日常/朋友圈', prompt: '做一张门店朋友圈日常海报' },
 ]
 
 type MaskMode = 'select' | 'rect' | 'brush'
@@ -73,7 +73,7 @@ interface DrawingState {
 export function CreationPage() {
   const setNav = useUiStore((s) => s.setNav)
   const [prompt, setPrompt] = useState('')
-  const [sceneId, setSceneId] = useState(SCENES[0]?.id ?? 'opening')
+  const [sceneId, setSceneId] = useState(POSTER_TYPES[0]?.id ?? 'custom_poster')
   const [intent, setIntent] = useState<ImageIntent>('poster_text')
   const [quality, setQuality] = useState<ImageQuality>('standard')
   const [ratio, setRatio] = useState('3:4')
@@ -151,7 +151,7 @@ export function CreationPage() {
     asset_id: asset.asset_id,
     role: referenceRoles[asset.asset_id] ?? defaultReferenceRole(intent, index),
     url: asset.url,
-    label: intent === 'portrait' ? (index === 0 ? '本人主参考' : '补充角度') : '参考素材',
+    label: intent === 'portrait' ? (index === 0 ? '助教主照片' : '补充照片') : '参考素材',
   })), [intent, referenceAssets, referenceRoles])
   const projectReferenceDescriptors = useMemo<ImageAssetReference[]>(() => {
     if (referenceDescriptors.length) return referenceDescriptors
@@ -422,12 +422,23 @@ export function CreationPage() {
     else if (lastFailedAction === 'upscale') void upscale()
   }
 
-  const selectScene = (id: string) => {
-    const scene = SCENES.find((item) => item.id === id)
-    if (!scene) return
-    setSceneId(scene.id)
-    setIntent(scene.intent)
-    setPrompt(scene.prompt)
+  const selectWorkflow = (next: 'poster' | 'assistant_photo') => {
+    if (next === 'assistant_photo') {
+      setIntent('portrait')
+      setSceneId('assistant_photo')
+      setPrompt('用已上传的助教实拍照片优化得更好看、自然，没有明显 AI 感；保留本人面部和身形特征。')
+      return
+    }
+    setIntent('poster_text')
+    setSceneId('custom_poster')
+    setPrompt('')
+  }
+
+  const selectPosterType = (id: string) => {
+    const type = POSTER_TYPES.find((item) => item.id === id)
+    if (!type) return
+    setSceneId(type.id)
+    setPrompt(type.prompt)
   }
 
   const requestText = () => {
@@ -458,7 +469,7 @@ export function CreationPage() {
     const limit = intent === 'portrait' ? 3 : 8
     const available = Math.max(0, limit - referenceAssets.length)
     if (available === 0) {
-      toast(intent === 'portrait' ? '人像最多使用 3 张参考图' : '最多使用 8 张参考图')
+      toast(intent === 'portrait' ? '助教照片最多使用 3 张' : '最多使用 8 张参考图')
       return
     }
     const next = await Promise.all(Array.from(files).slice(0, available).map(file => uploadWorkbenchImage(file)))
@@ -537,7 +548,7 @@ export function CreationPage() {
         },
         portrait_consent: portraitAuthorized,
         portrait_authorization_confirmed: portraitAuthorized,
-        input_fidelity: intent === 'portrait' ? 'high' : undefined,
+        input_fidelity: referenceAssets.length > 0 ? 'high' : undefined,
         creative_brief: creativeBrief,
       }
       const { job_id } = await studioApi.generate(generateInput)
@@ -823,11 +834,11 @@ export function CreationPage() {
       const { job_id } = await studioApi.edit({
         ...sourceForEdit(currentVersion, editText.trim(), 'edit_content', quality),
         user_request: editText.trim(),
-        reference_image_paths: intent === 'portrait' ? projectReferenceDescriptors.map(asset => asset.url).filter((url): url is string => Boolean(url)) : undefined,
-        reference_assets: intent === 'portrait' ? projectReferenceDescriptors : undefined,
+        reference_image_paths: projectReferenceDescriptors.map(asset => asset.url).filter((url): url is string => Boolean(url)),
+        reference_assets: projectReferenceDescriptors,
         portrait_consent: portraitAuthorized,
         portrait_authorization_confirmed: portraitAuthorized,
-        input_fidelity: intent === 'portrait' ? 'high' : undefined,
+        input_fidelity: projectReferenceDescriptors.length > 0 ? 'high' : undefined,
       })
       setActiveJobId(job_id)
       const job = await pollJob(job_id, { signal: ctrl.signal, intervalMs: 600, onProgress: (p: number, s?: string) => { setProgress(p); if (s) setStage(s) } })
@@ -858,11 +869,11 @@ export function CreationPage() {
         ...sourceForEdit(currentVersion, maskText.trim(), 'inpaint', quality),
         mask_path: asset.url,
         user_request: maskText.trim(),
-        reference_image_paths: intent === 'portrait' ? projectReferenceDescriptors.map(asset => asset.url).filter((url): url is string => Boolean(url)) : undefined,
-        reference_assets: intent === 'portrait' ? projectReferenceDescriptors : undefined,
+        reference_image_paths: projectReferenceDescriptors.map(asset => asset.url).filter((url): url is string => Boolean(url)),
+        reference_assets: projectReferenceDescriptors,
         portrait_consent: portraitAuthorized,
         portrait_authorization_confirmed: portraitAuthorized,
-        input_fidelity: intent === 'portrait' ? 'high' : undefined,
+        input_fidelity: projectReferenceDescriptors.length > 0 ? 'high' : undefined,
       })
       setActiveJobId(job_id)
       const job = await pollJob(job_id, { signal: ctrl.signal, intervalMs: 600, onProgress: (p: number, s?: string) => { setProgress(p); if (s) setStage(s) } })
@@ -963,11 +974,11 @@ export function CreationPage() {
       setReferenceRoles({ [asset.asset_id]: 'identity_primary' })
       setIntent('poster_text')
       setSceneId('coach_booking')
-      setPrompt('使用已确认的人像作为人物素材，制作助教课程预约海报，为标题、价格、日期和二维码预留清晰区域')
+      setPrompt('使用已确认的助教照片作为人物素材，制作助教到店预约海报，为标题、价格、日期和二维码预留清晰区域')
       setCreativeBrief(null)
-      toast('已带入人像素材，继续确认海报需求')
+      toast('已带入助教照片，继续确认海报需求')
     } catch (err) {
-      toast(err instanceof Error ? err.message : '带入人像素材失败')
+      toast(err instanceof Error ? err.message : '带入助教照片失败')
     }
   }
 
@@ -1018,7 +1029,7 @@ export function CreationPage() {
           )}
         />
 
-        <div className="mb-5 grid grid-cols-3 gap-1 rounded-lg p-1 min-[840px]:hidden" style={{ background: 'var(--color-surface-container)' }} role="tablist" aria-label="工作台视图">
+        {hasWorkbenchStage && <div className="mb-5 grid grid-cols-3 gap-1 rounded-lg p-1 min-[840px]:hidden" style={{ background: 'var(--color-surface-container)' }} role="tablist" aria-label="工作台视图">
           {([
             ['create', '创作'],
             ['canvas', '挑选'],
@@ -1042,33 +1053,41 @@ export function CreationPage() {
               )
             })()
           ))}
-        </div>
+        </div>}
 
         <div className={workspaceLayoutClass}>
         <aside className={`${compactPane === 'create' ? 'block' : 'hidden min-[840px]:block'} min-w-0 space-y-5`}>
           <section className="border-b pb-5" style={{ borderColor: 'var(--color-border)' }}>
-            <div className="mb-2 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>门店场景</div>
-            <div className={`grid grid-cols-2 gap-2 ${hasWorkbenchStage ? '' : 'min-[640px]:grid-cols-4'}`}>
-              {SCENES.map((scene) => (
-                <button key={scene.id} type="button" onClick={() => selectScene(scene.id)}
-                  className="rounded-md px-2 py-1.5 text-[12px] font-medium" style={segStyle(sceneId === scene.id)}>
-                  {scene.label}
-                </button>
-              ))}
+            <div className="grid grid-cols-1 gap-3 min-[560px]:grid-cols-2">
+              <label className="block">
+                <span className="mb-1 block text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>创作类型</span>
+                <select value={intent === 'portrait' ? 'assistant_photo' : 'poster'} onChange={event => selectWorkflow(event.target.value as 'poster' | 'assistant_photo')} className="w-full rounded-md px-2 py-2 text-[12px] outline-none" style={inputStyle} data-testid="image-workflow-select">
+                  <option value="poster">海报</option>
+                  <option value="assistant_photo">助教照片</option>
+                </select>
+              </label>
+              {intent === 'poster_text' && (
+                <label className="block">
+                  <span className="mb-1 block text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>海报类型（可选）</span>
+                  <select value={sceneId} onChange={event => selectPosterType(event.target.value)} className="w-full rounded-md px-2 py-2 text-[12px] outline-none" style={inputStyle} data-testid="poster-type-select">
+                    {POSTER_TYPES.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
+                  </select>
+                </label>
+              )}
             </div>
             <textarea
-	              value={prompt}
-	              onChange={(e) => setPrompt(e.target.value)}
-	              rows={6}
-	              className="mt-3 w-full resize-none rounded-md px-3 py-2 text-[13px] outline-none"
-	              placeholder="写下活动、硬文字、画面主体和门店氛围"
-	              style={inputStyle}
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              rows={4}
+              className="mt-3 w-full resize-none rounded-md px-3 py-2 text-[13px] leading-relaxed outline-none"
+              placeholder={intent === 'portrait' ? '上传照片后，说说想要的场景、服装、氛围或状态' : '写下你想做的海报、画面主体和需要保留的文字'}
+              style={inputStyle}
               data-testid="image-prompt-input"
             />
-            <button type="button" onClick={() => setQuickForm(value => !value)} className="mt-2 rounded-md px-2 py-1.5 text-[12px]" style={buttonSubtleStyle} data-testid="toggle-quick-form">
-              {quickForm ? '收起快速填写' : '快速填写活动信息'}
-            </button>
-            {quickForm && (
+            {intent === 'poster_text' && <button type="button" onClick={() => setQuickForm(value => !value)} className="mt-2 px-0 py-1 text-[12px]" style={{ color: 'var(--color-link)' }} data-testid="toggle-quick-form">
+              {quickForm ? '收起海报文字' : '添加海报硬文字'}
+            </button>}
+            {intent === 'poster_text' && quickForm && (
               <div className="mt-2 grid grid-cols-2 gap-2" data-testid="poster-quick-form">
                 <input value={posterTitle} onChange={e => setPosterTitle(e.target.value)} className="rounded-md px-2 py-1.5 text-[12px] outline-none" style={inputStyle} placeholder="主标题" />
                 <input value={posterOffer} onChange={e => setPosterOffer(e.target.value)} className="rounded-md px-2 py-1.5 text-[12px] outline-none" style={inputStyle} placeholder="优惠内容" />
@@ -1078,7 +1097,7 @@ export function CreationPage() {
               </div>
             )}
             <label className="mt-3 block">
-              <span className="mb-1 block text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>参考图</span>
+              <span className="mb-1 block text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>{intent === 'portrait' ? '助教实拍照片（1-3 张）' : '参考图（可选）'}</span>
               <input type="file" accept="image/*" multiple className="block w-full text-[12px]" onChange={(e) => void uploadReferences(e.target.files).catch((err) => toast(err instanceof Error ? err.message : '上传失败'))} />
             </label>
             {referenceAssets.length > 0 && (
@@ -1094,7 +1113,7 @@ export function CreationPage() {
                         className="w-16 rounded border px-1 py-0.5 text-[10px]"
                         style={inputStyle}
                       >
-                        <option value="identity_primary">主参考</option>
+                        <option value="identity_primary">主照片</option>
                         <option value="identity_supporting">补充</option>
                       </select>
                     )}
@@ -1102,50 +1121,51 @@ export function CreationPage() {
                 ))}
               </div>
             )}
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <label className="rounded-md px-2 py-1.5 text-[12px]" style={buttonSubtleStyle}>
-                <span>Logo</span>
-                <input type="file" accept="image/png,image/jpeg,image/webp" className="mt-1 block w-full text-[10px]" onChange={e => void uploadBrandAsset(e.target.files?.[0], 'logo')} />
-              </label>
-              <label className="rounded-md px-2 py-1.5 text-[12px]" style={buttonSubtleStyle}>
-                <span>二维码</span>
-                <input type="file" accept="image/png,image/jpeg,image/webp" className="mt-1 block w-full text-[10px]" onChange={e => void uploadBrandAsset(e.target.files?.[0], 'qrcode')} />
-              </label>
-            </div>
             {intent === 'portrait' && (
-              <label className="mt-3 flex items-start gap-2 rounded-md p-2 text-[12px]" style={{ background: 'var(--color-surface-container)' }} data-testid="portrait-authorization">
+              <label className="mt-3 flex items-start gap-2 border-t pt-3 text-[12px]" style={{ borderColor: 'var(--color-border)' }} data-testid="portrait-authorization">
                 <input type="checkbox" checked={portraitAuthorized} onChange={e => setPortraitAuthorized(e.target.checked)} className="mt-0.5" />
                 <span style={{ color: 'var(--color-text-secondary)' }}>我拥有这些照片的使用授权，且被拍者同意用于门店宣传</span>
               </label>
             )}
+            {intent === 'poster_text' && (
+              <details className="mt-3 border-t pt-3" style={{ borderColor: 'var(--color-border)' }}>
+                <summary className="cursor-pointer text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>添加品牌素材</summary>
+                <div className="mt-2 grid grid-cols-2 gap-3">
+                  <label className="block text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>
+                    <span>Logo</span>
+                    <input type="file" accept="image/png,image/jpeg,image/webp" className="mt-1 block w-full text-[10px]" onChange={e => void uploadBrandAsset(e.target.files?.[0], 'logo')} />
+                  </label>
+                  <label className="block text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>
+                    <span>二维码</span>
+                    <input type="file" accept="image/png,image/jpeg,image/webp" className="mt-1 block w-full text-[10px]" onChange={e => void uploadBrandAsset(e.target.files?.[0], 'qrcode')} />
+                  </label>
+                </div>
+              </details>
+            )}
           </section>
 
           <section className="border-b pb-5" style={{ borderColor: 'var(--color-border)' }}>
-            <div className="mb-2 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>成品设置</div>
-            <div className="grid grid-cols-2 gap-2">
-              {RATIOS.map((item) => (
-                <button key={item.id} type="button" onClick={() => setRatio(item.id)}
-                  className="rounded-md px-2 py-1.5 text-[12px] font-medium" style={segStyle(ratio === item.id)}>
-                  {item.label}
-                </button>
-              ))}
-            </div>
-            <div className="mt-3 flex items-center gap-2">
-              <span className="text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>数量</span>
-              {COUNTS.map((item) => (
-                <button key={item} type="button" onClick={() => setCount(item)}
-                  className="h-7 w-7 rounded-md text-[12px] font-medium" style={segStyle(count === item)}>
-                  {item}
-                </button>
-              ))}
-            </div>
-            <div className="mt-3 grid grid-cols-3 gap-2">
-              {(['draft', 'standard', 'final'] as ImageQuality[]).map((item) => (
-                <button key={item} type="button" onClick={() => setQuality(item)}
-                  className="rounded-md px-2 py-1.5 text-[12px] font-medium" style={segStyle(quality === item)}>
-                  {item === 'draft' ? '草稿' : item === 'final' ? '成稿' : '标准'}
-                </button>
-              ))}
+            <div className="grid grid-cols-3 gap-2">
+              <label className="block">
+                <span className="mb-1 block text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>画幅</span>
+                <select value={ratio} onChange={event => setRatio(event.target.value)} className="w-full rounded-md px-2 py-2 text-[12px] outline-none" style={inputStyle} data-testid="image-ratio-select">
+                  {RATIOS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                </select>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>候选</span>
+                <select value={count} onChange={event => setCount(Number(event.target.value))} className="w-full rounded-md px-2 py-2 text-[12px] outline-none" style={inputStyle} data-testid="image-count-select">
+                  {COUNTS.map((item) => <option key={item} value={item}>{item} 张</option>)}
+                </select>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>精度</span>
+                <select value={quality} onChange={event => setQuality(event.target.value as ImageQuality)} className="w-full rounded-md px-2 py-2 text-[12px] outline-none" style={inputStyle} data-testid="image-quality-select">
+                  <option value="draft">草稿</option>
+                  <option value="standard">标准</option>
+                  <option value="final">成稿</option>
+                </select>
+              </label>
             </div>
             <button type="button" onClick={() => void run()} disabled={!canRun}
               className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md px-4 py-2 text-[13px] font-medium disabled:opacity-50"
@@ -1242,8 +1262,8 @@ export function CreationPage() {
               {intent === 'portrait' && selectedImage && (referenceDescriptors[0] ?? projectReferenceDescriptors[0])?.url && (
                 <div className="mt-3 grid grid-cols-2 gap-3" data-testid="portrait-reference-compare">
                   <figure className="overflow-hidden rounded-md" style={{ border: '1px solid var(--color-border)' }}>
-                    <figcaption className="px-2 py-1 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>本人主参考</figcaption>
-                    <img src={assetUrl((referenceDescriptors[0] ?? projectReferenceDescriptors[0])!.url!)} alt="本人主参考" className="max-h-[320px] w-full object-contain" />
+                    <figcaption className="px-2 py-1 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>助教主照片</figcaption>
+                    <img src={assetUrl((referenceDescriptors[0] ?? projectReferenceDescriptors[0])!.url!)} alt="助教主照片" className="max-h-[320px] w-full object-contain" />
                   </figure>
                   <figure className="overflow-hidden rounded-md" style={{ border: '1px solid var(--color-border)' }}>
                     <figcaption className="px-2 py-1 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>候选结果</figcaption>
@@ -1300,7 +1320,7 @@ export function CreationPage() {
             {intent === 'portrait' && currentVersion?.review?.portrait_quality_state === 'user_confirmed' && (
               <>
                 <div className="mt-2 rounded-md px-2 py-1.5 text-[12px]" style={{ background: 'var(--color-surface-container)', color: 'var(--color-text-secondary)' }} data-testid="portrait-user-confirmed">已由用户确认像本人</div>
-                <button type="button" onClick={() => void usePortraitAsPoster()} className="mt-2 w-full rounded-md px-3 py-2 text-[12px] font-medium" style={buttonSubtleStyle} data-testid="portrait-to-poster-button">用这张人像做海报</button>
+                <button type="button" onClick={() => void usePortraitAsPoster()} className="mt-2 w-full rounded-md px-3 py-2 text-[12px] font-medium" style={buttonSubtleStyle} data-testid="portrait-to-poster-button">用这张照片做海报</button>
               </>
             )}
           </section>}
@@ -1855,22 +1875,22 @@ function imageReviewLines(review: ImageWorkbenchReview | undefined): string[] {
   for (const warning of review.poster_hard_gate_warnings ?? []) lines.push(`海报风险: ${warning}`)
   if (review.portrait_qc_status) {
     const suffix = review.portrait_qc_message ? `: ${review.portrait_qc_message}` : ''
-    lines.push(`人像质检: ${review.portrait_qc_status}${suffix}`)
+    lines.push(`人物照片检查: ${review.portrait_qc_status}${suffix}`)
   }
   if (review.portrait_quality_state) {
     const labels = { blocked: '已拦截', risk: '有风险', recommended: '建议候选，等待本人确认', user_confirmed: '用户已确认像本人', unchecked: '未检查' } as const
-    lines.push(`人像状态: ${labels[review.portrait_quality_state]}`)
+    lines.push(`人物照片状态: ${labels[review.portrait_quality_state]}`)
   }
   if (review.portrait_consistency_status && review.portrait_consistency_status !== 'not_checked') {
     lines.push(`参考一致性: ${review.portrait_consistency_status === 'preserved' ? '未发现明显漂移' : review.portrait_consistency_status === 'drifted' ? '疑似人物漂移' : '需要并排确认'}`)
   }
   if (review.input_qc_status) lines.push(`参考图检查: ${review.input_qc_status}`)
-  if (review.input_fidelity?.input_fidelity_status === 'unsupported') lines.push('高保真图片参数: 当前端点已降级，请人工确认人物一致性')
-  else if (review.input_fidelity?.input_fidelity_status === 'unknown') lines.push('高保真图片参数: 当前端点未能确认，请人工确认人物一致性')
+  if (review.input_fidelity?.input_fidelity_status === 'unsupported') lines.push('高保真图片参数: 当前端点已降级，请人工确认参考图一致性')
+  else if (review.input_fidelity?.input_fidelity_status === 'unknown') lines.push('高保真图片参数: 当前端点未能确认，请人工确认参考图一致性')
   if (review.input_fidelity_risk) lines.push(`高保真风险: ${review.input_fidelity_risk}`)
   if (review.commercial_ready !== undefined) lines.push(`投放状态: ${review.commercial_ready ? '需人工终审' : '不会自动宣称可商用'}`)
   for (const warning of review.text_quality_missing ?? []) lines.push(`缺失文字: ${warning}`)
-  for (const warning of review.portrait_qc_warnings ?? []) lines.push(`人像风险: ${warning}`)
+  for (const warning of review.portrait_qc_warnings ?? []) lines.push(`人物照片风险: ${warning}`)
   for (const warning of review.input_qc_warnings ?? []) lines.push(`参考图风险: ${warning}`)
   for (const warning of review.risk_messages ?? []) lines.push(`风险提示: ${warning}`)
   return lines

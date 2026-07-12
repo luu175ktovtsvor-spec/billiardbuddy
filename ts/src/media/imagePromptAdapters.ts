@@ -19,6 +19,7 @@ function englishChangeItem(value: string): string {
   if (text.startsWith('背景：')) return `Background: ${text.slice('背景：'.length)}`
   if (text.startsWith('服装：')) return `Wardrobe: ${text.slice('服装：'.length)}`
   if (text === '光线、气质或构图：按用户指定调整') return 'Lighting, mood, and composition: adjust only as requested.'
+  if (text === '照片质感：自然、好看、无明显 AI 感，保留真实皮肤和自然比例') return 'Photo quality: natural, flattering, and non-AI-looking; preserve real skin texture and natural proportions.'
   if (text === '只改变用户明确提出的场景或视觉方向') return 'Only change the scene or visual direction explicitly requested by the user.'
   return `Requested change: ${text}`
 }
@@ -26,6 +27,7 @@ function englishChangeItem(value: string): string {
 function englishPreserveItem(value: string): string {
   const text = value.trim()
   const known: Record<string, string> = {
+    '同一位已授权参考人物的可辨识面部特征': 'recognizable identity and natural facial details of the same person in the authorized reference photos',
     '面部可辨识特征': 'recognizable facial identity and natural facial details',
     '发型与发色（除非明确要求改变）': 'hair style and hair color unless explicitly changed',
     '肤色与年龄观感': 'skin tone and apparent age',
@@ -37,12 +39,25 @@ function englishPreserveItem(value: string): string {
   return known[text] ?? `Preserve requirement: ${text}`
 }
 
+function seedreamUseLabel(outputUse: ImageCreativeBrief['output_use']): string {
+  const labels: Record<ImageCreativeBrief['output_use'], string> = {
+    moments: '朋友圈配图',
+    group: '社群配图',
+    poster: '海报视觉',
+    rollup: '长幅海报视觉',
+    profile: '人物照片',
+    photo: '自然人物照片',
+    other: '用户指定用途',
+  }
+  return labels[outputUse]
+}
+
 export function compileSeedreamPrompt(brief: ImageCreativeBrief, mode: 'generate' | 'edit' = 'generate'): string {
   const direction = brief.visual_direction
   const poster = brief.poster
   const exactCopy = poster?.exact_copy.length ? `业务文字由固定图层排版，不在底图中生成` : undefined
   return joinParts([
-    `用途：${brief.output_use}`,
+    `用途：${seedreamUseLabel(brief.output_use)}`,
     `主体：${direction.subject}`,
     direction.action ? `动作：${direction.action}` : undefined,
     direction.environment ? `环境：${direction.environment}` : undefined,
@@ -51,7 +66,10 @@ export function compileSeedreamPrompt(brief: ImageCreativeBrief, mode: 'generate
     direction.lighting ? `光线：${direction.lighting}` : undefined,
     direction.composition ? `构图：${direction.composition}` : undefined,
     mode === 'edit' ? `仅修改：${brief.user_request}` : undefined,
-    brief.reference_assets.length ? '参考图按其指定角色使用，不重绘 Logo 或二维码' : undefined,
+    brief.reference_assets.length ? brief.scene === 'portrait'
+      ? '以已上传的已授权实拍照片作为图像条件，保留同一人的可辨识特征，不重绘 Logo 或二维码'
+      : '以已上传参考图作为图像条件，按其指定角色使用，不重绘 Logo 或二维码'
+      : undefined,
     exactCopy,
     brief.must_avoid.length ? `避免：${brief.must_avoid.join('、')}` : undefined,
   ]).slice(0, 1200)

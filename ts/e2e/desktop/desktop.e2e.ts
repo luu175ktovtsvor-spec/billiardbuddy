@@ -105,9 +105,8 @@ test('生图工作台在初始创作态保持任务层级与无横向溢出', as
 
   await desktop.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(720, 650))
   await expect.poll(() => desktop.window.evaluate(() => window.innerWidth)).toBeLessThanOrEqual(720)
-  await expect(desktop.window.getByRole('tab', { name: '创作' })).toBeVisible()
-  await expect(desktop.window.getByRole('tab', { name: '挑选' })).toBeDisabled()
-  await expect(desktop.window.getByRole('tab', { name: '调整' })).toBeDisabled()
+  await expect(desktop.window.getByRole('tab', { name: '创作' })).toBeHidden()
+  await expect(desktop.window.getByTestId('image-workflow-select')).toHaveValue('poster')
   await expect(desktop.window.getByTestId('whole-edit-input')).toBeHidden()
   await assertNoPageOverflow()
   await testInfo.attach('workbench-compact-layout', { body: await desktop.window.screenshot(), contentType: 'image/png' })
@@ -122,7 +121,7 @@ test('生图工作台可以取消正在生成的任务，并重试一次性失�
 
   const prompt = desktop.window.getByTestId('image-prompt-input')
   const generate = desktop.window.getByTestId('image-generate-button')
-  await desktop.window.getByRole('button', { name: '易拉宝' }).click()
+  await desktop.window.getByTestId('image-ratio-select').selectOption('2:5')
   await prompt.fill('做一张周末畅打活动海报')
   await generate.click()
   await expect(desktop.window.getByTestId('brief-understanding')).toBeVisible()
@@ -131,7 +130,7 @@ test('生图工作台可以取消正在生成的任务，并重试一次性失�
   await desktop.window.getByTestId('cancel-image-job').click()
   await expect(desktop.window.getByTestId('workbench-retry')).toContainText('已取消')
 
-  await desktop.window.getByRole('button', { name: '方图' }).click()
+  await desktop.window.getByTestId('image-ratio-select').selectOption('1:1')
   await prompt.fill('做一张会员日充值活动海报')
   await generate.click()
   await expect(desktop.window.getByTestId('brief-understanding')).toBeVisible()
@@ -152,7 +151,19 @@ test('生图工作台完成生成挑图局部改字导出并在重启后恢复',
   await expect(desktop.window.getByTestId('workspace-drag-strip')).toBeVisible()
   await expect(desktop.window.getByTestId('workbench-back-chat')).toBeVisible()
 
-  await desktop.window.getByRole('button', { name: '活动海报' }).click()
+  const reference = new PNG({ width: 768, height: 768 })
+  for (let i = 0; i < reference.data.length; i += 4) {
+    reference.data[i] = 32
+    reference.data[i + 1] = 92
+    reference.data[i + 2] = 76
+    reference.data[i + 3] = 255
+  }
+  await desktop.window.locator('input[type="file"][multiple]').setInputFiles({
+    name: 'poster-reference.png',
+    mimeType: 'image/png',
+    buffer: PNG.sync.write(reference),
+  })
+  await desktop.window.getByTestId('poster-type-select').selectOption('opening_anniversary')
   await desktop.window.getByTestId('image-generate-button').click()
   await expect(desktop.window.getByTestId('brief-understanding')).toBeVisible()
   await desktop.window.getByTestId('image-generate-button').click()
@@ -166,7 +177,7 @@ test('生图工作台完成生成挑图局部改字导出并在重启后恢复',
     return body.projects.some(project => project.versions.some(version => version.kind === 'text_export'))
   }, { timeout: 15_000 }).toBe(true)
   await desktop.window.getByTestId('open-selected-candidate').click()
-  await expect(desktop.window.getByTestId('workbench-title')).toContainText('周末双人畅打')
+  await expect(desktop.window.getByTestId('workbench-title')).toContainText('新店开业')
 
   const versionCount = async () => desktop.window.getByTestId('version-item').count()
   const versionsBeforeWholeEdit = await versionCount()
@@ -211,11 +222,13 @@ test('生图工作台完成生成挑图局部改字导出并在重启后恢复',
   const body = await desktop.api<{
     projects: Array<{
       canvas: { width: number; height: number }
+      reference_assets: Array<{ role: string }>
       versions: Array<{ kind: string; image_url: string }>
     }>
   }>('/api/v1/studio/workbench/projects')
   const project = body.projects[0]
   expect(project).toBeTruthy()
+  expect(project!.reference_assets[0]?.role).toBe('environment_reference')
   const exported = project!.versions.find((version) => version.kind === 'text_export')
   expect(exported).toBeTruthy()
   const pngRes = await fetch(`${desktop.sidecarBase}${exported!.image_url}`)
@@ -231,17 +244,17 @@ test('生图工作台完成生成挑图局部改字导出并在重启后恢复',
   const restarted = await desktop.restart()
   await restarted.window.getByText('生图工作台').click()
   await expect(restarted.window.getByTestId('creation-page')).toBeVisible()
-  await expect(restarted.window.getByTestId('workbench-title')).toContainText('周末双人畅打')
+  await expect(restarted.window.getByTestId('workbench-title')).toContainText('新店开业')
   await expect(restarted.window.getByTestId('image-quality-status')).toContainText(/未自动质检|OCR|人像|投放/)
 })
 
-test('人像工作台要求授权、保留参考角色并由用户确认本人', async ({ desktop }) => {
+test('助教实拍图生图要求授权、保留参考角色并由用户确认本人', async ({ desktop }) => {
   test.setTimeout(60_000)
   const input = desktop.window.getByTestId('chat-input')
   await input.fill('/生图工作台')
   await input.press('Enter')
   await expect(desktop.window.getByTestId('creation-page')).toBeVisible()
-  await desktop.window.getByRole('button', { name: '助教形象' }).click()
+  await desktop.window.getByTestId('image-workflow-select').selectOption('assistant_photo')
 
   const png = new PNG({ width: 768, height: 768 })
   for (let i = 0; i < png.data.length; i += 4) {
@@ -258,7 +271,7 @@ test('人像工作台要求授权、保留参考角色并由用户确认本人',
   await desktop.window.getByTestId('portrait-authorization').getByRole('checkbox').check()
 
   await desktop.window.getByTestId('image-generate-button').click()
-  await expect(desktop.window.getByTestId('brief-understanding')).toContainText('真人参考人像')
+  await expect(desktop.window.getByTestId('brief-understanding')).toContainText('助教实拍照片优化')
   await desktop.window.getByTestId('image-generate-button').click()
   await expect.poll(() => desktop.window.getByTestId('candidate-card').count(), { timeout: 20_000 }).toBe(3)
   await desktop.window.getByTestId('open-selected-candidate').click()

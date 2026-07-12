@@ -5002,7 +5002,7 @@ test('legacy studio generate attaches uploaded store brand assets to TS Seedream
       await new Promise(resolve => setTimeout(resolve, 10))
     }
 
-    expect(requestBody.prompt).toContain('用途：poster')
+    expect(requestBody.prompt).toContain('用途：海报视觉')
     expect(requestBody.prompt).toContain('门店名称:九号台球')
     expect(requestBody.prompt).toContain('高端质感')
     expect(requestBody.prompt).toContain('#0f8f68')

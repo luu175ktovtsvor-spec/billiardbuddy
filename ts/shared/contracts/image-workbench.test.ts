@@ -102,3 +102,29 @@ test('brief and portrait confirmation contracts keep provider details out of the
   expect(brief.portrait?.authorization_confirmed).toBe(true)
   expect(imageWorkbenchPortraitConfirmRequestSchema.parse({ confirmed: true }).confirmed).toBe(true)
 })
+
+test('custom poster type is compatible with legacy briefs', () => {
+  const legacy = imageCreativeBriefSchema.parse({
+    user_request: '做一张会员日海报',
+    poster: { template_id: 'membership_recharge', title: '会员日' },
+  })
+  const current = imageCreativeBriefSchema.parse({
+    user_request: '做一张自由设计的门店海报',
+    poster: {
+      template_id: 'custom_poster',
+    },
+  })
+
+  expect(legacy.poster?.template_id).toBe('membership_recharge')
+  expect(current.poster?.template_id).toBe('custom_poster')
+})
+
+test('photo output use keeps person-photo edits distinct from a profile template', () => {
+  const brief = imageCreativeBriefSchema.parse({
+    user_request: '把这张已授权实拍照片变得自然好看',
+    scene: 'portrait',
+    output_use: 'photo',
+  })
+
+  expect(brief.output_use).toBe('photo')
+})

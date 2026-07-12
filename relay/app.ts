@@ -156,7 +156,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           rec.inputFidelity = {
             requested: requestedFidelity,
             status: 'unsupported',
-            risk: '当前正式端点不接受手动高保真参数，已按端点默认图片输入能力处理；请人工确认人物一致性。',
+            risk: '当前正式端点不接受手动高保真参数，已按端点默认图片输入能力处理；请人工确认参考图一致性。',
           }
         }
 
@@ -202,7 +202,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           rec.inputFidelity = {
             requested: requestedFidelity,
             status: 'unsupported',
-            risk: '当前正式端点不接受手动高保真参数，已自动降级为标准图片输入；请人工确认人物一致性。',
+            risk: '当前正式端点不接受手动高保真参数，已自动降级为标准图片输入；请人工确认参考图一致性。',
           }
           resp = await requestUpstream(false)
           text = await resp.text()

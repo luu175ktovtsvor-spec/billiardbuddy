@@ -26,9 +26,13 @@ export interface ImageBriefCompileInput {
 
 const TEMPLATE_BY_KEYWORD: Array<[string, PosterBrief['template_id']]> = [
   ['开业', 'opening_anniversary'],
-  ['周年', 'opening_anniversary'],
+  ['新店', 'opening_anniversary'],
   ['充值', 'membership_recharge'],
-  ['会员', 'membership_recharge'],
+  ['一卡通', 'membership_recharge'],
+  ['器材券', 'membership_recharge'],
+  ['抢一', 'tournament_signup'],
+  ['组局', 'tournament_signup'],
+  ['会员赛', 'tournament_signup'],
   ['赛事', 'tournament_signup'],
   ['比赛', 'tournament_signup'],
   ['报名', 'tournament_signup'],
@@ -37,18 +41,21 @@ const TEMPLATE_BY_KEYWORD: Array<[string, PosterBrief['template_id']]> = [
   ['节日', 'holiday_moments'],
   ['春节', 'holiday_moments'],
   ['端午', 'holiday_moments'],
-  ['周末', 'weekend_bundle'],
-  ['畅打', 'weekend_bundle'],
+  ['朋友圈', 'holiday_moments'],
   ['团购', 'weekend_bundle'],
+  ['引流', 'weekend_bundle'],
+  ['新客', 'weekend_bundle'],
+  ['周末', 'weekend_bundle'],
 ]
 
 const TEMPLATE_LABELS: Record<string, string> = {
-  opening_anniversary: '开业/周年活动',
-  membership_recharge: '会员充值',
-  weekend_bundle: '周末畅打/团购套餐',
-  tournament_signup: '赛事报名',
-  coach_booking: '助教课程/陪练预约',
-  holiday_moments: '节日/朋友圈日常活动',
+  custom_poster: '自由海报',
+  opening_anniversary: '新店开业/首周活动',
+  membership_recharge: '一卡通/器材券',
+  weekend_bundle: '引流体验/团购爆款',
+  tournament_signup: '抢一大战/会员赛',
+  coach_booking: '助教到店/预约',
+  holiday_moments: '门店日常/朋友圈',
 }
 
 function clean(value: unknown): string {
@@ -69,12 +76,12 @@ function unique(values: string[]): string[] {
 
 function inferScene(text: string, explicit?: string, intent?: string): 'poster' | 'portrait' {
   if (explicit === 'portrait' || intent === 'portrait') return 'portrait'
-  return /人像|肖像|形象照|助教形象|本人|换脸|换服装|换背景/u.test(text) ? 'portrait' : 'poster'
+  return /人像|肖像|形象照|助教形象|助教照片|助教实拍|实拍照片|本人|换脸|换服装|换背景/u.test(text) ? 'portrait' : 'poster'
 }
 
 function inferTemplate(text: string, explicit?: string): PosterBrief['template_id'] {
   if (explicit && explicit in TEMPLATE_LABELS) return explicit as PosterBrief['template_id']
-  return TEMPLATE_BY_KEYWORD.find(([keyword]) => text.includes(keyword))?.[1] ?? 'weekend_bundle'
+  return TEMPLATE_BY_KEYWORD.find(([keyword]) => text.includes(keyword))?.[1] ?? 'custom_poster'
 }
 
 function extractQuoted(text: string): string {
@@ -103,6 +110,7 @@ function inferChange(text: string): string[] {
   if (/背景|场景/u.test(text)) items.push(text.match(/(?:换|改成|改为|放在)([^，。；;]{1,40})背景/u)?.[1] ? `背景：${text.match(/(?:换|改成|改为|放在)([^，。；;]{1,40})背景/u)?.[1]}` : '背景')
   if (/服装|衣服|球服/u.test(text)) items.push('服装：按用户指定调整')
   if (/光线|灯光|气质|姿态|构图/u.test(text)) items.push('光线、气质或构图：按用户指定调整')
+  if (/好看|自然|无明显\s*AI|无\s*AI\s*感|实拍|照片优化/u.test(text)) items.push('照片质感：自然、好看、无明显 AI 感，保留真实皮肤和自然比例')
   if (items.length === 0) items.push('只改变用户明确提出的场景或视觉方向')
   return unique(items)
 }
@@ -156,16 +164,16 @@ function posterBrief(text: string, input: ImageBriefCompileInput): PosterBrief {
   }
 }
 
-function makePosterDirection(text: string, brief: PosterBrief, brandContext?: string) {
+function makePosterDirection(text: string, brandContext?: string) {
   return {
-    subject: '真实台球房、球桌与门店活动氛围',
-    action: text.includes('聚会') ? '朋友在球房轻松聚会' : '顾客在台球房自然活动',
-    environment: '干净整洁的台球房，主体清楚，背景为真实空间层次',
-    style: '适合门店营销的现代简洁视觉',
+    subject: '用户描述的主体',
+    action: '按用户描述呈现自然动作',
+    environment: '与用户需求和参考图一致的真实场景',
+    style: '按用户描述生成的海报视觉',
     color: text.match(/(?:主色|配色|颜色)[为是]?([^，。；;]{1,20})/u)?.[1]?.trim() ?? undefined,
     lighting: '清晰、自然、有层次的商业灯光',
     composition: [
-      `为${TEMPLATE_LABELS[brief.template_id]}和标题、价格、二维码预留安静的可读区域`,
+      '为用户提供的标题、价格、日期、Logo 和二维码预留安静可读区域',
       brandContext ? `品牌约束：${brandContext}` : '',
     ].filter(Boolean).join('；'),
   }
@@ -185,9 +193,9 @@ export class ImageBriefCompiler {
     const poster = scene === 'poster' ? posterBrief(userRequest, input) : undefined
     const portrait: PortraitBrief | undefined = scene === 'portrait'
       ? {
-          subject_role: '本人',
+          subject_role: '已授权参考人物',
           change: inferChange(userRequest),
-          preserve: ['面部可辨识特征', '发型与发色（除非明确要求改变）', '肤色与年龄观感', '体型比例', '人物数量为一人'],
+          preserve: ['同一位已授权参考人物的可辨识面部特征', '发型与发色（除非明确要求改变）', '肤色与年龄观感', '体型比例', '人物数量为一人'],
           authorization_confirmed: input.portraitAuthorizationConfirmed === true || input.portraitConsent === true,
           primary_reference_asset_id: refs.find(ref => ref.role === 'identity_primary')?.asset_id,
         }
@@ -196,17 +204,17 @@ export class ImageBriefCompiler {
       schema_version: 1,
       scene,
       user_request: userRequest,
-      output_use: scene === 'portrait' ? 'profile' : input.ratio === '2:5' || input.ratio === '5:2' ? 'rollup' : 'poster',
+      output_use: scene === 'portrait' ? 'photo' : input.ratio === '2:5' || input.ratio === '5:2' ? 'rollup' : 'poster',
       ratio: input.ratio ?? '3:4',
       quality: input.quality ?? 'standard',
       reference_assets: refs,
-      visual_direction: scene === 'poster' && poster ? makePosterDirection(userRequest, poster, clean(input.brandContext)) : {
-        subject: '参考图中的同一位本人',
-        action: '自然、符合要求的宣传照姿态',
+      visual_direction: scene === 'poster' && poster ? makePosterDirection(userRequest, clean(input.brandContext)) : {
+        subject: '已上传实拍照片中的同一位参考人物',
+        action: '自然、好看且符合用户描述的真实照片状态',
         environment: userRequest,
-        style: '真实、克制、适合门店宣传的人像摄影',
-        lighting: '自然且与新环境一致的光线',
-        composition: '主体完整、脸部清楚、避免贴图感',
+        style: '真实自然的人物摄影，无明显 AI 感',
+        lighting: '自然、柔和且与现场一致的光线',
+        composition: '人物清楚、保留真实皮肤质感和自然比例，避免过度精修、贴图感或商业样片感',
       },
       must_preserve: scene === 'poster' ? ['门店业务信息由确定性文字层排版', '原始 Logo 和二维码不交给模型重绘'] : portrait?.preserve,
       must_avoid: scene === 'poster'
@@ -215,8 +223,8 @@ export class ImageBriefCompiler {
       poster,
       portrait,
       understanding: scene === 'poster'
-        ? `${TEMPLATE_LABELS[poster!.template_id]} / ${poster!.title || '门店活动'}${poster!.price ? ` / ${poster!.price}` : ''}${input.ratio ? ` / ${input.ratio}` : ''}`
-        : `真人参考人像 / ${portrait!.change.join('、')} / 保留本人面部特征`,
+        ? `${TEMPLATE_LABELS[poster!.template_id]} / ${poster!.title || '用户海报'}${poster!.price ? ` / ${poster!.price}` : ''}${input.ratio ? ` / ${input.ratio}` : ''}`
+        : `助教实拍照片优化 / ${portrait!.change.join('、')} / 保留本人特征`,
     })
     this.cache.set(key, brief)
     return brief
