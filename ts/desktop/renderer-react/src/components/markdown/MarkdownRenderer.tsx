@@ -81,20 +81,30 @@ export function MarkdownRenderer({ content }: { content: string }) {
         /* 某语言不支持时忽略,保持纯文本 */
       }
     })
-    // 每个代码块加「复制」按钮(hover 显现)。
+    // 每个代码块包成代码卡(对齐 Codex 真图):块头 = 左「语言名」灰字 + 右常驻「复制」小钮。
     root.querySelectorAll('pre').forEach((pre) => {
-      if (pre.querySelector('.qf-code-copy')) return
+      if (pre.parentElement?.classList.contains('qf-code-card')) return
+      const code = pre.querySelector('code')
+      const lang = [...(code?.classList ?? [])].find((c) => c.startsWith('language-'))?.slice('language-'.length) || 'text'
+      const card = document.createElement('div')
+      card.className = 'qf-code-card'
+      const head = document.createElement('div')
+      head.className = 'qf-code-head'
+      const label = document.createElement('span')
+      label.textContent = lang
       const btn = document.createElement('button')
       btn.type = 'button'
       btn.className = 'qf-code-copy'
       btn.textContent = '复制'
       btn.addEventListener('click', () => {
-        const codeText = pre.querySelector('code')?.textContent ?? pre.textContent ?? ''
+        const codeText = code?.textContent ?? pre.textContent ?? ''
         void navigator.clipboard?.writeText(codeText)
         btn.textContent = '已复制'
         window.setTimeout(() => { btn.textContent = '复制' }, 1200)
       })
-      pre.appendChild(btn)
+      head.append(label, btn)
+      pre.replaceWith(card)
+      card.append(head, pre)
     })
   }, [html])
 
