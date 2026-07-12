@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { compileImageBrief } from './imageBriefCompiler'
-import { compileProviderPrompt, routeImageBrief } from './imagePromptAdapters'
+import { compileProviderPrompt, compileSeedreamPrompt, routeImageBrief } from './imagePromptAdapters'
 
 test('compiler keeps Chinese business facts in a provider-neutral brief', () => {
   const brief = compileImageBrief({
@@ -31,14 +31,56 @@ test('compiler keeps a freeform poster free of prefilled operating context', () 
   expect(compileProviderPrompt(brief, 'generate').prompt).not.toContain('经营目标')
 })
 
-test('freeform poster does not inject billiards or store activity into the prompt', () => {
-  const brief = compileImageBrief({ prompt: '做一张社区夏日音乐会海报' })
+test('freeform poster does not inject billiards, store activity or unused business regions', () => {
+  const brief = compileImageBrief({ prompt: '夏日音乐节的抽象艺术海报，不要任何文字' })
   const prompt = compileProviderPrompt(brief, 'generate').prompt
 
   expect(brief.poster?.template_id).toBe('custom_poster')
+  expect(brief.poster?.reserved_regions).toEqual([])
+  expect(brief.must_preserve).toEqual([])
   expect(brief.understanding).not.toContain('门店活动')
   expect(prompt).not.toContain('台球房')
   expect(prompt).not.toContain('门店活动')
+  expect(brief.visual_direction.composition).not.toContain('价格')
+  expect(brief.visual_direction.composition).not.toContain('二维码')
+  expect(prompt).not.toContain('经营目标')
+})
+
+test('poster controls reserve only facts and assets explicitly supplied by the user', () => {
+  const brief = compileImageBrief({
+    prompt: '海边音乐节海报',
+    sceneTemplateId: 'custom_poster',
+    posterText: { title: '夏日声浪', price: '39.9 元' },
+  })
+
+  expect(brief.poster?.reserved_regions).toEqual(['title', 'price'])
+  expect(brief.must_preserve).toEqual(['用户明确提供的精确文字由确定性文字层排版'])
+  expect(brief.visual_direction.composition).toContain('标题、价格')
+  expect(brief.visual_direction.composition).not.toContain('Logo')
+  expect(brief.visual_direction.composition).not.toContain('二维码')
+})
+
+test('poster reference images remain direct image conditions without unrelated brand instructions', () => {
+  const brief = compileImageBrief({
+    prompt: '参考这张图的构图，生成一张夏日音乐节海报',
+    referenceAssets: [{ asset_id: 'poster_reference', role: 'style_reference' }],
+  })
+  const prompt = compileSeedreamPrompt(brief)
+
+  expect(brief.reference_assets).toEqual([{ asset_id: 'poster_reference', role: 'style_reference' }])
+  expect(prompt).toContain('以已上传参考图作为图像条件')
+  expect(prompt).not.toContain('不重绘 Logo 或二维码')
+})
+
+test('GPT freeform poster has no portrait identity preserve block', () => {
+  const brief = compileImageBrief({ prompt: '电影感的音乐节海报，画面中有朋友一起跳舞，不要任何文字' })
+  const prompt = compileProviderPrompt(brief, 'generate').prompt
+
+  expect(routeImageBrief(brief)).toBe('gpt_image_2')
+  expect(prompt).not.toContain('Preserve:')
+  expect(prompt).not.toContain('identity and natural details')
+  expect(prompt).not.toContain('Do not add people')
+  expect(prompt).toContain('visible text, gibberish, watermarks')
 })
 
 test('assistant photo compilation keeps image roles and natural-photo boundary', () => {
@@ -62,4 +104,9 @@ test('assistant photo compilation keeps image roles and natural-photo boundary',
   expect(prompt).toContain('non-AI-looking')
   expect(prompt).toContain('authorized reference photos')
   expect(prompt).toContain('Do not change anything else.')
+  const fallbackPrompt = compileSeedreamPrompt(brief, 'edit')
+  expect(fallbackPrompt).toContain('已上传的已授权实拍照片作为图像条件')
+  expect(fallbackPrompt).not.toContain('形象照')
+  expect(fallbackPrompt).not.toContain('Logo')
+  expect(fallbackPrompt).not.toContain('二维码')
 })

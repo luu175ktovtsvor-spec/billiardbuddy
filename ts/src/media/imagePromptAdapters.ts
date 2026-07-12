@@ -35,8 +35,21 @@ function englishPreserveItem(value: string): string {
     '人物数量为一人': 'exactly one person',
     '门店业务信息由确定性文字层排版': 'business copy is handled by deterministic text layers',
     '原始 Logo 和二维码不交给模型重绘': 'the supplied logo and QR code must not be redrawn',
+    '用户明确提供的精确文字由确定性文字层排版': 'exact copy explicitly supplied by the user is handled by deterministic text layers',
+    '原始 Logo 不交给模型重绘': 'the supplied logo must not be redrawn',
+    '原始二维码不交给模型重绘': 'the supplied QR code must not be redrawn',
   }
   return known[text] ?? `Preserve requirement: ${text}`
+}
+
+function englishAvoidItem(value: string): string {
+  const text = value.trim()
+  const known: Record<string, string> = {
+    '未要求的可见文字、乱码、水印或无关标识': 'visible text, gibberish, watermarks, or unrelated marks that the user did not request',
+    '主体不要遮挡用户明确提供的文字或素材区域': 'placing the main subject over explicit copy or supplied asset regions',
+    '额外人物、额外手指或肢体、塑料皮肤、过度磨皮、文字、水印': 'extra people, extra fingers or limbs, plastic skin, excessive retouching, text, or watermarks',
+  }
+  return known[text] ?? text
 }
 
 function seedreamUseLabel(outputUse: ImageCreativeBrief['output_use']): string {
@@ -67,8 +80,8 @@ export function compileSeedreamPrompt(brief: ImageCreativeBrief, mode: 'generate
     direction.composition ? `构图：${direction.composition}` : undefined,
     mode === 'edit' ? `仅修改：${brief.user_request}` : undefined,
     brief.reference_assets.length ? brief.scene === 'portrait'
-      ? '以已上传的已授权实拍照片作为图像条件，保留同一人的可辨识特征，不重绘 Logo 或二维码'
-      : '以已上传参考图作为图像条件，按其指定角色使用，不重绘 Logo 或二维码'
+      ? '以已上传的已授权实拍照片作为图像条件，保留同一人的可辨识特征'
+      : '以已上传参考图作为图像条件，按其指定角色使用'
       : undefined,
     exactCopy,
     brief.must_avoid.length ? `避免：${brief.must_avoid.join('、')}` : undefined,
@@ -76,23 +89,28 @@ export function compileSeedreamPrompt(brief: ImageCreativeBrief, mode: 'generate
 }
 
 export function compileGptImagePrompt(brief: ImageCreativeBrief, mode: 'generate' | 'edit' = 'generate'): string {
-  const preserve = brief.must_preserve.length ? brief.must_preserve : ['the identity and natural details of the supplied subject']
+  const preserve = brief.must_preserve.length
+    ? brief.must_preserve
+    : brief.scene === 'portrait'
+      ? ['the identity and natural details of the supplied subject']
+      : []
   const change = brief.scene === 'portrait'
     ? brief.portrait?.change ?? [brief.user_request]
     : mode === 'edit'
       ? [brief.user_request]
       : [brief.visual_direction.environment, brief.visual_direction.style, brief.visual_direction.composition].filter(Boolean)
   const references = brief.reference_assets.map((asset, index) => `Image ${index + 1}: ${asset.role}`).join('; ')
+  const avoid = brief.must_avoid.map(englishAvoidItem).filter(Boolean)
   return [
     'Change only:',
     change.filter((item): item is string => Boolean(item)).map(englishChangeItem).filter(Boolean).join('; '),
     '',
-    'Preserve:',
-    preserve.map(englishPreserveItem).filter(Boolean).join('; '),
-    '',
+    preserve.length ? 'Preserve:' : '',
+    preserve.length ? preserve.map(englishPreserveItem).filter(Boolean).join('; ') : '',
     references ? `Reference roles: ${references}.` : '',
     'Do not change anything else.',
-    'Do not add people, text, logos, watermarks, extra limbs, or distorted hands.',
+    avoid.length ? 'Avoid:' : '',
+    avoid.length ? avoid.join('; ') : '',
     brief.poster?.exact_copy.length ? `Keep exact Chinese copy as data only; do not translate or render it in the generated background: ${brief.poster.exact_copy.join(' | ')}` : '',
   ].filter(Boolean).join('\n')
 }

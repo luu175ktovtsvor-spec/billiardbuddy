@@ -160,22 +160,57 @@ function posterBrief(text: string, input: ImageBriefCompileInput): PosterBrief {
     cta,
     exact_copy: exactCopy,
     brand_asset_ids: [],
-    reserved_regions: ['title', 'price', 'details', 'contact', 'logo', 'qrcode'],
+    reserved_regions: [],
   }
 }
 
-function makePosterDirection(text: string, brandContext?: string) {
+type PosterRegion = PosterBrief['reserved_regions'][number]
+
+function posterControls(poster: PosterBrief, refs: ImageAssetReference[], brandContext?: string) {
+  const regions: PosterRegion[] = []
+  const regionLabels: string[] = []
+  const addRegion = (region: PosterRegion, label: string) => {
+    if (!regions.includes(region)) regions.push(region)
+    if (!regionLabels.includes(label)) regionLabels.push(label)
+  }
+  if (poster.title) addRegion('title', '标题')
+  if (poster.price) addRegion('price', '价格')
+  if (poster.offer || poster.date || poster.time || poster.address) addRegion('details', '活动信息')
+  if (poster.phone || poster.cta) addRegion('contact', '联系方式')
+
+  const hasLogo = refs.some(ref => ref.role === 'logo') || /\bLogo\b/iu.test(brandContext ?? '')
+  const hasQrCode = refs.some(ref => ref.role === 'qrcode') || /二维码/iu.test(brandContext ?? '')
+  if (hasLogo) addRegion('logo', 'Logo')
+  if (hasQrCode) addRegion('qrcode', '二维码')
+
+  const mustPreserve: string[] = []
+  if (poster.exact_copy.length) mustPreserve.push('用户明确提供的精确文字由确定性文字层排版')
+  if (hasLogo) mustPreserve.push('原始 Logo 不交给模型重绘')
+  if (hasQrCode) mustPreserve.push('原始二维码不交给模型重绘')
+
+  return {
+    regions,
+    composition: [
+      regionLabels.length ? `为用户明确提供的${regionLabels.join('、')}预留清晰区域` : '按用户描述安排构图，不额外假设未提供的信息',
+      brandContext ? `品牌约束：${brandContext}` : '',
+    ].filter(Boolean).join('；'),
+    mustPreserve,
+    mustAvoid: [
+      '未要求的可见文字、乱码、水印或无关标识',
+      ...(regions.length ? ['主体不要遮挡用户明确提供的文字或素材区域'] : []),
+    ],
+  }
+}
+
+function makePosterDirection(text: string, composition: string) {
   return {
     subject: '用户描述的主体',
     action: '按用户描述呈现自然动作',
     environment: '与用户需求和参考图一致的真实场景',
     style: '按用户描述生成的海报视觉',
     color: text.match(/(?:主色|配色|颜色)[为是]?([^，。；;]{1,20})/u)?.[1]?.trim() ?? undefined,
-    lighting: '清晰、自然、有层次的商业灯光',
-    composition: [
-      '为用户提供的标题、价格、日期、Logo 和二维码预留安静可读区域',
-      brandContext ? `品牌约束：${brandContext}` : '',
-    ].filter(Boolean).join('；'),
+    lighting: '清晰、自然、有层次的光线',
+    composition,
   }
 }
 
@@ -190,7 +225,11 @@ export class ImageBriefCompiler {
     if (cached) return cached
     const scene = inferScene(userRequest, input.scene, input.intent)
     const refs = referencesFrom(input, scene)
-    const poster = scene === 'poster' ? posterBrief(userRequest, input) : undefined
+    const posterDraft = scene === 'poster' ? posterBrief(userRequest, input) : undefined
+    const posterControl = posterDraft ? posterControls(posterDraft, refs, clean(input.brandContext)) : undefined
+    const poster = posterDraft && posterControl
+      ? { ...posterDraft, reserved_regions: posterControl.regions }
+      : undefined
     const portrait: PortraitBrief | undefined = scene === 'portrait'
       ? {
           subject_role: '已授权参考人物',
@@ -208,7 +247,7 @@ export class ImageBriefCompiler {
       ratio: input.ratio ?? '3:4',
       quality: input.quality ?? 'standard',
       reference_assets: refs,
-      visual_direction: scene === 'poster' && poster ? makePosterDirection(userRequest, clean(input.brandContext)) : {
+      visual_direction: scene === 'poster' && poster && posterControl ? makePosterDirection(userRequest, posterControl.composition) : {
         subject: '已上传实拍照片中的同一位参考人物',
         action: '自然、好看且符合用户描述的真实照片状态',
         environment: userRequest,
@@ -216,10 +255,8 @@ export class ImageBriefCompiler {
         lighting: '自然、柔和且与现场一致的光线',
         composition: '人物清楚、保留真实皮肤质感和自然比例，避免过度精修、贴图感或商业样片感',
       },
-      must_preserve: scene === 'poster' ? ['门店业务信息由确定性文字层排版', '原始 Logo 和二维码不交给模型重绘'] : portrait?.preserve,
-      must_avoid: scene === 'poster'
-        ? ['可见文字、乱码、水印、无关 Logo', '主体压住标题和二维码区域']
-        : ['额外人物、额外手指或肢体、塑料皮肤、过度磨皮、文字、水印'],
+      must_preserve: scene === 'poster' ? posterControl?.mustPreserve : portrait?.preserve,
+      must_avoid: scene === 'poster' ? posterControl?.mustAvoid : ['额外人物、额外手指或肢体、塑料皮肤、过度磨皮、文字、水印'],
       poster,
       portrait,
       understanding: scene === 'poster'
