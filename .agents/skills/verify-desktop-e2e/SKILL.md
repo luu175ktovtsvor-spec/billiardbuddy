@@ -36,6 +36,6 @@ Linux CI 使用 `xvfb-run` 提供显示环境；macOS/Windows 直接运行。不
 
 ## 新增测试
 
-在 `ts/e2e/desktop/desktop.spec.ts` 以一个用户可完成的行为为一个测试。优先使用 role、可见文字和稳定 `data-testid`；使用 `expect` 的自动等待，不写固定 sleep。用 UI 断言证明用户行为，用 sidecar API/日志证明后端事实；不要通过 UI 重测所有领域分支。
+在 `ts/e2e/desktop/desktop.e2e.ts` 以一个用户可完成的行为为一个测试。优先使用 role、可见文字和稳定 `data-testid`；使用 `expect` 的自动等待，不写固定 sleep。用 UI 断言证明用户行为，用 sidecar API/日志证明后端事实；不要通过 UI 重测所有领域分支。
 
 涉及真模型、生图、远程网关或付费调用时，另建显式 live smoke，默认不进 CI。跨平台截图会受字体和系统渲染影响，默认作为人工证据；只有建立各平台独立基线后才做像素快照硬闸。

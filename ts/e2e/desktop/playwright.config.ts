@@ -7,7 +7,7 @@ const resultsRoot = path.resolve(here, '../../test-results/desktop-e2e')
 
 export default defineConfig({
   testDir: here,
-  testMatch: 'desktop.spec.ts',
+  testMatch: 'desktop.e2e.ts',
   globalSetup: path.join(here, 'global-setup.ts'),
   fullyParallel: false,
   workers: 1,
