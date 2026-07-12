@@ -8,7 +8,7 @@ import type { ChatBlock } from '../../stores/chatStore'
 import { useFilePreviewStore } from '../../stores/filePreviewStore'
 import { DiffViewer } from './DiffViewer'
 import { IconAlertCircle, IconChevronDown, IconCopy, IconSpinner, IconStopCircle } from '../shared/icons'
-import { toolIcon, toolSummary, pendingVerb, pastVerb, doneVerb, resultSummary, readRangeDetail, toolTargetIsFile } from './toolMeta'
+import { toolIcon, toolSummary, statusVerb, doneVerb, resultSummary, readRangeDetail, toolTargetIsFile, formatDuration } from './toolMeta'
 import { Tooltip } from '../shared/Tooltip'
 import { t } from '../../i18n'
 
@@ -78,15 +78,24 @@ export function ToolCallCard({ block }: { block: ToolBlock }) {
   }, [block.liveOutput])
 
   const detail = detailText(block)
-  const verb =
-    block.status === 'running'
-      ? pendingVerb(block.tool)
-      : block.status === 'interrupted'
-        ? t('tools.interrupted')
-        : pastVerb(block.tool)
-  const verbColor = block.status === 'running' ? 'var(--color-text-tertiary)' : 'var(--color-text-secondary)'
+  // 三态动词(对齐 Codex 源码 toolActivity.active:正在运行/已运行/已停止),动词=两段式里的 action 段。
+  const verb = block.status === 'interrupted' ? t('tools.interrupted') : statusVerb(block.tool, block.status)
+  // 动词色恒定(对齐 Codex conversation-summary-leading:不随 running 变淡,靠 spinner+「正在」表进行)。
+  const verbColor = 'var(--color-text-secondary)'
   const detailColor = block.status === 'error' ? 'var(--color-error)' : 'var(--color-text-tertiary)'
   const detailValue = block.status === 'error' ? resultSummary(block.tool, block.output, true) : detail
+
+  // 运行中持续时长(对齐 Codex runningTimer「,已持续 {elapsed}」):秒级 ticker,仅 running 时跑。
+  const [nowTick, setNowTick] = useState(0)
+  useEffect(() => {
+    if (block.status !== 'running') return
+    const id = window.setInterval(() => setNowTick((n) => n + 1), 1000)
+    return () => window.clearInterval(id)
+  }, [block.status])
+  void nowTick
+  const runningSeconds = block.status === 'running' && typeof block.startedAt === 'number'
+    ? Math.max(0, Math.round((Date.now() - block.startedAt) / 1000))
+    : 0
 
   function openPreview(e: MouseEvent) {
     e.stopPropagation()
@@ -141,9 +150,10 @@ export function ToolCallCard({ block }: { block: ToolBlock }) {
           <span className="flex-1" />
         )}
 
-        {block.status === 'running' && typeof block.liveChars === 'number' && block.liveChars > 0 && (
+        {/* 运行中持续时长(对齐 Codex「,已持续 {elapsed}」;原「N 字」角标撤——字数是机制黑话,输出主体看展开的实时流) */}
+        {runningSeconds >= 3 && (
           <span className="shrink-0 text-[11px] tabular-nums" style={{ color: 'var(--color-text-tertiary)' }}>
-            {block.liveChars} 字
+            已持续 {formatDuration(runningSeconds)}
           </span>
         )}
 

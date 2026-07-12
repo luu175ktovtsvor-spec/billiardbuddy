@@ -7,11 +7,21 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ChatBlock } from '../../stores/chatStore'
 import { ToolCallCard } from './ToolCallCard'
-import { groupSummary, formatDuration } from './toolMeta'
-import { IconAlertCircle, IconCheckCircle, IconChevronDown, IconSpinner } from '../shared/icons'
+import { groupSummary, formatDuration, toolIcon } from './toolMeta'
+import { IconAlertCircle, IconChevronDown, IconSpinner } from '../shared/icons'
 import { t } from '../../i18n'
 
 type ToolBlock = Extract<ChatBlock, { kind: 'tool' }>
+
+/** 组头图标 = 首个工具的类型图标(灰),对齐 Codex 聚合头。 */
+function GroupIcon({ tool }: { tool: string }) {
+  const Icon = toolIcon(tool)
+  return (
+    <span style={{ color: 'var(--color-text-tertiary)' }}>
+      <Icon size={13} />
+    </span>
+  )
+}
 
 /** 单个工具调用直接渲染卡片、不套分组外壳(对齐 cc:toolCalls.length === 1 时跳过 group wrapper)。 */
 export function ToolCallGroup({ blocks }: { blocks: ToolBlock[] }) {
@@ -59,7 +69,8 @@ function ToolCallGroupMulti({ blocks }: { blocks: ToolBlock[] }) {
         ) : hasError ? (
           <IconAlertCircle size={13} style={{ color: 'var(--color-error)' }} />
         ) : (
-          <IconCheckCircle size={13} style={{ color: 'var(--color-success)' }} />
+          // 完成态组头 = 首个工具的类型图标(对齐 Codex 源码聚合头 icon: i.icon 语义),不画绿勾。
+          <GroupIcon tool={blocks[0]!.tool} />
         )}
         <span className="min-w-0 flex-1 truncate text-[12.5px]" style={{ color: 'var(--color-text-secondary)' }}>
           {summary}

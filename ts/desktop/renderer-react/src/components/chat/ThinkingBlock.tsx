@@ -37,16 +37,19 @@ export function ThinkingBlock({ content, isActive }: { content: string; isActive
         className="flex w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-[12px] transition-colors hover:bg-[var(--color-surface-hover)]"
         style={{ color: 'var(--color-text-tertiary)' }}
       >
-        <span className="shrink-0 text-[10px]">{expanded ? '▾' : '▸'}</span>
-        <span className="shrink-0 font-medium italic">
-          {isActive ? t('thinking.active') : t('thinking.done')}
-          {isActive && <span className="qf-thinking-dots" />}
-        </span>
-        {!expanded && preview && (
-          <span className="min-w-0 flex-1 truncate italic" style={{ color: 'var(--color-text-tertiary)', opacity: 0.8 }}>
-            · {preview}
+        {/* 对齐 Codex 真图:完成态无「已思考」前缀,直接思考内容灰斜体 + 尾随 ⌄;进行中保留「正在想」帮小白理解。 */}
+        {isActive && (
+          <span className="shrink-0 font-medium italic">
+            {t('thinking.active')}
+            <span className="qf-thinking-dots" />
           </span>
         )}
+        {preview && (
+          <span className="min-w-0 flex-1 truncate italic" style={{ color: 'var(--color-text-tertiary)', opacity: 0.8 }}>
+            {isActive ? `· ${preview}` : preview}
+          </span>
+        )}
+        <span className="shrink-0 text-[10px] transition-transform" style={{ transform: expanded ? 'rotate(180deg)' : undefined }}>⌄</span>
       </button>
       {expanded && hasContent && (
         <div
