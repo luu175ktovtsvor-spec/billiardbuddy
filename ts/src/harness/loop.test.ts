@@ -3029,3 +3029,60 @@ test('hooks 官方 continue:false:UserPromptSubmit 停机——不建消息、�
   expect(events.some(e => e.type === 'context_note' && e.text.includes('[hook 停止] 维护窗口,暂停接单'))).toBe(true)
   expect(events.some(e => e.type === 'final')).toBe(false)
 })
+
+test('blocking 安全阀:用量顶硬阻断线且自动压缩被禁 → 停轮提示 /compact,不再打模型', async () => {
+  const model = scriptedModel([
+    { kind: 'final', text: '第一轮回答', usage: { input_tokens: 28_000, output_tokens: 10 } },
+    { kind: 'final', text: 'should never run' },
+  ])
+  try {
+    process.env.DISABLE_AUTO_COMPACT = '1'
+    // 窗口 50k → 有效 30k → 阻断线 27k;第一轮上报 28k ≥ 27k。stop-hook 续跑注入第二问才会再进 while 顶部,
+    // 这里用两次连续调用同一 loop 不可行,改为:第一轮 final 后 loop 返回,不触阀;直接验证阀本身走 reactive 场景——
+    // 用 steering 逼第二轮:插话使 final 后继续。简化:验证第二次 runAgentLoop 带持久 lastInputTokens 不可得,
+    // 故本测试改在同轮内:scripted 第一步 tool_calls 让轮次继续。
+    const model2 = scriptedModel([
+      { kind: 'tool_calls', calls: [{ id: 'a', name: 'list_dir', input: {} }], usage: { input_tokens: 28_000, output_tokens: 5 } },
+      { kind: 'final', text: 'should never run' },
+    ])
+    const events = await collect(runAgentLoop({
+      model: model2, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+      systemPrompt: 'SYS', userMessage: 'x', contextWindowTokens: 50_000,
+    }))
+    expect(model2.received.length).toBe(1) // 工具批后回到 while 顶:阀拦住,第二次 model.step 不发生
+    expect(events.some(e => e.type === 'context_note' && e.text.includes('硬阻断线'))).toBe(true)
+    expect(events.some(e => e.type === 'final')).toBe(false)
+    expect(model.received.length).toBe(0)
+  } finally {
+    delete process.env.DISABLE_AUTO_COMPACT
+  }
+})
+
+test('headless 自动拒(对齐 cc AUTO_REJECT):avoidPermissionPrompts 下 ask 不弹卡、明确拒绝回灌;PermissionRequest hook 仍可放行', async () => {
+  // 默认档 write_file → ask。后台上下文:不 yield approval_request,tool_result 直接带自动拒绝理由。
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'w1', name: 'write_file', input: { path: 'h.txt', content: 'x' } }] },
+    { kind: 'final', text: 'done' },
+  ])
+  const events = await collect(runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x', avoidPermissionPrompts: true,
+  }))
+  expect(events.some(e => e.type === 'approval_request')).toBe(false)
+  const denied = events.find(e => e.type === 'tool_result' && e.tool === 'write_file')
+  expect(denied && denied.type === 'tool_result' && denied.output).toContain('自动拒绝')
+  expect(existsSync(join(root, 'h.txt'))).toBe(false)
+
+  // PermissionRequest hook 明确 allow → headless 也放行执行(对齐 cc:hook 决策优先于自动拒)。
+  const model2 = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'w2', name: 'write_file', input: { path: 'h2.txt', content: 'ok' } }] },
+    { kind: 'final', text: 'done' },
+  ])
+  const events2 = await collect(runAgentLoop({
+    model: model2, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x', avoidPermissionPrompts: true,
+    hooks: { rules: [{ event: 'PermissionRequest', handler: () => ({ action: 'allow' }) }] },
+  }))
+  expect(events2.some(e => e.type === 'approval_request')).toBe(false)
+  expect(readFileSync(join(root, 'h2.txt'), 'utf8')).toBe('ok')
+})

@@ -588,3 +588,27 @@ test('P1 断线重连:会话失效(404+-32001)后调用不挂死,经监督器自
     httpServer.stop(true)
   }
 }, 20000)
+
+test('truncateMcpText:2048 截断(对齐 cc MAX_MCP_DESCRIPTION_LENGTH);wrapFetch 保底 Accept + 超时信号', async () => {
+  const { truncateMcpText, MAX_MCP_TEXT_LENGTH, wrapFetchWithTimeoutAndAccept } = await import('./client')
+  expect(truncateMcpText('a'.repeat(3000)).length).toBeLessThanOrEqual(MAX_MCP_TEXT_LENGTH + 8)
+  expect(truncateMcpText('短的')).toBe('短的')
+  let seen: { headers?: Headers; hasSignal?: boolean } = {}
+  const wrapped = wrapFetchWithTimeoutAndAccept(async (_url, init) => {
+    seen = { headers: new Headers(init?.headers as ConstructorParameters<typeof Headers>[0] | undefined), hasSignal: !!init?.signal }
+    return new Response('{}')
+  })
+  await wrapped('https://x.example/mcp', { headers: { 'X-Custom': '1', 'content-type': 'application/json' } })
+  expect(seen.headers?.get('accept')).toBe('application/json, text/event-stream')
+  expect(seen.headers?.get('x-custom')).toBe('1')
+  expect(seen.headers?.get('content-type')).toBe('application/json') // 既有头不丢(Headers 合并,非对象展开)
+  expect(seen.hasSignal).toBe(true)
+  // 调用方自带 Accept 时不覆盖
+  await wrapped('https://x.example/mcp', { headers: { Accept: 'text/plain' } })
+  expect(seen.headers?.get('accept')).toBe('text/plain')
+})
+
+test('clientCapabilities 声明 roots(对齐 cc);ListRoots 回工作区 file:// URI 由 createClient 注册', async () => {
+  const { clientCapabilities } = await import('./client')
+  expect(clientCapabilities({})).toHaveProperty('roots')
+})

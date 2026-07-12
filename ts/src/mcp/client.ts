@@ -9,6 +9,7 @@ import {
   CallToolResultSchema,
   CreateMessageRequestSchema,
   ElicitRequestSchema,
+  ListRootsRequestSchema,
   type CallToolResult,
   type ClientCapabilities,
   type CreateMessageRequest,
@@ -20,6 +21,7 @@ import {
   type Tool as SdkMcpTool,
 } from '@modelcontextprotocol/sdk/types.js'
 import { existsSync } from 'node:fs'
+import { pathToFileURL } from 'node:url'
 import type { Tool, JSONSchema, ToolContext } from '../tools/Tool'
 import type { ImageBlock } from '../types/message'
 import { detectImageFormat, isVisionSupported, toImageBlock } from '../tools/imageRead'
@@ -35,6 +37,8 @@ type SdkMcpResourceContent = Awaited<ReturnType<Client['readResource']>>['conten
 
 export interface McpConnection {
   serverName: string
+  /** server 自报 instructions(initialize 结果,2048 截断;对齐 cc 捕获后注入系统提示)。 */
+  instructions?: string
   /** 初始连接的 client(向后兼容保留)。掉线重连后会换新 client——运行时取活连接一律走 getClient()。 */
   client: Client
   transport: Transport
@@ -80,6 +84,8 @@ export interface LoadedMcpTools {
   connections: McpConnection[]
   tools: Tool[]
   warnings: string[]
+  /** 各 server 自报 instructions(2048 截断/Unicode 净化),server 侧注入系统提示用(对齐 cc)。 */
+  instructions: Array<{ server: string; text: string }>
 }
 
 function truncate(text: string, max = 20000): string {
@@ -293,8 +299,17 @@ async function maybeTaskResult(taskRequested: boolean, extra: RequestHandlerExtr
   return { task }
 }
 
-function clientCapabilities(opts: LoadMcpToolsOptions): ClientCapabilities {
+/** MCP 文本上限(对齐 cc MAX_MCP_DESCRIPTION_LENGTH=2048):工具描述/server instructions 超长截断,防上下文膨胀与提示注入面。 */
+export const MAX_MCP_TEXT_LENGTH = 2048
+export function truncateMcpText(text: string): string {
+  return text.length <= MAX_MCP_TEXT_LENGTH ? text : `${text.slice(0, MAX_MCP_TEXT_LENGTH)}…[截断]`
+}
+
+export function clientCapabilities(opts: LoadMcpToolsOptions): ClientCapabilities {
   const capabilities: ClientCapabilities = {
+    // roots 能力(对齐 cc client.ts:988-990):声明后注册 ListRoots handler 返回工作区根的 file:// URI,
+    // 让文件系统类 server 知道该在哪个目录下工作。
+    roots: {},
     // 空对象即声明 elicitation 能力,足以让服务器发起表单/URL 征询,本地处理器仍
     // 会补默认值。绝不发送 { form:{}, url:{} } 嵌套形状——老式 Java/Spring MCP
     // 服务器的 Elicitation 类零字段且拒绝未知嵌套属性,带上 form/url 会打回它们。
@@ -335,6 +350,11 @@ function createClient(serverName: string, opts: LoadMcpToolsOptions): { client: 
     const result = await handler({ serverName, params: request.params, signal: extra.signal })
     return maybeTaskResult(!!request.params.task, extra, result as Result) as never
   })
+
+  // ListRoots(对齐 cc client.ts:1003-1012):回工作区根的 file:// URI,文件系统类 server 据此定位工作目录。
+  client.setRequestHandler(ListRootsRequestSchema, async () => ({
+    roots: opts.cwd ? [{ uri: pathToFileURL(opts.cwd).href, name: 'workspace' }] : [],
+  }))
 
   if (opts.samplingHandler) {
     client.setRequestHandler(CreateMessageRequestSchema, async (request, extra) => {
@@ -406,6 +426,22 @@ async function listAllPrompts(client: Client, opts: LoadMcpToolsOptions): Promis
   return prompts
 }
 
+/**
+ * 每请求超时 + Accept 保底(对齐 cc wrapFetchWithTimeout,client.ts:489-547):POST/初始化 60s 硬超时防挂死;
+ * 严格 server 缺 Accept 会 406,兜底带上 json+SSE 双类型。SSE 长连 GET **不**经此包装(不能掐持续事件流)。
+ */
+export function wrapFetchWithTimeoutAndAccept(base?: FetchLike, timeoutMs = 60_000): FetchLike {
+  const f: FetchLike = base ?? ((url, init) => fetch(url as never, init as never))
+  return (url, init) => {
+    // SDK 传 Headers 实例:必须用 Headers 合并,对象展开会丢掉 Content-Type 等既有头(会 415)。
+    const headers = new Headers(init?.headers as ConstructorParameters<typeof Headers>[0] | undefined)
+    if (!headers.has('accept')) headers.set('accept', 'application/json, text/event-stream')
+    const timeoutSignal = AbortSignal.timeout(timeoutMs)
+    const signal = init?.signal ? AbortSignal.any([init.signal as AbortSignal, timeoutSignal]) : timeoutSignal
+    return f(url, { ...init, headers, signal })
+  }
+}
+
 export function createTransport(rawConfig: McpServerConfig, opts: LoadMcpToolsOptions): Transport {
   // ${VAR}/${VAR:-default} 展开(对齐 cc envExpansion + 官方 .mcp.json 契约):在"真的要连"的时刻做,
   // 缺变量抛错指名道姓,别把 "${MY_TOKEN}" 当字面量发出去让鉴权静默失效。
@@ -430,7 +466,8 @@ export function createTransport(rawConfig: McpServerConfig, opts: LoadMcpToolsOp
     //     eventSourceInit 后 SDK 不会再自动附 Authorization(见 SSEClientTransportOptions.eventSourceInit 注释),
     //     且 SSE 长连不能套 http 那种 60s 请求超时(会掐断持续事件流)。
     const transportOptions: SSEClientTransportOptions = {
-      ...(opts.fetchImpl ? { fetch: opts.fetchImpl } : {}),
+      // SSE 的回发 POST 走这里:套 60s 超时 + Accept 保底(长连 GET 在 eventSourceInit,不套超时)。
+      fetch: wrapFetchWithTimeoutAndAccept(opts.fetchImpl),
       ...(config.headers ? { requestInit: { headers: config.headers } } : {}),
     }
     if (config.headers) {
@@ -451,7 +488,8 @@ export function createTransport(rawConfig: McpServerConfig, opts: LoadMcpToolsOp
     // 经 requestInit.headers 传给 transport,SDK 在每次请求时把它 spread 在自动头之后,用户头优先。
     // cc 还接了 authProvider(完整 OAuth,src/services/mcp/auth.ts ~2465 行)——本项目未移植,超出本次范围。
     return new StreamableHTTPClientTransport(new URL(config.url), {
-      fetch: opts.fetchImpl,
+      // 每请求 60s 超时 + Accept 保底(对齐 cc):初始化/调用 POST 不再可能无限挂死。
+      fetch: wrapFetchWithTimeoutAndAccept(opts.fetchImpl),
       ...(config.headers ? { requestInit: { headers: config.headers } } : {}),
     })
   }
@@ -573,7 +611,8 @@ function makeTool(serverName: string, sdkTool: SdkMcpTool, clientSource: Pick<Mc
   return {
     name: publicName,
     description: [
-      `MCP tool from server "${serverName}": ${sdkTool.description ?? sdkTool.title ?? sdkTool.name}`,
+      // 2048 截断(对齐 cc MAX_MCP_DESCRIPTION_LENGTH):外部 server 自报文本,防上下文膨胀/提示注入面。
+      truncateMcpText(`MCP tool from server "${serverName}": ${sdkTool.description ?? sdkTool.title ?? sdkTool.name}`),
       `Original tool name: ${sdkTool.name}`,
     ].join('\n'),
     inputSchema: schemaFor(sdkTool),
@@ -920,6 +959,11 @@ export async function connectMcpServer(config: McpServerConfig, opts: LoadMcpToo
     const tools = sdkTools.map(tool => makeTool(config.name, tool, supervisor, uniqueName(mcpToolName(config.name, tool.name), usedNames), opts))
     return {
       serverName: config.name,
+      // server instructions(对齐 cc client.ts:1151-1165):initialize 自报的使用说明,2048 截断后供系统提示注入。
+      instructions: (() => {
+        const text = client.getInstructions?.()
+        return typeof text === 'string' && text.trim() ? truncateMcpText(recursivelySanitizeUnicode(text.trim())) : undefined
+      })(),
       client,
       transport,
       taskStore,
@@ -947,11 +991,17 @@ export async function connectMcpServers(configs: McpServerConfig[], opts: LoadMc
       warnings.push(`MCP server "${config.name}" unavailable: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
-  return { connections, tools: [...connections.flatMap(connection => connection.tools), ...makeMcpCapabilityTools(connections, opts)], warnings }
+  return {
+    connections,
+    tools: [...connections.flatMap(connection => connection.tools), ...makeMcpCapabilityTools(connections, opts)],
+    warnings,
+    // 汇总各 server instructions(已截断/净化),供 server 侧注入系统提示(对齐 cc "MCP Server Instructions")。
+    instructions: connections.flatMap(c => (c.instructions ? [{ server: c.serverName, text: c.instructions }] : [])),
+  }
 }
 
 export async function loadMcpToolsFromFile(filePath: string | undefined, opts: LoadMcpToolsOptions = {}): Promise<LoadedMcpTools> {
-  if (!filePath || !existsSync(filePath)) return { connections: [], tools: [], warnings: [] }
+  if (!filePath || !existsSync(filePath)) return { connections: [], tools: [], warnings: [], instructions: [] }
   try {
     return await connectMcpServers(await loadMcpConfigFile(filePath), opts)
   } catch (err) {
@@ -959,6 +1009,7 @@ export async function loadMcpToolsFromFile(filePath: string | undefined, opts: L
       connections: [],
       tools: [],
       warnings: [`MCP config unavailable: ${err instanceof Error ? err.message : String(err)}`],
+      instructions: [],
     }
   }
 }

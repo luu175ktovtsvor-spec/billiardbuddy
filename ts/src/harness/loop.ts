@@ -29,7 +29,7 @@ import { computeRelevantMemoryInjection, SELECT_MEMORIES_SYSTEM_PROMPT, type Mem
 import { maybeExtractMemories, drainPendingExtraction } from '../memory/extractMemories'
 import { getAutoMemDir } from './memoryNames'
 import { formatTodoChecklist, parseProgressMarkdown } from '../types/todo'
-import { compactPipeline, compactionWillRun, looksLikeContextOverflow } from '../context/compaction'
+import { compactPipeline, compactionWillRun, isAtBlockingLimit, looksLikeContextOverflow } from '../context/compaction'
 import { buildRecentFileContextMessage } from '../context/recentFileContext'
 import { createInvokedSkillsMessage, restoreInvokedSkillsFromMessages } from '../skills/invokedSkills'
 import {
@@ -121,6 +121,8 @@ import type { TeamInboxContextOptions, TeamService } from '../tasks/teamService'
 import { clearThreadGoalHook, formatGoalContinuationStatusOutput, getThreadGoal, goalCompletionStatusOutput, goalLocalStatusMessage, hookRegistryHasGoalHook } from '../goals/goalState'
 
 export interface TranscriptLike {
+  /** 逐字记录文件路径(可选):喂给压缩摘要消息作"回读原文"锚点(对齐 cc transcriptPath 提示)。 */
+  readonly path?: string
   load(): Promise<Message[]>
   /** append-only 增量写:只把较盘上活跃链新增/分叉的那段追加成新行,绝不整表覆写(对齐 cc 事件日志)。 */
   append(messages: Message[]): Promise<void>
@@ -156,6 +158,8 @@ export interface RunAgentLoopOptions {
   initialMessages?: Message[]
   skipUserMessage?: boolean
   maxTurns?: number
+  /** headless/后台运行(对齐 cc shouldAvoidPermissionPrompts):ask 不弹卡,hook 无决策则自动拒。 */
+  avoidPermissionPrompts?: boolean
   signal?: AbortSignal
   /** 状态根目录:透传给 ToolContext.stateRoot,让 file-history 快照落在 stateRoot 而非用户工作区(见 Tool.ts)。 */
   stateRoot?: string
@@ -269,6 +273,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   restoreInvokedSkillsFromMessages(history, invokedSkillScopeId)
   let ctx: ToolContext = {
     workspace: opts.workspace,
+    shouldAvoidPermissionPrompts: opts.avoidPermissionPrompts,
     model,
     registry,
     systemPrompt: opts.systemPrompt,
@@ -448,7 +453,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     })
   }
 
-  const maybeCompact = async (force = false): Promise<string | undefined> => {
+  const maybeCompact = async (force = false): Promise<{ note?: string; didCompact: boolean }> => {
     const invokedSkills = createInvokedSkillsMessage(invokedSkillScopeId)
     // 压缩前完整(未裁剪)messages 的引用:compactPipeline 成功时会把 `messages` 变量重指到压缩后的短数组,
     // 这里留一份指向原数组对象的引用,供下面成功路径调 transcript.recordCompaction() 时把压缩前全量历史一并落盘
@@ -464,6 +469,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       lastInputTokens,
       readOnlyToolNames,
       compactionFailures,
+      transcriptPath: opts.transcript?.path,
       force,
     }
     // PreCompact 钩:只在本轮真会压缩时触发(对齐 cc executePreCompactHooks 在真压缩前 fire);
@@ -491,13 +497,10 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     }
     messages = out.messages
     compactionFailures = out.compactionFailures
-    if (!out.didCompact) return notes.length > 0 ? notes.join('\n') : undefined
+    if (!out.didCompact) return { didCompact: false, note: notes.length > 0 ? notes.join('\n') : undefined }
     notifyPromptCacheCompaction(promptCacheTrackingKey)
-    // PostCompact 钩:压缩完成后触发,载荷带摘要文本(从压缩后首条摘要消息还原,去掉展示前缀)。
-    const summaryMsg = messages[0]
-    const compactSummary = summaryMsg && summaryMsg.content[0]?.type === 'text'
-      ? summaryMsg.content[0].text.replace(/^\[此前对话摘要\]\n?/, '')
-      : (out.note ?? '')
+    // PostCompact 钩:压缩完成后触发,载荷带裸摘要文本(compactPipeline 直接透出,不再反解消息)。
+    const compactSummary = out.summary ?? out.note ?? ''
     const post = await applyPostCompactHooks(hooksForCurrentSession(), trigger, compactSummary, ctx)
     notes.push(...post.additionalContext)
     // SessionStart(source:'compact') 重放(对齐 cc compact.ts:549-626 + 官方 matcher 契约):压缩后给
@@ -514,7 +517,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       messages = [messages[0]!, recentFiles, ...messages.slice(1)]
     }
     const base = recentFiles ? `${out.note}\n已恢复最近文件上下文。` : out.note
-    return [base, ...notes].filter(Boolean).join('\n')
+    return { didCompact: true, note: [base, ...notes].filter(Boolean).join('\n') }
   }
 
   // —— 记忆召回(findRelevantMemories,对齐 cc utils/attachments.ts:2192 + query.ts prefetch)——
@@ -556,8 +559,16 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   let turn = 0
   await applyAggregateToolResultBudget()
   while (true) {
-    const compactNote = await maybeCompact(false)
-    if (compactNote) yield { type: 'context_note', text: compactNote }
+    const compactOut = await maybeCompact(false)
+    if (compactOut.note) yield { type: 'context_note', text: compactOut.note }
+    // blocking-limit 安全阀(对齐 cc isAtBlockingLimit = 有效窗口 − 3k):真实用量已顶硬阻断线、
+    // 而本轮自动压缩没有发生(被禁用/熔断/无可压)时,不再带着注定超限的上下文硬打模型吃 413——
+    // 明说后收场,用户可 /compact 手动压缩(可附自定义指令)或另开会话。
+    if (!compactOut.didCompact && lastInputTokens && opts.contextWindowTokens
+      && isAtBlockingLimit(lastInputTokens, opts.contextWindowTokens)) {
+      yield { type: 'context_note', text: `上下文用量已达硬阻断线(${lastInputTokens} tokens)且自动压缩未能生效,本轮停止以避免必然失败的请求。可发送 /compact 手动压缩后继续。` }
+      return
+    }
 
     let step: Awaited<ReturnType<Model['step']>>
     try {
@@ -579,12 +590,13 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
         for (const e of await fireStopFailureNotes(err)) yield e
         throw err
       }
-      const note = await maybeCompact(true)
-      if (!note) {
+      const reactive = await maybeCompact(true)
+      // 只有真压缩了才值得重试;hook 附注不算(旧实现拿 note 判,PreCompact hook 的附注会被误当"已压缩")。
+      if (!reactive.didCompact) {
         for (const e of await fireStopFailureNotes(err)) yield e
         throw err
       }
-      yield { type: 'context_note', text: note }
+      if (reactive.note) yield { type: 'context_note', text: reactive.note }
       const toolsForStep = visibleToolSpecs(registry, revealedToolNames)
       opts.onSummarySnapshot?.({ system, messages: messages.slice(), tools: toolsForStep, contentReplacementState: cloneContentReplacementStateForSnapshot(contentReplacementState) })
       recordPromptCacheState({ trackingKey: promptCacheTrackingKey, system, tools: toolsForStep, model: modelNameForPromptCache })
@@ -1284,6 +1296,15 @@ async function* gateOneCall(
     }
     if (permReq.behavior === 'deny') {
       const reason = permReq.message ?? DENIAL_FALLBACK_MSG(call.name)
+      yield* fireDenied(reason)
+      yield feedback(reason, true)
+      return
+    }
+    // headless/后台自动拒(对齐 cc permissions.ts:938-962 AUTO_REJECT):此上下文没有人能点审批卡。
+    // PermissionRequest hook 已在上方拿过 allow/deny 决策机会;无决策则明确拒绝并回灌原因,
+    // 别把 approval_request 空挂起让后台任务/模型干等(cc:'Permission prompts are not available in this context')。
+    if (ctx.shouldAvoidPermissionPrompts) {
+      const reason = `此运行环境(后台/无人值守)无法弹出审批,工具 ${call.name} 的本次调用已被自动拒绝。请改用无需审批的只读方式完成,或把这一步留给前台会话执行。`
       yield* fireDenied(reason)
       yield feedback(reason, true)
       return

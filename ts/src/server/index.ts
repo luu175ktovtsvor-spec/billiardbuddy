@@ -1554,6 +1554,42 @@ export function startServer(opts: StartServerOptions = {}) {
       status: 'running',
     })
     const model = createModelFromRuntimeProviders(providerRuntimes, opts.fetchImpl, providerHealthCallbacks)
+
+    // /compact 手动压缩(对齐 cc commands/compact,支持 `/compact 自定义摘要指令`):短路本回合——
+    // 真跑一次强制压缩(经 recordCompaction 落盘,压缩前历史留在活跃链可回看),回说明事件,不打模型主循环。
+    const compactCommand = rawUserMessage.match(/^\/compact(?:\s+([\s\S]+))?$/)
+    if (compactCommand) {
+      const compactTranscript = sessions.transcript(conversationId, workspace.root)
+      const preMessages = await compactTranscript.load()
+      restoreInvokedSkillsFromMessages(preMessages, conversationId)
+      const invokedSkillsMsg = createInvokedSkillsMessage(conversationId)
+      const out = await compactPipeline({
+        messages: preMessages,
+        model,
+        force: true,
+        customInstructions: compactCommand[1]?.trim() || undefined,
+        transcriptPath: compactTranscript.path,
+        postSummaryMessages: invokedSkillsMsg ? [invokedSkillsMsg] : [],
+        readOnlyToolNames: new Set(),
+      })
+      if (out.didCompact) {
+        await compactTranscript.recordCompaction(preMessages, out.messages, {
+          trigger: 'manual',
+          messagesSummarized: preMessages.length - out.messages.length,
+        })
+      }
+      const noteText = out.didCompact
+        ? `已手动压缩上下文:${out.note ?? ''}`.trim()
+        : '无需压缩:当前对话还没有可压缩的历史。'
+      const stream = (async function* (): AsyncGenerator<SessionEventRecord> {
+        yield await sessions.appendEvent(conversationId, { type: 'context_note', text: noteText })
+          .catch(() => fallbackEventRecord({ type: 'context_note', text: noteText }))
+        const finalEvent = { type: 'final' as const, text: noteText }
+        yield await sessions.appendEvent(conversationId, finalEvent).catch(() => fallbackEventRecord(finalEvent))
+      })()
+      return { conversationId, stream }
+    }
+
     const requestedContextWindowTokens = numberFrom(rawBody.contextWindowTokens ?? rawBody.context_window_tokens, 0)
     const contextWindowTokens = requestedContextWindowTokens > 0
       ? requestedContextWindowTokens
@@ -1691,6 +1727,14 @@ export function startServer(opts: StartServerOptions = {}) {
     })
     // 工作区级 .mcp.json 未信任被拦时,把警告并进 mcp 警告流(由下方 mcpTools.warnings 循环回灌)。
     if (gatedMcp.warning) mcpTools.warnings.unshift(gatedMcp.warning)
+    // MCP Server Instructions 注入系统提示(对齐 cc:server 自报使用说明,已 2048 截断/Unicode 净化)。
+    if (mcpTools.instructions.length > 0) {
+      systemPrompt = [
+        systemPrompt,
+        '# MCP Server Instructions',
+        ...mcpTools.instructions.map(entry => `## ${entry.server}\n${entry.text}`),
+      ].join('\n\n')
+    }
     const taskTools = [...createTaskTools(tasks), ...createStructuredTaskTools(taskLists)]
     let backgroundAgentOptions: BackgroundAgentTaskOptions | undefined
     const promptWorkerAgent = (prompt: PromptCommand, kind: 'command' | 'skill'): AgentDefinition => {
