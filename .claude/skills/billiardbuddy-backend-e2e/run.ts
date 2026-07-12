@@ -30,8 +30,9 @@ function sseOnce(delta: unknown, finish: string): Response {
     start(c) { c.enqueue(enc.encode(`data: ${JSON.stringify(o)}\n\n`)); c.enqueue(enc.encode('data: [DONE]\n\n')); c.close() },
   }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
 }
-function makeScriptedFetch(steps: ModelStep[]) {
+function makeScriptedFetch(initialSteps: ModelStep[]) {
   const captured = { systems: [] as string[], outUrls: [] as string[] }
+  let steps = initialSteps
   let i = 0
   const fn = async (url: string, init?: { body?: string }) => {
     captured.outUrls.push(String(url))
@@ -48,7 +49,36 @@ function makeScriptedFetch(steps: ModelStep[]) {
       ? sseOnce({ tool_calls: step.toolCalls.map((t, idx) => ({ index: idx, id: t.id, function: { name: t.name, arguments: JSON.stringify(t.input ?? {}) } })) }, 'tool_calls')
       : sseOnce({ content: (step as { text: string }).text }, 'stop')
   }
-  return Object.assign(fn, { captured })
+  // setScript:多会话共享一个 server 时,每次"用户说话"前切当前会话的脚本模型(UserSession.say 用)。
+  return Object.assign(fn, { captured, setScript(s: ModelStep[]) { steps = s; i = 0 } })
+}
+
+// —— UserSession:模拟一个前端窗口的用户(不起壳子)。把前端操作等价成后端请求参数 + 后续消息。——
+// 选目录/挂件/权限/大白话输入/点审批卡,全归结为"一组请求参数 + approve 消息",不需要 DOM/Electron。
+// 多个 UserSession(不同 convId)= 多会话隔离(各带各的目录/挂件/权限,天然不串台)。
+class UserSession {
+  workingDir: string | undefined
+  packs: string[] = []
+  permission = 'default'
+  lastEvents: Array<{ type: string; data: unknown }> = []
+  constructor(private base: string, readonly convId: string, private scripted: ReturnType<typeof makeScriptedFetch>) {}
+  selectFolder(dir: string) { this.workingDir = dir; return this }              // ← 前端"选目录"
+  enablePack(id: string) { if (!this.packs.includes(id)) this.packs.push(id); return this } // ← 挂挂件(/台球)
+  disablePack(id: string) { this.packs = this.packs.filter((p) => p !== id); return this }  // ← 关挂件(/台球关闭)
+  setPermission(mode: string) { this.permission = mode; return this }           // ← 切权限档(default/acceptEdits/bypassPermissions)
+  async say(message: string, model: ModelStep[]) {                             // ← 用户大白话输入一句
+    this.scripted.setScript(model)
+    const { events } = await runTurn(this.base, { message, conversationId: this.convId, working_dir: this.workingDir, permissionMode: this.permission, enabled_packs: this.packs })
+    this.lastEvents = events
+    return events
+  }
+  pendingApproval() { return this.lastEvents.find((e) => e.type === 'approval_request')?.data as { tool: string; args: unknown; token: string } | undefined }
+  async approve() {                                                            // ← 点审批卡"允许"
+    const ap = this.pendingApproval()
+    if (!ap) throw new Error('没有待审批的动作')
+    const res = await fetch(`${this.base}/api/v1/agent/execute`, { method: 'POST', body: JSON.stringify({ tool: ap.tool, args: ap.args, token: ap.token, conversationId: this.convId, working_dir: this.workingDir, permission_mode: this.permission, enabled_packs: this.packs }) })
+    return res.json() as Promise<{ ok?: boolean }>
+  }
 }
 
 // —— 发一条用户输入(POST /agent/run),收 SSE 事件流。——
@@ -73,11 +103,12 @@ interface Ctx {
   captured: { systems: string[]; outUrls: string[] }
   runTurn: (body: Record<string, unknown>) => ReturnType<typeof runTurn>
   transcript: (convId: string) => Promise<unknown[]>
+  session: (convId: string) => UserSession   // 模拟一个前端窗口的用户(选目录/挂件/权限/说话/审批)
 }
 interface Checkpoint {
   name: string
   expectation: string
-  model: ModelStep[]              // 脚本模型分步响应(live 模式忽略)
+  model?: ModelStep[]             // 单轮场景用;综合场景(UserSession)每次 say 自带 model,可不填
   run: (ctx: Ctx) => Promise<{ ok: boolean; note: string }>
 }
 
@@ -115,7 +146,54 @@ const CHECKPOINTS: Checkpoint[] = [
       return { ok, note: `域上下文注入=${domainInjected} 出口无模型名=${noModelName}` }
     },
   },
-  // TODO 补: 权限档(default 危险命令弹审批不执行) / 会话隔离(两 convId 各分区) / live 冒烟(真模型真调 list_dir + 真实出网URL)
+  {
+    // 前端等价 e2e(不起壳子):把"多窗口/选目录/挂件/权限档/大白话输入/点审批卡"全等价成后端请求参数+approve消息。
+    // 用桌面真实"测试台球运营管家"文件夹当项目目录(= 模拟前端的项目文件夹)。缺文件夹则跳过并说明。
+    name: 'frontend-like-multi-session',
+    expectation: '两窗口各选不同真实文件夹/各自权限/挂不挂台球 → 文件各落各夹不串台、default档弹审批bypass档不弹、挂台球窗口注入域上下文',
+    async run(ctx) {
+      const HOME = process.env.HOME ?? ''
+      const folder1 = join(HOME, 'Desktop', '测试台球运营管家')
+      const folder2 = join(HOME, 'Desktop', '测试管家台球运营管家2')
+      if (!existsSync(folder1) || !existsSync(folder2)) {
+        return { ok: false, note: `跳过:桌面缺真实测试文件夹(${folder1} / ${folder2})——建好那几个"测试台球运营管家"文件夹再跑` }
+      }
+      const report1 = join(folder1, 'be2e-经营报表.md')
+      try {
+        // —— 窗口A:选文件夹1 + 挂台球 + default档 → 说"建个报表"(模型调 write_file) → default 应弹审批 → 点"允许" → 落盘文件夹1 ——
+        const A = ctx.session('be2e-winA').selectFolder(folder1).enablePack('billiards').setPermission('default')
+        const aEvents = await A.say('帮我在当前文件夹建个经营报表.md,写一句:今天试营业', [
+          { toolCalls: [{ id: 'wa', name: 'write_file', input: { path: 'be2e-经营报表.md', content: '# 经营报表\n今天试营业\n' } }] },
+          { text: '建好了经营报表' },
+        ])
+        const aAsked = aEvents.some((e) => e.type === 'approval_request')     // default 档弹审批
+        const notLandedBeforeApprove = !existsSync(report1)                   // 审批前不落盘
+        if (aAsked) await A.approve()                                        // 点"允许"
+        const aLanded = existsSync(report1)                                  // 允许后落盘文件夹1
+        const aDomain = ctx.captured.systems.some((s) => s.includes('<domain_context id="billiards"')) // 挂台球→注入域上下文
+
+        // —— 窗口B:选文件夹2 + 不挂台球 + 完全访问档 → 说"列目录"(模型调 list_dir) → bypass 不弹审批、工具直执行 ——
+        const B = ctx.session('be2e-winB').selectFolder(folder2).setPermission('bypassPermissions')
+        const bEvents = await B.say('列一下当前目录都有啥文件', [
+          { toolCalls: [{ id: 'lb', name: 'list_dir', input: {} }] },
+          { text: '列好了' },
+        ])
+        const bNoAsk = !bEvents.some((e) => e.type === 'approval_request')    // bypass 不弹审批
+        const bRanTool = bEvents.some((e) => e.type === 'tool_result')        // 工具真执行
+
+        // —— 隔离:A 的文件落文件夹1、没串到文件夹2;两会话 transcript 各自分区 ——
+        const notLeaked = !existsSync(join(folder2, 'be2e-经营报表.md'))
+        const aTr = await ctx.transcript('be2e-winA'); const bTr = await ctx.transcript('be2e-winB')
+        const bothPersisted = JSON.stringify(aTr).includes('write_file') && JSON.stringify(bTr).includes('list_dir')
+
+        const ok = aAsked && notLandedBeforeApprove && aLanded && aDomain && bNoAsk && bRanTool && notLeaked && bothPersisted
+        return { ok, note: `A[default弹审批=${aAsked} 审批前未落盘=${notLandedBeforeApprove} 允许后落盘=${aLanded} 域注入=${aDomain}] B[bypass不弹=${bNoAsk} 工具执行=${bRanTool}] 隔离[不串文件夹2=${notLeaked} 双会话分区=${bothPersisted}]` }
+      } finally {
+        rmSync(report1, { force: true })  // 清理写进真实文件夹的测试文件
+      }
+    },
+  },
+  // TODO 补: live 冒烟(真模型真调工具 + 真实出网URL) / 第三权限档 acceptEdits / 会话内多轮工具链
 ]
 
 // ================= driver 主体(框架,一般不用改) =================
@@ -129,27 +207,24 @@ async function main() {
   for (const cp of CHECKPOINTS) {
     const transcriptRoot = mkdtempSync(join(tmpdir(), 'be2e-tr-'))
     const workspace = mkdtempSync(join(tmpdir(), 'be2e-ws-'))
-    const scripted = LIVE ? undefined : makeScriptedFetch(cp.model)
-    // ⚠️ 必须给 env 配模型出口(OPENAI_BASE_URL/KEY/TEXT_MODEL_NAME),否则后端不知道调哪个模型、根本不会调 fetchImpl。
-    //    mcpConfigPath 指到不存在的文件,避免读真实 MCP 配置。scripted:假模型 base 用占位域名;LIVE:交默认出网(需真 env)。
-    // LIVE:不传 fetchImpl,交给 startServer 默认出网(需真 env);scripted:注入假模型。
+    // scripted 总创建(供 UserSession.setScript 用);仅非 LIVE 时作为 fetchImpl 注入。LIVE 交默认出网(需真 env)。
+    const scripted = makeScriptedFetch(cp.model ?? [{ text: 'ok' }])
+    // ⚠️ 必须给 env 配模型出口,否则后端不知道调哪个模型、根本不会调 fetchImpl。mcpConfigPath 指到不存在文件避免读真实 MCP。
+    // provider env 用 DEEPSEEK_*(对齐 index.test.ts 已验证的 tool_calls 路径;OPENAI provider 对同样 tool_calls SSE 会走续写解析不出工具——踩过坑)。
     const server = startServer({
       port: 0,
       transcriptRoot,
       mcpConfigPath: join(transcriptRoot, 'missing.mcp.json'),
-      // provider env 用 DEEPSEEK_*(对齐 index.test.ts 已验证的 tool_calls 路径;OPENAI provider 对同样的
-      // tool_calls SSE 会走续写、解析不出工具调用——踩过坑,别改回 OPENAI_*)。
-      ...(scripted
-        ? { fetchImpl: scripted, env: { DEEPSEEK_BASE_URL: 'https://model.example/v1', DEEPSEEK_API_KEY: 'e2e-fake', TEXT_MODEL_NAME: 'mimo-v2.5' } }
-        : {}),
+      ...(LIVE ? {} : { fetchImpl: scripted, env: { DEEPSEEK_BASE_URL: 'https://model.example/v1', DEEPSEEK_API_KEY: 'e2e-fake', TEXT_MODEL_NAME: 'mimo-v2.5' } }),
     })
     const base = `http://127.0.0.1:${server.port}`
     const svc = new SessionService(transcriptRoot)
     const ctx: Ctx = {
       base, transcriptRoot, workspace,
-      captured: scripted?.captured ?? { systems: [], outUrls: [] },
+      captured: scripted.captured,
       runTurn: (body) => runTurn(base, body),
       transcript: (id) => svc.loadTranscript(id).catch(() => []),
+      session: (convId) => new UserSession(base, convId, scripted),
     }
     let r: { ok: boolean; note: string }
     try { r = await cp.run(ctx) } catch (e) { r = { ok: false, note: `检查点抛错: ${e instanceof Error ? e.message : String(e)}` } }
