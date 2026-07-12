@@ -164,7 +164,7 @@ export interface RunAgentLoopOptions {
   /** headless/后台运行(对齐 cc shouldAvoidPermissionPrompts):ask 不弹卡,hook 无决策则自动拒。 */
   avoidPermissionPrompts?: boolean
   /**
-   * 条件技能同轮实时激活(对齐 cc 文件工具内联激活):给本批工具碰到的文件路径,返回命中 paths 的条件技能。
+   * 条件技能同轮实时激活(效果对齐 cc、非实现对齐——cc 工具内部激活,我们 loop 层扫本批):给本批工具碰到的文件路径,返回命中 paths 的条件技能。
    * server 提供闭包(内含 skills library + workspaceRoot)。命中的技能当轮经 system-reminder 现身,而非等下一回合。
    */
   activateConditionalSkills?: (touchedPaths: string[]) => PromptCommand[]
@@ -434,10 +434,11 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     messages = [...history, { role: 'user', content: userContent }]
     userTurnQuery = userPrompt.userPrompt
   }
-  // 后台 async hook(asyncRewake)的跨回合唤醒:回合起点 drain 本会话积压的唤醒消息作 system-reminder 注入
-  // (对齐 cc 每轮轮询 drain pendingHooks)。用进程级队列而非回合级 steerInbox——后者会随回合销毁把后台完成的消息丢掉。
+  // 后台 async hook(asyncRewake)的跨回合唤醒:回合起点 drain 进程级 flat 队列作 system-reminder 注入
+  // (对齐 cc messageQueueManager 的 commandQueue,始终流向主循环)。flat 不分会话——子代理触发的唤醒也进同队列、
+  // 由主循环 drain,不会因子代理 conversationId 一次性而沉底。只在主循环 drain(!subagent),子代理不消费。
   if (!opts.subagent) {
-    const asyncWakes = drainAsyncHookWakes(ctx.conversationId)
+    const asyncWakes = drainAsyncHookWakes()
     if (asyncWakes.length > 0) {
       const wakeBlocks = asyncWakes.map(w => textBlock(wrapReminder(w)))
       const last = messages[messages.length - 1]
@@ -846,7 +847,8 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       followup.push(textBlock(wrapReminder(r.text)))
       if (r.kind === 'progress') ctx.requestsSinceProgress = 0
     }
-    // 条件技能同轮实时激活(对齐 cc 文件工具内联激活):本批碰到匹配 paths 的文件 → 命中的条件技能当轮现身,
+    // 条件技能同轮实时激活(效果对齐 cc、非实现对齐:cc 在每个文件工具 execute() 内部激活,我们在 loop 层扫本批
+    // 工具的路径入参——见 skillLoader.FILE_TOUCH_TOOL_NAMES 须与工具注册表同步):本批碰到匹配 paths 的文件 → 命中的条件技能当轮现身,
     // 注入 system-reminder 告知模型它现在可用(回合级去重,同一技能不重复提醒)。等下一回合 systemPrompt 重算时
     // server 侧也会把它算进发现清单;这里是"同轮内就现身"的增量补充,弥合 systemPrompt 回合内不重建的粒度差距。
     if (opts.activateConditionalSkills) {

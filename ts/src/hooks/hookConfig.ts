@@ -587,8 +587,9 @@ async function runCommandHook(raw: RawCommandHook, payload: HookPayload, ctx: To
 
   // 官方 async/asyncRewake(对齐 cc BashCommandHookSchema):后台跑、立即放行事件派发(返回无决策);
   // 不挂本轮 abort(独立于回合生命周期),仍受 timeout 兜底强杀。asyncRewake 且 exit 2 时,把 stderr/stdout 推进
-  // 【进程级】async hook 唤醒队列(按 conversationId),由 loop 每回合起点 drain 注入——不能用回合级 steerInbox
-  // (那会在回合结束时被销毁、后台完成时消息丢失,审查逮到的真丢消息 bug)。对齐 cc 进程级 pendingHooks + 轮询 drain。
+  // 【进程级 flat 队列】(不分会话,对齐 cc messageQueueManager 的 commandQueue;asyncRewake 绕过 AsyncHookRegistry),
+  // 由主循环每回合起点 drain 注入——不能用回合级 steerInbox(回合结束销毁丢消息),也不能按 conversationId 分区
+  // (子代理触发的会沉底,agentId 一次性没人再 drain)。见 asyncHookRegistry.ts 机制说明。
   const wantsRewake = raw.asyncRewake === true
   if (raw.async === true || wantsRewake) {
     const child = spawn(command, { cwd: ctx.workspace.root, env, shell, stdio: ['pipe', 'pipe', 'pipe'] })
@@ -597,12 +598,11 @@ async function runCommandHook(raw: RawCommandHook, payload: HookPayload, ctx: To
     child.stdout.on('data', chunk => { stdout += String(chunk) })
     child.stderr.on('data', chunk => { stderr += String(chunk) })
     const timer = setTimeout(() => child.kill(), timeoutMs)
-    const conversationId = ctx.conversationId
     child.on('error', () => clearTimeout(timer))
     child.on('close', code => {
       clearTimeout(timer)
       if (wantsRewake && code === 2) {
-        pushAsyncHookWake(conversationId, `[后台 hook ${payload.event} 唤醒(exit 2)] ${(stderr || stdout).trim() || command}`)
+        pushAsyncHookWake(`[后台 hook ${payload.event} 唤醒(exit 2)] ${(stderr || stdout).trim() || command}`)
       }
     })
     child.stdin?.end(jsonInput)
