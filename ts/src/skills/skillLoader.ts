@@ -41,7 +41,7 @@ interface UseSkillInput {
 export type ExecuteSkillFn = (skill: PromptCommand, args: string, ctx: ToolContext) => Promise<string>
 
 function safeName(value: string): string {
-  return value.trim().replace(/\s+/g, '-').replace(/[^A-Za-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+  return value.trim().replace(/\s+/g, '-').replace(/[^\p{L}\p{N}_-]/gu, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
 }
 
 function quoteYaml(value: string): string {

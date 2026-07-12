@@ -52,6 +52,26 @@ Follow these steps.
   }
 })
 
+test('loadSkillsDir:保留中文技能名和中文别名', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'skills-unicode-name-'))
+  try {
+    mkdirSync(join(root, 'modular-router'), { recursive: true })
+    writeFileSync(join(root, 'modular-router', 'SKILL.md'), `---
+name: 模块化开发总路由
+description: 先判断模块再改代码
+aliases: [模块化开工, project-router]
+---
+先追踪调用链。
+`)
+    const lib = await loadLayeredSkills({ bundledRoot: root, userRoot: null })
+    expect(lib.skills[0]?.name).toBe('模块化开发总路由')
+    expect(lib.byName.get('模块化开工')?.name).toBe('模块化开发总路由')
+    expect(lib.byName.get('project-router')?.name).toBe('模块化开发总路由')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('loadSkillsDir:解析 argument-hint/arguments frontmatter 并挂到 PromptCommand', async () => {
   const root = mkdtempSync(join(tmpdir(), 'skills-argument-hint-'))
   try {

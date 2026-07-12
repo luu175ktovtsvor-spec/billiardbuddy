@@ -1,85 +1,34 @@
 ---
 name: change-shared-contract
-description: [TODO: Complete and informative explanation of what the skill does and when to use it. Include WHEN to use this skill - specific scenarios, file types, or tasks that trigger it.]
+description: Change shared REST, SSE, WebSocket, Electron IPC, event, error, or persistence-boundary contracts without leaving frontend/backend drift. Use when paths, request or response fields, event variants, status codes, IPC payloads, timestamps, enums, or compatibility behavior change.
 ---
 
-# Change Shared Contract
+# 共享契约变更
 
-## Overview
+把契约当成独立交付物，不把前后端手工同步当作长期方案。
 
-[TODO: 1-2 sentences explaining what this skill enables]
+## 执行流程
 
-## Structuring This Skill
+1. 列出生产者、所有消费者、传输方式和当前契约文件。
+2. 明确兼容策略：新增可选字段、双读单写、旧值适配、版本端点，或同包原子替换。
+3. 优先建立单一契约源。新契约使用 Zod Schema，并由 Schema 推导 TypeScript 类型；避免新增手写镜像。
+4. 在边界运行时解析：后端解析请求，前端 API/WS 入口解析响应。不要用 `as T` 把未知 JSON 当成可信类型。
+5. 同一次修改完成生产者、消费者、错误/加载状态和契约测试。
+6. 删除旧契约前先确认所有消费者和已发布客户端已迁移。
 
-[TODO: Choose the structure that best fits this skill's purpose. Common patterns:
+## 各类连接
 
-**1. Workflow-Based** (best for sequential processes)
-- Works well when there are clear step-by-step procedures
-- Example: DOCX skill with "Workflow Decision Tree" -> "Reading" -> "Creating" -> "Editing"
-- Structure: ## Overview -> ## Workflow Decision Tree -> ## Step 1 -> ## Step 2...
+- WS/SSE：检查事件信封、序号、时间格式、重连回放、`done`/错误收尾和会话上下文完整性。
+- REST：检查路径、method、请求/响应 Schema、错误 envelope、空响应和超时。
+- Electron IPC：同步 `main.ts` handler、`preload.ts` 白名单和 renderer `desktopHost.ts` 类型；校验 payload。
+- 只读数据面：在 store/API 入口归一化 ISO 时间、缺省字段和数组/对象形状，不让原始 JSON 进入组件。
+- 持久化：保留旧 JSON/JSONL 可读性，必要时加幂等迁移。
 
-**2. Task-Based** (best for tool collections)
-- Works well when the skill offers different operations/capabilities
-- Example: PDF skill with "Quick Start" -> "Merge PDFs" -> "Split PDFs" -> "Extract Text"
-- Structure: ## Overview -> ## Quick Start -> ## Task Category 1 -> ## Task Category 2...
+## 兼容边界
 
-**3. Reference/Guidelines** (best for standards or specifications)
-- Works well for brand guidelines, coding standards, or requirements
-- Example: Brand styling with "Brand Guidelines" -> "Colors" -> "Typography" -> "Features"
-- Structure: ## Overview -> ## Guidelines -> ## Specifications -> ## Usage...
+- renderer 与 sidecar 随同一安装包：允许同次原子升级，但仍必须共享类型和契约测试。
+- gateway/relay/dataeye：默认存在旧客户端；先发布兼容服务器，再发布客户端，最后清理旧协议。
 
-**4. Capabilities-Based** (best for integrated systems)
-- Works well when the skill provides multiple interrelated features
-- Example: Product Management with "Core Capabilities" -> numbered capability list
-- Structure: ## Overview -> ## Core Capabilities -> ### 1. Feature -> ### 2. Feature...
+## 验证
 
-Patterns can be mixed and matched as needed. Most skills combine patterns (e.g., start with task-based, add workflow for complex operations).
-
-Delete this entire "Structuring This Skill" section when done - it's just guidance.]
-
-## [TODO: Replace with the first main section based on chosen structure]
-
-[TODO: Add content here. See examples in existing skills:
-- Code samples for technical skills
-- Decision trees for complex workflows
-- Concrete examples with realistic user requests
-- References to scripts/templates/references as needed]
-
-## Resources (optional)
-
-Create only the resource directories this skill actually needs. Delete this section if no resources are required.
-
-### scripts/
-Executable code (Python/Bash/etc.) that can be run directly to perform specific operations.
-
-**Examples from other skills:**
-- PDF skill: `fill_fillable_fields.py`, `extract_form_field_info.py` - utilities for PDF manipulation
-- DOCX skill: `document.py`, `utilities.py` - Python modules for document processing
-
-**Appropriate for:** Python scripts, shell scripts, or any executable code that performs automation, data processing, or specific operations.
-
-**Note:** Scripts may be executed without loading into context, but can still be read by Codex for patching or environment adjustments.
-
-### references/
-Documentation and reference material intended to be loaded into context to inform Codex's process and thinking.
-
-**Examples from other skills:**
-- Product management: `communication.md`, `context_building.md` - detailed workflow guides
-- BigQuery: API reference documentation and query examples
-- Finance: Schema documentation, company policies
-
-**Appropriate for:** In-depth documentation, API references, database schemas, comprehensive guides, or any detailed information that Codex should reference while working.
-
-### assets/
-Files not intended to be loaded into context, but rather used within the output Codex produces.
-
-**Examples from other skills:**
-- Brand styling: PowerPoint template files (.pptx), logo files
-- Frontend builder: HTML/React boilerplate project directories
-- Typography: Font files (.ttf, .woff2)
-
-**Appropriate for:** Templates, boilerplate code, document templates, images, icons, fonts, or any files meant to be copied or used in the final output.
-
----
-
-**Not every skill requires all three types of resources.**
+至少覆盖一个合法输入、一个非法输入、一个旧格式输入和完整生产者到消费者路径。字段改名不得只靠 typecheck。

@@ -1,0 +1,4 @@
+interface:
+  display_name: "后端模块开发"
+  short_description: "按传输、应用服务、领域逻辑、存储和适配器边界修改后端"
+  default_prompt: "使用 $change-backend-module 完成这次后端修改并保持外部契约稳定。"

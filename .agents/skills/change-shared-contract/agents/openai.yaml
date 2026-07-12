@@ -1,4 +1,4 @@
 interface:
   display_name: "共享契约变更"
-  short_description: "统一处理 REST、SSE、WebSocket、IPC 与跨服务协议变更"
+  short_description: "统一处理接口、事件、错误、IPC以及持久化边界的契约变化"
   default_prompt: "使用 $change-shared-contract 完成这次接口或事件契约修改。"

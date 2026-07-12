@@ -1,0 +1,4 @@
+interface:
+  display_name: "全栈功能交付"
+  short_description: "以纵向功能切片一次完成契约、后端、前端、测试和真实验收"
+  default_prompt: "使用 $deliver-fullstack-feature 交付这项需要前后端配合的新功能。"

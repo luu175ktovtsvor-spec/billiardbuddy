@@ -1,17 +1,18 @@
 ---
 name: billiardbuddy-desktop-e2e
-description: 对「球房管家」桌面 app（ts/ 架构：Electron 壳 + Bun/TS sidecar + React 前端）做全栈端到端测试——playwright-electron 驱动 React 前端（DOM + 截图 + 主进程 evaluate）+ 读 sidecar 日志/API/JSONL transcript + Claude 自己看截图做视觉判断 + 把每个问题自动归因到 前端/后端/传输。当要测桌面 app、做端到端或真机验收、验证界面是否正常渲染、复现/定位某个 bug、或判断问题到底出在前端还是后端时使用。配套驱动：run.mjs。
+description: 对球房管家 Electron、React 和 Bun sidecar 做桌面全栈 E2E，联合 DOM、截图、主进程、API、日志和 JSONL 证据归因问题。需要真机验收、验证界面与后端接通、复现桌面 Bug 或判断前端/传输/后端责任时使用。配套驱动 run.mjs。
 ---
 
-# 球房管家 · 桌面全栈 E2E（playwright-electron + sidecar 证据 + Claude 视觉）
+# 球房管家 · 桌面全栈 E2E（playwright-electron + sidecar 证据 + 视觉判断）
 
 > 本项目（ts/ 架构）专属的落地版；通用方法论见全局 skill `electron-fullstack-e2e`。本 skill 写死本项目的端口/起法/前端/日志。
 > ⚠️ 这是**开发期测试 skill**（测我们自己的 app），不进产品分发；内容写真实端口/路径没问题。
 > 🚧 **当前是骨架**：方法论 + 起服 + 归因 + 产出都通了，**具体检查点（测试用例）留占位，随前端搭好逐步补**（见「怎么加检查点」）。
+> 先读取 `.claude/skills/模块化开发总路由/SKILL.md` 和开工改动说明；只验证受影响用户路径，并把契约、前端和后端证据关联起来。
 
 ## 为什么是「全栈」而不是纯 Playwright
 **Playwright 只驱动前端（React DOM），看得到「界面卡住」却不知道后端 sidecar 干了啥 → 单边、会误判。** 真端到端 + 把前后端问题拆开，必须三边证据一起看：
-1. **前端**：playwright-electron 查 React DOM + `electronApp.evaluate()` 查主进程（BrowserWindow 状态）+ 截图（交给 **Claude 自己 Read 看**，不调任何外部视觉模型，原生视觉够用）。
+1. **前端**：playwright-electron 查 React DOM + `electronApp.evaluate()` 查主进程（BrowserWindow 状态）+ 截图（由当前视觉能力直接检查，不调用外部视觉模型）。
 2. **后端**：读 sidecar stdout 日志增量 + 直连 sidecar HTTP/WS API + 翻 JSONL transcript（文件式存储，会话/工具证据都在文件里）。
 3. **归因**：前端失败 + 后端成功 = **前端/传输**问题；前端失败 + 后端报错 = **后端**问题；都成 = 正常。
 
@@ -35,7 +36,7 @@ bun run desktop:build     # 出 electron main.mjs / preload.cjs
 node ../.claude/skills/billiardbuddy-desktop-e2e/run.mjs   # 跑骨架：启动 app + 截图 + 产出 manifest
 ```
 产出在 `test-results/`：
-- `<场景>__<检查点>.png` —— 截图（**Claude 用 Read 逐张看，判 {pass, reason}**）
+- `<场景>__<检查点>.png` —— 截图（逐张检查并记录 `{pass, reason}`）
 - `manifest.json` —— 每检查点的 期望 + 前端断言 + 后端证据增量 + **自动归因**
 - `sidecar.log` —— 后端 stdout（后端到底成没成的证据）
 
@@ -46,7 +47,7 @@ node ../.claude/skills/billiardbuddy-desktop-e2e/run.mjs   # 跑骨架：启动 
 - **前端 DOM/主进程**：`window.locator(...)`；`electronApp.evaluate(({BrowserWindow}) => ...)` 查窗口/菜单/托盘状态。
 - **后端 API**：`getSidecarBase(electronApp)` 拿 sidecar 基址 → `fetch('${base}/api/v1/...')`（健康检查、命令列表、会话等）。
 - **后端日志/transcript**：读 `test-results/sidecar.log` 增量 + `stateRoot/transcripts/<id>.jsonl`。
-- **视觉**：driver 只负责**截图落盘**；判 pass/fail 由 Claude 事后 `Read` 每张图做视觉判断（skill 使用者=Claude 自己看）。
+- **视觉**：driver 只负责截图落盘；Skill 使用者逐张检查并记录 pass/fail 与理由。
 
 ## 归因矩阵（driver 自动填进 manifest）
 | 前端断言 | 后端证据 | 归因 |

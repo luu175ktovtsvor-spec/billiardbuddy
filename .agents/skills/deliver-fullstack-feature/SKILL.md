@@ -1,85 +1,26 @@
 ---
 name: deliver-fullstack-feature
-description: [TODO: Complete and informative explanation of what the skill does and when to use it. Include WHEN to use this skill - specific scenarios, file types, or tasks that trigger it.]
+description: Deliver one user-visible vertical feature across contract, backend, frontend, persistence, and verification without leaving half-connected work. Use when a new workflow needs both UI and backend capability, a button needs a real implementation, or acceptance depends on an end-to-end path.
 ---
 
-# Deliver Fullstack Feature
+# 全栈功能交付
 
-## Overview
+以用户可完成的一件事为切片，不以“先做前端、以后再接后端”为切片。
 
-[TODO: 1-2 sentences explaining what this skill enables]
+## 执行顺序
 
-## Structuring This Skill
+1. 写清验收行为、主责功能域和非目标。
+2. 选择连接模式：A 线 WS、B 线 REST/job、Electron IPC、只读数据面或纯前端。
+3. 先定义共享契约、错误语义、进度/取消状态和兼容策略。
+4. 实现后端最小纵向路径：route -> service/domain -> adapter/store。
+5. 实现前端最小纵向路径：feature api -> store/reducer -> components/page。
+6. 覆盖成功、失败、空数据、处理中、重试/取消以及重启恢复等适用状态。
+7. 用契约测试、后端测试、前端状态测试和真实用户路径共同验收。
 
-[TODO: Choose the structure that best fits this skill's purpose. Common patterns:
+## 完整性硬闸
 
-**1. Workflow-Based** (best for sequential processes)
-- Works well when there are clear step-by-step procedures
-- Example: DOCX skill with "Workflow Decision Tree" -> "Reading" -> "Creating" -> "Editing"
-- Structure: ## Overview -> ## Workflow Decision Tree -> ## Step 1 -> ## Step 2...
-
-**2. Task-Based** (best for tool collections)
-- Works well when the skill offers different operations/capabilities
-- Example: PDF skill with "Quick Start" -> "Merge PDFs" -> "Split PDFs" -> "Extract Text"
-- Structure: ## Overview -> ## Quick Start -> ## Task Category 1 -> ## Task Category 2...
-
-**3. Reference/Guidelines** (best for standards or specifications)
-- Works well for brand guidelines, coding standards, or requirements
-- Example: Brand styling with "Brand Guidelines" -> "Colors" -> "Typography" -> "Features"
-- Structure: ## Overview -> ## Guidelines -> ## Specifications -> ## Usage...
-
-**4. Capabilities-Based** (best for integrated systems)
-- Works well when the skill provides multiple interrelated features
-- Example: Product Management with "Core Capabilities" -> numbered capability list
-- Structure: ## Overview -> ## Core Capabilities -> ### 1. Feature -> ### 2. Feature...
-
-Patterns can be mixed and matched as needed. Most skills combine patterns (e.g., start with task-based, add workflow for complex operations).
-
-Delete this entire "Structuring This Skill" section when done - it's just guidance.]
-
-## [TODO: Replace with the first main section based on chosen structure]
-
-[TODO: Add content here. See examples in existing skills:
-- Code samples for technical skills
-- Decision trees for complex workflows
-- Concrete examples with realistic user requests
-- References to scripts/templates/references as needed]
-
-## Resources (optional)
-
-Create only the resource directories this skill actually needs. Delete this section if no resources are required.
-
-### scripts/
-Executable code (Python/Bash/etc.) that can be run directly to perform specific operations.
-
-**Examples from other skills:**
-- PDF skill: `fill_fillable_fields.py`, `extract_form_field_info.py` - utilities for PDF manipulation
-- DOCX skill: `document.py`, `utilities.py` - Python modules for document processing
-
-**Appropriate for:** Python scripts, shell scripts, or any executable code that performs automation, data processing, or specific operations.
-
-**Note:** Scripts may be executed without loading into context, but can still be read by Codex for patching or environment adjustments.
-
-### references/
-Documentation and reference material intended to be loaded into context to inform Codex's process and thinking.
-
-**Examples from other skills:**
-- Product management: `communication.md`, `context_building.md` - detailed workflow guides
-- BigQuery: API reference documentation and query examples
-- Finance: Schema documentation, company policies
-
-**Appropriate for:** In-depth documentation, API references, database schemas, comprehensive guides, or any detailed information that Codex should reference while working.
-
-### assets/
-Files not intended to be loaded into context, but rather used within the output Codex produces.
-
-**Examples from other skills:**
-- Brand styling: PowerPoint template files (.pptx), logo files
-- Frontend builder: HTML/React boilerplate project directories
-- Typography: Font files (.ttf, .woff2)
-
-**Appropriate for:** Templates, boilerplate code, document templates, images, icons, fonts, or any files meant to be copied or used in the final output.
-
----
-
-**Not every skill requires all three types of resources.**
+- UI 不得使用 mock 数据冒充能力完成。
+- 后端新增能力必须有可发现的真实消费入口，除非需求明确只建底座。
+- 慢任务不得占用跨境或本地 HTTP 长连接；使用 job submit/poll。
+- 涉及工作目录、权限档、领域包、会话 id 时，前后端都要保留完整上下文并由后端兜底校验。
+- 一个任务只选一个主责模块；共享代码只承载真正跨域的稳定概念。
