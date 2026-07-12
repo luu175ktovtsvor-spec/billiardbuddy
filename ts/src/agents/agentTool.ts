@@ -69,6 +69,12 @@ export interface AgentTaskInput {
 export interface AgentTaskToolOptions {
   agents: AgentDefinition[]
   model: Model
+  /**
+   * 按 agent frontmatter 的 model 名解析子代理模型(对齐 cc getAgentModel):返回 null → 回退父模型。
+   * 白标单模型产品下 server 可不传(agent.model 恒回退父模型);接多档时 server 传一个按 provider 配置
+   * 名匹配的解析器,agent.model 即生效——机制在此,产品是否开档由 server 决定。
+   */
+  resolveModel?: (modelName: string) => Model | null
   baseTools: Tool[]
   baseSystemPrompt?: string
   maxTurns?: number
@@ -517,8 +523,10 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
           contentReplacementState: inheritedContentReplacementState,
         })
         for (const extra of subagentStart.additionalContext) emitSubagentProgress(ctx, agent, `子代理 ${agent.name} hook:${oneLine(extra, 160)}`)
+        // agent.model 消费(对齐 cc getAgentModel):有 frontmatter model 且解析器给出模型 → 用它,否则回退父模型。
+        const agentModel = (agent.model && opts.resolveModel?.(agent.model)) || opts.model
         const agentIterator = runAgentLoop({
-          model: opts.model,
+          model: agentModel,
           registry,
           workspace,
           systemPrompt: forkRunContext?.systemPrompt ?? await buildAgentSystemPrompt(agent, workspace.root, opts.baseSystemPrompt),

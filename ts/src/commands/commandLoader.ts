@@ -1,6 +1,6 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { basename, dirname, extname, join } from 'node:path'
-import { extractDescription, parseMarkdownDocument, stringField } from './frontmatter'
+import { booleanField, extractDescription, parseMarkdownDocument, stringArrayField, stringField } from './frontmatter'
 import { addAllowedToolsToContext, allowedToolRulesFromFrontmatter, normalizeAllowedTools } from './allowedTools'
 import { mergeHookRegistries, type HookSource } from '../hooks/hooks'
 import { normalizeHookRegistry } from '../hooks/hookConfig'
@@ -91,6 +91,9 @@ export async function loadCommandFile(filePath: string, hookSource?: HookSource)
   const hooks = normalizeHookRegistry(doc.frontmatter.hooks, hookSource ? { source: hookSource } : undefined)
   const argumentHint = stringField(doc.frontmatter, 'argument-hint') ?? stringField(doc.frontmatter, 'argumentHint')
   const argumentNames = parseArgumentNames(doc.frontmatter.arguments as string | string[] | undefined)
+  const disableModelInvocation = booleanField(doc.frontmatter, 'disable-model-invocation') ?? booleanField(doc.frontmatter, 'disableModelInvocation')
+  const userInvocable = booleanField(doc.frontmatter, 'user-invocable') ?? booleanField(doc.frontmatter, 'userInvocable')
+  const aliases = (stringArrayField(doc.frontmatter, 'aliases') ?? []).map(normalizeCommandName).filter(a => a && a !== name)
   const body = doc.body.trim()
 
   return {
@@ -106,6 +109,9 @@ export async function loadCommandFile(filePath: string, hookSource?: HookSource)
     ...(context === 'fork' || context === 'inline' ? { context } : {}),
     ...(agent ? { agent } : {}),
     ...(hooks.rules.length > 0 ? { hooks } : {}),
+    ...(disableModelInvocation ? { disableModelInvocation } : {}),
+    ...(userInvocable === false ? { userInvocable } : {}),
+    ...(aliases.length > 0 ? { aliases } : {}),
     source: 'commands',
     filePath,
     baseDir,
@@ -142,6 +148,19 @@ async function walkMarkdown(rootDir: string, depth = 0): Promise<string[]> {
   return out
 }
 
+/**
+ * 别名登记(对齐 cc byName 索引把 aliases 一并登记):别名只占用未被真实主名占用的键——
+ * 真实命令名永远优先于任何别名,不被别名覆盖(commands 已是主名去重后的最终集)。多个命令抢同一别名,后者赢。
+ */
+function applyCommandAliases(byName: Map<string, PromptCommand>, commands: PromptCommand[]): void {
+  const realNames = new Set(commands.map(c => c.name))
+  for (const command of commands) {
+    for (const alias of command.aliases ?? []) {
+      if (!realNames.has(alias)) byName.set(alias, command)
+    }
+  }
+}
+
 export async function loadCommandsDir(rootDir: string, hookSource?: HookSource): Promise<CommandLibrary> {
   const commands: PromptCommand[] = []
   for (const filePath of await walkMarkdown(rootDir)) {
@@ -157,7 +176,9 @@ export async function loadCommandsDir(rootDir: string, hookSource?: HookSource):
   for (const command of commands) {
     if (!byName.has(command.name)) byName.set(command.name, command)
   }
-  return { commands: [...byName.values()], byName }
+  const finalCommands = [...byName.values()]
+  applyCommandAliases(byName, finalCommands)
+  return { commands: finalCommands, byName }
 }
 
 export async function loadCommandsFromRoots(rootDirs: string[], hookSource?: HookSource): Promise<CommandLibrary> {
@@ -166,13 +187,17 @@ export async function loadCommandsFromRoots(rootDirs: string[], hookSource?: Hoo
     const library = await loadCommandsDir(rootDir, hookSource)
     for (const command of library.commands) byName.set(command.name, command)
   }
-  return { commands: [...byName.values()], byName }
+  const finalCommands = [...byName.values()]
+  applyCommandAliases(byName, finalCommands)
+  return { commands: finalCommands, byName }
 }
 
 export function commandLibraryFromCommands(commands: PromptCommand[]): CommandLibrary {
   const byName = new Map<string, PromptCommand>()
   for (const command of commands) byName.set(command.name, command)
-  return { commands: [...byName.values()], byName }
+  const finalCommands = [...byName.values()]
+  applyCommandAliases(byName, finalCommands)
+  return { commands: finalCommands, byName }
 }
 
 export function mergeCommandLibraries(...libraries: Array<CommandLibrary | undefined>): CommandLibrary {
@@ -180,7 +205,9 @@ export function mergeCommandLibraries(...libraries: Array<CommandLibrary | undef
   for (const library of libraries) {
     for (const command of library?.commands ?? []) byName.set(command.name, command)
   }
-  return { commands: [...byName.values()], byName }
+  const finalCommands = [...byName.values()]
+  applyCommandAliases(byName, finalCommands)
+  return { commands: finalCommands, byName }
 }
 
 export function publicCommand(command: PromptCommand) {
@@ -201,8 +228,10 @@ export function publicCommand(command: PromptCommand) {
 }
 
 export function formatCommandIndex(library: CommandLibrary): string {
-  if (library.commands.length === 0) return '当前没有可用命令。'
-  return library.commands
+  // 模型面清单:disable-model-invocation 的命令不列(模型看不到、也不该调;用户敲斜杠仍可)。对齐 cc。
+  const visible = library.commands.filter(command => !command.disableModelInvocation)
+  if (visible.length === 0) return '当前没有可用命令。'
+  return visible
     .map(command => {
       const suffix = command.whenToUse ? ` 使用时机:${command.whenToUse}` : ''
       return `- /${command.name}: ${command.description}${suffix}`
@@ -266,6 +295,7 @@ export function createCommandTools(library: CommandLibrary, opts: CreateCommandT
       const name = normalizeCommandName(input.name)
       const command = library.byName.get(name)
       if (!command) return `没有找到命令「/${name}」。可先调用 list_commands 查看可用命令。`
+      if (command.disableModelInvocation) return `命令「/${command.name}」标记为不可由模型调用(disable-model-invocation),只能由用户手动敲斜杠触发。`
       return await command.getPrompt(typeof input.args === 'string' ? input.args : '', ctx)
     },
   }
@@ -319,6 +349,7 @@ export function createCommandTools(library: CommandLibrary, opts: CreateCommandT
       const name = normalizeCommandName(raw)
       const command = library.byName.get(name)
       if (!command) return `没有找到命令「/${name}」。可先调用 list_commands 查看可用命令。`
+      if (command.disableModelInvocation) return `命令「/${command.name}」标记为不可由模型调用(disable-model-invocation),只能由用户手动敲斜杠触发。`
       const args = typeof input?.args === 'string' ? input.args : ''
       if (opts.executeCommand) return await opts.executeCommand(command, args, ctx)
       // 无执行器兜底(独立跑工具/测试):内联展开 + 权限/hook 灌注,与 use_skill 的内置路径同构。

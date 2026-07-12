@@ -46,6 +46,8 @@ export interface BackgroundAgentTaskOptions {
   tasks: TaskService
   agents: AgentDefinition[]
   model: Model
+  /** 按 agent.model 名解析子代理模型(对齐 cc getAgentModel);返回 null → 回退父模型。白标单模型下 server 可不传。 */
+  resolveModel?: (modelName: string) => Model | null
   baseTools: Tool[]
   baseSystemPrompt?: string
   maxTurns?: number
@@ -662,7 +664,8 @@ export async function startBackgroundAgentRun(
         await taskCtx.emit({ type: 'context_note', text: extra })
       }
       for await (const event of runAgentLoop({
-        model: opts.model,
+        // agent.model 消费(对齐 cc getAgentModel):有 frontmatter model 且解析器给出 → 用它,否则回退父模型。
+        model: (agent.model && opts.resolveModel?.(agent.model)) || opts.model,
         registry: new ToolRegistry(agentMcp.tools),
         // 后台任务无人值守:ask 自动拒(对齐 cc headless shouldAvoidPermissionPrompts),不空挂审批。
         avoidPermissionPrompts: true,

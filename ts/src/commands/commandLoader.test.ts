@@ -299,3 +299,39 @@ test('命令 frontmatter hooks 不再被静默丢弃;工作区来源标 local �
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('frontmatter 三字段:disable-model-invocation 剔出模型清单/use_command 拒绝,user-invocable 只影响用户面,aliases 进 byName', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cmd-fm-'))
+  try {
+    writeFileSync(join(root, 'deploy.md'), '---\ndescription: 部署\ndisable-model-invocation: true\naliases: [ship, release]\n---\n部署流程')
+    writeFileSync(join(root, 'hidden.md'), '---\ndescription: 内部\nuser-invocable: false\n---\n内部命令')
+    writeFileSync(join(root, 'normal.md'), '---\ndescription: 普通\n---\n普通命令')
+    const lib = await loadCommandsDir(root)
+
+    // 别名进 byName(主名优先不被覆盖)
+    expect(lib.byName.get('ship')?.name).toBe('deploy')
+    expect(lib.byName.get('release')?.name).toBe('deploy')
+    expect(lib.byName.get('deploy')?.name).toBe('deploy')
+    expect(lib.commands.length).toBe(3) // commands 只含主名,不含别名重复
+
+    // 解析正确
+    expect(lib.byName.get('deploy')?.disableModelInvocation).toBe(true)
+    expect(lib.byName.get('hidden')?.userInvocable).toBe(false)
+    expect(lib.byName.get('normal')?.disableModelInvocation).toBeUndefined()
+
+    // 模型面清单:deploy 不列(disable-model-invocation),hidden 与 normal 都列(user-invocable 不影响模型面)
+    const index = formatCommandIndex(lib)
+    expect(index).not.toContain('/deploy')
+    expect(index).toContain('/hidden')
+    expect(index).toContain('/normal')
+
+    // use_command 拒绝 disable-model-invocation(用别名也拒——解析到同一命令)
+    const useCommand = createCommandTools(lib).find(t => t.name === 'use_command')!
+    const ctx = { workspace: new Workspace(root) } as never
+    expect(await useCommand.execute({ name: 'deploy' }, ctx)).toContain('不可由模型调用')
+    expect(await useCommand.execute({ name: 'ship' }, ctx)).toContain('不可由模型调用')
+    expect(await useCommand.execute({ name: 'normal' }, ctx)).toContain('<command_invoked')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

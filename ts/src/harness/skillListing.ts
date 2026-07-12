@@ -34,12 +34,18 @@ export interface DiscoveryEntry {
   layer?: PromptCommand['skillLayer']
   /** cc bundled 语义:清单里永不被截断的条目。技能 + 领域包命令置 true,保证 billiards 在极端预算下仍在。 */
   alwaysInclude: boolean
+  /** disable-model-invocation:模型面清单排除它(用户面保留)。对齐 cc。 */
+  disableModelInvocation?: boolean
+  /** user-invocable(默认 true):false 则用户面清单排除它(模型面保留)。对齐 cc。 */
+  userInvocable?: boolean
 }
 
 export interface DiscoverySources {
   commands?: CommandLibrary
   skills?: SkillLibrary
   contextWindowTokens?: number
+  /** 本会话已激活的条件技能(碰到命中 paths 的文件才现身;对齐 cc activateConditionalSkillsForPaths → 并回清单)。 */
+  activatedConditionalSkills?: PromptCommand[]
 }
 
 export interface PublicCommandEntry {
@@ -73,7 +79,7 @@ function commandSource(cmd: PromptCommand): DiscoverySource {
  * 汇总一份发现条目:领域包命令 → 技能 → builtin/工作区命令。按 source 排序(pack、skill、builtin),
  * 组内保持稳定顺序;按 name 去重(命令优先于同名技能)。
  */
-export function collectDiscoveryEntries(opts: { commands?: CommandLibrary; skills?: SkillLibrary }): DiscoveryEntry[] {
+export function collectDiscoveryEntries(opts: { commands?: CommandLibrary; skills?: SkillLibrary; activatedConditionalSkills?: PromptCommand[] }): DiscoveryEntry[] {
   const entries: DiscoveryEntry[] = []
   const seen = new Set<string>()
   const push = (cmd: PromptCommand, source: DiscoverySource) => {
@@ -87,10 +93,14 @@ export function collectDiscoveryEntries(opts: { commands?: CommandLibrary; skill
       source,
       layer: cmd.skillLayer,
       alwaysInclude: source === 'skill' || source === 'pack',
+      ...(cmd.disableModelInvocation ? { disableModelInvocation: true } : {}),
+      ...(cmd.userInvocable === false ? { userInvocable: false } : {}),
     })
   }
   for (const cmd of opts.commands?.commands ?? []) push(cmd, commandSource(cmd))
   for (const skill of opts.skills?.skills ?? []) push(skill, 'skill')
+  // 已激活的条件技能并回清单(碰到命中文件才现身;默认它们被 loadLayeredSkills 排除在 skills 之外)。
+  for (const skill of opts.activatedConditionalSkills ?? []) push(skill, 'skill')
   return entries
     .map((entry, index) => ({ entry, index }))
     .sort((a, b) => {
@@ -154,7 +164,10 @@ export function formatEntriesWithinBudget(entries: DiscoveryEntry[], contextWind
 }
 
 export function toPublicCommandEntries(entries: DiscoveryEntry[]): PublicCommandEntry[] {
-  return entries.map(entry => ({
+  // 用户面清单(前端斜杠 typeahead):user-invocable:false 的条目不给用户;disable-model-invocation 的用户仍可见。对齐 cc。
+  return entries
+    .filter(entry => entry.userInvocable !== false)
+    .map(entry => ({
     name: entry.name,
     description: entry.description,
     source: entry.source,
@@ -169,7 +182,8 @@ export function toPublicCommandEntries(entries: DiscoveryEntry[]): PublicCommand
  * 没有任何可发现条目时返回空串(调用方据此决定是否拼接)。
  */
 export function buildSkillCommandListingSection(sources: DiscoverySources): string {
-  const entries = collectDiscoveryEntries(sources)
+  // 模型面清单:disable-model-invocation 的条目不进(模型看不到、不会调;用户敲斜杠仍可)。对齐 cc。
+  const entries = collectDiscoveryEntries(sources).filter(entry => !entry.disableModelInvocation)
   if (entries.length === 0) return ''
   const listing = formatEntriesWithinBudget(entries, sources.contextWindowTokens)
   if (!listing) return ''

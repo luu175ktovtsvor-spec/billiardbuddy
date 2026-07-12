@@ -44,14 +44,14 @@ import { jsonDetailError, jsonError, localCorsPreflight, TurnSetupError, withLoc
 import { VoiceTranscriptionError, transcribeVoiceFile } from './services/voiceTranscription'
 import { buildGeneralRegistry } from '../tools/generalTools'
 import { workspaceForActiveWorktree } from '../tools/worktreeTools'
-import { allowSkillTools, bundledSkillsRoot, formatUseSkillResult, loadLayeredSkills, loadSkillsDir, recordInvokedSkill, registerSkillHooks, userSkillsRoot } from '../skills/skillLoader'
+import { activateConditionalSkillsForPaths, allowSkillTools, bundledSkillsRoot, formatUseSkillResult, loadLayeredSkills, loadSkillsDir, recordInvokedSkill, registerSkillHooks, userSkillsRoot } from '../skills/skillLoader'
 import { createInvokedSkillsMessage, restoreInvokedSkillsFromMessages } from '../skills/invokedSkills'
 import { createBuiltinCommandLibrary, isBuiltinForkCommand } from '../commands/builtinCommands'
 import { allowedToolsForAgent } from '../commands/allowedTools'
 import { bridgeUnsafeCommandMessage, type CommandLibrary, filterBridgeSafeCommands, isBridgeSafeCommand, loadCommandsDir, loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
 import type { PromptCommand } from '../commands/types'
 import { loadPluginHookRegistry, loadWorkspaceHookRegistry } from '../hooks/hookConfig'
-import { applyElicitationHooks, applyElicitationResultHooks, applySessionEndHooks, configureHookTrust, type HookRegistry as ElicitationHookRegistry } from '../hooks/hooks'
+import { applyElicitationHooks, applyElicitationResultHooks, applySessionEndHooks, applyUserPromptExpansionHooks, configureHookTrust, type HookRegistry as ElicitationHookRegistry } from '../hooks/hooks'
 import { createDomainPackCommandLibrary, createDomainPackTools, listPublicDomainPacks, mergeEnabledPacks, mergeHookRegistries, packIdForCommandName, registerDomainPackCommandAliases, resolveEnabledPacks, suggestedSkillNamesForPacks, type DomainPack } from '../packs/domainPacks'
 import { clearThreadGoalHook, createGoalHookRegistry, ensureThreadGoalHookFromTranscript, getThreadGoal, parseGoalCommand, setThreadGoalHook } from '../goals/goalState'
 import { loadAgentsDir, type AgentDefinition } from '../agents/agentLoader'
@@ -89,7 +89,7 @@ import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../m
 import { AssetManager, ASSET_WS_TOPIC, getActiveAssetManager, setActiveAssetManager } from '../assets/assetManager'
 import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
-import { loadOutputStyles, publicOutputStyle, renderOutputStylePrompt } from '../outputStyles/outputStyleLoader'
+import { loadOutputStyles, publicOutputStyle, resolveOutputStyleConfig } from '../outputStyles/outputStyleLoader'
 import { defaultPluginInstallDir, defaultPluginRoots, installPluginFromGithub, listPlugins, resolveEnabledPluginContributions, resolveEnabledPluginHookConfigPaths, setPluginEnabled } from '../plugins/pluginLoader'
 import { LIBRARY_DIR_ENV, LIBRARY_DOT_DIR, LIBRARY_SUBDIR, getDefaultWorkspaceDir } from '../harness/desktopEnvNames'
 import { WorkspaceNameError, createNamedWorkspace } from '../workspace/workspaceProvision'
@@ -920,6 +920,21 @@ function backgroundTaskNotification(task: TaskMeta): Record<string, unknown> | n
  * 覆盖优先级:opts.transcriptRoot(测试/显式注入) > env `BILLIARDBUDDY_STATE_DIR`(白标显式覆盖整个 state 根)
  * > `~/.billiardbuddy/state`(默认,永远可写、与 cwd 无关)。
  */
+/** 从会话历史里刨出被文件工具"碰过"的路径(供条件技能激活:碰到命中 paths 的文件才现身)。取文件类工具的 path/file_path 入参。 */
+const FILE_TOUCH_TOOLS = new Set(['read_file', 'write_file', 'edit_file', 'read_many_files', 'Read', 'Write', 'Edit'])
+export function collectTouchedFilePaths(messages: Message[]): string[] {
+  const paths: string[] = []
+  for (const m of messages) {
+    for (const b of m.content) {
+      if (b.type !== 'tool_use' || !FILE_TOUCH_TOOLS.has(b.name)) continue
+      const input = b.input && typeof b.input === 'object' && !Array.isArray(b.input) ? b.input as Record<string, unknown> : {}
+      const p = typeof input.path === 'string' ? input.path : typeof input.file_path === 'string' ? input.file_path : undefined
+      if (p) paths.push(p)
+    }
+  }
+  return [...new Set(paths)]
+}
+
 export function resolveStateRoot(
   opts: { transcriptRoot?: string; env?: Record<string, string | undefined> } = {},
 ): string {
@@ -1633,19 +1648,28 @@ export function startServer(opts: StartServerOptions = {}) {
     const commands = await loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), enabledPacks, opts.env ?? process.env)
     // 技能/命令发现清单注入系统提示(对齐 cc SkillTool skill listing):汇总 builtin 命令 + 技能 + 已启用领域包命令,
     // 按约 1% 上下文预算截断,让模型「看清单 → 自动调」,/台球 等斜杠也映射到对应技能/命令。
-    let systemPrompt = await buildSystemPrompt(workspace, { commands, skills, contextWindowTokens })
-    const outputStyles = await loadOutputStyles()
-    const outputStylePrompt = renderOutputStylePrompt(outputStyles, stringOr(rawBody.output_style ?? rawBody.outputStyle, ''))
-    // 领域包上下文(billiards 等)每回合直接进系统提示——它是"我是谁"的域身份、每回合都得在,
-    // 不再骑 SessionStart hook(那会让 SessionStart 每回合重触发,丁审计发现)。SessionStart hook 由此
-    // 回归 cc 语义:只首回合触发一次(见 loop.ts)。
+    const outputStyleLibrary = await loadOutputStyles()
+    const outputStyleConfig = resolveOutputStyleConfig(outputStyleLibrary, stringOr(rawBody.output_style ?? rawBody.outputStyle, ''))
+    // 条件技能激活(对齐 cc "碰到命中 paths 的文件才现身"):仅当存在条件技能时才扫会话历史触碰过的文件路径,
+    // 命中的条件技能并回本回合发现清单(默认它们被 loadLayeredSkills 排除)。无条件技能时零开销、不 load。
+    let activatedConditionalSkills: PromptCommand[] | undefined
+    if ([...skills.byName.values()].some(s => s.paths && s.paths.length > 0)) {
+      const priorMessages = await transcript.load().catch(() => [] as Message[])
+      const touched = collectTouchedFilePaths(priorMessages)
+      const activatedNames = activateConditionalSkillsForPaths(skills, workspace.root, touched)
+      activatedConditionalSkills = [...activatedNames].map(n => skills.byName.get(n)).filter((s): s is PromptCommand => !!s)
+    }
+    let systemPrompt = await buildSystemPrompt(workspace, { commands, skills, contextWindowTokens, activatedConditionalSkills }, outputStyleConfig)
+    // 输出风格已在 buildSystemPrompt 中部注入(对齐 cc systemPromptSection('output_style') + keepCodingInstructions
+    // 门控),不再拼到尾部 extraContext。领域包上下文(billiards 等)每回合直接进系统提示——它是"我是谁"的域身份、
+    // 每回合都得在,不再骑 SessionStart hook(那会让 SessionStart 每回合重触发,丁审计发现)。
     const domainPackContext = enabledPacks.map(pack => pack.sessionStartContext).filter(Boolean).join('\n\n')
     const extraContext = [
       supportContext(rawBody),
       domainPackContext,
     ].filter(Boolean).join('\n\n')
-    if (outputStylePrompt || extraContext) {
-      systemPrompt = [systemPrompt, outputStylePrompt, extraContext].filter(Boolean).join('\n\n')
+    if (extraContext) {
+      systemPrompt = [systemPrompt, extraContext].filter(Boolean).join('\n\n')
     }
     const bridgeOrigin = rawBody.bridgeOrigin === true || rawBody.bridge_origin === true
     const skipSlashCommands = rawBody.skipSlashCommands === true || rawBody.skip_slash_commands === true
@@ -1690,7 +1714,9 @@ export function startServer(opts: StartServerOptions = {}) {
             prompt: '',
           }
       : undefined
-    const userMessage = goalCommandResult?.shouldQuery
+    // let:UserPromptExpansion hook 的 deny/halt 决策(下方 controller 后派发)可把命令展开体替换成拦截说明,
+    // 阻止危险命令原文流入模型(对齐 cc 该事件的拦截语义)。
+    let userMessage = goalCommandResult?.shouldQuery
       ? `Continue working until this goal is complete: ${parsedCommand?.args ?? ''}`
       : commandInvocation?.prompt ?? rawUserMessage
     const userContent = commandInvocation || goalCommandResult?.shouldQuery ? undefined : explicitUserContent
@@ -1711,6 +1737,20 @@ export function startServer(opts: StartServerOptions = {}) {
     const initialSessionHooks = sessionSkillHooks.get(conversationId)
     const agents = await loadAgentsDir(opts.agentsRoot ?? defaultAgentsRoot())
     const controller = turns.start(conversationId)
+    // UserPromptExpansion(官方事件):用户敲的斜杠命令已展开成 prompt → 派发(matcher=命令名);
+    // context 决策注入系统提示。命令解析早于 hooks 构建,故派发放这里(hooks 已就绪),对齐 cc 的展开时机。
+    if (commandInvocation && commandInvocation.name !== 'goal') {
+      const expansion = await applyUserPromptExpansionHooks(hooks, commandInvocation.name, commandInvocation.prompt, {
+        workspace, conversationId, signal: controller.signal,
+      })
+      if (expansion.additionalContext.length > 0) {
+        systemPrompt = `${systemPrompt}\n\n<hook_context event="UserPromptExpansion">\n${expansion.additionalContext.join('\n\n')}\n</hook_context>`
+      }
+      // deny/halt:拦住命令展开——用拦截说明替换命令体,不让危险原文进模型(对齐 cc UserPromptExpansion 拦截语义)。
+      if (expansion.blocked) {
+        userMessage = `命令 /${commandInvocation.name} 的展开已被 hook 阻止:${expansion.blocked}(命令内容未执行、未注入模型)`
+      }
+    }
     const gatedMcp = resolveMcpConfig(rawBody, workspace.root)
     const mcpConfigPath = gatedMcp.path
     const mcpTools = await loadMcpToolsFromFile(mcpConfigPath, {
@@ -1819,10 +1859,19 @@ export function startServer(opts: StartServerOptions = {}) {
     const storeDocTools = [createStoreDocsTool(storeDocs)]
     const backgroundBaseRegistry = buildGeneralRegistry({ skills, skillsRoot: createSkillsRoot, skillRecommendations, executeSkill, commands, extraTools: [...domainPackTools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
     const baseRegistry = buildGeneralRegistry({ skills, skillsRoot: createSkillsRoot, skillRecommendations, executeSkill, commands, extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
+    // 子代理 model 解析(对齐 cc getAgentModel):agent frontmatter 的 model 名匹配某个已配置 provider
+    // runtime 的模型名时,用该 runtime 单独构造模型;不匹配 → null → agentTool 回退父模型。
+    // 白标单模型下 runtimes 通常只有一档,匹配到同名即用、否则回退——机制真接通,owner 配多档即生效。
+    const resolveAgentModel = (modelName: string): Model | null => {
+      const matched = providerRuntimes.filter(runtime => runtime.config.model === modelName)
+      if (matched.length === 0) return null
+      return createModelFromRuntimeProviders(matched, opts.fetchImpl, providerHealthCallbacks)
+    }
     backgroundAgentOptions = {
       tasks,
       agents,
       model,
+      resolveModel: resolveAgentModel,
       baseTools: backgroundBaseRegistry.list(),
       baseSystemPrompt: systemPrompt,
       hooks,
@@ -1850,6 +1899,7 @@ export function startServer(opts: StartServerOptions = {}) {
       ? [createAgentTaskTool({
         agents,
         model,
+        resolveModel: resolveAgentModel,
         baseTools: backgroundAgentOptions.baseTools,
         baseSystemPrompt: systemPrompt,
         sidechainRoot: agentSidechainRoot,
@@ -4596,7 +4646,9 @@ export function startServer(opts: StartServerOptions = {}) {
           ? filterBridgeSafeCommands(commands.commands)
           : commands.commands
         if (!commandRoute[1] && req.method === 'GET') {
-          return Response.json({ commands: publicCommands.map(publicCommand) })
+          // 用户面清单:过滤 user-invocable:false(与新路由 /api/v1/agent/commands 的 toPublicCommandEntries 一致);
+          // disableModelInvocation 是模型面限制,用户仍可敲,不在此过滤。
+          return Response.json({ commands: publicCommands.filter(c => c.userInvocable !== false).map(publicCommand) })
         }
         if (commandRoute[1] === 'expand' && req.method === 'POST') {
           const body = bodyForWorkspace

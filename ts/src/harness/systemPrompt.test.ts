@@ -189,3 +189,25 @@ test('安全红线无条件注入:不挂任何领域包也在系统提示里(铁
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('outputStyle 门控(对齐 cc keepCodingInstructions):未选风格保留「# 做任务」;选非编码风格且未声明保留则跳过;声明保留则仍在;风格正文注入系统提示中部', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'sp-style-'))
+  try {
+    const ws = new Workspace(root)
+    // 未选风格(null)→ 保留 # 做任务
+    const base = await buildSystemPrompt(ws)
+    expect(base).toContain('# 做任务')
+
+    // 选了非编码风格、未声明 keepCodingInstructions → 跳过 # 做任务,但风格正文在
+    const styled = await buildSystemPrompt(ws, undefined, { prompt: '【输出风格 · 老师】用启发式讲解' })
+    expect(styled).not.toContain('# 做任务')
+    expect(styled).toContain('【输出风格 · 老师】用启发式讲解')
+
+    // 声明 keepCodingInstructions:true → 保留 # 做任务 + 风格正文
+    const kept = await buildSystemPrompt(ws, undefined, { prompt: '【输出风格 · 严谨】', keepCodingInstructions: true })
+    expect(kept).toContain('# 做任务')
+    expect(kept).toContain('【输出风格 · 严谨】')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
