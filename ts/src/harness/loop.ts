@@ -32,6 +32,8 @@ import { formatTodoChecklist, parseProgressMarkdown } from '../types/todo'
 import { compactPipeline, compactionWillRun, isAtBlockingLimit, looksLikeContextOverflow } from '../context/compaction'
 import { buildRecentFileContextMessage } from '../context/recentFileContext'
 import { createInvokedSkillsMessage, restoreInvokedSkillsFromMessages } from '../skills/invokedSkills'
+import { FILE_TOUCH_TOOL_NAMES, toolInputFilePath } from '../skills/skillLoader'
+import type { PromptCommand } from '../commands/types'
 import {
   applyToolResultBudget,
   cloneContentReplacementState,
@@ -160,6 +162,11 @@ export interface RunAgentLoopOptions {
   maxTurns?: number
   /** headless/后台运行(对齐 cc shouldAvoidPermissionPrompts):ask 不弹卡,hook 无决策则自动拒。 */
   avoidPermissionPrompts?: boolean
+  /**
+   * 条件技能同轮实时激活(对齐 cc 文件工具内联激活):给本批工具碰到的文件路径,返回命中 paths 的条件技能。
+   * server 提供闭包(内含 skills library + workspaceRoot)。命中的技能当轮经 system-reminder 现身,而非等下一回合。
+   */
+  activateConditionalSkills?: (touchedPaths: string[]) => PromptCommand[]
   signal?: AbortSignal
   /** 状态根目录:透传给 ToolContext.stateRoot,让 file-history 快照落在 stateRoot 而非用户工作区(见 Tool.ts)。 */
   stateRoot?: string
@@ -429,6 +436,8 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
   let lastInputTokens: number | undefined // 上一轮响应回报的真实 prompt input tokens(含 cache),供 token 级压缩触发
   let toolCallsNoProgress = 0
   let stuckNotified = false
+  // 本回合已实时激活的条件技能名(去重,同一技能不重复注入 system-reminder)。
+  const activatedConditionalNames = new Set<string>()
   let maxOutputTokensRecoveryCount = 0 // 连续"输出被长度上限截断"的续写计数;有实质进展(tool_calls/自然收敛)即复位
   // 计划验证提醒的"每段最多一次"闸:maxTurns=undefined(server 主路)时,final 分支不再靠 turn++/maxTurns 兜底,
   // 若模型收到提醒仍固执地不调 VerifyPlanExecution 直接 final,得避免无限重发同一条提醒。有真进展(跑了工具)即复位。
@@ -820,6 +829,25 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     for (const r of collectReminders(ctx)) {
       followup.push(textBlock(wrapReminder(r.text)))
       if (r.kind === 'progress') ctx.requestsSinceProgress = 0
+    }
+    // 条件技能同轮实时激活(对齐 cc 文件工具内联激活):本批碰到匹配 paths 的文件 → 命中的条件技能当轮现身,
+    // 注入 system-reminder 告知模型它现在可用(回合级去重,同一技能不重复提醒)。等下一回合 systemPrompt 重算时
+    // server 侧也会把它算进发现清单;这里是"同轮内就现身"的增量补充,弥合 systemPrompt 回合内不重建的粒度差距。
+    if (opts.activateConditionalSkills) {
+      const batchPaths: string[] = []
+      for (const c of step.calls) {
+        if (!FILE_TOUCH_TOOL_NAMES.has(c.name)) continue
+        const p = toolInputFilePath(c.input)
+        if (p) batchPaths.push(p)
+      }
+      if (batchPaths.length > 0) {
+        for (const skill of opts.activateConditionalSkills(batchPaths)) {
+          if (activatedConditionalNames.has(skill.name)) continue
+          activatedConditionalNames.add(skill.name)
+          followup.push(textBlock(wrapReminder(`技能「${skill.name}」现在可用(你处理的文件匹配了它的触发条件):${skill.description}。需要时用 use_skill / read_skill 调用它。`)))
+          yield { type: 'context_note', text: `条件技能「${skill.name}」已激活(碰到匹配文件)` }
+        }
+      }
     }
     // plan 提醒节流计数:每批 +1,collectReminders 按 % PLAN_REMIND_EVERY 决定该不该发(对齐 cc,不再每批必发)。
     if (ctx.permissionMode === 'plan') ctx.planModeTurnCount = (ctx.planModeTurnCount ?? 0) + 1

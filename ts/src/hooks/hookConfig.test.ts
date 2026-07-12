@@ -1078,3 +1078,52 @@ test('async/asyncRewake:后台跑不阻塞派发(立即无决策);exit 2 时 std
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('http hook async:后台发不阻塞派发(立即无决策);asyncRewake + 非2xx 推 steerInbox 唤醒', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-http-async-'))
+  try {
+    let hits = 0
+    await withHttpServer((req, res) => {
+      hits++
+      req.on('data', () => {})
+      req.on('end', () => { res.statusCode = 500; res.end('backend down') })
+    }, async url => {
+      const inbox: string[] = []
+      const ctx = { workspace: new Workspace(root), conversationId: 's1', steerInbox: inbox }
+      const registry = normalizeHookRegistry({
+        hooks: { Stop: [{ hooks: [{ type: 'http', url, asyncRewake: true }] }] },
+      })
+      const t0 = Date.now()
+      const decisions = await runHookEvent(registry, { event: 'Stop', sessionId: 's1' }, ctx as never)
+      expect(decisions).toEqual([]) // 后台发、立即无决策
+      expect(Date.now() - t0).toBeLessThan(1000)
+      // 等后台请求完成 + rewake 推入
+      for (let i = 0; i < 50 && inbox.length === 0; i++) await new Promise(r => setTimeout(r, 100))
+      expect(hits).toBe(1)
+      expect(inbox.length).toBe(1)
+      expect(inbox[0]).toContain('后台 http hook Stop 唤醒')
+      expect(inbox[0]).toContain('HTTP 500')
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('http hook async(非 rewake):后台发、失败也不推 steerInbox', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-http-async2-'))
+  try {
+    await withHttpServer((req, res) => {
+      req.on('data', () => {})
+      req.on('end', () => { res.statusCode = 500; res.end('x') })
+    }, async url => {
+      const inbox: string[] = []
+      const ctx = { workspace: new Workspace(root), conversationId: 's1', steerInbox: inbox }
+      const registry = normalizeHookRegistry({ hooks: { Stop: [{ hooks: [{ type: 'http', url, async: true }] }] } })
+      expect(await runHookEvent(registry, { event: 'Stop', sessionId: 's1' }, ctx as never)).toEqual([])
+      await new Promise(r => setTimeout(r, 400))
+      expect(inbox).toEqual([]) // async 非 rewake:失败不唤醒
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
