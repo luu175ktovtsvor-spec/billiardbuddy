@@ -509,3 +509,65 @@ test('P7 触发算法不打架:有真实 token 用量时完全走 token 公式,�
   })
   expect(tokenCompact.didCompact).toBe(true)
 })
+
+test('手动压缩:customInstructions 追加进摘要系统提示;摘要消息=cc三段式(标记行+回溯路径+续跑指令)', async () => {
+  let seenSystem = ''
+  const model: Model = {
+    async step(input) {
+      seenSystem = input.system ?? ''
+      return { kind: 'final', text: '<summary>摘要正文</summary>' }
+    },
+  }
+  const out = await compactPipeline({
+    messages: [userText('a'.repeat(200)), userText('b')],
+    model, force: true,
+    customInstructions: '重点保留价格谈判细节',
+    transcriptPath: '/tmp/t/conv.jsonl',
+    readOnlyToolNames: new Set(),
+  })
+  expect(seenSystem).toContain(COMPACTION_SYSTEM_PROMPT)
+  expect(seenSystem).toContain('重点保留价格谈判细节')
+  expect(out.didCompact).toBe(true)
+  expect(out.summary).toBe('摘要正文')
+  const first = out.messages[0]!
+  const firstBlock = first.content[0]
+  const text = firstBlock?.type === 'text' ? firstBlock.text : ''
+  expect(text.startsWith('[此前对话摘要]')).toBe(true) // 标记行保留(loop/前端锚它)
+  expect(text).toContain('/tmp/t/conv.jsonl')
+  expect(text).toContain('从中断处直接继续')
+  expect(text).toContain('不要复述摘要')
+})
+
+test('DISABLE_COMPACT 连 force 一起关;DISABLE_AUTO_COMPACT 只关自动、force 照跑(对齐 cc)', async () => {
+  const model: Model = { async step() { return { kind: 'final', text: '摘要' } } }
+  const messages = () => [userText('x'.repeat(300)), userText('y')]
+  try {
+    process.env.DISABLE_COMPACT = '1'
+    const all = await compactPipeline({ messages: messages(), model, force: true, readOnlyToolNames: new Set() })
+    expect(all.didCompact).toBe(false)
+    delete process.env.DISABLE_COMPACT
+
+    process.env.DISABLE_AUTO_COMPACT = '1'
+    const auto = await compactPipeline({ messages: messages(), model, contextWindowChars: 120, readOnlyToolNames: new Set() })
+    expect(auto.didCompact).toBe(false)
+    const forced = await compactPipeline({ messages: messages(), model, force: true, readOnlyToolNames: new Set() })
+    expect(forced.didCompact).toBe(true)
+  } finally {
+    delete process.env.DISABLE_COMPACT
+    delete process.env.DISABLE_AUTO_COMPACT
+  }
+})
+
+test('blocking 硬阻断线 = 有效窗口 − 3k(200k→177k);env 覆盖;小窗口非正阈值不判阻断', async () => {
+  const { getBlockingLimitTokens, isAtBlockingLimit } = await import('./compaction')
+  expect(getBlockingLimitTokens(200_000)).toBe(177_000) // 180k − 3k
+  expect(isAtBlockingLimit(177_000, 200_000)).toBe(true)
+  expect(isAtBlockingLimit(176_999, 200_000)).toBe(false)
+  expect(isAtBlockingLimit(999_999, 10_000)).toBe(false) // 有效窗口为负 → 域守卫不判
+  try {
+    process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = '500'
+    expect(isAtBlockingLimit(500, 200_000)).toBe(true)
+  } finally {
+    delete process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE
+  }
+})

@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
+import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { mergeHookRegistries, parseHookDecisionJSON, type HookDecision, type HookEvent, type HookHandler, type HookPayload, type HookRegistry, type HookRule, type HookSource } from './hooks'
 import type { Tool, ToolContext } from '../tools/Tool'
 import { ToolRegistry } from '../tools/registry'
@@ -76,6 +77,12 @@ interface RawCommandHook {
   timeout?: unknown
   decision?: unknown
   decisions?: unknown
+  /** 官方 async:true——后台跑、不阻塞事件派发,输出丢弃(除非 asyncRewake)。 */
+  async?: unknown
+  /** 官方 asyncRewake:true(隐含 async)——退出码 2 时把 stderr/stdout 作系统提醒注入 steering 收件箱唤醒模型。 */
+  asyncRewake?: unknown
+  /** 官方 shell 字段:'bash' | 'powershell'(仅 Windows 有意义;非 Windows 恒系统默认 shell)。 */
+  shell?: unknown
 }
 
 interface RawHttpHook {
@@ -110,6 +117,8 @@ export interface NormalizeHookRegistryOptions {
    * loadHookRegistryFile 加载工作区文件时传 'local';内置注册(域包/目标/技能)不传 → managed。
    */
   source?: HookSource
+  /** 插件根目录(loadPluginHookRegistry 传入):命令 hook 的 ${CLAUDE_PLUGIN_ROOT} 替换与同名 env 注入用。 */
+  pluginRoot?: string
   httpPolicy?: {
     allowedUrls?: string[]
     allowedEnvVars?: string[]
@@ -535,16 +544,74 @@ async function runPromptHook(raw: RawPromptHook, payload: HookPayload, ctx: Tool
   }
 }
 
-async function runCommandHook(raw: RawCommandHook, payload: HookPayload, ctx: ToolContext): Promise<HookDecision | HookDecision[] | null> {
+/**
+ * Windows 下命令 hook 的 shell 选择(对齐 cc execCommandHook:Git Bash 优先、退 PowerShell,绝不 cmd.exe——
+ * hook 命令普遍按 bash 语法写,cmd 解析必炸)。官方 `shell` 字段('bash'|'powershell')可显式指定;
+ * 非 Windows 恒返回 true(系统默认 shell)。platform/exists 可注入便于单测。
+ */
+export function resolveHookShell(
+  pref?: string,
+  platform: NodeJS.Platform = process.platform,
+  exists: (p: string) => boolean = existsSync,
+): string | boolean {
+  if (platform !== 'win32') return true
+  if (pref === 'powershell') return 'powershell.exe'
+  const gitBash = [
+    'C:\\Program Files\\Git\\bin\\bash.exe',
+    'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+  ].find(exists)
+  return gitBash ?? 'powershell.exe'
+}
+
+/** 命令 hook 的子进程 env:官方路径占位(CLAUDE_PROJECT_DIR 是 hook 作者契约名,保留;另给白标别名)+ 插件根。 */
+function hookSpawnEnv(ctx: ToolContext, pluginRoot?: string): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    CLAUDE_PROJECT_DIR: ctx.workspace.root,
+    BILLIARDBUDDY_PROJECT_DIR: ctx.workspace.root,
+    ...(pluginRoot ? { CLAUDE_PLUGIN_ROOT: pluginRoot } : {}),
+  }
+}
+
+async function runCommandHook(raw: RawCommandHook, payload: HookPayload, ctx: ToolContext, pluginRoot?: string): Promise<HookDecision | HookDecision[] | null> {
   if (typeof raw.command !== 'string' || !raw.command.trim()) return null
-  const command = raw.command.trim()
+  // ${CLAUDE_PLUGIN_ROOT} 替换(对齐 cc:仅插件来源的 hook 有替换基准;非插件 hook 保留字面量)。
+  const command = pluginRoot
+    ? raw.command.trim().replaceAll('${CLAUDE_PLUGIN_ROOT}', pluginRoot)
+    : raw.command.trim()
   const timeoutMs = commandTimeoutMs(raw.timeout)
   const jsonInput = JSON.stringify(commandHookPayload(payload, ctx))
+  const shell = resolveHookShell(typeof raw.shell === 'string' ? raw.shell : undefined)
+  const env = hookSpawnEnv(ctx, pluginRoot)
+
+  // 官方 async/asyncRewake:后台跑、立即放行事件派发(返回无决策);不挂本轮 abort(独立于回合生命周期),
+  // 仍受 timeout 兜底强杀。asyncRewake 且 exit 2 时,把 stderr/stdout 推进本会话 steering 收件箱作系统提醒
+  // 唤醒模型(cc AsyncHookRegistry 的桌面精简版:同会话 steerInbox 即既有的回合内/跨回合回灌通道)。
+  const wantsRewake = raw.asyncRewake === true
+  if (raw.async === true || wantsRewake) {
+    const child = spawn(command, { cwd: ctx.workspace.root, env, shell, stdio: ['pipe', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', chunk => { stdout += String(chunk) })
+    child.stderr.on('data', chunk => { stderr += String(chunk) })
+    const timer = setTimeout(() => child.kill(), timeoutMs)
+    const inbox = ctx.steerInbox
+    child.on('error', () => clearTimeout(timer))
+    child.on('close', code => {
+      clearTimeout(timer)
+      if (wantsRewake && code === 2) {
+        inbox?.push(`[后台 hook ${payload.event} 唤醒(exit 2)] ${(stderr || stdout).trim() || command}`)
+      }
+    })
+    child.stdin?.end(jsonInput)
+    return null
+  }
+
   return await new Promise<HookDecision | HookDecision[] | null>(resolve => {
     const child = spawn(command, {
       cwd: ctx.workspace.root,
-      env: process.env,
-      shell: true,
+      env,
+      shell,
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     let stdout = ''
@@ -748,7 +815,8 @@ function normalizeHookCommand(event: HookEvent, matcher: string | undefined, raw
 
   if (raw.type === 'command' && typeof raw.command === 'string' && raw.command.trim()) {
     const commandHook = raw as RawCommandHook
-    return { event, matcher, handler: onceHandler(raw, (payload, ctx) => runCommandHook(commandHook, payload, ctx)) }
+    const pluginRoot = options?.pluginRoot
+    return { event, matcher, handler: onceHandler(raw, (payload, ctx) => runCommandHook(commandHook, payload, ctx, pluginRoot)) }
   }
 
   if (raw.type === 'http' && typeof raw.url === 'string' && raw.url.trim()) {
@@ -898,7 +966,8 @@ export async function loadPluginHookRegistry(paths: readonly string[]): Promise<
       continue
     }
     try {
-      const registry = normalizeHookRegistry(JSON.parse(raw) as unknown, { source: 'plugin' })
+      // 插件根 = <plugin>/hooks/hooks.json 的上上级目录:命令 hook 里 ${CLAUDE_PLUGIN_ROOT} 的替换基准。
+      const registry = normalizeHookRegistry(JSON.parse(raw) as unknown, { source: 'plugin', pluginRoot: dirname(dirname(path)) })
       if (registry.rules.length > 0) registries.push(registry)
     } catch {
       // 坏 JSON / 非法结构:跳过这一个插件的 hooks,不影响其余。

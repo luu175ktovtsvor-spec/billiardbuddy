@@ -176,6 +176,8 @@ async function runExtraction(input: {
   const gen = runAgentLoop({
     model: input.model,
     registry,
+    // 记忆抽取 fork = 无人值守后台:ask 自动拒,绝不挂起等审批(对齐 cc headless 语义)。
+    avoidPermissionPrompts: true,
     workspace: input.workspace,
     systemPrompt: input.systemPrompt,
     initialMessages: input.recent,

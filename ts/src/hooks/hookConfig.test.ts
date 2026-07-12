@@ -1015,3 +1015,66 @@ test('command hook 官方通用输出字段:continue:false→halt / systemMessag
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('resolveHookShell:非Windows恒默认shell;win32 Git Bash优先→PowerShell兜底;shell 字段可显式指定', async () => {
+  const { resolveHookShell } = await import('./hookConfig')
+  expect(resolveHookShell(undefined, 'darwin')).toBe(true)
+  const noBash = () => false
+  const hasBash = (p: string) => p.includes('Program Files\\Git')
+  expect(resolveHookShell(undefined, 'win32', noBash)).toBe('powershell.exe')
+  expect(resolveHookShell(undefined, 'win32', hasBash)).toBe('C:\\Program Files\\Git\\bin\\bash.exe')
+  expect(resolveHookShell('powershell', 'win32', hasBash)).toBe('powershell.exe')
+  expect(resolveHookShell('bash', 'win32', noBash)).toBe('powershell.exe') // 指明bash但没装→仍退PowerShell
+})
+
+test('命令 hook 注入 CLAUDE_PROJECT_DIR;插件 hook 的 ${CLAUDE_PLUGIN_ROOT} 被替换并注入 env', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-env-'))
+  try {
+    const ctx = { workspace: new Workspace(root), conversationId: 's1' }
+    const echoEnv = `${process.execPath} -e "console.log(JSON.stringify({action:'context',additionalContext:process.env.CLAUDE_PROJECT_DIR+'|'+(process.env.CLAUDE_PLUGIN_ROOT||'')}))"`
+    const plain = normalizeHookRegistry({ hooks: { Stop: [{ hooks: [{ type: 'command', command: echoEnv }] }] } })
+    const d1 = await runHookEvent(plain, { event: 'Stop', sessionId: 's1' }, ctx as never)
+    expect(d1).toEqual([{ action: 'context', additionalContext: `${root}|` }])
+
+    const withPlugin = normalizeHookRegistry(
+      { hooks: { Stop: [{ hooks: [{ type: 'command', command: echoEnv }] }] } },
+      { source: 'plugin', pluginRoot: '/tmp/my-plugin' },
+    )
+    const d2 = await runHookEvent(withPlugin, { event: 'Stop', sessionId: 's1' }, ctx as never)
+    expect(d2).toEqual([{ action: 'context', additionalContext: `${root}|/tmp/my-plugin` }])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('async/asyncRewake:后台跑不阻塞派发(立即无决策);exit 2 时 stderr 注入 steerInbox 唤醒', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hook-async-'))
+  try {
+    const inbox: string[] = []
+    const ctx = { workspace: new Workspace(root), conversationId: 's1', steerInbox: inbox }
+    const rewake = normalizeHookRegistry({
+      hooks: { Stop: [{ hooks: [{ type: 'command', asyncRewake: true, command: `${process.execPath} -e "console.error('磁盘快满了');process.exit(2)"` }] }] },
+    })
+    const t0 = Date.now()
+    const decisions = await runHookEvent(rewake, { event: 'Stop', sessionId: 's1' }, ctx as never)
+    expect(decisions).toEqual([]) // 不等子进程、无决策
+    expect(Date.now() - t0).toBeLessThan(1500)
+    // 等后台进程退出并回灌
+    for (let i = 0; i < 50 && inbox.length === 0; i++) await new Promise(r => setTimeout(r, 100))
+    expect(inbox.length).toBe(1)
+    expect(inbox[0]).toContain('磁盘快满了')
+    expect(inbox[0]).toContain('后台 hook Stop 唤醒')
+
+    // async(非 rewake):exit 2 也不回灌
+    const silent = normalizeHookRegistry({
+      hooks: { Stop: [{ hooks: [{ type: 'command', async: true, command: `${process.execPath} -e "process.exit(2)"` }] }] },
+    })
+    const inbox2: string[] = []
+    const d2 = await runHookEvent(silent, { event: 'Stop', sessionId: 's1' }, { ...ctx, steerInbox: inbox2 } as never)
+    expect(d2).toEqual([])
+    await new Promise(r => setTimeout(r, 400))
+    expect(inbox2).toEqual([])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

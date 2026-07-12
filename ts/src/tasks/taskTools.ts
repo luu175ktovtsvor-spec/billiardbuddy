@@ -664,6 +664,8 @@ export async function startBackgroundAgentRun(
       for await (const event of runAgentLoop({
         model: opts.model,
         registry: new ToolRegistry(agentMcp.tools),
+        // 后台任务无人值守:ask 自动拒(对齐 cc headless shouldAvoidPermissionPrompts),不空挂审批。
+        avoidPermissionPrompts: true,
         workspace: runWorkspace,
         systemPrompt: runOptions.forkContext?.systemPrompt ?? await agentSystemPrompt(agent, runWorkspace.root, opts.baseSystemPrompt),
         userMessage: agentTaskMessage(agent, input),

@@ -116,6 +116,11 @@ export interface ToolContext {
    * 由执行层写入(首个生效),主循环在批尾统一消费并优雅停轮,消费后清空。
    */
   hookHaltReason?: string
+  /**
+   * headless/后台上下文标志(对齐 cc shouldAvoidPermissionPrompts):置真时权限 ask 不弹审批卡,
+   * PermissionRequest hook 无决策则自动拒绝(cc AUTO_REJECT 语义)。后台任务/记忆抽取 fork 等无人值守路径置真。
+   */
+  shouldAvoidPermissionPrompts?: boolean
   /** 当前会话的大工具结果落盘目录,供 read_stored_tool_result 安全回读。 */
   toolResultStoreDir?: string
   /** 大工具结果替换状态,供主循环/子代理/续跑保持一致的上下文裁剪决策。 */

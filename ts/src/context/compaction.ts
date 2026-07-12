@@ -27,6 +27,18 @@ export const KEEP_RECENT_MESSAGES = 0
  */
 export const MIN_AUTOCOMPACT_OLD_MESSAGES = 1
 export const MAX_COMPACTION_FAILURES = 3
+/** 手动 /compact 的预留 buffer(对齐 cc autoCompact.ts:65);也是 blocking 硬阻断线的减数。 */
+export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
+
+const envTruthy = (v: string | undefined): boolean => /^(1|true|yes|on)$/i.test(v ?? '')
+/** DISABLE_COMPACT:全部压缩(含手动/reactive)一刀关(对齐 cc autoCompact.ts:148,253)。 */
+export function isCompactDisabled(env: Record<string, string | undefined> = process.env): boolean {
+  return envTruthy(env.DISABLE_COMPACT)
+}
+/** DISABLE_AUTO_COMPACT:只关自动触发,force(手动//compact/reactive)不受影响(对齐 cc autoCompact.ts:152)。 */
+export function isAutoCompactDisabled(env: Record<string, string | undefined> = process.env): boolean {
+  return envTruthy(env.DISABLE_AUTO_COMPACT)
+}
 /**
  * 摘要请求本身超限(prompt-too-long)时的收缩重试上限。
  * 对齐 cc-haha src/services/compact/compact.ts:227 的 MAX_PTL_RETRIES = 3。
@@ -76,12 +88,18 @@ export interface CompactPipelineInput extends SplitOptions, MicrocompactOptions 
   readOnlyToolNames: ReadonlySet<string>
   compactionFailures?: number
   force?: boolean
+  /** 手动 /compact 的自定义摘要指令(对齐 cc getCompactPrompt 的 Additional Instructions,追加进摘要系统提示)。 */
+  customInstructions?: string
+  /** 会话逐字记录文件路径;有值时写进摘要消息,压缩后模型可回读原文(对齐 cc getCompactUserSummaryMessage)。 */
+  transcriptPath?: string
 }
 
 export interface CompactPipelineOutput {
   messages: Message[]
   didCompact: boolean
   note?: string
+  /** 裸摘要正文(不含三段式包装),供 PostCompact hook 载荷等直接消费,免去反解消息。 */
+  summary?: string
   compactionFailures: number
 }
 
@@ -221,6 +239,25 @@ export function getEffectiveContextWindowTokens(contextWindowTokens: number, max
  * CLAUDE_AUTOCOMPACT_PCT_OVERRIDE(0<pct≤100)存在时,阈值取 min(floor(有效窗口*pct/100), 默认阈值)
  * —— 只会让压缩更早、绝不更晚。
  */
+/**
+ * 硬阻断线(对齐 cc autoCompact.ts:123-135 isAtBlockingLimit):有效窗口 − 3k(MANUAL_COMPACT_BUFFER)。
+ * 真实用量顶到这里且压缩没能发生时,请求几乎必然超限——调用方应停手而不是硬打。
+ * CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE(正整数)可整体覆盖(测试/运维用)。
+ */
+export function getBlockingLimitTokens(contextWindowTokens: number, maxOutputTokens?: number): number {
+  const override = process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE
+  const parsed = override ? parseInt(override, 10) : NaN
+  if (!isNaN(parsed) && parsed > 0) return parsed
+  return getEffectiveContextWindowTokens(contextWindowTokens, maxOutputTokens) - MANUAL_COMPACT_BUFFER_TOKENS
+}
+
+export function isAtBlockingLimit(tokenUsage: number, contextWindowTokens: number, maxOutputTokens?: number): boolean {
+  const limit = getBlockingLimitTokens(contextWindowTokens, maxOutputTokens)
+  // 域守卫同 token 阈值:声明窗口小到公式失去意义(非正)时不判阻断,避免误伤小窗口测试/降级配置。
+  if (limit <= 0) return false
+  return tokenUsage >= limit
+}
+
 export function getAutoCompactTokenThreshold(contextWindowTokens: number, maxOutputTokens?: number): number {
   const effectiveContextWindow = getEffectiveContextWindowTokens(contextWindowTokens, maxOutputTokens)
   const autocompactThreshold = effectiveContextWindow - AUTOCOMPACT_BUFFER_TOKENS
@@ -236,7 +273,10 @@ export function getAutoCompactTokenThreshold(contextWindowTokens: number, maxOut
 }
 
 function shouldAutocompact(input: CompactPipelineInput, failures: number): boolean {
+  // 压缩开关(对齐 cc):DISABLE_COMPACT 连 force 一起关;DISABLE_AUTO_COMPACT 只关自动路径。
+  if (isCompactDisabled()) return false
   if (input.force) return true
+  if (isAutoCompactDisabled()) return false
   // cc 对齐:无冷却期、无"消息数没涨不再压"门——cc autoCompact 每轮纯按 token 复判、允许连续压缩
   // (一次压缩没降到阈值下时,下一轮继续压,而不是压制后带超限上下文打模型吃 413)。
   // 唯一熔断 = 连续压缩失败计数(对齐 cc MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES)。
@@ -290,10 +330,14 @@ export async function compactPipeline(input: CompactPipelineInput): Promise<Comp
     let toSummarize = split.old
     let retryAttempts = 0
     let step: AssistantStep
+    // 手动 /compact 自定义指令追加进摘要系统提示(对齐 cc getCompactPrompt 的 Additional Instructions)。
+    const summarySystem = input.customInstructions?.trim()
+      ? `${COMPACTION_SYSTEM_PROMPT}\n\n附加指令(用户手动压缩时指定,优先满足):\n${input.customInstructions.trim()}`
+      : COMPACTION_SYSTEM_PROMPT
     for (;;) {
       try {
         step = await input.model.step({
-          system: COMPACTION_SYSTEM_PROMPT,
+          system: summarySystem,
           messages: toSummarize,
           tools: [],
         })
@@ -316,13 +360,14 @@ export async function compactPipeline(input: CompactPipelineInput): Promise<Comp
     }
     const summary = extractCompactionSummary(summaryText)
     const compacted: Message[] = [
-      { role: 'user', content: [textBlock(`[此前对话摘要]\n${summary}`)] },
+      { role: 'user', content: [textBlock(buildCompactSummaryUserMessage(summary, input.transcriptPath))] },
       ...(input.postSummaryMessages ?? []),
       ...split.recent,
     ]
     return {
       messages: compacted,
       didCompact: true,
+      summary,
       note:
         retryAttempts > 0
           ? `已压缩旧上下文: ${split.old.length} 条消息(摘要请求超限收缩重试 ${retryAttempts} 次,实际摘要 ${toSummarize.length} 条)→ 1 条摘要。`
@@ -336,6 +381,20 @@ export async function compactPipeline(input: CompactPipelineInput): Promise<Comp
     // cc 的失败路径同样是"这轮不压、下轮再试",没有额外的"保留最近 N 条硬截断"兜底——不自造。
     return { messages: input.messages, didCompact: false, compactionFailures: failures + 1 }
   }
+}
+
+/**
+ * 压缩后的首条 user 消息 = cc 三段式(对齐 cc compact/prompt.ts:337-374 getCompactUserSummaryMessage):
+ * ① 续接声明 + 摘要正文;② transcript 路径回溯提示(有路径才带);③ 续跑指令——直接继续、别再向用户确认、
+ * 别复述摘要、别说"我将继续"。首行保留 `[此前对话摘要]` 标记:loop 的 PostCompact 摘要还原与前端展示都锚它。
+ */
+export function buildCompactSummaryUserMessage(summary: string, transcriptPath?: string): string {
+  let out = `[此前对话摘要]\n本会话因上下文耗尽从此前对话延续而来,下面的摘要覆盖更早的部分。\n\n${summary}`
+  if (transcriptPath) {
+    out += `\n\n若需要压缩前的具体细节(代码片段原文、报错原文、生成过的内容),完整逐字记录在:${transcriptPath}(可用读文件工具回看)。`
+  }
+  out += '\n\n请从中断处直接继续,不要再向用户提问确认——不要复述摘要、不要说"我将继续"之类的开场白,像没被打断一样接着干上一个任务。'
+  return out
 }
 
 export function extractCompactionSummary(text: string): string {
