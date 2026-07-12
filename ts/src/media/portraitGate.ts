@@ -96,7 +96,7 @@ export function portraitConsentRequiredResult(intent: PortraitIntent): Record<st
     needs_user_action: true,
     local_preview: false,
     portrait_signals: intent.signals,
-    message: '检测到这是一张真人肖像照片。优化真人形象前需要你先确认一次:你拥有这张照片的使用授权、' +
+    message: '检测到这是一张真人照片。优化照片前需要你先确认一次:你拥有这张照片的使用授权、' +
       '并且被拍的人同意用于门店宣传。确认后我再继续(在请求里带上 portrait_consent=true,或直接回复"已获肖像授权")。',
   }
 }
@@ -114,7 +114,7 @@ export function portraitReferenceRequiredResult(): Record<string, unknown> {
     needs_user_action: true,
     local_preview: false,
     input_qc_status: 'blocked',
-    input_qc_warnings: ['人像项目需要上传 1-3 张同一人物的已授权参考图。'],
+    input_qc_warnings: ['人物照片优化需要上传 1-3 张同一人物的已授权参考图。'],
     message: '请先上传 1-3 张同一人物的已授权参考图；系统不会只用外貌文字重建某个人。',
   }
 }

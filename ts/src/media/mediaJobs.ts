@@ -1303,7 +1303,7 @@ export class MediaJobService {
       const wantsFidelity = /^gpt-image/i.test(config.model) && !formalGptImage2 && (body.input_fidelity === 'high' || mode === 'edit')
       if (formalGptImage2 && (body.input_fidelity === 'high' || mode === 'edit')) {
         body._input_fidelity_status = 'unsupported'
-        body._input_fidelity_risk = '当前正式端点不接受手动高保真参数，已按端点默认图片输入能力处理；请人工确认人物一致性。'
+        body._input_fidelity_risk = '当前正式端点不接受手动高保真参数，已按端点默认图片输入能力处理；请人工确认参考图一致性。'
       }
       if (wantsFidelity) form.set('input_fidelity', String(body.input_fidelity ?? 'high'))
       for (const ref of refs) {
@@ -1327,7 +1327,7 @@ export class MediaJobService {
       } catch (err) {
         if (!wantsFidelity || !isInputFidelityRejection(err)) throw err
         body._input_fidelity_status = 'unsupported'
-        body._input_fidelity_risk = '当前部署端点不接受手动高保真参数，已自动降级为标准图片输入；请人工确认人物一致性。'
+        body._input_fidelity_risk = '当前部署端点不接受手动高保真参数，已自动降级为标准图片输入；请人工确认参考图一致性。'
         form.delete('input_fidelity')
         parsed = await this.readJson(await this.fetchImpl(endpoint, {
           method: 'POST',
@@ -1453,7 +1453,7 @@ export class MediaJobService {
       if (!taskBody.input_fidelity || !isInputFidelityRejection(err)) throw err
       delete taskBody.input_fidelity
       body._input_fidelity_status = 'unsupported'
-      body._input_fidelity_risk = '当前部署端点不接受手动高保真参数，已自动降级为标准图片输入；请人工确认人物一致性。'
+      body._input_fidelity_risk = '当前部署端点不接受手动高保真参数，已自动降级为标准图片输入；请人工确认参考图一致性。'
       submitted = await this.readJson(await this.fetchImpl(endpoint, {
         method: 'POST',
         headers: { 'authorization': `Bearer ${config.token}`, 'content-type': 'application/json' },
@@ -1929,7 +1929,7 @@ export class MediaJobService {
     if (body.input_fidelity === 'high' && (stringArrayFrom(body.reference_image_paths).length > 0 || stringArrayFrom(body.reference_generation_ids).length > 0) && !result.input_fidelity_status) {
       extra.input_fidelity_requested = 'high'
       extra.input_fidelity_status = 'unknown'
-      extra.input_fidelity_risk = '未能从当前部署端点证明高保真输入已接受，请人工确认人物一致性。'
+      extra.input_fidelity_risk = '未能从当前部署端点证明高保真输入已接受，请人工确认参考图一致性。'
     }
 
     const isLocalPreview = result.local_preview === true

@@ -37,6 +37,9 @@ export const imageAssetReferenceSchema = z.object({
 })
 
 export const posterTemplateIdSchema = z.enum([
+  // Existing projects retain their original type. `custom_poster` keeps the
+  // primary path freeform instead of forcing a starter category.
+  'custom_poster',
   'opening_anniversary',
   'membership_recharge',
   'weekend_bundle',
@@ -46,7 +49,7 @@ export const posterTemplateIdSchema = z.enum([
 ])
 
 export const posterBriefSchema = z.object({
-  template_id: posterTemplateIdSchema.default('weekend_bundle'),
+  template_id: posterTemplateIdSchema.default('custom_poster'),
   title: z.string().max(200).default(''),
   offer: z.string().max(200).default(''),
   price: z.string().max(80).default(''),
@@ -84,7 +87,7 @@ export const imageCreativeBriefSchema = z.object({
   schema_version: z.literal(1).default(1),
   scene: z.enum(['poster', 'portrait']).default('poster'),
   user_request: z.string().min(1).max(8000),
-  output_use: z.enum(['moments', 'group', 'poster', 'rollup', 'profile', 'other']).default('poster'),
+  output_use: z.enum(['moments', 'group', 'poster', 'rollup', 'profile', 'photo', 'other']).default('poster'),
   ratio: imageWorkbenchRatioSchema,
   quality: imageQualitySchema,
   reference_assets: z.array(imageAssetReferenceSchema).max(16).default([]),
