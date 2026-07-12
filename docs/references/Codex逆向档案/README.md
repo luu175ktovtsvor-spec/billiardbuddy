@@ -1,7 +1,7 @@
 # Codex(ChatGPT.app 内置)前端逆向档案
 
-> 📌 状态:✅现行 · 最后核对 2026-07-11
-> 🎯 **Codex 比 WorkBuddy 做得好 → 我们桌面前端以本档(Codex)为首要参照,只在个别更优处融合 WorkBuddy。** 交互/信息架构/组件形态一律以 Codex 为准;WorkBuddy 参照见 `../WorkBuddy逆向档案/`。
+> 📌 状态:✅现行 · 最后核对 2026-07-12
+> 🎯 **我们桌面前端完全照抄 Codex**(颜色/字体/文案/流式/布局/组件;强调色浅蓝 `#0a84ff`)。WorkBuddy 逆向档案已整体删除,不再是任何设计依据。
 
 ## 这份档案是什么
 
@@ -21,7 +21,24 @@
 ASAR=/Applications/ChatGPT.app/Contents/Resources/app.asar
 asar list "$ASAR" | grep -i '\.css$' # 看有哪些样式
 node -e 'require("asar").extractFile(process.env.ASAR,"webview/assets/app-C_Uac7Z9.css")' # 抠主样式
+npx @electron/asar extract "$ASAR" /tmp/chatgpt-asar   # 全量解包(~30s,211MB,临时用完即删)
 ```
+
+## asar 资产索引(已沉淀 vs 待挖 · 2026-07-12 盘点)
+
+本档案是**按需摘录**,不是 asar 全量镜像——全量搬没必要,施工哪块挖哪块。索引:
+
+| 资产 | 已沉淀 | asar 里还有 |
+|---|---|---|
+| 设计 token | `真实CSS摘录/全部设计token-1834条.txt` ✅ | — |
+| CSS | 6 份摘录(composer 工具条/头像/model-picker/page-layout/PR diff/消息导航 rail) | **另外 ~24 个 CSS 未摘**(`webview/assets/*.css`,如 plugins-page/onboarding-page/pdf-preview-panel/global-dictation…) |
+| 组件 JS(交互逻辑/DOM 结构) | `06-斜杠命令浮层.md`(反混淆读法全程示范) | **全部组件源码可挖**:主 bundle `app-initial~app-main~…js`(~8.8MB)含 composer/对话流/审批/命令面板;按 i18n key 反查组件位置 |
+| **i18n 功能全景** | 用法已入 `docs/plans/Codex前端对齐-差距清单-2026-07-12.md`(9697 keys 聚类 = 全功能地图) | 48 个语言包(`webview/assets/zh-CN-*.js` 等);**新功能对齐前先查这里**——比截图完整一个量级 |
+| 截图 | 9 张 ✅ | — |
+| 图标/字体 | 结论已记(lucide 149 + KaTeX) | 图标 JS 块可按名提取 |
+| 后端 | `Codex后端代码视图.md` ✅(asar + GitHub openai/codex) | `.vite/build/*` 主进程代码 |
+
+挖矿三步法(照 `06` 篇):① zh-CN 语言包里 grep 中文文案 → 拿到 i18n key;② 在非 locale 的 JS bundle 里 grep 该 key → 锁定组件函数;③ 读上下游函数(压缩名不碍事,看 className/jsx 结构/逻辑流)→ 写成规格文档落进本档案。
 
 ## 一句话结论:Codex 前端长什么样
 
