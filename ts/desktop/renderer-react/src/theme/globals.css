@@ -138,3 +138,6 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible, [tabindex]
 .qf-markdown th, .qf-markdown td { border: 1px solid var(--color-border); padding: .4em .6em; }
 /* 图片块(生图/媒体):圆角 + 发丝边,最大不超容器(照 Codex 媒体块) */
 .qf-markdown img { max-width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--color-border); margin: .6em 0; display: block; }
+
+/* ⌘F 线程内查找的当前命中闪烁高亮(对齐 Codex find bar 定位反馈)。 */
+.qf-find-hit { outline: 2px solid var(--color-primary); outline-offset: 3px; border-radius: 8px; transition: outline-color .3s ease; }

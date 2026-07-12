@@ -54,12 +54,15 @@ function ActivityGroupMulti({ blocks, tools }: { blocks: ActivityBlock[]; tools:
     prevRunningRef.current = isRunning
   }, [isRunning, hasError])
 
-  // 组头文案:进行中 = 最新活动实时行(对齐 Codex fDe active 态);完成 = 分类计数段(hDe summaryParts)。
+  // 组头文案:进行中 = 最新活动实时行(对齐 Codex fDe active 态);完成 = 分类计数段(hDe summaryParts);
+  // 只有一个工具的组(工具+思考混组)直接用该工具自己的动词文案,免得兜底「已处理」和回合头重复。
   const headerText = runningTool
     ? `${statusVerb(runningTool.tool, 'running')} ${toolSummary(runningTool.tool, runningTool.input)}`.trim()
     : thinkingActive
       ? '正在想…'
-      : summarizeActivity(tools.map((b) => b.tool))
+      : tools.length === 1
+        ? `${statusVerb(tools[0]!.tool, tools[0]!.status)} ${toolSummary(tools[0]!.tool, tools[0]!.input)}`.trim()
+        : summarizeActivity(tools.map((b) => b.tool))
 
   return (
     <div className="my-0.5" data-block="tool-group">
