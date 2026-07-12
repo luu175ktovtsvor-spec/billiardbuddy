@@ -30,7 +30,6 @@ export function CommandPalette() {
   const open = useUiStore((s) => s.paletteOpen)
   const setOpen = useUiStore((s) => s.setPaletteOpen)
   const setNav = useUiStore((s) => s.setNav)
-  const setSettingsOpen = useUiStore((s) => s.setSettingsOpen)
   const sessions = useSessionStore((s) => s.sessions)
   const [query, setQuery] = useState('')
   const [sel, setSel] = useState(0)
@@ -43,9 +42,9 @@ export function CommandPalette() {
       { id: 'new', label: '新建任务', icon: <IconEdit size={16} />, run: () => { setNav('chat'); openNewConversation() } },
       { id: 'scheduled', label: '已安排', icon: <IconClock size={16} />, run: () => setNav('scheduled') },
       { id: 'plugins', label: '插件', icon: <IconPuzzle size={16} />, run: () => setNav('plugins') },
-      { id: 'settings', label: '设置', icon: <IconSettings size={16} />, run: () => setSettingsOpen(true) },
+      { id: 'settings', label: '设置', icon: <IconSettings size={16} />, run: () => setNav('settings') },
     ],
-    [setNav, setSettingsOpen],
+    [setNav],
   )
 
   const q = query.trim().toLowerCase()

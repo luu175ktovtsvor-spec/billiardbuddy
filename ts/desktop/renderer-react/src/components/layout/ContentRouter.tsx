@@ -25,7 +25,7 @@ export function ContentRouter() {
     case 'session':
       return <ActiveSession />
     case 'settings':
-      // 设置走弹窗(SettingsModal),此分支保留兜底。
+      // 设置已是全页(AppShell nav===settings → SettingsPage),此 tab 分支仅兜底。
       return <EmptySession />
     default:
       return <EmptySession />

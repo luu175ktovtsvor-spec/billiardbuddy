@@ -30,20 +30,18 @@ export function initializeTheme() {
   applyTheme(readStoredTheme())
 }
 
-/** 主区当前视图(照 Codex 左栏:对话 / 生图 / 剪视频 / 已安排 / 插件 各占主区)。默认对话。 */
-export type MainNav = 'chat' | 'creation' | 'video' | 'scheduled' | 'plugins'
+/** 主区当前视图(照 Codex 左栏:对话 / 生图 / 剪视频 / 已安排 / 插件 / 设置全页 各占主区)。默认对话。 */
+export type MainNav = 'chat' | 'creation' | 'video' | 'scheduled' | 'plugins' | 'settings'
 
 interface UiState {
   theme: ThemeMode
   effectiveTheme: 'light' | 'dark'
-  settingsOpen: boolean
   sidebarCollapsed: boolean
   terminalOpen: boolean
   paletteOpen: boolean
   nav: MainNav
   setTheme: (mode: ThemeMode) => void
   toggleTheme: () => void
-  setSettingsOpen: (open: boolean) => void
   toggleSidebar: () => void
   toggleTerminal: () => void
   setPaletteOpen: (open: boolean) => void
@@ -53,12 +51,10 @@ interface UiState {
 export const useUiStore = create<UiState>((set, get) => ({
   theme: readStoredTheme(),
   effectiveTheme: resolveEffective(readStoredTheme()),
-  settingsOpen: false,
   sidebarCollapsed: false,
   terminalOpen: false,
   paletteOpen: false,
   nav: 'chat',
-  setSettingsOpen: (open) => set({ settingsOpen: open }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   toggleTerminal: () => set((s) => ({ terminalOpen: !s.terminalOpen })),
   setPaletteOpen: (open) => set({ paletteOpen: open }),

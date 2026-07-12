@@ -5,11 +5,12 @@ import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
 import { ContentRouter } from './ContentRouter'
 import { FilePreviewPanel } from '../workspace/FilePreviewPanel'
-import { SettingsModal } from '../settings/SettingsModal'
+import { SettingsPage } from '../../pages/SettingsPage'
 import { Toaster } from '../shared/Toaster'
 import { CommandPalette } from '../shared/CommandPalette'
 import { initializeDesktopServerUrl } from '../../lib/desktopRuntime'
 import { useSessionStore } from '../../stores/sessionStore'
+import { useSettingsStore } from '../../stores/settingsStore'
 import { useUiStore } from '../../stores/uiStore'
 import { useFilePreviewStore } from '../../stores/filePreviewStore'
 import { useChatStore } from '../../stores/chatStore'
@@ -86,6 +87,24 @@ export function AppShell() {
     })
   }, [])
 
+  // 运行时防休眠(对齐 Codex preventSleepWhileRunning):偏好开 + 会话 running → start,否则 stop。
+  // lastOn 防抖:powerSaveBlocker 句柄别重复叠加;卸载兜底 stop。
+  useEffect(() => {
+    let lastOn = false
+    const apply = () => {
+      const ps = getDesktopHost().preventSleep
+      if (!ps) return
+      const on = useSettingsStore.getState().preventSleepWhileRunning && useChatStore.getState().status === 'running'
+      if (on === lastOn) return
+      lastOn = on
+      void (on ? ps.start() : ps.stop())
+    }
+    const u1 = useChatStore.subscribe(apply)
+    const u2 = useSettingsStore.subscribe(apply)
+    apply()
+    return () => { u1(); u2(); if (lastOn) void getDesktopHost().preventSleep?.stop() }
+  }, [])
+
   // 工具改文件后自动刷新右侧工作区(文件树 + git 计数),对齐 Codex「改动实时反映到右栏」:
   // 此前 loadWorkspace 只手动触发,agent 改完文件右侧不动。订阅 chatStore 里"已完成的改文件类工具"计数,
   // 增长即防抖重载(仅面板开着时,省流量);会话切换 blocks 清空 → 计数回落自动复位,不误触。
@@ -128,6 +147,17 @@ export function AppShell() {
     )
   }
 
+  // 设置全页(照 Codex:整窗覆盖含侧栏区,左上「返回应用」回对话)。
+  if (nav === 'settings') {
+    return (
+      <div className="flex h-full" data-testid="app-shell">
+        <SettingsPage />
+        <CommandPalette />
+        <Toaster />
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-full" data-testid="app-shell">
       {!sidebarCollapsed && <Sidebar />}
@@ -144,8 +174,6 @@ export function AppShell() {
         {/* 终端 UI 已下架(asar 核实 Codex 终端 = 右面板 tab + xterm.js/node-pty 真交互终端,管手动命令与后台进程;
             AI 一次性命令的过程只在对话流内联显示,不灌终端)。真交互终端落地前不挂任何终端 UI,免得点开是个假的。 */}
       </div>
-      {/* 设置弹窗(左栏「设置」按钮触发) */}
-      <SettingsModal />
       {/* 命令面板(⌘K / 顶栏搜索/历史) */}
       <CommandPalette />
       {/* 全局 toast(操作反馈) */}
