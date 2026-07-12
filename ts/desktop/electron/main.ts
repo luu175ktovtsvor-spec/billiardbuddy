@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, Tray, nativeImage, screen, shell, type MenuItemConstructorOptions } from 'electron'
+import { DESKTOP_IPC } from '../../shared/contracts/desktop-host'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { existsSync, readdirSync } from 'node:fs'
@@ -232,7 +233,7 @@ function buildAppMenu(): void {
       {
         label: '选择工作区…',
         accelerator: 'CmdOrCtrl+O',
-        click: () => { void mainWindow?.webContents.send('desktop:menu', 'pick-workspace') },
+        click: () => { void mainWindow?.webContents.send(DESKTOP_IPC.menu, 'pick-workspace') },
       },
       { type: 'separator' },
       isMac ? { role: 'close', label: '关闭窗口' } : { role: 'quit', label: '退出' },
@@ -300,10 +301,10 @@ function createTray(): void {
 function registerIpc(): void {
   // 后端地址发现(对齐 cc runtime:getServerUrl):main 已 reserveServerPort 抢到 serverPort,
   // React 壳(QF_UI_REACT,file:// 加载)经此拿 sidecar 地址再 fetch/WS。vanilla 默认路径不用它,注册无副作用。
-  ipcMain.handle('runtime:getServerUrl', () => `http://${SERVER_BIND_HOST}:${serverPort}`)
+  ipcMain.handle(DESKTOP_IPC.getServerUrl, () => `http://${SERVER_BIND_HOST}:${serverPort}`)
 
   // 原生文件夹选择器(§7 用户选择工作区):无 payload,返回选中目录或 null。
-  ipcMain.handle('desktop:pickWorkspace', async () => {
+  ipcMain.handle(DESKTOP_IPC.pickWorkspace, async () => {
     const win = mainWindow ?? BrowserWindow.getAllWindows()[0]
     if (!win) return null
     const result = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], title: '选择工作区文件夹' })
@@ -311,7 +312,7 @@ function registerIpc(): void {
   })
 
   // 原生视频文件多选(剪视频看板导入素材):返回选中视频的绝对路径数组或 null。
-  ipcMain.handle('desktop:pickVideoFiles', async () => {
+  ipcMain.handle(DESKTOP_IPC.pickVideoFiles, async () => {
     const win = mainWindow ?? BrowserWindow.getAllWindows()[0]
     if (!win) return null
     const result = await dialog.showOpenDialog(win, {
@@ -323,7 +324,7 @@ function registerIpc(): void {
   })
 
   // 通用「文件和文件夹」多选(对话框附件:把选中路径插进输入框,让本机 agent 去读)。文件夹与文件都可选(macOS 原生支持同时)。
-  ipcMain.handle('desktop:pickPaths', async () => {
+  ipcMain.handle(DESKTOP_IPC.pickPaths, async () => {
     const win = mainWindow ?? BrowserWindow.getAllWindows()[0]
     if (!win) return null
     const result = await dialog.showOpenDialog(win, {
@@ -336,11 +337,11 @@ function registerIpc(): void {
   // 「打开/在 Finder 中显示」(右面板文件操作,对齐 Codex):openPath 用系统默认程序打开
   //(shell.openPath 契约:返回非空字符串 = 错误信息、'' = 成功);revealPath 在 Finder/文件管理器里定位文件。
   const isSanePath = (p: unknown): p is string => typeof p === 'string' && p.trim().length > 0 && p.length < 4096
-  ipcMain.handle('desktop:openPath', async (_e, p: unknown) => {
+  ipcMain.handle(DESKTOP_IPC.openPath, async (_e, p: unknown) => {
     if (!isSanePath(p)) return '无效路径'
     try { return await shell.openPath(p) } catch (err) { return err instanceof Error ? err.message : String(err) }
   })
-  ipcMain.handle('desktop:revealPath', (_e, p: unknown) => {
+  ipcMain.handle(DESKTOP_IPC.revealPath, (_e, p: unknown) => {
     if (!isSanePath(p)) return false
     shell.showItemInFolder(p)
     return true
@@ -348,8 +349,8 @@ function registerIpc(): void {
 
   // 防休眠:长任务(生图/渲染/长 agent 循环)开始时调 start、结束时调 stop,阻止系统睡眠打断任务。
   // 引用计数式,可并发多个长任务;渲染层从 desktopHost.preventSleep.start()/stop() 成对调用。
-  ipcMain.handle('desktop:preventSleep:start', () => { startPreventSleep(); return isPreventingSleep() })
-  ipcMain.handle('desktop:preventSleep:stop', () => { stopPreventSleep(); return isPreventingSleep() })
+  ipcMain.handle(DESKTOP_IPC.preventSleepStart, () => { startPreventSleep(); return isPreventingSleep() })
+  ipcMain.handle(DESKTOP_IPC.preventSleepStop, () => { stopPreventSleep(); return isPreventingSleep() })
 }
 
 async function boot(): Promise<void> {

@@ -1,0 +1,4 @@
+interface:
+  display_name: "测试策略设计"
+  short_description: "为模块改动选择单元、契约、集成、端到端和冒烟测试证据"
+  default_prompt: "使用 $design-test-strategy 为这次改动设计最小但充分的测试证据。"

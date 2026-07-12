@@ -30,6 +30,10 @@ node .agents/skills/project-change-router/scripts/inspect-change-surface.mjs <�
 - 新功能纵向跨越契约、后端和前端：执行 `../deliver-fullstack-feature/SKILL.md`。
 - 改桌面端与 `gateway/`、`relay/`、`dataeye/` 之间的协议：执行 `../change-cross-service-api/SKILL.md`。
 - 只调整目录、依赖方向或拆巨型文件且必须保持行为：执行 `../refactor-module-boundaries/SKILL.md`。
+- 新功能、回归修复、契约或重构需要选择测试证据：叠加 `../design-test-strategy/SKILL.md`。
+- 涉及文件、命令、权限、IPC、密钥、远程调用、扩展或更新：叠加 `../audit-security-boundaries/SKILL.md`。
+- 需要后端真实 Agent 链路：执行 `../verify-backend-e2e/SKILL.md`；需要 Electron 用户路径：执行 `../verify-desktop-e2e/SKILL.md`。
+- 改版本、打包、打 tag 或交付安装包：执行 `../release-desktop-safely/SKILL.md`。
 - 新增/删除/改名模块，或改变连接、部署、验证流程：同次执行 `../maintain-project-skills/SKILL.md`。
 - 完成实现后：执行 `../verify-modular-change/SKILL.md`。
 
@@ -45,12 +49,14 @@ node .agents/skills/project-change-router/scripts/inspect-change-surface.mjs <�
 4. 是否改变共享契约或远程协议？
 5. 哪些文件预计修改，哪些相邻模块明确不改？
 6. 用什么测试证明两端接通且没有破坏兼容性？
+7. 是否跨越安全、部署或发布边界？失败后如何回滚？
 
 ## 项目专属边界
 
 - 先判 A 线 Agent 循环还是 B 线确定性产品功能；不要创建第三套“衔接层”。
 - 保持本地内核的 JSONL/JSON 文件存储，不引入 SQL。
 - 不在 React 组件里拼路由或解释原始响应；通过功能 API 和 store 入口归一化。
+- 新增 WS、SSE、IPC 和跨层 REST 契约优先落 `ts/shared/contracts`，用 Zod 推导类型并在边界解析；禁止新增手写镜像。
 - 不继续向 `ts/src/server/index.ts` 堆独立业务逻辑；新增路由优先进入责任模块。
 - 本地 renderer 与 sidecar 同包发布，可原子改契约；远程服务必须向后兼容并按服务器先、客户端后发布。
 - 保留工作树中用户已有改动；禁止借模块化之名扩大重构范围。
@@ -58,4 +64,4 @@ node .agents/skills/project-change-router/scripts/inspect-change-surface.mjs <�
 
 ## 收工条件
 
-只有在契约、实现、消费者、测试、运行验证和必要文档全部闭环后才宣布完成。最终回复列出主责模块、实际改动、验证证据和剩余风险。
+只有在契约、实现、消费者、测试、运行验证和必要文档全部闭环，且 `bash scripts/quality_gate.sh` 通过后才宣布完成。最终回复列出主责模块、实际改动、验证证据和剩余风险。

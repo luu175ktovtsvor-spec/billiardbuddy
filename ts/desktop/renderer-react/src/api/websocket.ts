@@ -1,7 +1,7 @@
 // WebSocket 管理器(交互机制抄 cc api/websocket:每会话一条 WS + ping 心跳 + 指数退避重连 + 离线队列)。
 // ⚠️ 唯一改动 = URL 构造对齐我们后端:ws://host/agent/ws?conversationId=<id>&after=<n>(单端点,conversationId 走 query),
 //    不是 cc 的 /ws/<sessionId>。消息信封见 types/chat.ts。
-import type { ClientMessage, ServerMessage } from '../types/chat'
+import { parseServerMessage, type ClientMessage, type ServerMessage } from '../types/chat'
 import { getBaseUrl } from './client'
 
 type MessageHandler = (msg: ServerMessage) => void
@@ -67,7 +67,7 @@ class WebSocketManager {
     }
     ws.onmessage = (event) => {
       try {
-        const msg = JSON.parse(event.data as string) as ServerMessage
+        const msg = parseServerMessage(JSON.parse(event.data as string))
         for (const handler of conn.handlers) handler(msg)
       } catch {
         // 忽略坏消息

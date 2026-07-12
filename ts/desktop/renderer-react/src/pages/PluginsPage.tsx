@@ -10,17 +10,7 @@ import {
 } from '../components/shared/icons'
 import { t } from '../i18n'
 import { toast } from '../stores/toastStore'
-import { api } from '../api/client'
-import { mcpApi, addInputFromPreset, type McpPreset, type McpServerStatus, type AddMcpInput } from '../api/mcp'
-
-/** 技能条目(接后端 /api/v1/agent/skills)。 */
-interface SkillInfo {
-  name: string
-  description: string
-  source?: string
-  argument_hint?: string
-  user_invocable?: boolean
-}
+import { mcpApi, addInputFromPreset, type McpPreset, type McpServerStatus, type AddMcpInput, type SkillInfo } from '../api/mcp'
 
 interface Builtin {
   id: string
@@ -138,7 +128,7 @@ export function PluginsPage() {
       // 后端未就绪/离线:列表留空,不崩(页面仍展示内置能力+领域包)。
     }
     try {
-      const s = await api.get<{ skills: SkillInfo[] }>('/api/v1/agent/skills')
+      const s = await mcpApi.skills()
       setSkills(s.skills ?? [])
     } catch { /* 技能列表拿不到不影响页面其余部分 */ }
   }

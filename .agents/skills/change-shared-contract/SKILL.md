@@ -11,8 +11,8 @@ description: Change shared REST, SSE, WebSocket, Electron IPC, event, error, or 
 
 1. 列出生产者、所有消费者、传输方式和当前契约文件。
 2. 明确兼容策略：新增可选字段、双读单写、旧值适配、版本端点，或同包原子替换。
-3. 优先建立单一契约源。新契约使用 Zod Schema，并由 Schema 推导 TypeScript 类型；避免新增手写镜像。
-4. 在边界运行时解析：后端解析请求，前端 API/WS 入口解析响应。不要用 `as T` 把未知 JSON 当成可信类型。
+3. 优先建立单一契约源。桌面跨层契约放 `ts/shared/contracts`；新契约使用 Zod Schema，并由 Schema 推导 TypeScript 类型，禁止新增手写镜像。
+4. 在边界运行时解析：后端解析请求，前端 API/WS 入口解析响应。不要用 `as T` 把未知 JSON 当成可信类型；共享 Schema 的合法、非法和兼容样例必须进入测试。
 5. 同一次修改完成生产者、消费者、错误/加载状态和契约测试。
 6. 删除旧契约前先确认所有消费者和已发布客户端已迁移。
 

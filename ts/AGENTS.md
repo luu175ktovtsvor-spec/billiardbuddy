@@ -11,3 +11,6 @@
 - **可用 `node:` API**(child_process/net/fs):sidecar/electron plumbing 要 Node+Bun 双运行时,别改成 Bun 专有 API。
 - **产品红线不丢**:审批闸只卡对外/不可逆 · 全本地 · 免登录单用户 · 内置 key 走网关藏 key · 改文件前自动备份可回滚 · **白标绝不暴露底层模型** · 台球是可 @挂载领域包。
 - **每批**:先写行为规格/失败测试 → 可直接移植/改写实现 → 过验收门 → 类型检查/相关测试 → 回写当前施工矩阵。
+- **跨层契约唯一源**:`ts/shared/contracts` 的 Zod Schema + 推导类型；renderer/sidecar/IPC 不再手写两份。
+- **完成硬闸**:根目录运行 `bash scripts/quality_gate.sh`；`server/index.ts`、`chatStore.ts` 不得突破治理基线继续膨胀。
+- **两个 E2E 分工**:`bun run e2e:backend` 验 sidecar/ReAct/权限/工具/落盘；`bun run e2e:desktop` 验 Electron/React/preload/IPC/sidecar 用户路径，不互相替代。

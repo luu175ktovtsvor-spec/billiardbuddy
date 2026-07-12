@@ -1,6 +1,6 @@
 # billiards-ts-harness · 工程规则（ts/ 目录 · TS/Bun 内核）
 
-> **权威入口**:上级 `docs/当前目标与文档口径-2026-07-07.md` + `docs/plans/TS-cc-haha-v0.4.5-内核迁移矩阵-2026-07-07.md` + `docs/plans/内核A线对齐-差异总清单-波次-2026-07-10.md`。当前直接在 `main` 上施工;旧 `ts-harness-rewrite` 等分支名只代表历史阶段。本目录目标是把 coding-agent 内核能力做强;CC-Haha 已有许可,可直接复制/抄/移植/改写其可靠机制,并用本仓库测试兜住边界。
+> **权威入口**:上级 `docs/当前目标与文档口径-2026-07-07.md` + `docs/plans/TS-cc-haha-v0.4.5-内核迁移矩阵-2026-07-07.md` + `docs/plans/内核A线对齐-差异总清单-波次-2026-07-10.md`。非平凡改动使用短生命周期分支和小提交，合入前执行根目录统一质量门；旧 `ts-harness-rewrite` 等分支名只代表历史阶段。本目录目标是把 coding-agent 内核能力做强;CC-Haha 已有许可,可直接复制/抄/移植/改写其可靠机制,并用本仓库测试兜住边界。
 
 ## 铁律(违反即破坏产品)
 1. **迁移口径:CC-Haha 可直接复制/抄/移植/改写,效果对齐是唯一硬标准(owner 2026-07-07 更新)**:cc-haha 的**内核行为、架构边界、边界测试全量覆盖**；`~/Desktop/cc-haha-ref/LICENSE` 已允许 use/copy/modify/distribute/publish copies,所以可直接复制/抄/移植/改写实现。别为「看起来原创」而牺牲边界质量；复杂逻辑必须先写行为对齐测试，再实现到同输入→同决策。⚠️**行为对齐(唯一验收硬闸 · 全 harness 窗通用)**:路径校验/沙箱/危险命令/proxy 转换等确定性逻辑，验收拿刁钻边界(`../escape`、`\\server\share`、`~root/.ssh`、`rm -rf *` 等)断言判得跟 cc-haha 一模一样,别只测自己想到的用例。
@@ -12,6 +12,8 @@
 7. **产品红线不因换语言丢**:审批闸只卡对外/不可逆动作 · 全本地 · 免登录单用户 · 内置 key 走网关藏 key · 改文件前自动备份可回滚 · **白标绝不暴露底层模型** · 台球是可 @挂载领域包不是产品边界。
 8. **原生插件**:`.node`(sharp/onnx/whisper)大概率**塞不进 `bun build --compile` 单二进制**,当 sidecar 文件随包发;嵌入走 `transformers.js`——⚠️**服务端就是原生 `onnxruntime-node`(不是 WASM,HF 官方证实)**,且在 **Bun+Windows 会段错误**(bun#28008),**放 Node 子进程 sidecar 跑、别在 Bun 进程内**(见主文档 §0.6-2)。
 9. **注释从简、责任边界对齐 cc-haha**(主文档 §9)。
+10. **共享契约**:renderer、sidecar、IPC 的跨层 Schema 统一在 `ts/shared/contracts`;Zod 推导类型并在边界解析,禁止新增手写镜像。
+11. **机械质量门**:完成、提交、发布前从根目录运行 `bash scripts/quality_gate.sh`;不得调高架构基线掩盖巨型文件增长。
 
 ## 对上面 Bun 默认建议的**本工程校正**(别被通用建议带偏)
 - ✅ **可以用 `node:` API**(`node:child_process`/`node:net`/`node:fs`):sidecar/electron plumbing 要在 **Node(electron 主进程)+ Bun(后端)双运行时**都能跑,故用 `node:` 前缀而非 Bun 专有 API——这是**有意为之**,别改成 `Bun.file`/`Bun.$`。
@@ -25,4 +27,7 @@ bun run typecheck      # tsc --noEmit
 bun test               # 全量(发现 ts/**/*.test.ts)
 bun run build:sidecar  # bun build --compile 出本机 sidecar 二进制
 bun run desktop:dev    # 最小 Electron 壳拉起 sidecar(需先 build:sidecar)
+bun run e2e:backend    # bun:test 启动真实 sidecar,外部模型用确定性脚本替代
+bun run e2e:desktop    # @playwright/test 启动当前 worktree Electron,隔离状态并留 trace/截图/日志
+cd .. && bash scripts/quality_gate.sh # Skill/工作流/密钥/架构/typecheck/测试/构建总门
 ```

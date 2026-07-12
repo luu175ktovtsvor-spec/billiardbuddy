@@ -1,0 +1,4 @@
+interface:
+  display_name: "桌面端到端验证"
+  short_description: "联合 DOM、截图、主进程、API、日志和存储验证桌面链路"
+  default_prompt: "使用 $verify-desktop-e2e 验证这项桌面改动的真实用户路径。"

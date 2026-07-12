@@ -1,50 +1,15 @@
-// WS 消息信封(顶层 type),与后端 ts/src/server/index.ts 的 /agent/ws handler 逐字段对齐。
-//  - 客户端 → 服务端 = ClientMessage(handler 的 message() 分支)
-//  - 服务端 → 客户端 = ServerMessage(wsSend/wsError/handleWsRun 发出的)
-import type { SessionStreamEvent } from './events'
-
-/** 权限五档(对齐 cc / 后端 permissionModeFrom)。 */
-export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions' | 'dontAsk'
-
-/** 客户端 → 服务端。 */
-export type ClientMessage =
-  | {
-      type: 'run'
-      message: string
-      conversationId: string
-      permissionMode?: PermissionMode
-      enabled_packs?: string[]
-      working_dir?: string
-    }
-  | { type: 'replay'; conversationId: string; after: number }
-  | { type: 'ping'; ts?: number }
-  | { type: 'interrupt'; conversationId: string }
-  | { type: 'steer'; message: string; conversationId: string }
-  | {
-      type: 'approve'
-      tool: string
-      args: unknown
-      token: string
-      conversationId: string
-      permissionMode?: PermissionMode
-      remember_approval?: boolean
-      /** 本会话的工作目录:审批放行的执行必须跑在原会话目录(漏带时后端从 session meta 自愈)。 */
-      working_dir?: string
-      /** 本会话已挂的领域包:审批放行的执行要带,否则拿不到包工具/命令(漏带时后端从 session meta 自愈)。 */
-      enabled_packs?: string[]
-    }
-  | { type: 'reject'; tool: string; args: unknown; conversationId: string }
-
-/** 服务端 → 客户端。 */
-export type ServerMessage =
-  | { type: 'ready'; conversationId: string }
-  | { type: 'error'; error: string }
-  | { type: 'pong'; ts?: number }
-  | { type: 'event'; seq: number; ts: number | string; event: SessionStreamEvent; replay?: boolean } // ⚠️ ts 实际 wire 上是 ISO 字符串(events JSONL 的 Date 序列化),消费方要 Date.parse 归一,别按 number 判
-  | { type: 'approve_result'; [key: string]: unknown }
-  | { type: 'reject_result'; ok: boolean }
-  | { type: 'steer_result'; conversationId: string; queued: number; running: boolean }
-  | { type: 'interrupt_result'; conversationId: string; interrupted: boolean }
+// WS 信封的权威 Schema 与类型位于 ts/shared/contracts，renderer 不再手写镜像。
+export {
+  clientMessageSchema,
+  parseServerMessage,
+  permissionModeSchema,
+  serverMessageSchema,
+} from '../../../../shared/contracts/agent-websocket'
+export type {
+  ClientMessage,
+  PermissionMode,
+  ServerMessage,
+} from '../../../../shared/contracts/agent-websocket'
 
 /** 会话列表项(GET /sessions → { sessions: SessionSummary[] })。
  *  ⚠️ 后端 meta 的时间是 ISO 字符串,sessionStore.refresh 在入口统一转成 epoch ms(不然相对时间算出 NaN)。 */

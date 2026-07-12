@@ -44,7 +44,7 @@
 
 **在建/待办(详见总览 §九)**:右侧交互预览直接对标 cc、不留分叉(task#17)→ 前端后续批次(task#18)→ 配置/工作目录/会话 checkpoint 持久化(task#19)→ 生图人像质检/授权/spend 闸(task#11)→ 桌面基建余项(task#21)→ 自动更新发包 + dataeye 上报重接(task#13/#16)→ 命令搬运波 0-5(task#24)→ 分发前白标 scrub + 知识/guardrails 加密(task#22/#23,**打包前才做、开发期保留明文**)→ 台球知识重策展(task#12)。另有一份全维度盘点缺口清单在独立任务台账跟踪(横切缺口:web/多模态、后台执行原语、hooks/MCP 生态、安全洞、崩溃兜底、领域包可插拔、Windows 对等、数据生命周期、验证债等)。
 
-**工作方式**:直接在 `main` 上施工。TS 内核以 `~/Desktop/cc-haha-ref` 为可执行规格,唯一验收硬闸是行为对齐 + 测试锁边界。
+**工作方式**:非平凡改动用短生命周期分支和小提交,功能修改与结构重构分开;合入前跑统一质量门,保持 `main` 可构建、可回滚。TS 内核以 `~/Desktop/cc-haha-ref` 为可执行规格,行为对齐测试是内核验收标准。
 
 ## 核心架构原则
 
@@ -72,6 +72,8 @@ Codex 使用同一套规范的权威实现 `.agents/skills/project-change-router
 
 Skill 维护采用“架构变化即时更新、普通实现不更新”：新增/删除/改名/拆分/合并模块，或连接方式、部署边界、验证命令变化时，同一次任务执行 `.claude/skills/维护工程Skill/SKILL.md`；新开的 AI 任务读取最新版。
 
+规则分层：本次需求写在任务里，长期铁律写 `AGENTS.md/CLAUDE.md`，重复流程写 Skill，跨层协议写 `ts/shared/contracts`，必须执行的约束写 `scripts/quality_gate.sh` 和 CI。安全敏感改动叠加 `/安全边界审计`；发布叠加 `/桌面发布与回滚`。
+
 ### 前端(桌面 UI · `ts/desktop/renderer-react/` · React + Tailwind v4)
 - **全面照抄 Codex(ChatGPT.app 内置)**(推翻旧「走法B + 颜色/文案抄 WorkBuddy」):颜色/字体/文案/流式/布局/组件全对标 Codex。逆向真值 = 解包本地 `/Applications/ChatGPT.app` 的 `app.asar` 读真实 CSS/token,档案见 `docs/references/Codex逆向档案/`(01 设计系统 ~ 05 我们前端怎么做 + 真实截图 + 真实CSS摘录)。
 - **强调色改浅蓝**(不用绿、也不用 WorkBuddy 色):主按钮/发送/选中/焦点/链接走蓝 `#0a84ff`(暗 `#409cff`),文字/表面走中性近黑灰(前景色 `color-mix` 分级)。token 全在 `theme/workbuddy-tokens.css`(现 = Codex 主题层)。**前端不显示模型名**(白标)。左栏照 Codex(新建任务/已安排/插件/项目);助手回复无头像无名、上方「已处理 Ns」。
@@ -92,8 +94,8 @@ Skill 维护采用“架构变化即时更新、普通实现不更新”：新�
 
 1. **改前先找契约**:动手前定位这条数据的完整链路——IPC 白名单、路由/事件名、类型定义——列清两端谁生产谁消费,没找全不动手。
 2. **两头一起改**:动了一端的字段/事件/路由/类型,同一次施工把另一端和共享类型同步改完,绝不留"前端改了后端没接、后端改了前端不知道"的半截活。
-3. **收工双向验证**:typecheck + `bun test` 之外,凡涉界面的跑 e2e(billiardbuddy-desktop-e2e)把受影响路径真点一遍;接口层新增的连接点没测试盖到就补一条。
-4. **契约以后端为准**:前端照抄 Codex 只管"长什么样";Codex 的 UI 需要什么数据,就在 `ts/` 后端补真实能力或明确降级,禁止前端 mock 假数据糊界面(反逻辑死路)。
+3. **收工双向验证**:统一质量门之外,后端 Agent 链路执行 `/后端端到端验证`,凡涉界面的执行 `/桌面端到端验证` 把受影响路径真点一遍;接口层新增连接点必须补契约测试。
+4. **契约单一真相源**:跨 renderer/sidecar/IPC 的 Schema 放 `ts/shared/contracts`,由 Zod 推导两端类型并在边界解析;前端照抄 Codex 只管"长什么样",禁止 mock 假数据糊界面。
 
 ## 台球运营专家(可挂载领域包 · PPT-only)
 
@@ -107,7 +109,11 @@ Skill 维护采用“架构变化即时更新、普通实现不更新”：新�
 ## 开发 / 测试(当前栈 = `ts/`)
 
 ```bash
-bash scripts/test.sh # = cd ts && bun test + bun run typecheck
+bash scripts/quality_gate.sh # 完成/提交/发布前统一硬闸
+bash scripts/quality_gate.sh --quick # 开发中快速反馈,跳过 UI/Electron 构建
+bash scripts/test.sh # 旧的快速测试入口:cd ts && bun test + bun run typecheck
+cd ts && bun run e2e:backend # Bun sidecar/ReAct/权限/工具/落盘的确定性后端 E2E
+cd ts && bun run e2e:desktop # Playwright Test 启动 Electron+React+sidecar 的桌面 E2E
 cd ts && bun test # 全量单测(发现 ts/**/*.test.ts)
 cd ts && bun test src/harness/loop.test.ts # 跑单文件
 cd ts && bun run typecheck # tsc --noEmit

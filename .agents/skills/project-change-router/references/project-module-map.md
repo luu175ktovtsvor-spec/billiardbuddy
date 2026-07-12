@@ -13,7 +13,7 @@
 
 | 模块 | 当前主要路径 | 负责内容 |
 |---|---|---|
-| 契约与传输 | `ts/src/types`、`ts/src/server`、renderer `api/types` | REST/SSE/WS/IPC 数据边界 |
+| 契约与传输 | `ts/shared/contracts`、`ts/src/server`、renderer `api` | REST/SSE/WS/IPC Schema、边界解析和兼容入口 |
 | Electron/sidecar | `ts/desktop/electron`、`desktop/sidecars` | 窗口、IPC、进程生命周期 |
 | 会话与事件流 | `server/services/session*`、renderer chat/session | 会话、transcript、回放、rewind |
 | Agent 循环 | `ts/src/harness` | ReAct 循环和系统提示 |
@@ -40,6 +40,17 @@
 ## 依赖规则
 
 - UI 依赖功能 API/store；功能 API 依赖共享契约；不得反向依赖。
+- renderer 和后端共用 `ts/shared/contracts` 的 Zod Schema/推导类型；禁止新增两端手写镜像。
 - route 依赖应用服务；应用服务依赖领域接口；adapter 实现接口。
 - 跨模块不得导入对方内部文件。
 - 主责模块只有一个；共享模块只放稳定且确实被多个域共同拥有的概念。
+
+## 工程治理模块
+
+| 责任 | 权威位置 |
+|---|---|
+| AI 长期规则 | 根/路径级 `AGENTS.md`、`CLAUDE.md` |
+| 重复工作流 | `.agents/skills` 权威 Skill + `.claude/skills` 中文入口 |
+| 机械质量门 | `scripts/quality_gate.sh`、`scripts/quality/*` |
+| 持续集成 | `.github/workflows/ts-harness-ci.yml` |
+| Windows 安装包 | `.github/workflows/desktop-build-win.yml`，当前只产 artifact 不自动发布 |

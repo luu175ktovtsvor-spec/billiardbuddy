@@ -28,4 +28,5 @@ description: Implement React renderer changes within a feature boundary, separat
 - 遵守根 `CLAUDE.md` 的 Codex UI 设计口径和白标规则。
 - A 线对话走统一 WS；B 线慢任务走 REST submit/poll 或事件进度；OS 能力走 IPC。
 - 不直接扩大 `chatStore.ts`；新增事件逻辑优先提取纯 reducer。
+- renderer 不直接导入后端内部模块、Electron 或 Node；共享数据只依赖 `ts/shared/contracts`，原生能力只走 `desktopHost`。
 - 保证所有按钮有真实动作或明确不可用状态，禁止静默假按钮。

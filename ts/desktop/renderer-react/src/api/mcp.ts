@@ -41,6 +41,14 @@ export interface McpMutationResult {
   message: string
 }
 
+export interface SkillInfo {
+  name: string
+  description: string
+  source?: string
+  argument_hint?: string
+  user_invocable?: boolean
+}
+
 /** 添加 MCP 的入参:本机进程(command+args)或远程(url + transport)。 */
 export interface AddMcpInput {
   name: string
@@ -58,6 +66,8 @@ export const mcpApi = {
     api.get<McpListResult>(`/api/v1/agent/mcp${workspaceRoot ? `?workspaceRoot=${encodeURIComponent(workspaceRoot)}` : ''}`),
   /** 预设目录(一键启用:Playwright / 高德)。 */
   presets: () => api.get<{ presets: McpPreset[] }>('/api/v1/agent/mcp/presets'),
+  /** 当前 sidecar 可发现的技能列表。 */
+  skills: () => api.get<{ skills: SkillInfo[] }>('/api/v1/agent/skills'),
   /** 添加(本机 command 或远程 url)。url 含 <占位> 时后端拒(需先填真实 key)。 */
   add: (input: AddMcpInput) => api.post<McpMutationResult>('/api/v1/agent/mcp/add', input),
   /** 删除。 */

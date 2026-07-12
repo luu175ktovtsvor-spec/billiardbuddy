@@ -21,6 +21,7 @@ description: Refactor oversized files and misplaced responsibilities into explic
 4. 禁止循环依赖和跨模块深层导入；模块只暴露明确的公共入口。
 5. 同步拆分对应测试文件，使测试跟随责任模块，而不是继续集中在巨型测试中。
 6. 每个小批次跑相关测试；结束后跑全量回归和运行验证。
+7. `scripts/quality/architecture-baseline.json` 只用于阻止已知巨型文件继续增长；拆分后同步下调基线，不得调高数字绕过检查。
 
 ## 当前优先对象
 

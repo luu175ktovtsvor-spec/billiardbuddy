@@ -559,6 +559,9 @@ export const useChatStore = create<ChatState>((set, get) => {
         }
         break
       }
+      case 'asset_progress':
+        // 资产状态由对应功能 API/store 消费；聊天连接只需接受共享广播契约。
+        break
       case 'approve_result': {
         const result = typeof msg.result === 'string' ? msg.result : ''
         if (result) pushNote(`这一步已完成:${result.slice(0, 200)}`, 'note')
