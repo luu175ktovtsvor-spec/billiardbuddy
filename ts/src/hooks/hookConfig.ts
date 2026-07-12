@@ -808,30 +808,34 @@ async function runHttpHook(raw: RawHttpHook, payload: HookPayload, ctx: ToolCont
 }
 
 function normalizeHookCommand(event: HookEvent, matcher: string | undefined, raw: Record<string, unknown>, options?: NormalizeHookRegistryOptions): HookRule | null {
+  // hook.if 输入谓词(所有 handler 类型通用;仅工具类事件在 runHookEvent 消费,对齐 cc)。
+  const ifCondition = typeof raw.if === 'string' && raw.if.trim() ? raw.if.trim() : undefined
+  const withIf = (rule: HookRule): HookRule => (ifCondition ? { ...rule, ifCondition } : rule)
+
   const staticDecisions = normalizeDecisionList(raw.decisions ?? raw.decision ?? (raw.action ? raw : undefined))
   if (staticDecisions.length > 0) {
-    return { event, matcher, handler: onceHandler(raw, () => staticDecisions) }
+    return withIf({ event, matcher, handler: onceHandler(raw, () => staticDecisions) })
   }
 
   if (raw.type === 'command' && typeof raw.command === 'string' && raw.command.trim()) {
     const commandHook = raw as RawCommandHook
     const pluginRoot = options?.pluginRoot
-    return { event, matcher, handler: onceHandler(raw, (payload, ctx) => runCommandHook(commandHook, payload, ctx, pluginRoot)) }
+    return withIf({ event, matcher, handler: onceHandler(raw, (payload, ctx) => runCommandHook(commandHook, payload, ctx, pluginRoot)) })
   }
 
   if (raw.type === 'http' && typeof raw.url === 'string' && raw.url.trim()) {
     const httpHook = raw as RawHttpHook
-    return { event, matcher, handler: onceHandler(raw, (payload, ctx) => runHttpHook(httpHook, payload, ctx, options?.httpPolicy)) }
+    return withIf({ event, matcher, handler: onceHandler(raw, (payload, ctx) => runHttpHook(httpHook, payload, ctx, options?.httpPolicy)) })
   }
 
   if (raw.type === 'prompt' && typeof raw.prompt === 'string' && raw.prompt.trim()) {
     const promptHook = raw as RawPromptHook
-    return { event, matcher, handler: onceHandler(raw, (payload, ctx) => runPromptHook(promptHook, payload, ctx)) }
+    return withIf({ event, matcher, handler: onceHandler(raw, (payload, ctx) => runPromptHook(promptHook, payload, ctx)) })
   }
 
   if (raw.type === 'agent' && typeof raw.prompt === 'string' && raw.prompt.trim()) {
     const agentHook = raw as RawAgentHook
-    return { event, matcher, handler: onceHandler(raw, (payload, ctx) => runAgentHook(agentHook, payload, ctx)) }
+    return withIf({ event, matcher, handler: onceHandler(raw, (payload, ctx) => runAgentHook(agentHook, payload, ctx)) })
   }
 
   return null
@@ -846,10 +850,13 @@ function normalizeEventMap(value: unknown, options?: NormalizeHookRegistryOption
     for (const matcherConfig of matcherConfigs) {
       if (!isRecord(matcherConfig)) continue
       const matcher = typeof matcherConfig.matcher === 'string' && matcherConfig.matcher.trim() ? matcherConfig.matcher.trim() : undefined
+      // if 谓词:hook 自带优先,否则继承 matcherConfig 层的 if(与 matcher 同款透传,宽容两种写法)。
+      const groupIf = typeof matcherConfig.if === 'string' && matcherConfig.if.trim() ? matcherConfig.if.trim() : undefined
       if (Array.isArray(matcherConfig.hooks)) {
         for (const hook of matcherConfig.hooks) {
           if (!isRecord(hook)) continue
-          const rule = normalizeHookCommand(event, matcher, hook, options)
+          const merged = groupIf !== undefined && hook.if === undefined ? { if: groupIf, ...hook } : hook
+          const rule = normalizeHookCommand(event, matcher, merged, options)
           if (rule) rules.push(rule)
         }
         continue

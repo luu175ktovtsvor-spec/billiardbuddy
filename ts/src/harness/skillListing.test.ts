@@ -196,3 +196,47 @@ test('toPublicCommandEntries: 技能的 skillLayer 透传为 layer(前端「系�
     rmSync(skillsDir, { recursive: true, force: true })
   }
 })
+
+test('用户面清单(toPublicCommandEntries)剔除 user-invocable:false;模型面(buildSkillCommandListingSection)剔除 disable-model-invocation', async () => {
+  const { collectDiscoveryEntries, toPublicCommandEntries, buildSkillCommandListingSection } = await import('./skillListing')
+  const mk = (name: string, extra: Partial<import('../commands/types').PromptCommand> = {}): import('../commands/types').PromptCommand => ({
+    type: 'prompt', name, description: `${name} desc`, source: 'commands',
+    filePath: '', baseDir: '', contentLength: 0, async getPrompt() { return '' }, ...extra,
+  })
+  const commands = {
+    commands: [mk('open'), mk('userhidden', { userInvocable: false }), mk('modelhidden', { disableModelInvocation: true })],
+    byName: new Map(),
+  }
+  const entries = collectDiscoveryEntries({ commands })
+  // 用户面:userhidden 不给,modelhidden 保留
+  const publicNames = toPublicCommandEntries(entries).map(e => e.name)
+  expect(publicNames).toContain('open')
+  expect(publicNames).toContain('modelhidden')
+  expect(publicNames).not.toContain('userhidden')
+  // 模型面:modelhidden 不列,userhidden 保留
+  const section = buildSkillCommandListingSection({ commands })
+  expect(section).toContain('/open')
+  expect(section).toContain('/userhidden')
+  expect(section).not.toContain('/modelhidden')
+})
+
+test('问题3修复:条件技能激活后经 activatedConditionalSkills 并回发现清单(默认隐身→碰到文件现身)', async () => {
+  const { collectDiscoveryEntries, buildSkillCommandListingSection } = await import('./skillListing')
+  const mk = (name: string, extra: Partial<import('../commands/types').PromptCommand> = {}): import('../commands/types').PromptCommand => ({
+    type: 'prompt', name, description: `${name} desc`, source: 'skills',
+    filePath: '', baseDir: '', contentLength: 0, async getPrompt() { return '' }, ...extra,
+  })
+  const sqlSkill = mk('sqlhelper', { paths: ['*.sql'] })
+  // 未激活:发现清单不含 sqlhelper
+  const withoutActivation = buildSkillCommandListingSection({ skills: { skills: [mk('always')], byName: new Map() } })
+  expect(withoutActivation).not.toContain('sqlhelper')
+  // 激活后:并回清单
+  const withActivation = buildSkillCommandListingSection({
+    skills: { skills: [mk('always')], byName: new Map() },
+    activatedConditionalSkills: [sqlSkill],
+  })
+  expect(withActivation).toContain('sqlhelper')
+  // collectDiscoveryEntries 层面也含激活的条件技能
+  const entries = collectDiscoveryEntries({ skills: { skills: [], byName: new Map() }, activatedConditionalSkills: [sqlSkill] })
+  expect(entries.map(e => e.name)).toContain('sqlhelper')
+})

@@ -1,9 +1,10 @@
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { fileGlobMatchesPathForRule } from '../permissions/filePathRuleMatch'
 import { getUserConfigHomeDir, MEMORY_DOT_DIR } from '../harness/memoryNames'
 import { resolveBundledDir } from '../harness/bundledRoot'
-import { extractDescription, parseMarkdownDocument, stringField } from '../commands/frontmatter'
+import { booleanField, extractDescription, parseMarkdownDocument, stringArrayField, stringField } from '../commands/frontmatter'
 import { addAllowedToolsToContext, allowedToolRulesFromFrontmatter, normalizeAllowedTools } from '../commands/allowedTools'
 import { parseArgumentNames, substituteArguments } from '../commands/argumentSubstitution'
 import { executeShellCommandsInPrompt, substitutePromptTemplateVars } from '../commands/promptShellExecution'
@@ -82,6 +83,8 @@ export function registerSkillHooks(skill: PromptCommand, ctx: ToolContext): void
 const SAFE_SKILL_PROPERTIES = new Set<string>([
   'type', 'name', 'description', 'whenToUse',
   'argumentHint', 'argNames', 'model', 'context', 'agent',
+  // 可见性/别名/条件披露字段纯元数据,不授予工具/hook,不触发审批(否则带这些字段的普通技能会被误判需审批)。
+  'disableModelInvocation', 'userInvocable', 'aliases', 'skillLayer', 'paths',
   'source', 'filePath', 'baseDir', 'contentLength', 'getPrompt',
 ])
 
@@ -135,6 +138,46 @@ function useSkillAllowRuleMatches(ctx: ToolContext, name: string): boolean {
  * ⚠️ 当前生产只从 app 目录 / 已启用插件加载(defaultSkillsRoot、pluginContribs → 一律 managed);若日后接入
  * 工作区 .claude/skills,加载它们时**必须**传 hookSource:'local',否则工作区 skill 的 command hook 绕过信任门。
  */
+/**
+ * 解析 `paths` frontmatter(对齐 cc parseSkillPaths):支持字符串(逗号/换行分隔)或数组;去掉 `/**` 后缀
+ * (ignore 库把 path 视作连同其内容一起命中);全为 `**`(match-all)= 无条件 → 返回 undefined(不当条件技能)。
+ */
+export function parseSkillPaths(raw: unknown): string[] | undefined {
+  if (raw === undefined || raw === null) return undefined
+  const list = Array.isArray(raw)
+    ? raw.map(v => String(v))
+    : typeof raw === 'string'
+      ? raw.split(/[\n,]/)
+      : []
+  const patterns = list
+    .map(p => p.trim())
+    .map(p => (p.endsWith('/**') ? p.slice(0, -3) : p))
+    .filter(p => p.length > 0)
+  if (patterns.length === 0 || patterns.every(p => p === '**')) return undefined
+  return patterns
+}
+
+/**
+ * 条件技能激活(对齐 cc activateConditionalSkillsForPaths):给一批被"碰到"的文件路径,返回其中命中某条件技能
+ * `paths` glob 的技能名集合。调用方(loop)把这些名字并进本回合发现清单,让条件技能"碰到匹配文件才现身"。
+ * 匹配复用文件路径规则引擎(fileGlobMatchesPathForRule),与权限/read-ignore 同一套 glob 语义。
+ */
+export function activateConditionalSkillsForPaths(library: SkillLibrary, workspaceRoot: string, touchedPaths: string[]): Set<string> {
+  const activated = new Set<string>()
+  if (touchedPaths.length === 0) return activated
+  const conditional = library.byName ? [...new Set(library.byName.values())].filter(s => s.paths && s.paths.length > 0) : []
+  for (const skill of conditional) {
+    for (const pattern of skill.paths ?? []) {
+      const hit = touchedPaths.some(p => {
+        const abs = isAbsolute(p) ? p : join(workspaceRoot, p)
+        return fileGlobMatchesPathForRule(workspaceRoot, abs, pattern, 'localSettings')
+      })
+      if (hit) { activated.add(skill.name); break }
+    }
+  }
+  return activated
+}
+
 export async function loadSkillFile(filePath: string, source: PromptCommand['source'] = 'skills', hookSource?: HookSource): Promise<PromptCommand> {
   const raw = await readFile(filePath, 'utf8')
   const doc = parseMarkdownDocument(raw)
@@ -150,6 +193,10 @@ export async function loadSkillFile(filePath: string, source: PromptCommand['sou
   const hooks = normalizeHookRegistry(doc.frontmatter.hooks, hookSource ? { source: hookSource } : undefined)
   const argumentHint = stringField(doc.frontmatter, 'argument-hint') ?? stringField(doc.frontmatter, 'argumentHint')
   const argumentNames = parseArgumentNames(doc.frontmatter.arguments as string | string[] | undefined)
+  const disableModelInvocation = booleanField(doc.frontmatter, 'disable-model-invocation') ?? booleanField(doc.frontmatter, 'disableModelInvocation')
+  const userInvocable = booleanField(doc.frontmatter, 'user-invocable') ?? booleanField(doc.frontmatter, 'userInvocable')
+  const aliases = (stringArrayField(doc.frontmatter, 'aliases') ?? []).map(safeName).filter(a => a && a !== name)
+  const paths = parseSkillPaths(doc.frontmatter.paths)
   const body = doc.body.trim()
 
   return {
@@ -165,6 +212,10 @@ export async function loadSkillFile(filePath: string, source: PromptCommand['sou
     ...(context === 'fork' || context === 'inline' ? { context } : {}),
     ...(agent ? { agent } : {}),
     ...(hooks.rules.length > 0 ? { hooks } : {}),
+    ...(disableModelInvocation ? { disableModelInvocation } : {}),
+    ...(userInvocable === false ? { userInvocable } : {}),
+    ...(aliases.length > 0 ? { aliases } : {}),
+    ...(paths && paths.length > 0 ? { paths } : {}),
     source,
     filePath,
     baseDir,
@@ -281,7 +332,28 @@ export async function loadLayeredSkills(opts: LoadLayeredSkillsOptions = {}): Pr
       byName.set(skill.name, skill) // 后加载覆盖同名
     }
   }
-  return { skills: order.map(name => byName.get(name)!), byName }
+  const nameDeduped = order.map(name => byName.get(name)!)
+  // realpath 去重(对齐 cc:symlink 安全,同一物理文件经不同路径/名加载只算一次)。realpath 失败退回原路径。
+  const seenReal = new Set<string>()
+  const deduped: PromptCommand[] = []
+  for (const skill of nameDeduped) {
+    let rp = skill.filePath
+    try { rp = realpathSync(skill.filePath) } catch { /* 文件不在/权限:退回原路径参与去重 */ }
+    if (seenReal.has(rp)) { byName.delete(skill.name); continue }
+    seenReal.add(rp)
+    deduped.push(skill)
+  }
+  // 别名登记(对齐 cc):别名只占未被真实主名占用的键,主名永远优先。
+  const realNames = new Set(deduped.map(s => s.name))
+  for (const skill of deduped) {
+    for (const alias of skill.aliases ?? []) {
+      if (!realNames.has(alias)) byName.set(alias, skill)
+    }
+  }
+  // 条件技能(带 paths)默认不进发现清单(对齐 cc unconditional/conditional 分离):仍在 byName 里(可 by-name 调 +
+  // 供 activateConditionalSkillsForPaths 扫描),只是不主动现身;碰到命中路径的文件时由 loop 并进本回合清单。
+  const skills = deduped.filter(s => !(s.paths && s.paths.length > 0))
+  return { skills, byName }
 }
 
 export function formatSkillIndex(library: SkillLibrary, opts: SkillIndexOptions = {}): string {
@@ -291,6 +363,8 @@ export function formatSkillIndex(library: SkillLibrary, opts: SkillIndexOptions 
   const query = opts.query?.trim().toLowerCase() ?? ''
   const limit = clampLimit(opts.limit, 80)
   const skills = library.skills
+    // 模型面清单:disable-model-invocation 的技能不列(用户敲斜杠仍可)。对齐 cc。
+    .filter(skill => !skill.disableModelInvocation)
     .filter(skill => !opts.recommendedOnly || recommended.has(skill.name))
     .filter(skill => !query || skillMatchesQuery(skill, query))
     .sort((a, b) => {
@@ -353,6 +427,7 @@ export function createSkillTools(library: SkillLibrary, opts: { skillRoot?: stri
       if (!input || typeof input.name !== 'string') throw new Error('read_skill 需要 string 参数 name')
       const skill = library.byName.get(input.name)
       if (!skill) return `没有找到技能「${input.name}」。可先调用 list_skills 查看可用技能。`
+      if (skill.disableModelInvocation) return `技能「${skill.name}」标记为不可由模型调用(disable-model-invocation),只能由用户手动触发。`
       return await skill.getPrompt(typeof input.args === 'string' ? input.args : '', ctx)
     },
   }
@@ -400,6 +475,7 @@ export function createSkillTools(library: SkillLibrary, opts: { skillRoot?: stri
       if (!name) throw new Error('use_skill 需要 string 参数 name')
       const skill = library.byName.get(name)
       if (!skill) return `没有找到技能「${name}」。可先调用 list_skills 查看可用技能。`
+      if (skill.disableModelInvocation) return `技能「${skill.name}」标记为不可由模型调用(disable-model-invocation),只能由用户手动触发。`
       const args = typeof input?.args === 'string' ? input.args : ''
       if (opts.executeSkill) return await opts.executeSkill(skill, args, ctx)
       const prompt = await skill.getPrompt(args, ctx)

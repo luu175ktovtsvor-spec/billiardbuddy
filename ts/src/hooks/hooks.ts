@@ -1,5 +1,6 @@
 import type { ToolContext } from '../tools/Tool'
 import type { PermissionDecision } from '../permissions/types'
+import { hookIfConditionMatches } from './hookIf'
 
 /**
  * hook 事件全集 = cc-haha 全部 27 个(对齐 entrypoints/sdk/coreTypes.ts:25-53 HOOK_EVENTS,一个不少)。
@@ -45,7 +46,7 @@ export type HookEvent =
   | 'FileChanged'
   // —— 以下 3 个是官方 Claude Code 已发布、cc-haha v0.4.5 快照尚未收录的事件(按官方 hooks 契约补齐)——
   | 'PostToolBatch' // 已接线:一批并行工具全部落定后(loop 批尾),decision:block=停循环
-  | 'UserPromptExpansion' // 派发器就绪,call site 待接:用户敲的命令展开成 prompt 时(server 斜杠展开点)
+  | 'UserPromptExpansion' // 已接线:用户敲的命令展开成 prompt 时(server 斜杠展开点),context 注入 + deny/halt 拦截展开
   | 'MessageDisplay' // 派发器就绪,call site 待接:助手正文展示时(桌面壳渲染层,后端不派)
 
 export type HookDecision =
@@ -157,6 +158,8 @@ export interface HookRule {
   handler: HookHandler
   /** 省略即视为 managed(可信内核源);`local` = 工作区文件加载的不可信 hook,受信任门约束。 */
   source?: HookSource
+  /** frontmatter/配置 `if`:工具类事件按【工具输入】精细过滤(如 `Bash(git *)`);判定见 hookIf.ts,只工具类事件生效。 */
+  ifCondition?: string
 }
 
 export interface HookRegistry {
@@ -352,6 +355,11 @@ function matchTarget(payload: HookPayload): string | undefined {
   }
 }
 
+/** 工具类事件(hook.if 输入谓词仅对这些生效,对齐 cc prepareIfConditionMatcher 的事件门)。 */
+function isToolEvent(event: HookEvent): boolean {
+  return event === 'PreToolUse' || event === 'PostToolUse' || event === 'PostToolUseFailure' || event === 'PermissionRequest'
+}
+
 function matches(rule: HookRule, payload: HookPayload): boolean {
   if (rule.event !== payload.event) return false
   if (!rule.matcher || rule.matcher === '*') return true
@@ -372,6 +380,12 @@ export async function runHookEvent(registry: HookRegistry | undefined, payload: 
   const out: HookDecision[] = []
   for (const rule of registry.rules) {
     if (!matches(rule, payload)) continue
+    // hook.if 输入谓词(对齐 cc utils/hooks.ts:1849-1857 fail-closed):带 if 的规则——
+    // 非工具事件下 if 无法求值(ifMatcher===undefined)→ 整条 hook 不跑;工具事件下按工具输入匹配,不命中则不跑。
+    if (rule.ifCondition) {
+      if (!isToolEvent(payload.event)) continue
+      if (!hookIfConditionMatches(rule.ifCondition, payload.toolName, payload.input, ctx.workspace.root)) continue
+    }
     if (!shouldRunHookRule(rule, ctx.workspace.root, policy)) continue
     try {
       const result = await rule.handler(payload, ctx)
@@ -576,6 +590,33 @@ export async function applyPostToolUseHooks(
   }
   const haltReason = takeHalt(decisions)
   return { additionalContext, ...(haltReason !== undefined ? { haltReason } : {}) }
+}
+
+/**
+ * UserPromptExpansion(官方事件):用户敲的斜杠命令/技能展开成 prompt 时触发(对齐 cc,matcher=命令/技能名)。
+ * context 决策注入系统提示;deny/halt 记为 blocked(调用方决定是否用原文替代展开)。
+ */
+export async function applyUserPromptExpansionHooks(
+  registry: HookRegistry | undefined,
+  commandName: string,
+  expandedPrompt: string,
+  ctx: ToolContext,
+): Promise<{ additionalContext: string[]; blocked?: string }> {
+  const additionalContext: string[] = []
+  let blocked: string | undefined
+  const decisions = await runHookEvent(registry, {
+    event: 'UserPromptExpansion',
+    toolName: commandName,
+    userPrompt: expandedPrompt,
+    sessionId: ctx.conversationId,
+  }, ctx)
+  for (const decision of decisions) {
+    if (decision.action === 'context') additionalContext.push(decision.additionalContext)
+    if ((decision.action === 'deny' || decision.action === 'halt') && blocked === undefined) {
+      blocked = decision.action === 'deny' ? decision.message : (decision.reason ?? '命令展开被 hook 阻止')
+    }
+  }
+  return { additionalContext, ...(blocked !== undefined ? { blocked } : {}) }
 }
 
 export async function applyStopHooks(

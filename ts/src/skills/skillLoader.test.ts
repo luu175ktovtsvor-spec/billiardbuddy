@@ -470,3 +470,65 @@ test('create_skill:默认落用户白标目录 ~/.billiardbuddy/skills(server �
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test('parseSkillPaths(对齐 cc):去 /** 后缀、全 ** 视作无、支持逗号/换行/数组', async () => {
+  const { parseSkillPaths } = await import('./skillLoader')
+  expect(parseSkillPaths(undefined)).toBeUndefined()
+  expect(parseSkillPaths('**')).toBeUndefined()          // 全 match-all → 无条件
+  expect(parseSkillPaths('src/**')).toEqual(['src'])     // 去 /** 后缀
+  expect(parseSkillPaths('*.sql, migrations/**')).toEqual(['*.sql', 'migrations'])
+  expect(parseSkillPaths(['*.ts', '*.tsx'])).toEqual(['*.ts', '*.tsx'])
+})
+
+test('条件技能(带 paths)默认不进发现清单,但 by-name 可调;activateConditionalSkillsForPaths 命中路径才激活', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'skill-paths-'))
+  try {
+    const bundled = join(root, 'bundled'); mkdirSync(join(bundled, 'sqlhelper'), { recursive: true })
+    mkdirSync(join(bundled, 'always'), { recursive: true })
+    writeFileSync(join(bundled, 'sqlhelper', 'SKILL.md'), '---\nname: sqlhelper\ndescription: SQL 助手\npaths: "*.sql"\n---\n写 SQL')
+    writeFileSync(join(bundled, 'always', 'SKILL.md'), '---\nname: always\ndescription: 常驻\n---\n常驻技能')
+    const lib = await loadLayeredSkills({ bundledRoot: bundled, userRoot: null })
+
+    // 发现清单只含无条件技能;条件技能不列
+    expect(lib.skills.map(s => s.name)).toEqual(['always'])
+    expect(formatSkillIndex(lib)).not.toContain('sqlhelper')
+    // 但 byName 里有(可 by-name 调 / 供激活扫描)
+    expect(lib.byName.get('sqlhelper')?.paths).toEqual(['*.sql'])
+
+    // 碰到 *.sql 文件 → 激活;碰到别的 → 不激活
+    const { activateConditionalSkillsForPaths } = await import('./skillLoader')
+    expect([...activateConditionalSkillsForPaths(lib, root, ['db/schema.sql'])]).toEqual(['sqlhelper'])
+    expect([...activateConditionalSkillsForPaths(lib, root, ['src/app.ts'])]).toEqual([])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('问题4:技能别名进 byName(主名优先不覆盖)+ realpath 去重(symlink 同物理文件只算一次)', async () => {
+  const { symlinkSync } = await import('node:fs')
+  const root = mkdtempSync(join(tmpdir(), 'skill-alias-real-'))
+  try {
+    const bundled = join(root, 'bundled')
+    mkdirSync(join(bundled, 'commit'), { recursive: true })
+    mkdirSync(join(bundled, 'realtool'), { recursive: true })
+    writeFileSync(join(bundled, 'commit', 'SKILL.md'), '---\nname: commit\ndescription: 提交\naliases: [ci, gc]\n---\n提交流程')
+    writeFileSync(join(bundled, 'realtool', 'SKILL.md'), '---\nname: realtool\ndescription: 真实\n---\n真实技能')
+    const lib = await loadLayeredSkills({ bundledRoot: bundled, userRoot: null })
+    // 别名进 byName、指向主名技能
+    expect(lib.byName.get('ci')?.name).toBe('commit')
+    expect(lib.byName.get('gc')?.name).toBe('commit')
+    expect(lib.skills.map(s => s.name).sort()).toEqual(['commit', 'realtool']) // skills 数组不含别名重复
+
+    // realpath 去重:user 层 symlink 指向 bundled 的同一物理文件 → 只算一次
+    const user = join(root, 'user')
+    mkdirSync(join(user, 'linked'), { recursive: true })
+    symlinkSync(join(bundled, 'realtool', 'SKILL.md'), join(user, 'linked', 'SKILL.md'))
+    const lib2 = await loadLayeredSkills({ bundledRoot: bundled, userRoot: user })
+    const realCount = lib2.skills.filter(s => {
+      try { return require('node:fs').realpathSync(s.filePath) === require('node:fs').realpathSync(join(bundled, 'realtool', 'SKILL.md')) } catch { return false }
+    }).length
+    expect(realCount).toBe(1) // 同物理文件只留一个条目
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

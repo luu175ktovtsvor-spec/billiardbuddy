@@ -63,6 +63,16 @@ export function stringField(frontmatter: Record<string, unknown>, key: string): 
   return typeof v === 'string' && v.trim() ? v.trim() : undefined
 }
 
+/** frontmatter 布尔字段解析(对齐 cc parseBooleanFrontmatter):真值 true/'true'/'yes'/'on'/'1',其余 false;缺省返回 undefined。 */
+export function booleanField(frontmatter: Record<string, unknown>, key: string): boolean | undefined {
+  const v = frontmatter[key]
+  if (v === undefined || v === null) return undefined
+  if (typeof v === 'boolean') return v
+  if (typeof v === 'number') return v !== 0
+  if (typeof v === 'string') return /^(true|yes|on|1)$/i.test(v.trim())
+  return undefined
+}
+
 export function stringArrayField(frontmatter: Record<string, unknown>, key: string): string[] | undefined {
   const v = frontmatter[key]
   if (Array.isArray(v)) return v.map(String).map(x => x.trim()).filter(Boolean)

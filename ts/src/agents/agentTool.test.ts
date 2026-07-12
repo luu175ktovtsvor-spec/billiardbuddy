@@ -1352,3 +1352,41 @@ function git(cwd: string, args: string[]): string {
     },
   })
 }
+
+test('agent.model 消费(对齐 cc getAgentModel):有 frontmatter model 且 resolveModel 命中 → 用它;不命中 → 回退父模型', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-model-'))
+  try {
+    const parentModel = scriptedModel([{ kind: 'final', text: '父模型跑的' }])
+    const childModel = scriptedModel([{ kind: 'final', text: '子模型跑的' }])
+    const resolveCalls: string[] = []
+    const tool = createAgentTaskTool({
+      agents: [agent({ model: 'cheap-tier' })],
+      model: parentModel,
+      resolveModel: (name) => { resolveCalls.push(name); return name === 'cheap-tier' ? childModel : null },
+      baseTools: [fileReadTool],
+      baseSystemPrompt: 'BASE',
+      sidechainRoot: join(root, 'sidechains'),
+    })
+    const out = await tool.execute({ task: 't' }, { workspace: new Workspace(root), permissionMode: 'full' })
+    expect(resolveCalls).toEqual(['cheap-tier'])
+    expect(childModel.received.length).toBe(1) // 子代理走了解析出的模型
+    expect(parentModel.received.length).toBe(0) // 没走父模型
+    expect(out).toContain('子模型跑的')
+
+    // resolveModel 返回 null(不命中/白标单模型)→ 回退父模型
+    const parent2 = scriptedModel([{ kind: 'final', text: '回退父模型' }])
+    const tool2 = createAgentTaskTool({
+      agents: [agent({ model: 'unknown-tier' })],
+      model: parent2,
+      resolveModel: () => null,
+      baseTools: [fileReadTool],
+      baseSystemPrompt: 'BASE',
+      sidechainRoot: join(root, 'sidechains2'),
+    })
+    const out2 = await tool2.execute({ task: 't' }, { workspace: new Workspace(root), permissionMode: 'full' })
+    expect(parent2.received.length).toBe(1)
+    expect(out2).toContain('回退父模型')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

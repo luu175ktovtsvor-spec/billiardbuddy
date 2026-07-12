@@ -1,6 +1,6 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
-import { extractDescription, parseMarkdownDocument, stringField } from '../commands/frontmatter'
+import { booleanField, extractDescription, parseMarkdownDocument, stringField } from '../commands/frontmatter'
 import { getUserConfigHomeDir } from '../harness/memoryNames'
 import { LIBRARY_DIR_ENV, isLocalMode } from '../harness/desktopEnvNames'
 
@@ -10,6 +10,18 @@ export interface OutputStyle {
   prompt: string
   source: string
   filePath: string
+  /**
+   * frontmatter `keep-coding-instructions`(对齐 cc keepCodingInstructions):是否在切到本风格时仍保留
+   * 「# 做任务」编码纪律章。缺省(undefined)= 不保留(非编码风格默认丢编码指令);置 true 才保留。对齐 cc:
+   * outputStyleConfig===null(未选风格)→ 保留;选了风格且 keepCodingInstructions===true → 保留;否则丢。
+   */
+  keepCodingInstructions?: boolean
+}
+
+/** buildSystemPrompt 消费的风格配置(对齐 cc outputStyleConfig):选了风格才非空。 */
+export interface OutputStyleConfig {
+  prompt: string
+  keepCodingInstructions?: boolean
 }
 
 export interface OutputStyleLibrary {
@@ -28,7 +40,8 @@ async function loadStyleFile(filePath: string, source: string): Promise<OutputSt
     const name = safeName(stringField(doc.frontmatter, 'name') ?? basename(filePath, '.md'))
     if (!name) return null
     const description = stringField(doc.frontmatter, 'description') ?? extractDescription(doc.body) ?? name
-    return { name, description, prompt: doc.body.trim(), source, filePath }
+    const keepCodingInstructions = booleanField(doc.frontmatter, 'keep-coding-instructions') ?? booleanField(doc.frontmatter, 'keepCodingInstructions')
+    return { name, description, prompt: doc.body.trim(), source, filePath, ...(keepCodingInstructions !== undefined ? { keepCodingInstructions } : {}) }
   } catch {
     return null
   }
@@ -93,6 +106,17 @@ export function renderOutputStylePrompt(library: OutputStyleLibrary, name: strin
   const style = library.byName.get(safeName(name))
   if (!style?.prompt) return ''
   return `【输出风格 · ${style.name}】\n${style.prompt}`
+}
+
+/**
+ * 解析选中的风格为 buildSystemPrompt 消费的配置(对齐 cc outputStyleConfig):未选/未命中 → null
+ * (= cc null,系统提示保留完整编码指令);命中 → { prompt, keepCodingInstructions }。
+ */
+export function resolveOutputStyleConfig(library: OutputStyleLibrary, name: string | undefined): OutputStyleConfig | null {
+  if (!name) return null
+  const style = library.byName.get(safeName(name))
+  if (!style?.prompt) return null
+  return { prompt: `【输出风格 · ${style.name}】\n${style.prompt}`, ...(style.keepCodingInstructions !== undefined ? { keepCodingInstructions: style.keepCodingInstructions } : {}) }
 }
 
 export function styleRootOf(style: OutputStyle): string {

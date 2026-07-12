@@ -734,3 +734,24 @@ test('SessionStart matcher 按 source 匹配(官方 startup/resume/clear/compact
   const compact = await applySessionStartHooks(registry, c as never, 'compact')
   expect(compact.additionalContext).toEqual(['压缩后重注入', '任何来源都注入'])
 })
+
+test('applyUserPromptExpansionHooks:官方事件——命令展开时按命令名匹配,context 注入 / deny 记 blocked', async () => {
+  const { applyUserPromptExpansionHooks } = await import('./hooks')
+  const c = ctx()
+  const reg = {
+    rules: [
+      { event: 'UserPromptExpansion' as const, matcher: 'deploy', handler: () => ({ action: 'context' as const, additionalContext: '部署前请确认目标环境' }) },
+      { event: 'UserPromptExpansion' as const, matcher: 'danger', handler: () => ({ action: 'deny' as const, message: '该命令已禁用' }) },
+    ],
+  }
+  // 命令名 deploy 命中 context
+  const okd = await applyUserPromptExpansionHooks(reg, 'deploy', '展开后的部署指令', c as never)
+  expect(okd.additionalContext).toEqual(['部署前请确认目标环境'])
+  expect(okd.blocked).toBeUndefined()
+  // 命令名 danger 命中 deny → blocked
+  const blocked = await applyUserPromptExpansionHooks(reg, 'danger', '危险指令', c as never)
+  expect(blocked.blocked).toBe('该命令已禁用')
+  // 不匹配的命令名 → 无决策
+  const none = await applyUserPromptExpansionHooks(reg, 'other', 'x', c as never)
+  expect(none.additionalContext).toEqual([])
+})
