@@ -191,9 +191,10 @@ export interface ResultInspection {
   autoChecked: boolean
   warnings: string[]
   message: string
+  consistencyStatus: 'preserved' | 'uncertain' | 'drifted' | 'not_checked'
 }
 
-export async function inspectPortraitResult(images: QcImage[], opts: { model?: Model | null; signal?: AbortSignal } = {}): Promise<ResultInspection> {
+export async function inspectPortraitResult(images: QcImage[], opts: { model?: Model | null; signal?: AbortSignal; reference?: QcImage } = {}): Promise<ResultInspection> {
   const model = opts.model
   const hasBytes = images.some(i => i.base64)
   if (!model || !hasBytes) {
@@ -202,6 +203,7 @@ export async function inspectPortraitResult(images: QcImage[], opts: { model?: M
       autoChecked: false,
       warnings: [],
       message: '未自动质检(质检模型未接入或无可读成图):请人工把关手/脸/肢体是否正常、有没有过度美化、是不是还是本人,再决定是否商用。',
+      consistencyStatus: 'not_checked',
     }
   }
   try {
@@ -213,6 +215,7 @@ export async function inspectPortraitResult(images: QcImage[], opts: { model?: M
         autoChecked: false,
         warnings: [],
         message: '未自动质检(质检结果无法解析):请人工把关手/脸/肢体、是否过度美化、是否还是本人,再决定是否商用。',
+        consistencyStatus: 'not_checked',
       }
     }
     const warnings: string[] = []
@@ -229,12 +232,24 @@ export async function inspectPortraitResult(images: QcImage[], opts: { model?: M
       if (boolOrNull(r.realistic) === false) warnings.push(`${tag}真实感不足(偏塑料感/AI 味)。`)
       if (boolOrNull(r.unwanted_text) === true) warnings.push(`${tag}出现未要求的文字/水印。`)
     })
+    let consistencyStatus: ResultInspection['consistencyStatus'] = 'not_checked'
+    if (opts.reference?.base64) {
+      try {
+        const consistency = await inspectPortraitConsistency(opts.reference, images, { model, signal: opts.signal })
+        consistencyStatus = consistency.status
+        warnings.push(...consistency.warnings)
+      } catch {
+        consistencyStatus = 'uncertain'
+        warnings.push('参考图与成图的一致性未能自动判断,请并排确认是否像本人。')
+      }
+    }
     if (warnings.length === 0) {
       return {
         status: 'passed',
         autoChecked: true,
         warnings: [],
         message: '已自动质检:手/脸/肢体未见明显问题。真人成图建议再人工确认可辨识度后投放。',
+        consistencyStatus,
       }
     }
     const scrubbed = warnings.map(w => scrubProviderIdentifiers(w))
@@ -243,6 +258,7 @@ export async function inspectPortraitResult(images: QcImage[], opts: { model?: M
       autoChecked: true,
       warnings: scrubbed,
       message: scrubProviderIdentifiers(`自动质检发现风险:${scrubbed.join(' ')} 建议重新生成或人工确认后再用,先不要直接商用。`),
+      consistencyStatus,
     }
   } catch {
     return {
@@ -250,8 +266,37 @@ export async function inspectPortraitResult(images: QcImage[], opts: { model?: M
       autoChecked: false,
       warnings: [],
       message: '未自动质检(质检模型调用失败):请人工把关手/脸/肢体、是否过度美化、是否还是本人,再决定是否商用。',
+      consistencyStatus: 'not_checked',
     }
   }
+}
+
+export interface PortraitConsistencyInspection {
+  status: 'preserved' | 'uncertain' | 'drifted'
+  warnings: string[]
+}
+
+const CONSISTENCY_PROMPT = [
+  '第一张图片是本人主参考，后面的图片是候选结果。只判断可见特征是否保持，不做身份认证。严格输出 JSON:',
+  '{"images":[{"status":"preserved"}]}',
+  'status 只能是 preserved、uncertain、drifted。若候选脸型、五官、年龄观感明显变化，返回 drifted；无法确定返回 uncertain。',
+].join('\n')
+
+export async function inspectPortraitConsistency(
+  reference: QcImage,
+  candidates: QcImage[],
+  opts: { model?: Model | null; signal?: AbortSignal } = {},
+): Promise<PortraitConsistencyInspection> {
+  if (!opts.model || !reference.base64 || !candidates.some(item => item.base64)) {
+    return { status: 'uncertain', warnings: ['参考图与成图的一致性未完成自动检查,请并排确认是否像本人。'] }
+  }
+  const parsed = await askVlmJson(opts.model, '你是参考图一致性风险筛查助手。', CONSISTENCY_PROMPT, [reference, ...candidates], 5, opts.signal)
+  const statuses = parsed && Array.isArray(parsed.images)
+    ? parsed.images.map(item => item && typeof item === 'object' ? String((item as Record<string, unknown>).status ?? '') : '')
+    : []
+  if (statuses.includes('drifted')) return { status: 'drifted', warnings: ['参考图与候选的人物特征疑似发生明显漂移,不标推荐。'] }
+  if (!statuses.length || statuses.includes('uncertain')) return { status: 'uncertain', warnings: ['参考图与候选的一致性无法完全确认,请并排确认是否像本人。'] }
+  return { status: 'preserved', warnings: [] }
 }
 
 // --- 海报硬文字 OCR 校对(生成后) ----------------------------------------

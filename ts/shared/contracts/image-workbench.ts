@@ -15,6 +15,130 @@ export const imageIntentSchema = z.enum([
 
 export const imageQualitySchema = z.enum(['draft', 'standard', 'final']).default('standard')
 
+export const imageReferenceRoleSchema = z.enum([
+  'identity_primary',
+  'identity_supporting',
+  'style_reference',
+  'environment_reference',
+  'brand_reference',
+  'logo',
+  'qrcode',
+  'mask',
+  'source',
+])
+
+export const imageAssetReferenceSchema = z.object({
+  asset_id: imageWorkbenchIdSchema,
+  role: imageReferenceRoleSchema,
+  label: z.string().max(120).optional(),
+  // Asset URLs are local workbench uploads only. They let a reopened project
+  // show the same approved reference without exposing any provider details.
+  url: imageWorkbenchUrlSchema.optional(),
+})
+
+export const posterTemplateIdSchema = z.enum([
+  'opening_anniversary',
+  'membership_recharge',
+  'weekend_bundle',
+  'tournament_signup',
+  'coach_booking',
+  'holiday_moments',
+])
+
+export const posterBriefSchema = z.object({
+  template_id: posterTemplateIdSchema.default('weekend_bundle'),
+  title: z.string().max(200).default(''),
+  offer: z.string().max(200).default(''),
+  price: z.string().max(80).default(''),
+  date: z.string().max(120).default(''),
+  time: z.string().max(120).default(''),
+  address: z.string().max(240).default(''),
+  phone: z.string().max(80).default(''),
+  cta: z.string().max(120).default(''),
+  exact_copy: z.array(z.string().max(200)).max(20).default([]),
+  brand_asset_ids: z.array(imageWorkbenchIdSchema).max(16).default([]),
+  reserved_regions: z.array(z.enum(['title', 'price', 'details', 'contact', 'logo', 'qrcode'])).max(12).default([
+    'title',
+    'price',
+    'details',
+    'contact',
+    'logo',
+    'qrcode',
+  ]),
+})
+
+export const portraitBriefSchema = z.object({
+  subject_role: z.string().max(120).default('本人'),
+  change: z.array(z.string().max(240)).max(20).default([]),
+  preserve: z.array(z.string().max(240)).max(20).default([
+    '面部可辨识特征',
+    '肤色与年龄观感',
+    '体型比例',
+    '人物数量为一人',
+  ]),
+  authorization_confirmed: z.boolean().default(false),
+  primary_reference_asset_id: imageWorkbenchIdSchema.optional(),
+})
+
+export const imageCreativeBriefSchema = z.object({
+  schema_version: z.literal(1).default(1),
+  scene: z.enum(['poster', 'portrait']).default('poster'),
+  user_request: z.string().min(1).max(8000),
+  output_use: z.enum(['moments', 'group', 'poster', 'rollup', 'profile', 'other']).default('poster'),
+  ratio: imageWorkbenchRatioSchema,
+  quality: imageQualitySchema,
+  reference_assets: z.array(imageAssetReferenceSchema).max(16).default([]),
+  visual_direction: z.object({
+    subject: z.string().max(400).optional(),
+    action: z.string().max(400).optional(),
+    environment: z.string().max(400).optional(),
+    style: z.string().max(400).optional(),
+    color: z.string().max(240).optional(),
+    lighting: z.string().max(240).optional(),
+    composition: z.string().max(400).optional(),
+  }).default({}),
+  must_preserve: z.array(z.string().max(240)).max(40).default([]),
+  must_avoid: z.array(z.string().max(240)).max(40).default([]),
+  poster: posterBriefSchema.optional(),
+  portrait: portraitBriefSchema.optional(),
+  understanding: z.string().max(1000).optional(),
+  compiler_version: z.string().max(40).default('image-brief-v1'),
+})
+
+export const imageQualityStateSchema = z.enum(['blocked', 'risk', 'recommended', 'user_confirmed', 'unchecked'])
+
+export const imageQualityDecisionSchema = z.object({
+  state: imageQualityStateSchema,
+  hard_gate_passed: z.boolean().default(false),
+  auto_checked: z.boolean().default(false),
+  warnings: z.array(z.string().max(500)).max(80).default([]),
+  message: z.string().max(2000).default(''),
+})
+
+export const imageWorkbenchImageLayerSchema = z.object({
+  id: imageWorkbenchIdSchema,
+  type: z.enum(['logo', 'qrcode', 'reference_image']),
+  asset_id: imageWorkbenchIdSchema,
+  url: imageWorkbenchUrlSchema.optional(),
+  x: z.number().finite(),
+  y: z.number().finite(),
+  width: z.number().positive(),
+  height: z.number().positive(),
+  scale_x: z.number().positive().default(1),
+  scale_y: z.number().positive().default(1),
+  angle: z.number().finite().default(0),
+  locked: z.boolean().default(true),
+  visible: z.boolean().default(true),
+})
+
+export const imageCapabilityStatusSchema = z.enum(['accepted', 'unsupported', 'unknown', 'not_requested'])
+export const imageInputFidelitySchema = z.enum(['high', 'standard']).default('high')
+export const imageCapabilitySchema = z.object({
+  input_fidelity_requested: imageInputFidelitySchema.optional(),
+  input_fidelity_status: imageCapabilityStatusSchema.default('not_requested'),
+  risk: z.string().max(500).optional(),
+})
+
 export const imageWorkbenchTextLayerSchema = z.object({
   id: imageWorkbenchIdSchema,
   type: z.literal('text'),
@@ -41,6 +165,7 @@ export const imageWorkbenchCanvasSchema = z.object({
   width: z.number().int().positive().max(12000),
   height: z.number().int().positive().max(12000),
   text_layers: z.array(imageWorkbenchTextLayerSchema).max(80).default([]),
+  image_layers: z.array(imageWorkbenchImageLayerSchema).max(24).default([]),
   updated_at: imageWorkbenchIsoDateSchema,
 })
 
@@ -57,15 +182,24 @@ export const imageWorkbenchReviewSchema = z.object({
   text_quality_warning: z.boolean().optional(),
   text_quality_warning_message: z.string().max(2000).optional(),
   text_quality_missing: z.array(z.string().max(200)).max(80).optional(),
+  poster_quality_state: imageQualityStateSchema.optional(),
+  poster_hard_gate_passed: z.boolean().optional(),
+  poster_hard_gate_warnings: z.array(z.string().max(500)).max(80).optional(),
   portrait_qc_status: z.string().max(80).optional(),
   portrait_qc_auto_checked: z.boolean().optional(),
   portrait_qc_message: z.string().max(2000).optional(),
   portrait_qc_warnings: z.array(z.string().max(500)).max(80).optional(),
+  portrait_quality_state: imageQualityStateSchema.optional(),
+  portrait_consistency_status: z.enum(['preserved', 'uncertain', 'drifted', 'not_checked']).optional(),
   input_qc_status: z.string().max(80).optional(),
   input_qc_warnings: z.array(z.string().max(500)).max(80).optional(),
   commercial_ready: z.boolean().optional(),
+  quality_decision: imageQualityDecisionSchema.optional(),
+  portrait_user_confirmed: z.boolean().optional().default(false),
+  input_fidelity: imageCapabilitySchema.optional(),
+  input_fidelity_risk: z.string().max(500).optional(),
   risk_messages: z.array(z.string().max(500)).max(80).optional(),
-}).default({})
+}).default({ portrait_user_confirmed: false })
 
 export const imageWorkbenchVersionKindSchema = z.enum([
   'generated',
@@ -100,11 +234,18 @@ export const imageWorkbenchProjectSchema = z.object({
   source_generation_id: z.string().min(1).max(256).optional(),
   current_version_id: imageWorkbenchIdSchema,
   prompt: z.string().max(8000).optional(),
+  user_request: z.string().max(8000).optional(),
+  creative_brief: imageCreativeBriefSchema.optional(),
+  brief_understanding: z.string().max(1000).optional(),
+  compiler_version: z.string().max(40).optional(),
   intent: imageIntentSchema.default('poster_text'),
   quality: imageQualitySchema,
   ratio: z.string().min(1).max(16).optional(),
   quantity: z.number().int().positive().max(4).default(3),
   reference_asset_ids: z.array(imageWorkbenchIdSchema).max(16).default([]),
+  reference_assets: z.array(imageAssetReferenceSchema).max(16).default([]),
+  autosave_revision: z.number().int().nonnegative().default(0),
+  save_status: z.enum(['saved', 'saving', 'failed']).default('saved'),
   canvas: imageWorkbenchCanvasSchema,
   versions: z.array(imageWorkbenchVersionSchema).min(1).max(500),
   created_at: imageWorkbenchIsoDateSchema,
@@ -119,6 +260,9 @@ export const studioImageSchema = z.object({
   width: z.number().int().positive().optional(),
   height: z.number().int().positive().optional(),
   ratio: z.string().optional(),
+  local_preview: z.boolean().optional(),
+  portrait_quality_state: imageQualityStateSchema.optional(),
+  portrait_consistency_status: z.enum(['preserved', 'uncertain', 'drifted', 'not_checked']).optional(),
 }).catchall(z.unknown())
 
 export const mediaJobSchema = z.object({
@@ -135,20 +279,42 @@ export const mediaJobStartResponseSchema = z.object({
   job_id: z.string().min(1),
 })
 
+export const imageBriefCompileRequestSchema = z.object({
+  prompt: z.string().min(1).max(8000),
+  scene: z.enum(['poster', 'portrait']).optional(),
+  intent: imageIntentSchema.optional(),
+  ratio: imageWorkbenchRatioSchema,
+  quality: imageQualitySchema,
+  poster_text: z.record(z.string(), z.unknown()).optional(),
+  scene_template_id: z.string().max(80).optional(),
+  reference_assets: z.array(imageAssetReferenceSchema).max(16).default([]),
+  portrait_authorization_confirmed: z.boolean().default(false),
+})
+
+export const imageBriefCompileResponseSchema = z.object({
+  brief: imageCreativeBriefSchema,
+  understanding: z.string().max(1000),
+})
+
 export const studioGenerateRequestSchema = z.object({
   prompt: z.string().min(1).max(8000),
+  user_request: z.string().max(8000).optional(),
+  creative_brief: imageCreativeBriefSchema.optional(),
   image_prompt: z.string().max(8000).optional(),
   style: z.string().max(2000).optional(),
   poster_text: z.record(z.string(), z.unknown()).optional(),
   print_mode: z.boolean().optional(),
   portrait_consent: z.boolean().optional(),
+  portrait_authorization_confirmed: z.boolean().optional(),
   scene_template_id: z.string().max(80).optional(),
   ratio: imageWorkbenchRatioSchema,
   count: z.number().int().min(1).max(4).default(3),
   intent: imageIntentSchema.default('poster_text'),
   quality: imageQualitySchema,
   reference_image_paths: z.array(z.string().min(1).max(4096)).max(8).optional(),
+  reference_assets: z.array(imageAssetReferenceSchema).max(16).optional(),
   reference_generation_ids: z.array(z.string().min(1).max(256)).max(8).optional(),
+  input_fidelity: imageInputFidelitySchema.optional(),
   logo_path: z.string().min(1).max(4096).optional(),
   qr_path: z.string().min(1).max(4096).optional(),
   qrcode_text: z.string().max(4096).optional(),
@@ -163,8 +329,14 @@ export const studioEditRequestSchema = z.object({
   source_generation_id: z.string().min(1).max(256).optional(),
   source_image_path: z.string().min(1).max(4096).optional(),
   prompt: z.string().min(1).max(4000),
+  user_request: z.string().max(4000).optional(),
+  creative_brief: imageCreativeBriefSchema.optional(),
   image_prompt: z.string().max(4000).optional(),
   ratio: z.string().max(16).optional(),
+  reference_assets: z.array(imageAssetReferenceSchema).max(16).optional(),
+  reference_image_paths: z.array(z.string().min(1).max(4096)).max(8).optional(),
+  reference_generation_ids: z.array(z.string().min(1).max(256)).max(8).optional(),
+  input_fidelity: imageInputFidelitySchema.optional(),
   mask_path: z.string().min(1).max(4096).optional(),
   intent: z.enum(['edit_content', 'inpaint']).default('edit_content'),
   quality: imageQualitySchema,
@@ -194,10 +366,17 @@ export const imageWorkbenchCreateProjectRequestSchema = z.object({
   height: z.number().int().positive().max(12000),
   ratio: z.string().max(16).optional(),
   prompt: z.string().max(8000).optional(),
+  user_request: z.string().max(8000).optional(),
+  creative_brief: imageCreativeBriefSchema.optional(),
+  brief_understanding: z.string().max(1000).optional(),
+  compiler_version: z.string().max(40).optional(),
   intent: imageIntentSchema.default('poster_text'),
   quality: imageQualitySchema,
   quantity: z.number().int().positive().max(4).default(3),
   reference_asset_ids: z.array(imageWorkbenchIdSchema).max(16).default([]),
+  reference_assets: z.array(imageAssetReferenceSchema).max(16).default([]),
+  text_layers: z.array(imageWorkbenchTextLayerSchema).max(80).default([]),
+  image_layers: z.array(imageWorkbenchImageLayerSchema).max(24).default([]),
   review: imageWorkbenchReviewSchema.optional(),
 })
 
@@ -206,6 +385,8 @@ export const imageWorkbenchUpdateCanvasRequestSchema = z.object({
   width: z.number().int().positive().max(12000),
   height: z.number().int().positive().max(12000),
   text_layers: z.array(imageWorkbenchTextLayerSchema).max(80).default([]),
+  image_layers: z.array(imageWorkbenchImageLayerSchema).max(24).default([]),
+  revision: z.number().int().nonnegative().optional(),
 })
 
 export const imageWorkbenchAddVersionRequestSchema = z.object({
@@ -226,6 +407,11 @@ export const imageWorkbenchAddVersionRequestSchema = z.object({
 
 export const imageWorkbenchRollbackRequestSchema = z.object({
   version_id: imageWorkbenchIdSchema,
+})
+
+export const imageWorkbenchPortraitConfirmRequestSchema = z.object({
+  version_id: imageWorkbenchIdSchema.optional(),
+  confirmed: z.literal(true),
 })
 
 export const imageWorkbenchAssetKindSchema = z.enum(['reference', 'mask', 'export', 'library'])
@@ -253,6 +439,7 @@ export const imageWorkbenchExportRequestSchema = z.object({
   width: z.number().int().positive().max(12000),
   height: z.number().int().positive().max(12000),
   text_layers: z.array(imageWorkbenchTextLayerSchema).max(80).optional(),
+  image_layers: z.array(imageWorkbenchImageLayerSchema).max(24).optional(),
 })
 
 export const imageWorkbenchSaveToLibraryRequestSchema = z.object({
@@ -295,6 +482,15 @@ export const imageWorkbenchLibraryResponseSchema = z.object({
 
 export type ImageIntent = z.infer<typeof imageIntentSchema>
 export type ImageQuality = z.infer<typeof imageQualitySchema>
+export type ImageReferenceRole = z.infer<typeof imageReferenceRoleSchema>
+export type ImageAssetReference = z.infer<typeof imageAssetReferenceSchema>
+export type PosterBrief = z.infer<typeof posterBriefSchema>
+export type PortraitBrief = z.infer<typeof portraitBriefSchema>
+export type ImageCreativeBrief = z.infer<typeof imageCreativeBriefSchema>
+export type ImageQualityState = z.infer<typeof imageQualityStateSchema>
+export type ImageQualityDecision = z.infer<typeof imageQualityDecisionSchema>
+export type ImageWorkbenchImageLayer = z.infer<typeof imageWorkbenchImageLayerSchema>
+export type ImageCapability = z.infer<typeof imageCapabilitySchema>
 export type ImageWorkbenchReview = z.infer<typeof imageWorkbenchReviewSchema>
 export type ImageWorkbenchTextLayer = z.infer<typeof imageWorkbenchTextLayerSchema>
 export type ImageWorkbenchCanvas = z.infer<typeof imageWorkbenchCanvasSchema>
@@ -303,12 +499,15 @@ export type ImageWorkbenchProject = z.infer<typeof imageWorkbenchProjectSchema>
 export type StudioImage = z.infer<typeof studioImageSchema>
 export type MediaJob = z.infer<typeof mediaJobSchema>
 export type MediaJobStartResponse = z.infer<typeof mediaJobStartResponseSchema>
+export type ImageBriefCompileRequest = z.input<typeof imageBriefCompileRequestSchema>
+export type ImageBriefCompileResponse = z.infer<typeof imageBriefCompileResponseSchema>
 export type StudioGenerateRequest = z.input<typeof studioGenerateRequestSchema>
 export type StudioEditRequest = z.input<typeof studioEditRequestSchema>
 export type StudioUpscaleRequest = z.input<typeof studioUpscaleRequestSchema>
 export type ImageWorkbenchCreateProjectRequest = z.input<typeof imageWorkbenchCreateProjectRequestSchema>
 export type ImageWorkbenchUpdateCanvasRequest = z.input<typeof imageWorkbenchUpdateCanvasRequestSchema>
 export type ImageWorkbenchAddVersionRequest = z.input<typeof imageWorkbenchAddVersionRequestSchema>
+export type ImageWorkbenchPortraitConfirmRequest = z.input<typeof imageWorkbenchPortraitConfirmRequestSchema>
 export type ImageWorkbenchUploadAssetRequest = z.input<typeof imageWorkbenchUploadAssetRequestSchema>
 export type ImageWorkbenchAsset = z.infer<typeof imageWorkbenchAssetSchema>
 export type ImageWorkbenchLibraryItem = z.infer<typeof imageWorkbenchLibraryItemSchema>

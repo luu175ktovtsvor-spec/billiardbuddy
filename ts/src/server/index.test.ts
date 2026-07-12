@@ -4790,12 +4790,7 @@ test('legacy studio media endpoints create TS media jobs and expose media-job st
 	    const projects = await fetch(`http://127.0.0.1:${mediaServer.port}/api/v1/studio/workbench/projects`)
 	    expect(projects.status).toBe(200)
 	    const projectsBody = await projects.json() as any
-	    expect(projectsBody.projects).toHaveLength(1)
-	    expect(projectsBody.projects[0]).toMatchObject({
-	      source_generation_id: localGenerationId,
-	      current_version_id: expect.any(String),
-	      quantity: 1,
-	    })
+	    expect(projectsBody.projects).toHaveLength(0)
 
 	    const storyboard = await fetch(`http://127.0.0.1:${mediaServer.port}/api/v1/studio/storyboard`, {
       method: 'POST',
@@ -4853,6 +4848,62 @@ test('legacy studio generate uses TS image gateway when image env is configured'
     const asset = await fetch(`http://127.0.0.1:${mediaServer.port}${status.result.urls[0]}`)
     expect(asset.status).toBe(200)
     expect(asset.headers.get('content-type')).toContain('image/png')
+  } finally {
+    mediaServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('image workbench routes enforce revision conflicts and explicit portrait confirmation', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'image-workbench-routes-'))
+  const mediaServer = startServer({ port: 0, transcriptRoot: root })
+  const base = `http://127.0.0.1:${mediaServer.port}`
+  try {
+    const createdResponse = await fetch(`${base}/api/v1/studio/workbench/projects`, {
+      method: 'POST',
+      body: JSON.stringify({
+        title: '助教形象照',
+        image_url: '/uploads/posters/portrait.png',
+        width: 768,
+        height: 768,
+        intent: 'portrait',
+        quality: 'standard',
+        creative_brief: {
+          user_request: '保留本人特征，换成球房背景',
+          scene: 'portrait',
+          portrait: { authorization_confirmed: true },
+        },
+      }),
+    })
+    expect(createdResponse.status).toBe(200)
+    const created = await createdResponse.json() as any
+    expect(created.project.autosave_revision).toBe(0)
+
+    const save = () => fetch(`${base}/api/v1/studio/workbench/projects/${created.project.project_id}/canvas`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        current_version_id: created.project.current_version_id,
+        width: 768,
+        height: 768,
+        text_layers: [],
+        image_layers: [],
+        revision: 0,
+      }),
+    })
+    expect((await save()).status).toBe(200)
+    expect((await save()).status).toBe(409)
+
+    const confirmedResponse = await fetch(`${base}/api/v1/studio/workbench/projects/${created.project.project_id}/portrait-confirm`, {
+      method: 'POST',
+      body: JSON.stringify({ version_id: created.project.current_version_id, confirmed: true }),
+    })
+    expect(confirmedResponse.status).toBe(200)
+    const confirmed = await confirmedResponse.json() as any
+    expect(confirmed.project.versions[0].review).toMatchObject({
+      portrait_quality_state: 'user_confirmed',
+      portrait_user_confirmed: true,
+      commercial_ready: false,
+    })
   } finally {
     mediaServer.stop(true)
     rmSync(root, { recursive: true, force: true })
@@ -4951,7 +5002,7 @@ test('legacy studio generate attaches uploaded store brand assets to TS Seedream
       await new Promise(resolve => setTimeout(resolve, 10))
     }
 
-    expect(requestBody.prompt).toContain('做一张开业海报')
+    expect(requestBody.prompt).toContain('用途：poster')
     expect(requestBody.prompt).toContain('门店名称:九号台球')
     expect(requestBody.prompt).toContain('高端质感')
     expect(requestBody.prompt).toContain('#0f8f68')
@@ -5132,7 +5183,9 @@ test('legacy studio edit uses TS image edits gateway with generated source image
       if (status.status === 'done') break
       await new Promise(resolve => setTimeout(resolve, 10))
     }
-    expect(form.get('prompt')).toBe('把背景改成深绿色')
+    expect(String(form.get('prompt'))).toContain('Change only:')
+    expect(String(form.get('prompt'))).toContain('把背景改成深绿色')
+    expect(form.get('input_fidelity')).toBeNull()
     expect(form.getAll('image')).toHaveLength(1)
     expect(status.result).toMatchObject({ image_engine: '创意生图', mode: 'edit', local_preview: false })
     expect(status.result.urls[0]).toMatch(/^\/uploads\/posters\/image_.*\.png$/)

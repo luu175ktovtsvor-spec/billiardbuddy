@@ -88,6 +88,7 @@ import { resolveInboundUserMessage, type BridgeInboundContent, type BridgeResolv
 import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
 import { ImageWorkbenchStore } from '../media/imageWorkbenchStore'
 import { createImageWorkbenchRouteHandler } from '../media/imageWorkbenchRoutes'
+import { saveLocalImageAttachment } from '../media/imageUploadRoutes'
 import { localStoryboard } from '../media/studioFallbacks'
 import { AssetManager, ASSET_WS_TOPIC, getActiveAssetManager, setActiveAssetManager } from '../assets/assetManager'
 import { createMediaTools } from '../media/mediaTools'
@@ -106,6 +107,8 @@ import { textBlock, type ContentBlock, type Message } from '../types/message'
 import type { AgentEvent, AskQuestionField } from '../types/events'
 import { parseClientMessage, type ServerMessage as AgentServerMessage } from '../../shared/contracts/agent-websocket'
 import {
+  imageBriefCompileRequestSchema,
+  imageBriefCompileResponseSchema,
   studioEditRequestSchema,
   studioGenerateRequestSchema,
   studioUpscaleRequestSchema,
@@ -2771,25 +2774,6 @@ export function startServer(opts: StartServerOptions = {}) {
     return Response.json({ url: rel })
   }
 
-  /**
-   * 通用图片上传(区域截图/聊天附图):存 /uploads/local,返回 url。不改门店 store(与 logo/qrcode 区分)。
-   * 用途:①"基于此调整"——右侧预览框选区域截图 → 上传拿 url → 当一轮多模态 turn(图+指令)喂模型
-   * (走内核现成多模态,cc-haha 路,不改内核);②聊天里贴图。只收图片类型。
-   */
-  async function saveImageAttachment(req: Request) {
-    const form = await req.formData().catch(() => null)
-    const file = form?.get('file')
-    if (!(file instanceof File)) return jsonDetailError('file required', 400)
-    const type = file.type || ''
-    if (type && !type.startsWith('image/')) return jsonDetailError('只接受图片文件', 400)
-    const ext = extname(file.name || '') || (type.includes('png') ? '.png' : type.includes('webp') ? '.webp' : '.jpg')
-    const rel = `/uploads/local/attach-${Date.now()}-${crypto.randomUUID().slice(0, 8)}${ext}`
-    const abs = join(stateRoot, 'uploads', 'local', basename(rel))
-    await mkdir(dirname(abs), { recursive: true })
-    await writeFile(abs, Buffer.from(await file.arrayBuffer()))
-    return Response.json({ url: rel })
-  }
-
   async function serveLocalUpload(pathname: string): Promise<Response | null> {
     if (!pathname.startsWith('/uploads/local/')) return null
     const abs = join(stateRoot, 'uploads', 'local', basename(pathname))
@@ -3259,6 +3243,15 @@ export function startServer(opts: StartServerOptions = {}) {
       if (media.hasBackend) return Response.json(await media.proxyJson(url.pathname, undefined, 'GET'))
       return Response.json({ ok: false, detail: '没找到这张本地预览成品' }, { status: 404 })
     }
+    if (action === 'brief/compile' && req.method === 'POST') {
+      try {
+        const body = imageBriefCompileRequestSchema.parse(await req.json().catch(() => ({})))
+        const brief = media.compileBrief(body as Record<string, unknown>)
+        return Response.json(imageBriefCompileResponseSchema.parse({ brief, understanding: brief.understanding ?? brief.user_request }))
+      } catch (err) {
+        return jsonDetailError(err instanceof Error ? err.message : String(err), 400)
+      }
+    }
     if (action === 'generate' && req.method === 'POST') {
       try {
         const rawBody = studioGenerateRequestSchema.parse(await req.json().catch(() => ({})))
@@ -3477,7 +3470,7 @@ export function startServer(opts: StartServerOptions = {}) {
       if (url.pathname === '/api/v1/uploads/image') {
         // 通用图片上传(区域截图/聊天附图)→ 返回 /uploads/local url。供"基于此调整"+ 贴图。
         if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        return await saveImageAttachment(req)
+        return await saveLocalImageAttachment(stateRoot, req)
       }
 
       if (url.pathname === '/api/v1/stores/me/byok') {

@@ -65,7 +65,19 @@ class Semaphore {
 }
 
 type TaskState = 'queued' | 'running' | 'succeeded' | 'failed'
-type TaskRecord = { status: TaskState; data?: unknown[]; error?: string; created: number }
+type InputFidelityCapability = {
+  requested: string
+  status: 'accepted' | 'unsupported'
+  risk?: string
+}
+
+type TaskRecord = {
+  status: TaskState
+  data?: unknown[]
+  error?: string
+  created: number
+  inputFidelity?: InputFidelityCapability
+}
 
 type SubmitBody = {
   mode?: 'generate' | 'edit'
@@ -91,6 +103,14 @@ function dataUriToFile(uri: string, name: string): File | null {
 function clampCount(n: unknown): number {
   const v = Math.floor(Number(n))
   return Number.isFinite(v) ? Math.max(1, Math.min(4, v)) : 1
+}
+
+function isFormalGptImage2(model: string): boolean {
+  return /^gpt-image-2(?:$|[-_])/i.test(model.trim())
+}
+
+function inputFidelityRejected(status: number, detail: string): boolean {
+  return status >= 400 && status < 500 && /input[_ -]?fidelity|unsupported parameter|unknown parameter/i.test(detail)
 }
 
 export type RelayDeps = { env: Env; fetchImpl?: FetchLike; now?: () => number }
@@ -124,41 +144,71 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         const prompt = String(body.prompt ?? '')
         const n = clampCount(body.n)
         const size = body.size ? String(body.size) : undefined
-        let resp: Response
-        if (body.mode === 'edit') {
-          const form = new FormData()
-          form.set('model', model)
-          form.set('prompt', prompt)
-          form.set('n', String(n))
-          if (size) form.set('size', size)
-          if (body.input_fidelity) form.set('input_fidelity', String(body.input_fidelity))
-          const images = Array.isArray(body.images) ? body.images : []
-          let attached = 0
-          for (const uri of images) {
-            const file = dataUriToFile(String(uri), `image-${attached}.png`)
-            if (file) { form.append('image', file); attached++ }
+        const requestedFidelity = typeof body.input_fidelity === 'string' && body.input_fidelity.trim()
+          ? body.input_fidelity.trim()
+          : undefined
+        // The current formal gpt-image-2 API processes image inputs at high
+        // fidelity automatically and rejects a manual input_fidelity field.
+        // Keep the desktop -> gateway -> relay intent intact, omit it only at
+        // this endpoint, and return an explicit risk instead of faking support.
+        const omitFidelityForFormalEndpoint = Boolean(requestedFidelity && isFormalGptImage2(model))
+        if (requestedFidelity && omitFidelityForFormalEndpoint) {
+          rec.inputFidelity = {
+            requested: requestedFidelity,
+            status: 'unsupported',
+            risk: '当前正式端点不接受手动高保真参数，已按端点默认图片输入能力处理；请人工确认人物一致性。',
           }
-          if (attached === 0) throw new Error('改图任务缺少可用底图(images 为空或非法 data-uri)')
-          if (body.mask) {
-            const mask = dataUriToFile(String(body.mask), 'mask.png')
-            if (mask) form.set('mask', mask)
+        }
+
+        const requestUpstream = async (includeInputFidelity: boolean): Promise<Response> => {
+          if (body.mode === 'edit') {
+            const form = new FormData()
+            form.set('model', model)
+            form.set('prompt', prompt)
+            form.set('n', String(n))
+            if (size) form.set('size', size)
+            if (includeInputFidelity && requestedFidelity) form.set('input_fidelity', requestedFidelity)
+            const images = Array.isArray(body.images) ? body.images : []
+            let attached = 0
+            for (const uri of images) {
+              const file = dataUriToFile(String(uri), `image-${attached}.png`)
+              if (file) { form.append('image', file); attached++ }
+            }
+            if (attached === 0) throw new Error('改图任务缺少可用底图(images 为空或非法 data-uri)')
+            if (body.mask) {
+              const mask = dataUriToFile(String(body.mask), 'mask.png')
+              if (mask) form.set('mask', mask)
+            }
+            return await fetchImpl(`${config.openaiBase}/images/edits`, {
+              method: 'POST',
+              headers: { authorization: `Bearer ${config.openaiKey}` },
+              body: form,
+            })
           }
-          resp = await fetchImpl(`${config.openaiBase}/images/edits`, {
-            method: 'POST',
-            headers: { authorization: `Bearer ${config.openaiKey}` },
-            body: form,
-          })
-        } else {
           const payload: Record<string, unknown> = { model, prompt, n }
           if (size) payload.size = size
           if (body.response_format) payload.response_format = body.response_format
-          resp = await fetchImpl(`${config.openaiBase}/images/generations`, {
+          if (includeInputFidelity && requestedFidelity) payload.input_fidelity = requestedFidelity
+          return await fetchImpl(`${config.openaiBase}/images/generations`, {
             method: 'POST',
             headers: { authorization: `Bearer ${config.openaiKey}`, 'content-type': 'application/json' },
             body: JSON.stringify(payload),
           })
         }
-        const text = await resp.text()
+
+        let resp = await requestUpstream(Boolean(requestedFidelity && !omitFidelityForFormalEndpoint))
+        let text = await resp.text()
+        if (requestedFidelity && !omitFidelityForFormalEndpoint && inputFidelityRejected(resp.status, text)) {
+          rec.inputFidelity = {
+            requested: requestedFidelity,
+            status: 'unsupported',
+            risk: '当前正式端点不接受手动高保真参数，已自动降级为标准图片输入；请人工确认人物一致性。',
+          }
+          resp = await requestUpstream(false)
+          text = await resp.text()
+        } else if (requestedFidelity && !omitFidelityForFormalEndpoint && resp.ok) {
+          rec.inputFidelity = { requested: requestedFidelity, status: 'accepted' }
+        }
         if (!resp.ok) throw new Error(`OpenAI ${resp.status}:${text.slice(0, 300)}`)
         let parsed: unknown
         try { parsed = text ? JSON.parse(text) : {} } catch { parsed = {} }
@@ -199,7 +249,17 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         const id = url.pathname.slice('/images/tasks/'.length)
         const rec = tasks.get(id)
         if (!rec) return Response.json({ status: 'failed', error: '任务不存在或已过期' }, { status: 404 })
-        return Response.json({ status: rec.status, data: rec.data, error: rec.error, created: rec.created })
+        return Response.json({
+          status: rec.status,
+          data: rec.data,
+          error: rec.error,
+          created: rec.created,
+          ...(rec.inputFidelity ? {
+            input_fidelity_requested: rec.inputFidelity.requested,
+            input_fidelity_status: rec.inputFidelity.status,
+            ...(rec.inputFidelity.risk ? { input_fidelity_risk: rec.inputFidelity.risk } : {}),
+          } : {}),
+        })
       }
       return new Response('Not found', { status: 404 })
     } catch (err) {

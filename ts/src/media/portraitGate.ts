@@ -106,6 +106,34 @@ export interface InputQualityBlock {
   blockReason: string
 }
 
+export function portraitReferenceRequiredResult(): Record<string, unknown> {
+  return {
+    blocked: true,
+    block_reason: 'portrait_reference_required',
+    portrait_gate: 'reference_required',
+    needs_user_action: true,
+    local_preview: false,
+    input_qc_status: 'blocked',
+    input_qc_warnings: ['人像项目需要上传 1-3 张同一人物的已授权参考图。'],
+    message: '请先上传 1-3 张同一人物的已授权参考图；系统不会只用外貌文字重建某个人。',
+  }
+}
+
+export function portraitImpersonationBlockedResult(): Record<string, unknown> {
+  return {
+    blocked: true,
+    block_reason: 'portrait_impersonation_not_supported',
+    portrait_gate: 'impersonation_not_supported',
+    needs_user_action: true,
+    local_preview: false,
+    message: '不支持换脸、公众人物代言或身份冒充。请使用本人或已授权人物素材做自然宣传优化。',
+  }
+}
+
+export function requestsPortraitImpersonation(prompt: string): boolean {
+  return /换脸|深伪|deepfake|冒充|假扮|明星代言|公众人物代言|名人代言|模仿(?:某|明星|名人)/iu.test(prompt)
+}
+
 /** 输入图质检不合格时的拦截结果(拦低质,给大白话原因)。 */
 export function inputQualityBlockedResult(block: InputQualityBlock): Record<string, unknown> {
   return {
