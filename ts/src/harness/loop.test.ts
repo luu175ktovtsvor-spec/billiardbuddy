@@ -3086,3 +3086,45 @@ test('headless 自动拒(对齐 cc AUTO_REJECT):avoidPermissionPrompts 下 ask �
   expect(events2.some(e => e.type === 'approval_request')).toBe(false)
   expect(readFileSync(join(root, 'h2.txt'), 'utf8')).toBe('ok')
 })
+
+test('条件技能同轮实时激活:本批碰到匹配文件 → 该批 tool_result 后注入"技能可用"提醒(回合级去重)', async () => {
+  writeFileSync(join(root, 'schema.sql'), 'SELECT 1')
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'r1', name: 'read_file', input: { path: 'schema.sql' } }] },
+    { kind: 'tool_calls', calls: [{ id: 'r2', name: 'read_file', input: { path: 'schema.sql' } }] }, // 再碰一次:不该重复提醒
+    { kind: 'final', text: 'done' },
+  ])
+  const sqlSkill = { name: 'sqlhelper', description: 'SQL 助手', paths: ['*.sql'] } as unknown as import('../commands/types').PromptCommand
+  let activatorCalls = 0
+  const events = await collect(runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x',
+    activateConditionalSkills: (paths) => {
+      activatorCalls++
+      // 简化激活器:碰到 .sql 就返回 sqlhelper
+      return paths.some(p => p.endsWith('.sql')) ? [sqlSkill] : []
+    },
+  }))
+  // 激活提醒作 context_note 出现且只一次(第二批碰同文件被去重)
+  const activations = events.filter(e => e.type === 'context_note' && e.text.includes('条件技能「sqlhelper」已激活'))
+  expect(activations.length).toBe(1)
+  expect(activatorCalls).toBe(2) // 两批都碰了文件、都调了激活器,但第二次命中已激活→不再注入
+  // 提醒文本确实进了发给模型的后续消息(第二次 model.step 的 messages 含"技能「sqlhelper」现在可用")
+  const secondStepMessages = JSON.stringify(model.received[1]?.messages ?? [])
+  expect(secondStepMessages).toContain('技能「sqlhelper」现在可用')
+})
+
+test('条件技能实时激活:不碰匹配文件则不激活(碰 .ts 不触发 *.sql 技能)', async () => {
+  writeFileSync(join(root, 'app.ts'), 'export {}')
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'r1', name: 'read_file', input: { path: 'app.ts' } }] },
+    { kind: 'final', text: 'done' },
+  ])
+  const sqlSkill = { name: 'sqlhelper', description: 'SQL', paths: ['*.sql'] } as unknown as import('../commands/types').PromptCommand
+  const events = await collect(runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x',
+    activateConditionalSkills: (paths) => paths.some(p => p.endsWith('.sql')) ? [sqlSkill] : [],
+  }))
+  expect(events.some(e => e.type === 'context_note' && e.text.includes('sqlhelper'))).toBe(false)
+})

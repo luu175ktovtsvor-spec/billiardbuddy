@@ -157,6 +157,15 @@ export function parseSkillPaths(raw: unknown): string[] | undefined {
   return patterns
 }
 
+/** 文件类工具名(条件技能激活的触发面:碰这些工具的 path 入参 = "碰到文件")。内部名 + cc 规范名两套都收。 */
+export const FILE_TOUCH_TOOL_NAMES: ReadonlySet<string> = new Set(['read_file', 'write_file', 'edit_file', 'read_many_files', 'Read', 'Write', 'Edit'])
+
+/** 从文件类工具入参提 path(path 优先, 回退 file_path);非对象/无字段 → undefined。server(扫历史)与 loop(扫本批)共用。 */
+export function toolInputFilePath(input: unknown): string | undefined {
+  const rec = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {}
+  return typeof rec.path === 'string' ? rec.path : typeof rec.file_path === 'string' ? rec.file_path : undefined
+}
+
 /**
  * 条件技能激活(对齐 cc activateConditionalSkillsForPaths):给一批被"碰到"的文件路径,返回其中命中某条件技能
  * `paths` glob 的技能名集合。调用方(loop)把这些名字并进本回合发现清单,让条件技能"碰到匹配文件才现身"。

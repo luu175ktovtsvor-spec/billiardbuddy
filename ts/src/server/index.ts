@@ -44,7 +44,7 @@ import { jsonDetailError, jsonError, localCorsPreflight, TurnSetupError, withLoc
 import { VoiceTranscriptionError, transcribeVoiceFile } from './services/voiceTranscription'
 import { buildGeneralRegistry } from '../tools/generalTools'
 import { workspaceForActiveWorktree } from '../tools/worktreeTools'
-import { activateConditionalSkillsForPaths, allowSkillTools, bundledSkillsRoot, formatUseSkillResult, loadLayeredSkills, loadSkillsDir, recordInvokedSkill, registerSkillHooks, userSkillsRoot } from '../skills/skillLoader'
+import { activateConditionalSkillsForPaths, allowSkillTools, bundledSkillsRoot, FILE_TOUCH_TOOL_NAMES, formatUseSkillResult, loadLayeredSkills, loadSkillsDir, recordInvokedSkill, registerSkillHooks, toolInputFilePath, userSkillsRoot } from '../skills/skillLoader'
 import { createInvokedSkillsMessage, restoreInvokedSkillsFromMessages } from '../skills/invokedSkills'
 import { createBuiltinCommandLibrary, isBuiltinForkCommand } from '../commands/builtinCommands'
 import { allowedToolsForAgent } from '../commands/allowedTools'
@@ -920,15 +920,13 @@ function backgroundTaskNotification(task: TaskMeta): Record<string, unknown> | n
  * 覆盖优先级:opts.transcriptRoot(测试/显式注入) > env `BILLIARDBUDDY_STATE_DIR`(白标显式覆盖整个 state 根)
  * > `~/.billiardbuddy/state`(默认,永远可写、与 cwd 无关)。
  */
-/** 从会话历史里刨出被文件工具"碰过"的路径(供条件技能激活:碰到命中 paths 的文件才现身)。取文件类工具的 path/file_path 入参。 */
-const FILE_TOUCH_TOOLS = new Set(['read_file', 'write_file', 'edit_file', 'read_many_files', 'Read', 'Write', 'Edit'])
+/** 从会话历史里刨出被文件工具"碰过"的路径(供条件技能激活:碰到命中 paths 的文件才现身)。原语与 loop 侧共用(skillLoader)。 */
 export function collectTouchedFilePaths(messages: Message[]): string[] {
   const paths: string[] = []
   for (const m of messages) {
     for (const b of m.content) {
-      if (b.type !== 'tool_use' || !FILE_TOUCH_TOOLS.has(b.name)) continue
-      const input = b.input && typeof b.input === 'object' && !Array.isArray(b.input) ? b.input as Record<string, unknown> : {}
-      const p = typeof input.path === 'string' ? input.path : typeof input.file_path === 'string' ? input.file_path : undefined
+      if (b.type !== 'tool_use' || !FILE_TOUCH_TOOL_NAMES.has(b.name)) continue
+      const p = toolInputFilePath(b.input)
       if (p) paths.push(p)
     }
   }
@@ -1654,15 +1652,23 @@ export function startServer(opts: StartServerOptions = {}) {
     const priorMessages = await transcript.load().catch(() => [] as Message[])
     // 条件技能激活(对齐 cc "碰到命中 paths 的文件才现身"):扫会话历史触碰过的文件路径,命中的条件技能并回
     // 本回合发现清单(默认它们被 loadLayeredSkills 排除)。仅当存在条件技能时才算,无则跳过。
-    // ⚠️ 已知粒度差距(登记):激活按【回合起点】算一次——同一 runAgentLoop 内新碰到的文件要下一回合才现身
-    // (systemPrompt 回合内不重建,harness/loop.ts:304)。cc 是文件工具内联改 dynamicSkills、同轮实时;
-    // 我们的实时激活需 loop 内文件工具后重算清单/回传,属更大的 loop 热路径改造,单开。
+    // 回合起点激活:扫历史触碰过的文件,命中的条件技能进本回合发现清单(systemPrompt)。
+    // 同轮实时激活由下方 activateConditionalSkillsFn 传进 loop 补上(碰到文件当轮 system-reminder 现身)。
+    const hasConditionalSkills = [...skills.byName.values()].some(s => s.paths && s.paths.length > 0)
     let activatedConditionalSkills: PromptCommand[] | undefined
-    if ([...skills.byName.values()].some(s => s.paths && s.paths.length > 0)) {
+    if (hasConditionalSkills) {
       const touched = collectTouchedFilePaths(priorMessages)
       const activatedNames = activateConditionalSkillsForPaths(skills, workspace.root, touched)
       activatedConditionalSkills = [...activatedNames].map(n => skills.byName.get(n)).filter((s): s is PromptCommand => !!s)
     }
+    // 同轮实时激活闭包(对齐 cc 文件工具内联激活):loop 每批工具后拿本批碰到的文件路径调它,命中的条件技能当轮现身。
+    // 仅当存在条件技能时提供(否则 undefined,loop 跳过零开销)。
+    const activateConditionalSkillsFn = hasConditionalSkills
+      ? (paths: string[]): PromptCommand[] => {
+          const names = activateConditionalSkillsForPaths(skills, workspace.root, paths)
+          return [...names].map(n => skills.byName.get(n)).filter((s): s is PromptCommand => !!s)
+        }
+      : undefined
     let systemPrompt = await buildSystemPrompt(workspace, { commands, skills, contextWindowTokens, activatedConditionalSkills }, outputStyleConfig)
     // 输出风格已在 buildSystemPrompt 中部注入(对齐 cc systemPromptSection('output_style') + keepCodingInstructions
     // 门控),不再拼到尾部 extraContext。领域包上下文(billiards 等)每回合直接进系统提示——它是"我是谁"的域身份、
@@ -2118,6 +2124,7 @@ export function startServer(opts: StartServerOptions = {}) {
           modelName: providerRuntime.config.model,
           transcript,
           conversationId,
+          activateConditionalSkills: activateConditionalSkillsFn,
           steerInbox,
           registerInterrupt: fn => { interruptRequesters.set(conversationId, fn) },
           signal: controller.signal,
