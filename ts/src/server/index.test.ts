@@ -4784,10 +4784,20 @@ test('legacy studio media endpoints create TS media jobs and expose media-job st
     const localGenerationId = status.result.images[0].generation_id
     const generation = await fetch(`http://127.0.0.1:${mediaServer.port}/api/v1/studio/generation/${encodeURIComponent(localGenerationId)}`)
     expect(generation.status).toBe(200)
-    const generationBody = await generation.json() as any
-    expect(generationBody).toMatchObject({ url: status.result.urls[0], is_video: false, local_preview: true })
+	    const generationBody = await generation.json() as any
+	    expect(generationBody).toMatchObject({ url: status.result.urls[0], is_video: false, local_preview: true })
 
-    const storyboard = await fetch(`http://127.0.0.1:${mediaServer.port}/api/v1/studio/storyboard`, {
+	    const projects = await fetch(`http://127.0.0.1:${mediaServer.port}/api/v1/studio/workbench/projects`)
+	    expect(projects.status).toBe(200)
+	    const projectsBody = await projects.json() as any
+	    expect(projectsBody.projects).toHaveLength(1)
+	    expect(projectsBody.projects[0]).toMatchObject({
+	      source_generation_id: localGenerationId,
+	      current_version_id: expect.any(String),
+	      quantity: 1,
+	    })
+
+	    const storyboard = await fetch(`http://127.0.0.1:${mediaServer.port}/api/v1/studio/storyboard`, {
       method: 'POST',
       body: JSON.stringify({ theme: '会员日台球短片', shots: 4, subject: '年轻助教' }),
     })

@@ -30,6 +30,7 @@ import {
   type InputInspection,
   type QcImage,
 } from './imageQC'
+import type { ImageIntent, ImageQuality, ImageWorkbenchReview } from '../../shared/contracts/image-workbench'
 
 export type MediaJobKind =
   | 'generate'
@@ -66,6 +67,10 @@ export interface MediaJobServiceOptions {
   prepareImageBody?: (body: Record<string, unknown>, mode: 'generate' | 'edit') => Record<string, unknown> | Promise<Record<string, unknown>>
   /** 人像质检/OCR 用的网关 VLM(测试注入 fake;传 null 显式禁用;不传则按 env 构造,缺配置=优雅降级)。 */
   qcModel?: Model | null
+  /** 对话生图产物自动登记到同一份工作台项目真相源;工作台直调不带 conversation_id,不会自动创建。 */
+  workbenchStore?: {
+    createProject(input: unknown): Promise<unknown>
+  }
 }
 
 /** 人像闸预检结果:blocked=true 则任务直接返回该结果(正常完成、非报错),不进模型。 */
@@ -189,6 +194,17 @@ function normalizeBackendUrl(url: string | undefined): string | undefined {
 
 function normalizeProvider(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase() : ''
+}
+
+function normalizeImageIntent(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toLowerCase() : ''
+}
+
+function openAiQualityFrom(value: unknown): 'low' | 'medium' | 'high' {
+  const quality = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  if (quality === 'draft' || quality === 'low') return 'low'
+  if (quality === 'final' || quality === 'high') return 'high'
+  return 'medium'
 }
 
 export function resolveMediaBackendUrl(env: Record<string, string | undefined> = process.env): string | undefined {
@@ -348,6 +364,63 @@ function hardTextInspectionFields(inspection: HardTextInspection): Record<string
     text_quality_warning: true,
     text_quality_warning_message: inspection.message,
   }
+}
+
+function stringArrayField(record: Record<string, unknown>, key: string): string[] | undefined {
+  const value = record[key]
+  if (!Array.isArray(value)) return undefined
+  const out = value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+  return out.length ? out.slice(0, 80) : undefined
+}
+
+function boolField(record: Record<string, unknown>, key: string): boolean | undefined {
+  return typeof record[key] === 'boolean' ? record[key] as boolean : undefined
+}
+
+function reviewFromImageRecord(record: Record<string, unknown>): ImageWorkbenchReview {
+  const review: ImageWorkbenchReview = {}
+  const stringKeys = [
+    'text_quality_status',
+    'text_quality_warning_message',
+    'portrait_qc_status',
+    'portrait_qc_message',
+    'input_qc_status',
+    'image_engine_warning',
+  ] as const
+  for (const key of stringKeys) {
+    const value = stringFrom(record[key])
+    if (value) {
+      if (key === 'image_engine_warning') {
+        review.risk_messages = [...(review.risk_messages ?? []), value]
+      } else {
+        review[key] = value as never
+      }
+    }
+  }
+  const textMissing = stringArrayField(record, 'text_quality_missing')
+  if (textMissing) review.text_quality_missing = textMissing
+  const portraitWarnings = stringArrayField(record, 'portrait_qc_warnings')
+  if (portraitWarnings) review.portrait_qc_warnings = portraitWarnings
+  const inputWarnings = stringArrayField(record, 'input_qc_warnings')
+  if (inputWarnings) review.input_qc_warnings = inputWarnings
+  const textWarning = boolField(record, 'text_quality_warning')
+  if (textWarning !== undefined) review.text_quality_warning = textWarning
+  const portraitChecked = boolField(record, 'portrait_qc_auto_checked')
+  if (portraitChecked !== undefined) review.portrait_qc_auto_checked = portraitChecked
+  const commercialReady = boolField(record, 'commercial_ready')
+  if (commercialReady !== undefined) review.commercial_ready = commercialReady
+  return review
+}
+
+function imageIntentFromBody(body: Record<string, unknown>, mode: 'generate' | 'edit'): ImageIntent {
+  const value = normalizeImageIntent(body.intent)
+  if (value === 'poster_text' || value === 'portrait' || value === 'creative' || value === 'edit_content' || value === 'inpaint') return value
+  return mode === 'edit' ? 'edit_content' : 'poster_text'
+}
+
+function imageQualityFromBody(body: Record<string, unknown>): ImageQuality {
+  const value = stringFrom(body.quality)?.toLowerCase()
+  return value === 'draft' || value === 'final' ? value : 'standard'
 }
 
 function isWesternDominant(text: string): boolean {
@@ -746,7 +819,11 @@ export class MediaJobService {
       workspaceRoot: opts.workspaceRoot,
       proxyPath: '/api/v1/studio/generate',
       preflight: ctx => this.portraitPreflight(ctx, normalized, 'generate', shared),
-      postprocess: (ctx, result) => this.imageResultPostprocess(ctx, result, shared),
+      postprocess: async (ctx, result) => this.attachWorkbenchProjects(
+        await this.imageResultPostprocess(ctx, result, shared),
+        normalized,
+        'generate',
+      ),
       fallback: ctx => this.directOrLocalImageFallback(ctx, normalized, 'generate'),
     })
   }
@@ -768,7 +845,11 @@ export class MediaJobService {
       workspaceRoot: opts.workspaceRoot,
       proxyPath: '/api/v1/studio/edit',
       preflight: ctx => this.portraitPreflight(ctx, normalized, 'edit', shared),
-      postprocess: (ctx, result) => this.imageResultPostprocess(ctx, result, shared),
+      postprocess: async (ctx, result) => this.attachWorkbenchProjects(
+        await this.imageResultPostprocess(ctx, result, shared),
+        normalized,
+        'edit',
+      ),
       fallback: ctx => this.directOrLocalImageFallback(ctx, normalized, 'edit'),
     })
   }
@@ -799,6 +880,61 @@ export class MediaJobService {
       project,
       fallback: ctx => this.localVideoJobFallback(ctx, kind, normalized, project),
     })
+  }
+
+  private async attachWorkbenchProjects(result: Record<string, unknown>, body: Record<string, unknown>, mode: 'generate' | 'edit'): Promise<Record<string, unknown>> {
+    if (!this.opts.workbenchStore || !stringFrom(body.conversation_id)) return result
+    const images = Array.isArray(result.images)
+      ? result.images.map(item => asRecord(item)).filter((item): item is Record<string, unknown> => !!item)
+      : []
+    if (images.length === 0 || result.blocked === true) return result
+
+    const created: Array<{ project_id: string; version_id: string; image_url: string; generation_id?: string }> = []
+    const fallbackSize = ratioSize(body.ratio)
+    for (const image of images) {
+      const imageUrl = stringFrom(image.poster_url) ?? stringFrom(image.url)
+      if (!imageUrl) continue
+      const generationId = stringFrom(image.generation_id)
+      const width = numberFrom(image.width, fallbackSize.width)
+      const height = numberFrom(image.height, fallbackSize.height)
+      try {
+        const project = await this.opts.workbenchStore.createProject({
+          title: shortText(body.prompt ?? body.description ?? body.image_prompt, mode === 'edit' ? '对话改图' : '对话生图'),
+          source_generation_id: generationId,
+          image_url: imageUrl,
+          width,
+          height,
+          ratio: stringFrom(image.ratio) ?? fallbackSize.ratio,
+          prompt: stringFrom(body.prompt) ?? stringFrom(body.description) ?? stringFrom(body.image_prompt),
+          intent: imageIntentFromBody(body, mode),
+          quality: imageQualityFromBody(body),
+          quantity: clampCount(body.count),
+          review: reviewFromImageRecord({ ...result, ...image }),
+        }) as { project_id?: unknown; current_version_id?: unknown }
+        const projectId = typeof project.project_id === 'string' ? project.project_id : undefined
+        const versionId = typeof project.current_version_id === 'string' ? project.current_version_id : undefined
+        if (projectId && versionId) {
+          created.push({
+            project_id: projectId,
+            version_id: versionId,
+            image_url: imageUrl,
+            ...(generationId ? { generation_id: generationId } : {}),
+          })
+        }
+      } catch (err) {
+        return {
+          ...result,
+          workbench_warning: `图片已生成，但登记到工作台失败:${sanitizeMediaError(err)}`,
+        }
+      }
+    }
+    return created.length
+      ? {
+          ...result,
+          workbench_project_ids: created.map(item => item.project_id),
+          workbench_projects: created,
+        }
+      : result
   }
 
   async proxyJson(path: string, body?: Record<string, unknown>, method = 'POST'): Promise<Record<string, unknown>> {
@@ -941,6 +1077,7 @@ export class MediaJobService {
     const seedreamModel = seedreamImageModelFrom(this.env, envModel)
     const openAiModel = openAiImageModelFrom(this.env, envModel)
     const explicitProvider = normalizeProvider(body.image_provider)
+    const intent = normalizeImageIntent(body.intent)
     const providerHint = explicitProvider
     const prompt = String(body.image_prompt ?? body.prompt ?? body.description ?? '')
 
@@ -959,6 +1096,18 @@ export class MediaJobService {
       model = openAiModel
       reason = 'explicit_provider_openai'
       explicit = true
+    } else if (intent === 'poster_text') {
+      model = seedreamModel
+      reason = 'intent_poster_text_seedream'
+    } else if (intent === 'creative' || intent === 'portrait') {
+      model = openAiModel
+      reason = `intent_${intent}_openai`
+    } else if (intent === 'inpaint') {
+      model = openAiModel
+      reason = 'intent_inpaint_openai'
+    } else if (intent === 'edit_content') {
+      model = openAiModel
+      reason = 'intent_edit_content_openai'
     } else if (body._image_mode === 'edit' || stringFrom(body.source_generation_id)) {
       const editType = inferImageEditType(prompt, body.edit_type)
       model = editType === 'text_fix' ? seedreamModel : openAiModel
@@ -1061,6 +1210,7 @@ export class MediaJobService {
       form.set('prompt', prompt)
       form.set('n', String(count))
       form.set('size', stringFrom(body.size) ?? sized.size)
+      form.set('quality', openAiQualityFrom(body.quality))
       // input_fidelity 只对非 gpt-image-2 的 gpt-image 系列生效;gpt-image-2 恒最高保真、传了会 400(对齐老 Python)。
       if (/^gpt-image/i.test(config.model) && !/^gpt-image-2/i.test(config.model)) {
         form.set('input_fidelity', mode === 'edit' ? 'high' : 'low')
@@ -1127,6 +1277,7 @@ export class MediaJobService {
     } else if (responseFormat) {
       payload.response_format = responseFormat
     }
+    if (config.provider === 'openai-compatible') payload.quality = openAiQualityFrom(body.quality)
     const endpoint = joinImageEndpoint(config.baseUrl, config.endpointPath)
     const init: RequestInit = {
       method: 'POST',
@@ -1163,6 +1314,7 @@ export class MediaJobService {
       prompt,
       n: count,
       size: stringFrom(body.size) ?? sized.size,
+      quality: openAiQualityFrom(body.quality),
     }
     const responseFormat = stringFrom(body.response_format)
     if (responseFormat) taskBody.response_format = responseFormat

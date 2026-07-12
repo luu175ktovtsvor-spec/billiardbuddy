@@ -86,6 +86,9 @@ import { BridgeWorkerRefreshScheduler, type BridgeWorkerRefreshCause } from '../
 import { projectBridgeSdkEvent } from '../tasks/bridgeSdkEventProjection'
 import { resolveInboundUserMessage, type BridgeInboundContent, type BridgeResolvedInboundMessage } from '../tasks/bridgeInboundMessages'
 import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
+import { ImageWorkbenchStore } from '../media/imageWorkbenchStore'
+import { createImageWorkbenchRouteHandler } from '../media/imageWorkbenchRoutes'
+import { localStoryboard } from '../media/studioFallbacks'
 import { AssetManager, ASSET_WS_TOPIC, getActiveAssetManager, setActiveAssetManager } from '../assets/assetManager'
 import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
@@ -102,6 +105,11 @@ import type { AssistantStep, Model } from '../types/model'
 import { textBlock, type ContentBlock, type Message } from '../types/message'
 import type { AgentEvent, AskQuestionField } from '../types/events'
 import { parseClientMessage, type ServerMessage as AgentServerMessage } from '../../shared/contracts/agent-websocket'
+import {
+  studioEditRequestSchema,
+  studioGenerateRequestSchema,
+  studioUpscaleRequestSchema,
+} from '../../shared/contracts/image-workbench'
 import type { ToolContext } from '../tools/Tool'
 import type { PermissionUpdate } from '../permissions/types'
 import { applyPermissionUpdates } from '../permissions/permissionUpdate'
@@ -999,6 +1007,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const udsPeers = new UdsPeerRegistry(stateRoot)
   const bridgePeers = new BridgePeerRegistry(stateRoot)
   const bridgeRemote = new BridgeRemoteState(stateRoot)
+  const imageWorkbench = new ImageWorkbenchStore(stateRoot)
   const media = new MediaJobService({
     tasks,
     stateRoot,
@@ -1007,7 +1016,9 @@ export function startServer(opts: StartServerOptions = {}) {
     fetchImpl: opts.fetchImpl,
     pollIntervalMs: 100,
     prepareImageBody: (body, mode) => prepareStudioImageBody(body, mode),
+    workbenchStore: imageWorkbench,
   })
+  const handleImageWorkbenchRoute = createImageWorkbenchRouteHandler(imageWorkbench)
   // 资产管理器(瘦安装包):大块头资产(ffmpeg/转写权重/中文字体)首启后从静态源后台
   // 静默下载;媒体调用点经进程级注册表拿 ready 路径。测试环境默认不启动(不碰网络)。
   const assets = opts.assetManager ?? new AssetManager({
@@ -3236,27 +3247,10 @@ export function startServer(opts: StartServerOptions = {}) {
     return jsonDetailError(message, status)
   }
 
-  function localStoryboard(body: Record<string, unknown>): Record<string, unknown> {
-    const theme = stringOr(body.theme, stringOr(body.prompt, '门店短片'))
-    const subject = stringOr(body.subject, '')
-    const n = Math.max(2, Math.min(6, numberFrom(body.shots, 3)))
-    const subjectText = subject ? `，主体保持为${subject}` : ''
-    const shots = Array.from({ length: n }, (_, i) => {
-      const step = i + 1
-      if (step === 1) return `${theme}开场：给出门店环境或核心物件的建立镜头${subjectText}，运镜稳定。`
-      if (step === n) return `${theme}收尾：突出到店行动或活动信息${subjectText}，画面留出文案空间。`
-      return `${theme}分镜${step}：切到桌台、灯光、服务或互动细节${subjectText}，节奏自然。`
-    })
-    return {
-      shots,
-      caption: `${theme}，今天就来店里体验一下。`,
-      local_preview: true,
-      message: '媒体后端未配置，当前分镜为 TS 本地结构化占位；配置媒体后端后会调用真实分镜模型。',
-    }
-  }
-
   async function handleStudioRoute(url: URL, req: Request): Promise<Response | null> {
     if (!url.pathname.startsWith('/api/v1/studio/')) return null
+    const workbenchResponse = await handleImageWorkbenchRoute(url, req)
+    if (workbenchResponse) return workbenchResponse
     const action = url.pathname.slice('/api/v1/studio/'.length)
     const generationMatch = action.match(/^generation\/(.+)$/)
     if (generationMatch && req.method === 'GET') {
@@ -3266,34 +3260,43 @@ export function startServer(opts: StartServerOptions = {}) {
       return Response.json({ ok: false, detail: '没找到这张本地预览成品' }, { status: 404 })
     }
     if (action === 'generate' && req.method === 'POST') {
-      const rawBody = await req.json().catch(() => ({})) as Record<string, unknown>
-      const trusted = Array.isArray(rawBody.reference_image_paths)
-        ? rawBody.reference_image_paths.filter((item): item is string => typeof item === 'string')
-        : []
-      const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
-      return Response.json(await media.startStudioGenerate(body, {
-        conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
-        workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir()),
-      }))
+      try {
+        const rawBody = studioGenerateRequestSchema.parse(await req.json().catch(() => ({})))
+        const trusted = rawBody.reference_image_paths ?? []
+        const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
+        return Response.json(await media.startStudioGenerate(body, {
+          conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
+          workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir()),
+        }))
+      } catch (err) {
+        return jsonDetailError(err instanceof Error ? err.message : String(err), 400)
+      }
     }
     if (action === 'edit' && req.method === 'POST') {
-      const rawBody = await req.json().catch(() => ({})) as Record<string, unknown>
-      const trusted = typeof rawBody.mask_path === 'string' ? [rawBody.mask_path] : []
-      const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
-      return Response.json(await media.startStudioEdit(body, {
-        conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
-        workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir()),
-      }))
+      try {
+        const rawBody = studioEditRequestSchema.parse(await req.json().catch(() => ({})))
+        const trusted = [rawBody.mask_path, rawBody.source_image_path].filter((item): item is string => typeof item === 'string')
+        const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
+        return Response.json(await media.startStudioEdit(body, {
+          conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
+          workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir()),
+        }))
+      } catch (err) {
+        return jsonDetailError(err instanceof Error ? err.message : String(err), 400)
+      }
     }
     if (action === 'upscale' && req.method === 'POST') {
-      // 超分放大(本机 Real-ESRGAN,纯本地不代理):生图看板"放大"按钮 + agent upscale_image 工具共用。
-      const rawBody = await req.json().catch(() => ({})) as Record<string, unknown>
-      const trusted = typeof rawBody.source_image_path === 'string' ? [rawBody.source_image_path] : []
-      const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
-      return Response.json(await media.startUpscale(body, {
-        conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
-        workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir()),
-      }))
+      try {
+        const rawBody = studioUpscaleRequestSchema.parse(await req.json().catch(() => ({})))
+        const trusted = typeof rawBody.source_image_path === 'string' ? [rawBody.source_image_path] : []
+        const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
+        return Response.json(await media.startUpscale(body, {
+          conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
+          workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir()),
+        }))
+      } catch (err) {
+        return jsonDetailError(err instanceof Error ? err.message : String(err), 400)
+      }
     }
     if (action === 'expand' && req.method === 'POST') {
       const body = await req.json().catch(() => ({})) as Record<string, unknown>

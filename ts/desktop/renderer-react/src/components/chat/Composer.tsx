@@ -590,9 +590,21 @@ export function Composer() {
   function submit() {
     const text = value.trim()
     if (!text && pasted.length === 0) return
+    if (text === '/生图工作台' && pasted.length === 0) {
+      useUiStore.getState().setNav('creation')
+      setValue('')
+      setPasted([])
+      if (taRef.current) taRef.current.style.height = 'auto'
+      toast('已打开生图工作台')
+      return
+    }
     // 附件文本拼在正文后(围栏标记,模型读得懂、正文不被冲散);全空正文时给一句默认引导。
     const attachTail = pasted.map((p, i) => `\n\n[粘贴的文本${pasted.length > 1 ? ` ${i + 1}` : ''}]\n"""\n${p.text}\n"""`).join('')
-    const finalText = (text || (pasted.length ? '请看下面粘贴的内容:' : '')) + attachTail
+    const imageSlash = text.match(/^\/生图\s+(.+)$/s)
+    const baseText = imageSlash
+      ? `请根据下面描述调用 generate_image 工具生成图片，完成后把产物送入生图工作台。描述:${imageSlash[1]?.trim() ?? ''}`
+      : text
+    const finalText = (baseText || (pasted.length ? '请看下面粘贴的内容:' : '')) + attachTail
     if (!finalText.trim()) return
     // 运行中也放行:sendMessage 内部会把消息排队(对标 Codex queuedMessage),不再吞掉回车。
     sendMessage(finalText)

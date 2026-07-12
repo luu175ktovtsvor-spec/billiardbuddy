@@ -1,0 +1,78 @@
+import { expect, test } from 'bun:test'
+import {
+  imageWorkbenchProjectSchema,
+  studioEditRequestSchema,
+  studioGenerateRequestSchema,
+} from './image-workbench'
+
+test('studio generate contract keeps renderer on capability intent and strips provider fields', () => {
+  const parsed = studioGenerateRequestSchema.parse({
+    prompt: '做一张会员日海报',
+    image_provider: 'seedream',
+    image_model: 'real-model-name',
+  })
+
+  expect(parsed.count).toBe(3)
+  expect(parsed.quality).toBe('standard')
+  expect(parsed.intent).toBe('poster_text')
+  expect('image_provider' in parsed).toBe(false)
+  expect('image_model' in parsed).toBe(false)
+})
+
+test('studio generate contract preserves legacy print-mode fields without exposing provider control', () => {
+  const parsed = studioGenerateRequestSchema.parse({
+    prompt: '做一张印刷海报',
+    print_mode: true,
+    poster_text: { title: '会员日特惠' },
+    logo_path: '/uploads/store/logo.png',
+    qrcode_text: 'https://example.com/qr',
+    image_provider: 'seedream',
+  })
+
+  expect(parsed.print_mode).toBe(true)
+  expect(parsed.poster_text).toEqual({ title: '会员日特惠' })
+  expect(parsed.logo_path).toBe('/uploads/store/logo.png')
+  expect(parsed.qrcode_text).toContain('example.com')
+  expect('image_provider' in parsed).toBe(false)
+})
+
+test('studio edit contract requires a source image and accepts inpaint intent', () => {
+  expect(() => studioEditRequestSchema.parse({ prompt: '把桌布换成绿色' })).toThrow()
+  const parsed = studioEditRequestSchema.parse({
+    source_image_path: '/uploads/posters/source.png',
+    prompt: '只重绘选区',
+    mask_path: '/uploads/workbench/assets/mask/mask_1.png',
+    intent: 'inpaint',
+  })
+  expect(parsed.intent).toBe('inpaint')
+  expect(parsed.quality).toBe('standard')
+})
+
+test('workbench project contract persists controlled review fields on versions', () => {
+  const project = imageWorkbenchProjectSchema.parse({
+    schema_version: 1,
+    project_id: 'wb_contract',
+    title: '会员日',
+    current_version_id: 'v_contract',
+    quality: 'standard',
+    canvas: { width: 1024, height: 1024, text_layers: [], updated_at: '2026-07-13T00:00:00.000Z' },
+    versions: [{
+      id: 'v_contract',
+      kind: 'generated',
+      image_url: '/uploads/posters/a.png',
+      width: 1024,
+      height: 1024,
+      review: {
+        text_quality_status: 'pending_ocr',
+        text_quality_warning: true,
+        commercial_ready: false,
+      },
+      created_at: '2026-07-13T00:00:00.000Z',
+    }],
+    created_at: '2026-07-13T00:00:00.000Z',
+    updated_at: '2026-07-13T00:00:00.000Z',
+  })
+
+  expect(project.versions[0]?.review?.text_quality_status).toBe('pending_ocr')
+  expect(project.versions[0]?.review?.commercial_ready).toBe(false)
+})
