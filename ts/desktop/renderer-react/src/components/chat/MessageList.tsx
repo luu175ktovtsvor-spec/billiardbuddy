@@ -17,9 +17,127 @@ import { SessionTaskBar } from './SessionTaskBar'
 import { StreamingIndicator } from './StreamingIndicator'
 import { StepCapsule } from './StepCapsule'
 import { MessageActions } from './MessageActions'
-import { IconRefresh, IconChevronDown, IconEdit } from '../shared/icons'
+import { IconRefresh, IconChevronDown, IconEdit, IconSearch, IconX } from '../shared/icons'
 import { useComposerStore } from '../../stores/composerStore'
 import { t } from '../../i18n'
+
+// —— ⌘F 线程内查找条(对齐 Codex threadFindBar:搜索任务…/N 个结果/上一个/下一个/关闭)——
+function FindBar({ containerRef, onClose }: { containerRef: React.RefObject<HTMLDivElement | null>; onClose: () => void }) {
+  const blocks = useChatStore((s) => s.blocks)
+  const [query, setQuery] = useState('')
+  const [cur, setCur] = useState(0)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  // 命中 = 正文含 query 的 user/assistant 块(不搜思考/工具,和「任务内容」语义一致)。
+  const hits = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return [] as string[]
+    return blocks
+      .filter((b) => (b.kind === 'user' || b.kind === 'assistant') && b.text.toLowerCase().includes(q))
+      .map((b) => b.id)
+  }, [blocks, query])
+
+  useEffect(() => { setCur(0) }, [query])
+  useEffect(() => { inputRef.current?.focus() }, [])
+
+  // 当前命中滚动定位 + 闪烁高亮(qf-find-hit)。
+  useEffect(() => {
+    const id = hits[cur]
+    if (!id) return
+    const el = containerRef.current?.querySelector(`[data-bid="${id}"]`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.classList.add('qf-find-hit')
+    const timer = window.setTimeout(() => el.classList.remove('qf-find-hit'), 1600)
+    return () => { window.clearTimeout(timer); el.classList.remove('qf-find-hit') }
+  }, [hits, cur, containerRef])
+
+  const step = (d: number) => { if (hits.length) setCur((c) => (c + d + hits.length) % hits.length) }
+
+  return (
+    <div
+      className="absolute right-4 top-2 z-20 flex items-center gap-1 rounded-xl px-2 py-1"
+      style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', boxShadow: 'var(--shadow-popover)' }}
+      data-testid="find-bar"
+    >
+      <IconSearch size={13} style={{ color: 'var(--color-text-tertiary)' }} />
+      <input
+        ref={inputRef}
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') { e.preventDefault(); onClose() }
+          else if (e.key === 'Enter') { e.preventDefault(); step(e.shiftKey ? -1 : 1) }
+        }}
+        placeholder="搜索任务…"
+        className="w-[170px] bg-transparent text-[12.5px] outline-none"
+        style={{ color: 'var(--color-text-primary)' }}
+      />
+      <span className="shrink-0 text-[11.5px] tabular-nums" style={{ color: 'var(--color-text-tertiary)' }}>
+        {query.trim() ? (hits.length ? `${cur + 1}/${hits.length}` : '0 个结果') : ''}
+      </span>
+      <button type="button" title="上一个结果" onClick={() => step(-1)} className="flex h-5 w-5 items-center justify-center rounded transition-colors hover:bg-[var(--color-surface-hover)]" style={{ color: 'var(--color-text-secondary)' }}>
+        <IconChevronDown size={13} style={{ transform: 'rotate(180deg)' }} />
+      </button>
+      <button type="button" title="下一个结果" onClick={() => step(1)} className="flex h-5 w-5 items-center justify-center rounded transition-colors hover:bg-[var(--color-surface-hover)]" style={{ color: 'var(--color-text-secondary)' }}>
+        <IconChevronDown size={13} />
+      </button>
+      <button type="button" title="关闭查找" onClick={onClose} className="flex h-5 w-5 items-center justify-center rounded transition-colors hover:bg-[var(--color-surface-hover)]" style={{ color: 'var(--color-text-secondary)' }}>
+        <IconX size={13} />
+      </button>
+    </div>
+  )
+}
+
+// —— 用户消息导航 rail(对齐 Codex userMessageNavigation 真实 CSS:右缘小横杠列,hover 波浪放大
+//    scaleX 1/0.7/0.4/0.2 邻近衰减,点击跳到那条用户消息;≥2 条才显示)——
+function UserMessageRail({ containerRef }: { containerRef: React.RefObject<HTMLDivElement | null> }) {
+  const blocks = useChatStore((s) => s.blocks)
+  const users = useMemo(() => blocks.filter((b): b is Extract<ChatBlock, { kind: 'user' }> => b.kind === 'user'), [blocks])
+  const [hover, setHover] = useState<number | null>(null)
+  if (users.length < 2) return null
+
+  const jump = (i: number) => {
+    const nodes = containerRef.current?.querySelectorAll('[data-block="user"]')
+    nodes?.[i]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+  const scaleFor = (i: number) => {
+    if (hover == null) return 0.35
+    const d = Math.abs(i - hover)
+    return d === 0 ? 1 : d === 1 ? 0.7 : d === 2 ? 0.45 : d === 3 ? 0.28 : 0.2
+  }
+
+  return (
+    <div
+      className="absolute right-1 top-1/2 z-10 flex -translate-y-1/2 flex-col"
+      onMouseLeave={() => setHover(null)}
+      aria-label="用户消息"
+      data-testid="user-message-rail"
+    >
+      {users.map((u, i) => (
+        <button
+          key={u.id}
+          type="button"
+          title={u.text.slice(0, 48)}
+          aria-label={`跳转到用户消息 ${i + 1}`}
+          onMouseEnter={() => setHover(i)}
+          onClick={() => jump(i)}
+          className="flex h-[14px] w-[30px] items-center justify-end pr-1"
+        >
+          <span
+            className="block h-[2px] w-[24px] rounded-full"
+            style={{
+              background: 'var(--color-text-tertiary)',
+              transform: `scaleX(${scaleFor(i)})`,
+              transformOrigin: 'right',
+              transition: 'transform .16s ease',
+            }}
+          />
+        </button>
+      ))}
+    </div>
+  )
+}
 
 type ToolBlockT = Extract<ChatBlock, { kind: 'tool' }>
 type ThinkingBlockT = Extract<ChatBlock, { kind: 'thinking' }>
@@ -141,7 +259,7 @@ function Block({ block, isLast }: { block: ChatBlock; isLast?: boolean }) {
   switch (block.kind) {
     case 'user':
       return (
-        <div className="group/user my-2 flex items-center justify-end gap-1" data-block="user">
+        <div className="group/user my-2 flex items-center justify-end gap-1" data-block="user" data-bid={block.id}>
           <button
             type="button"
             aria-label="编辑"
@@ -162,7 +280,7 @@ function Block({ block, isLast }: { block: ChatBlock; isLast?: boolean }) {
       )
     case 'assistant':
       return (
-        <div className="group/msg text-sm leading-relaxed" data-block="assistant" style={{ color: 'var(--color-text-primary)' }}>
+        <div className="group/msg text-sm leading-relaxed" data-block="assistant" data-bid={block.id} style={{ color: 'var(--color-text-primary)' }}>
           <MarkdownRenderer content={block.text} />
           {block.streaming && <span className="qf-cursor">▍</span>}
           {!block.streaming && block.text.trim() && <MessageActions text={block.text} pinned={isLast} ts={block.ts} />}
@@ -239,6 +357,7 @@ export function MessageList() {
   }, [items])
   const containerRef = useRef<HTMLDivElement>(null)
   const [atBottom, setAtBottom] = useState(true)
+  const [findOpen, setFindOpen] = useState(false)
 
   function onScroll() {
     const el = containerRef.current
@@ -250,8 +369,22 @@ export function MessageList() {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [blocks])
 
+  // ⌘F 打开线程内查找(对齐 Codex threadFindBar;只在消息流挂载时生效)。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault()
+        setFindOpen(true)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   return (
     <div className="relative min-h-0 flex-1">
+      {findOpen && <FindBar containerRef={containerRef} onClose={() => setFindOpen(false)} />}
+      <UserMessageRail containerRef={containerRef} />
       <div ref={containerRef} onScroll={onScroll} className="h-full overflow-y-auto px-4 py-4">
         <div className="mx-auto max-w-[768px]">
           <SessionTaskBar />
