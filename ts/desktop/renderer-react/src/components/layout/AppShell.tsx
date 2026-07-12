@@ -6,6 +6,7 @@ import { TopBar } from './TopBar'
 import { ContentRouter } from './ContentRouter'
 import { FilePreviewPanel } from '../workspace/FilePreviewPanel'
 import { SettingsPage } from '../../pages/SettingsPage'
+import { OnboardingPage, isOnboardingDone } from '../../pages/OnboardingPage'
 import { Toaster } from '../shared/Toaster'
 import { CommandPalette } from '../shared/CommandPalette'
 import { initializeDesktopServerUrl } from '../../lib/desktopRuntime'
@@ -31,6 +32,8 @@ const MUTATING_TOOLS = new Set([
 
 export function AppShell() {
   const [phase, setPhase] = useState<Phase>(isPreviewMode() ? 'ready' : 'connecting')
+  // 首启引导(对齐 Codex onboarding):localStorage 无完成标记才显示,做完/跳过即永久收起。
+  const [onboarded, setOnboarded] = useState(() => isOnboardingDone())
 
   const [errorMsg, setErrorMsg] = useState('')
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed)
@@ -143,6 +146,16 @@ export function AppShell() {
             {errorMsg}
           </pre>
         </div>
+      </div>
+    )
+  }
+
+  // 首启引导(整窗,做完/跳过进主界面)。
+  if (!onboarded) {
+    return (
+      <div className="relative flex h-full" data-testid="app-shell">
+        <OnboardingPage onDone={() => setOnboarded(true)} />
+        <Toaster />
       </div>
     )
   }
