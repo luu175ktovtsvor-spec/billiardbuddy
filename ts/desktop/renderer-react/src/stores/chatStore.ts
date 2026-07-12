@@ -259,17 +259,19 @@ export const useChatStore = create<ChatState>((set, get) => {
     })
   }
 
-  /** 视觉皮改造新增(对齐助手回合头「已完成 Xs」):回合结束时把秒表定格值快照到最后一条 assistant 气泡,
-   *  纯展示用,不影响 elapsedSeconds 本身的运行时语义(它下一轮还会被 startElapsedTimer 清零复用)。 */
-  function attachTurnDuration() {
-    const seconds = get().elapsedSeconds
-    if (seconds <= 0) return
+  /** 视觉皮改造新增(对齐助手回合头「已处理 Xs」):回合结束时把时长快照到最后一条 assistant 气泡。
+   *  时长来源优先「事件时间戳差」(user_prompt.ts → done.ts,后端每条事件都带 ts,回放也在 → 历史回合时长持久;
+   *  对齐 Codex 重开会话仍显示「已处理 26s」),没有 ts 才退运行时秒表(不影响 elapsedSeconds 本身语义)。 */
+  function attachTurnDuration(secondsFromTs?: number, doneTs?: number) {
+    const seconds = secondsFromTs && secondsFromTs > 0 ? secondsFromTs : get().elapsedSeconds
+    if (seconds <= 0 && !doneTs) return
     set((s) => {
       const blocks = [...s.blocks]
       for (let i = blocks.length - 1; i >= 0; i--) {
         const b = blocks[i]
         if (b && b.kind === 'assistant') {
-          blocks[i] = { ...b, durationSec: seconds }
+          // doneTs = 回合完成时刻(事件 ts,回放同样成立)→ 动作条「星期四05:10」时间;本地 Date.now 兜底。
+          blocks[i] = { ...b, ...(seconds > 0 ? { durationSec: seconds } : {}), ts: doneTs ?? b.ts }
           break
         }
       }
@@ -306,9 +308,14 @@ export const useChatStore = create<ChatState>((set, get) => {
   }
 
   /** AgentEvent reducer(对齐 app.js renderEvent 一一对应)。 */
-  function reduceEvent(ev: AgentEvent | { type: 'done' } | { type: 'user_prompt'; text: string }) {
+  // 回合开始的事件时间戳(user_prompt.ts):done 时与其求差 = 回合真实时长(回放路径也成立)。
+  let turnStartTs: number | null = null
+
+  function reduceEvent(ev: AgentEvent | { type: 'done' } | { type: 'user_prompt'; text: string }, eventTs?: number) {
     switch (ev.type) {
       case 'user_prompt': {
+        // 回合起点:记事件时间戳,done 时求差 = 回合时长(回声路径也要记,实时回合同样受益)。
+        if (typeof eventTs === 'number') turnStartTs = eventTs
         // 用户这句话(回合流第一条)。本地已乐观插过 → 吞一次回声;回放路径(计数=0)→ 重建用户气泡。
         if (pendingUserEcho > 0) { pendingUserEcho--; break }
         if (ev.text && ev.text.trim()) set((s) => ({ blocks: [...s.blocks, { id: newBlockId(), kind: 'user', text: ev.text }] }))
@@ -499,7 +506,11 @@ export const useChatStore = create<ChatState>((set, get) => {
         finalizeThinking()
         settleAssistant()
         attachTurnTokens()
-        attachTurnDuration()
+        attachTurnDuration(
+          typeof eventTs === 'number' && turnStartTs != null ? Math.round((eventTs - turnStartTs) / 1000) : undefined,
+          typeof eventTs === 'number' ? eventTs : undefined,
+        )
+        turnStartTs = null
         stopElapsedTimer()
         // 回合结束刷会话列表:新会话首条消息跑完,侧栏对应项目组立刻出现该对话(不然要等点击才刷,
         // 组头一直空着显示"还没有对话";项目聚合由 Sidebar 的 useEffect 跟着 sessions 变化联动刷)。
@@ -538,7 +549,9 @@ export const useChatStore = create<ChatState>((set, get) => {
       }
       case 'event': {
         if (typeof msg.seq === 'number' && msg.seq > get().lastSeq) set({ lastSeq: msg.seq })
-        reduceEvent(msg.event)
+        // ts 归一化:wire 上实际是 ISO 字符串(events JSONL 的 Date 序列化),转 epoch ms 再往下传。
+        const tsMs = typeof msg.ts === 'number' ? msg.ts : Date.parse(msg.ts ?? '')
+        reduceEvent(msg.event, Number.isFinite(tsMs) ? tsMs : undefined)
         if (msg.event.type === 'final' || msg.event.type === 'done') {
           set({ status: 'idle', runVerb: 'working' })
           flushQueue()

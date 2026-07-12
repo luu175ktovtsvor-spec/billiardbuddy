@@ -40,7 +40,7 @@ export type ServerMessage =
   | { type: 'ready'; conversationId: string }
   | { type: 'error'; error: string }
   | { type: 'pong'; ts?: number }
-  | { type: 'event'; seq: number; ts: number; event: SessionStreamEvent; replay?: boolean }
+  | { type: 'event'; seq: number; ts: number | string; event: SessionStreamEvent; replay?: boolean } // ⚠️ ts 实际 wire 上是 ISO 字符串(events JSONL 的 Date 序列化),消费方要 Date.parse 归一,别按 number 判
   | { type: 'approve_result'; [key: string]: unknown }
   | { type: 'reject_result'; ok: boolean }
   | { type: 'steer_result'; conversationId: string; queued: number; running: boolean }

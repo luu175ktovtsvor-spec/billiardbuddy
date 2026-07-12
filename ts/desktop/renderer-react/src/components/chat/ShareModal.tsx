@@ -6,8 +6,9 @@ import { IconCopy, IconShareUp } from '../shared/icons'
 import { useChatStore } from '../../stores/chatStore'
 import { t } from '../../i18n'
 
-/** 把当前会话的可读内容(我/管家的对话正文)拼成纯文本;思考过程/工具过程/系统提示不进分享稿。 */
-function composeConversationText(title: string | undefined): string {
+/** 把当前会话的可读内容(我/管家的对话正文)拼成纯文本;思考过程/工具过程/系统提示不进分享稿。
+ *  也供顶栏「···」菜单的「复制整段对话」复用(对齐 Codex threadHeader.copyConversationMarkdown)。 */
+export function composeConversationText(title: string | undefined): string {
   const blocks = useChatStore.getState().blocks
   const lines: string[] = []
   if (title) lines.push(`【${title}】`, '')

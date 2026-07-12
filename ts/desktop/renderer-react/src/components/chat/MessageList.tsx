@@ -150,7 +150,7 @@ function Block({ block, isLast }: { block: ChatBlock; isLast?: boolean }) {
         <div className="group/msg text-sm leading-relaxed" data-block="assistant" style={{ color: 'var(--color-text-primary)' }}>
           <MarkdownRenderer content={block.text} />
           {block.streaming && <span className="qf-cursor">▍</span>}
-          {!block.streaming && block.text.trim() && <MessageActions text={block.text} pinned={isLast} />}
+          {!block.streaming && block.text.trim() && <MessageActions text={block.text} pinned={isLast} ts={block.ts} />}
         </div>
       )
     case 'thinking':

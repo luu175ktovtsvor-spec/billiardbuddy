@@ -109,9 +109,12 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible, [tabindex]
 .qf-file-chip--sheet:hover { background: transparent; text-decoration: underline; color: var(--color-link-hover); }
 .qf-file-chip-dot { width: 7px; height: 7px; border-radius: 2px; flex-shrink: 0; }
 .qf-markdown pre { position: relative; background: var(--color-surface-container-lowest); border: 1px solid var(--color-border); border-radius: 8px; padding: 12px; overflow-x: auto; margin: .6em 0; }
-/* 代码块「复制」按钮(hover 显现,照 Codex)。 */
-.qf-code-copy { position: absolute; top: 6px; right: 6px; font-size: 11px; line-height: 1; padding: 3px 7px; border-radius: 6px; color: var(--color-text-tertiary); background: var(--color-surface); border: 1px solid var(--color-border); opacity: 0; transition: opacity .15s ease; cursor: pointer; }
-.qf-markdown pre:hover .qf-code-copy { opacity: 1; }
+/* 代码卡(对齐 Codex 真图):块头一行 = 左「语言名」灰字 + 右「复制」小钮,常驻;pre 并入卡内去自边框。 */
+.qf-code-card { border: 1px solid var(--color-border); border-radius: 10px; overflow: hidden; margin: .6em 0; background: var(--color-surface-container-lowest); }
+.qf-code-card .qf-code-head { display: flex; align-items: center; justify-content: space-between; padding: 5px 10px 4px; font-size: 11.5px; color: var(--color-text-tertiary); border-bottom: 1px solid var(--color-border); }
+.qf-code-card pre { border: none; border-radius: 0; margin: 0; }
+/* 代码块「复制」按钮:卡头右侧常驻小字钮(照 Codex 常驻图标位)。 */
+.qf-code-copy { font-size: 11px; line-height: 1; padding: 3px 7px; border-radius: 6px; color: var(--color-text-tertiary); background: transparent; border: none; cursor: pointer; transition: color .15s ease, background .15s ease; }
 .qf-code-copy:hover { color: var(--color-text-primary); background: var(--color-surface-hover); }
 
 /* —— 代码块语法高亮(highlight.js token 色 · 真实 Codex hljs 配色 · CSS 变量明暗自适应) —— */
