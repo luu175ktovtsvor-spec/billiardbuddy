@@ -105,10 +105,6 @@ function clampCount(n: unknown): number {
   return Number.isFinite(v) ? Math.max(1, Math.min(4, v)) : 1
 }
 
-function isFormalGptImage2(model: string): boolean {
-  return /^gpt-image-2(?:$|[-_])/i.test(model.trim())
-}
-
 function inputFidelityRejected(status: number, detail: string): boolean {
   return status >= 400 && status < 500 && /input[_ -]?fidelity|unsupported parameter|unknown parameter/i.test(detail)
 }
@@ -147,19 +143,6 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         const requestedFidelity = typeof body.input_fidelity === 'string' && body.input_fidelity.trim()
           ? body.input_fidelity.trim()
           : undefined
-        // The current formal gpt-image-2 API processes image inputs at high
-        // fidelity automatically and rejects a manual input_fidelity field.
-        // Keep the desktop -> gateway -> relay intent intact, omit it only at
-        // this endpoint, and return an explicit risk instead of faking support.
-        const omitFidelityForFormalEndpoint = Boolean(requestedFidelity && isFormalGptImage2(model))
-        if (requestedFidelity && omitFidelityForFormalEndpoint) {
-          rec.inputFidelity = {
-            requested: requestedFidelity,
-            status: 'unsupported',
-            risk: '当前正式端点不接受手动高保真参数，已按端点默认图片输入能力处理；请人工确认参考图一致性。',
-          }
-        }
-
         const requestUpstream = async (includeInputFidelity: boolean): Promise<Response> => {
           if (body.mode === 'edit') {
             const form = new FormData()
@@ -196,9 +179,9 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           })
         }
 
-        let resp = await requestUpstream(Boolean(requestedFidelity && !omitFidelityForFormalEndpoint))
+        let resp = await requestUpstream(Boolean(requestedFidelity))
         let text = await resp.text()
-        if (requestedFidelity && !omitFidelityForFormalEndpoint && inputFidelityRejected(resp.status, text)) {
+        if (requestedFidelity && inputFidelityRejected(resp.status, text)) {
           rec.inputFidelity = {
             requested: requestedFidelity,
             status: 'unsupported',
@@ -206,7 +189,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           }
           resp = await requestUpstream(false)
           text = await resp.text()
-        } else if (requestedFidelity && !omitFidelityForFormalEndpoint && resp.ok) {
+        } else if (requestedFidelity && resp.ok) {
           rec.inputFidelity = { requested: requestedFidelity, status: 'accepted' }
         }
         if (!resp.ok) throw new Error(`OpenAI ${resp.status}:${text.slice(0, 300)}`)
