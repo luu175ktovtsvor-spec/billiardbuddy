@@ -841,7 +841,7 @@ test('legacy MCP management endpoints write desktop library config', async () =>
   }
 })
 
-test('legacy plugin endpoints list and toggle desktop plugins', async () => {
+test('server mounts plugin routes with the configured library root', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-plugins-'))
   mkdirSync(join(root, 'plugins', 'demo'), { recursive: true })
   writeFileSync(join(root, 'plugins', 'demo', 'plugin.json'), JSON.stringify({ name: 'demo', description: 'Demo plugin' }))
@@ -860,8 +860,12 @@ test('legacy plugin endpoints list and toggle desktop plugins', async () => {
       body: JSON.stringify({ name: 'demo', enabled: false }),
     })
     expect(await toggled.json()).toMatchObject({ ok: true })
-    const relisted = await (await fetch(`http://127.0.0.1:${pluginServer.port}/api/v1/agent/plugins`)).json() as any
-    expect(relisted.plugins[0]).toMatchObject({ name: 'demo', enabled: false })
+
+    const invalidInstall = await fetch(`http://127.0.0.1:${pluginServer.port}/api/v1/agent/plugins/install`, {
+      method: 'POST',
+      body: '{}',
+    })
+    expect(await invalidInstall.json()).toMatchObject({ ok: false })
   } finally {
     pluginServer.stop(true)
     rmSync(root, { recursive: true, force: true })
