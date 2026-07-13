@@ -13,7 +13,7 @@
 
 | 模块 | 当前主要路径 | 负责内容 |
 |---|---|---|
-| 契约与传输 | `ts/shared/contracts`、`ts/src/server`、renderer `api` | REST/SSE/WS/IPC Schema、边界解析和兼容入口 |
+| 契约与传输 | `ts/shared/contracts`、`ts/src/server`（`index.ts` 装配、`websocketHandler.ts` WS 生命周期）、renderer `api` | REST/SSE/WS/IPC Schema、边界解析和兼容入口 |
 | Electron/sidecar | `ts/desktop/electron`、`desktop/sidecars` | 窗口、IPC、进程生命周期 |
 | 会话与事件流 | `server/services/session*`、renderer chat/session | 会话、transcript、回放、rewind |
 | Agent 循环 | `ts/src/harness` | ReAct 循环和系统提示 |
