@@ -86,6 +86,13 @@ function pluginContributionText(plugin: PluginListItem): string {
   return entries.length > 0 ? entries.map(([label, count]) => `${label} ${count}`).join(' · ') : '未发现可加载内容'
 }
 
+const SKILL_SCOPE_LABEL: Record<ExtensionSkill['layer'], string> = {
+  bundled: '系统',
+  user: '个人',
+  workspace: '项目',
+  plugin: '插件',
+}
+
 /** 把表单里的「命令或 URL」拆成后端 add 入参:http/sse 开头当远程 url,否则当本机命令+参数。 */
 function parseTarget(name: string, target: string): AddMcpInput {
   const raw = target.trim()
@@ -160,7 +167,7 @@ export function PluginsPage() {
     const results = await Promise.allSettled([
       mcpApi.list(workspaceRoot ?? undefined),
       mcpApi.presets(),
-      extensionApi.skills(),
+      extensionApi.skills({ workspaceRoot }),
       pluginApi.list(),
     ])
     if (results[0].status === 'fulfilled') setServers(results[0].value.servers)
@@ -258,7 +265,36 @@ export function PluginsPage() {
           ))}
         </div>
 
-        {/* ② 领域包 */}
+        {/* ② 技能:当前项目实际可发现的系统/个人/项目/插件 Skill。 */}
+        <h2 className="mb-2.5 text-[12px] font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>
+          技能{skills.length > 0 ? ` · ${skills.length} 个` : ''}
+        </h2>
+        {skills.length > 0 ? (
+          <div className="mb-8 grid grid-cols-2 gap-3">
+            {skills.map((skill) => (
+              <Card key={`${skill.layer}:${skill.name}`}>
+                <div className="flex items-center gap-2">
+                  <IconTile muted><IconSparkles size={16} /></IconTile>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[13px] font-medium" style={{ color: 'var(--color-text-primary)', fontFamily: 'var(--font-mono)' }}>
+                      {skill.user_invocable ? `/${skill.name}` : skill.name}
+                    </div>
+                  </div>
+                  <span className="shrink-0 text-[11.5px]" style={{ color: 'var(--color-text-tertiary)' }}>
+                    {SKILL_SCOPE_LABEL[skill.layer]}
+                  </span>
+                </div>
+                <p className="mt-2 line-clamp-2 text-[12px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>
+                  {skill.when_to_use || skill.description}
+                </p>
+              </Card>
+            ))}
+          </div>
+        ) : loaded ? (
+          <p className="mb-8 text-[12.5px]" style={{ color: 'var(--color-text-tertiary)' }}>当前项目没有可用技能。</p>
+        ) : null}
+
+        {/* ③ 领域包 */}
         <h2 className="mb-2.5 text-[12px] font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>
           {t('plugins.connectorSection')}
         </h2>
@@ -289,7 +325,7 @@ export function PluginsPage() {
           </Card>
         </div>
 
-        {/* ③ 已安装插件 */}
+        {/* ④ 已安装插件 */}
         <h2 className="mb-2.5 text-[12px] font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>
           已安装插件{plugins.length > 0 ? ` · ${plugins.length} 个` : ''}
         </h2>
@@ -325,7 +361,7 @@ export function PluginsPage() {
           <p className="mb-8 text-[12px]" style={{ color: 'var(--color-danger, #e5484d)' }}>部分扩展状态暂时无法读取。</p>
         )}
 
-        {/* ④ MCP 连接器:一键启用预设 + 已装列表 + 添加 */}
+        {/* ⑤ MCP 连接器:一键启用预设 + 已装列表 + 添加 */}
         <h2 className="mb-2.5 text-[12px] font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>
           MCP 服务
         </h2>
@@ -399,27 +435,6 @@ export function PluginsPage() {
           </button>
         </div>
 
-        {/* ⑤ 技能(管家会的招式,对话里斜杠 / 唤起) */}
-        {skills.length > 0 && (
-          <>
-            <h2 className="mb-2.5 mt-8 text-[12px] font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>
-              技能 · {skills.length} 个
-            </h2>
-            <div className="grid grid-cols-2 gap-3">
-              {skills.map((s) => (
-                <Card key={s.name}>
-                  <div className="flex items-center gap-2">
-                    <IconTile muted><IconSparkles size={16} /></IconTile>
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-[13px] font-medium" style={{ color: 'var(--color-text-primary)', fontFamily: 'var(--font-mono)' }}>/{s.name}</div>
-                    </div>
-                  </div>
-                  <p className="mt-2 line-clamp-2 text-[12px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>{s.description}</p>
-                </Card>
-              ))}
-            </div>
-          </>
-        )}
       </div>
 
       {adding && <AddMcpForm onCancel={() => setAdding(false)} onSave={addConnector} />}

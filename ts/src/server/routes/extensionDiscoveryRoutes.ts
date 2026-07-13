@@ -44,8 +44,10 @@ export function createExtensionDiscoveryRouteHandler(deps: ExtensionDiscoveryRou
   return async function handleExtensionDiscoveryRoute(url: URL, req: Request): Promise<Response | null> {
     if (url.pathname === '/api/v1/agent/skills') {
       if (req.method !== 'GET') return methodNotAllowed()
+      const workspaceRoot = url.searchParams.get('working_dir') || url.searchParams.get('workspaceRoot') || deps.defaultWorkspaceRoot()
+      const workspace = new Workspace(workspaceRoot)
       const skills = (await loadRuntimeExtensionLibraries({
-        workspaceRoot: deps.defaultWorkspaceRoot(),
+        workspaceRoot: workspace.root,
         skillsRoot: deps.skillsRoot,
         commandsRoot: deps.commandsRoot,
         env,
@@ -57,8 +59,10 @@ export function createExtensionDiscoveryRouteHandler(deps: ExtensionDiscoveryRou
           name: skill.name,
           description: skill.description,
           source: skill.source,
-          argument_hint: skill.whenToUse,
-          user_invocable: true,
+          layer: skill.skillLayer,
+          ...(skill.whenToUse ? { when_to_use: skill.whenToUse } : {}),
+          ...(skill.argumentHint ? { argument_hint: skill.argumentHint } : {}),
+          user_invocable: skill.userInvocable !== false,
         })),
       }))
     }

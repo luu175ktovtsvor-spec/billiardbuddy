@@ -23,6 +23,7 @@ export const MAX_LISTING_DESC_CHARS = 250 // 每条描述硬上限(对齐 cc);�
 const MIN_DESC_LENGTH = 20
 
 export type DiscoverySource = 'builtin' | 'skill' | 'pack' | 'plugin'
+export type DiscoveryKind = 'command' | 'skill'
 
 export interface DiscoveryEntry {
   name: string
@@ -30,6 +31,7 @@ export interface DiscoveryEntry {
   whenToUse?: string
   argHint?: string
   source: DiscoverySource
+  kind: DiscoveryKind
   /** 技能落点层(bundled/user/workspace),前端斜杠浮层显示「系统/个人/项目」作用域用。 */
   layer?: PromptCommand['skillLayer']
   /** cc bundled 语义:清单里永不被截断的条目。技能 + 领域包命令置 true,保证 billiards 在极端预算下仍在。 */
@@ -52,6 +54,7 @@ export interface PublicCommandEntry {
   name: string
   description: string
   source: DiscoverySource
+  kind: DiscoveryKind
   layer?: PromptCommand['skillLayer']
   whenToUse?: string
   argHint?: string
@@ -83,7 +86,7 @@ function commandSource(cmd: PromptCommand): DiscoverySource {
 export function collectDiscoveryEntries(opts: { commands?: CommandLibrary; skills?: SkillLibrary; activatedConditionalSkills?: PromptCommand[] }): DiscoveryEntry[] {
   const entries: DiscoveryEntry[] = []
   const seen = new Set<string>()
-  const push = (cmd: PromptCommand, source: DiscoverySource) => {
+  const push = (cmd: PromptCommand, source: DiscoverySource, kind: DiscoveryKind) => {
     if (!cmd.name || seen.has(cmd.name)) return
     seen.add(cmd.name)
     entries.push({
@@ -92,16 +95,17 @@ export function collectDiscoveryEntries(opts: { commands?: CommandLibrary; skill
       whenToUse: cmd.whenToUse,
       argHint: cmd.argumentHint,
       source,
+      kind,
       layer: cmd.skillLayer,
-      alwaysInclude: source === 'skill' || source === 'pack',
+      alwaysInclude: kind === 'skill' || source === 'pack',
       ...(cmd.disableModelInvocation ? { disableModelInvocation: true } : {}),
       ...(cmd.userInvocable === false ? { userInvocable: false } : {}),
     })
   }
-  for (const cmd of opts.commands?.commands ?? []) push(cmd, commandSource(cmd))
-  for (const skill of opts.skills?.skills ?? []) push(skill, skill.source === 'plugin' ? 'plugin' : 'skill')
+  for (const cmd of opts.commands?.commands ?? []) push(cmd, commandSource(cmd), 'command')
+  for (const skill of opts.skills?.skills ?? []) push(skill, skill.source === 'plugin' ? 'plugin' : 'skill', 'skill')
   // 已激活的条件技能并回清单(碰到命中文件才现身;默认它们被 loadLayeredSkills 排除在 skills 之外)。
-  for (const skill of opts.activatedConditionalSkills ?? []) push(skill, 'skill')
+  for (const skill of opts.activatedConditionalSkills ?? []) push(skill, skill.source === 'plugin' ? 'plugin' : 'skill', 'skill')
   return entries
     .map((entry, index) => ({ entry, index }))
     .sort((a, b) => {
@@ -172,6 +176,7 @@ export function toPublicCommandEntries(entries: DiscoveryEntry[]): PublicCommand
     name: entry.name,
     description: entry.description,
     source: entry.source,
+    kind: entry.kind,
     ...(entry.layer ? { layer: entry.layer } : {}),
     ...(entry.whenToUse ? { whenToUse: entry.whenToUse } : {}),
     ...(entry.argHint ? { argHint: entry.argHint } : {}),

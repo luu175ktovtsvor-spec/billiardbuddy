@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import {
   extensionCommandsResponseSchema,
+  extensionSkillsResponseSchema,
   mcpListResponseSchema,
   pluginListResponseSchema,
   pluginToggleRequestSchema,
@@ -23,14 +24,24 @@ test('extension contracts accept current and compatible plugin/command responses
   })
 
   expect(extensionCommandsResponseSchema.parse({
-    commands: [{ name: 'plugin-skill', description: 'Plugin skill', source: 'plugin', layer: 'plugin' }],
-  }).commands[0]?.source).toBe('plugin')
+    commands: [{ name: 'plugin-skill', description: 'Plugin skill', source: 'plugin', kind: 'skill', layer: 'plugin' }],
+  }).commands[0]).toMatchObject({ source: 'plugin', kind: 'skill' })
+
+  expect(extensionSkillsResponseSchema.parse({
+    skills: [{ name: 'review', description: 'Review changes', source: 'skills', layer: 'user', user_invocable: true }],
+  }).skills[0]).toMatchObject({ layer: 'user', user_invocable: true })
 })
 
 test('extension contracts reject malformed trust and discovery fields', () => {
   expect(pluginToggleRequestSchema.safeParse({ name: 'demo', enabled: 'yes' }).success).toBe(false)
   expect(extensionCommandsResponseSchema.safeParse({
     commands: [{ name: 'bad', description: 'Bad source', source: 'remote' }],
+  }).success).toBe(false)
+  expect(extensionCommandsResponseSchema.safeParse({
+    commands: [{ name: 'old', description: 'Missing invocation kind', source: 'plugin' }],
+  }).success).toBe(false)
+  expect(extensionSkillsResponseSchema.safeParse({
+    skills: [{ name: 'old', description: 'Missing scope', source: 'skills', user_invocable: true }],
   }).success).toBe(false)
   expect(mcpListResponseSchema.safeParse({
     servers: [{ name: 'demo', status: 'running', tools: 0, disabled: false }],

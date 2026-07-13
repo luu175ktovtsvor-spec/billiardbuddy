@@ -4,6 +4,7 @@ import {
   extensionSkillsResponseSchema,
   pluginListResponseSchema,
   type ExtensionCommand,
+  type ExtensionInvocationKind,
   type ExtensionLayer,
   type ExtensionSource,
   type ExtensionSkill,
@@ -11,7 +12,7 @@ import {
 } from '../../../../shared/contracts/extensions'
 import { api } from './client'
 
-export type { ExtensionCommand, ExtensionLayer, ExtensionSource, ExtensionSkill, PluginListItem }
+export type { ExtensionCommand, ExtensionInvocationKind, ExtensionLayer, ExtensionSource, ExtensionSkill, PluginListItem }
 
 export const extensionApi = {
   commands: async (input: { workspaceRoot?: string | null; enabledPacks?: string[] } = {}) => {
@@ -23,9 +24,14 @@ export const extensionApi = {
       await api.get<unknown>(`/api/v1/agent/commands${query ? `?${query}` : ''}`),
     ).commands
   },
-  skills: async () => extensionSkillsResponseSchema.parse(
-    await api.get<unknown>('/api/v1/agent/skills'),
-  ).skills,
+  skills: async (input: { workspaceRoot?: string | null } = {}) => {
+    const params = new URLSearchParams()
+    if (input.workspaceRoot) params.set('working_dir', input.workspaceRoot)
+    const query = params.toString()
+    return extensionSkillsResponseSchema.parse(
+      await api.get<unknown>(`/api/v1/agent/skills${query ? `?${query}` : ''}`),
+    ).skills
+  },
 }
 
 export const pluginApi = {

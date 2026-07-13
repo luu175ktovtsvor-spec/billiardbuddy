@@ -89,7 +89,9 @@ WorkBuddy 安装包中的专有提示词只用于行为与结构对照，不复�
 ### 4.1 渐进披露
 
 - 普通用户先看到中文能力名、用途、启用状态和失败原因；内部 tool name、transport、provider 和原始 Schema 只在详情或诊断中出现。
-- `/` 面板只列用户可调用的 Command 和 Skill，并显示“系统 / 个人 / 项目 / 插件 / 专家”等来源。自然语言仍可由模型根据发现清单主动选择能力。
+- `/` 面板只列用户可调用的 Command 和 Skill。`kind` 区分调用类型，`source/layer` 区分内置、个人、项目、插件或专家来源；不能再用“来自插件”推断它一定是 Skill。自然语言仍可由模型根据发现清单主动选择能力。
+- 个人 Skill 位于 `~/.billiardbuddy/skills/<name>/SKILL.md`，项目 Skill 位于 `<workspace>/.billiardbuddy/skills/<name>/SKILL.md`。`create_skill` 经文件审批默认写个人目录；每个新回合按当前项目重新装载系统、个人、项目和已启用插件 Skill，因此新会话无需复制或重新注册。
+- MCP tools/resources/prompts 通过运行时工具和渐进披露入口发现，不直接平铺进 `/`。只有未来被明确声明为用户可调用 Skill 的 MCP 内容，才按 Skill 契约进入 `/`；`/mcp` 本身只是管理 Command。
 - 领域包的激活入口应始终可发现；只有启用后才展示领域子命令并向模型装配领域上下文和工具。
 - Plugin 与 MCP 不能混为同一个概念。插件卡展示名称、启停和贡献数量；MCP 卡展示连接、停用、授权、错误和工具数量。
 - MCP 首页不平铺所有原始工具。用户展开详情时再看服务说明、来源、工具清单、资源、授权和重连操作。
