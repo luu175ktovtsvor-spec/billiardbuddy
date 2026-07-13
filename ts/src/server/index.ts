@@ -1,19 +1,12 @@
 import { executeApproved, handleReject, runAgentLoop } from '../harness/loop'
-import { resolveBundledDir } from '../harness/bundledRoot'
 import { getWorkspaceGitStatus } from '../harness/env'
 import { buildSystemPrompt } from '../harness/systemPrompt'
 import { collectDiscoveryEntries, toPublicCommandEntries } from '../harness/skillListing'
 import { summarizeWorkspaceProjectInstructions } from '../harness/projectInstructions'
 import { scriptedModel } from '../harness/fakeModel'
 import { compactPipeline } from '../context/compaction'
-import { createModelFromProviderCandidates } from '../model/modelFactory'
 import { getConfiguredOrBuiltInModelContextWindow } from '../model/modelContextWindows'
-import {
-  PUBLIC_TEXT_CHANNEL,
-  publicProviderSummary,
-  scrubProviderIdentifiers,
-  toPublicProviderView,
-} from '../model/publicModelNames'
+import { publicProviderSummary, scrubProviderIdentifiers, toPublicProviderView } from '../model/publicModelNames'
 import { createChatOutputScrubber } from '../harness/outputScrub'
 import { SessionService, TurnRegistry, type SessionEventRecord, type SessionStatus, type SessionStreamEvent } from './services/sessionService'
 import { SessionRewindService, type RewindTargetSelector } from './services/sessionRewindService'
@@ -26,45 +19,26 @@ import { createTelemetryService } from './services/telemetry'
 import { EMBEDDED_FRONTEND } from './embeddedFrontend'
 import { UserSettingsStore } from './services/userSettings'
 import { StoreDocsService, createStoreDocsTool } from './services/storeDocsService'
-import {
-  OfficeDocumentError,
-  editCsvCell,
-  editXlsxCell,
-  isDocxPath,
-  isPptxPath,
-  isXlsxPath,
-  readOfficeDocumentBlocks,
-  readXlsxSheet,
-  renderMinimalPptx,
-  renderMinimalXlsx,
-  saveOfficeDocumentBlocks,
-} from '../utils/officeDocuments'
+import { OfficeDocumentError, editCsvCell, editXlsxCell, isDocxPath, isPptxPath, isXlsxPath, readOfficeDocumentBlocks, readXlsxSheet, renderMinimalPptx, renderMinimalXlsx, saveOfficeDocumentBlocks } from '../utils/officeDocuments'
 import { getLogger } from '../utils/logger'
 import { jsonDetailError, jsonError, localCorsPreflight, TurnSetupError, withLocalCors } from './middleware/http'
 import { VoiceTranscriptionError, transcribeVoiceFile } from './services/voiceTranscription'
 import { buildGeneralRegistry } from '../tools/generalTools'
 import { workspaceForActiveWorktree } from '../tools/worktreeTools'
-import { activateConditionalSkillsForPaths, allowSkillTools, bundledSkillsRoot, FILE_TOUCH_TOOL_NAMES, formatUseSkillResult, loadLayeredSkills, loadSkillsDir, recordInvokedSkill, registerSkillHooks, toolInputFilePaths, userSkillsRoot } from '../skills/skillLoader'
+import { activateConditionalSkillsForPaths, allowSkillTools, FILE_TOUCH_TOOL_NAMES, formatUseSkillResult, loadLayeredSkills, loadSkillsDir, recordInvokedSkill, registerSkillHooks, toolInputFilePaths, userSkillsRoot } from '../skills/skillLoader'
 import { createInvokedSkillsMessage, restoreInvokedSkillsFromMessages } from '../skills/invokedSkills'
-import { createBuiltinCommandLibrary, isBuiltinForkCommand } from '../commands/builtinCommands'
+import { isBuiltinForkCommand } from '../commands/builtinCommands'
 import { allowedToolsForAgent } from '../commands/allowedTools'
-import { bridgeUnsafeCommandMessage, type CommandLibrary, filterBridgeSafeCommands, isBridgeSafeCommand, loadCommandsDir, loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
+import { bridgeUnsafeCommandMessage, type CommandLibrary, filterBridgeSafeCommands, isBridgeSafeCommand, loadCommandsDir, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
 import type { PromptCommand } from '../commands/types'
 import { loadPluginHookRegistry, loadWorkspaceHookRegistry } from '../hooks/hookConfig'
-import { applyElicitationHooks, applyElicitationResultHooks, applySessionEndHooks, applyUserPromptExpansionHooks, configureHookTrust, type HookRegistry as ElicitationHookRegistry } from '../hooks/hooks'
-import { createDomainPackCommandLibrary, createDomainPackTools, listPublicDomainPacks, mergeEnabledPacks, mergeHookRegistries, packIdForCommandName, registerDomainPackCommandAliases, resolveEnabledPacks, suggestedSkillNamesForPacks, type DomainPack } from '../packs/domainPacks'
-import { clearThreadGoalHook, createGoalHookRegistry, ensureThreadGoalHookFromTranscript, getThreadGoal, parseGoalCommand, setThreadGoalHook } from '../goals/goalState'
+import { applyElicitationHooks, applyElicitationResultHooks, applyUserPromptExpansionHooks, configureHookTrust, type HookRegistry as ElicitationHookRegistry } from '../hooks/hooks'
+import { createDomainPackTools, listPublicDomainPacks, mergeEnabledPacks, mergeHookRegistries, packIdForCommandName, resolveEnabledPacks, suggestedSkillNamesForPacks } from '../packs/domainPacks'
+import { createGoalHookRegistry } from '../goals/goalState'
 import { loadAgentsDir, type AgentDefinition } from '../agents/agentLoader'
 import { createAgentTaskSidechainTools, createAgentTaskTool } from '../agents/agentTool'
 import { buildForkRunContext } from '../agents/forkSubagent'
-import {
-  closeMcpConnections,
-  defaultElicitationHandler,
-  loadMcpToolsFromFile,
-  type McpElicitationHandler,
-  type McpElicitationHandlerInput,
-  type McpSamplingHandlerInput,
-} from '../mcp/client'
+import { closeMcpConnections, defaultElicitationHandler, loadMcpToolsFromFile, type McpElicitationHandler, type McpElicitationHandlerInput } from '../mcp/client'
 import { loadMcpConfigFile } from '../mcp/config'
 import { addMcpServer, defaultWritableMcpConfigPath, MCP_PRESETS, removeMcpServer, setMcpServerDisabled } from '../mcp/configStore'
 import { TaskService, type TaskMeta, type TaskStatus } from '../tasks/taskService'
@@ -76,16 +50,16 @@ import { createTeamTools } from '../tasks/teamTools'
 import { startUdsInbox, type UdsInboxServer } from '../tasks/udsInbox'
 import { UdsPeerRegistry, type UdsPeerRecord } from '../tasks/udsPeerRegistry'
 import { BridgePeerRegistry } from '../tasks/bridgePeerRegistry'
-import { BridgeRemoteState, type BridgeRemoteCredentialRecord, type BridgeRemotePermissionResponse, type BridgeRemotePermissionStatus, type BridgeRemoteOutboxStatus } from '../tasks/bridgeRemoteState'
-import { bridgeRemoteConfigFromEnv, createBridgeRemoteTransport } from '../tasks/bridgeRemoteTransport'
+import { BridgeRemoteState, type BridgeRemoteCredentialRecord } from '../tasks/bridgeRemoteState'
+import { createBridgeRemoteTransport } from '../tasks/bridgeRemoteTransport'
 import { BridgeRemoteSubscriber, type BridgeRemoteWebSocketConstructor } from '../tasks/bridgeRemoteSubscriber'
 import { createBridgeCodeSessionClient } from '../tasks/bridgeCodeSessionClient'
-import { BridgeWorkerClient, type BridgeWorkerSessionState } from '../tasks/bridgeWorkerClient'
+import { BridgeWorkerClient } from '../tasks/bridgeWorkerClient'
 import { BridgeWorkerStream } from '../tasks/bridgeWorkerStream'
 import { BridgeWorkerRefreshScheduler, type BridgeWorkerRefreshCause } from '../tasks/bridgeWorkerRefreshScheduler'
 import { projectBridgeSdkEvent } from '../tasks/bridgeSdkEventProjection'
-import { resolveInboundUserMessage, type BridgeInboundContent, type BridgeResolvedInboundMessage } from '../tasks/bridgeInboundMessages'
-import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
+import { resolveInboundUserMessage, type BridgeResolvedInboundMessage } from '../tasks/bridgeInboundMessages'
+import { MediaJobService, resolveMediaBackendUrl } from '../media/mediaJobs'
 import { ImageWorkbenchStore } from '../media/imageWorkbenchStore'
 import { createImageWorkbenchRouteHandler } from '../media/imageWorkbenchRoutes'
 import { saveLocalImageAttachment } from '../media/imageUploadRoutes'
@@ -97,7 +71,7 @@ import { VideoEditingService } from '../media/video-edit/service'
 import { createVideoEditRouteHandler } from '../media/video-edit/routes'
 import { loadOutputStyles, publicOutputStyle, resolveOutputStyleConfig } from '../outputStyles/outputStyleLoader'
 import { defaultPluginInstallDir, defaultPluginRoots, installPluginFromGithub, listPlugins, resolveEnabledPluginContributions, resolveEnabledPluginHookConfigPaths, setPluginEnabled } from '../plugins/pluginLoader'
-import { LIBRARY_DIR_ENV, LIBRARY_DOT_DIR, LIBRARY_SUBDIR, getDefaultWorkspaceDir } from '../harness/desktopEnvNames'
+import { getDefaultWorkspaceDir } from '../harness/desktopEnvNames'
 import { WorkspaceNameError, createNamedWorkspace } from '../workspace/workspaceProvision'
 import { TurnConsumerTracker } from './turnConsumerTracker'
 import { Workspace } from '../workspace/workspace'
@@ -106,39 +80,27 @@ import { McpTrustStore, resolveTrustedMcpConfig } from '../mcp/mcpTrust'
 import { runMigrations } from '../migrations'
 import type { AssistantStep, Model } from '../types/model'
 import { textBlock, type ContentBlock, type Message } from '../types/message'
-import type { AgentEvent, AskQuestionField } from '../types/events'
-import { parseClientMessage, type ServerMessage as AgentServerMessage } from '../../shared/contracts/agent-websocket'
+import { parseClientMessage } from '../../shared/contracts/agent-websocket'
 import { voiceTranscriptionResponseSchema } from '../../shared/contracts/voice'
-import {
-  imageBrandPackPatchSchema, imageBrandPackSchema, imageBriefCompileRequestSchema,
-  imageBriefCompileResponseSchema,
-  studioEditRequestSchema,
-  studioGenerateRequestSchema,
-  studioUpscaleRequestSchema,
-} from '../../shared/contracts/image-workbench'
+import { imageBrandPackPatchSchema, imageBrandPackSchema, imageBriefCompileRequestSchema, imageBriefCompileResponseSchema, studioEditRequestSchema, studioGenerateRequestSchema, studioUpscaleRequestSchema } from '../../shared/contracts/image-workbench'
 import type { ToolContext } from '../tools/Tool'
 import type { PermissionUpdate } from '../permissions/types'
 import { applyPermissionUpdates } from '../permissions/permissionUpdate'
 import { configurePermissionTrust, loadPermissionRules, permissionUpdatesFromRules, persistPermissionRule } from '../permissions/permissionsSettings'
 import type { FetchLike } from '../proxy/ProxyModel'
-import type { PermissionMode } from '../permissions/types'
-import { canonicalPermissionMode } from '../permissions/canonical'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
-import { getAutoMemDir, getUserConfigHomeDir, MEMORY_DOT_DIR } from '../harness/memoryNames'
-import { existsSync, mkdirSync } from 'node:fs'
+import { getUserConfigHomeDir } from '../harness/memoryNames'
+import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 
-function sseLine(ev: SessionStreamEvent): string {
-  return `event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`
-}
-
-function sseReplayLine(seq: number, ev: SessionStreamEvent): string {
-  return `id: ${seq}\nevent: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`
-}
-
-function legacySseLine(data: Record<string, unknown>): string {
-  return `data: ${JSON.stringify(data)}\n\n`
-}
+import { fallbackEventRecord, legacySseLine, sseLine, sseReplayLine, wsError, wsSend } from './sse'
+import { delay, isRecord, numberFrom, permissionModeFrom, stringArray, stringOr, taskStatusFrom } from './requestParams'
+import { RAW_MIME_BY_EXT, isSensitiveFilePath, readTextIfExists, summarizeWorkspaceTree } from './workspaceTree'
+import { LEGACY_BYOK_TEXT_PROVIDER_ID, createModelFromRuntimeProviders, providerPath, providerStatusFor, runtimeProviderKey, runtimeProviderLabel, sanitizeProviderError, validateImageModelPayload } from './providerRuntime'
+import { bridgeCodeSessionConfigFromBody, bridgeOutboxStatusFrom, bridgePermissionResponseFrom, bridgePermissionStatusFrom, bridgeRefreshConfigFromBody, bridgeRemoteConfigFromBody, bridgeWorkerSessionStateFrom, inboundContentBlocks, inboundContentPreview } from './bridgeParams'
+import { defaultAgentsRoot, defaultCommandsRoot, defaultMcpConfigPath, defaultSkillsRoot, loadCommandsForWorkspace } from './extensionRoots'
+import { fireSessionEndHooks, handleGoalCommand, messageText, messagingSocketPathFrom, supportContext, workspaceFromBody } from './turnInput'
+import { isDeclineAnswer, mcpSchemaFieldLines, mcpSchemaFields, parseMcpFormAnswer, runMcpSampling, waitForInboxAnswer } from './mcpInteraction'
 
 export interface StartServerOptions {
   host?: string
@@ -173,14 +135,6 @@ export interface StartServerOptions {
   trustedWorkspaceRoots?: string[]
 }
 
-interface WorkspaceTreeEntry {
-  name: string
-  path: string
-  type: 'file' | 'directory'
-  children?: WorkspaceTreeEntry[]
-  truncated?: boolean
-}
-
 type TurnStreamInput = Record<string, unknown> & {
   message?: unknown
   userMessage?: unknown
@@ -192,714 +146,9 @@ type TurnStreamInput = Record<string, unknown> & {
   bridgeOrigin?: boolean
 }
 
-const WORKSPACE_TREE_SKIP = new Set([
-  '.git',
-  '.next',
-  '.agent-state',
-  '.cache',
-  '.mypy_cache',
-  '.playwright-cli',
-  '.pytest_cache',
-  '.ruff_cache',
-  '.superpowers',
-  '.venv',
-  '__pycache__',
-  'node_modules',
-  'dist',
-  'build',
-  'coverage',
-  'out',
-  'output',
-])
-
-// 原始文件字节预览的 content-type(右面板 <img> 渲染图片、pdf 等):按扩展名给,查不到走 octet-stream。
-const RAW_MIME_BY_EXT: Record<string, string> = {
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
-  '.webp': 'image/webp', '.svg': 'image/svg+xml', '.bmp': 'image/bmp', '.ico': 'image/x-icon',
-  '.avif': 'image/avif', '.pdf': 'application/pdf',
-}
-
-async function summarizeWorkspaceTree(root: string, opts: { maxDepth?: number; maxEntries?: number } = {}) {
-  const maxDepth = opts.maxDepth ?? 2
-  const maxEntries = opts.maxEntries ?? 400
-  let total = 0
-  let truncated = false
-
-  // ⚠️ 顶层(depth 0)永不因预算腰斩:此前是纯深度优先 + 总预算(120),排在前面的目录(如 .claude/.github)
-  // 一递归就把预算吃光,轮不到 ts/ docs/ 这些真正重要的顶层目录 → 文件树只显示头几个点目录=废。
-  // 现在保证同级(尤其顶层)条目全部露出,预算只管"深层要不要展开";深层没展开的目录留 children 为 undefined,
-  // 前端点开时按 fs/list 懒加载(契约已验证),既不丢顶层、又不无限膨胀。
-  async function walk(dir: string, depth: number): Promise<WorkspaceTreeEntry[]> {
-    let entries = await readdir(dir, { withFileTypes: true })
-    entries = entries
-      .filter(entry => entry.name !== '.DS_Store')
-      .filter(entry => !(entry.isDirectory() && WORKSPACE_TREE_SKIP.has(entry.name)))
-      .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name, 'zh-Hans-CN'))
-
-    const out: WorkspaceTreeEntry[] = []
-    for (const entry of entries) {
-      // 只有深层(depth>0)才受预算约束;顶层一律全列(顶层条目数=目录实际数,通常可控)。
-      if (depth > 0 && total >= maxEntries) {
-        truncated = true
-        break
-      }
-      const abs = resolve(dir, entry.name)
-      const item: WorkspaceTreeEntry = {
-        name: entry.name,
-        path: relative(root, abs) || entry.name,
-        type: entry.isDirectory() ? 'directory' : 'file',
-      }
-      total += 1
-      if (entry.isDirectory() && depth < maxDepth) {
-        if (total >= maxEntries) {
-          // 预算已尽:不预展开,标记 truncated,children 留空 → 前端点开时懒加载,不丢这个目录本身。
-          truncated = true
-          item.truncated = true
-        } else {
-          item.children = await walk(abs, depth + 1)
-          if (item.children.some(c => c.truncated)) item.truncated = true
-        }
-      }
-      out.push(item)
-    }
-    return out
-  }
-
-  try {
-    return { root, entries: await walk(root, 0), total, truncated }
-  } catch (err) {
-    return { root, entries: [], total: 0, truncated: false, error: err instanceof Error ? err.message : String(err) }
-  }
-}
-
 interface AgentWsData {
   conversationId: string
   after: number
-}
-
-function permissionModeFrom(value: unknown): PermissionMode {
-  return canonicalPermissionMode(value)
-}
-
-function stringOr(value: unknown, fallback: string): string {
-  return typeof value === 'string' && value.trim() ? value.trim() : fallback
-}
-
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map(item => item.trim()) : []
-}
-
-function messageText(message: Message): string {
-  return message.content
-    .map(block => {
-      if (block.type === 'text') return block.text
-      if (block.type === 'thinking') return block.thinking
-      return ''
-    })
-    .filter(Boolean)
-    .join('\n')
-    .trim()
-}
-
-function inboundContentBlocks(content: BridgeInboundContent): ContentBlock[] {
-  return typeof content === 'string' ? [textBlock(content)] : content
-}
-
-function inboundContentPreview(content: BridgeInboundContent): string {
-  if (typeof content === 'string') return content
-  return content.map(block => {
-    if (block.type === 'text') return block.text
-    if (block.type === 'image') return `[image ${block.source.media_type}]`
-    if (block.type === 'tool_result') {
-      // 多模态兼容:tool_result.content 现在可能是 string 或 blocks 数组(#46)。
-      // string 直接返回;数组时逐块摘要(text 取正文、image 给中性占位),别把数组/对象原样塞进预览。
-      if (typeof block.content === 'string') return block.content
-      return block.content
-        .map(inner => (inner.type === 'text' ? inner.text : `[image ${inner.source.media_type}]`))
-        .filter(Boolean)
-        .join('\n')
-    }
-    return `[${block.type}]`
-  }).filter(Boolean).join('\n').trim()
-}
-
-function isSensitiveFilePath(path: string): boolean {
-  const name = basename(path).toLowerCase()
-  if (name === '.env' || name.startsWith('.env.')) return true
-  if (/\.(pem|key|p12|pfx|crt|cer)$/i.test(name)) return true
-  return /(secret|credential|token|password|api[_-]?key)/i.test(name)
-}
-
-async function readTextIfExists(path: string): Promise<string> {
-  try {
-    return await readFile(path, 'utf8')
-  } catch {
-    return ''
-  }
-}
-
-function runtimeProviderLabel(runtime: RuntimeProviderResolution): string {
-  // 白标：saved-provider 用用户自设的名字（用户自建 BYOK、自己知道），
-  // env/内置出口一律给中性代称，绝不回显 `环境变量:<真实模型>`。
-  if (runtime.source === 'saved-provider') return runtime.providerName || runtime.providerId || PUBLIC_TEXT_CHANNEL.builtin
-  return PUBLIC_TEXT_CHANNEL.builtin
-}
-
-function runtimeProviderKey(runtime: RuntimeProviderResolution): string {
-  if (runtime.source === 'saved-provider' && runtime.providerId) return `saved:${runtime.providerId}`
-  return `${runtime.source}:${runtime.config.apiFormat}:${runtime.config.baseUrl}:${runtime.config.model}`
-}
-
-function sanitizeProviderError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err)
-  // 白标：除清 Bearer/api-key 外，再过 scrubProviderIdentifiers 清掉真实模型名/供应商/endpoint，
-  // 保证这条错误进 health.lastError / 失败旁白后不泄底。
-  return scrubProviderIdentifiers(
-    raw
-      .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer [redacted]')
-      .replace(/(api[_-]?key["'\s:=]+)[A-Za-z0-9._~+/=-]+/gi, '$1[redacted]'),
-  ).slice(0, 180)
-}
-
-function createModelFromRuntimeProviders(
-  runtimes: RuntimeProviderResolution[],
-  fetchImpl?: StartServerOptions['fetchImpl'],
-  health?: {
-    onFailure?: (runtime: RuntimeProviderResolution, err: unknown) => void
-    onSuccess?: (runtime: RuntimeProviderResolution) => void
-  },
-): Model {
-  return createModelFromProviderCandidates(
-    runtimes.map(runtime => ({
-      label: runtimeProviderLabel(runtime),
-      config: runtime.config,
-      onFailure: err => health?.onFailure?.(runtime, err),
-      onSuccess: () => health?.onSuccess?.(runtime),
-    })),
-    { fetchImpl },
-  )
-}
-
-const LEGACY_BYOK_TEXT_PROVIDER_ID = 'byok-text'
-
-function validateImageModelPayload(body: Record<string, unknown>) {
-  // 白标：BYOK 生图设置校验只回一个通用结论，绝不回显真实 provider 名或 known_models
-  // （原来会吐 openai/volcengine + gpt-image-2/doubao-seedream-* 硬编码真名）。
-  const model = typeof body.model === 'string' ? body.model.trim() : ''
-  if (!model) {
-    return { ok: false, level: 'warning', message: '缺少生图模型名。' }
-  }
-  return { ok: true, level: 'info', message: '已记录生图模型设置。' }
-}
-
-/** app 内置技能根(=cc bundled skills):`ts/src/skills/bundled`。旧值指向已删的 server/skills → 写盘/加载全废,已修。 */
-function defaultSkillsRoot(): string {
-  return bundledSkillsRoot()
-}
-
-// SessionEnd 落点(对齐参考实现 executeSessionEndHooks:会话结束时触发,fire-and-forget)。
-// 宿主在"用户删除会话"处调用:载荷带结束原因,失败/超时都不拖垮删除主流程。用最小 ToolContext
-// (无 model——SessionEnd 一般是命令/清理类钩子;若配了 agent/prompt 钩子会因缺 model 优雅降级为非阻塞提示)。
-// hooks 配置走三级加载(loadWorkspaceHookRegistry:~/.billiardbuddy/settings.json + 工作区
-// .billiardbuddy/settings.json + settings.local.json,取代已删除的死路径 server/hooks.json——
-// 该目录随老 Python server/ 一并删除,旧 defaultHooksPath() 恒 undefined,SessionEnd 从未真正加载到过
-// local hook)。project/local 两级来源钩子仍过工作区信任闸;工作区取显式全局默认工作区
-// (getDefaultWorkspaceDir,不选文件夹时的落点)。
-async function fireSessionEndHooks(conversationId: string, reason: string): Promise<void> {
-  try {
-    const registry = await loadWorkspaceHookRegistry(getDefaultWorkspaceDir())
-    if (!registry || registry.rules.length === 0) return
-    const ctx: ToolContext = {
-      workspace: new Workspace(getDefaultWorkspaceDir()),
-      conversationId,
-      permissionMode: 'default',
-    }
-    await applySessionEndHooks(registry, reason, ctx)
-  } catch {
-    // 忽略 SessionEnd 钩子异常,与参考实现的 fire-and-forget 语义一致。
-  }
-}
-
-function defaultCommandsRoot(): string {
-  // 内置 slash 命令(doctor/help/model/...)在 ts/commands。⚠️打包态走 resolveBundledDir(execPath 相对,
-  // 否则编译二进制 cwd=userData / import.meta.dir=/$bunfs 都找不到,打包后内置命令静默消失)。
-  return resolveBundledDir('commands', [
-    join(process.cwd(), 'commands'),
-    join(process.cwd(), 'ts', 'commands'),
-    join(import.meta.dir, '..', '..', 'commands'),
-  ])
-}
-
-function workspaceCommandRoots(workspaceRoot: string): string[] {
-  // 白标铁律(绝不用 .claude,与记忆/指令/存储同走 .billiardbuddy 命名空间):工作区自定义命令读
-  // `<ws>/.billiardbuddy/commands`。丁审计发现此前只读 .claude/.codex、与白标命名不一致,已收口。
-  return [
-    join(workspaceRoot, MEMORY_DOT_DIR, 'commands'),
-  ].filter(existsSync)
-}
-
-async function loadCommandsForWorkspace(workspaceRoot: string, builtInRoot: string, packs: DomainPack[] = [], env: Record<string, string | undefined> = process.env) {
-  const [builtInCommands, workspaceCommands] = await Promise.all([
-    loadCommandsFromRoots([builtInRoot]),
-    // 工作区来源命令的 frontmatter hooks 标 'local'(受信任门约束,防恶意仓库经命令 hooks RCE);
-    // app 内置命令省略 → managed(可信)。与 skills 加载的信任分层同构。
-    loadCommandsFromRoots(workspaceCommandRoots(workspaceRoot), 'local'),
-  ])
-  const merged = mergeCommandLibraries(builtInCommands, createBuiltinCommandLibrary(env), createDomainPackCommandLibrary(packs), workspaceCommands)
-  // 合并会从 commands 数组重建 byName,丢掉领域包别名键;重新挂上让 /台球、/球房、/billiards 都能解析到入口命令。
-  registerDomainPackCommandAliases(merged, packs)
-  return merged
-}
-
-function localCommandMessage(name: string, args: string, output: string): Message {
-  return {
-    role: 'user',
-    content: [textBlock([
-      `<command-name>/${name}</command-name>`,
-      `<command-args>${args}</command-args>`,
-      '<local-command-stdout>',
-      output,
-      '</local-command-stdout>',
-    ].join('\n'))],
-  }
-}
-
-async function handleGoalCommand(conversationId: string, args: string, transcript: { load(): Promise<Message[]>; append(messages: Message[]): Promise<void> }): Promise<{ output: string; shouldQuery: boolean }> {
-  const messages = await transcript.load()
-  let parsed: ReturnType<typeof parseGoalCommand>
-  try {
-    parsed = parseGoalCommand(args)
-  } catch (error) {
-    const output = error instanceof Error ? error.message : String(error)
-    messages.push(localCommandMessage('goal', args, output))
-    await transcript.append(messages)
-    return { output, shouldQuery: false }
-  }
-
-  if (parsed.type === 'clear') {
-    const existing = getThreadGoal(conversationId) ?? ensureThreadGoalHookFromTranscript(conversationId, messages)
-    const cleared = clearThreadGoalHook(conversationId)
-    const output = cleared || existing ? `Goal cleared: ${(cleared ?? existing)!.objective}` : 'No active goal.'
-    messages.push(localCommandMessage('goal', args, output))
-    await transcript.append(messages)
-    return { output, shouldQuery: false }
-  }
-
-  const goal = setThreadGoalHook(conversationId, parsed.objective)
-  const output = `Goal set: ${goal.objective}`
-  messages.push(localCommandMessage('goal', args, output))
-  await transcript.append(messages)
-  return { output, shouldQuery: true }
-}
-
-function defaultAgentsRoot(): string {
-  // app 内置 agents(=cc 的 getBuiltInAgents:general-purpose / Explore / Plan)。cc 把内置 agent 编进代码;
-  // 我们放 `ts/src/agents/bundled/<name>.md`。⚠️打包态定位走 resolveBundledDir(execPath 相对,见其文档:
-  // 编译二进制 import.meta.dir=/$bunfs、cwd=userData 都失效,不修则打包后子代理静默蒸发)。
-  return resolveBundledDir('agents', [
-    join(import.meta.dir, '..', 'agents', 'bundled'),
-    join(process.cwd(), 'src', 'agents', 'bundled'),
-    join(process.cwd(), 'ts', 'src', 'agents', 'bundled'),
-  ])
-}
-
-function defaultMcpConfigPath(workspaceRoot: string, env: Record<string, string | undefined> = process.env): string | undefined {
-  const libraryDir = env[LIBRARY_DIR_ENV]
-  const candidates = [
-    join(workspaceRoot, '.mcp.json'),
-    ...(libraryDir ? [join(libraryDir, '.mcp.json')] : []),
-    join(env.HOME || env.USERPROFILE || process.cwd(), LIBRARY_DOT_DIR, LIBRARY_SUBDIR, '.mcp.json'),
-    join(process.cwd(), '.mcp.json'),
-  ]
-  return candidates.find(existsSync)
-}
-
-function providerStatusFor(error: unknown): number {
-  const message = error instanceof Error ? error.message : String(error)
-  if (message.includes('not found')) return 404
-  if (message.includes('already exists')) return 409
-  if (message.includes('cannot delete active')) return 409
-  if (message.includes('cannot activate disabled')) return 409
-  if (message.includes('required') || message.includes('unsupported') || message.includes('非法')) return 400
-  return 500
-}
-
-function providerPath(url: URL): { matched: boolean; segments: string[] } {
-  const segments = url.pathname.split('/').filter(Boolean)
-  if (segments[0] === 'providers') return { matched: true, segments: segments.slice(1) }
-  if (segments[0] === 'api' && segments[1] === 'providers') return { matched: true, segments: segments.slice(2) }
-  return { matched: false, segments: [] }
-}
-
-function numberFrom(value: unknown, fallback: number): number {
-  const n = typeof value === 'number' ? value : typeof value === 'string' ? Number.parseInt(value, 10) : NaN
-  return Number.isFinite(n) ? n : fallback
-}
-
-function taskStatusFrom(value: unknown): TaskStatus | undefined {
-  return value === 'queued' || value === 'running' || value === 'completed' || value === 'failed' || value === 'cancelled'
-    ? value
-    : undefined
-}
-
-function bridgePermissionStatusFrom(value: unknown): BridgeRemotePermissionStatus | undefined {
-  return value === 'pending' || value === 'allowed' || value === 'denied' || value === 'cancelled'
-    ? value
-    : undefined
-}
-
-function bridgeOutboxStatusFrom(value: unknown): BridgeRemoteOutboxStatus | undefined {
-  return value === 'queued' || value === 'sent' ? value : undefined
-}
-
-function bridgeWorkerSessionStateFrom(value: unknown): BridgeWorkerSessionState | undefined {
-  return value === 'idle' || value === 'running' || value === 'requires_action'
-    ? value
-    : undefined
-}
-
-function bridgePermissionResponseFrom(body: Record<string, unknown>): BridgeRemotePermissionResponse {
-  const behavior = body.behavior
-  if (behavior === 'allow') {
-    return { behavior: 'allow', updatedInput: isRecord(body.updatedInput) ? body.updatedInput : isRecord(body.updated_input) ? body.updated_input : {} }
-  }
-  if (behavior === 'deny') {
-    return { behavior: 'deny', message: stringOr(body.message, 'Permission denied') }
-  }
-  throw new Error('behavior required')
-}
-
-function bridgeRemoteConfigFromBody(rawBody: Record<string, unknown>, env: Record<string, string | undefined>) {
-  const fromEnv = bridgeRemoteConfigFromEnv(env)
-  const nested = isRecord(rawBody.bridgeRemote) ? rawBody.bridgeRemote : isRecord(rawBody.bridge_remote) ? rawBody.bridge_remote : {}
-  const baseUrl = stringOr(rawBody.bridgeRemoteBaseUrl ?? rawBody.bridge_remote_base_url ?? nested.baseUrl ?? nested.base_url, '') || fromEnv?.baseUrl
-  const token = stringOr(rawBody.bridgeRemoteToken ?? rawBody.bridge_remote_token ?? nested.token, '') || fromEnv?.token
-  if (!baseUrl || !token) return null
-  const timeoutRaw = rawBody.bridgeRemoteTimeoutMs ?? rawBody.bridge_remote_timeout_ms ?? nested.timeoutMs ?? nested.timeout_ms
-  const timeoutMs = typeof timeoutRaw === 'number'
-    ? timeoutRaw
-    : typeof timeoutRaw === 'string'
-      ? Number.parseInt(timeoutRaw, 10)
-      : fromEnv?.timeoutMs
-  return {
-    baseUrl,
-    token,
-    orgUuid: stringOr(rawBody.bridgeRemoteOrgUuid ?? rawBody.bridge_remote_org_uuid ?? nested.orgUuid ?? nested.org_uuid, '') || fromEnv?.orgUuid,
-    betaHeader: typeof rawBody.bridgeRemoteBetaHeader === 'string'
-      ? rawBody.bridgeRemoteBetaHeader
-      : typeof rawBody.bridge_remote_beta_header === 'string'
-        ? rawBody.bridge_remote_beta_header
-        : typeof nested.betaHeader === 'string'
-          ? nested.betaHeader
-          : typeof nested.beta_header === 'string'
-            ? nested.beta_header
-            : fromEnv?.betaHeader,
-    timeoutMs: Number.isFinite(timeoutMs) ? timeoutMs : undefined,
-  }
-}
-
-function bridgeCodeSessionConfigFromBody(rawBody: Record<string, unknown>, env: Record<string, string | undefined>) {
-  const remote = bridgeRemoteConfigFromBody(rawBody, env)
-  if (!remote) return null
-  return {
-    baseUrl: remote.baseUrl,
-    token: remote.token,
-    timeoutMs: remote.timeoutMs,
-  }
-}
-
-function bridgeRefreshConfigFromBody(rawBody: Record<string, unknown>) {
-  const nested = isRecord(rawBody.bridgeRefresh) ? rawBody.bridgeRefresh : isRecord(rawBody.bridge_refresh) ? rawBody.bridge_refresh : {}
-  const enabledRaw = rawBody.bridgeRefreshEnabled ?? rawBody.bridge_refresh_enabled ?? nested.enabled
-  if (enabledRaw === false || enabledRaw === 'false' || enabledRaw === 0 || enabledRaw === '0') return { enabled: false }
-  return {
-    enabled: true,
-    refreshBufferMs: numberFrom(rawBody.bridgeRefreshBufferMs ?? rawBody.bridge_refresh_buffer_ms ?? nested.refreshBufferMs ?? nested.refresh_buffer_ms, 5 * 60 * 1000),
-    minDelayMs: numberFrom(rawBody.bridgeRefreshMinDelayMs ?? rawBody.bridge_refresh_min_delay_ms ?? nested.minDelayMs ?? nested.min_delay_ms, 30_000),
-    retryDelayMs: numberFrom(rawBody.bridgeRefreshRetryDelayMs ?? rawBody.bridge_refresh_retry_delay_ms ?? nested.retryDelayMs ?? nested.retry_delay_ms, 60_000),
-    maxConsecutiveFailures: numberFrom(rawBody.bridgeRefreshMaxFailures ?? rawBody.bridge_refresh_max_failures ?? nested.maxConsecutiveFailures ?? nested.max_consecutive_failures, 3),
-  }
-}
-
-function fallbackEventRecord(event: SessionStreamEvent): SessionEventRecord {
-  return { seq: 0, ts: new Date().toISOString(), event }
-}
-
-function supportContext(rawBody: Record<string, unknown>): string {
-  const blocks: string[] = []
-  const selectedFiles = stringArray(rawBody.selected_files ?? rawBody.selectedFiles)
-  if (selectedFiles.length > 0) {
-    blocks.push(`<selected_files>\n${selectedFiles.map(file => `- ${file}`).join('\n')}\n</selected_files>`)
-  }
-  const goal = stringOr(rawBody.goal, '')
-  if (goal) {
-    blocks.push(`<user_goal>\n${goal}\n</user_goal>`)
-  }
-  if (rawBody.deep_thinking === true || rawBody.deepThinking === true) {
-    blocks.push('用户打开了深度思考。遇到多步骤任务时，先简短拆解，再动手执行；不要只给建议。')
-  }
-  return blocks.length > 0 ? blocks.join('\n\n') : ''
-}
-
-function workspaceFromBody(rawBody: Record<string, unknown>): Workspace {
-  const root = stringOr(rawBody.working_dir ?? rawBody.workspaceRoot, getDefaultWorkspaceDir())
-  // 主 agent 读放行 carve-out(对齐 cc filesystem.ts isAutoMemFile 放行):AutoMem 记忆目录在
-  // 工作区之外(~/.billiardbuddy/projects/<slug>/memory),把它加进 allowedPaths,模型才能 grep/read_file
-  // 读回自己写的记忆(与写侧 save_memory、常驻索引读侧派生同一目录)。先 mkdir 保证它作为「目录」被放行。
-  const memoryDir = getAutoMemDir(new Workspace(root).root)
-  try { mkdirSync(memoryDir, { recursive: true }) } catch { /* 记忆目录创建尽力而为,失败不阻塞会话 */ }
-  return new Workspace(root, {
-    allowedPaths: [...stringArray(rawBody.selected_files ?? rawBody.selectedFiles), memoryDir],
-    fullDiskAccess: rawBody.full_disk_access === true || rawBody.fullDiskAccess === true,
-  })
-}
-
-function messagingSocketPathFrom(rawBody: Record<string, unknown>, env: Record<string, string | undefined>): string {
-  return stringOr(
-    rawBody.messagingSocketPath ?? rawBody.messaging_socket_path ?? rawBody.udsMessagingSocketPath ?? rawBody.uds_messaging_socket_path,
-    '',
-  ) || stringOr(env.CLAUDE_CODE_MESSAGING_SOCKET, '')
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function stringifyForPrompt(value: unknown): string {
-  if (typeof value === 'string') return value
-  try {
-    return JSON.stringify(value, null, 2)
-  } catch {
-    return String(value)
-  }
-}
-
-function mcpSamplingContentText(content: unknown): string {
-  if (Array.isArray(content)) return content.map(mcpSamplingContentText).filter(Boolean).join('\n')
-  if (!content || typeof content !== 'object') return stringifyForPrompt(content)
-  const block = content as Record<string, unknown>
-  if (block.type === 'text' && typeof block.text === 'string') return block.text
-  if (block.type === 'image') return `[image mimeType=${typeof block.mimeType === 'string' ? block.mimeType : 'unknown'}]`
-  if (block.type === 'audio') return `[audio mimeType=${typeof block.mimeType === 'string' ? block.mimeType : 'unknown'}]`
-  if (block.type === 'tool_use') {
-    const name = typeof block.name === 'string' ? block.name : 'unknown'
-    return `<mcp_sampling_tool_use name="${name}">\n${stringifyForPrompt(block.input)}\n</mcp_sampling_tool_use>`
-  }
-  if (block.type === 'tool_result') {
-    const id = typeof block.toolUseId === 'string' ? block.toolUseId : ''
-    // 多模态兼容:tool_result.content 可能是 string 或 blocks 数组(#46)。string 直接取用;
-    // 数组/其它形态交给本函数递归摘要(Array.isArray + typeof 分支已覆盖),不会 crash 也不产出 [object Object]。
-    const inner = typeof block.content === 'string' ? block.content : mcpSamplingContentText(block.content)
-    return `<mcp_sampling_tool_result id="${id}">\n${inner}\n</mcp_sampling_tool_result>`
-  }
-  if (block.type === 'resource' && block.resource && typeof block.resource === 'object') {
-    const resource = block.resource as Record<string, unknown>
-    if (typeof resource.text === 'string') return resource.text
-    if (typeof resource.uri === 'string') return `[resource uri=${resource.uri}]`
-  }
-  if (typeof block.uri === 'string') return `[resource_link uri=${block.uri}]`
-  return stringifyForPrompt(block)
-}
-
-function mcpSamplingMessages(messages: McpSamplingHandlerInput['params']['messages']): Message[] {
-  return messages.map(message => ({
-    role: message.role,
-    content: [textBlock(mcpSamplingContentText(message.content))],
-  }))
-}
-
-async function runMcpSampling(model: Model, modelName: string, params: McpSamplingHandlerInput['params'], signal?: AbortSignal) {
-  const step = await model.step({
-    system: params.systemPrompt,
-    messages: mcpSamplingMessages(params.messages),
-    tools: [],
-    signal,
-  })
-  const text = step.kind === 'final'
-    ? step.text
-    : [
-        step.text,
-        step.calls.length > 0 ? `MCP sampling requested tool use, but this Agent only allows tool execution through the main permission gate: ${step.calls.map(call => call.name).join(', ')}` : '',
-      ].filter(Boolean).join('\n\n')
-  return {
-    model: modelName || 'agent-model',
-    role: 'assistant' as const,
-    content: { type: 'text' as const, text },
-    stopReason: step.kind === 'tool_calls' ? 'toolUse' as const : 'endTurn' as const,
-  }
-}
-
-const MCP_ELICITATION_TIMEOUT_MS = 120000
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value)
-}
-
-function schemaProperties(params: McpElicitationHandlerInput['params']): Record<string, unknown> {
-  if (params.mode === 'url') return {}
-  const schema = params.requestedSchema
-  return isRecord(schema) && isRecord(schema.properties) ? schema.properties : {}
-}
-
-function schemaRequired(params: McpElicitationHandlerInput['params']): string[] {
-  if (params.mode === 'url') return []
-  const schema = params.requestedSchema
-  return Array.isArray(schema.required) ? schema.required.filter((item): item is string => typeof item === 'string') : []
-}
-
-function primitiveDefault(value: unknown): string | number | boolean | string[] | undefined {
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value
-  if (Array.isArray(value) && value.every(item => typeof item === 'string')) return value
-  return undefined
-}
-
-function defaultsForSchema(params: McpElicitationHandlerInput['params']): Record<string, string | number | boolean | string[]> {
-  const content: Record<string, string | number | boolean | string[]> = {}
-  for (const [key, prop] of Object.entries(schemaProperties(params))) {
-    if (!isRecord(prop) || !Object.prototype.hasOwnProperty.call(prop, 'default')) continue
-    const value = primitiveDefault(prop.default)
-    if (value !== undefined) content[key] = value
-  }
-  return content
-}
-
-function coerceElicitationValue(raw: unknown, propSchema: unknown): string | number | boolean | string[] | undefined {
-  const schema = isRecord(propSchema) ? propSchema : {}
-  const type = schema.type
-  if (type === 'boolean') {
-    if (typeof raw === 'boolean') return raw
-    if (typeof raw === 'string') {
-      const text = raw.trim().toLowerCase()
-      if (['true', 'yes', 'y', '1', '允许', '是', '对'].includes(text)) return true
-      if (['false', 'no', 'n', '0', '取消', '否', '不'].includes(text)) return false
-    }
-    return undefined
-  }
-  if (type === 'number' || type === 'integer') {
-    const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw.trim()) : NaN
-    if (!Number.isFinite(n)) return undefined
-    return type === 'integer' ? Math.trunc(n) : n
-  }
-  if (type === 'array') {
-    if (Array.isArray(raw) && raw.every(item => typeof item === 'string')) return raw
-    if (typeof raw === 'string') return raw.split(/[,\n，]/).map(item => item.trim()).filter(Boolean)
-    return undefined
-  }
-  if (typeof raw === 'string') return raw
-  if (raw === undefined || raw === null) return undefined
-  return String(raw)
-}
-
-function parseKeyValueAnswer(answer: string): Record<string, unknown> {
-  const out: Record<string, unknown> = {}
-  for (const line of answer.split(/\r?\n/)) {
-    const match = line.match(/^\s*([^:=：]+)\s*[:=：]\s*(.+?)\s*$/)
-    if (match) out[match[1]!.trim()] = match[2]!.trim()
-  }
-  return out
-}
-
-function parseMcpFormAnswer(answer: string, params: McpElicitationHandlerInput['params']): Record<string, string | number | boolean | string[]> | null {
-  if (params.mode === 'url') return null
-  const properties = schemaProperties(params)
-  const required = schemaRequired(params)
-  const merged: Record<string, unknown> = { ...defaultsForSchema(params) }
-  const trimmed = answer.trim()
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(trimmed)
-  } catch {
-    parsed = parseKeyValueAnswer(trimmed)
-  }
-  if (isRecord(parsed) && Object.keys(parsed).length > 0) {
-    Object.assign(merged, parsed)
-  } else {
-    const missing = required.filter(key => merged[key] === undefined)
-    if (missing.length === 1) merged[missing[0]!] = trimmed
-  }
-
-  const content: Record<string, string | number | boolean | string[]> = {}
-  for (const [key, raw] of Object.entries(merged)) {
-    const prop = properties[key]
-    if (!prop) continue
-    const value = coerceElicitationValue(raw, prop)
-    if (value !== undefined) content[key] = value
-  }
-  if (required.some(key => content[key] === undefined)) return null
-  return content
-}
-
-function mcpSchemaFieldLines(params: McpElicitationHandlerInput['params']): string[] {
-  const required = new Set(schemaRequired(params))
-  return Object.entries(schemaProperties(params)).map(([key, prop]) => {
-    const schema = isRecord(prop) ? prop : {}
-    const title = typeof schema.title === 'string' ? schema.title : key
-    const description = typeof schema.description === 'string' ? ` - ${schema.description}` : ''
-    const type = typeof schema.type === 'string' ? schema.type : 'value'
-    const requiredMark = required.has(key) ? '必填' : '可选'
-    const def = Object.prototype.hasOwnProperty.call(schema, 'default') ? `, 默认 ${stringifyForPrompt(schema.default)}` : ''
-    return `- ${key} (${title}, ${type}, ${requiredMark}${def})${description}`
-  })
-}
-
-function mcpSchemaFields(params: McpElicitationHandlerInput['params']): AskQuestionField[] | undefined {
-  if (params.mode === 'url') return undefined
-  const required = new Set(schemaRequired(params))
-  const fields = Object.entries(schemaProperties(params)).map(([key, prop]): AskQuestionField => {
-    const schema = isRecord(prop) ? prop : {}
-    const title = typeof schema.title === 'string' ? schema.title : key
-    const description = typeof schema.description === 'string' ? schema.description : undefined
-    const enumOptions = Array.isArray(schema.enum) ? schema.enum.filter((item): item is string => typeof item === 'string') : undefined
-    const arrayItemSchema = isRecord(schema.items) ? schema.items : {}
-    const arrayOptions = Array.isArray(arrayItemSchema.enum) ? arrayItemSchema.enum.filter((item): item is string => typeof item === 'string') : undefined
-    const type = schema.type === 'boolean'
-      ? 'boolean'
-      : schema.type === 'number' || schema.type === 'integer'
-        ? 'number'
-        : schema.type === 'array'
-          ? arrayOptions?.length ? 'multiselect' : 'textarea'
-          : enumOptions?.length ? 'select' : 'text'
-    return {
-      name: key,
-      label: title,
-      type,
-      required: required.has(key),
-      ...(description ? { description } : {}),
-      ...(primitiveDefault(schema.default) !== undefined ? { defaultValue: primitiveDefault(schema.default) } : {}),
-      ...((enumOptions?.length || arrayOptions?.length) ? { options: (enumOptions ?? arrayOptions)!.slice(0, 30) } : {}),
-      ...(schema.type === 'array' && !arrayOptions?.length ? { placeholder: '每行一个值' } : {}),
-    }
-  })
-  return fields.length > 0 ? fields : undefined
-}
-
-function isDeclineAnswer(answer: string): boolean {
-  return ['取消', '拒绝', '不允许', 'decline', 'cancel', 'no', '否'].includes(answer.trim().toLowerCase())
-}
-
-async function waitForInboxAnswer(inbox: string[], startLen: number, signal?: AbortSignal, timeoutMs = MCP_ELICITATION_TIMEOUT_MS): Promise<string | null> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (signal?.aborted) return null
-    if (inbox.length > startLen) {
-      const [answer] = inbox.splice(startLen, 1)
-      return typeof answer === 'string' ? answer : null
-    }
-    await delay(100)
-  }
-  return null
-}
-
-function wsSend(ws: { send(data: string): unknown }, data: AgentServerMessage): void {
-  try {
-    ws.send(JSON.stringify(data))
-  } catch {
-    // WebSocket 可能已经断开;turn 继续跑并落 event log,下次连接 replay。
-  }
-}
-
-function wsError(ws: { send(data: string): unknown }, message: string): void {
-  wsSend(ws, { type: 'error', error: message })
 }
 
 function backgroundTaskNotification(task: TaskMeta): Record<string, unknown> | null {
