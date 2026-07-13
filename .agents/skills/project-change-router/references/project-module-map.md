@@ -15,7 +15,7 @@
 |---|---|---|
 | 契约与传输 | `ts/shared/contracts`、`ts/src/server`（`index.ts` 装配、`websocketHandler.ts` WS 生命周期）、renderer `api` | REST/SSE/WS/IPC Schema、边界解析和兼容入口 |
 | Electron/sidecar | `ts/desktop/electron`、`desktop/sidecars` | 窗口、IPC、进程生命周期 |
-| 会话与事件流 | `server/services/session*`、`server/routes/sessionMetadataRoutes.ts`、`server/routes/sessionActivityRoutes.ts`、renderer chat/session | 会话元数据与活动 REST、transcript、回放、rewind |
+| 会话与事件流 | `server/services/session*`、`server/routes/sessionMetadataRoutes.ts`、`server/routes/sessionActivityRoutes.ts`、`server/routes/sessionRewindRoutes.ts`、renderer chat/session | 会话元数据、活动与回退 REST、transcript、回放、rewind |
 | Agent 循环 | `ts/src/harness` | ReAct 循环和系统提示 |
 | 模型与代理 | `model`、`proxy`、`server/services/provider*` | provider、协议转换、降级 |
 | 上下文与记忆 | `context`、`memory`、`goals` | 压缩、记忆、目标状态 |
