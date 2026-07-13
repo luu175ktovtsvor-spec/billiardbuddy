@@ -45,11 +45,13 @@ function stubSource(ready: Record<string, string>, ensure?: (id: string) => Ensu
   }
 }
 
-// 隔离 env:PATH 清空 + 内置目录指到空目录,避免开发机装的 ffmpeg 影响断言。
+// 隔离 env:PATH 与内置目录都指到空目录,避免开发机装的 ffmpeg 影响断言。
+// 注意不能用 PATH:''——resolveExecutable 的 `env.PATH || process.env.PATH` 会把空串
+// 当"没传"回落到真机 PATH,隔离就失效了(2026-07-13 真机逮到:~/bin/ffmpeg 泄进断言)。
 function isolatedEnv(extra: Record<string, string | undefined> = {}): Record<string, string | undefined> {
   const emptyDir = mkdtempSync(join(tmpdir(), 'qf-empty-'))
   roots.push(emptyDir)
-  return { PATH: '', QF_BINARIES_DIR: emptyDir, RESOURCES_PATH: emptyDir, ...extra }
+  return { PATH: emptyDir, QF_BINARIES_DIR: emptyDir, RESOURCES_PATH: emptyDir, ...extra }
 }
 
 test('ffmpegBinFrom:env 显式最高且不回退(坏路径也原样用,保持旧降级语义)', () => {
