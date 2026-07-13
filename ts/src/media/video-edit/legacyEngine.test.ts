@@ -20,7 +20,14 @@ import { estimateTempo, snapToBeats, planBeatDurations, beatPeriodFromBeats, ons
 import { parseVlmPlan, heuristicPlan, faceGuardActive, buildTagMessages, tagShots, type ShotForTag } from './evidence/visualTagger'
 import type { Model } from '../../types/model'
 
-const NO_BINARIES = { PATH: '', WHISPER_CLI: '', WHISPER_CPP_BIN: '', FFMPEG_BIN: '/nonexistent/ffmpeg', FFPROBE_BIN: '/nonexistent/ffprobe' }
+const NO_BINARIES = {
+  PATH: '/nonexistent/bin',
+  QF_BINARIES_DIR: '/nonexistent/binaries',
+  WHISPER_CLI: '',
+  WHISPER_CPP_BIN: '',
+  FFMPEG_BIN: '/nonexistent/ffmpeg',
+  FFPROBE_BIN: '/nonexistent/ffprobe',
+}
 
 // ── 口播路:whisper JSON 解析 + phrases 按静音≥0.5s 分组 ──────────────────────
 
