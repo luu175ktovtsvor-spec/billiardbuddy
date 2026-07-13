@@ -128,15 +128,14 @@ function referencesFrom(input: ImageBriefCompileInput, scene: 'poster' | 'portra
 function posterBrief(text: string, input: ImageBriefCompileInput): PosterBrief {
   const fields = input.posterText
   const templateId = inferTemplate(text, input.sceneTemplateId)
-  const title = firstString(fields, 'title', '主标题', 'headline') || extractQuoted(text) ||
-    (text.match(/(?:做一张|制作|生成)([^，。]{2,32})(?:海报|宣传图)/u)?.[1] ?? '')
+  const title = firstString(fields, 'title', '主标题', 'headline') || extractQuoted(text)
   const offer = firstString(fields, 'offer', 'subtitle', '副标题', '优惠')
   const price = firstString(fields, 'price', '价格', '售价') || extractPrice(text)
   const date = firstString(fields, 'date', '日期', '活动日期') || extractDate(text)
   const time = firstString(fields, 'time', '时间', '活动时间') || extractTime(text)
   const address = firstString(fields, 'address', '地址', '门店地址')
   const phone = firstString(fields, 'phone', 'telephone', '电话', '预约电话') || extractPhone(text)
-  const cta = firstString(fields, 'cta', '行动按钮', '按钮') || (text.includes('扫码') ? '扫码预约' : '')
+  const cta = firstString(fields, 'cta', '行动按钮', '按钮')
   const exactCopy = unique([
     title,
     offer,
@@ -204,10 +203,10 @@ function posterControls(poster: PosterBrief, refs: ImageAssetReference[], brandC
 
 function makePosterDirection(text: string, composition: string) {
   return {
-    subject: '用户描述的主体',
-    action: '按用户描述呈现自然动作',
-    environment: '与用户需求和参考图一致的真实场景',
-    style: '按用户描述生成的海报视觉',
+    subject: text,
+    action: '只呈现用户明确提出的动作、关系和数量',
+    environment: '仅使用用户描述或参考图明确提供的环境，不补充未要求的业务场景',
+    style: '遵循用户描述的视觉风格；未指定时保持重点清晰、自然协调',
     color: text.match(/(?:主色|配色|颜色)[为是]?([^，。；;]{1,20})/u)?.[1]?.trim() ?? undefined,
     lighting: '清晰、自然、有层次的光线',
     composition,
@@ -260,7 +259,7 @@ export class ImageBriefCompiler {
       poster,
       portrait,
       understanding: scene === 'poster'
-        ? `${TEMPLATE_LABELS[poster!.template_id]} / ${poster!.title || '用户海报'}${poster!.price ? ` / ${poster!.price}` : ''}${input.ratio ? ` / ${input.ratio}` : ''}`
+        ? `${TEMPLATE_LABELS[poster!.template_id]} / ${poster!.title || userRequest}${poster!.price ? ` / ${poster!.price}` : ''}${input.ratio ? ` / ${input.ratio}` : ''}`
         : `助教实拍照片优化 / ${portrait!.change.join('、')} / 保留本人特征`,
     })
     this.cache.set(key, brief)

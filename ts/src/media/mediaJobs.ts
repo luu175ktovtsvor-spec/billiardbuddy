@@ -781,6 +781,7 @@ export class MediaJobService {
   private readonly fetchImpl: FetchLike
   private readonly pollIntervalMs: number
   private readonly gptImageAsync: boolean
+  private readonly preparedImageBodies = new WeakSet<Record<string, unknown>>()
   private qcModelCache: Model | null | undefined
 
   constructor(private readonly opts: MediaJobServiceOptions) {
@@ -811,7 +812,6 @@ export class MediaJobService {
     const supplied = imageCreativeBriefSchema.safeParse(body.creative_brief)
     if (supplied.success) return supplied.data
     const userRequest = stringFrom(body.user_request) ?? stringFrom(body.prompt) ?? stringFrom(body.description) ?? stringFrom(body.image_prompt)
-    const compiledPrompt = stringFrom(body.image_prompt)
     return compileImageBrief({
       prompt: userRequest,
       scene: body.scene === 'portrait' || body.intent === 'portrait' || body.portrait === true ? 'portrait' : body.scene === 'poster' ? 'poster' : undefined,
@@ -824,7 +824,7 @@ export class MediaJobService {
       referenceImagePaths: stringArrayFrom(body.reference_image_paths),
       portraitConsent: body.portrait_consent === true,
       portraitAuthorizationConfirmed: body.portrait_authorization_confirmed === true,
-      brandContext: compiledPrompt && compiledPrompt !== userRequest ? compiledPrompt.replace(userRequest ?? '', '').trim() : undefined,
+      brandContext: this.preparedImageBodies.has(body) ? stringFrom(body._system_brand_context) : undefined,
     })
   }
 
@@ -1232,7 +1232,9 @@ export class MediaJobService {
   private async prepareImageBody(body: Record<string, unknown>, mode: 'generate' | 'edit'): Promise<Record<string, unknown>> {
     if (this.backendUrl) return body
     if (!this.opts.prepareImageBody) return body
-    return await this.opts.prepareImageBody(body, mode)
+    const prepared = await this.opts.prepareImageBody(body, mode)
+    this.preparedImageBodies.add(prepared)
+    return prepared
   }
 
   private async directOrLocalImageFallback(ctx: TaskRunnerContext, body: Record<string, unknown>, mode: 'generate' | 'edit'): Promise<Record<string, unknown>> {

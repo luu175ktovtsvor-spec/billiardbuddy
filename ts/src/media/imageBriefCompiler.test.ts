@@ -44,6 +44,7 @@ test('freeform poster does not inject billiards, store activity or unused busine
   expect(brief.visual_direction.composition).not.toContain('价格')
   expect(brief.visual_direction.composition).not.toContain('二维码')
   expect(prompt).not.toContain('经营目标')
+  expect(prompt).toContain('夏日音乐节的抽象艺术海报，不要任何文字')
 })
 
 test('poster controls reserve only facts and assets explicitly supplied by the user', () => {
@@ -60,6 +61,15 @@ test('poster controls reserve only facts and assets explicitly supplied by the u
   expect(brief.visual_direction.composition).not.toContain('二维码')
 })
 
+test('a poster topic is not guessed to be exact title or CTA copy', () => {
+  const brief = compileImageBrief({ prompt: '做一张海边音乐节海报，画面留出扫码区域但不要任何文字' })
+
+  expect(brief.poster?.title).toBe('')
+  expect(brief.poster?.cta).toBe('')
+  expect(brief.poster?.exact_copy).toEqual([])
+  expect(brief.poster?.reserved_regions).toEqual([])
+})
+
 test('poster reference images remain direct image conditions without unrelated brand instructions', () => {
   const brief = compileImageBrief({
     prompt: '参考这张图的构图，生成一张夏日音乐节海报',
@@ -73,13 +83,15 @@ test('poster reference images remain direct image conditions without unrelated b
 })
 
 test('GPT freeform poster has no portrait identity preserve block', () => {
-  const brief = compileImageBrief({ prompt: '电影感的音乐节海报，画面中有朋友一起跳舞，不要任何文字' })
+  const userRequest = '电影感的音乐节海报，画面中有朋友一起跳舞，不要任何文字'
+  const brief = compileImageBrief({ prompt: userRequest })
   const prompt = compileProviderPrompt(brief, 'generate').prompt
 
   expect(routeImageBrief(brief)).toBe('gpt_image_2')
   expect(prompt).not.toContain('Preserve:')
   expect(prompt).not.toContain('identity and natural details')
   expect(prompt).not.toContain('Do not add people')
+  expect(prompt).toContain(userRequest)
   expect(prompt).toContain('visible text, gibberish, watermarks')
 })
 

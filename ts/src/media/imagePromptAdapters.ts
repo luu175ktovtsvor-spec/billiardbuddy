@@ -98,7 +98,7 @@ export function compileGptImagePrompt(brief: ImageCreativeBrief, mode: 'generate
     ? brief.portrait?.change ?? [brief.user_request]
     : mode === 'edit'
       ? [brief.user_request]
-      : [brief.visual_direction.environment, brief.visual_direction.style, brief.visual_direction.composition].filter(Boolean)
+      : [brief.user_request, brief.visual_direction.style, brief.visual_direction.composition].filter(Boolean)
   const references = brief.reference_assets.map((asset, index) => `Image ${index + 1}: ${asset.role}`).join('; ')
   const avoid = brief.must_avoid.map(englishAvoidItem).filter(Boolean)
   return [

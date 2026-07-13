@@ -602,7 +602,7 @@ export function Composer() {
     const attachTail = pasted.map((p, i) => `\n\n[粘贴的文本${pasted.length > 1 ? ` ${i + 1}` : ''}]\n"""\n${p.text}\n"""`).join('')
     const imageSlash = text.match(/^\/生图\s+(.+)$/s)
     const baseText = imageSlash
-      ? `请根据下面描述调用 generate_image 工具生成图片，完成后把产物送入生图工作台。描述:${imageSlash[1]?.trim() ?? ''}`
+      ? `请理解下面的用户原始生图需求并调用 generate_image，完成后把产物送入生图工作台。调用工具时忠实保留原始画面意图，不要引入用户未提供的领域知识、运营方案或营销内容；后端会统一编译 CreativeBrief、路由模型并优化 Prompt。用户原始生图需求:${imageSlash[1]?.trim() ?? ''}`
       : text
     const finalText = (baseText || (pasted.length ? '请看下面粘贴的内容:' : '')) + attachTail
     if (!finalText.trim()) return
