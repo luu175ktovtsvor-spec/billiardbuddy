@@ -25,7 +25,7 @@
 | 扩展系统 | `skills`、`commands`、`hooks`、`packs`、`plugins`、`server/extensionRoots.ts`、扩展 routes、`shared/contracts/extensions.ts`、renderer `api/extensions.ts` 与 `PluginsPage.tsx` | 技能/命令/领域包发现与展开、启用插件贡献的统一运行时装配、插件管理 REST 和前端披露 |
 | MCP | `mcp`、`server/routes/mcpRoutes.ts`、`shared/contracts/extensions.ts`、renderer `api/mcp.ts` | MCP 管理 REST、配置、信任、OAuth、工具加载和前端连接状态 |
 | 任务与子代理 | `tasks`、`agents`、`server/routes/taskRoutes.ts` | 后台任务 REST 边界、子代理、团队 |
-| Remote Bridge | `tasks/bridge*`、server bridge routes | 远程控制与消息传输 |
+| Remote Bridge | `tasks/bridge*`、`server/routes/bridgeSessionRoutes.ts`、server worker 装配 | 远程控制会话数据面、消息传输与 worker 生命周期 |
 | 定时任务 | `ScheduledTaskRunner`、`server/routes/scheduledTaskRoutes.ts`、renderer scheduled | 排程、REST 边界、执行、运行历史 |
 | 生图/文档 | `ts/src/media`、`ts/shared/contracts/image-workbench.ts`、studio/workbench routes、renderer `features/image-workbench`（`pages/CreationPage.tsx` 仅兼容导出）、`api/studio.ts` | 图片 Brief/模型适配、候选质检、固定画布、项目资产/版本、Office 文档 |
 | 视频 | `ts/src/media/video-edit`、`ts/shared/contracts/video-edit.ts`、renderer `features/video-studio` | 视频 Brief、Scene/Timeline、素材证据、规划、预览与渲染 |
