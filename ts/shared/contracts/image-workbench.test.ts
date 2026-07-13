@@ -144,6 +144,20 @@ test('custom poster type is compatible with legacy briefs', () => {
   expect(current.poster?.template_id).toBe('custom_poster')
 })
 
+test('daily social is the current shortcut while legacy holiday projects remain readable', () => {
+  const current = imageCreativeBriefSchema.parse({
+    user_request: '做一张日常社媒配图',
+    poster: { template_id: 'daily_social' },
+  })
+  const legacy = imageCreativeBriefSchema.parse({
+    user_request: '旧项目',
+    poster: { template_id: 'holiday_moments' },
+  })
+
+  expect(current.poster?.template_id).toBe('daily_social')
+  expect(legacy.poster?.template_id).toBe('holiday_moments')
+})
+
 test('photo output use keeps person-photo edits distinct from a profile template', () => {
   const brief = imageCreativeBriefSchema.parse({
     user_request: '把这张已授权实拍照片变得自然好看',

@@ -88,6 +88,14 @@ test('poster categories are explicit shortcuts and never inferred from assistant
   })
   expect(explicit.poster?.template_id).toBe('recruitment_role')
   expect(explicit.understanding).toContain('招聘/岗位')
+
+  const daily = compileImageBrief({
+    prompt: '做一张今天营业现场的日常分享图',
+    scene: 'poster',
+    sceneTemplateId: 'daily_social',
+  })
+  expect(daily.poster?.template_id).toBe('daily_social')
+  expect(daily.understanding).toContain('日常/社媒')
 })
 
 test('freeform poster does not inject billiards, store activity or unused business regions', () => {
@@ -166,7 +174,7 @@ test('authorized everyday photo compilation keeps image roles and natural-photo 
   expect(brief.portrait?.preserve.join(' ')).toContain('面部')
   expect(brief.portrait?.change.join(' ')).toContain('无明显 AI 感')
   expect(brief.visual_direction.style).toContain('无明显 AI 感')
-  expect(brief.understanding).toContain('真人照片优化')
+  expect(brief.understanding).toContain('照片编辑')
   expect(brief.output_use).toBe('photo')
   expect(routeImageBrief(brief, 'edit')).toBe('gpt_image_2')
   const prompt = compileProviderPrompt(brief, 'edit').prompt
@@ -180,6 +188,21 @@ test('authorized everyday photo compilation keeps image roles and natural-photo 
   expect(fallbackPrompt).not.toContain('形象照')
   expect(fallbackPrompt).not.toContain('Logo')
   expect(fallbackPrompt).not.toContain('二维码')
+})
+
+test('GPT photo editing keeps the complete freeform user goal in the change section', () => {
+  const request = '把这张随手拍改成雨后街头的纪实感，保留原来的发型和衣服'
+  const brief = compileImageBrief({
+    prompt: request,
+    scene: 'portrait',
+    referenceAssets: [{ asset_id: 'person_main', role: 'identity_primary' }],
+    portraitAuthorizationConfirmed: true,
+  })
+  const prompt = compileProviderPrompt(brief, 'edit').prompt
+
+  expect(prompt).toContain('Change only:')
+  expect(prompt).toContain(request)
+  expect(prompt).toContain('Preserve:')
 })
 
 test('background wording alone does not turn a poster into a portrait task', () => {

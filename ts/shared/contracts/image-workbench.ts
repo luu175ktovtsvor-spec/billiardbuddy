@@ -71,6 +71,8 @@ export const posterTemplateIdSchema = z.enum([
   // Legacy value kept so projects created before the category wording was
   // corrected remain readable. New creation flows do not emit this value.
   'coach_booking',
+  'daily_social',
+  // Legacy value kept for projects that used the former holiday shortcut.
   'holiday_moments',
 ])
 

@@ -115,7 +115,7 @@ export function compileGptImagePrompt(brief: ImageCreativeBrief, mode: 'generate
       ? ['the identity and natural details of the supplied subject']
       : []
   const change = brief.scene === 'portrait'
-    ? brief.portrait?.change ?? [brief.user_request]
+    ? [...new Set([brief.user_request, ...(brief.portrait?.change ?? [])])]
     : mode === 'edit'
       ? [brief.user_request]
       : [brief.user_request, brief.visual_direction.style, brief.visual_direction.composition].filter(Boolean)

@@ -215,6 +215,7 @@ test('生图工作台完成生成挑图局部改字导出并在重启后恢复',
   await desktop.window.getByTestId('candidate-select').first().click()
   await expect(desktop.window.getByTestId('selected-candidate-preview')).toBeVisible()
   await expect(desktop.window.getByTestId('ab-compare')).toBeVisible()
+  await testInfo.attach('workbench-candidate-selection', { body: await desktop.window.screenshot(), contentType: 'image/png' })
   await desktop.window.getByTestId('quick-download-candidate').click()
   await expect.poll(async () => {
     const body = await desktop.api<{ projects: Array<{ versions: Array<{ kind: string }> }> }>('/api/v1/studio/workbench/projects')
@@ -289,6 +290,8 @@ test('生图工作台完成生成挑图局部改字导出并在重启后恢复',
   const restarted = await desktop.restart()
   await restarted.window.getByText('生图工作台').click()
   await expect(restarted.window.getByTestId('creation-page')).toBeVisible()
+  await expect(restarted.window.getByTestId('workbench-title')).toBeHidden()
+  await restarted.window.getByTestId('workbench-project-item').filter({ hasText: '开业或门店焕新' }).click()
   await expect(restarted.window.getByTestId('workbench-title')).toContainText('开业或门店焕新')
   await restarted.window.getByText('品牌素材', { exact: true }).click()
   await expect(restarted.window.getByTestId('brand-logo-preview')).toBeVisible()
@@ -347,7 +350,7 @@ test('授权随拍照片图生图要求授权、保留参考角色并由用户�
   await desktop.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1180, 760))
 
   await desktop.window.getByTestId('image-generate-button').click()
-  await expect(desktop.window.getByTestId('brief-understanding')).toContainText('真人照片优化')
+  await expect(desktop.window.getByTestId('brief-understanding')).toContainText('照片编辑')
   await desktop.window.getByTestId('image-generate-button').click()
   await expect.poll(() => desktop.window.getByTestId('candidate-card').count(), { timeout: 20_000 }).toBe(3)
   await desktop.window.getByTestId('open-selected-candidate').click()
