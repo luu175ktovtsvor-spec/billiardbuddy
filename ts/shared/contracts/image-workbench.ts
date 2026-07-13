@@ -5,6 +5,29 @@ export const imageWorkbenchIsoDateSchema = z.string().datetime()
 export const imageWorkbenchUrlSchema = z.string().min(1).max(4096)
 export const imageWorkbenchRatioSchema = z.string().min(1).max(16).default('3:4')
 
+const imageBrandPackFields = {
+  name: z.string().max(120).nullable().optional(),
+  brand_style: z.string().max(120).nullable().optional(),
+  brand_color: z.string().max(64).nullable().optional(),
+  logo_url: imageWorkbenchUrlSchema.nullable().optional(),
+  logo_asset_id: imageWorkbenchIdSchema.nullable().optional(),
+  logo_width: z.number().int().positive().max(12000).nullable().optional(),
+  logo_height: z.number().int().positive().max(12000).nullable().optional(),
+  qrcode_url: imageWorkbenchUrlSchema.nullable().optional(),
+  qrcode_asset_id: imageWorkbenchIdSchema.nullable().optional(),
+  qrcode_width: z.number().int().positive().max(12000).nullable().optional(),
+  qrcode_height: z.number().int().positive().max(12000).nullable().optional(),
+  brand_reference_images: z.array(imageWorkbenchUrlSchema).max(16).optional(),
+} as const
+
+// Store records predate the image workbench and contain unrelated fields.
+// Passthrough keeps those records readable while this contract owns brand data.
+export const imageBrandPackSchema = z.object({
+  ...imageBrandPackFields,
+  brand_reference_images: imageBrandPackFields.brand_reference_images.default([]),
+}).passthrough()
+export const imageBrandPackPatchSchema = z.object(imageBrandPackFields).partial().passthrough()
+
 export const imageIntentSchema = z.enum([
   'poster_text',
   'portrait',
@@ -484,6 +507,8 @@ export const imageWorkbenchLibraryResponseSchema = z.object({
 })
 
 export type ImageIntent = z.infer<typeof imageIntentSchema>
+export type ImageBrandPack = z.infer<typeof imageBrandPackSchema>
+export type ImageBrandPackPatch = z.input<typeof imageBrandPackPatchSchema>
 export type ImageQuality = z.infer<typeof imageQualitySchema>
 export type ImageReferenceRole = z.infer<typeof imageReferenceRoleSchema>
 export type ImageAssetReference = z.infer<typeof imageAssetReferenceSchema>

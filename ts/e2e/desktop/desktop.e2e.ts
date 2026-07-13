@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures'
 import { PNG } from 'pngjs'
+import * as QRCode from 'qrcode'
 
 test.describe('首次启动', () => {
   test.use({ onboarded: false })
@@ -95,6 +96,18 @@ test('生图工作台在初始创作态保持任务层级与无横向溢出', as
   await expect(desktop.window.getByRole('tab', { name: '创作', exact: true })).toBeHidden()
   await assertNoPageOverflow()
   await testInfo.attach('workbench-wide-layout', { body: await desktop.window.screenshot(), contentType: 'image/png' })
+  await desktop.window.getByRole('button', { name: '切换主题' }).click()
+  await expect.poll(() => desktop.window.evaluate(() => document.documentElement.dataset.theme)).toBe('dark')
+  await desktop.window.waitForTimeout(250)
+  await expect.poll(() => desktop.window.evaluate(() => {
+    const nav = document.querySelector('[data-testid="sidebar"] nav button')
+    return nav ? getComputedStyle(nav).color : null
+  })).toBe('rgb(255, 255, 255)')
+  await assertNoPageOverflow()
+  await testInfo.attach('workbench-wide-dark-layout', { body: await desktop.window.screenshot(), contentType: 'image/png' })
+  await desktop.window.getByRole('button', { name: '切换主题' }).click()
+  await expect.poll(() => desktop.window.evaluate(() => document.documentElement.dataset.theme)).toBe('light')
+  await desktop.window.waitForTimeout(250)
 
   await desktop.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 760))
   await expect.poll(() => desktop.window.evaluate(() => window.innerWidth)).toBeLessThanOrEqual(900)
@@ -149,6 +162,31 @@ test('生图工作台完成生成挑图局部改字导出并在重启后恢复',
   await expect(desktop.window.getByTestId('creation-page')).toBeVisible()
   await expect(desktop.window.getByTestId('sidebar')).toBeVisible()
   await expect(desktop.window.getByTestId('topbar')).toContainText('生图工作台')
+
+  const logo = new PNG({ width: 320, height: 120 })
+  for (let i = 0; i < logo.data.length; i += 4) {
+    logo.data[i] = 16
+    logo.data[i + 1] = 112
+    logo.data[i + 2] = 86
+    logo.data[i + 3] = 255
+  }
+  await desktop.window.getByText('品牌素材', { exact: true }).click()
+  await desktop.window.getByTestId('brand-logo-input').setInputFiles({
+    name: 'store-logo.png',
+    mimeType: 'image/png',
+    buffer: PNG.sync.write(logo),
+  })
+  await expect(desktop.window.getByTestId('brand-logo-preview')).toBeVisible()
+  await desktop.window.getByTestId('brand-qrcode-input').setInputFiles({
+    name: 'store-qrcode.png',
+    mimeType: 'image/png',
+    buffer: await QRCode.toBuffer('https://example.com/store', { type: 'png', width: 256, margin: 4 }),
+  })
+  await expect(desktop.window.getByTestId('brand-qrcode-preview')).toBeVisible()
+  const savedBrand = await desktop.api<{ logo_url?: string; qrcode_url?: string; logo_width?: number }>('/api/v1/stores/me')
+  expect(savedBrand.logo_url).toContain('/uploads/workbench/assets/reference/')
+  expect(savedBrand.qrcode_url).toContain('/uploads/workbench/assets/reference/')
+  expect(savedBrand.logo_width).toBe(320)
 
   const reference = new PNG({ width: 768, height: 768 })
   for (let i = 0; i < reference.data.length; i += 4) {
@@ -220,7 +258,7 @@ test('生图工作台完成生成挑图局部改字导出并在重启后恢复',
 
   const body = await desktop.api<{
     projects: Array<{
-      canvas: { width: number; height: number }
+      canvas: { width: number; height: number; image_layers: Array<{ type: string }> }
       reference_assets: Array<{ role: string }>
       versions: Array<{ kind: string; image_url: string }>
     }>
@@ -228,6 +266,7 @@ test('生图工作台完成生成挑图局部改字导出并在重启后恢复',
   const project = body.projects[0]
   expect(project).toBeTruthy()
   expect(project!.reference_assets[0]?.role).toBe('environment_reference')
+  expect(project!.canvas.image_layers.map(layer => layer.type).sort()).toEqual(['logo', 'qrcode'])
   const exported = project!.versions.find((version) => version.kind === 'text_export')
   expect(exported).toBeTruthy()
   const pngRes = await fetch(`${desktop.sidecarBase}${exported!.image_url}`)
@@ -244,6 +283,9 @@ test('生图工作台完成生成挑图局部改字导出并在重启后恢复',
   await restarted.window.getByText('生图工作台').click()
   await expect(restarted.window.getByTestId('creation-page')).toBeVisible()
   await expect(restarted.window.getByTestId('workbench-title')).toContainText('开业或门店焕新')
+  await restarted.window.getByText('品牌素材', { exact: true }).click()
+  await expect(restarted.window.getByTestId('brand-logo-preview')).toBeVisible()
+  await expect(restarted.window.getByTestId('brand-qrcode-preview')).toBeVisible()
   await expect(restarted.window.getByTestId('image-quality-status')).toContainText(/未自动质检|OCR|人像|投放/)
 })
 
@@ -253,6 +295,16 @@ test('授权随拍照片图生图要求授权、保留参考角色并由用户�
   await input.fill('/生图工作台')
   await input.press('Enter')
   await expect(desktop.window.getByTestId('creation-page')).toBeVisible()
+
+  const brandLogo = new PNG({ width: 240, height: 80 })
+  brandLogo.data.fill(120)
+  await desktop.window.getByText('品牌素材', { exact: true }).click()
+  await desktop.window.getByTestId('brand-logo-input').setInputFiles({
+    name: 'portrait-test-brand.png',
+    mimeType: 'image/png',
+    buffer: PNG.sync.write(brandLogo),
+  })
+  await expect(desktop.window.getByTestId('brand-logo-preview')).toBeVisible()
   await desktop.window.getByTestId('image-workflow-photo').click()
 
   const png = new PNG({ width: 768, height: 768 })
@@ -296,7 +348,8 @@ test('授权随拍照片图生图要求授权、保留参考角色并由用户�
   await desktop.window.getByTestId('confirm-portrait-button').click()
   await expect(desktop.window.getByTestId('portrait-user-confirmed')).toBeVisible()
 
-  const body = await desktop.api<{ projects: Array<{ reference_assets: Array<{ role: string }>; versions: Array<{ review?: { portrait_quality_state?: string; portrait_user_confirmed?: boolean } }> }> }>('/api/v1/studio/workbench/projects')
+  const body = await desktop.api<{ projects: Array<{ canvas: { image_layers: Array<{ type: string }> }; reference_assets: Array<{ role: string }>; versions: Array<{ review?: { portrait_quality_state?: string; portrait_user_confirmed?: boolean } }> }> }>('/api/v1/studio/workbench/projects')
   expect(body.projects[0]?.reference_assets[0]?.role).toBe('identity_primary')
+  expect(body.projects[0]?.canvas.image_layers).toEqual([])
   expect(body.projects[0]?.versions[0]?.review).toMatchObject({ portrait_quality_state: 'user_confirmed', portrait_user_confirmed: true })
 })

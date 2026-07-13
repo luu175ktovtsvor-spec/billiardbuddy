@@ -1,6 +1,7 @@
 // 生图/工作台 API:renderer 只提交能力意图;真实 provider/model 留在 sidecar。
 import { api, getBaseUrl } from './client'
 import {
+  imageBrandPackSchema,
   imageBriefCompileResponseSchema,
   imageWorkbenchAssetResponseSchema,
   imageWorkbenchExportResponseSchema,
@@ -10,6 +11,8 @@ import {
   mediaJobSchema,
   mediaJobStartResponseSchema,
   type ImageIntent,
+  type ImageBrandPack,
+  type ImageBrandPackPatch,
   type ImageQuality,
   type ImageAssetReference,
   type ImageReferenceRole,
@@ -27,7 +30,7 @@ import {
   type StudioImage,
 } from '../../../../shared/contracts/image-workbench'
 
-export type { ImageIntent, ImageQuality, ImageAssetReference, ImageReferenceRole, ImageCreativeBrief, ImageWorkbenchAsset, ImageWorkbenchLibraryItem, ImageWorkbenchProject, ImageWorkbenchReview, ImageWorkbenchTextLayer, ImageWorkbenchImageLayer, ImageWorkbenchVersion, StudioImage }
+export type { ImageIntent, ImageBrandPack, ImageBrandPackPatch, ImageQuality, ImageAssetReference, ImageReferenceRole, ImageCreativeBrief, ImageWorkbenchAsset, ImageWorkbenchLibraryItem, ImageWorkbenchProject, ImageWorkbenchReview, ImageWorkbenchTextLayer, ImageWorkbenchImageLayer, ImageWorkbenchVersion, StudioImage }
 
 export interface GenerateResult {
   urls?: string[]
@@ -155,6 +158,14 @@ export const studioApi = {
     portrait_authorization_confirmed: input.portrait_authorization_confirmed,
     input_fidelity: input.input_fidelity,
   })),
+}
+
+export const brandPackApi = {
+  get: async (): Promise<ImageBrandPack> =>
+    imageBrandPackSchema.parse(await api.get<unknown>('/api/v1/stores/me')),
+
+  update: async (input: ImageBrandPackPatch): Promise<ImageBrandPack> =>
+    imageBrandPackSchema.parse(await api.patch<unknown>('/api/v1/stores/me', input)),
 }
 
 export const workbenchApi = {

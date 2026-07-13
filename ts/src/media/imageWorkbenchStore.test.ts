@@ -104,14 +104,14 @@ test('ImageWorkbenchStore serializes autosave and requires explicit portrait con
   try {
     const store = new ImageWorkbenchStore(root)
     const project = await store.createProject({
-      title: '助教形象照',
+      title: '授权随拍优化',
       image_url: '/uploads/posters/portrait.png',
       width: 320,
       height: 320,
       intent: 'portrait',
       quality: 'standard',
       creative_brief: {
-        user_request: '做一张助教形象照',
+        user_request: '把这张授权随拍照片优化得自然好看',
         scene: 'portrait',
         portrait: { authorization_confirmed: true },
       },
@@ -155,14 +155,14 @@ test('ImageWorkbenchStore keeps controlled copy and export layout guards at the 
     })).rejects.toThrow(/受控文字层缺少业务信息/)
 
     const portrait = await store.createProject({
-      title: '助教形象照',
+      title: '授权随拍优化',
       image_url: '/uploads/posters/portrait.png',
       width: 320,
       height: 320,
       intent: 'portrait',
       quality: 'standard',
       creative_brief: {
-        user_request: '做一张助教形象照',
+        user_request: '把这张授权随拍照片优化得自然好看',
         scene: 'portrait',
         portrait: { authorization_confirmed: true },
       },

@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, FabricImage, Path, Rect, Textbox, type FabricObject } from 'fabric'
+import { PageHeader } from '../../components/shared/PageKit'
 import { Tooltip } from '../../components/shared/Tooltip'
-import { IconCheckCircle, IconEdit, IconPlus, IconRefresh, IconShareUp, IconSparkles, IconTarget, IconTrash, IconZap } from '../../components/shared/icons'
+import { IconCheckCircle, IconChevronRight, IconEdit, IconPlus, IconRefresh, IconShareUp, IconSparkles, IconTarget, IconTrash, IconZap } from '../../components/shared/icons'
 import { toast } from '../../stores/toastStore'
 import {
   assetUrl,
+  brandPackApi,
   pickImageUrl,
   pollJob,
   studioApi,
   workbenchApi,
   type ImageAssetReference,
+  type ImageBrandPack,
   type ImageIntent,
   type ImageQuality,
   type ImageReferenceRole,
@@ -82,6 +85,7 @@ export function CreationPage() {
   const [posterDate, setPosterDate] = useState('')
   const [posterPhone, setPosterPhone] = useState('')
   const [portraitAuthorized, setPortraitAuthorized] = useState(false)
+  const [brandPack, setBrandPack] = useState<ImageBrandPack | null>(null)
   const [logoAsset, setLogoAsset] = useState<ImageWorkbenchAsset | null>(null)
   const [qrAsset, setQrAsset] = useState<ImageWorkbenchAsset | null>(null)
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'failed'>('saved')
@@ -212,6 +216,22 @@ export function CreationPage() {
       }
     })()
     return () => { cancelled = true; abortRef.current?.abort() }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const loaded = await brandPackApi.get()
+      const [logo, qrcode] = await Promise.all([
+        brandAssetFromPack(loaded, 'logo'),
+        brandAssetFromPack(loaded, 'qrcode'),
+      ])
+      if (cancelled) return
+      setBrandPack(loaded)
+      setLogoAsset(logo)
+      setQrAsset(qrcode)
+    })().catch(() => undefined)
+    return () => { cancelled = true }
   }, [])
 
   useEffect(() => {
@@ -487,6 +507,13 @@ export function CreationPage() {
     if (!file) return
     try {
       const asset = await uploadWorkbenchImage(file)
+      if (kind === 'qrcode' && Math.abs(asset.width - asset.height) > 4) {
+        throw new Error('二维码请上传清晰的正方形原图')
+      }
+      const updated = await brandPackApi.update(kind === 'logo'
+        ? { logo_url: asset.url, logo_asset_id: asset.asset_id, logo_width: asset.width, logo_height: asset.height }
+        : { qrcode_url: asset.url, qrcode_asset_id: asset.asset_id, qrcode_width: asset.width, qrcode_height: asset.height })
+      setBrandPack(updated)
       if (kind === 'logo') setLogoAsset(asset)
       else setQrAsset(asset)
       toast(kind === 'logo' ? 'Logo 已加入品牌包' : '二维码已加入品牌包')
@@ -674,10 +701,7 @@ export function CreationPage() {
         date: [creativeBrief?.poster?.date, creativeBrief?.poster?.time].filter(Boolean).join(' '),
         phone: creativeBrief?.poster?.phone ?? posterPhone,
       }) : [],
-      image_layers: [
-        ...(logoAsset ? [{ id: `layer_${logoAsset.asset_id}`, type: 'logo' as const, asset_id: logoAsset.asset_id, url: logoAsset.url, x: width * 0.04, y: height * 0.04, width: width * 0.18, height: width * 0.18, locked: false }] : []),
-        ...(qrAsset ? [{ id: `layer_${qrAsset.asset_id}`, type: 'qrcode' as const, asset_id: qrAsset.asset_id, url: qrAsset.url, x: width * 0.78, y: height * 0.82, width: width * 0.16, height: width * 0.16, locked: false }] : []),
-      ],
+      image_layers: intent === 'poster_text' ? posterBrandImageLayers(width, height, logoAsset, qrAsset) : [],
       review: reviewFromRecord(img),
     })
   }
@@ -1058,26 +1082,34 @@ export function CreationPage() {
     ? 'grid min-h-0 grid-cols-1 gap-x-7 gap-y-6 min-[1180px]:grid-cols-[minmax(236px,280px)_minmax(0,1fr)] min-[1500px]:grid-cols-[250px_minmax(0,1fr)_280px]'
     : hasMainPanel
       ? 'grid min-h-0 grid-cols-1 gap-x-7 gap-y-6 min-[1180px]:grid-cols-[minmax(236px,280px)_minmax(0,1fr)]'
-      : 'mx-auto max-w-[760px]'
+      : 'block'
+  const contentClass = hasWorkbenchStage
+    ? 'max-w-[1560px] px-4 pb-7 pt-4 min-[840px]:px-6'
+    : 'max-w-[880px] px-4 py-7 min-[840px]:px-8'
 
   return (
     <div className="h-full overflow-y-auto" style={{ background: 'var(--color-app-main)' }} data-testid="creation-page">
-      <div className="mx-auto min-h-full w-full max-w-[1560px] px-4 pb-7 pt-2 min-[840px]:px-6">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <div className="inline-grid grid-cols-2 gap-1 rounded-lg p-1" style={{ background: 'var(--color-surface-container)' }} role="tablist" aria-label="创作模式">
-            <button type="button" role="tab" aria-selected={intent === 'poster_text'} onClick={() => selectWorkflow('poster')}
-              className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={segStyle(intent === 'poster_text')} data-testid="image-workflow-poster">
-              海报创作
-            </button>
-            <button type="button" role="tab" aria-selected={intent === 'portrait'} onClick={() => selectWorkflow('photo_edit')}
-              className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={segStyle(intent === 'portrait')} data-testid="image-workflow-photo">
-              照片优化
-            </button>
-          </div>
-          {saveState !== 'saved' && <span className="text-[11px]" style={{ color: saveState === 'failed' ? 'var(--color-error)' : 'var(--color-text-tertiary)' }}>
-            {saveState === 'saving' ? '保存中' : '保存失败'}
-          </span>}
-        </div>
+      <div className={`mx-auto min-h-full w-full ${contentClass}`}>
+        <PageHeader
+          title={hasWorkbenchStage ? '创作与编辑' : '开始创作'}
+          action={(
+            <div className="flex items-center gap-3">
+              {saveState !== 'saved' && <span className="text-[11px]" style={{ color: saveState === 'failed' ? 'var(--color-error)' : 'var(--color-text-tertiary)' }}>
+                {saveState === 'saving' ? '保存中' : '保存失败'}
+              </span>}
+              <div className="inline-grid grid-cols-2 gap-0.5 rounded-lg p-0.5" style={{ background: 'var(--color-surface-container)' }} role="tablist" aria-label="创作模式">
+                <button type="button" role="tab" aria-selected={intent === 'poster_text'} onClick={() => selectWorkflow('poster')}
+                  className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={modeTabStyle(intent === 'poster_text')} data-testid="image-workflow-poster">
+                  海报创作
+                </button>
+                <button type="button" role="tab" aria-selected={intent === 'portrait'} onClick={() => selectWorkflow('photo_edit')}
+                  className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={modeTabStyle(intent === 'portrait')} data-testid="image-workflow-photo">
+                  照片优化
+                </button>
+              </div>
+            </div>
+          )}
+        />
 
         {hasWorkbenchStage && <div className="mb-5 grid grid-cols-3 gap-1 rounded-lg p-1 min-[1180px]:hidden" style={{ background: 'var(--color-surface-container)' }} role="tablist" aria-label="工作台视图">
           {([
@@ -1109,19 +1141,19 @@ export function CreationPage() {
         <aside className={`${compactPane === 'create' ? 'block' : 'hidden min-[1180px]:block'} min-w-0 space-y-5`}>
           <section className="space-y-3">
             {intent === 'poster_text' && (
-              <label className="block">
-                <span className="mb-1 block text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>快捷分类</span>
-                <select value={sceneId} onChange={event => selectPosterType(event.target.value)} className="w-full rounded-md px-2.5 py-2 text-[12px] outline-none" style={inputStyle} data-testid="poster-type-select">
+              <label className="flex items-center gap-3">
+                <span className="w-[64px] shrink-0 text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>开始方式</span>
+                <select value={sceneId} onChange={event => selectPosterType(event.target.value)} className="min-w-0 flex-1 rounded-md px-2.5 py-2 text-[12px] outline-none" style={inputStyle} data-testid="poster-type-select">
                   {POSTER_TYPES.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
                 </select>
               </label>
             )}
 
-            <div className="rounded-lg p-3" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border-strong)', boxShadow: 'var(--shadow-input)' }}>
+            <div className="rounded-lg p-3" style={{ background: 'var(--color-surface-container-low)', border: '1px solid var(--color-border)' }}>
               <textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
-                rows={4}
+                rows={3}
                 className="w-full resize-none bg-transparent text-[13px] leading-relaxed outline-none"
                 placeholder={intent === 'portrait' ? '说说想怎么调整；留空时默认自然优化并保留本人' : '说说想做什么海报，需要哪些画面和文字'}
                 style={{ color: 'var(--color-text-primary)' }}
@@ -1185,23 +1217,44 @@ export function CreationPage() {
               </label>
             )}
             {intent === 'poster_text' && (
-              <details>
-                <summary className="cursor-pointer text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>品牌素材</summary>
+              <details className="group border-t" style={{ borderColor: 'var(--color-border)' }}>
+                <summary className="flex cursor-pointer list-none items-center gap-2 py-2 text-[12px] [&::-webkit-details-marker]:hidden" style={{ color: 'var(--color-text-secondary)' }}>
+                  <IconChevronRight size={13} className="transition-transform group-open:rotate-90" />
+                  <span>品牌素材</span>
+                  {(logoAsset || qrAsset) && <span className="ml-auto text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>{[logoAsset && 'Logo', qrAsset && '二维码'].filter(Boolean).join(' · ')}</span>}
+                </summary>
                 <div className="mt-2 grid grid-cols-2 gap-3">
                   <label className="cursor-pointer rounded-md px-2 py-2 text-center text-[12px]" style={inputStyle}>
                     <span>{logoAsset ? '更换 Logo' : '添加 Logo'}</span>
-                    <input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" onChange={e => void uploadBrandAsset(e.target.files?.[0], 'logo')} />
+                    <input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" data-testid="brand-logo-input" onChange={e => void uploadBrandAsset(e.target.files?.[0], 'logo')} />
                   </label>
                   <label className="cursor-pointer rounded-md px-2 py-2 text-center text-[12px]" style={inputStyle}>
                     <span>{qrAsset ? '更换二维码' : '添加二维码'}</span>
-                    <input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" onChange={e => void uploadBrandAsset(e.target.files?.[0], 'qrcode')} />
+                    <input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" data-testid="brand-qrcode-input" onChange={e => void uploadBrandAsset(e.target.files?.[0], 'qrcode')} />
                   </label>
                 </div>
+                {(brandPack || logoAsset || qrAsset) && (
+                  <div className="mt-2 flex min-h-10 items-center gap-2 rounded-md px-2 py-1.5" style={inputStyle} data-testid="brand-pack-preview">
+                    {logoAsset && <img src={assetUrl(logoAsset.url)} alt="品牌 Logo" className="h-7 w-9 object-contain" data-testid="brand-logo-preview" />}
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[11px]" style={{ color: 'var(--color-text-primary)' }}>{brandPack?.name || '品牌素材'}</div>
+                      <div className="flex items-center gap-1 text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>
+                        {brandPack?.brand_color && <span className="h-2.5 w-2.5 rounded-sm border" style={{ background: normalizeColorInput(brandPack.brand_color), borderColor: 'var(--color-border)' }} />}
+                        <span>{[brandPack?.brand_style, logoAsset && 'Logo', qrAsset && '二维码'].filter(Boolean).join(' · ') || '海报确定性图层'}</span>
+                      </div>
+                    </div>
+                    {qrAsset && <img src={assetUrl(qrAsset.url)} alt="品牌二维码" className="h-8 w-8 bg-white object-contain" data-testid="brand-qrcode-preview" />}
+                  </div>
+                )}
               </details>
             )}
 
-            <details data-testid="image-output-settings">
-              <summary className="cursor-pointer text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>输出设置</summary>
+            <details className="group border-t" style={{ borderColor: 'var(--color-border)' }} data-testid="image-output-settings">
+              <summary className="flex cursor-pointer list-none items-center gap-2 py-2 text-[12px] [&::-webkit-details-marker]:hidden" style={{ color: 'var(--color-text-secondary)' }}>
+                <IconChevronRight size={13} className="transition-transform group-open:rotate-90" />
+                <span>输出设置</span>
+                <span className="ml-auto text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>{ratio} · {count} 张 · {quality === 'draft' ? '草稿' : quality === 'final' ? '成稿' : '标准'}</span>
+              </summary>
               <div className="mt-2 grid grid-cols-3 gap-2">
                 <label className="block">
                   <span className="mb-1 block text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>画幅</span>
@@ -1227,8 +1280,9 @@ export function CreationPage() {
             </details>
 
             {creativeBrief && (
-              <div className="rounded-md px-2.5 py-2 text-[12px]" style={{ background: 'var(--color-surface-container-low)', color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }} data-testid="brief-understanding">
-                {creativeBrief.understanding ?? creativeBrief.user_request}
+              <div className="flex items-start gap-2 border-t px-0.5 pt-3 text-[12px]" style={{ color: 'var(--color-text-secondary)', borderColor: 'var(--color-border)' }} data-testid="brief-understanding">
+                <IconCheckCircle size={14} className="mt-0.5 shrink-0" style={{ color: 'var(--color-success)' }} />
+                <span>{creativeBrief.understanding ?? creativeBrief.user_request}</span>
               </div>
             )}
           </section>
@@ -1570,11 +1624,104 @@ async function uploadWorkbenchImage(file: File): Promise<ImageWorkbenchAsset> {
   })
 }
 
+async function brandAssetFromPack(pack: ImageBrandPack, kind: 'logo' | 'qrcode'): Promise<ImageWorkbenchAsset | null> {
+  const url = kind === 'logo' ? pack.logo_url : pack.qrcode_url
+  if (!url || !url.startsWith('/uploads/') || url.includes('\0') || url.split(/[\\/]/).some(segment => segment === '..')) return null
+  const explicitId = kind === 'logo' ? pack.logo_asset_id : pack.qrcode_asset_id
+  const filename = url.split('/').pop() ?? ''
+  const inferredId = filename.replace(/\.[^.]+$/, '')
+  const assetId = explicitId || inferredId
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(assetId)) return null
+
+  let width = kind === 'logo' ? pack.logo_width : pack.qrcode_width
+  let height = kind === 'logo' ? pack.logo_height : pack.qrcode_height
+  if (!width || !height) {
+    const dimensions = await imageDimensions(assetUrl(url))
+    width = dimensions.width
+    height = dimensions.height
+  }
+  return {
+    asset_id: assetId,
+    kind: 'reference',
+    url,
+    width,
+    height,
+    created_at: new Date().toISOString(),
+  }
+}
+
+function imageDimensions(src: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onerror = () => reject(new Error('品牌素材无法解码'))
+    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight })
+    image.src = src
+  })
+}
+
+function posterBrandImageLayers(
+  canvasWidth: number,
+  canvasHeight: number,
+  logo: ImageWorkbenchAsset | null,
+  qrcode: ImageWorkbenchAsset | null,
+): ImageWorkbenchImageLayer[] {
+  const layers: ImageWorkbenchImageLayer[] = []
+  if (logo) {
+    const maxWidth = canvasWidth * 0.18
+    const maxHeight = canvasHeight * 0.12
+    const scale = Math.min(maxWidth / logo.width, maxHeight / logo.height)
+    const width = logo.width * scale
+    const height = logo.height * scale
+    layers.push({
+      id: `layer_${logo.asset_id}`,
+      type: 'logo',
+      asset_id: logo.asset_id,
+      url: logo.url,
+      x: canvasWidth * 0.04,
+      y: canvasHeight * 0.04,
+      width,
+      height,
+      scale_x: 1,
+      scale_y: 1,
+      angle: 0,
+      locked: false,
+      visible: true,
+    })
+  }
+  if (qrcode) {
+    const size = Math.min(canvasWidth * 0.16, canvasHeight * 0.16)
+    layers.push({
+      id: `layer_${qrcode.asset_id}`,
+      type: 'qrcode',
+      asset_id: qrcode.asset_id,
+      url: qrcode.url,
+      x: canvasWidth - size - canvasWidth * 0.04,
+      y: canvasHeight - size - canvasHeight * 0.04,
+      width: size,
+      height: size,
+      scale_x: 1,
+      scale_y: 1,
+      angle: 0,
+      locked: false,
+      visible: true,
+    })
+  }
+  return layers
+}
+
 function segStyle(active: boolean) {
   return {
     background: active ? 'var(--color-surface-selected)' : 'transparent',
     color: active ? 'var(--color-brand)' : 'var(--color-text-secondary)',
     border: '1px solid transparent',
+  } as const
+}
+
+function modeTabStyle(active: boolean) {
+  return {
+    background: active ? 'var(--color-surface)' : 'transparent',
+    color: active ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+    boxShadow: active ? 'var(--shadow-input)' : undefined,
   } as const
 }
 
@@ -1614,10 +1761,27 @@ function posterTextLayers(width: number, height: number, fields: { title: string
   }))
 }
 
+const canvasHydrations = new WeakMap<Canvas, { token: symbol; promise: Promise<void> }>()
+
 async function hydrateCanvas(canvas: Canvas, project: ImageWorkbenchProject, version: ImageWorkbenchVersion): Promise<void> {
+  const token = Symbol('canvas-hydration')
+  const promise = hydrateCanvasAttempt(canvas, project, version, token)
+  canvasHydrations.set(canvas, { token, promise })
+  await promise
+  for (;;) {
+    const latest = canvasHydrations.get(canvas)
+    if (!latest || latest.token === token) return
+    await latest.promise
+    if (canvasHydrations.get(canvas) === latest) return
+  }
+}
+
+async function hydrateCanvasAttempt(canvas: Canvas, project: ImageWorkbenchProject, version: ImageWorkbenchVersion, token: symbol): Promise<void> {
+  const isCurrent = () => canvasHydrations.get(canvas)?.token === token
   canvas.clear()
   canvas.setDimensions({ width: project.canvas.width, height: project.canvas.height })
   const img = await FabricImage.fromURL(assetUrl(version.image_url), { crossOrigin: 'anonymous' })
+  if (!isCurrent()) return
   const imgWidth = Number(img.width || project.canvas.width)
   const imgHeight = Number(img.height || project.canvas.height)
   img.set({
@@ -1634,6 +1798,7 @@ async function hydrateCanvas(canvas: Canvas, project: ImageWorkbenchProject, ver
   for (const layer of project.canvas.image_layers ?? []) {
     if (!layer.url) continue
     const layerImage = await FabricImage.fromURL(assetUrl(layer.url), { crossOrigin: 'anonymous' })
+    if (!isCurrent()) return
     const sourceWidth = Number(layerImage.width || layer.width)
     const sourceHeight = Number(layerImage.height || layer.height)
     layerImage.set({
@@ -1652,6 +1817,7 @@ async function hydrateCanvas(canvas: Canvas, project: ImageWorkbenchProject, ver
     custom.workbenchLayerUrl = layer.url
     canvas.add(layerImage)
   }
+  if (!isCurrent()) return
   for (const layer of project.canvas.text_layers) canvas.add(textLayerToFabric(layer))
   canvas.requestRenderAll()
 }

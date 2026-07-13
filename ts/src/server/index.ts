@@ -107,7 +107,7 @@ import { textBlock, type ContentBlock, type Message } from '../types/message'
 import type { AgentEvent, AskQuestionField } from '../types/events'
 import { parseClientMessage, type ServerMessage as AgentServerMessage } from '../../shared/contracts/agent-websocket'
 import {
-  imageBriefCompileRequestSchema,
+  imageBrandPackPatchSchema, imageBrandPackSchema, imageBriefCompileRequestSchema,
   imageBriefCompileResponseSchema,
   studioEditRequestSchema,
   studioGenerateRequestSchema,
@@ -2863,17 +2863,17 @@ export function startServer(opts: StartServerOptions = {}) {
     if (location) lines.push(`门店位置:${location}`)
     if (brandStyle) lines.push(`品牌风格:${brandStyle}`)
     if (brandColor) lines.push(`品牌主色调呼应 ${brandColor}，背景和点缀色协调即可，不要求整图都是这个颜色。`)
-    if (hasLogo) lines.push('已附带门店 Logo 作为输入图，可自然融入画面或留出安全位置；不要扭曲、改字或把它当成装饰纹理。')
+    if (hasLogo) lines.push('已提供门店 Logo 原文件，将由固定图层准确叠加；底图只需留出安全位置，不要重绘 Logo。')
     if (hasQr) {
       const printNote = body.print_mode === true
         ? '这张图用于印刷/线下投放，二维码必须保持方正、清晰、可扫描，并留出足够静区。'
         : '二维码可作为行动入口自然出现，但必须保持方正、清晰、可扫描，不要重绘成花纹。'
-      lines.push(`已附带门店二维码作为输入图，${printNote}`)
+      lines.push(`已提供门店二维码原文件，将由固定图层准确叠加，${printNote}`)
     }
     if (hasBrandRefs) lines.push('已附带品牌参考图，只提取品牌质感和配色，不要照搬无关内容。')
-    if (mode === 'edit' && assets.length > 0) {
+    if (mode === 'edit' && hasBrandRefs) {
       lines.push('改图时第一张输入图是需要保留血缘的源图，门店素材只作为品牌融合参考。')
-    } else if (assets.length > 0) {
+    } else if (hasBrandRefs) {
       lines.push('输入素材用于品牌约束和版式参考，不要让参考图里的无关背景抢占主画面。')
     }
     return lines.length ? `门店品牌约束:\n${lines.map((line, index) => `${index + 1}. ${line}`).join('\n')}` : ''
@@ -2882,21 +2882,28 @@ export function startServer(opts: StartServerOptions = {}) {
   async function prepareStudioImageBody(rawBody: Record<string, unknown>, mode: 'generate' | 'edit'): Promise<Record<string, unknown>> {
     const store: Record<string, unknown> = await desktopData.getStore().catch(() => ({}))
     const assets = storeBrandAssets(store)
-    const brandReferencePaths = assets.map(asset => asset.url)
+    const suppliedBrief = rawBody.creative_brief && typeof rawBody.creative_brief === 'object'
+      ? rawBody.creative_brief as Record<string, unknown>
+      : undefined
+    const isPortrait = rawBody.scene === 'portrait'
+      || rawBody.intent === 'portrait'
+      || rawBody.portrait === true
+      || suppliedBrief?.scene === 'portrait'
+    const brandReferencePaths = isPortrait ? [] : assets.filter(asset => asset.role === 'brand').map(asset => asset.url)
     const logoAsset = assets.find(asset => asset.role === 'logo')
     const qrcodeAsset = assets.find(asset => asset.role === 'qrcode')
     const qrcodeText = optionalString(store.qrcode_text ?? store.qrcode_content ?? store.qr_content)
     const referenceImagePaths = uniqueStrings([...stringArray(rawBody.reference_image_paths), ...brandReferencePaths]).slice(0, 14)
-    const suffix = storeBrandSuffix(store, assets, rawBody, mode)
+    const suffix = isPortrait ? '' : storeBrandSuffix(store, assets, rawBody, mode)
     const body: Record<string, unknown> = {
       ...rawBody,
       _store_brand_pack_applied: true,
     }
     delete body._system_brand_context
     if (referenceImagePaths.length > 0) body.reference_image_paths = referenceImagePaths
-    if (logoAsset && !body._print_logo_path) body._print_logo_path = logoAsset.url
-    if (qrcodeAsset && !body._print_qr_path) body._print_qr_path = qrcodeAsset.url
-    if (qrcodeText && !body._print_qr_content) body._print_qr_content = qrcodeText
+    if (!isPortrait && logoAsset && !body._print_logo_path) body._print_logo_path = logoAsset.url
+    if (!isPortrait && qrcodeAsset && !body._print_qr_path) body._print_qr_path = qrcodeAsset.url
+    if (!isPortrait && qrcodeText && !body._print_qr_content) body._print_qr_content = qrcodeText
     if (suffix) body._system_brand_context = suffix
     return body
   }
@@ -3453,10 +3460,11 @@ export function startServer(opts: StartServerOptions = {}) {
       }
 
       if (url.pathname === '/api/v1/stores/me') {
-        if (req.method === 'GET') return Response.json(await desktopData.getStore())
+        if (req.method === 'GET') return Response.json(imageBrandPackSchema.parse(await desktopData.getStore()))
         if (req.method === 'PUT' || req.method === 'PATCH') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          return Response.json(await desktopData.updateStore(body))
+          const parsed = imageBrandPackPatchSchema.safeParse(await req.json().catch(() => ({})))
+          if (!parsed.success) return jsonDetailError('invalid brand pack', 400)
+          return Response.json(imageBrandPackSchema.parse(await desktopData.updateStore(parsed.data)))
         }
         return new Response('Method not allowed', { status: 405 })
       }
