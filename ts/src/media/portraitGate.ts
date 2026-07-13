@@ -3,15 +3,15 @@
 // 生图默认不弹花钱审批(owner 去钱味),但真人肖像必须先过授权确认(对齐方案文档 R1)。
 //
 // 口径(与 docs/plans/生图人像优化-流程质量标准与风险边界 R1 对齐):
-// 授权语义是"我拥有这张照片的使用授权、被拍者同意用于宣传",所以闸只在**存在真人照片输入**
+// 授权语义是"我拥有这张照片的使用授权、被拍者同意用于本次生成",所以闸只在**存在真人照片输入**
 // (edit 的底图 / generate 的参考图)时触发;纯文字生成一张写实人像(无被拍者)不触发本闸。
 //
 // 白标:本模块所有面向用户的文案均为自有中文中性文案,不含任何底层模型/供应商名。
 
 const PORTRAIT_KEYWORDS = [
   '人像', '肖像', '头像', '形象照', '写真', '证件照', '艺术照', '人物照', '人物写真',
-  '模特', '助教', '店员', '员工照', '个人照', '半身照', '全身照', '大头照', '正脸', '面部',
-  '美颜', '磨皮', '瘦脸', '妆容', '换装', '精修', '人物优化', '人像优化', '人像重塑', '肖像重塑',
+  '员工照', '个人照', '半身照', '全身照', '大头照', '正脸', '面部', '随手拍', '自拍',
+  '美颜', '磨皮', '瘦脸', '妆容', '换装', '精修', '修图', '人物优化', '人像优化', '照片优化', '照片编辑', '人像重塑', '肖像重塑',
   'portrait', 'headshot', 'selfie',
 ]
 
@@ -96,14 +96,42 @@ export function portraitConsentRequiredResult(intent: PortraitIntent): Record<st
     needs_user_action: true,
     local_preview: false,
     portrait_signals: intent.signals,
-    message: '检测到这是一张真人肖像照片。优化真人形象前需要你先确认一次:你拥有这张照片的使用授权、' +
-      '并且被拍的人同意用于门店宣传。确认后我再继续(在请求里带上 portrait_consent=true,或直接回复"已获肖像授权")。',
+    message: '检测到这是一张真人照片。优化照片前需要你先确认一次:你拥有这张照片的使用授权、' +
+      '并且被拍的人同意用于本次生成。确认后我再继续(在请求里带上 portrait_consent=true,或直接回复"已获肖像授权")。',
   }
 }
 
 export interface InputQualityBlock {
   warnings: string[]
   blockReason: string
+}
+
+export function portraitReferenceRequiredResult(): Record<string, unknown> {
+  return {
+    blocked: true,
+    block_reason: 'portrait_reference_required',
+    portrait_gate: 'reference_required',
+    needs_user_action: true,
+    local_preview: false,
+    input_qc_status: 'blocked',
+    input_qc_warnings: ['人物照片优化需要上传 1-3 张同一人物的已授权参考图。'],
+    message: '请先上传 1-3 张同一人物的已授权参考图；系统不会只用外貌文字重建某个人。',
+  }
+}
+
+export function portraitImpersonationBlockedResult(): Record<string, unknown> {
+  return {
+    blocked: true,
+    block_reason: 'portrait_impersonation_not_supported',
+    portrait_gate: 'impersonation_not_supported',
+    needs_user_action: true,
+    local_preview: false,
+    message: '不支持换脸、公众人物代言或身份冒充。请使用本人或已授权人物素材，按本次目标做照片编辑。',
+  }
+}
+
+export function requestsPortraitImpersonation(prompt: string): boolean {
+  return /换脸|深伪|deepfake|冒充|假扮|明星代言|公众人物代言|名人代言|模仿(?:某|明星|名人)/iu.test(prompt)
 }
 
 /** 输入图质检不合格时的拦截结果(拦低质,给大白话原因)。 */

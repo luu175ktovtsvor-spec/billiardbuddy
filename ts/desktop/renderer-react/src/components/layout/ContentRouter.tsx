@@ -6,7 +6,7 @@ import { ActiveSession } from '../../pages/ActiveSession'
 import { EmptySession } from '../../pages/EmptySession'
 import { ScheduledPage } from '../../pages/ScheduledPage'
 import { PluginsPage } from '../../pages/PluginsPage'
-import { CreationPage } from '../../pages/CreationPage'
+import { ImageWorkbenchPage } from '../../features/image-workbench'
 import { VideoStudioPage } from '../../pages/VideoStudioPage'
 
 export function ContentRouter() {
@@ -14,7 +14,7 @@ export function ContentRouter() {
   const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId) ?? null)
 
   // 主视图:生图 / 剪视频 / 已安排 / 插件(照 Codex 左栏切主区)。
-  if (nav === 'creation') return <CreationPage />
+  if (nav === 'creation') return <ImageWorkbenchPage />
   if (nav === 'video') return <VideoStudioPage />
   if (nav === 'scheduled') return <ScheduledPage />
   if (nav === 'plugins') return <PluginsPage />

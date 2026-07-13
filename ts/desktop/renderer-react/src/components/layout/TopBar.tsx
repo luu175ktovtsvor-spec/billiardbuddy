@@ -55,7 +55,15 @@ export function TopBar() {
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null)
 
   // 标题随主视图:已安排/插件 显示区名,对话显示会话标题。
-  const title = nav === 'scheduled' ? t('scheduled.title') : nav === 'plugins' ? t('plugins.title') : activeTab?.title || t('sidebar.newChat')
+  const title = nav === 'creation'
+    ? '生图工作台'
+    : nav === 'video'
+      ? '剪视频工作台'
+      : nav === 'scheduled'
+        ? t('scheduled.title')
+        : nav === 'plugins'
+          ? t('plugins.title')
+          : activeTab?.title || t('sidebar.newChat')
   const isChat = nav === 'chat'
 
   return (
