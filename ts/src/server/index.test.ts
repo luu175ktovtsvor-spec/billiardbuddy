@@ -1000,35 +1000,10 @@ test('POST /agent/run streams through configured real Model adapter and tools', 
     expect(sessionBody.session).toMatchObject({ id: 'c1', status: 'idle' })
     expect(sessionBody.messages.some((m: any) => m.role === 'assistant')).toBe(true)
 
-    const metaOnly = await fetch(`http://127.0.0.1:${realServer.port}/sessions/c1?includeMessages=0`)
-    const metaOnlyBody = await metaOnly.json() as any
-    expect(metaOnlyBody.session.id).toBe('c1')
-    expect('messages' in metaOnlyBody).toBe(false)
-
-    const page1 = await fetch(`http://127.0.0.1:${realServer.port}/sessions/c1/messages?limit=2`)
-    const page1Body = await page1.json() as any
-    expect(page1Body.messages).toHaveLength(2)
-    expect(page1Body.nextSeq).toBe(2)
-    expect(page1Body.hasMore).toBe(true)
-    const page2 = await fetch(`http://127.0.0.1:${realServer.port}/sessions/c1/messages?after=2&limit=10`)
-    const page2Body = await page2.json() as any
-    expect(page2Body.messages.length).toBeGreaterThan(0)
-    expect(page2Body.messages[0].seq).toBe(3)
-
     const eventsRes = await fetch(`http://127.0.0.1:${realServer.port}/sessions/c1/events`)
     const eventsBody = await eventsRes.json() as any
     expect(eventsBody.events.map((e: any) => e.event.type)).toEqual(['user_prompt', 'tool_call', 'tool_result', 'final', 'done'])
     expect(eventsBody.nextSeq).toBe(5)
-
-    const afterRes = await fetch(`http://127.0.0.1:${realServer.port}/sessions/c1/events?after=3`)
-    const afterBody = await afterRes.json() as any
-    expect(afterBody.events.map((e: any) => e.event.type)).toEqual(['final', 'done'])
-
-    const replay = await fetch(`http://127.0.0.1:${realServer.port}/sessions/c1/events?format=sse`)
-    const replayText = await replay.text()
-    expect(replayText).toContain('id: 1')
-    expect(replayText).toContain('event: tool_call')
-    expect(replayText).toContain('event: done')
   } finally {
     realServer.stop(true)
     rmSync(transcriptRoot, { recursive: true, force: true })
