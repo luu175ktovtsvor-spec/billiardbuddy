@@ -114,8 +114,9 @@ export function parseAssetManifest(raw: unknown): AssetManifest | null {
   const seen = new Set<string>()
   for (const item of doc.assets) {
     const spec = parseSpec(item)
-    if (spec && !seen.has(spec.id)) {
-      seen.add(spec.id)
+    const key = spec ? `${spec.id}:${spec.platform}` : ''
+    if (spec && !seen.has(key)) {
+      seen.add(key)
       assets.push(spec)
     }
   }
@@ -404,7 +405,7 @@ export class AssetManager {
   private async applyManifest(manifest: AssetManifest): Promise<void> {
     const specs = new Map<string, AssetSpec>()
     for (const spec of manifest.assets) {
-      if (spec.platform === 'all' || spec.platform === this.platform) specs.set(spec.id, spec)
+      if (spec.platform === this.platform || (spec.platform === 'all' && !specs.has(spec.id))) specs.set(spec.id, spec)
     }
     this.specs = specs
     this.manifestLoaded = true

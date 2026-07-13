@@ -5311,7 +5311,7 @@ test('legacy video-edit sync endpoints use local timeline documents without medi
   }
 })
 
-test('legacy video-edit auto plan and render use TS local ffmpeg fallback without media backend', async () => {
+test('legacy video-edit aliases delegate to Scene Timeline v2 without timeline dual writes', async () => {
   const root = mkdtempSync(join(tmpdir(), 'legacy-video-edit-local-render-'))
   const clipPath = join(root, 'source.mp4')
   const ffmpegPath = join(root, 'fake-ffmpeg.sh')
@@ -5357,29 +5357,23 @@ test('legacy video-edit auto plan and render use TS local ffmpeg fallback withou
       const status = await (await fetch(`http://127.0.0.1:${videoServer.port}/api/v1/agent/media-jobs/${planStart.job_id}`)).json() as any
       return status.status === 'done' ? status : null
     }, 5000)
-    expect(planStatus).toMatchObject({ kind: 'video_auto_plan', status: 'done', progress: 100 })
-    expect(planStatus.result).toMatchObject({ local_preview: true, used_vlm: false, brand: '本地预览' })
-    expect(planStatus.result.project).toBe(planStart.project)
-    expect(planStatus.result.footage_health.m1).toMatchObject({
-      ok: true,
-      duration_s: 7.5,
-      width: 1920,
-      height: 1080,
-      has_audio: true,
-    })
+    expect(planStatus).toMatchObject({ kind: 'video_v2_drafts', status: 'done', progress: 100 })
+    expect(planStatus.result.project_id).toBe(planStart.project)
+    expect(planStatus.result.alternative_ids).toHaveLength(3)
 
     const project = await (await fetch(`http://127.0.0.1:${videoServer.port}/api/v1/video-edit/projects/${encodeURIComponent(planStart.project)}`)).json() as any
-    expect(project.doc.media.m1.duration).toBe(7.5)
-    expect(project.doc.clips).toHaveLength(1)
-    expect(project.doc.clips[0]).toMatchObject({ src_in: 0, src_out: 4 })
-    expect(project.doc.captions).toHaveLength(1)
-    expect(project.doc.captions[0]).toMatchObject({ start: 0, end: 4 })
+    expect(project.project).toMatchObject({ schema_version: 2, project_id: planStart.project })
+    expect(project.project.sources[0]).toMatchObject({ duration_ms: 7500, width: 1920, height: 1080, has_audio: true })
+    expect(project.project.scenes.length).toBeGreaterThan(0)
+    expect(project.project.alternatives).toHaveLength(3)
+    expect(existsSync(join(root, 'uploads', 'edits', planStart.project, 'project.json'))).toBe(true)
+    expect(existsSync(join(root, 'uploads', 'edits', planStart.project, 'timeline.json'))).toBe(false)
 
     const startedRender = await fetch(`http://127.0.0.1:${videoServer.port}/api/v1/video-edit/projects/${encodeURIComponent(planStart.project)}/render_v2`, {
       method: 'POST',
       body: JSON.stringify({ output_name: '成片', conversation_id: 'video-c1' }),
     })
-    expect(startedRender.status).toBe(200)
+    expect(startedRender.status).toBe(202)
     const renderStart = await startedRender.json() as any
 
     let renderStatus: any = null
@@ -5388,19 +5382,16 @@ test('legacy video-edit auto plan and render use TS local ffmpeg fallback withou
       if (renderStatus.status === 'done') break
       await new Promise(resolve => setTimeout(resolve, 10))
     }
-    expect(renderStatus).toMatchObject({ kind: 'video_render', status: 'done', progress: 100 })
+    expect(renderStatus).toMatchObject({ kind: 'video_v2_render', status: 'done', progress: 100 })
     expect(renderStatus.result).toMatchObject({
-      provider: 'ts-ffmpeg',
-      render_engine: 'ffmpeg',
-      audio_loudness_normalized: true,
-      audio_loudness_filter: 'loudnorm=I=-16:TP=-1.5:LRA=11',
-      local_preview: false,
+      project_id: planStart.project,
+      preview: false,
     })
-    expect(readFileSync(ffmpegArgsPath, 'utf8')).toContain('loudnorm=I=-16:TP=-1.5:LRA=11')
-    expect(renderStatus.result.urls[0]).toMatch(/^\/uploads\/videos\/video_edit_.*\.mp4$/)
-    expect(renderStatus.result.caption_url).toMatch(/^\/uploads\/videos\/video_edit_.*\.srt$/)
+    expect(readFileSync(ffmpegArgsPath, 'utf8')).toContain('graphics.ass')
+    expect(renderStatus.result.video_url).toMatch(/^\/api\/v1\/video-edit\/projects\/.+\/exports\/export-.*\.mp4$/)
+    expect(renderStatus.result.manifest_url).toMatch(/\.manifest\.json$/)
 
-    const asset = await fetch(`http://127.0.0.1:${videoServer.port}${renderStatus.result.urls[0]}`)
+    const asset = await fetch(`http://127.0.0.1:${videoServer.port}${renderStatus.result.video_url}`)
     expect(asset.status).toBe(200)
     expect(asset.headers.get('content-type')).toContain('video/mp4')
   } finally {
@@ -5409,7 +5400,7 @@ test('legacy video-edit auto plan and render use TS local ffmpeg fallback withou
   }
 })
 
-test('legacy video-edit local plan reports footage health warnings for speech clips without audio', async () => {
+test('legacy speech alias preserves no-audio evidence and fails closed without inventing dialogue', async () => {
   const root = mkdtempSync(join(tmpdir(), 'legacy-video-edit-footage-health-'))
   const clipPath = join(root, 'silent.mp4')
   const ffprobePath = join(root, 'fake-ffprobe.sh')
@@ -5441,20 +5432,17 @@ test('legacy video-edit local plan reports footage health warnings for speech cl
 
     const planStatus = await waitFor(async () => {
       const status = await (await fetch(`http://127.0.0.1:${videoServer.port}/api/v1/agent/media-jobs/${planStart.job_id}`)).json() as any
-      return status.status === 'done' ? status : null
+      return status.status === 'done' || status.status === 'error' ? status : null
     }, 5000)
-    expect(planStatus).toMatchObject({ kind: 'video_auto_plan', status: 'done', progress: 100 })
-    expect(planStatus.result.has_speech).toBe(false)
-    expect(planStatus.result.footage_health.m1).toMatchObject({
-      is_bad: true,
-      duration_s: 5.25,
-      has_audio: false,
-    })
-    expect(planStatus.result.warnings.some((item: string) => item.includes('口播模式需要音轨'))).toBe(true)
+    expect(planStatus).toMatchObject({ kind: 'video_v2_drafts', status: 'error' })
+    expect(planStatus.error).toContain('真实素材不足')
 
     const project = await (await fetch(`http://127.0.0.1:${videoServer.port}/api/v1/video-edit/projects/${encodeURIComponent(planStart.project)}`)).json() as any
-    expect(project.doc.media.m1.duration).toBe(5.25)
-    expect(project.doc.clips[0]).toMatchObject({ src_in: 0, src_out: 5.25 })
+    expect(project.project.sources[0]).toMatchObject({ duration_ms: 5250, has_audio: false })
+    expect(project.project.creative_brief).toMatchObject({ preferred_view: 'talking' })
+    expect(project.project.scenes).toEqual([])
+    expect(project.project.sources[0].warnings.some((item: string) => /无音轨|没有音轨/.test(item))).toBe(true)
+    expect(existsSync(join(root, 'uploads', 'edits', planStart.project, 'timeline.json'))).toBe(false)
   } finally {
     videoServer.stop(true)
     rmSync(root, { recursive: true, force: true })

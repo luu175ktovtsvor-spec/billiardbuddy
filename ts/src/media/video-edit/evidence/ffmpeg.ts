@@ -6,7 +6,7 @@
 
 import { spawn } from 'node:child_process'
 import { basename } from 'node:path'
-import { ffmpegBinFrom as sharedFfmpegBinFrom } from './mediaBinaries'
+import { ffmpegBinFrom as sharedFfmpegBinFrom } from '../../mediaBinaries'
 
 /** 统一解析链(env 显式 → 资产管理器 → 内置 → PATH),实现见 mediaBinaries。 */
 export function ffmpegBinFrom(env: Record<string, string | undefined> | undefined): string {

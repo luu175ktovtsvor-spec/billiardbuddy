@@ -40,7 +40,7 @@ ssh root@<server> 'bash /tmp/deploy.sh'   # Bun+systemd(qfgw)+起服务+healthz
 | `GW_ARK_CHAT_RPM` | 火山豆包视觉/文本令牌桶(默认 30 RPM) |
 | `GW_ARK_IMG_IPM` / `GW_ARK_IMG_CONC` | 火山 Seedream 生图令牌桶 + 在途并发 |
 | `GW_Q_CHAT` / `GW_Q_IMG` / `GW_Q_ARK_CHAT` / `GW_Q_ARK_IMG` | 每用户每日配额 |
-| `GW_RELAY_TASKS_BASE` | 美国 relay 上 GPT 生图**异步任务服务**地址(`relay/app.ts`,如 `https://zzyppz.cn/relay/imgtasks`)。配了才开 `POST /v1/images/tasks` + `GET /v1/images/tasks/:id`(提交/轮询转发到美国 relay,根治大陆↔美国跨境长连接 60s 被掐);缺则返回 503、客户端退同步路径。详见 `docs/plans/GPT生图异步化-根治方案-2026-07-09.md` |
+| `GW_RELAY_TASKS_BASE` | 美国 relay 上 GPT 生图**异步任务服务**地址(`relay/app.ts`,如 `https://zzyppz.cn/relay/imgtasks`)。配了才开 `POST /v1/images/tasks` + `GET /v1/images/tasks/:id`(提交/轮询转发到美国 relay,根治大陆↔美国跨境长连接 60s 被掐);缺则返回 503、客户端退同步路径。当前链路见 `docs/生图-当前能力与设计.md` |
 
 详细部署步骤(服务器变量清单/nginx/发令牌/验证 curl/遗留风险)见
 `docs/plans/密钥收网关-部署清单-2026-07-02.md`。

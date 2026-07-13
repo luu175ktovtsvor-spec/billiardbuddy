@@ -6,8 +6,8 @@
 // 全本地零依赖(bundled ffmpeg + 轻量 TS 计算),语义好坏交给第 3 步 VLM。
 
 import { existsSync } from 'node:fs'
-import { ffmpegBinFrom, runFfmpegText } from './brollFfmpeg'
-import type { Shot } from './brollScenes'
+import { ffmpegBinFrom, runFfmpegText } from './ffmpeg'
+import type { Shot } from './shotDetection'
 
 /** 曝光/运动的判定档(YAVG/YDIF 均为 0~255 尺度)。 */
 export const EXPOSURE_MIN = 40

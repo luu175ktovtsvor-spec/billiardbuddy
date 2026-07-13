@@ -11,13 +11,13 @@ import {
   renderTakesPacked,
   resolveTranscribeAvailability,
   transcribeVideoWordLevel,
-} from './transcribe'
-import { classifyContent, type EditRoute } from './videoContentRouter'
-import { ffmpegBinFrom, ffprobeBinFrom, subtitleFontConfig } from './mediaBinaries'
-import { detectScenes, type Shot } from './brollScenes'
-import { measureShot, selectAndRankShots, type CandidateShot, type ScoredShot } from './brollSelect'
-import { beatsForMusic, planBeatDurations } from './beatSync'
-import { buildVlmModel, extractKeyframeBase64, tagShots, type ShotForTag } from './brollVlmTagger'
+} from '../transcribe'
+import { classifyContent, type EditRoute } from './evidence/contentRouter'
+import { ffmpegBinFrom, ffprobeBinFrom, subtitleFontConfig } from '../mediaBinaries'
+import { detectScenes, type Shot } from './evidence/shotDetection'
+import { measureShot, selectAndRankShots, type CandidateShot, type ScoredShot } from './evidence/shotQuality'
+import { beatsForMusic, planBeatDurations } from './evidence/beatAnalysis'
+import { buildVlmModel, extractKeyframeBase64, tagShots, type ShotForTag } from './evidence/visualTagger'
 
 export interface MediaRef {
   src: string

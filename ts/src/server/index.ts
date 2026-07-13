@@ -92,7 +92,9 @@ import { saveLocalImageAttachment } from '../media/imageUploadRoutes'
 import { localStoryboard } from '../media/studioFallbacks'
 import { AssetManager, ASSET_WS_TOPIC, getActiveAssetManager, setActiveAssetManager } from '../assets/assetManager'
 import { createMediaTools } from '../media/mediaTools'
-import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
+import { VideoEditError, VideoEditProjectStore } from '../media/video-edit/legacyTimeline'
+import { VideoEditingService } from '../media/video-edit/service'
+import { createVideoEditRouteHandler } from '../media/video-edit/routes'
 import { loadOutputStyles, publicOutputStyle, resolveOutputStyleConfig } from '../outputStyles/outputStyleLoader'
 import { defaultPluginInstallDir, defaultPluginRoots, installPluginFromGithub, listPlugins, resolveEnabledPluginContributions, resolveEnabledPluginHookConfigPaths, setPluginEnabled } from '../plugins/pluginLoader'
 import { LIBRARY_DIR_ENV, LIBRARY_DOT_DIR, LIBRARY_SUBDIR, getDefaultWorkspaceDir } from '../harness/desktopEnvNames'
@@ -106,6 +108,7 @@ import type { AssistantStep, Model } from '../types/model'
 import { textBlock, type ContentBlock, type Message } from '../types/message'
 import type { AgentEvent, AskQuestionField } from '../types/events'
 import { parseClientMessage, type ServerMessage as AgentServerMessage } from '../../shared/contracts/agent-websocket'
+import { voiceTranscriptionResponseSchema } from '../../shared/contracts/voice'
 import {
   imageBrandPackPatchSchema, imageBrandPackSchema, imageBriefCompileRequestSchema,
   imageBriefCompileResponseSchema,
@@ -1033,6 +1036,8 @@ export function startServer(opts: StartServerOptions = {}) {
   const assetAutoStart = opts.assetAutoStart ?? (process.env.NODE_ENV !== 'test' && (opts.env ?? process.env).QF_ASSETS_AUTOSTART !== '0')
   if (assetAutoStart) assets.start()
   const videoEdits = new VideoEditProjectStore(stateRoot)
+  const videoEditing = new VideoEditingService({ stateRoot, tasks, env: opts.env ?? process.env })
+  const handleVideoEditV2Route = createVideoEditRouteHandler(videoEditing, { defaultWorkspaceRoot: getDefaultWorkspaceDir() })
   const legacyStore = new LegacyAgentStore(stateRoot)
   const storeDocs = new StoreDocsService(desktopData, stateRoot)
   // 定时任务调度引擎(触发器)。到点 → 起一个真 agent 会话让模型在 cc 循环里用工具把任务干完(#66 衔接铁律,
@@ -1882,7 +1887,7 @@ export function startServer(opts: StartServerOptions = {}) {
         return resumeBackgroundAgentTask(backgroundAgentOptions, task, message, toolCtx)
       },
     })
-    const mediaTools = createMediaTools(media)
+    const mediaTools = createMediaTools(media, { videoEditing })
     const storeDocTools = [createStoreDocsTool(storeDocs)]
     const backgroundBaseRegistry = buildGeneralRegistry({ skills, skillsRoot: createSkillsRoot, skillRecommendations, executeSkill, commands, extraTools: [...domainPackTools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
     const baseRegistry = buildGeneralRegistry({ skills, skillsRoot: createSkillsRoot, skillRecommendations, executeSkill, commands, extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
@@ -2530,7 +2535,7 @@ export function startServer(opts: StartServerOptions = {}) {
       skillsRoot: userSkillsRoot(),
       skillRecommendations: suggestedSkillNamesForPacks(enabledPacks),
       commands: mergedCommands,
-      extraTools: [...domainPackTools, ...allMcpTools, ...createTaskTools(tasks), ...createStructuredTaskTools(taskLists), ...createTeamTools(teams, { tasks, udsPeers, bridgePeers, sendBridgeMessage: bridgeSendMessageFor(rawBody) }), ...createMediaTools(media), createStoreDocsTool(storeDocs)],
+      extraTools: [...domainPackTools, ...allMcpTools, ...createTaskTools(tasks), ...createStructuredTaskTools(taskLists), ...createTeamTools(teams, { tasks, udsPeers, bridgePeers, sendBridgeMessage: bridgeSendMessageFor(rawBody) }), ...createMediaTools(media, { videoEditing }), createStoreDocsTool(storeDocs)],
     })
     return { workspace, registry, connections: allConnections }
   }
@@ -3316,6 +3321,8 @@ export function startServer(opts: StartServerOptions = {}) {
 
   async function handleVideoEditRoute(url: URL, req: Request): Promise<Response | null> {
     if (!url.pathname.startsWith('/api/v1/video-edit/')) return null
+    const v2Response = await handleVideoEditV2Route(url, req.clone() as unknown as Request)
+    if (v2Response) return v2Response
     const body = req.method === 'GET' ? {} : await req.json().catch(() => ({})) as Record<string, unknown>
     const conversationId = typeof body.conversation_id === 'string' ? body.conversation_id : undefined
     const workspaceRoot = stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir())
@@ -3333,25 +3340,6 @@ export function startServer(opts: StartServerOptions = {}) {
         title: '视频素材理解',
       }))
     }
-    if (url.pathname === '/api/v1/video-edit/auto_plan' && req.method === 'POST') {
-      const project = typeof body.project === 'string' ? body.project : undefined
-      return Response.json(await media.startVideoJob('video_auto_plan', '/api/v1/video-edit/auto_plan', body, {
-        conversationId,
-        workspaceRoot,
-        project,
-        title: '视频智能出方案',
-      }))
-    }
-    if (url.pathname === '/api/v1/video-edit/auto_plan_v2' && req.method === 'POST') {
-      const project = typeof body.project === 'string' ? body.project : undefined
-      return Response.json(await media.startVideoJob('video_auto_plan', '/api/v1/video-edit/auto_plan_v2', body, {
-        conversationId,
-        workspaceRoot,
-        project,
-        title: 'V2 视频方案',
-      }))
-    }
-
     const renderMatch = url.pathname.match(/^\/api\/v1\/video-edit\/projects\/([^/]+)\/(render|render_v2)$/)
     if (renderMatch && req.method === 'POST') {
       const project = decodeURIComponent(renderMatch[1]!)
@@ -3527,7 +3515,7 @@ export function startServer(opts: StartServerOptions = {}) {
         const file = form?.get('file')
         if (!(file instanceof File)) return jsonDetailError('file required', 400)
         try {
-          return Response.json(await transcribeVoiceFile(file, { stateRoot, env: opts.env ?? process.env }))
+          return Response.json(voiceTranscriptionResponseSchema.parse(await transcribeVoiceFile(file, { stateRoot, env: opts.env ?? process.env })))
         } catch (err) {
           const status = err instanceof VoiceTranscriptionError ? err.status : 500
           return jsonDetailError(err instanceof Error ? err.message : String(err), status)
