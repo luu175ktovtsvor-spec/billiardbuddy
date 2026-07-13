@@ -40,6 +40,9 @@
 ### 计划中(`plans/`)
 | 路径 | 说明 |
 |------|------|
+| `plans/Claude-Code-2.1.207与cc-haha差异逆向立项-2026-07-13.md` | **官方 CLI 对 cc-haha 的分层逆向项目**:本机 2.1.207 Mach-O/Bun payload 基线、61 万行候选源码映射、首轮 CLI/子系统差异、A-E 差异分类、R0-R5 工作包与隔离取证规则 |
+| `plans/WorkBuddy安全设计逆向与落地方案-2026-07-13.md` | **桌面 Agent 安全施工依据**:WorkBuddy 5.2.5 源码级逆向、独立取舍、本项目真实缺口、目标安全契约与 P0-P2 验收路线 |
+| `plans/WorkBuddy与本项目底座差异及项目理解校正-2026-07-13.md` | **底座与产品方向校正**:WorkBuddy 属 Claude Code-derived 深度魔改的源码证据、coding-agent 作为通用执行 Agent 的准确定位、英文内核提示词/中文领域知识分层、A/B 两条领域落地线与可证伪门店验证门 |
 | `plans/TS-cc-haha-v0.4.5-内核迁移矩阵-2026-07-07.md` | **当前施工矩阵**:全模块 cc 差异审计 + 逐项已落/待落 + 本轮 P0 对齐进度(§3.401/§3.405) |
 | `plans/强-coding-agent-桌面外壳-阶段目标.md` | 阶段目标:能力/媒体/知识/发布分节要求 + 验收口径 |
 | `plans/通用Agent改造-0到6路线图.md` | 长期路线图/愿景(阶段0-9 能力覆盖清单、对标 cc-haha);⚠️ 进度日志是 Python 期历史记录,现行状态以总览/迁移矩阵为准 |
@@ -69,7 +72,7 @@
 | `references/Anthropic-Agent-SDK-参考架构.md` | 官方 Agent SDK 参考架构 |
 | `references/Codex逆向档案/` | **前端首要参照**:Codex(ChatGPT.app 内置)前端逆向(01 设计系统 ~ 05 落地)+ 后端代码视图 + 浏览器批注/「基于此调整」逆向。前端颜色/字体/文案/流式/布局/交互**完全照抄 Codex**,都从这查 |
 | `references/竞品拆解/` | **竞品源码级拆解知识库**:01 架构机制 / 02 前端设计配色 / 03 文案交互 / 04 借鉴批判筛选 / 05 cc-haha 行为对齐清单 / README。**交互/内核对标 cc-haha 从这查**(前端设计以 Codex 逆向档案为准;WorkBuddy 已弃) |
-| `references/系统提示词逆向-Codex与WorkBuddy.md` | **两款 coding agent 的后台系统提示词逆向**:Codex 基础提示词全文(开源 `gpt_5_codex_prompt.md` 逐字)+ WorkBuddy(CodeBuddy Code)嵌入的子代理/记忆/任务提示词逐字 + 主提示词分发方式结论 |
+| `references/系统提示词逆向-Codex与WorkBuddy.md` | **两款 coding agent 的后台系统提示词逆向**:Codex 基础提示词全文(开源 `gpt_5_codex_prompt.md` 逐字)+ WorkBuddy 5.2.5 `product.json` 英文主提示词证据/语言分层 + 包内子代理/记忆/任务提示词 |
 | `references/P3对外平台-官方文档与资质清单.md` | 对外发布平台资质与官方文档 |
 
 ---
